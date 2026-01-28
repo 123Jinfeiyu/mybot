@@ -3,6 +3,12 @@
 .idea/
 .cache/
 
+#
+*.so
+*.o
+*.cjo
+main
+
 # cangjie
 build/
 target/
