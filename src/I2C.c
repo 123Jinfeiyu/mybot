@@ -11,27 +11,24 @@
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/i2c-dev.h>
-#include <pthread.h>
 
-static int fd = -1;
-static pthread_mutex_t mutex;  /* 这个锁只提供接口给外部使用 */
-
-int I2C_init(const char* filepath) {  /* 动态指定设备文件 */
+int16_t I2C_init(const char* filepath) {  /* 动态指定设备文件 */
+    int16_t fd;
     if ((fd = open(filepath, O_RDWR)) < 0) {
 	perror("Failed to open I2C bus");
-	return 1;
+	return -1;
     }
     else {
-	return 0;
+	return fd;
     }
 }
 
-void I2C_free() {
+void I2C_free(int16_t fd) {
     close(fd);
     fd = -1;
 }
 
-int I2C_setAddr(const uint8_t addr) {
+int I2C_setAddr(int16_t fd, const uint8_t addr) {
     if (ioctl(fd, I2C_SLAVE, addr) < 0) {
 	perror("Failed to set I2C address");
 	return 1;
@@ -41,7 +38,7 @@ int I2C_setAddr(const uint8_t addr) {
     }
 }
 
-int I2C_writeReg(uint8_t reg, uint8_t val) {  /* 写寄存器 */
+int I2C_writeReg(int16_t fd, uint8_t reg, uint8_t val) {  /* 写寄存器 */
     uint8_t buf[] = {reg, val};
     if (write(fd, buf, 2) != 2) {
 	perror("I2C write error");
@@ -53,7 +50,7 @@ int I2C_writeReg(uint8_t reg, uint8_t val) {  /* 写寄存器 */
 }
 
 /* 读寄存器 */
-uint8_t I2C_readReg(uint8_t reg) {
+uint8_t I2C_readReg(int16_t fd, uint8_t reg) {
 
     uint8_t value;
 
@@ -70,13 +67,3 @@ uint8_t I2C_readReg(uint8_t reg) {
     return value;
 }
 
-
-/* 获取锁 */
-void I2C_lock() {
-    pthread_mutex_lock(&mutex); /* 加锁 */
-}
-
-/* 释放锁 */
-void I2C_unlock() {
-    pthread_mutex_unlock(&mutex);   /* 解锁 */
-}
