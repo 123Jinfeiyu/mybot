@@ -47,10 +47,15 @@ bot4cj/
    cd bot4cj
    ```
 
-3. 编译项目
+3. 编译C代码
    ```bash
    make
    ```
+
+4. 编译cj示例代码
+    ```bash
+    cjc -L . -l bot src/main.cj
+    ```
    
 ## 许可证
 
