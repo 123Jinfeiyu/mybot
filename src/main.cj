@@ -11,7 +11,7 @@ class Actor {
     public init(ss: StringReader<InputStream>) {
         var count: Int64 = 0;
         while (true) {  /* FIXME(花间岛): while(let Some(f) <- ss.read()) */
-            try {
+            try {       /*      (qing): 链式调用可读性反而降低 */
                 let a = ss.read()
                 let aa = match(a) {
                     case Some(v) => v
