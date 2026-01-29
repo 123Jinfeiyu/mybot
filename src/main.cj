@@ -1,10 +1,13 @@
 package bot4cj
+import std.io.*;
+import stdx.net.http.*;
 foreign func I2C_init(path: CString): Int16
 foreign func I2C_free(fd: Int16): Unit
 foreign func PCA9685_init(fd: Int16, addr: UInt8): Unit
 foreign func PCA9685_setAngle(fd: Int16, channel: UInt8, angle: Float32): Unit
-
-main(): Int64 {
+const BOT_ADDR = '0.0.0.0'
+const BOT_PORT = 5201u16
+main(_: Array<String>): Int64 {
     unsafe{
         var path = LibC.mallocCString("/dev/i2c-1")
         var fd: Int16 = I2C_init(path)
@@ -16,5 +19,21 @@ main(): Int64 {
         PCA9685_setAngle(fd, 0, 0.0)
         I2C_free(fd)
     }
+    let serv = ServerBuilder()
+        .addr(BOT_ADDR)
+        .port(BOT_PORT)
+        .build()
+    serv.distributor.register('/api/v2/bot_run', { context =>
+        if (context.request.method == 'POST') {
+            let ss = StringReader(context.request.body)
+            /* ---- 响应 ---- */
+            let headers = HttpHeaders()
+            headers.add('Content-Type', 'text/html; charset=utf-8;')
+            context.responseBuilder.setHeaders(headers)
+            context.responseBuilder.body('OK')
+        }
+    })
+    println('Bot at ${BOT_ADDR}:${BOT_PORT}')
+    serv.serve()
     return 0
 }
