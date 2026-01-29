@@ -10,7 +10,7 @@ const BOT_PORT = 5201u16
 class Actor {
     public init(ss: StringReader<InputStream>) {
         var count: Int64 = 0;
-        while (true) {
+        while (true) {  /* FIXME(花间岛): while(let Some(f) <- ss.read()) */
             try {
                 let a = ss.read()
                 let aa = match(a) {
