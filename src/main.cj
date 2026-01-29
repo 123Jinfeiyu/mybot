@@ -7,6 +7,29 @@ foreign func PCA9685_init(fd: Int16, addr: UInt8): Unit
 foreign func PCA9685_setAngle(fd: Int16, channel: UInt8, angle: Float32): Unit
 const BOT_ADDR = '0.0.0.0'
 const BOT_PORT = 5201u16
+class ScriptParser {
+    public static func parse(ss: StringReader<InputStream>) {
+        var count: Int64 = 0;
+        while (true) {
+            try {
+                let a = ss.read()
+                let aa = match(a) {
+                    case Some(v) => v
+                    case None => throw ReadOutOfStream(count)
+                }
+                count += 1
+            }
+            catch (exp: ReadOutOfStream) {
+                break
+            }
+        }
+    }
+}
+private class ReadOutOfStream <: Exception {
+    public ReadOutOfStream(public let length: Int64) {
+        super('we got length: ${length}')
+    }
+}
 main(_: Array<String>): Int64 {
     unsafe{
         var path = LibC.mallocCString("/dev/i2c-1")
@@ -26,6 +49,7 @@ main(_: Array<String>): Int64 {
     serv.distributor.register('/api/v2/bot_run', { context =>
         if (context.request.method == 'POST') {
             let ss = StringReader(context.request.body)
+            let act = ScriptParser.parse(ss)
             /* ---- 响应 ---- */
             let headers = HttpHeaders()
             headers.add('Content-Type', 'text/html; charset=utf-8;')
