@@ -1,11 +1,7 @@
 /*
  *  该文件是i2c用户界面
- *
- * NOTE:  以C++的方式处理异常可能会更好
- * FIXME: 包含询问方法以确定i2c设备的状态
  */
 #include <stdio.h>
-#include <string.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>

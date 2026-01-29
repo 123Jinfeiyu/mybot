@@ -7,7 +7,7 @@
 void PCA9685_init(int16_t fd, uint8_t addr) {
     I2C_setAddr(fd, addr);
     I2C_writeReg(fd, 0x00, 0x20);   /* 开启AI（地址自增）和关闭SLEEP */
-    usleep(5000);               /* 等待振荡器启动 */
+    usleep(5000);                   /* 等待振荡器启动 */
 
     /* 设置PWM频率为50Hz（舵机标准周期20ms） */
     const float freq = 50.0;
