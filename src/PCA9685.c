@@ -37,5 +37,6 @@ void PCA9685_setAngle(int16_t fd, uint8_t channel, float angle) {
     const float max = 2.5;    /* 180°对应2.5ms */
     float width = min + (max - min) * (angle / 180.0);
     uint16_t off_val = (uint16_t)(width * 4096 / 20);        /* 20ms 周期 */
+    I2C_setAddr(fd, PCA9685_ADDR);
     PCA9685_setPWM(fd, channel, 0, off_val); /* ON=0, OFF=计算值 */
 }

@@ -24,8 +24,8 @@ class I2C {
                 throw Exception("Can't open i2c device")
             }
             LibC.free(cstr)
-            MPU6050_init(fd)
             PCA9685_init(fd, 0x40)
+            MPU6050_init(fd) /* */
         }
     }
     public func PCA9685_turnAngle(channel: UInt8, angle: Float32) {
