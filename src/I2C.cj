@@ -13,6 +13,7 @@ foreign func I2C_free(fd: Int16): Unit
 foreign func PCA9685_init(fd: Int16, addr: UInt8): Unit
 foreign func PCA9685_setAngle(fd: Int16, channel: UInt8, angle: Float32): Unit
 foreign func MPU6050_readSensor(fd: Int16, data:  CPointer<MPU6050_sensorData>): Unit
+foreign func MPU6050_init(fd: Int16): Unit
 foreign func MPU6050_calAngle(data: CPointer<MPU6050_sensorData>, pitch: CPointer<Float32>, roll: CPointer<Float32>): Unit
 class I2C {
     public init(path: String) {
@@ -23,6 +24,7 @@ class I2C {
                 throw Exception("Can't open i2c device")
             }
             LibC.free(cstr)
+            MPU6050_init(fd)
             PCA9685_init(fd, 0x40)
         }
     }
@@ -33,13 +35,16 @@ class I2C {
     }
     public func MPU6050_calAngle(): (Float32, Float32) {
         unsafe {
-            var pitch: Float32 = 0.0
-            var roll: Float32  = 0.0
+            var pitch: CPointer<Float32> = LibC.malloc<Float32>()
+            var roll: CPointer<Float32>  = LibC.malloc<Float32>()
             var pData = LibC.malloc<MPU6050_sensorData> ()
             MPU6050_readSensor(fd, pData)
-            MPU6050_calAngle(pData, inout pitch, inout roll)
+            MPU6050_calAngle(pData, pitch, roll)
+            let t = (pitch.read(), roll.read())
             LibC.free(pData)
-            return (pitch, roll)
+            LibC.free(pitch)
+            LibC.free(roll)
+            return t
         }
     }
     ~init() {
