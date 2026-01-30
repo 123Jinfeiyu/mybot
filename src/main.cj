@@ -1,47 +1,18 @@
 package bot4cj
 import std.io.*
-import std.time.*
 import std.math.*
 import std.convert.*
 import std.collection.*
 import stdx.net.http.*
-foreign func I2C_init(path: CString): Int16
-foreign func I2C_free(fd: Int16): Unit
-foreign func PCA9685_init(fd: Int16, addr: UInt8): Unit
-foreign func PCA9685_setAngle(fd: Int16, channel: UInt8, angle: Float32): Unit
 const BOT_ADDR = '0.0.0.0'
 const BOT_PORT = 5201u16
 const I2C_PATH = "/dev/i2c-1"
-class PCA9685 {
-    public init(path: String) {
-        unsafe{
-            var cstr = LibC.mallocCString(path)
-            fd = I2C_init(cstr)
-            if (fd <= 0) { /* 打开设备失败 */
-                throw Exception("Can't open i2c device")
-            }
-            LibC.free(cstr)
-            PCA9685_init(fd, 0x40)
-        }
-    }
-    public func turnAngle(channel: UInt8, angle: Float32) {
-        unsafe {
-            PCA9685_setAngle(fd, channel, angle)
-        }
-    }
-    ~init() {
-        unsafe {
-            I2C_free(fd)
-        }
-    }
-    private var fd: Int16
-}
 
 /* 机器人类 */
 class Actor {
 
     public init(filepath: String) {
-        pca9685 = PCA9685(filepath)
+        i2c = I2C(filepath)
     }
     
     public func parse(ss: StringReader<InputStream>) {
@@ -81,19 +52,19 @@ class Actor {
     public func play() {
         let max = bot[0]
         let min = bot[1]
-        let pca = pca9685.getOrThrow()
+        let i2 = i2c.getOrThrow()
         for (i in 2..bot.size) {
             let a = bot[i] /* 选中一行 */
             for (j in 0..a.size-1) {
-                let ma = abs(bot[0][j])
-                let mi = abs(bot[1][j])
-                let rf = bot[0][j] < 0.0f32  /* rotate flag */
+                let ma = abs(max[j])
+                let mi = abs(min[j])
+                let rf = max[j] < 0.0f32  /* rotate flag */
                 var t = a[j]                 /* 选中单个 */
                 t = if (ma < t) { ma } else { t }
                 t = if (mi < t) { t }  else { mi }
                 t = if (rf) { 180.0f32 - t } else { t }
                 let jj = UInt8(j)
-                pca.turnAngle(jj, t)
+                i2.PCA9685_turnAngle(jj, t)
             }
             let aa = a.last.getOrThrow()
             sleep(Duration.millisecond * Int64(aa))
@@ -101,7 +72,7 @@ class Actor {
     }
 
     /*-----------------*/
-    private var pca9685: Option<PCA9685> = None
+    private var i2c: Option<I2C> = None
     private var nl: Bool = true   /* new line */
     private var sl: Bool = false  /* special */
     private var cm: Bool = false  /* comment */
