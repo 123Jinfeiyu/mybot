@@ -46,13 +46,13 @@ class Actor {
                 let a = ss.read()
                 let aa = match(a) {
                     case Some(v) => v
-                    case None => throw ReadOutOfStream(count)
+                    case None => break
                 }
                 count += 1
                 this.next(aa)
             }
-            catch (exp: ReadOutOfStream) {
-                break
+            catch (exp: Exception) {
+                throw ParseError(count)
             }
         }
     }
@@ -119,8 +119,8 @@ class Actor {
         return f
     }
 }
-private class ReadOutOfStream <: Exception {
-    public ReadOutOfStream(public let length: Int64) {
+private class ParseError <: Exception {
+    public ParseError(public let length: Int64) {
         super('we got length: ${length}')
     }
 }
