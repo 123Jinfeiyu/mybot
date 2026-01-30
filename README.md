@@ -57,7 +57,7 @@ bot4cj/
 
 4. 编译cj示例代码
     ```bash
-    cjc -L . -l bot src/main.cj
+    cjpm run
     ```
    
 ## API 参考
