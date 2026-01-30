@@ -85,7 +85,7 @@ class Actor {
             for (j in 0..a.size-1) {
                 let ma = abs(bot[0][j])
                 let mi = abs(bot[1][j])
-                let rf: Bool = bot[0][j] < 0.0f32  /* rotate flag */
+                let rf = bot[0][j] < 0.0f32  /* rotate flag */
                 var t = a[j]
                 t = if (ma < t) { ma } else { t }
                 t = if (mi < t) { t }  else { mi }
