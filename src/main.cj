@@ -1,8 +1,10 @@
 package bot4cj
-import std.io.*;
+import std.io.*
+import std.time.*
+import std.math.*
 import std.convert.*
 import std.collection.*
-import stdx.net.http.*;
+import stdx.net.http.*
 foreign func I2C_init(path: CString): Int16
 foreign func I2C_free(fd: Int16): Unit
 foreign func PCA9685_init(fd: Int16, addr: UInt8): Unit
@@ -35,10 +37,11 @@ class PCA9685 {
     private var fd: Int16
 }
 
+/* 机器人类 */
 class Actor {
 
     public init(filepath: String) {
-        pca = PCA9685(filepath)
+        pca9685 = PCA9685(filepath)
     }
     
     public func parse(ss: StringReader<InputStream>) {
@@ -73,7 +76,28 @@ class Actor {
         }
     }
 
-    private var pca: Option<PCA9685> = None
+    public func play() {
+        let pca = pca9685.getOrThrow()
+        let max = bot[0]
+        let min = bot[1]
+        for (i in 2..bot.size) {
+            let a = bot[i]
+            for (j in 0..a.size-1) {
+                let ma = abs(bot[0][j])
+                let mi = abs(bot[1][j])
+                let rf: Bool = bot[0][j] > 0.0f32  /* rotate flag */
+                var t = a[j]
+                t = if (ma < t) { ma } else { t }
+                t = if (mi < t) { t }  else { mi }
+                let jj = UInt8(j)
+                pca.turnAngle(jj, t)
+            }
+            sleep(Duration.millisecond * Int64(a.last.getOrThrow()))
+        }
+    }
+
+    /*-----------------*/
+    private var pca9685: Option<PCA9685> = None
     private var nl: Bool = true   /* new line */
     private var sl: Bool = false  /* special */
     private var cm: Bool = false  /* comment */
@@ -168,10 +192,6 @@ private class UnknowExcept <: ParseExcept {
 
 main(_: Array<String>): Int64 {
 
-    //let pca = PCA9685("/dev/i2c-1")
-    //pca.turnAngle(1, 0.0)
-    //return 0;
-
     let serv = ServerBuilder()
         .addr(BOT_ADDR)
         .port(BOT_PORT)
@@ -184,6 +204,7 @@ main(_: Array<String>): Int64 {
             actor.parse(ss)
             println("-------------")
             actor.print()
+            actor.play()
             /* ---- 响应 ---- */
             let headers = HttpHeaders()
             headers.add('Content-Type', 'text/html; charset=utf-8;')
