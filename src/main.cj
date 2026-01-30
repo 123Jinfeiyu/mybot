@@ -77,9 +77,9 @@ class Actor {
     }
 
     public func play() {
-        let pca = pca9685.getOrThrow()
         let max = bot[0]
         let min = bot[1]
+        let pca = pca9685.getOrThrow()
         for (i in 2..bot.size) {
             let a = bot[i]
             for (j in 0..a.size-1) {
@@ -93,7 +93,8 @@ class Actor {
                 let jj = UInt8(j)
                 pca.turnAngle(jj, t)
             }
-            sleep(Duration.millisecond * Int64(a.last.getOrThrow()))
+            let aa = a.last.getOrThrow()
+            sleep(Duration.millisecond * Int64(aa))
         }
     }
 
