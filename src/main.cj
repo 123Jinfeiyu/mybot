@@ -51,7 +51,7 @@ class Actor {
                 count += 1
                 this.next(aa)
             }
-            catch (exp: Exception) {
+            catch (exp: IllegalArgumentException) { /* 临时占位 */
                 throw ParseError(count)
             }
         }
@@ -119,11 +119,13 @@ class Actor {
         return f
     }
 }
+
 private class ParseError <: Exception {
     public ParseError(public let length: Int64) {
         super('we got length: ${length}')
     }
 }
+
 main(_: Array<String>): Int64 {
 
     let pca = PCA9685("/dev/i2c-1")
