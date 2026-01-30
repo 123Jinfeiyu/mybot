@@ -69,6 +69,11 @@ class Actor {
             let aa = a.last.getOrThrow()
             sleep(Duration.millisecond * Int64(aa))
         }
+        let t: (Float32, Float32) = i2c.getOrThrow().MPU6050_calAngle()
+        print(t[0])
+        print(",")
+        print(t[1])
+        println()
     }
 
     /*-----------------*/
