@@ -36,9 +36,11 @@ class PCA9685 {
 }
 
 class Actor {
+
     public init(filepath: String) {
         pca = PCA9685(filepath)
     }
+    
     public func parse(ss: StringReader<InputStream>) {
         var count: Int64 = 0;
         while (true) {  /* FIXME(花间岛): while(let Some(f) <- ss.read()) */
