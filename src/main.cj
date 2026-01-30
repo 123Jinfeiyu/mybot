@@ -51,11 +51,25 @@ class Actor {
                     case None => break
                 }
                 count += 1
-                this.next(aa)
+                print(aa)
+                this.next(aa, count)
             }
-            catch (exp: IllegalArgumentException) { /* 临时占位 */
-                throw ParseError(count)
+            catch (exp: BufOverTheLine) { /* 临时占位 */
+                throw exp
             }
+            catch (exp: IllegalArgumentException) {
+                throw UnknowExcept(count)
+            }
+        }
+    }
+
+    public func print() {
+        for (array in bot) {
+            for (item in array) {
+                print(item)
+                print(" ")
+            }
+            print("\n")
         }
     }
 
@@ -66,8 +80,8 @@ class Actor {
     private var tmp = ArrayList<Rune>()
     private var grp = ArrayList<Float32>()
     private var bot = ArrayList<ArrayList<Float32>>()
-
-    private func next(c: Rune) {
+    private static const TMP_LEN = 16
+    private func next(c: Rune, count: Int64) {
         /* ---- comment ---- */
         if (!cm && c == r'#') {
             cm = true
@@ -95,23 +109,35 @@ class Actor {
             nl = false
             sl = false
             tmp.add(c)
+            if (tmp.size > TMP_LEN) {
+                throw BufOverTheLine(count)
+            }
         }
         /* ---- ---- */
         else if (!nl && c == r' ') {
-            let f = fromTmp()
-            grp.add(f)
+            if (!tmp.isEmpty()) {
+                let f = fromTmp()
+                grp.add(f)
+            }
         }
         else if (!nl && c == r';') {
-            let f = fromTmp()
-            grp.add(f)
-            bot.add(grp)
-            grp.clear()
+            if (!tmp.isEmpty()) {
+                let f = fromTmp()
+                grp.add(f)
+            }
+            if (!grp.isEmpty()) {
+                bot.add(grp.clone())
+                grp.clear()
+            }
             nl = true
             sl = false
             cm = false
         }
         else if (!nl) {
-             tmp.add(c)
+            tmp.add(c)
+            if (tmp.size > TMP_LEN) {
+                throw BufOverTheLine(count)
+            }
         }
     }
     private func fromTmp(): Float32 {
@@ -122,17 +148,29 @@ class Actor {
     }
 }
 
-private class ParseError <: Exception {
-    public ParseError(public let length: Int64) {
-        super('we got length: ${length}')
+open private class ParseExcept <: Exception {
+    public ParseExcept(msg: String, length: Int64) {
+        super('${msg}. we got length: ${length}')
+    }
+}
+
+private class BufOverTheLine <: ParseExcept {
+    public BufOverTheLine(count: Int64) {
+        super('Buffer length over the line', count)
+    }
+}
+
+private class UnknowExcept <: ParseExcept {
+    public UnknowExcept(count: Int64) {
+        super("I don't understand what happened", count)
     }
 }
 
 main(_: Array<String>): Int64 {
 
-    let pca = PCA9685("/dev/i2c-1")
-    pca.turnAngle(1, 0.0)
-    return 0;
+    //let pca = PCA9685("/dev/i2c-1")
+    //pca.turnAngle(1, 0.0)
+    //return 0;
 
     let serv = ServerBuilder()
         .addr(BOT_ADDR)
@@ -144,6 +182,8 @@ main(_: Array<String>): Int64 {
             let ss = StringReader(context.request.body)
             let actor = Actor(I2C_PATH)
             actor.parse(ss)
+            println("-------------")
+            actor.print()
             /* ---- 响应 ---- */
             let headers = HttpHeaders()
             headers.add('Content-Type', 'text/html; charset=utf-8;')
