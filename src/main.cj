@@ -76,17 +76,19 @@ class Actor {
         }
     }
 
+    /* 开始演绎 ---
+     * 按照解析出来的顺序进行旋转 */
     public func play() {
         let max = bot[0]
         let min = bot[1]
         let pca = pca9685.getOrThrow()
         for (i in 2..bot.size) {
-            let a = bot[i]
+            let a = bot[i] /* 选中一行 */
             for (j in 0..a.size-1) {
                 let ma = abs(bot[0][j])
                 let mi = abs(bot[1][j])
                 let rf = bot[0][j] < 0.0f32  /* rotate flag */
-                var t = a[j]
+                var t = a[j]                 /* 选中单个 */
                 t = if (ma < t) { ma } else { t }
                 t = if (mi < t) { t }  else { mi }
                 t = if (rf) { 180.0f32 - t } else { t }
@@ -103,10 +105,10 @@ class Actor {
     private var nl: Bool = true   /* new line */
     private var sl: Bool = false  /* special */
     private var cm: Bool = false  /* comment */
-    private var tmp = ArrayList<Rune>()
-    private var grp = ArrayList<Float32>()
+    private var tmp = ArrayList<Rune>()    /* 文字缓冲区 */
+    private var grp = ArrayList<Float32>() /* 单行 */
     private var bot = ArrayList<ArrayList<Float32>>()
-    private static const TMP_LEN = 16
+    private static const TMP_LEN = 16      /* 文字缓冲区不超过 */
     private func next(c: Rune, count: Int64) {
         /* ---- comment ---- */
         if (!cm && c == r'#') {
@@ -134,24 +136,24 @@ class Actor {
         else if (nl && c != r'!') {
             nl = false
             sl = false
-            tmp.add(c)
-            if (tmp.size > TMP_LEN) {
+            tmp.add(c) /* 到缓冲区 */
+            if (tmp.size > TMP_LEN) { /* 缓冲区过长 */
                 throw BufOverTheLine(count)
             }
         }
         /* ---- ---- */
         else if (!nl && c == r' ') {
-            if (!tmp.isEmpty()) {
+            if (!tmp.isEmpty()) { /* 结算当前 */
                 let f = fromTmp()
                 grp.add(f)
             }
         }
         else if (!nl && c == r';') {
-            if (!tmp.isEmpty()) {
+            if (!tmp.isEmpty()) { /* 结算当前 */
                 let f = fromTmp()
                 grp.add(f)
             }
-            if (!grp.isEmpty()) {
+            if (!grp.isEmpty()) { /* 结算一行 */
                 bot.add(grp.clone())
                 grp.clear()
             }
@@ -160,12 +162,14 @@ class Actor {
             cm = false
         }
         else if (!nl) {
-            tmp.add(c)
-            if (tmp.size > TMP_LEN) {
+            tmp.add(c) /* 到缓冲区 */
+            if (tmp.size > TMP_LEN) { /* 缓冲区过长 */
                 throw BufOverTheLine(count)
             }
         }
     }
+
+    /* 从文字缓冲区输出并解析 */
     private func fromTmp(): Float32 {
         let str = String(tmp)
         tmp.clear()
@@ -174,18 +178,21 @@ class Actor {
     }
 }
 
+/* 解析异常 */
 open private class ParseExcept <: Exception {
     public ParseExcept(msg: String, length: Int64) {
         super('${msg}. we got length: ${length}')
     }
 }
 
+/* 缓冲区过长 */
 private class BufOverTheLine <: ParseExcept {
     public BufOverTheLine(count: Int64) {
         super('Buffer length over the line', count)
     }
 }
 
+/* 未知异常 */
 private class UnknowExcept <: ParseExcept {
     public UnknowExcept(count: Int64) {
         super("I don't understand what happened", count)
@@ -195,10 +202,11 @@ private class UnknowExcept <: ParseExcept {
 main(_: Array<String>): Int64 {
 
     let serv = ServerBuilder()
-        .addr(BOT_ADDR)
-        .port(BOT_PORT)
-        .build()
+    .addr(BOT_ADDR)
+    .port(BOT_PORT)
+    .build()
 
+    /* curl -X POST /api/v2/bot_run -d ${cat filepath} */
     serv.distributor.register('/api/v2/bot_run', { context =>
         if (context.request.method == 'POST') {
             let ss = StringReader(context.request.body)
