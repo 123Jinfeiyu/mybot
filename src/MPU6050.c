@@ -1,4 +1,4 @@
-
+/* MPU6050陀螺仪与加速度计 - 使用界面 */
 
 #include <math.h>
 #include <stdio.h>
