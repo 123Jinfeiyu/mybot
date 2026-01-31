@@ -1,10 +1,5 @@
 
-/*
- * FIXME: 1. 传感器数据校准
-        2. 可采用卡尔曼滤波
 
-   FIXME: 采用类进行封装，因为可能需要一对
- */
 #include <math.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -56,8 +51,13 @@ void MPU6050_readSensor(int16_t fd, struct MPU6050_sensorData *data) {
     data->gyro_z  = read16BitReg(fd, MPU6050_GYRO_REG_Z_HIGH, MPU6050_GYRO_REG_Z_LOW);
 }
 
-/* FIXME: 当设备剧烈运动时（如加速度远大于重力），加速度计数据会包含运动加速度，此时角度计算可能不准确。实际应用中需结合陀螺仪数据（如互补滤波或卡尔曼滤波）来提高稳定性。 */
-/* FIXME: 适合静态测量或学习用途。如果需要实际应用，建议添加传感器融合算法 */
+/* FIXME: 当设备剧烈运动时（如加速度远大于重力），加速度计数据会包含运动加速度，此时角度计算可能不准确。实际应用中需结合陀螺仪数据（如互补滤波或卡尔曼滤波）来提高稳定性。
+ * FIXME: 适合静态测量或学习用途。如果需要实际应用，建议添加传感器融合算法
+ * FIXME: 1. 传感器数据校准
+ *      2. 可采用卡尔曼滤波
+ *
+ *  感觉calAngle()函数计算出来的角度不对，不如使用纯陀螺仪和加速度计的数据进行训练
+ */
 void MPU6050_calAngle(struct MPU6050_sensorData *data, float *pitch, float *roll) {
     /* - ±2g → 16384 LSB/g
        - ±4g → 8192 LSB/g
