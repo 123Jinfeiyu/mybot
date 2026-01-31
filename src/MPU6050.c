@@ -26,7 +26,8 @@
 #define MPU6050_ACCEL_REG_Z_HIGH 0x3F
 #define MPU6050_ACCEL_REG_Z_LOW 0x40
 
-/* 初始化 MPU6050 */
+/* 初始化 MPU6050
+ * FIXME: 输入I2C地址*/
 void MPU6050_init(int16_t fd) {
     I2C_setAddr(fd, MPU6050_ADDR1);
     I2C_writeReg(fd, MPU6050_PWR_MGMT_1,     MPU6050_PWR_NOSLEEP);     /* 退出睡眠 */
@@ -49,26 +50,4 @@ void MPU6050_readSensor(int16_t fd, struct MPU6050_sensorData *data) {
     data->gyro_x  = read16BitReg(fd, MPU6050_GYRO_REG_X_HIGH, MPU6050_GYRO_REG_X_LOW);
     data->gyro_y  = read16BitReg(fd, MPU6050_GYRO_REG_Y_HIGH, MPU6050_GYRO_REG_Y_LOW);
     data->gyro_z  = read16BitReg(fd, MPU6050_GYRO_REG_Z_HIGH, MPU6050_GYRO_REG_Z_LOW);
-}
-
-/* FIXME: 当设备剧烈运动时（如加速度远大于重力），加速度计数据会包含运动加速度，此时角度计算可能不准确。实际应用中需结合陀螺仪数据（如互补滤波或卡尔曼滤波）来提高稳定性。
- * FIXME: 适合静态测量或学习用途。如果需要实际应用，建议添加传感器融合算法
- * FIXME: 1. 传感器数据校准
- *      2. 可采用卡尔曼滤波
- *
- *  感觉calAngle()函数计算出来的角度不对，不如使用纯陀螺仪和加速度计的数据进行训练
- */
-void MPU6050_calAngle(struct MPU6050_sensorData *data, float *pitch, float *roll) {
-    /* - ±2g → 16384 LSB/g
-       - ±4g → 8192 LSB/g
-       - ±8g → 4096 LSB/g
-       - ±16g → 2048 LSB/g */
-    const float scale = 4096.0;    /* 加速度数据转重力单位（±8g 量程 4096 LSB/g） */
-    float ax = data->accel_x / scale;
-    float ay = data->accel_y / scale;
-    float az = data->accel_z / scale;
-
-    /* 计算俯仰角(Pitch)和翻滚角(Roll) */
-    *pitch = atan2(-ax, sqrt(ay * ay + az * az)) * 180.0 / M_PI;
-    *roll = atan2(ay, az) * 180.0 / M_PI;
 }
