@@ -37,8 +37,6 @@ class I2C {
                 throw Exception("Can't open i2c device")
             }
             LibC.free(cstr)
-            PCA9685_init(fd, 0x40)
-            MPU6050_init(fd) /* */
         }
     }
     ~init() {
@@ -46,14 +44,28 @@ class I2C {
             I2C_free(fd)
         }
     }
+    /* --------------------
+     * 初始化pca9685舵机控制板 */
+    public func pca9685_init() {
+        unsafe {
+            PCA9685_init(fd, 0x40)
+        }
+    }
     /* 控制pca9685舵机旋转一个角度 */
-    public func PCA9685_turnAngle(channel: UInt8, angle: Float32) {
+    public func pca9685_turnAngle(channel: UInt8, angle: Float32) {
         unsafe {
             PCA9685_setAngle(fd, channel, angle)
         }
     }
+    /* --------------------
+     * 初始化mpu6050陀螺仪与加速度计 */
+    public func mpu6050_init() {
+        unsafe {
+            MPU6050_init(fd) /* */
+        }
+    }
     /* 读取MPU6050的加速度计、陀螺仪数据 */
-    public func MPU6050_readData(): (Float32, Float32) {
+    public func mpu6050_readData(): (Float32, Float32) {
         unsafe {
             var pData = LibC.malloc<MPU6050_sensorData> ()
             MPU6050_readSensor(fd, pData)
