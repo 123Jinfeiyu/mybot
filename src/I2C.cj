@@ -41,12 +41,19 @@ class I2C {
             MPU6050_init(fd) /* */
         }
     }
+    ~init() {
+        unsafe {
+            I2C_free(fd)
+        }
+    }
+    /* 控制pca9685舵机旋转一个角度 */
     public func PCA9685_turnAngle(channel: UInt8, angle: Float32) {
         unsafe {
             PCA9685_setAngle(fd, channel, angle)
         }
     }
-    public func MPU6050_calAngle(): (Float32, Float32) {
+    /* 读取MPU6050的加速度计、陀螺仪数据 */
+    public func MPU6050_readData(): (Float32, Float32) {
         unsafe {
             var pData = LibC.malloc<MPU6050_sensorData> ()
             MPU6050_readSensor(fd, pData)
@@ -55,10 +62,7 @@ class I2C {
             return data
         }
     }
-    ~init() {
-        unsafe {
-            I2C_free(fd)
-        }
-    }
+
+    /* 存放文件描述符 */
     private var fd: Int16
 }
