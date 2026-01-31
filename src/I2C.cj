@@ -65,7 +65,7 @@ class I2C {
         }
     }
     /* 读取MPU6050的加速度计、陀螺仪数据 */
-    public func mpu6050_readData(): (Float32, Float32) {
+    public func mpu6050_readData(): MPU6050_sensorData {
         unsafe {
             var pData = LibC.malloc<MPU6050_sensorData> ()
             MPU6050_readSensor(fd, pData)

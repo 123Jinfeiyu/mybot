@@ -71,9 +71,9 @@ class Actor {
             }
             let aa = a.last.getOrThrow()
             sleep(Duration.millisecond * Int64(aa))
+            let d = i2.mpu6050_readData()
+            d.print()
         }
-        let d = i2.mpu6050_readData()
-        d.print()
     }
 
     /*-----------------*/
