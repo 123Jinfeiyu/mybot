@@ -51,7 +51,6 @@ class I2C {
             var pData = LibC.malloc<MPU6050_sensorData> ()
             MPU6050_readSensor(fd, pData)
             let data = pData.read()
-            data.print()
             LibC.free(pData)
             return data
         }
