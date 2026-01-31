@@ -13,6 +13,9 @@ class Actor {
 
     public init(filepath: String) {
         i2c = I2C(filepath)
+        let i2 = i2c.getOrThrow()
+        i2.pca9685_init()
+        i2.mpu6050_init() 
     }
     
     public func parse(ss: StringReader<InputStream>) {
@@ -64,12 +67,12 @@ class Actor {
                 t = if (mi < t) { t }  else { mi }
                 t = if (rf) { 180.0f32 - t } else { t }
                 let jj = UInt8(j)
-                i2.PCA9685_turnAngle(jj, t)
+                i2.pca9685_turnAngle(jj, t)
             }
             let aa = a.last.getOrThrow()
             sleep(Duration.millisecond * Int64(aa))
         }
-        let d = i2.MPU6050_readData()
+        let d = i2.mpu6050_readData()
         d.print()
     }
 
