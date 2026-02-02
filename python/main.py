@@ -95,18 +95,25 @@ class Actor:
 
     def serialize(self) -> str:
         msg = ''
+        the_max = self.ls[0]
+        the_min = self.ls[1]
         for i in range(len(self.ls)):
+            line = self.ls[i]
             nl = True
             if i < self.at:
                 msg += '!'
-            for j in self.ls[i]:
+            for j in range(len(line)):
 
                 if nl:
                     nl = False
                 else:
                     msg += ' '
 
-                msg += str(j)
+                if j < len(line) - 1:
+                    jj = max(min(line[j], the_max[j]), the_min[j])
+                else:
+                    jj = line[j]
+                msg += str(jj)
 
             msg += ';\n'
         return msg
@@ -151,9 +158,11 @@ class Actor:
             
             # 计算DRL误差（使用原始output计算损失，保持梯度连接）
             target = torch.zeros_like(output)
-            for j in range(16):
-                jj = int(modified_output[0, j * 181 : (j + 1) * 181].argmax())
-                target[0, j * 181 + jj] = 1.0 # one-hot，使用标量而不是张量
+            #for j in range(16):
+            #    jj = int(modified_output[0, j * 181 : (j + 1) * 181].argmax())
+            #    target[0, j * 181 + jj] = 1.0 # one-hot，使用标量而不是张量
+            for j in range(3060):
+                target[0, j] = modified_output[0, j]
 
             # 确保target不需要梯度
             target = target.detach()
