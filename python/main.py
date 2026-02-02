@@ -109,10 +109,7 @@ class Actor:
                 else:
                     msg += ' '
 
-                if j < len(line) - 1:
-                    jj = max(min(line[j], the_max[j]), the_min[j])
-                else:
-                    jj = line[j]
+                jj = line[j]
                 msg += str(jj)
 
             msg += ';\n'
