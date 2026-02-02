@@ -142,19 +142,19 @@ class Actor:
                 val = output[0, j].item() + random.uniform(-0.1, 0.1)
                 val = max(0, min(1, val))
                 modified_output[0, j] = val
-            output = modified_output
             
             print(len(self.ls), i)
-            # 输出切片
+            # 输出切片（使用modified_output，但保持原始output用于损失计算）
             for j in range(16):
-                jj = int(output[0, j * 181 : (j + 1) * 181].argmax())
+                jj = int(modified_output[0, j * 181 : (j + 1) * 181].argmax())
                 self.ls[i][j] = jj
             
-            # 计算DRL误差
+            # 计算DRL误差（使用原始output计算损失，保持梯度连接）
             target = torch.zeros_like(output)
             for j in range(16):
-                jj = int(output[0, j * 181 : (j + 1) * 181].argmax())
+                jj = int(modified_output[0, j * 181 : (j + 1) * 181].argmax())
                 target[0, j * 181 + jj] = 1.0 # one-hot，使用标量而不是张量
+
             # 确保target不需要梯度
             target = target.detach()
             loss = criterion(output, target)
@@ -178,46 +178,46 @@ class Actor:
             
             # 清空梯度，避免累积
             optimizer.zero_grad() 
-            
-            # 模拟奖励
-            rewards = [0, 1, -10]
-            for ii in range(len(rewards)):
-                reward = rewards[ii]
+        
+        # 模拟奖励
+        rewards = [0, 1, -10]
+        for ii in range(len(rewards)):
+            reward = rewards[ii]
 
-                # 折扣系数
-                discount_factor = 0.98
-                # 奖励阈值
-                threshold = 0.01
+            # 折扣系数
+            discount_factor = 0.98
+            # 奖励阈值
+            threshold = 0.01
 
-                for jj in range(ii).__reversed__(): 
-                    reward *= discount_factor
-                    if abs(reward) < threshold:
-                        break   
-                        
-                    # 计算奖励的标准化值（可选）
-                    if len(rewards) > 0:
-                        reward_mean = sum(rewards) / len(rewards)
-                        reward_std = max(1e-8, (sum((r - reward_mean)**2 for r in rewards) / len(rewards))**0.5)
-                        normalized_rewards = [(r - reward_mean) / reward_std for r in rewards]
-                    else:
-                        normalized_rewards = [1.0] * len(gradients)
+            for jj in range(ii).__reversed__(): 
+                reward *= discount_factor
+                if abs(reward) < threshold:
+                    break   
                     
-                    # 累加梯度（根据奖励加权）
-                    for name, param in model.named_parameters():
-                        if param.requires_grad:
-                            param.grad = torch.zeros_like(param.data)
-                            for grad_idx, grad_dict in enumerate(gradients):
-                                if name in grad_dict:
-                                    # 根据奖励加权梯度
-                                    weight = normalized_rewards[grad_idx] if grad_idx < len(normalized_rewards) else 1.0
-                                    param.grad += grad_dict[name] * weight
-                    # 取平均
-                    param.grad /= len(gradients)
-                    
-                    # 执行优化步骤
-                    optimizer.step()
-                    # 清空梯度
-                    optimizer.zero_grad()
+                # 计算奖励的标准化值（可选）
+                if len(rewards) > 0:
+                    reward_mean = sum(rewards) / len(rewards)
+                    reward_std = max(1e-8, (sum((r - reward_mean)**2 for r in rewards) / len(rewards))**0.5)
+                    normalized_rewards = [(r - reward_mean) / reward_std for r in rewards]
+                else:
+                    normalized_rewards = [1.0] * len(gradients)
+                
+                # 累加梯度（根据奖励加权）
+                for name, param in model.named_parameters():
+                    if param.requires_grad:
+                        param.grad = torch.zeros_like(param.data)
+                        for grad_idx, grad_dict in enumerate(gradients):
+                            if name in grad_dict:
+                                # 根据奖励加权梯度
+                                weight = normalized_rewards[grad_idx] if grad_idx < len(normalized_rewards) else 1.0
+                                param.grad += grad_dict[name] * weight
+                # 取平均
+                param.grad /= len(gradients)
+                
+                # 执行优化步骤
+                optimizer.step()
+                # 清空梯度
+                optimizer.zero_grad()
 
                 
         model.save_model(model_path)
