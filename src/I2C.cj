@@ -1,10 +1,6 @@
 package bot4cj
 
-/*
- * MPU6050传感器数据
- *
- * 因为我们可能会直接使用这些数据，需要在其中增加一些常用的方法
- */
+/* MPU6050传感器数据 */
 @C
 struct MPU6050_sensorData {
     var accel_x: Int16 = 0
