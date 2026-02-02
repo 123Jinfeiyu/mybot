@@ -62,7 +62,7 @@ class Actor {
                 let ma = abs(max[j])
                 let mi = abs(min[j])
                 let rf = max[j] < 0.0f32  /* rotate flag */
-                var t = a[j]                 /* 选中单个 */
+                var t = a[j]              /* 选中单个 */
                 t = if (ma < t) { ma } else { t }
                 t = if (mi < t) { t }  else { mi }
                 t = if (rf) { 180.0f32 - t } else { t }
