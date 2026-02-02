@@ -11,8 +11,11 @@
 - 提供 I2C 总线通信接口
 - 支持 PCA9685 舵机驱动芯片控制
 - 支持 MPU6050 六轴传感器数据获取
+- 支持 MPU6050 传感器的角度计算功能
+- 仓颉语言的面向对象封装
 - 简洁易用的 API 接口
 - 基于仓颉语言的现代化编程体验
+- I2C 设备扫描脚本
 - 内置 HTTP 服务器示例，便于远程控制
 
 ## 项目结构
@@ -21,15 +24,22 @@
 bot4cj/
 ├── src/
 │   ├── I2C.c           # I2C 接口实现
+│   ├── I2C.cj          # 仓颉语言 I2C 封装
 │   ├── PCA9685.c       # PCA9685 舵机驱动实现
 │   ├── MPU6050.c       # MPU6050 六轴传感器实现
 │   ├── bot4cj.h        # 库头文件
 │   └── main.cj         # 示例主文件
+├── scripts/
+│   └── step.bot        # 脚本文件
+├── python/
+│   ├── .gitignore
+│   └── postf.py        # Python 辅助测试脚本
 ├── .gitignore
 ├── LICENSE
 ├── Makefile
 ├── README.md
-└── cjpm.toml          # 仓颉包管理文件
+├── cjpm.toml          # 仓颉包管理文件
+└── scan_i2c.sh        # I2C 设备扫描脚本
 ```
 
 ## 安装方法
@@ -78,7 +88,22 @@ bot4cj/
 
 ### MPU6050 接口
 
-- 支持获取加速度计和陀螺仪数据
+- `MPU6050_init(fd: Int16): Unit` - 初始化 MPU6050 传感器
+- `MPU6050_readSensor(fd: Int16, data: CPointer<MPU6050_sensorData>): Unit` - 读取传感器数据
+
+### 仓颉语言封装接口
+
+- `I2C` 类 - 提供面向对象的 I2C 设备操作
+  - `init(path: String)` - 初始化 I2C 设备
+  - `pca9685_init()` - 初始化 PCA9685 舵机控制板
+  - `pca9685_turnAngle(channel: UInt8, angle: Float32)` - 控制舵机旋转角度
+  - `mpu6050_init()` - 初始化 MPU6050 传感器
+  - `mpu6050_readData(): MPU6050_sensorData` - 读取 MPU6050 传感器数据
+
+- `MPU6050_sensorData` 结构体 - 存储 MPU6050 传感器数据
+  - `accel_x, accel_y, accel_z` - 加速度计数据
+  - `gyro_x, gyro_y, gyro_z` - 陀螺仪数据
+  - `print()` - 打印传感器数据
 
 ## 许可证
 
