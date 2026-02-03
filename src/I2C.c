@@ -26,7 +26,7 @@ void I2C_free(int16_t fd) {
     fd = -1;
 }
 
-int I2C_setAddr(int16_t fd, const uint8_t addr) {
+int I2C_setAddr(int16_t fd, uint8_t addr) {
     if (ioctl(fd, I2C_SLAVE, addr) < 0) {
 	perror("Failed to set I2C address");
 	return 1;
@@ -64,4 +64,3 @@ uint8_t I2C_readReg(int16_t fd, uint8_t reg) {
 
     return value;
 }
-

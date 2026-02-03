@@ -5,7 +5,7 @@
 #define I2C_DEV "/dev/i2c-1"
 int16_t I2C_init(const char* filepath);
 void I2C_free(int16_t fd);
-int I2C_setAddr(int16_t fd, const uint8_t addr);
+int I2C_setAddr(int16_t fd, uint8_t addr);
 int I2C_writeReg(int16_t fd, uint8_t reg, uint8_t val);
 uint8_t I2C_readReg(int16_t fd, uint8_t reg);
 /* PCA9685 */
