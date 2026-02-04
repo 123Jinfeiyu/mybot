@@ -8,6 +8,7 @@ void I2C_free(int16_t fd);
 int I2C_setAddr(int16_t fd, uint8_t addr);
 int I2C_writeReg(int16_t fd, uint8_t reg, uint8_t val);
 uint8_t I2C_readReg(int16_t fd, uint8_t reg);
+int8_t I2C_readRegFplag(int16_t fd, uint8_t reg);
 /* PCA9685 */
 #define PCA9685_ADDR 0x40  /* 7位地址 */
 void PCA9685_init(int16_t fd, uint8_t addr);

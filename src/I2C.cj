@@ -1,32 +1,21 @@
 package bot4cj
-
-/* MPU6050传感器数据 */
-@C
-struct MPU6050_sensorData {
-    var accel_x: Int16 = 0
-    var accel_y: Int16 = 0
-    var accel_z: Int16 = 0
-    var gyro_x:  Int16 = 0
-    var gyro_y:  Int16 = 0
-    var gyro_z:  Int16 = 0
-    public func print() {
-        println("[accel x, y, z] ${accel_x}, ${accel_y}, ${accel_z}")
-        println("[gyro  x, y, z] ${gyro_x},  ${gyro_y},  ${gyro_z}")
-        println("--------------------")
-    }
-}
 foreign func I2C_init(path: CString): Int16
 foreign func I2C_free(fd: Int16): Unit
 foreign func I2C_setAddr(fd: Int16, addr: UInt8): Bool
 foreign func I2C_writeReg(fd: Int16, reg: UInt8, val: UInt8): Bool
 foreign func I2C_readReg(fd: Int16, reg: UInt8): UInt8
+foreign func I2C_readRegFlag(fd: Int16, reg: UInt8): Int8
 foreign func PCA9685_init(fd: Int16, addr: UInt8): Unit
 foreign func PCA9685_setAngle(fd: Int16, channel: UInt8, angle: Float32): Unit
 foreign func MPU6050_readSensor(fd: Int16, data:  CPointer<MPU6050_sensorData>): Unit
 foreign func MPU6050_init(fd: Int16): Unit
 foreign func MPU6050_calAngle(data: CPointer<MPU6050_sensorData>, pitch: CPointer<Float32>, roll: CPointer<Float32>): Unit
 
-/* 打开一个I2C设备 在gc回收时关闭 */
+/*
+ * 打开一个I2C设备 在gc回收时关闭
+ *
+ *     对I2C的操作都要加锁
+ */
 class I2C {
     public init(path: String) {
         this.path = path
@@ -67,6 +56,13 @@ class I2C {
     public func readReg(reg: UInt8): UInt8 {
         unsafe {
             return I2C_readReg(fd, reg)
+        }
+    }
+
+    /* 读取I2C从机寄存器 - 带符号 */
+    public func readRegFlag(reg: UInt8): Int8 {
+        unsafe {
+            return I2C_readRegFlag(fd, reg)
         }
     }
     /* --------------------

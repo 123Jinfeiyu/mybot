@@ -64,3 +64,21 @@ uint8_t I2C_readReg(int16_t fd, uint8_t reg) {
 
     return value;
 }
+
+/* 读寄存器 - 有符号 */
+int8_t I2C_readRegFlag(int16_t fd, uint8_t reg) {
+
+    int8_t value;
+
+    if (write(fd, &reg, 1) != 1) {
+	perror("I2C read error");
+	return 0;
+    }
+
+    if (read(fd, &value, 1)!= 1) {
+	perror("I2C read error");
+	return 0;
+    }
+
+    return value;
+}
