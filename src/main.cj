@@ -56,6 +56,11 @@ class Actor {
         let max = bot[0]
         let min = bot[1]
         let i2 = i2c.getOrThrow()
+        let mp = MPU6050(i2)
+        let data = mp.readSensor()
+        let data2 = i2.mpu6050_readData()
+        data.print()
+        data2.print()
         for (i in 2..bot.size) {
             let a = bot[i] /* 选中一行 */
             for (j in 0..a.size-1) {
@@ -71,8 +76,6 @@ class Actor {
             }
             let aa = a.last.getOrThrow()
             sleep(Duration.millisecond * Int64(aa))
-            let d = i2.mpu6050_readData()
-            d.print()
         }
     }
 
