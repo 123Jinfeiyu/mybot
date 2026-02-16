@@ -15,7 +15,6 @@ class Actor {
         i2c = I2C(filepath)
         let i2 = i2c.getOrThrow()
         i2.pca9685_init()
-        i2.mpu6050_init() 
     }
     
     public func parse(ss: StringReader<InputStream>) {
@@ -58,9 +57,7 @@ class Actor {
         let i2 = i2c.getOrThrow()
         let mp = MPU6050(i2)
         let data = mp.readSensor()
-        let data2 = i2.mpu6050_readData()
         data.print()
-        data2.print()
         for (i in 2..bot.size) {
             let a = bot[i] /* 选中一行 */
             for (j in 0..a.size-1) {

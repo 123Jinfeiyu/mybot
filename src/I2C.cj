@@ -7,9 +7,9 @@ foreign func I2C_readReg(fd: Int16, reg: UInt8): UInt8
 foreign func I2C_readRegFlag(fd: Int16, reg: UInt8): Int8
 foreign func PCA9685_init(fd: Int16, addr: UInt8): Unit
 foreign func PCA9685_setAngle(fd: Int16, channel: UInt8, angle: Float32): Unit
-foreign func MPU6050_readSensor(fd: Int16, data:  CPointer<MPU6050_sensorData>): Unit
-foreign func MPU6050_init(fd: Int16): Unit
-foreign func MPU6050_calAngle(data: CPointer<MPU6050_sensorData>, pitch: CPointer<Float32>, roll: CPointer<Float32>): Unit
+//foreign func MPU6050_readSensor(fd: Int16, data:  CPointer<MPU6050_sensorData>): Unit
+//foreign func MPU6050_init(fd: Int16): Unit
+//foreign func MPU6050_calAngle(data: CPointer<MPU6050_sensorData>, pitch: CPointer<Float32>, roll: CPointer<Float32>): Unit
 
 /*
  * 打开一个I2C设备 在gc回收时关闭
@@ -80,21 +80,21 @@ class I2C {
     }
     /* --------------------
      * 初始化mpu6050陀螺仪与加速度计 */
-    public func mpu6050_init() {
-        unsafe {
-            MPU6050_init(fd) /* */
-        }
-    }
+    //public func mpu6050_init() {
+    //    unsafe {
+    //        MPU6050_init(fd) /* */
+    //    }
+    //}
     /* 读取MPU6050的加速度计、陀螺仪数据 */
-    public func mpu6050_readData(): MPU6050_sensorData {
-        unsafe {
-            var pData = LibC.malloc<MPU6050_sensorData> ()
-            MPU6050_readSensor(fd, pData)
-            let data = pData.read()
-            LibC.free(pData)
-            return data
-        }
-    }
+    //public func mpu6050_readData(): MPU6050_sensorData {
+    //    unsafe {
+    //        var pData = LibC.malloc<MPU6050_sensorData> ()
+    //        MPU6050_readSensor(fd, pData)
+    //        let data = pData.read()
+    //        LibC.free(pData)
+    //        return data
+    //    }
+    //}
 
     /* 存放文件描述符 */
     private var fd: Int16
