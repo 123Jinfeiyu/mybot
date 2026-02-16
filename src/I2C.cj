@@ -67,17 +67,17 @@ class I2C {
     }
     /* --------------------
      * 初始化pca9685舵机控制板 */
-    public func pca9685_init() {
-        unsafe {
-            PCA9685_init(fd, 0x40)
-        }
-    }
+    //public func pca9685_init() {
+    //    unsafe {
+    //        PCA9685_init(fd, 0x40)
+    //    }
+    //}
     /* 控制pca9685舵机旋转一个角度 */
-    public func pca9685_turnAngle(channel: UInt8, angle: Float32) {
-        unsafe {
-            PCA9685_setAngle(fd, channel, angle)
-        }
-    }
+    //public func pca9685_turnAngle(channel: UInt8, angle: Float32) {
+    //    unsafe {
+    //        PCA9685_setAngle(fd, channel, angle)
+    //    }
+    //}
     /* --------------------
      * 初始化mpu6050陀螺仪与加速度计 */
     //public func mpu6050_init() {
