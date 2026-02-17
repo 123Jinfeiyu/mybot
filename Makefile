@@ -9,5 +9,8 @@ LIBS := -lpthread
 FLAGS := -O3 -pipe -Wall -Werror
 
 #-----------
-libbot.so:  src/I2C.c src/PCA9685.c src/MPU6050.c
+libbot.so:  src/I2C.c
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
+
+clear:
+	rm libbot.so
