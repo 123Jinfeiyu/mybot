@@ -1,53 +1,66 @@
 /*
  *  i2c - 用户界面
  *
- *        按理说这里已经提供了I2C通用接口，可以将上层代码移动到仓颉下面
+ *        这里已经提供了I2C通用接口，可以将上层代码移动到仓颉下面
  */
 #include <stdio.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <linux/i2c-dev.h>
+#include <linux/i2c-dev.h> /* 特意研究一下该文件 */
 
-int16_t I2C_init(const char* filepath) {  /* 动态指定设备文件 */
-    int16_t fd;
+#define BOT4CJ_I2C_OK 0
+#define BOT4CJ_I2C_ERR 1
+#define BOT4CJ_I2C_OPENED_FAILED -1
+
+/*
+ * 初始化i2c设备
+ *
+ *   动态指定设备文件
+ *
+ *   返回打开的文件句柄或者错误码
+ */
+int16_t I2C_init(const char* filepath) {  
+   int16_t fd;
     if ((fd = open(filepath, O_RDWR)) < 0) {
 	perror("Failed to open I2C bus");
-	return -1;
+	return BOT4CJ_I2C_OPENED_FAILED;
     }
     else {
 	return fd;
     }
 }
 
+/* 释放I2C设备文件 */
 void I2C_free(int16_t fd) {
     close(fd);
-    fd = -1;
 }
 
+/* 设置I2C地址 */
 int I2C_setAddr(int16_t fd, uint8_t addr) {
     if (ioctl(fd, I2C_SLAVE, addr) < 0) {
 	perror("Failed to set I2C address");
-	return 1;
+	return BOT4CJ_I2C_ERR;
     }
     else {
-	return 0;
+	return BOT4CJ_I2C_OK;
     }
 }
 
-int I2C_writeReg(int16_t fd, uint8_t reg, uint8_t val) {  /* 写寄存器 */
+/* 写寄存器 */
+int I2C_writeReg(int16_t fd, uint8_t reg, uint8_t val) {  
     uint8_t buf[] = {reg, val};
     if (write(fd, buf, 2) != 2) {
 	perror("I2C write error");
-	return 1;
+	return BOT4CJ_I2C_ERR;
     }
     else {
-	return 0;
+	return BOT4CJ_I2C_OK;
     }
 }
 
-/* 读寄存器 */
+/* 读寄存器 失败返回0 */
 uint8_t I2C_readReg(int16_t fd, uint8_t reg) {
 
     uint8_t value;
@@ -65,7 +78,8 @@ uint8_t I2C_readReg(int16_t fd, uint8_t reg) {
     return value;
 }
 
-/* 读寄存器 - 有符号 */
+/* 读寄存器 - 有符号
+ *   失败返回0 */
 int8_t I2C_readRegFlag(int16_t fd, uint8_t reg) {
 
     int8_t value;
