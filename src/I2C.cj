@@ -17,9 +17,9 @@ class I2C {
         this.path = path
         unsafe{
             var cstr = LibC.mallocCString(path)  /* 申请资源 */
-            fd = I2C_init(cstr)
+            fd = I2C_init(cstr)                  /* 打开设备 */
             LibC.free(cstr)                      /* 释放资源 */
-            if (fd <= 0) {    /* 打开设备失败 */
+            if (fd == I2C_FILE_NOT_OPENED) {     /* 打开设备失败 */
                 throw Exception("Can't open i2c device")
             }
         }

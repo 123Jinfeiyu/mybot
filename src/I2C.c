@@ -3,16 +3,15 @@
  *
  *        这里已经提供了I2C通用接口，可以将上层代码移动到仓颉下面
  */
+
 #include <stdio.h>
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <linux/i2c-dev.h> /* 特意研究一下该文件 */
+#include "bot4cj.h"
 
-#define BOT4CJ_I2C_OK 0
-#define BOT4CJ_I2C_ERR 1
-#define BOT4CJ_I2C_OPENED_FAILED -1
 
 /*
  * 初始化i2c设备

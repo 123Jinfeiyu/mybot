@@ -9,7 +9,7 @@ struct MPU6050_sensorData {
     var gyro_x:  Int16 = 0
     var gyro_y:  Int16 = 0
     var gyro_z:  Int16 = 0
-    public func print() {
+    public func print() {  /* 格式化打印 */
         println("[accel x, y, z] ${accel_x}, ${accel_y}, ${accel_z}")
         println("[gyro  x, y, z] ${gyro_x},  ${gyro_y},  ${gyro_z}")
         println("--------------------")
@@ -17,7 +17,7 @@ struct MPU6050_sensorData {
 }
 
 /* MPU6050陀螺仪、加速度计
- *   输入并持有一个I2C类型 */
+ *   输入并持有一个I2C引用 */
 class MPU6050 {
     public init(i2c: I2C) {
         this.i2c = i2c

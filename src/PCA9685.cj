@@ -4,7 +4,7 @@
 package bot4cj
 
 class PCA9685 {
-    private static const ADDR_0: UInt8 = 0x40
+    private static const ADDR_0: UInt8 = 0x40   /* PCA9685 */
     private var i2c: Option<I2C>
     private var addr: UInt8
     public init(i2c: I2C, addr!: UInt8 = ADDR_0) {
@@ -12,7 +12,7 @@ class PCA9685 {
         this.addr = addr
         i2c.setAddr(addr);
         i2c.writeReg(0x00, 0x20);   /* 开启AI（地址自增）和关闭SLEEP */
-        sleep(5000 * Duration.millisecond);  /* 等待振荡器启动 */
+        sleep(5000 * Duration.nanosecond);  /* 等待振荡器启动 */
         
         set()
     }
@@ -28,7 +28,7 @@ class PCA9685 {
         i2c.writeReg(0x00, 0x10);       /* 进入SLEEP模式（允许改频率） */
         i2c.writeReg(0xFE, prescale);   /* 写入预分频值 */
         i2c.writeReg(0x00, 0x20);       /* 退出SLEEP */
-        sleep(5000 * Duration.millisecond);  /* 等待振荡器启动 */
+        sleep(5000 * Duration.nanosecond);  /* 等待振荡器启动 */
     }
 
 
