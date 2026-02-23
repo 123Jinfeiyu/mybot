@@ -6,7 +6,7 @@
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-L . -l bot"
+  compile-option = "-l c -L . -l bot"
   override-compile-option = ""
   link-option = ""
   package-configuration = {}

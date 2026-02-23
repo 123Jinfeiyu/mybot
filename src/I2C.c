@@ -9,8 +9,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
-#include <linux/i2c-dev.h> /* 特意研究一下该文件 */
-#include "bot4cj.h"
+#include <linux/i2c-dev.h> /* 其中宏的取值可能具有平台特异性 */
+#include "bot4cj.h"        /* 有没有可能在仓颉代码中解析C头文件取得宏 */
 
 
 /*

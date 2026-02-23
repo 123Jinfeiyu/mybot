@@ -3,10 +3,10 @@ package bot4cj
 /* MPU6050传感器数据 */
 @C
 struct MPU6050_sensorData {
-    var accel_x: Int16 = 0
+    var accel_x: Int16 = 0 /* 加速度计 */
     var accel_y: Int16 = 0
     var accel_z: Int16 = 0
-    var gyro_x:  Int16 = 0
+    var gyro_x:  Int16 = 0 /* 陀螺仪 */
     var gyro_y:  Int16 = 0
     var gyro_z:  Int16 = 0
     public func print() {  /* 格式化打印 */
