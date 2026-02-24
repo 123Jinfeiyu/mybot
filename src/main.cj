@@ -1,11 +1,9 @@
 package bot4cj
 import std.io.*
+import std.env.*
 import std.math.*
 import std.convert.*
 import std.collection.*
-import stdx.net.http.*
-const BOT_ADDR = '0.0.0.0'
-const BOT_PORT = 5201u16
 const I2C_PATH = "/dev/i2c-1"
 
 /* 机器人类 */
@@ -15,7 +13,18 @@ class Actor {
         i2c = I2C(filepath)
     }
     
-    public func parse(ss: StringReader<InputStream>) {
+    /*
+     * 解析器 - 循环不变式
+     *
+     *
+     * 初始化：ss是一个动作脚本的输入流
+     *
+     * 保持：ss是动作脚本剩余部分的输入流
+     *
+     * 终止：当输入流为空时，循环终止
+     */
+    public func parse(inputStream: InputStream) {
+        let ss = StringReader(inputStream)
         var count: Int64 = 0;
         while (true) {  /* FIXME(花间岛): while(let Some(f) <- ss.read()) */
             try {       /*      (qing): 链式调用可读性反而降低 */
@@ -176,29 +185,10 @@ private class UnknowExcept <: ParseExcept {
 
 main(_: Array<String>): Int64 {
 
-    let serv = ServerBuilder()
-    .addr(BOT_ADDR)
-    .port(BOT_PORT)
-    .build()
-
-    /* curl -X POST /api/v2/bot_run -d ${cat filepath} */
-    serv.distributor.register('/api/v2/bot_run', { context =>
-        if (context.request.method == 'POST') {
-            let ss = StringReader(context.request.body)
-            let actor = Actor(I2C_PATH)
-            actor.parse(ss)
-            println("-------------")
-            actor.print()
-            actor.play()
-            /* ---- 响应 ---- */
-            let headers = HttpHeaders()
-            headers.add('Content-Type', 'text/html; charset=utf-8;')
-            context.responseBuilder.setHeaders(headers)
-            context.responseBuilder.body('OK')
-        }
-    })
-
-    println('Bot at ${BOT_ADDR}:${BOT_PORT}')
-    serv.serve()
+    let consoleReader = getStdIn()
+    let actor = Actor(I2C_PATH)
+    actor.parse(consoleReader)
+    actor.print()
+    actor.play()
     return 0
 }
