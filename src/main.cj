@@ -155,11 +155,11 @@ class Actor {
         cc
     }
 
-    /* 从文字缓冲区输出并解析 */
+    /* 从文字缓冲区解析、清理并输出数值 */
     private func fromTmp(): Float32 {
         let str = String(tmp)
-        tmp.clear()
         let f = Float32.parse(str)
+        tmp.clear()
         return f
     }
 }
