@@ -33,9 +33,7 @@ class Actor {
                     case Some(v) => v
                     case None => break
                 }
-                count += 1
-                print(aa)
-                this.next(aa, count)
+                count = this.next(aa, count)
             }
             catch (exp: BufOverTheLine) { /* 临时占位 */
                 throw exp
@@ -93,7 +91,8 @@ class Actor {
     private var grp = ArrayList<Float32>() /* 单行 */
     private var bot = ArrayList<ArrayList<Float32>>()
     private static const TMP_LEN = 16      /* 文字缓冲区不超过 */
-    private func next(c: Rune, count: Int64) {
+    private func next(c: Rune, count: Int64): Int64 {
+        var cc: Int64 = count
         /* ---- comment ---- */
         if (!cm && c == r'#') {
             cm = true
@@ -102,6 +101,7 @@ class Actor {
             nl = true
             sl = false
             cm = false
+            cc += 1
         }
         else if (cm && c != r'\n') { /* FIXME: EOF */
             ;
@@ -110,7 +110,7 @@ class Actor {
             ;
         }
         else if (nl && c == r'\n') {
-            ;
+            cc += 1
         }
         /* ---- new line ---- */
         else if (nl && c == r'!') {
@@ -151,6 +151,8 @@ class Actor {
                 throw BufOverTheLine(count)
             }
         }
+
+        cc
     }
 
     /* 从文字缓冲区输出并解析 */
