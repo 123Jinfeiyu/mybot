@@ -8,7 +8,10 @@ const I2C_PATH = "/dev/i2c-1"
 
 /* 机器人类 
  * TODO: 增加缓慢到达方法
- * TODO: 增加机器人构造偏差 */
+ * TODO: 增加机器人构造偏差 
+ * FIXME: print()以原貌打印
+ * FIXME: parse()兼容空的特殊行 */
+
 class Actor {
 
     public init(filepath: String) {
@@ -46,6 +49,8 @@ class Actor {
         }
     }
 
+    /* 打印整个动作脚本
+     * */
     public func print() {
         for (array in bot) {
             for (item in array) {
@@ -59,24 +64,24 @@ class Actor {
     /* 开始演绎 ---
      * 按照解析出来的顺序进行旋转 */
     public func play() {
-        let max = bot[0]
-        let min = bot[1]
+        let max = bot[0] /* 第一行是上限 */
+        let min = bot[1] /* 第二行是下限 */
         let i2 = i2c.getOrThrow()
         let pca9685 = PCA9685(i2)
         //let mp = MPU6050(i2)
         //let data = mp.readSensor()
         //data.print()
-        for (i in 2..bot.size) {
-            let a = bot[i] /* 选中一行 */
-            for (j in 0..a.size-1) {
-                let ma = abs(max[j])
-                let mi = abs(min[j])
-                let rf = max[j] < 0.0f32  /* rotate flag */
+        for (i in 2..bot.size) { /* 从第2行开始遍历 */
+            let a = bot[i]       /* 选中一行 */
+            for (j in 0..a.size-1) {  /* 遍历关节（最后一列是时延） */
+                let ma = abs(max[j])  /* 取得该关节最大值 */
+                let mi = abs(min[j])  /* 取得该关节最小值 */
+                let rf = max[j] < 0.0f32  /* rotate flag 逆转标志 */
                 var t = a[j]              /* 选中单个 */
-                t = if (ma < t) { ma } else { t }
-                t = if (mi < t) { t }  else { mi }
-                t = if (rf) { 180.0f32 - t } else { t }
-                let jj = UInt8(j)
+                t = if (ma < t) { ma } else { t }  /* 对上限进行切片 */
+                t = if (mi < t) { t }  else { mi } /* 对下限进行切片 */
+                t = if (rf) { 180.0f32 - t } else { t } /* 是否逆转 */
+                let jj = UInt8(j) /* FIXME: 应该从一开始就用UInt8进行存储 */
                 pca9685.setAngle(jj, t)
             }
             let aa = a.last.getOrThrow()
@@ -96,29 +101,44 @@ class Actor {
     private func next(c: Rune, count: Int64): Int64 {
         var cc: Int64 = count
         /* ---- comment ---- */
+
+        /* 注释行开始标志 */
         if (!cm && c == r'#') {
             cm = true
         }
+
+        /* 注释行结束标识 */
         else if (cm && c == r'\n') {
             nl = true
             sl = false
             cm = false
             cc += 1
         }
-        else if (cm && c != r'\n') { /* FIXME: EOF */
+
+        /* 注释内容
+         * FIXME: EOF */
+        else if (cm && c != r'\n') {
             ;
         }
-        else if (nl && c == r' ') {
+        /* ---------------- new line ---------------- */
+
+        /* 新行且为空字符 */
+        else if (nl && (c == r' ' || c == r'\t')) { 
             ;
         }
+
+        /* 新行且为空行 */
         else if (nl && c == r'\n') {
             cc += 1
         }
-        /* ---- new line ---- */
-        else if (nl && c == r'!') {
+
+        /* 新行且为特殊行 */
+        else if (nl && c == r'!') { 
             nl = false
             sl = true
         }
+
+        /* 新行且不为特殊行、制表符和空格：录入 */
         else if (nl && c != r'!') {
             nl = false
             sl = false
@@ -127,13 +147,16 @@ class Actor {
                 throw BufOverTheLine(count)
             }
         }
-        /* ---- ---- */
-        else if (!nl && c == r' ') {
+        /* ---------------- 非首行 ---------------- */
+        /* 空格与制表符：两个列之间的分隔字符 */
+        else if (!nl && (c == r' ' || c = r'\t')) {
             if (!tmp.isEmpty()) { /* 结算当前 */
                 let f = fromTmp()
                 grp.add(f)
             }
         }
+
+        /* 分号：一行的结束标志 */
         else if (!nl && c == r';') {
             if (!tmp.isEmpty()) { /* 结算当前 */
                 let f = fromTmp()
@@ -147,6 +170,8 @@ class Actor {
             sl = false
             cm = false
         }
+
+        /* 非空格、非制表符、非分号 （FIXME: 且是数字） */
         else if (!nl) {
             tmp.add(c) /* 到缓冲区 */
             if (tmp.size > TMP_LEN) { /* 缓冲区过长 */
