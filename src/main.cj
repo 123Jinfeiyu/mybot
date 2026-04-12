@@ -61,9 +61,9 @@ class Actor {
         let min = bot[1]
         let i2 = i2c.getOrThrow()
         let pca9685 = PCA9685(i2)
-        let mp = MPU6050(i2)
-        let data = mp.readSensor()
-        data.print()
+        //let mp = MPU6050(i2)
+        //let data = mp.readSensor()
+        //data.print()
         for (i in 2..bot.size) {
             let a = bot[i] /* 选中一行 */
             for (j in 0..a.size-1) {
