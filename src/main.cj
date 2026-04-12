@@ -6,7 +6,9 @@ import std.convert.*
 import std.collection.*
 const I2C_PATH = "/dev/i2c-1"
 
-/* 机器人类 */
+/* 机器人类 
+ * TODO: 增加缓慢到达方法
+ * TODO: 增加机器人构造偏差 */
 class Actor {
 
     public init(filepath: String) {
