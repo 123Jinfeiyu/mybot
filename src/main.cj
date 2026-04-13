@@ -9,6 +9,7 @@ const I2C_PATH = "/dev/i2c-1"
 /* 机器人类 
  * TODO: 增加缓慢到达方法
  * TODO: 增加机器人构造偏差 
+ * TODO: 机器人构造脚本
  * TODO: 增加脚本起始状态限制、最终状态记录
  * TODO：增加check()方法，检查脚本列数是否对应
  * TODO：解析pi为单位的角度
