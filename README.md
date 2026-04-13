@@ -36,7 +36,7 @@ cat ss/step.bot | cjpm run
 7号舵机		=>	左上水平关节
 8号舵机		=>	左上垂直关节
 9号舵机		=>	云台1
-19号舵机 	=>	云台2
+10号舵机 	=>	云台2
 ```
 
 适用的机器人图纸[仓库链接](https://gitcode.com/qingss0/spider-bot)
