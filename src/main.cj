@@ -1,6 +1,5 @@
 package bot4cj
 import std.io.*
-import std.env.*
 import std.math.*
 import std.convert.*
 import std.collection.*
@@ -156,7 +155,7 @@ class Actor {
         }
         /* ---------------- 非首字 ---------------- */
         /* 空格与制表符：两个列之间的分隔字符 */
-        else if (!nl && (c == r' ' || c = r'\t')) {
+        else if (!nl && (c == r' ' || c == r'\t')) {
             if (!tmp.isEmpty()) { /* 结算当前 */
                 let f = fromTmp()
                 grp.add(f)
@@ -221,10 +220,46 @@ private class UnknowExcept <: ParseExcept {
 
 main(_: Array<String>): Int64 {
 
-    let consoleReader = getStdIn()
-    let actor = Actor(I2C_PATH)
-    actor.parse(consoleReader)
-    actor.print()
-    actor.play()
+
+
+    //let consoleReader = getStdIn()
+    //let actor = Actor(I2C_PATH)
+    //actor.parse(consoleReader)
+    //actor.print()
+    //actor.play()
+
+    /* test */
+    let m = Matrix(10, 20)
+    let p = m[1, 2]
+    let s1 = Matrix(20, 12)
+    let s2 = Matrix(10, 20)
+    let s3 = s1 + 2.0f32
+    let r1 = m + 12.0f32
+    let r2 = r1 + r1;
+    let r3 = r2 - 5.0f32;
+    let r4 = m + 2.0f32
+    let r5 = r3 - r4
+    let r6 = r5 * 3.0f32
+    let r7 = r6 / 2.0f32
+    let dr1 = r7 * s3
+    let pdr1 = dr1[1, 2]
+    print(m == s1)
+    print("\t")
+    print(m == s2)
+    println()
+    print(m.hasDotShapeWith(s1))
+    print("\t")
+    print(m.hasDotShapeWith(s2))
+    println()
+    print(dr1.getRow())
+    print(',\t')
+    print(dr1.getCol())
+    println()
+    unsafe {
+        if (!p.isNull()) {
+            println(p.read())
+            println(pdr1.read())
+        }
+    }
     return 0
 }

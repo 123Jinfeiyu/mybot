@@ -9,7 +9,7 @@ LIBS := -lpthread
 FLAGS := -O3 -pipe -Wall -Werror
 
 #-----------
-libbot.so:  src/I2C.c
+libbot.so:  src/I2C.c src/Matrix.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
 
 clear:
