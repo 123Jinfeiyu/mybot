@@ -143,6 +143,7 @@ namespace qing {
 
 }
 
+/* FIXME: 形状不合法时返回空指针 */
 using namespace qing;
 extern "C" {
 	void* createMatrix(uint64_t row, uint64_t col) {
@@ -203,6 +204,25 @@ extern "C" {
 	void * subBroadcastMatrix(void *m, float t) {
 		Matrx<float> *M = (Matrx<float> *) m;
 		auto a  = new Matrx<float> ((*M) - t);
+		return (void *) a;
+	}
+
+	void* multiBroadcastMatrix(void *m, float t) {
+		Matrx<float> *M = (Matrx<float> *) m;
+		auto a = new Matrx<float>((*M) * t);
+		return (void*) a;
+	}
+
+	void* divBroadcastMatrix(void *m, float t) {
+		Matrx<float> *M = (Matrx<float> *) m;
+		auto a = new Matrx<float>((*M) / t);
+		return (void*) a;
+	}
+
+	void* dotMatrix(void *m, void *s) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		Matrx<float> *S = (Matrx<float>*) s;
+		auto a = new Matrx<float>((*M) * (*S));
 		return (void *) a;
 	}
 

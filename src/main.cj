@@ -233,12 +233,16 @@ main(_: Array<String>): Int64 {
     let p = m[1, 2]
     let s1 = Matrix(20, 12)
     let s2 = Matrix(10, 20)
+    let s3 = s1 + 2.0f32
     let r1 = m + 12.0f32
     let r2 = r1 + r1;
     let r3 = r2 - 5.0f32;
     let r4 = m + 2.0f32
     let r5 = r3 - r4
-    let p5 = r5[1, 2]
+    let r6 = r5 * 3.0f32
+    let r7 = r6 / 2.0f32
+    let dr1 = r7 * s3
+    let pdr1 = dr1[1, 2]
     print(m == s1)
     print("\t")
     print(m == s2)
@@ -247,14 +251,14 @@ main(_: Array<String>): Int64 {
     print("\t")
     print(m.hasDotShapeWith(s2))
     println()
-    print(m.getRow())
+    print(dr1.getRow())
     print(',\t')
-    print(m.getCol())
+    print(dr1.getCol())
     println()
     unsafe {
         if (!p.isNull()) {
             println(p.read())
-            println(p5.read())
+            println(pdr1.read())
         }
     }
     return 0
