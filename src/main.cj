@@ -222,14 +222,14 @@ main(_: Array<String>): Int64 {
 
 
 
-    //let consoleReader = getStdIn()
-    //let actor = Actor(I2C_PATH)
-    //actor.parse(consoleReader)
-    //actor.print()
-    //actor.play()
+    let consoleReader = getStdIn()
+    let actor = Actor(I2C_PATH)
+    actor.parse(consoleReader)
+    actor.print()
+    actor.play()
 
     /* test */
-    let m = Matrix(10, 20)
+    /*let m = Matrix(10, 20)
     let p = m[1, 2]
     let s1 = Matrix(20, 12)
     let s2 = Matrix(10, 20)
@@ -260,6 +260,7 @@ main(_: Array<String>): Int64 {
             println(p.read())
             println(pdr1.read())
         }
-    }
+    }*/
+
     return 0
 }
