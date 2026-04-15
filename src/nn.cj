@@ -24,7 +24,7 @@ class Nn {
 	{
 		this.inputno = inputno
 		this.outputno = outputno
-		weights = Matrix.initWithXavierUniform(inputno, outputno)
+		weights = Matrix.initWithXavierNormal(inputno, outputno)
 		bias = Matrix(1, outputno)
 		this.afunc = afunc
 		this.learning_rate = learning_rate
@@ -32,7 +32,7 @@ class Nn {
 	
 	func forward(x: Matrix): Matrix {
 		// x => (inputs, 1)
-		let r = x.T() * weights // (1, outputno)
+		let r = x * weights + bias // (1, outputno)
 		return r
 	}
 
@@ -40,6 +40,7 @@ class Nn {
 		// prev_raw_outputs_dotf => (1, outputno)
 		// errs => (1, outputno)
 
+		//return errs * prev_raw_outputs_dotf
 		var bias_grad = Matrix(1, outputno)
 		for (idx in 0u64..outputno) {
 			let a = errs[0, idx]
@@ -54,17 +55,38 @@ class Nn {
 	}
 
 	func bak_wsgrad(prev_inputs: Matrix, bias_grad: Matrix) {
-		// prev_inputs => (inputs, 1)
-		return prev_inputs * bias_grad // (inputs, outputs)
+		// prev_inputs => (1, inputs)
+		return prev_inputs.T() * bias_grad // (inputs, outputs)
 	}
 
-	func bak_uperrs(bias_grad: Matrix) {
-		return weights * bias_grad.T() // (inputs, 1)
+	func bak_uperrs(bias_grad: Matrix, prev_dotf: Matrix) {
+		let first = bias_grad * weights.T() // (1, inputs)
+		
+		var uperrs = Matrix(1, inputno)
+		for (idx in 0u64..inputno) {
+			let a = first[0, idx]
+			let b = prev_dotf[0, idx]
+			unsafe {
+				let c = a.read() * b.read()
+				uperrs[0, idx].write(c)
+			}
+		}
+
+		uperrs.T()
 	}
 
 	func update(weights_grad: Matrix, bias_grad: Matrix, discount: Float32) {
 		weights -= weights_grad * learning_rate * discount
 		bias    -= bias_grad    * learning_rate * discount
+	}
+
+	func print() {
+		weights.print()
+		bias.print()
+	}
+
+	func print_shape() {
+		println("${inputno}, ${outputno}")
 	}
 
 	let inputno: UInt64
