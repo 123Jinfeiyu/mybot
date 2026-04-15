@@ -13,6 +13,7 @@ foreign func subBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func multiBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func divBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func dotMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
+foreign func xavierNormalInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 
 class Matrix {
 
@@ -23,6 +24,13 @@ class Matrix {
 
 	Matrix(m: CPointer<Unit>) {
 		M = m
+	}
+
+	static func initWithXavierNormal(fan_in: UInt64, fan_out: UInt64) {
+		unsafe {
+			let m = xavierNormalInit(fan_in, fan_out);
+			return Matrix(m)
+		}
 	}
 
 	// 释放资源

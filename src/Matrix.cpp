@@ -1,4 +1,6 @@
+#include <random>
 #include "Matrix.hh"
+
 namespace qing {
 
 	template <typename T>
@@ -225,5 +227,32 @@ extern "C" {
 		auto a = new Matrx<float>((*M) * (*S));
 		return (void *) a;
 	}
+
+	/* 正态分布Xavier初始化 */
+	void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
+	{
+		/* 构建空数组 */
+		std::vector<float> weights(fan_in * fan_out);
+
+		/* 高质量的随机数生成器 */
+		static std::mt19937 generator(std::random_device{}());
+
+		/* 计算标准差 */
+		float sigma = std::sqrt(2.0f / (fan_in + fan_out));
+
+		/* 创建正态分布对象，均值为0，标准差为sigma */
+		std::normal_distribution<float> distribution(0.0f, sigma);
+
+		/* 遍历权重矩阵，进行赋值 */
+		uint64_t k=0;
+		for (uint64_t i=0; i<fan_in; ++i)
+			for (uint64_t j=0; j<fan_out; ++j)
+				weights[k++] = distribution(generator);
+
+		/* 构建矩阵 */
+		auto matrix = new Matrx<float>(fan_in, fan_out, weights);
+		return (void *)matrix;
+	}
+
 
 }
