@@ -2,6 +2,7 @@ package bot4cj
 import std.io.*
 import std.env.*
 import std.math.*
+import std.random.*
 import std.convert.*
 import std.collection.*
 const I2C_PATH = "/dev/i2c-1"
@@ -229,8 +230,9 @@ main(_: Array<String>): Int64 {
     actor.print()
     actor.play()
 
+
     /* test */
-    /*let m = Matrix(10, 20)
+    let m = Matrix.initWithXavierUniform(10, 20)
     let p = m[1, 2]
     let s1 = Matrix(20, 12)
     let s2 = Matrix(10, 20)
@@ -261,6 +263,37 @@ main(_: Array<String>): Int64 {
             println(p.read())
             println(pdr1.read())
         }
+    }
+
+
+    /* test nn */
+    /*let f = ActivationFuncs.Leaky_ReLU
+    let nn = Nn(2, 1, f, 0.7)
+    let random = Random()
+    for (i in 0..10000) {
+        let m = Matrix(2, 1)
+	let a = random.nextFloat32()
+	let b = random.nextFloat32()
+	unsafe {
+            m[0, 0].write(if (a>0.49) { 1.0f32 } else { 0.0f32 })
+            m[1, 0].write(if (b>0.49) { 1.0f32 } else { 0.0f32 })
+        }
+        let ress = nn.forward(m)
+        let errs = Matrix(1, 1)
+	unsafe {
+            let t = if (a > 0.49 && b > 0.49) { 1.0f32 } else { 0.0f32 }
+            let r = ress[0, 0].read()
+            let err = r - t
+            errs[0, 0].write(err)
+            if (i % 100 == 0) {
+                println("${i},\t${a}\t:${b},\t${t}:\t${r}\t& ${err}")
+            }
+        }
+        let out_dof = f.fdo(ress)
+        let bias_grad = nn.bak_bsgrad(out_dof, errs)
+        let weights_grad = nn.bak_wsgrad(m, bias_grad)
+	let uperrs = nn.bak_uperrs(bias_grad)
+        nn.update(weights_grad, bias_grad, 1.0f32)
     }*/
 
     return 0
