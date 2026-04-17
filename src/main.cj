@@ -269,11 +269,11 @@ main(_: Array<String>): Int64 {
 
     /* test nn */
     let batch = 1
-    let num = 1000
-    let prt_num = 10
+    let num = 10000
+    let prt_num = 1
     let f = ActivationFuncs.Leaky_ReLU
-    let nn = Nn(2, 4, f, 0.6f32)
-    let nn1 = Nn(4, 2, f, 0.6f32)
+    let nn = Nn(2, 4, f, 0.1f32)
+    let nn1 = Nn(4, 2, f, 0.1f32)
     let random = Random(UInt64(DateTime.now().nanosecond))
     var arrwsgrad = ArrayList<Matrix>()
     var arrbsgrad = ArrayList<Matrix>()
@@ -315,7 +315,8 @@ main(_: Array<String>): Int64 {
         let out1_dotf = f.fdot(out1_dof)
         let out_dotf = f.fdot(out_dof)
 
-        let bias1_grad = errs//nn1.bak_bsgrad(errs, out1_dotf)
+        let bias1_grad = errs
+        //let delta1 = nn1.bak_bsgrad(errs, out1_dotf)
         let weights1_grad = nn1.bak_wsgrad(out_dof, bias1_grad)
 	let uperrs1 = nn1.bak_uperrs(bias1_grad, out_dotf)
 
@@ -329,7 +330,8 @@ main(_: Array<String>): Int64 {
             arrbsgrad1 = ArrayList<Matrix>()
         }
 
-        let bias_grad = uperrs1//nn.bak_bsgrad(uperrs1, out_dotf)
+        let bias_grad = uperrs1
+        //let delta  = nn.bak_bsgrad(uperrs1, out_dotf)
         let weights_grad = nn.bak_wsgrad(m, bias_grad)
 	//let uperrs = nn.bak_uperrs(bias_grad)
 
