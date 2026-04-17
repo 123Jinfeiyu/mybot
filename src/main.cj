@@ -225,15 +225,15 @@ main(_: Array<String>): Int64 {
 
 
 
-    /*let consoleReader = getStdIn()
+    let consoleReader = getStdIn()
     let actor = Actor(I2C_PATH)
     actor.parse(consoleReader)
     actor.print()
     actor.play()
-*/
+
 
     /* test */
-    let m = Matrix.initWithXavierUniform(10, 20)
+    /*let m = Matrix.initWithXavierUniform(10, 20)
     let p = m[1, 2]
     let s1 = Matrix(20, 12)
     let s2 = Matrix(10, 20)
@@ -264,11 +264,11 @@ main(_: Array<String>): Int64 {
             println(p.read())
             println(pdr1.read())
         }
-    }
+    }*/
 
 
     /* test nn */
-    let batch = 1
+    /*let batch = 1
     let num = 10000
     let prt_num = 1
     let f = ActivationFuncs.Leaky_ReLU
@@ -333,7 +333,7 @@ main(_: Array<String>): Int64 {
         let bias_grad = uperrs1
         //let delta  = nn.bak_bsgrad(uperrs1, out_dotf)
         let weights_grad = nn.bak_wsgrad(m, bias_grad)
-	//let uperrs = nn.bak_uperrs(bias_grad)
+        //let uperrs = nn.bak_uperrs(bias_grad)
 
         arrwsgrad.add(weights_grad)
         arrbsgrad.add(bias_grad)
@@ -344,7 +344,7 @@ main(_: Array<String>): Int64 {
             arrwsgrad = ArrayList<Matrix>()
             arrbsgrad = ArrayList<Matrix>()
         }
-    }
+    }*/
 
     return 0
 }
