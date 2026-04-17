@@ -2,6 +2,7 @@ package bot4cj
 import std.io.*
 import std.env.*
 import std.math.*
+import std.time.*
 import std.random.*
 import std.convert.*
 import std.collection.*
@@ -224,15 +225,15 @@ main(_: Array<String>): Int64 {
 
 
 
-    let consoleReader = getStdIn()
+    /*let consoleReader = getStdIn()
     let actor = Actor(I2C_PATH)
     actor.parse(consoleReader)
     actor.print()
     actor.play()
-
+*/
 
     /* test */
-    /*let m = Matrix.initWithXavierUniform(10, 20)
+    let m = Matrix.initWithXavierUniform(10, 20)
     let p = m[1, 2]
     let s1 = Matrix(20, 12)
     let s2 = Matrix(10, 20)
@@ -263,38 +264,87 @@ main(_: Array<String>): Int64 {
             println(p.read())
             println(pdr1.read())
         }
-    }*/
+    }
 
 
     /* test nn */
-    /*let f = ActivationFuncs.Leaky_ReLU
-    let nn = Nn(2, 1, f, 0.7)
-    let random = Random()
-    for (i in 0..10000) {
-        let m = Matrix(2, 1)
-	let a = random.nextFloat32()
-	let b = random.nextFloat32()
+    let batch = 1
+    let num = 10000
+    let prt_num = 1
+    let f = ActivationFuncs.Leaky_ReLU
+    let nn = Nn(2, 4, f, 0.1f32)
+    let nn1 = Nn(4, 2, f, 0.1f32)
+    let random = Random(UInt64(DateTime.now().nanosecond))
+    var arrwsgrad = ArrayList<Matrix>()
+    var arrbsgrad = ArrayList<Matrix>()
+    var arrwsgrad1 = ArrayList<Matrix>()
+    var arrbsgrad1 = ArrayList<Matrix>()
+    for (i in 0..(num*batch)) {
+        let m = Matrix(1, 2)
+	let a = random.nextInt8(2)
+	let b = random.nextInt8(2)
 	unsafe {
-            m[0, 0].write(if (a>0.49) { 1.0f32 } else { 0.0f32 })
-            m[1, 0].write(if (b>0.49) { 1.0f32 } else { 0.0f32 })
+            m[0, 0].write(Float32(a))
+            m[0, 1].write(Float32(b))
         }
         let ress = nn.forward(m)
-        let errs = Matrix(1, 1)
+        let out_dof = f.fdo(ress)
+
+        let ress1 = nn1.forward(out_dof)
+        let out1_dof = f.fdo(ress1)
+
+        let errs = Matrix(1, 2)
 	unsafe {
-            let t = if (a > 0.49 && b > 0.49) { 1.0f32 } else { 0.0f32 }
-            let r = ress[0, 0].read()
-            let err = r - t
-            errs[0, 0].write(err)
-            if (i % 100 == 0) {
-                println("${i},\t${a}\t:${b},\t${t}:\t${r}\t& ${err}")
+            let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
+            let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
+            let r0 = out1_dof[0, 0].read()
+            let r1 = out1_dof[0, 1].read()
+            let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
+            let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
+            let err0 = r0 - t0
+            let err1 = r1 - t1
+            errs[0, 0].write(err0)
+            errs[0, 1].write(err1)
+            if (i % prt_num == prt_num-1) {
+                print("${i},\t${t0},\t${t1}\t:\t${r0},\t${r1}\t& \t ${err0},\t${err1}")
+                print("\t: ${0.5 * (loss0*loss0 + loss1*loss1)}")
+                println()
             }
         }
-        let out_dof = f.fdo(ress)
-        let bias_grad = nn.bak_bsgrad(out_dof, errs)
+
+        let out1_dotf = f.fdot(out1_dof)
+        let out_dotf = f.fdot(out_dof)
+
+        let bias1_grad = errs
+        //let delta1 = nn1.bak_bsgrad(errs, out1_dotf)
+        let weights1_grad = nn1.bak_wsgrad(out_dof, bias1_grad)
+	let uperrs1 = nn1.bak_uperrs(bias1_grad, out_dotf)
+
+        arrwsgrad1.add(weights1_grad)
+        arrbsgrad1.add(bias1_grad)
+        if (arrwsgrad1.size >= batch) {
+            for (idx in 0..arrwsgrad1.size) {
+                nn1.update(arrwsgrad1[idx], arrbsgrad1[idx], 1.0f32/Float32(batch))
+            }
+            arrwsgrad1 = ArrayList<Matrix>()
+            arrbsgrad1 = ArrayList<Matrix>()
+        }
+
+        let bias_grad = uperrs1
+        //let delta  = nn.bak_bsgrad(uperrs1, out_dotf)
         let weights_grad = nn.bak_wsgrad(m, bias_grad)
-	let uperrs = nn.bak_uperrs(bias_grad)
-        nn.update(weights_grad, bias_grad, 1.0f32)
-    }*/
+	//let uperrs = nn.bak_uperrs(bias_grad)
+
+        arrwsgrad.add(weights_grad)
+        arrbsgrad.add(bias_grad)
+        if (arrwsgrad.size >= batch) {
+            for (idx in 0..arrwsgrad.size) {
+                nn.update(arrwsgrad[idx], arrbsgrad[idx], 1.0f32/Float32(batch))
+            }
+            arrwsgrad = ArrayList<Matrix>()
+            arrbsgrad = ArrayList<Matrix>()
+        }
+    }
 
     return 0
 }

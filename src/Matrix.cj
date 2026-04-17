@@ -73,6 +73,13 @@ class Matrix {
 
 	operator func +(s: Matrix): Matrix {
 		unsafe {
+			if (!sameShapeMatrix(M, s.getData())) {
+				println('------------')
+				print_shape()
+				s.print_shape()
+				println('------------')
+				throw IllegalArgumentException("not same shape")
+			}
 			let r = plusMatrix(M, s.getData())
 			return Matrix(r)
 		}
@@ -87,6 +94,13 @@ class Matrix {
 
 	operator func -(s: Matrix): Matrix {
 		unsafe {
+			if (!(this == s)) {
+				println('------------')
+				print_shape()
+				s.print_shape()
+				println('------------')
+				throw IllegalArgumentException("not same shape")
+			}
 			let r = subMatrix(M, s.getData())
 			return Matrix(r)
 		}
@@ -115,6 +129,13 @@ class Matrix {
 
 	operator func *(s: Matrix): Matrix {
 		unsafe {
+			if (!hasDotShapeWith(s)) {
+				println('------------')
+				print_shape()
+				s.print_shape()
+				println('------------')
+				throw IllegalArgumentException("not same shape")
+			}
 			let r = dotMatrix(M, s.getData())
 			return Matrix(r)
 		}
@@ -125,6 +146,23 @@ class Matrix {
 			let r = transposeMatrix(M)
 			return Matrix(r)
 		}
+	}
+
+	func print(): Unit {
+		unsafe {
+			for (i in 0..getRow()) {
+				for (j in 0..getCol()) {
+					let a = this[i, j].read()
+					print(a)
+					print(" ")
+				}
+			}
+		}
+		println()
+	}
+
+	func print_shape() {
+		println("${getRow()}, ${getCol()}")
 	}
 
 	// 矩阵的C风格指针
