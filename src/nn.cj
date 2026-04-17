@@ -41,28 +41,35 @@ class Nn {
 		// errs => (1, outputno)
 
 		//return errs * prev_raw_outputs_dotf
-		var bias_grad = Matrix(1, outputno)
+		var delta = Matrix(1, outputno)
 		for (idx in 0u64..outputno) {
 			let a = errs[0, idx]
 			let b = prev_raw_outputs_dotf[0, idx]
 			unsafe {
 				let c = a.read() * b.read()
-				bias_grad[0, idx].write(c)
+				delta[0, idx].write(c)
 			}
 		}
 		
-		bias_grad
+		delta
 	}
 
-	func bak_wsgrad(prev_inputs: Matrix, bias_grad: Matrix) {
+	func bak_wsgrad(prev_inputs: Matrix, delta: Matrix) {
 		// prev_inputs => (1, inputs)
-		return prev_inputs.T() * bias_grad // (inputs, outputs)
+		return prev_inputs.T() * delta // (inputs, outputs)
 	}
 
-	func bak_uperrs(bias_grad: Matrix, prev_dotf: Matrix) {
-		let first = bias_grad * weights.T() // (1, inputs)
+	func bak_uperrs(delta: Matrix, prev_dotf: Matrix) {
+		let first =  (weights * delta.T()).T() // (1, inputs)
 		
 		var uperrs = Matrix(1, inputno)
+		if (!(first == prev_dotf)) {
+			println('------------')
+			first.print_shape()
+			prev_dotf.print_shape()
+			println('------------')
+			throw IllegalArgumentException("not same shape")
+		}
 		for (idx in 0u64..inputno) {
 			let a = first[0, idx]
 			let b = prev_dotf[0, idx]
@@ -72,7 +79,7 @@ class Nn {
 			}
 		}
 
-		uperrs.T()
+		uperrs
 	}
 
 	func update(weights_grad: Matrix, bias_grad: Matrix, discount: Float32) {

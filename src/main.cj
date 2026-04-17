@@ -272,8 +272,8 @@ main(_: Array<String>): Int64 {
     let num = 1000
     let prt_num = 1000
     let f = ActivationFuncs.Leaky_ReLU
-    let nn = Nn(2, 4, f, 0.1f32)
-    let nn1 = Nn(4, 2, f, 0.1f32)
+    let nn = Nn(2, 4, f, 0.6f32)
+    let nn1 = Nn(4, 2, f, 0.6f32)
     let random = Random(UInt64(DateTime.now().nanosecond))
     var arrwsgrad = ArrayList<Matrix>()
     var arrbsgrad = ArrayList<Matrix>()
@@ -281,11 +281,11 @@ main(_: Array<String>): Int64 {
     var arrbsgrad1 = ArrayList<Matrix>()
     for (i in 0..(num*batch)) {
         let m = Matrix(1, 2)
-	let a = Float32(random.nextInt8(2))
-	let b = Float32(random.nextInt8(2))
+	let a = random.nextInt8(2)
+	let b = random.nextInt8(2)
 	unsafe {
-            m[0, 0].write(a)
-            m[0, 1].write(b)
+            m[0, 0].write(Float32(a))
+            m[0, 1].write(Float32(b))
         }
         let ress = nn.forward(m)
         let out_dof = f.fdo(ress)
@@ -295,17 +295,19 @@ main(_: Array<String>): Int64 {
 
         let errs = Matrix(1, 2)
 	unsafe {
-            let t0 = if (a > 0.99 && b < 0.99) { 1.0f32 } else { 0.0f32 }    
-            let t1 = if (a < 0.99 && b < 0.99) { 1.0f32 } else { 0.0f32 }    
+            let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
+            let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
             let r0 = out1_dof[0, 0].read()
             let r1 = out1_dof[0, 1].read()
-            let err0 = r0 - t0 
-            let err1 = r1 - t1 
+            let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
+            let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
+            let err0 = r0 - t0
+            let err1 = r1 - t1
             errs[0, 0].write(err0)
             errs[0, 1].write(err1)
             if (i % prt_num == prt_num-1) {
                 print("${i},\t${t0},\t${t1}\t:\t${r0},\t${r1}\t& \t ${err0},\t${err1}")
-                print("\t: ${0.5 * (err0*err0 + err1*err1)}")
+                print("\t: ${0.5 * (loss0*loss0 + loss1*loss1)}")
                 println()
             }
         }
@@ -313,7 +315,7 @@ main(_: Array<String>): Int64 {
         let out1_dotf = f.fdot(out1_dof)
         let out_dotf = f.fdot(out_dof)
 
-        let bias1_grad = nn1.bak_bsgrad(errs, out1_dotf)
+        let bias1_grad = errs//nn1.bak_bsgrad(errs, out1_dotf)
         let weights1_grad = nn1.bak_wsgrad(out_dof, bias1_grad)
 	let uperrs1 = nn1.bak_uperrs(bias1_grad, out_dotf)
 
@@ -327,7 +329,7 @@ main(_: Array<String>): Int64 {
             arrbsgrad1 = ArrayList<Matrix>()
         }
 
-        let bias_grad = nn.bak_bsgrad(uperrs1, out_dotf)
+        let bias_grad = uperrs1//nn.bak_bsgrad(uperrs1, out_dotf)
         let weights_grad = nn.bak_wsgrad(m, bias_grad)
 	//let uperrs = nn.bak_uperrs(bias_grad)
 
