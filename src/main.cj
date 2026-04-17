@@ -268,9 +268,9 @@ main(_: Array<String>): Int64 {
 
 
     /* test nn */
-    let batch = 100
+    let batch = 1
     let num = 1000
-    let prt_num = 1000
+    let prt_num = 10
     let f = ActivationFuncs.Leaky_ReLU
     let nn = Nn(2, 4, f, 0.6f32)
     let nn1 = Nn(4, 2, f, 0.6f32)
