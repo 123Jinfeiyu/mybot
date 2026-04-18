@@ -6,7 +6,7 @@ import std.time.*
 import std.random.*
 import std.convert.*
 import std.collection.*
-import stdx.net.*
+import stdx.net.http.*
 const I2C_PATH = "/dev/i2c-1"
 
 /* 机器人类 
@@ -224,8 +224,7 @@ private class UnknowExcept <: ParseExcept {
 
 main(args: Array<String>): Int64 {
 
-    println(args[0])
-    if (args.size == 2 && args[1] == "--serve") {
+    if (args.size == 1 && args[0] == "--serve") {
         
         let serv = ServerBuilder()
         .addr("127.0.0.1")
@@ -235,9 +234,10 @@ main(args: Array<String>): Int64 {
         /* curl -X POST /api/v2/bot_run -d ${cat filepath} */
         serv.distributor.register('/api/v2/bot_run', { context =>
             if (context.request.method == 'POST') {
-                let ss = StringReader(context.request.body)
+                //let ss = StringReader(context.request.body)
                 let actor = Actor(I2C_PATH)
-                actor.parse(ss)
+                //actor.parse(ss)
+                actor.parse(context.request.body)
                 //println("-------------")
                 //actor.print()
                 //actor.play()
@@ -249,7 +249,7 @@ main(args: Array<String>): Int64 {
             }
         })
 
-        println('Bot at ${BOT_ADDR}:${BOT_PORT}')
+        println('Bot at ${"127.0.0.1"}:${5119}')
         serv.serve()
         return 0
     }
