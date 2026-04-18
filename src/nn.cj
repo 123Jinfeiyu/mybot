@@ -24,7 +24,7 @@ class Nn {
 	{
 		this.inputno = inputno
 		this.outputno = outputno
-		weights = Matrix.initWithXavierNormal(inputno, outputno)
+		weights = Matrix.initWithXavierUniform(inputno, outputno)
 		bias = Matrix(1, outputno)
 		this.afunc = afunc
 		this.learning_rate = learning_rate

@@ -225,11 +225,11 @@ main(_: Array<String>): Int64 {
 
 
 
-    let consoleReader = getStdIn()
+    /*let consoleReader = getStdIn()
     let actor = Actor(I2C_PATH)
     actor.parse(consoleReader)
     actor.print()
-    actor.play()
+    actor.play()*/
 
 
     /* test */
@@ -268,17 +268,16 @@ main(_: Array<String>): Int64 {
 
 
     /* test nn */
-    /*let batch = 1
+    let batch = 1
     let num = 10000
     let prt_num = 1
     let f = ActivationFuncs.Leaky_ReLU
-    let nn = Nn(2, 4, f, 0.1f32)
-    let nn1 = Nn(4, 2, f, 0.1f32)
+    let nns = ArrayList<Nn>()
+    nns.add(Nn(2, 4, f, 0.1f32))
+    nns.add(Nn(4, 2, f, 0.1f32))
     let random = Random(UInt64(DateTime.now().nanosecond))
-    var arrwsgrad = ArrayList<Matrix>()
-    var arrbsgrad = ArrayList<Matrix>()
-    var arrwsgrad1 = ArrayList<Matrix>()
-    var arrbsgrad1 = ArrayList<Matrix>()
+    let wsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
+    let bsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
     for (i in 0..(num*batch)) {
         let m = Matrix(1, 2)
 	let a = random.nextInt8(2)
@@ -287,18 +286,25 @@ main(_: Array<String>): Int64 {
             m[0, 0].write(Float32(a))
             m[0, 1].write(Float32(b))
         }
-        let ress = nn.forward(m)
-        let out_dof = f.fdo(ress)
+ 
+        let outs_dof = ArrayList<Matrix> ()
+        let outs_dotf = ArrayList<Matrix> ()
 
-        let ress1 = nn1.forward(out_dof)
-        let out1_dof = f.fdo(ress1)
+        for (idx in 0..nns.size) {
+            let x = if (idx == 0) { m } else { outs_dof[idx-1] }
+            let res = nns[idx].forward(x)
+            let out_dof = f.fdo(res)
+            let out_dotf = f.fdot(out_dof)
+            outs_dof.add(out_dof)
+            outs_dotf.add(out_dotf)
+        }
 
-        let errs = Matrix(1, 2)
+        var errs = Matrix(1, 2)
 	unsafe {
             let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
             let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
-            let r0 = out1_dof[0, 0].read()
-            let r1 = out1_dof[0, 1].read()
+            let r0 = outs_dof[nns.size-1][0, 0].read()
+            let r1 = outs_dof[nns.size-1][0, 1].read()
             let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
             let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
             let err0 = r0 - t0
@@ -312,39 +318,25 @@ main(_: Array<String>): Int64 {
             }
         }
 
-        let out1_dotf = f.fdot(out1_dof)
-        let out_dotf = f.fdot(out_dof)
-
-        let bias1_grad = errs
-        //let delta1 = nn1.bak_bsgrad(errs, out1_dotf)
-        let weights1_grad = nn1.bak_wsgrad(out_dof, bias1_grad)
-	let uperrs1 = nn1.bak_uperrs(bias1_grad, out_dotf)
-
-        arrwsgrad1.add(weights1_grad)
-        arrbsgrad1.add(bias1_grad)
-        if (arrwsgrad1.size >= batch) {
-            for (idx in 0..arrwsgrad1.size) {
-                nn1.update(arrwsgrad1[idx], arrbsgrad1[idx], 1.0f32/Float32(batch))
+        for (idx in (nns.size-1)..=0:-1) {
+            let up = if (idx == 0) { m} else { outs_dof[idx-1] }
+            let bias_grad = errs
+            //let delta = nns[idx].bak_bsgrad(errs, outs_dotf[idx])
+            let weights_grad = nns[idx].bak_wsgrad(up, bias_grad)
+            if (idx > 0) {
+                errs = nns[idx].bak_uperrs(bias_grad, outs_dotf[idx-1])
             }
-            arrwsgrad1 = ArrayList<Matrix>()
-            arrbsgrad1 = ArrayList<Matrix>()
-        }
-
-        let bias_grad = uperrs1
-        //let delta  = nn.bak_bsgrad(uperrs1, out_dotf)
-        let weights_grad = nn.bak_wsgrad(m, bias_grad)
-        //let uperrs = nn.bak_uperrs(bias_grad)
-
-        arrwsgrad.add(weights_grad)
-        arrbsgrad.add(bias_grad)
-        if (arrwsgrad.size >= batch) {
-            for (idx in 0..arrwsgrad.size) {
-                nn.update(arrwsgrad[idx], arrbsgrad[idx], 1.0f32/Float32(batch))
+            wsgrads[idx].add(weights_grad)
+            bsgrads[idx].add(bias_grad)
+            if (wsgrads[idx].size >= batch) {
+                for (j in 0..wsgrads[idx].size) {
+                    nns[idx].update(wsgrads[idx][j], bsgrads[idx][j], 1.0f32/Float32(batch))
+                }
+                wsgrads[idx] = ArrayList<Matrix>()
+                bsgrads[idx] = ArrayList<Matrix>()
             }
-            arrwsgrad = ArrayList<Matrix>()
-            arrbsgrad = ArrayList<Matrix>()
         }
-    }*/
+    }
 
     return 0
 }
