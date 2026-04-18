@@ -298,12 +298,11 @@ main(args: Array<String>): Int64 {
 
     /* test nn */
     let batch = 1
-    let num = 10000
-    let prt_num = 100
-    let f = ActivationFuncs.Leaky_ReLU
+    let num = 1000
+    let prt_num = 10
     let nns = ArrayList<Nn>()
-    nns.add(Nn(2, 4, f, 0.1f32))
-    nns.add(Nn(4, 2, f, 0.1f32))
+    nns.add(Nn(2, 4, ActivationFuncs.ReLU, 0.5f32))
+    nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
     let random = Random(UInt64(DateTime.now().nanosecond))
     let wsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
     let bsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
@@ -330,8 +329,8 @@ main(args: Array<String>): Int64 {
         for (idx in 0..nns.size) {
             let x = if (idx == 0) { m } else { outs_dof[idx-1] }
             let res = nns[idx].forward(x)
-            let out_dof = f.fdo(res)
-            let out_dotf = f.fdot(out_dof)
+            let out_dof = nns[idx].fdo(res)
+            let out_dotf = nns[idx].fdot(out_dof)
             outs_dof.add(out_dof)
             outs_dotf.add(out_dotf)
         }

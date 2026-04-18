@@ -4,29 +4,34 @@ foreign func Sigmoid_dot(m: CPointer<Unit>): CPointer<Unit>
 foreign func ReLU_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func ReLU_dot(m: CPointer<Unit>): CPointer<Unit>
 enum ActivationFuncs {
-	None | ReLU |Leaky_ReLU |Tanh
+	//None | Sigmoid | ReLU |Leaky_ReLU |Tanh
+	Sigmoid | ReLU
 	func fdo(m: Matrix): Matrix { // 暂时只设置ReLU
 		unsafe {
-			let r = Sigmoid_do(m.getData())
-			return Matrix(r)
+                        match(this) {
+				case Sigmoid => Matrix(Sigmoid_do(m.getData()))
+				case ReLU  => Matrix(ReLU_do(m.getData()))
+			}
 		}
 	}
 	func fdot(m: Matrix): Matrix {
 		unsafe {
-			let r = Sigmoid_dot(m.getData())
-			return Matrix(r)
+			match(this) {
+				case Sigmoid => Matrix(Sigmoid_dot(m.getData()))
+				case ReLU => Matrix(ReLU_dot(m.getData()))
+			}
 		}
 	}
 }
 
 class Nn {
-	init(inputno: UInt64, outputno: UInt64, afunc: ActivationFuncs, learning_rate: Float32)
+	init(inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32)
 	{
 		this.inputno = inputno
 		this.outputno = outputno
 		weights = Matrix.initWithXavierUniform(inputno, outputno)
 		bias = Matrix(1, outputno)
-		this.afunc = afunc
+		this.f = f
 		this.learning_rate = learning_rate
 	}
 	
@@ -34,6 +39,14 @@ class Nn {
 		// x => (inputs, 1)
 		let r = x * weights + bias // (1, outputno)
 		return r
+	}
+
+	func fdo(x: Matrix): Matrix {
+		return f.fdo(x)
+	}
+
+	func fdot(x: Matrix): Matrix {
+		return f.fdot(x)
 	}
 
 	func bak_bsgrad(prev_raw_outputs_dotf: Matrix, errs: Matrix): Matrix {
@@ -100,6 +113,6 @@ class Nn {
 	let outputno: UInt64
 	var weights: Matrix // (inputs, outputs)
 	var bias: Matrix    // (1, outputs)
-	let afunc: ActivationFuncs
 	var learning_rate: Float32
+ 	let f: ActivationFuncs
 }
