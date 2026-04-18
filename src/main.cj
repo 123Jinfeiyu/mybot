@@ -225,11 +225,11 @@ main(_: Array<String>): Int64 {
 
 
 
-    /*let consoleReader = getStdIn()
+    let consoleReader = getStdIn()
     let actor = Actor(I2C_PATH)
     actor.parse(consoleReader)
     actor.print()
-    actor.play()*/
+    actor.play()
 
 
     /* test */
@@ -268,7 +268,7 @@ main(_: Array<String>): Int64 {
 
 
     /* test nn */
-    let batch = 1
+    /*let batch = 1
     let num = 10000
     let prt_num = 1
     let f = ActivationFuncs.Leaky_ReLU
@@ -336,7 +336,7 @@ main(_: Array<String>): Int64 {
                 bsgrads[idx] = ArrayList<Matrix>()
             }
         }
-    }
+    }*/
 
     return 0
 }
