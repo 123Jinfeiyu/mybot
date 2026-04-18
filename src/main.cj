@@ -224,14 +224,14 @@ private class UnknowExcept <: ParseExcept {
 
 main(args: Array<String>): Int64 {
 
-    if (args.size == 1 && args[0] == "--serve") {
+    /*if (args.size == 1 && args[0] == "--serve") {
         
         let serv = ServerBuilder()
         .addr("127.0.0.1")
         .port(5119)
         .build()
 
-        /* curl -X POST /api/v2/bot_run -d ${cat filepath} */
+        // curl -X POST /api/v2/bot_run -d ${cat filepath}
         serv.distributor.register('/api/v2/bot_run', { context =>
             if (context.request.method == 'POST') {
                 //let ss = StringReader(context.request.body)
@@ -241,7 +241,7 @@ main(args: Array<String>): Int64 {
                 //println("-------------")
                 //actor.print()
                 //actor.play()
-                /* ---- 响应 ---- */
+                // ---- 响应 ---- 
                 let headers = HttpHeaders()
                 headers.add('Content-Type', 'text/html; charset=utf-8;')
                 context.responseBuilder.setHeaders(headers)
@@ -258,7 +258,7 @@ main(args: Array<String>): Int64 {
     let actor = Actor(I2C_PATH)
     actor.parse(consoleReader)
     //actor.print()
-    actor.play()
+    actor.play()*/
 
 
     /* test */
@@ -297,9 +297,9 @@ main(args: Array<String>): Int64 {
 
 
     /* test nn */
-    /*let batch = 1
+    let batch = 1
     let num = 10000
-    let prt_num = 1
+    let prt_num = 100
     let f = ActivationFuncs.Leaky_ReLU
     let nns = ArrayList<Nn>()
     nns.add(Nn(2, 4, f, 0.1f32))
@@ -309,16 +309,24 @@ main(args: Array<String>): Int64 {
     let bsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
     for (i in 0..(num*batch)) {
         let m = Matrix(1, 2)
+        let t = Matrix(1, 2)
+
 	let a = random.nextInt8(2)
 	let b = random.nextInt8(2)
+        let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
+        let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
+
 	unsafe {
             m[0, 0].write(Float32(a))
             m[0, 1].write(Float32(b))
+            t[0, 0].write(t0)
+            t[0, 1].write(t1)
         }
  
         let outs_dof = ArrayList<Matrix> ()
         let outs_dotf = ArrayList<Matrix> ()
 
+        // 正向传播
         for (idx in 0..nns.size) {
             let x = if (idx == 0) { m } else { outs_dof[idx-1] }
             let res = nns[idx].forward(x)
@@ -328,25 +336,22 @@ main(args: Array<String>): Int64 {
             outs_dotf.add(out_dotf)
         }
 
-        var errs = Matrix(1, 2)
+        var errs = outs_dof[nns.size-1] - t
+
+        // 输出损失
 	unsafe {
-            let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
-            let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
             let r0 = outs_dof[nns.size-1][0, 0].read()
             let r1 = outs_dof[nns.size-1][0, 1].read()
             let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
             let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
-            let err0 = r0 - t0
-            let err1 = r1 - t1
-            errs[0, 0].write(err0)
-            errs[0, 1].write(err1)
             if (i % prt_num == prt_num-1) {
-                print("${i},\t${t0},\t${t1}\t:\t${r0},\t${r1}\t& \t ${err0},\t${err1}")
+                print("${i},\t${t0},\t${t1}\t:\t${r0},\t${r1}")
                 print("\t: ${0.5 * (loss0*loss0 + loss1*loss1)}")
                 println()
             }
         }
 
+        // 反向传播
         for (idx in (nns.size-1)..=0:-1) {
             let up = if (idx == 0) { m} else { outs_dof[idx-1] }
             let bias_grad = errs
@@ -365,7 +370,7 @@ main(args: Array<String>): Int64 {
                 bsgrads[idx] = ArrayList<Matrix>()
             }
         }
-    }*/
+    }
 
     return 0
 }
