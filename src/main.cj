@@ -6,6 +6,7 @@ import std.time.*
 import std.random.*
 import std.convert.*
 import std.collection.*
+import stdx.net.*
 const I2C_PATH = "/dev/i2c-1"
 
 /* 机器人类 
@@ -221,14 +222,42 @@ private class UnknowExcept <: ParseExcept {
     }
 }
 
-main(_: Array<String>): Int64 {
+main(args: Array<String>): Int64 {
 
+    println(args[0])
+    if (args.size == 2 && args[1] == "--serve") {
+        
+        let serv = ServerBuilder()
+        .addr("127.0.0.1")
+        .port(5119)
+        .build()
 
+        /* curl -X POST /api/v2/bot_run -d ${cat filepath} */
+        serv.distributor.register('/api/v2/bot_run', { context =>
+            if (context.request.method == 'POST') {
+                let ss = StringReader(context.request.body)
+                let actor = Actor(I2C_PATH)
+                actor.parse(ss)
+                //println("-------------")
+                //actor.print()
+                //actor.play()
+                /* ---- 响应 ---- */
+                let headers = HttpHeaders()
+                headers.add('Content-Type', 'text/html; charset=utf-8;')
+                context.responseBuilder.setHeaders(headers)
+                context.responseBuilder.body('OK')
+            }
+        })
+
+        println('Bot at ${BOT_ADDR}:${BOT_PORT}')
+        serv.serve()
+        return 0
+    }
 
     let consoleReader = getStdIn()
     let actor = Actor(I2C_PATH)
     actor.parse(consoleReader)
-    actor.print()
+    //actor.print()
     actor.play()
 
 
