@@ -7,7 +7,6 @@ import std.random.*
 import std.convert.*
 import std.collection.*
 import stdx.net.http.*
-const I2C_PATH = "/dev/i2c-1"
 
 /* 机器人类 
  * TODO: 增加缓慢到达方法
@@ -222,6 +221,7 @@ private class UnknowExcept <: ParseExcept {
     }
 }
 
+const I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 main(args: Array<String>): Int64 {
 
     /*if (args.size == 1 && args[0] == "--serve") {
@@ -303,25 +303,45 @@ main(args: Array<String>): Int64 {
     let nns = ArrayList<Nn>()
     nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f32))
     nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
-    let random = Random(UInt64(DateTime.now().nanosecond))
-    let wsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
-    let bsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
     for (i in 0..(num*batch)) {
         let m = Matrix(1, 2)
         let t = Matrix(1, 2)
+        prepare(m, t)
 
-	let a = random.nextInt8(2)
-	let b = random.nextInt8(2)
-        let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
-        let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
+        let l = train(i, batch, nns, m, t)
 
-	unsafe {
-            m[0, 0].write(Float32(a))
-            m[0, 1].write(Float32(b))
-            t[0, 0].write(t0)
-            t[0, 1].write(t1)
+        if (i % prt_num == prt_num-1) {
+            print("${i}\t:")
+            print("${l}")
+            println()
         }
  
+    }
+
+    return 0
+}
+
+func prepare(m: Matrix, t: Matrix) {
+    let random = Random(UInt64(DateTime.now().nanosecond))
+    let a = random.nextInt8(2)
+    let b = random.nextInt8(2)
+    let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
+    let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
+
+    unsafe {
+        m[0, 0].write(Float32(a))
+        m[0, 1].write(Float32(b))
+        t[0, 0].write(t0)
+        t[0, 1].write(t1)
+    }
+}
+
+func train(i: Int64, batch: Int64, nns: ArrayList<Nn>, m: Matrix, t: Matrix) {
+
+        let wsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
+        let bsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
+
+        // train
         let outs_dof = ArrayList<Matrix> ()
         let outs_dotf = ArrayList<Matrix> ()
 
@@ -359,18 +379,13 @@ main(args: Array<String>): Int64 {
         }
 
         // 输出损失
-	unsafe {
+        unsafe {
+            let t0 = t[0, 0].read()
+            let t1 = t[0, 1].read()
             let r0 = outs_dof[nns.size-1][0, 0].read()
             let r1 = outs_dof[nns.size-1][0, 1].read()
             let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
             let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
-            if (i % prt_num == prt_num-1) {
-                print("${i},\t${t0},\t${t1}\t:\t${r0},\t${r1}")
-                print("\t: ${0.5 * (loss0*loss0 + loss1*loss1)}")
-                println()
-            }
+            return 0.5 * (loss0 * loss0 + loss1 * loss1)
         }
-    }
-
-    return 0
 }
