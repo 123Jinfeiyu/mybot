@@ -332,4 +332,24 @@ extern "C" {
 		return (void *)N;
 	}
 
+
+	void* Leaky_ReLU_do(void *m, float alpha) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		std::vector<float> v = M->get_data();
+		for (float& x: v) {
+			x =  x > 0 ? x : alpha * x;
+		}
+		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
+
+	void* Leaky_ReLU_dot(void *m, float alpha) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		std::vector<float> v = M->get_data();
+		for (float& x: v) {
+			x = x > 0 ? 1.0 : alpha;
+		}
+		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
 }

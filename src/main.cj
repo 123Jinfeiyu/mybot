@@ -298,10 +298,10 @@ main(args: Array<String>): Int64 {
 
     /* test nn */
     let batch = 1
-    let num = 1000
-    let prt_num = 10
+    let num = 10000
+    let prt_num = 100
     let nns = ArrayList<Nn>()
-    nns.add(Nn(2, 4, ActivationFuncs.ReLU, 0.5f32))
+    nns.add(Nn(2, 4, ActivationFuncs.Leaky_ReLU, 0.5f32))
     nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
     let random = Random(UInt64(DateTime.now().nanosecond))
     let wsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
@@ -335,20 +335,8 @@ main(args: Array<String>): Int64 {
             outs_dotf.add(out_dotf)
         }
 
+        // 计算误差
         var errs = outs_dof[nns.size-1] - t
-
-        // 输出损失
-	unsafe {
-            let r0 = outs_dof[nns.size-1][0, 0].read()
-            let r1 = outs_dof[nns.size-1][0, 1].read()
-            let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
-            let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
-            if (i % prt_num == prt_num-1) {
-                print("${i},\t${t0},\t${t1}\t:\t${r0},\t${r1}")
-                print("\t: ${0.5 * (loss0*loss0 + loss1*loss1)}")
-                println()
-            }
-        }
 
         // 反向传播
         for (idx in (nns.size-1)..=0:-1) {
@@ -367,6 +355,19 @@ main(args: Array<String>): Int64 {
                 }
                 wsgrads[idx] = ArrayList<Matrix>()
                 bsgrads[idx] = ArrayList<Matrix>()
+            }
+        }
+
+        // 输出损失
+	unsafe {
+            let r0 = outs_dof[nns.size-1][0, 0].read()
+            let r1 = outs_dof[nns.size-1][0, 1].read()
+            let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
+            let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
+            if (i % prt_num == prt_num-1) {
+                print("${i},\t${t0},\t${t1}\t:\t${r0},\t${r1}")
+                print("\t: ${0.5 * (loss0*loss0 + loss1*loss1)}")
+                println()
             }
         }
     }

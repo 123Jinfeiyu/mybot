@@ -3,14 +3,17 @@ foreign func Sigmoid_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func Sigmoid_dot(m: CPointer<Unit>): CPointer<Unit>
 foreign func ReLU_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func ReLU_dot(m: CPointer<Unit>): CPointer<Unit>
+foreign func Leaky_ReLU_do(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
+foreign func Leaky_ReLU_dot(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
 enum ActivationFuncs {
 	//None | Sigmoid | ReLU |Leaky_ReLU |Tanh
-	Sigmoid | ReLU
+	Sigmoid | ReLU | Leaky_ReLU
 	func fdo(m: Matrix): Matrix { // 暂时只设置ReLU
 		unsafe {
                         match(this) {
 				case Sigmoid => Matrix(Sigmoid_do(m.getData()))
 				case ReLU  => Matrix(ReLU_do(m.getData()))
+				case Leaky_ReLU => Matrix(Leaky_ReLU_do(m.getData(), 0.1f32))
 			}
 		}
 	}
@@ -19,6 +22,7 @@ enum ActivationFuncs {
 			match(this) {
 				case Sigmoid => Matrix(Sigmoid_dot(m.getData()))
 				case ReLU => Matrix(ReLU_dot(m.getData()))
+				case Leaky_ReLU => Matrix(Leaky_ReLU_dot(m.getData(), 0.1f32))
 			}
 		}
 	}
