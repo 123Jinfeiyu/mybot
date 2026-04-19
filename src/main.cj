@@ -301,7 +301,7 @@ main(args: Array<String>): Int64 {
     let num = 10000
     let prt_num = 100
     let nns = ArrayList<Nn>()
-    nns.add(Nn(2, 4, ActivationFuncs.Leaky_ReLU, 0.5f32))
+    nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f32))
     nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
     let random = Random(UInt64(DateTime.now().nanosecond))
     let wsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})

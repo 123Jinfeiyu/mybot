@@ -352,4 +352,29 @@ extern "C" {
 		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
 		return (void *)N;
 	}
+
+	void* Tanh_do(void *m) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		std::vector<float> v = M->get_data();
+		for (float& x: v) {
+			x = std::tanh(x);
+		}
+		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
+
+	void* Tanh_dot(void *m) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		std::vector<float> v = M->get_data();
+		for (float& x: v) {
+			if      (x > 20.0) x =  0.0;      // tanh(x) ≈ 1, 导数≈0
+			else if (x < -20.0) x =  0.0;     // tanh(x) ≈ -1, 导数≈0
+			else {
+				float t = tanh(x);
+				x =  1.0 - t * t;
+			}
+		}
+		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
 }
