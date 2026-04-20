@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <math.h>
 
-#define N 32768  // 必须与fft1.c中的N一致
+#define N 65536  // 必须与fft1.c中的N一致
 #include "fft1.c"
 
 
@@ -41,18 +41,17 @@ int main()
     }
     
     printf("\n峰值出现在索引 %d，幅度 %f\n", peak_idx, max_mag);
-    printf("对应频率: %f Hz\n", peak_idx * 32768.0 / N);  // fs=256Hz
+    printf("对应频率: %f Hz\n", peak_idx * 65536.0 / N);  // fs=256Hz
     
     return 0;
 }
-#include <math.h>
 
 void functf(double A[2][N])
 {
     unsigned long int i;
     double dt, tt;
     double freq = 10.0;      // 10Hz
-    double fs = 32768.0;     // 采样率32768Hz
+    double fs = 65536.0;     // 采样率65536Hz
     
     dt = 1.0 / fs;
     

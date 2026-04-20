@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <math.h>
 #ifndef DN
-#define DN 4
+#define DN (N*2)
 #endif
 #define eps 1.0e-9
 void initial(void);
@@ -170,7 +170,7 @@ void fft1r2(double A[2][N], double B[2][N], int ifft)
     }  /* end else */
 }
 /* ifft = 1 <--> FFT  **  ifft = -1 <--> IFFT */
-/*void fft1r1(double A[2][DN], int ifft)
+void fft1r1(double A[2][DN], int ifft)
 {
     unsigned long int j, k, dk;
     double norm, c[2][N], d[2][N], tt, hunit, cosj, sinj;
@@ -237,4 +237,4 @@ void fft1r2(double A[2][N], double B[2][N], int ifft)
         }
     } // end else
 }
-*/
+
