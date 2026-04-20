@@ -225,7 +225,7 @@ const I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 foreign func test(): Int32
 main(args: Array<String>): Int64 {
 
-    /*if (args.size == 1 && args[0] == "--serve") {
+    if (args.size == 1 && args[0] == "--serve") {
         
         let serv = ServerBuilder()
         .addr("127.0.0.1")
@@ -259,7 +259,7 @@ main(args: Array<String>): Int64 {
     let actor = Actor(I2C_PATH)
     actor.parse(consoleReader)
     //actor.print()
-    actor.play()*/
+    actor.play()
 
 
     /* test m */
@@ -301,9 +301,6 @@ main(args: Array<String>): Int64 {
     //fftt.print()
     //var fftr = start_fft(fftt)
     //fftr.print()
-    unsafe {
-        test()
-    }
 
 
     /* test nn */
@@ -317,15 +314,12 @@ main(args: Array<String>): Int64 {
         let m = Matrix(1, 2)
         let t = Matrix(1, 2)
         prepare(m, t)
-
-        let l = train(i, batch, nns, m, t)
-
+        let l = train(nns, m, t, 1.0f64)
         if (i % prt_num == prt_num-1) {
             print("${i}\t:")
             print("${l}")
             println()
         }
- 
     }*/
 
     return 0
@@ -346,10 +340,7 @@ func prepare(m: Matrix, t: Matrix) {
     }
 }
 
-func train(i: Int64, batch: Int64, nns: ArrayList<Nn>, m: Matrix, t: Matrix) {
-
-        let wsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
-        let bsgrads = ArrayList<ArrayList<Matrix>>(nns.size, {_: Int64 => ArrayList<Matrix>()})
+func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float64) {
 
         // train
         let outs_dof = ArrayList<Matrix> ()
@@ -377,15 +368,7 @@ func train(i: Int64, batch: Int64, nns: ArrayList<Nn>, m: Matrix, t: Matrix) {
             if (idx > 0) {
                 errs = nns[idx].bak_uperrs(bias_grad, outs_dotf[idx-1])
             }
-            wsgrads[idx].add(weights_grad)
-            bsgrads[idx].add(bias_grad)
-            if (wsgrads[idx].size >= batch) {
-                for (j in 0..wsgrads[idx].size) {
-                    nns[idx].update(wsgrads[idx][j], bsgrads[idx][j], 1.0f64/Float64(batch))
-                }
-                wsgrads[idx] = ArrayList<Matrix>()
-                bsgrads[idx] = ArrayList<Matrix>()
-            }
+            nns[idx].update(weights_grad, bias_grad, discount)
         }
 
         // 输出损失
