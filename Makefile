@@ -3,6 +3,7 @@ VERSION := 0.0.2
 APP_NAME := bot
 
 CC:= gcc
+CXX:= g++
 
 LIBS := -lpthread
 
@@ -14,6 +15,8 @@ libbot.so:  src/I2C.c src/Matrix.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
 
 libfft.so:  src/fft1.c src/fft.cpp
+	#$(CC) $(FLAGS) src/fft1.c -fPIC -c -o fft1.o
+	#$(CXX) $(FLAGS) src/fft.cpp -fPIC -c -o fft.o
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 test: test_fft1m1

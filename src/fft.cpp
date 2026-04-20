@@ -1,6 +1,8 @@
 #include <math.h>
 #include <vector>
-#include "fft.h"
+extern "C" {
+    #include "fft.h"
+}
 #include "Matrix.hh"
 using namespace qing;
 
