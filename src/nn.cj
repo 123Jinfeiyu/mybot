@@ -57,12 +57,13 @@ class Nn {
 		return f.fdot(x)
 	}
 
-	func bak_bsgrad(prev_raw_outputs_dotf: Matrix, errs: Matrix): Matrix {
+ 	// This is Wrong
+	//func bak_bsgrad(prev_raw_outputs_dotf: Matrix, errs: Matrix): Matrix {
 		// prev_raw_outputs_dotf => (1, outputno)
 		// errs => (1, outputno)
 
-		return errs * prev_raw_outputs_dotf
-	}
+	//	return errs * prev_raw_outputs_dotf
+	//}
 
 	func bak_wsgrad(prev_inputs: Matrix, delta: Matrix) {
 		// prev_inputs => (1, inputs)
