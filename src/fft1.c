@@ -6,7 +6,7 @@
 #include <math.h>
 #include "fft.h"
 static int ifirst=0, sign=-1;
-static unsigned M, jup[16], kup[16];
+static unsigned M, jup[64], kup[64];
 static double pi, wr[N], wi[N];
 /********* initial **************/
 void initial(void)
