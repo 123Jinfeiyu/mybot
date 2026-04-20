@@ -9,13 +9,13 @@ LIBS := -lpthread
 FLAGS := -O3 -pipe -Wall -Werror
 
 #-----------
-all: libbot.so test_fft
+all: libbot.so test_fft1
 libbot.so:  src/I2C.c src/Matrix.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
 
-test_fft:  src/test_fft1m1.c
+test_fft1:  src/test_fft1m1.c
 	$(CC) $(FLAGS) -lm  $^ -o $@
 
 clear:
 	rm libbot.so
-	rm test_fft
+	rm test_fft1
