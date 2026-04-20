@@ -112,7 +112,7 @@ namespace qing {
 	}
 
 	template<typename T>
-	const Matrx<T> Matrx<T>::operator*(const Matrx<T>& other) {  /* 操作符重载 - 矩阵乘法 */ 
+	Matrx<T> Matrx<T>::dot(const Matrx<T>& other) {  /* 操作符重载 - 矩阵乘法 */ 
 		//assert_dot_shape(other); /* 它们的形状是否能够点积 */
 		auto matrix = Matrx<T>(this->get_row(), other.get_col());
 		for (uint64_t i=0; i<this->get_row(); ++i) /* 点积运算 */
@@ -134,11 +134,31 @@ namespace qing {
 	}
 
 	template<typename T>
+	Matrx<T> Matrx<T>::operator*(const Matrx<T>& other) {  /* 加法操作符重定义 - 矩阵加法 */
+		//assert_same_shape(other);  /* 检查两个矩阵形状是否一致 */
+		std::vector<T> v0  = this->get_data();
+		std::vector<T> vec = other.get_data();
+		for (auto it = v0.begin(), it_or = vec.begin(); it != v0.end(); ++it, ++it_or )
+			*it *= *it_or;
+		return Matrx<T>{this->get_row(), this->get_col(), v0};
+	}
+
+	template<typename T>
 	Matrx<T> Matrx<T>::operator/(T& item) {  /* 操作符重载 - 矩阵除法广播 */
 		std::vector<T> vec = this->get_data();
 		for (auto it = vec.begin(); it != vec.end(); ++it) 
 			*it /= item;
 		return Matrx<T>(this->get_row(), this->get_col(), vec);
+	}
+
+	template<typename T>
+	Matrx<T> Matrx<T>::operator/(const Matrx<T>& other) {  /* 加法操作符重定义 - 矩阵加法 */
+		//assert_same_shape(other);  /* 检查两个矩阵形状是否一致 */
+		std::vector<T> v0  = this->get_data();
+		std::vector<T> vec = other.get_data();
+		for (auto it = v0.begin(), it_or = vec.begin(); it != v0.end(); ++it, ++it_or )
+			*it /= *it_or;
+		return Matrx<T>{this->get_row(), this->get_col(), v0};
 	}
 
 	template class Matrx<float>; /* 显式实例化 */
@@ -150,88 +170,102 @@ namespace qing {
 using namespace qing;
 extern "C" {
 	void* createMatrix(uint64_t row, uint64_t col) {
-		return (void *) new Matrx<float>(row, col);
+		return (void *) new Matrx<double>(row, col);
 	}
 
 	void freeMatrix(void* M) {
-		delete (Matrx<float>*) M;
+		delete (Matrx<double>*) M;
 	}
 
-	float* witchMatrix(void *m, uint64_t row, uint64_t col) {
-		Matrx<float> *M = (Matrx<float>*) m;
+	double* witchMatrix(void *m, uint64_t row, uint64_t col) {
+		Matrx<double> *M = (Matrx<double>*) m;
 		return &(M->witch(row, col));
 	}
 
 	uint64_t getrowMatrix(void *m) {
-		Matrx<float> *M = (Matrx<float>*) m;
+		Matrx<double> *M = (Matrx<double>*) m;
 		return M->get_row();
 	}
 
 	uint64_t getcolMatrix(void *m) {
-		Matrx<float> *M = (Matrx<float>*) m;
+		Matrx<double> *M = (Matrx<double>*) m;
 		return M->get_col();
 	}
 
 	bool sameShapeMatrix(void *m, void *s) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		Matrx<float> *S = (Matrx<float>*) s;
+		Matrx<double> *M = (Matrx<double>*) m;
+		Matrx<double> *S = (Matrx<double>*) s;
 		return M->has_same_shape(*S);
 	}
 
 	bool dotShapeMatrix(void *m, void *s) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		Matrx<float> *S = (Matrx<float>*) s;
+		Matrx<double> *M = (Matrx<double>*) m;
+		Matrx<double> *S = (Matrx<double>*) s;
 		return M->has_dot_shape(*S);
 	}
 	
 	void* plusMatrix(void *m, void *s) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		Matrx<float> *S = (Matrx<float>*) s;
-		auto a = new Matrx<float>((*M) + (*S));
+		Matrx<double> *M = (Matrx<double>*) m;
+		Matrx<double> *S = (Matrx<double>*) s;
+		auto a = new Matrx<double>((*M) + (*S));
 		return (void *) a;
 	}
 
-	void* plusBroadcastMatrix(void *m, float t) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		auto a = new Matrx<float> ((*M) + t);
+	void* plusBroadcastMatrix(void *m, double t) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		auto a = new Matrx<double> ((*M) + t);
 		return (void*) a;
 	}
 
 	void* subMatrix(void *m, void *s) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		Matrx<float> *S = (Matrx<float>*) s;
-		auto a = new Matrx<float>((*M) - (*S));
+		Matrx<double> *M = (Matrx<double>*) m;
+		Matrx<double> *S = (Matrx<double>*) s;
+		auto a = new Matrx<double>((*M) - (*S));
 		return (void *) a;
 	}
 
-	void * subBroadcastMatrix(void *m, float t) {
-		Matrx<float> *M = (Matrx<float> *) m;
-		auto a  = new Matrx<float> ((*M) - t);
+	void * subBroadcastMatrix(void *m, double t) {
+		Matrx<double> *M = (Matrx<double> *) m;
+		auto a  = new Matrx<double> ((*M) - t);
 		return (void *) a;
 	}
 
-	void* multiBroadcastMatrix(void *m, float t) {
-		Matrx<float> *M = (Matrx<float> *) m;
-		auto a = new Matrx<float>((*M) * t);
+	void* multiMatrix(void *m, void *s) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		Matrx<double> *S = (Matrx<double>*) s;
+		auto a = new Matrx<double>((*M) * (*S));
+		return (void *) a;
+	}
+
+	void* multiBroadcastMatrix(void *m, double t) {
+		Matrx<double> *M = (Matrx<double> *) m;
+		auto a = new Matrx<double>((*M) * t);
 		return (void*) a;
 	}
 
-	void* divBroadcastMatrix(void *m, float t) {
-		Matrx<float> *M = (Matrx<float> *) m;
-		auto a = new Matrx<float>((*M) / t);
+	void* divMatrix(void *m, void *s) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		Matrx<double> *S = (Matrx<double>*) s;
+		auto a = new Matrx<double>((*M) / (*S));
+		return (void *) a;
+	}
+
+	void* divBroadcastMatrix(void *m, double t) {
+		Matrx<double> *M = (Matrx<double> *) m;
+		auto a = new Matrx<double>((*M) / t);
 		return (void*) a;
 	}
 
 	void* dotMatrix(void *m, void *s) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		Matrx<float> *S = (Matrx<float>*) s;
-		auto a = new Matrx<float>((*M) * (*S));
+		Matrx<double> *M = (Matrx<double>*) m;
+		Matrx<double> *S = (Matrx<double>*) s;
+		auto a = new Matrx<double>(M->dot(*S));
 		return (void *) a;
 	}
 
 	void* transposeMatrix(void *m) {
-		Matrx<float> *M = (Matrx<float> *)m;
-		auto N= new Matrx<float>(M->get_col(), M->get_row());
+		Matrx<double> *M = (Matrx<double> *)m;
+		auto N= new Matrx<double>(M->get_col(), M->get_row());
 		for (uint64_t row = 0; row< N->get_row(); row++) {
 			for (uint64_t col = 0; col < N->get_col(); col++) {
 				N->witch(row, col)  = M->get(col, row);
@@ -244,16 +278,16 @@ extern "C" {
 	void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
 	{
 		/* 构建空数组 */
-		std::vector<float> weights(fan_in * fan_out);
+		std::vector<double> weights(fan_in * fan_out);
 
 		/* 高质量的随机数生成器 */
 		static std::mt19937 generator(std::random_device{}());
 
 		/* 计算标准差 */
-		float sigma = std::sqrt(2.0f / (fan_in + fan_out));
+		double sigma = std::sqrt(2.0f / (fan_in + fan_out));
 
 		/* 创建正态分布对象，均值为0，标准差为sigma */
-		std::normal_distribution<float> distribution(0.0f, sigma);
+		std::normal_distribution<double> distribution(0.0f, sigma);
 
 		/* 遍历权重矩阵，进行赋值 */
 		uint64_t k=0;
@@ -262,7 +296,7 @@ extern "C" {
 				weights[k++] = distribution(generator);
 
 		/* 构建矩阵 */
-		auto matrix = new Matrx<float>(fan_in, fan_out, weights);
+		auto matrix = new Matrx<double>(fan_in, fan_out, weights);
 		return (void *)matrix;
 	}
 
@@ -270,16 +304,16 @@ extern "C" {
 	void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
 	{	
 		/* 构建空的数组 */
-		auto weights = std::vector<float>(fan_in * fan_out);
+		auto weights = std::vector<double>(fan_in * fan_out);
 
 		/* 使用高质量的随机数生成器 */
 		static std::mt19937 generator(std::random_device{}());
 
 		/* 计算区间范围：sqrt(2 / (fan_in + fan_out)) */
-		float scale = std::sqrt(2.0f / (fan_in + fan_out));
+		double scale = std::sqrt(2.0f / (fan_in + fan_out));
 
 		/* 创建均匀分布对象，范围为[-scale, scale] */
-		std::uniform_real_distribution<float> distribution(-scale, scale);
+		std::uniform_real_distribution<double> distribution(-scale, scale);
 
 		/* 遍历权重矩阵，进行赋值 */
 		uint64_t k=0;
@@ -288,48 +322,93 @@ extern "C" {
 				weights[k++] = distribution(generator);
 
 		/* 构建矩阵对象 */
-		auto matrix = new Matrx<float> (fan_in, fan_out, weights);
+		auto matrix = new Matrx<double> (fan_in, fan_out, weights);
 		return (void *)matrix;
 	}
 
 	void* Sigmoid_do(void *m) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		std::vector<float> v = M->get_data();
-		for (float& x: v) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& x: v) {
 			x = 1.0 / (1.0 + std::exp(-x));
 		}
-		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
 		return (void *)N;
 	}
 
 	void* Sigmoid_dot(void *m) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		std::vector<float> v = M->get_data();
-		for (float& o: v) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& o: v) {
 			o = o * (1.0 - o);
 		}
-		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
 		return (void *)N;
 	}
 
 	void* ReLU_do(void *m) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		std::vector<float> v = M->get_data();
-		for (float& x: v) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& x: v) {
 			x = x > 0 ? x : 0;
 		}
-		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
 		return (void *)N;
 	}
 
 	void* ReLU_dot(void *m) {
-		Matrx<float> *M = (Matrx<float>*) m;
-		std::vector<float> v = M->get_data();
-		for (float& x: v) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& x: v) {
 			x =  x > 0 ? 1.0f : 0.0f;
 		}
-		auto N = new Matrx<float> (M->get_row(), M->get_col(), v);
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
 		return (void *)N;
 	}
 
+
+	void* Leaky_ReLU_do(void *m, double alpha) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& x: v) {
+			x =  x > 0 ? x : alpha * x;
+		}
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
+
+	void* Leaky_ReLU_dot(void *m, double alpha) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& x: v) {
+			x = x > 0 ? 1.0 : alpha;
+		}
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
+
+	void* Tanh_do(void *m) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& x: v) {
+			x = std::tanh(x);
+		}
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
+
+	void* Tanh_dot(void *m) {
+		Matrx<double> *M = (Matrx<double>*) m;
+		std::vector<double> v = M->get_data();
+		for (double& x: v) {
+			if      (x > 20.0) x =  0.0;      // tanh(x) ≈ 1, 导数≈0
+			else if (x < -20.0) x =  0.0;     // tanh(x) ≈ -1, 导数≈0
+			else {
+				double t = tanh(x);
+				x =  1.0 - t * t;
+			}
+		}
+		auto N = new Matrx<double> (M->get_row(), M->get_col(), v);
+		return (void *)N;
+	}
 }
