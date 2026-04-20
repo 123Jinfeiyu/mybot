@@ -4,16 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
-#ifndef DN
-#define DN (N*2)
-#endif
-#define eps 1.0e-9
-void initial(void);
-void fft1(double A[2][N], int ifft);
-unsigned long int inverseq(unsigned long int i1,
-                            unsigned long int imax);
-void fft1r2(double A[2][N], double B[2][N], int ifft);
-void fft1r1(double A[2][DN], int ifft);
+#include "fft.h"
 static int ifirst=0, sign=-1;
 static unsigned M, jup[16], kup[16];
 static double pi, wr[N], wi[N];
