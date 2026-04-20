@@ -10,7 +10,9 @@ foreign func plusMatrix(M: CPointer<Unit>, S:CPointer<Unit>): CPointer<Unit>
 foreign func plusBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func subMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
 foreign func subBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
+foreign func multiMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
 foreign func multiBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
+foreign func divMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
 foreign func divBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func dotMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
 foreign func transposeMatrix(M: CPointer<Unit>): CPointer<Unit>
@@ -113,9 +115,37 @@ class Matrix {
 		}
 	}
 
+	operator func *(s: Matrix): Matrix {
+		unsafe {
+			if (!(this == s)) {
+				println('------------')
+				print_shape()
+				s.print_shape()
+				println('------------')
+				throw IllegalArgumentException("not same shape")
+			}
+			let r = multiMatrix(M, s.getData())
+			return Matrix(r)
+		}
+	}
+
 	operator func *(t: Float32): Matrix {
 		unsafe {
 			let r = multiBroadcastMatrix(M, t)
+			return Matrix(r)
+		}
+	}
+
+	operator func /(s: Matrix): Matrix {
+		unsafe {
+			if (!(this == s)) {
+				println('------------')
+				print_shape()
+				s.print_shape()
+				println('------------')
+				throw IllegalArgumentException("not same shape")
+			}
+			let r = divMatrix(M, s.getData())
 			return Matrix(r)
 		}
 	}
@@ -127,14 +157,14 @@ class Matrix {
 		}
 	}
 
-	operator func *(s: Matrix): Matrix {
+	func dot (s: Matrix): Matrix {
 		unsafe {
 			if (!hasDotShapeWith(s)) {
 				println('------------')
 				print_shape()
 				s.print_shape()
 				println('------------')
-				throw IllegalArgumentException("not same shape")
+				throw IllegalArgumentException("not dot shape")
 			}
 			let r = dotMatrix(M, s.getData())
 			return Matrix(r)

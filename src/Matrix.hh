@@ -37,9 +37,11 @@ public:
     Matrx<T> operator+(T& item);  /* 矩阵加法广播 */
     Matrx<T> operator-(const Matrx<T>& other);  /* 操作符重载 - 矩阵减法 */
     Matrx<T> operator-(T& item);  /* 操作符重载 - 矩阵减法广播 */
-    const Matrx<T> operator*(const Matrx<T>& other);  /* 操作符重载 - 矩阵乘法 */ 
+    Matrx<T> operator*(const Matrx<T>& other);  /* 操作符重载 - 矩阵乘法 */ 
     Matrx<T> operator*(T& item);  /* 操作符重载 - 矩阵乘法广播 */
     Matrx<T> operator/(T& item);  /* 操作符重载 - 矩阵除法广播 */
+    Matrx<T> operator/(const Matrx<T>& other);  /* 操作符重载 - 矩阵乘法 */ 
+    Matrx<T> dot(const Matrx<T>& other);  /* 操作符重载 - 矩阵乘法 */ 
 
     /* 储存矩阵 */
     void save(std::ostream& out) {

@@ -112,7 +112,7 @@ namespace qing {
 	}
 
 	template<typename T>
-	const Matrx<T> Matrx<T>::operator*(const Matrx<T>& other) {  /* 操作符重载 - 矩阵乘法 */ 
+	Matrx<T> Matrx<T>::dot(const Matrx<T>& other) {  /* 操作符重载 - 矩阵乘法 */ 
 		//assert_dot_shape(other); /* 它们的形状是否能够点积 */
 		auto matrix = Matrx<T>(this->get_row(), other.get_col());
 		for (uint64_t i=0; i<this->get_row(); ++i) /* 点积运算 */
@@ -134,11 +134,31 @@ namespace qing {
 	}
 
 	template<typename T>
+	Matrx<T> Matrx<T>::operator*(const Matrx<T>& other) {  /* 加法操作符重定义 - 矩阵加法 */
+		//assert_same_shape(other);  /* 检查两个矩阵形状是否一致 */
+		std::vector<T> v0  = this->get_data();
+		std::vector<T> vec = other.get_data();
+		for (auto it = v0.begin(), it_or = vec.begin(); it != v0.end(); ++it, ++it_or )
+			*it *= *it_or;
+		return Matrx<T>{this->get_row(), this->get_col(), v0};
+	}
+
+	template<typename T>
 	Matrx<T> Matrx<T>::operator/(T& item) {  /* 操作符重载 - 矩阵除法广播 */
 		std::vector<T> vec = this->get_data();
 		for (auto it = vec.begin(); it != vec.end(); ++it) 
 			*it /= item;
 		return Matrx<T>(this->get_row(), this->get_col(), vec);
+	}
+
+	template<typename T>
+	Matrx<T> Matrx<T>::operator/(const Matrx<T>& other) {  /* 加法操作符重定义 - 矩阵加法 */
+		//assert_same_shape(other);  /* 检查两个矩阵形状是否一致 */
+		std::vector<T> v0  = this->get_data();
+		std::vector<T> vec = other.get_data();
+		for (auto it = v0.begin(), it_or = vec.begin(); it != v0.end(); ++it, ++it_or )
+			*it /= *it_or;
+		return Matrx<T>{this->get_row(), this->get_col(), v0};
 	}
 
 	template class Matrx<float>; /* 显式实例化 */
@@ -210,10 +230,24 @@ extern "C" {
 		return (void *) a;
 	}
 
+	void* multiMatrix(void *m, void *s) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		Matrx<float> *S = (Matrx<float>*) s;
+		auto a = new Matrx<float>((*M) * (*S));
+		return (void *) a;
+	}
+
 	void* multiBroadcastMatrix(void *m, float t) {
 		Matrx<float> *M = (Matrx<float> *) m;
 		auto a = new Matrx<float>((*M) * t);
 		return (void*) a;
+	}
+
+	void* divMatrix(void *m, void *s) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		Matrx<float> *S = (Matrx<float>*) s;
+		auto a = new Matrx<float>((*M) / (*S));
+		return (void *) a;
 	}
 
 	void* divBroadcastMatrix(void *m, float t) {
@@ -225,7 +259,7 @@ extern "C" {
 	void* dotMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
-		auto a = new Matrx<float>((*M) * (*S));
+		auto a = new Matrx<float>(M->dot(*S));
 		return (void *) a;
 	}
 
