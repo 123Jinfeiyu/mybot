@@ -50,15 +50,16 @@ void functf(double A[2][N])
 {
     unsigned long int i;
     double dt, tt;
+    double p = 0.1;
     double freq = 10.0;      // 10Hz
-    double fs = 65536.0;     // 采样率65536Hz
+    double fs = N;     // 采样率65536Hz
     
     dt = 1.0 / fs;
     
     for(i = 0; i < N; i++)
     {
         tt = (double)i * dt;
-        A[0][i] = sin(2.0 * M_PI * freq * tt);  // 正弦波
+        A[0][i] = sin(2.0 * M_PI * freq * tt) * p;  // 正弦波
         A[1][i] = 0.0;                           // 虚部为0
     }
 }

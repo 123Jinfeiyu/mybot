@@ -7,7 +7,7 @@ CXX:= g++
 
 LIBS := -lpthread
 
-FLAGS := -O3 -pipe -Wall -Werror
+FLAGS := -O3 -pipe #-Wall -Werror
 
 #-----------
 all: libbot.so libfft.so test_fft1m1
@@ -15,8 +15,6 @@ libbot.so:  src/I2C.c src/Matrix.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
 
 libfft.so:  src/fft1.c src/fft.cpp
-	#$(CC) $(FLAGS) src/fft1.c -fPIC -c -o fft1.o
-	#$(CXX) $(FLAGS) src/fft.cpp -fPIC -c -o fft.o
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 test: test_fft1m1
