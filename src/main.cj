@@ -225,7 +225,14 @@ const I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 foreign func test(): Int32
 main(args: Array<String>): Int64 {
 
-    if (args.size == 1 && args[0] == "--serve") {
+    if  (args.size == 1 && args[0] == "--help") {
+        println("这是一个机器人动作脚本解析器。")
+        println("使用管道输入动作脚本，示例：")
+        println("cat std.bot | ./bot")
+        return 0
+    }
+
+    else if (args.size == 1 && args[0] == "--serve") {
         
         let serv = ServerBuilder()
         .addr("127.0.0.1")
