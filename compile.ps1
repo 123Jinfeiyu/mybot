@@ -1,0 +1,1 @@
+nvcc -shared -o cu4cj.dll src/main.cu -allow-unsupported-compiler
