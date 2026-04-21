@@ -13,7 +13,8 @@ import std.collection.*
  * TODO：增加check()方法，检查脚本列数是否对应
  * TODO：解析pi为单位的角度
  * FIXME: print()以原貌打印
- * FIXME: parse()兼容空的特殊行 */
+ * FIXME: parse()兼容空的特殊行
+ * TODO*: 解析器与舵机设备解耦 */
 
 class Actor {
 
