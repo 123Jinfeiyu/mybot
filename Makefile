@@ -11,10 +11,10 @@ FLAGS := -O3 -pipe #-Wall -Werror
 
 #-----------
 all: libbot.so libfft.so
-libbot.so:  src/I2C.c src/Matrix.cpp
+libbot.so:  src/cpp/I2C.c src/cpp/Matrix.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
 
-libfft.so:  src/fft1.c src/fft.cpp
+libfft.so:  src/cpp/fft1.c src/cpp/fft.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 clear:
