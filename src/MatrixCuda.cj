@@ -1,5 +1,5 @@
 package bot4cj
-
+/*
 // FIXME: 使用Int64作为维度
 foreign func Cu4cj_Free(d: CPointer<Unit>): Unit
 foreign func Cu4cj_Orig(n: Int64): CPointer<Float32>
@@ -15,12 +15,12 @@ foreign func Cu4cj_MulBroadcast(d1: CPointer<Float32>, d2: Float32, d_r: CPointe
 foreign func Cu4cj_DivBroadcast(d1: CPointer<Float32>, d2: Float32, d_r: CPointer<Float32>, n: Int64): Unit
 foreign func Cu4cj_MatDot(d1: CPointer<Float32>, d2: CPointer<Float32>, d_r: CPointer<Float32>, m: Int64, n: Int64, k: Int64): Unit
 
-/* 矩阵初始化模式 */
+// 矩阵初始化模式
 enum MatrixInitMode {
     | Zero | Normal
 }
 
-/* 单精度小数 - 矩阵 */
+// 单精度小数 - 矩阵
 class MatrixF32 {
     init(row: Int64, col: Int64, vec: CPointer<Float32>) {
         this.row = row
@@ -139,3 +139,4 @@ func test_cuda(): Int64 {
         return 0
     }
 }
+*/
