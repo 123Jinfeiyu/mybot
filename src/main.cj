@@ -1,10 +1,8 @@
 package bot4cj
-import std.io.*
 import std.env.*
 import std.math.*
 import std.time.*
 import std.random.*
-import std.convert.*
 import std.collection.*
 import stdx.net.http.*
 

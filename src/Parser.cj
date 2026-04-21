@@ -1,3 +1,8 @@
+package bot4cj
+import std.io.*
+import std.math.*
+import std.convert.*
+import std.collection.*
 
 /* 机器人类 
  * TODO: 增加缓慢到达方法
