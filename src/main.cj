@@ -21,371 +21,370 @@ import stdx.net.http.*
 
 class Actor {
 
-    public init(filepath: String) {
-        i2c = I2C(filepath)
-    }
+	public init(filepath: String) {
+		i2c = I2C(filepath)
+	}
     
-    /*
-     * 解析器 - 循环不变式
-     *
-     *
-     * 初始化：ss是一个动作脚本的输入流
-     *
-     * 保持：ss是动作脚本剩余部分的输入流
-     *
-     * 终止：当输入流为空时，循环终止
-     */
-    public func parse(inputStream: InputStream) {
-        let ss = StringReader(inputStream)
-        var count: Int64 = 0;
-        while (true) {  /* FIXME(花间岛): while(let Some(f) <- ss.read()) */
-            try {       /*      (qing): 链式调用可读性反而降低 */
-                let a = ss.read()
-                let aa = match(a) {
-                    case Some(v) => v
-                    case None => break
-                }
-                count = this.next(aa, count)
-            }
-            catch (exp: BufOverTheLine) { /* 临时占位 */
-                throw exp
-            }
-            catch (exp: IllegalArgumentException) {
-                throw UnknowExcept(count)
-            }
-        }
+	/*
+ 	 * 解析器 - 循环不变式
+ 	 *
+ 	 *
+ 	 * 初始化：ss是一个动作脚本的输入流
+ 	 *
+ 	 * 保持：ss是动作脚本剩余部分的输入流
+ 	 *
+ 	 * 终止：当输入流为空时，循环终止
+ 	 */
+	public func parse(inputStream: InputStream) {
+		let ss = StringReader(inputStream)
+		var count: Int64 = 0;
+		while (true) {	/* FIXME(花间岛): while(let Some(f) <- ss.read()) */
+			try {	/*      (qing): 链式调用可读性反而降低 */
+				let a = ss.read()
+				let aa = match(a) {
+					case Some(v) => v
+					case None => break
+				}
+				count = this.next(aa, count)
+			}
+			catch (exp: BufOverTheLine) { /* 临时占位 */
+				throw exp
+			}
+			catch (exp: IllegalArgumentException) {
+				throw UnknowExcept(count)
+			}
+		}
 
-        //check()
-    }
+		//check()
+	}
 
-    /* 打印整个动作脚本
-     * */
-    public func print() {
-        for (array in bot) {
-            for (item in array) {
-                print(item)
-                print(" ")
-            }
-            print("\n")
-        }
-    }
+	/* 打印整个动作脚本
+	 * FIXME: 原样打印出来 */
+	public func print() {
+		for (array in bot) {
+			for (item in array) {
+ 				print(item)
+				print(" ")
+			}
+			print("\n")
+		}
+	}
 
-    /* 开始演绎 --- 按照解析出来的顺序进行旋转
-     * FIXME: 考虑max和min符号不同的情况 */
-    public func play() {
-        let max = bot[0] /* 第一行是上限 */
-        let min = bot[1] /* 第二行是下限 */
-        let i2 = i2c.getOrThrow()
-        let pca9685 = PCA9685(i2)
-        //let mp = MPU6050(i2)
-        //let data = mp.readSensor()
-        //data.print()
-        for (i in 2..bot.size) { /* 从第2行开始遍历 */
-            let a = bot[i]       /* 选中一行 */
-            for (j in 0..a.size-1) {  /* 遍历关节（最后一列是时延） */
-                let ma = abs(max[j])  /* 取得该关节最大值 */
-                let mi = abs(min[j])  /* 取得该关节最小值 */
-                let rf = max[j] < 0.0f64  /* rotate flag 逆转标志 */
-                var t = a[j]              /* 选中单个 */
-                t = if (ma < t) { ma } else { t }  /* 对上限进行切片 */
-                t = if (mi < t) { t }  else { mi } /* 对下限进行切片 */
-                t = if (rf) { 180.0f64 - t } else { t } /* 是否逆转 */
-                let jj = UInt8(j) /* FIXME: 应该从一开始就用UInt8进行存储 */
-                pca9685.setAngle(jj, Float32(t))
-            }
-            let aa = a.last.getOrThrow()
-            sleep(Duration.millisecond * Int64(aa))
-        }
-    }
+	/* 开始演绎 --- 按照解析出来的顺序进行旋转
+	 * FIXME: 考虑max和min符号不同的情况
+	 * TODO: 加入DRL微调  */
+	public func play() {
+		let max = bot[0] /* 第一行是上限 */
+		let min = bot[1] /* 第二行是下限 */
+		let i2 = i2c.getOrThrow()
+		let pca9685 = PCA9685(i2)
+		//let mp = MPU6050(i2)
+		//let data = mp.readSensor()
+		//data.print()
+		for (i in 2..bot.size) {	/* 从第2行开始遍历 */
+			let a = bot[i]		/* 选中一行 */
+			for (j in 0..a.size-1) {	/* 遍历关节（最后一列是时延） */
+				let ma = abs(max[j])	/* 取得该关节最大值 */
+				let mi = abs(min[j])	/* 取得该关节最小值 */
+				let rf = max[j] < 0.0f64	/* rotate flag 逆转标志 */
+				var t = a[j]			/* 选中单个 */
+				t = if (ma < t) { ma } else { t }	/* 对上限进行切片 */
+				t = if (mi < t) { t }  else { mi }	/* 对下限进行切片 */
+				t = if (rf) { 180.0f64 - t } else { t }	/* 是否逆转 */
+				let jj = UInt8(j) /* FIXME: 应该从一开始就用UInt8进行存储 */
+				pca9685.setAngle(jj, Float32(t))
+			}
+			let aa = a.last.getOrThrow()
+			sleep(Duration.millisecond * Int64(aa))
+		}
+	}
 
-    /*-----------------*/
-    private var i2c: Option<I2C> = None
-    private var nl: Bool = true   /* new line */
-    private var sl: Bool = false  /* special */
-    private var cm: Bool = false  /* comment */
-    private var tmp = ArrayList<Rune>()    /* 文字缓冲区 */
-    private var grp = ArrayList<Float64>() /* 单行 */
-    private var bot = ArrayList<ArrayList<Float64>>()
-    private static const TMP_LEN = 16      /* 文字缓冲区不超过 */
-    private func next(c: Rune, count: Int64): Int64 {
-        var cc: Int64 = count
-        /* ---- comment ---- */
+	/*-----------------*/
+	private var i2c: Option<I2C> = None
+	private var nl: Bool = true   /* new line */
+	private var sl: Bool = false  /* special */
+	private var cm: Bool = false  /* comment */
+	private var tmp = ArrayList<Rune>()    /* 文字缓冲区 */
+	private var grp = ArrayList<Float64>() /* 单行 */
+	private var bot = ArrayList<ArrayList<Float64>>()
+	private static const TMP_LEN = 16      /* 文字缓冲区不超过 */
+	private func next(c: Rune, count: Int64): Int64 {
+		var cc: Int64 = count
+		/* ---- comment ---- */
 
-        /* 注释行开始标志 */
-        if (!cm && c == r'#') {
-            cm = true
-        }
+		/* 注释行开始标志 */
+		if (!cm && c == r'#') {
+			cm = true
+		}
 
-        /* 注释行结束标识 */
-        else if (cm && c == r'\n') {
-            nl = true
-            sl = false
-            cm = false
-            cc += 1
-        }
+		/* 注释行结束标识 */
+		else if (cm && c == r'\n') {
+			nl = true
+			sl = false
+			cm = false
+			cc += 1
+		}
 
-        /* 注释内容
-         * FIXME: EOF */
-        else if (cm && c != r'\n') {
-            ;
-        }
-        /* ---------------- new line ---------------- */
+		/* 注释内容
+		 * FIXME: EOF */
+		else if (cm && c != r'\n') {
+			;
+		}
+		/* ---------------- new line ---------------- */
 
-        /* 新行且为空字符 */
-        else if (nl && (c == r' ' || c == r'\t')) { 
-            ;
-        }
+		/* 新行且为空字符 */
+		else if (nl && (c == r' ' || c == r'\t')) { 
+			;
+		}
 
-        /* 新行且为空行 */
-        else if (nl && c == r'\n') {
-            cc += 1
-        }
+		/* 新行且为空行 */
+		else if (nl && c == r'\n') {
+			cc += 1
+		}
 
-        /* 新行且为特殊行 */
-        else if (nl && c == r'!') { 
-            nl = false
-            sl = true
-        }
+		/* 新行且为特殊行 */
+		else if (nl && c == r'!') { 
+			nl = false
+			sl = true
+		}
 
-        /* 新行且不为特殊行、制表符和空格：录入 */
-        else if (nl && c != r'!') {
-            nl = false
-            sl = false
-            tmp.add(c) /* 到缓冲区 */
-            if (tmp.size > TMP_LEN) { /* 缓冲区过长 */
-                throw BufOverTheLine(count)
-            }
-        }
-        /* ---------------- 非首字 ---------------- */
-        /* 空格与制表符：两个列之间的分隔字符 */
-        else if (!nl && (c == r' ' || c == r'\t')) {
-            if (!tmp.isEmpty()) { /* 结算当前 */
-                let f = fromTmp()
-                grp.add(f)
-            }
-        }
+		/* 新行且不为特殊行、制表符和空格：录入 */
+		else if (nl && c != r'!') {
+			nl = false
+			sl = false
+			tmp.add(c) /* 到缓冲区 */
+			if (tmp.size > TMP_LEN) { /* 缓冲区过长 */
+				throw BufOverTheLine(count)
+			}
+		}
 
-        /* 分号：一行的结束标志 */
-        else if (!nl && c == r';') {
-            if (!tmp.isEmpty()) { /* 结算当前 */
-                let f = fromTmp()
-                grp.add(f)
-            }
-            if (!grp.isEmpty()) { /* 结算一行 */
-                bot.add(grp.clone())
-                grp.clear()
-            }
-            nl = true
-            sl = false
-            cm = false
-        }
+		/* ---------------- 非首字 ---------------- */
+		/* 空格与制表符：两个列之间的分隔字符 */
+		else if (!nl && (c == r' ' || c == r'\t')) {
+			if (!tmp.isEmpty()) { /* 结算当前 */
+				let f = fromTmp()
+				grp.add(f)
+			}
+		}
 
-        /* 非空格、非制表符、非分号 （FIXME: 且是数字） */
-        else if (!nl) {
-            tmp.add(c) /* 到缓冲区 */
-            if (tmp.size > TMP_LEN) { /* 缓冲区过长 */
-                throw BufOverTheLine(count)
-            }
-        }
+		/* 分号：一行的结束标志 */
+		else if (!nl && c == r';') {
+			if (!tmp.isEmpty()) { /* 结算当前 */
+				let f = fromTmp()
+				grp.add(f)
+			}
+			if (!grp.isEmpty()) { /* 结算一行 */
+				bot.add(grp.clone())
+				grp.clear()
+			}
+			nl = true
+			sl = false
+			cm = false
+		}
 
-        cc
-    }
+		/* 非空格、非制表符、非分号 （FIXME: 且是数字） */
+		else if (!nl) {
+			tmp.add(c) /* 到缓冲区 */
+			if (tmp.size > TMP_LEN) { /* 缓冲区过长 */
+				throw BufOverTheLine(count)
+			}
+ 		}
 
-    /* 从文字缓冲区解析、清理并输出数值 */
-    private func fromTmp(): Float64 {
-        let str = String(tmp)
-        let f = Float64.parse(str)
-        tmp.clear()
-        return f
-    }
+		cc
+	}
+
+	/* 从文字缓冲区解析、清理并输出数值 */
+	private func fromTmp(): Float64 {
+		let str = String(tmp)
+		let f = Float64.parse(str)
+		tmp.clear()
+		return f
+	}
 }
 
 /* 解析异常 */
 open private class ParseExcept <: Exception {
-    public ParseExcept(msg: String, length: Int64) {
-        super('${msg}. we got length: ${length}')
-    }
+	public ParseExcept(msg: String, length: Int64) {
+		super('${msg}. we got length: ${length}')
+	}
 }
 
 /* 缓冲区过长 */
 private class BufOverTheLine <: ParseExcept {
-    public BufOverTheLine(count: Int64) {
-        super('Buffer length over the line', count)
-    }
+	public BufOverTheLine(count: Int64) {
+		super('Buffer length over the line', count)
+	}
 }
 
 /* 未知异常 */
 private class UnknowExcept <: ParseExcept {
-    public UnknowExcept(count: Int64) {
-        super("I don't understand what happened", count)
-    }
+	public UnknowExcept(count: Int64) {
+		super("I don't understand what happened", count)
+	}
 }
 
 const I2C_PATH = "/dev/i2c-1" // For Raspberrypi
-foreign func test(): Int32
 main(args: Array<String>): Int64 {
 
-    if  (args.size == 1 && args[0] == "--help") {
-        println("这是一个机器人动作脚本解析器。")
-        println("使用管道输入动作脚本，示例：")
-        println("cat std.bot | ./bot")
-        return 0
-    }
+	if  (args.size == 1 && args[0] == "--help") {
+		println("这是一个机器人动作脚本解析器。")
+		println("使用管道输入动作脚本，示例：")
+		println("cat std.bot | ./bot")
+		return 0
+	}
 
-    else if (args.size == 1 && args[0] == "--serve") {
+	else if (args.size == 1 && args[0] == "--serve") {
         
-        let serv = ServerBuilder()
-        .addr("127.0.0.1")
-        .port(5119)
-        .build()
+		let serv = ServerBuilder()
+		.addr("127.0.0.1")
+		.port(5119)
+		.build()
 
-        // curl -X POST /api/v2/bot_run -d ${cat filepath}
-        serv.distributor.register('/api/v2/bot_run', { context =>
-            if (context.request.method == 'POST') {
-                //let ss = StringReader(context.request.body)
-                let actor = Actor(I2C_PATH)
-                //actor.parse(ss)
-                actor.parse(context.request.body)
-                //println("-------------")
-                //actor.print()
-                //actor.play()
-                // ---- 响应 ---- 
-                let headers = HttpHeaders()
-                headers.add('Content-Type', 'text/html; charset=utf-8;')
-                context.responseBuilder.setHeaders(headers)
-                context.responseBuilder.body('OK')
-            }
-        })
+		// curl -X POST /api/v2/bot_run -d ${cat filepath}
+		serv.distributor.register('/api/v2/bot_run', { context =>
+			if (context.request.method == 'POST') {
+			let actor = Actor(I2C_PATH)
+			actor.parse(context.request.body)
+			//println("-------------")
+			//actor.print()
+			//actor.play()
+			// ---- 响应 ---- 
+			let headers = HttpHeaders()
+			headers.add('Content-Type', 'text/html; charset=utf-8;')
+			context.responseBuilder.setHeaders(headers)
+			context.responseBuilder.body('OK')
+		}})
 
-        println('Bot at ${"127.0.0.1"}:${5119}')
-        serv.serve()
-        return 0
-    }
+		println('Bot at ${"127.0.0.1"}:${5119}')
+		serv.serve()
+		return 0
+	}
 
-    let consoleReader = getStdIn()
-    let actor = Actor(I2C_PATH)
-    actor.parse(consoleReader)
-    //actor.print()
-    actor.play()
+	let consoleReader = getStdIn()
+	let actor = Actor(I2C_PATH)
+	actor.parse(consoleReader)
+	//actor.print()
+	actor.play()
 
 
-    /* test m */
-    /*let m = Matrix.initWithXavierUniform(10, 20)
-    let p = m[1, 2]
-    let s1 = Matrix(20, 12)
-    let s2 = Matrix(10, 20)
-    let s3 = s1 + 2.0f64
-    let r1 = m + 12.0f64
-    let r2 = r1 + r1;
-    let r3 = r2 - 5.0f64;
-    let r4 = m + 2.0f64
-    let r5 = r3 - r4
-    let r6 = r5 * 3.0f64
-    let r7 = r6 / 2.0f64
-    let dr1 = r7 * s3
-    let pdr1 = dr1[1, 2]
-    print(m == s1)
-    print("\t")
-    print(m == s2)
-    println()
-    print(m.hasDotShapeWith(s1))
-    print("\t")
-    print(m.hasDotShapeWith(s2))
-    println()
-    print(dr1.getRow())
-    print(',\t')
-    print(dr1.getCol())
-    println()
-    unsafe {
-        if (!p.isNull()) {
-            println(p.read())
-            println(pdr1.read())
-        }
-    }*/
+	/* test m */
+	/*let m = Matrix.initWithXavierUniform(10, 20)
+	let p = m[1, 2]
+	let s1 = Matrix(20, 12)
+	let s2 = Matrix(10, 20)
+	let s3 = s1 + 2.0f64
+	let r1 = m + 12.0f64
+	let r2 = r1 + r1;
+	let r3 = r2 - 5.0f64;
+	let r4 = m + 2.0f64
+	let r5 = r3 - r4
+	let r6 = r5 * 3.0f64
+	let r7 = r6 / 2.0f64
+	let dr1 = r7 * s3
+	let pdr1 = dr1[1, 2]
+	print(m == s1)
+	print("\t")
+	print(m == s2)
+	println()
+	print(m.hasDotShapeWith(s1))
+	print("\t")
+	print(m.hasDotShapeWith(s2))
+	println()
+	print(dr1.getRow())
+	print(',\t')
+	print(dr1.getCol())
+	println()
+	unsafe {
+		if (!p.isNull()) {
+			println(p.read())
+			println(pdr1.read())
+		}
+	}*/
 
-    /* test fft */
-    //var fftt = genWave()
-    //fftt.print()
-    //var fftr = start_fft(fftt)
-    //fftr.print()
+	/* test fft */
+	//var fftt = genWave()
+	//fftt.print()
+	//var fftr = start_fft(fftt)
+	//fftr.print()
 
 
-    /* test nn */
-    /*let batch = 1
-    let num = 10000
-    let prt_num = 100
-    let nns = ArrayList<Nn>()
-    nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f64))
-    nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f64))
-    for (i in 0..(num*batch)) {
-        let m = Matrix(1, 2)
-        let t = Matrix(1, 2)
-        prepare(m, t)
-        let l = train(nns, m, t, 1.0f64)
-        if (i % prt_num == prt_num-1) {
-            print("${i}\t:")
-            print("${l}")
-            println()
-        }
-    }*/
+	/* test nn */
+	/*let batch = 1
+	let num = 10000
+	let prt_num = 100
+	let nns = ArrayList<Nn>()
+	nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f64))
+	nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f64))
+	for (i in 0..(num*batch)) {
+		let m = Matrix(1, 2)
+		let t = Matrix(1, 2)
+		prepare(m, t)
+		let l = train(nns, m, t, 1.0f64)
+		if (i % prt_num == prt_num-1) {
+			print("${i}\t:")
+			print("${l}")
+			println()
+		}
+	}*/
 
-    return 0
+	return 0
 }
 
-func prepare(m: Matrix, t: Matrix) {
-    let random = Random(UInt64(DateTime.now().nanosecond))
-    let a = random.nextInt8(2)
-    let b = random.nextInt8(2)
-    let t0 = if (a  == b) { 1.0f64 } else { 0.0f64 }    
-    let t1 = if (a  != b) { 1.0f64 } else { 0.0f64 }    
+func prepare(m: Matrix, t: Matrix)
+{
+	let random = Random(UInt64(DateTime.now().nanosecond))
+	let a = random.nextInt8(2)
+	let b = random.nextInt8(2)
+	let t0 = if (a  == b) { 1.0f64 } else { 0.0f64 }    
+	let t1 = if (a  != b) { 1.0f64 } else { 0.0f64 }    
 
-    unsafe {
-        m[0, 0].write(Float64(a))
-        m[0, 1].write(Float64(b))
-        t[0, 0].write(t0)
-        t[0, 1].write(t1)
-    }
+	unsafe {
+		m[0, 0].write(Float64(a))
+		m[0, 1].write(Float64(b))
+		t[0, 0].write(t0)
+		t[0, 1].write(t1)
+	}
 }
 
 func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float64) {
 
-        // train
-        let outs_dof = ArrayList<Matrix> ()
-        let outs_dotf = ArrayList<Matrix> ()
+	// train
+	let outs_dof = ArrayList<Matrix> ()
+	let outs_dotf = ArrayList<Matrix> ()
 
-        // 正向传播
-        for (idx in 0..nns.size) {
-            let x = if (idx == 0) { m } else { outs_dof[idx-1] }
-            let res = nns[idx].forward(x)
-            let out_dof = nns[idx].fdo(res)
-            let out_dotf = nns[idx].fdot(out_dof)
-            outs_dof.add(out_dof)
-            outs_dotf.add(out_dotf)
-        }
+	// 正向传播
+	for (idx in 0..nns.size) {
+		let x = if (idx == 0) { m } else { outs_dof[idx-1] }
+		let res = nns[idx].forward(x)
+		let out_dof = nns[idx].fdo(res)
+		let out_dotf = nns[idx].fdot(out_dof)
+		outs_dof.add(out_dof)
+		outs_dotf.add(out_dotf)
+	}
 
-        // 计算误差
+	// 计算误差
         var errs = outs_dof[nns.size-1] - t
 
-        // 反向传播
-        for (idx in (nns.size-1)..=0:-1) {
-            let up = if (idx == 0) { m} else { outs_dof[idx-1] }
-            let bias_grad = errs
-            //let delta = nns[idx].bak_bsgrad(errs, outs_dotf[idx])
-            let weights_grad = nns[idx].bak_wsgrad(up, bias_grad)
-            if (idx > 0) {
-                errs = nns[idx].bak_uperrs(bias_grad, outs_dotf[idx-1])
-            }
-            nns[idx].update(weights_grad, bias_grad, discount)
-        }
+	// 反向传播
+	for (idx in (nns.size-1)..=0:-1) {
+		let up = if (idx == 0) { m} else { outs_dof[idx-1] }
+		let bias_grad = errs
+		//let delta = nns[idx].bak_bsgrad(errs, outs_dotf[idx])
+		let weights_grad = nns[idx].bak_wsgrad(up, bias_grad)
+		if (idx > 0) {
+			errs = nns[idx].bak_uperrs(bias_grad, outs_dotf[idx-1])
+		}
+ 		nns[idx].update(weights_grad, bias_grad, discount)
+	}
 
-        // 输出损失
-        unsafe {
-            let t0 = t[0, 0].read()
-            let t1 = t[0, 1].read()
-            let r0 = outs_dof[nns.size-1][0, 0].read()
-            let r1 = outs_dof[nns.size-1][0, 1].read()
-            let loss0 =  -t0 * log(r0) - (1.0f64-t0) * log(1.0f64-r0);
-            let loss1 =  -t1 * log(r1) - (1.0f64-t1) * log(1.0f64-r1);
-            return 0.5 * (loss0 * loss0 + loss1 * loss1)
-        }
+	// 输出损失
+	unsafe {
+		let t0 = t[0, 0].read()
+		let t1 = t[0, 1].read()
+		let r0 = outs_dof[nns.size-1][0, 0].read()
+		let r1 = outs_dof[nns.size-1][0, 1].read()
+		let loss0 =  -t0 * log(r0) - (1.0f64-t0) * log(1.0f64-r0);
+		let loss1 =  -t1 * log(r1) - (1.0f64-t1) * log(1.0f64-r1);
+		return 0.5 * (loss0 * loss0 + loss1 * loss1)
+	}
 }
