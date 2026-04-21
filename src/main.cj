@@ -318,7 +318,7 @@ main(args: Array<String>): Int64 {
 	for (i in 0..(num*batch)) {
 		let m = Matrix(1, 2)
 		let t = Matrix(1, 2)
-		prepare(m, t)
+		prepare_andDoor(m, t)
 		let l = train(nns, m, t, 1.0f64)
 		if (i % prt_num == prt_num-1) {
 			print("${i}\t:")
@@ -327,10 +327,12 @@ main(args: Array<String>): Int64 {
 		}
 	}*/
 
+
 	return 0
 }
 
-func prepare(m: Matrix, t: Matrix)
+/* 准备与门的测试用例 */
+func prepare_andDoor(m: Matrix, t: Matrix)
 {
 	let random = Random(UInt64(DateTime.now().nanosecond))
 	let a = random.nextInt8(2)
@@ -346,6 +348,13 @@ func prepare(m: Matrix, t: Matrix)
 	}
 }
 
+/*
+ * description: 输入一组原始数据和教师数据，进行神经网络训练
+ * @param nns:  输入神经网络结构
+ * @param m:    输入一组原始数据
+ * @param t:    输入一组教师数据
+ * @param discount: 输入本次训练的折扣系数
+ */
 func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float64) {
 
 	// train
