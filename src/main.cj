@@ -50,15 +50,11 @@ func run_serve() {
 /* 从标准输入中读取动作脚本 */
 func run_action() {
 	let consoleReader = getStdIn()
-	let actor = ActsParser(consoleReader)
-	//actor.parse(consoleReader)
-	//actor.play()
-	println(actor.serialize())
-	for (item in actor[1]) {
-		print(item)
-		print(" ")
+	let parser = ActsParser(consoleReader)
+	let actor = Actor(I2C_PATH)
+	for (i in 0..parser.size) {
+		actor.play(parser[i])
 	}
-	println()
 }
 
 main(args: Array<String>): Int64 {
