@@ -5,7 +5,13 @@ import std.convert.*
 import std.collection.*
 
 /* 动作解析器类 - 只解析
- * 兼容上一代Actor类的脚本格式  */
+ * 兼容上一代Actor类的脚本格式  
+ * TODO: 增加缓慢到达
+ * TODO: 脚本引入
+ * TODO: 状态变量
+ * TODO: 在check()中检查脚本列数是否对应
+ * TODO: 解析Pi为单位的角度
+ * TODO: 空的特殊行  */
 class ActsParser {
 	// 直接通过输入流构造
 	init(inputStream: InputStream) { _parse(inputStream) }
@@ -164,10 +170,15 @@ class ActsParser {
 			let ma = abs(bot[0][j])
 			let mi = abs(bot[1][j])
 			let rf = rotates[j]
+			let dx: Option<Float64> = if (bot.size >= 3) {bot[2][j]} else {None}
 			var t = a[j]
 			t = if (ma < t) {ma} else {t}
 			t = if (mi > t) {mi} else {t}
 			t = if (!rf) {t} else {180.0f64 - t}
+			t = match(dx) {
+				case Some(D) => t + D
+				case None     => t
+			}
 			bs.add(t)
 		}
 		bs.add(a.last.getOrThrow())
