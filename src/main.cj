@@ -1,32 +1,35 @@
 package bot4cj
 import std.env.*
+import std.argopt.*
 import std.math.*
 import std.time.*
 import std.random.*
+import std.convert.*
 import std.collection.*
 import stdx.net.http.*
 
 
-const I2C_PATH = "/dev/i2c-1" // For Raspberrypi
-main(args: Array<String>): Int64 {
+var I2C_PATH = "/dev/i2c-1" // For Raspberrypi
+var HTTP_ADDR = "127.0.0.1"
+var HTTP_PORT = 5119u16
 
-	if  (args.size == 1 && args[0] == "--help") {
-		println("这是一个机器人动作脚本解析器。")
-		println("使用管道输入动作脚本，示例：")
-		println("cat std.bot | ./bot")
-		return 0
-	}
 
-	else if (args.size == 1 && args[0] == "--serve") {
-        
-		let serv = ServerBuilder()
-		.addr("127.0.0.1")
-		.port(5119)
-		.build()
+func print_help() {
+	println("这是一个机器人动作脚本解析器。")
+	println("使用管道输入动作脚本，示例：")
+	println("cat std.bot | ./bot")
+}
 
-		// curl -X POST /api/v2/bot_run -d ${cat filepath}
-		serv.distributor.register('/api/v2/bot_run', { context =>
-			if (context.request.method == 'POST') {
+/* http伺服器读取动作脚本 */
+func run_serve() {
+	let serv = ServerBuilder()
+	.addr(HTTP_ADDR)
+	.port(HTTP_PORT)
+	.build()
+
+	// curl -X POST /api/v2/bot_run -d ${cat filepath}
+	serv.distributor.register('/api/v2/bot_run', { context =>
+		if (context.request.method == 'POST') {
 			let actor = Actor(I2C_PATH)
 			actor.parse(context.request.body)
 			//println("-------------")
@@ -37,18 +40,57 @@ main(args: Array<String>): Int64 {
 			headers.add('Content-Type', 'text/html; charset=utf-8;')
 			context.responseBuilder.setHeaders(headers)
 			context.responseBuilder.body('OK')
-		}})
+		}
+	})
 
-		println('Bot at ${"127.0.0.1"}:${5119}')
-		serv.serve()
-		return 0
-	}
+	println('Bot at ${HTTP_ADDR}:${HTTP_PORT}')
+	serv.serve()
+}
 
+/* 从标准输入中读取动作脚本 */
+func run_action() {
 	let consoleReader = getStdIn()
 	let actor = Actor(I2C_PATH)
 	actor.parse(consoleReader)
-	//actor.print()
 	actor.play()
+}
+
+main(args: Array<String>): Int64 {
+
+	let help = ArgumentSpec.Long("help", ArgumentMode.NoValue)
+	let serve = ArgumentSpec.Long("serve", ArgumentMode.OptionalValue)
+	let i2c = ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue)
+	let specs = [help, serve, i2c]
+	let parsed = parseArguments(args, specs)
+	let options = parsed.options
+
+
+	if (options.contains("i2c")) {
+		I2C_PATH = options['i2c']
+	}
+
+	if (options.contains("serve")) {
+		if (options['serve'] != "") {
+			let s = options['serve']
+			HTTP_PORT = UInt16.parse(s)
+		}
+	}
+
+
+
+	if  (options.contains("help")) {
+		print_help()
+		return 0
+	}
+
+	else if (options.contains("serve")) {
+        	run_serve()
+		return 0
+	}
+
+	else {
+		run_action()
+	}
 
 
 	/* test m */
