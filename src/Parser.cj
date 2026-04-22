@@ -13,8 +13,10 @@ import std.collection.*
  * TODO: 解析Pi为单位的角度
  * TODO: 空的特殊行  */
 class ActsParser {
+
 	// 直接通过输入流构造
 	init(inputStream: InputStream) { _parse(inputStream) }
+
 	/* 解析器 - 循环不变式
          * 初始化： ss是一个动作脚本的输入流
          * 保持： ss是动作脚本剩余部分的输入流
@@ -119,6 +121,8 @@ class ActsParser {
 
 	// 序列化
 	func serialize(): String {
+
+		// 字符串构造器
 		let sb = StringBuilder()
 
 		// 序列化特殊行
@@ -158,11 +162,13 @@ class ActsParser {
 		}
 	}
 
+	// 取动作的长度
 	public mut prop size: Int64 {
 		get() { act.size }
 		set(v) {}
 	}
-	
+
+	// 取一行动作脚本
 	operator func [](idx: Int64) {
 		let a = act[idx]
 		let bs = ArrayList<Float64>()
