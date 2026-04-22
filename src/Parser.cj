@@ -4,6 +4,177 @@ import std.math.*
 import std.convert.*
 import std.collection.*
 
+/* 动作解析器类 - 只解析
+ * 兼容上一代Actor类的脚本格式  */
+class ActsParser {
+	// 直接通过输入流构造
+	init(inputStream: InputStream) { _parse(inputStream) }
+	/* 解析器 - 循环不变式
+         * 初始化： ss是一个动作脚本的输入流
+         * 保持： ss是动作脚本剩余部分的输入流
+         * 终止： 当输入流为空时，循环终止  */
+        func _parse(inputStream: InputStream) {
+		let ss = StringReader(inputStream)
+		var count = 0i64
+		while (true) {
+			if(let Some(s) <- ss.read()) {
+				try {
+					print(s)
+					count = next(s, count)
+				}
+				catch (exp: BufOverTheLine) { throw exp }
+				catch (exp: IllegalArgumentException) { throw UnknowExcept(count) }
+			}
+			else { break} 
+		}
+		//check()
+		sync()
+	}
+	var nl: Bool = true	// new line
+	var sl: Bool = false	// special
+	var cm: Bool = false	// comment
+	var tmp = ArrayList<Rune>()	// rune buf
+	var grp = ArrayList<Float64>()	// one line
+	var bot = ArrayList<ArrayList<Float64>>()	// bot settings
+	var act = ArrayList<ArrayList<Float64>>()	// acts list
+	static const TMP_LEN = 16	// size of tmp
+	func next(c: Rune, count: Int64): Int64 {
+		var cc: Int64  = count
+
+		//------------ COMMENTS ------------
+		if (!cm && c == r'#') { cm = true }	// 注释开始时
+		else if (cm && c == r'\n') {		// 注释结束时
+			nl = true
+			sl = false
+			cm = false
+			cc += 1
+		}
+		else if (cm && c != r'\n') { ; }	// 注释进行时 FIXME: EOF情况
+		
+		//------------ new line ------------
+		else if (nl && (c == r' ' || c == r'\t')) { ; }	// 新行空字符，维持现状
+		else if (nl && c == r'\n') { cc += 1}	// 新行空行
+		else if (nl && c == r'!') {		// 新行特殊行
+			nl = false
+			sl = true
+		}
+		else if (nl && c == r'~') { ; }		// 新行特殊行2留空 TODO: 引入脚本
+		else if (nl && c != r'~' && c != r'!') {	// 新行且不为特殊行、制表符和空格
+			nl = false
+			sl = false
+			tmp.add(c)			// to buf
+			if (tmp.size > TMP_LEN) {	// to long
+				throw BufOverTheLine(count)
+			}
+		}
+		
+		//------------- not nl -------------
+		else if (!nl && (c == r' ' || c == r'\t')) {	// 空格与制表符为两列之间分隔字符
+			if (!tmp.isEmpty()) {
+				let f = fromTmp()	// 结算当前列
+				grp.add(f)
+			}
+		}
+		else if (!nl && c == r';') {	// 分号是一行的结束标记
+			if (!tmp.isEmpty()) {
+				let f = fromTmp()	// 结算当前列
+				grp.add(f)
+			}
+			if (!grp.isEmpty() && sl) {	// 特殊行结算
+				bot.add(grp.clone())
+				grp.clear()
+			}
+			if (!grp.isEmpty() && !sl) {	// 普通行结算
+				act.add(grp.clone())
+				grp.clear()
+			}
+			nl = true
+			sl = false
+			cm = false
+		}
+		else if (!nl) {	// 非空格、非制表符、非分号 FIXME: 且为数字
+			tmp.add(c)			// to buf
+			if (tmp.size > TMP_LEN) {	// to long
+				throw BufOverTheLine(count)
+			}
+		}
+
+		//返回当前行号
+		return cc
+	}
+
+	// 从临时字符缓冲区解析出数值并清理
+	func fromTmp(): Float64 {
+		let str = String(tmp)
+		let f = Float64.parse(str)
+		tmp.clear()
+		return f
+	}
+
+	// 序列化
+	func serialize(): String {
+		let sb = StringBuilder()
+
+		// 序列化特殊行
+		for (line in bot) {
+			sb.append("!")
+			for (i in 0..line.size) {
+				sb.append(line[i])
+				let c = if (i == line.size-1) {
+					 "\n"
+				} else { "\t" }
+				sb.append(c)
+			}
+		}
+
+		// 序列化普通行
+		for (line in act) {
+			for (i in 0..line.size){
+				sb.append(line[i])
+				let c = if (i == line.size-1) {
+					"\n"
+				} else { "\t" }	
+				sb.append(c)
+			}
+		}
+
+		// 取字符串
+		return sb.toString()
+	}
+
+	var rotates = ArrayList<Bool>()
+	func sync() {	// 对齐
+		let sl = bot[0]
+		rotates.clear()
+		for (col in sl) {
+			let flag = col < 0.0f64
+			rotates.add(flag)
+		}
+	}
+
+	public mut prop size: Int64 {
+		get() { act.size }
+		set(v) {}
+	}
+	
+	operator func [](idx: Int64) {
+		let a = act[idx]
+		let bs = ArrayList<Float64>()
+		for (j in 0..a.size-1) {
+			let ma = abs(bot[0][j])
+			let mi = abs(bot[1][j])
+			let rf = rotates[j]
+			var t = a[j]
+			t = if (ma < t) {ma} else {t}
+			t = if (mi > t) {mi} else {t}
+			t = if (!rf) {t} else {180.0f64 - t}
+			bs.add(t)
+		}
+		bs.add(a.last.getOrThrow())
+		bs
+	}
+}
+
 /* 机器人类 
  * TODO: 增加缓慢到达方法
  * TODO: 增加机器人构造偏差 
@@ -15,7 +186,6 @@ import std.collection.*
  * FIXME: print()以原貌打印
  * FIXME: parse()兼容空的特殊行
  * TODO*: 解析器与舵机设备解耦 */
-
 class Actor {
 
 	public init(filepath: String) {
@@ -94,6 +264,17 @@ class Actor {
 			let aa = a.last.getOrThrow()
 			sleep(Duration.millisecond * Int64(aa))
 		}
+	}
+
+	/* 单行演绎 */
+	public func play(t: ArrayList<Float64>) {
+		let i2 = i2c.getOrThrow()
+		let pca9685 = PCA9685(i2)
+		for (jj in 0..t.size-1) {
+			pca9685.setAngle(UInt8(jj), Float32(t[jj]))
+		}
+		let tt = t.last.getOrThrow()
+		sleep(Duration.millisecond * Int64(tt)) /* FIXME: 小数不准*/
 	}
 
 	/*-----------------*/
