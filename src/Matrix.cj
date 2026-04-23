@@ -1,4 +1,7 @@
 package bot4cj
+import std.fs.*
+import std.io.*
+import std.convert.*
 foreign func createMatrix(row: UInt64, col: UInt64): CPointer<Unit>
 foreign func freeMatrix(M: CPointer<Unit>): Unit
 foreign func witchMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): CPointer<Float32>
@@ -193,6 +196,36 @@ class Matrix {
 
 	func print_shape() {
 		println("${getRow()}, ${getCol()}")
+	}
+
+	func save(file: File) {
+		unsafe {
+			for (i in 0..getRow()) {
+				for (j in 0..getCol()) {
+					file.write(this[i, j].read().toString().toArray())
+					if (j < getCol()-1) { 
+						file.write(" ".toArray()) }
+					else { file.write("\n".toArray()) }
+				} 
+			}
+		}
+	}
+
+	static func loadItem(sr: StringReader<InputStream>) {
+		let s = sr.readUntil({r => r==r' ' || r ==r'\n'})
+		return Float32.parse(s.getOrThrow())
+	}
+	static func load(sr: StringReader<InputStream>, row: UInt64, col: UInt64): Matrix {
+		let m = Matrix(row, col)
+		unsafe {
+			for (i in 0..m.getRow()) {
+				for (j in 0..m.getCol()) {
+					let f  = loadItem(sr)
+					m[i, j].write(f)
+				}
+			}
+			m
+		}
 	}
 
 	// 矩阵的C风格指针

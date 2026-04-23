@@ -1,6 +1,8 @@
 package bot4cj
 import std.env.*
 import std.argopt.*
+import std.fs.*
+import std.io.*
 import std.math.*
 import std.time.*
 import std.random.*
@@ -64,9 +66,15 @@ main(args: Array<String>): Int64 {
 	let help = ArgumentSpec.Long("help", ArgumentMode.NoValue)
 	let serve = ArgumentSpec.Long("serve", ArgumentMode.OptionalValue)
 	let i2c = ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue)
-	let specs = [help, serve, i2c]
+	let innn = ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue)
+	let out = ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue)
+	let specs = [help, serve, i2c, innn, out]
 	let parsed = parseArguments(args, specs)
 	let options = parsed.options
+
+	//for (key in options.keys()) {
+	//	println("  ${key}: ${options[key]}")
+	//}
 
 
 	if (options.contains("i2c")) {
@@ -79,6 +87,31 @@ main(args: Array<String>): Int64 {
 			HTTP_PORT = UInt16.parse(s)
 		}
 	}
+
+	// init nn
+	let nns = ArrayList<Nn>()
+	if (options.keys().contains("i")) {
+		let filename = options['i']
+		let file = File(filename, OpenMode.Read)
+		let sr = StringReader<InputStream>(file)
+		while (true) {
+			if (let Some(S) <- sr.readUntil(r' ')) {
+				var S2 = S.trimAscii()
+				if (S2 == "FullConnectLayer") {
+					nns.add(Nn.load(sr))
+				}
+				else if (S2 == "") { break }
+				else { throw IllegalArgumentException() }
+			}
+			else { break }
+		}
+	}
+	else {
+		nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f32))
+		nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
+	}
+
+
 
 
 
@@ -94,42 +127,9 @@ main(args: Array<String>): Int64 {
 
 	else {
 		run_action()
+		return 0
 	}
 
-
-	/* test m */
-	/*let m = Matrix.initWithXavierUniform(10, 20)
-	let p = m[1, 2]
-	let s1 = Matrix(20, 12)
-	let s2 = Matrix(10, 20)
-	let s3 = s1 + 2.0f32
-	let r1 = m + 12.0f32
-	let r2 = r1 + r1
-	let r3 = r2 - 5.0f32
-	let r4 = m + 2.0f32
-	let r5 = r3 - r4
-	let r6 = r5 * 3.0f32
-	let r7 = r6 / 2.0f32
-	let dr1 = r7 * s3
-	let pdr1 = dr1[1, 2]
-	print(m == s1)
-	print("\t")
-	print(m == s2)
-	println()
-	print(m.hasDotShapeWith(s1))
-	print("\t")
-	print(m.hasDotShapeWith(s2))
-	println()
-	print(dr1.getRow())
-	print(',\t')
-	print(dr1.getCol())
-	println()
-	unsafe {
-		if (!p.isNull()) {
-			println(p.read())
-			println(pdr1.read())
-		}
-	}*/
 
 	/* test fft */
 	//var fftt = genWave()
@@ -139,12 +139,9 @@ main(args: Array<String>): Int64 {
 
 
 	/* test nn */
-	/*let batch = 1
+	let batch = 1
 	let num = 10000
 	let prt_num = 100
-	let nns = ArrayList<Nn>()
-	nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f32))
-	nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
 	for (i in 0..(num*batch)) {
 		let m = Matrix(1, 2)
 		let t = Matrix(1, 2)
@@ -155,9 +152,20 @@ main(args: Array<String>): Int64 {
 			print("${l}")
 			println()
 		}
-	}*/
+	}
 
+	if (options.contains("o")) {
 
+		let filename = options['o']
+		let file: File
+		if (exists(filename)) {
+			file = File(filename, OpenMode.Write) }
+		else { file= File.create(filename) }
+		for (nn in nns) { // 存储全部的层
+			nn.save(file)
+		}
+		file.close()
+	}
 	return 0
 }
 
