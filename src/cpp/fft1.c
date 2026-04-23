@@ -7,12 +7,12 @@
 #include "fft.h"
 static int ifirst=0, sign=-1;
 static unsigned M, jup[64], kup[64];
-static double pi, wr[N], wi[N];
+static float pi, wr[N], wi[N];
 /********* initial **************/
 void initial(void)
 {
     unsigned long int i, j, ni;
-    double unit, tt;
+    float unit, tt;
     ni = N;
     M  = 0;
     while (ni > 1) { ni=ni/2; M=M+1; }
@@ -30,8 +30,8 @@ void initial(void)
         kup[j]=kup[j-1]/2;
         jup[j]=jup[j-1]*2;
     }
-    pi=4.0*atan((double)1.0);
-    unit=2.0*pi/((double)N);
+    pi=4.0*atan((float)1.0);
+    unit=2.0*pi/((float)N);
     tt=0.0;
     for(i=0;i<N;i++)
     {
@@ -41,10 +41,10 @@ void initial(void)
     }
 }
 /** ifft=1<-->FFT ** ifft=-1<-->IFFT **/
-void fft1(double A[2][N], int ifft)
+void fft1(float A[2][N], int ifft)
 {
     unsigned long int l, k, i, j, jl0, jl0k, jl1k, reseq, ij;
-    double wrc, wis, ar, ai, x[2][N];
+    float wrc, wis, ar, ai, x[2][N];
     if (ifirst == 0) { initial(), ifirst=1; }
     if (ifft == -1)
         for(i=0;i<N;i++) A[1][i] = -A[1][i];
@@ -84,8 +84,8 @@ void fft1(double A[2][N], int ifft)
     if (ifft == -1)
         for (i=0; i<N; i++)
         {
-            A[0][i]  = A[0][i]/((double)N);
-            A[1][i]  = -A[1][i]/((double)N);
+            A[0][i]  = A[0][i]/((float)N);
+            A[1][i]  = -A[1][i]/((float)N);
         }
 }
 /*********************************/
@@ -104,10 +104,10 @@ unsigned long int inverseq(unsigned long int i1,
     return (inv);
 }
 /* ifft=1 <--> FFT ** ifft=-1 <--> IFFT */
-void fft1r2(double A[2][N], double B[2][N], int ifft)
+void fft1r2(float A[2][N], float B[2][N], int ifft)
 {
     unsigned long int k, j;
-    double norm, c[2][N];
+    float norm, c[2][N];
     if (ifft != -1)
     {
         for (k=0; k<N; k++)
@@ -161,11 +161,11 @@ void fft1r2(double A[2][N], double B[2][N], int ifft)
     }  /* end else */
 }
 /* ifft = 1 <--> FFT  **  ifft = -1 <--> IFFT */
-void fft1r1(double A[2][DN], int ifft)
+void fft1r1(float A[2][DN], int ifft)
 {
     unsigned long int j, k, dk;
-    double norm, c[2][N], d[2][N], tt, hunit, cosj, sinj;
-    hunit = 4.0 * atan(1.0) / (double)N;
+    float norm, c[2][N], d[2][N], tt, hunit, cosj, sinj;
+    hunit = 4.0 * atan(1.0) / (float)N;
     if ( ifft != -1)
     {
         for (k=0; k<N; k++)
@@ -179,7 +179,7 @@ void fft1r1(double A[2][DN], int ifft)
         fft1r2(c, d, 1);
         for (j = 0; j < N; j++)
         {
-            tt = (double)j * hunit;
+            tt = (float)j * hunit;
             cosj = cos(tt);
             sinj = sign * sin(tt);
             A[0][j] = c[0][j] + cosj * d[0][j] - sinj * d[1][j];
@@ -211,7 +211,7 @@ void fft1r1(double A[2][DN], int ifft)
         {
             c[0][j]= 0.5 * (A[0][j]+A[0][N+j]);
             c[1][j]= 0.5 * (A[1][j]+A[1][N+j]);
-            tt = (double) j * hunit;
+            tt = (float) j * hunit;
             cosj = cos(tt);
             sinj = -sign*sin(tt);
             d[0][j]= 0.5 * (cosj * (A[0][j]-A[0][N+j])
