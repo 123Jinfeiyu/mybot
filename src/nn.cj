@@ -74,7 +74,7 @@ class Nn {
 	}
 	
 	func forward(x: Matrix): Matrix {
-		// x => (inputs, 1)
+		// x => (1, inputs)
 		let r = x.dot(weights) + bias // (1, outputno)
 		return r
 	}

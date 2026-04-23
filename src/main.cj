@@ -52,12 +52,24 @@ func run_serve() {
 }
 
 /* 从标准输入中读取动作脚本 */
-func run_action() {
+func run_action(nns: ArrayList<Nn>) {
 	let consoleReader = getStdIn()
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
 	for (i in 0..parser.size) {
-		actor.play(parser[i])
+		let x = Matrix(1, 40) // 4个3轴加速度和角速度，16个关节
+		unsafe {
+			let r = parser[i].clone()
+			for (j in 0..r.size) {
+				x[0u64, UInt64(j)].write(Float32(r[j]) / 180.0f32)
+			}
+			let y = forward(nns, x)
+			for (j in 0..y.getCol()-1) {
+				let a = y[0, j].read()
+				r[Int64(j)] = (Float32(r[Int64(j)]) + 180.0f32 * 0.5f32) * (a + 1.0f32) - 180.0f32 * 0.5f32
+			}
+			actor.play(r)
+		}
 	}
 }
 
@@ -107,8 +119,9 @@ main(args: Array<String>): Int64 {
 		}
 	}
 	else {
-		nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f32))
-		nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
+		nns.add(Nn(40, 80, ActivationFuncs.Tanh, 0.1f32))
+		nns.add(Nn(80, 40, ActivationFuncs.Tanh, 0.1f32))
+		nns.add(Nn(40, 17, ActivationFuncs.Tanh, 0.1f32)) // 16个舵机加1个时延
 	}
 
 
@@ -126,7 +139,7 @@ main(args: Array<String>): Int64 {
 	}
 
 	else {
-		run_action()
+		run_action(nns)
 		return 0
 	}
 
@@ -139,7 +152,7 @@ main(args: Array<String>): Int64 {
 
 
 	/* test nn */
-	let batch = 1
+	/*let batch = 1
 	let num = 10000
 	let prt_num = 100
 	for (i in 0..(num*batch)) {
@@ -152,7 +165,7 @@ main(args: Array<String>): Int64 {
 			print("${l}")
 			println()
 		}
-	}
+	}*/
 
 	if (options.contains("o")) {
 
@@ -184,6 +197,18 @@ func prepare_andDoor(m: Matrix, t: Matrix)
 		t[0, 0].write(t0)
 		t[0, 1].write(t1)
 	}
+}
+
+func forward(nns: ArrayList<Nn>, m: Matrix) {
+
+	// 正向传播
+	var out_dof = Matrix(1, 1)
+	for (idx in 0..nns.size) {
+		let x = if (idx == 0) { m } else { out_dof }
+		let res = nns[idx].forward(x)
+		out_dof = nns[idx].fdo(res)
+	}
+	return out_dof
 }
 
 /*

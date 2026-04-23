@@ -1,7 +1,7 @@
 # STAND
 #               legs                 | neck |    free    | delay
 #lb       rb       rf      lf
-!90  180 -90 -180  90  180 -90 -180  180 15   0 0 0 0 0 0; # 4-legs spider robot
+!90  180 -90 -180  90  180 -90 -180  180 180  0 0 0 0 0 0; # 4-legs spider robot
 !0     0  -0   -0   0    0  -0   -0    0  0   0 0 0 0 0 0; # 4-legs spider robot
 
-45     0  45    0  45    0  45    0   90  0   0 0 0 0 0 0  20;   # stand
+45     0  45    0  45    0  45    0   90  90   0 0 0 0 0 0  20;   # stand
