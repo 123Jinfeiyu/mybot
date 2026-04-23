@@ -3,8 +3,8 @@ foreign func Sigmoid_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func Sigmoid_dot(m: CPointer<Unit>): CPointer<Unit>
 foreign func ReLU_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func ReLU_dot(m: CPointer<Unit>): CPointer<Unit>
-foreign func Leaky_ReLU_do(m: CPointer<Unit>, alpha: Float64): CPointer<Unit>
-foreign func Leaky_ReLU_dot(m: CPointer<Unit>, alpha: Float64): CPointer<Unit>
+foreign func Leaky_ReLU_do(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
+foreign func Leaky_ReLU_dot(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
 foreign func Tanh_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func Tanh_dot(m: CPointer<Unit>): CPointer<Unit>
 enum ActivationFuncs {
@@ -15,7 +15,7 @@ enum ActivationFuncs {
                         match(this) {
 				case Sigmoid => Matrix(Sigmoid_do(m.getData()))
 				case ReLU  => Matrix(ReLU_do(m.getData()))
-				case Leaky_ReLU => Matrix(Leaky_ReLU_do(m.getData(), 0.1f64))
+				case Leaky_ReLU => Matrix(Leaky_ReLU_do(m.getData(), 0.1f32))
 				case Tanh  => Matrix(Tanh_do(m.getData()))
 			}
 		}
@@ -25,7 +25,7 @@ enum ActivationFuncs {
 			match(this) {
 				case Sigmoid => Matrix(Sigmoid_dot(m.getData()))
 				case ReLU => Matrix(ReLU_dot(m.getData()))
-				case Leaky_ReLU => Matrix(Leaky_ReLU_dot(m.getData(), 0.1f64))
+				case Leaky_ReLU => Matrix(Leaky_ReLU_dot(m.getData(), 0.1f32))
 				case Tanh => Matrix(Tanh_dot(m.getData()))
 			}
 		}
@@ -33,7 +33,7 @@ enum ActivationFuncs {
 }
 
 class Nn {
-	init(inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float64)
+	init(inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32)
 	{
 		this.inputno = inputno
 		this.outputno = outputno
@@ -77,7 +77,7 @@ class Nn {
 		uperrs
 	}
 
-	func update(weights_grad: Matrix, bias_grad: Matrix, discount: Float64) {
+	func update(weights_grad: Matrix, bias_grad: Matrix, discount: Float32) {
 		weights -= weights_grad * learning_rate * discount
 		bias    -= bias_grad    * learning_rate * discount
 	}
@@ -95,6 +95,6 @@ class Nn {
 	let outputno: UInt64
 	var weights: Matrix // (inputs, outputs)
 	var bias: Matrix    // (1, outputs)
-	var learning_rate: Float64
+	var learning_rate: Float32
  	let f: ActivationFuncs
 }

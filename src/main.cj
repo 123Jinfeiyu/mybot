@@ -31,10 +31,12 @@ func run_serve() {
 	serv.distributor.register('/api/v2/bot_run', { context =>
 		if (context.request.method == 'POST') {
 			let actor = Actor(I2C_PATH)
-			actor.parse(context.request.body)
+			let parser = ActsParser(context.request.body)
 			//println("-------------")
 			//actor.print()
-			//actor.play()
+			for (i in 0..parser.size) {
+				actor.play(parser[i])
+			}
 			// ---- 响应 ---- 
 			let headers = HttpHeaders()
 			headers.add('Content-Type', 'text/html; charset=utf-8;')
@@ -100,14 +102,14 @@ main(args: Array<String>): Int64 {
 	let p = m[1, 2]
 	let s1 = Matrix(20, 12)
 	let s2 = Matrix(10, 20)
-	let s3 = s1 + 2.0f64
-	let r1 = m + 12.0f64
-	let r2 = r1 + r1;
-	let r3 = r2 - 5.0f64;
-	let r4 = m + 2.0f64
+	let s3 = s1 + 2.0f32
+	let r1 = m + 12.0f32
+	let r2 = r1 + r1
+	let r3 = r2 - 5.0f32
+	let r4 = m + 2.0f32
 	let r5 = r3 - r4
-	let r6 = r5 * 3.0f64
-	let r7 = r6 / 2.0f64
+	let r6 = r5 * 3.0f32
+	let r7 = r6 / 2.0f32
 	let dr1 = r7 * s3
 	let pdr1 = dr1[1, 2]
 	print(m == s1)
@@ -141,13 +143,13 @@ main(args: Array<String>): Int64 {
 	let num = 10000
 	let prt_num = 100
 	let nns = ArrayList<Nn>()
-	nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f64))
-	nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f64))
+	nns.add(Nn(2, 4, ActivationFuncs.Tanh, 0.5f32))
+	nns.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.1f32))
 	for (i in 0..(num*batch)) {
 		let m = Matrix(1, 2)
 		let t = Matrix(1, 2)
 		prepare_andDoor(m, t)
-		let l = train(nns, m, t, 1.0f64)
+		let l = train(nns, m, t, 1.0f32)
 		if (i % prt_num == prt_num-1) {
 			print("${i}\t:")
 			print("${l}")
@@ -165,12 +167,12 @@ func prepare_andDoor(m: Matrix, t: Matrix)
 	let random = Random(UInt64(DateTime.now().nanosecond))
 	let a = random.nextInt8(2)
 	let b = random.nextInt8(2)
-	let t0 = if (a  == b) { 1.0f64 } else { 0.0f64 }    
-	let t1 = if (a  != b) { 1.0f64 } else { 0.0f64 }    
+	let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
+	let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
 
 	unsafe {
-		m[0, 0].write(Float64(a))
-		m[0, 1].write(Float64(b))
+		m[0, 0].write(Float32(a))
+		m[0, 1].write(Float32(b))
 		t[0, 0].write(t0)
 		t[0, 1].write(t1)
 	}
@@ -183,7 +185,7 @@ func prepare_andDoor(m: Matrix, t: Matrix)
  * @param t:    输入一组教师数据
  * @param discount: 输入本次训练的折扣系数
  */
-func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float64) {
+func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
 
 	// train
 	let outs_dof = ArrayList<Matrix> ()
@@ -220,8 +222,8 @@ func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float64) {
 		let t1 = t[0, 1].read()
 		let r0 = outs_dof[nns.size-1][0, 0].read()
 		let r1 = outs_dof[nns.size-1][0, 1].read()
-		let loss0 =  -t0 * log(r0) - (1.0f64-t0) * log(1.0f64-r0);
-		let loss1 =  -t1 * log(r1) - (1.0f64-t1) * log(1.0f64-r1);
+		let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
+		let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
 		return 0.5 * (loss0 * loss0 + loss1 * loss1)
 	}
 }

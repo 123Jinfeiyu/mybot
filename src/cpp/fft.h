@@ -2,7 +2,7 @@
 #define FFT_H
 
 #ifndef N
-#define N 65536
+#define N 32768
 #endif
 
 #ifndef DN
@@ -16,11 +16,11 @@ extern "C" {
 #endif
 
 void initial(void);
-void fft1(double A[2][N], int ifft);
+void fft1(float A[2][N], int ifft);
 unsigned long int inverseq(unsigned long int i1,
                             unsigned long int imax);
-void fft1r2(double A[2][N], double B[2][N], int ifft);
-void fft1r1(double A[2][DN], int ifft);
+void fft1r2(float A[2][N], float B[2][N], int ifft);
+void fft1r1(float A[2][DN], int ifft);
 
 #ifdef __cplusplus
 }

@@ -1,19 +1,19 @@
 package bot4cj
 foreign func createMatrix(row: UInt64, col: UInt64): CPointer<Unit>
 foreign func freeMatrix(M: CPointer<Unit>): Unit
-foreign func witchMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): CPointer<Float64>
+foreign func witchMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): CPointer<Float32>
 foreign func getrowMatrix(M: CPointer<Unit>): UInt64
 foreign func getcolMatrix(M: CPointer<Unit>): UInt64
 foreign func sameShapeMatrix(M: CPointer<Unit>, S: CPointer<Unit>): Bool
 foreign func dotShapeMatrix(M: CPointer<Unit>, S: CPointer<Unit>): Bool
 foreign func plusMatrix(M: CPointer<Unit>, S:CPointer<Unit>): CPointer<Unit>
-foreign func plusBroadcastMatrix(M: CPointer<Unit>, T: Float64): CPointer<Unit>
+foreign func plusBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func subMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
-foreign func subBroadcastMatrix(M: CPointer<Unit>, T: Float64): CPointer<Unit>
+foreign func subBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func multiMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
-foreign func multiBroadcastMatrix(M: CPointer<Unit>, T: Float64): CPointer<Unit>
+foreign func multiBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func divMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
-foreign func divBroadcastMatrix(M: CPointer<Unit>, T: Float64): CPointer<Unit>
+foreign func divBroadcastMatrix(M: CPointer<Unit>, T: Float32): CPointer<Unit>
 foreign func dotMatrix(M: CPointer<Unit>, S: CPointer<Unit>): CPointer<Unit>
 foreign func transposeMatrix(M: CPointer<Unit>): CPointer<Unit>
 foreign func xavierNormalInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
@@ -49,7 +49,7 @@ class Matrix {
 		unsafe { freeMatrix(M) }
 	}
 
-	operator func [](r: UInt64, c: UInt64): CPointer<Float64> {
+	operator func [](r: UInt64, c: UInt64): CPointer<Float32> {
 		unsafe { return witchMatrix(M, r, c) }
 	}
 
@@ -87,7 +87,7 @@ class Matrix {
 		}
 	}
 
-	operator func +(t: Float64): Matrix {
+	operator func +(t: Float32): Matrix {
 		unsafe {
 			let r = plusBroadcastMatrix(M, t)
 			return Matrix(r);
@@ -108,7 +108,7 @@ class Matrix {
 		}
 	}
 
-	operator func -(t: Float64): Matrix {
+	operator func -(t: Float32): Matrix {
 		unsafe {
 			let r = subBroadcastMatrix(M, t)
 			return Matrix(r);
@@ -129,7 +129,7 @@ class Matrix {
 		}
 	}
 
-	operator func *(t: Float64): Matrix {
+	operator func *(t: Float32): Matrix {
 		unsafe {
 			let r = multiBroadcastMatrix(M, t)
 			return Matrix(r)
@@ -150,7 +150,7 @@ class Matrix {
 		}
 	}
 
-	operator func /(t: Float64): Matrix {
+	operator func /(t: Float32): Matrix {
 		unsafe {
 			let r = divBroadcastMatrix(M, t)
 			return Matrix(r)

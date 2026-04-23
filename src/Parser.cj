@@ -42,9 +42,9 @@ class ActsParser {
 	var sl: Bool = false	// special
 	var cm: Bool = false	// comment
 	var tmp = ArrayList<Rune>()	// rune buf
-	var grp = ArrayList<Float64>()	// one line
-	var bot = ArrayList<ArrayList<Float64>>()	// bot settings
-	var act = ArrayList<ArrayList<Float64>>()	// acts list
+	var grp = ArrayList<Float32>()	// one line
+	var bot = ArrayList<ArrayList<Float32>>()	// bot settings
+	var act = ArrayList<ArrayList<Float32>>()	// acts list
 	static const TMP_LEN = 16	// size of tmp
 	func next(c: Rune, count: Int64): Int64 {
 		var cc: Int64  = count
@@ -112,9 +112,9 @@ class ActsParser {
 	}
 
 	// 从临时字符缓冲区解析出数值并清理
-	func fromTmp(): Float64 {
+	func fromTmp(): Float32 {
 		let str = String(tmp)
-		let f = Float64.parse(str)
+		let f = Float32.parse(str)
 		tmp.clear()
 		return f
 	}
@@ -157,7 +157,7 @@ class ActsParser {
 		let sl = bot[0]
 		rotates.clear()
 		for (col in sl) {
-			let flag = col < 0.0f64
+			let flag = col < 0.0f32
 			rotates.add(flag)
 		}
 	}
@@ -171,16 +171,16 @@ class ActsParser {
 	// 取一行动作脚本
 	operator func [](idx: Int64) {
 		let a = act[idx]
-		let bs = ArrayList<Float64>()
+		let bs = ArrayList<Float32>()
 		for (j in 0..a.size-1) {
 			let ma = abs(bot[0][j])
 			let mi = abs(bot[1][j])
 			let rf = rotates[j]
-			let dx: Option<Float64> = if (bot.size >= 3) {bot[2][j]} else {None}
+			let dx: Option<Float32> = if (bot.size >= 3) {bot[2][j]} else {None}
 			var t = a[j]
 			t = if (ma < t) {ma} else {t}
 			t = if (mi > t) {mi} else {t}
-			t = if (!rf) {t} else {180.0f64 - t}
+			t = if (!rf) {t} else {180.0f32 - t}
 			t = match(dx) {
 				case Some(D) => t + D
 				case None     => t
@@ -270,11 +270,11 @@ class Actor {
 			for (j in 0..a.size-1) {	/* 遍历关节（最后一列是时延） */
 				let ma = abs(max[j])	/* 取得该关节最大值 */
 				let mi = abs(min[j])	/* 取得该关节最小值 */
-				let rf = max[j] < 0.0f64	/* rotate flag 逆转标志 */
+				let rf = max[j] < 0.0f32	/* rotate flag 逆转标志 */
 				var t = a[j]			/* 选中单个 */
 				t = if (ma < t) { ma } else { t }	/* 对上限进行切片 */
 				t = if (mi < t) { t }  else { mi }	/* 对下限进行切片 */
-				t = if (rf) { 180.0f64 - t } else { t }	/* 是否逆转 */
+				t = if (rf) { 180.0f32 - t } else { t }	/* 是否逆转 */
 				let jj = UInt8(j) /* FIXME: 应该从一开始就用UInt8进行存储 */
 				pca9685.setAngle(jj, Float32(t))
 			}
@@ -284,7 +284,7 @@ class Actor {
 	}
 
 	/* 单行演绎 */
-	public func play(t: ArrayList<Float64>) {
+	public func play(t: ArrayList<Float32>) {
 		let i2 = i2c.getOrThrow()
 		let pca9685 = PCA9685(i2)
 		for (jj in 0..t.size-1) {
@@ -300,8 +300,8 @@ class Actor {
 	private var sl: Bool = false  /* special */
 	private var cm: Bool = false  /* comment */
 	private var tmp = ArrayList<Rune>()    /* 文字缓冲区 */
-	private var grp = ArrayList<Float64>() /* 单行 */
-	private var bot = ArrayList<ArrayList<Float64>>()
+	private var grp = ArrayList<Float32>() /* 单行 */
+	private var bot = ArrayList<ArrayList<Float32>>()
 	private static const TMP_LEN = 16      /* 文字缓冲区不超过 */
 	private func next(c: Rune, count: Int64): Int64 {
 		var cc: Int64 = count
@@ -389,9 +389,9 @@ class Actor {
 	}
 
 	/* 从文字缓冲区解析、清理并输出数值 */
-	private func fromTmp(): Float64 {
+	private func fromTmp(): Float32 {
 		let str = String(tmp)
-		let f = Float64.parse(str)
+		let f = Float32.parse(str)
 		tmp.clear()
 		return f
 	}
