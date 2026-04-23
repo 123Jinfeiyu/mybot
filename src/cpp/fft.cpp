@@ -62,7 +62,7 @@ extern "C" {
         std::vector<float> R(N);
         fft_init(A, *(Matrx<float> *)M);
         //fft1(A, 1);	// 复序列基2 FFT
-        fft1r1(A, 1);
+        fft1r1(A, 1);   // 单实序列
         fft_result(R, A);
         return (void*) new Matrx<float>(N/2, 1, R);
     }
