@@ -14,7 +14,7 @@ import stdx.net.http.*
 var I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 var HTTP_ADDR = "127.0.0.1"
 var HTTP_PORT = 5119u16
-
+var NNS_OUT: Option<String> = None
 
 func print_help() {
 	println("这是一个机器人动作脚本解析器。")
@@ -23,7 +23,7 @@ func print_help() {
 }
 
 /* http伺服器读取动作脚本 */
-func run_serve() {
+func run_serve(nns: ArrayList<Nn>) {
 	let serv = ServerBuilder()
 	.addr(HTTP_ADDR)
 	.port(HTTP_PORT)
@@ -32,13 +32,7 @@ func run_serve() {
 	// curl -X POST /api/v2/bot_run -d ${cat filepath}
 	serv.distributor.register('/api/v2/bot_run', { context =>
 		if (context.request.method == 'POST') {
-			let actor = Actor(I2C_PATH)
-			let parser = ActsParser(context.request.body)
-			//println("-------------")
-			//actor.print()
-			for (i in 0..parser.size) {
-				actor.play(parser[i])
-			}
+			run_action(context.request.body, nns)
 			// ---- 响应 ---- 
 			let headers = HttpHeaders()
 			headers.add('Content-Type', 'text/html; charset=utf-8;')
@@ -51,9 +45,17 @@ func run_serve() {
 	serv.serve()
 }
 
-/* 从标准输入中读取动作脚本 */
-func run_action(nns: ArrayList<Nn>) {
-	let consoleReader = getStdIn()
+/* 从标准输入中读取动作脚本，并进行感知训练 */
+func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
+	let parser = ActsParser(consoleReader)
+	let actor = Actor(I2C_PATH)
+	for (i in 0..parser.size) {
+		actor.play(parser[i])
+	}
+}
+
+/* 从标准输入中读取动作脚本，并进行随机DRL */
+func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
 	for (i in 0..parser.size) {
@@ -71,24 +73,28 @@ func run_action(nns: ArrayList<Nn>) {
 			actor.play(r)
 		}
 	}
+
+	// 选择性储存
+	if (let Some(P) <- NNS_OUT) {
+		save_nns(nns, P)
+	}
 }
 
 main(args: Array<String>): Int64 {
 
-	let help = ArgumentSpec.Long("help", ArgumentMode.NoValue)
-	let serve = ArgumentSpec.Long("serve", ArgumentMode.OptionalValue)
-	let i2c = ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue)
-	let innn = ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue)
-	let out = ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue)
-	let specs = [help, serve, i2c, innn, out]
+	// 解析命令行参数
+	let specs = [
+		ArgumentSpec.Long("help", ArgumentMode.NoValue),
+		ArgumentSpec.Long("serve", ArgumentMode.OptionalValue),
+		ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue),
+		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),
+		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue)
+	]
 	let parsed = parseArguments(args, specs)
 	let options = parsed.options
 
-	//for (key in options.keys()) {
-	//	println("  ${key}: ${options[key]}")
-	//}
-
-
+	//---------------------------
+	// 读取设置项
 	if (options.contains("i2c")) {
 		I2C_PATH = options['i2c']
 	}
@@ -100,58 +106,52 @@ main(args: Array<String>): Int64 {
 		}
 	}
 
-	// init nn
-	let nns = ArrayList<Nn>()
+	//---------------------------
+	// 初始化神经网络 init nn
+	var nns: ArrayList<Nn> = 
 	if (options.keys().contains("i")) {
 		let filename = options['i']
-		let file = File(filename, OpenMode.Read)
-		let sr = StringReader<InputStream>(file)
-		while (true) {
-			if (let Some(S) <- sr.readUntil(r' ')) {
-				var S2 = S.trimAscii()
-				if (S2 == "FullConnectLayer") {
-					nns.add(Nn.load(sr))
-				}
-				else if (S2 == "") { break }
-				else { throw IllegalArgumentException() }
-			}
-			else { break }
-		}
-	}
+		load_nns(filename)  }
 	else {
-		nns.add(Nn(40, 80, ActivationFuncs.Tanh, 0.1f32))
-		nns.add(Nn(80, 40, ActivationFuncs.Tanh, 0.1f32))
-		nns.add(Nn(40, 17, ActivationFuncs.Tanh, 0.1f32)) // 16个舵机加1个时延
+		let nn_in = ArrayList<Nn>()
+		nn_in.add(Nn(40, 80, ActivationFuncs.Tanh, 0.1f32))
+		nn_in.add(Nn(80, 40, ActivationFuncs.Tanh, 0.1f32))
+		nn_in.add(Nn(40, 17, ActivationFuncs.Tanh, 0.1f32)) // 16个舵机加1个时延
+		nn_in  }
+
+	if (options.contains("o")) {
+
+		NNS_OUT = Option<String>.Some(options['o'])
 	}
 
 
 
+	//---------------------------
+	// 分支选择
 
-
-	if  (options.contains("help")) {
+	if  (options.contains("help")) {	// 拉起帮助页面
 		print_help()
 		return 0
 	}
 
-	else if (options.contains("serve")) {
-        	run_serve()
-		return 0
+	else if (options.contains("serve")) {	// 启动web伺服器
+        	run_serve(nns)
 	}
 
-	else {
-		run_action(nns)
-		return 0
+	else {	// 从标准输入获取动作脚本
+		let consoleReader = getStdIn()
+		run_action(consoleReader, nns)
 	}
 
 
-	/* test fft */
-	//var fftt = genWave()
-	//fftt.print()
-	//var fftr = start_fft(fftt)
-	//fftr.print()
+	// test fft
+	/*var fftt = genWave()
+	fftt.print()
+	var fftr = start_fft(fftt)
+	fftr.print()*/
 
 
-	/* test nn */
+	// test nn
 	/*let batch = 1
 	let num = 10000
 	let prt_num = 100
@@ -167,9 +167,33 @@ main(args: Array<String>): Int64 {
 		}
 	}*/
 
-	if (options.contains("o")) {
+	return 0
+}
 
-		let filename = options['o']
+// 加载多层神经网络
+func load_nns(filename: String): ArrayList<Nn> {
+	let nns = ArrayList<Nn>()
+	let file = File(filename, OpenMode.Read)
+	let sr = StringReader<InputStream>(file)
+	while (true) {
+		if (let Some(S) <- sr.readUntil(r' ')) {
+			var S2 = S.trimAscii()
+			if (S2 == "FullConnectLayer") {
+				nns.add(Nn.load(sr))
+			}
+			else if (S2 == "") { break }
+			else { throw IllegalArgumentException() }
+		}
+		else { break }
+	}
+
+	file.close()
+	return nns
+}
+
+// 储存多层神经网络
+func save_nns(nns: ArrayList<Nn>, filename: String) {
+
 		let file: File
 		if (exists(filename)) {
 			file = File(filename, OpenMode.Write) }
@@ -178,8 +202,6 @@ main(args: Array<String>): Int64 {
 			nn.save(file)
 		}
 		file.close()
-	}
-	return 0
 }
 
 /* 准备与门的测试用例 */
@@ -199,6 +221,7 @@ func prepare_andDoor(m: Matrix, t: Matrix)
 	}
 }
 
+// 神经网络推理
 func forward(nns: ArrayList<Nn>, m: Matrix) {
 
 	// 正向传播
@@ -211,7 +234,7 @@ func forward(nns: ArrayList<Nn>, m: Matrix) {
 	return out_dof
 }
 
-/*
+/* 【神经网络训练】
  * description: 输入一组原始数据和教师数据，进行神经网络训练
  * @param nns:  输入神经网络结构
  * @param m:    输入一组原始数据
