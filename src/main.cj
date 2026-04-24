@@ -58,19 +58,47 @@ func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
 func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
+	let i2c = I2C(I2C_PATH)
+	let mpu6050s = [
+		MPU6050(i2c, MPU6050.ADDR_0),
+		MPU6050(i2c, MPU6050.ADDR_1)
+	]
+	var dataSet = [
+		mpu6050s[0].readSensor(),
+		mpu6050s[1].readSensor()
+	]
 	for (i in 0..parser.size) {
-		let x = Matrix(1, 40) // 4个3轴加速度和角速度，16个关节
+		let x = Matrix(1, 41) // 4个3轴加速度和角速度，16个关节，1个时延
 		unsafe {
 			let r = parser[i].clone()
 			for (j in 0..r.size) {
 				x[0u64, UInt64(j)].write(Float32(r[j]) / 180.0f32)
 			}
+
+			for (j in 0..dataSet.size) {
+				let idx = UInt64(r.size) + UInt64(j) * 6u64
+				x[0u64, idx + 0u64].write(Float32(dataSet[j].accel_x) / 65535.0f32)
+				x[0u64, idx + 1u64].write(Float32(dataSet[j].accel_y) / 65535.0f32)
+				x[0u64, idx + 2u64].write(Float32(dataSet[j].accel_x) / 65535.0f32)
+				x[0u64, idx + 3u64].write(Float32(dataSet[j].gyro_x) / 65535.0f32)
+				x[0u64, idx + 4u64].write(Float32(dataSet[j].gyro_y) / 65535.0f32)
+				x[0u64, idx + 5u64].write(Float32(dataSet[j].gyro_z)  / 65535.0f32)
+			}
+
+			println("----------------------------------")
+			x.print()
 			let y = forward(nns, x)
+
 			for (j in 0..y.getCol()-1) {
 				let a = y[0, j].read()
 				r[Int64(j)] = (Float32(r[Int64(j)]) + 180.0f32 * 0.5f32) * (a + 1.0f32) - 180.0f32 * 0.5f32
 			}
-			actor.play(r)
+
+		      	actor.play(r)
+			dataSet = [
+				mpu6050s[0].readSensor(),
+				mpu6050s[1].readSensor()
+			]
 		}
 	}
 
@@ -82,6 +110,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 
 main(args: Array<String>): Int64 {
 
+	//---------------------------
 	// 解析命令行参数
 	let specs = [
 		ArgumentSpec.Long("help", ArgumentMode.NoValue),
@@ -114,7 +143,7 @@ main(args: Array<String>): Int64 {
 		load_nns(filename)  }
 	else {
 		let nn_in = ArrayList<Nn>()
-		nn_in.add(Nn(40, 80, ActivationFuncs.Tanh, 0.1f32))
+		nn_in.add(Nn(41, 80, ActivationFuncs.Tanh, 0.1f32))
 		nn_in.add(Nn(80, 40, ActivationFuncs.Tanh, 0.1f32))
 		nn_in.add(Nn(40, 17, ActivationFuncs.Tanh, 0.1f32)) // 16个舵机加1个时延
 		nn_in  }

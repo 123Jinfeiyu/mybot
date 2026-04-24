@@ -192,7 +192,7 @@ class ActsParser {
 	}
 }
 
-/* 机器人类 
+/* 旧的机器人类 现在用于配合专门的解析器
  * TODO: 增加缓慢到达方法
  * TODO: 增加机器人构造偏差 
  * TODO: 机器人构造脚本
@@ -293,6 +293,7 @@ class Actor {
 		let tt = t.last.getOrThrow()
 		sleep(Duration.millisecond * Int64(tt)) /* FIXME: 小数不准*/
 	}
+
 
 	/*-----------------*/
 	private var i2c: Option<I2C> = None
