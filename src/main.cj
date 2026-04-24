@@ -169,7 +169,7 @@ main(args: Array<String>): Int64 {
 
 	else {	// 从标准输入获取动作脚本
 		let consoleReader = getStdIn()
-		run_action(consoleReader, nns)
+		run_action_drl(consoleReader, nns)
 	}
 
 
