@@ -9,7 +9,7 @@ import std.random.*
 import std.convert.*
 import std.collection.*
 import stdx.net.http.*
-
+import stdx.encoding.json.*
 
 var I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 var HTTP_ADDR = "127.0.0.1"
@@ -62,11 +62,11 @@ main(args: Array<String>): Int64 {
 	}
 
 
-
 	//---------------------------
 	// 分支选择
 
 	if  (options.contains("help")) {	// 拉起帮助页面
+
 		print_help()
 		return 0
 	}
@@ -78,15 +78,20 @@ main(args: Array<String>): Int64 {
 	}
 
 	else if (options.contains("serve")) {	// 启动web伺服器
-        	run_serve(nns)
+		let savepath  = if (options.contains('o')) {
+			options['o']
+		} else  { "./nn.txt" } // 获取储存路径
+        	run_serve(nns, savepath)
 	}
 
 	else {	// 从标准输入获取动作脚本
+
 		let consoleReader = getStdIn()
 		run_action_drl(consoleReader, nns)
+		if (options.contains("o")) {
+			save_nns(nns, options['o'])
+		}
 	}
-
-
 
 
 	return 0
@@ -131,8 +136,9 @@ func run_test(key: String) {
 	}
 }
 
-/* http伺服器读取动作脚本 */
-func run_serve(nns: ArrayList<Nn>) {
+/* http伺服器读取动作脚本
+ * TODO: 集成更多的前端托管的功能 */
+func run_serve(nns: ArrayList<Nn>, save_path: String) {
 	let serv = ServerBuilder()
 	.addr(HTTP_ADDR)
 	.port(HTTP_PORT)
@@ -141,13 +147,53 @@ func run_serve(nns: ArrayList<Nn>) {
 	// curl -X POST /api/v2/bot_run -d ${cat filepath}
 	serv.distributor.register('/api/v2/bot_run', { context =>
 		if (context.request.method == 'POST') {
-			run_action(context.request.body, nns)
+			// ---- 动作 ----
+			run_action_drl(context.request.body, nns)
+			save_nns(nns, save_path)
 			// ---- 响应 ---- 
 			let headers = HttpHeaders()
 			headers.add('Content-Type', 'text/html; charset=utf-8;')
 			context.responseBuilder.setHeaders(headers)
 			context.responseBuilder.body('OK')
 		}
+	})
+
+	// curl -X POST /api/v1/fs -d '{"mode": "list", "path": "/path/to/dirent"}'
+	serv.distributor.register('/api/v1/list', { context =>
+	
+		try {
+			if (context.request.method != 'POST') {
+				throw IllegalArgumentException("Method does not supportted.")
+			}
+			let json = StringReader(context.request.body).readToEnd()
+			let obj = JsonValue.fromStr(json).asObject()
+			let mode = obj.get('mode').getOrThrow().asString().getValue()
+			if (mode == "list") {
+				let path = obj.get('path').getOrThrow().asString().getValue()
+				let ret = JsonArray()
+				Directory.walk(path, {fileinfo =>
+					let obj = JsonObject()
+					obj.put("name", JsonString(fileinfo.name))
+					ret.add(obj)
+					return true
+				})
+				let headers = HttpHeaders()
+				headers.add('Content-Type', 'application/json; charset=utf-8;')
+				context.responseBuilder.setHeaders(headers)
+				context.responseBuilder.body(ret.toJsonString().toArray())
+			}
+			else {
+				throw IllegalArgumentException("Invalid mode.")
+			}
+		}
+
+		catch (exp: Exception) {
+			let headers = HttpHeaders()
+			headers.add('Content-Type', 'application/json; charset=utf-8;')
+			context.responseBuilder.setHeaders(headers)
+			context.responseBuilder.body(exp.toString()) // FIXME: http code
+		}
+
 	})
 
 	println('Bot at ${HTTP_ADDR}:${HTTP_PORT}')
