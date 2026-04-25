@@ -98,6 +98,39 @@ func print_help() {
 	println("cat std.bot | ./bot")
 }
 
+/* 集成多种常规测试、临时测试 */
+func run_test(key: String) {
+
+	if (key == "fft") {
+
+		println('FFT test start...')
+		var fftt = genWave()
+		var fftr = start_fft(fftt)
+		println('FFT test completed.')
+	}
+
+	else if (key == "ann") {
+
+		let nn_t = ArrayList<Nn>()
+		nn_t.add(Nn(2, 4, ActivationFuncs.Leaky_ReLU, 0.4f32))
+		nn_t.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.4f32))
+		let batch = 1
+		let num = 1000
+		let prt_num = 100
+		for (i in 0..(num*batch)) {
+			let m = Matrix(1, 2)
+			let t = Matrix(1, 2)
+			prepare_andDoor(m, t)
+			let l = train(nn_t, m, t, 1.0f32)
+			if (i % prt_num == prt_num-1) {
+				print("${i}\t:")
+				print("${l}")
+				println()
+			}
+		}
+	}
+}
+
 /* http伺服器读取动作脚本 */
 func run_serve(nns: ArrayList<Nn>) {
 	let serv = ServerBuilder()
@@ -181,38 +214,6 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	// 选择性储存
 	if (let Some(P) <- NNS_OUT) {
 		save_nns(nns, P)
-	}
-}
-
-func run_test(key: String) {
-
-	if (key == "fft") {
-
-		println('FFT test start...')
-		var fftt = genWave()
-		var fftr = start_fft(fftt)
-		println('FFT test completed.')
-	}
-
-	else if (key == "ann") {
-
-		let nn_t = ArrayList<Nn>()
-		nn_t.add(Nn(2, 4, ActivationFuncs.Leaky_ReLU, 0.4f32))
-		nn_t.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.4f32))
-		let batch = 1
-		let num = 1000
-		let prt_num = 100
-		for (i in 0..(num*batch)) {
-			let m = Matrix(1, 2)
-			let t = Matrix(1, 2)
-			prepare_andDoor(m, t)
-			let l = train(nn_t, m, t, 1.0f32)
-			if (i % prt_num == prt_num-1) {
-				print("${i}\t:")
-				print("${l}")
-				println()
-			}
-		}
 	}
 }
 
