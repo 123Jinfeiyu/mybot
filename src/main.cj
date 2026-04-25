@@ -117,7 +117,8 @@ main(args: Array<String>): Int64 {
 		ArgumentSpec.Long("serve", ArgumentMode.OptionalValue),
 		ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue),
 		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),
-		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue)
+		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),
+		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)
 	]
 	let parsed = parseArguments(args, specs)
 	let options = parsed.options
@@ -163,6 +164,38 @@ main(args: Array<String>): Int64 {
 		return 0
 	}
 
+	else if (options.contains("test") && options["test"] == "fft") {
+
+		println('FFT test start...')
+		var fftt = genWave()
+		var fftr = start_fft(fftt)
+		println('FFT test completed.')
+		return 0
+	}
+
+	if (options.contains("test") && options["test"] == "ann") {
+
+		let nn_t = ArrayList<Nn>()
+		nn_t.add(Nn(2, 4, ActivationFuncs.Leaky_ReLU, 0.4f32))
+		nn_t.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.4f32))
+		let batch = 1
+		let num = 1000
+		let prt_num = 100
+		for (i in 0..(num*batch)) {
+			let m = Matrix(1, 2)
+			let t = Matrix(1, 2)
+			prepare_andDoor(m, t)
+			let l = train(nn_t, m, t, 1.0f32)
+			if (i % prt_num == prt_num-1) {
+				print("${i}\t:")
+				print("${l}")
+				println()
+			}
+		}
+
+		return 0
+	}
+
 	else if (options.contains("serve")) {	// 启动web伺服器
         	run_serve(nns)
 	}
@@ -173,28 +206,7 @@ main(args: Array<String>): Int64 {
 	}
 
 
-	// test fft
-	/*var fftt = genWave()
-	fftt.print()
-	var fftr = start_fft(fftt)
-	fftr.print()*/
 
-
-	// test nn
-	/*let batch = 1
-	let num = 10000
-	let prt_num = 100
-	for (i in 0..(num*batch)) {
-		let m = Matrix(1, 2)
-		let t = Matrix(1, 2)
-		prepare_andDoor(m, t)
-		let l = train(nns, m, t, 1.0f32)
-		if (i % prt_num == prt_num-1) {
-			print("${i}\t:")
-			print("${l}")
-			println()
-		}
-	}*/
 
 	return 0
 }
