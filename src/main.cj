@@ -15,6 +15,82 @@ var I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 var HTTP_ADDR = "127.0.0.1"
 var HTTP_PORT = 5119u16
 var NNS_OUT: Option<String> = None
+main(args: Array<String>): Int64 {
+
+	//---------------------------
+	// 解析命令行参数
+	let specs = [
+		ArgumentSpec.Long("help", ArgumentMode.NoValue),
+		ArgumentSpec.Long("serve", ArgumentMode.OptionalValue),
+		ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue),
+		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),
+		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),
+		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)
+	]
+	let parsed = parseArguments(args, specs)
+	let options = parsed.options
+
+	//---------------------------
+	// 读取设置项
+	if (options.contains("i2c")) {
+		I2C_PATH = options['i2c']
+	}
+
+	if (options.contains("serve")) {
+		if (options['serve'] != "") {
+			let s = options['serve']
+			HTTP_PORT = UInt16.parse(s)
+		}
+	}
+
+	//---------------------------
+	// 初始化神经网络 init nn
+	var nns: ArrayList<Nn> = 
+	if (options.keys().contains("i")) {
+		let filename = options['i']
+		load_nns(filename)  }
+	else {
+		let nn_in = ArrayList<Nn>()
+		nn_in.add(Nn(41, 80, ActivationFuncs.Tanh, 0.1f32))
+		nn_in.add(Nn(80, 40, ActivationFuncs.Tanh, 0.1f32))
+		nn_in.add(Nn(40, 17, ActivationFuncs.Tanh, 0.1f32)) // 16个舵机加1个时延
+		nn_in  }
+
+	if (options.contains("o")) {
+
+		NNS_OUT = Option<String>.Some(options['o'])
+	}
+
+
+
+	//---------------------------
+	// 分支选择
+
+	if  (options.contains("help")) {	// 拉起帮助页面
+		print_help()
+		return 0
+	}
+
+	else if (options.contains("test")) {
+
+		run_test(options["test"])
+		return 0
+	}
+
+	else if (options.contains("serve")) {	// 启动web伺服器
+        	run_serve(nns)
+	}
+
+	else {	// 从标准输入获取动作脚本
+		let consoleReader = getStdIn()
+		run_action_drl(consoleReader, nns)
+	}
+
+
+
+
+	return 0
+}
 
 func print_help() {
 	println("这是一个机器人动作脚本解析器。")
@@ -140,82 +216,6 @@ func run_test(key: String) {
 	}
 }
 
-main(args: Array<String>): Int64 {
-
-	//---------------------------
-	// 解析命令行参数
-	let specs = [
-		ArgumentSpec.Long("help", ArgumentMode.NoValue),
-		ArgumentSpec.Long("serve", ArgumentMode.OptionalValue),
-		ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue),
-		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),
-		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),
-		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)
-	]
-	let parsed = parseArguments(args, specs)
-	let options = parsed.options
-
-	//---------------------------
-	// 读取设置项
-	if (options.contains("i2c")) {
-		I2C_PATH = options['i2c']
-	}
-
-	if (options.contains("serve")) {
-		if (options['serve'] != "") {
-			let s = options['serve']
-			HTTP_PORT = UInt16.parse(s)
-		}
-	}
-
-	//---------------------------
-	// 初始化神经网络 init nn
-	var nns: ArrayList<Nn> = 
-	if (options.keys().contains("i")) {
-		let filename = options['i']
-		load_nns(filename)  }
-	else {
-		let nn_in = ArrayList<Nn>()
-		nn_in.add(Nn(41, 80, ActivationFuncs.Tanh, 0.1f32))
-		nn_in.add(Nn(80, 40, ActivationFuncs.Tanh, 0.1f32))
-		nn_in.add(Nn(40, 17, ActivationFuncs.Tanh, 0.1f32)) // 16个舵机加1个时延
-		nn_in  }
-
-	if (options.contains("o")) {
-
-		NNS_OUT = Option<String>.Some(options['o'])
-	}
-
-
-
-	//---------------------------
-	// 分支选择
-
-	if  (options.contains("help")) {	// 拉起帮助页面
-		print_help()
-		return 0
-	}
-
-	else if (options.contains("test")) {
-
-		run_test(options["test"])
-		return 0
-	}
-
-	else if (options.contains("serve")) {	// 启动web伺服器
-        	run_serve(nns)
-	}
-
-	else {	// 从标准输入获取动作脚本
-		let consoleReader = getStdIn()
-		run_action_drl(consoleReader, nns)
-	}
-
-
-
-
-	return 0
-}
 
 // 加载多层神经网络
 func load_nns(filename: String): ArrayList<Nn> {
