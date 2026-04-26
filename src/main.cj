@@ -134,6 +134,11 @@ func run_test(key: String) {
 			}
 		}
 	}
+
+	else if (key == "mpu6050") {
+
+		
+	}
 }
 
 /* http伺服器读取动作脚本
@@ -174,6 +179,15 @@ func run_serve(nns: ArrayList<Nn>, save_path: String) {
 				Directory.walk(path, {fileinfo =>
 					let obj = JsonObject()
 					obj.put("name", JsonString(fileinfo.name))
+					if (fileinfo.isDirectory()) {
+						obj.put("type", JsonString("Directory"))
+					}
+					else if (fileinfo.isSymbolicLink()) {
+						obj.put("type", JsonString("SymbolicLink"))
+					}
+					else if (fileinfo.isRegular()) {
+						obj.put("type", JsonString("Regular"))
+					}
 					ret.add(obj)
 					return true
 				})
@@ -194,6 +208,28 @@ func run_serve(nns: ArrayList<Nn>, save_path: String) {
 			context.responseBuilder.body(exp.toString()) // FIXME: http code
 		}
 
+	})
+
+	// curl -X GET / 
+	serv.distributor.register('/', { context =>
+		try {
+			if (context.request.method != 'GET') {
+				throw IllegalArgumentException("Method does not supportted.")
+			}
+
+			let html = String.fromUtf8(File.readFrom("./public/index.html"))
+			let headers = HttpHeaders()
+			headers.add("Content-Type", "text/html; charset=utf-8;")
+			context.responseBuilder.setHeaders(headers)
+			context.responseBuilder.body(html)  // FIXME: 不读取出全部的字符串，直接放入输入流可不可以
+		}
+
+		catch (exp: Exception) {
+			let headers = HttpHeaders()
+			headers.add('Content-Type', 'application/json; charset=utf-8;')
+			context.responseBuilder.setHeaders(headers)
+			context.responseBuilder.body(exp.toString()) // FIXME: http code
+		}
 	})
 
 	println('Bot at ${HTTP_ADDR}:${HTTP_PORT}')
