@@ -2,6 +2,13 @@
 
 基于仓颉和 Linux I2C 接口的硬件机器人库
 
+## 依赖库
+```
+# debian
+apt update
+apt install libi2c-dev
+```
+
 ## 项目介绍
 
 `bot4cj` 基于仓颉编程语言和 Linux I2C 接口，提供了便捷的硬件控制能力，支持pca9685、mpu6050。
