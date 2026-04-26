@@ -262,6 +262,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
 	let i2c = I2C(I2C_PATH)
+	let pca9685 = PCA9685(i2c)
 	let mpu6050s = [
 		MPU6050(i2c, MPU6050.ADDR_0),
 		MPU6050(i2c, MPU6050.ADDR_1)
@@ -270,6 +271,9 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 		mpu6050s[0].readSensor(),
 		mpu6050s[1].readSensor()
 	]
+	let xSet = ArrayList<Matrix>()
+	let tSet = ArrayList<Matrix>() // 教师
+	let rSet = ArrayList<Float32>() // 奖励
 	for (i in 0..parser.size) {
 		let x = Matrix(1, 41) // 4个3轴加速度和角速度，16个关节，1个时延
 		unsafe {
@@ -288,20 +292,50 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 				x[0u64, idx + 5u64].write(Float32(dataSet[j].gyro_z)  / 65535.0f32)
 			}
 
+			// 推理
 			println("----------------------------------")
 			x.print()
 			let y = forward(nns, x)
 
+			// 记录
+			xSet.add(x)
+			tSet.add(y)
+			rSet.add(0.0f32)
+
+			// 微调
 			for (j in 0..y.getCol()-1) {
 				let a = y[0, j].read()
 				r[Int64(j)] = (Float32(r[Int64(j)]) + 180.0f32 * 0.5f32) * (a + 1.0f32) - 180.0f32 * 0.5f32
 			}
 
-		      	actor.play(r)
+			// 做动作
+			for (jj in 0..r.size-1) {
+				pca9685.setAngle(UInt8(jj), Float32(r[jj]))
+			}
+
+			// 读mpu6050
 			dataSet = [
 				mpu6050s[0].readSensor(),
 				mpu6050s[1].readSensor()
 			]
+
+			// 产生奖励
+			for (j in 0..dataSet.size) {
+				let pre = xSet[xSet.size-1][0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64].read()
+				var rewards = Float32(dataSet[j].accel_x) - pre
+				for (k in rSet.size-1..0:-1) {
+					rSet[k] = rewards
+					rewards *= 0.9
+				}
+			}
+
+			// 时延
+			let tt = r.last.getOrThrow()
+			sleep(Duration.millisecond * Int64(tt)) /* FIXME: 小数不准*/
+		}
+
+		for (i in 0..xSet.size) {
+			let _ = train(nns, xSet[i], tSet[i], rSet[i])
 		}
 	}
 
