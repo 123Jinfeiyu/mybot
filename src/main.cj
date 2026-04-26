@@ -135,9 +135,21 @@ func run_test(key: String) {
 		}
 	}
 
+	// 对单个mpu6050进行持续测试
 	else if (key == "mpu6050") {
 
-		
+		let i2c = I2C(I2C_PATH)
+		let mpu6050 = MPU6050(i2c, MPU6050.ADDR_0)
+		while (true) {
+			let data = mpu6050.readSensor()
+			print("accel_x: ${data.accel_x}\t")
+			print("accel_y: ${data.accel_y}\t")
+			print("accel_z: ${data.accel_z}\t")
+			print("gyro_x: ${data.gyro_x}\t")
+			print("gyro_y: ${data.gyro_y}\t")
+			println("gyro_z: ${data.gyro_z}")
+			sleep(Duration.millisecond * 100)
+		}
 	}
 }
 
