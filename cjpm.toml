@@ -6,7 +6,7 @@
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-l c -L . -l fft -l bot"
+  compile-option = "-l c -l i2c -L . -l fft -l bot"
   override-compile-option = ""
   link-option = ""
   package-configuration = {}
