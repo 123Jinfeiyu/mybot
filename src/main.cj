@@ -51,8 +51,8 @@ main(args: Array<String>): Int64 {
 		load_nns(filename)  }
 	else {
 		let nn_in = ArrayList<Nn>()
-		nn_in.add(Nn(41, 80, ActivationFuncs.Tanh, 0.1f32))
-		nn_in.add(Nn(80, 40, ActivationFuncs.Tanh, 0.1f32))
+		nn_in.add(Nn(41, 80, ActivationFuncs.Leaky_ReLU, 0.1f32))
+		nn_in.add(Nn(80, 40, ActivationFuncs.Leaky_ReLU, 0.1f32))
 		nn_in.add(Nn(40, 17, ActivationFuncs.Tanh, 0.1f32)) // 16个舵机加1个时延
 		nn_in  }
 
@@ -267,10 +267,10 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 		MPU6050(i2c, MPU6050.ADDR_0),
 		MPU6050(i2c, MPU6050.ADDR_1)
 	]
-	var dataSet = [
-		mpu6050s[0].readSensor(),
-		mpu6050s[1].readSensor()
-	]
+	var dataSet = ArrayList<MPU6050_sensorData> ()
+    dataSet.add(mpu6050s[0].readSensor())
+	dataSet.add(mpu6050s[1].readSensor())
+
 	let xSet = ArrayList<Matrix>()
 	let tSet = ArrayList<Matrix>() // 教师
 	let rSet = ArrayList<Float32>() // 奖励
@@ -293,8 +293,6 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			}
 
 			// 推理
-			println("----------------------------------")
-			x.print()
 			let y = forward(nns, x)
 
 			// 记录
@@ -314,10 +312,11 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			}
 
 			// 读mpu6050
-			dataSet = [
-				mpu6050s[0].readSensor(),
-				mpu6050s[1].readSensor()
-			]
+			dataSet.clear()
+			sleep(Duration.millisecond * 1)
+	        dataSet.add(mpu6050s[0].readSensor())
+			sleep(Duration.millisecond * 1)
+	        dataSet.add(mpu6050s[1].readSensor())
 
 			// 产生奖励
 			for (j in 0..dataSet.size) {
@@ -334,11 +333,14 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			sleep(Duration.millisecond * Int64(tt)) /* FIXME: 小数不准*/
 		}
 
-		for (i in 0..xSet.size) {
-			let _ = train(nns, xSet[i], tSet[i], rSet[i])
-		}
 	}
 
+	for (i in 0..xSet.size) {
+		println("----------------------------------")
+		xSet[i].print()
+		let loss = train(nns, xSet[i], tSet[i], rSet[i])
+		println("loss:\t${loss}")
+	}
 	// 选择性储存
 	if (let Some(P) <- NNS_OUT) {
 		save_nns(nns, P)
