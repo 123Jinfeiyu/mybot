@@ -269,7 +269,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	]
 	var dataSet = ArrayList<MPU6050_sensorData> ()
 
-	let xSet = ArrayList<Matrix>()
+	let xSet = ArrayList<Matrix>() // 输入
 	let tSet = ArrayList<Matrix>() // 教师
 	let rSet = ArrayList<Float32>() // 奖励
 	for (i in 0..parser.size) {
