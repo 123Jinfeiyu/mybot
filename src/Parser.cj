@@ -6,7 +6,7 @@ import std.collection.*
 
 /* 动作解析器类 - 只解析
  * 兼容上一代Actor类的脚本格式  
- * TODO: 增加缓慢到达
+ * TODO: 增加缓慢到达（该方式在drl微调时可能会很有用）
  * TODO: 脚本引入
  * TODO: 状态变量
  * TODO: 在check()中检查脚本列数是否对应
