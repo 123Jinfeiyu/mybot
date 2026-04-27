@@ -12,6 +12,10 @@ test_fft1m1
 *.so
 *.o
 *.cjo
+*.dll
+*.exe
+*.lib
+*.exp
 main
 
 # cangjie

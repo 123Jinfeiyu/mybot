@@ -24,9 +24,9 @@ libfft.so:  src/cpp/fft1.c src/cpp/fft.cpp
 cuda: libcu.so
 
 # GPU矩阵
-libcu.so: src/cuda/Matrix.cu
-	$(NVCC) -arch=compute_61 -code=sm_61 -O3 -Xcompiler -fPIC \
-	 -shared  src/cuda/Matrix.cu -o libcu.so
+libcu.so: src/cuda/cu4cj.cu
+	#$(NVCC) -arch=compute_61 -code=sm_61 -O3 -Xcompiler -fPIC -shared  src/cuda/cu4cj.cu -o libcu.so
+	$(NVCC) -fPIC -shared  src/cuda/cu4cj.cu -o libcu.so
 
 clear:
 	rm libbot.so
