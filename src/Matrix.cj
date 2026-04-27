@@ -22,6 +22,7 @@ foreign func transposeMatrix(M: CPointer<Unit>): CPointer<Unit>
 foreign func xavierNormalInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 foreign func xavierUniformInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 
+// TODO: 将矩阵元数据存储在仓颉部分
 class Matrix {
 
 	// 获取资源
