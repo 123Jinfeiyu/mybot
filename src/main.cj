@@ -257,7 +257,8 @@ func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
 	}
 }
 
-/* 从标准输入中读取动作脚本，并进行随机DRL */
+/* 从标准输入中读取动作脚本，并进行随机DRL
+ * FIXME: 为不同的目标设计不同的奖励策略， */
 func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
