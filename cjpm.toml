@@ -18,3 +18,6 @@
 [target.aarch64-unknown-linux-gnu]
   [target.aarch64-unknown-linux-gnu.bin-dependencies]
     path-option = ["${CANGJIE_STDX_PATH}/linux_aarch64_cjnative/static/stdx"]
+[target.x86_64-w64-mingw32]                                                     # 系统架构和 OS 信息
+  [target.x86_64-w64-mingw32.bin-dependencies]
+    path-option = ["${CANGJIE_STDX_PATH}\\windows_x86_64_cjnative\\dynamic\\stdx"]
