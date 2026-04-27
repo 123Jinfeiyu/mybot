@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include <time.h>
+#include <random>
 #include "error.cuh"
 extern "C" {
 /* 创建一个设备数组 */
@@ -20,7 +21,17 @@ void Cu4cj_Free(void* d)
     CHECK(cudaFree(d));
 }
 
-/* 创建一个单精度浮点数组 输入数组的长度 */
+#ifdef _WIN64
+__declspec(dllexport) void freeMatrix(void* d)
+#else
+void freeMatrix(void* d)
+#endif
+{
+    cudaFree(d);
+}
+
+
+/* 创建一个单精度浮点数组 输入数组的长度（不初始化） */
 #ifdef _WIN64
 __declspec(dllexport) void* Cu4cj_Orig(uint64_t n)
 #else
@@ -29,6 +40,7 @@ void* Cu4cj_Orig(int64_t n)
 {
     return _crtDevArr(n * sizeof(float));
 }
+
 
 /*
  * 从主机内存拷贝数据到设备内存
@@ -44,6 +56,7 @@ float* Cu4cj_ToDev(float* h, int64_t n)
     CHECK(cudaMemcpy(d, h, n * sizeof(float), cudaMemcpyHostToDevice));
     return d;
 }
+
 
 /* 从设备内存拷贝数据到主机内存 */
 #ifdef _WIN64
@@ -66,6 +79,16 @@ float* Cu4cj_Zero(int64_t n)
     float* d = (float*)Cu4cj_Orig(n);
     CHECK(cudaMemset(d, 0, n*sizeof(float)));
     return d;
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* createMatrix(const uint64_t n)
+#else
+void* createMatrix(int64_t n)
+#endif
+{
+    float* d = Cu4cj_Zero(n); 
+    return (void*)d;
 }
 
 
@@ -104,6 +127,60 @@ float* Cu4cj_Normal(int64_t n, int64_t fan_in, int64_t fan_out)
     
     return d;
 }
+
+#ifdef _WIN64
+__declspec(dllexport) void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
+#else
+void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
+#endif
+{
+    float* d = Cu4cj_Normal(fan_in * fan_out, fan_in, fan_out); 
+    return (void*)d;
+}
+
+
+
+#ifdef _WIN64
+__declspec(dllexport) void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
+#else
+void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
+#endif
+{
+    uint64_t n = fan_in * fan_out;
+
+    // 先在主机上分配内存并生成正态分布随机数
+    float* h = (float*)malloc(n * sizeof(float));
+
+    /* 使用高质量的随机数生成器 */
+    static std::mt19937 generator(std::random_device{}());
+
+    /* 计算区间范围：sqrt(2 / (fan_in + fan_out)) */
+    float scale = std::sqrt(2.0f / (fan_in + fan_out));
+
+    /* 创建均匀分布对象，范围为[-scale, scale] */
+    std::uniform_real_distribution<float> distribution(-scale, scale);
+
+    /* 遍历权重矩阵，进行赋值 */
+    uint64_t k=0;
+    for (uint64_t i=0; i<fan_in; ++i)
+        for (uint64_t j=0; j<fan_out; ++j)
+            h[k++] = distribution(generator);
+
+            
+    
+    // 在设备上分配内存
+    float* d = (float*)Cu4cj_Orig(n);
+    
+    // 将主机内存中的数据拷贝到设备内存
+    CHECK(cudaMemcpy(d, h, n * sizeof(float), cudaMemcpyHostToDevice));
+    
+    // 释放主机内存
+    free(h);
+    
+    return d;
+}
+
+
 
 // 向量加法
 static void __global__ _devAdd(float* d1, float* d2, float* r, int64_t n) {
@@ -254,6 +331,5 @@ void Cu4cj_MatDot(float* d1, float* d2, float* d_r, int64_t m, int64_t n, int64_
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
 }
-
 
 }
