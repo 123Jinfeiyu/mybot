@@ -21,6 +21,7 @@ struct MPU6050_sensorData {
 class MPU6050 {
     public init(i2c: I2C, addr: UInt8) {
         this.i2c = i2c
+        this.addr = addr
         i2c.setAddr(addr);
         i2c.writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
         i2c.writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
@@ -51,6 +52,7 @@ class MPU6050 {
     private static const ACCEL_REG_Z_LOW:  UInt8 = 0x40
     /*----------------*/
     private var i2c: Option<I2C> = None
+    private var addr: UInt8
 
     /* 读取 16 位传感器数据（带符号）
      * FIXME: 是否能够正确处理符号位 */
@@ -64,6 +66,8 @@ class MPU6050 {
     /* 获取原始MPU6050传感器数据 */
     public func readSensor(): MPU6050_sensorData {
         var data = MPU6050_sensorData()
+        let i2 = i2c.getOrThrow()
+        i2.setAddr(addr);
         data.accel_x = read16BitReg(ACCEL_REG_X_HIGH, ACCEL_REG_X_LOW);
         data.accel_y = read16BitReg(ACCEL_REG_Y_HIGH, ACCEL_REG_Y_LOW);
         data.accel_z = read16BitReg(ACCEL_REG_Z_HIGH, ACCEL_REG_Z_LOW);

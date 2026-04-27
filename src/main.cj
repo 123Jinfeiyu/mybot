@@ -51,9 +51,9 @@ main(args: Array<String>): Int64 {
 		load_nns(filename)  }
 	else {
 		let nn_in = ArrayList<Nn>()
-		nn_in.add(Nn(41, 80, ActivationFuncs.Leaky_ReLU, 0.1f32))
-		nn_in.add(Nn(80, 40, ActivationFuncs.Leaky_ReLU, 0.1f32))
-		nn_in.add(Nn(40, 17, ActivationFuncs.Sigmoid, 0.1f32)) // 16个舵机加1个时延
+		nn_in.add(Nn(41, 80, ActivationFuncs.Leaky_ReLU, 0.2f32))
+		nn_in.add(Nn(80, 40, ActivationFuncs.Leaky_ReLU, 0.2f32))
+		nn_in.add(Nn(40, 17, ActivationFuncs.Sigmoid, 0.2f32)) // 16个舵机加1个时延
 		nn_in  }
 
 	if (options.contains("o")) {
@@ -148,7 +148,7 @@ func run_test(key: String) {
 			print("gyro_x: ${data.gyro_x}\t")
 			print("gyro_y: ${data.gyro_y}\t")
 			println("gyro_z: ${data.gyro_z}")
-			sleep(Duration.millisecond * 100)
+			sleep(Duration.millisecond * 10)
 		}
 	}
 }
@@ -265,11 +265,10 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let i2c = I2C(I2C_PATH)
 	let pca9685 = PCA9685(i2c)
 	let mpu6050s = [
-		MPU6050(i2c, MPU6050.ADDR_0),
-		MPU6050(i2c, MPU6050.ADDR_1)
+		MPU6050(i2c, MPU6050.ADDR_1),
+		MPU6050(i2c, MPU6050.ADDR_0)
 	]
 	var dataSet = ArrayList<MPU6050_sensorData> ()
-
 	let xSet = ArrayList<Matrix>() // 输入
 	let tSet = ArrayList<Matrix>() // 教师
 	let rSet = ArrayList<Float32>() // 奖励
@@ -298,40 +297,52 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			// 推理
 			let y = forward(nns, x)
 
+			// 微调		
+			let random = Random(UInt64(DateTime.now().nanosecond))
+			for (j in 0..y.getCol()-1) {
+				let a = y[0, j].read()
+				let fix = (a - 0.5f32 + (random.nextFloat32() - 0.5f32) * 0.2f32)
+				r[Int64(j)] += fix * 180.0f32 * 0.4
+				y[0, j].write(fix) // 回写
+			}
+
 			// 记录
 			xSet.add(x)
 			tSet.add(y)
 			rSet.add(0.0f32)
 
-			// 微调		
-			let random = Random(UInt64(DateTime.now().nanosecond))
-			for (j in 0..y.getCol()-1) {
-				let a = y[0, j].read()
-				let fix = (a - 0.5f32 + (random.nextFloat32() - 0.5f32) * 0.1f32) * 180.0f32 * 0.2
-				r[Int64(j)] += fix
-				y[0, j].write(r[Int64(j)] / 180.0f32)
-			}
-
 			// 做动作
 			let rp = parser[i]
 			for (jj in 0..rp.size-1) {
+				print(rp[jj])
+				print(" ")
 				pca9685.setAngle(UInt8(jj), Float32(rp[jj]))
 			}
+			println()
+			sleep(Duration.millisecond*1)
 
 			// 读mpu6050
-			dataSet.clear()
+			dataSet = ArrayList<MPU6050_sensorData>()
 			dataSet.add(mpu6050s[0].readSensor())
 			dataSet.add(mpu6050s[1].readSensor())
 
 			// 产生奖励
 			// 前进奖励策略
 			for (j in 0..dataSet.size) {
-				let pre = xSet[xSet.size-1][0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64].read()
-				var rewards = Float32(dataSet[j].accel_x) / 65535.0f32 * 100.0f32 - pre * 100.0f32
+				if (xSet.size == 1) { continue }
+				let pre = xSet[xSet.size-2][0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64].read()
+				let aa = Float32(dataSet[j].accel_x)
+				let bb = pre * 65535.0f32
+				var rewards = if (j%2==0) { bb - aa } else { aa - bb }
+				rewards /= 10000.0f32
+				println("rewards:\t${rewards}")
 				for (k in rSet.size-1..0:-1) {
+					//xSet[k].print()
+					print(" ")
 					rSet[k] += rewards
 					rewards *= 0.9
 				}
+				println()
 			}
 
 			// 时延
