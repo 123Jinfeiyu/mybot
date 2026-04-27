@@ -276,13 +276,14 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 		let x = Matrix(1, 41) // 4个3轴加速度和角速度，16个关节，1个时延
 		unsafe {
 
-			let r = parser[i].clone()
+			let r = parser.which(i)
 
 			// 整理出输入
 			for (j in 0..r.size) {
 				x[0u64, UInt64(j)].write(Float32(r[j]) / 180.0f32)
 			}
 
+			// 陀螺仪部分
 			for (j in 0..dataSet.size) {
 				let idx = UInt64(r.size) + UInt64(j) * 6u64
 				x[0u64, idx + 0u64].write(Float32(dataSet[j].accel_x) / 65535.0f32)
@@ -311,21 +312,23 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			}
 
 			// 做动作
-			for (jj in 0..r.size-1) {
-				pca9685.setAngle(UInt8(jj), Float32(r[jj]))
+			let rp = parser[i]
+			for (jj in 0..rp.size-1) {
+				pca9685.setAngle(UInt8(jj), Float32(rp[jj]))
 			}
 
 			// 读mpu6050
 			dataSet.clear()
-	        dataSet.add(mpu6050s[0].readSensor())
-	        dataSet.add(mpu6050s[1].readSensor())
+			dataSet.add(mpu6050s[0].readSensor())
+			dataSet.add(mpu6050s[1].readSensor())
 
 			// 产生奖励
+			// 前进奖励策略
 			for (j in 0..dataSet.size) {
 				let pre = xSet[xSet.size-1][0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64].read()
 				var rewards = Float32(dataSet[j].accel_x) / 65535.0f32 * 100.0f32 - pre * 100.0f32
 				for (k in rSet.size-1..0:-1) {
-					rSet[k] = rewards
+					rSet[k] += rewards
 					rewards *= 0.9
 				}
 			}
@@ -337,14 +340,14 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 
 	}
 
+	// 打印损失
 	for (i in 0..xSet.size) {
 		println("----------------------------------")
-		xSet[i].print()
-		tSet[i].print()
 		println(rSet[i])
 		let loss = train(nns, xSet[i], tSet[i], rSet[i])
 		println("loss:\t${loss}")
 	}
+
 	// 选择性储存
 	if (let Some(P) <- NNS_OUT) {
 		save_nns(nns, P)
@@ -353,6 +356,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 
 
 // 加载多层神经网络
+// TODO: 也许用类封装
 func load_nns(filename: String): ArrayList<Nn> {
 	let nns = ArrayList<Nn>()
 	let file = File(filename, OpenMode.Read)

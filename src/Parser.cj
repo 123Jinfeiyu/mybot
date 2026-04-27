@@ -168,6 +168,11 @@ class ActsParser {
 		set(v) {}
 	}
 
+	// 获取一行原生的动作脚本
+	public func which(idx: Int64) {
+		return act[idx]
+	}
+
 	// 取一行动作脚本
 	operator func [](idx: Int64) {
 		let a = act[idx]

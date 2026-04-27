@@ -77,9 +77,10 @@ uint8_t I2C_readReg(int16_t fd, uint8_t reg) {
 	return 0;
     }*/
 
-
-    return i2c_smbus_read_byte_data(fd, reg);
     //return value;
+
+    int8_t a = i2c_smbus_read_byte_data(fd, reg);
+    return *(uint8_t *)& a;
 }
 
 /* 读寄存器 - 有符号
@@ -98,7 +99,7 @@ int8_t I2C_readRegFlag(int16_t fd, uint8_t reg) {
 	//return 0;
     //}
 
-    return i2c_smbus_read_byte_data(fd, reg);
-
     //return value;
+
+    return i2c_smbus_read_byte_data(fd, reg);
 }
