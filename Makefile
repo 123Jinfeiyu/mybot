@@ -20,9 +20,9 @@ libmt4cj.so: src/cpp/Matrix.cpp
 endif
 
 ifeq ($(MODE), cuda)# GPU矩阵
-libmt4cj.so: src/cuda/cu4cj.cu
-	#$(NVCC) -arch=compute_61 -code=sm_61 -O3 -Xcompiler -fPIC -shared  src/cuda/cu4cj.cu -o libbot.so
-	$(NVCC) -fPIC -shared  src/cuda/cu4cj.cu -o libmt4cj.so
+libmt4cj.so: src/cuda/matrix.cu
+	#$(NVCC) -arch=compute_61 -code=sm_61 -O3 -Xcompiler -fPIC -shared  src/cuda/matrix.cu -o libmt4cj.so
+	$(NVCC) -fPIC -shared  src/cuda/matrix.cu -o libmt4cj.so
 
 endif
 
