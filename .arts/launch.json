@@ -1,0 +1,13 @@
+{
+    "configurations": [
+        {
+            "name": "Cangjie: launch",
+            "request": "launch",
+            "type": "cangjieDebug",
+            "externalConsole": false,
+            "buildBeforeLaunch": true,
+            "env": {},
+            "program": "d:\\qs1\\bot4cj\\target\\debug\\bin\\main.exe"
+        }
+    ]
+}

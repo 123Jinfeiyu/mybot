@@ -16,7 +16,7 @@ var HTTP_ADDR = "127.0.0.1"
 var HTTP_PORT = 5119u16
 var NNS_OUT: Option<String> = None
 main(args: Array<String>): Int64 {
-
+	
 	//---------------------------
 	// 解析命令行参数
 	let specs = [

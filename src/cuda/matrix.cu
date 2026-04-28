@@ -328,7 +328,7 @@ float* Cu4cj_Transport(float *m, uint64_t r, uint64_t c)
 #endif
 {
     float *d_r = (float*)Cu4cj_Zero(c * r * sizeof(float));
-    _devTransport<<<gridDim, blockDim>>>(m, d_r, c, r);
+    _devTransport<<<1, c * r>>>(m, d_r, c, r);
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return d_r;
@@ -745,10 +745,10 @@ void* dotMatrix(void *m, void *s)
 }
 
 #ifdef _WIN64
-__declspec(dllexport) void* transportMatrix(void *m)
+__declspec(dllexport) void* transposeMatrix(void *m)
 #endif
 #ifdef __linux__
-void* transportMatrix(void *m)
+void* transposeMatrix(void *m)
 #endif
 {
     Matrix* m1 = (Matrix*)m;
@@ -764,7 +764,7 @@ void* Sigmoid_do(void *m)
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devSigmoid<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    _devSigmoid<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC());
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);
@@ -778,7 +778,7 @@ void* Sigmoid_dot(void *m)
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devSigmoidDerivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    _devSigmoidDerivative<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC());
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);
@@ -792,7 +792,7 @@ void* ReLU_do(void *m)
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devReLU<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    _devReLU<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC());
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);
@@ -804,7 +804,7 @@ __declspec(dllexport) void* ReLU_dot(void *m)
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devReLUDerivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    _devReLUDerivative<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC()); 
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);
@@ -812,28 +812,28 @@ __declspec(dllexport) void* ReLU_dot(void *m)
 
 
 #ifdef _WIN64
-__declspec(dllexport) void* LeakyReLU_do(void *m, float a)
+__declspec(dllexport) void* Leaky_ReLU_do(void *m, float a)
 #else
 void* LeakyReLU_do(void *m, float a) 
 #endif
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devLeakyReLU<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC(), a);
+    _devLeakyReLU<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC(), a);
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);
 }
 
 #ifdef _WIN64
-__declspec(dllexport) void* LeakyReLU_dot(void *m, float a)
+__declspec(dllexport) void* Leaky_ReLU_dot(void *m, float a)
 #else
 void* LeakyReLU_dot(void *m, float a) 
 #endif
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devLeakyReLU_Derivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC(), a);
+    _devLeakyReLU_Derivative<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC(), a);
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);
@@ -848,7 +848,7 @@ void* Tanh_do(void *m)
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devTanh<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    _devTanh<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC());
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);
@@ -862,7 +862,7 @@ void* Tanh_dot(void *m)
 {
     Matrix* m1 = (Matrix*)m;
     Matrix s = Matrix(*m1);
-    _devTanhDerivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    _devTanhDerivative<<<1, s.getR()* s.getC()>>>(s.getD(), s.getD(), s.getR()* s.getC());
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
     return (void *)new Matrix(s);

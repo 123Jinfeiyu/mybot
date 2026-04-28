@@ -37,7 +37,7 @@ int16_t I2C_init(const char* filepath) {
 }
 #endif
 #ifdef _WIN64
-int16_t I2C_init(const char* _) {  
+int16_t I2C_init(const char* filepath) {
     return BOT4CJ_I2C_OPENED_FAILED;
 }
 #endif
@@ -49,7 +49,7 @@ void I2C_free(int16_t fd) {
 }
 #endif
 #ifdef _WIN64
-void I2C_free(int16_t _) {
+void I2C_free(int16_t fd) {
     /* Windows平台下无需操作 */
 }
 #endif

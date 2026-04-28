@@ -49,15 +49,23 @@ static void fft_result(std::vector<float>& R, float A[2][DN])
 extern "C" {
 
     // 生成正弦波
+#ifdef _WIN64
+    __declspec(dllexport) void* gen_wave()
+#else
     void* gen_wave()
+#endif
     {
         std::vector<float> A(DN);
         functf1d(A.data());
         return (void *)new Matrx<float>(DN, 1, A);
     }
-
+    
     // 开始FFT
+#ifdef _WIN64
+    __declspec(dllexport) void* start_fft(void* M)
+#else
     void* start_fft(void* M)
+#endif  
     {
         float A[2][DN];
         std::vector<float> R(N);
