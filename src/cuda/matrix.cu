@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <stdint.h>
 #include <time.h>
 #include <random>
@@ -19,15 +20,6 @@ void Cu4cj_Free(void* d)
 #endif
 {
     CHECK(cudaFree(d));
-}
-
-#ifdef _WIN64
-__declspec(dllexport) void freeMatrix(void* d)
-#else
-void freeMatrix(void* d)
-#endif
-{
-    cudaFree(d);
 }
 
 
@@ -68,6 +60,16 @@ void Cu4cj_ToHost(float* d, float* h, int64_t n)
     CHECK(cudaMemcpy(h, d, n * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
+
+#ifdef _WIN64
+__declspec(dllexport) void Cu4cj_Copy(float* d, float* h, const uint64_t n)
+#else
+void Cu4cj_Copy(float* d, float* h, int64_t n)
+#endif
+{
+    CHECK(cudaMemcpy(h, d, n * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
 /* 创建一个单精度浮点数组并将其初始化为零
  * FIXME: 当n == 10000 时进程被杀死 */
 #ifdef _WIN64
@@ -79,16 +81,6 @@ float* Cu4cj_Zero(int64_t n)
     float* d = (float*)Cu4cj_Orig(n);
     CHECK(cudaMemset(d, 0, n*sizeof(float)));
     return d;
-}
-
-#ifdef _WIN64
-__declspec(dllexport) void* createMatrix(const uint64_t n)
-#else
-void* createMatrix(int64_t n)
-#endif
-{
-    float* d = Cu4cj_Zero(n); 
-    return (void*)d;
 }
 
 
@@ -128,57 +120,6 @@ float* Cu4cj_Normal(int64_t n, int64_t fan_in, int64_t fan_out)
     return d;
 }
 
-#ifdef _WIN64
-__declspec(dllexport) void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
-#else
-void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
-#endif
-{
-    float* d = Cu4cj_Normal(fan_in * fan_out, fan_in, fan_out); 
-    return (void*)d;
-}
-
-
-
-#ifdef _WIN64
-__declspec(dllexport) void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
-#else
-void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
-#endif
-{
-    uint64_t n = fan_in * fan_out;
-
-    // 先在主机上分配内存并生成正态分布随机数
-    float* h = (float*)malloc(n * sizeof(float));
-
-    /* 使用高质量的随机数生成器 */
-    static std::mt19937 generator(std::random_device{}());
-
-    /* 计算区间范围：sqrt(2 / (fan_in + fan_out)) */
-    float scale = std::sqrt(2.0f / (fan_in + fan_out));
-
-    /* 创建均匀分布对象，范围为[-scale, scale] */
-    std::uniform_real_distribution<float> distribution(-scale, scale);
-
-    /* 遍历权重矩阵，进行赋值 */
-    uint64_t k=0;
-    for (uint64_t i=0; i<fan_in; ++i)
-        for (uint64_t j=0; j<fan_out; ++j)
-            h[k++] = distribution(generator);
-
-            
-    
-    // 在设备上分配内存
-    float* d = (float*)Cu4cj_Orig(n);
-    
-    // 将主机内存中的数据拷贝到设备内存
-    CHECK(cudaMemcpy(d, h, n * sizeof(float), cudaMemcpyHostToDevice));
-    
-    // 释放主机内存
-    free(h);
-    
-    return d;
-}
 
 
 
@@ -219,6 +160,46 @@ void Cu4cj_Sub(float* d1, float* d2, float* d_r, int64_t n)
 #endif
 {
     _devSub<<<(n + 255) / 256, 256>>>(d1, d2, d_r, n);
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+}
+
+// 向量依次相乘
+static void __global__ _devMul(float* d1, float* d2, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = d1[i] * d2[i];
+    }   
+}
+
+// 向量依次相乘
+#ifdef _WIN64
+__declspec(dllexport) void Cu4cj_Mul(float* d1, float* d2, float* d_r, uint64_t n)
+#else
+void Cu4cj_Mul(float* d1, float* d2, float* d_r, int64_t n)
+#endif
+{
+    _devMul<<<(n + 255) / 256, 256>>>(d1, d2, d_r, n);
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+}
+
+// 向量依次相除
+static void __global__ _devDiv(float* d1, float* d2, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = d1[i] / d2[i];
+    }   
+}
+
+// 向量依次相除
+#ifdef _WIN64
+__declspec(dllexport) void Cu4cj_Div(float* d1, float* d2, float* d_r, uint64_t n)
+#else
+void Cu4cj_Div(float* d1, float* d2, float* d_r, int64_t n)
+#endif
+{
+    _devDiv<<<(n + 255) / 256, 256>>>(d1, d2, d_r, n);
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
 }
@@ -331,5 +312,325 @@ void Cu4cj_MatDot(float* d1, float* d2, float* d_r, int64_t m, int64_t n, int64_
     CHECK(cudaGetLastError());
     CHECK(cudaDeviceSynchronize());
 }
+
+}
+
+namespace qing {
+    class Matrix {
+    public:
+        Matrix(uint64_t r, uint64_t c) {
+            this->r = r;
+            this->c = c;
+            this->d = (float*)Cu4cj_Zero(r * c * sizeof(float));
+        }
+        Matrix(uint64_t r, uint64_t c, float* d) {
+            this->r = r;
+            this->c = c;
+            this->d = d;
+        }
+        Matrix(const Matrix& m) {
+            this->r = m.getR();
+            this->c = m.getC();
+            this->d = (float*)Cu4cj_Zero(m.getR() * m.getC() * sizeof(float));
+            Cu4cj_Copy(m.getD(), d, m.getR() * m.getC() * sizeof(float));
+        }
+        ~Matrix() {
+            Cu4cj_Free(d);
+        }
+        uint64_t getR() const {
+            return r;
+        }
+        uint64_t getC() const {
+            return c;
+        }
+        float* getD() const {
+            return d;
+        }
+        float get(uint64_t r, uint64_t c) const {
+            float h;
+            CHECK(cudaMemcpy(&h, &d[c * this->r + r], sizeof(float), cudaMemcpyDeviceToHost));
+            return h;
+        }
+        void set(uint64_t r, uint64_t c, float v) {
+            CHECK(cudaMemcpy(&d[c * this->r + r], &v, sizeof(float), cudaMemcpyHostToDevice));
+        }
+        bool hasSameShape(const Matrix& m) {
+            return r == m.getR() && c == m.getC();
+        }
+        bool hasDotShape(const Matrix& m) {
+            return c == m.getR();
+        }
+        Matrix operator+(const Matrix& m) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_Add(d, m.getD(), d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix operator+(float a) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_AddBroadcast(d, a, d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix operator-(const Matrix& m) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_Sub(d, m.getD(), d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix operator-(float a) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_SubBroadcast(d, a, d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix operator*(const Matrix& m) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_Mul(d, m.getD(), d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix operator*(float a) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_MulBroadcast(d, a, d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix operator/(const Matrix& m) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_Div(d, m.getD(), d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix operator/(float a) {
+            float *d_r = (float*)Cu4cj_Zero(r * c * sizeof(float));
+            Cu4cj_DivBroadcast(d, a, d_r, r * c);
+            return Matrix(r, c, d_r);
+        }
+        Matrix dot(const Matrix& m) {
+            //if (!hasDotShape(m)) {
+            //    throw std::invalid_argument("Dot product: matrices must have compatible shapes");
+            //}
+            float *d_r = (float*)Cu4cj_Zero(r * m.getC() * sizeof(float));
+            Cu4cj_MatDot(d, m.getD(), d_r, r, c, m.getC());
+            return Matrix(r, m.getC(), d_r);
+        }  
+
+    private:
+        uint64_t r, c;
+        float* d;
+    };
+}
+
+using namespace qing;
+extern "C" {
+    
+
+#ifdef _WIN64
+__declspec(dllexport) void* createMatrix(const uint64_t r, const uint64_t c)
+#else
+void* createMatrix(int64_t r, int64_t c)
+#endif
+{
+    return(void*) new Matrix(r, c);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void freeMatrix(void* m)
+#else
+void freeMatrix(void* m)
+#endif
+{
+    delete (Matrix*)m;
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
+#else
+void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
+#endif
+{
+    float* d = Cu4cj_Normal(fan_in * fan_out, fan_in, fan_out); 
+    return (void *)new Matrix(fan_in, fan_out, d);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
+#else
+void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
+#endif
+{
+    uint64_t n = fan_in * fan_out;
+
+    // 先在主机上分配内存并生成正态分布随机数
+    float* h = (float*)malloc(n * sizeof(float));
+
+    /* 使用高质量的随机数生成器 */
+    static std::mt19937 generator(std::random_device{}());
+
+    /* 计算区间范围：sqrt(2 / (fan_in + fan_out)) */
+    float scale = std::sqrt(2.0f / (fan_in + fan_out));
+
+    /* 创建均匀分布对象，范围为[-scale, scale] */
+    std::uniform_real_distribution<float> distribution(-scale, scale);
+
+    /* 遍历权重矩阵，进行赋值 */
+    uint64_t k=0;
+    for (uint64_t i=0; i<fan_in; ++i)
+        for (uint64_t j=0; j<fan_out; ++j)
+            h[k++] = distribution(generator);
+
+            
+    
+    // 在设备上分配内存
+    float* d = (float*)Cu4cj_Orig(n*sizeof(float));
+    
+    // 将主机内存中的数据拷贝到设备内存
+    CHECK(cudaMemcpy(d, h, n * sizeof(float), cudaMemcpyHostToDevice));
+    
+    // 释放主机内存
+    free(h);
+    
+    return (void *)new Matrix(fan_in, fan_out, d);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) uint64_t getrowMatrix(void *m)
+#else
+uint64_t getrowMatrix(void *m)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    return m1->getR();
+}
+#ifdef _WIN64
+__declspec(dllexport) uint64_t getcolMatrix(void *m)
+#else
+uint64_t getcolMatrix(void *m)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    return m1->getC();    
+}
+
+#ifdef _WIN64
+__declspec(dllexport) float getMatrix(void *m, uint64_t r, uint64_t c)
+#else
+float getMatrix(void *m, uint64_t r, uint64_t c)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    return m1->get(r, c);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void setMatrix(void *m, uint64_t r, uint64_t c, float v)
+#else
+void setMatrix(void *m, uint64_t r, uint64_t c, float v)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    m1->set(r, c, v);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* plusMatrix(void *m, void *s)
+#endif
+#ifdef __linux__
+void* plusMatrix(void *m, void *s)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix* s1 = (Matrix*)s;
+    Matrix r = *m1 + *s1;
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* plusBroadcastMatrix(void *m, float a)
+#else
+void* plusBroadcastMatrix(void *m, float a)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix r = *m1 + a;
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* subMatrix(void *m, void *s)
+#else
+void* subMatrix(void *m, void *s)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix* s1 = (Matrix*)s;
+    Matrix r = *m1 - *s1;
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* subBroadcastMatrix(void *m, float a)
+#else
+void* subBroadcastMatrix(void *m, float a)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix r = *m1 - a;
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* multiMatrix(void *m, void *s)
+#else
+void* multiMatrix(void *m, void *s)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix* s1 = (Matrix*)s;
+    Matrix r = (*m1) * (*s1);
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* multiBroadcastMatrix(void *m, float a)
+#else
+void* multiBroadcastMatrix(void *m, float a)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix r = (*m1) * a;
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* divMatrix(void *m, void *s)
+#else
+void* divMatrix(void *m, void *s)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix* s1 = (Matrix*)s;
+    Matrix r = (*m1) / (*s1);
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* divBroadcastMatrix(void *m, float a)
+#else
+void* divBroadcastMatrix(void *m, float a)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix r = (*m1) / a;
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* dotMatrix(void *m, void *s)
+#else
+void* dotMatrix(void *m, void *s)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix* s1 = (Matrix*)s;
+    Matrix r = (*m1).dot(*s1);
+    return (void *)new Matrix(r);
+}
+
+
 
 }

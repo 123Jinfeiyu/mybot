@@ -30,6 +30,11 @@ namespace qing {
 	}
 
 	template<typename T>
+	void Matrx<T>::set(uint64_t row, uint64_t col, T v) {  /* 设置矩阵元素 */
+		arr[col * this->row + row] = v;
+	}
+
+	template<typename T>
 	const std::vector<T>& Matrx<T>::get_data() const{  /* 访问器 - 用于获取原始数据 */
 		return arr;
 	}
@@ -180,6 +185,16 @@ extern "C" {
 	float* witchMatrix(void *m, uint64_t row, uint64_t col) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		return &(M->witch(row, col));
+	}
+
+	float getMatrix(void *m, uint64_t row, uint64_t col) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		return M->get(row, col);
+	}
+
+	void setMatrix(void *m, uint64_t row, uint64_t col, float v) {
+		Matrx<float> *M = (Matrx<float>*) m;
+		M->set(row, col, v);
 	}
 
 	uint64_t getrowMatrix(void *m) {

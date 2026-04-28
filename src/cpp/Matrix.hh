@@ -23,7 +23,11 @@ public:
     Matrx(const uint64_t row, const uint64_t col);
     Matrx(const uint64_t row, const uint64_t col, const std::vector<T>& src);
     const T& get(uint64_t row, uint64_t col) const;
+    //-------------旧接口----------------
     T& witch(uint64_t row, uint64_t col);
+    //-------------新接口----------------
+    void set(uint64_t row, uint64_t col, T v);
+    //-----------------------------------
     const std::vector<T>& get_data() const;
     const uint64_t get_col() const;
     const uint64_t get_row() const;
