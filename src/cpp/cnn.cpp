@@ -24,9 +24,6 @@
 #include <sys/stat.h>
 #include <dirent.h>
 
-// 项目头文件
-#include "ConvLayer.hpp"
-
 class ConvLayer {
 private:
     // 参数

@@ -8,7 +8,7 @@ LIBS := -lpthread
 FLAGS := -O3 -pipe #-Wall -Werror
 
 #-----------
-all: libi2c4cj.so libmt4cj.so libfft4cj.so
+all: libi2c4cj.so libmt4cj.so libfft4cj.so libcnn4cj.so
 
 # 机器人及cpu神经网络、矩阵
 libi2c4cj.so:  src/cpp/I2C.c
@@ -28,6 +28,10 @@ endif
 
 # 快速傅里叶变换fft
 libfft4cj.so:  src/cpp/fft1.c src/cpp/fft.cpp
+	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
+
+# 卷积神经网络cnn
+libcnn4cj.so:  src/cpp/cnn.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 clear:

@@ -7,7 +7,7 @@
 # debian
 apt update
 apt install libi2c-dev
-apt install libcimg-dev
+apt install cimg-dev
 
 ```
 
