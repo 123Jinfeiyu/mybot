@@ -174,51 +174,81 @@ namespace qing {
 /* FIXME: 形状不合法时返回空指针 */
 using namespace qing;
 extern "C" {
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* createMatrix(uint64_t row, uint64_t col) {
 		return (void *) new Matrx<float>(row, col);
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void freeMatrix(void* M) {
 		delete (Matrx<float>*) M;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	float* witchMatrix(void *m, uint64_t row, uint64_t col) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		return &(M->witch(row, col));
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	float getMatrix(void *m, uint64_t row, uint64_t col) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		return M->get(row, col);
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void setMatrix(void *m, uint64_t row, uint64_t col, float v) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		M->set(row, col, v);
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	uint64_t getrowMatrix(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		return M->get_row();
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	uint64_t getcolMatrix(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		return M->get_col();
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	bool sameShapeMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
 		return M->has_same_shape(*S);
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	bool dotShapeMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
 		return M->has_dot_shape(*S);
 	}
 	
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* plusMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
@@ -226,12 +256,18 @@ extern "C" {
 		return (void *) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* plusBroadcastMatrix(void *m, float t) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		auto a = new Matrx<float> ((*M) + t);
 		return (void*) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* subMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
@@ -239,12 +275,18 @@ extern "C" {
 		return (void *) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void * subBroadcastMatrix(void *m, float t) {
 		Matrx<float> *M = (Matrx<float> *) m;
 		auto a  = new Matrx<float> ((*M) - t);
 		return (void *) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* multiMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
@@ -252,12 +294,18 @@ extern "C" {
 		return (void *) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* multiBroadcastMatrix(void *m, float t) {
 		Matrx<float> *M = (Matrx<float> *) m;
 		auto a = new Matrx<float>((*M) * t);
 		return (void*) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* divMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
@@ -265,12 +313,18 @@ extern "C" {
 		return (void *) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* divBroadcastMatrix(void *m, float t) {
 		Matrx<float> *M = (Matrx<float> *) m;
 		auto a = new Matrx<float>((*M) / t);
 		return (void*) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* dotMatrix(void *m, void *s) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		Matrx<float> *S = (Matrx<float>*) s;
@@ -278,6 +332,9 @@ extern "C" {
 		return (void *) a;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* transposeMatrix(void *m) {
 		Matrx<float> *M = (Matrx<float> *)m;
 		auto N= new Matrx<float>(M->get_col(), M->get_row());
@@ -290,6 +347,9 @@ extern "C" {
 	}
 
 	/* 正态分布Xavier初始化 */
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* xavierNormalInit(uint64_t fan_in, uint64_t fan_out)
 	{
 		/* 构建空数组 */
@@ -316,6 +376,9 @@ extern "C" {
 	}
 
 	/* 均匀分布Xavier初始化函数 */
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* xavierUniformInit(uint64_t fan_in, uint64_t fan_out)
 	{	
 		/* 构建空的数组 */
@@ -341,6 +404,9 @@ extern "C" {
 		return (void *)matrix;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* Sigmoid_do(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
@@ -351,6 +417,9 @@ extern "C" {
 		return (void *)N;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* Sigmoid_dot(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
@@ -361,6 +430,9 @@ extern "C" {
 		return (void *)N;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* ReLU_do(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
@@ -371,6 +443,9 @@ extern "C" {
 		return (void *)N;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* ReLU_dot(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
@@ -382,6 +457,9 @@ extern "C" {
 	}
 
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* Leaky_ReLU_do(void *m, float alpha) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
@@ -392,6 +470,9 @@ extern "C" {
 		return (void *)N;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* Leaky_ReLU_dot(void *m, float alpha) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
@@ -402,6 +483,9 @@ extern "C" {
 		return (void *)N;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* Tanh_do(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
@@ -412,6 +496,9 @@ extern "C" {
 		return (void *)N;
 	}
 
+	#ifdef _WIN64
+	_declspec(dllexport)
+	#endif
 	void* Tanh_dot(void *m) {
 		Matrx<float> *M = (Matrx<float>*) m;
 		std::vector<float> v = M->get_data();
