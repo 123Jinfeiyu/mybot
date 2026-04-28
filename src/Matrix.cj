@@ -5,6 +5,8 @@ import std.convert.*
 foreign func createMatrix(row: UInt64, col: UInt64): CPointer<Unit>
 foreign func freeMatrix(M: CPointer<Unit>): Unit
 foreign func witchMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): CPointer<Float32>
+foreign func getMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): Float32
+foreign func setMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64, v: Float32): Unit
 foreign func getrowMatrix(M: CPointer<Unit>): UInt64
 foreign func getcolMatrix(M: CPointer<Unit>): UInt64
 foreign func sameShapeMatrix(M: CPointer<Unit>, S: CPointer<Unit>): Bool
