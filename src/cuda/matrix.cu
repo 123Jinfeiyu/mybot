@@ -313,6 +313,92 @@ void Cu4cj_MatDot(float* d1, float* d2, float* d_r, int64_t m, int64_t n, int64_
     CHECK(cudaDeviceSynchronize());
 }
 
+// 矩阵转置
+static void __global__ _devTransport(float* d1, float* d2, int64_t m, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    int j = blockIdx.y * blockDim.y + threadIdx.y;
+    if (i < m && j < n) {
+        d2[j * m + i] = d1[i * n + j];
+    }
+}
+#ifdef _WIN64
+__declspec(dllexport) float* Cu4cj_Transport(float *m, uint64_t r, uint64_t c)
+#else
+float* Cu4cj_Transport(float *m, uint64_t r, uint64_t c)        
+#endif
+{
+    float *d_r = (float*)Cu4cj_Zero(c * r * sizeof(float));
+    _devTransport<<<gridDim, blockDim>>>(m, d_r, c, r);
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return d_r;
+}
+
+
+// Sigmoid 激活函数，输入为矩阵，输出为矩阵
+static void __global__ _devSigmoid(float* d1, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = 1.0f / (1.0f + exp(-d1[i]));
+    }
+}  
+
+// Sigmoid 导数
+static void __global__ _devSigmoidDerivative(float* d1, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = d1[i] * (1.0f - d1[i]);
+    }
+}
+
+// ReLU
+static void __global__ _devReLU(float* d1, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = d1[i] > 0.0f ? d1[i] : 0.0f;
+    }
+}
+
+// ReLU 导数
+static void __global__ _devReLUDerivative(float* d1, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = d1[i] > 0.0f ? 1.0f : 0.0f;
+    }
+}
+
+// Leaky_ReLU
+static void __global__ _devLeakyReLU(float* d1, float* r, int64_t n, float a) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = d1[i] > 0.0f ? d1[i] : a * d1[i];
+    }
+}
+
+// Leaky_ReLU 导数
+static void __global__ _devLeakyReLU_Derivative(float* d1, float* r, int64_t n, float a) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = d1[i] > 0.0f ? 1.0f : a;
+    }
+}
+
+// Tanh 激活函数，输入为矩阵，输出为矩阵
+static void __global__ _devTanh(float* d1, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = (exp(d1[i]) - exp(-d1[i])) / (exp(d1[i]) + exp(-d1[i]));
+    }
+}
+
+// Tanh 导数
+static void __global__ _devTanhDerivative(float* d1, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < n) {
+        r[i] = 1.0f - d1[i] * d1[i];
+    }
+}
+
 }
 
 namespace qing {
@@ -407,7 +493,11 @@ namespace qing {
             float *d_r = (float*)Cu4cj_Zero(r * m.getC() * sizeof(float));
             Cu4cj_MatDot(d, m.getD(), d_r, r, c, m.getC());
             return Matrix(r, m.getC(), d_r);
-        }  
+        } 
+        Matrix T() {
+            float *d_r = (float*)Cu4cj_Transport(d, r, c);
+            return Matrix(c, r, d_r);
+        }
 
     private:
         uint64_t r, c;
@@ -527,6 +617,29 @@ void setMatrix(void *m, uint64_t r, uint64_t c, float v)
 }
 
 #ifdef _WIN64
+__declspec(dllexport) bool sameShapeMatrix(void *m, void *s)
+#else
+bool sameShapeMatrix(void *m, void *s)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix* s1 = (Matrix*)s;
+    return (*m1).hasSameShape(*s1);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) bool dotShapeMatrix(void *m, void *s)
+#else
+bool dotShapeMatrix(void *m, void *s)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix* s1 = (Matrix*)s;
+    return (*m1).hasDotShape(*s1);
+}
+
+
+#ifdef _WIN64
 __declspec(dllexport) void* plusMatrix(void *m, void *s)
 #endif
 #ifdef __linux__
@@ -631,6 +744,129 @@ void* dotMatrix(void *m, void *s)
     return (void *)new Matrix(r);
 }
 
+#ifdef _WIN64
+__declspec(dllexport) void* transportMatrix(void *m)
+#endif
+#ifdef __linux__
+void* transportMatrix(void *m)
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix r = m1->T();
+    return (void *)new Matrix(r);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* Sigmoid_do(void *m)
+#else
+void* Sigmoid_do(void *m) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devSigmoid<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* Sigmoid_dot(void *m)
+#else
+void* Sigmoid_dot(void *m) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devSigmoidDerivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* ReLU_do(void *m)
+#else
+void* ReLU_do(void *m) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devReLU<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* ReLU_dot(void *m) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devReLUDerivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
+
+
+#ifdef _WIN64
+__declspec(dllexport) void* LeakyReLU_do(void *m, float a)
+#else
+void* LeakyReLU_do(void *m, float a) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devLeakyReLU<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC(), a);
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* LeakyReLU_dot(void *m, float a)
+#else
+void* LeakyReLU_dot(void *m, float a) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devLeakyReLU_Derivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC(), a);
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
+
+// Tanh
+#ifdef _WIN64
+__declspec(dllexport) void* Tanh_do(void *m)
+#else
+void* Tanh_do(void *m) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devTanh<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
+
+#ifdef _WIN64
+__declspec(dllexport) void* Tanh_dot(void *m)
+#else
+void* Tanh_dot(void *m) 
+#endif
+{
+    Matrix* m1 = (Matrix*)m;
+    Matrix s = Matrix(*m1);
+    _devTanhDerivative<<<gridDim, blockDim>>>(s.getD(), s.getD(), s.getR()* s.getC());
+    CHECK(cudaGetLastError());
+    CHECK(cudaDeviceSynchronize());
+    return (void *)new Matrix(s);
+}
 
 
 }
