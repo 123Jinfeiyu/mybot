@@ -31,10 +31,11 @@ libfft4cj.so:  src/cpp/fft1.c src/cpp/fft.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 # 卷积神经网络cnn
-libcnn4cj.so:  src/cpp/cnn.cpp
+libcnn4cj.so:  src/cpp/cnn_i.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 clear:
 	rm libi2c4cj.so
 	rm libmt4cj.so
 	rm libfft4cj.so
+	rm libcnn4cj.so
