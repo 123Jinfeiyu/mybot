@@ -7,6 +7,8 @@
 # debian
 apt update
 apt install libi2c-dev
+apt install libcimg-dev
+
 ```
 
 ## 项目介绍
