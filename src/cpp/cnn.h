@@ -835,29 +835,27 @@ public:
         }
     }
     
-    // 批量加载图片
     std::vector<float> load_batch(const std::vector<std::string>& filepaths, bool verbose = false) {
         this->verbose = verbose;
-        
         std::vector<float> batch_data;
         int loaded_count = 0;
+        
+        // 先计算总大小,预留空间
+        int single_image_size = target_channels * target_height * target_width;
+        batch_data.reserve(filepaths.size() * single_image_size);
         
         for (const auto& filepath : filepaths) {
             auto img_data = load_image(filepath, verbose);
             if (!img_data.empty()) {
-                if (batch_data.empty()) {
-                    batch_data = img_data;
-                } else {
-                    // 追加到batch数据中
-                    batch_data.insert(batch_data.end(), img_data.begin(), img_data.end());
-                }
+                // 统一使用 insert 方式追加
+                batch_data.insert(batch_data.end(), img_data.begin(), img_data.end());
                 loaded_count++;
             }
         }
         
         if (verbose) {
             std::cout << "Successfully loaded " << loaded_count << " images out of " 
-                      << filepaths.size() << std::endl;
+                    << filepaths.size() << std::endl;
         }
         
         return batch_data;
