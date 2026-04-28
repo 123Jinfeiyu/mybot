@@ -4,7 +4,7 @@ import std.io.*
 import std.convert.*
 foreign func createMatrix(row: UInt64, col: UInt64): CPointer<Unit>
 foreign func freeMatrix(M: CPointer<Unit>): Unit
-foreign func witchMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): CPointer<Float32>
+//foreign func witchMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): CPointer<Float32>
 foreign func getMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64): Float32
 foreign func setMatrix(M: CPointer<Unit>, row: UInt64, col: UInt64, v: Float32): Unit
 foreign func getrowMatrix(M: CPointer<Unit>): UInt64
@@ -55,8 +55,16 @@ class Matrix {
 		unsafe { freeMatrix(M) }
 	}
 
-	operator func [](r: UInt64, c: UInt64): CPointer<Float32> {
-		unsafe { return witchMatrix(M, r, c) }
+	//operator func [](r: UInt64, c: UInt64): CPointer<Float32> {
+	//	unsafe { return witchMatrix(M, r, c) }
+	//}
+
+	func get(r: UInt64, c: UInt64): Float32 {
+		unsafe { return getMatrix(M, r, c) }
+	}
+
+	func set(r: UInt64, c: UInt64, v: Float32) {
+		unsafe { setMatrix(M, r, c, v) }
 	}
 
 	operator func ==(s: Matrix): Bool {
@@ -188,7 +196,7 @@ class Matrix {
 		unsafe {
 			for (i in 0..getRow()) {
 				for (j in 0..getCol()) {
-					let a = this[i, j].read()
+					let a = this.get(i, j)
 					print(a)
 					print(" ")
 				}
@@ -205,7 +213,7 @@ class Matrix {
 		unsafe {
 			for (i in 0..getRow()) {
 				for (j in 0..getCol()) {
-					file.write(this[i, j].read().toString().toArray())
+					file.write(this.get(i, j).toString().toArray())
 					if (j < getCol()-1) { 
 						file.write(" ".toArray()) }
 					else { file.write("\n".toArray()) }
@@ -224,7 +232,7 @@ class Matrix {
 			for (i in 0..m.getRow()) {
 				for (j in 0..m.getCol()) {
 					let f  = loadItem(sr)
-					m[i, j].write(f)
+					m.set(i, j, f)
 				}
 			}
 			m

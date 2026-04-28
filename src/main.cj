@@ -280,18 +280,18 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 
 			// 整理出输入
 			for (j in 0..r.size) {
-				x[0u64, UInt64(j)].write(Float32(r[j]) / 180.0f32)
+				x.set(0u64, UInt64(j), Float32(r[j]) / 180.0f32)
 			}
 
 			// 陀螺仪部分
 			for (j in 0..dataSet.size) {
 				let idx = UInt64(r.size) + UInt64(j) * 6u64
-				x[0u64, idx + 0u64].write(Float32(dataSet[j].accel_x) / 65535.0f32)
-				x[0u64, idx + 1u64].write(Float32(dataSet[j].accel_y) / 65535.0f32)
-				x[0u64, idx + 2u64].write(Float32(dataSet[j].accel_x) / 65535.0f32)
-				x[0u64, idx + 3u64].write(Float32(dataSet[j].gyro_x) / 65535.0f32)
-				x[0u64, idx + 4u64].write(Float32(dataSet[j].gyro_y) / 65535.0f32)
-				x[0u64, idx + 5u64].write(Float32(dataSet[j].gyro_z)  / 65535.0f32)
+				x.set(0u64, idx + 0u64, Float32(dataSet[j].accel_x) / 65535.0f32)
+				x.set(0u64, idx + 1u64, Float32(dataSet[j].accel_y) / 65535.0f32)
+				x.set(0u64, idx + 2u64, Float32(dataSet[j].accel_x) / 65535.0f32)
+				x.set(0u64, idx + 3u64, Float32(dataSet[j].gyro_x) / 65535.0f32)
+				x.set(0u64, idx + 4u64, Float32(dataSet[j].gyro_y) / 65535.0f32)
+				x.set(0u64, idx + 5u64, Float32(dataSet[j].gyro_z)  / 65535.0f32)
 			}
 
 			// 推理
@@ -300,10 +300,10 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			// 微调		
 			let random = Random(UInt64(DateTime.now().nanosecond))
 			for (j in 0..y.getCol()-1) {
-				let a = y[0, j].read()
+				let a = y.get(0, j)
 				let fix = (a - 0.5f32 + (random.nextFloat32() - 0.5f32) * 0.2f32)
 				r[Int64(j)] += fix * 180.0f32 * 0.4
-				y[0, j].write(fix) // 回写
+				y.set(0, j, fix) // 回写
 			}
 
 			// 记录
@@ -330,7 +330,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			// 前进奖励策略
 			for (j in 0..dataSet.size) {
 				if (xSet.size == 1) { continue }
-				let pre = xSet[xSet.size-2][0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64].read()
+				let pre = xSet[xSet.size-2].get(0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64)
 				let aa = Float32(dataSet[j].accel_x)
 				let bb = pre * 65535.0f32
 				var rewards = if (j%2==0) { bb - aa } else { aa - bb }
@@ -412,10 +412,10 @@ func prepare_andDoor(m: Matrix, t: Matrix)
 	let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
 
 	unsafe {
-		m[0, 0].write(Float32(a))
-		m[0, 1].write(Float32(b))
-		t[0, 0].write(t0)
-		t[0, 1].write(t1)
+		m.set(0, 0, Float32(a))
+		m.set(0, 1, Float32(b))
+		t.set(0, 0, t0)
+		t.set(0, 1, t1)
 	}
 }
 
@@ -472,10 +472,10 @@ func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
 
 	// 输出损失
 	unsafe {
-		let t0 = t[0, 0].read()
-		let t1 = t[0, 1].read()
-		let r0 = outs_dof[nns.size-1][0, 0].read()
-		let r1 = outs_dof[nns.size-1][0, 1].read()
+		let t0 = t.get(0, 0)
+		let t1 = t.get(0, 1)
+		let r0 = outs_dof[nns.size-1].get(0, 0)
+		let r1 = outs_dof[nns.size-1].get(0, 1)
 		let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
 		let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
 		return 0.5 * (loss0 * loss0 + loss1 * loss1)
