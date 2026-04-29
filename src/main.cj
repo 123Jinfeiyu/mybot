@@ -162,7 +162,11 @@ func run_test(key: String) {
 }
 
 /* http伺服器读取动作脚本
- * TODO: 集成更多的前端托管的功能 */
+ * TODO: 集成更多的前端托管的功能 
+ *
+ * qing(20260430): 
+ * TODO: 在http伺服器中集成smn的功能，即能够托管前端
+ * TODO: 在http伺服器中集成phs的功能，即托管进程 */
 func run_serve(nns: ArrayList<Nn>, save_path: String) {
 	let serv = ServerBuilder()
 	.addr(HTTP_ADDR)
@@ -256,7 +260,7 @@ func run_serve(nns: ArrayList<Nn>, save_path: String) {
 	serv.serve()
 }
 
-/* 从标准输入中读取动作脚本，并进行感知训练 */
+/* 从标准输入中读取动作脚本 */
 func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
@@ -266,7 +270,12 @@ func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
 }
 
 /* 从标准输入中读取动作脚本，并进行随机DRL
- * FIXME: 为不同的目标设计不同的奖励策略， */
+ * FIXME: 为不同的目标设计不同的奖励策略，
+ *
+ * TODO(qing-20260430): 使用视觉和cnn进行微调
+ * 首先使机器人摄像头云台旋转不同角度（在同一位置）
+ * 采集图像，然后训练机器人识别画面偏移方向（自监督学习）
+ * 用这个模型去训练微调机器人走直线  */
 func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
