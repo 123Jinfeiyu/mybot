@@ -1,0 +1,1 @@
+cjpm run --run-args="$($args -join ' ')"
