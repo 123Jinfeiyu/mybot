@@ -101,6 +101,8 @@ func print_help() {
 	println("这是一个机器人动作脚本解析器。")
 	println("使用管道输入动作脚本，示例：")
 	println("cat std.bot | ./bot")
+	println()
+	println("--i2c=/path/to/device\t选择i2c设备")
 }
 
 /* 集成多种常规测试、临时测试 */
