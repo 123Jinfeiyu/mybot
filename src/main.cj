@@ -19,12 +19,12 @@ main(args: Array<String>): Int64 {
 	//---------------------------
 	// 解析命令行参数
 	let specs = [
-		ArgumentSpec.Long("help", ArgumentMode.NoValue),
-		ArgumentSpec.Long("serve", ArgumentMode.OptionalValue),
-		ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue),
-		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),
-		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),
-		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)
+		ArgumentSpec.Long("help", ArgumentMode.NoValue),  // 拉起帮助菜单
+		ArgumentSpec.Long("serve", ArgumentMode.OptionalValue), // 启动http伺服器 
+		ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue),  // 选择i2c设备
+		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),  // 神经网络模型输入
+		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),  // 神经网络模型输出
+		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)  // 运行一个测试分支
 	]
 	let parsed = parseArguments(args, specs)
 	let options = parsed.options
@@ -71,7 +71,7 @@ main(args: Array<String>): Int64 {
 		return 0
 	}
 
-	else if (options.contains("test")) {
+	else if (options.contains("test")) { // 启动一个测试分支
 
 		run_test(options["test"])
 		return 0
