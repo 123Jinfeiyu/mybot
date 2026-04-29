@@ -254,8 +254,6 @@ void cnn_free_buffer(float* buffer);
 // 获取错误信息
 const char* cnn_get_last_error(void);
 
-// 获取版本信息
-const char* cnn_get_version(void);
 
 #ifdef __cplusplus
 }

@@ -35,8 +35,13 @@ static float* alloc_and_copy(const std::vector<float>& data, size_t* out_size) {
 // ============================================================================
 // 卷积层实现
 // ============================================================================
+#ifdef _WIN64
+#define CNN_API _declspec(dllexport)
+#else
+#define CNN_API
+#endif
 
-void* cnn_create_conv_layer(int in_channels, int out_channels, 
+CNN_API void* cnn_create_conv_layer(int in_channels, int out_channels, 
                             int kernel_size, int stride, int padding,
                             float negative_slope) {
     clear_error();
@@ -50,13 +55,13 @@ void* cnn_create_conv_layer(int in_channels, int out_channels,
     }
 }
 
-void cnn_destroy_conv_layer(void* layer) {
+CNN_API void cnn_destroy_conv_layer(void* layer) {
     if (layer) {
         delete static_cast<ConvLayer*>(layer);
     }
 }
 
-void cnn_conv_set_input_shape(void* layer, int height, int width) {
+CNN_API void cnn_conv_set_input_shape(void* layer, int height, int width) {
     if (!layer) {
         set_error("Null layer pointer");
         return;
@@ -69,7 +74,7 @@ void cnn_conv_set_input_shape(void* layer, int height, int width) {
     }
 }
 
-float* cnn_conv_forward(void* layer, const float* input, size_t input_size,
+CNN_API float* cnn_conv_forward(void* layer, const float* input, size_t input_size,
                         int batch_size, int training, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -89,7 +94,7 @@ float* cnn_conv_forward(void* layer, const float* input, size_t input_size,
     }
 }
 
-float* cnn_conv_backward(void* layer, const float* grad_output, size_t grad_size,
+CNN_API float* cnn_conv_backward(void* layer, const float* grad_output, size_t grad_size,
                          int batch_size, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -109,7 +114,7 @@ float* cnn_conv_backward(void* layer, const float* grad_output, size_t grad_size
     }
 }
 
-void cnn_conv_update_parameters(void* layer, float learning_rate, float momentum) {
+CNN_API void cnn_conv_update_parameters(void* layer, float learning_rate, float momentum) {
     if (!layer) {
         set_error("Null layer pointer");
         return;
@@ -122,7 +127,7 @@ void cnn_conv_update_parameters(void* layer, float learning_rate, float momentum
     }
 }
 
-void cnn_conv_update_parameters_adam(void* layer, float learning_rate, 
+CNN_API void cnn_conv_update_parameters_adam(void* layer, float learning_rate, 
                                      float beta1, float beta2, 
                                      float epsilon, int t) {
     if (!layer) {
@@ -137,17 +142,17 @@ void cnn_conv_update_parameters_adam(void* layer, float learning_rate,
     }
 }
 
-size_t cnn_conv_get_weights_size(void* layer) {
+CNN_API size_t cnn_conv_get_weights_size(void* layer) {
     if (!layer) return 0;
     return static_cast<ConvLayer*>(layer)->get_weights().size();
 }
 
-size_t cnn_conv_get_bias_size(void* layer) {
+CNN_API size_t cnn_conv_get_bias_size(void* layer) {
     if (!layer) return 0;
     return static_cast<ConvLayer*>(layer)->get_bias().size();
 }
 
-float* cnn_conv_get_weights(void* layer) {
+CNN_API float* cnn_conv_get_weights(void* layer) {
     if (!layer) {
         set_error("Null layer pointer");
         return nullptr;
@@ -158,7 +163,7 @@ float* cnn_conv_get_weights(void* layer) {
     return buffer;
 }
 
-float* cnn_conv_get_bias(void* layer) {
+CNN_API float* cnn_conv_get_bias(void* layer) {
     if (!layer) {
         set_error("Null layer pointer");
         return nullptr;
@@ -169,7 +174,7 @@ float* cnn_conv_get_bias(void* layer) {
     return buffer;
 }
 
-void cnn_conv_set_weights(void* layer, const float* weights, size_t size) {
+CNN_API void cnn_conv_set_weights(void* layer, const float* weights, size_t size) {
     if (!layer) {
         set_error("Null layer pointer");
         return;
@@ -187,7 +192,7 @@ void cnn_conv_set_weights(void* layer, const float* weights, size_t size) {
     }
 }
 
-void cnn_conv_set_bias(void* layer, const float* bias, size_t size) {
+CNN_API void cnn_conv_set_bias(void* layer, const float* bias, size_t size) { 
     if (!layer) {
         set_error("Null layer pointer");
         return;
@@ -205,7 +210,7 @@ void cnn_conv_set_bias(void* layer, const float* bias, size_t size) {
     }
 }
 
-void cnn_conv_get_output_shape(void* layer, int* out_channels, 
+CNN_API void cnn_conv_get_output_shape(void* layer, int* out_channels, 
                                 int* out_height, int* out_width) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -220,13 +225,13 @@ void cnn_conv_get_output_shape(void* layer, int* out_channels,
     *out_width = std::get<1>(shape);
 }
 
-void cnn_conv_clear_cache(void* layer) {
+CNN_API void cnn_conv_clear_cache(void* layer) {
     if (layer) {
         static_cast<ConvLayer*>(layer)->clear_cache();
     }
 }
 
-void cnn_conv_reset_optimizer_state(void* layer) {
+CNN_API void cnn_conv_reset_optimizer_state(void* layer) {
     if (layer) {
         static_cast<ConvLayer*>(layer)->reset_optimizer_state();
     }
@@ -236,7 +241,7 @@ void cnn_conv_reset_optimizer_state(void* layer) {
 // 池化层实现
 // ============================================================================
 
-void* cnn_create_pooling_layer(int pool_height, int pool_width, 
+CNN_API void* cnn_create_pooling_layer(int pool_height, int pool_width, 
                                int stride, int padding, int pool_type) {
     clear_error();
     try {
@@ -249,13 +254,13 @@ void* cnn_create_pooling_layer(int pool_height, int pool_width,
     }
 }
 
-void cnn_destroy_pooling_layer(void* layer) {
+CNN_API void cnn_destroy_pooling_layer(void* layer) {
     if (layer) {
         delete static_cast<PoolingLayer*>(layer);
     }
 }
 
-void cnn_pooling_set_input_shape(void* layer, int channels, int height, int width) {
+CNN_API void cnn_pooling_set_input_shape(void* layer, int channels, int height, int width) {
     if (!layer) {
         set_error("Null layer pointer");
         return;
@@ -268,7 +273,7 @@ void cnn_pooling_set_input_shape(void* layer, int channels, int height, int widt
     }
 }
 
-float* cnn_pooling_forward(void* layer, const float* input, size_t input_size,
+CNN_API float* cnn_pooling_forward(void* layer, const float* input, size_t input_size,
                            int batch_size, int training, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -288,7 +293,7 @@ float* cnn_pooling_forward(void* layer, const float* input, size_t input_size,
     }
 }
 
-float* cnn_pooling_backward(void* layer, const float* grad_output, size_t grad_size,
+CNN_API float* cnn_pooling_backward(void* layer, const float* grad_output, size_t grad_size,
                             int batch_size, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -308,7 +313,7 @@ float* cnn_pooling_backward(void* layer, const float* grad_output, size_t grad_s
     }
 }
 
-void cnn_pooling_get_output_shape(void* layer, int* out_channels,
+CNN_API void cnn_pooling_get_output_shape(void* layer, int* out_channels,
                                    int* out_height, int* out_width) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -327,7 +332,7 @@ void cnn_pooling_get_output_shape(void* layer, int* out_channels,
 // 全局平均池化层实现
 // ============================================================================
 
-void* cnn_create_global_avg_pool_layer(void) {
+CNN_API void* cnn_create_global_avg_pool_layer(void) {
     clear_error();
     try {
         auto* layer = new GlobalAveragePooling();
@@ -338,13 +343,13 @@ void* cnn_create_global_avg_pool_layer(void) {
     }
 }
 
-void cnn_destroy_global_avg_pool_layer(void* layer) {
+CNN_API void cnn_destroy_global_avg_pool_layer(void* layer) {
     if (layer) {
         delete static_cast<GlobalAveragePooling*>(layer);
     }
 }
 
-void cnn_global_avg_pool_set_input_shape(void* layer, int channels, int height, int width) {
+CNN_API void cnn_global_avg_pool_set_input_shape(void* layer, int channels, int height, int width) {
     if (!layer) {
         set_error("Null layer pointer");
         return;
@@ -352,7 +357,7 @@ void cnn_global_avg_pool_set_input_shape(void* layer, int channels, int height, 
     static_cast<GlobalAveragePooling*>(layer)->set_input_shape(channels, height, width);
 }
 
-float* cnn_global_avg_pool_forward(void* layer, const float* input, size_t input_size,
+CNN_API float* cnn_global_avg_pool_forward(void* layer, const float* input, size_t input_size,
                                    int batch_size, int training, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -372,7 +377,7 @@ float* cnn_global_avg_pool_forward(void* layer, const float* input, size_t input
     }
 }
 
-float* cnn_global_avg_pool_backward(void* layer, const float* grad_output, size_t grad_size,
+CNN_API float* cnn_global_avg_pool_backward(void* layer, const float* grad_output, size_t grad_size,
                                     int batch_size, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -396,7 +401,7 @@ float* cnn_global_avg_pool_backward(void* layer, const float* grad_output, size_
 // Flatten 层实现
 // ============================================================================
 
-void* cnn_create_flatten_layer(void) {
+CNN_API void* cnn_create_flatten_layer(void) {
     clear_error();
     try {
         auto* layer = new FlattenLayer();
@@ -407,13 +412,13 @@ void* cnn_create_flatten_layer(void) {
     }
 }
 
-void cnn_destroy_flatten_layer(void* layer) {
+CNN_API void cnn_destroy_flatten_layer(void* layer) {
     if (layer) {
         delete static_cast<FlattenLayer*>(layer);
     }
 }
 
-void cnn_flatten_set_input_shape(void* layer, int channels, int height, int width, int batch) {
+CNN_API void cnn_flatten_set_input_shape(void* layer, int channels, int height, int width, int batch) {
     if (!layer) {
         set_error("Null layer pointer");
         return;
@@ -421,7 +426,7 @@ void cnn_flatten_set_input_shape(void* layer, int channels, int height, int widt
     static_cast<FlattenLayer*>(layer)->set_input_shape(channels, height, width, batch);
 }
 
-float* cnn_flatten_forward(void* layer, const float* input, size_t input_size,
+CNN_API float* cnn_flatten_forward(void* layer, const float* input, size_t input_size,
                            int batch_size, int training, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -441,7 +446,7 @@ float* cnn_flatten_forward(void* layer, const float* input, size_t input_size,
     }
 }
 
-float* cnn_flatten_backward(void* layer, const float* grad_output, size_t grad_size,
+CNN_API float* cnn_flatten_backward(void* layer, const float* grad_output, size_t grad_size,
                             int batch_size, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -465,7 +470,7 @@ float* cnn_flatten_backward(void* layer, const float* grad_output, size_t grad_s
 // Dynamic Flatten 层实现
 // ============================================================================
 
-void* cnn_create_dynamic_flatten_layer(void) {
+CNN_API void* cnn_create_dynamic_flatten_layer(void) {
     clear_error();
     try {
         auto* layer = new DynamicFlattenLayer();
@@ -476,13 +481,13 @@ void* cnn_create_dynamic_flatten_layer(void) {
     }
 }
 
-void cnn_destroy_dynamic_flatten_layer(void* layer) {
+CNN_API void cnn_destroy_dynamic_flatten_layer(void* layer) {
     if (layer) {
         delete static_cast<DynamicFlattenLayer*>(layer);
     }
 }
 
-float* cnn_dynamic_flatten_forward(void* layer, const float* input, size_t input_size,
+CNN_API float* cnn_dynamic_flatten_forward(void* layer, const float* input, size_t input_size,
                                    int channels, int height, int width,
                                    int batch_size, int training, size_t* output_size) {
     if (!layer) {
@@ -504,7 +509,7 @@ float* cnn_dynamic_flatten_forward(void* layer, const float* input, size_t input
     }
 }
 
-float* cnn_dynamic_flatten_backward(void* layer, const float* grad_output, size_t grad_size,
+CNN_API float* cnn_dynamic_flatten_backward(void* layer, const float* grad_output, size_t grad_size,
                                     int batch_size, size_t* output_size) {
     if (!layer) {
         set_error("Null layer pointer");
@@ -528,7 +533,7 @@ float* cnn_dynamic_flatten_backward(void* layer, const float* grad_output, size_
 // 图像加载器实现
 // ============================================================================
 
-void* cnn_create_image_loader(int channels, int height, int width,
+CNN_API void* cnn_create_image_loader(int channels, int height, int width,
                               int norm_01, int norm_mean_std,
                               float mean, float std, int auto_compute) {
     clear_error();
@@ -543,13 +548,13 @@ void* cnn_create_image_loader(int channels, int height, int width,
     }
 }
 
-void cnn_destroy_image_loader(void* loader) {
+CNN_API void cnn_destroy_image_loader(void* loader) {
     if (loader) {
         delete static_cast<ImageLoader*>(loader);
     }
 }
 
-float* cnn_load_image(void* loader, const char* filepath, size_t* output_size) {
+CNN_API float* cnn_load_image(void* loader, const char* filepath, size_t* output_size) {
     if (!loader) {
         set_error("Null loader pointer");
         *output_size = 0;
@@ -567,7 +572,7 @@ float* cnn_load_image(void* loader, const char* filepath, size_t* output_size) {
     }
 }
 
-float* cnn_load_batch(void* loader, const char** filepaths, int count, size_t* output_size) {
+CNN_API float* cnn_load_batch(void* loader, const char** filepaths, int count, size_t* output_size) {
     if (!loader) {
         set_error("Null loader pointer");
         *output_size = 0;
@@ -589,7 +594,7 @@ float* cnn_load_batch(void* loader, const char** filepaths, int count, size_t* o
     }
 }
 
-float* cnn_load_from_directory(void* loader, const char* dir_path,
+CNN_API float* cnn_load_from_directory(void* loader, const char* dir_path,  
                                const char** extensions, int ext_count,
                                size_t* output_size) {
     if (!loader) {
@@ -613,7 +618,7 @@ float* cnn_load_from_directory(void* loader, const char* dir_path,
     }
 }
 
-void cnn_compute_dataset_statistics(void* loader, const char** filepaths, 
+CNN_API void cnn_compute_dataset_statistics(void* loader, const char** filepaths,
                                     int count, int max_images) {
     if (!loader) {
         set_error("Null loader pointer");
@@ -632,7 +637,7 @@ void cnn_compute_dataset_statistics(void* loader, const char** filepaths,
     }
 }
 
-void cnn_set_normalization_params(void* loader, const float* means, 
+CNN_API void cnn_set_normalization_params(void* loader, const float* means, 
                                   const float* stds, int num_channels) {
     if (!loader) {
         set_error("Null loader pointer");
@@ -644,7 +649,7 @@ void cnn_set_normalization_params(void* loader, const float* means,
         std::vector<float>(stds, stds + num_channels));
 }
 
-float* cnn_get_normalization_means(void* loader, size_t* means_size) {
+CNN_API float* cnn_get_normalization_means(void* loader, size_t* means_size) {
     if (!loader) {
         set_error("Null loader pointer");
         *means_size = 0;
@@ -654,7 +659,7 @@ float* cnn_get_normalization_means(void* loader, size_t* means_size) {
     return alloc_and_copy(means, means_size);
 }
 
-float* cnn_get_normalization_stds(void* loader, size_t* stds_size) {
+CNN_API float* cnn_get_normalization_stds(void* loader, size_t* stds_size) {
     if (!loader) {
         set_error("Null loader pointer");
         *stds_size = 0;
@@ -664,17 +669,17 @@ float* cnn_get_normalization_stds(void* loader, size_t* stds_size) {
     return alloc_and_copy(stds, stds_size);
 }
 
-int cnn_image_loader_get_height(void* loader) {
+CNN_API int cnn_image_loader_get_height(void* loader) {
     if (!loader) return 0;
     return static_cast<ImageLoader*>(loader)->get_target_height();
 }
 
-int cnn_image_loader_get_width(void* loader) {
+CNN_API int cnn_image_loader_get_width(void* loader) {
     if (!loader) return 0;
     return static_cast<ImageLoader*>(loader)->get_target_width();
 }
 
-int cnn_image_loader_get_channels(void* loader) {
+CNN_API int cnn_image_loader_get_channels(void* loader) {
     if (!loader) return 0;
     return static_cast<ImageLoader*>(loader)->get_target_channels();
 }
@@ -683,7 +688,7 @@ int cnn_image_loader_get_channels(void* loader) {
 // 通用内存管理
 // ============================================================================
 
-void cnn_free_buffer(float* buffer) {
+CNN_API void cnn_free_buffer(float* buffer) {
     delete[] buffer;
 }
 
@@ -691,10 +696,6 @@ void cnn_free_buffer(float* buffer) {
 // 辅助函数
 // ============================================================================
 
-const char* cnn_get_last_error(void) {
+CNN_API const char* cnn_get_last_error(void) {
     return g_last_error;
-}
-
-const char* cnn_get_version(void) {
-    return "1.0.0";
 }
