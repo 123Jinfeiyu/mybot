@@ -31,7 +31,7 @@ libfft4cj.so:  src/cpp/fft1.c src/cpp/fft.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 # 卷积神经网络cnn
-libcnn4cj.so:  src/cpp/cnn/cnn_i.cpp conv.o pooling.o ga_pooling.o imgl.o
+libcnn4cj.so:  src/cpp/cnn/cnn_i.cpp conv.o pooling.o ga_pooling.o flatten.o imgl.o
 	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
 
 conv.o:  src/cpp/cnn/conv.cpp
