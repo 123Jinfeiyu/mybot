@@ -151,6 +151,13 @@ func run_test(key: String) {
 			sleep(Duration.millisecond * 10)
 		}
 	}
+
+	// 发声测试
+	else if (key == "sound") {
+		unsafe {
+			play_frequency(2000i32, 1000i32, 0.2f64, 2i32, 48000i32)
+		}
+	}
 }
 
 /* http伺服器读取动作脚本

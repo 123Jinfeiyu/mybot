@@ -8,12 +8,17 @@ LIBS := -lpthread
 FLAGS := -O3 -pipe #-Wall -Werror
 
 #-----------
-all: libi2c4cj.so libmt4cj.so libfft4cj.so libcnn4cj.so
+all: libi2c4cj.so libsnd4cj.so libmt4cj.so libfft4cj.so #libcnn4cj.so
 
-# 机器人及cpu神经网络、矩阵
+# I2C
 libi2c4cj.so:  src/cpp/I2C.c
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
 
+# SOUND
+libsnd4cj.so:  src/cpp/snd.cpp
+	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
+
+# cpu nn
 ifeq ($(MODE), cpu)
 libmt4cj.so: src/cpp/Matrix.cpp
 	$(CC) $(FLAGS) -shared -fPIC $^ -o $@
@@ -51,5 +56,5 @@ imgl.o:  src/cpp/cnn/imgl.cpp
 
 
 clear:
-	rm *.o
-	rm *.so
+	rm -f *.o
+	rm -f *.so

@@ -8,6 +8,7 @@
 apt update
 apt install libi2c-dev
 apt install cimg-dev
+apt install libasound2-dev
 
 ```
 
