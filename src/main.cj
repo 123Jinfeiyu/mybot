@@ -51,6 +51,7 @@ main(args: Array<String>): Int64 {
 	else {
 		let nn_in = ArrayList<Nn>()
 		nn_in.add(Nn(41, 80, ActivationFuncs.Leaky_ReLU, 0.2f32))
+		nn_in.add(Nn(80, 80, ActivationFuncs.Leaky_ReLU, 0.2f32))
 		nn_in.add(Nn(80, 40, ActivationFuncs.Leaky_ReLU, 0.2f32))
 		nn_in.add(Nn(40, 17, ActivationFuncs.Sigmoid, 0.2f32)) // 16个舵机加1个时延
 		nn_in  }
