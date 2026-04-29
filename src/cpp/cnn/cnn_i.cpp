@@ -1,6 +1,10 @@
 // cnn_c_interface.cpp
 #include "cnn_i.h"
-#include "cnn.h"
+#include "conv.h"
+#include "pooling.h"
+#include "ga_pooling.h"
+#include "flatten.h"
+#include "imgl.h"
 #include <cstring>
 #include <vector>
 
