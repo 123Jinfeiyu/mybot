@@ -9,6 +9,25 @@ extern "C" {
 #endif
 
 // ============================================================================
+// 类型定义 - 使用 void* 作为不透明指针
+// ============================================================================
+
+// CNN 层类型枚举
+typedef enum {
+    CNN_LAYER_CONV = 0,
+    CNN_LAYER_POOLING = 1,
+    CNN_LAYER_GLOBAL_AVG_POOL = 2,
+    CNN_LAYER_FLATTEN = 3,
+    CNN_LAYER_DYNAMIC_FLATTEN = 4
+} CnnLayerType;
+
+// 池化类型枚举
+typedef enum {
+    CNN_POOL_MAX = 0,
+    CNN_POOL_AVG = 1
+} CnnPoolType;
+
+// ============================================================================
 // 神经网络层接口
 // ============================================================================
 
@@ -254,6 +273,8 @@ void cnn_free_buffer(float* buffer);
 // 获取错误信息
 const char* cnn_get_last_error(void);
 
+// 获取版本信息
+const char* cnn_get_version(void);
 
 #ifdef __cplusplus
 }

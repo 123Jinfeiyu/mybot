@@ -242,10 +242,9 @@ CNN_API void cnn_conv_reset_optimizer_state(void* layer) {
 // ============================================================================
 
 CNN_API void* cnn_create_pooling_layer(int pool_height, int pool_width, 
-                               int stride, int padding, int pool_type) {
+                               int stride, int padding, bool is_max) {
     clear_error();
     try {
-        bool is_max = (pool_type == CNN_POOL_MAX);
         auto* layer = new PoolingLayer(pool_height, pool_width, stride, padding, is_max);
         return static_cast<void*>(layer);
     } catch (const std::exception& e) {
