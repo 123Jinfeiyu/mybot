@@ -8,3 +8,4 @@ nvcc -shared -o pooling.lib -c src/cpp/cnn/pooling.cpp -allow-unsupported-compil
 nvcc -shared -o ga_pooling.lib -c src/cpp/cnn/ga_pooling.cpp -allow-unsupported-compiler
 nvcc -shared -o flatten.lib -c src/cpp/cnn/flatten.cpp -allow-unsupported-compiler
 nvcc -shared --std=c++17 -o libcnn4cj.dll src/cpp/cnn/cnn_i.cpp conv.lib imgl.lib pooling.lib ga_pooling.lib flatten.lib -allow-unsupported-compiler
+nvcc -shared -o libsnd4cj.dll src/cpp/snd.cpp -allow-unsupported-compiler
