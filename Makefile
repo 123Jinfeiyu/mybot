@@ -5,7 +5,7 @@ CC:= gcc
 CXX:= g++
 NVCC:= nvcc
 LIBS := -lpthread
-FLAGS := -O3 -pipe -std=c++17 #-Wall -Werror
+FLAGS := -O3 -pipe #-Wall -Werror
 
 #-----------
 all: libi2c4cj.so libmt4cj.so libfft4cj.so libcnn4cj.so
@@ -32,7 +32,7 @@ libfft4cj.so:  src/cpp/fft1.c src/cpp/fft.cpp
 
 # 卷积神经网络cnn
 libcnn4cj.so:  src/cpp/cnn/cnn_i.cpp conv.o pooling.o ga_pooling.o flatten.o imgl.o
-	$(CC) $(FLAGS) -shared -fPIC $^ -lm -o $@
+	$(CC) $(FLAGS) -std=c++17 -shared -fPIC $^ -lm -o $@
 
 conv.o:  src/cpp/cnn/conv.cpp
 	$(CC) $(FLAGS) -shared -fPIC -c $^ -o $@
