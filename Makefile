@@ -5,7 +5,7 @@ CC:= gcc
 CXX:= g++
 NVCC:= nvcc
 LIBS := -lpthread
-FLAGS := -O3 -pipe #-Wall -Werror
+FLAGS := -O3 -pipe -std=c++17 #-Wall -Werror
 
 #-----------
 all: libi2c4cj.so libmt4cj.so libfft4cj.so libcnn4cj.so

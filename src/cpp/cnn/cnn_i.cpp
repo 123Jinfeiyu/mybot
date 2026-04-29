@@ -1,5 +1,5 @@
 // cnn_c_interface.cpp
-#include "cnn_i.h"
+//#include "cnn_i.h"
 #include "conv.h"
 #include "pooling.h"
 #include "ga_pooling.h"
