@@ -154,9 +154,8 @@ func run_test(key: String) {
 
 	// 发声测试
 	else if (key == "sound") {
-		unsafe {
-			play_frequency(2000i32, 1000i32, 0.2f64, 2i32, 48000i32)
-		}
+		let spk = Spk(volume: 0.2f64, channels: 2i32, sample_rate: 48000i32)
+		spk.play(5000, 400)
 	}
 }
 
