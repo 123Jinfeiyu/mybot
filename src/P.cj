@@ -11,7 +11,9 @@ import std.collection.*
  * TODO: 状态变量
  * TODO: 在check()中检查脚本列数是否对应
  * TODO: 解析Pi为单位的角度
- * TODO: 空的特殊行  */
+ * TODO: 空的特殊行
+ *
+ * TODO: 硬件模式标签  */
 class ActsParser {
 
 	// 直接通过输入流构造

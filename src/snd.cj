@@ -11,6 +11,8 @@ class Spk {
 		this.channels = channels
 		this.sample_rate = sample_rate
 	}
+
+	// 控制扬声器发声
 	func play(frequency: Int32, volume: Float64, durations_ms: Int32): Bool {
 		unsafe {
 			play_frequency(frequency, durations_ms, volume, channels, sample_rate)
