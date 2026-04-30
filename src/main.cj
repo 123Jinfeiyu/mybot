@@ -383,7 +383,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			}
 
 			// 时延
-			let tt = rp["delay"].getVal().getOrThrow()
+			let tt = r.last.getOrThrow()
 			sleep(Duration.millisecond * Int64(tt)) /* FIXME: 小数不准*/
 		}
 

@@ -1,6 +1,6 @@
 # SNNEAK
 #               legs                 | neck |     free     | speaker | delay
-~s1   s2  s3   s4  s5   s6  s7   s8   s9 s10   - - - - - -   spk       delay;  # column name
+~s1   s2  s3   s4  s5   s6  s7   s8   s9 s10   - - - - - -   spk;  # column name
 !90  180 -90 -180  90  180 -90 -180  180 180   0 0 0 0 0 0  10000; # 4-legs spider robot
 !0     0  -0   -0   0    0  -0   -0    0  0    0 0 0 0 0 0  10; # 4-legs spider robot
 !0     0   0    0   0    0   0    0    0  0    0 0 0 0 0 0  0; # offset
