@@ -252,7 +252,7 @@ class ActsParser {
 			t = if (mi > t) {mi} else {t}
 			t = if (!rf) {t} else {180.0f32 - t}
 			t = match(dx) {
-				case Some(D) => t + D
+				case Some(D) => t + D  // 漂移
 				case None     => t
 			}
 			bs.add(t)
