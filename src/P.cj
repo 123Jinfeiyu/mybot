@@ -47,6 +47,7 @@ class Act {
  * TODO: 列名声明(done)
  * TODO: 增加跳过项
  * TODO: 增加复合项（或者通过动作累加完成）
+ * TODO: 增加设置项
  */
 class ActsParser {
 
