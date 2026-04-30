@@ -361,8 +361,9 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 
 			// 读mpu6050
 			dataSet = ArrayList<MPU6050_sensorData>()
-			dataSet.add(mpu6050s[0].readSensor())
-			dataSet.add(mpu6050s[1].readSensor())
+			for (mpu6050 in mpu6050s) {
+				dataSet.add(mpu6050.readSensor())
+			}
 
 			// 产生奖励
 			// 前进奖励策略
@@ -376,11 +377,9 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 				println("rewards:\t${rewards}")
 				for (k in rSet.size-1..0:-1) {
 					//xSet[k].print()
-					print(" ")
 					rSet[k] += rewards
 					rewards *= 0.9
 				}
-				println()
 			}
 
 			// 时延
