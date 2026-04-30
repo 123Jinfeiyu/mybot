@@ -48,20 +48,20 @@ class ActsParser {
 	init(inputStream: InputStream) { _parse(inputStream) }
 
 	/* 解析器 - 循环不变式
-         * 初始化： ss是一个动作脚本的输入流
-         * 保持： ss是动作脚本剩余部分的输入流
-         * 终止： 当输入流为空时，循环终止  */
-        func _parse(inputStream: InputStream) {
+	 * 初始化： ss是一个动作脚本的输入流
+	 * 保持： ss是动作脚本剩余部分的输入流
+	 * 终止： 当输入流为空时，循环终止  */
+	func _parse(inputStream: InputStream) {
 		let ss = StringReader(inputStream)
-		var count = 0i64
+		var count = 1i64 	// 从第一行开始
 		while (true) {
 			if(let Some(s) <- ss.read()) {
 				try {
-					print(s)
+					//print(s)
 					count = next(s, count)
 				}
 				catch (exp: BufOverTheLine) { throw exp }
-				catch (exp: IllegalArgumentException) { throw UnknowExcept(count) }
+				//catch (exp: IllegalArgumentException) { throw UnknowExcept(count) } // FIXME: 多半是解析问题？还是暴露出来更好
 			}
 			else { break} 
 		}
@@ -70,15 +70,17 @@ class ActsParser {
 	}
 	var nl: Bool = true	// new line
 	var sl: Bool = false	// special
+	var sl_n: Bool = false 	// special (name)
 	var cm: Bool = false	// comment
 	var tmp = ArrayList<Rune>()	// rune buf
 	var grp = ArrayList<Float32>()	// one line
+	var nam = ArrayList<String>() // 列命名
 	var bot = ArrayList<ArrayList<Float32>>()	// bot settings
 	var act = ArrayList<ArrayList<Float32>>()	// acts list
 	static const TMP_LEN = 16	// size of tmp
 	func next(c: Rune, count: Int64): Int64 {
 		var cc: Int64  = count
-
+		//println("nl: ${nl}\tsl: ${sl}\tsl_n: ${sl_n}\tcm: ${cm}\tval: \'${c}\'")
 		//------------ COMMENTS ------------
 		if (!cm && c == r'#') { cm = true }	// 注释开始时
 		else if (cm && c == r'\n') {		// 注释结束时
@@ -90,13 +92,18 @@ class ActsParser {
 		else if (cm && c != r'\n') { ; }	// 注释进行时 FIXME: EOF情况
 		
 		//------------ new line ------------
-		else if (nl && (c == r' ' || c == r'\t')) { ; }	// 新行空字符，维持现状
-		else if (nl && c == r'\n') { cc += 1}	// 新行空行
+		else if (nl && (c == r' ' || c == r'\t' || c == r'\r')) { ; }	// 新行空字符，维持现状
+		else if (nl && c == r'\n') {	// 新行空行
+			cc += 1
+		}
 		else if (nl && c == r'!') {		// 新行特殊行
 			nl = false
 			sl = true
 		}
-		else if (nl && c == r'~') { ; }		// 新行特殊行2留空 TODO: 引入脚本
+		else if (nl && c == r'~') {		// 新行特殊行2留空
+			nl = false
+			sl_n =true
+		}
 		else if (nl && c != r'~' && c != r'!') {	// 新行且不为特殊行、制表符和空格
 			nl = false
 			sl = false
@@ -107,13 +114,29 @@ class ActsParser {
 		}
 		
 		//------------- not nl -------------
-		else if (!nl && (c == r' ' || c == r'\t')) {	// 空格与制表符为两列之间分隔字符
+		else if (!nl && sl_n && (c == r' ' || c == r'\t' || c == r"\n")) {	// 添加命名项
+			if (!tmp.isEmpty()) {
+				let n = String(tmp)
+				nam.add(n)
+				tmp.clear()
+			}
+		}
+		else if (!nl && !sl_n && (c == r' ' || c == r'\t' || c == r'\n')) {	// 空格与制表符为两列之间分隔字符
 			if (!tmp.isEmpty()) {
 				let f = fromTmp()	// 结算当前列
 				grp.add(f)
 			}
 		}
-		else if (!nl && c == r';') {	// 分号是一行的结束标记
+		else if (!nl && sl_n && c == r';') {	// 命名行结束
+			if (!tmp.isEmpty()) {
+				let n =String(tmp)
+				nam.add(n)
+				tmp.clear()
+			}
+			nl = true
+			sl_n = false
+		}
+		else if (!nl && !sl_n && c == r';') {	// 分号是一行的结束标记
 			if (!tmp.isEmpty()) {
 				let f = fromTmp()	// 结算当前列
 				grp.add(f)
@@ -128,8 +151,8 @@ class ActsParser {
 			}
 			nl = true
 			sl = false
-			cm = false
 		}
+
 		else if (!nl) {	// 非空格、非制表符、非分号 FIXME: 且为数字
 			tmp.add(c)			// to buf
 			if (tmp.size > TMP_LEN) {	// to long
@@ -154,6 +177,18 @@ class ActsParser {
 
 		// 字符串构造器
 		let sb = StringBuilder()
+
+		// 序列化命名行
+		if (!nam.isEmpty()) {
+			sb.append("~")
+			for (i in 0..nam.size){
+				sb.append(nam[i])
+				let c = if (i == nam.size-1) {
+					 "\n"
+				} else { "\t\t" }
+				sb.append(c)
+			}
+		}
 
 		// 序列化特殊行
 		for (line in bot) {

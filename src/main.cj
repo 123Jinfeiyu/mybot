@@ -159,6 +159,13 @@ func run_test(key: String) {
 		let spk = Spk(channels: 2i32, sample_rate: 48000i32)
 		spk.play(5000.0f32, 0.2, 400)
 	}
+
+	// 解析器测试
+	else if (key == "parser") {
+		let file = File("ss/test.bot", OpenMode.Read)
+		let parser =  ActsParser(file)
+		print(parser.serialize())
+	}
 }
 
 /* http伺服器读取动作脚本
