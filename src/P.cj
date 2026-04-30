@@ -40,7 +40,8 @@ class Act {
  *
  * qing(20260430):
  * TODO: 实时交互式解析，在启动时选择模型
- * TODO: 列名声明
+ * TODO: 列名声明(done)
+ * TODO: 增加跳过项
  */
 class ActsParser {
 
