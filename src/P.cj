@@ -31,7 +31,7 @@ class Act {
 /* 动作解析器类 - 只解析
  * 兼容上一代Actor类的脚本格式  
  * TODO: 增加缓慢到达（该方式在drl微调时可能会很有用）
- * TODO: 脚本引入
+ * TODO: 脚本引入（使用@符号）
  * TODO: 状态变量
  * TODO: 在check()中检查脚本列数是否对应
  * TODO: 解析Pi为单位的角度
@@ -48,6 +48,7 @@ class Act {
  * TODO: 增加跳过项
  * TODO: 增加复合项（或者通过动作累加完成）
  * TODO: 增加设置项
+ * TODO: 增加变量设置
  */
 class ActsParser {
 
