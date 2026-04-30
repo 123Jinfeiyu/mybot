@@ -6,7 +6,7 @@ import std.collection.*
 
 /* 单条动作的类型枚举 */
 enum ActType {
-	SERVO | SPEAK
+	SERVO | SPEAK | DELAY | NOPE | UNKNOW
 }
 
 /* 单条动作类 */
@@ -15,12 +15,16 @@ class Act {
 	let val: Option<Float32> // 动作值
 	let duration: Float32 // 该动作持续的时间
 	let skip: Bool
-	init(Type: ActType, value!: Float32, duration!: Float32, skip!: Bool = false) {
+	init(Type: ActType, value!: Option<Float32>, duration!: Float32, skip!: Bool = false) {
 		this.typ = Type
 		this.val = value
 		this.duration = duration
 		this.skip = skip
 	}
+	func getVal() { this.val }
+	func getType() { this.typ }
+	func getDelay() {this.duration}
+	func getSkip() {this.skip}
 }
 
 
@@ -42,6 +46,7 @@ class Act {
  * TODO: 实时交互式解析，在启动时选择模型
  * TODO: 列名声明(done)
  * TODO: 增加跳过项
+ * TODO: 增加复合项（或者通过动作累加完成）
  */
 class ActsParser {
 
@@ -75,7 +80,7 @@ class ActsParser {
 	var cm: Bool = false	// comment
 	var tmp = ArrayList<Rune>()	// rune buf
 	var grp = ArrayList<Float32>()	// one line
-	var nam = ArrayList<String>() // 列命名
+	var nam = ArrayList<String>()	// 列命名
 	var bot = ArrayList<ArrayList<Float32>>()	// bot settings
 	var act = ArrayList<ArrayList<Float32>>()	// acts list
 	static const TMP_LEN = 16	// size of tmp
@@ -240,26 +245,42 @@ class ActsParser {
 	}
 
 	// 取一行动作脚本
+	// qing(20260430) TODO: 返回Map<String, Act> 对应名字
 	operator func [](idx: Int64) {
 		let a = act[idx]
-		let bs = ArrayList<Float32>()
+		//let bs = ArrayList<Float32>()
+		let map = HashMap<String, Act>()
 		for (j in 0..a.size-1) {
 			let ma = abs(bot[0][j])
 			let mi = abs(bot[1][j])
 			let rf = rotates[j]
-			let dx: Option<Float32> = if (bot.size >= 3) {bot[2][j]} else {None}
+			let dx = if (bot.size >= 3) {
+				bot[2][j]
+			} else { 0.0f32 }
+			let nm = nam[j] // name
 			var t = a[j]
 			t = if (ma < t) {ma} else {t}
 			t = if (mi > t) {mi} else {t}
 			t = if (!rf) {t} else {180.0f32 - t}
-			t = match(dx) {
-				case Some(D) => t + D  // 漂移
-				case None     => t
+			t = t + dx  // plus offset
+			//bs.add(t)
+			let typ = if (nm.startsWith("s")) {
+				ActType.SERVO
+			} else if (nm.startsWith("spk")) {
+				ActType.SPEAK
+			} else if (nm == "delay") {
+				ActType.DELAY
+			} else if (nm == "-") {
+				ActType.NOPE
+			} else {
+				ActType.UNKNOW
 			}
-			bs.add(t)
+			let act = Act(typ, value: t, duration: a.last.getOrThrow(), skip: false)
+			map.add(nm, act)
 		}
-		bs.add(a.last.getOrThrow())
-		bs
+		//bs.add(a.last.getOrThrow())
+		//bs
+		map
 	}
 }
 

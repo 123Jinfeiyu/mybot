@@ -43,7 +43,7 @@ main(args: Array<String>): Int64 {
 	}
 
 	//---------------------------
-	// 初始化神经网络 init nn
+	// 初始化神经网络 （init nn）
 	var nns: ArrayList<Nn> = 
 	if (options.keys().contains("i")) {
 		let filename = options['i']
@@ -268,13 +268,13 @@ func run_serve(nns: ArrayList<Nn>, save_path: String) {
 }
 
 /* 从标准输入中读取动作脚本 */
-func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
-	let parser = ActsParser(consoleReader)
-	let actor = Actor(I2C_PATH)
-	for (i in 0..parser.size) {
-		actor.play(parser[i])
-	}
-}
+//func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
+//	let parser = ActsParser(consoleReader)
+//	let actor = Actor(I2C_PATH)
+//	for (i in 0..parser.size) {
+//		actor.play(parser[i])
+//	}
+//}
 
 /* 从标准输入中读取动作脚本，并进行随机DRL
  * FIXME: 为不同的目标设计不同的奖励策略，
@@ -282,7 +282,15 @@ func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
  * TODO(qing-20260430): 使用视觉和cnn进行微调
  * 首先使机器人摄像头云台旋转不同角度（在同一位置）
  * 采集图像，然后训练机器人识别画面偏移方向（自监督学习）
- * 用这个模型去训练微调机器人走直线  */
+ * 用这个模型去训练微调机器人走直线
+ *
+ * TODO: 专门设计一个机器人类，记录参数。
+ *（可是这样就不通用了）
+ * 方案二是对于命名的模式给予固定设置
+ *
+ * TODO: 发声常伴随着延时，所以现在有两个方案
+ *   1. cpp发声线程（可叠加声音）。
+ *   2. 以发声替代延时。 */
 func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
@@ -335,13 +343,19 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			tSet.add(y)
 			rSet.add(0.0f32)
 
-			// 做动作
+			// 解析
 			let rp = parser[i]
-			for (jj in 0..rp.size-1) {
-				print(rp[jj])
-				print(" ")
-				pca9685.setAngle(UInt8(jj), Float32(rp[jj]))
+
+			// 做动作
+			for (jj in 0..10) {
+				let k = "s${jj}"
+				let v = rp[k]
+				let id = UInt8(jj)
+				let val = Float32(v.getVal().getOrThrow())
+				pca9685.setAngle(id, val)
 			}
+
+
 			println()
 			sleep(Duration.millisecond*1)
 
@@ -370,7 +384,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			}
 
 			// 时延
-			let tt = r.last.getOrThrow()
+			let tt = rp["delay"].getVal().getOrThrow()
 			sleep(Duration.millisecond * Int64(tt)) /* FIXME: 小数不准*/
 		}
 
