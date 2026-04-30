@@ -1,6 +1,10 @@
 /* 机器人构成模块 */
 
 package bot4cj
+import std.io.*
+import std.time.*
+import std.random.*
+import std.collection.*
 
 
 
