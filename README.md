@@ -7,8 +7,8 @@
 # debian
 apt update
 apt install libi2c-dev
-apt install cimg-dev
-apt install libasound2-dev
+apt install cimg-dev   #  新版用于cnn，开发中
+apt install libasound2-dev # 新版用于扬声器
 
 ```
 
