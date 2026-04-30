@@ -31,7 +31,9 @@ import std.collection.*
  *
  * TODO: 发声常伴随着延时，所以现在有两个方案
  *   1. cpp发声线程（可叠加声音）。
- *   2. 以发声替代延时。 */
+ *   2. 以发声替代延时。（done）
+ *
+ * TODO(qing-20260501): 让机器人和神经网络自检 */
 func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let parser = ActsParser(consoleReader)
 	let actor = Actor(I2C_PATH)
@@ -88,7 +90,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			let rp = parser[i]
 
 			// 做动作
-			for (jj in 0..10) {
+			for (jj in 0..10) { // fixme: 不写死
 				let k = "s${jj}"
 				let v = rp[k]
 				let id = UInt8(jj)
