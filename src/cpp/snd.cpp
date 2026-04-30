@@ -26,6 +26,8 @@ extern "C" {
 // sample_rate: Sample rate in Hz
 #ifdef _WIN32
 #define SND_EXPORT __declspec(dllexport)
+#else
+#define SND_EXPORT
 #endif
 SND_EXPORT bool play_frequency(float frequency, int32_t duration_ms, 
                     double volume, int32_t channels, 
