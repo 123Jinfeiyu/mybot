@@ -6,8 +6,23 @@ import std.collection.*
 
 /* 单条动作的类型枚举 */
 enum ActType {
-	SERVO | SPEAK | DELAY | NOPE | UNKNOW
+
+	SERVO | SPEAK | NOPE | UNKNOW
+
+	// 以固定方式解析命名含义
+	static func parse(nm: String): ActType {
+		if (nm.startsWith("s")) {
+			ActType.SERVO
+		} else if (nm == "spk") {
+			ActType.SPEAK
+		} else if (nm == "-") {
+			ActType.NOPE
+		} else {
+			ActType.UNKNOW
+		}
+	}
 }
+
 
 /* 单条动作类 */
 class Act {
@@ -250,39 +265,40 @@ class ActsParser {
 	// qing(20260430) TODO: 返回Map<String, Act> 对应名字
 	operator func [](idx: Int64) {
 		let a = act[idx]
-		//let bs = ArrayList<Float32>()
 		let map = HashMap<String, Act>()
 		for (j in 0..a.size-1) {
-			let ma = abs(bot[0][j])
-			let mi = abs(bot[1][j])
-			let rf = rotates[j]
-			let dx = if (bot.size >= 3) {
-				bot[2][j]
-			} else { 0.0f32 }
 			let nm = nam[j] // name
-			var t = a[j]
-			t = if (ma < t) {ma} else {t}
-			t = if (mi > t) {mi} else {t}
-			t = if (!rf) {t} else {180.0f32 - t}
-			t = t + dx  // plus offset
-			//bs.add(t)
-			let typ = if (nm.startsWith("s")) {
-				ActType.SERVO
-			} else if (nm.startsWith("spk")) {
-				ActType.SPEAK
-			} else if (nm == "delay") {
-				ActType.DELAY
-			} else if (nm == "-") {
-				ActType.NOPE
-			} else {
-				ActType.UNKNOW
-			}
-			let act = Act(typ, value: t, duration: a.last.getOrThrow(), skip: false)
+			let typ = ActType.parse(nm)
+			let act = Act(typ,	// 生成动作
+				value: _sync(j, a[j]), duration: 0.0f32,
+				skip: false)
 			map.add(nm, act)
 		}
-		//bs.add(a.last.getOrThrow())
-		//bs
-		map
+		let act_n = Act(ActType.NOPE, value: None,
+			duration: a.last.getOrThrow(),
+			skip: false)
+		map.add("delay", act_n)
+		return map
+	}
+
+	// 根据配置对齐原始数据
+	private func _sync(j: Int64, target: Float32): Float32 {
+
+		// 抽象成方法
+		let ma = abs(bot[0][j])
+		let mi = abs(bot[1][j])
+		let rf = rotates[j]
+		let dx = if (bot.size >= 3) {
+			bot[2][j]
+		} else { 0.0f32 }
+
+		var t = target
+		t = if (ma < t) {ma} else {t}
+		t = if (mi > t) {mi} else {t}
+		t = if (!rf) {t} else {180.0f32 - t}
+		t = t + dx  // plus offset
+
+		return t
 	}
 }
 
