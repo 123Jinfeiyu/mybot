@@ -4,6 +4,26 @@ import std.math.*
 import std.convert.*
 import std.collection.*
 
+/* 单条动作的类型枚举 */
+enum ActType {
+	SERVO | SPEAK
+}
+
+/* 单条动作类 */
+class Act {
+	let typ: ActType // 该动作的类型
+	let val: Option<Float32> // 动作值
+	let duration: Float32 // 该动作持续的时间
+	let skip: Bool
+	init(Type: ActType, value!: Float32, duration!: Float32, skip!: Bool = false) {
+		this.typ = Type
+		this.val = value
+		this.duration = duration
+		this.skip = skip
+	}
+}
+
+
 /* 动作解析器类 - 只解析
  * 兼容上一代Actor类的脚本格式  
  * TODO: 增加缓慢到达（该方式在drl微调时可能会很有用）
@@ -20,6 +40,7 @@ import std.collection.*
  *
  * qing(20260430):
  * TODO: 实时交互式解析，在启动时选择模型
+ * TODO: 列名声明
  */
 class ActsParser {
 
@@ -216,7 +237,8 @@ class ActsParser {
  * TODO：解析pi为单位的角度
  * FIXME: print()以原貌打印
  * FIXME: parse()兼容空的特殊行
- * TODO*: 解析器与舵机设备解耦 */
+ * TODO*: 解析器与舵机设备解耦
+ * TODO: ”编译“动作脚本 */
 class Actor {
 
 	public init(filepath: String) {
