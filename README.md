@@ -54,7 +54,7 @@ cat ss/step.bot | cjpm run
 麦克风(spk)		=>  ...
 ```
 
-适用的机器人图纸[仓库链接](https://gitcode.com/qingss0/spider-bot)
+适用的机器人图纸[仓库链接](https://github.com/gopsc/Dashun)
 
 ### 动作脚本语法
 
