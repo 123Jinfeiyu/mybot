@@ -177,7 +177,7 @@ func run_test(key: String) {
 				break}
 		}
 		file.close()
-		//print(parser.serialize())
+		print(parser.serialize())
 	}
 }
 

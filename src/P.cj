@@ -67,6 +67,7 @@ class Act {
  *
  * qing(20260502)
  * TODO: 增加变量表，创建硬件变量以及模型
+ * TODO*: 增加从字符串到数值的延迟解析
  */
 class ActsParser {
 
@@ -93,18 +94,17 @@ class ActsParser {
 		}) {
 			try {
 				let s = so.getOrThrow()
-				print(s)
+				//print(s)
 				let l = act.size
 				count = next(s, count)
 				let n = act.size
 				if (n == l + 1) {
-					return this[l]
-				}
+					return this[l] }
 				so  = input.read()
 			}
 			catch (exp: BufOverTheLine) { throw exp }
 			catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
-			catch (exp: Exception) { throw UnknowExcept(count) } // FIXME: 还是暴露出来更好
+			catch (exp: Exception) { throw UnknowExcept(count) } // FIXME: 还是暴露出原来的错误位置来更好？
 		}
 
 		return Option<HashMap<String, Act>>.None
@@ -155,20 +155,40 @@ class ActsParser {
 		}
 		
 		//------------- not nl -------------
-		else if (!nl && sl_n && (c == r' ' || c == r'\t' || c == r"\n")) {	// 添加命名项
+		else if (!nl && sl_n && !sl && (c == r' ' || c == r'\t' || c == r"\n")) {	// 添加命名项
 			if (!tmp.isEmpty()) {
 				let n = String(tmp)
 				nam.add(n)
 				tmp.clear()
 			}
 		}
-		else if (!nl && !sl_n && (c == r' ' || c == r'\t' || c == r'\n')) {	// 空格与制表符为两列之间分隔字符
-			if (!tmp.isEmpty()) {
+		else if (!nl && !sl_n && sl && (c == r' ' || c == r'\t' || c == r'\n')) {	// 添加特殊项
+			if (!tmp.isEmpty() && String(tmp) == "-") {
+				grp.add(0.0f32)		// 当前行略过（0）
+				tmp.clear()
+			}
+			else if (!tmp.isEmpty()) {
 				let f = fromTmp()	// 结算当前列
 				grp.add(f)
 			}
 		}
-		else if (!nl && sl_n && c == r';') {	// 命名行结束
+		else if (!nl && !sl_n && !sl && (c == r" " || c == r'\t' || c == r'\n')) {	// 添加动作项
+			println(tmp)
+			if (!tmp.isEmpty() && String(tmp) == "-" && act.size == 0) {  // 首行动作被跳过
+				grp.add(0.0f32)
+				tmp.clear()
+			} 
+			else if (!tmp.isEmpty() && String(tmp) == "-" && act.size > 0) { // 非首行
+				let f = act[act.size-1][grp.size]
+				grp.add(f)
+				tmp.clear()
+			}
+			else if (!tmp.isEmpty()) {
+				let f = fromTmp()	// 结算当前列
+				grp.add(f)
+			}
+		}
+		else if (!nl && sl_n && !sl && c == r';') {	// 命名行结束
 			if (!tmp.isEmpty()) {
 				let n =String(tmp)
 				nam.add(n)
@@ -177,21 +197,45 @@ class ActsParser {
 			nl = true
 			sl_n = false
 		}
-		else if (!nl && !sl_n && c == r';') {	// 分号是一行的结束标记
-			if (!tmp.isEmpty()) {
+		else if (!nl && !sl_n && sl && c == r';') { // 特殊行结束
+			if (!tmp.isEmpty() && String(tmp) == "-") {
+				grp.add(0.0f32)		// 当前行略过（0）
+				tmp.clear()
+			}
+			else if (!tmp.isEmpty()) {
 				let f = fromTmp()	// 结算当前列
 				grp.add(f)
 			}
-			if (!grp.isEmpty() && sl) {	// 特殊行结算
+
+			if (!grp.isEmpty()) {
 				bot.add(grp.clone())
-				grp.clear()
-			}
-			if (!grp.isEmpty() && !sl) {	// 普通行结算
-				act.add(grp.clone())
 				grp.clear()
 			}
 			nl = true
 			sl = false
+		}
+		else if (!nl && !sl_n && !sl && c == r';') {	// 普通行结束
+
+			if (!tmp.isEmpty() && String(tmp) == "-" && act.size == 0) {  // 首行动作被跳过
+				grp.add(0.0f32)
+				tmp.clear()
+			} 
+			else if (!tmp.isEmpty() && String(tmp) == "-" && act.size > 0) { // 非首行
+				let f = act[act.size-1][grp.size]
+				grp.add(f)
+				tmp.clear()
+			}
+			else if (!tmp.isEmpty()) {
+				let f = fromTmp()	// 结算当前列
+				grp.add(f)
+			}
+
+			if (!grp.isEmpty()) {		// 普通行结算
+				act.add(grp.clone())
+				grp.clear()
+			}
+			nl = true
+
 		}
 
 		else if (!nl) {	// 非空格、非制表符、非分号 FIXME: 且为数字
@@ -207,6 +251,7 @@ class ActsParser {
 
 	// 从临时字符缓冲区解析出数值并清理
 	func fromTmp(): Float32 {
+		//println(tmp)
 		let str = String(tmp)
 		let f = Float32.parse(str)
 		tmp.clear()
@@ -323,8 +368,8 @@ class ActsParser {
 
 /* 解析异常 */
 open private class ParseExcept <: Exception {
-	public ParseExcept(msg: String, length: Int64) {
-		super('${msg}. we got length: ${length}')
+	public ParseExcept(msg: String, line: Int64) {
+		super('${msg}. we got line: ${line}')
 	}
 }
 
