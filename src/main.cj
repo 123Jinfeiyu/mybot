@@ -155,14 +155,24 @@ func run_test(key: String) {
 	// 发声测试
 	else if (key == "sound") {
 		let spk = Spk(channels: 2i32, sample_rate: 48000i32)
-		spk.play(5000.0f32, 0.2, 400)
+		spk.play(500.0f32, 0.2, 400)
 	}
 
 	// 解析器测试
 	else if (key == "parser") {
 		let file = File("ss/test.bot", OpenMode.Read)
 		let parser =  ActsParser(file)
-		print(parser.serialize())
+		//print(parser.serialize())
+
+		let spk = Spk(channels: 2i32, sample_rate: 48000i32)
+		for (i in 0..parser.size) {
+			let pl = parser[i]
+			let freq = pl['spk'].getVal().getOrThrow()
+			let time = pl['delay'].getDelay()
+			spk.play(freq, 0.6, Int32(time))	// 以发声代替延时
+			println("freq=${freq}")
+			println("time=${time}")
+		}
 	}
 }
 
