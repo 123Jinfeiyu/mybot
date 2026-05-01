@@ -51,7 +51,7 @@ cat ss/step.bot | cjpm run
 8号舵机(s8)		=>	左上垂直关节
 9号舵机(s9)		=>	云台1
 10号舵机(s10) 	=>	云台2
-麦克风(spk)		=>  ...
+扬声器(spk)		=>  ...
 ```
 
 适用的机器人建模文件[仓库链接](https://github.com/gopsc/Dashun)
