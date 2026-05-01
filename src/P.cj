@@ -29,7 +29,7 @@ class Act {
 	let typ: ActType // 该动作的类型
 	let val: Option<Float32> // 动作值
 	let duration: Float32 // 该动作持续的时间
-	let skip: Bool
+	let skip: Bool  // 是否跳过
 	init(Type: ActType, value!: Option<Float32>, duration!: Float32, skip!: Bool = false) {
 		this.typ = Type
 		this.val = value
