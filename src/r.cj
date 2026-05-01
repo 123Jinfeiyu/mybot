@@ -34,8 +34,8 @@ import std.collection.*
  *   2. 以发声替代延时。（done）
  *
  * TODO(qing-20260501): 让机器人和神经网络自检 */
-func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
-	let sr = StringReader<InputStream>(consoleReader)
+func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
+	let sr = StringReader<InputStream>(input)
 	let parser = ActsParser(sr)
 	let i2c = I2C(I2C_PATH)
 	let pca9685 = PCA9685(i2c)
