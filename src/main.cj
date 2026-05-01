@@ -159,20 +159,25 @@ func run_test(key: String) {
 	}
 
 	// 解析器测试
-	else if (key == "parser") {
+	else if (key == "p-snd") {
 		let file = File("ss/test.bot", OpenMode.Read)
-		let parser =  ActsParser(file)
-		//print(parser.serialize())
+		let sr = StringReader<InputStream>(file)
+		let parser =  ActsParser(sr)
 
 		let spk = Spk(channels: 2i32, sample_rate: 48000i32)
-		for (i in 0..parser.size) {
-			let pl = parser[i]
-			let freq = pl['spk'].getVal().getOrThrow()
-			let time = pl['delay'].getDelay()
-			spk.play(freq, 0.6, Int32(time))	// 以发声代替延时
-			println("freq=${freq}")
-			println("time=${time}")
+		while (true) {
+			if (let Some(pl) <- parser.parse()) {
+				let freq = pl['spk'].getVal().getOrThrow()
+				let time = pl['delay'].getDelay()
+				spk.play(freq, 0.6, Int32(time))	// 以发声代替延时
+				println("freq=${freq}")
+				println("time=${time}")
+			}
+			else {
+				break}
 		}
+		file.close()
+		//print(parser.serialize())
 	}
 }
 

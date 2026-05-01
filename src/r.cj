@@ -35,8 +35,8 @@ import std.collection.*
  *
  * TODO(qing-20260501): 让机器人和神经网络自检 */
 func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
-	let parser = ActsParser(consoleReader)
-	let actor = Actor(I2C_PATH)
+	let sr = StringReader<InputStream>(consoleReader)
+	let parser = ActsParser(sr)
 	let i2c = I2C(I2C_PATH)
 	let pca9685 = PCA9685(i2c)
 	let mpu6050s = [
@@ -47,11 +47,17 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 	let xSet = ArrayList<Matrix>() // 输入
 	let tSet = ArrayList<Matrix>() // 教师
 	let rSet = ArrayList<Float32>() // 奖励
-	for (i in 0..parser.size) {
+	while(true) {
+		// 解析一行，没了就退出循环
+		match(parser.parse()) {
+			case Some(_) => true
+			case None => break
+		}
+
 		let x = Matrix(1, 41) // 4个3轴加速度和角速度，16个关节，1个时延
 		unsafe {
 
-			let r = parser.which(i)
+			let r = parser.which(parser.size-1) // 取尾部
 
 			// 整理出输入
 			for (j in 0..r.size) {
@@ -87,7 +93,7 @@ func run_action_drl(consoleReader: InputStream, nns: ArrayList<Nn>) {
 			rSet.add(0.0f32)
 
 			// 解析
-			let rp = parser[i]
+			let rp = parser[parser.size - 1]
 
 			// 做动作
 			for (jj in 0..10) { // fixme: 不写死
