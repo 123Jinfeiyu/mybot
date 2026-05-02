@@ -96,12 +96,16 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 
 			// 解析
 			let rp = parser[parser.size - 1]
+			for (key in rp.keys()) {
+				print("${key}\t")
+			}
+			println()
 
 			// 做动作
-			for (jj in 0..10) { // fixme: 不写死
+			for (jj in 1..=10) { // fixme: 不写死
 				let k = "s${jj}"
 				let v = rp[k]
-				let id = UInt8(jj)
+				let id = UInt8(jj) - 1u8
 				let val = Float32(v.getVal().getOrThrow())
 				pca9685.setAngle(id, val)
 			}

@@ -95,7 +95,7 @@ class ActsParser {
 		}) {
 			try {
 				let s = so.getOrThrow()
-				//print(s)
+				print(s)
 				let l = act.size
 				count = next(s, count)
 				let n = act.size
@@ -104,8 +104,8 @@ class ActsParser {
 				so  = input.read()
 			}
 			catch (exp: BufOverTheLine) { throw exp }
-			catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
-			catch (exp: Exception) { throw UnknowExcept(count) } // FIXME: 还是暴露出原来的错误位置来更好？
+			//catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
+			//catch (exp: Exception) { throw UnknowExcept(count) } // FIXME: 还是暴露出原来的错误位置来更好？
 		}
 
 		return Option<HashMap<String, Act>>.None
@@ -329,7 +329,7 @@ class ActsParser {
 	operator func [](idx: Int64) {
 		let a = act[idx]
 		let map = HashMap<String, Act>()
-		for (j in 0..a.size-1) {
+		for (j in 0..a.size) {
 			let nm = nam[j] // name
 			let typ = ActType.parse(nm)
 			let act = Act(typ,	// 生成动作
@@ -337,10 +337,6 @@ class ActsParser {
 				skip: false)
 			map.add(nm, act)
 		}
-		let act_n = Act(ActType.NOPE, value: None,
-			duration: a.last.getOrThrow(),
-			skip: false)
-		map.add("delay", act_n)
 		return map
 	}
 
