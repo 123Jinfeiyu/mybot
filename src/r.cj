@@ -33,7 +33,9 @@ import std.collection.*
  *   1. cpp发声线程（可叠加声音）。
  *   2. 以发声替代延时。（done）
  *
- * TODO(qing-20260501): 让机器人和神经网络自检 */
+ * TODO(qing-20260501): 让机器人和神经网络自检（自行对比是否准确）
+ *
+ * TODO(qing-20260502): 硬件变量、软（数值）变量，使用箭头加大括号？  */
 func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 	let sr = StringReader<InputStream>(input)
 	let parser = ActsParser(sr)

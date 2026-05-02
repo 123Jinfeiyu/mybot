@@ -257,6 +257,7 @@ class ActsParser {
 	}
 
 	// 序列化
+	// TODO(qing-20260502): 我需要先解析对其动作，然后再序列化吗？
 	func serialize(): String {
 
 		// 字符串构造器
