@@ -68,6 +68,7 @@ class Act {
  * qing(20260502)
  * TODO: 增加变量表，创建硬件变量以及模型
  * TODO*: 增加从字符串到数值的延迟解析
+ * TODO*: 扩展为矩阵编程语言
  */
 class ActsParser {
 
@@ -385,3 +386,153 @@ private class UnknowExcept <: ParseExcept {
 		super("I don't understand what happened", count)
 	}
 }
+
+
+
+
+/* 矩阵编程语言 - 基本对象 */
+class MatrixObject {
+	var tmp = ArrayList<Rune>()	// rune buf 字符缓冲区
+	var grp = ArrayList<String>()	// one line 整行缓冲区
+	//var nam = ArrayList<String>()	// 列命名
+	//var settings = ArrayList<ArrayList<String>>() // 设置项
+	var name: String = ""	// 名字
+	var values = ArrayList<ArrayList<String>>()	// 原始矩阵
+
+	// 已命名
+	func hasName() { !(name == "") }
+
+	// 获得名字
+	func getName(): String { return name }
+
+	// 添加字符
+	func addRune(c: Rune) {
+		tmp.add(c)
+	}
+
+	// 提交名字
+	func submitName() {
+		if (tmp.size == 0) { return }
+		let s = String(tmp)
+		tmp.clear()
+		name = s
+	}
+
+	// 提交元素
+	func submitItem() {
+		if (tmp.size == 0) { return }
+		let s = String(tmp)
+		tmp = ArrayList<Rune>()
+		grp.add(s)
+	}
+
+	// 提交行
+	func submitLine() {
+		if (grp.size == 0) { return }
+		values.add(grp)
+		grp = ArrayList<String>()
+	}
+}
+
+class MatrixParser {
+
+	static func hasValue(co: Option<Rune>): Bool {
+		match(co) {
+			case Some(c) => true
+			case None => false
+		}
+	}
+
+	var input: StringReader<InputStream>
+	init(input: StringReader<InputStream>) {
+		this.input = input
+	}
+
+	// 切换目标
+	func reset(input: StringReader<InputStream>) {
+		this.input = input
+	}
+
+	/* 解析器 - 循环不变式
+	 * 初始化： ss是一个动作脚本的输入流
+	 * 保持： ss是动作脚本剩余部分的输入流
+	 * 终止： 当输入流为空时，循环终止  */
+	var obj = MatrixObject()  // 矩阵对象
+	func parse(): Option<MatrixObject> {
+		var count = 1i64 	// 从第一行开始
+		flag = false	// 重置结束标志
+		this.obj = MatrixObject()  // 一次解析一个对象
+		var so = input.read()
+		while (!flag && hasValue(so)) {
+			try {
+				let s = so.getOrThrow()
+				print(s)
+				count = _next(s, count)
+				so  = input.read()
+			}
+			catch (exp: BufOverTheLine) { throw exp }
+			catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
+			catch (exp: Exception) { throw UnknowExcept(count) } // FIXME: 还是暴露出原来的错误位置来更好？
+		}
+
+		if (!obj.hasName()) {return None}
+		return  obj
+	}
+
+	var flag = false	// 结束标志
+	var nl: Bool = true	// new line
+	var cm: Bool = false	// comment
+	var nm: Bool = false	// name-line
+	private func _next(c: Rune, ct: Int64): Int64 {
+		var count = ct
+		//------------ COMMENTS ------------
+		if (!cm && c == r'#') { cm = true }	// 注释开始时
+		else if (cm && c == r'\n') {		// 注释结束时
+			nl = true
+			cm = false
+			count += 1
+		}
+		else if (cm && c != r'\n') { ; }	// 注释进行时 FIXME: EOF情况
+		
+		//------------ new line ------------
+		else if (nl && (c == r' ' || c == r'\t' || c == r'\r')) { ; }	// 新行空字符，维持现状
+		else if (nl && c == r'\n') {	// 新行空行
+			count += 1
+		}
+		else if (nl && c == r'@' && !obj.hasName()) {
+			nl = false
+			nm = true
+		}
+		else if (nl && c == r'@' && obj.hasName()) {
+			flag =true
+			nl = false
+			nm = true
+		}
+		else if (nl && c != r'@') {	// 新行内容
+			nl = false
+			obj.addRune(c)
+		}
+		//------------- not nl -------------
+		else if (!nl &&  nm && (c == r' ' || c == r'\t' || c == r'\n')) {	// 添加名字
+			obj.submitName()
+			nl = true
+			nm = false
+		}
+		else if (!nl && !nm && (c == r' ' || c == r'\t' || c == r"\n")) {	// 添加命名项
+			obj.submitItem()
+			if (c ==  r"\n") { count += 1 }
+		}
+		else if (!nl && c == r';') {	// 普通行结束
+			obj.submitItem()
+			obj.submitLine()
+			nl = true
+		} 
+		else if (!nl) {	// 非空格、非制表符、非分号
+			obj.addRune(c)
+		}
+
+		return count
+	}
+
+}
+

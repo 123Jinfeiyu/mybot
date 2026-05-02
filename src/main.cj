@@ -182,6 +182,22 @@ func run_test(key: String) {
 		file.close()
 		print(parser.serialize())
 	}
+
+	else if (key == "matrix") {
+		
+		let file = File("ss/test.mt", OpenMode.Read)
+		let sr = StringReader<InputStream>(file)
+		let parser =  MatrixParser(sr)
+		while (true) {
+			if (let Some(O) <- parser.parse()) {
+				let n = O.getName();
+				println(n)
+			}
+			else {
+				break }
+		}
+		file.close()
+	}
 }
 
 /* http伺服器读取动作脚本
