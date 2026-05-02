@@ -121,7 +121,6 @@ class ActsParser {
 	static const TMP_LEN = 16	// size of tmp
 	func next(c: Rune, count: Int64): Int64 {
 		var cc: Int64  = count
-		//println("nl: ${nl}\tsl: ${sl}\tsl_n: ${sl_n}\tcm: ${cm}\tval: \'${c}\'")
 		//------------ COMMENTS ------------
 		if (!cm && c == r'#') { cm = true }	// 注释开始时
 		else if (cm && c == r'\n') {		// 注释结束时
@@ -173,7 +172,7 @@ class ActsParser {
 			}
 		}
 		else if (!nl && !sl_n && !sl && (c == r" " || c == r'\t' || c == r'\n')) {	// 添加动作项
-			println(tmp)
+
 			if (!tmp.isEmpty() && String(tmp) == "-" && act.size == 0) {  // 首行动作被跳过
 				grp.add(0.0f32)
 				tmp.clear()
@@ -251,7 +250,6 @@ class ActsParser {
 
 	// 从临时字符缓冲区解析出数值并清理
 	func fromTmp(): Float32 {
-		//println(tmp)
 		let str = String(tmp)
 		let f = Float32.parse(str)
 		tmp.clear()

@@ -169,7 +169,10 @@ func run_test(key: String) {
 			if (let Some(pl) <- parser.parse()) {
 				let freq = pl['spk'].getVal().getOrThrow()
 				let time = pl['delay'].getDelay()
-				spk.play(freq, 0.6, Int32(time))	// 以发声代替延时
+				if (freq == 0.0f32) { 
+					println("------------------")
+					sleep(Duration.millisecond * Int64(time * 1000.0f32) / 1000)
+				} else { spk.play(freq, 0.6, Int32(time)) }
 				println("freq=${freq}")
 				println("time=${time}")
 			}
