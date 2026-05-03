@@ -101,6 +101,10 @@ func print_help() {
 	println("cat std.bot | ./bot")
 	println()
 	println("--i2c=/path/to/device\t选择i2c设备")
+	println()
+	println("-i  选择输入的模型的路径")
+	println("-o  设置输出的模型的路径")
+
 }
 
 /* 集成多种常规测试、临时测试 */
