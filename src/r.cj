@@ -145,7 +145,7 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 			}
 			else {
 				let spk = Spk(channels: 2i32, sample_rate: 48000i32)
-				spk.play(freq, 0.2, Int32(tt))	// 以发声代替延时
+				spk.play(freq, 0.6, Int32(tt))	// 以发声代替延时
 			}
 		}
 
