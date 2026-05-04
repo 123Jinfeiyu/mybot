@@ -6,6 +6,7 @@ import std.time.*
 import std.random.*
 import std.collection.*
 
+
 /* 阅读矩阵脚本
  * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型 */
 func readMatrix(file: InputStream): LinkedList<MatrixObject> {
@@ -24,11 +25,79 @@ func readMatrix(file: InputStream): LinkedList<MatrixObject> {
 	return C
 }
 
+/* 在矩阵对象的容器中寻找目标 */
+func findMt(objs: LinkedList<MatrixObject>, name: String) {
+	for (item in objs) {
+		if (name == item.getName()) {
+			return item
+		}
+	}
+
+	throw IllegalArgumentException("Matrix object not found")
+}
+
+// 创建硬件变量字典
+func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> {
+	let M = HashMap<String, IHardware> ()
+	createServoVars(objs, M)
+	return M
+}
+
+// 创建舵机机组硬件变量
+func createServoVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
+{
+	let servoDefs = findMt(objs, "Servo")	// MatrixObject
+	let idxName = servoDefs.indexOfCol(0, "name")
+	let idxMax = servoDefs.indexOfCol(0, "max")
+	let idxMin = servoDefs.indexOfCol(0, "min")
+	let idxOffset = servoDefs.indexOfCol(0, "offset")
+	for (i in 1..servoDefs.size) {
+		let name = servoDefs[i, idxName]
+		let max = servoDefs[i, idxMax]
+		let min = servoDefs[i, idxMin]
+		let offset = servoDefs[i, idxOffset]
+		let servo = Servo({f32 => 
+			0.0f32
+		})
+		M[name]=  servo
+		println("Create a Servo: ${name}")
+	}
+}
+
 /* 使用矩阵脚本驱动机器人 */
 func runWithMt(input: InputStream) {
 	let ll = readMatrix(input)
+	let map = createHardVars(ll)
 } 
 
+// 硬件接口
+interface IHardware {
+	public func play(input: Float32): Float32
+}
+
+// 舵机类
+class Servo <: IHardware {
+	init(things: (Float32) -> Float32) {
+		this.things = things
+	}
+	let things: (Float32) -> Float32
+
+	public func play(input: Float32): Float32 {
+		return things(input)
+	}
+}
+
+// 扬声器类
+class Speaker <: IHardware {
+	init(things: (Float32) -> Float32) {
+		this.things = things
+	}
+	let things: (Float32) -> Float32
+
+	public func play(input: Float32): Float32 {
+		return things(input)
+	}
+}
 
 /* 从标准输入中读取动作脚本，并进行随机DRL
  * FIXME: 为不同的目标设计不同的奖励策略，

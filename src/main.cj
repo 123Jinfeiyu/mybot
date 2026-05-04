@@ -190,7 +190,7 @@ func run_test(key: String) {
 	// 测试解析矩阵
 	else if (key == "matrix") {
 		let file = File("ss/test.mt", OpenMode.Read)
-		readMatrix(file)
+		runWithMt(file)
 		file.close()
 	}
 }

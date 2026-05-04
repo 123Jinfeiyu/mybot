@@ -406,6 +406,17 @@ class MatrixObject {
 	// 获得名字
 	func getName(): String { return name }
 
+	// 取动作的长度
+	public mut prop size: Int64 {
+		get() { values.size }
+		set(_) {}
+	}
+
+	// 获取矩阵元素
+	operator func [](row: Int64, col: Int64): String {
+		return values[row][col]
+	}
+
 	//  在某一行中寻找某一个字符串的列号
 	func indexOfCol(row: Int64, key: String): Int64 {
 		for (col in 0..values[row].size) {
