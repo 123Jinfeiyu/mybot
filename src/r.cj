@@ -6,16 +6,29 @@ import std.time.*
 import std.random.*
 import std.collection.*
 
+/* 阅读矩阵脚本
+ * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型 */
+func readMatrix(file: InputStream): LinkedList<MatrixObject> {
+	let sr = StringReader<InputStream>(file)
+	let parser =  MatrixParser(sr)
+	let C = LinkedList<MatrixObject>()
+	while (true) {
+		if (let Some(O) <- parser.parse()) {
+			let n = O.getName();
+			println(n)
+			C.addLast(O)
+		}
+		else { break }
+	}
 
+	return C
+}
 
-/* 从标准输入中读取动作脚本 */
-//func run_action(consoleReader: InputStream, _: ArrayList<Nn>) {
-//	let parser = ActsParser(consoleReader)
-//	let actor = Actor(I2C_PATH)
-//	for (i in 0..parser.size) {
-//		actor.play(parser[i])
-//	}
-//}
+/* 使用矩阵脚本驱动机器人 */
+func runWithMt(input: InputStream) {
+	let ll = readMatrix(input)
+} 
+
 
 /* 从标准输入中读取动作脚本，并进行随机DRL
  * FIXME: 为不同的目标设计不同的奖励策略，
@@ -25,8 +38,8 @@ import std.collection.*
  * 采集图像，然后训练机器人识别画面偏移方向（自监督学习）
  * 用这个模型去训练微调机器人走直线
  *
- * TODO: 专门设计一个机器人类，记录参数。
- *（可是这样就不通用了）
+ * TODO: 专门设计一个机器人类，记录参数。 (done)
+ *（可是这样就不通用了）(20260504-qing): 由矩阵式脚本提供通用性
  * 方案二是对于命名的模式给予固定设置
  *
  * TODO: 发声常伴随着延时，所以现在有两个方案

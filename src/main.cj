@@ -162,7 +162,7 @@ func run_test(key: String) {
 		spk.play(500.0f32, 0.2, 400)
 	}
 
-	// 解析器测试
+	// 解析器测试 - 只发声
 	else if (key == "p-snd") {
 		let file = File("ss/test.bot", OpenMode.Read)
 		let sr = StringReader<InputStream>(file)
@@ -187,19 +187,10 @@ func run_test(key: String) {
 		print(parser.serialize())
 	}
 
+	// 测试解析矩阵
 	else if (key == "matrix") {
-		
 		let file = File("ss/test.mt", OpenMode.Read)
-		let sr = StringReader<InputStream>(file)
-		let parser =  MatrixParser(sr)
-		while (true) {
-			if (let Some(O) <- parser.parse()) {
-				let n = O.getName();
-				println(n)
-			}
-			else {
-				break }
-		}
+		readMatrix(file)
 		file.close()
 	}
 }

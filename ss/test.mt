@@ -1,17 +1,27 @@
-@Robot
- name   max  min  offset     note   type
-   s1    90    -       -    SERVO    f32 	# rb0
-   s2   180    -       -        -      - 	# rb1 
-   s3   -90    -       -        -      -	# lb0
-   s4  -180    -       -        -      -	# lb1
-   s5    90    -       -        -      -	# lf0
-   s6   180    -       -        -      -	# lf1
-   s7   -90    -       -        -      -	# rf0
-   s8  -180    -       -        -      -	# rf1
-   s9   180    -       -        -      -	# cam0
-  s10   180    -       -        -      -	# cam1
-  spk  5000    -       -  SPEAKER    i32	# speaker
-delay  1000    -       -     TIME    f32	# delay
+
+
+@Timer
+ name   max  min
+delay  1000    -;
+@
+
+@Speaker
+name  channels  volumn  max_f  min_f
+ spk         2     0.6   5000      -;
+@
+
+@Servo
+ name   max  min  offset
+  s1    90     -       -;	# rb0
+  s2   180     -       -;	# rb1 
+  s3   -90     -       -;	# lb0
+  s4  -180     -       -;	# lb1
+  s5    90     -       -;	# lf0
+  s6   180     -       -;	# lf1
+  s7   -90     -       -;	# rf0
+  s8  -180     -       -;	# rf1
+  s9   180     -       -;	# cam0
+ s10   180     -       -;	# cam1
 @
 
 @Action

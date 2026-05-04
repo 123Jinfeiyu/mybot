@@ -363,22 +363,29 @@ class ActsParser {
 
 
 /* 解析异常 */
-open private class ParseExcept <: Exception {
+open class ParseExcept <: Exception {
 	public ParseExcept(msg: String, line: Int64) {
 		super('${msg}. we got line: ${line}')
 	}
 }
 
 /* 缓冲区过长 */
-private class BufOverTheLine <: ParseExcept {
-	public BufOverTheLine(count: Int64) {
+class BufOverTheLine <: ParseExcept {
+	BufOverTheLine(count: Int64) {
 		super('Buffer length over the line', count)
 	}
 }
 
+/* 行没对齐 */
+class DoesNotSync <: ParseExcept {
+	DoesNotSync(count: Int64) {
+		super("Matrix Line Does Not Sync", count)
+	}
+}
+
 /* 未知异常 */
-private class UnknowExcept <: ParseExcept {
-	public UnknowExcept(count: Int64) {
+class UnknowExcept <: ParseExcept {
+	UnknowExcept(count: Int64) {
 		super("I don't understand what happened", count)
 	}
 }
@@ -388,11 +395,9 @@ private class UnknowExcept <: ParseExcept {
 
 /* 矩阵编程语言 - 基本对象 */
 class MatrixObject {
+	var name: String = ""	// 名字
 	var tmp = ArrayList<Rune>()	// rune buf 字符缓冲区
 	var grp = ArrayList<String>()	// one line 整行缓冲区
-	//var nam = ArrayList<String>()	// 列命名
-	//var settings = ArrayList<ArrayList<String>>() // 设置项
-	var name: String = ""	// 名字
 	var values = ArrayList<ArrayList<String>>()	// 原始矩阵
 
 	// 已命名
@@ -400,6 +405,18 @@ class MatrixObject {
 
 	// 获得名字
 	func getName(): String { return name }
+
+	//  在某一行中寻找某一个字符串的列号
+	func indexOfCol(row: Int64, key: String): Int64 {
+		for (col in 0..values[row].size) {
+			if (values[row][col] == key) {
+				return col
+			}
+		}
+
+		// 没找到
+		throw IllegalArgumentException("The key does not found.")
+	}
 
 	// 添加字符
 	func addRune(c: Rune) {
@@ -423,8 +440,10 @@ class MatrixObject {
 	}
 
 	// 提交行
-	func submitLine() {
+	func submitLine(count: Int64) {
 		if (grp.size == 0) { return }
+		if (!values.size == 0 && !grp.size == values[values.size - 1].size)
+			{ throw DoesNotSync(count) }
 		values.add(grp)
 		grp = ArrayList<String>()
 	}
@@ -520,7 +539,7 @@ class MatrixParser {
 		}
 		else if (!nl && c == r';') {	// 普通行结束
 			obj.submitItem()
-			obj.submitLine()
+			obj.submitLine(count)
 			nl = true
 		} 
 		else if (!nl) {	// 非空格、非制表符、非分号
