@@ -78,66 +78,6 @@ class Interf_Speaker <: IHardware {
 	}
 }
 
-
-
-let C = LinkedList<MatrixObject>()
-let M = HashMap<String, IHardware>() 
-
-// 使用矩阵脚本驱动机器人
-// 不行就将矩阵脚本转化为bot脚本吧
-func runWithMt(input: InputStream) {
-	readMatrix(input)
-	createHardVars()
-}
-
-
-// 阅读矩阵脚本
-// TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
-func readMatrix(file: InputStream){
-	let sr = StringReader<InputStream>(file)
-	let parser =  MatrixParser(sr)
-	while (true) {
-		if (let Some(O) <- parser.parse()) {
-			let n = O.getName();
-			println(n)
-			C.addLast(O)
-		}
-		else { break }
-	}
-}
-
-// 创建硬件变量字典
-func createHardVars()
-{
-	createSpeakerVars()
-}
-
-// 创建扬声器机组硬件变量
-func createSpeakerVars()
-{
-	let SpeakerDefs = findMt(C, "Speaker")	// MatrixObject
-	for (i in 1..SpeakerDefs.size) {
-		let idxName = SpeakerDefs.indexOfCol(0, "name")
-		let name = SpeakerDefs[i, idxName]
-		M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
-	}
-}
-
-// 在矩阵对象的容器中寻找目标
-func findMt(ll: LinkedList<MatrixObject>, name: String)
-{
-	for (item in ll) {
-		var target  = item.getName()
-		target = target.trimAscii() // ???
-		if (name == target) {
-			return item
-		}
-	}
-
-	// 什么都没找到，抛出异常
-	throw IllegalArgumentException("Matrix object not found")
-}
-
 // 解析项目值
 func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T>
 {
@@ -154,6 +94,70 @@ func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T
 	return T.parse(raw)
 }
 
+
+
+class RobotStruct {
+
+	// 存放解析结果和创建的变量
+	let C = LinkedList<MatrixObject>()
+	let M = HashMap<String, IHardware>() 
+
+	// 使用矩阵脚本驱动机器人
+	// 不行就将矩阵脚本转化为bot脚本吧
+	init(input: InputStream) {
+		readMatrix(input)
+		createHardVars()
+	}
+
+
+	// 阅读矩阵脚本
+	// TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
+	func readMatrix(file: InputStream){
+		let sr = StringReader<InputStream>(file)
+		let parser =  MatrixParser(sr)
+		while (true) {
+			if (let Some(O) <- parser.parse()) {
+				let n = O.getName();
+				println(n)
+				C.addLast(O)
+			}
+			else { break }
+		}
+	}
+
+	// 创建硬件变量字典
+	func createHardVars()
+	{
+		createSpeakerVars()
+	}
+
+	// 创建扬声器机组硬件变量
+	func createSpeakerVars()
+	{
+		let SpeakerDefs = findMt(C, "Speaker")	// MatrixObject
+		for (i in 1..SpeakerDefs.size) {
+			let idxName = SpeakerDefs.indexOfCol(0, "name")
+			let name = SpeakerDefs[i, idxName]
+			M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
+		}
+	}
+
+	// 在矩阵对象的容器中寻找目标
+	func findMt(ll: LinkedList<MatrixObject>, name: String)
+	{
+		for (item in ll) {
+			var target  = item.getName()
+			target = target.trimAscii() // ???
+			if (name == target) {
+				return item
+			}
+		}
+
+		// 什么都没找到，抛出异常
+		throw IllegalArgumentException("Matrix object not found")
+	}
+
+}
 
 
 /* 从标准输入中读取动作脚本，并进行随机DRL
