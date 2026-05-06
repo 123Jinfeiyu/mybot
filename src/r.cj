@@ -5,7 +5,8 @@ import std.io.*
 import std.time.*
 import std.random.*
 import std.collection.*
-
+import std.convert.*
+import stdx.encoding.json.*
 
 /* 阅读矩阵脚本
  * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型 */
@@ -28,7 +29,9 @@ func readMatrix(file: InputStream): LinkedList<MatrixObject> {
 /* 在矩阵对象的容器中寻找目标 */
 func findMt(objs: LinkedList<MatrixObject>, name: String) {
 	for (item in objs) {
-		if (name == item.getName()) {
+		var target  = item.getName()
+		target = target.trimAscii() // ???
+		if (name == target) {
 			return item
 		}
 	}
@@ -39,28 +42,38 @@ func findMt(objs: LinkedList<MatrixObject>, name: String) {
 // 创建硬件变量字典
 func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> {
 	let M = HashMap<String, IHardware> ()
-	createServoVars(objs, M)
+	createSpeakerVars(objs, M)
 	return M
 }
 
 // 创建舵机机组硬件变量
-func createServoVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
+func createSpeakerVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
 {
-	let servoDefs = findMt(objs, "Servo")	// MatrixObject
+	let servoDefs = findMt(objs, "Speaker")	// MatrixObject
 	let idxName = servoDefs.indexOfCol(0, "name")
-	let idxMax = servoDefs.indexOfCol(0, "max")
-	let idxMin = servoDefs.indexOfCol(0, "min")
-	let idxOffset = servoDefs.indexOfCol(0, "offset")
+	let idxChannels = servoDefs.indexOfCol(0, "channels")
+	let idxSampleRate = servoDefs.indexOfCol(0, "sample_rate")
+	let idxVolumn = servoDefs.indexOfCol(0, "volumn")
+	let idxMax_f = servoDefs.indexOfCol(0, "max_f")
+	let idxMin_f = servoDefs.indexOfCol(0, "min_f")
 	for (i in 1..servoDefs.size) {
 		let name = servoDefs[i, idxName]
-		let max = servoDefs[i, idxMax]
-		let min = servoDefs[i, idxMin]
-		let offset = servoDefs[i, idxOffset]
-		let servo = Servo({f32 => 
+		let channels = Int32.parse(servoDefs[i, idxChannels])
+		let sample_rate = Int32.parse(servoDefs[i, idxSampleRate])
+		let volume = Float32.parse(servoDefs[i, idxVolumn])
+		let max_f = Float32.parse(servoDefs[i, idxMax_f])
+		let min_f = Float32.parse(servoDefs[i, idxMin_f])
+		let spk = Spk(channels: channels, sample_rate: sample_rate)
+		let interf_spk = Interf_Speaker({json => 
+			let json_obj = json.asObject()
+			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
+			let volu  = Float64(json_obj.get("volume").getOrThrow().asFloat().getValue())
+			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
+			spk.play(freq, volu, delay)
 			0.0f32
 		})
-		M[name]=  servo
-		println("Create a Servo: ${name}")
+		M[name]= interf_spk
+		println("Create a Speaker: ${name}")
 	}
 }
 
@@ -72,29 +85,29 @@ func runWithMt(input: InputStream) {
 
 // 硬件接口
 interface IHardware {
-	public func play(input: Float32): Float32
+	public func play(input: JsonValue): Float32
 }
 
 // 舵机类
-class Servo <: IHardware {
-	init(things: (Float32) -> Float32) {
+class Interf_Servo <: IHardware {
+	init(things: (JsonValue) -> Float32) {
 		this.things = things
 	}
-	let things: (Float32) -> Float32
+	let things: (JsonValue) -> Float32
 
-	public func play(input: Float32): Float32 {
+	public func play(input: JsonValue): Float32 {
 		return things(input)
 	}
 }
 
 // 扬声器类
-class Speaker <: IHardware {
-	init(things: (Float32) -> Float32) {
+class Interf_Speaker <: IHardware {
+	init(things: (JsonValue) -> Float32) {
 		this.things = things
 	}
-	let things: (Float32) -> Float32
+	let things: (JsonValue) -> Float32
 
-	public func play(input: Float32): Float32 {
+	public func play(input: JsonValue): Float32 {
 		return things(input)
 	}
 }

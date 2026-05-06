@@ -2,6 +2,7 @@
     #include <windows.h>
     #include <mmsystem.h>
     #pragma comment(lib, "winmm.lib")
+    #pragma comment(lib, "user32.lib")
     #define _USE_MATH_DEFINES
     #include <cmath>
 #else

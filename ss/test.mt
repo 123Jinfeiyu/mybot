@@ -25,8 +25,8 @@ mpu6050-3  i2c-0   0x69;
 @
 
 @Speaker
-name  channels  volumn  max_f  min_f;
- spk         2     0.6   5000      -;
+name  channels  sample_rate  volumn  max_f  min_f;
+ spk         2        48000     0.6   5000      -;
 @
 
 @Servo
