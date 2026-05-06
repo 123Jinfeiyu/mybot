@@ -26,7 +26,7 @@ func readMatrix(file: InputStream): LinkedList<MatrixObject> {
 	return C
 }
 
-/* 在矩阵对象的容器中寻找目标 */
+// 在矩阵对象的容器中寻找目标
 func findMt(objs: LinkedList<MatrixObject>, name: String) {
 	for (item in objs) {
 		var target  = item.getName()
@@ -36,8 +36,26 @@ func findMt(objs: LinkedList<MatrixObject>, name: String) {
 		}
 	}
 
+	// 什么都没找到，抛出异常
 	throw IllegalArgumentException("Matrix object not found")
 }
+
+// 解析项目值
+func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T>
+{
+	let raw = obj[row, col]
+	if (raw == "-" && row > 1) {
+		let prev = obj[row-1, col]
+		return T.parse(prev)
+	}
+	else if (raw == "-" && !row > 1) {
+		return T.parse("0")
+	}
+	
+	// else if (!raw == "-")
+	return T.parse(raw)
+}
+
 
 // 创建硬件变量字典
 func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> {
@@ -49,24 +67,26 @@ func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> 
 // 创建舵机机组硬件变量
 func createSpeakerVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
 {
-	let servoDefs = findMt(objs, "Speaker")	// MatrixObject
-	let idxName = servoDefs.indexOfCol(0, "name")
-	let idxChannels = servoDefs.indexOfCol(0, "channels")
-	let idxSampleRate = servoDefs.indexOfCol(0, "sample_rate")
-	let idxVolumn = servoDefs.indexOfCol(0, "volumn")
-	let idxMax_f = servoDefs.indexOfCol(0, "max_f")
-	let idxMin_f = servoDefs.indexOfCol(0, "min_f")
-	for (i in 1..servoDefs.size) {
-		let name = servoDefs[i, idxName]
-		let channels = Int32.parse(servoDefs[i, idxChannels])
-		let sample_rate = Int32.parse(servoDefs[i, idxSampleRate])
-		let volume = Float32.parse(servoDefs[i, idxVolumn])
-		let max_f = Float32.parse(servoDefs[i, idxMax_f])
-		let min_f = Float32.parse(servoDefs[i, idxMin_f])
+	let SpeakerDefs = findMt(objs, "Speaker")	// MatrixObject
+	let idxName = SpeakerDefs.indexOfCol(0, "name")
+	let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
+	let idxSampleRate = SpeakerDefs.indexOfCol(0, "sample_rate")
+	let idxVolumn = SpeakerDefs.indexOfCol(0, "volumn")
+	let idxMax_f = SpeakerDefs.indexOfCol(0, "max_f")
+	let idxMin_f = SpeakerDefs.indexOfCol(0, "min_f")
+	for (i in 1..SpeakerDefs.size) {
+		let name = SpeakerDefs[i, idxName]
+		let channels = parseMt<Int32>(SpeakerDefs, i, idxChannels)
+		let sample_rate = parseMt<Int32>(SpeakerDefs, i, idxSampleRate)
+		let volume = parseMt<Float32>(SpeakerDefs, i, idxVolumn)
+		let max_f = parseMt<Float32>(SpeakerDefs, i, idxMax_f)
+		let min_f = parseMt<Float32>(SpeakerDefs, i, idxMin_f)
 		let spk = Spk(channels: channels, sample_rate: sample_rate)
 		let interf_spk = Interf_Speaker({json => 
 			let json_obj = json.asObject()
 			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
+			if (freq > max_f) { freq = max_f }
+			if (freq < min_f) { freq = min_f }
 			let volu  = Float64(json_obj.get("volume").getOrThrow().asFloat().getValue())
 			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
 			spk.play(freq, volu, delay)
