@@ -80,40 +80,22 @@ class Interf_Speaker <: IHardware {
 
 
 
+let C = LinkedList<MatrixObject>()
+let M = HashMap<String, IHardware>() 
 
 // 使用矩阵脚本驱动机器人
 // 不行就将矩阵脚本转化为bot脚本吧
 func runWithMt(input: InputStream) {
-	let ll = readMatrix(input)
-	let map = createHardVars(ll)
-} 
-
-
-// 创建硬件变量字典
-func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> {
-	let M = HashMap<String, IHardware> ()
-	createSpeakerVars(objs, M)
-	return M
-}
-
-// 创建舵机机组硬件变量
-func createSpeakerVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
-{
-	let SpeakerDefs = findMt(objs, "Speaker")	// MatrixObject
-	for (i in 1..SpeakerDefs.size) {
-		let idxName = SpeakerDefs.indexOfCol(0, "name")
-		let name = SpeakerDefs[i, idxName]
-		M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
-	}
+	readMatrix(input)
+	createHardVars()
 }
 
 
 // 阅读矩阵脚本
 // TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
-func readMatrix(file: InputStream): LinkedList<MatrixObject> {
+func readMatrix(file: InputStream){
 	let sr = StringReader<InputStream>(file)
 	let parser =  MatrixParser(sr)
-	let C = LinkedList<MatrixObject>()
 	while (true) {
 		if (let Some(O) <- parser.parse()) {
 			let n = O.getName();
@@ -122,13 +104,29 @@ func readMatrix(file: InputStream): LinkedList<MatrixObject> {
 		}
 		else { break }
 	}
+}
 
-	return C
+// 创建硬件变量字典
+func createHardVars()
+{
+	createSpeakerVars()
+}
+
+// 创建扬声器机组硬件变量
+func createSpeakerVars()
+{
+	let SpeakerDefs = findMt(C, "Speaker")	// MatrixObject
+	for (i in 1..SpeakerDefs.size) {
+		let idxName = SpeakerDefs.indexOfCol(0, "name")
+		let name = SpeakerDefs[i, idxName]
+		M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
+	}
 }
 
 // 在矩阵对象的容器中寻找目标
-func findMt(objs: LinkedList<MatrixObject>, name: String) {
-	for (item in objs) {
+func findMt(ll: LinkedList<MatrixObject>, name: String)
+{
+	for (item in ll) {
 		var target  = item.getName()
 		target = target.trimAscii() // ???
 		if (name == target) {
