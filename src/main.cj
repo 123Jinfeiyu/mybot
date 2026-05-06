@@ -191,6 +191,7 @@ func run_test(key: String) {
 	else if (key == "matrix") {
 		let file = File("ss/test.mt", OpenMode.Read)
 		let robot = RobotStruct(file)
+		robot.run()
 		file.close()
 	}
 }

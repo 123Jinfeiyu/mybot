@@ -29,6 +29,7 @@ class Interf_Servo <: IHardware {
 
 // 扬声器类
 // 使用工厂函数
+// TODO: 输入扬声器设备名
 class Interf_Speaker <: IHardware {
 	init(things: (JsonValue) -> Float32) {
 		this.things = things
@@ -95,7 +96,8 @@ func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T
 }
 
 
-
+/* 机器人结构类
+ * 机器人结构是动态的，从脚本中解析的 */
 class RobotStruct {
 
 	// 存放解析结果和创建的变量
@@ -107,6 +109,10 @@ class RobotStruct {
 	init(input: InputStream) {
 		readMatrix(input)
 		createHardVars()
+	}
+
+	func run() {
+		
 	}
 
 
@@ -121,7 +127,8 @@ class RobotStruct {
 				println(n)
 				C.addLast(O)
 			}
-			else { break }
+			else {
+				break }
 		}
 	}
 
@@ -134,7 +141,7 @@ class RobotStruct {
 	// 创建扬声器机组硬件变量
 	func createSpeakerVars()
 	{
-		let SpeakerDefs = findMt(C, "Speaker")	// MatrixObject
+		let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	// MatrixObject
 		for (i in 1..SpeakerDefs.size) {
 			let idxName = SpeakerDefs.indexOfCol(0, "name")
 			let name = SpeakerDefs[i, idxName]
@@ -143,7 +150,7 @@ class RobotStruct {
 	}
 
 	// 在矩阵对象的容器中寻找目标
-	func findMt(ll: LinkedList<MatrixObject>, name: String)
+	static func findMt(ll: LinkedList<MatrixObject>, name: String): Option<MatrixObject>
 	{
 		for (item in ll) {
 			var target  = item.getName()
@@ -154,7 +161,8 @@ class RobotStruct {
 		}
 
 		// 什么都没找到，抛出异常
-		throw IllegalArgumentException("Matrix object not found")
+		//throw IllegalArgumentException("Matrix object not found")
+		return None
 	}
 
 }
