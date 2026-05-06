@@ -8,8 +8,8 @@ import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
 
-/* 阅读矩阵脚本
- * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型 */
+// 阅读矩阵脚本
+// TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
 func readMatrix(file: InputStream): LinkedList<MatrixObject> {
 	let sr = StringReader<InputStream>(file)
 	let parser =  MatrixParser(sr)
@@ -68,36 +68,14 @@ func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> 
 func createSpeakerVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
 {
 	let SpeakerDefs = findMt(objs, "Speaker")	// MatrixObject
-	let idxName = SpeakerDefs.indexOfCol(0, "name")
-	let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
-	let idxSampleRate = SpeakerDefs.indexOfCol(0, "sample_rate")
-	let idxVolumn = SpeakerDefs.indexOfCol(0, "volumn")
-	let idxMax_f = SpeakerDefs.indexOfCol(0, "max_f")
-	let idxMin_f = SpeakerDefs.indexOfCol(0, "min_f")
 	for (i in 1..SpeakerDefs.size) {
+		let idxName = SpeakerDefs.indexOfCol(0, "name")
 		let name = SpeakerDefs[i, idxName]
-		let channels = parseMt<Int32>(SpeakerDefs, i, idxChannels)
-		let sample_rate = parseMt<Int32>(SpeakerDefs, i, idxSampleRate)
-		let volume = parseMt<Float32>(SpeakerDefs, i, idxVolumn)
-		let max_f = parseMt<Float32>(SpeakerDefs, i, idxMax_f)
-		let min_f = parseMt<Float32>(SpeakerDefs, i, idxMin_f)
-		let spk = Spk(channels: channels, sample_rate: sample_rate)
-		let interf_spk = Interf_Speaker({json => 
-			let json_obj = json.asObject()
-			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
-			if (freq > max_f) { freq = max_f }
-			if (freq < min_f) { freq = min_f }
-			let volu  = Float64(json_obj.get("volume").getOrThrow().asFloat().getValue())
-			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
-			spk.play(freq, volu, delay)
-			0.0f32
-		})
-		M[name]= interf_spk
-		println("Create a Speaker: ${name}")
+		M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
 	}
 }
 
-/* 使用矩阵脚本驱动机器人 */
+// 使用矩阵脚本驱动机器人
 func runWithMt(input: InputStream) {
 	let ll = readMatrix(input)
 	let map = createHardVars(ll)
@@ -121,6 +99,7 @@ class Interf_Servo <: IHardware {
 }
 
 // 扬声器类
+// 使用工厂函数
 class Interf_Speaker <: IHardware {
 	init(things: (JsonValue) -> Float32) {
 		this.things = things
@@ -129,6 +108,44 @@ class Interf_Speaker <: IHardware {
 
 	public func play(input: JsonValue): Float32 {
 		return things(input)
+	}
+
+    // 工厂函数，根据矩阵对象进行构造
+	//
+	//  @Speaker
+	//  name  channels  sample_rate  volumn  max_f  min_f;
+	//   spk         2        48000     0.6   5000      -;
+	//  @
+	static func Factory(SpeakerDefs: MatrixObject, i: Int64): Interf_Speaker
+	{
+		let idxName = SpeakerDefs.indexOfCol(0, "name")
+		let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
+		let idxSampleRate = SpeakerDefs.indexOfCol(0, "sample_rate")
+		let idxVolumn = SpeakerDefs.indexOfCol(0, "volumn")
+		let idxMax_f = SpeakerDefs.indexOfCol(0, "max_f")
+		let idxMin_f = SpeakerDefs.indexOfCol(0, "min_f")
+
+		let name = SpeakerDefs[i, idxName]
+		let channels = parseMt<Int32>(SpeakerDefs, i, idxChannels)
+		let sample_rate = parseMt<Int32>(SpeakerDefs, i, idxSampleRate)
+		let volume = parseMt<Float32>(SpeakerDefs, i, idxVolumn)
+		let max_f = parseMt<Float32>(SpeakerDefs, i, idxMax_f)
+		let min_f = parseMt<Float32>(SpeakerDefs, i, idxMin_f)
+
+		println("Create a Speaker: ${name}")		
+		let spk = Spk(channels: channels, sample_rate: sample_rate)
+		let interf_spk = Interf_Speaker({json => 
+			let json_obj = json.asObject()
+			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
+			if (freq > max_f) { freq = max_f }
+			if (freq < min_f) { freq = min_f }
+			let volu  = Float64(json_obj.get("volume").getOrThrow().asFloat().getValue())
+			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
+			spk.play(freq, volu, delay)
+			0.0f32
+		})
+
+		return interf_spk
 	}
 }
 
