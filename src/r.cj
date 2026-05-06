@@ -8,78 +8,7 @@ import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
 
-// 阅读矩阵脚本
-// TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
-func readMatrix(file: InputStream): LinkedList<MatrixObject> {
-	let sr = StringReader<InputStream>(file)
-	let parser =  MatrixParser(sr)
-	let C = LinkedList<MatrixObject>()
-	while (true) {
-		if (let Some(O) <- parser.parse()) {
-			let n = O.getName();
-			println(n)
-			C.addLast(O)
-		}
-		else { break }
-	}
 
-	return C
-}
-
-// 在矩阵对象的容器中寻找目标
-func findMt(objs: LinkedList<MatrixObject>, name: String) {
-	for (item in objs) {
-		var target  = item.getName()
-		target = target.trimAscii() // ???
-		if (name == target) {
-			return item
-		}
-	}
-
-	// 什么都没找到，抛出异常
-	throw IllegalArgumentException("Matrix object not found")
-}
-
-// 解析项目值
-func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T>
-{
-	let raw = obj[row, col]
-	if (raw == "-" && row > 1) {
-		let prev = obj[row-1, col]
-		return T.parse(prev)
-	}
-	else if (raw == "-" && !row > 1) {
-		return T.parse("0")
-	}
-	
-	// else if (!raw == "-")
-	return T.parse(raw)
-}
-
-
-// 创建硬件变量字典
-func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> {
-	let M = HashMap<String, IHardware> ()
-	createSpeakerVars(objs, M)
-	return M
-}
-
-// 创建舵机机组硬件变量
-func createSpeakerVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
-{
-	let SpeakerDefs = findMt(objs, "Speaker")	// MatrixObject
-	for (i in 1..SpeakerDefs.size) {
-		let idxName = SpeakerDefs.indexOfCol(0, "name")
-		let name = SpeakerDefs[i, idxName]
-		M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
-	}
-}
-
-// 使用矩阵脚本驱动机器人
-func runWithMt(input: InputStream) {
-	let ll = readMatrix(input)
-	let map = createHardVars(ll)
-} 
 
 // 硬件接口
 interface IHardware {
@@ -148,6 +77,86 @@ class Interf_Speaker <: IHardware {
 		return interf_spk
 	}
 }
+
+
+
+
+// 使用矩阵脚本驱动机器人
+// 不行就将矩阵脚本转化为bot脚本吧
+func runWithMt(input: InputStream) {
+	let ll = readMatrix(input)
+	let map = createHardVars(ll)
+} 
+
+
+// 创建硬件变量字典
+func createHardVars(objs: LinkedList<MatrixObject>): HashMap<String, IHardware> {
+	let M = HashMap<String, IHardware> ()
+	createSpeakerVars(objs, M)
+	return M
+}
+
+// 创建舵机机组硬件变量
+func createSpeakerVars(objs: LinkedList<MatrixObject>, M: HashMap<String, IHardware>)
+{
+	let SpeakerDefs = findMt(objs, "Speaker")	// MatrixObject
+	for (i in 1..SpeakerDefs.size) {
+		let idxName = SpeakerDefs.indexOfCol(0, "name")
+		let name = SpeakerDefs[i, idxName]
+		M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
+	}
+}
+
+
+// 阅读矩阵脚本
+// TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
+func readMatrix(file: InputStream): LinkedList<MatrixObject> {
+	let sr = StringReader<InputStream>(file)
+	let parser =  MatrixParser(sr)
+	let C = LinkedList<MatrixObject>()
+	while (true) {
+		if (let Some(O) <- parser.parse()) {
+			let n = O.getName();
+			println(n)
+			C.addLast(O)
+		}
+		else { break }
+	}
+
+	return C
+}
+
+// 在矩阵对象的容器中寻找目标
+func findMt(objs: LinkedList<MatrixObject>, name: String) {
+	for (item in objs) {
+		var target  = item.getName()
+		target = target.trimAscii() // ???
+		if (name == target) {
+			return item
+		}
+	}
+
+	// 什么都没找到，抛出异常
+	throw IllegalArgumentException("Matrix object not found")
+}
+
+// 解析项目值
+func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T>
+{
+	let raw = obj[row, col]
+	if (raw == "-" && row > 1) {
+		let prev = obj[row-1, col]
+		return T.parse(prev)
+	}
+	else if (raw == "-" && !row > 1) {
+		return T.parse("0")
+	}
+	
+	// else if (!raw == "-")
+	return T.parse(raw)
+}
+
+
 
 /* 从标准输入中读取动作脚本，并进行随机DRL
  * FIXME: 为不同的目标设计不同的奖励策略，
