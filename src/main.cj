@@ -208,48 +208,71 @@ func run_serve(nns: ArrayList<Nn>, save_path: String) {
 	.port(HTTP_PORT)
 	.build()
 
-	// curl -X POST /api/v2/bot_run -d ${cat filepath}
+	// curl -X POST http://127.0.0.1:5119/api/v2/bot_run -d ${cat filepath}
 	serv.distributor.register('/api/v2/bot_run', { context =>
-		if (context.request.method == 'POST') {
-			// ---- 动作 ----
-			run_action_drl(context.request.body, nns)
-			save_nns(nns, save_path)
-			// ---- 响应 ---- 
+		if (context.request.method != 'POST') {				
+			let headers = HttpHeaders()
+			headers.add('Content-Type', 'text/plain; charset=utf-8;')
+			context.responseBuilder.setHeaders(headers)
+			context.responseBuilder.body("Method not supportted") // FIXME: http code
+			context.responseBuilder.status(400)
+		}
+		// ---- 动作 ----
+		run_action_drl(context.request.body, nns)
+		save_nns(nns, save_path)
+		// ---- 响应 ---- 
+		let headers = HttpHeaders()
+		headers.add('Content-Type', 'text/html; charset=utf-8;')
+		context.responseBuilder.setHeaders(headers)
+		context.responseBuilder.body('OK')
+	})
+
+	// curl -X GET / 
+	serv.distributor.register('/', { context =>
+		try {
+			if (context.request.method != 'GET') {
+				let headers = HttpHeaders()
+				headers.add('Content-Type', 'text/plain; charset=utf-8;')
+				context.responseBuilder.setHeaders(headers)
+				context.responseBuilder.body("Method not supportted")
+				context.responseBuilder.status(400)
+			}
+
+			let file = File("public/index.html", OpenMode.Read)
 			let headers = HttpHeaders()
 			headers.add('Content-Type', 'text/html; charset=utf-8;')
 			context.responseBuilder.setHeaders(headers)
-			context.responseBuilder.body('OK')
+			context.responseBuilder.body(file)
+			context.responseBuilder.status(200)
+		}
+
+		catch (exp: Exception) {
+			let headers = HttpHeaders()
+			headers.add('Content-Type', 'text/plain; charset=utf-8;')
+			context.responseBuilder.setHeaders(headers)
+			context.responseBuilder.body(exp.toString())
+			context.responseBuilder.status(500)
 		}
 	})
 
-	// curl -X POST /api/v1/fs -d '{"mode": "list", "path": "/path/to/dirent"}'
-	serv.distributor.register('/api/v1/list', { context =>
+	// curl -X POST http://127.0.0.1:5119/api/v1/fs -d '{"mode": "list", "path": "/path/to/dirent"}'
+	// python test/test_api_fs.py
+	serv.distributor.register('/api/v1/fs', { context =>
 	
 		try {
-			if (context.request.method != 'POST') {
-				throw IllegalArgumentException("Method does not supportted.")
+			if (context.request.method != 'POST') {				
+				let headers = HttpHeaders()
+				headers.add('Content-Type', 'text/plain; charset=utf-8;')
+				context.responseBuilder.setHeaders(headers)
+				context.responseBuilder.body("Method not supportted") // FIXME: http code
+				context.responseBuilder.status(400)
 			}
 			let json = StringReader(context.request.body).readToEnd()
 			let obj = JsonValue.fromStr(json).asObject()
 			let mode = obj.get('mode').getOrThrow().asString().getValue()
 			if (mode == "list") {
 				let path = obj.get('path').getOrThrow().asString().getValue()
-				let ret = JsonArray()
-				Directory.walk(path, {fileinfo =>
-					let obj = JsonObject()
-					obj.put("name", JsonString(fileinfo.name))
-					if (fileinfo.isDirectory()) {
-						obj.put("type", JsonString("Directory"))
-					}
-					else if (fileinfo.isSymbolicLink()) {
-						obj.put("type", JsonString("SymbolicLink"))
-					}
-					else if (fileinfo.isRegular()) {
-						obj.put("type", JsonString("Regular"))
-					}
-					ret.add(obj)
-					return true
-				})
+				let ret = getDirList(path)
 				let headers = HttpHeaders()
 				headers.add('Content-Type', 'application/json; charset=utf-8;')
 				context.responseBuilder.setHeaders(headers)
@@ -262,36 +285,38 @@ func run_serve(nns: ArrayList<Nn>, save_path: String) {
 
 		catch (exp: Exception) {
 			let headers = HttpHeaders()
-			headers.add('Content-Type', 'application/json; charset=utf-8;')
+			headers.add('Content-Type', 'text/plain; charset=utf-8;')
 			context.responseBuilder.setHeaders(headers)
 			context.responseBuilder.body(exp.toString()) // FIXME: http code
+			context.responseBuilder.status(500)
 		}
 
 	})
 
-	// curl -X GET / 
-	serv.distributor.register('/', { context =>
-		try {
-			if (context.request.method != 'GET') {
-				throw IllegalArgumentException("Method does not supportted.")
-			}
-
-			let html = String.fromUtf8(File.readFrom("./public/index.html"))
-			let headers = HttpHeaders()
-			headers.add("Content-Type", "text/html; charset=utf-8;")
-			context.responseBuilder.setHeaders(headers)
-			context.responseBuilder.body(html)  // FIXME: 不读取出全部的字符串，直接放入输入流可不可以
-		}
-
-		catch (exp: Exception) {
-			let headers = HttpHeaders()
-			headers.add('Content-Type', 'application/json; charset=utf-8;')
-			context.responseBuilder.setHeaders(headers)
-			context.responseBuilder.body(exp.toString()) // FIXME: http code
-		}
-	})
 
 	println('Bot at ${HTTP_ADDR}:${HTTP_PORT}')
 	serv.serve()
 }
 
+// 取得json格式的目录内容的列表，显示目录、符号链接、普通文件
+// 附带文件是否可读可写，如果是普通文件，还会添加文件大小项
+func getDirList(path: String): JsonValue {
+	let ret = JsonArray()
+	Directory.walk(path, {fileinfo =>
+		let obj = JsonObject()
+		obj.put("name", JsonString(fileinfo.name))
+		if (fileinfo.isDirectory()) {
+			obj.put("type", JsonString("Directory")) }
+		else if (fileinfo.isSymbolicLink()) {
+			obj.put("type", JsonString("SymbolicLink")) }
+		else if (fileinfo.isRegular()) {
+			obj.put("type", JsonString("Regular"))
+			obj.put("size", JsonInt(fileinfo.size))
+		}
+		obj.put("writable", JsonBool(fileinfo.canWrite()))
+		obj.put("readable", JsonBool(fileinfo.canRead()))
+		ret.add(obj)
+		return true
+	})
+	return ret
+}
