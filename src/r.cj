@@ -11,12 +11,9 @@ import stdx.encoding.json.*
 
 
 // 硬件接口
-interface IHardware {
-	public func play(input: JsonValue): Float32
-}
-
-// 舵机类
-class Interf_Servo <: IHardware {
+// 接收一个lambda表达式，在回调函数中定义行为
+// 通过JsonValue这种通用的数据结构进行传值
+open class MatrixVars_Hardware {
 	init(things: (JsonValue) -> Float32) {
 		this.things = things
 	}
@@ -24,29 +21,69 @@ class Interf_Servo <: IHardware {
 
 	public func play(input: JsonValue): Float32 {
 		return things(input)
+	}
+}
+
+
+// I2C变量类
+class MtVars_I2C <: MatrixVars_Hardware {
+	init(things: (JsonValue) -> Float32) {
+		super(things)
+	}
+
+	// 工厂模式，根据矩阵对象构造
+	// 
+	//@I2C
+	// name        path;
+	//i2c-0  /dev/i2c-0;
+	//@
+	static func Factory(I2CDefs: MatrixObject, i: Int64): MtVars_I2C
+	{
+		let idxName  = I2CDefs.indexOfCol(0, "name")
+		let idxPath  = I2CDefs.indexOfCol(0, "path")
+
+		let name = I2CDefs[i, idxName]
+		let path = getMt(I2CDefs, i, idxPath)
+
+		println("Create a I2C hard-Var: ${name},\tpath: ${path}")
+		let i2c = I2C(path)
+		let mtvars_i2c = MtVars_I2C({json: JsonValue =>
+			0.0f32
+		})
+
+		return mtvars_i2c
+	}
+}
+
+// PCA9685变量类
+class MtVars_PCA9685 <: MatrixVars_Hardware {
+	init(things: (JsonValue) -> Float32) {
+		super(things)
+	}
+}
+
+// 舵机变量类
+class MtVars_Servo <: MatrixVars_Hardware {
+	init(things: (JsonValue) -> Float32) {
+		super(things)
 	}
 }
 
 // 扬声器类
 // 使用工厂函数
 // TODO: 输入扬声器设备名
-class Interf_Speaker <: IHardware {
+class MtVars_Speaker <: MatrixVars_Hardware {
 	init(things: (JsonValue) -> Float32) {
-		this.things = things
-	}
-	let things: (JsonValue) -> Float32
-
-	public func play(input: JsonValue): Float32 {
-		return things(input)
+		super(things)
 	}
 
-    // 工厂函数，根据矩阵对象进行构造
+	// 工厂函数，根据矩阵对象进行构造
 	//
 	//  @Speaker
 	//  name  channels  sample_rate  volumn  max_f  min_f;
 	//   spk         2        48000     0.6   5000      -;
 	//  @
-	static func Factory(SpeakerDefs: MatrixObject, i: Int64): Interf_Speaker
+	static func Factory(SpeakerDefs: MatrixObject, i: Int64): MtVars_Speaker
 	{
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
 		let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
@@ -64,19 +101,30 @@ class Interf_Speaker <: IHardware {
 
 		println("Create a Speaker: ${name}")		
 		let spk = Spk(channels: channels, sample_rate: sample_rate)
-		let interf_spk = Interf_Speaker({json => 
+		let mtvar_spk = MtVars_Speaker({json => 
 			let json_obj = json.asObject()
 			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
 			if (freq > max_f) { freq = max_f }
 			if (freq < min_f) { freq = min_f }
 			let volu  = Float64(json_obj.get("volume").getOrThrow().asFloat().getValue())
-			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
+			let delay  = Int32(json_obj.get("delay").getOrThrow().asInt().getValue())
 			spk.play(freq, volu, delay)
 			0.0f32
 		})
 
-		return interf_spk
+		return mtvar_spk
 	}
+}
+
+
+// 获得项目值
+func getMt(obj: MatrixObject, row: Int64, col: Int64) 
+{
+	let raw = obj[row, col]
+	if (raw == "-" && row > 1) {
+		return obj[row - 1, col]
+	}
+	return raw
 }
 
 // 解析项目值
@@ -102,7 +150,7 @@ class RobotStruct {
 
 	// 存放解析结果和创建的变量
 	let C = LinkedList<MatrixObject>()
-	let M = HashMap<String, IHardware>() 
+	let M = HashMap<String, MatrixVars_Hardware>() 
 
 	// 使用矩阵脚本驱动机器人
 	// 不行就将矩阵脚本转化为bot脚本吧
@@ -136,6 +184,19 @@ class RobotStruct {
 	func createHardVars()
 	{
 		createSpeakerVars()
+		createI2CVars()
+	}
+
+
+	// 创建I2C机组硬件变量
+	func createI2CVars()
+	{
+		let I2CDefs= findMt(C, "I2C").getOrThrow()	// MatrixObject
+		for (i in 1..I2CDefs.size) {
+			let idxName = I2CDefs.indexOfCol(0, "name")
+			let name = I2CDefs[i, idxName]
+			M[name]  = MtVars_I2C.Factory(I2CDefs, 1)
+		}
 	}
 
 	// 创建扬声器机组硬件变量
@@ -145,7 +206,7 @@ class RobotStruct {
 		for (i in 1..SpeakerDefs.size) {
 			let idxName = SpeakerDefs.indexOfCol(0, "name")
 			let name = SpeakerDefs[i, idxName]
-			M[name]= Interf_Speaker.Factory(SpeakerDefs, i)
+			M[name]= MtVars_Speaker.Factory(SpeakerDefs, i)
 		}
 	}
 

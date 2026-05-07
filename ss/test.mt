@@ -7,7 +7,7 @@ delay  1000    -;
 
 @I2C
  name        path;
-i2c-0  /dev/i2c-0;
+#i2c-0  /dev/i2c-0;
 i2c-1  /dev/i2c-1;
 @
 
@@ -20,8 +20,8 @@ pca9685-0  i2c-1   0x40;
      name    I2C   path;
 mpu6050-0  i2c-1   0x69;
 mpu6050-1  i2c-1   0x68;
-mpu6050-2  i2c-0   0x68;
-mpu6050-3  i2c-0   0x69;
+#mpu6050-2  i2c-0   0x68;
+#mpu6050-3  i2c-0   0x69;
 @
 
 @Speaker
