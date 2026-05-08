@@ -37,7 +37,7 @@ class MtVars_I2C <: MatrixVars_Hardware {
 	// name        path;
 	//i2c-0  /dev/i2c-0;
 	//@
-	static func Factory(I2CDefs: MatrixObject, i: Int64): MtVars_I2C
+	static func Factory(I2CDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_I2C
 	{
 		let idxName  = I2CDefs.indexOfCol(0, "name")
 		let idxPath  = I2CDefs.indexOfCol(0, "path")
@@ -78,6 +78,12 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 	init(things: (JsonValue) -> Float32) {
 		super(things)
 	}
+
+	// 工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖
+	static func Factory(I2CDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_PCA9685
+	{
+		
+	}
 }
 
 // 舵机变量类
@@ -101,7 +107,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 	//  name  channels  sample_rate  volumn  max_f  min_f;
 	//   spk         2        48000     0.6   5000      -;
 	//  @
-	static func Factory(SpeakerDefs: MatrixObject, i: Int64): MtVars_Speaker
+	static func Factory(SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker
 	{
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
 		let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
@@ -213,7 +219,7 @@ class RobotStruct {
 		for (i in 1..I2CDefs.size) {
 			let idxName = I2CDefs.indexOfCol(0, "name")
 			let name = I2CDefs[i, idxName]
-			M[name]  = MtVars_I2C.Factory(I2CDefs, 1)
+			M[name]  = MtVars_I2C.Factory(I2CDefs, 1, M)
 		}
 	}
 
@@ -224,7 +230,7 @@ class RobotStruct {
 		for (i in 1..SpeakerDefs.size) {
 			let idxName = SpeakerDefs.indexOfCol(0, "name")
 			let name = SpeakerDefs[i, idxName]
-			M[name]= MtVars_Speaker.Factory(SpeakerDefs, i)
+			M[name]= MtVars_Speaker.Factory(SpeakerDefs, i, M)
 		}
 	}
 
