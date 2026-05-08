@@ -47,8 +47,26 @@ class MtVars_I2C <: MatrixVars_Hardware {
 
 		println("Create a I2C hard-Var: ${name},\tpath: ${path}")
 		let i2c = I2C(path)
-		let mtvars_i2c = MtVars_I2C({json: JsonValue =>
-			0.0f32
+		let mtvars_i2c = MtVars_I2C({json: JsonValue =>				// {"mode": "set_addr", "addr": 0x01}
+			let obj = json.asObject()					// {"mode": "set_val",  "reg": 0x01, "val": 0x56}
+			let mode = obj.get("mode").getOrThrow().asString().getValue()	// {"mode": "get_val",  "reg": 0x02}
+			if (mode == "set_addr") {
+				let addr = obj.get("addr").getOrThrow().asInt().getValue()
+				i2c.setAddr(UInt8(addr))
+				return 0.0f32
+			} else if (mode == "set_val") {
+				let reg = obj.get("reg").getOrThrow().asInt().getValue()
+				let val = obj.get("val").getOrThrow().asInt().getValue()
+				i2c.writeReg(UInt8(reg), UInt8(val))
+				return 0.0f32
+			} else if (mode == "get_val") {
+				let reg = obj.get("reg").getOrThrow().asInt().getValue()
+				let raw = i2c.readRegFlag(UInt8(reg))
+				return Float32(raw)
+			}
+
+			// FIXME: 改为抛出异常
+			return 0.0f32
 		})
 
 		return mtvars_i2c
@@ -101,7 +119,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 
 		println("Create a Speaker: ${name}")		
 		let spk = Spk(channels: channels, sample_rate: sample_rate)
-		let mtvar_spk = MtVars_Speaker({json => 
+		let mtvar_spk = MtVars_Speaker({json =>		// {"frequency": 1000.0, "volume": 0.6, "delay": 400}
 			let json_obj = json.asObject()
 			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
 			if (freq > max_f) { freq = max_f }
