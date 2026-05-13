@@ -446,17 +446,17 @@ class Matrix1 {
 			IllegalArgumentException("Matrixes doesn't match")
 		}
 		let r  =get_row()
-		let c = get_col()
+		let c = S.get_col()
 		let M = Matrix1(r, c)
 		for (ir in 0..get_row()) {
 			for (ic in 0..S.get_col()) {
 				var sum = FP32(0.0f32)
 				for (ik in 0..get_col()) {
 					let a = get(ir, ik).getOrThrow()
-					let b = get(ik, ic).getOrThrow()
+					let b = S.get(ik, ic).getOrThrow()
 					sum += a * b
 				}
-				M.set(ir, ir, sum)
+				M.set(ir, ic, sum)
 			}
 		}
 		return M
