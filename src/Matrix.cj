@@ -332,7 +332,7 @@ class Matrix1 {
 
 	operator func +(S: Matrix1) {
 		if (!has_same_shape(S)) {
-			IllegalArgumentException("Matrixes doesn't match")
+			throw IllegalArgumentException("Matrixes doesn't match")
 		}
 		let r  =get_row()
 		let c = get_col()
@@ -363,7 +363,7 @@ class Matrix1 {
 
 	operator func -(S: Matrix1) {
 		if (!has_same_shape(S)) {
-			IllegalArgumentException("Matrixes doesn't match")
+			throw IllegalArgumentException("Matrixes doesn't match")
 		}
 		let r  =get_row()
 		let c = get_col()
@@ -394,7 +394,7 @@ class Matrix1 {
 
 	operator func *(S: Matrix1) {
 		if (!has_same_shape(S)) {
-			IllegalArgumentException("Matrixes doesn't match")
+			throw IllegalArgumentException("Matrixes doesn't match")
 		}
 		let r  =get_row()
 		let c = get_col()
@@ -425,7 +425,7 @@ class Matrix1 {
 
 	operator func /(S: Matrix1) {
 		if (!has_same_shape(S)) {
-			IllegalArgumentException("Matrixes doesn't match")
+			throw IllegalArgumentException("Matrixes doesn't match")
 		}
 		let r  =get_row()
 		let c = get_col()
@@ -443,7 +443,7 @@ class Matrix1 {
 
 	func dot(S: Matrix1) {
 		if (!has_dot_shape(S)) {
-			IllegalArgumentException("Matrixes doesn't match")
+			throw IllegalArgumentException("Matrixes doesn't match")
 		}
 		let r  =get_row()
 		let c = S.get_col()
@@ -460,5 +460,31 @@ class Matrix1 {
 			}
 		}
 		return M
+	}
+
+	func clone() {
+		let r = get_row()
+		let c = get_col()
+		let N = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c) {
+				let v = get(ir, ic).getOrThrow()
+				N.set(ir, ic, v)
+			}
+		}
+		return N
+	}
+
+	func T() {
+		let r = get_row()
+		let c = get_col()
+		let N = Matrix1(c, r)
+		for (ir in 0..r) {
+			for (ic in 0..c) {
+				let v = get(ir, ic).getOrThrow()
+				N.set(ic, ir, v)
+			}
+		}
+		return N
 	}
 }

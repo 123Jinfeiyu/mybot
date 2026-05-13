@@ -161,3 +161,53 @@ class Nn {
 	var learning_rate: Float32
  	let f: ActivationFuncs
 }
+
+class Nn1 {
+	let inputno: Int64	/* 神经网络规格 */
+	let outputno: Int64
+	var weights: Matrix1	/* (inputs, outputs) */
+	var bias: Matrix1	/* (1, output) */
+	let learning_rate: FP32	/* 学习率 */
+	let f: Af		/* 激活函数 */
+	/*------------------*/
+	var prev_inputs: Option<Matrix1> = None
+	var prev_raw_inputs: Option<Matrix1> = None
+	var prev_outputs: Option<Matrix1> = None
+	/*------------------*/
+	var weights_grad: Option<Matrix1> = None
+	var bias_grad: Option<Matrix1> = None
+	init(i: Int64, o: Int64, lr: Float32, f: Af) {
+		inputno = i
+		outputno =o
+		learning_rate=FP32(lr)
+		this.f = f
+		weights = Matrix1(inputno, outputno)
+		bias = Matrix1(1, outputno)
+		Ini.xavierUniformInit(weights, inputno, outputno)
+	}
+	func forward(x: Matrix1) {
+		prev_inputs = x.clone()
+		var r = x.dot(weights)
+		r = r + bias
+		prev_raw_inputs = r.clone()
+		let r1 = f.forward(r)
+		prev_outputs = r1.clone()
+		return r1
+	}
+
+	func backward(errs: Matrix1) {
+		let first = errs  * f.backward(prev_raw_inputs.getOrThrow()) /* 逐元素相乘 */
+		let mx = prev_inputs.getOrThrow().T()
+		weights_grad = mx.dot(first)
+		bias_grad = first.clone()
+		let errs_up = first.dot(weights.T())
+		return errs_up
+	}
+
+	/* NOTE(20260514-qing):当前震荡是正常的SGD行为，但通过动量或学习率衰减可以显著改善。 */
+	/* NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
+	func update(discount: Float32) {
+		weights = weights + weights_grad.getOrThrow() * learning_rate * FP32(discount)
+		bias = bias + bias_grad.getOrThrow() * learning_rate * FP32(discount)
+	}
+}

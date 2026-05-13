@@ -41,8 +41,7 @@ func save_nns(nns: ArrayList<Nn>, filename: String) {
 		file.close()
 }
 
-/* 准备与门的测试用例 */
-func prepare_andDoor(m: Matrix, t: Matrix)
+func prepare_andDoor(m: Matrix1, t: Matrix1)	/* 准备与门的测试用例 */
 {
 	let random = Random(UInt64(DateTime.now().nanosecond))
 	let a = random.nextInt8(2)
@@ -51,10 +50,10 @@ func prepare_andDoor(m: Matrix, t: Matrix)
 	let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
 
 	unsafe {
-		m.set(0, 0, Float32(a))
-		m.set(0, 1, Float32(b))
-		t.set(0, 0, t0)
-		t.set(0, 1, t1)
+		m.set(0, 0, FP32(Float32(a)))
+		m.set(0, 1, FP32(Float32(b)))
+		t.set(0, 0, FP32(t0))
+		t.set(0, 1, FP32(t1))
 	}
 }
 
@@ -70,6 +69,16 @@ func forward(nns: ArrayList<Nn>, m: Matrix) {
 	}
 	return out_dof
 }
+func forward1(nns: ArrayList<Nn1>, m: Matrix1) {
+
+	// 正向传播
+	var out_dof = Matrix1(1, 1)
+	for (idx in 0..nns.size) {
+		let x = if (idx == 0) { m } else { out_dof }
+		out_dof= nns[idx].forward(x)
+	}
+	return out_dof
+}
 
 /* 【神经网络训练】
  * description: 输入一组原始数据和教师数据，进行神经网络训练
@@ -78,6 +87,40 @@ func forward(nns: ArrayList<Nn>, m: Matrix) {
  * @param t:    输入一组教师数据
  * @param discount: 输入本次训练的折扣系数
  */
+func train1(nns: ArrayList<Nn1>, m: Matrix1, t: Matrix1, discount: Float32) {
+
+	// train
+
+	var res = Matrix1(1, 1)
+	// 正向传播
+	for (idx in 0..nns.size) {
+		let x = if (idx == 0) { m } else { res }
+		res = nns[idx].forward(x)
+	}
+
+	// 计算误差
+        var errs =  t - res
+
+	// 反向传播
+	for (idx in (nns.size-1)..=0:-1) {
+		errs = nns[idx].backward(errs)
+	}
+
+	// 梯度更新
+	for (idx in 0..nns.size) {
+ 		nns[idx].update(discount)
+	}
+
+	// 输出损失
+	let t0 = t.get(0, 0).getOrThrow().getValue()
+	let t1 = t.get(0, 1).getOrThrow().getValue()
+	let r0 = res.get(0, 0).getOrThrow().getValue()
+	let r1 = res.get(0, 1).getOrThrow().getValue()
+	let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
+	let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
+	//return 0.5 * (loss0 * loss0 + loss1 * loss1)
+	return loss0
+}
 func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
 
 	// train

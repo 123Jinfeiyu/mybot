@@ -118,19 +118,20 @@ func run_test(key: String) {
 		println('FFT test completed.')
 	}
 
-	else if (key == "ann") {
+	else if (key == "nn") {
 
-		let nn_t = ArrayList<Nn>()
-		nn_t.add(Nn(2, 4, ActivationFuncs.Leaky_ReLU, 0.4f32))
-		nn_t.add(Nn(4, 2, ActivationFuncs.Sigmoid, 0.4f32))
+		let nn_t = ArrayList<Nn1>()
+		nn_t.add(Nn1(2, 8, 0.4f32, Af.Leaky_ReLU(FP32(0.01))))
+		nn_t.add(Nn1(8, 4, 0.4f32, Af.Leaky_ReLU(FP32(0.01))))
+		nn_t.add(Nn1(4, 2, 0.4f32, Af.Sigmoid))
 		let batch = 1
-		let num = 1000
+		let num =1000
 		let prt_num = 100
 		for (i in 0..(num*batch)) {
-			let m = Matrix(1, 2)
-			let t = Matrix(1, 2)
+			let m = Matrix1(1, 2)
+			let t = Matrix1(1, 2)
 			prepare_andDoor(m, t)
-			let l = train(nn_t, m, t, 1.0f32)
+			let l = train1(nn_t, m, t, 1.0f32) // 这个1.0是学习率的折扣，而非学习率本身
 			if (i % prt_num == prt_num-1) {
 				print("${i}\t:")
 				print("${l}")
