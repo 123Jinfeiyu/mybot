@@ -242,3 +242,223 @@ class Matrix {
 	// 矩阵的C风格指针
 	var M: CPointer<Unit>
 }
+
+/* 这个是32位浮点数 */
+struct FP32 {
+	var val: Float32
+	init(t: Float32) {
+		val =  t }
+	func getValue() {
+		return val }
+	//operator func =(t: Float32) { /* this can not */
+	//	val = t }
+	operator func +(t: Float32) {
+		return FP32(val + t)}
+	operator func +(S: FP32) {
+		return this + S.getValue() }
+	operator func -(t: Float32) {
+		return FP32(val - t) }
+	operator func -(S: FP32) {
+		return this - S.getValue() }
+	operator func *(t: Float32) {
+		return FP32(val * t) }
+	operator func *(S: FP32) {
+		return this * S.getValue() }
+	operator func /(t: Float32) {
+		return FP32(val / t) }
+	operator func /(S: FP32) {
+		return this / S.getValue() }
+
+}
+
+
+/*
+
+ ___col___
+/         \
++---------+ \
+| + + + + | | row - 第一维度
+| + + + + | |
++---------+ /
+
+*/
+class Matrix1 {
+
+	var row: Int64
+	var col: Int64
+	var arr: Array<FP32>
+
+	Matrix1(row: Int64, col: Int64) {
+		this.row = row
+		this.col = col
+		this.arr = Array<FP32>(row * col, repeat: FP32(0.0f32))
+	}
+
+	func get(r: Int64, c: Int64) {
+		return arr.get(c * this.row + r)
+	}
+
+	func set(r: Int64, c: Int64, v: FP32) {
+		arr[c * this.row + r] = v
+	}
+
+	func get_row() { return row }
+
+	func get_col() { return col }
+
+	func has_same_shape(other: Matrix1) {
+		let a = this.get_row()  == other.get_row()
+		let b = this.get_col()  == other.get_col()
+		return a && b
+	}
+
+	func has_dot_shape(other: Matrix1) {
+		return this.get_col() == other.get_row()
+	}
+
+	operator func +(a: FP32) {
+		let r  =get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c) {
+				let v = this.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v + a)
+			}
+		}
+
+		return M
+	}
+
+	operator func +(S: Matrix1) {
+		if (!has_same_shape(S)) {
+			IllegalArgumentException("Matrixes doesn't match")
+		}
+		let r  =get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c) {
+				let v = this.get(ir, ic).getOrThrow()
+				let vs = S.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v + vs)
+			}
+		}
+
+		return M
+	}
+
+	operator func -(a: FP32) {
+		let r = get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c){
+				let v = this.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v - a)
+			}
+		}
+		return M
+	}
+
+	operator func -(S: Matrix1) {
+		if (!has_same_shape(S)) {
+			IllegalArgumentException("Matrixes doesn't match")
+		}
+		let r  =get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c) {
+				let v = this.get(ir, ic).getOrThrow()
+				let vs = S.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v - vs)
+			}
+		}
+
+		return M
+	}
+
+	operator func *(a: FP32) {
+		let r = get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c){
+				let v = this.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v * a)
+			}
+		}
+		return M
+	}
+
+	operator func *(S: Matrix1) {
+		if (!has_same_shape(S)) {
+			IllegalArgumentException("Matrixes doesn't match")
+		}
+		let r  =get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c) {
+				let v = this.get(ir, ic).getOrThrow()
+				let vs = S.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v * vs)
+			}
+		}
+
+		return M
+	}
+
+	operator func /(a: FP32) {
+		let r = get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c){
+				let v = this.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v / a)
+			}
+		}
+		return M
+	}
+
+	operator func /(S: Matrix1) {
+		if (!has_same_shape(S)) {
+			IllegalArgumentException("Matrixes doesn't match")
+		}
+		let r  =get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..r) {
+			for (ic in 0..c) {
+				let v = this.get(ir, ic).getOrThrow()
+				let vs = S.get(ir, ic).getOrThrow()
+				M.set(ir, ic, v / vs)
+			}
+		}
+
+		return M
+	}
+
+	func dot(S: Matrix1) {
+		if (!has_dot_shape(S)) {
+			IllegalArgumentException("Matrixes doesn't match")
+		}
+		let r  =get_row()
+		let c = get_col()
+		let M = Matrix1(r, c)
+		for (ir in 0..get_row()) {
+			for (ic in 0..S.get_col()) {
+				var sum = FP32(0.0f32)
+				for (ik in 0..get_col()) {
+					let a = get(ir, ik).getOrThrow()
+					let b = get(ik, ic).getOrThrow()
+					sum += a * b
+				}
+				M.set(ir, ir, sum)
+			}
+		}
+		return M
+	}
+}
