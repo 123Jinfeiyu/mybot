@@ -46,15 +46,12 @@ func prepare_andDoor(m: Matrix1, t: Matrix1)	/* 准备与门的测试用例 */
 	let random = Random(UInt64(DateTime.now().nanosecond))
 	let a = random.nextInt8(2)
 	let b = random.nextInt8(2)
-	let t0 = if (a  == b) { 1.0f32 } else { 0.0f32 }    
-	let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
-
-	unsafe {
-		m.set(0, 0, FP32(Float32(a)))
-		m.set(0, 1, FP32(Float32(b)))
-		t.set(0, 0, FP32(t0))
-		t.set(0, 1, FP32(t1))
-	}
+	let t0 = if ((a == 0 &&  b == 0) || (a ==1 && b == 1)) { 1.0f32 } else { 0.0f32 }    
+	//let t1 = if (a  != b) { 1.0f32 } else { 0.0f32 }    
+	m.set(0, 0, FP32(Float32(a)))
+	m.set(0, 1, FP32(Float32(b)))
+	t.set(0, 0, FP32(t0))
+	//t.set(0, 1, FP32(t1))
 }
 
 // 神经网络推理
@@ -111,14 +108,14 @@ func train1(nns: ArrayList<Nn1>, m: Matrix1, t: Matrix1, discount: Float32) {
  		nns[idx].update(discount)
 	}
 
-	// 输出损失
+	// 计算MSE损失
 	let t0 = t.get(0, 0).getOrThrow().getValue()
-	let t1 = t.get(0, 1).getOrThrow().getValue()
+	//let t1 = t.get(0, 1).getOrThrow().getValue()
 	let r0 = res.get(0, 0).getOrThrow().getValue()
-	let r1 = res.get(0, 1).getOrThrow().getValue()
-	let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
-	let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
-	//return 0.5 * (loss0 * loss0 + loss1 * loss1)
+	//let r1 = res.get(0, 1).getOrThrow().getValue()
+	let loss0 = 0.5 * (t0 - r0) * (t0 - r0)
+	//let loss1 = 0.5 * (t1 - r1) * (t1 - r1)
+	//return (loss0 + loss1) / 2.0
 	return loss0
 }
 func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {

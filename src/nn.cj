@@ -186,12 +186,12 @@ class Nn1 {
 		Ini.xavierUniformInit(weights, inputno, outputno)
 	}
 	func forward(x: Matrix1) {
-		prev_inputs = x.clone()
+		prev_inputs = x
 		var r = x.dot(weights)
 		r = r + bias
-		prev_raw_inputs = r.clone()
+		prev_raw_inputs = r
 		let r1 = f.forward(r)
-		prev_outputs = r1.clone()
+		prev_outputs = r1
 		return r1
 	}
 
@@ -199,7 +199,7 @@ class Nn1 {
 		let first = errs  * f.backward(prev_raw_inputs.getOrThrow()) /* 逐元素相乘 */
 		let mx = prev_inputs.getOrThrow().T()
 		weights_grad = mx.dot(first)
-		bias_grad = first.clone()
+		bias_grad = first
 		let errs_up = first.dot(weights.T())
 		return errs_up
 	}
@@ -207,7 +207,7 @@ class Nn1 {
 	/* NOTE(20260514-qing):当前震荡是正常的SGD行为，但通过动量或学习率衰减可以显著改善。 */
 	/* NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
 	func update(discount: Float32) {
-		weights = weights + weights_grad.getOrThrow() * learning_rate * FP32(discount)
+		weights = weights +  weights_grad.getOrThrow() * learning_rate * FP32(discount)
 		bias = bias + bias_grad.getOrThrow() * learning_rate * FP32(discount)
 	}
 }

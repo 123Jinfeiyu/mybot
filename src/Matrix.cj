@@ -295,11 +295,11 @@ class Matrix1 {
 	}
 
 	func get(r: Int64, c: Int64) {
-		return arr.get(c * this.row + r)
+		return arr.get(r * this.col + c)
 	}
 
 	func set(r: Int64, c: Int64, v: FP32) {
-		arr[c * this.row + r] = v
+		arr[r * this.col + c] = v
 	}
 
 	func get_row() { return row }
