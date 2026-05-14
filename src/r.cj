@@ -1,4 +1,5 @@
-/* 机器人构成模块 */
+/* 机器人构成模块
+ * INFO(20260514-qing): 该模块确定机器人结构，为解耦考虑应该从解析出的矩阵对象中构建 */
 
 package bot4cj
 import std.io.*
@@ -10,33 +11,59 @@ import stdx.encoding.json.*
 
 
 
-// 硬件接口
-// 接收一个lambda表达式，在回调函数中定义行为
-// 通过JsonValue这种通用的数据结构进行传值
+/* 硬件接口
+ * 接收一个lambda表达式，在回调函数中定义行为
+ * 通过JsonValue这种通用的数据结构进行传值  */
 open class MatrixVars_Hardware {
-	init(things: (JsonValue) -> Float32) {
-		this.things = things
-	}
-	let things: (JsonValue) -> Float32
+	init(things: (JsonValue) -> JsonValue) {
+		this.things = things  }
 
-	public func play(input: JsonValue): Float32 {
-		return things(input)
+	let things: (JsonValue) -> JsonValue	/* 该事件回调应该接收和返回JsonValue  */
+
+	public func play(input: JsonValue): JsonValue {
+		return things(input)  }
+
+
+	/* INFO(20260514-qing):  这两个函放在外面很突兀，考虑放进Matrix_HardVars */
+	/* -------- 获得项目值 -------- */
+	static func getMt(obj: MatrixObject, row: Int64, col: Int64) 
+	{
+		let raw = obj[row, col]
+		if (raw == "-" && row > 1) {
+			return obj[row - 1, col]  }
+		return raw
+	}
+
+	/* -------- 解析项目值 -------- */
+	static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T>
+	{
+		let raw = obj[row, col]
+		if (raw == "-" && row > 1) {
+			let prev = obj[row-1, col]
+			return T.parse(prev)
+		}
+		else if (raw == "-" && !row > 1) {
+			return T.parse("0")  }
+
+		// else if (!raw == "-")
+		return T.parse(raw)
 	}
 }
 
 
-// I2C变量类
+/* I2C变量类 */
 class MtVars_I2C <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> Float32) {
-		super(things)
-	}
+	init(things: (JsonValue) -> JsonValue) {
+		super(things)  }
 
-	// 工厂模式，根据矩阵对象构造
-	// 
-	//@I2C
-	// name        path;
-	//i2c-0  /dev/i2c-0;
-	//@
+	/*
+	 *  工厂模式，根据矩阵对象构造
+	 * 
+	 *  @I2C
+	 *   name        path;
+	 *  i2c-0  /dev/i2c-0;
+	 *  @
+	 */
 	static func Factory(I2CDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_I2C
 	{
 		let idxName  = I2CDefs.indexOfCol(0, "name")
@@ -47,66 +74,78 @@ class MtVars_I2C <: MatrixVars_Hardware {
 
 		println("Create a I2C hard-Var: ${name},\tpath: ${path}")
 		let i2c = I2C(path)
-		let mtvars_i2c = MtVars_I2C({json: JsonValue =>				// {"mode": "set_addr", "addr": 0x01}
-			let obj = json.asObject()					// {"mode": "set_val",  "reg": 0x01, "val": 0x56}
-			let mode = obj.get("mode").getOrThrow().asString().getValue()	// {"mode": "get_val",  "reg": 0x02}
+		let mtvars_i2c = MtVars_I2C({json: JsonValue =>				/*  {"mode": "set_addr", "addr": 0x01} */
+			let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
+			let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
+			let ret = JsonObject()	/* 该变量用于存储返回值 */
 			if (mode == "set_addr") {
 				let addr = obj.get("addr").getOrThrow().asInt().getValue()
 				i2c.setAddr(UInt8(addr))
-				return 0.0f32
+				/* ---- 准备返回值 ---- */
+				ret.put("status", JsonString("OK"))
+				return ret
 			} else if (mode == "set_val") {
 				let reg = obj.get("reg").getOrThrow().asInt().getValue()
 				let val = obj.get("val").getOrThrow().asInt().getValue()
 				i2c.writeReg(UInt8(reg), UInt8(val))
-				return 0.0f32
+				/* ---- 准备返回值 ---- */
+				ret.put("status", JsonString("OK"))
+				return ret
 			} else if (mode == "get_val") {
 				let reg = obj.get("reg").getOrThrow().asInt().getValue()
 				let raw = i2c.readRegFlag(UInt8(reg))
-				return Float32(raw)
+				/* ---- 准备返回值 ---- */
+				ret.put("status", JsonString("OK"))
+				ret.put("value", JsonInt(Int64(raw)))
+				return ret
 			}
 
-			// FIXME: 改为抛出异常
-			return 0.0f32
+			/* FIXME: 改为抛出异常 */
+			/* ---- 准备返回值 ---- */
+			ret.put("status", JsonString("ERR"))
+			ret.put("message", JsonString("Invalid Mode"))
+			return ret
 		})
 
 		return mtvars_i2c
 	}
 }
 
-// PCA9685变量类
+/*  PCA9685变量类 */
 class MtVars_PCA9685 <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> Float32) {
-		super(things)
-	}
+	init(things: (JsonValue) -> JsonValue) {
+		super(things)  }
 
-	// 工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖
+	/* 工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖 */
 	static func Factory(I2CDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_PCA9685
 	{
 		
 	}
 }
 
-// 舵机变量类
+/* 舵机变量类 */
 class MtVars_Servo <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> Float32) {
-		super(things)
-	}
+	init(things: (JsonValue) -> JsonValue) {
+		super(things)  }
 }
 
-// 扬声器类
-// 使用工厂函数
-// TODO: 输入扬声器设备名
+/*
+ * 扬声器类
+ * - 使用工厂函数
+ * - TODO: 输入扬声器设备名（扬声器又是一台戏）
+ */
 class MtVars_Speaker <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> Float32) {
-		super(things)
-	}
+	init(things: (JsonValue) -> JsonValue) {
+		super(things)  }
 
-	// 工厂函数，根据矩阵对象进行构造
-	//
-	//  @Speaker
-	//  name  channels  sample_rate  volumn  max_f  min_f;
-	//   spk         2        48000     0.6   5000      -;
-	//  @
+	/*
+	 * 工厂函数，根据矩阵对象进行构造
+	 *
+	 *  @Speaker
+	 *  name  channels  sample_rate  volumn  max_f  min_f;
+	 *   spk         2        48000     0.6   5000      -;
+	 *  @
+	 */
 	static func Factory(SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker
 	{
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
@@ -133,7 +172,10 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 			let volu  = Float64(json_obj.get("volume").getOrThrow().asFloat().getValue())
 			let delay  = Int32(json_obj.get("delay").getOrThrow().asInt().getValue())
 			spk.play(freq, volu, delay)
-			0.0f32
+			/* ---- 准备返回值 ---- */
+			let ret = JsonObject()	/* FIXME: 处理异常情况 */
+			ret.put("status", JsonString("OK"))
+			return ret
 		})
 
 		return mtvar_spk
@@ -141,43 +183,18 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 }
 
 
-// 获得项目值
-func getMt(obj: MatrixObject, row: Int64, col: Int64) 
-{
-	let raw = obj[row, col]
-	if (raw == "-" && row > 1) {
-		return obj[row - 1, col]
-	}
-	return raw
-}
-
-// 解析项目值
-func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T>
-{
-	let raw = obj[row, col]
-	if (raw == "-" && row > 1) {
-		let prev = obj[row-1, col]
-		return T.parse(prev)
-	}
-	else if (raw == "-" && !row > 1) {
-		return T.parse("0")
-	}
-	
-	// else if (!raw == "-")
-	return T.parse(raw)
-}
-
 
 /* 机器人结构类
- * 机器人结构是动态的，从脚本中解析的 */
+ * 机器人结构是动态的，从脚本中解析的 
+ * TODO(20260514-qing): 调整为输入MatrixObject  */
 class RobotStruct {
 
-	// 存放解析结果和创建的变量
+	/*  存放解析结果和创建的变量 */
 	let C = LinkedList<MatrixObject>()
 	let M = HashMap<String, MatrixVars_Hardware>() 
 
-	// 使用矩阵脚本驱动机器人
-	// 不行就将矩阵脚本转化为bot脚本吧
+	/*  使用矩阵脚本驱动机器人
+	 *  不行就将矩阵脚本转化为bot脚本吧  */
 	init(input: InputStream) {
 		readMatrix(input)
 		createHardVars()
@@ -188,8 +205,8 @@ class RobotStruct {
 	}
 
 
-	// 阅读矩阵脚本
-	// TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
+	/* 阅读矩阵脚本
+	 * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型  */
 	func readMatrix(file: InputStream){
 		let sr = StringReader<InputStream>(file)
 		let parser =  MatrixParser(sr)
@@ -204,7 +221,7 @@ class RobotStruct {
 		}
 	}
 
-	// 创建硬件变量字典
+	/* -------- 创建硬件变量字典 -------- */
 	func createHardVars()
 	{
 		createSpeakerVars()
@@ -212,7 +229,7 @@ class RobotStruct {
 	}
 
 
-	// 创建I2C机组硬件变量
+	/* -------- 创建I2C机组硬件变量 -------- */
 	func createI2CVars()
 	{
 		let I2CDefs= findMt(C, "I2C").getOrThrow()	// MatrixObject
@@ -223,7 +240,7 @@ class RobotStruct {
 		}
 	}
 
-	// 创建扬声器机组硬件变量
+	/* -------- 创建扬声器机组硬件变量 -------- */
 	func createSpeakerVars()
 	{
 		let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	// MatrixObject
@@ -234,7 +251,7 @@ class RobotStruct {
 		}
 	}
 
-	// 在矩阵对象的容器中寻找目标
+	/* -------- 在矩阵对象的容器中寻找目标 -------- */
 	static func findMt(ll: LinkedList<MatrixObject>, name: String): Option<MatrixObject>
 	{
 		for (item in ll) {
@@ -245,7 +262,6 @@ class RobotStruct {
 			}
 		}
 
-		// 什么都没找到，抛出异常
 		//throw IllegalArgumentException("Matrix object not found")
 		return None
 	}
@@ -282,28 +298,26 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 		MPU6050(i2c, MPU6050.ADDR_0)
 	]
 	var dataSet = ArrayList<MPU6050_sensorData> ()
-	let xSet = ArrayList<Matrix>() // 输入
-	let tSet = ArrayList<Matrix>() // 教师
-	let rSet = ArrayList<Float32>() // 奖励
+	let xSet = ArrayList<Matrix>() /* 输入 */
+	let tSet = ArrayList<Matrix>() /* 教师 */
+	let rSet = ArrayList<Float32>() /* 奖励 */
 	while(true) {
-		// 解析一行，没了就退出循环
+		/* 解析一行，没了就退出循环 */
 		match(parser.parse()) {
 			case Some(_) => true
 			case None => break
 		}
 
-		let x = Matrix(1, 41) // 4个3轴加速度和角速度，16个关节，1个时延
+		let x = Matrix(1, 41) /* 4个3轴加速度和角速度，16个关节，1个时延 */
 		unsafe {
 
-			let r = parser.which(parser.size-1) // 取尾部
+			let r = parser.which(parser.size-1) /* 取尾部 */
 
-			// 整理出输入
-			for (j in 0..r.size) {
+			for (j in 0..r.size) {	/* 整理出输入 */
 				x.set(0u64, UInt64(j), Float32(r[j]) / 180.0f32)
 			}
 
-			// 陀螺仪部分
-			for (j in 0..dataSet.size) {
+			for (j in 0..dataSet.size) {	/* 陀螺仪部分 */
 				let idx = UInt64(r.size) + UInt64(j) * 6u64
 				x.set(0u64, idx + 0u64, Float32(dataSet[j].accel_x) / 65535.0f32)
 				x.set(0u64, idx + 1u64, Float32(dataSet[j].accel_y) / 65535.0f32)
@@ -313,10 +327,10 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 				x.set(0u64, idx + 5u64, Float32(dataSet[j].gyro_z)  / 65535.0f32)
 			}
 
-			// 推理
+			/* -------- 推理 -------- */
 			let y = forward(nns, x)
 
-			// 微调		
+			/* -------- 微调 -------- */
 			let random = Random(UInt64(DateTime.now().nanosecond))
 			for (j in 0..y.getCol()-1) {
 				let a = y.get(0, j)
@@ -325,20 +339,20 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 				y.set(0, j, fix) // 回写
 			}
 
-			// 记录
+			/* -------- 记录 -------- */
 			xSet.add(x)
 			tSet.add(y)
 			rSet.add(0.0f32)
 
-			// 解析
+			/* -------- 解析 -------- */
 			let rp = parser[parser.size - 1]
 			for (key in rp.keys()) {
 				print("${key}\t")
 			}
 			println()
 
-			// 做动作
-			for (jj in 1..=10) { // fixme: 不写死
+			/* -------- 做动作 -------- */
+			for (jj in 1..=10) { /* fixme: 不写死 */
 				let k = "s${jj}"
 				let v = rp[k]
 				let id = UInt8(jj) - 1u8
@@ -350,14 +364,14 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 			println()
 			sleep(Duration.millisecond*1)
 
-			// 读mpu6050
+			/* -------- 读mpu6050 -------- */
 			dataSet = ArrayList<MPU6050_sensorData>()
 			for (mpu6050 in mpu6050s) {
 				dataSet.add(mpu6050.readSensor())
 			}
 
-			// 产生奖励
-			// 前进奖励策略
+			/* -------- 产生奖励 --------
+			 * 前进奖励策略  */
 			for (j in 0..dataSet.size) {
 				if (xSet.size == 1) { continue }
 				let pre = xSet[xSet.size-2].get(0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64)
@@ -373,7 +387,7 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 				}
 			}
 
-			// 时延
+			/* -------- 时延 -------- */
 			let freq = rp['spk'].getVal().getOrThrow()
 			let tt = rp['delay'].getVal().getOrThrow()
 			if (freq == 0.0f32) {
@@ -381,13 +395,13 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 			}
 			else {
 				let spk = Spk(channels: 2i32, sample_rate: 48000i32)
-				spk.play(freq, 0.6, Int32(tt))	// 以发声代替延时
+				spk.play(freq, 0.6, Int32(tt))	/* 以发声代替延时 */
 			}
 		}
 
 	}
 
-	// 打印损失
+	/* -------- 打印损失 -------- */
 	for (i in 0..xSet.size) {
 		println("----------------------------------")
 		println(rSet[i])
@@ -395,7 +409,7 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 		println("loss:\t${loss}")
 	}
 
-	// 选择性储存
+	/* -------- 选择性储存 -------- */
 	if (let Some(P) <- NNS_OUT) {
 		save_nns(nns, P)
 	}

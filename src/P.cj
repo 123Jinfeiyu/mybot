@@ -393,48 +393,48 @@ class UnknowExcept <: ParseExcept {
 
 
 
-/* 矩阵编程语言 - 基本对象 */
+/* 矩阵编程语言 - 基本对象
+ * TODO：储存功能
+ * TODO：神经网络层转换为矩阵对象 */
 class MatrixObject {
-	var name: String = ""	// 名字
-	var tmp = ArrayList<Rune>()	// rune buf 字符缓冲区
-	var grp = ArrayList<String>()	// one line 整行缓冲区
-	var values = ArrayList<ArrayList<String>>()	// 原始矩阵
+	var name: String = ""	/* 名字 */
+	var tmp = ArrayList<Rune>()	/* rune buf 字符缓冲区 */
+	var grp = ArrayList<String>()	/* one line 整行缓冲区 */
+	var values = ArrayList<ArrayList<String>>()	/* 原始矩阵 */
 
-	// 已命名
+	/* -------- 已命名 -------- */
 	func hasName() { !(name == "") }
 
-	// 获得名字
+	/* --------- 获得名字 --------- */
 	func getName(): String { return name }
 
-	// 取动作的长度
+	/* ------- 取动作的长度 ------- */
 	public mut prop size: Int64 {
 		get() { values.size }
 		set(_) {}
 	}
 
-	// 获取矩阵元素
+	/* ------- 获取矩阵元素 ------- */
 	operator func [](row: Int64, col: Int64): String {
 		return values[row][col]
 	}
 
-	//  在某一行中寻找某一个字符串的列号
+	/** -- 在某一行中寻找某一个字符串的列号 -- */
 	func indexOfCol(row: Int64, key: String): Int64 {
 		for (col in 0..values[row].size) {
 			if (values[row][col] == key) {
-				return col
-			}
+				return col  }
 		}
 
-		// 没找到
+		/*  没找到  */
 		throw IllegalArgumentException("The key does not found.")
 	}
 
-	// 添加字符
+	/* -------- 添加字符 -------- */
 	func addRune(c: Rune) {
-		tmp.add(c)
-	}
+		tmp.add(c)  }
 
-	// 提交名字
+	/* -------- 提交名字 -------- */
 	func submitName() {
 		if (tmp.size == 0) { return }
 		let s = String(tmp)
@@ -442,7 +442,7 @@ class MatrixObject {
 		name = s
 	}
 
-	// 提交元素
+	/* -------- 提交元素 -------- */
 	func submitItem() {
 		if (tmp.size == 0) { return }
 		let s = String(tmp)
@@ -450,7 +450,7 @@ class MatrixObject {
 		grp.add(s)
 	}
 
-	// 提交行
+	/* -------- 提交行 -------- */
 	func submitLine(count: Int64) {
 		if (grp.size == 0) { return }
 		if (!values.size == 0 && !grp.size == values[values.size - 1].size)
@@ -460,6 +460,10 @@ class MatrixObject {
 	}
 }
 
+/*  矩阵式解析器
+ *  TODO(20260514-qing): 这个类输入流数据，输出MatrixObject对象
+ *  它是与其深度绑定的，我倾向于将其与MatrixObject融合
+ *  即持有HashMap<String, ArrayList<ArrayList<String>>>  */
 class MatrixParser {
 
 	static func hasValue(co: Option<Rune>): Bool {
@@ -471,58 +475,56 @@ class MatrixParser {
 
 	var input: StringReader<InputStream>
 	init(input: StringReader<InputStream>) {
-		this.input = input
-	}
+		this.input = input  }
 
-	// 切换目标
+	/* -------- 切换目标 -------- */
 	func reset(input: StringReader<InputStream>) {
-		this.input = input
-	}
+		this.input = input  }
 
 	/* 解析器 - 循环不变式
 	 * 初始化： ss是一个动作脚本的输入流
 	 * 保持： ss是动作脚本剩余部分的输入流
 	 * 终止： 当输入流为空时，循环终止  */
-	var obj = MatrixObject()  // 矩阵对象
+	var obj = MatrixObject() 
 	func parse(): Option<MatrixObject> {
-		var count = 1i64 	// 从第一行开始
-		flag = false	// 重置结束标志
-		this.obj = MatrixObject()  // 一次解析一个对象
+		var count = 1i64	/* 行计数器始于1 */
+		flag = false		/* 重置结束标志 */
+		this.obj = MatrixObject()  /* 一次只解析一个对象 */
 		var so = input.read()
 		while (!flag && hasValue(so)) {
 			try {
 				let s = so.getOrThrow()
-				print(s)
+				print(s)		/* debug */
 				count = _next(s, count)
-				so  = input.read()
+				so  = input.read()	/* 为下一次循环提供条件 */
 			}
 			catch (exp: BufOverTheLine) { throw exp }
 			catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
-			catch (exp: Exception) { throw UnknowExcept(count) } // FIXME: 还是暴露出原来的错误位置来更好？
+			catch (exp: Exception) { throw UnknowExcept(count) } /* FIXME: 还是暴露出原来的错误位置来更好？ */
 		}
 
 		if (!obj.hasName()) {return None}
 		return  obj
 	}
 
-	var flag = false	// 结束标志
-	var nl: Bool = true	// new line
-	var cm: Bool = false	// comment
-	var nm: Bool = false	// name-line
+	var flag = false	/* 结束标志 */
+	var nl: Bool = true	/* new line */
+	var cm: Bool = false	/* comment */
+	var nm: Bool = false	/* name-line */
 	private func _next(c: Rune, ct: Int64): Int64 {
 		var count = ct
-		//------------ COMMENTS ------------
-		if (!cm && c == r'#') { cm = true }	// 注释开始时
-		else if (cm && c == r'\n') {		// 注释结束时
+		/* ------------ COMMENTS ------------ */
+		if (!cm && c == r'#') { cm = true }	/* 注释开始时 */
+		else if (cm && c == r'\n') {		/* 注释结束时 */
 			nl = true
 			cm = false
 			count += 1
 		}
-		else if (cm && c != r'\n') { ; }	// 注释进行时 FIXME: EOF情况
-		
-		//------------ new line ------------
-		else if (nl && (c == r' ' || c == r'\t' || c == r'\r')) { ; }	// 新行空字符，维持现状
-		else if (nl && c == r'\n') {	// 新行空行
+		else if (cm && c != r'\n') { ; }	/* 注释进行时 */ 
+							/* FIXME: EOF情况 */
+		/* ------------ new line ------------ */
+		else if (nl && (c == r' ' || c == r'\t' || c == r'\r')) { ; }	/* 新行空字符，维持现状 */
+		else if (nl && c == r'\n') {	/* 新行空行 */
 			count += 1
 		}
 		else if (nl && c == r'@' && !obj.hasName()) {
@@ -534,21 +536,21 @@ class MatrixParser {
 			nl = false
 			nm = true
 		}
-		else if (nl && c != r'@') {	// 新行内容
+		else if (nl && c != r'@') {	/* 新行内容 */
 			nl = false
 			obj.addRune(c)
 		}
 		//------------- not nl -------------
-		else if (!nl &&  nm && (c == r' ' || c == r'\t' || c == r'\n')) {	// 添加名字
+		else if (!nl &&  nm && (c == r' ' || c == r'\t' || c == r'\n')) {	/* 添加名字 */
 			obj.submitName()
 			nl = true
 			nm = false
 		}
-		else if (!nl && !nm && (c == r' ' || c == r'\t' || c == r"\n")) {	// 添加命名项
+		else if (!nl && !nm && (c == r' ' || c == r'\t' || c == r"\n")) {	/* 添加命名项 */
 			obj.submitItem()
 			if (c ==  r"\n") { count += 1 }
 		}
-		else if (!nl && c == r';') {	// 普通行结束
+		else if (!nl && c == r';') {	/* 普通行结束 */
 			obj.submitItem()
 			obj.submitLine(count)
 			nl = true
