@@ -116,10 +116,33 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 	init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
 
-	/* 工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖 */
-	static func Factory(I2CDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_PCA9685
+	/*  工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖
+	 *  @PCA9685
+	 *       name    I2C   path;
+	 *  pca9685-0  i2c-1   0x40;
+	 *  @
+	 */
+	static func Factory(PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_PCA9685
 	{
-		
+		let idxName = PCA9685Defs.indexOfCol(0, "name")
+		let idxI2c  = PCA9685Defs.indexOfCol(0, "I2C")
+		let idxPath = PCA9685Defs.indexOfCol(0, "path")
+
+		let name = PCA9685Defs[i, idxName]
+		let i2c = getMt(PCA9685Defs, i, idxI2c)
+		let path = getMt(PCA9685Defs, i, idxPath)
+
+		println("Create a I2C hard-Var: ${name},\ti2c: ${i2c},\tpath: ${path}")
+
+		let i2c_HardVar = map[i2c]
+		//let pca9685 = PCA9685()
+
+		let mtvars_pca9685 = MtVars_PCA9685({json: JsonValue =>
+			let ret = JsonObject()
+			return ret
+		})
+
+		return mtvars_pca9685
 	}
 }
 
@@ -224,15 +247,16 @@ class RobotStruct {
 	/* -------- 创建硬件变量字典 -------- */
 	func createHardVars()
 	{
-		createSpeakerVars()
 		createI2CVars()
+		createPCA9685Vars()
+		createSpeakerVars()
 	}
 
 
 	/* -------- 创建I2C机组硬件变量 -------- */
 	func createI2CVars()
 	{
-		let I2CDefs= findMt(C, "I2C").getOrThrow()	// MatrixObject
+		let I2CDefs= findMt(C, "I2C").getOrThrow()	/* MatrixObject */
 		for (i in 1..I2CDefs.size) {
 			let idxName = I2CDefs.indexOfCol(0, "name")
 			let name = I2CDefs[i, idxName]
@@ -240,10 +264,21 @@ class RobotStruct {
 		}
 	}
 
+	/* -------- 创建PCA9685硬件变量 -------- */
+	func createPCA9685Vars()
+	{
+		let PCA9685Defs = findMt(C, "PCA9685").getOrThrow()
+		for (i in 1..PCA9685Defs.size) {
+			let idxName = PCA9685Defs.indexOfCol(0, "name")
+			let name = PCA9685Defs[i, idxName]
+			M[name]=  MtVars_PCA9685.Factory(PCA9685Defs, 1, M)
+		}
+	}
+
 	/* -------- 创建扬声器机组硬件变量 -------- */
 	func createSpeakerVars()
 	{
-		let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	// MatrixObject
+		let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	/* MatrixObject */
 		for (i in 1..SpeakerDefs.size) {
 			let idxName = SpeakerDefs.indexOfCol(0, "name")
 			let name = SpeakerDefs[i, idxName]
