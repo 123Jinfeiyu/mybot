@@ -200,9 +200,9 @@ func run_test(key: String) {
 		let robot = RobotStruct(file)
 		file.close()
 		robot.run()
-		let outf = File("ss/output_1.mt", OpenMode.Write)
-		robot.save(outf)
-		outf.close()
+		//let outf = File("ss/output_1.mt", OpenMode.Write)
+		//robot.save(outf)
+		//outf.close()
 	}
 }
 
