@@ -292,11 +292,16 @@ class RobotStruct {
 	 *  不行就将矩阵脚本转化为bot脚本吧  */
 	init(input: InputStream) {
 		readMatrix(input)
-		createHardVars()
+		//createHardVars()
 	}
 
 	func run() {
 		
+	}
+
+	func save(out: OutputStream) {
+		let ms = MatrixSaver(out)
+		ms.save(C)
 	}
 
 
@@ -316,7 +321,8 @@ class RobotStruct {
 		}
 	}
 
-	/* -------- 创建硬件变量字典 -------- */
+	/* -------- 创建硬件变量字典 --------
+	 * TODO(20260515-qing): 解耦合  */
 	func createHardVars()
 	{
 		createI2CVars()

@@ -430,6 +430,19 @@ class MatrixObject {
 		throw IllegalArgumentException("The key does not found.")
 	}
 
+	/*  -----  储存对象 ----- */
+	func save(output: StringWriter<OutputStream>) {
+		output.writeln("@${getName()}")
+		for (vec in values) {
+			for (item in vec) {
+				output.write(item)
+				output.write(" ")
+			}
+			output.writeln()
+		}
+		output.writeln("@")
+	}
+
 	/* -------- 添加字符 -------- */
 	func addRune(c: Rune) {
 		tmp.add(c)  }
@@ -503,8 +516,9 @@ class MatrixParser {
 			catch (exp: Exception) { throw UnknowExcept(count) } /* FIXME: 还是暴露出原来的错误位置来更好？ */
 		}
 
+		/* 如果没有新的矩阵式对象（意外终止）则返回空 */
 		if (!obj.hasName()) {return None}
-		return  obj
+		return  obj	/* 否则为解析成功正常退出，返回解析到的矩阵式对象 */
 	}
 
 	var flag = false	/* 结束标志 */
@@ -564,3 +578,17 @@ class MatrixParser {
 
 }
 
+/* 矩阵式储存器，接收矩阵式的哈希表（HashMap<String, MatrixObject>）
+ * 以及一个输出流（在构造函数）。 */
+class MatrixSaver {
+	let stringWriter: StringWriter<OutputStream>
+	init(output: OutputStream) {
+		stringWriter = StringWriter(output)  }
+	func save(C: LinkedList<MatrixObject>) {
+		for (item in C) {
+			item.save(stringWriter)
+			stringWriter.writeln()	/* 对象之间空一行 */
+			stringWriter.flush()
+		}
+	}
+}
