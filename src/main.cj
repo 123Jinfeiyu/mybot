@@ -192,6 +192,17 @@ func run_test(key: String) {
 		robot.save(outf)
 		outf.close()
 	}
+
+	/* -------------测试解析矩阵 二段------------ */
+	else if (key == "matrix2") {
+		let file = File("ss/output.mt", OpenMode.Read)
+		let robot = RobotStruct(file)
+		file.close()
+		robot.run()
+		let outf = File("ss/output_1.mt", OpenMode.Write)
+		robot.save(outf)
+		outf.close()
+	}
 }
 
 /* http伺服器读取动作脚本

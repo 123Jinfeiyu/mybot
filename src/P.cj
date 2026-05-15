@@ -438,7 +438,7 @@ class MatrixObject {
 				output.write(item)
 				output.write(" ")
 			}
-			output.writeln()
+			output.writeln(";")
 		}
 		output.writeln("@")
 	}
