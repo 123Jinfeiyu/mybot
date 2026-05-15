@@ -1,4 +1,4 @@
-package bot4cj
+package bot4cj.hd
 foreign func I2C_init(path: CString): Int16
 foreign func I2C_free(fd: Int16): Unit
 foreign func I2C_setAddr(fd: Int16, addr: UInt8): Bool
@@ -13,7 +13,7 @@ const I2C_FILE_NOT_OPENED: Int16 = -1
  *     fixme: 对I2C的操作都要加锁
  *     TODO: 直接使用libi2c.so
  */
-class I2C {
+public class I2C {
     public init(path: String) {
         this.path = path
         unsafe{

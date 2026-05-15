@@ -1,14 +1,14 @@
-package bot4cj
+package bot4cj.hd
 
 /* MPU6050传感器数据 */
 @C
-struct MPU6050_sensorData {
-    var accel_x: Int16 = 0 /* 加速度计 */
-    var accel_y: Int16 = 0
-    var accel_z: Int16 = 0
-    var gyro_x:  Int16 = 0 /* 陀螺仪 */
-    var gyro_y:  Int16 = 0
-    var gyro_z:  Int16 = 0
+public struct MPU6050_sensorData {
+    public var accel_x: Int16 = 0 /* 加速度计 */
+    public var accel_y: Int16 = 0
+    public var accel_z: Int16 = 0
+    public var gyro_x:  Int16 = 0 /* 陀螺仪 */
+    public var gyro_y:  Int16 = 0
+    public var gyro_z:  Int16 = 0
     public func print() {  /* 格式化打印 */
         println("[accel x, y, z] ${accel_x}, ${accel_y}, ${accel_z}")
         println("[gyro  x, y, z] ${gyro_x},  ${gyro_y},  ${gyro_z}")
@@ -18,7 +18,7 @@ struct MPU6050_sensorData {
 
 /* MPU6050陀螺仪、加速度计
  *   输入并持有一个I2C引用 */
-class MPU6050 {
+public class MPU6050 {
     public init(i2c: I2C, addr: UInt8) {
         this.i2c = i2c
         this.addr = addr

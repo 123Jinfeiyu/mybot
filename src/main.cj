@@ -2,12 +2,12 @@ package bot4cj
 import std.io.*
 import std.fs.*
 import std.env.*
-import std.random.*
 import std.argopt.*
 import std.convert.*
 import std.collection.*
 import stdx.net.http.*
 import stdx.encoding.json.*
+import bot4cj.hd.*
 
 var I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 var HTTP_ADDR = "127.0.0.1"

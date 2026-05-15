@@ -2,9 +2,9 @@
  *  TODO(20260515-qing): 由于对统一接口的需求，设计基于回调的虚拟化硬件 */
 
 
-package bot4cj
+package bot4cj.hd
 
-class PCA9685 {
+public class PCA9685 {
     private static const ADDR_0: UInt8 = 0x40   /* PCA9685 */
     private var i2c_setAddr: (UInt8) -> Unit
     private var i2c_readReg: (UInt8) -> Int8

@@ -8,7 +8,7 @@ import std.random.*
 import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
-
+import bot4cj.hd.*
 
 
 /* 硬件接口
@@ -122,7 +122,7 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 	 *  pca9685-0  i2c-1   0x40;
 	 *  @
 	 */
-	static func Factory(PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_PCA9685
+	static func Factory(PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_PCA9685
 	{
 		let idxName = PCA9685Defs.indexOfCol(0, "name")
 		let idxI2c  = PCA9685Defs.indexOfCol(0, "I2C")
@@ -155,6 +155,7 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 				i2c_HardVar.play(obj)}
 			)
 
+		/* {"channel": 0, "angle": 90.0}  */
 		let mtvars_pca9685 = MtVars_PCA9685({json: JsonValue =>
 			let channel = json.asObject().get("channel").getOrThrow().asFloat().getValue()
 			let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
@@ -168,10 +169,23 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 	}
 }
 
-/* 舵机变量类 */
+/* 舵机变量类
+ * TODO(20260515-qing): 普通的舵机类也是传入回调函数的，
+ * - 但是我们考虑到最大值、最小值的限制和漂移值的调整，
+ * - 还是要专门做一个舵机类  */
 class MtVars_Servo <: MatrixVars_Hardware {
 	init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
+
+	/* 工厂模式：使用矩阵对象构造 
+	 *
+	 *  @Servo
+	 *  name   max  min  offset  controller  id;
+	 *    s1    90     -       -   pca9685-0   0;
+	 *  @
+	 *
+	 */
+	//static func Factory(ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_Servo
 }
 
 /*
