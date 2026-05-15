@@ -5,13 +5,20 @@ public class Servo {
 	var max: Float32
 	var min: Float32
 	var offset: Float32
-	var setAngle: (UInt8, Float32) -> Unit
-	init(max!: Float32, min!: Float32, offset!: Float32,
-			setAngle!: (UInt8,Float32) -> Unit)
-	{
+	var callback_setAngle: (Float32) -> Unit
+	public init(max!: Float32, min!: Float32, offset!: Float32,
+			callback_setAngle!: (Float32) -> Unit) {
 		this.max =max
 		this.min = min
 		this.offset = offset
-		this.setAngle = setAngle
+		this.callback_setAngle = callback_setAngle
+	}
+
+	public func setAngle(angle: Float32) {
+		var a = angle
+		a += offset
+		if (a > max) { a = max}
+		if (a < min) { a = min}
+		callback_setAngle(a)
 	}
 }

@@ -30,17 +30,17 @@ name  channels  sample_rate  volumn  max_f  min_f;
 @
 
 @Servo
- name   max  min  offset  controller  id;
-  s1    90     -       -   pca9685-0   0;	# rb0
-  s2   180     -       -           -   1;	# rb1 
-  s3   -90     -       -           -   2;	# lb0
-  s4  -180     -       -           -   3;	# lb1
-  s5    90     -       -           -   4;	# lf0
-  s6   180     -       -           -   5;	# lf1
-  s7   -90     -       -           -   6;	# rf0
-  s8  -180     -       -           -   7;	# rf1
-  s9   180     -       -           -   8;	# cam0
- s10   180     -       -           -   9;	# cam1
+ name   max  min  offset  controller  channel;
+  s1    90     -       -   pca9685-0        0;	# rb0
+  s2   180     -       -           -        1;	# rb1 
+  s3   -90     -       -           -        2;	# lb0
+  s4  -180     -       -           -        3;	# lb1
+  s5    90     -       -           -        4;	# lf0
+  s6   180     -       -           -        5;	# lf1
+  s7   -90     -       -           -        6;	# rf0
+  s8  -180     -       -           -        7;	# rf1
+  s9   180     -       -           -        8;	# cam0
+ s10   180     -       -           -        9;	# cam1
 @
 
 @Action

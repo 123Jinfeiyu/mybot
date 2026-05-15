@@ -157,7 +157,7 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 
 		/* {"channel": 0, "angle": 90.0}  */
 		let mtvars_pca9685 = MtVars_PCA9685({json: JsonValue =>
-			let channel = json.asObject().get("channel").getOrThrow().asFloat().getValue()
+			let channel = json.asObject().get("channel").getOrThrow().asInt().getValue()
 			let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
 			pca9685.setAngle(UInt8(channel), Float32(angle))
 			let ret = JsonObject()
@@ -180,12 +180,47 @@ class MtVars_Servo <: MatrixVars_Hardware {
 	/* 工厂模式：使用矩阵对象构造 
 	 *
 	 *  @Servo
-	 *  name   max  min  offset  controller  id;
-	 *    s1    90     -       -   pca9685-0   0;
+	 *  name   max  min  offset  controller  channel;
+	 *    s1    90    -       -   pca9685-0        0;
 	 *  @
 	 *
 	 */
-	//static func Factory(ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_Servo
+	static func Factory(ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_Servo
+	{
+		let idxName = ServoDefs.indexOfCol(0, "name")
+		let idxMax = ServoDefs.indexOfCol(0, "max")
+		let idxMin = ServoDefs.indexOfCol(0, "min")
+		let idxOffset = ServoDefs.indexOfCol(0,"offset")
+		let idxCtrl = ServoDefs.indexOfCol(0, "controller")
+		let idxChannel = ServoDefs.indexOfCol(0, "channel")
+
+		let name = ServoDefs[i, idxName]
+		let max = parseMt<Float32>(ServoDefs, i, idxMax)
+		let min = parseMt<Float32> (ServoDefs,i, idxMin)
+		let offset = parseMt<Float32>(ServoDefs, i, idxOffset)
+		let ctrl = getMt(ServoDefs, i, idxCtrl)
+		let channel = parseMt<UInt8>(ServoDefs, i, idxChannel)
+
+		print("Create a Servo hard-Var: ${name},\tmax: ${max},\tmin: ${min},\toffset: ${offset}")
+		println(",\tcontroller: ${ctrl},\tchannel: ${channel}")
+
+		let controller = map[ctrl]	/* like pca9685 */
+		let servo = Servo(max: max, min: min, offset: offset,
+			callback_setAngle: {angle: Float32 =>
+				let obj = JsonObject()
+				obj.put("channel", JsonInt(Int64(channel)))
+				obj.put("angle", JsonFloat(Float64(angle)))
+				controller.play(obj)
+		})
+		let mtvars_servo = MtVars_Servo({json=>
+				let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
+				servo.setAngle(Float32(angle))
+				let ret = JsonObject()
+				ret.put("status", JsonString("OK"))
+				return ret
+		})
+		return mtvars_servo
+	}
 }
 
 /*
@@ -286,35 +321,44 @@ class RobotStruct {
 	{
 		createI2CVars()
 		createPCA9685Vars()
+		createServoVars()
 		createSpeakerVars()
 	}
 
 
 	/* -------- 创建I2C机组硬件变量 -------- */
-	func createI2CVars()
-	{
+	func createI2CVars() {
 		let I2CDefs= findMt(C, "I2C").getOrThrow()	/* MatrixObject */
 		for (i in 1..I2CDefs.size) {
 			let idxName = I2CDefs.indexOfCol(0, "name")
 			let name = I2CDefs[i, idxName]
-			M[name]  = MtVars_I2C.Factory(I2CDefs, 1, M)
+			M[name]  = MtVars_I2C.Factory(I2CDefs, i, M)
 		}
 	}
 
 	/* -------- 创建PCA9685硬件变量 -------- */
-	func createPCA9685Vars()
-	{
+	func createPCA9685Vars() {
 		let PCA9685Defs = findMt(C, "PCA9685").getOrThrow()
 		for (i in 1..PCA9685Defs.size) {
 			let idxName = PCA9685Defs.indexOfCol(0, "name")
 			let name = PCA9685Defs[i, idxName]
-			M[name]=  MtVars_PCA9685.Factory(PCA9685Defs, 1, M)
+			M[name]=  MtVars_PCA9685.Factory(PCA9685Defs, i, M)
 		}
 	}
 
+	/* -------- 创建Servo舵机硬件变量 -------- */
+	func createServoVars() {
+		let ServoDefs = findMt(C, "Servo").getOrThrow()
+		for (i in 1..ServoDefs.size) {
+			let idxName = ServoDefs.indexOfCol(0, "name")
+			let name = ServoDefs[i, idxName]
+			M[name] = MtVars_Servo.Factory(ServoDefs, i, M)
+		}
+	}
+
+
 	/* -------- 创建扬声器机组硬件变量 -------- */
-	func createSpeakerVars()
-	{
+	func createSpeakerVars() {
 		let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	/* MatrixObject */
 		for (i in 1..SpeakerDefs.size) {
 			let idxName = SpeakerDefs.indexOfCol(0, "name")
