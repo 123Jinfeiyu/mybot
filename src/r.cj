@@ -135,10 +135,32 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 		println("Create a I2C hard-Var: ${name},\ti2c: ${i2c},\tpath: ${path}")
 
 		let i2c_HardVar = map[i2c]
-		//let pca9685 = PCA9685()
+		let pca9685 = PCA9685(i2c_setAddr: {addr =>
+				let obj = JsonObject()
+				obj.put("mode", JsonString("set_addr"))
+				obj.put("addr", JsonInt(Int64(addr)))
+				i2c_HardVar.play(obj)},
+			i2c_readReg: {reg: UInt8 =>
+				let obj = JsonObject()
+				obj.put("mode", JsonString("get_val"))
+				obj.put("reg", JsonInt(Int64(reg)))
+				let res = i2c_HardVar.play(obj)
+				let val = res.asObject().get("value").getOrThrow().asInt().getValue()
+				return Int8(val)},
+			i2c_writeReg: {reg, val =>
+				let obj = JsonObject()
+				obj.put("mode", JsonString("set_val"))
+				obj.put("reg", JsonInt(Int64(reg)))
+				obj.put("val", JsonInt(Int64(val)))
+				i2c_HardVar.play(obj)}
+			)
 
 		let mtvars_pca9685 = MtVars_PCA9685({json: JsonValue =>
+			let channel = json.asObject().get("channel").getOrThrow().asFloat().getValue()
+			let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
+			pca9685.setAngle(UInt8(channel), Float32(angle))
 			let ret = JsonObject()
+			ret.put("status", JsonString("OK"))
 			return ret
 		})
 
@@ -209,7 +231,8 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 
 /* 机器人结构类
  * 机器人结构是动态的，从脚本中解析的 
- * TODO(20260514-qing): 调整为输入MatrixObject  */
+ * TODO(20260514-qing): 调整为输入MatrixObject
+ * TODO(20260515-qing): 需要重写一遍硬件类  */
 class RobotStruct {
 
 	/*  存放解析结果和创建的变量 */
@@ -327,7 +350,9 @@ func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
 	let sr = StringReader<InputStream>(input)
 	let parser = ActsParser(sr)
 	let i2c = I2C(I2C_PATH)
-	let pca9685 = PCA9685(i2c)
+	let pca9685 = PCA9685(i2c_setAddr: {addr => i2c.setAddr(addr)},
+		i2c_readReg: {reg => i2c.readRegFlag(reg)},
+		i2c_writeReg:{reg, val => i2c.writeReg(reg, val)})
 	let mpu6050s = [
 		MPU6050(i2c, MPU6050.ADDR_1),
 		MPU6050(i2c, MPU6050.ADDR_0)
