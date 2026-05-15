@@ -358,7 +358,7 @@ class ActsParser {
 		t = if (ma < t) {ma} else {t}
 		t = if (mi > t) {mi} else {t}
 		t = if (!rf) {t} else {180.0f32 - t}
-		t = t + dx  // plus offset
+		t = t + dx  /* plus offset */
 
 		return t
 	}
