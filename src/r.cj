@@ -26,20 +26,20 @@ open class MatrixVars_Hardware {
 
 	/* INFO(20260514-qing):  这两个函放在外面很突兀，考虑放进Matrix_HardVars */
 	/* -------- 获得项目值 -------- */
-	static func getMt(obj: MatrixObject, row: Int64, col: Int64) 
+	static func getMt(obj: MatrixObject, row: Int64, col: Int64): String
 	{
 		let raw = obj[row, col]
 		if (raw == "-" && row > 1) {
-			return obj[row - 1, col]  }
+			return getMt(obj, row - 1, col)  }
 		return raw
 	}
 
 	/* -------- 解析项目值 -------- */
-	static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64) where T <: Parsable<T>
+	static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64): T  where T <: Parsable<T>
 	{
 		let raw = obj[row, col]
 		if (raw == "-" && row > 1) {
-			let prev = obj[row-1, col]
+			let prev = getMt(obj, row-1, col)
 			return T.parse(prev)
 		}
 		else if (raw == "-" && !row > 1) {
@@ -132,7 +132,7 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 		let i2c = getMt(PCA9685Defs, i, idxI2c)
 		let path = getMt(PCA9685Defs, i, idxPath)
 
-		println("Create a I2C hard-Var: ${name},\ti2c: ${i2c},\tpath: ${path}")
+		println("Create a PCA9685 hard-Var: ${name}, i2c: ${i2c}, path: ${path}")
 
 		let i2c_HardVar = map[i2c]
 		let pca9685 = PCA9685(i2c_setAddr: {addr =>
@@ -201,8 +201,8 @@ class MtVars_Servo <: MatrixVars_Hardware {
 		let ctrl = getMt(ServoDefs, i, idxCtrl)
 		let channel = parseMt<UInt8>(ServoDefs, i, idxChannel)
 
-		print("Create a Servo hard-Var: ${name},\tmax: ${max},\tmin: ${min},\toffset: ${offset}")
-		println(",\tcontroller: ${ctrl},\tchannel: ${channel}")
+		print("Create a Servo hard-Var: ${name}, max: ${max}, min: ${min}, offset: ${offset}")
+		println(", controller: ${ctrl}, channel: ${channel}")
 
 		let controller = map[ctrl]	/* like pca9685 */
 		let servo = Servo(max: max, min: min, offset: offset,
@@ -256,7 +256,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 		let max_f = parseMt<Float32>(SpeakerDefs, i, idxMax_f)
 		let min_f = parseMt<Float32>(SpeakerDefs, i, idxMin_f)
 
-		println("Create a Speaker: ${name}")		
+		println("Create a Speaker: ${name}, channels: ${channels}, sample_rate: ${sample_rate}, volume: $(volume), max_f: ${max_f}, min_f: ${min_f}")		
 		let spk = Spk(channels: channels, sample_rate: sample_rate)
 		let mtvar_spk = MtVars_Speaker({json =>		// {"frequency": 1000.0, "volume": 0.6, "delay": 400}
 			let json_obj = json.asObject()
@@ -292,7 +292,7 @@ class RobotStruct {
 	 *  不行就将矩阵脚本转化为bot脚本吧  */
 	init(input: InputStream) {
 		readMatrix(input)
-		//createHardVars()
+		createHardVars()
 	}
 
 	func run() {
