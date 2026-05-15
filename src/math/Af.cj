@@ -1,8 +1,8 @@
-package bot4cj
+package bot4cj.math
 import std.math.*
 
 /* Activation Functions 激活函数族 */
-enum Af {
+public enum Af {
 	None | Sigmoid | ReLU | Leaky_ReLU(FP32) | Tanh | Softmax
 
 	func forward(x: Matrix1) {

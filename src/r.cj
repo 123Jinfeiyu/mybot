@@ -9,7 +9,7 @@ import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
-
+import bot4cj.math.*
 
 /* 硬件接口
  * 接收一个lambda表达式，在回调函数中定义行为

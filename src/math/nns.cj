@@ -1,4 +1,4 @@
-package bot4cj
+package bot4cj.math
 import std.io.*
 import std.fs.*
 import std.math.*
@@ -8,7 +8,7 @@ import std.collection.*
 
 // 加载多层神经网络
 // TODO: 也许用类封装
-func load_nns(filename: String): ArrayList<Nn> {
+public func load_nns(filename: String): ArrayList<Nn> {
 	let nns = ArrayList<Nn>()
 	let file = File(filename, OpenMode.Read)
 	let sr = StringReader<InputStream>(file)
@@ -29,7 +29,7 @@ func load_nns(filename: String): ArrayList<Nn> {
 }
 
 // 储存多层神经网络
-func save_nns(nns: ArrayList<Nn>, filename: String) {
+public func save_nns(nns: ArrayList<Nn>, filename: String) {
 
 		let file: File
 		if (exists(filename)) {
@@ -41,7 +41,7 @@ func save_nns(nns: ArrayList<Nn>, filename: String) {
 		file.close()
 }
 
-func prepare_andDoor(m: Matrix1, t: Matrix1)	/* 准备与门的测试用例 */
+public func prepare_andDoor(m: Matrix1, t: Matrix1)	/* 准备与门的测试用例 */
 {
 	let random = Random(UInt64(DateTime.now().nanosecond))
 	let a = random.nextInt8(2)
@@ -55,7 +55,7 @@ func prepare_andDoor(m: Matrix1, t: Matrix1)	/* 准备与门的测试用例 */
 }
 
 // 神经网络推理
-func forward(nns: ArrayList<Nn>, m: Matrix) {
+public func forward(nns: ArrayList<Nn>, m: Matrix) {
 
 	// 正向传播
 	var out_dof = Matrix(1, 1)
@@ -66,7 +66,7 @@ func forward(nns: ArrayList<Nn>, m: Matrix) {
 	}
 	return out_dof
 }
-func forward1(nns: ArrayList<Nn1>, m: Matrix1) {
+public func forward1(nns: ArrayList<Nn1>, m: Matrix1) {
 
 	// 正向传播
 	var out_dof = Matrix1(1, 1)
@@ -84,7 +84,7 @@ func forward1(nns: ArrayList<Nn1>, m: Matrix1) {
  * @param t:    输入一组教师数据
  * @param discount: 输入本次训练的折扣系数
  */
-func train1(nns: ArrayList<Nn1>, m: Matrix1, t: Matrix1, discount: Float32) {
+public func train1(nns: ArrayList<Nn1>, m: Matrix1, t: Matrix1, discount: Float32) {
 
 	// train
 
@@ -118,7 +118,7 @@ func train1(nns: ArrayList<Nn1>, m: Matrix1, t: Matrix1, discount: Float32) {
 	//return (loss0 + loss1) / 2.0
 	return loss0
 }
-func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
+public func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
 
 	// train
 	let outs_dof = ArrayList<Matrix> ()

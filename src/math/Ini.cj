@@ -1,8 +1,8 @@
-package bot4cj
+package bot4cj.math
 import std.random.*
 import std.time.*
 import std.math.*
-class Ini {
+public class Ini {
 	static func xavierNormalInit(target: Matrix1, fan_in: Int64, fan_out: Int64) {
 		let seed = DateTime.now().nanosecond
 		let random = Random(UInt64(seed))

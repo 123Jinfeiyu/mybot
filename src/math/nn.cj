@@ -1,4 +1,4 @@
-package bot4cj
+package bot4cj.math
 import std.fs.*
 import std.io.*
 import std.convert.*
@@ -10,7 +10,7 @@ foreign func Leaky_ReLU_do(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
 foreign func Leaky_ReLU_dot(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
 foreign func Tanh_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func Tanh_dot(m: CPointer<Unit>): CPointer<Unit>
-enum ActivationFuncs {
+public enum ActivationFuncs {
 	//None | Sigmoid | ReLU |Leaky_ReLU |Tanh
 	Sigmoid | ReLU | Leaky_ReLU | Tanh
 	func fdo(m: Matrix): Matrix { // 暂时只设置ReLU
@@ -52,8 +52,8 @@ enum ActivationFuncs {
 	}
 }
 
-class Nn {
-	init(inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32)
+public class Nn {
+	public init(inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32)
 	{
 		this.inputno = inputno
 		this.outputno = outputno
@@ -162,7 +162,7 @@ class Nn {
  	let f: ActivationFuncs
 }
 
-class Nn1 {
+public class Nn1 {
 	let inputno: Int64	/* 神经网络规格 */
 	let outputno: Int64
 	var weights: Matrix1	/* (inputs, outputs) */
@@ -176,7 +176,7 @@ class Nn1 {
 	/*------------------*/
 	var weights_grad: Option<Matrix1> = None
 	var bias_grad: Option<Matrix1> = None
-	init(i: Int64, o: Int64, lr: Float32, f: Af) {
+	public init(i: Int64, o: Int64, lr: Float32, f: Af) {
 		inputno = i
 		outputno =o
 		learning_rate=FP32(lr)

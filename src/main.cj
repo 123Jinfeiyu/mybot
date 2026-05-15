@@ -8,6 +8,7 @@ import std.collection.*
 import stdx.net.http.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
+import bot4cj.math.*
 
 var I2C_PATH = "/dev/i2c-1" // For Raspberrypi
 var HTTP_ADDR = "127.0.0.1"

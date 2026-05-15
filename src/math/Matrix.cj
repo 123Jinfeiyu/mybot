@@ -1,4 +1,4 @@
-package bot4cj
+package bot4cj.math
 import std.fs.*
 import std.io.*
 import std.convert.*
@@ -25,14 +25,14 @@ foreign func xavierNormalInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 foreign func xavierUniformInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 
 // TODO: 将矩阵元数据存储在仓颉部分
-class Matrix {
+public class Matrix {
 
 	// 获取资源
-	init(row: UInt64, col: UInt64) {
+	public init(row: UInt64, col: UInt64) {
 		unsafe { M = createMatrix(row, col) }
 	}
 
-	Matrix(m: CPointer<Unit>) {
+	public Matrix(m: CPointer<Unit>) {
 		M = m
 	}
 
@@ -59,11 +59,11 @@ class Matrix {
 	//	unsafe { return witchMatrix(M, r, c) }
 	//}
 
-	func get(r: UInt64, c: UInt64): Float32 {
+	public func get(r: UInt64, c: UInt64): Float32 {
 		unsafe { return getMatrix(M, r, c) }
 	}
 
-	func set(r: UInt64, c: UInt64, v: Float32) {
+	public func set(r: UInt64, c: UInt64, v: Float32) {
 		unsafe { setMatrix(M, r, c, v) }
 	}
 
@@ -71,11 +71,11 @@ class Matrix {
 		unsafe { return sameShapeMatrix(M, s.getData()) }
 	}
 
-	func getRow(): UInt64 {
+	public func getRow(): UInt64 {
 		unsafe { return getrowMatrix(M) }
 	}
 
-	func getCol(): UInt64 {
+	public func getCol(): UInt64 {
 		unsafe { return getcolMatrix(M) }
 	}
 
@@ -244,9 +244,9 @@ class Matrix {
 }
 
 /* 这个是32位浮点数 */
-struct FP32 {
+public struct FP32 {
 	var val: Float32
-	init(t: Float32) {
+	public init(t: Float32) {
 		val =  t }
 	func getValue() {
 		return val }
@@ -282,29 +282,29 @@ struct FP32 {
 +---------+ /
 
 */
-class Matrix1 {
+public class Matrix1 {
 
 	var row: Int64
 	var col: Int64
 	var arr: Array<FP32>
 
-	Matrix1(row: Int64, col: Int64) {
+	public Matrix1(row: Int64, col: Int64) {
 		this.row = row
 		this.col = col
 		this.arr = Array<FP32>(row * col, repeat: FP32(0.0f32))
 	}
 
-	func get(r: Int64, c: Int64) {
+	public func get(r: Int64, c: Int64) {
 		return arr.get(r * this.col + c)
 	}
 
-	func set(r: Int64, c: Int64, v: FP32) {
+	public func set(r: Int64, c: Int64, v: FP32) {
 		arr[r * this.col + c] = v
 	}
 
-	func get_row() { return row }
+	public func get_row() { return row }
 
-	func get_col() { return col }
+	public func get_col() { return col }
 
 	func has_same_shape(other: Matrix1) {
 		let a = this.get_row()  == other.get_row()
@@ -316,7 +316,7 @@ class Matrix1 {
 		return this.get_col() == other.get_row()
 	}
 
-	operator func +(a: FP32) {
+	public operator func +(a: FP32) {
 		let r  =get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -330,7 +330,7 @@ class Matrix1 {
 		return M
 	}
 
-	operator func +(S: Matrix1) {
+	public operator func +(S: Matrix1) {
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -348,7 +348,7 @@ class Matrix1 {
 		return M
 	}
 
-	operator func -(a: FP32) {
+	public  operator func -(a: FP32) {
 		let r = get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -361,7 +361,7 @@ class Matrix1 {
 		return M
 	}
 
-	operator func -(S: Matrix1) {
+	public operator func -(S: Matrix1) {
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -379,7 +379,7 @@ class Matrix1 {
 		return M
 	}
 
-	operator func *(a: FP32) {
+	public operator func *(a: FP32) {
 		let r = get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -392,7 +392,7 @@ class Matrix1 {
 		return M
 	}
 
-	operator func *(S: Matrix1) {
+	public operator func *(S: Matrix1) {
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -410,7 +410,7 @@ class Matrix1 {
 		return M
 	}
 
-	operator func /(a: FP32) {
+	public operator func /(a: FP32) {
 		let r = get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -423,7 +423,7 @@ class Matrix1 {
 		return M
 	}
 
-	operator func /(S: Matrix1) {
+	public operator func /(S: Matrix1) {
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -441,7 +441,7 @@ class Matrix1 {
 		return M
 	}
 
-	func dot(S: Matrix1) {
+	public func dot(S: Matrix1) {
 		if (!has_dot_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -462,7 +462,7 @@ class Matrix1 {
 		return M
 	}
 
-	func clone() {
+	public func clone() {
 		let r = get_row()
 		let c = get_col()
 		let N = Matrix1(r, c)
@@ -475,7 +475,7 @@ class Matrix1 {
 		return N
 	}
 
-	func T() {
+	public func T() {
 		let r = get_row()
 		let c = get_col()
 		let N = Matrix1(c, r)
