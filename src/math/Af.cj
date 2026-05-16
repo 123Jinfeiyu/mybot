@@ -1,7 +1,8 @@
 package bot4cj.math
 import std.math.*
 
-/* -------- Activation Functions 激活函数族 -------- */
+/* -------- Activation Functions 激活函数族 --------
+ * TODO(20260516-qing): 增加序列化、反序列化工厂函数  */
 public enum Af {
 
 	None | Sigmoid | ReLU | Leaky_ReLU(FP32) | Tanh | Softmax

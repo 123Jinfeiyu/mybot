@@ -10,8 +10,8 @@ foreign func Leaky_ReLU_do(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
 foreign func Leaky_ReLU_dot(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
 foreign func Tanh_do(m: CPointer<Unit>): CPointer<Unit>
 foreign func Tanh_dot(m: CPointer<Unit>): CPointer<Unit>
+/* -------- 旧版激活函数 --------*/
 public enum ActivationFuncs {
-	//None | Sigmoid | ReLU |Leaky_ReLU |Tanh
 	Sigmoid | ReLU | Leaky_ReLU | Tanh
 	func fdo(m: Matrix): Matrix { // 暂时只设置ReLU
 		unsafe {
@@ -52,9 +52,14 @@ public enum ActivationFuncs {
 	}
 }
 
+/* -------- 旧版的神经网络类 --------
+ * 这个实现依赖C++语言的动态分享库，特点是速度快 
+ * 这个实现可能是有问题的  */
 public class Nn {
-	public init(inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32)
-	{
+
+	/* -------- 主初始化器 -------- */
+	public init(
+			inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32) {
 		this.inputno = inputno
 		this.outputno = outputno
 		weights = Matrix.initWithXavierUniform(inputno, outputno)
@@ -63,8 +68,9 @@ public class Nn {
 		this.learning_rate = learning_rate
 	}
 
-	init(inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32, weights: Matrix, bias: Matrix)
-	{
+	/* -------- 提供了权重矩阵的初始化器 -------- */
+	public init(
+			inputno: UInt64, outputno: UInt64, f: ActivationFuncs, learning_rate: Float32, weights: Matrix, bias: Matrix) {
 		this.inputno = inputno
 		this.outputno = outputno
 		this.weights = weights
@@ -73,33 +79,36 @@ public class Nn {
 		this.learning_rate = learning_rate
 	}
 	
+	/* -------- 神经网络推理 -------- */
 	func forward(x: Matrix): Matrix {
-		// x => (1, inputs)
-		let r = x.dot(weights) + bias // (1, outputno)
+		/*  x => (1, inputs)  */
+		let r = x.dot(weights) + bias	/*  (1, outputno)  */
 		return r
 	}
 
+	/* -------- 实施激活函数 -------- */
 	func fdo(x: Matrix): Matrix {
-		return f.fdo(x)
-	}
+		return f.fdo(x)  }
 
+	/* -------- 激活函数导数 -------- */
 	func fdot(x: Matrix): Matrix {
-		return f.fdot(x)
-	}
+		return f.fdot(x)  }
 
- 	// This is Wrong
+ 	/*  This is Wrong  */
 	//func bak_bsgrad(prev_raw_outputs_dotf: Matrix, errs: Matrix): Matrix {
-		// prev_raw_outputs_dotf => (1, outputno)
-		// errs => (1, outputno)
+		/*  prev_raw_outputs_dotf => (1, outputno)
+		 *  errs => (1, outputno)  */
 
 	//	return errs * prev_raw_outputs_dotf
 	//}
 
+	/* -------- 权重梯度的传播 -------- */
 	func bak_wsgrad(prev_inputs: Matrix, delta: Matrix) {
-		// prev_inputs => (1, inputs)
-		return prev_inputs.T().dot(delta) // (inputs, outputs)
+		/*  prev_inputs => (1, inputs)  */
+		return prev_inputs.T().dot(delta)	/*  (inputs, outputs)  */
 	}
 
+	/* -------- 计算上一层的误差 -------- */
 	func bak_uperrs(delta: Matrix, prev_dotf: Matrix) {
 		let first =  weights.dot(delta.T()).T() // (1, inputs)
 		
@@ -107,20 +116,23 @@ public class Nn {
 		uperrs
 	}
 
+	/* -------- 更新权重、偏爱因子 -------- */
 	func update(weights_grad: Matrix, bias_grad: Matrix, discount: Float32) {
 		weights -= weights_grad * learning_rate * discount
 		bias    -= bias_grad    * learning_rate * discount
 	}
 
+	/* -------- 打印权重、偏爱因子 -------- */
 	func print() {
 		weights.print()
 		bias.print()
 	}
 
+	/* -------- 打印神经网络全连接层的形状 -------- */
 	func print_shape() {
-		println("${inputno}, ${outputno}")
-	}
+		println("${inputno}, ${outputno}") }
 
+	/* -------- 储存神经网络 -------- */
 	func save(file: File) {
 		file.write("FullConnectLayer ".toArray())
 		file.write(inputno.toString().toArray())
@@ -137,13 +149,18 @@ public class Nn {
 		//file.write("\n".toArray())
 	}
 
-	static func loadItem<T>(sr: StringReader<InputStream>) where T <: Parsable<T> {
+	/* -------- 静态方法，加载单个项目 -------- */
+	static func loadItem<T>(sr: StringReader<InputStream>) where T <: Parsable<T>
+	{
 		let s = sr.readUntil({r => r == r" " || r == r"\n"})
 		let ss = s.getOrThrow().trimAscii()
 		println(ss)
 		return T.parse(ss)
 	}
-	static func load(sr: StringReader<InputStream>) {
+
+	/* -------- 静态方法，加载神经网络 -------- */
+	static func load(sr: StringReader<InputStream>)
+	{
 		let inputno = loadItem<UInt64>(sr)
 		let outputno = loadItem<UInt64>(sr)
 		let lr = loadItem<Float32>(sr)
@@ -156,12 +173,13 @@ public class Nn {
 
 	let inputno: UInt64
 	let outputno: UInt64
-	var weights: Matrix // (inputs, outputs)
-	var bias: Matrix    // (1, outputs)
+	var weights: Matrix	/*  (inputs, outputs)  */
+	var bias: Matrix	/* (1, outputs)  */
 	var learning_rate: Float32
  	let f: ActivationFuncs
 }
 
+/* -------- 新版的神经网络，使用原生矩阵对象实现 -------- */
 public class Nn1 {
 	let inputno: Int64	/* 神经网络规格 */
 	let outputno: Int64

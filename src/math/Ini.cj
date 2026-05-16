@@ -2,7 +2,10 @@ package bot4cj.math
 import std.random.*
 import std.time.*
 import std.math.*
+/* -------- 神经网络使用的权重矩阵初始化类 -------- */
 public class Ini {
+
+	/* -------- xavier正态初始化 -------- */
 	static func xavierNormalInit(target: Matrix1, fan_in: Int64, fan_out: Int64) {
 		let seed = DateTime.now().nanosecond
 		let random = Random(UInt64(seed))
@@ -15,6 +18,7 @@ public class Ini {
 		}
 	}
 
+	/* -------- Glorot均匀初始化 -------- */
 	static func xavierUniformInit(target: Matrix1, fan_in: Int64, fan_out: Int64) {
 		let limit = sqrt(6.0f32 / Float32(fan_in + fan_out))
 
@@ -22,10 +26,8 @@ public class Ini {
 			for (c in 0..fan_out) {
 				let seed = DateTime.now().nanosecond
 				let random = Random(UInt64(seed))
-				/* 均匀分布 [-limit, limit] */
-				let v = (random.nextFloat32() * 2.0f32 - 1.0f32) * limit
-				target.set(r, c, FP32(v))
-			}
+				let v = (random.nextFloat32() * 2.0f32 - 1.0f32) * limit	/* 均匀分布 [-limit, limit] */
+				target.set(r, c, FP32(v))  }
 		}
 
 	}
