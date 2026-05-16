@@ -194,6 +194,10 @@ public class Nn1 {
 	/*------------------*/
 	var weights_grad: Option<Matrix1> = None
 	var bias_grad: Option<Matrix1> = None
+	
+
+	/* -------- 初始化器 --------
+	 * TODO(20260516-qing): 不要把初始化方法写死，使用枚举类  */
 	public init(i: Int64, o: Int64, lr: Float32, f: Af) {
 		inputno = i
 		outputno =o
@@ -203,7 +207,10 @@ public class Nn1 {
 		bias = Matrix1(1, outputno)
 		Ini.xavierUniformInit(weights, inputno, outputno)
 	}
-	func forward(x: Matrix1) {
+
+	/* -------- 神经网络推理 -------- */
+	func forward(x: Matrix1)
+	{
 		prev_inputs = x
 		var r = x.dot(weights)
 		r = r + bias
@@ -213,7 +220,9 @@ public class Nn1 {
 		return r1
 	}
 
-	func backward(errs: Matrix1) {
+	/* -------- 反向传播算法 -------- */
+	func backward(errs: Matrix1)
+	{
 		let first = errs  * f.backward(prev_raw_inputs.getOrThrow()) /* 逐元素相乘 */
 		let mx = prev_inputs.getOrThrow().T()
 		weights_grad = mx.dot(first)
@@ -222,10 +231,12 @@ public class Nn1 {
 		return errs_up
 	}
 
-	/* NOTE(20260514-qing):当前震荡是正常的SGD行为，但通过动量或学习率衰减可以显著改善。 */
-	/* NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
+	/*  -------- 更新权重值、偏爱因子 --------
+	 *  NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
 	func update(discount: Float32) {
 		weights = weights +  weights_grad.getOrThrow() * learning_rate * FP32(discount)
 		bias = bias + bias_grad.getOrThrow() * learning_rate * FP32(discount)
 	}
+
+
 }

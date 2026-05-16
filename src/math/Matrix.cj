@@ -24,18 +24,21 @@ foreign func transposeMatrix(M: CPointer<Unit>): CPointer<Unit>
 foreign func xavierNormalInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 foreign func xavierUniformInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 
-// TODO: 将矩阵元数据存储在仓颉部分
+/* -------- 旧版的矩阵类，依赖c++编译的共享动态库 --------
+ *  TODO: 将矩阵元数据存储在仓颉部分(done at 202605xx )  */
 public class Matrix {
 
-	// 获取资源
+	/*  -------- 主初始化器，初始化并获取资源 --------  */
 	public init(row: UInt64, col: UInt64) {
 		unsafe { M = createMatrix(row, col) }
 	}
 
+	/* -------- 初始化器，利用已经存在的元数据进行构建 -------- */
 	public Matrix(m: CPointer<Unit>) {
 		M = m
 	}
 
+	/* -------- Xavier正态分布初始化 -------- */
 	static func initWithXavierNormal(fan_in: UInt64, fan_out: UInt64) {
 		unsafe {
 			let m = xavierNormalInit(fan_in, fan_out);
@@ -43,6 +46,7 @@ public class Matrix {
 		}
 	}
 
+	/* -------- Glorot均匀初始化 -------- */
 	static func initWithXavierUniform(fan_in: UInt64, fan_out: UInt64) {
 		unsafe {
 			let m = xavierUniformInit(fan_in, fan_out);
@@ -50,43 +54,54 @@ public class Matrix {
 		}
 	}
 
-	// 释放资源
+	/* ========  在析构函数中释放资源 ======== */
 	~init() {
 		unsafe { freeMatrix(M) }
 	}
 
+	/* -------- 取下标，由于不能返回值类型的引用被弃用 -------- */
 	//operator func [](r: UInt64, c: UInt64): CPointer<Float32> {
 	//	unsafe { return witchMatrix(M, r, c) }
 	//}
 
+	/* -------- 获得某个矩阵单元的值 -------- */
 	public func get(r: UInt64, c: UInt64): Float32 {
 		unsafe { return getMatrix(M, r, c) }
 	}
 
+	/* -------- 设置某个矩阵单元的值 --------*/
 	public func set(r: UInt64, c: UInt64, v: Float32) {
 		unsafe { setMatrix(M, r, c, v) }
 	}
 
+	/* ------- 两个矩阵形状是否相同 -------- 
+	 * FIXME: 这个函数所重载的运算符不贴切  */
 	operator func ==(s: Matrix): Bool {
 		unsafe { return sameShapeMatrix(M, s.getData()) }
 	}
 
+	/* -------- 获得行数 -------- */
 	public func getRow(): UInt64 {
 		unsafe { return getrowMatrix(M) }
 	}
 
+	/* -------- 获取列数 --------*/
 	public func getCol(): UInt64 {
 		unsafe { return getcolMatrix(M) }
 	}
 
+	/* -------- 获取指向元数据的C风格指针 -------- */
 	func getData(): CPointer<Unit> {
 		return M;
 	}
 
+	/* -------- 是否两个矩阵具有点积和的形状 -------- */
 	func hasDotShapeWith(s: Matrix): Bool {
 		unsafe { return dotShapeMatrix(M, s.getData()) }
 	}
 
+	/* -------- 逐元素算数运算 -------- */
+	/* -------------------------------- */
 	operator func +(s: Matrix): Matrix {
 		unsafe {
 			if (!sameShapeMatrix(M, s.getData())) {
@@ -171,6 +186,11 @@ public class Matrix {
 		}
 	}
 
+	/* -------------------------------- */
+	/* -------------------------------- */
+
+
+	/* -------- 矩阵点积和算法 -------- */
 	func dot (s: Matrix): Matrix {
 		unsafe {
 			if (!hasDotShapeWith(s)) {
@@ -185,6 +205,7 @@ public class Matrix {
 		}
 	}
 
+	/* -------- 矩阵转置 -------- */
 	func T(): Matrix {
 		unsafe {
 			let r = transposeMatrix(M)
@@ -192,6 +213,7 @@ public class Matrix {
 		}
 	}
 
+	/* -------- 打印矩阵 -------- */
 	func print(): Unit {
 		unsafe {
 			for (i in 0..getRow()) {
@@ -205,10 +227,12 @@ public class Matrix {
 		println()
 	}
 
+	/* -------- 打印形状 -------- */
 	func print_shape() {
 		println("${getRow()}, ${getCol()}")
 	}
 
+	/* -------- 保存矩阵 -------- */
 	func save(file: File) {
 		unsafe {
 			for (i in 0..getRow()) {
@@ -222,10 +246,13 @@ public class Matrix {
 		}
 	}
 
+	/* -------- 静态方法，加载单独项 -------- */
 	static func loadItem(sr: StringReader<InputStream>) {
 		let s = sr.readUntil({r => r==r' ' || r ==r'\n'})
 		return Float32.parse(s.getOrThrow())
 	}
+
+	/* -------- 静态方法，加载矩阵 -------- */
 	static func load(sr: StringReader<InputStream>, row: UInt64, col: UInt64): Matrix {
 		let m = Matrix(row, col)
 		unsafe {
@@ -239,17 +266,18 @@ public class Matrix {
 		}
 	}
 
-	// 矩阵的C风格指针
+	/* -------- 矩阵的C风格指针 -------- */
 	var M: CPointer<Unit>
 }
 
-/* 这个是32位浮点数 */
+/* -------- 这一坨是32位浮点数 -------- */
 public struct FP32 {
-	var val: Float32
-	public init(t: Float32) {
+	private var val: Float32
+	public init(t: Float32) {	/* 以Float32初始化对象 */
 		val =  t }
-	func getValue() {
+	func getValue() {	/* 获取值 */
 		return val }
+	/* -------- 运算符重载 -------- */
 	//operator func =(t: Float32) { /* this can not */
 	//	val = t }
 	operator func +(t: Float32) {
@@ -273,7 +301,7 @@ public struct FP32 {
 
 
 /*
-
+ *  新版的矩阵对象，仓颉原生实现
  ___col___
 /         \
 +---------+ \
