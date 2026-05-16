@@ -327,15 +327,15 @@ class ActsParser {
 	public func which(idx: Int64) {
 		return act[idx] }
 
-	// 取一行动作脚本
-	// qing(20260430) TODO: 返回Map<String, Act> 对应名字
+	/*  取一行动作脚本
+	 *  qing(20260430) TODO: 返回Map<String, Act> 对应名字  */
 	operator func [](idx: Int64) {
 		let a = act[idx]
 		let map = HashMap<String, Act>()
 		for (j in 0..a.size) {
 			let nm = nam[j] // name
 			let typ = ActType.parse(nm)
-			let act = Act(typ,	// 生成动作
+			let act = Act(typ,	/* 生成动作 */
 				value: _sync(j, a[j]), duration: 0.0f32,
 				skip: false)
 			map.add(nm, act) }
@@ -343,10 +343,10 @@ class ActsParser {
 		return map
 	}
 
-	// 根据配置对齐原始数据
+	/* 根据配置对齐原始数据 */
 	private func _sync(j: Int64, target: Float32): Float32 {
 
-		// 抽象成方法
+		/* 抽象成方法 */
 		let ma = abs(bot[0][j])
 		let mi = abs(bot[1][j])
 		let rf = bot[0][j] < 0.0f32
@@ -364,43 +364,15 @@ class ActsParser {
 	}
 }
 
-
-/* 解析异常 */
-open class ParseExcept <: Exception {
-	public ParseExcept(msg: String, line: Int64) {
-		super('${msg}. we got line: ${line}')
-	}
-}
-
-/* 缓冲区过长 */
-class BufOverTheLine <: ParseExcept {
-	BufOverTheLine(count: Int64) {
-		super('Buffer length over the line', count)
-	}
-}
-
-/* 行没对齐 */
-class DoesNotSync <: ParseExcept {
-	DoesNotSync(count: Int64) {
-		super("Matrix Line Does Not Sync", count)
-	}
-}
-
-/* 未知异常 */
-class UnknowExcept <: ParseExcept {
-	UnknowExcept(count: Int64) {
-		super("I don't understand what happened", count)
-	}
-}
-
-
+/* --------------------------------------------------------- */
+/* --------------------------------------------------------- */
 
 
 /* 矩阵编程语言 - 基本对象
  * TODO：储存功能
  * TODO：神经网络层转换为矩阵对象 */
 class MatrixObject {
-	var name: String = ""	/* 名字 */
+	var name: String = ""		/* 名字 */
 	var tmp = ArrayList<Rune>()	/* rune buf 字符缓冲区 */
 	var grp = ArrayList<String>()	/* one line 整行缓冲区 */
 	var values = ArrayList<ArrayList<String>>()	/* 原始矩阵 */
@@ -429,7 +401,7 @@ class MatrixObject {
 				return col  }
 		}
 
-		/*  没找到  */
+		/* ---- 没找到 ---- */
 		throw IllegalArgumentException("The key does not found.")
 	}
 
@@ -476,51 +448,54 @@ class MatrixObject {
 	}
 }
 
-/*  矩阵式解析器
+/*  -------- 矩阵式解析器 --------
  *  TODO(20260514-qing): 这个类输入流数据，输出MatrixObject对象
  *  它是与其深度绑定的，我倾向于将其与MatrixObject融合
  *  即持有HashMap<String, ArrayList<ArrayList<String>>>  */
 class MatrixParser {
 
-	static func hasValue(co: Option<Rune>): Bool {
+	/* ---- 静态判断Option<Rune>是否有值 ----
+	   - 该方法用于文本文件遍历时判空  */
+	private static func hasValue(co: Option<Rune>): Bool {
 		match(co) {
-			case Some(c) => true
+			case Some(_) => true
 			case None => false
 		}
 	}
 
+	/* -------- 主初始化器（构造函数） --------
+	   - 设置目标输入流  */
 	var input: StringReader<InputStream>
 	init(input: StringReader<InputStream>) {
 		this.input = input  }
 
-	/* -------- 切换目标 -------- */
+	/* -------- 切换目标输入流 -------- */
 	func reset(input: StringReader<InputStream>) {
 		this.input = input  }
 
-	/* 解析器 - 循环不变式
-	 * 初始化： ss是一个动作脚本的输入流
-	 * 保持： ss是动作脚本剩余部分的输入流
-	 * 终止： 当输入流为空时，循环终止  */
+	/* -------- 解析器 - 循环不变式 ----------------------
+	 * -------- 初始化： ss是一个动作脚本的输入流 --------
+	 * -------- 保持： ss是动作脚本剩余部分的输入流 ------
+	 * -------- 终止： 当输入流为空时，循环终止 ----------  */
 	var obj = MatrixObject() 
 	func parse(): Option<MatrixObject> {
 		var count = 1i64	/* 行计数器始于1 */
 		flag = false		/* 重置结束标志 */
-		this.obj = MatrixObject()  /* 一次只解析一个对象 */
-		var so = input.read()
+		this.obj = MatrixObject()	/* 一次只解析一个对象 */
+		var so = input.read()	/* 获取初始状态 */
 		while (!flag && hasValue(so)) {
 			try {
-				let s = so.getOrThrow()
-				print(s)		/* debug */
-				count = _next(s, count)
-				so  = input.read()	/* 为下一次循环提供条件 */
+				print(s)				/* debug */
+				count = _next(so.getOrThrow(), count)	/* 进行解析解析 */
+				so  = input.read()			/* 为下一次循环提供条件 */
 			}
 			catch (exp: BufOverTheLine) { throw exp }
 			catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
-			catch (exp: Exception) { throw UnknowExcept(count) } /* FIXME: 还是暴露出原来的错误位置来更好？ */
+			catch (exp: Exception) { throw UnknowExcept(count) }	/* FIXME: 还是暴露出原来的错误位置来更好？ */
 		}
 
 		/* 如果没有新的矩阵式对象（意外终止）则返回空 */
-		if (!obj.hasName()) {return None}
+		if (!obj.hasName()) {  return None  }
 		return  obj	/* 否则为解析成功正常退出，返回解析到的矩阵式对象 */
 	}
 
@@ -557,7 +532,7 @@ class MatrixParser {
 			nl = false
 			obj.addRune(c)
 		}
-		//------------- not nl -------------
+		/* ------------- not nl ------------- */
 		else if (!nl &&  nm && (c == r' ' || c == r'\t' || c == r'\n')) {	/* 添加名字 */
 			obj.submitName()
 			nl = true
@@ -576,6 +551,7 @@ class MatrixParser {
 			obj.addRune(c)
 		}
 
+		/* -------- 返回行号 -------- */
 		return count
 	}
 
@@ -595,3 +571,38 @@ class MatrixSaver {
 		}
 	}
 }
+
+
+/* --------------------------------------------------------- */
+/* --------------------------------------------------------- */
+
+/* 解析异常 */
+open class ParseExcept <: Exception {
+	public ParseExcept(msg: String, line: Int64) {
+		super('${msg}. we got line: ${line}')
+	}
+}
+
+/* 缓冲区过长 */
+class BufOverTheLine <: ParseExcept {
+	BufOverTheLine(count: Int64) {
+		super('Buffer length over the line', count)
+	}
+}
+
+/* 行没对齐 */
+class DoesNotSync <: ParseExcept {
+	DoesNotSync(count: Int64) {
+		super("Matrix Line Does Not Sync", count)
+	}
+}
+
+/* 未知异常 */
+class UnknowExcept <: ParseExcept {
+	UnknowExcept(count: Int64) {
+		super("I don't understand what happened", count)
+	}
+}
+
+
+
