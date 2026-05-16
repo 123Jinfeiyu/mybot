@@ -485,9 +485,10 @@ class MatrixParser {
 		var so = input.read()	/* 获取初始状态 */
 		while (!flag && hasValue(so)) {
 			try {
-				print(s)				/* debug */
-				count = _next(so.getOrThrow(), count)	/* 进行解析解析 */
-				so  = input.read()			/* 为下一次循环提供条件 */
+				let s = so.getOrThrow()
+				print(s)		/* debug */
+				count = _next(s, count)	/* 进行解析解析 */
+				so  = input.read()	/* 为下一次循环提供条件 */
 			}
 			catch (exp: BufOverTheLine) { throw exp }
 			catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
@@ -557,8 +558,9 @@ class MatrixParser {
 
 }
 
-/* 矩阵式储存器，接收矩阵式的哈希表（HashMap<String, MatrixObject>）
- * 以及一个输出流（在构造函数）。 */
+/* -------- 矩阵式储存器 -------- 
+ * - 接收矩阵式的哈希表（HashMap<String, MatrixObject>）
+ * - 以及一个输出流（在构造函数）。 */
 class MatrixSaver {
 	let stringWriter: StringWriter<OutputStream>
 	init(output: OutputStream) {
@@ -575,6 +577,7 @@ class MatrixSaver {
 
 /* --------------------------------------------------------- */
 /* --------------------------------------------------------- */
+/* TODO(20260516-qing): 继续完善异常种类 */
 
 /* 解析异常 */
 open class ParseExcept <: Exception {

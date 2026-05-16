@@ -11,20 +11,28 @@ import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
 
-/* 硬件接口
+/* -------- 硬件变量基类 --------
  * 接收一个lambda表达式，在回调函数中定义行为
  * 通过JsonValue这种通用的数据结构进行传值  */
 open class MatrixVars_Hardware {
+
+	/*  -------- 主初始化器 --------
+	 *  - 输入一个回调函数，在这里采用json值进行参数传递，能够为多种硬件同一接口
+	 *  - INFO(20260516-qing): 但是这样的话，我怎么知道矩阵式中的对象有哪些输入参数呢
+	 *  ----------------------------  */
 	init(things: (JsonValue) -> JsonValue) {
 		this.things = things  }
 
-	let things: (JsonValue) -> JsonValue	/* 该事件回调应该接收和返回JsonValue  */
+	let things: (JsonValue) -> JsonValue	/* 事件回调 - 接收和返回JsonValue  */
 
+	/* -------- 事件发生器 -------- */
 	public func play(input: JsonValue): JsonValue {
 		return things(input)  }
 
 
+	/* ----------------- */
 	/* INFO(20260514-qing):  这两个函放在外面很突兀，考虑放进Matrix_HardVars */
+
 	/* -------- 获得项目值 -------- */
 	static func getMt(obj: MatrixObject, row: Int64, col: Int64): String
 	{
@@ -51,20 +59,18 @@ open class MatrixVars_Hardware {
 }
 
 
-/* I2C变量类 */
+/* -------- I2C变量类 -------- */
 class MtVars_I2C <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> JsonValue) {
+	public init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
 
-	/*
-	 *  工厂模式，根据矩阵对象构造
-	 * 
-	 *  @I2C
+	/*  @I2C
 	 *   name        path;
 	 *  i2c-0  /dev/i2c-0;
 	 *  @
 	 */
-	static func Factory(I2CDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_I2C
+	public static func Factory(	/*  工厂模式，根据矩阵对象构造  */
+		I2CDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_I2C
 	{
 		let idxName  = I2CDefs.indexOfCol(0, "name")
 		let idxPath  = I2CDefs.indexOfCol(0, "path")
@@ -72,36 +78,35 @@ class MtVars_I2C <: MatrixVars_Hardware {
 		let name = I2CDefs[i, idxName]
 		let path = getMt(I2CDefs, i, idxPath)
 
-		println("Create a I2C hard-Var: ${name},\tpath: ${path}")
-		let i2c = I2C(path)
+		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* debug */
+		let i2c = I2C(path)	/*  在这里创建传统I2C硬件对象，通过闭包保存在MtVars_I2C里  */
 		let mtvars_i2c = MtVars_I2C({json: JsonValue =>				/*  {"mode": "set_addr", "addr": 0x01} */
 			let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
 			let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
-			let ret = JsonObject()	/* 该变量用于存储返回值 */
 			if (mode == "set_addr") {
 				let addr = obj.get("addr").getOrThrow().asInt().getValue()
 				i2c.setAddr(UInt8(addr))
-				/* ---- 准备返回值 ---- */
+				let ret = JsonObject()
 				ret.put("status", JsonString("OK"))
-				return ret
-			} else if (mode == "set_val") {
+				return ret  }
+			else if (mode == "set_val") {
 				let reg = obj.get("reg").getOrThrow().asInt().getValue()
 				let val = obj.get("val").getOrThrow().asInt().getValue()
 				i2c.writeReg(UInt8(reg), UInt8(val))
-				/* ---- 准备返回值 ---- */
+				let ret = JsonObject()
 				ret.put("status", JsonString("OK"))
-				return ret
-			} else if (mode == "get_val") {
+				return ret  }
+			else if (mode == "get_val") {
 				let reg = obj.get("reg").getOrThrow().asInt().getValue()
 				let raw = i2c.readRegFlag(UInt8(reg))
-				/* ---- 准备返回值 ---- */
+				let ret = JsonObject()
 				ret.put("status", JsonString("OK"))
 				ret.put("value", JsonInt(Int64(raw)))
-				return ret
-			}
+				return ret  }
 
-			/* FIXME: 改为抛出异常 */
 			/* ---- 准备返回值 ---- */
+			/* FIXME: 改为抛出异常 */
+			let ret = JsonObject()
 			ret.put("status", JsonString("ERR"))
 			ret.put("message", JsonString("Invalid Mode"))
 			return ret
@@ -111,18 +116,19 @@ class MtVars_I2C <: MatrixVars_Hardware {
 	}
 }
 
-/*  PCA9685变量类 */
+/* -------- PCA9685硬件变量 -------- */
 class MtVars_PCA9685 <: MatrixVars_Hardware {
 	init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
 
-	/*  工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖
+	/*
 	 *  @PCA9685
 	 *       name    I2C   path;
 	 *  pca9685-0  i2c-1   0x40;
 	 *  @
 	 */
-	static func Factory(PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_PCA9685
+	static func Factory(	/*  工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖 */
+		PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_PCA9685
 	{
 		let idxName = PCA9685Defs.indexOfCol(0, "name")
 		let idxI2c  = PCA9685Defs.indexOfCol(0, "I2C")
@@ -134,7 +140,7 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 
 		println("Create a PCA9685 hard-Var: ${name}, i2c: ${i2c}, path: ${path}")
 
-		let i2c_HardVar = map[i2c]
+		let i2c_HardVar = map[i2c]	/* 这个I2C硬件变量的引用通过闭包保存在该PCA9685及MtVars_PCA9685中 */
 		let pca9685 = PCA9685(i2c_setAddr: {addr =>
 				let obj = JsonObject()
 				obj.put("mode", JsonString("set_addr"))
@@ -169,23 +175,22 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 	}
 }
 
-/* 舵机变量类
- * TODO(20260515-qing): 普通的舵机类也是传入回调函数的，
+/* -------- 舵机变量类 -------- 
+ * TODO(20260515-qing): 现在普通的舵机类也是传入回调函数的，
  * - 但是我们考虑到最大值、最小值的限制和漂移值的调整，
- * - 还是要专门做一个舵机类  */
+ * - 还是要专门做一个舵机硬件变量  */
 class MtVars_Servo <: MatrixVars_Hardware {
 	init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
 
-	/* 工厂模式：使用矩阵对象构造 
-	 *
+	/*
 	 *  @Servo
 	 *  name   max  min  offset  controller  channel;
 	 *    s1    90    -       -   pca9685-0        0;
 	 *  @
-	 *
 	 */
-	static func Factory(ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_Servo
+	static func Factory(	/* 工厂模式：使用矩阵对象构造 */
+		ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_Servo
 	{
 		let idxName = ServoDefs.indexOfCol(0, "name")
 		let idxMax = ServoDefs.indexOfCol(0, "max")
@@ -212,6 +217,10 @@ class MtVars_Servo <: MatrixVars_Hardware {
 				obj.put("angle", JsonFloat(Float64(angle)))
 				controller.play(obj)
 		})
+
+		/*
+		 * {"angle": "180.0"}
+		 */
 		let mtvars_servo = MtVars_Servo({json=>
 				let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
 				servo.setAngle(Float32(angle))
@@ -233,15 +242,14 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 		super(things)  }
 
 	/*
-	 * 工厂函数，根据矩阵对象进行构造
-	 *
 	 *  @Speaker
 	 *  name  channels  sample_rate  volumn  max_f  min_f;
 	 *   spk         2        48000     0.6   5000      -;
 	 *  @
 	 */
-	static func Factory(SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker
-	{
+	static func Factory(	/*  工厂函数，根据矩阵对象进行构造  */
+		SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker {
+
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
 		let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
 		let idxSampleRate = SpeakerDefs.indexOfCol(0, "sample_rate")
@@ -278,7 +286,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 
 
 
-/* 机器人结构类
+/* -------- 机器人结构类 --------
  * 机器人结构是动态的，从脚本中解析的 
  * TODO(20260514-qing): 调整为输入MatrixObject
  * TODO(20260515-qing): 需要重写一遍硬件类  */
