@@ -10,15 +10,14 @@ import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
 
-var I2C_PATH = "/dev/i2c-1" // For Raspberrypi
+var I2C_PATH = "/dev/i2c-1"	/*  For Raspberrypi  */
 var HTTP_ADDR = "127.0.0.1"
 var HTTP_PORT = 5119u16
-var NNS_OUT: Option<String> = None
+var NNS_OUT: Option<String> = None	/* 神经网络输出路径 */
 main(args: Array<String>): Int64 {
 	
 	/* --------------------------- */
 	/* 解析命令行参数 */
-
 
 	let specs = [
 		ArgumentSpec.Long("help", ArgumentMode.NoValue),	/* 拉起帮助菜单 */
@@ -75,20 +74,19 @@ main(args: Array<String>): Int64 {
 	/* 分支选择 */
 
 
-	/* 拉起帮助手册 */
+	/* -------- 拉起帮助手册 -------- */
 	if  (options.contains("help")) {
 		print_help()
 		return 0
 	}
 
-	/* 启动一个测试分支 */
+	/* -------- 启动一个测试分支 -------- */
 	else if (options.contains("test")) {
-
 		run_test(options["test"])
 		return 0
 	}
 
-	/* 启动web伺服器
+	/* -------- 启动web伺服器 --------
 	 * INFO: 伺服器主要能够接收动作脚本，我们还准备植入托管前端以及文件系统操作 */
 	else if (options.contains("serve")) {
 		let savepath  = if (options.contains('o')) {
@@ -97,20 +95,19 @@ main(args: Array<String>): Int64 {
         	run_serve(nns, savepath)
 	}
 
-	/* 缺省行为：从标准输入获取动作脚本 */
+	/* -------- 缺省行为：从标准输入获取动作脚本 -------- */
 	else {
-
 		let consoleReader = getStdIn()
 		run_action_drl(consoleReader, nns)
 		if (options.contains("o")) {
-			save_nns(nns, options['o'])
-		}
+			save_nns(nns, options['o'])  }
 	}
 
 
 	return 0
 }
 
+/* -------- 打印帮助手册 -------- */
 func print_help()
 {
 	println("这是一个机器人动作脚本解析器。")
@@ -123,12 +120,11 @@ func print_help()
 	println("-o  设置输出的模型的路径")
 }
 
-/* 集成多种常规测试、临时测试 */
+/* -------- 集成多种常规测试、临时测试 -------- */
 func run_test(key: String) {
 
 	/* ----------快速傅里叶变换测试---------- */
 	if (key == "fft") {
-
 		println('FFT test start...')
 		var fftt = genWave()
 		var fftr = start_fft(fftt)
@@ -138,7 +134,6 @@ func run_test(key: String) {
 	/* -----------神经网络与门测试------------
 	 * INFO: 我们使用随机生成的动态数据集，这样会导致一些后果 */
 	else if (key == "nn") {
-
 		let nn_t = ArrayList<Nn1>()
 		nn_t.add(Nn1(2, 4, 0.1f32, Af.Leaky_ReLU(FP32(0.01))))
 		nn_t.add(Nn1(4, 1, 0.1f32, Af.Sigmoid))
@@ -189,20 +184,28 @@ func run_test(key: String) {
 		let robot = RobotStruct(file)
 		file.close()
 		robot.run()
+	}
+
+	/* -------- 测试解析矩阵，并且输出 -------- */
+	else if (key == "matrix_o") {
+		let file = File("ss/test.mt", OpenMode.Read)
+		let robot = RobotStruct(file)
+		file.close()
+		robot.run()
 		let outf = File("ss/output.mt", OpenMode.Write)
 		robot.save(outf)
 		outf.close()
 	}
 
-	/* -------------测试解析矩阵 二段------------ */
-	else if (key == "matrix2") {
+	/* -------- 解析测试输出的矩阵 -------- */
+	else if (key == "matrix_2") {
 		let file = File("ss/output.mt", OpenMode.Read)
 		let robot = RobotStruct(file)
 		file.close()
 		robot.run()
-		//let outf = File("ss/output_1.mt", OpenMode.Write)
-		//robot.save(outf)
-		//outf.close()
+		let outf = File("ss/output_1.mt", OpenMode.Write)
+		robot.save(outf)
+		outf.close()
 	}
 }
 

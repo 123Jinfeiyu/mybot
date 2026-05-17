@@ -248,7 +248,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 	 *   spk         2        48000     0.6   5000      -;
 	 *  @
 	 */
-	pulibc static func Factory(	/*  工厂函数，根据矩阵对象进行构造  */
+	public static func Factory(	/*  工厂函数，根据矩阵对象进行构造  */
 		SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker {
 
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
@@ -316,7 +316,7 @@ class RobotStruct {
 		ms.save(C)
 	}
 
-	/* -------- 阅读矩阵脚本 -------- */
+	/* -------- 阅读矩阵脚本 --------
 	 * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型  */
 	private func readMatrix(file: InputStream){
 		let sr = StringReader<InputStream>(file)
