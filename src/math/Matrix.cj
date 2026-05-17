@@ -302,6 +302,9 @@ public struct FP32 {
 
 /*
  *  新版的矩阵对象，仓颉原生实现
+ *  TODO(20260517-qing): 设计原生的多维数组类
+ *
+
  ___col___
 /         \
 +---------+ \
@@ -316,12 +319,15 @@ public class Matrix1 {
 	var col: Int64
 	var arr: Array<FP32>
 
+	/* -------- 构造器，默认值为0 -------- */
 	public Matrix1(row: Int64, col: Int64) {
 		this.row = row
 		this.col = col
 		this.arr = Array<FP32>(row * col, repeat: FP32(0.0f32))
 	}
 
+	/* --------- 这几个方法是访问器 -------- */
+	/* ------------------------------------- */
 	public func get(r: Int64, c: Int64) {
 		return arr.get(r * this.col + c)
 	}
@@ -334,6 +340,8 @@ public class Matrix1 {
 
 	public func get_col() { return col }
 
+	/* -------- 这两个函数是比较器 -------- */
+	/* ------------------------------------ */
 	func has_same_shape(other: Matrix1) {
 		let a = this.get_row()  == other.get_row()
 		let b = this.get_col()  == other.get_col()
@@ -344,6 +352,8 @@ public class Matrix1 {
 		return this.get_col() == other.get_row()
 	}
 
+	/* -------- 这些是运算符重载 -------- */
+	/* ---------------------------------- */
 	public operator func +(a: FP32) {
 		let r  =get_row()
 		let c = get_col()
@@ -469,6 +479,7 @@ public class Matrix1 {
 		return M
 	}
 
+	/* -------- 矩阵点积乘法 -------- */
 	public func dot(S: Matrix1) {
 		if (!has_dot_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
@@ -490,6 +501,7 @@ public class Matrix1 {
 		return M
 	}
 
+	/* -------- 克隆一个一模一样的矩阵 -------- */
 	public func clone() {
 		let r = get_row()
 		let c = get_col()
@@ -503,6 +515,7 @@ public class Matrix1 {
 		return N
 	}
 
+	/* -------- 矩阵转置，返回转置后的矩阵 -------- */
 	public func T() {
 		let r = get_row()
 		let c = get_col()
