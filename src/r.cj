@@ -258,7 +258,7 @@ class MtVars_Servo <: MatrixVars_Hardware {
 		})
 
 		/*
-		 * {"angle": "180.0"}
+		 * {"angle": 180.0}
 		 */
 		let mtvars_servo = MtVars_Servo(things: {json=>
 				let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
@@ -301,20 +301,19 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 		let name = SpeakerDefs[i, idxName]
 		let channels = parseMt<Int32>(SpeakerDefs, i, idxChannels)
 		let sample_rate = parseMt<Int32>(SpeakerDefs, i, idxSampleRate)
-		let volume = parseMt<Float32>(SpeakerDefs, i, idxVolumn)
+		let volume = parseMt<Float64>(SpeakerDefs, i, idxVolumn)
 		let max_f = parseMt<Float32>(SpeakerDefs, i, idxMax_f)
 		let min_f = parseMt<Float32>(SpeakerDefs, i, idxMin_f)
 
 		println("Create a Speaker: ${name}, channels: ${channels}, sample_rate: ${sample_rate}, volume: $(volume), max_f: ${max_f}, min_f: ${min_f}")		
 		let spk = Spk(channels: channels, sample_rate: sample_rate)
-		let mtvar_spk = MtVars_Speaker(things: {json =>		// {"frequency": 1000.0, "volume": 0.6, "delay": 400}
+		let mtvar_spk = MtVars_Speaker(things: {json =>		// {"frequency": 1000.0, "delay": 400}
 			let json_obj = json.asObject()
 			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
 			if (freq > max_f) { freq = max_f }
 			if (freq < min_f) { freq = min_f }
-			let volu  = Float64(json_obj.get("volume").getOrThrow().asFloat().getValue())
 			let delay  = Int32(json_obj.get("delay").getOrThrow().asInt().getValue())
-			spk.play(freq, volu, delay)
+			spk.play(freq, volume, delay)
 			/* ---- 准备返回值 ---- */
 			let ret = JsonObject()	/* FIXME: 处理异常情况 */
 			ret.put("status", JsonString("OK"))
@@ -363,7 +362,7 @@ class RobotStruct {
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
 	public func run() {
-		
+		run_drl_action()
 	}
 
 	/* -------- 储存整个矩阵变量表 --------
@@ -388,7 +387,8 @@ class RobotStruct {
 	}
 
 	/* -------- 创建硬件变量字典 --------
-	 * TODO(20260515-qing): 解耦合  */
+	 * TODO(20260515-qing): 解耦合  
+	 * FIXME(20260518-qing): 在插入哈希表之前如果有已经存在的键值，要释放它的资源  */
 	private func createHardVars()
 	{
 		createI2CVars()
@@ -450,6 +450,11 @@ class RobotStruct {
 		}
 
 		return None
+	}
+
+	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
+	private func run_drl_action() {
+		
 	}
 
 }
