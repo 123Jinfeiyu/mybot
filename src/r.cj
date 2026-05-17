@@ -292,28 +292,29 @@ class MtVars_Speaker <: MatrixVars_Hardware {
  * TODO(20260515-qing): 需要重写一遍硬件类  */
 class RobotStruct {
 
-	/*  存放解析结果和创建的变量 */
+	/* -------- 存放解析结果和创建的变量 -------- */
 	let C = LinkedList<MatrixObject>()
 	let M = HashMap<String, MatrixVars_Hardware>() 
 
-	/*  使用矩阵脚本驱动机器人
+	/* -------- 使用矩阵脚本驱动机器人 --------
 	 *  不行就将矩阵脚本转化为bot脚本吧  */
 	init(input: InputStream) {
 		readMatrix(input)
 		createHardVars()
 	}
 
+	/* -------- 执行@Action矩阵中的内容 -------- */
 	func run() {
 		
 	}
 
+	/* -------- 储存整个矩阵变量表 -------- */
 	func save(out: OutputStream) {
 		let ms = MatrixSaver(out)
 		ms.save(C)
 	}
 
-
-	/* 阅读矩阵脚本
+	/* -------- 阅读矩阵脚本 -------- */
 	 * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型  */
 	func readMatrix(file: InputStream){
 		let sr = StringReader<InputStream>(file)
@@ -392,14 +393,13 @@ class RobotStruct {
 			}
 		}
 
-		//throw IllegalArgumentException("Matrix object not found")
 		return None
 	}
 
 }
 
 
-/* 从标准输入中读取动作脚本，并进行随机DRL
+/* -------- （旧版）从标准输入中读取动作脚本，并进行随机DRL --------
  * FIXME: 为不同的目标设计不同的奖励策略，
  *
  * TODO(qing-20260430): 使用视觉和cnn进行微调
