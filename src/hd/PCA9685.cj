@@ -17,17 +17,18 @@ public class PCA9685 {
 		this.i2c_readReg = i2c_readReg
 		this.i2c_writeReg= i2c_writeReg
 		this.addr = addr
-		/* -------- 初始化PCA9685 -------- */
-		i2c_setAddr(addr);
-		i2c_writeReg(0x00, 0x20);   /* 开启AI（地址自增）和关闭SLEEP */
-		sleep(5000 * Duration.nanosecond);	/* 等待振荡器启动 */
-        					/* FIXME: 这一条是不是重复了 */
-		set()
+		/* -------- 初始化PCA9685 --------
+		 * FIXME(20260517-qing): 在旧版机器人代码移除以后，移除这一段 */
+		setup()
 	}
 
 	/*  -------- 设置PWM频率为50Hz（舵机标准周期20ms0） --------
 	 *  TODO(20260516-qing): 不将数值写死 */
-	public func set() {
+	public func setup() {
+		i2c_setAddr(addr);
+		i2c_writeReg(0x00, 0x20);   /* 开启AI（地址自增）和关闭SLEEP */
+		sleep(5000 * Duration.nanosecond);	/* 等待振荡器启动 */
+        					/* FIXME: 这一条是不是重复了 */
 		var freq: Float32 = 50.0;
 		var prescale_val: Float32 = 25000000.0 / (4096.0 * freq) - 1.0;    /* 25MHz主频 */
 		var prescale: UInt8 = UInt8(prescale_val + 0.5);

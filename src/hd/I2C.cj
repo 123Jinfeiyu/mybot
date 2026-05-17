@@ -24,9 +24,24 @@ public class I2C {
 		}
 	}
 
-	/* -------- 析构函数 - 关闭I2C设备 -------- */
+	/* -------- 析构函数 -------- */
 	~init() {
-		unsafe {  I2C_free(fd)  }
+		unsafe {
+			if (fd == -1) {
+				I2C_free(fd)
+				fd == -1
+			}
+		}
+	}
+
+	/* -------- 关闭I2C设备 -------- */
+	public func close() {
+		unsafe {
+			if (fd == -1) {
+				I2C_free(fd)
+				fd == -1
+			}
+		}
 	}
 
 	/* -------- 设置I2C设备地址 -------- */

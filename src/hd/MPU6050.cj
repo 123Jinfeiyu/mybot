@@ -26,16 +26,31 @@ public struct MPU6050_sensorData {
  * -  输入并持有一个I2C引用  */
 public class MPU6050 {
 
-	/* -------- 主初始化器 -------- */
+	/* -------- 主初始化器 --------
+	 * FIXME(20260517-qing): 由于gc的原因，我们可能会手动构造RAII，
+	 * - 将一部分初始化移动到别的函数，但是为了向后兼容，这里暂时保留了它们  */
 	public init(i2c: I2C, addr: UInt8)  {
 		this.i2c = i2c
 		this.addr = addr
 		i2c.setAddr(addr);
+		/* -------- */
 		i2c.writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
 		i2c.writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
 		i2c.writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
 		sleep(Duration.millisecond * 100);            /* 等待稳定 */
+		/* -------- */
 	}
+
+	/* -------- 初始化该模块 -------- */
+	public func setup() {
+		let i2cc = i2c.getOrThrow()
+		i2cc.setAddr(addr);
+		i2cc.writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
+		i2cc.writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
+		i2cc.writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
+		sleep(Duration.millisecond * 100);            /* 等待稳定 */
+	}
+    
     
 	public static const ADDR_0:           UInt8 = 0x68  /* 默认地址 */
 	public static const ADDR_1:           UInt8 = 0x68  /* 地址2 */

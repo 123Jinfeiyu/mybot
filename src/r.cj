@@ -13,23 +13,46 @@ import bot4cj.math.*
 
 /* -------- 硬件变量基类 --------
  * 接收一个lambda表达式，在回调函数中定义行为
- * 通过JsonValue这种通用的数据结构进行传值  */
+ * 通过JsonValue这种通用的数据结构进行传值
+ * TODO*(20260517-qing): 因为析构器（终结器）的调用时间不确定，需要手动构造RAII机制
+ * - 需要进一步解耦各种原始硬件模块类，使其初始化部分单独调用  */
 open class MatrixVars_Hardware {
 
 	/*  -------- 主初始化器 --------
 	 *  - 输入一个回调函数，在这里采用json值进行参数传递，能够为多种硬件同一接口
-	 *  - INFO(20260516-qing): 但是这样的话，我怎么知道矩阵式中的对象有哪些输入参数呢
+	 *  - NOTE(20260516-qing): 但是这样的话，我怎么知道矩阵式中的对象有哪些输入参数呢
 	 *  ----------------------------  */
-	public init(things: (JsonValue) -> JsonValue) {
-		this.things = things  }
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit>,
+			free!: Option<() -> Unit>  ) {
+		this.things = things
+		this.rise = rise
+		this.free = free  }
 
 	/* -------- 事件回调，接收和返回JsonValue -------- */
 	private let things: (JsonValue) -> JsonValue	
+
+	/* -------- 召集事件，不接受参数 -------- */
+	private let rise: Option<() -> Unit>
+
+	/* -------- 遣返事件，不接受参数 -------- */
+	private let free: Option<() -> Unit>
 
 	/* -------- 事件发生器 -------- */
 	public func play(input: JsonValue): JsonValue {
 		return things(input)  }
 
+	/* -------- 伪初始化器 -------- */
+	public func build() {
+		if (let Some(callback) <- rise) {
+			callback()  }
+	}
+
+	/* -------- 伪解构器 -------- */
+	public func destroy() {
+		if (let Some(callback) <- free) {
+			callback()  }
+	}
 
 	/* ----------------- */
 	/* INFO(20260514-qing):  这两个函放在外面很突兀，考虑放进Matrix_HardVars  (done) */
@@ -62,8 +85,10 @@ open class MatrixVars_Hardware {
 
 /* -------- I2C变量类 -------- */
 class MtVars_I2C <: MatrixVars_Hardware {
-	public init(things: (JsonValue) -> JsonValue) {
-		super(things)  }
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None  )
+		{  super(things: things, rise: rise, free: free)  }
 
 	/*  @I2C
 	 *   name        path;
@@ -81,10 +106,10 @@ class MtVars_I2C <: MatrixVars_Hardware {
 
 		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* debug */
 		let i2c = I2C(path)	/*  在这里创建传统I2C硬件对象，通过闭包保存在MtVars_I2C里  */
-		let mtvars_i2c = MtVars_I2C({json: JsonValue =>				/*  {"mode": "set_addr", "addr": 0x01} */
+		let mtvars_i2c = MtVars_I2C(things: {json: JsonValue =>				/*  {"mode": "set_addr", "addr": 0x01} */
 			let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
 			let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
-			if (mode == "set_addr") {
+			if (mode == "set_addr")  {
 				let addr = obj.get("addr").getOrThrow().asInt().getValue()
 				i2c.setAddr(UInt8(addr))
 				let ret = JsonObject()
@@ -111,6 +136,10 @@ class MtVars_I2C <: MatrixVars_Hardware {
 			ret.put("status", JsonString("ERR"))
 			ret.put("message", JsonString("Invalid Mode"))
 			return ret
+		},
+
+		free: {=>
+			i2c.close()
 		})
 
 		return mtvars_i2c
@@ -119,8 +148,10 @@ class MtVars_I2C <: MatrixVars_Hardware {
 
 /* -------- PCA9685硬件变量 -------- */
 class MtVars_PCA9685 <: MatrixVars_Hardware {
-	public init(things: (JsonValue) -> JsonValue) {
-		super(things)  }
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None  )
+		{  super(things: things, rise: rise, free: free)  }
 
 	/*
 	 *  @PCA9685
@@ -163,14 +194,19 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 			)
 
 		/* {"channel": 0, "angle": 90.0}  */
-		let mtvars_pca9685 = MtVars_PCA9685({json: JsonValue =>
+		let mtvars_pca9685 = MtVars_PCA9685(things: {json: JsonValue =>
 			let channel = json.asObject().get("channel").getOrThrow().asInt().getValue()
 			let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
 			pca9685.setAngle(UInt8(channel), Float32(angle))
 			let ret = JsonObject()
 			ret.put("status", JsonString("OK"))
 			return ret
-		})
+		},
+			rise: {=>
+				println("HardVar ${name} is setup now.")
+				pca9685.setup()
+			}
+		)
 
 		return mtvars_pca9685
 	}
@@ -181,8 +217,10 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
  * - 但是我们考虑到最大值、最小值的限制和漂移值的调整，
  * - 还是要专门做一个舵机硬件变量  */
 class MtVars_Servo <: MatrixVars_Hardware {
-	public init(things: (JsonValue) -> JsonValue) {
-		super(things)  }
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None  )
+		{  super(things: things, rise: rise, free: free)  }
 
 	/*
 	 *  @Servo
@@ -222,7 +260,7 @@ class MtVars_Servo <: MatrixVars_Hardware {
 		/*
 		 * {"angle": "180.0"}
 		 */
-		let mtvars_servo = MtVars_Servo({json=>
+		let mtvars_servo = MtVars_Servo(things: {json=>
 				let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
 				servo.setAngle(Float32(angle))
 				let ret = JsonObject()
@@ -239,8 +277,10 @@ class MtVars_Servo <: MatrixVars_Hardware {
  * - TODO: 输入扬声器设备名（扬声器又是一台戏）
  */
 class MtVars_Speaker <: MatrixVars_Hardware {
-	public init(things: (JsonValue) -> JsonValue) {
-		super(things)  }
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None  )
+		{  super(things: things, rise: rise, free: free)  }
 
 	/*
 	 *  @Speaker
@@ -267,7 +307,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 
 		println("Create a Speaker: ${name}, channels: ${channels}, sample_rate: ${sample_rate}, volume: $(volume), max_f: ${max_f}, min_f: ${min_f}")		
 		let spk = Spk(channels: channels, sample_rate: sample_rate)
-		let mtvar_spk = MtVars_Speaker({json =>		// {"frequency": 1000.0, "volume": 0.6, "delay": 400}
+		let mtvar_spk = MtVars_Speaker(things: {json =>		// {"frequency": 1000.0, "volume": 0.6, "delay": 400}
 			let json_obj = json.asObject()
 			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
 			if (freq > max_f) { freq = max_f }
@@ -302,6 +342,20 @@ class RobotStruct {
 	public init(input: InputStream) {
 		readMatrix(input)
 		createHardVars()
+	}
+
+	/* -------- 激活所有硬件变量 -------- */
+	public func  active() {
+		for (item in M.values()) {
+			item.build()
+		}
+	}
+
+	/* -------- 消除所有硬件变量 -------- */
+	public func deactive() {
+		for (item in M.values()) {
+			item.destroy()
+		}
 	}
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
