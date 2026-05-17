@@ -2,7 +2,7 @@
 nn/
 bot
 bot?
-test_fft1m1
+test_*
 
 .git/
 .vscode/
