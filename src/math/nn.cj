@@ -179,7 +179,9 @@ public class Nn {
  	let f: ActivationFuncs
 }
 
-/* -------- 新版的神经网络，使用原生矩阵对象实现 -------- */
+/* -------- 新版的神经网络，使用原生矩阵对象实现 --------
+   TODO(20260517-qing): 增加batch批次处理，使用ArrayList<Matrix1>   */
+
 public class Nn1 {
 	let inputno: Int64	/* 神经网络规格 */
 	let outputno: Int64
