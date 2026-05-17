@@ -351,10 +351,12 @@ class RobotStruct {
 		}
 	}
 
-	/* -------- 消除所有硬件变量 -------- */
+	/* -------- 消除所有硬件变量 --------
+	 * INFO(20260517-qing): 它需要以倒序方式进行清除  */
 	public func deactive() {
-		for (item in M.values()) {
-			item.destroy()
+		let items = M.values().toArray()
+		for (i in items.size-1..=0:-1) {
+			items[i].destroy()
 		}
 	}
 
