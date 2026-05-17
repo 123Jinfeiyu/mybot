@@ -4,7 +4,7 @@ import std.math.*
 import std.convert.*
 import std.collection.*
 
-/* 单条动作的类型枚举
+/*  -------- 单条动作的类型枚举 --------
  *
  *  INFO(20260515-qing):
  *  - 这是老版本解析器的固定命名含义枚举
@@ -14,55 +14,43 @@ import std.collection.*
 enum ActType {
 
 	SERVO | SPEAK | NOPE | UNKNOW
-
-	static func parse(nm: String): ActType	/*  以固定方式解析命名含义  */
-	{
-		if (nm.startsWith("s")) { 
-			ActType.SERVO 
-		}
-		else if (nm == "spk") { 
-			ActType.SPEAK
-		}
-		else if (nm == "-") {
-			ActType.NOPE
-		}
-		else {
-			ActType.UNKNOW 
-		}
+	/* -------- 以固定方式解析命名含义 -------- */
+	public static func parse(nm: String): ActType	{
+		if (nm.startsWith("s")) {  ActType.SERVO   }
+		else if (nm == "spk") {  ActType.SPEAK  }
+		else if (nm == "-") {  ActType.NOPE  }
+		else {  ActType.UNKNOW  }
 	}
 }
 
 
-/* 单条动作类
+/* -------- 单条动作类 --------
  * INFO(20260515-qing):
  * - 这是老版本的动作解析器的动作类
  * - 能够记录动作的类型、值、持续时间、是否被跳过
  * - 新版本使用矩阵式对象，能够正常使用后，可能 删除该旧版本
  */
 class Act {
-	let typ: ActType	/* 该动作的类型 */
-	let val: Option<Float32>	/* 动作值 */
-	let duration: Float32	/* 该动作持续的时间 */
-	let skip: Bool		/* 是否跳过 */
-	init(Type: ActType, value!: Option<Float32>, duration!: Float32, skip!: Bool = false)
-	{
+	private let typ: ActType		/* 该动作的类型 */
+	private let val: Option<Float32>	/* 动作值 */
+	private let duration: Float32		/* 该动作持续的时间 */
+	private let skip: Bool			/* 是否跳过 */
+	public init(Type: ActType, value!: Option<Float32>, duration!: Float32, skip!: Bool = false)  {
 		this.typ = Type
 		this.val = value
 		this.duration = duration
 		this.skip = skip
 	}
-	func getVal() {
-		this.val }
-	func getType() {
-		this.typ }
-	func getDelay() {
-		this.duration }
-	func getSkip() {
-		this.skip}
+	public func getVal() { this.val }
+	public func getType() { this.typ }
+	public func getDelay() { this.duration }
+	public func getSkip() { this.skip}
 }
 
 
-/* 动作解析器类 - 只解析
+/* -------- 动作解析器类 - 只解析 --------
+ * INFO(20260517-qing): 这是旧版本的解析器类。
+ *
  * 兼容上一代Actor类的脚本格式  
  * TODO: 增加缓慢到达（该方式在drl微调时可能会很有用）
  * TODO: 脚本引入（使用@符号）
@@ -95,21 +83,19 @@ class Act {
  */
 class ActsParser {
 
-	var input: StringReader<InputStream>
-	init(input: StringReader<InputStream>) {
-		this.input = input
-	}
+	private var input: StringReader<InputStream>
+	public init(input: StringReader<InputStream>) {
+		this.input = input  }
 
-	/*  切换目标  */
-	func target(input: StringReader<InputStream>) {
-		this.input = input
-	}
+	/* -------- 切换目标 -------- */
+	public func target(input: StringReader<InputStream>) {
+		this.input = input  }
 
-	/* 解析器 - 循环不变式
+	/* -------- 解析器 - 循环不变式 --------
 	 * 初始化： ss是一个动作脚本的输入流
 	 * 保持： ss是动作脚本剩余部分的输入流
 	 * 终止： 当输入流为空时，循环终止  */
-	func parse(): Option<HashMap<String, Act>> {
+	public func parse(): Option<HashMap<String, Act>> {
 		var count = 1i64 	/*  从第一行开始  */
 		var so = input.read()
 		while (match(so) {
@@ -133,17 +119,17 @@ class ActsParser {
 
 		return Option<HashMap<String, Act>>.None
 	}
-	var nl: Bool = true	/* new line */
-	var sl: Bool = false	/* special */
-	var sl_n: Bool = false 	/* special (name) */
-	var cm: Bool = false	/* comment */
-	var tmp = ArrayList<Rune>()	/* rune buf */
-	var grp = ArrayList<Float32>()	/* one line */
-	var nam = ArrayList<String>()	/* 列命名 */
-	var bot = ArrayList<ArrayList<Float32>>()	/* bot settings */
-	var act = ArrayList<ArrayList<Float32>>()	/* acts list */
-	static const TMP_LEN = 16	/* size of tmp */
-	func next(c: Rune, count: Int64): Int64 {
+	private var nl: Bool = true	/* new line */
+	private var sl: Bool = false	/* special */
+	private var sl_n: Bool = false 	/* special (name) */
+	private var cm: Bool = false	/* comment */
+	private var tmp = ArrayList<Rune>()	/* rune buf */
+	private var grp = ArrayList<Float32>()	/* one line */
+	private var nam = ArrayList<String>()	/* 列命名 */
+	private var bot = ArrayList<ArrayList<Float32>>()	/* bot settings */
+	private var act = ArrayList<ArrayList<Float32>>()	/* acts list */
+	private static const TMP_LEN = 16	/* size of tmp */
+	private func next(c: Rune, count: Int64): Int64 {
 		var cc: Int64  = count
 		/* ------------ COMMENTS ------------ */
 		if (!cm && c == r'#') { cm = true }	/* 注释开始时 */
@@ -267,16 +253,15 @@ class ActsParser {
 	}
 
 	/* -------- 从临时字符缓冲区解析出数值并清理 -------- */
-	func fromTmp(): Float32 {
+	private func fromTmp(): Float32 {
 		let str = String(tmp)
 		let f = Float32.parse(str)
 		tmp.clear()
-		return f
-	}
+		return f  }
 
 	/* ---------------- 序列化 ---------------- 
 	 * TODO(qing-20260502): 我需要先解析对其动作，然后再序列化吗？  */
-	func serialize(): String {
+	public func serialize(): String {
 
 		/* -------- 字符串构造器 -------- */
 		let sb = StringBuilder()
@@ -327,9 +312,9 @@ class ActsParser {
 	public func which(idx: Int64) {
 		return act[idx] }
 
-	/*  取一行动作脚本
+	/*  -------- 取一行动作脚本 --------
 	 *  qing(20260430) TODO: 返回Map<String, Act> 对应名字  */
-	operator func [](idx: Int64) {
+	public operator func [](idx: Int64) {
 		let a = act[idx]
 		let map = HashMap<String, Act>()
 		for (j in 0..a.size) {
@@ -343,7 +328,7 @@ class ActsParser {
 		return map
 	}
 
-	/* 根据配置对齐原始数据 */
+	/* -------- 根据配置对齐原始数据 -------- */
 	private func _sync(j: Int64, target: Float32): Float32 {
 
 		/* 抽象成方法 */
@@ -368,20 +353,20 @@ class ActsParser {
 /* --------------------------------------------------------- */
 
 
-/* 矩阵编程语言 - 基本对象
+/* -------- 矩阵编程语言 - 基本对象 --------
  * TODO：储存功能
  * TODO：神经网络层转换为矩阵对象 */
 class MatrixObject {
-	var name: String = ""		/* 名字 */
-	var tmp = ArrayList<Rune>()	/* rune buf 字符缓冲区 */
-	var grp = ArrayList<String>()	/* one line 整行缓冲区 */
-	var values = ArrayList<ArrayList<String>>()	/* 原始矩阵 */
+	private var name: String = ""		/* 名字 */
+	private var tmp = ArrayList<Rune>()	/* rune buf 字符缓冲区 */
+	private var grp = ArrayList<String>()	/* one line 整行缓冲区 */
+	private var values = ArrayList<ArrayList<String>>()	/* 原始矩阵 */
 
 	/* -------- 已命名 -------- */
-	func hasName() { !(name == "") }
+	public func hasName(): Bool { !(name == "") }
 
 	/* --------- 获得名字 --------- */
-	func getName(): String { return name }
+	public func getName(): String { return name }
 
 	/* ------- 取动作的长度 ------- */
 	public mut prop size: Int64 {
@@ -389,13 +374,13 @@ class MatrixObject {
 		set(_) {}
 	}
 
-	/* ------- 获取矩阵元素 ------- */
-	operator func [](row: Int64, col: Int64): String {
+	/* ------- 获取矩阵元素，只能取，不能修改 ------- */
+	public operator func [](row: Int64, col: Int64): String {
 		return values[row][col]
 	}
 
 	/** -- 在某一行中寻找某一个字符串的列号 -- */
-	func indexOfCol(row: Int64, key: String): Int64 {
+	public func indexOfCol(row: Int64, key: String): Int64 {
 		for (col in 0..values[row].size) {
 			if (values[row][col] == key) {
 				return col  }
@@ -406,7 +391,7 @@ class MatrixObject {
 	}
 
 	/*  -----  储存对象 ----- */
-	func save(output: StringWriter<OutputStream>) {
+	public func save(output: StringWriter<OutputStream>) {
 		output.writeln("@${getName()}")
 		for (vec in values) {
 			for (item in vec) {
@@ -419,11 +404,10 @@ class MatrixObject {
 	}
 
 	/* -------- 添加字符 -------- */
-	func addRune(c: Rune) {
-		tmp.add(c)  }
+	public func addRune(c: Rune) {  tmp.add(c)  }
 
 	/* -------- 提交名字 -------- */
-	func submitName() {
+	public func submitName() {
 		if (tmp.size == 0) { return }
 		let s = String(tmp)
 		tmp.clear()
@@ -431,7 +415,7 @@ class MatrixObject {
 	}
 
 	/* -------- 提交元素 -------- */
-	func submitItem() {
+	public func submitItem() {
 		if (tmp.size == 0) { return }
 		let s = String(tmp)
 		tmp = ArrayList<Rune>()
@@ -439,7 +423,7 @@ class MatrixObject {
 	}
 
 	/* -------- 提交行 -------- */
-	func submitLine(count: Int64) {
+	public func submitLine(count: Int64) {
 		if (grp.size == 0) { return }
 		if (!values.size == 0 && !grp.size == values[values.size - 1].size)
 			{ throw DoesNotSync(count) }
@@ -465,24 +449,24 @@ class MatrixParser {
 
 	/* -------- 主初始化器（构造函数） --------
 	   - 设置目标输入流  */
-	var input: StringReader<InputStream>
-	init(input: StringReader<InputStream>) {
+	private var input: StringReader<InputStream>
+	public init(input: StringReader<InputStream>) {
 		this.input = input  }
 
 	/* -------- 切换目标输入流 -------- */
-	func reset(input: StringReader<InputStream>) {
+	public func reset(input: StringReader<InputStream>) {
 		this.input = input  }
 
 	/* -------- 解析器 - 循环不变式 ----------------------
 	 * -------- 初始化： ss是一个动作脚本的输入流 --------
 	 * -------- 保持： ss是动作脚本剩余部分的输入流 ------
 	 * -------- 终止： 当输入流为空时，循环终止 ----------  */
-	var obj = MatrixObject() 
-	func parse(): Option<MatrixObject> {
-		var count = 1i64	/* 行计数器始于1 */
-		flag = false		/* 重置结束标志 */
-		this.obj = MatrixObject()	/* 一次只解析一个对象 */
-		var so = input.read()	/* 获取初始状态 */
+	private var obj = MatrixObject() 
+	public func parse(): Option<MatrixObject> {
+		var count = 1i64		/* 行计数器始于1 */
+		flag = false			/* 重置结束标志 */
+		this.obj = MatrixObject()	/* 创建一个新的对象，一次只解析一个对象 */
+		var so = input.read()		/* 获取初始状态 */
 		while (!flag && hasValue(so)) {
 			try {
 				let s = so.getOrThrow()
@@ -500,10 +484,10 @@ class MatrixParser {
 		return  obj	/* 否则为解析成功正常退出，返回解析到的矩阵式对象 */
 	}
 
-	var flag = false	/* 结束标志 */
-	var nl: Bool = true	/* new line */
-	var cm: Bool = false	/* comment */
-	var nm: Bool = false	/* name-line */
+	private var flag = false	/* 结束标志 */
+	private var nl: Bool = true	/* new line */
+	private var cm: Bool = false	/* comment */
+	private var nm: Bool = false	/* name-line */
 	private func _next(c: Rune, ct: Int64): Int64 {
 		var count = ct
 		/* ------------ COMMENTS ------------ */
@@ -562,15 +546,14 @@ class MatrixParser {
  * - 接收矩阵式的哈希表（HashMap<String, MatrixObject>）
  * - 以及一个输出流（在构造函数）。 */
 class MatrixSaver {
-	let stringWriter: StringWriter<OutputStream>
-	init(output: OutputStream) {
+	private let stringWriter: StringWriter<OutputStream>
+	public init(output: OutputStream) {
 		stringWriter = StringWriter(output)  }
-	func save(C: LinkedList<MatrixObject>) {
+	public func save(C: LinkedList<MatrixObject>) {
 		for (item in C) {
 			item.save(stringWriter)
 			stringWriter.writeln()	/* 对象之间空一行 */
-			stringWriter.flush()
-		}
+			stringWriter.flush()  }
 	}
 }
 
@@ -579,32 +562,28 @@ class MatrixSaver {
 /* --------------------------------------------------------- */
 /* TODO(20260516-qing): 继续完善异常种类 */
 
-/* 解析异常 */
+/* -------- 解析异常 -------- */
 open class ParseExcept <: Exception {
 	public ParseExcept(msg: String, line: Int64) {
-		super('${msg}. we got line: ${line}')
-	}
+		super('${msg}. we got line: ${line}')  }
 }
 
-/* 缓冲区过长 */
+/* -------- 缓冲区过长 -------- */
 class BufOverTheLine <: ParseExcept {
 	BufOverTheLine(count: Int64) {
-		super('Buffer length over the line', count)
-	}
+		super('Buffer length over the line', count)  }
 }
 
-/* 行没对齐 */
+/* -------- 行没对齐 -------- */
 class DoesNotSync <: ParseExcept {
 	DoesNotSync(count: Int64) {
-		super("Matrix Line Does Not Sync", count)
-	}
+		super("Matrix Line Does Not Sync", count)  }
 }
 
-/* 未知异常 */
+/* -------- 未知异常 -------- */
 class UnknowExcept <: ParseExcept {
 	UnknowExcept(count: Int64) {
-		super("I don't understand what happened", count)
-	}
+		super("I don't understand what happened", count)  }
 }
 
 

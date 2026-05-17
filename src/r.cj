@@ -20,10 +20,11 @@ open class MatrixVars_Hardware {
 	 *  - 输入一个回调函数，在这里采用json值进行参数传递，能够为多种硬件同一接口
 	 *  - INFO(20260516-qing): 但是这样的话，我怎么知道矩阵式中的对象有哪些输入参数呢
 	 *  ----------------------------  */
-	init(things: (JsonValue) -> JsonValue) {
+	public init(things: (JsonValue) -> JsonValue) {
 		this.things = things  }
 
-	let things: (JsonValue) -> JsonValue	/* 事件回调 - 接收和返回JsonValue  */
+	/* -------- 事件回调，接收和返回JsonValue -------- */
+	private let things: (JsonValue) -> JsonValue	
 
 	/* -------- 事件发生器 -------- */
 	public func play(input: JsonValue): JsonValue {
@@ -31,10 +32,10 @@ open class MatrixVars_Hardware {
 
 
 	/* ----------------- */
-	/* INFO(20260514-qing):  这两个函放在外面很突兀，考虑放进Matrix_HardVars */
+	/* INFO(20260514-qing):  这两个函放在外面很突兀，考虑放进Matrix_HardVars  (done) */
 
 	/* -------- 获得项目值 -------- */
-	static func getMt(obj: MatrixObject, row: Int64, col: Int64): String
+	protected static func getMt(obj: MatrixObject, row: Int64, col: Int64): String
 	{
 		let raw = obj[row, col]
 		if (raw == "-" && row > 1) {
@@ -43,7 +44,7 @@ open class MatrixVars_Hardware {
 	}
 
 	/* -------- 解析项目值 -------- */
-	static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64): T  where T <: Parsable<T>
+	protected static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64): T  where T <: Parsable<T>
 	{
 		let raw = obj[row, col]
 		if (raw == "-" && row > 1) {
@@ -118,7 +119,7 @@ class MtVars_I2C <: MatrixVars_Hardware {
 
 /* -------- PCA9685硬件变量 -------- */
 class MtVars_PCA9685 <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> JsonValue) {
+	public init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
 
 	/*
@@ -127,7 +128,7 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 	 *  pca9685-0  i2c-1   0x40;
 	 *  @
 	 */
-	static func Factory(	/*  工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖 */
+	public static func Factory(	/*  工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖 */
 		PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_PCA9685
 	{
 		let idxName = PCA9685Defs.indexOfCol(0, "name")
@@ -180,7 +181,7 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
  * - 但是我们考虑到最大值、最小值的限制和漂移值的调整，
  * - 还是要专门做一个舵机硬件变量  */
 class MtVars_Servo <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> JsonValue) {
+	public init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
 
 	/*
@@ -189,7 +190,7 @@ class MtVars_Servo <: MatrixVars_Hardware {
 	 *    s1    90    -       -   pca9685-0        0;
 	 *  @
 	 */
-	static func Factory(	/* 工厂模式：使用矩阵对象构造 */
+	public static func Factory(	/* 工厂模式：使用矩阵对象构造 */
 		ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_Servo
 	{
 		let idxName = ServoDefs.indexOfCol(0, "name")
@@ -238,7 +239,7 @@ class MtVars_Servo <: MatrixVars_Hardware {
  * - TODO: 输入扬声器设备名（扬声器又是一台戏）
  */
 class MtVars_Speaker <: MatrixVars_Hardware {
-	init(things: (JsonValue) -> JsonValue) {
+	public init(things: (JsonValue) -> JsonValue) {
 		super(things)  }
 
 	/*
@@ -247,7 +248,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 	 *   spk         2        48000     0.6   5000      -;
 	 *  @
 	 */
-	static func Factory(	/*  工厂函数，根据矩阵对象进行构造  */
+	pulibc static func Factory(	/*  工厂函数，根据矩阵对象进行构造  */
 		SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker {
 
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
@@ -293,46 +294,45 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 class RobotStruct {
 
 	/* -------- 存放解析结果和创建的变量 -------- */
-	let C = LinkedList<MatrixObject>()
-	let M = HashMap<String, MatrixVars_Hardware>() 
+	private let C = LinkedList<MatrixObject>()
+	private let M = HashMap<String, MatrixVars_Hardware>() 
 
 	/* -------- 使用矩阵脚本驱动机器人 --------
 	 *  不行就将矩阵脚本转化为bot脚本吧  */
-	init(input: InputStream) {
+	public init(input: InputStream) {
 		readMatrix(input)
 		createHardVars()
 	}
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
-	func run() {
+	public func run() {
 		
 	}
 
-	/* -------- 储存整个矩阵变量表 -------- */
-	func save(out: OutputStream) {
+	/* -------- 储存整个矩阵变量表 --------
+	 * NOTE(20260517-qing): 使用完毕要关闭输出流  */
+	public func save(out: OutputStream) {
 		let ms = MatrixSaver(out)
 		ms.save(C)
 	}
 
 	/* -------- 阅读矩阵脚本 -------- */
 	 * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型  */
-	func readMatrix(file: InputStream){
+	private func readMatrix(file: InputStream){
 		let sr = StringReader<InputStream>(file)
 		let parser =  MatrixParser(sr)
 		while (true) {
 			if (let Some(O) <- parser.parse()) {
 				let n = O.getName();
 				println(n)
-				C.addLast(O)
-			}
-			else {
-				break }
+				C.addLast(O)  }
+			else { break }
 		}
 	}
 
 	/* -------- 创建硬件变量字典 --------
 	 * TODO(20260515-qing): 解耦合  */
-	func createHardVars()
+	private func createHardVars()
 	{
 		createI2CVars()
 		createPCA9685Vars()
@@ -342,7 +342,7 @@ class RobotStruct {
 
 
 	/* -------- 创建I2C机组硬件变量 -------- */
-	func createI2CVars() {
+	private func createI2CVars() {
 		let I2CDefs= findMt(C, "I2C").getOrThrow()	/* MatrixObject */
 		for (i in 1..I2CDefs.size) {
 			let idxName = I2CDefs.indexOfCol(0, "name")
@@ -352,7 +352,7 @@ class RobotStruct {
 	}
 
 	/* -------- 创建PCA9685硬件变量 -------- */
-	func createPCA9685Vars() {
+	private func createPCA9685Vars() {
 		let PCA9685Defs = findMt(C, "PCA9685").getOrThrow()
 		for (i in 1..PCA9685Defs.size) {
 			let idxName = PCA9685Defs.indexOfCol(0, "name")
@@ -362,7 +362,7 @@ class RobotStruct {
 	}
 
 	/* -------- 创建Servo舵机硬件变量 -------- */
-	func createServoVars() {
+	private func createServoVars() {
 		let ServoDefs = findMt(C, "Servo").getOrThrow()
 		for (i in 1..ServoDefs.size) {
 			let idxName = ServoDefs.indexOfCol(0, "name")
@@ -373,7 +373,7 @@ class RobotStruct {
 
 
 	/* -------- 创建扬声器机组硬件变量 -------- */
-	func createSpeakerVars() {
+	private func createSpeakerVars() {
 		let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	/* MatrixObject */
 		for (i in 1..SpeakerDefs.size) {
 			let idxName = SpeakerDefs.indexOfCol(0, "name")
@@ -383,14 +383,13 @@ class RobotStruct {
 	}
 
 	/* -------- 在矩阵对象的容器中寻找目标 -------- */
-	static func findMt(ll: LinkedList<MatrixObject>, name: String): Option<MatrixObject>
+	private static func findMt(ll: LinkedList<MatrixObject>, name: String): Option<MatrixObject>
 	{
 		for (item in ll) {
 			var target  = item.getName()
 			target = target.trimAscii() // ???
 			if (name == target) {
-				return item
-			}
+				return item  }
 		}
 
 		return None
