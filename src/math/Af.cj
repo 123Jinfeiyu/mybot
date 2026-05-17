@@ -8,7 +8,7 @@ public enum Af {
 	None | Sigmoid | ReLU | Leaky_ReLU(FP32) | Tanh | Softmax
 
 	/* -------- 执行激活函数 -------- */	
-	func forward(x: Matrix1) {
+	public func forward(x: Matrix1) {
 		match(this) {
 			case None => none(x)
 			case Sigmoid => sigmoid(x)
@@ -20,7 +20,7 @@ public enum Af {
 	}
 
 	/* -------- 激活函数的导数 -------- */
-	func backward(y: Matrix1) {
+	public func backward(y: Matrix1) {
 		match(this) {
 			case None => none_dot(y)
 			case Sigmoid => sigmoid_dot(y)
@@ -32,7 +32,7 @@ public enum Af {
 	}
 
 	/* -------- 空的激活函数 -------- */
-	static func none(M: Matrix1) {
+	private static func none(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -46,7 +46,7 @@ public enum Af {
 	}
 
 	/* -------- 空激活函数的导数 -------- */
-	static func none_dot(M: Matrix1) {
+	private static func none_dot(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -58,7 +58,7 @@ public enum Af {
 	}
 
 	/* -------- S型生长曲线 -------- */
-	static func sigmoid(M: Matrix1) {
+	private static func sigmoid(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -73,7 +73,7 @@ public enum Af {
 	}
 
 	/* -------- S型生长曲线的导数 -------- */
-	static func sigmoid_dot(M: Matrix1) {
+	private static func sigmoid_dot(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -89,7 +89,7 @@ public enum Af {
 	}
 	
 	/* -------- 线性整流单元 -------- */
-	static func relu(M: Matrix1) {
+	private static func relu(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -105,7 +105,7 @@ public enum Af {
 	}
 
 	/* -------- 线性整流单元的导数 -------- */
-	static func relu_dot(M: Matrix1) {
+	private static func relu_dot(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -121,7 +121,7 @@ public enum Af {
 	}
 
 	/* -------- 带泄露的线性整流单元 -------- */
-	static func leaky_relu(M: Matrix1, alpha: FP32) {
+	private static func leaky_relu(M: Matrix1, alpha: FP32) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -137,7 +137,7 @@ public enum Af {
 	}
 
 	/* -------- 带泄露的整流单元导数 -------- */
-	static func leaky_relu_dot(M: Matrix1, alpha: FP32) {
+	private static func leaky_relu_dot(M: Matrix1, alpha: FP32) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -152,7 +152,7 @@ public enum Af {
 	}
 
 	/* -------- 双曲正切函数 --------*/
-	static func tanh(M: Matrix1) {
+	private static func tanh(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -167,7 +167,7 @@ public enum Af {
 	}
 
 	/* -------- 双曲正切函数的导数 -------- */
-	static func tanh_dot(M: Matrix1) {
+	private static func tanh_dot(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -182,7 +182,7 @@ public enum Af {
 	}
 
 	/* -------- 归一化指数函数 -------- */
-	static func softmax(M: Matrix1) {
+	private static func softmax(M: Matrix1) {
 		let row = M.get_row()
 		let col = M.get_col()
 		let N = Matrix1(row, col)
@@ -219,7 +219,7 @@ public enum Af {
 	/* -------- 计算Softmax的雅可比矩阵 --------
 	 * 输入：已计算好的softmax输出（概率分布）
 	 * 输出：雅可比矩阵 J[i][j] = ∂y_i/∂x_j  */
-	func softmax_jacobian(softmax_output: Matrix1) {
+	private func softmax_jacobian(softmax_output: Matrix1) {
 		let row = softmax_output.get_row()
 		let col = softmax_output.get_col()
 		let n = row * col

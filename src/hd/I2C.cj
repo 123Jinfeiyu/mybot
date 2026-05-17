@@ -9,11 +9,10 @@ const I2C_FILE_NOT_OPENED: Int16 = -1
 
 /* -------- 打开一个I2C设备 在gc回收时关闭 --------
  *     fixme: 对I2C的操作都要加锁
- *     TODO: 直接使用libi2c.so
- */
+ *     TODO: 直接使用libi2c.so  */
 public class I2C {
 
-	/* 主初始化器 - 打开I2C设备 */
+	/* -------- 主初始化器 - 打开I2C设备 -------- */
 	public init(path: String) {
 		this.path = path
 		unsafe{
@@ -25,7 +24,7 @@ public class I2C {
 		}
 	}
 
-	/* 析构函数 - 关闭I2C设备 */
+	/* -------- 析构函数 - 关闭I2C设备 -------- */
 	~init() {
 		unsafe {  I2C_free(fd)  }
 	}

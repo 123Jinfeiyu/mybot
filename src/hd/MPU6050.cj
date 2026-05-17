@@ -27,8 +27,7 @@ public struct MPU6050_sensorData {
 public class MPU6050 {
 
 	/* -------- 主初始化器 -------- */
-	public init(i2c: I2C, addr: UInt8)
-	{
+	public init(i2c: I2C, addr: UInt8)  {
 		this.i2c = i2c
 		this.addr = addr
 		i2c.setAddr(addr);

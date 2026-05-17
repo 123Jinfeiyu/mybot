@@ -5,8 +5,8 @@ foreign func play_frequency(frequency: Float32, duration_ms: Int32, volume: Floa
 /* -------- 扬声器类 --------
  * TODO: 一次打开设备，一段时间后再关闭 */
 public class Spk {
-	var channels: Int32
-	var sample_rate: Int32
+	private var channels: Int32
+	private var sample_rate: Int32
 	public init(channels!: Int32, sample_rate!: Int32) {
 		this.channels = channels
 		this.sample_rate = sample_rate

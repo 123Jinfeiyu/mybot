@@ -34,12 +34,10 @@ public class Matrix {
 	}
 
 	/* -------- 初始化器，利用已经存在的元数据进行构建 -------- */
-	public Matrix(m: CPointer<Unit>) {
-		M = m
-	}
+	public Matrix(m: CPointer<Unit>) {  M = m  }
 
 	/* -------- Xavier正态分布初始化 -------- */
-	static func initWithXavierNormal(fan_in: UInt64, fan_out: UInt64) {
+	public static func initWithXavierNormal(fan_in: UInt64, fan_out: UInt64) {
 		unsafe {
 			let m = xavierNormalInit(fan_in, fan_out);
 			return Matrix(m)
@@ -47,7 +45,7 @@ public class Matrix {
 	}
 
 	/* -------- Glorot均匀初始化 -------- */
-	static func initWithXavierUniform(fan_in: UInt64, fan_out: UInt64) {
+	public static func initWithXavierUniform(fan_in: UInt64, fan_out: UInt64) {
 		unsafe {
 			let m = xavierUniformInit(fan_in, fan_out);
 			return Matrix(m)
@@ -60,7 +58,7 @@ public class Matrix {
 	}
 
 	/* -------- 取下标，由于不能返回值类型的引用被弃用 -------- */
-	//operator func [](r: UInt64, c: UInt64): CPointer<Float32> {
+	//public operator func [](r: UInt64, c: UInt64): CPointer<Float32> {
 	//	unsafe { return witchMatrix(M, r, c) }
 	//}
 
@@ -76,7 +74,7 @@ public class Matrix {
 
 	/* ------- 两个矩阵形状是否相同 -------- 
 	 * FIXME: 这个函数所重载的运算符不贴切  */
-	operator func ==(s: Matrix): Bool {
+	public operator func ==(s: Matrix): Bool {
 		unsafe { return sameShapeMatrix(M, s.getData()) }
 	}
 
@@ -91,18 +89,16 @@ public class Matrix {
 	}
 
 	/* -------- 获取指向元数据的C风格指针 -------- */
-	func getData(): CPointer<Unit> {
-		return M;
-	}
+	public func getData(): CPointer<Unit> { return M; }
 
 	/* -------- 是否两个矩阵具有点积和的形状 -------- */
-	func hasDotShapeWith(s: Matrix): Bool {
+	public func hasDotShapeWith(s: Matrix): Bool {
 		unsafe { return dotShapeMatrix(M, s.getData()) }
 	}
 
 	/* -------- 逐元素算数运算 -------- */
 	/* -------------------------------- */
-	operator func +(s: Matrix): Matrix {
+	public operator func +(s: Matrix): Matrix {
 		unsafe {
 			if (!sameShapeMatrix(M, s.getData())) {
 				println('------------')
@@ -116,14 +112,14 @@ public class Matrix {
 		}
 	}
 
-	operator func +(t: Float32): Matrix {
+	public operator func +(t: Float32): Matrix {
 		unsafe {
 			let r = plusBroadcastMatrix(M, t)
 			return Matrix(r);
 		}
 	}
 
-	operator func -(s: Matrix): Matrix {
+	public operator func -(s: Matrix): Matrix {
 		unsafe {
 			if (!(this == s)) {
 				println('------------')
@@ -137,14 +133,14 @@ public class Matrix {
 		}
 	}
 
-	operator func -(t: Float32): Matrix {
+	public operator func -(t: Float32): Matrix {
 		unsafe {
 			let r = subBroadcastMatrix(M, t)
 			return Matrix(r);
 		}
 	}
 
-	operator func *(s: Matrix): Matrix {
+	public operator func *(s: Matrix): Matrix {
 		unsafe {
 			if (!(this == s)) {
 				println('------------')
@@ -158,14 +154,14 @@ public class Matrix {
 		}
 	}
 
-	operator func *(t: Float32): Matrix {
+	public operator func *(t: Float32): Matrix {
 		unsafe {
 			let r = multiBroadcastMatrix(M, t)
 			return Matrix(r)
 		}
 	}
 
-	operator func /(s: Matrix): Matrix {
+	public operator func /(s: Matrix): Matrix {
 		unsafe {
 			if (!(this == s)) {
 				println('------------')
@@ -179,7 +175,7 @@ public class Matrix {
 		}
 	}
 
-	operator func /(t: Float32): Matrix {
+	public operator func /(t: Float32): Matrix {
 		unsafe {
 			let r = divBroadcastMatrix(M, t)
 			return Matrix(r)
@@ -191,7 +187,7 @@ public class Matrix {
 
 
 	/* -------- 矩阵点积和算法 -------- */
-	func dot (s: Matrix): Matrix {
+	public func dot (s: Matrix): Matrix {
 		unsafe {
 			if (!hasDotShapeWith(s)) {
 				println('------------')
@@ -206,7 +202,7 @@ public class Matrix {
 	}
 
 	/* -------- 矩阵转置 -------- */
-	func T(): Matrix {
+	public func T(): Matrix {
 		unsafe {
 			let r = transposeMatrix(M)
 			return Matrix(r)
@@ -214,7 +210,7 @@ public class Matrix {
 	}
 
 	/* -------- 打印矩阵 -------- */
-	func print(): Unit {
+	public func print(): Unit {
 		unsafe {
 			for (i in 0..getRow()) {
 				for (j in 0..getCol()) {
@@ -228,12 +224,12 @@ public class Matrix {
 	}
 
 	/* -------- 打印形状 -------- */
-	func print_shape() {
+	public func print_shape() {
 		println("${getRow()}, ${getCol()}")
 	}
 
 	/* -------- 保存矩阵 -------- */
-	func save(file: File) {
+	public func save(file: File) {
 		unsafe {
 			for (i in 0..getRow()) {
 				for (j in 0..getCol()) {
@@ -247,13 +243,13 @@ public class Matrix {
 	}
 
 	/* -------- 静态方法，加载单独项 -------- */
-	static func loadItem(sr: StringReader<InputStream>) {
+	private static func loadItem(sr: StringReader<InputStream>) {
 		let s = sr.readUntil({r => r==r' ' || r ==r'\n'})
 		return Float32.parse(s.getOrThrow())
 	}
 
 	/* -------- 静态方法，加载矩阵 -------- */
-	static func load(sr: StringReader<InputStream>, row: UInt64, col: UInt64): Matrix {
+	public static func load(sr: StringReader<InputStream>, row: UInt64, col: UInt64): Matrix {
 		let m = Matrix(row, col)
 		unsafe {
 			for (i in 0..m.getRow()) {
@@ -267,7 +263,7 @@ public class Matrix {
 	}
 
 	/* -------- 矩阵的C风格指针 -------- */
-	var M: CPointer<Unit>
+	private var M: CPointer<Unit>
 }
 
 /* -------- 这一坨是32位浮点数 -------- */
@@ -275,26 +271,26 @@ public struct FP32 {
 	private var val: Float32
 	public init(t: Float32) {	/* 以Float32初始化对象 */
 		val =  t }
-	func getValue() {	/* 获取值 */
+	public func getValue() {	/* 获取值 */
 		return val }
 	/* -------- 运算符重载 -------- */
-	//operator func =(t: Float32) { /* this can not */
+	//public operator func =(t: Float32) { /* this can not */
 	//	val = t }
-	operator func +(t: Float32) {
+	public operator func +(t: Float32) {
 		return FP32(val + t)}
-	operator func +(S: FP32) {
+	public operator func +(S: FP32) {
 		return this + S.getValue() }
-	operator func -(t: Float32) {
+	public operator func -(t: Float32) {
 		return FP32(val - t) }
-	operator func -(S: FP32) {
+	public operator func -(S: FP32) {
 		return this - S.getValue() }
-	operator func *(t: Float32) {
+	public operator func *(t: Float32) {
 		return FP32(val * t) }
-	operator func *(S: FP32) {
+	public operator func *(S: FP32) {
 		return this * S.getValue() }
-	operator func /(t: Float32) {
+	public operator func /(t: Float32) {
 		return FP32(val / t) }
-	operator func /(S: FP32) {
+	public operator func /(S: FP32) {
 		return this / S.getValue() }
 
 }
@@ -315,9 +311,9 @@ public struct FP32 {
 */
 public class Matrix1 {
 
-	var row: Int64
-	var col: Int64
-	var arr: Array<FP32>
+	private var row: Int64
+	private var col: Int64
+	private var arr: Array<FP32>
 
 	/* -------- 构造器，默认值为0 -------- */
 	public Matrix1(row: Int64, col: Int64) {
@@ -342,13 +338,13 @@ public class Matrix1 {
 
 	/* -------- 这两个函数是比较器 -------- */
 	/* ------------------------------------ */
-	func has_same_shape(other: Matrix1) {
+	public func has_same_shape(other: Matrix1) {
 		let a = this.get_row()  == other.get_row()
 		let b = this.get_col()  == other.get_col()
 		return a && b
 	}
 
-	func has_dot_shape(other: Matrix1) {
+	public func has_dot_shape(other: Matrix1) {
 		return this.get_col() == other.get_row()
 	}
 
