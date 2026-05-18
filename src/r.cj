@@ -491,7 +491,7 @@ class RobotStruct {
 	private func run_drl_action() {
 		let ActionDefs = findMt(C, "Action").getOrThrow()	/* MatrixObject */
 		for (i in 1..ActionDefs.size) {
-			let set =JsonObject()	/* 每个硬件变量的参数集合 */
+			let set =JsonObject()		/* 每个硬件变量的参数集合 */
 			for (j in 0..ActionDefs.col) {
 				let name_HV = ActionDefs[0, j]	/* 获取硬件变量名 */
 				let arr = name_HV.split(".")
@@ -534,8 +534,11 @@ class RobotStruct {
 				let params: JsonValue = set.get(name_dev).getOrThrow()
 				let _: JsonValue = hv.play(params)
 			}
+
+
 		}
 	}
+
 
 }
 
