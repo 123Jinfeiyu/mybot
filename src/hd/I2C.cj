@@ -13,10 +13,19 @@ const I2C_FILE_NOT_OPENED: Int16 = -1
 foreign func open(path: CString, flag: Int32, ...): Int32
 foreign func close(fd: Int32): Int32	/* 成功返回0，失败返回-1 */
 foreign func ioctl(fd: Int32, addr: UInt64, ...): Int32	/* 成功返回非负整数，失败返回-1 */
+foreign func read(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative
+foreign func write(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative
+
+
+@C
+func getPtr(p: CPointer<UInt8>): CPointer<Unit> {
+	return CPointer<Unit>(p)
+}
 public class I2C_Orig {
 	private static let O_RDWR = 2i32
-	private static let I2C_Failed = -1i32
-	private static let I2C_Success = 0i32
+	private static let I2C_FAILED = -1i32
+	private static let I2C_SUCCESS = 0i32
+	private static let I2C_SLAVE = 0x0703u64	/* at least on arm64 */
 	private var fd: Int32 = -1
 	private var path: String
 	public init (path: String) {
@@ -29,11 +38,31 @@ public class I2C_Orig {
 
 	public func _close(): Unit {
 		let ret = unsafe { close(fd) }
-		if (ret == I2C_Failed) {
+		if (ret == I2C_FAILED) {
 			throw I2cClosedFailed(path) }
-		else if (ret == I2C_Success) {
+		else if (ret == I2C_SUCCESS) {
 			;  }
 		else { throw I2cUnknowExp(path, "$function returned: {ret.toString()}") }
+	}
+
+	public func setAddr(addr: UInt8) {
+		let ret  = unsafe {  ioctl(fd, I2C_SLAVE, addr)  }
+		if (ret < 0) { throw I2cSetAddressFailed(path) }
+	}
+
+	public func writeReg(reg: UInt8, val:UInt8): Unit {
+		var a: VArray<UInt8, $2> = [reg, val]
+		var p: CPointer<Unit> = unsafe { getPtr(inout a) }
+		let ret = unsafe { write(fd, p, 2) }
+		if (ret != 2) { throw I2cWriteRegFailed(path)  }
+	}
+
+	public func readReg(reg: UInt8): UInt8 {
+		var value: UInt8 = 0
+		var p = unsafe { getPtr(inout value) }
+		let ret = unsafe { read(fd, p, 1) }
+		if (ret != 1) { throw I2cReadRegFailed(path) }
+		return value
 	}
 }
 
@@ -139,6 +168,12 @@ private class I2cSetAddressFailed <: I2cExcept {
 private class I2cWriteRegFailed <: I2cExcept {
 	public I2cWriteRegFailed(dev: String) {
 		super(dev, "failed to write i2c reg")  }
+}
+
+/* -------- I2C读从机I2C失败 -------- */
+private class I2cReadRegFailed <: I2cExcept {
+	public I2cReadRegFailed(dev: String) {
+		super(dev, "failed to read i2c reg")  }
 }
 
 /* -------- 未知I2C异常 -------- */
