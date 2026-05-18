@@ -1,7 +1,7 @@
 @Alias
 name      alias;
    A      angle;
-   F  frequence;
+   F  frequency;
 @
 
 @I2C

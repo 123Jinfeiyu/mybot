@@ -337,7 +337,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
 			if (freq > max_f) { freq = max_f }
 			if (freq < min_f) { freq = min_f }
-			let delay  = Int32(json_obj.get("delay").getOrThrow().asInt().getValue())
+			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
 			spk.play(freq, volume, delay)
 			/* ---- 准备返回值 ---- */
 			let ret = JsonObject()	/* FIXME: 处理异常情况 */
