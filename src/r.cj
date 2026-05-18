@@ -130,7 +130,7 @@ class MtVars_I2C <: MatrixVars_Hardware {
 		let path = getMt(I2CDefs, i, idxPath)
 
 		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* debug */
-		let i2c = I2C(path)	/*  在这里创建传统I2C硬件对象，通过闭包保存在MtVars_I2C里  */
+		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C硬件对象，通过闭包保存在MtVars_I2C里  */
 		let mtvars_i2c = MtVars_I2C(things: {json: JsonValue =>				/*  {"mode": "set_addr", "addr": 0x01} */
 			let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
 			let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
@@ -149,7 +149,7 @@ class MtVars_I2C <: MatrixVars_Hardware {
 				return ret  }
 			else if (mode == "get_val") {
 				let reg = obj.get("reg").getOrThrow().asInt().getValue()
-				let raw = i2c.readRegFlag(UInt8(reg))
+				let raw = i2c.readReg(UInt8(reg))
 				let ret = JsonObject()
 				ret.put("status", JsonString("OK"))
 				ret.put("value", JsonInt(Int64(raw)))
@@ -164,7 +164,8 @@ class MtVars_I2C <: MatrixVars_Hardware {
 		},
 
 		free: {=>
-			i2c.close()
+			println("I2C HVar: ${name} is closing now")
+			i2c._close()
 		})
 
 		return mtvars_i2c
