@@ -7,6 +7,37 @@ foreign func I2C_readReg(fd: Int16, reg: UInt8): UInt8
 foreign func I2C_readRegFlag(fd: Int16, reg: UInt8): Int8
 const I2C_FILE_NOT_OPENED: Int16 = -1
 
+
+/* -------- 我们将直接调用glibc中的函数 --------
+ * TODO(20260518-qing):  稍后我们专门做一个i2c库，这样就能够区分不同架构上面的int的大小  */
+foreign func open(path: CString, flag: Int32, ...): Int32
+foreign func close(fd: Int32): Int32	/* 成功返回0，失败返回-1 */
+foreign func ioctl(fd: Int32, addr: UInt64, ...): Int32	/* 成功返回非负整数，失败返回-1 */
+public class I2C_Orig {
+	private static let O_RDWR = 2i32
+	private static let I2C_Failed = -1i32
+	private static let I2C_Success = 0i32
+	private var fd: Int32 = -1
+	private var path: String
+	public init (path: String) {
+		this.path = path
+		let s1 = unsafe { LibC.mallocCString(path) }
+		let fd = unsafe { open(s1, O_RDWR) }
+		if (fd > 0) { this.fd = fd }
+		else { throw I2cOpenedFailed(path) }
+	}
+
+	public func _close(): Unit {
+		let ret = unsafe { close(fd) }
+		if (ret == I2C_Failed) {
+			throw I2cClosedFailed(path) }
+		else if (ret == I2C_Success) {
+			;  }
+		else { throw I2cUnknowExp(path, "$function returned: {ret.toString()}") }
+	}
+}
+
+
 /* -------- 打开一个I2C设备 在gc回收时关闭 --------
  *     fixme: 对I2C的操作都要加锁
  *     TODO: 直接使用libi2c.so  */
@@ -92,6 +123,12 @@ private class I2cOpenedFailed <: I2cExcept {
 		super(dev, "failed to open i2c device")  }
 }
 
+/* -------- 关闭I2C设备失败 -------- */
+private class I2cClosedFailed <: I2cExcept {
+	public I2cClosedFailed(dev: String) {
+		super(dev, "failed to close i2c device")  }
+}
+
 /* -------- I2C设置地址失败 -------- */
 private class I2cSetAddressFailed <: I2cExcept {
 	public I2cSetAddressFailed(dev: String) {
@@ -102,4 +139,10 @@ private class I2cSetAddressFailed <: I2cExcept {
 private class I2cWriteRegFailed <: I2cExcept {
 	public I2cWriteRegFailed(dev: String) {
 		super(dev, "failed to write i2c reg")  }
+}
+
+/* -------- 未知I2C异常 -------- */
+private class I2cUnknowExp <: I2cExcept {
+	public I2cUnknowExp(dev: String, msg: String) {
+		super(dev, msg)  }
 }
