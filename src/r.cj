@@ -82,6 +82,31 @@ open class MatrixVars_Hardware {
 	}
 }
 
+/* -------- 别名变量 -------- */
+class MtVars_Alias <: MatrixVars_Hardware {
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None  )
+		{  super(things: things, rise: rise, free: free)  }
+
+	public static func Factory(AliasDefs: MatrixObject, i: Int64,
+			_: HashMap<String, MatrixVars_Hardware>): MtVars_Alias
+	{
+		let idxName = AliasDefs.indexOfCol(0, "name")
+		let idxAlias= AliasDefs.indexOfCol(0, "alias")
+
+		let name = AliasDefs[i, idxName]
+		let alias= getMt(AliasDefs, i, idxAlias)
+
+		println("Create a Alias vars: ${name}, witch means ${alias}")
+		let mtvars_alias = MtVars_Alias(things: {_: JsonValue =>
+			let str = JsonString(alias)
+			return str
+		})
+
+		return mtvars_alias
+	}
+}
 
 /* -------- I2C变量类 -------- */
 class MtVars_I2C <: MatrixVars_Hardware {
