@@ -183,9 +183,13 @@ func run_test(key: String) {
 		let file = File("ss/test.mt", OpenMode.Read)
 		let robot = RobotStruct(file)
 		file.close()
-		robot.active()
-		robot.run()
-		robot.deactive()
+		try {
+			robot.active()
+			robot.run()
+		}
+		finally {
+			robot.deactive()
+		}
 	}
 
 	/* -------- 测试解析矩阵，并且输出 -------- */
@@ -193,9 +197,6 @@ func run_test(key: String) {
 		let file = File("ss/test.mt", OpenMode.Read)
 		let robot = RobotStruct(file)
 		file.close()
-		robot.active()
-		robot.run()
-		robot.deactive()
 		let outf = File("ss/output.mt", OpenMode.Write)
 		robot.save(outf)
 		outf.close()

@@ -416,12 +416,22 @@ class RobotStruct {
 	 * FIXME(20260518-qing): 在插入哈希表之前如果有已经存在的键值，要释放它的资源  */
 	private func createHardVars()
 	{
+		createAliasVars()
 		createI2CVars()
 		createPCA9685Vars()
 		createServoVars()
 		createSpeakerVars()
 	}
 
+	/* -------- 创建别名硬件变量 -------- */
+	private func createAliasVars() {
+		let AliasDefs = findMt(C, "Alias").getOrThrow()	/* MatrixObject */
+		for (i in 1..AliasDefs.size) {
+			let idxName = AliasDefs.indexOfCol(0, "name")
+			let name = AliasDefs[i, idxName]
+			M[name] = MtVars_Alias.Factory(AliasDefs, i, M)
+		}
+	}
 
 	/* -------- 创建I2C机组硬件变量 -------- */
 	private func createI2CVars() {
@@ -479,7 +489,52 @@ class RobotStruct {
 
 	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
 	private func run_drl_action() {
-		
+		let ActionDefs = findMt(C, "Action").getOrThrow()	/* MatrixObject */
+		for (i in 1..ActionDefs.size) {
+			let set =JsonObject()	/* 每个硬件变量的参数集合 */
+			for (j in 0..ActionDefs.col) {
+				let name_HV = ActionDefs[0, j]	/* 获取硬件变量名 */
+				let arr = name_HV.split(".")
+				if (arr.size != 2) {
+					throw IllegalArgumentException("Action column is not valid")  }
+				let name_dev = arr[0]
+				var name_param = arr[1]
+				var val_str = ActionDefs[i, j]
+
+
+				var idx = i
+				while (val_str == "-" && idx > 1) {	/* 取得真实值（解析占位符） */
+					val_str = ActionDefs[idx -1, j]
+					idx -= 1  }
+				if  (val_str == "-" && idx == 1) {	/* 第1行占位则设置缺省值 */
+					val_str = "0"  }
+				
+				let val_fp64 = Float64.parse(val_str)
+				let AliasHV = M.get(name_param)		/* 可能的参数别名转换 */
+				if (let Some(aliasHV) <- AliasHV) {
+					let alias = aliasHV.play(JsonObject()).asString().getValue()
+					name_param = alias
+				}
+
+				var set_params: JsonObject	/* 设置或者取得属于该硬件变量的参数 */
+				if (let Some(obj_) <- set.get(name_dev)) {
+					set_params = obj_.asObject()  }
+				else {
+					set_params = JsonObject()
+					set.put(name_dev, set_params)  }
+
+				set_params.put(name_param, JsonFloat(val_fp64))	/* 设置一个该硬件变量的参数 */
+
+			}
+
+			/* -------- 执行一行 -------- */
+			let keys = set.getFields().keys()
+			for (name_dev in keys) {
+				let hv = M[name_dev]
+				let params: JsonValue = set.get(name_dev).getOrThrow()
+				let _: JsonValue = hv.play(params)
+			}
+		}
 	}
 
 }

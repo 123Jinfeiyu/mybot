@@ -374,6 +374,19 @@ class MatrixObject {
 		set(_) {}
 	}
 
+	/* -------- 取动作的列数 -------- */
+	public mut prop col: Int64 {
+		get() {
+			if (this.size > 0) {
+				return values[0].size  }
+			else {
+				return 0  }
+		}
+
+
+		set(_) {}
+	}
+
 	/* ------- 获取矩阵元素，只能取，不能修改 ------- */
 	public operator func [](row: Int64, col: Int64): String {
 		return values[row][col]
