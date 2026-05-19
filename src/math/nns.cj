@@ -9,36 +9,36 @@ import std.collection.*
 /* -------- （旧版）加载多层神经网络 --------
    TODO: 也许用类封装
    INFO(20260517-qing): 新版使用仓颉原生矩阵，然后与MatrixObject类互转  */
-public func load_nns(filename: String): ArrayList<Nn> {
-	let nns = ArrayList<Nn>()
-	let file = File(filename, OpenMode.Read)
-	let sr = StringReader<InputStream>(file)
-	while (true) {
-		if (let Some(S) <- sr.readUntil(r' ')) {
-			var S2 = S.trimAscii()
-			if (S2 == "FullConnectLayer") {
-				nns.add(Nn.load(sr))  }
-			else if (S2 == "") { break }
-			else { throw IllegalArgumentException() }
-		}
-		else { break }
-	}
+//public func load_nns(filename: String): ArrayList<Nn> {
+//	let nns = ArrayList<Nn>()
+//	let file = File(filename, OpenMode.Read)
+//	let sr = StringReader<InputStream>(file)
+//	while (true) {
+//		if (let Some(S) <- sr.readUntil(r' ')) {
+//			var S2 = S.trimAscii()
+//			if (S2 == "FullConnectLayer") {
+//				nns.add(Nn.load(sr))  }
+//			else if (S2 == "") { break }
+//			else { throw IllegalArgumentException() }
+//		}
+//		else { break }
+//	}
 
-	file.close()
-	return nns
-}
+//	file.close()
+//	return nns
+//}
 
 /* -------- （旧版）储存多层神经网络 -------- */
-public func save_nns(nns: ArrayList<Nn>, filename: String) {
+//public func save_nns(nns: ArrayList<Nn>, filename: String) {
 
-		let file: File
-		if (exists(filename)) {
-			file = File(filename, OpenMode.Write) }
-		else { file= File.create(filename) }
-		for (nn in nns) { /*  存储全部的层  */
-			nn.save(file)  }
-		file.close()
-}
+//		let file: File
+//		if (exists(filename)) {
+//			file = File(filename, OpenMode.Write) }
+//		else { file= File.create(filename) }
+//		for (nn in nns) { /*  存储全部的层  */
+//			nn.save(file)  }
+//		file.close()
+//}
 
 /* -------- 准备与门的测试用例 -------- */
 public func prepare_andDoor(m: Matrix1, t: Matrix1)
@@ -55,15 +55,15 @@ public func prepare_andDoor(m: Matrix1, t: Matrix1)
 }
 
 /* -------- 旧版神经网络推理 -------- */
-public func forward(nns: ArrayList<Nn>, m: Matrix) {
-	var out_dof = Matrix(1, 1)
-	for (idx in 0..nns.size) {
-		let x = if (idx == 0) { m } else { out_dof }
-		let res = nns[idx].forward(x)
-		out_dof = nns[idx].fdo(res)
-	}
-	return out_dof
-}
+//public func forward(nns: ArrayList<Nn>, m: Matrix) {
+//	var out_dof = Matrix(1, 1)
+//	for (idx in 0..nns.size) {
+//		let x = if (idx == 0) { m } else { out_dof }
+//		let res = nns[idx].forward(x)
+//		out_dof = nns[idx].fdo(res)
+//	}
+//	return out_dof
+//}
 
 /* -------- 新版神经网络推理，使用原生矩阵 -------- */
 public func forward1(nns: ArrayList<Nn1>, m: Matrix1) {
@@ -120,45 +120,45 @@ public func train1(nns: ArrayList<Nn1>, m: Matrix1, t: Matrix1, discount: Float3
 }
 
 /* -------- 旧版的神经网络训练 -------- */
-public func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
+//public func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
 
 	/* ----------------- */
-	let outs_dof = ArrayList<Matrix> ()
-	let outs_dotf = ArrayList<Matrix> ()
+//	let outs_dof = ArrayList<Matrix> ()
+//	let outs_dotf = ArrayList<Matrix> ()
 
 	/* -------- 正向传播 -------- */
-	for (idx in 0..nns.size) {
-		let x = if (idx == 0) { m } else { outs_dof[idx-1] }
-		let res = nns[idx].forward(x)
-		let out_dof = nns[idx].fdo(res)
-		let out_dotf = nns[idx].fdot(out_dof)
-		outs_dof.add(out_dof)
-		outs_dotf.add(out_dotf)
-	}
+//	for (idx in 0..nns.size) {
+//		let x = if (idx == 0) { m } else { outs_dof[idx-1] }
+//		let res = nns[idx].forward(x)
+//		let out_dof = nns[idx].fdo(res)
+//		let out_dotf = nns[idx].fdot(out_dof)
+//		outs_dof.add(out_dof)
+//		outs_dotf.add(out_dotf)
+//	}
 
 	/* -------- 计算误差 -------- */
-        var errs = outs_dof[nns.size-1] - t
+//        var errs = outs_dof[nns.size-1] - t
 
 	/* -------- 反向传播 -------- */
-	for (idx in (nns.size-1)..=0:-1) {
-		let up = if (idx == 0) { m} else { outs_dof[idx-1] }
-		let bias_grad = errs
+//	for (idx in (nns.size-1)..=0:-1) {
+//		let up = if (idx == 0) { m} else { outs_dof[idx-1] }
+//		let bias_grad = errs
 		//let delta = nns[idx].bak_bsgrad(errs, outs_dotf[idx])
-		let weights_grad = nns[idx].bak_wsgrad(up, bias_grad)
-		if (idx > 0) {
-			errs = nns[idx].bak_uperrs(bias_grad, outs_dotf[idx-1])  }
- 		nns[idx].update(weights_grad, bias_grad, discount)
-	}
+//		let weights_grad = nns[idx].bak_wsgrad(up, bias_grad)
+//		if (idx > 0) {
+//			errs = nns[idx].bak_uperrs(bias_grad, outs_dotf[idx-1])  }
+// 		nns[idx].update(weights_grad, bias_grad, discount)
+//	}
 
 	/* -------- 输出损失 -------- */
-	unsafe {
-		let t0 = t.get(0, 0)
-		let t1 = t.get(0, 1)
-		let r0 = outs_dof[nns.size-1].get(0, 0)
-		let r1 = outs_dof[nns.size-1].get(0, 1)
-		let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
-		let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
-		return 0.5 * (loss0 * loss0 + loss1 * loss1)
-	}
+//	unsafe {
+//		let t0 = t.get(0, 0)
+//		let t1 = t.get(0, 1)
+//		let r0 = outs_dof[nns.size-1].get(0, 0)
+//		let r1 = outs_dof[nns.size-1].get(0, 1)
+//		let loss0 =  -t0 * log(r0) - (1.0f32-t0) * log(1.0f32-r0);
+//		let loss1 =  -t1 * log(r1) - (1.0f32-t1) * log(1.0f32-r1);
+//		return 0.5 * (loss0 * loss0 + loss1 * loss1)
+//	}
 
-}
+//}

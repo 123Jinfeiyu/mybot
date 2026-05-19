@@ -52,17 +52,17 @@ main(args: Array<String>): Int64 {
 	 * TODO: 可以去掉内部初始化，使用矩阵式模板进行初始化 */
 
 
-	var nns: ArrayList<Nn> = 
-	if (options.keys().contains("i")) {
-		let filename = options['i']
-		load_nns(filename)  }
-	else {
-		let nn_in = ArrayList<Nn>()
-		nn_in.add(Nn(41, 80, ActivationFuncs.Leaky_ReLU, 0.2f32))
-		nn_in.add(Nn(80, 80, ActivationFuncs.Leaky_ReLU, 0.2f32))
-		nn_in.add(Nn(80, 40, ActivationFuncs.Leaky_ReLU, 0.2f32))
-		nn_in.add(Nn(40, 17, ActivationFuncs.Sigmoid, 0.2f32)) // 16个舵机加1个时延
-		nn_in  }
+	//var nns: ArrayList<Nn> = 
+	//if (options.keys().contains("i")) {
+	//	let filename = options['i']
+	//	load_nns(filename)  }
+	//else {
+	//	let nn_in = ArrayList<Nn>()
+	//	nn_in.add(Nn(41, 80, ActivationFuncs.Leaky_ReLU, 0.2f32))
+	//	nn_in.add(Nn(80, 80, ActivationFuncs.Leaky_ReLU, 0.2f32))
+	//	nn_in.add(Nn(80, 40, ActivationFuncs.Leaky_ReLU, 0.2f32))
+	//	nn_in.add(Nn(40, 17, ActivationFuncs.Sigmoid, 0.2f32)) // 16个舵机加1个时延
+	//	nn_in  }
 
 	if (options.contains("o")) {
 
@@ -92,7 +92,7 @@ main(args: Array<String>): Int64 {
 		let savepath  = if (options.contains('o')) {
 			options['o']
 		} else  { "./nn.txt" } /* 获取储存路径 */
-        	run_serve(nns, savepath)
+        	run_serve(/*nns, savepath*/)
 	}
 
 	/* -------- 缺省行为：从标准输入获取动作脚本 --------
@@ -136,16 +136,16 @@ func print_help()
 func run_test(key: String) {
 
 	/* ----------快速傅里叶变换测试---------- */
-	if (key == "fft") {
-		println('FFT test start...')
-		var fftt = genWave()
-		var fftr = start_fft(fftt)
-		println('FFT test completed.')
-	}
+	//if (key == "fft") {
+	//	println('FFT test start...')
+	//var fftt = genWave()
+	//	var fftr = start_fft(fftt)
+	//	println('FFT test completed.')
+	//}
 
 	/* -----------神经网络与门测试------------
 	 * INFO: 我们使用随机生成的动态数据集，这样会导致一些后果 */
-	else if (key == "nn") {
+	if (key == "nn") {
 		let nn_t = ArrayList<Nn1>()
 		nn_t.add(Nn1(2, 4, 0.1f32, Af.Leaky_ReLU(FP32(0.01))))
 		nn_t.add(Nn1(4, 1, 0.1f32, Af.Sigmoid))
@@ -233,7 +233,7 @@ func run_test(key: String) {
  * qing(20260430): 
  * TODO: 在http伺服器中集成smn的功能，即能够托管前端
  * TODO: 在http伺服器中集成phs的功能，即托管进程 */
-func run_serve(nns: ArrayList<Nn>, save_path: String) {
+func run_serve(/*nns: ArrayList<Nn>, save_path: String*/) {
 	let serv = ServerBuilder()
 	.addr(HTTP_ADDR)
 	.port(HTTP_PORT)
