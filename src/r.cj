@@ -499,30 +499,7 @@ class RobotStruct {
 		for (i in 1..ActionDefs.size) {
 			let set =JsonObject()		/* 每个硬件变量的参数集合 */
 			for (j in 0..ActionDefs.col) {
-				let name_HV = ActionDefs[0, j]	/* 获取硬件变量名 FIXME:  该名称不得使用占位符 且不重复 */
-				let arr = name_HV.split(".")
-				if (arr.size != 2) {
-					throw IllegalArgumentException("Action column is not valid")  }
-				let name_dev = arr[0]
-				var name_param = arr[1]
-
-				var val_fp64 = MatrixVars_Hardware.parseMt<Float64>(ActionDefs, i, j)
-
-				let AliasHV = M.get(name_param)		/* 可能的参数别名转换 */
-				if (let Some(aliasHV) <- AliasHV) {
-					let ret = aliasHV.play(JsonObject())
-					let alias = ret.asString().getValue()
-					name_param = alias
-				}
-
-				var set_params: JsonObject	/* 设置或者取得属于该硬件变量的参数 */
-				if (let Some(obj_) <- set.get(name_dev)) {
-					set_params = obj_.asObject()  }
-				else {
-					set_params = JsonObject()
-					set.put(name_dev, set_params)  }
-
-				set_params.put(name_param, JsonFloat(val_fp64))	/* 设置一个该硬件变量的参数 */
+				parse_action_matrixObject(set, ActionDefs)
 			}
 
 			/* -------- 执行一行 -------- */
@@ -537,7 +514,33 @@ class RobotStruct {
 		}
 	}
 
+	/* -------- 解析@Action矩阵对象 -------- */
+	private func parse_action_matrixObject(set: JsonObject, ActionDefs: MatrixObject) {
+		let name_HV = ActionDefs[0, j]	/* 获取硬件变量名 FIXME:  该名称不得使用占位符 且不重复 */
+		let arr = name_HV.split(".")
+		if (arr.size != 2) {
+			throw IllegalArgumentException("Action column is not valid")  }
+		let name_dev = arr[0]
+		var name_param = arr[1]
 
+		var val_fp64 = MatrixVars_Hardware.parseMt<Float64>(ActionDefs, i, j)
+
+		let AliasHV = M.get(name_param)		/* 可能的参数别名转换 */
+		if (let Some(aliasHV) <- AliasHV) {
+			let ret = aliasHV.play(JsonObject())
+			let alias = ret.asString().getValue()
+			name_param = alias
+		}
+
+		var set_params: JsonObject	/* 设置或者取得属于该硬件变量的参数 */
+		if (let Some(obj_) <- set.get(name_dev)) {
+			set_params = obj_.asObject()  }
+		else {
+			set_params = JsonObject()
+			set.put(name_dev, set_params)  }
+
+		set_params.put(name_param, JsonFloat(val_fp64))	/* 设置一个该硬件变量的参数 */
+	}
 }
 
 
