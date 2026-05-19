@@ -18,6 +18,8 @@
 [target.aarch64-unknown-linux-gnu]
   [target.aarch64-unknown-linux-gnu.bin-dependencies]
     path-option = ["${CANGJIE_STDX_PATH}/linux_aarch64_cjnative/static/stdx"]
+# 为什么不支持Windows了？
+# 因为新版我们加载了Linux的glibc，通常Windows中没有这个
 #[target.x86_64-w64-mingw32]
 #  [target.x86_64-w64-mingw32.bin-dependencies]
 #    path-option = ["${CANGJIE_STDX_PATH}\\windows_x86_64_cjnative\\dynamic\\stdx"]
