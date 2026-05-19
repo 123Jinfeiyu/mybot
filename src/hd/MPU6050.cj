@@ -22,6 +22,10 @@ public struct MPU6050_sensorData {
 	}
 }
 
+@C
+func mpu6050_Daemon() {
+}
+
 /* -------- MPU6050陀螺仪、加速度计 --------
  * -  输入并持有一个I2C引用  */
 public class MPU6050 {

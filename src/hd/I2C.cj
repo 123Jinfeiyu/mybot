@@ -21,8 +21,21 @@ foreign func write(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative
 func getPtr(p: CPointer<UInt8>): CPointer<Unit> {
 	return CPointer<Unit>(p)
 }
+
+const O_RDWR = 2i32
+/* -------- OPEN I2C DEVICE -------- */
+@C
+func openI2cDev(path: CString): Int32 {
+	return unsafe { open(path, O_RDWR) }
+}
+
+/* -------- CLOSE I2C DEVICE -------- */
+@C
+func closeI2cDev(fd: Int32): Int32 {
+	return unsafe { close(fd) }
+}
+
 public class I2C_Orig {
-	private static let O_RDWR = 2i32
 	private static let I2C_FAILED = -1i32
 	private static let I2C_SUCCESS = 0i32
 	private static let I2C_SLAVE = 0x0703u64	/* at least on arm64 */
@@ -30,14 +43,15 @@ public class I2C_Orig {
 	private var path: String
 	public init (path: String) {
 		this.path = path
-		let s1 = unsafe { LibC.mallocCString(path) }
-		let fd = unsafe { open(s1, O_RDWR) }
+		let s1 = unsafe { 
+			LibC.mallocCString(path) }
+		let fd = unsafe { openI2cDev(s1) }
 		if (fd > 0) { this.fd = fd }
 		else { throw I2cOpenedFailed(path) }
 	}
 
 	public func _close(): Unit {
-		let ret = unsafe { close(fd) }
+		let ret = unsafe { closeI2cDev(fd) }
 		if (ret == I2C_FAILED) {
 			throw I2cClosedFailed(path) }
 		else if (ret == I2C_SUCCESS) {
@@ -64,6 +78,12 @@ public class I2C_Orig {
 		if (ret != 1) { throw I2cReadRegFailed(path) }
 		return value
 	}
+
+	/*--------获取文件句柄--------*/
+	public func getFd(): Int32 {
+		return fd
+	}
+
 }
 
 

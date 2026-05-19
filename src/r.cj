@@ -11,6 +11,7 @@ import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
 
+
 /* ---------------- 硬件变量基类 ----------------
  * 接收一个lambda表达式，在回调函数中定义行为
  * 通过JsonValue这种通用的数据结构进行传值

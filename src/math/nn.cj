@@ -242,4 +242,15 @@ public class Nn1 {
 	}
 
 
+	/* -------- 形状访问器 -------- */
+	public func get_in_shape() { return inputno }
+
+	public func get_out_shape() { return outputno }
+
+	public func get_lr() { return learning_rate }
+
+	public func get_f_type()  { return f.get_type() }
+
+	public func get_f_val() { return f.get_value() }
+
 }

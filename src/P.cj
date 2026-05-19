@@ -3,6 +3,7 @@ import std.io.*
 import std.math.*
 import std.convert.*
 import std.collection.*
+import bot4cj.math.*
 
 /*  -------- 单条动作的类型枚举 --------
  *
@@ -441,6 +442,15 @@ class MatrixObject {
 			{ throw DoesNotSync(count) }
 		values.add(grp)
 		grp = ArrayList<String>()
+	}
+}
+
+/* ---------------- 对Nn1进行扩展 ---------------- */
+extend Nn1 {
+	/* -------- 转换为MatrixObject对象 -------- */
+	public func toMto(): MatrixObject {
+		let mto = MatrixObject()
+		return mto
 	}
 }
 

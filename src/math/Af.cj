@@ -31,6 +31,30 @@ public enum Af {
 		}
 	}
 
+	/* -------- 序列化与反序列化 -------- */
+	public func get_type(): String {
+		return match(this) {
+			case None => "None"
+			case Sigmoid => "Sigmoid"
+			case ReLU => "ReLU"
+			case Leaky_ReLU(alpha) => "Leaky_ReLU"
+			case Tanh => "Tanh"
+			case Softmax => "Softmax"
+		}
+	}
+
+	/*  */
+	public func get_value(): FP32 {
+		return match(this) {
+			case None => FP32(0.0f32)
+			case Sigmoid => FP32(0.0f32)
+			case ReLU => FP32(0.0f32)
+			case Leaky_ReLU(alpha) => alpha
+			case Tanh => FP32(0.0f32)
+			case Softmax => FP32(0.0f32)
+		}
+	}
+
 	/* -------- 空的激活函数 -------- */
 	private static func none(M: Matrix1) {
 		let row = M.get_row()
