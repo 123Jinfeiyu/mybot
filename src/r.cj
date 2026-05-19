@@ -140,7 +140,13 @@ class MtVars_I2C <: MatrixVars_Hardware {
 		let mtvars_i2c = MtVars_I2C(things: {json: JsonValue =>			/*  {"mode": "set_addr", "addr": 0x01} */
 			let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
 			let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
-			if (mode == "set_addr")  {
+			if (mode == "get_fd") {
+				let fd = i2c.getFd()
+				let ret = JsonObject()
+				ret.put("fd",JsonInt(Int64(fd)))
+				return ret
+			}
+			else if (mode == "set_addr")  {
 				let addr = obj.get("addr").getOrThrow().asInt().getValue()
 				i2c.setAddr(UInt8(addr))
 				let ret = JsonObject()

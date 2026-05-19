@@ -23,7 +23,8 @@ public struct MPU6050_sensorData {
 }
 
 @C
-func mpu6050_Daemon() {
+func mpu6050_Daemon(fd: Int32) {
+	
 }
 
 /* -------- MPU6050陀螺仪、加速度计 --------
@@ -37,7 +38,6 @@ public class MPU6050 {
 			i2c_writeReg!: (UInt8, UInt8) -> Unit,	/* 写i2c地址 - 回调函数 */
 			i2c_readReg!: (UInt8) -> Int8,		/* 读i2c地址 - 回调函数 */
 			addr!: UInt8)  {
-		//this.i2c = i2c
 		this.i2c_setAddr = i2c_setAddr
 		this.i2c_writeReg = i2c_writeReg
 		this.i2c_readReg = i2c_readReg
@@ -53,7 +53,6 @@ public class MPU6050 {
 
 	/* -------- 初始化该模块 -------- */
 	public func setup() {
-		//let i2cc = i2c.getOrThrow()
 		i2c_setAddr(addr);
 		i2c_writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
 		i2c_writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
