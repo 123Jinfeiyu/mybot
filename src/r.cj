@@ -508,14 +508,6 @@ class RobotStruct {
 
 				var val_fp64 = MatrixVars_Hardware.parseMt<Float64>(ActionDefs, i, j)
 
-				//var val_str = ActionDefs[i, j]
-				//var idx = i
-				//while (val_str == "-" && idx > 1) {	/* 取得真实值（解析占位符） */
-				//	val_str = ActionDefs[idx -1, j]
-				//	idx -= 1  }
-				//if  (val_str == "-" && idx == 1) {	/* 第1行占位则设置缺省值 */
-				//	val_str = "0"  }
-				
 				let AliasHV = M.get(name_param)		/* 可能的参数别名转换 */
 				if (let Some(aliasHV) <- AliasHV) {
 					let ret = aliasHV.play(JsonObject())
@@ -531,7 +523,6 @@ class RobotStruct {
 					set.put(name_dev, set_params)  }
 
 				set_params.put(name_param, JsonFloat(val_fp64))	/* 设置一个该硬件变量的参数 */
-
 			}
 
 			/* -------- 执行一行 -------- */
