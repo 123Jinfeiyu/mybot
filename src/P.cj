@@ -362,7 +362,7 @@ class MatrixObject {
 	private var grp = ArrayList<String>()	/* one line 整行缓冲区 */
 	private var values = ArrayList<ArrayList<String>>()	/* 原始矩阵 */
 
-	/* -------- 已命名 -------- */
+	/* -------- 是否已命名 -------- */
 	public func hasName(): Bool { !(name == "") }
 
 	/* --------- 获得名字 --------- */
@@ -379,8 +379,7 @@ class MatrixObject {
 		get() {
 			if (this.size > 0) {
 				return values[0].size  }
-			else {
-				return 0  }
+			else { return 0  }
 		}
 
 
