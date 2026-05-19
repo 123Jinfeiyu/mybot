@@ -81,273 +81,273 @@ class Act {
  * - 带变量表的矩阵式脚本解析器正在开发，届时我们将这里的一些想法
  * - 移动到新的解析器特性，届时该旧版本可以被删除
  */
-class ActsParser {
-
-	private var input: StringReader<InputStream>
-	public init(input: StringReader<InputStream>) {
-		this.input = input  }
-
-	/* -------- 切换目标 -------- */
-	public func target(input: StringReader<InputStream>) {
-		this.input = input  }
-
-	/* -------- 解析器 - 循环不变式 --------
-	 * 初始化： ss是一个动作脚本的输入流
-	 * 保持： ss是动作脚本剩余部分的输入流
-	 * 终止： 当输入流为空时，循环终止  */
-	public func parse(): Option<HashMap<String, Act>> {
-		var count = 1i64 	/*  从第一行开始  */
-		var so = input.read()
-		while (match(so) {
-			case Some(s) => true
-			case None => false
-		}) {
-			try {
-				let s = so.getOrThrow()
-				print(s)
-				let l = act.size
-				count = next(s, count)
-				let n = act.size
-				if (n == l + 1) {
-					return this[l] }
-				so  = input.read()
-			}
-			catch (exp: BufOverTheLine) { throw exp }
-			//catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
-			//catch (exp: Exception) { throw UnknowExcept(count) } /* FIXME: 还是暴露出原来的错误位置来更好？ */
-		}
-
-		return Option<HashMap<String, Act>>.None
-	}
-	private var nl: Bool = true	/* new line */
-	private var sl: Bool = false	/* special */
-	private var sl_n: Bool = false 	/* special (name) */
-	private var cm: Bool = false	/* comment */
-	private var tmp = ArrayList<Rune>()	/* rune buf */
-	private var grp = ArrayList<Float32>()	/* one line */
-	private var nam = ArrayList<String>()	/* 列命名 */
-	private var bot = ArrayList<ArrayList<Float32>>()	/* bot settings */
-	private var act = ArrayList<ArrayList<Float32>>()	/* acts list */
-	private static const TMP_LEN = 16	/* size of tmp */
-	private func next(c: Rune, count: Int64): Int64 {
-		var cc: Int64  = count
-		/* ------------ COMMENTS ------------ */
-		if (!cm && c == r'#') { cm = true }	/* 注释开始时 */
-		else if (cm && c == r'\n') {		/* 注释结束时 */
-			nl = true
-			sl = false
-			cm = false
-			cc += 1
-		}
-		else if (cm && c != r'\n') { ; }	/* 注释进行时
-							 * FIXME: EOF情况  */
-		//------------ new line ------------
-		else if (nl && (c == r' ' || c == r'\t' || c == r'\r')) { ; }	/*  新行空字符，维持现状 */
-		else if (nl && c == r'\n') {	/* 新行空行 */
-			cc += 1
-		}
-		else if (nl && c == r'!') {		/* 新行特殊行 */
-			nl = false
-			sl = true
-		}
-		else if (nl && c == r'~') {		/* 新行特殊行2留空  */
-			nl = false
-			sl_n =true
-		}
-		else if (nl && c != r'~' && c != r'!') {	/* 新行且不为特殊行、制表符和空格 */
-			nl = false
-			sl = false
-			tmp.add(c)			/* to buf */
-			if (tmp.size > TMP_LEN) {	/* to long */
-				throw BufOverTheLine(count)  }
-		}
-		
-		/* ------------- not nl ------------- */
-		else if (!nl && sl_n && !sl && (c == r' ' || c == r'\t' || c == r"\n")) {	/* 添加命名项 */
-			if (!tmp.isEmpty()) {
-				let n = String(tmp)
-				nam.add(n)
-				tmp.clear()  }
-		}
-		else if (!nl && !sl_n && sl && (c == r' ' || c == r'\t' || c == r'\n')) {	/* 添加特殊项 */
-			if (!tmp.isEmpty() && String(tmp) == "-") {
-				grp.add(0.0f32)		/* 当前行略过（0） */
-				tmp.clear()  }
-
-			else if (!tmp.isEmpty()) {
-				let f = fromTmp()	/* 结算当前列 */
-				grp.add(f)  }
-		}
-		else if (!nl && !sl_n && !sl && (c == r" " || c == r'\t' || c == r'\n')) {	/* 添加动作项 */
-
-			if (!tmp.isEmpty() && String(tmp) == "-" && act.size == 0) {	/* 首行动作被跳过 */
-				grp.add(0.0f32)
-				tmp.clear()  }
-
-			else if (!tmp.isEmpty() && String(tmp) == "-" && act.size > 0) {	/* 非首行 */
-				let f = act[act.size-1][grp.size]
-				grp.add(f)
-				tmp.clear()  }
-
-			else if (!tmp.isEmpty()) {
-				let f = fromTmp()	/* 结算当前列 */
-				grp.add(f)  }
-
-		}
-		else if (!nl && sl_n && !sl && c == r';') {	/* 命名行结束 */
-			if (!tmp.isEmpty()) {
-				let n =String(tmp)
-				nam.add(n)
-				tmp.clear()  }
-			nl = true
-			sl_n = false
-		}
-		else if (!nl && !sl_n && sl && c == r';') { /* 特殊行结束 */
-			if (!tmp.isEmpty() && String(tmp) == "-") {
-				grp.add(0.0f32)		/* 当前行略过（0） */
-				tmp.clear()  }
-
-			else if (!tmp.isEmpty()) {
-				let f = fromTmp()	/* 结算当前列 */
-				grp.add(f)  }
-
-			if (!grp.isEmpty()) {
-				bot.add(grp.clone())
-				grp.clear()  }
-
-			nl = true
-			sl = false
-		}
-		else if (!nl && !sl_n && !sl && c == r';') {	/* 普通行结束 */
-
-			if (!tmp.isEmpty() && String(tmp) == "-" && act.size == 0) {  /* 首行动作被跳过 */
-				grp.add(0.0f32)
-				tmp.clear()  } 
-
-			else if (!tmp.isEmpty() && String(tmp) == "-" && act.size > 0) {	/* 非首行 */
-				let f = act[act.size-1][grp.size]
-				grp.add(f)
-				tmp.clear() }
-
-			else if (!tmp.isEmpty()) {
-				let f = fromTmp()	/* 结算当前列 */
-				grp.add(f)  }
-
-			if (!grp.isEmpty()) {		/* 普通行结算 */
-				act.add(grp.clone())
-				grp.clear()  }
-
-			nl = true
-
-		}
-
-		else if (!nl) {	/* 非空格、非制表符、非分号
-					FIXME: 且为数字  */
-			tmp.add(c)			/*  to buf  */
-			if (tmp.size > TMP_LEN) {	/*  to long */
-				throw BufOverTheLine(count)  }
-		}
-
-		/*  返回当前行号  */
-		return cc
-	}
-
-	/* -------- 从临时字符缓冲区解析出数值并清理 -------- */
-	private func fromTmp(): Float32 {
-		let str = String(tmp)
-		let f = Float32.parse(str)
-		tmp.clear()
-		return f  }
-
-	/* ---------------- 序列化 ---------------- 
-	 * TODO(qing-20260502): 我需要先解析对其动作，然后再序列化吗？  */
-	public func serialize(): String {
-
-		/* -------- 字符串构造器 -------- */
-		let sb = StringBuilder()
-
-		/* -------- 序列化命名行 -------- */
-		if (!nam.isEmpty()) {
-			sb.append("~")
-			for (i in 0..nam.size){
-				sb.append(nam[i])
-				let c = if (i == nam.size-1) {
-					 "\n"  }
-				else { "\t\t" }
-				sb.append(c)  }
-		}
-
-		/* -------- 序列化特殊行 -------- */
-		for (line in bot) {
-			sb.append("!")
-			for (i in 0..line.size) {
-				sb.append(line[i])
-				let c = if (i == line.size-1) {
-					 "\n"  }
-				else { "\t" }
-				sb.append(c)  }
-		}
-
-		/* -------- 序列化普通行 -------- */
-		for (line in act) {
-			for (i in 0..line.size){
-				sb.append(line[i])
-				let c = if (i == line.size-1) {
-					"\n"
-				} else { "\t" }	
-				sb.append(c)
-			}
-		}
-
-		/* 取字符串 */
-		return sb.toString()
-	}
-
-	/* -------- 取动作的长度 -------- */
-	public mut prop size: Int64 { /* 类属性访问器 */
-		get() { act.size }
-		set(v) {}  }
-
-	/* ---- 获取一行原生的动作脚本 ---- */
-	public func which(idx: Int64) {
-		return act[idx] }
-
-	/*  -------- 取一行动作脚本 --------
-	 *  qing(20260430) TODO: 返回Map<String, Act> 对应名字  */
-	public operator func [](idx: Int64) {
-		let a = act[idx]
-		let map = HashMap<String, Act>()
-		for (j in 0..a.size) {
-			let nm = nam[j] // name
-			let typ = ActType.parse(nm)
-			let act = Act(typ,	/* 生成动作 */
-				value: _sync(j, a[j]), duration: 0.0f32,
-				skip: false)
-			map.add(nm, act) }
-
-		return map
-	}
-
-	/* -------- 根据配置对齐原始数据 -------- */
-	private func _sync(j: Int64, target: Float32): Float32 {
-
-		/* 抽象成方法 */
-		let ma = abs(bot[0][j])
-		let mi = abs(bot[1][j])
-		let rf = bot[0][j] < 0.0f32
-		let dx = if (bot.size >= 3) {
-			bot[2][j]
-		} else { 0.0f32 }
-
-		var t = target
-		t = if (ma < t) {ma} else {t}
-		t = if (mi > t) {mi} else {t}
-		t = if (!rf) {t} else {180.0f32 - t}
-		t = t + dx  /* plus offset */
-
-		return t
-	}
-}
+//class ActsParser {
+//
+//	private var input: StringReader<InputStream>
+//	public init(input: StringReader<InputStream>) {
+//		this.input = input  }
+//
+//	/* -------- 切换目标 -------- */
+//	public func target(input: StringReader<InputStream>) {
+//		this.input = input  }
+//
+//	/* -------- 解析器 - 循环不变式 --------
+//	 * 初始化： ss是一个动作脚本的输入流
+//	 * 保持： ss是动作脚本剩余部分的输入流
+//	 * 终止： 当输入流为空时，循环终止  */
+//	public func parse(): Option<HashMap<String, Act>> {
+//		var count = 1i64 	/*  从第一行开始  */
+//		var so = input.read()
+//		while (match(so) {
+//			case Some(s) => true
+//			case None => false
+//		}) {
+//			try {
+//				let s = so.getOrThrow()
+//				print(s)
+//				let l = act.size
+//				count = next(s, count)
+//				let n = act.size
+//				if (n == l + 1) {
+//					return this[l] }
+//				so  = input.read()
+//			}
+//			catch (exp: BufOverTheLine) { throw exp }
+//			//catch (exp: IllegalArgumentException) { throw IllegalArgumentException("Parse failed at line ${count}") } 
+//			//catch (exp: Exception) { throw UnknowExcept(count) } /* FIXME: 还是暴露出原来的错误位置来更好？ */
+//		}
+//
+//		return Option<HashMap<String, Act>>.None
+//	}
+//	private var nl: Bool = true	/* new line */
+//	private var sl: Bool = false	/* special */
+//	private var sl_n: Bool = false 	/* special (name) */
+//	private var cm: Bool = false	/* comment */
+//	private var tmp = ArrayList<Rune>()	/* rune buf */
+//	private var grp = ArrayList<Float32>()	/* one line */
+//	private var nam = ArrayList<String>()	/* 列命名 */
+//	private var bot = ArrayList<ArrayList<Float32>>()	/* bot settings */
+//	private var act = ArrayList<ArrayList<Float32>>()	/* acts list */
+//	private static const TMP_LEN = 16	/* size of tmp */
+//	private func next(c: Rune, count: Int64): Int64 {
+//		var cc: Int64  = count
+//		/* ------------ COMMENTS ------------ */
+//		if (!cm && c == r'#') { cm = true }	/* 注释开始时 */
+//		else if (cm && c == r'\n') {		/* 注释结束时 */
+//			nl = true
+//			sl = false
+//			cm = false
+//			cc += 1
+//		}
+//		else if (cm && c != r'\n') { ; }	/* 注释进行时
+//							 * FIXME: EOF情况  */
+//		//------------ new line ------------
+//		else if (nl && (c == r' ' || c == r'\t' || c == r'\r')) { ; }	/*  新行空字符，维持现状 */
+//		else if (nl && c == r'\n') {	/* 新行空行 */
+//			cc += 1
+//		}
+//		else if (nl && c == r'!') {		/* 新行特殊行 */
+//			nl = false
+//			sl = true
+//		}
+//		else if (nl && c == r'~') {		/* 新行特殊行2留空  */
+//			nl = false
+//			sl_n =true
+//		}
+//		else if (nl && c != r'~' && c != r'!') {	/* 新行且不为特殊行、制表符和空格 */
+//			nl = false
+//			sl = false
+//			tmp.add(c)			/* to buf */
+//			if (tmp.size > TMP_LEN) {	/* to long */
+//				throw BufOverTheLine(count)  }
+//		}
+//		
+//		/* ------------- not nl ------------- */
+//		else if (!nl && sl_n && !sl && (c == r' ' || c == r'\t' || c == r"\n")) {	/* 添加命名项 */
+//			if (!tmp.isEmpty()) {
+//				let n = String(tmp)
+//				nam.add(n)
+//				tmp.clear()  }
+//		}
+//		else if (!nl && !sl_n && sl && (c == r' ' || c == r'\t' || c == r'\n')) {	/* 添加特殊项 */
+//			if (!tmp.isEmpty() && String(tmp) == "-") {
+//				grp.add(0.0f32)		/* 当前行略过（0） */
+//				tmp.clear()  }
+//
+//			else if (!tmp.isEmpty()) {
+//				let f = fromTmp()	/* 结算当前列 */
+//				grp.add(f)  }
+//		}
+//		else if (!nl && !sl_n && !sl && (c == r" " || c == r'\t' || c == r'\n')) {	/* 添加动作项 */
+//
+//			if (!tmp.isEmpty() && String(tmp) == "-" && act.size == 0) {	/* 首行动作被跳过 */
+//				grp.add(0.0f32)
+//				tmp.clear()  }
+//
+//			else if (!tmp.isEmpty() && String(tmp) == "-" && act.size > 0) {	/* 非首行 */
+//				let f = act[act.size-1][grp.size]
+//				grp.add(f)
+//				tmp.clear()  }
+//
+//			else if (!tmp.isEmpty()) {
+//				let f = fromTmp()	/* 结算当前列 */
+//				grp.add(f)  }
+//
+//		}
+//		else if (!nl && sl_n && !sl && c == r';') {	/* 命名行结束 */
+//			if (!tmp.isEmpty()) {
+//				let n =String(tmp)
+//				nam.add(n)
+//				tmp.clear()  }
+//			nl = true
+//			sl_n = false
+//		}
+//		else if (!nl && !sl_n && sl && c == r';') { /* 特殊行结束 */
+//			if (!tmp.isEmpty() && String(tmp) == "-") {
+//				grp.add(0.0f32)		/* 当前行略过（0） */
+//				tmp.clear()  }
+//
+//			else if (!tmp.isEmpty()) {
+//				let f = fromTmp()	/* 结算当前列 */
+//				grp.add(f)  }
+//
+//			if (!grp.isEmpty()) {
+//				bot.add(grp.clone())
+//				grp.clear()  }
+//
+//			nl = true
+//			sl = false
+//		}
+//		else if (!nl && !sl_n && !sl && c == r';') {	/* 普通行结束 */
+//
+//			if (!tmp.isEmpty() && String(tmp) == "-" && act.size == 0) {  /* 首行动作被跳过 */
+//				grp.add(0.0f32)
+//				tmp.clear()  } 
+//
+//			else if (!tmp.isEmpty() && String(tmp) == "-" && act.size > 0) {	/* 非首行 */
+//				let f = act[act.size-1][grp.size]
+//				grp.add(f)
+//				tmp.clear() }
+//
+//			else if (!tmp.isEmpty()) {
+//				let f = fromTmp()	/* 结算当前列 */
+//				grp.add(f)  }
+//
+//			if (!grp.isEmpty()) {		/* 普通行结算 */
+//				act.add(grp.clone())
+//				grp.clear()  }
+//
+//			nl = true
+//
+//		}
+//
+//		else if (!nl) {	/* 非空格、非制表符、非分号
+//					FIXME: 且为数字  */
+//			tmp.add(c)			/*  to buf  */
+//			if (tmp.size > TMP_LEN) {	/*  to long */
+//				throw BufOverTheLine(count)  }
+//		}
+//
+//		/*  返回当前行号  */
+//		return cc
+//	}
+//
+//	/* -------- 从临时字符缓冲区解析出数值并清理 -------- */
+//	private func fromTmp(): Float32 {
+//		let str = String(tmp)
+//		let f = Float32.parse(str)
+//		tmp.clear()
+//		return f  }
+//
+//	/* ---------------- 序列化 ---------------- 
+//	 * TODO(qing-20260502): 我需要先解析对其动作，然后再序列化吗？  */
+//	public func serialize(): String {
+//
+//		/* -------- 字符串构造器 -------- */
+//		let sb = StringBuilder()
+//
+//		/* -------- 序列化命名行 -------- */
+//		if (!nam.isEmpty()) {
+//			sb.append("~")
+//			for (i in 0..nam.size){
+//				sb.append(nam[i])
+//				let c = if (i == nam.size-1) {
+//					 "\n"  }
+//				else { "\t\t" }
+//				sb.append(c)  }
+//		}
+//
+//		/* -------- 序列化特殊行 -------- */
+//		for (line in bot) {
+//			sb.append("!")
+//			for (i in 0..line.size) {
+//				sb.append(line[i])
+//				let c = if (i == line.size-1) {
+//					 "\n"  }
+//				else { "\t" }
+//				sb.append(c)  }
+//		}
+//
+//		/* -------- 序列化普通行 -------- */
+//		for (line in act) {
+//			for (i in 0..line.size){
+//				sb.append(line[i])
+//				let c = if (i == line.size-1) {
+//					"\n"
+//				} else { "\t" }	
+//				sb.append(c)
+//			}
+//		}
+//
+//		/* 取字符串 */
+//		return sb.toString()
+//	}
+//
+//	/* -------- 取动作的长度 -------- */
+//	public mut prop size: Int64 { /* 类属性访问器 */
+//		get() { act.size }
+//		set(v) {}  }
+//
+//	/* ---- 获取一行原生的动作脚本 ---- */
+//	public func which(idx: Int64) {
+//		return act[idx] }
+//
+//	/*  -------- 取一行动作脚本 --------
+//	 *  qing(20260430) TODO: 返回Map<String, Act> 对应名字  */
+//	public operator func [](idx: Int64) {
+//		let a = act[idx]
+//		let map = HashMap<String, Act>()
+//		for (j in 0..a.size) {
+//			let nm = nam[j] // name
+//			let typ = ActType.parse(nm)
+//			let act = Act(typ,	/* 生成动作 */
+//				value: _sync(j, a[j]), duration: 0.0f32,
+//				skip: false)
+//			map.add(nm, act) }
+//
+//		return map
+//	}
+//
+//	/* -------- 根据配置对齐原始数据 -------- */
+//	private func _sync(j: Int64, target: Float32): Float32 {
+//
+//		/* 抽象成方法 */
+//		let ma = abs(bot[0][j])
+//		let mi = abs(bot[1][j])
+//		let rf = bot[0][j] < 0.0f32
+//		let dx = if (bot.size >= 3) {
+//			bot[2][j]
+//		} else { 0.0f32 }
+//
+//		var t = target
+//		t = if (ma < t) {ma} else {t}
+//		t = if (mi > t) {mi} else {t}
+//		t = if (!rf) {t} else {180.0f32 - t}
+//		t = t + dx  /* plus offset */
+//
+//		return t
+//	}
+//}
 
 /* --------------------------------------------------------- */
 /* --------------------------------------------------------- */

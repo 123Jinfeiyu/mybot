@@ -191,17 +191,17 @@ func run_test(key: String) {
 
 
 	/* -------------测试解析矩阵------------ */
-	else if (key == "matrix") {
-		let file = File("ss/test.mt", OpenMode.Read)
-		let robot = RobotStruct(file)
-		try {
-			robot.active()
-			robot.run()
-		}
-		finally {
-			robot.deactive()
-		}
-	}
+	//else if (key == "matrix") {
+	//	let file = File("ss/test.mt", OpenMode.Read)
+	//	let robot = RobotStruct(file)
+	//	try {
+	//		robot.active()
+	//		robot.run()
+	//	}
+	//	finally {
+	//		robot.deactive()
+	//	}
+	//}
 
 	/* -------- 测试解析矩阵，并且输出 -------- */
 	else if (key == "matrix_o") {
