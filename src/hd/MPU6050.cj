@@ -6,6 +6,27 @@
  */
 
 package bot4cj.hd
+    
+const ADDR_0:           UInt8 = 0x68  /* 默认地址 */
+const ADDR_1:           UInt8 = 0x68  /* 地址2 */
+const PWR_MGMT_1:       UInt8 = 0x6B  /* 电源管理寄存器1 */
+const PWR_NOSLEEP:      UInt8 = 0x00  /* 电源管理 - 非睡眠模式 */
+const GYRO_CONF_REG:    UInt8 = 0x1B  /* 陀螺仪配置寄存器 */
+const GYRO_FS_500DPS:   UInt8 = 0x08  /* 陀螺仪量程 - 正负500度/秒 */
+const GYRO_REG_X_HIGH:  UInt8 = 0x43  /* x - 陀螺仪横轴 高字节 */
+const GYRO_REG_X_LOW:   UInt8 = 0x44
+const GYRO_REG_Y_HIGH:  UInt8 = 0x45  /* y */
+const GYRO_REG_Y_LOW:   UInt8 = 0x46
+const GYRO_REG_Z_HIGH:  UInt8 = 0x47  /* z */
+const GYRO_REG_Z_LOW:   UInt8 = 0x48
+const ACCEL_CONF_REG:   UInt8 = 0x1C  /* 加速度计配置寄存器 */
+const ACCEL_FS_8g:      UInt8 = 0x10  /* 加速度计量程 正负8g */
+const ACCEL_REG_X_HIGH: UInt8 = 0x3B
+const ACCEL_REG_X_LOW:  UInt8 = 0x3C
+const ACCEL_REG_Y_HIGH: UInt8 = 0x3D
+const ACCEL_REG_Y_LOW:  UInt8 = 0x3E
+const ACCEL_REG_Z_HIGH: UInt8 = 0x3F
+const ACCEL_REG_Z_LOW:  UInt8 = 0x40
 
 @C  /* -------- MPU6050传感器数据 -------- */
 public struct MPU6050_sensorData {
@@ -22,8 +43,46 @@ public struct MPU6050_sensorData {
 	}
 }
 
+
 @C
-func mpu6050_Daemon(fd: Int32) {
+func mpu6050_setup(i2c_fd: Int32, addr: UInt8) {
+	unsafe {
+		setI2cAddr(i2c_fd, addr);
+		writeI2cReg(i2c_fd, PWR_MGMT_1, PWR_NOSLEEP);		/* 退出睡眠 */
+		writeI2cReg(i2c_fd, GYRO_CONF_REG, GYRO_FS_500DPS);	/* ±500°/s */
+		writeI2cReg(i2c_fd, ACCEL_CONF_REG, ACCEL_FS_8g);	/*  ±8g */
+		sleep(Duration.millisecond * 100);			/* 等待稳定 */
+	}
+}
+
+@C
+/* -------- 读取 16 位传感器数据（带符号）--------
+ * FIXME: 是否能够正确处理符号位 */
+func read16BitReg(i2c_fd: Int32, high: UInt8, low: UInt8): Int16 {
+	unsafe {
+		let hh: Int16 = Int16(readI2cReg(i2c_fd, high))
+		let ll: Int16 = Int16(readI2cReg(i2c_fd, low))
+		return (hh << 8) | ll
+	}
+}
+
+@C
+func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
+		var data = MPU6050_sensorData()
+		unsafe {
+			setI2cAddr(i2c_fd, addr) 
+			data.accel_x = read16BitReg(i2c_fd, ACCEL_REG_X_HIGH, ACCEL_REG_X_LOW);
+			data.accel_y = read16BitReg(i2c_fd, ACCEL_REG_Y_HIGH, ACCEL_REG_Y_LOW);
+			data.accel_z = read16BitReg(i2c_fd, ACCEL_REG_Z_HIGH, ACCEL_REG_Z_LOW);
+			data.gyro_x  = read16BitReg(i2c_fd, GYRO_REG_X_HIGH, GYRO_REG_X_LOW);
+			data.gyro_y  = read16BitReg(i2c_fd, GYRO_REG_Y_HIGH, GYRO_REG_Y_LOW);
+			data.gyro_z  = read16BitReg(i2c_fd, GYRO_REG_Z_HIGH, GYRO_REG_Z_LOW);
+		}
+		return data 
+}
+
+@C
+func mpu6050_Daemon(fd: Int32, addr: UInt8) {
 	
 }
 
@@ -34,81 +93,24 @@ public class MPU6050 {
 	/* -------- 主初始化器 --------
 	 * FIXME(20260517-qing): 由于gc的原因，我们可能会手动构造RAII，
 	 * - 将一部分初始化移动到别的函数，但是为了向后兼容，这里暂时保留了它们  */
-	public init(i2c_setAddr!: (UInt8) -> Unit,		/* 设置通信地址 - 回调函数 */
-			i2c_writeReg!: (UInt8, UInt8) -> Unit,	/* 写i2c地址 - 回调函数 */
-			i2c_readReg!: (UInt8) -> Int8,		/* 读i2c地址 - 回调函数 */
-			addr!: UInt8)  {
-		this.i2c_setAddr = i2c_setAddr
-		this.i2c_writeReg = i2c_writeReg
-		this.i2c_readReg = i2c_readReg
+	public init(i2c_fd: Int32, addr!: UInt8)  {
+		this.i2c_fd = i2c_fd
 		this.addr = addr
-		i2c_setAddr(addr);
-		/* -------- */
-		i2c_writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
-		i2c_writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
-		i2c_writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
-		sleep(Duration.millisecond * 100);            /* 等待稳定 */
-		/* -------- */
 	}
 
 	/* -------- 初始化该模块 -------- */
 	public func setup() {
-		i2c_setAddr(addr);
-		i2c_writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
-		i2c_writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
-		i2c_writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
-		sleep(Duration.millisecond * 100);            /* 等待稳定 */
+		unsafe { mpu6050_setup(i2c_fd, addr) }
 	}
     
-    
-	public static const ADDR_0:           UInt8 = 0x68  /* 默认地址 */
-	public static const ADDR_1:           UInt8 = 0x68  /* 地址2 */
-	private static const PWR_MGMT_1:       UInt8 = 0x6B  /* 电源管理寄存器1 */
-	private static const PWR_NOSLEEP:      UInt8 = 0x00  /* 电源管理 - 非睡眠模式 */
-	private static const GYRO_CONF_REG:    UInt8 = 0x1B  /* 陀螺仪配置寄存器 */
-	private static const GYRO_FS_500DPS:   UInt8 = 0x08  /* 陀螺仪量程 - 正负500度/秒 */
-	private static const GYRO_REG_X_HIGH:  UInt8 = 0x43  /* x - 陀螺仪横轴 高字节 */
-	private static const GYRO_REG_X_LOW:   UInt8 = 0x44
-	private static const GYRO_REG_Y_HIGH:  UInt8 = 0x45  /* y */
-	private static const GYRO_REG_Y_LOW:   UInt8 = 0x46
-	private static const GYRO_REG_Z_HIGH:  UInt8 = 0x47  /* z */
-	private static const GYRO_REG_Z_LOW:   UInt8 = 0x48
-	private static const ACCEL_CONF_REG:   UInt8 = 0x1C  /* 加速度计配置寄存器 */
-	private static const ACCEL_FS_8g:      UInt8 = 0x10  /* 加速度计量程 正负8g */
-	private static const ACCEL_REG_X_HIGH: UInt8 = 0x3B
-	private static const ACCEL_REG_X_LOW:  UInt8 = 0x3C
-	private static const ACCEL_REG_Y_HIGH: UInt8 = 0x3D
-	private static const ACCEL_REG_Y_LOW:  UInt8 = 0x3E
-	private static const ACCEL_REG_Z_HIGH: UInt8 = 0x3F
-	private static const ACCEL_REG_Z_LOW:  UInt8 = 0x40
 	/*----------------*/
-	//private var i2c: Option<I2C> = None
-	private var i2c_setAddr: (UInt8) -> Unit
-	private var i2c_readReg: (UInt8) -> Int8
-	private var i2c_writeReg:(UInt8, UInt8) -> Unit
+	private var i2c_fd: Int32
 	private var addr: UInt8
 
-	/* -------- 读取 16 位传感器数据（带符号）--------
-	 * FIXME: 是否能够正确处理符号位 */
-	private func read16BitReg(high: UInt8, low: UInt8): Int16 {
-		//let i2 = i2c.getOrThrow()
-		let hh: Int16 = Int16(i2c_readReg(high))
-		let ll: Int16 = Int16(i2c_readReg(low))
-		return (hh << 8) | ll
-	}
 
 	/* -------- 获取原始MPU6050传感器数据 -------- */
 	public func readSensor(): MPU6050_sensorData {
-		var data = MPU6050_sensorData()
-		//let i2 = i2c.getOrThrow()
-		i2c_setAddr(addr);
-		data.accel_x = read16BitReg(ACCEL_REG_X_HIGH, ACCEL_REG_X_LOW);
-		data.accel_y = read16BitReg(ACCEL_REG_Y_HIGH, ACCEL_REG_Y_LOW);
-		data.accel_z = read16BitReg(ACCEL_REG_Z_HIGH, ACCEL_REG_Z_LOW);
-		data.gyro_x  = read16BitReg(GYRO_REG_X_HIGH, GYRO_REG_X_LOW);
-		data.gyro_y  = read16BitReg(GYRO_REG_Y_HIGH, GYRO_REG_Y_LOW);
-		data.gyro_z  = read16BitReg(GYRO_REG_Z_HIGH, GYRO_REG_Z_LOW);
-		return data
+		return unsafe { mpu6050_readSensor(i2c_fd, addr) }
 	}
 }
 
