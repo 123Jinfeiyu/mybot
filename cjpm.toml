@@ -6,7 +6,7 @@
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-l c -l asound -L . -l snd4cj" # -lcnn4cj # Linux
+  compile-option = "-l c" # -lcnn4cj # Linux
   #compile-option = "-L . -l fft4cj -l mt4cj -l i2c4cj -l snd4cj"  # windows
   override-compile-option = ""
   link-option = ""
@@ -19,6 +19,6 @@
 [target.aarch64-unknown-linux-gnu]
   [target.aarch64-unknown-linux-gnu.bin-dependencies]
     path-option = ["${CANGJIE_STDX_PATH}/linux_aarch64_cjnative/static/stdx"]
-[target.x86_64-w64-mingw32]
-  [target.x86_64-w64-mingw32.bin-dependencies]
-    path-option = ["${CANGJIE_STDX_PATH}\\windows_x86_64_cjnative\\dynamic\\stdx"]
+#[target.x86_64-w64-mingw32]
+#  [target.x86_64-w64-mingw32.bin-dependencies]
+#    path-option = ["${CANGJIE_STDX_PATH}\\windows_x86_64_cjnative\\dynamic\\stdx"]
