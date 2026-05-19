@@ -499,7 +499,7 @@ class RobotStruct {
 		for (i in 1..ActionDefs.size) {
 			let set =JsonObject()		/* 每个硬件变量的参数集合 */
 			for (j in 0..ActionDefs.col) {
-				parse_action_matrixObject(set, ActionDefs)
+				parse_action_matrixObject(set, ActionDefs, i, j)
 			}
 
 			/* -------- 执行一行 -------- */
@@ -515,7 +515,8 @@ class RobotStruct {
 	}
 
 	/* -------- 解析@Action矩阵对象 -------- */
-	private func parse_action_matrixObject(set: JsonObject, ActionDefs: MatrixObject) {
+	private func parse_action_matrixObject(set: JsonObject, ActionDefs: MatrixObject,
+			i: Int64, j: Int64) {
 		let name_HV = ActionDefs[0, j]	/* 获取硬件变量名 FIXME:  该名称不得使用占位符 且不重复 */
 		let arr = name_HV.split(".")
 		if (arr.size != 2) {
