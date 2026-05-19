@@ -6,6 +6,8 @@
  */
 
 package bot4cj.hd
+import std.time.*
+import bot4cj.th.*
     
 const ADDR_0:           UInt8 = 0x68  /* 默认地址 */
 const ADDR_1:           UInt8 = 0x68  /* 地址2 */
@@ -28,7 +30,8 @@ const ACCEL_REG_Y_LOW:  UInt8 = 0x3E
 const ACCEL_REG_Z_HIGH: UInt8 = 0x3F
 const ACCEL_REG_Z_LOW:  UInt8 = 0x40
 
-@C  /* -------- MPU6050传感器数据 -------- */
+/* -------- MPU6050传感器数据 -------- */
+@C
 public struct MPU6050_sensorData {
 	public var accel_x: Int16 = 0 /* 加速度计 */
 	public var accel_y: Int16 = 0
@@ -44,6 +47,7 @@ public struct MPU6050_sensorData {
 }
 
 
+/* -------- 设置MPU6050 -------- */
 @C
 func mpu6050_setup(i2c_fd: Int32, addr: UInt8) {
 	unsafe {
@@ -66,6 +70,7 @@ func read16BitReg(i2c_fd: Int32, high: UInt8, low: UInt8): Int16 {
 	}
 }
 
+/* -------- 读取传感器数据 -------- */
 @C
 func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 		var data = MPU6050_sensorData()
@@ -81,10 +86,21 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 		return data 
 }
 
-
+/* -------- mpu6050主线程 --------*/
 @C
-func mpu6050_Daemon(fd: Int32, addr: UInt8) {
-	
+func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
+	while(true) {
+		println("I am running.")
+		sleep(Duration.second * 1)
+	}
+
+	return CPointer<Unit>()
+}
+
+/* -------- mpu6050启动守护 -------- */
+@C
+public func mpu6050_DaemonStart(fd: Int32, addr: UInt8): UInt64 {
+	return Pth_init(mpu6050_main, CPointer<Unit>())
 }
 
 /* -------- MPU6050陀螺仪、加速度计 --------

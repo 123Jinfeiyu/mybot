@@ -2,6 +2,7 @@ package bot4cj
 import std.io.*
 import std.fs.*
 import std.env.*
+import std.time.*
 import std.argopt.*
 import std.convert.*
 import std.collection.*
@@ -182,6 +183,11 @@ func run_test(key: String) {
 	//		sleep(Duration.millisecond * 10)
 	//	}
 	//}
+
+	else if (key == "mpu6050_bind") {
+		unsafe { mpu6050_DaemonStart(0i32, 40u8) }
+		while (true) { sleep(Duration.second * 1) }
+	}
 
 	/* --------------发声测试--------------- */
 	else if (key == "sound") {
