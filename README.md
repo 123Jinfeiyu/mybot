@@ -3,18 +3,7 @@
 基于仓颉和 Linux I2C 接口的硬件机器人库
 
 ## 依赖库
-```
-# debian
-apt update
-apt install libi2c-dev
-apt install cimg-dev   #  新版用于cnn，开发中
-apt install libasound2-dev # 新版用于扬声器
-
-
-# or
-dnf install i2c-tools-devel
-dnf install alsa-lib-devel
-```
+libc
 
 ## 项目介绍
 
@@ -22,7 +11,6 @@ dnf install alsa-lib-devel
 
 编译方法：
 ```bash
-make
 cjpm build
 ```
 
