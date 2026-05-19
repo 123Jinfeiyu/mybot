@@ -95,12 +95,24 @@ main(args: Array<String>): Int64 {
         	run_serve(nns, savepath)
 	}
 
-	/* -------- 缺省行为：从标准输入获取动作脚本 -------- */
+	/* -------- 缺省行为：从标准输入获取动作脚本 --------
+	 * TODO(20260519-qing): 改为从文件流中获取动作脚本，这样能进行脚本引入  */
 	else {
 		let consoleReader = getStdIn()
-		run_action_drl(consoleReader, nns)
-		if (options.contains("o")) {
-			save_nns(nns, options['o'])  }
+		let robot = RobotStruct(consoleReader)
+		//file.close()
+		try {
+			robot.active()
+			robot.run()
+		}
+		finally {
+			robot.deactive()
+		}
+
+//		let consoleReader = getStdIn()
+//		run_action_drl(consoleReader, nns)
+//		if (options.contains("o")) {
+//			save_nns(nns, options['o'])  }
 	}
 
 
@@ -155,21 +167,21 @@ func run_test(key: String) {
 
 	/* -------------对单个mpu6050进行持续测试--------------
 	 * 这里主要是用于测试该硬件是否可用 */
-	else if (key == "mpu6050") {
+	//else if (key == "mpu6050") {
 
-		let i2c = I2C(I2C_PATH)
-		let mpu6050 = MPU6050(i2c, MPU6050.ADDR_0)
-		while (true) {
-			let data = mpu6050.readSensor()
-			print("accel_x: ${data.accel_x}\t")
-			print("accel_y: ${data.accel_y}\t")
-			print("accel_z: ${data.accel_z}\t")
-			print("gyro_x: ${data.gyro_x}\t")
-			print("gyro_y: ${data.gyro_y}\t")
-			println("gyro_z: ${data.gyro_z}")
-			sleep(Duration.millisecond * 10)
-		}
-	}
+	//	let i2c = I2C(I2C_PATH)
+	//	let mpu6050 = MPU6050(i2c, MPU6050.ADDR_0)
+	//	while (true) {
+	//		let data = mpu6050.readSensor()
+	//		print("accel_x: ${data.accel_x}\t")
+	//		print("accel_y: ${data.accel_y}\t")
+	//		print("accel_z: ${data.accel_z}\t")
+	//		print("gyro_x: ${data.gyro_x}\t")
+	//		print("gyro_y: ${data.gyro_y}\t")
+	//		println("gyro_z: ${data.gyro_z}")
+	//		sleep(Duration.millisecond * 10)
+	//	}
+	//}
 
 	/* --------------发声测试--------------- */
 	else if (key == "sound") {
@@ -182,7 +194,6 @@ func run_test(key: String) {
 	else if (key == "matrix") {
 		let file = File("ss/test.mt", OpenMode.Read)
 		let robot = RobotStruct(file)
-		file.close()
 		try {
 			robot.active()
 			robot.run()
@@ -238,8 +249,17 @@ func run_serve(nns: ArrayList<Nn>, save_path: String) {
 			context.responseBuilder.status(400)
 		}
 		/* ---- 动作 ---- */
-		run_action_drl(context.request.body, nns)
-		save_nns(nns, save_path)
+//		run_action_drl(context.request.body, nns)
+//		save_nns(nns, save_path)
+		let robot = RobotStruct(context.request.body)
+//		file.close()
+		try {
+			robot.active()
+			robot.run()
+		}
+		finally {
+			robot.deactive()
+		}
 		/* ---- 响应 ---- */
 		let headers = HttpHeaders()
 		headers.add('Content-Type', 'text/html; charset=utf-8;')

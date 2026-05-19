@@ -563,131 +563,131 @@ class RobotStruct {
  * TODO(qing-20260501): 让机器人和神经网络自检（自行对比是否准确）
  *
  * TODO(qing-20260502): 硬件变量、软（数值）变量，使用箭头加大括号？  */
-func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
-	let sr = StringReader<InputStream>(input)
-	let parser = ActsParser(sr)
-	let i2c = I2C(I2C_PATH)
-	let pca9685 = PCA9685(i2c_setAddr: {addr => i2c.setAddr(addr)},
-		i2c_readReg: {reg => i2c.readRegFlag(reg)},
-		i2c_writeReg:{reg, val => i2c.writeReg(reg, val)})
-	let mpu6050s = [
-		MPU6050(i2c, MPU6050.ADDR_1),
-		MPU6050(i2c, MPU6050.ADDR_0)
-	]
-	var dataSet = ArrayList<MPU6050_sensorData> ()
-	let xSet = ArrayList<Matrix>() /* 输入 */
-	let tSet = ArrayList<Matrix>() /* 教师 */
-	let rSet = ArrayList<Float32>() /* 奖励 */
-	while(true) {
+//func run_action_drl(input: InputStream, nns: ArrayList<Nn>) {
+//	let sr = StringReader<InputStream>(input)
+//	let parser = ActsParser(sr)
+//	let i2c = I2C(I2C_PATH)
+//	let pca9685 = PCA9685(i2c_setAddr: {addr => i2c.setAddr(addr)},
+//		i2c_readReg: {reg => i2c.readRegFlag(reg)},
+//		i2c_writeReg:{reg, val => i2c.writeReg(reg, val)})
+//	let mpu6050s = [
+//		MPU6050(i2c, MPU6050.ADDR_1),
+//		MPU6050(i2c, MPU6050.ADDR_0)
+//	]
+//	var dataSet = ArrayList<MPU6050_sensorData> ()
+//	let xSet = ArrayList<Matrix>() /* 输入 */
+//	let tSet = ArrayList<Matrix>() /* 教师 */
+//	let rSet = ArrayList<Float32>() /* 奖励 */
+//	while(true) {
 		/* 解析一行，没了就退出循环 */
-		match(parser.parse()) {
-			case Some(_) => true
-			case None => break
-		}
+//		match(parser.parse()) {
+//			case Some(_) => true
+//			case None => break
+//		}
 
-		let x = Matrix(1, 41) /* 4个3轴加速度和角速度，16个关节，1个时延 */
-		unsafe {
+//		let x = Matrix(1, 41) /* 4个3轴加速度和角速度，16个关节，1个时延 */
+//		unsafe {
 
-			let r = parser.which(parser.size-1) /* 取尾部 */
+//			let r = parser.which(parser.size-1) /* 取尾部 */
 
-			for (j in 0..r.size) {	/* 整理出输入 */
-				x.set(0u64, UInt64(j), Float32(r[j]) / 180.0f32)
-			}
+//			for (j in 0..r.size) {	/* 整理出输入 */
+//				x.set(0u64, UInt64(j), Float32(r[j]) / 180.0f32)
+//			}
 
-			for (j in 0..dataSet.size) {	/* 陀螺仪部分 */
-				let idx = UInt64(r.size) + UInt64(j) * 6u64
-				x.set(0u64, idx + 0u64, Float32(dataSet[j].accel_x) / 65535.0f32)
-				x.set(0u64, idx + 1u64, Float32(dataSet[j].accel_y) / 65535.0f32)
-				x.set(0u64, idx + 2u64, Float32(dataSet[j].accel_x) / 65535.0f32)
-				x.set(0u64, idx + 3u64, Float32(dataSet[j].gyro_x) / 65535.0f32)
-				x.set(0u64, idx + 4u64, Float32(dataSet[j].gyro_y) / 65535.0f32)
-				x.set(0u64, idx + 5u64, Float32(dataSet[j].gyro_z)  / 65535.0f32)
-			}
+//			for (j in 0..dataSet.size) {	/* 陀螺仪部分 */
+//				let idx = UInt64(r.size) + UInt64(j) * 6u64
+//				x.set(0u64, idx + 0u64, Float32(dataSet[j].accel_x) / 65535.0f32)
+//				x.set(0u64, idx + 1u64, Float32(dataSet[j].accel_y) / 65535.0f32)
+//				x.set(0u64, idx + 2u64, Float32(dataSet[j].accel_x) / 65535.0f32)
+//				x.set(0u64, idx + 3u64, Float32(dataSet[j].gyro_x) / 65535.0f32)
+//				x.set(0u64, idx + 4u64, Float32(dataSet[j].gyro_y) / 65535.0f32)
+//				x.set(0u64, idx + 5u64, Float32(dataSet[j].gyro_z)  / 65535.0f32)
+//			}
 
 			/* -------- 推理 -------- */
-			let y = forward(nns, x)
+//			let y = forward(nns, x)
 
 			/* -------- 微调 -------- */
-			let random = Random(UInt64(DateTime.now().nanosecond))
-			for (j in 0..y.getCol()-1) {
-				let a = y.get(0, j)
-				let fix = (a - 0.5f32 + (random.nextFloat32() - 0.5f32) * 0.2f32)
-				r[Int64(j)] += fix * 180.0f32 * 0.4
-				y.set(0, j, fix) // 回写
-			}
+//			let random = Random(UInt64(DateTime.now().nanosecond))
+//			for (j in 0..y.getCol()-1) {
+//				let a = y.get(0, j)
+//				let fix = (a - 0.5f32 + (random.nextFloat32() - 0.5f32) * 0.2f32)
+//				r[Int64(j)] += fix * 180.0f32 * 0.4
+//				y.set(0, j, fix) // 回写
+//			}
 
 			/* -------- 记录 -------- */
-			xSet.add(x)
-			tSet.add(y)
-			rSet.add(0.0f32)
+//			xSet.add(x)
+//			tSet.add(y)
+//			rSet.add(0.0f32)
 
 			/* -------- 解析 -------- */
-			let rp = parser[parser.size - 1]
-			for (key in rp.keys()) {
-				print("${key}\t")
-			}
-			println()
+//			let rp = parser[parser.size - 1]
+//			for (key in rp.keys()) {
+//				print("${key}\t")
+//			}
+//			println()
 
 			/* -------- 做动作 -------- */
-			for (jj in 1..=10) { /* fixme: 不写死 */
-				let k = "s${jj}"
-				let v = rp[k]
-				let id = UInt8(jj) - 1u8
-				let val = Float32(v.getVal().getOrThrow())
-				pca9685.setAngle(id, val)
-			}
+//			for (jj in 1..=10) { /* fixme: 不写死 */
+//				let k = "s${jj}"
+//				let v = rp[k]
+//				let id = UInt8(jj) - 1u8
+//				let val = Float32(v.getVal().getOrThrow())
+//				pca9685.setAngle(id, val)
+//			}
 
 
-			println()
-			sleep(Duration.millisecond*1)
+//			println()
+//			sleep(Duration.millisecond*1)
 
 			/* -------- 读mpu6050 -------- */
-			dataSet = ArrayList<MPU6050_sensorData>()
-			for (mpu6050 in mpu6050s) {
-				dataSet.add(mpu6050.readSensor())
-			}
+//			dataSet = ArrayList<MPU6050_sensorData>()
+//			for (mpu6050 in mpu6050s) {
+//				dataSet.add(mpu6050.readSensor())
+//			}
 
 			/* -------- 产生奖励 --------
 			 * 前进奖励策略  */
-			for (j in 0..dataSet.size) {
-				if (xSet.size == 1) { continue }
-				let pre = xSet[xSet.size-2].get(0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64)
-				let aa = Float32(dataSet[j].accel_x)
-				let bb = pre * 65535.0f32
-				var rewards = if (j%2==0) { bb - aa } else { aa - bb }
-				rewards /= 10000.0f32
-				println("rewards:\t${rewards}")
-				for (k in rSet.size-1..0:-1) {
+//			for (j in 0..dataSet.size) {
+//				if (xSet.size == 1) { continue }
+//				let pre = xSet[xSet.size-2].get(0, UInt64(r.size) + UInt64(j) * 6u64 + 0u64)
+//				let aa = Float32(dataSet[j].accel_x)
+//				let bb = pre * 65535.0f32
+//				var rewards = if (j%2==0) { bb - aa } else { aa - bb }
+//				rewards /= 10000.0f32
+//				println("rewards:\t${rewards}")
+//				for (k in rSet.size-1..0:-1) {
 					//xSet[k].print()
-					rSet[k] += rewards
-					rewards *= 0.9
-				}
-			}
+//					rSet[k] += rewards
+//					rewards *= 0.9
+//				}
+//			}
 
 			/* -------- 时延 -------- */
-			let freq = rp['spk'].getVal().getOrThrow()
-			let tt = rp['delay'].getVal().getOrThrow()
-			if (freq == 0.0f32) {
-				sleep(Duration.millisecond * Int64(tt * 1000.0f32) / 1000)
-			}
-			else {
-				let spk = Spk(channels: 2i32, sample_rate: 48000i32)
-				spk.play(freq, 0.6, Int32(tt))	/* 以发声代替延时 */
-			}
-		}
+//			let freq = rp['spk'].getVal().getOrThrow()
+//			let tt = rp['delay'].getVal().getOrThrow()
+//			if (freq == 0.0f32) {
+//				sleep(Duration.millisecond * Int64(tt * 1000.0f32) / 1000)
+//			}
+//			else {
+//				let spk = Spk(channels: 2i32, sample_rate: 48000i32)
+//				spk.play(freq, 0.6, Int32(tt))	/* 以发声代替延时 */
+//			}
+//		}
 
-	}
+//	}
 
 	/* -------- 打印损失 -------- */
-	for (i in 0..xSet.size) {
-		println("----------------------------------")
-		println(rSet[i])
-		let loss = train(nns, xSet[i], tSet[i], rSet[i])
-		println("loss:\t${loss}")
-	}
+//	for (i in 0..xSet.size) {
+//		println("----------------------------------")
+//		println(rSet[i])
+//		let loss = train(nns, xSet[i], tSet[i], rSet[i])
+//		println("loss:\t${loss}")
+//	}
 
 	/* -------- 选择性储存 -------- */
-	if (let Some(P) <- NNS_OUT) {
-		save_nns(nns, P)
-	}
-}
+//	if (let Some(P) <- NNS_OUT) {
+//		save_nns(nns, P)
+//	}
+//}

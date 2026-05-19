@@ -29,25 +29,31 @@ public class MPU6050 {
 	/* -------- 主初始化器 --------
 	 * FIXME(20260517-qing): 由于gc的原因，我们可能会手动构造RAII，
 	 * - 将一部分初始化移动到别的函数，但是为了向后兼容，这里暂时保留了它们  */
-	public init(i2c: I2C, addr: UInt8)  {
-		this.i2c = i2c
+	public init(i2c_setAddr!: (UInt8) -> Unit,		/* 设置通信地址 - 回调函数 */
+			i2c_writeReg!: (UInt8, UInt8) -> Unit,	/* 写i2c地址 - 回调函数 */
+			i2c_readReg!: (UInt8) -> Int8,		/* 读i2c地址 - 回调函数 */
+			addr!: UInt8)  {
+		//this.i2c = i2c
+		this.i2c_setAddr = i2c_setAddr
+		this.i2c_writeReg = i2c_writeReg
+		this.i2c_readReg = i2c_readReg
 		this.addr = addr
-		i2c.setAddr(addr);
+		i2c_setAddr(addr);
 		/* -------- */
-		i2c.writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
-		i2c.writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
-		i2c.writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
+		i2c_writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
+		i2c_writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
+		i2c_writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
 		sleep(Duration.millisecond * 100);            /* 等待稳定 */
 		/* -------- */
 	}
 
 	/* -------- 初始化该模块 -------- */
 	public func setup() {
-		let i2cc = i2c.getOrThrow()
-		i2cc.setAddr(addr);
-		i2cc.writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
-		i2cc.writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
-		i2cc.writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
+		//let i2cc = i2c.getOrThrow()
+		i2c_setAddr(addr);
+		i2c_writeReg(PWR_MGMT_1, PWR_NOSLEEP);        /* 退出睡眠 */
+		i2c_writeReg(GYRO_CONF_REG, GYRO_FS_500DPS);  /* ±500°/s */
+		i2c_writeReg(ACCEL_CONF_REG, ACCEL_FS_8g);    /*  ±8g */
 		sleep(Duration.millisecond * 100);            /* 等待稳定 */
 	}
     
@@ -73,23 +79,26 @@ public class MPU6050 {
 	private static const ACCEL_REG_Z_HIGH: UInt8 = 0x3F
 	private static const ACCEL_REG_Z_LOW:  UInt8 = 0x40
 	/*----------------*/
-	private var i2c: Option<I2C> = None
+	//private var i2c: Option<I2C> = None
+	private var i2c_setAddr: (UInt8) -> Unit
+	private var i2c_readReg: (UInt8) -> Int8
+	private var i2c_writeReg:(UInt8, UInt8) -> Unit
 	private var addr: UInt8
 
 	/* -------- 读取 16 位传感器数据（带符号）--------
 	 * FIXME: 是否能够正确处理符号位 */
 	private func read16BitReg(high: UInt8, low: UInt8): Int16 {
-		let i2 = i2c.getOrThrow()
-		let hh: Int16 = Int16(i2.readRegFlag(high))
-		let ll: Int16 = Int16(i2.readRegFlag(low))
+		//let i2 = i2c.getOrThrow()
+		let hh: Int16 = Int16(i2c_readReg(high))
+		let ll: Int16 = Int16(i2c_readReg(low))
 		return (hh << 8) | ll
 	}
 
 	/* -------- 获取原始MPU6050传感器数据 -------- */
 	public func readSensor(): MPU6050_sensorData {
 		var data = MPU6050_sensorData()
-		let i2 = i2c.getOrThrow()
-		i2.setAddr(addr);
+		//let i2 = i2c.getOrThrow()
+		i2c_setAddr(addr);
 		data.accel_x = read16BitReg(ACCEL_REG_X_HIGH, ACCEL_REG_X_LOW);
 		data.accel_y = read16BitReg(ACCEL_REG_Y_HIGH, ACCEL_REG_Y_LOW);
 		data.accel_z = read16BitReg(ACCEL_REG_Z_HIGH, ACCEL_REG_Z_LOW);
