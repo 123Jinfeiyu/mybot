@@ -10,18 +10,12 @@ libc
 
 `bot4cj` 基于仓颉编程语言和 Linux I2C 接口，提供了便捷的硬件控制能力，支持pca9685、mpu6050，我通常使用树莓派作为宿主机。
 
-编译方法：
-```bash
-cjpm build
-```
-
 ## 解析器
 
-程序内置了动作脚本解析器，连接pca9685后使用如下方法使用：
+树莓派通过I2C接口连接pca9685后使用如下方法使用：
 
 ```bash
-# 蜘蛛机器人脚本
-cat ss/step.bot | cjpm run
+cat ss/test.mt | cjpm run	# 蜘蛛机器人脚本
 ```
 
 ## 动作脚本
@@ -45,7 +39,7 @@ cat ss/step.bot | cjpm run
 
 适用的机器人建模文件[仓库链接](https://github.com/gopsc/Dashun)
 
-### 新版机器人脚本语法（.mt）
+### 机器人脚本语法（.mt）
 
 **.bot文件是旧版动作脚本**
 
