@@ -81,6 +81,7 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 		return data 
 }
 
+
 @C
 func mpu6050_Daemon(fd: Int32, addr: UInt8) {
 	

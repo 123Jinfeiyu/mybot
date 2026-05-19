@@ -22,33 +22,44 @@ func getPtr(p: CPointer<UInt8>): CPointer<Unit> {
 	return CPointer<Unit>(p)
 }
 
+const I2C_FAILED = -1i32
+const I2C_SUCCESS = 0i32
 const O_RDWR = 2i32
 const I2C_SLAVE = 0x0703u64	/* at least on arm64 */
 /* -------- OPEN I2C DEVICE -------- */
 @C
 func openI2cDev(path: CString): Int32 {
-	return unsafe { open(path, O_RDWR) }
+	let fd = unsafe { open(path, O_RDWR) }
+	if (fd > 0) { return  fd }
+	else { throw I2cOpenedFailed("?") }
 }
 
 /* -------- CLOSE I2C DEVICE -------- */
 @C
-func closeI2cDev(fd: Int32): Int32 {
-	return unsafe { close(fd) }
+func closeI2cDev(fd: Int32): Unit {
+	let ret =  unsafe { close(fd) }
+	if (ret == I2C_FAILED) {
+		throw I2cClosedFailed("?") }
+	else if (ret == I2C_SUCCESS) { ;  }
+	else {
+		throw I2cUnknowExp("?", "$function returned: {ret.toString()}") }
 }
 
 /* -------- SET I2C ADDR -------- */
 @C
-func setI2cAddr(fd: Int32, addr: UInt8): Int32 {
-	return unsafe {
-		ioctl(fd, I2C_SLAVE, addr) }
+func setI2cAddr(fd: Int32, addr: UInt8): Unit {
+	let ret = unsafe { ioctl(fd, I2C_SLAVE, addr) }
+	if (ret < 0) { throw I2cSetAddressFailed("?") }
 }
 
 /* -------- WRITE I2C REG -------- */
 @C
-func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): IntNative {
+func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 	var a: VArray<UInt8, $2> = [reg, val]
 	var p: CPointer<Unit> = unsafe { getPtr(inout a) }
-	return  unsafe { write(fd, p, 2) }
+	if (2 !=  unsafe { write(fd, p, 2) }) {
+		throw I2cWriteRegFailed("?")
+	}
 }
 
 /* -------- READ I2C REG -------- */
@@ -57,40 +68,30 @@ func readI2cReg(fd: Int32, reg: UInt8): UInt8 {
 	var value: UInt8 = 0
 	var p = unsafe { getPtr(inout value) }
 	let ret = unsafe { read(fd, p, 1) }
+	if (ret != 1) { throw I2cReadRegFailed("?") }
 	return value
 }
 
 public class I2C_Orig {
-	private static let I2C_FAILED = -1i32
-	private static let I2C_SUCCESS = 0i32
 	private var fd: Int32 = -1
 	private var path: String
 	public init (path: String) {
 		this.path = path
 		let s1 = unsafe { 
 			LibC.mallocCString(path) }
-		let fd = unsafe { openI2cDev(s1) }
-		if (fd > 0) { this.fd = fd }
-		else { throw I2cOpenedFailed(path) }
+		fd = unsafe { openI2cDev(s1) }
 	}
 
 	public func _close(): Unit {
-		let ret = unsafe { closeI2cDev(fd) }
-		if (ret == I2C_FAILED) {
-			throw I2cClosedFailed(path) }
-		else if (ret == I2C_SUCCESS) { ;  }
-		else {
-			throw I2cUnknowExp(path, "$function returned: {ret.toString()}") }
+		unsafe { closeI2cDev(fd) }
 	}
 
 	public func setAddr(addr: UInt8) {
-		let ret  = unsafe {  setI2cAddr(fd, addr)  }
-		if (ret < 0) { throw I2cSetAddressFailed(path) }
+		unsafe {  setI2cAddr(fd, addr)  }
 	}
 
 	public func writeReg(reg: UInt8, val:UInt8): Unit {
-		let ret = unsafe { writeI2cReg(fd, reg, val) }
-		if (ret != 2) { throw I2cWriteRegFailed(path)  }
+		unsafe { writeI2cReg(fd, reg, val) }
 	}
 
 	public func readReg(reg: UInt8): UInt8 {
