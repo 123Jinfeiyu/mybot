@@ -87,12 +87,14 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 }
 
 /* -------- mpu6050主线程 --------*/
+foreign func pthread_testcancel(): Unit
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	let param  =  unsafe{ CPointer<mpu6050_th_param>(args).read() }
 	for(_ in 0..10) {
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		sleep(Duration.second * 1)
+		unsafe { pthread_testcancel() }
 	}
 
 	return CPointer<Unit>()
@@ -164,7 +166,7 @@ public class MPU6050 {
 	public func waitDaemon() {
 		if (let Some(P) <- pth) {
 			var ptr: CPointer<Unit> = CPointer<Unit>()
-			P.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>()))
+			P.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>(ptr)))
 		}
 	}
 

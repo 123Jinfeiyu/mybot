@@ -6,6 +6,7 @@ foreign func pthread_create(thread: CPointer<UInt64>,  attr: CPointer<Unit>,
 foreign func pthread_join(thread: UInt64, retval: CPointer<CPointer<Unit>>): Int32
 foreign func pthread_exit(retval: CPointer<Unit>): Unit
 foreign func pthread_cancel(thread: UInt64): Int32
+foreign func pthread_testcancel(): Unit
 
 
 /* -------- pthread线程类 --------

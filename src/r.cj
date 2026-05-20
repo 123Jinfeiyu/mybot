@@ -229,10 +229,13 @@ class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 				mpu6050.startDaemon()
 			},
 			free: {=>
+				println("MPU6050_BIND HVar: ${name} is closing now")
 				mpu6050.stopDaemon()
 				mpu6050.waitDaemon()
 			}
 		)
+
+		return mtvars_mpu6050bind
 	}
 }
 
@@ -484,6 +487,7 @@ class RobotStruct {
 	{
 		createAliasVars()
 		createI2CVars()
+		createMPU6050Bind()
 		createPCA9685Vars()
 		createServoVars()
 		createSpeakerVars()
@@ -506,6 +510,16 @@ class RobotStruct {
 			let idxName = I2CDefs.indexOfCol(0, "name")
 			let name = I2CDefs[i, idxName]
 			M[name]  = MtVars_I2C.Factory(I2CDefs, i, M)
+		}
+	}
+
+	/* -------- 创建MPU6050_BIND硬件变量 -------- */
+	private func createMPU6050Bind() {
+		let MPU6050BindDefs = findMt(C, "MPU6050_BIND").getOrThrow()
+		for (i in 1..MPU6050BindDefs.size) {
+			let idxName = MPU6050BindDefs.indexOfCol(0, "name")
+			let name: String = MPU6050BindDefs[i, idxName]
+			M.add(name, MtVars_MPU6050_BIND.Factory(MPU6050BindDefs, i, M))
 		}
 	}
 
