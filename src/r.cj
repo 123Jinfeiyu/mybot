@@ -184,6 +184,24 @@ class MtVars_I2C <: MatrixVars_Hardware {
 	}
 }
 
+/* -------- MPU6050_BIND硬件变量 --------*/
+class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None) {
+		super(things: things, rise: rise, free: free)  }
+
+	/*
+	 *
+	 */
+	public static func Factory (
+			MPU6050_BIND_Defs: MatrixObject, i: Int64,
+			map: HashMap<String, MatrixVars_Hardware>)//: MtVars_MPU6050_BIND
+	{
+		
+	}
+}
+
 /* -------- PCA9685硬件变量 -------- */
 class MtVars_PCA9685 <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,

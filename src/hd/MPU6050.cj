@@ -89,33 +89,21 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 /* -------- mpu6050主线程 --------*/
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
-	let a1 = unsafe {  CPointer<Int32>(args).read() }
-	let a2 = unsafe {  (CPointer<Int32>(args)+ 1).read() }
+	let param  =  unsafe{ CPointer<mpu6050_th_param>(args).read() }
 	for(_ in 0..10) {
-		println("I am running. arg1: ${a1}, arg2: ${a2}")
+		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		sleep(Duration.second * 1)
 	}
 
 	return CPointer<Unit>()
 }
 
-/* -------- mpu6050启动守护 -------- 
- * TODO(20260520-qing): 放进类中
- * --------------------------------- */
-var arr: VArray<Int32, $2>  = [-1, -1]	/* 线程参数必须能够持久保存 */
-public func mpu6050_DaemonStart(fd: Int32, addr: UInt8) {
-	arr = [fd, Int32(addr)]
-	let pth = Pth(mpu6050_main, CPointer<Unit>(inout arr))
-	var ptr: CPointer<Unit> = CPointer<Unit>()
-	for (_ in 0..5) { sleep(Duration.second * 1)}
-	pth.close()
-	pth.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>()))
-	return pth
+/* -------- mpu6050线程参数 -------- */
+@C
+struct mpu6050_th_param {
+	public var i2c_fd: Int32 = 0
+	public var addr: UInt8 = 0
 }
-
-
-
-
 
 
 
@@ -126,9 +114,21 @@ public class MPU6050 {
 	/* -------- 主初始化器 --------
 	 * FIXME(20260517-qing): 由于gc的原因，我们可能会手动构造RAII，
 	 * - 将一部分初始化移动到别的函数，但是为了向后兼容，这里暂时保留了它们  */
-	public init(i2c_fd: Int32, addr!: UInt8)  {
+	public init(i2c_fd: Int32, addr: UInt8)  {
 		this.i2c_fd = i2c_fd
 		this.addr = addr
+		unsafe {
+			param  = LibC.malloc<mpu6050_th_param>()
+			var tmp = mpu6050_th_param()
+			tmp.i2c_fd = i2c_fd
+			tmp.addr = addr
+			param.write(tmp)
+		}
+	}
+
+	/* -------- 终结器 -------- */
+	~init() {
+		unsafe {  LibC.free(param)  }
 	}
 
 	/* -------- 初始化该模块 -------- */
@@ -145,5 +145,28 @@ public class MPU6050 {
 	public func readSensor(): MPU6050_sensorData {
 		return unsafe { mpu6050_readSensor(i2c_fd, addr) }
 	}
+
+	/* -------- mpu6050启动守护 -------- 
+	 * TODO(20260520-qing): 放进类中
+	 * --------------------------------- */
+	var param: CPointer<mpu6050_th_param>	/* 线程参数必须能够持久保存 */
+	var pth: Option<Pth> = None
+	public func startDaemon() {
+		pth = Pth(mpu6050_main, CPointer<Unit>(param))
+	}
+
+	public func stopDaemon() {
+		if (let Some(P) <- pth) {
+			P.close()
+		}
+	}
+
+	public func waitDaemon() {
+		if (let Some(P) <- pth) {
+			var ptr: CPointer<Unit> = CPointer<Unit>()
+			P.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>()))
+		}
+	}
+
 }
 
