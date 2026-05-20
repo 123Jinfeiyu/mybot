@@ -107,6 +107,8 @@ public func mpu6050_DaemonStart(fd: Int32, addr: UInt8) {
 	arr = [fd, Int32(addr)]
 	let pth = Pth(mpu6050_main, CPointer<Unit>(inout arr))
 	var ptr: CPointer<Unit> = CPointer<Unit>()
+	for (_ in 0..5) { sleep(Duration.second * 1)}
+	pth.close()
 	pth.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>()))
 	return pth
 }
