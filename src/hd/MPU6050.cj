@@ -89,8 +89,10 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 /* -------- mpu6050主线程 --------*/
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
+	let a1 = unsafe {  CPointer<Int32>(args).read() }
+	let a2 = unsafe {  (CPointer<Int32>(args)+ 1).read() }
 	while(true) {
-		println("I am running.")
+		println("I am running. arg1: ${a1}, arg2: ${a2}")
 		sleep(Duration.second * 1)
 	}
 
@@ -98,10 +100,18 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 }
 
 /* -------- mpu6050启动守护 -------- */
-@C
+var arr: VArray<Int32, $2>  = [-1, -1]	/* 参数必须能够持久保存 */
 public func mpu6050_DaemonStart(fd: Int32, addr: UInt8): UInt64 {
-	return Pth_init(mpu6050_main, CPointer<Unit>())
+	arr = [fd, Int32(addr)]
+	let pt = Pth_init(mpu6050_main, CPointer<Unit>(inout arr))
+	return pt
 }
+
+
+
+
+
+
 
 /* -------- MPU6050陀螺仪、加速度计 --------
  * -  输入并持有一个I2C引用  */

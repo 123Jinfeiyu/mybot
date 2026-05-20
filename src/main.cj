@@ -185,7 +185,7 @@ func run_test(key: String) {
 	//}
 
 	else if (key == "mpu6050_bind") {
-		unsafe { mpu6050_DaemonStart(0i32, 40u8) }
+		mpu6050_DaemonStart(10i32, 40u8)
 		while (true) { sleep(Duration.second * 1) }
 	}
 
