@@ -91,7 +91,7 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	let a1 = unsafe {  CPointer<Int32>(args).read() }
 	let a2 = unsafe {  (CPointer<Int32>(args)+ 1).read() }
-	while(true) {
+	for(_ in 0..10) {
 		println("I am running. arg1: ${a1}, arg2: ${a2}")
 		sleep(Duration.second * 1)
 	}
@@ -99,12 +99,16 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	return CPointer<Unit>()
 }
 
-/* -------- mpu6050启动守护 -------- */
-var arr: VArray<Int32, $2>  = [-1, -1]	/* 参数必须能够持久保存 */
-public func mpu6050_DaemonStart(fd: Int32, addr: UInt8): UInt64 {
+/* -------- mpu6050启动守护 -------- 
+ * TODO(20260520-qing): 放进类中
+ * --------------------------------- */
+var arr: VArray<Int32, $2>  = [-1, -1]	/* 线程参数必须能够持久保存 */
+public func mpu6050_DaemonStart(fd: Int32, addr: UInt8) {
 	arr = [fd, Int32(addr)]
-	let pt = Pth_init(mpu6050_main, CPointer<Unit>(inout arr))
-	return pt
+	let pth = Pth(mpu6050_main, CPointer<Unit>(inout arr))
+	var ptr: CPointer<Unit> = CPointer<Unit>()
+	pth.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>()))
+	return pth
 }
 
 

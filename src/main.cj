@@ -186,7 +186,6 @@ func run_test(key: String) {
 
 	else if (key == "mpu6050_bind") {
 		mpu6050_DaemonStart(10i32, 40u8)
-		while (true) { sleep(Duration.second * 1) }
 	}
 
 	/* --------------发声测试--------------- */
