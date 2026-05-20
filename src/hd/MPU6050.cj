@@ -91,8 +91,11 @@ foreign func pthread_testcancel(): Unit
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	let param  =  unsafe{ CPointer<mpu6050_th_param>(args).read() }
+	let mutex = param.mutex
 	for(_ in 0..10) {
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
+		unsafe { _mutex_lock(mutex) }
+		unsafe { _mutex_unlock(mutex) }
 		sleep(Duration.second * 1)
 		unsafe { pthread_testcancel() }
 	}
@@ -105,6 +108,7 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 struct mpu6050_th_param {
 	public var i2c_fd: Int32 = 0
 	public var addr: UInt8 = 0
+	public var mutex = CPointer<UInt8>()
 }
 
 
@@ -124,13 +128,19 @@ public class MPU6050 {
 			var tmp = mpu6050_th_param()
 			tmp.i2c_fd = i2c_fd
 			tmp.addr = addr
+			tmp.mutex = unsafe { _mutex_create() }
+			unsafe { _mutex_init(tmp.mutex) }
 			param.write(tmp)
 		}
 	}
 
 	/* -------- 终结器 -------- */
 	~init() {
-		unsafe {  LibC.free(param)  }
+		unsafe {
+			let tmp = param.read()
+			_mutex_destroy(tmp.mutex)
+			LibC.free(param) 
+		}
 	}
 
 	/* -------- 初始化该模块 -------- */
