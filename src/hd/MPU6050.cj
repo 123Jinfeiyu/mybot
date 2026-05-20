@@ -95,6 +95,10 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	for(_ in 0..10) {
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		unsafe { _mutex_lock(mutex) }
+
+		let data = unsafe { mpu6050_readSensor(param.i2c_fd, param.addr) }
+		data.print()
+
 		unsafe { _mutex_unlock(mutex) }
 		sleep(Duration.second * 1)
 		unsafe { pthread_testcancel() }
