@@ -191,14 +191,48 @@ class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 			free!: Option<() -> Unit> = None) {
 		super(things: things, rise: rise, free: free)  }
 
-	/*
-	 *
+	/* 工厂函数，通过矩阵对象构建硬件变量
+	 * @MPU6050_BIND
+	 *      name    I2C   addr;
+	 * mpu6050-0  i2c-1   0x69;
 	 */
 	public static func Factory (
 			MPU6050_BIND_Defs: MatrixObject, i: Int64,
 			map: HashMap<String, MatrixVars_Hardware>)//: MtVars_MPU6050_BIND
 	{
-		
+		let idxName = MPU6050_BIND_Defs.indexOfCol(0, "name")
+		let idxI2c  = MPU6050_BIND_Defs.indexOfCol(0, "I2C")
+		let idxAddr = MPU6050_BIND_Defs.indexOfCol(0, "addr")
+
+		let name = MPU6050_BIND_Defs[i, idxName]
+		let i2c  = getMt(MPU6050_BIND_Defs, i, idxI2c)
+		let addr = getMt(MPU6050_BIND_Defs, i, idxAddr)
+
+		println("Create a MPU6050_BIND HVar: ${name}, use i2c interf: ${i2c}, i2c addr: ${addr}")
+		let i2c_HardVar = map[i2c]
+		let param = JsonObject()
+		param.put("mode", JsonString("get_fd"))
+		let ret = i2c_HardVar.play(param)
+		let fd = Int32(ret.asObject().get("fd").getOrThrow().asInt().getValue())
+		let _addr = UInt8.parse(addr)
+
+		let mpu6050 = MPU6050(fd, _addr)		
+
+		let mtvars_mpu6050bind = MtVars_MPU6050_BIND(
+			things: {json: JsonValue => 
+				let ret = JsonObject()
+				ret.put("status", JsonString("OK"))
+				return ret
+			},
+			rise: {=>
+				mpu6050.setup()
+				mpu6050.startDaemon()
+			},
+			free: {=>
+				mpu6050.stopDaemon()
+				mpu6050.waitDaemon()
+			}
+		)
 	}
 }
 
@@ -220,13 +254,13 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 	{
 		let idxName = PCA9685Defs.indexOfCol(0, "name")
 		let idxI2c  = PCA9685Defs.indexOfCol(0, "I2C")
-		let idxPath = PCA9685Defs.indexOfCol(0, "path")
+		let idxAddr = PCA9685Defs.indexOfCol(0, "addr")
 
 		let name = PCA9685Defs[i, idxName]
 		let i2c = getMt(PCA9685Defs, i, idxI2c)
-		let path = getMt(PCA9685Defs, i, idxPath)
+		let addr = getMt(PCA9685Defs, i, idxAddr)
 
-		println("Create a PCA9685 hard-Var: ${name}, i2c: ${i2c}, path: ${path}")
+		println("Create a PCA9685 hard-Var: ${name}, i2c: ${i2c}, path: ${addr}")
 
 		let i2c_HardVar = map[i2c]	/* 这个I2C硬件变量的引用通过闭包保存在该PCA9685及MtVars_PCA9685中 */
 		let pca9685 = PCA9685(i2c_setAddr: {addr =>
@@ -246,7 +280,8 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 				obj.put("mode", JsonString("set_val"))
 				obj.put("reg", JsonInt(Int64(reg)))
 				obj.put("val", JsonInt(Int64(val)))
-				i2c_HardVar.play(obj)}
+				i2c_HardVar.play(obj)},
+			addr: UInt8.parse(addr)
 			)
 
 		/* {"channel": 0, "angle": 90.0}  */

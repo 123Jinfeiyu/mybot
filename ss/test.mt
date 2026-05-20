@@ -13,12 +13,12 @@ i2c-1  /dev/i2c-1;
 @
 
 @PCA9685
-     name    I2C   path;
+     name    I2C   addr;
 pca9685-0  i2c-1   0x40;
 @
 
 @MPU6050_BIND
-     name    I2C   path;
+     name    I2C   addr;
 mpu6050-0  i2c-1   0x69;
 mpu6050-1  i2c-1   0x68;
 #mpu6050-2  i2c-0   0x68;
