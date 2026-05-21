@@ -108,10 +108,15 @@ func I2cLock_create(fd: Int32): Unit {
 		if (MAIN_LOCK.isNull()) {
 			MAIN_LOCK = _mutex_create()
 			LOCKS = LibC.malloc<I2C_Lock>(count: 20)
+			for (i in 0..20) {
+				let tmp = I2C_Lock()
+				(LOCKS+i).write(tmp)
+			}
 		}
 
 		/* -------- 获取主锁 --------*/
 		_mutex_lock(MAIN_LOCK)
+		var flag = false
 
 		for (idx in 0..20) {
 			var lock = (LOCKS+idx).read()
@@ -119,13 +124,15 @@ func I2cLock_create(fd: Int32): Unit {
 				lock.is_active = true
 				lock.i2c_fd = fd
 				lock.lock = _mutex_create()
+				_mutex_init(lock.lock)
 				(LOCKS+idx).write(lock)
-				_mutex_unlock(MAIN_LOCK)
-				return
+				flag = true
+				break
 			}
 		}
 
 		_mutex_unlock(MAIN_LOCK)
+		if (flag ) { return }
 		throw OverflowException("LOCKS is over.")
 	}
 }
@@ -144,6 +151,7 @@ func I2cLock_destroy(fd: Int32): Unit {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
 				lock.is_active = false
+				_mutex_destroy(lock.lock)
 				_mutex_free(lock.lock)
 				(LOCKS+idx).write(lock)
 				flag_target = true
@@ -153,6 +161,8 @@ func I2cLock_destroy(fd: Int32): Unit {
 			}
 		}
 
+
+		_mutex_unlock(MAIN_LOCK)
 		if (!flag_any) {
 			LibC.free(LOCKS)
 			_mutex_free(MAIN_LOCK)
@@ -163,7 +173,6 @@ func I2cLock_destroy(fd: Int32): Unit {
 			return
 		}
 
-		_mutex_unlock(MAIN_LOCK)
 		throw NoneValueException("i2c lock nor found")
 	}
 }
@@ -176,19 +185,22 @@ func I2cLock_lock(fd: Int32): Unit {
 		if (MAIN_LOCK.isNull()) {
 			throw NoneValueException("no i2c lock")
 		}
+
 		_mutex_lock(MAIN_LOCK)
 
+		var flag = false
 		for (idx in 0..20) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
-				lock.is_active = false
 				_mutex_lock(lock.lock)
 				(LOCKS+idx).write(lock)
+				flag = true
 				break
 			}
 		}
 
 		_mutex_unlock(MAIN_LOCK)
+		if (flag) { return } 
 		throw NoneValueException("i2c lock nor found")
 	}
 }
@@ -203,17 +215,18 @@ func I2cLock_unlock(fd: Int32): Unit {
 		}
 		_mutex_lock(MAIN_LOCK)
 
+		var flag = false
 		for (idx in 0..20) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
-				lock.is_active = false
 				_mutex_unlock(lock.lock)
 				(LOCKS+idx).write(lock)
+				flag = true
 				break
 			}
 		}
-
 		_mutex_unlock(MAIN_LOCK)
+		if (flag) {return}
 		throw NoneValueException("i2c lock nor found")
 	}
 }

@@ -42,7 +42,7 @@ public class PCA9685 {
 			writeI2cReg(i2c_fd, 0x00, 0x10);       /* 进入SLEEP模式（允许改频率） */
 			writeI2cReg(i2c_fd, 0xFE, prescale);   /* 写入预分频值 */
 			writeI2cReg(i2c_fd, 0x00, 0x20);       /* 退出SLEEP */
-	
+
 			I2cLock_unlock(i2c_fd)
 		}
 		sleep(5000 * Duration.nanosecond);  /* 等待振荡器启动 */
@@ -69,6 +69,7 @@ public class PCA9685 {
 		let off_val: UInt16 = UInt16(width * 4096.0 / 20.0);        /* 20ms 周期 */
 		unsafe {
 			I2cLock_lock(i2c_fd)
+			sleep(Duration.millisecond * 1)
 			setI2cAddr(i2c_fd, this.addr);
 			this.setPWM(channel, 0, off_val); /* ON=0, OFF=计算值 */
 			I2cLock_unlock(i2c_fd)

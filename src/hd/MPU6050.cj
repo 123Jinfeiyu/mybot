@@ -74,8 +74,10 @@ func read16BitReg(i2c_fd: Int32, high: UInt8, low: UInt8): Int16 {
 @C
 func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 		var data = MPU6050_sensorData()
+		
 		unsafe {
 			I2cLock_lock(i2c_fd)
+			sleep(Duration.millisecond * 1)
 			setI2cAddr(i2c_fd, addr) 
 			data.accel_x = read16BitReg(i2c_fd, ACCEL_REG_X_HIGH, ACCEL_REG_X_LOW);
 			data.accel_y = read16BitReg(i2c_fd, ACCEL_REG_Y_HIGH, ACCEL_REG_Y_LOW);
@@ -97,11 +99,11 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		//unsafe { _mutex_lock(mutex) }
 
-		//let data = unsafe { mpu6050_readSensor(param.i2c_fd, param.addr) }
-		//data.print()
+		let data = unsafe { mpu6050_readSensor(param.i2c_fd, param.addr) }
+		data.print()
 
 		//unsafe { _mutex_unlock(mutex) }
-		sleep(Duration.second * 1)
+		sleep(Duration.millisecond * 50)
 		unsafe { pthread_testcancel() }
 	}
 
