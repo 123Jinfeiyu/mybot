@@ -51,10 +51,13 @@ public struct MPU6050_sensorData {
 @C
 func mpu6050_setup(i2c_fd: Int32, addr: UInt8) {
 	unsafe {
+		I2cLock_lock(i2c_fd)
 		setI2cAddr(i2c_fd, addr);
+		sleep(Duration.millisecond * 1)
 		writeI2cReg(i2c_fd, PWR_MGMT_1, PWR_NOSLEEP);		/* 退出睡眠 */
 		writeI2cReg(i2c_fd, GYRO_CONF_REG, GYRO_FS_500DPS);	/* ±500°/s */
 		writeI2cReg(i2c_fd, ACCEL_CONF_REG, ACCEL_FS_8g);	/*  ±8g */
+		I2cLock_unlock(i2c_fd)
 		sleep(Duration.millisecond * 100);			/* 等待稳定 */
 	}
 }
