@@ -76,8 +76,12 @@ func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 
 /* -------- READ I2C REG -------- */
 @C
-func readI2cReg(fd: Int32, reg: UInt8): UInt8 {
-	var value: UInt8 = 0
+func readI2cReg(fd: Int32, reg: UInt8): Int8 {
+	var ptr = reg
+	if (1 != unsafe { write(fd, CPointer<Unit>(inout ptr), 1) }) {
+		throw I2cReadRegFailed("?")
+	}
+	var value: Int8 = 0
 	var p = unsafe { CPointer<Unit>(inout value) }
 	let ret = unsafe { read(fd, p, 1) }
 	if (ret != 1) { throw I2cReadRegFailed("?") }
@@ -180,7 +184,6 @@ func I2cLock_destroy(fd: Int32): Unit {
 /* -------- 为一个I2C锁具加锁 -------- */
 @C
 func I2cLock_lock(fd: Int32): Unit {
-
 	unsafe {
 		if (MAIN_LOCK.isNull()) {
 			throw NoneValueException("no i2c lock")
@@ -208,7 +211,6 @@ func I2cLock_lock(fd: Int32): Unit {
 /* -------- 为一个I2C锁具解锁 -------- */
 @C
 func I2cLock_unlock(fd: Int32): Unit {
-
 	unsafe {
 		if (MAIN_LOCK.isNull()) {
 			throw NoneValueException("no i2c lock")
@@ -256,7 +258,7 @@ public class I2C_Orig {
 		unsafe { writeI2cReg(fd, reg, val) }
 	}
 
-	public func readReg(reg: UInt8): UInt8 {
+	public func readReg(reg: UInt8): Int8 {
 		var value = unsafe { readI2cReg(fd, reg) }
 		return value
 	}

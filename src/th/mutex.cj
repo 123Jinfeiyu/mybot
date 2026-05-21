@@ -1,5 +1,4 @@
 package bot4cj.th
-
 foreign func pthread_mutex_init(mutex: CPointer<UInt8>, attr: CPointer<UInt64>): Int32
 foreign func pthread_mutex_destroy(mutex: CPointer<UInt8>): Int32
 foreign func pthread_mutex_lock(mutex: CPointer<UInt8>): Int32

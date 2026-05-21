@@ -69,7 +69,6 @@ public class PCA9685 {
 		let off_val: UInt16 = UInt16(width * 4096.0 / 20.0);        /* 20ms 周期 */
 		unsafe {
 			I2cLock_lock(i2c_fd)
-			sleep(Duration.millisecond * 1)
 			setI2cAddr(i2c_fd, this.addr);
 			this.setPWM(channel, 0, off_val); /* ON=0, OFF=计算值 */
 			I2cLock_unlock(i2c_fd)
