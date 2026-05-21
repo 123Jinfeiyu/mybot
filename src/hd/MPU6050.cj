@@ -75,6 +75,7 @@ func read16BitReg(i2c_fd: Int32, high: UInt8, low: UInt8): Int16 {
 func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 		var data = MPU6050_sensorData()
 		unsafe {
+			I2cLock_lock(i2c_fd)
 			setI2cAddr(i2c_fd, addr) 
 			data.accel_x = read16BitReg(i2c_fd, ACCEL_REG_X_HIGH, ACCEL_REG_X_LOW);
 			data.accel_y = read16BitReg(i2c_fd, ACCEL_REG_Y_HIGH, ACCEL_REG_Y_LOW);
@@ -82,6 +83,7 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 			data.gyro_x  = read16BitReg(i2c_fd, GYRO_REG_X_HIGH, GYRO_REG_X_LOW);
 			data.gyro_y  = read16BitReg(i2c_fd, GYRO_REG_Y_HIGH, GYRO_REG_Y_LOW);
 			data.gyro_z  = read16BitReg(i2c_fd, GYRO_REG_Z_HIGH, GYRO_REG_Z_LOW);
+			I2cLock_unlock(i2c_fd)
 		}
 		return data 
 }
@@ -91,7 +93,6 @@ foreign func pthread_testcancel(): Unit
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	let param  =  unsafe{ CPointer<mpu6050_th_param>(args).read() }
-	//let mutex = param.mutex
 	for(_ in 0..10) {
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		//unsafe { _mutex_lock(mutex) }
@@ -132,8 +133,6 @@ public class MPU6050 {
 			var tmp = mpu6050_th_param()
 			tmp.i2c_fd = i2c_fd
 			tmp.addr = addr
-			//tmp.mutex = unsafe { _mutex_create() }
-			//unsafe { _mutex_init(tmp.mutex) }
 			param.write(tmp)
 		}
 	}
@@ -141,8 +140,6 @@ public class MPU6050 {
 	/* -------- 终结器 -------- */
 	~init() {
 		unsafe {
-			//let tmp = param.read()
-			//_mutex_destroy(tmp.mutex)
 			LibC.free(param) 
 		}
 	}

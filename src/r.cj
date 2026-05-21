@@ -266,26 +266,32 @@ class MtVars_PCA9685 <: MatrixVars_Hardware {
 		println("Create a PCA9685 hard-Var: ${name}, i2c: ${i2c}, path: ${addr}")
 
 		let i2c_HardVar = map[i2c]	/* 这个I2C硬件变量的引用通过闭包保存在该PCA9685及MtVars_PCA9685中 */
-		let pca9685 = PCA9685(i2c_setAddr: {addr =>
-				let obj = JsonObject()
-				obj.put("mode", JsonString("set_addr"))
-				obj.put("addr", JsonInt(Int64(addr)))
-				i2c_HardVar.play(obj)},
-			i2c_readReg: {reg: UInt8 =>
-				let obj = JsonObject()
-				obj.put("mode", JsonString("get_val"))
-				obj.put("reg", JsonInt(Int64(reg)))
-				let res = i2c_HardVar.play(obj)
-				let val = res.asObject().get("value").getOrThrow().asInt().getValue()
-				return Int8(val)},
-			i2c_writeReg: {reg, val =>
-				let obj = JsonObject()
-				obj.put("mode", JsonString("set_val"))
-				obj.put("reg", JsonInt(Int64(reg)))
-				obj.put("val", JsonInt(Int64(val)))
-				i2c_HardVar.play(obj)},
+		let obj = JsonObject()
+		obj.put("mode", JsonString("get_fd"))
+		let ret = i2c_HardVar.play(obj)
+		let fd = Int32(ret.asObject().get("fd").getOrThrow().asInt().getValue())
+		let pca9685 = PCA9685(
+			//i2c_setAddr: {addr =>
+			//	let obj = JsonObject()
+			//	obj.put("mode", JsonString("set_addr"))
+			//	obj.put("addr", JsonInt(Int64(addr)))
+			//	i2c_HardVar.play(obj)},
+			//i2c_readReg: {reg: UInt8 =>
+			//	let obj = JsonObject()
+			//	obj.put("mode", JsonString("get_val"))
+			//	obj.put("reg", JsonInt(Int64(reg)))
+			//	let res = i2c_HardVar.play(obj)
+			//	let val = res.asObject().get("value").getOrThrow().asInt().getValue()
+			//	return Int8(val)},
+			//i2c_writeReg: {reg, val =>
+			//	let obj = JsonObject()
+			//	obj.put("mode", JsonString("set_val"))
+			//	obj.put("reg", JsonInt(Int64(reg)))
+			//	obj.put("val", JsonInt(Int64(val)))
+			//	i2c_HardVar.play(obj)},
+			fd,
 			addr: UInt8.parse(addr)
-			)
+		)
 
 		/* {"channel": 0, "angle": 90.0}  */
 		let mtvars_pca9685 = MtVars_PCA9685(things: {json: JsonValue =>

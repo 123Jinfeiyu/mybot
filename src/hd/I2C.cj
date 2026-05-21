@@ -11,7 +11,8 @@ import bot4cj.th.*
 
 
 /* -------- 我们将直接调用glibc中的函数 --------
- * TODO(20260518-qing):  稍后我们专门做一个i2c库，这样就能够区分不同架构上面的int的大小  */
+ * TODO(20260518-qing):  稍后我们专门做一个i2c代码仓库，这样就能够区分不同架构上面的int的大小
+ * TODO*(20260521-qing): C语言中的int类型一般是Int32，我们可以声明一个类型别名  */
 foreign func open(path: CString, flag: Int32, ...): Int32
 foreign func close(fd: Int32): Int32	/* 成功返回0，失败返回-1 */
 foreign func ioctl(fd: Int32, addr: UInt64, ...): Int32	/* 成功返回非负整数，失败返回-1 */
@@ -19,14 +20,9 @@ foreign func read(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative
 foreign func write(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative
 
 
-@C
-func getPtr(p: CPointer<UInt8>): CPointer<Unit> {
-	return CPointer<Unit>(p)
-}
-
 const I2C_FAILED = -1i32
 const I2C_SUCCESS = 0i32
-const O_RDWR = 2i32
+const O_RDWR = 2i32	/* C头文件中的宏 */
 const I2C_SLAVE = 0x0703u64	/* at least on arm64 */
 /* -------- OPEN I2C DEVICE -------- */
 @C
@@ -52,7 +48,8 @@ func closeI2cDev(fd: Int32): Unit {
 			throw I2cClosedFailed("?") }
 		else if (ret == I2C_SUCCESS) { ;  }
 		else {
-			throw I2cUnknowExp("?", "$function returned: {ret.toString()}")
+			throw I2cUnknowExp(
+				"?", "$function returned: {ret.toString()}")
 		}
 	}
 }
@@ -62,7 +59,8 @@ func closeI2cDev(fd: Int32): Unit {
 func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 	unsafe {
 		let ret = ioctl(fd, I2C_SLAVE, addr)
-		if (ret < 0) { throw I2cSetAddressFailed("?") }
+		if (ret < 0) {
+			throw I2cSetAddressFailed("?") }
 	}
 }
 
@@ -70,7 +68,7 @@ func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 @C
 func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 	var a: VArray<UInt8, $2> = [reg, val]
-	var p: CPointer<Unit> = unsafe { getPtr(inout a) }
+	var p: CPointer<Unit> = unsafe { CPointer<Unit>(inout a) }
 	if (2 !=  unsafe { write(fd, p, 2) }) {
 		throw I2cWriteRegFailed("?")
 	}
@@ -80,7 +78,7 @@ func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 @C
 func readI2cReg(fd: Int32, reg: UInt8): UInt8 {
 	var value: UInt8 = 0
-	var p = unsafe { getPtr(inout value) }
+	var p = unsafe { CPointer<Unit>(inout value) }
 	let ret = unsafe { read(fd, p, 1) }
 	if (ret != 1) { throw I2cReadRegFailed("?") }
 	return value
@@ -88,7 +86,10 @@ func readI2cReg(fd: Int32, reg: UInt8): UInt8 {
 
 
 /* -------- I2C锁具 --------
- *  因为每个I2C接口在通信时具有原子化的需求  */
+ * INFO(20260521-qing): 因为每个I2C接口在通信时具有原子化的需求
+ * - 需要一个互斥锁集合，在打开第一个I2C设备时被初始化，
+ * - 释放最后一个I2C设备时，将锁具释放
+ * - 每次进行I2C通信时，进行上锁操作   */
 @C
 struct I2C_Lock {
 	var i2c_fd: Int32 = 0
@@ -218,7 +219,8 @@ func I2cLock_unlock(fd: Int32): Unit {
 }
 
 
-/* ---------------- */
+/* -------- 原生I2C通信类--------
+ * INFO(20260521-qing): 直接调用glibc的接口 */
 public class I2C_Orig {
 	private var fd: Int32 = -1
 	private var path: String
@@ -259,7 +261,7 @@ public class I2C_Orig {
  *     TODO: 直接使用libi2c.so  */
 //public class I2C {
 
-	/* -------- 主初始化器 - 打开I2C设备 -------- */
+//	/* -------- 主初始化器 - 打开I2C设备 -------- */
 //	public init(path: String) {
 //		this.path = path
 //		unsafe{
@@ -270,8 +272,8 @@ public class I2C_Orig {
 //				throw I2cOpenedFailed(path)  }
 //		}
 //	}
-
-	/* -------- 析构函数 -------- */
+//
+//	/* -------- 析构函数 -------- */
 //	~init() {
 //		unsafe {
 //			if (fd == -1) {
@@ -280,8 +282,8 @@ public class I2C_Orig {
 //			}
 //		}
 //	}
-
-	/* -------- 关闭I2C设备 -------- */
+//
+//	/* -------- 关闭I2C设备 -------- */
 //	public func close() {
 //		unsafe {
 //			if (fd == -1) {
@@ -290,41 +292,41 @@ public class I2C_Orig {
 //			}
 //		}
 //	}
-
-	/* -------- 设置I2C设备地址 -------- */
+//
+//	/* -------- 设置I2C设备地址 -------- */
 //	public func setAddr(addr: UInt8): Unit {
 //		unsafe {
 //			if (I2C_setAddr(fd, addr)) {  throw I2cSetAddressFailed(path)  }
 //		}
 //	}
-
-	/* -------- 写入从机寄存器 -------- */
+//
+//	/* -------- 写入从机寄存器 -------- */
 //	public func writeReg(reg: UInt8, val:UInt8): Unit {
 //		unsafe {
 //			if (I2C_writeReg(fd, reg, val)) {  throw I2cWriteRegFailed(path)  }
 //		}
 //	}
-
-	/* -------- 读取I2C从机寄存器 --------
-	 * -- 失败返回0 -- */
+//
+//	/* -------- 读取I2C从机寄存器 --------
+//	 * -- 失败返回0 -- */
 //	public func readReg(reg: UInt8): UInt8 {
 //		unsafe {
 //			return I2C_readReg(fd, reg)  }
 //	}
-
-	/* -------- 读取I2C从机寄存器 - 带符号 --------
-	 * -- 失败返回0 -- */
+//
+//	/* -------- 读取I2C从机寄存器 - 带符号 --------
+//	 * -- 失败返回0 -- */
 //	public func readRegFlag(reg: UInt8): Int8 {
 //		unsafe {
 //			return I2C_readRegFlag(fd, reg)  }
 //	}
-
-	/* -------- 存放文件描述符 -------- */
+//
+//	/* -------- 存放文件描述符 -------- */
 //	private var fd: Int16
-
-	/* -------- 存放设备文件地址 -------- */
+//
+//	/* -------- 存放设备文件地址 -------- */
 //	private var path: String
-
+//
 //}
 
 /* -------- I2C设备异常 -------- */
