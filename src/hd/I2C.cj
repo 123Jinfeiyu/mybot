@@ -1,4 +1,6 @@
 package bot4cj.hd
+import bot4cj.th.*
+
 //foreign func I2C_init(path: CString): Int16
 //foreign func I2C_free(fd: Int16): Unit
 //foreign func I2C_setAddr(fd: Int16, addr: UInt8): Bool
@@ -29,27 +31,39 @@ const I2C_SLAVE = 0x0703u64	/* at least on arm64 */
 /* -------- OPEN I2C DEVICE -------- */
 @C
 func openI2cDev(path: CString): Int32 {
-	let fd = unsafe { open(path, O_RDWR) }
-	if (fd > 0) { return  fd }
-	else { throw I2cOpenedFailed("?") }
+	unsafe {
+		let fd =  open(path, O_RDWR)
+		if (fd > 0) { 
+			I2cLock_create(fd)
+			return  fd
+		}
+		else {
+			throw I2cOpenedFailed("?") }
+	}
 }
 
 /* -------- CLOSE I2C DEVICE -------- */
 @C
 func closeI2cDev(fd: Int32): Unit {
-	let ret =  unsafe { close(fd) }
-	if (ret == I2C_FAILED) {
-		throw I2cClosedFailed("?") }
-	else if (ret == I2C_SUCCESS) { ;  }
-	else {
-		throw I2cUnknowExp("?", "$function returned: {ret.toString()}") }
+	unsafe {
+		I2cLock_destroy(fd)
+		let ret = close(fd)
+		if (ret == I2C_FAILED) {
+			throw I2cClosedFailed("?") }
+		else if (ret == I2C_SUCCESS) { ;  }
+		else {
+			throw I2cUnknowExp("?", "$function returned: {ret.toString()}")
+		}
+	}
 }
 
 /* -------- SET I2C ADDR -------- */
 @C
 func setI2cAddr(fd: Int32, addr: UInt8): Unit {
-	let ret = unsafe { ioctl(fd, I2C_SLAVE, addr) }
-	if (ret < 0) { throw I2cSetAddressFailed("?") }
+	unsafe {
+		let ret = ioctl(fd, I2C_SLAVE, addr)
+		if (ret < 0) { throw I2cSetAddressFailed("?") }
+	}
 }
 
 /* -------- WRITE I2C REG -------- */
@@ -72,6 +86,139 @@ func readI2cReg(fd: Int32, reg: UInt8): UInt8 {
 	return value
 }
 
+
+/* -------- I2C锁具 --------
+ *  因为每个I2C接口在通信时具有原子化的需求  */
+@C
+struct I2C_Lock {
+	var i2c_fd: Int32 = 0
+	var lock = CPointer<UInt8>()
+	var is_active = false
+}
+
+var MAIN_LOCK = CPointer<UInt8>()
+var LOCKS = CPointer<I2C_Lock>()
+
+/* -------- 为一个I2C设备注册锁具 -------- */
+@C
+func I2cLock_create(fd: Int32): Unit {
+	unsafe {
+		/* -------- 初始化主要的锁 -------- */
+		if (MAIN_LOCK.isNull()) {
+			MAIN_LOCK = _mutex_create()
+			LOCKS = LibC.malloc<I2C_Lock>(count: 20)
+		}
+
+		/* -------- 获取主锁 --------*/
+		_mutex_lock(MAIN_LOCK)
+
+		for (idx in 0..20) {
+			var lock = (LOCKS+idx).read()
+			if (lock.is_active == false) {
+				lock.is_active = true
+				lock.i2c_fd = fd
+				lock.lock = _mutex_create()
+				(LOCKS+idx).write(lock)
+				_mutex_unlock(MAIN_LOCK)
+				return
+			}
+		}
+
+		_mutex_unlock(MAIN_LOCK)
+		throw OverflowException("LOCKS is over.")
+	}
+}
+/* -------- 为一个I2C设备注销锁具 -------- */
+@C
+func I2cLock_destroy(fd: Int32): Unit {
+	unsafe {
+		if (MAIN_LOCK.isNull()) {
+			throw NoneValueException("no i2c lock")
+		}
+		_mutex_lock(MAIN_LOCK)
+
+		var flag_any = false
+		var flag_target = false
+		for (idx in 0..20) {
+			var lock = (LOCKS+idx).read()
+			if (lock.is_active == true && lock.i2c_fd == fd) {
+				lock.is_active = false
+				_mutex_free(lock.lock)
+				(LOCKS+idx).write(lock)
+				flag_target = true
+			}
+			else if (lock.is_active == true && lock.i2c_fd != fd) {
+				flag_any = true
+			}
+		}
+
+		if (!flag_any) {
+			LibC.free(LOCKS)
+			_mutex_free(MAIN_LOCK)
+			MAIN_LOCK = CPointer<UInt8>()
+		}
+
+		if (flag_target) {
+			return
+		}
+
+		_mutex_unlock(MAIN_LOCK)
+		throw NoneValueException("i2c lock nor found")
+	}
+}
+
+/* -------- 为一个I2C锁具加锁 -------- */
+@C
+func I2cLock_lock(fd: Int32): Unit {
+
+	unsafe {
+		if (MAIN_LOCK.isNull()) {
+			throw NoneValueException("no i2c lock")
+		}
+		_mutex_lock(MAIN_LOCK)
+
+		for (idx in 0..20) {
+			var lock = (LOCKS+idx).read()
+			if (lock.is_active == true && lock.i2c_fd == fd) {
+				lock.is_active = false
+				_mutex_lock(lock.lock)
+				(LOCKS+idx).write(lock)
+				break
+			}
+		}
+
+		_mutex_unlock(MAIN_LOCK)
+		throw NoneValueException("i2c lock nor found")
+	}
+}
+
+/* -------- 为一个I2C锁具解锁 -------- */
+@C
+func I2cLock_unlock(fd: Int32): Unit {
+
+	unsafe {
+		if (MAIN_LOCK.isNull()) {
+			throw NoneValueException("no i2c lock")
+		}
+		_mutex_lock(MAIN_LOCK)
+
+		for (idx in 0..20) {
+			var lock = (LOCKS+idx).read()
+			if (lock.is_active == true && lock.i2c_fd == fd) {
+				lock.is_active = false
+				_mutex_unlock(lock.lock)
+				(LOCKS+idx).write(lock)
+				break
+			}
+		}
+
+		_mutex_unlock(MAIN_LOCK)
+		throw NoneValueException("i2c lock nor found")
+	}
+}
+
+
+/* ---------------- */
 public class I2C_Orig {
 	private var fd: Int32 = -1
 	private var path: String
