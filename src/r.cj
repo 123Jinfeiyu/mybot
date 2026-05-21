@@ -225,6 +225,7 @@ class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 				return ret
 			},
 			rise: {=>
+				println("MPU6050_BIND HVar: ${name} is starting now")
 				mpu6050.setup()
 				mpu6050.startDaemon()
 			},
