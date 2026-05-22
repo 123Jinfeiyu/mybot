@@ -97,47 +97,66 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 //foreign func pthread_testcancel(): Unit
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
+
+	/* -------- 获取传入线程的参数 -------- */
 	let param  =  unsafe{ CPointer<mpu6050_th_param>(args).read() }
 
+	/* -------- 为加速度计准备滤波器组 -------- */
 	var kalman_accel_x = extKalman(20.0f32, 200.0f32)
 	var kalman_accel_y = extKalman(20.0f32, 200.0f32)
 	var kalman_accel_z = extKalman(20.0f32, 200.0f32)
+
+	/* -------- 为陀螺仪准备滤波器组 -------- */
 	var kalman_gyro_x = extKalman(20.0f32, 200.0f32)
 	var kalman_gyro_y = extKalman(20.0f32, 200.0f32)
 	var kalman_gyro_z = extKalman(20.0f32, 200.0f32)
+
+
 	while(true) {
+
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		//unsafe { _mutex_lock(mutex) }
 
+		/* -------- 获取传感器数据 -------- */
 		var data = unsafe { mpu6050_readSensor(param.i2c_fd, param.addr) }
+
+		/* -------- 为加速度计执行滤波操作 -------- */
 		let filtered_accel_x = kalman_accel_x.filter(Float32(data.accel_x))
 		let filtered_accel_y = kalman_accel_y.filter(Float32(data.accel_y))
 		let filtered_accel_z = kalman_accel_z.filter(Float32(data.accel_z))
+
+		/* -------- 为陀螺仪执行滤波操作 -------- */
 		let filtered_gyro_x = kalman_gyro_x.filter(Float32(data.gyro_x))
 		let filtered_gyro_y = kalman_gyro_y.filter(Float32(data.gyro_y))
 		let filtered_gyro_z = kalman_gyro_z.filter(Float32(data.gyro_z))
+
+		/* -------- 打印出加速度计的数据 --------*/
 		print("accel_x: ${filtered_accel_x}\t")
 		print("accel_y: ${filtered_accel_y}\t")
 		print("accel_z: ${filtered_accel_z}\n")
+
+		/* -------- 打印出陀螺仪的数据 -------- */
 		print("gyro_x: ${filtered_gyro_x}\t")
 		print("gyro_y: ${filtered_gyro_y}\t")
 		print("gyro_z: ${filtered_gyro_z}\n")
 
 		//unsafe { _mutex_unlock(mutex) }
 		sleep(Duration.millisecond * 10)
+
 	}
 
+	/* -------- 返回NULL指针以占位 -------- */
 	return CPointer<Unit>()
 }
 
 /* -------- mpu6050线程参数 --------
- * INFO(20260522-qing): mutex字段是一个锁的指针，
+ * INFO(20260522-qing): mutex字段是一个锁的指针，需要在MPU6050的构造函数中获取资源
  * -  用于辅助别的线程获取值。  */
 @C
 struct mpu6050_th_param {
-	public var i2c_fd: Int32 = 0
-	public var addr: UInt8 = 0
-	public var mutex = CPointer<UInt8>()
+	public var i2c_fd: Int32 = 0		/* i2c文件句柄 */
+	public var addr: UInt8 = 0		/* i2c设备地址 */
+	public var mutex = CPointer<UInt8>()	/* 用于辅助别的线程获取值的锁 */
 }
 
 
@@ -157,14 +176,17 @@ public class MPU6050 {
 			var tmp = mpu6050_th_param()
 			tmp.i2c_fd = i2c_fd
 			tmp.addr = addr
-			//tmp.mutex = LibC.malloc<UInt8()
+			tmp.mutex = LibC.malloc<UInt8()
 			param.write(tmp)
 		}
 	}
 
 	/* -------- 终结器 -------- */
 	~init() {
+		/* -------- 清除构造时申请的线程参数和锁 -------- */
 		unsafe {
+			var tmp = param.read()
+			LibC.free(tmp.mutex)
 			LibC.free(param) 
 		}
 	}
@@ -175,8 +197,8 @@ public class MPU6050 {
 	}
     
 	/*----------------*/
-	private var i2c_fd: Int32
-	private var addr: UInt8
+	private var i2c_fd: Int32	/* -------- I2C设备文件句柄 -------- */
+	private var addr: UInt8		/* -------- I2C设备地址 -------- */
 
 
 	/* -------- 获取原始MPU6050传感器数据 -------- */
@@ -187,23 +209,23 @@ public class MPU6050 {
 	/* -------- mpu6050启动守护 -------- 
 	 * TODO(20260520-qing): 放进类中
 	 * --------------------------------- */
-	var param: CPointer<mpu6050_th_param>	/* 线程参数必须能够持久保存 */
-	var pth: Option<Pth> = None
-	public func startDaemon() {
+	var param: CPointer<mpu6050_th_param>	/* -------- 线程参数必须能够持久保存 -------- */
+	var pth: Option<Pth> = None		/* -------- 线程对象 -------- */
+	public func startDaemon() {		/* -------- 启动线程 -------- */
 		pth = Pth(mpu6050_main, CPointer<Unit>(param))
 	}
 
+	/* -------- 停止线程 -------- */
 	public func stopDaemon() {
 		if (let Some(P) <- pth) {
-			P.close()
-		}
+			P.close()  }
 	}
 
+	/* -------- 等待线程终止 -------- */
 	public func waitDaemon() {
 		if (let Some(P) <- pth) {
 			var ptr: CPointer<Unit> = CPointer<Unit>()
-			P.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>(ptr)))
-		}
+			P.join(CPointer<CPointer<Unit>>(CPointer<CPointer<Unit>>(ptr)))  }
 	}
 
 }
