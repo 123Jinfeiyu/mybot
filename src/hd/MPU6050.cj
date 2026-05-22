@@ -8,6 +8,7 @@
 package bot4cj.hd
 import std.time.*
 import bot4cj.th.*
+import bot4cj.math.*
     
 const ADDR_0:           UInt8 = 0x68  /* 默认地址 */
 const ADDR_1:           UInt8 = 0x68  /* 地址2 */
@@ -92,7 +93,7 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 		return data 
 }
 
-/* -------- mpu6050主线程 --------*/
+/* -------- mpu6050主线程 -------- */
 //foreign func pthread_testcancel(): Unit
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
@@ -101,8 +102,10 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		//unsafe { _mutex_lock(mutex) }
 
-		let data = unsafe { mpu6050_readSensor(param.i2c_fd, param.addr) }
-		data.print()
+		var kalman_accel_x = extKalman(20.0f32, 200.0f32)
+		var data = unsafe { mpu6050_readSensor(param.i2c_fd, param.addr) }
+		let filtered_accel_x = kalman_accel_x.filter(Float32(data.accel_x))
+		println("accel_x: ${filtered_accel_x}")
 
 		//unsafe { _mutex_unlock(mutex) }
 		sleep(Duration.millisecond * 10)
@@ -111,23 +114,25 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	return CPointer<Unit>()
 }
 
-/* -------- mpu6050线程参数 -------- */
+/* -------- mpu6050线程参数 --------
+ * INFO(20260522-qing): mutex字段是一个锁的指针，
+ * -  用于辅助别的线程获取值。  */
 @C
 struct mpu6050_th_param {
 	public var i2c_fd: Int32 = 0
 	public var addr: UInt8 = 0
-	//public var mutex = CPointer<UInt8>()
+	public var mutex = CPointer<UInt8>()
 }
 
 
 
 /* -------- MPU6050陀螺仪、加速度计 --------
- * -  输入并持有一个I2C引用  */
+ * - 输入并持有一个I2C文件句柄  */
 public class MPU6050 {
 
 	/* -------- 主初始化器 --------
 	 * FIXME(20260517-qing): 由于gc的原因，我们可能会手动构造RAII，
-	 * - 将一部分初始化移动到别的函数，但是为了向后兼容，这里暂时保留了它们  */
+	 * - 将一部分初始化移动到别的函数  */
 	public init(i2c_fd: Int32, addr: UInt8)  {
 		this.i2c_fd = i2c_fd
 		this.addr = addr
@@ -136,6 +141,7 @@ public class MPU6050 {
 			var tmp = mpu6050_th_param()
 			tmp.i2c_fd = i2c_fd
 			tmp.addr = addr
+			//tmp.mutex = LibC.malloc<UInt8()
 			param.write(tmp)
 		}
 	}

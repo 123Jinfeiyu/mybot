@@ -24,7 +24,7 @@ const I2C_FAILED = -1i32
 const I2C_SUCCESS = 0i32
 const O_RDWR = 2i32	/* C头文件中的宏 */
 const I2C_SLAVE = 0x0703u64	/* at least on arm64 */
-/* -------- OPEN I2C DEVICE -------- */
+/* -------- OPEN I2C DEVICE 打开I2C设备  -------- */
 @C
 func openI2cDev(path: CString): Int32 {
 	unsafe {
@@ -34,11 +34,12 @@ func openI2cDev(path: CString): Int32 {
 			return  fd
 		}
 		else {
-			throw I2cOpenedFailed("?") }
+			throw I2cOpenedFailed("?")
+		}
 	}
 }
 
-/* -------- CLOSE I2C DEVICE -------- */
+/* -------- CLOSE I2C DEVICE 关闭I2C设备 -------- */
 @C
 func closeI2cDev(fd: Int32): Unit {
 	unsafe {
@@ -54,7 +55,7 @@ func closeI2cDev(fd: Int32): Unit {
 	}
 }
 
-/* -------- SET I2C ADDR -------- */
+/* -------- SET I2C ADDR 设置I2C地址 -------- */
 @C
 func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 	unsafe {
@@ -64,7 +65,7 @@ func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 	}
 }
 
-/* -------- WRITE I2C REG -------- */
+/* -------- WRITE I2C REG 写I2C寄存器 -------- */
 @C
 func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 	var a: VArray<UInt8, $2> = [reg, val]
@@ -74,7 +75,8 @@ func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 	}
 }
 
-/* -------- READ I2C REG -------- */
+/* -------- READ I2C REG 读I2C寄存器 --------
+ * INFO(20260522-qing): 读取寄存器之前要先写寄存器地址 */
 @C
 func readI2cReg(fd: Int32, reg: UInt8): Int8 {
 	var ptr = reg
