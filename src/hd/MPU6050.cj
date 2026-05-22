@@ -98,14 +98,30 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 	let param  =  unsafe{ CPointer<mpu6050_th_param>(args).read() }
+
+	var kalman_accel_x = extKalman(20.0f32, 200.0f32)
+	var kalman_accel_y = extKalman(20.0f32, 200.0f32)
+	var kalman_accel_z = extKalman(20.0f32, 200.0f32)
+	var kalman_gyro_x = extKalman(20.0f32, 200.0f32)
+	var kalman_gyro_y = extKalman(20.0f32, 200.0f32)
+	var kalman_gyro_z = extKalman(20.0f32, 200.0f32)
 	while(true) {
 		println("I am running. i2c_fd: ${param.i2c_fd}, addr: ${param.addr}")
 		//unsafe { _mutex_lock(mutex) }
 
-		var kalman_accel_x = extKalman(20.0f32, 200.0f32)
 		var data = unsafe { mpu6050_readSensor(param.i2c_fd, param.addr) }
 		let filtered_accel_x = kalman_accel_x.filter(Float32(data.accel_x))
-		println("accel_x: ${filtered_accel_x}")
+		let filtered_accel_y = kalman_accel_y.filter(Float32(data.accel_y))
+		let filtered_accel_z = kalman_accel_z.filter(Float32(data.accel_z))
+		let filtered_gyro_x = kalman_gyro_x.filter(Float32(data.gyro_x))
+		let filtered_gyro_y = kalman_gyro_y.filter(Float32(data.gyro_y))
+		let filtered_gyro_z = kalman_gyro_z.filter(Float32(data.gyro_z))
+		print("accel_x: ${filtered_accel_x}\t")
+		print("accel_y: ${filtered_accel_y}\t")
+		print("accel_z: ${filtered_accel_z}\n")
+		print("gyro_x: ${filtered_gyro_x}\t")
+		print("gyro_y: ${filtered_gyro_y}\t")
+		print("gyro_z: ${filtered_gyro_z}\n")
 
 		//unsafe { _mutex_unlock(mutex) }
 		sleep(Duration.millisecond * 10)
