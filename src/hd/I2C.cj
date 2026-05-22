@@ -13,24 +13,24 @@ import bot4cj.th.*
 /* -------- 我们将直接调用glibc中的函数 --------
  * TODO(20260518-qing):  稍后我们专门做一个i2c代码仓库，这样就能够区分不同架构上面的int的大小
  * TODO*(20260521-qing): C语言中的int类型一般是Int32，我们可以声明一个类型别名  */
-foreign func open(path: CString, flag: Int32, ...): Int32
-foreign func close(fd: Int32): Int32	/* 成功返回0，失败返回-1 */
-foreign func ioctl(fd: Int32, addr: UInt64, ...): Int32	/* 成功返回非负整数，失败返回-1 */
-foreign func read(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative
-foreign func write(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative
+foreign func open(path: CString, flag: Int32, ...): Int32				/* -------- libc中的打开文件函数 -------- */
+foreign func close(fd: Int32): Int32							/* -------- 关闭文件。成功返回0，失败返回-1 -------- */
+foreign func ioctl(fd: Int32, addr: UInt64, ...): Int32					/* -------- 成功返回非负整数，失败返回-1 -------- */
+foreign func read(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative		/* -------- 读取文件内容，返回读取的字节数 -------- */
+foreign func write(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative	/* -------- 写入文件内容，返回写入的字节数 -------- */
 
+const I2C_FAILED = -1i32	/* -------- I2C关闭文件失败 -------- */
+const I2C_SUCCESS = 0i32	/* -------- I2C关闭文件成功 -------- */
+const O_RDWR = 2i32		/* -------- C头文件中的宏，以读写方式打开 -------- */
+const I2C_SLAVE = 0x0703u64	/* -------- at least on arm64 -------- */
 
-const I2C_FAILED = -1i32
-const I2C_SUCCESS = 0i32
-const O_RDWR = 2i32	/* C头文件中的宏 */
-const I2C_SLAVE = 0x0703u64	/* at least on arm64 */
 /* -------- OPEN I2C DEVICE 打开I2C设备  -------- */
 @C
 func openI2cDev(path: CString): Int32 {
 	unsafe {
 		let fd =  open(path, O_RDWR)
 		if (fd > 0) { 
-			I2cLock_create(fd)
+			I2cLock_create(fd)	/* -------- 为I2C设备创建锁 -------- */
 			return  fd
 		}
 		else {
@@ -43,7 +43,7 @@ func openI2cDev(path: CString): Int32 {
 @C
 func closeI2cDev(fd: Int32): Unit {
 	unsafe {
-		I2cLock_destroy(fd)
+		I2cLock_destroy(fd)	/* -------- 销毁I2C设备的锁 -------- */
 		let ret = close(fd)
 		if (ret == I2C_FAILED) {
 			throw I2cClosedFailed("?") }
