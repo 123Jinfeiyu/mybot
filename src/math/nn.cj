@@ -13,23 +13,25 @@ import std.convert.*
 
 
 /* -------- 新版的神经网络，使用原生矩阵对象实现 --------
-   TODO(20260517-qing): 增加batch批次处理，使用ArrayList<Matrix1>
-   TODO*(20260519-qing): 将神经网络转换为MatrixObject矩阵式对象   */
+ * TODO(20260517-qing): 增加batch批次处理，使用ArrayList<Matrix1>
+ * TODO*(20260519-qing): 将神经网络转换为MatrixObject矩阵式对象   */
 
 public class Nn1 {
-	let inputno: Int64	/* 输入 */
-	let outputno: Int64	/* 输出 */
-	var weights: Matrix1	/* (inputs, outputs) */
-	var bias: Matrix1	/* (1, output) */
-	let learning_rate: FP32	/* 学习率 */
-	let f: Af		/* 激活函数 */
+
+	let inputno: Int64	/* -------- 输入 -------- */
+	let outputno: Int64	/* -------- 输出 -------- */
+	var weights: Matrix1	/* -- (inputs, outputs) - */
+	var bias: Matrix1	/* ----- (1, output) ---- */
+	let learning_rate: FP32	/* ------- 学习率 ------- */
+	let f: Af		/* ------ 激活函数 ------ */
+
 	/*------------------*/
-	var prev_inputs: Option<Matrix1> = None
-	var prev_raw_inputs: Option<Matrix1> = None
-	var prev_outputs: Option<Matrix1> = None
+	var prev_inputs: Option<Matrix1> = None		/* ---- 之前的输入 ---- */
+	var prev_raw_inputs: Option<Matrix1> = None	/* ---- 之前的原始输出 ---- */
+	var prev_outputs: Option<Matrix1> = None	/* ---- 之前的输出 ---- */
 	/*------------------*/
-	var weights_grad: Option<Matrix1> = None
-	var bias_grad: Option<Matrix1> = None
+	var weights_grad: Option<Matrix1> = None	/* ---- 权重梯度 ---- */
+	var bias_grad: Option<Matrix1> = None		/* ---- 偏置梯度 ---- */
 	
 
 	/* -------- 初始化器 --------
@@ -41,12 +43,13 @@ public class Nn1 {
 		this.f = f
 		weights = Matrix1(inputno, outputno)
 		bias = Matrix1(1, outputno)
+
+		/* -------- 初始化权重 -------- */
 		Ini.xavierUniformInit(weights, inputno, outputno)
 	}
 
 	/* -------- 神经网络推理 -------- */
-	func forward(x: Matrix1)
-	{
+	func forward(x: Matrix1) {
 		prev_inputs = x
 		var r = x.dot(weights)
 		r = r + bias
@@ -76,15 +79,21 @@ public class Nn1 {
 
 
 	/* -------- 形状访问器 -------- */
-	public func get_in_shape() { return inputno }
+	public func get_in_shape() {
+		return inputno }
 
-	public func get_out_shape() { return outputno }
+	public func get_out_shape() {
+		return outputno }
 
-	public func get_lr() { return learning_rate }
+	public func get_lr() {
+		return learning_rate }
 
-	public func get_f_type()  { return f.get_type() }
+	public func get_f_type()  {
+		return f.get_type() }
 
-	public func get_f_val() { return f.get_value() }
+	public func get_f_val() {
+		return f.get_value() }
+	/* ---------------------------- */
 
 }
 
