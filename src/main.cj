@@ -101,7 +101,6 @@ main(args: Array<String>): Int64 {
 	else {
 		let consoleReader = getStdIn()
 		let robot = RobotStruct(consoleReader)
-		//file.close()
 		try {
 			robot.active()
 			robot.run()
@@ -110,6 +109,7 @@ main(args: Array<String>): Int64 {
 			robot.deactive()
 		}
 
+		/*----NOTE(20260523-qing): 储存微调网络模型 ----*/
 //		let consoleReader = getStdIn()
 //		run_action_drl(consoleReader, nns)
 //		if (options.contains("o")) {
@@ -136,14 +136,6 @@ func print_help()
 /* -------- 集成多种常规测试、临时测试 -------- */
 func run_test(key: String) {
 
-	/* ----------快速傅里叶变换测试---------- */
-	//if (key == "fft") {
-	//	println('FFT test start...')
-	//var fftt = genWave()
-	//	var fftr = start_fft(fftt)
-	//	println('FFT test completed.')
-	//}
-
 	/* -----------神经网络与门测试------------
 	 * INFO: 我们使用随机生成的动态数据集，这样会导致一些后果 */
 	if (key == "nn") {
@@ -166,44 +158,6 @@ func run_test(key: String) {
 		}
 	}
 
-	/* -------------对单个mpu6050进行持续测试--------------
-	 * 这里主要是用于测试该硬件是否可用 */
-	//else if (key == "mpu6050") {
-
-	//	let i2c = I2C(I2C_PATH)
-	//	let mpu6050 = MPU6050(i2c, MPU6050.ADDR_0)
-	//	while (true) {
-	//		let data = mpu6050.readSensor()
-	//		print("accel_x: ${data.accel_x}\t")
-	//		print("accel_y: ${data.accel_y}\t")
-	//		print("accel_z: ${data.accel_z}\t")
-	//		print("gyro_x: ${data.gyro_x}\t")
-	//		print("gyro_y: ${data.gyro_y}\t")
-	//		println("gyro_z: ${data.gyro_z}")
-	//		sleep(Duration.millisecond * 10)
-	//	}
-	//}
-
-
-	/* --------------发声测试--------------- */
-	else if (key == "sound") {
-		let spk = Spk(channels: 2i32, sample_rate: 48000i32)
-		spk.play(500.0f32, 0.2, 400)
-	}
-
-
-	/* -------------测试解析矩阵------------ */
-	//else if (key == "matrix") {
-	//	let file = File("ss/test.mt", OpenMode.Read)
-	//	let robot = RobotStruct(file)
-	//	try {
-	//		robot.active()
-	//		robot.run()
-	//	}
-	//	finally {
-	//		robot.deactive()
-	//	}
-	//}
 
 	/* -------- 测试解析矩阵，并且输出 -------- */
 	else if (key == "matrix_o") {
@@ -254,7 +208,6 @@ func run_serve(/*nns: ArrayList<Nn>, save_path: String*/) {
 //		run_action_drl(context.request.body, nns)
 //		save_nns(nns, save_path)
 		let robot = RobotStruct(context.request.body)
-//		file.close()
 		try {
 			robot.active()
 			robot.run()
