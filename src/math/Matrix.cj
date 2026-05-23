@@ -25,7 +25,7 @@ import std.convert.*
 //foreign func xavierUniformInit(fan_in: UInt64, fan_out: UInt64): CPointer<Unit>
 
 
-/* -------- 这一坨是32位浮点数 -------- */
+/* -------- 32位浮点数 -------- */
 public struct FP32 {
 	private var val: Float32
 	public init(t: Float32) {	/* 以Float32初始化对象 */
@@ -33,7 +33,7 @@ public struct FP32 {
 	public func getValue() {	/* 获取值 */
 		return val }
 	/* -------- 运算符重载 -------- */
-	//public operator func =(t: Float32) { /* this can not */
+	//public operator func =(t: Float32) {	/*-------- this can not --------*/
 	//	val = t }
 	public operator func +(t: Float32) {
 		return FP32(val + t)}
@@ -67,22 +67,26 @@ public struct FP32 {
 | + + + + | |
 +---------+ /
 
+
+ * TODO(20260523-qing): 以某种方式统一矩阵式的字符串矩阵和这里的数值矩阵
 */
 public class Matrix1 {
 
-	private var row: Int64
-	private var col: Int64
-	private var arr: Array<FP32>
+	private var row: Int64		/* ---- 行数 ---- */
+	private var col: Int64		/* ---- 列数 ---- */
+	private var arr: Array<FP32>	/* ---- 数据 ---- */
 
 	/* -------- 构造器，默认值为0 -------- */
 	public Matrix1(row: Int64, col: Int64) {
 		this.row = row
 		this.col = col
-		this.arr = Array<FP32>(row * col, repeat: FP32(0.0f32))
+		this.arr = Array<FP32>(row * col, {_ => FP32(0.0f32)})
 	}
 
 	/* --------- 这几个方法是访问器 -------- */
 	/* ------------------------------------- */
+	/* -------- TODO(20260524-qing): 使用prop成员 -------- */
+
 	public func get(r: Int64, c: Int64) {
 		return arr.get(r * this.col + c)
 	}
@@ -109,7 +113,7 @@ public class Matrix1 {
 
 	/* -------- 这些是运算符重载 -------- */
 	/* ---------------------------------- */
-	public operator func +(a: FP32) {
+	public operator func +(a: FP32) {	/* ---- 矩阵广播加法 ---- */
 		let r  =get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -123,7 +127,7 @@ public class Matrix1 {
 		return M
 	}
 
-	public operator func +(S: Matrix1) {
+	public operator func +(S: Matrix1) {	/* ---- 矩阵加法 ---- */
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -141,7 +145,7 @@ public class Matrix1 {
 		return M
 	}
 
-	public  operator func -(a: FP32) {
+	public  operator func -(a: FP32) {	/* ---- 矩阵广播减法 ----*/
 		let r = get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -154,7 +158,7 @@ public class Matrix1 {
 		return M
 	}
 
-	public operator func -(S: Matrix1) {
+	public operator func -(S: Matrix1) {	/* ---- 矩阵减法 ---- */
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -172,7 +176,7 @@ public class Matrix1 {
 		return M
 	}
 
-	public operator func *(a: FP32) {
+	public operator func *(a: FP32) {	/* ---- 矩阵广播乘法 ---- */
 		let r = get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -185,7 +189,7 @@ public class Matrix1 {
 		return M
 	}
 
-	public operator func *(S: Matrix1) {
+	public operator func *(S: Matrix1) {	/* ---- 逐元素相乘 ---- */
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -203,7 +207,7 @@ public class Matrix1 {
 		return M
 	}
 
-	public operator func /(a: FP32) {
+	public operator func /(a: FP32) {	/* ---- 矩阵广播除法 ---- */
 		let r = get_row()
 		let c = get_col()
 		let M = Matrix1(r, c)
@@ -216,7 +220,7 @@ public class Matrix1 {
 		return M
 	}
 
-	public operator func /(S: Matrix1) {
+	public operator func /(S: Matrix1) {	/* ---- 逐元素除法 ---- */
 		if (!has_same_shape(S)) {
 			throw IllegalArgumentException("Matrixes doesn't match")
 		}
@@ -234,6 +238,7 @@ public class Matrix1 {
 		return M
 	}
 
+	/* ------------------------------ */
 	/* -------- 矩阵点积乘法 -------- */
 	public func dot(S: Matrix1) {
 		if (!has_dot_shape(S)) {
