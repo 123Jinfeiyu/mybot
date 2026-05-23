@@ -12,17 +12,17 @@ import bot4cj.math.*
  *  - 新版本中是相对解耦合的
  *  - 新版本成熟后，这个版本可能被删除
  */
-enum ActType {
-
-	SERVO | SPEAK | NOPE | UNKNOW
-	/* -------- 以固定方式解析命名含义 -------- */
-	public static func parse(nm: String): ActType	{
-		if (nm.startsWith("s")) {  ActType.SERVO   }
-		else if (nm == "spk") {  ActType.SPEAK  }
-		else if (nm == "-") {  ActType.NOPE  }
-		else {  ActType.UNKNOW  }
-	}
-}
+//enum ActType {
+//
+//	SERVO | SPEAK | NOPE | UNKNOW
+//	/* -------- 以固定方式解析命名含义 -------- */
+//	public static func parse(nm: String): ActType	{
+//		if (nm.startsWith("s")) {  ActType.SERVO   }
+//		else if (nm == "spk") {  ActType.SPEAK  }
+//		else if (nm == "-") {  ActType.NOPE  }
+//		else {  ActType.UNKNOW  }
+//	}
+//}
 
 
 /* -------- 单条动作类 --------
@@ -31,22 +31,22 @@ enum ActType {
  * - 能够记录动作的类型、值、持续时间、是否被跳过
  * - 新版本使用矩阵式对象，能够正常使用后，可能 删除该旧版本
  */
-class Act {
-	private let typ: ActType		/* 该动作的类型 */
-	private let val: Option<Float32>	/* 动作值 */
-	private let duration: Float32		/* 该动作持续的时间 */
-	private let skip: Bool			/* 是否跳过 */
-	public init(Type: ActType, value!: Option<Float32>, duration!: Float32, skip!: Bool = false)  {
-		this.typ = Type
-		this.val = value
-		this.duration = duration
-		this.skip = skip
-	}
-	public func getVal() { this.val }
-	public func getType() { this.typ }
-	public func getDelay() { this.duration }
-	public func getSkip() { this.skip}
-}
+//class Act {
+//	private let typ: ActType		/* 该动作的类型 */
+//	private let val: Option<Float32>	/* 动作值 */
+//	private let duration: Float32		/* 该动作持续的时间 */
+//	private let skip: Bool			/* 是否跳过 */
+//	public init(Type: ActType, value!: Option<Float32>, duration!: Float32, skip!: Bool = false)  {
+//		this.typ = Type
+//		this.val = value
+//		this.duration = duration
+//		this.skip = skip
+//	}
+//	public func getVal() { this.val }
+//	public func getType() { this.typ }
+//	public func getDelay() { this.duration }
+//	public func getSkip() { this.skip}
+//}
 
 
 /* -------- 动作解析器类 - 只解析 --------

@@ -176,7 +176,7 @@ public class MPU6050 {
 			var tmp = mpu6050_th_param()
 			tmp.i2c_fd = i2c_fd
 			tmp.addr = addr
-			tmp.mutex = LibC.malloc<UInt8()
+			tmp.mutex = LibC.malloc<UInt8>()
 			param.write(tmp)
 		}
 	}

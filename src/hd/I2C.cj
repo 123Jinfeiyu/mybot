@@ -115,7 +115,7 @@ func I2cLock_create(fd: Int32): Unit {
 		/* -------- 初始化主要的锁 -------- */
 		if (MAIN_LOCK.isNull()) {
 			MAIN_LOCK = _mutex_create()
-			LOCKS = LibC.malloc<I2C_Lock>(count: LOCK_SIZE)
+			LOCKS = LibC.malloc<I2C_Lock>(count: LOCKS_SIZE)
 			for (i in 0..20) {
 				let tmp = I2C_Lock()
 				(LOCKS+i).write(tmp)
@@ -126,7 +126,7 @@ func I2cLock_create(fd: Int32): Unit {
 		_mutex_lock(MAIN_LOCK)
 		var flag = false
 
-		for (idx in 0..LOCK_SIZE) {
+		for (idx in 0..LOCKS_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == false) {
 				lock.is_active = true
@@ -156,7 +156,7 @@ func I2cLock_destroy(fd: Int32): Unit {
 
 		var flag_any = false
 		var flag_target = false
-		for (idx in 0..LOCK_SIZE) {
+		for (idx in 0..LOCKS_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
 				lock.is_active = false
@@ -201,7 +201,7 @@ func I2cLock_lock(fd: Int32): Unit {
 		_mutex_lock(MAIN_LOCK)
 
 		var flag = false
-		for (idx in 0..LOCK_SIZE) {
+		for (idx in 0..LOCKS_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
 				_mutex_lock(lock.lock)
@@ -227,7 +227,7 @@ func I2cLock_unlock(fd: Int32): Unit {
 		_mutex_lock(MAIN_LOCK)
 
 		var flag = false
-		for (idx in 0..LOCK_SIZE) {
+		for (idx in 0..LOCKS_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
 				_mutex_unlock(lock.lock)
