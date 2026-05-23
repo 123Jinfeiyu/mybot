@@ -6,19 +6,10 @@ import bot4cj.th.*
  *  TODO(20260516-qing): 获取pca9685的中文或者英文参考资料  */
 public class PCA9685 {
 	private static const ADDR_0: UInt8 = 0x40   /* PCA9685的i2c地址 */
-	//private var i2c_setAddr: (UInt8) -> Unit
-	//private var i2c_readReg: (UInt8) -> Int8
-	//private var i2c_writeReg:(UInt8, UInt8) -> Unit
 	private let i2c_fd: Int32
 	private let addr: UInt8
-	public init(//i2c_setAddr!: (UInt8) -> Unit,		/* 设置通信地址 - 回调函数 */
-		//	i2c_writeReg!: (UInt8, UInt8) -> Unit,	/* 写i2c地址 - 回调函数 */
-		//	i2c_readReg!: (UInt8) -> Int8,		/* 读i2c地址 - 回调函数 */
-			i2c_fd: Int32,
+	public init(	i2c_fd: Int32,
 			addr!: UInt8 = ADDR_0) {		/* PCA9685硬件地址 */
-		//this.i2c_setAddr = i2c_setAddr
-		//this.i2c_readReg = i2c_readReg
-		//this.i2c_writeReg= i2c_writeReg
 		this.i2c_fd = i2c_fd
 		this.addr = addr
 		/* -------- 初始化PCA9685 --------
