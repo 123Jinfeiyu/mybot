@@ -53,12 +53,12 @@ s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	#
   45     -     -     -     -     -     -     -     -      -      0        500;	# stand
    -     -    90     -     -     -    45     -     -      -      -         20;	# right-behind
 
-   -     -    45     -     -     -     -     -     -      -    200        500;	# stand
+   -     -    45     -     -     -     -     -     -     45    200        500;	# stand
    -     -     -     -    90     -     -     -     -      -      0         20;	# right-front
 
    -     -     -     -    45     -     -     -     -      -      -        500;	# stand
    -     -     -     -     -     -    90     -     -      -      -         20;	# left-front
 
    -     -     -     -     -     -    45     -     -      -      -        500;	# stand
-   -     -     -     -     -     -     -     -     -      -      -         20;	# stand
+   -     -     -     -     -     -     -     -     -     90      -         20;	# stand
 @
