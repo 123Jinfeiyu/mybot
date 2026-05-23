@@ -10,6 +10,85 @@ import std.convert.*
 //foreign func Leaky_ReLU_dot(m: CPointer<Unit>, alpha: Float32): CPointer<Unit>
 //foreign func Tanh_do(m: CPointer<Unit>): CPointer<Unit>
 //foreign func Tanh_dot(m: CPointer<Unit>): CPointer<Unit>
+
+
+/* -------- 新版的神经网络，使用原生矩阵对象实现 --------
+   TODO(20260517-qing): 增加batch批次处理，使用ArrayList<Matrix1>
+   TODO*(20260519-qing): 将神经网络转换为MatrixObject矩阵式对象   */
+
+public class Nn1 {
+	let inputno: Int64	/* 输入 */
+	let outputno: Int64	/* 输出 */
+	var weights: Matrix1	/* (inputs, outputs) */
+	var bias: Matrix1	/* (1, output) */
+	let learning_rate: FP32	/* 学习率 */
+	let f: Af		/* 激活函数 */
+	/*------------------*/
+	var prev_inputs: Option<Matrix1> = None
+	var prev_raw_inputs: Option<Matrix1> = None
+	var prev_outputs: Option<Matrix1> = None
+	/*------------------*/
+	var weights_grad: Option<Matrix1> = None
+	var bias_grad: Option<Matrix1> = None
+	
+
+	/* -------- 初始化器 --------
+	 * TODO(20260516-qing): 不要把初始化方法写死，使用枚举类  */
+	public init(i: Int64, o: Int64, lr: Float32, f: Af) {
+		inputno = i
+		outputno =o
+		learning_rate=FP32(lr)
+		this.f = f
+		weights = Matrix1(inputno, outputno)
+		bias = Matrix1(1, outputno)
+		Ini.xavierUniformInit(weights, inputno, outputno)
+	}
+
+	/* -------- 神经网络推理 -------- */
+	func forward(x: Matrix1)
+	{
+		prev_inputs = x
+		var r = x.dot(weights)
+		r = r + bias
+		prev_raw_inputs = r
+		let r1 = f.forward(r)
+		prev_outputs = r1
+		return r1
+	}
+
+	/* -------- 反向传播算法 -------- */
+	func backward(errs: Matrix1)
+	{
+		let first = errs  * f.backward(prev_raw_inputs.getOrThrow()) /* 逐元素相乘 */
+		let mx = prev_inputs.getOrThrow().T()
+		weights_grad = mx.dot(first)
+		bias_grad = first
+		let errs_up = first.dot(weights.T())
+		return errs_up
+	}
+
+	/*  -------- 更新权重值、偏爱因子 --------
+	 *  NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
+	func update(discount: Float32) {
+		weights = weights +  weights_grad.getOrThrow() * learning_rate * FP32(discount)
+		bias = bias + bias_grad.getOrThrow() * learning_rate * FP32(discount)
+	}
+
+
+	/* -------- 形状访问器 -------- */
+	public func get_in_shape() { return inputno }
+
+	public func get_out_shape() { return outputno }
+
+	public func get_lr() { return learning_rate }
+
+	public func get_f_type()  { return f.get_type() }
+
+	public func get_f_val() { return f.get_value() }
+
+}
+
+
 ///* -------- 旧版激活函数 --------*/
 //public enum ActivationFuncs {
 //	Sigmoid | ReLU | Leaky_ReLU | Tanh
@@ -178,79 +257,3 @@ import std.convert.*
 //	var learning_rate: Float32
 // 	let f: ActivationFuncs
 //}
-
-/* -------- 新版的神经网络，使用原生矩阵对象实现 --------
-   TODO(20260517-qing): 增加batch批次处理，使用ArrayList<Matrix1>
-   TODO*(20260519-qing): 将神经网络转换为MatrixObject矩阵式对象   */
-
-public class Nn1 {
-	let inputno: Int64	/* 输入 */
-	let outputno: Int64	/* 输出 */
-	var weights: Matrix1	/* (inputs, outputs) */
-	var bias: Matrix1	/* (1, output) */
-	let learning_rate: FP32	/* 学习率 */
-	let f: Af		/* 激活函数 */
-	/*------------------*/
-	var prev_inputs: Option<Matrix1> = None
-	var prev_raw_inputs: Option<Matrix1> = None
-	var prev_outputs: Option<Matrix1> = None
-	/*------------------*/
-	var weights_grad: Option<Matrix1> = None
-	var bias_grad: Option<Matrix1> = None
-	
-
-	/* -------- 初始化器 --------
-	 * TODO(20260516-qing): 不要把初始化方法写死，使用枚举类  */
-	public init(i: Int64, o: Int64, lr: Float32, f: Af) {
-		inputno = i
-		outputno =o
-		learning_rate=FP32(lr)
-		this.f = f
-		weights = Matrix1(inputno, outputno)
-		bias = Matrix1(1, outputno)
-		Ini.xavierUniformInit(weights, inputno, outputno)
-	}
-
-	/* -------- 神经网络推理 -------- */
-	func forward(x: Matrix1)
-	{
-		prev_inputs = x
-		var r = x.dot(weights)
-		r = r + bias
-		prev_raw_inputs = r
-		let r1 = f.forward(r)
-		prev_outputs = r1
-		return r1
-	}
-
-	/* -------- 反向传播算法 -------- */
-	func backward(errs: Matrix1)
-	{
-		let first = errs  * f.backward(prev_raw_inputs.getOrThrow()) /* 逐元素相乘 */
-		let mx = prev_inputs.getOrThrow().T()
-		weights_grad = mx.dot(first)
-		bias_grad = first
-		let errs_up = first.dot(weights.T())
-		return errs_up
-	}
-
-	/*  -------- 更新权重值、偏爱因子 --------
-	 *  NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
-	func update(discount: Float32) {
-		weights = weights +  weights_grad.getOrThrow() * learning_rate * FP32(discount)
-		bias = bias + bias_grad.getOrThrow() * learning_rate * FP32(discount)
-	}
-
-
-	/* -------- 形状访问器 -------- */
-	public func get_in_shape() { return inputno }
-
-	public func get_out_shape() { return outputno }
-
-	public func get_lr() { return learning_rate }
-
-	public func get_f_type()  { return f.get_type() }
-
-	public func get_f_val() { return f.get_value() }
-
-}
