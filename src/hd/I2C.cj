@@ -95,16 +95,18 @@ func readI2cReg(fd: Int32, reg: UInt8): Int8 {
  * INFO(20260521-qing): 因为每个I2C接口在通信时具有原子化的需求
  * - 需要一个互斥锁集合，在打开第一个I2C设备时被初始化，
  * - 释放最后一个I2C设备时，将锁具释放
- * - 每次进行I2C通信时，进行上锁操作   */
+ * - **每次进行I2C通信时，进行上锁操作**   */
 @C
 struct I2C_Lock {
-	var i2c_fd: Int32 = 0
-	var lock = CPointer<UInt8>()
-	var is_active = false
+	var i2c_fd: Int32 = 0		/* -------- 这个锁绑定的I2C设备文件句柄 -------- */
+	var lock = CPointer<UInt8>()	/* -------- phread_mutex_t 锁对象 -------- */
+	var is_active = false		/* -------- 该锁具是否被激活 --------*/
 }
 
-var MAIN_LOCK = CPointer<UInt8>()
-var LOCKS = CPointer<I2C_Lock>()
+
+var MAIN_LOCK = CPointer<UInt8>()	/* -------- 主锁，操作锁具时使用 -------- */
+var LOCKS = CPointer<I2C_Lock>()	/* -------- 指向锁具内存的指针 -------- */
+const LOCKS_SIZE: Int64 = 20		/* -------- 锁具的容量 --------*/
 
 /* -------- 为一个I2C设备注册锁具 -------- */
 @C
@@ -113,7 +115,7 @@ func I2cLock_create(fd: Int32): Unit {
 		/* -------- 初始化主要的锁 -------- */
 		if (MAIN_LOCK.isNull()) {
 			MAIN_LOCK = _mutex_create()
-			LOCKS = LibC.malloc<I2C_Lock>(count: 20)
+			LOCKS = LibC.malloc<I2C_Lock>(count: LOCK_SIZE)
 			for (i in 0..20) {
 				let tmp = I2C_Lock()
 				(LOCKS+i).write(tmp)
@@ -124,7 +126,7 @@ func I2cLock_create(fd: Int32): Unit {
 		_mutex_lock(MAIN_LOCK)
 		var flag = false
 
-		for (idx in 0..20) {
+		for (idx in 0..LOCK_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == false) {
 				lock.is_active = true
@@ -138,7 +140,7 @@ func I2cLock_create(fd: Int32): Unit {
 		}
 
 		_mutex_unlock(MAIN_LOCK)
-		if (flag ) { return }
+		if (flag ) { return }	/* -------- 出口 -------- */
 		throw OverflowException("LOCKS is over.")
 	}
 }
@@ -146,6 +148,7 @@ func I2cLock_create(fd: Int32): Unit {
 @C
 func I2cLock_destroy(fd: Int32): Unit {
 	unsafe {
+		/* -------- 检查锁具有没有被初始化 --------*/
 		if (MAIN_LOCK.isNull()) {
 			throw NoneValueException("no i2c lock")
 		}
@@ -153,7 +156,7 @@ func I2cLock_destroy(fd: Int32): Unit {
 
 		var flag_any = false
 		var flag_target = false
-		for (idx in 0..20) {
+		for (idx in 0..LOCK_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
 				lock.is_active = false
@@ -161,6 +164,7 @@ func I2cLock_destroy(fd: Int32): Unit {
 				_mutex_free(lock.lock)
 				(LOCKS+idx).write(lock)
 				flag_target = true
+				/* -------- NOTE: 扫描整个锁具不终止 -------- */
 			}
 			else if (lock.is_active == true && lock.i2c_fd != fd) {
 				flag_any = true
@@ -169,15 +173,18 @@ func I2cLock_destroy(fd: Int32): Unit {
 
 
 		_mutex_unlock(MAIN_LOCK)
+
+		/* -------- 如果锁具里已经没有I2C锁， 就释放整个锁具 --------  */
 		if (!flag_any) {
 			LibC.free(LOCKS)
 			_mutex_free(MAIN_LOCK)
 			MAIN_LOCK = CPointer<UInt8>()
 		}
 
+		/* -------- 出口  -------- */
 		if (flag_target) {
-			return
-		}
+			return  }
+
 
 		throw NoneValueException("i2c lock nor found")
 	}
@@ -194,7 +201,7 @@ func I2cLock_lock(fd: Int32): Unit {
 		_mutex_lock(MAIN_LOCK)
 
 		var flag = false
-		for (idx in 0..20) {
+		for (idx in 0..LOCK_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
 				_mutex_lock(lock.lock)
@@ -220,7 +227,7 @@ func I2cLock_unlock(fd: Int32): Unit {
 		_mutex_lock(MAIN_LOCK)
 
 		var flag = false
-		for (idx in 0..20) {
+		for (idx in 0..LOCK_SIZE) {
 			var lock = (LOCKS+idx).read()
 			if (lock.is_active == true && lock.i2c_fd == fd) {
 				_mutex_unlock(lock.lock)
