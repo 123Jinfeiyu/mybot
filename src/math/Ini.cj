@@ -2,8 +2,10 @@ package bot4cj.math
 import std.random.*
 import std.time.*
 import std.math.*
+
 /* -------- 神经网络使用的权重矩阵初始化类 --------
- * TODO(20260517-qing): 将该函数改为枚举类，统一一个接口，根据模式匹配执行初始化 */
+ * TODO(20260517-qing): 将该函数改为枚举类，统一一个接口，根据模式匹配执行初始化
+ * - 这样在矩阵式中可以定义初始化方式  */
 public class Ini {
 
 	/* -------- xavier正态初始化 -------- */
