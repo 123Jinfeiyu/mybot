@@ -6,40 +6,6 @@ import std.time.*
 import std.random.*
 import std.collection.*
 
-/* -------- （旧版）加载多层神经网络 --------
-   TODO: 也许用类封装
-   INFO(20260517-qing): 新版使用仓颉原生矩阵，然后与MatrixObject类互转  */
-//public func load_nns(filename: String): ArrayList<Nn> {
-//	let nns = ArrayList<Nn>()
-//	let file = File(filename, OpenMode.Read)
-//	let sr = StringReader<InputStream>(file)
-//	while (true) {
-//		if (let Some(S) <- sr.readUntil(r' ')) {
-//			var S2 = S.trimAscii()
-//			if (S2 == "FullConnectLayer") {
-//				nns.add(Nn.load(sr))  }
-//			else if (S2 == "") { break }
-//			else { throw IllegalArgumentException() }
-//		}
-//		else { break }
-//	}
-
-//	file.close()
-//	return nns
-//}
-
-/* -------- （旧版）储存多层神经网络 -------- */
-//public func save_nns(nns: ArrayList<Nn>, filename: String) {
-//
-//		let file: File
-//		if (exists(filename)) {
-//			file = File(filename, OpenMode.Write) }
-//		else { file= File.create(filename) }
-//		for (nn in nns) { /*  存储全部的层  */
-//			nn.save(file)  }
-//		file.close()
-//}
-
 /* -------- 准备与门的测试用例 --------
  * INFO(20260524-qing): 输入{2}，输出{1} */
 public func prepare_andDoor(m: Matrix1, t: Matrix1) {
@@ -53,17 +19,6 @@ public func prepare_andDoor(m: Matrix1, t: Matrix1) {
 	t.set(0, 0, FP32(t0))
 	//t.set(0, 1, FP32(t1))
 }
-
-/* -------- 旧版神经网络推理 -------- */
-//public func forward(nns: ArrayList<Nn>, m: Matrix) {
-//	var out_dof = Matrix(1, 1)
-//	for (idx in 0..nns.size) {
-//		let x = if (idx == 0) { m } else { out_dof }
-//		let res = nns[idx].forward(x)
-//		out_dof = nns[idx].fdo(res)
-//	}
-//	return out_dof
-//}
 
 /* -------- 新版神经网络推理，使用原生矩阵 -------- */
 public func forward1(nns: ArrayList<Nn1>, m: Matrix1) {
@@ -118,6 +73,51 @@ public func train1(nns: ArrayList<Nn1>, m: Matrix1, t: Matrix1, discount: Float3
 	//return (loss0 + loss1) / 2.0
 	return loss0
 }
+
+/* -------- （旧版）加载多层神经网络 --------
+   TODO: 也许用类封装
+   INFO(20260517-qing): 新版使用仓颉原生矩阵，然后与MatrixObject类互转  */
+//public func load_nns(filename: String): ArrayList<Nn> {
+//	let nns = ArrayList<Nn>()
+//	let file = File(filename, OpenMode.Read)
+//	let sr = StringReader<InputStream>(file)
+//	while (true) {
+//		if (let Some(S) <- sr.readUntil(r' ')) {
+//			var S2 = S.trimAscii()
+//			if (S2 == "FullConnectLayer") {
+//				nns.add(Nn.load(sr))  }
+//			else if (S2 == "") { break }
+//			else { throw IllegalArgumentException() }
+//		}
+//		else { break }
+//	}
+
+//	file.close()
+//	return nns
+//}
+
+/* -------- （旧版）储存多层神经网络 -------- */
+//public func save_nns(nns: ArrayList<Nn>, filename: String) {
+//
+//		let file: File
+//		if (exists(filename)) {
+//			file = File(filename, OpenMode.Write) }
+//		else { file= File.create(filename) }
+//		for (nn in nns) { /*  存储全部的层  */
+//			nn.save(file)  }
+//		file.close()
+//}
+
+/* -------- 旧版神经网络推理 -------- */
+//public func forward(nns: ArrayList<Nn>, m: Matrix) {
+//	var out_dof = Matrix(1, 1)
+//	for (idx in 0..nns.size) {
+//		let x = if (idx == 0) { m } else { out_dof }
+//		let res = nns[idx].forward(x)
+//		out_dof = nns[idx].fdo(res)
+//	}
+//	return out_dof
+//}
 
 /* -------- 旧版的神经网络训练 -------- */
 //public func train(nns: ArrayList<Nn>, m: Matrix, t: Matrix, discount: Float32) {
