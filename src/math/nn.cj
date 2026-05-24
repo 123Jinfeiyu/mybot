@@ -14,7 +14,8 @@ import std.convert.*
 
 /* -------- 新版的神经网络，使用原生矩阵对象实现 --------
  * TODO(20260517-qing): 增加batch批次处理，使用ArrayList<Matrix1>
- * TODO*(20260519-qing): 将神经网络转换为MatrixObject矩阵式对象   */
+ * TODO*(20260519-qing): 将神经网络转换为MatrixObject矩阵式对象
+ * TODO(20260524-qing): 增加Adam优化器   */
 
 public class Nn1 {
 
