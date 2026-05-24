@@ -1,4 +1,5 @@
 package bot4cj.hd
+import std.math.*
 /* -------- 舵机类 --------
  * 含最大值、最小值、漂移值三个调整项
  * 以及一个设置角度回调函数 */
@@ -18,8 +19,9 @@ public class Servo {
 	public func setAngle(angle: Float32) {
 		var a = angle
 		a += offset
-		if (a > max) { a = max}
-		if (a < min) { a = min}
+		if (a > abs(max)) { a = abs(max)}
+		if (a < abs(min)) { a = abs(min)}
+		if (max < 0.0f32) { a = 180.0f32 - a }
 		callback_setAngle(a)
 	}
 }
