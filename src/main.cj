@@ -143,8 +143,8 @@ func run_test(key: String) {
 		nn_t.add(Nn1(2, 4, 0.1f32, Af.Leaky_ReLU(FP32(0.01))))
 		nn_t.add(Nn1(4, 1, 0.1f32, Af.Sigmoid))
 		let batch = 1
-		let num =2000
-		let prt_num = 100
+		let num =20000
+		let prt_num = 10
 		for (i in 0..(num*batch)) {
 			let m = Matrix1(1, 2)
 			let t = Matrix1(1, 1)

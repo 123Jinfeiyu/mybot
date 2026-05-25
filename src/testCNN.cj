@@ -51,9 +51,9 @@ func testCNN(): Unit {
     printSeparator()
     println()
 
-    let nTrainSamples = 300
+    let nTrainSamples = 100
     let nTestSamples = 60
-    let nEpochs = 20
+    let nEpochs = 150
     let batchSize = 10
 
     println("训练样本数: ${nTrainSamples}")
@@ -68,11 +68,11 @@ func testCNN(): Unit {
 
     let lr = FP32(0.01)
 
-    var conv1 = ConvLayer(1, 4, (3, 3), 1, 0, lr, Af.ReLU, Option.None)
+    var conv1 = ConvLayer(1, 4, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var pool1 = PoolingLayer(4, (2, 2), 2, 0, "max", Af.ReLU, lr, lr)
-    var conv2 = ConvLayer(4, 8, (3, 3), 1, 0, lr, Af.ReLU, Option.None)
+    var conv2 = ConvLayer(4, 8, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var flatten = FlattenLayer(8, 1, 1)
-    var fc = Nn1(8, 3, Float32(0.1), Af.Softmax)
+    var fc = Nn1(8, 3, Float32(0.2), Af.Softmax)
 
     println("网络创建完成")
     println()
