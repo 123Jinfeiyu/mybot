@@ -140,11 +140,11 @@ func run_test(key: String) {
 	 * INFO: 我们使用随机生成的动态数据集，这样会导致一些后果 */
 	if (key == "nn") {
 		let nn_t = ArrayList<Nn1>()
-		nn_t.add(Nn1(2, 4, 0.1f32, Af.Leaky_ReLU(FP32(0.01))))
-		nn_t.add(Nn1(4, 1, 0.1f32, Af.Sigmoid))
+		nn_t.add(Nn1(2, 4, 0.05f32, Af.Leaky_ReLU(FP32(0.01))))
+		nn_t.add(Nn1(4, 1, 0.05f32, Af.Sigmoid))
 		let batch = 1
-		let num =20000
-		let prt_num = 10
+		let num =2000
+		let prt_num = 100
 		for (i in 0..(num*batch)) {
 			let m = Matrix1(1, 2)
 			let t = Matrix1(1, 1)
