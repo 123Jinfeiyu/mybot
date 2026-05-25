@@ -198,9 +198,9 @@ public enum Af {
 		for (r in 0..row) {
 			for (c in 0..col) {
 				let y = M.get(r, c).getOrThrow()
-				let y1= y.getValue()
-				let y2 = 1.0f32 - y1 * y1
-				N.set(r, c, FP32(y2))  }
+				let y_val= y.getValue()
+				let rea = 1.0f32 - y_val * y_val
+				N.set(r, c, FP32(rea))  }
 		}
 		return N
 	}
