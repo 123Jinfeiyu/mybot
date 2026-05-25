@@ -50,7 +50,7 @@ public class Nn1 {
 	}
 
 	/* -------- 神经网络推理 -------- */
-	func forward(x: Matrix1) {
+	public func forward(x: Matrix1) {
 		prev_inputs = x
 		var r = x.dot(weights)
 		r = r + bias
@@ -61,9 +61,13 @@ public class Nn1 {
 	}
 
 	/* -------- 反向传播算法 -------- */
-	func backward(errs: Matrix1)
+	public func backward(errs: Matrix1)
 	{
-		let first = errs  * f.backward(prev_raw_inputs.getOrThrow()) /* 逐元素相乘 */
+		if (is_softmax(f)) {
+			return softmax_backward(errs)
+		}
+		let fbak = f.backward(prev_raw_inputs.getOrThrow())
+		let first = errs  * fbak /* 逐元素相乘 */
 		let mx = prev_inputs.getOrThrow().T()
 		weights_grad = mx.dot(first)
 		bias_grad = first
@@ -73,9 +77,67 @@ public class Nn1 {
 
 	/*  -------- 更新权重值、偏爱因子 --------
 	 *  NOTE: discount（折扣）是为了方便深度强化学习给出奖励值 */
-	func update(discount: Float32) {
-		weights = weights +  weights_grad.getOrThrow() * learning_rate * FP32(discount)
-		bias = bias + bias_grad.getOrThrow() * learning_rate * FP32(discount)
+	public func update(discount: Float32) {
+		weights = weights - weights_grad.getOrThrow() * learning_rate * FP32(discount)
+		bias = bias - bias_grad.getOrThrow() * learning_rate * FP32(discount)
+	}
+
+	/**/
+	private static func is_softmax(f: Af) {
+		return match (f) {
+			case Af.Softmax => true
+			case _ => false
+		}
+	}
+
+	private func softmax_backward(errs: Matrix1) {
+		/* 使用雅可比矩阵的方式 */
+		let y = prev_outputs.getOrThrow()       /* softmax 输出 */
+		let dy = errs                            /* 上游梯度 ∂L/∂y */
+		let jacobian = f.backward(y)     /* n×n 雅可比矩阵 */
+		
+		/* 将 dy 展平成列向量 n×1 */
+		let row = dy.get_row()
+		let col = dy.get_col()
+		let n = row * col
+		var dy_vec = Matrix1(n, 1)
+		var idx = 0
+		for (r in 0..row) {
+			for (c in 0..col) {
+				let val = dy.get(r, c).getOrThrow()
+				dy_vec.set(idx, 0, val)
+				idx = idx + 1
+			}
+		}
+			
+		/* dx_vec = J · dy_vec  (n×n × n×1 = n×1) */
+		var dx_vec = Matrix1(n, 1)
+		for (i in 0..n) {
+			var sum = 0.0f32
+			for (j in 0..n) {
+				let j_val = jacobian.get(i, j).getOrThrow().getValue()
+				let dy_val = dy_vec.get(j, 0).getOrThrow().getValue()
+				sum = sum + j_val * dy_val
+			}
+			dx_vec.set(i, 0, FP32(sum))
+		}
+			
+		/* 恢复为原始形状，作为 first */
+		var first = Matrix1(row, col)
+		idx = 0
+		for (r in 0..row) {
+			for (c in 0..col) {
+				let val = dx_vec.get(idx, 0).getOrThrow()
+				first.set(r, c, val)
+				idx = idx + 1
+			}
+		}
+			
+		let mx = prev_inputs.getOrThrow().T()
+		weights_grad = mx.dot(first)
+		bias_grad = first
+		let errs_up = first.dot(weights.T())
+		return errs_up
 	}
 
 

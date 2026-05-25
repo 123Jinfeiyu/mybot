@@ -159,6 +159,11 @@ func run_test(key: String) {
 	}
 
 
+	else if (key == "cnn") {
+		testCNN()
+	}
+
+
 	/* -------- 测试解析矩阵，并且输出 -------- */
 	else if (key == "matrix_o") {
 		let file = File("ss/test.mt", OpenMode.Read)
