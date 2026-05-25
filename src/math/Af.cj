@@ -197,10 +197,10 @@ public enum Af {
 		let N = Matrix1(row, col)
 		for (r in 0..row) {
 			for (c in 0..col) {
-				let x = M.get(r, c).getOrThrow()
-				let x1= x.getValue()
-				let x2 = 1.0f32 - x1 * x1
-				N.set(r, c, FP32(x2))  }
+				let y = M.get(r, c).getOrThrow()
+				let y1= y.getValue()
+				let y2 = 1.0f32 - y1 * y1
+				N.set(r, c, FP32(y2))  }
 		}
 		return N
 	}
