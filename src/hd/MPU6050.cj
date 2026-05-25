@@ -7,6 +7,7 @@
 
 package bot4cj.hd
 import std.time.*
+import std.math.*
 import bot4cj.th.*
 import bot4cj.math.*
     
@@ -93,7 +94,14 @@ func mpu6050_readSensor(i2c_fd: Int32, addr: UInt8) {
 		return data 
 }
 
-/* -------- mpu6050主线程 -------- */
+
+/* -------- 计算PITCH角 -------- */
+//@C
+//func mpu6050_calcPitch()
+
+/* -------- mpu6050主线程 -------- 
+ * TODO(20260525-qing): 使用互补滤波就够用了  */
+const RAD_TO_DEG = 57.2956f32	/* ---- 弧度转换为角度的系数（180/π ≈ 57.2956） ---- */
 //foreign func pthread_testcancel(): Unit
 @C
 func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
@@ -139,6 +147,13 @@ func mpu6050_main(args: CPointer<Unit>): CPointer<Unit> {
 		print("gyro_x: ${filtered_gyro_x}\t")
 		print("gyro_y: ${filtered_gyro_y}\t")
 		print("gyro_z: ${filtered_gyro_z}\n")
+
+		/* -------- 计算Pitch（俯仰角）和Roll（翻滚角） -------- */
+		let roll = atan2(filtered_accel_y, filtered_accel_z) * RAD_TO_DEG
+		let pitch = atan(-filtered_accel_x / sqrt(filtered_accel_y * filtered_accel_y + filtered_accel_z * filtered_accel_z)) * RAD_TO_DEG
+
+		let roll1 = atan(filtered_accel_y / sqrt(filtered_accel_x * filtered_accel_x + filtered_accel_z * filtered_accel_z)) * RAD_TO_DEG
+		let pitch1 = atan2(-filtered_accel_x, filtered_accel_z) * RAD_TO_DEG
 
 		//unsafe { _mutex_unlock(mutex) }
 		sleep(Duration.millisecond * 10)
