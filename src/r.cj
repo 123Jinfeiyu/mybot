@@ -431,7 +431,9 @@ class MtVars_Speaker <: MatrixVars_Hardware {
  * 机器人结构是动态的，从脚本中解析的 
  * TODO(20260514-qing): 调整为输入MatrixObject
  * TODO(20260515-qing): 需要重写一遍硬件类(done)
- * TODO*(20260518-qing): 使用神经网络RNN直接根据动作+传感器脚本生成下一步动作  */
+ * TODO(20260518-qing): 使用神经网络RNN直接根据动作+传感器脚本生成下一步动作
+ * TODO(20260527-qing): 增加硬件模块行为脚本
+ * TODO*(20260527-qing): 为@Action表演矩阵对象增加位置指示器，以增量行动  */
 class RobotStruct {
 
 	/* -------- 存放解析结果和创建的变量 -------- */
