@@ -53,7 +53,7 @@ func testCNN(): Unit {
 
     let nTrainSamples = 100
     let nTestSamples = 60
-    let nEpochs = 40
+    let nEpochs = 50
     let batchSize = 10
 
     println("训练样本数: ${nTrainSamples}")
@@ -72,7 +72,7 @@ func testCNN(): Unit {
     var pool1 = PoolingLayer(4, (2, 2), 2, 0, "max", Af.ReLU, lr, lr)
     var conv2 = ConvLayer(4, 8, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var flatten = FlattenLayer(8, 1, 1)
-    var fc = Nn1(8, 3, Float32(0.05), Af.Softmax)
+    var fc = Nn1(8, 3, Float32(0.2), Af.Softmax)
 
     println("网络创建完成")
     println()
