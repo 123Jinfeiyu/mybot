@@ -245,9 +245,9 @@ func testGeometryCNN(): Unit {
     println("")
     
     let imgSize = 16
-    let nTrainSamples = 20
+    let nTrainSamples = 200
     let nTestSamples = 60
-    let nEpochs = 100
+    let nEpochs = 30
     let batchSize = 10
     let nClasses = 3
     

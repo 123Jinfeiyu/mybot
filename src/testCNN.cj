@@ -1,6 +1,6 @@
-// test_cnn.cj - 添加调试版本
+// test_cnn.cj - 使用 Adam 优化器的版本
 package bot4cj
-import  bot4cj.math.*
+import bot4cj.math.*
 import std.math.*
 import std.random.*
 import std.collection.*
@@ -47,7 +47,7 @@ func printSeparator(): Unit {
 
 func testCNN(): Unit {
     printSeparator()
-    println("CNN 纯色矩阵识别测试")
+    println("CNN 纯色矩阵识别测试 (使用 Adam 优化器)")
     printSeparator()
     println()
 
@@ -67,6 +67,7 @@ func testCNN(): Unit {
     println()
 
     let lr = FP32(0.005)
+    let adamLR = FP32(0.001)  // Adam 的学习率
 
     var conv1 = ConvLayer(1, 4, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var pool1 = PoolingLayer(4, (2, 2), 2, 0, "max", Af.ReLU, lr, lr)
@@ -74,7 +75,11 @@ func testCNN(): Unit {
     var flatten = FlattenLayer(8, 1, 1)
     var fc = Nn1(8, 3, Float32(0.2), Af.Softmax)
 
-    println("网络创建完成")
+    // 创建 Adam 优化器（为每个卷积层创建独立的优化器）
+    var adam1 = Adam(adamLR)
+    var adam2 = Adam(adamLR)
+
+    println("网络创建完成 (Conv1和Conv2使用Adam优化器)")
     println()
 
     println("生成数据...")
@@ -183,23 +188,33 @@ func testCNN(): Unit {
             let c1Delta = pool1.backward(p1Delta)
             let _ = conv1.backward(c1Delta)
 
+            // ===== 参数更新 =====
             if ((i + 1) % batchSize == 0) {
-                conv1.update(Float32(1.0))
+                // 卷积层使用 Adam 更新
+                adam1.updateConvLayer(conv1)
+                adam2.updateConvLayer(conv2)
+                
+                // 其他层使用 SGD 更新
                 pool1.update(Float32(1.0))
-                conv2.update(Float32(1.0))
                 fc.update(Float32(1.0))
             }
         }
 
-        conv1.update(Float32(1.0))
+        // Epoch 结束时的更新
+        adam1.updateConvLayer(conv1)
+        adam2.updateConvLayer(conv2)
         pool1.update(Float32(1.0))
-        conv2.update(Float32(1.0))
         fc.update(Float32(1.0))
 
         let avgLoss = epochLoss / Float32(nTrainSamples)
         let accuracy = Float32(epochCorrect) / Float32(nTrainSamples) * Float32(100.0)
 
         println("Epoch ${epoch + 1}/${nEpochs} - Loss: ${avgLoss}, Accuracy: ${accuracy}%")
+        
+        // 打印 Adam 的步数信息
+        if (epoch == 0) {
+            println("  Adam Step: ${adam1.getStep()}")
+        }
     }
 
     println("")
@@ -293,4 +308,3 @@ func testCNN(): Unit {
     println("测试完成!")
     printSeparator()
 }
-
