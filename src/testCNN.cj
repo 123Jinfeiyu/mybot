@@ -51,7 +51,7 @@ func testCNN(): Unit {
     printSeparator()
     println()
 
-    let nTrainSamples = 100
+    let nTrainSamples = 200
     let nTestSamples = 60
     let nEpochs = 50
     let batchSize = 10
