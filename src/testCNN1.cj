@@ -1,4 +1,4 @@
-// test_geometry_cnn.cj - 几何图形分类测试（最终版）
+// test_geometry_cnn.cj - 几何图形分类测试（Adam 优化器版本）
 package bot4cj
 import bot4cj.math.*
 import std.math.*
@@ -240,14 +240,14 @@ func printLine(): Unit {
  */
 func testGeometryCNN(): Unit {
     printLine()
-    println("CNN 几何图形分类测试")
+    println("CNN 几何图形分类测试 (Adam 优化器版本)")
     printLine()
     println("")
     
     let imgSize = 16
     let nTrainSamples = 200
     let nTestSamples = 60
-    let nEpochs = 30
+    let nEpochs = 50
     let batchSize = 10
     let nClasses = 3
     
@@ -258,6 +258,7 @@ func testGeometryCNN(): Unit {
     println("  训练轮数: ${nEpochs}")
     println("  Batch 大小: ${batchSize}")
     println("  类别数: ${nClasses} (圆形, 正方形, 三角形)")
+    println("  优化器: Adam")
     println("")
     
     println("网络结构:")
@@ -279,7 +280,13 @@ func testGeometryCNN(): Unit {
     var fc1 = Nn1(64, 32, Float32(0.3), Af.ReLU)
     var fc2 = Nn1(32, 3, Float32(0.3), Af.Softmax)
     
-    println("网络创建完成")
+    // 创建 Adam 优化器
+    var adamConv1 = Adam(FP32(0.001))    // 卷积层1
+    var adamConv2 = Adam(FP32(0.001))    // 卷积层2
+    var adamFC1 = Adam(FP32(0.0005))     // 全连接层1
+    var adamFC2 = Adam(FP32(0.0005))     // 全连接层2
+    
+    println("网络创建完成 (Adam优化器: Conv1, Conv2, FC1, FC2)")
     println("")
     
     // 生成数据
@@ -380,24 +387,26 @@ func testGeometryCNN(): Unit {
             let c1Delta = pool1.backward(p1Delta)
             let _ = conv1.backward(c1Delta)
             
-            // 批次更新
+            // 批次更新 - 使用 Adam
             if ((i + 1) % batchSize == 0) {
-                conv1.update(Float32(1.0))
+                adamConv1.updateConvLayer(conv1)    // Conv1 - Adam
+                adamConv2.updateConvLayer(conv2)    // Conv2 - Adam
+                adamFC1.updateFCLayer(fc1)          // FC1 - Adam
+                adamFC2.updateFCLayer(fc2)          // FC2 - Adam
+                
+                // 池化层仍使用 SGD
                 pool1.update(Float32(1.0))
-                conv2.update(Float32(1.0))
                 pool2.update(Float32(1.0))
-                fc1.update(Float32(1.0))
-                fc2.update(Float32(1.0))
             }
         }
         
-        // 最终更新
-        conv1.update(Float32(1.0))
+        // 最终更新 - 使用 Adam
+        adamConv1.updateConvLayer(conv1)
+        adamConv2.updateConvLayer(conv2)
+        adamFC1.updateFCLayer(fc1)
+        adamFC2.updateFCLayer(fc2)
         pool1.update(Float32(1.0))
-        conv2.update(Float32(1.0))
         pool2.update(Float32(1.0))
-        fc1.update(Float32(1.0))
-        fc2.update(Float32(1.0))
         
         let avgLoss = epochLoss / Float32(nTrainSamples)
         let accuracy = Float32(epochCorrect) / Float32(nTrainSamples) * Float32(100.0)
@@ -406,14 +415,15 @@ func testGeometryCNN(): Unit {
             bestAccuracy = accuracy
         }
         
-        // 每10个epoch输出一次
+        // 输出训练信息
         if (epoch % 1 == 0 || epoch == nEpochs - 1) {
-            println("Epoch ${epoch + 1}/${nEpochs} - Loss: ${avgLoss}, Accuracy: ${accuracy}%")
+            println("Epoch ${epoch + 1}/${nEpochs} - Loss: ${avgLoss}, Accuracy: ${accuracy}%, Adam Step: ${adamConv1.getStep()}")
         }
     }
     
     println("")
     println("训练完成! 最佳训练准确率: ${bestAccuracy}%")
+    println("总更新步数: ${adamConv1.getStep()}")
     println("")
     
     // 测试
@@ -505,4 +515,3 @@ func testGeometryCNN(): Unit {
     println("几何图形分类测试完成!")
     printLine()
 }
-

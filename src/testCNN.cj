@@ -1,4 +1,4 @@
-// test_cnn.cj - 使用 Adam 优化器的版本
+// test_cnn.cj - 使用 Adam 优化器的版本（所有层）
 package bot4cj
 import bot4cj.math.*
 import std.math.*
@@ -47,7 +47,7 @@ func printSeparator(): Unit {
 
 func testCNN(): Unit {
     printSeparator()
-    println("CNN 纯色矩阵识别测试 (使用 Adam 优化器)")
+    println("CNN 纯色矩阵识别测试 (所有层使用 Adam 优化器)")
     printSeparator()
     println()
 
@@ -67,7 +67,6 @@ func testCNN(): Unit {
     println()
 
     let lr = FP32(0.005)
-    let adamLR = FP32(0.001)  // Adam 的学习率
 
     var conv1 = ConvLayer(1, 4, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var pool1 = PoolingLayer(4, (2, 2), 2, 0, "max", Af.ReLU, lr, lr)
@@ -75,11 +74,12 @@ func testCNN(): Unit {
     var flatten = FlattenLayer(8, 1, 1)
     var fc = Nn1(8, 3, Float32(0.2), Af.Softmax)
 
-    // 创建 Adam 优化器（为每个卷积层创建独立的优化器）
-    var adam1 = Adam(adamLR)
-    var adam2 = Adam(adamLR)
+    // 创建 Adam 优化器（为每个可训练层创建独立的优化器）
+    var adamConv1 = Adam(FP32(0.001))   // 卷积层1
+    var adamConv2 = Adam(FP32(0.001))   // 卷积层2
+    var adamFC = Adam(FP32(0.0005))     // 全连接层（使用更小的学习率）
 
-    println("网络创建完成 (Conv1和Conv2使用Adam优化器)")
+    println("网络创建完成 (Conv1, Conv2, FC 使用 Adam 优化器)")
     println()
 
     println("生成数据...")
@@ -190,21 +190,21 @@ func testCNN(): Unit {
 
             // ===== 参数更新 =====
             if ((i + 1) % batchSize == 0) {
-                // 卷积层使用 Adam 更新
-                adam1.updateConvLayer(conv1)
-                adam2.updateConvLayer(conv2)
+                // 所有可训练层使用 Adam 更新
+                adamConv1.updateConvLayer(conv1)   // 卷积层1 - Adam
+                adamConv2.updateConvLayer(conv2)   // 卷积层2 - Adam
+                adamFC.updateFCLayer(fc)           // 全连接层 - Adam
                 
-                // 其他层使用 SGD 更新
+                // 池化层使用 SGD 更新（如果需要的话）
                 pool1.update(Float32(1.0))
-                fc.update(Float32(1.0))
             }
         }
 
         // Epoch 结束时的更新
-        adam1.updateConvLayer(conv1)
-        adam2.updateConvLayer(conv2)
+        adamConv1.updateConvLayer(conv1)
+        adamConv2.updateConvLayer(conv2)
+        adamFC.updateFCLayer(fc)
         pool1.update(Float32(1.0))
-        fc.update(Float32(1.0))
 
         let avgLoss = epochLoss / Float32(nTrainSamples)
         let accuracy = Float32(epochCorrect) / Float32(nTrainSamples) * Float32(100.0)
@@ -213,7 +213,7 @@ func testCNN(): Unit {
         
         // 打印 Adam 的步数信息
         if (epoch == 0) {
-            println("  Adam Step: ${adam1.getStep()}")
+            println("  Adam Step: ${adamConv1.getStep()}")
         }
     }
 

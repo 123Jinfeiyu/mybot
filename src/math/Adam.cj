@@ -1,4 +1,4 @@
-// Adam.cj - Adam 优化器实现
+// Adam.cj - Adam 优化器实现（添加全连接层支持）
 package bot4cj.math
 
 import std.math.*
@@ -79,6 +79,62 @@ public class Adam {
     }
     
     /**
+     * 更新矩阵参数（通用方法）
+     * @param param 要更新的参数矩阵
+     * @param grad 梯度矩阵
+     * @param key 参数在HashMap中的键名
+     */
+    private func updateMatrix(
+        param: Matrix1,
+        grad: Matrix1,
+        key: String
+    ): Unit {
+        // 初始化动量
+        let hasState = m.contains(key)
+        if (!hasState) {
+            let rows = param.get_row()
+            let cols = param.get_col()
+            m.add(key, Matrix1(rows, cols))
+            v.add(key, Matrix1(rows, cols))
+        }
+        
+        let mMat = m.get(key).getOrThrow()
+        let vMat = v.get(key).getOrThrow()
+        
+        let rows = param.get_row()
+        let cols = param.get_col()
+        
+        for (r in 0..rows) {
+            for (c in 0..cols) {
+                let g = grad.get(r, c).getOrThrow()
+                
+                // 更新一阶矩
+                let oldM = mMat.get(r, c).getOrThrow()
+                let newM = beta1 * oldM + (FP32(1.0) - beta1) * g
+                mMat.set(r, c, newM)
+                
+                // 更新二阶矩
+                let oldV = vMat.get(r, c).getOrThrow()
+                let newV = beta2 * oldV + (FP32(1.0) - beta2) * g * g
+                vMat.set(r, c, newV)
+                
+                // 偏差修正
+                let one = FP32(1.0)
+                let beta1Pow = power(beta1, t)
+                let beta2Pow = power(beta2, t)
+                
+                let mHat = newM / (one - beta1Pow)
+                let vHat = newV / (one - beta2Pow)
+                
+                // 更新参数
+                let oldParam = param.get(r, c).getOrThrow()
+                let update = learningRate * mHat / (sqrt(vHat) + epsilon)
+                param.set(r, c, oldParam - update)
+            }
+        }
+    }
+    
+    /**
      * 更新卷积层参数
      */
     public func updateConvLayer(layer: ConvLayer): Unit {
@@ -91,51 +147,8 @@ public class Adam {
         }
         
         for (oc in 0..layer.nOutputChannels) {
-            let key = "kernel_" + oc.toString()
-            
-            // 初始化动量
-            let hasM = m.contains(key)
-            if (!hasM) {
-                let rows = layer.kernels[oc].get_row()
-                let cols = layer.kernels[oc].get_col()
-                m.add(key, Matrix1(rows, cols))
-                v.add(key, Matrix1(rows, cols))
-            }
-            
-            let mMat = m.get(key).getOrThrow()
-            let vMat = v.get(key).getOrThrow()
-            let grad = kGrad[oc]
-            
-            let rows = layer.kernels[oc].get_row()
-            let cols = layer.kernels[oc].get_col()
-            
-            for (r in 0..rows) {
-                for (c in 0..cols) {
-                    let g = grad.get(r, c).getOrThrow()
-                    
-                    // 更新动量
-                    let oldM = mMat.get(r, c).getOrThrow()
-                    let newM = beta1 * oldM + (FP32(1.0) - beta1) * g
-                    mMat.set(r, c, newM)
-                    
-                    let oldV = vMat.get(r, c).getOrThrow()
-                    let newV = beta2 * oldV + (FP32(1.0) - beta2) * g * g
-                    vMat.set(r, c, newV)
-                    
-                    // 偏差修正
-                    let one = FP32(1.0)
-                    let beta1Pow = power(beta1, t)
-                    let beta2Pow = power(beta2, t)
-                    
-                    let mHat = newM / (one - beta1Pow)
-                    let vHat = newV / (one - beta2Pow)
-                    
-                    // 更新参数
-                    let oldParam = layer.kernels[oc].get(r, c).getOrThrow()
-                    let update = learningRate * mHat / (sqrt(vHat) + epsilon)
-                    layer.kernels[oc].set(r, c, oldParam - update)
-                }
-            }
+            let key = "conv_kernel_" + oc.toString()
+            updateMatrix(layer.kernels[oc], kGrad[oc], key)
         }
         
         // 更新偏置
@@ -144,41 +157,33 @@ public class Adam {
             case _ => throw Exception("No bias gradient")
         }
         
-        let biasKey = "bias"
-        let hasBiasM = m.contains(biasKey)
-        if (!hasBiasM) {
-            let rows = layer.biases.get_row()
-            let cols = layer.biases.get_col()
-            m.add(biasKey, Matrix1(rows, cols))
-            v.add(biasKey, Matrix1(rows, cols))
+        let biasKey = "conv_bias"
+        updateMatrix(layer.biases, bGrad, biasKey)
+    }
+    
+    /**
+     * 更新全连接层参数（Nn1）
+     */
+    public func updateFCLayer(layer: Nn1): Unit {
+        t += 1
+        
+        // 更新权重
+        var wGrad = match (layer.weights_grad) {
+            case Some(val) => val
+            case _ => throw Exception("No weights gradient")
         }
         
-        let mBias = m.get(biasKey).getOrThrow()
-        let vBias = v.get(biasKey).getOrThrow()
+        let weightKey = "fc_weights"
+        updateMatrix(layer.weights, wGrad, weightKey)
         
-        for (c in 0..layer.nOutputChannels) {
-            let g = bGrad.get(0, c).getOrThrow()
-            
-            let oldM = mBias.get(0, c).getOrThrow()
-            let newM = beta1 * oldM + (FP32(1.0) - beta1) * g
-            mBias.set(0, c, newM)
-            
-            let oldV = vBias.get(0, c).getOrThrow()
-            let newV = beta2 * oldV + (FP32(1.0) - beta2) * g * g
-            vBias.set(0, c, newV)
-            
-            // 偏差修正
-            let one = FP32(1.0)
-            let beta1Pow = power(beta1, t)
-            let beta2Pow = power(beta2, t)
-            
-            let mHat = newM / (one - beta1Pow)
-            let vHat = newV / (one - beta2Pow)
-            
-            let oldBias = layer.biases.get(0, c).getOrThrow()
-            let update = learningRate * mHat / (sqrt(vHat) + epsilon)
-            layer.biases.set(0, c, oldBias - update)
+        // 更新偏置
+        var bGrad = match (layer.bias_grad) {
+            case Some(val) => val
+            case _ => throw Exception("No bias gradient")
         }
+        
+        let biasKey = "fc_bias"
+        updateMatrix(layer.bias, bGrad, biasKey)
     }
     
     /**
