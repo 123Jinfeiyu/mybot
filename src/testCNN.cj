@@ -53,7 +53,7 @@ func testCNN(): Unit {
 
     let nTrainSamples = 100
     let nTestSamples = 60
-    let nEpochs = 30
+    let nEpochs = 40
     let batchSize = 10
 
     println("训练样本数: ${nTrainSamples}")
