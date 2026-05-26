@@ -66,13 +66,13 @@ func testCNN(): Unit {
     println("Input(8x8x1) -> Conv(3x3,1->4) -> Pool(2x2) -> Conv(3x3,4->8) -> Flatten -> FC(8,3)")
     println()
 
-    let lr = FP32(0.005)
+    let lr = FP32(0.001)
 
     var conv1 = ConvLayer(1, 4, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var pool1 = PoolingLayer(4, (2, 2), 2, 0, "max", Af.ReLU, lr, lr)
     var conv2 = ConvLayer(4, 8, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var flatten = FlattenLayer(8, 1, 1)
-    var fc = Nn1(8, 3, Float32(0.2), Af.Softmax)
+    var fc = Nn1(8, 3, Float32(0.4), Af.Softmax)
 
     // 创建 Adam 优化器（为每个可训练层创建独立的优化器）
     var adamConv1 = Adam(FP32(0.001))   // 卷积层1

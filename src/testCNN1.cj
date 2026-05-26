@@ -277,7 +277,7 @@ func testGeometryCNN(): Unit {
     var conv2 = ConvLayer(8, 16, (3, 3), 1, 0, lr, Af.Leaky_ReLU(FP32(0.01)), Option.None)
     var pool2 = PoolingLayer(16, (2, 2), 2, 0, "max", Af.ReLU, lr, lr)
     var flatten = FlattenLayer(16, 2, 2)
-    var fc1 = Nn1(64, 32, Float32(0.3), Af.ReLU)
+    var fc1 = Nn1(64, 32, Float32(0.3), Af.Leaky_ReLU(FP32(0.01)))
     var fc2 = Nn1(32, 3, Float32(0.3), Af.Softmax)
     
     // 创建 Adam 优化器
