@@ -232,70 +232,70 @@ func run_serve(/*nns: ArrayList<Nn>, save_path: String*/) {
 	})
 
 	/* curl -X GET / */
-	serv.distributor.register('/', { context =>
-		try {
-			if (context.request.method != 'GET') {
-				let headers = HttpHeaders()
-				headers.add('Content-Type', 'text/plain; charset=utf-8;')
-				context.responseBuilder.setHeaders(headers)
-				context.responseBuilder.body("Method not supportted")
-				context.responseBuilder.status(400)
-			}
+	//serv.distributor.register('/', { context =>
+	//	try {
+	//		if (context.request.method != 'GET') {
+	//			let headers = HttpHeaders()
+	//			headers.add('Content-Type', 'text/plain; charset=utf-8;')
+	//			context.responseBuilder.setHeaders(headers)
+	//			context.responseBuilder.body("Method not supportted")
+	//			context.responseBuilder.status(400)
+	//		}
 
-			let file = File("public/index.html", OpenMode.Read)
-			let headers = HttpHeaders()
-			headers.add('Content-Type', 'text/html; charset=utf-8;')
-			context.responseBuilder.setHeaders(headers)
-			context.responseBuilder.body(file)
-			context.responseBuilder.status(200)
-		}
+	//		let file = File("public/index.html", OpenMode.Read)
+	//		let headers = HttpHeaders()
+	//		headers.add('Content-Type', 'text/html; charset=utf-8;')
+	//		context.responseBuilder.setHeaders(headers)
+	//		context.responseBuilder.body(file)
+	//		context.responseBuilder.status(200)
+	//	}
 
-		catch (exp: Exception) {
-			let headers = HttpHeaders()
-			headers.add('Content-Type', 'text/plain; charset=utf-8;')
-			context.responseBuilder.setHeaders(headers)
-			context.responseBuilder.body(exp.toString())
-			context.responseBuilder.status(500)
-		}
-	})
+	//	catch (exp: Exception) {
+	//		let headers = HttpHeaders()
+	//		headers.add('Content-Type', 'text/plain; charset=utf-8;')
+	//		context.responseBuilder.setHeaders(headers)
+	//		context.responseBuilder.body(exp.toString())
+	//		context.responseBuilder.status(500)
+	//	}
+	//})
 
 	/*  curl -X POST http://127.0.0.1:5119/api/v1/fs -d '{"mode": "list", "path": "/path/to/dirent"}'
 	 *  python test/test_api_fs.py  */
-	serv.distributor.register('/api/v1/fs', { context =>
+	//serv.distributor.register('/api/v1/fs', { context =>
 	
-		try {
-			if (context.request.method != 'POST') {				
-				let headers = HttpHeaders()
-				headers.add('Content-Type', 'text/plain; charset=utf-8;')
-				context.responseBuilder.setHeaders(headers)
-				context.responseBuilder.body("Method not supportted")
-				context.responseBuilder.status(400)
-			}
-			let json = StringReader(context.request.body).readToEnd()
-			let obj = JsonValue.fromStr(json).asObject()
-			let mode = obj.get('mode').getOrThrow().asString().getValue()
-			if (mode == "list") {
-				let path = obj.get('path').getOrThrow().asString().getValue()
-				let ret = getDirList(path)
-				let headers = HttpHeaders()
-				headers.add('Content-Type', 'application/json; charset=utf-8;')
-				context.responseBuilder.setHeaders(headers)
-				context.responseBuilder.body(ret.toJsonString().toArray())
-			}
-			else {
-				throw IllegalArgumentException("Invalid mode.")
-			}
-		}
+	//	try {
+	//		if (context.request.method != 'POST') {				
+	//			let headers = HttpHeaders()
+	//			headers.add('Content-Type', 'text/plain; charset=utf-8;')
+	//			context.responseBuilder.setHeaders(headers)
+	//			context.responseBuilder.body("Method not supportted")
+	//			context.responseBuilder.status(400)
+	//		}
+	//		let json = StringReader(context.request.body).readToEnd()
+	//		let obj = JsonValue.fromStr(json).asObject()
+	//		let mode = obj.get('mode').getOrThrow().asString().getValue()
+	//		if (mode == "list") {
+	//			let path = obj.get('path').getOrThrow().asString().getValue()
+	//			let ret = getDirList(path)
+	//			let headers = HttpHeaders()
+	//			headers.add('Content-Type', 'application/json; charset=utf-8;')
+	//			context.responseBuilder.setHeaders(headers)
+	//			context.responseBuilder.body(ret.toJsonString().toArray())
+	//		}
+	//		else {
+	//			throw IllegalArgumentException("Invalid mode.")
+	//		}
+	//	}
 
-		catch (exp: Exception) {
-			let headers = HttpHeaders()
-			headers.add('Content-Type', 'text/plain; charset=utf-8;')
-			context.responseBuilder.setHeaders(headers)
-			context.responseBuilder.body(exp.toString()) // FIXME: http code
-			context.responseBuilder.status(500)
-		}
+	//	catch (exp: Exception) {
+	//		let headers = HttpHeaders()
+	//		headers.add('Content-Type', 'text/plain; charset=utf-8;')
+	//		context.responseBuilder.setHeaders(headers)
+	//		context.responseBuilder.body(exp.toString()) // FIXME: http code
+	//		context.responseBuilder.status(500)
+	//	}
 
-	})
+	//})
 
 
 	println('Bot at ${HTTP_ADDR}:${HTTP_PORT}')
