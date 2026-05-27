@@ -10,6 +10,7 @@ import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
+import bot4cj.hd.extern.*
 import bot4cj.math.*
 
 
