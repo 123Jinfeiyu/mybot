@@ -1,0 +1,1084 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bot4cj 项目深度分析文档</title>
+    <style>
+        :root {
+            --bg: #0d1117;
+            --bg-secondary: #161b22;
+            --bg-tertiary: #21262d;
+            --text: #c9d1d9;
+            --text-secondary: #8b949e;
+            --border: #30363d;
+            --accent: #58a6ff;
+            --accent-hover: #79c0ff;
+            --green: #3fb950;
+            --orange: #d2991d;
+            --red: #f85149;
+            --purple: #a371f7;
+            --code-bg: #1c2128;
+            --max-width: 960px;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.75;
+            font-size: 15px;
+        }
+
+        /* ===== 导航栏 ===== */
+        .sidebar {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 260px;
+            height: 100vh;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border);
+            overflow-y: auto;
+            z-index: 100;
+            padding: 20px 16px;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        .sidebar::-webkit-scrollbar { width: 4px; }
+        .sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        .sidebar-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .sidebar nav a {
+            display: block;
+            padding: 6px 10px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            font-size: 13.5px;
+            border-radius: 6px;
+            transition: all 0.15s;
+            margin-bottom: 2px;
+        }
+
+        .sidebar nav a:hover {
+            color: var(--text);
+            background: var(--bg-tertiary);
+        }
+
+        .sidebar nav a.active {
+            color: var(--accent);
+            background: rgba(88, 166, 255, 0.1);
+        }
+
+        .sidebar nav .sub { padding-left: 24px; font-size: 12.5px; }
+
+        /* ===== 主内容区 ===== */
+        .main {
+            margin-left: 260px;
+            padding: 40px 48px 80px;
+            max-width: var(--max-width);
+        }
+
+        h1 {
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #f0f6fc;
+            line-height: 1.3;
+        }
+
+        h2 {
+            font-size: 22px;
+            font-weight: 600;
+            margin-top: 48px;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+            color: #f0f6fc;
+        }
+
+        h3 {
+            font-size: 18px;
+            font-weight: 600;
+            margin-top: 32px;
+            margin-bottom: 12px;
+            color: #e6edf3;
+        }
+
+        h4 {
+            font-size: 15px;
+            font-weight: 600;
+            margin-top: 24px;
+            margin-bottom: 8px;
+            color: var(--text);
+        }
+
+        p { margin-bottom: 14px; }
+
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { color: var(--accent-hover); text-decoration: underline; }
+
+        blockquote {
+            border-left: 3px solid var(--accent);
+            padding: 12px 20px;
+            margin: 16px 0;
+            background: var(--bg-secondary);
+            border-radius: 0 8px 8px 0;
+            color: var(--text-secondary);
+        }
+
+        strong { color: #e6edf3; }
+
+        hr {
+            border: none;
+            border-top: 1px solid var(--border);
+            margin: 40px 0;
+        }
+
+        /* ===== 代码块 ===== */
+        code {
+            font-family: "Cascadia Code", "JetBrains Mono", "Fira Code", "Consolas", monospace;
+            font-size: 13px;
+            background: var(--code-bg);
+            padding: 2px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--border);
+        }
+
+        pre {
+            background: var(--code-bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px 20px;
+            overflow-x: auto;
+            margin: 16px 0;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        pre code {
+            background: none;
+            border: none;
+            padding: 0;
+            font-size: 13px;
+        }
+
+        /* ===== 表格 ===== */
+        .table-wrapper {
+            overflow-x: auto;
+            margin: 16px 0;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13.5px;
+        }
+
+        th, td {
+            padding: 10px 16px;
+            text-align: left;
+            border-bottom: 1px solid var(--border);
+        }
+
+        th {
+            background: var(--bg-secondary);
+            font-weight: 600;
+            color: #e6edf3;
+            white-space: nowrap;
+        }
+
+        td { color: var(--text); }
+        tr:last-child td { border-bottom: none; }
+        tr:hover td { background: rgba(88, 166, 255, 0.04); }
+
+        /* ===== 特性卡片 ===== */
+        .feature-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+            margin: 16px 0;
+        }
+
+        .feature-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+            transition: border-color 0.2s;
+        }
+
+        .feature-card:hover { border-color: var(--accent); }
+        .feature-card .label { font-size: 12px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
+        .feature-card .desc { font-size: 13px; color: var(--text-secondary); }
+
+        /* ===== 缺陷等级标签 ===== */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+        .badge-high { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+        .badge-mid { background: rgba(210, 153, 29, 0.15); color: var(--orange); }
+        .badge-low { background: rgba(139, 148, 158, 0.15); color: var(--text-secondary); }
+
+        /* ===== 响应式 ===== */
+        @media (max-width: 900px) {
+            .sidebar {
+                position: static;
+                width: 100%;
+                height: auto;
+                max-height: 40vh;
+                border-right: none;
+                border-bottom: 1px solid var(--border);
+                padding: 12px;
+            }
+            .main { margin-left: 0; padding: 24px 20px 60px; }
+        }
+
+        /* ===== 回到顶部 ===== */
+        .back-to-top {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            width: 40px;
+            height: 40px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.3s;
+            z-index: 200;
+            color: var(--text-secondary);
+            font-size: 18px;
+        }
+        .back-to-top.visible { opacity: 1; }
+        .back-to-top:hover { background: var(--border); }
+
+        /* ===== 打印 ===== */
+        @media print {
+            .sidebar, .back-to-top { display: none; }
+            .main { margin-left: 0; padding: 0; }
+            body { background: white; color: #000; }
+            pre, code { background: #f5f5f5; border-color: #ddd; }
+            table { border-color: #ddd; }
+            th { background: #eee; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ========== 侧边栏导航 ========== -->
+<aside class="sidebar" id="sidebar">
+    <div class="sidebar-title">📋 目录导航</div>
+    <nav>
+        <a href="#section-0">项目总览</a>
+        <a href="#section-1" class="sub">项目是什么</a>
+        <a href="#section-1-2" class="sub">能做什么</a>
+        <a href="#section-1-3" class="sub">技术栈</a>
+        <a href="#section-2">架构与目录结构</a>
+        <a href="#section-3">核心数据流</a>
+        <a href="#section-4">矩阵式脚本语言</a>
+        <a href="#section-5">解析器模块</a>
+        <a href="#section-6">机器人结构模块</a>
+        <a href="#section-7">硬件驱动层</a>
+        <a href="#section-8">数学库</a>
+        <a href="#section-9">神经网络模块</a>
+        <a href="#section-10">卡尔曼滤波</a>
+        <a href="#section-11">FFT 快速傅里叶变换</a>
+        <a href="#section-12">CNN 卷积神经网络</a>
+        <a href="#section-13">CUDA GPU 加速</a>
+        <a href="#section-14">线程与同步</a>
+        <a href="#section-15">HTTP 服务器</a>
+        <a href="#section-16">辅助工具</a>
+        <a href="#section-17">构建系统</a>
+        <a href="#section-18">缺陷与改进建议</a>
+        <a href="#section-19">学习路线图</a>
+    </nav>
+</aside>
+
+<!-- ========== 主内容 ========== -->
+<main class="main">
+
+    <h1>🤖 bot4cj 项目深度分析文档</h1>
+    <blockquote>本文档对 bot4cj 项目进行全面、详细的分析，涵盖项目架构、每个模块的实现细节、算法原理、数据流、缺陷与改进建议。目标读者为零基础学习者。</blockquote>
+
+    <!-- ===== 1. 项目总览 ===== -->
+    <h2 id="section-0">1. 项目总览</h2>
+
+    <h3 id="section-1">1.1 项目是什么</h3>
+    <p><strong>bot4cj</strong> 是一个<strong>机器人硬件脚本解析器</strong>，基于仓颉（Cangjie）编程语言和 Linux I2C 接口。它的核心思想是：</p>
+    <blockquote>用一种自定义的"矩阵式脚本语言"来<strong>描述机器人的硬件构成和动作序列</strong>，然后解析并驱动真实硬件执行这些动作。</blockquote>
+    <p>简单类比：如果把机器人比作一个演员，那么 <code>.mt</code> 脚本就是剧本，<code>bot4cj</code> 就是导演——它读剧本、安排演员（硬件）、指挥表演（执行动作）。</p>
+
+    <h3 id="section-1-2">1.2 项目能做什么</h3>
+    <div class="feature-grid">
+        <div class="feature-card"><div class="label">📝 解析矩阵式脚本</div><div class="desc">读取 .mt 文件，解析出硬件定义和动作序列</div></div>
+        <div class="feature-card"><div class="label">🔌 驱动 PCA9685</div><div class="desc">通过 I2C 控制最多 16 路舵机</div></div>
+        <div class="feature-card"><div class="label">📐 读取 MPU6050</div><div class="desc">实时获取姿态数据，带卡尔曼滤波</div></div>
+        <div class="feature-card"><div class="label">🔊 控制扬声器</div><div class="desc">以声音频率替代延时</div></div>
+        <div class="feature-card"><div class="label">🌐 HTTP 服务器</div><div class="desc">通过网络接口远程提交脚本并执行</div></div>
+        <div class="feature-card"><div class="label">🧠 神经网络</div><div class="desc">全连接前馈网络，支持反向传播训练</div></div>
+        <div class="feature-card"><div class="label">🎯 深度强化学习</div><div class="desc">DRL 对机器人动作微调（已注释）</div></div>
+        <div class="feature-card"><div class="label">👁️ CNN</div><div class="desc">卷积神经网络用于视觉识别（C++/FFI）</div></div>
+        <div class="feature-card"><div class="label">📊 FFT 频谱分析</div><div class="desc">对信号进行快速傅里叶变换</div></div>
+        <div class="feature-card"><div class="label">⚡ CUDA GPU 加速</div><div class="desc">矩阵运算和激活函数在 GPU 上执行</div></div>
+    </div>
+
+    <h3 id="section-1-3">1.3 技术栈</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>层级</th><th>技术</th><th>用途</th></tr>
+        <tr><td>应用层</td><td>仓颉 (Cangjie)</td><td>主程序、解析器、机器人结构、数学库</td></tr>
+        <tr><td>系统层</td><td>C/C++</td><td>I2C 驱动、矩阵运算、FFT、CNN、音频</td></tr>
+        <tr><td>加速层</td><td>CUDA</td><td>GPU 矩阵运算、GPU 激活函数</td></tr>
+        <tr><td>脚本层</td><td>.mt 矩阵式脚本</td><td>硬件定义和动作描述</td></tr>
+        <tr><td>前端层</td><td>HTML + Tailwind</td><td>Web 管理界面</td></tr>
+        <tr><td>工具层</td><td>Python</td><td>图片标注工具、API 测试</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <!-- ===== 2. 项目架构与目录结构 ===== -->
+    <h2 id="section-2">2. 项目架构与目录结构</h2>
+    <pre><code>bot4cj/
+├── src/                          # 源代码根目录
+│   ├── main.cj                   # 程序入口：命令行解析、分支选择
+│   ├── P.cj                      # 解析器：MatrixObject、MatrixParser、MatrixSaver
+│   ├── r.cj                      # 机器人结构：RobotStruct、硬件变量类
+│   ├── math/                     # 数学库
+│   │   ├── Matrix.cj             # FP32 结构体 + Matrix1 矩阵类（仓颉原生）
+│   │   ├── Tensor.cj             # 张量类（多维数组）
+│   │   ├── nn.cj                 # 神经网络层 Nn1 + 训练/推理函数
+│   │   ├── nns.cj                # 多层神经网络训练/推理（旧版，已注释）
+│   │   ├── Af.cj                 # 激活函数枚举
+│   │   ├── Ini.cj                # 权重初始化：Xavier 正态/均匀
+│   │   ├── kalman.cj             # 一维卡尔曼滤波器（仓颉实现）
+│   │   └── fft.cj                # FFT 接口（已注释，改用 C 实现）
+│   ├── hd/                       # 硬件驱动
+│   │   ├── I2C.cj                # I2C 通信：直接调用 glibc + 互斥锁系统
+│   │   ├── PCA9685.cj            # PCA9685 舵机驱动板控制
+│   │   ├── MPU6050.cj            # MPU6050 陀螺仪/加速度计 + 守护线程
+│   │   ├── Servo.cj              # 舵机类：角度限制 + 偏移 + 回调
+│   │   └── snd.cj                # 扬声器类（目前仅延时占位）
+│   ├── th/                       # 线程与同步
+│   │   ├── mutex.cj              # pthread 互斥锁封装
+│   │   └── pthread.cj            # pthread 线程封装
+│   ├── cpp/                      # C/C++ 共享库源码
+│   │   ├── I2C.c                 # 旧版 I2C 驱动（使用 i2c-smbus）
+│   │   ├── Matrix.cpp + .hh      # C++ 模板矩阵类 + C 接口封装
+│   │   ├── kalman.c + .h         # 旧版卡尔曼滤波器（C 实现）
+│   │   ├── fft1.c                # 基-2 FFT 算法（纯 C）
+│   │   ├── fft.cpp + .h          # FFT 封装层（C++ → C 接口）
+│   │   ├── snd.cpp               # 音频播放（Windows WaveAPI / Linux ALSA）
+│   │   ├── bot4cj.h              # C 头文件：I2C 常量和函数声明
+│   │   └── cnn/                  # CNN 卷积神经网络
+│   ├── cuda/                     # CUDA GPU 加速
+│   └── py/                       # 图片标注工具
+├── scripts/                      # 动作脚本
+├── public/                       # Web 前端页面
+├── test/                         # API 测试
+├── Makefile                      # C/C++ 共享库构建
+├── cjpm.toml                     # 仓颉包管理配置
+└── _run.sh / _set.sh             # 运行和构建脚本</code></pre>
+
+    <hr>
+
+    <!-- ===== 3. 核心数据流 ===== -->
+    <h2 id="section-3">3. 核心数据流：从脚本到硬件</h2>
+    <p>这是理解整个项目最关键的部分。以下是数据从脚本文件到硬件执行的完整流程：</p>
+    <pre><code>┌─────────────┐
+│  .mt 脚本文件  │  例如：scripts/test.mt
+└──────┬──────┘
+       │ 文件读取 (InputStream)
+       ▼
+┌─────────────┐
+│  MatrixParser │  逐字符解析，输出 MatrixObject 对象
+│  (src/P.cj)  │  每个 @name...@ 块变成一个 MatrixObject
+└──────┬──────┘
+       │ LinkedList&lt;MatrixObject&gt;
+       ▼
+┌─────────────┐
+│  RobotStruct  │  从 MatrixObject 列表构建硬件变量字典
+│  (src/r.cj)  │  HashMap&lt;String, MatrixVars_Hardware&gt;
+└──────┬──────┘
+       │
+       ├── createAliasVars()     从 @Alias 矩阵创建别名变量
+       ├── createI2CVars()       从 @I2C 矩阵创建 I2C 设备变量
+       ├── createMPU6050Bind()   从 @MPU6050_BIND 矩阵创建陀螺仪变量
+       ├── createPCA9685Vars()   从 @PCA9685 矩阵创建舵机控制板变量
+       ├── createServoVars()     从 @Servo 矩阵创建舵机变量
+       └── createSpeakerVars()   从 @Speaker 矩阵创建扬声器变量
+       │
+       ▼
+┌─────────────┐
+│  active()    │  调用所有硬件变量的 build() 方法（初始化硬件）
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│  run()       │  逐行执行 @Action 矩阵中的动作
+│  run_drl_    │  每行解析出各硬件的参数，调用 play() 执行
+│  action()    │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────┐
+│  deactive()  │  以倒序调用所有硬件变量的 destroy() 方法
+└─────────────┘</code></pre>
+
+    <h3>关键概念：MatrixVars_Hardware（硬件变量）</h3>
+    <p>这是整个项目的核心抽象。每种硬件（I2C、PCA9685、Servo、Speaker...）都被封装为一个<strong>硬件变量</strong>，它们：</p>
+    <ol>
+        <li><strong>通过闭包持有真实的硬件对象</strong>（如 <code>I2C_Orig</code>、<code>PCA9685</code>、<code>Servo</code>）</li>
+        <li><strong>通过 JsonValue 进行统一接口通信</strong>（输入 JsonValue，输出 JsonValue）</li>
+        <li><strong>有生命周期</strong>：<code>build()</code> 初始化，<code>play()</code> 执行，<code>destroy()</code> 释放</li>
+    </ol>
+
+    <hr>
+
+    <!-- ===== 4. 矩阵式脚本语言 ===== -->
+    <h2 id="section-4">4. 矩阵式脚本语言（.mt）详解</h2>
+
+    <h3>4.1 语法规则</h3>
+    <p>矩阵式脚本是一种<strong>声明式、表格型</strong>的领域特定语言（DSL），用于描述机器人的硬件构成和动作序列。</p>
+    <p><strong>基本结构：</strong></p>
+    <pre><code>@MatrixName          ← 矩阵开始，@ 后跟名称
+ col1  col2  col3;   ← 第 0 行：列名声明
+ val1  val2  val3;   ← 第 1 行起：数据行
+ val4  -    val6;    ← "-" 表示沿用上一行同列的值
+@</code></pre>
+    <ul>
+        <li><strong>注释：</strong>以 <code>#</code> 开头到行末</li>
+        <li><strong>占位符 <code>-</code>：</strong>在数据行中，<code>-</code> 表示"与上一行同一列的值相同"，减少重复书写。</li>
+    </ul>
+
+    <h3>4.2 各矩阵对象的含义</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>矩阵名</th><th>用途</th><th>关键列</th></tr>
+        <tr><td><code>@Alias</code></td><td>定义参数别名</td><td>name, alias</td></tr>
+        <tr><td><code>@I2C</code></td><td>定义 I2C 总线设备</td><td>name, path</td></tr>
+        <tr><td><code>@PCA9685</code></td><td>定义舵机控制板</td><td>name, I2C, addr</td></tr>
+        <tr><td><code>@MPU6050_BIND</code></td><td>定义陀螺仪</td><td>name, I2C, addr</td></tr>
+        <tr><td><code>@Speaker</code></td><td>定义扬声器</td><td>name, channels, sample_rate, volumn, max_f, min_f</td></tr>
+        <tr><td><code>@Servo</code></td><td>定义舵机</td><td>name, max, min, offset, controller, channel</td></tr>
+        <tr><td><code>@Action</code></td><td>定义动作序列</td><td>格式为 <code>硬件名.参数名</code></td></tr>
+    </table>
+    </div>
+
+    <h3>4.3 @Action 矩阵详解</h3>
+    <p><code>@Action</code> 是最核心的矩阵，它定义了机器人的动作序列：</p>
+    <pre><code>@Action
+s1.A  s2.A  s3.A  ...  spk.F  spk.delay;   ← 列名：硬件变量.参数名
+  45     -    45  ...     10        200;     ← 第1行：站立姿态
+  90     -     -  ...      -         20;     ← 第2行：左后方抬起
+  ...
+@</code></pre>
+
+    <h3>4.4 蜘蛛机器人动作示例解读</h3>
+    <p>以 <code>scripts/test.mt</code> 为例，这是一个 8 足蜘蛛机器人的行走步态：</p>
+    <pre><code>@Action
+s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;
+  45     -    45     -    45     -    45     -    90     90     10        200;  # 站立
+  90     -     -     -     -     -     -     -     -      -      -         20;  # 左后方抬起
+  45     -     -     -     -     -     -     -     -      -      0        500;  # 恢复站立
+   -     -    90     -     -     -    45     -     -      -      -         20;  # 右后方抬起
+  ...
+@</code></pre>
+    <ul>
+        <li>s1-s8 是 8 个舵机（4 条腿，每腿 2 个关节）</li>
+        <li>s9-s10 是云台舵机</li>
+        <li>spk.F 是扬声器频率，spk.delay 是延时</li>
+    </ul>
+
+    <hr>
+
+    <!-- ===== 5. 解析器模块 ===== -->
+    <h2 id="section-5">5. 解析器模块详解</h2>
+
+    <h3>5.1 MatrixObject 类</h3>
+    <p><strong>用途：</strong>表示解析后的一个矩阵对象，对应脚本中 <code>@name ... @</code> 之间的内容。</p>
+    <pre><code>MatrixObject {
+    name: String                         ← 矩阵名称
+    values: ArrayList&lt;ArrayList&lt;String&gt;&gt; ← 二维字符串矩阵
+}</code></pre>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>方法</th><th>功能</th></tr>
+        <tr><td><code>hasName()</code></td><td>是否已命名</td></tr>
+        <tr><td><code>[](row, col)</code></td><td>像数组一样用下标访问</td></tr>
+        <tr><td><code>indexOfCol(row, key)</code></td><td>在某行中查找列号</td></tr>
+        <tr><td><code>addRune(c)</code></td><td>添加字符到缓冲区</td></tr>
+        <tr><td><code>submitName()</code></td><td>提交名字</td></tr>
+        <tr><td><code>submitItem()</code></td><td>提交元素</td></tr>
+        <tr><td><code>submitLine(count)</code></td><td>提交一行，检查列数一致性</td></tr>
+        <tr><td><code>save(output)</code></td><td>将矩阵对象写回文件流</td></tr>
+    </table>
+    </div>
+
+    <h3>5.2 MatrixParser 类</h3>
+    <p><strong>用途：</strong>将输入流逐字符解析为 <code>MatrixObject</code> 对象。</p>
+    <p><strong>算法：有限状态机（FSM）</strong></p>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>标志</th><th>含义</th></tr>
+        <tr><td><code>flag</code></td><td>是否遇到结束的 <code>@</code></td></tr>
+        <tr><td><code>nl</code></td><td>是否处于新行起始位置</td></tr>
+        <tr><td><code>cm</code></td><td>是否处于注释中</td></tr>
+        <tr><td><code>nm</code></td><td>是否正在解析名称行（@ 后的第一行）</td></tr>
+    </table>
+    </div>
+
+    <pre><code>输入字符 c
+├── 如果在注释中 (cm=true)
+│   ├── c == '\n' → 注释结束，nl=true, cm=false
+│   └── 其他 → 忽略
+├── 如果在新行起始 (nl=true)
+│   ├── c 是空白 → 维持现状
+│   ├── c == '\n' → 空行，行号+1
+│   ├── c == '@' 且未命名 → 开始名称行，nm=true
+│   ├── c == '@' 且已命名 → 结束标志，flag=true
+│   └── 其他 → 内容字符，加入缓冲区
+├── 如果不在新行 (nl=false)
+│   ├── 在名称行且遇空白 → 提交名字
+│   ├── 遇空白/制表符 → 提交当前元素
+│   ├── c == ';' → 提交元素并提交行
+│   └── 其他 → 加入缓冲区</code></pre>
+
+    <h3>5.4 异常体系</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>异常类</th><th>含义</th></tr>
+        <tr><td><code>ParseExcept</code></td><td>解析异常基类</td></tr>
+        <tr><td><code>BufOverTheLine</code></td><td>缓冲区过长</td></tr>
+        <tr><td><code>DoesNotSync</code></td><td>矩阵行没对齐（列数不一致）</td></tr>
+        <tr><td><code>UnknowExcept</code></td><td>未知异常兜底</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <!-- ===== 6. 机器人结构模块 ===== -->
+    <h2 id="section-6">6. 机器人结构模块详解</h2>
+
+    <h3>6.1 MatrixVars_Hardware 基类</h3>
+    <p><strong>这是整个硬件抽象的核心。</strong></p>
+    <pre><code>MatrixVars_Hardware（基类）
+├── things: (JsonValue) → JsonValue    ← 事件回调（核心！）
+├── rise: Option&lt;() → Unit&gt;           ← 初始化回调
+├── free: Option&lt;() → Unit&gt;           ← 释放回调
+├── play(input) → things(input)        ← 执行动作
+├── build() → rise()                   ← 初始化硬件
+└── destroy() → free()                 ← 释放硬件</code></pre>
+
+    <p><strong>为什么用 JsonValue 通信？</strong>不同硬件需要不同参数：</p>
+    <ul>
+        <li>PCA9685 需要 <code>{"channel": 0, "angle": 90.0}</code></li>
+        <li>I2C 需要 <code>{"mode": "set_addr", "addr": 0x40}</code></li>
+        <li>Servo 需要 <code>{"angle": 180.0}</code></li>
+        <li>Speaker 需要 <code>{"frequency": 1000.0, "delay": 400}</code></li>
+    </ul>
+
+    <h3>6.2 各硬件变量类</h3>
+
+    <h4>MtVars_I2C（I2C 变量）</h4>
+    <p><code>things</code> 支持 4 种模式：</p>
+    <ul>
+        <li><code>get_fd</code>：获取文件描述符</li>
+        <li><code>set_addr</code>：设置从机地址</li>
+        <li><code>set_val</code>：写寄存器</li>
+        <li><code>get_val</code>：读寄存器</li>
+    </ul>
+
+    <h4>MtVars_Servo（舵机变量）</h4>
+    <p><code>Servo.setAngle()</code> 逻辑：</p>
+    <pre><code>角度 = 输入角度 + 偏移值(offset)
+如果 角度 &gt; 最大值(max) → 角度 = max
+如果 角度 &lt; 最小值(min) → 角度 = min
+调用回调函数设置角度</code></pre>
+
+    <h3>6.3 RobotStruct 类</h3>
+    <pre><code>RobotStruct(input)
+  ├── readMatrix(input)         解析所有矩阵对象
+  └── createHardVars()          创建硬件变量字典
+        ├── createAliasVars()
+        ├── createI2CVars()
+        ├── createMPU6050Bind()
+        ├── createPCA9685Vars()
+        ├── createServoVars()
+        └── createSpeakerVars()
+
+active()                         初始化所有硬件
+run() → run_drl_action()         执行动作
+deactive()                       倒序释放所有硬件</code></pre>
+
+    <hr>
+
+    <!-- ===== 7. 硬件驱动层 ===== -->
+    <h2 id="section-7">7. 硬件驱动层详解</h2>
+
+    <h3>7.1 I2C 通信</h3>
+    <p>项目直接在仓颉中通过 <code>foreign func</code> 声明并调用 Linux glibc 的原生函数：</p>
+    <pre><code>foreign func open(path: CString, flag: Int32, ...): Int32
+foreign func close(fd: Int32): Int32
+foreign func ioctl(fd: Int32, addr: UInt64, ...): Int32
+foreign func read(fd: Int32, buf: CPointer&lt;Unit&gt;, count: UIntNative): IntNative
+foreign func write(fd: Int32, buf: CPointer&lt;Unit&gt;, count: UIntNative): IntNative</code></pre>
+
+    <h3>7.2 I2C 互斥锁系统</h3>
+    <pre><code>MAIN_LOCK (主锁)          ← 保护 LOCKS 数组的操作
+  └── LOCKS[0..19] (锁具数组)   ← 每个 I2C 设备一个锁
+        └── I2C_Lock {
+              i2c_fd: Int32      ← 绑定的 I2C 设备文件句柄
+              lock: CPointer     ← pthread_mutex_t 指针
+              is_active: Bool    ← 是否激活
+            }</code></pre>
+
+    <h3>7.3 PCA9685 舵机控制板</h3>
+    <p><strong>角度转 PWM：</strong></p>
+    <pre><code>脉宽 = 0.5 + (2.5 - 0.5) * (angle / 180.0)    ← 0°→0.5ms, 180°→2.5ms
+OFF值 = 脉宽 * 4096 / 20                        ← 20ms 周期, 12位分辨率
+setPWM(channel, ON=0, OFF=计算值)</code></pre>
+
+    <h3>7.4 MPU6050 陀螺仪/加速度计</h3>
+    <p><strong>守护线程 mpu6050_main()：</strong></p>
+    <ol>
+        <li>读取原始传感器数据</li>
+        <li>对 6 个轴分别进行卡尔曼滤波</li>
+        <li>打印滤波后的数据</li>
+        <li>睡眠 10ms</li>
+    </ol>
+
+    <h3>7.6 Spk 扬声器类</h3>
+    <p><strong>当前状态：</strong>仅实现了延时功能，实际发声被注释掉。C++ 实现的音频播放（<code>src/cpp/snd.cpp</code>）是完整的，支持 Windows WaveAPI 和 Linux ALSA。</p>
+
+    <hr>
+
+    <!-- ===== 8. 数学库 ===== -->
+    <h2 id="section-8">8. 数学库详解</h2>
+
+    <h3>8.2 Matrix1 矩阵类</h3>
+    <p><strong>数据布局：</strong>一维数组 <code>Array&lt;FP32&gt;</code>，行优先存储。</p>
+    <pre><code>arr[row * col + col]  ← 元素访问公式</code></pre>
+
+    <div class="table-wrapper">
+    <table>
+        <tr><th>运算</th><th>符号</th><th>含义</th><th>形状要求</th></tr>
+        <tr><td>矩阵加法</td><td><code>A + B</code></td><td>逐元素相加</td><td>同形状</td></tr>
+        <tr><td>广播加法</td><td><code>A + s</code></td><td>每个元素加标量</td><td>-</td></tr>
+        <tr><td>矩阵减法</td><td><code>A - B</code></td><td>逐元素相减</td><td>同形状</td></tr>
+        <tr><td>逐元素乘</td><td><code>A * B</code></td><td>逐元素相乘（Hadamard积）</td><td>同形状</td></tr>
+        <tr><td>矩阵乘法</td><td><code>A.dot(B)</code></td><td>矩阵点积（MatMul）</td><td>A.col == B.row</td></tr>
+        <tr><td>转置</td><td><code>A.T()</code></td><td>行列互换</td><td>-</td></tr>
+    </table>
+    </div>
+
+    <p><strong>矩阵乘法算法（dot）：</strong></p>
+    <pre><code>对于结果矩阵的每个元素 (i, j):
+    sum = 0
+    对于 k in 0..A.col:
+        sum += A[i, k] * B[k, j]
+    结果[i, j] = sum</code></pre>
+    <p>时间复杂度：O(m × n × k)</p>
+
+    <hr>
+
+    <!-- ===== 9. 神经网络 ===== -->
+    <h2 id="section-9">9. 神经网络模块详解</h2>
+
+    <h3>9.1 Nn1 全连接层</h3>
+    <pre><code>class Nn1 {
+    inputno: Int64          ← 输入维度
+    outputno: Int64         ← 输出维度
+    weights: Matrix1        ← 权重矩阵 (inputno, outputno)
+    bias: Matrix1           ← 偏置向量 (1, outputno)
+    learning_rate: FP32     ← 学习率
+    f: Af                   ← 激活函数
+}</code></pre>
+
+    <p><strong>forward() 前向传播：</strong> <code>a = f(Wx + b)</code></p>
+    <p><strong>backward() 反向传播：</strong></p>
+    <pre><code>δ = errs * f'(z)             ← 误差 × 激活函数导数
+weights_grad = x^T · δ       ← 权重梯度
+bias_grad = δ                ← 偏置梯度
+errs_up = δ · W^T            ← 传给上一层的误差</code></pre>
+
+    <h3>9.2 激活函数</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>函数</th><th>公式</th><th>导数</th><th>用途</th></tr>
+        <tr><td>Sigmoid</td><td>f(x) = 1/(1+e^(-x))</td><td>f'(x) = f(x)(1-f(x))</td><td>二分类输出层</td></tr>
+        <tr><td>ReLU</td><td>f(x) = max(0, x)</td><td>f'(x) = 1 if x&gt;0, else 0</td><td>隐藏层</td></tr>
+        <tr><td>Leaky_ReLU</td><td>f(x) = x if x&gt;0, else αx</td><td>f'(x) = 1 if x&gt;0, else α</td><td>隐藏层</td></tr>
+        <tr><td>Tanh</td><td>f(x) = tanh(x)</td><td>f'(x) = 1 - tanh²(x)</td><td>隐藏层</td></tr>
+        <tr><td>Softmax</td><td>f(x_i) = e^(x_i) / Σe^(x_j)</td><td>雅可比矩阵</td><td>多分类输出层</td></tr>
+    </table>
+    </div>
+
+    <h3>9.3 Xavier 权重初始化</h3>
+    <pre><code>σ = sqrt(2 / (fan_in + fan_out))      ← Xavier 正态
+limit = sqrt(6 / (fan_in + fan_out))    ← Xavier 均匀（Glorot）</code></pre>
+
+    <hr>
+
+    <!-- ===== 10. 卡尔曼滤波 ===== -->
+    <h2 id="section-10">10. 卡尔曼滤波详解</h2>
+    <p>卡尔曼滤波是一种<strong>最优估计算法</strong>，用于从含有噪声的测量数据中估计系统的真实状态。</p>
+
+    <h3>一维卡尔曼滤波器 5 个核心公式</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>步骤</th><th>公式</th><th>含义</th></tr>
+        <tr><td>预测状态</td><td>X_mid = A · X_last</td><td>根据上一次最优估计预测当前状态</td></tr>
+        <tr><td>预测协方差</td><td>P_mid = A · P_last + Q</td><td>预测的不确定性增大（+系统噪声Q）</td></tr>
+        <tr><td>计算卡尔曼增益</td><td>kg = P_mid / (P_mid + R)</td><td>测量越可靠(R小)，增益越大</td></tr>
+        <tr><td>更新状态</td><td>X_now = X_mid + kg · (dat - X_mid)</td><td>用测量值修正预测值</td></tr>
+        <tr><td>更新协方差</td><td>P_now = (1 - kg) · P_mid</td><td>估计的不确定性减小</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <!-- ===== 11. FFT ===== -->
+    <h2 id="section-11">11. FFT 快速傅里叶变换详解</h2>
+    <p>快速傅里叶变换（FFT）是一种高效计算离散傅里叶变换（DFT）的算法。将时域信号转换为频域表示。</p>
+    <p><strong>DFT 公式：</strong> X[k] = Σ x[n] · e^(-j·2π·k·n/N)</p>
+    <p><strong>算法：Cooley-Tukey 基-2 FFT</strong> —— 将 N 点 DFT 分解为两个 N/2 点 DFT，递归分解，时间复杂度从 O(N²) 降低到 O(N·log N)。</p>
+
+    <h3>蝶形运算</h3>
+    <pre><code>对于每一级 l:
+    对于每一组 j:
+        对于每个蝶形 k:
+            t = A[jl1k] · W[ij]           ← 旋转因子乘法
+            A[jl1k] = A[jl0k] - t         ← 蝶形运算上支
+            A[jl0k] = A[jl0k] + t         ← 蝶形运算下支</code></pre>
+
+    <hr>
+
+    <!-- ===== 12. CNN ===== -->
+    <h2 id="section-12">12. CNN 卷积神经网络详解</h2>
+
+    <h3>12.1 CNN 架构</h3>
+    <p>CNN 模块完全用 C++ 实现，通过 C 接口（<code>extern "C"</code>）暴露给仓颉调用。</p>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>层</th><th>文件</th><th>功能</th></tr>
+        <tr><td>ConvLayer</td><td>conv.cpp/h</td><td>2D 卷积层 + 反向传播 + 参数更新</td></tr>
+        <tr><td>PoolingLayer</td><td>pooling.cpp/h</td><td>最大/平均池化</td></tr>
+        <tr><td>GlobalAveragePooling</td><td>ga_pooling.cpp/h</td><td>全局平均池化</td></tr>
+        <tr><td>FlattenLayer</td><td>flatten.cpp/h</td><td>展平（4D → 2D）</td></tr>
+        <tr><td>ImageLoader</td><td>imgl.cpp/h</td><td>图像加载 + 归一化</td></tr>
+    </table>
+    </div>
+
+    <h3>卷积层前向传播</h3>
+    <pre><code>对于每个输出通道 oc:
+    对于每个空间位置 (oh, ow):
+        sum = bias[oc]
+        对于每个输入通道 ic:
+            对于每个核位置 (kh, kw):
+                sum += weight[oc,ic,kh,kw] * input[ic,oh*stride+kh,ow*stride+kw]
+        output[oc,oh,ow] = sum</code></pre>
+
+    <hr>
+
+    <!-- ===== 13. CUDA ===== -->
+    <h2 id="section-13">13. CUDA GPU 加速详解</h2>
+
+    <h3>13.1 CUDA 矩阵运算</h3>
+    <pre><code>__global__ void _devAdd(float* d1, float* d2, float* r, int64_t n) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;  ← 计算全局线程ID
+    if (i &lt; n) {
+        r[i] = d1[i] + d2[i];                        ← 每个线程处理一个元素
+    }
+}</code></pre>
+
+    <div class="table-wrapper">
+    <table>
+        <tr><th>函数</th><th>功能</th></tr>
+        <tr><td><code>Cu4cj_Orig(n)</code></td><td>在 GPU 上分配 n 个 float 的内存</td></tr>
+        <tr><td><code>Cu4cj_Zero(n)</code></td><td>在 GPU 上分配并清零</td></tr>
+        <tr><td><code>Cu4cj_ToDev(h, n)</code></td><td>主机 → 设备拷贝</td></tr>
+        <tr><td><code>Cu4cj_ToHost(d, h, n)</code></td><td>设备 → 主机拷贝</td></tr>
+        <tr><td><code>Cu4cj_Free(d)</code></td><td>释放 GPU 内存</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <!-- ===== 14. 线程与同步 ===== -->
+    <h2 id="section-14">14. 线程与同步模块详解</h2>
+    <p>直接封装 pthread 互斥锁和线程：</p>
+    <pre><code>foreign func pthread_mutex_init(mutex, attr): Int32
+foreign func pthread_mutex_destroy(mutex): Int32
+foreign func pthread_mutex_lock(mutex): Int32
+foreign func pthread_mutex_unlock(mutex): Int32</code></pre>
+
+    <pre><code>public class Pth {
+    init(_main, args) → pthread_create(...)   ← 创建线程
+    join(retval) → pthread_join(...)           ← 等待线程结束
+    close() → pthread_cancel(...)              ← 取消线程
+}</code></pre>
+
+    <hr>
+
+    <!-- ===== 15. HTTP 服务器 ===== -->
+    <h2 id="section-15">15. HTTP 服务器模块详解</h2>
+
+    <div class="table-wrapper">
+    <table>
+        <tr><th>路径</th><th>方法</th><th>功能</th></tr>
+        <tr><td><code>/api/v2/bot_run</code></td><td>POST</td><td>接收动作脚本并执行</td></tr>
+        <tr><td><code>/</code></td><td>GET</td><td>返回前端页面</td></tr>
+        <tr><td><code>/api/v1/fs</code></td><td>POST</td><td>文件系统操作（列表目录）</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <!-- ===== 16. 辅助工具 ===== -->
+    <h2 id="section-16">16. 辅助工具详解</h2>
+    <ul>
+        <li><strong>图片标注工具</strong>（<code>src/py/labeled.py</code>）：Python + Tkinter + PIL + OpenCV，用于 CNN 训练数据标注</li>
+        <li><strong>前端页面</strong>（<code>public/index.html</code>）：科技感展示页面，Tailwind CSS，暗色模式</li>
+        <li><strong>API 测试</strong>（<code>test/test_api_fs.py</code>）：测试文件系统 API</li>
+    </ul>
+
+    <hr>
+
+    <!-- ===== 17. 构建系统 ===== -->
+    <h2 id="section-17">17. 构建系统详解</h2>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>目标</th><th>源文件</th><th>输出</th><th>用途</th></tr>
+        <tr><td><code>libi2c4cj.so</code></td><td>I2C.c</td><td>I2C 驱动</td><td>旧版（已弃用）</td></tr>
+        <tr><td><code>libsnd4cj.so</code></td><td>snd.cpp</td><td>音频播放</td><td>WaveAPI / ALSA</td></tr>
+        <tr><td><code>libmt4cj.so</code></td><td>Matrix.cpp / matrix.cu</td><td>矩阵运算</td><td>CPU 或 GPU 版本</td></tr>
+        <tr><td><code>libfft4cj.so</code></td><td>fft1.c + fft.cpp</td><td>FFT</td><td>快速傅里叶变换</td></tr>
+        <tr><td><code>libcnn4cj.so</code></td><td>cnn_i.cpp + ...</td><td>CNN</td><td>卷积神经网络</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <!-- ===== 18. 全局缺陷与改进建议 ===== -->
+    <h2 id="section-18">18. 全局缺陷与改进建议</h2>
+
+    <h3>18.1 严重缺陷</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>编号</th><th>缺陷</th><th>位置</th><th>详细说明</th><th>严重程度</th></tr>
+        <tr>
+            <td>D1</td><td><strong>析构器调用时间不确定</strong></td><td>r.cj:28</td>
+            <td>仓颉的 GC 不保证析构器调用时间，I2C 文件描述符可能泄漏</td>
+            <td><span class="badge badge-high">高</span></td>
+        </tr>
+        <tr>
+            <td>D2</td><td><strong>扬声器仅延时未发声</strong></td><td>hd/snd.cj:17</td>
+            <td><code>play()</code> 只 sleep，C++ 实现的 <code>play_frequency()</code> 未被调用</td>
+            <td><span class="badge badge-high">高</span></td>
+        </tr>
+        <tr>
+            <td>D3</td><td><strong>MPU6050 线程无法安全退出</strong></td><td>hd/MPU6050.cj:115</td>
+            <td><code>mpu6050_main()</code> 是无限循环，<code>pthread_cancel</code> 可能在不安全点中断</td>
+            <td><span class="badge badge-high">高</span></td>
+        </tr>
+        <tr>
+            <td>D4</td><td><strong>I2C 锁系统线性扫描</strong></td><td>hd/I2C.cj:129</td>
+            <td>每次加锁/解锁都遍历 20 个元素的数组，O(n) 复杂度</td>
+            <td><span class="badge badge-mid">中</span></td>
+        </tr>
+        <tr>
+            <td>D5</td><td><strong>xavierUniformInit 每个元素新建 Random</strong></td><td>math/Ini.cj:30</td>
+            <td>循环内每次 <code>DateTime.now().nanosecond + Random()</code>，种子可能重复</td>
+            <td><span class="badge badge-mid">中</span></td>
+        </tr>
+        <tr>
+            <td>D6</td><td><strong>Softmax 雅可比矩阵反向传播未正确使用</strong></td><td>math/Af.cj:246</td>
+            <td><code>softmax_jacobian</code> 返回 n×n 矩阵，但 <code>backward</code> 调用者期望与输入同形状</td>
+            <td><span class="badge badge-high">高</span></td>
+        </tr>
+        <tr>
+            <td>D8</td><td><strong>tanh 导数输入错误</strong></td><td>math/Af.cj:194-206</td>
+            <td>计算 <code>1 - x*x</code> 用的是原始输入 x，应改为 <code>1 - y*y</code></td>
+            <td><span class="badge badge-high">高</span></td>
+        </tr>
+        <tr>
+            <td>D9</td><td><strong>I2C 读寄存器返回 Int8 而非 UInt8</strong></td><td>hd/I2C.cj:81</td>
+            <td>负值寄存器数据会出错</td>
+            <td><span class="badge badge-mid">中</span></td>
+        </tr>
+        <tr>
+            <td>D10</td><td><strong>MPU6050 ADDR_0 和 ADDR_1 相同</strong></td><td>hd/MPU6050.cj:14-15</td>
+            <td>两个地址常量都是 0x68，ADDR_1 应为 0x69</td>
+            <td><span class="badge badge-mid">中</span></td>
+        </tr>
+    </table>
+    </div>
+
+    <h3>18.2 设计缺陷</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>编号</th><th>缺陷</th><th>详细说明</th><th>建议</th></tr>
+        <tr><td>D12</td><td>JsonValue 通信开销大</td><td>每次硬件操作都要构造/解析 JSON</td><td>对高频路径提供直接调用接口</td></tr>
+        <tr><td>D13</td><td>硬件变量创建顺序硬编码</td><td><code>createHardVars()</code> 中顺序固定</td><td>使用依赖图自动排序</td></tr>
+        <tr><td>D14</td><td>无 batch 训练支持</td><td>神经网络每次只训练一个样本</td><td>增加 batch 维度</td></tr>
+        <tr><td>D15</td><td>无 Adam 优化器</td><td>仓颉版 Nn1 只有 SGD</td><td>实现 Adam 优化器</td></tr>
+        <tr><td>D20</td><td>无单元测试</td><td>数学库、解析器等无自动化测试</td><td>添加测试框架</td></tr>
+    </table>
+    </div>
+
+    <h3>18.3 安全缺陷</h3>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>编号</th><th>缺陷</th><th>详细说明</th></tr>
+        <tr><td>D21</td><td>文件系统 API 无认证</td><td><code>/api/v1/fs</code> 可列出任意目录内容</td></tr>
+        <tr><td>D22</td><td>HTTP 服务器无认证</td><td><code>/api/v2/bot_run</code> 可执行任意脚本</td></tr>
+        <tr><td>D23</td><td>路径遍历风险</td><td>文件系统 API 接受用户输入的路径</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <!-- ===== 19. 学习路线图 ===== -->
+    <h2 id="section-19">19. 学习路线图</h2>
+
+    <div class="feature-grid">
+        <div class="feature-card">
+            <div class="label">📝 第一阶段（1-2天）</div>
+            <div class="desc"><strong>理解脚本语言</strong><br>阅读 <code>scripts/test.mt</code>，理解 .mt 语法，手动写一个简单脚本</div>
+        </div>
+        <div class="feature-card">
+            <div class="label">🔍 第二阶段（2-3天）</div>
+            <div class="desc"><strong>理解解析器</strong><br>从 MatrixObject 开始，跟踪 MatrixParser 的状态机逻辑</div>
+        </div>
+        <div class="feature-card">
+            <div class="label">🔌 第三阶段（3-5天）</div>
+            <div class="desc"><strong>理解硬件驱动</strong><br>学习 I2C 通信原理，阅读 PCA9685、MPU6050 驱动代码</div>
+        </div>
+        <div class="feature-card">
+            <div class="label">🏗️ 第四阶段（2-3天）</div>
+            <div class="desc"><strong>理解机器人结构</strong><br>理解闭包设计，跟踪硬件变量创建和 run_drl_action() 流程</div>
+        </div>
+        <div class="feature-card">
+            <div class="label">🧠 第五阶段（3-5天）</div>
+            <div class="desc"><strong>理解神经网络</strong><br>学习矩阵运算、激活函数，手动计算前向/反向传播</div>
+        </div>
+        <div class="feature-card">
+            <div class="label">🚀 第六阶段（选学）</div>
+            <div class="desc"><strong>理解高级功能</strong><br>卡尔曼滤波、FFT 蝶形运算、CNN、CUDA GPU 编程</div>
+        </div>
+    </div>
+
+    <hr>
+
+    <h2>附录 A：仓颉语言关键语法速查</h2>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>语法</th><th>含义</th><th>对应语言</th></tr>
+        <tr><td><code>package foo</code></td><td>声明包</td><td>Java package</td></tr>
+        <tr><td><code>import std.io.*</code></td><td>导入</td><td>Java import</td></tr>
+        <tr><td><code>class A &lt;: B</code></td><td>继承</td><td>Java extends</td></tr>
+        <tr><td><code>open class</code></td><td>允许继承</td><td>Java 非 final</td></tr>
+        <tr><td><code>let / var</code></td><td>不可变/可变</td><td>Kotlin val/var</td></tr>
+        <tr><td><code>Option&lt;T&gt;</code></td><td>可选类型</td><td>Java Optional</td></tr>
+        <tr><td><code>Some(v) / None</code></td><td>有值/无值</td><td>Optional.of/present</td></tr>
+        <tr><td><code>if (let Some(v) &lt;- expr)</code></td><td>if-let 解构</td><td>Swift if-let</td></tr>
+        <tr><td><code>match(expr) { case ... }</code></td><td>模式匹配</td><td>Kotlin when / Rust match</td></tr>
+        <tr><td><code>foreign func</code></td><td>FFI 声明</td><td>Java native / Rust extern</td></tr>
+        <tr><td><code>unsafe { }</code></td><td>不安全块</td><td>Rust unsafe</td></tr>
+        <tr><td><code>CPointer&lt;T&gt;</code></td><td>C 指针</td><td>Rust *mut T</td></tr>
+        <tr><td><code>@C</code></td><td>C 兼容注解</td><td>使结构体内存布局兼容 C</td></tr>
+        <tr><td><code>operator func []</code></td><td>运算符重载</td><td>C++ operator[]</td></tr>
+        <tr><td><code>extend A { }</code></td><td>扩展方法</td><td>Kotlin extension</td></tr>
+    </table>
+    </div>
+
+    <hr>
+
+    <h2>附录 B：术语表</h2>
+    <div class="table-wrapper">
+    <table>
+        <tr><th>术语</th><th>英文</th><th>含义</th></tr>
+        <tr><td>舵机</td><td>Servo</td><td>一种可以精确控制角度的电机</td></tr>
+        <tr><td>I2C</td><td>Inter-Integrated Circuit</td><td>一种两线制串行总线协议</td></tr>
+        <tr><td>PWM</td><td>Pulse Width Modulation</td><td>脉宽调制，通过改变脉冲宽度控制输出</td></tr>
+        <tr><td>陀螺仪</td><td>Gyroscope</td><td>测量角速度的传感器</td></tr>
+        <tr><td>前向传播</td><td>Forward Propagation</td><td>神经网络从输入到输出的计算过程</td></tr>
+        <tr><td>反向传播</td><td>Backpropagation</td><td>神经网络从输出到输入的梯度计算过程</td></tr>
+        <tr><td>梯度下降</td><td>Gradient Descent</td><td>沿梯度反方向更新参数以最小化损失</td></tr>
+        <tr><td>学习率</td><td>Learning Rate</td><td>每次参数更新的步长</td></tr>
+        <tr><td>激活函数</td><td>Activation Function</td><td>引入非线性的函数（如 ReLU、Sigmoid）</td></tr>
+        <tr><td>卡尔曼增益</td><td>Kalman Gain</td><td>决定多大程度上相信测量值 vs 预测值</td></tr>
+        <tr><td>傅里叶变换</td><td>Fourier Transform</td><td>将信号从时域转换到频域</td></tr>
+        <tr><td>蝶形运算</td><td>Butterfly Operation</td><td>FFT 中的基本计算单元</td></tr>
+        <tr><td>卷积</td><td>Convolution</td><td>滑动窗口加权求和的运算</td></tr>
+        <tr><td>池化</td><td>Pooling</td><td>降采样操作（取最大值或平均值）</td></tr>
+        <tr><td>FFI</td><td>Foreign Function Interface</td><td>调用其他语言函数的接口</td></tr>
+        <tr><td>DRL</td><td>Deep Reinforcement Learning</td><td>深度强化学习</td></tr>
+    </table>
+    </div>
+
+</main>
+
+<!-- 回到顶部按钮 -->
+<div class="back-to-top" id="backToTop" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</div>
+
+<script>
+    // 回到顶部按钮显示/隐藏
+    const btn = document.getElementById('backToTop');
+    window.addEventListener('scroll', () => {
+        btn.classList.toggle('visible', window.scrollY > 400);
+    });
+
+    // 侧边栏激活项高亮
+    const navLinks = document.querySelectorAll('.sidebar nav a');
+    const sections = document.querySelectorAll('h2[id]');
+
+    function updateActive() {
+        let current = '';
+        sections.forEach(s => {
+            if (window.scrollY >= s.offsetTop - 100) current = s.id;
+        });
+        navLinks.forEach(a => {
+            a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+        });
+    }
+
+    window.addEventListener('scroll', updateActive);
+
+    // 平滑滚动（锚点链接）
+    document.querySelectorAll('a[href^="#"]').forEach(a => {
+        a.addEventListener('click', e => {
+            e.preventDefault();
+            const target = document.querySelector(a.getAttribute('href'));
+            if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+    });
+</script>
+
+</body>
+</html>
