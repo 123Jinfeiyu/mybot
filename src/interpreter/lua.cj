@@ -1,6 +1,9 @@
 package bot4cj.interpreter
 import std.collection.*
 import stdx.encoding.json.*
+import ctype4cj.*
+
+/* ---- 使用type定义类型 ---- */
 foreign func luaL_newstate(): CPointer<Unit>
 foreign func lua_close(L: CPointer<Unit>): Unit
 foreign func luaL_openlibs(L: CPointer<Unit>): Unit
@@ -24,6 +27,21 @@ foreign func lua_next(L: CPointer<Unit>, index: Int32): Int32
 const LUA_OK: Int32 = 0
 const LUA_MULTRET: Int32 = -1 	/* ---- 将所有值都压入栈中 ----*/
 const LUA_TTABLE: Int32 = 5	/* ---- 表的类型通常为5 ---- */
+
+
+
+/* ---- Lua解释器初始化 ---- */
+@C
+public func Lua_init(): CPointer<Unit> {
+	let L = unsafe { luaL_newstate() }
+	if (L.isNull()) {
+		throw IllegalMemoryException("Lua_init()")
+	}
+
+	return L
+}
+
+/* NOTE(20260530-qing): 考虑到CFunc兼容性，先进行一次CFunc封装 */
 public class Lua {
 	private let L: CPointer<Unit>
 	public init() {

@@ -20,6 +20,8 @@
     path-option = ["${CANGJIE_STDX_PATH}/linux_x86_64_cjnative/static/stdx"]
 
 [target.aarch64-unknown-linux-gnu]
+  [target.aarch64-unknown-linux-gnu.dependencies]
+    ctype4cj = { git = "https://gitcode.com/qingss0/ctype4cj_arm64.git", branch="main" }
   [target.aarch64-unknown-linux-gnu.bin-dependencies]
     path-option = ["${CANGJIE_STDX_PATH}/linux_aarch64_cjnative/static/stdx"]
     
