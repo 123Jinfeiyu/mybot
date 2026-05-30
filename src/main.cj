@@ -11,6 +11,7 @@ import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
 import bot4cj.interpreter.*
+import ctype4cj.*
 
 var I2C_PATH = "/dev/i2c-1"	/*  For Raspberrypi  */
 var HTTP_ADDR = "127.0.0.1"
@@ -194,19 +195,84 @@ func run_test(key: String) {
 
 
 	/* -------- */
-	else if (key == "lua") {
-		let lua = Lua()
-		let obj = JsonObject()
-		obj.put("name", JsonString("qing"))
-		obj.put("age", JsonString("28"))
-		obj.put("city", JsonString("Chengdu"))
-		lua.runFile_withTable("./test/tt.lua", obj,  1)
-		lua.close()
-	}
+//	else if (key == "lua") {
+//		let lua = Lua()
+//		let obj = JsonObject()
+//		obj.put("name", JsonString("qing"))
+//		obj.put("age", JsonString("28"))
+//		obj.put("city", JsonString("Chengdu"))
+//		lua.runFile_withTable("./test/tt.lua", obj,  1)
+//		lua.close()
+//	}
 
 	else if (key == "lua1") {
 		unsafe {
-			let L = Lua_init()
+
+			/* ---- 准备数据 ---- */
+			let obj = JsonObject()
+			obj.put("name", JsonString("qing"))
+			obj.put("age", JsonString("28"))
+			obj.put("city", JsonString("Chengdu"))
+
+			/* ---- 申请资源 ---- */
+			let L: lua_State = Lua_init()
+			Lua_loadlib(L)
+			let filename_c = LibC.mallocCString("./test/tt.lua")
+			if (filename_c.isEmpty()) {
+				throw IllegalMemoryException("LibC.mallocCString()")
+			}
+
+			/* ---- 设置Lua状态机 ---- */
+			var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
+			if (status == LUA_OK) {
+
+				/* ----在Lua状态机里 创建Lua表 ---- */				
+				Lua_createtable(L, 0, 0)
+
+				/* ---- 向Lua表中推入数据 ---- */
+				let fields: HashMap<String, JsonValue> = obj.getFields()
+				for (k in fields.keys()) {
+					let v = fields.get(k).getOrThrow().asString().getValue()
+					let sk = LibC.mallocCString(k)
+					let sv = LibC.mallocCString(v)
+					Lua_pushstring(L, sv)
+					Lua_setfield(L, -2, sk)
+					LibC.free(sk)
+					LibC.free(sv)
+				}
+
+				status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
+				println("lua status: ${status}")
+				if (status == LUA_OK) {
+					println(1)
+					if (Lua_type(L, -1) == LUA_TTABLE) {
+						/* ---- 栈顶是表 ---- 
+						 * ---- 压入 nil 作为遍历的起始键 ---- */
+						Lua_pushnil(L)
+						while(Lua_next(L, -2) != 0) {
+							/* ---- 此时栈：[表, 键, 值] ----
+							 * ---- 检查键值是否为空指针 ---- */
+							let key = Lua_tostring(L, -2)
+							let val = Lua_tostring(L, -1)
+							println("${key}: ${val}")
+							Lua_pop(L, 1)
+						}
+					}
+					Lua_pop(L, 1)
+				}
+
+				else if (status != LUA_OK) {
+					let err  = Lua_tostring(L, -1)
+					if (!err.isEmpty()) {
+						println("Lua 错误详情: ${err.toString()}")
+					}
+					Lua_pop(L, 1)
+				}
+
+			}
+
+			/* ---- 释放资源 ---- */
+			LibC.free(filename_c)			
 			Lua_free(L)
 		}
 	}

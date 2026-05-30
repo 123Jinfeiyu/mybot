@@ -4,7 +4,7 @@ import stdx.encoding.json.*
 import ctype4cj.*
 
 /* ---- 定义Lua状态机类型 ---- */
-type lua_State = CPointer<Unit>
+public type lua_State = CPointer<Unit>
 
 foreign func luaL_newstate(): lua_State
 foreign func lua_close(L: lua_State): Unit
@@ -67,7 +67,7 @@ public func Lua_loadfilex(L: lua_State, filename: CString, mode: CPointer<C_Char
 @C
 public func Lua_pcallk(L: lua_State, nargs: C_Int, nresults: C_Int, msgh: C_Int, ctx: C_IntPtr, k: CPointer<Unit>): C_Int
 {
-	return unsafe { Lua_pcallk(L, nargs, nresults, msgh, ctx, k) }
+	return unsafe { lua_pcallk(L, nargs, nresults, msgh, ctx, k) }
 }
 
 /* ---- 用于预先创建表（table）的函数。
@@ -110,17 +110,16 @@ public func Lua_pushnil(L: lua_State): Unit
 /* ---- 将栈上指定索引处的 Lua 值转换为 C 字符串 ---- 
  * NOTE(20260530-qing): 其返回值不可被free  */
 @C
-public func lua_tostring(L: lua_State, index: C_Int): CString {
+public func Lua_tostring(L: lua_State, index: C_Int): CString {
 	unsafe {
 		let cstr = lua_tolstring(L, index, CPointer<UIntNative>())
-		if (!cstr.isEmpty()) {  return cstr  }
-		else { throw NoneValueException("Lua value") }
+		return cstr
 	}
 }
 
 /* ---- 从栈顶弹出指定数量的元素 ---- */
 @C
-public func lua_pop(L: lua_State, index: Int32): Unit {
+public func Lua_pop(L: lua_State, index: Int32): Unit {
 	unsafe { lua_settop(L, (-index) - 1i32) }
 }
 
@@ -135,97 +134,97 @@ public func Lua_next(L: lua_State, index: C_Int): C_Int
 
 /* ----------------------------------------------------------- */
 /* NOTE(20260530-qing): 考虑到CFunc兼容性，先进行一次CFunc封装 */
-public class Lua {
-	private let L: CPointer<Unit>
-	public init() {
-		unsafe {
-			L = luaL_newstate()
-			luaL_openlibs(L)
-		}
-	}
-
-	/* ---- FIXME: 提供机制而非策略，将逻辑后推到别的类 ---- */
-	public func runFile_withTable(filename: String, obj: JsonObject, nret: Int32): Int32 {
-		unsafe {
-			let fn = LibC.mallocCString(filename)
-			if (fn.isEmpty()) { return -1i32 }
-			var status = luaL_loadfilex(L, fn, CPointer<C_Char>())
-			if (status == LUA_OK) {
-				push_string_dict(obj)
-				status = lua_pcallk(L, nret, LUA_MULTRET, 0, 0, CPointer<Unit>())
-				if (status == LUA_OK) {
-					if (isLuaTable(-1i32)) {
-						read_string_dict()
-					}
-					lua_settop(L, (-1i32)-1i32)
-				}
-
-				else if (status != LUA_OK) {
-					let  err = lua_tolstring(L, -1, CPointer<UIntNative>());
-					println("Lua 错误详情: ${err.toString()}");
-					lua_settop(L, (-1i32)-1i32);
-				}
-
-			}
-			LibC.free(fn)
-			return status
-		}
-	}
-
-	public func close() {
-		unsafe { lua_close(L) }
-	}
-
-	public func lua_pop(index: Int32): Unit {
-		unsafe { lua_settop(L, (-index) - 1i32) }
-	}
-
-	public func push_string_dict(obj: JsonObject) {
-		unsafe { lua_createtable(L, 0i32, 0i32) }
-		let fields: HashMap<String, JsonValue> = obj.getFields()
-		for (k in fields.keys()) {
-			let v: String =  fields.get(k).getOrThrow().asString().getValue()
-			unsafe {
-				let sk = LibC.mallocCString(k)
-				let sv = LibC.mallocCString(v)
-				lua_pushstring(L, sv)
-				lua_setfield(L, -2i32, sk)
-				LibC.free(sk)
-				LibC.free(sv)
-			}
-		}
-	}
-
-	public func read_string_dict() {
-		/* ---- 假设栈顶是表 ---- */
-		
-		/* ---- 压入 nil 作为遍历的起始键 ---- */
-		unsafe {
-			lua_pushnil(L)
-			while (lua_next(L, -2) != 0i32) {
-				/* ---- 此时栈：[表, 键, 值] ---- */
-				let key = lua_tostring(-2)
-				let val = lua_tostring(-1)
-				println("${key}: ${val}")
-				lua_pop(1)
-			}
-		}
-	}
-
-	public func isLuaTable(index: Int32): Bool {
-		unsafe {
-			let t = lua_type(L, index)
-			return t == LUA_TTABLE
-		}
-	}
-
-	public func lua_tostring(index: Int32): String {
-		unsafe {
-			let cstr = lua_tolstring(L, index, CPointer<UIntNative>())
-			if (!cstr.isEmpty()) {
-				return cstr.toString()
-			}
-			else { throw NoneValueException("Lua value") }
-		}
-	}
-}
+//public class Lua {
+//	private let L: CPointer<Unit>
+//	public init() {
+//		unsafe {
+//			L = luaL_newstate()
+//			luaL_openlibs(L)
+//		}
+//	}
+//
+//	/* ---- FIXME: 提供机制而非策略，将逻辑后推到别的类 ---- */
+//	public func runFile_withTable(filename: String, obj: JsonObject, nret: Int32): Int32 {
+//		unsafe {
+//			let fn = LibC.mallocCString(filename)
+//			if (fn.isEmpty()) { return -1i32 }
+//			var status = Lua_loadfilex(L, fn, CPointer<C_Char>())
+//			if (status == LUA_OK) {
+//				push_string_dict(obj)
+//				status = lua_pcallk(L, nret, LUA_MULTRET, 0, 0, CPointer<Unit>())
+//				if (status == LUA_OK) {
+//					if (isLuaTable(-1i32)) {
+//						read_string_dict()
+//					}
+//					lua_settop(L, (-1i32)-1i32)
+//				}
+//
+//				else if (status != LUA_OK) {
+//					let  err = lua_tolstring(L, -1, CPointer<UIntNative>());
+//					println("Lua 错误详情: ${err.toString()}");
+//					lua_settop(L, (-1i32)-1i32);
+//				}
+//
+//			}
+//			LibC.free(fn)
+//			return status
+//		}
+//	}
+//
+//	public func close() {
+//		unsafe { lua_close(L) }
+//	}
+//
+//	public func lua_pop(index: Int32): Unit {
+//		unsafe { lua_settop(L, (-index) - 1i32) }
+//	}
+//
+//	public func push_string_dict(obj: JsonObject) {
+//		unsafe { lua_createtable(L, 0i32, 0i32) }
+//		let fields: HashMap<String, JsonValue> = obj.getFields()
+//		for (k in fields.keys()) {
+//			let v: String =  fields.get(k).getOrThrow().asString().getValue()
+//			unsafe {
+//				let sk = LibC.mallocCString(k)
+//				let sv = LibC.mallocCString(v)
+//				lua_pushstring(L, sv)
+//				lua_setfield(L, -2i32, sk)
+//				LibC.free(sk)
+//				LibC.free(sv)
+//			}
+//		}
+//	}
+//
+//	public func read_string_dict() {
+//		/* ---- 假设栈顶是表 ---- */
+//		
+//		/* ---- 压入 nil 作为遍历的起始键 ---- */
+//		unsafe {
+//			lua_pushnil(L)
+//			while (lua_next(L, -2) != 0i32) {
+//				/* ---- 此时栈：[表, 键, 值] ---- */
+//				let key = lua_tostring(-2)
+//				let val = lua_tostring(-1)
+//				println("${key}: ${val}")
+//				lua_pop(1)
+//			}
+//		}
+//	}
+//
+//	public func isLuaTable(index: Int32): Bool {
+//		unsafe {
+//			let t = lua_type(L, index)
+//			return t == LUA_TTABLE
+//		}
+//	}
+//
+//	public func lua_tostring(index: Int32): String {
+//		unsafe {
+//			let cstr = lua_tolstring(L, index, CPointer<UIntNative>())
+//			if (!cstr.isEmpty()) {
+//				return cstr.toString()
+//			}
+//			else { throw NoneValueException("Lua value") }
+//		}
+//	}
+//}
