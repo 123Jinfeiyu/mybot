@@ -10,6 +10,7 @@ import stdx.net.http.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
+import bot4cj.interpreter.*
 
 var I2C_PATH = "/dev/i2c-1"	/*  For Raspberrypi  */
 var HTTP_ADDR = "127.0.0.1"
@@ -189,6 +190,18 @@ func run_test(key: String) {
 		let outf = File("ss/output_1.mt", OpenMode.Write)
 		robot.save(outf)
 		outf.close()
+	}
+
+
+	/* -------- */
+	else if (key == "lua") {
+		let lua = Lua()
+		let obj = JsonObject()
+		obj.put("name", JsonString("qing"))
+		obj.put("age", JsonString("28"))
+		obj.put("city", JsonString("Chengdu"))
+		lua.runFile_withTable("./test/tt.lua", obj,  1)
+		lua.close()
 	}
 }
 
