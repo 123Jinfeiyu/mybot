@@ -3,17 +3,19 @@ import std.collection.*
 import stdx.encoding.json.*
 import ctype4cj.*
 
-/* ---- 使用type定义类型 ---- */
-foreign func luaL_newstate(): CPointer<Unit>
-foreign func lua_close(L: CPointer<Unit>): Unit
-foreign func luaL_openlibs(L: CPointer<Unit>): Unit
-foreign func luaL_loadfilex(L: CPointer<Unit>, filename: CString, mode: CPointer<Unit>): Int32
-foreign func lua_pcallk (L: CPointer<Unit>,
-                nargs: Int32,
-                nresults: Int32,
-                msgh: Int32,
-                ctx: Int64,
-                k: CPointer<Unit>): Int32
+/* ---- 定义Lua状态机类型 ---- */
+type lua_State = CPointer<Unit>
+
+foreign func luaL_newstate(): lua_State
+foreign func lua_close(L: lua_State): Unit
+foreign func luaL_openlibs(L: lua_State): Unit
+foreign func luaL_loadfilex(L: lua_State, filename: CString, mode: CPointer<Unit>): Int32
+foreign func lua_pcallk (L: lua_State,
+                nargs: C_Int,
+                nresults: C_Int,
+                msgh: C_Int,
+                ctx: C_Long,	/* ---- 指针大小的有符号整数 ---- */
+                k: CPointer<Unit>  ): C_Int
 foreign func lua_createtable(L: CPointer<Unit>, narr: Int32, nrec: Int32): Unit
 foreign func lua_pushstring(L: CPointer<Unit>, value: CString): Unit
 foreign func lua_setfield(L: CPointer<Unit>, index: Int32, key: CString): Unit
