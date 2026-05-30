@@ -1,5 +1,6 @@
 package bot4cj.hd
 import bot4cj.th.*
+import ctype4cj.*
 
 //foreign func I2C_init(path: CString): Int16
 //foreign func I2C_free(fd: Int16): Unit
@@ -13,11 +14,11 @@ import bot4cj.th.*
 /* -------- 我们将直接调用glibc中的函数 --------
  * TODO(20260518-qing):  稍后我们专门做一个i2c代码仓库，这样就能够区分不同架构上面的int的大小
  * TODO*(20260521-qing): C语言中的int类型一般是Int32，我们可以声明一个类型别名  */
-foreign func open(path: CString, flag: Int32, ...): Int32				/* -------- libc中的打开文件函数 -------- */
-foreign func close(fd: Int32): Int32							/* -------- 关闭文件。成功返回0，失败返回-1 -------- */
-foreign func ioctl(fd: Int32, addr: UInt64, ...): Int32					/* -------- 成功返回非负整数，失败返回-1 -------- */
-foreign func read(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative		/* -------- 读取文件内容，返回读取的字节数 -------- */
-foreign func write(fd: Int32, buf: CPointer<Unit>, count: UIntNative): IntNative	/* -------- 写入文件内容，返回写入的字节数 -------- */
+foreign func open(path: CString, flag: C_Int, ...): C_Int				/* -------- libc中的打开文件函数 -------- */
+foreign func close(fd: C_Int): C_Int							/* -------- 关闭文件。成功返回0，失败返回-1 -------- */
+foreign func ioctl(fd: C_Int, addr: C_ULong, ...): C_Int				/* -------- 成功返回非负整数，失败返回-1 -------- */
+foreign func read(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative		/* -------- 读取文件内容，返回读取的字节数 -------- */
+foreign func write(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative	/* -------- 写入文件内容，返回写入的字节数 -------- */
 
 const I2C_FAILED = -1i32	/* -------- I2C关闭文件失败 -------- */
 const I2C_SUCCESS = 0i32	/* -------- I2C关闭文件成功 -------- */

@@ -203,6 +203,13 @@ func run_test(key: String) {
 		lua.runFile_withTable("./test/tt.lua", obj,  1)
 		lua.close()
 	}
+
+	else if (key == "lua1") {
+		unsafe {
+			let L = Lua_init()
+			Lua_free(L)
+		}
+	}
 }
 
 /* http伺服器读取动作脚本
