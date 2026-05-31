@@ -1,8 +1,8 @@
 [package]
-  cjc-version = "1.0.4"
+  cjc-version = "1.0.5"
   name = "bot4cj"
   description = "nothing here"
-  version = "1.0.0"
+  version = "0.0.3"
   target-dir = ""
   src-dir = ""
   output-type = "executable"
@@ -21,7 +21,7 @@
 
 [target.aarch64-unknown-linux-gnu]
   [target.aarch64-unknown-linux-gnu.dependencies]
-    ctype4cj = { git = "https://gitcode.com/qingss0/ctype4cj_arm64.git", branch="main" }
+    ctype4cj = { git = "https://gitcode.com/qingss0/ctype4cj.git", branch="main" }
   [target.aarch64-unknown-linux-gnu.bin-dependencies]
     path-option = ["${CANGJIE_STDX_PATH}/linux_aarch64_cjnative/static/stdx"]
     
