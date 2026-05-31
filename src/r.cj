@@ -12,7 +12,8 @@ import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.hd.extern.*
 import bot4cj.math.*
-
+import bot4cj.interpreter.*
+import ctype4cj.*
 
 /* ---------------- 硬件变量基类 ----------------
  * 接收一个lambda表达式，在回调函数中定义行为
@@ -89,6 +90,102 @@ open class MatrixVars_Hardware {
 	}
 	/* ----------------- */
 	/* ----------------- */
+}
+
+/* ---- Lua脚本变量 ---- */
+class MtVars_Lua <: MatrixVars_Hardware {
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None  )
+		{  super(things: things, rise: rise, free: free)  }
+
+	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数 ---- */
+	public static func Factory(luapath: String, Defs: MatrixObject, i: Int64, M: HashMap<String, MatrixVars_Hardware>): MtVars_Lua
+	{
+		let obj = JsonObject()
+		let col = Defs.col
+		for (c in 0..col) {
+			let colname = Defs[0, c]
+			let colval = getMt(Defs, i, c)
+			obj.put(colname, JsonString(colval))
+		}
+
+		let mtVars_Lua = MtVars_Lua(
+			things: {json: JsonValue =>
+				let obj = json.asObject()
+				let ret = JsonObject()
+				unsafe {
+					/* ---- 申请资源 ---- */
+					let L: lua_State = Lua_init()
+					Lua_loadlib(L)
+					let filename_c = LibC.mallocCString(luapath)
+					if (filename_c.isEmpty()) {
+						throw IllegalMemoryException("LibC.mallocCString()")
+					}
+
+					/* ---- 设置Lua状态机 ---- */
+					var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
+					if (status == LUA_OK) {
+
+						/* ----在Lua状态机里 创建Lua表 ---- */				
+						Lua_createtable(L, 0, 0)
+
+						/* ---- 向Lua表中推入数据 ---- */
+						let fields: HashMap<String, JsonValue> = obj.getFields()
+						for (k in fields.keys()) {
+							let v = fields.get(k).getOrThrow().asString().getValue()
+							let sk = LibC.mallocCString(k)
+							let sv = LibC.mallocCString(v)
+							Lua_pushstring(L, sv)
+							Lua_setfield(L, -2, sk)
+							LibC.free(sk)
+							LibC.free(sv)
+						}
+
+						status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
+						println("lua status: ${status}")
+						if (status == LUA_OK) {
+							if (Lua_type(L, -1) == LUA_TTABLE) {
+								/* ---- 栈顶是表 ---- 
+								 * ---- 压入 nil 作为遍历的起始键 ---- */
+								Lua_pushnil(L)
+								while(Lua_next(L, -2) != 0) {
+									/* ---- 此时栈：[表, 键, 值] ----
+									 * ---- 检查键值是否为空指针 ---- 
+									 * ---- FIXME(20260531-qing) ---- */
+									let key = Lua_tostring(L, -2)
+									let val = Lua_tostring(L, -1)
+									if (key.isEmpty() || val.isEmpty()) {
+										throw NoneValueException("Lua_tostring()")
+									}
+									println("${key}: ${val}")
+									ret.put(key.toString(), JsonString(val.toString()))
+									Lua_pop(L, 1)
+								}
+							}
+							Lua_pop(L, 1)
+						}
+
+						else if (status != LUA_OK) {
+							let err  = Lua_tostring(L, -1)
+							if (!err.isEmpty()) {
+								println("Lua 错误详情: ${err.toString()}")
+							}
+							Lua_pop(L, 1)
+						}
+
+					}
+
+					/* ---- 释放资源 ---- */
+					LibC.free(filename_c)			
+					Lua_free(L)
+				}
+				return ret
+		})
+
+
+		return mtVars_Lua
+	}
 }
 
 /* -------- 别名变量 -------- */
