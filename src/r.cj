@@ -92,6 +92,28 @@ open class MatrixVars_Hardware {
 	/* ----------------- */
 }
 
+
+/* ---- 用于注册到Lua的I2C操作C语言函数 ---- */
+@C
+func Lua_openI2c(L: lua_State): C_Int {
+	unsafe {
+		let filename: CString = Lua_checkstring(L, 1)	/* 第一个参数 */
+		let fd = openI2cDev(filename)
+		let val = (fd as lua_Integer).getOrThrow()
+		Lua_pushinteger(L, val) 
+		return 1	/* 返回1，表示有1个返回值 */
+	}
+}
+
+@C
+func Lua_closeI2c(L: lua_State): C_Int {
+	unsafe {
+		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
+		closeI2cDev(fd)
+		return 0
+	}
+}
+
 /* ---- Lua脚本变量 ---- */
 class MtVars_Lua <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,

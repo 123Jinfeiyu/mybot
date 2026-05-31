@@ -27,7 +27,7 @@ const I2C_SLAVE = 0x0703u64	/* -------- at least on arm64 -------- */
 
 /* -------- OPEN I2C DEVICE 打开I2C设备  -------- */
 @C
-func openI2cDev(path: CString): Int32 {
+public func openI2cDev(path: CString): Int32 {
 	unsafe {
 		let fd =  open(path, O_RDWR)
 		if (fd > 0) { 
@@ -42,7 +42,7 @@ func openI2cDev(path: CString): Int32 {
 
 /* -------- CLOSE I2C DEVICE 关闭I2C设备 -------- */
 @C
-func closeI2cDev(fd: Int32): Unit {
+public func closeI2cDev(fd: Int32): Unit {
 	unsafe {
 		I2cLock_destroy(fd)	/* -------- 销毁I2C设备的锁 -------- */
 		let ret = close(fd)
@@ -58,7 +58,7 @@ func closeI2cDev(fd: Int32): Unit {
 
 /* -------- SET I2C ADDR 设置I2C地址 -------- */
 @C
-func setI2cAddr(fd: Int32, addr: UInt8): Unit {
+public func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 	unsafe {
 		let ret = ioctl(fd, I2C_SLAVE, addr)
 		if (ret < 0) {
@@ -68,7 +68,7 @@ func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 
 /* -------- WRITE I2C REG 写I2C寄存器 -------- */
 @C
-func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
+public func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 	var a: VArray<UInt8, $2> = [reg, val]
 	var p: CPointer<Unit> = unsafe { CPointer<Unit>(inout a) }
 	if (2 !=  unsafe { write(fd, p, 2) }) {
@@ -79,7 +79,7 @@ func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 /* -------- READ I2C REG 读I2C寄存器 --------
  * INFO(20260522-qing): 读取寄存器之前要先写寄存器地址 */
 @C
-func readI2cReg(fd: Int32, reg: UInt8): Int8 {
+public func readI2cReg(fd: Int32, reg: UInt8): Int8 {
 	var ptr = reg
 	if (1 != unsafe { write(fd, CPointer<Unit>(inout ptr), 1) }) {
 		throw I2cReadRegFailed("?")

@@ -5,6 +5,7 @@ import ctype4cj.*
 
 /* ---- 定义Lua状态机类型 ---- */
 public type lua_State = CPointer<Unit>
+public type lua_Integer = C_LongLong
 
 foreign func luaL_newstate(): lua_State
 foreign func lua_close(L: lua_State): Unit
@@ -25,6 +26,9 @@ foreign func lua_tolstring(L: lua_State, index: C_Int, plen: CPointer<UIntNative
 foreign func lua_pushnil(L: lua_State): Unit
 foreign func lua_next(L: lua_State, index: C_Int): C_Int
 foreign func lua_getglobal(L: lua_State, name: CString): Unit
+foreign func luaL_checkinteger(L: lua_State, arg: C_Int): lua_Integer
+foreign func luaL_checklstring(L: lua_State, arg: C_Int, len: CPointer<UIntNative>): CString
+foreign func lua_pushinteger(L: lua_State, n: lua_Integer): Unit
 
 public const LUA_OK: C_Int = 0
 public const LUA_MULTRET: C_Int = -1 	/* ---- 将所有值都压入栈中 ----*/
@@ -107,12 +111,34 @@ public func Lua_pushnil(L: lua_State): Unit
 	unsafe { lua_pushnil(L) }
 }
 
+/* ---- 遍历表。
+ * ---- 它从表中取出一个键值对，并将键和值压入栈。 ---- */
+@C
+public func Lua_next(L: lua_State, index: C_Int): C_Int
+{
+	return unsafe { lua_next(L, index) }
+}
+
+/* ---- 将整数值压入 Lua 栈 ---- */
+@C
+public func Lua_pushinteger(L: lua_State, n: lua_Integer): Unit
+{
+	unsafe { lua_pushinteger(L, n) }
+}
 /* ----获取全局变量值，将全局变量的值压入栈顶。 ---- */
 @C
 public func Lua_getglobal(L: lua_State, name: CString): Unit
 {
 	unsafe { lua_getglobal(L, name) }
 }
+
+/* ---- 从 Lua 栈中检查并提取整数值 ---- */
+@C
+public func Lua_checkinteger(L: lua_State, arg: C_Int): lua_Integer
+{
+	return unsafe { luaL_checkinteger(L, arg) }
+}
+
 
 /* -------------------------------------------------- */
 /* ---- 将栈上指定索引处的 Lua 值转换为 C 字符串 ---- 
@@ -131,13 +157,13 @@ public func Lua_pop(L: lua_State, index: Int32): Unit {
 	unsafe { lua_settop(L, (-index) - 1i32) }
 }
 
-/* ---- 遍历表。
- * ---- 它从表中取出一个键值对，并将键和值压入栈。 ---- */
+/* ---- 从 Lua 栈中检查并提取字符串 ---- */
 @C
-public func Lua_next(L: lua_State, index: C_Int): C_Int
+public func Lua_checkstring(L: lua_State, arg: C_Int): CString
 {
-	return unsafe { lua_next(L, index) }
+	return unsafe { luaL_checklstring(L, arg, CPointer<UIntNative>()) }
 }
+
 
 
 /* ----------------------------------------------------------- */
