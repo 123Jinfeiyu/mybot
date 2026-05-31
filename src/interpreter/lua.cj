@@ -24,6 +24,7 @@ foreign func lua_settop(L: lua_State, n: C_Int): Unit
 foreign func lua_tolstring(L: lua_State, index: C_Int, plen: CPointer<UIntNative>): CString
 foreign func lua_pushnil(L: lua_State): Unit
 foreign func lua_next(L: lua_State, index: C_Int): C_Int
+foreign func lua_getglobal(L: lua_State, name: CString): Unit
 
 public const LUA_OK: C_Int = 0
 public const LUA_MULTRET: C_Int = -1 	/* ---- 将所有值都压入栈中 ----*/
@@ -104,6 +105,13 @@ public func Lua_type(L: lua_State, index: C_Int): C_Int
 public func Lua_pushnil(L: lua_State): Unit
 {
 	unsafe { lua_pushnil(L) }
+}
+
+/* ----获取全局变量值，将全局变量的值压入栈顶。 ---- */
+@C
+public func Lua_getglobal(L: lua_State, name: CString): Unit
+{
+	unsafe { lua_getglobal(L, name) }
 }
 
 /* -------------------------------------------------- */

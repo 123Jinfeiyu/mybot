@@ -244,7 +244,6 @@ func run_test(key: String) {
 				status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
 				println("lua status: ${status}")
 				if (status == LUA_OK) {
-					println(1)
 					if (Lua_type(L, -1) == LUA_TTABLE) {
 						/* ---- 栈顶是表 ---- 
 						 * ---- 压入 nil 作为遍历的起始键 ---- */
