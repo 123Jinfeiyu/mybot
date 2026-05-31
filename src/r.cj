@@ -114,6 +114,40 @@ func Lua_closeI2c(L: lua_State): C_Int {
 	}
 }
 
+@C
+func Lua_setI2cAddr(L: lua_State): C_Int {
+	unsafe {
+		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
+		let addr = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
+		setI2cAddr(fd, addr)
+		return 0
+	}
+}
+
+@C
+func Lua_writeI2cReg(L: lua_State): C_Int {
+	unsafe {
+		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
+		let reg = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
+		let val = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
+		writeI2cReg(fd, reg, val)
+		return 0
+	}
+}
+
+@C
+func Lua_readI2cReg(L: lua_State): C_Int {
+	unsafe {
+		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
+		let reg = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
+		let res = (readI2cReg(fd, reg) as lua_Integer).getOrThrow()
+		Lua_pushinteger(L, res)
+		return 1
+	}
+}
+
+
+
 /* ---- Lua脚本变量 ---- */
 class MtVars_Lua <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -139,11 +173,38 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				unsafe {
 					/* ---- 申请资源 ---- */
 					let L: lua_State = Lua_init()
-					Lua_loadlib(L)
 					let filename_c = LibC.mallocCString(luapath)
 					if (filename_c.isEmpty()) {
 						throw IllegalMemoryException("LibC.mallocCString()")
 					}
+
+					/* ---- 加载Lua库、注册Lua函数 ---- */
+					Lua_loadlib(L)
+
+					/* ---- i2c_open() ---- */
+					let cstr_open = LibC.mallocCString("i2c_open")
+					Lua_register(L, cstr_open, Lua_openI2c)
+					LibC.free(cstr_open)
+
+					/* ---- i2c_close() ---- */
+					let cstr_close = LibC.mallocCString("i2c_close")
+					Lua_register(L, cstr_close, Lua_closeI2c)
+					LibC.free(cstr_close)
+
+					/* ---- i2c_set_addr() ---- */
+					let cstr_set = LibC.mallocCString("i2c_set_addr")
+					Lua_register(L, cstr_set, Lua_setI2cAddr)
+					LibC.free(cstr_set)
+
+					/* ---- i2c_write_reg() ---- */
+					let cstr_write = LibC.mallocCString("i2c_write_reg")
+					Lua_register(L, cstr_write, Lua_writeI2cReg)
+					LibC.free(cstr_write)
+
+					/* ---- i2c_read_reg() ---- */
+					let cstr_read = LibC.mallocCString("i2c_read_reg")
+					Lua_register(L, cstr_read, Lua_readI2cReg)
+					LibC.free(cstr_read)
 
 					/* ---- 设置Lua状态机 ---- */
 					var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())

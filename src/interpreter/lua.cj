@@ -6,6 +6,7 @@ import ctype4cj.*
 /* ---- 定义Lua状态机类型 ---- */
 public type lua_State = CPointer<Unit>
 public type lua_Integer = C_LongLong
+public type lua_CFunction = CFunc<(lua_State) -> C_Int>
 
 foreign func luaL_newstate(): lua_State
 foreign func lua_close(L: lua_State): Unit
@@ -29,6 +30,8 @@ foreign func lua_getglobal(L: lua_State, name: CString): Unit
 foreign func luaL_checkinteger(L: lua_State, arg: C_Int): lua_Integer
 foreign func luaL_checklstring(L: lua_State, arg: C_Int, len: CPointer<UIntNative>): CString
 foreign func lua_pushinteger(L: lua_State, n: lua_Integer): Unit
+foreign func lua_pushcclosure(L: lua_State, f: lua_CFunction, n: C_Int): Unit
+foreign func lua_setglobal(L: lua_State, name: CString): Unit
 
 public const LUA_OK: C_Int = 0
 public const LUA_MULTRET: C_Int = -1 	/* ---- 将所有值都压入栈中 ----*/
@@ -164,6 +167,14 @@ public func Lua_checkstring(L: lua_State, arg: C_Int): CString
 	return unsafe { luaL_checklstring(L, arg, CPointer<UIntNative>()) }
 }
 
+/* ---- 将 C 函数注册为 Lua 全局函数 ---- */
+@C
+public func Lua_register(L: lua_State, n: CString, f: lua_CFunction): Unit {
+	unsafe {
+		lua_pushcclosure(L, f, 0)
+		lua_setglobal(L, n)
+	}
+}
 
 
 /* ----------------------------------------------------------- */
