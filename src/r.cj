@@ -99,7 +99,7 @@ func Lua_openI2c(L: lua_State): C_Int {
 	unsafe {
 		let filename: CString = Lua_checkstring(L, 1)	/* 第一个参数 */
 		let fd = openI2cDev(filename)
-		let val = (fd as lua_Integer).getOrThrow()
+		let val: lua_Integer = Int64(fd)	/* lua_Integer */
 		Lua_pushinteger(L, val) 
 		return 1	/* 返回1，表示有1个返回值 */
 	}
@@ -108,7 +108,7 @@ func Lua_openI2c(L: lua_State): C_Int {
 @C
 func Lua_closeI2c(L: lua_State): C_Int {
 	unsafe {
-		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
 		closeI2cDev(fd)
 		return 0
 	}
@@ -117,8 +117,8 @@ func Lua_closeI2c(L: lua_State): C_Int {
 @C
 func Lua_setI2cAddr(L: lua_State): C_Int {
 	unsafe {
-		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
-		let addr = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let addr = UInt8(Lua_checkinteger(L, 2))
 		setI2cAddr(fd, addr)
 		return 0
 	}
@@ -127,9 +127,9 @@ func Lua_setI2cAddr(L: lua_State): C_Int {
 @C
 func Lua_writeI2cReg(L: lua_State): C_Int {
 	unsafe {
-		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
-		let reg = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
-		let val = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let reg = UInt8(Lua_checkinteger(L, 2))
+		let val = UInt8(Lua_checkinteger(L, 3))
 		writeI2cReg(fd, reg, val)
 		return 0
 	}
@@ -138,11 +138,20 @@ func Lua_writeI2cReg(L: lua_State): C_Int {
 @C
 func Lua_readI2cReg(L: lua_State): C_Int {
 	unsafe {
-		let fd = (Lua_checkinteger(L, 1) as C_Int).getOrThrow()
-		let reg = (Lua_checkinteger(L, 1) as UInt8).getOrThrow()
-		let res = (readI2cReg(fd, reg) as lua_Integer).getOrThrow()
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let reg = UInt8(Lua_checkinteger(L, 2))
+		let res = Int64(readI2cReg(fd, reg))	/* lua_Integer */
 		Lua_pushinteger(L, res)
 		return 1
+	}
+}
+
+@C
+func Lua_milliSleep(L: lua_State): C_Int {
+	unsafe {
+		let n = Int64(Lua_checkinteger(L, 1))
+		sleep(Duration.millisecond * n)
+		return 0
 	}
 }
 
@@ -180,6 +189,11 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 					/* ---- 加载Lua库、注册Lua函数 ---- */
 					Lua_loadlib(L)
+
+					/* milli_sleep() */
+					let cstr_sleep = LibC.mallocCString("milli_sleep")
+					Lua_register(L, cstr_sleep, Lua_milliSleep)
+					LibC.free(cstr_sleep)
 
 					/* ---- i2c_open() ---- */
 					let cstr_open = LibC.mallocCString("i2c_open")
@@ -723,6 +737,12 @@ class RobotStruct {
 			let name = PCA9685Defs[i, idxName]
 			M[name]=  MtVars_PCA9685.Factory(PCA9685Defs, i, M)
 		}
+
+		/* --- 测试lua --- */
+		//let obj = JsonObject()
+		//obj.put("key", JsonString("val"))
+		//let mtv = MtVars_Lua.Factory("./modules/PCA9685.lua", PCA9685Defs, 0, M)
+		//mtv.play(obj)
 	}
 
 	/* -------- 创建Servo舵机硬件变量 -------- */
