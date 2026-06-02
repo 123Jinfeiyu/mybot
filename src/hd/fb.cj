@@ -1,6 +1,17 @@
 package bot4cj.hd
 import ctype4cj.*
 
+const FBIOGET_VSCREENINFO = 0x4602u64
+const FBIOGET_FSCREENINFO = 0x4600u64
+const PROT_WRITE: C_Int = 0x2
+const MAP_SHARED: C_Int = 0x01
+
+/* --- 定义在I2C.cj里了 ---*/
+//foreign func ioctl(fd: C_Int, request: C_ULong, ...): C_Int
+/* ---- 内存映射 ---- */
+public type off_t = C_LongLong
+foreign func mmap(addr: CPointer<Unit>, length: UIntNative, prot: C_Int, flags: C_Int, fd: C_Int, offset: off_t): CPointer<Unit>
+
 /* -------- 打开framebuffer帧缓冲设备 -------- */
 @C
 public func fb_open(fb_dev: CString): C_Int {
@@ -9,7 +20,7 @@ public func fb_open(fb_dev: CString): C_Int {
 
 /* -------- 帧缓冲区固定参数 -------- */
 @C
-struct fb_fix_screeninfo {
+public struct fb_fix_screeninfo {
         var id: VArray<C_Char, $16>         /* 设备驱动名称字符串，比如"TT Builtin" */
         var smem_start: C_ULong = 0         /* 帧缓冲内存（显存）的物理起始地址 */
                                             /* (physical address) */
@@ -44,7 +55,8 @@ struct fb_fix_screeninfo {
  * 偏移量指定了调色板索引的最低有效位在像素值中的位置。
  * 长度表示可用的调色板条目数量（即条目数 = 1 << 长度）。
  */
-struct fb_bitfield {
+@C
+public struct fb_bitfield {
         var offset: UInt32 = 0              /* 位域的起始位置（从右侧算起）*/
         var length: UInt32 = 0              /* 位域的长度（比特数）       */
         var msb_right: UInt32 = 0           /* != 0 : 最高有效位在右侧     */
@@ -52,7 +64,8 @@ struct fb_bitfield {
 }
 
 /* -------- 帧缓冲区可变参数 -------- */
-struct fb_var_screeninfo {
+@C
+public struct fb_var_screeninfo {
         var xres: UInt32 = 0            /* visible resolution           */
         var yres: UInt32 = 0
         var xres_virtual: UInt32 = 0    /* virtual resolution           */
@@ -98,4 +111,28 @@ struct fb_var_screeninfo {
 		transp = fb_bitfield()
 		reserved = VArray<UInt32, $4> (repeat: 0)
 	}
+}
+
+/* ---- 获取帧缓冲区可变参数 ---- */
+@C
+public func fb_get_var_info(fd: C_Int) {
+	var info = fb_var_screeninfo()
+	unsafe { ioctl(fd, FBIOGET_VSCREENINFO, inout info) }
+	return info
+}
+
+/* ---- 获取帧缓冲区固定参数 ---- */
+@C
+public func fb_get_fix_info(fd: C_Int) {
+	var info = fb_fix_screeninfo()
+	unsafe { ioctl(fd, FBIOGET_FSCREENINFO, inout info) }
+	return info
+}
+
+/* ---- 内存映射 ---- */
+@C
+public func fb_mmap(addr: CPointer<Unit>, length: UIntNative, fd: C_Int, offset: off_t): CPointer<Unit>
+{
+	let buf = unsafe { mmap(addr, length, PROT_WRITE, MAP_SHARED, fd, offset) }
+	return buf
 }
