@@ -230,13 +230,27 @@ class MtVars_Lua <: MatrixVars_Hardware {
 						/* ---- 向Lua表中推入数据 ---- */
 						let fields: HashMap<String, JsonValue> = obj.getFields()
 						for (k in fields.keys()) {
-							let v = fields.get(k).getOrThrow().asString().getValue()
-							let sk = LibC.mallocCString(k)
-							let sv = LibC.mallocCString(v)
-							Lua_pushstring(L, sv)
-							Lua_setfield(L, -2, sk)
-							LibC.free(sk)
-							LibC.free(sv)
+							println("入栈：${k}:")
+							let val = fields.get(k).getOrThrow()
+							if (val is JsonString) {
+								let v = val.asString().getValue()
+								println("${v}")
+								let sk = LibC.mallocCString(k)
+								let sv = LibC.mallocCString(v)
+								Lua_pushstring(L, sv)
+								Lua_setfield(L, -2, sk)
+								LibC.free(sk)
+								LibC.free(sv)
+							}
+							else if (val is JsonInt) {
+								let v = val.asInt().getValue()
+								println("${v}")
+								let sk = LibC.mallocCString(k)
+								let sv = Int64(v)
+								Lua_pushinteger(L, sv)
+								Lua_setfield(L, -2, sk)
+								LibC.free(sk)
+							}
 						}
 
 						status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
@@ -273,10 +287,17 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 					}
 
+					else {
+						// 从栈顶获取错误信息
+						let error_msg = Lua_tostring(L, -1);
+						println(error_msg.toString());
+					}
+
 					/* ---- 释放资源 ---- */
 					LibC.free(filename_c)			
 					Lua_free(L)
 				}
+
 				return ret
 		})
 
@@ -739,10 +760,13 @@ class RobotStruct {
 		}
 
 		/* --- 测试lua --- */
-		//let obj = JsonObject()
-		//obj.put("key", JsonString("val"))
-		//let mtv = MtVars_Lua.Factory("./modules/PCA9685.lua", PCA9685Defs, 0, M)
-		//mtv.play(obj)
+		let obj = JsonObject()
+		obj.put("mode", JsonString("build"))
+		obj.put("address", JsonInt(0x40))
+		let mtv = MtVars_Lua.Factory("./modules/PCA9685.lua", PCA9685Defs, 0, M)
+		println(obj.toString())
+		let res = mtv.play(obj).asObject()
+		println(res.toString())
 	}
 
 	/* -------- 创建Servo舵机硬件变量 -------- */
