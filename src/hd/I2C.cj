@@ -22,7 +22,7 @@ foreign func write(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative
 
 const I2C_FAILED = -1i32	/* -------- I2C关闭文件失败 -------- */
 const I2C_SUCCESS = 0i32	/* -------- I2C关闭文件成功 -------- */
-const O_RDWR = 2i32		/* -------- C头文件中的宏，以读写方式打开 -------- */
+//const O_RDWR = 2i32		/* -------- C头文件中的宏，以读写方式打开 -------- */
 const I2C_SLAVE = 0x0703u64	/* -------- at least on arm64 -------- */
 
 /* -------- OPEN I2C DEVICE 打开I2C设备  -------- */
