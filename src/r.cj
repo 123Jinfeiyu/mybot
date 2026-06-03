@@ -159,6 +159,8 @@ func Lua_milliSleep(L: lua_State): C_Int {
 
 /* ---- Lua脚本变量 ---- */
 class MtVars_Lua <: MatrixVars_Hardware {
+
+	/* ---- 构造函数 => 传入召集函数以及解散函数 ---- */
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
 			free!: Option<() -> Unit> = None  )
@@ -191,7 +193,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		return mtVars_Lua
 	}
 
-	/* ---- 调用Lua脚本 ---- */
+	/* ---- 调用Lua脚本 =>  ---- */
 	private static func call_lua(luapath: String, json: JsonValue): JsonValue {
 		let obj = json.asObject()
 		let ret = JsonObject()
