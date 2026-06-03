@@ -230,11 +230,9 @@ class MtVars_Lua <: MatrixVars_Hardware {
 						/* ---- 向Lua表中推入数据 ---- */
 						let fields: HashMap<String, JsonValue> = obj.getFields()
 						for (k in fields.keys()) {
-							println("入栈：${k}:")
 							let val = fields.get(k).getOrThrow()
 							if (val is JsonString) {
 								let v = val.asString().getValue()
-								println("${v}")
 								let sk = LibC.mallocCString(k)
 								let sv = LibC.mallocCString(v)
 								Lua_pushstring(L, sv)
@@ -244,7 +242,6 @@ class MtVars_Lua <: MatrixVars_Hardware {
 							}
 							else if (val is JsonInt) {
 								let v = val.asInt().getValue()
-								println("${v}")
 								let sk = LibC.mallocCString(k)
 								let sv = Int64(v)
 								Lua_pushinteger(L, sv)
@@ -356,41 +353,41 @@ class MtVars_I2C <: MatrixVars_Hardware {
 		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* debug */
 		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C硬件对象，通过闭包保存在MtVars_I2C里  */
 		let mtvars_i2c = MtVars_I2C(things: {json: JsonValue =>			/*  {"mode": "set_addr", "addr": 0x01} */
-			let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
-			let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
-			if (mode == "get_fd") {
+			//let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
+			//let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
+			//if (mode == "get_fd") {
 				let fd = i2c.getFd()
 				let ret = JsonObject()
 				ret.put("fd",JsonInt(Int64(fd)))
 				return ret
-			}
-			else if (mode == "set_addr")  {
-				let addr = obj.get("addr").getOrThrow().asInt().getValue()
-				i2c.setAddr(UInt8(addr))
-				let ret = JsonObject()
-				ret.put("status", JsonString("OK"))
-				return ret  }
-			else if (mode == "set_val") {
-				let reg = obj.get("reg").getOrThrow().asInt().getValue()
-				let val = obj.get("val").getOrThrow().asInt().getValue()
-				i2c.writeReg(UInt8(reg), UInt8(val))
-				let ret = JsonObject()
-				ret.put("status", JsonString("OK"))
-				return ret  }
-			else if (mode == "get_val") {
-				let reg = obj.get("reg").getOrThrow().asInt().getValue()
-				let raw = i2c.readReg(UInt8(reg))
-				let ret = JsonObject()
-				ret.put("status", JsonString("OK"))
-				ret.put("value", JsonInt(Int64(raw)))
-				return ret  }
+			//}
+			//else if (mode == "set_addr")  {
+			//	let addr = obj.get("addr").getOrThrow().asInt().getValue()
+			//	i2c.setAddr(UInt8(addr))
+			//	let ret = JsonObject()
+			//	ret.put("status", JsonString("OK"))
+			//	return ret  }
+			//else if (mode == "set_val") {
+			//	let reg = obj.get("reg").getOrThrow().asInt().getValue()
+			//	let val = obj.get("val").getOrThrow().asInt().getValue()
+			//	i2c.writeReg(UInt8(reg), UInt8(val))
+			//	let ret = JsonObject()
+			//	ret.put("status", JsonString("OK"))
+			//	return ret  }
+			//else if (mode == "get_val") {
+			//	let reg = obj.get("reg").getOrThrow().asInt().getValue()
+			//	let raw = i2c.readReg(UInt8(reg))
+			//	let ret = JsonObject()
+			//	ret.put("status", JsonString("OK"))
+			//	ret.put("value", JsonInt(Int64(raw)))
+			//	return ret  }
 
 			/* ---- 准备返回值 ---- */
 			/* FIXME: 改为抛出异常 */
-			let ret = JsonObject()
-			ret.put("status", JsonString("ERR"))
-			ret.put("message", JsonString("Invalid Mode"))
-			return ret
+			//let ret = JsonObject()
+			//ret.put("status", JsonString("ERR"))
+			//ret.put("message", JsonString("Invalid Mode"))
+			//return ret
 		},
 
 		free: {=>
@@ -712,12 +709,52 @@ class RobotStruct {
 	 * FIXME(20260518-qing): 在插入哈希表之前如果有已经存在的键值，要释放它的资源  */
 	private func createHardVars()
 	{
-		createAliasVars()
-		createI2CVars()
-		createMPU6050Bind()
-		createPCA9685Vars()
-		createServoVars()
-		createSpeakerVars()
+	//	createAliasVars()
+	//	createI2CVars()
+	//	createMPU6050Bind()
+	//	createPCA9685Vars()
+	//	createServoVars()
+	//	createSpeakerVars()
+
+		for (matrix in C) {
+			let MtName = matrix.getName()
+			if (MtName == "I2C") {
+				let idxName = matrix.indexOfCol(0,"name")
+				for (i in 1..matrix.size) {
+					let name = matrix[i, idxName]
+					M[name] = MtVars_I2C.Factory(matrix, i, M)
+				}
+			}
+			else {
+				let idxName = matrix.indexOfCol(0, "name")
+				for (i in 1..matrix.size ) {
+					let obj = JsonObject()
+					for (j in 0..matrix.col) {
+						let colName = matrix[0, j]
+						let value = matrix[i, j]
+						/* ---- FIXME: 加入点号别名的逻辑 ---- */
+						if (let Some(mt) <- M.get(value)) {
+							let json = JsonObject()
+							//json.put("mode", JsonString("get_fd"))
+							let res = mt.play(json).asObject()
+							let fields: HashMap<String, JsonValue> = res.getFields()
+							for (k in fields.keys()) {
+								let val = fields.get(k).getOrThrow()
+								obj.put(k, val)
+							}
+								
+						}
+						else {
+							obj.put(colName, JsonString(value))
+						}
+					}
+					println(obj.toString())
+					let mtv = MtVars_Lua.Factory("./modules/${MtName}.lua", matrix, 0, M)
+					let res = mtv.play(obj).asObject()
+					println(res.toString())
+				}
+			}
+		}
 	}
 
 	/* -------- 创建别名硬件变量 -------- */
@@ -738,7 +775,7 @@ class RobotStruct {
 			let name = I2CDefs[i, idxName]
 			M[name]  = MtVars_I2C.Factory(I2CDefs, i, M)
 		}
-	}
+		}
 
 	/* -------- 创建MPU6050_BIND硬件变量 -------- */
 	private func createMPU6050Bind() {
@@ -758,15 +795,6 @@ class RobotStruct {
 			let name = PCA9685Defs[i, idxName]
 			M[name]=  MtVars_PCA9685.Factory(PCA9685Defs, i, M)
 		}
-
-		/* --- 测试lua --- */
-		let obj = JsonObject()
-		obj.put("mode", JsonString("build"))
-		obj.put("address", JsonInt(0x40))
-		let mtv = MtVars_Lua.Factory("./modules/PCA9685.lua", PCA9685Defs, 0, M)
-		println(obj.toString())
-		let res = mtv.play(obj).asObject()
-		println(res.toString())
 	}
 
 	/* -------- 创建Servo舵机硬件变量 -------- */
