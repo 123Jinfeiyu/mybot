@@ -176,130 +176,142 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		}
 
 		let mtVars_Lua = MtVars_Lua(
-			things: {json: JsonValue =>
-				let obj = json.asObject()
-				let ret = JsonObject()
-				unsafe {
-					/* ---- 申请资源 ---- */
-					let L: lua_State = Lua_init()
-					let filename_c = LibC.mallocCString(luapath)
-					if (filename_c.isEmpty()) {
-						throw IllegalMemoryException("LibC.mallocCString()")
-					}
-
-					/* ---- 加载Lua库、注册Lua函数 ---- */
-					Lua_loadlib(L)
-
-					/* milli_sleep() */
-					let cstr_sleep = LibC.mallocCString("milli_sleep")
-					Lua_register(L, cstr_sleep, Lua_milliSleep)
-					LibC.free(cstr_sleep)
-
-					/* ---- i2c_open() ---- */
-					let cstr_open = LibC.mallocCString("i2c_open")
-					Lua_register(L, cstr_open, Lua_openI2c)
-					LibC.free(cstr_open)
-
-					/* ---- i2c_close() ---- */
-					let cstr_close = LibC.mallocCString("i2c_close")
-					Lua_register(L, cstr_close, Lua_closeI2c)
-					LibC.free(cstr_close)
-
-					/* ---- i2c_set_addr() ---- */
-					let cstr_set = LibC.mallocCString("i2c_set_addr")
-					Lua_register(L, cstr_set, Lua_setI2cAddr)
-					LibC.free(cstr_set)
-
-					/* ---- i2c_write_reg() ---- */
-					let cstr_write = LibC.mallocCString("i2c_write_reg")
-					Lua_register(L, cstr_write, Lua_writeI2cReg)
-					LibC.free(cstr_write)
-
-					/* ---- i2c_read_reg() ---- */
-					let cstr_read = LibC.mallocCString("i2c_read_reg")
-					Lua_register(L, cstr_read, Lua_readI2cReg)
-					LibC.free(cstr_read)
-
-					/* ---- 设置Lua状态机 ---- */
-					var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
-					if (status == LUA_OK) {
-
-						/* ----在Lua状态机里 创建Lua表 ---- */				
-						Lua_createtable(L, 0, 0)
-
-						/* ---- 向Lua表中推入数据 ---- */
-						let fields: HashMap<String, JsonValue> = obj.getFields()
-						for (k in fields.keys()) {
-							let val = fields.get(k).getOrThrow()
-							if (val is JsonString) {
-								let v = val.asString().getValue()
-								let sk = LibC.mallocCString(k)
-								let sv = LibC.mallocCString(v)
-								Lua_pushstring(L, sv)
-								Lua_setfield(L, -2, sk)
-								LibC.free(sk)
-								LibC.free(sv)
-							}
-							else if (val is JsonInt) {
-								let v = val.asInt().getValue()
-								let sk = LibC.mallocCString(k)
-								let sv = Int64(v)
-								Lua_pushinteger(L, sv)
-								Lua_setfield(L, -2, sk)
-								LibC.free(sk)
-							}
-						}
-
-						status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
-						println("lua status: ${status}")
-						if (status == LUA_OK) {
-							if (Lua_type(L, -1) == LUA_TTABLE) {
-								/* ---- 栈顶是表 ---- 
-								 * ---- 压入 nil 作为遍历的起始键 ---- */
-								Lua_pushnil(L)
-								while(Lua_next(L, -2) != 0) {
-									/* ---- 此时栈：[表, 键, 值] ----
-									 * ---- 检查键值是否为空指针 ---- 
-									 * ---- FIXME(20260531-qing) ---- */
-									let key = Lua_tostring(L, -2)
-									let val = Lua_tostring(L, -1)
-									if (key.isEmpty() || val.isEmpty()) {
-										throw NoneValueException("Lua_tostring()")
-									}
-									println("${key}: ${val}")
-									ret.put(key.toString(), JsonString(val.toString()))
-									Lua_pop(L, 1)
-								}
-							}
-							Lua_pop(L, 1)
-						}
-
-						else if (status != LUA_OK) {
-							let err  = Lua_tostring(L, -1)
-							if (!err.isEmpty()) {
-								println("Lua 错误详情: ${err.toString()}")
-							}
-							Lua_pop(L, 1)
-						}
-
-					}
-
-					else {
-						// 从栈顶获取错误信息
-						let error_msg = Lua_tostring(L, -1);
-						println(error_msg.toString());
-					}
-
-					/* ---- 释放资源 ---- */
-					LibC.free(filename_c)			
-					Lua_free(L)
-				}
-
-				return ret
-		})
+			things: {json: JsonValue => return call_lua(luapath, json) },
+			rise: { =>
+				obj.put("mode", JsonString("build"))
+				call_lua(luapath, obj)
+			},
+			free: { =>
+				obj.put("mode", JsonString("destroy"))
+				call_lua(luapath, obj)
+			}
+		)
 
 
 		return mtVars_Lua
+	}
+
+	/* ---- 调用Lua脚本 ---- */
+	private static func call_lua(luapath: String, json: JsonValue): JsonValue {
+		let obj = json.asObject()
+		let ret = JsonObject()
+		unsafe {
+			/* ---- 申请资源 ---- */
+			let L: lua_State = Lua_init()
+			let filename_c = LibC.mallocCString(luapath)
+			if (filename_c.isEmpty()) {
+				throw IllegalMemoryException("LibC.mallocCString()")
+			}
+
+			/* ---- 加载Lua库、注册Lua函数 ---- */
+			Lua_loadlib(L)
+
+			/* milli_sleep() */
+			let cstr_sleep = LibC.mallocCString("milli_sleep")
+			Lua_register(L, cstr_sleep, Lua_milliSleep)
+			LibC.free(cstr_sleep)
+
+			/* ---- i2c_open() ---- */
+			let cstr_open = LibC.mallocCString("i2c_open")
+			Lua_register(L, cstr_open, Lua_openI2c)
+			LibC.free(cstr_open)
+
+			/* ---- i2c_close() ---- */
+			let cstr_close = LibC.mallocCString("i2c_close")
+			Lua_register(L, cstr_close, Lua_closeI2c)
+			LibC.free(cstr_close)
+
+			/* ---- i2c_set_addr() ---- */
+			let cstr_set = LibC.mallocCString("i2c_set_addr")
+			Lua_register(L, cstr_set, Lua_setI2cAddr)
+			LibC.free(cstr_set)
+
+			/* ---- i2c_write_reg() ---- */
+			let cstr_write = LibC.mallocCString("i2c_write_reg")
+			Lua_register(L, cstr_write, Lua_writeI2cReg)
+			LibC.free(cstr_write)
+
+			/* ---- i2c_read_reg() ---- */
+			let cstr_read = LibC.mallocCString("i2c_read_reg")
+			Lua_register(L, cstr_read, Lua_readI2cReg)
+			LibC.free(cstr_read)
+
+			/* ---- 设置Lua状态机 ---- */
+			var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
+			if (status == LUA_OK) {
+
+				/* ----在Lua状态机里 创建Lua表 ---- */				
+				Lua_createtable(L, 0, 0)
+
+				/* ---- 向Lua表中推入数据 ---- */
+				let fields: HashMap<String, JsonValue> = obj.getFields()
+				for (k in fields.keys()) {
+					let val = fields.get(k).getOrThrow()
+					if (val is JsonString) {
+						let v = val.asString().getValue()
+						let sk = LibC.mallocCString(k)
+						let sv = LibC.mallocCString(v)
+						Lua_pushstring(L, sv)
+						Lua_setfield(L, -2, sk)
+						LibC.free(sk)
+						LibC.free(sv)
+					}
+					else if (val is JsonInt) {
+						let v = val.asInt().getValue()
+						let sk = LibC.mallocCString(k)
+						let sv = Int64(v)
+						Lua_pushinteger(L, sv)
+						Lua_setfield(L, -2, sk)
+						LibC.free(sk)
+					}
+				}
+
+				status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
+				println("lua status: ${status}")
+				if (status == LUA_OK) {
+					if (Lua_type(L, -1) == LUA_TTABLE) {
+						/* ---- 栈顶是表 ---- 
+							* ---- 压入 nil 作为遍历的起始键 ---- */
+						Lua_pushnil(L)
+						while(Lua_next(L, -2) != 0) {
+							/* ---- 此时栈：[表, 键, 值] ----
+								* ---- 检查键值是否为空指针 ---- 
+								* ---- FIXME(20260531-qing) ---- */
+							let key = Lua_tostring(L, -2)
+							let val = Lua_tostring(L, -1)
+							if (key.isEmpty() || val.isEmpty()) {
+								throw NoneValueException("Lua_tostring()")
+							}
+							println("${key}: ${val}")
+							ret.put(key.toString(), JsonString(val.toString()))
+							Lua_pop(L, 1)
+						}
+					}
+					Lua_pop(L, 1)
+				}
+
+				else if (status != LUA_OK) {
+					let err  = Lua_tostring(L, -1)
+					if (!err.isEmpty()) {
+						println("Lua 错误详情: ${err.toString()}")
+					}
+					Lua_pop(L, 1)
+				}
+
+			}
+
+			else {
+				// 从栈顶获取错误信息
+				let error_msg = Lua_tostring(L, -1);
+				println(error_msg.toString());
+			}
+
+			/* ---- 释放资源 ---- */
+			LibC.free(filename_c)			
+			Lua_free(L)
+		}
+
+		return ret
 	}
 }
 
