@@ -167,25 +167,44 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		{  super(things: things, rise: rise, free: free)  }
 
 	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数 ---- */
-	public static func Factory(luapath: String, Defs: MatrixObject, i: Int64, M: HashMap<String, MatrixVars_Hardware>): MtVars_Lua
+	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
 	{
-		let obj = JsonObject()
-		let col = Defs.col
-		for (c in 0..col) {
-			let colname = Defs[0, c]
-			let colval = getMt(Defs, i, c)
-			obj.put(colname, JsonString(colval))
-		}
+		//let obj = JsonObject()
+		//let col = Defs.col
+		//for (c in 0..col) {
+		//	let colname = Defs[0, c]
+		//	let colval = getMt(Defs, i, c)
+		//	obj.put(colname, JsonString(colval))
+		//}
 
 		let mtVars_Lua = MtVars_Lua(
-			things: {json: JsonValue => return call_lua(luapath, json) },
+			things: {json: JsonValue =>
+				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				obj.put("mode", JsonString("call"))
+				/* --- 合并两张表 --- */
+				let fields: HashMap<String, JsonValue> = json.asObject().getFields()
+				for (k in fields.keys()) {
+					let val = fields.get(k).getOrThrow()
+					obj.put(k, val)
+				}
+				println("Lua scripts call parameters: ${obj.toString()}")
+				let res = call_lua(luapath, json)
+				println("Lua script call result: ${res.toString()}")
+				return res
+			},
 			rise: { =>
+				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				obj.put("mode", JsonString("build"))
-				call_lua(luapath, obj)
+				println("Lua scripts build parameters: ${obj.toString()}")
+				let res = call_lua(luapath, obj)
+				println("Lua script build result: ${res.toString()}")
 			},
 			free: { =>
+				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				obj.put("mode", JsonString("destroy"))
-				call_lua(luapath, obj)
+				println("Lua scripts destroy parameters: ${obj.toString()}")
+				let res = call_lua(luapath, obj)
+				println("Lua script destroy result: ${res.toString()}")
 			}
 		)
 
@@ -470,77 +489,77 @@ class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 }
 
 /* -------- PCA9685硬件变量 -------- */
-class MtVars_PCA9685 <: MatrixVars_Hardware {
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None  )
-		{  super(things: things, rise: rise, free: free)  }
-
-	/*
-	 *  @PCA9685
-	 *       name    I2C   path;
-	 *  pca9685-0  i2c-1   0x40;
-	 *  @
-	 */
-	public static func Factory(	/*  工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖 */
-		PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_PCA9685
-	{
-		let idxName = PCA9685Defs.indexOfCol(0, "name")
-		let idxI2c  = PCA9685Defs.indexOfCol(0, "I2C")
-		let idxAddr = PCA9685Defs.indexOfCol(0, "addr")
-
-		let name = PCA9685Defs[i, idxName]
-		let i2c = getMt(PCA9685Defs, i, idxI2c)
-		let addr = getMt(PCA9685Defs, i, idxAddr)
-
-		println("Create a PCA9685 hard-Var: ${name}, i2c: ${i2c}, path: ${addr}")
-
-		let i2c_HardVar = map[i2c]	/* 这个I2C硬件变量的引用通过闭包保存在该PCA9685及MtVars_PCA9685中 */
-		let obj = JsonObject()
-		obj.put("mode", JsonString("get_fd"))
-		let ret = i2c_HardVar.play(obj)
-		let fd = Int32(ret.asObject().get("fd").getOrThrow().asInt().getValue())
-		let pca9685 = PCA9685(
-			//i2c_setAddr: {addr =>
-			//	let obj = JsonObject()
-			//	obj.put("mode", JsonString("set_addr"))
-			//	obj.put("addr", JsonInt(Int64(addr)))
-			//	i2c_HardVar.play(obj)},
-			//i2c_readReg: {reg: UInt8 =>
-			//	let obj = JsonObject()
-			//	obj.put("mode", JsonString("get_val"))
-			//	obj.put("reg", JsonInt(Int64(reg)))
-			//	let res = i2c_HardVar.play(obj)
-			//	let val = res.asObject().get("value").getOrThrow().asInt().getValue()
-			//	return Int8(val)},
-			//i2c_writeReg: {reg, val =>
-			//	let obj = JsonObject()
-			//	obj.put("mode", JsonString("set_val"))
-			//	obj.put("reg", JsonInt(Int64(reg)))
-			//	obj.put("val", JsonInt(Int64(val)))
-			//	i2c_HardVar.play(obj)},
-			fd,
-			addr: UInt8.parse(addr)
-		)
-
-		/* {"channel": 0, "angle": 90.0}  */
-		let mtvars_pca9685 = MtVars_PCA9685(things: {json: JsonValue =>
-			let channel = json.asObject().get("channel").getOrThrow().asInt().getValue()
-			let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
-			pca9685.setAngle(UInt8(channel), Float32(angle))
-			let ret = JsonObject()
-			ret.put("status", JsonString("OK"))
-			return ret
-		},
-			rise: {=>
-				println("HardVar ${name} is setup now.")
-				pca9685.setup()
-			}
-		)
-
-		return mtvars_pca9685
-	}
-}
+//class MtVars_PCA9685 <: MatrixVars_Hardware {
+//	public init(things!: (JsonValue) -> JsonValue,
+//			rise!: Option<() -> Unit> = None,
+//			free!: Option<() -> Unit> = None  )
+//		{  super(things: things, rise: rise, free: free)  }
+//
+//	/*
+//	 *  @PCA9685
+//	 *       name    I2C   path;
+//	 *  pca9685-0  i2c-1   0x40;
+//	 *  @
+//	 */
+//	public static func Factory(	/*  工厂模式，根据矩阵对象构造，并在哈系变量表中搜索相关依赖 */
+//		PCA9685Defs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_PCA9685
+//	{
+//		let idxName = PCA9685Defs.indexOfCol(0, "name")
+//		let idxI2c  = PCA9685Defs.indexOfCol(0, "I2C")
+//		let idxAddr = PCA9685Defs.indexOfCol(0, "addr")
+//
+//		let name = PCA9685Defs[i, idxName]
+//		let i2c = getMt(PCA9685Defs, i, idxI2c)
+//		let addr = getMt(PCA9685Defs, i, idxAddr)
+//
+//		println("Create a PCA9685 hard-Var: ${name}, i2c: ${i2c}, path: ${addr}")
+//
+//		let i2c_HardVar = map[i2c]	/* 这个I2C硬件变量的引用通过闭包保存在该PCA9685及MtVars_PCA9685中 */
+//		let obj = JsonObject()
+//		obj.put("mode", JsonString("get_fd"))
+//		let ret = i2c_HardVar.play(obj)
+//		let fd = Int32(ret.asObject().get("fd").getOrThrow().asInt().getValue())
+//		let pca9685 = PCA9685(
+//			//i2c_setAddr: {addr =>
+//			//	let obj = JsonObject()
+//			//	obj.put("mode", JsonString("set_addr"))
+//			//	obj.put("addr", JsonInt(Int64(addr)))
+//			//	i2c_HardVar.play(obj)},
+//			//i2c_readReg: {reg: UInt8 =>
+//			//	let obj = JsonObject()
+//			//	obj.put("mode", JsonString("get_val"))
+//			//	obj.put("reg", JsonInt(Int64(reg)))
+//			//	let res = i2c_HardVar.play(obj)
+//			//	let val = res.asObject().get("value").getOrThrow().asInt().getValue()
+//			//	return Int8(val)},
+//			//i2c_writeReg: {reg, val =>
+//			//	let obj = JsonObject()
+//			//	obj.put("mode", JsonString("set_val"))
+//			//	obj.put("reg", JsonInt(Int64(reg)))
+//			//	obj.put("val", JsonInt(Int64(val)))
+//			//	i2c_HardVar.play(obj)},
+//			fd,
+//			addr: UInt8.parse(addr)
+//		)
+//
+//		/* {"channel": 0, "angle": 90.0}  */
+//		let mtvars_pca9685 = MtVars_PCA9685(things: {json: JsonValue =>
+//			let channel = json.asObject().get("channel").getOrThrow().asInt().getValue()
+//			let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
+//			pca9685.setAngle(UInt8(channel), Float32(angle))
+//			let ret = JsonObject()
+//			ret.put("status", JsonString("OK"))
+//			return ret
+//		},
+//			rise: {=>
+//				println("HardVar ${name} is setup now.")
+//				pca9685.setup()
+//			}
+//		)
+//
+//		return mtvars_pca9685
+//	}
+//}
 
 /* -------- 舵机变量类 -------- 
  * TODO(20260515-qing): 现在普通的舵机类也是传入回调函数的，
@@ -694,7 +713,7 @@ class RobotStruct {
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
 	public func run() {
-		run_drl_action()
+		//run_drl_action()
 	}
 
 	/* -------- 储存整个矩阵变量表 --------
@@ -739,14 +758,15 @@ class RobotStruct {
 					M[name] = MtVars_I2C.Factory(matrix, i, M)
 				}
 			}
-			else {
+			else if (matrix.size > 0) {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size ) {
 					let obj = JsonObject()
+					let name = matrix[i, idxName]
 					for (j in 0..matrix.col) {
 						let colName = matrix[0, j]
-						let value = matrix[i, j]
-						/* ---- FIXME: 加入点号别名的逻辑 ---- */
+						let value = MatrixVars_Hardware.getMt(matrix, i, j)
+						/* ---- FIXME: 加入点号别名的检索逻辑 ---- */
 						if (let Some(mt) <- M.get(value)) {
 							let json = JsonObject()
 							//json.put("mode", JsonString("get_fd"))
@@ -762,10 +782,9 @@ class RobotStruct {
 							obj.put(colName, JsonString(value))
 						}
 					}
-					println(obj.toString())
-					let mtv = MtVars_Lua.Factory("./modules/${MtName}.lua", matrix, 0, M)
-					let res = mtv.play(obj).asObject()
-					println(res.toString())
+					let mtv = MtVars_Lua.Factory("./modules/${MtName}.lua", obj)
+					//let res = mtv.play(obj).asObject()
+					M[name] = mtv
 				}
 			}
 		}
