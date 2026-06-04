@@ -6,7 +6,7 @@ import std.time.*
 import std.argopt.*
 import std.convert.*
 import std.collection.*
-import stdx.net.http.*
+//import stdx.net.http.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
@@ -24,7 +24,7 @@ main(args: Array<String>): Int64 {
 
 	let specs = [
 		ArgumentSpec.Long("help", ArgumentMode.NoValue),	/* 拉起帮助菜单 */
-		ArgumentSpec.Long("serve", ArgumentMode.OptionalValue),	/* 启动http伺服器 */
+		//ArgumentSpec.Long("serve", ArgumentMode.OptionalValue),	/* 启动http伺服器 */
 		ArgumentSpec.Long("i2c", ArgumentMode.RequiredValue),	/* 选择i2c设备 */
 		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),	/* 神经网络模型输入 */
 		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),	/* 神经网络模型输出 */
@@ -43,12 +43,12 @@ main(args: Array<String>): Int64 {
 		I2C_PATH = options['i2c']
 	}
 
-	if (options.contains("serve")) {
-		if (options['serve'] != "") {
-			let s = options['serve']
-			HTTP_PORT = UInt16.parse(s)
-		}
-	}
+	//if (options.contains("serve")) {
+	//	if (options['serve'] != "") {
+	//		let s = options['serve']
+	//		HTTP_PORT = UInt16.parse(s)
+	//	}
+	//}
 
 	/*---------------------------*/
 	/* 初始化神经网络 （init nn）
@@ -91,12 +91,12 @@ main(args: Array<String>): Int64 {
 
 	/* -------- 启动web伺服器 --------
 	 * INFO: 伺服器主要能够接收动作脚本，我们还准备植入托管前端以及文件系统操作 */
-	else if (options.contains("serve")) {
-		let savepath  = if (options.contains('o')) {
-			options['o']
-		} else  { "./nn.txt" } /* 获取储存路径 */
-        	run_serve(/*nns, savepath*/)
-	}
+	//else if (options.contains("serve")) {
+	//	let savepath  = if (options.contains('o')) {
+	//		options['o']
+	//	} else  { "./nn.txt" } /* 获取储存路径 */
+        //	run_serve(/*nns, savepath*/)
+	//}
 
 	/* -------- 缺省行为：从标准输入获取动作脚本 --------
 	 * TODO(20260519-qing): 改为从文件流中获取动作脚本，这样能进行脚本引入  */
@@ -283,38 +283,38 @@ func run_test(key: String) {
  * qing(20260430): 
  * TODO: 在http伺服器中集成smn的功能，即能够托管前端
  * TODO: 在http伺服器中集成phs的功能，即托管进程 */
-func run_serve(/*nns: ArrayList<Nn>, save_path: String*/) {
-	let serv = ServerBuilder()
-	.addr(HTTP_ADDR)
-	.port(HTTP_PORT)
-	.build()
+//func run_serve(/*nns: ArrayList<Nn>, save_path: String*/) {
+//	let serv = ServerBuilder()
+//	.addr(HTTP_ADDR)
+//	.port(HTTP_PORT)
+//	.build()
 
 	/*  curl -X POST http://127.0.0.1:5119/api/v2/bot_run -d ${cat filepath}  */
-	serv.distributor.register('/api/v2/bot_run', { context =>
-		if (context.request.method != 'POST') {				
-			let headers = HttpHeaders()
-			headers.add('Content-Type', 'text/plain; charset=utf-8;')
-			context.responseBuilder.setHeaders(headers)
-			context.responseBuilder.body("Method not supportted") // FIXME: http code
-			context.responseBuilder.status(400)
-		}
+//	serv.distributor.register('/api/v2/bot_run', { context =>
+//		if (context.request.method != 'POST') {				
+//			let headers = HttpHeaders()
+//			headers.add('Content-Type', 'text/plain; charset=utf-8;')
+//			context.responseBuilder.setHeaders(headers)
+//			context.responseBuilder.body("Method not supportted") // FIXME: http code
+//			context.responseBuilder.status(400)
+//		}
 		/* ---- 动作 ---- */
 //		run_action_drl(context.request.body, nns)
 //		save_nns(nns, save_path)
-		let robot = RobotStruct(context.request.body)
-		try {
-			robot.active()
-			robot.run()
-		}
-		finally {
-			robot.deactive()
-		}
+//		let robot = RobotStruct(context.request.body)
+//		try {
+//			robot.active()
+//			robot.run()
+//		}
+//		finally {
+//			robot.deactive()
+//		}
 		/* ---- 响应 ---- */
-		let headers = HttpHeaders()
-		headers.add('Content-Type', 'text/html; charset=utf-8;')
-		context.responseBuilder.setHeaders(headers)
-		context.responseBuilder.body('OK')
-	})
+//		let headers = HttpHeaders()
+//		headers.add('Content-Type', 'text/html; charset=utf-8;')
+//		context.responseBuilder.setHeaders(headers)
+//		context.responseBuilder.body('OK')
+//	})
 
 	/* curl -X GET / */
 	//serv.distributor.register('/', { context =>
@@ -383,29 +383,29 @@ func run_serve(/*nns: ArrayList<Nn>, save_path: String*/) {
 	//})
 
 
-	println('Bot at ${HTTP_ADDR}:${HTTP_PORT}')
-	serv.serve()
-}
+//	println('Bot at ${HTTP_ADDR}:${HTTP_PORT}')
+//	serv.serve()
+//}
 
 /*  取得json格式的目录内容的列表，显示目录、符号链接、普通文件
  *  附带文件是否可读可写，如果是普通文件，还会添加文件大小项  */
-func getDirList(path: String): JsonValue {
-	let ret = JsonArray()
-	Directory.walk(path, {fileinfo =>
-		let obj = JsonObject()
-		obj.put("name", JsonString(fileinfo.name))
-		if (fileinfo.isDirectory()) {
-			obj.put("type", JsonString("Directory")) }
-		else if (fileinfo.isSymbolicLink()) {
-			obj.put("type", JsonString("SymbolicLink")) }
-		else if (fileinfo.isRegular()) {
-			obj.put("type", JsonString("Regular"))
-			obj.put("size", JsonInt(fileinfo.size))
-		}
-		obj.put("writable", JsonBool(fileinfo.canWrite()))
-		obj.put("readable", JsonBool(fileinfo.canRead()))
-		ret.add(obj)
-		return true
-	})
-	return ret
-}
+//func getDirList(path: String): JsonValue {
+//	let ret = JsonArray()
+//	Directory.walk(path, {fileinfo =>
+//		let obj = JsonObject()
+//		obj.put("name", JsonString(fileinfo.name))
+//		if (fileinfo.isDirectory()) {
+//			obj.put("type", JsonString("Directory")) }
+//		else if (fileinfo.isSymbolicLink()) {
+//			obj.put("type", JsonString("SymbolicLink")) }
+//		else if (fileinfo.isRegular()) {
+//			obj.put("type", JsonString("Regular"))
+//			obj.put("size", JsonInt(fileinfo.size))
+//		}
+//		obj.put("writable", JsonBool(fileinfo.canWrite()))
+//		obj.put("readable", JsonBool(fileinfo.canRead()))
+//		ret.add(obj)
+//		return true
+//	})
+//	return ret
+//}
