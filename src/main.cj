@@ -14,8 +14,8 @@ import bot4cj.interpreter.*
 import ctype4cj.*
 
 //var I2C_PATH = "/dev/i2c-1"	/*  For Raspberrypi  */
-var HTTP_ADDR = "127.0.0.1"
-var HTTP_PORT = 5119u16
+//var HTTP_ADDR = "127.0.0.1"
+//var HTTP_PORT = 5119u16
 var NNS_OUT: Option<String> = None	/* 神经网络输出路径 */
 main(args: Array<String>): Int64 {
 	

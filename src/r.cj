@@ -742,6 +742,7 @@ class RobotStruct {
 	 * FIXME(20260518-qing): 在插入哈希表之前如果有已经存在的键值，要释放它的资源  */
 	private func createHardVars()
 	{
+
 	//	createAliasVars()
 	//	createI2CVars()
 	//	createMPU6050Bind()
@@ -769,7 +770,6 @@ class RobotStruct {
 						/* ---- FIXME: 加入点号别名的检索逻辑 ---- */
 						if (let Some(mt) <- M.get(value)) {
 							let json = JsonObject()
-							//json.put("mode", JsonString("get_fd"))
 							let res = mt.play(json).asObject()
 							let fields: HashMap<String, JsonValue> = res.getFields()
 							for (k in fields.keys()) {
@@ -821,14 +821,14 @@ class RobotStruct {
 	}
 
 	/* -------- 创建PCA9685硬件变量 -------- */
-	private func createPCA9685Vars() {
-		let PCA9685Defs = findMt(C, "PCA9685").getOrThrow()
-		for (i in 1..PCA9685Defs.size) {
-			let idxName = PCA9685Defs.indexOfCol(0, "name")
-			let name = PCA9685Defs[i, idxName]
-			M[name]=  MtVars_PCA9685.Factory(PCA9685Defs, i, M)
-		}
-	}
+//	private func createPCA9685Vars() {
+//		let PCA9685Defs = findMt(C, "PCA9685").getOrThrow()
+//		for (i in 1..PCA9685Defs.size) {
+//			let idxName = PCA9685Defs.indexOfCol(0, "name")
+//			let name = PCA9685Defs[i, idxName]
+//			M[name]=  MtVars_PCA9685.Factory(PCA9685Defs, i, M)
+//		}
+//	}
 
 	/* -------- 创建Servo舵机硬件变量 -------- */
 	private func createServoVars() {

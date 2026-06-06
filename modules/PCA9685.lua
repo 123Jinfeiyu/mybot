@@ -33,24 +33,19 @@ function build_pca9685(data)
 	local freq = 50.0
 	local prescale_val = 25000000.0 / (4096.0 * freq) - 1.0	-- 25MHz主频
 	local prescale = prescale_val + 0.5
-	print(1)
 	-- 开始配置PCA9685
 	i2c_set_addr(fd, addr)
 
-	print(1)
 	-- 重启PCA9685
 	i2c_write_reg(fd, 0x00, 0x80)
 
-	print(1)
 	-- 等待振荡器启动
 	milli_sleep(5)
 
-	print(1)
 	i2c_write_reg(fd, 0x00, 0x10)	-- 进入SLEEP模式（允许改频率）
 	i2c_write_reg(fd, 0xFE, math.floor(prescale))
 	i2c_write_reg(fd, 0x00, 0x20)	-- 退出SLEEP模式
 
-	print(1)
 	-- 等待振荡器启动
 	milli_sleep(5)
 
