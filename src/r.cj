@@ -230,7 +230,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		return mtVars_Lua
 	}
 
-	/* ---- 调用Lua脚本 =>  ---- */
+	/* ---- 调用Lua脚本的方法  ---- */
 	private static func call_lua(luapath: String, json: JsonValue): JsonValue {
 		let obj = json.asObject()
 		let ret = JsonObject()
@@ -314,8 +314,8 @@ class MtVars_Lua <: MatrixVars_Hardware {
 						Lua_pushnil(L)
 						while(Lua_next(L, -2) != 0) {
 							/* ---- 此时栈：[表, 键, 值] ----
-								* ---- 检查键值是否为空指针 ---- 
-								* ---- FIXME(20260531-qing) ---- */
+							 * ---- 检查键值是否为空指针 ---- 
+							 * ---- FIXME(20260531-qing) ---- */
 							let key = Lua_tostring(L, -2)
 							let val = Lua_tostring(L, -1)
 							if (key.isEmpty() || val.isEmpty()) {
@@ -763,6 +763,8 @@ class RobotStruct {
 
 		for (matrix in C) {
 			let MtName = matrix.getName()
+
+			/* ---- 【特殊的】I2C硬件 ---- */
 			if (MtName == "I2C") {
 				let idxName = matrix.indexOfCol(0,"name")
 				for (i in 1..matrix.size) {
@@ -770,6 +772,31 @@ class RobotStruct {
 					M[name] = MtVars_I2C.Factory(matrix, i, M)
 				}
 			}
+
+			/* ---- 【特殊的】Alias别名硬件 ---- */
+			else if (MtName == "Alias") {
+				let idxName =  matrix.indexOfCol(0, "name")
+				for (i in 1..matrix.size) {
+					let name =  matrix[i, idxName]
+					M[name] = MtVars_Alias.Factory(matrix, i, M)
+				}
+			}
+
+			/* ---- 【特殊的】Servo舵机硬件 ---- */
+			else if (MtName == "Servo") {
+				let idxName = matrix.indexOfCol(0, "name")
+				for (i in 1..matrix.size) {
+					let name = matrix[i, idxName]
+					M[name] = MtVars_Servo.Factory(matrix, i, M)
+				}
+			}
+
+			/* ---- [特殊的] Action矩阵---- */
+			else if (MtName == "Action") {
+				;
+			}
+
+			/* ---- 【通用的】Lua脚本硬件 ---- */
 			else if (matrix.size > 0) {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size ) {
