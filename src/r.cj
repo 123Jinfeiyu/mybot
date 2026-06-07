@@ -10,7 +10,7 @@ import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
-import bot4cj.hd.extern.*
+//import bot4cj.hd.extern.*
 import bot4cj.math.*
 import bot4cj.interpreter.*
 import ctype4cj.*
@@ -93,7 +93,9 @@ open class MatrixVars_Hardware {
 }
 
 
-/* ---- 用于注册到Lua的I2C操作C语言函数 ---- */
+/* ---- 用于注册到Lua的I2C操作C语言函数 ----
+ *
+ * ---- 打开一个I2C设备 ----  */
 @C
 func Lua_openI2c(L: lua_State): C_Int {
 	unsafe {
@@ -105,6 +107,7 @@ func Lua_openI2c(L: lua_State): C_Int {
 	}
 }
 
+/* ---- 关闭I2C设备 ---- */
 @C
 func Lua_closeI2c(L: lua_State): C_Int {
 	unsafe {
@@ -114,6 +117,7 @@ func Lua_closeI2c(L: lua_State): C_Int {
 	}
 }
 
+/* ---- 设置I2C地址 ---- */
 @C
 func Lua_setI2cAddr(L: lua_State): C_Int {
 	unsafe {
@@ -124,6 +128,7 @@ func Lua_setI2cAddr(L: lua_State): C_Int {
 	}
 }
 
+/* ---- 写I2C寄存器 ---- */
 @C
 func Lua_writeI2cReg(L: lua_State): C_Int {
 	unsafe {
@@ -135,6 +140,7 @@ func Lua_writeI2cReg(L: lua_State): C_Int {
 	}
 }
 
+/* ---- 读I2C寄存器 ---- */
 @C
 func Lua_readI2cReg(L: lua_State): C_Int {
 	unsafe {
@@ -146,6 +152,7 @@ func Lua_readI2cReg(L: lua_State): C_Int {
 	}
 }
 
+/* ---- 毫秒级延时 ---- */
 @C
 func Lua_milliSleep(L: lua_State): C_Int {
 	unsafe {
@@ -157,7 +164,7 @@ func Lua_milliSleep(L: lua_State): C_Int {
 
 
 
-/* ---- Lua脚本变量 ---- */
+/* ---- Lua解释器 - 硬件变量 ---- */
 class MtVars_Lua <: MatrixVars_Hardware {
 
 	/* ---- 构造函数 => 传入召集函数以及解散函数 ---- */
@@ -169,6 +176,8 @@ class MtVars_Lua <: MatrixVars_Hardware {
 	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数 ---- */
 	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
 	{
+
+		/* ---- 从矩阵中取出所有的参数，移动到了机器人结构类里 ---- */
 		//let obj = JsonObject()
 		//let col = Defs.col
 		//for (c in 0..col) {
@@ -179,9 +188,12 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 		let mtVars_Lua = MtVars_Lua(
 			things: {json: JsonValue =>
+
+				/* ---- 从元数据jsonobj进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				obj.put("mode", JsonString("call"))
-				/* --- 合并两张表 --- */
+
+				/* --- 合并两张jsonobj表（元数据和参数） --- */
 				let fields: HashMap<String, JsonValue> = json.asObject().getFields()
 				for (k in fields.keys()) {
 					let val = fields.get(k).getOrThrow()
@@ -191,16 +203,21 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				let res = call_lua(luapath, json)
 				println("Lua script call result: ${res.toString()}")
 				return res
+
 			},
 			rise: { =>
+				/* ---- 从元数据进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				/* ---- 插入模式指令 ---- */
 				obj.put("mode", JsonString("build"))
 				println("Lua scripts build parameters: ${obj.toString()}")
 				let res = call_lua(luapath, obj)
 				println("Lua script build result: ${res.toString()}")
 			},
 			free: { =>
+				/* ---- 从元数据进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				/* ---- 插入模式指令 ---- */
 				obj.put("mode", JsonString("destroy"))
 				println("Lua scripts destroy parameters: ${obj.toString()}")
 				let res = call_lua(luapath, obj)
@@ -209,6 +226,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		)
 
 
+		/* ---- 返回构造的硬件变量 ---- */
 		return mtVars_Lua
 	}
 
@@ -743,13 +761,6 @@ class RobotStruct {
 	private func createHardVars()
 	{
 
-	//	createAliasVars()
-	//	createI2CVars()
-	//	createMPU6050Bind()
-	//	createPCA9685Vars()
-	//	createServoVars()
-	//	createSpeakerVars()
-
 		for (matrix in C) {
 			let MtName = matrix.getName()
 			if (MtName == "I2C") {
@@ -769,6 +780,8 @@ class RobotStruct {
 						let value = MatrixVars_Hardware.getMt(matrix, i, j)
 						/* ---- FIXME: 加入点号别名的检索逻辑 ---- */
 						if (let Some(mt) <- M.get(value)) {
+							/*---- 检测出存在该名称的变量，传入空对象参数 ----
+							 *----   求取返回值  ---- */
 							let json = JsonObject()
 							let res = mt.play(json).asObject()
 							let fields: HashMap<String, JsonValue> = res.getFields()
@@ -782,43 +795,42 @@ class RobotStruct {
 							obj.put(colName, JsonString(value))
 						}
 					}
-					let mtv = MtVars_Lua.Factory("./modules/${MtName}.lua", obj)
-					//let res = mtv.play(obj).asObject()
-					M[name] = mtv
+					/* ---- fixme: 这里的脚本路径是写死的，随后我们需要设计一个机制 ---- */
+					M[name] = MtVars_Lua.Factory("./modules/${MtName}.lua", obj)
 				}
 			}
 		}
 	}
 
 	/* -------- 创建别名硬件变量 -------- */
-	private func createAliasVars() {
-		let AliasDefs = findMt(C, "Alias").getOrThrow()	/* MatrixObject */
-		for (i in 1..AliasDefs.size) {
-			let idxName = AliasDefs.indexOfCol(0, "name")
-			let name = AliasDefs[i, idxName]
-			M[name] = MtVars_Alias.Factory(AliasDefs, i, M)
-		}
-	}
+	//private func createAliasVars() {
+	//	let AliasDefs = findMt(C, "Alias").getOrThrow()	/* MatrixObject */
+	//	for (i in 1..AliasDefs.size) {
+	//		let idxName = AliasDefs.indexOfCol(0, "name")
+	//		let name = AliasDefs[i, idxName]
+	//		M[name] = MtVars_Alias.Factory(AliasDefs, i, M)
+	//	}
+	//}
 
 	/* -------- 创建I2C机组硬件变量 -------- */
-	private func createI2CVars() {
-		let I2CDefs= findMt(C, "I2C").getOrThrow()	/* MatrixObject */
-		for (i in 1..I2CDefs.size) {
-			let idxName = I2CDefs.indexOfCol(0, "name")
-			let name = I2CDefs[i, idxName]
-			M[name]  = MtVars_I2C.Factory(I2CDefs, i, M)
-		}
-		}
+	//private func createI2CVars() {
+	//	let I2CDefs= findMt(C, "I2C").getOrThrow()	/* MatrixObject */
+	//	for (i in 1..I2CDefs.size) {
+	//		let idxName = I2CDefs.indexOfCol(0, "name")
+	//		let name = I2CDefs[i, idxName]
+	//		M[name]  = MtVars_I2C.Factory(I2CDefs, i, M)
+	//	}
+	//	}
 
 	/* -------- 创建MPU6050_BIND硬件变量 -------- */
-	private func createMPU6050Bind() {
-		let MPU6050BindDefs = findMt(C, "MPU6050_BIND").getOrThrow()
-		for (i in 1..MPU6050BindDefs.size) {
-			let idxName = MPU6050BindDefs.indexOfCol(0, "name")
-			let name: String = MPU6050BindDefs[i, idxName]
-			M.add(name, MtVars_MPU6050_BIND.Factory(MPU6050BindDefs, i, M))
-		}
-	}
+	//private func createMPU6050Bind() {
+	//	let MPU6050BindDefs = findMt(C, "MPU6050_BIND").getOrThrow()
+	//	for (i in 1..MPU6050BindDefs.size) {
+	//		let idxName = MPU6050BindDefs.indexOfCol(0, "name")
+	//		let name: String = MPU6050BindDefs[i, idxName]
+	//		M.add(name, MtVars_MPU6050_BIND.Factory(MPU6050BindDefs, i, M))
+	//	}
+	//}
 
 	/* -------- 创建PCA9685硬件变量 -------- */
 //	private func createPCA9685Vars() {
@@ -831,25 +843,25 @@ class RobotStruct {
 //	}
 
 	/* -------- 创建Servo舵机硬件变量 -------- */
-	private func createServoVars() {
-		let ServoDefs = findMt(C, "Servo").getOrThrow()
-		for (i in 1..ServoDefs.size) {
-			let idxName = ServoDefs.indexOfCol(0, "name")
-			let name = ServoDefs[i, idxName]
-			M[name] = MtVars_Servo.Factory(ServoDefs, i, M)
-		}
-	}
+	//private func createServoVars() {
+	//	let ServoDefs = findMt(C, "Servo").getOrThrow()
+	//	for (i in 1..ServoDefs.size) {
+	//		let idxName = ServoDefs.indexOfCol(0, "name")
+	//		let name = ServoDefs[i, idxName]
+	//		M[name] = MtVars_Servo.Factory(ServoDefs, i, M)
+	//	}
+	//}
 
 
 	/* -------- 创建扬声器机组硬件变量 -------- */
-	private func createSpeakerVars() {
-		let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	/* MatrixObject */
-		for (i in 1..SpeakerDefs.size) {
-			let idxName = SpeakerDefs.indexOfCol(0, "name")
-			let name = SpeakerDefs[i, idxName]
-			M[name]= MtVars_Speaker.Factory(SpeakerDefs, i, M)
-		}
-	}
+	//private func createSpeakerVars() {
+	//	let SpeakerDefs = findMt(C, "Speaker").getOrThrow()	/* MatrixObject */
+	//	for (i in 1..SpeakerDefs.size) {
+	//		let idxName = SpeakerDefs.indexOfCol(0, "name")
+	//		let name = SpeakerDefs[i, idxName]
+	//		M[name]= MtVars_Speaker.Factory(SpeakerDefs, i, M)
+	//	}
+	//}
 
 	/* -------- 在矩阵对象的容器中寻找目标 -------- */
 	private static func findMt(ll: LinkedList<MatrixObject>, name: String): Option<MatrixObject>
