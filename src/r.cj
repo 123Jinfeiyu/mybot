@@ -796,6 +796,15 @@ class RobotStruct {
 				;
 			}
 
+			/* ---- [特殊的] Speaker扬声器硬件 ---- */
+			else if (MtName == "Speaker") {
+				let idxName = matrix.indexOfCol(0, "name")
+				for (i in 1..matrix.size) {
+					let name = matrix[i, idxName]
+					M[name] = MtVars_Speaker.Factory(matrix, i, M)
+				}
+			}
+
 			/* ---- 【通用的】Lua脚本硬件 ---- */
 			else if (matrix.size > 0) {
 				let idxName = matrix.indexOfCol(0, "name")

@@ -17,6 +17,11 @@ i2c-1  /dev/i2c-1;
 pca9685-0  i2c-1   0x40;
 @
 
+@Speaker
+name  channels  sample_rate  volumn  max_f  min_f;
+ spk         2        48000     0.6   5000      -;
+@
+
 @Servo
  name   max  min  offset  controller  channel;
   s1    90     -       -   pca9685-0        0;	# rb0
