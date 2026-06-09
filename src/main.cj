@@ -34,17 +34,6 @@ main(args: Array<String>): Int64 {
 	/* 读取设置项 */
 
 
-	//if (options.contains("i2c")) {
-	//	I2C_PATH = options['i2c']
-	//}
-
-	//if (options.contains("serve")) {
-	//	if (options['serve'] != "") {
-	//		let s = options['serve']
-	//		HTTP_PORT = UInt16.parse(s)
-	//	}
-	//}
-
 	/*---------------------------*/
 	/* 初始化神经网络 （init nn）
 	 * TODO: 可以去掉内部初始化，使用矩阵式模板进行初始化 */
