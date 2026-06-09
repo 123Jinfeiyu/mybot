@@ -18,6 +18,7 @@ import ctype4cj.*
 /* ---------------- 硬件变量基类 ----------------
  * 接收一个lambda表达式，在回调函数中定义行为
  * 通过JsonValue这种通用的数据结构进行传值
+ *
  * TODO*(20260517-qing): 因为析构器（终结器）的调用时间不确定，需要手动构造RAII机制
  * - 需要进一步解耦各种原始硬件模块类，使其初始化部分单独调用
  * TODO(20260519-qing): 考虑将@Action矩阵对象置为硬件变量的一种
@@ -34,7 +35,8 @@ open class MatrixVars_Hardware {
 			free!: Option<() -> Unit>  ) {
 		this.things = things
 		this.rise = rise
-		this.free = free  }
+		this.free = free
+	}
 
 	/* -------- 事件回调，接收和返回JsonValue -------- */
 	private let things: (JsonValue) -> JsonValue	
@@ -63,7 +65,6 @@ open class MatrixVars_Hardware {
 
 	/* ----------------- */
 	/* ----------------- */
-	/* INFO(20260514-qing):  这两个函放在外面很突兀，考虑放进Matrix_HardVars  (done) */
 
 	/* -------- 获得项目值 -------- */
 	public static func getMt(obj: MatrixObject, row: Int64, col: Int64): String
@@ -171,20 +172,12 @@ class MtVars_Lua <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
 			free!: Option<() -> Unit> = None  )
-		{  super(things: things, rise: rise, free: free)  }
+
+	{  super(things: things, rise: rise, free: free)  }
 
 	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数 ---- */
 	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
 	{
-
-		/* ---- 从矩阵中取出所有的参数，移动到了机器人结构类里 ---- */
-		//let obj = JsonObject()
-		//let col = Defs.col
-		//for (c in 0..col) {
-		//	let colname = Defs[0, c]
-		//	let colval = getMt(Defs, i, c)
-		//	obj.put(colname, JsonString(colval))
-		//}
 
 		let mtVars_Lua = MtVars_Lua(
 			things: {json: JsonValue =>
@@ -340,7 +333,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			}
 
 			else {
-				// 从栈顶获取错误信息
+				/* ---- 从栈顶获取错误信息 ---- */
 				let error_msg = Lua_tostring(L, -1);
 				println(error_msg.toString());
 			}
@@ -359,7 +352,8 @@ class MtVars_Alias <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
 			free!: Option<() -> Unit> = None  )
-		{  super(things: things, rise: rise, free: free)  }
+
+	{  super(things: things, rise: rise, free: free)  }
 
 	public static func Factory(AliasDefs: MatrixObject, i: Int64,
 			_: HashMap<String, MatrixVars_Hardware>): MtVars_Alias
@@ -372,7 +366,7 @@ class MtVars_Alias <: MatrixVars_Hardware {
 
 		println("Create a Alias vars: ${name}, witch means ${alias}")
 		let mtvars_alias = MtVars_Alias(things: {_: JsonValue =>
-			let str = JsonString(alias)	/* 直接返回JsonString（alias） */
+			let str = JsonString(alias)	/* ---- 直接返回JsonString（alias）---- */
 			return str
 		})
 
@@ -385,7 +379,8 @@ class MtVars_I2C <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
 			free!: Option<() -> Unit> = None  )
-		{  super(things: things, rise: rise, free: free)  }
+
+	{  super(things: things, rise: rise, free: free)  }
 
 	/*  @I2C
 	 *   name        path;
@@ -401,50 +396,20 @@ class MtVars_I2C <: MatrixVars_Hardware {
 		let name = I2CDefs[i, idxName]
 		let path = getMt(I2CDefs, i, idxPath)
 
-		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* debug */
+		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* ---- debug ---- */
 		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C硬件对象，通过闭包保存在MtVars_I2C里  */
-		let mtvars_i2c = MtVars_I2C(things: {json: JsonValue =>			/*  {"mode": "set_addr", "addr": 0x01} */
-			//let obj = json.asObject()					/*  {"mode": "set_val",  "reg": 0x01, "val": 0x56} */
-			//let mode = obj.get("mode").getOrThrow().asString().getValue()	/*  {"mode": "get_val",  "reg": 0x02} */
-			//if (mode == "get_fd") {
+		let mtvars_i2c = MtVars_I2C(
+			things: { json: JsonValue =>
 				let fd = i2c.getFd()
 				let ret = JsonObject()
 				ret.put("fd",JsonInt(Int64(fd)))
 				return ret
-			//}
-			//else if (mode == "set_addr")  {
-			//	let addr = obj.get("addr").getOrThrow().asInt().getValue()
-			//	i2c.setAddr(UInt8(addr))
-			//	let ret = JsonObject()
-			//	ret.put("status", JsonString("OK"))
-			//	return ret  }
-			//else if (mode == "set_val") {
-			//	let reg = obj.get("reg").getOrThrow().asInt().getValue()
-			//	let val = obj.get("val").getOrThrow().asInt().getValue()
-			//	i2c.writeReg(UInt8(reg), UInt8(val))
-			//	let ret = JsonObject()
-			//	ret.put("status", JsonString("OK"))
-			//	return ret  }
-			//else if (mode == "get_val") {
-			//	let reg = obj.get("reg").getOrThrow().asInt().getValue()
-			//	let raw = i2c.readReg(UInt8(reg))
-			//	let ret = JsonObject()
-			//	ret.put("status", JsonString("OK"))
-			//	ret.put("value", JsonInt(Int64(raw)))
-			//	return ret  }
+			},
 
-			/* ---- 准备返回值 ---- */
-			/* FIXME: 改为抛出异常 */
-			//let ret = JsonObject()
-			//ret.put("status", JsonString("ERR"))
-			//ret.put("message", JsonString("Invalid Mode"))
-			//return ret
-		},
-
-		free: {=>
-			println("I2C HVar: ${name} is closing now")
-			i2c._close()
-		})
+			free: {=>
+				println("I2C HVar: ${name} is closing now")
+				i2c._close()
+			})
 
 		return mtvars_i2c
 	}
