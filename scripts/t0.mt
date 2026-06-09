@@ -1,10 +1,10 @@
 
 # 在 @Action 矩阵中，硬件变量的参数可以使用别名
-#@Alias
-#name      alias;
-#   A      angle;
-#   F  frequency;
-#@
+@Alias
+name      alias;
+   A      angle;
+   F  frequency;
+@
 
 @I2C
  name        path;
@@ -40,4 +40,17 @@ name  channels  sample_rate  volumn  max_f  min_f;
 @Action
 s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	# column name
   45     -    45     -    45     -    45     -    90     90     10        200;	# stand
+  90     -     -     -     -     -     -     -     -      -      -         20;	# left-behind
+
+  45     -     -     -     -     -     -     -     -      -      0        500;	# stand
+   -     -    90     -     -     -    45     -     -      -      -         20;	# right-behind
+
+   -     -    45     -     -     -     -     -     -     45    200        500;	# stand
+   -     -     -     -    90     -     -     -     -      -      0         20;	# right-front
+
+   -     -     -     -    45     -     -     -     -      -      -        500;	# stand
+   -     -     -     -     -     -    90     -     -      -      -         20;	# left-front
+
+   -     -     -     -     -     -    45     -     -      -      -        500;	# stand
+   -     -     -     -     -     -     -     -     -     90      -         20;	# stand
 @

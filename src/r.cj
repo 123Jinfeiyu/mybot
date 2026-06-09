@@ -200,7 +200,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 					obj.put(k, val)
 				}
 				println("Lua scripts call parameters: ${obj.toString()}")
-				let res = call_lua(luapath, json)
+				let res = call_lua(luapath, obj)
 				println("Lua script call result: ${res.toString()}")
 				return res
 
@@ -620,7 +620,8 @@ class MtVars_Servo <: MatrixVars_Hardware {
 			callback_setAngle: {angle: Float32 =>
 				let obj = JsonObject()
 				obj.put("channel", JsonInt(Int64(channel)))
-				obj.put("angle", JsonFloat(Float64(angle)))
+				//obj.put("angle", JsonFloat(Float64(angle)))
+				obj.put("angle", JsonInt(Int64(angle)))
 				controller.play(obj)
 		})
 
@@ -731,7 +732,7 @@ class RobotStruct {
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
 	public func run() {
-		//run_drl_action()
+		run_drl_action()
 	}
 
 	/* -------- 储存整个矩阵变量表 --------
