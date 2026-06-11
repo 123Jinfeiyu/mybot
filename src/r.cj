@@ -38,54 +38,89 @@ open class MatrixVars_Hardware {
 		this.free = free
 	}
 
-	/* -------- 事件回调，接收和返回JsonValue -------- */
+
+	/* --------------------------------
+	 * --------------------------------
+	 * -------- 事件回调，接收和返回JsonValue
+	 * -------- 这是整个硬件的主要事件  */
+
 	private let things: (JsonValue) -> JsonValue	
 
-	/* -------- 召集事件，不接受参数 -------- */
+	/* -------- 召集事件，不接受参数
+	 * -------- 即硬件获取资源  */
+
 	private let rise: Option<() -> Unit>
 
-	/* -------- 遣返事件，不接受参数 -------- */
+	/* -------- 遣返事件，不接受参数
+	 * -------- 即硬件释放资源*/
+
 	private let free: Option<() -> Unit>
 
-	/* -------- 事件发生器 -------- */
-	public func play(input: JsonValue): JsonValue {
-		return things(input)  }
+	/* -------------------------------- *
+	 * -------------------------------- */
 
-	/* -------- 伪初始化器 -------- */
+	/* -------- 事件发生器
+	 * -------- 该方法会调用硬件，需要传入1个JsonValue参数
+	 * -------- 它返回1个JsonValue值  */
+
+	public func play(input: JsonValue): JsonValue {
+		return things(input)
+	}
+
+	/* -------- 伪初始化器
+	 * -------- 该方法会打开硬件，什么也不传入和返回  */
+
 	public func build() {
 		if (let Some(callback) <- rise) {
-			callback()  }
+			callback()
+		}
 	}
 
-	/* -------- 伪解构器 -------- */
+	/* -------- 伪解构器
+	 * -------- 该方法会关闭硬件，什么也不传入和返回  */
+
 	public func destroy() {
 		if (let Some(callback) <- free) {
-			callback()  }
+			callback()
+		}
 	}
 
 	/* ----------------- */
 	/* ----------------- */
 
-	/* -------- 获得项目值 -------- */
+	/* -------- 获得项目值
+	 * -------- 如果矩阵单元的原始值是占位符且不为标题行，不为首行
+	 * -------- 就递归地获取上一行的值  */
 	public static func getMt(obj: MatrixObject, row: Int64, col: Int64): String
 	{
 		let raw = obj[row, col]
 		if (raw == "-" && row > 1) {
-			return getMt(obj, row - 1, col)  }
+			return getMt(obj, row - 1, col)
+		}
 		return raw
 	}
 
-	/* -------- 解析项目值 -------- */
+	/* -------- 解析项目值
+	 * -------- 先获取矩阵单元的项目值（解析过占位符的值）
+	 * -------- 然后解析为需要的格式
+	 * --------
+	 * -------- FIXME(20260611-qing): 直接调用getMt()再进行解析  */
 	public static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64): T  where T <: Parsable<T>
-	{
+	{	
+		/* ---- 先获取矩阵单元的原始值 ---- */
 		let raw = obj[row, col]
+
+		/* ---- 原始值为占位符且（非首行的）非标题行 ---- */
 		if (raw == "-" && row > 1) {
 			let prev = getMt(obj, row-1, col)
 			return T.parse(prev)
 		}
+
+		/* ---- 原始值为占位符且为（非标题行的）首行 ---- */
 		else if (raw == "-" && !row > 1) {
 			return T.parse("0")  }
 
+		/* ---- 原始值并非占位符 ---- */
 		// else if (!raw == "-")
 		return T.parse(raw)
 	}
@@ -95,6 +130,7 @@ open class MatrixVars_Hardware {
 
 
 /* ---- 用于注册到Lua的I2C操作C语言函数 ----
+ *
  *
  * ---- 打开一个I2C设备 ----  */
 @C
@@ -165,57 +201,91 @@ func Lua_milliSleep(L: lua_State): C_Int {
 
 
 
-/* ---- Lua解释器 - 硬件变量 ---- */
+/* ---- Lua状态机 - 硬件变量
+ * ----   */
 class MtVars_Lua <: MatrixVars_Hardware {
 
-	/* ---- 构造函数 => 传入召集函数以及解散函数 ---- */
+	/* ---- 构造函数 =>
+	 * ----  传入事件函数，召集函数以及解散函数
+	 * ---- */
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
 			free!: Option<() -> Unit> = None  )
 
 	{  super(things: things, rise: rise, free: free)  }
 
-	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数 ---- */
+	/* ---- 工厂函数 =>
+	 * ---- 运行指定Lua脚本，传入矩阵中的所有参数（元数据）
+	 * ---- */
 	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
 	{
 
 		let mtVars_Lua = MtVars_Lua(
+
+			/* ---- 主要事件：调用该硬件的驱动脚本 ----
+			 * ---- 合并两张表（json_obj），一张来自创建该硬件时的设置（元数据）
+			 * ---- 另一张是调用该硬件事件时传入的参数
+			 * ----
+			 * ---- 其中前者是一些诸如I2C地址、SPI速率的硬件参数
+			 * ---- 后者是一些类似舵机旋转角度的软件参数 */
 			things: {json: JsonValue =>
 
-				/* ---- 从元数据jsonobj进行深拷贝 ---- */
+				/* ---- 从元数据（json_obj）进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				obj.put("mode", JsonString("call"))
 
-				/* --- 合并两张jsonobj表（元数据和参数） --- */
+				/* --- 合并两张（json_obj）表（元数据和参数） --- */
 				let fields: HashMap<String, JsonValue> = json.asObject().getFields()
 				for (k in fields.keys()) {
 					let val = fields.get(k).getOrThrow()
 					obj.put(k, val)
 				}
 				println("Lua scripts call parameters: ${obj.toString()}")
+
 				let res = call_lua(luapath, obj)
+
 				println("Lua script call result: ${res.toString()}")
+
 				return res
 
 			},
+
+			/* ---- 集合方法：提供元数据（json_obj）
+			 * ---- 并对该硬件进行初始化  */
 			rise: { =>
+
 				/* ---- 从元数据进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+
 				/* ---- 插入模式指令 ---- */
 				obj.put("mode", JsonString("build"))
+
 				println("Lua scripts build parameters: ${obj.toString()}")
+
 				let res = call_lua(luapath, obj)
+
 				println("Lua script build result: ${res.toString()}")
+
 			},
+
+			/* ---- 解散方法：传入元数据（json_obj|json_data）
+			 * ---- 然后使用Lua状态机对设备进行关闭（或者重置）   */
 			free: { =>
+
 				/* ---- 从元数据进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+
 				/* ---- 插入模式指令 ---- */
 				obj.put("mode", JsonString("destroy"))
+
 				println("Lua scripts destroy parameters: ${obj.toString()}")
+
 				let res = call_lua(luapath, obj)
+
 				println("Lua script destroy result: ${res.toString()}")
+
 			}
+
 		)
 
 
@@ -238,7 +308,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			/* ---- 加载Lua库、注册Lua函数 ---- */
 			Lua_loadlib(L)
 
-			/* milli_sleep() */
+			/* ---- milli_sleep() ---- */
 			let cstr_sleep = LibC.mallocCString("milli_sleep")
 			Lua_register(L, cstr_sleep, Lua_milliSleep)
 			LibC.free(cstr_sleep)
@@ -347,12 +417,14 @@ class MtVars_Lua <: MatrixVars_Hardware {
 	}
 }
 
-/* -------- 别名变量 -------- */
+/* -------- 别名变量
+ * -------- 这种变量用于给某个参数取一个更简单的别名
+ * -------- 它的事件返回（JsonString）将作为新的矩阵项目值 
+ * --------  */
 class MtVars_Alias <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
 			free!: Option<() -> Unit> = None  )
-
 	{  super(things: things, rise: rise, free: free)  }
 
 	public static func Factory(AliasDefs: MatrixObject, i: Int64,
@@ -374,7 +446,9 @@ class MtVars_Alias <: MatrixVars_Hardware {
 	}
 }
 
-/* -------- I2C变量类 -------- */
+/* -------- I2C变量类
+ * -------- 这种硬件变量是特殊且固定的
+ * -------- */
 class MtVars_I2C <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
