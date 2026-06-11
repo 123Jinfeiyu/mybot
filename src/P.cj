@@ -7,12 +7,13 @@ import bot4cj.math.*
 
 /* -------- 矩阵编程语言 - 基本对象 --------
  * TODO：储存功能
- * TODO：神经网络层转换为矩阵对象 */
+ * TODO：神经网络层转换为矩阵对象
+   --------  */
 class MatrixObject {
-	private var name: String = ""		/* 名字 */
-	private var tmp = ArrayList<Rune>()	/* rune buf 字符缓冲区 */
-	private var grp = ArrayList<String>()	/* one line 整行缓冲区 */
-	private var values = ArrayList<ArrayList<String>>()	/* 原始矩阵 */
+	private var name: String = ""		/* -------- 名字 -------- */
+	private var tmp = ArrayList<Rune>()	/* ---- rune buf 字符缓冲区 ---- */
+	private var grp = ArrayList<String>()	/* ---- one line 整行缓冲区 ---- */
+	private var values = ArrayList<ArrayList<String>>()	/* ---- 原始矩阵 ---- */
 
 	/* -------- 是否已命名 -------- */
 	public func hasName(): Bool { !(name == "") }
