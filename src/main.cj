@@ -74,7 +74,7 @@ main(args: Array<String>): Int64 {
 	}
 
 	/* -------- 缺省行为：从标准输入获取动作脚本 --------
-	 * TODO(20260519-qing): 改为从文件流中获取动作脚本，这样能进行脚本引入  */
+	 * TODO(20260519-qing): 进行脚本引入（相对路径也可，从环境变量的路径中搜寻也可）  */
 	else {
 		let consoleReader = getStdIn()
 		let robot = RobotStruct(consoleReader)
