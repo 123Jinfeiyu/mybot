@@ -33,6 +33,7 @@ function build_pca9685(data)
 	local freq = 50.0
 	local prescale_val = 25000000.0 / (4096.0 * freq) - 1.0	-- 25MHz主频
 	local prescale = prescale_val + 0.5
+
 	-- 开始配置PCA9685
 	i2c_set_addr(fd, addr)
 
@@ -56,7 +57,8 @@ function build_pca9685(data)
 
 end
 
--- 销毁脚本
+-- 销毁PCA9685的脚本
+-- 其实可以不需要，因为我们只是清空设置
 function destroy_pca9685(data)
 
 	local fd = data.fd
@@ -142,14 +144,19 @@ function call_pca9685(data)
 		}
 	end
 
+	-- 设置I2C地址
 	i2c_set_addr(fd, addr)
+
+	-- 计算需要的参数
 	local min = 0.5	-- 0度对应0.5ms
 	local max = 2.5	-- 180度对应2.5ms
 	local width = min + (max - min) * (angle / 180.0)
 	local offval = math.floor(width * 4096.0 / 20.0)
 	local reg = 0x06 + 4 * channel
-	i2c_write_reg(fd, reg + 0, (0 >> 0)  & 0xFF)	-- 1 * 8
-	i2c_write_reg(fd, reg + 1, (0 >> 8)  & 0xFF)	-- 2 * 8
+
+	-- 写I2C寄存器
+	i2c_write_reg(fd, reg + 0, (0 >> 0)  & 0xFF)		-- 1 * 8
+	i2c_write_reg(fd, reg + 1, (0 >> 8)  & 0xFF)		-- 2 * 8
 	i2c_write_reg(fd, reg + 2, (offval >> 0) & 0xFF)	-- 3 * 8
 	i2c_write_reg(fd, reg + 3, (offval >> 8) & 0xFF)	-- 4 * 8
 
@@ -160,6 +167,8 @@ function call_pca9685(data)
 
 end
 
+
+-- 这个函数是辅助用的
 function print_table(t, indent)
     indent = indent or 0
     for k, v in pairs(t) do
@@ -177,6 +186,7 @@ end
 -- 注意：传入的参数在 ... 中（可变参数）
 local input = ...  -- 获取第一个参数（我们的字典）
 
+-- 检查该参数是否是一张表
 if type(input) ~= "table" then
 	return {
 		result = "ERR",
@@ -184,7 +194,7 @@ if type(input) ~= "table" then
 	}
 end
 
-
+-- 取得此次调用的模式
 local mode = input.mode
 
 -- 检查mode字段是否存在
