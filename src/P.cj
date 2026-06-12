@@ -6,7 +6,7 @@ import std.collection.*
 import bot4cj.math.*
 
 /* -------- 矩阵编程语言 - 基本对象 --------
- * TODO：储存功能
+ * TODO：增加储存到文件系统的功能
  * TODO：神经网络层转换为矩阵对象
    --------  */
 class MatrixObject {
