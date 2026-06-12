@@ -3,7 +3,8 @@
 
 
 
--- 配置脚本
+-- 【配置脚本】
+-- 该脚本负责初始化PCA9685
 -- FIXME(20260602-qing): 异常处理
 function build_pca9685(data)
 
@@ -57,8 +58,9 @@ function build_pca9685(data)
 
 end
 
--- 销毁PCA9685的脚本
--- 其实可以不需要，因为我们只是清空设置
+-- 【销毁PCA9685的脚本】
+-- 重置PCA9685
+-- NOTE(20260612-qing): 其实可以不需要，因为我们只是清空设置
 function destroy_pca9685(data)
 
 	local fd = data.fd
@@ -97,8 +99,9 @@ function destroy_pca9685(data)
 end
 
 
--- 调用脚本
--- 接收一个参数（表），返回另一个表
+-- 【调用PCA9685】
+-- 将一个舵机通道转动到一个角度
+-- NOTE(20260612-qing): 接收一个参数（表），返回一个结果（表）
 function call_pca9685(data)
 
 
