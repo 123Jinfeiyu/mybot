@@ -36,7 +36,7 @@ main(args: Array<String>): Int64 {
 
 	/*---------------------------*/
 	/* 初始化神经网络 （init nn）
-	 * TODO: 可以去掉内部初始化，使用矩阵式模板进行初始化 */
+	 * TODO: 可以去掉内部初始化参数，使用矩阵式模板进行初始化 */
 
 
 	//var nns: ArrayList<Nn> = 
@@ -51,8 +51,8 @@ main(args: Array<String>): Int64 {
 	//	nn_in.add(Nn(40, 17, ActivationFuncs.Sigmoid, 0.2f32)) // 16个舵机加1个时延
 	//	nn_in  }
 
+	/* ---- 使用-o选项进行输出路径的选择 ---- */
 	if (options.contains("o")) {
-
 		NNS_OUT = Option<String>.Some(options['o'])
 	}
 
