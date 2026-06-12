@@ -20,7 +20,7 @@ main(args: Array<String>): Int64 {
 	/* 解析命令行参数 */
 
 	let specs = [
-		ArgumentSpec.Long("help", ArgumentMode.NoValue),	/* 拉起帮助菜单 */
+		ArgumentSpec.Long("help", ArgumentMode.NoValue),		/* 拉起帮助菜单 */
 		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),	/* 神经网络模型输入 */
 		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),	/* 神经网络模型输出 */
 		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)	/* 运行一个测试分支 */
