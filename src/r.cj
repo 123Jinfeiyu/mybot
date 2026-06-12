@@ -1,6 +1,7 @@
-/* 机器人构成模块
- * INFO(20260514-qing): 该模块确定机器人结构，为解耦考虑应该从解析出的矩阵对象中构建
- * TODO(20260527-qing): 使脚本中的数值亦可从运行时确定  */
+/* -------- 机器人构成模块
+ * -------- INFO(20260514-qing): 该模块确定机器人结构，为解耦考虑应该从解析出的矩阵对象中构建
+ * -------- TODO(20260527-qing): 使脚本中的数值亦可从运行时确定
+ * -------- */
 
 package bot4cj
 import std.io.*
@@ -16,19 +17,18 @@ import bot4cj.interpreter.*
 import ctype4cj.*
 
 /* ---------------- 硬件变量基类 ----------------
- * 接收一个lambda表达式，在回调函数中定义行为
- * 通过JsonValue这种通用的数据结构进行传值
+ * -------- 接收一个lambda表达式，在回调函数中定义行为
+ * -------- 通过JsonValue这种通用的数据结构进行传值
  *
- * TODO*(20260517-qing): 因为析构器（终结器）的调用时间不确定，需要手动构造RAII机制
- * - 需要进一步解耦各种原始硬件模块类，使其初始化部分单独调用
- * TODO(20260519-qing): 考虑将@Action矩阵对象置为硬件变量的一种
- * TODO*(20260529-qing): 增加微调器机制，通过不同的微调器对@Action进行微调
+ * -------- TODO*(20260517-qing): 因为析构器（终结器）的调用时间不确定，需要手动构造RAII机制
+ * -------- TODO(20260519-qing): 考虑将@Action矩阵对象置为硬件变量的一种
+ * -------- TODO*(20260529-qing): 增加微调器机制，通过不同的微调器对@Action进行微调
  * ----------------------------------------------  */
 open class MatrixVars_Hardware {
 
 	/*  ---------------- 主初始化器 ----------------
-	 *  - 输入一个回调函数，在这里采用json值进行参数传递，能够为多种硬件同一接口
-	 *  - NOTE(20260516-qing): 但是这样的话，我怎么知道矩阵式中的对象有哪些输入参数呢
+	 *  -------- 输入一个回调函数，用json参数能够为多种硬件提供同一接口
+	 *  -------- 在@Action矩阵中的每一列都是一个输入参数
 	 *  --------------------------------------------  */
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit>,
@@ -206,16 +206,16 @@ func Lua_milliSleep(L: lua_State): C_Int {
 /* ---- Lua状态机 - 硬件变量
  * ----
  * ---- TODO(20260612-qing): 提前创建Lua状态机，利用闭包进行引用储存
- * ----     它将在free中被销毁掉。
+ * ----     在rise中申请的资源将在free中被释放。
  * ----
  * ----     我们将Lua状态机做成类成员存储，在原本的召集函数中进行初始化
- * ----     在解散函数中进行解构，释放资源。
+ * ----     在解构函数中释放资源。
  * ----
  * ---- */
 class MtVars_Lua <: MatrixVars_Hardware {
 
-	/* ---- 构造函数 =>
-	 * ----  传入事件函数，召集函数以及解散函数
+	/* ---- 构造函数 => 传入事件函数，召集函数以及解构函数
+	 * ---- 
 	 * ---- */
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
@@ -223,20 +223,21 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 	{  super(things: things, rise: rise, free: free)  }
 
-	/* ---- 工厂函数 =>
-	 * ---- 运行指定Lua脚本，传入矩阵中的所有参数（元数据）
+	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数（元数据）
+	 * ---- 
 	 * ---- */
 	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
 	{
 
 		let mtVars_Lua = MtVars_Lua(
 
-			/* ---- 主要事件：调用该硬件的驱动脚本 ----
+			/* ---- 主要事件：调用该硬件的驱动脚本
 			 * ---- 合并两张表（json_obj），一张来自创建该硬件时的设置（元数据）
 			 * ---- 另一张是调用该硬件事件时传入的参数
 			 * ----
 			 * ---- 其中前者是一些诸如I2C地址、SPI速率的硬件参数
-			 * ---- 后者是一些类似舵机旋转角度的软件参数 */
+			 * ---- 后者是一些类似舵机旋转角度的实时参数
+			 * ---- */
 			things: {json: JsonValue =>
 
 				/* ---- 从元数据（json_obj）进行深拷贝 ---- */
@@ -259,8 +260,9 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 			},
 
-			/* ---- 集合方法：提供元数据（json_obj）
-			 * ---- 并对该硬件进行初始化  */
+			/* ---- 召集方法：提供元数据（json_obj）
+			 * ---- 并对该硬件进行初始化
+			 * ---- */
 			rise: { =>
 
 				/* ---- 在这里对Lua脚本进行构建 ---- */
@@ -281,8 +283,9 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 			},
 
-			/* ---- 解散方法：传入元数据（json_obj|json_data）
-			 * ---- 然后使用Lua状态机对设备进行关闭（或者重置）   */
+			/* ---- 解构方法：传入元数据（json_obj|json_data）
+			 * ---- 然后使用Lua状态机对设备进行关闭（或者重置）
+			 * ---- */
 			free: { =>
 
 				/* ---- 从元数据进行深拷贝 ---- */
@@ -305,23 +308,28 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		)
 
 
-		/* ---- 返回构造的硬件变量 ---- */
+		/* ---- 返回构造的硬件变量
+		 * ---- */
 		return mtVars_Lua
 	}
 
-	/* ---- 调用Lua脚本的方法  ---- */
+	/* ---- 调用Lua脚本的方法
+	 * ---- */
 	private static func call_lua(luapath: String, json: JsonValue): JsonValue {
 		let obj = json.asObject()
 		let ret = JsonObject()
 		unsafe {
-			/* ---- 申请资源 ---- */
+
+			/* ---- 申请资源 
+			 * ---- */
 			let L: lua_State = Lua_init()
 			let filename_c = LibC.mallocCString(luapath)
 			if (filename_c.isEmpty()) {
 				throw IllegalMemoryException("LibC.mallocCString()")
 			}
 
-			/* ---- 加载Lua库、注册Lua函数 ---- */
+			/* ---- 加载Lua库、注册Lua函数
+			 * ---- */
 			Lua_loadlib(L)
 
 			/* ---- milli_sleep() ---- */
@@ -354,14 +362,17 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			Lua_register(L, cstr_read, Lua_readI2cReg)
 			LibC.free(cstr_read)
 
-			/* ---- 设置Lua状态机 ---- */
+			/* ---- 设置Lua状态机
+			 * ---- */
 			var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
 			if (status == LUA_OK) {
 
-				/* ----在Lua状态机里 创建Lua表 ---- */				
+				/* ----在Lua状态机里 创建Lua表
+				 * ---- */				
 				Lua_createtable(L, 0, 0)
 
-				/* ---- 向Lua表中推入数据 ---- */
+				/* ---- 向Lua表中推入数据
+				 * ---- */
 				let fields: HashMap<String, JsonValue> = obj.getFields()
 				for (k in fields.keys()) {
 					let val = fields.get(k).getOrThrow()
@@ -388,8 +399,9 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				println("lua status: ${status}")
 				if (status == LUA_OK) {
 					if (Lua_type(L, -1) == LUA_TTABLE) {
-						/* ---- 栈顶是表 ---- 
-							* ---- 压入 nil 作为遍历的起始键 ---- */
+						/* ---- 栈顶是表
+						 * ---- 压入 nil 作为遍历的起始键
+						 * ---- */
 						Lua_pushnil(L)
 						while(Lua_next(L, -2) != 0) {
 							/* ---- 此时栈：[表, 键, 值] ----
@@ -419,12 +431,14 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			}
 
 			else {
-				/* ---- 从栈顶获取错误信息 ---- */
+				/* ---- 从栈顶获取错误信息
+				 * ---- */
 				let error_msg = Lua_tostring(L, -1);
 				println(error_msg.toString());
 			}
 
-			/* ---- 释放资源 ---- */
+			/* ---- 释放资源
+			 * ---- */
 			LibC.free(filename_c)			
 			Lua_free(L)
 		}
@@ -509,7 +523,7 @@ class MtVars_I2C <: MatrixVars_Hardware {
 
 /* -------- MPU6050_BIND硬件变量
  * -------- INFO(20260612-qing): 自从引入了Lua状态机扩展硬件，该硬件变量不知道何去何从。
- * --------
+ * -------- TODO(20260612-qing): 在Lua脚本中定义好BIND函数后，在pthread线程中反复调用
  * -------- */
 class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -566,10 +580,13 @@ class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 	}
 }
 
-/* -------- 舵机变量类 -------- 
- * TODO(20260515-qing): 现在普通的舵机类也是传入回调函数的，
- * - 但是我们考虑到该硬件变量调用别的硬件变量，
- * - 还是要专门做一个舵机硬件变量  */
+/* -------- 舵机变量类
+ * -------- 
+ * -------- TODO(20260515-qing): 现在普通的舵机类也是传入回调函数的，
+ * -------- 但是我们考虑到该硬件变量调用别的硬件变量，所以还是要专门做一个舵机硬件变量
+ * --------
+ * -------- TODO（20260612-qing): 根据Lua硬件脚本的返回结果，调用别的硬件变量
+ * -------- */
 class MtVars_Servo <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
@@ -626,11 +643,12 @@ class MtVars_Servo <: MatrixVars_Hardware {
 	}
 }
 
-/*
- * 扬声器类
- *
- * - 使用工厂函数
- * - TODO: 输入扬声器设备名（扬声器又是一台戏）
+/* -------- 扬声器类
+ * --------
+ * -------- 使用工厂函数
+ * --------
+ * -------- TODO: 输入扬声器设备名，扬声器又是一个复杂的功能
+ * --------
  */
 class MtVars_Speaker <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -638,13 +656,13 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 			free!: Option<() -> Unit> = None  )
 		{  super(things: things, rise: rise, free: free)  }
 
-	/*
-	 *  @Speaker
-	 *  name  channels  sample_rate  volumn  max_f  min_f;
-	 *   spk         2        48000     0.6   5000      -;
-	 *  @
+	/* --------| 工厂函数，根据矩阵对象进行构造
+	 * --------| @Speaker
+	 * --------| name  channels  sample_rate  volumn  max_f  min_f;
+	 * --------|  spk         2        48000     0.6   5000      -;
+	 * --------| @
 	 */
-	public static func Factory(	/*  工厂函数，根据矩阵对象进行构造  */
+	public static func Factory(
 		SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker {
 
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
@@ -670,8 +688,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 			if (freq < min_f) { freq = min_f }
 			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
 			spk.play(freq, volume, delay)
-			/* ---- 准备返回值 ---- */
-			let ret = JsonObject()	/* FIXME: 处理异常情况 */
+			let ret = JsonObject()	/* ---- FIXME: 处理异常情况 */
 			ret.put("status", JsonString("OK"))
 			return ret
 		})
@@ -682,35 +699,43 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 
 
 
-/* -------- 机器人结构类 --------
- * 机器人结构是动态的，从脚本中解析的 
- * TODO(20260514-qing): 调整为输入MatrixObject
- * TODO(20260515-qing): 需要重写一遍硬件类(done)
- * TODO(20260518-qing): 使用神经网络RNN直接根据动作+传感器脚本生成下一步动作
- * TODO(20260527-qing): 增加硬件模块行为脚本
- * TODO*(20260527-qing): 为@Action表演矩阵对象增加位置指示器，以增量行动  */
+/* -------- 机器人结构类
+ * --------
+ * -------- 机器人结构是动态的，从脚本中解析的 
+ * -------- TODO(20260514-qing): 调整为输入MatrixObject
+ * -------- TODO(20260515-qing): 需要重写一遍硬件类(done)
+ * -------- TODO(20260518-qing): 使用神经网络RNN直接根据动作+传感器脚本生成下一步动作
+ * -------- TODO(20260527-qing): 增加硬件模块行为脚本
+ * -------- TODO*(20260527-qing): 为@Action表演矩阵对象增加位置指示器，以增量行动
+ * -------- */
 class RobotStruct {
 
-	/* -------- 存放解析结果和创建的变量 -------- */
+	/* -------- 存放解析结果和创建的变量
+	 * -------- */
 	private let C = LinkedList<MatrixObject>()
 	private let M = HashMap<String, MatrixVars_Hardware>() 
 
-	/* -------- 使用矩阵脚本驱动机器人 --------
-	 *  不行就将矩阵脚本转化为bot脚本吧  */
+	/* -------- 使用矩阵脚本驱动机器人
+	 * --------
+	 * -------- 不行就将矩阵脚本转化为bot脚本吧
+	 * -------- */
 	public init(input: InputStream) {
 		readMatrix(input)
 		createHardVars()
 	}
 
-	/* -------- 激活所有硬件变量 -------- */
+	/* -------- 激活所有硬件变量
+	 * -------- */
 	public func  active() {
 		for (item in M.values()) {
 			item.build()
 		}
 	}
 
-	/* -------- 消除所有硬件变量 --------
-	 * INFO(20260517-qing): 它需要以倒序方式进行清除  */
+	/* -------- 消除所有硬件变量
+	 * --------
+	 * -------- INFO(20260517-qing): 它需要以倒序方式进行清除
+	 * -------- */
 	public func deactive() {
 		let items = M.values().toArray()
 		for (i in items.size-1..=0:-1) {
@@ -718,20 +743,25 @@ class RobotStruct {
 		}
 	}
 
-	/* -------- 执行@Action矩阵中的内容 -------- */
+	/* -------- 执行@Action矩阵中的内容
+	 * -------- */
 	public func run() {
 		run_drl_action()
 	}
 
-	/* -------- 储存整个矩阵变量表 --------
-	 * NOTE(20260517-qing): 使用完毕要关闭输出流  */
+	/* -------- 储存整个矩阵变量表
+	 * --------
+	 * -------- NOTE(20260517-qing): 使用完毕要关闭输出流
+	 * -------- */
 	public func save(out: OutputStream) {
 		let ms = MatrixSaver(out)
 		ms.save(C)
 	}
 
-	/* -------- 阅读矩阵脚本 --------
-	 * TODO(20260504-qing): 使用矩阵脚本存储神经网络模型  */
+	/* -------- 阅读矩阵脚本
+	 * --------
+	 * -------- TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
+	 * -------- */
 	private func readMatrix(file: InputStream){
 		let sr = StringReader<InputStream>(file)
 		let parser =  MatrixParser(sr)
@@ -744,16 +774,19 @@ class RobotStruct {
 		}
 	}
 
-	/* -------- 创建硬件变量字典 --------
-	 * TODO(20260515-qing): 解耦合  
-	 * FIXME(20260518-qing): 在插入哈希表之前如果有已经存在的键值，要释放它的资源  */
+	/* -------- 创建硬件变量字典
+	 * --------
+	 * -------- TODO(20260515-qing): 解耦合  
+	 * -------- FIXME(20260518-qing): 在插入哈希表之前如果有已经存在的键值，要释放它的资源
+	 * -------- */
 	private func createHardVars()
 	{
 
 		for (matrix in C) {
 			let MtName = matrix.getName()
 
-			/* ---- 【特殊的】I2C硬件 ---- */
+			/* ---- 【特殊的】I2C硬件
+			 * ---- */
 			if (MtName == "I2C") {
 				let idxName = matrix.indexOfCol(0,"name")
 				for (i in 1..matrix.size) {
@@ -762,7 +795,8 @@ class RobotStruct {
 				}
 			}
 
-			/* ---- 【特殊的】Alias别名硬件 ---- */
+			/* ---- 【特殊的】Alias别名硬件
+			 * ---- */
 			else if (MtName == "Alias") {
 				let idxName =  matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size) {
@@ -771,7 +805,8 @@ class RobotStruct {
 				}
 			}
 
-			/* ---- 【特殊的】Servo舵机硬件 ---- */
+			/* ---- 【特殊的】Servo舵机硬件
+			 * ---- */
 			else if (MtName == "Servo") {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size) {
@@ -780,12 +815,14 @@ class RobotStruct {
 				}
 			}
 
-			/* ---- [特殊的] Action矩阵---- */
+			/* ---- [特殊的] Action矩阵
+			 * ---- */
 			else if (MtName == "Action") {
 				;
 			}
 
-			/* ---- [特殊的] Speaker扬声器硬件 ---- */
+			/* ---- [特殊的] Speaker扬声器硬件
+			 * ---- */
 			else if (MtName == "Speaker") {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size) {
@@ -794,7 +831,8 @@ class RobotStruct {
 				}
 			}
 
-			/* ---- 【通用的】Lua脚本硬件 ---- */
+			/* ---- 【通用的】Lua脚本硬件
+			 * ---- */
 			else if (matrix.size > 0) {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size ) {
@@ -803,10 +841,13 @@ class RobotStruct {
 					for (j in 0..matrix.col) {
 						let colName = matrix[0, j]
 						let value = MatrixVars_Hardware.getMt(matrix, i, j)
-						/* ---- FIXME: 加入点号别名的检索逻辑 ---- */
+						/* ---- ----
+						 * ---- FIXME: 加入点号别名的检索逻辑 ----
+						 * ---- ---- */
 						if (let Some(mt) <- M.get(value)) {
-							/*---- 检测出存在该名称的变量，传入空对象参数 ----
-							 *----   求取返回值  ---- */
+							/* ---- ----
+							 * ---- 存在该名称的变量，传入空对象参数，并求取返回值
+							 * ---- ---- */
 							let json = JsonObject()
 							let res = mt.play(json).asObject()
 							let fields: HashMap<String, JsonValue> = res.getFields()
@@ -820,7 +861,9 @@ class RobotStruct {
 							obj.put(colName, JsonString(value))
 						}
 					}
-					/* ---- fixme: 这里的脚本路径是写死的，随后我们需要设计一个机制 ---- */
+
+					/* ---- fixme: 这里的脚本路径是写死的，随后我们需要设计一个机制，从环境变量中查找
+					 * ---- */
 					M[name] = MtVars_Lua.Factory("./modules/${MtName}.lua", obj)
 				}
 			}
@@ -828,7 +871,8 @@ class RobotStruct {
 	}
 
 
-	/* -------- 在矩阵对象的容器中寻找目标 -------- */
+	/* -------- 在矩阵对象的容器中寻找目标
+	 * -------- */
 	private static func findMt(ll: LinkedList<MatrixObject>, name: String): Option<MatrixObject>
 	{
 		for (item in ll) {
@@ -841,7 +885,8 @@ class RobotStruct {
 		return None
 	}
 
-	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
+	/* -------- 使用drl微调动作，使用RNN生成动作流
+	 * -------- */
 	private func run_drl_action() {
 		let ActionDefs = findMt(C, "Action").getOrThrow()	/* MatrixObject */
 		for (i in 1..ActionDefs.size) {
