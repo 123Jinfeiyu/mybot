@@ -171,7 +171,7 @@ function call_pca9685(data)
 end
 
 
--- 这个函数是辅助用的
+-- 这个函数是辅助用的，它能够打印一张表出来
 function print_table(t, indent)
     indent = indent or 0
     for k, v in pairs(t) do
@@ -185,9 +185,11 @@ function print_table(t, indent)
 end
 
 
--- 脚本主体：接收传入的参数，调用处理函数，返回结果
--- 注意：传入的参数在 ... 中（可变参数）
-local input = ...  -- 获取第一个参数（我们的字典）
+-- 【脚本主体】接收传入的参数，调用处理函数，返回结果
+-- NOTE(20260612-qing): 传入的参数在 ... 中（可变参数）
+--
+-- 获取第一个参数（我们的字典）
+local input = ...  
 
 -- 检查该参数是否是一张表
 if type(input) ~= "table" then
@@ -197,6 +199,7 @@ if type(input) ~= "table" then
 	}
 end
 
+--
 -- 取得此次调用的模式
 local mode = input.mode
 
