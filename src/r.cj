@@ -202,7 +202,14 @@ func Lua_milliSleep(L: lua_State): C_Int {
 
 
 /* ---- Lua状态机 - 硬件变量
- * ----   */
+ * ----
+ * ---- TODO(20260612-qing): 提前创建Lua状态机，利用闭包进行引用储存
+ * ----     它将在free中被销毁掉。
+ * ----
+ * ----     我们将Lua状态机做成类成员存储，在原本的召集函数中进行初始化
+ * ----     在解散函数中进行解构，释放资源。
+ * ----
+ * ---- */
 class MtVars_Lua <: MatrixVars_Hardware {
 
 	/* ---- 构造函数 =>
@@ -254,6 +261,10 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			 * ---- 并对该硬件进行初始化  */
 			rise: { =>
 
+				/* ---- 在这里对Lua脚本进行构建 ---- */
+
+
+
 				/* ---- 从元数据进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 
@@ -283,6 +294,9 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				let res = call_lua(luapath, obj)
 
 				println("Lua script destroy result: ${res.toString()}")
+
+
+				/* ---- 在这里写就Lua状态机的解构 ---- */
 
 			}
 
@@ -420,6 +434,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 /* -------- 别名变量
  * -------- 这种变量用于给某个参数取一个更简单的别名
  * -------- 它的事件返回（JsonString）将作为新的矩阵项目值 
+ * --------
  * --------  */
 class MtVars_Alias <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -448,6 +463,7 @@ class MtVars_Alias <: MatrixVars_Hardware {
 
 /* -------- I2C变量类
  * -------- 这种硬件变量是特殊且固定的
+ * --------
  * -------- */
 class MtVars_I2C <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -489,7 +505,10 @@ class MtVars_I2C <: MatrixVars_Hardware {
 	}
 }
 
-/* -------- MPU6050_BIND硬件变量 --------*/
+/* -------- MPU6050_BIND硬件变量
+ * -------- INFO(20260612-qing): 自从引入了Lua状态机扩展硬件，该硬件变量不知道何去何从。
+ * --------
+ * -------- */
 class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
@@ -547,7 +566,7 @@ class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
 
 /* -------- 舵机变量类 -------- 
  * TODO(20260515-qing): 现在普通的舵机类也是传入回调函数的，
- * - 但是我们考虑到最大值、最小值的限制和漂移值的调整，
+ * - 但是我们考虑到该硬件变量调用别的硬件变量，
  * - 还是要专门做一个舵机硬件变量  */
 class MtVars_Servo <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -607,6 +626,7 @@ class MtVars_Servo <: MatrixVars_Hardware {
 
 /*
  * 扬声器类
+ *
  * - 使用工厂函数
  * - TODO: 输入扬声器设备名（扬声器又是一台戏）
  */
