@@ -5,6 +5,12 @@ bot4cj是基于仓颉和 Linux I2C 接口的机器人硬件脚本解析器。
 ## 依赖库
 libc、libpthread、liblua-5.4
 
+You may need this
+
+``` bash
+sudo ln -s /usr/lib/aarch64-linux-gnu/liblua5.4.so /usr/lib/aarch64-linux-gnu/liblua.so
+```
+
 ## 项目介绍
 想要得到一个机器人软件通常比一个普通的软件更为困难，这是因为这个世界上的机器人五花八门，所以它们的软件往往都是独特的，所以我想写一种用于描述机器人硬件的脚本。
 
