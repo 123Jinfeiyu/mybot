@@ -469,7 +469,7 @@ class MtVars_Alias <: MatrixVars_Hardware {
 
 		println("Create a Alias vars: ${name}, witch means ${alias}")
 		let mtvars_alias = MtVars_Alias(things: {_: JsonValue =>
-			let str = JsonString(alias)	/* ---- 直接返回JsonString（alias）---- */
+			let str = JsonString(alias)	/*  直接返回JsonString（alias）*/
 			return str
 		})
 
