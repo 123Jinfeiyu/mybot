@@ -106,7 +106,6 @@ open class MatrixVars_Hardware {
 	 * -------- 先获取矩阵单元的项目值（解析过占位符的值）
 	 * -------- 然后解析为需要的格式
 	 * --------
-	 * -------- FIXME(20260611-qing): 直接调用getMt()再进行解析  */
 	public static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64): T  where T <: Parsable<T>
 	{	
 		/* ---- 先获取矩阵单元的原始值 ---- */
@@ -299,6 +298,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				let res = call_lua(luapath, obj)
 
 				println("Lua script destroy result: ${res.toString()}")
+
 
 
 				/* ---- 在这里写就Lua状态机的解构 ---- */
