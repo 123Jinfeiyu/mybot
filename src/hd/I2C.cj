@@ -1,26 +1,23 @@
+
+/* TODO(20260518-qing):  稍后我们专门做一个i2c代码仓库，这样就能够区分不同架构上面的int的大小
+ * TODO(20260615-qing):  有没有可能只做一个简单的封装不引入异常机制  */
+
 package bot4cj.hd
 import bot4cj.th.*
 import ctype4cj.*
 
-/* -------- 我们将直接调用glibc中的函数 --------
- * TODO(20260518-qing):  稍后我们专门做一个i2c代码仓库，这样就能够区分不同架构上面的int的大小
- * TODO*(20260521-qing): C语言中的int类型一般是Int32，我们可以声明一个类型别名  */
-foreign func open(path: CString, flag: C_Int, ...): C_Int				/* -------- libc中的打开文件函数 -------- */
-foreign func close(fd: C_Int): C_Int							/* -------- 关闭文件。成功返回0，失败返回-1 -------- */
+/* -------- 我们将直接调用glibc中的一些函数 -------- */
 foreign func ioctl(fd: C_Int, addr: C_ULong, ...): C_Int				/* -------- 成功返回非负整数，失败返回-1 -------- */
-foreign func read(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative		/* -------- 读取文件内容，返回读取的字节数 -------- */
-foreign func write(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative	/* -------- 写入文件内容，返回写入的字节数 -------- */
 
 const I2C_FAILED = -1i32	/* -------- I2C关闭文件失败 -------- */
 const I2C_SUCCESS = 0i32	/* -------- I2C关闭文件成功 -------- */
-//const O_RDWR = 2i32		/* -------- C头文件中的宏，以读写方式打开 -------- */
 const I2C_SLAVE = 0x0703u64	/* -------- at least on arm64 -------- */
 
 /* -------- OPEN I2C DEVICE 打开I2C设备  -------- */
 @C
 public func openI2cDev(path: CString): Int32 {
 	unsafe {
-		let fd =  open(path, O_RDWR)
+		let fd =  libc_open(path, O_RDWR)
 		if (fd > 0) { 
 			I2cLock_create(fd)	/* -------- 为I2C设备创建锁 -------- */
 			return  fd
@@ -36,7 +33,7 @@ public func openI2cDev(path: CString): Int32 {
 public func closeI2cDev(fd: Int32): Unit {
 	unsafe {
 		I2cLock_destroy(fd)	/* -------- 销毁I2C设备的锁 -------- */
-		let ret = close(fd)
+		let ret = libc_close(fd)
 		if (ret == I2C_FAILED) {
 			throw I2cClosedFailed("?") }
 		else if (ret == I2C_SUCCESS) { ;  }
@@ -62,7 +59,7 @@ public func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 public func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 	var a: VArray<UInt8, $2> = [reg, val]
 	var p: CPointer<Unit> = unsafe { CPointer<Unit>(inout a) }
-	if (2 !=  unsafe { write(fd, p, 2) }) {
+	if (2 !=  unsafe { libc_write(fd, p, 2) }) {
 		throw I2cWriteRegFailed("?")
 	}
 }
@@ -72,12 +69,12 @@ public func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 @C
 public func readI2cReg(fd: Int32, reg: UInt8): Int8 {
 	var ptr = reg
-	if (1 != unsafe { write(fd, CPointer<Unit>(inout ptr), 1) }) {
+	if (1 != unsafe { libc_write(fd, CPointer<Unit>(inout ptr), 1) }) {
 		throw I2cReadRegFailed("?")
 	}
 	var value: Int8 = 0
 	var p = unsafe { CPointer<Unit>(inout value) }
-	let ret = unsafe { read(fd, p, 1) }
+	let ret = unsafe { libc_read(fd, p, 1) }
 	if (ret != 1) { throw I2cReadRegFailed("?") }
 	return value
 }

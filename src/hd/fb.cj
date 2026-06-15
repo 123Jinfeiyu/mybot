@@ -15,7 +15,7 @@ foreign func mmap(addr: CPointer<Unit>, length: UIntNative, prot: C_Int, flags: 
 /* -------- 打开framebuffer帧缓冲设备 -------- */
 @C
 public func fb_open(fb_dev: CString): C_Int {
-	return unsafe { open(fb_dev, O_RDWR) }
+	return unsafe { libc_open(fb_dev, O_RDWR) }
 }
 
 /* -------- 帧缓冲区固定参数 -------- */
