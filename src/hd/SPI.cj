@@ -68,3 +68,20 @@ public func setup_spi(fd: C_Int, mode: UInt8, bits: UInt8, speed: UInt32, delay:
 	return SPI_SUCCESS
 
 }
+
+
+/* ---- 发送数据，数据在函数外准备 ---- */
+@C
+public func write_spi(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative
+{
+	return unsafe { libc_write(fd, buf, count) }
+}
+
+
+/* ---- 接收数据，缓冲区在函数外准备 ---- */
+@C
+public func read_spi(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative
+{
+	return unsafe { libc_read(fd, buf, count) }
+}
+
