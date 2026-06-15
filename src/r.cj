@@ -105,7 +105,7 @@ open class MatrixVars_Hardware {
 	/* -------- 解析项目值
 	 * -------- 先获取矩阵单元的项目值（解析过占位符的值）
 	 * -------- 然后解析为需要的格式
-	 * --------
+	 * -------- */
 	public static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64): T  where T <: Parsable<T>
 	{	
 		/* ---- 先获取矩阵单元的原始值 ---- */
