@@ -70,18 +70,27 @@ public func setup_spi(fd: C_Int, mode: UInt8, bits: UInt8, speed: UInt32, delay:
 }
 
 
-/* ---- 发送数据，数据在函数外准备 ---- */
+/* ---- 发送一个字节数据 ---- */
 @C
-public func write_spi(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative
+public func write_spi(fd: C_Int, data: UInt8): Int64
 {
-	return unsafe { libc_write(fd, buf, count) }
+	var buf = data
+	var ptr = CPointer<Unit>(inout buf)
+	let res = unsafe { libc_write(fd, ptr, 1) }
+	if (res == 1) { return SPI_SUCCESS }
+	else    { return SPI_FAILED }
 }
 
 
-/* ---- 接收数据，缓冲区在函数外准备 ---- */
+/* ---- 接收数据，接收1个字节数据 ----
+ * ---- NOTE(20260616-qing): 注意失败后返回256（大于u8的范围） */
 @C
-public func read_spi(fd: C_Int, buf: CPointer<Unit>, count: UIntNative): IntNative
+public func read_spi(fd: C_Int): UInt16
 {
-	return unsafe { libc_read(fd, buf, count) }
+	var buf = 0u16
+	var ptr = CPointer<Unit>(inout buf)
+	let res =  unsafe { libc_read(fd, ptr, 1) }
+	if (res != 1) { return 256u16  }
+	else   { return buf }
 }
 

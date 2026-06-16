@@ -65,7 +65,9 @@ public func writeI2cReg(fd: Int32, reg: UInt8, val:UInt8): Unit {
 }
 
 /* -------- READ I2C REG 读I2C寄存器 --------
- * INFO(20260522-qing): 读取寄存器之前要先写寄存器地址 */
+ * INFO(20260522-qing): 读取寄存器之前要先写寄存器地址
+ * INFO(20260616-qing): 这个函数只读取一个字节的数据
+ * -------- */
 @C
 public func readI2cReg(fd: Int32, reg: UInt8): Int8 {
 	var ptr = reg
