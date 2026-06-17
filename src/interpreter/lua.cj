@@ -34,6 +34,7 @@ foreign func lua_pushcclosure(L: lua_State, f: lua_CFunction, n: C_Int): Unit
 foreign func lua_setglobal(L: lua_State, name: CString): Unit
 
 public const LUA_OK: C_Int = 0
+public const LUA_ERR: C_Int = 1		/* ---- 这是我自己写的 ---- */
 public const LUA_MULTRET: C_Int = -1 	/* ---- 将所有值都压入栈中 ----*/
 public const LUA_TTABLE: C_Int = 5	/* ---- 表的类型通常为5 ---- */
 
@@ -43,11 +44,19 @@ public const LUA_TTABLE: C_Int = 5	/* ---- 表的类型通常为5 ---- */
 @C
 public func Lua_init(): lua_State {
 	let L: lua_State = unsafe { luaL_newstate() }
-	if (L.isNull()) {
-		throw IllegalMemoryException("Lua_init()")
-	}
+	//if (L.isNull()) {
+	//	throw IllegalMemoryException("Lua_init()")
+	//}
 
 	return L
+}
+
+
+/* 检查Lua状态机是否初始化成功 */
+@C
+public func Lua_check(L: lua_State): C_Int {
+	if (L.isNull()) { return LUA_ERR }
+	else     { return LUA_OK }
 }
 
 /* ---- 释放Lua状态机 ---- */

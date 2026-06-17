@@ -323,6 +323,10 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			/* ---- 申请资源 
 			 * ---- */
 			let L: lua_State = Lua_init()
+			if (Lua_check(L) == LUA_ERR) {
+				throw IllegalMemoryException("Lua_check()")
+			}
+
 			let filename_c = LibC.mallocCString(luapath)
 			if (filename_c.isEmpty()) {
 				throw IllegalMemoryException("LibC.mallocCString()")

@@ -14,9 +14,10 @@
 
 [dependencies]
 
-# 为什么不支持Linux x86了
-# 因为这种机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
+# 这种x86机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
 [target.x86_64-unknown-linux-gnu]
+  [target.x86_64-unknown-linux-gnu.dependencies]
+    ctype4cj = { git = "https://gitcode.com/qingss0/ctype4cj.git", branch="main" }
   [target.x86_64-unknown-linux-gnu.bin-dependencies]
     path-option = ["${CANGJIE_STDX_PATH}/linux_x86_64_cjnative/static/stdx"]
 
