@@ -10,7 +10,7 @@ foreign func pthread_testcancel(): Unit
 
 
 /* -------- pthread线程类 --------
-   FIXME(20260520-qing): 目前仅支持ARM64
+   FIXME(20260520-qing): 目前仅支持ARM64（？）
    FIXME(20260521-qing): 异常处理  */
 public class Pth {
 	private var pthread: UInt64 = 0

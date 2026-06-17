@@ -6,7 +6,12 @@ foreign func pthread_mutex_trylock(mutex: CPointer<UInt8>): Int32
 foreign func pthread_mutex_unlock(mutex: CPointer<UInt8>): Int32
 
 /* -------- 互斥锁类型的字节数 -------*/
+@When[arch == "aarch64"]
 const SIZE_PTHREAD_MUTEX_TYPE_BYTE = 48
+
+@When[arch == "x86_64"]
+const SIZE_PTHREAD_MUTEX_TYPE_BYTE = 40
+
 
 /* -------- 为一个新的互斥锁申请内存 -------- */
 @C

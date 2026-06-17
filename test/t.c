@@ -1,11 +1,15 @@
 #include <stdio.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <linux/spi/spidev.h>
 int main () {
+	printf("int: %lu\n", sizeof(int));
+
+	printf("O_RDWR: %i\n", O_RDWR);
+
 	printf("pthread_t: %lu\n", sizeof(pthread_t));
 	printf("pthread_mutex_t: %lu\n", sizeof(pthread_mutex_t));
 	printf("pthread_mutexattr_t: %lu\n", sizeof(pthread_mutexattr_t));
-	printf("int: %lu\n", sizeof(int));
 
     printf("SPI_IOC_MAGIC: 0x%02X ('%c')\n", SPI_IOC_MAGIC, SPI_IOC_MAGIC);
     printf("SPI_IOC_WR_MODE: 0x%08X\n", SPI_IOC_WR_MODE);
