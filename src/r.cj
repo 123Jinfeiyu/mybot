@@ -200,6 +200,66 @@ func Lua_milliSleep(L: lua_State): C_Int {
 	}
 }
 
+/* ---- 打开一个SPI设备 ---- */
+@C
+func Lua_openSPI(L: lua_State): C_Int {
+	unsafe {
+		let filename: CString = Lua_checkstring(L, 1)	/* 第一个参数 */
+		let fd = open_spi(filename)
+		let val: lua_Integer = Int64(fd)	/* lua_Integer */
+		Lua_pushinteger(L, val) 
+		return 1	/* 返回1，表示有1个返回值 */
+	}
+}
+
+
+/* ---- 关闭一个SPI设备 ---- */
+@C
+func Lua_closeSPI(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		close_spi(fd)
+		return 0
+	}
+}
+
+/* ---- 设置一个SPI设备 ---- */
+@C
+func Lua_setupSPI(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let mode = UInt8(Lua_checkinteger(L, 2))
+		let bits = UInt8(Lua_checkinteger(L, 3))
+		let speed = UInt32(Lua_checkinteger(L, 4))
+		let delay = UInt16(Lua_checkinteger(L, 5))
+		let res: lua_Integer = Int64(setup_spi(fd, mode, bits, speed, delay))	/* lua_Integer */
+		Lua_pushinteger(L, res)
+		return 1
+	}
+}
+
+/* ---- 写SPI设备 ---- */
+@C
+func Lua_writeSPI(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let val = UInt8(Lua_checkinteger(L, 2))
+		let res: lua_Integer = Int64(write_spi(fd, val))	/* lua_Integer */
+		Lua_pushinteger(L, res)
+		return 1
+	}
+}
+
+/* ---- 读SPI设备 ---- */
+@C
+func Lua_readSPI(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let res: lua_Integer = Int64(read_spi(fd))	/* lua_Integer */
+		Lua_pushinteger(L, res)
+		return 1
+	}
+}
 
 
 /* ---- Lua状态机 - 硬件变量
@@ -336,35 +396,67 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			 * ---- */
 			Lua_loadlib(L)
 
+			/* ---- TH ---- */
+
 			/* ---- milli_sleep() ---- */
-			let cstr_sleep = LibC.mallocCString("milli_sleep")
-			Lua_register(L, cstr_sleep, Lua_milliSleep)
-			LibC.free(cstr_sleep)
+			var cstr = LibC.mallocCString("milli_sleep")
+			Lua_register(L, cstr, Lua_milliSleep)
+			LibC.free(cstr)
+
+			/* ---- I2C设备 ---- */
 
 			/* ---- i2c_open() ---- */
-			let cstr_open = LibC.mallocCString("i2c_open")
-			Lua_register(L, cstr_open, Lua_openI2c)
-			LibC.free(cstr_open)
+			cstr = LibC.mallocCString("i2c_open")
+			Lua_register(L, cstr, Lua_openI2c)
+			LibC.free(cstr)
 
 			/* ---- i2c_close() ---- */
-			let cstr_close = LibC.mallocCString("i2c_close")
-			Lua_register(L, cstr_close, Lua_closeI2c)
-			LibC.free(cstr_close)
+			cstr = LibC.mallocCString("i2c_close")
+			Lua_register(L, cstr, Lua_closeI2c)
+			LibC.free(cstr)
 
 			/* ---- i2c_set_addr() ---- */
-			let cstr_set = LibC.mallocCString("i2c_set_addr")
-			Lua_register(L, cstr_set, Lua_setI2cAddr)
-			LibC.free(cstr_set)
+			cstr = LibC.mallocCString("i2c_set_addr")
+			Lua_register(L, cstr, Lua_setI2cAddr)
+			LibC.free(cstr)
 
 			/* ---- i2c_write_reg() ---- */
-			let cstr_write = LibC.mallocCString("i2c_write_reg")
-			Lua_register(L, cstr_write, Lua_writeI2cReg)
-			LibC.free(cstr_write)
+			cstr = LibC.mallocCString("i2c_write_reg")
+			Lua_register(L, cstr, Lua_writeI2cReg)
+			LibC.free(cstr)
 
 			/* ---- i2c_read_reg() ---- */
-			let cstr_read = LibC.mallocCString("i2c_read_reg")
-			Lua_register(L, cstr_read, Lua_readI2cReg)
-			LibC.free(cstr_read)
+			cstr = LibC.mallocCString("i2c_read_reg")
+			Lua_register(L, cstr, Lua_readI2cReg)
+			LibC.free(cstr)
+
+			/* ---- SPI ----*/
+
+			/* ---- spi_open() ---- */
+			cstr = LibC.mallocCString("spi_open")
+			Lua_register(L, cstr, Lua_openSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_close() ---- */
+			cstr = LibC.mallocCString("spi_close")
+			Lua_register(L, cstr, Lua_closeSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_setsup() ---- */
+			cstr = LibC.mallocCString("spi_setup")
+			Lua_register(L, cstr, Lua_setupSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_write() ---- */
+			cstr = LibC.mallocCString("spi_write")
+			Lua_register(L, cstr, Lua_writeSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_read() ---- */
+			cstr = LibC.mallocCString("spi_read")
+			Lua_register(L, cstr, Lua_readSPI)
+			LibC.free(cstr)
+
 
 			/* ---- 设置Lua状态机
 			 * ---- */

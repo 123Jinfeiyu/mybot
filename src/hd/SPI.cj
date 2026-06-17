@@ -85,12 +85,12 @@ public func write_spi(fd: C_Int, data: UInt8): Int64
 /* ---- 接收数据，接收1个字节数据 ----
  * ---- NOTE(20260616-qing): 注意失败后返回256（大于u8的范围） */
 @C
-public func read_spi(fd: C_Int): UInt16
+public func read_spi(fd: C_Int): Int64
 {
 	var buf = 0u16
 	var ptr = CPointer<Unit>(inout buf)
 	let res =  unsafe { libc_read(fd, ptr, 1) }
-	if (res != 1) { return 256u16  }
-	else   { return buf }
+	if (res != 1) { return 256  }
+	else   { return Int64(buf) }
 }
 

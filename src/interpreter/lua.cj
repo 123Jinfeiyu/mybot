@@ -44,10 +44,6 @@ public const LUA_TTABLE: C_Int = 5	/* ---- 表的类型通常为5 ---- */
 @C
 public func Lua_init(): lua_State {
 	let L: lua_State = unsafe { luaL_newstate() }
-	//if (L.isNull()) {
-	//	throw IllegalMemoryException("Lua_init()")
-	//}
-
 	return L
 }
 
@@ -80,7 +76,8 @@ public func Lua_loadfilex(L: lua_State, filename: CString, mode: CPointer<C_Char
 }
 
 /* ---- 受保护地调用 Lua 函数的函数，
- * ---- 是 lua_pcall() 的增强版本，增加了对C 协程（yield） 的支持 ---- */
+ * ---- 是 lua_pcall() 的增强版本，增加了对C 协程（yield） 的支持
+ * ---- 但是我们可能用不上Lua协程，如果调用协程可能会出问题 */
 @C
 public func Lua_pcallk(L: lua_State, nargs: C_Int, nresults: C_Int, msgh: C_Int, ctx: C_IntPtr, k: CPointer<Unit>): C_Int
 {
