@@ -573,9 +573,8 @@ class MtVars_Alias <: MatrixVars_Hardware {
 	}
 }
 
-/* -------- I2C变量类
- * -------- 这种硬件变量是特殊且固定的
- * --------
+/* -------- I2C变量类 这种硬件变量是特殊且固定的
+ * -------- TODO(20260617-qing): 等LUA状态机被闭包保存之后，将其优化为Lua驱动
  * -------- */
 class MtVars_I2C <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -599,7 +598,7 @@ class MtVars_I2C <: MatrixVars_Hardware {
 		let path = getMt(I2CDefs, i, idxPath)
 
 		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* ---- debug ---- */
-		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C硬件对象，通过闭包保存在MtVars_I2C里  */
+		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C类对象，通过闭包保存在MtVars_I2C里  */
 		let mtvars_i2c = MtVars_I2C(
 			things: { json: JsonValue =>
 				let fd = i2c.getFd()
