@@ -280,13 +280,24 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			rise!: Option<() -> Unit> = None,
 			free!: Option<() -> Unit> = None  )
 
-	{  super(things: things, rise: rise, free: free)  }
+	{
+		super(things: things, rise: rise, free: free)
+	}
+	
 
 	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数（元数据）
 	 * ---- 
 	 * ---- */
 	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
 	{
+
+		/* ---- LUA状态机对象 ---- */
+		let L: lua_State = unsafe {Lua_init()}
+		unsafe {
+			if (Lua_check(L) == LUA_ERR) {
+				throw IllegalMemoryException("Lua_check()")
+			}
+		}
 
 		let mtVars_Lua = MtVars_Lua(
 
@@ -311,7 +322,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				}
 				println("Lua scripts call parameters: ${obj.toString()}")
 
-				let res = call_lua(luapath, obj)
+				let res = call_lua(L, obj)
 
 				println("Lua script call result: ${res.toString()}")
 
@@ -324,8 +335,11 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			 * ---- */
 			rise: { =>
 
-				/* ---- 在这里构建Lua状态机进行构建 ---- */
-
+				/* ---- 在这里构建Lua状态机进行构建 ----
+				 * ---- 使用专用的异常 ---- */
+				if (build_lua(L, luapath) == false) {
+					throw Exception("build_lua")
+				}
 
 
 				/* ---- 从元数据进行深拷贝 ---- */
@@ -336,7 +350,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 				println("Lua scripts build parameters: ${obj.toString()}")
 
-				let res = call_lua(luapath, obj)
+				let res = call_lua(L, obj)
 
 				println("Lua script build result: ${res.toString()}")
 
@@ -355,13 +369,14 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 				println("Lua scripts destroy parameters: ${obj.toString()}")
 
-				let res = call_lua(luapath, obj)
+				let res = call_lua(L, obj)
 
 				println("Lua script destroy result: ${res.toString()}")
 
 
 
 				/* ---- 在这里写就Lua状态机的解构 ---- */
+				destroy_lua(L)
 
 			}
 
@@ -373,117 +388,110 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		return mtVars_Lua
 	}
 
-	/* ---- LUA状态机对象 ---- */
-	private var L: lua_State
-
 	/* ---- 构造Lua状态机 ---- */
-	private func build_lua(): Bool {
+	private static func build_lua(L: lua_State, luapath: String): Bool {
 		/* ---- 申请资源 
-			* ---- */
-		let L: lua_State = Lua_init()
-		if (Lua_check(L) == LUA_ERR) {
-			throw IllegalMemoryException("Lua_check()")
+		 * ---- */
+		unsafe {
+			let filename_c = LibC.mallocCString(luapath)
+			if (filename_c.isEmpty()) {
+				throw IllegalMemoryException("LibC.mallocCString()")
+			}
+
+			/* ---- 加载Lua库、注册Lua函数
+			 * ---- */
+			Lua_loadlib(L)
+
+			/* ---- TH ---- */
+
+			/* ---- milli_sleep() ---- */
+			var cstr = LibC.mallocCString("milli_sleep")
+			Lua_register(L, cstr, Lua_milliSleep)
+			LibC.free(cstr)
+
+			/* ---- I2C设备 ---- */
+
+			/* ---- i2c_open() ---- */
+			cstr = LibC.mallocCString("i2c_open")
+			Lua_register(L, cstr, Lua_openI2c)
+			LibC.free(cstr)
+
+			/* ---- i2c_close() ---- */
+			cstr = LibC.mallocCString("i2c_close")
+			Lua_register(L, cstr, Lua_closeI2c)
+			LibC.free(cstr)
+
+			/* ---- i2c_set_addr() ---- */
+			cstr = LibC.mallocCString("i2c_set_addr")
+			Lua_register(L, cstr, Lua_setI2cAddr)
+			LibC.free(cstr)
+
+			/* ---- i2c_write_reg() ---- */
+			cstr = LibC.mallocCString("i2c_write_reg")
+			Lua_register(L, cstr, Lua_writeI2cReg)
+			LibC.free(cstr)
+
+			/* ---- i2c_read_reg() ---- */
+			cstr = LibC.mallocCString("i2c_read_reg")
+			Lua_register(L, cstr, Lua_readI2cReg)
+			LibC.free(cstr)
+
+			/* ---- SPI ----*/
+
+			/* ---- spi_open() ---- */
+			cstr = LibC.mallocCString("spi_open")
+			Lua_register(L, cstr, Lua_openSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_close() ---- */
+			cstr = LibC.mallocCString("spi_close")
+			Lua_register(L, cstr, Lua_closeSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_setsup() ---- */
+			cstr = LibC.mallocCString("spi_setup")
+			Lua_register(L, cstr, Lua_setupSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_write() ---- */
+			cstr = LibC.mallocCString("spi_write")
+			Lua_register(L, cstr, Lua_writeSPI)
+			LibC.free(cstr)
+
+			/* ---- spi_read() ---- */
+			cstr = LibC.mallocCString("spi_read")
+			Lua_register(L, cstr, Lua_readSPI)
+			LibC.free(cstr)
+
+
+			/* ---- 设置Lua状态机
+			 * ---- */
+			var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
+			LibC.free(filename_c)			
+
+			if (status == LUA_OK) {
+				return true
+			}
+
+			else {
+				/* ---- 从栈顶获取错误信息
+				 * ---- */
+				let error_msg = Lua_tostring(L, -1);
+				println(error_msg.toString());
+
+				return false
+			}
 		}
-
-		let filename_c = LibC.mallocCString(luapath)
-		if (filename_c.isEmpty()) {
-			throw IllegalMemoryException("LibC.mallocCString()")
-		}
-
-		/* ---- 加载Lua库、注册Lua函数
-			* ---- */
-		Lua_loadlib(L)
-
-		/* ---- TH ---- */
-
-		/* ---- milli_sleep() ---- */
-		var cstr = LibC.mallocCString("milli_sleep")
-		Lua_register(L, cstr, Lua_milliSleep)
-		LibC.free(cstr)
-
-		/* ---- I2C设备 ---- */
-
-		/* ---- i2c_open() ---- */
-		cstr = LibC.mallocCString("i2c_open")
-		Lua_register(L, cstr, Lua_openI2c)
-		LibC.free(cstr)
-
-		/* ---- i2c_close() ---- */
-		cstr = LibC.mallocCString("i2c_close")
-		Lua_register(L, cstr, Lua_closeI2c)
-		LibC.free(cstr)
-
-		/* ---- i2c_set_addr() ---- */
-		cstr = LibC.mallocCString("i2c_set_addr")
-		Lua_register(L, cstr, Lua_setI2cAddr)
-		LibC.free(cstr)
-
-		/* ---- i2c_write_reg() ---- */
-		cstr = LibC.mallocCString("i2c_write_reg")
-		Lua_register(L, cstr, Lua_writeI2cReg)
-		LibC.free(cstr)
-
-		/* ---- i2c_read_reg() ---- */
-		cstr = LibC.mallocCString("i2c_read_reg")
-		Lua_register(L, cstr, Lua_readI2cReg)
-		LibC.free(cstr)
-
-		/* ---- SPI ----*/
-
-		/* ---- spi_open() ---- */
-		cstr = LibC.mallocCString("spi_open")
-		Lua_register(L, cstr, Lua_openSPI)
-		LibC.free(cstr)
-
-		/* ---- spi_close() ---- */
-		cstr = LibC.mallocCString("spi_close")
-		Lua_register(L, cstr, Lua_closeSPI)
-		LibC.free(cstr)
-
-		/* ---- spi_setsup() ---- */
-		cstr = LibC.mallocCString("spi_setup")
-		Lua_register(L, cstr, Lua_setupSPI)
-		LibC.free(cstr)
-
-		/* ---- spi_write() ---- */
-		cstr = LibC.mallocCString("spi_write")
-		Lua_register(L, cstr, Lua_writeSPI)
-		LibC.free(cstr)
-
-		/* ---- spi_read() ---- */
-		cstr = LibC.mallocCString("spi_read")
-		Lua_register(L, cstr, Lua_readSPI)
-		LibC.free(cstr)
-
-
-		/* ---- 设置Lua状态机
-			* ---- */
-		var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
-		LibC.free(filename_c)			
-
-		if (status == LUA_OK) {
-			return true
-		}
-
-		else {
-			/* ---- 从栈顶获取错误信息
-				* ---- */
-			let error_msg = Lua_tostring(L, -1);
-			println(error_msg.toString());
-
-			return false
-		}
-
 	}
 
 	/* ---- 释放LUA状态机 ---- */
-	private func destroy_lua() {
-		Lua_free(L)
+	private static func destroy_lua(L: lua_State) {
+		unsafe { Lua_free(L) }
 	}
 
 	/* ---- 调用Lua脚本的方法
 	 * ---- */
-	private func call_lua(luapath: String, json: JsonValue): JsonValue {
+	private static func call_lua(L: lua_State, json: JsonValue): JsonValue {
 		let obj = json.asObject()
 		let ret = JsonObject()
 		unsafe {
@@ -517,7 +525,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				}
 			}
 
-			status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
+			var status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
 			println("lua status: ${status}")
 			if (status == LUA_OK) {
 				if (Lua_type(L, -1) == LUA_TTABLE) {
@@ -551,7 +559,6 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			}
 
 		}
-
 		return ret
 	}
 }
