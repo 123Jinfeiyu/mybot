@@ -324,7 +324,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			 * ---- */
 			rise: { =>
 
-				/* ---- 在这里对Lua脚本进行构建 ---- */
+				/* ---- 在这里构建Lua状态机进行构建 ---- */
 
 
 
