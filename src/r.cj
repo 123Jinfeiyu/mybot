@@ -122,8 +122,6 @@ open class MatrixVars_Hardware {
 
 		/* ---- 原始值并非占位符 ---- */
 		// else if (!raw == "-")
-
-		println("ROW: ${row}, RAW DATA: ${raw}")
 		return T.parse(raw)
 	}
 	/* ----------------- */
@@ -574,6 +572,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 			/* ---- 恢复Lua状态机 ----*/
 			Lua_settop(L, top)
+			//Lua_pop(L, 1)
 		}
 		return ret
 	}
