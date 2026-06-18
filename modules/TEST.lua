@@ -19,7 +19,19 @@ end
 -- 【配置脚本】
 -- 该脚本负责初始化PCA9685
 -- FIXME(20260602-qing): 异常处理
-function build_pca9685(data)
+function build(data)
+
+	-- 检查该参数是否是一张表
+	if type(data) ~= "table" then
+		return {
+			result = "ERR",
+			message = "Invalid Arguments: table"
+		}
+	end
+
+	print("-------- Lua builder func get a table --------")
+	print_table(data)
+	print("----------------------------------------------")
 
 	-- 返回成功信号
 	return {
@@ -31,7 +43,19 @@ end
 -- 【销毁PCA9685的脚本】
 -- 重置PCA9685
 -- NOTE(20260612-qing): 其实可以不需要，因为我们只是清空设置
-function destroy_pca9685(data)
+function destroy(data)
+
+	-- 检查该参数是否是一张表
+	if type(data) ~= "table" then
+		return {
+			result = "ERR",
+			message = "Invalid Arguments: table"
+		}
+	end
+
+	print("-------- Lua ender func get a table --------")
+	print_table(data)
+	print("--------------------------------------------")
 
 
 	-- 返回成功信号
@@ -45,58 +69,24 @@ end
 -- 【调用PCA9685】
 -- 将一个舵机通道转动到一个角度
 -- NOTE(20260612-qing): 接收一个参数（表），返回一个结果（表）
-function call_pca9685(data)
+function call(data)
 
+	-- 检查该参数是否是一张表
+	if type(data) ~= "table" then
+		return {
+			result = "ERR",
+			message = "Invalid Arguments: table"
+		}
+	end
+
+	print("-------- Lua caller func get a table --------")
+	print_table(data)
+	print("---------------------------------------------")
 
 	-- 返回字典
  	return {
 		result = "OK"
 	}
 
-end
-
-
-
--- 【脚本主体】接收传入的参数，调用处理函数，返回结果
--- NOTE(20260612-qing): 传入的参数在 ... 中（可变参数）
---
--- 获取第一个参数（我们的字典）
-local input = ...  
-
--- 检查该参数是否是一张表
-if type(input) ~= "table" then
-	return {
-		result = "ERR",
-		message = "Invalid Arguments: table"
-	}
-end
-
-
-print_table(input, 4)
-
---
--- 取得此次调用的模式
-local mode = input.mode
-
--- 检查mode字段是否存在
-if mode == nil then
-	return {
-		result = "ERR",
-		message = "Invalid Arguments: no mode"
-	}
-end
-
--- 根据mode的值进行行动
-if mode == "build" then
-	return build_pca9685(input)
-elseif mode == "destroy" then
-	return destroy_pca9685(input)
-elseif mode == "call" then
-	return call_pca9685(input)
-else
-	return {
-		result = "ERR",
-		message = "Invalid Arguments: unknow mode"
-	}
 end
 

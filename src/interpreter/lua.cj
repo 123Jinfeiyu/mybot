@@ -27,11 +27,11 @@ foreign func lua_settop(L: lua_State, n: C_Int): Unit
 foreign func lua_tolstring(L: lua_State, index: C_Int, plen: CPointer<UIntNative>): CString
 foreign func lua_pushnil(L: lua_State): Unit
 foreign func lua_next(L: lua_State, index: C_Int): C_Int
-foreign func lua_getglobal(L: lua_State, name: CString): Unit
 foreign func luaL_checkinteger(L: lua_State, arg: C_Int): lua_Integer
 foreign func luaL_checklstring(L: lua_State, arg: C_Int, len: CPointer<UIntNative>): CString
 foreign func lua_pushinteger(L: lua_State, n: lua_Integer): Unit
 foreign func lua_pushcclosure(L: lua_State, f: lua_CFunction, n: C_Int): Unit
+foreign func lua_getglobal(L: lua_State, name: CString): Unit
 foreign func lua_setglobal(L: lua_State, name: CString): Unit
 
 public const LUA_OK: C_Int = 0
@@ -135,12 +135,6 @@ public func Lua_pushinteger(L: lua_State, n: lua_Integer): Unit
 {
 	unsafe { lua_pushinteger(L, n) }
 }
-/* ----获取全局变量值，将全局变量的值压入栈顶。 ---- */
-@C
-public func Lua_getglobal(L: lua_State, name: CString): Unit
-{
-	unsafe { lua_getglobal(L, name) }
-}
 
 /* ---- 从 Lua 栈中检查并提取整数值 ---- */
 @C
@@ -185,6 +179,13 @@ public func Lua_pop(L: lua_State, index: Int32): Unit {
 public func Lua_checkstring(L: lua_State, arg: C_Int): CString
 {
 	return unsafe { luaL_checklstring(L, arg, CPointer<UIntNative>()) }
+}
+
+
+/* ---- 在全局变量中搜索目标 ---- */
+@C
+public func Lua_getglobal(L: lua_State, name: CString): Unit {
+	unsafe { lua_getglobal(L, name) }
 }
 
 /* ---- 将 C 函数注册为 Lua 全局函数 ---- */

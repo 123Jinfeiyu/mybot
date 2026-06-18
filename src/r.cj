@@ -470,17 +470,19 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			LibC.free(filename_c)			
 
 			if (status == LUA_OK) {
-				return true
+				var status = Lua_pcallk(L, 0, LUA_MULTRET, 0, 0, CPointer<Unit>())
+				println("lua build status: ${status}")
+				if (status == LUA_OK) {
+					return true
+				}
 			}
 
-			else {
-				/* ---- 从栈顶获取错误信息
-				 * ---- */
-				let error_msg = Lua_tostring(L, -1);
-				println(error_msg.toString());
+			/* ---- 从栈顶获取错误信息
+			 * ---- */
+			let error_msg = Lua_tostring(L, -1);
+			println(error_msg.toString());
 
-				return false
-			}
+			return false
 		}
 	}
 
@@ -499,9 +501,16 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			/* ---- 获取栈顶指针  ----*/
 			let top  = Lua_gettop(L)
 
+			/* ---- ---- */
+			let mode = obj.get("mode").getOrThrow().asString().getValue()
+			let cstr = LibC.mallocCString(mode)
+			Lua_getglobal(L, cstr)
+			LibC.free(cstr)
+
 			/* ----在Lua状态机里 创建Lua表
 			 * ---- */				
 			Lua_createtable(L, 0, 0)
+			
 
 			/* ---- 向Lua表中推入数据
 			 * ---- */
