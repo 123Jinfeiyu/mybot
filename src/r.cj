@@ -297,7 +297,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			 * ---- 其中前者是一些诸如I2C地址、SPI速率的硬件参数
 			 * ---- 后者是一些类似舵机旋转角度的实时参数
 			 * ---- */
-			things: {json: JsonValue =>
+			things: { json: JsonValue =>
 
 				/* ---- 从元数据（json_obj）进行深拷贝 ---- */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()

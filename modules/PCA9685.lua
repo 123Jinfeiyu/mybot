@@ -147,6 +147,8 @@ function call_pca9685(data)
 		}
 	end
 
+	print(string.format("Lua hardware drive set angle: %d", angle))
+
 	-- 设置I2C地址
 	i2c_set_addr(fd, addr)
 

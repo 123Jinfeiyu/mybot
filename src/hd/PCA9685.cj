@@ -3,7 +3,8 @@ import bot4cj.th.*
 
 /*  pca9685舵机控制版 - bot4cj
  *  TODO(20260515-qing): 由于对统一接口的需求，设计基于回调的虚拟化硬件
- *  TODO(20260516-qing): 获取pca9685的中文或者英文参考资料  */
+ *  TODO(20260516-qing): 获取pca9685的中文或者英文参考资料
+ *  NOTE(20260618-qing): 该代码已经被Lua脚本所取代，留着备用说不定以后会删除。  */
 public class PCA9685 {
 	private static const ADDR_0: UInt8 = 0x40   /* PCA9685的i2c地址 */
 	private let i2c_fd: Int32
