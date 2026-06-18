@@ -113,16 +113,17 @@ open class MatrixVars_Hardware {
 
 		/* ---- 原始值为占位符且（非首行的）非标题行 ---- */
 		if (raw == "-" && row > 1) {
-			let prev = getMt(obj, row-1, col)
-			return T.parse(prev)
+			return  parseMt<T>(obj, row-1, col)
 		}
 
 		/* ---- 原始值为占位符且为（非标题行的）首行 ---- */
-		else if (raw == "-" && !row > 1) {
+		else if (raw == "-" && !(row > 1)) {
 			return T.parse("0")  }
 
 		/* ---- 原始值并非占位符 ---- */
 		// else if (!raw == "-")
+
+		println("ROW: ${row}, RAW DATA: ${raw}")
 		return T.parse(raw)
 	}
 	/* ----------------- */
