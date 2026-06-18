@@ -22,6 +22,7 @@ foreign func lua_createtable(L: lua_State, narr: C_Int, nrec: C_Int): Unit
 foreign func lua_pushstring(L: lua_State, value: CString): Unit
 foreign func lua_setfield(L: lua_State, index: C_Int, key: CString): Unit
 foreign func lua_type(L: lua_State, index: C_Int):  C_Int
+foreign func lua_gettop(L: lua_State): C_Int
 foreign func lua_settop(L: lua_State, n: C_Int): Unit
 foreign func lua_tolstring(L: lua_State, index: C_Int, plen: CPointer<UIntNative>): CString
 foreign func lua_pushnil(L: lua_State): Unit
@@ -158,6 +159,19 @@ public func Lua_tostring(L: lua_State, index: C_Int): CString {
 		let cstr = lua_tolstring(L, index, CPointer<UIntNative>())
 		return cstr
 	}
+}
+
+
+/* ---- 获取Lua栈顶指针 ---- */
+@C 
+public func Lua_gettop(L: lua_State): C_Int {
+	return unsafe { lua_gettop(L) }
+}
+
+/* ---- 设置Lua栈顶指针 ---- */
+@C
+public func Lua_settop(L: lua_State, n: C_Int): Unit {
+	unsafe { lua_settop(L, n) }
 }
 
 /* ---- 从栈顶弹出指定数量的元素 ---- */

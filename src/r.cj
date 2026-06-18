@@ -496,13 +496,15 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		let ret = JsonObject()
 		unsafe {
 
-			
+			/* ---- 获取栈顶指针  ----*/
+			let top  = Lua_gettop(L)
+
 			/* ----在Lua状态机里 创建Lua表
-				* ---- */				
+			 * ---- */				
 			Lua_createtable(L, 0, 0)
 
 			/* ---- 向Lua表中推入数据
-				* ---- */
+			 * ---- */
 			let fields: HashMap<String, JsonValue> = obj.getFields()
 			for (k in fields.keys()) {
 				let val = fields.get(k).getOrThrow()
@@ -547,7 +549,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 						Lua_pop(L, 1)
 					}
 				}
-				Lua_pop(L, 1)
+				//Lua_pop(L, 1)
 			}
 
 			else if (status != LUA_OK) {
@@ -555,9 +557,11 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				if (!err.isEmpty()) {
 					println("Lua 错误详情: ${err.toString()}")
 				}
-				Lua_pop(L, 1)
+				//Lua_pop(L, 1)
 			}
 
+			/* ---- 恢复Lua状态机 ----*/
+			Lua_settop(L, top)
 		}
 		return ret
 	}
