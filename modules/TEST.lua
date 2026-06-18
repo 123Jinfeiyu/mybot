@@ -17,8 +17,6 @@ end
 
 
 -- 【配置脚本】
--- 该脚本负责初始化PCA9685
--- FIXME(20260602-qing): 异常处理
 function build(data)
 
 	-- 检查该参数是否是一张表
@@ -40,9 +38,7 @@ function build(data)
 
 end
 
--- 【销毁PCA9685的脚本】
--- 重置PCA9685
--- NOTE(20260612-qing): 其实可以不需要，因为我们只是清空设置
+-- 【销毁用的脚本】
 function destroy(data)
 
 	-- 检查该参数是否是一张表
@@ -66,9 +62,7 @@ function destroy(data)
 end
 
 
--- 【调用PCA9685】
--- 将一个舵机通道转动到一个角度
--- NOTE(20260612-qing): 接收一个参数（表），返回一个结果（表）
+-- 【调用的脚本】
 function call(data)
 
 	-- 检查该参数是否是一张表
