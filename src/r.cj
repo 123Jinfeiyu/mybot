@@ -388,7 +388,8 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		return mtVars_Lua
 	}
 
-	/* ---- 构造Lua状态机 ---- */
+	/* ---- 构造Lua状态机 ----
+	 * ---- NOTE(20260618-qing): 构建完毕会运行一次 */
 	private static func build_lua(L: lua_State, luapath: String): Bool {
 		/* ---- 申请资源 
 		 * ---- */
@@ -486,13 +487,14 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		}
 	}
 
-	/* ---- 释放LUA状态机 ---- */
+	/* ---- 释放LUA状态机
+	 * ---- NOTE(20260618-qing): 销毁之后该变量即废弃 */
 	private static func destroy_lua(L: lua_State) {
 		unsafe { Lua_free(L) }
 	}
 
 	/* ---- 调用Lua脚本的方法
-	 * ---- */
+	 * ---- NOTE(20260618-qing): 每次调用之后会重置栈指针  */
 	private static func call_lua(L: lua_State, json: JsonValue): JsonValue {
 		let obj = json.asObject()
 		let ret = JsonObject()
