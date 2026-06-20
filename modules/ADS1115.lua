@@ -73,6 +73,53 @@ ADS1115_MODE_SINGLE		= 0x0100	-- 单次转换（默认，省电）
 -- ==== 启动转换 ====
 ADS1115_OS_START		= 0x8000	-- 启动单次转换
 
+-- ADS1115 配置上下文
+ads1115_t = {
+	addr = 0x00,
+	config = 0x00,		-- 16bits
+	fs_valtage = 0.0	-- 满量程电压（取决于PGA）
+}
+
+-- PGA对应的满量程电压（单位：V）
+pga_fs = {
+	6.144,	-- ADS1115_PGA_6_144V [0]
+	4.096,	-- ADS1115_PGA_4_096V [1]
+	2.048,	-- ADS1115_PGA_2_048V [2]
+	1.024,	-- ADS1115_PGA_1_024V [3]
+	0.512,	-- ADS1115_PGA_0_512V [4]
+	0.256	-- ADS1115_PGA_0_256V [5]
+}
+
+-- PGA 增益对应的满量程电压名
+pga_names = {
+	"±6.144V",	-- [0]
+	"±4.096V",	-- [1]
+	"±2.048V",	-- [2]
+	"±1.024V",	-- [3]
+	"±0.512V",	-- [4]
+	"±0.256V"	-- [5]
+}
+
+-- 数据速率字符串
+dr_names = {
+	"8 SPS",	-- [0]
+	"16 SPS",	-- [1]
+	"32 SPS",	-- [2]
+	"64 SPS",	-- [3]
+	"128 SPS",	-- [4]
+	"250 SPS",	-- [5]
+	"475 SPS",	-- [6]
+	"860 SPS"	-- [7]
+}
+
+
+
+-- I2C写2字节（大端）
+function i2c_write_word(fd, reg, val)
+	i2c_write_reg(fd, reg + 0, (val >> 8) | 0xFF)
+	i2c_write_reg(fd, reg + 1, val & 0xFF)
+end
+
 --
 -- 【配置脚本】
 -- FIXME(20260602-qing): 异常处理
@@ -111,10 +158,9 @@ function build(data)
 
 	addr = tonumber(addr)
 
-	-- 设置PWM频率
-	local freq = 50.0
-	local prescale_val = 25000000.0 / (4096.0 * freq) - 1.0	-- 25MHz主频
-	local prescale = prescale_val + 0.5
+	-- 写进配置表
+	ads1115.addr = addr
+
 
 	-- 开始配置PCA9685
 	i2c_set_addr(fd, addr)
