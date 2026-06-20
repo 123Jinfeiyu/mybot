@@ -28,6 +28,16 @@ public func openI2cDev(path: CString): Int32 {
 	}
 }
 
+/* ---- 简化版，判断在外部实现 ---- */
+@C
+public func openI2cDev1(path: CString): C_Int {
+	unsafe {
+		let fd = libc_open(path, O_RDWR)
+		I2cLock_create(fd)
+		return fd
+	}
+}
+
 /* -------- CLOSE I2C DEVICE 关闭I2C设备 -------- */
 @C
 public func closeI2cDev(fd: Int32): Unit {
@@ -44,6 +54,14 @@ public func closeI2cDev(fd: Int32): Unit {
 	}
 }
 
+@C
+public func closeI2cDev1(fd: C_Int): Unit {
+	unsafe {
+		I2cLock_destroy(fd)
+		libc_close(fd)
+	}
+}
+
 /* -------- SET I2C ADDR 设置I2C地址 -------- */
 @C
 public func setI2cAddr(fd: Int32, addr: UInt8): Unit {
@@ -51,6 +69,13 @@ public func setI2cAddr(fd: Int32, addr: UInt8): Unit {
 		let ret = ioctl(fd, I2C_SLAVE, addr)
 		if (ret < 0) {
 			throw I2cSetAddressFailed("?") }
+	}
+}
+
+@C
+public func setI2cAddr1(fd: C_Int, addr: UInt8): C_Int {
+	unsafe {
+		return ioctl(fd, I2C_SLAVE, addr)
 	}
 }
 
