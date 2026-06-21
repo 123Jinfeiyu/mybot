@@ -1,5 +1,5 @@
 package bot4cj.hd
-import bot4cj.th.*
+import pthread4cj.*
 
 /*  pca9685舵机控制版 - bot4cj
  *  TODO(20260515-qing): 由于对统一接口的需求，设计基于回调的虚拟化硬件

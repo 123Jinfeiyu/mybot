@@ -8,7 +8,7 @@
 package bot4cj.hd
 import std.time.*
 import std.math.*
-import bot4cj.th.*
+import pthread4cj.*
 import bot4cj.math.*
     
 const ADDR_0:           UInt8 = 0x68  /* 默认地址 */

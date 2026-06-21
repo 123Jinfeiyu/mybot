@@ -3,7 +3,7 @@
  * TODO(20260615-qing):  有没有可能只做一个简单的封装不引入异常机制  */
 
 package bot4cj.hd
-import bot4cj.th.*
+import pthread4cj.*
 import ctype4cj.*
 
 /* -------- 我们将直接调用glibc中的一些函数 -------- */
