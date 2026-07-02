@@ -9,7 +9,6 @@ import std.collection.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
 import bot4cj.math.*
-import bot4cj.interpreter.*
 import ctype4cj.*
 
 /* ---- 神经网络输出路径 ---- */

@@ -13,9 +13,9 @@ import stdx.encoding.json.*
 import bot4cj.hd.*
 //import bot4cj.hd.extern.*
 import bot4cj.math.*
-import bot4cj.interpreter.*
 import ctype4cj.*
 import spi4cj.*
+import lua4cj.*
 
 /* ---------------- 硬件变量基类 ----------------
  * -------- 接收3个lambda表达式，在回调函数中定义行为（）

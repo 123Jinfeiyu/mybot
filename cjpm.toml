@@ -13,9 +13,10 @@
   package-configuration = {}
 
 [dependencies]
+  ctype4cj = { git = "https://gitcode.com/qingss0/ctype4cj.git", branch="main" }
   pthread4cj = { git = "https://gitcode.com/qingss0/pthread4cj.git", branch="main"}
   spi4cj = { git = "https://gitcode.com/qingss0/spi4cj.git", branch="main"}
-  ctype4cj = { git = "https://gitcode.com/qingss0/ctype4cj.git", branch="main" }
+  lua4cj = { git = "https://gitcode.com/qingss0/lua4cj.git", branch="main" }
 # 这种x86机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
 [target.x86_64-unknown-linux-gnu]
   [target.x86_64-unknown-linux-gnu.dependencies]
