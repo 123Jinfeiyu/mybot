@@ -98,13 +98,13 @@ class MatrixObject {
 }
 
 /* ---------------- 对Nn1进行扩展 ---------------- */
-extend Nn1 {
-	/* -------- 转换为MatrixObject对象 -------- */
-	public func toMto(): MatrixObject {
-		let mto = MatrixObject()
-		return mto
-	}
-}
+//extend Nn1 {
+//	/* -------- 转换为MatrixObject对象 -------- */
+//	public func toMto(): MatrixObject {
+//		let mto = MatrixObject()
+//		return mto
+//	}
+//}
 
 /*  -------- 矩阵式解析器 --------
  *  TODO(20260514-qing): 这个类输入流数据，输出MatrixObject对象
