@@ -1,7 +1,8 @@
-/* -------- 机器人构成模块
- * -------- INFO(20260514-qing): 该模块确定机器人结构，为解耦考虑应该从解析出的矩阵对象中构建
- * -------- TODO(20260527-qing): 使脚本中的数值亦可从运行时确定
- * -------- */
+/*
+ *  机器人构成模块
+ *  INFO(20260514-qing): 该模块确定机器人结构，为解耦考虑应该从解析出的矩阵对象中构建
+ *  TODO(20260527-qing): 使脚本中的数值亦可从运行时确定
+ */
 
 package bot4cj
 import std.io.*
@@ -17,83 +18,76 @@ import ctype4cj.*
 import spi4cj.*
 import lua4cj.*
 
-/* ---------------- 硬件变量基类 ----------------
- * -------- 接收3个lambda表达式，在回调函数中定义行为（）
- * -------- 通过JsonValue这种通用的数据结构进行传值
- *
- * -------- TODO*(20260517-qing): 因为析构器（终结器）的调用时间不确定，需要手动构造RAII机制
- * -------- TODO(20260519-qing): 考虑将@Action矩阵对象置为硬件变量的一种
- * -------- TODO*(20260529-qing): 增加微调器机制，通过不同的微调器对@Action进行微调
- * ----------------------------------------------  */
+/*
+ * ---------------- 硬件变量基类 ----------------
+ *  接收3个lambda表达式，在回调函数中定义行为（）
+ *  通过JsonValue这种通用的数据结构进行传值
+ *  
+ *  INFO*(20260517-qing): 因为析构器（终结器）的调用时间不确定，需要手动构造RAII机制
+ *  TODO(20260519-qing): 考虑将@Action矩阵对象置为硬件变量的一种
+ *  TODO*(20260529-qing): 增加微调器机制，通过不同的微调器对@Action进行微调
+ */
 open class MatrixVars_Hardware {
 
 	/*  ---------------- 主初始化器 ----------------
-	 *  -------- 输入一个回调函数，用json参数能够为多种硬件提供同一接口
-	 *  -------- 在@Action矩阵中的每一列都是一个输入参数
+	 *   输入三个回调函数，用json参数能够为多种硬件提供同一接口
+	 *   在@Action矩阵中的每一列都是一个输入参数
 	 *  --------------------------------------------  */
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit>,
-			free!: Option<() -> Unit>  ) {
+	public init(
+	things!: (JsonValue) -> JsonValue,	/* 运行硬件或传感器 */
+	rise!: Option<() -> Unit>,		/* 可选的硬件构造函数 */
+	free!: Option<() -> Unit>) {		/* 可选的硬件析构函数 */
+
 		this.things = things
-		this.rise = rise
-		this.free = free
+		this.rise   = rise
+		this.free   = free
 	}
 
 
-	/* --------------------------------
-	 * --------------------------------
-	 * -------- 事件回调，接收和返回JsonValue
-	 * -------- 这是整个硬件的主要事件  */
-
+	/*
+	 *  --------------------------------
+	 *  事件回调，接收和返回JsonValue 这是整个硬件的主要事件
+	 */
 	private let things: (JsonValue) -> JsonValue	
 
-	/* -------- 召集事件，不接受参数
-	 * -------- 即硬件获取资源  */
-
+	/* 召集事件，不接受参数  即硬件获取资源  */
 	private let rise: Option<() -> Unit>
 
-	/* -------- 遣返事件，不接受参数
-	 * -------- 即硬件释放资源*/
-
+	/* 遣返事件，不接受参数  即硬件释放资源*/
 	private let free: Option<() -> Unit>
 
-	/* -------------------------------- *
-	 * -------------------------------- */
+	/*
+	 *  -------------------------------- *
+	 *  事件发生器  该方法会调用硬件，需要传入1个JsonValue参数  它返回1个JsonValue值
+	 *
+	 *  TODO(20260612-qing): 使用某种方式记录变量是否经过了初始化 
+	 */
+	public func play(input: JsonValue): JsonValue {  return things(input)  }
 
-	/* -------- 事件发生器
-	 * -------- TODO(20260612-qing): 使用某种方式记录变量是否经过了初始化
-	 * --------
-	 * -------- 该方法会调用硬件，需要传入1个JsonValue参数
-	 * -------- 它返回1个JsonValue值  */
-
-	public func play(input: JsonValue): JsonValue {
-		return things(input)
-	}
-
-	/* -------- 伪初始化器
-	 * -------- 该方法会打开硬件，什么也不传入和返回  */
+	/*
+	 *  -------------------------------- *
+	 *  伪初始化器  该方法会打开硬件，什么也不传入和返回
+	 */
 
 	public func build() {
-		if (let Some(callback) <- rise) {
-			callback()
-		}
+
+		if (let Some(callback) <- rise) {  callback()  }
 	}
 
-	/* -------- 伪解构器
-	 * -------- 该方法会关闭硬件，什么也不传入和返回  */
-
+	/* 
+	 *  -------------------------------- *
+	 *  伪解构器   该方法会关闭硬件，什么也不传入和返回
+	 */
 	public func destroy() {
-		if (let Some(callback) <- free) {
-			callback()
-		}
+
+		if (let Some(callback) <- free) {  callback()  }
 	}
 
-	/* ----------------- */
-	/* ----------------- */
-
-	/* -------- 获得项目值
-	 * -------- 如果矩阵单元的原始值是占位符且不为标题行，不为首行
-	 * -------- 就递归地获取上一行的值  */
+	/*
+	 *  ---------------------------------- 
+	 *  获得项目值。如果矩阵单元的原始值是占位符且不为标题行，
+	 *  不为首行， 就递归地获取上一行的值
+	 */
 	public static func getMt(obj: MatrixObject, row: Int64, col: Int64): String
 	{
 		let raw = obj[row, col]
@@ -103,74 +97,72 @@ open class MatrixVars_Hardware {
 		return raw
 	}
 
-	/* -------- 解析项目值
-	 * -------- 先获取矩阵单元的项目值（解析过占位符的值）
-	 * -------- 然后解析为需要的格式
-	 * -------- */
+	/*
+	 * ----------------------------------
+	 * 解析项目值，先获取矩阵单元的项目值————解析过占位符的值）————然后解析为需要的类型
+	 */
 	public static func parseMt<T>(obj: MatrixObject, row: Int64, col: Int64): T  where T <: Parsable<T>
 	{	
-		/* ---- 先获取矩阵单元的原始值 ---- */
+		/* 先获取矩阵单元的原始值 */
 		let raw = obj[row, col]
 
-		/* ---- 原始值为占位符且（非首行的）非标题行 ---- */
-		if (raw == "-" && row > 1) {
-			return  parseMt<T>(obj, row-1, col)
-		}
+		/* 如果原始值为占位符且（非首行的）非标题行 */
+		if      (raw == "-" &&   row > 1)  { return  parseMt<T>(obj, row-1, col)  }
 
-		/* ---- 原始值为占位符且为（非标题行的）首行 ---- */
-		else if (raw == "-" && !(row > 1)) {
-			return T.parse("0")  }
+		/* 原始值为占位符且为（非标题行的）首行 */
+		else if (raw == "-" && !(row > 1)) {  return T.parse("0")  }
 
-		/* ---- 原始值并非占位符 ---- */
+		/* 原始值并非占位符  */
 		// else if (!raw == "-")
 		return T.parse(raw)
 	}
-	/* ----------------- */
-	/* ----------------- */
+
+
+
+	/* ---------------------------------- */
 }
 
 
-/* ---- 用于注册到Lua的I2C操作C语言函数 ----
- *
- *
- * ---- 打开一个I2C设备 ----  */
-@C
+/*
+ * ----------------------------------
+ * 用于注册到Lua的I2C操作函数
+ */
+
+@C /* 打开一个I2C设备 */
 func Lua_openI2c(L: lua_State): C_Int {
 	unsafe {
 		let filename: CString = Lua_checkstring(L, 1)	/* 第一个参数 */
-		let fd = openI2cDev(filename)
-		let val: lua_Integer = Int64(fd)	/* lua_Integer */
-		Lua_pushinteger(L, val) 
-		return 1	/* 返回1，表示有1个返回值 */
+		let fd = openI2cDev(filename)			/* 进行操作 */
+		let val: lua_Integer = Int64(fd)		/* FIXME: 使用lua_Integer构造 */
+		Lua_pushinteger(L, val) 			/* 向lua状态机中压入整数 */
+		return 1					/* 返回1，表示有1个返回值 */
 	}
 }
 
-/* ---- 关闭I2C设备 ---- */
-@C
+@C /* 关闭I2C设备 */
 func Lua_closeI2c(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let fd = Int32(Lua_checkinteger(L, 1))	/* FIXME: 使用C_Int直接构造 */
 		closeI2cDev(fd)
 		return 0
 	}
 }
 
-/* ---- 设置I2C地址 ---- */
-@C
+@C /* 设置I2C地址 */
 func Lua_setI2cAddr(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
-		let addr = UInt8(Lua_checkinteger(L, 2))
+		let fd = Int32(Lua_checkinteger(L, 1))		/* FIXME: 使用C_Int直接构造 */
+		let addr = UInt8(Lua_checkinteger(L, 2))	/* 第二个参数 */
 		setI2cAddr(fd, addr)
 		return 0
 	}
 }
 
-/* ---- 写I2C寄存器 ---- */
-@C
+
+@C /* 写I2C寄存器 */
 func Lua_writeI2cReg(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let fd = Int32(Lua_checkinteger(L, 1))		/* FIXME: 使用C_Int直接构造 */
 		let reg = UInt8(Lua_checkinteger(L, 2))
 		let val = UInt8(Lua_checkinteger(L, 3))
 		writeI2cReg(fd, reg, val)
@@ -178,20 +170,20 @@ func Lua_writeI2cReg(L: lua_State): C_Int {
 	}
 }
 
-/* ---- 读I2C寄存器 ---- */
-@C
+
+@C /* 读I2C寄存器 */
 func Lua_readI2cReg(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let fd = Int32(Lua_checkinteger(L, 1))		/* FIXME: 使用C_Int直接构造 */
 		let reg = UInt8(Lua_checkinteger(L, 2))
-		let res = Int64(readI2cReg(fd, reg))	/* lua_Integer */
+		let res = Int64(readI2cReg(fd, reg))		/* FIXME: 使用lua_Integer直接构造 */
 		Lua_pushinteger(L, res)
 		return 1
 	}
 }
 
-/* ---- 毫秒级延时 ---- */
-@C
+
+@C /* 毫秒级延时 */
 func Lua_milliSleep(L: lua_State): C_Int {
 	unsafe {
 		let n = Int64(Lua_checkinteger(L, 1))
@@ -200,181 +192,173 @@ func Lua_milliSleep(L: lua_State): C_Int {
 	}
 }
 
-/* ---- 打开一个SPI设备 ---- */
-@C
+
+@C /* 打开一个SPI设备 */
 func Lua_openSPI(L: lua_State): C_Int {
 	unsafe {
-		let filename: CString = Lua_checkstring(L, 1)	/* 第一个参数 */
+		let filename: CString = Lua_checkstring(L, 1)
 		let fd = open_spi(filename)
-		let val: lua_Integer = Int64(fd)	/* lua_Integer */
+		let val: lua_Integer = Int64(fd)		/* FIXME: 直接使用lua_Integer构造 */
 		Lua_pushinteger(L, val) 
-		return 1	/* 返回1，表示有1个返回值 */
+		return 1
 	}
 }
 
 
-/* ---- 关闭一个SPI设备 ---- */
-@C
+@C  /* 关闭一个SPI设备 */
 func Lua_closeSPI(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let fd = Int32(Lua_checkinteger(L, 1))		/* FIXME: 直接使用C_Int进行构造 */
 		close_spi(fd)
 		return 0
 	}
 }
 
-/* ---- 设置一个SPI设备 ---- */
-@C
+@C /* 设置一个SPI设备 */
 func Lua_setupSPI(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let fd = Int32(Lua_checkinteger(L, 1))	/* FIXME: 直接使用C_Int进行构造1 */
 		let mode = UInt8(Lua_checkinteger(L, 2))
 		let bits = UInt8(Lua_checkinteger(L, 3))
 		let speed = UInt32(Lua_checkinteger(L, 4))
 		let delay = UInt16(Lua_checkinteger(L, 5))
-		let res: lua_Integer = Int64(setup_spi(fd, mode, bits, speed, delay))	/* lua_Integer */
+		let res: lua_Integer = Int64(setup_spi(fd, mode, bits, speed, delay))	/* FIXME: lua_Integer */
 		Lua_pushinteger(L, res)
 		return 1
 	}
 }
 
-/* ---- 写SPI设备 ---- */
-@C
+
+@C /* 写SPI设备 */
 func Lua_writeSPI(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
+		let fd = Int32(Lua_checkinteger(L, 1))			/* FIXME: C_Int */
 		let val = UInt8(Lua_checkinteger(L, 2))
-		let res: lua_Integer = Int64(write_spi(fd, val))	/* lua_Integer */
+		let res: lua_Integer = Int64(write_spi(fd, val))	/* FIXME: lua_Integer */
 		Lua_pushinteger(L, res)
 		return 1
 	}
 }
 
-/* ---- 读SPI设备 ---- */
-@C
+
+@C /* 读SPI设备 */
 func Lua_readSPI(L: lua_State): C_Int {
 	unsafe {
-		let fd = Int32(Lua_checkinteger(L, 1))	/* C_Int */
-		let res: lua_Integer = Int64(read_spi(fd))	/* lua_Integer */
+		let fd = Int32(Lua_checkinteger(L, 1))		/* FIXME: C_Int */
+		let res: lua_Integer = Int64(read_spi(fd))	/* FIXME: lua_Integer */
 		Lua_pushinteger(L, res)
 		return 1
 	}
 }
 
 
-/* ---- Lua状态机 - 硬件变量
- * ----
- * ---- TODO(20260612-qing): 提前创建Lua状态机，利用闭包进行引用储存
- * ----     在rise中申请的资源将在free中被释放。
- * ----
- * ----     我们将Lua状态机做成类成员存储，在原本的召集函数中进行初始化
- * ----     在解构函数中释放资源。
- * ----
- * ---- */
+/*
+ * Lua状态机 - 硬件变量
+ *
+ * TODO(20260612-qing): 提前创建Lua状态机，利用闭包进行引用储存
+ *      在rise中申请的资源将在free中被释放。
+ *
+ *      我们将Lua状态机做成类成员存储，在原本的召集函数中进行初始化
+ *      在解构函数中释放资源。
+ * 
+ */
 class MtVars_Lua <: MatrixVars_Hardware {
 
-	/* ---- 构造函数 => 传入事件函数，召集函数以及解构函数
-	 * ---- 
-	 * ---- */
+	/*
+	 *  构造函数 => 传入事件函数，硬件构造函数以及硬件解构函数
+	 *
+	 *  FIXME: 将构造函数设置为 private
+	 */
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None  )
+			free!: Option<() -> Unit> = None
 
-	{
-		super(things: things, rise: rise, free: free)
-	}
+	) {  super(things: things, rise: rise, free: free)  }
 	
 
-	/* ---- 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数（元数据）
-	 * ---- 
-	 * ---- */
+	/* 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数（元数据） */
 	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
 	{
 
-		/* ---- LUA状态机对象 ---- */
-		let L: lua_State = unsafe {Lua_init()}
-		unsafe {
-			if (Lua_check(L) == LUA_ERR) {
-				throw IllegalMemoryException("Lua_check()")
-			}
-		}
+		/* 创建LUA状态机对象 */
+		let L: lua_State = unsafe {  Lua_init()  }
+
+		/* 检查有没有创建成功？ */
+		if ( unsafe { Lua_check(L) } == LUA_ERR) {
+			throw IllegalMemoryException("Lua_check()")  }
 
 		let mtVars_Lua = MtVars_Lua(
 
-			/* ---- 主要事件：调用该硬件的驱动脚本
-			 * ---- 合并两张表（json_obj），一张来自创建该硬件时的设置（元数据）
-			 * ---- 另一张是调用该硬件事件时传入的参数
-			 * ----
-			 * ---- 其中前者是一些诸如I2C地址、SPI速率的硬件参数
-			 * ---- 后者是一些类似舵机旋转角度的实时参数
-			 * ---- */
+			/*
+			 *  主要事件：调用该硬件的驱动脚本
+			 *  合并两张表（json_obj），一张来自创建该硬件时的矩阵（元数据）
+			 *  另一张是调用该硬件事件时传入的参数（ @Action ）
+			 * 
+			 *  其中前者是一些诸如I2C地址、SPI速率的硬件参数
+			 *  后者是一些类似舵机旋转角度的实时参数
+			 *
+			 * TODO(20260825): 事先创建完所有ACTION的行，创建好每一步的参数
+			 */
 			things: { json: JsonValue =>
 
-				/* ---- 从元数据（json_obj）进行深拷贝 ---- */
+				/*  从元数据（json_obj）进行深拷贝  */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				obj.put("mode", JsonString("call"))
 
-				/* --- 合并两张（json_obj）表（元数据和参数） --- */
+				/*  合并两张（json_obj）表（元数据和参数）  */
 				let fields: HashMap<String, JsonValue> = json.asObject().getFields()
 				for (k in fields.keys()) {
 					let val = fields.get(k).getOrThrow()
 					obj.put(k, val)
 				}
-				println("Lua scripts call parameters: ${obj.toString()}")
+				//println("Lua scripts call parameters: ${obj.toString()}")
 
+				/* 调用Lua解释器 */
 				let res = call_lua(L, obj)
 
-				println("Lua script call result: ${res.toString()}")
-
+				//println("Lua script call result: ${res.toString()}")
 				return res
 
 			},
 
-			/* ---- 召集方法：提供元数据（json_obj）
-			 * ---- 并对该硬件进行初始化
-			 * ---- */
+			/* 硬件构造方法：提供元数据（json_obj）  对该硬件进行初始化 */
 			rise: { =>
 
-				/* ---- 在这里构建Lua状态机进行构建 ----
-				 * ---- 使用专用的异常 ---- */
+				/*  在这里构建Lua状态机   TODO: 使用专用的异常  */
 				if (build_lua(L, luapath) == false) {
 					throw Exception("build_lua")
 				}
 
 
-				/* ---- 从元数据进行深拷贝 ---- */
+				/* 从元数据进行深拷贝 */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 
-				/* ---- 插入模式指令 ---- */
+				/* 插入模式指令 （告知lua脚本这是在构建） */
 				obj.put("mode", JsonString("build"))
+				//println("Lua scripts build parameters: ${obj.toString()}")
 
-				println("Lua scripts build parameters: ${obj.toString()}")
-
+				/* 开始构建 */
 				let res = call_lua(L, obj)
 
-				println("Lua script build result: ${res.toString()}")
-
+				//println("Lua script build result: ${res.toString()}")
 			},
 
-			/* ---- 解构方法：传入元数据（json_obj|json_data）
-			 * ---- 然后使用Lua状态机对设备进行关闭（或者重置）
-			 * ---- */
+			/*
+			 *  硬件解构方法：传入元数据（json_obj|json_data）
+			 *  然后使用Lua状态机对设备进行关闭（或者重置）
+			 */
 			free: { =>
 
-				/* ---- 从元数据进行深拷贝 ---- */
+				/*  从元数据进行深拷贝  */
 				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 
-				/* ---- 插入模式指令 ---- */
+				/*  插入模式指令  */
 				obj.put("mode", JsonString("destroy"))
-
-				println("Lua scripts destroy parameters: ${obj.toString()}")
+				//println("Lua scripts destroy parameters: ${obj.toString()}")
 
 				let res = call_lua(L, obj)
 
-				println("Lua script destroy result: ${res.toString()}")
-
-
-
+				//println("Lua script destroy result: ${res.toString()}")
 				/* ---- 在这里写就Lua状态机的解构 ---- */
 				destroy_lua(L)
 
@@ -383,90 +367,87 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		)
 
 
-		/* ---- 返回构造的硬件变量
-		 * ---- */
+		/*
+		 * --------------------------------
+		 * 返回构造的硬件变量本体
+		 */
 		return mtVars_Lua
 	}
 
-	/* ---- 构造Lua状态机 ----
-	 * ---- NOTE(20260618-qing): 构建完毕会运行一次 */
+	/*  构造Lua状态机  申请资源
+	 *
+	 *  NOTE(20260618-qing): 构建完毕会运行一次 */
 	private static func build_lua(L: lua_State, luapath: String): Bool {
-		/* ---- 申请资源 
-		 * ---- */
 		unsafe {
 			let filename_c = LibC.mallocCString(luapath)
-			if (filename_c.isEmpty()) {
-				throw IllegalMemoryException("LibC.mallocCString()")
-			}
+			if (filename_c.isEmpty()) { throw IllegalMemoryException("LibC.mallocCString()")  }
 
-			/* ---- 加载Lua库、注册Lua函数
-			 * ---- */
+			/*  加载Lua库、注册Lua函数  */
 			Lua_loadlib(L)
 
-			/* ---- TH ---- */
+			/*  -------- 进程相关 -------- */
 
-			/* ---- milli_sleep() ---- */
+			/*  milli_sleep()  */
 			var cstr = LibC.mallocCString("milli_sleep")
 			Lua_register(L, cstr, Lua_milliSleep)
 			LibC.free(cstr)
 
-			/* ---- I2C设备 ---- */
+			/*  -------- I2C设备 -------- */
 
-			/* ---- i2c_open() ---- */
+			/*  i2c_open()  */
 			cstr = LibC.mallocCString("i2c_open")
 			Lua_register(L, cstr, Lua_openI2c)
 			LibC.free(cstr)
 
-			/* ---- i2c_close() ---- */
+			/*  i2c_close()  */
 			cstr = LibC.mallocCString("i2c_close")
 			Lua_register(L, cstr, Lua_closeI2c)
 			LibC.free(cstr)
 
-			/* ---- i2c_set_addr() ---- */
+			/*  i2c_set_addr()  */
 			cstr = LibC.mallocCString("i2c_set_addr")
 			Lua_register(L, cstr, Lua_setI2cAddr)
 			LibC.free(cstr)
 
-			/* ---- i2c_write_reg() ---- */
+			/*  i2c_write_reg()  */
 			cstr = LibC.mallocCString("i2c_write_reg")
 			Lua_register(L, cstr, Lua_writeI2cReg)
 			LibC.free(cstr)
 
-			/* ---- i2c_read_reg() ---- */
+			/*  i2c_read_reg()  */
 			cstr = LibC.mallocCString("i2c_read_reg")
 			Lua_register(L, cstr, Lua_readI2cReg)
 			LibC.free(cstr)
 
-			/* ---- SPI ----*/
+			/* -------- SPI --------*/
 
-			/* ---- spi_open() ---- */
+			/*  spi_open()  */
 			cstr = LibC.mallocCString("spi_open")
 			Lua_register(L, cstr, Lua_openSPI)
 			LibC.free(cstr)
 
-			/* ---- spi_close() ---- */
+			/*  spi_close()  */
 			cstr = LibC.mallocCString("spi_close")
 			Lua_register(L, cstr, Lua_closeSPI)
 			LibC.free(cstr)
 
-			/* ---- spi_setsup() ---- */
+			/*  spi_setsup()  */
 			cstr = LibC.mallocCString("spi_setup")
 			Lua_register(L, cstr, Lua_setupSPI)
 			LibC.free(cstr)
 
-			/* ---- spi_write() ---- */
+			/*  spi_write()  */
 			cstr = LibC.mallocCString("spi_write")
 			Lua_register(L, cstr, Lua_writeSPI)
 			LibC.free(cstr)
 
-			/* ---- spi_read() ---- */
+			/*  spi_read()  */
 			cstr = LibC.mallocCString("spi_read")
 			Lua_register(L, cstr, Lua_readSPI)
 			LibC.free(cstr)
 
 
-			/* ---- 设置Lua状态机
-			 * ---- */
+			/* -------- 设置Lua状态机 -------- */
 			var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
 			LibC.free(filename_c)			
 
@@ -478,23 +459,30 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				}
 			}
 
-			/* ---- 从栈顶获取错误信息
-			 * ---- */
+			/* -------- 从栈顶获取错误信息 -------- */
 			let error_msg = Lua_tostring(L, -1);
 			println(error_msg.toString());
+
+
 
 			return false
 		}
 	}
 
-	/* ---- 释放LUA状态机
-	 * ---- NOTE(20260618-qing): 销毁之后该变量即废弃 */
+	/*
+	 *  释放LUA状态机
+	 *
+	 *  NOTE(20260618-qing): 销毁之后该变量即废弃
+	 */
 	private static func destroy_lua(L: lua_State) {
 		unsafe { Lua_free(L) }
 	}
 
-	/* ---- 调用Lua脚本的方法
-	 * ---- NOTE(20260618-qing): 每次调用之后会重置栈指针  */
+	/*
+	 *  调用Lua脚本的方法
+	 *
+	 *  NOTE(20260618-qing): 每次调用之后会重置栈指针
+	 */
 	private static func call_lua(L: lua_State, json: JsonValue): JsonValue {
 		let obj = json.asObject()
 		let ret = JsonObject()
@@ -509,13 +497,11 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			Lua_getglobal(L, cstr)
 			LibC.free(cstr)
 
-			/* ----在Lua状态机里 创建Lua表
-			 * ---- */				
+			/* ----在Lua状态机里 创建Lua表 ---- */				
 			Lua_createtable(L, 0, 0)
 			
 
-			/* ---- 向Lua表中推入数据
-			 * ---- */
+			/* ---- 向Lua表中推入数据 ---- */
 			let fields: HashMap<String, JsonValue> = obj.getFields()
 			for (k in fields.keys()) {
 				let val = fields.get(k).getOrThrow()
@@ -542,14 +528,10 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			println("lua status: ${status}")
 			if (status == LUA_OK) {
 				if (Lua_type(L, -1) == LUA_TTABLE) {
-					/* ---- 栈顶是表
-						* ---- 压入 nil 作为遍历的起始键
-						* ---- */
+					/* ---- 栈顶是表  压入 nil 作为遍历的起始键 ---- */
 					Lua_pushnil(L)
 					while(Lua_next(L, -2) != 0) {
-						/* ---- 此时栈：[表, 键, 值] ----
-							* ---- 检查键值是否为空指针 ---- 
-							* ---- FIXME(20260531-qing) ---- */
+						/* ---- 此时栈：[表, 键, 值]  检查键值是否为空指针 */
 						let key = Lua_tostring(L, -2)
 						let val = Lua_tostring(L, -1)
 						if (key.isEmpty() || val.isEmpty()) {
@@ -565,13 +547,11 @@ class MtVars_Lua <: MatrixVars_Hardware {
 
 			else if (status != LUA_OK) {
 				let err  = Lua_tostring(L, -1)
-				if (!err.isEmpty()) {
-					println("Lua 错误详情: ${err.toString()}")
-				}
+				if (!err.isEmpty()) { println("Lua 错误详情: ${err.toString()}") }
 				//Lua_pop(L, 1)
 			}
 
-			/* ---- 恢复Lua状态机 ----*/
+			/* -------- 恢复Lua状态机 -------- */
 			Lua_settop(L, top)
 			//Lua_pop(L, 1)
 		}

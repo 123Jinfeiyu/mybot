@@ -88,7 +88,7 @@ main(args: Array<String>): Int64 {
 		}
 
 		/* 无论有没有成功激活，都进行清理 */
-		finally { robot.deactive() }
+		finally {  robot.deactive()  }
 
 		/* NOTE(20260523-qing): 储存微调网络模型 */
 //		let consoleReader = getStdIn()
@@ -106,7 +106,7 @@ func print_help()
 {
 	println("这是一个机器人动作脚本解析器。")
 	println("使用管道输入动作脚本，示例：")
-	println("cat std.mt | ./bot")
+	println("cat scripts/std.mt | ./bot")
 	println()
 	println("--i2c=/path/to/device\t选择i2c设备")
 	println()
@@ -117,15 +117,10 @@ func print_help()
 /* -------- 集成多种常规测试、临时测试 -------- */
 func run_test(key: String) {
 
-	/*
-	 * 神经网络门测试
-	 */
-	if (key == "nn1") {
-		testNn()
-	}
+	/*  神经网络门测试  */
+	if (key == "nn1") {  testNn()  }
 
-	/* -------- 测试解析矩阵，并且输出
-	 * -------- */
+	/* -------- 测试反序列化矩阵，并且序列化输出 -------- */
 	else if (key == "matrix_o") {
 		let file = File("ss/test.mt", OpenMode.Read)
 		let robot = RobotStruct(file)
@@ -135,8 +130,7 @@ func run_test(key: String) {
 		outf.close()
 	}
 
-	/* -------- 解析测试输出的矩阵
-	 * -------- */
+	/* -------- 解析反序列化之前输出的矩阵 -------- */
 	else if (key == "matrix_2") {
 		let file = File("ss/output.mt", OpenMode.Read)
 		let robot = RobotStruct(file)
