@@ -116,10 +116,10 @@ class MatrixObject {
 /*  -------- 矩阵式解析器 --------
  *  TODO(20260514-qing): 这个类输入流数据，输出MatrixObject对象
  *  它是与其深度绑定的，我倾向于将其与MatrixObject融合
- *  即持有HashMap<String, ArrayList<ArrayList<String>>>  */
+ *  即持有HashMap<String, ArrayList<ArrayList<String>>>
  *
  *  INFO(20260826-qing): MatrixParser解析出有效字符后会添加到
- *  	所持有MatrixObject的缓冲区，并在分隔符处进行提交
+ *  	所持有MatrixObject的缓冲区，并在分隔符处进行提交 */
 class MatrixParser {
 
 	/* ---- 静态判断Option<Rune>是否有值 ----
