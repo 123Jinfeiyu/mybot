@@ -5,10 +5,13 @@ import std.convert.*
 import std.collection.*
 import bot4cj.math.*
 
-/* -------- 矩阵编程语言 - 基本对象 --------
+/*
+ * 矩阵编程语言 - 基本对象
  * TODO：增加储存到文件系统的功能
  * TODO：神经网络层转换为矩阵对象
-   --------  */
+ * *INFO(20260826-qing): MatrixObject中除了矩阵，还有缓冲区和用于提交的成员函数
+ * --------------------------------
+ */
 class MatrixObject {
 	private var name: String = ""		/* -------- 名字 -------- */
 	private var tmp = ArrayList<Rune>()	/* ---- rune buf 字符缓冲区 ---- */
@@ -30,12 +33,16 @@ class MatrixObject {
 	/* -------- 取动作的列数 -------- */
 	public mut prop col: Int64 {
 		get() {
+
 			if (this.size > 0) {
-				return values[0].size  }
-			else { return 0  }
+				return values[0].size
+			} else {
+				return 0
+			}
+
 		}
 
-
+		/* FIXME: 只能取 */
 		set(_) {}
 	}
 
@@ -44,7 +51,7 @@ class MatrixObject {
 		return values[row][col]
 	}
 
-	/** -- 在某一行中寻找某一个字符串的列号 -- */
+	/* -- 在某一行中寻找某一个字符串的列号 -- */
 	public func indexOfCol(row: Int64, key: String): Int64 {
 		for (col in 0..values[row].size) {
 			if (values[row][col] == key) {
@@ -110,6 +117,9 @@ class MatrixObject {
  *  TODO(20260514-qing): 这个类输入流数据，输出MatrixObject对象
  *  它是与其深度绑定的，我倾向于将其与MatrixObject融合
  *  即持有HashMap<String, ArrayList<ArrayList<String>>>  */
+ *
+ *  INFO(20260826-qing): MatrixParser解析出有效字符后会添加到
+ *  	所持有MatrixObject的缓冲区，并在分隔符处进行提交
 class MatrixParser {
 
 	/* ---- 静态判断Option<Rune>是否有值 ----
@@ -218,7 +228,12 @@ class MatrixParser {
 
 /* -------- 矩阵式储存器 -------- 
  * - 接收矩阵式的哈希表（HashMap<String, MatrixObject>）
- * - 以及一个输出流（在构造函数）。 */
+ * - 以及一个输出流（在构造函数）。
+ *
+ * ========
+ * INFO(20260626-qing): 设置好输出流，然后输入MatrixObject
+ *	每输入一个就存储进入
+ */
 class MatrixSaver {
 	private let stringWriter: StringWriter<OutputStream>
 	public init(output: OutputStream) {
