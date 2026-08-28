@@ -16,17 +16,6 @@ sudo apt update && sudo apt install liblua5.4-dev
 ```
 
 
-
-**你还需要运行下面两行的其中之一（根据架构）**
-
-``` bash
-sudo ln -s /usr/lib/aarch64-linux-gnu/liblua5.4.so /usr/lib/aarch64-linux-gnu/liblua.so
-sudo ln -s /usr/lib/x86_64-linux-gnu/liblua5.4.so /usr/lib/x86_64-linux-gnu/liblua.so
-```
-
-
-
-
 ## 项目介绍
 机器人软件通常被称为“专用软件”，想要得到一个机器人软件通常比一个普通的软件更为困难，这是因为这个世界上的机器人五花八门，所以它们的软件往往都是独特的，所以我想写一种用于描述机器人硬件和动作的通用的脚本。
 

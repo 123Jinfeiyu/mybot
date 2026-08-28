@@ -7,7 +7,7 @@
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-l c -l pthread -l lua" # Linux
+  compile-option = "-l c -l pthread -l lua5.4" # Linux
   override-compile-option = ""
   link-option = ""
   package-configuration = {}
