@@ -1,7 +1,12 @@
--- PCA9685 PWM控制板 硬件脚本（测试）
+-- PCA9685 PWM控制板
+
+
+
+
 
 
 -- 这个函数是辅助用的，它能够打印一张表出来
+--
 function print_table(t, indent)
     indent = indent or 0
     for k, v in pairs(t) do
@@ -17,36 +22,40 @@ end
 
 
 
+
+
 -- 【配置脚本】
 -- 该脚本负责初始化PCA9685
 -- FIXME(20260602-qing): 异常处理
+--
 function build(data)
 
-	-- 检查该参数是否是一张表
-	if type(data) ~= "table" then
+	if type(data) ~= "table" then	-- 检查该参数是否是一张表
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: table"
+			message = "Invalid Arguments Type: table"
 		}
 	end
 
 	print("-------- Lua builder func get a table --------")
 	print_table(data)
 	print("----------------------------------------------")
+
+
+	-----------------------------------------------------
 	local fd = data.fd
 
-	-- 检查文件句柄参数是否存在
-	if fd == nil then
+	if fd == nil then	-- 检查文件句柄参数是否存在
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: fd"
+			message = "Invalid Argument: fd"
 		}
 	end
 
+	-----------------------------------------------------
 	local addr = data.address
 
-	-- 检查地址参数是否存在
-	if addr == nil then
+	if addr == nil then	-- 检查地址参数是否存在
 		return {
 			result = "ERR",
 			message = "Invalid Arguments: addr"
@@ -55,44 +64,37 @@ function build(data)
 
 	addr = tonumber(addr)
 
-	-- 设置PWM频率
-	local freq = 50.0
-	local prescale_val = 25000000.0 / (4096.0 * freq) - 1.0	-- 25MHz主频
+	-----------------------------------------------------
+	-----------------------------------------------------
+	local freq = 50.0						-- 设置PWM频率
+	local prescale_val = 25000000.0 / (4096.0 * freq) - 1.0		-- 25MHz主频
 	local prescale = prescale_val + 0.5
 
-	-- 开始配置PCA9685
-	i2c_set_addr(fd, addr)
+	i2c_set_addr(fd, addr)		-- 开始配置PCA9685
 
-	-- 重启PCA9685
-	i2c_write_reg(fd, 0x00, 0x80)
+	i2c_write_reg(fd, 0x00, 0x80)	-- 重启PCA9685
 
-	-- 等待振荡器启动
-	milli_sleep(5)
+	milli_sleep(5)			-- 等待振荡器启动
 
-	i2c_write_reg(fd, 0x00, 0x10)	-- 进入SLEEP模式（允许改频率）
+	i2c_write_reg(fd, 0x00, 0x10)			-- 进入SLEEP模式（允许改频率）
 	i2c_write_reg(fd, 0xFE, math.floor(prescale))
-	i2c_write_reg(fd, 0x00, 0x20)	-- 退出SLEEP模式
+	i2c_write_reg(fd, 0x00, 0x20)			-- 退出SLEEP模式
 
-	-- 等待振荡器启动
-	milli_sleep(5)
+	milli_sleep(5)			-- 等待振荡器启动
 
-	-- 返回成功信号
-	return {
-		result = "OK"
-	}
+	return {  result = "OK"  }	-- 返回成功信号
 
 end
 
--- 【销毁PCA9685的脚本】
--- 重置PCA9685
+-- 【销毁PCA9685的脚本】重置PCA9685
 -- NOTE(20260612-qing): 其实可以不需要，因为我们只是清空设置
+--
 function destroy(data)
 
-	-- 检查该参数是否是一张表
-	if type(data) ~= "table" then
+	if type(data) ~= "table" then	-- 检查该参数是否是一张表
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: table"
+			message = "Invalid Arguments Type: table"
 		}
 	end
 
@@ -100,20 +102,18 @@ function destroy(data)
 	print_table(data)
 	print("--------------------------------------------")
 
+	-----------------------------------------------------
 	local fd = data.fd
-
-	-- 检查fd参数是否存在
-	if fd == nil then
+	if fd == nil then	-- 检查fd参数是否存在
 		return {
 			result = "ERR",
 			message = "Invalid Arguments: fd"
 		}
 	end
 
+	-----------------------------------------------------
 	local addr = data.address
-
-	-- 检查address参数是否存在
-	if addr == nil then
+	if addr == nil then	-- 检查address参数是否存在
 		return {
 			result = "ERR",
 			message = "Invalid Arguments: addr"
@@ -122,16 +122,14 @@ function destroy(data)
 
 	addr = tonumber(addr)
 
-	-- 准备配置
-	i2c_set_addr(fd, addr)
+	-----------------------------------------------------
 
-	-- 重启PCA9685
-	i2c_write_reg(fd, 0x00, 0x80)
 
-	-- 返回成功信号
-	return {
-		result = "OK"
-	}
+	i2c_set_addr(fd, addr)		-- 准备配置
+
+	i2c_write_reg(fd, 0x00, 0x80)	-- 重启PCA9685
+
+	return {  result = "OK"  }	-- 返回成功信号
 
 end
 
@@ -141,8 +139,7 @@ end
 -- NOTE(20260612-qing): 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	-- 检查该参数是否是一张表
-	if type(data) ~= "table" then
+	if type(data) ~= "table" then	-- 检查该参数是否是一张表
 		return {
 			result = "ERR",
 			message = "Invalid Arguments: table"
@@ -154,42 +151,37 @@ function call(data)
 	print("---------------------------------------------")
 
 
+	-----------------------------------------------------
 	local fd = data.fd
-
-	-- 检查fd参数是否存在
-	if fd == nil then
+	if fd == nil then	-- 检查fd参数是否存在
 		return {
 			result = "ERR",
 			message = "Invalid Argument: fd"
 		}
 	end
-
 	local addr = data.address
 
-	-- 检查address参数是否存在
-	if addr == nil then
+	-----------------------------------------------------
+	if addr == nil then	-- 检查address参数是否存在
 		return {
 			result = "ERR",
 			message = "Invalid Argument: addr"
 		}
 	end
-
 	addr = tonumber(addr)
 
+	-----------------------------------------------------
 	local channel = data.channel
-
-	-- 检查channel参数是否存在
-	if channel == nil then
+	if channel == nil then	-- 检查channel参数是否存在
 		return {
 			result = "ERR",
 			message = "Invalid Argument: channel"
 		}
 	end
-
 	local angle = data.angle
 
-	-- 检查angle参数是否存在
-	if angle == nil then
+	-----------------------------------------------------
+	if angle == nil then	-- 检查angle参数是否存在
 		return {
 			result = "ERR",
 			message = "Invalid Argument: angle"
@@ -198,8 +190,8 @@ function call(data)
 
 	print(string.format("Lua hardware drive set angle: %d", angle))
 
-	-- 设置I2C地址
-	i2c_set_addr(fd, addr)
+	-----------------------------------------------------
+	i2c_set_addr(fd, addr)	-- 设置I2C地址
 
 	-- 计算需要的参数
 	local min = 0.5	-- 0度对应0.5ms
@@ -215,9 +207,7 @@ function call(data)
 	i2c_write_reg(fd, reg + 3, (offval >> 8) & 0xFF)	-- 4 * 8
 
 	-- 返回字典
- 	return {
-		result = "OK"
-	}
+ 	return { result = "OK" }
 
 end
 
