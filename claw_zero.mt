@@ -41,11 +41,12 @@ s14    180    -       -           -       13;  # rf2
 # 行动矩阵
 @Action
 s11.A  s12.A  s13.A  s14.A   spk.F  spk.delay;	# column name
-    -      -      180       -      10       6000;	# stand
-    -      -      150       -      10        500;	# stand
-    -      -      120       -      10        500;	# stand
-    -      -       90       -      10        500;	# stand
-    -      -       60       -      10        500;	# stand
-    -      -       30       -      10        500;	# stand
-    -      -        0       -      10        500;	# stand
+    -      -   180       -      10        100;	# stand
+    -      -   180       -      10       2000;	# stand
+    -      -   150       -      10       1000;	# stand
+    -      -   120       -      10       1000;	# stand
+    -      -    90       -      10       1000;	# stand
+    -      -    60       -      10       1000;	# stand
+    -      -    30       -      10       1000;	# stand
+    -      -     0       -      10       1000;	# stand
 @
