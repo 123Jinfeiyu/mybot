@@ -14,7 +14,7 @@ import std.fs.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
 import ctype4cj.*
-import nn4cj.*
+//import nn4cj.*
 
 /* ---- 神经网络输出路径 ---- */
 var NNS_OUT: Option<String> = None	
@@ -118,7 +118,7 @@ func print_help()
 func run_test(key: String) {
 
 	/*  神经网络门测试  */
-	if (key == "nn1") {  testNn()  }
+	if (key == "nn1") {  /*testNn()*/  }
 
 	/* -------- 测试反序列化矩阵，并且序列化输出 -------- */
 	else if (key == "matrix_o") {
