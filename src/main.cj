@@ -38,9 +38,8 @@ main(args: Array<String>): Int64 {
 	/*
 	 *  初始化神经网络 （init nn）
 	 *  TODO: 可以去掉内部初始化参数，使用矩阵式模板进行初始化
+	 *  NOTE(20260830-qing): 更换nn4cj库之后，我的开发机器无法编译神经网络部分了，所以注释掉了
 	 */
-
-
 	//var nns: ArrayList<Nn> = 
 	//if (options.keys().contains("i")) {
 	//	let filename = options['i']
