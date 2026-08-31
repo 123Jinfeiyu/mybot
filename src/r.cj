@@ -186,7 +186,13 @@ func Lua_readI2cReg(L: lua_State): C_Int {
 }
 
 @C /* 写I2C寄存器多个字节（burst 写：reg + 2 字节数据）
- * 用于 ADS1115 等 16 位寄存器设备 */
+ * 用于 ADS1115 等 16 位寄存器设备。
+ *
+ * Lua 调用示例（见 modules/ADS1115.lua）：
+ *   i2c_set_addr(fd, 0x48)
+ *   -- 写 CONFIG 寄存器(0x01)：高字节 0x84、低字节 0x83
+ *   i2c_write_multi(fd, 0x01, 0x84, 0x83)
+ *   返回值：0 = 成功，-1 = 失败 */
 func Lua_i2cWriteMulti(L: lua_State): C_Int {
 	unsafe {
 		let fd = Int32(Lua_checkinteger(L, 1))
@@ -206,7 +212,13 @@ func Lua_i2cWriteMulti(L: lua_State): C_Int {
 }
 
 @C /* 读I2C寄存器多个字节（burst 读：写指针 + 读 n 字节）
- * 返回大端合并后的整数值，失败返回 -1 */
+ * 返回大端合并后的整数值，失败返回 -1。
+ *
+ * Lua 调用示例（见 modules/ADS1115.lua）：
+ *   i2c_set_addr(fd, 0x48)
+ *   local raw = i2c_read_multi(fd, 0x00, 2)  -- 读 16 位转换结果(大端)
+ *   local hi  = math.floor(raw / 256) % 256  -- 拆高字节
+ *   local lo  = raw % 256                    -- 拆低字节 */
 func Lua_i2cReadMulti(L: lua_State): C_Int {
 	unsafe {
 		let fd = Int32(Lua_checkinteger(L, 1))
@@ -305,7 +317,11 @@ func Lua_readSPI(L: lua_State): C_Int {
 }
 
 @C /* SPI 一次写 3 字节（单次传输，CS 保持低）
- * 用于 ADS1256 等需要命令序列连续发送的设备 */
+ * 用于 ADS1256 等需要命令序列连续发送的设备。
+ *
+ * Lua 调用示例（见 modules/ADS1256.lua）：
+ *   spi_write3(fd, 0x50, 0x00, 0x03)  -- WREG 写 STATUS 寄存器(0x00) = 0x03
+ *   返回值：0 = 成功，-1 = 失败 */
 func Lua_spiWrite3(L: lua_State): C_Int {
 	unsafe {
 		let fd = Int32(Lua_checkinteger(L, 1))
@@ -324,7 +340,12 @@ func Lua_spiWrite3(L: lua_State): C_Int {
 	}
 }
 
-@C /* SPI 一次读 n 字节（单次传输），返回大端合并值，失败返回 -1 */
+@C /* SPI 一次读 n 字节（单次传输），返回大端合并值，失败返回 -1。
+ *
+ * Lua 调用示例（见 modules/ADS1256.lua）：
+ *   -- RDATAC 连续模式：CS 拉低即输出当前样本，读 4 字节取前 3（24 位）
+ *   local raw = spi_read_multi(fd, 4)
+ *   local val = math.floor(raw / 256)  -- 丢弃最后一个填充字节 */
 func Lua_spiReadMulti(L: lua_State): C_Int {
 	unsafe {
 		let fd = Int32(Lua_checkinteger(L, 1))
