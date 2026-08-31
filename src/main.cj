@@ -13,19 +13,20 @@ import std.io.*
 import std.fs.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
-import ctype4cj.*
+//import ctype4cj.*
 //import nn4cj.*
 
 /* ---- 神经网络输出路径 ---- */
-var NNS_OUT: Option<String> = None	
+//var NNS_OUT: Option<String> = None	
 main(args: Array<String>): Int64 {
 	
 	/* ---- 解析命令行参数 ---- */
 	let specs = [
 		ArgumentSpec.Long("help", ArgumentMode.NoValue),	/* ---- 拉起帮助 ---- */
-		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),	/* ---- 输入模型 ---- */
-		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),	/* ---- 输出模型 ---- */
-		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)	/* ---- 输入一个测试 ---- */
+		ArgumentSpec.Long("robot", ArgumentMode.RequiredValue),	/* ---- 结构脚本 ---- */
+//		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),	/* ---- 输入模型 ---- */
+//		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),	/* ---- 输出模型 ---- */
+//		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)	/* ---- 输入一个测试 ---- */
 	]
 
 	/* ---- 执行解析 ---- */
@@ -53,9 +54,9 @@ main(args: Array<String>): Int64 {
 	//	nn_in  }
 
 	/* ---- 使用-o选项进行输出路径的选择 ---- */
-	if (options.contains("o")) {
-		NNS_OUT = Option<String>.Some(options['o'])
-	}
+	//if (options.contains("o")) {
+	//	NNS_OUT = Option<String>.Some(options['o'])
+	//}
 
 	/*---------------------------*/
 	/* 分支选择 */
@@ -68,22 +69,25 @@ main(args: Array<String>): Int64 {
 	}
 
 	/* -------- 启动一个测试分支 -------- */
-	else if (options.contains("test")) {
-		run_test(options["test"])
-		return 0
-	}
+	//else if (options.contains("test")) {
+	//	run_test(options["test"])
+	//	return 0
+	//}
 
 	/*
 	 *  缺省行为：从标准输入获取动作脚本
 	 * 
 	 *  TODO(20260519-qing): 进行脚本引入（相对路径也可，从**环境变量**的路径中搜寻也可）
 	 */
-	else {
-		let consoleReader = getStdIn()
-		let robot = RobotStruct(consoleReader)
+	else if (options.contains("robot")) {
+
+		let fstream  = File(options["robot"], OpenMode.Read)
+		let robot = RobotStruct(fstream)
 		try {
 			robot.active()
-			robot.run()
+
+			let consoleReader = getStdIn()
+			robot.run(consoleReader)
 		}
 
 		/* 无论有没有成功激活，都进行清理 */
@@ -96,6 +100,12 @@ main(args: Array<String>): Int64 {
 //			save_nns(nns, options['o'])  }
 	}
 
+	/* 没有输入机器人结构脚本，打印帮助文档 */
+	else {
+
+		print_help()
+	}
+
 
 	return 0
 }
@@ -104,42 +114,37 @@ main(args: Array<String>): Int64 {
 func print_help()
 {
 	println("这是一个机器人动作脚本解析器。")
-	println("使用管道输入动作脚本，示例：")
-	println("cat scripts/std.mt | ./bot")
-	println()
-	println("--i2c=/path/to/device\t选择i2c设备")
-	println()
-	println("-i  选择输入的模型的路径")
-	println("-o  设置输出的模型的路径")
+	println("使用--robot选项指定结构脚本，然后使用管道输入动作脚本，示例：")
+	println("cat scripts/std.mt | ./bot --robot=./robots/spider.mt")
 }
 
 /* -------- 集成多种常规测试、临时测试 -------- */
-func run_test(key: String) {
-
-	/*  神经网络门测试  */
-	if (key == "nn1") {  /*testNn()*/  }
-
-	/* -------- 测试反序列化矩阵，并且序列化输出 -------- */
-	else if (key == "matrix_o") {
-		let file = File("ss/test.mt", OpenMode.Read)
-		let robot = RobotStruct(file)
-		file.close()
-		let outf = File("ss/output.mt", OpenMode.Write)
-		robot.save(outf)
-		outf.close()
-	}
-
-	/* -------- 解析反序列化之前输出的矩阵 -------- */
-	else if (key == "matrix_2") {
-		let file = File("ss/output.mt", OpenMode.Read)
-		let robot = RobotStruct(file)
-		file.close()
-		robot.active()
-		robot.run()
-		robot.deactive()
-		let outf = File("ss/output_1.mt", OpenMode.Write)
-		robot.save(outf)
-		outf.close()
-	}
-
-}
+//func run_test(key: String) {
+//
+//	/*  神经网络门测试  */
+//	if (key == "nn1") {  /*testNn()*/  }
+//
+//	/* -------- 测试反序列化矩阵，并且序列化输出 -------- */
+//	else if (key == "matrix_o") {
+//		let file = File("ss/test.mt", OpenMode.Read)
+//		let robot = RobotStruct(file)
+//		file.close()
+//		let outf = File("ss/output.mt", OpenMode.Write)
+//		robot.save(outf)
+//		outf.close()
+//	}
+//
+//	/* -------- 解析反序列化之前输出的矩阵 -------- */
+//	else if (key == "matrix_2") {
+//		let file = File("ss/output.mt", OpenMode.Read)
+//		let robot = RobotStruct(file)
+//		file.close()
+//		robot.active()
+//		robot.run()
+//		robot.deactive()
+//		let outf = File("ss/output_1.mt", OpenMode.Write)
+//		robot.save(outf)
+//		outf.close()
+//	}
+//
+//}

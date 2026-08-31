@@ -997,7 +997,7 @@ class RobotStruct {
 	 *  不行就将矩阵脚本转化为bot脚本吧
 	 */
 	public init(input: InputStream) {
-		readMatrix(input)
+		readMatrix(input, C)
 		createHardVars()
 	}
 
@@ -1021,8 +1021,10 @@ class RobotStruct {
 	}
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
-	public func run() {
-		run_drl_action()
+	public func run(input: InputStream) {
+		let AC = LinkedList<MatrixObject>()
+		readMatrix(input, AC)
+		run_drl_action(AC)
 	}
 
 	/*
@@ -1040,7 +1042,7 @@ class RobotStruct {
 	 * 
 	 *  TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
 	 */
-	private func readMatrix(file: InputStream){
+	static private func readMatrix(file: InputStream, C: LinkedList<MatrixObject>){
 		let sr = StringReader<InputStream>(file)
 		let parser =  MatrixParser(sr)
 		while (true) {
@@ -1140,8 +1142,8 @@ class RobotStruct {
 	}
 
 	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
-	private func run_drl_action() {
-		let ActionDefs = findMt(C, "Action").getOrThrow()	/* MatrixObject */
+	private func run_drl_action(AC: LinkedList<MatrixObject>) {
+		let ActionDefs = findMt(AC, "Action").getOrThrow()	/* MatrixObject */
 		for (i in 1..ActionDefs.size) {
 			let set =JsonObject()		/* 每个硬件变量的参数集合 */
 			for (j in 0..ActionDefs.col) {
