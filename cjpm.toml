@@ -3,7 +3,7 @@
   cjc-version = "1.1.3"
   name = "bot4cj"
   description = "nothing here"
-  version = "0.0.3"
+  version = "0.0.4"
   target-dir = ""
   src-dir = ""
   output-type = "executable"
@@ -14,14 +14,10 @@
 
 [dependencies]
   #ctype4cj = { git = "https://gitcode.com/qingss0/ctype4cj.git", branch="main" }
-  ctype4cj = "1.0.3"
-  #pthread4cj = { git = "https://gitcode.com/qingss0/pthread4cj.git", branch="main"}
-  pthread4cj = "1.0.0"
-  #spi4cj = { git = "https://gitcode.com/qingss0/spi4cj.git", branch="main"}
-  spi4cj = "1.0.0"
-  #lua4cj = { git = "https://gitcode.com/qingss0/lua4cj.git", branch="main" }
-  lua4cj = "1.0.0"
-  #nn4cj = { git = "https://gitcode.com/qingss0/nn4cj.git", branch="main"}
+  ctype4cj = "1.0.4"
+  pthread4cj = "1.0.1"
+  spi4cj = "1.0.1"
+  lua4cj = "1.0.2"
 # 这种x86机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
 [target.x86_64-unknown-linux-gnu]
   [target.x86_64-unknown-linux-gnu.dependencies]

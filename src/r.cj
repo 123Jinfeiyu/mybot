@@ -18,9 +18,6 @@ import ctype4cj.*
 import spi4cj.*
 import lua4cj.*
 
-/* lua4cj 未导出 lua_pushnumber，这里补充声明（liblua 已链接） */
-foreign func lua_pushnumber(L: lua_State, n: Float64): Unit
-
 /*
  * ---------------- 硬件变量基类 ----------------
  *  接收3个lambda表达式，在回调函数中定义行为（）
@@ -676,7 +673,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				else if (val is JsonFloat) {
 					let v = val.asFloat().getValue()
 					let sk = LibC.mallocCString(k)
-					lua_pushnumber(L, v)
+					Lua_pushnumber(L, v)
 					Lua_setfield(L, -2, sk)
 					LibC.free(sk)
 				}
