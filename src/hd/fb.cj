@@ -6,6 +6,9 @@ const FBIOGET_FSCREENINFO = 0x4600u64
 const PROT_WRITE: C_Int = 0x2
 const MAP_SHARED: C_Int = 0x01
 
+/* -------- 我们将直接调用glibc中的一些函数 -------- */
+foreign func ioctl(fd: C_Int, addr: C_ULong, ...): C_Int				/* -------- 成功返回非负整数，失败返回-1 -------- */
+
 /* --- 定义在I2C.cj里了 ---*/
 //foreign func ioctl(fd: C_Int, request: C_ULong, ...): C_Int
 /* ---- 内存映射 ---- */

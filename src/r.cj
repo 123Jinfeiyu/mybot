@@ -11,10 +11,10 @@ import std.random.*
 import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
-import bot4cj.hd.*
-//import bot4cj.hd.extern.*
 import bot4cj.math.*
+import bot4cj.hd.*
 import ctype4cj.*
+import iic4cj.*
 import spi4cj.*
 import lua4cj.*
 
@@ -182,6 +182,68 @@ func Lua_readI2cReg(L: lua_State): C_Int {
 	}
 }
 
+@C /* 写I2C寄存器多个字节（burst 写：reg + 2 字节数据）
+ * 用于 ADS1115 等 16 位寄存器设备。
+ *
+ * Lua 调用示例（见 modules/ADS1115.lua）：
+ *   i2c_set_addr(fd, 0x48)
+ *   -- 写 CONFIG 寄存器(0x01)：高字节 0x84、低字节 0x83
+ *   i2c_write_multi(fd, 0x01, 0x84, 0x83)
+ *   返回值：0 = 成功，-1 = 失败 */
+func Lua_i2cWriteMulti(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		let reg = UInt8(Lua_checkinteger(L, 2))
+		let b1 = UInt8(Lua_checkinteger(L, 3))
+		let b2 = UInt8(Lua_checkinteger(L, 4))
+		let buf = LibC.malloc<UInt8>(count: 3)
+		(buf + 0).write(reg)
+		(buf + 1).write(b1)
+		(buf + 2).write(b2)
+		let res = libc_write(fd, CPointer<Unit>(buf), 3)
+		LibC.free(buf)
+		if (res == 3) { Lua_pushinteger(L, 0) }
+		else { Lua_pushinteger(L, -1) }
+		return 1
+	}
+}
+
+@C /* 读I2C寄存器多个字节（burst 读：写指针 + 读 n 字节）
+ * 返回大端合并后的整数值，失败返回 -1。
+ *
+ * Lua 调用示例（见 modules/ADS1115.lua）：
+ *   i2c_set_addr(fd, 0x48)
+ *   local raw = i2c_read_multi(fd, 0x00, 2)  -- 读 16 位转换结果(大端)
+ *   local hi  = math.floor(raw / 256) % 256  -- 拆高字节
+ *   local lo  = raw % 256                    -- 拆低字节 */
+func Lua_i2cReadMulti(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		let reg = UInt8(Lua_checkinteger(L, 2))
+		var n = Int64(Lua_checkinteger(L, 3))
+		if (n < 1 || n > 8) { n = 1 }
+		var ptr = reg
+		if (1 != libc_write(fd, CPointer<Unit>(inout ptr), 1)) {
+			Lua_pushinteger(L, -1)
+			return 1
+		}
+		let buf = LibC.malloc<UInt8>(count: n)
+		let ret = libc_read(fd, CPointer<Unit>(buf), UIntNative(n))
+		if (ret != IntNative(n)) {
+			LibC.free(buf)
+			Lua_pushinteger(L, -1)
+			return 1
+		}
+		var v: Int64 = 0
+		for (i in 0..n) {
+			v = (v << 8) | Int64((buf + i).read())
+		}
+		LibC.free(buf)
+		Lua_pushinteger(L, v)
+		return 1
+	}
+}
+
 
 @C /* 毫秒级延时 */
 func Lua_milliSleep(L: lua_State): C_Int {
@@ -247,6 +309,58 @@ func Lua_readSPI(L: lua_State): C_Int {
 		let fd = Int32(Lua_checkinteger(L, 1))		/* FIXME: C_Int */
 		let res: lua_Integer = Int64(read_spi(fd))	/* FIXME: lua_Integer */
 		Lua_pushinteger(L, res)
+		return 1
+	}
+}
+
+@C /* SPI 一次写 3 字节（单次传输，CS 保持低）
+ * 用于 ADS1256 等需要命令序列连续发送的设备。
+ *
+ * Lua 调用示例（见 modules/ADS1256.lua）：
+ *   spi_write3(fd, 0x50, 0x00, 0x03)  -- WREG 写 STATUS 寄存器(0x00) = 0x03
+ *   返回值：0 = 成功，-1 = 失败 */
+func Lua_spiWrite3(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		let b0 = UInt8(Lua_checkinteger(L, 2))
+		let b1 = UInt8(Lua_checkinteger(L, 3))
+		let b2 = UInt8(Lua_checkinteger(L, 4))
+		let buf = LibC.malloc<UInt8>(count: 3)
+		(buf + 0).write(b0)
+		(buf + 1).write(b1)
+		(buf + 2).write(b2)
+		let res = libc_write(fd, CPointer<Unit>(buf), 3)
+		LibC.free(buf)
+		if (res == 3) { Lua_pushinteger(L, 0) }
+		else { Lua_pushinteger(L, -1) }
+		return 1
+	}
+}
+
+@C /* SPI 一次读 n 字节（单次传输），返回大端合并值，失败返回 -1。
+ *
+ * Lua 调用示例（见 modules/ADS1256.lua）：
+ *   -- RDATAC 连续模式：CS 拉低即输出当前样本，读 4 字节取前 3（24 位）
+ *   local raw = spi_read_multi(fd, 4)
+ *   local val = math.floor(raw / 256)  -- 丢弃最后一个填充字节 */
+func Lua_spiReadMulti(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		var n = Int64(Lua_checkinteger(L, 2))
+		if (n < 1 || n > 8) { n = 1 }
+		let buf = LibC.malloc<UInt8>(count: n)
+		let ret = libc_read(fd, CPointer<Unit>(buf), UIntNative(n))
+		if (ret != IntNative(n)) {
+			LibC.free(buf)
+			Lua_pushinteger(L, -1)
+			return 1
+		}
+		var v: Int64 = 0
+		for (i in 0..n) {
+			v = (v << 8) | Int64((buf + i).read())
+		}
+		LibC.free(buf)
+		Lua_pushinteger(L, v)
 		return 1
 	}
 }
@@ -435,6 +549,16 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			Lua_register(L, cstr, Lua_readI2cReg)
 			LibC.free(cstr)
 
+			/*  i2c_write_multi()  */
+			cstr = LibC.mallocCString("i2c_write_multi")
+			Lua_register(L, cstr, Lua_i2cWriteMulti)
+			LibC.free(cstr)
+
+			/*  i2c_read_multi()  */
+			cstr = LibC.mallocCString("i2c_read_multi")
+			Lua_register(L, cstr, Lua_i2cReadMulti)
+			LibC.free(cstr)
+
 			/* -------- SPI --------*/
 
 			/*  spi_open()  */
@@ -460,6 +584,16 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			/*  spi_read()  */
 			cstr = LibC.mallocCString("spi_read")
 			Lua_register(L, cstr, Lua_readSPI)
+			LibC.free(cstr)
+
+			/*  spi_write3()  */
+			cstr = LibC.mallocCString("spi_write3")
+			Lua_register(L, cstr, Lua_spiWrite3)
+			LibC.free(cstr)
+
+			/*  spi_read_multi()  */
+			cstr = LibC.mallocCString("spi_read_multi")
+			Lua_register(L, cstr, Lua_spiReadMulti)
 			LibC.free(cstr)
 
 
@@ -536,6 +670,13 @@ class MtVars_Lua <: MatrixVars_Hardware {
 					Lua_setfield(L, -2, sk)
 					LibC.free(sk)
 				}
+				else if (val is JsonFloat) {
+					let v = val.asFloat().getValue()
+					let sk = LibC.mallocCString(k)
+					Lua_pushnumber(L, v)
+					Lua_setfield(L, -2, sk)
+					LibC.free(sk)
+				}
 			}
 
 			var status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
@@ -605,104 +746,104 @@ class MtVars_Alias <: MatrixVars_Hardware {
  *  I2C变量类 这种硬件变量是特殊且固定的
  *  TODO(20260617-qing): 等LUA状态机被闭包保存之后，将其优化为Lua驱动
  */
-class MtVars_I2C <: MatrixVars_Hardware {
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None  )
-
-	{  super(things: things, rise: rise, free: free)  }
-
-	/*  @I2C
-	 *   name        path;
-	 *  i2c-0  /dev/i2c-0;
-	 *  @
-	 */
-	public static func Factory(	/*  工厂模式，根据矩阵对象构造  */
-		I2CDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_I2C
-	{
-		let idxName  = I2CDefs.indexOfCol(0, "name")
-		let idxPath  = I2CDefs.indexOfCol(0, "path")
-
-		let name = I2CDefs[i, idxName]
-		let path = getMt(I2CDefs, i, idxPath)
-
-		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* ---- debug ---- */
-		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C类对象，通过闭包保存在MtVars_I2C里  */
-		let mtvars_i2c = MtVars_I2C(
-			things: { json: JsonValue =>
-				let fd = i2c.getFd()
-				let ret = JsonObject()
-				ret.put("fd",JsonInt(Int64(fd)))
-				return ret
-			},
-
-			free: {=>
-				println("I2C HVar: ${name} is closing now")
-				i2c._close()
-			})
-
-		return mtvars_i2c
-	}
-}
+//class MtVars_I2C <: MatrixVars_Hardware {
+//	public init(things!: (JsonValue) -> JsonValue,
+//			rise!: Option<() -> Unit> = None,
+//			free!: Option<() -> Unit> = None  )
+//
+//	{  super(things: things, rise: rise, free: free)  }
+//
+//	/*  @I2C
+//	 *   name        path;
+//	 *  i2c-0  /dev/i2c-0;
+//	 *  @
+//	 */
+//	public static func Factory(	/*  工厂模式，根据矩阵对象构造  */
+//		I2CDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_I2C
+//	{
+//		let idxName  = I2CDefs.indexOfCol(0, "name")
+//		let idxPath  = I2CDefs.indexOfCol(0, "path")
+//
+//		let name = I2CDefs[i, idxName]
+//		let path = getMt(I2CDefs, i, idxPath)
+//
+//		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* ---- debug ---- */
+//		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C类对象，通过闭包保存在MtVars_I2C里  */
+//		let mtvars_i2c = MtVars_I2C(
+//			things: { json: JsonValue =>
+//				let fd = i2c.getFd()
+//				let ret = JsonObject()
+//				ret.put("fd",JsonInt(Int64(fd)))
+//				return ret
+//			},
+//
+//			free: {=>
+//				println("I2C HVar: ${name} is closing now")
+//				i2c._close()
+//			})
+//
+//		return mtvars_i2c
+//	}
+//}
 
 /*  MPU6050_BIND硬件变量
  *  INFO(20260612-qing): 自从引入了Lua状态机扩展硬件，该硬件变量不知道何去何从。
  *  TODO(20260612-qing): 在Lua脚本中定义好BIND函数后，在pthread线程中反复调用
  * -------- */
-class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None) {
-		super(things: things, rise: rise, free: free)  }
-
-	/* 工厂函数，通过矩阵对象构建硬件变量
-	 * @MPU6050_BIND
-	 *      name    I2C   addr;
-	 * mpu6050-0  i2c-1   0x69;
-	 */
-	public static func Factory (
-			MPU6050_BIND_Defs: MatrixObject, i: Int64,
-			map: HashMap<String, MatrixVars_Hardware>)//: MtVars_MPU6050_BIND
-	{
-		let idxName = MPU6050_BIND_Defs.indexOfCol(0, "name")
-		let idxI2c  = MPU6050_BIND_Defs.indexOfCol(0, "I2C")
-		let idxAddr = MPU6050_BIND_Defs.indexOfCol(0, "addr")
-
-		let name = MPU6050_BIND_Defs[i, idxName]
-		let i2c  = getMt(MPU6050_BIND_Defs, i, idxI2c)
-		let addr = getMt(MPU6050_BIND_Defs, i, idxAddr)
-
-		println("Create a MPU6050_BIND HVar: ${name}, use i2c interf: ${i2c}, i2c addr: ${addr}")
-		let i2c_HardVar = map[i2c]
-		let param = JsonObject()
-		param.put("mode", JsonString("get_fd"))
-		let ret = i2c_HardVar.play(param)
-		let fd = Int32(ret.asObject().get("fd").getOrThrow().asInt().getValue())
-		let _addr = UInt8.parse(addr)
-
-		let mpu6050 = MPU6050(fd, _addr)		
-
-		let mtvars_mpu6050bind = MtVars_MPU6050_BIND(
-			things: {json: JsonValue => 
-				let ret = JsonObject()
-				ret.put("status", JsonString("OK"))
-				return ret
-			},
-			rise: {=>
-				println("MPU6050_BIND HVar: ${name} is starting now")
-				mpu6050.setup()
-				mpu6050.startDaemon()
-			},
-			free: {=>
-				println("MPU6050_BIND HVar: ${name} is closing now")
-				mpu6050.stopDaemon()
-				mpu6050.waitDaemon()
-			}
-		)
-
-		return mtvars_mpu6050bind
-	}
-}
+//class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
+//	public init(things!: (JsonValue) -> JsonValue,
+//			rise!: Option<() -> Unit> = None,
+//			free!: Option<() -> Unit> = None) {
+//		super(things: things, rise: rise, free: free)  }
+//
+//	/* 工厂函数，通过矩阵对象构建硬件变量
+//	 * @MPU6050_BIND
+//	 *      name    I2C   addr;
+//	 * mpu6050-0  i2c-1   0x69;
+//	 */
+//	public static func Factory (
+//			MPU6050_BIND_Defs: MatrixObject, i: Int64,
+//			map: HashMap<String, MatrixVars_Hardware>)//: MtVars_MPU6050_BIND
+//	{
+//		let idxName = MPU6050_BIND_Defs.indexOfCol(0, "name")
+//		let idxI2c  = MPU6050_BIND_Defs.indexOfCol(0, "I2C")
+//		let idxAddr = MPU6050_BIND_Defs.indexOfCol(0, "addr")
+//
+//		let name = MPU6050_BIND_Defs[i, idxName]
+//		let i2c  = getMt(MPU6050_BIND_Defs, i, idxI2c)
+//		let addr = getMt(MPU6050_BIND_Defs, i, idxAddr)
+//
+//		println("Create a MPU6050_BIND HVar: ${name}, use i2c interf: ${i2c}, i2c addr: ${addr}")
+//		let i2c_HardVar = map[i2c]
+//		let param = JsonObject()
+//		param.put("mode", JsonString("get_fd"))
+//		let ret = i2c_HardVar.play(param)
+//		let fd = Int32(ret.asObject().get("fd").getOrThrow().asInt().getValue())
+//		let _addr = UInt8.parse(addr)
+//
+//		let mpu6050 = MPU6050(fd, _addr)		
+//
+//		let mtvars_mpu6050bind = MtVars_MPU6050_BIND(
+//			things: {json: JsonValue => 
+//				let ret = JsonObject()
+//				ret.put("status", JsonString("OK"))
+//				return ret
+//			},
+//			rise: {=>
+//				println("MPU6050_BIND HVar: ${name} is starting now")
+//				mpu6050.setup()
+//				mpu6050.startDaemon()
+//			},
+//			free: {=>
+//				println("MPU6050_BIND HVar: ${name} is closing now")
+//				mpu6050.stopDaemon()
+//				mpu6050.waitDaemon()
+//			}
+//		)
+//
+//		return mtvars_mpu6050bind
+//	}
+//}
 
 /*  舵机变量类
  *  
