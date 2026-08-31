@@ -18,6 +18,9 @@ import ctype4cj.*
 import spi4cj.*
 import lua4cj.*
 
+/* lua4cj 未导出 lua_pushnumber，这里补充声明（liblua 已链接） */
+foreign func lua_pushnumber(L: lua_State, n: Float64): Unit
+
 /*
  * ---------------- 硬件变量基类 ----------------
  *  接收3个lambda表达式，在回调函数中定义行为（）
@@ -182,6 +185,56 @@ func Lua_readI2cReg(L: lua_State): C_Int {
 	}
 }
 
+@C /* 写I2C寄存器多个字节（burst 写：reg + 2 字节数据）
+ * 用于 ADS1115 等 16 位寄存器设备 */
+func Lua_i2cWriteMulti(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		let reg = UInt8(Lua_checkinteger(L, 2))
+		let b1 = UInt8(Lua_checkinteger(L, 3))
+		let b2 = UInt8(Lua_checkinteger(L, 4))
+		let buf = LibC.malloc<UInt8>(count: 3)
+		(buf + 0).write(reg)
+		(buf + 1).write(b1)
+		(buf + 2).write(b2)
+		let res = libc_write(fd, CPointer<Unit>(buf), 3)
+		LibC.free(buf)
+		if (res == 3) { Lua_pushinteger(L, 0) }
+		else { Lua_pushinteger(L, -1) }
+		return 1
+	}
+}
+
+@C /* 读I2C寄存器多个字节（burst 读：写指针 + 读 n 字节）
+ * 返回大端合并后的整数值，失败返回 -1 */
+func Lua_i2cReadMulti(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		let reg = UInt8(Lua_checkinteger(L, 2))
+		var n = Int64(Lua_checkinteger(L, 3))
+		if (n < 1 || n > 8) { n = 1 }
+		var ptr = reg
+		if (1 != libc_write(fd, CPointer<Unit>(inout ptr), 1)) {
+			Lua_pushinteger(L, -1)
+			return 1
+		}
+		let buf = LibC.malloc<UInt8>(count: n)
+		let ret = libc_read(fd, CPointer<Unit>(buf), UIntNative(n))
+		if (ret != IntNative(n)) {
+			LibC.free(buf)
+			Lua_pushinteger(L, -1)
+			return 1
+		}
+		var v: Int64 = 0
+		for (i in 0..n) {
+			v = (v << 8) | Int64((buf + i).read())
+		}
+		LibC.free(buf)
+		Lua_pushinteger(L, v)
+		return 1
+	}
+}
+
 
 @C /* 毫秒级延时 */
 func Lua_milliSleep(L: lua_State): C_Int {
@@ -247,6 +300,49 @@ func Lua_readSPI(L: lua_State): C_Int {
 		let fd = Int32(Lua_checkinteger(L, 1))		/* FIXME: C_Int */
 		let res: lua_Integer = Int64(read_spi(fd))	/* FIXME: lua_Integer */
 		Lua_pushinteger(L, res)
+		return 1
+	}
+}
+
+@C /* SPI 一次写 3 字节（单次传输，CS 保持低）
+ * 用于 ADS1256 等需要命令序列连续发送的设备 */
+func Lua_spiWrite3(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		let b0 = UInt8(Lua_checkinteger(L, 2))
+		let b1 = UInt8(Lua_checkinteger(L, 3))
+		let b2 = UInt8(Lua_checkinteger(L, 4))
+		let buf = LibC.malloc<UInt8>(count: 3)
+		(buf + 0).write(b0)
+		(buf + 1).write(b1)
+		(buf + 2).write(b2)
+		let res = libc_write(fd, CPointer<Unit>(buf), 3)
+		LibC.free(buf)
+		if (res == 3) { Lua_pushinteger(L, 0) }
+		else { Lua_pushinteger(L, -1) }
+		return 1
+	}
+}
+
+@C /* SPI 一次读 n 字节（单次传输），返回大端合并值，失败返回 -1 */
+func Lua_spiReadMulti(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		var n = Int64(Lua_checkinteger(L, 2))
+		if (n < 1 || n > 8) { n = 1 }
+		let buf = LibC.malloc<UInt8>(count: n)
+		let ret = libc_read(fd, CPointer<Unit>(buf), UIntNative(n))
+		if (ret != IntNative(n)) {
+			LibC.free(buf)
+			Lua_pushinteger(L, -1)
+			return 1
+		}
+		var v: Int64 = 0
+		for (i in 0..n) {
+			v = (v << 8) | Int64((buf + i).read())
+		}
+		LibC.free(buf)
+		Lua_pushinteger(L, v)
 		return 1
 	}
 }
@@ -435,6 +531,16 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			Lua_register(L, cstr, Lua_readI2cReg)
 			LibC.free(cstr)
 
+			/*  i2c_write_multi()  */
+			cstr = LibC.mallocCString("i2c_write_multi")
+			Lua_register(L, cstr, Lua_i2cWriteMulti)
+			LibC.free(cstr)
+
+			/*  i2c_read_multi()  */
+			cstr = LibC.mallocCString("i2c_read_multi")
+			Lua_register(L, cstr, Lua_i2cReadMulti)
+			LibC.free(cstr)
+
 			/* -------- SPI --------*/
 
 			/*  spi_open()  */
@@ -460,6 +566,16 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			/*  spi_read()  */
 			cstr = LibC.mallocCString("spi_read")
 			Lua_register(L, cstr, Lua_readSPI)
+			LibC.free(cstr)
+
+			/*  spi_write3()  */
+			cstr = LibC.mallocCString("spi_write3")
+			Lua_register(L, cstr, Lua_spiWrite3)
+			LibC.free(cstr)
+
+			/*  spi_read_multi()  */
+			cstr = LibC.mallocCString("spi_read_multi")
+			Lua_register(L, cstr, Lua_spiReadMulti)
 			LibC.free(cstr)
 
 
@@ -533,6 +649,13 @@ class MtVars_Lua <: MatrixVars_Hardware {
 					let sk = LibC.mallocCString(k)
 					let sv = Int64(v)
 					Lua_pushinteger(L, sv)
+					Lua_setfield(L, -2, sk)
+					LibC.free(sk)
+				}
+				else if (val is JsonFloat) {
+					let v = val.asFloat().getValue()
+					let sk = LibC.mallocCString(k)
+					lua_pushnumber(L, v)
 					Lua_setfield(L, -2, sk)
 					LibC.free(sk)
 				}
