@@ -11,7 +11,6 @@ import std.random.*
 import std.collection.*
 import std.convert.*
 import stdx.encoding.json.*
-//import bot4cj.hd.extern.*
 import bot4cj.math.*
 import bot4cj.hd.*
 import ctype4cj.*
