@@ -7,7 +7,7 @@
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-l c -l pthread -l lua5.4" # Linux
+  compile-option = "-l c -l pthread -l lua" # Linux
   override-compile-option = ""
   link-option = ""
   package-configuration = {}
@@ -21,7 +21,7 @@
   spi4cj = "1.0.0"
   #lua4cj = { git = "https://gitcode.com/qingss0/lua4cj.git", branch="main" }
   lua4cj = "1.0.0"
-  nn4cj = { git = "https://gitcode.com/qingss0/nn4cj.git", branch="main"}
+  #nn4cj = { git = "https://gitcode.com/qingss0/nn4cj.git", branch="main"}
 # 这种x86机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
 [target.x86_64-unknown-linux-gnu]
   [target.x86_64-unknown-linux-gnu.dependencies]

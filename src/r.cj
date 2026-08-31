@@ -277,7 +277,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 	
 
 	/* 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数（元数据） */
-	public static func Factory(luapath: String, metadata: JsonValue): MtVars_Lua
+	public static func Factory(luapath: String, getMetadata: ()->JsonObject): MtVars_Lua
 	{
 
 		/* 创建LUA状态机对象 */
@@ -286,6 +286,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		/* 检查有没有创建成功？ */
 		if ( unsafe { Lua_check(L) } == LUA_ERR) {
 			throw IllegalMemoryException("Lua_check()")  }
+
 
 		let mtVars_Lua = MtVars_Lua(
 
@@ -301,8 +302,12 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			 */
 			things: { json: JsonValue =>
 
+				/* 获取元数据 */
+				let metadata = getMetadata()
+
 				/*  从元数据（json_obj）进行深拷贝  */
-				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				//let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				let obj = metadata
 				obj.put("mode", JsonString("call"))
 
 				/*  合并两张（json_obj）表（元数据和参数）  */
@@ -311,12 +316,12 @@ class MtVars_Lua <: MatrixVars_Hardware {
 					let val = fields.get(k).getOrThrow()
 					obj.put(k, val)
 				}
-				//println("Lua scripts call parameters: ${obj.toString()}")
+				println("Lua scripts call parameters: ${obj.toString()}")
 
 				/* 调用Lua解释器 */
 				let res = call_lua(L, obj)
 
-				//println("Lua script call result: ${res.toString()}")
+				println("Lua script call result: ${res.toString()}")
 				return res
 
 			},
@@ -325,22 +330,28 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			rise: { =>
 
 				/*  在这里构建Lua状态机   TODO: 使用专用的异常  */
+				println("build lua state")
 				if (build_lua(L, luapath) == false) {
 					throw Exception("build_lua")
 				}
 
 
+				/* 获取元数据 */
+				println("get metadata")
+				let metadata = getMetadata()
+
 				/* 从元数据进行深拷贝 */
-				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				//let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				let obj = metadata
 
 				/* 插入模式指令 （告知lua脚本这是在构建） */
 				obj.put("mode", JsonString("build"))
-				//println("Lua scripts build parameters: ${obj.toString()}")
+				println("Lua scripts build parameters: ${obj.toString()}")
 
 				/* 开始构建 */
 				let res = call_lua(L, obj)
 
-				//println("Lua script build result: ${res.toString()}")
+				println("Lua script build result: ${res.toString()}")
 			},
 
 			/*
@@ -349,16 +360,20 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			 */
 			free: { =>
 
+				/* 获取元数据 */
+				let metadata = getMetadata()
+
 				/*  从元数据进行深拷贝  */
-				let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				//let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
+				let obj = metadata
 
 				/*  插入模式指令  */
 				obj.put("mode", JsonString("destroy"))
-				//println("Lua scripts destroy parameters: ${obj.toString()}")
+				println("Lua scripts destroy parameters: ${obj.toString()}")
 
 				let res = call_lua(L, obj)
 
-				//println("Lua script destroy result: ${res.toString()}")
+				println("Lua script destroy result: ${res.toString()}")
 				/* ---- 在这里写就Lua状态机的解构 ---- */
 				destroy_lua(L)
 
@@ -373,6 +388,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 		 */
 		return mtVars_Lua
 	}
+
 
 	/*  构造Lua状态机  申请资源
 	 *
@@ -454,9 +470,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			if (status == LUA_OK) {
 				var status = Lua_pcallk(L, 0, LUA_MULTRET, 0, 0, CPointer<Unit>())
 				println("lua build status: ${status}")
-				if (status == LUA_OK) {
-					return true
-				}
+				if (status == LUA_OK) { return true  }
 			}
 
 			/* -------- 从栈顶获取错误信息 -------- */
@@ -903,17 +917,17 @@ class RobotStruct {
 
 			/* ---- 【特殊的】I2C硬件
 			 * ---- */
-			if (MtName == "I2C") {
-				let idxName = matrix.indexOfCol(0,"name")
-				for (i in 1..matrix.size) {
-					let name = matrix[i, idxName]
-					M[name] = MtVars_I2C.Factory(matrix, i, M)
-				}
-			}
+			//if (MtName == "I2C") {
+			//	let idxName = matrix.indexOfCol(0,"name")
+			//	for (i in 1..matrix.size) {
+			//		let name = matrix[i, idxName]
+			//		M[name] = MtVars_I2C.Factory(matrix, i, M)
+			//	}
+			//}
 
 			/* ---- 【特殊的】Alias别名硬件
 			 * ---- */
-			else if (MtName == "Alias") {
+			if (MtName == "Alias") {
 				let idxName =  matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size) {
 					let name =  matrix[i, idxName]
@@ -950,37 +964,15 @@ class RobotStruct {
 			else if (matrix.size > 0) {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size ) {
-					let obj = JsonObject()
 					let name = matrix[i, idxName]
-					for (j in 0..matrix.col) {
-						let colName = matrix[0, j]
-						let value = MatrixVars_Hardware.getMt(matrix, i, j)
-						/* ---- ----
-						 * ---- FIXME: 加入点号别名的检索逻辑 ----
-						 * ---- ---- */
-						if (let Some(mt) <- M.get(value)) {
-							/* ---- ----
-							 * ---- 存在该名称的变量，传入空对象参数，并求取返回值
-							 * ---- ---- */
-							let json = JsonObject()
-							let res = mt.play(json).asObject()
-							let fields: HashMap<String, JsonValue> = res.getFields()
-							for (k in fields.keys()) {
-								let val = fields.get(k).getOrThrow()
-								obj.put(k, val)
-							}
-								
-						}
-						else {
-							obj.put(colName, JsonString(value))
-						}
-					}
-
 					/* ---- fixme: 这里的脚本路径是写死的，随后我们需要设计一个机制，从环境变量中查找
-					 * ---- */
-					M[name] = MtVars_Lua.Factory("./modules/${MtName}.lua", obj)
+					 * ---- TODO: 从家目录查找 */
+					M[name] = MtVars_Lua.Factory("./modules/${MtName}.lua", {=>
+							println(123)
+							this._getMetadata(matrix, i)
+					})
 				}
-			}
+		}
 		}
 	}
 
@@ -1047,6 +1039,41 @@ class RobotStruct {
 
 		set_params.put(name_param, JsonFloat(val_fp64))	/* 设置一个该硬件变量的参数 */
 	}
+
+	private func _getMetadata(matrix: MatrixObject, i: Int64): JsonObject {
+		let obj = JsonObject()
+		let idxName = matrix.indexOfCol(0, "name")
+		let name = matrix[i, idxName]
+		for (j in 0..matrix.col) {
+			let colName = matrix[0, j]
+			let value = MatrixVars_Hardware.getMt(matrix, i, j)
+			/* ---- ----
+			 * ---- FIXME: 加入点号别名的检索逻辑 ----
+			 * ---- ---- */
+			if (j == idxName) { continue  } /* 自身调用警告 */
+			if (let Some(mt) <- M.get(value)) {
+				/* ---- ----
+				 * ---- 存在该名称的变量，传入空对象参数，并求取返回值
+				 * ---- ---- */
+				let json = JsonObject()
+				let res = mt.play(json).asObject()
+				let fields: HashMap<String, JsonValue> = res.getFields()
+				for (k in fields.keys()) {
+					let val = fields.get(k).getOrThrow()
+					obj.put(k, val)
+				}
+					
+			}
+			else {
+				obj.put(colName, JsonString(value))
+			}
+		}
+
+		return obj
+		
+	}
+
+
 }
 
 

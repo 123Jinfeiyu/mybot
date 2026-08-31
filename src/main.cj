@@ -14,7 +14,7 @@ import std.fs.*
 import stdx.encoding.json.*
 import bot4cj.hd.*
 import ctype4cj.*
-import nn4cj.*
+//import nn4cj.*
 
 /* ---- 神经网络输出路径 ---- */
 var NNS_OUT: Option<String> = None	
@@ -38,9 +38,8 @@ main(args: Array<String>): Int64 {
 	/*
 	 *  初始化神经网络 （init nn）
 	 *  TODO: 可以去掉内部初始化参数，使用矩阵式模板进行初始化
+	 *  NOTE(20260830-qing): 更换nn4cj库之后，我的开发机器无法编译神经网络部分了，所以注释掉了
 	 */
-
-
 	//var nns: ArrayList<Nn> = 
 	//if (options.keys().contains("i")) {
 	//	let filename = options['i']
@@ -118,7 +117,7 @@ func print_help()
 func run_test(key: String) {
 
 	/*  神经网络门测试  */
-	if (key == "nn1") {  testNn()  }
+	if (key == "nn1") {  /*testNn()*/  }
 
 	/* -------- 测试反序列化矩阵，并且序列化输出 -------- */
 	else if (key == "matrix_o") {

@@ -8,7 +8,7 @@ name      alias;
 
 @I2C
  name        path;
-i2c-0  /dev/i2c-0;
+#i2c-0	/dev/i2c-0;
 i2c-1  /dev/i2c-1;
 @
 
@@ -42,10 +42,14 @@ name  channels  sample_rate  volumn  max_f  min_f;
   s8  -180     -       -           -        7;	# rf1
   s9   180     -       -           -        8;	# cam0
  s10   180     -       -           -        9;	# cam1
+ s11   90      -       -           -       10;  # rb2
+ s12   90      -       -           -       11;  # lb2
+ s13   90      -       -           -       12;  # lf2
+ s14   90      -       -           -       13;  # rf2
 @
 
 # 行动矩阵
 @Action
-s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	# column name
-  45     -    45     -    45     -    45     -    90     90     10        200;	# stand
+s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A   spk.F  spk.delay;	# column name
+  45     -    45     -    45     -    45     -    90     90      10        200;	# stand
 @
