@@ -42,9 +42,9 @@ name  channels  sample_rate  volumn  max_f  min_f;
   s8  -180     -       -           -        9;	# rf1
   s9   180     -       -           -        0;	# cam0
  s10   180     -       -           -        1;	# cam1
- s11    90     -       -   pca9685-0        2;  # rb2
- s12    90     -       -           -        3;  # lb2
- s13  -180     0      55           -        4;  # lf2
- s14   180     -       -           -        8;  # rf2
+ s11    90     -       -   pca9685-0        4;  # rb2
+ s12    90     -       -           -        7;  # lb2
+ s13  -180     0      55           -       13;  # lf2
+ s14   180     -       -           -       10;  # rf2
 @
 @
