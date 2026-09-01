@@ -1144,6 +1144,20 @@ class RobotStruct {
 	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
 	private func run_drl_action(AC: LinkedList<MatrixObject>) {
 		let ActionDefs = findMt(AC, "Action").getOrThrow()	/* MatrixObject */
+
+		/* 按标题行的列顺序收集设备名，保证执行顺序与脚本列序一致
+		 * （例如把 Timer(Speaker) 列写在最后，它就会最后执行，见 issue #12） */
+		let order = ArrayList<String>()
+		for (j in 0..ActionDefs.col) {
+			let name_HV = ActionDefs[0, j]
+			let arr = name_HV.split(".")
+			if (arr.size != 2) {
+				throw IllegalArgumentException("Action column is not valid")  }
+			let name_dev = arr[0]
+			if (!order.contains(name_dev)) {
+				order.add(name_dev)  }
+		}
+
 		for (i in 1..ActionDefs.size) {
 			let set =JsonObject()		/* 每个硬件变量的参数集合 */
 			for (j in 0..ActionDefs.col) {
@@ -1151,8 +1165,7 @@ class RobotStruct {
 			}
 
 			/* -------- 执行一行 -------- */
-			let keys = set.getFields().keys()
-			for (name_dev in keys) {
+			for (name_dev in order) {
 				let hv = M[name_dev]
 				let params: JsonValue = set.get(name_dev).getOrThrow()
 				let _: JsonValue = hv.play(params)
