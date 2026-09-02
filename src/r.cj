@@ -17,6 +17,7 @@ import ctype4cj.*
 import iic4cj.*
 import spi4cj.*
 import lua4cj.*
+import mt2.*
 
 /*
  * ---------------- 硬件变量基类 ----------------

@@ -69,7 +69,7 @@ cat scripts/std.mt | cjpm run	# 蜘蛛机器人站立脚本
 每个矩阵对象以@name 行开头，@ 行结束。
 
 
-示例：
+robot机器人结构示例：
 
 ```mt
 
@@ -99,8 +99,8 @@ pca9685-0  i2c-1   0x40;
 # 定义mpu6050硬件
 @MPU6050
      name    I2C   path;
-mpu6050-0  i2c-1   0x69;
-mpu6050-1  i2c-1   0x68;
+#mpu6050-0  i2c-1   0x69;
+#mpu6050-1  i2c-1   0x68;
 #mpu6050-2  i2c-0   0x68;
 #mpu6050-3  i2c-0   0x69;
 @
@@ -125,7 +125,12 @@ name  channels  sample_rate  volumn  max_f  min_f;
   s9   180     -       -           -        8;	# cam0
  s10   180     -       -           -        9;	# cam1
 @
+```
 
+
+action机器人动作脚本实例：
+
+```
 # 行动矩阵为硬件变量输入参数
 @Action
 s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	# column name
