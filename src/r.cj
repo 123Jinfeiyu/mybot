@@ -246,6 +246,37 @@ func Lua_i2cReadMulti(L: lua_State): C_Int {
 }
 
 
+@C /* 纯读I2C多个字节（不写指针字节，用于SGP30这类命令式传感器）
+ * 返回大端合并后的整数值，失败返回 -1。
+ *
+ * Lua 调用示例（见 modules/SGP30.lua）：
+ *   i2c_set_addr(fd, 0x58)
+ *   i2c_write_reg(fd, 0x20, 0x08)  -- 发送 Measure_air_quality 命令（2字节）
+ *   milli_sleep(12)                -- 等待测量完成
+ *   local raw = i2c_read(fd, 6)    -- 纯读6字节（不写任何字节） */
+func Lua_i2cRead(L: lua_State): C_Int {
+	unsafe {
+		let fd = Int32(Lua_checkinteger(L, 1))
+		var n = Int64(Lua_checkinteger(L, 2))
+		if (n < 1 || n > 8) { n = 1 }
+		let buf = LibC.malloc<UInt8>(count: n)
+		let ret = libc_read(fd, CPointer<Unit>(buf), UIntNative(n))
+		if (ret != IntNative(n)) {
+			LibC.free(buf)
+			Lua_pushinteger(L, -1)
+			return 1
+		}
+		var v: Int64 = 0
+		for (i in 0..n) {
+			v = (v << 8) | Int64((buf + i).read())
+		}
+		LibC.free(buf)
+		Lua_pushinteger(L, v)
+		return 1
+	}
+}
+
+
 @C /* 毫秒级延时 */
 func Lua_milliSleep(L: lua_State): C_Int {
 	unsafe {
@@ -558,6 +589,11 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			/*  i2c_read_multi()  */
 			cstr = LibC.mallocCString("i2c_read_multi")
 			Lua_register(L, cstr, Lua_i2cReadMulti)
+			LibC.free(cstr)
+
+			/*  i2c_read()  */
+			cstr = LibC.mallocCString("i2c_read")
+			Lua_register(L, cstr, Lua_i2cRead)
 			LibC.free(cstr)
 
 			/* -------- SPI --------*/
