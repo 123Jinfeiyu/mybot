@@ -14,7 +14,7 @@ public class Spk {
 	}
 
 	/* -------- 控制扬声器发声 -------- */
-	public func play(frequency: Float32, volume: Float64, durations_ms: Int32): Bool {
+	public func play(_: Float32, _: Float64, durations_ms: Int32): Bool {
 		//unsafe {  play_frequency(frequency, durations_ms, volume, channels, sample_rate)  }
 		sleep(Duration.millisecond * Int64(durations_ms))
 		return true

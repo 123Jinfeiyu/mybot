@@ -19,7 +19,7 @@ public class Servo {
 		this.callback_setAngle = callback_setAngle
 	}
 
-	public func setAngle(angle: Float32) {
+	public func setAngle(angle: Float32): Unit {
 		var a = angle
 		a += offset	/* ---- 加上漂移值 ---- */
 		if (a > abs(max)) { a = abs(max)}

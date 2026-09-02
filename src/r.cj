@@ -18,6 +18,7 @@ import iic4cj.*
 import spi4cj.*
 import lua4cj.*
 import mt2.*
+import SQL4cj.*
 
 /*
  * ---------------- 硬件变量基类 ----------------
@@ -70,7 +71,7 @@ open class MatrixVars_Hardware {
 	 *  伪初始化器  该方法会打开硬件，什么也不传入和返回
 	 */
 
-	public func build() {
+	public func build(): Unit {
 
 		if (let Some(callback) <- rise) {  callback()  }
 	}
@@ -79,7 +80,7 @@ open class MatrixVars_Hardware {
 	 *  -------------------------------- *
 	 *  伪解构器   该方法会关闭硬件，什么也不传入和返回
 	 */
-	public func destroy() {
+	public func destroy(): Unit {
 
 		if (let Some(callback) <- free) {  callback()  }
 	}
@@ -902,7 +903,7 @@ class MtVars_Servo <: MatrixVars_Hardware {
 	 *  @
 	 */
 	public static func Factory(	/* 工厂模式：使用矩阵对象构造 */
-		ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>)//: MtVars_Servo
+		ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Servo
 	{
 		let idxName = ServoDefs.indexOfCol(0, "name")
 		let idxMax = ServoDefs.indexOfCol(0, "max")
@@ -967,7 +968,7 @@ class MtVars_Speaker <: MatrixVars_Hardware {
 	 *  @
 	 */
 	public static func Factory(
-		SpeakerDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker {
+		SpeakerDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker {
 
 		let idxName = SpeakerDefs.indexOfCol(0, "name")
 		let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
@@ -1039,7 +1040,7 @@ class RobotStruct {
 	}
 
 	/* -------- 激活所有硬件变量 -------- */
-	public func  active() {
+	public func  active(): Unit {
 		for (item in M.values()) {
 			item.build()
 		}
@@ -1050,7 +1051,7 @@ class RobotStruct {
 	 * 
 	 *  INFO(20260517-qing): 它需要以倒序方式进行清除
 	 */
-	public func deactive() {
+	public func deactive(): Unit {
 		let items = M.values().toArray()
 		for (i in items.size-1..=0:-1) {
 			items[i].destroy()
@@ -1058,7 +1059,7 @@ class RobotStruct {
 	}
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
-	public func run(input: InputStream) {
+	public func run(input: InputStream): Unit {
 		let AC = LinkedList<MatrixObject>()
 		readMatrix(input, AC)
 		run_drl_action(AC)
@@ -1069,7 +1070,7 @@ class RobotStruct {
 	 * 
 	 *  NOTE(20260517-qing): 使用完毕要关闭输出流
 	 */
-	public func save(out: OutputStream) {
+	public func save(out: OutputStream): Unit {
 		let ms = MatrixSaver(out)
 		ms.save(C)
 	}
@@ -1088,6 +1089,38 @@ class RobotStruct {
 				println(n)
 				C.addLast(O)  }
 			else { break }
+		}
+	}
+
+	static private func readSQL(input: InputStream, C: LinkedList<MatrixObject>) {
+		let sr = StringReader<InputStream>(input)
+		let tkns = Lexer.parseAll(sr)
+		let eves = Parser.parseAll(tkns)
+		for (eve in eves) {
+			match (eve) {
+				case CREATE_TABLE(ev) =>
+					var mt = MatrixObject()
+					for (ch in ev.tableName) {
+						mt.addRune(Rune(ch))
+					}
+					mt.submitName()
+					for (col in ev.tableColumns) {
+
+						match (col._type) {
+							case _String => 
+								for (ch in col.name) {
+									mt.addRune(Rune(ch))
+								}
+								mt.submitItem()
+							case _ => Exception("Only String is Valid")
+						}
+
+						mt.submitLine(0)
+					}
+
+					C.addLast(mt)
+				case _ => Exception("Only CREATE-TABLE is Valid")
+			}
 		}
 	}
 
