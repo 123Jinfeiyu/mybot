@@ -1117,10 +1117,10 @@ class RobotStruct {
 							case _ => Exception("Only String is Valid")
 						}
 
-						mt.submitLine(0)
 					}
-
+					mt.submitLine(0)
 					C.addLast(mt)
+
 				case INSERT_TABLE(ev) =>
 
 					C.forEach({item =>
