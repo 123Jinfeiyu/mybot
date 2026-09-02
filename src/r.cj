@@ -1035,8 +1035,8 @@ class RobotStruct {
 	 *  不行就将矩阵脚本转化为bot脚本吧
 	 */
 	public init(input: InputStream) {
-		readMatrix(input, C)
-		//readSQL(input, C)
+		//readMatrix(input, C)
+		readSQL(input, C)
 		createHardVars()
 	}
 
