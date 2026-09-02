@@ -1036,6 +1036,7 @@ class RobotStruct {
 	 */
 	public init(input: InputStream) {
 		readMatrix(input, C)
+		//readSQL(input, C)
 		createHardVars()
 	}
 
@@ -1062,6 +1063,7 @@ class RobotStruct {
 	public func run(input: InputStream): Unit {
 		let AC = LinkedList<MatrixObject>()
 		readMatrix(input, AC)
+		//readSQL(input, AC)
 		run_drl_action(AC)
 	}
 
@@ -1119,7 +1121,31 @@ class RobotStruct {
 					}
 
 					C.addLast(mt)
-				case _ => Exception("Only CREATE-TABLE is Valid")
+				case INSERT_TABLE(ev) =>
+
+					C.forEach({item =>
+
+						if (ev.targetTabName == item.getName()) {
+
+							println("{${ev.targetTabName}}")
+
+							for (row in ev.tableRows) {
+								for (i in 0..item.col) {
+									for (col in row) {
+										if (col.columnName == item[0, i]) {
+											for (ch in col.value) {
+												item.addRune(Rune(ch))
+											}
+											item.submitItem()
+										}
+									}
+								}
+								item.submitLine(0)
+							}
+						}
+					})
+
+				case _ => Exception("Unsupported sql command")
 			}
 		}
 	}
@@ -1189,7 +1215,6 @@ class RobotStruct {
 					/* ---- fixme: 这里的脚本路径是写死的，随后我们需要设计一个机制，从环境变量中查找
 					 * ---- TODO: 从家目录查找 */
 					addHardwareVar(name, MtVars_Lua.Factory("./modules/${MtName}.lua", {=>
-							println(123)
 							this._getMetadata(matrix, i)
 					}))
 				}
@@ -1236,6 +1261,7 @@ class RobotStruct {
 
 			/* -------- 执行一行 -------- */
 			for (name_dev in order) {
+				M.forEach({key, _ => println("{${key}}")})
 				let hv = M[name_dev]
 				let params: JsonValue = set.get(name_dev).getOrThrow()
 				let _: JsonValue = hv.play(params)
