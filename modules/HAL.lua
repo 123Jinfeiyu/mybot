@@ -73,6 +73,8 @@ HAL.backend = "ffi"
 ------------------------------------------------------------------
 local O_RDWR = 2
 HAL.I2C_SLAVE = 0x0703
+HAL.I2C_SLAVE_FORCE = 0x0706	-- 地址被内核驱动占用（EBUSY）时强制设定，语义同 i2c-tools -f
+HAL.EBUSY = 16
 
 -- ioctl 编号按 _IOC(dir=WRITE(1)<<30 | size<<16 | type('k'=0x6b)<<8 | nr) 计算
 HAL.SPI_IOC_WR_MODE          = 0x40016b01	-- _IOW('k', 1, __u8)
@@ -91,6 +93,7 @@ HAL.sys = {
 	read    = function(fd, buf, n)  return tonumber(ffi.C.read(fd, buf, n)) end,
 	write   = function(fd, buf, n)  return tonumber(ffi.C.write(fd, buf, n)) end,
 	usleep  = function(us)          return ffi.C.usleep(us) end,
+	errno   = function()            return ffi.errno() end,
 }
 
 ------------------------------------------------------------------
@@ -139,6 +142,7 @@ function i2c_close(fd)
 end
 
 -- 设置从设备地址（ioctl I2C_SLAVE，作用于 fd，跨状态机持久）
+-- 地址被内核驱动占用（EBUSY）时回退 I2C_SLAVE_FORCE，语义同 i2c-tools 的 -f
 function i2c_set_addr(fd, addr)
 	fd = tonumber(fd)
 	addr = uint_of(addr)
@@ -147,11 +151,20 @@ function i2c_set_addr(fd, addr)
 		return false
 	end
 	local r = HAL.sys.ioctl_i(fd, HAL.I2C_SLAVE, addr)
-	if r ~= 0 then
-		print("HAL: I2C_SLAVE ioctl failed on fd " .. fd .. ": " .. tostring(r))
+	if r == 0 then return true end
+
+	local e = HAL.sys.errno()
+	if e == HAL.EBUSY then
+		print(string.format(
+			"HAL: addr 0x%02x is claimed by a kernel driver (EBUSY), retrying with I2C_SLAVE_FORCE", addr))
+		r = HAL.sys.ioctl_i(fd, HAL.I2C_SLAVE_FORCE, addr)
+		if r == 0 then return true end
+		print("HAL: I2C_SLAVE_FORCE ioctl failed on fd " .. fd .. ": errno " .. HAL.sys.errno())
 		return false
 	end
-	return true
+
+	print("HAL: I2C_SLAVE ioctl failed on fd " .. fd .. ": errno " .. tostring(e))
+	return false
 end
 
 -- 写寄存器（2 字节：reg + val），成功返回 true
