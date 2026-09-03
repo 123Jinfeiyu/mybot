@@ -14,7 +14,6 @@ import std.env.*
 import std.process.*
 import stdx.encoding.json.*
 import bot4cj.math.*
-import bot4cj.hd.*
 import ctype4cj.*
 import iic4cj.*
 import spi4cj.*
@@ -906,68 +905,6 @@ class MtVars_Alias <: MatrixVars_Hardware {
 //	}
 //}
 
-/*  舵机变量类
- *  
- *  TODO(20260515-qing): 现在普通的舵机类也是传入回调函数的，
- *  但是我们考虑到该硬件变量调用别的硬件变量，所以还是要专门做一个舵机硬件变量
- * 
- *  TODO（20260612-qing): 根据Lua硬件脚本的返回结果，调用别的硬件变量
- */
-class MtVars_Servo <: MatrixVars_Hardware {
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None  )
-		{  super(things: things, rise: rise, free: free)  }
-
-	/*
-	 *  @Servo
-	 *  name   max  min  offset  controller  channel;
-	 *    s1    90    -       -   pca9685-0        0;
-	 *  @
-	 */
-	public static func Factory(	/* 工厂模式：使用矩阵对象构造 */
-		ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Servo
-	{
-		let idxName = ServoDefs.indexOfCol(0, "name")
-		let idxMax = ServoDefs.indexOfCol(0, "max")
-		let idxMin = ServoDefs.indexOfCol(0, "min")
-		let idxOffset = ServoDefs.indexOfCol(0,"offset")
-		let idxCtrl = ServoDefs.indexOfCol(0, "controller")
-		let idxChannel = ServoDefs.indexOfCol(0, "channel")
-
-		let name = ServoDefs[i, idxName]
-		let max = parseMt<Float32>(ServoDefs, i, idxMax)
-		let min = parseMt<Float32> (ServoDefs,i, idxMin)
-		let offset = parseMt<Float32>(ServoDefs, i, idxOffset)
-		let ctrl = getMt(ServoDefs, i, idxCtrl)
-		let channel = parseMt<UInt8>(ServoDefs, i, idxChannel)
-
-		print("Create a Servo hard-Var: ${name}, max: ${max}, min: ${min}, offset: ${offset}")
-		println(", controller: ${ctrl}, channel: ${channel}")
-
-		let controller = map[ctrl]	/* like pca9685 */
-		let servo = Servo(max: max, min: min, offset: offset,
-			callback_setAngle: {angle: Float32 =>
-				let obj = JsonObject()
-				obj.put("channel", JsonInt(Int64(channel)))
-				//obj.put("angle", JsonFloat(Float64(angle)))
-				obj.put("angle", JsonInt(Int64(angle)))
-				controller.play(obj)
-		})
-
-		/*
-		 * {"angle": 180.0}
-		 */
-		let mtvars_servo = MtVars_Servo(things: {json=>
-				let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
-				servo.setAngle(Float32(angle))
-				let ret = JsonObject()
-				ret.put("status", JsonString("OK"))
-				return ret
-		})
-		return mtvars_servo
-	}
-}
 
 
 
@@ -1150,15 +1087,6 @@ class RobotStruct {
 				}
 			}
 
-			/* ---- 【特殊的】Servo舵机硬件
-			 * ---- */
-			else if (MtName == "Servo") {
-				let idxName = matrix.indexOfCol(0, "name")
-				for (i in 1..matrix.size) {
-					let name = matrix[i, idxName]
-					addHardwareVar(name, MtVars_Servo.Factory(matrix, i, M))
-				}
-			}
 
 			/* ---- [特殊的] Action矩阵
 			 * ---- */
