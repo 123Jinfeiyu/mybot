@@ -10,6 +10,8 @@ import std.time.*
 import std.random.*
 import std.collection.*
 import std.convert.*
+import std.env.*
+import std.process.*
 import stdx.encoding.json.*
 import bot4cj.math.*
 import bot4cj.hd.*
@@ -477,14 +479,12 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			rise: { =>
 
 				/*  在这里构建Lua状态机   TODO: 使用专用的异常  */
-				println("build lua state")
 				if (build_lua(L, luapath) == false) {
-					throw Exception("build_lua")
+					throw Exception("Failed to build Lua state from script: '${luapath}'. Please check if the file exists and is valid Lua code.")
 				}
 
 
 				/* 获取元数据 */
-				println("get metadata")
 				let metadata = getMetadata()
 
 				/* 从元数据进行深拷贝 */
@@ -1212,9 +1212,10 @@ class RobotStruct {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size ) {
 					let name = matrix[i, idxName]
-					/* ---- fixme: 这里的脚本路径是写死的，随后我们需要设计一个机制，从环境变量中查找
-					 * ---- TODO: 从家目录查找 */
-					addHardwareVar(name, MtVars_Lua.Factory("./modules/${MtName}.lua", {=>
+					/* ---- 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径，默认为 ./modules ---- */
+					let modulePath = Process.current.getEnv("BOT4CJ_MODULE_PATH") ?? "./modules"
+					let scriptPath = "${modulePath}/${MtName}.lua"
+					addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
 							this._getMetadata(matrix, i)
 					}))
 				}
@@ -1238,7 +1239,11 @@ class RobotStruct {
 
 	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
 	private func run_drl_action(AC: LinkedList<MatrixObject>) {
-		let ActionDefs = findMt(AC, "Action").getOrThrow()	/* MatrixObject */
+		let ActionDefsOpt = findMt(AC, "Action")
+		if (ActionDefsOpt.isNone()) {
+			throw IllegalArgumentException("No @Action matrix found in script. Please define action matrix in your .mt file.")
+		}
+		let ActionDefs = ActionDefsOpt.getOrThrow()	/* MatrixObject */
 
 		/* 按标题行的列顺序收集设备名，保证执行顺序与脚本列序一致
 		 * （例如把 Timer(Speaker) 列写在最后，它就会最后执行，见 issue #12） */
@@ -1261,9 +1266,16 @@ class RobotStruct {
 
 			/* -------- 执行一行 -------- */
 			for (name_dev in order) {
-				M.forEach({key, _ => println("{${key}}")})
-				let hv = M[name_dev]
-				let params: JsonValue = set.get(name_dev).getOrThrow()
+				let hvOpt = M.get(name_dev)
+				if (hvOpt.isNone()) {
+					throw IllegalArgumentException("Hardware variable '${name_dev}' is used in @Action but not defined in hardware declaration section.")
+				}
+				let hv = hvOpt.getOrThrow()
+				let paramsOpt = set.get(name_dev)
+				if (paramsOpt.isNone()) {
+					throw IllegalArgumentException("Parameter for hardware variable '${name_dev}' is missing in action row ${i}.")
+				}
+				let params: JsonValue = paramsOpt.getOrThrow()
 				let _: JsonValue = hv.play(params)
 			}
 
