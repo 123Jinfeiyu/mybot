@@ -935,6 +935,34 @@ class RobotStruct {
 	}
 
 	/*
+	 *  注册一张 @Alias 矩阵中的所有别名变量
+	 *
+	 *  session: 动作脚本侧注册时传入本次 run 的会话集合——
+	 *  同一动作脚本内重复定义抛错；与结构脚本同名则覆盖并打日志。
+	 *  None 表示结构脚本侧注册，重名直接抛错（addHardwareVar 原有行为）。
+	 */
+	private func registerAliasMatrix(matrix: MatrixObject, session: Option<HashSet<String>>) {
+		let idxName = matrix.indexOfCol(0, "name")
+		for (i in 1..matrix.size) {
+			let name = matrix[i, idxName]
+			let aliasVar = MtVars_Alias.Factory(matrix, i, M)
+			if (let Some(set) <- session) {
+				if (set.contains(name)) {
+					throw IllegalArgumentException("Duplicate alias name '${name}' within the action script")
+				}
+				set.add(name)
+				if (let Some(_) <- M.get(name)) {
+					println("Alias '${name}' defined in action script overrides the structure definition")
+				}
+				M[name] = aliasVar
+			}
+			else {
+				addHardwareVar(name, aliasVar)
+			}
+		}
+	}
+
+	/*
 	 *  使用矩阵脚本驱动机器人
 	 * 
 	 *  不行就将矩阵脚本转化为bot脚本吧
@@ -969,6 +997,15 @@ class RobotStruct {
 		let AC = LinkedList<MatrixObject>()
 		readMatrix(input, AC)
 		//readSQL(input, AC)
+
+		/* ---- 注册动作脚本中内联的 @Alias（同名时覆盖结构脚本的定义） ---- */
+		let session = HashSet<String>()
+		for (matrix in AC) {
+			if (matrix.getName().trimAscii() == "Alias") {
+				registerAliasMatrix(matrix, Some(session))
+			}
+		}
+
 		run_drl_action(AC)
 	}
 
@@ -1080,11 +1117,7 @@ class RobotStruct {
 			/* ---- 【特殊的】Alias别名硬件
 			 * ---- */
 			if (MtName == "Alias") {
-				let idxName =  matrix.indexOfCol(0, "name")
-				for (i in 1..matrix.size) {
-					let name =  matrix[i, idxName]
-					addHardwareVar(name, MtVars_Alias.Factory(matrix, i, M))
-				}
+				registerAliasMatrix(matrix, None)
 			}
 
 
