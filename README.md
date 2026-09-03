@@ -179,3 +179,23 @@ s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	#
 @
 
 ```
+
+动作脚本中也可以内联定义 `@Alias`（别名矩阵），无需写进结构脚本：
+
+```mt
+# 与 @Action 写在同一个 .mt 文件中
+@Alias
+name  alias;
+   A  angle;
+   F  frequency;
+@
+
+@Action
+s1.A  spk.F;
+   45    10;
+@
+```
+
+- 结构脚本（.sql）与动作脚本（.mt）两侧都可以定义别名
+- 同名时**动作脚本的定义覆盖结构脚本**（会打印覆盖日志）
+- 同一动作脚本内重复定义同名别名会报错
