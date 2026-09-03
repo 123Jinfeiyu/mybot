@@ -44,6 +44,37 @@ SPI 传输延时（delay_usecs）无 per-fd 持久化 ioctl，由传输函数的
 （配置写在 @SPI 矩阵的 delay 列，SPI.lua 的 `call()` 随 fd 返回，经元数据引用流入设备驱动，参考 ADS1256.lua）。
 
 
+## 守护线程（@Daemon）
+
+后台持续采样（如 IMU）用 `@Daemon` 矩阵声明，宿主用 **Cangjie `spawn` 原语**起守护线程：
+
+```sql
+CREATE TABLE Daemon (
+	name  String,
+	chunk String
+);
+INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/daemon_probe.lua');
+```
+
+**并发模型（关键）**：
+- 守护线程由 `spawn { ... }` 创建（返回 `Future`，`future.get()` 即 join）——**不能用 pthread4cj 裸线程**：foreign pthread 无 Cangjie 运行时线程态，在其上跑 @C 代码必崩（PoC 实测 3/3 SIGSEGV）；spawn 线程运行时已附着，安全
+- 守护线程持有**独立 lua_State**（`jit.off` + loadfilex 采样 chunk 一次 + pcall 一次，chunk 内自带 `while not should_stop` 循环），与主线程状态机 1:1 隔离——规避 LuaJIT VM 非线程安全
+- **IPC 经共享内存槽** `daemon_slot_t`（`modules/lib/pthread.lua` 定义布局：mutex+count+nvals+values[16]+stop）：守护侧 Lua `P.publish(slot, {...})` 写值，主线程侧 `play()` 加锁读值，双方用同一 pthread_mutex 防撕裂
+
+**采样 chunk 契约**（运行在守护线程的独立状态机）：
+```lua
+if jit then jit.off() end
+local P = dofile(.../lib/pthread.lua)
+dofile(.../lib/HAL.lua)              -- 采样要用 HAL；节拍用 milli_sleep
+local slot = P.slot_attach(DAEMON_SLOT_ADDR)   -- 宿主注入的槽地址全局
+while not P.should_stop(slot) do
+    local ax, ay, az = 采样()         -- 经 HAL 读传感器
+    P.publish(slot, { ax, ay, az })
+    milli_sleep(2)
+end
+```
+
+
 ## 解析器
 
 树莓派通过I2C接口连接pca9685后使用如下方法使用：

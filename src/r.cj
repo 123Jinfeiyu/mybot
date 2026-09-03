@@ -547,50 +547,60 @@ class MtVars_Alias <: MatrixVars_Hardware {
 
 /*
  * ---------------- 守护线程硬件变量（@Daemon） ----------------
- *  宿主侧用 pthread4cj 起原生线程，线程上创建【独立 lua_State】，
- *  loadfilex 采样 chunk 一次 + pcall 一次（chunk 内自带 while 循环，轮询停止标志）。
- *  线程与其 lua_State 1:1 独占，主线程绝不触碰该状态机——规避 LuaJIT VM 非线程安全。
- *  独立 lua_State + jit.off + load-once 的并发安全已由 C PoC 验证（3线程×20万次0崩溃）。
+ *  用 Cangjie spawn 原语起守护线程（运行时已附着，区别于 pthread4cj 裸线程——
+ *  后者在 foreign 线程上跑 Cangjie @C 代码必崩，已 PoC 证伪）。线程上创建
+ *  【独立 lua_State】，loadfilex 采样 chunk 一次 + pcall 一次（chunk 内 while 循环
+ *  轮询停止标志）。线程与其 lua_State 1:1 独占，主线程绝不触碰该状态机。
  *
- *  当前为地基探针：共享内存仅 stop 标志 + counter 计数；
- *  正式版将用 pthread.lua 的 daemon_slot_t（mutex + values）传递采样值。
+ *  IPC：共享内存槽 daemon_slot_t（布局见 modules/lib/pthread.lua，两侧严格一致），
+ *  守护侧 Lua 经 pthread.lua 的 publish 写值（mutex 保护），主线程侧 play 经
+ *  foreign pthread_mutex 加锁读取，防撕裂。
  */
+
+/* ---- 共享槽 daemon_slot_t 布局偏移（必须与 modules/lib/pthread.lua 一致）---- */
+let SLOT_COUNT_OFF: Int64 = 64		/* int32：publish 次数 */
+let SLOT_NVALS_OFF: Int64 = 68		/* int32：本次值个数 */
+let SLOT_VALUES_OFF: Int64 = 72		/* double[16]：采样值 */
+let SLOT_STOP_OFF: Int64 = 200		/* uint8：停止标志 */
+let SLOT_SIZE: Int64 = 208
+let SLOT_MAXVALS: Int64 = 16
+
+/* ---- libc pthread_mutex（直接 foreign 声明；libc 已链接，不需 pthread4cj）---- */
+foreign func pthread_mutex_init(m: CPointer<UInt8>, attr: CPointer<Unit>): Int32
+foreign func pthread_mutex_lock(m: CPointer<UInt8>): Int32
+foreign func pthread_mutex_unlock(m: CPointer<UInt8>): Int32
+foreign func pthread_mutex_destroy(m: CPointer<UInt8>): Int32
 
 /* ---- 可变状态持有者：rise/free 闭包捕获此 let 引用并改其字段，
  *      规避 Cangjie「lambda 捕获可变变量」限制 ---- */
 class DaemonHolder {
-	public let stop: CPointer<UInt8>
-	public let counter: CPointer<Int64>
+	public let slot: CPointer<UInt8>
 	public var future: Option<Future<Int64>>
-	public init(stop!: CPointer<UInt8>, counter!: CPointer<Int64>) {
-		this.stop = stop
-		this.counter = counter
+	public init(slot!: CPointer<UInt8>) {
+		this.slot = slot
 		this.future = None
 	}
 }
 
-/* ---- 守护线程体（在 spawn 线程上运行，运行时已附着）：
- *      建私有 lua_State，注入共享内存地址，跑采样 chunk（chunk 内 while 循环至 stop） ---- */
-public func daemon_body(stop: CPointer<UInt8>, counter: CPointer<Int64>, chunk: CString): Int64 {
+/* ---- 守护线程体（spawn 线程上运行）：建私有 lua_State，注入槽地址，跑采样 chunk ---- */
+public func daemon_body(slot: CPointer<UInt8>, chunk: CString): Int64 {
 	unsafe {
 		let L = Lua_init()
 		if (Lua_check(L) == LUA_ERR) { return -1i64 }
 		Lua_loadlib(L)
 
-		/* 注入共享内存地址为 Lua 全局整数 */
-		Lua_pushinteger(L, Int64(stop.toUIntNative()))
-		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_STOP_ADDR"))
-		Lua_pushinteger(L, Int64(counter.toUIntNative()))
-		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_COUNT_ADDR"))
+		/* 注入共享槽地址为 Lua 全局整数（chunk 经 pthread.lua slot_attach 附着） */
+		Lua_pushinteger(L, Int64(slot.toUIntNative()))
+		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_SLOT_ADDR"))
 
 		/* 加载采样 chunk 一次并 pcall 一次（chunk 内 while 循环直到 stop） */
 		let st = Lua_loadfilex(L, chunk, CPointer<C_Char>())
 		if (st == LUA_OK) {
 			let _ = Lua_pcall(L, 0, LUA_MULTRET, 0)
 		}
-		let n = counter.read()
+		let n = CPointer<Int32>(slot + SLOT_COUNT_OFF).read()
 		Lua_free(L)
-		return n
+		return Int64(n)
 	}
 }
 
@@ -604,7 +614,7 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 	/*
 	 *  @Daemon
 	 *   name    chunk;
-	 *   d0      modules/lib/daemon_probe.lua;
+	 *   sim0    modules/lib/daemon_probe.lua;
 	 *  @
 	 */
 	public static func Factory(defs: MatrixObject, i: Int64,
@@ -616,43 +626,58 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 		let chunkPath = MatrixVars_Hardware.getMt(defs, i, idxChunk)
 		println("Create a Daemon hard-Var: ${name}, chunk: ${chunkPath}")
 
-		let stop = unsafe { LibC.malloc<UInt8>(count: 1) }
-		unsafe { stop.write(0u8) }
-		let counter = unsafe { LibC.malloc<Int64>(count: 1) }
-		unsafe { counter.write(0i64) }
-		let holder = DaemonHolder(stop: stop, counter: counter)
+		/* 分配并清零共享槽，初始化 mutex（offset 0） */
+		let slot = unsafe { LibC.malloc<UInt8>(count: SLOT_SIZE) }
+		unsafe {
+			for (k in 0..SLOT_SIZE) { (slot + k).write(0u8) }
+			pthread_mutex_init(slot, CPointer<Unit>())
+		}
+		let holder = DaemonHolder(slot: slot)
 
 		let daemon = MtVars_Daemon(
-			/* play：主线程读迭代计数（探针观测；正式版改读 values 槽） */
+			/* play：主线程加锁读采样值 → JSON */
 			things: { _: JsonValue =>
-				let n = unsafe { holder.counter.read() }
-				println("Daemon '${name}' play: iterations=${n}")
 				let ret = JsonObject()
-				ret.put("status", JsonString("OK"))
-				ret.put("iterations", JsonInt(n))
+				let arr = JsonArray()
+				unsafe {
+					pthread_mutex_lock(holder.slot)
+					let nvals = Int64(CPointer<Int32>(holder.slot + SLOT_NVALS_OFF).read())
+					let count = Int64(CPointer<Int32>(holder.slot + SLOT_COUNT_OFF).read())
+					var nv = nvals
+					if (nv > SLOT_MAXVALS) { nv = SLOT_MAXVALS }
+					for (k in 0..nv) {
+						let v = CPointer<Float64>(holder.slot + SLOT_VALUES_OFF + 8 * k).read()
+						arr.add(JsonFloat(v))
+					}
+					let v0 = if (nv > 0) { CPointer<Float64>(holder.slot + SLOT_VALUES_OFF).read() } else { 0.0 }
+					pthread_mutex_unlock(holder.slot)
+					ret.put("status", JsonString("OK"))
+					ret.put("count", JsonInt(count))
+					ret.put("values", arr)
+					println("Daemon '${name}' play: count=${count} nvals=${nvals} v0=${v0}")
+				}
 				return ret
 			},
 			/* rise：spawn 守护线程（Cangjie 原生并发原语，运行时已附着） */
 			rise: { =>
 				unsafe {
 					let cstr = LibC.mallocCString(chunkPath)
-					let stop_p = holder.stop
-					let cnt_p = holder.counter
-					let f = spawn { daemon_body(stop_p, cnt_p, cstr) }
+					let slot_p = holder.slot
+					let f = spawn { daemon_body(slot_p, cstr) }
 					holder.future = Option<Future<Int64>>.Some(f)
 					println("Daemon '${name}' spawned")
 				}
 			},
-			/* free：置停止标志 + future.get() 等待退出（显式停止，见 issue #3） */
+			/* free：置停止标志 + future.get() 等待退出 + 销毁 mutex（显式停止，见 issue #3） */
 			free: { =>
 				unsafe {
-					holder.stop.write(1u8)
+					(holder.slot + SLOT_STOP_OFF).write(1u8)
 					if (let Some(f) <- holder.future) {
 						let n = f.get()
-						println("Daemon '${name}' joined, total iterations=${n}")
+						println("Daemon '${name}' joined, total publishes=${n}")
 					}
-					LibC.free(holder.stop)
-					LibC.free(holder.counter)
+					pthread_mutex_destroy(holder.slot)
+					LibC.free(holder.slot)
 				}
 			}
 		)
