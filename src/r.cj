@@ -545,6 +545,121 @@ class MtVars_Alias <: MatrixVars_Hardware {
 
 
 
+/*
+ * ---------------- 守护线程硬件变量（@Daemon） ----------------
+ *  宿主侧用 pthread4cj 起原生线程，线程上创建【独立 lua_State】，
+ *  loadfilex 采样 chunk 一次 + pcall 一次（chunk 内自带 while 循环，轮询停止标志）。
+ *  线程与其 lua_State 1:1 独占，主线程绝不触碰该状态机——规避 LuaJIT VM 非线程安全。
+ *  独立 lua_State + jit.off + load-once 的并发安全已由 C PoC 验证（3线程×20万次0崩溃）。
+ *
+ *  当前为地基探针：共享内存仅 stop 标志 + counter 计数；
+ *  正式版将用 pthread.lua 的 daemon_slot_t（mutex + values）传递采样值。
+ */
+
+/* ---- 可变状态持有者：rise/free 闭包捕获此 let 引用并改其字段，
+ *      规避 Cangjie「lambda 捕获可变变量」限制 ---- */
+class DaemonHolder {
+	public let stop: CPointer<UInt8>
+	public let counter: CPointer<Int64>
+	public var future: Option<Future<Int64>>
+	public init(stop!: CPointer<UInt8>, counter!: CPointer<Int64>) {
+		this.stop = stop
+		this.counter = counter
+		this.future = None
+	}
+}
+
+/* ---- 守护线程体（在 spawn 线程上运行，运行时已附着）：
+ *      建私有 lua_State，注入共享内存地址，跑采样 chunk（chunk 内 while 循环至 stop） ---- */
+public func daemon_body(stop: CPointer<UInt8>, counter: CPointer<Int64>, chunk: CString): Int64 {
+	unsafe {
+		let L = Lua_init()
+		if (Lua_check(L) == LUA_ERR) { return -1i64 }
+		Lua_loadlib(L)
+
+		/* 注入共享内存地址为 Lua 全局整数 */
+		Lua_pushinteger(L, Int64(stop.toUIntNative()))
+		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_STOP_ADDR"))
+		Lua_pushinteger(L, Int64(counter.toUIntNative()))
+		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_COUNT_ADDR"))
+
+		/* 加载采样 chunk 一次并 pcall 一次（chunk 内 while 循环直到 stop） */
+		let st = Lua_loadfilex(L, chunk, CPointer<C_Char>())
+		if (st == LUA_OK) {
+			let _ = Lua_pcall(L, 0, LUA_MULTRET, 0)
+		}
+		let n = counter.read()
+		Lua_free(L)
+		return n
+	}
+}
+
+/* ---- 守护硬件变量 ---- */
+class MtVars_Daemon <: MatrixVars_Hardware {
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None)
+	{  super(things: things, rise: rise, free: free)  }
+
+	/*
+	 *  @Daemon
+	 *   name    chunk;
+	 *   d0      modules/lib/daemon_probe.lua;
+	 *  @
+	 */
+	public static func Factory(defs: MatrixObject, i: Int64,
+			_: HashMap<String, MatrixVars_Hardware>): MtVars_Daemon
+	{
+		let idxName = defs.indexOfCol(0, "name")
+		let idxChunk = defs.indexOfCol(0, "chunk")
+		let name = defs[i, idxName]
+		let chunkPath = MatrixVars_Hardware.getMt(defs, i, idxChunk)
+		println("Create a Daemon hard-Var: ${name}, chunk: ${chunkPath}")
+
+		let stop = unsafe { LibC.malloc<UInt8>(count: 1) }
+		unsafe { stop.write(0u8) }
+		let counter = unsafe { LibC.malloc<Int64>(count: 1) }
+		unsafe { counter.write(0i64) }
+		let holder = DaemonHolder(stop: stop, counter: counter)
+
+		let daemon = MtVars_Daemon(
+			/* play：主线程读迭代计数（探针观测；正式版改读 values 槽） */
+			things: { _: JsonValue =>
+				let n = unsafe { holder.counter.read() }
+				println("Daemon '${name}' play: iterations=${n}")
+				let ret = JsonObject()
+				ret.put("status", JsonString("OK"))
+				ret.put("iterations", JsonInt(n))
+				return ret
+			},
+			/* rise：spawn 守护线程（Cangjie 原生并发原语，运行时已附着） */
+			rise: { =>
+				unsafe {
+					let cstr = LibC.mallocCString(chunkPath)
+					let stop_p = holder.stop
+					let cnt_p = holder.counter
+					let f = spawn { daemon_body(stop_p, cnt_p, cstr) }
+					holder.future = Option<Future<Int64>>.Some(f)
+					println("Daemon '${name}' spawned")
+				}
+			},
+			/* free：置停止标志 + future.get() 等待退出（显式停止，见 issue #3） */
+			free: { =>
+				unsafe {
+					holder.stop.write(1u8)
+					if (let Some(f) <- holder.future) {
+						let n = f.get()
+						println("Daemon '${name}' joined, total iterations=${n}")
+					}
+					LibC.free(holder.stop)
+					LibC.free(holder.counter)
+				}
+			}
+		)
+		return daemon
+	}
+}
+
 /* 机器人结构类
  * 
  * 机器人结构是动态的，从脚本中解析的 
@@ -761,6 +876,15 @@ class RobotStruct {
 			 * ---- */
 			else if (MtName == "Action") {
 				;
+			}
+
+			/* ---- 【特殊的】Daemon 守护线程硬件 ---- */
+			else if (MtName == "Daemon") {
+				let idxName = matrix.indexOfCol(0, "name")
+				for (i in 1..matrix.size) {
+					let name = matrix[i, idxName]
+					addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, M))
+				}
 			}
 
 			/* ---- 【通用的】Lua脚本硬件 ---- */
