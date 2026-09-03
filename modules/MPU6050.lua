@@ -6,6 +6,7 @@
 --
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 function print_table(t, indent)
     indent = indent or 0
@@ -195,12 +196,12 @@ function call(data)
 	-- 返回字典
  	return {
 		result  = "OK",
-		ACCEL_X = (accel_x_high << 8) | accel_x_low,
-		ACCEL_Y = (accel_y_high << 8) | accel_y_low,
-		ACCEL_Z = (accel_z_high << 8) | accel_z_low,
-		GYRO_X  = (gyro_x_high  << 8) | gyro_x_low,
-		GYRO_Y  = (gyro_y_high  << 8) | gyro_y_low,
-		GYRO_Z  = (gyro_z_high  << 8) | gyro_z_low
+		ACCEL_X = bitc.bor(bitc.lshift(accel_x_high, 8), accel_x_low),
+		ACCEL_Y = bitc.bor(bitc.lshift(accel_y_high, 8), accel_y_low),
+		ACCEL_Z = bitc.bor(bitc.lshift(accel_z_high, 8), accel_z_low),
+		GYRO_X  = bitc.bor(bitc.lshift(gyro_x_high, 8), gyro_x_low),
+		GYRO_Y  = bitc.bor(bitc.lshift(gyro_y_high, 8), gyro_y_low),
+		GYRO_Z  = bitc.bor(bitc.lshift(gyro_z_high, 8), gyro_z_low)
 	}
 
 end

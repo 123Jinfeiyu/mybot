@@ -17,6 +17,7 @@
 -- ==================== 寄存器 ====================
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 local REG_CONVERSION     = 0x00   -- 转换结果（只读，16 位）
 local REG_CONFIG         = 0x01   -- 配置寄存器（读/写，16 位）
@@ -100,11 +101,12 @@ function build(data)
     if dr_idx  < 0 or dr_idx  > 7 then dr_idx  = 4 end
     if channel < 0 or channel > 3 then channel = 0 end
 
-    local config = MUX_SINGLE_AIN0 | (channel << 12)   -- 输入通道
-                 | (pga_idx << 9)                      -- PGA 增益
-                 | MODE_SINGLE                         -- 单次模式
-                 | (dr_idx << 5)                       -- 数据速率
-                 | COMP_QUE_DISABLE                    -- 禁用比较器
+    local config = MUX_SINGLE_AIN0
+    config = bitc.bor(config, bitc.lshift(channel, 12))   -- 输入通道
+    config = bitc.bor(config, bitc.lshift(pga_idx, 9))    -- PGA 增益
+    config = bitc.bor(config, MODE_SINGLE)                -- 单次模式
+    config = bitc.bor(config, bitc.lshift(dr_idx, 5))     -- 数据速率
+    config = bitc.bor(config, COMP_QUE_DISABLE)           -- 禁用比较器
 
     i2c_set_addr(fd, addr)
 
@@ -188,7 +190,7 @@ function call(data)
         if channel < 0 or channel > 3 then
             return { result = "ERR", message = "Invalid channel: 0~3" }
         end
-        mux = MUX_SINGLE_AIN0 | (channel << 12)
+        mux = bitc.bor(MUX_SINGLE_AIN0, bitc.lshift(channel, 12))
     end
 
     -- 读回当前配置，保留 PGA/DR，只改 MUX 并启动单次转换
@@ -196,7 +198,7 @@ function call(data)
     if config < 0 then
         return { result = "ERR", message = "Failed to read config" }
     end
-    local new_config = (config & 0x8FFF) | mux | OS_START   -- 清 MUX 位，设通道，启动转换
+    local new_config = bitc.bor(bitc.bor(bitc.band(config, 0x8FFF), mux), OS_START)   -- 清 MUX 位，设通道，启动转换
 
     local hi = math.floor(new_config / 256) % 256
     local lo = new_config % 256
@@ -208,7 +210,7 @@ function call(data)
     local ready = false
     for _ = 1, 100 do
         local cfg = i2c_read_multi(fd, REG_CONFIG, 2)
-        if cfg >= 0 and (cfg & OS_START) == 0 then
+        if cfg >= 0 and bitc.band(cfg, OS_START) == 0 then
             ready = true
             break
         end
@@ -224,7 +226,7 @@ function call(data)
         return { result = "ERR", message = "Failed to read conversion" }
     end
 
-    local pga_idx = tonum(data.pga, ((config >> 9) & 0x07))
+    local pga_idx = tonum(data.pga, bitc.band(bitc.rshift(config, 9), 0x07))
     if pga_idx < 0 or pga_idx > 5 then pga_idx = 2 end
     local fs = pga_fs[pga_idx + 1]
     local raw = sign16(raw16)

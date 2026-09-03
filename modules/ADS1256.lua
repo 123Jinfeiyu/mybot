@@ -22,6 +22,7 @@
 -- ==================== 寄存器 ====================
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 local REG_STATUS = 0x00
 local REG_MUX    = 0x01
@@ -78,7 +79,7 @@ end
 
 -- 辅助：写寄存器（WREG：命令 + 计数字节 + 数据，一次传输）
 local function write_reg(fd, reg, val)
-    return spi_write3(fd, CMD_WREG | reg, 0x00, val)
+    return spi_write3(fd, bitc.bor(CMD_WREG, reg), 0x00, val)
 end
 
 -- 【配置脚本】初始化 ADS1256
@@ -119,7 +120,7 @@ function build(data)
     end
 
     -- 3. MUX：默认 AIN0 + AINCOM（单端）
-    if write_reg(fd, REG_MUX, (channel << 4) | 0x08) ~= 0 then
+    if write_reg(fd, REG_MUX, bitc.bor(bitc.lshift(channel, 4), 0x08)) ~= 0 then
         return { result = "ERR", message = "Failed to write MUX" }
     end
 
@@ -186,13 +187,13 @@ function call(data)
         if pos < 0 or pos > 7 or neg < 0 or neg > 7 then
             return { result = "ERR", message = "Invalid diff channel: 0~7" }
         end
-        mux = (pos << 4) | neg
+        mux = bitc.bor(bitc.lshift(pos, 4), neg)
     else
         local channel = tonum(data.channel, 0)
         if channel < 0 or channel > 7 then
             return { result = "ERR", message = "Invalid channel: 0~7" }
         end
-        mux = (channel << 4) | 0x08    -- AINch vs AINCOM
+        mux = bitc.bor(bitc.lshift(channel, 4), 0x08)    -- AINch vs AINCOM
     end
 
     -- 退出连续模式 → 改通道 → 同步重启转换 → 回到连续模式
@@ -220,7 +221,7 @@ function call(data)
         return { result = "ERR", message = "Failed to read data" }
     end
 
-    local raw24 = (v >> 8) & 0xFFFFFF   -- 取前 3 字节
+    local raw24 = bitc.band(bitc.rshift(v, 8), 0xFFFFFF)   -- 取前 3 字节
     if raw24 >= 0x800000 then raw24 = raw24 - 0x1000000 end  -- 24 位符号扩展
 
     local pga_idx = tonum(data.pga, 0)

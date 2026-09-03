@@ -6,13 +6,19 @@ bot4cj是基于仓颉和 Linux I2C 接口的**机器人硬件控制器**，它�
 
 
 ## 依赖库
-这个项目依赖一些仓颉语言的软件包，以及liblua-5.4
+这个项目依赖一些仓颉语言的软件包，以及 LuaJIT（仓颉绑定见 `src/lj/lj.cj`）
 
 
-**你需要安装lua开发库，以及总线工具（运行时 HAL 依赖）**
+**你需要安装 LuaJIT 开发库**
 
 ```bash
-sudo apt update && sudo apt install liblua5.4-dev i2c-tools spi-tools
+sudo apt update && sudo apt install libluajit-5.1-dev
+```
+
+可选——仅在无 LuaJIT 的环境使用 shell 降级后端时需要：
+
+```bash
+sudo apt install i2c-tools spi-tools
 ```
 
 
@@ -28,15 +34,18 @@ sudo apt update && sudo apt install liblua5.4-dev i2c-tools spi-tools
 
 ## 基层硬件抽象层（HAL）
 
-I2C/SPI 总线操作由纯 Lua 的 `modules/HAL.lua` 实现（issue #14：不再依赖仓颉注册的 cfunc）：
+I2C/SPI 总线操作由 `modules/HAL.lua` 实现（issue #14：不再依赖仓颉注册的 cfunc），双后端自动选择：
 
-- I2C 经 `i2c-tools`（i2cset/i2cget/i2ctransfer），SPI 经 `spi-tools`（spi-config/spi-pipe）
-- 驱动模块（PCA9685.lua 等）顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致，驱动代码无需改动
-- 驱动模块可用 `lua5.4` 独立运行调试（见 `test/test_hal.lua`），无需仓颉二进制
-- 句柄直接编码总线身份（I2C: `1000000+bus`；SPI: `2000000+B*100+C`），跨 Lua 状态机有效；
-  SPI 速率经 `/tmp/bot4cj-hal/` 配置文件在各状态机间传递（mode/bits 由内核持久化）
+- **LuaJIT ffi 主后端**：`ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；
+  fd 为真实内核句柄，跨 Lua 状态机天然有效；SPI 经 spidev ioctl（`SPI_IOC_MESSAGE` 单次传输，CS 保持低）
+- **shell-out 降级后端**（`HAL_shell.lua`）：非 LuaJIT 环境自动启用，经 i2c-tools/spi-tools 实现；
+  句柄编码总线身份（I2C `1000000+bus`、SPI `2000000+B*100+C`），SPI 速率经 `/tmp/bot4cj-hal/` 传递
+- 驱动模块顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致；Lua 5.3+ 位运算经 `bitcompat.lua`
+  双兼容（LuaJIT 用内建 bit 库，纯 5.4 用算术回退）
+- 驱动模块可用 `luajit`/`lua5.4` 独立运行调试，无需仓颉二进制
+  （单测见 `test/test_hal_ffi.lua`、`test/test_hal_shell.lua`）
 
-已知限制：`spi_setup` 的 delay 参数被忽略（spi-tools 无对应物）；每次寄存器操作 fork 一个外部进程，密集写场景（快步行×多舵机）延迟高于原 ioctl 路径。
+已知限制：ffi 后端 `spi_setup` 的 delay 无法持久化到 fd（跨状态机按 0 处理）；shell 后端每次寄存器操作 fork 一个外部进程。
 
 
 ## 解析器

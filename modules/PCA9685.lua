@@ -9,6 +9,7 @@
 --
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 function print_table(t, indent)
     indent = indent or 0
@@ -222,10 +223,10 @@ function call(data)
 	local reg = 0x06 + 4 * channel
 
 	-- 写I2C寄存器
-	i2c_write_reg(fd, reg + 0, (0 >> 0)  & 0xFF)		-- 1 * 8
-	i2c_write_reg(fd, reg + 1, (0 >> 8)  & 0xFF)		-- 2 * 8
-	i2c_write_reg(fd, reg + 2, (offval >> 0) & 0xFF)	-- 3 * 8
-	i2c_write_reg(fd, reg + 3, (offval >> 8) & 0xFF)	-- 4 * 8
+	i2c_write_reg(fd, reg + 0, bitc.band(bitc.rshift(0, 0), 0xFF))		-- 1 * 8
+	i2c_write_reg(fd, reg + 1, bitc.band(bitc.rshift(0, 8), 0xFF))		-- 2 * 8
+	i2c_write_reg(fd, reg + 2, bitc.band(bitc.rshift(offval, 0), 0xFF))	-- 3 * 8
+	i2c_write_reg(fd, reg + 3, bitc.band(bitc.rshift(offval, 8), 0xFF))	-- 4 * 8
 
 	-- 返回字典
  	return { result = "OK" }

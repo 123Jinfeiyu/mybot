@@ -15,7 +15,7 @@ import std.process.*
 import stdx.encoding.json.*
 import bot4cj.math.*
 import ctype4cj.*
-import lua4cj.*
+import bot4cj.lj.*
 import mt2.*
 import SQL4cj.*
 
@@ -299,7 +299,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 			LibC.free(filename_c)			
 
 			if (status == LUA_OK) {
-				var status = Lua_pcallk(L, 0, LUA_MULTRET, 0, 0, CPointer<Unit>())
+				var status = Lua_pcall(L, 0, LUA_MULTRET, 0)
 				println("lua build status: ${status}")
 				if (status == LUA_OK) { return true  }
 			}
@@ -376,7 +376,7 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				}
 			}
 
-			var status = Lua_pcallk(L, 1, LUA_MULTRET, 0, 0, CPointer<Unit>())
+			var status = Lua_pcall(L, 1, LUA_MULTRET, 0)
 			println("lua status: ${status}")
 			if (status == LUA_OK) {
 				if (Lua_type(L, -1) == LUA_TTABLE) {

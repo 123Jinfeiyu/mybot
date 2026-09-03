@@ -3,11 +3,11 @@
   cjc-version = "1.1.3"
   name = "bot4cj"
   description = "基于仓颉和 Linux I2C 接口的机器人硬件控制器（用 DSL 描述机器人结构与动作）"
-  version = "0.1.1"
+  version = "0.2.0"
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-l c" # Linux
+  compile-option = "-l c -l luajit-5.1" # Linux
   override-compile-option = ""
   link-option = ""
   package-configuration = {}
@@ -16,7 +16,6 @@
   SQL4cj = { git = "https://gitcode.com/qingss0/SQL4cj.git", branch="main" }
   ctype4cj = "1.0.4"
   #stdx = "1.1.0"
-  lua4cj = "1.0.3"
   mt2 = "1.0.0"
   #SQL4cj = "1.0.1"
 # 这种x86机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
