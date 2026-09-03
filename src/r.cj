@@ -11,6 +11,7 @@ import std.random.*
 import std.collection.*
 import std.convert.*
 import std.env.*
+import std.process.*
 import stdx.encoding.json.*
 import bot4cj.math.*
 import bot4cj.hd.*
@@ -1212,7 +1213,7 @@ class RobotStruct {
 				for (i in 1..matrix.size ) {
 					let name = matrix[i, idxName]
 					/* ---- 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径，默认为 ./modules ---- */
-					let modulePath = std.env.getEnv("BOT4CJ_MODULE_PATH").getOr("./modules")
+					let modulePath = Process.current.getEnv("BOT4CJ_MODULE_PATH") ?? "./modules"
 					let scriptPath = "${modulePath}/${MtName}.lua"
 					addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
 							this._getMetadata(matrix, i)
