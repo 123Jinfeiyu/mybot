@@ -582,21 +582,31 @@ class DaemonHolder {
 	}
 }
 
-/* ---- 守护线程体（spawn 线程上运行）：建私有 lua_State，注入槽地址，跑采样 chunk ---- */
-public func daemon_body(slot: CPointer<UInt8>, chunk: CString): Int64 {
+/* ---- 守护线程体（spawn 线程上运行）：建私有 lua_State，注入槽地址+配置，跑采样 chunk ---- */
+public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString): Int64 {
 	unsafe {
 		let L = Lua_init()
 		if (Lua_check(L) == LUA_ERR) { return -1i64 }
 		Lua_loadlib(L)
 
-		/* 注入共享槽地址为 Lua 全局整数（chunk 经 pthread.lua slot_attach 附着） */
+		/* 注入共享槽地址（整数）与配置串（"k=v;k=v"）为 Lua 全局 */
 		Lua_pushinteger(L, Int64(slot.toUIntNative()))
 		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_SLOT_ADDR"))
+		Lua_pushstring(L, config)
+		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_CONFIG"))
 
 		/* 加载采样 chunk 一次并 pcall 一次（chunk 内 while 循环直到 stop） */
 		let st = Lua_loadfilex(L, chunk, CPointer<C_Char>())
 		if (st == LUA_OK) {
-			let _ = Lua_pcall(L, 0, LUA_MULTRET, 0)
+			let pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
+			if (pcs != LUA_OK) {
+				let err = Lua_tostring(L, -1)
+				println("[daemon] chunk pcall error: ${err.toString()}")
+			}
+		}
+		else {
+			let err = Lua_tostring(L, -1)
+			println("[daemon] chunk load error: ${err.toString()}")
 		}
 		let n = CPointer<Int32>(slot + SLOT_COUNT_OFF).read()
 		Lua_free(L)
@@ -625,6 +635,16 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 		let name = defs[i, idxName]
 		let chunkPath = MatrixVars_Hardware.getMt(defs, i, idxChunk)
 		println("Create a Daemon hard-Var: ${name}, chunk: ${chunkPath}")
+
+		/* 收集 name/chunk 之外的列为配置串 "k=v;k=v"，注入 chunk（如 i2c/addr/interval） */
+		var cfgAcc = ""
+		for (j in 0..defs.col) {
+			let colName = defs[0, j]
+			if (colName == "name" || colName == "chunk") { continue }
+			let v = MatrixVars_Hardware.getMt(defs, i, j)
+			cfgAcc = "${cfgAcc}${colName}=${v};"
+		}
+		let configStr = cfgAcc
 
 		/* 分配并清零共享槽，初始化 mutex（offset 0） */
 		let slot = unsafe { LibC.malloc<UInt8>(count: SLOT_SIZE) }
@@ -662,10 +682,11 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 			rise: { =>
 				unsafe {
 					let cstr = LibC.mallocCString(chunkPath)
+					let cfg_cstr = LibC.mallocCString(configStr)
 					let slot_p = holder.slot
-					let f = spawn { daemon_body(slot_p, cstr) }
+					let f = spawn { daemon_body(slot_p, cstr, cfg_cstr) }
 					holder.future = Option<Future<Int64>>.Some(f)
-					println("Daemon '${name}' spawned")
+					println("Daemon '${name}' spawned, config: ${configStr}")
 				}
 			},
 			/* free：置停止标志 + future.get() 等待退出 + 销毁 mutex（显式停止，见 issue #3） */

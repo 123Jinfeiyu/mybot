@@ -74,6 +74,10 @@ while not P.should_stop(slot) do
 end
 ```
 
+现成示例：`modules/lib/mpu6050_daemon.lua`（复用 MPU6050.lua 驱动读六轴 → 16 位补码符号扩展 → publish 到槽）。@Daemon 矩阵除 name/chunk 外的列（如 i2c/addr/interval）会被序列化为 `DAEMON_CONFIG` 串注入 chunk，由 chunk 解析。
+
+**启动时序注意**：守护线程 setup（开总线 + 配置传感器）需数毫秒；若动作序列极短（几行瞬时 play），可能在守护首次采样前就 free() 停止（表现为 publishes=0）。真实机器人动作序列为秒级，无此问题；测试时用 Timer 延时列拉长主线程时间窗。
+
 
 ## 解析器
 
