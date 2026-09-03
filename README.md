@@ -74,9 +74,25 @@ while not P.should_stop(slot) do
 end
 ```
 
-现成示例：`modules/lib/mpu6050_daemon.lua`（复用 MPU6050.lua 驱动读六轴 → 16 位补码符号扩展 → publish 到槽）。@Daemon 矩阵除 name/chunk 外的列（如 i2c/addr/interval）会被序列化为 `DAEMON_CONFIG` 串注入 chunk，由 chunk 解析。
+采样 chunk 运行在守护线程的独立状态机里（示例见下方「万能采样 chunk」）。@Daemon 矩阵除 name/chunk 外的列会被序列化为 `DAEMON_CONFIG` 串注入 chunk，由 chunk 解析。
 
 **启动时序注意**：守护线程 setup（开总线 + 配置传感器）需数毫秒；若动作序列极短（几行瞬时 play），可能在守护首次采样前就 free() 停止（表现为 publishes=0）。真实机器人动作序列为秒级，无此问题；测试时用 Timer 延时列拉长主线程时间窗。
+
+**万能采样 chunk（零 per-sensor 代码）**：`modules/lib/sensor_daemon.lua` 服务任意 build/call/destroy 型驱动——@Daemon 矩阵配置 driver/proto/path/addr/interval/fields/sign（其余任意键透传给驱动 call 作附加参数，如 channel/pga），无需为每个传感器写 Lua：
+
+```sql
+CREATE TABLE Daemon (
+	name String, chunk String, driver String, proto String,
+	path String, addr String, interval String, fields String, sign String
+);
+INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign)
+  VALUES ('imu0', 'modules/lib/sensor_daemon.lua', 'MPU6050', 'i2c',
+          '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
+```
+
+（fields 用 `|` 分隔以避开 SQL 值分隔符逗号；sign=16 表示对提取值做 16 位补码符号扩展）
+
+**数据消费（闭环）**：守护 `play()` 把采样值以标量键 `v0..vN`（外加 count/nvals/status）返回。别的硬件变量只要在矩阵里用一列**引用守护变量名**，即经 `_getMetadata` 引用机制拿到这些值（标量键能过 call_lua，JsonArray 不能，故用 v0..vN）。`modules/Monitor.lua` 是示例：@Monitor 的 src 列填守护名，call() 里 `data.v0` 即实时采样值，决策后可经 controller 列转发执行器，形成「守护采样 → 引用消费 → 决策 → 转发执行」闭环。
 
 
 ## 解析器

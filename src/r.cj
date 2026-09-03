@@ -655,7 +655,8 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 		let holder = DaemonHolder(slot: slot)
 
 		let daemon = MtVars_Daemon(
-			/* play：主线程加锁读采样值 → JSON */
+			/* play：主线程加锁读采样值 → JSON。值同时以标量键 v0..vN 暴露，
+			 *       供别的硬件变量经引用机制读取（call_lua 只传标量、不传 JsonArray） */
 			things: { _: JsonValue =>
 				let ret = JsonObject()
 				let arr = JsonArray()
@@ -668,13 +669,14 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 					for (k in 0..nv) {
 						let v = CPointer<Float64>(holder.slot + SLOT_VALUES_OFF + 8 * k).read()
 						arr.add(JsonFloat(v))
+						ret.put("v${k}", JsonFloat(v))
 					}
-					let v0 = if (nv > 0) { CPointer<Float64>(holder.slot + SLOT_VALUES_OFF).read() } else { 0.0 }
 					pthread_mutex_unlock(holder.slot)
 					ret.put("status", JsonString("OK"))
 					ret.put("count", JsonInt(count))
+					ret.put("nvals", JsonInt(nvals))
 					ret.put("values", arr)
-					println("Daemon '${name}' play: count=${count} nvals=${nvals} v0=${v0}")
+					println("Daemon '${name}' play: count=${count} nvals=${nvals}")
 				}
 				return ret
 			},
