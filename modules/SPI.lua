@@ -1,6 +1,9 @@
 -- SPI 硬件
 
 --
+-- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+
 SPI_SUCCESS = 0
 SPI_FAILED = 1
 

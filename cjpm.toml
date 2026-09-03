@@ -16,8 +16,6 @@
   SQL4cj = { git = "https://gitcode.com/qingss0/SQL4cj.git", branch="main" }
   ctype4cj = "1.0.4"
   #stdx = "1.1.0"
-  iic4cj = "1.0.0"
-  spi4cj = "1.0.1"
   lua4cj = "1.0.3"
   mt2 = "1.0.0"
   #SQL4cj = "1.0.1"

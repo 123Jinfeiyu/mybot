@@ -21,6 +21,9 @@
 --   6. 过采样固定 x1/x1/x1（单次测量约 6~9ms），两次 call 建议间隔 > 1s
 
 -- ==================== 寄存器 ====================
+-- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+
 local REG_ID        = 0xD0   -- 芯片ID（BME280=0x60，BMP280=0x58）
 local REG_RESET     = 0xE0   -- 软复位（写0xB6）
 local REG_STATUS    = 0xF3   -- bit3=measuring，bit0=im_update

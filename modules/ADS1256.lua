@@ -20,6 +20,9 @@
 -- NOTE: ADS1256 要求 SPI Mode 1（CPOL=0, CPHA=1），请在 @SPI 块中配置
 
 -- ==================== 寄存器 ====================
+-- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+
 local REG_STATUS = 0x00
 local REG_MUX    = 0x01
 local REG_ADCON  = 0x02

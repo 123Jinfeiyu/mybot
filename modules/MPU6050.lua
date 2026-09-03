@@ -4,6 +4,9 @@
 
 -- 这个函数是辅助用的，它能够打印一张表出来
 --
+-- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+
 function print_table(t, indent)
     indent = indent or 0
     for k, v in pairs(t) do

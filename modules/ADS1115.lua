@@ -15,6 +15,9 @@
 -- 依赖 r.cj 注册的 i2c_write_multi / i2c_read_multi（burst 读写 16 位寄存器）
 
 -- ==================== 寄存器 ====================
+-- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+
 local REG_CONVERSION     = 0x00   -- 转换结果（只读，16 位）
 local REG_CONFIG         = 0x01   -- 配置寄存器（读/写，16 位）
 local REG_LO_THRESH      = 0x02   -- 低阈值比较

@@ -9,10 +9,10 @@ bot4cj是基于仓颉和 Linux I2C 接口的**机器人硬件控制器**，它�
 这个项目依赖一些仓颉语言的软件包，以及liblua-5.4
 
 
-**你需要安装lua开发库**
+**你需要安装lua开发库，以及总线工具（运行时 HAL 依赖）**
 
 ```bash
-sudo apt update && sudo apt install liblua5.4-dev
+sudo apt update && sudo apt install liblua5.4-dev i2c-tools spi-tools
 ```
 
 
@@ -24,6 +24,19 @@ sudo apt update && sudo apt install liblua5.4-dev
 
 
 
+
+
+## 基层硬件抽象层（HAL）
+
+I2C/SPI 总线操作由纯 Lua 的 `modules/HAL.lua` 实现（issue #14：不再依赖仓颉注册的 cfunc）：
+
+- I2C 经 `i2c-tools`（i2cset/i2cget/i2ctransfer），SPI 经 `spi-tools`（spi-config/spi-pipe）
+- 驱动模块（PCA9685.lua 等）顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致，驱动代码无需改动
+- 驱动模块可用 `lua5.4` 独立运行调试（见 `test/test_hal.lua`），无需仓颉二进制
+- 句柄直接编码总线身份（I2C: `1000000+bus`；SPI: `2000000+B*100+C`），跨 Lua 状态机有效；
+  SPI 速率经 `/tmp/bot4cj-hal/` 配置文件在各状态机间传递（mode/bits 由内核持久化）
+
+已知限制：`spi_setup` 的 delay 参数被忽略（spi-tools 无对应物）；每次寄存器操作 fork 一个外部进程，密集写场景（快步行×多舵机）延迟高于原 ioctl 路径。
 
 
 ## 解析器
