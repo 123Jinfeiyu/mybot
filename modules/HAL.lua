@@ -88,7 +88,12 @@ HAL.SPI_IOC_MESSAGE_1        = 0x40206b00	-- _IOW('k', 0, spi_ioc_transfer[1])
 HAL.sys = {
 	open    = function(path, flags) return ffi.C.open(path, flags) end,
 	close   = function(fd)          return ffi.C.close(fd) end,
-	ioctl_i = function(fd, req, val) return ffi.C.ioctl(fd, req, val) end,
+	-- 变参必须显式 cast：JIT 编译后 Lua number 会以 double 位模式传入变参
+	-- （ioctl 收到 0x4050... > 0x7f → EINVAL），解释执行却传 int——
+	-- cast 为 unsigned long cdata 后两种执行路径 ABI 一致（第 58 次调用起复现）
+	ioctl_i = function(fd, req, val)
+		return ffi.C.ioctl(fd, req, ffi.cast("unsigned long", val))
+	end,
 	ioctl_p = function(fd, req, ptr) return ffi.C.ioctl(fd, req, ptr) end,
 	read    = function(fd, buf, n)  return tonumber(ffi.C.read(fd, buf, n)) end,
 	write   = function(fd, buf, n)  return tonumber(ffi.C.write(fd, buf, n)) end,
