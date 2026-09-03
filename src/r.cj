@@ -13,7 +13,6 @@ import std.convert.*
 import std.env.*
 import std.process.*
 import stdx.encoding.json.*
-import bot4cj.math.*
 import ctype4cj.*
 import luajit4cj.*
 import mt2.*

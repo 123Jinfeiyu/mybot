@@ -6,19 +6,13 @@ bot4cj是基于仓颉和 Linux I2C 接口的**机器人硬件控制器**，它�
 
 
 ## 依赖库
-这个项目依赖一些仓颉语言的软件包，以及 LuaJIT（仓颉绑定见 `src/lj/lj.cj`）
+这个项目依赖一些仓颉语言的软件包，以及 LuaJIT（仓颉绑定为独立包 [luajit4cj](https://gitcode.com/qingss0/luajit4cj)）
 
 
 **你需要安装 LuaJIT 开发库**
 
 ```bash
 sudo apt update && sudo apt install libluajit-5.1-dev
-```
-
-可选——仅在无 LuaJIT 的环境使用 shell 降级后端时需要：
-
-```bash
-sudo apt install i2c-tools spi-tools
 ```
 
 
@@ -34,19 +28,20 @@ sudo apt install i2c-tools spi-tools
 
 ## 基层硬件抽象层（HAL）
 
-I2C/SPI 总线操作由 `modules/HAL.lua` 实现（issue #14：不再依赖仓颉注册的 cfunc），双后端自动选择：
+I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现（issue #14：不再依赖仓颉注册的 cfunc），
+**仅支持 LuaJIT**（原 i2c-tools/spi-tools shell-out 降级后端已移除）：
 
-- **LuaJIT ffi 主后端**：`ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；
+- `ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；
   fd 为真实内核句柄，跨 Lua 状态机天然有效；SPI 经 spidev ioctl（`SPI_IOC_MESSAGE` 单次传输，CS 保持低）
-- **shell-out 降级后端**（`HAL_shell.lua`）：非 LuaJIT 环境自动启用，经 i2c-tools/spi-tools 实现；
-  句柄编码总线身份（I2C `1000000+bus`、SPI `2000000+B*100+C`），SPI 速率经 `/tmp/bot4cj-hal/` 传递
 - 驱动模块顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致；Lua 5.3+ 位运算经 `bitcompat.lua`
   双兼容（LuaJIT 用内建 bit 库，纯 5.4 用算术回退）
-- 驱动模块可用 `luajit`/`lua5.4` 独立运行调试，无需仓颉二进制
-  （单测见 `test/test_hal_ffi.lua`、`test/test_hal_shell.lua`）
+- `modules/lib/` 收纳非驱动的库模块：`HAL.lua`（总线抽象）与 `kalman.lua`
+  （一维卡尔曼滤波器，自 src/math/kalman.cj 移植，返回表风格，供驱动 dofile 后 `Kalman.new(Q,R)` / `kf:filter(dat)` 使用）
+- 不依赖 HAL 的模块（Servo/dummy/Relay/kalman 等）仍可用 `luajit`/`lua5.4` 独立调试；
+  总线驱动需 `luajit`（单测见 `test/test_hal_ffi.lua`、`test/test_kalman.lua`）
 
-SPI 传输延时（delay_usecs）无 per-fd 持久化 ioctl，ffi 后端由传输函数的可选 `delay_us` 尾参逐次携带
-（配置写在 @SPI 矩阵的 delay 列，SPI.lua 的 `call()` 随 fd 返回，经元数据引用流入设备驱动，参考 ADS1256.lua）；shell 降级后端忽略 delay。
+SPI 传输延时（delay_usecs）无 per-fd 持久化 ioctl，由传输函数的可选 `delay_us` 尾参逐次携带
+（配置写在 @SPI 矩阵的 delay 列，SPI.lua 的 `call()` 随 fd 返回，经元数据引用流入设备驱动，参考 ADS1256.lua）。
 
 
 ## 解析器
