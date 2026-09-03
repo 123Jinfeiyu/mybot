@@ -15,7 +15,7 @@ import std.process.*
 import stdx.encoding.json.*
 import bot4cj.math.*
 import ctype4cj.*
-import bot4cj.lj.*
+import luajit4cj.*
 import mt2.*
 import SQL4cj.*
 
