@@ -7,6 +7,10 @@
 
 -- 这个函数是辅助用的，它能够打印一张表出来
 --
+-- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
+local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
+
 function print_table(t, indent)
     indent = indent or 0
     for k, v in pairs(t) do
@@ -26,12 +30,12 @@ local function crc8(word)
 	local hi = math.floor(word / 256) % 256
 	local lo = word % 256
 	for _, b in ipairs({hi, lo}) do
-		crc = crc ~ b
+		crc = bitc.bxor(crc, b)
 		for _ = 1, 8 do
-			if crc & 0x80 ~= 0 then
-				crc = ((crc << 1) ~ 0x31) & 0xFF
+			if bitc.band(crc, 0x80) ~= 0 then
+				crc = bitc.band(bitc.bxor(bitc.lshift(crc, 1), 0x31), 0xFF)
 			else
-				crc = (crc << 1) & 0xFF
+				crc = bitc.band(bitc.lshift(crc, 1), 0xFF)
 			end
 		end
 	end
@@ -166,8 +170,8 @@ function call(data)
 		b[i] = math.floor(raw / 256 ^ (5 - i)) % 256
 	end
 
-	local co2  = (b[0] << 8) | b[1]
-	local tvoc = (b[3] << 8) | b[4]
+	local co2  = bitc.bor(bitc.lshift(b[0], 8), b[1])
+	local tvoc = bitc.bor(bitc.lshift(b[3], 8), b[4])
 
 	-- CRC校验
 	local crc_ok = (crc8(co2) == b[2]) and (crc8(tvoc) == b[5])
