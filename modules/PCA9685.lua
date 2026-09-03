@@ -178,6 +178,15 @@ function call(data)
 			message = "Invalid Argument: channel"
 		}
 	end
+	channel = tonumber(channel)
+	if channel == nil then	-- 检查channel是否是数值
+		return {
+			result = "ERR",
+			message = "Invalid Argument: channel (not a number)"
+		}
+	end
+	channel = math.floor(channel)	-- 寄存器地址需要整数通道号
+
 	local angle = data.angle
 
 	-----------------------------------------------------
@@ -187,8 +196,17 @@ function call(data)
 			message = "Invalid Argument: angle"
 		}
 	end
+	angle = tonumber(angle)
+	if angle == nil then	-- 检查angle是否是数值（支持浮点角度）
+		return {
+			result = "ERR",
+			message = "Invalid Argument: angle (not a number)"
+		}
+	end
+	if angle < 0 then angle = 0 end
+	if angle > 180 then angle = 180 end	-- 限幅，防止超出0.5~2.5ms脉宽损伤舵机
 
-	print(string.format("Lua hardware drive set angle: %d", angle))
+	print(string.format("Lua hardware drive set angle: %.2f", angle))
 
 	-----------------------------------------------------
 	i2c_set_addr(fd, addr)	-- 设置I2C地址

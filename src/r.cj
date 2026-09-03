@@ -14,7 +14,6 @@ import std.env.*
 import std.process.*
 import stdx.encoding.json.*
 import bot4cj.math.*
-import bot4cj.hd.*
 import ctype4cj.*
 import iic4cj.*
 import spi4cj.*
@@ -425,8 +424,15 @@ class MtVars_Lua <: MatrixVars_Hardware {
 	) {  super(things: things, rise: rise, free: free)  }
 	
 
-	/* 工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数（元数据） */
-	public static func Factory(luapath: String, getMetadata: ()->JsonObject): MtVars_Lua
+	/*
+	 *  工厂函数 => 运行指定Lua脚本，传入矩阵中的所有参数（元数据）
+	 *
+	 *  controller: 可选的控制器硬件变量（饿汉绑定）。
+	 *  声明后本硬件变量的 call 事件变为两级调用：
+	 *  先运行自己的 Lua 驱动，再把「元数据 ∪ Lua返回表」转发给 controller.play()
+	 */
+	public static func Factory(luapath: String, getMetadata: ()->JsonObject,
+			controller!: Option<MatrixVars_Hardware> = None): MtVars_Lua
 	{
 
 		/* 创建LUA状态机对象 */
@@ -471,6 +477,22 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				let res = call_lua(L, obj)
 
 				println("Lua script call result: ${res.toString()}")
+
+				/* ---- controller 转发：元数据 ∪ 自己Lua的返回表 ---- */
+				if (let Some(ctrl) <- controller) {
+					/* 重新收集元数据（skipCol 已跳过 controller 列） */
+					let payload = getMetadata()
+					let retFields: HashMap<String, JsonValue> = res.asObject().getFields()
+					for (k in retFields.keys()) {
+						payload.put(k, retFields.get(k).getOrThrow())
+					}
+					println("Forward to controller: ${payload.toString()}")
+
+					let ctrl_res = ctrl.play(payload)
+					println("Controller result: ${ctrl_res.toString()}")
+					return ctrl_res
+				}
+
 				return res
 
 			},
@@ -883,68 +905,6 @@ class MtVars_Alias <: MatrixVars_Hardware {
 //	}
 //}
 
-/*  舵机变量类
- *  
- *  TODO(20260515-qing): 现在普通的舵机类也是传入回调函数的，
- *  但是我们考虑到该硬件变量调用别的硬件变量，所以还是要专门做一个舵机硬件变量
- * 
- *  TODO（20260612-qing): 根据Lua硬件脚本的返回结果，调用别的硬件变量
- */
-class MtVars_Servo <: MatrixVars_Hardware {
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None  )
-		{  super(things: things, rise: rise, free: free)  }
-
-	/*
-	 *  @Servo
-	 *  name   max  min  offset  controller  channel;
-	 *    s1    90    -       -   pca9685-0        0;
-	 *  @
-	 */
-	public static func Factory(	/* 工厂模式：使用矩阵对象构造 */
-		ServoDefs: MatrixObject, i: Int64, map: HashMap<String, MatrixVars_Hardware>): MtVars_Servo
-	{
-		let idxName = ServoDefs.indexOfCol(0, "name")
-		let idxMax = ServoDefs.indexOfCol(0, "max")
-		let idxMin = ServoDefs.indexOfCol(0, "min")
-		let idxOffset = ServoDefs.indexOfCol(0,"offset")
-		let idxCtrl = ServoDefs.indexOfCol(0, "controller")
-		let idxChannel = ServoDefs.indexOfCol(0, "channel")
-
-		let name = ServoDefs[i, idxName]
-		let max = parseMt<Float32>(ServoDefs, i, idxMax)
-		let min = parseMt<Float32> (ServoDefs,i, idxMin)
-		let offset = parseMt<Float32>(ServoDefs, i, idxOffset)
-		let ctrl = getMt(ServoDefs, i, idxCtrl)
-		let channel = parseMt<UInt8>(ServoDefs, i, idxChannel)
-
-		print("Create a Servo hard-Var: ${name}, max: ${max}, min: ${min}, offset: ${offset}")
-		println(", controller: ${ctrl}, channel: ${channel}")
-
-		let controller = map[ctrl]	/* like pca9685 */
-		let servo = Servo(max: max, min: min, offset: offset,
-			callback_setAngle: {angle: Float32 =>
-				let obj = JsonObject()
-				obj.put("channel", JsonInt(Int64(channel)))
-				//obj.put("angle", JsonFloat(Float64(angle)))
-				obj.put("angle", JsonInt(Int64(angle)))
-				controller.play(obj)
-		})
-
-		/*
-		 * {"angle": 180.0}
-		 */
-		let mtvars_servo = MtVars_Servo(things: {json=>
-				let angle = json.asObject().get("angle").getOrThrow().asFloat().getValue()
-				servo.setAngle(Float32(angle))
-				let ret = JsonObject()
-				ret.put("status", JsonString("OK"))
-				return ret
-		})
-		return mtvars_servo
-	}
-}
 
 
 
@@ -1127,15 +1087,6 @@ class RobotStruct {
 				}
 			}
 
-			/* ---- 【特殊的】Servo舵机硬件
-			 * ---- */
-			else if (MtName == "Servo") {
-				let idxName = matrix.indexOfCol(0, "name")
-				for (i in 1..matrix.size) {
-					let name = matrix[i, idxName]
-					addHardwareVar(name, MtVars_Servo.Factory(matrix, i, M))
-				}
-			}
 
 			/* ---- [特殊的] Action矩阵
 			 * ---- */
@@ -1146,14 +1097,39 @@ class RobotStruct {
 			/* ---- 【通用的】Lua脚本硬件 ---- */
 			else if (matrix.size > 0) {
 				let idxName = matrix.indexOfCol(0, "name")
+
+				/* ---- 手动扫描标题行，寻找可选的 controller 列 ---- */
+				var idxCtrl: Int64 = -1
+				for (j in 0..matrix.col) {
+					if (matrix[0, j] == "controller") { idxCtrl = j; break }
+				}
+
+				/* ---- 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径，默认为 ./modules ---- */
+				let modulePath = Process.current.getEnv("BOT4CJ_MODULE_PATH") ?? "./modules"
+				let scriptPath = "${modulePath}/${MtName}.lua"
+
 				for (i in 1..matrix.size ) {
 					let name = matrix[i, idxName]
-					/* ---- 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径，默认为 ./modules ---- */
-					let modulePath = Process.current.getEnv("BOT4CJ_MODULE_PATH") ?? "./modules"
-					let scriptPath = "${modulePath}/${MtName}.lua"
+
+					/* ---- 解析该行的 controller 引用（支持 - 占位符继承） ---- */
+					var ctrlOpt: Option<MatrixVars_Hardware> = None
+					if (idxCtrl >= 0) {
+						let ctrlName = MatrixVars_Hardware.getMt(matrix, i, idxCtrl)
+						if (ctrlName != "-") {
+							let ctrlOptHV = M.get(ctrlName)
+							if (ctrlOptHV.isNone()) {
+								throw IllegalArgumentException(
+									"Hardware variable '${name}' declares controller '${ctrlName}', but it is not defined yet. The controller must be defined before the matrix that references it.")
+							}
+							ctrlOpt = ctrlOptHV.getOrThrow()
+						}
+					}
+
+					/* ---- 元数据闭包：跳过 controller 列，避免误当作引用 play ---- */
+					let skipCol = idxCtrl	/* lambda 不得捕获可变变量 */
 					addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
-							this._getMetadata(matrix, i)
-					}))
+							this._getMetadata(matrix, i, skipCol: skipCol)
+					}, controller: ctrlOpt))
 				}
 		}
 		}
@@ -1248,7 +1224,12 @@ class RobotStruct {
 		set_params.put(name_param, JsonFloat(val_fp64))	/* 设置一个该硬件变量的参数 */
 	}
 
-	private func _getMetadata(matrix: MatrixObject, i: Int64): JsonObject {
+	/*
+	 *  skipCol: 收集元数据时跳过的列下标（-1 表示不跳过）
+	 *  controller 列的值是控制器硬件变量的名字，既不是字面元数据，
+	 *  也不应在收集阶段被 play（转发发生在 things 回调里）
+	 */
+	private func _getMetadata(matrix: MatrixObject, i: Int64, skipCol!: Int64 = -1): JsonObject {
 		let obj = JsonObject()
 		let idxName = matrix.indexOfCol(0, "name")
 		let name = matrix[i, idxName]
@@ -1258,7 +1239,7 @@ class RobotStruct {
 			/* ---- ----
 			 * ---- FIXME: 加入点号别名的检索逻辑 ----
 			 * ---- ---- */
-			if (j == idxName) { continue  } /* 自身调用警告 */
+			if (j == idxName || j == skipCol) { continue  } /* 自身调用警告 */
 			if (let Some(mt) <- M.get(value)) {
 				/* ---- ----
 				 * ---- 存在该名称的变量，传入空对象参数，并求取返回值

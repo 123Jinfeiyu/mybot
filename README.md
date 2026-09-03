@@ -127,6 +127,34 @@ name  channels  sample_rate  volumn  max_f  min_f;
 @
 ```
 
+### controller 引用（通用）
+
+除 `Servo` 外，任何硬件矩阵都可以声明一个 `controller` 列，把该硬件变量的调用转发给另一个硬件变量：
+
+- 先运行自己的 Lua 驱动（`modules/<矩阵名>.lua` 的 `call`）
+- 框架再把「该行元数据（跳过 `name`/`controller` 列） ∪ 自己 Lua 的返回表」发送给 `controller` 指定的硬件变量
+- `controller` 的值支持 `-` 占位符继承上一行
+- 被引用的 controller 必须在结构脚本中先于引用它的矩阵定义
+
+可运行示例（`Relay` 把参数转成 `delay` 后交给 `Timer` 延时）：
+
+```sql
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('timer-0');
+
+CREATE TABLE Relay (
+	name       String,
+	controller String,
+	note       String
+);
+INSERT INTO Relay (name, controller, note) VALUES ('relay0', 'timer-0', 'hello-relay');
+```
+
+```bash
+cat scripts/relay-test.mt | ./bot --robot=robots/relay-test.sql
+```
 
 action机器人动作脚本实例：
 

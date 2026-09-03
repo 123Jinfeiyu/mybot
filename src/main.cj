@@ -12,7 +12,6 @@ import std.convert.*
 import std.io.*
 import std.fs.*
 import stdx.encoding.json.*
-import bot4cj.hd.*
 //import ctype4cj.*
 //import nn4cj.*
 
