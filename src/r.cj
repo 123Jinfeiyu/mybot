@@ -905,7 +905,10 @@ class RobotStruct {
 		let name = matrix[i, idxName]
 		for (j in 0..matrix.col) {
 			let colName = matrix[0, j]
-			let value = MatrixVars_Hardware.getMt(matrix, i, j)
+			/* ---- 无法继承的 "-" 占位符（整列皆 "-" 时递归止于首行）归一为 "0"，
+			 * ---- 与 parseMt 的既有约定对齐，避免 "-" 泄漏进元数据与转发载荷 ---- */
+			var value = MatrixVars_Hardware.getMt(matrix, i, j)
+			if (value == "-") { value = "0" }
 			/* ---- ----
 			 * ---- FIXME: 加入点号别名的检索逻辑 ----
 			 * ---- ---- */
