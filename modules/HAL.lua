@@ -15,8 +15,10 @@
 -- 【可测试性】系统调用统一走 HAL.sys.* 间接层，离线单测（test/test_hal_ffi.lua）
 -- 注入 mock 即可验证调用序列与缓冲区内容。
 --
--- 【已知限制】spi_setup 的 delay 参数仅本状态机内生效（transfer 结构体逐次携带，
--- 无法像 speed 那样持久化到 fd），跨状态机调用时按 0 处理。
+-- 【delay 说明】delay_usecs 是逐次传输参数，内核无 per-fd 持久化 ioctl；
+-- 需要延时的驱动经传输函数的 delay_us 尾参显式传入（参考 ADS1256.lua：
+-- delay 配置在 @SPI 矩阵，由 SPI.lua 的 call() 随 fd 一并返回，
+-- 经元数据引用机制流入设备驱动，驱动统一附带在每次传输上）。
 
 -- 重复加载保护：同一状态机内只初始化一次
 if _G.__BOT4CJ_HAL ~= nil then return _G.__BOT4CJ_HAL end
@@ -258,7 +260,8 @@ end
 
 -- 配置 SPI 设备，返回 0 = 成功，-1 = 失败
 -- mode/bits/speed 经 ioctl 持久化到 fd（跨状态机有效）；
--- delay 无 per-fd 持久化途径，仅在传输结构体中按 0 处理（见文件头限制说明）。
+-- delay 无 per-fd 持久化途径：请由驱动在每次传输时经 delay_us 尾参显式传入
+-- （spi_write/spi_read/spi_write3/spi_read_multi 均支持）。
 function spi_setup(fd, mode, bits, speed, delay)
 	fd = tonumber(fd)
 	mode, bits, speed = uint_of(mode), uint_of(bits), uint_of(speed)
@@ -270,7 +273,7 @@ function spi_setup(fd, mode, bits, speed, delay)
 		return -1
 	end
 	if tonumber(delay) ~= nil and tonumber(delay) > 0 then
-		print("HAL: spi_setup delay cannot persist on fd, treated as 0 per transfer")
+		print("HAL: spi_setup delay cannot persist on fd; pass delay_us per transfer instead")
 	end
 
 	local m8 = ffi.new("uint8_t[1]", mode)
@@ -285,9 +288,16 @@ end
 -- 内部：单次 SPI 事务（一条 message，CS 保持低）。
 -- tx/rx 为 uint8_t 缓冲区 cdata（nil 表示该方向不使用）；len 为字节数。
 -- speed_hz/bits_per_word 填 0：内核自动沿用 fd 上 spi_setup 配置的值。
-local function spi_xfer(fd, tx, rx, len)
+-- delay_us：可选，本次传输最后一位之后、CS 拉高之前的等待微秒数
+-- （内核无 per-fd 持久化途径，由驱动逐次显式传入，__u16 钳制到 65535）。
+local function spi_xfer(fd, tx, rx, len, delay_us)
 	local msg = ffi.new("spi_ioc_transfer[1]")	-- ffi.new 零初始化
 	msg[0].len = len
+	delay_us = uint_of(delay_us)
+	if delay_us ~= nil then
+		if delay_us > 65535 then delay_us = 65535 end
+		msg[0].delay_usecs = delay_us
+	end
 	if tx ~= nil then
 		msg[0].tx_buf = ffi.cast("unsigned long long", ffi.cast("const uint8_t *", tx))
 	end
@@ -298,43 +308,43 @@ local function spi_xfer(fd, tx, rx, len)
 	return r ~= nil and r >= 0
 end
 
--- 写 1 字节，返回 0 = 成功，-1 = 失败
-function spi_write(fd, val)
+-- 写 1 字节，返回 0 = 成功，-1 = 失败；delay_us 可选（CS 拉高前等待）
+function spi_write(fd, val, delay_us)
 	fd = tonumber(fd)
 	val = byte_of(val)
 	if fd == nil or val == nil then return -1 end
 	local buf = ffi.new("uint8_t[1]", val)
-	if spi_xfer(fd, buf, nil, 1) then return 0 end
+	if spi_xfer(fd, buf, nil, 1, delay_us) then return 0 end
 	return -1
 end
 
--- 读 1 字节（发一个 dummy 字节），返回 0~255；失败返回 -1
-function spi_read(fd)
+-- 读 1 字节（发一个 dummy 字节），返回 0~255；失败返回 -1；delay_us 可选
+function spi_read(fd, delay_us)
 	fd = tonumber(fd)
 	if fd == nil then return -1 end
 	local buf = ffi.new("uint8_t[1]")
-	if not spi_xfer(fd, nil, buf, 1) then return -1 end
+	if not spi_xfer(fd, nil, buf, 1, delay_us) then return -1 end
 	return tonumber(buf[0])
 end
 
--- 一次写 3 字节（单次传输，CS 保持低），返回 0 = 成功，-1 = 失败
-function spi_write3(fd, b0, b1, b2)
+-- 一次写 3 字节（单次传输，CS 保持低），返回 0 = 成功，-1 = 失败；delay_us 可选
+function spi_write3(fd, b0, b1, b2, delay_us)
 	fd = tonumber(fd)
 	b0, b1, b2 = byte_of(b0), byte_of(b1), byte_of(b2)
 	if fd == nil or b0 == nil or b1 == nil or b2 == nil then return -1 end
 	local buf = ffi.new("uint8_t[3]", b0, b1, b2)
-	if spi_xfer(fd, buf, nil, 3) then return 0 end
+	if spi_xfer(fd, buf, nil, 3, delay_us) then return 0 end
 	return -1
 end
 
--- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 钳制 1~8）
-function spi_read_multi(fd, n)
+-- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 钳制 1~8）；delay_us 可选
+function spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	if fd == nil or n == nil then return -1 end
 	if n < 1 or n > 8 then n = 1 end
 	local buf = ffi.new("uint8_t[?]", n)
-	if not spi_xfer(fd, nil, buf, n) then return -1 end
+	if not spi_xfer(fd, nil, buf, n, delay_us) then return -1 end
 	local v = 0
 	for i = 0, n - 1 do
 		v = v * 256 + tonumber(buf[i])

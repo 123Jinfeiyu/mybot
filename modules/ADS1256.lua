@@ -24,6 +24,13 @@
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/HAL.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
+-- 本设备的 SPI 传输封装：统一附带 @SPI 矩阵配置的 delay
+-- （delay 由 SPI.lua 的 call() 随 fd 返回，经元数据引用流入 data.delay）
+local dev_delay = 0
+local function spi_w(fd, v)        return spi_write(fd, v, dev_delay) end
+local function spi_w3(fd, a, b, c) return spi_write3(fd, a, b, c, dev_delay) end
+local function spi_rm(fd, n)       return spi_read_multi(fd, n, dev_delay) end
+
 local REG_STATUS = 0x00
 local REG_MUX    = 0x01
 local REG_ADCON  = 0x02
@@ -79,7 +86,7 @@ end
 
 -- 辅助：写寄存器（WREG：命令 + 计数字节 + 数据，一次传输）
 local function write_reg(fd, reg, val)
-    return spi_write3(fd, bitc.bor(CMD_WREG, reg), 0x00, val)
+    return spi_w3(fd, bitc.bor(CMD_WREG, reg), 0x00, val)
 end
 
 -- 【配置脚本】初始化 ADS1256
@@ -101,6 +108,7 @@ function build(data)
     fd = tonumber(fd)
 
     -- 可配置项（缺省：1000SPS / PGA ×1 / AIN0 单端）
+    dev_delay = tonum(data.delay, dev_delay)
     local drate_idx = tonum(data.drate, 5)
     local pga_idx   = tonum(data.pga, 0)
     local channel   = tonum(data.channel, 0)
@@ -109,9 +117,9 @@ function build(data)
     if channel < 0 or channel > 7 then channel = 0 end
 
     -- 1. 复位并唤醒
-    spi_write(fd, CMD_RESET)
+    spi_w(fd, CMD_RESET)
     milli_sleep(5)
-    spi_write(fd, CMD_WAKEUP)
+    spi_w(fd, CMD_WAKEUP)
     milli_sleep(5)
 
     -- 2. STATUS：BIT5 ORDER=0（MSB 优先），BIT4 ACAL=1（自动校准），其余 0
@@ -135,11 +143,11 @@ function build(data)
     end
 
     -- 6. 自校准（约 2 个转换周期，保守等待）
-    spi_write(fd, CMD_SELFCAL)
+    spi_w(fd, CMD_SELFCAL)
     milli_sleep(50)
 
     -- 7. 进入连续读模式
-    spi_write(fd, CMD_RDATAC)
+    spi_w(fd, CMD_RDATAC)
 
     print(string.format("ADS1256 init OK: drate=%d SPS, PGA=×%d, channel=AIN%d",
         drate_tab[drate_idx + 1][2], pga_gain[pga_idx + 1], channel))
@@ -157,7 +165,7 @@ function destroy(data)
         return { result = "ERR", message = "Invalid Arguments: fd" }
     end
 
-    spi_write(tonumber(fd), CMD_SDATAC)
+    spi_w(tonumber(fd), CMD_SDATAC)
     return { result = "OK" }
 end
 
@@ -197,17 +205,18 @@ function call(data)
     end
 
     -- 退出连续模式 → 改通道 → 同步重启转换 → 回到连续模式
-    spi_write(fd, CMD_SDATAC)
+    spi_w(fd, CMD_SDATAC)
     if write_reg(fd, REG_MUX, mux) ~= 0 then
-        spi_write(fd, CMD_RDATAC)
+        spi_w(fd, CMD_RDATAC)
         return { result = "ERR", message = "Failed to write MUX" }
     end
-    spi_write(fd, CMD_SYNC)
+    spi_w(fd, CMD_SYNC)
     milli_sleep(1)
-    spi_write(fd, CMD_WAKEUP)
-    spi_write(fd, CMD_RDATAC)
+    spi_w(fd, CMD_WAKEUP)
+    spi_w(fd, CMD_RDATAC)
 
     -- 等待一个完整转换周期（按 drate 估算，最少 1ms）
+    dev_delay = tonum(data.delay, dev_delay)
     local drate_idx = tonum(data.drate, 5)
     if drate_idx < 0 or drate_idx > 14 then drate_idx = 5 end
     local sps = drate_tab[drate_idx + 1][2]
@@ -216,7 +225,7 @@ function call(data)
 
     -- 读 24 位数据（RDATAC 连续模式：CS 拉低即输出最新样本，无需命令）
     -- 一次读 4 字节，前 3 字节是当前样本（第 4 字节是下一个样本的高字节，丢弃）
-    local v = spi_read_multi(fd, 4)
+    local v = spi_rm(fd, 4)
     if v < 0 then
         return { result = "ERR", message = "Failed to read data" }
     end

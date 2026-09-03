@@ -45,7 +45,8 @@ I2C/SPI 总线操作由 `modules/HAL.lua` 实现（issue #14：不再依赖仓�
 - 驱动模块可用 `luajit`/`lua5.4` 独立运行调试，无需仓颉二进制
   （单测见 `test/test_hal_ffi.lua`、`test/test_hal_shell.lua`）
 
-已知限制：ffi 后端 `spi_setup` 的 delay 无法持久化到 fd（跨状态机按 0 处理）；shell 后端每次寄存器操作 fork 一个外部进程。
+SPI 传输延时（delay_usecs）无 per-fd 持久化 ioctl，ffi 后端由传输函数的可选 `delay_us` 尾参逐次携带
+（配置写在 @SPI 矩阵的 delay 列，SPI.lua 的 `call()` 随 fd 返回，经元数据引用流入设备驱动，参考 ADS1256.lua）；shell 降级后端忽略 delay。
 
 
 ## 解析器
