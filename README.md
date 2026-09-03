@@ -33,6 +33,9 @@ I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现（issue #14：不再依赖�
 
 - `ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；
   fd 为真实内核句柄，跨 Lua 状态机天然有效；SPI 经 spidev ioctl（`SPI_IOC_MESSAGE` 单次传输，CS 保持低）
+- **I2C 经 `I2C_RDWR` ioctl 原子事务**：读寄存器的「写指针 + 读」合并为单次内核传输，
+  消除守护线程与主线程并发访问**同一器件**时的寄存器指针竞态；地址由每条 i2c_msg 携带，
+  不再需要 `I2C_SLAVE` ioctl（也就没有地址被内核驱动占用的 EBUSY 问题）
 - 驱动模块顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致；Lua 5.3+ 位运算经 `bitcompat.lua`
   双兼容（LuaJIT 用内建 bit 库，纯 5.4 用算术回退）
 - `modules/lib/` 收纳非驱动的库模块：`HAL.lua`（总线抽象）与 `kalman.lua`

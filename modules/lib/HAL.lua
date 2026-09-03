@@ -55,11 +55,25 @@ typedef struct {
 	unsigned char      word_delay_usecs;
 	unsigned char      pad;
 } spi_ioc_transfer;
+
+/* /usr/include/linux/i2c.h：I2C_RDWR 原子事务（写指针+读合并为单次内核传输） */
+typedef struct {
+	unsigned short  addr;
+	unsigned short  flags;
+	unsigned short  len;
+	unsigned char  *buf;
+} cj_i2c_msg;
+typedef struct {
+	cj_i2c_msg   *msgs;
+	unsigned int  nmsgs;
+} cj_i2c_rdwr;
 ]]
 
 -- 布局自检：结构体尺寸与内核头文件不符则立即失败（防止静默内存越界）
 assert(ffi.sizeof("spi_ioc_transfer") == 32,
 	"spi_ioc_transfer size mismatch: expect 32, got " .. ffi.sizeof("spi_ioc_transfer"))
+assert(ffi.sizeof("cj_i2c_msg") == 16,
+	"cj_i2c_msg size mismatch: expect 16, got " .. ffi.sizeof("cj_i2c_msg"))
 
 local HAL = {}
 _G.__BOT4CJ_HAL = HAL
@@ -69,9 +83,9 @@ HAL.backend = "ffi"
 -- 常量
 ------------------------------------------------------------------
 local O_RDWR = 2
-HAL.I2C_SLAVE = 0x0703
-HAL.I2C_SLAVE_FORCE = 0x0706	-- 地址被内核驱动占用（EBUSY）时强制设定，语义同 i2c-tools -f
-HAL.EBUSY = 16
+HAL.I2C_RDWR = 0x0707		-- i2c-dev 原子多消息事务
+HAL.I2C_M_RD = 0x0001		-- i2c_msg.flags：读（0 为写）
+HAL.i2c_addr = {}		-- fd -> 7位从地址（per-state；每条 i2c_msg 自带地址，无需 I2C_SLAVE ioctl）
 
 -- ioctl 编号按 _IOC(dir=WRITE(1)<<30 | size<<16 | type('k'=0x6b)<<8 | nr) 计算
 HAL.SPI_IOC_WR_MODE          = 0x40016b01	-- _IOW('k', 1, __u8)
@@ -140,11 +154,14 @@ end
 
 function i2c_close(fd)
 	fd = tonumber(fd)
-	if fd ~= nil and fd >= 0 then HAL.sys.close(fd) end
+	if fd ~= nil and fd >= 0 then
+		HAL.sys.close(fd)
+		HAL.i2c_addr[fd] = nil
+	end
 end
 
--- 设置从设备地址（ioctl I2C_SLAVE，作用于 fd，跨状态机持久）
--- 地址被内核驱动占用（EBUSY）时回退 I2C_SLAVE_FORCE，语义同 i2c-tools 的 -f
+-- 设置从设备地址：仅记录到 per-fd 地址表。
+-- I2C_RDWR 每条消息自带地址，无需 I2C_SLAVE ioctl，也就没有 EBUSY/地址被占用问题。
 function i2c_set_addr(fd, addr)
 	fd = tonumber(fd)
 	addr = uint_of(addr)
@@ -152,49 +169,58 @@ function i2c_set_addr(fd, addr)
 		print("HAL: i2c_set_addr invalid args: " .. tostring(fd) .. ", " .. tostring(addr))
 		return false
 	end
-	local r = HAL.sys.ioctl_i(fd, HAL.I2C_SLAVE, addr)
-	if r == 0 then return true end
-
-	local e = HAL.sys.errno()
-	if e == HAL.EBUSY then
-		print(string.format(
-			"HAL: addr 0x%02x is claimed by a kernel driver (EBUSY), retrying with I2C_SLAVE_FORCE", addr))
-		r = HAL.sys.ioctl_i(fd, HAL.I2C_SLAVE_FORCE, addr)
-		if r == 0 then return true end
-		print("HAL: I2C_SLAVE_FORCE ioctl failed on fd " .. fd .. ": errno " .. HAL.sys.errno())
-		return false
-	end
-
-	print("HAL: I2C_SLAVE ioctl failed on fd " .. fd .. ": errno " .. tostring(e))
-	return false
+	HAL.i2c_addr[fd] = addr
+	return true
 end
 
--- 写寄存器（2 字节：reg + val），成功返回 true
+-- 内部：执行一次 I2C_RDWR 原子事务（msgs 为 cj_i2c_msg[n]），返回内核传输数或负值
+local function i2c_rdwr(fd, msgs, nmsgs)
+	local data = ffi.new("cj_i2c_rdwr[1]")
+	data[0].msgs = msgs
+	data[0].nmsgs = nmsgs
+	return HAL.sys.ioctl_p(fd, HAL.I2C_RDWR, data)
+end
+
+-- 内部：读缓冲区 n 字节按大端合并
+local function be_merge(buf, n)
+	local v = 0
+	for i = 0, n - 1 do v = v * 256 + tonumber(buf[i]) end
+	return v
+end
+
+-- 写寄存器（单条写消息 {reg,val}，原子），成功返回 true
 function i2c_write_reg(fd, reg, val)
 	fd = tonumber(fd)
 	reg, val = byte_of(reg), byte_of(val)
-	if fd == nil or reg == nil or val == nil then return false end
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or reg == nil or val == nil or addr == nil then return false end
 	local buf = ffi.new("uint8_t[2]", reg, val)
-	return HAL.sys.write(fd, buf, 2) == 2
+	local msgs = ffi.new("cj_i2c_msg[1]")
+	msgs[0].addr = addr; msgs[0].flags = 0; msgs[0].len = 2; msgs[0].buf = buf
+	return i2c_rdwr(fd, msgs, 1) >= 0
 end
 
--- 读寄存器，返回 0~255；失败返回 -1
+-- 读寄存器（写指针 + 读 合并为单次原子事务），返回 0~255；失败返回 -1
 function i2c_read_reg(fd, reg)
 	fd = tonumber(fd)
 	reg = byte_of(reg)
-	if fd == nil or reg == nil then return -1 end
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or reg == nil or addr == nil then return -1 end
 	local wb = ffi.new("uint8_t[1]", reg)
-	if HAL.sys.write(fd, wb, 1) ~= 1 then return -1 end
 	local rb = ffi.new("uint8_t[1]")
-	if HAL.sys.read(fd, rb, 1) ~= 1 then return -1 end
+	local msgs = ffi.new("cj_i2c_msg[2]")
+	msgs[0].addr = addr; msgs[0].flags = 0;            msgs[0].len = 1; msgs[0].buf = wb
+	msgs[1].addr = addr; msgs[1].flags = HAL.I2C_M_RD; msgs[1].len = 1; msgs[1].buf = rb
+	if i2c_rdwr(fd, msgs, 2) < 0 then return -1 end
 	return tonumber(rb[0])
 end
 
--- 写寄存器+多字节数据（burst 写，支持任意多字节），返回 0 = 成功，-1 = 失败
+-- 写寄存器+多字节数据（单条写消息，原子），返回 0 = 成功，-1 = 失败
 function i2c_write_multi(fd, reg, ...)
 	fd = tonumber(fd)
 	reg = byte_of(reg)
-	if fd == nil or reg == nil then return -1 end
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or reg == nil or addr == nil then return -1 end
 	local data = { reg }
 	for _, v in ipairs({ ... }) do
 		local b = byte_of(v)
@@ -203,40 +229,41 @@ function i2c_write_multi(fd, reg, ...)
 	end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i, b in ipairs(data) do buf[i - 1] = b end
-	if HAL.sys.write(fd, buf, #data) == #data then return 0 end
+	local msgs = ffi.new("cj_i2c_msg[1]")
+	msgs[0].addr = addr; msgs[0].flags = 0; msgs[0].len = #data; msgs[0].buf = buf
+	if i2c_rdwr(fd, msgs, 1) >= 0 then return 0 end
 	return -1
 end
 
--- 内部：读 n 字节并按大端合并；失败返回 nil
-local function read_be(fd, n)
-	local buf = ffi.new("uint8_t[?]", n)
-	if HAL.sys.read(fd, buf, n) ~= n then return nil end
-	local v = 0
-	for i = 0, n - 1 do
-		v = v * 256 + tonumber(buf[i])
-	end
-	return v
-end
-
--- 写指针后读 n 字节（burst 读），返回大端合并值；失败返回 -1（n 钳制 1~8，与 cfunc 契约一致）
+-- 写指针后读 n 字节（合并为单次原子事务），返回大端合并值；失败返回 -1（n 钳制 1~8）
 function i2c_read_multi(fd, reg, n)
 	fd = tonumber(fd)
 	reg = byte_of(reg)
 	n = uint_of(n)
-	if fd == nil or reg == nil or n == nil then return -1 end
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or reg == nil or n == nil or addr == nil then return -1 end
 	if n < 1 or n > 8 then n = 1 end
 	local wb = ffi.new("uint8_t[1]", reg)
-	if HAL.sys.write(fd, wb, 1) ~= 1 then return -1 end
-	return read_be(fd, n) or -1
+	local rb = ffi.new("uint8_t[?]", n)
+	local msgs = ffi.new("cj_i2c_msg[2]")
+	msgs[0].addr = addr; msgs[0].flags = 0;            msgs[0].len = 1; msgs[0].buf = wb
+	msgs[1].addr = addr; msgs[1].flags = HAL.I2C_M_RD; msgs[1].len = n; msgs[1].buf = rb
+	if i2c_rdwr(fd, msgs, 2) < 0 then return -1 end
+	return be_merge(rb, n)
 end
 
--- 纯读 n 字节（不写指针，SGP30 这类命令式传感器用），返回大端合并值；失败返回 -1
+-- 纯读 n 字节（单条读消息，不写指针，SGP30 这类命令式传感器用），大端合并；失败返回 -1
 function i2c_read(fd, n)
 	fd = tonumber(fd)
 	n = uint_of(n)
-	if fd == nil or n == nil then return -1 end
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or n == nil or addr == nil then return -1 end
 	if n < 1 or n > 8 then n = 1 end
-	return read_be(fd, n) or -1
+	local rb = ffi.new("uint8_t[?]", n)
+	local msgs = ffi.new("cj_i2c_msg[1]")
+	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
+	if i2c_rdwr(fd, msgs, 1) < 0 then return -1 end
+	return be_merge(rb, n)
 end
 
 ------------------------------------------------------------------
