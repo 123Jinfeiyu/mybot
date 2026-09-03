@@ -582,8 +582,9 @@ class DaemonHolder {
 	}
 }
 
-/* ---- 守护线程体（spawn 线程上运行）：建私有 lua_State，注入槽地址+配置，跑采样 chunk ---- */
-public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString): Int64 {
+/* ---- 守护线程体（spawn 绿色线程上运行）：建私有 lua_State，注入槽地址+配置，
+ *      先跑 chunk 一次完成 setup 并定义全局 daemon_tick，随后逐拍驱动 ---- */
+public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, interval_ms: Int64): Int64 {
 	unsafe {
 		let L = Lua_init()
 		if (Lua_check(L) == LUA_ERR) { return -1i64 }
@@ -595,19 +596,38 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString):
 		Lua_pushstring(L, config)
 		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_CONFIG"))
 
-		/* 加载采样 chunk 一次并 pcall 一次（chunk 内 while 循环直到 stop） */
+		/* 跑 chunk 一次：完成 setup（开总线/配置传感器/附着槽）并定义全局 daemon_tick */
 		let st = Lua_loadfilex(L, chunk, CPointer<C_Char>())
-		if (st == LUA_OK) {
-			let pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
-			if (pcs != LUA_OK) {
-				let err = Lua_tostring(L, -1)
-				println("[daemon] chunk pcall error: ${err.toString()}")
-			}
-		}
-		else {
+		if (st != LUA_OK) {
 			let err = Lua_tostring(L, -1)
 			println("[daemon] chunk load error: ${err.toString()}")
+			Lua_free(L)
+			return -1i64
 		}
+		var pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
+		if (pcs != LUA_OK) {
+			let err = Lua_tostring(L, -1)
+			println("[daemon] chunk setup error: ${err.toString()}")
+			Lua_free(L)
+			return -1i64
+		}
+		Lua_settop(L, 0)
+
+		/* 逐拍循环：每拍 getglobal(daemon_tick)+pcall 采样一次；拍间用 Cangjie sleep——
+		 * 在 M:N 运行时下 sleep 会让出绿色线程、不独占 schd-worker（D 方案关键，
+		 * 区别于 chunk 内 ffi usleep 阻塞 worker 导致 worker 池耗尽的死锁）。 */
+		let tickName = LibC.mallocCString("daemon_tick")
+		while ((slot + SLOT_STOP_OFF).read() == 0u8) {
+			Lua_getglobal(L, tickName)
+			pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
+			if (pcs != LUA_OK) {
+				let err = Lua_tostring(L, -1)
+				println("[daemon] tick error: ${err.toString()}")
+			}
+			Lua_settop(L, 0)
+			sleep(Duration.millisecond * interval_ms)
+		}
+
 		let n = CPointer<Int32>(slot + SLOT_COUNT_OFF).read()
 		Lua_free(L)
 		return Int64(n)
@@ -628,7 +648,8 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 	 *  @
 	 */
 	public static func Factory(defs: MatrixObject, i: Int64,
-			_: HashMap<String, MatrixVars_Hardware>): MtVars_Daemon
+			_: HashMap<String, MatrixVars_Hardware>,
+			registry: ArrayList<DaemonHolder>): MtVars_Daemon
 	{
 		let idxName = defs.indexOfCol(0, "name")
 		let idxChunk = defs.indexOfCol(0, "chunk")
@@ -646,6 +667,17 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 		}
 		let configStr = cfgAcc
 
+		/* 提取采样间隔（ms）供 daemon_body 逐拍 Cangjie sleep；缺省 5ms。
+		 * 用 let 定型以便 rise 闭包安全捕获（规避捕获可变变量） */
+		var ivAcc: Int64 = 5
+		for (j in 0..defs.col) {
+			if (defs[0, j] == "interval") {
+				let iv = MatrixVars_Hardware.getMt(defs, i, j)
+				if (iv != "-") { ivAcc = Int64.parse(iv) }
+			}
+		}
+		let intervalMs = ivAcc
+
 		/* 分配并清零共享槽，初始化 mutex（offset 0） */
 		let slot = unsafe { LibC.malloc<UInt8>(count: SLOT_SIZE) }
 		unsafe {
@@ -653,6 +685,7 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 			pthread_mutex_init(slot, CPointer<Unit>())
 		}
 		let holder = DaemonHolder(slot: slot)
+		registry.add(holder)	/* 注册：deactive 先统一置 stop 再 join，防饿死死锁 */
 
 		let daemon = MtVars_Daemon(
 			/* play：主线程加锁读采样值 → JSON。值同时以标量键 v0..vN 暴露，
@@ -686,7 +719,7 @@ class MtVars_Daemon <: MatrixVars_Hardware {
 					let cstr = LibC.mallocCString(chunkPath)
 					let cfg_cstr = LibC.mallocCString(configStr)
 					let slot_p = holder.slot
-					let f = spawn { daemon_body(slot_p, cstr, cfg_cstr) }
+					let f = spawn { daemon_body(slot_p, cstr, cfg_cstr, intervalMs) }
 					holder.future = Option<Future<Int64>>.Some(f)
 					println("Daemon '${name}' spawned, config: ${configStr}")
 				}
@@ -723,6 +756,8 @@ class RobotStruct {
 
 	/* -------- 存放解析结果和创建的变量 -------- */
 	private let C = LinkedList<MatrixObject>()
+	/* -------- 守护 holder 注册表：deactive 先统一置 stop 再 join（防 worker 饿死死锁）-------- */
+	private let daemonHolders = ArrayList<DaemonHolder>()
 	private let M = HashMap<String, MatrixVars_Hardware>() 
 
 	/* -------- 安全添加硬件变量（检查重复键） -------- */
@@ -785,6 +820,13 @@ class RobotStruct {
 	 *  INFO(20260517-qing): 它需要以倒序方式进行清除
 	 */
 	public func deactive(): Unit {
+		/* P1 防死锁：先给【所有】守护置 stop，再统一 join。
+		 * 否则逐个 stop+get 时，若先 join 一个被 worker 池饿死的守护，其余守护
+		 * （stop 未置位）仍独占 worker → 饿死者永不运行 → get() 永久阻塞。
+		 * 全部置 stop 后：运行中的守护退出释放 worker，饿死者随后拿到 worker 即见 stop 退出。 */
+		for (h in daemonHolders) {
+			unsafe { (h.slot + SLOT_STOP_OFF).write(1u8) }
+		}
 		let items = M.values().toArray()
 		for (i in items.size-1..=0:-1) {
 			items[i].destroy()
@@ -931,7 +973,7 @@ class RobotStruct {
 				let idxName = matrix.indexOfCol(0, "name")
 				for (i in 1..matrix.size) {
 					let name = matrix[i, idxName]
-					addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, M))
+					addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, M, daemonHolders))
 				}
 			}
 

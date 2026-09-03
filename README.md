@@ -60,20 +60,22 @@ INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/daemon_probe.lua')
 ```
 
 **并发模型（关键）**：
-- 守护线程由 `spawn { ... }` 创建（返回 `Future`，`future.get()` 即 join）——**不能用 pthread4cj 裸线程**：foreign pthread 无 Cangjie 运行时线程态，在其上跑 @C 代码必崩（PoC 实测 3/3 SIGSEGV）；spawn 线程运行时已附着，安全
-- 守护线程持有**独立 lua_State**（`jit.off` + loadfilex 采样 chunk 一次 + pcall 一次，chunk 内自带 `while not should_stop` 循环），与主线程状态机 1:1 隔离——规避 LuaJIT VM 非线程安全
+- 守护线程由 `spawn { ... }` 创建（返回 `Future`，`future.get()` 即 join）——**不能用 pthread4cj 裸线程**：foreign pthread 无 Cangjie 运行时线程态，在其上跑 @C 代码必崩（PoC 实测 3/3 SIGSEGV）；spawn 是 Cangjie 的 M:N 绿色线程（跑在 `schd-worker` 池上），运行时已附着，安全
+- 守护线程持有**独立 lua_State**（`jit.off`），与主线程状态机 1:1 隔离——规避 LuaJIT VM 非线程安全
+- **逐拍驱动 + 让出式节拍**：daemon_body 先 pcall 采样 chunk 一次完成 setup（chunk 定义全局 `daemon_tick` 单次采样函数），随后循环 `getglobal(daemon_tick)+pcall` 逐拍采样，**拍间用 Cangjie `sleep(Duration)`**——它会让出绿色线程、释放 schd-worker；切忌在 chunk 内用 ffi `usleep` 自旋循环，那会阻塞 worker 不放，守护数 ≥ worker 数（核数-1）时 worker 池耗尽、连主线程的 Timer sleep 都会死锁。用让出式 sleep 后实测 **8 守护（远超 4 核机的 3 worker）+ Timer 全部并发运行、干净退出**
 - **IPC 经共享内存槽** `daemon_slot_t`（`modules/lib/pthread.lua` 定义布局：mutex+count+nvals+values[16]+stop）：守护侧 Lua `P.publish(slot, {...})` 写值，主线程侧 `play()` 加锁读值，双方用同一 pthread_mutex 防撕裂
+- @Daemon 矩阵的 `interval` 列 = 采样间隔 ms（daemon_body 逐拍 Cangjie sleep 用，缺省 5）；关闭时 deactive **先统一给所有守护置 stop 再逐个 join**（防逐个 stop+join 时饿死者拿不到 worker 的死锁）
 
-**采样 chunk 契约**（运行在守护线程的独立状态机）：
+**采样 chunk 契约**（运行在守护线程的独立状态机；被 pcall 一次做 setup，并定义全局 `daemon_tick`）：
 ```lua
 if jit then jit.off() end
 local P = dofile(.../lib/pthread.lua)
-dofile(.../lib/HAL.lua)              -- 采样要用 HAL；节拍用 milli_sleep
+dofile(.../lib/HAL.lua)              -- 采样要用 HAL
 local slot = P.slot_attach(DAEMON_SLOT_ADDR)   -- 宿主注入的槽地址全局
-while not P.should_stop(slot) do
+-- ... setup：开总线、配置传感器（本 chunk 被 pcall 一次）...
+function daemon_tick()               -- daemon_body 逐拍调用（单次采样），拍间由 Cangjie sleep 让出
     local ax, ay, az = 采样()         -- 经 HAL 读传感器
     P.publish(slot, { ax, ay, az })
-    milli_sleep(2)
 end
 ```
 
