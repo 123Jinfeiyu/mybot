@@ -946,61 +946,6 @@ class MtVars_Servo <: MatrixVars_Hardware {
 	}
 }
 
-/*
- * 扬声器类
- * 
- * 使用工厂函数
- * 
- * TODO: 输入扬声器设备名，扬声器又是一个复杂的功能
- * 
- */
-class MtVars_Speaker <: MatrixVars_Hardware {
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None  )
-		{  super(things: things, rise: rise, free: free)  }
-
-	/*
-	 *  工厂函数，根据矩阵对象进行构造
-	 *  @Speaker
-	 *  name  channels  sample_rate  volumn  max_f  min_f;
-	 *   spk         2        48000     0.6   5000      -;
-	 *  @
-	 */
-	public static func Factory(
-		SpeakerDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_Speaker {
-
-		let idxName = SpeakerDefs.indexOfCol(0, "name")
-		let idxChannels = SpeakerDefs.indexOfCol(0, "channels")
-		let idxSampleRate = SpeakerDefs.indexOfCol(0, "sample_rate")
-		let idxVolumn = SpeakerDefs.indexOfCol(0, "volumn")
-		let idxMax_f = SpeakerDefs.indexOfCol(0, "max_f")
-		let idxMin_f = SpeakerDefs.indexOfCol(0, "min_f")
-
-		let name = SpeakerDefs[i, idxName]
-		let channels = parseMt<Int32>(SpeakerDefs, i, idxChannels)
-		let sample_rate = parseMt<Int32>(SpeakerDefs, i, idxSampleRate)
-		let volume = parseMt<Float64>(SpeakerDefs, i, idxVolumn)
-		let max_f = parseMt<Float32>(SpeakerDefs, i, idxMax_f)
-		let min_f = parseMt<Float32>(SpeakerDefs, i, idxMin_f)
-
-		println("Create a Speaker: ${name}, channels: ${channels}, sample_rate: ${sample_rate}, volume: $(volume), max_f: ${max_f}, min_f: ${min_f}")		
-		let spk = Spk(channels: channels, sample_rate: sample_rate)
-		let mtvar_spk = MtVars_Speaker(things: {json =>		// {"frequency": 1000.0, "delay": 400}
-			let json_obj = json.asObject()
-			var freq  = Float32(json_obj.get("frequency").getOrThrow().asFloat().getValue())
-			if (freq > max_f) { freq = max_f }
-			if (freq < min_f) { freq = min_f }
-			let delay  = Int32(json_obj.get("delay").getOrThrow().asFloat().getValue())
-			spk.play(freq, volume, delay)
-			let ret = JsonObject()	/* ---- FIXME: 处理异常情况 */
-			ret.put("status", JsonString("OK"))
-			return ret
-		})
-
-		return mtvar_spk
-	}
-}
 
 
 
@@ -1196,15 +1141,6 @@ class RobotStruct {
 			 * ---- */
 			else if (MtName == "Action") {
 				;
-			}
-
-			/* ---- [特殊的] Speaker扬声器硬件 ---- */
-			else if (MtName == "Speaker") {
-				let idxName = matrix.indexOfCol(0, "name")
-				for (i in 1..matrix.size) {
-					let name = matrix[i, idxName]
-					addHardwareVar(name, MtVars_Speaker.Factory(matrix, i, M))
-				}
 			}
 
 			/* ---- 【通用的】Lua脚本硬件 ---- */
