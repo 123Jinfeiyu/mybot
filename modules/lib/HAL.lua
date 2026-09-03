@@ -1,13 +1,11 @@
--- HAL.lua - 基层硬件抽象层（LuaJIT ffi 主后端）
+-- HAL.lua - 基层硬件抽象层（LuaJIT ffi，位于 modules/lib/）
 -- bot4cj 仓颉语言机器人框架
 --
 -- issue #14：完全解耦的基层硬件应用层驱动——不再依赖仓颉注册的 cfunc。
 --
--- 【后端选择】
---   LuaJIT（有 ffi）→ 直调 glibc（open/ioctl/read/write/close/usleep），
---                     原生性能，fd 为真实内核句柄，跨 Lua 状态机天然有效
---   其他 Lua 5.x    → dofile HAL_shell.lua（i2c-tools/spi-tools shell-out 降级路径，
---                     该后端用句柄编码与 /tmp 配置文件模拟跨状态机语义）
+-- 【运行环境】仅支持 LuaJIT：经 ffi 直调 glibc（open/ioctl/read/write/close/usleep），
+-- 原生性能，fd 为真实内核句柄，跨 Lua 状态机天然有效。
+-- （原 i2c-tools/spi-tools shell-out 降级后端 HAL_shell.lua 已移除。）
 --
 -- 【安全】设备路径经白名单模式校验；所有数值参数 tonumber + 范围校验后才进入
 -- ioctl/缓冲区，无 shell 参与。
@@ -23,14 +21,13 @@
 -- 重复加载保护：同一状态机内只初始化一次
 if _G.__BOT4CJ_HAL ~= nil then return _G.__BOT4CJ_HAL end
 
--- 后端探测：LuaJIT 且 ffi 可用 → 本文件的 ffi 后端；否则降级 shell 后端
+-- 环境检查：必须有 ffi（LuaJIT）；shell 降级后端已移除
 local has_ffi, ffi = false, nil
 if rawget(_G, "jit") ~= nil then
 	has_ffi, ffi = pcall(require, "ffi")
 end
 if not has_ffi then
-	local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
-	return dofile(dir .. "/HAL_shell.lua")	-- shell 版自行设置加载保护
+	error("HAL requires LuaJIT with ffi (the shell-out fallback backend has been removed)")
 end
 
 ------------------------------------------------------------------
