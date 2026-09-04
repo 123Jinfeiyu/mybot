@@ -2,6 +2,10 @@
 # 结构脚本：test/test_ads1115.sql（I2C + adc0@0x48 + Timer + adc-d0 守护）
 # 运行：cat test/test_ads1115.mt | ./target/release/bin/main --robot=test/test_ads1115.sql
 #
+# 注意：SQL 脚本不支持注释；且结构脚本 '-' 占位符经元数据归一为 "0"，
+# 所以 adc0 的 pga/dr 在 .sql 里显式写 '2'/'4'（±2.048V / 128SPS），
+# 若写 '-' 会归一成 0，被驱动当作显式档位 ±6.144V / 8SPS。
+#
 # 无器件时（总线扫描无 ACK）：build/call 返回明确 ERR，守护 fail(-2) 发布错误码，
 # 程序仍正常走完退出 0（与 test_hal_i2c 的无器件约定一致）。
 #
