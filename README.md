@@ -33,6 +33,9 @@ I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现（issue #14：不再依赖�
 
 - `ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；
   fd 为真实内核句柄，跨 Lua 状态机天然有效；SPI 经 spidev ioctl（`SPI_IOC_MESSAGE` 单次传输，CS 保持低）
+- **I2C 经 `I2C_RDWR` ioctl 原子事务**：读寄存器的「写指针 + 读」合并为单次内核传输，
+  消除守护线程与主线程并发访问**同一器件**时的寄存器指针竞态；地址由每条 i2c_msg 携带，
+  不再需要 `I2C_SLAVE` ioctl（也就没有地址被内核驱动占用的 EBUSY 问题）
 - 驱动模块顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致；Lua 5.3+ 位运算经 `bitcompat.lua`
   双兼容（LuaJIT 用内建 bit 库，纯 5.4 用算术回退）
 - `modules/lib/` 收纳非驱动的库模块：`HAL.lua`（总线抽象）与 `kalman.lua`
@@ -42,6 +45,57 @@ I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现（issue #14：不再依赖�
 
 SPI 传输延时（delay_usecs）无 per-fd 持久化 ioctl，由传输函数的可选 `delay_us` 尾参逐次携带
 （配置写在 @SPI 矩阵的 delay 列，SPI.lua 的 `call()` 随 fd 返回，经元数据引用流入设备驱动，参考 ADS1256.lua）。
+
+
+## 守护线程（@Daemon）
+
+后台持续采样（如 IMU）用 `@Daemon` 矩阵声明，宿主用 **Cangjie `spawn` 原语**起守护线程：
+
+```sql
+CREATE TABLE Daemon (
+	name  String,
+	chunk String
+);
+INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/daemon_probe.lua');
+```
+
+**并发模型（关键）**：
+- 守护线程由 `spawn { ... }` 创建（返回 `Future`，`future.get()` 即 join）——**不能用 pthread4cj 裸线程**：foreign pthread 无 Cangjie 运行时线程态，在其上跑 @C 代码必崩（PoC 实测 3/3 SIGSEGV）；spawn 线程运行时已附着，安全
+- 守护线程持有**独立 lua_State**（`jit.off` + loadfilex 采样 chunk 一次 + pcall 一次，chunk 内自带 `while not should_stop` 循环），与主线程状态机 1:1 隔离——规避 LuaJIT VM 非线程安全
+- **IPC 经共享内存槽** `daemon_slot_t`（`modules/lib/pthread.lua` 定义布局：mutex+count+nvals+values[16]+stop）：守护侧 Lua `P.publish(slot, {...})` 写值，主线程侧 `play()` 加锁读值，双方用同一 pthread_mutex 防撕裂
+
+**采样 chunk 契约**（运行在守护线程的独立状态机）：
+```lua
+if jit then jit.off() end
+local P = dofile(.../lib/pthread.lua)
+dofile(.../lib/HAL.lua)              -- 采样要用 HAL；节拍用 milli_sleep
+local slot = P.slot_attach(DAEMON_SLOT_ADDR)   -- 宿主注入的槽地址全局
+while not P.should_stop(slot) do
+    local ax, ay, az = 采样()         -- 经 HAL 读传感器
+    P.publish(slot, { ax, ay, az })
+    milli_sleep(2)
+end
+```
+
+采样 chunk 运行在守护线程的独立状态机里（示例见下方「万能采样 chunk」）。@Daemon 矩阵除 name/chunk 外的列会被序列化为 `DAEMON_CONFIG` 串注入 chunk，由 chunk 解析。
+
+**启动时序注意**：守护线程 setup（开总线 + 配置传感器）需数毫秒；若动作序列极短（几行瞬时 play），可能在守护首次采样前就 free() 停止（表现为 publishes=0）。真实机器人动作序列为秒级，无此问题；测试时用 Timer 延时列拉长主线程时间窗。
+
+**万能采样 chunk（零 per-sensor 代码）**：`modules/lib/sensor_daemon.lua` 服务任意 build/call/destroy 型驱动——@Daemon 矩阵配置 driver/proto/path/addr/interval/fields/sign（其余任意键透传给驱动 call 作附加参数，如 channel/pga），无需为每个传感器写 Lua：
+
+```sql
+CREATE TABLE Daemon (
+	name String, chunk String, driver String, proto String,
+	path String, addr String, interval String, fields String, sign String
+);
+INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign)
+  VALUES ('imu0', 'modules/lib/sensor_daemon.lua', 'MPU6050', 'i2c',
+          '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
+```
+
+（fields 用 `|` 分隔以避开 SQL 值分隔符逗号；sign=16 表示对提取值做 16 位补码符号扩展）
+
+**数据消费（闭环）**：守护 `play()` 把采样值以标量键 `v0..vN`（外加 count/nvals/status）返回。别的硬件变量只要在矩阵里用一列**引用守护变量名**，即经 `_getMetadata` 引用机制拿到这些值（标量键能过 call_lua，JsonArray 不能，故用 v0..vN）。`modules/Monitor.lua` 是示例：@Monitor 的 src 列填守护名，call() 里 `data.v0` 即实时采样值，决策后可经 controller 列转发执行器，形成「守护采样 → 引用消费 → 决策 → 转发执行」闭环。
 
 
 ## 解析器

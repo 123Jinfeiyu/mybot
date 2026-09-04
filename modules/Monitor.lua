@@ -1,0 +1,49 @@
+-- Monitor.lua - 守护数据消费 / 闭环控制示例驱动
+-- bot4cj 仓颉语言机器人框架
+--
+-- 用法：在结构脚本中定义 @Monitor 矩阵，某列的值填一个 @Daemon 变量名，
+-- 经 _getMetadata 的引用机制，该守护 play() 返回的 v0..vN / count / status
+-- 会被合并进本变量的元数据，call() 里即可用 data.v0 等读到实时采样值。
+--
+--   CREATE TABLE Daemon (name String, chunk String);
+--   INSERT INTO Daemon (name, chunk) VALUES ('sim0', 'modules/lib/daemon_probe.lua');
+--   CREATE TABLE Monitor (name String, src String);
+--   INSERT INTO Monitor (name, src) VALUES ('mon0', 'sim0');   -- src 引用守护 sim0
+--
+-- 本示例：读 v0 按阈值判定 level，并回传 out=v0；若本变量再声明 controller 列，
+-- 框架会把返回值转发给执行器，形成「守护采样 → 引用消费 → 决策 → 转发执行」闭环。
+
+function build(data)
+	if type(data) ~= "table" then
+		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	end
+	return { result = "OK" }
+end
+
+function destroy(data)
+	if type(data) ~= "table" then
+		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	end
+	return { result = "OK" }
+end
+
+function call(data)
+	if type(data) ~= "table" then
+		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	end
+
+	-- data.v0.. / count 来自被引用的守护（经引用机制合并进元数据）
+	local v0 = tonumber(data.v0)
+	local count = tonumber(data.count)
+	if v0 == nil then
+		-- 守护尚未发布任何采样（启动瞬间）或被引用列缺失
+		return { result = "ERR", message = "no daemon value (v0 missing)" }
+	end
+
+	local level = (v0 > 1.0) and "HIGH" or "LOW"
+	print(string.format("Monitor: v0=%s count=%s -> level=%s",
+		tostring(v0), tostring(count), level))
+
+	-- 回传决策值（若声明 controller 列，框架会把它转发给执行器）
+	return { result = "OK", level = level, out = v0 }
+end
