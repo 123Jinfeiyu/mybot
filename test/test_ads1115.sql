@@ -1,0 +1,32 @@
+CREATE TABLE I2C (
+	name String,
+	path String
+);
+INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');
+
+CREATE TABLE ADS1115 (
+	name    String,
+	I2C     String,
+	address String,
+	pga     String,
+	dr      String,
+	channel String
+);
+INSERT INTO ADS1115 (name, I2C, address, pga, dr, channel) VALUES ('adc0', 'i2c-1', '0x48', '-', '-', '0');
+
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
+CREATE TABLE Daemon (
+	name     String,
+	chunk    String,
+	driver   String,
+	proto    String,
+	path     String,
+	addr     String,
+	interval String,
+	fields   String
+);
+INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields) VALUES ('adc-d0', 'modules/lib/sensor_daemon.lua', 'ADS1115', 'i2c', '/dev/i2c-1', '0x48', '50', 'raw|voltage');
