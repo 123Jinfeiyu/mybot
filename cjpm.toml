@@ -13,12 +13,13 @@
   package-configuration = {}
 
 [dependencies]
-  SQL4cj = { git = "https://gitcode.com/qingss0/SQL4cj.git", branch="main" }
+  #SQL4cj = { git = "https://gitcode.com/qingss0/SQL4cj.git", branch="main" }
+
   ctype4cj = "1.0.4"
-  #stdx = "1.1.0"
   mt2 = "1.0.0"
-  luajit4cj = { git = "https://gitcode.com/qingss0/luajit4cj.git", branch = "main" }
-  #SQL4cj = "1.0.1"
+  luajit4cj = "1.0.0"
+  SQL4cj = "1.0.3"
+
 # 这种x86机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
 [target.x86_64-unknown-linux-gnu]
   [target.x86_64-unknown-linux-gnu.dependencies]
