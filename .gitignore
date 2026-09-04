@@ -2,7 +2,6 @@
 nn/
 bot
 bot?
-test_*
 
 .git/
 .vscode/
