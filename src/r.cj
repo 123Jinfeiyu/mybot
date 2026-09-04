@@ -758,7 +758,10 @@ class RobotStruct {
 	private let C = LinkedList<MatrixObject>()
 	/* -------- 守护 holder 注册表：deactive 先统一置 stop 再 join（防 worker 饿死死锁）-------- */
 	private let daemonHolders = ArrayList<DaemonHolder>()
-	private let M = HashMap<String, MatrixVars_Hardware>() 
+	private let M = HashMap<String, MatrixVars_Hardware>()
+	/* 硬件变量声明序序列：active/deactive 按声明序 build/destroy
+	 * （HashMap 遍历序未定义，而 I2C→PCA9685 等 fd 依赖要求声明序） */
+	private let hwSeq = ArrayList<MatrixVars_Hardware>() 
 
 	/* -------- 安全添加硬件变量（检查重复键） -------- */
 	private func addHardwareVar(name: String, hw: MatrixVars_Hardware) {
@@ -766,6 +769,7 @@ class RobotStruct {
 			throw IllegalArgumentException("Duplicate hardware variable name: '${name}'")
 		}
 		M[name] = hw
+		hwSeq.add(hw)
 	}
 
 	/*
@@ -809,7 +813,7 @@ class RobotStruct {
 
 	/* -------- 激活所有硬件变量 -------- */
 	public func  active(): Unit {
-		for (item in M.values()) {
+		for (item in hwSeq) {
 			item.build()
 		}
 	}
@@ -827,7 +831,7 @@ class RobotStruct {
 		for (h in daemonHolders) {
 			unsafe { (h.slot + SLOT_STOP_OFF).write(1u8) }
 		}
-		let items = M.values().toArray()
+		let items = hwSeq.toArray()
 		for (i in items.size-1..=0:-1) {
 			items[i].destroy()
 		}
@@ -897,7 +901,7 @@ class RobotStruct {
 									mt.addRune(Rune(ch))
 								}
 								mt.submitItem()
-							case _ => Exception("Only String is Valid")
+							case _ => throw Exception("Only String is Valid")
 						}
 
 					}
@@ -928,7 +932,7 @@ class RobotStruct {
 						}
 					})
 
-				case _ => Exception("Unsupported sql command")
+				case _ => throw Exception("Unsupported sql command")
 			}
 		}
 	}
