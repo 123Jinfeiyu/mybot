@@ -99,18 +99,25 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 
 **数据消费（闭环）**：守护 `play()` 把采样值以标量键 `v0..vN`（外加 count/nvals/status）返回。别的硬件变量只要在矩阵里用一列**引用守护变量名**，即经 `_getMetadata` 引用机制拿到这些值（标量键能过 call_lua，JsonArray 不能，故用 v0..vN）。`modules/Monitor.lua` 是示例：@Monitor 的 src 列填守护名，call() 里 `data.v0` 即实时采样值，决策后可经 controller 列转发执行器，形成「守护采样 → 引用消费 → 决策 → 转发执行」闭环。
 
-**滤波器硬件变量**：`modules/Kalman.lua`（@Kalman 矩阵）把 `lib/kalman.lua` 封装为可引用的一级——它的 src 列引用守护/传感器，call 逐拍滤波，输出既作 `out` 也别名 `v0`（成为「虚拟传感器」，下游按 v0 统一消费）。滤波器实例存驱动模块级 local，**状态跨 call 保持**（本变量 lua_State 独占）。三级引用链示例：
+**滤波器硬件变量**：每个滤波器 = `lib/<filter>.lua` 库（统一 `.new()` + `:filter(x)` 接口，lua5.4/luajit 双兼容）+ `<Filter>.lua` 驱动（@矩阵名对应）。驱动的 src 列引用守护/传感器，call 逐拍滤波，输出既作 `out` 也别名 `v0`（成为「虚拟传感器」，下游按 v0 统一消费）；滤波器实例存驱动模块级 local，**状态跨 call 保持**。现有滤波器：
+
+- **Kalman**（`lib/kalman.lua` + `Kalman.lua`）：一维卡尔曼，配置 `Q`/`R`（系统/测量噪声协方差）
+- **Ema**（`lib/ema.lua` + `Ema.lua`）：指数移动平均（一阶低通），配置 `alpha`∈(0,1]（越小越平滑）、可选 `init`
+
+三级引用链示例（守护采样 → 滤波 → 消费）：
 
 ```sql
 CREATE TABLE Daemon (name String, chunk String);
 INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/sensor_daemon.lua');  -- 采样
 CREATE TABLE Kalman (name String, Q String, R String, src String, field String);
-INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', 'imu0', 'v0');  -- 滤波
+INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', 'imu0', 'v0');  -- 卡尔曼
+-- 或 EMA：CREATE TABLE Ema (name String, alpha String, src String, field String);
+--        INSERT INTO Ema (name, alpha, src, field) VALUES ('ef0', '0.3', 'imu0', 'v0');
 CREATE TABLE Monitor (name String, src String);
 INSERT INTO Monitor (name, src) VALUES ('mon0', 'kf0');  -- 消费滤波值
 ```
 
-引用链 `imu0 → kf0 → mon0` 全靠既有引用机制自动串联（播放 mon0 会递归播放 kf0、imu0）。也可直接在 @Action 里以 `kf0.in` 列喂待滤值（无需 src）。注意：kf0 每被 play 一次滤波器推进一拍，多消费者引用同一滤波器会重复推进。
+引用链 `imu0 → kf0 → mon0` 全靠既有引用机制自动串联（播放 mon0 会递归播放 kf0、imu0）。也可直接在 @Action 里以 `kf0.in`/`ef0.in` 列喂待滤值（无需 src）。注意：滤波变量每被 play 一次推进一拍，多消费者引用同一滤波器会重复推进。
 
 
 ## 解析器
