@@ -36,3 +36,7 @@ log
 report
 tmp
 .tmp/
+
+# 工具配置
+.opencode/
+opencode.json
