@@ -1,6 +1,6 @@
 # bot4cj
 
-bot4cj是基于仓颉和 Linux I2C 接口的**机器人硬件控制器**，它是一个**可扩展的结构**，目标是将**机器人结构**、**机器人动作**用DSL解耦出来。通过管道向程序传递机器人结构、动作脚本的内容，就可以驱动机器人做出动作。
+bot4cj是基于仓颉的**机器人硬件控制器**，它是一个**可扩展的结构**，目标是用一门简单快速的脚本语言写**应用层硬件驱动**，将**机器人结构**、**机器人动作**用DSL解耦出来。通过管道向程序传递动作脚本的内容，就可以驱动机器人做出动作。
 
 
 
@@ -19,7 +19,7 @@ sudo apt update && sudo apt install libluajit-5.1-dev
 ## 项目介绍
 机器人软件通常被称为“专用软件”，想要得到一个机器人软件通常比一个普通的软件更为困难，这是因为这个世界上的机器人五花八门，所以它们的软件往往都是独特的，所以我想写一种用于描述机器人硬件和动作的通用的脚本。
 
-`bot4cj` 基于仓颉编程语言和 Linux I2C 接口，提供了便捷的硬件控制能力，目前支持pca9685，我通常使用树莓派作为宿主机。
+`bot4cj` 基于仓颉编程语言，提供了便捷的硬件控制能力，目前支持pca9685，我通常使用树莓派作为宿主机。
 
 
 
@@ -29,7 +29,7 @@ sudo apt update && sudo apt install libluajit-5.1-dev
 ## 基层硬件抽象层（HAL）
 
 I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现（issue #14：不再依赖仓颉注册的 cfunc），
-**仅支持 LuaJIT**（原 i2c-tools/spi-tools shell-out 降级后端已移除）：
+**仅支持 LuaJIT**：
 
 - `ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；
   fd 为真实内核句柄，跨 Lua 状态机天然有效；SPI 经 spidev ioctl（`SPI_IOC_MESSAGE` 单次传输，CS 保持低）
@@ -125,10 +125,10 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', 'kf0');  -- 消费滤波值
 树莓派通过I2C接口连接pca9685后使用如下方法使用：
 
 ```bash
-cat scripts/std.mt | cjpm run	# 蜘蛛机器人站立脚本
+cat scripts/std.mt | bash _run.sh --robot=robots/spider1.sql	# 蜘蛛机器人站立脚本
 ```
 
-
+动作脚本从管道输入，机器人结构从--robot
 
 
 
