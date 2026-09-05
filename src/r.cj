@@ -99,9 +99,10 @@ class RobotStruct {
 		/* P1 防死锁：先给【所有】守护置 stop，再统一 join。
 		 * 否则逐个 stop+get 时，若先 join 一个被 worker 池饿死的守护，其余守护
 		 * （stop 未置位）仍独占 worker → 饿死者永不运行 → get() 永久阻塞。
-		 * 全部置 stop 后：运行中的守护退出释放 worker，饿死者随后拿到 worker 即见 stop 退出。 */
+		 * 全部置 stop 后：运行中的守护退出释放 worker，饿死者随后拿到 worker 即见 stop 退出。
+		 * P2：stop 经槽内 mutex 临界区写入（acquire/release），消除数据竞争 */
 		for (h in daemonHolders) {
-			unsafe { (h.slot + SLOT_STOP_OFF).write(1u8) }
+			daemon_request_stop(h.slot)
 		}
 		let items = hwSeq.toArray()
 		for (i in items.size-1..=0:-1) {

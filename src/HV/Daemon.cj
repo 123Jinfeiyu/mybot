@@ -33,6 +33,27 @@ foreign func pthread_mutex_lock(m: CPointer<UInt8>): Int32
 foreign func pthread_mutex_unlock(m: CPointer<UInt8>): Int32
 foreign func pthread_mutex_destroy(m: CPointer<UInt8>): Int32
 
+/* ---- stop 标志读写：统一经槽内 mutex 临界区 ----
+ * mutex 的 lock/unlock 提供 acquire/release 内存语义，清除守护线程与主线程
+ * 裸读写 stop 的数据竞争（P2：原 (slot+SLOT_STOP_OFF).read()/write(1u8) 为无序访问，
+ * arm64 弱内存序下理论可见性延迟）。锁临界区极短、无嵌套，无死锁风险。 */
+public func daemon_request_stop(slot: CPointer<UInt8>): Unit {
+	unsafe {
+		pthread_mutex_lock(slot)
+		(slot + SLOT_STOP_OFF).write(1u8)
+		pthread_mutex_unlock(slot)
+	}
+}
+
+public func daemon_stop_requested(slot: CPointer<UInt8>): Bool {
+	unsafe {
+		pthread_mutex_lock(slot)
+		let s = (slot + SLOT_STOP_OFF).read()
+		pthread_mutex_unlock(slot)
+		return s != 0u8
+	}
+}
+
 /* ---- 可变状态持有者：rise/free 闭包捕获此 let 引用并改其字段，
  *      规避 Cangjie「lambda 捕获可变变量」限制 ---- */
 public class DaemonHolder {
@@ -79,7 +100,7 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		 * 在 M:N 运行时下 sleep 会让出绿色线程、不独占 schd-worker（D 方案关键，
 		 * 区别于 chunk 内 ffi usleep 阻塞 worker 导致 worker 池耗尽的死锁）。 */
 		let tickName = LibC.mallocCString("daemon_tick")
-		while ((slot + SLOT_STOP_OFF).read() == 0u8) {
+		while (!daemon_stop_requested(slot)) {
 			Lua_getglobal(L, tickName)
 			pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
 			if (pcs != LUA_OK) {
@@ -189,7 +210,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 			/* free：置停止标志 + future.get() 等待退出 + 销毁 mutex（显式停止，见 issue #3） */
 			free: { =>
 				unsafe {
-					(holder.slot + SLOT_STOP_OFF).write(1u8)
+					daemon_request_stop(holder.slot)
 					if (let Some(f) <- holder.future) {
 						let n = f.get()
 						println("Daemon '${name}' joined, total publishes=${n}")
