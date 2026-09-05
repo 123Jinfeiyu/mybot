@@ -11,6 +11,14 @@ dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
+-- 关键寄存器与模式位（PCA9685 数据手册 §7.3 寄存器映射）
+local REG_MODE1    = 0x00	-- 模式寄存器1
+local MODE1_RESTART= 0x80	-- 重启位：置 1 触发已排队的计数重启
+local MODE1_SLEEP  = 0x10	-- 睡眠位：置 1 关闭振荡器，改 PRE_SCALE 前必须进入
+local MODE1_AI     = 0x20	-- 地址自增位：置 1 使寄存器写自动递增
+local REG_PRESCALE = 0xFE	-- 预分频寄存器（实际频率 = 25MHz / (4096 * (prescale+1))）
+local LED0_ON_L    = 0x06	-- 通道 0 ON 计数低字节（后续通道每 4 字节步进）
+
 
 
 
@@ -62,13 +70,13 @@ function build(data)
 
 	i2c_set_addr(fd, addr)		-- 开始配置PCA9685
 
-	i2c_write_reg(fd, 0x00, 0x80)	-- 重启PCA9685
+	i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)	-- 触发一次重启（唤醒振荡器）
 
 	milli_sleep(5)			-- 等待振荡器启动
 
-	i2c_write_reg(fd, 0x00, 0x10)			-- 进入SLEEP模式（允许改频率）
-	i2c_write_reg(fd, 0xFE, math.floor(prescale))
-	i2c_write_reg(fd, 0x00, 0x20)			-- 退出SLEEP模式
+	i2c_write_reg(fd, REG_MODE1, MODE1_SLEEP)		-- 进入SLEEP模式（允许改频率）
+	i2c_write_reg(fd, REG_PRESCALE, math.floor(prescale))
+	i2c_write_reg(fd, REG_MODE1, MODE1_AI)			-- 退出SLEEP并开启地址自增
 
 	milli_sleep(5)			-- 等待振荡器启动
 
@@ -115,7 +123,7 @@ function destroy(data)
 
 	i2c_set_addr(fd, addr)		-- 准备配置
 
-	i2c_write_reg(fd, 0x00, 0x80)	-- 重启PCA9685
+	i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)	-- 触发重启（非复位配置，仅重新开始计数）
 
 	return {  result = "OK"  }	-- 返回成功信号
 
@@ -211,13 +219,13 @@ function call(data)
 	local max = 2.5	-- 180度对应2.5ms
 	local width = min + (max - min) * (angle / 180.0)
 	local offval = math.floor(width * 4096.0 / 20.0)
-	local reg = 0x06 + 4 * channel
+	local reg = LED0_ON_L + 4 * channel
 
-	-- 写I2C寄存器
-	i2c_write_reg(fd, reg + 0, bitc.band(bitc.rshift(0, 0), 0xFF))		-- 1 * 8
-	i2c_write_reg(fd, reg + 1, bitc.band(bitc.rshift(0, 8), 0xFF))		-- 2 * 8
-	i2c_write_reg(fd, reg + 2, bitc.band(bitc.rshift(offval, 0), 0xFF))	-- 3 * 8
-	i2c_write_reg(fd, reg + 3, bitc.band(bitc.rshift(offval, 8), 0xFF))	-- 4 * 8
+	-- 写I2C寄存器：ON 计数恒为 0（脉宽自周期起点起算），OFF 计数写入低/高字节
+	i2c_write_reg(fd, reg + 0, 0x00)		-- ON 计数低字节 = 0
+	i2c_write_reg(fd, reg + 1, 0x00)		-- ON 计数高字节 = 0
+	i2c_write_reg(fd, reg + 2, bitc.band(bitc.rshift(offval, 0), 0xFF))	-- OFF 计数低字节
+	i2c_write_reg(fd, reg + 3, bitc.band(bitc.rshift(offval, 8), 0xFF))	-- OFF 计数高字节
 
 	-- 返回字典
  	return { result = "OK" }
