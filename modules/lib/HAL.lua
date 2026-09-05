@@ -242,21 +242,40 @@ function i2c_write_multi(fd, reg, ...)
 	return -1
 end
 
--- 写指针后读 n 字节（合并为单次原子事务），返回大端合并值；失败返回 -1（n 钳制 1~8）
-function i2c_read_multi(fd, reg, n)
+-- 写指针后读 n 字节（合并为单次原子事务），返回 1 基字节表 {b0, b1, ...}；
+-- 失败返回 nil。与 i2c_read_multi 同一内核事务，但返回字节表、不受 Lua
+-- number 2^53 精度限制——多字节块读（BH1745 颜色 8B / BMI270 六轴 12B 等）
+-- 请用此接口。n 钳制 1~16。
+function i2c_read_multi_bytes(fd, reg, n)
 	fd = tonumber(fd)
 	reg = byte_of(reg)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
-	if fd == nil or reg == nil or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 8 then n = 1 end
+	if fd == nil or reg == nil or n == nil or addr == nil then return nil end
+	if n < 1 then n = 1 end
+	if n > 16 then n = 16 end
 	local wb = ffi.new("uint8_t[1]", reg)
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[2]")
 	msgs[0].addr = addr; msgs[0].flags = 0;            msgs[0].len = 1; msgs[0].buf = wb
 	msgs[1].addr = addr; msgs[1].flags = HAL.I2C_M_RD; msgs[1].len = n; msgs[1].buf = rb
-	if i2c_rdwr(fd, msgs, 2) < 0 then return -1 end
-	return be_merge(rb, n)
+	if i2c_rdwr(fd, msgs, 2) < 0 then return nil end
+	local t = {}
+	for i = 0, n - 1 do t[i + 1] = tonumber(rb[i]) end
+	return t
+end
+
+-- 写指针后读 n 字节（合并为单次原子事务），返回大端合并值；失败返回 -1。
+-- 注意合并值为 Lua number：6 字节以上（2^48）将超 2^53 精度被静默截断，
+-- 因此 n 钳制 1~6；更长块读请用 i2c_read_multi_bytes。
+function i2c_read_multi(fd, reg, n)
+	n = uint_of(n)
+	if n == nil or n < 1 or n > 6 then n = 1 end
+	local t = i2c_read_multi_bytes(fd, reg, n)
+	if t == nil then return -1 end
+	local v = 0
+	for i = 1, #t do v = v * 256 + t[i] end
+	return v
 end
 
 -- 纯读 n 字节（单条读消息，不写指针，SGP30 这类命令式传感器用），大端合并；失败返回 -1

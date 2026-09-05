@@ -172,7 +172,17 @@ check("read_multi 单次原子含 2 消息、读 2 字节",
 rx_preset = { 0xaa, 0xbb, 0xcc }
 check("i2c_read_multi 3 字节", i2c_read_multi(fd, 0x00, 3) == 0xAABBCC)
 rx_preset = { 0x07 }
-check("i2c_read_multi n>8 钳制为 1", i2c_read_multi(fd, 0, 99) == 7)
+check("i2c_read_multi n>6 钳制为 1（合并值 2^53 精度上限）", i2c_read_multi(fd, 0, 99) == 7)
+-- 字节表版：不受 2^53 限制，n 钳制 1~16
+rx_preset = { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0 }
+local rb8 = i2c_read_multi_bytes(fd, 0x00, 8)
+check("i2c_read_multi_bytes 8 字节返回字节表",
+	type(rb8) == "table" and #rb8 == 8
+	and rb8[1] == 0x12 and rb8[4] == 0x78 and rb8[8] == 0xf0)
+check("i2c_read_multi_bytes n>16 钳制 16", #(i2c_read_multi_bytes(fd, 0x00, 99) or {}) == 16)
+mock_ioctl_ret = -1
+check("i2c_read_multi_bytes 失败返回 nil", i2c_read_multi_bytes(fd, 0x00, 8) == nil)
+mock_ioctl_ret = 0
 mock_ioctl_ret = -1
 check("read_multi 失败返回 -1", i2c_read_multi(fd, 0, 2) == -1)
 
