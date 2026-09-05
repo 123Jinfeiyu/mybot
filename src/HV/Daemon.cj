@@ -75,11 +75,16 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		if (Lua_check(L) == LUA_ERR) { return -1i64 }
 		Lua_loadlib(L)
 
-		/* 注入共享槽地址（整数）与配置串（"k=v;k=v"）为 Lua 全局 */
+		/* 注入共享槽地址（整数）与配置串（"k=v;k=v"）为 Lua 全局；
+		 * Lua_setfield 会立即复制 key，调用返回后 malloc 的 key 串即可释放（P6/M4） */
 		Lua_pushinteger(L, Int64(slot.toUIntNative()))
-		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_SLOT_ADDR"))
+		let keyAddr = LibC.mallocCString("DAEMON_SLOT_ADDR")
+		Lua_setfield(L, LUA_GLOBALSINDEX, keyAddr)
+		LibC.free(keyAddr)
 		Lua_pushstring(L, config)
-		Lua_setfield(L, LUA_GLOBALSINDEX, LibC.mallocCString("DAEMON_CONFIG"))
+		let keyCfg = LibC.mallocCString("DAEMON_CONFIG")
+		Lua_setfield(L, LUA_GLOBALSINDEX, keyCfg)
+		LibC.free(keyCfg)
 
 		/* 跑 chunk 一次：完成 setup（开总线/配置传感器/附着槽）并定义全局 daemon_tick */
 		let st = Lua_loadfilex(L, chunk, CPointer<C_Char>())
@@ -112,6 +117,7 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 			Lua_settop(L, 0)
 			sleep(Duration.millisecond * interval_ms)
 		}
+		LibC.free(tickName)
 
 		let n = CPointer<Int32>(slot + SLOT_COUNT_OFF).read()
 		Lua_free(L)
@@ -203,13 +209,20 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 				}
 				return ret
 			},
-			/* rise：spawn 守护线程（Cangjie 原生并发原语，运行时已附着） */
+			/* rise：spawn 守护线程（Cangjie 原生并发原语，运行时已附着）。
+			 * chunk/config CString 由守护线程连同 daemon_body 结果一起释放（P6/M4；
+			 * 所有 return 路径都经 finally 释放） */
 			rise: { =>
 				unsafe {
 					let cstr = LibC.mallocCString(chunkPath)
 					let cfg_cstr = LibC.mallocCString(configStr)
 					let slot_p = holder.slot
-					let f = spawn { daemon_body(slot_p, cstr, cfg_cstr, intervalMs) }
+					let f = spawn {
+						var r = -1i64
+						try { r = daemon_body(slot_p, cstr, cfg_cstr, intervalMs) }
+						finally { LibC.free(cstr); LibC.free(cfg_cstr) }
+						r
+					}
 					holder.future = Option<Future<Int64>>.Some(f)
 					println("Daemon '${name}' spawned, config: ${configStr}")
 				}
