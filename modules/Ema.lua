@@ -20,6 +20,7 @@ local EmaLib = dofile(dir .. "/lib/ema.lua")
 
 local f = nil			-- EMA 实例（build 创建，跨 call 保持状态）
 local field = "v0"		-- 待滤字段名（可由 field 列配置）
+local last = nil			-- 最近一次 call 输出快照（read 用，P4/M1）
 
 function build(data)
 	if type(data) ~= "table" then
@@ -49,7 +50,16 @@ function call(data)
 		return { result = "ERR", message = "no input value (field=" .. tostring(field) .. ")" }
 	end
 	local out = f:filter(raw)
-	return { result = "OK", out = out, v0 = out, raw = raw }
+	last = { result = "OK", out = out, v0 = out, raw = raw }
+	return last
+end
+
+-- P4/M1：引用语义 = 无副作用读快照（不推进滤波状态）
+function read(data)
+	if last == nil then
+		return { result = "ERR", message = "no sample yet" }
+	end
+	return last
 end
 
 function destroy(data)

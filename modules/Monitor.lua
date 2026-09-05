@@ -13,6 +13,8 @@
 -- 本示例：读 v0 按阈值判定 level，并回传 out=v0；若本变量再声明 controller 列，
 -- 框架会把返回值转发给执行器，形成「守护采样 → 引用消费 → 决策 → 转发执行」闭环。
 
+local last = nil		-- 最近一次 call 输出快照（read 用，P4/M1）
+
 function build(data)
 	if type(data) ~= "table" then
 		return { result = "ERR", message = "Invalid Arguments Type: table" }
@@ -45,5 +47,14 @@ function call(data)
 		tostring(v0), tostring(count), level))
 
 	-- 回传决策值（若声明 controller 列，框架会把它转发给执行器）
-	return { result = "OK", level = level, out = v0 }
+	last = { result = "OK", level = level, out = v0 }
+	return last
+end
+
+-- P4/M1：引用语义 = 读最近一次决策快照（无副作用）
+function read(data)
+	if last == nil then
+		return { result = "ERR", message = "no sample yet" }
+	end
+	return last
 end

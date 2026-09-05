@@ -15,18 +15,36 @@ import stdx.encoding.json.*
 import ctype4cj.*
 import luajit4cj.*
 
+/* Lua 类型常量（luajit4cj 绑定仅导出 LUA_TTABLE，补充其余轨值常量） */
+public const LUA_TNIL: C_Int = 0
+
 public class MtVars_Lua <: MatrixVars_Hardware {
 
 	/*
 	 *  构造函数 => 传入事件函数，硬件构造函数以及硬件解构函数
 	 *
 	 *  FIXME: 将构造函数设置为 private
+	 *
+	 *  readCb: 可选的无副作用读回调（P4/M1）。有状态的 Lua 驱动（如 Ema/Kalman 滤波）
+	 *  在 Lua 侧定义 read(data) 返回最近一次 call 的输出快照；无 read 硬件（守护/传感器）
+	 *  在回调内回退到实时 call 语义（= play({}) 向后兼容）。
 	 */
 	public init(things!: (JsonValue) -> JsonValue,
 			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None
+			free!: Option<() -> Unit> = None,
+			readCb!: Option<() -> JsonValue> = None
 
-	) {  super(things: things, rise: rise, free: free)  }
+	) {
+		super(things: things, rise: rise, free: free)
+		this.readCb = readCb
+	}
+
+	public override func read(): JsonValue {
+		if (let Some(cb) <- this.readCb) { return cb() }
+		return super.read()
+	}
+
+	private let readCb: Option<() -> JsonValue>
 
 
 	/*
@@ -107,6 +125,29 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				return res
 
 			},
+
+			/* 无副作用读（P4/M1）：Lua 驱动若定义 read(data)（滤波器返回快照）→ 走快照；
+			 * 否则回退实时 call（= play({}) 向后兼容，守护/传感器/动作硬件引用语义不变）。
+			 * 注意：不做 ensureOk——引用读是数据流而非动作，无样本/无输入属过渡态
+			 * （如滤波器未 pump 前被 build 期引用），不应像显式 play 那样 halt-on-error。 */
+			readCb: Some({ =>
+				unsafe {
+					let rc = LibC.mallocCString("read")
+					Lua_getglobal(L, rc)
+					let tp = Lua_type(L, -1)
+					Lua_pop(L, 1)
+					LibC.free(rc)
+					if (tp != LUA_TNIL) {
+						let metadata = getMetadata()
+						metadata.put("mode", JsonString("read"))
+						return call_lua(L, metadata)
+					}
+				}
+				/* Lua 未定义 read：回退实时 call 语义 */
+				let metadata = getMetadata()
+				metadata.put("mode", JsonString("call"))
+				return call_lua(L, metadata)
+			}),
 
 			/* 硬件构造方法：提供元数据（json_obj）  对该硬件进行初始化 */
 			rise: { =>

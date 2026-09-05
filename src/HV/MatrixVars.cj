@@ -52,6 +52,17 @@ public open class MatrixVars_Hardware {
 
 	/*
 	 *  -------------------------------- *
+	 *  无副作用读（P4/M1）：引用机制（_getMetadata 的"引用列即变量名"）一律走 read()。
+	 *
+	 *  缺省实现 = play({})（实时读，向后兼容）：守护读共享槽快照、传感器读实时值，
+	 *  均无状态副作用。有状态的硬件（Lua 驱动如 Ema/Kalman 滤波）在 Lua 侧定义
+	 *  read(data) 返回最近一次 call 的输出快照、不推进状态——见 MtVars_Lua.read()
+	 *  （Lua 未定义 read 时其 fallback 也回到本实时语义）。
+	 */
+	public open func read(): JsonValue {  return this.play(JsonObject())  }
+
+	/*
+	 *  -------------------------------- *
 	 *  伪初始化器  该方法会打开硬件，什么也不传入和返回
 	 */
 

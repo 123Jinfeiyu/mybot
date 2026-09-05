@@ -363,7 +363,8 @@ class RobotStruct {
 
 		let AliasHV = M.get(name_param)		/* 可能的参数别名转换 */
 		if (let Some(aliasHV) <- AliasHV) {
-			let ret = aliasHV.play(JsonObject())
+			/* P4/M1：别名引用同样走 read() 快照（避免有状态硬件被读取时推进） */
+			let ret = aliasHV.read()
 			let alias = ret.asString().getValue()
 			name_param = alias
 		}
@@ -399,10 +400,11 @@ class RobotStruct {
 			if (j == idxName || j == skipCol) { continue  } /* 自身调用警告 */
 			if (let Some(mt) <- M.get(value)) {
 				/* ---- ----
-				 * ---- 存在该名称的变量，传入空对象参数，并求取返回值
+				 * ---- 该单元格是另一硬件变量的名字：引用语义 = 读取其当前快照 ----
+				 * ---- （P4/M1：引用改 read()，不再触发 play()——避免有状态硬件如 ----
+				 * ----  滤波器的元数据收集副作用推进；推进只由显式调用驱动） ----
 				 * ---- ---- */
-				let json = JsonObject()
-				let res = mt.play(json).asObject()
+				let res = mt.read().asObject()
 				let fields: HashMap<String, JsonValue> = res.getFields()
 				for (k in fields.keys()) {
 					let val = fields.get(k).getOrThrow()

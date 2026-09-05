@@ -12,3 +12,7 @@ function daemon_tick()
 	t = t + 1
 	P.publish(slot, { 1.5, 2.5, 3.5, math.sin(t * 0.1) * 100 })
 end
+
+-- setup 阶段立即发布首帧：下游引用方在首个 tick 前即可读到就绪值
+-- （避免「守护首发 interval 前，首行动作引用到空槽」的预热竞态）
+daemon_tick()

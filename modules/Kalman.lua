@@ -23,6 +23,7 @@ local KalmanLib = dofile(dir .. "/lib/kalman.lua")
 
 local kf = nil			-- 滤波器实例（build 创建，跨 call 保持状态）
 local field = "v0"		-- 待滤字段名（可由 field 列配置）
+local last = nil			-- 最近一次 call 输出快照（read 用，P4/M1）
 
 function build(data)
 	if type(data) ~= "table" then
@@ -53,7 +54,16 @@ function call(data)
 
 	local out = kf:filter(raw)
 	-- out 为滤波结果；同时别名 v0，使本变量可被当作「虚拟传感器」按 v0 消费
-	return { result = "OK", out = out, v0 = out, raw = raw }
+	last = { result = "OK", out = out, v0 = out, raw = raw }
+	return last
+end
+
+-- P4/M1：引用语义 = 无副作用读快照（不推进滤波状态）
+function read(data)
+	if last == nil then
+		return { result = "ERR", message = "no sample yet" }
+	end
+	return last
 end
 
 function destroy(data)

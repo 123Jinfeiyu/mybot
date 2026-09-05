@@ -1,7 +1,9 @@
 # 闭环：sim0 守护采样 → mon0 引用读取 v0 → 决策
 @Action
-mon0.read  t0.delay;
-    -        30;
+# 预热 200ms：等待 sim0 守护完成 setup 首发（暖机竞态规避），再开始消费
+t0.delay  mon0.read;
+  200        -     ;
+   -         30    ;
     -        30;
     -        30;
     -        30;
