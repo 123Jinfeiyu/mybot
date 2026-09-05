@@ -19,8 +19,15 @@
 - **滤波器硬件变量**：Kalman（一维卡尔曼）与 Ema（指数移动平均），支持 守护→滤波→消费
   三级引用链（如 `imu0 → kf0 → mon0`）；`Monitor.lua` 示范消费/决策/转发闭环
 - **新驱动**：SHT3X（SHT30/31/35 兼容）、INA3221（三通道高边电流/电压）、INA219（单通道
-  高边电流/功率）、MAX17043（单节锂电电量计）、TPL0501（SPI 256 抽头数字电位器，首个输出型
-  器件）、LTC2944（多节电池库仑计，3.6~60V）、GPIO（HAL 扩展 gpiod uAPI，跨 SoC 通用）
+  高边电流/功率）、INA226（单通道高边电流/功率监测计，0.1% 精度，有真 ID 寄存器可甄别
+  芯片）、MAX17043（单节锂电电量计）、TPL0501（SPI 256 抽头数字电位器，首个输出型
+  器件）、LTC2944（多节电池库仑计，3.6~60V）、GPIO（HAL 扩展 gpiod uAPI，跨 SoC 通用）、
+  MLX90393（Melexis 三轴磁力计/罗盘，命令式协议，build 自检链路 复位→Memory Recall→
+  写 GAIN 回读校验→试测一帧）
+- **HAL 新增 `i2c_read_bytes`**：纯读逐字节返回（>6 字节的命令式应答超出 i2c_read
+  大端合并的 2^53 double 精度线，如 MLX90393 的 9 字节 XYZT+status）
+- SGP30 驱动升级：build 自检（Measure_test）+ 基线持久化（免 12h 重学习）+
+  绝对湿度补偿（引用 SHT3X 守护快照）
 - **硬件错误通道（halt-on-error）**：`ensureOk` 统一 `{result}` 契约检查，任一硬件调用失败
   即中断剩余动作并以非零码退出
 - **Lua 驱动沙箱**：加载后中和 `os.execute`/`io.popen`/`os.exit` 与任意文件读写（#5 清单）
@@ -40,6 +47,8 @@
 
 ### 修复
 
+- `sensor_daemon` 字段提取对浮点静默向下取整：未配 sign 时原样透传（INA226 的
+  V/I/P、MLX90393 的 µT 等浮点字段此前经守护发布会丢掉小数；sign=16 整型路径不变）
 - 守护线程三连：stop 标志改经 mutex 临界区读写（消除数据竞争）；join 加超时
   （防 UAF 与 deactive 永久阻塞）；修复每守护 5 个 C 字符串泄漏
 - `sandbox_lua` 栈索引错误（`setfield(-1)` 索引 nil 致 PANIC，#9 M1）

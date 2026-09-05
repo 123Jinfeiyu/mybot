@@ -249,6 +249,18 @@ INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-0', 'i2c-1', '0x69');
 -- INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-3', 'i2c-0', '0x69');
 
 
+/* 定义mlx90393三轴磁力计（罗盘/磁场测量；gain=GAIN_SEL 0~7，0=5x 最高增益；
+   timeout=单次测量就绪轮询超时 ms；离线测试 test/test_mlx90393.lua） */
+CREATE TABLE MLX90393 (
+	name    String,
+	I2C     String,
+	address String,
+	gain    String,
+	timeout String
+);
+INSERT INTO MLX90393 (name, I2C, address, gain, timeout) VALUES ('mlx0', 'i2c-1', '0x0C', '-', '-');
+
+
 /* 定义扬声器位：旧版 @Speaker 矩阵已移除，现在仅用 Timer 负责延时 */
 CREATE TABLE Timer (
 	name String

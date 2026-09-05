@@ -273,6 +273,25 @@ function i2c_read(fd, n)
 	return be_merge(rb, n)
 end
 
+-- 纯读 n 字节（单条读消息），逐字节返回 1 基表 { b1, b2, ... }；失败返回 nil
+-- 与 i2c_read 的区别：不按大端合并——合并值超过 2^53（约 7 字节）后 double
+-- 精度不保，命令式器件的长应答（如 MLX90393 的 XYZT+status 共 9 字节）
+-- 必须逐字节取
+function i2c_read_bytes(fd, n)
+	fd = tonumber(fd)
+	n = uint_of(n)
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or n == nil or addr == nil then return nil end
+	if n < 1 or n > 16 then n = 16 end
+	local rb = ffi.new("uint8_t[?]", n)
+	local msgs = ffi.new("cj_i2c_msg[1]")
+	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
+	if i2c_rdwr(fd, msgs, 1) < 0 then return nil end
+	local b = {}
+	for i = 0, n - 1 do b[i + 1] = tonumber(rb[i]) end
+	return b
+end
+
 ------------------------------------------------------------------
 -- 延时
 ------------------------------------------------------------------
