@@ -390,10 +390,12 @@ class RobotStruct {
 		let name = matrix[i, idxName]
 		for (j in 0..matrix.col) {
 			let colName = matrix[0, j]
-			/* ---- 无法继承的 "-" 占位符（整列皆 "-" 时递归止于首行）归一为 "0"，
-			 * ---- 与 parseMt 的既有约定对齐，避免 "-" 泄漏进元数据与转发载荷 ---- */
+			/* 无法继承的 "-" 占位符（整列皆 "-" 时 getMt 止于首行返回 "-"）：
+		 * 该列无有效配置——跳过注入该字段，Lua 驱动侧 tonumber(nil) or 缺省
+		 * 自然生效（M3：DSL 用 "-" 表达"用默认值"，如 ADS1256 的 pga/dr 整列缺省）。
+		 * 注意：Action 取值路径的 parseMt 语义不变（首行 "-"=0）。 */
 			var value = MatrixVars_Hardware.getMt(matrix, i, j)
-			if (value == "-") { value = "0" }
+			if (value == "-") { continue }
 			/* ---- ----
 			 * ---- FIXME: 加入点号别名的检索逻辑 ----
 			 * ---- ---- */
