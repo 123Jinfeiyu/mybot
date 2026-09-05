@@ -10,10 +10,35 @@
 
 package bot4cj.HV
 import std.convert.*
+import std.env.*
 import stdx.encoding.json.*
 import mt2.*
 
 public open class MatrixVars_Hardware {
+
+	/*
+	 *  ---------------- 调试开关 ----------------
+	 *  环境变量 BOT4CJ_DEBUG=1 开启 call/build/destroy 的参数表、结果表、
+	 *  逐键值、lua status 等详细日志（高频刷屏）；默认关闭。
+	 *  错误信息、生命周期摘要（spawn/join/publishes）与构建期单次输出不受影响。
+	 *  -------------------------------------------
+	 */
+	public static let debugEnabled: Bool = initDebugEnabled()
+
+	/*
+	 *  读取一次 BOT4CJ_DEBUG 并按 "1" 判定。
+	 *  <staticmethod>
+	 */
+	public static func initDebugEnabled(): Bool {
+		if (let Some(v) <- getVariable("BOT4CJ_DEBUG")) {
+			return v == "1"
+		}
+		return false
+	}
+
+	public static func logD(msg: String) {
+		if (debugEnabled) { println(msg) }
+	}
 
 	/*  ---------------- 主初始化器 ----------------
 	 *   输入三个回调函数，用json参数能够为多种硬件提供同一接口

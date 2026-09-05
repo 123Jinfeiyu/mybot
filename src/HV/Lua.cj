@@ -103,12 +103,12 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 					let val = fields.get(k).getOrThrow()
 					obj.put(k, val)
 				}
-				println("Lua scripts call parameters: ${obj.toString()}")
+				logD("Lua scripts call parameters: ${obj.toString()}")
 
 				/* 调用Lua解释器 */
 				let res = call_lua(L, obj)
 
-				println("Lua script call result: ${res.toString()}")
+				logD("Lua script call result: ${res.toString()}")
 
 				/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
 				MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
@@ -121,10 +121,10 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 					for (k in retFields.keys()) {
 						payload.put(k, retFields.get(k).getOrThrow())
 					}
-					println("Forward to controller: ${payload.toString()}")
+					logD("Forward to controller: ${payload.toString()}")
 
 					let ctrl_res = ctrl.play(payload)
-					println("Controller result: ${ctrl_res.toString()}")
+					logD("Controller result: ${ctrl_res.toString()}")
 
 					/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
 					MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
@@ -176,12 +176,12 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 				/* 插入模式指令 （告知lua脚本这是在构建） */
 				obj.put("mode", JsonString("build"))
-				println("Lua scripts build parameters: ${obj.toString()}")
+				logD("Lua scripts build parameters: ${obj.toString()}")
 
 				/* 开始构建 */
 				let res = call_lua(L, obj)
 
-				println("Lua script build result: ${res.toString()}")
+				logD("Lua script build result: ${res.toString()}")
 
 				/* ---- 检查 build 返回契约：失败即抛（main 的 finally 会清理已建硬件） ---- */
 				MatrixVars_Hardware.ensureOk(res, ctx: "build ${luapath}")
@@ -201,11 +201,11 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 				/*  插入模式指令  */
 				obj.put("mode", JsonString("destroy"))
-				println("Lua scripts destroy parameters: ${obj.toString()}")
+				logD("Lua scripts destroy parameters: ${obj.toString()}")
 
 				let res = call_lua(L, obj)
 
-				println("Lua script destroy result: ${res.toString()}")
+				logD("Lua script destroy result: ${res.toString()}")
 				/* ---- 先释放 Lua 状态机，再检查返回契约——避免检查抛异常时泄漏 ---- */
 				destroy_lua(L)
 
@@ -242,7 +242,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 			if (status == LUA_OK) {
 				var status = Lua_pcall(L, 0, LUA_MULTRET, 0)
-				println("lua build status: ${status}")
+				logD("lua build status: ${status}")
 				if (status == LUA_OK) { return true  }
 			}
 
@@ -335,7 +335,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			}
 
 			var status = Lua_pcall(L, 1, LUA_MULTRET, 0)
-			println("lua status: ${status}")
+			logD("lua status: ${status}")
 			if (status == LUA_OK) {
 				if (Lua_type(L, -1) == LUA_TTABLE) {
 					/* ---- 栈顶是表  压入 nil 作为遍历的起始键 ---- */
@@ -370,7 +370,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 							}
 							val = JsonString(s.toString())
 						}
-						println("${key}: ${val.toString()}")
+						logD("${key}: ${val.toString()}")
 						ret.put(key.toString(), val)
 						Lua_pop(L, 1)
 					}
