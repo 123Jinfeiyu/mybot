@@ -293,6 +293,19 @@ CREATE TABLE VL53L4CD (
 INSERT INTO VL53L4CD (name, I2C, address) VALUES ('tof0', 'i2c-1', '0x29');
 
 
+/* 定义ms5611高分辨率气压计（0.012mbar/约10cm海拔分辨率；osr=过采样率
+   256~4096 缺省 4096，p0=参考海平面气压缺省 1013.25；build 做 PROM CRC-4
+   自检；遮光海绵勿撕除，离线测试 test/test_ms5611.lua） */
+CREATE TABLE MS5611 (
+	name    String,
+	I2C     String,
+	address String,
+	osr     String,
+	p0      String
+);
+INSERT INTO MS5611 (name, I2C, address, osr) VALUES ('baro0', 'i2c-1', '0x77', '-');
+
+
 /* 定义扬声器位：旧版 @Speaker 矩阵已移除，现在仅用 Timer 负责延时 */
 CREATE TABLE Timer (
 	name String

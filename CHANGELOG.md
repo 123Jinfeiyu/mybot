@@ -26,7 +26,9 @@
   写 GAIN 回读校验→试测一帧）、AS3935（ams Franklin 闪电传感器，首个**事件型**驱动——
   call 返回最近锁存事件/雷暴距离/闪电能量，协议经 SparkFun 与 ESPHome 参考实现交叉核对）、
   VL53L4CD（ST ToF 激光测距，1mm~1.2m/18°，自 ST ULD 逐行移植 91 字节配置流与
-  SetRangeTiming 预算编码，返回距离/状态/信号质量字段）
+  SetRangeTiming 预算编码，返回距离/状态/信号质量字段）、MS5611（TE 高分辨率
+  气压计/高度计，0.012mbar，PROM CRC-4 自检 + 一阶/二阶温度补偿，含 double
+  2^53 精度线上的 D1xSENS 拆位精确算法与压高公式海拔输出）
 - **HAL 新增 16 位寄存器指针读写** `i2c_write_reg16`/`i2c_read_reg16`：ST VL53Lx 族
   寄存器地址 16 位，「写 2 字节指针 + 读数据」合并为单次 I2C_RDWR 原子事务
   （避免拆两段事务重新引入指针竞态）
