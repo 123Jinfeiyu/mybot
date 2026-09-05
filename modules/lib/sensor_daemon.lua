@@ -55,11 +55,13 @@ if not ok_load then fail(-8); return end
 -- 高速采样中静默驱动的 print 刷屏（本状态机独立）
 print = function() end
 
--- 16 位二进制补码符号扩展
+-- 字段提取：sign=16 时做 16 位二进制补码符号扩展（整型路径，先取整保证
+-- % 65536 可用）；未配 sign 时原样透传（浮点字段如 INA226 的 V/I/P、
+-- MLX90393 的 µT 值此前被无条件向下取整丢精度，现保留小数）
 local function sx(v)
-	v = math.floor(tonumber(v) or 0)
+	v = tonumber(v) or 0
 	if sign == 16 then
-		v = v % 65536
+		v = math.floor(v) % 65536
 		if v >= 32768 then v = v - 65536 end
 	end
 	return v
