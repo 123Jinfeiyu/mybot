@@ -97,7 +97,14 @@ HAL.SPI_IOC_MESSAGE_1        = 0x40206b00	-- _IOW('k', 0, spi_ioc_transfer[1])
 -- 系统调用间接层（离线单测在此注入 mock）
 ------------------------------------------------------------------
 HAL.sys = {
-	open    = function(path, flags) return ffi.C.open(path, flags) end,
+	-- mode：可选的 open 第三参（O_CREAT 场景的权限位，如 0x1A4=0644），
+	-- 变参显式 cast 理由同下 ioctl_i
+	open    = function(path, flags, mode)
+		if mode ~= nil then
+			return ffi.C.open(path, flags, ffi.cast("unsigned int", mode))
+		end
+		return ffi.C.open(path, flags)
+	end,
 	close   = function(fd)          return ffi.C.close(fd) end,
 	-- 变参必须显式 cast：JIT 编译后 Lua number 会以 double 位模式传入变参
 	-- （ioctl 收到 0x4050... > 0x7f → EINVAL），解释执行却传 int——
