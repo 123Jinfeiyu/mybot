@@ -28,6 +28,56 @@ foreign func lua_toboolean(L: lua_State, index: C_Int): C_Int
 foreign func lua_tointeger(L: lua_State, index: C_Int): C_LongLong
 foreign func lua_pushboolean(L: lua_State, value: C_Int): Unit
 
+/* ---- 读取 Lua 栈顶错误对象为字符串 ----
+ *  lua_tolstring 对非 string/number 的值返回空指针，直接 toString() 是空指针解引用；
+ *  先判型：string/number 原样转串（lua_tolstring 会把数字原地转字符串），
+ *  其余对象返回类型说明（issue #5 清单 H5） */
+public func luaErrorString(L: lua_State): String {
+	let t = unsafe { Lua_type(L, -1) }
+	if (t == LUA_TSTRING || t == LUA_TNUMBER) {
+		let s = unsafe { Lua_tostring(L, -1) }
+		return s.toString()
+	}
+	return "<non-string error object, Lua type ${t}>"
+}
+
+/* ---- 收紧 Lua 沙箱（issue #9 M1 可落地部分）----
+ *  保留 os.getenv（模块路径）/ os.time|clock / dofile / require（HAL 的 ffi 依赖），
+ *  中和可直接破坏宿主的入口：shell 执行（os.execute / io.popen）、进程退出（os.exit）、
+ *  任意文件读写（io.open / io.lines / os.remove / os.rename）。
+ *  各全局缺表时跳过对应组，不中断启动。 */
+public func sandbox_lua(L: lua_State): Unit {
+	unsafe {
+		let osKeys = ["execute", "exit", "remove", "rename"]
+		let kos = LibC.mallocCString("os")
+		Lua_getglobal(L, kos)
+		if (Lua_type(L, -1) == LUA_TTABLE) {
+			for (name in osKeys) {
+				let kn = LibC.mallocCString(name)
+				Lua_pushnil(L)
+				Lua_setfield(L, -2, kn)	/* 表在 -2：pushnil 后值在栈顶，-1 会索引 nil 致 PANIC */
+				LibC.free(kn)
+			}
+		}
+		Lua_pop(L, 1)
+		LibC.free(kos)
+
+		let ioKeys = ["popen", "open", "lines"]
+		let kio = LibC.mallocCString("io")
+		Lua_getglobal(L, kio)
+		if (Lua_type(L, -1) == LUA_TTABLE) {
+			for (name in ioKeys) {
+				let kn = LibC.mallocCString(name)
+				Lua_pushnil(L)
+				Lua_setfield(L, -2, kn)	/* 同上：表在 -2 */
+				LibC.free(kn)
+			}
+		}
+		Lua_pop(L, 1)
+		LibC.free(kio)
+	}
+}
+
 public class MtVars_Lua <: MatrixVars_Hardware {
 
 	/*
@@ -235,6 +285,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 			/*  加载Lua标准库（os/io等，HAL.lua 依赖；不再注册硬件cfunc）  */
 			Lua_loadlib(L)
+			sandbox_lua(L)	/* 中和 os.execute/io.popen 等宿主入口（issue #9 M1） */
 
 			/* -------- 设置Lua状态机 -------- */
 			var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
@@ -246,11 +297,9 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				if (status == LUA_OK) { return true  }
 			}
 
-			/* -------- 从栈顶获取错误信息 -------- */
-			let error_msg = Lua_tostring(L, -1);
-			println(error_msg.toString());
-
-
+			/* -------- 从栈顶获取错误信息（判型防空指针，见 luaErrorString） -------- */
+			println(luaErrorString(L))
+			Lua_settop(L, 0)	/* 恢复栈，错误对象不滞留（issue #5 清单 H5） */
 
 			return false
 		}
@@ -341,33 +390,37 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 					/* ---- 栈顶是表  压入 nil 作为遍历的起始键 ---- */
 					Lua_pushnil(L)
 					while(Lua_next(L, -2) != 0) {
-						/* ---- 此时栈：[表, 键, 值]  检查键值是否为空指针 ---- */
-						/* P7/M5：按 Lua_type 分流——number/boolean/nil 保留类型，
-						 * 不再一律 Lua_tostring 字符串化 */
-						let key = Lua_tostring(L, -2)
-						if (key.isEmpty()) {
-							throw NoneValueException("Lua_tostring() key")
+						/* ---- 此时栈：[表, 键, 值] ----
+						 * H5 加固（issue #5 清单）：
+						 * 1) 键只接受 string——Lua 手册警告遍历期间对【键】调 lua_tolstring
+						 *    会原地改写键值，数字键将扰乱后续 lua_next；
+						 * 2) 值支持 number/boolean/nil/string（P7/M5 类型保留），其余类型
+						 *    （table/function 等）跳过——不再 throw，避免跳过栈尾 Lua_settop
+						 *    造成 Lua 栈泄漏 */
+						let keyType = Lua_type(L, -2)
+						let valType = Lua_type(L, -1)
+						if (keyType != LUA_TSTRING ||
+							(valType != LUA_TSTRING && valType != LUA_TNUMBER &&
+							 valType != LUA_TBOOLEAN && valType != LUA_TNIL)) {
+							logD("Lua return field skipped: key type ${keyType}, value type ${valType}")
+							Lua_pop(L, 1)	/* 弹出值，保留键供下一次 Lua_next */
+							continue
 						}
+						let key = Lua_tostring(L, -2)
 						var val: JsonValue
-						let tp = Lua_type(L, -1)
-						/* P7/M5：if-else 链做类型分流——match 的 `case 名` 是绑定模式会吞值，
-						 * 不能用常量标识符做模式 */
-						if (tp == LUA_TNUMBER) {
+						if (valType == LUA_TNUMBER) {
 							let d = lua_tonumber(L, -1)
 							let i = lua_tointeger(L, -1)
 							val = if (Float64(i) == d) { JsonInt(i) } else { JsonFloat(d) }
 						}
-						else if (tp == LUA_TBOOLEAN) {
+						else if (valType == LUA_TBOOLEAN) {
 							val = JsonBool(lua_toboolean(L, -1) != 0)
 						}
-						else if (tp == LUA_TNIL) {
+						else if (valType == LUA_TNIL) {
 							val = JsonNull()
 						}
 						else {
 							let s = Lua_tostring(L, -1)
-							if (s.isEmpty()) {
-								throw NoneValueException("Lua_tostring() value")
-							}
 							val = JsonString(s.toString())
 						}
 						logD("${key}: ${val.toString()}")
@@ -378,8 +431,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			}
 
 			else if (status != LUA_OK) {
-				let err  = Lua_tostring(L, -1)
-				if (!err.isEmpty()) { println("Lua 错误详情: ${err.toString()}") }
+				println("Lua 错误详情: ${luaErrorString(L)}")
 			}
 
 			/* -------- 恢复Lua状态机 -------- */

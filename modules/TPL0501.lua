@@ -62,9 +62,7 @@ function build(data)
 	end
 
 	if DEBUG then
-		print("-------- TPL0501 builder func get a table --------")
-		print_table(data)
-		print("--------------------------------------------------")
+		dbg_table("-------- TPL0501 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
@@ -112,9 +110,7 @@ function call(data)
 	end
 
 	if DEBUG then
-		print("-------- TPL0501 caller func get a table --------")
-		print_table(data)
-		print("-------------------------------------------------")
+		dbg_table("-------- TPL0501 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------

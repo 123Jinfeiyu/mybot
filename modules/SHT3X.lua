@@ -89,9 +89,7 @@ function build(data)
 	end
 
 	if DEBUG then
-		print("-------- SHT3X builder func get a table --------")
-		print_table(data)
-		print("------------------------------------------------")
+		dbg_table("-------- SHT3X builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
@@ -186,9 +184,7 @@ function call(data)
 	end
 
 	if DEBUG then
-		print("-------- SHT3X caller func get a table --------")
-		print_table(data)
-		print("-----------------------------------------------")
+		dbg_table("-------- SHT3X caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------

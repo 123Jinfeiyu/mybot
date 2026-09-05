@@ -125,9 +125,7 @@ function build(data)
 	end
 
 	if DEBUG then
-		print("-------- INA3221 builder func get a table --------")
-		print_table(data)
-		print("--------------------------------------------------")
+		dbg_table("-------- INA3221 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
@@ -228,9 +226,7 @@ function call(data)
 	end
 
 	if DEBUG then
-		print("-------- INA3221 caller func get a table --------")
-		print_table(data)
-		print("-------------------------------------------------")
+		dbg_table("-------- INA3221 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------
