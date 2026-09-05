@@ -7,7 +7,7 @@
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-l c" # Linux
+  compile-option = "-l c -l luajit-5.1" # Linux；luajit-5.1 供 Lua.cj 直接 foreign 的 lua_tonumber/toboolean/tointeger/pushboolean（P7/M5）
   override-compile-option = ""
   link-option = ""
   package-configuration = {}

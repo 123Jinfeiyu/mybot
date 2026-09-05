@@ -17,6 +17,16 @@ import luajit4cj.*
 
 /* Lua 类型常量（luajit4cj 绑定仅导出 LUA_TTABLE，补充其余轨值常量） */
 public const LUA_TNIL: C_Int = 0
+public const LUA_TBOOLEAN: C_Int = 1
+public const LUA_TNUMBER: C_Int = 3
+public const LUA_TSTRING: C_Int = 4
+public const LUA_TFUNCTION: C_Int = 6
+
+/* ---- foreign func：luajit4cj 绑定未导出的 libluajit 符号（P7/M5） ---- */
+foreign func lua_tonumber(L: lua_State, index: C_Int): C_Double
+foreign func lua_toboolean(L: lua_State, index: C_Int): C_Int
+foreign func lua_tointeger(L: lua_State, index: C_Int): C_LongLong
+foreign func lua_pushboolean(L: lua_State, value: C_Int): Unit
 
 public class MtVars_Lua <: MatrixVars_Hardware {
 
@@ -306,6 +316,22 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 					Lua_setfield(L, -2, sk)
 					LibC.free(sk)
 				}
+				else if (val is JsonBool) {
+					/* P7/M5：布尔入参不再丢弃 */
+					let v = val.asBool().getValue()
+					let b = if (v) { 1 } else { 0 }
+					let sk = LibC.mallocCString(k)
+					lua_pushboolean(L, Int32(b))
+					Lua_setfield(L, -2, sk)
+					LibC.free(sk)
+				}
+				else if (val is JsonNull) {
+					/* P7/M5：null 入参推 nil */
+					let sk = LibC.mallocCString(k)
+					Lua_pushnil(L)
+					Lua_setfield(L, -2, sk)
+					LibC.free(sk)
+				}
 			}
 
 			var status = Lua_pcall(L, 1, LUA_MULTRET, 0)
@@ -315,14 +341,37 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 					/* ---- 栈顶是表  压入 nil 作为遍历的起始键 ---- */
 					Lua_pushnil(L)
 					while(Lua_next(L, -2) != 0) {
-						/* ---- 此时栈：[表, 键, 值]  检查键值是否为空指针 */
+						/* ---- 此时栈：[表, 键, 值]  检查键值是否为空指针 ---- */
+						/* P7/M5：按 Lua_type 分流——number/boolean/nil 保留类型，
+						 * 不再一律 Lua_tostring 字符串化 */
 						let key = Lua_tostring(L, -2)
-						let val = Lua_tostring(L, -1)
-						if (key.isEmpty() || val.isEmpty()) {
-							throw NoneValueException("Lua_tostring()")
+						if (key.isEmpty()) {
+							throw NoneValueException("Lua_tostring() key")
 						}
-						println("${key}: ${val}")
-						ret.put(key.toString(), JsonString(val.toString()))
+						var val: JsonValue
+						let tp = Lua_type(L, -1)
+						/* P7/M5：if-else 链做类型分流——match 的 `case 名` 是绑定模式会吞值，
+						 * 不能用常量标识符做模式 */
+						if (tp == LUA_TNUMBER) {
+							let d = lua_tonumber(L, -1)
+							let i = lua_tointeger(L, -1)
+							val = if (Float64(i) == d) { JsonInt(i) } else { JsonFloat(d) }
+						}
+						else if (tp == LUA_TBOOLEAN) {
+							val = JsonBool(lua_toboolean(L, -1) != 0)
+						}
+						else if (tp == LUA_TNIL) {
+							val = JsonNull()
+						}
+						else {
+							let s = Lua_tostring(L, -1)
+							if (s.isEmpty()) {
+								throw NoneValueException("Lua_tostring() value")
+							}
+							val = JsonString(s.toString())
+						}
+						println("${key}: ${val.toString()}")
+						ret.put(key.toString(), val)
 						Lua_pop(L, 1)
 					}
 				}
