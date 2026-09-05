@@ -58,9 +58,11 @@ public func daemon_stop_requested(slot: CPointer<UInt8>): Bool {
  *      规避 Cangjie「lambda 捕获可变变量」限制 ---- */
 public class DaemonHolder {
 	public let slot: CPointer<UInt8>
+	public let joinTimeoutMs: Int64
 	public var future: Option<Future<Int64>>
-	public init(slot!: CPointer<UInt8>) {
+	public init(slot!: CPointer<UInt8>, joinTimeoutMs!: Int64) {
 		this.slot = slot
+		this.joinTimeoutMs = joinTimeoutMs
 		this.future = None
 	}
 }
@@ -161,13 +163,18 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		}
 		let intervalMs = ivAcc
 
+		/* join 超时（P3）：正常退出 = stop 置位后最多再等一拍 sleep + tick 执行，
+		 * 取 interval 5 倍并保底 2000ms，防守护 tick 长时间阻塞时 deactive 挂死。
+		 * 超时后放弃 join、保留 slot（防 UAF），由进程退出回收。 */
+		let joinTimeoutMs = if (intervalMs * 5 > 2000) { intervalMs * 5 } else { 2000 }
+
 		/* 分配并清零共享槽，初始化 mutex（offset 0） */
 		let slot = unsafe { LibC.malloc<UInt8>(count: SLOT_SIZE) }
 		unsafe {
 			for (k in 0..SLOT_SIZE) { (slot + k).write(0u8) }
 			pthread_mutex_init(slot, CPointer<Unit>())
 		}
-		let holder = DaemonHolder(slot: slot)
+		let holder = DaemonHolder(slot: slot, joinTimeoutMs: joinTimeoutMs)
 		registry.add(holder)	/* 注册：deactive 先统一置 stop 再 join，防饿死死锁 */
 
 		let daemon = MtVars_Daemon(
@@ -207,16 +214,31 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 					println("Daemon '${name}' spawned, config: ${configStr}")
 				}
 			},
-			/* free：置停止标志 + future.get() 等待退出 + 销毁 mutex（显式停止，见 issue #3） */
+			/* free：置停止标志 + future 带超时等待退出 + 销毁 mutex（显式停止，见 issue #3）。
+			 * 超过 joinTimeoutMs 未退出（守护 tick 长时间阻塞等）则放弃等待并跳过 slot 释放——
+			 * 守护线程仍可能在使用该槽 publish/读 stop，立即 destroy/free 会 use-after-free；
+			 * 保留 slot 交给进程退出时由 OS 回收，同步打印警告。 */
 			free: { =>
 				unsafe {
 					daemon_request_stop(holder.slot)
 					if (let Some(f) <- holder.future) {
-						let n = f.get()
-						println("Daemon '${name}' joined, total publishes=${n}")
+						var joined = false
+						var n = 0i64
+						try {
+							n = f.get(Duration.millisecond * holder.joinTimeoutMs)
+							joined = true
+						} catch (e: TimeoutException) {
+							println("Daemon '${name}' not exited within ${holder.joinTimeoutMs}ms, abandoning slot (thread still running)")
+						}
+						if (joined) {
+							println("Daemon '${name}' joined, total publishes=${n}")
+							pthread_mutex_destroy(holder.slot)
+							LibC.free(holder.slot)
+						}
+					} else {
+						pthread_mutex_destroy(holder.slot)
+						LibC.free(holder.slot)
 					}
-					pthread_mutex_destroy(holder.slot)
-					LibC.free(holder.slot)
 				}
 			}
 		)
