@@ -105,7 +105,9 @@ class RobotStruct {
 		}
 		let items = hwSeq.toArray()
 		for (i in items.size-1..=0:-1) {
-			items[i].destroy()
+			/* 单个 destroy 失败不阻塞后续清理（记录并继续） */
+			try { items[i].destroy() }
+			catch (e: Exception) { println("Deactive warning: ${e}") }
 		}
 	}
 
@@ -336,7 +338,10 @@ class RobotStruct {
 					throw IllegalArgumentException("Parameter for hardware variable '${name_dev}' is missing in action row ${i}.")
 				}
 				let params: JsonValue = paramsOpt.getOrThrow()
-				let _: JsonValue = hv.play(params)
+				let res: JsonValue = hv.play(params)
+
+				/* ---- halt-on-error：硬件 call 返回显式 ERR 即中断剩余动作 ---- */
+				MatrixVars_Hardware.ensureOk(res, ctx: "play ${name_dev} (row ${i})")
 			}
 
 

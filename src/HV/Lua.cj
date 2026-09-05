@@ -82,6 +82,9 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 				println("Lua script call result: ${res.toString()}")
 
+				/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
+				MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
+
 				/* ---- controller 转发：元数据 ∪ 自己Lua的返回表 ---- */
 				if (let Some(ctrl) <- controller) {
 					/* 重新收集元数据（skipCol 已跳过 controller 列） */
@@ -94,6 +97,10 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 					let ctrl_res = ctrl.play(payload)
 					println("Controller result: ${ctrl_res.toString()}")
+
+					/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
+					MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
+
 					return ctrl_res
 				}
 
@@ -124,6 +131,9 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				let res = call_lua(L, obj)
 
 				println("Lua script build result: ${res.toString()}")
+
+				/* ---- 检查 build 返回契约：失败即抛（main 的 finally 会清理已建硬件） ---- */
+				MatrixVars_Hardware.ensureOk(res, ctx: "build ${luapath}")
 			},
 
 			/*
@@ -145,8 +155,11 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				let res = call_lua(L, obj)
 
 				println("Lua script destroy result: ${res.toString()}")
-				/* ---- 在这里写就Lua状态机的解构 ---- */
+				/* ---- 先释放 Lua 状态机，再检查返回契约——避免检查抛异常时泄漏 ---- */
 				destroy_lua(L)
+
+				/* ---- 检查 destroy 返回契约：ERR 抛出让 deactive 的 try-catch 记录 ---- */
+				MatrixVars_Hardware.ensureOk(res, ctx: "destroy ${luapath}")
 
 			}
 

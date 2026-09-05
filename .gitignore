@@ -35,3 +35,4 @@ cjpm.lock
 log
 report
 tmp
+.tmp/

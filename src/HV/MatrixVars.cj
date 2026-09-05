@@ -102,6 +102,32 @@ public open class MatrixVars_Hardware {
 		return T.parse(raw)
 	}
 
+	/*
+	 * ----------------------------------
+	 * 硬件调用结果契约检查（halt-on-error）
+	 *
+	 * 统一约定：Lua 驱动返回 { result = "OK" | "ERR", message = "..." }。
+	 * 不含 result 字段视为成功（兼容读值型驱动如 SPI/Relay）；含显式 "ERR"
+	 * 时抛出异常，由调用方决定中断动作序列还是捕获继续。
+	 */
+	public static func ensureOk(res: JsonValue, ctx!: String = ""): JsonValue {
+		if (!(res is JsonObject)) { return res }
+		let obj = res.asObject()
+		if (let Some(rs) <- obj.get("result")) {
+			if (rs is JsonString) {
+				if (rs.asString().getValue().trimAscii() == "ERR") {
+					var msg = "Hardware call failed (${ctx})"
+					if (let Some(m) <- obj.get("message")) {
+						if (m is JsonString) {
+							msg = "${msg}: ${m.asString().getValue()}"
+						}
+					}
+					throw Exception(msg)
+				}
+			}
+		}
+		return res
+	}
 
 
 	/* ---------------------------------- */

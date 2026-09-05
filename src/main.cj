@@ -89,6 +89,12 @@ main(args: Array<String>): Int64 {
 			robot.run(consoleReader)
 		}
 
+		/* 硬件/动作调用出错：停止执行并友好退出（错误码 1） */
+		catch (e: Exception) {
+			println("Action aborted: ${e}")
+			return 1
+		}
+
 		/* 无论有没有成功激活，都进行清理 */
 		finally {  robot.deactive()  }
 
