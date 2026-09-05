@@ -17,6 +17,8 @@
 -- ==================== 寄存器 ====================
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
+-- 调试打印辅助 print_table（modules/lib/）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 local REG_CONVERSION     = 0x00   -- 转换结果（只读，16 位）
@@ -43,19 +45,6 @@ local dr_names = { "8", "16", "32", "64", "128", "250", "475", "860" }
 
 -- 调试开关：传感器高频读取，默认关闭逐次打印
 local DEBUG = false
-
--- 辅助：打印一张表
-function print_table(t, indent)
-    indent = indent or 0
-    for k, v in pairs(t) do
-        if type(v) == 'table' then
-            print(string.rep(' ', indent) .. k .. ":")
-            print_table(v, indent + 2)
-        else
-            print(string.rep(' ', indent) .. k .. ": " .. tostring(v))
-        end
-    end
-end
 
 -- 辅助：把 16 位无符号值符号扩展为有符号数
 local function sign16(v)

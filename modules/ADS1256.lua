@@ -22,6 +22,8 @@
 -- ==================== 寄存器 ====================
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
+-- 调试打印辅助 print_table（modules/lib/）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 -- 本设备的 SPI 传输封装：统一附带 @SPI 矩阵配置的 delay
@@ -64,19 +66,6 @@ local VREF = 2.5
 
 -- 调试开关：传感器高频读取，默认关闭逐次打印
 local DEBUG = false
-
--- 辅助：打印一张表
-function print_table(t, indent)
-    indent = indent or 0
-    for k, v in pairs(t) do
-        if type(v) == 'table' then
-            print(string.rep(' ', indent) .. k .. ":")
-            print_table(v, indent + 2)
-        else
-            print(string.rep(' ', indent) .. k .. ": " .. tostring(v))
-        end
-    end
-end
 
 -- 辅助：把数据里的字段转成数字（字符串/数字均可），nil 返回默认值
 local function tonum(v, default)

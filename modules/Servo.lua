@@ -8,18 +8,8 @@
 -- 输入参数：angle（支持浮点）
 -- 用法见 robots/spider1.sql 的 Servo 表与 scripts/*.mt 动作脚本
 
-
-function print_table(t, indent)
-    indent = indent or 0
-    for k, v in pairs(t) do
-        if type(v) == 'table' then
-            print(string.rep(' ', indent) .. k .. ":")
-            print_table(v, indent + 2)
-        else
-            print(string.rep(' ', indent) .. k .. ": " .. tostring(v))
-        end
-    end
-end
+-- 调试打印辅助 print_table（modules/lib/）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 
 
 -- 占位符 "-" 或非法值按 0 处理

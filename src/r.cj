@@ -113,7 +113,6 @@ open class MatrixVars_Hardware {
 		else if (raw == "-" && !(row > 1)) {  return T.parse("0")  }
 
 		/* 原始值并非占位符  */
-		// else if (!raw == "-")
 		return T.parse(raw)
 	}
 
@@ -184,7 +183,6 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				let metadata = getMetadata()
 
 				/*  从元数据（json_obj）进行深拷贝  */
-				//let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				let obj = metadata
 				obj.put("mode", JsonString("call"))
 
@@ -233,7 +231,6 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				let metadata = getMetadata()
 
 				/* 从元数据进行深拷贝 */
-				//let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				let obj = metadata
 
 				/* 插入模式指令 （告知lua脚本这是在构建） */
@@ -256,7 +253,6 @@ class MtVars_Lua <: MatrixVars_Hardware {
 				let metadata = getMetadata()
 
 				/*  从元数据进行深拷贝  */
-				//let obj = JsonValue.fromStr(metadata.toJsonString()).asObject()
 				let obj = metadata
 
 				/*  插入模式指令  */
@@ -393,18 +389,15 @@ class MtVars_Lua <: MatrixVars_Hardware {
 						Lua_pop(L, 1)
 					}
 				}
-				//Lua_pop(L, 1)
 			}
 
 			else if (status != LUA_OK) {
 				let err  = Lua_tostring(L, -1)
 				if (!err.isEmpty()) { println("Lua 错误详情: ${err.toString()}") }
-				//Lua_pop(L, 1)
 			}
 
 			/* -------- 恢复Lua状态机 -------- */
 			Lua_settop(L, top)
-			//Lua_pop(L, 1)
 		}
 		return ret
 	}
@@ -437,113 +430,6 @@ class MtVars_Alias <: MatrixVars_Hardware {
 		return mtvars_alias
 	}
 }
-
-/*
- *  I2C变量类 这种硬件变量是特殊且固定的
- *  TODO(20260617-qing): 等LUA状态机被闭包保存之后，将其优化为Lua驱动
- */
-//class MtVars_I2C <: MatrixVars_Hardware {
-//	public init(things!: (JsonValue) -> JsonValue,
-//			rise!: Option<() -> Unit> = None,
-//			free!: Option<() -> Unit> = None  )
-//
-//	{  super(things: things, rise: rise, free: free)  }
-//
-//	/*  @I2C
-//	 *   name        path;
-//	 *  i2c-0  /dev/i2c-0;
-//	 *  @
-//	 */
-//	public static func Factory(	/*  工厂模式，根据矩阵对象构造  */
-//		I2CDefs: MatrixObject, i: Int64, _: HashMap<String, MatrixVars_Hardware>): MtVars_I2C
-//	{
-//		let idxName  = I2CDefs.indexOfCol(0, "name")
-//		let idxPath  = I2CDefs.indexOfCol(0, "path")
-//
-//		let name = I2CDefs[i, idxName]
-//		let path = getMt(I2CDefs, i, idxPath)
-//
-//		println("Create a I2C hard-Var: ${name},\tpath: ${path}")	/* ---- debug ---- */
-//		let i2c = I2C_Orig(path)	/*  在这里创建传统I2C类对象，通过闭包保存在MtVars_I2C里  */
-//		let mtvars_i2c = MtVars_I2C(
-//			things: { json: JsonValue =>
-//				let fd = i2c.getFd()
-//				let ret = JsonObject()
-//				ret.put("fd",JsonInt(Int64(fd)))
-//				return ret
-//			},
-//
-//			free: {=>
-//				println("I2C HVar: ${name} is closing now")
-//				i2c._close()
-//			})
-//
-//		return mtvars_i2c
-//	}
-//}
-
-/*  MPU6050_BIND硬件变量
- *  INFO(20260612-qing): 自从引入了Lua状态机扩展硬件，该硬件变量不知道何去何从。
- *  TODO(20260612-qing): 在Lua脚本中定义好BIND函数后，在pthread线程中反复调用
- * -------- */
-//class MtVars_MPU6050_BIND <: MatrixVars_Hardware {
-//	public init(things!: (JsonValue) -> JsonValue,
-//			rise!: Option<() -> Unit> = None,
-//			free!: Option<() -> Unit> = None) {
-//		super(things: things, rise: rise, free: free)  }
-//
-//	/* 工厂函数，通过矩阵对象构建硬件变量
-//	 * @MPU6050_BIND
-//	 *      name    I2C   addr;
-//	 * mpu6050-0  i2c-1   0x69;
-//	 */
-//	public static func Factory (
-//			MPU6050_BIND_Defs: MatrixObject, i: Int64,
-//			map: HashMap<String, MatrixVars_Hardware>)//: MtVars_MPU6050_BIND
-//	{
-//		let idxName = MPU6050_BIND_Defs.indexOfCol(0, "name")
-//		let idxI2c  = MPU6050_BIND_Defs.indexOfCol(0, "I2C")
-//		let idxAddr = MPU6050_BIND_Defs.indexOfCol(0, "addr")
-//
-//		let name = MPU6050_BIND_Defs[i, idxName]
-//		let i2c  = getMt(MPU6050_BIND_Defs, i, idxI2c)
-//		let addr = getMt(MPU6050_BIND_Defs, i, idxAddr)
-//
-//		println("Create a MPU6050_BIND HVar: ${name}, use i2c interf: ${i2c}, i2c addr: ${addr}")
-//		let i2c_HardVar = map[i2c]
-//		let param = JsonObject()
-//		param.put("mode", JsonString("get_fd"))
-//		let ret = i2c_HardVar.play(param)
-//		let fd = Int32(ret.asObject().get("fd").getOrThrow().asInt().getValue())
-//		let _addr = UInt8.parse(addr)
-//
-//		let mpu6050 = MPU6050(fd, _addr)		
-//
-//		let mtvars_mpu6050bind = MtVars_MPU6050_BIND(
-//			things: {json: JsonValue => 
-//				let ret = JsonObject()
-//				ret.put("status", JsonString("OK"))
-//				return ret
-//			},
-//			rise: {=>
-//				println("MPU6050_BIND HVar: ${name} is starting now")
-//				mpu6050.setup()
-//				mpu6050.startDaemon()
-//			},
-//			free: {=>
-//				println("MPU6050_BIND HVar: ${name} is closing now")
-//				mpu6050.stopDaemon()
-//				mpu6050.waitDaemon()
-//			}
-//		)
-//
-//		return mtvars_mpu6050bind
-//	}
-//}
-
-
-
-
 
 /*
  * ---------------- 守护线程硬件变量（@Daemon） ----------------
@@ -806,7 +692,6 @@ class RobotStruct {
 	 *  不行就将矩阵脚本转化为bot脚本吧
 	 */
 	public init(input: InputStream) {
-		//readMatrix(input, C)
 		readSQL(input, C)
 		createHardVars()
 	}
@@ -841,7 +726,6 @@ class RobotStruct {
 	public func run(input: InputStream): Unit {
 		let AC = LinkedList<MatrixObject>()
 		readMatrix(input, AC)
-		//readSQL(input, AC)
 
 		/* ---- 注册动作脚本中内联的 @Alias（同名时覆盖结构脚本的定义） ---- */
 		let session = HashSet<String>()
@@ -947,19 +831,9 @@ class RobotStruct {
 	{
 
 		for (matrix in C) {
-			let MtName = matrix.getName()
+		let MtName = matrix.getName()
 
-			/* ---- 【特殊的】I2C硬件
-			 * ---- */
-			//if (MtName == "I2C") {
-			//	let idxName = matrix.indexOfCol(0,"name")
-			//	for (i in 1..matrix.size) {
-			//		let name = matrix[i, idxName]
-			//		M[name] = MtVars_I2C.Factory(matrix, i, M)
-			//	}
-			//}
-
-			/* ---- 【特殊的】Alias别名硬件
+		/* ---- 【特殊的】Alias别名硬件
 			 * ---- */
 			if (MtName == "Alias") {
 				registerAliasMatrix(matrix, None)

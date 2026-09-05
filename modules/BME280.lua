@@ -23,6 +23,8 @@
 -- ==================== 寄存器 ====================
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
+-- 调试打印辅助 print_table（modules/lib/）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 local REG_ID        = 0xD0   -- 芯片ID（BME280=0x60，BMP280=0x58）
@@ -54,19 +56,6 @@ local dig_T1, dig_T2, dig_T3
 local dig_P1, dig_P2, dig_P3, dig_P4, dig_P5, dig_P6, dig_P7, dig_P8, dig_P9
 local dig_H1, dig_H2, dig_H3, dig_H4, dig_H5, dig_H6
 local cal_ok = false
-
--- 辅助：打印一张表
-function print_table(t, indent)
-    indent = indent or 0
-    for k, v in pairs(t) do
-        if type(v) == 'table' then
-            print(string.rep(' ', indent) .. k .. ":")
-            print_table(v, indent + 2)
-        else
-            print(string.rep(' ', indent) .. k .. ": " .. tostring(v))
-        end
-    end
-end
 
 -- 辅助：整数值拆成 n 个字节（下标1起始，大端序），用 // 与 % 保持在整数域
 local function to_bytes(v, n)

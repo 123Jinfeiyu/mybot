@@ -2,27 +2,15 @@
 
 --
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+-- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 
 I2C_SUCCESS = 0
 I2C_FAILED  = 1
 
 -- 全局文件句柄
 fd = -1
-
--- 这个函数是辅助用的，它能够打印一张表出来
-function print_table(t, indent)
-    indent = indent or 0
-    for k, v in pairs(t) do
-        if type(v) == 'table' then
-            print(string.rep(' ', indent) .. k .. ":")
-            print_table(v, indent + 2)
-        else
-            print(string.rep(' ', indent) .. k .. ": " .. tostring(v))
-        end
-    end
-end
-
 
 function build(data)
 

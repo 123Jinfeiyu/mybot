@@ -4,18 +4,8 @@
 -- 返回值由框架与元数据合并后转发给 controller 指定的硬件变量（如 Timer）
 -- 用法：在结构脚本中定义 @Relay 矩阵并带 controller 列，见 robots/relay-test.sql
 
-
-function print_table(t, indent)
-    indent = indent or 0
-    for k, v in pairs(t) do
-        if type(v) == 'table' then
-            print(string.rep(' ', indent) .. k .. ":")
-            print_table(v, indent + 2)
-        else
-            print(string.rep(' ', indent) .. k .. ": " .. tostring(v))
-        end
-    end
-end
+-- 调试打印辅助 print_table（modules/lib/）
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 
 
 -- 【配置脚本】纯软件模块，没有资源需要申请
