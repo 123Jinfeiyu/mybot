@@ -23,7 +23,8 @@
   芯片）、MAX17043（单节锂电电量计）、TPL0501（SPI 256 抽头数字电位器，首个输出型
   器件）、LTC2944（多节电池库仑计，3.6~60V）、GPIO（HAL 扩展 gpiod uAPI，跨 SoC 通用）、
   MLX90393（Melexis 三轴磁力计/罗盘，命令式协议，build 自检链路 复位→Memory Recall→
-  写 GAIN 回读校验→试测一帧）
+  写 GAIN 回读校验→试测一帧）、AS3935（ams Franklin 闪电传感器，首个**事件型**驱动——
+  call 返回最近锁存事件/雷暴距离/闪电能量，协议经 SparkFun 与 ESPHome 参考实现交叉核对）
 - **HAL 新增 `i2c_read_bytes`**：纯读逐字节返回（>6 字节的命令式应答超出 i2c_read
   大端合并的 2^53 double 精度线，如 MLX90393 的 9 字节 XYZT+status）
 - SGP30 驱动升级：build 自检（Measure_test）+ 基线持久化（免 12h 重学习）+

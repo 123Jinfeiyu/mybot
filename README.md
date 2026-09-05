@@ -261,6 +261,24 @@ CREATE TABLE MLX90393 (
 INSERT INTO MLX90393 (name, I2C, address, gain, timeout) VALUES ('mlx0', 'i2c-1', '0x0C', '-', '-');
 
 
+/* 定义as3935闪电传感器（事件型：call 返回最近事件，适合 @Daemon 低频轮询；
+   地址 0x03 在 I2C 保留区，i2cdetect 默认扫不到；电机是强干扰源，误报频繁
+   先 mask_dist='1'；离线测试 test/test_as3935.lua） */
+CREATE TABLE AS3935 (
+	name      String,
+	I2C       String,
+	address   String,
+	indoor    String,
+	nf        String,
+	wdth      String,
+	srej      String,
+	min_lig   String,
+	mask_dist String,
+	tun_cap   String
+);
+INSERT INTO AS3935 (name, I2C, address, indoor) VALUES ('as3935-0', 'i2c-1', '0x03', '-');
+
+
 /* 定义扬声器位：旧版 @Speaker 矩阵已移除，现在仅用 Timer 负责延时 */
 CREATE TABLE Timer (
 	name String
