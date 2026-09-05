@@ -1,0 +1,33 @@
+/*  别名变量（硬件类型，自 r.cj 迁出）
+ *  这种变量用于给某个参数取一个更简单的别名  它的事件返回（JsonString）将作为新的矩阵项目值
+ */
+
+package bot4cj.HV
+import std.collection.*
+import stdx.encoding.json.*
+import mt2.*
+
+public class MtVars_Alias <: MatrixVars_Hardware {
+	public init(things!: (JsonValue) -> JsonValue,
+			rise!: Option<() -> Unit> = None,
+			free!: Option<() -> Unit> = None  )
+	{  super(things: things, rise: rise, free: free)  }
+
+	public static func Factory(AliasDefs: MatrixObject, i: Int64,
+			_: HashMap<String, MatrixVars_Hardware>): MtVars_Alias
+	{
+		let idxName = AliasDefs.indexOfCol(0, "name")
+		let idxAlias= AliasDefs.indexOfCol(0, "alias")
+
+		let name = AliasDefs[i, idxName]
+		let alias= getMt(AliasDefs, i, idxAlias)
+
+		println("Create a Alias vars: ${name}, witch means ${alias}")
+		let mtvars_alias = MtVars_Alias(things: {_: JsonValue =>
+			let str = JsonString(alias)	/*  直接返回JsonString（alias）*/
+			return str
+		})
+
+		return mtvars_alias
+	}
+}
