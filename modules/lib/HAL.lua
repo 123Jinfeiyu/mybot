@@ -424,6 +424,23 @@ function spi_write3(fd, b0, b1, b2, delay_us)
 	return -1
 end
 
+-- 一次写一帧任意长度字节（单次传输，CS 保持低），返回 0 = 成功，-1 = 失败；
+-- delay_us 可选。data 为 1 基字节值表（如 {0x21, 0x00}）——以表传参避免与
+-- spi_write3 的尾参 delay_us 语义冲突。16 位字帧器件（AD9833 等）用此接口。
+function spi_write_multi(fd, data, delay_us)
+	fd = tonumber(fd)
+	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
+	if #data > 64 then return -1 end
+	local buf = ffi.new("uint8_t[?]", #data)
+	for i = 1, #data do
+		local b = byte_of(data[i])
+		if b == nil then return -1 end
+		buf[i - 1] = b
+	end
+	if spi_xfer(fd, buf, nil, #data, delay_us) then return 0 end
+	return -1
+end
+
 -- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 钳制 1~8）；delay_us 可选
 function spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)

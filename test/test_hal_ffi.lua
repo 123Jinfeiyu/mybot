@@ -234,6 +234,18 @@ check("spi_write3 speed_hz=0（沿用 fd 配置）", c ~= nil and c.speed == 0)
 check("spi_write3 缺省 delay_usecs=0（向后兼容）", c ~= nil and c.delay == 0, c and c.delay)
 
 reset()
+check("spi_write_multi 返回 0", spi_write_multi(sfd, { 0x21, 0x00 }, 0) == 0)
+c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+check("spi_write_multi 单次 2 字节帧（CS 保持低）",
+	c ~= nil and c.len == 2 and c.tx == string.char(0x21, 0x00))
+check("spi_write_multi 非法字节拒绝", spi_write_multi(sfd, { 0x21, 300 }, 0) == -1)
+check("spi_write_multi 空表拒绝", spi_write_multi(sfd, {}, 0) == -1)
+check("spi_write_multi 缺表拒绝", spi_write_multi(sfd, nil, 0) == -1)
+reset()
+check("spi_write_multi 携带 delay_us", spi_write_multi(sfd, { 0x40, 0x00 }, 120) == 0
+	and (find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1) or {}).delay == 120)
+
+reset()
 check("spi_write 单字节", spi_write(sfd, 0xAB) == 0)
 c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
 check("spi_write 传输 1 字节", c ~= nil and c.len == 1 and c.tx == string.char(0xAB))
