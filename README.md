@@ -163,63 +163,78 @@ cat scripts/std.mt | bash _run.sh --robot=robots/spider1.sql	# 蜘蛛机器人�
 每个矩阵对象以@name 行开头，@ 行结束。
 
 
-robot机器人结构示例：
+robot机器人结构示例（新版结构脚本为 .sql 文件，由 SQL4cj 解析，支持 `--` 单行注释与块注释；旧版 .mt 结构矩阵已废弃）：
 
-```mt
-
-# 在 @Action 矩阵中，硬件变量的参数可以使用别名
-@Alias
-name      alias;
-   A      angle;
-   F  frequency;
-@
-
-
-# 定义I2C硬件
-@I2C
- name        path;
-i2c-0  /dev/i2c-0;
-i2c-1  /dev/i2c-1;
-@
+```sql
+/* 在 @Action 矩阵中，硬件变量的参数可以使用别名 */
+CREATE TABLE Alias (
+	name  String,
+	alias String
+);
+INSERT INTO Alias (name, alias) VALUES (A, angle);
+INSERT INTO Alias (name, alias) VALUES (F, frequency);
 
 
-# 定义pca9685硬件
-@PCA9685
-     name    I2C   path;
-pca9685-0  i2c-1   0x40;
-@
+/* 定义I2C硬件 */
+CREATE TABLE I2C (
+	name String,
+	path String
+);
+INSERT INTO I2C (name, path) VALUES ('i2c-0', '/dev/i2c-0');
+INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');
 
 
-# 定义mpu6050硬件
-@MPU6050
-     name    I2C   path;
-#mpu6050-0  i2c-1   0x69;
-#mpu6050-1  i2c-1   0x68;
-#mpu6050-2  i2c-0   0x68;
-#mpu6050-3  i2c-0   0x69;
-@
+/* 定义pca9685硬件 */
+CREATE TABLE PCA9685 (
+	name    String,
+	I2C     String,
+	address String
+);
+INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', 'i2c-1', '0x40');
 
-# 定义扬声器硬件
-@Speaker
-name  channels  sample_rate  volumn  max_f  min_f;
- spk         2        48000     0.6   5000      -;
-@
 
-# 定义舵机硬件
-@Servo
- name   max  min  offset  controller  channel;
-  s1    90     -       -   pca9685-0        0;	# rb0
-  s2   180     -       -           -        1;	# rb1 
-  s3   -90     -       -           -        2;	# lb0
-  s4  -180     -       -           -        3;	# lb1
-  s5    90     -       -           -        4;	# lf0
-  s6   180     -       -           -        5;	# lf1
-  s7   -90     -       -           -        6;	# rf0
-  s8  -180     -       -           -        7;	# rf1
-  s9   180     -       -           -        8;	# cam0
- s10   180     -       -           -        9;	# cam1
-@
+/* 定义mpu6050硬件（持续采样建议改用上文 @Daemon 守护，见「万能采样 chunk」） */
+CREATE TABLE MPU6050 (
+	name    String,
+	I2C     String,
+	address String
+);
+INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-0', 'i2c-1', '0x69');
+-- INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-1', 'i2c-1', '0x68');
+-- INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-2', 'i2c-0', '0x68');
+-- INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-3', 'i2c-0', '0x69');
+
+
+/* 定义扬声器位：旧版 @Speaker 矩阵已移除，现在仅用 Timer 负责延时 */
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('spk');
+
+
+/* 定义舵机硬件：max 限幅（负值表示方向反向）、offset 中位漂移，"-" 继承上一行 */
+CREATE TABLE Servo (
+	name       String,
+	max        String,
+	min        String,
+	offset     String,
+	controller String,
+	channel    String
+);
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s1,  90, -, -, 'pca9685-0', 0);	-- 左下水平关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s2, 180, -, -,          -, 1);	-- 左下垂直关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s3, -90, -, -,          -, 2);	-- 右下水平关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s4,-180, -, -,          -, 3);	-- 右下垂直关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s5,  90, -, -,          -, 4);	-- 右上水平关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s6, 180, -, -,          -, 5);	-- 右上垂直关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s7, -90, -, -,          -, 6);	-- 左上水平关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s8,-180, -, -,          -, 7);	-- 左上垂直关节
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s9, 180, -, -,          -, 8);	-- 云台1
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s10,180, -, -,          -, 9);	-- 云台2
 ```
+
+> 说明：`-` 是占位符，表示继承上一行同列的值（如 s2-s10 的 controller 继承 s1 的 `pca9685-0`）；
+> 注释整行 INSERT 即可下线一个硬件实例（如上被注释的 mpu6050-1 ~ mpu6050-3）。
 
 ### controller 引用（通用）
 
