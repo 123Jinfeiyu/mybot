@@ -55,7 +55,7 @@ public func sandbox_lua(L: lua_State): Unit {
 			for (name in osKeys) {
 				let kn = LibC.mallocCString(name)
 				Lua_pushnil(L)
-				Lua_setfield(L, -1, kn)
+				Lua_setfield(L, -2, kn)	/* 表在 -2：pushnil 后值在栈顶，-1 会索引 nil 致 PANIC */
 				LibC.free(kn)
 			}
 		}
@@ -69,7 +69,7 @@ public func sandbox_lua(L: lua_State): Unit {
 			for (name in ioKeys) {
 				let kn = LibC.mallocCString(name)
 				Lua_pushnil(L)
-				Lua_setfield(L, -1, kn)
+				Lua_setfield(L, -2, kn)	/* 同上：表在 -2 */
 				LibC.free(kn)
 			}
 		}
