@@ -1,3 +1,8 @@
+/*
+ * MPU6050 六轴守护采样测试：sensor_daemon 万能采样，
+ * interval=10ms，fields 六轴，sign=16（原始值为有符号 16 位）
+ * 配合 test_mpu_daemon.mt
+ */
 CREATE TABLE Timer (
 	name String
 );

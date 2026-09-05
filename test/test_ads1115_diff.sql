@@ -1,3 +1,7 @@
+/*
+ * ADS1115 差分采样测试（配套 test_ads1115_diff.mt，结构与单端版相同）
+ * 差分对由动作脚本 @Action 的 pos/neg 列指定，与 channel 不可混用同一 @Action
+ */
 CREATE TABLE I2C (
 	name String,
 	path String

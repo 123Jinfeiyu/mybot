@@ -1,4 +1,9 @@
+/*
+ * 蜘蛛机器人结构脚本（spider.sql 变体：Timer 名为 spk，其余结构相同）
+ * 由 SQL4cj 解析：支持 -- 单行注释与斜杠星号块注释（1.0.3 起）
+ */
 
+/* 别名表：动作脚本(.mt)中可用别名指代硬件参数名 */
 CREATE TABLE Alias (
 	name  String,
 	alias String
@@ -6,13 +11,14 @@ CREATE TABLE Alias (
 INSERT INTO Alias (name, alias) VALUES (A, angle);
 INSERT INTO Alias (name, alias) VALUES (F, frequency);
 
-
+/* I2C 总线：name 引用名 → /dev/i2c-N 设备路径 */
 CREATE TABLE I2C (
 	name String,
 	path String
 );
 INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');
 
+/* PCA9685：16 路 PWM 舵机控制器，挂在 i2c-1 总线 0x40 地址 */
 CREATE TABLE PCA9685 (
 	name    String,
 	I2C     String,
@@ -20,11 +26,21 @@ CREATE TABLE PCA9685 (
 );
 INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', 'i2c-1', '0x40');
 
+/* Timer：spk 仅负责延时的时基矩阵（扬声器位） */
 CREATE TABLE Timer (
 	name String
 );
 INSERT INTO Timer (name) VALUES ('spk');
 
+/*
+ * 舵机表：14 路
+ *   max        限幅上限（取绝对值，负值表示舵机方向反向）
+ *   min        限幅下限（取绝对值，"-" 按 0 处理）
+ *   offset     中位漂移（先加 offset 再限幅）
+ *   controller 挂载的 PWM 控制器名
+ *   channel    PCA9685 输出通道
+ * 腿标记：rb=右后 lb=左后 lf=左前 rf=右前；关节 0=髋 1=大腿 2=膝
+ */
 CREATE TABLE Servo (
 	name 		String,
 	max  		String,
@@ -33,17 +49,17 @@ CREATE TABLE Servo (
 	controller	String,
 	channel		String
 );
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s1,    90,   -, -5,  'pca9685-0', 6);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s2,  -180,   -,  0,  'pca9685-0', 5); 
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s3,   -90,   -,  0,  'pca9685-0', 14);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s4,   180,   -,  25, 'pca9685-0', 15);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s5,    90,   -,  0,  'pca9685-0', 8);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s6,  -180,   -,  0,  'pca9685-0', 9);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s7,   -90,   -,  0,  'pca9685-0', 11);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s8,   180,   -,  0,  'pca9685-0', 12);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s9,   180,   -,  0,  'pca9685-0', 0);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s10,  180,   -,  0,  'pca9685-0', 1);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s11,   90,   -,  0,  'pca9685-0', 4);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s12,   90,   -,  0,  'pca9685-0', 7);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s13, -180,   -,  55, 'pca9685-0', 13);
-INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s14,  180,   -,  0,  'pca9685-0', 10);
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s1,    90,   -, -5,  'pca9685-0', 6);		-- rb0 右后腿·髋
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s2,  -180,   -,  0,  'pca9685-0', 5);		-- rb1 右后腿·大腿
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s3,   -90,   -,  0,  'pca9685-0', 14);	-- lb0 左后腿·髋
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s4,   180,   -,  25, 'pca9685-0', 15);	-- lb1 左后腿·大腿
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s5,    90,   -,  0,  'pca9685-0', 8);		-- lf0 左前腿·髋
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s6,  -180,   -,  0,  'pca9685-0', 9);		-- lf1 左前腿·大腿
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s7,   -90,   -,  0,  'pca9685-0', 11);	-- rf0 右前腿·髋
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s8,   180,   -,  0,  'pca9685-0', 12);	-- rf1 右前腿·大腿
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s9,   180,   -,  0,  'pca9685-0', 0);		-- cam0 云台水平
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s10,  180,   -,  0,  'pca9685-0', 1);		-- cam1 云台垂直
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s11,   90,   -,  0,  'pca9685-0', 4);		-- rb2 右后腿·膝
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s12,   90,   -,  0,  'pca9685-0', 7);		-- lb2 左后腿·膝
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s13, -180,   -,  55, 'pca9685-0', 13);	-- lf2 左前腿·膝
+INSERT INTO Servo (name, max, min, offset, controller, channel)  VALUES  (s14,  180,   -,  0,  'pca9685-0', 10);	-- rf2 右前腿·膝

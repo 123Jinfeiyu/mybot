@@ -1,3 +1,7 @@
+/*
+ * HAL I2C 联调配套结构：真实 i2c-1 总线 + PCA9685(0x40) + Servo s1
+ * 每次动作走 I2C_RDWR ioctl 原子事务
+ */
 CREATE TABLE Alias (
 	name  String,
 	alias String

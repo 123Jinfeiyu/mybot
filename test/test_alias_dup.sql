@@ -1,3 +1,7 @@
+/*
+ * 用例3配套结构：同一动作脚本重复定义别名 A 应抛错
+ * 配合 test_alias_dup.mt 运行，预期非 0 退出
+ */
 CREATE TABLE dummy (
 	name String
 );

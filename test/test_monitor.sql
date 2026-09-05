@@ -1,3 +1,7 @@
+/*
+ * Monitor 闭环测试：daemon_probe 采样(sim0) → Monitor 引用读取 v0(mon0)
+ * 配合 test_monitor.mt
+ */
 CREATE TABLE Timer (
 	name String
 );

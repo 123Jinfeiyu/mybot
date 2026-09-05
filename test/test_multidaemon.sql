@@ -1,3 +1,7 @@
+/*
+ * 多守护并发诊断：daemon_tid × 4（d0-d3 各持独立 lua_State）
+ * 配合 test_multidaemon.mt
+ */
 CREATE TABLE Timer (
 	name String
 );

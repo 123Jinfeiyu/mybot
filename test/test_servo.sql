@@ -1,3 +1,7 @@
+/*
+ * Servo 纯逻辑测试：控制器为 dummy，不触真实硬件，
+ * 验证 offset 漂移、|min|/|max| 限幅与负 max 反向（配套 test_servo.mt）
+ */
 CREATE TABLE Alias (
 	name  String,
 	alias String

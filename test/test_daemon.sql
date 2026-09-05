@@ -1,3 +1,7 @@
+/*
+ * 守护并发压测配套结构：dummy(dm 列=主线程 Lua 负载) +
+ * daemon_probe 守护(d0 列=读守护计数)，配合 test_daemon.mt 的 200 行动作
+ */
 CREATE TABLE Daemon (
 	name  String,
 	chunk String

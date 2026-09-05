@@ -1,9 +1,14 @@
+/*
+ * ADS1115 单端采集测试（配套 test_ads1115.mt）
+ * pga/dr 显式配置：占位符归 0 会使驱动缺省档位失效（±6.144V/8SPS）
+ */
 CREATE TABLE I2C (
 	name String,
 	path String
 );
 INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');
 
+/* pga=2（±2.048V）dr=4（128SPS）channel=0 单端通道 */
 CREATE TABLE ADS1115 (
 	name    String,
 	I2C     String,
@@ -19,6 +24,7 @@ CREATE TABLE Timer (
 );
 INSERT INTO Timer (name) VALUES ('t0');
 
+/* 万能采样守护：driver/proto/path/addr/interval/fields 由 sensor_daemon.lua 解释 */
 CREATE TABLE Daemon (
 	name     String,
 	chunk    String,

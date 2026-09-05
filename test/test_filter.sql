@@ -1,3 +1,7 @@
+/*
+ * Kalman 滤波测试：daemon_probe 采样(sim0) → Kalman 滤波(kf0, Q=20 R=200)
+ * → Monitor 引用(mon0)，配合 test_filter.mt
+ */
 CREATE TABLE Timer (
 	name String
 );

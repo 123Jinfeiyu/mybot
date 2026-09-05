@@ -1,3 +1,8 @@
+/*
+ * LuaJIT JIT 编译触发测试配套结构（阈值 56 行）
+ * 70 行动作经 Servo→PCA9685，每行 4 次 I2C_RDWR ioctl；
+ * 0x40 无器件时 NACK 静默失败仍计次（配套 test_jit_rows.mt）
+ */
 CREATE TABLE I2C (
 	name String,
 	path String

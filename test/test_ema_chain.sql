@@ -1,3 +1,7 @@
+/*
+ * EMA 滤波链测试：daemon_probe 采样(sim0) → Ema 滤波(ema0, alpha=0.3)
+ * → Monitor 引用(mon0)，配合 test_ema_chain.mt
+ */
 CREATE TABLE Timer (name String);
 INSERT INTO Timer (name) VALUES ('t0');
 

@@ -1,3 +1,8 @@
+/*
+ * 用例2配套结构：别名覆盖测试——此处定义 A->angle，
+ * 动作脚本重定义 A->test；若覆盖生效 Servo.lua 收不到 angle 会报 ERR
+ * （配套 test_alias_override.mt）
+ */
 CREATE TABLE Alias (
 	name  String,
 	alias String
