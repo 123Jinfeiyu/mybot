@@ -70,7 +70,7 @@ function build(data)
 	-----------------------------------------------------
 	-----------------------------------------------------
 
-	i2c_set_addr(fd, addr)		-- 开始配置PCA9685
+	i2c_set_addr(fd, addr)		-- 开始配置MPU6050
 	milli_sleep(1)			-- 
 
 	i2c_write_reg(fd, PWR_MGMT_1, PWR_NOSLEEP)		-- 退出睡眠
@@ -127,6 +127,8 @@ end
 
 -- 【调用MPU6050】
 -- NOTE(20260612-qing): 接收一个参数（表），返回一个结果（表）
+-- 返回为有符号 16 位（补码）原始值：加速度 ±8g、陀螺 ±500°/s 量程的寄存器原始量，
+-- 未做量程比例换算（要物理单位需按灵敏度系数另算）。
 function call(data)
 
 
@@ -161,6 +163,13 @@ function call(data)
 	-----------------------------------------------------
 	i2c_set_addr(fd, addr)	-- 设置I2C地址
 
+	-- 16 位补码符号扩展：高/低字节合并成有符号数
+	local function s16(hi, lo)
+		local v = bitc.bor(bitc.lshift(hi, 8), lo)
+		if v >= 32768 then v = v - 65536 end	-- 负值还原
+		return v
+	end
+
 	local accel_x_high = i2c_read_reg(fd, ACCEL_REG_X_HIGH)
 	local accel_x_low  = i2c_read_reg(fd, ACCEL_REG_X_LOW)
 	local accel_y_high = i2c_read_reg(fd, ACCEL_REG_Y_HIGH)
@@ -175,15 +184,15 @@ function call(data)
 	local gyro_z_high  = i2c_read_reg(fd, GYRO_REG_Z_HIGH)
 	local gyro_z_low   = i2c_read_reg(fd, GYRO_REG_Z_LOW)
 
-	-- 返回字典
+	-- 返回字典（有符号 16 位原始值）
  	return {
 		result  = "OK",
-		ACCEL_X = bitc.bor(bitc.lshift(accel_x_high, 8), accel_x_low),
-		ACCEL_Y = bitc.bor(bitc.lshift(accel_y_high, 8), accel_y_low),
-		ACCEL_Z = bitc.bor(bitc.lshift(accel_z_high, 8), accel_z_low),
-		GYRO_X  = bitc.bor(bitc.lshift(gyro_x_high, 8), gyro_x_low),
-		GYRO_Y  = bitc.bor(bitc.lshift(gyro_y_high, 8), gyro_y_low),
-		GYRO_Z  = bitc.bor(bitc.lshift(gyro_z_high, 8), gyro_z_low)
+		ACCEL_X = s16(accel_x_high, accel_x_low),
+		ACCEL_Y = s16(accel_y_high, accel_y_low),
+		ACCEL_Z = s16(accel_z_high, accel_z_low),
+		GYRO_X  = s16(gyro_x_high,  gyro_x_low),
+		GYRO_Y  = s16(gyro_y_high,  gyro_y_low),
+		GYRO_Z  = s16(gyro_z_high,  gyro_z_low)
 	}
 
 end
