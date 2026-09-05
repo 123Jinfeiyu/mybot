@@ -65,9 +65,7 @@ function build(data)
 	end
 
 	if DEBUG then
-		print("-------- MAX17043 builder func get a table --------")
-		print_table(data)
-		print("---------------------------------------------------")
+		dbg_table("-------- MAX17043 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
@@ -129,9 +127,7 @@ function call(data)
 	end
 
 	if DEBUG then
-		print("-------- MAX17043 caller func get a table --------")
-		print_table(data)
-		print("--------------------------------------------------")
+		dbg_table("-------- MAX17043 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------
