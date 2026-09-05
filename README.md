@@ -279,6 +279,20 @@ CREATE TABLE AS3935 (
 INSERT INTO AS3935 (name, I2C, address, indoor) VALUES ('as3935-0', 'i2c-1', '0x03', '-');
 
 
+/* 定义vl53l4cd ToF激光测距（1mm~1.2m/18° 窄视场；budget=单次测量预算 ms 10~200；
+   inter=间隔 ms，0=连续；寄存器地址 16 位，经 HAL 的 i2c_read_reg16 原子访问；
+   离线测试 test/test_vl53l4cd.lua） */
+CREATE TABLE VL53L4CD (
+	name    String,
+	I2C     String,
+	address String,
+	budget  String,
+	inter   String,
+	timeout String
+);
+INSERT INTO VL53L4CD (name, I2C, address) VALUES ('tof0', 'i2c-1', '0x29');
+
+
 /* 定义扬声器位：旧版 @Speaker 矩阵已移除，现在仅用 Timer 负责延时 */
 CREATE TABLE Timer (
 	name String

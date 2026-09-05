@@ -292,6 +292,54 @@ function i2c_read(fd, n)
 	return be_merge(rb, n)
 end
 
+------------------------------------------------------------------
+-- 16 位寄存器指针器件（ST VL53Lx ToF 族：寄存器地址 16 位、值大端多字节）。
+-- 「写 2 字节指针 + 读数据」合并为单次 I2C_RDWR 原子事务——若拆成两段事务，
+-- 会重新引入同器件并发访问时的寄存器指针竞态（见本文件 I2C_RDWR 注释）。
+------------------------------------------------------------------
+
+-- 写 16 位指针寄存器 + 数据字节（单条写消息，原子），返回 0 = 成功，-1 = 失败
+-- 用法：i2c_write_reg16(fd, 0x0087, 0x21) 单字节；
+--       i2c_write_reg16(fd, 0x002D, b1, b2, ...) 连续流写（器件指针自增）
+function i2c_write_reg16(fd, reg16, ...)
+	fd = tonumber(fd)
+	reg16 = uint_of(reg16)
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or reg16 == nil or reg16 > 0xFFFF or addr == nil then return -1 end
+	local data = {}
+	for _, v in ipairs({ ... }) do
+		local b = byte_of(v)
+		if b == nil then return -1 end
+		data[#data + 1] = b
+	end
+	local buf = ffi.new("uint8_t[?]", #data + 2)
+	buf[0] = math.floor(reg16 / 256) % 256
+	buf[1] = reg16 % 256
+	for i, b in ipairs(data) do buf[i + 1] = b end
+	local msgs = ffi.new("cj_i2c_msg[1]")
+	msgs[0].addr = addr; msgs[0].flags = 0; msgs[0].len = #data + 2; msgs[0].buf = buf
+	if i2c_rdwr(fd, msgs, 1) >= 0 then return 0 end
+	return -1
+end
+
+-- 写 16 位指针后读 n 字节（合并为单次原子事务），返回大端合并值；失败返回 -1。
+-- n 钳制 1~6（2^53 精度上限，同 i2c_read_multi；本族寄存器最长 dword=4）
+function i2c_read_reg16(fd, reg16, n)
+	fd = tonumber(fd)
+	reg16 = uint_of(reg16)
+	n = uint_of(n)
+	local addr = HAL.i2c_addr[fd]
+	if fd == nil or reg16 == nil or reg16 > 0xFFFF or n == nil or addr == nil then return -1 end
+	if n < 1 or n > 6 then n = 1 end
+	local wb = ffi.new("uint8_t[2]", math.floor(reg16 / 256) % 256, reg16 % 256)
+	local rb = ffi.new("uint8_t[?]", n)
+	local msgs = ffi.new("cj_i2c_msg[2]")
+	msgs[0].addr = addr; msgs[0].flags = 0;            msgs[0].len = 2; msgs[0].buf = wb
+	msgs[1].addr = addr; msgs[1].flags = HAL.I2C_M_RD; msgs[1].len = n; msgs[1].buf = rb
+	if i2c_rdwr(fd, msgs, 2) < 0 then return -1 end
+	return be_merge(rb, n)
+end
+
 -- 纯读 n 字节（单条读消息），逐字节返回 1 基表 { b1, b2, ... }；失败返回 nil
 -- 与 i2c_read 的区别：不按大端合并——合并值超过 2^53（约 7 字节）后 double
 -- 精度不保，命令式器件的长应答（如 MLX90393 的 XYZT+status 共 9 字节）
