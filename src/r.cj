@@ -382,12 +382,16 @@ class RobotStruct {
 
 		var val_fp64 = MatrixVars_Hardware.parseMt<Float64>(ActionDefs, i, j)
 
-		let AliasHV = M.get(name_param)		/* 可能的参数别名转换 */
-		if (let Some(aliasHV) <- AliasHV) {
-			/* P4/M1：别名引用同样走 read() 快照（避免有状态硬件被读取时推进） */
-			let ret = aliasHV.read()
-			let alias = ret.asString().getValue()
-			name_param = alias
+		/* 参数别名转换：仅当参数名恰好是显式声明的 Alias 变量时才把 name_param
+		 * 替换为其目标名；普通硬件变量（守护/传感器/执行器）与参数重名时
+		 * 不误触发——保留字面参数名（Low：参数名误命中）。
+		 * 引用的 Alias 同样走 read() 快照（P4/M1）。 */
+		if (let Some(aliasHV) <- M.get(name_param)) {
+			if (aliasHV is MtVars_Alias) {
+				let ret = aliasHV.read()
+				let alias = ret.asString().getValue()
+				name_param = alias
+			}
 		}
 
 		var set_params: JsonObject	/* 设置或者取得属于该硬件变量的参数 */
