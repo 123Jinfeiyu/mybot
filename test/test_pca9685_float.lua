@@ -4,13 +4,14 @@
 
 local writes = {}
 
--- 桩：模拟框架注册的 C 函数
+dofile("modules/PCA9685.lua")
+
+-- 桩：驱动加载后替换 HAL 全局。HAL 迁移（issue #14）后驱动 dofile 自带真实现，
+-- 先注桩会被 HAL 的真函数覆盖；驱动在 call 时才解析全局名，后注桩才生效
 function i2c_set_addr(fd, addr) end
 function i2c_write_reg(fd, reg, val) writes[#writes + 1] = {reg = reg, val = val} end
 function i2c_read_reg(fd, reg) return 0 end
 function milli_sleep(ms) end
-
-dofile("modules/PCA9685.lua")
 
 local fails = 0
 
