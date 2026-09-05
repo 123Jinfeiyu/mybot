@@ -394,4 +394,116 @@ function spi_read_multi(fd, n, delay_us)
 	return v
 end
 
+------------------------------------------------------------------
+-- GPIO（gpiod uAPI ABI v1：/dev/gpiochipN ioctl）
+------------------------------------------------------------------
+-- 内核标准接口（>= 4.8），跨 SoC 通用：树莓派/瑞芯微/全志等仅路径与
+-- 线号不同。结构体全部定宽字段，x86_64/aarch64 布局一致。
+-- ioctl 编号经 test/test_ioctl_nums.c 与系统头文件实证。
+
+HAL.GPIO_GET_LINEHANDLE         = 0xC16CB403	-- _IOWR(0xB4, 0x03, gpiohandle_request)
+HAL.GPIOHANDLE_GET_LINE_VALUES  = 0xC040B408	-- _IOWR(0xB4, 0x08, gpiohandle_data)
+HAL.GPIOHANDLE_SET_LINE_VALUES  = 0xC040B409	-- _IOWR(0xB4, 0x09, gpiohandle_data)
+-- 注意：HAL 运行于 LuaJIT（5.1），无 << 运算符，标志位用字面量（INPUT=1<<0 等）
+HAL.GPIOHANDLE_REQUEST_INPUT      = 1
+HAL.GPIOHANDLE_REQUEST_OUTPUT     = 2
+HAL.GPIOHANDLE_REQUEST_ACTIVE_LOW = 4
+
+ffi.cdef[[
+/* /usr/include/linux/gpio.h（ABI v1，deprecated 但全内核支持；uAPI v2 结构含
+ * __u64 对齐字段与位掩码语义，对 Lua 侧过重，基础输入输出用 v1 足够） */
+typedef struct {
+	unsigned int lineoffsets[64];
+	unsigned int flags;
+	unsigned char default_values[64];
+	char consumer_label[32];
+	unsigned int lines;
+	int fd;
+} cj_gpiohandle_request;
+typedef struct {
+	unsigned char values[64];
+} cj_gpiohandle_data;
+]]
+
+-- 结构体尺寸自检（防 ABI 静默漂移；字段全定宽，两架构同值）
+assert(ffi.sizeof("cj_gpiohandle_request") == 364,
+	"gpiohandle_request size mismatch: expect 364, got " .. ffi.sizeof("cj_gpiohandle_request"))
+assert(ffi.sizeof("cj_gpiohandle_data") == 64,
+	"gpiohandle_data size mismatch: expect 64, got " .. ffi.sizeof("cj_gpiohandle_data"))
+
+-- 请求一条 GPIO 线，返回句柄 fd（供 set/get 使用）；失败返回 -1
+-- direction: "out" | "in"；default_value：输出模式的上电值（0/1）
+-- active_low：true = 低电平有效（可选）
+function gpio_request_line(chip_path, offset, direction, default_value, active_low)
+	if type(chip_path) ~= "string" then return -1 end
+	if string.match(chip_path, "^/dev/gpiochip%d+$") == nil then
+		print("HAL: invalid gpiochip path: " .. tostring(chip_path))
+		return -1
+	end
+	offset = tonumber(offset)
+	if offset == nil or offset < 0 or offset > 0xFFFFFFFF then return -1 end
+
+	local chipfd = tonumber(HAL.sys.open(chip_path, O_RDWR))
+	if chipfd == nil or chipfd < 0 then
+		print("HAL: failed to open gpiochip: " .. chip_path)
+		return -1
+	end
+
+	local flags
+	if direction == "out" then
+		flags = HAL.GPIOHANDLE_REQUEST_OUTPUT
+	else
+		flags = HAL.GPIOHANDLE_REQUEST_INPUT
+	end
+	if active_low then
+		flags = flags + HAL.GPIOHANDLE_REQUEST_ACTIVE_LOW		-- 位不重叠，算术加即可（HAL 不加载位库）
+	end
+
+	local req = ffi.new("cj_gpiohandle_request")	-- ffi.new 零初始化
+	req.lineoffsets[0] = offset
+	req.flags = flags
+	if direction == "out" then
+		local dv = tonumber(default_value) or 0
+		req.default_values[0] = (dv ~= 0) and 1 or 0	-- 内核语义：非 0 即有效电平
+	end
+	req.consumer_label = "bot4cj"
+	req.lines = 1
+
+	if HAL.sys.ioctl_p(chipfd, HAL.GPIO_GET_LINEHANDLE, req) ~= 0 or req.fd < 0 then
+		print("HAL: failed to request gpio line " .. tostring(offset) ..
+		      " on " .. chip_path)
+		HAL.sys.close(chipfd)
+		return -1
+	end
+
+	local hfd = tonumber(req.fd)
+	HAL.sys.close(chipfd)		-- 取得句柄后 chip fd 即可关闭（内核 uAPI 约定）
+	return hfd
+end
+
+-- 设置输出值（非 0 归一为 1，内核把非 0 一律当有效电平），成功返回 true
+function gpio_set_value(hfd, v)
+	hfd = tonumber(hfd)
+	if hfd == nil or hfd < 0 then return false end
+	local data = ffi.new("cj_gpiohandle_data")
+	local n = tonumber(v) or 0
+	data.values[0] = (n ~= 0) and 1 or 0
+	return HAL.sys.ioctl_p(hfd, HAL.GPIOHANDLE_SET_LINE_VALUES, data) == 0
+end
+
+-- 读取输入值，返回 0/1；失败返回 -1
+function gpio_get_value(hfd)
+	hfd = tonumber(hfd)
+	if hfd == nil or hfd < 0 then return -1 end
+	local data = ffi.new("cj_gpiohandle_data")
+	if HAL.sys.ioctl_p(hfd, HAL.GPIOHANDLE_GET_LINE_VALUES, data) ~= 0 then return -1 end
+	return tonumber(data.values[0])
+end
+
+-- 释放 GPIO 句柄（关闭句柄 fd 即释放线占用）
+function gpio_free_line(hfd)
+	hfd = tonumber(hfd)
+	if hfd ~= nil and hfd >= 0 then HAL.sys.close(hfd) end
+end
+
 return HAL
