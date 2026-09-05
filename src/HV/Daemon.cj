@@ -74,6 +74,7 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		let L = Lua_init()
 		if (Lua_check(L) == LUA_ERR) { return -1i64 }
 		Lua_loadlib(L)
+		sandbox_lua(L)	/* 中和 os.execute/io.popen 等宿主入口（issue #9 M1） */
 
 		/* 注入共享槽地址（整数）与配置串（"k=v;k=v"）为 Lua 全局；
 		 * Lua_setfield 会立即复制 key，调用返回后 malloc 的 key 串即可释放（P6/M4） */
@@ -89,15 +90,13 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		/* 跑 chunk 一次：完成 setup（开总线/配置传感器/附着槽）并定义全局 daemon_tick */
 		let st = Lua_loadfilex(L, chunk, CPointer<C_Char>())
 		if (st != LUA_OK) {
-			let err = Lua_tostring(L, -1)
-			println("[daemon] chunk load error: ${err.toString()}")
+			println("[daemon] chunk load error: ${luaErrorString(L)}")
 			Lua_free(L)
 			return -1i64
 		}
 		var pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
 		if (pcs != LUA_OK) {
-			let err = Lua_tostring(L, -1)
-			println("[daemon] chunk setup error: ${err.toString()}")
+			println("[daemon] chunk setup error: ${luaErrorString(L)}")
 			Lua_free(L)
 			return -1i64
 		}
@@ -111,8 +110,7 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 			Lua_getglobal(L, tickName)
 			pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
 			if (pcs != LUA_OK) {
-				let err = Lua_tostring(L, -1)
-				println("[daemon] tick error: ${err.toString()}")
+				println("[daemon] tick error: ${luaErrorString(L)}")
 			}
 			Lua_settop(L, 0)
 			sleep(Duration.millisecond * interval_ms)

@@ -190,15 +190,36 @@ class RobotStruct {
 
 							println("{${ev.targetTabName}}")
 
+							var rowNo = 0
 							for (row in ev.tableRows) {
+								rowNo += 1
+								/* ---- INSERT 值列与表头逐列匹配；缺列/重复列/未知列
+								 * ---- 会使矩阵单元静默错位（动作打到错误舵机），显式报错 ---- */
 								for (i in 0..item.col) {
+									var matched = 0
 									for (col in row) {
 										if (col.columnName == item[0, i]) {
+											matched += 1
+											if (matched > 1) {
+												throw IllegalArgumentException("INSERT INTO ${ev.targetTabName} row ${rowNo}: duplicate column '${col.columnName}'")
+											}
 											for (ch in col.value) {
 												item.addRune(Rune(ch))
 											}
 											item.submitItem()
 										}
+									}
+									if (matched == 0) {
+										throw IllegalArgumentException("INSERT INTO ${ev.targetTabName} row ${rowNo}: column '${item[0, i]}' is missing")
+									}
+								}
+								for (col in row) {
+									var known = false
+									for (i in 0..item.col) {
+										if (col.columnName == item[0, i]) { known = true; break }
+									}
+									if (!known) {
+										throw IllegalArgumentException("INSERT INTO ${ev.targetTabName} row ${rowNo}: unknown column '${col.columnName}'")
 									}
 								}
 								item.submitLine(0)
