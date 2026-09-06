@@ -4,6 +4,8 @@ bot4cj是基于仓颉的**机器人硬件控制器**，它是一个**可扩展�
 
 [实机演示地址](http://152.136.227.85:8080/videos/robot-show.mp4)
 
+视频由PC端和机器人两部分组成，如果播放卡顿可以右键下载下来观看。
+
 
 ## 依赖库
 这个项目依赖一些仓颉语言的软件包，以及 LuaJIT（仓颉绑定为独立包 [luajit4cj](https://gitcode.com/qingss0/luajit4cj)）
