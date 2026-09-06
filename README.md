@@ -293,6 +293,22 @@ CREATE TABLE VL53L4CD (
 INSERT INTO VL53L4CD (name, I2C, address) VALUES ('tof0', 'i2c-1', '0x29');
 
 
+/* 定义vl53l0x ToF激光测距（ST 第一代 FlightSense，30mm~2m/25° 视场；
+   sig=final range 信号率门限 MCPS 缺省 0.25（越小越能收弱反射），
+   long=长距模式（ESPHome 同款换 tuning 挡 + 门限 0.1）；单帧约 33ms，
+   页式寄存器序列须整段连续执行，一器件一消费者；
+   离线测试 test/test_vl53l0x.lua） */
+CREATE TABLE VL53L0X (
+	name    String,
+	I2C     String,
+	address String,
+	sig     String,
+	long    String,
+	timeout String
+);
+INSERT INTO VL53L0X (name, I2C, address) VALUES ('tof0', 'i2c-1', '0x29');
+
+
 /* 定义ms5611高分辨率气压计（0.012mbar/约10cm海拔分辨率；osr=过采样率
    256~4096 缺省 4096，p0=参考海平面气压缺省 1013.25；build 做 PROM CRC-4
    自检；遮光海绵勿撕除，离线测试 test/test_ms5611.lua） */
