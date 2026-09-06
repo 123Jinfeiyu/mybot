@@ -5,6 +5,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 -- 全局文件句柄
 fd = 0
@@ -15,11 +16,9 @@ baud = 9600
 function build(data)
 
 	-- 检查该参数是否是一张表
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- UART.lua builder func get a table --------", data)
@@ -61,11 +60,9 @@ end
 -- 【销毁UART】关闭串口句柄
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- UART.lua ender func get a table --------", data)

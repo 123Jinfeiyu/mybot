@@ -34,6 +34,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -228,30 +229,18 @@ local cfg_wait			-- call 转换超时 ms
 -- ==================== 配置脚本 ====================
 function build(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- BME688 builder func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-- 软复位 -> Chip ID -> 变体甄别
@@ -353,30 +342,18 @@ end
 -- 触发一次强制模式转换（T+P+H+气体），等待完成后读场数据并补偿。
 function call(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- BME688 caller func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	local wait_ms = tonumber(data.wait) or cfg_wait or 300
@@ -476,11 +453,9 @@ end
 -- 置睡眠模式（清 CTRL_MEAS 模式位），加热器停止；fd 归 I2C 硬件变量所有
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

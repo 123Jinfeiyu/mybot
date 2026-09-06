@@ -42,6 +42,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 -- 调试开关：电量计读取频率低，默认关闭逐次打印
@@ -80,30 +81,18 @@ local cfg_variant	-- 器件名（横幅/报错用）
 -- ==================== 配置脚本 ====================
 function build(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- MAX17048 builder func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-- VERSION 自检（家族地址相同，插错芯片在这里拦下）
@@ -222,30 +211,18 @@ end
 -- 读电压/SOC/速率/告警标志；clear=1 时读取后清除告警位
 function call(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- MAX17048 caller func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-----------------------------------------------------
@@ -300,11 +277,9 @@ end
 -- 无关断寄存器（休眠经 HIBRT 自行配置，本驱动不触碰）；fd 归 I2C 硬件变量所有
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  result = "OK"  }

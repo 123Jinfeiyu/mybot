@@ -5,6 +5,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 I2C_SUCCESS = 0
 I2C_FAILED  = 1
@@ -15,11 +16,9 @@ fd = -1
 function build(data)
 
 	-- 检查该参数是否是一张表
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 	dbg_table("-------- I2C.Lua builder func get a table --------", data)
 
@@ -56,11 +55,9 @@ end
 function destroy(data)
 
 	-- 检查该参数是否是一张表
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid param Type"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	i2c_close(fd)
@@ -77,11 +74,9 @@ end
 function call(data)
 
 	-- 检查该参数是否是一张表
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Params Type"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  fd = fd  }

@@ -37,6 +37,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 -- 调试开关：传感器高频读取，默认关闭逐次打印
@@ -202,11 +203,9 @@ end
 -- 【销毁INA3221】无资源需要释放（总线归 I2C 硬件变量所有）
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  result = "OK"  }

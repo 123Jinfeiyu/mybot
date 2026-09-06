@@ -25,6 +25,7 @@
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 local REG_ID        = 0xD0   -- 芯片ID（BME280=0x60，BMP280=0x58）
@@ -104,8 +105,9 @@ end
 
 -- 【配置脚本】初始化BME280：校验ID、软复位、读校准系数、配置过采样
 function build(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments Type: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     if DEBUG then
@@ -194,8 +196,9 @@ end
 
 -- 【销毁脚本】进入睡眠模式
 function destroy(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments Type: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     local fd = tonumber(data.fd)
@@ -211,8 +214,9 @@ end
 
 -- 【调用脚本】单次触发测量并返回 T(°C) / P(Pa) / H(%RH)
 function call(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments Type: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     if not cal_ok then

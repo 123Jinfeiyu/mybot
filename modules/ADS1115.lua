@@ -19,6 +19,7 @@
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 local REG_CONVERSION     = 0x00   -- 转换结果（只读，16 位）
@@ -60,8 +61,9 @@ end
 
 -- 【配置脚本】初始化 ADS1115
 function build(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments Type: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     if DEBUG then
@@ -118,8 +120,9 @@ end
 
 -- 【销毁脚本】停止转换，回到低功耗
 function destroy(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments Type: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     local fd = data.fd
@@ -140,8 +143,9 @@ end
 -- 【调用脚本】读取一个通道的电压
 -- 参数：channel（0~3 单端）或 pos/neg（差分）
 function call(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     if DEBUG then

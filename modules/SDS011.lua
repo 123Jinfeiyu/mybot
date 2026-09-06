@@ -35,6 +35,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 -- 调试开关：采样周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -112,11 +113,9 @@ local cfg_timeout
 -- 切被动查询模式 + 读固件版本（顺带在位探测）
 function build(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -168,11 +167,9 @@ end
 -- 默认查询一次读数；power="sleep"/"work" 控制风扇
 function call(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -238,11 +235,9 @@ end
 -- 无资源需要释放（串口归 @UART 硬件变量所有；保持被动模式）
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  result = "OK"  }

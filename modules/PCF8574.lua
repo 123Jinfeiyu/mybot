@@ -28,6 +28,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 -- 调试开关：IO 扩展器逐拍读取，默认关闭逐次打印
 local DEBUG = false
@@ -45,11 +46,9 @@ end
 -- ==================== 配置脚本 ====================
 function build(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -116,30 +115,18 @@ end
 -- out=0~255 写输出锁存；不传则纯读引脚。两种情况都回读引脚即时状态。
 function call(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- PCF8574 caller func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-----------------------------------------------------
@@ -181,11 +168,9 @@ end
 -- 无关断寄存器；锁存保持到断电；fd 归 I2C 硬件变量所有
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  result = "OK"  }

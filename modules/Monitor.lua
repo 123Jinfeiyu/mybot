@@ -1,3 +1,4 @@
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 -- Monitor.lua - 守护数据消费 / 闭环控制示例驱动
 -- bot4cj 仓颉语言机器人框架
 --
@@ -16,22 +17,25 @@
 local last = nil		-- 最近一次 call 输出快照（read 用，P4/M1）
 
 function build(data)
-	if type(data) ~= "table" then
-		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 	return { result = "OK" }
 end
 
 function destroy(data)
-	if type(data) ~= "table" then
-		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 	return { result = "OK" }
 end
 
 function call(data)
-	if type(data) ~= "table" then
-		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	-- data.v0.. / count 来自被引用的守护（经引用机制合并进元数据）

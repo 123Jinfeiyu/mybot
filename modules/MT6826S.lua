@@ -42,6 +42,7 @@
 -- 同时持有 HAL 表：全双工帧走 HAL.sys 间接层（可离线 mock）
 local HAL = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 local ffi = require("ffi")		-- spi_ioc_transfer 结构体（HAL 已完成 cdef）
 
@@ -132,11 +133,9 @@ end
 -- 无运行时配置寄存器可写（EEPROM 项零位/线数等按手册用编程流程），仅做在位自检
 function build(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -174,11 +173,9 @@ end
 -- 读一次角度快照；CRC 失败自动重读一轮，仍失败置 CRC_OK=0
 function call(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -224,11 +221,9 @@ end
 -- 只读器件无关断寄存器；总线 fd 归 SPI 硬件变量所有
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  result = "OK"  }

@@ -24,6 +24,7 @@
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 -- 本设备的 SPI 传输封装：统一附带 @SPI 矩阵配置的 delay
@@ -80,8 +81,9 @@ end
 
 -- 【配置脚本】初始化 ADS1256
 function build(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments Type: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     if DEBUG then
@@ -143,8 +145,9 @@ end
 
 -- 【销毁脚本】停止连续读
 function destroy(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments Type: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     local fd = data.fd
@@ -159,8 +162,9 @@ end
 -- 【调用脚本】读取一个通道的电压
 -- 参数：channel（0~7 单端）或 pos/neg（差分）
 function call(data)
-    if type(data) ~= "table" then
-        return { result = "ERR", message = "Invalid Arguments: table" }
+    local ok, ek = arg_table(data)
+    if not ok then
+    	return ek
     end
 
     if DEBUG then

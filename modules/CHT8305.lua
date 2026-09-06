@@ -34,6 +34,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -69,30 +70,18 @@ end
 -- 软复位 -> 厂商/器件 ID 自检
 function build(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- CHT8305 builder func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-- 软复位（bit15 自清零，恢复 POR 默认配置）：
@@ -155,30 +144,18 @@ end
 -- 触发并读取温度 + 湿度（各一次指针写 + 14ms 转换等待 + 2 字节读）
 function call(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- CHT8305 caller func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-----------------------------------------------------
@@ -225,11 +202,9 @@ end
 -- 无关断寄存器（低功耗由配置位另行操作，本驱动不触碰）；fd 归 I2C 硬件变量所有
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  result = "OK"  }

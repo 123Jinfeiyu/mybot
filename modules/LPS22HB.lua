@@ -33,6 +33,7 @@
 -- 调试打印辅助 print_table（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 -- 调试开关：气压计低频读取，默认关闭逐次打印
 local DEBUG = false
@@ -56,30 +57,18 @@ local cfg_wait
 -- ==================== 配置脚本 ====================
 function build(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- LPS22HB builder func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-- WHO_AM_I 自检
@@ -139,30 +128,18 @@ end
 -- 触发单次转换 -> 轮询完成 -> 5 字节突发读 -> 换算 P/T
 function call(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
 		dbg_table("-------- LPS22HB caller func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	local wait_ms = tonumber(data.wait) or cfg_wait or wait_default
@@ -231,11 +208,9 @@ end
 -- 单次模式本身即 power-down；fd 归 I2C 硬件变量所有
 function destroy(data)
 
-	if type(data) ~= "table" then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	return {  result = "OK"  }
