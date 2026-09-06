@@ -15,18 +15,7 @@ import stdx.encoding.json.*
 import ctype4cj.*
 import luajit4cj.*
 
-/* Lua 类型常量（luajit4cj 绑定仅导出 LUA_TTABLE，补充其余轨值常量） */
-public const LUA_TNIL: C_Int = 0
-public const LUA_TBOOLEAN: C_Int = 1
-public const LUA_TNUMBER: C_Int = 3
-public const LUA_TSTRING: C_Int = 4
-public const LUA_TFUNCTION: C_Int = 6
-
-/* ---- foreign func：luajit4cj 绑定未导出的 libluajit 符号（P7/M5） ---- */
-foreign func lua_tonumber(L: lua_State, index: C_Int): C_Double
-foreign func lua_toboolean(L: lua_State, index: C_Int): C_Int
-foreign func lua_tointeger(L: lua_State, index: C_Int): C_LongLong
-foreign func lua_pushboolean(L: lua_State, value: C_Int): Unit
+/* ---- Lua 类型常量与取值/压栈 API 由 luajit4cj 提供（1.0.1 起导出，P7/M5 补齐） ---- */
 
 /* ---- 读取 Lua 栈顶错误对象为字符串 ----
  *  lua_tolstring 对非 string/number 的值返回空指针，直接 toString() 是空指针解引用；
@@ -379,7 +368,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 					let v = val.asBool().getValue()
 					let b = if (v) { 1 } else { 0 }
 					let sk = LibC.mallocCString(k)
-					lua_pushboolean(L, Int32(b))
+					Lua_pushboolean(L, Int32(b))
 					Lua_setfield(L, -2, sk)
 					LibC.free(sk)
 				}
@@ -418,12 +407,12 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 						let key = Lua_tostring(L, -2)
 						var val: JsonValue
 						if (valType == LUA_TNUMBER) {
-							let d = lua_tonumber(L, -1)
-							let i = lua_tointeger(L, -1)
+							let d = Lua_tonumber(L, -1)
+							let i = Lua_tointeger(L, -1)
 							val = if (Float64(i) == d) { JsonInt(i) } else { JsonFloat(d) }
 						}
 						else if (valType == LUA_TBOOLEAN) {
-							val = JsonBool(lua_toboolean(L, -1) != 0)
+							val = JsonBool(Lua_toboolean(L, -1) != 0)
 						}
 						else if (valType == LUA_TNIL) {
 							val = JsonNull()

@@ -85,6 +85,10 @@ getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续�
   实时快照，剔除每 call 两遍 O(cols·rows) 全表扫描；转发不再二次 read 引用
 - 驱动样板收敛：`lib/drv_common.lua`（err/arg_table/i2c_pair）统一 47 个驱动的
   类型校验与 fd 构造，净删 ~100 行重复样板
+- 依赖升级 luajit4cj 1.0.1（新增 Lua 类型常量与 Lua_tonumber/toboolean/tointeger/
+  pushboolean 取值/压栈封装）：bot4cj 不再本地 foreign libluajit 符号，Lua C API
+  一律经绑定包调用；compile-option 同步去掉 `-l luajit-5.1`（链接经 luajit4cj
+  动态库传递，见其 README 约定）
 
 ### 修复
 
