@@ -4,6 +4,7 @@ if jit then jit.off() end
 
 local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
 local P = dofile(dir .. "/lib/pthread.lua")
+P.assert_layout()
 local slot = P.slot_attach(DAEMON_SLOT_ADDR)
 
 local t = 0

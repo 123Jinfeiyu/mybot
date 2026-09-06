@@ -138,4 +138,50 @@ function P.signal_stop(slot)
 	slot[0].stop = 1
 end
 
+------------------------------------------------------------------
+-- 跨语言槽布局核对（Low：槽布局人工维护）
+-- 宿主侧 r.cj/Daemon.cj 手写 SLOT_*_OFF 与 @C struct DaemonSlot 一致；
+-- 本库用 ffi 的运行时 struct 布局（编译器填充后的事实）逐项断言，
+-- 把「仓颉定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
+-- 仓颉侧基准（Daemon.cj:23-28，SLOT_SIZE=208）：
+--   offset  0  char     mutex[64]     (pthread_mutex_t, 预留 64)
+--   offset 64  int32    count
+--   offset 68  int32    nvals
+--   offset 72  double   values[16]
+--   offset 200 uint8    stop
+-- ffi.offsetof/sizeof 并非所有 arch 都可用——不可用时跳过断言（回退旧行为）。
+-- ffi.offsetof/sizeof 并非所有 platform 都可用——不可用时跳过断言（回退旧行为）。
+-- ffi 命名空间内未声明原生 pthread_mutex_t（HAL 只声明大小截断的别名），
+-- 故真实 mutex 尺寸无法直接 sizeof；仅在可解析时做 ≤64B 预留校验。
+------------------------------------------------------------------
+local function layout_ok()
+	if not ffi.offsetof then return true end
+	local ok, to = pcall(function()
+		-- P2: pthread_mutex_t 真实尺寸须 ≤ 预留 64B（aarch64=48、x86_64=40）。
+		--     类型未声明则 pcall 捕获并跳过——无法断言比已声明的更多。
+		local mutex_type_ok, msz = pcall(function() return ffi.sizeof("pthread_mutex_t") end)
+		if mutex_type_ok and msz > 64 then
+			error("pthread_mutex_t size " .. tostring(msz) .. " > 64B slot mutex reserve")
+		end
+		local checks = {
+			{ "count",   64,  ffi.offsetof("daemon_slot_t", "count") },
+			{ "nvals",   68,  ffi.offsetof("daemon_slot_t", "nvals") },
+			{ "values",  72,  ffi.offsetof("daemon_slot_t", "values") },
+			{ "stop",   200,  ffi.offsetof("daemon_slot_t", "stop") },
+			{ "size",   208,  ffi.sizeof("daemon_slot_t") },
+		}
+		for _, c in ipairs(checks) do
+			if c[3] ~= c[2] then
+				error("slot layout mismatch: " .. c[1] .. "=" .. tostring(c[3]) .. " (expect " .. c[2] .. ")")
+			end
+		end
+	end)
+	if not ok then
+		print("BOT4CJ slot layout check failed: " .. tostring(to))
+		return false
+	end
+	return true
+end
+P.assert_layout = layout_ok
+
 return P
