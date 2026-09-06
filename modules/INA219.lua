@@ -55,8 +55,8 @@ local CFG_DEFAULT = 0x399F		-- BRNG=32V, PGA=/8, 双 ADC 12 位, 连续模式
 -- ==================== 配置位 ====================
 -- [15]=RST [13]=BRNG [12:11]=PGA [10:7]=BADC [6:3]=SADC [2:0]=MODE
 local CFG_RST      = 0x8000
-local CFG_BRNG_32V = 1 << 13
-local CFG_PGA_DIV8 = 3 << 11		-- 分流量程 ±320mV
+local CFG_BRNG_32V = bitc.lshift(1, 13)	-- 1<<13（LuaJIT 5.1 无 <<，走 bitcompat）
+local CFG_PGA_DIV8 = bitc.lshift(3, 11)	-- 3<<11（分流量程 ±320mV）
 local CFG_MODE_CONT = 0x7			-- 连续 + 分流 + 总线
 
 local IT_532US_US = 532			-- 12 位单次转换时间（µs），平均模式的基时

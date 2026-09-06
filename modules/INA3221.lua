@@ -62,7 +62,7 @@ local ID_DIE      = 0x3220
 -- [15]=RST [14:12]=通道使能(ch1=bit14,ch2=13,ch3=12) [11:9]=AVG
 -- [8:6]=总线CT [5:3]=分流CT [2:0]=MODE(bit0 分流/bit1 总线/bit2 连续)
 local CFG_RST        = 0x8000
-local CFG_CH_ALL     = 0x7 << 12
+local CFG_CH_ALL     = bitc.lshift(0x7, 12)	-- 0x7<<12（3 通道全使能）
 local CFG_MODE_CONT  = 0x7			-- 连续 + 分流 + 总线
 local CT_1100US      = 4			-- CT 代码 100 = 1.1ms
 
