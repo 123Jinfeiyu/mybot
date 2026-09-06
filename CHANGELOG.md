@@ -28,7 +28,9 @@
   VL53L4CD（ST ToF 激光测距，1mm~1.2m/18°，自 ST ULD 逐行移植 91 字节配置流与
   SetRangeTiming 预算编码，返回距离/状态/信号质量字段）、MS5611（TE 高分辨率
   气压计/高度计，0.012mbar，PROM CRC-4 自检 + 一阶/二阶温度补偿，含 double
-  2^53 精度线上的 D1xSENS 拆位精确算法与压高公式海拔输出）、VL53L0X（ST 第一代 ToF 激光
+  2^53 精度线上的 D1xSENS 拆位精确算法与压高公式海拔输出）、AS7262（ams 六通道
+  可见光光谱 450~645nm，间接寄存器访问 TX/RX_VALID 握手时序同 SparkFun 实现，
+  连续全通道模式 + 六通道原始计数 + 片上温度）、VL53L0X（ST 第一代 ToF 激光
   测距，30mm~2m/25°，Pololu/ESPHome/ST ULD 三方寄存器序列交叉核对：页式
   getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续模式，
   标准/长距双 tuning 挡，结果块 12 字节与状态查表自 ST API 移植）

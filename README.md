@@ -322,6 +322,20 @@ CREATE TABLE MS5611 (
 INSERT INTO MS5611 (name, I2C, address, osr) VALUES ('baro0', 'i2c-1', '0x77', '-');
 
 
+/* 定义as7262六通道光谱传感器（V450/B500/G550/Y570/O600/R645nm 16位原始计数；
+   gain=增益倍数 1/3.7/16/64 就近吸附缺省 64x，integ=积分 2.8ms 单位缺省 50；
+   间接寄存器访问有芯片侧握手状态，一器件一消费者；离线测试 test/test_as7262.lua） */
+CREATE TABLE AS7262 (
+	name    String,
+	I2C     String,
+	address String,
+	gain    String,
+	integ   String,
+	timeout String
+);
+INSERT INTO AS7262 (name, I2C, address) VALUES ('spec0', 'i2c-1', '0x49');
+
+
 /* 定义扬声器位：旧版 @Speaker 矩阵已移除，现在仅用 Timer 负责延时 */
 CREATE TABLE Timer (
 	name String
