@@ -17,6 +17,7 @@ import std.collection.*
 import stdx.encoding.json.*
 import ctype4cj.*
 import luajit4cj.*
+import pthread4cj.*
 import mt2.*
 
 /* ---- 共享槽 daemon_slot_t 布局偏移（必须与 modules/lib/pthread.lua 一致）---- */
@@ -27,11 +28,7 @@ public let SLOT_STOP_OFF: Int64 = 200		/* uint8：停止标志 */
 public let SLOT_SIZE: Int64 = 208
 public let SLOT_MAXVALS: Int64 = 16
 
-/* ---- libc pthread_mutex（直接 foreign 声明；libc 已链接，不需 pthread4cj）---- */
-foreign func pthread_mutex_init(m: CPointer<UInt8>, attr: CPointer<Unit>): Int32
-foreign func pthread_mutex_lock(m: CPointer<UInt8>): Int32
-foreign func pthread_mutex_unlock(m: CPointer<UInt8>): Int32
-foreign func pthread_mutex_destroy(m: CPointer<UInt8>): Int32
+/* ---- pthread CFunc（_mutex_init/destroy/lock/unlock）由 pthread4cj 提供 ---- */
 
 /* ---- stop 标志读写：统一经槽内 mutex 临界区 ----
  * mutex 的 lock/unlock 提供 acquire/release 内存语义，清除守护线程与主线程
@@ -39,17 +36,17 @@ foreign func pthread_mutex_destroy(m: CPointer<UInt8>): Int32
  * arm64 弱内存序下理论可见性延迟）。锁临界区极短、无嵌套，无死锁风险。 */
 public func daemon_request_stop(slot: CPointer<UInt8>): Unit {
 	unsafe {
-		pthread_mutex_lock(slot)
+		_mutex_lock(slot)
 		(slot + SLOT_STOP_OFF).write(1u8)
-		pthread_mutex_unlock(slot)
+		_mutex_unlock(slot)
 	}
 }
 
 public func daemon_stop_requested(slot: CPointer<UInt8>): Bool {
 	unsafe {
-		pthread_mutex_lock(slot)
+		_mutex_lock(slot)
 		let s = (slot + SLOT_STOP_OFF).read()
-		pthread_mutex_unlock(slot)
+		_mutex_unlock(slot)
 		return s != 0u8
 	}
 }
@@ -179,7 +176,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		let slot = unsafe { LibC.malloc<UInt8>(count: SLOT_SIZE) }
 		unsafe {
 			for (k in 0..SLOT_SIZE) { (slot + k).write(0u8) }
-			pthread_mutex_init(slot, CPointer<Unit>())
+			_mutex_init(slot)
 		}
 		let holder = DaemonHolder(slot: slot, joinTimeoutMs: joinTimeoutMs)
 		registry.add(holder)	/* 注册：deactive 先统一置 stop 再 join，防饿死死锁 */
@@ -191,7 +188,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 				let ret = JsonObject()
 				let arr = JsonArray()
 				unsafe {
-					pthread_mutex_lock(holder.slot)
+					_mutex_lock(holder.slot)
 					let nvals = Int64(CPointer<Int32>(holder.slot + SLOT_NVALS_OFF).read())
 					let count = Int64(CPointer<Int32>(holder.slot + SLOT_COUNT_OFF).read())
 					var nv = nvals
@@ -201,7 +198,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 						arr.add(JsonFloat(v))
 						ret.put("v${k}", JsonFloat(v))
 					}
-					pthread_mutex_unlock(holder.slot)
+					_mutex_unlock(holder.slot)
 					ret.put("status", JsonString("OK"))
 					ret.put("count", JsonInt(count))
 					ret.put("nvals", JsonInt(nvals))
@@ -246,11 +243,11 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 						}
 						if (joined) {
 							println("Daemon '${name}' joined, total publishes=${n}")
-							pthread_mutex_destroy(holder.slot)
+							_mutex_destroy(holder.slot)
 							LibC.free(holder.slot)
 						}
 					} else {
-						pthread_mutex_destroy(holder.slot)
+						_mutex_destroy(holder.slot)
 						LibC.free(holder.slot)
 					}
 				}

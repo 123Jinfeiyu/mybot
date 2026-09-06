@@ -89,6 +89,8 @@ getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续�
   pushboolean 取值/压栈封装）：bot4cj 不再本地 foreign libluajit 符号，Lua C API
   一律经绑定包调用；compile-option 同步去掉 `-l luajit-5.1`（链接经 luajit4cj
   动态库传递，见其 README 约定）
+- 接入 pthread4cj 1.0.2：守护槽互斥（stop 置位/采样读取）改经其
+  `_mutex_init/destroy/lock/unlock` @C 封装，不再本地 foreign libc pthread 符号
 
 ### 修复
 
