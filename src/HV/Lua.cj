@@ -140,11 +140,15 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			 */
 			things: { json: JsonValue =>
 
-				/* 获取元数据 */
+				/* 获取元数据（P8/M2：一次收集——静态列缓存重放 + 引用列实时快照） */
 				let metadata = getMetadata()
+				let metaFields: HashMap<String, JsonValue> = metadata.getFields()
 
-				/*  从元数据（json_obj）进行深拷贝  */
-				let obj = metadata
+				/*  从元数据浅拷贝（不污染共享源；转发侧复用同一份干净元数据）  */
+				let obj = JsonObject()
+				for (k in metaFields.keys()) {
+					obj.put(k, metaFields.get(k).getOrThrow())
+				}
 				obj.put("mode", JsonString("call"))
 
 				/*  合并两张（json_obj）表（元数据和参数）  */
@@ -165,8 +169,13 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 				/* ---- controller 转发：元数据 ∪ 自己Lua的返回表 ---- */
 				if (let Some(ctrl) <- controller) {
-					/* 重新收集元数据（skipCol 已跳过 controller 列） */
-					let payload = getMetadata()
+					/* 转发 payload = 同一份干净元数据 ∪ 自己Lua的返回表
+					 * （原实现二次 getMetadata()：重复 O(cols·rows) 扫描且引用列被
+					 *   read() 两遍；P8/M2 后一次收集两次浅拷贝） */
+					let payload = JsonObject()
+					for (k in metaFields.keys()) {
+						payload.put(k, metaFields.get(k).getOrThrow())
+					}
 					let retFields: HashMap<String, JsonValue> = res.asObject().getFields()
 					for (k in retFields.keys()) {
 						payload.put(k, retFields.get(k).getOrThrow())

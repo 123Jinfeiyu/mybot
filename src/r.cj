@@ -297,15 +297,24 @@ class RobotStruct {
 						}
 					}
 
-					/* ---- 元数据闭包：跳过 controller 列，避免误当作引用 play ---- */
-					let skipCol = idxCtrl	/* lambda 不得捕获可变变量 */
-					addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
-							this._getMetadata(matrix, i, skipCol: skipCol)
-					}, controller: ctrlOpt), source: " (in table '${MtName}')")
+/* ---- 元数据闭包：跳过 controller 列，避免误当作引用 play ----
+				 * P8/M2：由 MetaProvider 提供静态列缓存 + 引用列实时快照 */
+				let skipCol = idxCtrl	/* lambda 不得捕获可变变量 */
+				let metaProv = MetaProvider(matrix, i, skipCol, M)
+				addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
+						metaProv.collect()
+				}, controller: ctrlOpt), source: " (in table '${MtName}')")
 				}
 		}
 		}
 	}
+
+
+	/* P8/M2：元数据静态列缓存 —— 实现见文件顶层 private class MetaProvider
+	 * （Cangjie 不支持类内嵌套类，移出作为顶层类） */
+
+	/* 旧版 _getMetadata 已由 MetaProvider 取代（P8/M2）：原逻辑保留于 commit 历史。
+	 * 返回值字段不变：字面列 colName=JsonString(值)，引用列展开其 read() 快照字段。 */
 
 
 	/* -------- 在矩阵对象的容器中寻找目标 -------- */
@@ -404,51 +413,76 @@ class RobotStruct {
 		set_params.put(name_param, JsonFloat(val_fp64))	/* 设置一个该硬件变量的参数 */
 	}
 
-	/*
-	 *  skipCol: 收集元数据时跳过的列下标（-1 表示不跳过）
-	 *  controller 列的值是控制器硬件变量的名字，既不是字面元数据，
-	 *  也不应在收集阶段被 play（转发发生在 things 回调里）
-	 */
-	private func _getMetadata(matrix: MatrixObject, i: Int64, skipCol!: Int64 = -1): JsonObject {
-		let obj = JsonObject()
-		let idxName = matrix.indexOfCol(0, "name")
-		let name = matrix[i, idxName]
-		for (j in 0..matrix.col) {
-			let colName = matrix[0, j]
-			/* 无法继承的 "-" 占位符（整列皆 "-" 时 getMt 止于首行返回 "-"）：
-		 * 该列无有效配置——跳过注入该字段，Lua 驱动侧 tonumber(nil) or 缺省
-		 * 自然生效（M3：DSL 用 "-" 表达"用默认值"，如 ADS1256 的 pga/dr 整列缺省）。
-		 * 注意：Action 取值路径的 parseMt 语义不变（首行 "-"=0）。 */
-			var value = MatrixVars_Hardware.getMt(matrix, i, j)
-			if (value == "-") { continue }
-			/* ---- ----
-			 * ---- FIXME: 加入点号别名的检索逻辑 ----
-			 * ---- ---- */
-			if (j == idxName || j == skipCol) { continue  } /* 自身调用警告 */
-			if (let Some(mt) <- M.get(value)) {
-				/* ---- ----
-				 * ---- 该单元格是另一硬件变量的名字：引用语义 = 读取其当前快照 ----
-				 * ---- （P4/M1：引用改 read()，不再触发 play()——避免有状态硬件如 ----
-				 * ----  滤波器的元数据收集副作用推进；推进只由显式调用驱动） ----
-				 * ---- ---- */
-				let res = mt.read().asObject()
-				let fields: HashMap<String, JsonValue> = res.getFields()
-				for (k in fields.keys()) {
-					let val = fields.get(k).getOrThrow()
-					obj.put(k, val)
-				}
-					
-			}
-			else {
-				obj.put(colName, JsonString(value))
-			}
-		}
+}
 
-		return obj
-		
+
+/* P8/M2：元数据静态列缓存（剔除每 call 两遍 O(cols·rows) 扫描）
+ *
+ * 原 _getMetadata 每次调用都逐列 getMt（"-" 继承链上溯 O(rows)），
+ * 且 controller 转发路径把整行重复收集、引用列被 read() 两遍。
+ * 矩阵对象运行期只读（无 restart/rebuild/reload 路径），静态层安全缓存：
+ *   - 字面列与 "-" 继承结果   → 首采冻结，之后每次浅拷贝重放；
+ *   - "-" 整列缺省（M3）      → 首采 continue 跳过（Lua 侧 tonumber(nil) or 缺省）；
+ *   - name 列、controller(skipCol) 列 → 跳过；
+ *   - 引用列（值是另一硬件变量名）→ 运行期每次实时 read() 快照（P4/M1），
+ *     不入缓存，count/nvals/values 等动态值始终反映当前状态。
+ * 并发：首采在 build 期单线程完成，静态字段此后只读共享；collect() 每次返回
+ * 全新 JsonObject，调用方在副本上写 mode/参数，无共享对象污染（守护多线程 play 安全）。
+ * 注意：Cangjie 不支持类内嵌套类，故置于文件顶层（仅供 RobotStruct 使用）。
+ */
+class MetaProvider {
+	let matrix: MatrixObject
+	let row: Int64
+	let skipCol: Int64
+	let M: HashMap<String, MatrixVars_Hardware>
+	var cols: Option<ArrayList<String>> = None
+	var vals: Option<ArrayList<String>> = None
+	var refs: Option<ArrayList<String>> = None
+
+	init(matrix: MatrixObject, row: Int64, skipCol: Int64, M: HashMap<String, MatrixVars_Hardware>) {
+		this.matrix = matrix
+		this.row = row
+		this.skipCol = skipCol
+		this.M = M
 	}
 
+	func collect(): JsonObject {
+		seed()
+		let obj = JsonObject()
+		let colsArr = cols.getOrThrow()
+		let valsArr = vals.getOrThrow()
+		for (k in 0..colsArr.size) {
+			obj.put(colsArr[k], JsonString(valsArr[k]))
+		}
+		for (name in refs.getOrThrow()) {
+			if (let Some(mt) <- M.get(name)) {
+				let fields = mt.read().asObject().getFields()
+				for (k in fields.keys()) {
+					obj.put(k, fields.get(k).getOrThrow())
+				}
+			}
+		}
+		return obj
+	}
 
+	func seed() {
+		if (let Some(_) <- this.cols) { return }
+		let cArr = ArrayList<String>()
+		let vArr = ArrayList<String>()
+		let rArr = ArrayList<String>()
+		let idxName = matrix.indexOfCol(0, "name")
+		for (j in 0..matrix.col) {
+			let colName = matrix[0, j]
+			var value = MatrixVars_Hardware.getMt(matrix, row, j)
+			if (value == "-") { continue }
+			if (j == idxName || j == skipCol) { continue }
+			if (let Some(_) <- M.get(value)) { rArr.add(value) }
+			else { cArr.add(colName); vArr.add(value) }
+		}
+		this.cols = cArr
+		this.vals = vArr
+		this.refs = rArr
+	}
 }
 
 
