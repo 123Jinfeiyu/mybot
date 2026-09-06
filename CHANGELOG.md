@@ -32,13 +32,37 @@
   可见光光谱 450~645nm，间接寄存器访问 TX/RX_VALID 握手时序同 SparkFun 实现，
   连续全通道模式 + 六通道原始计数 + 片上温度）、VL53L0X（ST 第一代 ToF 激光
   测距，30mm~2m/25°，Pololu/ESPHome/ST ULD 三方寄存器序列交叉核对：页式
-  getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续模式，
-  标准/长距双 tuning 挡，结果块 12 字节与状态查表自 ST API 移植）
+getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续模式，
+   标准/长距双 tuning 挡，结果块 12 字节与状态查表自 ST API 移植）
+- **新驱动（补录）**：BMI270（六轴 IMU，配置 blob 双版本自 Bosch SensorAPI
+  提取）、LSM6DSV16X（六轴 IMU，无 blob，位域/码表自 ST 官方头文件核实）、
+  BME688（四合一环境：T/P/H 补偿 + 双变体气体路，Bosch API 交叉验证）、
+  BMM150（三轴地磁，补偿管线黄金向量交叉验证 Bosch 原函数）、
+  MT6826S（15 位磁编码器，SPI 模式 3 全双工帧 + CRC-8 校验 + 零位偏移）、
+  LPS22HB（高分辨率气压计，单次模式 + BDU 防撕裂 + ST 家族自动增量位地址）、
+  ADS1015（12 位高速 ADC，ADS1115 孪生，3300SPS + 左对齐解码）、
+  MCP3421（18 位差分 ADC，配置回显自检 + RDY 轮询 + 四档分辨率）、
+  APDS9900（环境光/近距，命令字节协议 + 内核同款 lux 算法）、
+  BH1745（颜色传感器）、ADXL345（三轴加速度计，FULL_RES 恒定灵敏度，
+  第四颗同构加速度计）、MAX30102（心率/血氧 PPG，Part ID 自检 + FIFO
+  批量排空 + SAT 饱和标志）、AMG8833（8x8 红外热像阵列 Grid-EYE，
+  聚合标量输出绕框架桥限制）、EMC2101（智能风扇控制器，温度/PWM/转速
+  反馈 + 片上 LUT 双模式）、MAX17048（ModelGauge 换代电量计，VERSION
+  寄存器甄别 17043/44/48/49 家族，支持 17049 双节变体）、CHT8305
+  （申矽凌微温湿度，指针寄存器协议 + 双 ID 自检）、MCP4725（12 位 I2C
+  DAC，EEPROM 断电保持 + 读回，首个模拟输出家族）、AD9833（DDS 波形
+  发生器）、PCF8574（8 位准双向 IO 扩展器，无寄存器图单字节读写）、
+  SDS011（激光 PM2.5/PM10 传感器，首个被动查询式 UART 器件）
+- **UART 总线能力**（HAL termios 段 + UART 矩阵 + MH-Z19B CO2 参考驱动）：
+  新增串行器件族；MH-Z19B 为首个 UART 参考实现，SDS011 同款节拍
 - **HAL 新增 16 位寄存器指针读写** `i2c_write_reg16`/`i2c_read_reg16`：ST VL53Lx 族
   寄存器地址 16 位，「写 2 字节指针 + 读数据」合并为单次 I2C_RDWR 原子事务
   （避免拆两段事务重新引入指针竞态）
 - **HAL 新增 `i2c_read_bytes`**：纯读逐字节返回（>6 字节的命令式应答超出 i2c_read
   大端合并的 2^53 double 精度线，如 MLX90393 的 9 字节 XYZT+status）
+- **HAL 新增 `i2c_read_multi_bytes`**：字节表读（BH1745 颜色 8B / BMI270 六轴 12B
+  等超 Lua number 2^53 精度的多字节单次读，配合 i2c_write_reg16 边沿位指针协议）
+- **HAL 新增 `spi_write_multi`**：任意长帧 SPI 写（AD9833 DDS 波形发生器倒序字节帧）
 - SGP30 驱动升级：build 自检（Measure_test）+ 基线持久化（免 12h 重学习）+
   绝对湿度补偿（引用 SHT3X 守护快照）
 - **硬件错误通道（halt-on-error）**：`ensureOk` 统一 `{result}` 契约检查，任一硬件调用失败
@@ -57,6 +81,10 @@
 - DSL 语义收紧：`-` 整列缺省不再注入字段（可表达"用默认值"）；Lua 返回值保留
   number/bool/nil 类型不再字符串化；引用读快照去副作用（读不推进滤波器）
 - 硬件变量生命周期改按声明序遍历
+- 元数据收集改静态列缓存（P8/M2）：`MetaProvider` 一次冻结字面列、引用列每次
+  实时快照，剔除每 call 两遍 O(cols·rows) 全表扫描；转发不再二次 read 引用
+- 驱动样板收敛：`lib/drv_common.lua`（err/arg_table/i2c_pair）统一 47 个驱动的
+  类型校验与 fd 构造，净删 ~100 行重复样板
 
 ### 修复
 
@@ -67,6 +95,18 @@
 - `sandbox_lua` 栈索引错误（`setfield(-1)` 索引 nil 致 PANIC，#9 M1）
 - PCA9685 channel 越界校验 + 离线测试（#9 M2）
 - 两处裸 Exception 静默不抛
+- MPU6050 六轴符号扩展：补码负值还原为有符号原始值 + 离线测试
+- `test_pca9685_channel`/`float` 离线测试：桩改在驱动加载后注入（驱动加载
+  期间 `dofile` 链路被 `os.getenv` 沙箱影响）
+- 参数名误命中（Low）：@Action 参数名替换收窄为仅显式 @Alias 变量，普通硬件
+  变量与参数重名时保留字面参数（如 `s1.t0` 不被误读为 Timer）
+- INA219/INA3221 Lua 5.3 的 `<<` 位左移改为 `bitcompat.lshift`（LuaJIT 5.1 不识别，
+  两个驱动此前加载即报 `unexpected symbol near '<'`，无法使用）
+- 槽布局跨语言自检（Low）：`pthread.lua` ffi.offsetof/sizeof 逐项核对
+  `daemon_slot_t` 与 `Daemon.cj` 的 SLOT_*_OFF，守护启动即校验、漂移即红
+- 注入地址精度契约（Low）：`lua_pushinteger` 整数 tag 注入对任意 64 位值逐位
+  保真；`slot_attach` 增前置守卫（损坏地址启动即红），≥2^53 仅告警不拦截；
+  配套 `test/test_slot_addr.lua` 16 项断言
 
 ## [0.2.0] - 2026-09-04
 
