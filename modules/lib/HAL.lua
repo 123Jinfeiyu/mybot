@@ -117,6 +117,13 @@ HAL.sys = {
 	write   = function(fd, buf, n)  return tonumber(ffi.C.write(fd, buf, n)) end,
 	usleep  = function(us)          return ffi.C.usleep(us) end,
 	errno   = function()            return ffi.errno() end,
+	-- UART termios（glibc 直接调用；termios 以 void* 传递避免分架构布局差异）
+	tcgetattr = function(fd, ptr)   return ffi.C.tcgetattr(fd, ptr) end,
+	tcsetattr = function(fd, act, ptr) return ffi.C.tcsetattr(fd, act, ptr) end,
+	cfmakeraw = function(ptr)       ffi.C.cfmakeraw(ptr) end,
+	cfsetispeed = function(ptr, baud) return ffi.C.cfsetispeed(ptr, baud) end,
+	cfsetospeed = function(ptr, baud) return ffi.C.cfsetospeed(ptr, baud) end,
+	tcflush   = function(fd, q)     return ffi.C.tcflush(fd, q) end,
 }
 
 ------------------------------------------------------------------
@@ -614,6 +621,148 @@ end
 function gpio_free_line(hfd)
 	hfd = tonumber(hfd)
 	if hfd ~= nil and hfd >= 0 then HAL.sys.close(hfd) end
+end
+
+------------------------------------------------------------------
+-- UART（termios raw 8N1：/dev/tty*、/dev/serial*；非阻塞轮询读）
+------------------------------------------------------------------
+-- 常量经 test/test_uart_consts.c 与系统头文件实证（gpio 段同款方法）：
+-- sizeof(struct termios)=60、c_line 偏移 16、c_cc 偏移 17、VMIN=6/VTIME=5、
+-- O_RDWR=2 O_NOCTTY=256 O_NONBLOCK=2048、TCSANOW=0、TCIFLUSH=0、
+-- CREAD=128 CLOCAL=2048 CS8=48；现代 glibc 的 B* 波特率常量即数值本身
+-- （B9600==9600、B115200==115200），cfsetispeed 直接收 Hz 值
+
+ffi.cdef[[
+int  tcgetattr(int fd, void *termios_p);
+int  tcsetattr(int fd, int act, const void *termios_p);
+void cfmakeraw(void *termios_p);
+int  cfsetispeed(void *termios_p, unsigned int speed);
+int  cfsetospeed(void *termios_p, unsigned int speed);
+int  tcflush(int fd, int queue_selector);
+
+typedef struct {
+	unsigned int c_iflag, c_oflag, c_cflag, c_lflag;
+	unsigned char c_line;
+	unsigned char c_cc[32];
+	unsigned int c_ispeed, c_ospeed;
+} cj_termios;
+]]
+
+-- 结构体尺寸自检：glibc x86_64/aarch64 均为 60 字节，不符则立即失败
+-- （防止分架构布局静默漂移导致 c_cc 下标越界写）
+assert(ffi.sizeof("cj_termios") == 60,
+	"cj_termios size mismatch: expect 60, got " .. ffi.sizeof("cj_termios"))
+
+HAL.UART_O_FLAGS  = 2306		-- O_RDWR(2) | O_NOCTTY(256) | O_NONBLOCK(2048)
+HAL.UART_TCSANOW  = 0
+HAL.UART_TCIFLUSH = 0
+HAL.UART_VMIN_IDX = 6			-- c_cc 下标（VMIN）
+HAL.UART_VTIME_IDX = 5			-- c_cc 下标（VTIME）
+HAL.UART_CREAD_CLOCAL = 2176	-- CREAD(128) | CLOCAL(2048)
+
+HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
+
+local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 }
+
+-- 打开串口（raw 8N1 + 波特率 + 非阻塞），成功返回 fd，失败返回 -1
+function uart_open(path, baud)
+	if type(path) ~= "string" then return -1 end
+	baud = tonumber(baud)
+	local baud_ok = false
+	for _, b in ipairs(UART_BAUDS) do
+		if b == baud then baud_ok = true; break end
+	end
+	if not baud_ok then
+		print("HAL: invalid uart baud: " .. tostring(baud))
+		return -1
+	end
+	-- 路径白名单：常规 tty 命名 + /dev/serialN（树莓派软链惯例）
+	if string.match(path, "^/dev/tty[A-Za-z0-9]+$") == nil
+		and string.match(path, "^/dev/serial%d+$") == nil then
+		print("HAL: invalid uart path: " .. tostring(path))
+		return -1
+	end
+	local fd = tonumber(HAL.sys.open(path, HAL.UART_O_FLAGS))
+	if fd == nil or fd < 0 then
+		print("HAL: failed to open uart: " .. path)
+		return -1
+	end
+	local t = ffi.new("cj_termios[1]")	-- ffi.new 零初始化
+	if HAL.sys.tcgetattr(fd, t) ~= 0 then
+		print("HAL: tcgetattr failed: " .. path .. " (是串口设备吗?)")
+		HAL.sys.close(fd)
+		return -1
+	end
+	HAL.sys.cfmakeraw(t)				-- raw 模式（无回显/无行缓冲/8N1 基础）
+	-- CREAD|CLOCAL 用真位或置位（cfmakeraw 不清这两位，加法会进位污染高位；
+	-- HAL 仅支持 LuaJIT，内建 bit 库可用）
+	local bitlib = require("bit")
+	t[0].c_cflag = bitlib.bor(tonumber(t[0].c_cflag) or 0, HAL.UART_CREAD_CLOCAL)
+	t[0].c_cc[HAL.UART_VMIN_IDX] = 0	-- 非阻塞读：VMIN=0
+	t[0].c_cc[HAL.UART_VTIME_IDX] = 1	-- 100ms 字间计时器（驱动层另有轮询超时）
+	HAL.sys.cfsetispeed(t, baud)
+	HAL.sys.cfsetospeed(t, baud)
+	if HAL.sys.tcsetattr(fd, HAL.UART_TCSANOW, t) ~= 0 then
+		print("HAL: tcsetattr failed: " .. path)
+		HAL.sys.close(fd)
+		return -1
+	end
+	HAL.uart_baud[fd] = baud
+	return fd
+end
+
+-- 关闭串口
+function uart_close(fd)
+	fd = tonumber(fd)
+	if fd == nil or fd < 0 then return -1 end
+	HAL.uart_baud[fd] = nil
+	return HAL.sys.close(fd)
+end
+
+-- 清空输入缓冲（丢弃未读字节，请求-应答协议发帧前用）
+function uart_flush(fd)
+	fd = tonumber(fd)
+	if fd == nil or fd < 0 then return -1 end
+	return HAL.sys.tcflush(fd, HAL.UART_TCIFLUSH)
+end
+
+-- 写一帧字节（data 为 1 基字节值表），返回写入字节数或 -1
+function uart_write(fd, data)
+	fd = tonumber(fd)
+	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
+	if #data > 512 then return -1 end
+	local buf = ffi.new("uint8_t[?]", #data)
+	for i = 1, #data do
+		local b = byte_of(data[i])
+		if b == nil then return -1 end
+		buf[i - 1] = b
+	end
+	local r = tonumber(HAL.sys.write(fd, buf, #data))
+	if r == nil or r < 0 then return -1 end
+	return r
+end
+
+-- 读最多 n 字节（非阻塞轮询，1ms 步进直至 timeout_ms），返回 1 基字节表
+-- （可能为空表 = 超时无数据）；fd 读取错误（EAGAIN 之外）返回 nil
+function uart_read(fd, n, timeout_ms)
+	fd = tonumber(fd)
+	n = uint_of(n)
+	timeout_ms = tonumber(timeout_ms) or 0
+	if fd == nil or n == nil or n < 1 then return nil end
+	if n > 512 then n = 512 end
+	local buf = ffi.new("uint8_t[?]", n)
+	local out = {}
+	local iters = math.max(0, math.floor(timeout_ms)) + 1
+	for it = 1, iters do
+		local want = n - #out
+		local r = tonumber(HAL.sys.read(fd, buf, want))
+		if r ~= nil and r > 0 then
+			for i = 0, r - 1 do out[#out + 1] = tonumber(buf[i]) end
+			if #out >= n then break end
+		end
+		if it < iters then HAL.sys.usleep(1000) end
+	end
+	return out
 end
 
 return HAL

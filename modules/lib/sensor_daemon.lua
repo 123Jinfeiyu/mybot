@@ -7,7 +7,7 @@
 --
 -- DAEMON_CONFIG（"k=v;k=v"，来自 @Daemon 矩阵除 name/chunk 外的列）：
 --   driver   必填，驱动模块名（modules/<driver>.lua，如 MPU6050/BME280/ADS1115/SGP30）
---   proto    i2c（默认）| spi
+--   proto    i2c（默认）| spi | uart（uart 时 path=串口设备、baud=波特率）
 --   path     总线设备路径（默认 i2c:/dev/i2c-1，spi:/dev/spidev0.0）
 --   addr     器件地址（i2c 如 0x68；spi 忽略）
 --   fields   逗号或管道分隔的 call() 返回字段名，按序 publish（SQL 里推荐用 |）
@@ -70,7 +70,7 @@ end
 -- 组装驱动参数：fd/address + 配置中的额外键（排除框架键）
 local known = {
 	driver = 1, proto = 1, path = 1, addr = 1, interval = 1,
-	fields = 1, sign = 1, mode = 1, bits = 1, speed = 1, delay = 1,
+	fields = 1, sign = 1, mode = 1, bits = 1, speed = 1, delay = 1, baud = 1,
 }
 local params = {}
 if addr then params.address = addr end
@@ -86,6 +86,9 @@ if proto == "spi" then
 		spi_setup(fd, tonumber(cfg.mode or 0), tonumber(cfg.bits or 8),
 		          tonumber(cfg.speed or 1000000), tonumber(cfg.delay or 0))
 	end
+elseif proto == "uart" then
+	-- 串口设备（如 MHZ19）：raw 8N1，波特率 baud 列（缺省 9600）
+	fd = uart_open(path, tonumber(cfg.baud or 9600))
 else
 	fd = i2c_open(path)
 end
