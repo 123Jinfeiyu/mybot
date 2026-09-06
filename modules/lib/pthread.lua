@@ -16,6 +16,15 @@
 -- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 HAL.lua 已定义的
 -- open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，重复 cdef 会报错）。
 --
+-- 【地址注入契约】（Low：注入地址 ≥2^53 精度）
+-- 宿主经 lua_pushinteger 以 64 位整数 tag 注入槽地址（Daemon.cj:81），LuaJIT 整数 tag
+-- 使任意 64 位值（含 ≥2^53、bit63 置位）逐位保真；本库只管把它当不透明句柄
+-- 原样 ffi.cast 直传。地址在 Lua 数字域仅当被算术（+ - * /）或 tonumber 强制 double
+-- 时才开始在 >=2^53 丢位——故各守护 chunk 禁止对地址做任何算术。
+-- slot_attach 在此补前置守卫：非负整值被 double 化（非整/负）直接 error，把「已损坏的
+-- 地址」显式红在守护初始化期；>=2^53 仅告警（注入路径逐位保真，拦截会误伤精确路径），
+-- 提示该地址处于算术危险区、必须当不透明句柄直传。
+--
 -- 用法（守护侧，独立状态机）：
 --   local P = dofile(.../lib/pthread.lua)
 --   local slot = P.slot_attach(DAEMON_SLOT_ADDR)   -- 宿主注入的地址全局
@@ -80,6 +89,16 @@ end
 ------------------------------------------------------------------
 -- 附着到宿主分配的槽（addr 为整数地址）
 function P.slot_attach(addr)
+	-- 前置守卫：地址必须仍为非负整数值（整数 tag）。
+	-- 注入路径（lua_pushinteger）对任意 64 位值逐位保真，故 ≥2^53 仅告警不拦截
+	-- （拦了会误伤合法精确路径）；真正危险的是 Lua 侧算术/tonumber 把整数 double
+	-- 化后在 ≥2^53 静默丢位——那是使用方违规，任何事后检查都不可见，见契约注释。
+	if type(addr) ~= "number" or addr < 0 or addr % 1 ~= 0 then
+		error("DAEMON_SLOT_ADDR must be a non-negative integer, got " .. tostring(addr))
+	end
+	if addr >= 2^53 then
+		print("[pthread] warning: DAEMON_SLOT_ADDR " .. tostring(addr) .. " >= 2^53; treat as opaque, do NOT do arithmetic on it")
+	end
 	return ffi.cast("daemon_slot_t *", ffi.cast("uint64_t", addr))
 end
 

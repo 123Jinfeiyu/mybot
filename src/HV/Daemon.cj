@@ -77,7 +77,10 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		sandbox_lua(L)	/* 中和 os.execute/io.popen 等宿主入口（issue #9 M1） */
 
 		/* 注入共享槽地址（整数）与配置串（"k=v;k=v"）为 Lua 全局；
-		 * Lua_setfield 会立即复制 key，调用返回后 malloc 的 key 串即可释放（P6/M4） */
+		 * Lua_setfield 会立即复制 key，调用返回后 malloc 的 key 串即可释放（P6/M4）。
+		 * 地址经 lua_pushinteger 以 64 位整数 tag 注入，任意值（含 ≥2^53）逐位保真；
+		 * Lua 侧只许原样 ffi.cast 直传句柄，禁止对地址做算术/tonumber（≥2^53 丢位）——
+		 * 对应契约在 modules/lib/pthread.lua 顶层注释。 */
 		Lua_pushinteger(L, Int64(slot.toUIntNative()))
 		let keyAddr = LibC.mallocCString("DAEMON_SLOT_ADDR")
 		Lua_setfield(L, LUA_GLOBALSINDEX, keyAddr)
