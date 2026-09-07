@@ -36,7 +36,7 @@ public open class MatrixVars_Hardware {
 		return false
 	}
 
-	public static func logD(msg: String) {
+	public static func logD(msg: String): Unit {
 		if (debugEnabled) { println(msg) }
 	}
 
