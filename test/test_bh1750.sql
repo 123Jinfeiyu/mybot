@@ -22,7 +22,7 @@ CREATE TABLE Daemon (
 	fields   String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
-  VALUES ('light0', 'modules/lib/sensor_daemon.lua', 'BH1750', 'i2c', '/dev/i2c-1', '0x23', '120', 'LUX');
+  VALUES ('light0', 'lib/sensor_daemon.lua', 'BH1750', 'i2c', '/dev/i2c-1', '0x23', '120', 'LUX');
 
 /* Monitor 挂到 light0 上：src 列经引用机制合并守护的 v0/count 进入元数据 */
 CREATE TABLE Monitor (

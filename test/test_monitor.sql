@@ -12,7 +12,7 @@ CREATE TABLE Daemon (
 	chunk String,
 	interval String
 );
-INSERT INTO Daemon (name, chunk, interval) VALUES ('sim0', 'modules/lib/daemon_probe.lua', '1');
+INSERT INTO Daemon (name, chunk, interval) VALUES ('sim0', 'lib/daemon_probe.lua', '1');
 
 CREATE TABLE Monitor (
 	name String,

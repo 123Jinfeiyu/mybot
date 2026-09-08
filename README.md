@@ -239,8 +239,10 @@ CREATE TABLE Daemon (
 	name  String,
 	chunk String
 );
-INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/daemon_probe.lua');
+INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/daemon_probe.lua');
 ```
+
+> chunk 寻址：与普通 Lua 硬件模块一致，相对路径以 `BOT4CJ_MODULE_PATH`（默认 `./modules`）为基准，不依赖进程 CWD——编译产物拷到任意位置、设置该环境变量指向模块目录即可运行。写全 `modules/lib/xxx.lua`（或绝对路径）也兼容。
 
 并发模型的关键点：
 
@@ -250,7 +252,7 @@ INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/daemon_probe.lua')
 - **IPC 经共享内存槽**：守护侧 Lua `P.publish(slot, {...})` 写值，主线程侧 `play()` 加锁读值，同一 pthread_mutex 防撕裂
 - `@Daemon` 矩阵除 `name`/`chunk` 外的列会序列化为 `DAEMON_CONFIG` 串注入 chunk
 
-**万能采样 chunk（零 per-sensor 代码）**：`modules/lib/sensor_daemon.lua` 服务任意 build/call/destroy 型驱动，无需为每个传感器写 Lua：
+**万能采样 chunk（零 per-sensor 代码）**：`lib/sensor_daemon.lua` 服务任意 build/call/destroy 型驱动，无需为每个传感器写 Lua：
 
 ```sql
 CREATE TABLE Daemon (
@@ -258,7 +260,7 @@ CREATE TABLE Daemon (
 	path String, addr String, interval String, fields String, sign String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign)
-  VALUES ('imu0', 'modules/lib/sensor_daemon.lua', 'MPU6050', 'i2c',
+  VALUES ('imu0', 'lib/sensor_daemon.lua', 'MPU6050', 'i2c',
           '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
 ```
 
@@ -277,7 +279,7 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 
 | 变量 | 说明 |
 | --- | --- |
-| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua` 与驱动 dofile `lib/` 均按其解析 |
+| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua`、驱动 dofile `lib/` 与 `@Daemon` 的 chunk 均按其解析 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
 
 安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。
@@ -298,7 +300,7 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 
 ```sql
 CREATE TABLE Daemon (name String, chunk String);
-INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/sensor_daemon.lua');   -- 采样
+INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/sensor_daemon.lua');   -- 采样
 
 CREATE TABLE Kalman (name String, Q String, R String, src String, field String);
 INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', 'imu0', 'v0');  -- 卡尔曼

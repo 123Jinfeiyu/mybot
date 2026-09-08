@@ -31,7 +31,7 @@
 --       path String, addr String, interval String, fields String, sign String,
 --       opmode String, rate String, n String);
 --   INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign, opmode, rate, n)
---     VALUES ('hr0', 'modules/lib/sensor_daemon.lua', 'MAX30102', 'i2c', '/dev/i2c-1', '0x57',
+--     VALUES ('hr0', 'lib/sensor_daemon.lua', 'MAX30102', 'i2c', '/dev/i2c-1', '0x57',
 --             '12', 'IR|RED', '-', 'spo2', '100', '2');
 --
 -- call 返回契约：

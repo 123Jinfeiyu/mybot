@@ -14,6 +14,7 @@ package bot4cj.HV
 import std.time.*
 import std.convert.*
 import std.collection.*
+import std.process.*
 import stdx.encoding.json.*
 import ctype4cj.*
 import luajit4cj.*
@@ -123,6 +124,37 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 	}
 }
 
+/* ---- chunk 路径寻址（P：任意位置运行）----
+ * 普通 Lua 硬件模块经 r.cj 以 "${BOT4CJ_MODULE_PATH}/${MtName}.lua" 寻址；
+ * 原实现把 chunk 列当字面路径直接 loadfilex（相对进程 CWD），编译产物换目录即找不到。
+ * 统一为与普通硬件模块一致的 modulePath 基准：
+ *   绝对路径（'/' 开头）                              → 原样
+ *   已在模块目录树内（"./modules" 或 "modules" 前缀）→ 原样（兼容现有 SQL 写法）
+ *   其余相对路径（如 lib/sensor_daemon.lua）           → "${modulePath}/${chunk}"
+ * modulePath 由调用方从 BOT4CJ_MODULE_PATH 取得（缺省 "./modules"），可为绝对路径。
+ */
+public func resolveDaemonChunk(chunk: String, modulePath: String): String {
+	if (chunk.startsWith("/")) {
+		return chunk
+	}
+	if (chunk == modulePath || chunk.startsWith("${modulePath}/")) {
+		return chunk
+	}
+	/* 兼容不带 "./" 的旧写法：缺省 modulePath="./modules" 时结构脚本写
+	 * 'modules/lib/xxx.lua' 也应原样（否则会被拼成 ./modules/modules/lib/xxx.lua）。 */
+	let noDot = if (modulePath.startsWith("./")) {
+		let rs = modulePath.toRuneArray()
+		let arr = Array<Rune>(rs.size - 2, { i => rs[i + 2] })
+		String(arr)
+	} else {
+		modulePath
+	}
+	if (chunk == noDot || chunk.startsWith("${noDot}/")) {
+		return chunk
+	}
+	return "${modulePath}/${chunk}"
+}
+
 /* ---- 守护硬件变量 ---- */
 public class MtVars_Daemon <: MatrixVars_Hardware {
 	public init(things!: (JsonValue) -> JsonValue,
@@ -133,7 +165,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 	/*
 	 *  @Daemon
 	 *   name    chunk;
-	 *   sim0    modules/lib/daemon_probe.lua;
+	 *   sim0    lib/daemon_probe.lua;
 	 *  @
 	 */
 	public static func Factory(defs: MatrixObject, i: Int64,
@@ -143,7 +175,11 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		let idxName = defs.indexOfCol(0, "name")
 		let idxChunk = defs.indexOfCol(0, "chunk")
 		let name = defs[i, idxName]
-		let chunkPath = MatrixVars_Hardware.getMt(defs, i, idxChunk)
+		let chunkRaw = MatrixVars_Hardware.getMt(defs, i, idxChunk)
+		/* chunk 寻址：与普通 Lua 硬件模块一致，相对路径以 BOT4CJ_MODULE_PATH 为基准解析，
+		 * 使编译产物可拷到任意位置运行（原实现字面路径相对 CWD） */
+		let modulePath = Process.current.getEnv("BOT4CJ_MODULE_PATH") ?? "./modules"
+		let chunkPath = resolveDaemonChunk(chunkRaw, modulePath)
 		println("Create a Daemon hard-Var: ${name}, chunk: ${chunkPath}")
 
 		/* 收集 name/chunk 之外的列为配置串 "k=v;k=v"，注入 chunk（如 i2c/addr/interval） */

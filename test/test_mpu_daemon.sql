@@ -21,7 +21,7 @@ CREATE TABLE Daemon (
 	fields   String,
 	sign     String
 );
-INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign) VALUES ('imu0', 'modules/lib/sensor_daemon.lua', 'MPU6050', 'i2c', '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
+INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign) VALUES ('imu0', 'lib/sensor_daemon.lua', 'MPU6050', 'i2c', '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
 
 /* Monitor 挂到 imu0 上：src 列经引用机制合并守护的 v0..vN 进入元数据 */
 CREATE TABLE Monitor (

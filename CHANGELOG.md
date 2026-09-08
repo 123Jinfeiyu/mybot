@@ -74,6 +74,7 @@ getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续�
 
 ### 变更
 
+- **@Daemon chunk 按 `BOT4CJ_MODULE_PATH` 寻址**：与普通 Lua 硬件模块同一基准（绝对路径 / `modules/` 前缀原样，其余相对路径拼模块目录），编译产物可拷到任意位置运行（此前 chunk 按字面路径相对 CWD）
 - 硬件变量类迁出为 `src/HV/` 子包（Alias/Daemon/Lua/MatrixVars），`r.cj` 只留
   RobotStruct 编排层（#15）
 - HAL i2c 改用 `I2C_RDWR` 原子事务：读寄存器的「写指针 + 读」合并为单次内核传输，

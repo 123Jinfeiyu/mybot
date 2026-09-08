@@ -7,7 +7,7 @@ dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua"
 -- 会被合并进本变量的元数据，call() 里即可用 data.v0 等读到实时采样值。
 --
 --   CREATE TABLE Daemon (name String, chunk String);
---   INSERT INTO Daemon (name, chunk) VALUES ('sim0', 'modules/lib/daemon_probe.lua');
+--   INSERT INTO Daemon (name, chunk) VALUES ('sim0', 'lib/daemon_probe.lua');
 --   CREATE TABLE Monitor (name String, src String);
 --   INSERT INTO Monitor (name, src) VALUES ('mon0', 'sim0');   -- src 引用守护 sim0
 --

@@ -20,7 +20,7 @@
 -- 守护路径：interval 建议 >= 转换周期（18bit 档 >= 270ms），这样每拍数据恰好
 --   就绪、call 不必等待；fields 取 "voltage"（伏特浮点）或 "raw"（有符号码值）：
 --   INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign, res, pga)
---     VALUES ('adc18-0', 'modules/lib/sensor_daemon.lua', 'MCP3421', 'i2c',
+--     VALUES ('adc18-0', 'lib/sensor_daemon.lua', 'MCP3421', 'i2c',
 --             '/dev/i2c-1', '0x68', '270', 'voltage', '-', '18', '1');
 --
 -- call 返回契约（键名与 ADS1115 对齐）：{ result, raw, voltage }。

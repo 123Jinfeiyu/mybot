@@ -48,4 +48,4 @@ CREATE TABLE Daemon (
 	baseline String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, baseline)
-  VALUES ('sgp-d0', 'modules/lib/sensor_daemon.lua', 'SGP30', 'i2c', '/dev/i2c-1', '0x58', '1000', 'CO2EQ|TVOC', '-');
+  VALUES ('sgp-d0', 'lib/sensor_daemon.lua', 'SGP30', 'i2c', '/dev/i2c-1', '0x58', '1000', 'CO2EQ|TVOC', '-');

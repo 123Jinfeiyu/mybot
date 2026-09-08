@@ -33,4 +33,4 @@ CREATE TABLE Daemon (
 	fields   String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
-  VALUES ('sht-d0', 'modules/lib/sensor_daemon.lua', 'SHT3X', 'i2c', '/dev/i2c-1', '0x44', '100', 'T|RH');
+  VALUES ('sht-d0', 'lib/sensor_daemon.lua', 'SHT3X', 'i2c', '/dev/i2c-1', '0x44', '100', 'T|RH');

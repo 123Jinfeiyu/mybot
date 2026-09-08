@@ -35,4 +35,4 @@ CREATE TABLE Daemon (
 	interval String,
 	fields   String
 );
-INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields) VALUES ('adc-d0', 'modules/lib/sensor_daemon.lua', 'ADS1115', 'i2c', '/dev/i2c-1', '0x48', '50', 'raw|voltage');
+INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields) VALUES ('adc-d0', 'lib/sensor_daemon.lua', 'ADS1115', 'i2c', '/dev/i2c-1', '0x48', '50', 'raw|voltage');

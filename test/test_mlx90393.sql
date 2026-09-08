@@ -42,4 +42,4 @@ CREATE TABLE Daemon (
 	fields   String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
-  VALUES ('mlx-d0', 'modules/lib/sensor_daemon.lua', 'MLX90393', 'i2c', '/dev/i2c-1', '0x0C', '20', 'X|Y|Z|T');
+  VALUES ('mlx-d0', 'lib/sensor_daemon.lua', 'MLX90393', 'i2c', '/dev/i2c-1', '0x0C', '20', 'X|Y|Z|T');

@@ -39,5 +39,5 @@ CREATE TABLE Daemon (
 	fields   String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
-  VALUES ('cam-d0', 'modules/lib/sensor_daemon.lua', 'AMG8833', 'i2c', '/dev/i2c-1', '0x69', '200',
+  VALUES ('cam-d0', 'lib/sensor_daemon.lua', 'AMG8833', 'i2c', '/dev/i2c-1', '0x69', '200',
           'MAXT|AVGT|MAXR|MAXC|THERM');
