@@ -188,8 +188,6 @@ class RobotStruct {
 
 						if (ev.targetTabName == item.getName()) {
 
-							println("{${ev.targetTabName}}")
-
 							var rowNo = 0
 							for (row in ev.tableRows) {
 								rowNo += 1

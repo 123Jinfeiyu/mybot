@@ -69,6 +69,10 @@ public func sandbox_lua(L: lua_State): Unit {
 
 public class MtVars_Lua <: MatrixVars_Hardware {
 
+	/* 顶层调用深度计数：只在外层 .mt 直接调用的原子处打印结果，
+	 * 避免被 controller 转发的嵌套 Lua 调用重复输出 */
+	private static var topDepth = 0
+
 	/*
 	 *  构造函数 => 传入事件函数，硬件构造函数以及硬件解构函数
 	 *
@@ -129,58 +133,72 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			 */
 			things: { json: JsonValue =>
 
-				/* 获取元数据（P8/M2：一次收集——静态列缓存重放 + 引用列实时快照） */
-				let metadata = getMetadata()
-				let metaFields: HashMap<String, JsonValue> = metadata.getFields()
+				let top = (MtVars_Lua.topDepth == 0)
+				MtVars_Lua.topDepth += 1
 
-				/*  从元数据浅拷贝（不污染共享源；转发侧复用同一份干净元数据）  */
-				let obj = JsonObject()
-				for (k in metaFields.keys()) {
-					obj.put(k, metaFields.get(k).getOrThrow())
-				}
-				obj.put("mode", JsonString("call"))
+				if (top) { println("----------") }
 
-				/*  合并两张（json_obj）表（元数据和参数）  */
-				let fields: HashMap<String, JsonValue> = json.asObject().getFields()
-				for (k in fields.keys()) {
-					let val = fields.get(k).getOrThrow()
-					obj.put(k, val)
-				}
-				logD("Lua scripts call parameters: ${obj.toString()}")
+				try {
 
-				/* 调用Lua解释器 */
-				let res = call_lua(L, obj)
+					/* 获取元数据（P8/M2：一次收集——静态列缓存重放 + 引用列实时快照） */
+					let metadata = getMetadata()
+					let metaFields: HashMap<String, JsonValue> = metadata.getFields()
 
-				logD("Lua script call result: ${res.toString()}")
-
-				/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
-				MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
-
-				/* ---- controller 转发：元数据 ∪ 自己Lua的返回表 ---- */
-				if (let Some(ctrl) <- controller) {
-					/* 转发 payload = 同一份干净元数据 ∪ 自己Lua的返回表
-					 * （原实现二次 getMetadata()：重复 O(cols·rows) 扫描且引用列被
-					 *   read() 两遍；P8/M2 后一次收集两次浅拷贝） */
-					let payload = JsonObject()
+					/*  从元数据浅拷贝（不污染共享源；转发侧复用同一份干净元数据）  */
+					let obj = JsonObject()
 					for (k in metaFields.keys()) {
-						payload.put(k, metaFields.get(k).getOrThrow())
+						obj.put(k, metaFields.get(k).getOrThrow())
 					}
-					let retFields: HashMap<String, JsonValue> = res.asObject().getFields()
-					for (k in retFields.keys()) {
-						payload.put(k, retFields.get(k).getOrThrow())
+					obj.put("mode", JsonString("call"))
+
+					/*  合并两张（json_obj）表（元数据和参数）  */
+					let fields: HashMap<String, JsonValue> = json.asObject().getFields()
+					for (k in fields.keys()) {
+						let val = fields.get(k).getOrThrow()
+						obj.put(k, val)
 					}
-					logD("Forward to controller: ${payload.toString()}")
+					logD("Lua scripts call parameters: ${obj.toString()}")
 
-					let ctrl_res = ctrl.play(payload)
-					logD("Controller result: ${ctrl_res.toString()}")
+					/* 调用Lua解释器 */
+					let res = call_lua(L, obj)
 
-					/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
-					MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
+					logD("Lua script call result: ${res.toString()}")
 
-					return ctrl_res
+					/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
+					MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
+
+					/* ---- controller 转发：元数据 ∪ 自己Lua的返回表 ---- */
+					if (let Some(ctrl) <- controller) {
+						/* 转发 payload = 同一份干净元数据 ∪ 自己Lua的返回表
+						 * （原实现二次 getMetadata()：重复 O(cols·rows) 扫描且引用列被
+						 *   read() 两遍；P8/M2 后一次收集两次浅拷贝） */
+						let payload = JsonObject()
+						for (k in metaFields.keys()) {
+							payload.put(k, metaFields.get(k).getOrThrow())
+						}
+						let retFields: HashMap<String, JsonValue> = res.asObject().getFields()
+						for (k in retFields.keys()) {
+							payload.put(k, retFields.get(k).getOrThrow())
+						}
+						logD("Forward to controller: ${payload.toString()}")
+
+						let ctrl_res = ctrl.play(payload)
+						logD("Controller result: ${ctrl_res.toString()}")
+
+						/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
+						MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
+
+						if (top) { println(ctrl_res.toString()) }
+						return ctrl_res
+					}
+
+					if (top) { println(res.toString()) }
+					return res
+
 				}
-
-				return res
+				finally {
+					MtVars_Lua.topDepth -= 1
+				}
 
 			},
 
