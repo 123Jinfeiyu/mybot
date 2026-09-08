@@ -1,196 +1,70 @@
-# bot4cj
+# bot4cj - 基于仓颉的通用机器人控制程序
 
-bot4cj是基于仓颉的**机器人硬件控制器**，它是一个**可扩展的结构**，目标是用一门简单快速的脚本语言写**应用层硬件驱动**，将**机器人结构**、**机器人动作**用DSL解耦出来。通过管道向程序传递动作脚本的内容，就可以驱动机器人做出动作。
+> **共建理念**：能写文档的写文档，能写代码的写代码，一起共建仓颉生态！
+
+bot4cj 是基于仓颉语言编写的**机器人硬件控制器**。它提供一套可扩展的结构：用一门简单快速的脚本语言（LuaJIT）来编写**应用层硬件驱动**，把**机器人结构**和**机器人动作**用 DSL 解耦开来。只要通过管道把动作脚本的内容传给程序，就可以驱动机器人做出动作。
 
 [实机演示地址](http://152.136.227.85:8080/videos/robot-show.mp4)
 
-视频由PC端和机器人两部分组成，如果播放卡顿可以右键下载下来观看。
+视频由 PC 端与机器人实拍两部分组成，如果播放卡顿可以右键下载后观看。
 
+## 📋 项目信息
 
-## 依赖库
-这个项目依赖一些仓颉语言的软件包，以及 LuaJIT（仓颉绑定为独立包 [luajit4cj](https://gitcode.com/qingss0/luajit4cj)）
+- **项目版本**：v0.3.0（`cjpm.toml`）
+- **维护状态**：🟢 积极维护中
+- **主要负责人**：qingss0（Flowers_Unamed 团队）
+- **开发人员**：[qingss0](https://gitcode.com/qingss0)
+- **仓颉版本**：支持仓颉语言 1.1.3（stdx 1.1.3）
 
+## 🚀 快速开始
 
-**你需要安装 LuaJIT 开发库**
+### 安装依赖
+
+首先安装 LuaJIT 开发库（仓颉侧的绑定为独立包 [luajit4cj](https://gitcode.com/qingss0/luajit4cj)）：
 
 ```bash
 sudo apt update && sudo apt install libluajit-5.1-dev
 ```
 
-
-## 5 分钟上手
-
-### 1. 构建
+### 构建
 
 ```bash
 export CANGJIE_STDX_PATH=/path/to/cangjie-stdx   # cjpm.toml 按目标架构读取
-bash _set.sh        # 等价于 cjpm update + cjpm build
+bash _set.sh                                     # 等价于 cjpm update + cjpm build
 ```
 
 可选自检：`bash test/run_all.sh` 一键跑全部 Lua 离线测试（需 `luajit`，桩替身不触硬件；真机 i2c 用例自动跳过）。
 
-### 2. 无硬件跑通第一条链路（Relay → Timer）
+### 无硬件跑通第一条链路（Relay → Timer）
 
-`relay-test` 不接任何硬件：Relay 把 `test` 参数转成 `delay`，经 controller 机制转发给
-Timer 延时 200ms，用来验证安装是否成功：
+`relay-test` 不需要接任何硬件：Relay 把 `test` 参数转成 `delay`，经 controller 机制转发给 Timer 延时 200ms，用于验证安装是否成功：
 
 ```bash
 cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 ```
 
-看到 `Relay: test=200 note=hello-relay -> delay=200` 且正常退出，即链路跑通。
-想看每一步的参数/结果转储：
+看到 `Relay: test=200 note=hello-relay -> delay=200` 且正常退出，即链路跑通。想看每一步的参数/结果转储，可以开启调试开关：
 
 ```bash
 export BOT4CJ_DEBUG=1
 cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 ```
 
-### 3. 接第一块 PCA9685
+### 接第一块 PCA9685
 
-- 接线：树莓派 i2c-1（SDA1/SCL1）→ PCA9685，地址 0x40
-- 参照 `robots/spider1.sql` 写自己的结构脚本：I2C 表 → PCA9685 表 → Servo 表
-  （Servo 的 controller 列指向 `pca9685-0`，channel 对应接线通道）
+- 接线：树莓派 `i2c-1`（SDA1/SCL1）→ PCA9685，地址 `0x40`
+- 参照 `robots/spider1.sql` 写自己的结构脚本：I2C 表 → PCA9685 表 → Servo 表（Servo 的 controller 列指向 `pca9685-0`，channel 对应接线通道）
 - 跑站立动作：
 
 ```bash
 cat scripts/std.mt | bash _run.sh --robot=robots/spider1.sql
 ```
 
-脚本语法细节见下文「机器人结构语法」「动作脚本」两节；报错信息会指出是哪张表、
-哪一行、哪一列的问题，按提示修正即可。
+脚本语法细节见下文「机器人结构脚本」「动作脚本」两节；报错信息会指出是哪张表、哪一行、哪一列的问题，按提示修正即可。
 
+## 📱 运行示例
 
-## 项目介绍
-机器人软件通常被称为“专用软件”，想要得到一个机器人软件通常比一个普通的软件更为困难，这是因为这个世界上的机器人五花八门，所以它们的软件往往都是独特的，所以我想写一种用于描述机器人硬件和动作的通用的脚本。
-
-`bot4cj` 基于仓颉编程语言，提供了便捷的硬件控制能力，目前支持pca9685，我通常使用树莓派作为宿主机。
-
-
-
-
-
-
-## 基层硬件抽象层（HAL）
-
-I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现（issue #14：不再依赖仓颉注册的 cfunc），
-**仅支持 LuaJIT**：
-
-- `ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；
-  fd 为真实内核句柄，跨 Lua 状态机天然有效；SPI 经 spidev ioctl（`SPI_IOC_MESSAGE` 单次传输，CS 保持低）
-- **I2C 经 `I2C_RDWR` ioctl 原子事务**：读寄存器的「写指针 + 读」合并为单次内核传输，
-  消除守护线程与主线程并发访问**同一器件**时的寄存器指针竞态；地址由每条 i2c_msg 携带，
-  不再需要 `I2C_SLAVE` ioctl（也就没有地址被内核驱动占用的 EBUSY 问题）
-- 驱动模块顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致；Lua 5.3+ 位运算经 `bitcompat.lua`
-  双兼容（LuaJIT 用内建 bit 库，纯 5.4 用算术回退）
-- `modules/lib/` 收纳非驱动的库模块：`HAL.lua`（总线抽象）与 `kalman.lua`
-  （一维卡尔曼滤波器，自 src/math/kalman.cj 移植，返回表风格，供驱动 dofile 后 `Kalman.new(Q,R)` / `kf:filter(dat)` 使用）
-- 不依赖 HAL 的模块（Servo/dummy/Relay/kalman 等）仍可用 `luajit`/`lua5.4` 独立调试；
-  总线驱动需 `luajit`（单测见 `test/test_hal_ffi.lua`、`test/test_kalman.lua`；一键跑全部离线测试：`bash test/run_all.sh`）
-
-SPI 传输延时（delay_usecs）无 per-fd 持久化 ioctl，由传输函数的可选 `delay_us` 尾参逐次携带
-（配置写在 @SPI 矩阵的 delay 列，SPI.lua 的 `call()` 随 fd 返回，经元数据引用流入设备驱动，参考 ADS1256.lua）。
-
-
-## 守护线程（@Daemon）
-
-后台持续采样（如 IMU）用 `@Daemon` 矩阵声明，宿主用 **Cangjie `spawn` 原语**起守护线程：
-
-```sql
-CREATE TABLE Daemon (
-	name  String,
-	chunk String
-);
-INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/daemon_probe.lua');
-```
-
-**并发模型（关键）**：
-- 守护线程由 `spawn { ... }` 创建（返回 `Future`，`future.get()` 即 join）——**不能用 pthread4cj 裸线程**：foreign pthread 无 Cangjie 运行时线程态，在其上跑 @C 代码必崩（PoC 实测 3/3 SIGSEGV）；spawn 是 Cangjie 的 M:N 绿色线程（跑在 `schd-worker` 池上），运行时已附着，安全
-- 守护线程持有**独立 lua_State**（`jit.off`），与主线程状态机 1:1 隔离——规避 LuaJIT VM 非线程安全
-- **逐拍驱动 + 让出式节拍**：daemon_body 先 pcall 采样 chunk 一次完成 setup（chunk 定义全局 `daemon_tick` 单次采样函数），随后循环 `getglobal(daemon_tick)+pcall` 逐拍采样，**拍间用 Cangjie `sleep(Duration)`**——它会让出绿色线程、释放 schd-worker；切忌在 chunk 内用 ffi `usleep` 自旋循环，那会阻塞 worker 不放，守护数 ≥ worker 数（核数-1）时 worker 池耗尽、连主线程的 Timer sleep 都会死锁。用让出式 sleep 后实测 **8 守护（远超 4 核机的 3 worker）+ Timer 全部并发运行、干净退出**
-- **IPC 经共享内存槽** `daemon_slot_t`（`modules/lib/pthread.lua` 定义布局：mutex+count+nvals+values[16]+stop）：守护侧 Lua `P.publish(slot, {...})` 写值，主线程侧 `play()` 加锁读值，双方用同一 pthread_mutex 防撕裂
-- @Daemon 矩阵的 `interval` 列 = 采样间隔 ms（daemon_body 逐拍 Cangjie sleep 用，缺省 5）；关闭时 deactive **先统一给所有守护置 stop 再逐个 join**（防逐个 stop+join 时饿死者拿不到 worker 的死锁）
-
-**采样 chunk 契约**（运行在守护线程的独立状态机；被 pcall 一次做 setup，并定义全局 `daemon_tick`）：
-```lua
-if jit then jit.off() end
-local P = dofile(.../lib/pthread.lua)
-dofile(.../lib/HAL.lua)              -- 采样要用 HAL
-local slot = P.slot_attach(DAEMON_SLOT_ADDR)   -- 宿主注入的槽地址全局
--- ... setup：开总线、配置传感器（本 chunk 被 pcall 一次）...
-function daemon_tick()               -- daemon_body 逐拍调用（单次采样），拍间由 Cangjie sleep 让出
-    local ax, ay, az = 采样()         -- 经 HAL 读传感器
-    P.publish(slot, { ax, ay, az })
-end
-```
-
-采样 chunk 运行在守护线程的独立状态机里（示例见下方「万能采样 chunk」）。@Daemon 矩阵除 name/chunk 外的列会被序列化为 `DAEMON_CONFIG` 串注入 chunk，由 chunk 解析。
-
-**启动时序注意**：守护线程 setup（开总线 + 配置传感器）需数毫秒；若动作序列极短（几行瞬时 play），可能在守护首次采样前就 free() 停止（表现为 publishes=0）。真实机器人动作序列为秒级，无此问题；测试时用 Timer 延时列拉长主线程时间窗。
-
-**万能采样 chunk（零 per-sensor 代码）**：`modules/lib/sensor_daemon.lua` 服务任意 build/call/destroy 型驱动——@Daemon 矩阵配置 driver/proto/path/addr/interval/fields/sign（其余任意键透传给驱动 call 作附加参数，如 channel/pga），无需为每个传感器写 Lua：
-
-```sql
-CREATE TABLE Daemon (
-	name String, chunk String, driver String, proto String,
-	path String, addr String, interval String, fields String, sign String
-);
-INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign)
-  VALUES ('imu0', 'modules/lib/sensor_daemon.lua', 'MPU6050', 'i2c',
-          '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
-```
-
-（fields 用 `|` 分隔以避开 SQL 值分隔符逗号；sign=16 表示对提取值做 16 位补码符号扩展）
-
-**数据消费（闭环）**：守护 `play()` 把采样值以标量键 `v0..vN`（外加 count/nvals/status）返回。别的硬件变量只要在矩阵里用一列**引用守护变量名**，即经 `_getMetadata` 引用机制拿到这些值（标量键能过 call_lua，JsonArray 不能，故用 v0..vN）。`modules/Monitor.lua` 是示例：@Monitor 的 src 列填守护名，call() 里 `data.v0` 即实时采样值，决策后可经 controller 列转发执行器，形成「守护采样 → 引用消费 → 决策 → 转发执行」闭环。
-
-**滤波器硬件变量**：每个滤波器 = `lib/<filter>.lua` 库（统一 `.new()` + `:filter(x)` 接口，lua5.4/luajit 双兼容）+ `<Filter>.lua` 驱动（@矩阵名对应）。驱动的 src 列引用守护/传感器，call 逐拍滤波，输出既作 `out` 也别名 `v0`（成为「虚拟传感器」，下游按 v0 统一消费）；滤波器实例存驱动模块级 local，**状态跨 call 保持**。现有滤波器：
-
-- **Kalman**（`lib/kalman.lua` + `Kalman.lua`）：一维卡尔曼，配置 `Q`/`R`（系统/测量噪声协方差）
-- **Ema**（`lib/ema.lua` + `Ema.lua`）：指数移动平均（一阶低通），配置 `alpha`∈(0,1]（越小越平滑）、可选 `init`
-
-三级引用链示例（守护采样 → 滤波 → 消费）：
-
-```sql
-CREATE TABLE Daemon (name String, chunk String);
-INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/sensor_daemon.lua');  -- 采样
-CREATE TABLE Kalman (name String, Q String, R String, src String, field String);
-INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', 'imu0', 'v0');  -- 卡尔曼
--- 或 EMA：CREATE TABLE Ema (name String, alpha String, src String, field String);
---        INSERT INTO Ema (name, alpha, src, field) VALUES ('ef0', '0.3', 'imu0', 'v0');
-CREATE TABLE Monitor (name String, src String);
-INSERT INTO Monitor (name, src) VALUES ('mon0', 'kf0');  -- 消费滤波值
-```
-
-引用链 `imu0 → kf0 → mon0` 全靠既有引用机制自动串联（播放 mon0 会递归播放 kf0、imu0）。也可直接在 @Action 里以 `kf0.in`/`ef0.in` 列喂待滤值（无需 src）。注意：滤波变量每被 play 一次推进一拍，多消费者引用同一滤波器会重复推进。
-
-
-## 环境变量
-
-| 变量 | 说明 |
-| --- | --- |
-| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua` 与驱动 dofile `lib/` 均按其解析 |
-| `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
-
-安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。
-
-
-## 解析器
-
-树莓派通过I2C接口连接pca9685后使用如下方法使用：
-
-```bash
-cat scripts/std.mt | bash _run.sh --robot=robots/spider1.sql	# 蜘蛛机器人站立脚本
-```
-
-动作脚本从管道输入，机器人结构从--robot
-
-
-
-
-## 动作脚本
-
-项目中包含的动作脚本在scripts文件夹下面，这些动作脚本的适配机器人结构如下
+项目中包含的动作脚本都在 `scripts/` 文件夹下，刚好适配 spider1 的结构脚本（PCA9685 挂 1~10 号通道）：
 
 ```textplain
 # PCA9685
@@ -207,30 +81,71 @@ cat scripts/std.mt | bash _run.sh --robot=robots/spider1.sql	# 蜘蛛机器人�
 扬声器(spk)		=>  仅负责延时
 ```
 
-### 机器人结构语法
+除基础的站立 `std.mt` 外，`scripts/` 里还有转向、倾斜、举手、躺下、原地跳等动作脚本：
 
-robot机器人结构示例（新版结构脚本为 .sql 文件，由 SQL4cj 解析，支持 `--` 单行注释与块注释；旧版 .mt 结构矩阵已废弃）：
+```bash
+cat scripts/left-turn.mt | bash _run.sh --robot=robots/spider1.sql   # 左转
+cat scripts/tilt-r.mt   | bash _run.sh --robot=robots/spider1.sql   # 右倾
+cat scripts/one-shake.mt| bash _run.sh --robot=robots/spider1.sql   # 单腿姿势
+```
+
+机器人结构由 `--robot` 指定，动作脚本从管道输入——只要换结构脚本并调整动作脚本，就可以把同一套程序复用到另一台机器人上。
+
+## 🔧 环境要求
+
+### 支持的版本
+
+**已验证的开发环境：**
+
+| 组件          | 版本信息 | 状态    |
+| ------------- | -------- | ------- |
+| 仓颉语言      | v1.1.3   | ✅ 支持 |
+| 仓颉 stdx     | v1.1.3   | ✅ 支持 |
+| LuaJIT        | 5.1（libluajit-5.1-dev）| ✅ 必需 |
+| Linux glibc   | 发行版自带 | ✅ 必需 |
+
+**依赖包：**
+
+| 依赖包 | 用途 |
+| ------ | ---- |
+| [luajit4cj](https://gitcode.com/qingss0/luajit4cj) | LuaJIT 的仓颉绑定，Lua C API 一律经其调用 |
+| [pthread4cj](https://gitcode.com/qingss0/pthread4cj) | 守护线程共享内存槽的互斥锁封装 |
+| [SQL4cj](https://gitcode.com/qingss0/SQL4cj) | 机器人结构脚本（.sql）的解析 |
+| mt2、ctype4cj | 矩阵与基础工具支持 |
+
+### 平台兼容性
+
+| 平台                     | 支持状态      | 备注                                             |
+| ------------------------ | ------------- | ------------------------------------------------ |
+| Linux（aarch64 / x86_64）| ✅ 完全支持   | 主要平台，树莓派实测稳定                         |
+| Windows                  | ❌ 暂不支持   | 新版 HAL 加载 Linux glibc，Windows 通常没有     |
+| macOS                    | ❌ 暂不支持   | 计划支持                                         |
+
+由于底层的系统接口调用（I2C/SPI 总线、UART）被下沉到了脚本端，程序本身很容易跨平台编译运行。
+
+## 📚 核心概念与 DSL
+
+机器人开发的关键是把「结构」和「行为」解耦：bot4cj 用三种脚本协同工作——
+
+| 脚本 | 后缀 | 作用 |
+| ---- | ---- | ---- |
+| 结构脚本 | `.sql` | 以 SQL 方言声明机器人硬件结构与调用链 |
+| 驱动脚本 | `.lua` | 在 LuaJIT 里实现每个硬件变量的底层驱动 |
+| 动作脚本 | `.mt`  | 以行列式 DSL 编排机器人的动作 |
+
+### 机器人结构脚本（.sql）
+
+新版结构脚本为 `.sql` 文件，由 SQL4cj 解析（支持 `--` 单行注释与块注释）；旧版 `.mt` 结构矩阵已废弃。核心就是一组 `CREATE TABLE / INSERT INTO` 矩阵，每个 `@矩阵名` 对应一类硬件变量：
 
 ```sql
-/* 在 @Action 矩阵中，硬件变量的参数可以使用别名 */
-CREATE TABLE Alias (
-	name  String,
-	alias String
-);
-INSERT INTO Alias (name, alias) VALUES (A, angle);
-INSERT INTO Alias (name, alias) VALUES (F, frequency);
-
-
-/* 定义I2C硬件 */
+/* 定义 I2C 总线 */
 CREATE TABLE I2C (
 	name String,
 	path String
 );
-INSERT INTO I2C (name, path) VALUES ('i2c-0', '/dev/i2c-0');
 INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');
 
-
-/* 定义pca9685硬件 */
+/* 定义 PCA9685 舵机控制器，挂在 i2c-1 的 0x40 地址 */
 CREATE TABLE PCA9685 (
 	name    String,
 	I2C     String,
@@ -238,114 +153,7 @@ CREATE TABLE PCA9685 (
 );
 INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', 'i2c-1', '0x40');
 
-
-/* 定义mpu6050硬件（持续采样建议改用上文 @Daemon 守护，见「万能采样 chunk」） */
-CREATE TABLE MPU6050 (
-	name    String,
-	I2C     String,
-	address String
-);
-INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-0', 'i2c-1', '0x69');
--- INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-1', 'i2c-1', '0x68');
--- INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-2', 'i2c-0', '0x68');
--- INSERT INTO MPU6050 (name, I2C, address) VALUES ('mpu6050-3', 'i2c-0', '0x69');
-
-
-/* 定义mlx90393三轴磁力计（罗盘/磁场测量；gain=GAIN_SEL 0~7，0=5x 最高增益；
-   timeout=单次测量就绪轮询超时 ms；离线测试 test/test_mlx90393.lua） */
-CREATE TABLE MLX90393 (
-	name    String,
-	I2C     String,
-	address String,
-	gain    String,
-	timeout String
-);
-INSERT INTO MLX90393 (name, I2C, address, gain, timeout) VALUES ('mlx0', 'i2c-1', '0x0C', '-', '-');
-
-
-/* 定义as3935闪电传感器（事件型：call 返回最近事件，适合 @Daemon 低频轮询；
-   地址 0x03 在 I2C 保留区，i2cdetect 默认扫不到；电机是强干扰源，误报频繁
-   先 mask_dist='1'；离线测试 test/test_as3935.lua） */
-CREATE TABLE AS3935 (
-	name      String,
-	I2C       String,
-	address   String,
-	indoor    String,
-	nf        String,
-	wdth      String,
-	srej      String,
-	min_lig   String,
-	mask_dist String,
-	tun_cap   String
-);
-INSERT INTO AS3935 (name, I2C, address, indoor) VALUES ('as3935-0', 'i2c-1', '0x03', '-');
-
-
-/* 定义vl53l4cd ToF激光测距（1mm~1.2m/18° 窄视场；budget=单次测量预算 ms 10~200；
-   inter=间隔 ms，0=连续；寄存器地址 16 位，经 HAL 的 i2c_read_reg16 原子访问；
-   离线测试 test/test_vl53l4cd.lua） */
-CREATE TABLE VL53L4CD (
-	name    String,
-	I2C     String,
-	address String,
-	budget  String,
-	inter   String,
-	timeout String
-);
-INSERT INTO VL53L4CD (name, I2C, address) VALUES ('tof0', 'i2c-1', '0x29');
-
-
-/* 定义vl53l0x ToF激光测距（ST 第一代 FlightSense，30mm~2m/25° 视场；
-   sig=final range 信号率门限 MCPS 缺省 0.25（越小越能收弱反射），
-   long=长距模式（ESPHome 同款换 tuning 挡 + 门限 0.1）；单帧约 33ms，
-   页式寄存器序列须整段连续执行，一器件一消费者；
-   离线测试 test/test_vl53l0x.lua） */
-CREATE TABLE VL53L0X (
-	name    String,
-	I2C     String,
-	address String,
-	sig     String,
-	long    String,
-	timeout String
-);
-INSERT INTO VL53L0X (name, I2C, address) VALUES ('tof0', 'i2c-1', '0x29');
-
-
-/* 定义ms5611高分辨率气压计（0.012mbar/约10cm海拔分辨率；osr=过采样率
-   256~4096 缺省 4096，p0=参考海平面气压缺省 1013.25；build 做 PROM CRC-4
-   自检；遮光海绵勿撕除，离线测试 test/test_ms5611.lua） */
-CREATE TABLE MS5611 (
-	name    String,
-	I2C     String,
-	address String,
-	osr     String,
-	p0      String
-);
-INSERT INTO MS5611 (name, I2C, address, osr) VALUES ('baro0', 'i2c-1', '0x77', '-');
-
-
-/* 定义as7262六通道光谱传感器（V450/B500/G550/Y570/O600/R645nm 16位原始计数；
-   gain=增益倍数 1/3.7/16/64 就近吸附缺省 64x，integ=积分 2.8ms 单位缺省 50；
-   间接寄存器访问有芯片侧握手状态，一器件一消费者；离线测试 test/test_as7262.lua） */
-CREATE TABLE AS7262 (
-	name    String,
-	I2C     String,
-	address String,
-	gain    String,
-	integ   String,
-	timeout String
-);
-INSERT INTO AS7262 (name, I2C, address) VALUES ('spec0', 'i2c-1', '0x49');
-
-
-/* 定义扬声器位：旧版 @Speaker 矩阵已移除，现在仅用 Timer 负责延时 */
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('spk');
-
-
-/* 定义舵机硬件：max 限幅（负值表示方向反向）、offset 中位漂移，"-" 继承上一行 */
+/* 定义舵机：max 限幅（负值表示方向反向）、offset 中位漂移，"-" 继承上一行 */
 CREATE TABLE Servo (
 	name       String,
 	max        String,
@@ -354,36 +162,55 @@ CREATE TABLE Servo (
 	controller String,
 	channel    String
 );
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s1,  90, -, -, 'pca9685-0', 0);	-- 左下水平关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s2, 180, -, -,          -, 1);	-- 左下垂直关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s3, -90, -, -,          -, 2);	-- 右下水平关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s4,-180, -, -,          -, 3);	-- 右下垂直关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s5,  90, -, -,          -, 4);	-- 右上水平关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s6, 180, -, -,          -, 5);	-- 右上垂直关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s7, -90, -, -,          -, 6);	-- 左上水平关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s8,-180, -, -,          -, 7);	-- 左上垂直关节
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s9, 180, -, -,          -, 8);	-- 云台1
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s10,180, -, -,          -, 9);	-- 云台2
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s1, 90, -, -, 'pca9685-0', 0);	-- 左下水平关节
 ```
 
-> 说明：`-` 是占位符，表示继承上一行同列的值（如 s2-s10 的 controller 继承 s1 的 `pca9685-0`）；
-> 注释整行 INSERT 即可下线一个硬件实例（如上被注释的 mpu6050-1 ~ mpu6050-3）。
+> 说明：`-` 是占位符，表示继承上一行同列的值（如 s2 之后的 controller 继承 s1 的 `pca9685-0`）；注释整行 INSERT 即可下线一个硬件实例。
 
-### controller 引用（通用）
+### 硬件变量矩阵一览
 
-除 `Servo` 外，任何硬件矩阵都可以声明一个 `controller` 列，把该硬件变量的调用转发给另一个硬件变量：
+目前框架内置 50 个左右硬件驱动，按总线/能力分类如下（每个驱动就是一个 `modules/<矩阵名>.lua`）：
 
-- 先运行自己的 Lua 驱动（`modules/<矩阵名>.lua` 的 `call`）
-- 框架再把「该行元数据（跳过 `name`/`controller` 列） ∪ 自己 Lua 的返回表」发送给 `controller` 指定的硬件变量
-- `controller` 的值支持 `-` 占位符继承上一行
-- 被引用的 controller 必须在结构脚本中先于引用它的矩阵定义
+| 类别 | 硬件变量 | 说明 |
+| ---- | -------- | ---- |
+| 舵机/输出 | `PCA9685`、`Servo`、`Timer`、`MCP4725`、`AD9833`、`TPL0501`、`PCF8574`、`GPIO` | 舵机控制器、DAC、DDS 波形、数字电位器、IO 扩展、GPIO |
+| IMU/姿态 | `MPU6050`、`BMI270`、`LSM6DSV`、`ADXL345`、`MLX90393`、`BMM150` | 六轴/三轴加速度计、磁力计、罗盘 |
+| 气压/环境 | `MS5611`、`LPS22HB`、`BME280`、`BME688`、`SHT3X`、`CHT8305`、`AMG8833`、`AS7262`、`APDS9900`、`BH1745` | 气压计、温湿度、热像、光谱、环境光、颜色 |
+| 测距 | `VL53L0X`、`VL53L4CD`、`AS3935` | ToF 激光测距、闪电事件传感器 |
+| ADC/电源 | `ADS1015`、`ADS1115`、`ADS1256`、`MCP3421`、`INA219`、`INA226`、`INA3221`、`MAX17043`、`MAX17048`、`LTC2944`、`EMC2101` | 高速 ADC、电流/功率监测计、库仑计、电量计、风扇控制器 |
+| 气体/其他 | `SGP30`、`SDS011`、`MHZ19`、`MAX30102`、`MT6826S` | 空气质量、PM2.5、CO2、血氧 PPG、磁编码器 |
+| 框架 | `I2C`、`SPI`、`UART`、`Relay`、`dummy`、`Kalman`、`Ema`、`Monitor` | 总线、转发测试、滤波器、数据消费示例 |
+
+### 动作脚本（.mt）
+
+动作脚本用一张表格描述一帧一帧的动作：表头是「硬件变量.参数」，每一行就是一步：
+
+```mt
+# 行动矩阵为硬件变量输入参数
+@Action
+s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  spk.F  spk.delay;	# column name
+  45     -    45     -    45     -    45     -     10        200;	# stand
+  90     -     -     -     -     -     -     -      -         20;	# left-behind
+@
+```
+
+- 动作脚本也可以内联定义 `@Alias` 别名矩阵（如把 `s1.A` 写成 `s1.angle`），无需写进结构脚本
+- 结构脚本与动作脚本两侧都可以定义别名，同名时动作脚本的定义覆盖结构脚本（会打印覆盖日志）
+- 同一动作脚本内重复定义同名别名会报错
+
+### controller 引用机制（通用）
+
+除 `Servo` 外，任何硬件矩阵都可以声明一个 `controller` 列，把该硬件变量的调用**转发**给另一个硬件变量：
+
+1. 先运行自己的 Lua 驱动（`modules/<矩阵名>.lua` 的 `call`）
+2. 框架再把「该行元数据（跳过 `name`/`controller` 列）∪ 自己 Lua 的返回表」发送给 `controller` 指定的硬件变量
+3. `controller` 的值支持 `-` 占位符继承上一行
+4. 被引用的 controller 必须在结构脚本中先于引用它的矩阵定义
 
 可运行示例（`Relay` 把参数转成 `delay` 后交给 `Timer` 延时）：
 
 ```sql
-CREATE TABLE Timer (
-	name String
-);
+CREATE TABLE Timer (name String);
 INSERT INTO Timer (name) VALUES ('timer-0');
 
 CREATE TABLE Relay (
@@ -394,50 +221,228 @@ CREATE TABLE Relay (
 INSERT INTO Relay (name, controller, note) VALUES ('relay0', 'timer-0', 'hello-relay');
 ```
 
+### 基层硬件抽象层（HAL）
+
+I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现，**仅支持 LuaJIT**：
+
+- `ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；fd 为真实内核句柄，跨 Lua 状态机天然有效
+- **I2C 经 `I2C_RDWR` ioctl 原子事务**：读寄存器的「写指针 + 读」合并为单次内核传输，消除守护线程与主线程并发访问同一器件时的寄存器指针竞态；地址由每条 i2c_msg 携带，不再需要 `I2C_SLAVE` ioctl（也没有地址被内核驱动占用的 EBUSY 问题）
+- 驱动模块顶部 `dofile` 加载 HAL，函数名与原 cfunc 完全一致；Lua 5.3+ 位运算经 `bitcompat.lua` 双兼容
+- `modules/lib/` 还收纳 `kalman.lua`（一维卡尔曼滤波器）等公共库，不依赖 HAL 的模块仍可用 `luajit`/`lua5.4` 独立调试
+
+### @Daemon 守护线程
+
+后台持续采样（如 IMU）用 `@Daemon` 矩阵声明，宿主用**仓颉 `spawn` 原语**起守护线程：
+
+```sql
+CREATE TABLE Daemon (
+	name  String,
+	chunk String
+);
+INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/daemon_probe.lua');
+```
+
+并发模型的关键点：
+
+- **必须用 `spawn`**，不能用 pthread4cj 裸线程：foreign pthread 没有仓颉运行时线程态，在其上跑 @C 代码必崩（PoC 实测 3/3 SIGSEGV）；spawn 是仓颉的 M:N 绿色线程，运行时已附着，安全
+- 守护线程持有**独立 lua_State**（`jit.off`），与主线程状态机 1:1 隔离，规避 LuaJIT VM 非线程安全
+- **让出式节拍**：拍间用仓颉 `sleep(Duration)` 让出 worker；切忌在 chunk 内用 ffi `usleep` 自旋循环（会阻塞 worker 不放，守护线程数 ≥ worker 数时池耗尽是死锁）
+- **IPC 经共享内存槽**：守护侧 Lua `P.publish(slot, {...})` 写值，主线程侧 `play()` 加锁读值，同一 pthread_mutex 防撕裂
+- `@Daemon` 矩阵除 `name`/`chunk` 外的列会序列化为 `DAEMON_CONFIG` 串注入 chunk
+
+**万能采样 chunk（零 per-sensor 代码）**：`modules/lib/sensor_daemon.lua` 服务任意 build/call/destroy 型驱动，无需为每个传感器写 Lua：
+
+```sql
+CREATE TABLE Daemon (
+	name String, chunk String, driver String, proto String,
+	path String, addr String, interval String, fields String, sign String
+);
+INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign)
+  VALUES ('imu0', 'modules/lib/sensor_daemon.lua', 'MPU6050', 'i2c',
+          '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
+```
+
+`fields` 用 `|` 分隔以避开 SQL 值分隔符逗号；`sign=16` 表示对提取值做 16 位补码符号扩展。
+
+**滤波器硬件变量**：每个滤波器 = `lib/<filter>.lua` 库（统一 `.new()` + `:filter(x)` 接口）+ `<Filter>.lua` 驱动。驱动引用守护/传感器，call 逐拍滤波，输出既作 `out` 也别名 `v0`，成为「虚拟传感器」。现有滤波器：
+
+- **Kalman**（一维卡尔曼）：配置 `Q`/`R`（系统/测量噪声协方差）
+- **Ema**（指数移动平均）：配置 `alpha`∈(0,1]（越小越平滑）、可选 `init`
+
+三级引用链示例（守护采样 → 滤波 → 消费）：`imu0 → kf0 → mon0` 全靠既有引用机制自动串联（播放 mon0 会递归播放 kf0、imu0）。
+
+> 注意：守护线程 setup（开总线 + 配置传感器）需数毫秒；若动作序列极短（几行瞬时 play），可能在守护首次采样前就 free() 停止（表现为 publishes=0）。真实机器人动作序列为秒级，无此问题；测试时用 Timer 延时列拉长主线程时间窗。
+
+### 环境变量
+
+| 变量 | 说明 |
+| --- | --- |
+| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua` 与驱动 dofile `lib/` 均按其解析 |
+| `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
+
+安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。
+
+## 💡 使用示例
+
+### 基础用法：无硬件自检
+
+不接任何硬件也能开发调试，确认从「解析结构 → 加载驱动 → 转发调用」的整条链路正常：
+
 ```bash
-cat scripts/relay-test.mt | ./bot --robot=robots/relay-test.sql
+cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 ```
 
-action机器人动作脚本实例：
+### 高级用法：守护采样 → 滤波 → 消费闭环
 
-```
-# 行动矩阵为硬件变量输入参数
-@Action
-s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	# column name
-  45     -    45     -    45     -    45     -    90     90     10        200;	# stand
-  90     -     -     -     -     -     -     -     -      -      -         20;	# left-behind
+用 `@Daemon` 起守护线程采样 IMU，接 Kalman 滤波，再用 `Monitor` 消费并转发执行器，形成闭环：
 
-  45     -     -     -     -     -     -     -     -      -      0        500;	# stand
-   -     -    90     -     -     -    45     -     -      -      -         20;	# right-behind
+```sql
+CREATE TABLE Daemon (name String, chunk String);
+INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'modules/lib/sensor_daemon.lua');   -- 采样
 
-   -     -    45     -     -     -     -     -     -      -    200        500;	# stand
-   -     -     -     -    90     -     -     -     -      -      0         20;	# right-front
+CREATE TABLE Kalman (name String, Q String, R String, src String, field String);
+INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', 'imu0', 'v0');  -- 卡尔曼
 
-   -     -     -     -    45     -     -     -     -      -      -        500;	# stand
-   -     -     -     -     -     -    90     -     -      -      -         20;	# left-front
-
-   -     -     -     -     -     -    45     -     -      -      -        500;	# stand
-   -     -     -     -     -     -     -     -     -      -      -         20;	# stand
-@
-
+CREATE TABLE Monitor (name String, src String);
+INSERT INTO Monitor (name, src) VALUES ('mon0', 'kf0');   -- 消费滤波值
 ```
 
-动作脚本中也可以内联定义 `@Alias`（别名矩阵），无需写进结构脚本：
+`modules/Monitor.lua` 即此类示例：`call()` 里 `data.v0` 拿到实时采样值，决策后可经 controller 列转发执行器。
 
-```mt
-# 与 @Action 写在同一个 .mt 文件中
-@Alias
-name  alias;
-   A  angle;
-   F  frequency;
-@
+## ⚠️ 已知限制
 
-@Action
-s1.A  spk.F;
-   45    10;
-@
+### 当前版本限制
+
+- **仅支持 Linux**：HAL 通过 `ffi` 直调 glibc，Windows 平台没有现成的 glibc，暂不支持（旧版曾支持，0.3.0 起移除）
+- **仅支持 LuaJIT**：总线驱动依赖 `ffi`，需 `luajit` 解释器；不依赖 HAL 的模块可用 `lua5.4` 独立调试
+- **守护线程的开销**：每个守护持有独立 lua_State，拍间必须让出式 sleep，否则会耗尽 worker 池
+- **一器件一消费者**：页式寄存器序列的器件（如 VL53L0X）与握手式间接访问器件（如 AS7262）只支持单消费者
+
+### 待实现功能
+
+- [ ] **TCP 传输动作**：目前动作脚本经管道输入，Windows 上可能没有管道，未来计划推出 TCP 持续传输
+- [ ] **神经网络生成动作**：神经网络/强化学习路径（DRL、CNN）已在本仓库历史上实现过，当前版本暂时注释，计划结合 `nn4cj` 重新接入
+- [ ] **更多操作系统适配**：鸿蒙终端、macOS、开源鸿蒙机器人
+- [ ] **驱动生态扩充**：按模板新增一个 Lua 文件即可即插即用，欢迎社区贡献
+
+## 🔧 开发与贡献
+
+### 本地开发
+
+```bash
+# 克隆仓库
+git clone https://gitcode.com/qingss0/bot4cj.git
+cd bot4cj
+
+# 安装依赖并构建
+bash _set.sh
+
+# 运行离线测试（桩替身不触硬件）
+bash test/run_all.sh
+
+# 运行示例（无硬件自检链路）
+cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 ```
 
-- 结构脚本（.sql）与动作脚本（.mt）两侧都可以定义别名
-- 同名时**动作脚本的定义覆盖结构脚本**（会打印覆盖日志）
-- 同一动作脚本内重复定义同名别名会报错
+### 贡献指南
+
+我们欢迎所有形式的贡献！
+
+- **🐛 报告 Bug**：[提交 Issue](https://gitcode.com/qingss0/bot4cj/issues)
+- **💡 功能建议**：[功能请求](https://gitcode.com/qingss0/bot4cj/issues)
+- **📝 完善文档**：改进 README、添加示例、翻译文档
+- **🔧 代码贡献**：新增驱动、修复 Bug、优化性能
+- **🧪 测试验证**：在不同总线上测试、补充离线用例
+
+> 💡 **记住**：能写文档的写文档，能写代码的写代码，一起共建生态！
+
+### 开发者
+
+- **主要维护者**：[@qingss0](https://gitcode.com/qingss0)
+- **团队**：Flowers_Unamed（BadHope）
+
+## 📋 更新日志
+
+### v0.3.0（2026-09）
+
+- ✅ 守护线程机制 `@Daemon`：仓颉 `spawn` 绿色线程 + 每守护独立 lua_State + 共享内存槽 IPC
+- ✅ 万能采样 chunk `sensor_daemon.lua`：零 per-sensor 代码
+- ✅ 滤波器硬件变量：Kalman 与 Ema，支持「守护 → 滤波 → 消费」三级引用链
+- ✅ 新增一批驱动：SHT3X、INA219/INA226/INA3221、MAX17043/17048、LTC2944、GPIO、MLX90393、AS3935、VL53L0X/VL53L4CD、MS5611、AS7262、BME688、BMI270、LSM6DSV、BMM150 等
+- ✅ UART 总线能力（HAL termios + MH-Z19B 参考驱动）
+- ✅ HAL 新增 16 位寄存器指针读写与多字节读；驱动样板收敛为 `drv_common.lua`
+- ✅ Lua 驱动沙箱（中和 shell 与任意文件读写）
+
+### v0.2.0（2026-09）
+
+- ✅ HAL 彻底甩掉宿主注册的 cfunc，进入 LuaJIT ffi 时代（此后仅支持 LuaJIT）
+- ✅ LuaJIT 绑定抽取为独立包 [luajit4cj](https://gitcode.com/qingss0/luajit4cj)
+
+### v0.1.1（2026-09）
+
+- ✅ controller 引用机制：硬件变量可在矩阵里把执行转发给其它硬件变量
+- ✅ 动作脚本支持内联 `@Alias` 定义
+
+### v0.0.6（2026-09）
+
+- ✅ 机器人结构脚本迁移到 SQL（SQL4cj 解析，支持注释）
+- ✅ 新驱动：Timer、SGP30、Dummy
+
+### v0.0.3（2026-05）
+
+- ✅ 项目最大转折点：嵌入 Lua 状态机，硬件变量改由 Lua 脚本实现
+
+### v0.0.1beta（2026-04）
+
+- 🚧 项目起步：PCA9685 舵机驱动、蜘蛛机器人步态脚本、FFT/神经网络探索
+
+完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 📄 开源协议
+
+本项目基于 [MIT](LICENSE) 协议开源（Copyright (c) 2025 卿松），请自由地享受和参与开源。
+
+## 📸 效果展示
+
+### 运行视频
+
+> 🎥 [查看完整演示视频](http://152.136.227.85:8080/videos/robot-show.mp4)
+
+演示视频由 PC 端与机器人实拍两部分组成，展示了平面蜘蛛机器人按动作脚本完成站立、转向、倾斜、举手等动作。
+
+## 🙋 常见问题
+
+### Q: 报错提示看不懂怎么办？
+
+A: 结构脚本的报错信息会明确指出是哪张表、哪一行、哪一列的问题；动作脚本报错会说明是哪个硬件变量与参数。按提示修正即可，也可以在 [Issues](https://gitcode.com/qingss0/bot4cj/issues) 中反馈。
+
+### Q: @Daemon 守护线程为什么卡死？
+
+A: 最常见的原因是拍间用 ffi `usleep` 自旋，占用 schd-worker 不放，导致 worker 池耗尽。请让守护采样 chunk 只定义全局 `daemon_tick`，拍间由仓颉 `sleep(Duration)` 让出。
+
+### Q: 守护线程 publishes=0？
+
+A: 动作序列极短（几行瞬时 play）时，守护可能在首次采样前就被 free() 停止。真实动作序列为秒级没有问题；测试时用 Timer 延时列拉长主线程时间窗。
+
+### Q: I2C 设备报 EBUSY？
+
+A: HAL 已改用 `I2C_RDWR` 原子事务，地址由每条 i2c_msg 携带，不再需要 `I2C_SLAVE` ioctl，一般不会再遇到内核驱动占用地址导致的 EBUSY。
+
+### Q: 为什么不支持 Windows？
+
+A: 新版 HAL 加载 Linux 的 glibc（open/ioctl/read/write/usleep），Windows 通常没有；动作脚本经管道输入，Windows 的 cmd/PowerShell 也没有原生的管道重定向。旧版曾支持 Windows，后续计划推出 TCP 传输与多平台适配。
+
+### Q: 不接硬件也能开发吗？
+
+A: 可以。`bash test/run_all.sh` 用桩替身跑全部 Lua 离线测试；`relay-test` 链路（Relay → Timer）不需要任何硬件，先跑通它即可验证安装与环境是否正确。
+
+---
+
+## 📞 联系我们
+
+- 🐛 **问题反馈**：[GitCode Issues](https://gitcode.com/qingss0/bot4cj/issues)
+- 🏠 **代码仓库**：[gitcode.com/qingss0/bot4cj](https://gitcode.com/qingss0/bot4cj)
+- 📧 **邮件联系**：1776177662@qq.com
+- 📹 **演示视频**：[实机演示地址](http://152.136.227.85:8080/videos/robot-show.mp4)
+
+**一起建设仓颉生态！** 🚀
