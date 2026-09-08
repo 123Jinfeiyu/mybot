@@ -8,10 +8,7 @@ package bot4cj
 import std.argopt.*
 import std.collection.*
 import std.env.*
-import std.convert.*
-import std.io.*
 import std.fs.*
-import stdx.encoding.json.*
 //import ctype4cj.*
 //import nn4cj.*
 
@@ -36,9 +33,11 @@ main(args: Array<String>): Int64 {
 	/* 读取设置项 */
 
 	/*
-	 *  初始化神经网络 （init nn）
+	 *  初始化神经网络 （init nn）。
+	 *  注意：以下 NN/DRL 相关代码为历史实现，当前版本注释保留。
 	 *  TODO: 可以去掉内部初始化参数，使用矩阵式模板进行初始化
 	 *  NOTE(20260830-qing): 更换nn4cj库之后，我的开发机器无法编译神经网络部分了，所以注释掉了
+	 *  （计划结合 nn4cj 重新接入，见 README「待实现功能」）
 	 */
 	//var nns: ArrayList<Nn> = 
 	//if (options.keys().contains("i")) {
@@ -120,7 +119,7 @@ main(args: Array<String>): Int64 {
 		/* 无论有没有成功激活，都进行清理 */
 		finally {  robot.deactive()  }
 
-		/* NOTE(20260523-qing): 储存微调网络模型 */
+		/* 以下 NN/DRL 路径注释保留（历史上用于微调网络模型，未来配合 nn4cj 重新接入） */
 //		let consoleReader = getStdIn()
 //		run_action_drl(consoleReader, nns)
 //		if (options.contains("o")) {
@@ -145,7 +144,9 @@ func print_help()
 	println("cat scripts/std.mt | ./bot --robot=./robots/spider1.sql")
 }
 
-/* -------- 集成多种常规测试、临时测试 -------- */
+/* -------- 集成多种常规测试、临时测试 --------
+ * 以下 run_test 为历史代码，注释保留（其中 matrix_* 分支已过期——robot.run()
+ * 现需 InputStream 实参；nn1 分支待 nn4cj 重新接入时激活） */
 //func run_test(key: String) {
 //
 //	/*  神经网络门测试  */

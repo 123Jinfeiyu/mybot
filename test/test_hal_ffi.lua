@@ -2,16 +2,8 @@
 -- mock HAL.sys.* 系统调用层，验证调用序列、缓冲区内容与错误路径；不触碰真实硬件。
 -- 用法（项目根目录）: luajit test/test_hal_ffi.lua
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1
-		print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local ffi = require("ffi")
 local HAL = dofile("modules/lib/HAL.lua")
@@ -337,5 +329,4 @@ check("SPI.lua call 随 fd 返回 delay=50",
 	tonumber(r.fd) ~= nil and tonumber(r.delay) == 50, r.delay)
 
 ------------------------------------------------------------------
-print(string.format("结果: %d 通过, %d 失败", passed, failed))
-if failed > 0 then os.exit(1) end
+tester.summary()

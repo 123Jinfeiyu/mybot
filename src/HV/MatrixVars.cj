@@ -3,7 +3,8 @@
  *  接收3个lambda表达式，在回调函数中定义行为（）
  *  通过JsonValue这种通用的数据结构进行传值
  *
- *  INFO*(20260517-qing): 因为析构器（终结器）的调用时间不确定，需要手动构造RAII机制
+ *  说明：析构器（终结器）的调用时间不确定，故手动构造 RAII 机制（build/destroy）。
+ *  未来规划（详见 README 待实现功能）：
  *  TODO(20260519-qing): 考虑将@Action矩阵对象置为硬件变量的一种
  *  TODO*(20260529-qing): 增加微调器机制，通过不同的微调器对@Action进行微调
  */
@@ -70,7 +71,6 @@ public open class MatrixVars_Hardware {
 	/*
 	 *  -------------------------------- *
 	 *  事件发生器  该方法会调用硬件，需要传入1个JsonValue参数  它返回1个JsonValue值
-	 *
 	 *  TODO(20260612-qing): 使用某种方式记录变量是否经过了初始化
 	 */
 	public func play(input: JsonValue): JsonValue {  return things(input)  }

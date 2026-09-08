@@ -4,10 +4,10 @@
 
 
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 
 
@@ -17,11 +17,9 @@ dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua
 --
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua builder func get a table --------", data)
@@ -34,11 +32,9 @@ end
 --
 function destroy(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua ender func get a table --------", data)
@@ -53,11 +49,9 @@ end
 -- NOTE(20260902-qing): 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua caller func get a table --------", data)
@@ -65,25 +59,16 @@ function call(data)
 	-----------------------------------------------------
 	local delay = data.delay
 	if delay == nil then	-- 检查延时参数是否存在
-		return {
-			result = "ERR",
-			message = "Invalid Argument: delay"
-		}
+		return err("Invalid Argument: delay")
 	end
 
 	delay = tonumber(delay)
 	if delay == nil then	-- 检查延时参数是否是数值
-		return {
-			result = "ERR",
-			message = "Invalid Argument: delay (not a number)"
-		}
+		return err("Invalid Argument: delay (not a number)")
 	end
 
 	if delay < 0 then	-- 延时不得为负
-		return {
-			result = "ERR",
-			message = "Invalid Argument: delay (negative)"
-		}
+		return err("Invalid Argument: delay (negative)")
 	end
 
 	-----------------------------------------------------

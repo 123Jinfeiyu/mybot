@@ -1,13 +1,12 @@
 /*
- *  机器人构成模块
- *  INFO(20260514-qing): 该模块确定机器人结构，为解耦考虑应该从解析出的矩阵对象中构建
+ *  机器人构成模块：确定机器人结构，从解析出的矩阵对象构建硬件变量
  *  TODO(20260527-qing): 使脚本中的数值亦可从运行时确定
  */
 
 package bot4cj
 import std.io.*
 import std.collection.*
-import std.process.*
+import std.env.*
 import stdx.encoding.json.*
 import mt2.*
 import SQL4cj.*
@@ -15,15 +14,13 @@ import bot4cj.HV.*
 
 
 /* 机器人结构类
- * 
- * 机器人结构是动态的，从脚本中解析的 
- * TODO(20260514-qing): 调整为输入MatrixObject
- * TODO(20260515-qing): 需要重写一遍硬件类
+ *
+ * 机器人结构是动态的：接受输入流，随后逐个解析存入链表。
+ *
+ * 未来规划（详见 README 待实现功能）：
  * TODO(20260518-qing): 使用神经网络RNN直接根据动作+传感器脚本生成下一步动作
  * TODO(20260527-qing): 增加硬件模块行为脚本
  * TODO*(20260527-qing): 为@Action表演矩阵对象增加位置指示器，以增量行动
- *
- * INFO(20260826-qing): 机器人结构类对象，接受输入流，随后逐个解析存入链表
  */
 class RobotStruct {
 
@@ -92,8 +89,8 @@ class RobotStruct {
 
 	/*
 	 *  消除所有硬件变量
-	 * 
-	 *  INFO(20260517-qing): 它需要以倒序方式进行清除
+	 *
+	 *  清除必须以倒序进行（I2C→PCA9685 等 fd 依赖要求先销毁依赖方）。
 	 */
 	public func deactive(): Unit {
 		/* P1 防死锁：先给【所有】守护置 stop，再统一 join。
@@ -130,8 +127,8 @@ class RobotStruct {
 
 	/*
 	 *  储存整个矩阵变量表
-	 * 
-	 *  NOTE(20260517-qing): 使用完毕要关闭输出流
+	 *
+	 *  调用方使用完毕后应关闭输出流。
 	 */
 	public func save(out: OutputStream): Unit {
 		let ms = MatrixSaver(out)
@@ -140,8 +137,7 @@ class RobotStruct {
 
 	/*
 	 *  阅读矩阵脚本
-	 * 
-	 *  TODO(20260504-qing): 使用矩阵脚本存储神经网络模型
+	 *  TODO(20260504-qing): 使用矩阵脚本存储神经网络模型（未来 NN 接入时实现）
 	 */
 	static private func readMatrix(file: InputStream, C: LinkedList<MatrixObject>){
 		let sr = StringReader<InputStream>(file)
@@ -230,89 +226,83 @@ class RobotStruct {
 		}
 	}
 
-	/*
+/*
 	 *  创建硬件变量字典
-	 * 
-	 *  TODO(20260515-qing): 解耦合  
-	 *  FIXME(20260518-qing): 在插入哈希表之前如果有已经存在的键值，要释放它的资源
+	 *
+	 *  按矩阵类型分派到独立创建方法（各硬件类型工厂逻辑自洽，便于单独测试）：
+	 *    Alias   → 别名硬件（结构脚本侧注册，重名直接抛错）
+	 *    Action  → 跳过（动作由 run() 阶段读取）
+	 *    Daemon  → 守护线程硬件（spawn 绿色线程 + 共享内存槽）
+	 *    其余    → 通用 Lua 脚本硬件（走 MetaProvider 元数据 + 可选 controller 转发）
 	 */
-	private func createHardVars()
-	{
-
+	private func createHardVars() {
 		for (matrix in C) {
-		let MtName = matrix.getName()
-
-		/* ---- 【特殊的】Alias别名硬件
-			 * ---- */
+			let MtName = matrix.getName()
 			if (MtName == "Alias") {
 				registerAliasMatrix(matrix, None)
 			}
-
-
-			/* ---- [特殊的] Action矩阵
-			 * ---- */
 			else if (MtName == "Action") {
+				/* 动作矩阵不在此阶段创建硬件 */
 				;
 			}
-
-			/* ---- 【特殊的】Daemon 守护线程硬件 ---- */
 			else if (MtName == "Daemon") {
-				let idxName = matrix.indexOfCol(0, "name")
-				for (i in 1..matrix.size) {
-					let name = matrix[i, idxName]
-					addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, M, daemonHolders), source: " (in table '${MtName}')")
-				}
+				createDaemonVars(matrix, MtName)
 			}
-
-			/* ---- 【通用的】Lua脚本硬件 ---- */
 			else if (matrix.size > 0) {
-				let idxName = matrix.indexOfCol(0, "name")
-
-				/* ---- 手动扫描标题行，寻找可选的 controller 列 ---- */
-				var idxCtrl: Int64 = -1
-				for (j in 0..matrix.col) {
-					if (matrix[0, j] == "controller") { idxCtrl = j; break }
-				}
-
-				/* ---- 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径，默认为 ./modules ---- */
-				let modulePath = Process.current.getEnv("BOT4CJ_MODULE_PATH") ?? "./modules"
-				let scriptPath = "${modulePath}/${MtName}.lua"
-
-				for (i in 1..matrix.size ) {
-					let name = matrix[i, idxName]
-
-					/* ---- 解析该行的 controller 引用（支持 - 占位符继承） ---- */
-					var ctrlOpt: Option<MatrixVars_Hardware> = None
-					if (idxCtrl >= 0) {
-						let ctrlName = MatrixVars_Hardware.getMt(matrix, i, idxCtrl)
-						if (ctrlName != "-") {
-							let ctrlOptHV = M.get(ctrlName)
-							if (ctrlOptHV.isNone()) {
-								throw IllegalArgumentException(
-									"Hardware variable '${name}' declares controller '${ctrlName}' in table '${MtName}', but it is not defined yet. The controller must be defined before the matrix that references it.")
-							}
-							ctrlOpt = ctrlOptHV.getOrThrow()
-						}
-					}
-
-/* ---- 元数据闭包：跳过 controller 列，避免误当作引用 play ----
-				 * P8/M2：由 MetaProvider 提供静态列缓存 + 引用列实时快照 */
-				let skipCol = idxCtrl	/* lambda 不得捕获可变变量 */
-				let metaProv = MetaProvider(matrix, i, skipCol, M)
-				addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
-						metaProv.collect()
-				}, controller: ctrlOpt), source: " (in table '${MtName}')")
-				}
-		}
+				createLuaVars(matrix, MtName)
+			}
 		}
 	}
 
+	/* ---- Daemon 守护线程硬件：矩阵每行一个守护变量 ---- */
+	private func createDaemonVars(matrix: MatrixObject, MtName: String): Unit {
+		let idxName = matrix.indexOfCol(0, "name")
+		for (i in 1..matrix.size) {
+			let name = matrix[i, idxName]
+			addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, M, daemonHolders), source: " (in table '${MtName}')")
+		}
+	}
 
-	/* P8/M2：元数据静态列缓存 —— 实现见文件顶层 private class MetaProvider
-	 * （Cangjie 不支持类内嵌套类，移出作为顶层类） */
+	/* ---- 通用 Lua 脚本硬件：矩阵每行一个硬件变量 ----
+	 *  元数据闭包由 MetaProvider 提供静态列缓存 + 引用列实时快照（P8/M2）；
+	 *  跳过 controller 列，避免误当作引用 play。 */
+	private func createLuaVars(matrix: MatrixObject, MtName: String): Unit {
+		let idxName = matrix.indexOfCol(0, "name")
 
-	/* 旧版 _getMetadata 已由 MetaProvider 取代（P8/M2）：原逻辑保留于 commit 历史。
-	 * 返回值字段不变：字面列 colName=JsonString(值)，引用列展开其 read() 快照字段。 */
+		/* 手动扫描标题行，寻找可选的 controller 列 */
+		var idxCtrl: Int64 = -1
+		for (j in 0..matrix.col) {
+			if (matrix[0, j] == "controller") { idxCtrl = j; break }
+		}
+
+		/* 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径（std.env），默认为 ./modules */
+		let modulePath = getVariable("BOT4CJ_MODULE_PATH") ?? "./modules"
+		let scriptPath = "${modulePath}/${MtName}.lua"
+
+		for (i in 1..matrix.size) {
+			let name = matrix[i, idxName]
+
+			/* 解析该行的 controller 引用（支持 - 占位符继承） */
+			var ctrlOpt: Option<MatrixVars_Hardware> = None
+			if (idxCtrl >= 0) {
+				let ctrlName = MatrixVars_Hardware.getMt(matrix, i, idxCtrl)
+				if (ctrlName != "-") {
+					if (let Some(hv) <- M.get(ctrlName)) {
+						ctrlOpt = Some(hv)
+					} else {
+						throw IllegalArgumentException(
+							"Hardware variable '${name}' declares controller '${ctrlName}' in table '${MtName}', but it is not defined yet. The controller must be defined before the matrix that references it.")
+					}
+				}
+			}
+
+			let skipCol = idxCtrl	/* lambda 不得捕获可变变量 */
+			let metaProv = MetaProvider(matrix, i, skipCol, M)
+			addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
+					metaProv.collect()
+			}, controller: ctrlOpt), source: " (in table '${MtName}')")
+		}
+	}
 
 
 	/* -------- 在矩阵对象的容器中寻找目标 -------- */
@@ -340,11 +330,7 @@ class RobotStruct {
 		 * （例如把 Timer(Speaker) 列写在最后，它就会最后执行，见 issue #12） */
 		let order = ArrayList<String>()
 		for (j in 0..ActionDefs.col) {
-			let name_HV = ActionDefs[0, j]
-			let arr = name_HV.split(".")
-			if (arr.size != 2) {
-				throw IllegalArgumentException("Action column '${name_HV}' is not valid (expect <device>.<param>)")  }
-			let name_dev = arr[0]
+			let (name_dev, _) = parseActionColumn(ActionDefs[0, j])
 			if (!order.contains(name_dev)) {
 				order.add(name_dev)  }
 		}
@@ -377,15 +363,21 @@ class RobotStruct {
 		}
 	}
 
-	/* -------- 解析@Action矩阵对象 -------- */
-	private func parse_action_matrixObject(set: JsonObject, ActionDefs: MatrixObject,
-			i: Int64, j: Int64) {
-		let name_HV = ActionDefs[0, j]	/* 获取硬件变量名 FIXME:  该名称不得使用占位符 且不重复 */
+	/* -------- 解析@Action列头 "<device>.<param>"（唯一校验点） -------- */
+	private static func parseActionColumn(name_HV: String): (String, String) {
 		let arr = name_HV.split(".")
 		if (arr.size != 2) {
-			throw IllegalArgumentException("Action column '${name_HV}' is not valid (expect <device>.<param>)")  }
-		let name_dev = arr[0]
-		var name_param = arr[1]
+			throw IllegalArgumentException("Action column '${name_HV}' is not valid (expect <device>.<param>)")
+		}
+		return (arr[0], arr[1])
+	}
+
+	/* -------- 解析@Action矩阵对象 -------- *
+	 * 列名格式 <device>.<param> 由 parseActionColumn 统一校验拆分。 */
+	private func parse_action_matrixObject(set: JsonObject, ActionDefs: MatrixObject,
+			i: Int64, j: Int64) {
+		let (name_dev, name_param_orig) = parseActionColumn(ActionDefs[0, j])
+		var name_param = name_param_orig
 
 		var val_fp64 = MatrixVars_Hardware.parseMt<Float64>(ActionDefs, i, j)
 

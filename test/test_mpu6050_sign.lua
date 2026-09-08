@@ -11,7 +11,7 @@ dofile("modules/MPU6050.lua")
 
 -- 驱动 dofile HAL 后再注桩（HAL 真函数会被覆盖，参考 test_pca9685_channel.lua）
 local writes
-function i2c_set_addr(fd, addr) end
+function i2c_set_addr(fd, addr) return true end
 function i2c_read_reg(fd, reg) return regs[reg] or 0 end
 function i2c_write_reg(fd, reg, val) end
 function milli_sleep(ms) end

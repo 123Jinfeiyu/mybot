@@ -3,9 +3,10 @@
 
 
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
 
 
@@ -36,36 +37,18 @@ local ACCEL_REG_Z_LOW	= 0x40	--
 --
 function build(data)
 
-
-
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
+
 	dbg_table("-------- Lua builder func get a table --------", data)
 
-
 	-----------------------------------------------------
-	local fd = data.fd
-	if fd == nil then	-- 检查文件句柄参数是否存在
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
-
-	-----------------------------------------------------
-	local addr = data.address
-	if addr == nil then	-- 检查地址参数是否存在
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: addr"
-		}
-	end
-
-	addr = tonumber(addr)
 
 	-----------------------------------------------------
 	-----------------------------------------------------
@@ -86,39 +69,22 @@ end
 -- 【重置MPU6050的脚本】
 function destroy(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua ender func get a table --------", data)
 
 	-----------------------------------------------------
-	local fd = data.fd
-	if fd == nil then	-- 检查fd参数是否存在
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: fd"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
 
 	-----------------------------------------------------
-	local addr = data.address
-	if addr == nil then	-- 检查address参数是否存在
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: addr"
-		}
-	end
-	addr = tonumber(addr)
-
-	-----------------------------------------------------
-
 
 	i2c_set_addr(fd, addr)		-- 准备配置
-	--i2c_write_reg(fd, 0x00, 0x80)	-- FIXME: 进入睡眠模式
 
 	return {  result = "OK"  }	-- 返回成功信号
 
@@ -132,33 +98,18 @@ end
 function call(data)
 
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua caller func get a table --------", data)
 
 	-----------------------------------------------------
-	local fd = data.fd
-	if fd == nil then	-- 检查fd参数是否存在
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then
+		return ek
 	end
-	local addr = data.address
-
-	-----------------------------------------------------
-	if addr == nil then	-- 检查address参数是否存在
-		return {
-			result = "ERR",
-			message = "Invalid Argument: addr"
-		}
-	end
-	addr = tonumber(addr)
 
 	-----------------------------------------------------
 	i2c_set_addr(fd, addr)	-- 设置I2C地址
@@ -196,4 +147,3 @@ function call(data)
 	}
 
 end
-

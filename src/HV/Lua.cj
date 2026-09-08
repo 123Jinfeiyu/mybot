@@ -1,11 +1,8 @@
 /*
  *  Lua状态机 - 硬件变量（自 r.cj 迁出）
  *
- *  TODO(20260612-qing): 提前创建Lua状态机，利用闭包进行引用储存
- *      在rise中申请的资源将在free中被释放。
- *
- *      我们将Lua状态机做成类成员存储，在原本的召集函数中进行初始化
- *      在解构函数中释放资源。
+ *  Lua 状态机在工厂中提前创建，作为实例状态存储；
+ *  rise 中申请的资源（加载脚本/初始化）将在 free 中被释放。
  *
  */
 
@@ -74,30 +71,30 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 	private static var topDepth = 0
 
 	/*
-	 *  构造函数 => 传入事件函数，硬件构造函数以及硬件解构函数
+	 *  私有构造函数：把 Lua 状态机、脚本路径、元数据收集器与 controller 引用
+	 *  固化为调用上下文，事件回调统一转调静态实现方法 callImpl/readImpl/
+	 *  riseImpl/freeImpl（闭包只捕获构造参数，不引用 this——Cangjie 限制：
+	 *  super 传递的回调不得在成员初始化前访问实例方法）。
 	 *
-	 *  FIXME: 将构造函数设置为 private
-	 *
-	 *  readCb: 可选的无副作用读回调（P4/M1）。有状态的 Lua 驱动（如 Ema/Kalman 滤波）
-	 *  在 Lua 侧定义 read(data) 返回最近一次 call 的输出快照；无 read 硬件（守护/传感器）
-	 *  在回调内回退到实时 call 语义（= play({}) 向后兼容）。
+	 *  （此前 Factory() 内联三个大闭包，183 行难读难测；抽成具名实现后职责单一。）
+	 *  回调在 build/play/destroy 期才被调用，静态实现方法不受实例构造时序影响。
 	 */
-	public init(things!: (JsonValue) -> JsonValue,
-			rise!: Option<() -> Unit> = None,
-			free!: Option<() -> Unit> = None,
-			readCb!: Option<() -> JsonValue> = None
-
-	) {
-		super(things: things, rise: rise, free: free)
-		this.readCb = readCb
+	private init(L: lua_State, luapath: String, getMetadata: () -> JsonObject,
+			controller: Option<MatrixVars_Hardware>) {
+		super(
+			things: { json: JsonValue => MtVars_Lua.callImpl(L, luapath, getMetadata, controller, json) },
+			rise: Some({ => MtVars_Lua.riseImpl(L, luapath, getMetadata) }),
+			free: Some({ => MtVars_Lua.freeImpl(L, luapath, getMetadata) }),
+		)
+		this.readCb = Some({ => MtVars_Lua.readImpl(L, getMetadata) })
 	}
+
+	private let readCb: Option<() -> JsonValue>
 
 	public override func read(): JsonValue {
 		if (let Some(cb) <- this.readCb) { return cb() }
 		return super.read()
 	}
-
-	private let readCb: Option<() -> JsonValue>
 
 
 	/*
@@ -119,175 +116,144 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			throw IllegalMemoryException("Lua_check()")  }
 
 
-		let mtVars_Lua = MtVars_Lua(
+		/* 以私有构造构建硬件变量：事件回调统一转调实例方法 doCall/doRead/doRise/doFree */
+		return MtVars_Lua(L, luapath, getMetadata, controller)
+	}
 
-			/*
-			 *  主要事件：调用该硬件的驱动脚本
-			 *  合并两张表（json_obj），一张来自创建该硬件时的矩阵（元数据）
-			 *  另一张是调用该硬件事件时传入的参数（ @Action ）
-			 *
-			 *  其中前者是一些诸如I2C地址、SPI速率的硬件参数
-			 *  后者是一些类似舵机旋转角度的实时参数
-			 *
-			 * TODO(20260825): 事先创建完所有ACTION的行，创建好每一步的参数
-			 */
-			things: { json: JsonValue =>
+	/*
+	 *  call 事件实现：调用该硬件的驱动脚本。
+	 *  合并两张表（json_obj）：创建时矩阵的元数据 + @Action 传入的实时参数。
+	 *  controller 转发：元数据 ∪ 自己 Lua 的返回表 交给 controller.play()。
+	 *  外层（topDepth==0）才把结果直出屏幕，避免被 controller 转发的嵌套调用重复打印。
+	 */
+	private static func callImpl(L: lua_State, luapath: String, getMetadata: () -> JsonObject,
+			controller: Option<MatrixVars_Hardware>, json: JsonValue): JsonValue {
+		let top = (MtVars_Lua.topDepth == 0)
+		MtVars_Lua.topDepth += 1
 
-				let top = (MtVars_Lua.topDepth == 0)
-				MtVars_Lua.topDepth += 1
+		if (top) { println("----------") }
 
-				if (top) { println("----------") }
+		try {
+			/* 获取元数据（P8/M2：一次收集——静态列缓存重放 + 引用列实时快照） */
+			let metadata = getMetadata()
+			let metaFields: HashMap<String, JsonValue> = metadata.getFields()
 
-				try {
+			/*  从元数据浅拷贝（不污染共享源；转发侧复用同一份干净元数据）  */
+			let obj = JsonObject()
+			for (k in metaFields.keys()) {
+				obj.put(k, metaFields.get(k).getOrThrow())
+			}
+			obj.put("mode", JsonString("call"))
 
-					/* 获取元数据（P8/M2：一次收集——静态列缓存重放 + 引用列实时快照） */
-					let metadata = getMetadata()
-					let metaFields: HashMap<String, JsonValue> = metadata.getFields()
+			/*  合并两张（json_obj）表（元数据和参数）  */
+			let fields: HashMap<String, JsonValue> = json.asObject().getFields()
+			for (k in fields.keys()) {
+				let val = fields.get(k).getOrThrow()
+				obj.put(k, val)
+			}
+			logD("Lua scripts call parameters: ${obj.toString()}")
 
-					/*  从元数据浅拷贝（不污染共享源；转发侧复用同一份干净元数据）  */
-					let obj = JsonObject()
-					for (k in metaFields.keys()) {
-						obj.put(k, metaFields.get(k).getOrThrow())
-					}
-					obj.put("mode", JsonString("call"))
+			/* 调用Lua解释器 */
+			let res = call_lua(L, obj)
 
-					/*  合并两张（json_obj）表（元数据和参数）  */
-					let fields: HashMap<String, JsonValue> = json.asObject().getFields()
-					for (k in fields.keys()) {
-						let val = fields.get(k).getOrThrow()
-						obj.put(k, val)
-					}
-					logD("Lua scripts call parameters: ${obj.toString()}")
+			logD("Lua script call result: ${res.toString()}")
 
-					/* 调用Lua解释器 */
-					let res = call_lua(L, obj)
+			/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
+			MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
 
-					logD("Lua script call result: ${res.toString()}")
-
-					/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
-					MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
-
-					/* ---- controller 转发：元数据 ∪ 自己Lua的返回表 ---- */
-					if (let Some(ctrl) <- controller) {
-						/* 转发 payload = 同一份干净元数据 ∪ 自己Lua的返回表
-						 * （原实现二次 getMetadata()：重复 O(cols·rows) 扫描且引用列被
-						 *   read() 两遍；P8/M2 后一次收集两次浅拷贝） */
-						let payload = JsonObject()
-						for (k in metaFields.keys()) {
-							payload.put(k, metaFields.get(k).getOrThrow())
-						}
-						let retFields: HashMap<String, JsonValue> = res.asObject().getFields()
-						for (k in retFields.keys()) {
-							payload.put(k, retFields.get(k).getOrThrow())
-						}
-						logD("Forward to controller: ${payload.toString()}")
-
-						let ctrl_res = ctrl.play(payload)
-						logD("Controller result: ${ctrl_res.toString()}")
-
-						/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
-						MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
-
-						if (top) { println(ctrl_res.toString()) }
-						return ctrl_res
-					}
-
-					if (top) { println(res.toString()) }
-					return res
-
+			/* ---- controller 转发：元数据 ∪ 自己Lua的返回表 ---- */
+			if (let Some(ctrl) <- controller) {
+				/* 转发 payload = 同一份干净元数据 ∪ 自己Lua的返回表
+				 * （原实现二次 getMetadata()：重复 O(cols·rows) 扫描且引用列被
+				 *   read() 两遍；P8/M2 后一次收集两次浅拷贝） */
+				let payload = JsonObject()
+				for (k in metaFields.keys()) {
+					payload.put(k, metaFields.get(k).getOrThrow())
 				}
-				finally {
-					MtVars_Lua.topDepth -= 1
+				let retFields: HashMap<String, JsonValue> = res.asObject().getFields()
+				for (k in retFields.keys()) {
+					payload.put(k, retFields.get(k).getOrThrow())
 				}
+				logD("Forward to controller: ${payload.toString()}")
 
-			},
+				let ctrl_res = ctrl.play(payload)
+				logD("Controller result: ${ctrl_res.toString()}")
 
-			/* 无副作用读（P4/M1）：Lua 驱动若定义 read(data)（滤波器返回快照）→ 走快照；
-			 * 否则回退实时 call（= play({}) 向后兼容，守护/传感器/动作硬件引用语义不变）。
-			 * 注意：不做 ensureOk——引用读是数据流而非动作，无样本/无输入属过渡态
-			 * （如滤波器未 pump 前被 build 期引用），不应像显式 play 那样 halt-on-error。 */
-			readCb: Some({ =>
-				unsafe {
-					let rc = LibC.mallocCString("read")
-					Lua_getglobal(L, rc)
-					let tp = Lua_type(L, -1)
-					Lua_pop(L, 1)
-					LibC.free(rc)
-					if (tp != LUA_TNIL) {
-						let metadata = getMetadata()
-						metadata.put("mode", JsonString("read"))
-						return call_lua(L, metadata)
-					}
-				}
-				/* Lua 未定义 read：回退实时 call 语义 */
-				let metadata = getMetadata()
-				metadata.put("mode", JsonString("call"))
-				return call_lua(L, metadata)
-			}),
+				/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
+				MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
 
-			/* 硬件构造方法：提供元数据（json_obj）  对该硬件进行初始化 */
-			rise: { =>
-
-				/*  在这里构建Lua状态机   TODO: 使用专用的异常  */
-				if (build_lua(L, luapath) == false) {
-					throw Exception("Failed to build Lua state from script: '${luapath}'. Please check if the file exists and is valid Lua code.")
-				}
-
-
-				/* 获取元数据 */
-				let metadata = getMetadata()
-
-				/* 从元数据进行深拷贝 */
-				let obj = metadata
-
-				/* 插入模式指令 （告知lua脚本这是在构建） */
-				obj.put("mode", JsonString("build"))
-				logD("Lua scripts build parameters: ${obj.toString()}")
-
-				/* 开始构建 */
-				let res = call_lua(L, obj)
-
-				logD("Lua script build result: ${res.toString()}")
-
-				/* ---- 检查 build 返回契约：失败即抛（main 的 finally 会清理已建硬件） ---- */
-				MatrixVars_Hardware.ensureOk(res, ctx: "build ${luapath}")
-			},
-
-			/*
-			 *  硬件解构方法：传入元数据（json_obj|json_data）
-			 *  然后使用Lua状态机对设备进行关闭（或者重置）
-			 */
-			free: { =>
-
-				/* 获取元数据 */
-				let metadata = getMetadata()
-
-				/*  从元数据进行深拷贝  */
-				let obj = metadata
-
-				/*  插入模式指令  */
-				obj.put("mode", JsonString("destroy"))
-				logD("Lua scripts destroy parameters: ${obj.toString()}")
-
-				let res = call_lua(L, obj)
-
-				logD("Lua script destroy result: ${res.toString()}")
-				/* ---- 先释放 Lua 状态机，再检查返回契约——避免检查抛异常时泄漏 ---- */
-				destroy_lua(L)
-
-				/* ---- 检查 destroy 返回契约：ERR 抛出让 deactive 的 try-catch 记录 ---- */
-				MatrixVars_Hardware.ensureOk(res, ctx: "destroy ${luapath}")
-
+				if (top) { println(ctrl_res.toString()) }
+				return ctrl_res
 			}
 
-		)
+			if (top) { println(res.toString()) }
+			return res
+		}
+		finally {
+			MtVars_Lua.topDepth -= 1
+		}
+	}
 
+	/*
+	 *  无副作用读实现（P4/M1）：Lua 驱动若定义 read(data)（滤波器返回快照）→ 走快照；
+	 *  否则回退实时 call（= play({}) 向后兼容，守护/传感器/动作硬件引用语义不变）。
+	 *  注意：不做 ensureOk——引用读是数据流而非动作，无样本/无输入属过渡态
+	 *  （如滤波器未 pump 前被 build 期引用），不应像显式 play 那样 halt-on-error。
+	 */
+	private static func readImpl(L: lua_State, getMetadata: () -> JsonObject): JsonValue {
+		unsafe {
+			let rc = LibC.mallocCString("read")
+			Lua_getglobal(L, rc)
+			let tp = Lua_type(L, -1)
+			Lua_pop(L, 1)
+			LibC.free(rc)
+			if (tp != LUA_TNIL) {
+				let metadata = getMetadata()
+				metadata.put("mode", JsonString("read"))
+				return call_lua(L, metadata)
+			}
+		}
+		/* Lua 未定义 read：回退实时 call 语义 */
+		let metadata = getMetadata()
+		metadata.put("mode", JsonString("call"))
+		return call_lua(L, metadata)
+	}
 
-		/*
-		 * --------------------------------
-		 * 返回构造的硬件变量本体
-		 */
-		return mtVars_Lua
+	/* 硬件构造方法实现：提供元数据（json_obj）对该硬件进行初始化 */
+	private static func riseImpl(L: lua_State, luapath: String, getMetadata: () -> JsonObject): Unit {
+		/* 在这里构建Lua状态机 */
+		if (build_lua(L, luapath) == false) {
+			throw Exception("Failed to build Lua state from script: '${luapath}'. Please check if the file exists and is valid Lua code.")
+		}
+
+		/* 获取元数据并注入 build 指令 */
+		let metadata = getMetadata()
+		metadata.put("mode", JsonString("build"))
+		logD("Lua scripts build parameters: ${metadata.toString()}")
+
+		let res = call_lua(L, metadata)
+
+		logD("Lua script build result: ${res.toString()}")
+
+		/* ---- 检查 build 返回契约：失败即抛（main 的 finally 会清理已建硬件） ---- */
+		MatrixVars_Hardware.ensureOk(res, ctx: "build ${luapath}")
+	}
+
+	/* 硬件解构方法实现：传入元数据，使用 Lua 状态机对设备进行关闭（或者重置） */
+	private static func freeImpl(L: lua_State, luapath: String, getMetadata: () -> JsonObject): Unit {
+		/* 获取元数据并注入 destroy 指令 */
+		let metadata = getMetadata()
+		metadata.put("mode", JsonString("destroy"))
+		logD("Lua scripts destroy parameters: ${metadata.toString()}")
+
+		let res = call_lua(L, metadata)
+
+		logD("Lua script destroy result: ${res.toString()}")
+		/* ---- 先释放 Lua 状态机，再检查返回契约——避免检查抛异常时泄漏 ---- */
+		destroy_lua(L)
+
+		/* ---- 检查 destroy 返回契约：ERR 抛出让 deactive 的 try-catch 记录 ---- */
+		MatrixVars_Hardware.ensureOk(res, ctx: "destroy ${luapath}")
 	}
 
 

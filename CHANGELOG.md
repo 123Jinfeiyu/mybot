@@ -84,8 +84,23 @@ getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续�
 - 硬件变量生命周期改按声明序遍历
 - 元数据收集改静态列缓存（P8/M2）：`MetaProvider` 一次冻结字面列、引用列每次
   实时快照，剔除每 call 两遍 O(cols·rows) 全表扫描；转发不再二次 read 引用
-- 驱动样板收敛：`lib/drv_common.lua`（err/arg_table/i2c_pair）统一 47 个驱动的
-  类型校验与 fd 构造，净删 ~100 行重复样板
+- 驱动样板收敛：`lib/drv_common.lua`（err/arg_table/i2c_pair）统一 **52 个**驱动的
+  类型校验与 fd 构造（本版补收 PCA9685/Timer/MPU6050/Dummy，净删 ~100 行重复样板）；
+  PCA9685 时基魔法数提为具名常量；删除 SPI/I2C 中从未使用的
+  `SPI_SUCCESS`/`SPI_FAILED`/`I2C_SUCCESS`/`I2C_FAILED` 全局
+- **Cangjie 内核瘦身**：
+  - `Lua.cj` 的 `MtVars_Lua.Factory()` 巨型内联闭包拆为静态实现方法
+    (callImpl/readImpl/riseImpl/freeImpl)，构造收紧为 private；Lua 状态机 init
+    时即创建、rise/free 管理生命周期
+  - `r.cj` `createHardVars()` 重构为分发器 + `createDaemonVars()`/`createLuaVars()`
+  - `r.cj` Action 列校验收敛为单一 `parseActionColumn()`（run_drl_action 与
+    parse_action_matrixObject 共用），消除重复的"<device>.<param>"拆分断言
+  - `getEnv` 迁移至 `getVariable`（std.env），清理 main/Daemon/Lua 未用 import；
+    过期/误导性 TODO/FIXME/INFO 注释收敛为未来规划条目，NN/DRL 注释块
+    明确标注"保留待 nn4cj 接入"
+- **共享测试库** `test/lib/tester.lua`：check/expect_ok/expect_err/expect_cmds/
+  summary 一套断言原语（幂等 dofile），test_ema/test_bh1750/test_hal_ffi 三个
+  代表用例已接入（其余渐进迁移）
 - 依赖升级 luajit4cj 1.0.1（新增 Lua 类型常量与 Lua_tonumber/toboolean/tointeger/
   pushboolean 取值/压栈封装）：bot4cj 不再本地 foreign libluajit 符号，Lua C API
   一律经绑定包调用；compile-option 同步去掉 `-l luajit-5.1`（链接经 luajit4cj

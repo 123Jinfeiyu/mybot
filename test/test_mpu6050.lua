@@ -131,8 +131,9 @@ check(set_addr_log[#set_addr_log] == 0x69, "set_addr 收到 0x69=105", tostring(
 
 -- ==================== build：错误通道 ====================
 -- NOTE: 当前驱动不检查 i2c_write_reg 返回值，I/O 写失败不会触发 ERR。
-expect_err("build 缺 fd", function() return build({ address = "0x68" }) end, "Invalid Argument")
-expect_err("build 缺 address", function() return build({ fd = 3 }) end, "Invalid Arguments")
+-- fd/address 统一走 drv_common.i2c_pair（消息 "Invalid Argument: fd or address"）。
+expect_err("build 缺 fd", function() return build({ address = "0x68" }) end, "Invalid Argument: fd or address")
+expect_err("build 缺 address", function() return build({ fd = 3 }) end, "Invalid Argument: fd or address")
 expect_err("build 参数非表", function() return build(nil) end, "Invalid Arguments Type")
 
 -- ==================== call：符号扩展与返回契约 ====================
@@ -184,11 +185,11 @@ check(raw_ok and raw and raw.result == "OK" and raw.ACCEL_X ~= nil and raw.GYRO_
 
 -- ==================== call：错误通道 ====================
 -- NOTE: 当前驱动不检查 i2c_read_reg 返回值，I/O 读失败仅得到 0，不会触发 ERR。
--- 注意 call 的错误文案与 build/destroy 不一致（build="Invalid Arguments: addr"、
--- destroy="Invalid Arguments: fd"，call="Invalid Arguments: table"），按实际逐一断言。
-expect_err("call 缺 fd", function() return call({ address = "0x68" }) end, "Invalid Argument: fd")
-expect_err("call 缺 address", function() return call({ fd = 3 }) end, "Invalid Argument: addr")
-expect_err("call 参数非表", function() return call("x") end, "Invalid Arguments: table")
+-- fd/address 统一走 drv_common.i2c_pair（消息 "Invalid Argument: fd or address"），
+-- 非表参数经 arg_table（消息 "Invalid Arguments Type: table"）。
+expect_err("call 缺 fd", function() return call({ address = "0x68" }) end, "Invalid Argument: fd or address")
+expect_err("call 缺 address", function() return call({ fd = 3 }) end, "Invalid Argument: fd or address")
+expect_err("call 参数非表", function() return call("x") end, "Invalid Arguments Type")
 
 -- ==================== destroy ====================
 expect_ok("destroy 正常", function() return destroy(base) end)

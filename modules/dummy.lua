@@ -6,8 +6,9 @@
 --       然后在 @Action 中以 dummy.echo 之类的列名调用
 
 
--- 调试打印辅助 print_table（modules/lib/）
+-- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
+dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
 
 
@@ -21,11 +22,9 @@ local call_count = 0
 --
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua builder func get a table --------", data)
@@ -43,11 +42,9 @@ end
 --
 function destroy(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua ender func get a table --------", data)
@@ -64,11 +61,9 @@ end
 -- NOTE(20260902-qing): 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- Lua caller func get a table --------", data)

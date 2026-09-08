@@ -7,9 +7,6 @@ dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
-SPI_SUCCESS = 0
-SPI_FAILED = 1
-
 -- 全局文件句柄
 fd = 0
 

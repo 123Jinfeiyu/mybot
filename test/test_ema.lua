@@ -1,15 +1,8 @@
 -- ema.lua 单元测试（lua5.4 与 luajit 均可运行）
 -- 用法（项目根目录）: lua5.4 test/test_ema.lua
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1; print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local Ema = dofile("modules/lib/ema.lua")
 
@@ -103,5 +96,4 @@ check("α>1 报错", pcall(Ema.new, 1.5) == false)
 check("α 非数值报错", pcall(Ema.new, "x") == false)
 check("filter 非数值报错", pcall(function() Ema.new(0.5):filter("xyz") end) == false)
 
-print(string.format("结果: %d 通过, %d 失败", passed, failed))
-if failed > 0 then os.exit(1) end
+tester.summary()

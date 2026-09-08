@@ -11,10 +11,9 @@
  */
 
 package bot4cj.HV
-import std.time.*
 import std.convert.*
 import std.collection.*
-import std.process.*
+import std.env.*
 import stdx.encoding.json.*
 import ctype4cj.*
 import luajit4cj.*
@@ -178,7 +177,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		let chunkRaw = MatrixVars_Hardware.getMt(defs, i, idxChunk)
 		/* chunk 寻址：与普通 Lua 硬件模块一致，相对路径以 BOT4CJ_MODULE_PATH 为基准解析，
 		 * 使编译产物可拷到任意位置运行（原实现字面路径相对 CWD） */
-		let modulePath = Process.current.getEnv("BOT4CJ_MODULE_PATH") ?? "./modules"
+		let modulePath = getVariable("BOT4CJ_MODULE_PATH") ?? "./modules"
 		let chunkPath = resolveDaemonChunk(chunkRaw, modulePath)
 		println("Create a Daemon hard-Var: ${name}, chunk: ${chunkPath}")
 
