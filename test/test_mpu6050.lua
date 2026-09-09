@@ -30,9 +30,9 @@ function i2c_set_addr(fd, addr)
 end
 
 function i2c_write_reg(fd, reg, val)
-	if fail_write then return -1 end
+	if fail_write then return false end	-- HAL 契约：失败返回布尔 false
 	writes[#writes + 1] = { reg = reg, val = val }
-	return 0
+	return true
 end
 
 function i2c_read_reg(fd, reg)
@@ -130,11 +130,15 @@ expect_ok("build 地址 '0x69'", function() return build({ fd = 3, address = "0x
 check(set_addr_log[#set_addr_log] == 0x69, "set_addr 收到 0x69=105", tostring(set_addr_log[#set_addr_log]))
 
 -- ==================== build：错误通道 ====================
--- NOTE: 当前驱动不检查 i2c_write_reg 返回值，I/O 写失败不会触发 ERR。
 -- fd/address 统一走 drv_common.i2c_pair（消息 "Invalid Argument: fd or address"）。
 expect_err("build 缺 fd", function() return build({ address = "0x68" }) end, "Invalid Argument: fd or address")
 expect_err("build 缺 address", function() return build({ fd = 3 }) end, "Invalid Argument: fd or address")
 expect_err("build 参数非表", function() return build(nil) end, "Invalid Arguments Type")
+
+-- 写失败必须触发 ERR（halt-on-error 契约，build 逐寄存器检查 i2c_write_reg 返回值）
+fail_write = true
+expect_err("build 写失败触发 ERR", function() return build(base) end, "write failed")
+fail_write = false
 
 -- ==================== call：符号扩展与返回契约 ====================
 -- 全零

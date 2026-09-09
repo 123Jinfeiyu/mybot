@@ -10,6 +10,14 @@ dofile("modules/PCA9685.lua")
 -- 先注桩会被 HAL 的真函数覆盖；驱动在 call 时才解析全局名，后注桩才生效
 function i2c_set_addr(fd, addr) return true end
 function i2c_write_reg(fd, reg, val) writes[#writes + 1] = {reg = reg, val = val} end
+-- call() 已改为单次 i2c_write_multi 原子写（AI 自增），按字节展开记录保持断言形态
+function i2c_write_multi(fd, reg, ...)
+	local bytes = {...}
+	for i, b in ipairs(bytes) do
+		writes[#writes + 1] = {reg = reg + i - 1, val = b}
+	end
+	return 0
+end
 function i2c_read_reg(fd, reg) return 0 end
 function milli_sleep(ms) end
 

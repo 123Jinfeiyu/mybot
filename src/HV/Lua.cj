@@ -412,8 +412,13 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				}
 			}
 
-			else if (status != LUA_OK) {
-				println("Lua 错误详情: ${luaErrorString(L)}")
+			else {
+				let errStr = luaErrorString(L)
+				println("Lua 错误详情: ${errStr}")
+				/* pcall 失败若返回空表（无 result 字段）会被 ensureOk 视为成功，
+				 * 驱动运行时错误将静默放行——必须显式带 ERR 契约 */
+				ret.put("result", JsonString("ERR"))
+				ret.put("message", JsonString(errStr))
 			}
 
 			/* -------- 恢复Lua状态机 -------- */
