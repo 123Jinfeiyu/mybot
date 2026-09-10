@@ -72,6 +72,7 @@ if (Lua_check(L) == LUA_ERR) {
 
 ### H-06: 全局fd无作用域保护
 **文件**: `modules/I2C.lua:11`  
+**状态**: 已修复（本提交 dcd3522 后补）——I2C/SPI/UART 三处 `fd`（及 SPI `delay_us`、UART `baud`）改 `local` upvalue；43 测试全绿  
 **问题**: `fd`是全局变量，多实例会互相覆盖  
 **影响**: fd泄漏和地址冲突  
 **修复建议**: 将fd改为local或使用upvalue

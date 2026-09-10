@@ -7,11 +7,11 @@ dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
--- 全局文件句柄
-fd = 0
+-- 文件句柄（H-06：local upvalue 共享于本文件 build/call/destroy，不污染全局）
+local fd = 0
 
 -- 全局波特率（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
-baud = 9600
+local baud = 9600
 
 function build(data)
 
