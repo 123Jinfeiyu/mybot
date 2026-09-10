@@ -8,7 +8,8 @@
 -- 覆盖点（对照 modules/MPU6050.lua 当前实现）：
 --   1. build：参数校验、默认地址 0x68、寄存器配置序列（PWR_MGMT_1=0x6B 退睡眠、
 --      陀螺 0x1B=±500°/s、加速度 0x1C=±8g）、100ms 稳定等待、错误通道；
---   2. call：六轴 16 位补码符号扩展（正/负/零/极值），返回键名与量程无换算；
+--   2. call：0x3B 起 14 字节 burst 原子读、六轴 16 位补码符号扩展（正/负/零/极值）、
+--      读失败（nil）触发 ERR、返回键名与量程无换算；
 --   3. destroy：参数校验与成功返回；
 --   4. 字符串 fd/address（框架元数据侧全为字符串）兼容。
 
@@ -35,9 +36,14 @@ function i2c_write_reg(fd, reg, val)
 	return true
 end
 
-function i2c_read_reg(fd, reg)
-	if fail_read then return -1 end
-	return regs[reg] or 0
+-- burst 读桩：reg 起连续 n 字节（1 基表），与 HAL i2c_read_multi_bytes 契约一致
+local read_log = {}      -- burst 读请求序列 {reg, n}
+function i2c_read_multi_bytes(fd, reg, n)
+	if fail_read then return nil end	-- HAL 契约：失败返回 nil
+	read_log[#read_log + 1] = { reg = reg, n = n }
+	local t = {}
+	for i = 0, n - 1 do t[i + 1] = regs[reg + i] or 0 end
+	return t
 end
 
 function milli_sleep(ms) sleep_total = sleep_total + ms end
@@ -140,10 +146,14 @@ fail_write = true
 expect_err("build 写失败触发 ERR", function() return build(base) end, "write failed")
 fail_write = false
 
--- ==================== call：符号扩展与返回契约 ====================
+-- ==================== call：burst 原子读与符号扩展 ====================
 -- 全零
 regs = {}
+read_log = {}
 expect_ok("call 全零返回 OK", function() return call(base) end)
+check(#read_log == 1 and read_log[1].reg == 0x3B and read_log[1].n == 14,
+	"call 单次 burst 读 0x3B 起 14 字节（原子，无撕裂窗口）",
+	read_log[1] and string.format("reg=0x%02X n=%d cnt=%d", read_log[1].reg, read_log[1].n, #read_log))
 expect_axis("call 全零", base, "ACCEL_X", 0)
 expect_axis("call 全零", base, "GYRO_Z",  0)
 
@@ -188,7 +198,11 @@ check(raw_ok and raw and raw.result == "OK" and raw.ACCEL_X ~= nil and raw.GYRO_
 	"call 返回键名 ACCEL_*/GYRO_* 与 result 契约", raw_ok and tostring(raw and raw.result) or result_of(raw_ok, raw))
 
 -- ==================== call：错误通道 ====================
--- NOTE: 当前驱动不检查 i2c_read_reg 返回值，I/O 读失败仅得到 0，不会触发 ERR。
+-- burst 读失败（HAL 返回 nil）必须触发 ERR（halt-on-error 契约）。
+fail_read = true
+expect_err("call 读失败触发 ERR", function() return call(base) end, "read failed")
+fail_read = false
+
 -- fd/address 统一走 drv_common.i2c_pair（消息 "Invalid Argument: fd or address"），
 -- 非表参数经 arg_table（消息 "Invalid Arguments Type: table"）。
 expect_err("call 缺 fd", function() return call({ address = "0x68" }) end, "Invalid Argument: fd or address")

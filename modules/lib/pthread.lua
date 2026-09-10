@@ -121,12 +121,23 @@ function P.mutex_init(slot)
 	ffi.C.pthread_mutex_init(slot_mutex(slot), nil)
 end
 
--- 守护侧：发布一组采样值（mutex 保护，count 自增）
+-- 守护侧：发布一组采样值（mutex 保护，count 自增）。
+-- 入锁前校验 vals 全为数值：本库面向用户自写守护 chunk，若在持锁区间内
+-- 对 ffi double 槽位赋非数值（nil/字符串等）会抛 error 跳过 unlock，
+-- 主线程侧 play() 从此永久死锁——非法值必须在锁外显式红出来。
 function P.publish(slot, vals)
-	local m = slot_mutex(slot)
-	ffi.C.pthread_mutex_lock(m)
+	if type(vals) ~= "table" then
+		error("publish: vals must be a table, got " .. type(vals))
+	end
 	local n = #vals
 	if n > P.SLOT_MAXVALS then n = P.SLOT_MAXVALS end
+	for i = 1, n do
+		if type(vals[i]) ~= "number" then
+			error("publish: vals[" .. i .. "] must be a number, got " .. type(vals[i]))
+		end
+	end
+	local m = slot_mutex(slot)
+	ffi.C.pthread_mutex_lock(m)
 	slot[0].nvals = n
 	for i = 1, n do
 		slot[0].values[i - 1] = vals[i]

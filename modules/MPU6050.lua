@@ -123,29 +123,23 @@ function call(data)
 		return v
 	end
 
-	local accel_x_high = i2c_read_reg(fd, ACCEL_REG_X_HIGH)
-	local accel_x_low  = i2c_read_reg(fd, ACCEL_REG_X_LOW)
-	local accel_y_high = i2c_read_reg(fd, ACCEL_REG_Y_HIGH)
-	local accel_y_low  = i2c_read_reg(fd, ACCEL_REG_Y_LOW)
-	local accel_z_high = i2c_read_reg(fd, ACCEL_REG_Z_HIGH)
-	local accel_z_low  = i2c_read_reg(fd, ACCEL_REG_Z_LOW)
+	-- 六轴 burst read：0x3B 起 14 字节单次原子事务（ACCEL 6B + TEMP 2B + GYRO 6B）。
+	-- 取代原 12 次独立单字节读：跨事务间寄存器已刷新，hi/lo 可能来自不同采样（撕裂）；
+	-- 且逐次读的 -1 失败值不经检查会被 s16 合成伪读数（datasheet 亦推荐 burst 保证一致性）。
+	local t = i2c_read_multi_bytes(fd, ACCEL_REG_X_HIGH, 14)
+	if t == nil then
+		return err("MPU6050 read failed (burst 0x3B..0x48, check wiring)")
+	end
 
-	local gyro_x_high  = i2c_read_reg(fd, GYRO_REG_X_HIGH)
-	local gyro_x_low   = i2c_read_reg(fd, GYRO_REG_X_LOW)
-	local gyro_y_high  = i2c_read_reg(fd, GYRO_REG_Y_HIGH)
-	local gyro_y_low   = i2c_read_reg(fd, GYRO_REG_Y_LOW)
-	local gyro_z_high  = i2c_read_reg(fd, GYRO_REG_Z_HIGH)
-	local gyro_z_low   = i2c_read_reg(fd, GYRO_REG_Z_LOW)
-
-	-- 返回字典（有符号 16 位原始值）
+	-- 返回字典（有符号 16 位原始值）；t[7]/t[8] 为温度寄存器（0x41/0x42），当前不输出
  	return {
 		result  = "OK",
-		ACCEL_X = s16(accel_x_high, accel_x_low),
-		ACCEL_Y = s16(accel_y_high, accel_y_low),
-		ACCEL_Z = s16(accel_z_high, accel_z_low),
-		GYRO_X  = s16(gyro_x_high,  gyro_x_low),
-		GYRO_Y  = s16(gyro_y_high,  gyro_y_low),
-		GYRO_Z  = s16(gyro_z_high,  gyro_z_low)
+		ACCEL_X = s16(t[1],  t[2]),
+		ACCEL_Y = s16(t[3],  t[4]),
+		ACCEL_Z = s16(t[5],  t[6]),
+		GYRO_X  = s16(t[9],  t[10]),
+		GYRO_Y  = s16(t[11], t[12]),
+		GYRO_Z  = s16(t[13], t[14])
 	}
 
 end

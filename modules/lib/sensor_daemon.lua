@@ -40,17 +40,36 @@ for f in string.gmatch(cfg.fields or "", "[^,|]+") do
 end
 
 local slot = P.slot_attach(DAEMON_SLOT_ADDR)
+P.assert_layout()	-- 跨语言槽布局漂移在守护启动期显式暴露（daemon_probe 同款自检）
 
--- setup 失败：发布错误标志一次，daemon_tick 置为空转（daemon_body 仍会逐拍调用直到 stop）
-local function fail(code)
+-- 保留真实 print 的引用（下文会静默驱动 print 刷屏），fail 诊断日志仍可见
+local log = print
+
+-- 总线 fd 提前声明：fail 需在任何失败点关闭已打开的总线（否则守护
+-- lua_State 长期持有泄漏 fd）
+local fd = nil
+
+-- setup 失败：打日志 → 关总线 fd → 发布错误标志一次 → daemon_tick 置空转
+-- （daemon_body 仍会逐拍调用直到 stop）。
+-- 错误码：-9 缺 driver、-8 驱动加载失败、-1 开总线失败、-3 spi setup 失败、-2 build 失败。
+-- 注意：错误码经 v0 发布（槽布局无独立 status 字段）——下游消费者若把 v0
+-- 当实测值需自行甄别（特征：count 恒为 1 且 v0 为负整数）；诊断以日志行为准。
+local function fail(code, msg)
+	log("[sensor_daemon] setup failed (" .. tostring(code) .. "): " .. tostring(msg))
+	if fd ~= nil and fd >= 0 then
+		if proto == "spi" then spi_close(fd)
+		elseif proto == "uart" then uart_close(fd)
+		else i2c_close(fd) end
+		fd = -1
+	end
 	P.publish(slot, { code })
 	function daemon_tick() end
 end
 
-if not driver or driver == "" then fail(-9); return end
+if not driver or driver == "" then fail(-9, "config missing 'driver'"); return end
 
 local ok_load = pcall(dofile, dir .. "/" .. driver .. ".lua")
-if not ok_load then fail(-8); return end
+if not ok_load then fail(-8, "cannot load driver: " .. dir .. "/" .. tostring(driver) .. ".lua"); return end
 
 -- 高速采样中静默驱动的 print 刷屏（本状态机独立）
 print = function() end
@@ -78,13 +97,15 @@ for k, v in pairs(cfg) do
 	if not known[k] then params[k] = v end
 end
 
--- 打开总线
-local fd
+-- 打开总线（fd 已在 fail 定义前声明为 upvalue，供其在失败点关闭）
 if proto == "spi" then
 	fd = spi_open(path)
 	if fd and fd >= 0 then
-		spi_setup(fd, tonumber(cfg.mode or 0), tonumber(cfg.bits or 8),
-		          tonumber(cfg.speed or 1000000), tonumber(cfg.delay or 0))
+		-- setup 失败必须显式失败：半配置 fd 交给驱动会得到错误数据
+		if spi_setup(fd, tonumber(cfg.mode or 0), tonumber(cfg.bits or 8),
+		             tonumber(cfg.speed or 1000000), tonumber(cfg.delay or 0)) ~= 0 then
+			fail(-3, "spi_setup failed: " .. path); return
+		end
 	end
 elseif proto == "uart" then
 	-- 串口设备（如 MHZ19）：raw 8N1，波特率 baud 列（缺省 9600）
@@ -92,12 +113,15 @@ elseif proto == "uart" then
 else
 	fd = i2c_open(path)
 end
-if not fd or fd < 0 then fail(-1); return end
+if not fd or fd < 0 then fd = nil; fail(-1, "cannot open bus: " .. path); return end
 params.fd = fd
 
 -- 配置器件
 local r = build(params)
-if type(r) ~= "table" or r.result ~= "OK" then fail(-2); return end
+if type(r) ~= "table" or r.result ~= "OK" then
+	local why = (type(r) == "table" and r.message) and tostring(r.message) or "driver build() not OK"
+	fail(-2, why); return
+end
 
 -- daemon_body 逐拍调用：单次采样 → 提取 fields → publish
 function daemon_tick()

@@ -172,7 +172,12 @@ function call(data)
     -- 差分 / 单端模式选择
     local mux
     if data.pos ~= nil and data.neg ~= nil then
+        -- 先判 tonumber 结果：占位符 "-" 或非法串转出 nil，直接拼串会触发
+        -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
         local pos, neg = tonumber(data.pos), tonumber(data.neg)
+        if pos == nil or neg == nil then
+            return { result = "ERR", message = "Invalid diff pair: pos/neg not a number" }
+        end
         local diff_map = { ["0,1"] = MUX_DIFF_AIN0_AIN1, ["0,3"] = MUX_DIFF_AIN0_AIN3,
                            ["1,3"] = MUX_DIFF_AIN1_AIN3, ["2,3"] = MUX_DIFF_AIN2_AIN3 }
         mux = diff_map[pos .. "," .. neg]

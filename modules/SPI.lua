@@ -7,8 +7,8 @@ dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
 dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
 
--- 全局文件句柄
-fd = 0
+-- 全局文件句柄（-1 = 未打开，与 I2C/destroy 后状态一致）
+fd = -1
 
 -- 全局传输延时（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
 delay_us = 0
@@ -81,6 +81,10 @@ function build(data)
 	delay_us = delay or 0
 	local res = spi_setup(fd, spi_mode, bits, speed, delay)
 	if res ~= 0  then
+		-- setup 失败必须关掉已打开的 fd：否则半配置句柄泄漏并残留在全局，
+		-- 后续 call 会把它流给下游设备驱动
+		spi_close(fd)
+		fd = -1
 		return {
 			result = "ERR",
 			message = "Failed to setup SPI device"
@@ -130,7 +134,16 @@ function call(data)
 
 	dbg_table("-------- SPI.Lua caller func get a table --------", data)
 
+	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐）
+	if fd == nil or fd <= 0 then
+		return {
+			result = "ERR",
+			message = "SPI not opened (build first)"
+		}
+	end
+
 	return {
+		result = "OK",
 		fd = fd,
 		delay = delay_us
 	}

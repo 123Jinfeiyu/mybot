@@ -76,6 +76,14 @@ function call(data)
 		return ek
 	end
 
-	return {  fd = fd  }
+	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐）
+	if fd == nil or fd <= 0 then
+		return {
+			result = "ERR",
+			message = "I2C not opened (build first)"
+		}
+	end
+
+	return {  result = "OK",  fd = fd  }
 
 end

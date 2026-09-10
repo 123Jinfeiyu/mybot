@@ -190,7 +190,12 @@ function call(data)
     -- 差分 / 单端模式选择
     local mux
     if data.pos ~= nil and data.neg ~= nil then
+        -- 先判 tonumber 结果：占位符 "-" 或非法串转出 nil，直接比较会触发
+        -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
         local pos, neg = tonumber(data.pos), tonumber(data.neg)
+        if pos == nil or neg == nil then
+            return { result = "ERR", message = "Invalid diff channel: pos/neg not a number" }
+        end
         if pos < 0 or pos > 7 or neg < 0 or neg > 7 then
             return { result = "ERR", message = "Invalid diff channel: 0~7" }
         end

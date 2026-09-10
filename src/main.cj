@@ -98,9 +98,11 @@ main(args: Array<String>): Int64 {
 			println("结构脚本解析失败 '${rpath}': ${e.message}")
 			println("无硬件自检链路：cat scripts/relay-test.mt | ./bot --robot=robots/relay-test.sql")
 			return 1
+		} finally {
+			/* 解析成败均关闭文件流（原实现异常路径不 close 泄漏 fd） */
+			fstream.close()
 		}
 		let robot = robotOpt.getOrThrow()
-		fstream.close()
 
 		try {
 			robot.active()
