@@ -33,7 +33,28 @@ export CANGJIE_STDX_PATH=/path/to/cangjie-stdx   # cjpm.toml 按目标架构读�
 bash _set.sh                                     # 等价于 cjpm update + cjpm build
 ```
 
-可选自检：`bash test/run_all.sh` 一键跑全部 Lua 离线测试（需 `luajit`，桩替身不触硬件；真机 i2c 用例自动跳过）。
+### 无硬件测试
+
+测试分两层，均无需任何 I2C/SPI/UART 真机设备，可全程在开发机上完成：
+
+**Lua 驱动层（桩替身）**：`bash test/run_all.sh` 一键跑全部 Lua 离线测试（需 `luajit`；真机 i2c 用例自动跳过；`test/` 下所有 `test_*.lua` 都会被自动收集）。单跑无硬件样例：
+
+```bash
+.tmp/luajit test/test_relay_nohw.lua        # Relay：纯软件驱动，连 HAL/ffi 都不碰
+# 或系统解释器：  lua5.4 test/test_relay_nohw.lua
+```
+
+**仓颉程序层（编译链路自检）**：`cjpm build` 之后用 `_run.sh` 直跑产物，链路全部为纯软件 hook，不透真机：
+
+```bash
+cjpm build
+cat scripts/relay-test.mt     | bash _run.sh --robot=robots/relay-test.sql    # Relay → Timer 单链路
+cat test/test_daemon.mt       | bash _run.sh --robot=test/test_daemon.sql     # 单守护并发压测（主线程负载 × 计数守护）
+cat test/test_multidaemon.mt  | bash _run.sh --robot=test/test_multidaemon.sql # 4 守护并发诊断（各持独立 lua_State）
+cat test/test_monitor.mt      | bash _run.sh --robot=test/test_monitor.sql    # 守护采样 → Monitor 引用消费闭环
+```
+
+仓颉端的 Daemon 无硬件测试由 `lib/daemon_probe.lua`（模拟传感器，内存槽发布计数/正弦）与 `lib/daemon_tid.lua`（gettid + 计数）驱动，扎到的是同一份 `Daemon.cj` 槽分配/加锁代码；每条命令退出码 0 即通过。对比：`test/test_mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
 
 ### 无硬件跑通第一条链路（Relay → Timer）
 
