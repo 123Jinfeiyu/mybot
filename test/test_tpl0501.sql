@@ -20,7 +20,7 @@ CREATE TABLE TPL0501 (
 	SPI     String,
 	rtotal  String
 );
-INSERT INTO TPL0501 (name, SPI, rtotal) VALUES ('dpot-0', 'spi-0', '100000');
+INSERT INTO TPL0501 (name, SPI, rtotal) VALUES ('dpot-0', '$spi-0', '100000');
 
 CREATE TABLE Timer (
 	name String

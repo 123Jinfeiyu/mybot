@@ -21,7 +21,7 @@ CREATE TABLE INA226 (
 	ct      String
 );
 INSERT INTO INA226 (name, I2C, address, rshunt, avg, ct)
-  VALUES ('ina226-0', 'i2c-1', '0x40', '0.1', '16', '1100');
+  VALUES ('ina226-0', '$i2c-1', '0x40', '0.1', '16', '1100');
 
 CREATE TABLE Timer (
 	name String

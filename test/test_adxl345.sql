@@ -20,7 +20,7 @@ CREATE TABLE ADXL345 (
 	odr     String
 );
 INSERT INTO ADXL345 (name, I2C, address, range, odr)
-  VALUES ('acc0', 'i2c-1', '0x53', '-', '-');
+  VALUES ('acc0', '$i2c-1', '0x53', '-', '-');
 
 CREATE TABLE Timer (
 	name String

@@ -19,7 +19,7 @@ CREATE TABLE PCA9685 (
 	I2C     String,
 	address String
 );
-INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', 'i2c-1', '0x40');
+INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', '$i2c-1', '0x40');
 
 CREATE TABLE Servo (
 	name       String,

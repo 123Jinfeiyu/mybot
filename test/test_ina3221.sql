@@ -20,7 +20,7 @@ CREATE TABLE INA3221 (
 	rshunt3 String
 );
 INSERT INTO INA3221 (name, I2C, address, avg, rshunt1, rshunt2, rshunt3)
-  VALUES ('ina3221-0', 'i2c-1', '0x40', '16', '0.01', '0.01', '0.01');
+  VALUES ('ina3221-0', '$i2c-1', '0x40', '16', '0.01', '0.01', '0.01');
 
 CREATE TABLE Timer (
 	name String

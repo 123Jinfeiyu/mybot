@@ -22,7 +22,7 @@ CREATE TABLE VL53L4CD (
 	timeout String
 );
 INSERT INTO VL53L4CD (name, I2C, address)
-  VALUES ('tof0', 'i2c-1', '0x29');
+  VALUES ('tof0', '$i2c-1', '0x29');
 
 CREATE TABLE Timer (
 	name String

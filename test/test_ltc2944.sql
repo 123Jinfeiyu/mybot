@@ -19,7 +19,7 @@ CREATE TABLE LTC2944 (
 	prescaler String
 );
 INSERT INTO LTC2944 (name, I2C, address, rsense, prescaler)
-  VALUES ('gauge-0', 'i2c-1', '0x64', '0.05', '4096');
+  VALUES ('gauge-0', '$i2c-1', '0x64', '0.05', '4096');
 
 CREATE TABLE Timer (
 	name String

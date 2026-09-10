@@ -17,7 +17,7 @@ CREATE TABLE ADS1115 (
 	dr      String,
 	channel String
 );
-INSERT INTO ADS1115 (name, I2C, address, pga, dr, channel) VALUES ('adc0', 'i2c-1', '0x48', '2', '4', '0');
+INSERT INTO ADS1115 (name, I2C, address, pga, dr, channel) VALUES ('adc0', '$i2c-1', '0x48', '2', '4', '0');
 
 CREATE TABLE Timer (
 	name String

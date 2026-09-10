@@ -22,7 +22,7 @@ CREATE TABLE AS7262 (
 	timeout String
 );
 INSERT INTO AS7262 (name, I2C, address)
-  VALUES ('spec0', 'i2c-1', '0x49');
+  VALUES ('spec0', '$i2c-1', '0x49');
 
 CREATE TABLE Timer (
 	name String

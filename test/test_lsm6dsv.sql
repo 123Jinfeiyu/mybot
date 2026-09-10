@@ -21,7 +21,7 @@ CREATE TABLE LSM6DSV (
 	odr        String
 );
 INSERT INTO LSM6DSV (name, I2C, address, range, gyro_range, odr)
-  VALUES ('imu0', 'i2c-1', '0x6A', '-', '-', '-');
+  VALUES ('imu0', '$i2c-1', '0x6A', '-', '-', '-');
 
 CREATE TABLE Timer (
 	name String

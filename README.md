@@ -178,7 +178,7 @@ CREATE TABLE PCA9685 (
 	I2C     String,
 	address String
 );
-INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', 'i2c-1', '0x40');
+INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', '$i2c-1', '0x40');
 
 /* 定义舵机：max 限幅（负值表示方向反向）、offset 中位漂移，"-" 继承上一行 */
 CREATE TABLE Servo (
@@ -192,7 +192,7 @@ CREATE TABLE Servo (
 INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s1, 90, -, -, 'pca9685-0', 0);	-- 左下水平关节
 ```
 
-> 说明：`-` 是占位符，表示继承上一行同列的值（如 s2 之后的 controller 继承 s1 的 `pca9685-0`）；注释整行 INSERT 即可下线一个硬件实例。
+> 说明：`-` 是占位符，表示继承上一行同列的值（如 s2 之后的 controller 继承 s1 的 `pca9685-0`）；`I2C` 列以 `$i2c-1` 引用上方定义的总线硬件变量（0.3.2 起引用列须 `$` 前缀，裸名一律按字面值），框架把总线 `call()` 返回的 `fd` 合并进本变量的元数据；注释整行 INSERT 即可下线一个硬件实例。
 
 ### 硬件变量矩阵一览
 

@@ -20,7 +20,7 @@ CREATE TABLE BH1745 (
 	gain    String
 );
 INSERT INTO BH1745 (name, I2C, address, mt, gain)
-  VALUES ('colour0', 'i2c-1', '0x38', '-', '-');
+  VALUES ('colour0', '$i2c-1', '0x38', '-', '-');
 
 CREATE TABLE Timer (
 	name String

@@ -23,7 +23,7 @@ CREATE TABLE BMI270 (
 	cfg        String
 );
 INSERT INTO BMI270 (name, I2C, address, range, gyro_range, odr, cfg)
-  VALUES ('imu0', 'i2c-1', '0x68', '-', '-', '-', '-');
+  VALUES ('imu0', '$i2c-1', '0x68', '-', '-', '-', '-');
 
 CREATE TABLE Timer (
 	name String

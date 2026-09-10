@@ -14,7 +14,7 @@ CREATE TABLE SHT3X (
 	I2C     String,
 	address String
 );
-INSERT INTO SHT3X (name, I2C, address) VALUES ('sht3x-0', 'i2c-1', '0x44');
+INSERT INTO SHT3X (name, I2C, address) VALUES ('sht3x-0', '$i2c-1', '0x44');
 
 CREATE TABLE Timer (
 	name String

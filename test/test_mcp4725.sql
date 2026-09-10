@@ -18,7 +18,7 @@ CREATE TABLE MCP4725 (
 	vref    String
 );
 INSERT INTO MCP4725 (name, I2C, address, vref)
-  VALUES ('dac0', 'i2c-1', '-', '-');
+  VALUES ('dac0', '$i2c-1', '-', '-');
 
 CREATE TABLE Timer (
 	name String

@@ -34,6 +34,15 @@
   抛错（重名 / controller 未定义等）时已创建硬件变量按 hwSeq 声明序
   倒序回收，为未来 TCP 长驻模式的「失败清理重试」铺路；main 报错
   前缀由「Action aborted」改为中性的「Aborted」
+- **总线引用列 `$` 迁移补漏（真机回归发现）**：0.3.2 五个 test SQL
+  同步加 `$` 时，漏掉了「设备表引用总线变量」的同类场景——PCA9685/
+  ADS1115/ADXL345 等 28 个结构脚本的 `I2C`/`SPI`/`UART` 列仍写裸名
+  （如 `'i2c-1'`），显式化后按字面值处理，总线 `call()` 返回的 `fd`
+  不再合并进设备元数据，真机 build 报
+  「Invalid Argument: fd or address」（纯 Lua 离线测试桩注入 fd、
+  不经元数据管线，故未拦截此回归）。现全部补 `$`
+  （robots/spider1.sql 与 test/ 下 28 个 .sql 共 31 处），
+  README 结构脚本示例与说明同步
 
 ## [0.3.1] - 2026-09-10
 

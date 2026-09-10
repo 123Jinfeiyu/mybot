@@ -15,7 +15,7 @@ CREATE TABLE MHZ19 (
 	name String,
 	UART String
 );
-INSERT INTO MHZ19 (name, UART) VALUES ('co2-0', 'uart-0');
+INSERT INTO MHZ19 (name, UART) VALUES ('co2-0', '$uart-0');
 
 CREATE TABLE Timer (
 	name String

@@ -19,7 +19,7 @@ CREATE TABLE AMG8833 (
 	fps     String
 );
 INSERT INTO AMG8833 (name, I2C, address, fps)
-  VALUES ('cam0', 'i2c-1', '-', '-');
+  VALUES ('cam0', '$i2c-1', '-', '-');
 
 CREATE TABLE Timer (
 	name String

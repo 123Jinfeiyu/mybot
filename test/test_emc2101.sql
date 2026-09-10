@@ -20,10 +20,10 @@ CREATE TABLE EMC2101 (
 	lut     String
 );
 INSERT INTO EMC2101 (name, I2C, address, duty, lut)
-  VALUES ('fan0', 'i2c-1', '0x4C', '40', '-');
+  VALUES ('fan0', '$i2c-1', '0x4C', '40', '-');
 -- 片上自主温控示例（二选一，替换上一条 INSERT）：
 -- INSERT INTO EMC2101 (name, I2C, address, duty, lut)
---   VALUES ('fan0', 'i2c-1', '0x4C', '-', '40:0,50:30,60:60,70:100');
+--   VALUES ('fan0', '$i2c-1', '0x4C', '-', '40:0,50:30,60:60,70:100');
 
 CREATE TABLE Timer (
 	name String

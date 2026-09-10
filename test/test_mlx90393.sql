@@ -22,7 +22,7 @@ CREATE TABLE MLX90393 (
 	timeout String
 );
 INSERT INTO MLX90393 (name, I2C, address, gain, timeout)
-  VALUES ('mlx0', 'i2c-1', '0x0C', '-', '-');
+  VALUES ('mlx0', '$i2c-1', '0x0C', '-', '-');
 
 CREATE TABLE Timer (
 	name String

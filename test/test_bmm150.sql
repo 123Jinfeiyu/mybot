@@ -20,7 +20,7 @@ CREATE TABLE BMM150 (
 	preset  String
 );
 INSERT INTO BMM150 (name, I2C, address, preset)
-  VALUES ('mag0', 'i2c-1', '0x10', '-');
+  VALUES ('mag0', '$i2c-1', '0x10', '-');
 
 CREATE TABLE Timer (
 	name String

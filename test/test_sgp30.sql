@@ -24,10 +24,10 @@ CREATE TABLE SGP30 (
 	rh_field String
 );
 INSERT INTO SGP30 (name, I2C, address, baseline, sht, t_field, rh_field)
-  VALUES ('sgp30-0', 'i2c-1', '0x58', '-', '-', '-', '-');
+  VALUES ('sgp30-0', '$i2c-1', '0x58', '-', '-', '-', '-');
 -- 开启持久化 + 湿度补偿示例（需同文件先定义 sht-d0 守护）：
 -- INSERT INTO SGP30 (name, I2C, address, baseline, sht, t_field, rh_field)
---   VALUES ('sgp30-0', 'i2c-1', '0x58', '/tmp/sgp30-baseline.bin', 'sht-d0', 'v0', 'v1');
+--   VALUES ('sgp30-0', '$i2c-1', '0x58', '/tmp/sgp30-baseline.bin', 'sht-d0', 'v0', 'v1');
 
 CREATE TABLE Timer (
 	name String

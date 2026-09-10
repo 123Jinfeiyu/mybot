@@ -19,7 +19,7 @@ CREATE TABLE INA219 (
 	avg     String
 );
 INSERT INTO INA219 (name, I2C, address, rshunt, avg)
-  VALUES ('ina219-0', 'i2c-1', '0x40', '0.1', '16');
+  VALUES ('ina219-0', '$i2c-1', '0x40', '0.1', '16');
 
 CREATE TABLE Timer (
 	name String

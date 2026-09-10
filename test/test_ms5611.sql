@@ -21,7 +21,7 @@ CREATE TABLE MS5611 (
 	p0      String
 );
 INSERT INTO MS5611 (name, I2C, address, osr)
-  VALUES ('baro0', 'i2c-1', '0x77', '-');
+  VALUES ('baro0', '$i2c-1', '0x77', '-');
 
 CREATE TABLE Timer (
 	name String

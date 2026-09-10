@@ -25,7 +25,7 @@ CREATE TABLE AD9833 (
 	phase String
 );
 INSERT INTO AD9833 (name, SPI, freq, wave, phase)
-  VALUES ('sig0', 'spi-0', '1000', 'sine', '0');
+  VALUES ('sig0', '$spi-0', '1000', 'sine', '0');
 
 CREATE TABLE Timer (
 	name String

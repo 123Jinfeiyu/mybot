@@ -24,7 +24,7 @@ CREATE TABLE PCA9685 (
 	I2C     String,
 	address String
 );
-INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', 'i2c-1', '0x40');
+INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', '$i2c-1', '0x40');
 
 /* Timer：spk 仅负责延时的时基矩阵（扬声器位） */
 CREATE TABLE Timer (

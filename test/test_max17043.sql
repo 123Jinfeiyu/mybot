@@ -15,7 +15,7 @@ CREATE TABLE MAX17043 (
 	I2C     String,
 	address String
 );
-INSERT INTO MAX17043 (name, I2C, address) VALUES ('fuel-0', 'i2c-1', '0x36');
+INSERT INTO MAX17043 (name, I2C, address) VALUES ('fuel-0', '$i2c-1', '0x36');
 
 CREATE TABLE Timer (
 	name String
