@@ -23,6 +23,7 @@
 
 ### H-01: Lua状态机内存泄漏
 **文件**: `src/HV/Daemon.cj:72`  
+**状态**: 已修复（提交 d9c3bb9）——`Lua_check(L)` 失败先 `Lua_free(L)` 再返回  
 **问题**: `Lua_check(L)` 失败时直接返回，未调用 `Lua_free(L)`  
 **影响**: 每次守护线程初始化失败都会泄漏一个lua_State  
 **修复建议**:
@@ -35,18 +36,23 @@ if (Lua_check(L) == LUA_ERR) {
 
 ### H-02: 字符串模板比较逻辑错误
 **文件**: `src/HV/Daemon.cj:139,151`  
+**状态**: 已修复（提交 d9c3bb9）——`"${modulePath}/"` 改为 `modulePath + "/"` 等显式拼接  
 **问题**: `chunk.startsWith("${modulePath}/")` 是字面量比较，永远不匹配  
 **影响**: daemon chunk路径解析总是走到最后的return分支  
 **修复建议**: 改为 `chunk.startsWith(modulePath + "/")`
 
 ### H-03: call_lua丢弃JsonArray类型
 **文件**: `src/HV/Lua.cj:345-387`  
+**状态**: 已修复（本提交）——入参递归转换（JsonArray/JsonObject→Lua 表，新增 `lua_rawseti`），
+出参递归转换（Lua 表→JsonArray/JsonObject，新增 `lua_pushvalue`）；配套
+`test/test_h03_arr.{sql,mt}` 双向验证（values_n=4 / list=[10,20,30]）
 **问题**: 元数据中的数组类型被静默丢弃  
 **影响**: Daemon的values字段等数组数据无法传递给Lua  
 **修复建议**: 添加JsonArray处理分支或至少添加日志
 
 ### H-04: 共享内存越界读取
 **文件**: `modules/lib/pthread.lua:150-161`  
+**状态**: 已修复（提交 4031fff）——`latest()` 锁内钳制 nvals 到 [0, SLOT_MAXVALS]  
 **问题**: `latest()`未钳制`nvals`范围，可能越界读取  
 **影响**: 共享内存损坏时可能泄露内存或崩溃  
 **修复建议**: 在锁内钳制nvals到[0, SLOT_MAXVALS]
