@@ -69,7 +69,7 @@ public class DaemonHolder {
 public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, interval_ms: Int64): Int64 {
 	unsafe {
 		let L = Lua_init()
-		if (Lua_check(L) == LUA_ERR) { return -1i64 }
+		if (Lua_check(L) == LUA_ERR) { Lua_free(L); return -1i64 }
 		Lua_loadlib(L)
 		sandbox_lua(L)	/* 中和 os.execute/io.popen 等宿主入口（issue #9 M1） */
 
@@ -136,7 +136,7 @@ public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	if (chunk.startsWith("/")) {
 		return chunk
 	}
-	if (chunk.startsWith("${modulePath}/")) {
+	if (chunk.startsWith(modulePath + "/")) {
 		return chunk
 	}
 	/* 兼容不带 "./" 的旧写法：缺省 modulePath="./modules" 时结构脚本写
@@ -148,10 +148,10 @@ public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	} else {
 		modulePath
 	}
-	if (chunk.startsWith("${noDot}/")) {
+	if (chunk.startsWith(noDot + "/")) {
 		return chunk
 	}
-	return "${modulePath}/${chunk}"
+	return modulePath + "/" + chunk
 }
 
 /* ---- 守护硬件变量 ---- */
