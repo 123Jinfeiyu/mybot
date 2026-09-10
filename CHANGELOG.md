@@ -21,6 +21,19 @@
 
 ### 修复
 
+- **共享槽布局核对失败改 fail-fast**：`pthread.lua` 的 `assert_layout`
+  名不符实——布局漂移只 `print` 并返回 false，而两个调用方
+  （sensor_daemon / daemon_probe）均忽略返回值，继续在错误偏移上读写
+  共享槽，一旦「仓颉 SLOT_*_OFF vs Lua cdef」ABI 漂移即跨语言内存踩踏，
+  且告警淹没在守护输出里。现失败直接 `error()`（守护 setup 的 pcall
+  兜住并显式报 chunk setup error），守护拒绝在损坏布局上启动
+- **ADS1115 destroy 语义反转**：原实现写 `config=0x0000`「清零停止转换」，
+  但 MODE 位=0 是【连续转换模式】、COMP_QUE=00 为比较器使能（每次转换后
+  拉 ALERT）——器件反而进入持续采样 + ALERT 翻转态（功耗、杂散中断）。
+  现改 ADS1015 同款读改写：仅置 MODE=1（单次态不启动转换即断电）并清掉
+  读回的 OS 位（防写回误启动一次多余转换），保留 PGA/DR/MUX 配置。
+  新增 `test/test_ads1115.lua` 离线桩测试（此前该驱动零离线覆盖）：
+  16 位符号扩展、差分 MUX、OS 轮询时序、超时与 destroy 读改写回归守护
 - **重名前置判重（资源泄漏防线）**：`MtVars_Lua.Factory`（LuaJIT 状态机）
   与 `MtVars_Daemon.Factory`（共享槽 + mutex）都在实参求值时先申请 OS
   资源、`addHardwareVar` 后置查重，重名抛错后资源无人持有、无法回收

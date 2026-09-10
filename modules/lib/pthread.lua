@@ -180,13 +180,14 @@ end
 --   offset 72  double   values[16]
 --   offset 200 uint8    stop
 -- ffi.offsetof/sizeof 并非所有 arch 都可用——不可用时跳过断言（回退旧行为）。
--- ffi.offsetof/sizeof 并非所有 platform 都可用——不可用时跳过断言（回退旧行为）。
 -- ffi 命名空间内未声明原生 pthread_mutex_t（HAL 只声明大小截断的别名），
 -- 故真实 mutex 尺寸无法直接 sizeof；仅在可解析时做 ≤64B 预留校验。
+-- 【修复】失败直接 error() fail-fast，不再返回 false——调用方若忽略返回值
+-- 会在错误偏移读写共享槽，ABI 漂移即跨语言内存踩踏。
 ------------------------------------------------------------------
-local function layout_ok()
-	if not ffi.offsetof then return true end
-	local ok, to = pcall(function()
+local function assert_layout()
+	if not ffi.offsetof then return end
+	local ok, err_msg = pcall(function()
 		-- P2: pthread_mutex_t 真实尺寸须 ≤ 预留 64B（aarch64=48、x86_64=40）。
 		--     类型未声明则 pcall 捕获并跳过——无法断言比已声明的更多。
 		local mutex_type_ok, msz = pcall(function() return ffi.sizeof("pthread_mutex_t") end)
@@ -207,11 +208,9 @@ local function layout_ok()
 		end
 	end)
 	if not ok then
-		print("BOT4CJ slot layout check failed: " .. tostring(to))
-		return false
+		error("BOT4CJ slot layout check failed: " .. tostring(err_msg))
 	end
-	return true
 end
-P.assert_layout = layout_ok
+P.assert_layout = assert_layout
 
 return P

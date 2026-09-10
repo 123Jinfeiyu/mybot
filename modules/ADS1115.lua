@@ -121,7 +121,11 @@ function build(data)
     return { result = "OK" }
 end
 
--- 【销毁脚本】停止转换，回到低功耗
+-- 【销毁脚本】置单次模式进入转换间隙断电态（保留 PGA/DR/MUX 配置）
+-- 【修复】原实现写 config=0x0000：MODE 位=0 是【连续转换模式】、COMP_QUE=00
+-- 为比较器使能（每次转换后拉 ALERT），与「停止转换」意图相反——器件反而进入
+-- 持续采样 + ALERT 翻转态（功耗、杂散中断）。现改 ADS1015 同款读改写：
+-- 仅确保 MODE=1（单次态下不启动转换即断电），不破坏其余配置。
 function destroy(data)
     local ok, ek = arg_table(data)
     if not ok then
@@ -140,7 +144,13 @@ function destroy(data)
     if not i2c_set_addr(tonumber(fd), tonumber(addr)) then
         return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
     end
-    i2c_write_multi(tonumber(fd), REG_CONFIG, 0x00, 0x00)  -- 清零配置，停止转换
+    -- 读改写：须清掉读回的 OS 位（空闲恒读 1）——原样写回 OS=1 会误启动一次多余转换
+    local config = i2c_read_multi(tonumber(fd), REG_CONFIG, 2)
+    if config >= 0 then
+        local new_config = bitc.band(bitc.bor(config, MODE_SINGLE), 0x7FFF)
+        i2c_write_multi(tonumber(fd), REG_CONFIG,
+            math.floor(new_config / 256) % 256, new_config % 256)
+    end
 
     return { result = "OK" }
 end
