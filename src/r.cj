@@ -83,17 +83,23 @@ class RobotStruct {
 	}
 
 	/*
-	 *  使用矩阵脚本驱动机器人
-	 * 
-	 *  不行就将矩阵脚本转化为bot脚本吧
+	 *  使用矩阵脚本驱动机器人（两阶段构造·阶段一：纯解析）
+	 *
+	 *  只做 SQL 解析，不申请任何 OS 资源——解析期抛错零清理负担；
+	 *  资源创建在 active()（阶段二），与其配对的 deactivate() 保证回收。
 	 */
 	public init(input: InputStream) {
 		readSQL(input, C)
-		createHardVars()
 	}
 
-	/* -------- 激活所有硬件变量 -------- */
-	public func  active(): Unit {
+	/* -------- 激活所有硬件变量（两阶段构造·阶段二：创建 + build）--------
+	 * createHardVars 与 build 均可能抛错（重名 / controller 未定义 /
+	 * Lua 脚本加载失败等）；调用方（main）以 finally deactivate 配对——
+	 * 异常路径下已创建的硬件变量按 hwSeq 声明序倒序回收，长驻进程
+	 * （未来 TCP 模式）可安全清理重试。
+	 * 仅可调用一次：重复调用会对同名硬件再次判重抛错。 */
+	public func active(): Unit {
+		createHardVars()
 		for (item in hwSeq) {
 			item.build()
 		}

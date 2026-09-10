@@ -111,9 +111,10 @@ main(args: Array<String>): Int64 {
 			robot.run(consoleReader)
 		}
 
-		/* 硬件/动作调用出错：停止执行并友好退出（错误码 1） */
+		/* 硬件创建/激活/动作调用出错：停止执行并友好退出（错误码 1）；
+		 * finally 的 deactivate 按声明序倒序回收已创建资源（两阶段构造） */
 		catch (e: Exception) {
-			println("Action aborted: ${e}")
+			println("Aborted: ${e}")
 			return 1
 		}
 

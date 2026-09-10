@@ -28,6 +28,12 @@
   每次重试都累积泄漏）。`createLuaVars` / `createDaemonVars` 现于调
   Factory 前置判重（报错文案与 addHardwareVar 一致），资源只在名字
   确认可用后才创建；`addHardwareVar` 保留为权威兜底
+- **RobotStruct 两阶段构造**：`init` 只做 SQL 纯解析（不申请 OS 资源，
+  解析期抛错零清理负担），`createHardVars`（资源创建阶段）挪入
+  `active()`，与 main 现有的 `finally deactivate` 天然配对——激活期
+  抛错（重名 / controller 未定义等）时已创建硬件变量按 hwSeq 声明序
+  倒序回收，为未来 TCP 长驻模式的「失败清理重试」铺路；main 报错
+  前缀由「Action aborted」改为中性的「Aborted」
 
 ## [0.3.1] - 2026-09-10
 
