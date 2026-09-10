@@ -3,6 +3,7 @@
 -- 但热点循环被 JIT 编译（约 56 次阈值）后按 double 位模式传递，
 -- 内核收到 0x4050...（>0x7f）返回 EINVAL —— 真机多行动作脚本必现。
 -- 修复：HAL.sys.ioctl_i 显式 ffi.cast("unsigned long", val)。
+-- requires: i2c
 -- 本测试用真实 /dev/i2c 总线循环调用远超 JIT 阈值次数来锁定该回归。
 --
 -- 用法（项目根目录）: luajit test/test_jit_warmup.lua

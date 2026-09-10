@@ -97,21 +97,18 @@ cat scripts/std.mt | bash _run.sh --robot=robots/spider1.sql
 
 ## 📱 运行示例
 
-项目中包含的动作脚本都在 `scripts/` 文件夹下，刚好适配 spider1 的结构脚本（PCA9685 挂 1~10 号通道）：
+项目中包含的动作脚本都在 `scripts/` 文件夹下，适配 `robots/spider1.sql` 的 14 路舵机结构（通道分配见该文件注释）：
 
 ```text
-# PCA9685
-1号舵机(s1)		=>	左下水平关节
-2号舵机(s2)		=>	左下垂直关节
-3号舵机(s3)	 	=>	右下水平关节
-4号舵机(s4)		=>	右下垂直关节
-5号舵机(s5)		=>	右上水平关节
-6号舵机(s6)		=>	右上垂直关节
-7号舵机(s7)		=>	左上水平关节
-8号舵机(s8)		=>	左上垂直关节
-9号舵机(s9)		=>	云台1
-10号舵机(s10) 	=>	云台2
-扬声器(spk)		=>  仅负责延时
+# PCA9685 通道分配（参照 robots/spider1.sql）
+s1   rb0  右后腿·髋      ch6     s9   cam0 云台水平  ch0
+s2   rb1  右后腿·大腿    ch5     s10  cam1 云台垂直  ch1
+s3   lb0  左后腿·髋     ch14     s11  rb2  右后腿·膝  ch4
+s4   lb1  左后腿·大腿   ch15     s12  lb2  左后腿·膝  ch7
+s5   lf0  左前腿·髋      ch8     s13  lf2  左前腿·膝 ch13
+s6   lf1  左前腿·大腿    ch9     s14  rf2  右前腿·膝 ch10
+s7   rf0  右前腿·髋     ch11     spk  Timer 仅负责延时
+s8   rf1  右前腿·大腿   ch12
 ```
 
 除基础的站立 `std.mt` 外，`scripts/` 里还有转向、倾斜、举手、躺下、原地跳等动作脚本：
@@ -162,7 +159,7 @@ cat scripts/one-shake.mt | bash _run.sh --robot=robots/spider1.sql   # 单腿姿
 
 ### 机器人结构脚本（.sql）
 
-结构脚本是 `.sql` 文件，由 SQL4cj 解析，支持 `--` 单行注释与块注释（旧版 `.mt` 结构矩阵已废弃）。内容就是一组 `CREATE TABLE / INSERT INTO`：每张表对应一类硬件（表名即矩阵名，决定加载哪个驱动），每行 INSERT 就是一个具体的硬件实例：
+结构脚本是 `.sql` 文件，由 SQL4cj 解析，支持 `--` 单行注释与块注释（旧版 `.mt` 结构矩阵与 `.bot` 格式已废弃）。内容就是一组 `CREATE TABLE / INSERT INTO`：每张表对应一类硬件（表名即矩阵名，决定加载哪个驱动），每行 INSERT 就是一个具体的硬件实例：
 
 ```sql
 /* 定义 I2C 总线 */
@@ -494,7 +491,6 @@ A: 可以。`bash test/run_all.sh` 用桩替身跑全部 Lua 离线测试；`rel
 
 - 🐛 **问题反馈**：[GitCode Issues](https://gitcode.com/qingss0/bot4cj/issues)
 - 🏠 **代码仓库**：[gitcode.com/qingss0/bot4cj](https://gitcode.com/qingss0/bot4cj)
-- 📧 **邮件联系**：1776177662@qq.com
 - 📹 **演示视频**：[实机演示地址](http://152.136.227.85:8080/videos/robot-show.mp4)
 
 **一起建设仓颉生态！** 🚀

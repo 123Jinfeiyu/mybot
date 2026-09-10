@@ -1,7 +1,7 @@
 # prjs
 nn/
-bot
-bot?
+/bot
+/bot?
 
 .git/
 .vscode/
@@ -16,7 +16,7 @@ bot?
 *.exe
 *.lib
 *.exp
-main
+/main
 
 # cangjie
 build/
@@ -33,9 +33,9 @@ module-lock.json
 
 
 # 其他
-log
-report
-tmp
+/log
+/report
+/tmp
 .tmp/
 *.deb
 

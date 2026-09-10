@@ -35,10 +35,10 @@ for t in test/test_*.lua; do
 	if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
 		continue
 	fi
-	# 真机测试：无 i2c 总线时跳过（脚本会尝试打开 /dev/i2c-* 做变参 ABI 回归）
-	if [ "$name" = "test_jit_warmup.lua" ] && ! ls /dev/i2c-* >/dev/null 2>&1; then
+	# 真机测试：文件内声明 "-- requires: i2c" 且本机无 /dev/i2c-* 时跳过
+	if grep -q '^\-\- requires: i2c' "$t" && ! ls /dev/i2c-* >/dev/null 2>&1; then
 		echo "----- $name -----"
-		echo "[SKIP] 需要 /dev/i2c-* 真机总线（ffi 变参 ABI 回归），本机无 i2c，跳过"
+		echo "[SKIP] 需要 /dev/i2c-* 真机总线（文件标记 -- requires: i2c），本机无 i2c，跳过"
 		continue
 	fi
 	echo "----- $name -----"

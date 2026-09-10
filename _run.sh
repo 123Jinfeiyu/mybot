@@ -15,9 +15,18 @@ esac
 if [ -n "$CANGJIE_HOME" ]; then
 	rt="$CANGJIE_HOME/runtime/lib/linux_${crjarch}_cjnative"
 else
-	rt="$(dirname "$(dirname "$(command -v cjc)")")/runtime/lib/linux_${crjarch}_cjnative"
+	cjc_path="$(command -v cjc 2>/dev/null)"
+	if [ -z "$cjc_path" ]; then
+		echo "未找到 cjc 编译器，请设置 CANGJIE_HOME 环境变量或将 cjc 加入 PATH" >&2
+		exit 1
+	fi
+	rt="$(dirname "$(dirname "$cjc_path")")/runtime/lib/linux_${crjarch}_cjnative"
 fi
-export LD_LIBRARY_PATH="$ldp:$rt"
+# 拼接 LD_LIBRARY_PATH：ldp 或 rt 为空时跳过，避免空项等价于把当前目录纳入库搜索路径
+ldpath=""
+[ -n "$ldp" ] && ldpath="$ldp"
+[ -n "$rt" ]  && ldpath="${ldpath:+$ldpath:}$rt"
+export LD_LIBRARY_PATH="$ldpath"
 
 bin="$base/target/release/bin/main"
 if [ ! -x "$bin" ]; then

@@ -46,6 +46,27 @@
   `_set.sh` 每次构建都 `cjpm update` 主动拉新，二者叠加导致依赖版本
   漂移、历史构建无法复现；现锁文件入库，`_set.sh` 仅在锁文件缺失时
   update（升级依赖：手动 `cjpm update` 后连同锁文件一起提交）
+- **README 舵机表与 spider1.sql 对齐**：原 README 列 10 路 s1~s10
+  「左下/右下水平垂直」命名，spider1.sql 实际 14 路 s1~s14 + spk，
+  通道分配 rb/lb/lf/rf 髋/大腿/膝/云台，接线参照严重误导；现同步
+  为完整 14 路通道表并标注「参照 robots/spider1.sql」
+- **robots/spider.mt 过时残存删除**：旧版 @表格式结构脚本，含已消失
+  的 @MPU6050_BIND / @Speaker 表，总线列裸名（无 0.3.2 强制的 `$`
+  前缀），按当前解析器无法工作；README/CHANGELOG 均未引用
+- **.gitignore 裸名模式锚定**：`bot`/`bot?`/`main`/`log`/`report`/`tmp`
+  匹配任意深度同名文件/目录（如未来新增 `src/log/`）；现锚定为
+  `/bot`/`/bot?`/`/main`/`/log`/`/report`/`/tmp`
+- **结构脚本头注释更新**：spider1.sql 补充 `_run.sh` 用法，relay-test.mt
+  补充完整命令行；消除过时的 `cat xxx.mt | ./bot` 引用
+- **`_run.sh` cjc 缺失显式报错**：`CANGJIE_HOME` 未设且 `cjc` 不在
+  PATH 时原实现静默拼出错误路径，最终报晦涩的动态库缺失；现显式
+  报错提示设置环境变量或安装编译器。同时修复 ldp/rt 拼接空项等价
+  于把当前目录纳入库搜索路径的安全隐患（LD_LIBRARY_PATH 开头空项）
+- **`test/run_all.sh` 真机跳过改为文件内标记**：原硬编码文件名
+  `test_jit_warmup.lua`，新增真机用例需改 runner；现改为文件内声明
+  `-- requires: i2c`，runner 按标记判断（可移植到 SPI/UART 等）
+- **test_relay_nohw.lua 迁移至共享测试框架**：消除本地重复的
+  check/passed/failed/summary 样板，统一使用 test/lib/tester.lua
 - **共享槽布局核对失败改 fail-fast**：`pthread.lua` 的 `assert_layout`
   名不符实——布局漂移只 `print` 并返回 false，而两个调用方
   （sensor_daemon / daemon_probe）均忽略返回值，继续在错误偏移上读写
