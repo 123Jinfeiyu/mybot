@@ -79,6 +79,7 @@ if (Lua_check(L) == LUA_ERR) {
 
 ### H-07: 文件描述符泄漏
 **文件**: `modules/lib/sensor_daemon.lua:127-136`  
+**状态**: 已修复（本提交）——chunk 定义 `daemon_cleanup()`（幂等 close_bus），daemon_body 于 stop 后、Lua_free 前按存在性调用；回归 test_h07_fd.lua，44 测试全绿  
 **问题**: 守护线程退出时fd未关闭  
 **影响**: 长期运行可能导致fd耗尽  
 **修复建议**: 添加cleanup函数在退出前关闭fd
