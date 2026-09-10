@@ -5,6 +5,11 @@
  *   入参：metadata.values(JsonArray) → Lua 表（# 可测长、下标可取元素）
  *   出参：Lua 返回表 list → JsonArray（不再被 LUA_TTABLE 跳过）
  */
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
 CREATE TABLE Daemon (
 	name  String,
 	chunk String
