@@ -117,8 +117,24 @@ local function slot_mutex(slot)
 	return ffi.cast("cj_pthread_mutex_t *", slot[0].mutex)
 end
 
+-- H-05：mutex 调用返回值一律检查。成功=0；EBUSY/EINVAL/EAGAIN/EDEADLK 等
+-- 一律显式 error——静默忽略会在锁损坏时造成数据竞态或永久死锁。
+local function mutex_call(op, m)
+	local fn
+	if op == "lock" then fn = ffi.C.pthread_mutex_lock
+	else fn = ffi.C.pthread_mutex_unlock end
+	local rc = fn(m)
+	if rc ~= 0 then
+		error("pthread_mutex_" .. op .. " failed: rc=" .. tostring(rc), 2)
+	end
+end
+
 function P.mutex_init(slot)
-	ffi.C.pthread_mutex_init(slot_mutex(slot), nil)
+	local m = slot_mutex(slot)
+	local rc = ffi.C.pthread_mutex_init(m, nil)
+	if rc ~= 0 then
+		error("pthread_mutex_init failed: rc=" .. tostring(rc), 2)
+	end
 end
 
 -- 守护侧：发布一组采样值（mutex 保护，count 自增）。
@@ -137,19 +153,19 @@ function P.publish(slot, vals)
 		end
 	end
 	local m = slot_mutex(slot)
-	ffi.C.pthread_mutex_lock(m)
+	mutex_call("lock", m)
 	slot[0].nvals = n
 	for i = 1, n do
 		slot[0].values[i - 1] = vals[i]
 	end
 	slot[0].count = slot[0].count + 1
-	ffi.C.pthread_mutex_unlock(m)
+	mutex_call("unlock", m)
 end
 
 -- 主线程侧：读取最新一组值，返回 values 表（1 基）与 count
 function P.latest(slot)
 	local m = slot_mutex(slot)
-	ffi.C.pthread_mutex_lock(m)
+	mutex_call("lock", m)
 	local n = slot[0].nvals
 	if n < 0 then n = 0 end
 	if n > P.SLOT_MAXVALS then n = P.SLOT_MAXVALS end
@@ -158,7 +174,7 @@ function P.latest(slot)
 		t[i + 1] = slot[0].values[i]
 	end
 	local c = slot[0].count
-	ffi.C.pthread_mutex_unlock(m)
+	mutex_call("unlock", m)
 	return t, c
 end
 
