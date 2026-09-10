@@ -28,7 +28,8 @@ local REG_LO_THRESH      = 0x02   -- 低阈值比较
 local REG_HI_THRESH      = 0x03   -- 高阈值比较
 
 -- ==================== 配置位 ====================
-local OS_START           = 0x8000 -- 单次转换启动位（1=开始，完成后硬件自动清零）
+local OS_START           = 0x8000 -- 单次转换启动位。写 1=启动转换；
+                                  -- 读语义：0=正在转换，1=空闲/转换完成（datasheet 9.6.3）
 local MUX_DIFF_AIN0_AIN1 = 0x0000 -- 差分：P=AIN0，N=AIN1
 local MUX_DIFF_AIN0_AIN3 = 0x1000 -- 差分：P=AIN0，N=AIN3
 local MUX_DIFF_AIN1_AIN3 = 0x2000 -- 差分：P=AIN1，N=AIN3
@@ -199,11 +200,13 @@ function call(data)
         return { result = "ERR", message = "Failed to start conversion" }
     end
 
-    -- 轮询 OS 位：转换完成后硬件自动清零（128SPS 约 7.8ms，最多等 100ms）
+    -- 轮询 OS 位：读到 0 表示正在转换，读到 1 表示转换完成/空闲
+    -- （128SPS 约 7.8ms，最多等 100ms）。注意与写语义相反——若误等 0，
+    -- 启动转换后首轮即满足，读到的是上一次的陈旧值。
     local ready = false
     for _ = 1, 100 do
         local cfg = i2c_read_multi(fd, REG_CONFIG, 2)
-        if cfg >= 0 and bitc.band(cfg, OS_START) == 0 then
+        if cfg >= 0 and bitc.band(cfg, OS_START) ~= 0 then
             ready = true
             break
         end

@@ -5,7 +5,9 @@
 -- 再替换 HAL 全局。器件按 16 位寄存器文件 + 转换状态机建模：
 --   - POR 默认配置 0x8583（±0.256V / 连续 / 1600SPS，数据手册值）
 --   - 单次写 OS=1 启动转换：busy 至精确 1/SPS 周期（独立于驱动 1ms 轮询），
---     完成后 OS 位自动清零、转换寄存器装载结果
+--     完成后转换寄存器装载结果
+--   - OS 位读语义按真实硬件建模（datasheet 8.6.3）：转换中读 0、空闲读 1
+--     （写入的 OS=1 是启动命令，不落存储；读取时按 busy 状态动态合成）
 --   - 转换寄存器按【12 位左对齐】编码（码值 << 4），独立于驱动右移解码
 --   - 连续模式（MODE=0）写后立即出数
 
@@ -14,7 +16,8 @@ dofile("modules/ADS1015.lua")
 local bitc = dofile("modules/bitcompat.lua")
 
 -- ==================== 器件模型 ====================
-local regs = { [0x00] = 0, [0x01] = 0x8583, [0x02] = 0x8000, [0x03] = 0x7FFF }
+-- regs[0x01] 存储不含 OS 位（低 15 位）；读取时空闲合成 OS=1（POR 读值 0x8583）
+local regs = { [0x00] = 0, [0x01] = 0x0583, [0x02] = 0x8000, [0x03] = 0x7FFF }
 local conv_raw12 = 0			-- 12 位有符号测量值（测试注入）
 local busy_until = nil			-- 转换完成时刻（fake 时钟 ms），nil = 空闲
 local stuck = false				-- 模拟器件卡死（超时用例）
@@ -37,8 +40,7 @@ end
 
 local function advance()
 	if busy_until ~= nil and not stuck and now_ms >= busy_until then
-		busy_until = nil
-		regs[0x01] = regs[0x01] % 0x8000		-- OS 位自动清零
+		busy_until = nil						-- 转空闲（OS 读值由读函数合成为 1）
 		regs[0x00] = encode12(conv_raw12)
 	end
 end
@@ -53,7 +55,7 @@ function i2c_write_multi(fd, reg, ...)
 	for _, b in ipairs(bytes) do v = v * 256 + (math.floor(b) % 256) end
 	wr_log[#wr_log + 1] = { reg = reg, val = v, n = #bytes }
 	if reg == 0x01 then
-		regs[0x01] = v
+		regs[0x01] = v % 0x8000						-- OS 是启动命令位，不落存储
 		if math.floor(v / 0x8000) % 2 == 1 then		-- OS=1：启动转换
 			if math.floor(v / 0x0100) % 2 == 1 then	-- 单次模式
 				busy_until = now_ms + conv_ms[dr_of(v)]
@@ -74,6 +76,9 @@ function i2c_read_multi(fd, reg, n)
 	assert(reg ~= nil and reg >= 0 and reg <= 3, "unexpected register " .. tostring(reg))
 	advance()
 	local v = regs[reg] or 0
+	if reg == 0x01 and busy_until == nil then
+		v = v % 0x8000 + 0x8000		-- 空闲：OS 读 1（转换中保持 0）
+	end
 	if corrupt and reg == 0x01 then v = bitc.bxor(v, 0x0080) end
 	return math.floor(v / 256) % 256 * 256 + v % 256		-- 经大端字节路径合并
 end
@@ -115,7 +120,7 @@ end
 
 local FD, ADDR = 3, 0x48
 local function reset()
-	regs = { [0x00] = 0, [0x01] = 0x8583, [0x02] = 0x8000, [0x03] = 0x7FFF }
+	regs = { [0x00] = 0, [0x01] = 0x0583, [0x02] = 0x8000, [0x03] = 0x7FFF }
 	conv_raw12 = 0
 	busy_until = nil
 	stuck = false

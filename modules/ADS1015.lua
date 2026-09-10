@@ -34,7 +34,8 @@ local REG_LO_THRESH      = 0x02   -- 低阈值比较
 local REG_HI_THRESH      = 0x03   -- 高阈值比较
 
 -- ==================== 配置位 ====================
-local OS_START           = 0x8000 -- 单次转换启动位（1=开始，完成后硬件自动清零）
+local OS_START           = 0x8000 -- 单次转换启动位。写 1=启动转换；
+                                  -- 读语义：0=正在转换，1=空闲/转换完成（datasheet 8.6.3）
 local MUX_DIFF_AIN0_AIN1 = 0x0000 -- 差分：P=AIN0，N=AIN1
 local MUX_DIFF_AIN0_AIN3 = 0x1000 -- 差分：P=AIN0，N=AIN3
 local MUX_DIFF_AIN1_AIN3 = 0x2000 -- 差分：P=AIN1，N=AIN3
@@ -121,12 +122,14 @@ function build(data)
         return { result = "ERR", message = "Failed to write ADS1015 config" }
     end
 
-    -- 读回比对自检（无 ID 寄存器，兼在位探测与配置确认）
+    -- 读回比对自检（无 ID 寄存器，兼在位探测与配置确认）。
+    -- 比对须掩掉 OS 位（bit15）：其读语义为转换状态（空闲恒读 1），
+    -- 与写入值（OS=0）必然不同，全 16 位比对在真实器件上永远 mismatch。
     local rd = i2c_read_multi(fd, REG_CONFIG, 2)
     if rd < 0 then
         return { result = "ERR", message = "Failed to read back ADS1015 config" }
     end
-    if rd ~= config then
+    if bitc.band(rd, 0x7FFF) ~= bitc.band(config, 0x7FFF) then
         return { result = "ERR",
                  message = string.format("ADS1015 config echo mismatch: got 0x%04X (expect 0x%04X)", rd, config) }
     end
@@ -146,10 +149,11 @@ function destroy(data)
     local fd = tonumber(data.fd)
     local addr = tonumber(data.address)
     if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-        -- 读改写：仅确保 MODE=1（单次态下 OS=0 即断电），不破坏其余配置
+        -- 读改写：仅确保 MODE=1（单次态下不启动转换即断电），不破坏其余配置。
+        -- 须清掉读回的 OS 位（空闲恒读 1）：原样写回 OS=1 会误启动一次多余转换。
         local config = i2c_read_multi(fd, REG_CONFIG, 2)
         if config >= 0 then
-            local new_config = bitc.bor(config, MODE_SINGLE)
+            local new_config = bitc.band(bitc.bor(config, MODE_SINGLE), 0x7FFF)
             i2c_write_multi(fd, REG_CONFIG,
                 math.floor(new_config / 256) % 256, new_config % 256)
         end
@@ -212,11 +216,13 @@ function call(data)
         return { result = "ERR", message = "Failed to start conversion" }
     end
 
-    -- 轮询 OS 位：转换完成后硬件自动清零（1600SPS 约 0.6ms，最多等 100ms）
+    -- 轮询 OS 位：读到 0 表示正在转换，读到 1 表示转换完成/空闲
+    -- （1600SPS 约 0.6ms，最多等 100ms）。注意与写语义相反——若误等 0，
+    -- 启动转换后首轮即满足，读到的是上一次的陈旧值。
     local ready = false
     for _ = 1, 100 do
         local cfg = i2c_read_multi(fd, REG_CONFIG, 2)
-        if cfg >= 0 and bitc.band(cfg, OS_START) == 0 then
+        if cfg >= 0 and bitc.band(cfg, OS_START) ~= 0 then
             ready = true
             break
         end

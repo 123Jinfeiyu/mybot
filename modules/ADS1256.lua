@@ -245,7 +245,9 @@ function call(data)
     local pga_idx = tonum(data.pga, 0)
     if pga_idx < 0 or pga_idx > 6 then pga_idx = 0 end
     local gain = pga_gain[pga_idx + 1]
-    local voltage = raw24 * VREF / 8388608.0 / gain
+    -- 满量程差分输入 = ±2·VREF/PGA（datasheet：0x7FFFFF 对应 +2·VREF/PGA，
+    -- VREF=2.5V、PGA=1 时即 ±5V）——分子须乘 2，否则读数系统性低一半
+    local voltage = raw24 * 2 * VREF / 8388608.0 / gain
 
     return {
         result = "OK",
