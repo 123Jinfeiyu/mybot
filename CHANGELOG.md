@@ -27,6 +27,13 @@
   信息（`'timer-0' ... not defined`）暴露，排查方向完全错位。现无
   匹配表时解析期抛错（信息含拼错的表名并提示检查 CREATE TABLE）；
   新增 `test/test_insert_typo.sql` 负路径回归用例（期望退出码 1）
+- **ADS1115 轮询预算覆盖最慢档**：OS 位轮询预算 100ms < dr=0（8SPS）
+  的 125ms 转换周期，真机该档必误报 Conversion timeout；预算扩至
+  200ms，`test_ads1115` 补 8SPS 用例回归守护
+- **ADS1115/ADS1015 PGA 冗余编码读回换算错 8 倍**：call 无 pga 参数时
+  回读芯片配置的 PGA 字段（3 位，0~7），字段值 6/7 与 5 同为 ±0.256V
+  （datasheet 冗余编码），原实现按「越界」重置为 2（±2.048V），电压
+  换算放大 8 倍；现 6/7 映射到 5，两驱动测试各补 PGA=6 用例
 - **共享槽布局核对失败改 fail-fast**：`pthread.lua` 的 `assert_layout`
   名不符实——布局漂移只 `print` 并返回 false，而两个调用方
   （sensor_daemon / daemon_probe）均忽略返回值，继续在错误偏移上读写

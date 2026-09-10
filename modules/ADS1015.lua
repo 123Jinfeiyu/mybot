@@ -243,8 +243,11 @@ function call(data)
         return { result = "ERR", message = "Failed to read conversion" }
     end
 
+    -- pga 缺省时回读芯片配置的 PGA 字段（3 位，0~7）：6/7 与 5 同为 ±0.256V
+    -- （datasheet 冗余编码），须映射到 5——原实现重置为 2（±2.048V）换算错 8 倍
     local pga_idx = tonum(data.pga, bitc.band(bitc.rshift(config, 9), 0x07))
-    if pga_idx < 0 or pga_idx > 5 then pga_idx = 2 end
+    if pga_idx > 5 then pga_idx = 5 end
+    if pga_idx < 0 then pga_idx = 2 end
     local fs = pga_fs[pga_idx + 1]
     local raw = raw12_of(raw16)
     local voltage = raw * fs / 2048.0

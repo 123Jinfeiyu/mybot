@@ -216,10 +216,11 @@ function call(data)
     end
 
     -- 轮询 OS 位：读到 0 表示正在转换，读到 1 表示转换完成/空闲
-    -- （128SPS 约 7.8ms，最多等 100ms）。注意与写语义相反——若误等 0，
+    -- （128SPS 约 7.8ms；预算 200ms 覆盖最慢档 8SPS 的 125ms 转换周期——
+    -- 原 100ms 预算在 dr=0 档必误报超时）。注意与写语义相反——若误等 0，
     -- 启动转换后首轮即满足，读到的是上一次的陈旧值。
     local ready = false
-    for _ = 1, 100 do
+    for _ = 1, 200 do
         local cfg = i2c_read_multi(fd, REG_CONFIG, 2)
         if cfg >= 0 and bitc.band(cfg, OS_START) ~= 0 then
             ready = true
@@ -237,8 +238,11 @@ function call(data)
         return { result = "ERR", message = "Failed to read conversion" }
     end
 
+    -- pga 缺省时回读芯片配置的 PGA 字段（3 位，0~7）：6/7 与 5 同为 ±0.256V
+    -- （datasheet 冗余编码），须映射到 5——原实现重置为 2（±2.048V）换算错 8 倍
     local pga_idx = tonum(data.pga, bitc.band(bitc.rshift(config, 9), 0x07))
-    if pga_idx < 0 or pga_idx > 5 then pga_idx = 2 end
+    if pga_idx > 5 then pga_idx = 5 end
+    if pga_idx < 0 then pga_idx = 2 end
     local fs = pga_fs[pga_idx + 1]
     local raw = sign16(raw16)
     local voltage = raw * fs / 32768.0

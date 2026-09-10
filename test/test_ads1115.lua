@@ -33,9 +33,8 @@ local rd_nak = false
 local sa_fail = false			-- 模拟 set_addr 失败（destroy 严格契约用例）
 
 -- 精确转换周期 1000/SPS（ADS1115 数据率表 {8,16,32,64,128,250,475,860}），
--- 与驱动的 1ms 轮询不耦合。
--- 注意：dr=0（8SPS）转换需 125ms，超过驱动 100ms 轮询预算——真实硬件上
--- 该档会误报 Conversion timeout（已知驱动限制，暂不入用例以免固化缺陷）。
+-- 与驱动的 1ms 轮询不耦合。dr=0（8SPS）转换需 125ms，驱动轮询预算 200ms
+-- 覆盖之（0.3.2 修复：原 100ms 预算在该档必误报超时，入用例回归守护）。
 local conv_ms = { [0]=125, [1]=62.5, [2]=31.25, [3]=15.625,
                   [4]=7.8125, [5]=4, [6]=2.1053, [7]=1.1628 }
 
@@ -218,6 +217,17 @@ if res then
 	check(near(res.voltage, 16000 * 4.096 / 32768), "voltage = 2.0V（fs=±4.096V）", tostring(res.voltage))
 end
 
+-- 0.3.2 修复回归：PGA 字段 6/7 与 5 同为 ±0.256V（datasheet 冗余编码），
+-- 原实现读回后重置为 2（±2.048V）换算错 8 倍
+reset()
+expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
+regs[0x01] = 0x4D83			-- 模拟芯片 PGA 字段=6（0x4583 的 pga 位改 110）
+conv_raw16 = 1000
+res = expect_ok("call PGA=6 冗余编码", function() return call({ fd = FD, address = "0x48" }) end)
+if res then
+	check(near(res.voltage, 1000 * 0.256 / 32768), "voltage 按 ±0.256V 换算（不再错 8 倍）", tostring(res.voltage))
+end
+
 -- ==================== call：差分 ====================
 reset()
 expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
@@ -253,11 +263,21 @@ if res then
 	check(now_ms >= 62.5, "轮询至 62.5ms 转换完成", tostring(now_ms))
 end
 
+-- 0.3.2 修复回归：8SPS 转换 125ms，原 100ms 轮询预算必误报超时
+reset()
+expect_ok("call 前 build（8SPS 最慢档）", function() return build({ fd = FD, address = "0x48", dr = "0" }) end)
+conv_raw16 = 7
+res = expect_ok("call 8SPS 档等待转换（预算 200ms 覆盖 125ms）", function() return call({ fd = FD, address = "0x48" }) end)
+if res then
+	check(res.raw == 7, "raw=7", tostring(res.raw))
+	check(now_ms >= 125, "轮询至 125ms 转换完成", tostring(now_ms))
+end
+
 reset()
 expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
 stuck = true
 expect_err("call 转换超时", function() return call({ fd = FD, address = "0x48" }) end, "Conversion timeout")
-check(now_ms >= 100, "超时前轮询 100ms", tostring(now_ms))
+check(now_ms >= 200, "超时前轮询满 200ms 预算", tostring(now_ms))
 stuck = false
 
 reset()

@@ -208,6 +208,17 @@ if res then
 	check(near(res.voltage, 1000 * 4.096 / 2048), "voltage = 2.0V（fs=±4.096V）", tostring(res.voltage))
 end
 
+-- 0.3.2 修复回归：PGA 字段 6/7 与 5 同为 ±0.256V（datasheet 冗余编码），
+-- 原实现读回后重置为 2（±2.048V）换算错 8 倍
+reset()
+expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
+regs[0x01] = 0x4D83			-- 模拟芯片 PGA 字段=6（0x4583 的 pga 位改 110）
+conv_raw12 = 1000
+res = expect_ok("call PGA=6 冗余编码", function() return call({ fd = FD, address = "0x48" }) end)
+if res then
+	check(near(res.voltage, 1000 * 0.256 / 2048), "voltage 按 ±0.256V 换算（不再错 8 倍）", tostring(res.voltage))
+end
+
 -- ==================== call：差分 ====================
 reset()
 expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
