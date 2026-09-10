@@ -179,6 +179,10 @@ function call(data)
     end
     addr = tonumber(addr)
 
+    if not i2c_set_addr(fd, addr) then
+        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
+    end
+
     -- 差分 / 单端模式选择
     local mux
     if data.pos ~= nil and data.neg ~= nil then

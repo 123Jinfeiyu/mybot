@@ -29,7 +29,7 @@ end
 
 -- I2C 传感器 build/call 公共前置：fd/address 存在性 + set_addr
 -- 用法：local fd, addr, e = i2c_pair(data); if fd == nil then return e end
--- 返回：成功 => (addr, addr, nil)；失败 => (nil, -1, err表)
+-- 返回：成功 => (fd, addr, nil)；失败 => (nil, -1, err表)
 -- 原各驱动 build 与 call 双份校验语义一致，统一于此
 function i2c_pair(data)
 	local fd = tonumber(data.fd)

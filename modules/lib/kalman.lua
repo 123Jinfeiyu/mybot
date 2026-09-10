@@ -30,6 +30,12 @@ function Kalman.new(Q, R)
 	if Q == nil or R == nil then
 		error("Kalman.new: Q and R must be numbers")
 	end
+	if Q < 0 then
+		error("Kalman.new: Q must be >= 0 (system noise covariance)")
+	end
+	if R <= 0 then
+		error("Kalman.new: R must be > 0 (measurement noise covariance)")
+	end
 	return setmetatable({
 		X_last = 0.0,	-- 上一时刻的最优结果 X(k-1|k-1)
 		P_last = 0.0,	-- 上一时刻最优结果的协方差 P(k-1|k-1)

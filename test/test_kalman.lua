@@ -77,6 +77,10 @@ check("字符串参数经 tonumber 接受", math.abs(v - 50 * 20 / 220) < 1e-12,
 
 -- 用例7：非法参数报错
 check("Kalman.new 非数值报错", pcall(Kalman.new, "abc", 1) == false)
+check("Kalman.new Q<0 报错", pcall(Kalman.new, -1, 1) == false)
+check("Kalman.new R=0 报错（kg=0/0 NaN）", pcall(Kalman.new, 1, 0) == false)
+check("Kalman.new R<0 报错", pcall(Kalman.new, 1, -1) == false)
+check("Kalman.new Q=0 R>0 合法", pcall(Kalman.new, 0, 1) == true)
 check("filter 非数值报错", pcall(function() Kalman.new(1, 1):filter("xyz") end) == false)
 
 print(string.format("结果: %d 通过, %d 失败", passed, failed))

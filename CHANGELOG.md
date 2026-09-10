@@ -67,6 +67,19 @@
   `-- requires: i2c`，runner 按标记判断（可移植到 SPI/UART 等）
 - **test_relay_nohw.lua 迁移至共享测试框架**：消除本地重复的
   check/passed/failed/summary 样板，统一使用 test/lib/tester.lua
+- **ADS1115/ADS1015 call 补 i2c_set_addr**：call() 读写寄存器前未调用
+  `i2c_set_addr`，靠 build() 遗留的 `HAL.i2c_addr[fd]` 兜底——当前
+  「一变量一 lua_State」下可用，但违背 drv_common 声明的「build 与 call
+  双份」契约，状态机一旦复用即串址读错器件；现补上与 build/destroy
+  一致的 set_addr 调用
+- **Kalman.new 校验 Q≥0、R>0**：Q=0 且 R=0 时 `kg=0/0` → NaN 永久
+  传播（EMA 的 alpha 已有校验，契约不一）；现 Q<0 / R≤0 显式报错，
+  `test_kalman` 补 4 个负路径用例
+- **sensor_daemon tick 期错误限频日志**：tick 期总线错误（HAL 打印 +
+  call 返回 ERR）完全无声，仅 count 停滞可察觉；现失败计数 + 首 3 次
+  及每 100 次打印摘要，保留诊断信息
+- **drv_common.lua 注释笔误修正**：`i2c_pair` 返回值注释
+  `(addr, addr, nil)` → `(fd, addr, nil)`
 - **共享槽布局核对失败改 fail-fast**：`pthread.lua` 的 `assert_layout`
   名不符实——布局漂移只 `print` 并返回 false，而两个调用方
   （sensor_daemon / daemon_probe）均忽略返回值，继续在错误偏移上读写

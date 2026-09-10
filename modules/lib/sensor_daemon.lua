@@ -124,6 +124,11 @@ if type(r) ~= "table" or r.result ~= "OK" then
 end
 
 -- daemon_body 逐拍调用：单次采样 → 提取 fields → publish
+-- 错误限频：tick 期总线错误仅首 3 次 + 每 100 次打印一条摘要，
+-- 避免高频采样下日志刷屏，同时保留诊断信息（count 停滞不可见时
+-- 日志是唯一线索）
+local tick_errors = 0
+local tick_total  = 0
 function daemon_tick()
 	local s = call(params)
 	if type(s) == "table" and s.result == "OK" then
@@ -132,5 +137,14 @@ function daemon_tick()
 			vals[i] = sx(s[fields[i]])
 		end
 		P.publish(slot, vals)
+		tick_errors = 0
+	else
+		tick_errors = tick_errors + 1
+		tick_total  = tick_total + 1
+		if tick_errors <= 3 or tick_total % 100 == 0 then
+			local why = (type(s) == "table" and s.message) and tostring(s.message) or "unknown"
+			log(string.format("[sensor_daemon] tick error #%d (total %d): %s",
+				tick_errors, tick_total, why))
+		end
 	end
 end
