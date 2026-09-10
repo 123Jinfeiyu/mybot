@@ -238,7 +238,12 @@ function call(data)
 		}
 	end
 
-	i2c_set_addr(fd, addr)
+	if not i2c_set_addr(fd, addr) then
+		return {
+			result = "ERR",
+			message = "Invalid Argument: fd or address (set_addr failed)"
+		}
+	end
 
 	-----------------------------------------------------
 	local regs = { REG_SHUNT1, REG_BUS1, REG_SHUNT2, REG_BUS2, REG_SHUNT3, REG_BUS3 }

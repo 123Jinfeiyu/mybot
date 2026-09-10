@@ -347,8 +347,7 @@ function destroy(data)
 
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address)
-	if fd ~= nil and addr ~= nil then
-		i2c_set_addr(fd, addr)
+	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
 		i2c_write_reg16(fd, REG_SYSTEM_START, 0x00)
 	end
 
@@ -382,7 +381,12 @@ function call(data)
 		}
 	end
 
-	i2c_set_addr(fd, addr)
+	if not i2c_set_addr(fd, addr) then
+		return {
+			result = "ERR",
+			message = "Invalid Argument: fd or address (set_addr failed)"
+		}
+	end
 
 	-----------------------------------------------------
 	-- 等本次测量就绪

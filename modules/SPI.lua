@@ -32,46 +32,42 @@ function build(data)
 		}
 	end
 
-	-- 模式
-	local spi_mode = data.spi_mode
-	if spi_mode == nil then
+	-- 模式（0~3：CPOL/CPHA 组合，与 Linux spidev 一致）
+	local spi_mode = tonumber(data.spi_mode)
+	if spi_mode == nil or spi_mode < 0 or spi_mode > 3 then
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: spi_mode"
+			message = "Invalid Arguments: spi_mode (0~3)"
 		}
 	end
-	spi_mode = tonumber(spi_mode)
 
-	-- 比特
-	local bits = data.bits
-	if bits == nil then
+	-- 比特（每字位数，7~16）
+	local bits = tonumber(data.bits)
+	if bits == nil or bits < 7 or bits > 16 then
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: bits"
+			message = "Invalid Arguments: bits (7~16)"
 		}
 	end
-	bits = tonumber(bits)
 
 
-	-- 速率
-	local speed = data.speed
-	if speed == nil then
+	-- 速率（Hz，必须为正）
+	local speed = tonumber(data.speed)
+	if speed == nil or speed <= 0 then
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: speed"
+			message = "Invalid Arguments: speed (>0)"
 		}
 	end
-	speed = tonumber(speed)
 
-	--
-	local delay = data.delay
-	if delay == nil then
+	-- 延时（单次传输后 CS 拉高前等待，us，非负）
+	local delay = tonumber(data.delay)
+	if delay == nil or delay < 0 then
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: delay"
+			message = "Invalid Arguments: delay (>=0)"
 		}
 	end
-	delay = tonumber(delay)
 
 	-- 开始执行
 	fd = spi_open(path)

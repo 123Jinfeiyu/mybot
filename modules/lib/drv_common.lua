@@ -7,8 +7,11 @@
 --   3. { result = "ERR", message = ... } 返回表构造
 -- 行为与各驱动旧内联版本等价；调用点语义不变。
 -- 驱动顶部在 HAL 之后 dofile 加载；依赖 i2c_set_addr（HAL）在此运行时可解析。
--- 幂等：同状态机内只定义一次（多个驱动文件 dofile 本库时安全）
-if arg_table ~= nil then return end
+-- 幂等：同状态机内只定义一次（多个驱动文件 dofile 本库时安全）。
+-- 用本库私有标记判断重复加载——若用 arg_table 等全局函数的存在性判断，
+-- 状态机「先定义了同名全局函数但缺 err/i2c_pair」时会整体 return，消费者则崩溃。
+if __BOT4CJ_DRV_COMMON_LOADED ~= nil then return end
+__BOT4CJ_DRV_COMMON_LOADED = true
 
 -- 统一 ERR 返回契约（与各驱动旧内联 {result="ERR",message=...} 一致）
 function err(msg)

@@ -54,8 +54,6 @@ function build(data)
 	local prescale_val = OSC_CLK_HZ / (PWM_RESOLUTION * freq) - 1.0	-- 25MHz主频
 	local prescale = prescale_val + 0.5
 
-	i2c_set_addr(fd, addr)		-- 开始配置PCA9685
-
 	if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then	-- 触发一次重启（唤醒振荡器）
 		return err("PCA9685 not responding (MODE1 write failed, check address and wiring)")
 	end
@@ -97,8 +95,6 @@ function destroy(data)
 	end
 
 	-----------------------------------------------------
-
-	i2c_set_addr(fd, addr)		-- 准备配置
 
 	if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then	-- 触发重启（非复位配置，仅重新开始计数）
 		return err("PCA9685 write failed: MODE1 (restart)")
@@ -163,7 +159,6 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	i2c_set_addr(fd, addr)	-- 设置I2C地址
 
 	-- 计算需要的参数
 	local min = PULSE_0DEG_MS	-- 0度对应0.5ms

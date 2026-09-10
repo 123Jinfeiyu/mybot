@@ -90,6 +90,8 @@ function call(data)
 	if a > math.abs(max) then a = math.abs(max) end
 	if a < math.abs(min) then a = math.abs(min) end
 	if max < 0 then a = 180 - a end		-- 负max表示舵机方向相反
+	if a < 0 then a = 0 end
+	if a > 180 then a = 180 end		-- 物理角度限幅，防 offset/|max| 配置击穿下游（PCA9685 侧亦限幅）
 
 	print(string.format("Servo: angle=%s offset=%s -> %s (channel %d)",
 		tostring(angle), tostring(offset), tostring(a), channel))

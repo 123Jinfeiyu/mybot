@@ -97,7 +97,9 @@ function build(data)
     config = bitc.bor(config, bitc.lshift(dr_idx, 5))     -- 数据速率
     config = bitc.bor(config, COMP_QUE_DISABLE)           -- 禁用比较器
 
-    i2c_set_addr(fd, addr)
+    if not i2c_set_addr(fd, addr) then
+        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
+    end
 
     -- 写 16 位配置寄存器（burst 写：reg + 高字节 + 低字节）
     local hi = math.floor(config / 256) % 256
@@ -134,7 +136,9 @@ function destroy(data)
         return { result = "ERR", message = "Invalid Arguments: addr" }
     end
 
-    i2c_set_addr(tonumber(fd), tonumber(addr))
+    if not i2c_set_addr(tonumber(fd), tonumber(addr)) then
+        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
+    end
     i2c_write_multi(tonumber(fd), REG_CONFIG, 0x00, 0x00)  -- 清零配置，停止转换
 
     return { result = "OK" }

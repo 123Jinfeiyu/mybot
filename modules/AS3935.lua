@@ -294,7 +294,12 @@ function call(data)
 		}
 	end
 
-	i2c_set_addr(fd, addr)
+	if not i2c_set_addr(fd, addr) then
+		return {
+			result = "ERR",
+			message = "Invalid Argument: fd or address (set_addr failed)"
+		}
+	end
 
 	-- 与参考实现一致：事件锁存稳定后再读（IRQ 触发后约 2ms 才可读）
 	milli_sleep(2)

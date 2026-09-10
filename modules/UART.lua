@@ -31,16 +31,16 @@ function build(data)
 		}
 	end
 
-	local uart_baud = data.baud
-	if uart_baud == nil then
+	local uart_baud = tonumber(data.baud)
+	if uart_baud == nil or uart_baud <= 0 then
 		return {
 			result = "ERR",
-			message = "Invalid Arguments: baud"
+			message = "Invalid Arguments: baud (positive number)"
 		}
 	end
 
 	-- 打开串口（raw 8N1 + 非阻塞；波特率白名单在 HAL 内校验）
-	local opened = uart_open(path, tonumber(uart_baud))
+	local opened = uart_open(path, uart_baud)
 	if opened == nil or opened < 0 then
 		return {
 			result = "ERR",
@@ -49,7 +49,7 @@ function build(data)
 	end
 
 	fd = opened
-	baud = tonumber(uart_baud)
+	baud = uart_baud
 
 	if os.getenv("BOT4CJ_DEBUG") == "1" then
 		print("UART opened: " .. path .. " @ " .. tostring(baud) .. " baud, fd=" .. tostring(fd))

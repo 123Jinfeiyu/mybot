@@ -53,7 +53,6 @@ function build(data)
 	-----------------------------------------------------
 	-----------------------------------------------------
 
-	i2c_set_addr(fd, addr)		-- 开始配置MPU6050
 	milli_sleep(1)			-- 
 
 	if not i2c_write_reg(fd, PWR_MGMT_1, PWR_NOSLEEP) then		-- 退出睡眠
@@ -90,8 +89,6 @@ function destroy(data)
 
 	-----------------------------------------------------
 
-	i2c_set_addr(fd, addr)		-- 准备配置
-
 	return {  result = "OK"  }	-- 返回成功信号
 
 end
@@ -118,7 +115,6 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	i2c_set_addr(fd, addr)	-- 设置I2C地址
 
 	-- 16 位补码符号扩展：高/低字节合并成有符号数
 	local function s16(hi, lo)

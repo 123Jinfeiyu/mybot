@@ -120,7 +120,9 @@ function build(data)
         return { result = "ERR", message = "Invalid Argument: fd or address" }
     end
 
-    i2c_set_addr(fd, addr)
+    if not i2c_set_addr(fd, addr) then
+        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
+    end
 
     -- 校验芯片ID
     local id = i2c_read_multi(fd, REG_ID, 1)
@@ -203,8 +205,7 @@ function destroy(data)
 
     local fd = tonumber(data.fd)
     local addr = tonumber(data.address)
-    if fd ~= nil and fd >= 0 and addr ~= nil then
-        i2c_set_addr(fd, addr)
+    if fd ~= nil and fd >= 0 and addr ~= nil and i2c_set_addr(fd, addr) then
         i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP))
     end
     cal_ok = false
@@ -229,7 +230,9 @@ function call(data)
         return { result = "ERR", message = "Invalid Argument: fd or address" }
     end
 
-    i2c_set_addr(fd, addr)
+    if not i2c_set_addr(fd, addr) then
+        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
+    end
 
     -- 单次触发测量（forced模式，完成后自动回到睡眠）
     i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_FORCED))
