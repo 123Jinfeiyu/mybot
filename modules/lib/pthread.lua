@@ -151,6 +151,8 @@ function P.latest(slot)
 	local m = slot_mutex(slot)
 	ffi.C.pthread_mutex_lock(m)
 	local n = slot[0].nvals
+	if n < 0 then n = 0 end
+	if n > P.SLOT_MAXVALS then n = P.SLOT_MAXVALS end
 	local t = {}
 	for i = 0, n - 1 do
 		t[i + 1] = slot[0].values[i]
