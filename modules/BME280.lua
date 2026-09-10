@@ -22,11 +22,12 @@
 
 -- ==================== 寄存器 ====================
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+dofile(mpath.resolve("lib/HAL.lua"))
 -- 调试打印辅助 print_table（modules/lib/）
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
-local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 local REG_ID        = 0xD0   -- 芯片ID（BME280=0x60，BMP280=0x58）
 local REG_RESET     = 0xE0   -- 软复位（写0xB6）
