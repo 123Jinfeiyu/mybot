@@ -1,7 +1,12 @@
 #!/bin/bash
 cd "$(dirname "$0")" || exit
 export cjStackSize=64MB
-export cjHeapSize=128MB
+# 堆不可压到 64MB：controller 转发（嵌套 play）路径在小堆高频 GC 下会触发
+# 悬空引用段错误（0.3.2 真机回归：walk-fl.mt 必崩于 22~30 行，现场为
+# managed 对象字段读取野指针；64MB 堆 5~6/6 崩，默认堆/512MB 0/12 崩，
+# 无转发路径同体积分配不崩——判别实验见 CHANGELOG 0.3.2）。树莓派 5 内存充裕，
+# 显式给 512MB 并保留环境变量覆盖能力（外部预置 cjHeapSize 时以先到者为准）
+export cjHeapSize="${cjHeapSize:-512MB}"
 
 # M3: cjpm run 恒返回 0，会吞掉程序 abort 的退出码，故直跑产物并把退出码原样透传。
 # 运行时库路径按当前架构选择（x86_64 / aarch64），与 cjpm.toml 的 target 声明一致
