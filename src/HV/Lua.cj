@@ -283,8 +283,8 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 	private static func build_lua(L: lua_State, luapath: String): Bool {
 		unsafe {
 			let filename_c = LibC.mallocCString(luapath)
-			/* 判空用 nullptr：isEmpty() 在 malloc 失败返回 null 的 CString 上调用会先解引用而 panic */
-			if (filename_c == nullptr) { throw IllegalMemoryException("LibC.mallocCString()")  }
+			/* malloc 失败返回空指针，用 isNull() 判别（isEmpty() 语义含空串，区分度不足） */
+			if (filename_c.isNull()) { throw IllegalMemoryException("LibC.mallocCString()")  }
 
 			/*  加载Lua标准库（os/io等，HAL.lua 依赖；不再注册硬件cfunc）  */
 			Lua_loadlib(L)

@@ -210,7 +210,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		/* 分配并清零共享槽，初始化 mutex（offset 0）。malloc 失败（NULL）
 		 * 立即抛错，杜绝后续 (slot+k).write 解引用空指针崩态 */
 		let slot = unsafe { LibC.malloc<UInt8>(count: SLOT_SIZE) }
-		if (slot == nullptr) {
+		if (slot.isNull()) {
 			throw Exception("Daemon '${name}' failed to allocate shared slot (${SLOT_SIZE} bytes)")
 		}
 		unsafe {
