@@ -40,7 +40,6 @@ function build(data)
 			message = "Invalid Arguments: spi_mode"
 		}
 	end
-	print(spi_mode)
 	spi_mode = tonumber(spi_mode)
 
 	-- 比特
@@ -111,7 +110,6 @@ function destroy(data)
 	end
 
 	dbg_table("-------- SPI.Lua ender func get a table --------", data)
-	print(string.format("now fd: %i", fd))
 
 	spi_close(fd)
 	fd = -1

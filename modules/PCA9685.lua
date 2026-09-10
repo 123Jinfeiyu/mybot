@@ -158,7 +158,9 @@ function call(data)
 	if angle < 0 then angle = 0 end
 	if angle > 180 then angle = 180 end	-- 限幅，防止超出0.5~2.5ms脉宽损伤舵机
 
-	print(string.format("Lua hardware drive set angle: %.2f", angle))
+	if os.getenv("BOT4CJ_DEBUG") == "1" then
+		print(string.format("Lua hardware drive set angle: %.2f", angle))
+	end
 
 	-----------------------------------------------------
 	i2c_set_addr(fd, addr)	-- 设置I2C地址

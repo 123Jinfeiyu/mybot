@@ -38,7 +38,6 @@ function build(data)
 			message = "Invalid Arguments: baud"
 		}
 	end
-	print(uart_baud)
 
 	-- 打开串口（raw 8N1 + 非阻塞；波特率白名单在 HAL 内校验）
 	local opened = uart_open(path, tonumber(uart_baud))
@@ -52,7 +51,9 @@ function build(data)
 	fd = opened
 	baud = tonumber(uart_baud)
 
-	print("UART opened: " .. path .. " @ " .. tostring(baud) .. " baud, fd=" .. tostring(fd))
+	if os.getenv("BOT4CJ_DEBUG") == "1" then
+		print("UART opened: " .. path .. " @ " .. tostring(baud) .. " baud, fd=" .. tostring(fd))
+	end
 	return {  result = "OK"  }
 
 end

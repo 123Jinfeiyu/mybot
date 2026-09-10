@@ -47,8 +47,10 @@ function call(data)
 	end
 
 	local level = (v0 > 1.0) and "HIGH" or "LOW"
-	print(string.format("Monitor: v0=%s count=%s -> level=%s",
-		tostring(v0), tostring(count), level))
+	if os.getenv("BOT4CJ_DEBUG") == "1" then
+		print(string.format("Monitor: v0=%s count=%s -> level=%s",
+			tostring(v0), tostring(count), level))
+	end
 
 	-- 回传决策值（若声明 controller 列，框架会把它转发给执行器）
 	last = { result = "OK", level = level, out = v0 }

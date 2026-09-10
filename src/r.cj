@@ -144,8 +144,6 @@ class RobotStruct {
 		let parser =  MatrixParser(sr)
 		while (true) {
 			if (let Some(O) <- parser.parse()) {
-				let n = O.getName();
-				println(n)
 				C.addLast(O)  }
 			else { break }
 		}
