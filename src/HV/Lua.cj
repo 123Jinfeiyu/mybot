@@ -241,6 +241,24 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 	/* 硬件解构方法实现：传入元数据，使用 Lua 状态机对设备进行关闭（或者重置） */
 	private static func freeImpl(L: lua_State, luapath: String, getMetadata: () -> JsonObject): Unit {
+		/* 防御（M2）：build 失败的变量（脚本未加载）全局 destroy 为 nil——
+		 * 调 call_lua 只会得到 "attempt to call a nil value" 的误导性噪音
+		 * （0.3.0 后 pcall 失败已显式返回 ERR 契约，噪音随之升级为 Deactive warning）。
+		 * 此类状态机无 destroy 可调：跳过调用、释放状态机后正常返回，不抛 ERR，
+		 * 与 Deamon/其他硬件变量"未构建即不解析"的语义对齐。 */
+		unsafe {
+			let dc = LibC.mallocCString("destroy")
+			Lua_getglobal(L, dc)
+			let tp = Lua_type(L, -1)
+			Lua_pop(L, 1)
+			LibC.free(dc)
+			if (tp == LUA_TNIL) {
+				logD("Lua '${luapath}' has no global destroy (not built); skipping destroy call, releasing state")
+				destroy_lua(L)
+				return
+			}
+		}
+
 		/* 获取元数据并注入 destroy 指令 */
 		let metadata = getMetadata()
 		metadata.put("mode", JsonString("destroy"))
