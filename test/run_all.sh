@@ -38,7 +38,7 @@ for t in test/test_*.lua; do
 	rc=$?
 	echo "$out"
 	# 兼容两种失败约定：退出码非零，或打印 [FAIL] 行
-	if [ $rc -ne 0 ] || echo "$out" | grep -q "\[FAIL\]"; then
+	if [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]"; then
 		fail=$((fail + 1))
 		failed="$failed $name"
 	else

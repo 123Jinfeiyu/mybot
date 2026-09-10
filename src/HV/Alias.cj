@@ -22,12 +22,12 @@ public class MtVars_Alias <: MatrixVars_Hardware {
 		let name = AliasDefs[i, idxName]
 		let alias= getMt(AliasDefs, i, idxAlias)
 
-		println("Create a Alias vars: ${name}, witch means ${alias}")
-		let mtvars_alias = MtVars_Alias(things: {_: JsonValue =>
+		println("Create an Alias vars: ${name}, which means ${alias}")
+		let aliasVar = MtVars_Alias(things: {_: JsonValue =>
 			let str = JsonString(alias)	/*  直接返回JsonString（alias）*/
 			return str
 		})
 
-		return mtvars_alias
+		return aliasVar
 	}
 }

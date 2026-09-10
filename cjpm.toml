@@ -7,7 +7,7 @@
   target-dir = ""
   src-dir = ""
   output-type = "executable"
-  compile-option = "-l c" # Linux；luajit/pthread 链接均经绑定包动态库传递，消费方无需重复声明
+  compile-option = "-lc" # Linux；luajit/pthread 链接均经绑定包动态库传递，消费方无需重复声明
   override-compile-option = ""
   link-option = ""
   package-configuration = {}

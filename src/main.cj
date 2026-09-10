@@ -115,7 +115,7 @@ main(args: Array<String>): Int64 {
 		}
 
 		/* 无论有没有成功激活，都进行清理 */
-		finally {  robot.deactive()  }
+		finally {  robot.deactivate()  }
 
 		/* 以下 NN/DRL 路径注释保留（历史上用于微调网络模型，未来配合 nn4cj 重新接入） */
 //		let consoleReader = getStdIn()
@@ -167,7 +167,7 @@ func print_help()
 //		file.close()
 //		robot.active()
 //		robot.run()
-//		robot.deactive()
+//		robot.deactivate()
 //		let outf = File("ss/output_1.mt", OpenMode.Write)
 //		robot.save(outf)
 //		outf.close()

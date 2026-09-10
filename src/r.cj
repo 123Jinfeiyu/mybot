@@ -26,10 +26,10 @@ class RobotStruct {
 
 	/* -------- 存放解析结果和创建的变量 -------- */
 	private let C = LinkedList<MatrixObject>()
-	/* -------- 守护 holder 注册表：deactive 先统一置 stop 再 join（防 worker 饿死死锁）-------- */
+	/* -------- 守护 holder 注册表：deactivate 先统一置 stop 再 join（防 worker 饿死死锁）-------- */
 	private let daemonHolders = ArrayList<DaemonHolder>()
 	private let M = HashMap<String, MatrixVars_Hardware>()
-	/* 硬件变量声明序序列：active/deactive 按声明序 build/destroy
+	/* 硬件变量声明序列：active/deactivate 按声明序 build/destroy
 	 * （HashMap 遍历序未定义，而 I2C→PCA9685 等 fd 依赖要求声明序） */
 	private let hwSeq = ArrayList<MatrixVars_Hardware>() 
 
@@ -92,7 +92,7 @@ class RobotStruct {
 	 *
 	 *  清除必须以倒序进行（I2C→PCA9685 等 fd 依赖要求先销毁依赖方）。
 	 */
-	public func deactive(): Unit {
+	public func deactivate(): Unit {
 		/* P1 防死锁：先给【所有】守护置 stop，再统一 join。
 		 * 否则逐个 stop+get 时，若先 join 一个被 worker 池饿死的守护，其余守护
 		 * （stop 未置位）仍独占 worker → 饿死者永不运行 → get() 永久阻塞。
@@ -139,12 +139,12 @@ class RobotStruct {
 	 *  阅读矩阵脚本
 	 *  TODO(20260504-qing): 使用矩阵脚本存储神经网络模型（未来 NN 接入时实现）
 	 */
-	static private func readMatrix(file: InputStream, C: LinkedList<MatrixObject>){
+	static private func readMatrix(file: InputStream, out: LinkedList<MatrixObject>){
 		let sr = StringReader<InputStream>(file)
 		let parser =  MatrixParser(sr)
 		while (true) {
 			if (let Some(O) <- parser.parse()) {
-				C.addLast(O)  }
+				out.addLast(O)  }
 			else { break }
 		}
 	}
@@ -308,7 +308,7 @@ class RobotStruct {
 	{
 		for (item in ll) {
 			var target  = item.getName()
-			target = target.trimAscii() // ???
+			target = target.trimAscii()
 			if (name == target) {
 				return item  }
 		}
@@ -318,25 +318,25 @@ class RobotStruct {
 
 	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
 	private func run_drl_action(AC: LinkedList<MatrixObject>) {
-		let ActionDefsOpt = findMt(AC, "Action")
-		if (ActionDefsOpt.isNone()) {
+		let actionDefsOpt = findMt(AC, "Action")
+		if (actionDefsOpt.isNone()) {
 			throw IllegalArgumentException("No @Action matrix found in script. Please define action matrix in your .mt file.")
 		}
-		let ActionDefs = ActionDefsOpt.getOrThrow()	/* MatrixObject */
+		let actionDefs = actionDefsOpt.getOrThrow()	/* MatrixObject */
 
 		/* 按标题行的列顺序收集设备名，保证执行顺序与脚本列序一致
 		 * （例如把 Timer(Speaker) 列写在最后，它就会最后执行，见 issue #12） */
 		let order = ArrayList<String>()
-		for (j in 0..ActionDefs.col) {
-			let (name_dev, _) = parseActionColumn(ActionDefs[0, j])
+		for (j in 0..actionDefs.col) {
+			let (name_dev, _) = parseActionColumn(actionDefs[0, j])
 			if (!order.contains(name_dev)) {
 				order.add(name_dev)  }
 		}
 
-		for (i in 1..ActionDefs.size) {
+		for (i in 1..actionDefs.size) {
 			let set =JsonObject()		/* 每个硬件变量的参数集合 */
-			for (j in 0..ActionDefs.col) {
-				parse_action_matrixObject(set, ActionDefs, i, j)
+			for (j in 0..actionDefs.col) {
+				parse_action_matrixObject(set, actionDefs, i, j)
 			}
 
 			/* -------- 执行一行 -------- */
@@ -372,12 +372,12 @@ class RobotStruct {
 
 	/* -------- 解析@Action矩阵对象 -------- *
 	 * 列名格式 <device>.<param> 由 parseActionColumn 统一校验拆分。 */
-	private func parse_action_matrixObject(set: JsonObject, ActionDefs: MatrixObject,
+	private func parse_action_matrixObject(set: JsonObject, actionDefs: MatrixObject,
 			i: Int64, j: Int64) {
-		let (name_dev, name_param_orig) = parseActionColumn(ActionDefs[0, j])
+		let (name_dev, name_param_orig) = parseActionColumn(actionDefs[0, j])
 		var name_param = name_param_orig
 
-		var val_fp64 = MatrixVars_Hardware.parseMt<Float64>(ActionDefs, i, j)
+		var val_fp64 = MatrixVars_Hardware.parseMt<Float64>(actionDefs, i, j)
 
 		/* 参数别名转换：仅当参数名恰好是显式声明的 Alias 变量时才把 name_param
 		 * 替换为其目标名；普通硬件变量（守护/传感器/执行器）与参数重名时

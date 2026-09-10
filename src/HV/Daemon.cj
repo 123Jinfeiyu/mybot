@@ -94,8 +94,8 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 			Lua_free(L)
 			return -1i64
 		}
-		var pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
-		if (pcs != LUA_OK) {
+		var pcStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
+		if (pcStatus != LUA_OK) {
 			println("[daemon] chunk setup error: ${luaErrorString(L)}")
 			Lua_free(L)
 			return -1i64
@@ -108,8 +108,8 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		let tickName = LibC.mallocCString("daemon_tick")
 		while (!daemon_stop_requested(slot)) {
 			Lua_getglobal(L, tickName)
-			pcs = Lua_pcall(L, 0, LUA_MULTRET, 0)
-			if (pcs != LUA_OK) {
+			pcStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
+			if (pcStatus != LUA_OK) {
 				println("[daemon] tick error: ${luaErrorString(L)}")
 			}
 			Lua_settop(L, 0)
@@ -136,7 +136,7 @@ public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	if (chunk.startsWith("/")) {
 		return chunk
 	}
-	if (chunk == modulePath || chunk.startsWith("${modulePath}/")) {
+	if (chunk.startsWith("${modulePath}/")) {
 		return chunk
 	}
 	/* 兼容不带 "./" 的旧写法：缺省 modulePath="./modules" 时结构脚本写
@@ -148,7 +148,7 @@ public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	} else {
 		modulePath
 	}
-	if (chunk == noDot || chunk.startsWith("${noDot}/")) {
+	if (chunk.startsWith("${noDot}/")) {
 		return chunk
 	}
 	return "${modulePath}/${chunk}"
@@ -203,7 +203,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		let intervalMs = ivAcc
 
 		/* join 超时（P3）：正常退出 = stop 置位后最多再等一拍 sleep + tick 执行，
-		 * 取 interval 5 倍并保底 2000ms，防守护 tick 长时间阻塞时 deactive 挂死。
+		 * 取 interval 5 倍并保底 2000ms，防守护 tick 长时间阻塞时 deactivate 挂死。
 		 * 超时后放弃 join、保留 slot（防 UAF），由进程退出回收。 */
 		let joinTimeoutMs = if (intervalMs * 5 > 2000) { intervalMs * 5 } else { 2000 }
 
@@ -218,7 +218,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 			_mutex_init(slot)
 		}
 		let holder = DaemonHolder(slot: slot, joinTimeoutMs: joinTimeoutMs)
-		registry.add(holder)	/* 注册：deactive 先统一置 stop 再 join，防饿死死锁 */
+		registry.add(holder)	/* 注册：deactivate 先统一置 stop 再 join，防饿死死锁 */
 
 		let daemon = MtVars_Daemon(
 			/* play：主线程加锁读采样值 → JSON。值同时以标量键 v0..vN 暴露，
