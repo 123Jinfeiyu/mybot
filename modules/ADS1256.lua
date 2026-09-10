@@ -106,9 +106,13 @@ function build(data)
     if channel < 0 or channel > 7 then channel = 0 end
 
     -- 1. 复位并唤醒
-    spi_w(fd, CMD_RESET)
+    if spi_w(fd, CMD_RESET) ~= 0 then
+        return { result = "ERR", message = "Failed to reset ADS1256" }
+    end
     milli_sleep(5)
-    spi_w(fd, CMD_WAKEUP)
+    if spi_w(fd, CMD_WAKEUP) ~= 0 then
+        return { result = "ERR", message = "Failed to wake ADS1256" }
+    end
     milli_sleep(5)
 
     -- 2. STATUS：BIT5 ORDER=0（MSB 优先），BIT4 ACAL=1（自动校准），其余 0
@@ -132,11 +136,15 @@ function build(data)
     end
 
     -- 6. 自校准（约 2 个转换周期，保守等待）
-    spi_w(fd, CMD_SELFCAL)
+    if spi_w(fd, CMD_SELFCAL) ~= 0 then
+        return { result = "ERR", message = "Failed to start self-calibration" }
+    end
     milli_sleep(50)
 
     -- 7. 进入连续读模式
-    spi_w(fd, CMD_RDATAC)
+    if spi_w(fd, CMD_RDATAC) ~= 0 then
+        return { result = "ERR", message = "Failed to enter continuous read mode" }
+    end
 
     print(string.format("ADS1256 init OK: drate=%d SPS, PGA=×%d, channel=AIN%d",
         drate_tab[drate_idx + 1][2], pga_gain[pga_idx + 1], channel))
@@ -155,7 +163,9 @@ function destroy(data)
         return { result = "ERR", message = "Invalid Arguments: fd" }
     end
 
-    spi_w(tonumber(fd), CMD_SDATAC)
+    if spi_w(tonumber(fd), CMD_SDATAC) ~= 0 then
+        return { result = "ERR", message = "Failed to stop continuous read mode" }
+    end
     return { result = "OK" }
 end
 
@@ -194,15 +204,25 @@ function call(data)
     end
 
     -- 退出连续模式 → 改通道 → 同步重启转换 → 回到连续模式
-    spi_w(fd, CMD_SDATAC)
+    if spi_w(fd, CMD_SDATAC) ~= 0 then
+        return { result = "ERR", message = "Failed to stop continuous read mode" }
+    end
     if write_reg(fd, REG_MUX, mux) ~= 0 then
         spi_w(fd, CMD_RDATAC)
         return { result = "ERR", message = "Failed to write MUX" }
     end
-    spi_w(fd, CMD_SYNC)
+    if spi_w(fd, CMD_SYNC) ~= 0 then
+        spi_w(fd, CMD_RDATAC)
+        return { result = "ERR", message = "Failed to sync ADS1256" }
+    end
     milli_sleep(1)
-    spi_w(fd, CMD_WAKEUP)
-    spi_w(fd, CMD_RDATAC)
+    if spi_w(fd, CMD_WAKEUP) ~= 0 then
+        spi_w(fd, CMD_RDATAC)
+        return { result = "ERR", message = "Failed to wake ADS1256" }
+    end
+    if spi_w(fd, CMD_RDATAC) ~= 0 then
+        return { result = "ERR", message = "Failed to enter continuous read mode" }
+    end
 
     -- 等待一个完整转换周期（按 drate 估算，最少 1ms）
     dev_delay = tonum(data.delay, dev_delay)
