@@ -412,7 +412,8 @@ class RobotStruct {
  *   - 字面列与 "-" 继承结果   → 首采冻结，之后每次浅拷贝重放；
  *   - "-" 整列缺省（M3）      → 首采 continue 跳过（Lua 侧 tonumber(nil) or 缺省）；
  *   - name 列、controller(skipCol) 列 → 跳过；
- *   - 引用列（值是另一硬件变量名）→ 运行期每次实时 read() 快照（P4/M1），
+ *   - 引用列（值以 $ 前缀显式标记，如 $imu0；裸名一律按字面值）
+ *     → 运行期每次实时 read() 快照（P4/M1），
  *     不入缓存，count/nvals/values 等动态值始终反映当前状态。
  * 并发：首采在 build 期单线程完成，静态字段此后只读共享；collect() 每次返回
  * 全新 JsonObject，调用方在副本上写 mode/参数，无共享对象污染（守护多线程 play 安全）。
@@ -464,7 +465,20 @@ class MetaProvider {
 			var value = MatrixVars_Hardware.getMt(matrix, row, j)
 			if (value == "-") { continue }
 			if (j == idxName || j == skipCol) { continue }
-			if (let Some(_) <- M.get(value)) { rArr.add(value) }
+			/* 引用列须显式 $ 前缀（如 $imu0）；裸名一律按字面值——
+			 * 消除「字面值恰与硬件变量名相同被误判为引用」的隐式行为。
+			 * $ 指向未定义变量属拼写错误，显式报错（信息给出表/列/行/值） */
+			if (value.startsWith("$")) {
+				let rs = value.toRuneArray()
+				let arr = Array<Rune>(rs.size - 1, { i => rs[i + 1] })
+				let refName = String(arr)
+				if (let Some(_) <- M.get(refName)) {
+					rArr.add(refName)
+				} else {
+					throw IllegalArgumentException(
+						"'${value}' (column '${colName}') in table '${matrix.getName()}' row ${row}: references hardware variable '${refName}', but it is not defined.")
+				}
+			}
 			else { cArr.add(colName); vArr.add(value) }
 		}
 		this.cols = cArr

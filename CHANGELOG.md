@@ -4,6 +4,21 @@
 `feature/bidirectional-communication` 等未合并分支不计入）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号与 `cjpm.toml` 的 `version` 字段对应。
 
+## [0.3.2] - 2026-09-10
+
+引用列显式化：`$` 前缀替代隐式按值判定（行为变更，存量结构脚本需同步加 `$`）。
+
+### 变更
+
+- **引用列须以 `$` 前缀显式标记**：元数据列引用硬件变量须写 `$名字`
+  （如 `src='$imu0'`），裸名一律按字面值——原实现把「值恰好等于已定义
+  硬件变量名」的列隐式判为引用列，纯字面值与设备名撞名（如 note 列值
+  恰为 `timer-0`）会被静默当引用、字段丢失；`$` 指向未定义硬件变量在
+  build 期显式报错（信息含表/列/行/值）。`MetaProvider` 引用判定同步
+  更新；test_monitor / test_filter / test_ema_chain / test_bh1750 /
+  test_mpu_daemon 五个用例与 README、Monitor.lua 示例同步加 `$`；
+  新增 `test/test_ref_prefix.sql|.mt` 回归用例（撞名字面值保持字面传递）
+
 ## [0.3.1] - 2026-09-10
 
 0.3.0 审计复审后的低危修复批（HAL 读接口静默失败显式化、UART 错误契约落地、

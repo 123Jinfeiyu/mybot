@@ -9,7 +9,7 @@ CREATE TABLE Daemon (name String, chunk String, interval String);
 INSERT INTO Daemon (name, chunk, interval) VALUES ('sim0', 'lib/daemon_probe.lua', '1');
 
 CREATE TABLE Ema (name String, alpha String, src String, field String);
-INSERT INTO Ema (name, alpha, src, field) VALUES ('ema0', '0.3', 'sim0', 'v0');
+INSERT INTO Ema (name, alpha, src, field) VALUES ('ema0', '0.3', '$sim0', 'v0');
 
 CREATE TABLE Monitor (name String, src String);
-INSERT INTO Monitor (name, src) VALUES ('mon0', 'ema0');
+INSERT INTO Monitor (name, src) VALUES ('mon0', '$ema0');

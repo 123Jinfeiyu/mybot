@@ -2,14 +2,14 @@ dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua"
 -- Monitor.lua - 守护数据消费 / 闭环控制示例驱动
 -- bot4cj 仓颉语言机器人框架
 --
--- 用法：在结构脚本中定义 @Monitor 矩阵，某列的值填一个 @Daemon 变量名，
--- 经 _getMetadata 的引用机制，该守护 play() 返回的 v0..vN / count / status
+-- 用法：在结构脚本中定义 @Monitor 矩阵，某列的值填 `$` 前缀的 @Daemon 变量名，
+-- 经引用机制，该守护 play() 返回的 v0..vN / count / status
 -- 会被合并进本变量的元数据，call() 里即可用 data.v0 等读到实时采样值。
 --
 --   CREATE TABLE Daemon (name String, chunk String);
 --   INSERT INTO Daemon (name, chunk) VALUES ('sim0', 'lib/daemon_probe.lua');
 --   CREATE TABLE Monitor (name String, src String);
---   INSERT INTO Monitor (name, src) VALUES ('mon0', 'sim0');   -- src 引用守护 sim0
+--   INSERT INTO Monitor (name, src) VALUES ('mon0', '$sim0');   -- src 引用守护 sim0（$ 前缀必填，裸名按字面值）
 --
 -- 本示例：读 v0 按阈值判定 level，并回传 out=v0；若本变量再声明 controller 列，
 -- 框架会把返回值转发给执行器，形成「守护采样 → 引用消费 → 决策 → 转发执行」闭环。

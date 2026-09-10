@@ -18,4 +18,4 @@ CREATE TABLE Monitor (
 	name String,
 	src  String
 );
-INSERT INTO Monitor (name, src) VALUES ('mon0', 'sim0');
+INSERT INTO Monitor (name, src) VALUES ('mon0', '$sim0');

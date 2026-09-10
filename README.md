@@ -20,7 +20,7 @@ bot4cj 是用仓颉语言编写的**机器人硬件控制器**。可以把它想
 
 ## 📋 项目信息
 
-- **项目版本**：v0.3.1（`cjpm.toml`）
+- **项目版本**：v0.3.2（`cjpm.toml`）
 - **维护状态**：🟢 积极维护中
 - **主要负责人**：qingss0（Flowers_Unamed 团队）
 - **开发人员**：[qingss0](https://gitcode.com/qingss0)
@@ -248,6 +248,15 @@ CREATE TABLE Relay (
 INSERT INTO Relay (name, controller, note) VALUES ('relay0', 'timer-0', 'hello-relay');
 ```
 
+#### 引用列（`$` 前缀）
+
+除 `controller` 列外，元数据列还可以**按值引用**另一个硬件变量：值以 `$` 开头（如 `$imu0`）即为引用列，被引用变量的 `read()` 快照字段会实时合并进本变量的元数据；**不带 `$` 的裸名一律按字面值**（0.3.1 及之前按"值恰好是已定义硬件变量名"隐式判定引用，已废弃）。`$` 指向未定义的硬件变量会在 build 期显式报错：
+
+```sql
+CREATE TABLE Monitor (name String, src String);
+INSERT INTO Monitor (name, src) VALUES ('mon0', '$imu0');   -- 引用守护 imu0（$ 前缀必填）
+```
+
 ### 基层硬件抽象层（HAL）
 
 总线怎么"开口说话"（打开设备、读写寄存器的底层动作）都封装在 `modules/lib/HAL.lua`，所有驱动共用这一份，**仅支持 LuaJIT**：
@@ -332,10 +341,10 @@ CREATE TABLE Daemon (name String, chunk String);
 INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/sensor_daemon.lua');   -- 采样
 
 CREATE TABLE Kalman (name String, Q String, R String, src String, field String);
-INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', 'imu0', 'v0');  -- 卡尔曼
+INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', '$imu0', 'v0');  -- 卡尔曼
 
 CREATE TABLE Monitor (name String, src String);
-INSERT INTO Monitor (name, src) VALUES ('mon0', 'kf0');   -- 消费滤波值
+INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 ```
 
 `modules/Monitor.lua` 即此类示例：`call()` 里 `data.v0` 拿到实时采样值，决策后可经 controller 列转发执行器。
@@ -393,6 +402,10 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 - **团队**：Flowers_Unamed（BadHope）
 
 ## 📋 更新日志
+
+### v0.3.2（2026-09）
+
+- ✅ 引用列改 `$` 前缀显式标记：元数据列引用硬件变量须写 `$名字`（如 `src='$imu0'`），裸名一律按字面值，消除「字面值恰与硬件变量名相同被误判为引用」的隐式行为；`$` 指向未定义变量在 build 期显式报错（含表/列/行信息）
 
 ### v0.3.1（2026-09）
 

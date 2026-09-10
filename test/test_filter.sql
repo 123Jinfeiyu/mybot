@@ -21,10 +21,10 @@ CREATE TABLE Kalman (
 	src   String,
 	field String
 );
-INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', 'sim0', 'v0');
+INSERT INTO Kalman (name, Q, R, src, field) VALUES ('kf0', '20', '200', '$sim0', 'v0');
 
 CREATE TABLE Monitor (
 	name String,
 	src  String
 );
-INSERT INTO Monitor (name, src) VALUES ('mon0', 'kf0');
+INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');
