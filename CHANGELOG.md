@@ -4,7 +4,7 @@
 `feature/bidirectional-communication` 等未合并分支不计入）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号与 `cjpm.toml` 的 `version` 字段对应。
 
-## [0.3.0] - 2026-09-04 ~ 2026-09-06（当前版本，未打 tag）
+## [0.3.0] - 2026-09-04 ~ 2026-09-10（当前版本，未打 tag）
 
 围绕「守护采样 → 滤波 → 引用消费」数据闭环的大版本，同时落地 HV 子包重构、
 硬件错误通道与一批新驱动（含 !33 feat/issue15-ux 合并）。
@@ -129,6 +129,28 @@ getSpadInfo + SPAD 使能图原位重排 + 参考校准两轮 + 背靠背连续�
 - 注入地址精度契约（Low）：`lua_pushinteger` 整数 tag 注入对任意 64 位值逐位
   保真；`slot_attach` 增前置守卫（损坏地址启动即红），≥2^53 仅告警不拦截；
   配套 `test/test_slot_addr.lua` 16 项断言
+- 审计加固两轮（09-08 ~ 09-10，清单见 `.tmp/` 审计报告）：驱动返回值判读补齐
+  （EMC2101/MS5611/ADS1256 的 set_addr/spi_w）、生产 print 噪音收敛到
+  BOT4CJ_DEBUG 门控、`_run.sh` 退出码透传与 aarch64 运行时库路径、
+  Daemon/Lua malloc 空指针检查、halt-on-error 契约补强（pcall 失败显式 ERR）、
+  拼写与命名规范清理
+- **ADS1x15 OS 位读语义反转**（datasheet 级）：轮询改等 1=转换完成——原实现等 0
+  在启动转换后首轮即满足，所有采样滞后一拍读到陈旧值（首拍为复位默认值 0）；
+  ADS1015 回显比对掩掉 OS 位（空闲恒读 1，原全 16 位比对在真机上必 mismatch、
+  build 永远失败）、destroy 读改写清 OS 位防误启一次多余转换；
+  `test_ads1015` 器件模型改按真实 OS 语义建模以守护修复
+- **ADS1256 满量程换算少乘 2**：满量程为 ±2·VREF/PGA，原电压读数系统性低一半
+- pthread `publish` 入锁前校验 vals 全为数值：防持锁区间 ffi 赋值抛错跳过
+  unlock，主线程侧 `play()` 永久死锁
+- MPU6050 六轴改 0x3B 起 14 字节 burst 单次原子读（消除 hi/lo 跨事务撕裂窗口
+  与 12 次读失败值被静默合成伪读数），失败按 ERR 契约上报
+- SPI setup 失败关闭泄漏 fd 并复位状态；I2C/SPI 的 `call` 校验 build 成败
+  （未 build 不下发无效 fd）、返回契约补 `result="OK"`——三总线与 UART 对齐
+- ADS1015/1115/1256 差分参数 `tonumber` 判 nil 按契约返回 ERR（占位符 `-`
+  原触发裸 Lua error 被吞成通用错误）
+- `sensor_daemon`：setup 各失败点关闭已开总线 fd（原长期泄漏）、补 spi_setup
+  判读（错误码 -3）与 `P.assert_layout()` 槽布局断言、fail 增诊断日志
+- `main.cj` 结构脚本解析异常路径经 finally 关闭文件流（原泄漏 fd）
 
 ## [0.2.0] - 2026-09-04
 

@@ -143,7 +143,8 @@ public open class MatrixVars_Hardware {
 	 * 硬件调用结果契约检查（halt-on-error）
 	 *
 	 * 统一约定：Lua 驱动返回 { result = "OK" | "ERR", message = "..." }。
-	 * 不含 result 字段视为成功（兼容读值型驱动如 SPI/Relay）；含显式 "ERR"
+	 * 不含 result 字段视为成功（兼容转发类驱动如 Relay/Servo；总线三件套
+	 * I2C/SPI/UART 的 call 现均带 result）；含显式 "ERR"
 	 * 时抛出异常，由调用方决定中断动作序列还是捕获继续。
 	 */
 	public static func ensureOk(res: JsonValue, ctx!: String = ""): JsonValue {
