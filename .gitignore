@@ -2,6 +2,7 @@
 nn/
 /bot
 /bot?
+cjpm.lock
 
 .git/
 .vscode/
