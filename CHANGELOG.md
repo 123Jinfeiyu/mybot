@@ -21,6 +21,12 @@
 
 ### 修复
 
+- **INSERT 目标表名拼错由静默吞掉改解析期显式报错**：`readSQL` 的
+  INSERT_TABLE 分支只处理表名匹配的 CREATE TABLE，无一匹配时整条
+  INSERT 被无声跳过——硬件实例静默消失，错误延迟到动作期以误导性
+  信息（`'timer-0' ... not defined`）暴露，排查方向完全错位。现无
+  匹配表时解析期抛错（信息含拼错的表名并提示检查 CREATE TABLE）；
+  新增 `test/test_insert_typo.sql` 负路径回归用例（期望退出码 1）
 - **共享槽布局核对失败改 fail-fast**：`pthread.lua` 的 `assert_layout`
   名不符实——布局漂移只 `print` 并返回 false，而两个调用方
   （sensor_daemon / daemon_probe）均忽略返回值，继续在错误偏移上读写

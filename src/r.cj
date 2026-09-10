@@ -196,9 +196,15 @@ class RobotStruct {
 
 				case INSERT_TABLE(ev) =>
 
-					C.forEach({item =>
+					/* ---- 目标表须先经 CREATE TABLE 定义：表名拼错时原实现静默
+					 * ---- 跳过整条 INSERT，硬件实例无声消失，错误延迟到动作期
+					 * ---- 以误导性信息（'xx' not defined）暴露——现解析期显式报错。
+					 * ---- forEach 改 for 循环：lambda 不得捕获可变变量（matched） ---- */
+					var matchedTable = false
+					for (item in C) {
 
 						if (ev.targetTabName == item.getName()) {
+							matchedTable = true
 
 							var rowNo = 0
 							for (row in ev.tableRows) {
@@ -235,7 +241,11 @@ class RobotStruct {
 								item.submitLine(0)
 							}
 						}
-					})
+					}
+					if (!matchedTable) {
+						throw IllegalArgumentException(
+							"INSERT INTO '${ev.targetTabName}': table is not defined. CREATE TABLE must appear before INSERT (check for typos in the table name).")
+					}
 
 				case _ => throw Exception("Unsupported sql command")
 			}
