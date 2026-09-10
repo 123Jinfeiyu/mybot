@@ -34,6 +34,18 @@
   回读芯片配置的 PGA 字段（3 位，0~7），字段值 6/7 与 5 同为 ±0.256V
   （datasheet 冗余编码），原实现按「越界」重置为 2（±2.048V），电压
   换算放大 8 倍；现 6/7 映射到 5，两驱动测试各补 PGA=6 用例
+- **HAL `i2c_read_bytes` n<1 反向钳制**：`n < 1 or n > 16` 统一钳到 16，
+  请求 0 字节反而读出 16 字节超长表——0.3.1「越界显式失败」修复批的同类
+  漏网；现与 `i2c_read_multi_bytes` 对齐（n<1 钳 1、n>16 钳 16），
+  `test_hal_ffi` 补 4 个 `i2c_read_bytes` 用例（此前该函数零覆盖）
+- **`test/run_all.sh` 空匹配假绿与死循环挂死**：过滤器拼错时输出
+  「0 通过, 0 失败」且退出码 0（CI 假绿）——现无匹配用例显式报错退出 1；
+  新增单测超时（`TEST_TIMEOUT` 秒，默认 60，经 coreutils `timeout`，
+  缺失时回退不限时），防单个用例死循环挂死整个入口
+- **构建可复现性：`cjpm.lock` 入库**：原 `.gitignore` 忽略锁文件、
+  `_set.sh` 每次构建都 `cjpm update` 主动拉新，二者叠加导致依赖版本
+  漂移、历史构建无法复现；现锁文件入库，`_set.sh` 仅在锁文件缺失时
+  update（升级依赖：手动 `cjpm update` 后连同锁文件一起提交）
 - **共享槽布局核对失败改 fail-fast**：`pthread.lua` 的 `assert_layout`
   名不符实——布局漂移只 `print` 并返回 false，而两个调用方
   （sensor_daemon / daemon_probe）均忽略返回值，继续在错误偏移上读写

@@ -190,6 +190,18 @@ check("i2c_read 为单条读消息（无写指针）",
 check("i2c_read n>8 显式失败返回 -1", i2c_read(fd, 9) == -1)
 check("i2c_read n<1 显式失败返回 -1", i2c_read(fd, 0) == -1)
 
+-- 字节表纯读版：n 钳制 1~16（对齐 i2c_read_multi_bytes；
+-- 0.3.2 修复：原实现 n<1 反向钳到 16，请求 0 字节反读 16 字节超长表）
+rx_preset = { 0x5a, 0x5b }
+local prb = i2c_read_bytes(fd, 2)
+check("i2c_read_bytes 2 字节返回字节表",
+	type(prb) == "table" and #prb == 2 and prb[1] == 0x5a and prb[2] == 0x5b)
+check("i2c_read_bytes n>16 钳制 16", #(i2c_read_bytes(fd, 99) or {}) == 16)
+check("i2c_read_bytes n<1 钳制 1（不再反向钳 16）", #(i2c_read_bytes(fd, 0) or {}) == 1)
+mock_ioctl_ret = -1
+check("i2c_read_bytes 失败返回 nil", i2c_read_bytes(fd, 2) == nil)
+mock_ioctl_ret = 0
+
 -- 未 set_addr 的 fd：地址缺失，操作应拒绝且不发 ioctl
 reset()
 check("未设地址 write_reg 拒绝", i2c_write_reg(999, 0, 0) == false)
