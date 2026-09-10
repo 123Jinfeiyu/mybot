@@ -164,7 +164,8 @@ check("read_multi 单次原子含 2 消息、读 2 字节",
 rx_preset = { 0xaa, 0xbb, 0xcc }
 check("i2c_read_multi 3 字节", i2c_read_multi(fd, 0x00, 3) == 0xAABBCC)
 rx_preset = { 0x07 }
-check("i2c_read_multi n>6 钳制为 1（合并值 2^53 精度上限）", i2c_read_multi(fd, 0, 99) == 7)
+check("i2c_read_multi n>6 显式失败返回 -1（静默钳 1 会放大成长度错位的错误合并值）",
+	i2c_read_multi(fd, 0, 99) == -1)
 -- 字节表版：不受 2^53 限制，n 钳制 1~16
 rx_preset = { 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0 }
 local rb8 = i2c_read_multi_bytes(fd, 0x00, 8)
@@ -186,6 +187,8 @@ check("i2c_read 纯读大端合并", i2c_read(fd, 2) == 0x2a)
 c = find("ioctl_p", "req", HAL.I2C_RDWR)
 check("i2c_read 为单条读消息（无写指针）",
 	c ~= nil and c.nmsgs == 1 and c.msgs[1].flags == HAL.I2C_M_RD)
+check("i2c_read n>8 显式失败返回 -1", i2c_read(fd, 9) == -1)
+check("i2c_read n<1 显式失败返回 -1", i2c_read(fd, 0) == -1)
 
 -- 未 set_addr 的 fd：地址缺失，操作应拒绝且不发 ioctl
 reset()
@@ -253,6 +256,9 @@ c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
 check("spi_read_multi 单次 4 字节传输", c ~= nil and c.len == 4)
 mock_ioctl_ret = -1
 check("spi_read_multi ioctl 失败返回 -1", spi_read_multi(sfd, 4) == -1)
+mock_ioctl_ret = 0
+reset()
+check("spi_read_multi n>8 显式失败返回 -1", spi_read_multi(sfd, 9) == -1)
 
 -- delay_us 逐次传输（方案3：驱动显式传入）
 reset()

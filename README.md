@@ -20,7 +20,7 @@ bot4cj 是用仓颉语言编写的**机器人硬件控制器**。可以把它想
 
 ## 📋 项目信息
 
-- **项目版本**：v0.3.0（`cjpm.toml`）
+- **项目版本**：v0.3.1（`cjpm.toml`）
 - **维护状态**：🟢 积极维护中
 - **主要负责人**：qingss0（Flowers_Unamed 团队）
 - **开发人员**：[qingss0](https://gitcode.com/qingss0)
@@ -321,7 +321,7 @@ cat test/test_monitor.mt     | bash _run.sh --robot=test/test_monitor.sql    # �
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua`、驱动 dofile `lib/` 与 `@Daemon` 的 chunk 均按其解析 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
 
-安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。
+安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；未来接入 TCP 等外部输入时需另行建立信任边界（输入校验或白名单 API）。
 
 ## 💡 进阶示例：守护采样 → 滤波 → 消费闭环
 
@@ -393,6 +393,13 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 - **团队**：Flowers_Unamed（BadHope）
 
 ## 📋 更新日志
+
+### v0.3.1（2026-09）
+
+- ✅ HAL 合并值读函数（i2c_read / i2c_read_multi / i2c_read_reg16 / spi_read_multi）n 越界改显式失败（返回 -1），消除静默钳到 1 字节放大成错误数据的隐患
+- ✅ HAL uart_read 落实错误契约：非 EAGAIN/EINTR 的读错误立即返回 nil，不再空转到超时
+- ✅ Servo 逐次打印收敛到 `BOT4CJ_DEBUG` 门控；`_run.sh` 增加过期二进制告警与产物缺失友好提示
+- ✅ README 安全说明明确「护栏非安全边界」定位（详见 [CHANGELOG.md](CHANGELOG.md)）
 
 ### v0.3.0（2026-09）
 

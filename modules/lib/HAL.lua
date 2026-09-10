@@ -274,10 +274,11 @@ end
 
 -- 写指针后读 n 字节（合并为单次原子事务），返回大端合并值；失败返回 -1。
 -- 注意合并值为 Lua number：6 字节以上（2^48）将超 2^53 精度被静默截断，
--- 因此 n 钳制 1~6；更长块读请用 i2c_read_multi_bytes。
+-- 因此 n 有效范围 1~6，越界（含非法值）显式返回 -1——静默钳到 1 字节会把
+-- 长度错位放大成错误合并值；更长块读请用 i2c_read_multi_bytes。
 function i2c_read_multi(fd, reg, n)
 	n = uint_of(n)
-	if n == nil or n < 1 or n > 6 then n = 1 end
+	if n == nil or n < 1 or n > 6 then return -1 end
 	local t = i2c_read_multi_bytes(fd, reg, n)
 	if t == nil then return -1 end
 	local v = 0
@@ -286,12 +287,14 @@ function i2c_read_multi(fd, reg, n)
 end
 
 -- 纯读 n 字节（单条读消息，不写指针，SGP30 这类命令式传感器用），大端合并；失败返回 -1
+-- n 有效范围 1~8，越界（含非法值）显式返回 -1：静默钳到 1 字节会被调用方的
+-- 拆字节数学放大成错误数据；更长纯读请用 i2c_read_bytes
 function i2c_read(fd, n)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 8 then n = 1 end
+	if n < 1 or n > 8 then return -1 end
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[1]")
 	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
@@ -330,14 +333,15 @@ function i2c_write_reg16(fd, reg16, ...)
 end
 
 -- 写 16 位指针后读 n 字节（合并为单次原子事务），返回大端合并值；失败返回 -1。
--- n 钳制 1~6（2^53 精度上限，同 i2c_read_multi；本族寄存器最长 dword=4）
+-- n 有效范围 1~6（2^53 精度上限，同 i2c_read_multi；本族寄存器最长 dword=4），
+-- 越界显式返回 -1（静默钳制危害同 i2c_read_multi）
 function i2c_read_reg16(fd, reg16, n)
 	fd = tonumber(fd)
 	reg16 = uint_of(reg16)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or reg16 == nil or reg16 > 0xFFFF or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 6 then n = 1 end
+	if n < 1 or n > 6 then return -1 end
 	local wb = ffi.new("uint8_t[2]", math.floor(reg16 / 256) % 256, reg16 % 256)
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[2]")
@@ -496,12 +500,13 @@ function spi_write_multi(fd, data, delay_us)
 	return -1
 end
 
--- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 钳制 1~8）；delay_us 可选
+-- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 有效范围 1~8，
+-- 越界显式返回 -1，静默钳制危害同 i2c_read_multi）；delay_us 可选
 function spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	if fd == nil or n == nil then return -1 end
-	if n < 1 or n > 8 then n = 1 end
+	if n < 1 or n > 8 then return -1 end
 	local buf = ffi.new("uint8_t[?]", n)
 	if not spi_xfer(fd, nil, buf, n, delay_us) then return -1 end
 	local v = 0
@@ -659,6 +664,8 @@ HAL.UART_TCIFLUSH = 0
 HAL.UART_VMIN_IDX = 6			-- c_cc 下标（VMIN）
 HAL.UART_VTIME_IDX = 5			-- c_cc 下标（VTIME）
 HAL.UART_CREAD_CLOCAL = 2176	-- CREAD(128) | CLOCAL(2048)
+HAL.EAGAIN = 11					-- Linux errno：非阻塞读暂无数据
+HAL.EINTR = 4					-- Linux errno：被信号打断
 
 HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
 
@@ -743,7 +750,8 @@ function uart_write(fd, data)
 end
 
 -- 读最多 n 字节（非阻塞轮询，1ms 步进直至 timeout_ms），返回 1 基字节表
--- （可能为空表 = 超时无数据）；fd 读取错误（EAGAIN 之外）返回 nil
+-- （可能为空表 = 超时无数据）；fd 读取错误（EAGAIN/EINTR 之外的 errno）
+-- 立即返回 nil——原实现把一切 read 失败当"无数据"空转到超时，错误被吞
 function uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
 	n = uint_of(n)
@@ -759,6 +767,10 @@ function uart_read(fd, n, timeout_ms)
 		if r ~= nil and r > 0 then
 			for i = 0, r - 1 do out[#out + 1] = tonumber(buf[i]) end
 			if #out >= n then break end
+		elseif r == nil or r < 0 then
+			-- EAGAIN=暂无数据、EINTR=被信号打断：继续轮询；其余错误显式失败
+			local e = HAL.sys.errno()
+			if e ~= HAL.EAGAIN and e ~= HAL.EINTR then return nil end
 		end
 		if it < iters then HAL.sys.usleep(1000) end
 	end

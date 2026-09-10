@@ -4,7 +4,43 @@
 `feature/bidirectional-communication` 等未合并分支不计入）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号与 `cjpm.toml` 的 `version` 字段对应。
 
-## [0.3.0] - 2026-09-04 ~ 2026-09-10（当前版本，未打 tag）
+## [0.3.1] - 2026-09-10
+
+0.3.0 审计复审后的低危修复批（HAL 读接口静默失败显式化、UART 错误契约落地、
+脚本工程加固），无新增功能。
+
+### 修复
+
+- **HAL 合并值读函数 n 越界改显式失败**：`i2c_read` / `i2c_read_multi` /
+  `i2c_read_reg16` / `spi_read_multi` 的 n 非法（nil / <1 / 超上限）由
+  「静默钳到 1 字节」改为返回 -1——静默钳制读出的 1 字节会经调用方的大端
+  合并/拆字节数学放大成看似合法的错误数据（-1 本就是失败契约，MHZ19、
+  SGP30、SHT3X 等全部调用方均已判读）；更长块读仍走字节表版
+  `i2c_read_multi_bytes` / `i2c_read_bytes`（其钳制保留并已在注释注明）。
+  配套 `test_hal_ffi` 断言更新并补 `i2c_read` n>8/n<1、`spi_read_multi` n>8 用例
+- **HAL `uart_read` 落实错误契约**：read 失败时按 errno 分流——EAGAIN/EINTR
+  继续轮询，其余错误（如 EIO）立即返回 nil（文档本就如此承诺，原实现
+  把一切失败当「无数据」空转到超时，错误被吞）；新增 EIO 错误路径用例，
+  `HAL.EAGAIN`/`HAL.EINTR` 常量化
+- Servo 驱动逐次 `print` 收敛到 `BOT4CJ_DEBUG` 门控（与 Monitor 一致；
+  大型动作脚本此前每帧每舵机刷一行；Relay 打印保留——README 承诺的
+  relay-test 成功标识）
+
+### 变更
+
+- `_run.sh`：
+  - 编译产物缺失时友好提示并退出 1（原 bash 报 No such file 或 confusing）
+  - `src/` 源码新于 `target/release/bin/main` 时打印过期告警——
+    「改完源码忘 build，旧二进制行为与文档不符」的常见坑前置暴露
+  - 运行时 .so 路径收集由 GNU `find -printf` 改 POSIX 可移植写法
+
+### 文档
+
+- README「安全说明」明确定位：Lua 沙箱是**防误用护栏而非安全边界**
+  （Lua 驱动可经 `require("ffi")` 直调任意 libc；.sql/.lua/.mt 均为可信
+  输入），并注明未来接入 TCP 等外部输入时需另行建立信任边界
+
+## [0.3.0] - 2026-09-04 ~ 2026-09-10（未打 tag）
 
 围绕「守护采样 → 滤波 → 引用消费」数据闭环的大版本，同时落地 HV 子包重构、
 硬件错误通道与一批新驱动（含 !33 feat/issue15-ux 合并）。

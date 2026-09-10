@@ -168,6 +168,14 @@ reset({ -1 })
 local got2 = uart_read(7, 9, 5)
 check(type(got2) == "table" and #got2 == 0, "超时返回空表", got2 and tostring(#got2) or "nil")
 
+-- 读错误（EAGAIN 之外的 errno，如 EIO）：立即返回 nil，不再空转到超时
+reset({ -1 })
+local old_errno = HAL.sys.errno
+HAL.sys.errno = function() return 5 end	-- EIO
+local got_err = uart_read(7, 9, 300)
+HAL.sys.errno = old_errno
+check(got_err == nil, "读错误（非 EAGAIN/EINTR）立即返回 nil", tostring(got_err))
+
 -- 足量单次到达：立即返回不轮询
 reset({ { 1, 2, 3, 4, 5, 6, 7, 8, 9 } })
 local n_usleep_before = 0
