@@ -56,9 +56,15 @@ function build(data)
 	i2c_set_addr(fd, addr)		-- 开始配置MPU6050
 	milli_sleep(1)			-- 
 
-	i2c_write_reg(fd, PWR_MGMT_1, PWR_NOSLEEP)		-- 退出睡眠
-	i2c_write_reg(fd, GYRO_CONF_REG, GYRO_FS_500DPS)	-- 设陀螺仪量程
-	i2c_write_reg(fd, ACCEL_CONF_REG, ACCEL_FS_8g)		-- 设加速度计量程
+	if not i2c_write_reg(fd, PWR_MGMT_1, PWR_NOSLEEP) then		-- 退出睡眠
+		return err("MPU6050 not responding (PWR_MGMT_1 write failed, check address and wiring)")
+	end
+	if not i2c_write_reg(fd, GYRO_CONF_REG, GYRO_FS_500DPS) then	-- 设陀螺仪量程
+		return err("MPU6050 write failed: GYRO_CONFIG")
+	end
+	if not i2c_write_reg(fd, ACCEL_CONF_REG, ACCEL_FS_8g) then	-- 设加速度计量程
+		return err("MPU6050 write failed: ACCEL_CONFIG")
+	end
 
 	milli_sleep(100)		-- 等待稳定
 

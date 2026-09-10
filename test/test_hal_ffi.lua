@@ -301,8 +301,8 @@ check("build 经 I2C_RDWR 原子写配置寄存器",
 reset()
 r = call({ mode = "call", fd = 7, address = "0x40", channel = 6, angle = 45 })
 check("PCA9685.lua call 设置角度", r.result == "OK", r.result)
--- channel 6 → 寄存器 0x1e 起 4 字节；angle 45 → offval 204 = 0xcc
--- 收集所有 I2C_RDWR 写消息的数据字节（每次 i2c_write_reg = 一次单写消息事务）
+-- channel 6 → 寄存器 0x1e 起；angle 45 → offval 204 = 0xcc
+-- call 为单次 i2c_write_multi（AI 自增）：一条写消息 = 寄存器指针 + ON(2B) + OFF(2B)
 local writes = {}
 for _, cc in ipairs(calls) do
 	if cc.op == "ioctl_p" and cc.req == HAL.I2C_RDWR and cc.msgs then
@@ -311,9 +311,9 @@ for _, cc in ipairs(calls) do
 		end
 	end
 end
-check("call 写 PWM ON 低字节 (0x1e,0x00)", writes[1] == string.char(0x1e, 0x00))
-check("call 写 PWM OFF 低字节 (0x20,0xcc)", writes[3] == string.char(0x20, 0xcc),
-	writes[3] and string.byte(writes[3], 2))
+check("call 单次原子写 PWM 4 字节 (0x1e,00,00,cc,00)",
+	#writes == 1 and writes[1] == string.char(0x1e, 0x00, 0x00, 0xcc, 0x00),
+	tostring(#writes) .. ":" .. tostring(writes[1] and #writes[1]))
 io.write("---- 驱动链测试输出结束 ----\n\n")
 
 ------------------------------------------------------------------

@@ -56,13 +56,21 @@ function build(data)
 
 	i2c_set_addr(fd, addr)		-- 开始配置PCA9685
 
-	i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)	-- 触发一次重启（唤醒振荡器）
+	if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then	-- 触发一次重启（唤醒振荡器）
+		return err("PCA9685 not responding (MODE1 write failed, check address and wiring)")
+	end
 
 	milli_sleep(5)			-- 等待振荡器启动
 
-	i2c_write_reg(fd, REG_MODE1, MODE1_SLEEP)		-- 进入SLEEP模式（允许改频率）
-	i2c_write_reg(fd, REG_PRESCALE, math.floor(prescale))
-	i2c_write_reg(fd, REG_MODE1, MODE1_AI)			-- 退出SLEEP并开启地址自增
+	if not i2c_write_reg(fd, REG_MODE1, MODE1_SLEEP) then	-- 进入SLEEP模式（允许改频率）
+		return err("PCA9685 write failed: MODE1 (SLEEP)")
+	end
+	if not i2c_write_reg(fd, REG_PRESCALE, math.floor(prescale)) then
+		return err("PCA9685 write failed: PRE_SCALE")
+	end
+	if not i2c_write_reg(fd, REG_MODE1, MODE1_AI) then	-- 退出SLEEP并开启地址自增
+		return err("PCA9685 write failed: MODE1 (AI)")
+	end
 
 	milli_sleep(5)			-- 等待振荡器启动
 
@@ -92,7 +100,9 @@ function destroy(data)
 
 	i2c_set_addr(fd, addr)		-- 准备配置
 
-	i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)	-- 触发重启（非复位配置，仅重新开始计数）
+	if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then	-- 触发重启（非复位配置，仅重新开始计数）
+		return err("PCA9685 write failed: MODE1 (restart)")
+	end
 
 	return {  result = "OK"  }	-- 返回成功信号
 
@@ -160,11 +170,14 @@ function call(data)
 	local offval = math.floor(width * PWM_RESOLUTION / PERIOD_MS)
 	local reg = LED0_ON_L + 4 * channel
 
-	-- 写I2C寄存器：ON 计数恒为 0（脉宽自周期起点起算），OFF 计数写入低/高字节
-	i2c_write_reg(fd, reg + 0, 0x00)		-- ON 计数低字节 = 0
-	i2c_write_reg(fd, reg + 1, 0x00)		-- ON 计数高字节 = 0
-	i2c_write_reg(fd, reg + 2, bitc.band(bitc.rshift(offval, 0), 0xFF))	-- OFF 计数低字节
-	i2c_write_reg(fd, reg + 3, bitc.band(bitc.rshift(offval, 8), 0xFF))	-- OFF 计数高字节
+	-- ON 计数恒为 0（脉宽自周期起点起算），OFF 计数写入低/高字节。
+	-- build 已开 AI 自增：4 字节合为单次 I2C_RDWR 原子更新——原 4 次独立事务
+	-- 存在半更新窗口，并发访问同一总线时舵机会吃到新旧混合脉宽
+	local off_lo = bitc.band(offval, 0xFF)
+	local off_hi = bitc.band(bitc.rshift(offval, 8), 0xFF)
+	if i2c_write_multi(fd, reg, 0x00, 0x00, off_lo, off_hi) ~= 0 then
+		return err("PCA9685 write failed: PWM registers (channel " .. tostring(channel) .. ")")
+	end
 
 	-- 返回字典
  	return { result = "OK" }
