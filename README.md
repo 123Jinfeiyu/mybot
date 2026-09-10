@@ -2,7 +2,15 @@
 
 > **共建理念**：能写文档的写文档，能写代码的写代码，一起共建仓颉生态！
 
-bot4cj 是基于仓颉语言编写的**机器人硬件控制器**。它提供一套可扩展的结构：用一门简单快速的脚本语言（LuaJIT）来编写**应用层硬件驱动**，把**机器人结构**和**机器人动作**用 DSL 解耦开来。只要通过管道把动作脚本的内容传给程序，就可以驱动机器人做出动作。
+bot4cj 是基于仓颉语言编写的**机器人硬件控制器**。你可以把它想成一个"播放器"：给机器人一份**动作剧本**，它就照着"演"出来。
+
+一句话原理——**结构、驱动、动作三件事分开写**：
+
+- **机器人长了什么、怎么接线** → 结构脚本 `.sql`
+- **每个零件怎么控制** → 驱动脚本 `.lua`（用快而简单的 LuaJIT 写硬件底层）
+- **每一秒做什么动作** → 动作脚本 `.mt`
+
+程序把这三样东西拼起来，就可以从电脑上通过一行命令指挥机器人站立、走路、转向……（详细介绍见下文「一分钟理解」与「核心概念与 DSL」。）
 
 [实机演示地址](http://152.136.227.85:8080/videos/robot-show.mp4)
 
@@ -15,6 +23,34 @@ bot4cj 是基于仓颉语言编写的**机器人硬件控制器**。它提供一
 - **主要负责人**：qingss0（Flowers_Unamed 团队）
 - **开发人员**：[qingss0](https://gitcode.com/qingss0)
 - **仓颉版本**：支持仓颉语言 1.1.3（stdx 1.1.3）
+
+## 🧭 新手导读：一分钟理解 bot4cj
+
+把 bot4cj 想象成一间**机器人剧场**，三份脚本各干各的活：
+
+| 脚本 | 像什么 | 干什么 |
+| ---- | ------ | ------ |
+| 结构脚本 `.sql` | 舞台的**接线图** | 机器人身上挂了哪些"零件"、接在哪条总线/哪个地址、谁听谁的 |
+| 驱动脚本 `.lua` | 零件的**说明书** | 每个零件怎么点亮、怎么读数（I2C / SPI / UART 都藏在这一层） |
+| 动作脚本 `.mt`  | 演员的**剧本** | 一行 = 一个时间点的动作，逐行播放就是一段表演 |
+
+它们之间的配合：
+
+```text
+结构脚本 .sql → 定义零件清单（舵机、传感器…）
+                  │ 每个零件配一份说明书（自动加载）
+驱动脚本 .lua → 教计算机读写这个零件
+                  ↑ 按剧本逐行调用
+动作脚本 .mt  → 第 1 行做什么 → 第 2 行做什么 → …
+```
+
+好消息是：**不接任何硬件也能先跑通全流程**——程序内置了"假零件"（传感器桩替身、Relay 转发链路），装好环境后在开发机上就能看到整条链路真实运转。如果只记一件事，就记下面这条命令：
+
+```bash
+cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
+```
+
+它是一台"玩具电梯"：`Relay` 收到参数后转个弯交给 `Timer` 延时 200ms，全程不碰硬件，用来验证环境装没装对（看到 `Relay: test=200 note=hello-relay -> delay=200` 即成功）。
 
 ## 🚀 快速开始
 
@@ -33,32 +69,9 @@ export CANGJIE_STDX_PATH=/path/to/cangjie-stdx   # cjpm.toml 按目标架构读�
 bash _set.sh                                     # 等价于 cjpm update + cjpm build
 ```
 
-### 无硬件测试
+### 最快的验证：无硬件跑通第一条链路（Relay → Timer）
 
-测试分两层，均无需任何 I2C/SPI/UART 真机设备，可全程在开发机上完成：
-
-**Lua 驱动层（桩替身）**：`bash test/run_all.sh` 一键跑全部 Lua 离线测试（需 `luajit`；真机 i2c 用例自动跳过；`test/` 下所有 `test_*.lua` 都会被自动收集）。单跑无硬件样例：
-
-```bash
-.tmp/luajit test/test_relay_nohw.lua        # Relay：纯软件驱动，连 HAL/ffi 都不碰
-# 或系统解释器：  lua5.4 test/test_relay_nohw.lua
-```
-
-**仓颉程序层（编译链路自检）**：`cjpm build` 之后用 `_run.sh` 直跑产物，链路全部为纯软件 hook，不透真机：
-
-```bash
-cjpm build
-cat scripts/relay-test.mt     | bash _run.sh --robot=robots/relay-test.sql    # Relay → Timer 单链路
-cat test/test_daemon.mt       | bash _run.sh --robot=test/test_daemon.sql     # 单守护并发压测（主线程负载 × 计数守护）
-cat test/test_multidaemon.mt  | bash _run.sh --robot=test/test_multidaemon.sql # 4 守护并发诊断（各持独立 lua_State）
-cat test/test_monitor.mt      | bash _run.sh --robot=test/test_monitor.sql    # 守护采样 → Monitor 引用消费闭环
-```
-
-仓颉端的 Daemon 无硬件测试由 `lib/daemon_probe.lua`（模拟传感器，内存槽发布计数/正弦）与 `lib/daemon_tid.lua`（gettid + 计数）驱动，扎到的是同一份 `Daemon.cj` 槽分配/加锁代码；每条命令退出码 0 即通过。对比：`test/test_mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
-
-### 无硬件跑通第一条链路（Relay → Timer）
-
-`relay-test` 不需要接任何硬件：Relay 把 `test` 参数转成 `delay`，经 controller 机制转发给 Timer 延时 200ms，用于验证安装是否成功：
+`relay-test` 是一条"玩具电梯"链路，**不需要接任何硬件**：Relay 把 `test` 参数转成 `delay`，经 controller 机制转发给 Timer 延时 200ms。它用来确认"环境装好了、程序能跑了"——**新手跳到这一步跑通它即可**：
 
 ```bash
 cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
@@ -70,6 +83,19 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 export BOT4CJ_DEBUG=1
 cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 ```
+
+### 进阶：无硬件测试（可选）
+
+跑通上面那条后，可以在开发机（不接硬件）上把测试跑得更全，分两层：
+
+**Lua 驱动层（桩替身）**：`bash test/run_all.sh` 一键跑全部 Lua 离线测试（需 `luajit`；真机 i2c 用例自动跳过；`test/` 下所有 `test_*.lua` 都会被自动收集）。单跑无硬件样例：
+
+```bash
+.tmp/luajit test/test_relay_nohw.lua        # Relay：纯软件驱动，连 HAL/ffi 都不碰
+# 或系统解释器：  lua5.4 test/test_relay_nohw.lua
+```
+
+**仓颉程序层**：`relay-test` 之上，`@Daemon` 守护线程也备好了无硬件测试命令，见下文「@Daemon 守护线程」小节末尾的「无硬件跑 Daemon」——每条命令退出码 0 即通过。
 
 ### 接第一块 PCA9685
 
@@ -146,13 +172,13 @@ cat scripts/one-shake.mt| bash _run.sh --robot=robots/spider1.sql   # 单腿姿�
 
 ## 📚 核心概念与 DSL
 
-机器人开发的关键是把「结构」和「行为」解耦：bot4cj 用三种脚本协同工作——
+机器人开发的关键是把「结构」和「行为」解耦：bot4cj 用三种脚本协同工作。**看不懂术语没关系——只要记住这是"一台接线图 + 一份说明书 + 一本剧本"**：
 
-| 脚本 | 后缀 | 作用 |
-| ---- | ---- | ---- |
-| 结构脚本 | `.sql` | 以 SQL 方言声明机器人硬件结构与调用链 |
-| 驱动脚本 | `.lua` | 在 LuaJIT 里实现每个硬件变量的底层驱动 |
-| 动作脚本 | `.mt`  | 以行列式 DSL 编排机器人的动作 |
+| 脚本 | 后缀 | 作用 | 通俗理解 |
+| ---- | ---- | ---- | -------- |
+| 结构脚本 | `.sql` | 以 SQL 方言声明机器人硬件结构与调用链 | 舞台**接线图** |
+| 驱动脚本 | `.lua` | 在 LuaJIT 里实现每个硬件变量的底层驱动 | 零件的**说明书** |
+| 动作脚本 | `.mt`  | 以行列式 DSL 编排机器人的动作 | 演员的**剧本** |
 
 ### 机器人结构脚本（.sql）
 
@@ -190,7 +216,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s1, 90, 
 
 ### 硬件变量矩阵一览
 
-目前框架内置 50 个左右硬件驱动，按总线/能力分类如下（每个驱动就是一个 `modules/<矩阵名>.lua`）：
+**先看结论**：这张表是"零件仓库清单"——用不到的器件直接跳过，等真接了某个传感器再回来对号入座。目前框架内置 50 个左右硬件驱动，按总线/能力分类如下（每个驱动就是一个 `modules/<矩阵名>.lua`）：
 
 | 类别 | 硬件变量 | 说明 |
 | ---- | -------- | ---- |
@@ -204,7 +230,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s1, 90, 
 
 ### 动作脚本（.mt）
 
-动作脚本用一张表格描述一帧一帧的动作：表头是「硬件变量.参数」，每一行就是一步：
+可以这样理解：**表头是"台词名"，一行就是一帧动作**。动作脚本用一张表格描述一帧一帧的动作：表头是「硬件变量.参数」，每一行就是一步，程序逐行往下"播放"：
 
 ```mt
 # 行动矩阵为硬件变量输入参数
@@ -221,7 +247,7 @@ s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  spk.F  spk.delay;	# column name
 
 ### controller 引用机制（通用）
 
-除 `Servo` 外，任何硬件矩阵都可以声明一个 `controller` 列，把该硬件变量的调用**转发**给另一个硬件变量：
+可以理解成**"转交任务"**：某个硬件变量收到指令后，自己先干一份活，再把结果转交给另一个硬件变量。除 `Servo` 外，任何硬件矩阵都可以声明一个 `controller` 列，把该硬件变量的调用**转发**给另一个硬件变量：
 
 1. 先运行自己的 Lua 驱动（`modules/<矩阵名>.lua` 的 `call`）
 2. 框架再把「该行元数据（跳过 `name`/`controller` 列）∪ 自己 Lua 的返回表」发送给 `controller` 指定的硬件变量
@@ -244,7 +270,7 @@ INSERT INTO Relay (name, controller, note) VALUES ('relay0', 'timer-0', 'hello-r
 
 ### 基层硬件抽象层（HAL）
 
-I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现，**仅支持 LuaJIT**：
+总线怎么"开口说话"（打开设备、读写寄存器的底层动作）都封装在 `modules/lib/HAL.lua`，所有驱动共用这一份，**仅支持 LuaJIT**：
 
 - `ffi` 直调 glibc（open/ioctl/read/write/usleep），原生性能零 fork；fd 为真实内核句柄，跨 Lua 状态机天然有效
 - **I2C 经 `I2C_RDWR` ioctl 原子事务**：读寄存器的「写指针 + 读」合并为单次内核传输，消除守护线程与主线程并发访问同一器件时的寄存器指针竞态；地址由每条 i2c_msg 携带，不再需要 `I2C_SLAVE` ioctl（也没有地址被内核驱动占用的 EBUSY 问题）
@@ -253,7 +279,7 @@ I2C/SPI 总线操作由 `modules/lib/HAL.lua` 实现，**仅支持 LuaJIT**：
 
 ### @Daemon 守护线程
 
-后台持续采样（如 IMU）用 `@Daemon` 矩阵声明，宿主用**仓颉 `spawn` 原语**起守护线程：
+有些传感器需要**一刻不停地读**（比如 IMU 姿态）。这活儿靠 `@Daemon` 声明的**后台小工**来做：宿主用**仓颉 `spawn` 原语**起一个守护线程，在后台循环采样，主线程随时去取最新值：
 
 ```sql
 CREATE TABLE Daemon (
@@ -296,6 +322,18 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 
 > 注意：守护线程 setup（开总线 + 配置传感器）需数毫秒；若动作序列极短（几行瞬时 play），可能在守护首次采样前就 free() 停止（表现为 publishes=0）。真实机器人动作序列为秒级，无此问题；测试时用 Timer 延时列拉长主线程时间窗。
 
+#### 无硬件跑 Daemon（可选自检）
+
+想看守护机制本身转起来，不必上真传感器——两个纯软件"模拟传感器"就够了：`lib/daemon_probe.lua`（内存槽发布计数/正弦）与 `lib/daemon_tid.lua`（gettid + 计数），扎到的仍是同一份 `Daemon.cj` 槽分配/加锁代码。`cjpm build` 后逐条跑，退出码 0 即通过：
+
+```bash
+cat test/test_daemon.mt      | bash _run.sh --robot=test/test_daemon.sql     # 单守护并发压测（主线程负载 × 计数守护）
+cat test/test_multidaemon.mt | bash _run.sh --robot=test/test_multidaemon.sql # 4 守护并发诊断（各持独立 lua_State）
+cat test/test_monitor.mt     | bash _run.sh --robot=test/test_monitor.sql    # 守护采样 → Monitor 引用消费闭环
+```
+
+对比：`test/test_mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
+
 ### 环境变量
 
 | 变量 | 说明 |
@@ -309,7 +347,7 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 
 ### 基础用法：无硬件自检
 
-不接任何硬件也能开发调试，确认从「解析结构 → 加载驱动 → 转发调用」的整条链路正常：
+与快速开始「Relay → Timer」是同一条命令：不接任何硬件，验证「解析结构 → 加载驱动 → 转发调用」整条链路正常：
 
 ```bash
 cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
