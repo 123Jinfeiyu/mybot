@@ -36,6 +36,7 @@ log
 report
 tmp
 .tmp/
+*.deb
 
 # 工具配置
 .opencode/

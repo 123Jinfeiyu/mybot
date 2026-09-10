@@ -6,8 +6,6 @@ package bot4cj
  */
 
 import std.argopt.*
-import std.collection.*
-import std.env.*
 import std.fs.*
 //import ctype4cj.*
 //import nn4cj.*

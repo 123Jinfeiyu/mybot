@@ -67,7 +67,9 @@ public func sandbox_lua(L: lua_State): Unit {
 public class MtVars_Lua <: MatrixVars_Hardware {
 
 	/* 顶层调用深度计数：只在外层 .mt 直接调用的原子处打印结果，
-	 * 避免被 controller 转发的嵌套 Lua 调用重复输出 */
+	 * 避免被 controller 转发的嵌套 Lua 调用重复输出。
+	 * 约束（P：单线程）：非同步静态计数，动作路径（r.cj play）串行执行，
+	 * 不得引入并发访问；@Daemon 守护线程持独立 lua_State、不经本变量。 */
 	private static var topDepth = 0
 
 	/*
@@ -281,7 +283,8 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 	private static func build_lua(L: lua_State, luapath: String): Bool {
 		unsafe {
 			let filename_c = LibC.mallocCString(luapath)
-			if (filename_c.isEmpty()) { throw IllegalMemoryException("LibC.mallocCString()")  }
+			/* 判空用 nullptr：isEmpty() 在 malloc 失败返回 null 的 CString 上调用会先解引用而 panic */
+			if (filename_c == nullptr) { throw IllegalMemoryException("LibC.mallocCString()")  }
 
 			/*  加载Lua标准库（os/io等，HAL.lua 依赖；不再注册硬件cfunc）  */
 			Lua_loadlib(L)
