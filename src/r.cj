@@ -42,6 +42,18 @@ class RobotStruct {
 		hwSeq.add(hw)
 	}
 
+	/* -------- 重名前置判重（资源泄漏防线）--------
+	 * MtVars_Lua.Factory（LuaJIT 状态机）与 MtVars_Daemon.Factory（共享槽 + mutex）
+	 * 都在实参求值时先申请 OS 资源，addHardwareVar 后置查重抛错后资源无人持有、
+	 * 无法回收——当前错误路径进程退出由 OS 兜底，但长驻进程（未来 TCP 模式）
+	 * 每次重试都会累积泄漏。先确认名字可用再调 Factory；
+	 * addHardwareVar 保留为权威兜底（报错文案一致）。 */
+	private func precheckDuplicate(name: String, MtName: String): Unit {
+		if (let Some(_) <- M.get(name)) {
+			throw IllegalArgumentException("Duplicate hardware variable name: '${name}' (in table '${MtName}')")
+		}
+	}
+
 	/*
 	 *  注册一张 @Alias 矩阵中的所有别名变量
 	 *
@@ -257,6 +269,7 @@ class RobotStruct {
 		let idxName = matrix.indexOfCol(0, "name")
 		for (i in 1..matrix.size) {
 			let name = matrix[i, idxName]
+			precheckDuplicate(name, MtName)
 			addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, M, daemonHolders), source: " (in table '${MtName}')")
 		}
 	}
@@ -279,6 +292,7 @@ class RobotStruct {
 
 		for (i in 1..matrix.size) {
 			let name = matrix[i, idxName]
+			precheckDuplicate(name, MtName)
 
 			/* 解析该行的 controller 引用（支持 - 占位符继承） */
 			var ctrlOpt: Option<MatrixVars_Hardware> = None

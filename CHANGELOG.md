@@ -19,6 +19,16 @@
   test_mpu_daemon 五个用例与 README、Monitor.lua 示例同步加 `$`；
   新增 `test/test_ref_prefix.sql|.mt` 回归用例（撞名字面值保持字面传递）
 
+### 修复
+
+- **重名前置判重（资源泄漏防线）**：`MtVars_Lua.Factory`（LuaJIT 状态机）
+  与 `MtVars_Daemon.Factory`（共享槽 + mutex）都在实参求值时先申请 OS
+  资源、`addHardwareVar` 后置查重，重名抛错后资源无人持有、无法回收
+  （当前错误路径进程退出由 OS 兜底；长驻进程场景——如未来 TCP 模式——
+  每次重试都累积泄漏）。`createLuaVars` / `createDaemonVars` 现于调
+  Factory 前置判重（报错文案与 addHardwareVar 一致），资源只在名字
+  确认可用后才创建；`addHardwareVar` 保留为权威兜底
+
 ## [0.3.1] - 2026-09-10
 
 0.3.0 审计复审后的低危修复批（HAL 读接口静默失败显式化、UART 错误契约落地、
