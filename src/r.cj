@@ -140,7 +140,7 @@ class RobotStruct {
 			}
 		}
 
-		run_drl_action(AC)
+		run_action(AC)
 	}
 
 	/*
@@ -336,8 +336,8 @@ class RobotStruct {
 		return None
 	}
 
-	/* -------- 使用drl微调动作，使用RNN生成动作流 -------- */
-	private func run_drl_action(AC: LinkedList<MatrixObject>) {
+	/* -------- 逐行播放 @Action 矩阵 -------- */
+	private func run_action(AC: LinkedList<MatrixObject>) {
 		let actionDefsOpt = findMt(AC, "Action")
 		if (actionDefsOpt.isNone()) {
 			throw IllegalArgumentException("No @Action matrix found in script. Please define action matrix in your .mt file.")
