@@ -23,29 +23,32 @@ vbus.attach("bh1750@0x23", 0x23, {
 vbus.inject()
 
 local mpath = dofile("modules/lib/mpath.lua")
-local BH = dofile("modules/BH1750.lua")
+dofile("modules/BH1750.lua")
+-- BH1750 加载时会重新加载 HAL，覆盖 virtbus 注入，需要恢复后重新注入
+vbus.restore()
+vbus.inject()
 
 -- build：应在位判定成功（PowerOn 0x01 / 连续 H 0x10 写成功）
 local fd = i2c_open("/dev/i2c-1")
 cmds = {}
-local res = BH.build({ fd = fd, address = 0x23, mode = "H" })
+local res = build({ fd = fd, address = 0x23, mode = "H" })
 tester.check("build 在位判定成功返回 OK", tostring(res.result) == "OK")
 tester.check("build 发出 PowerOn 命令 0x01", cmds[1] == 0x01)
 tester.check("build 发出连续 H 命令 0x10", cmds[2] == 0x10)
 
 -- call：读回 0x7530 → LUX = count/1.2 = 25000
-res = BH.call({ fd = fd, address = 0x23, mode = "H" })
+res = call({ fd = fd, address = 0x23, mode = "H" })
 tester.check("call 返回 OK", tostring(res.result) == "OK")
 tester.check("call 照度换算正确 (30000/1.2)", math.abs(res.LUX - 25000) < 1e-6)
 
 -- destroy：发 PowerDown 0x00
 cmds = {}
-res = BH.destroy({ fd = fd, address = 0x23 })
+res = destroy({ fd = fd, address = 0x23 })
 tester.check("destroy 返回 OK", tostring(res.result) == "OK")
 tester.check("destroy 发出 PowerDown 0x00", cmds[#cmds] == 0x00)
 
 -- 负路径：地址不在总线（0x50 无器件）→ build 写 NACK → 显式 ERR
-res = BH.build({ fd = fd, address = 0x50, mode = "H" })
+res = build({ fd = fd, address = 0x50, mode = "H" })
 tester.check("地址无器件 build 显式 ERR", tostring(res.result) == "ERR")
 
 i2c_close(fd)
