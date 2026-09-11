@@ -2,7 +2,7 @@
 nn/
 /bot
 /bot?
-cjpm.lock
+# 注意：cjpm.lock 已入库（0.3.2 起保证构建可复现），不要再忽略
 
 .git/
 .vscode/
