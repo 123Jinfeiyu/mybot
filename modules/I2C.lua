@@ -3,12 +3,14 @@
 --
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 -- 调试打印辅助 print_table（modules/lib/）
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+dofile(mpath.resolve("lib/HAL.lua"))
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
 
--- 全局文件句柄
-fd = -1
+-- 文件句柄（H-06：local upvalue 共享于本文件 build/call/destroy，不污染全局；
+-- 每个硬件变量独立 lua_State，故天然隔离）
+local fd = -1
 
 function build(data)
 

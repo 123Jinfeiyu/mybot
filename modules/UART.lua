@@ -3,15 +3,16 @@
 --
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 -- 调试打印辅助 print_table（modules/lib/）
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+dofile(mpath.resolve("lib/HAL.lua"))
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
 
--- 全局文件句柄
-fd = 0
+-- 文件句柄（H-06：local upvalue 共享于本文件 build/call/destroy，不污染全局）
+local fd = 0
 
 -- 全局波特率（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
-baud = 9600
+local baud = 9600
 
 function build(data)
 

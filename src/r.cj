@@ -302,9 +302,9 @@ class RobotStruct {
 			if (matrix[0, j] == "controller") { idxCtrl = j; break }
 		}
 
-		/* 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径（std.env），默认为 ./modules */
+		/* 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径（std.env），支持 ':' 分隔多路径，默认为 ./modules */
 		let modulePath = getVariable("BOT4CJ_MODULE_PATH") ?? "./modules"
-		let scriptPath = "${modulePath}/${MtName}.lua"
+		let scriptPath = firstExistingModule(modulePath, "${MtName}.lua")
 
 		for (i in 1..matrix.size) {
 			let name = matrix[i, idxName]
