@@ -4,6 +4,30 @@
 `feature/bidirectional-communication` 等未合并分支不计入）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号与 `cjpm.toml` 的 `version` 字段对应。
 
+## [0.3.3] - 2026-09-11
+
+版本号于 d9ad46a 提升至 0.3.3。
+
+### 修复
+
+- **BME280 湿度校准块读取超 HAL 合并读上限，build 恒 ERR（驱动完全不可用）**：
+  build 读 0xE1~0xE7 共 7 字节湿度校准系数时调用合并读 `i2c_read_multi`，
+  而该函数上限 6 字节（Lua number 2^53 精度约束，越界显式返回 -1，见
+  `lib/HAL.lua`）——HAL 收紧（1~8 收至 1~6）后此调用点漏网，任何 BME280
+  build 恒报 "Failed to read calibration"；因该驱动此前零测试覆盖，
+  离线测试全绿也未能拦截。现改走字节表版 `i2c_read_multi_bytes`
+  （HAL 注释明示的长块读指定路径，与 BMM150/MPU6050/VL53L0X 惯例一致），
+  单次 I2C_RDWR 事务读全块不合并；文件头「实现要点」注释同步（旧注释
+  描述的合并读符号回绕为收紧前行为）。新增 `test/test_bme280.lua` 离线
+  桩测试 33 用例：桩侧 `i2c_read_multi` 镜像真 HAL 契约（n>6 显式 -1）
+  守护本回归——旧代码在该桩下 build 复现恒 ERR；校准注入用 datasheet
+  附录 8.3 示例系数组，补偿输出与测试内独立转录的官方浮点公式交叉验证
+  （专抓端序/H4·H5 nibble 装配转录笔误），并覆盖 chip id 校验、NVM 拷贝
+  超时、读写无应答、无效温度/湿度读数（0x80000/0x8000 哨兵）、测量超时、
+  destroy 置睡眠与缺参安全返回等负路径。本机验证：`luajit
+  test/test_bme280.lua` 全绿；`test/run_all.sh` 50 个用例文件全通过
+  （0 失败，含新增文件）
+
 ## [0.3.2] - 2026-09-10
 
 引用列显式化：`$` 前缀替代隐式按值判定（行为变更，存量结构脚本需同步加 `$`）。

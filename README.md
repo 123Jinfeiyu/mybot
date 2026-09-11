@@ -20,7 +20,7 @@ bot4cj 是用仓颉语言编写的**机器人硬件控制器**。可以把它想
 
 ## 📋 项目信息
 
-- **项目版本**：v0.3.2（`cjpm.toml`）
+- **项目版本**：v0.3.3（`cjpm.toml`）
 - **维护状态**：🟢 积极维护中
 - **主要负责人**：qingss0（Flowers_Unamed 团队）
 - **开发人员**：[qingss0](https://gitcode.com/qingss0)
@@ -416,6 +416,10 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 - **团队**：Flowers_Unamed（BadHope）
 
 ## 📋 更新日志
+
+### v0.3.3（2026-09）
+
+- ✅ 修复 BME280 驱动 build 恒 ERR：湿度校准块 7 字节读超 HAL 合并读上限 6 字节，改走字节表版 `i2c_read_multi_bytes`；新增 `test/test_bme280.lua` 离线桩测试 33 用例（旧代码在桩下复现恒 ERR，防回归）
 
 ### v0.3.2（2026-09）
 
