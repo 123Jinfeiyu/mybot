@@ -12,6 +12,19 @@ CREATE TABLE Alias (
 INSERT INTO Alias (name, alias) VALUES (A, angle);
 INSERT INTO Alias (name, alias) VALUES (F, frequency);
 
+/* GPIO-19：BCM19（物理 35 脚）推挽输出，高电平有效，上电 0 */
+CREATE TABLE GPIO (
+	name      String,
+	chip      String,
+	offset    String,
+	direction String,
+	active    String,
+	init      String
+);
+-- INSERT INTO GPIO (name, chip, offset, direction, active, init)
+--   VALUES ('GPIO-19', '/dev/gpiochip0', '19', 'out', 'high', '0');
+
+
 /* I2C 总线：name 引用名 → /dev/i2c-N 设备路径 */
 CREATE TABLE I2C (
 	name String,
