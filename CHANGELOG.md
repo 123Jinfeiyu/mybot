@@ -34,6 +34,11 @@
 - `Servo.lua` / `Relay.lua` 日志格式化对浮点改 `%s`+`tostring`（原 `%d` 口径依赖
   LuaJIT 截断行为）；Relay 的逐帧输出为 README 首条命令的验收标记，保持不变
 - `test_h07_fd.lua` 桩目录补拷 `lib/mpath.lua`（适配守护 chunk 的新加载链路）
+- `sensor_daemon.lua` 守护退出清理先调驱动 `destroy()`（若有，`type(destroy)=='function'`
+  守卫）再关总线 fd：让 VL53L0X 停止 ranging、ADS1x15 置单次态断电等器件退出活跃态
+- 新增 `test/test_spi.lua`（26 断言：build 参数校验、call 前置检查、destroy 关闭、
+  open/ioctl 失败路径）与 `test/test_ads1256.lua`（44 断言：build 寄存器写序列、
+  call 单端/差分/负值/PGA 电压换算、destroy SDATAC、越界归缺省、失败路径）
 
 ### 文档
 
@@ -42,7 +47,7 @@
 
 ## [0.3.3] - 2026-09-11
 
-新增硬件 PWM 驱动，并修两处构建/配置一致性问题。
+新增硬件 PWM 驱动，修复 BME280 恒 ERR 与两处构建/配置一致性问题。
 
 ### 新增
 
@@ -80,6 +85,21 @@
 - **`_run.sh` 堆大小注释与默认值不符**：注释写「显式给 512MB」，实际默认 128MB。
   512MB 堆在 512MB 内存的板子（如 CM0）上会 OOM，128MB 为折中值；注释已改为
   说明折中理由与 `cjHeapSize` 覆盖方式（该中间值尚未经 A/B 验证）
+- **BME280 湿度校准块读取超 HAL 合并读上限，build 恒 ERR（驱动完全不可用）**：
+  build 读 0xE1~0xE7 共 7 字节湿度校准系数时调用合并读 `i2c_read_multi`，
+  而该函数上限 6 字节（Lua number 2^53 精度约束，越界显式返回 -1，见
+  `lib/HAL.lua`）——HAL 收紧（1~8 收至 1~6）后此调用点漏网，任何 BME280
+  build 恒报 "Failed to read calibration"；因该驱动此前零测试覆盖，
+  离线测试全绿也未能拦截。现改走字节表版 `i2c_read_multi_bytes`
+  （HAL 注释明示的长块读指定路径，与 BMM150/MPU6050/VL53L0X 惯例一致），
+  单次 I2C_RDWR 事务读全块不合并；文件头「实现要点」注释同步（旧注释
+  描述的合并读符号回绕为收紧前行为）。新增 `test/test_bme280.lua` 离线
+  桩测试 33 用例：桩侧 `i2c_read_multi` 镜像真 HAL 契约（n>6 显式 -1）
+  守护本回归——旧代码在该桩下 build 复现恒 ERR；校准注入用 datasheet
+  附录 8.3 示例系数组，补偿输出与测试内独立转录的官方浮点公式交叉验证
+  （专抓端序/H4·H5 nibble 装配转录笔误），并覆盖 chip id 校验、NVM 拷贝
+  超时、读写无应答、无效温度/湿度读数（0x80000/0x8000 哨兵）、测量超时、
+  destroy 置睡眠与缺参安全返回等负路径
 
 ### 文档
 

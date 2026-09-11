@@ -12,8 +12,9 @@
 -- 实现要点：
 --   1. 寄存器写不逐条判 i2c_write_reg 的 true/false，关键配置一律回读复核
 --      （回读可同时覆盖「写失败」与「器件未应用」两种情形）
---   2. i2c_read_multi 为纯 Lua 大端合并：失败返回 -1，成功恒为非负且在
---      double 域内精确（<=2^53）；多字节读取按 4 字节块进行（单次 n<=6 上限内）
+--   2. HAL 合并读 i2c_read_multi 上限 6 字节（合并值超 2^53 丢精度；纯 Lua 算术
+--      恒为非负，越界显式 -1）：校准区/数据区按 4 字节块读；湿度校准块 7 字节
+--      走字节表版 i2c_read_multi_bytes（长块读的 HAL 指定路径）
 --   3. 软复位后须等状态寄存器 im_update 位（bit0）清零，才可读取校准系数
 --   4. 校准区 0x88~0x9F 为小端，测量数据区 0xF7~0xFE 为大端
 --   5. 补偿公式为数据手册附录 8.3 的浮点版
@@ -167,12 +168,11 @@ function build(data)
     dig_H1 = h1
 
     -- H2(0xE1,s16) H3(0xE3,u8) H4(s12: E4<<4|E5低4位) H5(s12: E6<<4|E5高4位) H6(0xE7,s8)
-    -- 共7字节，合并值 < 2^56，不会溢出，可一次读
-    local ce = i2c_read_multi(fd, REG_H_CAL, 7)
-    if ce < 0 then
+    -- 共7字节：HAL 合并读上限 6，走字节表版一次事务读全块（不合并、无 2^53 精度问题）
+    local e = i2c_read_multi_bytes(fd, REG_H_CAL, 7)
+    if e == nil then
         return { result = "ERR", message = "Failed to read calibration" }
     end
-    local e = to_bytes(ce, 7)
     dig_H2 = s16le(e, 1)
     dig_H3 = e[3]
     dig_H4 = s12(bitc.bor(bitc.lshift(e[4], 4), bitc.band(e[5], 0x0F)))
