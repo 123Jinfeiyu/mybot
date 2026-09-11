@@ -14,6 +14,7 @@ package bot4cj.HV
 import std.convert.*
 import std.collection.*
 import std.env.*
+import std.fs.*
 import stdx.encoding.json.*
 import ctype4cj.*
 import luajit4cj.*
@@ -138,15 +139,35 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 	}
 }
 
-/* ---- chunk 路径寻址（P：任意位置运行）----
+/* ---- chunk 路径寻址（P：任意位置运行；issue #19 支持多路径）----
  * 普通 Lua 硬件模块经 r.cj 以 "${BOT4CJ_MODULE_PATH}/${MtName}.lua" 寻址；
  * 原实现把 chunk 列当字面路径直接 loadfilex（相对进程 CWD），编译产物换目录即找不到。
  * 统一为与普通硬件模块一致的 modulePath 基准：
  *   绝对路径（'/' 开头）                              → 原样
  *   已在模块目录树内（"./modules" 或 "modules" 前缀）→ 原样（兼容现有 SQL 写法）
- *   其余相对路径（如 lib/sensor_daemon.lua）           → "${modulePath}/${chunk}"
- * modulePath 由调用方从 BOT4CJ_MODULE_PATH 取得（缺省 "./modules"），可为绝对路径。
+ *   其余相对路径（如 lib/sensor_daemon.lua）           → 多路径按序探测（firstExistingModule）
+ * modulePath 由调用方从 BOT4CJ_MODULE_PATH 取得（缺省 "./modules"），可为 ':' 分隔多路径。
  */
+/* ---- issue #19：多模块路径按序查找第一个存在的文件 ----
+ * BOT4CJ_MODULE_PATH 支持 ':' 分隔多个路径；依次探测 File 可读，命中即返回；
+ * 全部不存在返回最后一个路径拼接（保持原有"文件不存在"加载报错语义）。 */
+public func firstExistingModule(paths: String, rel: String): String {
+	let parts = paths.split(":")
+	var last = "${paths}/${rel}"
+	for (p in parts) {
+		if (p == "") { continue }
+		let cand = "${p}/${rel}"
+		try {
+			let f = File(cand, OpenMode.Read)
+			f.close()
+			return cand
+		} catch (_) {
+			last = cand
+		}
+	}
+	return last
+}
+
 public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	if (chunk.startsWith("/")) {
 		return chunk
@@ -166,7 +187,7 @@ public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	if (chunk.startsWith(noDot + "/")) {
 		return chunk
 	}
-	return modulePath + "/" + chunk
+	return firstExistingModule(modulePath, chunk)
 }
 
 /* ---- 守护硬件变量 ---- */

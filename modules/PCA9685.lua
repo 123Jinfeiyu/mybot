@@ -5,10 +5,11 @@
 
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 -- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
-local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+dofile(mpath.resolve("lib/HAL.lua"))
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 关键寄存器与模式位（PCA9685 数据手册 §7.3 寄存器映射）
 local REG_MODE1    = 0x00	-- 模式寄存器1
