@@ -69,7 +69,7 @@ public class DaemonHolder {
 public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, interval_ms: Int64): Int64 {
 	unsafe {
 		let L = Lua_init()
-		if (Lua_check(L) == LUA_ERR) { return -1i64 }
+		if (Lua_check(L) == LUA_ERR) { Lua_free(L); return -1i64 }
 		Lua_loadlib(L)
 		sandbox_lua(L)	/* 中和 os.execute/io.popen 等宿主入口（issue #9 M1） */
 
@@ -117,6 +117,21 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		}
 		LibC.free(tickName)
 
+		/* H-07：stop 后、Lua_free 前，调用 chunk 定义的 daemon_cleanup()（若存在）
+		 * 关闭守护打开的总线 fd——否则守护线程持有的 lua_State 长期泄漏 fd。
+		 * daemon_probe 等无资源 chunk 未定义该函数，Lua_type==LUA_TNIL 跳过。
+		 * 注意：sandbox_lua 中和/print 覆盖不影响本清理路径（不走全局 print）。 */
+		let cleanupName = LibC.mallocCString("daemon_cleanup")
+		Lua_getglobal(L, cleanupName)
+		if (Lua_type(L, -1) == LUA_TFUNCTION) {
+			pcStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
+			if (pcStatus != LUA_OK) {
+				println("[daemon] cleanup error: ${luaErrorString(L)}")
+			}
+		}
+		Lua_settop(L, 0)
+		LibC.free(cleanupName)
+
 		let n = CPointer<Int32>(slot + SLOT_COUNT_OFF).read()
 		Lua_free(L)
 		return Int64(n)
@@ -136,7 +151,7 @@ public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	if (chunk.startsWith("/")) {
 		return chunk
 	}
-	if (chunk.startsWith("${modulePath}/")) {
+	if (chunk.startsWith(modulePath + "/")) {
 		return chunk
 	}
 	/* 兼容不带 "./" 的旧写法：缺省 modulePath="./modules" 时结构脚本写
@@ -148,10 +163,10 @@ public func resolveDaemonChunk(chunk: String, modulePath: String): String {
 	} else {
 		modulePath
 	}
-	if (chunk.startsWith("${noDot}/")) {
+	if (chunk.startsWith(noDot + "/")) {
 		return chunk
 	}
-	return "${modulePath}/${chunk}"
+	return modulePath + "/" + chunk
 }
 
 /* ---- 守护硬件变量 ---- */
