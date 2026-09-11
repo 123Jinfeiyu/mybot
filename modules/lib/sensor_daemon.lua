@@ -154,8 +154,12 @@ function daemon_tick()
 	end
 end
 
--- H-07：守护退出（stop 后、Lua_free 前）由 daemon_body 调用，关闭总线 fd。
+-- H-07：守护退出（stop 后、Lua_free 前）由 daemon_body 调用，先调驱动 destroy()（若有）
+-- 让器件退出活跃态（VL53L0X 停止 ranging、ADS1x15 置单次态断电等），再关总线 fd。
 -- setup 失败路径不会到达此定义（fail 已 return），此时 fd 已由 close_bus 关闭。
 function daemon_cleanup()
+	if type(destroy) == "function" then
+		destroy(params)
+	end
 	close_bus()
 end
