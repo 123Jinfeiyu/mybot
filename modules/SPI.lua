@@ -8,11 +8,12 @@ dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
--- 全局文件句柄（-1 = 未打开，与 I2C/destroy 后状态一致）
-fd = -1
+-- 文件句柄（H-06：local upvalue 共享于本文件 build/call/destroy，不污染全局；
+-- -1 = 未打开，与 I2C/destroy 后状态一致）
+local fd = -1
 
 -- 全局传输延时（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
-delay_us = 0
+local delay_us = 0
 
 function build(data)
 
