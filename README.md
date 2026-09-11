@@ -320,6 +320,23 @@ cat test/test_monitor.mt     | bash _run.sh --robot=test/test_monitor.sql    # �
 
 对比：`test/test_mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
 
+#### 虚拟 I2C 总线（issue #18，无真机验证驱动链路）
+
+`lib/virtbus.lua` 提供纯内存的虚拟 I2C 总线：`inject()` 后替换 HAL 的全部全局 `i2c_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*` 即可完整跑通 build/call/destroy。器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言；未挂载的地址按 NACK 处理（写 -1、读 -1/nil），负路径可测，与真机"设备不在总线"行为一致。
+
+```lua
+local vbus = dofile("modules/lib/virtbus.lua")
+vbus.attach("光感@0x23", 0x23, {
+    write = function(bytes) ... end,
+    read  = function(n) return { 0x75, 0x30 } end,   -- 假计数值
+})
+vbus.inject()          -- 此后驱动调用全走虚拟总线
+-- dofile 真实驱动 → build/call/destroy 正常跑；tester 断言 txlog 与返回值
+vbus.reset()           -- 还原全局 i2c_* 并清空
+```
+
+回归：`test/test_virtbus.lua`（纯 Lua，27 断言，功能/事务记录/NACK/还原全覆盖）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 在虚拟总线上 build/call/destroy 链路 + 无器件负路径，run_all.sh 自动纳入）。
+
 ### 环境变量
 
 | 变量 | 说明 |
