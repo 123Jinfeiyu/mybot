@@ -4,6 +4,54 @@
 `feature/bidirectional-communication` 等未合并分支不计入）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号与 `cjpm.toml` 的 `version` 字段对应。
 
+## [0.3.3] - 2026-09-11
+
+新增硬件 PWM 驱动，并修两处构建/配置一致性问题。
+
+### 新增
+
+- **硬件 PWM 驱动 `PWM`**（`modules/PWM.lua` + `modules/lib/HAL.lua` PWM 段）：
+  走 Linux 标准 sysfs 接口（`/sys/class/pwm/pwmchipN/pwmM`），波形由 SoC 控制器
+  产生，Lua 侧只写 `period`/`duty_cycle`/`enable`，不掉 CPU、不抖动。
+  - **不做软件 bit-bang PWM**：`call()` 内循环翻转会阻塞整套动作播放；
+    放到 `@Daemon` 里用 ffi `usleep` 自旋又占住 schd-worker 不放、耗尽 worker 池
+    （README 已记该死锁）。故本框架只支持硬件 PWM。
+  - **走 ffi 而非 io 库**：`sandbox_lua` 中和了 `io.open`/`io.lines`，sysfs 写不了；
+    改用 `HAL.sys.open/write` 可保持沙箱不变。
+  - **写序固定 duty→period→duty**：内核要求 `duty_cycle <= period`，降频时
+    「新 period 小于旧 duty」会被 EINVAL 拒绝，故先把 duty 归零。
+  - `chip`/`channel` 限定非负整数（≤65535）：既防路径穿越，也避免 `tostring`
+    对大数输出科学计数法污染路径。
+  - 驱动侧：`duty` 未配置时 build 期不使能输出（与 `GPIO.init` 语义一致，
+    避免意外驱动负载）；配置失败回滚已导出的通道；destroy 先停输出再 unexport。
+  - 离线测试 `test/test_pwm.lua` 分两层 mock（HAL 段断言 sysfs 写入路径/数值/写序，
+    驱动层断言 build/call/destroy 参数校验与返回契约）；
+    示例 `test/test_pwm.sql` + `.mt`（20kHz 占空比渐增渐减）
+
+### 修复
+
+- **`pwm_exported` 存在性探测改 `O_RDONLY`**：原用 `O_WRONLY` 打开 `pwmN/enable`
+  判断是否已导出，而该文件默认 `0644 root:root`，非 root 用户拿到的是 EACCES
+  而非「不存在」，被误判成未导出并反复 export
+- **越界通道号前置校验 + 新增 `pwm_npwm`**：内核对超出 `npwm` 的通道号只回一个
+  EINVAL 且静默不生成目录，「did not take effect」无法自解释。现 export 前先读
+  `npwm` 校验并给出合法范围——最常见的误用是把 `channel` 填成 GPIO 引脚号
+  （如 17），而引脚实际由 dtoverlay 决定，与 channel 无关
+- **sysfs 写失败带 errno 人话提示**：原只打路径，无法区分 ENOENT
+  （overlay 未启用/编号不对）与 EACCES（权限不足）
+- **`.gitignore` 移除 `cjpm.lock`**：0.3.2 已把锁文件入库以保证构建可复现，
+  但忽略规则未同步删除，二者矛盾——锁文件一旦被删/重建会再次被忽略
+- **`_run.sh` 堆大小注释与默认值不符**：注释写「显式给 512MB」，实际默认 128MB。
+  512MB 堆在 512MB 内存的板子（如 CM0）上会 OOM，128MB 为折中值；注释已改为
+  说明折中理由与 `cjHeapSize` 覆盖方式（该中间值尚未经 A/B 验证）
+
+### 文档
+
+- README：硬件变量矩阵表补 `PWM`，驱动计数 50 → 53，项目版本同步 v0.3.3
+- README 新增「硬件 PWM」小节：引脚由设备树静态绑定（附 BCM2710 的引脚/func
+  映射表与 `dtoverlay` 写法）、`channel` 不是引脚号、`export` 成功不等于有物理
+  输出、权限与 gpiod 复用互斥等注意事项
+
 ## [0.3.2] - 2026-09-10
 
 引用列显式化：`$` 前缀替代隐式按值判定（行为变更，存量结构脚本需同步加 `$`）。

@@ -20,7 +20,7 @@ bot4cj 是用仓颉语言编写的**机器人硬件控制器**。可以把它想
 
 ## 📋 项目信息
 
-- **项目版本**：v0.3.2（`cjpm.toml`）
+- **项目版本**：v0.3.3（`cjpm.toml`）
 - **维护状态**：🟢 积极维护中
 - **主要负责人**：qingss0（Flowers_Unamed 团队）
 - **开发人员**：[qingss0](https://gitcode.com/qingss0)
@@ -193,17 +193,67 @@ INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES (s1, 90, 
 
 ### 硬件变量矩阵一览
 
-**先看结论**：这张表是"零件仓库清单"——用不到的器件直接跳过，等真接了某个传感器再回来对号入座。目前框架内置 50 个左右硬件驱动，按总线/能力分类如下（每个驱动就是一个 `modules/<矩阵名>.lua`）：
+**先看结论**：这张表是"零件仓库清单"——用不到的器件直接跳过，等真接了某个传感器再回来对号入座。目前框架内置 53 个硬件驱动，按总线/能力分类如下（每个驱动就是一个 `modules/<矩阵名>.lua`）：
 
 | 类别 | 硬件变量 | 说明 |
 | ---- | -------- | ---- |
-| 舵机/输出 | `PCA9685`、`Servo`、`Timer`、`MCP4725`、`AD9833`、`TPL0501`、`PCF8574`、`GPIO` | 舵机控制器、DAC、DDS 波形、数字电位器、IO 扩展、GPIO |
+| 舵机/输出 | `PCA9685`、`Servo`、`Timer`、`MCP4725`、`AD9833`、`TPL0501`、`PCF8574`、`GPIO`、`PWM` | 舵机控制器、DAC、DDS 波形、数字电位器、IO 扩展、GPIO、硬件 PWM |
 | IMU/姿态 | `MPU6050`、`BMI270`、`LSM6DSV`、`ADXL345`、`MLX90393`、`BMM150` | 六轴/三轴加速度计、磁力计、罗盘 |
 | 气压/环境 | `MS5611`、`LPS22HB`、`BME280`、`BME688`、`SHT3X`、`CHT8305`、`AMG8833`、`AS7262`、`APDS9900`、`BH1745` | 气压计、温湿度、热像、光谱、环境光、颜色 |
 | 测距 | `VL53L0X`、`VL53L4CD`、`AS3935` | ToF 激光测距、闪电事件传感器 |
 | ADC/电源 | `ADS1015`、`ADS1115`、`ADS1256`、`MCP3421`、`INA219`、`INA226`、`INA3221`、`MAX17043`、`MAX17048`、`LTC2944`、`EMC2101` | 高速 ADC、电流/功率监测计、库仑计、电量计、风扇控制器 |
 | 气体/其他 | `SGP30`、`SDS011`、`MHZ19`、`MAX30102`、`MT6826S` | 空气质量、PM2.5、CO2、血氧 PPG、磁编码器 |
 | 框架 | `I2C`、`SPI`、`UART`、`Relay`、`dummy`、`Kalman`、`Ema`、`Monitor` | 总线、转发测试、滤波器、数据消费示例 |
+
+### 硬件 PWM（`PWM`）
+
+`PWM` 走 Linux 标准 sysfs 接口（`/sys/class/pwm/pwmchipN/pwmM`），波形由 SoC 的 PWM 控制器产生，Lua 侧只写 `period` / `duty_cycle` / `enable` 三个属性——不掉 CPU、不抖动。
+
+> **为什么不做软件 PWM**：在 `call()` 里循环翻转会阻塞整套动作的播放；放到 `@Daemon` 里用 ffi `usleep` 自旋又会占住 schd-worker 不放、耗尽 worker 池（见下文「@Daemon 守护线程」）。所以本框架只支持硬件 PWM。
+
+```sql
+CREATE TABLE PWM (
+	name      String,
+	chip      String,
+	channel   String,
+	frequency String,
+	duty      String,
+	invert    String
+);
+INSERT INTO PWM (name, chip, channel, frequency, duty, invert)
+  VALUES ('pwm0', '0', '1', '20000', '0', '-');
+```
+
+- `channel` 是**硬件通道号**（`0` = PWM0，`1` = PWM1），**不是 GPIO 引脚号**——填引脚号会直接报越界
+- `frequency` 载波频率 Hz（缺省 1000）：电机 10k~20kHz，LED 1k 上下
+- `duty` 占空比 0~100；给了才在 build 期使能输出，不给则保持关闭、等第一帧再输出（与 `GPIO` 的 `init` 语义一致）
+- `invert` 填 `1` 输出反相（低电平有效的驱动板）
+- 动作脚本里写 `pwm0.duty`；也可以写 `pwm0.value`（`value` 是 `duty` 的别名）
+
+#### 从哪个物理脚输出：设备树说了算
+
+sysfs **没有**"选引脚"这个属性——引脚由开机时的设备树静态绑定，在 `/boot/firmware/config.txt` 里配，**改完必须重启**：
+
+```ini
+dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
+```
+
+BCM2710（CM0 / Pi Zero 2 W / Pi 3）的合法组合：
+
+| 通道 | 可选引脚（func 值） |
+| ---- | ------------------ |
+| PWM0 | GPIO12 (`func=4`)、GPIO18 (`func=2`)、GPIO40、GPIO52 |
+| PWM1 | GPIO13 (`func=4`)、GPIO19 (`func=2`)、GPIO41、GPIO45、GPIO53 |
+
+用 `raspi-gpio get <pin>` 确认复用是否生效（应显示 `ALT0` / `ALT5`，而不是 `INPUT` / `OUTPUT`）。
+
+> ⚠️ `export` 成功**不等于**有物理输出：overlay 没给该通道配脚时，`period` / `duty` 照样写得进去，但引脚仍是普通 GPIO，外面量不到波形。
+
+注意事项：
+
+- 同一引脚不能既被 `GPIO` 用 gpiod 请求、又被配成 PWM（功能复用互斥，二选一）
+- `export` / `unexport` 默认只有 root 可写，普通用户需 udev 授权，或以 `sudo -E` 运行（`-E` 保留 `CANGJIE_HOME` / `LD_LIBRARY_PATH`）
+- 取消导出后引脚回到未配置状态，停机后的电平要靠硬件上下拉兜底
 
 ### 动作脚本（.mt）
 
@@ -416,6 +466,12 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 - **团队**：Flowers_Unamed（BadHope）
 
 ## 📋 更新日志
+
+### v0.3.3（2026-09）
+
+- ✅ 新增硬件 PWM 驱动 `PWM`：走 Linux sysfs（`/sys/class/pwm`），可配频率与占空比。软件 bit-bang PWM 在本框架不可行（会阻塞动作播放或耗尽 worker 池），故仅支持硬件 PWM
+- ✅ 修复 `.gitignore` 残留的 `cjpm.lock`（0.3.2 已把锁文件入库，忽略项与之矛盾）
+- ✅ 修正 `_run.sh` 堆大小注释与默认值不符（注释写 512MB，实际 128MB）
 
 ### v0.3.2（2026-09）
 
