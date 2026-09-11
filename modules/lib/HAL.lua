@@ -780,4 +780,221 @@ function uart_read(fd, n, timeout_ms)
 	return out
 end
 
+------------------------------------------------------------------
+-- PWM（Linux sysfs：/sys/class/pwm/pwmchipN/pwmM）
+------------------------------------------------------------------
+-- 波形由 SoC（Pi 5 为 RP1）的 PWM 控制器自行产生，Lua 侧只写
+-- period / duty_cycle / enable 三个属性——无 CPU 占用、无软件抖动。
+-- 这是本框架唯一可行的 PWM 路径：软件 bit-bang 要么阻塞主线程的动作播放，
+-- 要么在守护线程里 ffi usleep 自旋耗尽 schd-worker 池（README 已记死锁）。
+--
+-- 【为何用 ffi 而不是 io 库】Lua.cj 的 sandbox_lua 中和了 io.open/io.lines，
+-- 驱动写不了 sysfs；这里走 HAL.sys.open/write（ffi 直调 libc），
+-- 既保持沙箱不变，也与各总线段的写法一致。
+--
+-- 【sysfs 已 deprecated 但可用】树莓派 OS（Bookworm）默认挂载 /sys/class/pwm；
+-- 将来若需多通道原子配置可换 /dev/pwmchip* 的字符设备 uAPI——届时按
+-- test/test_ioctl_nums.c 的方法实证 ioctl 编号与结构体尺寸，别硬编码。
+--
+-- 接口：pwm_exported / pwm_export / pwm_config / pwm_set_polarity /
+--       pwm_enable / pwm_unexport
+-- chip、channel 必须是非负整数（防路径穿越），其余一律拒绝并打印诊断。
+-- 典型：CM0 / Pi Zero 2 W 的 PWM1 复用 GPIO19（ALT5）→ chip=0 channel=1。
+
+HAL.PWM_SYSFS_ROOT = "/sys/class/pwm"
+HAL.pwm_state = {}			-- "chip/channel" -> {freq, duty, period_ns, duty_ns, enabled}
+
+local O_WRONLY = 1
+local O_RDONLY = 0
+
+-- sysfs 写失败几乎总是这两种原因，给出人话提示（errno 取自 Linux 通用值）
+HAL.ENOENT = 2			-- 节点不存在：overlay 未启用 / chip 编号不对
+HAL.EACCES = 13			-- 权限不足：export 通常仅 root 可写
+
+local function errno_hint(e)
+	if e == HAL.ENOENT then
+		return "ENOENT(节点不存在：PWM overlay 未启用，或 pwmchip 编号不对?)"
+	elseif e == HAL.EACCES then
+		return "EACCES(权限不足：export/unexport 默认仅 root 可写，需 udev 规则或 sudo -E)"
+	elseif e == HAL.EINVAL then
+		return "EINVAL(参数被内核拒绝)"
+	end
+	return "errno=" .. tostring(e)
+end
+
+-- 规范化非负整数 id（拒绝负数、小数、"../"、超范围值），非法返回 nil。
+-- 上限 65535：既覆盖真实 pwmchip 编号，也避免 tostring 对大数输出科学
+-- 计数法（如 1e+15）污染路径。
+local function pwm_id(v)
+	local n = tonumber(v)
+	if n == nil or n < 0 or n > 65535 or n ~= math.floor(n) then return nil end
+	return tostring(math.floor(n))
+end
+
+-- pwmchip 级属性路径（export / unexport）
+local function pwm_chip_path(chip, attr)
+	local c = pwm_id(chip)
+	if c == nil then
+		print("HAL: invalid pwm chip: " .. tostring(chip))
+		return nil
+	end
+	return HAL.PWM_SYSFS_ROOT .. "/pwmchip" .. c .. "/" .. attr
+end
+
+-- 通道级属性路径（period / duty_cycle / enable / polarity）
+local function pwm_attr_path(chip, channel, attr)
+	local c, h = pwm_id(chip), pwm_id(channel)
+	if c == nil or h == nil then
+		print("HAL: invalid pwm chip/channel: " .. tostring(chip) .. "/" .. tostring(channel))
+		return nil
+	end
+	return HAL.PWM_SYSFS_ROOT .. "/pwmchip" .. c .. "/pwm" .. h .. "/" .. attr
+end
+
+-- 向任意 sysfs 文件写入字符串；成功 true，失败打印路径并 false
+local function sysfs_write(path, val)
+	if type(path) ~= "string" then return false end
+	local fd = tonumber(HAL.sys.open(path, O_WRONLY))
+	if fd == nil or fd < 0 then
+		print("HAL: pwm open failed: " .. path .. " " .. errno_hint(HAL.sys.errno()))
+		return false
+	end
+	local s = tostring(val)
+	local buf = ffi.new("char[?]", #s)
+	ffi.copy(buf, s)
+	local n = tonumber(HAL.sys.write(fd, buf, #s))
+	HAL.sys.close(fd)
+	if n == nil or n < #s then
+		print("HAL: pwm write failed: " .. path .. " <- " .. s .. " " .. errno_hint(HAL.sys.errno()))
+		return false
+	end
+	return true
+end
+
+-- 读 pwmchip 的通道数（npwm）；读不到返回 nil
+-- 通道号必须小于该值，export 越界通道时内核静默不生成目录，
+-- 故失败诊断必须带上它（只说"没生效"无法区分越界与权限）。
+function pwm_npwm(chip)
+	local p = pwm_chip_path(chip, "npwm")
+	if p == nil then return nil end
+	local fd = tonumber(HAL.sys.open(p, O_RDONLY))
+	if fd == nil or fd < 0 then return nil end
+	local buf = ffi.new("char[16]")
+	local n = tonumber(HAL.sys.read(fd, buf, 16))
+	HAL.sys.close(fd)
+	if n == nil or n <= 0 then return nil end
+	return tonumber(ffi.string(buf, n))
+end
+
+-- 通道是否已导出（以 enable 属性能否打开为准）
+-- 用 O_RDONLY 探测：存在性判断不该受写权限影响——
+-- enable 默认 0644 root:root，非 root 用 O_WRONLY 探测会拿到 EACCES 误判为"未导出"
+function pwm_exported(chip, channel)
+	local path = pwm_attr_path(chip, channel, "enable")
+	if path == nil then return false end
+	local fd = tonumber(HAL.sys.open(path, O_RDONLY))
+	if fd == nil or fd < 0 then return false end
+	HAL.sys.close(fd)
+	return true
+end
+
+-- 导出通道；已导出则直接成功（重复 export 会被内核以 EINVAL 拒绝）
+function pwm_export(chip, channel)
+	if pwm_exported(chip, channel) then return true end
+	local p = pwm_chip_path(chip, "export")
+	local h = pwm_id(channel)
+	if p == nil or h == nil then
+		print("HAL: invalid pwm channel: " .. tostring(channel))
+		return false
+	end
+	-- 前置校验：越界通道号内核只回一个 EINVAL，错误信息本身无法自解释。
+	-- 最常见的误用是把 channel 当成 GPIO 引脚号填（如 17）——
+	-- 引脚由 config.txt 的 dtoverlay 决定，与 channel 无关。
+	local n = pwm_npwm(chip)
+	if n ~= nil and tonumber(h) >= n then
+		print("HAL: pwm channel " .. h .. " out of range on pwmchip" .. tostring(chip) ..
+			": 该 chip 只有 " .. tostring(n) .. " 个通道（合法值 0~" .. tostring(n - 1) .. "）。" ..
+			"channel 是 PWM 硬件通道号，不是 GPIO 引脚号——引脚由 dtoverlay 决定。")
+		return false
+	end
+	if not sysfs_write(p, h) then return false end
+	if not pwm_exported(chip, channel) then
+		-- 写入成功却没生成目录，最常见是通道号越界（内核静默忽略）
+		local n = pwm_npwm(chip)
+		if n ~= nil then
+			print("HAL: pwm export did not take effect: pwmchip" .. tostring(chip) ..
+				" pwm" .. tostring(h) .. " — 该 chip 只有 " .. tostring(n) ..
+				" 个通道，channel 须为 0~" .. tostring(n - 1) ..
+				"（要双通道请用 dtoverlay=pwm-2chan 并重启）")
+		else
+			print("HAL: pwm export did not take effect: pwmchip" .. tostring(chip) ..
+				" pwm" .. tostring(h) .. "（无法读取 npwm，检查 /sys/class/pwm 挂载与权限）")
+		end
+		return false
+	end
+	return true
+end
+
+-- 设载波频率与占空比（duty 为百分比 0~100）
+-- 返回 (true, period_ns, duty_ns) 或 false
+function pwm_config(chip, channel, freq_hz, duty_pct)
+	local f = tonumber(freq_hz)
+	local d = tonumber(duty_pct)
+	if f == nil or f <= 0 then
+		print("HAL: invalid pwm frequency: " .. tostring(freq_hz))
+		return false
+	end
+	if d == nil or d < 0 or d > 100 then
+		print("HAL: invalid pwm duty: " .. tostring(duty_pct) .. " (expect 0~100)")
+		return false
+	end
+	local period_ns = math.floor(1e9 / f + 0.5)
+	if period_ns < 1 then period_ns = 1 end
+	local duty_ns = math.floor(period_ns * d / 100 + 0.5)
+	if duty_ns > period_ns then duty_ns = period_ns end
+
+	-- 写序：内核要求 duty_cycle <= period，故先把 duty 归零再改 period。
+	-- 否则「新 period 小于旧 duty」会被内核以 EINVAL 拒绝——降频必踩。
+	-- 代价是切换瞬间多一个低电平周期，对电机/LED 无实际影响。
+	if not sysfs_write(pwm_attr_path(chip, channel, "duty_cycle"), 0) then return false end
+	if not sysfs_write(pwm_attr_path(chip, channel, "period"), period_ns) then return false end
+	if not sysfs_write(pwm_attr_path(chip, channel, "duty_cycle"), duty_ns) then return false end
+
+	local key = tostring(pwm_id(chip)) .. "/" .. tostring(pwm_id(channel))
+	local st = HAL.pwm_state[key] or {}
+	st.freq, st.duty = f, d
+	st.period_ns, st.duty_ns = period_ns, duty_ns
+	HAL.pwm_state[key] = st
+	return true, period_ns, duty_ns
+end
+
+-- 极性：inversed = 输出反相（低电平有效的驱动板用）
+function pwm_set_polarity(chip, channel, inversed)
+	return sysfs_write(pwm_attr_path(chip, channel, "polarity"),
+		inversed and "inversed" or "normal")
+end
+
+-- 使能 / 关闭输出
+function pwm_enable(chip, channel, on)
+	local ok = sysfs_write(pwm_attr_path(chip, channel, "enable"), (on and 1 or 0))
+	if ok then
+		local key = tostring(pwm_id(chip)) .. "/" .. tostring(pwm_id(channel))
+		local st = HAL.pwm_state[key] or {}
+		st.enabled = on and true or false
+		HAL.pwm_state[key] = st
+	end
+	return ok
+end
+
+-- 取消导出（先停输出，避免取消后引脚停在某个电平上继续驱动负载）
+function pwm_unexport(chip, channel)
+	local p = pwm_chip_path(chip, "unexport")
+	local h = pwm_id(channel)
+	if p == nil or h == nil then return false end
+	pwm_enable(chip, channel, false)
+	local ok = sysfs_write(p, h)
+	if ok then HAL.pwm_state[tostring(pwm_id(chip)) .. "/" .. tostring(h)] = nil end
+	return ok
+end
+
 return HAL
