@@ -89,6 +89,12 @@ function build(data)
 	local init = tonumber(data.init) or 0
 
 	-----------------------------------------------------
+	-- 重复 build 先释放旧句柄再请求（防御：不依赖调用方保证 build 恰一次）
+	if hfd >= 0 then
+		gpio_free_line(hfd)
+		hfd = -1
+	end
+
 	hfd = gpio_request_line(chip, offset, direction, init, active_low)
 	if hfd < 0 then
 		return {

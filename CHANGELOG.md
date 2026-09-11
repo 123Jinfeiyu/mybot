@@ -4,6 +4,42 @@
 `feature/bidirectional-communication` 等未合并分支不计入）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号与 `cjpm.toml` 的 `version` 字段对应。
 
+## [未发布]
+
+审计修复批次：BH1750 MTreg 编码、多路径加载收尾、守护 CRC 坏样本过滤等。
+
+### 修复
+
+- **BH1750 MTreg 编码错误**（datasheet 级）：低字节命令原写 `0x60|((mt>>1)&0x0F)`，
+  依 ROHM 手册改为 `0x60|(mt&0x1F)`（MT[4:0]）——原编码丢 bit0 且比特错位，
+  mtreg 设置越大偏差越大（如 mt=127 实际生效约 103）；`test/test_bh1750.lua`
+  原将错误编码固化为断言，一并修正
+- **多路径模块查找对守护 chunk 与滤波驱动不生效**（issue #19 收尾）：
+  `lib/sensor_daemon.lua`、`lib/daemon_probe.lua`、`lib/daemon_tid.lua`、
+  `Ema.lua`、`Kalman.lua` 原用 `BOT4CJ_MODULE_PATH` 原始整串拼路径，环境变量含
+  `:` 时 daemon setup 即失败（`cannot open ./modules:./extra_modules/lib/...`）；
+  统一改为与其余驱动一致的「首段加载 mpath + `mpath.resolve` 按序查找」惯用法
+- **守护消费端过滤 CRC 失败样本**：SHT3X/SGP30 的 CRC 失败响应（`result=OK` 且
+  `CRC_OK=0`，直接 play 时避免 halt-on-error 中断动作）此前会被 sensor_daemon
+  原样 publish 给下游；现 `daemon_tick` 对 `CRC_OK=0` 不发布、按 tick 错误计数与限频日志
+- `Lua.cj` 沙箱补中和 `io.input` / `io.output`（LuaJIT 的这两者在 C 层直调 fopen、
+  不经过已中和的 `io.open`）；模块层无使用，纯收紧
+- `Lua.cj` Lua 表转 JSON 两处：混合键表（数字键 + 字符串键）原只出数组、静默丢字符串键，
+  现整体转对象（数字键转字符串键）；数字键排序原对 `toArray()` 拷贝排序（无效），
+  现按排序后的拷贝迭代
+- `INA219.lua` call 补 not-built 守卫（原 build 前调用时 rshunt 为 nil，
+  除法抛裸 Lua error，报错信息难看）
+- `I2C.lua` / `GPIO.lua` build 重复调用先关旧 fd / 释放旧句柄（防重建泄漏，
+  当前流程 build 恰一次，纯防御）
+- `Servo.lua` / `Relay.lua` 日志格式化对浮点改 `%s`+`tostring`（原 `%d` 口径依赖
+  LuaJIT 截断行为）；Relay 的逐帧输出为 README 首条命令的验收标记，保持不变
+- `test_h07_fd.lua` 桩目录补拷 `lib/mpath.lua`（适配守护 chunk 的新加载链路）
+
+### 文档
+
+- `BME280.lua` / `SHT3X.lua` 头注释更新为现 HAL（纯 Lua 大端合并）语义，
+  移除旧 cfunc 桥「有符号 Int64 回绕」的过时描述；负值还原分支注明为防御遗留
+
 ## [0.3.3] - 2026-09-11
 
 新增硬件 PWM 驱动，并修两处构建/配置一致性问题。

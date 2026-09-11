@@ -221,6 +221,14 @@ function call(data)
 		dbg_table("-------- INA219 caller func get a table --------", data)
 	end
 
+	-- build 前调用时 rshunt 为 nil，除法会抛裸 Lua error（pcall 兜底信息难看）
+	if rshunt == nil then
+		return {
+			result = "ERR",
+			message = "INA219 not built (build first)"
+		}
+	end
+
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address)

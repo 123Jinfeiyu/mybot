@@ -50,6 +50,15 @@ f = io.open(d .. "/lib/pthread.lua", "w")
 f:write(pthread_src)
 f:close()
 
+-- lib/mpath.lua：sensor_daemon 统一经「首段加载 mpath + resolve」取 lib，
+-- 桩目录同样要有它（resolve 后命中的才是上面的桩 HAL）
+local mfile = io.open("modules/lib/mpath.lua", "r")
+local mpath_src = mfile:read("*a")
+mfile:close()
+f = io.open(d .. "/lib/mpath.lua", "w")
+f:write(mpath_src)
+f:close()
+
 -- 真实 pthread 分配共享槽，取整数地址注入
 local realP = dofile("modules/lib/pthread.lua")
 local slot = realP.slot_new()

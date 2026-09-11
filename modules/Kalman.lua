@@ -20,8 +20,7 @@ dofile(mpath.resolve("lib/drv_common.lua"))
 --   1) src 引用源变量：call 读 data[field]（默认 data.v0，来自被引用守护）
 --   2) @Action 直接传：以 <name>.in 列传入待滤值，call 优先读 data.in
 
-local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
-local KalmanLib = dofile(dir .. "/lib/kalman.lua")
+local KalmanLib = dofile(mpath.resolve("lib/kalman.lua"))
 
 local kf = nil			-- 滤波器实例（build 创建，跨 call 保持状态）
 local field = "v0"		-- 待滤字段名（可由 field 列配置）

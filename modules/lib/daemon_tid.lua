@@ -4,8 +4,8 @@
 if jit then jit.off() end
 
 local ffi = require("ffi")
-local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
-local P = dofile(dir .. "/lib/pthread.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local P = dofile(mpath.resolve("lib/pthread.lua"))
 
 pcall(ffi.cdef, "long gettid(void);")		-- glibc 2.30+
 local tid = tonumber(ffi.C.gettid())

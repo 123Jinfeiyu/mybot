@@ -94,22 +94,22 @@ expect_ok("build once='true' H2", function() return build({ fd = 3, address = "0
 expect_cmds("build 单次 H2 用 OnceH2(0x21)", writes, { CMD_POWER_ON, CMD_ONCE_H2 })
 
 -- ==================== build：MTreg ====================
--- mtreg=100：命令 = 0x40|(100>>5)&7 = 0x43，0x60|(100>>1)&15 = 0x62
+-- mtreg=100：命令 = 0x40|(100>>5)&7 = 0x43，0x60|(100&0x1F) = 0x64
 writes = {}; sleep_total = 0
 expect_ok("build mtreg=100 (H 连续)", function() return build({ fd = 3, address = "0x23", mtreg = "100" }) end)
-expect_cmds("build MTreg 命令对 0x43,0x62 夹在 PowerOn 与模式之间", writes, { CMD_POWER_ON, 0x43, 0x62, CMD_CONT_H })
+expect_cmds("build MTreg 命令对 0x43,0x64 夹在 PowerOn 与模式之间", writes, { CMD_POWER_ON, 0x43, 0x64, CMD_CONT_H })
 check("build 等一帧按 mtreg 归一 (H: 120*100/69 ≈ 173.9ms)",
 	math.abs(sleep_total - 120 * 100 / 69) < 1e-6, string.format("%.1f", sleep_total))
 
 writes = {}; sleep_total = 0
 expect_ok("build mtreg=30 钳制到 31", function() return build({ fd = 3, address = "0x23", mtreg = "30" }) end)
--- 31>>5 = 0 -> 0x40；31>>1 = 15 -> 0x60|15 = 0x6F
-expect_cmds("build mtreg 钳制下限 31 -> 0x40,0x6F", writes, { CMD_POWER_ON, 0x40, 0x6F, CMD_CONT_H })
+-- 31>>5 = 0 -> 0x40；31&0x1F = 31 -> 0x60|31 = 0x7F
+expect_cmds("build mtreg 钳制下限 31 -> 0x40,0x7F", writes, { CMD_POWER_ON, 0x40, 0x7F, CMD_CONT_H })
 
 writes = {}; sleep_total = 0
 expect_ok("build mtreg=300 钳制到 254", function() return build({ fd = 3, address = "0x23", mtreg = "300" }) end)
--- 254>>5 = 7, 254>>1 = 127, %16 = 15
-expect_cmds("build mtreg 钳制上限 254 -> 0x47,0x6F", writes, { CMD_POWER_ON, 0x47, 0x6F, CMD_CONT_H })
+-- 254>>5 = 7 -> 0x47；254&0x1F = 30 -> 0x60|30 = 0x7E
+expect_cmds("build mtreg 钳制上限 254 -> 0x47,0x7E", writes, { CMD_POWER_ON, 0x47, 0x7E, CMD_CONT_H })
 
 -- ==================== build：错误通道 ====================
 expect_err("build 非法 mode", function() return build({ fd = 3, address = "0x23", mode = "X" }) end, "Invalid mode")

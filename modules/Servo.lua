@@ -95,8 +95,8 @@ function call(data)
 	if a > 180 then a = 180 end		-- 物理角度限幅，防 offset/|max| 配置击穿下游（PCA9685 侧亦限幅）
 
 	if os.getenv("BOT4CJ_DEBUG") == "1" then
-		print(string.format("Servo: angle=%s offset=%s -> %s (channel %d)",
-			tostring(angle), tostring(offset), tostring(a), channel))
+		print(string.format("Servo: angle=%s offset=%s -> %s (channel %s)",
+			tostring(angle), tostring(offset), tostring(a), tostring(channel)))
 	end
 
 	-- 返回值将与元数据合并后由框架转发给 controller
