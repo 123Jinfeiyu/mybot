@@ -8,11 +8,18 @@
 
 package bot4cj.HV
 import std.collection.*
+import std.sort.*
 import stdx.encoding.json.*
 import ctype4cj.*
 import luajit4cj.*
 
 /* ---- Lua 类型常量与取值/压栈 API 由 luajit4cj 提供（1.0.1 起导出，P7/M5 补齐） ---- */
+
+/* ---- H-03：数组进 / 递归表出 需要的两个 C 符号（luajit4cj 未导出，本地补声明） ---- */
+@C
+foreign func lua_rawseti(L: lua_State, index: C_Int, n: C_LongLong): Unit
+@C
+foreign func lua_pushvalue(L: lua_State, index: C_Int): Unit
 
 /* ---- 读取 Lua 栈顶错误对象为字符串 ----
  *  lua_tolstring 对非 string/number 的值返回空指针，直接 toString() 是空指针解引用；
@@ -317,6 +324,112 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 		unsafe { Lua_free(L) }
 	}
 
+	/* 将 JsonValue 递归压入 Lua 栈。数组/对象转 Lua 表（H-03）。
+	 * 返回后栈顶即该值；不接受的类型（异常安全）压 nil 并留日志。 */
+	private static func push_lua_value(L: lua_State, val: JsonValue): Unit {
+		if (val is JsonString) {
+			let v = val.asString().getValue()
+			let sv = unsafe { LibC.mallocCString(v) }
+			unsafe { Lua_pushstring(L, sv) }
+			unsafe { LibC.free(sv) }
+		}
+		else if (val is JsonInt) {
+			unsafe { Lua_pushinteger(L, Int64(val.asInt().getValue())) }
+		}
+		else if (val is JsonFloat) {
+			unsafe { Lua_pushnumber(L, val.asFloat().getValue()) }
+		}
+		else if (val is JsonBool) {
+			let b = if (val.asBool().getValue()) { 1 } else { 0 }
+			unsafe { Lua_pushboolean(L, Int32(b)) }
+		}
+		else if (val is JsonNull) {
+			unsafe { Lua_pushnil(L) }
+		}
+		else if (val is JsonArray) {
+			let arr = val.asArray()
+			unsafe { Lua_createtable(L, Int32(arr.size()), 0) }
+			for (i in 0..arr.size()) {
+				push_lua_value(L, arr.get(i).getOrThrow())
+				unsafe { lua_rawseti(L, -2, Int64(i + 1)) }
+			}
+		}
+		else if (val is JsonObject) {
+			let obj = val.asObject()
+			unsafe { Lua_createtable(L, 0, 0) }
+			let fs: HashMap<String, JsonValue> = obj.getFields()
+			for (k in fs.keys()) {
+				push_lua_value(L, fs.get(k).getOrThrow())
+				let sk = unsafe { LibC.mallocCString(k) }
+				unsafe { Lua_setfield(L, -2, sk) }
+				unsafe { LibC.free(sk) }
+			}
+		}
+		else {
+			logD("push_lua_value: unsupported JsonValue type, pushed nil")
+			unsafe { Lua_pushnil(L) }
+		}
+	}
+
+	/* 读取 Lua 栈上 index 处的值并转换为 JsonValue（递归）。table 转 JsonArray/JsonObject；
+	 * 不接受的类型（function/userdata 等）回 JsonNull（H-03）。调用前后栈深度不变。 */
+	private static func lua_value_to_json(L: lua_State, idx: C_Int): JsonValue {
+		let t = unsafe { Lua_type(L, idx) }
+		if (t == LUA_TNUMBER) {
+			let d = unsafe { Lua_tonumber(L, idx) }
+			let i = unsafe { Lua_tointeger(L, idx) }
+			return if (Float64(i) == d) { JsonInt(i) } else { JsonFloat(d) }
+		}
+		else if (t == LUA_TBOOLEAN) {
+			let b = unsafe { Lua_toboolean(L, idx) }
+			return JsonBool(b != 0)
+		}
+		else if (t == LUA_TNIL) {
+			return JsonNull()
+		}
+		else if (t == LUA_TSTRING) {
+			let s = unsafe { Lua_tostring(L, idx) }
+			return JsonString(s.toString())
+		}
+		else if (t == LUA_TTABLE) {
+			let arrKeys = ArrayList<Int64>()
+			let arrVals = HashMap<Int64, JsonValue>()
+			let obj = JsonObject()
+			unsafe {
+				lua_pushvalue(L, idx)	/* 表副本到栈顶 */
+				Lua_pushnil(L)
+				while (Lua_next(L, -2) != 0) {
+					let keyType = Lua_type(L, -2)
+					if (keyType == LUA_TNUMBER) {
+						let k = Lua_tointeger(L, -2)
+						let vj = lua_value_to_json(L, -1)
+						arrVals.add(k, vj)
+						arrKeys.add(k)
+					}
+					else if (keyType == LUA_TSTRING) {
+						let ks = Lua_tostring(L, -2)
+						let vj = lua_value_to_json(L, -1)
+						obj.put(ks.toString(), vj)
+					}
+					Lua_pop(L, 1)	/* 弹出值，保留键供下一次 Lua_next */
+				}
+				Lua_pop(L, 1)	/* 弹出表副本 */
+			}
+			if (arrKeys.size > 0) {
+				sort(arrKeys.toArray())
+				let arr = JsonArray()
+				for (k in arrKeys) { arr.add(arrVals.get(k).getOrThrow()) }
+				return arr
+			}
+			if (obj.getFields().size > 0) { return obj }
+			return JsonArray()	/* 空表 → 空数组 */
+		}
+		else {
+			logD("lua_value_to_json: unsupported Lua type ${t}, returned null")
+			return JsonNull()
+		}
+	}
+
 	/*
 	 *  调用Lua脚本的方法
 	 *
@@ -340,50 +453,14 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			Lua_createtable(L, 0, 0)
 
 
-			/* ---- 向Lua表中推入数据 ---- */
+			/* ---- 向Lua表中推入数据（H-03：数组/对象/字符串统一走递归转换） ---- */
 			let fields: HashMap<String, JsonValue> = obj.getFields()
 			for (k in fields.keys()) {
 				let val = fields.get(k).getOrThrow()
-				if (val is JsonString) {
-					let v = val.asString().getValue()
-					let sk = LibC.mallocCString(k)
-					let sv = LibC.mallocCString(v)
-					Lua_pushstring(L, sv)
-					Lua_setfield(L, -2, sk)
-					LibC.free(sk)
-					LibC.free(sv)
-				}
-				else if (val is JsonInt) {
-					let v = val.asInt().getValue()
-					let sk = LibC.mallocCString(k)
-					let sv = Int64(v)
-					Lua_pushinteger(L, sv)
-					Lua_setfield(L, -2, sk)
-					LibC.free(sk)
-				}
-				else if (val is JsonFloat) {
-					let v = val.asFloat().getValue()
-					let sk = LibC.mallocCString(k)
-					Lua_pushnumber(L, v)
-					Lua_setfield(L, -2, sk)
-					LibC.free(sk)
-				}
-				else if (val is JsonBool) {
-					/* P7/M5：布尔入参不再丢弃 */
-					let v = val.asBool().getValue()
-					let b = if (v) { 1 } else { 0 }
-					let sk = LibC.mallocCString(k)
-					Lua_pushboolean(L, Int32(b))
-					Lua_setfield(L, -2, sk)
-					LibC.free(sk)
-				}
-				else if (val is JsonNull) {
-					/* P7/M5：null 入参推 nil */
-					let sk = LibC.mallocCString(k)
-					Lua_pushnil(L)
-					Lua_setfield(L, -2, sk)
-					LibC.free(sk)
-				}
+				push_lua_value(L, val)
+				let sk = LibC.mallocCString(k)
+				Lua_setfield(L, -2, sk)
+				LibC.free(sk)
 			}
 
 			var status = Lua_pcall(L, 1, LUA_MULTRET, 0)
@@ -394,38 +471,18 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 					Lua_pushnil(L)
 					while(Lua_next(L, -2) != 0) {
 						/* ---- 此时栈：[表, 键, 值] ----
-						 * H5 加固（issue #5 清单）：
-						 * 1) 键只接受 string——Lua 手册警告遍历期间对【键】调 lua_tolstring
-						 *    会原地改写键值，数字键将扰乱后续 lua_next；
-						 * 2) 值支持 number/boolean/nil/string（P7/M5 类型保留），其余类型
-						 *    （table/function 等）跳过——不再 throw，避免跳过栈尾 Lua_settop
-						 *    造成 Lua 栈泄漏 */
+						 * H5 加固（issue #5 清单）：键只接受 string——Lua 手册警告遍历期间
+						 * 对【键】调 lua_tolstring 会原地改写键值，数字键将扰乱后续 lua_next；
+						 * 值经 lua_value_to_json 递归转换（H-03：table → JsonArray/JsonObject，
+						 * 其余不可转换类型回 JsonNull 而非跳过）。 */
 						let keyType = Lua_type(L, -2)
-						let valType = Lua_type(L, -1)
-						if (keyType != LUA_TSTRING ||
-							(valType != LUA_TSTRING && valType != LUA_TNUMBER &&
-							 valType != LUA_TBOOLEAN && valType != LUA_TNIL)) {
-							logD("Lua return field skipped: key type ${keyType}, value type ${valType}")
+						if (keyType != LUA_TSTRING) {
+							logD("Lua return field skipped: key type ${keyType}")
 							Lua_pop(L, 1)	/* 弹出值，保留键供下一次 Lua_next */
 							continue
 						}
 						let key = Lua_tostring(L, -2)
-						var val: JsonValue
-						if (valType == LUA_TNUMBER) {
-							let d = Lua_tonumber(L, -1)
-							let i = Lua_tointeger(L, -1)
-							val = if (Float64(i) == d) { JsonInt(i) } else { JsonFloat(d) }
-						}
-						else if (valType == LUA_TBOOLEAN) {
-							val = JsonBool(Lua_toboolean(L, -1) != 0)
-						}
-						else if (valType == LUA_TNIL) {
-							val = JsonNull()
-						}
-						else {
-							let s = Lua_tostring(L, -1)
-							val = JsonString(s.toString())
-						}
+						let val = lua_value_to_json(L, -1)
 						logD("${key}: ${val.toString()}")
 						ret.put(key.toString(), val)
 						Lua_pop(L, 1)

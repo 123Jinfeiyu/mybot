@@ -7,8 +7,9 @@
 
 
 -- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
 
 
 

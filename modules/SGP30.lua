@@ -40,10 +40,11 @@
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 -- 同时持有 HAL 表：基线文件读写走 HAL.sys 间接层（可离线 mock）
 -- 调试打印辅助 print_table（modules/lib/）
-local HAL = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
-local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local HAL = dofile(mpath.resolve("lib/HAL.lua"))
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 local ffi = require("ffi")		-- 基线文件缓冲区（HAL 已完成 cdef）
 local unpack = unpack or table.unpack		-- LuaJIT 5.1 / Lua 5.4 双兼容
 

@@ -40,10 +40,11 @@
 
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 -- 同时持有 HAL 表：全双工帧走 HAL.sys 间接层（可离线 mock）
-local HAL = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/HAL.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/print_table.lua")
-dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/drv_common.lua")
-local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local HAL = dofile(mpath.resolve("lib/HAL.lua"))
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 local ffi = require("ffi")		-- spi_ioc_transfer 结构体（HAL 已完成 cdef）
 
 -- 调试开关：编码器逐拍读取，默认关闭逐次打印

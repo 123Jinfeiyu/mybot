@@ -49,6 +49,16 @@ local log = print
 -- lua_State 长期持有泄漏 fd）
 local fd = nil
 
+-- H-07：关闭已打开的总线 fd（幂等；fail 与 daemon_cleanup 共用）
+local function close_bus()
+	if fd ~= nil and fd >= 0 then
+		if proto == "spi" then spi_close(fd)
+		elseif proto == "uart" then uart_close(fd)
+		else i2c_close(fd) end
+		fd = -1
+	end
+end
+
 -- setup 失败：打日志 → 关总线 fd → 发布错误标志一次 → daemon_tick 置空转
 -- （daemon_body 仍会逐拍调用直到 stop）。
 -- 错误码：-9 缺 driver、-8 驱动加载失败、-1 开总线失败、-3 spi setup 失败、-2 build 失败。
@@ -56,12 +66,7 @@ local fd = nil
 -- 当实测值需自行甄别（特征：count 恒为 1 且 v0 为负整数）；诊断以日志行为准。
 local function fail(code, msg)
 	log("[sensor_daemon] setup failed (" .. tostring(code) .. "): " .. tostring(msg))
-	if fd ~= nil and fd >= 0 then
-		if proto == "spi" then spi_close(fd)
-		elseif proto == "uart" then uart_close(fd)
-		else i2c_close(fd) end
-		fd = -1
-	end
+	close_bus()
 	P.publish(slot, { code })
 	function daemon_tick() end
 end
@@ -147,4 +152,10 @@ function daemon_tick()
 				tick_errors, tick_total, why))
 		end
 	end
+end
+
+-- H-07：守护退出（stop 后、Lua_free 前）由 daemon_body 调用，关闭总线 fd。
+-- setup 失败路径不会到达此定义（fail 已 return），此时 fd 已由 close_bus 关闭。
+function daemon_cleanup()
+	close_bus()
 end
