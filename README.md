@@ -119,7 +119,21 @@ cat scripts/tilt-r.mt    | bash _run.sh --robot=robots/spider1.sql   # 右倾
 cat scripts/one-shake.mt | bash _run.sh --robot=robots/spider1.sql   # 单腿姿势
 ```
 
-机器人结构由 `--robot` 指定，动作脚本从管道输入——只要换结构脚本并调整动作脚本，就可以把同一套程序复用到另一台机器人上。
+机器人结构由 `--robot` 指定，动作脚本来源可三选一（`src/ActionSource.cj` 工厂，优先级从高到低）：
+
+```bash
+# 1) TCP 长驻模式：监听端口等待客户端下发 .mt（适合上位机/远程持续喂动作）
+bash _run.sh --robot=robots/relay-test.sql --tcp 19240
+
+# 2) 文件输入：不依赖管道，直接指定动作脚本（Windows 无管道也能跑）
+bash _run.sh --robot=robots/relay-test.sql --input scripts/relay-test.mt
+
+# 3) 缺省：stdin 管道（前两节示例的写法）
+cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
+```
+
+TCP 源把连接字节流适配为字符流逐行解析，客户端关闭连接（EOF）即结束本次 run；
+`scripts/tcp_e2e.sh [port]` 提供 Python 客户端 → TCP → 服务端的回环端到端自检。
 
 ## 🔧 环境要求
 
@@ -371,7 +385,7 @@ API 契约、模型回调、txlog 格式、SPI 语义、器件模型明细与全
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua`、驱动 dofile `lib/` 与 `@Daemon` 的 chunk 均按其解析；支持 `:` 分隔多个路径（如 `./modules:./extra_modules`）按序查找，**共享库目录放第一段**（issue #19） |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
 
-安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；未来接入 TCP 等外部输入时需另行建立信任边界（输入校验或白名单 API）。
+安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；现已支持 TCP 动作输入（`--tcp`），接入外部网络数据源时需另行建立信任边界（输入校验或白名单 API）。
 
 ## 💡 进阶示例：守护采样 → 滤波 → 消费闭环
 
@@ -401,8 +415,8 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 
 ### 待实现功能
 
-- [ ] **TCP 传输动作**：目前动作脚本经管道输入，Windows 上可能没有管道，未来计划推出 TCP 持续传输
-- [ ] **神经网络生成动作**：神经网络/强化学习路径（DRL、CNN）已在本仓库历史上实现过，当前版本暂时注释，计划结合 `nn4cj` 重新接入
+- [x] **TCP 传输动作**：已落地 ActionSource 三源动作输入（stdin / 文件 / `--tcp` 长驻，见上文「运行示例」）
+- [x] **神经网络前向推理（纯 Lua 基准）**：[`modules/lib/nn.lua`](modules/lib/nn.lua) 提供无 nn4cj 依赖的全连接 MLP 前向引擎（默认 `{41,80,80,40,17}` 四层、LeakyReLU/Sigmoid、`.mt` 权重存取）；将推理输出接回仓颉动作链路（历史 nn4cj/`MtVars_NN` 路径）仍待重新接入
 - [ ] **更多操作系统适配**：鸿蒙终端、macOS、开源鸿蒙机器人
 - [ ] **驱动生态扩充**：按模板新增一个 Lua 文件即可即插即用，欢迎社区贡献
 
