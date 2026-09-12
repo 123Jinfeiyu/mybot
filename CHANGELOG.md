@@ -221,6 +221,37 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   （DIST_MM:f/STATUS/VALID/SIGNAL_KCPS:f 四字段、距离 EMA α=0.2、
   raw/滤波两 Monitor，16 拍）；run_all.sh E2E 用例表加 vl53l4cd_virt。
   全套 64 跑通 / 1 真机用例跳过 / 仓颉 E2E 五组。
+- **SHT3X 虚拟器件（首个 16 位命令字 + 每数据字 CRC-8 的命令式 I2C 器件）
+  + 测试迁移 + 第六个守护 E2E**：新增 `virtbus/sht3x.lua`——SHT30/31/35
+  温湿度，无寄存器指针：每笔写恰为 2 字节命令大端字（驱动借
+  i2c_write_reg(fd,hi,lo) 的 2 字节原子写发送），状态/测量走无指针纯读
+  （i2c_read），与 BH1750（单字节 opcode）同族但命令宽一倍，且读回帧
+  每 2 字节带 1 字节 CRC-8（poly 0x31/init 0xFF，datasheet 向量
+  0xBEEF→0x92，模型真算非常量）。复刻协议事实：软复位 0x30A2 回上电
+  状态（bit4 复位检测、加热器关）、清状态 0x3041 清标志但保留 bit12
+  加热器、读状态 0xF32D 回 3 字节且 bit0/bit1 读后清零；非法命令 NACK
+  并置 bit1（命令状态）；单次轮询三档重复性转换门 16/7/5ms（max
+  15.5/6.5/4.5 向上取整），`advance(ms)` 虚拟时钟，转换未完成纯读
+  NACK、单次结果读后失效；时钟拉伸六字同门；周期模式 15 个启动字 +
+  break/fetch（fetch 数据可重复读，空闲 fetch NACK）；加热器
+  0x306D/0x3066 改 bit12；非 2 字节写 NACK。故障钩子：三 nack 表字段、
+  `fail_cmd(字谓词)`/`fail_read(pending,consume,n 谓词)`（可只断测量
+  6 字节读不误伤状态 3 字节读）、`corrupt_crc`（只坏 CRC 字节不动数据，
+  驱动 CRC_OK=0 降级路径）、`set_meas_stuck`、`set_status_word(字覆写)`
+  （注入坏标志位组合且 CRC 按覆写字真算）；reset 保留钩子；`virt_tick`
+  32 拍双正弦（T 20~30°C、RH 30~70%，相位差 π/4）并预武装（守护每拍
+  新写单次命令，命令下发即就绪，16ms milli_sleep 在守护里是真实睡眠）。
+  `test/test_sht3x.lua` 从 206 行手写 i2c_* 全局桩整体重写（114 断言：
+  CRC 向量/状态四标志位与读后清/非法命令/非 2 字节帧/三档转换门/结果
+  读后失效/长度不符 NACK/周期 fetch/六类钩子/virt_tick 节拍与物理量
+  注入，真实 build 命令序列与 3ms 睡眠/bit4 缺失仅告警/**旧错位映射
+  守卫 bit0 不致命 bit1 致命**/七路负路径，真实 call 16ms 等待与 6 字节
+  帧解析/双量程端点/坏 CRC 降级不中断/连续两拍/virt_tick 预武装/六路
+  负路径，destroy 零事务）。新增 `robots/test/sht3x_virt.sql` +
+  `scripts/test/sht3x_virt.mt`（T:f/RH:f/CRC_OK 三字段、温度 EMA
+  α=0.2、raw/滤波两 Monitor，interval=50ms 容纳 16ms 真实转换等待，
+  16 拍）；run_all.sh E2E 用例表加 sht3x_virt。全套 65 跑通 / 1 真机
+  用例跳过 / 仓颉 E2E 六组。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
