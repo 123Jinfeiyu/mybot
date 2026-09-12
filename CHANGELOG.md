@@ -14,6 +14,35 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
 
 ### 新增
 
+- **虚拟 I2C 器件模型库 `modules/lib/virtbus/`**（issue #18 深化，无真机驱动链路
+  验证的夹具库）：`virtbus/regmap.lua` 通用「寄存器指针 + burst」模型覆盖
+  MPU6050/BME280 类多数 I2C 传感器（8 位指针 + burst 自增回绕、`{ptr16=true}`
+  支持 VL53Lx 类 16 位指针；`set/set_word/get_sword` 预置寄存器、`nack` 故障注入、
+  `write_log` 留痕、`reset`），`virtbus/bh1750.lua` 为命令式器件样板（opcode 序列、
+  大端计数读回、状态解释、`set_count`）。模型只复现协议层事实、测量值由用例显式
+  注入，避免模型与驱动按同一错误理解互证假绿。
+- **virtbus 总线语义对齐真机 I2C_RDWR**：指针式读族（`i2c_read_reg/multi/
+  multi_bytes/reg16`）此前丢弃寄存器指针参数，模型无从知道读哪个寄存器；现改为
+  先发一笔指针写事务再读，指针写 NACK 则整笔读失败（与真机 ioctl 失败一致），
+  纯读族（`i2c_read/read_bytes`）保持无指针。新增模型故障注入契约（`write` 显式
+  `return false` / `read` 返回 nil = NACK；regmap 另支持 `nack_read/nack_write`
+  定向故障），`attach` 改为动态委托模型函数（attach 后替换模型字段/函数即时生效）；
+  新增 `vbus.load_driver(path)` 封装「加载真实驱动（连带首次加载 HAL 覆盖全局
+  函数）+ 自动重注入」，替代测试里手写 restore+inject。
+- **virtbus 返回值契约修正（防假绿）**：`i2c_write_reg` 虚拟实现原先返回 0/-1，
+  与 HAL 的布尔契约不符——Lua 中 -1 为真，MPU6050 等驱动以 `if not i2c_write_reg`
+  判定时会把 NACK 当成功（虚拟总线假绿、真机炸）。改为返回 true/false；
+  `write_multi/reg16` 保持 0/-1；读族补齐 HAL 的长度约束（`read` n 1~8、
+  `read_multi/read_reg16` n 1~6 越界显式 -1，字节表族钳 1~16）。
+- **MPU6050 虚拟器件 `virtbus/mpu6050.lua` + 测试迁移**：regmap 之上固化
+  MPU6050 寄存器事实（WHO_AM_I 0x75、build 配置 0x6B/0x1B/0x1C、0x3B 起 14
+  字节六轴+温度 burst），提供 `set_accel/set_gyro/set_temp_raw`（有符号 LSB）、
+  `sample()`、物理量造样本 `set_accel_g/set_gyro_dps/set_temp_c`、`who()` 错挂
+  注入、`config_writes()` 配置序列留痕。`test/test_mpu6050.lua` 从手写全局函数
+  桩整体迁移到「真实驱动 + 虚拟总线 + 器件模型」（44 断言，新增 burst 指针事务、
+  0x69 备地址、读写定向 NACK 等断言）；原 `test_mpu6050_sign.lua` 的补码/温度
+  场景为其严格子集，合并删除。test_virtbus（43 断言）/ test_virtbus_regmap
+  （37 断言）同步扩断言，run_all.sh 全绿（58 跑通 / 1 真机用例跳过）。
 - **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
   轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
   校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，

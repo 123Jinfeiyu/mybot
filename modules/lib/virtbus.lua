@@ -17,11 +17,26 @@
 --   vbus.reset()           -- 清空器件/日志/线索并 restore
 --   vbus.restore()         -- 还原原始 i2c_* 全局函数
 --
--- 语义对齐 HAL：
---   写族（i2c_write_reg/16/multi）→ dev.write(完整字节表)，返回 0=成功/-1=NACK
---   读族（i2c_read_reg/16/multi/multi_bytes/read/read_bytes）→ dev.read(n)，
---     按 HAL 原语义组返回值（大端合并或字节表）；无器件地址命中按 NACK 处理
---   （写 -1、读 -1/nil），与真机"设备不在总线"的行为一致，可测负路径
+-- 语义对齐 HAL（返回值契约逐函数与 HAL.lua 相同，驱动用 `if not` / `==0` 等
+-- 不同判定时行为才不会在虚拟总线上失真）：
+--   i2c_write_reg       → dev.write(...)，返回布尔 true=成功/false=NACK（HAL 契约）
+--   i2c_write_multi/16  → dev.write(...)，返回 0=成功/-1=NACK
+--   指针式读族（i2c_read_reg/16/multi/multi_bytes）→ 先 dev.write(指针字节表)
+--     再 dev.read(n)，复刻 HAL I2C_RDWR 的「写指针+读」原子事务——模型据此
+--     知道读的是哪个寄存器（regmap 类器件模型的前提）；指针写 NACK 则整笔读失败
+--   纯读族（i2c_read/read_bytes，无指针命令式器件用）→ 仅 dev.read(n)
+--   长度约束同 HAL：read/read_multi/read_reg16 越界（合并值精度上限）显式失败；
+--   read_bytes/read_multi_bytes 钳制 n 1~16（表长对调用方可见）
+--   返回值按 HAL 原语义组装（大端合并或字节表）；无器件地址命中按 NACK 处理
+--   （写 false/-1、读 -1/nil），与真机"设备不在总线"行为一致，可测负路径
+--
+-- 器件模型故障注入契约：
+--   dev.write(bytes) 显式 return false → 本笔写按 NACK 处理（无返回/return nil = 成功）
+--   dev.read(n) 返回 nil               → 本笔读按 NACK 处理
+--
+-- 设备模型库：modules/lib/virtbus/（regmap.lua 通用寄存器组、bh1750.lua 等现成模型）。
+-- 加载真实驱动建议用 vbus.load_driver(path)：驱动首次 dofile HAL 会覆盖注入的全局
+-- i2c_*，本助手自动重注入（test_virtbus_bh1750 早期手动 restore+inject 的封装）。
 --
 -- 本文件为纯 Lua（不依赖 ffi），可用 lua5.4/luajit 离线跑。
 local virtbus = {}
@@ -48,12 +63,18 @@ function virtbus.reset()
 	virtbus.devs = devs
 end
 
--- 挂载器件模型：name 仅日志用；dev.write(bytes)/dev.read(n) 缺省为空实现
+-- 挂载器件模型：name 仅日志用；dev.write(bytes)/dev.read(n) 缺省为空实现。
+-- 保存模型引用并在每笔事务时动态取函数：测试既可以替换模型字段（如 dev.nack=true，
+-- 函数闭包读到新值），也可以直接换函数（fake_dev.write = ...），attach 后均生效。
 function virtbus.attach(name, addr, dev)
 	devs[addr] = {
 		name = name,
-		write = dev.write or function() end,
-		read = dev.read or function(n)
+		model = dev,
+		write = function(bytes)
+			if dev.write then return dev.write(bytes) end
+		end,
+		read = function(n)
+			if dev.read then return dev.read(n) end
 			local t = {}
 			for i = 1, n do t[i] = 0 end
 			return t
@@ -73,11 +94,12 @@ local function dev_of(fd)
 end
 
 -- ---- 写族：组合字节表后交给器件，返回 0 = 成功，-1 = NACK ----
+-- 模型可显式 return false 模拟本笔写 NACK（返回 nil/无返回按成功）
 local function do_write(fd, bytes)
 	log_tx("w", fd_addr[fd], bytes)
 	local dev = dev_of(fd)
 	if dev == nil then return -1 end
-	dev.write(bytes)
+	if dev.write(bytes) == false then return -1 end
 	return 0
 end
 
@@ -112,8 +134,11 @@ function virtbus.v_i2c_set_addr(fd, addr)
 	return true
 end
 
+-- 注意：HAL 的 i2c_write_reg 返回布尔（`i2c_rdwr(...) >= 0`），驱动普遍用
+-- `if not i2c_write_reg(...)` 判定；不能像 write_multi 那样返回 0/-1
+-- （Lua 中 -1 为真，NACK 会被驱动当成功——假绿）。
 function virtbus.v_i2c_write_reg(fd, reg, val)
-	return do_write(fd, { reg, val })
+	return do_write(fd, { reg, val }) == 0
 end
 
 function virtbus.v_i2c_write_multi(fd, reg, ...)
@@ -128,14 +153,39 @@ function virtbus.v_i2c_write_reg16(fd, reg16, ...)
 	return do_write(fd, bytes)
 end
 
--- ---- 读族：调器件 read(n)，再按 HAL 语义组返回值 ----
+-- ---- 读族：n 由调用方按 HAL 契约校验/钳制后传入 ----
 local function do_read(fd, n)
-	n = tonumber(n)
-	if n == nil or n < 1 then n = 1 end
 	local dev = dev_of(fd)
 	log_tx("r", fd_addr[fd], { n = n })
 	if dev == nil then return nil end
 	return dev.read(n)
+end
+
+-- 正整数校验（合并值类接口用）：非法/越界返回 nil
+local function read_n(n, maxv)
+	n = tonumber(n)
+	if n == nil or n ~= math.floor(n) or n < 1 or n > maxv then return nil end
+	return n
+end
+
+-- 字节表类接口：钳到 1~16（对齐 HAL i2c_read_multi_bytes/read_bytes）
+local function clamp_n16(n)
+	n = tonumber(n)
+	if n == nil then n = 1 end
+	n = math.floor(n)
+	if n < 1 then n = 1 end
+	if n > 16 then n = 16 end
+	return n
+end
+
+-- ---- 指针式读：先把寄存器指针作为一笔写事务发给器件，再读 ----
+-- 对齐 HAL：真机上 i2c_read_reg/multi/reg16 是 I2C_RDWR 的「写指针消息 +
+-- 读消息」单原子事务；旧实现把指针参数丢弃，模型无从知道读哪个寄存器，
+-- 寄存器指针器件（MPU6050/BME280…）无法建模。指针写 NACK（无器件/模型
+-- 注入故障）则整笔读失败且不产生读事务——与真机 ioctl 失败一致。
+local function do_read_ptr(fd, ptr_bytes, n)
+	if do_write(fd, ptr_bytes) ~= 0 then return nil end
+	return do_read(fd, n)
 end
 
 local function be_merge(t)
@@ -145,36 +195,56 @@ local function be_merge(t)
 end
 
 function virtbus.v_i2c_read_reg(fd, reg)
-	local t = do_read(fd, 1)
+	reg = tonumber(reg)
+	if reg == nil then return -1 end
+	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, 1)
 	if t == nil or #t < 1 then return -1 end
 	return t[1]
 end
 
+-- 纯读大端合并：HAL 限定 n 1~8，越界显式 -1（不静默钳制）
 function virtbus.v_i2c_read(fd, n)
+	n = read_n(n, 8)
+	if n == nil then return -1 end
 	local t = do_read(fd, n)
 	if t == nil or #t < 1 then return -1 end
 	return be_merge(t)
 end
 
+-- 指针读大端合并：HAL 限定 n 1~6（2^53 精度上限）
 function virtbus.v_i2c_read_multi(fd, reg, n)
-	local t = do_read(fd, n)
+	reg = tonumber(reg)
+	n = read_n(n, 6)
+	if reg == nil or n == nil then return -1 end
+	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, n)
 	if t == nil or #t < 1 then return -1 end
 	return be_merge(t)
 end
 
+-- 指针读字节表：HAL 钳制 n 1~16
 function virtbus.v_i2c_read_multi_bytes(fd, reg, n)
-	local t = do_read(fd, n)
+	reg = tonumber(reg)
+	if reg == nil then return nil end
+	n = clamp_n16(n)
+	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, n)
 	if t == nil then return nil end
 	return t
 end
 
+-- 16 位指针读大端合并：HAL 限定 n 1~6
 function virtbus.v_i2c_read_reg16(fd, reg16, n)
-	local t = do_read(fd, n)
+	reg16 = tonumber(reg16)
+	n = read_n(n, 6)
+	if reg16 == nil or reg16 < 0 or reg16 > 0xFFFF or n == nil then return -1 end
+	local r = math.floor(reg16)
+	local t = do_read_ptr(fd, { math.floor(r / 256) % 256, r % 256 }, n)
 	if t == nil or #t < 1 then return -1 end
 	return be_merge(t)
 end
 
+-- 纯读字节表：HAL 钳制 n 1~16
 function virtbus.v_i2c_read_bytes(fd, n)
+	n = clamp_n16(n)
 	local t = do_read(fd, n)
 	if t == nil then return nil end
 	return t
@@ -215,6 +285,19 @@ function virtbus.restore()
 	end
 	originals = {}
 	virtbus._injected = false
+end
+
+-- 加载真实驱动文件并确保虚拟总线处于注入态。
+-- 驱动顶部首次 dofile HAL.lua 会用真实 ffi 函数定义全局 i2c_*，把先前的
+-- 虚拟注入覆盖掉；故加载后强制重注入。先加载再注入时，originals 捕获的是
+-- 真实 HAL 函数，restore()/reset() 能真正还原 HAL（而不是把全局置空）。
+-- 约定：一个 Lua 状态机内只走一次「加载驱动 + 注入」流程——多驱动并存请先
+-- dofile 全部驱动再统一注入（run_all.sh 每个用例本就是独立 luajit 进程）。
+function virtbus.load_driver(path)
+	dofile(path)
+	virtbus._injected = false
+	virtbus.inject()
+	return virtbus
 end
 
 return virtbus

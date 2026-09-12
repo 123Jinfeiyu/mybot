@@ -372,7 +372,7 @@ cat scripts/test/monitor.mt     | bash _run.sh --robot=robots/test/monitor.sql  
 
 #### 虚拟 I2C 总线（issue #18，无真机验证驱动链路）
 
-`lib/virtbus.lua` 提供纯内存的虚拟 I2C 总线：`inject()` 后替换 HAL 的全部全局 `i2c_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*` 即可完整跑通 build/call/destroy。器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言；未挂载的地址按 NACK 处理（写 -1、读 -1/nil），负路径可测，与真机"设备不在总线"行为一致。
+`lib/virtbus.lua` 提供纯内存的虚拟 I2C 总线：`inject()` 后替换 HAL 的全部全局 `i2c_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*` 即可完整跑通 build/call/destroy。器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言；未挂载的地址按 NACK 处理（写 -1、读 -1/nil），模型自身也可 `write` 返回 `false`/`read` 返回 `nil` 注入 NACK（模拟掉线），负路径与真机"设备不在总线"行为一致。指针式读族（`read_reg/multi/reg16`）严格复刻 HAL 的 I2C_RDWR「写指针 + 读」事务，模型能知道当前读的是哪个寄存器；`read/read_bytes` 为无指针纯读。
 
 ```lua
 local vbus = dofile("modules/lib/virtbus.lua")
@@ -380,12 +380,28 @@ vbus.attach("光感@0x23", 0x23, {
     write = function(bytes) ... end,
     read  = function(n) return { 0x75, 0x30 } end,   -- 假计数值
 })
-vbus.inject()          -- 此后驱动调用全走虚拟总线
--- dofile 真实驱动 → build/call/destroy 正常跑；tester 断言 txlog 与返回值
+vbus.load_driver("modules/BH1750.lua")  -- dofile 真实驱动（连带 HAL）并自动重注入
+-- build/call/destroy 正常跑；tester 断言 txlog 与返回值
 vbus.reset()           -- 还原全局 i2c_* 并清空
 ```
 
-回归：`test/test_virtbus.lua`（纯 Lua，27 断言，功能/事务记录/NACK/还原全覆盖）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 在虚拟总线上 build/call/destroy 链路 + 无器件负路径，run_all.sh 自动纳入）。
+**现成器件模型库 `lib/virtbus/`**（协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿）：
+
+- `virtbus/regmap.lua`：通用「寄存器指针 + burst」模型，覆盖 MPU6050/BME280 一类大多数 I2C 传感器（8 位指针；构造传 `{ptr16=true}` 支持 VL53Lx 类 16 位指针）；提供 `set/set_word/get_sword` 预置寄存器、`nack`（读写全断）与 `nack_read/nack_write`（定向故障）、`write_log` 事务留痕、`reset()`。
+- `virtbus/mpu6050.lua`：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`config_writes()` 取 build 配置序列。
+- `virtbus/bh1750.lua`：BH1750 命令式器件模型（opcode 序列、大端计数读回、上电/模式状态解释、`set_count()`、`nack`）。
+
+```lua
+local mpmod = dofile("modules/lib/virtbus/mpu6050.lua")
+local imu = mpmod.new()                      -- WHO_AM_I 默认 0x68
+imu:sample({ ax = 1, ay = 2, az = 3,         -- 有符号原始 LSB
+             gx = -4, gy = -3, gz = -2, temp = 340 })
+vbus.attach("MPU6050@0x68", 0x68, imu)
+```
+
+> 契约对齐：虚拟总线逐函数复刻 HAL 返回值——`i2c_write_reg` 为**布尔**（驱动用 `if not` 判定，若错返 -1 会因 Lua 真值规则造成 NACK 假成功）、`write_multi/reg16` 为 0/-1、读族长度约束（合并值 1~6/1~8 越界显式失败，字节表钳 1~16）一致。
+
+回归：`test/test_virtbus.lua`（纯 Lua，43 断言：功能/指针事务/长度约束/两级 NACK/还原）、`test/test_virtbus_regmap.lua`（纯 Lua，37 断言：regmap + ptr16 + 定向故障 + 总线集成）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径）、`test/test_mpu6050.lua`（LuaJIT，真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK，44 断言；原手写桩 test_mpu6050_sign 为其严格子集已合并删除；run_all.sh 自动纳入）。
 
 ### 环境变量
 
