@@ -43,6 +43,20 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   0x69 备地址、读写定向 NACK 等断言）；原 `test_mpu6050_sign.lua` 的补码/温度
   场景为其严格子集，合并删除。test_virtbus（43 断言）/ test_virtbus_regmap
   （37 断言）同步扩断言，run_all.sh 全绿（58 跑通 / 1 真机用例跳过）。
+- **守护无硬件端到端：sensor_daemon 新增 `proto=virt`**（issue #18 第三期）：
+  @Daemon 配 `proto=virt` 时不打开真机，按 driver 名挂 `lib/virtbus/<小写>.lua`
+  器件模型——真实驱动 build/call → 32 通道共享槽 → @Ema/@Kalman → @Monitor
+  整条链路纯内存可跑（无需仓颉侧改动，proto 列原本就透传进 DAEMON_CONFIG；
+  HAL 的 __BOT4CJ_HAL guard 保证 chunk 内驱动重复 dofile 不覆盖虚拟注入）。
+  模型可选 `virt_tick(n)` 由守护每拍驱动造数；mpu6050 模型实现确定性六轴
+  正弦/余弦波形 + 温度慢漂（无随机，数值可复现；幅值在 ±8g/±500dps 量程内）。
+  无模型/缺 addr 显式 setup fail(-8)、守护空转不崩；启动打印醒目
+  `VIRTUAL HARDWARE` 横幅防生产误用。新增 `robots/test/mpu_virt.sql` +
+  `scripts/test/mpu_virt.mt`（虚拟七字段守护 + 七路 EMA α=0.2 + raw/滤波两个
+  Monitor，21 拍核对 count 递增、EMA 递推、TEMP:f 浮点未被 sign=16 取整）；
+  run_all.sh 末尾新增仓颉级 E2E 段（断言横幅/无错误/count 增长/温度浮点/EMA
+  已混合；编译产物或仓颉 runtime 缺失自动跳过，不阻断纯 Lua 回归），
+  test_mpu6050 同步补 virt_tick 6 条断言（共 50），全套 59 跑通 / 1 真机跳过。
 - **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
   轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
   校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，

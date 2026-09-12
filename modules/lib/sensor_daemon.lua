@@ -8,6 +8,9 @@
 -- DAEMON_CONFIG（"k=v;k=v"，来自 @Daemon 矩阵除 name/chunk 外的列）：
 --   driver   必填，驱动模块名（modules/<driver>.lua，如 MPU6050/BME280/ADS1115/SGP30）
 --   proto    i2c（默认）| spi | uart（uart 时 path=串口设备、baud=波特率）
+--            | virt（无硬件仿真：挂 modules/lib/virtbus/<driver 小写>.lua 器件模型，
+--            驱动/滤波/消费链路全走内存虚拟 I2C；模型每拍 virt_tick 造合成数据。
+--            仅限测试，启动会打印 VIRTUAL HARDWARE 警告横幅，禁止生产使用）
 --   path     总线设备路径（默认 i2c:/dev/i2c-1，spi:/dev/spidev0.0）
 --   addr     器件地址（i2c 如 0x68；spi 忽略）
 --   fields   逗号或管道分隔的 call() 返回字段名，按序 publish（SQL 里推荐用 |）。
@@ -73,6 +76,9 @@ local log = print
 -- lua_State 长期持有泄漏 fd）
 local fd = nil
 
+-- proto=virt：虚拟总线句柄与器件模型（tick 每拍驱动模型造数，cleanup 还原）
+local vbus, vdev = nil, nil
+
 -- H-07：关闭已打开的总线 fd（幂等；fail 与 daemon_cleanup 共用）
 local function close_bus()
 	if fd ~= nil and fd >= 0 then
@@ -98,11 +104,56 @@ end
 if not driver or driver == "" then fail(-9, "config missing 'driver'"); return end
 
 local drvpath = mpath.resolve(driver .. ".lua")
-local ok_load = pcall(dofile, drvpath)
-if not ok_load then fail(-8, "cannot load driver: " .. drvpath); return end
+local ok_load, load_err = true, nil
+
+if proto == "virt" then
+	-- ---- 无硬件仿真：加载虚拟总线 + 与 driver 同名的器件模型 ----
+	-- 约定：modules/lib/virtbus/<driver 小写>.lua 必须存在且 new() 返回模型；
+	-- 模型每拍 virt_tick(n) 造数（无此方法则输出静态初值）。
+	-- HAL 已在本 chunk 顶部 dofile（__BOT4CJ_HAL guard 使驱动内的再次 dofile
+	-- 不覆盖全局），load_driver 仍重注入一次以固定「驱动加载后全局为虚拟函数」。
+	local vrok
+	vrok, vbus = pcall(dofile, mpath.resolve("lib/virtbus.lua"))
+	if not vrok then
+		fail(-8, "virt: cannot load lib/virtbus.lua: " .. tostring(vbus)); return
+	end
+	local model_path = mpath.resolve("lib/virtbus/" .. string.lower(tostring(driver)) .. ".lua")
+	local vmod
+	vrok, vmod = pcall(dofile, model_path)
+	if not vrok or type(vmod) ~= "table" or type(vmod.new) ~= "function" then
+		fail(-8, "virt: no virtual device model for driver '" .. tostring(driver)
+			.. "': " .. model_path); return
+	end
+	vrok, vdev = pcall(vmod.new)
+	if not vrok or type(vdev) ~= "table" then
+		fail(-8, "virt: model new() failed: " .. tostring(vdev)); return
+	end
+	local addr_n = tonumber(addr)
+	if not addr_n then
+		fail(-8, "virt: missing/invalid 'addr' for virtual device: " .. tostring(addr)); return
+	end
+	vbus.attach("VIRT:" .. tostring(driver) .. "@" .. tostring(addr), addr_n, vdev)
+	ok_load, load_err = pcall(vbus.load_driver, drvpath)
+else
+	ok_load, load_err = pcall(dofile, drvpath)
+end
+if not ok_load then
+	fail(-8, "cannot load driver: " .. drvpath .. " (" .. tostring(load_err) .. ")"); return
+end
 
 -- 高速采样中静默驱动的 print 刷屏（本状态机独立）
 print = function() end
+
+-- proto=virt 显著横幅：仿真数据绝不能被误当成真机采样（防生产环境误用）
+if proto == "virt" then
+	log("================================================================")
+	log(" [sensor_daemon] *** VIRTUAL HARDWARE -- NO REAL DEVICE ***")
+	log(string.format(" proto=virt driver=%s addr=%s bus=%s",
+		tostring(driver), tostring(addr), tostring(path)))
+	log(" 采样值全部来自内存仿真模型（合成波形），不代表任何真机！")
+	log(" 仅限无硬件链路测试，禁止用于生产环境。")
+	log("================================================================")
+end
 
 -- 字段提取（逐字段模式优先于全局 sign）：
 --   "f"   原样透传（换算后的浮点物理量，如 MPU6050 TEMP °C、INA226 V/I/P、MLX90393 µT）
@@ -161,7 +212,13 @@ end
 -- 日志是唯一线索）
 local tick_errors = 0
 local tick_total  = 0
+local virt_n      = 0	-- proto=virt：已驱动的模型节拍序号（确定性波形相位）
 function daemon_tick()
+	-- virt：先让模型推进一拍合成数据，驱动随后经虚拟总线读到本拍样本
+	if vdev ~= nil and type(vdev.virt_tick) == "function" then
+		vdev:virt_tick(virt_n)
+		virt_n = virt_n + 1
+	end
 	local s = call(params)
 	-- SHT3X/SGP30 等驱动 CRC 失败仍返回 result=OK（仅标 CRC_OK=0，避免直接 play 时
 	-- halt-on-error 中断动作序列）；守护侧是数据流而非动作，坏样本不得发布给下游——
@@ -198,4 +255,6 @@ function daemon_cleanup()
 		destroy(params)
 	end
 	close_bus()
+	-- virt：还原全局 i2c_*（独立守护 lua_State 随之销毁，主要为状态对称）
+	if vbus ~= nil then vbus.restore() end
 end

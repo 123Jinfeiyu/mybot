@@ -206,6 +206,54 @@ expect_err("call 缺 fd", function() return call({ address = "0x68" }) end, "Inv
 expect_err("call 缺 address", function() return call({ fd = fd }) end, "Invalid Argument: fd or address")
 expect_err("call 参数非表", function() return call("x") end, "Invalid Arguments Type")
 
+-- ==================== virt_tick：守护仿真波形（proto=virt） ====================
+do
+	local R = mpmod.REG
+	local sim = mpmod.new()
+	sim:virt_tick(0)
+	-- n=0：accel 正弦起点 ax=0；gyro 余弦起点 gx=满幅 10000；温度静态项 raw=1530（≈41.03°C）
+	check("virt_tick n=0：ax=0 / gx=10000 / temp_raw=1530",
+		sim:get_sword(R.ACCEL_XH) == 0
+		and sim:get_sword(R.GYRO_XH) == 10000
+		and sim:get_sword(R.TEMP_H) == 1530,
+		string.format("ax=%d gx=%d temp=%d",
+			sim:get_sword(R.ACCEL_XH), sim:get_sword(R.GYRO_XH), sim:get_sword(R.TEMP_H)))
+	-- 三轴相位互差 120°：n=0 时 ay≈20000·sin(2π/3)≈17321，az≈-17321（容差 ±2 LSB）
+	local ay, az = sim:get_sword(R.ACCEL_XH + 2), sim:get_sword(R.ACCEL_XH + 4)
+	check("virt_tick n=0：ay/az 为 ±17321（120° 相位）",
+		math.abs(ay - 20000 * math.sin(2 * math.pi / 3)) <= 2
+		and math.abs(az - 20000 * math.sin(4 * math.pi / 3)) <= 2,
+		"ay=" .. tostring(ay) .. " az=" .. tostring(az))
+	-- 确定性：两个独立实例同节拍必须逐字段一致（E2E 数值可复现的前提）
+	local a, b = mpmod.new(), mpmod.new()
+	a:virt_tick(7); b:virt_tick(7)
+	local det = true
+	for _, r in ipairs({ R.ACCEL_XH, R.ACCEL_XH + 2, R.ACCEL_XH + 4,
+			R.GYRO_XH, R.GYRO_XH + 2, R.GYRO_XH + 4, R.TEMP_H }) do
+		if a:get_sword(r) ~= b:get_sword(r) then det = false end
+	end
+	check("virt_tick 确定性（同 n 两实例七字段全等）", det)
+	-- 推进性与幅值边界：扫 0..60 拍 ax 必随 n 变化，六轴始终在波形幅值内，温度慢漂有界
+	local first_ax = sim:get_sword(R.ACCEL_XH)	-- sim 已在 n=0
+	local moved, bounded = false, true
+	for n = 1, 60 do
+		sim:virt_tick(n)
+		if sim:get_sword(R.ACCEL_XH) ~= first_ax then moved = true end
+		for _, r in ipairs({ R.ACCEL_XH, R.ACCEL_XH + 2, R.ACCEL_XH + 4 }) do
+			if math.abs(sim:get_sword(r)) > 20000 then bounded = false end
+		end
+		for _, r in ipairs({ R.GYRO_XH, R.GYRO_XH + 2, R.GYRO_XH + 4 }) do
+			if math.abs(sim:get_sword(r)) > 10000 then bounded = false end
+		end
+		local tr = sim:get_sword(R.TEMP_H)
+		if tr < 1360 or tr > 1700 then bounded = false end
+	end
+	check("virt_tick 随 n 推进（60 拍内 ax 离开过初值）", moved)
+	check("virt_tick 幅值有界（accel≤20000 / gyro≤10000 / temp∈[1360,1700] LSB）", bounded)
+	-- 链式返回 self
+	check("virt_tick 返回模型自身（链式）", mpmod.new():virt_tick(3) ~= nil)
+end
+
 -- ==================== destroy ====================
 expect_ok("destroy 正常", function() return destroy(base) end)
 expect_err("destroy 缺 fd", function() return destroy({ address = "0x68" }) end, "Invalid Argument")

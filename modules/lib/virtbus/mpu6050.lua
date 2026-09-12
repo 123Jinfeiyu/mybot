@@ -118,6 +118,29 @@ function mpu6050.new(opts)
 		return self:set_temp_raw((degC - mpu6050.TEMP_OFFSET_DEG) * mpu6050.TEMP_LSB_PER_DEG)
 	end
 
+	-- ---------------- 守护仿真节拍（proto=virt 的 sensor_daemon 每拍调用） ----------------
+
+	-- 确定性合成波形（无随机，E2E 数值可复现/可断言）：n 为守护采样序号。
+	-- 加速度三轴互差 120° 正弦、陀螺三轴同相位余弦，幅值均在驱动选定量程内
+	-- （accel ±20000 LSB≈±4.9g @±8g；gyro ±10000 LSB≈±153dps @±500dps）；
+	-- 温度在约 41°C 慢漂（raw=1530 → 41.03°C）。守护 10ms/拍时角速度 ≈4.8Hz，
+	-- 50ms 消费节拍下 20 拍可观察到 EMA 的平滑与相位滞后。
+	function m:virt_tick(n)
+		n = tonumber(n) or 0
+		local th = n * 0.30
+		local twopi3 = 2 * math.pi / 3
+		self:set_accel(
+			20000 * math.sin(th),
+			20000 * math.sin(th + twopi3),
+			20000 * math.sin(th + 2 * twopi3))
+		self:set_gyro(
+			10000 * math.cos(th),
+			10000 * math.cos(th + twopi3),
+			10000 * math.cos(th + 2 * twopi3))
+		self:set_temp_raw(1530 + 170 * math.sin(th * 0.08))
+		return self
+	end
+
 	-- ---------------- 配置/身份留痕（build 序列断言） ----------------
 
 	-- 改 WHO_AM_I 身份值（如 0x71 模拟 MPU6500/9250 错挂）

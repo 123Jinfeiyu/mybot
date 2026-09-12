@@ -388,7 +388,7 @@ vbus.reset()           -- 还原全局 i2c_* 并清空
 **现成器件模型库 `lib/virtbus/`**（协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿）：
 
 - `virtbus/regmap.lua`：通用「寄存器指针 + burst」模型，覆盖 MPU6050/BME280 一类大多数 I2C 传感器（8 位指针；构造传 `{ptr16=true}` 支持 VL53Lx 类 16 位指针）；提供 `set/set_word/get_sword` 预置寄存器、`nack`（读写全断）与 `nack_read/nack_write`（定向故障）、`write_log` 事务留痕、`reset()`。
-- `virtbus/mpu6050.lua`：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`config_writes()` 取 build 配置序列。
+- `virtbus/mpu6050.lua`：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`virt_tick(n)` 造确定性合成波形（供 proto=virt 守护逐拍驱动）、`config_writes()` 取 build 配置序列。
 - `virtbus/bh1750.lua`：BH1750 命令式器件模型（opcode 序列、大端计数读回、上电/模式状态解释、`set_count()`、`nack`）。
 
 ```lua
@@ -401,7 +401,15 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 
 > 契约对齐：虚拟总线逐函数复刻 HAL 返回值——`i2c_write_reg` 为**布尔**（驱动用 `if not` 判定，若错返 -1 会因 Lua 真值规则造成 NACK 假成功）、`write_multi/reg16` 为 0/-1、读族长度约束（合并值 1~6/1~8 越界显式失败，字节表钳 1~16）一致。
 
-回归：`test/test_virtbus.lua`（纯 Lua，43 断言：功能/指针事务/长度约束/两级 NACK/还原）、`test/test_virtbus_regmap.lua`（纯 Lua，37 断言：regmap + ptr16 + 定向故障 + 总线集成）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径）、`test/test_mpu6050.lua`（LuaJIT，真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK，44 断言；原手写桩 test_mpu6050_sign 为其严格子集已合并删除；run_all.sh 自动纳入）。
+**守护无硬件端到端（`proto=virt`）**：`@Daemon` 的 `proto` 列填 `virt`，sensor_daemon 不碰真机，而是挂 `lib/virtbus/<driver 小写>.lua` 器件模型——真实驱动 build/call、共享槽 publish、`@Ema/@Kalman`、`@Monitor` 引用消费整条链路全部走内存仿真。模型若提供 `virt_tick(n)`，守护每拍先驱动它造**确定性合成波形**再采样（无该方法则输出静态初值）；驱动无对应模型/缺 `addr` 时 setup 显式 fail(-8)，守护空转不崩。守护启动打印醒目 `VIRTUAL HARDWARE` 横幅（仿真数据禁止用于生产环境）。示例：`robots/test/mpu_virt.sql` + `scripts/test/mpu_virt.mt`（七字段虚拟守护 + 七路 EMA + 直连/滤波两个 Monitor）：
+
+```bash
+cat scripts/test/mpu_virt.mt | bash _run.sh --robot=robots/test/mpu_virt.sql
+```
+
+`run_all.sh` 在检测到编译产物 `target/release/bin/main` 与仓颉 runtime 时自动执行该仓颉级 E2E（断言横幅、无错误、守护持续发布 count 增长、温度浮点未被取整、EMA 输出已混合），缺失则跳过不阻断纯 Lua 回归。
+
+回归：`test/test_virtbus.lua`（纯 Lua，43 断言：功能/指针事务/长度约束/两级 NACK/还原）、`test/test_virtbus_regmap.lua`（纯 Lua，37 断言：regmap + ptr16 + 定向故障 + 总线集成）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径）、`test/test_mpu6050.lua`（LuaJIT，真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK/virt_tick 仿真波形，50 断言；原手写桩 test_mpu6050_sign 为其严格子集已合并删除；均由 run_all.sh 自动纳入）。
 
 ### 环境变量
 

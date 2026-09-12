@@ -59,9 +59,58 @@ for t in test/test_*.lua; do
 done
 
 echo "==============================================="
+
+# ======================================================================
+# 仓颉级无硬件端到端：编译产物 + 仓颉 runtime 齐备才跑，缺失则跳过
+# （纯 Lua 环境/CI 无 cjc 时不阻断回归）。用例走真实 bot4cj 二进制：
+# 守护线程→共享槽→Ema→Monitor 全链路，仅 I2C 器件为内存仿真模型。
+# ======================================================================
+bin="target/release/bin/main"
+if [ -n "$filter" ] && [[ "mpu_virt" != *"$filter"* ]]; then
+	:
+elif [ ! -x "$bin" ]; then
+	echo "----- mpu_virt (仓颉 E2E) -----"
+	echo "[SKIP] 无编译产物 $bin（执行 bash _set.sh 后可跑无硬件端到端）"
+elif ! command -v cjc >/dev/null 2>&1 && [ -z "$CANGJIE_HOME" ] && [ ! -d "$HOME/cangjie" ]; then
+	echo "----- mpu_virt (仓颉 E2E) -----"
+	echo "[SKIP] 无仓颉 runtime（需 cjc 在 PATH、设置 CANGJIE_HOME，或存在 ~/cangjie）"
+else
+	echo "----- mpu_virt (仓颉 E2E) -----"
+	[ -z "$CANGJIE_HOME" ] && [ -d "$HOME/cangjie" ] && export CANGJIE_HOME="$HOME/cangjie"
+	# 21 行动作约 1.2s，给 30s 上限防挂死；_run.sh 退出码原样透传
+	if [ -n "$timeout_cmd" ]; then
+		out="$(cat scripts/test/mpu_virt.mt | timeout 30 bash _run.sh --robot=robots/test/mpu_virt.sql 2>&1)"
+	else
+		out="$(cat scripts/test/mpu_virt.mt | bash _run.sh --robot=robots/test/mpu_virt.sql 2>&1)"
+	fi
+	rc=$?
+	echo "$out"
+	e2e_ok=true
+	[ $rc -ne 0 ] && e2e_ok=false
+	echo "$out" | grep -qF "VIRTUAL HARDWARE" || e2e_ok=false
+	echo "$out" | grep -qE "chunk setup error|chunk load error|setup failed|tick error|cleanup error" \
+		&& e2e_ok=false
+	echo "$out" | grep -qF "joined, total publishes=" || e2e_ok=false
+	# 守护持续发布：出现 ≥2 个不同 count 且最大 ≥10（21 拍消费、守护 10ms/拍）
+	count_max="$(echo "$out" | grep -oE '"count":[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)"
+	count_uniq="$(echo "$out" | grep -oE '"count":[0-9]+' | sort -u | wc -l)"
+	{ [ -z "$count_max" ] || [ "$count_max" -lt 10 ] || [ "$count_uniq" -lt 2 ]; } && e2e_ok=false
+	# 七字段快照：温度路 v6 为 41.x°C 浮点（:f 透传，未被 sign=16 取整）
+	echo "$out" | grep -qE '"v6":41\.[0-9]+' || e2e_ok=false
+	# EMA 已推进且在平滑：某拍同事务内 v0 为带小数值、raw 为整数（α=0.2 混合后必非整数）
+	echo "$out" | grep -qE '"v0":-?[0-9]+\.[0-9]+.*"raw":-?[0-9]+[,}]|"raw":-?[0-9]+[,}].*"v0":-?[0-9]+\.[0-9]+' \
+		|| e2e_ok=false
+	if $e2e_ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed mpu_virt(E2E)"
+	fi
+fi
+
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua 或仓颉 E2E，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败"
