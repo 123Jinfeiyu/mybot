@@ -252,6 +252,36 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   α=0.2、raw/滤波两 Monitor，interval=50ms 容纳 16ms 真实转换等待，
   16 拍）；run_all.sh E2E 用例表加 sht3x_virt。全套 65 跑通 / 1 真机
   用例跳过 / 仓颉 E2E 六组。
+- **MCP3421 虚拟器件（首个「单字节配置写 + 数据流纯读、读回帧自带配置
+  回显/RDY 就绪位」的命令式 I2C 器件）+ 测试迁移 + 第七个守护 E2E**：
+  新增 `virtbus/mcp3421.lua`——18 位 ΔΣ ADC，无寄存器指针：写恒为
+  1 字节配置（i2c_write_multi；[7]RDY 写 1 启动转换、[4]O/C 连续/单次、
+  [3:2]分辨率 12/14/16/18、[1:0]PGA ×1/2/4/8），读恒无指针纯读
+  （i2c_read 大端合并），末字节是配置回显——bit7 RDY 兼作就绪握手
+  （0=新数据、1=转换中/已读走），低 6 位供 build 比对兼在位探测；与
+  BH1750/SHT3X 的区别是「回显即状态、无独立命令/状态字」。复刻协议
+  事实：四档转换门 5/17/67/267ms（1/SPS 向上取整，`advance(ms)` 虚拟
+  时钟，写 RDY=1 重启转换、门限前回显 RDY=1）；连续模式读走一帧立即
+  排下一转换，oneshot 读完进低功耗待机，O/C=0/RDY=0 待机配置取消转换；
+  18bit 读 4 字节（D[17:16] 在首字节低 2 位的右对齐补码），12/14bit 读
+  3 字节（顶部重复符号位、按 int16 解释）；读长度由主设备决定（字节流，
+  短读截取/长读补 0）。故障钩子：三 nack 表字段、`fail_write(字节谓词)`/
+  `fail_read(n,fresh 谓词)`、`set_never_ready`（RDY 恒 1，驱动 5ms 步进
+  轮询至 wait 超时路径）、`corrupt_echo`（只翻低 6 位配置位不动 RDY，
+  build echo mismatch 路径）；reset 保留钩子；`set_raw` 按位宽钳制、
+  `set_voltage` 物理量注入（LSB=2.048/2^(res-1)/pga 与驱动同源）；
+  `virt_tick` 32 拍 ±1.5V 正弦并预武装（守护首读 RDY=0 零睡眠）。
+  `test/test_mcp3421.lua` 从 335 行手写 i2c_* 全局桩整体重写（143 断言：
+  配置位域/四档转换门边界/各档补码帧独立编码交叉验证/连续续转/oneshot
+  待机/字节流长度/位宽钳制/电压注入/六类钩子/virt_tick，真实 build
+  四档配置字节 0x9C/0x8B/0x94/0x91 与「写→纯读回显」序列及八路负路径，
+  真实 call 轮询睡眠节拍 270/70/20/5ms/双满码 ×8/oneshot 触发写/wait
+  超时/五路负路径/virt_tick 零等待两拍，destroy 待机写 0x0C/0x0B）。
+  新增 `robots/test/mcp3421_virt.sql` + `scripts/test/mcp3421_virt.mt`
+  （12bit/×1/连续档、voltage:f 单字段含负值、电压 EMA α=0.2、raw/滤波
+  两 Monitor，interval=50ms，16 拍）；run_all.sh E2E 用例表加
+  mcp3421_virt（浮点断言含负号）。全套 66 跑通 / 1 真机用例跳过 /
+  仓颉 E2E 七组。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
