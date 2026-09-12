@@ -451,6 +451,7 @@ virtbus.lua 本身是**纯 Lua、无 ffi 依赖**（lua5.4/luajit 都能离线�
 - `virtbus/mpu6050.lua`：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`virt_tick(n)` 造确定性合成波形（供 proto=virt 守护逐拍驱动）、`config_writes()` 取 build 配置序列。
 - `virtbus/bme280.lua`：BME280 温压湿环境传感器模型（regmap 包装层）——0xD0 身份（`who(0x58)` 模拟错挂 BMP280）、datasheet 示例校准 NVM 字节布局（0x88 起 T/P 小端系数、0xA1 H1、0xE1 起 7 字节 H 块含 H4/H5 的 s12 nibble 拼装）、0xF7 起 P/T 20bit + H 16bit 数据区、合成 0xF3 STATUS 与 forced 转换状态机（`advance(ms)` 外部虚拟时钟驱动 6ms 转换/`nvm_stuck`/`meas_stuck` 卡死注入；`virt_tick` 走预武装路径无需时钟）、`set_raw(t,p,h)` 注入无符号 ADC 码（0x80000/0x8000 无效读数可测）。
 - `virtbus/bh1750.lua`：BH1750 命令式器件模型（opcode 序列、大端计数读回、上电/模式状态解释、`set_count()`、`nack`）。
+- `virtbus/ads1256.lua`：**首个 SPI 模型**，ADS1256 24bit ΣΔ ADC 的全双工命令状态机（`xfer` 点定义）——RESET/WAKEUP/SYNC/SELFCAL/RDATAC/SDATAC 命令、WREG/RREG 寄存器访问（RREG 读窗口优先于命令识别，dummy 字节 0x00 不被误判 WAKEUP）、RDATAC 模式 24bit 大端样本帧（驱动丢弃第 4 字节）；固化 MUX 单端 `ch<<4|0x08`/差分 `pos<<4|neg`、ADCON PGA 1~64、DRATE 30k~5SPS 事实；`set_raw`（补码 floor 量化 + clamp）、`set_voltage(v,pga_idx)` 反解、`virt_tick` 32 拍确定性正弦（1.25±1.0V）、`fail_when/fail_data` 帧级故障注入（RESET 不清故障钩子，防负路径假绿）。模块表 `BUS="spi"` 供守护自动分流；除 `xfer` 外公开 API 一律冒号定义。
 
 ```lua
 local mpmod = dofile("modules/lib/virtbus/mpu6050.lua")
@@ -462,16 +463,17 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 
 > 契约对齐：虚拟总线逐函数复刻 HAL 返回值——`i2c_write_reg` 为**布尔**（驱动用 `if not` 判定，若错返 -1 会因 Lua 真值规则造成 NACK 假成功）、`write_multi/reg16` 为 0/-1、读族长度约束（合并值 1~6/1~8 越界显式失败，字节表钳 1~16）一致。
 
-**守护无硬件端到端（`proto=virt`）**：`@Daemon` 的 `proto` 列填 `virt`，sensor_daemon 不碰真机，而是挂 `lib/virtbus/<driver 小写>.lua` 器件模型——真实驱动 build/call、共享槽 publish、`@Ema/@Kalman`、`@Monitor` 引用消费整条链路全部走内存仿真。模型若提供 `virt_tick(n)`，守护每拍先驱动它造**确定性合成波形**再采样（无该方法则输出静态初值）；驱动无对应模型/缺 `addr` 时 setup 显式 fail(-8)，守护空转不崩。守护启动打印醒目 `VIRTUAL HARDWARE` 横幅（仿真数据禁止用于生产环境）。现有两例：`mpu_virt`（七字段 IMU 守护 + 七路 EMA + 两 Monitor）与 `bme280_virt`（三字段温压湿守护 + 三路 EMA + 两 Monitor，真实驱动跑附录 8.3 补偿、模型只给 NVM/位场）：
+**守护无硬件端到端（`proto=virt`）**：`@Daemon` 的 `proto` 列填 `virt`，sensor_daemon 不碰真机，而是挂 `lib/virtbus/<driver 小写>.lua` 器件模型——真实驱动 build/call、共享槽 publish、`@Ema/@Kalman`、`@Monitor` 引用消费整条链路全部走内存仿真。挂载族按模型模块表 `BUS` 标记自动分流：I2C 模型（默认）走 `attach(addr)` + `i2c_open`（必须配 `addr`）；**SPI 模型（`BUS="spi"`）走 `attach_spi(name,path,dev)` + `spi_open/spi_setup`**（`path` 缺省 `/dev/spidev0.0`、免 addr，`mode/bits/speed` 从 Daemon 列读取，如 ADS1256 要 Mode1/8bit/1.92MHz，SPI 器件 params 不透传 address）。模型若提供 `virt_tick(n)`，守护每拍先驱动它造**确定性合成波形**再采样（无该方法则输出静态初值）；驱动无对应模型/缺必填总线身份时 setup 显式 fail(-8)，守护空转不崩。守护启动打印醒目 `VIRTUAL HARDWARE` 横幅（仿真数据禁止用于生产环境）。现有三例：`mpu_virt`（七字段 IMU 守护 + 七路 EMA + 两 Monitor）、`bme280_virt`（三字段温压湿守护 + 三路 EMA + 两 Monitor，真实驱动跑附录 8.3 补偿、模型只给 NVM/位场）与 `ads1256_virt`（首个 SPI E2E：raw+voltage:f 两字段守护，真实驱动跑 8 帧 build/6 帧 call 与 24bit 补码电压换算、模型只给命令状态机与合成正弦样本）：
 
 ```bash
 cat scripts/test/mpu_virt.mt    | bash _run.sh --robot=robots/test/mpu_virt.sql
 cat scripts/test/bme280_virt.mt | bash _run.sh --robot=robots/test/bme280_virt.sql
+cat scripts/test/ads1256_virt.mt | bash _run.sh --robot=robots/test/ads1256_virt.sql
 ```
 
 `run_all.sh` 在检测到编译产物 `target/release/bin/main` 与仓颉 runtime 时，按用例表（用例名｜`:f` 浮点字段断言｜count 下限）自动执行仓颉级 E2E：通用断言横幅、无错误、守护持续发布 count 增长、EMA 至少一拍 `out ≠ raw`（键序无关的逐行数值比对），另加每用例的浮点字段未被取整断言；环境缺失则逐例跳过，不阻断纯 Lua 回归。
 
-回归：`test/test_virtbus.lua`（纯 Lua，43 断言：功能/指针事务/长度约束/两级 NACK/还原）、`test/test_virtbus_regmap.lua`（纯 Lua，37 断言：regmap + ptr16 + 定向故障 + 总线集成）、`test/test_virtbus_spi.lua`（74 断言：SPI 路径白名单/setup 校验/全双工 CS 帧/delay 钳制/字节与帧长边界/无挂载与模型故障负路径/动态委托/fd 生命周期/I2C+SPI 并存，LuaJIT 段另挂虚拟 SPI 跑真实 `modules/SPI.lua` chunk 的 build/call/destroy）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径）、`test/test_mpu6050.lua`（LuaJIT，真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK/virt_tick 仿真波形，50 断言；原手写桩 test_mpu6050_sign 为其严格子集已合并删除）、`test/test_bme280.lua`（LuaJIT，真实 BME280 全链路 51 断言：复位/校准块 6×4B+7B 长读/CTRL 回读复核/forced 状态机/20bit 数据位场/0x80000 与 0x8000 无效读数/超时/主备地址/附录 8.3 独立参考交叉验证——迁移时模型按字节宽度编码戳破旧桩 H1=260 的超宽假值，datasheet 真值 H1=75 对应 45.3%RH 档）；均由 run_all.sh 自动纳入。
+回归：`test/test_virtbus.lua`（纯 Lua，43 断言：功能/指针事务/长度约束/两级 NACK/还原）、`test/test_virtbus_regmap.lua`（纯 Lua，37 断言：regmap + ptr16 + 定向故障 + 总线集成）、`test/test_virtbus_spi.lua`（74 断言：SPI 路径白名单/setup 校验/全双工 CS 帧/delay 钳制/字节与帧长边界/无挂载与模型故障负路径/动态委托/fd 生命周期/I2C+SPI 并存，LuaJIT 段另挂虚拟 SPI 跑真实 `modules/SPI.lua` chunk 的 build/call/destroy）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径）、`test/test_mpu6050.lua`（LuaJIT，真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK/virt_tick 仿真波形，50 断言；原手写桩 test_mpu6050_sign 为其严格子集已合并删除）、`test/test_bme280.lua`（LuaJIT，真实 BME280 全链路 51 断言：复位/校准块 6×4B+7B 长读/CTRL 回读复核/forced 状态机/20bit 数据位场/0x80000 与 0x8000 无效读数/超时/主备地址/附录 8.3 独立参考交叉验证——迁移时模型按字节宽度编码戳破旧桩 H1=260 的超宽假值，datasheet 真值 H1=75 对应 45.3%RH 档）、`test/test_ads1256.lua`（LuaJIT，**首个挂真实驱动的 SPI 全链路** 96 断言：模型协议事实/24bit 样本帧与 clamp/WREG-RREG/virt_tick 周期波形、build 8 帧字节序列与 5+5+50ms 等待/Mode1 setup 留痕/自定义 drate-pga-channel、call 6 帧序列与转换等待/单端差分 MUX/±满量程补码/PGA 换算/第 4 字节丢弃、8 类 build + 5 类 call 帧级失败负路径/MUX 失败补发 RDATAC 恢复/8 拍连读；旧 mock ioctl_p cdata 层桩整体替换）；均由 run_all.sh 自动纳入。
 
 ### 环境变量
 

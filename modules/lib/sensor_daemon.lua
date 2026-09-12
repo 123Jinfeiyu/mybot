@@ -41,6 +41,10 @@ local path   = cfg.path or (proto == "spi" and "/dev/spidev0.0" or "/dev/i2c-1")
 local addr   = cfg.addr
 local sign   = tonumber(cfg.sign)
 
+-- 实际总线族：proto=virt 时由模型 BUS 标记决定（I2C 模型走 i2c_*，SPI 模型走 spi_*）；
+-- close_bus/开总线/params 都按它分流。virt 在模型加载后可能从 i2c 修正为 spi。
+local bus_kind = (proto == "uart") and "uart" or (proto == "spi") and "spi" or "i2c"
+
 -- fields 解析："名字" 或 "名字:模式"；模式 ""=跟随全局 sign，"f"/"float"=原样，
 -- "s16"=16 位补码（解析到非法模式按原样透传并打日志，绝不静默取整丢精度）
 local fields = {}
@@ -82,8 +86,8 @@ local vbus, vdev = nil, nil
 -- H-07：关闭已打开的总线 fd（幂等；fail 与 daemon_cleanup 共用）
 local function close_bus()
 	if fd ~= nil and fd >= 0 then
-		if proto == "spi" then spi_close(fd)
-		elseif proto == "uart" then uart_close(fd)
+		if bus_kind == "spi" then spi_close(fd)
+		elseif bus_kind == "uart" then uart_close(fd)
 		else i2c_close(fd) end
 		fd = -1
 	end
@@ -128,11 +132,21 @@ if proto == "virt" then
 	if not vrok or type(vdev) ~= "table" then
 		fail(-8, "virt: model new() failed: " .. tostring(vdev)); return
 	end
-	local addr_n = tonumber(addr)
-	if not addr_n then
-		fail(-8, "virt: missing/invalid 'addr' for virtual device: " .. tostring(addr)); return
+	-- SPI 模型（模块表 BUS="spi"，兼容实例自带 BUS）：路径即片选身份，
+	-- 走 attach_spi；I2C 模型维持 addr 挂载。
+	local is_spi = (vmod.BUS == "spi" or vdev.BUS == "spi")
+	if is_spi then
+		bus_kind = "spi"
+		-- 用户未显式给 path 时，proto=virt 上面默认成了 /dev/i2c-1，这里修正
+		if not cfg.path then path = "/dev/spidev0.0" end
+		vbus.attach_spi("VIRT:" .. tostring(driver) .. "@" .. path, path, vdev)
+	else
+		local addr_n = tonumber(addr)
+		if not addr_n then
+			fail(-8, "virt: missing/invalid 'addr' for virtual device: " .. tostring(addr)); return
+		end
+		vbus.attach("VIRT:" .. tostring(driver) .. "@" .. tostring(addr), addr_n, vdev)
 	end
-	vbus.attach("VIRT:" .. tostring(driver) .. "@" .. tostring(addr), addr_n, vdev)
 	ok_load, load_err = pcall(vbus.load_driver, drvpath)
 else
 	ok_load, load_err = pcall(dofile, drvpath)
@@ -148,8 +162,8 @@ print = function() end
 if proto == "virt" then
 	log("================================================================")
 	log(" [sensor_daemon] *** VIRTUAL HARDWARE -- NO REAL DEVICE ***")
-	log(string.format(" proto=virt driver=%s addr=%s bus=%s",
-		tostring(driver), tostring(addr), tostring(path)))
+	log(string.format(" proto=virt driver=%s bus=%s(%s) addr=%s",
+		tostring(driver), bus_kind, tostring(path), tostring(addr)))
 	log(" 采样值全部来自内存仿真模型（合成波形），不代表任何真机！")
 	log(" 仅限无硬件链路测试，禁止用于生产环境。")
 	log("================================================================")
@@ -175,22 +189,24 @@ local known = {
 	fields = 1, sign = 1, mode = 1, bits = 1, speed = 1, delay = 1, baud = 1,
 }
 local params = {}
-if addr then params.address = addr end
+-- SPI 器件（含 virt SPI 模型）没有地址概念；只有 I2C 才传 address
+if addr and bus_kind ~= "spi" then params.address = addr end
 for k, v in pairs(cfg) do
 	if not known[k] then params[k] = v end
 end
 
 -- 打开总线（fd 已在 fail 定义前声明为 upvalue，供其在失败点关闭）
-if proto == "spi" then
+if bus_kind == "spi" then
 	fd = spi_open(path)
 	if fd and fd >= 0 then
 		-- setup 失败必须显式失败：半配置 fd 交给驱动会得到错误数据
+		-- （proto=virt 时 spi_* 是虚拟注入层，mode/bits/speed 同样留痕）
 		if spi_setup(fd, tonumber(cfg.mode or 0), tonumber(cfg.bits or 8),
 		             tonumber(cfg.speed or 1000000), tonumber(cfg.delay or 0)) ~= 0 then
 			fail(-3, "spi_setup failed: " .. path); return
 		end
 	end
-elseif proto == "uart" then
+elseif bus_kind == "uart" then
 	-- 串口设备（如 MHZ19）：raw 8N1，波特率 baud 列（缺省 9600）
 	fd = uart_open(path, tonumber(cfg.baud or 9600))
 else
@@ -255,6 +271,6 @@ function daemon_cleanup()
 		destroy(params)
 	end
 	close_bus()
-	-- virt：还原全局 i2c_*（独立守护 lua_State 随之销毁，主要为状态对称）
+	-- virt：还原全局 i2c_*/spi_*（独立守护 lua_State 随之销毁，主要为状态对称）
 	if vbus ~= nil then vbus.restore() end
 end

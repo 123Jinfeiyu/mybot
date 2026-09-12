@@ -88,6 +88,30 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   挂虚拟 SPI 跑真实 modules/SPI.lua chunk 的 build/call/destroy）。
   边界：MT6826S 绕过全局 spi_* 直调 HAL.sys.ioctl_p 做全双工帧，需先在
   HAL 提供全局全双工原语才能迁移；TPL0501/AD9833/ADS1256 已可直接挂模型。
+- **ADS1256 虚拟器件（首个 SPI 模型）+ 测试迁移 + 守护 proto=virt 扩 SPI +
+  第三个守护 E2E**：新增 `virtbus/ads1256.lua`——24bit ΣΔ ADC 的全双工命令
+  状态机（RESET/WAKEUP/SYNC/SELFCAL/RDATAC/SDATAC、WREG/RREG 寄存器访问、
+  RDATAC 模式 24bit 大端样本帧第 4 字节丢弃），固化 STATUS/MUX/ADCON/DRATE
+  事实（单端 `ch<<4|0x08`、差分 `pos<<4|neg`、PGA 1~64、DRATE 30k~5SPS 表）；
+  `set_raw` 注入有符号补码（floor 量化 + clamp）、`set_voltage(v,pga)` 按
+  `raw=v·2^23/(2·VREF)·gain` 反解、`virt_tick(n)` 造 32 拍确定性正弦
+  （1.25±1.0V，周期零点特判避免 sin(2π) 浮点尾巴量化成 1 LSB 相位误差），
+  `fail_when(pred)/fail_data` 帧级故障注入（RESET 不清故障钩子，否则 build
+  负路径首帧 RESET 会解除后续命令的故障条件造成假绿）。模块表 `BUS="spi"`
+  标记供守护区分挂载族；模型公开 API 一律冒号定义，仅 `xfer` 按注入契约点
+  定义。`test/test_ads1256.lua` 从 mock `HAL.sys.ioctl_p` cdata 层的旧桩
+  整体重写迁移（96 断言：模型协议事实/样本帧 clamp/WREG-RREG/8 帧 build
+  字节序列与 5+5+50ms 等待/setup Mode1 留痕/自定义 drate-pga-channel/
+  call 六帧序列与转换等待/单端差分 MUX/±满量程补码/PGA 换算/8 类 build 与
+  5 类 call 失败负路径/MUX 失败补发 RDATAC 恢复/8 拍连读）。
+  sensor_daemon `proto=virt` 从 I2C-only 扩到按模型 `BUS` 标记自动分流：
+  SPI 模型走 `attach_spi(name,path,vdev)`（path 缺省 /dev/spidev0.0、不要求
+  addr）+ 虚拟 `spi_open/spi_setup`（mode/bits/speed 从配置，ADS1256 要
+  Mode1），总线开关与 params（SPI 不传 address）统一按 bus_kind 分流；
+  I2C 模型行为不变。新增 `robots/test/ads1256_virt.sql` +
+  `scripts/test/ads1256_virt.mt`（raw+voltage:f 两字段守护、voltage 一路
+  EMA α=0.2、raw/滤波两 Monitor，16 拍核对合成正弦与 EMA 混合）；
+  run_all.sh E2E 用例表加 ads1256_virt。全套 62 跑通 / 1 真机用例跳过。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
