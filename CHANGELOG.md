@@ -126,6 +126,18 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   校验零发字、5 字 build + 6 字 call 逐帧失败负路径、静音态控制字、
   12.5MHz 满量程 raw=0x8000000、故障后重建恢复）。写-only 输出器件无
   测量数据，守护 proto=virt 采样 E2E 不适用（阶段 C 明确豁免）。
+- **TPL0501 虚拟器件（最小写-only SPI 输出器件）+ 测试迁移**：新增
+  `virtbus/tpl0501.lua`——256 抽头数字电位器的单字节模型：协议即一个
+  SPI 字节（CS 帧移入 8 位、CS 上升沿锁存，无命令字/地址/SDO），模型
+  按移位寄存器事实处理（多字节帧只锁存最后 8 位、全部字节留痕），抽头
+  易失上电默认中点 0x7F（build 不发任何帧）；反向读取 `wiper/percent/
+  ohms(rtotal)`（R=level/255·rtotal 线性事实，不抄驱动正向公式），
+  构造可指定 rtotal（100k/10k 型号），帧级 fail_when 且 reset 不清钩子。
+  `test/test_tpl0501.lua` 从替换全局 spi_write 的旧桩整体重写（95 断言：
+  上电中点/单字节锁存/多字节移位语义/rx 等长纯 0、setup Mode0 留痕、
+  build 零发字与 rtotal 缺省/10k/非法值、level/percent/ohms 三路换算限幅、
+  三参数优先级、delay 透传与 65535 钳制、参数校验零发字、故障帧与未打开
+  fd 双负路径）。写-only 输出器件，阶段 C 守护采样 E2E 豁免。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
