@@ -138,6 +138,33 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   build 零发字与 rtotal 缺省/10k/非法值、level/percent/ohms 三路换算限幅、
   三参数优先级、delay 透传与 65535 钳制、参数校验零发字、故障帧与未打开
   fd 双负路径）。写-only 输出器件，阶段 C 守护采样 E2E 豁免。
+- **VL53L0X 虚拟器件（首个 8 位指针+0xFF 分页 I2C 器件）+ 测试迁移 +
+  第四个守护 E2E**：新增 `virtbus/vl53l0x.lua`——ToF 测距传感器的分页
+  寄存器模型（8 位寄存器指针，区别于 VL53L4CD 的 16 位指针，不能用
+  regmap ptr16）：`regs[page][reg]` 双键存储，页选 0xFF 写即切页，同号
+  不同页互不覆盖；复刻 build 全套协议事实——0xC0 身份 0xEE、DataInit
+  舞步（page1 读 0x91 取 stop_variable，回写校验）、page6/7 SPAD 握手
+  （0x83 RMW 保留、page7 就绪轮询、0x92 数量/光圈编码、0xB0 六字节图）、
+  0x60 MSRC、0x44 信号率 Q9.7、约 90 条 tuning 与长距覆写位、两轮参考
+  校准（0x41/0x01）、0x02 连续模式；call 侧 SYSRANGE 模式机 + 0x13
+  data-ready 低 3 位 + 0x0B 清中断时序，用 `advance(ms)` 虚拟时钟实现
+  5ms 转换倒计时（参考校准与 virt_tick 预武装首次轮询即就绪，守护零真实
+  等待）；`inject_result` 按 datasheet 定点布局写 0x14~0x1F 十二字节结果
+  块（状态/SPAD 8.8/信号与环境 9.7/距离大端）；故障钩子含全断 nack、
+  定向 `fail_read(reg,page)`/`fail_write(pred)`（清中断失败可只断 0x0B
+  不误伤指针读）、`set_spad_stuck/set_refcal_stuck/set_never_ready/who`，
+  reset 保留钩子、clear_faults 全清；`virt_tick(n)` 造 32 拍确定性正弦
+  距离 100~1100mm（恒有效状态）。`test/test_vl53l0x.lua` 从 410 行手写
+  桩整体重写（116 断言：模型分页隔离/舞步/SPAD 握手/模式机/虚拟时钟/
+  钩子/注入块/virt_tick 九组协议事实，真实 build 全序列——VHV RMW、
+  Q9.7 门限 0.25→0x0020/长距 0.1→0x000C/1.5/负值钳零、SEQ_CONFIG
+  序列、24 非光圈与 12 光圈图重排、tuning 档位、stop_variable 回写、
+  九路 build 负路径，真实 call 的 300mm 五字段解析、ST 状态码六例映射、
+  8190 越界、四路 call 负路径，destroy 停测留痕）。新增
+  `robots/test/vl53l0x_virt.sql` + `scripts/test/vl53l0x_virt.mt`
+  （DIST_MM:f/STATUS/VALID/SIGNAL_MCPS:f 四字段守护、距离一路 EMA
+  α=0.2、raw/滤波两 Monitor，16 拍核对合成距离波形与 EMA 混合）；
+  run_all.sh E2E 用例表加 vl53l0x_virt。全套 63 跑通 / 1 真机用例跳过。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
