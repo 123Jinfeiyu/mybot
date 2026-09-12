@@ -73,6 +73,21 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   温压湿浮点守护 + 三路 EMA + 两 Monitor）；run_all.sh E2E 段重构为用例表
   驱动（用例名｜:f 浮点断言｜count 下限），EMA 混合断言改为键序无关的逐行
   `out≠raw` 数值比对。全套 60 跑通 / 1 真机用例跳过。
+- **virtbus 新增 SPI 注入层（虚拟总线从 I2C 扩到 I2C/SPI，0.1.0→0.2.0）**：
+  `inject()` 现替换全部 20 个全局（12 个 i2c_* + 8 个 spi_*），两套总线
+  同一注入态并存、共用虚拟 fd 编号空间与一条 txlog 时间线。SPI 按 spidev
+  语义建模——`attach_spi(name, path, dev)` 以路径 `/dev/spidev<B>.<C>`
+  为片选身份（同路径多 fd 命中同一模型），模型仅一个全双工回调
+  `xfer(tx)→rx`（纯写同帧也移入 MISO，照真机事实留痕，可建模 ADS1256
+  命令态/DATA 轮询类协议）；一次传输 = 一个 CS 帧 = 一条 `x` 事务
+  （`tx/rx/delay/ok`，失败帧 rx=nil 也记录）。逐函数对齐 HAL 契约：
+  路径白名单、spi_setup 校验与留痕（控制器语义：无器件挂载也成功，与
+  I2C 无地址 NACK 刻意区分）、非字节不发帧、write_multi 1~64/read_multi
+  n 1~8 越界显式 -1、delay_us 钳 65535；无挂载/未打开 fd/模型返 nil-false
+  传输族一律 -1。新增 `test/test_virtbus_spi.lua`（74 断言，LuaJIT 段
+  挂虚拟 SPI 跑真实 modules/SPI.lua chunk 的 build/call/destroy）。
+  边界：MT6826S 绕过全局 spi_* 直调 HAL.sys.ioctl_p 做全双工帧，需先在
+  HAL 提供全局全双工原语才能迁移；TPL0501/AD9833/ADS1256 已可直接挂模型。
 - **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
   轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
   校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，

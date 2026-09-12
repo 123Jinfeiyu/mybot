@@ -370,9 +370,9 @@ cat scripts/test/monitor.mt     | bash _run.sh --robot=robots/test/monitor.sql  
 
 对比：`scripts/test/mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
 
-#### 虚拟 I2C 总线（issue #18，无真机验证驱动链路）
+#### 虚拟总线（I2C/SPI，issue #18，无真机验证驱动链路）
 
-`lib/virtbus.lua` 提供纯内存的虚拟 I2C 总线：`inject()` 后替换 HAL 的全部全局 `i2c_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*` 即可完整跑通 build/call/destroy。器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言；未挂载的地址按 NACK 处理（写 -1、读 -1/nil），模型自身也可 `write` 返回 `false`/`read` 返回 `nil` 注入 NACK（模拟掉线），负路径与真机"设备不在总线"行为一致。指针式读族（`read_reg/multi/reg16`）严格复刻 HAL 的 I2C_RDWR「写指针 + 读」事务，模型能知道当前读的是哪个寄存器；`read/read_bytes` 为无指针纯读。
+`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*`、`/dev/spidev*` 即可完整跑通 build/call/destroy。I2C 器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言；未挂载的地址按 NACK 处理（写 -1、读 -1/nil），模型自身也可 `write` 返回 `false`/`read` 返回 `nil` 注入 NACK（模拟掉线），负路径与真机"设备不在总线"行为一致。指针式读族（`read_reg/multi/reg16`）严格复刻 HAL 的 I2C_RDWR「写指针 + 读」事务，模型能知道当前读的是哪个寄存器；`read/read_bytes` 为无指针纯读。
 
 ```lua
 local vbus = dofile("modules/lib/virtbus.lua")
@@ -393,13 +393,14 @@ vbus.reset()           -- 还原全局 i2c_* 并清空
 
 | API | 说明 |
 | --- | --- |
-| `vbus.attach(name, addr, dev)` | 在 7 位地址挂模型；`name` 仅日志用。保存模型引用并**动态委托**——attach 后替换 `dev.write/read` 或改模型字段（如 `dev.nack=true`）即时生效，无需重挂；同一模型可挂多个地址（主/备地址测试） |
-| `vbus.inject()` | 替换全部 12 个全局 `i2c_*` 为虚拟实现；幂等（已注入直接返回） |
+| `vbus.attach(name, addr, dev)` | 在 7 位 I2C 地址挂模型；`name` 仅日志用。保存模型引用并**动态委托**——attach 后替换 `dev.write/read` 或改模型字段（如 `dev.nack=true`）即时生效，无需重挂；同一模型可挂多个地址（主/备地址测试） |
+| `vbus.attach_spi(name, path, dev)` | 按 spidev 路径（`/dev/spidev<bus>.<cs>`，路径即片选）挂 SPI 模型；动态委托 `dev.xfer`，同路径多 fd 命中同一模型 |
+| `vbus.inject()` | 替换全部 20 个全局 `i2c_*`（12）/`spi_*`（8）为虚拟实现；幂等（已注入直接返回）；I2C/SPI 在同一注入态下并存 |
 | `vbus.restore()` | 还原注入前捕获的原始全局函数（真实 HAL 函数） |
-| `vbus.reset()` | `restore()` + 清空器件表、txlog、fd 线索；每个用例开头调用保证隔离 |
-| `vbus.load_driver(path)` | `dofile` 真实驱动后强制重注入（驱动首次 dofile HAL 会用真实 ffi 函数覆盖全局）；并保证 `restore()` 能还原到真实 HAL 而非置空 |
-| `vbus.txlog` | 事务序列数组（见下），驱动行为断言的唯一凭据 |
-| `vbus.devs` | 当前地址 → 挂载项的表 |
+| `vbus.reset()` | `restore()` + 清空器件表、txlog、fd 线索（含 SPI）；每个用例开头调用保证隔离 |
+| `vbus.load_driver(path)` | `dofile` 真实驱动后强制重注入（驱动首次 dofile HAL 会用真实 ffi 函数覆盖全局 `i2c_*/spi_*`）；并保证 `restore()` 能还原到真实 HAL 而非置空 |
+| `vbus.txlog` | 事务序列数组（见下），驱动行为断言的唯一凭据；I2C/SPI 共用一条时间线 |
+| `vbus.devs` / `vbus.spi_devs` | 当前 I2C 地址 / SPI 路径 → 挂载项的表 |
 
 `i2c_open` 走与 HAL 相同的路径白名单（仅匹配 `/dev/i2c-%d+`，非法路径返回 -1），
 虚拟 fd 从 3 起分配；`i2c_set_addr` 后该 fd 的事务才路由到对应模型，未 set_addr
@@ -433,6 +434,14 @@ vbus.attach("自定义@0x68", 0x68, dev)
 | `"w"` | 写事务（含读操作的寄存器指针写） | 地址 | 1 基字节表，如 `{0x3B}`、`{0x6B, 0x00}` |
 | `"r"` | 读事务 | 地址 | `{ n = 请求字节数 }`（实际数据由模型 read 返回，不入日志） |
 
+**SPI 契约**（`attach_spi(name, path, dev)`，路径即片选身份）：
+
+- 挂载身份是 spidev 路径（`^/dev/spidev%d+%.%d+$` 白名单同 HAL），虚拟 fd 与 I2C 共用编号空间；同一路径的多个 fd 命中同一模型，`spi_close` 只关自己的 fd。
+- SPI 物理层**全双工、无 ACK**：模型只有一个回调 `xfer(tx)`——收本帧 MOSI 1 基表、返回等长 MISO 表（短补 0/长截断；返回 nil/false = 传输失败）。一次 HAL 传输（`spi_write/write3/write_multi/read/read_multi`）= 一个 CS 帧 = txlog 一条 `x` 记录；**纯写也会移入 MISO 字节**（真机如此，调用方丢弃但 txlog 照记），模型可借此实现「发命令的同帧回状态」协议（如 ADS1256 的命令态/DATA 轮询）；`spi_read*` 的 MOSI 为全 0（等价真机 tx_buf=NULL）。
+- `spi_setup` 复刻 HAL 校验（mode 0~3、bits 7~16、speed 正整数）并留痕；它面向**控制器**，真机上总线无器件也成功——虚拟层同此语义（与 I2C「无地址 NACK」刻意不同）。传输族的字节/帧长校验同 HAL（非字节不发帧直接 -1；`write_multi` 1~64 字节；`read_multi` n 1~8 越界显式 -1），`delay_us` 钳到 65535 随帧留痕。无挂载路径/未打开 fd 的传输一律 -1（虚拟层约定的「设备不在」负路径）。
+- SPI txlog 条目：`{dir="sopen", path}`、`{dir="setup", path, mode, bits, speed}`、`{dir="x", path, tx={...}, rx={...}, delay=us, ok=bool}`（失败帧 `rx=nil, ok=false` 同样记录）。
+- 现状边界：`spi_*` 全局族可注入（覆盖 TPL0501/AD9833/ADS1256 用法）；MT6826S 驱动绕过全局直调 `HAL.sys.ioctl_p` 打全双工帧，本层拦截不到，迁移它需先在 HAL 增加全局全双工传输原语。
+
 virtbus.lua 本身是**纯 Lua、无 ffi 依赖**（lua5.4/luajit 都能离线跑总线契约）；
 只有经 `load_driver` 加载真实驱动时才需要 LuaJIT（HAL.lua 依赖 ffi）。
 
@@ -462,7 +471,7 @@ cat scripts/test/bme280_virt.mt | bash _run.sh --robot=robots/test/bme280_virt.s
 
 `run_all.sh` 在检测到编译产物 `target/release/bin/main` 与仓颉 runtime 时，按用例表（用例名｜`:f` 浮点字段断言｜count 下限）自动执行仓颉级 E2E：通用断言横幅、无错误、守护持续发布 count 增长、EMA 至少一拍 `out ≠ raw`（键序无关的逐行数值比对），另加每用例的浮点字段未被取整断言；环境缺失则逐例跳过，不阻断纯 Lua 回归。
 
-回归：`test/test_virtbus.lua`（纯 Lua，43 断言：功能/指针事务/长度约束/两级 NACK/还原）、`test/test_virtbus_regmap.lua`（纯 Lua，37 断言：regmap + ptr16 + 定向故障 + 总线集成）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径）、`test/test_mpu6050.lua`（LuaJIT，真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK/virt_tick 仿真波形，50 断言；原手写桩 test_mpu6050_sign 为其严格子集已合并删除）、`test/test_bme280.lua`（LuaJIT，真实 BME280 全链路 51 断言：复位/校准块 6×4B+7B 长读/CTRL 回读复核/forced 状态机/20bit 数据位场/0x80000 与 0x8000 无效读数/超时/主备地址/附录 8.3 独立参考交叉验证——迁移时模型按字节宽度编码戳破旧桩 H1=260 的超宽假值，datasheet 真值 H1=75 对应 45.3%RH 档）；均由 run_all.sh 自动纳入。
+回归：`test/test_virtbus.lua`（纯 Lua，43 断言：功能/指针事务/长度约束/两级 NACK/还原）、`test/test_virtbus_regmap.lua`（纯 Lua，37 断言：regmap + ptr16 + 定向故障 + 总线集成）、`test/test_virtbus_spi.lua`（74 断言：SPI 路径白名单/setup 校验/全双工 CS 帧/delay 钳制/字节与帧长边界/无挂载与模型故障负路径/动态委托/fd 生命周期/I2C+SPI 并存，LuaJIT 段另挂虚拟 SPI 跑真实 `modules/SPI.lua` chunk 的 build/call/destroy）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径）、`test/test_mpu6050.lua`（LuaJIT，真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK/virt_tick 仿真波形，50 断言；原手写桩 test_mpu6050_sign 为其严格子集已合并删除）、`test/test_bme280.lua`（LuaJIT，真实 BME280 全链路 51 断言：复位/校准块 6×4B+7B 长读/CTRL 回读复核/forced 状态机/20bit 数据位场/0x80000 与 0x8000 无效读数/超时/主备地址/附录 8.3 独立参考交叉验证——迁移时模型按字节宽度编码戳破旧桩 H1=260 的超宽假值，datasheet 真值 H1=75 对应 45.3%RH 档）；均由 run_all.sh 自动纳入。
 
 ### 环境变量
 
