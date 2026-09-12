@@ -88,6 +88,17 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   挂虚拟 SPI 跑真实 modules/SPI.lua chunk 的 build/call/destroy）。
   边界：MT6826S 绕过全局 spi_* 直调 HAL.sys.ioctl_p 做全双工帧，需先在
   HAL 提供全局全双工原语才能迁移；TPL0501/AD9833/ADS1256 已可直接挂模型。
+- **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
+  同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
+  LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
+  每次 PWM sysfs 写（export/enable/period/duty/polarity/unexport）都固定
+  越界 1 字节写坏相邻 GC 对象头，下一次 GC 扫描（常在无关文件解析/分配时）
+  即段错误：正常跑约 50% 复现、崩溃点离出错写操作极远（gdb 栈在
+  lua_loadx→lj_gc）。修复为 `char[?](#s+1)`，写计数仍用 #s（NUL 不发内核）。
+  `test/test_pwm.lua` 开头加最激进 GC 节奏护栏（setpause=1/setstepmul=
+  100000，修复前 100% 崩、修复后连跑稳定）；npwm read mock 的 ffi.copy
+  改为显式 len（内核 read 不回填 NUL）。排查方式与 ffi.copy NUL 语义已在
+  代码注释固化；全套 61 用例连跑 3 次全绿。
 - **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
   轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
   校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，
