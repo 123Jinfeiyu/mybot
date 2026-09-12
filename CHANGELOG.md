@@ -6,435 +6,72 @@
 
 ## [未发布]
 
-审计修复批次：BH1750 MTreg 编码、多路径加载收尾、守护 CRC 坏样本过滤等；
-新增 INA219 / INA3221 / SHT3X / LTC2944 / MAX17043 / TPL0501 离线桩测试覆盖；
-@Daemon 共享槽采样通道 16 → 32（支撑单守护聚合多路传感器）；
-ActionSource 工厂（stdin / TCP / 文件三源可替换动作输入）；
+virtbus 虚拟硬件测试基座推进：11 个 I2C/SPI 器件模型与测试「手写桩 → 真实驱动」迁移、
+守护 `proto=virt` 无硬件端到端；落地 2026-09 审计修复批次（BH1750 MTreg、多路径加载、
+守护 CRC 坏样本过滤等）；ActionSource 工厂（stdin / TCP / 文件三源可替换动作输入）；
 NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
 
 ### 新增
 
-- **虚拟 I2C 器件模型库 `modules/lib/virtbus/`**（issue #18 深化，无真机驱动链路
-  验证的夹具库）：`virtbus/regmap.lua` 通用「寄存器指针 + burst」模型覆盖
-  MPU6050/BME280 类多数 I2C 传感器（8 位指针 + burst 自增回绕、`{ptr16=true}`
-  支持 VL53Lx 类 16 位指针；`set/set_word/get_sword` 预置寄存器、`nack` 故障注入、
-  `write_log` 留痕、`reset`），`virtbus/bh1750.lua` 为命令式器件样板（opcode 序列、
-  大端计数读回、状态解释、`set_count`）。模型只复现协议层事实、测量值由用例显式
-  注入，避免模型与驱动按同一错误理解互证假绿。
-- **virtbus 总线语义对齐真机 I2C_RDWR**：指针式读族（`i2c_read_reg/multi/
-  multi_bytes/reg16`）此前丢弃寄存器指针参数，模型无从知道读哪个寄存器；现改为
-  先发一笔指针写事务再读，指针写 NACK 则整笔读失败（与真机 ioctl 失败一致），
-  纯读族（`i2c_read/read_bytes`）保持无指针。新增模型故障注入契约（`write` 显式
-  `return false` / `read` 返回 nil = NACK；regmap 另支持 `nack_read/nack_write`
-  定向故障），`attach` 改为动态委托模型函数（attach 后替换模型字段/函数即时生效）；
-  新增 `vbus.load_driver(path)` 封装「加载真实驱动（连带首次加载 HAL 覆盖全局
-  函数）+ 自动重注入」，替代测试里手写 restore+inject。
-- **virtbus 返回值契约修正（防假绿）**：`i2c_write_reg` 虚拟实现原先返回 0/-1，
-  与 HAL 的布尔契约不符——Lua 中 -1 为真，MPU6050 等驱动以 `if not i2c_write_reg`
-  判定时会把 NACK 当成功（虚拟总线假绿、真机炸）。改为返回 true/false；
-  `write_multi/reg16` 保持 0/-1；读族补齐 HAL 的长度约束（`read` n 1~8、
-  `read_multi/read_reg16` n 1~6 越界显式 -1，字节表族钳 1~16）。
-- **MPU6050 虚拟器件 `virtbus/mpu6050.lua` + 测试迁移**：regmap 之上固化
-  MPU6050 寄存器事实（WHO_AM_I 0x75、build 配置 0x6B/0x1B/0x1C、0x3B 起 14
-  字节六轴+温度 burst），提供 `set_accel/set_gyro/set_temp_raw`（有符号 LSB）、
-  `sample()`、物理量造样本 `set_accel_g/set_gyro_dps/set_temp_c`、`who()` 错挂
-  注入、`config_writes()` 配置序列留痕。`test/test_mpu6050.lua` 从手写全局函数
-  桩整体迁移到「真实驱动 + 虚拟总线 + 器件模型」（44 断言，新增 burst 指针事务、
-  0x69 备地址、读写定向 NACK 等断言）；原 `test_mpu6050_sign.lua` 的补码/温度
-  场景为其严格子集，合并删除。test_virtbus（43 断言）/ test_virtbus_regmap
-  （37 断言）同步扩断言，run_all.sh 全绿（58 跑通 / 1 真机用例跳过）。
-- **守护无硬件端到端：sensor_daemon 新增 `proto=virt`**（issue #18 第三期）：
-  @Daemon 配 `proto=virt` 时不打开真机，按 driver 名挂 `lib/virtbus/<小写>.lua`
-  器件模型——真实驱动 build/call → 32 通道共享槽 → @Ema/@Kalman → @Monitor
-  整条链路纯内存可跑（无需仓颉侧改动，proto 列原本就透传进 DAEMON_CONFIG；
-  HAL 的 __BOT4CJ_HAL guard 保证 chunk 内驱动重复 dofile 不覆盖虚拟注入）。
-  模型可选 `virt_tick(n)` 由守护每拍驱动造数；mpu6050 模型实现确定性六轴
-  正弦/余弦波形 + 温度慢漂（无随机，数值可复现；幅值在 ±8g/±500dps 量程内）。
-  无模型/缺 addr 显式 setup fail(-8)、守护空转不崩；启动打印醒目
-  `VIRTUAL HARDWARE` 横幅防生产误用。新增 `robots/test/mpu_virt.sql` +
-  `scripts/test/mpu_virt.mt`（虚拟七字段守护 + 七路 EMA α=0.2 + raw/滤波两个
-  Monitor，21 拍核对 count 递增、EMA 递推、TEMP:f 浮点未被 sign=16 取整）；
-  run_all.sh 末尾新增仓颉级 E2E 段（断言横幅/无错误/count 增长/温度浮点/EMA
-  已混合；编译产物或仓颉 runtime 缺失自动跳过，不阻断纯 Lua 回归），
-  test_mpu6050 同步补 virt_tick 6 条断言（共 50），全套 59 跑通 / 1 真机跳过。
-- **BME280 虚拟器件 `virtbus/bme280.lua` + 测试迁移 + 第二个守护 E2E**：
-  regmap 包装层固化 BME280 协议事实——0xD0 身份（`who(0x58)` 模拟错挂
-  BMP280）、datasheet 示例校准 NVM 字节布局（0x88 起 T/P 小端系数、0xA1 H1、
-  0xE1 起 7 字节湿度块含 H4/H5 的 s12 nibble 拼装）、0xF7 起 P/T 20bit +
-  H 16bit 数据区、合成 0xF3 STATUS 与 forced 转换状态机（`advance(ms)` 外部
-  虚拟时钟、`nvm_stuck/meas_stuck` 卡死注入；`virt_tick` 预武装路径供守护
-  零等待采样）。模型只给 NVM/位场，附录 8.3 补偿只存在于真实驱动。
-  `test/test_bme280.lua` 从 279 行手写桩迁移（51 断言：复位/6×4B+7B 校准
-  长读/CTRL 回读复核/状态机忙→就绪/无效读数/超时/主备地址/与独立转录参考
-  公式交叉验证）。迁移即抓出色宽假绿：旧桩把 H1=260 当裸数直存（dig_H1
-  为 u8，字节放不下；datasheet 真值 H1=75，补偿输出 45.3%RH 档），桩与
-  测试共用错误假设互相放行，模型按字节编码后两侧自然暴露，已修正。
-  新增 `robots/test/bme280_virt.sql` + `scripts/test/bme280_virt.mt`（三字段
-  温压湿浮点守护 + 三路 EMA + 两 Monitor）；run_all.sh E2E 段重构为用例表
-  驱动（用例名｜:f 浮点断言｜count 下限），EMA 混合断言改为键序无关的逐行
-  `out≠raw` 数值比对。全套 60 跑通 / 1 真机用例跳过。
-- **virtbus 新增 SPI 注入层（虚拟总线从 I2C 扩到 I2C/SPI，0.1.0→0.2.0）**：
-  `inject()` 现替换全部 20 个全局（12 个 i2c_* + 8 个 spi_*），两套总线
-  同一注入态并存、共用虚拟 fd 编号空间与一条 txlog 时间线。SPI 按 spidev
-  语义建模——`attach_spi(name, path, dev)` 以路径 `/dev/spidev<B>.<C>`
-  为片选身份（同路径多 fd 命中同一模型），模型仅一个全双工回调
-  `xfer(tx)→rx`（纯写同帧也移入 MISO，照真机事实留痕，可建模 ADS1256
-  命令态/DATA 轮询类协议）；一次传输 = 一个 CS 帧 = 一条 `x` 事务
-  （`tx/rx/delay/ok`，失败帧 rx=nil 也记录）。逐函数对齐 HAL 契约：
-  路径白名单、spi_setup 校验与留痕（控制器语义：无器件挂载也成功，与
-  I2C 无地址 NACK 刻意区分）、非字节不发帧、write_multi 1~64/read_multi
-  n 1~8 越界显式 -1、delay_us 钳 65535；无挂载/未打开 fd/模型返 nil-false
-  传输族一律 -1。新增 `test/test_virtbus_spi.lua`（74 断言，LuaJIT 段
-  挂虚拟 SPI 跑真实 modules/SPI.lua chunk 的 build/call/destroy）。
-  边界：MT6826S 绕过全局 spi_* 直调 HAL.sys.ioctl_p 做全双工帧，需先在
-  HAL 提供全局全双工原语才能迁移；TPL0501/AD9833/ADS1256 已可直接挂模型。
-- **ADS1256 虚拟器件（首个 SPI 模型）+ 测试迁移 + 守护 proto=virt 扩 SPI +
-  第三个守护 E2E**：新增 `virtbus/ads1256.lua`——24bit ΣΔ ADC 的全双工命令
-  状态机（RESET/WAKEUP/SYNC/SELFCAL/RDATAC/SDATAC、WREG/RREG 寄存器访问、
-  RDATAC 模式 24bit 大端样本帧第 4 字节丢弃），固化 STATUS/MUX/ADCON/DRATE
-  事实（单端 `ch<<4|0x08`、差分 `pos<<4|neg`、PGA 1~64、DRATE 30k~5SPS 表）；
-  `set_raw` 注入有符号补码（floor 量化 + clamp）、`set_voltage(v,pga)` 按
-  `raw=v·2^23/(2·VREF)·gain` 反解、`virt_tick(n)` 造 32 拍确定性正弦
-  （1.25±1.0V，周期零点特判避免 sin(2π) 浮点尾巴量化成 1 LSB 相位误差），
-  `fail_when(pred)/fail_data` 帧级故障注入（RESET 不清故障钩子，否则 build
-  负路径首帧 RESET 会解除后续命令的故障条件造成假绿）。模块表 `BUS="spi"`
-  标记供守护区分挂载族；模型公开 API 一律冒号定义，仅 `xfer` 按注入契约点
-  定义。`test/test_ads1256.lua` 从 mock `HAL.sys.ioctl_p` cdata 层的旧桩
-  整体重写迁移（96 断言：模型协议事实/样本帧 clamp/WREG-RREG/8 帧 build
-  字节序列与 5+5+50ms 等待/setup Mode1 留痕/自定义 drate-pga-channel/
-  call 六帧序列与转换等待/单端差分 MUX/±满量程补码/PGA 换算/8 类 build 与
-  5 类 call 失败负路径/MUX 失败补发 RDATAC 恢复/8 拍连读）。
-  sensor_daemon `proto=virt` 从 I2C-only 扩到按模型 `BUS` 标记自动分流：
-  SPI 模型走 `attach_spi(name,path,vdev)`（path 缺省 /dev/spidev0.0、不要求
-  addr）+ 虚拟 `spi_open/spi_setup`（mode/bits/speed 从配置，ADS1256 要
-  Mode1），总线开关与 params（SPI 不传 address）统一按 bus_kind 分流；
-  I2C 模型行为不变。新增 `robots/test/ads1256_virt.sql` +
-  `scripts/test/ads1256_virt.mt`（raw+voltage:f 两字段守护、voltage 一路
-  EMA α=0.2、raw/滤波两 Monitor，16 拍核对合成正弦与 EMA 混合）；
-  run_all.sh E2E 用例表加 ads1256_virt。全套 62 跑通 / 1 真机用例跳过。
-- **AD9833 虚拟器件（写-only SPI 输出器件）+ 测试迁移**：新增
-  `virtbus/ad9833.lua`——DDS 波形发生器的 16 位字解码状态机（每 2 字节
-  CS 帧一个大端字，顶 2 位寻址控制/FREQ0/FREQ1/PHASE），把驱动写下的帧
-  还原回 28 位调谐字（B28 两段加载 per-register 低半字锁存、低 14 位在前；
-  B28=0/HLB 单半字写）、12 位相位字、波形位（sine/triangle/square/
-  unknown）、FSELECT/PSELECT 活动寄存器、RESET 静音与 SLEEP 位，提供
-  `freq_hz/phase_deg/wave/muted` 反向读取与帧级 fail_when。器件无 SDO，
-  模型只做 MOSI 侧解码（f=raw·MCLK/2^28 为 datasheet 事实换算，不抄驱动
-  正向公式）。`test/test_ad9833.lua` 从手写字桩整体重写（110 断言：
-  顶 2 位寻址/高低半字反序保护/HLB 单半字/FREQ1 与 FSELECT/PHASE0-1/
-  setup Mode2 留痕/非整字帧/build 五字序列与 440 方波 90° 解码、参数
-  校验零发字、5 字 build + 6 字 call 逐帧失败负路径、静音态控制字、
-  12.5MHz 满量程 raw=0x8000000、故障后重建恢复）。写-only 输出器件无
-  测量数据，守护 proto=virt 采样 E2E 不适用（阶段 C 明确豁免）。
-- **TPL0501 虚拟器件（最小写-only SPI 输出器件）+ 测试迁移**：新增
-  `virtbus/tpl0501.lua`——256 抽头数字电位器的单字节模型：协议即一个
-  SPI 字节（CS 帧移入 8 位、CS 上升沿锁存，无命令字/地址/SDO），模型
-  按移位寄存器事实处理（多字节帧只锁存最后 8 位、全部字节留痕），抽头
-  易失上电默认中点 0x7F（build 不发任何帧）；反向读取 `wiper/percent/
-  ohms(rtotal)`（R=level/255·rtotal 线性事实，不抄驱动正向公式），
-  构造可指定 rtotal（100k/10k 型号），帧级 fail_when 且 reset 不清钩子。
-  `test/test_tpl0501.lua` 从替换全局 spi_write 的旧桩整体重写（95 断言：
-  上电中点/单字节锁存/多字节移位语义/rx 等长纯 0、setup Mode0 留痕、
-  build 零发字与 rtotal 缺省/10k/非法值、level/percent/ohms 三路换算限幅、
-  三参数优先级、delay 透传与 65535 钳制、参数校验零发字、故障帧与未打开
-  fd 双负路径）。写-only 输出器件，阶段 C 守护采样 E2E 豁免。
-- **VL53L0X 虚拟器件（首个 8 位指针+0xFF 分页 I2C 器件）+ 测试迁移 +
-  第四个守护 E2E**：新增 `virtbus/vl53l0x.lua`——ToF 测距传感器的分页
-  寄存器模型（8 位寄存器指针，区别于 VL53L4CD 的 16 位指针，不能用
-  regmap ptr16）：`regs[page][reg]` 双键存储，页选 0xFF 写即切页，同号
-  不同页互不覆盖；复刻 build 全套协议事实——0xC0 身份 0xEE、DataInit
-  舞步（page1 读 0x91 取 stop_variable，回写校验）、page6/7 SPAD 握手
-  （0x83 RMW 保留、page7 就绪轮询、0x92 数量/光圈编码、0xB0 六字节图）、
-  0x60 MSRC、0x44 信号率 Q9.7、约 90 条 tuning 与长距覆写位、两轮参考
-  校准（0x41/0x01）、0x02 连续模式；call 侧 SYSRANGE 模式机 + 0x13
-  data-ready 低 3 位 + 0x0B 清中断时序，用 `advance(ms)` 虚拟时钟实现
-  5ms 转换倒计时（参考校准与 virt_tick 预武装首次轮询即就绪，守护零真实
-  等待）；`inject_result` 按 datasheet 定点布局写 0x14~0x1F 十二字节结果
-  块（状态/SPAD 8.8/信号与环境 9.7/距离大端）；故障钩子含全断 nack、
-  定向 `fail_read(reg,page)`/`fail_write(pred)`（清中断失败可只断 0x0B
-  不误伤指针读）、`set_spad_stuck/set_refcal_stuck/set_never_ready/who`，
-  reset 保留钩子、clear_faults 全清；`virt_tick(n)` 造 32 拍确定性正弦
-  距离 100~1100mm（恒有效状态）。`test/test_vl53l0x.lua` 从 410 行手写
-  桩整体重写（116 断言：模型分页隔离/舞步/SPAD 握手/模式机/虚拟时钟/
-  钩子/注入块/virt_tick 九组协议事实，真实 build 全序列——VHV RMW、
-  Q9.7 门限 0.25→0x0020/长距 0.1→0x000C/1.5/负值钳零、SEQ_CONFIG
-  序列、24 非光圈与 12 光圈图重排、tuning 档位、stop_variable 回写、
-  九路 build 负路径，真实 call 的 300mm 五字段解析、ST 状态码六例映射、
-  8190 越界、四路 call 负路径，destroy 停测留痕）。新增
-  `robots/test/vl53l0x_virt.sql` + `scripts/test/vl53l0x_virt.mt`
-  （DIST_MM:f/STATUS/VALID/SIGNAL_MCPS:f 四字段守护、距离一路 EMA
-  α=0.2、raw/滤波两 Monitor，16 拍核对合成距离波形与 EMA 混合）；
-  run_all.sh E2E 用例表加 vl53l0x_virt。全套 63 跑通 / 1 真机用例跳过。
-- **MCP4725 虚拟器件（首个 I2C 命令位嵌入式输出器件）+ 测试迁移**：新增
-  `virtbus/mcp4725.lua`——12 位 I2C DAC，无寄存器指针，命令类型嵌在写流
-  首字节高 3 位（C2..C0）、读为无指针纯读，与 BH1750（单字节 opcode）
-  和寄存器指针器件均不同。模型真正解码驱动写下的每帧：快速写
-  （C2C1=00，`00 PD1 PD0 D11..D8 | D7..D0`，PD 在 bits5:4，只更新易失
-  DAC/掉电位）与写 DAC+EEPROM（C=011，`0x60|PD<<1 | D11..D4 | D3..D0<<4`，
-  命令帧 PD 在 bits2:1——与读回状态字节 PD 在 bits5:4 是硅片事实差异），
-  双码独立存储；EEP 写进入 25ms 写周期状态机（忙时读回 bit7 RDY=0），
-  `advance(ms)` 虚拟时钟推进（测试 milli_sleep 桩转调，驱动 50ms 步进
-  首次轮询即完成）；无指针读回按 datasheet 拼 5 字节（RDY/PD、DAC
-  跨字节 12 位、EEPROM 12 位），1 字节读只回状态字节供轮询；短于命令
-  要求的帧返 NACK、未建模命令（010）合法帧 ACK 留痕 unknown 不改状态；
-  钩子含 nack 全断、`fail_read(按读长度谓词)`（可只断 1 字节 RDY 轮询，
-  验证驱动对"轮询途中总线失败"与"超时"的区分，2026-09 审计点）、
-  `fail_write(按帧谓词)`、`set_eep_stuck`，reset 保留钩子。输出器件无
-  virt_tick，阶段 C 守护采样 E2E 豁免（读回的是静态设置码非采样数据）。
-  `test/test_mcp4725.lua` 从 188 行手写帧桩整体重写（108 断言：
-  模型上电读回/PD 位编解码/双码独立性/RDY 25ms 时序/帧长与未用命令/
-  写日志分类/五类钩子，真实 build 纯读在位验证零写/set_addr 留痕/
-  vref 列/四路基建负路径，真实快速写的 level-volt-percent 三参优先级/
-  钳位/vref 3.3 换算/帧字节级断言，真实 EEP 写 3 字节帧/一次轮询即完成/
-  10 拍 500ms 超时/轮询总线失败/写帧失败四路径，无参读回易失码与
-  EEPROM 独立性，destroy 零事务）。
-- **VL53L4CD 虚拟器件（首个 16 位寄存器指针 ptr16 真实器件）+ 测试迁移 +
-  第五个守护 E2E**：新增 `virtbus/vl53l4cd.lua`——ST FlightSense ToF，
-  寄存器窗线性 16 位寻址（指针事务 2 字节大端，多字节写地址自增），与同
-  系列 VL53L0X（8 位指针+0xFF 分页）刻意对照，是 regmap `{ptr16=true}`
-  路径的首个真实落地：在 ptr16 底座上用包装法（链接原 write/read 后覆盖
-  同表字段）加器件状态机。复刻协议事实——软复位 0x0000 写 0x00 保持/
-  0x01 释放（释放即回上电种子：OSC 频率 10000、PLL 校准 512、固件状态
-  0x00E5=3，芯片侧启动序列/清中断计数清零）；91 字节默认配置流是一笔
-  0x002D 起的自增流写（末字节即 0x0087=0x00，模型只认首地址命中故不污染
-  启动序列留痕）；data-ready 极性链 0x0030 bit4 决定有效极性、0x0031
-  bit0 动态合成（极性翻转自动跟随，bit1 保留位读 1）；0x0087=0x40/0x21
-  启动预武装（守护 build 的 VHV/首测量自检首次轮询即就绪）、0x0086=0x01
-  清中断后运行态进入 5ms 转换倒计时，`advance(ms)` 推进（测试 milli_sleep
-  桩转调，连续两拍 call 自然走完倒计时）；停止态推进不武装；结果块六
-  寄存器独立原子读（0x0089 状态/0x008C SPAD/0x008E 信号/0x0090 环境/
-  0x0092 sigma/0x0096 距离），`inject_result` 按字节宽度写入不抄换算；
-  钩子含 nack 三件套（**包装层自持自判**：浅拷贝后外部置 d.nack 不被
-  底座 old_write 看见）、`fail_read(16位地址,长度)`/`fail_write(帧谓词)`、
-  `set_never_ready/set_boot_stuck/set_boot_status`；reseed 原地清空
-  regs（**不能换表**：包装表 d.regs 与底座共享引用，换表会让 set_word
-  写到复位前旧表）；reset 保留钩子；`virt_tick` 32 拍正弦 100~1100mm。
-  `test/test_vl53l4cd.lua` 从 300 行手写 16 位寄存器桩整体重写
-  （108 断言：模型种子/软复位两语义/极性链四态/停止态/注入块/六类钩子/
-  virt_tick 节拍，真实 build 软复位帧/91 字节配置流/启动序列/清中断×2/
-  尾三写/SetRangeTiming 四档编码常量（0x00C8/0x0185、0x02D1/0x038B、
-  0x001F/0x0029、自主 INTER 0xD300+0x0060/0x0080）/word 与 dword 帧长/
-  预武装零轮询睡眠/七路负路径，真实 call 1234mm 五字段/六结果读按指针
-  地址过滤轮询/连续两拍 5ms 倒计时/状态映射与 SPAD=0 守卫/极性翻转/
-  超时-轮询失败-结果读失败-清中断失败四路径，destroy 停测）。新增
-  `robots/test/vl53l4cd_virt.sql` + `scripts/test/vl53l4cd_virt.mt`
-  （DIST_MM:f/STATUS/VALID/SIGNAL_KCPS:f 四字段、距离 EMA α=0.2、
-  raw/滤波两 Monitor，16 拍）；run_all.sh E2E 用例表加 vl53l4cd_virt。
-  全套 64 跑通 / 1 真机用例跳过 / 仓颉 E2E 五组。
-- **SHT3X 虚拟器件（首个 16 位命令字 + 每数据字 CRC-8 的命令式 I2C 器件）
-  + 测试迁移 + 第六个守护 E2E**：新增 `virtbus/sht3x.lua`——SHT30/31/35
-  温湿度，无寄存器指针：每笔写恰为 2 字节命令大端字（驱动借
-  i2c_write_reg(fd,hi,lo) 的 2 字节原子写发送），状态/测量走无指针纯读
-  （i2c_read），与 BH1750（单字节 opcode）同族但命令宽一倍，且读回帧
-  每 2 字节带 1 字节 CRC-8（poly 0x31/init 0xFF，datasheet 向量
-  0xBEEF→0x92，模型真算非常量）。复刻协议事实：软复位 0x30A2 回上电
-  状态（bit4 复位检测、加热器关）、清状态 0x3041 清标志但保留 bit12
-  加热器、读状态 0xF32D 回 3 字节且 bit0/bit1 读后清零；非法命令 NACK
-  并置 bit1（命令状态）；单次轮询三档重复性转换门 16/7/5ms（max
-  15.5/6.5/4.5 向上取整），`advance(ms)` 虚拟时钟，转换未完成纯读
-  NACK、单次结果读后失效；时钟拉伸六字同门；周期模式 15 个启动字 +
-  break/fetch（fetch 数据可重复读，空闲 fetch NACK）；加热器
-  0x306D/0x3066 改 bit12；非 2 字节写 NACK。故障钩子：三 nack 表字段、
-  `fail_cmd(字谓词)`/`fail_read(pending,consume,n 谓词)`（可只断测量
-  6 字节读不误伤状态 3 字节读）、`corrupt_crc`（只坏 CRC 字节不动数据，
-  驱动 CRC_OK=0 降级路径）、`set_meas_stuck`、`set_status_word(字覆写)`
-  （注入坏标志位组合且 CRC 按覆写字真算）；reset 保留钩子；`virt_tick`
-  32 拍双正弦（T 20~30°C、RH 30~70%，相位差 π/4）并预武装（守护每拍
-  新写单次命令，命令下发即就绪，16ms milli_sleep 在守护里是真实睡眠）。
-  `test/test_sht3x.lua` 从 206 行手写 i2c_* 全局桩整体重写（114 断言：
-  CRC 向量/状态四标志位与读后清/非法命令/非 2 字节帧/三档转换门/结果
-  读后失效/长度不符 NACK/周期 fetch/六类钩子/virt_tick 节拍与物理量
-  注入，真实 build 命令序列与 3ms 睡眠/bit4 缺失仅告警/**旧错位映射
-  守卫 bit0 不致命 bit1 致命**/七路负路径，真实 call 16ms 等待与 6 字节
-  帧解析/双量程端点/坏 CRC 降级不中断/连续两拍/virt_tick 预武装/六路
-  负路径，destroy 零事务）。新增 `robots/test/sht3x_virt.sql` +
-  `scripts/test/sht3x_virt.mt`（T:f/RH:f/CRC_OK 三字段、温度 EMA
-  α=0.2、raw/滤波两 Monitor，interval=50ms 容纳 16ms 真实转换等待，
-  16 拍）；run_all.sh E2E 用例表加 sht3x_virt。全套 65 跑通 / 1 真机
-  用例跳过 / 仓颉 E2E 六组。
-- **MCP3421 虚拟器件（首个「单字节配置写 + 数据流纯读、读回帧自带配置
-  回显/RDY 就绪位」的命令式 I2C 器件）+ 测试迁移 + 第七个守护 E2E**：
-  新增 `virtbus/mcp3421.lua`——18 位 ΔΣ ADC，无寄存器指针：写恒为
-  1 字节配置（i2c_write_multi；[7]RDY 写 1 启动转换、[4]O/C 连续/单次、
-  [3:2]分辨率 12/14/16/18、[1:0]PGA ×1/2/4/8），读恒无指针纯读
-  （i2c_read 大端合并），末字节是配置回显——bit7 RDY 兼作就绪握手
-  （0=新数据、1=转换中/已读走），低 6 位供 build 比对兼在位探测；与
-  BH1750/SHT3X 的区别是「回显即状态、无独立命令/状态字」。复刻协议
-  事实：四档转换门 5/17/67/267ms（1/SPS 向上取整，`advance(ms)` 虚拟
-  时钟，写 RDY=1 重启转换、门限前回显 RDY=1）；连续模式读走一帧立即
-  排下一转换，oneshot 读完进低功耗待机，O/C=0/RDY=0 待机配置取消转换；
-  18bit 读 4 字节（D[17:16] 在首字节低 2 位的右对齐补码），12/14bit 读
-  3 字节（顶部重复符号位、按 int16 解释）；读长度由主设备决定（字节流，
-  短读截取/长读补 0）。故障钩子：三 nack 表字段、`fail_write(字节谓词)`/
-  `fail_read(n,fresh 谓词)`、`set_never_ready`（RDY 恒 1，驱动 5ms 步进
-  轮询至 wait 超时路径）、`corrupt_echo`（只翻低 6 位配置位不动 RDY，
-  build echo mismatch 路径）；reset 保留钩子；`set_raw` 按位宽钳制、
-  `set_voltage` 物理量注入（LSB=2.048/2^(res-1)/pga 与驱动同源）；
-  `virt_tick` 32 拍 ±1.5V 正弦并预武装（守护首读 RDY=0 零睡眠）。
-  `test/test_mcp3421.lua` 从 335 行手写 i2c_* 全局桩整体重写（143 断言：
-  配置位域/四档转换门边界/各档补码帧独立编码交叉验证/连续续转/oneshot
-  待机/字节流长度/位宽钳制/电压注入/六类钩子/virt_tick，真实 build
-  四档配置字节 0x9C/0x8B/0x94/0x91 与「写→纯读回显」序列及八路负路径，
-  真实 call 轮询睡眠节拍 270/70/20/5ms/双满码 ×8/oneshot 触发写/wait
-  超时/五路负路径/virt_tick 零等待两拍，destroy 待机写 0x0C/0x0B）。
-  新增 `robots/test/mcp3421_virt.sql` + `scripts/test/mcp3421_virt.mt`
-  （12bit/×1/连续档、voltage:f 单字段含负值、电压 EMA α=0.2、raw/滤波
-  两 Monitor，interval=50ms，16 拍）；run_all.sh E2E 用例表加
-  mcp3421_virt（浮点断言含负号）。全套 66 跑通 / 1 真机用例跳过 /
-  仓颉 E2E 七组。
-- **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
-  同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
-  LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
-  每次 PWM sysfs 写（export/enable/period/duty/polarity/unexport）都固定
-  越界 1 字节写坏相邻 GC 对象头，下一次 GC 扫描（常在无关文件解析/分配时）
-  即段错误：正常跑约 50% 复现、崩溃点离出错写操作极远（gdb 栈在
-  lua_loadx→lj_gc）。修复为 `char[?](#s+1)`，写计数仍用 #s（NUL 不发内核）。
-  `test/test_pwm.lua` 开头加最激进 GC 节奏护栏（setpause=1/setstepmul=
-  100000，修复前 100% 崩、修复后连跑稳定）；npwm read mock 的 ffi.copy
-  改为显式 len（内核 read 不回填 NUL）。排查方式与 ffi.copy NUL 语义已在
-  代码注释固化；全套 61 用例连跑 3 次全绿。
-- **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
-  轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
-  校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，
-  锁定关键预期值：CRC 通过样本 T/RH 换算结果、`CRC_OK=1`、坏样本（`bitc.bxor`
-  翻转一字节）`CRC_OK=0` 负路径、缺 fd/address 与 read/set_addr/总线读失败、
-  poll 模式 0x2400 写序列与 16ms 等待。
-- **LTC2944 离线测试 `test/test_ltc2944.lua`**（30 用例）：桩内模拟「build 控制字
-  计算（`0xC0 | (code<<3)`，code=预设表索引-1；缺省 M4096 -> 0xF0、M16 -> 0xD0、
-  M1 -> 0xC0）-> VCELL/I/TEMP/CHARGE 换算」全链路，锁定关键预期值：
-  `V=raw/65535*70.8`、`I=(raw-0x7FFF)/0x7FFF*0.064/rsense`、
-  `T=raw/65535*510-273.15`、`CHARGE=chg*0.34e-3*(M*0.05)/(rsense*4096)`
-  （M=4096、rsense=0.05、chg=1000 -> 0.34Ah）、缺省 M/rsense 归一、缺 fd/address
-  与写控制字/读总线失败负路径。
-- **MAX17043 离线测试 `test/test_max17043.lua`**（20 用例）：桩内模拟「build
-  读版本寄存器 0x08 甄别存在性（只读型器件）-> VCELL（0x02，12-bit 左移 4 ->
-  `>>4`，LSB 1.25mV）/ SOC（0x04，`raw/256` %）读」全链路，锁定关键预期值：
-  满量程/标称电压换算、SOC 百分比、缺 fd/address 与版本读/总线读失败负路径、
-  只读 build 不写任何器件寄存器（纯读取型驱动特征）。
-- **TPL0501 离线测试 `test/test_tpl0501.lua`**（28 用例）：桩内模拟「SPI 写
-  256 抽头电位器，优先级 level > percent > ohms，越界 clamp 0~255，
-  `ohms=level/255*rtotal` 换算」全链路，锁定关键预期值：三档入参优先级、
-  clamp 边界（-1->0、256->255、percent 80 -> 204）、`spi_write` 失败负路径、
-  缺 fd 与 rtotal 缺省 100kΩ。
-- **INA219 离线测试 `test/test_ina219.lua`**（32 用例）：桩内模拟「软复位 ->
-  读回配置默认值 0x399F 甄别 -> 写工作配置 -> 等首拍」全链路，锁定的关键预期值：
-  缺省工作配置 0x3DDF（bit13|PGA3|avg16code11|cont）、avg 降档 0x3C47/0x3E67/0x3F77、
-  总线寄存器 >>3 后 LSB 4mV（16384 读值 -> 8.192V）、分流 16 位完整有符号无移位
-  LSB 10µV（4000 -> 40mV）、反流 0xFC00 -> -10.24mV、INA226 误挂（复位配置 0x4127）
-  识别、缺 fd/address 与 set_addr/总线读失败负路径、rshunt='-' 归缺省 0.1Ω；
-  与 `test_ina226.lua` 形成姊妹对照——两颗芯片寄存器布局同构但换算完全不同
-  （总线 13 位左移 3/4mV vs 16 位无移位/1.25mV，LSB 差 32 倍），专抓「照搬 INA226
-  的换算」类移植笔误。
-- **INA3221 离线测试 `test/test_ina3221.lua`**（34 用例）：桩内模拟「ID 甄别
-  （0xFE=0x5449/0xFF=0x3220）-> 软复位 -> 写工作配置 -> 等首拍」全链路，锁定的关键
-  预期值：缺省工作配置 0x7527（3ch|avg16code2|CT4|cont）、avg 降档 0x7127/0x7F27、
-  三通道分流/总线 >>3 后分流 LSB 40µV/总线 LSB 8mV、反流 0xFC00 经 LuaJIT
-  `bit.rshift` 无符号语义 -> -128 LSB -> -5.12mV、缺 fd/address 与 set_addr/总线读
-  失败负路径、rshuntN='-' 归缺省 0.01Ω。
-- **@Daemon 共享槽采样通道 16 → 32**（`src/HV/Daemon.cj` + `modules/lib/pthread.lua`
-  两侧 ABI 同步）：单守护可由 16 通道提升到 32 通道，支撑"一个守护线程聚合多路
-  传感器"（多 IMU / 多气感 / 里程计）场景。槽布局前缀 `count(64)/nvals(68)/values(72)`
-  不变，仅尾部 `values[32]` 占 256B 后 `stop` 经 C 编译器 8 字节对齐落 328、槽总大小
-  208 → 336（`gcc __builtin_offsetof` 实测；仓颉手写 `SLOT_*_OFF` 与 Lua `ffi.offsetof`
-  逐项断言双向锁定，漂移 fail-fast）。`test/test_pthread.lua` 同步扩容（截断 32 +
-  满额 32 通道往返），回归 58/0。
+- **virtbus 虚拟硬件测试基座**（`modules/lib/virtbus/`，issue #18）：在真实 HAL 之下注入
+  虚拟 I2C/SPI 总线、挂载器件模型，即可用真实驱动跑通全链路，无需真机；模型只复现协议
+  层事实、测量值由用例显式注入，避免模型与驱动按同一错误理解互证假绿。
+  - `regmap.lua` 通用寄存器模型（8/16 位指针 + burst 自增回绕）、`bh1750.lua` 命令式器件
+    样板；`inject()` 统一替换 12 个 `i2c_*` + 8 个 `spi_*` 全局，语义对齐真机 I2C_RDWR /
+    spidev，支持 NACK/定向故障注入、txlog 留痕、`vbus.load_driver` 封装。
+  - **11 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、
+    VL53L0X（8 位指针 + 0xFF 分页）、MCP4725（命令位）、VL53L4CD（16 位指针）、SHT3X
+    （16 位命令字 + 数据 CRC-8）、MCP3421（配置回显/RDY 握手）、MS5611（命令通道 +
+    PROM CRC-4）；SPI 侧 ADS1256（ΣΔ ADC）、AD9833、TPL0501（写-only，采样 E2E 豁免）。
+    迁移即抓出旧桩假绿——BME280 的 H1=260 字节放不下、MPU6050 的 -1 返真把 NACK 当成功，
+    均为桩与测试共用错误假设互相放行。
+  - **守护 `proto=virt` 无硬件端到端**：不打开真机、按驱动名挂模型，build/call → 共享槽
+    → 滤波 → Monitor 全链路纯内存跑通，启动打印 `VIRTUAL HARDWARE` 横幅防生产误用。
+    全套 67 跑通 / 1 真机用例跳过 / 仓颉 E2E 八组。
+- @Daemon 共享槽采样通道 16 → 32（`src/HV/Daemon.cj` + `lib/pthread.lua` ABI 同步、布局
+  断言锁定），支撑单守护聚合多路传感器。
+- **MPU6050 补全片上温度输出**：call() 返回 `TEMP/TEMP_RAW`；`sensor_daemon` 字段新增
+  `:f`/`:s16` 逐字段模式后缀（浮点物理量不被 `sign=16` 取整破坏）。
 - **ActionSource 工厂 `src/ActionSource.cj`**（stdin / TCP / 文件三源可替换动作输入）：
-  `main.cj` 新增 `--tcp <port>` / `--input <path>` 参数，优先级 tcp > input > stdin。
-  仓颉核心 `r.cj · run(input: InputStream)` 已接受抽象 `InputStream`，零改动即接入。
-  `TcpStreamReader` 将 `TcpSocket` 字节流适配为 `InputStream` 字符流（.mt 纯 ASCII，
-  单字节 = 单 Rune；未来 UTF-8 列名需升级 BufferedInputStream + UTF-8 解码器）。
-  `scripts/tcp_e2e.sh` 端到端回环测试（Python 客户端 → TCP → 服务端 relay-test）。
-  `test/test_action_source.lua` 7 用例（工厂优先级 + 文件源等价性 + stdin 管道）。
-  与项目作者 `5dac278` 的两阶段构造 + 失败清理互为表里，落地其预留的「TCP 长驻
-  模式」能力。
-- **NN 前向推理引擎 `modules/lib/nn.lua`**（纯 Lua，无 nn4cj 依赖）：落实 `main.cj`
-  历史注释 + `r.cj` TODO「用矩阵脚本存储神经网络模型」。全连接 MLP 前向推理，默认同
-  历史 4 层架构 `{41,80,80,40,17}`（隐含层 LeakyReLU α=0.2 + 输出层 Sigmoid，
-  17=16 舵机 + 1 时延）。`forward`/`forwardOne` 前向传播、`zeroInit`/`randInit` 初始化、
-  `saveMt`/`loadMt` 权重以 `.mt` 矩阵文本存取（6 位有效数字序列化，往返文本不变）。
-  `test/test_nn.lua` 16 用例（激活边界 / 维度校验 / 手算前向核对 / .mt 往返 / 错误路径），
-  回归 60/0。可离线桩测试，作为未来仓颉 `MtVars_NN` / nn4cj 重新接入的推理侧替代或回归基准。
+  `main.cj` 新增 `--tcp <port>` / `--input <path>` 参数（优先级 tcp > input > stdin），
+  仓颉核心 `r.cj` 的抽象 `InputStream` 零改动接入；`TcpStreamReader` 将字节流适配为字符流；
+  `scripts/tcp_e2e.sh` 回环端到端、`test/test_action_source.lua` 7 用例（工厂优先级/
+  文件源等价性/stdin 管道）。
+- **NN 前向推理引擎 `modules/lib/nn.lua`**（纯 Lua，无 nn4cj 依赖）：全连接 MLP 前向
+  推理，默认同历史 4 层架构 `{41,80,80,40,17}`（隐含层 LeakyReLU α=0.2 + 输出层 Sigmoid）；
+  `forward`/`forwardOne` 前向传播、`zeroInit`/`randInit` 初始化、`saveMt`/`loadMt`
+  权重以 .mt 矩阵文本存取；`test/test_nn.lua` 16 用例（激活边界/维度校验/手算前向/
+  .mt 往返/错误路径），作为未来 nn4cj 重新接入的推理侧回归基准。
+- 离线桩测试：SHT3X、LTC2944、MAX17043、TPL0501、INA219（与 INA226 姊妹对照，专抓
+  「照搬换算」移植笔误）、INA3221；新增 `test_spi.lua`、`test_ads1256.lua`。
 
-- **BH1750 MTreg 编码错误**（datasheet 级）：低字节命令原写 `0x60|((mt>>1)&0x0F)`，
-  依 ROHM 手册改为 `0x60|(mt&0x1F)`（MT[4:0]）——原编码丢 bit0 且比特错位，
-  mtreg 设置越大偏差越大（如 mt=127 实际生效约 103）；`test/test_bh1750.lua`
-  原将错误编码固化为断言，一并修正
-- **多路径模块查找对守护 chunk 与滤波驱动不生效**（issue #19 收尾）：
-  `lib/sensor_daemon.lua`、`lib/daemon_probe.lua`、`lib/daemon_tid.lua`、
-  `Ema.lua`、`Kalman.lua` 原用 `BOT4CJ_MODULE_PATH` 原始整串拼路径，环境变量含
-  `:` 时 daemon setup 即失败（`cannot open ./modules:./extra_modules/lib/...`）；
-  统一改为与其余驱动一致的「首段加载 mpath + `mpath.resolve` 按序查找」惯用法
-- **守护消费端过滤 CRC 失败样本**：SHT3X/SGP30 的 CRC 失败响应（`result=OK` 且
-  `CRC_OK=0`，直接 play 时避免 halt-on-error 中断动作）此前会被 sensor_daemon
-  原样 publish 给下游；现 `daemon_tick` 对 `CRC_OK=0` 不发布、按 tick 错误计数与限频日志
-- `Lua.cj` 沙箱补中和 `io.input` / `io.output`（LuaJIT 的这两者在 C 层直调 fopen、
-  不经过已中和的 `io.open`）；模块层无使用，纯收紧
-- `Lua.cj` Lua 表转 JSON 两处：混合键表（数字键 + 字符串键）原只出数组、静默丢字符串键，
-  现整体转对象（数字键转字符串键）；数字键排序原对 `toArray()` 拷贝排序（无效），
-  现按排序后的拷贝迭代
-- `INA219.lua` call 补 not-built 守卫（原 build 前调用时 rshunt 为 nil，
-  除法抛裸 Lua error，报错信息难看）
-- `I2C.lua` / `GPIO.lua` build 重复调用先关旧 fd / 释放旧句柄（防重建泄漏，
-  当前流程 build 恰一次，纯防御）
-- **2026-09 审计修复批次**（驱动 datasheet 级四严重 + 中低项）：
-  - **LTC2944 控制字写偏**（严重 S1）：CONTROL(0x01) 是 8 位寄存器，原 `write_reg16`
-    发 `[0x01, 0x00, ctrl]` 三字节，器件寄存器指针自增使 CONTROL 实际收到 0x00
-    （ADC 模式 00 = Sleep，build 后器件完全不转换、V/I/T 读陈旧值、电荷不累计），
-    且每次 build 把电荷 MSB(0x02) 覆写成控制字（默认量程下约 ±21mAh 错位）；
-    改单字节 `i2c_write_reg`。`test_ltc2944.lua` 桩改为逐字节自增建模 +
-    `charge_msb_clobbered` 回归哨兵（旧实现在新桩下必红），并补 call-before-build 守卫
-  - **BMM150 三轴多乘 0.3**（严重 S2）：补偿管线三轴均已 `/16` 收尾输出 µT
-    （与 Bosch BMM150-SensorAPI master 的 int16 compensate_*「data(micro-tesla)」
-    文档一致，Z 轴按驱动自身头注释即自相矛盾），call 再 ×0.3 使读数整体缩小
-    3.33 倍；去掉系数并同步 `test_bmm150.lua` 黄金向量期望值
-  - **INA219 SADC 平均档表错一位**（严重 S3）：datasheet 里 8 是 12 位单次的别名码，
-    2~128 次平均应为 9~15；原表把 2 次映射到 8，使 avg≥2 的每一档实际平均次数
-    减半（缺省"16 次"实为 8 次）。改 `{3,9,10,11,12,13,14,15}`、缺省 code 12，
-    重算 `test_ina219.lua` 工作配置期望值（0x3E67/0x3CCF/0x3EEF/0x3FFF）
-  - **MHZ19 帧头扫描死代码**（严重 S4）：`uart_read(fd, 9)` 单次最多返回 9 字节，
-    帧前有任何噪声字节时"帧头扫描"数学上不可达（start>1 则帧越界），且
-    `test_mhz19.lua` 旧桩忽略 `n` 返回 11 字节造成假绿；改 SDS011 同款多轮
-    累积聚合读（校验和兜底），桩改 FIFO 逐轮弹出镜像 HAL 契约——旧实现在新桩下必红
-  - **SHT3X 状态位映射错误**（中 M1）：数据手册 Table 18 实为 bit0=写校验和状态、
-    bit1=命令状态、bit4=系统复位检测；原把 bit0/bit1 当命令/复位位，真命令错误
-    漏检、复位检测形同虚设；`test_sht3x.lua` 状态值同步按正确位映射喂入
-  - **MPU6050 补 WHO_AM_I(0x75=0x68) 甄别**：纯写配置的 build 让总线上任意会 ACK
-    的器件蒙混过关（同批 IMU 均已甄别）；`test_mpu6050.lua` 补 0x75 读桩与
-    错挂/读失败用例
-  - **call-before-build 守卫补齐**：INA226/INA3221/MLX90393/LTC2944 未 build 先
-    call 会做 nil 算术裸 error（违反 ERR 契约，INA219 原有守卫）；统一返回
-    `not built (build first)`
-  - **重复 build 守卫补齐**：SPI/UART/PWM 与 I2C/GPIO 对齐（旧 fd/导出通道泄漏）
-  - **MCP4725 RDY 轮询区分总线错误**：i2c_read 失败（-1）原被当作"未就绪"、
-    断线误报成"EEPROM 写超时"；现立即报总线读失败
-  - **AMG8833 call 补 set_addr**：共享总线 fd 的从地址是 per-fd 状态，两次 call
-    之间被别的器件寻址会把读数打到错误从地址
-  - **Timer 延时上限**：>4294967ms 超 usleep unsigned int 上限会 32 位回绕成
-    随机短延时，现显式报错
-  - **Kalman build 非法 Q/R 转 ERR**：`KalmanLib.new` 对 Q<0/R<=0 直接 error，
-    现 pcall 转 ERR 契约（与 Ema 一致）
-  - **HAL.EINVAL 定义补上**：errno_hint 的 EINVAL 分支原引用未定义常量（死分支），
-    现 `HAL.EINVAL = 22`
-- `Servo.lua` / `Relay.lua` 日志格式化对浮点改 `%s`+`tostring`（原 `%d` 口径依赖
-  LuaJIT 截断行为）；Relay 的逐帧输出为 README 首条命令的验收标记，保持不变
-- `test_h07_fd.lua` 桩目录补拷 `lib/mpath.lua`（适配守护 chunk 的新加载链路）
-- `sensor_daemon.lua` 守护退出清理先调驱动 `destroy()`（若有，`type(destroy)=='function'`
-  守卫）再关总线 fd：让 VL53L0X 停止 ranging、ADS1x15 置单次态断电等器件退出活跃态
-- 新增 `test/test_spi.lua`（26 断言：build 参数校验、call 前置检查、destroy 关闭、
-  open/ioctl 失败路径）与 `test/test_ads1256.lua`（44 断言：build 寄存器写序列、
-  call 单端/差分/负值/PGA 电压换算、destroy SDATAC、越界归缺省、失败路径）
-- **MPU6050 补全片上温度输出**：0x3B 起 14 字节 burst 本含 TEMP_OUT（0x41/0x42），
-  原驱动读出后丢弃；现 `call()` 返回 `TEMP`（摄氏度，datasheet 公式 `raw/340+36.53`，
-  340 LSB/°C、零偏 36.53°C）与 `TEMP_RAW`（有符号原始值）。`sensor_daemon.lua` 的
-  `fields` 增加逐字段模式后缀：`:f`/`:float` 原样透传浮点（温度等已换算物理量不被
-  全局 `sign=16` 取整破坏）、`:s16` 强制 16 位补码、无后缀跟随全局 `sign`；
-  `mpu_daemon`（v6=温度经 Monitor 透传）/`mpu_filter`（第七路 etmp EMA）真机脚本
-  与 `test_mpu6050.lua`/`test_mpu6050_sign.lua` 离线测试同步覆盖温度通道
+### 修复
+
+- **test_pwm 概率性段错误（真机同样受影响）**：`HAL.sysfs_write` 的 `ffi.copy(buf, s)`
+  不带 len 会连 NUL 拷贝 `#s+1` 字节、固定越界 1 字节写坏 GC 对象头；改 `char[?](#s+1)`，
+  测试加激进 GC 节奏护栏。
+- **BH1750 MTreg 编码错误**（datasheet 级）：MT[4:0] 原用 `0x60|((mt>>1)&0x0F)` 丢 bit0
+  且错位（mt=127 实际生效约 103），改 `0x60|(mt&0x1F)`；测试错误断言一并修正。
+- **多路径模块查找对守护 chunk 与滤波驱动不生效**（issue #19 收尾）：`sensor_daemon` /
+  `daemon_probe` / `daemon_tid` / `Ema` / `Kalman` 统一为「首段 mpath + resolve」按序查找。
+- **守护消费端过滤 CRC 失败样本**：SHT3X/SGP30 的 `CRC_OK=0` 响应不再发布下游，按 tick
+  错误计数与限频日志。
+- **2026-09 审计修复批次**（datasheet 级四严重 + 中低项）：
+  - 严重：LTC2944 控制字经 `write_reg16` 三字节使寄存器指针自增写偏、改单字节写并补回归
+    哨兵（S1）；BMM150 三轴多乘 0.3、去除并同步黄金向量（S2）；INA219 SADC 平均档表错
+    一位、缺省"16 次"实为 8 次（S3）；MHZ19 帧头扫描死代码、改累积读 + 校验和兜底（S4）。
+  - 中低：SHT3X 状态位映射修正（bit0 校验和/bit1 命令/bit4 复位）、MPU6050 补 WHO_AM_I
+    甄别、call-before-build / 重复 build 守卫补齐、MCP4725 RDY 区分总线错误、AMG8833
+    call 补 set_addr、Timer 延时上限、Kalman 非法 Q/R 转 ERR、HAL.EINVAL 补定义。
+- `Lua.cj` 沙箱补中和 `io.input` / `io.output`；Lua 表转 JSON 混合键（数字+字符串）整体
+  转对象；INA219 call 补 not-built 守卫。
+- 守护退出清理先调驱动 `destroy()` 再关总线 fd（VL53L0X 停放测、ADS1x15 置单次态）；
+  `Servo`/`Relay` 浮点日志改 `%s`+tostring。
 
 ### 文档
 
-- `BME280.lua` / `SHT3X.lua` 头注释更新为现 HAL（纯 Lua 大端合并）语义，
-  移除旧 cfunc 桥「有符号 Int64 回绕」的过时描述；负值还原分支注明为防御遗留
+- `BME280.lua` / `SHT3X.lua` 头注释更新为现 HAL（纯 Lua 大端合并）语义，移除旧 cfunc 桥
+  「有符号 Int64 回绕」的过时描述。
 
 ## [0.3.3] - 2026-09-11
 
