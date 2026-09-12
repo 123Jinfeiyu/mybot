@@ -62,9 +62,12 @@ local CFG_MODE_CONT = 0x7			-- 连续 + 分流 + 总线
 
 local IT_532US_US = 532			-- 12 位单次转换时间（µs），平均模式的基时
 
--- 平均样本数 -> SADC/BADC 代码（12 位单次=3，2~128 次平均=8~14）
+-- 平均样本数 -> SADC/BADC 代码。datasheet 表：3=12 位单次 532µs、
+-- 9=2 次、10=4、11=8、12=16、13=32、14=64、15=128 次平均
+-- （8 是 12 位单次的别名码，不是"2 次平均"——旧表把 2 次映射到 8 使
+-- avg≥2 的每一档实际平均次数减半，2026-09 审计 S3 已修）
 local avg_tab  = { 1, 2, 4, 8, 16, 32, 64, 128 }
-local avg_code = { 3, 8, 9, 10, 11, 12, 13, 14 }
+local avg_code = { 3, 9, 10, 11, 12, 13, 14, 15 }
 
 local DEF_RSHUNT = 0.1			-- 缺省分流电阻 100mΩ（CJMCU-219 板载 R100）
 
@@ -95,14 +98,14 @@ local function write_reg16(fd, reg, val16)
 	return i2c_write_multi(fd, reg, hi, lo) == 0
 end
 
--- 平均样本数列 -> 代码（非法/'-' 归一值落到最近的合法档，缺省 16 次）
+-- 平均样本数列 -> 代码（非法/'-' 归一值落到最近的合法档，缺省 16 次 = code 12）
 local function avg_code_of(v)
 	local n = tonumber(v)
-	if n == nil or n <= 0 then return 11, 16 end
+	if n == nil or n <= 0 then return 12, 16 end
 	for i = #avg_tab, 1, -1 do
 		if n >= avg_tab[i] then return avg_code[i], avg_tab[i] end
 	end
-	return 11, 16
+	return 12, 16
 end
 
 -- 分流电阻列 -> 欧姆（非法/'-' 归一值/非正数按缺省，防除零）
@@ -219,6 +222,14 @@ function call(data)
 
 	if DEBUG then
 		dbg_table("-------- INA219 caller func get a table --------", data)
+	end
+
+	-- build 前调用时 rshunt 为 nil，除法会抛裸 Lua error（pcall 兜底信息难看）
+	if rshunt == nil then
+		return {
+			result = "ERR",
+			message = "INA219 not built (build first)"
+		}
 	end
 
 	-----------------------------------------------------

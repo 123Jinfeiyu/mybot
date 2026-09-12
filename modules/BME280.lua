@@ -10,11 +10,11 @@
 -- call 无需额外参数（元数据由框架自动合并传入），返回 { result, T(°C), P(Pa), H(%RH) }
 --
 -- 实现要点：
---   1. i2c_write_reg 在 r.cj 中不向 Lua 压入返回值（fire-and-forget），
---      因此不检查其返回值，改为回读寄存器验证配置是否生效
---   2. i2c_read_multi 把 n 字节按大端合并为有符号 Int64，
---      首字节 >= 0x80 时会回绕成负数、被误判为读取失败，
---      故多字节读取一律按 4 字节块进行（合并值 <= 0xFFFFFFFF，恒为正）
+--   1. 寄存器写不逐条判 i2c_write_reg 的 true/false，关键配置一律回读复核
+--      （回读可同时覆盖「写失败」与「器件未应用」两种情形）
+--   2. HAL 合并读 i2c_read_multi 上限 6 字节（合并值超 2^53 丢精度；纯 Lua 算术
+--      恒为非负，越界显式 -1）：校准区/数据区按 4 字节块读；湿度校准块 7 字节
+--      走字节表版 i2c_read_multi_bytes（长块读的 HAL 指定路径）
 --   3. 软复位后须等状态寄存器 im_update 位（bit0）清零，才可读取校准系数
 --   4. 校准区 0x88~0x9F 为小端，测量数据区 0xF7~0xFE 为大端
 --   5. 补偿公式为数据手册附录 8.3 的浮点版
@@ -70,7 +70,7 @@ local function to_bytes(v, n)
 end
 
 -- 辅助：从 reg 起按 4 字节块读 n 字节（n 为 4 的倍数），拼接成大端字节数组
--- 失败返回 nil（宿主合并值只有 -1 表示失败，4 字节合并恒为正）
+-- 失败返回 nil（HAL 合并值只有 -1 表示失败，成功恒为非负）
 local function read_block(fd, reg, n)
     local b = {}
     for off = 0, n - 4, 4 do
@@ -168,12 +168,11 @@ function build(data)
     dig_H1 = h1
 
     -- H2(0xE1,s16) H3(0xE3,u8) H4(s12: E4<<4|E5低4位) H5(s12: E6<<4|E5高4位) H6(0xE7,s8)
-    -- 共7字节，合并值 < 2^56，不会溢出，可一次读
-    local ce = i2c_read_multi(fd, REG_H_CAL, 7)
-    if ce < 0 then
+    -- 共7字节：HAL 合并读上限 6，走字节表版一次事务读全块（不合并、无 2^53 精度问题）
+    local e = i2c_read_multi_bytes(fd, REG_H_CAL, 7)
+    if e == nil then
         return { result = "ERR", message = "Failed to read calibration" }
     end
-    local e = to_bytes(ce, 7)
     dig_H2 = s16le(e, 1)
     dig_H3 = e[3]
     dig_H4 = s12(bitc.bor(bitc.lshift(e[4], 4), bitc.band(e[5], 0x0F)))
@@ -185,7 +184,7 @@ function build(data)
     i2c_write_reg(fd, REG_CTRL_HUM, OSRS_H_X1)
     i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP))
 
-    -- write_reg 不返回状态，回读寄存器确认配置生效
+    -- 写后回读寄存器，确认配置生效（覆盖写失败与器件未应用两种情形）
     local chk_hum = i2c_read_multi(fd, REG_CTRL_HUM, 1)
     local chk_meas = i2c_read_multi(fd, REG_CTRL_MEAS, 1)
     if chk_hum ~= OSRS_H_X1 or chk_meas ~= (bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP)) then

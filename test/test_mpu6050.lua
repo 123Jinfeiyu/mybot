@@ -36,6 +36,13 @@ function i2c_write_reg(fd, reg, val)
 	return true
 end
 
+-- WHO_AM_I 读桩：0x75 默认答 0x68（身份值），用例可注入 regs[0x75] 模拟错挂器件
+function i2c_read_reg(fd, reg)
+	if fail_read then return -1 end	-- HAL 契约：失败返回 -1
+	if reg == 0x75 then return regs[0x75] or 0x68 end
+	return regs[reg] or 0
+end
+
 -- burst 读桩：reg 起连续 n 字节（1 基表），与 HAL i2c_read_multi_bytes 契约一致
 local read_log = {}      -- burst 读请求序列 {reg, n}
 function i2c_read_multi_bytes(fd, reg, n)
@@ -134,6 +141,16 @@ check(#set_addr_log > 0 and set_addr_log[#set_addr_log] == 0x68,
 set_addr_log = {}
 expect_ok("build 地址 '0x69'", function() return build({ fd = 3, address = "0x69" }) end)
 check(set_addr_log[#set_addr_log] == 0x69, "set_addr 收到 0x69=105", tostring(set_addr_log[#set_addr_log]))
+
+-- ==================== build：WHO_AM_I 甄别 ====================
+-- 错挂器件（如 MPU6500/9250 的 0x71）：纯写配置能通过，身份值必须拦下
+regs = { [0x75] = 0x71 }
+expect_err("build WHO_AM_I 不符 (0x71)", function() return build(base) end, "WHO_AM_I")
+regs = {}
+
+fail_read = true
+expect_err("build 读 WHO_AM_I 失败", function() return build(base) end, "not responding")
+fail_read = false
 
 -- ==================== build：错误通道 ====================
 -- fd/address 统一走 drv_common.i2c_pair（消息 "Invalid Argument: fd or address"）。

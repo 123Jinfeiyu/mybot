@@ -99,6 +99,13 @@ function build(data)
 	end
 
 	-----------------------------------------------------
+	-- 重复 build 先撤销先前导出的通道（与 I2C/GPIO/SPI/UART 的重复 build
+	-- 守卫一致；否则换 chip/channel 再 build 会残留占用旧通道）
+	if exported then
+		pwm_unexport(chip, channel)
+		exported = false
+	end
+
 	if not pwm_export(c, h) then
 		return err("Failed to export PWM pwmchip" .. tostring(c) .. " pwm" .. tostring(h))
 	end

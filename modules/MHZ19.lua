@@ -27,7 +27,10 @@
 --   2. 应答帧 9 字节：FF 86 HI LO TEMP S U1 U2 CS；CS 校验同上
 --      （b1=0x86 起）；CO₂ = HI x 256 + LO
 --   3. 读序：发帧前先清输入缓冲（uart_flush，丢弃陈旧字节），
---      发后按 9 字节带超时读，再做帧头扫描（容忍前导噪声字节）
+--      发后多轮累积聚合读（同 SDS011.read_frame）：uart_read 单次最多
+--      返回 n 字节，帧前有噪声字节时完整帧跨轮到达——只读一轮 9 字节
+--      再做帧头扫描在数学上不可达（帧头移位后 9 字节装不下整帧，
+--      2026-09 审计 S4 已修）；扫描 + 校验和兜底
 --   4. 字节流可能分片到达，uart_read 轮询聚合由 HAL 承担
 --   5. 校验和错误/短读/写失败均报 ERR（halt-on-error 链路可用）
 
@@ -57,6 +60,28 @@ local function checksum(frame, from, to)
 	local sum = 0
 	for i = from, to do sum = sum + frame[i] end
 	return (0x100 - (sum % 0x100)) % 0x100
+end
+
+-- 读一帧应答（FF 86 开头 + 校验和），容忍前导噪声：聚合扫描，最多 3 轮。
+-- uart_read 单次最多返回 n 字节，噪声字节后完整帧跨轮到达——逐轮累计，
+-- 每轮对全部窗口扫描帧头 + 校验和。返回 9 字节 1 基表；失败返回 nil, 原因。
+local function read_frame(fd, timeout_ms)
+	local acc = {}
+	for _ = 1, 3 do
+		local chunk = uart_read(fd, FRAME_LEN, timeout_ms)
+		if chunk == nil then return nil, "read error" end
+		for _, b in ipairs(chunk) do acc[#acc + 1] = b end
+		for i = 1, (#acc >= FRAME_LEN) and (#acc - FRAME_LEN + 1) or 0 do
+			if acc[i] == RESP_HEAD and acc[i + 1] == RESP_CMD then
+				local f = {}
+				for k = 0, FRAME_LEN - 1 do f[k + 1] = acc[i + k] end
+				local cs = checksum(f, 2, 8)
+				if f[9] == cs then return f, nil end
+			end
+		end
+	end
+	if #acc == 0 then return nil, "timeout (no bytes)" end
+	return nil, "no valid frame (head FF 86 + checksum)"
 end
 
 -- 【配置脚本】校验句柄，清输入缓冲（无寄存器可校验器件）
@@ -141,35 +166,12 @@ function call(data)
 		}
 	end
 
-	local resp = uart_read(fd, FRAME_LEN, READ_TIMEOUT_MS)
-	if resp == nil or #resp < FRAME_LEN then
+	-- 多轮累积聚合读：容忍前导噪声与跨轮分片（校验和在 read_frame 内兜底）
+	local f, ferr = read_frame(fd, READ_TIMEOUT_MS)
+	if f == nil then
 		return {
 			result = "ERR",
-			message = "MHZ19 response timeout/short (" ..
-				tostring(resp and #resp or "nil") .. "/" .. tostring(FRAME_LEN) .. ")"
-		}
-	end
-
-	-- 帧头扫描：容忍前导噪声字节，找 FF 86
-	local start = nil
-	for i = 1, #resp - 1 do
-		if resp[i] == RESP_HEAD and resp[i + 1] == RESP_CMD then start = i; break end
-	end
-	if start == nil or start + FRAME_LEN - 1 > #resp then
-		return {
-			result = "ERR",
-			message = "MHZ19 frame head not found (FF 86)"
-		}
-	end
-
-	-- 帧拷贝并校验和
-	local f = {}
-	for i = 0, FRAME_LEN - 1 do f[i + 1] = resp[start + i] end
-	local cs = checksum(f, 2, 8)
-	if f[9] ~= cs then
-		return {
-			result = "ERR",
-			message = string.format("MHZ19 checksum mismatch: got 0x%02X (expect 0x%02X)", f[9], cs)
+			message = "MHZ19 no valid response: " .. tostring(ferr)
 		}
 	end
 

@@ -175,10 +175,20 @@ function call(data)
 
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
+	local addr = tonumber(data.address) or 0x69	-- 与 build 同款缺省（AD_SELECT 拉低）
 	if fd == nil then
 		return {
 			result = "ERR",
 			message = "Invalid Argument: fd"
+		}
+	end
+
+	-- 共享总线 fd 的从地址是 per-fd 状态：每次 call 显式 set_addr，
+	-- 否则两次 call 之间别的器件寻址会把本器件读数打到错误从地址
+	if not i2c_set_addr(fd, addr) then
+		return {
+			result = "ERR",
+			message = "Invalid Argument: fd or address (set_addr failed)"
 		}
 	end
 

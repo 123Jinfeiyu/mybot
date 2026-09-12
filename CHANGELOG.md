@@ -4,9 +4,137 @@
 `feature/bidirectional-communication` 等未合并分支不计入）。
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号与 `cjpm.toml` 的 `version` 字段对应。
 
+## [未发布]
+
+审计修复批次：BH1750 MTreg 编码、多路径加载收尾、守护 CRC 坏样本过滤等；
+新增 INA219 / INA3221 / SHT3X / LTC2944 / MAX17043 / TPL0501 离线桩测试覆盖；
+@Daemon 共享槽采样通道 16 → 32（支撑单守护聚合多路传感器）。
+
+### 新增
+
+- **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
+  轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
+  校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，
+  锁定关键预期值：CRC 通过样本 T/RH 换算结果、`CRC_OK=1`、坏样本（`bitc.bxor`
+  翻转一字节）`CRC_OK=0` 负路径、缺 fd/address 与 read/set_addr/总线读失败、
+  poll 模式 0x2400 写序列与 16ms 等待。
+- **LTC2944 离线测试 `test/test_ltc2944.lua`**（30 用例）：桩内模拟「build 控制字
+  计算（`0xC0 | (code<<3)`，code=预设表索引-1；缺省 M4096 -> 0xF0、M16 -> 0xD0、
+  M1 -> 0xC0）-> VCELL/I/TEMP/CHARGE 换算」全链路，锁定关键预期值：
+  `V=raw/65535*70.8`、`I=(raw-0x7FFF)/0x7FFF*0.064/rsense`、
+  `T=raw/65535*510-273.15`、`CHARGE=chg*0.34e-3*(M*0.05)/(rsense*4096)`
+  （M=4096、rsense=0.05、chg=1000 -> 0.34Ah）、缺省 M/rsense 归一、缺 fd/address
+  与写控制字/读总线失败负路径。
+- **MAX17043 离线测试 `test/test_max17043.lua`**（20 用例）：桩内模拟「build
+  读版本寄存器 0x08 甄别存在性（只读型器件）-> VCELL（0x02，12-bit 左移 4 ->
+  `>>4`，LSB 1.25mV）/ SOC（0x04，`raw/256` %）读」全链路，锁定关键预期值：
+  满量程/标称电压换算、SOC 百分比、缺 fd/address 与版本读/总线读失败负路径、
+  只读 build 不写任何器件寄存器（纯读取型驱动特征）。
+- **TPL0501 离线测试 `test/test_tpl0501.lua`**（28 用例）：桩内模拟「SPI 写
+  256 抽头电位器，优先级 level > percent > ohms，越界 clamp 0~255，
+  `ohms=level/255*rtotal` 换算」全链路，锁定关键预期值：三档入参优先级、
+  clamp 边界（-1->0、256->255、percent 80 -> 204）、`spi_write` 失败负路径、
+  缺 fd 与 rtotal 缺省 100kΩ。
+- **INA219 离线测试 `test/test_ina219.lua`**（32 用例）：桩内模拟「软复位 ->
+  读回配置默认值 0x399F 甄别 -> 写工作配置 -> 等首拍」全链路，锁定的关键预期值：
+  缺省工作配置 0x3DDF（bit13|PGA3|avg16code11|cont）、avg 降档 0x3C47/0x3E67/0x3F77、
+  总线寄存器 >>3 后 LSB 4mV（16384 读值 -> 8.192V）、分流 16 位完整有符号无移位
+  LSB 10µV（4000 -> 40mV）、反流 0xFC00 -> -10.24mV、INA226 误挂（复位配置 0x4127）
+  识别、缺 fd/address 与 set_addr/总线读失败负路径、rshunt='-' 归缺省 0.1Ω；
+  与 `test_ina226.lua` 形成姊妹对照——两颗芯片寄存器布局同构但换算完全不同
+  （总线 13 位左移 3/4mV vs 16 位无移位/1.25mV，LSB 差 32 倍），专抓「照搬 INA226
+  的换算」类移植笔误。
+- **INA3221 离线测试 `test/test_ina3221.lua`**（34 用例）：桩内模拟「ID 甄别
+  （0xFE=0x5449/0xFF=0x3220）-> 软复位 -> 写工作配置 -> 等首拍」全链路，锁定的关键
+  预期值：缺省工作配置 0x7527（3ch|avg16code2|CT4|cont）、avg 降档 0x7127/0x7F27、
+  三通道分流/总线 >>3 后分流 LSB 40µV/总线 LSB 8mV、反流 0xFC00 经 LuaJIT
+  `bit.rshift` 无符号语义 -> -128 LSB -> -5.12mV、缺 fd/address 与 set_addr/总线读
+  失败负路径、rshuntN='-' 归缺省 0.01Ω。
+- **@Daemon 共享槽采样通道 16 → 32**（`src/HV/Daemon.cj` + `modules/lib/pthread.lua`
+  两侧 ABI 同步）：单守护可由 16 通道提升到 32 通道，支撑"一个守护线程聚合多路
+  传感器"（多 IMU / 多气感 / 里程计）场景。槽布局前缀 `count(64)/nvals(68)/values(72)`
+  不变，仅尾部 `values[32]` 占 256B 后 `stop` 经 C 编译器 8 字节对齐落 328、槽总大小
+  208 → 336（`gcc __builtin_offsetof` 实测；仓颉手写 `SLOT_*_OFF` 与 Lua `ffi.offsetof`
+  逐项断言双向锁定，漂移 fail-fast）。`test/test_pthread.lua` 同步扩容（截断 32 +
+  满额 32 通道往返），回归 58/0。
+
+- **BH1750 MTreg 编码错误**（datasheet 级）：低字节命令原写 `0x60|((mt>>1)&0x0F)`，
+  依 ROHM 手册改为 `0x60|(mt&0x1F)`（MT[4:0]）——原编码丢 bit0 且比特错位，
+  mtreg 设置越大偏差越大（如 mt=127 实际生效约 103）；`test/test_bh1750.lua`
+  原将错误编码固化为断言，一并修正
+- **多路径模块查找对守护 chunk 与滤波驱动不生效**（issue #19 收尾）：
+  `lib/sensor_daemon.lua`、`lib/daemon_probe.lua`、`lib/daemon_tid.lua`、
+  `Ema.lua`、`Kalman.lua` 原用 `BOT4CJ_MODULE_PATH` 原始整串拼路径，环境变量含
+  `:` 时 daemon setup 即失败（`cannot open ./modules:./extra_modules/lib/...`）；
+  统一改为与其余驱动一致的「首段加载 mpath + `mpath.resolve` 按序查找」惯用法
+- **守护消费端过滤 CRC 失败样本**：SHT3X/SGP30 的 CRC 失败响应（`result=OK` 且
+  `CRC_OK=0`，直接 play 时避免 halt-on-error 中断动作）此前会被 sensor_daemon
+  原样 publish 给下游；现 `daemon_tick` 对 `CRC_OK=0` 不发布、按 tick 错误计数与限频日志
+- `Lua.cj` 沙箱补中和 `io.input` / `io.output`（LuaJIT 的这两者在 C 层直调 fopen、
+  不经过已中和的 `io.open`）；模块层无使用，纯收紧
+- `Lua.cj` Lua 表转 JSON 两处：混合键表（数字键 + 字符串键）原只出数组、静默丢字符串键，
+  现整体转对象（数字键转字符串键）；数字键排序原对 `toArray()` 拷贝排序（无效），
+  现按排序后的拷贝迭代
+- `INA219.lua` call 补 not-built 守卫（原 build 前调用时 rshunt 为 nil，
+  除法抛裸 Lua error，报错信息难看）
+- `I2C.lua` / `GPIO.lua` build 重复调用先关旧 fd / 释放旧句柄（防重建泄漏，
+  当前流程 build 恰一次，纯防御）
+- **2026-09 审计修复批次**（驱动 datasheet 级四严重 + 中低项）：
+  - **LTC2944 控制字写偏**（严重 S1）：CONTROL(0x01) 是 8 位寄存器，原 `write_reg16`
+    发 `[0x01, 0x00, ctrl]` 三字节，器件寄存器指针自增使 CONTROL 实际收到 0x00
+    （ADC 模式 00 = Sleep，build 后器件完全不转换、V/I/T 读陈旧值、电荷不累计），
+    且每次 build 把电荷 MSB(0x02) 覆写成控制字（默认量程下约 ±21mAh 错位）；
+    改单字节 `i2c_write_reg`。`test_ltc2944.lua` 桩改为逐字节自增建模 +
+    `charge_msb_clobbered` 回归哨兵（旧实现在新桩下必红），并补 call-before-build 守卫
+  - **BMM150 三轴多乘 0.3**（严重 S2）：补偿管线三轴均已 `/16` 收尾输出 µT
+    （与 Bosch BMM150-SensorAPI master 的 int16 compensate_*「data(micro-tesla)」
+    文档一致，Z 轴按驱动自身头注释即自相矛盾），call 再 ×0.3 使读数整体缩小
+    3.33 倍；去掉系数并同步 `test_bmm150.lua` 黄金向量期望值
+  - **INA219 SADC 平均档表错一位**（严重 S3）：datasheet 里 8 是 12 位单次的别名码，
+    2~128 次平均应为 9~15；原表把 2 次映射到 8，使 avg≥2 的每一档实际平均次数
+    减半（缺省"16 次"实为 8 次）。改 `{3,9,10,11,12,13,14,15}`、缺省 code 12，
+    重算 `test_ina219.lua` 工作配置期望值（0x3E67/0x3CCF/0x3EEF/0x3FFF）
+  - **MHZ19 帧头扫描死代码**（严重 S4）：`uart_read(fd, 9)` 单次最多返回 9 字节，
+    帧前有任何噪声字节时"帧头扫描"数学上不可达（start>1 则帧越界），且
+    `test_mhz19.lua` 旧桩忽略 `n` 返回 11 字节造成假绿；改 SDS011 同款多轮
+    累积聚合读（校验和兜底），桩改 FIFO 逐轮弹出镜像 HAL 契约——旧实现在新桩下必红
+  - **SHT3X 状态位映射错误**（中 M1）：数据手册 Table 18 实为 bit0=写校验和状态、
+    bit1=命令状态、bit4=系统复位检测；原把 bit0/bit1 当命令/复位位，真命令错误
+    漏检、复位检测形同虚设；`test_sht3x.lua` 状态值同步按正确位映射喂入
+  - **MPU6050 补 WHO_AM_I(0x75=0x68) 甄别**：纯写配置的 build 让总线上任意会 ACK
+    的器件蒙混过关（同批 IMU 均已甄别）；`test_mpu6050.lua` 补 0x75 读桩与
+    错挂/读失败用例
+  - **call-before-build 守卫补齐**：INA226/INA3221/MLX90393/LTC2944 未 build 先
+    call 会做 nil 算术裸 error（违反 ERR 契约，INA219 原有守卫）；统一返回
+    `not built (build first)`
+  - **重复 build 守卫补齐**：SPI/UART/PWM 与 I2C/GPIO 对齐（旧 fd/导出通道泄漏）
+  - **MCP4725 RDY 轮询区分总线错误**：i2c_read 失败（-1）原被当作"未就绪"、
+    断线误报成"EEPROM 写超时"；现立即报总线读失败
+  - **AMG8833 call 补 set_addr**：共享总线 fd 的从地址是 per-fd 状态，两次 call
+    之间被别的器件寻址会把读数打到错误从地址
+  - **Timer 延时上限**：>4294967ms 超 usleep unsigned int 上限会 32 位回绕成
+    随机短延时，现显式报错
+  - **Kalman build 非法 Q/R 转 ERR**：`KalmanLib.new` 对 Q<0/R<=0 直接 error，
+    现 pcall 转 ERR 契约（与 Ema 一致）
+  - **HAL.EINVAL 定义补上**：errno_hint 的 EINVAL 分支原引用未定义常量（死分支），
+    现 `HAL.EINVAL = 22`
+- `Servo.lua` / `Relay.lua` 日志格式化对浮点改 `%s`+`tostring`（原 `%d` 口径依赖
+  LuaJIT 截断行为）；Relay 的逐帧输出为 README 首条命令的验收标记，保持不变
+- `test_h07_fd.lua` 桩目录补拷 `lib/mpath.lua`（适配守护 chunk 的新加载链路）
+- `sensor_daemon.lua` 守护退出清理先调驱动 `destroy()`（若有，`type(destroy)=='function'`
+  守卫）再关总线 fd：让 VL53L0X 停止 ranging、ADS1x15 置单次态断电等器件退出活跃态
+- 新增 `test/test_spi.lua`（26 断言：build 参数校验、call 前置检查、destroy 关闭、
+  open/ioctl 失败路径）与 `test/test_ads1256.lua`（44 断言：build 寄存器写序列、
+  call 单端/差分/负值/PGA 电压换算、destroy SDATAC、越界归缺省、失败路径）
+
+### 文档
+
+- `BME280.lua` / `SHT3X.lua` 头注释更新为现 HAL（纯 Lua 大端合并）语义，
+  移除旧 cfunc 桥「有符号 Int64 回绕」的过时描述；负值还原分支注明为防御遗留
+
 ## [0.3.3] - 2026-09-11
 
-新增硬件 PWM 驱动，并修两处构建/配置一致性问题。
+新增硬件 PWM 驱动，修复 BME280 恒 ERR 与两处构建/配置一致性问题。
 
 ### 新增
 
@@ -44,6 +172,21 @@
 - **`_run.sh` 堆大小注释与默认值不符**：注释写「显式给 512MB」，实际默认 128MB。
   512MB 堆在 512MB 内存的板子（如 CM0）上会 OOM，128MB 为折中值；注释已改为
   说明折中理由与 `cjHeapSize` 覆盖方式（该中间值尚未经 A/B 验证）
+- **BME280 湿度校准块读取超 HAL 合并读上限，build 恒 ERR（驱动完全不可用）**：
+  build 读 0xE1~0xE7 共 7 字节湿度校准系数时调用合并读 `i2c_read_multi`，
+  而该函数上限 6 字节（Lua number 2^53 精度约束，越界显式返回 -1，见
+  `lib/HAL.lua`）——HAL 收紧（1~8 收至 1~6）后此调用点漏网，任何 BME280
+  build 恒报 "Failed to read calibration"；因该驱动此前零测试覆盖，
+  离线测试全绿也未能拦截。现改走字节表版 `i2c_read_multi_bytes`
+  （HAL 注释明示的长块读指定路径，与 BMM150/MPU6050/VL53L0X 惯例一致），
+  单次 I2C_RDWR 事务读全块不合并；文件头「实现要点」注释同步（旧注释
+  描述的合并读符号回绕为收紧前行为）。新增 `test/test_bme280.lua` 离线
+  桩测试 33 用例：桩侧 `i2c_read_multi` 镜像真 HAL 契约（n>6 显式 -1）
+  守护本回归——旧代码在该桩下 build 复现恒 ERR；校准注入用 datasheet
+  附录 8.3 示例系数组，补偿输出与测试内独立转录的官方浮点公式交叉验证
+  （专抓端序/H4·H5 nibble 装配转录笔误），并覆盖 chip id 校验、NVM 拷贝
+  超时、读写无应答、无效温度/湿度读数（0x80000/0x8000 哨兵）、测量超时、
+  destroy 置睡眠与缺参安全返回等负路径
 
 ### 文档
 

@@ -18,9 +18,9 @@
 
 if jit then jit.off() end
 
-local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
-local P = dofile(dir .. "/lib/pthread.lua")
-dofile(dir .. "/lib/HAL.lua")			-- i2c/spi 采样
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local P = dofile(mpath.resolve("lib/pthread.lua"))
+dofile(mpath.resolve("lib/HAL.lua"))	-- i2c/spi 采样
 
 -- 解析配置串
 local cfg = {}
@@ -73,8 +73,9 @@ end
 
 if not driver or driver == "" then fail(-9, "config missing 'driver'"); return end
 
-local ok_load = pcall(dofile, dir .. "/" .. driver .. ".lua")
-if not ok_load then fail(-8, "cannot load driver: " .. dir .. "/" .. tostring(driver) .. ".lua"); return end
+local drvpath = mpath.resolve(driver .. ".lua")
+local ok_load = pcall(dofile, drvpath)
+if not ok_load then fail(-8, "cannot load driver: " .. drvpath); return end
 
 -- 高速采样中静默驱动的 print 刷屏（本状态机独立）
 print = function() end
@@ -136,7 +137,11 @@ local tick_errors = 0
 local tick_total  = 0
 function daemon_tick()
 	local s = call(params)
-	if type(s) == "table" and s.result == "OK" then
+	-- SHT3X/SGP30 等驱动 CRC 失败仍返回 result=OK（仅标 CRC_OK=0，避免直接 play 时
+	-- halt-on-error 中断动作序列）；守护侧是数据流而非动作，坏样本不得发布给下游——
+	-- 按 tick 错误处理、本次不 publish（count 停滞即是诊断线索）
+	local crc_bad = (type(s) == "table" and s.result == "OK" and s.CRC_OK == 0)
+	if type(s) == "table" and s.result == "OK" and not crc_bad then
 		local vals = {}
 		for i = 1, #fields do
 			vals[i] = sx(s[fields[i]])
@@ -147,15 +152,24 @@ function daemon_tick()
 		tick_errors = tick_errors + 1
 		tick_total  = tick_total + 1
 		if tick_errors <= 3 or tick_total % 100 == 0 then
-			local why = (type(s) == "table" and s.message) and tostring(s.message) or "unknown"
+			local why = "unknown"
+			if crc_bad then
+				why = "CRC check failed (CRC_OK=0)"
+			elseif type(s) == "table" and s.message then
+				why = tostring(s.message)
+			end
 			log(string.format("[sensor_daemon] tick error #%d (total %d): %s",
 				tick_errors, tick_total, why))
 		end
 	end
 end
 
--- H-07：守护退出（stop 后、Lua_free 前）由 daemon_body 调用，关闭总线 fd。
+-- H-07：守护退出（stop 后、Lua_free 前）由 daemon_body 调用，先调驱动 destroy()（若有）
+-- 让器件退出活跃态（VL53L0X 停止 ranging、ADS1x15 置单次态断电等），再关总线 fd。
 -- setup 失败路径不会到达此定义（fail 已 return），此时 fd 已由 close_bus 关闭。
 function daemon_cleanup()
+	if type(destroy) == "function" then
+		destroy(params)
+	end
 	close_bus()
 end

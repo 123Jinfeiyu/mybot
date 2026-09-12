@@ -74,6 +74,13 @@ function call(data)
 
 	-----------------------------------------------------
 	local ms = math.floor(delay + 0.5)	-- 舍入为整数毫秒
+
+	-- HAL 的 usleep 收 unsigned int 微秒（上限约 4294967ms ≈ 71.6 分钟），
+	-- 超限会 32 位回绕成随机短延时——静默破坏节拍，显式报错
+	if ms > 4294967 then
+		return err("Invalid Argument: delay exceeds usleep limit (max 4294967 ms)")
+	end
+
 	milli_sleep(ms)			-- 阻塞指定毫秒数
 
 	-- 返回字典

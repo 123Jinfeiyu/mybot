@@ -20,8 +20,7 @@ dofile(mpath.resolve("lib/drv_common.lua"))
 --   1) src 引用源变量：call 读 data[field]（默认 data.v0，来自被引用守护）
 --   2) @Action 直接传：以 <name>.in 列传入待滤值，call 优先读 data.in
 
-local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
-local KalmanLib = dofile(dir .. "/lib/kalman.lua")
+local KalmanLib = dofile(mpath.resolve("lib/kalman.lua"))
 
 local kf = nil			-- 滤波器实例（build 创建，跨 call 保持状态）
 local field = "v0"		-- 待滤字段名（可由 field 列配置）
@@ -35,7 +34,13 @@ function build(data)
 	local Q = tonumber(data.Q) or 20
 	local R = tonumber(data.R) or 200
 	if data.field ~= nil and data.field ~= "" then field = data.field end
-	kf = KalmanLib.new(Q, R)
+	-- lib/kalman.lua 对 Q<0 / R<=0 直接 error——pcall 转成 ERR 契约，
+	-- 非法配置不得以裸 Lua 异常逃出 build（与 Ema.lua 的 pcall 一致）
+	local ok_new, kf_new = pcall(KalmanLib.new, Q, R)
+	if not ok_new then
+		return { result = "ERR", message = "Invalid Kalman Q/R: " .. tostring(kf_new) }
+	end
+	kf = kf_new
 	return { result = "OK", Q = Q, R = R, field = field }
 end
 

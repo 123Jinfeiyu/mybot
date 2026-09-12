@@ -17,8 +17,7 @@ dofile(mpath.resolve("lib/drv_common.lua"))
 -- 引用链示例：@Daemon(采样) → @Ema(src=守护) → @Monitor(src=滤波变量)
 -- 也可不经 src，直接在 @Action 里以 <name>.in 列喂待滤值。
 
-local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
-local EmaLib = dofile(dir .. "/lib/ema.lua")
+local EmaLib = dofile(mpath.resolve("lib/ema.lua"))
 
 local f = nil			-- EMA 实例（build 创建，跨 call 保持状态）
 local field = "v0"		-- 待滤字段名（可由 field 列配置）

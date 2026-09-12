@@ -219,7 +219,15 @@ function call(data)
 		for _ = 1, 10 do
 			milli_sleep(EEPROM_POLL_MS)
 			local r = i2c_read(fd, 1)
-			if r >= 0 and (r % 256) >= RDY_MASK then
+			-- 总线读失败（-1）必须与"未就绪"区分：断线误报成
+			-- "EEPROM 写超时"会把排障引向错误方向（2026-09 审计）
+			if r < 0 then
+				return {
+					result = "ERR",
+					message = "MCP4725 EEPROM write: bus read failed while polling RDY"
+				}
+			end
+			if r >= RDY_MASK then
 				dbg(string.format("MCP4725 EEPROM write done: code=%d", code))
 				return {
 					result  = "OK",

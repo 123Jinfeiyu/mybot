@@ -363,12 +363,12 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 想看守护机制本身转起来，不必上真传感器——两个纯软件"模拟传感器"就够了：`lib/daemon_probe.lua`（内存槽发布计数/正弦）与 `lib/daemon_tid.lua`（gettid + 计数），扎到的仍是同一份 `Daemon.cj` 槽分配/加锁代码。`cjpm build` 后逐条跑，退出码 0 即通过：
 
 ```bash
-cat test/test_daemon.mt      | bash _run.sh --robot=test/test_daemon.sql     # 单守护并发压测（主线程负载 × 计数守护）
-cat test/test_multidaemon.mt | bash _run.sh --robot=test/test_multidaemon.sql # 4 守护并发诊断（各持独立 lua_State）
-cat test/test_monitor.mt     | bash _run.sh --robot=test/test_monitor.sql    # 守护采样 → Monitor 引用消费闭环
+cat scripts/test/daemon.mt      | bash _run.sh --robot=robots/test/daemon.sql     # 单守护并发压测（主线程负载 × 计数守护）
+cat scripts/test/multidaemon.mt | bash _run.sh --robot=robots/test/multidaemon.sql # 4 守护并发诊断（各持独立 lua_State）
+cat scripts/test/monitor.mt     | bash _run.sh --robot=robots/test/monitor.sql    # 守护采样 → Monitor 引用消费闭环
 ```
 
-对比：`test/test_mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
+对比：`scripts/test/mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
 
 #### 虚拟 I2C 总线（issue #18，无真机验证驱动链路）
 
@@ -394,7 +394,7 @@ vbus.reset()           -- 还原全局 i2c_* 并清空
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua`、驱动 dofile `lib/` 与 `@Daemon` 的 chunk 均按其解析；支持 `:` 分隔多个路径（如 `./modules:./extra_modules`）按序查找，**共享库目录放第一段**（issue #19） |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
 
-安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；未来接入 TCP 等外部输入时需另行建立信任边界（输入校验或白名单 API）。
+安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；未来接入 TCP 等外部输入时需另行建立信任边界（输入校验或白名单 API）。
 
 ## 💡 进阶示例：守护采样 → 滤波 → 消费闭环
 
@@ -472,6 +472,7 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 - ✅ 新增硬件 PWM 驱动 `PWM`：走 Linux sysfs（`/sys/class/pwm`），可配频率与占空比。软件 bit-bang PWM 在本框架不可行（会阻塞动作播放或耗尽 worker 池），故仅支持硬件 PWM
 - ✅ 修复 `.gitignore` 残留的 `cjpm.lock`（0.3.2 已把锁文件入库，忽略项与之矛盾）
 - ✅ 修正 `_run.sh` 堆大小注释与默认值不符（注释写 512MB，实际 128MB）
+- ✅ 修复 BME280 驱动 build 恒 ERR：湿度校准块 7 字节读超 HAL 合并读上限 6 字节，改走字节表版 `i2c_read_multi_bytes`；新增 `test/test_bme280.lua` 离线桩测试 33 用例（旧代码在桩下复现恒 ERR，防回归）
 
 ### v0.3.2（2026-09）
 

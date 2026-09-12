@@ -48,14 +48,36 @@ function call(data)
 	end
 
 	local level = (v0 > 1.0) and "HIGH" or "LOW"
+
+	-- 透传守护快照的全部标量采样字段（v0..vN）与发布计数：
+	-- 多字段守护（如六轴 IMU：v0..v5）经本消费结果在顶层即可见，
+	-- 不再只露出 v0；单值守护（daemon_probe 仅 v0）输出形状不变。
+	-- values 数组与 vN 重复，nvals/status 为框架内部字段，均不透传。
+	local res_tbl = { result = "OK", level = level, out = v0 }
+	for k, v in pairs(data) do
+		if type(k) == "string" and string.match(k, "^v%d+$") and type(v) == "number" then
+			res_tbl[k] = v
+		end
+	end
+	if count ~= nil then
+		res_tbl.count = count
+	end
+
 	if os.getenv("BOT4CJ_DEBUG") == "1" then
-		print(string.format("Monitor: v0=%s count=%s -> level=%s",
-			tostring(v0), tostring(count), level))
+		local parts = {}
+		for k, v in pairs(res_tbl) do
+			if string.match(k, "^v%d+$") then
+				parts[#parts + 1] = string.format("%s=%s", k, tostring(v))
+			end
+		end
+		table.sort(parts)
+		print(string.format("Monitor: %s count=%s -> level=%s",
+			table.concat(parts, " "), tostring(count), level))
 	end
 
 	-- 回传决策值（若声明 controller 列，框架会把它转发给执行器）
-	last = { result = "OK", level = level, out = v0 }
-	return last
+	last = res_tbl
+	return res_tbl
 end
 
 -- P4/M1：引用语义 = 读最近一次决策快照（无副作用）

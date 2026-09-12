@@ -30,6 +30,12 @@ function build(data)
 	end
 
 
+	-- 重复 build 先关旧 fd 再开新（防御：不依赖调用方保证 build 恰一次）
+	if fd ~= nil and fd > 0 then
+		i2c_close(fd)
+		fd = -1
+	end
+
 	-- 开始执行
 	fd = i2c_open(path)
 	if fd <= 0 then

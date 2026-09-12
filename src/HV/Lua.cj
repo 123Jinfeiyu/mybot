@@ -37,7 +37,8 @@ public func luaErrorString(L: lua_State): String {
 /* ---- 收紧 Lua 沙箱（issue #9 M1 可落地部分）----
  *  保留 os.getenv（模块路径）/ os.time|clock / dofile / require（HAL 的 ffi 依赖），
  *  中和可直接破坏宿主的入口：shell 执行（os.execute / io.popen）、进程退出（os.exit）、
- *  任意文件读写（io.open / io.lines / os.remove / os.rename）。
+ *  任意文件读写（io.open / io.lines / io.input / io.output / os.remove / os.rename；
+ *  io.input/io.output 在 LuaJIT 内部直调 fopen、不经过 io.open，须单独中和）。
  *  各全局缺表时跳过对应组，不中断启动。 */
 public func sandbox_lua(L: lua_State): Unit {
 	unsafe {
@@ -55,7 +56,7 @@ public func sandbox_lua(L: lua_State): Unit {
 		Lua_pop(L, 1)
 		LibC.free(kos)
 
-		let ioKeys = ["popen", "open", "lines"]
+		let ioKeys = ["popen", "open", "lines", "input", "output"]
 		let kio = LibC.mallocCString("io")
 		Lua_getglobal(L, kio)
 		if (Lua_type(L, -1) == LUA_TTABLE) {
@@ -416,9 +417,16 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				Lua_pop(L, 1)	/* 弹出表副本 */
 			}
 			if (arrKeys.size > 0) {
-				sort(arrKeys.toArray())
+				/* toArray 为拷贝，必须排序拷贝后按其迭代——原实现对拷贝排序等于没排 */
+				let sortedKeys = arrKeys.toArray()
+				sort(sortedKeys)
+				if (obj.getFields().size > 0) {
+					/* 混合键表：数组表达不了字符串键——整体转对象（数字键转字符串键），不丢字段 */
+					for (k in sortedKeys) { obj.put("${k}", arrVals.get(k).getOrThrow()) }
+					return obj
+				}
 				let arr = JsonArray()
-				for (k in arrKeys) { arr.add(arrVals.get(k).getOrThrow()) }
+				for (k in sortedKeys) { arr.add(arrVals.get(k).getOrThrow()) }
 				return arr
 			}
 			if (obj.getFields().size > 0) { return obj }

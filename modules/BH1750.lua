@@ -31,7 +31,7 @@
 --
 -- 实现要点（协议与换算经官方罗姆 ROHM 手册 + Adafruit/Claws BH1750 双源互证）：
 --   1. 模式命令 0x10/0x11/0x13 连续，0x20/0x21/0x23 单次
---   2. MTreg 设置需连写两字节命令：0x40|(mt>>5)&7 与 0x60|(mt>>1)&0x0F
+--   2. MTreg 设置需连写两字节命令：0x40|(mt>>5)&7 与 0x60|mt&0x1F
 --      （先高比特再低比特；MTreg 增大测量时间与灵敏度均按比例提升）
 --   3. 返回值最大 65535 counts；H2 档约 27306 lx、H 档约 54612 lx 封顶
 
@@ -86,7 +86,7 @@ end
 local function set_mtreg(fd)
 	if mtreg == MTREG_DEFAULT then return true end
 	local hi = bitc.bor(CMD_MT_HIGH, math.floor(mtreg / 32) % 8)	-- 0x40|(mt>>5)&7
-	local lo = bitc.bor(CMD_MT_LOW,  math.floor(mtreg / 2) % 16)	-- 0x60|(mt>>1)&F
+	local lo = bitc.bor(CMD_MT_LOW,  mtreg % 32)					-- 0x60|mt&0x1F（MT[4:0]）
 	return send_cmd(fd, hi) and send_cmd(fd, lo)
 end
 

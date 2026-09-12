@@ -58,8 +58,8 @@ function call(data)
 		delay = 0
 	end
 
-	print(string.format("Relay: test=%s note=%s -> delay=%d",
-		tostring(data.test), tostring(data.note), delay))
+	print(string.format("Relay: test=%s note=%s -> delay=%s",
+		tostring(data.test), tostring(data.note), tostring(delay)))
 
 	-- 返回值将与元数据合并后转发给 controller
 	return {  delay = delay  }
