@@ -34,7 +34,13 @@ function build(data)
 	local Q = tonumber(data.Q) or 20
 	local R = tonumber(data.R) or 200
 	if data.field ~= nil and data.field ~= "" then field = data.field end
-	kf = KalmanLib.new(Q, R)
+	-- lib/kalman.lua 对 Q<0 / R<=0 直接 error——pcall 转成 ERR 契约，
+	-- 非法配置不得以裸 Lua 异常逃出 build（与 Ema.lua 的 pcall 一致）
+	local ok_new, kf_new = pcall(KalmanLib.new, Q, R)
+	if not ok_new then
+		return { result = "ERR", message = "Invalid Kalman Q/R: " .. tostring(kf_new) }
+	end
+	kf = kf_new
 	return { result = "OK", Q = Q, R = R, field = field }
 end
 

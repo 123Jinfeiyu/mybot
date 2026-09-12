@@ -40,6 +40,13 @@ function build(data)
 		}
 	end
 
+	-- 重复 build 先关旧句柄再开新（与 I2C/GPIO/SPI 的守卫一致；
+	-- 否则旧 fd 泄漏且残留在 HAL.uart_baud 表中）
+	if fd ~= nil and fd > 0 then
+		uart_close(fd)
+		fd = 0
+	end
+
 	-- 打开串口（raw 8N1 + 非阻塞；波特率白名单在 HAL 内校验）
 	local opened = uart_open(path, uart_baud)
 	if opened == nil or opened < 0 then

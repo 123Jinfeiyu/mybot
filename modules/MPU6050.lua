@@ -13,6 +13,8 @@ local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 local ADDR_0		= 0x68	-- 默认地址
 local ADDR_1		= 0x69	-- 额外地址
+local REG_WHO_AM_I	= 0x75	-- 身份寄存器（只读）
+local WHO_AM_I_VAL	= 0x68	-- MPU6050 身份值（bit0 恒 0）
 local PWR_MGMT_1	= 0x6B	-- 电源管理寄存器1
 local PWR_NOSLEEP	= 0x00	-- 电源管理 - 非睡眠模式
 local GYRO_CONF_REG	= 0x1B	-- 陀螺仪配置寄存器
@@ -59,6 +61,17 @@ function build(data)
 	if not i2c_write_reg(fd, PWR_MGMT_1, PWR_NOSLEEP) then		-- 退出睡眠
 		return err("MPU6050 not responding (PWR_MGMT_1 write failed, check address and wiring)")
 	end
+
+	-- WHO_AM_I 甄别：总线上任意会 ACK 的器件（或错地址）都能通过纯写配置的
+	-- build——读身份寄存器把错挂器件挡在 build 期（同批 IMU 均已甄别）
+	local who = i2c_read_reg(fd, REG_WHO_AM_I)
+	if who < 0 then
+		return err("MPU6050 not responding (WHO_AM_I read failed, check address and wiring)")
+	end
+	if who ~= WHO_AM_I_VAL then
+		return err(string.format("MPU6050 WHO_AM_I = 0x%02X (expect 0x68, not MPU6050?)", who))
+	end
+
 	if not i2c_write_reg(fd, GYRO_CONF_REG, GYRO_FS_500DPS) then	-- 设陀螺仪量程
 		return err("MPU6050 write failed: GYRO_CONFIG")
 	end

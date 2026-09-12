@@ -44,9 +44,15 @@ local CMD_READ_STATUS = { 0xF3, 0x2D }	-- 读状态寄存器：2 数据字节 + 
 local CMD_MEAS_HIGH   = { 0x24, 0x00 }	-- 高重复性，最大 15.5ms
 local MEAS_WAIT_MS    = 16		-- 轮询等待（不低于数据手册最大值）
 
--- ==================== 状态寄存器位 ====================
-local ST_CMD_STATUS = 0x0001		-- 1=上一命令未处理或非法
-local ST_RESET_SEEN = 0x0002		-- 1=发生过复位（软复位/硬复位/上电）
+-- ==================== 状态寄存器位（数据手册 Table 18，读命令 0xF32D） ====================
+--   bit0 = 写数据校验和状态（'1' = 上次写数据校验和失败）
+--   bit1 = 命令状态（'1' = 上一命令未处理或非法）
+--   bit4 = 系统复位检测（软复位/硬复位/上电后置位）
+-- 旧映射把 bit0/bit1 当作命令/复位位——真命令错误漏检、复位检测位永错
+-- （2026-09 审计 M1 已修；bit0 仅诊断参考，build 不判）
+local ST_WRITE_CRC = 0x0001		-- bit0：写数据校验和状态
+local ST_CMD_STATUS = 0x0002		-- bit1：1=上一命令未处理或非法
+local ST_RESET_SEEN = 0x0010		-- bit4：1=发生过复位（软复位/硬复位/上电）
 
 -- CRC8校验字（多项式0x31，初值0xFF，与 SGP30.lua 一致）
 local function crc8(word)
@@ -146,11 +152,11 @@ function build(data)
 	if bitc.band(status, ST_CMD_STATUS) ~= 0 then
 		return {
 			result = "ERR",
-			message = "SHT3X command status error (bit0)"
+			message = "SHT3X command status error (bit1: last command not processed)"
 		}
 	end
 	if bitc.band(status, ST_RESET_SEEN) == 0 then
-		print("SHT3X: reset flag (bit1) not set in status, continuing")
+		print("SHT3X: reset flag (bit4) not set in status, continuing")
 	end
 
 	print(string.format("SHT3X init OK: addr=0x%02X, status=0x%04X", addr, status))

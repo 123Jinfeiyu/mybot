@@ -73,6 +73,45 @@
   除法抛裸 Lua error，报错信息难看）
 - `I2C.lua` / `GPIO.lua` build 重复调用先关旧 fd / 释放旧句柄（防重建泄漏，
   当前流程 build 恰一次，纯防御）
+- **2026-09 审计修复批次**（驱动 datasheet 级四严重 + 中低项）：
+  - **LTC2944 控制字写偏**（严重 S1）：CONTROL(0x01) 是 8 位寄存器，原 `write_reg16`
+    发 `[0x01, 0x00, ctrl]` 三字节，器件寄存器指针自增使 CONTROL 实际收到 0x00
+    （ADC 模式 00 = Sleep，build 后器件完全不转换、V/I/T 读陈旧值、电荷不累计），
+    且每次 build 把电荷 MSB(0x02) 覆写成控制字（默认量程下约 ±21mAh 错位）；
+    改单字节 `i2c_write_reg`。`test_ltc2944.lua` 桩改为逐字节自增建模 +
+    `charge_msb_clobbered` 回归哨兵（旧实现在新桩下必红），并补 call-before-build 守卫
+  - **BMM150 三轴多乘 0.3**（严重 S2）：补偿管线三轴均已 `/16` 收尾输出 µT
+    （与 Bosch BMM150-SensorAPI master 的 int16 compensate_*「data(micro-tesla)」
+    文档一致，Z 轴按驱动自身头注释即自相矛盾），call 再 ×0.3 使读数整体缩小
+    3.33 倍；去掉系数并同步 `test_bmm150.lua` 黄金向量期望值
+  - **INA219 SADC 平均档表错一位**（严重 S3）：datasheet 里 8 是 12 位单次的别名码，
+    2~128 次平均应为 9~15；原表把 2 次映射到 8，使 avg≥2 的每一档实际平均次数
+    减半（缺省"16 次"实为 8 次）。改 `{3,9,10,11,12,13,14,15}`、缺省 code 12，
+    重算 `test_ina219.lua` 工作配置期望值（0x3E67/0x3CCF/0x3EEF/0x3FFF）
+  - **MHZ19 帧头扫描死代码**（严重 S4）：`uart_read(fd, 9)` 单次最多返回 9 字节，
+    帧前有任何噪声字节时"帧头扫描"数学上不可达（start>1 则帧越界），且
+    `test_mhz19.lua` 旧桩忽略 `n` 返回 11 字节造成假绿；改 SDS011 同款多轮
+    累积聚合读（校验和兜底），桩改 FIFO 逐轮弹出镜像 HAL 契约——旧实现在新桩下必红
+  - **SHT3X 状态位映射错误**（中 M1）：数据手册 Table 18 实为 bit0=写校验和状态、
+    bit1=命令状态、bit4=系统复位检测；原把 bit0/bit1 当命令/复位位，真命令错误
+    漏检、复位检测形同虚设；`test_sht3x.lua` 状态值同步按正确位映射喂入
+  - **MPU6050 补 WHO_AM_I(0x75=0x68) 甄别**：纯写配置的 build 让总线上任意会 ACK
+    的器件蒙混过关（同批 IMU 均已甄别）；`test_mpu6050.lua` 补 0x75 读桩与
+    错挂/读失败用例
+  - **call-before-build 守卫补齐**：INA226/INA3221/MLX90393/LTC2944 未 build 先
+    call 会做 nil 算术裸 error（违反 ERR 契约，INA219 原有守卫）；统一返回
+    `not built (build first)`
+  - **重复 build 守卫补齐**：SPI/UART/PWM 与 I2C/GPIO 对齐（旧 fd/导出通道泄漏）
+  - **MCP4725 RDY 轮询区分总线错误**：i2c_read 失败（-1）原被当作"未就绪"、
+    断线误报成"EEPROM 写超时"；现立即报总线读失败
+  - **AMG8833 call 补 set_addr**：共享总线 fd 的从地址是 per-fd 状态，两次 call
+    之间被别的器件寻址会把读数打到错误从地址
+  - **Timer 延时上限**：>4294967ms 超 usleep unsigned int 上限会 32 位回绕成
+    随机短延时，现显式报错
+  - **Kalman build 非法 Q/R 转 ERR**：`KalmanLib.new` 对 Q<0/R<=0 直接 error，
+    现 pcall 转 ERR 契约（与 Ema 一致）
+  - **HAL.EINVAL 定义补上**：errno_hint 的 EINVAL 分支原引用未定义常量（死分支），
+    现 `HAL.EINVAL = 22`
 - `Servo.lua` / `Relay.lua` 日志格式化对浮点改 `%s`+`tostring`（原 `%d` 口径依赖
   LuaJIT 截断行为）；Relay 的逐帧输出为 README 首条命令的验收标记，保持不变
 - `test_h07_fd.lua` 桩目录补拷 `lib/mpath.lua`（适配守护 chunk 的新加载链路）

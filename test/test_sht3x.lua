@@ -6,7 +6,8 @@
 --   i2c_write_reg：写 0x30A2 软复位 / 0xF32D 读状态 / 0x2400 触发测量
 --   i2c_read：3 字节（状态寄存器）或 6 字节（测量结果 T_MSB T_LSB tCRC RH_MSB RH_LSB rhCRC）
 -- 换算锁定：T = -45 + 175*raw/65535，RH = 100*raw/65535；
--- 状态寄存器 bit0=命令错误、bit1=复位标志。
+-- 状态寄存器（数据手册 Table 18）：bit0=写校验和状态、bit1=命令状态、
+-- bit4=系统复位检测——测试按正确位映射喂状态值，守护驱动不回归旧错位映射。
 -- CRC8 多项式 0x31、初值 0xFF（与驱动一致）；测试侧用驱动同源的
 -- modules/bitcompat.lua 重算 CRC，保证期望值与驱动同语义。
 
@@ -37,7 +38,7 @@ local set_addr_ok = true	-- 模拟 set_addr 成功
 local meas_ok = true		-- 测量命令写入是否成功
 
 -- 状态寄存器 3 字节（status_hi, status_lo, status_crc）
-local status_bytes = { 0x00, 0x02, crc8(0x0002) }	-- 默认：复位标志置位、CRC 正确
+local status_bytes = { 0x00, 0x10, crc8(0x0010) }	-- 默认：复位检测位(bit4)置位、CRC 正确
 -- 测量结果 6 字节（t_hi, t_lo, t_crc, rh_hi, rh_lo, rh_crc）
 local meas_bytes = { 0, 0, 0, 0, 0, 0 }
 
@@ -110,7 +111,7 @@ end
 -- ==================== build：正常路径 ====================
 expect_ok("build 正常（复位标志置位）", function() return build({ fd = 3, address = "0x44" }) end)
 
--- 复位标志未置位（bit1=0）也继续，仅告警
+-- 复位检测位未置位（bit4=0）也继续，仅告警
 status_bytes = { 0x00, 0x00, crc8(0x0000) }
 expect_ok("build 复位标志未置位仍继续", function() return build({ fd = 3, address = "0x44" }) end)
 
@@ -127,15 +128,15 @@ expect_err("build 读状态失败", function() return build({ fd = 3, address = 
 read_fail = false
 
 -- 状态 CRC 不匹配
-status_bytes = { 0x00, 0x02, 0xFF }
+status_bytes = { 0x00, 0x10, 0xFF }
 expect_err("build 状态 CRC 不匹配", function() return build({ fd = 3, address = "0x44" }) end, "CRC mismatch")
 
--- 命令状态错误（bit0=1）
-status_bytes = { 0x00, 0x01, crc8(0x0001) }
-expect_err("build 命令状态错误 (bit0)", function() return build({ fd = 3, address = "0x44" }) end, "command status error")
+-- 命令状态错误（bit1=1）：命令未处理位，而非 bit0（写校验和状态）
+status_bytes = { 0x00, 0x02, crc8(0x0002) }
+expect_err("build 命令状态错误 (bit1)", function() return build({ fd = 3, address = "0x44" }) end, "command status error")
 
 -- 恢复正常状态供后续 call 测试
-status_bytes = { 0x00, 0x02, crc8(0x0002) }
+status_bytes = { 0x00, 0x10, crc8(0x0010) }
 
 -- ==================== call：换算 ====================
 -- T=25°C -> raw≈26220；RH=50% -> raw≈32768

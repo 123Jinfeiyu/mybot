@@ -246,6 +246,15 @@ function call(data)
 		}
 	end
 
+	-- build 前置守卫：rshunt1..3 仅 build 赋值，未 build 先 call 会做 nil 除法
+	-- 裸 error（与 INA219 的守卫对齐）
+	if rshunt1 == nil or rshunt2 == nil or rshunt3 == nil then
+		return {
+			result = "ERR",
+			message = "INA3221 not built (build first)"
+		}
+	end
+
 	-----------------------------------------------------
 	local regs = { REG_SHUNT1, REG_BUS1, REG_SHUNT2, REG_BUS2, REG_SHUNT3, REG_BUS3 }
 	local raw = {}

@@ -78,12 +78,9 @@ local function read_reg16(fd, reg)
 	return v
 end
 
--- 写 16 位寄存器（i2c_write_multi 返回 0 = 成功）
-local function write_reg16(fd, reg, val16)
-	local hi = math.floor(val16 / 256) % 256
-	local lo = val16 % 256
-	return i2c_write_multi(fd, reg, hi, lo) == 0
-end
+-- 注意：CONTROL(0x01) 是 8 位寄存器，必须单字节写。若像 16 位寄存器一样
+-- 发 [0x01, 0x00, ctrl] 三字节，器件寄存器指针自增会把 0x00 写进 CONTROL
+-- （[7:6]=00 = Sleep 模式，器件不再转换）、把 ctrl 写进 CHG_MSB(0x02) 破坏累计电荷。
 
 -- 预分频列 -> (M 值, 控制码)；非法/'-' 归一值落最大量程 4096
 local function presc_code_of(v)
@@ -157,7 +154,7 @@ function build(data)
 		if presc_tab[i] == presc_m then code = i - 1 end
 	end
 	local control = bitc.bor(0xC0, bitc.lshift(code, 3))
-	if not write_reg16(fd, REG_CONTROL, control) then
+	if not i2c_write_reg(fd, REG_CONTROL, control) then
 		return {
 			result = "ERR",
 			message = "Failed to write LTC2944 control"
@@ -214,6 +211,14 @@ function call(data)
 		return {
 			result = "ERR",
 			message = "Invalid Argument: fd or address (set_addr failed)"
+		}
+	end
+
+	-- build 前置守卫：rsense/presc_m 仅 build 赋值，未 build 先 call 会做 nil 算术
+	if rsense == nil or presc_m == nil then
+		return {
+			result = "ERR",
+			message = "LTC2944 not initialized (build first)"
 		}
 	end
 

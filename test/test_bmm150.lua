@@ -172,9 +172,9 @@ check(wr_of(0x4C) == 0x00, "OP_MODE = 10Hz + normal (0x00)", string.format("0x%0
 -- ==================== call：黄金向量 A（典型 trim） ====================
 local res = expect_ok("call 向量 A", function() return call({ fd = FD, address = "0x10" }) end)
 if res then
-	check(res.X ~= nil and near(res.X, -53 * 0.3), "A X = -53 LSB -> -15.9µT", tostring(res.X))
-	check(res.Y ~= nil and near(res.Y, 19 * 0.3), "A Y = 19 LSB -> 5.7µT", tostring(res.Y))
-	check(res.Z ~= nil and near(res.Z, -2047 * 0.3), "A Z = -2047 LSB（公式饱和）-> -614.1µT", tostring(res.Z))
+	check(res.X ~= nil and near(res.X, -53), "A X = -53µT", tostring(res.X))
+	check(res.Y ~= nil and near(res.Y, 19), "A Y = 19µT", tostring(res.Y))
+	check(res.Z ~= nil and near(res.Z, -2047), "A Z = -2047µT（公式饱和）", tostring(res.Z))
 end
 
 -- ==================== call：黄金向量 B（简化 trim） ====================
@@ -184,9 +184,9 @@ for addr, v in pairs(data_to_regs(100, -250, 300, 600)) do regs[addr] = v end
 expect_ok("build 重读 trimB", function() return build({ fd = FD, address = "0x10" }) end)
 res = expect_ok("call 向量 B", function() return call({ fd = FD, address = "0x10" }) end)
 if res then
-	check(res.X ~= nil and near(res.X, 31 * 0.3), "B X = 31 LSB -> 9.3µT", tostring(res.X))
-	check(res.Y ~= nil and near(res.Y, -78 * 0.3), "B Y = -78 LSB -> -23.4µT", tostring(res.Y))
-	check(res.Z ~= nil and near(res.Z, 2047 * 0.3), "B Z = 2047 LSB（公式饱和）-> 614.1µT", tostring(res.Z))
+	check(res.X ~= nil and near(res.X, 31), "B X = 31µT", tostring(res.X))
+	check(res.Y ~= nil and near(res.Y, -78), "B Y = -78µT", tostring(res.Y))
+	check(res.Z ~= nil and near(res.Z, 2047), "B Z = 2047µT（公式饱和）", tostring(res.Z))
 end
 
 -- ==================== call：黄金向量 B2（溢出码 -> nil） ====================
@@ -194,7 +194,7 @@ for addr, v in pairs(data_to_regs(-4096, 4095, -16384, 600)) do regs[addr] = v e
 res = expect_ok("call 向量 B2（溢出码）", function() return call({ fd = FD, address = "0x10" }) end)
 if res then
 	check(res.X == nil, "B2 X：原始码 -4096（XY 溢出翻转）-> nil", tostring(res.X))
-	check(res.Y ~= nil and near(res.Y, 1279 * 0.3), "B2 Y = 1279 LSB（4095 非溢出）-> 383.7µT", tostring(res.Y))
+	check(res.Y ~= nil and near(res.Y, 1279), "B2 Y = 1279µT（4095 非溢出）", tostring(res.Y))
 	check(res.Z == nil, "B2 Z：原始码 -16384（Z 溢出）-> nil", tostring(res.Z))
 end
 
@@ -204,8 +204,8 @@ for addr, v in pairs(data_to_regs(-200, 100, -450, 0)) do regs[addr] = v end
 expect_ok("build 重读 trimA", function() return build({ fd = FD, address = "0x10" }) end)
 res = expect_ok("call 向量 C（RHALL=0）", function() return call({ fd = FD, address = "0x10" }) end)
 if res then
-	check(res.X ~= nil and near(res.X, -68 * 0.3), "C X = -68 LSB（dig_xyz1 回退路径）-> -20.4µT", tostring(res.X))
-	check(res.Y ~= nil and near(res.Y, 28 * 0.3), "C Y = 28 LSB -> 8.4µT", tostring(res.Y))
+	check(res.X ~= nil and near(res.X, -68), "C X = -68µT（dig_xyz1 回退路径）", tostring(res.X))
+	check(res.Y ~= nil and near(res.Y, 28), "C Y = 28µT", tostring(res.Y))
 	check(res.Z == nil, "C Z：RHALL=0 无回退 -> nil", tostring(res.Z))
 end
 

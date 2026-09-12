@@ -71,6 +71,13 @@ function build(data)
 		}
 	end
 
+	-- 重复 build 先关旧 fd 再开新（防御：不依赖调用方保证 build 恰一次；
+	-- 与 I2C/GPIO 的守卫一致——否则旧 fd 永久泄漏）
+	if fd ~= nil and fd > 0 then
+		spi_close(fd)
+		fd = -1
+	end
+
 	-- 开始执行
 	fd = spi_open(path)
 	if fd <= 0 then

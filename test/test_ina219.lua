@@ -100,8 +100,8 @@ cfg_after_reset = 0x399F
 fail_read, set_addr_ok = false, true
 
 expect_ok("build 默认参数 (avg/rshunt 缺省)", function() return build({ fd = 3, address = "0x40" }) end)
-check(last_work_cfg == 0x3DDF,
-	"缺省工作配置 = 0x3DDF (bit13|PGA3|avg16code11|cont)", string.format("0x%04X", last_work_cfg or 0))
+check(last_work_cfg == 0x3E67,
+	"缺省工作配置 = 0x3E67 (bit13|PGA3|avg16code12|cont)", string.format("0x%04X", last_work_cfg or 0))
 check(sleep_ms ~= nil and sleep_ms >= math.ceil(2 * 532 * 16 / 1000),
 	"build 等待 >= 一个转换循环 (>=17ms)", tostring(sleep_ms))
 
@@ -110,16 +110,16 @@ expect_ok("build 字符串 fd='3'", function() return build({ fd = "3", address 
 
 -- ==================== build：avg 降档 ====================
 expect_ok("build avg='3'", function() return build({ fd = 3, address = "0x40", avg = "3" }) end)
-check(last_work_cfg == 0x3C47, "avg3->2 code8 => 0x3C47", string.format("0x%04X", last_work_cfg or 0))
+check(last_work_cfg == 0x3CCF, "avg3->2 code9 => 0x3CCF", string.format("0x%04X", last_work_cfg or 0))
 
 expect_ok("build avg='32'", function() return build({ fd = 3, address = "0x40", avg = "32" }) end)
-check(last_work_cfg == 0x3E67, "avg32 code12 => 0x3E67", string.format("0x%04X", last_work_cfg or 0))
+check(last_work_cfg == 0x3EEF, "avg32 code13 => 0x3EEF", string.format("0x%04X", last_work_cfg or 0))
 
 expect_ok("build avg='2000'", function() return build({ fd = 3, address = "0x40", avg = "2000" }) end)
-check(last_work_cfg == 0x3F77, "avg2000->128 code14 => 0x3F77", string.format("0x%04X", last_work_cfg or 0))
+check(last_work_cfg == 0x3FFF, "avg2000->128 code15 => 0x3FFF", string.format("0x%04X", last_work_cfg or 0))
 
 expect_ok("build avg='-'", function() return build({ fd = 3, address = "0x40", avg = "-" }) end)
-check(last_work_cfg == 0x3DDF, "'-' 缺省档 => 0x3DDF", string.format("0x%04X", last_work_cfg or 0))
+check(last_work_cfg == 0x3E67, "'-' 缺省档 => 0x3E67", string.format("0x%04X", last_work_cfg or 0))
 
 -- ==================== build：甄别与错误通道 ====================
 cfg_after_reset = 0x4127

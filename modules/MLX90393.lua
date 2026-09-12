@@ -349,6 +349,15 @@ function call(data)
 		}
 	end
 
+	-- build 前置守卫：poll_timeout_ms/sens_xy 仅 build 赋值，
+	-- 未 build 先 call 会对 nil 做比较/算术裸 error（与 INA219/LTC2944 对齐）
+	if poll_timeout_ms == nil or sens_xy == nil then
+		return {
+			result = "ERR",
+			message = "MLX90393 not built (build first)"
+		}
+	end
+
 	-----------------------------------------------------
 	local b, err = measure_once(fd)
 	if b == nil then

@@ -16,9 +16,12 @@
 --   四种 preset 对应 ODR/重复次数表：10/10/10/20Hz，rep_xy 1/4/7/23，
 --   rep_z 1/7/13/41（依 Bosch bmm150_set_presetmode 钉死）；'-' 缺省
 --
--- call 无需额外参数，返回 { result, X, Y, Z }（补偿后微特斯拉浮点，
--- X/Y LSB=0.3µT，Z 公式自带 /16 缩放与 ±2047 饱和；溢出/饱和异常轴为
--- nil——原始码 -4096(XY)/-16384(Z) 或 RHALL/trim 不可用）
+-- call 无需额外参数，返回 { result, X, Y, Z }（补偿后微特斯拉浮点）。
+-- 三轴补偿管线均以 /16 收尾（compensate_x/y 的末步与 compensate_z 的
+-- 「LSB -> micro-tesla」换算同构），输出即 µT——依 Bosch BMM150_SensorAPI
+-- master 的 int16 compensate_* 文档「data(micro-tesla) in int16_t」钉死，
+-- 勿再乘缩放系数；溢出/饱和异常轴为 nil（原始码 -4096(XY)/-16384(Z)
+-- 或 RHALL/trim 不可用）
 -- 接 sensor_daemon：fields=X|Y|Z（浮点透传，勿配 sign）
 --
 -- 实现要点（寄存器/公式依 Bosch BMM150_SensorAPI master 逐行核实）：
@@ -379,10 +382,11 @@ function call(data)
 	local z = compensate_z(z_raw, rhall, trim)
 
 	-- 溢出哨兵 -32768 -> nil（不能用 and/or 惯用法：then 值为 nil 时必落 or 分支）
+	-- 三轴管线均已 /16 收尾、输出 µT（见文件头），无需再乘任何系数
 	local X, Y, Z
-	if x == -32768 then X = nil else X = x * 0.3 end
-	if y == -32768 then Y = nil else Y = y * 0.3 end
-	if z == -32768 then Z = nil else Z = z * 0.3 end
+	if x == -32768 then X = nil else X = x end
+	if y == -32768 then Y = nil else Y = y end
+	if z == -32768 then Z = nil else Z = z end
 
 	local ret = {
 		result = "OK",

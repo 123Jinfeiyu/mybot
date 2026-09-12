@@ -810,6 +810,7 @@ local O_RDONLY = 0
 -- sysfs 写失败几乎总是这两种原因，给出人话提示（errno 取自 Linux 通用值）
 HAL.ENOENT = 2			-- 节点不存在：overlay 未启用 / chip 编号不对
 HAL.EACCES = 13			-- 权限不足：export 通常仅 root 可写
+HAL.EINVAL = 22			-- 参数被内核拒绝（如越界通道号、重复 export）
 
 local function errno_hint(e)
 	if e == HAL.ENOENT then

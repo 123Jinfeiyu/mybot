@@ -290,6 +290,15 @@ function call(data)
 		}
 	end
 
+	-- build 前置守卫：rshunt 仅 build 赋值，未 build 先 call 会做 nil 除法
+	-- 裸 error（与 INA219 的守卫对齐）
+	if rshunt == nil then
+		return {
+			result = "ERR",
+			message = "INA226 not built (build first)"
+		}
+	end
+
 	-----------------------------------------------------
 	local s = read_reg16(fd, REG_SHUNT)
 	if s == nil then
