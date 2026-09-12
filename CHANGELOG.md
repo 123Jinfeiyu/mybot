@@ -7,10 +7,33 @@
 ## [未发布]
 
 审计修复批次：BH1750 MTreg 编码、多路径加载收尾、守护 CRC 坏样本过滤等；
-新增 INA219 / INA3221 离线桩测试覆盖。
+新增 INA219 / INA3221 / SHT3X / LTC2944 / MAX17043 / TPL0501 离线桩测试覆盖。
 
 ### 新增
 
+- **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
+  轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
+  校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，
+  锁定关键预期值：CRC 通过样本 T/RH 换算结果、`CRC_OK=1`、坏样本（`bitc.bxor`
+  翻转一字节）`CRC_OK=0` 负路径、缺 fd/address 与 read/set_addr/总线读失败、
+  poll 模式 0x2400 写序列与 16ms 等待。
+- **LTC2944 离线测试 `test/test_ltc2944.lua`**（30 用例）：桩内模拟「build 控制字
+  计算（`0xC0 | (code<<3)`，code=预设表索引-1；缺省 M4096 -> 0xF0、M16 -> 0xD0、
+  M1 -> 0xC0）-> VCELL/I/TEMP/CHARGE 换算」全链路，锁定关键预期值：
+  `V=raw/65535*70.8`、`I=(raw-0x7FFF)/0x7FFF*0.064/rsense`、
+  `T=raw/65535*510-273.15`、`CHARGE=chg*0.34e-3*(M*0.05)/(rsense*4096)`
+  （M=4096、rsense=0.05、chg=1000 -> 0.34Ah）、缺省 M/rsense 归一、缺 fd/address
+  与写控制字/读总线失败负路径。
+- **MAX17043 离线测试 `test/test_max17043.lua`**（20 用例）：桩内模拟「build
+  读版本寄存器 0x08 甄别存在性（只读型器件）-> VCELL（0x02，12-bit 左移 4 ->
+  `>>4`，LSB 1.25mV）/ SOC（0x04，`raw/256` %）读」全链路，锁定关键预期值：
+  满量程/标称电压换算、SOC 百分比、缺 fd/address 与版本读/总线读失败负路径、
+  只读 build 不写任何器件寄存器（纯读取型驱动特征）。
+- **TPL0501 离线测试 `test/test_tpl0501.lua`**（28 用例）：桩内模拟「SPI 写
+  256 抽头电位器，优先级 level > percent > ohms，越界 clamp 0~255，
+  `ohms=level/255*rtotal` 换算」全链路，锁定关键预期值：三档入参优先级、
+  clamp 边界（-1->0、256->255、percent 80 -> 204）、`spi_write` 失败负路径、
+  缺 fd 与 rtotal 缺省 100kΩ。
 - **INA219 离线测试 `test/test_ina219.lua`**（32 用例）：桩内模拟「软复位 ->
   读回配置默认值 0x399F 甄别 -> 写工作配置 -> 等首拍」全链路，锁定的关键预期值：
   缺省工作配置 0x3DDF（bit13|PGA3|avg16code11|cont）、avg 降档 0x3C47/0x3E67/0x3F77、
