@@ -165,6 +165,29 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   （DIST_MM:f/STATUS/VALID/SIGNAL_MCPS:f 四字段守护、距离一路 EMA
   α=0.2、raw/滤波两 Monitor，16 拍核对合成距离波形与 EMA 混合）；
   run_all.sh E2E 用例表加 vl53l0x_virt。全套 63 跑通 / 1 真机用例跳过。
+- **MCP4725 虚拟器件（首个 I2C 命令位嵌入式输出器件）+ 测试迁移**：新增
+  `virtbus/mcp4725.lua`——12 位 I2C DAC，无寄存器指针，命令类型嵌在写流
+  首字节高 3 位（C2..C0）、读为无指针纯读，与 BH1750（单字节 opcode）
+  和寄存器指针器件均不同。模型真正解码驱动写下的每帧：快速写
+  （C2C1=00，`00 PD1 PD0 D11..D8 | D7..D0`，PD 在 bits5:4，只更新易失
+  DAC/掉电位）与写 DAC+EEPROM（C=011，`0x60|PD<<1 | D11..D4 | D3..D0<<4`，
+  命令帧 PD 在 bits2:1——与读回状态字节 PD 在 bits5:4 是硅片事实差异），
+  双码独立存储；EEP 写进入 25ms 写周期状态机（忙时读回 bit7 RDY=0），
+  `advance(ms)` 虚拟时钟推进（测试 milli_sleep 桩转调，驱动 50ms 步进
+  首次轮询即完成）；无指针读回按 datasheet 拼 5 字节（RDY/PD、DAC
+  跨字节 12 位、EEPROM 12 位），1 字节读只回状态字节供轮询；短于命令
+  要求的帧返 NACK、未建模命令（010）合法帧 ACK 留痕 unknown 不改状态；
+  钩子含 nack 全断、`fail_read(按读长度谓词)`（可只断 1 字节 RDY 轮询，
+  验证驱动对"轮询途中总线失败"与"超时"的区分，2026-09 审计点）、
+  `fail_write(按帧谓词)`、`set_eep_stuck`，reset 保留钩子。输出器件无
+  virt_tick，阶段 C 守护采样 E2E 豁免（读回的是静态设置码非采样数据）。
+  `test/test_mcp4725.lua` 从 188 行手写帧桩整体重写（108 断言：
+  模型上电读回/PD 位编解码/双码独立性/RDY 25ms 时序/帧长与未用命令/
+  写日志分类/五类钩子，真实 build 纯读在位验证零写/set_addr 留痕/
+  vref 列/四路基建负路径，真实快速写的 level-volt-percent 三参优先级/
+  钳位/vref 3.3 换算/帧字节级断言，真实 EEP 写 3 字节帧/一次轮询即完成/
+  10 拍 500ms 超时/轮询总线失败/写帧失败四路径，无参读回易失码与
+  EEPROM 独立性，destroy 零事务）。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
