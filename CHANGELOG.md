@@ -7,7 +7,8 @@
 ## [未发布]
 
 审计修复批次：BH1750 MTreg 编码、多路径加载收尾、守护 CRC 坏样本过滤等；
-新增 INA219 / INA3221 / SHT3X / LTC2944 / MAX17043 / TPL0501 离线桩测试覆盖。
+新增 INA219 / INA3221 / SHT3X / LTC2944 / MAX17043 / TPL0501 离线桩测试覆盖；
+@Daemon 共享槽采样通道 16 → 32（支撑单守护聚合多路传感器）。
 
 ### 新增
 
@@ -49,8 +50,13 @@
   三通道分流/总线 >>3 后分流 LSB 40µV/总线 LSB 8mV、反流 0xFC00 经 LuaJIT
   `bit.rshift` 无符号语义 -> -128 LSB -> -5.12mV、缺 fd/address 与 set_addr/总线读
   失败负路径、rshuntN='-' 归缺省 0.01Ω。
-
-### 修复
+- **@Daemon 共享槽采样通道 16 → 32**（`src/HV/Daemon.cj` + `modules/lib/pthread.lua`
+  两侧 ABI 同步）：单守护可由 16 通道提升到 32 通道，支撑"一个守护线程聚合多路
+  传感器"（多 IMU / 多气感 / 里程计）场景。槽布局前缀 `count(64)/nvals(68)/values(72)`
+  不变，仅尾部 `values[32]` 占 256B 后 `stop` 经 C 编译器 8 字节对齐落 328、槽总大小
+  208 → 336（`gcc __builtin_offsetof` 实测；仓颉手写 `SLOT_*_OFF` 与 Lua `ffi.offsetof`
+  逐项断言双向锁定，漂移 fail-fast）。`test/test_pthread.lua` 同步扩容（截断 32 +
+  满额 32 通道往返），回归 58/0。
 
 - **BH1750 MTreg 编码错误**（datasheet 级）：低字节命令原写 `0x60|((mt>>1)&0x0F)`，
   依 ROHM 手册改为 `0x60|(mt&0x1F)`（MT[4:0]）——原编码丢 bit0 且比特错位，

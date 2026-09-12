@@ -6,12 +6,13 @@
 -- 宿主侧（r.cj 经 pthread4cj），本库只负责跨状态机的共享内存 + 互斥，
 -- 全部经 ffi 直调 libc，无仓颉 cfunc（守住 issue #14 的纯 Lua 数据通路）。
 --
--- 【共享槽布局】必须与 r.cj 的 @C struct DaemonSlot 严格一致（同一 C ABI）：
+-- 【共享槽布局】必须与 Daemon.cj 的 @C struct DaemonSlot 严格一致（同一 C ABI）：
 --   offset 0   char    mutex[64]    pthread_mutex_t（aarch64=48B/x86_64=40B，预留 64）
 --   offset 64  int32   count        已 publish 次数
 --   offset 68  int32   nvals        本次值个数
---   offset 72  double  values[16]   采样值
---   offset 200 uint8   stop         停止标志（1=请求停止）
+--   offset 72  double  values[32]   采样值（P：16 → 32，支撑单守护聚合多路传感器）
+--   offset 248 uint8   stop         停止标志（1=请求停止；values[32] 尾在 72+256=328 前，
+--                                    实际 stop 紧随 values，对齐后落在 248）
 --
 -- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 HAL.lua 已定义的
 -- open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，重复 cdef 会报错）。
@@ -62,12 +63,12 @@ typedef struct {
 	char     mutex[64];
 	int32_t  count;
 	int32_t  nvals;
-	double   values[16];
+	double   values[32];
 	uint8_t  stop;
 } daemon_slot_t;
 ]]
 
-P.SLOT_MAXVALS = 16
+P.SLOT_MAXVALS = 32
 
 ------------------------------------------------------------------
 -- 地址 ↔ 指针
@@ -191,12 +192,12 @@ end
 -- 宿主侧 r.cj/Daemon.cj 手写 SLOT_*_OFF 与 @C struct DaemonSlot 一致；
 -- 本库用 ffi 的运行时 struct 布局（编译器填充后的事实）逐项断言，
 -- 把「仓颉定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
--- 仓颉侧基准（Daemon.cj:23-28，SLOT_SIZE=208）：
---   offset  0  char     mutex[64]     (pthread_mutex_t, 预留 64)
---   offset 64  int32    count
---   offset 68  int32    nvals
---   offset 72  double   values[16]
---   offset 200 uint8    stop
+-- 仓颉侧基准（Daemon.cj:23-28，SLOT_SIZE=336）：
+--   offset  0   char    mutex[64]     (pthread_mutex_t, 预留 64)
+--   offset 64  int32   count
+--   offset 68  int32   nvals
+--   offset 72  double  values[32]
+--   offset 328 uint8   stop
 -- ffi.offsetof/sizeof 并非所有 arch 都可用——不可用时跳过断言（回退旧行为）。
 -- ffi 命名空间内未声明原生 pthread_mutex_t（HAL 只声明大小截断的别名），
 -- 故真实 mutex 尺寸无法直接 sizeof；仅在可解析时做 ≤64B 预留校验。
@@ -216,8 +217,8 @@ local function assert_layout()
 			{ "count",   64,  ffi.offsetof("daemon_slot_t", "count") },
 			{ "nvals",   68,  ffi.offsetof("daemon_slot_t", "nvals") },
 			{ "values",  72,  ffi.offsetof("daemon_slot_t", "values") },
-			{ "stop",   200,  ffi.offsetof("daemon_slot_t", "stop") },
-			{ "size",   208,  ffi.sizeof("daemon_slot_t") },
+			{ "stop",   328,  ffi.offsetof("daemon_slot_t", "stop") },
+			{ "size",   336,  ffi.sizeof("daemon_slot_t") },
 		}
 		for _, c in ipairs(checks) do
 			if c[3] ~= c[2] then
