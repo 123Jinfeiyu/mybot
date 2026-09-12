@@ -216,6 +216,14 @@ if not fd or fd < 0 then fd = nil; fail(-1, "cannot open bus: " .. path); return
 params.fd = fd
 
 -- 配置器件
+-- build 前先打一拍 virt_tick(0)：部分器件 build 内含长转换门（如 SGP30
+-- Measure_test 220ms 自检），守护线程不注入 milli_sleep 桩、不推进模型虚拟
+-- 时钟，预武装使这类 build 读即就绪；同时把器件置于已上电稳定（warm）态。
+-- 无 virt_tick 的模型（写-only 输出器件）不受影响；既有模型 build 不读
+-- 转换结果（NVM/状态/回显），预武装不误伤。virt_n 仍从 0 起，造数确定性不变。
+if vdev ~= nil and type(vdev.virt_tick) == "function" then
+	pcall(function() vdev:virt_tick(0) end)
+end
 local r = build(params)
 if type(r) ~= "table" or r.result ~= "OK" then
 	local why = (type(r) == "table" and r.message) and tostring(r.message) or "driver build() not OK"
