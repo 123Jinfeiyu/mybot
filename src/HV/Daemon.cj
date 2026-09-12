@@ -21,13 +21,16 @@ import luajit4cj.*
 import pthread4cj.*
 import mt2.*
 
-/* ---- 共享槽 daemon_slot_t 布局偏移（必须与 modules/lib/pthread.lua 一致）---- */
+/* ---- 共享槽 daemon_slot_t 布局偏移（必须与 modules/lib/pthread.lua 一致）----
+ * P：values 扩容到 32 通道（原 16），支撑单守护聚合多路传感器（多 IMU/气感/里程计）；
+ * 前缀偏移 count(64)/nvals(68)/values(72) 不变；values[32] 占 256B 后 stop 紧跟其后，
+ * 经 C 编译器 8 字节对齐落 328，槽总大小 336（gcc __builtin_offsetof 实测）。 */
 public let SLOT_COUNT_OFF: Int64 = 64		/* int32：publish 次数 */
 public let SLOT_NVALS_OFF: Int64 = 68		/* int32：本次值个数 */
-public let SLOT_VALUES_OFF: Int64 = 72		/* double[16]：采样值 */
-public let SLOT_STOP_OFF: Int64 = 200		/* uint8：停止标志 */
-public let SLOT_SIZE: Int64 = 208
-public let SLOT_MAXVALS: Int64 = 16
+public let SLOT_VALUES_OFF: Int64 = 72		/* double[32]：采样值 */
+public let SLOT_STOP_OFF: Int64 = 328		/* uint8：停止标志 */
+public let SLOT_SIZE: Int64 = 336
+public let SLOT_MAXVALS: Int64 = 32
 
 /* ---- pthread CFunc（_mutex_init/destroy/lock/unlock）由 pthread4cj 提供 ---- */
 

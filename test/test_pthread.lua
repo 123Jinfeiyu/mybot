@@ -49,7 +49,19 @@ do
 	for i = 1, P.SLOT_MAXVALS + 5 do big[i] = i end
 	P.publish(slot, big)
 	local vals = P.latest(slot)
-	check("超 MAXVALS 截断到 16", #vals == P.SLOT_MAXVALS, #vals)
+	check("超 MAXVALS 截断到 32", #vals == P.SLOT_MAXVALS, #vals)
+end
+
+-- 满额 32 通道往返（P：values[32]，支撑单守护聚合多路传感器）
+do
+	local slot = P.slot_new()
+	local full = {}
+	for i = 1, P.SLOT_MAXVALS do full[i] = i * 0.5 end
+	P.publish(slot, full)
+	local vals, count = P.latest(slot)
+	check("满 32 通道值往返", #vals == P.SLOT_MAXVALS and vals[1] == 0.5
+		and vals[32] == 32 * 0.5 and count == 1,
+		string.format("n=%s last=%s", tostring(#vals), tostring(vals[32])))
 end
 
 -- 停止标志
