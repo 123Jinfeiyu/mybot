@@ -25,6 +25,7 @@ function milli_sleep(ms) end
 local A_XH, A_XL = 0x3B, 0x3C
 local A_YH, A_YL = 0x3D, 0x3E
 local A_ZH, A_ZL = 0x3F, 0x40
+local T_H, T_L   = 0x41, 0x42
 local G_XH, G_XL = 0x43, 0x44
 local G_YH, G_YL = 0x45, 0x46
 local G_ZH, G_ZL = 0x47, 0x48
@@ -84,6 +85,28 @@ set_word(G_YH, G_YL, 0xFB2E)  -- -1234
 set_word(A_ZH, A_ZL, 0x8001)  -- -32767
 expect_sign("negative gyro_y=-1234", base, "GYRO_Y", -1234)
 expect_sign("negative accel_z=-32767", base, "ACCEL_Z", -32767)
+
+-- 温度：TEMP_RAW 同样走 s16 符号扩展，TEMP 按 datasheet 公式换算 °C（容差 1e-9）
+local function expect_temp(label, word, expectRaw, expectC)
+	regs = {}
+	set_word(T_H, T_L, word)
+	local ok, res = pcall(call, base)
+	local gotRaw = ok and type(res) == "table" and res.TEMP_RAW or nil
+	local gotC   = ok and type(res) == "table" and res.TEMP or nil
+	local pass = ok and gotRaw == expectRaw and gotC ~= nil and math.abs(gotC - expectC) < 1e-9
+	if pass then
+		print(string.format("[PASS] %-28s TEMP_RAW=%d TEMP=%.4f°C", label, gotRaw, gotC))
+	else
+		fails = fails + 1
+		print(string.format("[FAIL] %-28s TEMP_RAW=%s TEMP=%s (expect %d / %.4f) result=%s",
+			label, tostring(gotRaw), tostring(gotC), expectRaw, expectC, result_of(ok, res)))
+	end
+end
+expect_temp("temp zero 0x0000",    0x0000,     0, 36.53)
+expect_temp("temp positive 340",   0x0154,   340, 37.53)
+expect_temp("temp negative -340",  0xFEAC,  -340, 35.53)
+expect_temp("temp room -5120",     0xEC00, -5120, -5120 / 340 + 36.53)
+expect_temp("temp min 0x8000",     0x8000, -32768, -32768 / 340 + 36.53)
 
 if fails == 0 then
 	print("all passed")
