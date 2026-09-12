@@ -8,7 +8,9 @@
 
 审计修复批次：BH1750 MTreg 编码、多路径加载收尾、守护 CRC 坏样本过滤等；
 新增 INA219 / INA3221 / SHT3X / LTC2944 / MAX17043 / TPL0501 离线桩测试覆盖；
-@Daemon 共享槽采样通道 16 → 32（支撑单守护聚合多路传感器）。
+@Daemon 共享槽采样通道 16 → 32（支撑单守护聚合多路传感器）；
+ActionSource 工厂（stdin / TCP / 文件三源可替换动作输入）；
+NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
 
 ### 新增
 
@@ -57,6 +59,22 @@
   208 → 336（`gcc __builtin_offsetof` 实测；仓颉手写 `SLOT_*_OFF` 与 Lua `ffi.offsetof`
   逐项断言双向锁定，漂移 fail-fast）。`test/test_pthread.lua` 同步扩容（截断 32 +
   满额 32 通道往返），回归 58/0。
+- **ActionSource 工厂 `src/ActionSource.cj`**（stdin / TCP / 文件三源可替换动作输入）：
+  `main.cj` 新增 `--tcp <port>` / `--input <path>` 参数，优先级 tcp > input > stdin。
+  仓颉核心 `r.cj · run(input: InputStream)` 已接受抽象 `InputStream`，零改动即接入。
+  `TcpStreamReader` 将 `TcpSocket` 字节流适配为 `InputStream` 字符流（.mt 纯 ASCII，
+  单字节 = 单 Rune；未来 UTF-8 列名需升级 BufferedInputStream + UTF-8 解码器）。
+  `scripts/tcp_e2e.sh` 端到端回环测试（Python 客户端 → TCP → 服务端 relay-test）。
+  `test/test_action_source.lua` 7 用例（工厂优先级 + 文件源等价性 + stdin 管道）。
+  与项目作者 `5dac278` 的两阶段构造 + 失败清理互为表里，落地其预留的「TCP 长驻
+  模式」能力。
+- **NN 前向推理引擎 `modules/lib/nn.lua`**（纯 Lua，无 nn4cj 依赖）：落实 `main.cj`
+  历史注释 + `r.cj` TODO「用矩阵脚本存储神经网络模型」。全连接 MLP 前向推理，默认同
+  历史 4 层架构 `{41,80,80,40,17}`（隐含层 LeakyReLU α=0.2 + 输出层 Sigmoid，
+  17=16 舵机 + 1 时延）。`forward`/`forwardOne` 前向传播、`zeroInit`/`randInit` 初始化、
+  `saveMt`/`loadMt` 权重以 `.mt` 矩阵文本存取（6 位有效数字序列化，往返文本不变）。
+  `test/test_nn.lua` 16 用例（激活边界 / 维度校验 / 手算前向核对 / .mt 往返 / 错误路径），
+  回归 60/0。可离线桩测试，作为未来仓颉 `MtVars_NN` / nn4cj 重新接入的推理侧替代或回归基准。
 
 - **BH1750 MTreg 编码错误**（datasheet 级）：低字节命令原写 `0x60|((mt>>1)&0x0F)`，
   依 ROHM 手册改为 `0x60|(mt&0x1F)`（MT[4:0]）——原编码丢 bit0 且比特错位，

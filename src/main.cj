@@ -19,6 +19,8 @@ main(args: Array<String>): Int64 {
 	let specs = [
 		ArgumentSpec.Long("help", ArgumentMode.NoValue),	/* ---- 拉起帮助 ---- */
 		ArgumentSpec.Long("robot", ArgumentMode.RequiredValue),	/* ---- 结构脚本 ---- */
+		ArgumentSpec.Long("tcp", ArgumentMode.RequiredValue),	/* ---- TCP 端口（长驻模式）---- */
+		ArgumentSpec.Long("input", ArgumentMode.RequiredValue)	/* ---- 动作脚本文件路径 ---- */
 //		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),	/* ---- 输入模型 ---- */
 //		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),	/* ---- 输出模型 ---- */
 //		ArgumentSpec.Long("test", ArgumentMode.RequiredValue)	/* ---- 输入一个测试 ---- */
@@ -107,8 +109,14 @@ main(args: Array<String>): Int64 {
 		try {
 			robot.active()
 
-			let consoleReader = getStdIn()
-			robot.run(consoleReader)
+			/* ---- ActionSource：可替换动作输入源（stdin / TCP / 文件）---- */
+			let inputOpt = openActionSource(options)
+			if (let Some(input) <- inputOpt) {
+				robot.run(input)
+			} else {
+				println("动作输入源打开失败，退出")
+				return 1
+			}
 		}
 
 		/* 硬件创建/激活/动作调用出错：停止执行并友好退出（错误码 1）；
@@ -144,6 +152,11 @@ func print_help()
 	println("这是一个机器人动作脚本解析器。")
 	println("使用--robot选项指定结构脚本，然后使用管道输入动作脚本，示例：")
 	println("cat scripts/std.mt | ./bot --robot=./robots/spider1.sql")
+	println("")
+	println("动作输入源（优先级从高到低）：")
+	println("  --tcp <port>    TCP 长驻模式：监听端口等待客户端下发 .mt")
+	println("  --input <path>  从文件读取动作脚本")
+	println("  （缺省）        从 stdin 管道读取")
 }
 
 /* -------- 集成多种常规测试、临时测试 --------
