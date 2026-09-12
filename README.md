@@ -344,10 +344,10 @@ CREATE TABLE Daemon (
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, sign)
   VALUES ('imu0', 'lib/sensor_daemon.lua', 'MPU6050', 'i2c',
-          '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z', '16');
+          '/dev/i2c-1', '0x68', '10', 'ACCEL_X|ACCEL_Y|ACCEL_Z|GYRO_X|GYRO_Y|GYRO_Z|TEMP:f', '16');
 ```
 
-`fields` 用 `|` 分隔以避开 SQL 值分隔符逗号；`sign=16` 表示对提取值做 16 位补码符号扩展。
+`fields` 用 `|` 分隔以避开 SQL 值分隔符逗号；`sign=16` 表示对提取值做 16 位补码符号扩展。字段可带 `:模式` 后缀逐字段覆盖：`:f`/`:float` 原样透传浮点（如 MPU6050 的 `TEMP` °C，避免被 `sign=16` 取整破坏），`:s16` 强制 16 位补码；无后缀跟随全局 `sign`。
 
 **滤波器硬件变量**：每个滤波器 = `lib/<filter>.lua` 库（统一 `.new()` + `:filter(x)` 接口）+ `<Filter>.lua` 驱动。驱动引用守护/传感器，call 逐拍滤波，输出既作 `out` 也别名 `v0`，成为「虚拟传感器」。现有滤波器：
 

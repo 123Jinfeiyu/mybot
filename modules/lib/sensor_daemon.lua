@@ -10,8 +10,12 @@
 --   proto    i2c（默认）| spi | uart（uart 时 path=串口设备、baud=波特率）
 --   path     总线设备路径（默认 i2c:/dev/i2c-1，spi:/dev/spidev0.0）
 --   addr     器件地址（i2c 如 0x68；spi 忽略）
---   fields   逗号或管道分隔的 call() 返回字段名，按序 publish（SQL 里推荐用 |）
---   sign     可选，16 表示对提取值做 16 位补码符号扩展
+--   fields   逗号或管道分隔的 call() 返回字段名，按序 publish（SQL 里推荐用 |）。
+--            每项可带 ":模式" 后缀做逐字段变换，覆盖全局 sign：
+--              ACCEL_X        无后缀：按全局 sign 列处理
+--              TEMP:f         f/float = 原样透传（温度等换算后的浮点物理量，禁止取整补码）
+--              REG_H:s16      s16 = 强制 16 位补码符号扩展
+--   sign     可选，16 表示对提取值做 16 位补码符号扩展（无 :后缀 字段的缺省行为）
 --   spi 专用：mode/bits/speed/delay
 --   其余任意键（如 channel/pga）作为 build/call 的附加参数透传给驱动
 --   （interval 由 daemon_body 逐拍 sleep 使用，不在本 chunk 内处理）
@@ -34,9 +38,29 @@ local path   = cfg.path or (proto == "spi" and "/dev/spidev0.0" or "/dev/i2c-1")
 local addr   = cfg.addr
 local sign   = tonumber(cfg.sign)
 
+-- fields 解析："名字" 或 "名字:模式"；模式 ""=跟随全局 sign，"f"/"float"=原样，
+-- "s16"=16 位补码（解析到非法模式按原样透传并打日志，绝不静默取整丢精度）
 local fields = {}
-for f in string.gmatch(cfg.fields or "", "[^,|]+") do
-	fields[#fields + 1] = f
+local field_modes = {}
+for tok in string.gmatch(cfg.fields or "", "[^,|]+") do
+	-- %w* 而非 %a*：s16 等模式名含数字
+	local name, suffix = string.match(tok, "^([^:]+):?(%w*)$")
+	if name == nil or name == "" then
+		print("sensor_daemon: bad field token '" .. tostring(tok) .. "', skipped")
+	else
+		local mode = ""
+		if suffix == "f" or suffix == "float" then
+			mode = "f"
+		elseif suffix == "s16" then
+			mode = "s16"
+		elseif suffix ~= "" then
+			print("sensor_daemon: unknown field mode ':" .. suffix .. "' on '"
+				.. name .. "', passthrough as-is")
+			mode = "f"
+		end
+		fields[#fields + 1] = name
+		field_modes[#field_modes + 1] = mode
+	end
 end
 
 local slot = P.slot_attach(DAEMON_SLOT_ADDR)
@@ -80,12 +104,14 @@ if not ok_load then fail(-8, "cannot load driver: " .. drvpath); return end
 -- 高速采样中静默驱动的 print 刷屏（本状态机独立）
 print = function() end
 
--- 字段提取：sign=16 时做 16 位二进制补码符号扩展（整型路径，先取整保证
--- % 65536 可用）；未配 sign 时原样透传（浮点字段如 INA226 的 V/I/P、
--- MLX90393 的 µT 值此前被无条件向下取整丢精度，现保留小数）
-local function sx(v)
+-- 字段提取（逐字段模式优先于全局 sign）：
+--   "f"   原样透传（换算后的浮点物理量，如 MPU6050 TEMP °C、INA226 V/I/P、MLX90393 µT）
+--   "s16" 16 位二进制补码符号扩展（整型路径，先取整保证 % 65536 可用）
+--   ""    跟随全局 sign 列（sign=16 时补码，否则原样）
+local function conv(v, mode)
 	v = tonumber(v) or 0
-	if sign == 16 then
+	local bits = (mode == "s16") and 16 or (mode == "" and sign or nil)
+	if bits == 16 then
 		v = math.floor(v) % 65536
 		if v >= 32768 then v = v - 65536 end
 	end
@@ -144,7 +170,7 @@ function daemon_tick()
 	if type(s) == "table" and s.result == "OK" and not crc_bad then
 		local vals = {}
 		for i = 1, #fields do
-			vals[i] = sx(s[fields[i]])
+			vals[i] = conv(s[fields[i]], field_modes[i])
 		end
 		P.publish(slot, vals)
 		tick_errors = 0

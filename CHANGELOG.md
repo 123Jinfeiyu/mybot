@@ -126,6 +126,13 @@
 - 新增 `test/test_spi.lua`（26 断言：build 参数校验、call 前置检查、destroy 关闭、
   open/ioctl 失败路径）与 `test/test_ads1256.lua`（44 断言：build 寄存器写序列、
   call 单端/差分/负值/PGA 电压换算、destroy SDATAC、越界归缺省、失败路径）
+- **MPU6050 补全片上温度输出**：0x3B 起 14 字节 burst 本含 TEMP_OUT（0x41/0x42），
+  原驱动读出后丢弃；现 `call()` 返回 `TEMP`（摄氏度，datasheet 公式 `raw/340+36.53`，
+  340 LSB/°C、零偏 36.53°C）与 `TEMP_RAW`（有符号原始值）。`sensor_daemon.lua` 的
+  `fields` 增加逐字段模式后缀：`:f`/`:float` 原样透传浮点（温度等已换算物理量不被
+  全局 `sign=16` 取整破坏）、`:s16` 强制 16 位补码、无后缀跟随全局 `sign`；
+  `mpu_daemon`（v6=温度经 Monitor 透传）/`mpu_filter`（第七路 etmp EMA）真机脚本
+  与 `test_mpu6050.lua`/`test_mpu6050_sign.lua` 离线测试同步覆盖温度通道
 
 ### 文档
 

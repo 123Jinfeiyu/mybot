@@ -9,7 +9,8 @@
 --   1. build：参数校验、默认地址 0x68、寄存器配置序列（PWR_MGMT_1=0x6B 退睡眠、
 --      陀螺 0x1B=±500°/s、加速度 0x1C=±8g）、100ms 稳定等待、错误通道；
 --   2. call：0x3B 起 14 字节 burst 原子读、六轴 16 位补码符号扩展（正/负/零/极值）、
---      读失败（nil）触发 ERR、返回键名与量程无换算；
+--      温度 TEMP_OUT（t[7]/t[8]）符号扩展后按 °C=raw/340+36.53 换算（正/负/零/典型室温）、
+--      读失败（nil）触发 ERR、六轴返回键名与量程无换算；
 --   3. destroy：参数校验与成功返回；
 --   4. 字符串 fd/address（框架元数据侧全为字符串）兼容。
 
@@ -66,6 +67,7 @@ local ACCEL_FS_8g    = 0x10
 local A_XH, A_XL = 0x3B, 0x3C
 local A_YH, A_YL = 0x3D, 0x3E
 local A_ZH, A_ZL = 0x3F, 0x40
+local T_H, T_L   = 0x41, 0x42	-- 温度 TEMP_OUT 高低字节
 local G_XH, G_XL = 0x43, 0x44
 local G_YH, G_YL = 0x45, 0x46
 local G_ZH, G_ZL = 0x47, 0x48
@@ -114,6 +116,21 @@ local function expect_axis(label, data, axis, expect)
 	local got = ok and type(res) == "table" and res[axis] or nil
 	check(ok and got ~= nil and got == expect, label .. " " .. axis .. "=" .. tostring(expect),
 		"got=" .. tostring(got) .. " result=" .. result_of(ok, res))
+end
+
+-- 断言温度换算（浮点，容差 1e-9）；同时核对 TEMP_RAW 原始值
+local function expect_temp(label, raw, expectC)
+	regs = {}
+	set_word(T_H, T_L, raw)
+	local ok, res = pcall(call, base)
+	local gotC   = ok and type(res) == "table" and res.TEMP or nil
+	local gotRaw = ok and type(res) == "table" and res.TEMP_RAW or nil
+	local expectRaw = (raw >= 32768) and (raw - 65536) or raw
+	check(ok and gotC ~= nil and math.abs(gotC - expectC) < 1e-9
+		and gotRaw == expectRaw,
+		string.format("%s raw=%d -> %.2f°C", label, expectRaw, expectC),
+		string.format("got TEMP=%s TEMP_RAW=%s result=%s",
+			tostring(gotC), tostring(gotRaw), result_of(ok, res)))
 end
 
 -- ==================== build：寄存器配置 ====================
@@ -174,6 +191,13 @@ check(#read_log == 1 and read_log[1].reg == 0x3B and read_log[1].n == 14,
 expect_axis("call 全零", base, "ACCEL_X", 0)
 expect_axis("call 全零", base, "GYRO_Z",  0)
 
+-- 温度随 burst 一并读出：全零 raw=0 → 0/340+36.53 = 36.53°C（datasheet 零点偏置）
+local zok, zres = pcall(call, base)
+check(zok and type(zres) == "table" and math.abs(zres.TEMP - 36.53) < 1e-9
+	and zres.TEMP_RAW == 0,
+	"call 全零温度 TEMP=36.53°C / TEMP_RAW=0",
+	zok and tostring(zres and zres.TEMP) or result_of(zok, zres))
+
 -- 正值
 regs = {}
 set_word(A_XH, A_XL, 0x1234)
@@ -203,11 +227,32 @@ set_word(A_ZH, A_ZL, 0x0003)
 set_word(G_XH, G_XL, 0xFFFC)  -- -4
 set_word(G_YH, G_YL, 0xFFFD)  -- -3
 set_word(G_ZH, G_ZL, 0xFFFE)  -- -2
+set_word(T_H, T_L, 0x0154)  -- 温度 raw=340 → 37.53°C（与六轴同一次 burst）
 local ok, res = pcall(call, base)
 check(ok and res.ACCEL_X == 1 and res.ACCEL_Y == 2 and res.ACCEL_Z == 3
 	and res.GYRO_X == -4 and res.GYRO_Y == -3 and res.GYRO_Z == -2 and res.result == "OK",
 	"六轴同时正确（1,2,3,-4,-3,-2）",
 	ok and table.concat({ res.ACCEL_X, res.ACCEL_Y, res.ACCEL_Z, res.GYRO_X, res.GYRO_Y, res.GYRO_Z }, ",") or result_of(ok, res))
+check(ok and math.abs(res.TEMP - 37.53) < 1e-9 and res.TEMP_RAW == 340,
+	"同一 burst 温度随行（raw=340 -> 37.53°C）",
+	ok and string.format("TEMP=%s TEMP_RAW=%s", tostring(res and res.TEMP), tostring(res and res.TEMP_RAW)) or result_of(ok, res))
+
+-- ==================== call：温度换算（°C = raw/340 + 36.53）====================
+expect_temp("温度零偏",     0x0000, 36.53)                 -- raw=0
+expect_temp("温度正 340",   0x0154, 37.53)                 -- +1°C
+expect_temp("温度负 -340",  0xFEAC, 35.53)                 -- -1°C（补码）
+expect_temp("温度典型室温", 0xEC00, -5120 / 340 + 36.53)   -- raw=-5120 ≈ 21.47°C
+expect_temp("温度极值负满", 0x8000, -32768 / 340 + 36.53)  -- -32768 LSB
+expect_temp("温度极值正满", 0x7FFF,  32767 / 340 + 36.53)  -- +32767 LSB
+-- 温度键契约：同时给换算值 TEMP(°C) 与原始值 TEMP_RAW（供守护分别按 :f / 默认补码选取）
+regs = {}
+set_word(T_H, T_L, 0x0154)
+local tok, tres = pcall(call, base)
+check(tok and type(tres.TEMP) == "number" and type(tres.TEMP_RAW) == "number"
+	and math.abs(tres.TEMP - 37.53) < 1e-9 and tres.TEMP_RAW == 340,
+	"温度键名 TEMP(°C)/TEMP_RAW 并存（37.53 / 340）",
+	tok and string.format("TEMP=%s TEMP_RAW=%s", tostring(tres and tres.TEMP), tostring(tres and tres.TEMP_RAW))
+		or result_of(tok, tres))
 
 -- 量程无换算：直接返回寄存器原始值（不做 16384/65.5 除法），键名用驱动输出名
 local raw_ok, raw = pcall(call, base)

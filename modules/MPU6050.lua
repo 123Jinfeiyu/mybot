@@ -33,6 +33,9 @@ local ACCEL_REG_Y_HIGH	= 0x3D	-- y
 local ACCEL_REG_Y_LOW	= 0x3E	--
 local ACCEL_REG_Z_HIGH	= 0x3F	-- Z
 local ACCEL_REG_Z_LOW	= 0x40	--
+-- 温度寄存器 0x41/0x42 位于 14 字节 burst 的 t[7]/t[8]
+local TEMP_LSB_PER_DEG	= 340.0	-- 温度灵敏度 340 LSB/°C（datasheet 寄存器映射表）
+local TEMP_OFFSET_DEG	= 36.53	-- raw=0 对应 36.53°C（片上温度，非环境温度精确量）
 
 -- 【配置脚本】
 -- 该脚本负责初始化MPU6050
@@ -110,8 +113,9 @@ end
 
 -- 【调用MPU6050】
 -- NOTE(20260612-qing): 接收一个参数（表），返回一个结果（表）
--- 返回为有符号 16 位（补码）原始值：加速度 ±8g、陀螺 ±500°/s 量程的寄存器原始量，
--- 未做量程比例换算（要物理单位需按灵敏度系数另算）。
+-- 六轴返回有符号 16 位（补码）原始值：加速度 ±8g、陀螺 ±500°/s 量程的寄存器原始量，
+-- 未做量程比例换算（要物理单位需按灵敏度系数另算）；
+-- TEMP 为换算后的摄氏度浮点，TEMP_RAW 为其有符号原始值。
 function call(data)
 
 
@@ -145,15 +149,23 @@ function call(data)
 		return err("MPU6050 read failed (burst 0x3B..0x48, check wiring)")
 	end
 
-	-- 返回字典（有符号 16 位原始值）；t[7]/t[8] 为温度寄存器（0x41/0x42），当前不输出
+	-- 温度：t[7]/t[8] 为 TEMP_OUT（0x41/0x42）有符号原始值，
+	-- 按 datasheet 公式换算摄氏度：°C = raw / 340 + 36.53。
+	-- 片上温度受芯片自热影响，通常高于环境温度几度，非精密环境温度传感器。
+	local tempRaw = s16(t[7], t[8])
+	local tempC   = tempRaw / TEMP_LSB_PER_DEG + TEMP_OFFSET_DEG
+
+	-- 返回字典：六轴为有符号 16 位原始值（未做量程比例换算），TEMP 为摄氏度浮点
  	return {
-		result  = "OK",
-		ACCEL_X = s16(t[1],  t[2]),
-		ACCEL_Y = s16(t[3],  t[4]),
-		ACCEL_Z = s16(t[5],  t[6]),
-		GYRO_X  = s16(t[9],  t[10]),
-		GYRO_Y  = s16(t[11], t[12]),
-		GYRO_Z  = s16(t[13], t[14])
-	}
+ 		result  = "OK",
+ 		ACCEL_X = s16(t[1],  t[2]),
+ 		ACCEL_Y = s16(t[3],  t[4]),
+ 		ACCEL_Z = s16(t[5],  t[6]),
+ 		GYRO_X  = s16(t[9],  t[10]),
+ 		GYRO_Y  = s16(t[11], t[12]),
+ 		GYRO_Z  = s16(t[13], t[14]),
+ 		TEMP    = tempC,
+ 		TEMP_RAW = tempRaw
+ 	}
 
 end
