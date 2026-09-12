@@ -13,9 +13,18 @@
 --   })
 --   vbus.inject()          -- 替换全局 i2c_*，此后驱动调用全走虚拟总线
 --   -- ... 正常 dofile 驱动、传 build/call/destroy 数据 ...
---   vbus.txlog             -- { {f="open",dir="w",addr=,bytes=}, ... } 事务序列（断言用）
+--   vbus.txlog             -- 事务序列（断言用），条目按时间序追加：
+--                            --   {dir="open", addr=nil, bytes={raw=path}}
+--                            --   {dir="set",  addr=addr, bytes={}}
+--                            --   {dir="w",    addr=addr, bytes={1基字节表}}
+--                            --   {dir="r",    addr=addr, bytes={n=请求长度}}
+--                            -- 指针式读产生相邻的 w（指针）+ r 两条
 --   vbus.reset()           -- 清空器件/日志/线索并 restore
 --   vbus.restore()         -- 还原原始 i2c_* 全局函数
+--
+-- 模型回调（attach 的 dev 表，点定义、无 self 参数，自身用局部名引用）：
+--   dev.write(bytes)  收 1 基字节表；显式 return false = NACK，无返回 = 成功
+--   dev.read(n)       返回 1 基字节表；返回 nil = NACK；缺省读返回全 0
 --
 -- 语义对齐 HAL（返回值契约逐函数与 HAL.lua 相同，驱动用 `if not` / `==0` 等
 -- 不同判定时行为才不会在虚拟总线上失真）：

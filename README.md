@@ -385,6 +385,57 @@ vbus.load_driver("modules/BH1750.lua")  -- dofile 真实驱动（连带 HAL）�
 vbus.reset()           -- 还原全局 i2c_* 并清空
 ```
 
+标准流程五步：`vbus.reset()`（用例隔离）→ `attach(addr, 模型)` → `inject()` 或
+`load_driver(驱动路径)`（挂真实驱动时用后者，自动重注入）→ 驱动 build/call/destroy
++ 断言 `txlog`/返回值 → `restore()` 或 `reset()`。
+
+**virtbus.lua API**：
+
+| API | 说明 |
+| --- | --- |
+| `vbus.attach(name, addr, dev)` | 在 7 位地址挂模型；`name` 仅日志用。保存模型引用并**动态委托**——attach 后替换 `dev.write/read` 或改模型字段（如 `dev.nack=true`）即时生效，无需重挂；同一模型可挂多个地址（主/备地址测试） |
+| `vbus.inject()` | 替换全部 12 个全局 `i2c_*` 为虚拟实现；幂等（已注入直接返回） |
+| `vbus.restore()` | 还原注入前捕获的原始全局函数（真实 HAL 函数） |
+| `vbus.reset()` | `restore()` + 清空器件表、txlog、fd 线索；每个用例开头调用保证隔离 |
+| `vbus.load_driver(path)` | `dofile` 真实驱动后强制重注入（驱动首次 dofile HAL 会用真实 ffi 函数覆盖全局）；并保证 `restore()` 能还原到真实 HAL 而非置空 |
+| `vbus.txlog` | 事务序列数组（见下），驱动行为断言的唯一凭据 |
+| `vbus.devs` | 当前地址 → 挂载项的表 |
+
+`i2c_open` 走与 HAL 相同的路径白名单（仅匹配 `/dev/i2c-%d+`，非法路径返回 -1），
+虚拟 fd 从 3 起分配；`i2c_set_addr` 后该 fd 的事务才路由到对应模型，未 set_addr
+或地址无模型一律按 NACK 处理。
+
+**模型回调契约**（`attach` 的 dev 表，函数为点定义）：
+
+- `write(bytes)`：收到 1 基字节表（写族为 `{reg, val...}`，指针式读前还会收到
+  单字节/双字节的寄存器指针）。**显式 `return false` = NACK**；无返回值/nil = 成功。
+- `read(n)`：返回 **1 基字节表**（长度可少于 n，按实际组装）；**返回 nil = NACK**；
+  不提供 `read` 时缺省返回 n 个 0。n 已按 HAL 契约钳制（字节表族 1~16）。
+
+```lua
+local dev = { armed = false }
+function dev.write(bytes)        -- 点定义：无 self 参数，引用自身用 dev
+	if bytes[1] == 0x01 then dev.armed = true end
+end
+function dev.read(n)
+	if not dev.armed then return nil end       -- 未武装先 NACK（负路径）
+	return { 0x00, 0x68 }                      -- 动态读数（改 dev.armed 即时生效）
+end
+vbus.attach("自定义@0x68", 0x68, dev)
+```
+
+**txlog 条目格式**（按时间序追加；指针式读产生相邻的 `w` + `r` 两条）：
+
+| dir | 含义 | addr | bytes |
+| --- | --- | --- | --- |
+| `"open"` | 打开虚拟总线 | nil | `{ raw = 路径 }` |
+| `"set"` | `i2c_set_addr` 绑定地址 | 地址 | `{}` |
+| `"w"` | 写事务（含读操作的寄存器指针写） | 地址 | 1 基字节表，如 `{0x3B}`、`{0x6B, 0x00}` |
+| `"r"` | 读事务 | 地址 | `{ n = 请求字节数 }`（实际数据由模型 read 返回，不入日志） |
+
+virtbus.lua 本身是**纯 Lua、无 ffi 依赖**（lua5.4/luajit 都能离线跑总线契约）；
+只有经 `load_driver` 加载真实驱动时才需要 LuaJIT（HAL.lua 依赖 ffi）。
+
 **现成器件模型库 `lib/virtbus/`**（协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿）：
 
 - `virtbus/regmap.lua`：通用「寄存器指针 + burst」模型，覆盖 MPU6050/BME280 一类大多数 I2C 传感器（8 位指针；构造传 `{ptr16=true}` 支持 VL53Lx 类 16 位指针）；提供 `set/set_word/get_sword` 预置寄存器、`nack`（读写全断）与 `nack_read/nack_write`（定向故障）、`write_log` 事务留痕、`reset()`。
