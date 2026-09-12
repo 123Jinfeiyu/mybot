@@ -112,6 +112,20 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   `scripts/test/ads1256_virt.mt`（raw+voltage:f 两字段守护、voltage 一路
   EMA α=0.2、raw/滤波两 Monitor，16 拍核对合成正弦与 EMA 混合）；
   run_all.sh E2E 用例表加 ads1256_virt。全套 62 跑通 / 1 真机用例跳过。
+- **AD9833 虚拟器件（写-only SPI 输出器件）+ 测试迁移**：新增
+  `virtbus/ad9833.lua`——DDS 波形发生器的 16 位字解码状态机（每 2 字节
+  CS 帧一个大端字，顶 2 位寻址控制/FREQ0/FREQ1/PHASE），把驱动写下的帧
+  还原回 28 位调谐字（B28 两段加载 per-register 低半字锁存、低 14 位在前；
+  B28=0/HLB 单半字写）、12 位相位字、波形位（sine/triangle/square/
+  unknown）、FSELECT/PSELECT 活动寄存器、RESET 静音与 SLEEP 位，提供
+  `freq_hz/phase_deg/wave/muted` 反向读取与帧级 fail_when。器件无 SDO，
+  模型只做 MOSI 侧解码（f=raw·MCLK/2^28 为 datasheet 事实换算，不抄驱动
+  正向公式）。`test/test_ad9833.lua` 从手写字桩整体重写（110 断言：
+  顶 2 位寻址/高低半字反序保护/HLB 单半字/FREQ1 与 FSELECT/PHASE0-1/
+  setup Mode2 留痕/非整字帧/build 五字序列与 440 方波 90° 解码、参数
+  校验零发字、5 字 build + 6 字 call 逐帧失败负路径、静音态控制字、
+  12.5MHz 满量程 raw=0x8000000、故障后重建恢复）。写-only 输出器件无
+  测量数据，守护 proto=virt 采样 E2E 不适用（阶段 C 明确豁免）。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
