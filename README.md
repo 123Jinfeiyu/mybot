@@ -363,12 +363,12 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 想看守护机制本身转起来，不必上真传感器——两个纯软件"模拟传感器"就够了：`lib/daemon_probe.lua`（内存槽发布计数/正弦）与 `lib/daemon_tid.lua`（gettid + 计数），扎到的仍是同一份 `Daemon.cj` 槽分配/加锁代码。`cjpm build` 后逐条跑，退出码 0 即通过：
 
 ```bash
-cat test/test_daemon.mt      | bash _run.sh --robot=test/test_daemon.sql     # 单守护并发压测（主线程负载 × 计数守护）
-cat test/test_multidaemon.mt | bash _run.sh --robot=test/test_multidaemon.sql # 4 守护并发诊断（各持独立 lua_State）
-cat test/test_monitor.mt     | bash _run.sh --robot=test/test_monitor.sql    # 守护采样 → Monitor 引用消费闭环
+cat scripts/test/daemon.mt      | bash _run.sh --robot=robots/test/daemon.sql     # 单守护并发压测（主线程负载 × 计数守护）
+cat scripts/test/multidaemon.mt | bash _run.sh --robot=robots/test/multidaemon.sql # 4 守护并发诊断（各持独立 lua_State）
+cat scripts/test/monitor.mt     | bash _run.sh --robot=robots/test/monitor.sql    # 守护采样 → Monitor 引用消费闭环
 ```
 
-对比：`test/test_mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
+对比：`scripts/test/mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
 
 #### 虚拟 I2C 总线（issue #18，无真机验证驱动链路）
 
