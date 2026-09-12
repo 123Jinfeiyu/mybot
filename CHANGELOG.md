@@ -57,6 +57,22 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   run_all.sh 末尾新增仓颉级 E2E 段（断言横幅/无错误/count 增长/温度浮点/EMA
   已混合；编译产物或仓颉 runtime 缺失自动跳过，不阻断纯 Lua 回归），
   test_mpu6050 同步补 virt_tick 6 条断言（共 50），全套 59 跑通 / 1 真机跳过。
+- **BME280 虚拟器件 `virtbus/bme280.lua` + 测试迁移 + 第二个守护 E2E**：
+  regmap 包装层固化 BME280 协议事实——0xD0 身份（`who(0x58)` 模拟错挂
+  BMP280）、datasheet 示例校准 NVM 字节布局（0x88 起 T/P 小端系数、0xA1 H1、
+  0xE1 起 7 字节湿度块含 H4/H5 的 s12 nibble 拼装）、0xF7 起 P/T 20bit +
+  H 16bit 数据区、合成 0xF3 STATUS 与 forced 转换状态机（`advance(ms)` 外部
+  虚拟时钟、`nvm_stuck/meas_stuck` 卡死注入；`virt_tick` 预武装路径供守护
+  零等待采样）。模型只给 NVM/位场，附录 8.3 补偿只存在于真实驱动。
+  `test/test_bme280.lua` 从 279 行手写桩迁移（51 断言：复位/6×4B+7B 校准
+  长读/CTRL 回读复核/状态机忙→就绪/无效读数/超时/主备地址/与独立转录参考
+  公式交叉验证）。迁移即抓出色宽假绿：旧桩把 H1=260 当裸数直存（dig_H1
+  为 u8，字节放不下；datasheet 真值 H1=75，补偿输出 45.3%RH 档），桩与
+  测试共用错误假设互相放行，模型按字节编码后两侧自然暴露，已修正。
+  新增 `robots/test/bme280_virt.sql` + `scripts/test/bme280_virt.mt`（三字段
+  温压湿浮点守护 + 三路 EMA + 两 Monitor）；run_all.sh E2E 段重构为用例表
+  驱动（用例名｜:f 浮点断言｜count 下限），EMA 混合断言改为键序无关的逐行
+  `out≠raw` 数值比对。全套 60 跑通 / 1 真机用例跳过。
 - **SHT3X 离线测试 `test/test_sht3x.lua`**（29 用例）：桩内模拟「软复位 0x30A2 ->
   轮询 status/ready -> 读 6 字节测量帧（status3+meas3）-> CRC8（poly 0x31/init 0xFF）
   校验 -> 温度 `T=-45+175*raw/65535` / 湿度 `RH=100*raw/65535` 换算」全链路，

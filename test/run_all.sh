@@ -64,49 +64,85 @@ echo "==============================================="
 # 仓颉级无硬件端到端：编译产物 + 仓颉 runtime 齐备才跑，缺失则跳过
 # （纯 Lua 环境/CI 无 cjc 时不阻断回归）。用例走真实 bot4cj 二进制：
 # 守护线程→共享槽→Ema→Monitor 全链路，仅 I2C 器件为内存仿真模型。
+#
+# 用例表：用例名|raw 快照浮点断言 ERE（证明 :f 字段未被取整）|count 下限。
+# EMA 混合断言对所有用例通用：某拍 monf 行内 out ≠ raw（滤波确实推进）。
 # ======================================================================
 bin="target/release/bin/main"
-if [ -n "$filter" ] && [[ "mpu_virt" != *"$filter"* ]]; then
-	:
-elif [ ! -x "$bin" ]; then
-	echo "----- mpu_virt (仓颉 E2E) -----"
-	echo "[SKIP] 无编译产物 $bin（执行 bash _set.sh 后可跑无硬件端到端）"
-elif ! command -v cjc >/dev/null 2>&1 && [ -z "$CANGJIE_HOME" ] && [ ! -d "$HOME/cangjie" ]; then
-	echo "----- mpu_virt (仓颉 E2E) -----"
-	echo "[SKIP] 无仓颉 runtime（需 cjc 在 PATH、设置 CANGJIE_HOME，或存在 ~/cangjie）"
-else
-	echo "----- mpu_virt (仓颉 E2E) -----"
-	[ -z "$CANGJIE_HOME" ] && [ -d "$HOME/cangjie" ] && export CANGJIE_HOME="$HOME/cangjie"
-	# 21 行动作约 1.2s，给 30s 上限防挂死；_run.sh 退出码原样透传
-	if [ -n "$timeout_cmd" ]; then
-		out="$(cat scripts/test/mpu_virt.mt | timeout 30 bash _run.sh --robot=robots/test/mpu_virt.sql 2>&1)"
-	else
-		out="$(cat scripts/test/mpu_virt.mt | bash _run.sh --robot=robots/test/mpu_virt.sql 2>&1)"
+e2e_cases=(
+	'mpu_virt|"v6":41\.[0-9]+|10'
+	'bme280_virt|"v0":2[0-9]\.[0-9]+|10'
+)
+
+run_one_e2e() {
+	local name="$1" float_ere="$2" count_min="$3"
+	echo "----- $name (仓颉 E2E) -----"
+	if [ ! -x "$bin" ]; then
+		echo "[SKIP] 无编译产物 $bin（执行 bash _set.sh 后可跑无硬件端到端）"
+		return 2
 	fi
-	rc=$?
+	# 动作时长约 1s，给 30s 上限防挂死；_run.sh 退出码原样透传
+	if [ -n "$timeout_cmd" ]; then
+		out="$(cat "scripts/test/$name.mt" | timeout 30 bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+	else
+		out="$(cat "scripts/test/$name.mt" | bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+	fi
+	local rc=$?
 	echo "$out"
-	e2e_ok=true
+	local e2e_ok=true
 	[ $rc -ne 0 ] && e2e_ok=false
 	echo "$out" | grep -qF "VIRTUAL HARDWARE" || e2e_ok=false
-	echo "$out" | grep -qE "chunk setup error|chunk load error|setup failed|tick error|cleanup error" \
+	echo "$out" | grep -qE "chunk setup error|chunk load error|setup failed|tick error|cleanup error|解析失败" \
 		&& e2e_ok=false
 	echo "$out" | grep -qF "joined, total publishes=" || e2e_ok=false
-	# 守护持续发布：出现 ≥2 个不同 count 且最大 ≥10（21 拍消费、守护 10ms/拍）
+	# 守护持续发布：出现 ≥2 个不同 count 且最大值达标
+	local count_max count_uniq
 	count_max="$(echo "$out" | grep -oE '"count":[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)"
 	count_uniq="$(echo "$out" | grep -oE '"count":[0-9]+' | sort -u | wc -l)"
-	{ [ -z "$count_max" ] || [ "$count_max" -lt 10 ] || [ "$count_uniq" -lt 2 ]; } && e2e_ok=false
-	# 七字段快照：温度路 v6 为 41.x°C 浮点（:f 透传，未被 sign=16 取整）
-	echo "$out" | grep -qE '"v6":41\.[0-9]+' || e2e_ok=false
-	# EMA 已推进且在平滑：某拍同事务内 v0 为带小数值、raw 为整数（α=0.2 混合后必非整数）
-	echo "$out" | grep -qE '"v0":-?[0-9]+\.[0-9]+.*"raw":-?[0-9]+[,}]|"raw":-?[0-9]+[,}].*"v0":-?[0-9]+\.[0-9]+' \
-		|| e2e_ok=false
+	{ [ -z "$count_max" ] || [ "$count_max" -lt "$count_min" ] || [ "$count_uniq" -lt 2 ]; } && e2e_ok=false
+	# raw 快照里 :f 浮点字段保持小数（未被 sign=16 取整补码）
+	echo "$out" | grep -qE "$float_ere" || e2e_ok=false
+	# EMA 已推进：至少一行 monf 快照 out ≠ raw（首拍种子相同，后续 α 混合必不同）。
+	# JSON 键序不固定，逐行各自提取 out/raw 数值做比对。
+	local mixed_n=0 o r
+	while IFS= read -r line; do
+		o="$(printf '%s' "$line" | grep -oE '"out":-?[0-9]+(\.[0-9]+)?' | head -1 | cut -d: -f2)"
+		r="$(printf '%s' "$line" | grep -oE '"raw":-?[0-9]+(\.[0-9]+)?' | head -1 | cut -d: -f2)"
+		if [ -n "$o" ] && [ -n "$r" ] && [ "$o" != "$r" ]; then
+			mixed_n=$((mixed_n + 1))
+		fi
+	done < <(printf '%s' "$out" | grep -F '"raw"')
+	[ "$mixed_n" -ge 1 ] || e2e_ok=false
 	if $e2e_ok; then
 		pass=$((pass + 1))
 	else
 		fail=$((fail + 1))
-		failed="$failed mpu_virt(E2E)"
+		failed="$failed $name(E2E)"
 	fi
+}
+
+if ! command -v cjc >/dev/null 2>&1 && [ -z "$CANGJIE_HOME" ] && [ ! -d "$HOME/cangjie" ]; then
+	for spec in "${e2e_cases[@]}"; do
+		name="${spec%%|*}"
+		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then
+			echo "----- $name (仓颉 E2E) -----"
+			echo "[SKIP] 无仓颉 runtime（需 cjc 在 PATH、设置 CANGJIE_HOME，或存在 ~/cangjie）"
+		fi
+	done
+else
+	[ -z "$CANGJIE_HOME" ] && [ -d "$HOME/cangjie" ] && export CANGJIE_HOME="$HOME/cangjie"
+	for spec in "${e2e_cases[@]}"; do
+		name="${spec%%|*}"
+		rest="${spec#*|}"
+		float_ere="${rest%%|*}"
+		count_min="${rest##*|}"
+		if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
+			continue
+		fi
+		run_one_e2e "$name" "$float_ere" "$count_min"
+	done
 fi
+
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
