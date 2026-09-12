@@ -188,6 +188,39 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   钳位/vref 3.3 换算/帧字节级断言，真实 EEP 写 3 字节帧/一次轮询即完成/
   10 拍 500ms 超时/轮询总线失败/写帧失败四路径，无参读回易失码与
   EEPROM 独立性，destroy 零事务）。
+- **VL53L4CD 虚拟器件（首个 16 位寄存器指针 ptr16 真实器件）+ 测试迁移 +
+  第五个守护 E2E**：新增 `virtbus/vl53l4cd.lua`——ST FlightSense ToF，
+  寄存器窗线性 16 位寻址（指针事务 2 字节大端，多字节写地址自增），与同
+  系列 VL53L0X（8 位指针+0xFF 分页）刻意对照，是 regmap `{ptr16=true}`
+  路径的首个真实落地：在 ptr16 底座上用包装法（链接原 write/read 后覆盖
+  同表字段）加器件状态机。复刻协议事实——软复位 0x0000 写 0x00 保持/
+  0x01 释放（释放即回上电种子：OSC 频率 10000、PLL 校准 512、固件状态
+  0x00E5=3，芯片侧启动序列/清中断计数清零）；91 字节默认配置流是一笔
+  0x002D 起的自增流写（末字节即 0x0087=0x00，模型只认首地址命中故不污染
+  启动序列留痕）；data-ready 极性链 0x0030 bit4 决定有效极性、0x0031
+  bit0 动态合成（极性翻转自动跟随，bit1 保留位读 1）；0x0087=0x40/0x21
+  启动预武装（守护 build 的 VHV/首测量自检首次轮询即就绪）、0x0086=0x01
+  清中断后运行态进入 5ms 转换倒计时，`advance(ms)` 推进（测试 milli_sleep
+  桩转调，连续两拍 call 自然走完倒计时）；停止态推进不武装；结果块六
+  寄存器独立原子读（0x0089 状态/0x008C SPAD/0x008E 信号/0x0090 环境/
+  0x0092 sigma/0x0096 距离），`inject_result` 按字节宽度写入不抄换算；
+  钩子含 nack 三件套（**包装层自持自判**：浅拷贝后外部置 d.nack 不被
+  底座 old_write 看见）、`fail_read(16位地址,长度)`/`fail_write(帧谓词)`、
+  `set_never_ready/set_boot_stuck/set_boot_status`；reseed 原地清空
+  regs（**不能换表**：包装表 d.regs 与底座共享引用，换表会让 set_word
+  写到复位前旧表）；reset 保留钩子；`virt_tick` 32 拍正弦 100~1100mm。
+  `test/test_vl53l4cd.lua` 从 300 行手写 16 位寄存器桩整体重写
+  （108 断言：模型种子/软复位两语义/极性链四态/停止态/注入块/六类钩子/
+  virt_tick 节拍，真实 build 软复位帧/91 字节配置流/启动序列/清中断×2/
+  尾三写/SetRangeTiming 四档编码常量（0x00C8/0x0185、0x02D1/0x038B、
+  0x001F/0x0029、自主 INTER 0xD300+0x0060/0x0080）/word 与 dword 帧长/
+  预武装零轮询睡眠/七路负路径，真实 call 1234mm 五字段/六结果读按指针
+  地址过滤轮询/连续两拍 5ms 倒计时/状态映射与 SPAD=0 守卫/极性翻转/
+  超时-轮询失败-结果读失败-清中断失败四路径，destroy 停测）。新增
+  `robots/test/vl53l4cd_virt.sql` + `scripts/test/vl53l4cd_virt.mt`
+  （DIST_MM:f/STATUS/VALID/SIGNAL_KCPS:f 四字段、距离 EMA α=0.2、
+  raw/滤波两 Monitor，16 拍）；run_all.sh E2E 用例表加 vl53l4cd_virt。
+  全套 64 跑通 / 1 真机用例跳过 / 仓颉 E2E 五组。
 - **修复 test_pwm 概率性段错误（HAL.sysfs_write ffi 缓冲越界 1 字节，真机
   同样受影响）**：`ffi.copy(buf, s)` 源为 Lua 字符串且不显式给 len 时，
   LuaJIT 会连同结尾 NUL 拷贝 #s+1 字节，而缓冲按 `char[?](#s)` 分配——
