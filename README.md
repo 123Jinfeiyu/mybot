@@ -132,7 +132,8 @@ bash _run.sh --robot=robots/relay-test.sql --input scripts/relay-test.mt
 cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 ```
 
-TCP 源把连接字节流适配为字符流逐行解析，客户端关闭连接（EOF）即结束本次 run；
+TCP 源直接以字节流（`InputStream.read(Array<Byte>)`）交给核心的 StringReader 解析，
+客户端关闭连接（EOF，read 返 0）即结束本次 run；断连异常同样按 EOF 收尾而非 abort。
 `scripts/tcp_e2e.sh [port]` 提供 Python 客户端 → TCP → 服务端的回环端到端自检。
 
 ## 🔧 环境要求

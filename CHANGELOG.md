@@ -52,6 +52,16 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
 
 ### 修复
 
+- **ActionSource 在干净构建（树莓派 aarch64/本机全量）下编译失败 8 错**：该模块引入后
+  从未通过编译（E2E 一直跑旧二进制，未暴露）。按 Cangjie std.io 实际接口修正——
+  `InputStream` 是字节流接口，唯一抽象成员是 `read(buffer: Array<Byte>): Int64`（EOF 返 0），
+  并无 `read(): ?Rune`，`TcpStreamReader` 改实现字节版 read（SocketException 吞为 0=EOF，
+  TCP 断连正常收尾而非 abort）；`File`/`TcpSocket` 本身即 InputStream，删除不存在的
+  `File.getReader()`；补 `std.collection`/`std.convert` 导入，`Map` 改 `ReadOnlyMap`
+  （argopt 的 options 类型），`String.toLong()` 改 `Int64.parse` 并捕获非法端口，
+  `Int64.toUInt16()` 改 `UInt16(port)`，`getRemoteAddress()` 改 `remoteAddress` 属性。
+  另修 `scripts/tcp_e2e.sh` 就绪探测真连再断开会消费服务端唯一 accept、致真客户端读到
+  空脚本的缺陷（探测改由发送客户端「连接被拒则重试」，accept 到的首连即脚本连接）。
 - **test_pwm 概率性段错误（真机同样受影响）**：`HAL.sysfs_write` 的 `ffi.copy(buf, s)`
   不带 len 会连 NUL 拷贝 `#s+1` 字节、固定越界 1 字节写坏 GC 对象头；改 `char[?](#s+1)`，
   测试加激进 GC 节奏护栏。

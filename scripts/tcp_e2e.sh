@@ -33,47 +33,41 @@ if ! command -v python3 &>/dev/null; then
 	exit 1
 fi
 
-echo "[1/4] 启动服务端：${BOT} --robot=robots/relay-test.sql --tcp ${PORT}"
+echo "[1/3] 启动服务端：${BOT} --robot=robots/relay-test.sql --tcp ${PORT}"
 "$BOT" --robot=robots/relay-test.sql --tcp "$PORT" > /tmp/tcp_e2e_server.log 2>&1 &
 SRV_PID=$!
 
-echo "[2/4] 等待服务端监听 ${PORT}..."
-for i in $(seq 1 20); do
-	if python3 -c "
-import socket, sys
-s = socket.socket()
-s.settimeout(0.5)
-try:
-    s.connect(('127.0.0.1', ${PORT})); s.close(); sys.exit(0)
-except: sys.exit(1)
-" 2>/dev/null; then
-		echo "   服务端就绪（第 ${i} 次探测）"
-		break
-	fi
-	if [[ $i -eq 20 ]]; then
-		echo "   错误：服务端 10s 内未就绪"
-		kill "$SRV_PID" 2>/dev/null || true
-		cat /tmp/tcp_e2e_server.log
-		exit 1
-	fi
-	sleep 0.5
-done
-
-echo "[3/4] 客户端连接并发送 relay-test.mt"
+echo "[2/3] 客户端轮询连接（拒绝=未就绪，0.5s 重试，最多 10s）并发送 relay-test.mt"
+# 注意：就绪探测绝不能真的建立 TCP 连接再断开——服务端 accept() 取走的是
+# 第一个连接，探测连接会被当成动作客户端：它立即 FIN，服务端读到空脚本
+# 必报 "No @Action matrix found"。故由发送客户端自己做「连接被拒则重试」，
+# accept 到的第一个连接即真正携带脚本的连接。
 python3 - <<PYEOF
-import socket, time
-with open("scripts/relay-test.mt", "r") as f:
-    content = f.read()
-s = socket.socket()
-s.connect(("127.0.0.1", ${PORT}))
-s.sendall(content.encode())
+import socket, time, sys
+content = open("scripts/relay-test.mt", "r").read()
+data = content.encode()
+last = None
+for i in range(20):
+    s = socket.socket()
+    s.settimeout(5)
+    try:
+        s.connect(("127.0.0.1", ${PORT}))
+        break
+    except OSError as e:
+        last = e
+        s.close()
+        time.sleep(0.5)
+else:
+    print(f"   连接服务端失败：{last}", file=sys.stderr)
+    sys.exit(1)
+s.sendall(data)
 s.shutdown(socket.SHUT_WR)
 time.sleep(0.5)
 s.close()
-print(f"   客户端已发送 {len(content)} 字节 relay-test.mt")
+print(f"   客户端已连接并发送 {len(data)} 字节 relay-test.mt")
 PYEOF
 
-echo "[4/4] 等待服务端处理并验证输出"
+echo "[3/3] 等待服务端处理并验证输出"
 for i in $(seq 1 "${TIMEOUT}"); do
 	if ! kill -0 "$SRV_PID" 2>/dev/null; then break; fi
 	sleep 1

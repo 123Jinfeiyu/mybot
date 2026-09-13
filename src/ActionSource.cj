@@ -9,6 +9,11 @@
  *
  *  与 r.cj 的集成：RobotStruct.run(input: InputStream) 已接受 InputStream，
  *  本工厂返回的 InputStream 直接传入即可，核心侧零改动。
+ *
+ *  注意（Cangjie std.io 事实，1.0.x/1.1.x 一致）：InputStream 是【字节流】
+ *  接口，唯一抽象成员为 read(buffer: Array<Byte>): Int64（读到 EOF 返回 0），
+ *  并没有 read(): ?Rune 字符方法；字符读取由 StringReader/ConsoleReader 等
+ *  包装提供。File 与 TcpSocket 本身即 InputStream，无需 getReader() 转换。
  */
 
 package bot4cj
@@ -17,13 +22,22 @@ import std.io.*
 import std.net.*
 import std.env.*
 import std.fs.*
+import std.collection.*
+import std.convert.*
 
 /* ---- ActionSource 工厂：tcp > input > stdin ---- */
-public func openActionSource(options: Map<String, String>): Option<InputStream> {
+/* 参数取 ReadOnlyMap：std.argopt 解析出的 options 即该类型（只需读操作） */
+public func openActionSource(options: ReadOnlyMap<String, String>): Option<InputStream> {
 	/* ---- TCP 模式（最高优先级）---- */
 	if (options.contains("tcp")) {
 		let portStr = options["tcp"]
-		let port = portStr.toLong()
+		let port: Int64
+		try {
+			port = Int64.parse(portStr)
+		} catch (e: Exception) {
+			println("--tcp 端口号无效：${portStr}（合法范围 1-65535）")
+			return None
+		}
 		if (port < 1 || port > 65535) {
 			println("--tcp 端口号无效：${portStr}（合法范围 1-65535）")
 			return None
@@ -31,13 +45,13 @@ public func openActionSource(options: Map<String, String>): Option<InputStream> 
 		return Some(openTcpActionSource(port))
 	}
 
-	/* ---- 文件模式 ---- */
+	/* ---- 文件模式（File 本身即字节 InputStream）---- */
 	if (options.contains("input")) {
 		let path = options["input"]
 		try {
 			let f = File(path, OpenMode.Read)
 			println("从文件读取动作脚本：${path}")
-			return Some(f.getReader())
+			return Some(f)
 		} catch (e: Exception) {
 			println("无法打开动作脚本文件 '${path}': ${e.message}")
 			return None
@@ -50,27 +64,30 @@ public func openActionSource(options: Map<String, String>): Option<InputStream> 
 
 /*
  * 打开 TCP 动作源：监听 0.0.0.0:<port>，接受第一个客户端连接，
- * 返回适配为 InputStream 的字节流包装。
+ * 返回适配为 InputStream 的包装（断连时读为 EOF 而非抛异常）。
  *
  * 仓颉 stdlib API：
  *   TcpServerSocket(bindAt: UInt16) → .bind() → .accept() → TcpSocket
- *   TcpSocket 为字节流（read(Array<Byte>)），需适配为 InputStream（字符流）。
+ *   TcpSocket 本身即为 InputStream（read(Array<Byte>) 字节流）。
  */
 public func openTcpActionSource(port: Int64): InputStream {
-	let port16 = port.toUInt16()
+	let port16 = UInt16(port)
 	println("TCP 动作源：监听 0.0.0.0:${port16}，等待客户端连接...")
 	let server = TcpServerSocket(bindAt: port16)
 	server.bind()
 	let sock = server.accept()
-	let peer = sock.getRemoteAddress()
+	let peer = sock.remoteAddress
 	println("TCP 客户端已连接：${peer}")
 	return TcpStreamReader(sock)
 }
 
 /*
- * TcpStreamReader：将 TcpSocket 字节流适配为 InputStream（字符流）。
- * .mt 脚本为纯 ASCII，单字节 = 单 Rune 直接映射，无需 UTF-8 多字节解码。
- * socket EOF / SocketException → 返回 None（视为连接结束）。
+ * TcpStreamReader：TcpSocket 字节流的断连安全包装。
+ *
+ * InputStream 是字节流接口（read(buffer): Int64，EOF 返 0）；.mt 脚本为
+ * 纯 ASCII，字节即字符，消费端 StringReader 按字节做 UTF-8 解码即可。
+ * 对端关闭连接时 socket 可能抛 SocketException，此处吞掉并返回 0（EOF），
+ * 让上层 run() 像读到管道 EOF 一样正常收尾，而不是 abort 退出。
  */
 public class TcpStreamReader <: InputStream {
 
@@ -80,20 +97,14 @@ public class TcpStreamReader <: InputStream {
 		this.sock = sock
 	}
 
-	public override func read(): Option<Rune> {
-		let buf = Array<Byte>(1, repeat: 0)
-		let n: Int32
+	public func read(buffer: Array<Byte>): Int64 {
 		try {
-			n = sock.read(buf)
+			return sock.read(buffer)
 		} catch (e: SocketException) {
 			if (!sock.isClosed()) {
 				sock.close()
 			}
-			return None
+			return 0
 		}
-		if (n <= 0) {
-			return None
-		}
-		return Some(Rune(buf[0].toUInt8()))
 	}
 }
