@@ -6,7 +6,7 @@
 
 ## [未发布]
 
-virtbus 虚拟硬件测试基座推进：13 个 I2C/SPI 器件模型与测试「手写桩 → 真实驱动」迁移、
+virtbus 虚拟硬件测试基座推进：14 个 I2C/SPI 器件模型与测试「手写桩 → 真实驱动」迁移、
 守护 `proto=virt` 无硬件端到端；落地 2026-09 审计修复批次（BH1750 MTreg、多路径加载、
 守护 CRC 坏样本过滤等）；ActionSource 工厂（stdin / TCP / 文件三源可替换动作输入）；
 NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
@@ -19,7 +19,7 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   - `regmap.lua` 通用寄存器模型（8/16 位指针 + burst 自增回绕）、`bh1750.lua` 命令式器件
     样板；`inject()` 统一替换 12 个 `i2c_*` + 8 个 `spi_*` 全局，语义对齐真机 I2C_RDWR /
     spidev，支持 NACK/定向故障注入、txlog 留痕、`vbus.load_driver` 封装。
-  - **13 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、
+  - **14 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、
     VL53L0X（8 位指针 + 0xFF 分页）、MCP4725（命令位）、VL53L4CD（16 位指针）、SHT3X
     （16 位命令字 + 数据 CRC-8）、MCP3421（配置回显/RDY 握手）、MS5611（命令通道 +
     PROM CRC-4）、SGP30（16 位命令字 + 每数据字 CRC-8，且命令带读写数据载荷：湿度补偿/
@@ -27,12 +27,15 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
     模型，守护侧配套 build 前先打一拍 virt_tick(0) 预武装）、INA219（首个字寻址 16 位
     寄存器器件：寄存器号代表 16 位字而非字节地址，字节地址 regmap 会串读相邻字，模型
     用纯闭包字存储；CONFIG 0x399F 复位甄别区分 INA226、BUS 13 位左移 3，电流/功率全
-    软件换算）；SPI 侧 ADS1256（ΣΔ ADC）、AD9833、TPL0501（写-only，采样 E2E 豁免）。
+    软件换算）、ADS1115（字寻址 + oneshot 单次转换：CONFIG.OS 位读写语义相反——写 1
+    启动一次转换、读时转换中 0/完成 1，模型按转换状态机动态合成该位；八档转换门 =
+    1000/SPS 由 advance 推进，结果寄存器只在转换完成瞬间按 MUX 装载，virt_tick 预武装
+    使守护 call 首读即就绪零睡眠）；SPI 侧 ADS1256（ΣΔ ADC）、AD9833、TPL0501（写-only，采样 E2E 豁免）。
     迁移即抓出旧桩假绿——BME280 的 H1=260 字节放不下、MPU6050 的 -1 返真把 NACK 当成功，
     均为桩与测试共用错误假设互相放行。
   - **守护 `proto=virt` 无硬件端到端**：不打开真机、按驱动名挂模型，build/call → 共享槽
     → 滤波 → Monitor 全链路纯内存跑通，启动打印 `VIRTUAL HARDWARE` 横幅防生产误用。
-    全套 71 项跑通 / 1 真机用例跳过 / 仓颉 E2E 十组。
+    全套 72 项跑通 / 1 真机用例跳过 / 仓颉 E2E 十一组。
 - @Daemon 共享槽采样通道 16 → 32（`src/HV/Daemon.cj` + `lib/pthread.lua` ABI 同步、布局
   断言锁定），支撑单守护聚合多路传感器。
 - **MPU6050 补全片上温度输出**：call() 返回 `TEMP/TEMP_RAW`；`sensor_daemon` 字段新增
