@@ -31,6 +31,7 @@
 
 local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
+local unpack = unpack or table.unpack		-- LuaJIT 5.1 / Lua 5.4 双兼容
 
 local M = {}
 M._VERSION = "0.1.0"
@@ -156,7 +157,7 @@ function M.new()
 			base1 = bytes[3] * 256 + bytes[4]
 			base2 = bytes[6] * 256 + bytes[7]
 		end
-		cmds[#cmds + 1] = { word = word, payload = { table.unpack(bytes, 3) } }
+		cmds[#cmds + 1] = { word = word, payload = { unpack(bytes, 3) } }
 		return true
 	end
 

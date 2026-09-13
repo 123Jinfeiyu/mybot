@@ -147,6 +147,11 @@ class RobotStruct {
 	 *  储存整个矩阵变量表
 	 *
 	 *  调用方使用完毕后应关闭输出流。
+	 *
+	 *  说明：本方法是预留的公开 API，为 NN 模块接入矩阵脚本存储而保留
+	 *  （调用点见 main.cj 中随 NN 段一并注释的 robot.save(outf)）。
+	 *  当前编译产物中无调用者，会产生 unused function 警告——属预期，
+	 *  待 NN 功能恢复后即被启用，请勿按死代码删除。
 	 */
 	public func save(out: OutputStream): Unit {
 		let ms = MatrixSaver(out)

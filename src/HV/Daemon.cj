@@ -231,12 +231,29 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		let configStr = cfgAcc
 
 		/* 提取采样间隔（ms）供 daemon_body 逐拍 Cangjie sleep；缺省 5ms。
-		 * 用 let 定型以便 rise 闭包安全捕获（规避捕获可变变量） */
+		 * 用 let 定型以便 rise 闭包安全捕获（规避捕获可变变量）
+		 *
+		 * P2/P3-1：interval ≤ 0 会让 daemon_body 的 sleep(0) 空转，守护线程
+		 * 100% CPU 忙循环且占满 schd-worker；解析失败/非数字亦须显式报错。
+		 * 故：解析失败与非正值一律抛出带 表/行/列/值 上下文的异常，而非静默沿用。 */
 		var ivAcc: Int64 = 5
+		let daemonTabName = defs.getName()
 		for (j in 0..defs.col) {
 			if (defs[0, j] == "interval") {
 				let iv = MatrixVars_Hardware.getMt(defs, i, j)
-				if (iv != "-") { ivAcc = Int64.parse(iv) }
+				if (iv != "-") {
+					let parsed = try {
+						Int64.parse(iv)
+					} catch (e: Exception) {
+						throw IllegalArgumentException(
+							"Daemon '${name}': column 'interval' value '${iv}' is not a valid integer (in table '${daemonTabName}', row ${i}).")
+					}
+					if (parsed <= 0) {
+						throw IllegalArgumentException(
+							"Daemon '${name}': column 'interval' must be > 0 ms, got ${parsed} (in table '${daemonTabName}', row ${i}). interval <= 0 causes a busy-loop that pins a CPU core.")
+					}
+					ivAcc = parsed
+				}
 			}
 		}
 		let intervalMs = ivAcc

@@ -55,6 +55,27 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
 
 ### 修复
 
+- **5 个测试结构脚本 INSERT 缺列，用例 100% 在解析期失败**：`readSQL` 强制 INSERT 覆盖
+  建表每一列（缺列即 `IllegalArgumentException`），而 AS3935/AS7262/MS5611/VL53L0X/
+  VL53L4CD 的 INSERT 均只写了部分列。按各自 `CREATE TABLE` 补全为 `'-'` 占位符（继承
+  语义：首行占位 → 用驱动缺省），用例由「解析失败」变为正常走到硬件层（无总线时报
+  `HAL: failed to open i2c bus`，与真机行为一致）。
+- **`h03_arr.sql` 的 `src` 引用列漏写 `$` 前缀**：0.3.2 起引用列须显式 `$名字`，裸名按
+  字面值。该脚本 `'arr_src'` 未加 `$`，H-03 数组传输用例恒失败；补为 `'$arr_src'` 后
+  返回 `{"values_n":4,"values_first":1.5,"result":"OK","list":[10,20,30]}`。
+- **守护 `interval ≤ 0` 会导致 CPU 忙循环（100% 占核）**：`Daemon.Factory` 原仅
+  `Int64.parse(iv)` 取值，无下界校验；`interval=0` 时 `daemon_body` 的 `sleep(0)` 空转
+  且占满 schd-worker。现对解析失败（非整数）与 `≤ 0` 一律抛 `IllegalArgumentException`，
+  报错带**表名/行号/列名/实际值**上下文（如 `Daemon 'd0': column 'interval' must be > 0 ms,
+  got 0 (in table 'Daemon', row 1)`），正常值不受影响。
+- **`modules/lib/virtbus/sgp30.lua` 调用 `table.unpack` 致 LuaJIT 下崩溃**：LuaJIT（5.1）
+  无 `table.unpack`（仅全局 `unpack`），该文件漏了其余驱动都有的兼容 shim，`test_sgp30.lua`
+  在执行 `write` 时报 `attempt to call field 'unpack' (a nil value)`。补
+  `local unpack = unpack or table.unpack` 并改用 `unpack(bytes, 3)`。
+- **`modules/lib/pthread.lua` 共享槽 `stop` 偏移注释错误（248 应为 328）**：文件头注释把
+  `stop` 偏移写成 248 并配了错误推导，与同文件第 200 行的 328 及 `Daemon.cj` 常量、
+  C 实测（mutex 64 + count 4 + nvals 4 + values 256 = 328）均不符，易致二次开发误用。
+
 - **ActionSource 在干净构建（树莓派 aarch64/本机全量）下编译失败 8 错**：该模块引入后
   从未通过编译（E2E 一直跑旧二进制，未暴露）。按 Cangjie std.io 实际接口修正——
   `InputStream` 是字节流接口，唯一抽象成员是 `read(buffer: Array<Byte>): Int64`（EOF 返 0），
