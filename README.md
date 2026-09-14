@@ -367,7 +367,7 @@ cat scripts/test/monitor.mt     | bash _run.sh --robot=robots/test/monitor.sql  
 
 #### 虚拟总线（I2C/SPI，无真机验证驱动链路）
 
-`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*` 函数，真实驱动无需真机与 `/dev/i2c-*`、`/dev/spidev*` 即可完整跑通 build/call/destroy，每次事务记入 `txlog` 供断言，并可注入 NACK 等负路径（与真机"设备不在总线"行为一致）。配套 `lib/virtbus/` 器件模型库收录 28 个协议级模型（regmap 通用底座及 MPU6050、BME280、BH1750、ADS1256、AD9833、TPL0501、VL53L0X、VL53L4CD、MCP4725、SHT3X、MCP3421、MS5611、SGP30、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、CHT8305、ADS1015、INA226、INA3221、MAX17043、ADXL345、LPS22HB）。
+`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*` 函数，真实驱动无需真机与 `/dev/i2c-*`、`/dev/spidev*` 即可完整跑通 build/call/destroy，每次事务记入 `txlog` 供断言，并可注入 NACK 等负路径（与真机"设备不在总线"行为一致）。配套 `lib/virtbus/` 器件模型库收录 29 个协议级模型（regmap 通用底座及 MPU6050、BME280、BH1750、ADS1256、AD9833、TPL0501、VL53L0X、VL53L4CD、MCP4725、SHT3X、MCP3421、MS5611、SGP30、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、CHT8305、ADS1015、INA226、INA3221、MAX17043、ADXL345、LPS22HB、PCA9685）。
 
 `@Daemon` 的 `proto` 列填 `virt` 可做**守护无硬件端到端**：真实驱动 build/call、共享槽 publish、`@Ema/@Kalman` 滤波、`@Monitor` 引用消费整条链路全部走内存仿真（守护启动打印 `VIRTUAL HARDWARE` 横幅，仿真数据禁止用于生产环境）。现有 23 个 E2E 用例，例如：
 
