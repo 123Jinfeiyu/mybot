@@ -11,8 +11,8 @@ virtbus 虚拟硬件测试基座、2026-09 审计修复批次、ActionSource 工
 
 - **virtbus 虚拟硬件测试基座**（`modules/lib/virtbus/`，issue #18）：真实 HAL 下注入虚拟 I2C/SPI 总线与器件模型，无需真机即可用真实驱动跑通全链路。
   - `regmap.lua` 通用寄存器模型（8/16 位指针 + burst 自增回绕）；`inject()` 替换全局 I2C/SPI 函数，支持 NACK/故障注入、txlog 留痕。
-  - **25 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、VL53L0X、MCP4725、VL53L4CD、SHT3X、MCP3421、MS5611、SGP30、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、CHT8305、ADS1015、INA226、INA3221、MAX17043、ADXL345；SPI 侧 ADS1256、AD9833、TPL0501。迁移即抓出旧桩假绿（BME280 H1 溢出、MPU6050 NACK 误判等）。
-  - **守护 `proto=virt` 无硬件端到端**：按驱动名挂模型，build/call → 共享槽 → 滤波 → Monitor 全链路纯内存跑通。全套 83 项 / 1 真机跳过 / E2E 二十二组。
+  - **26 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、VL53L0X、MCP4725、VL53L4CD、SHT3X、MCP3421、MS5611、SGP30、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、CHT8305、ADS1015、INA226、INA3221、MAX17043、ADXL345、LPS22HB；SPI 侧 ADS1256、AD9833、TPL0501。迁移即抓出旧桩假绿（BME280 H1 溢出、MPU6050 NACK 误判等）。
+  - **守护 `proto=virt` 无硬件端到端**：按驱动名挂模型，build/call → 共享槽 → 滤波 → Monitor 全链路纯内存跑通。全套 84 项 / 1 真机跳过 / E2E 二十三组。
 - @Daemon 共享槽采样通道 16 → 32，支撑单守护聚合多路传感器。
 - **MPU6050 补全片上温度输出**：call() 返回 `TEMP/TEMP_RAW`；`sensor_daemon` 字段新增 `:f`/`:s16` 逐字段模式后缀。
 - **ActionSource 工厂 `src/ActionSource.cj`**（stdin / TCP / 文件三源可替换动作输入）：`main.cj` 新增 `--tcp` / `--input` 参数；`TcpStreamReader` 字节流适配字符流；含回环 E2E 与 7 用例。
