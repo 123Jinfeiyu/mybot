@@ -26,9 +26,11 @@
 --   1. 甄别双 ID：SYSTEM_CONTROL(0x40)[5:0] Part ID = 0x0B（0b001011）、
 --      MANUFACTURER(0x92) = 0xE0，build 软复位后验证
 --   2. 寄存器基址 0x40 起（网上老示例按 0x80 起的写法是别的芯片，勿照搬）
---   3. 颜色数据【大端】：COLOUR_DATA(0x50) 起 8 字节 = R/G/B/C 四通道
---      每通道 MSB 在前——与 ST/Bosch IMU 的小端相反；i2c_read_multi 的
---      合并读恰好按大端拼字，8 字节一次原子读后按 16 位逐对拆分
+--   3. 颜色数据【小端】：datasheet Rev.002 Command Set 逐行明确
+--      0x50=RED_DATA_LSBs/0x51=RED_DATA_MSBs（G/B/Clear 同构，LSB 在
+--      偶地址）——与 ST/Bosch IMU 小端一致；8 字节一次原子读后按
+--      MSB*256+LSB 逐对拆分（早期版本误按大端解码，迁移 virtbus 时
+--      照 datasheet 修正）
 --   4. 配置分工与直觉不同：MODE_CONTROL1(0x41) 只有测量时间 [2:0]，
 --      ADC 增益在 MODE_CONTROL2(0x42)[1:0]（只有 x1/x2/x16 三档，0b11 保留），
 --      测量启动 = MODE_CONTROL2 bit4 (RGBC_EN)，数据有效 = bit7 (VALID)
@@ -197,7 +199,7 @@ end
 
 
 -- 【调用BH1745】读四通道原始计数
--- NOTE: 数据大端（MSB 在前，与 IMU 小端相反）；一次 8 字节原子读
+-- NOTE: 数据小端（0x50=LSB、0x51=MSB，datasheet Rev.002）；一次 8 字节原子读
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
@@ -238,13 +240,13 @@ function call(data)
 		}
 	end
 
-	-- 8 字节按大端拆 4 个 16 位通道：R/G/B/C
+	-- 8 字节按小端拆 4 个 16 位通道（偶地址 LSB）：R/G/B/C
 	local ret = {
 		result = "OK",
-		R = b[1] * 256 + b[2],
-		G = b[3] * 256 + b[4],
-		B = b[5] * 256 + b[6],
-		C = b[7] * 256 + b[8]
+		R = b[2] * 256 + b[1],
+		G = b[4] * 256 + b[3],
+		B = b[6] * 256 + b[5],
+		C = b[8] * 256 + b[7]
 	}
 
 	if DEBUG then
