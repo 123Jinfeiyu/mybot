@@ -43,6 +43,7 @@ virtbus 虚拟硬件测试基座、2026-09 审计修复批次、ActionSource 工
 - **`jsonMergeInto` 浅合并辅助**（`MatrixVars.cj`）：`callImpl` 元数据拷贝/参数合并/转发 payload 与 `MetaProvider.collect` 引用列合并共 5 处重复循环收敛。
 - **`MtVars_Daemon.Factory` 拆分**：play/rise/free 三个内联大闭包提取为具名静态实现 `playImpl`/`riseImpl`/`freeImpl`（与 `MtVars_Lua` 既有同类重构对齐）；配置串与 interval 两遍列扫描合并为一遍；slot 释放两分支去重为 `releaseSlot`。
 - `sandbox_lua` os/io 两段孪生中和逻辑合并为数据驱动循环；ActionSource 端口校验双报错路径合一。
+- **命名改进**：`src/r.cj` → `src/RobotStruct.cj`（单字母文件名自描述化）；`RobotStruct` 单字母字段 `C`/`M` → `matrices`/`hardwareVars`（含 `MetaProvider` 同名字段）；`run_action`/`parse_action_matrixObject` → `runAction`/`parseActionCell`；局部 `MtName`/`AC`/`AliasDefs` 等统一 camelCase。各文件注释中对 r.cj 的引用同步更新。
 
 ### 文档
 

@@ -1,5 +1,5 @@
 /*
- *  Lua状态机 - 硬件变量（自 r.cj 迁出）
+ *  Lua状态机 - 硬件变量（自 RobotStruct.cj 迁出）
  *
  *  Lua 状态机在工厂中提前创建，作为实例状态存储；
  *  rise 中申请的资源（加载脚本/初始化）将在 free 中被释放。
@@ -96,7 +96,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 	/* 顶层调用深度计数：只在外层 .mt 直接调用的原子处打印结果，
 	 * 避免被 controller 转发的嵌套 Lua 调用重复输出。
-	 * 约束（P：单线程）：非同步静态计数，动作路径（r.cj play）串行执行，
+	 * 约束（P：单线程）：非同步静态计数，动作路径（RobotStruct.cj play）串行执行，
 	 * 不得引入并发访问；@Daemon 守护线程持独立 lua_State、不经本变量。 */
 	private static var topDepth = 0
 

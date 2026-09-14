@@ -24,21 +24,22 @@ import bot4cj.HV.*
  */
 class RobotStruct {
 
-	/* -------- 存放解析结果和创建的变量 -------- */
-	private let C = LinkedList<MatrixObject>()
+	/* -------- 结构脚本解析出的矩阵对象（按脚本声明序） -------- */
+	private let matrices = LinkedList<MatrixObject>()
 	/* -------- 守护 holder 注册表：deactivate 先统一置 stop 再 join（防 worker 饿死死锁）-------- */
 	private let daemonHolders = ArrayList<DaemonHolder>()
-	private let M = HashMap<String, MatrixVars_Hardware>()
+	/* -------- 硬件变量注册表：名字 → 硬件变量 -------- */
+	private let hardwareVars = HashMap<String, MatrixVars_Hardware>()
 	/* 硬件变量声明序列：active/deactivate 按声明序 build/destroy
 	 * （HashMap 遍历序未定义，而 I2C→PCA9685 等 fd 依赖要求声明序） */
 	private let hwSeq = ArrayList<MatrixVars_Hardware>() 
 
 	/* -------- 安全添加硬件变量（检查重复键；source 用于报错时指明声明来源） -------- */
 	private func addHardwareVar(name: String, hw: MatrixVars_Hardware, source!: String = "") {
-		if (let Some(_) <- M.get(name)) {
+		if (let Some(_) <- hardwareVars.get(name)) {
 			throw IllegalArgumentException("Duplicate hardware variable name: '${name}'${source}")
 		}
-		M[name] = hw
+		hardwareVars[name] = hw
 		hwSeq.add(hw)
 	}
 
@@ -48,9 +49,9 @@ class RobotStruct {
 	 * 无法回收——当前错误路径进程退出由 OS 兜底，但长驻进程（未来 TCP 模式）
 	 * 每次重试都会累积泄漏。先确认名字可用再调 Factory；
 	 * addHardwareVar 保留为权威兜底（报错文案一致）。 */
-	private func precheckDuplicate(name: String, MtName: String): Unit {
-		if (let Some(_) <- M.get(name)) {
-			throw IllegalArgumentException("Duplicate hardware variable name: '${name}' (in table '${MtName}')")
+	private func precheckDuplicate(name: String, mtName: String): Unit {
+		if (let Some(_) <- hardwareVars.get(name)) {
+			throw IllegalArgumentException("Duplicate hardware variable name: '${name}' (in table '${mtName}')")
 		}
 	}
 
@@ -65,16 +66,16 @@ class RobotStruct {
 		let idxName = matrix.indexOfCol(0, "name")
 		for (i in 1..matrix.size) {
 			let name = matrix[i, idxName]
-			let aliasVar = MtVars_Alias.Factory(matrix, i, M)
+			let aliasVar = MtVars_Alias.Factory(matrix, i, hardwareVars)
 			if (let Some(set) <- session) {
 				if (set.contains(name)) {
 					throw IllegalArgumentException("Duplicate alias name '${name}' within the action script")
 				}
 				set.add(name)
-				if (let Some(_) <- M.get(name)) {
+				if (let Some(_) <- hardwareVars.get(name)) {
 					println("Alias '${name}' defined in action script overrides the structure definition")
 				}
-				M[name] = aliasVar
+				hardwareVars[name] = aliasVar
 			}
 			else {
 				addHardwareVar(name, aliasVar, source: " (in @Alias matrix)")
@@ -89,7 +90,7 @@ class RobotStruct {
 	 *  资源创建在 active()（阶段二），与其配对的 deactivate() 保证回收。
 	 */
 	public init(input: InputStream) {
-		readSQL(input, C)
+		readSQL(input, matrices)
 	}
 
 	/* -------- 激活所有硬件变量（两阶段构造·阶段二：创建 + build）--------
@@ -129,18 +130,18 @@ class RobotStruct {
 
 	/* -------- 执行@Action矩阵中的内容 -------- */
 	public func run(input: InputStream): Unit {
-		let AC = LinkedList<MatrixObject>()
-		readMatrix(input, AC)
+		let actionMatrices = LinkedList<MatrixObject>()
+		readMatrix(input, actionMatrices)
 
 		/* ---- 注册动作脚本中内联的 @Alias（同名时覆盖结构脚本的定义） ---- */
 		let session = HashSet<String>()
-		for (matrix in AC) {
+		for (matrix in actionMatrices) {
 			if (matrix.getName().trimAscii() == "Alias") {
 				registerAliasMatrix(matrix, Some(session))
 			}
 		}
 
-		run_action(AC)
+		runAction(actionMatrices)
 	}
 
 	/*
@@ -155,7 +156,7 @@ class RobotStruct {
 	 */
 	public func save(out: OutputStream): Unit {
 		let ms = MatrixSaver(out)
-		ms.save(C)
+		ms.save(matrices)
 	}
 
 	/*
@@ -172,7 +173,7 @@ class RobotStruct {
 		}
 	}
 
-	static private func readSQL(input: InputStream, C: LinkedList<MatrixObject>) {
+	static private func readSQL(input: InputStream, out: LinkedList<MatrixObject>) {
 		let sr = StringReader<InputStream>(input)
 		let tkns = Lexer.parseAll(sr)
 		let eves = Parser.parseAll(tkns)
@@ -197,7 +198,7 @@ class RobotStruct {
 
 					}
 					mt.submitLine(0)
-					C.addLast(mt)
+					out.addLast(mt)
 
 				case INSERT_TABLE(ev) =>
 
@@ -206,7 +207,7 @@ class RobotStruct {
 					 * ---- 以误导性信息（'xx' not defined）暴露——现解析期显式报错。
 					 * ---- forEach 改 for 循环：lambda 不得捕获可变变量（matched） ---- */
 					var matchedTable = false
-					for (item in C) {
+					for (item in out) {
 
 						if (ev.targetTabName == item.getName()) {
 							matchedTable = true
@@ -267,38 +268,38 @@ class RobotStruct {
 	 *    其余    → 通用 Lua 脚本硬件（走 MetaProvider 元数据 + 可选 controller 转发）
 	 */
 	private func createHardVars() {
-		for (matrix in C) {
-			let MtName = matrix.getName()
-			if (MtName == "Alias") {
+		for (matrix in matrices) {
+			let mtName = matrix.getName()
+			if (mtName == "Alias") {
 				registerAliasMatrix(matrix, None)
 			}
-			else if (MtName == "Action") {
+			else if (mtName == "Action") {
 				/* 动作矩阵不在此阶段创建硬件 */
 				;
 			}
-			else if (MtName == "Daemon") {
-				createDaemonVars(matrix, MtName)
+			else if (mtName == "Daemon") {
+				createDaemonVars(matrix, mtName)
 			}
 			else if (matrix.size > 0) {
-				createLuaVars(matrix, MtName)
+				createLuaVars(matrix, mtName)
 			}
 		}
 	}
 
 	/* ---- Daemon 守护线程硬件：矩阵每行一个守护变量 ---- */
-	private func createDaemonVars(matrix: MatrixObject, MtName: String): Unit {
+	private func createDaemonVars(matrix: MatrixObject, mtName: String): Unit {
 		let idxName = matrix.indexOfCol(0, "name")
 		for (i in 1..matrix.size) {
 			let name = matrix[i, idxName]
-			precheckDuplicate(name, MtName)
-			addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, M, daemonHolders), source: " (in table '${MtName}')")
+			precheckDuplicate(name, mtName)
+			addHardwareVar(name, MtVars_Daemon.Factory(matrix, i, hardwareVars, daemonHolders), source: " (in table '${mtName}')")
 		}
 	}
 
 	/* ---- 通用 Lua 脚本硬件：矩阵每行一个硬件变量 ----
 	 *  元数据闭包由 MetaProvider 提供静态列缓存 + 引用列实时快照（P8/M2）；
 	 *  跳过 controller 列，避免误当作引用 play。 */
-	private func createLuaVars(matrix: MatrixObject, MtName: String): Unit {
+	private func createLuaVars(matrix: MatrixObject, mtName: String): Unit {
 		let idxName = matrix.indexOfCol(0, "name")
 
 		/* 手动扫描标题行，寻找可选的 controller 列 */
@@ -309,31 +310,31 @@ class RobotStruct {
 
 		/* 从环境变量 BOT4CJ_MODULE_PATH 获取模块路径（std.env），支持 ':' 分隔多路径，默认为 ./modules */
 		let modulePath = getVariable("BOT4CJ_MODULE_PATH") ?? "./modules"
-		let scriptPath = firstExistingModule(modulePath, "${MtName}.lua")
+		let scriptPath = firstExistingModule(modulePath, "${mtName}.lua")
 
 		for (i in 1..matrix.size) {
 			let name = matrix[i, idxName]
-			precheckDuplicate(name, MtName)
+			precheckDuplicate(name, mtName)
 
 			/* 解析该行的 controller 引用（支持 - 占位符继承） */
 			var ctrlOpt: Option<MatrixVars_Hardware> = None
 			if (idxCtrl >= 0) {
 				let ctrlName = MatrixVars_Hardware.getMt(matrix, i, idxCtrl)
 				if (ctrlName != "-") {
-					if (let Some(hv) <- M.get(ctrlName)) {
+					if (let Some(hv) <- hardwareVars.get(ctrlName)) {
 						ctrlOpt = Some(hv)
 					} else {
 						throw IllegalArgumentException(
-							"Hardware variable '${name}' declares controller '${ctrlName}' in table '${MtName}', but it is not defined yet. The controller must be defined before the matrix that references it.")
+							"Hardware variable '${name}' declares controller '${ctrlName}' in table '${mtName}', but it is not defined yet. The controller must be defined before the matrix that references it.")
 					}
 				}
 			}
 
 			let skipCol = idxCtrl	/* lambda 不得捕获可变变量 */
-			let metaProv = MetaProvider(matrix, i, skipCol, M)
+			let metaProv = MetaProvider(matrix, i, skipCol, hardwareVars)
 			addHardwareVar(name, MtVars_Lua.Factory(scriptPath, {=>
 					metaProv.collect()
-			}, controller: ctrlOpt), source: " (in table '${MtName}')")
+			}, controller: ctrlOpt), source: " (in table '${mtName}')")
 		}
 	}
 
@@ -352,8 +353,8 @@ class RobotStruct {
 	}
 
 	/* -------- 逐行播放 @Action 矩阵 -------- */
-	private func run_action(AC: LinkedList<MatrixObject>) {
-		let actionDefsOpt = findMt(AC, "Action")
+	private func runAction(actionMatrices: LinkedList<MatrixObject>) {
+		let actionDefsOpt = findMt(actionMatrices, "Action")
 		if (actionDefsOpt.isNone()) {
 			throw IllegalArgumentException("No @Action matrix found in script. Please define action matrix in your .mt file.")
 		}
@@ -369,14 +370,14 @@ class RobotStruct {
 		}
 
 		for (i in 1..actionDefs.size) {
-			let set =JsonObject()		/* 每个硬件变量的参数集合 */
+			let set = JsonObject()		/* 每个硬件变量的参数集合 */
 			for (j in 0..actionDefs.col) {
-				parse_action_matrixObject(set, actionDefs, i, j)
+				parseActionCell(set, actionDefs, i, j)
 			}
 
 			/* -------- 执行一行 -------- */
 			for (name_dev in order) {
-				let hvOpt = M.get(name_dev)
+				let hvOpt = hardwareVars.get(name_dev)
 				if (hvOpt.isNone()) {
 					throw IllegalArgumentException("Hardware variable '${name_dev}' is used in @Action (row ${i}) but not defined in hardware declaration section.")
 				}
@@ -405,9 +406,9 @@ class RobotStruct {
 		return (arr[0], arr[1])
 	}
 
-	/* -------- 解析@Action矩阵对象 -------- *
+	/* -------- 解析@Action矩阵的一个单元格，参数归入所属设备的参数集合 -------- *
 	 * 列名格式 <device>.<param> 由 parseActionColumn 统一校验拆分。 */
-	private func parse_action_matrixObject(set: JsonObject, actionDefs: MatrixObject,
+	private func parseActionCell(set: JsonObject, actionDefs: MatrixObject,
 			i: Int64, j: Int64) {
 		let (name_dev, name_param_orig) = parseActionColumn(actionDefs[0, j])
 		var name_param = name_param_orig
@@ -418,7 +419,7 @@ class RobotStruct {
 		 * 替换为其目标名；普通硬件变量（守护/传感器/执行器）与参数重名时
 		 * 不误触发——保留字面参数名（Low：参数名误命中）。
 		 * 引用的 Alias 同样走 read() 快照（P4/M1）。 */
-		if (let Some(aliasHV) <- M.get(name_param)) {
+		if (let Some(aliasHV) <- hardwareVars.get(name_param)) {
 			if (aliasHV is MtVars_Alias) {
 				let ret = aliasHV.read()
 				let alias = ret.asString().getValue()
@@ -458,16 +459,17 @@ class MetaProvider {
 	let matrix: MatrixObject
 	let row: Int64
 	let skipCol: Int64
-	let M: HashMap<String, MatrixVars_Hardware>
+	let hardwareVars: HashMap<String, MatrixVars_Hardware>
 	var cols: Option<ArrayList<String>> = None
 	var vals: Option<ArrayList<String>> = None
 	var refs: Option<ArrayList<String>> = None
 
-	init(matrix: MatrixObject, row: Int64, skipCol: Int64, M: HashMap<String, MatrixVars_Hardware>) {
+	init(matrix: MatrixObject, row: Int64, skipCol: Int64,
+			hardwareVars: HashMap<String, MatrixVars_Hardware>) {
 		this.matrix = matrix
 		this.row = row
 		this.skipCol = skipCol
-		this.M = M
+		this.hardwareVars = hardwareVars
 	}
 
 	func collect(): JsonObject {
@@ -479,7 +481,7 @@ class MetaProvider {
 			obj.put(colsArr[k], JsonString(valsArr[k]))
 		}
 		for (name in refs.getOrThrow()) {
-			if (let Some(mt) <- M.get(name)) {
+			if (let Some(mt) <- hardwareVars.get(name)) {
 				jsonMergeInto(obj, mt.read().asObject())
 			}
 		}
@@ -504,7 +506,7 @@ class MetaProvider {
 				let rs = value.toRuneArray()
 				let arr = Array<Rune>(rs.size - 1, { i => rs[i + 1] })
 				let refName = String(arr)
-				if (let Some(_) <- M.get(refName)) {
+				if (let Some(_) <- hardwareVars.get(refName)) {
 					rArr.add(refName)
 				} else {
 					throw IllegalArgumentException(

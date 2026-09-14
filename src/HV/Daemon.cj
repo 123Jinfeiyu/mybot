@@ -1,5 +1,5 @@
 /*
- * ---------------- 守护线程硬件变量（@Daemon，自 r.cj 迁出） ----------------
+ * ---------------- 守护线程硬件变量（@Daemon，自 RobotStruct.cj 迁出） ----------------
  *  用 Cangjie spawn 原语起守护线程（运行时已附着，区别于 pthread4cj 裸线程——
  *  后者在 foreign 线程上跑 Cangjie @C 代码必崩，已 PoC 证伪）。线程上创建
  *  【独立 lua_State】，loadfilex 采样 chunk 一次 + pcall 一次（chunk 内 while 循环
@@ -143,7 +143,7 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 }
 
 /* ---- chunk 路径寻址（P：任意位置运行；issue #19 支持多路径）----
- * 普通 Lua 硬件模块经 r.cj 以 "${BOT4CJ_MODULE_PATH}/${MtName}.lua" 寻址；
+ * 普通 Lua 硬件模块经 RobotStruct.cj 以 "${BOT4CJ_MODULE_PATH}/${mtName}.lua" 寻址；
  * 原实现把 chunk 列当字面路径直接 loadfilex（相对进程 CWD），编译产物换目录即找不到。
  * 统一为与普通硬件模块一致的 modulePath 基准：
  *   绝对路径（'/' 开头）                              → 原样

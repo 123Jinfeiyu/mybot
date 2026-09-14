@@ -7,7 +7,7 @@
  *    - TCP socket（--tcp <port>，长驻模式，客户端可下发 .mt）
  *    - 文件（--input <path>，单次执行后退出）
  *
- *  与 r.cj 的集成：RobotStruct.run(input: InputStream) 已接受 InputStream，
+ *  与 RobotStruct.cj 的集成：RobotStruct.run(input: InputStream) 已接受 InputStream，
  *  本工厂返回的 InputStream 直接传入即可，核心侧零改动。
  *
  *  注意（Cangjie std.io 事实，1.0.x/1.1.x 一致）：InputStream 是【字节流】

@@ -1,4 +1,4 @@
-/*  别名变量（硬件类型，自 r.cj 迁出）
+/*  别名变量（硬件类型，自 RobotStruct.cj 迁出）
  *  这种变量用于给某个参数取一个更简单的别名  它的事件返回（JsonString）将作为新的矩阵项目值
  */
 
@@ -13,14 +13,14 @@ public class MtVars_Alias <: MatrixVars_Hardware {
 			free!: Option<() -> Unit> = None  )
 	{  super(things: things, rise: rise, free: free)  }
 
-	public static func Factory(AliasDefs: MatrixObject, i: Int64,
+	public static func Factory(defs: MatrixObject, i: Int64,
 			_: HashMap<String, MatrixVars_Hardware>): MtVars_Alias
 	{
-		let idxName = AliasDefs.indexOfCol(0, "name")
-		let idxAlias= AliasDefs.indexOfCol(0, "alias")
+		let idxName = defs.indexOfCol(0, "name")
+		let idxAlias= defs.indexOfCol(0, "alias")
 
-		let name = AliasDefs[i, idxName]
-		let alias= getMt(AliasDefs, i, idxAlias)
+		let name = defs[i, idxName]
+		let alias= getMt(defs, i, idxAlias)
 
 		println("Create an Alias vars: ${name}, which means ${alias}")
 		let aliasVar = MtVars_Alias(things: {_: JsonValue =>

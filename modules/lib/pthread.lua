@@ -3,7 +3,7 @@
 --
 -- 用途：@Daemon 机制的数据通路。守护线程在【独立 lua_State】上采样，
 -- 经共享内存槽 publish 结果；主线程侧 latest 读取。线程本身的创建在仓颉
--- 宿主侧（r.cj 经 pthread4cj），本库只负责跨状态机的共享内存 + 互斥，
+-- 宿主侧（HV/Daemon.cj 经 Cangjie spawn），本库只负责跨状态机的共享内存 + 互斥，
 -- 全部经 ffi 直调 libc，无仓颉 cfunc（守住 issue #14 的纯 Lua 数据通路）。
 --
 -- 【共享槽布局】必须与 Daemon.cj 的 @C struct DaemonSlot 严格一致（同一 C ABI）：
@@ -189,7 +189,7 @@ end
 
 ------------------------------------------------------------------
 -- 跨语言槽布局核对（Low：槽布局人工维护）
--- 宿主侧 r.cj/Daemon.cj 手写 SLOT_*_OFF 与 @C struct DaemonSlot 一致；
+-- 宿主侧 HV/Daemon.cj 手写 SLOT_*_OFF 与 @C struct DaemonSlot 一致；
 -- 本库用 ffi 的运行时 struct 布局（编译器填充后的事实）逐项断言，
 -- 把「仓颉定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
 -- 仓颉侧基准（Daemon.cj:23-28，SLOT_SIZE=336）：
