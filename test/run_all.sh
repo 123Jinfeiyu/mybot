@@ -90,6 +90,9 @@ e2e_cases=(
 	# AMG8833 raw MAXR/MAXC 是整数行列，浮点断言锚定 monf 行 Ema 对
 	# AVGT 平均温度的 α 混合输出 out（必为带小数浮点）
 	'amg8833_virt|"out":[0-9]+\.[0-9]+|10'
+	# PCF8574 raw PINS/OUT 是无符号 8 位整数引脚码（:f 透传无小数），
+	# 浮点断言锚定 monf 行 Ema 对 PINS walking 位码的 α 混合输出 out
+	'pcf8574_virt|"out":[0-9]+\.[0-9]+|10'
 )
 
 run_one_e2e() {
