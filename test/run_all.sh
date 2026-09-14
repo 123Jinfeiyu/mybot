@@ -87,6 +87,9 @@ e2e_cases=(
 	# MAX30102 raw IR/RED 同为无符号 18 位整数计数，浮点断言锚定 monf 行
 	# Ema 对 IR 计数的 α 混合输出 out（必为带小数浮点）
 	'max30102_virt|"out":[0-9]+\.[0-9]+|10'
+	# AMG8833 raw MAXR/MAXC 是整数行列，浮点断言锚定 monf 行 Ema 对
+	# AVGT 平均温度的 α 混合输出 out（必为带小数浮点）
+	'amg8833_virt|"out":[0-9]+\.[0-9]+|10'
 )
 
 run_one_e2e() {

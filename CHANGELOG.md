@@ -6,7 +6,7 @@
 
 ## [未发布]
 
-virtbus 虚拟硬件测试基座推进：16 个 I2C/SPI 器件模型与测试「手写桩 → 真实驱动」迁移、
+virtbus 虚拟硬件测试基座推进：17 个 I2C/SPI 器件模型与测试「手写桩 → 真实驱动」迁移、
 守护 `proto=virt` 无硬件端到端；落地 2026-09 审计修复批次（BH1750 MTreg、多路径加载、
 守护 CRC 坏样本过滤等）；ActionSource 工厂（stdin / TCP / 文件三源可替换动作输入）；
 NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
@@ -19,7 +19,7 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   - `regmap.lua` 通用寄存器模型（8/16 位指针 + burst 自增回绕）、`bh1750.lua` 命令式器件
     样板；`inject()` 统一替换 12 个 `i2c_*` + 8 个 `spi_*` 全局，语义对齐真机 I2C_RDWR /
     spidev，支持 NACK/定向故障注入、txlog 留痕、`vbus.load_driver` 封装。
-  - **16 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、
+  - **17 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、
     VL53L0X（8 位指针 + 0xFF 分页）、MCP4725（命令位）、VL53L4CD（16 位指针）、SHT3X
     （16 位命令字 + 数据 CRC-8）、MCP3421（配置回显/RDY 握手）、MS5611（命令通道 +
     PROM CRC-4）、SGP30（16 位命令字 + 每数据字 CRC-8，且命令带读写数据载荷：湿度补偿/
@@ -45,12 +45,21 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
     后 avail=8 的假绿，真实语义 WR=RD=8、avail=0 驱动报 FIFO empty；有效输出周期
     1000×2^SMP_AVE/SR 由 advance 推进；build RESET 仅真实睡 5ms，E2E 预热 200ms，
     virt_tick PPG 双正弦 RED 50000±18000/IR 60000±22000 每拍直推 FIFO 使 call
-    零睡眠）；SPI 侧 ADS1256（ΣΔ ADC）、AD9833、TPL0501（写-only，采样 E2E 豁免）。
+    零睡眠）、
+    AMG8833（首个「8 位字节指针 + 128 字节像素块连续 burst 读 + 帧周期门」
+    器件：Panasonic Grid-EYE 8×8 红外热电堆阵列，无 ID 寄存器、build 不做在位甄别；
+    64 像素 12 位补码小端位于 0x80 起每像素 2B（0.25°C/LSB，MSB 高 4 位恒 0），
+    片上热敏 0x0E/0x0F 同构（0.0625°C/LSB），字节指针读到 0xFF 回绕 0x00；
+    RST 0x01 是命令寄存器——0x3F 初始复位/0x30 标志复位、值不落盘；PCTL/FPSC
+    帧门 100/1000ms 由 advance 推进，无注入时像素保持上一帧（POR 全 0）、模型
+    绝不自造测量值；build 的 5+120ms 为真实睡眠，E2E 首行预热 200ms，virt_tick
+    注入背景 25°C + 移动热点热图（峰值约 45°C）使 call 零睡眠）；
+    SPI 侧 ADS1256（ΣΔ ADC）、AD9833、TPL0501（写-only，采样 E2E 豁免）。
     迁移即抓出旧桩假绿——BME280 的 H1=260 字节放不下、MPU6050 的 -1 返真把 NACK 当成功，
     均为桩与测试共用错误假设互相放行。
   - **守护 `proto=virt` 无硬件端到端**：不打开真机、按驱动名挂模型，build/call → 共享槽
     → 滤波 → Monitor 全链路纯内存跑通，启动打印 `VIRTUAL HARDWARE` 横幅防生产误用。
-    全套 74 项跑通 / 1 真机用例跳过 / 仓颉 E2E 十三组。
+    全套 75 项跑通 / 1 真机用例跳过 / 仓颉 E2E 十四组。
 - @Daemon 共享槽采样通道 16 → 32（`src/HV/Daemon.cj` + `lib/pthread.lua` ABI 同步、布局
   断言锁定），支撑单守护聚合多路传感器。
 - **MPU6050 补全片上温度输出**：call() 返回 `TEMP/TEMP_RAW`；`sensor_daemon` 字段新增
