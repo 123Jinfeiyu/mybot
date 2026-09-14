@@ -93,6 +93,9 @@ e2e_cases=(
 	# PCF8574 raw PINS/OUT 是无符号 8 位整数引脚码（:f 透传无小数），
 	# 浮点断言锚定 monf 行 Ema 对 PINS walking 位码的 α 混合输出 out
 	'pcf8574_virt|"out":[0-9]+\.[0-9]+|10'
+	# LTC2944 raw 四字段均 :f 浮点；v0=CHARGE/v1=V/v2=I/v3=T，锚定 v1
+	# 母线电压正弦（11.6~12.4V，带小数即证明未被 sign=16 取整）
+	'ltc2944_virt|"v1":1[12]\.[0-9]+|10'
 )
 
 run_one_e2e() {
