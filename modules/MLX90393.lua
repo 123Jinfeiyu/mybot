@@ -13,37 +13,45 @@
 --     VALUES ('mlx0', 'i2c-1', '0x0C', '-', '-');
 --
 -- 列说明：
---   gain    = GAIN_SEL 0~7（0=5x 最高增益，7=0.2x 最低增益），非法值钳到界内，缺省 0
+--   gain    = GAIN_SEL 0~7（0=最低增益 0.751µT/LSB 量程最大，7=最高增益
+--              0.150µT/LSB，灵敏度相差 5 倍），非法值钳到界内，缺省 0
 --   timeout = 单次测量就绪轮询超时 ms（缺省 50；就绪位轮不到即报 ERR）
 --   各列写 '-' 按缺省值处理
 --
 -- call 无需额外参数，返回：
---   { result, X/Y/Z(µT，浮点), T(°C), XR/YR/ZR/TR(有符号原始计数), status(状态字节) }
--- 接 sensor_daemon：fields=X|Y|Z|T（驱动内已做补码还原，勿配 sign）
+--   { result, X/Y/Z(µT，浮点), T(°C), XR/YR/ZR(有符号原始计数), TR(无符号),
+--     status(状态字节) }
+-- 接 sensor_daemon：fields=X:f|Y:f|Z:f|T:f（驱动内已做补码还原，浮点透传）
 --
--- 协议要点（命令式，非寄存器地图；每条命令的应答以 1 字节 status 收尾）：
---   命令：0x00 NOP | 0x30+flags 启动单次测量 | 0x40+flags 读结果 |
---         0x50 读寄存器 | 0x60 写寄存器 | 0xD0 Memory Recall | 0xF0 复位
---   flags：bit0=T bit1=X bit2=Y bit3=Z，故 0x3F=启动 XYZT、0x4F=读 XYZT
---   WR 格式：[0x60, 字高 8 位, 字低 8 位]，16 位字 = 寄存器地址[15:12] + 数据[11:0]
---   RR 格式：[0x50, 寄存器地址<<2]，应答 3 字节 = 16 位数据 + status
---   status：bit7=ERROR、bit6=SM_DONE（单次测量完成）
---   读结果应答 9 字节，超出 i2c_read 大端合并的 2^53 精度线，走 HAL.i2c_read_bytes
+-- 协议要点（datasheet 3901090393 Rev012 §15；命令式，非寄存器地图）：
+--   每条命令的应答【首字节永远是 status】，其后才是数据；先发命令写事务，
+--   再 Sr 纯读（NOP 0x00 无副作用，驱动用它轮询 status）。
+--   命令：0x00 NOP | 0x10+zyxt SB 突发 | 0x20+zyxt SW 唤醒 |
+--         0x30+zyxt SM 单次 | 0x40+zyxt RM 读测量 | 0x50 RR 读寄存器 |
+--         0x60 WR 写寄存器 | 0x80 EX 退出模式 | 0xD0 HR Memory Recall |
+--         0xE0 HS Memory Store | 0xF0 RT 复位
+--   zyxt：bit0=T bit1=X bit2=Y bit3=Z，故 0x3F=SM XYZT、0x4F=RM XYZT；
+--         RM/ SM 的片内转换顺序为 TXYZ，应答按 Status-TXYZ 组帧，zyxt
+--         中为 0 的分量跳过。
+--   WR 帧【4 字节】：[0x60, D15..8, D7..0, A5..A0<<2]（地址在独立第 4 字节）
+--   RR 帧【2 字节】：[0x50, A5..A0<<2]，应答 3 字节 = [status, D15..8, D7..0]
+--   status：bit7=BURST_MODE bit6=WOC_MODE bit5=SM_MODE（单次转换完成）、
+--           bit4=ERROR、bit3=SED、bit2=RS（复位后首帧自清）、bit1:0=D
+--           （仅 RR/RM 有效：附加数据字节数 = 2D+2）
+--   RM XYZT 应答 9 字节 [status,Tmsb,Tlsb,Xmsb,Xlsb,Ymsb,Ylsb,Zmsb,Zlsb]，
+--   走 HAL.i2c_read_bytes（大端合并超 2^53 精度线）
 --
--- build 流程（自检链路）：复位 -> Memory Recall（TRIM 出厂校准必须恢复，否则
---   数据无效）-> 写 GAIN_SEL（读-改-写 + 回读校验）-> 试测一帧并丢弃（甄别在位、
---   打通 触发/轮询/读回 全链路）
+-- 寄存器 0x00 = Z-SERIES[15]/GAIN_SEL[14:12]/HALLCONF[11:8]，POR=0x007C
+--   （GAIN_SEL=7、HALLCONF=0xC）；build 读-改-写保留 HALLCONF，只改 GAIN_SEL。
 --
--- 【对 datasheet 复核项】离线开发无法上网核对，协议中不确定的细节全部收敛为
---   常量，真机数据异常时按序核对（每项都是一行改动）：
---   1. 读结果字节序按 [T Z Y X] 解析（MSB 在前、status 收尾）。若轴对调/T 位置
---      不对，改下方 OFF_T/Z/Y/X 偏移表（另一常见候选序 [X Y Z T]）
---   2. 灵敏度基准：GAIN_SEL=0、16 位时 XY=0.751 / Z=1.210 µT/LSB（Z 与 XY 不同），
---      其余增益按增益倍数反比换算；上真机前建议对照 datasheet 的
---      Sensitivity vs GAIN_SEL/RES 表复核，或用地磁场（水平 ~50µT）标定
---   3. T[°C] = TR / 32（16 位；实测偏差大则查 T 灵敏度定义）
---   4. SM_DONE 取 bit6（0x40）：若真机每次都报测量超时，优先改 ST_SMDONE
---   5. 默认 RES=0（16 位）假设：灵敏度表按 16 位给出，改过 RES 的器件需另配
+-- 换算（HALLCONF=0xC、RES=0、TC off、25°C，datasheet Table 17）：
+--   GAIN_SEL=0 时 XY=0.751 / Z=1.210 µT/LSB；GAIN_SEL 7~0 的增益倍数表
+--   {1,4/3,5/3,2,2.5,3,4,5}，SEL=0 对应 5（相对 SEL=7 基准 0.150/0.242）。
+--   温度：45.2 LSB/°C、25°C 输出 46244（u16 无符号），°C = 25+(TR-46244)/45.2。
+--
+-- build 流程（自检链路）：RT 复位 -> HR Memory Recall（POR/RT 时片内其实
+--   自动执行一次 HR，显式再做一次无害）-> 写 GAIN_SEL（读-改-写 + 回读校验）
+--   -> SM/RM 试测一帧并丢弃（甄别在位、打通 触发/轮询/读回 全链路）
 
 -- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
 -- 调试打印辅助 print_table（modules/lib/）
@@ -58,49 +66,59 @@ local DEBUG = false
 
 -- ==================== 命令与状态 ====================
 local CMD_NOP    = 0x00
-local CMD_SINGLE = 0x30		-- 启动单次测量（低 4 位 flags）
-local CMD_READ   = 0x40		-- 读测量结果（低 4 位 flags）
-local CMD_RR     = 0x50		-- 读寄存器
-local CMD_WR     = 0x60		-- 写寄存器
-local CMD_RECALL = 0xD0		-- Memory Recall（恢复出厂 TRIM）
-local CMD_RESET  = 0xF0		-- 复位
+local CMD_SB     = 0x10		-- 启动突发模式（低 4 位 zyxt）
+local CMD_SW     = 0x20		-- 启动 Wake-on-Change（低 4 位 zyxt）
+local CMD_SINGLE = 0x30		-- 启动单次测量（低 4 位 zyxt）
+local CMD_READ   = 0x40		-- 读测量结果（低 4 位 zyxt）
+local CMD_RR     = 0x50		-- 读寄存器（第 2 字节 = 地址<<2）
+local CMD_WR     = 0x60		-- 写寄存器（4 字节帧）
+local CMD_EXIT   = 0x80		-- 退出当前模式
+local CMD_RECALL = 0xD0		-- HR：NVRAM -> 易失内存（恢复出厂 TRIM）
+local CMD_STORE  = 0xE0		-- HS：易失内存 -> NVRAM
+local CMD_RESET  = 0xF0		-- RT：复位
 
 local FLAG_T = 0x01
 local FLAG_X = 0x02
 local FLAG_Y = 0x04
 local FLAG_Z = 0x08
 
-local ST_ERROR  = 0x80		-- status bit7：错误
-local ST_SMDONE = 0x40		-- status bit6：单次测量完成（见头注释复核项 4）
+-- status 字节布局（datasheet §15.2 Table 12，status 永远是应答首字节）
+local ST_BURST = 0x80		-- bit7：当前处于突发模式
+local ST_WOC   = 0x40		-- bit6：当前处于 Wake-on-Change 模式
+local ST_SM    = 0x20		-- bit5：单次测量完成（SM_MODE）
+local ST_ERROR = 0x10		-- bit4：命令被拒绝/不可纠正错误
+local ST_RS    = 0x04		-- bit2：复位发生（RT 后首 status 置位、自清）
 
 local CMD_XYZT  = CMD_SINGLE + FLAG_T + FLAG_X + FLAG_Y + FLAG_Z	-- 0x3F
 local READ_XYZT = CMD_READ  + FLAG_T + FLAG_X + FLAG_Y + FLAG_Z	-- 0x4F
-local RESP_N    = 9			-- 0x4F 应答：T/Z/Y/X 各 2 字节 + status
+local RESP_N    = 9			-- 0x4F 应答：status + T/X/Y/Z 各 2 字节
 
-local REG_GAIN = 0x02		-- GAIN 寄存器：[6:4]=GAIN_SEL，[1:0]=GAIN_ADDR
+-- 应答内偏移（1 基；status 占 b[1]，片内转换/组帧顺序 TXYZ）
+local OFF_STATUS = 1
+local OFF_T = 2
+local OFF_X = 4
+local OFF_Y = 6
+local OFF_Z = 8
+
+local REG_GAIN = 0x00		-- Z-SERIES/GAIN_SEL[6:4]/HALLCONF[3:0]，POR=0x007C
 
 -- ==================== 时序常量 ====================
--- 复位/Memory Recall 完成时间（datasheet 数量级 + 余量）
+-- RT 后 datasheet 建议等 1.5ms（取 5ms 余量）；HR 无单独等待要求（留 2ms）
 local T_RESET_MS  = 5
 local T_RECALL_MS = 2
 local POLL_MS     = 1		-- 就绪轮询步长
 
--- ==================== 读结果解析（见头注释复核项 1） ====================
--- 按 [T Z Y X] + status 收尾解析（1 基字节偏移；每轴 MSB 在前）
-local OFF_T = 1
-local OFF_Z = 3
-local OFF_Y = 5
-local OFF_X = 7
-
--- ==================== 灵敏度换算（见头注释复核项 2） ====================
--- GAIN_SEL=0（5x）、16 位基准：µT/LSB；其余增益按 GAIN_TAB 反比换算
+-- ==================== 灵敏度换算（datasheet Table 17，HALLCONF=0xC/RES=0） ====================
+-- GAIN_SEL=0 基准：XY=0.751 / Z=1.210 µT/LSB；GAIN_TAB 是 SEL 7~0 相对
+-- SEL=7（最高增益 1x）的增益倍数：SEL=0 为 5x。µT/LSB 随倍数正比放大。
 local SENS_XY_0 = 0.751
 local SENS_Z_0  = 1.210
-local GAIN_BASE = 5
-local GAIN_TAB  = { 5, 4, 3, 2.5, 2, 1.5, 1, 0.2 }		-- GAIN_SEL 0~7 的增益倍数
+local GAIN_BASE = 5									-- SEL=0 对应倍数
+local GAIN_TAB  = { 5, 4, 3, 2.5, 2, 5 / 3, 4 / 3, 1 }	-- GAIN_SEL 0~7
 
--- T 换算（见头注释复核项 3）：°C = TR / T_LSB_DIV
-local T_LSB_DIV = 32
+-- 温度（datasheet §电气特性）：45.2 LSB/°C，25°C 输出 46244（u16 无符号）
+local T_LSB_PER_C = 45.2
+local T_RAW_AT_25 = 46244
 
 local DEF_GAIN    = 0
 local DEF_TIMEOUT = 50		-- ms
@@ -129,21 +147,23 @@ local function read_status(fd)
 	return v
 end
 
--- 写寄存器：地址 4 位 + 数据 12 位打包为 16 位字（地址在 [15:12]）
-local function write_reg(fd, addr4, data12)
-	local w = addr4 * 4096 + data12
-	return i2c_write_multi(fd, CMD_WR, math.floor(w / 256) % 256, w % 256) == 0
+-- 写寄存器（WR 4 字节帧）：[0x60, D15..8, D7..0, A5..A0<<2]
+local function write_reg(fd, addr, data16)
+	return i2c_write_multi(fd, CMD_WR,
+		math.floor(data16 / 256) % 256, data16 % 256, addr * 4) == 0
 end
 
--- 读 16 位寄存器（RR：[0x50, addr<<2] -> 3 字节应答），返回 16 位值；失败返回 nil
-local function read_reg16(fd, addr4)
-	if i2c_write_multi(fd, CMD_RR, addr4 * 4) ~= 0 then return nil end
+-- 读 16 位寄存器（RR：[0x50, addr<<2] -> [status,Dhi,Dlo] 3 字节应答），
+-- 返回 16 位值；失败返回 nil
+local function read_reg16(fd, addr)
+	if i2c_write_multi(fd, CMD_RR, addr * 4) ~= 0 then return nil end
 	local b = i2c_read_bytes(fd, 3)
 	if b == nil then return nil end
-	return b[1] * 256 + b[2]
+	return b[2] * 256 + b[3]
 end
 
--- 单次测量：触发 -> 轮询就绪 -> 读 9 字节应答。成功返回字节数组，失败返回 nil + 错误信息
+-- 单次测量：SM 触发 -> NOP 轮询 SM_MODE -> RM 读 9 字节应答。
+-- 成功返回字节数组，失败返回 nil + 错误信息
 local function measure_once(fd)
 	if not send_cmd(fd, CMD_XYZT) then
 		return nil, "Failed to start MLX90393 single measurement"
@@ -161,7 +181,7 @@ local function measure_once(fd)
 		if bitc.band(st, ST_ERROR) ~= 0 then
 			return nil, string.format("MLX90393 status ERROR (0x%02X)", st)
 		end
-		if bitc.band(st, ST_SMDONE) ~= 0 then
+		if bitc.band(st, ST_SM) ~= 0 then
 			if not send_cmd(fd, READ_XYZT) then
 				return nil, "Failed to send MLX90393 read command"
 			end
@@ -172,24 +192,24 @@ local function measure_once(fd)
 			return b
 		end
 	end
-	return nil, string.format("MLX90393 measurement timeout (%dms, SM_DONE never set; check wiring or ST_SMDONE def)", poll_timeout_ms)
+	return nil, string.format("MLX90393 measurement timeout (%dms, SM_MODE never set; check wiring)", poll_timeout_ms)
 end
 
--- 解析 9 字节应答并换算，返回结果表
+-- 解析 9 字节应答（status-first，TXYZ 顺序）并换算，返回结果表
 local function parse_response(b)
-	local tr = s16(b[OFF_T] * 256 + b[OFF_T + 1])
-	local zr = s16(b[OFF_Z] * 256 + b[OFF_Z + 1])
-	local yr = s16(b[OFF_Y] * 256 + b[OFF_Y + 1])
+	local tr = b[OFF_T] * 256 + b[OFF_T + 1]			-- 温度 u16 无符号
 	local xr = s16(b[OFF_X] * 256 + b[OFF_X + 1])
+	local yr = s16(b[OFF_Y] * 256 + b[OFF_Y + 1])
+	local zr = s16(b[OFF_Z] * 256 + b[OFF_Z + 1])
 
 	local ret = {
 		result = "OK",
 		X = xr * sens_xy,				-- µT（浮点）
 		Y = yr * sens_xy,
 		Z = zr * sens_z,
-		T = tr / T_LSB_DIV,				-- °C
-		XR = xr, YR = yr, ZR = zr, TR = tr,	-- 有符号原始计数
-		status = b[RESP_N]
+		T = 25 + (tr - T_RAW_AT_25) / T_LSB_PER_C,	-- °C
+		XR = xr, YR = yr, ZR = zr, TR = tr,	-- 磁场有符号；温度无符号
+		status = b[OFF_STATUS]
 	}
 
 	if DEBUG then
@@ -242,12 +262,12 @@ function build(data)
 	if to == nil or to < 1 then to = DEF_TIMEOUT end
 	poll_timeout_ms = math.floor(to)
 
-	-- 灵敏度按增益反比换算
-	sens_xy = SENS_XY_0 * GAIN_BASE / GAIN_TAB[gain + 1]
-	sens_z  = SENS_Z_0  * GAIN_BASE / GAIN_TAB[gain + 1]
+	-- 灵敏度：µT/LSB 随增益倍数正比（SEL=0 基准 × tab/5）
+	sens_xy = SENS_XY_0 * GAIN_TAB[gain + 1] / GAIN_BASE
+	sens_z  = SENS_Z_0  * GAIN_TAB[gain + 1] / GAIN_BASE
 
 	-----------------------------------------------------
-	-- 复位（寄存器被清零）
+	-- RT 暖复位（datasheet：RT 后片内自动执行一次 HR，易失内存回 NVRAM）
 	if not send_cmd(fd, CMD_RESET) then
 		return {
 			result = "ERR",
@@ -256,7 +276,7 @@ function build(data)
 	end
 	milli_sleep(T_RESET_MS)
 
-	-- Memory Recall：恢复出厂 TRIM 校准（复位后必须做，否则测量数据无效）
+	-- HR 显式再恢复一次出厂 TRIM（自动 HR 之外的冗余保险，无害）
 	if not send_cmd(fd, CMD_RECALL) then
 		return {
 			result = "ERR",
