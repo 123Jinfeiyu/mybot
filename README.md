@@ -119,7 +119,22 @@ cat scripts/tilt-r.mt    | bash _run.sh --robot=robots/spider1.sql   # 右倾
 cat scripts/one-shake.mt | bash _run.sh --robot=robots/spider1.sql   # 单腿姿势
 ```
 
-机器人结构由 `--robot` 指定，动作脚本从管道输入——只要换结构脚本并调整动作脚本，就可以把同一套程序复用到另一台机器人上。
+机器人结构由 `--robot` 指定，动作脚本来源可三选一（`src/ActionSource.cj` 工厂，优先级从高到低）：
+
+```bash
+# 1) TCP 长驻模式：监听端口等待客户端下发 .mt（适合上位机/远程持续喂动作）
+bash _run.sh --robot=robots/relay-test.sql --tcp 19240
+
+# 2) 文件输入：不依赖管道，直接指定动作脚本（Windows 无管道也能跑）
+bash _run.sh --robot=robots/relay-test.sql --input scripts/relay-test.mt
+
+# 3) 缺省：stdin 管道（前两节示例的写法）
+cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
+```
+
+TCP 源直接以字节流（`InputStream.read(Array<Byte>)`）交给核心的 StringReader 解析，
+客户端关闭连接（EOF，read 返 0）即结束本次 run；断连异常同样按 EOF 收尾而非 abort。
+`scripts/tcp_e2e.sh [port]` 提供 Python 客户端 → TCP → 服务端的回环端到端自检。
 
 ## 🔧 环境要求
 
@@ -230,30 +245,10 @@ INSERT INTO PWM (name, chip, channel, frequency, duty, invert)
 - `invert` 填 `1` 输出反相（低电平有效的驱动板）
 - 动作脚本里写 `pwm0.duty`；也可以写 `pwm0.value`（`value` 是 `duty` 的别名）
 
-#### 从哪个物理脚输出：设备树说了算
+从哪个物理脚输出由**设备树**决定（sysfs 没有"选引脚"属性）：在 `/boot/firmware/config.txt` 配 `dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4` 并重启，树莓派常用组合为 PWM0 → GPIO12/18、PWM1 → GPIO13/19，用 `raspi-gpio get <pin>` 确认复用生效（应显示 `ALT0`/`ALT5`）。注意：
 
-sysfs **没有**"选引脚"这个属性——引脚由开机时的设备树静态绑定，在 `/boot/firmware/config.txt` 里配，**改完必须重启**：
-
-```ini
-dtoverlay=pwm-2chan,pin=12,func=4,pin2=13,func2=4
-```
-
-BCM2710（CM0 / Pi Zero 2 W / Pi 3）的合法组合：
-
-| 通道 | 可选引脚（func 值） |
-| ---- | ------------------ |
-| PWM0 | GPIO12 (`func=4`)、GPIO18 (`func=2`)、GPIO40、GPIO52 |
-| PWM1 | GPIO13 (`func=4`)、GPIO19 (`func=2`)、GPIO41、GPIO45、GPIO53 |
-
-用 `raspi-gpio get <pin>` 确认复用是否生效（应显示 `ALT0` / `ALT5`，而不是 `INPUT` / `OUTPUT`）。
-
-> ⚠️ `export` 成功**不等于**有物理输出：overlay 没给该通道配脚时，`period` / `duty` 照样写得进去，但引脚仍是普通 GPIO，外面量不到波形。
-
-注意事项：
-
-- 同一引脚不能既被 `GPIO` 用 gpiod 请求、又被配成 PWM（功能复用互斥，二选一）
-- `export` / `unexport` 默认只有 root 可写，普通用户需 udev 授权，或以 `sudo -E` 运行（`-E` 保留 `CANGJIE_HOME` / `LD_LIBRARY_PATH`）
-- 取消导出后引脚回到未配置状态，停机后的电平要靠硬件上下拉兜底
+- ⚠️ `export` 成功**不等于**有物理输出——overlay 没配脚时 `period`/`duty` 照样写得进去，但引脚仍是普通 GPIO
+- 同一引脚不能既被 `GPIO` 用 gpiod 请求、又被配成 PWM（复用互斥）；`export` 默认仅 root 可写，普通用户需 udev 授权或以 `sudo -E` 运行
 
 ### 动作脚本（.mt）
 
@@ -325,7 +320,7 @@ CREATE TABLE Daemon (
 INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/daemon_probe.lua');
 ```
 
-> chunk 寻址：与普通 Lua 硬件模块一致，相对路径以 `BOT4CJ_MODULE_PATH`（默认 `./modules`）为基准，不依赖进程 CWD——编译产物拷到任意位置、设置该环境变量指向模块目录即可运行。写全 `modules/lib/xxx.lua`（或绝对路径）也兼容。`BOT4CJ_MODULE_PATH` 支持用 `:` 分隔多个路径（如 `./modules:./extra_modules`），框架与驱动按序查找第一个存在的文件；**约定共享库目录（含 `lib/` 与 `mpath.lua`）放第一段**（issue #19）。
+> chunk 寻址与普通 Lua 硬件模块一致：相对路径以 `BOT4CJ_MODULE_PATH`（默认 `./modules`）为基准、不依赖进程 CWD，写全路径/绝对路径也兼容（多路径查找规则见下文「环境变量」）。
 
 并发模型的关键点：
 
@@ -370,22 +365,19 @@ cat scripts/test/monitor.mt     | bash _run.sh --robot=robots/test/monitor.sql  
 
 对比：`scripts/test/mpu_daemon.mt` 挂在真实 `MPU6050`（`/dev/i2c-1`, 0x68）上，那一条才需要真机。
 
-#### 虚拟 I2C 总线（issue #18，无真机验证驱动链路）
+#### 虚拟总线（I2C/SPI，无真机验证驱动链路）
 
-`lib/virtbus.lua` 提供纯内存的虚拟 I2C 总线：`inject()` 后替换 HAL 的全部全局 `i2c_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*` 即可完整跑通 build/call/destroy。器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言；未挂载的地址按 NACK 处理（写 -1、读 -1/nil），负路径可测，与真机"设备不在总线"行为一致。
+`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*` 函数，真实驱动无需真机与 `/dev/i2c-*`、`/dev/spidev*` 即可完整跑通 build/call/destroy，每次事务记入 `txlog` 供断言，并可注入 NACK 等负路径（与真机"设备不在总线"行为一致）。配套 `lib/virtbus/` 器件模型库收录 26 个协议级模型（regmap 通用底座及 MPU6050、BME280、BH1750、ADS1256、AD9833、TPL0501、VL53L0X、VL53L4CD、MCP4725、SHT3X、MCP3421、MS5611、SGP30、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、CHT8305、ADS1015、INA226、INA3221、MAX17043）。
 
-```lua
-local vbus = dofile("modules/lib/virtbus.lua")
-vbus.attach("光感@0x23", 0x23, {
-    write = function(bytes) ... end,
-    read  = function(n) return { 0x75, 0x30 } end,   -- 假计数值
-})
-vbus.inject()          -- 此后驱动调用全走虚拟总线
--- dofile 真实驱动 → build/call/destroy 正常跑；tester 断言 txlog 与返回值
-vbus.reset()           -- 还原全局 i2c_* 并清空
+`@Daemon` 的 `proto` 列填 `virt` 可做**守护无硬件端到端**：真实驱动 build/call、共享槽 publish、`@Ema/@Kalman` 滤波、`@Monitor` 引用消费整条链路全部走内存仿真（守护启动打印 `VIRTUAL HARDWARE` 横幅，仿真数据禁止用于生产环境）。现有 21 个 E2E 用例，例如：
+
+```bash
+cat scripts/test/mpu_virt.mt    | bash _run.sh --robot=robots/test/mpu_virt.sql
+cat scripts/test/bme280_virt.mt | bash _run.sh --robot=robots/test/bme280_virt.sql
+# 其余 19 例（ads1256/vl53l0x/vl53l4cd/sht3x/mcp3421/ms5611/sgp30/ina219/ads1115/as7262/max30102/amg8833/pcf8574/ltc2944/cht8305/ads1015/ina226/ina3221/max17043）见 docs/virtbus.md
 ```
 
-回归：`test/test_virtbus.lua`（纯 Lua，27 断言，功能/事务记录/NACK/还原全覆盖）、`test/test_virtbus_bh1750.lua`（LuaJIT，真实 BH1750 在虚拟总线上 build/call/destroy 链路 + 无器件负路径，run_all.sh 自动纳入）。
+API 契约、模型回调、txlog 格式、SPI 语义、器件模型明细与全部回归用例，见 **[docs/virtbus.md](docs/virtbus.md)**（相关回归与仓颉级 E2E 均由 `run_all.sh` 自动纳入）。
 
 ### 环境变量
 
@@ -393,8 +385,9 @@ vbus.reset()           -- 还原全局 i2c_* 并清空
 | --- | --- |
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua`、驱动 dofile `lib/` 与 `@Daemon` 的 chunk 均按其解析；支持 `:` 分隔多个路径（如 `./modules:./extra_modules`）按序查找，**共享库目录放第一段**（issue #19） |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
+| `BOT4CJ_NO_GC` | 设为 `1` 关闭仓颉 GC（导出 `cjEnableGC=0`），**长动作脚本模式**：并发 GC 缺陷（见已知限制）在高分配速率下会概率性崩溃/挂死，关 GC 后实测 5000 行脚本 6/6 稳定通过且耗时约减半；千行级脚本 RSS <100MB，进程退出由 OS 回收内存。**仅限一次性执行**，`--tcp` 长驻模式禁用（内存会无限增长直至 OOM） |
 
-安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；未来接入 TCP 等外部输入时需另行建立信任边界（输入校验或白名单 API）。
+安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；现已支持 TCP 动作输入（`--tcp`），接入外部网络数据源时需另行建立信任边界（输入校验或白名单 API）。
 
 ## 💡 进阶示例：守护采样 → 滤波 → 消费闭环
 
@@ -421,11 +414,18 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 - **仅支持 LuaJIT**：总线驱动依赖 `ffi`，需 `luajit` 解释器；不依赖 HAL 的模块可用 `lua5.4` 独立调试
 - **守护线程的开销**：每个守护持有独立 lua_State，拍间必须让出式 sleep，否则会耗尽 worker 池
 - **一器件一消费者**：页式寄存器序列的器件（如 VL53L0X）与握手式间接访问器件（如 AS7262）只支持单消费者
+- **超长动作脚本 + controller 转发路径存在概率性崩溃/挂死（仓颉运行时并发 GC 缺陷）**：
+  gdb 实证（v0.3.3 复盘）为仓颉 1.1.3 并发复制 GC 在高分配速率下的并发缺陷——主线程可卡死
+  在 GC 读屏障内自旋（CPU 100%）、读到未转发旧引用（SIGSEGV）或容器状态被并发搬移破坏
+  （`ConcurrentModificationException`）。controller 转发路径因分配速率翻倍而优先暴露：
+  ≤800 行 0% 失败，1000~5000 行默认配置失败率约 17%（v0.3.3 logD 条件求值修复后，
+  修复前约 50%+），与堆大小基本无关（调堆**不能**解决）。正常步态脚本（数十行）不受影响；
+  需要跑长脚本时设 `BOT4CJ_NO_GC=1`（详见环境变量表）。runtime 层根除需仓颉运行时修复
 
 ### 待实现功能
 
-- [ ] **TCP 传输动作**：目前动作脚本经管道输入，Windows 上可能没有管道，未来计划推出 TCP 持续传输
-- [ ] **神经网络生成动作**：神经网络/强化学习路径（DRL、CNN）已在本仓库历史上实现过，当前版本暂时注释，计划结合 `nn4cj` 重新接入
+- [x] **TCP 传输动作**：已落地 ActionSource 三源动作输入（stdin / 文件 / `--tcp` 长驻，见上文「运行示例」）
+- [x] **神经网络前向推理（纯 Lua 基准）**：[`modules/lib/nn.lua`](modules/lib/nn.lua) 提供无 nn4cj 依赖的全连接 MLP 前向引擎（默认 `{41,80,80,40,17}` 四层、LeakyReLU/Sigmoid、`.mt` 权重存取）；将推理输出接回仓颉动作链路（历史 nn4cj/`MtVars_NN` 路径）仍待重新接入
 - [ ] **更多操作系统适配**：鸿蒙终端、macOS、开源鸿蒙机器人
 - [ ] **驱动生态扩充**：按模板新增一个 Lua 文件即可即插即用，欢迎社区贡献
 
@@ -472,54 +472,10 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 - ✅ 新增硬件 PWM 驱动 `PWM`：走 Linux sysfs（`/sys/class/pwm`），可配频率与占空比。软件 bit-bang PWM 在本框架不可行（会阻塞动作播放或耗尽 worker 池），故仅支持硬件 PWM
 - ✅ 修复 `.gitignore` 残留的 `cjpm.lock`（0.3.2 已把锁文件入库，忽略项与之矛盾）
 - ✅ 修正 `_run.sh` 堆大小注释与默认值不符（注释写 512MB，实际 128MB）
+- ✅ 定性长脚本崩溃根因（仓颉运行时并发 GC 缺陷，gdb 实证）并落地规避：新增 `BOT4CJ_NO_GC=1` 长脚本模式，热路径 `logD` 改条件求值（默认配置失败率约 50% → 17%，长脚本模式 0%）
 - ✅ 修复 BME280 驱动 build 恒 ERR：湿度校准块 7 字节读超 HAL 合并读上限 6 字节，改走字节表版 `i2c_read_multi_bytes`；新增 `test/test_bme280.lua` 离线桩测试 33 用例（旧代码在桩下复现恒 ERR，防回归）
 
-### v0.3.2（2026-09）
-
-- ✅ 引用列改 `$` 前缀显式标记：元数据列引用硬件变量须写 `$名字`（如 `src='$imu0'`），裸名一律按字面值，消除「字面值恰与硬件变量名相同被误判为引用」的隐式行为；`$` 指向未定义变量在 build 期显式报错（含表/列/行信息）
-
-### v0.3.1（2026-09）
-
-- ✅ HAL 合并值读函数（i2c_read / i2c_read_multi / i2c_read_reg16 / spi_read_multi）n 越界改显式失败（返回 -1），消除静默钳到 1 字节放大成错误数据的隐患
-- ✅ HAL uart_read 落实错误契约：非 EAGAIN/EINTR 的读错误立即返回 nil，不再空转到超时
-- ✅ Servo 逐次打印收敛到 `BOT4CJ_DEBUG` 门控；`_run.sh` 增加过期二进制告警与产物缺失友好提示
-- ✅ README 安全说明明确「护栏非安全边界」定位（详见 [CHANGELOG.md](CHANGELOG.md)）
-
-### v0.3.0（2026-09）
-
-- ✅ 守护线程机制 `@Daemon`：仓颉 `spawn` 绿色线程 + 每守护独立 lua_State + 共享内存槽 IPC
-- ✅ 万能采样 chunk `sensor_daemon.lua`：零 per-sensor 代码
-- ✅ 滤波器硬件变量：Kalman 与 Ema，支持「守护 → 滤波 → 消费」三级引用链
-- ✅ 新增一批驱动：SHT3X、INA219/INA226/INA3221、MAX17043/17048、LTC2944、GPIO、MLX90393、AS3935、VL53L0X/VL53L4CD、MS5611、AS7262、BME688、BMI270、LSM6DSV、BMM150 等
-- ✅ UART 总线能力（HAL termios + MH-Z19B 参考驱动）
-- ✅ HAL 新增 16 位寄存器指针读写与多字节读；驱动样板收敛为 `drv_common.lua`
-- ✅ Lua 驱动沙箱（中和 shell 与任意文件读写）
-- ✅ 两轮审计加固：驱动返回值判读补齐、ADS1x15/ADS1256 datasheet 级修正、守护 IPC 护锁、总线 fd 生命周期收紧（详见 [CHANGELOG.md](CHANGELOG.md)）
-
-### v0.2.0（2026-09）
-
-- ✅ HAL 彻底甩掉宿主注册的 cfunc，进入 LuaJIT ffi 时代（此后仅支持 LuaJIT）
-- ✅ LuaJIT 绑定抽取为独立包 [luajit4cj](https://gitcode.com/qingss0/luajit4cj)
-
-### v0.1.1（2026-09）
-
-- ✅ controller 引用机制：硬件变量可在矩阵里把执行转发给其它硬件变量
-- ✅ 动作脚本支持内联 `@Alias` 定义
-
-### v0.0.6（2026-09）
-
-- ✅ 机器人结构脚本迁移到 SQL（SQL4cj 解析，支持注释）
-- ✅ 新驱动：Timer、SGP30、Dummy
-
-### v0.0.3（2026-05）
-
-- ✅ 项目最大转折点：嵌入 Lua 状态机，硬件变量改由 Lua 脚本实现
-
-### v0.0.1beta（2026-04）
-
-- 🚧 项目起步：PCA9685 舵机驱动、蜘蛛机器人步态脚本、FFT/神经网络探索
-
-完整历史见 [CHANGELOG.md](CHANGELOG.md)。
+历史版本要点：v0.3.2 引用列改 `$` 前缀显式标记；v0.3.1 HAL 读函数越界显式失败；v0.3.0 引入 `@Daemon` 守护线程、滤波器与大批驱动；v0.2.0 HAL 进入 LuaJIT ffi 时代；更早版本完成 SQL 结构脚本迁移与 Lua 状态机嵌入。完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 📄 开源协议
 

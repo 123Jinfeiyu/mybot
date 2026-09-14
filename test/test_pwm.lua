@@ -4,6 +4,12 @@
 --   2) 驱动层：桩替换全局 pwm_* 函数，验证 build/call/destroy 的参数与契约
 -- 用法（项目根目录）: luajit test/test_pwm.lua
 
+-- GC 压力护栏：本套件曾因 sysfs_write 的 ffi 缓冲越界 1 字节（写坏相邻
+-- GC 对象头）出现概率性段错误，崩溃点离出错写操作很远、正常跑约 50% 复现。
+-- 最激进 GC 节奏让这类潜伏的堆/ffi 越界在当次测试内必然暴露（修复前 100% 崩）。
+collectgarbage("setpause", 1)
+collectgarbage("setstepmul", 100000)
+
 local tester = dofile("test/lib/tester.lua")
 local check = tester.check
 
@@ -49,10 +55,12 @@ HAL.sys.write = function(fd, buf, n)
 end
 HAL.sys.errno = function() return 0 end
 HAL.sys.read = function(fd, buf, n)
-	-- 仅 npwm 用到：把预设内容拷进缓冲区
+	-- 仅 npwm 用到：把预设内容拷进缓冲区。显式给 #s：内核 read 只回填
+	-- 实际字节、不加 NUL（ffi.copy 省略 len 且源是 Lua 字符串时会多拷
+	-- 一个结尾 NUL；这里目标缓冲固定 16B 当前安全，显式 len 更忠实）。
 	local s = mock_npwm
 	if #s > n then s = s:sub(1, n) end
-	ffi.copy(buf, s)
+	ffi.copy(buf, s, #s)
 	return #s
 end
 

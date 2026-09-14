@@ -161,13 +161,12 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				let val = fields.get(k).getOrThrow()
 				obj.put(k, val)
 			}
-			logD("Lua scripts call parameters: ${obj.toString()}")
+			if (debugEnabled) { logD("Lua scripts call parameters: ${obj.toString()}") }
 
 			/* 调用Lua解释器 */
 			let res = call_lua(L, obj)
 
-			logD("Lua script call result: ${res.toString()}")
-
+			if (debugEnabled) { logD("Lua script call result: ${res.toString()}") }
 			/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
 			MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
 
@@ -184,10 +183,10 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				for (k in retFields.keys()) {
 					payload.put(k, retFields.get(k).getOrThrow())
 				}
-				logD("Forward to controller: ${payload.toString()}")
+				if (debugEnabled) { logD("Forward to controller: ${payload.toString()}") }
 
 				let ctrl_res = ctrl.play(payload)
-				logD("Controller result: ${ctrl_res.toString()}")
+				if (debugEnabled) { logD("Controller result: ${ctrl_res.toString()}") }
 
 				/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
 				MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
@@ -472,7 +471,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			}
 
 			var status = Lua_pcall(L, 1, LUA_MULTRET, 0)
-			logD("lua status: ${status}")
+			if (debugEnabled) { logD("lua status: ${status}") }
 			if (status == LUA_OK) {
 				if (Lua_type(L, -1) == LUA_TTABLE) {
 					/* ---- 栈顶是表  压入 nil 作为遍历的起始键 ---- */
@@ -491,7 +490,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 						}
 						let key = Lua_tostring(L, -2)
 						let val = lua_value_to_json(L, -1)
-						logD("${key}: ${val.toString()}")
+						if (debugEnabled) { logD("${key}: ${val.toString()}") }
 						ret.put(key.toString(), val)
 						Lua_pop(L, 1)
 					}

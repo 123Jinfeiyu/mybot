@@ -20,4 +20,4 @@ CREATE TABLE H03ARR (
 	name String,
 	src  String
 );
-INSERT INTO H03ARR (name, src) VALUES ('h03', 'arr_src');
+INSERT INTO H03ARR (name, src) VALUES ('h03', '$arr_src');

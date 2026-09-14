@@ -1,122 +1,49 @@
--- BME280.lua 离线测试（桩替身，不触碰真实 I2C）
--- 用法: luajit test_bme280.lua（BME280 依赖 HAL 的 ffi，需 LuaJIT）
+-- test_bme280.lua - BME280 真实驱动在虚拟总线上的离线回归（无真机）
+-- 用法: luajit test/test_bme280.lua（驱动 dofile HAL 加载 ffi，需 LuaJIT）
 --
--- mock 方式（同 test_bme688.lua 约定）：先 dofile 驱动（连带加载真 HAL），
--- 再替换 HAL 全局。器件按寄存器文件 + 转换状态机建模：
---   - 校准注入用 datasheet 附录 8.3 示例系数组（T=25.08°C / P≈100653Pa 档），
---     测试内直接用系数常量做参考补偿输出，与驱动的字节装配结果交叉验证
---     （专抓端序/nibble 装配转录笔误）
---   - 桩侧 i2c_read_multi 镜像真 HAL 契约：n>6 显式 -1——守护「合并读越界」
---     回归（BME280 湿度校准块 7 字节曾因此 build 恒 ERR，驱动不可用）
---   - 写 CTRL_MEAS 模式位=1 触发单次转换：busy 6ms 后填充数据区
+-- mock 方式：virtbus 内存 I2C 总线 + virtbus/bme280 器件模型（regmap 之上固化
+-- NVM 校准布局、20bit 数据区位场、STATUS 合成与 forced 转换状态机），加载
+-- 【真实】modules/BME280.lua 跑完整 build/call/destroy。milli_sleep 后注桩：
+-- 既累计时长又驱动模型虚拟时钟（6ms 转换/50 次 NVM 轮询/100 次测量轮询）。
+--
+-- 覆盖点（对照 modules/BME280.lua 当前实现）：
+--   1. build：ID 甄别（0x60 放行 / 0x58 错挂 BMP280 拦截 / 读 NACK）、软复位
+--      0xE0<-0xB6、im_update 轮询与卡死超时（≥3+50ms）、T/P/H 校准块读取
+--      （0x88 起 24B、0xA1、0xE1 起 7B 字节表长读）、CTRL 配置与写后回读
+--      复核（配置写被器件吞掉→回读不一致）、主备地址 0x76/0x77、参数校验；
+--   2. call：forced 触发写 0xF4<-0x25、measuring 位轮询（5+100ms 超时）、
+--      0xF7/0xFB 两个 4 字节指针读取 20bit P/T 与 16bit H、无效读数
+--      0x80000/0x8000、T/P/H 与测试独立转录的附录 8.3 参考公式交叉验证
+--      （专抓 nibble/小端装配与补偿转录笔误）、burst NACK、参数校验；
+--   3. destroy：CTRL_MEAS 模式位清零、缺 fd 安全、参数校验；
+--   4. 模型协议行为：6ms 转换状态机（忙→到点就绪）、virt_tick 预武装
+--           （触发即就绪，守护 E2E 路径）、确定性波形。
 
-dofile("modules/BME280.lua")
+local tester = dofile("test/lib/tester.lua")
+local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
+local vbus = dofile("modules/lib/virtbus.lua")
+local bmemod = dofile("modules/lib/virtbus/bme280.lua")
+vbus.reset()
 
--- ==================== 校准系数（datasheet 附录 8.3 示例组） ====================
+local bme = bmemod.new()
+vbus.attach("BME280@0x76", 0x76, bme)
+vbus.attach("BME280@0x77", 0x77, bme)	-- 同一模型挂备地址
+vbus.load_driver("modules/BME280.lua")
+
+-- milli_sleep：累计时长 + 推进模型虚拟时钟（驱动运行时解析全局名，后注桩生效）
+local sleep_total = 0
+function milli_sleep(ms) sleep_total = sleep_total + ms; bme:advance(ms) end
+
+local fd = i2c_open("/dev/i2c-1")	-- 虚拟 fd 从 3 起
+
+-- ==================== datasheet 校准组与独立参考补偿（附录 8.3 浮点版） ====================
 local CAL = {
 	T1 = 27504, T2 = 26435, T3 = -1000,
 	P1 = 36477, P2 = -10685, P3 = 3024, P4 = 2855, P5 = 140,
 	P6 = -7, P7 = 15500, P8 = -14600, P9 = 6000,
-	H1 = 260, H2 = 382, H3 = 0, H4 = 350, H5 = 0, H6 = 30,
+	H1 = 75, H2 = 382, H3 = 0, H4 = 350, H5 = 0, H6 = 30,	-- H1 为 u8：datasheet 示例真值 75（0x4B，输出 45.3%RH 档）
 }
 
--- ==================== 器件模型 ====================
-local regs = {}
-local adc_T, adc_P, adc_H = 519888, 415148, 30000
-local busy_until = nil
-local nvm_stuck = false
-local meas_stuck = false
-local now_ms = 0
-local wr_nak, rd_nak = false, false
-
-local function put16le(reg, v)
-	v = v % 65536
-	regs[reg] = v % 256
-	regs[reg + 1] = math.floor(v / 256)
-end
-
-local function inject_regs()
-	regs[0xD0] = 0x60
-	put16le(0x88, CAL.T1); put16le(0x8A, CAL.T2); put16le(0x8C, CAL.T3)
-	put16le(0x8E, CAL.P1); put16le(0x90, CAL.P2); put16le(0x92, CAL.P3)
-	put16le(0x94, CAL.P4); put16le(0x96, CAL.P5); put16le(0x98, CAL.P6)
-	put16le(0x9A, CAL.P7); put16le(0x9C, CAL.P8); put16le(0x9E, CAL.P9)
-	regs[0xA1] = CAL.H1
-	put16le(0xE1, CAL.H2)
-	regs[0xE3] = CAL.H3
-	-- H4=s12(E4<<4|E5低4位) H5=s12(E6<<4|E5高4位)：按位场逆向装配 E4/E5/E6
-	regs[0xE4] = math.floor(CAL.H4 / 16) % 256
-	regs[0xE6] = math.floor(CAL.H5 / 16) % 256
-	regs[0xE5] = (CAL.H5 % 16) * 16 + CAL.H4 % 16
-	regs[0xE7] = CAL.H6 % 256
-end
-
-local function fill_data()
-	-- 数据区 0xF7~0xFE：P(20bit) T(20bit) H(16bit)，MSB 对齐
-	regs[0xF7] = math.floor(adc_P / 4096) % 256
-	regs[0xF8] = math.floor(adc_P / 16) % 256
-	regs[0xF9] = (adc_P % 16) * 16
-	regs[0xFA] = math.floor(adc_T / 4096) % 256
-	regs[0xFB] = math.floor(adc_T / 16) % 256
-	regs[0xFC] = (adc_T % 16) * 16
-	regs[0xFD] = math.floor(adc_H / 256) % 256
-	regs[0xFE] = adc_H % 256
-end
-
-local function advance()
-	if busy_until ~= nil and now_ms >= busy_until then
-		busy_until = nil
-		fill_data()
-	end
-end
-
--- 状态寄存器 0xF3 按模型状态合成：bit0=NVM 拷贝中，bit3=测量中
-local function read_reg(reg)
-	if reg == 0xF3 then
-		local st = 0
-		if nvm_stuck then st = st + 0x01 end
-		if busy_until ~= nil then st = st + 0x08 end
-		return st
-	end
-	return regs[reg] or 0
-end
-
--- 注意：桩定义在 dofile 之后（先定义会被 HAL 真函数覆盖）
-function i2c_set_addr(fd, addr) return true end
-
-function i2c_write_reg(fd, reg, val)
-	if wr_nak then return false end
-	val = math.floor(val) % 256
-	regs[reg] = val
-	if reg == 0xF4 and val % 4 == 1 then			-- forced 模式触发单次测量
-		busy_until = meas_stuck and math.huge or (now_ms + 6)
-	end
-	return true
-end
-
--- 镜像真 HAL 契约：合并读上限 6（2^53 精度），越界显式 -1（回归守护点）
-function i2c_read_multi(fd, reg, n)
-	if rd_nak then return -1 end
-	if n == nil or n < 1 or n > 6 then return -1 end
-	advance()
-	local v = 0
-	for i = 0, n - 1 do v = v * 256 + read_reg(reg + i) end
-	return v
-end
-
-function i2c_read_multi_bytes(fd, reg, n)
-	if rd_nak then return nil end
-	if n == nil then return nil end
-	n = math.max(1, math.min(16, n))
-	advance()
-	local t = {}
-	for i = 0, n - 1 do t[i + 1] = read_reg(reg + i) end
-	return t
-end
-
-function milli_sleep(ms) now_ms = now_ms + ms end
-
--- ==================== 参考补偿（测试内独立转录 datasheet 附录 8.3 浮点版） ====================
 local function ref_temperature(adc)
 	local var1 = (adc / 16384.0 - CAL.T1 / 1024.0) * CAL.T2
 	local var2 = (adc / 131072.0 - CAL.T1 / 8192.0) ^ 2 * CAL.T3
@@ -150,130 +77,209 @@ local function ref_humidity(adc, t_fine)
 	return math.max(0.0, math.min(100.0, h))
 end
 
--- ==================== 断言辅助 ====================
-local fails = 0
-local function check(cond, label, extra)
-	if cond then
-		print(string.format("[PASS] %s", label))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %s%s", label, extra and (" (" .. tostring(extra) .. ")") or ""))
-	end
-end
-
 local function near(a, b, rel)
 	return math.abs(a - b) <= (rel or 1e-6) * math.max(1.0, math.abs(a), math.abs(b))
 end
 
-local function result_of(ok, res)
-	if ok and type(res) == "table" then return tostring(res.result) end
-	return "EXC:" .. tostring(res)
+-- ==================== txlog 辅助 ====================
+-- 找「单字节寄存器指针写 + 紧跟 n 字节读」的原子事务对
+local function find_ptr_read(ptr, n)
+	for i = 1, #vbus.txlog - 1 do
+		local w, r = vbus.txlog[i], vbus.txlog[i + 1]
+		if w.dir == "w" and #w.bytes == 1 and w.bytes[1] == ptr
+			and r.dir == "r" and r.bytes.n == n then
+			return true
+		end
+	end
+	return false
 end
 
-local function expect_ok(label, fn)
-	local ok, res = pcall(fn)
-	check(result_of(ok, res) == "OK", label, result_of(ok, res))
-	return ok and res or nil
+local function find_data_write(reg, val)
+	for _, e in ipairs(vbus.txlog) do
+		if e.dir == "w" and #e.bytes >= 2 and e.bytes[1] == reg
+			and (val == nil or e.bytes[2] == val) then
+			return true
+		end
+	end
+	return false
 end
 
-local function expect_err(label, fn, msgpat)
-	local ok, res = pcall(fn)
-	local msg = type(res) == "table" and tostring(res.message) or tostring(res)
-	check(result_of(ok, res) == "ERR" and msg:find(msgpat, 1, true) ~= nil,
-		label, msg)
+local function last_set_addr()
+	for i = #vbus.txlog, 1, -1 do
+		if vbus.txlog[i].dir == "set" then return vbus.txlog[i].addr end
+	end
 end
 
-local FD, ADDR = 3, 0x76
-local function reg(a) return regs[a] end
-
-local function reset()
-	regs = {}
-	adc_T, adc_P, adc_H = 519888, 415148, 30000
-	busy_until = nil
-	nvm_stuck = false
-	meas_stuck = false
-	now_ms = 0
-	wr_nak, rd_nak = false, false
-	inject_regs()
+local function section()	-- 每个场景段：模型回构造态，虚拟时钟清零
+	bme:reset()
+	sleep_total = 0
 end
 
--- ==================== call 未 build ====================
-reset()
-expect_err("call 未 build", function() return call({ fd = FD, address = "0x76" }) end, "not initialized")
+-- ==================== call 未 build（必须在首个成功 build 之前） ====================
+expect_err("call 未 build", function() return call({ fd = fd, address = "0x76" }) end, "not initialized")
 
 -- ==================== build：配置与寄存器 ====================
-reset()
-expect_ok("build 默认", function() return build({ fd = FD, address = "0x76" }) end)
-check(reg(0xF2) == 0x01, "CTRL_HUM=0x01（湿度 x1）", string.format("0x%02X", reg(0xF2) or 0))
-check(reg(0xF4) == 0x24, "CTRL_MEAS=0x24（T/P x1，睡眠）", string.format("0x%02X", reg(0xF4) or 0))
-check(reg(0xF5) == 0x00, "CONFIG=0x00（滤波关闭）", string.format("0x%02X", reg(0xF5) or 0))
+section()
+local build_mark = #vbus.txlog	-- 只统计本次 build 的事务（不能重配 vbus.txlog：核心走 upvalue 追加）
+expect_ok("build 默认地址 0x76", function() return build({ fd = fd, address = "0x76" }) end)
+check("CTRL_HUM=0x01（湿度 x1）", bme:get(0xF2) == 0x01, string.format("0x%02X", bme:get(0xF2) or 0))
+check("CTRL_MEAS=0x24（T/P x1，睡眠）", bme:get(0xF4) == 0x24, string.format("0x%02X", bme:get(0xF4) or 0))
+check("CONFIG=0x00（滤波关闭）", bme:get(0xF5) == 0x00, string.format("0x%02X", bme:get(0xF5) or 0))
+do
+	local cw = bme:config_writes()
+	local want = { {0xE0,0xB6}, {0xF5,0x00}, {0xF2,0x01}, {0xF4,0x24} }
+	local same = #cw == #want
+	for i = 1, #want do
+		if same and (cw[i].reg ~= want[i][1] or cw[i].val ~= want[i][2]) then same = false end
+	end
+	check("配置写序列：复位0xB6→F5→F2→F4=0x24", same,
+		(function()
+			local t = {}
+			for _, e in ipairs(cw) do t[#t + 1] = string.format("%02X=%02X", e.reg, e.val) end
+			return table.concat(t, ",")
+		end)())
+end
+check("软复位后固定等 3ms 再轮询", sleep_total == 3, tostring(sleep_total))
+check("校准块读：0x88 起 24B = 6 个 4 字节指针读",
+	(function()
+		local n = 0
+		for i = build_mark + 1, #vbus.txlog - 1 do
+			local w, r = vbus.txlog[i], vbus.txlog[i + 1]
+			if w.dir == "w" and #w.bytes == 1
+				and (w.bytes[1] >= 0x88 and w.bytes[1] <= 0x9C)
+				and r.dir == "r" and r.bytes.n == 4 then n = n + 1 end
+		end
+		return n == 6
+	end)(), "应读到 6 块")
+check("湿度校准走字节表长读：0xE1 指针 + n=7", find_ptr_read(0xE1, 7))
+check("H1 单字节读：0xA1 指针 + n=1", find_ptr_read(0xA1, 1))
+check("STATUS im_update 轮询读：0xF3 指针 + n=1", find_ptr_read(0xF3, 1))
+
+section()
+expect_ok("build 备地址 0x77", function() return build({ fd = fd, address = "0x77" }) end)
+check("备地址事务路由到 0x77", last_set_addr() == 0x77, string.format("0x%02X", last_set_addr() or 0))
 
 -- ==================== build：错误路径 ====================
-reset()
-regs[0xD0] = 0x58
-expect_err("build chip id 错误（BMP280?）", function() return build({ fd = FD, address = "0x76" }) end, "chip id")
-reset()
-nvm_stuck = true
-expect_err("build NVM 拷贝超时", function() return build({ fd = FD, address = "0x76" }) end, "copy timeout")
-check(now_ms >= 50, "超时前轮询 50ms", tostring(now_ms))
-reset()
-wr_nak = true
-expect_err("build 写无应答（回读配置不一致）", function() return build({ fd = FD, address = "0x76" }) end, "configure")
-wr_nak = false
-rd_nak = true
-expect_err("build 读无应答", function() return build({ fd = FD, address = "0x76" }) end, "chip id")
-rd_nak = false
+section()
+bme:who(0x58)
+expect_err("build chip id 错误（BMP280?）", function() return build({ fd = fd, address = "0x76" }) end, "chip id")
+
+section()
+bme.nvm_stuck = true
+expect_err("build NVM 拷贝超时", function() return build({ fd = fd, address = "0x76" }) end, "copy timeout")
+check("超时前轮询 3+50ms", sleep_total >= 53, tostring(sleep_total))
+
+section()
+do
+	-- 驱动不判写返回值、靠写后回读复核：注入「器件吞掉配置写（未应用）」——
+	-- F2/F4/F5 写成功但寄存器不变，回读不一致；读指针写（单字节）必须照常透传。
+	local real_write = bme.write
+	bme.write = function(bytes)
+		if type(bytes) == "table" and #bytes >= 2
+			and (bytes[1] == 0xF2 or bytes[1] == 0xF4 or bytes[1] == 0xF5) then
+			return true
+		end
+		return real_write(bytes)
+	end
+	expect_err("build 配置写未生效（回读不一致）",
+		function() return build({ fd = fd, address = "0x76" }) end, "configure")
+	bme.write = real_write
+end
+
+section()
+bme.nack_read = true
+expect_err("build 读无应答（chip id 失败）", function() return build({ fd = fd, address = "0x76" }) end, "chip id")
+
+section()
 expect_err("build 缺 fd", function() return build({ address = "0x76" }) end, "fd or address")
-expect_err("build 缺 address", function() return build({ fd = FD }) end, "fd or address")
+expect_err("build 缺 address", function() return build({ fd = fd }) end, "fd or address")
 expect_err("build 非表参数", function() return build(0) end, "Invalid Arguments Type")
 
 -- ==================== call：T/P/H 与独立公式交叉验证 ====================
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x76" }) end)
-local res = expect_ok("call 三通道补偿", function() return call({ fd = FD, address = "0x76" }) end)
+section()
+expect_ok("call 前 build", function() return build({ fd = fd, address = "0x76" }) end)
+local res = expect_ok("call 三通道补偿", function() return call({ fd = fd, address = "0x76" }) end)
 if res then
-	local refT, t_fine = ref_temperature(adc_T)
-	local refP = ref_pressure(adc_P, t_fine)
-	local refH = ref_humidity(adc_H, t_fine)
-	check(refT > 20 and refT < 30 and refP > 95000 and refP < 105000
-		and refH > 0 and refH < 100, "参考值落在未钳位合理区间",
+	local refT, t_fine = ref_temperature(519888)
+	local refP = ref_pressure(415148, t_fine)
+	local refH = ref_humidity(30000, t_fine)
+	check("参考值落在未钳位合理区间",
+		refT > 20 and refT < 30 and refP > 95000 and refP < 105000 and refH > 0 and refH < 100,
 		string.format("T=%s P=%s H=%s", tostring(refT), tostring(refP), tostring(refH)))
-	check(near(res.T, refT), "T 与独立公式一致", string.format("%s vs %s", tostring(res.T), tostring(refT)))
-	check(near(res.P, refP), "P 与独立公式一致", string.format("%s vs %s", tostring(res.P), tostring(refP)))
-	check(near(res.H, refH), "H 与独立公式一致", string.format("%s vs %s", tostring(res.H), tostring(refH)))
+	check("T 与独立公式一致（25.08°C 档）", near(res.T, refT),
+		string.format("%s vs %s", tostring(res.T), tostring(refT)))
+	check("P 与独立公式一致（≈100653Pa）", near(res.P, refP),
+		string.format("%s vs %s", tostring(res.P), tostring(refP)))
+	check("H 与独立公式一致（45.3%RH 档）", near(res.H, refH),
+		string.format("%s vs %s", tostring(res.H), tostring(refH)))
+end
+check("forced 触发写：0xF4<-0x25（x1/x1 + mode=01）", find_data_write(0xF4, 0x25))
+check("数据块读：0xF7 指针 + n=4（P高/T高）", find_ptr_read(0xF7, 4))
+check("数据块读：0xFB 指针 + n=4（T低/H）", find_ptr_read(0xFB, 4))
+
+-- ==================== 转换状态机：忙→到点就绪 ====================
+section()
+expect_ok("状态机用 build", function() return build({ fd = fd, address = "0x76" }) end)
+i2c_set_addr(fd, 0x76)
+i2c_write_reg(fd, 0xF4, 0x25)
+check("触发后未推进时钟：STATUS=0x08（measuring）",
+	i2c_read_multi(fd, 0xF3, 1) == 0x08,
+	string.format("0x%02X", i2c_read_multi(fd, 0xF3, 1)))
+bme:advance(5)
+check("5ms（<6ms 转换）：仍 measuring", i2c_read_multi(fd, 0xF3, 1) == 0x08)
+bme:advance(1)
+check("6ms 到点：measuring 清零、数据区已填充", i2c_read_multi(fd, 0xF3, 1) == 0x00)
+
+-- virt_tick 预武装（守护 proto=virt 路径：无人驱动虚拟时钟，触发即就绪）
+section()
+bme:virt_tick(3)
+i2c_set_addr(fd, 0x76)
+i2c_write_reg(fd, 0xF4, 0x25)
+check("预武装后触发：零等待 STATUS=0x00", i2c_read_multi(fd, 0xF3, 1) == 0x00)
+do
+	local a = bmemod.new()
+	a:virt_tick(0); a:virt_tick(4)
+	local d0, d4 = {}, {}
+	for r = 0xF7, 0xFE do d0[#d0 + 1] = a:get(r) end
+	a:virt_tick(0); a:virt_tick(4)
+	for r = 0xF7, 0xFE do d4[#d4 + 1] = a:get(r) end
+	local deterministic = true
+	for i = 1, 8 do if d0[i] ~= d4[i] then deterministic = false end end
+	check("virt_tick 确定性（同序号同数据）", deterministic)
+	a:virt_tick(0); local z = {}
+	for r = 0xF7, 0xFE do z[#z + 1] = a:get(r) end
+	local changed = false
+	for i = 1, 8 do if z[i] ~= d0[i] then changed = true end end
+	check("virt_tick 波形随序号变化（n=0≠n=4）", changed)
 end
 
 -- ==================== call：无效读数与超时 ====================
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x76" }) end)
-adc_T = 0x80000
-expect_err("call 无效温度读数（0x80000）", function() return call({ fd = FD, address = "0x76" }) end, "temperature")
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x76" }) end)
-adc_H = 0x8000
-expect_err("call 无效湿度读数（0x8000）", function() return call({ fd = FD, address = "0x76" }) end, "humidity")
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x76" }) end)
-meas_stuck = true
-expect_err("call 测量超时", function() return call({ fd = FD, address = "0x76" }) end, "timeout")
-check(now_ms >= 105, "超时前轮询 105ms（5ms 首等 + 100ms）", tostring(now_ms))
+section()
+expect_ok("无效温度用例 build", function() return build({ fd = fd, address = "0x76" }) end)
+bme:set_raw(0x80000)
+expect_err("call 无效温度读数（0x80000）", function() return call({ fd = fd, address = "0x76" }) end, "temperature")
+
+section()
+expect_ok("无效湿度用例 build", function() return build({ fd = fd, address = "0x76" }) end)
+bme:set_raw(nil, nil, 0x8000)
+expect_err("call 无效湿度读数（0x8000）", function() return call({ fd = fd, address = "0x76" }) end, "humidity")
+
+section()
+expect_ok("超时用例 build", function() return build({ fd = fd, address = "0x76" }) end)
+bme.meas_stuck = true
+expect_err("call 测量超时", function() return call({ fd = fd, address = "0x76" }) end, "timeout")
+check("超时前轮询 5+100ms", sleep_total >= 105, tostring(sleep_total))
 expect_err("call 非表参数", function() return call(3) end, "Invalid Arguments")
-expect_err("call 缺 address", function() return call({ fd = FD }) end, "fd or address")
+expect_err("call 缺 address", function() return call({ fd = fd }) end, "fd or address")
 
 -- ==================== destroy ====================
-reset()
-expect_ok("destroy 前 build", function() return build({ fd = FD, address = "0x76" }) end)
-expect_ok("destroy 置睡眠", function() return destroy({ fd = FD, address = "0x76" }) end)
-check(reg(0xF4) % 4 == 0, "CTRL_MEAS 模式位清零（睡眠）", tostring(reg(0xF4)))
+section()
+expect_ok("destroy 前 build", function() return build({ fd = fd, address = "0x76" }) end)
+expect_ok("destroy 置睡眠", function() return destroy({ fd = fd, address = "0x76" }) end)
+check("CTRL_MEAS 模式位清零（睡眠）", bme:get(0xF4) % 4 == 0, tostring(bme:get(0xF4)))
 
-reset()
+section()
 expect_ok("destroy 缺 fd 安全返回", function() return destroy({}) end)
 expect_err("destroy 非表参数", function() return destroy(nil) end, "Invalid Arguments Type")
 
--- ==================== 汇总 ====================
-if fails == 0 then
-	print("all passed")
-else
-	print(fails .. " case(s) failed")
-	os.exit(1)
-end
+tester.summary("test_bme280")

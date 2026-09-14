@@ -1,326 +1,594 @@
--- ADS1115.lua 离线测试（桩替身，不触碰真实 I2C）
--- 用法: luajit test_ads1115.lua（ADS1115 依赖 HAL 的 ffi，需 LuaJIT）
+-- test_ads1115.lua —— ADS1115 真实驱动 + 虚拟 I2C 总线 + 字寻址/oneshot 模型
+-- 用法（项目根目录）: luajit test/test_ads1115.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
--- mock 方式（同 test_ads1015.lua 约定）：先 dofile 驱动（连带加载真 HAL），
--- 再替换 HAL 全局。器件按 16 位寄存器文件 + 转换状态机建模：
---   - POR 默认配置 0x8583（±2.048V / 单次 / 128SPS，数据手册值）
---   - 单次写 OS=1 启动转换：busy 至精确 1/SPS 周期（独立于驱动 1ms 轮询），
---     完成后转换寄存器装载结果
---   - OS 位读语义按真实硬件建模（datasheet 9.6.3）：转换中读 0、空闲读 1
---     （写入的 OS=1 是启动命令，不落存储；读取时按 busy 状态动态合成）
---   - 转换寄存器为【16 位直接编码】（区别 ADS1015 的 12 位左对齐）
+-- 从「dofile 驱动后替换 i2c_* 全局的 326 行手写桩」迁移到「真实驱动 +
+-- virtbus 注入层 + virtbus/ads1115.lua 模型」。本器件是 virtbus 库【首个
+-- 字寻址 16 位寄存器 + oneshot 转换门/OS 就绪握手器件】（字寻址骨架同族
+-- INA219：寄存器号 0x00~0x03 各代表一个 16 位字，绝不能套字节地址
+-- regmap；但 INA219 连续模式无转换门，ADS1115 驱动走单次转换）：
+--   0x00 CONVERSION 16 位有符号结果（直接编码，非 ADS1015 的 12 位左对齐）
+--   0x01 CONFIG [15]OS [14:12]MUX [11:9]PGA [8]MODE [7:5]DR [4:0]比较器
+-- OS 位读写语义相反：写 1（单次模式）启动转换，读时转换中=0/空闲=1，
+-- 故模型 shadow 落写值、读回 bit15 按状态动态合成；转换门 = 1000/SPS
+-- （125/62.5/31.25/15.625/7.8125/4/2.1053/1.1628ms），驱动 1ms 步进
+-- 轮询（每档实际睡眠 = ceil(门限)），200ms 预算覆盖最慢 8SPS 档。
 --
--- 与 ADS1015 驱动的行为差异（测试同步覆盖）：
---   - build 读回不做比对（仅判读失败），无 echo mismatch 用例
---   - destroy 缺 fd/addr 返回 ERR（严格契约；ADS1015 为宽松 OK）
---   - destroy 为读改写置 MODE_SINGLE + 清 OS 位（0.3.2 修复：原实现写
---     0x0000 = 连续转换 + 比较器使能，与「停止」意图相反）
+-- 覆盖：模型侧 POR/字寻址不串读/坏长度与越界/OS 动态合成与八档门边界/
+-- 通道隔离/s16 补码/连续模式/阈值照读照写/武装零等待一次性消费/
+-- virt_tick 峰谷周期/物理量 PGA 量化独立交叉/六类钩子与 reset 保留/
+-- 卡死武装无效；真实 build 配置字与参数归一/写读事务序列/五路负路径；
+-- 真实 call 启动前读保 PGA/DR→启动字→九次轮询（128SPS 档）→结果读
+-- 完整序列与睡眠拍数、正负满码/通道与四差分对 MUX 字/PGA 回读与 6/7
+-- 冗余/慢档等待/超时/三路读失败/virt_tick 零睡眠闭环；destroy 读改写。
 
-dofile("modules/ADS1115.lua")
+local tester = dofile("test/lib/tester.lua")
+local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
-local bitc = dofile("modules/bitcompat.lua")
+local vbus = dofile("modules/lib/virtbus.lua")
+local smod = dofile("modules/lib/virtbus/ads1115.lua")
+vbus.reset()
 
--- ==================== 器件模型 ====================
--- regs[0x01] 存储不含 OS 位（低 15 位）；读取时空闲合成 OS=1（POR 读值 0x8583）
-local regs = { [0x00] = 0, [0x01] = 0x0583, [0x02] = 0x8000, [0x03] = 0x7FFF }
-local conv_raw16 = 0			-- 16 位有符号测量值（测试注入）
-local busy_until = nil			-- 转换完成时刻（fake 时钟 ms），nil = 空闲
-local stuck = false				-- 模拟器件卡死（超时用例）
-local now_ms = 0
-local wr_log = {}
-local wr_nak = false
-local rd_nak = false
-local sa_fail = false			-- 模拟 set_addr 失败（destroy 严格契约用例）
+local ADDR = 0x48
+local dev = smod.new()
+vbus.attach("ADS1115@0x48", ADDR, dev)
+vbus.load_driver("modules/ADS1115.lua")
 
--- 精确转换周期 1000/SPS（ADS1115 数据率表 {8,16,32,64,128,250,475,860}），
--- 与驱动的 1ms 轮询不耦合。dr=0（8SPS）转换需 125ms，驱动轮询预算 200ms
--- 覆盖之（0.3.2 修复：原 100ms 预算在该档必误报超时，入用例回归守护）。
-local conv_ms = { [0]=125, [1]=62.5, [2]=31.25, [3]=15.625,
-                  [4]=7.8125, [5]=4, [6]=2.1053, [7]=1.1628 }
+-- milli_sleep：累计时长 + 推进转换虚拟时钟（驱动运行时解析全局名）
+local sleep_total = 0
+function milli_sleep(ms) sleep_total = sleep_total + ms; dev:advance(ms) end
 
-local function dr_of(cfg) return math.floor(cfg / 32) % 8 end
+local fd = i2c_open("/dev/i2c-1")	-- 虚拟 fd 从 3 起
+check("i2c_open 虚拟 fd=3", fd == 3, tostring(fd))
 
--- 16 位有符号码值 -> 16 位无符号存储值（独立编码，检验驱动符号扩展解码）
-local function encode16(v)
-	return v % 65536
+local function near(a, b, eps) return math.abs(a - b) <= (eps or 1e-9) end
+
+-- 每个 section：器件回 POR + 故障解除（挂载/fd 不动）
+local function section()
+	dev:reset()
+	dev:clear_faults()
+	sleep_total = 0
+	return #vbus.txlog
 end
 
-local function advance()
-	if busy_until ~= nil and not stuck and now_ms >= busy_until then
-		busy_until = nil						-- 转空闲（OS 读值由读函数合成为 1）
-		regs[0x00] = encode16(conv_raw16)
+local function entries(mark)
+	local t = {}
+	for i = (mark or 0) + 1, #vbus.txlog do t[#t + 1] = vbus.txlog[i] end
+	return t
+end
+local function writes(mark)
+	local t = {}
+	for _, e in ipairs(entries(mark)) do
+		if e.dir == "w" then t[#t + 1] = e.bytes end
 	end
+	return t
 end
-
--- 注意：桩定义在 dofile 之后（先定义会被 HAL 真函数覆盖）
-function i2c_set_addr(fd, addr)
-	if sa_fail then return false end
-	return true
-end
-
-function i2c_write_multi(fd, reg, ...)
-	if wr_nak then return -1 end
-	local bytes = { ... }
-	local v = 0
-	for _, b in ipairs(bytes) do v = v * 256 + (math.floor(b) % 256) end
-	wr_log[#wr_log + 1] = { reg = reg, val = v, n = #bytes }
-	if reg == 0x01 then
-		regs[0x01] = v % 0x8000						-- OS 是启动命令位，不落存储
-		if math.floor(v / 0x8000) % 2 == 1 then		-- OS=1：启动转换
-			if math.floor(v / 0x0100) % 2 == 1 then	-- 单次模式
-				busy_until = now_ms + conv_ms[dr_of(v)]
-			else										-- 连续模式：立即出数
-				busy_until = nil
-				regs[0x00] = encode16(conv_raw16)
-			end
-		end
-	else
-		regs[reg] = v
+local function reads(mark)
+	local t = {}
+	for _, e in ipairs(entries(mark)) do
+		if e.dir == "r" then t[#t + 1] = e.bytes.n end
 	end
-	return 0
+	return t
 end
-
-function i2c_read_multi(fd, reg, n)
-	if rd_nak then return -1 end
-	assert(n == 2, "only 16-bit reads expected")
-	assert(reg ~= nil and reg >= 0 and reg <= 3, "unexpected register " .. tostring(reg))
-	advance()
-	local v = regs[reg] or 0
-	if reg == 0x01 and busy_until == nil then
-		v = v % 0x8000 + 0x8000		-- 空闲：OS 读 1（转换中保持 0）
+local function set_addrs(mark)
+	local t = {}
+	for _, e in ipairs(entries(mark)) do
+		if e.dir == "set" then t[#t + 1] = e.addr end
 	end
-	return math.floor(v / 256) % 256 * 256 + v % 256		-- 经大端字节路径合并
+	return t
 end
-
-function milli_sleep(ms) now_ms = now_ms + ms end
-
--- ==================== 断言辅助 ====================
-local fails = 0
-local function check(cond, label, extra)
-	if cond then
-		print(string.format("[PASS] %s", label))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %s%s", label, extra and (" (" .. tostring(extra) .. ")") or ""))
+-- 窗口内字写 {ptr,hi,lo} 的拼字序列
+local function write_words(mark)
+	local t = {}
+	for _, b in ipairs(writes(mark)) do
+		if #b == 3 then t[#t + 1] = b[1] * 65536 + b[2] * 256 + b[3] end
 	end
+	return t
+end
+-- 窗口内单字节指针写的指针序列
+local function ptr_writes(mark)
+	local t = {}
+	for _, b in ipairs(writes(mark)) do
+		if #b == 1 then t[#t + 1] = b[1] end
+	end
+	return t
 end
 
-local function near(a, b, eps)
-	return math.abs(a - b) <= (eps or 1e-9)
+local PGA_FS = { [0] = 6.144, 4.096, 2.048, 1.024, 0.512, 0.256 }
+local CONV_MS = { [0] = 125, 62.5, 31.25, 15.625, 7.8125, 4, 1000/475, 1000/860 }
+-- 驱动 1ms 步进轮询每档实际睡眠拍数 = ceil(转换门)
+local SLEEP_TAB = { [0] = 125, 63, 32, 16, 8, 4, 3, 2 }
+local DR_BITS = { [0] = 0x00, [1] = 0x20, [2] = 0x40, [3] = 0x60,
+                  [4] = 0x80, [5] = 0xA0, [6] = 0xC0, [7] = 0xE0 }
+
+-- 直接打一次 oneshot（写 OS=1 启动字，MUX=AIN0/PGA2），dr 为速率索引
+local function start_oneshot(dr)
+	local lo = DR_BITS[dr] + 0x03
+	dev.write({ 0x01, 0xC5, lo })
 end
 
-local function result_of(ok, res)
-	if ok and type(res) == "table" then return tostring(res.result) end
-	return "EXC:" .. tostring(res)
+-- =====================================================================
+-- 组 1：模型协议事实（脱驱动，直接点回调/调 API）
+-- =====================================================================
+local mark = section()
+
+check("POR CONFIG 读 0x8583", dev:config() == 0x8583, string.format("0x%04X", dev:config()))
+check("POR shadow 0x8583", dev:config_shadow() == 0x8583)
+check("POR LO_THRESH 0x8000", dev:lo_thresh() == 0x8000, string.format("0x%04X", dev:lo_thresh()))
+check("POR HI_THRESH 0x7FFF", dev:hi_thresh() == 0x7FFF, string.format("0x%04X", dev:hi_thresh()))
+check("POR CONVERSION 0", dev:conversion_raw() == 0)
+check("POR 不 busy", not dev:busy())
+check("POR active_mux=4(AIN0)", dev:active_mux() == 4)
+
+-- 字寻址不串读：相邻字各自独立
+dev.write({ 0x00, 0x12, 0x34 })
+dev.write({ 0x01, 0x45, 0x83 })
+dev.write({ 0x00 })
+local c0 = dev.read(2)
+check("字 0x00 读回 0x1234", c0[1] == 0x12 and c0[2] == 0x34, table.concat(c0, ","))
+dev.write({ 0x01 })
+local c1 = dev.read(2)
+-- 0x4583 为 OS=0 单次写，空闲读回 bit15 动态合成 1 → 0xC583；hi/lo 仍是本字
+check("字 0x01 读回本字 hi/lo（OS 合成 0xC583，不串字）",
+      c1[1] == 0xC5 and c1[2] == 0x83, table.concat(c1, ","))
+
+-- 坏事务：恰 1（指针）或恰 3（字）合法
+check("空表写 NACK", dev.write({}) == false)
+check("2 字节写 NACK", dev.write({ 0x01, 0x45 }) == false)
+check("4 字节写 NACK", dev.write({ 0x01, 0x45, 0x83, 0x00 }) == false)
+check("非 table 写 NACK", dev.write(7) == false)
+check("指针越界 0x04 NACK", dev.write({ 0x04 }) == false)
+check("字写越界寄存器 NACK", dev.write({ 0x05, 0x00, 0x00 }) == false)
+check("read(0) NACK", dev.read(0) == nil)
+
+-- OS 位读写相反：OS=0 单次写不启动；OS=1 启动后转换中读 0、空闲读 1
+mark = section()
+check("OS=0 单次写 ACK", dev.write({ 0x01, 0x45, 0x83 }))
+check("OS=0 不启动（start_count=0）", dev:start_count() == 0, tostring(dev:start_count()))
+check("OS=0 后空闲读回合成 OS=1（0xC583）", dev:config() == 0xC583,
+      string.format("0x%04X", dev:config()))
+check("shadow 保留驱动写值 0x4583", dev:config_shadow() == 0x4583,
+      string.format("0x%04X", dev:config_shadow()))
+
+-- 128SPS oneshot 门限 7.8125ms：启动即 busy、OS 读 0、结果完成前不变
+dev:set_result(4, 32767)
+start_oneshot(4)
+check("OS=1 启动计数 +1", dev:start_count() == 1)
+check("启动即 busy", dev:busy())
+check("转换中 OS 读 0（0x4583）", dev:config() == 0x4583, string.format("0x%04X", dev:config()))
+check("完成前 CONVERSION 保持旧值 0", dev:conversion_raw() == 0)
+dev:advance(7)
+check("7ms 未过 7.8125 门仍 busy", dev:busy())
+dev:advance(0.8)
+check("7.8ms 仍 busy", dev:busy())
+dev:advance(0.02)
+check("7.82ms 过門就绪", not dev:busy())
+check("完成后 OS 读 1", dev:config() == 0xC583, string.format("0x%04X", dev:config()))
+check("完成时装入注入码 32767", dev:conversion_raw() == 32767, tostring(dev:conversion_raw()))
+
+-- 八档转换门边界：T-1ms 仍 busy（整数档 T 本身完成）
+for dr = 0, 7 do
+	local d0 = section()
+	start_oneshot(dr)
+	dev:advance(CONV_MS[dr] - 1)
+	check(string.format("DR=%d 门前 1ms busy", dr), dev:busy())
+	dev:advance(1)
+	check(string.format("DR=%d 门后就绪", dr), not dev:busy())
 end
 
-local function expect_ok(label, fn)
-	local ok, res = pcall(fn)
-	check(result_of(ok, res) == "OK", label, result_of(ok, res))
-	return ok and res or nil
+-- s16 补码：正满/负满/-1
+mark = section()
+for _, raw in ipairs({ { 32767, 0x7FFF }, { -32768, 0x8000 }, { -1, 0xFFFF }, { 0, 0 } }) do
+	dev:set_result(4, raw[1])
+	start_oneshot(4); dev:advance(8)
+	dev.write({ 0x00 })
+	local b = dev.read(2)
+	local u = b[1] * 256 + b[2]
+	check(string.format("码 %d 帧编码 0x%04X", raw[1], raw[2]), u == raw[2],
+	      string.format("0x%04X", u))
+	check(string.format("码 %d s16 观察口还原", raw[1]), dev:conversion_raw() == raw[1])
 end
 
-local function expect_err(label, fn, msgpat)
-	local ok, res = pcall(fn)
-	local msg = type(res) == "table" and tostring(res.message) or tostring(res)
-	check(result_of(ok, res) == "ERR" and msg:find(msgpat, 1, true) ~= nil,
-		label, msg)
+-- 通道隔离：MUX 各自的注入码只在对应通道转换时装入
+mark = section()
+dev:set_result(4, 111)		-- AIN0
+dev:set_result(6, 222)		-- AIN2
+dev:set_result(0, -33)		-- 差分 0-1
+-- 切 AIN2（0xE583）
+dev.write({ 0x01, 0xE5, 0x83 }); dev:advance(8)
+check("切 AIN2 后 active_mux=6", dev:active_mux() == 6)
+check("AIN2 装入 222", dev:conversion_raw() == 222, tostring(dev:conversion_raw()))
+-- 差分 0-1（0x8583）
+dev.write({ 0x01, 0x85, 0x83 }); dev:advance(8)
+check("差分 0-1 active_mux=0", dev:active_mux() == 0)
+check("差分码 -33 装入", dev:conversion_raw() == -33, tostring(dev:conversion_raw()))
+-- 回 AIN0
+dev.write({ 0x01, 0xC5, 0x83 }); dev:advance(8)
+check("回 AIN0 装入 111", dev:conversion_raw() == 111, tostring(dev:conversion_raw()))
+
+-- 连续模式（MODE=0）：不 busy、OS 读恒 0、结果立即装入
+mark = section()
+dev:set_result(4, 1234)
+dev.write({ 0x01, 0x44, 0x83 })		-- MUX=AIN0 MODE=0 DR=128，OS=0
+check("连续写不 busy", not dev:busy())
+check("连续模式 OS 读 0（0x4483）", dev:config() == 0x4483, string.format("0x%04X", dev:config()))
+check("连续结果立即装入 1234", dev:conversion_raw() == 1234)
+check("连续写 start_count 不增", dev:start_count() == 0)
+
+-- 阈值寄存器照读照写
+mark = section()
+dev.write({ 0x02, 0x12, 0x34 })
+dev.write({ 0x03, 0xAB, 0xCD })
+check("LO 照写 0x1234", dev:lo_thresh() == 0x1234, string.format("0x%04X", dev:lo_thresh()))
+check("HI 照写 0xABCD", dev:hi_thresh() == 0xABCD, string.format("0x%04X", dev:hi_thresh()))
+
+-- 物理量 API 独立量化交叉（V*32768/FS 公式独立于驱动，常量另算）
+mark = section()
+local function code_after_single(ch, v, pga)
+	section()
+	dev:set_single(ch, v, pga)
+	local mux = 4 + ch
+	dev.write({ 0x01, 0x80 + mux * 0x10 + pga * 2, 0x83 })
+	dev:advance(8)
+	return dev:conversion_raw()
 end
+check("AIN0 1.5V@±2.048 码", code_after_single(0, 1.5, 2) == math.floor(1.5 * 32768 / 2.048 + 0.5))
+check("AIN3 -0.2V@±0.256 码", code_after_single(3, -0.2, 5) == math.floor(-0.2 * 32768 / 0.256 + 0.5))
+check("AIN1 满程钳 +32767", code_after_single(1, 10, 0) == 32767)
+section()
+dev:set_diff(2, -7.0, 0)		-- -7V 超 ±6.144 满程
+dev.write({ 0x01, 0x80 + 2 * 0x10, 0x83 }); dev:advance(8)
+check("差分负满程钳 -32768", dev:conversion_raw() == -32768, tostring(dev:conversion_raw()))
 
-local FD, ADDR = 3, 0x48
-local function reset()
-	regs = { [0x00] = 0, [0x01] = 0x0583, [0x02] = 0x8000, [0x03] = 0x7FFF }
-	conv_raw16 = 0
-	busy_until = nil
-	stuck = false
-	now_ms = 0
-	wr_log = {}
-	wr_nak = false
-	rd_nak = false
-	sa_fail = false
+-- virt_tick：确定性正弦 1.65±0.25V，武装零等待、一次性消费、32 拍周期
+mark = section()
+local function tick_raw(n)
+	section()
+	dev:virt_tick(n)
+	if not dev:armed() then return nil, "not armed" end
+	start_oneshot(4)			-- 武装启动
+	if dev:busy() then return nil, "armed but busy" end
+	if dev:armed() then return nil, "armed not consumed" end
+	return dev:conversion_raw()
 end
+local r0 = tick_raw(0)
+local r8 = tick_raw(8)
+local r24 = tick_raw(24)
+local r32 = tick_raw(32)
+local exp0 = math.floor(1.65 * 32768 / 2.048 + 0.5)
+local exp8 = math.floor((1.65 + 0.25) * 32768 / 2.048 + 0.5)
+check("virt_tick n0 武装零等待码", r0 == exp0, tostring(r0))
+check("virt_tick n8 峰值码", r8 == exp8, tostring(r8) .. "/" .. tostring(exp8))
+check("n8 峰 > n0", r8 > r0)
+check("n24 谷 < n0", r24 < r0)
+check("n32 = n0 周期", r32 == r0, tostring(r32) .. "/" .. tostring(r0))
+-- 未武装的启动必须走真实门（武装只影响一次）
+section()
+dev:virt_tick(0)
+start_oneshot(4); dev:advance(8)	-- 第一次消费武装
+dev:set_result(4, 12345)
+start_oneshot(4)
+check("武装消费后第二次启动真实 busy", dev:busy())
+dev:advance(8)
+check("第二次转换完成 12345", dev:conversion_raw() == 12345)
 
-local function last_wr() return wr_log[#wr_log] end
+-- 卡死：永不就绪、advance 不推进、武装无效
+mark = section()
+dev:set_never_ready(true)
+dev:virt_tick(0)
+start_oneshot(4)
+check("卡死时武装无效仍 busy", dev:busy())
+dev:advance(500)
+check("卡死后 advance 500ms 不就绪", dev:busy())
+check("卡死 OS 恒读 0", dev:config() == 0x4583, string.format("0x%04X", dev:config()))
+dev:set_never_ready(false)
+dev:advance(8)
+check("解除卡死后完成", not dev:busy() and dev:conversion_raw() ~= nil)
 
--- ==================== build：配置编码 ====================
-reset()
-expect_ok("build 默认（AIN0/±2.048V/128SPS）", function() return build({ fd = FD, address = "0x48" }) end)
-check(#wr_log == 1 and last_wr().reg == 0x01 and last_wr().val == 0x4583,
-	"配置字 0x4583（单端AIN0|±2.048V|单次|128SPS|禁比较器）",
-	last_wr() and string.format("0x%04X", last_wr().val))
+-- 钩子：nack/nack_read/nack_write/谓词；reset 保留钩子
+mark = section()
+dev.nack = true
+check("nack 写失败", dev.write({ 0x01, 0x45, 0x83 }) == false)
+check("nack 读失败", dev.read(2) == nil)
+dev.nack = false
+dev.nack_write = true
+check("nack_write 写失败", dev.write({ 0x01, 0x45, 0x83 }) == false)
+dev.nack_write = false
+dev.nack_read = true
+check("nack_read 读失败", dev.read(2) == nil)
+dev.nack_read = false
+dev:fail_write(function(b) return #b == 3 and b[1] == 0x02 end)
+check("谓词放行 CONFIG 写", dev.write({ 0x01, 0x45, 0x83 }))
+check("谓词拦截 LO 写", dev.write({ 0x02, 0x80, 0x00 }) == false)
+dev:fail_read(function(p) return p == 0x03 end)
+dev.write({ 0x03 })
+check("谓词拦截 HI 读", dev.read(2) == nil)
+dev:fail_read(); dev:fail_write()
+dev.nack_read = true
+dev:reset()
+check("reset 保留故障钩子", dev.nack_read == true)
+check("reset 回 POR CONFIG", dev:config() == 0x8583, string.format("0x%04X", dev:config()))
+check("reset 清启动计数", dev:start_count() == 0)
+dev:clear_faults()
 
-reset()
-expect_ok("build 自定义（AIN3/±0.256V/860SPS）", function()
-	return build({ fd = FD, address = "0x48", pga = "5", dr = "7", channel = "3" })
+-- =====================================================================
+-- 组 2：真实 build
+-- =====================================================================
+mark = section()
+local b = expect_ok("build 默认 AIN0/±2.048V/128SPS", function()
+	return build({ fd = fd, address = "0x48" })
 end)
-check(last_wr().val == 0x7BE3, "配置字 0x7BE3（AIN3|±0.256V|单次|860SPS|禁比较器）",
-	last_wr() and string.format("0x%04X", last_wr().val))
+local ws = write_words(mark)
+check("build 恰一笔字写", #ws == 1, tostring(#ws))
+check("build 配置字 0x4583", ws[1] == 0x01 * 65536 + 0x4583,
+      string.format("0x%06X", ws[1] or 0))
+check("build 一次 set_addr", #set_addrs(mark) == 1 and set_addrs(mark)[1] == ADDR)
+local rs = reads(mark)
+check("build 一次 2B 回读", #rs == 1 and rs[1] == 2, table.concat(rs, ","))
+check("build 零睡眠", sleep_total == 0, tostring(sleep_total))
 
--- ==================== build：错误路径 ====================
-reset()
-wr_nak = true
-expect_err("build 写配置无应答", function() return build({ fd = FD, address = "0x48" }) end, "Failed to write")
-wr_nak = false
+-- 自定义全档
+mark = section()
+expect_ok("build 自定义 AIN3/PGA5/DR7", function()
+	return build({ fd = fd, address = "0x48", pga = "5", dr = "7", channel = "3" })
+end)
+ws = write_words(mark)
+check("build 配置字 0x7BE3", ws[1] == 0x01 * 65536 + 0x7BE3,
+      string.format("0x%06X", ws[1] or 0))
 
-reset()
-rd_nak = true
-expect_err("build 回读无应答", function() return build({ fd = FD, address = "0x48" }) end, "Failed to read back")
-rd_nak = false
+-- 参数归一：越界全部回默认
+mark = section()
+expect_ok("build 越界参数归一默认", function()
+	return build({ fd = fd, address = "0x48", pga = 9, dr = -1, channel = 99 })
+end)
+ws = write_words(mark)
+check("归一后仍 0x4583", ws[1] == 0x01 * 65536 + 0x4583, string.format("0x%06X", ws[1] or 0))
 
-reset()
-sa_fail = true
-expect_err("build set_addr 失败", function() return build({ fd = FD, address = "0x48" }) end, "set_addr failed")
-sa_fail = false
+-- build 负路径
+section()
+expect_err("build 非表参数", function() return build("x") end, "Invalid Arguments")
+section()
+expect_err("build 缺 fd", function() return build({ address = "0x48" }) end, "fd")
+section()
+expect_err("build 缺 addr", function() return build({ fd = fd }) end, "addr")
+section()
+expect_err("build set_addr 失败（fd=99）", function()
+	return build({ fd = 99, address = "0x48" })
+end, "set_addr failed")
+section()
+dev:fail_write(function(bb) return #bb == 3 and bb[1] == 0x01 end)
+expect_err("build 配置写失败", function()
+	return build({ fd = fd, address = "0x48" })
+end, "Failed to write")
+section()
+dev.nack_read = true
+expect_err("build 回读失败", function()
+	return build({ fd = fd, address = "0x48" })
+end, "Failed to read back")
+section()
 
-reset()
-expect_err("build 缺 fd", function() return build({ address = "0x48" }) end, "Invalid Argument: fd")
-expect_err("build 非表参数", function() return build("x") end, "Invalid Arguments Type")
-
--- ==================== call：单端读取与 16 位符号扩展 ====================
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
-conv_raw16 = 32767
-local res = expect_ok("call 单端正满码", function() return call({ fd = FD, address = "0x48" }) end)
+-- =====================================================================
+-- 组 3：真实 call
+-- =====================================================================
+-- 默认档完整序列：set_addr → 读 CONFIG(指针+读) → 字写启动 →
+-- 1ms 步进轮询 9 次 CONFIG（128SPS：8 拍睡眠）→ 读 CONVERSION
+mark = section()
+expect_ok("call 前 build", function() return build({ fd = fd, address = "0x48" }) end)
+dev:set_result(4, 32767)
+mark = #vbus.txlog		-- call 窗口在 build 之后起算
+local res = expect_ok("call 正满码 128SPS", function()
+	return call({ fd = fd, address = "0x48" })
+end)
 if res then
-	check(res.raw == 32767, "raw=32767（16 位直接解码）", tostring(res.raw))
-	check(near(res.voltage, 32767 * 2.048 / 32768), "voltage = 2.0479V", tostring(res.voltage))
-	check(last_wr().val == 0xC583, "call 重写配置启动转换（OS=1|AIN0）",
-		last_wr() and string.format("0x%04X", last_wr().val))
-	check(now_ms >= 7.8125, "轮询至转换完成", tostring(now_ms))
+	check("raw=32767", res.raw == 32767, tostring(res.raw))
+	check("voltage=32767*2.048/32768", near(res.voltage, 32767 * 2.048 / 32768),
+	      tostring(res.voltage))
+end
+check("call 一次 set_addr", #set_addrs(mark) == 1)
+local cw = write_words(mark)
+check("call 恰一笔启动字写", #cw == 1 and cw[1] == 0x01 * 65536 + 0xC583,
+      string.format("0x%06X", cw[1] or 0))
+local pw = ptr_writes(mark)
+check("指针写 11 笔（10×CONFIG+1×CONVERSION）", #pw == 11, tostring(#pw))
+local n1, n0 = 0, 0
+for _, p in ipairs(pw) do if p == 0x01 then n1 = n1 + 1 elseif p == 0x00 then n0 = n0 + 1 end end
+check("CONFIG 指针 10（启动前 1+轮询 9）", n1 == 10, tostring(n1))
+check("CONVERSION 指针 1", n0 == 1, tostring(n0))
+rs = reads(mark)
+check("读事务 11 笔×2B", #rs == 11, tostring(#rs))
+-- 轮询首读 t=0 必忙，故 8 拍 1ms 睡眠；末读 CONVERSION 在就绪后
+check("128SPS 轮询睡眠 8ms", sleep_total == 8, tostring(sleep_total))
+
+-- 负码 / -1 LSB
+for _, raw in ipairs({ -32768, -1 }) do
+	section()
+	expect_ok("call 前 build", function() return build({ fd = fd, address = "0x48" }) end)
+	dev:set_result(4, raw)
+	mark = #vbus.txlog
+	res = expect_ok("call 码 " .. raw, function() return call({ fd = fd, address = "0x48" }) end)
+	if res then
+		check("raw 还原 " .. raw, res.raw == raw, tostring(res.raw))
+		check("voltage 换算 " .. raw, near(res.voltage, raw * 2.048 / 32768),
+		      tostring(res.voltage))
+	end
 end
 
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
-conv_raw16 = -32768
-res = expect_ok("call 负满码", function() return call({ fd = FD, address = "0x48" }) end)
-if res then
-	check(res.raw == -32768, "raw=-32768（sign16 符号扩展）", tostring(res.raw))
-	check(near(res.voltage, -2.048), "voltage = -2.048V", tostring(res.voltage))
+-- call 参数切通道：启动字 MUX 表
+local CH_WORD = { [0] = 0xC583, [1] = 0xD583, [2] = 0xE583, [3] = 0xF583 }
+for ch = 0, 3 do
+	section()
+	expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+	dev:set_result(4 + ch, 100 + ch)
+	mark = #vbus.txlog
+	res = expect_ok("call 切 AIN" .. ch, function()
+		return call({ fd = fd, address = "0x48", channel = ch })
+	end)
+	cw = write_words(mark)
+	check(string.format("AIN%d 启动字 0x%04X", ch, CH_WORD[ch]),
+	      cw[1] == 0x01 * 65536 + CH_WORD[ch], string.format("0x%06X", cw[1] or 0))
+	if res then check("通道码隔离 " .. (100 + ch), res.raw == 100 + ch, tostring(res.raw)) end
 end
 
-reset()
-expect_ok("call 前 build（channel=2）", function() return build({ fd = FD, address = "0x48", channel = "2" }) end)
-conv_raw16 = 100
-res = expect_ok("call 通道 2（call 参数切换 MUX）", function() return call({ fd = FD, address = "0x48", channel = "2" }) end)
-if res then
-	check(res.raw == 100, "raw=100", tostring(res.raw))
-	check(last_wr().val == 0xE583, "MUX 切到 AIN2（0xE583）",
-		last_wr() and string.format("0x%04X", last_wr().val))
-end
+-- PGA 缺省回读芯片配置：build ±4.096V（PGA=1）
+section()
+expect_ok("build PGA1", function() return build({ fd = fd, address = "0x48", pga = "1" }) end)
+dev:set_result(4, 16000)
+mark = #vbus.txlog
+res = expect_ok("call 无 pga 参回读 PGA=1", function()
+	return call({ fd = fd, address = "0x48" })
+end)
+if res then check("按 ±4.096V 换算 =2.0V", near(res.voltage, 16000 * 4.096 / 32768),
+                  tostring(res.voltage)) end
 
--- ==================== call：PGA 缺省回读芯片配置 ====================
-reset()
-expect_ok("call 前 build（±4.096V）", function() return build({ fd = FD, address = "0x48", pga = "1" }) end)
-conv_raw16 = 16000
-res = expect_ok("call 无 pga 参 -> 回读芯片配置换算", function() return call({ fd = FD, address = "0x48" }) end)
-if res then
-	check(near(res.voltage, 16000 * 4.096 / 32768), "voltage = 2.0V（fs=±4.096V）", tostring(res.voltage))
-end
+-- PGA 字段 6/7 冗余编码 → ±0.256V（0.3.2 修复回归）
+section()
+expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+dev.write({ 0x01, 0x4D, 0x83 })		-- 外部把芯片 PGA 字段改成 110（OS=0 不启动）
+dev:set_result(4, 1000)
+mark = #vbus.txlog
+res = expect_ok("call PGA=6 冗余编码", function()
+	return call({ fd = fd, address = "0x48" })
+end)
+cw = write_words(mark)
+check("PGA6 启动字 0xCD83", cw[1] == 0x01 * 65536 + 0xCD83, string.format("0x%06X", cw[1] or 0))
+if res then check("按 ±0.256V 换算", near(res.voltage, 1000 * 0.256 / 32768),
+                  tostring(res.voltage)) end
 
--- 0.3.2 修复回归：PGA 字段 6/7 与 5 同为 ±0.256V（datasheet 冗余编码），
--- 原实现读回后重置为 2（±2.048V）换算错 8 倍
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
-regs[0x01] = 0x4D83			-- 模拟芯片 PGA 字段=6（0x4583 的 pga 位改 110）
-conv_raw16 = 1000
-res = expect_ok("call PGA=6 冗余编码", function() return call({ fd = FD, address = "0x48" }) end)
-if res then
-	check(near(res.voltage, 1000 * 0.256 / 32768), "voltage 按 ±0.256V 换算（不再错 8 倍）", tostring(res.voltage))
+-- 差分四对 MUX 字
+local DIFF = { { 0, 1, 0x8583 }, { 0, 3, 0x9583 }, { 1, 3, 0xA583 }, { 2, 3, 0xB583 } }
+for _, t in ipairs(DIFF) do
+	section()
+	expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+	dev:set_result((t[1] == 0 and t[2] == 1) and 0 or (t[1] == 0 and 1 or t[1]), -300)
+	mark = #vbus.txlog
+	expect_ok(string.format("call 差分 %d-%d", t[1], t[2]), function()
+		return call({ fd = fd, address = "0x48", pos = t[1], neg = t[2] })
+	end)
+	cw = write_words(mark)
+	check(string.format("差分 %d-%d 启动字 0x%04X", t[1], t[2], t[3]),
+	      cw[1] == 0x01 * 65536 + t[3], string.format("0x%06X", cw[1] or 0))
 end
-
--- ==================== call：差分 ====================
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
-conv_raw16 = -300
-res = expect_ok("call 差分 0-1", function() return call({ fd = FD, address = "0x48", pos = 0, neg = 1 }) end)
-if res then
-	check(res.raw == -300, "raw=-300", tostring(res.raw))
-	check(last_wr().val == 0x8583, "MUX=差分0-1（0x8583）",
-		last_wr() and string.format("0x%04X", last_wr().val))
-end
-
-res = expect_ok("call 差分 2-3", function() return call({ fd = FD, address = "0x48", pos = 2, neg = 3 }) end)
-if res then
-	check(last_wr().val == 0xB583, "MUX=差分2-3（0xB583）",
-		last_wr() and string.format("0x%04X", last_wr().val))
-end
-
-expect_err("call 不支持的差分对 1-2", function()
-	return call({ fd = FD, address = "0x48", pos = 1, neg = 2 })
+section()
+expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+expect_err("call 不支持差分对 1-2", function()
+	return call({ fd = fd, address = "0x48", pos = 1, neg = 2 })
 end, "Unsupported diff")
 expect_err("call 差分参数非数字", function()
-	return call({ fd = FD, address = "0x48", pos = "-", neg = 1 })
+	return call({ fd = fd, address = "0x48", pos = "-", neg = 1 })
 end, "not a number")
-expect_err("call 非法通道", function() return call({ fd = FD, address = "0x48", channel = "4" }) end, "Invalid channel")
-
--- ==================== call：慢速档与超时 ====================
-reset()
-expect_ok("call 前 build（16SPS 慢档）", function() return build({ fd = FD, address = "0x48", dr = "1" }) end)
-conv_raw16 = 5
-res = expect_ok("call 16SPS 档等待转换", function() return call({ fd = FD, address = "0x48" }) end)
-if res then
-	check(res.raw == 5, "raw=5", tostring(res.raw))
-	check(now_ms >= 62.5, "轮询至 62.5ms 转换完成", tostring(now_ms))
-end
-
--- 0.3.2 修复回归：8SPS 转换 125ms，原 100ms 轮询预算必误报超时
-reset()
-expect_ok("call 前 build（8SPS 最慢档）", function() return build({ fd = FD, address = "0x48", dr = "0" }) end)
-conv_raw16 = 7
-res = expect_ok("call 8SPS 档等待转换（预算 200ms 覆盖 125ms）", function() return call({ fd = FD, address = "0x48" }) end)
-if res then
-	check(res.raw == 7, "raw=7", tostring(res.raw))
-	check(now_ms >= 125, "轮询至 125ms 转换完成", tostring(now_ms))
-end
-
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
-stuck = true
-expect_err("call 转换超时", function() return call({ fd = FD, address = "0x48" }) end, "Conversion timeout")
-check(now_ms >= 200, "超时前轮询满 200ms 预算", tostring(now_ms))
-stuck = false
-
-reset()
-expect_ok("call 前 build", function() return build({ fd = FD, address = "0x48" }) end)
-rd_nak = true
-expect_err("call 读配置无应答", function() return call({ fd = FD, address = "0x48" }) end, "Failed to read config")
-rd_nak = false
+expect_err("call 非法通道 4", function()
+	return call({ fd = fd, address = "0x48", channel = 4 })
+end, "Invalid channel")
 expect_err("call 非表参数", function() return call(11) end, "Invalid Arguments")
-expect_err("call 缺 address", function() return call({ fd = FD }) end, "Invalid Argument: addr")
+expect_err("call 缺 addr", function() return call({ fd = fd }) end, "addr")
 
--- ==================== destroy（0.3.2 修复回归守护） ====================
-reset()
-regs[0x01] = 0x4483			-- 模拟连续模式配置（MODE=0）
-expect_ok("destroy 置单次断电态", function() return destroy({ fd = FD, address = "0x48" }) end)
-check(last_wr() ~= nil and last_wr().reg == 0x01 and last_wr().val == 0x4583,
-	"读改写置 MODE=1，保留 PGA/DR/MUX（0x4483 -> 0x4583）",
-	last_wr() and string.format("0x%04X", last_wr().val))
-check(busy_until == nil, "OS 位已清（写回不误启动转换）", tostring(busy_until))
+-- DR 八档：每档轮询睡眠拍数 = ceil(转换门)
+for dr = 0, 7 do
+	section()
+	expect_ok("build DR" .. dr, function()
+		return build({ fd = fd, address = "0x48", dr = tostring(dr) })
+	end)
+	dev:set_result(4, 5)
+	mark = #vbus.txlog
+	res = expect_ok("call DR" .. dr .. " 等到转换", function()
+		return call({ fd = fd, address = "0x48" })
+	end)
+	check(string.format("DR=%d 睡眠 %dms（ceil 门限）", dr, SLEEP_TAB[dr]),
+	      sleep_total == SLEEP_TAB[dr], tostring(sleep_total))
+	if res then check("DR" .. dr .. " 结果码 5", res.raw == 5, tostring(res.raw)) end
+end
 
-reset()
-rd_nak = true
-expect_ok("destroy 读配置失败安全返回", function() return destroy({ fd = FD, address = "0x48" }) end)
-check(#wr_log == 0, "读失败不发任何写", tostring(#wr_log))
-rd_nak = false
+-- 转换超时：卡死，轮询满 200ms 预算
+section()
+expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+dev:set_never_ready(true)
+mark = #vbus.txlog
+expect_err("call 转换超时", function()
+	return call({ fd = fd, address = "0x48" })
+end, "Conversion timeout")
+check("超时前轮询满 200ms", sleep_total == 200, tostring(sleep_total))
+-- 超时时轮询读了 200 次 CONFIG，无 CONVERSION 读
+pw = ptr_writes(mark)
+local seen_conv = false
+for _, p in ipairs(pw) do if p == 0x00 then seen_conv = true end end
+check("超时路径不读 CONVERSION", not seen_conv)
+section()
 
--- ADS1115 destroy 保持严格契约（区别 ADS1015 的宽松 OK）
-reset()
-expect_err("destroy 缺 fd 报 ERR", function() return destroy({ address = "0x48" }) end, "Invalid Arguments: fd")
-expect_err("destroy 缺 addr 报 ERR", function() return destroy({ fd = FD }) end, "Invalid Arguments: addr")
-check(#wr_log == 0, "缺参不发任何写", tostring(#wr_log))
+-- call 三路读失败 + 启动写失败
+section()
+expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+dev.nack_read = true
+expect_err("call 读 CONFIG 失败", function()
+	return call({ fd = fd, address = "0x48" })
+end, "Failed to read config")
+section()
+expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+dev:fail_write(function(bb) return #bb == 3 and bb[1] == 0x01 end)
+expect_err("call 启动写失败", function()
+	return call({ fd = fd, address = "0x48" })
+end, "Failed to start conversion")
+section()
+expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+dev:fail_read(function(p) return p == 0x00 end)	-- 只 NACK 结果读，轮询正常
+dev:set_result(4, 1)
+expect_err("call 读 CONVERSION 失败", function()
+	return call({ fd = fd, address = "0x48" })
+end, "Failed to read conversion")
+section()
+expect_err("call set_addr 失败（fd=99）", function()
+	return call({ fd = 99, address = "0x48" })
+end, "set_addr failed")
+section()
 
-reset()
-sa_fail = true
-expect_err("destroy set_addr 失败报 ERR", function() return destroy({ fd = FD, address = "0x48" }) end, "set_addr failed")
-sa_fail = false
+-- virt_tick 闭环：守护式武装，call 零真实睡眠、电压跟正弦走
+local function v_of(n) return 1.65 + 0.25 * math.sin(n * (2 * math.pi / 32)) end
+for _, n in ipairs({ 0, 8, 24 }) do
+	section()
+	expect_ok("build", function() return build({ fd = fd, address = "0x48" }) end)
+	dev:virt_tick(n)
+	mark = #vbus.txlog
+	res = expect_ok("virt_tick n=" .. n .. " call", function()
+		return call({ fd = fd, address = "0x48" })
+	end)
+	check(string.format("n=%d 武装零睡眠", n), sleep_total == 0, tostring(sleep_total))
+	if res then
+		check(string.format("n=%d 正弦电压闭环", n),
+		      near(res.voltage, v_of(n), 0.0001), tostring(res.voltage))
+	end
+end
 
-reset()
-expect_err("destroy 非表参数", function() return destroy(nil) end, "Invalid Arguments Type")
+-- =====================================================================
+-- 组 4：destroy（读改写置 MODE=1 + 清 OS，不误启动转换）
+-- =====================================================================
+mark = section()
+-- 预置芯片为连续模式配置（OS=0 MODE=0），destroy 应读出 0x4483、写回 0x4583
+dev.write({ 0x01, 0x44, 0x83 })
+expect_ok("destroy 置单次断电态", function()
+	return destroy({ fd = fd, address = "0x48" })
+end)
+cw = write_words(mark)
+check("destroy 读改写字 0x4583", #cw == 1 and cw[1] == 0x01 * 65536 + 0x4583,
+      string.format("0x%06X", cw[1] or 0))
+check("destroy 一次 set_addr", #set_addrs(mark) == 1)
+check("destroy 一次 CONFIG 读", #reads(mark) == 1)
+check("写回 OS=0 未启动转换", dev:start_count() == 0 and not dev:busy())
+check("写回后 shadow=0x4583（MODE=1）", dev:config_shadow() == 0x4583,
+      string.format("0x%04X", dev:config_shadow()))
+
+mark = section()
+dev.nack_read = true
+expect_ok("destroy 读失败安全返回", function()
+	return destroy({ fd = fd, address = "0x48" })
+end)
+check("读失败零字写", #write_words(mark) == 0, tostring(#write_words(mark)))
+section()
+
+expect_err("destroy 缺 fd", function() return destroy({ address = "0x48" }) end, "fd")
+expect_err("destroy 缺 addr", function() return destroy({ fd = fd }) end, "addr")
+expect_err("destroy 非表参数", function() return destroy(nil) end, "Invalid Arguments")
+section()
+expect_err("destroy set_addr 失败", function()
+	return destroy({ fd = 99, address = "0x48" })
+end, "set_addr failed")
 
 -- ==================== 汇总 ====================
-if fails == 0 then
-	print("all passed")
-else
-	print(fails .. " case(s) failed")
-	os.exit(1)
-end
+tester.summary()

@@ -861,7 +861,11 @@ local function sysfs_write(path, val)
 		return false
 	end
 	local s = tostring(val)
-	local buf = ffi.new("char[?]", #s)
+	-- ffi.copy 从 Lua 字符串拷贝（不显式给 len）会连同结尾 NUL 一起拷
+	-- （#s+1 字节）；缓冲只开 #s 会固定越界 1 字节、写坏相邻 GC 对象，
+	-- 下一次 GC 扫描时段错误（崩溃点与写操作相隔甚远，极难查）。
+	-- 缓冲留 1 字节给 NUL；实际写计数仍用 #s，NUL 不发给内核。
+	local buf = ffi.new("char[?]", #s + 1)
 	ffi.copy(buf, s)
 	local n = tonumber(HAL.sys.write(fd, buf, #s))
 	HAL.sys.close(fd)

@@ -27,8 +27,8 @@ CREATE TABLE AS3935 (
 	mask_dist String,
 	tun_cap   String
 );
-INSERT INTO AS3935 (name, I2C, address, indoor)
-  VALUES ('as3935-0', '$i2c-1', '0x03', '-');
+INSERT INTO AS3935 (name, I2C, address, indoor, nf, wdth, srej, min_lig, mask_dist, tun_cap)
+  VALUES ('as3935-0', '$i2c-1', '0x03', '-', '-', '-', '-', '-', '-', '-');
 
 CREATE TABLE Timer (
 	name String

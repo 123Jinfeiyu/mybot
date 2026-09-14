@@ -13,9 +13,3 @@ grep -E 'camera_auto_detect|i2c_arm|i2c_vc|dtoverlay=i2c0' /boot/firmware/config
 echo "===== 3秒后重启 ====="
 sleep 3
 sudo reboot
-dtoverlay=i2c0,pins_44_45
-===== 当前相关配置 =====
-dtparam=i2c_arm=on
-camera_auto_detect=0
-dtoverlay=i2c0,pins_44_45
-===== 3秒后重启 =====

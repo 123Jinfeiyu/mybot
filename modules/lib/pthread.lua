@@ -11,8 +11,8 @@
 --   offset 64  int32   count        已 publish 次数
 --   offset 68  int32   nvals        本次值个数
 --   offset 72  double  values[32]   采样值（P：16 → 32，支撑单守护聚合多路传感器）
---   offset 248 uint8   stop         停止标志（1=请求停止；values[32] 尾在 72+256=328 前，
---                                    实际 stop 紧随 values，对齐后落在 248）
+--   offset 328 uint8   stop         停止标志（1=请求停止；紧随 values[32] 之后：
+--                                    mutex 64 + count 4 + nvals 4 + values 256 = 328）
 --
 -- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 HAL.lua 已定义的
 -- open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，重复 cdef 会报错）。
