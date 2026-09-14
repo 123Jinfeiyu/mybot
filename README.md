@@ -385,6 +385,7 @@ API 契约、模型回调、txlog 格式、SPI 语义、器件模型明细与全
 | --- | --- |
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua`、驱动 dofile `lib/` 与 `@Daemon` 的 chunk 均按其解析；支持 `:` 分隔多个路径（如 `./modules:./extra_modules`）按序查找，**共享库目录放第一段**（issue #19） |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
+| `BOT4CJ_NO_GC` | 设为 `1` 关闭仓颉 GC（导出 `cjEnableGC=0`），**长动作脚本模式**：并发 GC 缺陷（见已知限制）在高分配速率下会概率性崩溃/挂死，关 GC 后实测 5000 行脚本 6/6 稳定通过且耗时约减半；千行级脚本 RSS <100MB，进程退出由 OS 回收内存。**仅限一次性执行**，`--tcp` 长驻模式禁用（内存会无限增长直至 OOM） |
 
 安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；现已支持 TCP 动作输入（`--tcp`），接入外部网络数据源时需另行建立信任边界（输入校验或白名单 API）。
 
@@ -413,6 +414,13 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 - **仅支持 LuaJIT**：总线驱动依赖 `ffi`，需 `luajit` 解释器；不依赖 HAL 的模块可用 `lua5.4` 独立调试
 - **守护线程的开销**：每个守护持有独立 lua_State，拍间必须让出式 sleep，否则会耗尽 worker 池
 - **一器件一消费者**：页式寄存器序列的器件（如 VL53L0X）与握手式间接访问器件（如 AS7262）只支持单消费者
+- **超长动作脚本 + controller 转发路径存在概率性崩溃/挂死（仓颉运行时并发 GC 缺陷）**：
+  gdb 实证（v0.3.3 复盘）为仓颉 1.1.3 并发复制 GC 在高分配速率下的并发缺陷——主线程可卡死
+  在 GC 读屏障内自旋（CPU 100%）、读到未转发旧引用（SIGSEGV）或容器状态被并发搬移破坏
+  （`ConcurrentModificationException`）。controller 转发路径因分配速率翻倍而优先暴露：
+  ≤800 行 0% 失败，1000~5000 行默认配置失败率约 17%（v0.3.3 logD 条件求值修复后，
+  修复前约 50%+），与堆大小基本无关（调堆**不能**解决）。正常步态脚本（数十行）不受影响；
+  需要跑长脚本时设 `BOT4CJ_NO_GC=1`（详见环境变量表）。runtime 层根除需仓颉运行时修复
 
 ### 待实现功能
 
@@ -464,6 +472,7 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 - ✅ 新增硬件 PWM 驱动 `PWM`：走 Linux sysfs（`/sys/class/pwm`），可配频率与占空比。软件 bit-bang PWM 在本框架不可行（会阻塞动作播放或耗尽 worker 池），故仅支持硬件 PWM
 - ✅ 修复 `.gitignore` 残留的 `cjpm.lock`（0.3.2 已把锁文件入库，忽略项与之矛盾）
 - ✅ 修正 `_run.sh` 堆大小注释与默认值不符（注释写 512MB，实际 128MB）
+- ✅ 定性长脚本崩溃根因（仓颉运行时并发 GC 缺陷，gdb 实证）并落地规避：新增 `BOT4CJ_NO_GC=1` 长脚本模式，热路径 `logD` 改条件求值（默认配置失败率约 50% → 17%，长脚本模式 0%）
 - ✅ 修复 BME280 驱动 build 恒 ERR：湿度校准块 7 字节读超 HAL 合并读上限 6 字节，改走字节表版 `i2c_read_multi_bytes`；新增 `test/test_bme280.lua` 离线桩测试 33 用例（旧代码在桩下复现恒 ERR，防回归）
 
 历史版本要点：v0.3.2 引用列改 `$` 前缀显式标记；v0.3.1 HAL 读函数越界显式失败；v0.3.0 引入 `@Daemon` 守护线程、滤波器与大批驱动；v0.2.0 HAL 进入 LuaJIT ffi 时代；更早版本完成 SQL 结构脚本迁移与 Lua 状态机嵌入。完整历史见 [CHANGELOG.md](CHANGELOG.md)。

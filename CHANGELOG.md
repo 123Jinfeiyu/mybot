@@ -75,6 +75,25 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
 - **`modules/lib/pthread.lua` 共享槽 `stop` 偏移注释错误（248 应为 328）**：文件头注释把
   `stop` 偏移写成 248 并配了错误推导，与同文件第 200 行的 328 及 `Daemon.cj` 常量、
   C 实测（mutex 64 + count 4 + nvals 4 + values 256 = 328）均不符，易致二次开发误用。
+- **长动作脚本在 controller 转发路径下概率性崩溃/挂死——根因复盘与规避方案**：
+  0.3.2 记录的「高频 GC 触发悬空引用段错误」本次在沙箱 x86_64 上用 gdb 实证复现并定性：
+  仓颉 1.1.3 运行时并发复制 GC（WCollector）在**高分配速率 mutator**下存在并发缺陷——
+  gdb attach 活锁现场显示主线程卡死于 `PreforwardBarrier::ReadReference → TryForwardObject`
+  读屏障内自旋（CPU 100%），同时 gc-main-thread 正在 `ForwardFromSpace` 搬移对象；
+  三种失败形态（活锁 / SIGSEGV 野指针 / `ConcurrentModificationException`、
+  `IndexOutOfBounds size:-1`）分别对应「屏障自旋」「读到未转发旧引用」「容器被并发搬移破坏」。
+  controller 转发路径因 payload 双重浅拷贝使分配速率翻倍而优先暴露：实测 relay-test +
+  1000~5000 行脚本默认堆下失败率 50%+（≤800 行 0%），与堆大小（64/128/512MB）基本无关
+  （并发时序问题而非堆耗尽），5000 行失败的行号集中于 ~830-870（与该分配速率下的
+  GC 触发点吻合）。**规避**：`_run.sh` 新增长脚本模式 `BOT4CJ_NO_GC=1`（导出
+  `cjEnableGC=0`），关闭 GC 后同脚本 6/6 全过、耗时约减半；适用于一次性执行的动作
+  脚本（千行级 RSS <100MB，进程退出由 OS 回收），`--tcp` 长驻模式禁用。runtime 层
+  根除需仓颉运行时侧修复（对象生命周期审计不可达此处）。
+- **热路径 `logD` 参数急切求值（分配速率放大器）**：`callImpl`/`call_lua`/守护 play 中
+  7 处 `logD("...${obj.toString()}")` 的字符串插值在调用点无条件求值——调试关闭时每行动作
+  仍白建 4~8 个大 JSON 串（含返回表**每字段一次**的插值），人为抬高 GC 压力、加剧上述
+  并发 GC 撞车概率。全部改为 `if (debugEnabled) { logD(...) }` 条件求值，`BOT4CJ_DEBUG=1`
+  行为不变。
 
 - **ActionSource 在干净构建（树莓派 aarch64/本机全量）下编译失败 8 错**：该模块引入后
   从未通过编译（E2E 一直跑旧二进制，未暴露）。按 Cangjie std.io 实际接口修正——

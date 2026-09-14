@@ -298,7 +298,7 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 					ret.put("count", JsonInt(count))
 					ret.put("nvals", JsonInt(nvals))
 					ret.put("values", arr)
-					logD("Daemon '${name}' play: count=${count} nvals=${nvals}")
+					if (debugEnabled) { logD("Daemon '${name}' play: count=${count} nvals=${nvals}") }
 				}
 				return ret
 			},
