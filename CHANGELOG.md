@@ -6,7 +6,7 @@
 
 ## [未发布]
 
-virtbus 虚拟硬件测试基座推进：20 个 I2C/SPI 器件模型与测试「手写桩 → 真实驱动」迁移、
+virtbus 虚拟硬件测试基座推进：21 个 I2C/SPI 器件模型与测试「手写桩 → 真实驱动」迁移、
 守护 `proto=virt` 无硬件端到端；落地 2026-09 审计修复批次（BH1750 MTreg、多路径加载、
 守护 CRC 坏样本过滤等）；ActionSource 工厂（stdin / TCP / 文件三源可替换动作输入）；
 NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
@@ -19,7 +19,7 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
   - `regmap.lua` 通用寄存器模型（8/16 位指针 + burst 自增回绕）、`bh1750.lua` 命令式器件
     样板；`inject()` 统一替换 12 个 `i2c_*` + 8 个 `spi_*` 全局，语义对齐真机 I2C_RDWR /
     spidev，支持 NACK/定向故障注入、txlog 留痕、`vbus.load_driver` 封装。
-  - **20 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、
+  - **21 个虚拟器件模型及测试迁移**（原手写桩整体重写）：I2C 侧 MPU6050、BME280、
     VL53L0X（8 位指针 + 0xFF 分页）、MCP4725（命令位）、VL53L4CD（16 位指针）、SHT3X
     （16 位命令字 + 数据 CRC-8）、MCP3421（配置回显/RDY 握手）、MS5611（命令通道 +
     PROM CRC-4）、SGP30（16 位命令字 + 每数据字 CRC-8，且命令带读写数据载荷：湿度补偿/
@@ -97,12 +97,25 @@ NN 前向推理引擎 `modules/lib/nn.lua`（纯 Lua，无 nn4cj 依赖）。
     湿谷）并预武装，武装跨 build 内软复位保留（build 前 tick 一次、复位
     不断流），E2E interval=50ms 容纳 28ms 真实转换睡眠、首行预热 200ms，
     实测守护发布 13 次、T 25.97→30.0°C 爬坡而 H 48.05→40%RH 反向走低；
+    ADS1015（ADS1115 的 12 位快速孪生，同「字寻址 16 位寄存器 + oneshot
+    转换门/OS 就绪握手」范式）：TI 12 位 4 通道 ADC（0x48），寄存器位布局与
+    ADS1115 全同（POR CONFIG 0x8583、build 默认字同为 0x4583），差异仅在
+    数据面与速率面——CONVERSION 为 12 位有符号码【左对齐】存放（低 4 位恒
+    0、有效码 -2048~2047：2047→0x7FF0、-2048→0x8000），驱动算术右移 4 位
+    后 V=raw12·FS/2048（非 ADS1115 的 /32768）；DR 位 100 在 ADS1015 是
+    1600SPS（ADS1115 同字为 128SPS），速率表 128~3300SPS（DR6=DR7=3300）、
+    默认转换门 0.625ms，驱动 1ms 步进轮询超时预算 100 次（ADS1115 为 200
+    次）；模型骨架复制 ads1115 纯闭包（OS 位读时动态合成、完成瞬间按 MUX
+    装注入码、武装一次性消费），无模块级 init upvalue 故无未 build 守卫、
+    destroy 缺 fd/addr 零事务安全返回 OK；virt_tick 同样 AIN0 1.65±0.25V
+    正弦 + 预武装，E2E interval=20ms、首行预热 200ms，实测守护发布 39~42
+    次、电压 1.40~1.90V；
     SPI 侧 ADS1256（ΣΔ ADC）、AD9833、TPL0501（写-only，采样 E2E 豁免）。
     迁移即抓出旧桩假绿——BME280 的 H1=260 字节放不下、MPU6050 的 -1 返真把 NACK 当成功，
     均为桩与测试共用错误假设互相放行。
   - **守护 `proto=virt` 无硬件端到端**：不打开真机、按驱动名挂模型，build/call → 共享槽
     → 滤波 → Monitor 全链路纯内存跑通，启动打印 `VIRTUAL HARDWARE` 横幅防生产误用。
-    全套 78 项跑通 / 1 真机用例跳过 / 仓颉 E2E 十七组。
+    全套 79 项跑通 / 1 真机用例跳过 / 仓颉 E2E 十八组。
 - @Daemon 共享槽采样通道 16 → 32（`src/HV/Daemon.cj` + `lib/pthread.lua` ABI 同步、布局
   断言锁定），支撑单守护聚合多路传感器。
 - **MPU6050 补全片上温度输出**：call() 返回 `TEMP/TEMP_RAW`；`sensor_daemon` 字段新增
