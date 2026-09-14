@@ -480,10 +480,7 @@ class MetaProvider {
 		}
 		for (name in refs.getOrThrow()) {
 			if (let Some(mt) <- M.get(name)) {
-				let fields = mt.read().asObject().getFields()
-				for (k in fields.keys()) {
-					obj.put(k, fields.get(k).getOrThrow())
-				}
+				jsonMergeInto(obj, mt.read().asObject())
 			}
 		}
 		return obj

@@ -37,8 +37,14 @@ public open class MatrixVars_Hardware {
 		return false
 	}
 
-	public static func logD(msg: String): Unit {
-		if (debugEnabled) { println(msg) }
+	/*
+	 *  惰性调试日志：接收 () -> String，仅 debugEnabled 时才求值消息体。
+	 *  背景：0.3.3 曾因热路径 logD("${obj.toString()}") 无条件求值产生大量
+	 *  临时字符串（GC 压力崩溃），改条件求值后仍有 10 处调用点漏改——
+	 *  惰性签名从类型上根除该问题（非 debug 模式下插值代码根本不执行）。
+	 */
+	public static func logD(msg: () -> String): Unit {
+		if (debugEnabled) { println(msg()) }
 	}
 
 	/*  ---------------- 主初始化器 ----------------
@@ -168,4 +174,17 @@ public open class MatrixVars_Hardware {
 
 
 	/* ---------------------------------- */
+}
+
+/*
+ * ----------------------------------
+ * JsonObject 浅合并：把 src 的所有字段写入 dst（同名覆盖）。
+ * 此前该 4 行循环在 MtVars_Lua.callImpl（元数据拷贝/参数合并/转发 payload）
+ * 与 MetaProvider.collect（引用列快照合并）中重复 5 处。
+ */
+public func jsonMergeInto(dst: JsonObject, src: JsonObject): Unit {
+	let fields = src.getFields()
+	for (k in fields.keys()) {
+		dst.put(k, fields.get(k).getOrThrow())
+	}
 }

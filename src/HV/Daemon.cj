@@ -83,13 +83,9 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		 * Lua 侧只许原样 ffi.cast 直传句柄，禁止对地址做算术/tonumber（≥2^53 丢位）——
 		 * 对应契约在 modules/lib/pthread.lua 顶层注释。 */
 		Lua_pushinteger(L, Int64(slot.toUIntNative()))
-		let keyAddr = LibC.mallocCString("DAEMON_SLOT_ADDR")
-		Lua_setfield(L, LUA_GLOBALSINDEX, keyAddr)
-		LibC.free(keyAddr)
+		withCString("DAEMON_SLOT_ADDR") { k: CString => unsafe { Lua_setfield(L, LUA_GLOBALSINDEX, k) } }
 		Lua_pushstring(L, config)
-		let keyCfg = LibC.mallocCString("DAEMON_CONFIG")
-		Lua_setfield(L, LUA_GLOBALSINDEX, keyCfg)
-		LibC.free(keyCfg)
+		withCString("DAEMON_CONFIG") { k: CString => unsafe { Lua_setfield(L, LUA_GLOBALSINDEX, k) } }
 
 		/* 跑 chunk 一次：完成 setup（开总线/配置传感器/附着槽）并定义全局 daemon_tick */
 		let st = Lua_loadfilex(L, chunk, CPointer<C_Char>())
@@ -98,8 +94,8 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 			Lua_free(L)
 			return -1i64
 		}
-		var pcStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
-		if (pcStatus != LUA_OK) {
+		let setupStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
+		if (setupStatus != LUA_OK) {
 			println("[daemon] chunk setup error: ${luaErrorString(L)}")
 			Lua_free(L)
 			return -1i64
@@ -109,32 +105,36 @@ public func daemon_body(slot: CPointer<UInt8>, chunk: CString, config: CString, 
 		/* 逐拍循环：每拍 getglobal(daemon_tick)+pcall 采样一次；拍间用 Cangjie sleep——
 		 * 在 M:N 运行时下 sleep 会让出绿色线程、不独占 schd-worker（D 方案关键，
 		 * 区别于 chunk 内 ffi usleep 阻塞 worker 导致 worker 池耗尽的死锁）。 */
-		let tickName = LibC.mallocCString("daemon_tick")
-		while (!daemon_stop_requested(slot)) {
-			Lua_getglobal(L, tickName)
-			pcStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
-			if (pcStatus != LUA_OK) {
-				println("[daemon] tick error: ${luaErrorString(L)}")
+		withCString("daemon_tick") { tickName: CString =>
+			while (!daemon_stop_requested(slot)) {
+				unsafe {
+					Lua_getglobal(L, tickName)
+					let st = Lua_pcall(L, 0, LUA_MULTRET, 0)
+					if (st != LUA_OK) {
+						println("[daemon] tick error: ${luaErrorString(L)}")
+					}
+					Lua_settop(L, 0)
+				}
+				sleep(Duration.millisecond * interval_ms)
 			}
-			Lua_settop(L, 0)
-			sleep(Duration.millisecond * interval_ms)
 		}
-		LibC.free(tickName)
 
 		/* H-07：stop 后、Lua_free 前，调用 chunk 定义的 daemon_cleanup()（若存在）
 		 * 关闭守护打开的总线 fd——否则守护线程持有的 lua_State 长期泄漏 fd。
 		 * daemon_probe 等无资源 chunk 未定义该函数，Lua_type==LUA_TNIL 跳过。
 		 * 注意：sandbox_lua 中和/print 覆盖不影响本清理路径（不走全局 print）。 */
-		let cleanupName = LibC.mallocCString("daemon_cleanup")
-		Lua_getglobal(L, cleanupName)
-		if (Lua_type(L, -1) == LUA_TFUNCTION) {
-			pcStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
-			if (pcStatus != LUA_OK) {
-				println("[daemon] cleanup error: ${luaErrorString(L)}")
+		withCString("daemon_cleanup") { cleanupName: CString =>
+			unsafe {
+				Lua_getglobal(L, cleanupName)
+				if (Lua_type(L, -1) == LUA_TFUNCTION) {
+					let st = Lua_pcall(L, 0, LUA_MULTRET, 0)
+					if (st != LUA_OK) {
+						println("[daemon] cleanup error: ${luaErrorString(L)}")
+					}
+				}
+				Lua_settop(L, 0)
 			}
 		}
-		Lua_settop(L, 0)
-		LibC.free(cleanupName)
 
 		let n = CPointer<Int32>(slot + SLOT_COUNT_OFF).read()
 		Lua_free(L)
@@ -220,42 +220,22 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		let chunkPath = resolveDaemonChunk(chunkRaw, modulePath)
 		println("Create a Daemon hard-Var: ${name}, chunk: ${chunkPath}")
 
-		/* 收集 name/chunk 之外的列为配置串 "k=v;k=v"，注入 chunk（如 i2c/addr/interval） */
+		/* 单遍列扫描：收集 name/chunk 之外的列为配置串 "k=v;k=v" 注入 chunk
+		 * （如 i2c/addr/interval），同时提取采样间隔 interval（ms，缺省 5，
+		 * 供 daemon_body 逐拍 Cangjie sleep；解析与校验见 parseInterval）。
+		 * 用 let 定型以便 rise 闭包安全捕获（规避捕获可变变量） */
 		var cfgAcc = ""
+		var ivAcc: Int64 = 5
 		for (j in 0..defs.col) {
 			let colName = defs[0, j]
 			if (colName == "name" || colName == "chunk") { continue }
 			let v = MatrixVars_Hardware.getMt(defs, i, j)
 			cfgAcc = "${cfgAcc}${colName}=${v};"
-		}
-		let configStr = cfgAcc
-
-		/* 提取采样间隔（ms）供 daemon_body 逐拍 Cangjie sleep；缺省 5ms。
-		 * 用 let 定型以便 rise 闭包安全捕获（规避捕获可变变量）
-		 *
-		 * P2/P3-1：interval ≤ 0 会让 daemon_body 的 sleep(0) 空转，守护线程
-		 * 100% CPU 忙循环且占满 schd-worker；解析失败/非数字亦须显式报错。
-		 * 故：解析失败与非正值一律抛出带 表/行/列/值 上下文的异常，而非静默沿用。 */
-		var ivAcc: Int64 = 5
-		let daemonTabName = defs.getName()
-		for (j in 0..defs.col) {
-			if (defs[0, j] == "interval") {
-				let iv = MatrixVars_Hardware.getMt(defs, i, j)
-				if (iv != "-") {
-					let parsed = try {
-						Int64.parse(iv)
-					} catch (e: Exception) {
-						throw IllegalArgumentException(
-							"Daemon '${name}': column 'interval' value '${iv}' is not a valid integer (in table '${daemonTabName}', row ${i}).")
-					}
-					if (parsed <= 0) {
-						throw IllegalArgumentException(
-							"Daemon '${name}': column 'interval' must be > 0 ms, got ${parsed} (in table '${daemonTabName}', row ${i}). interval <= 0 causes a busy-loop that pins a CPU core.")
-					}
-					ivAcc = parsed
-				}
+			if (colName == "interval" && v != "-") {
+				ivAcc = parseInterval(v, name, defs.getName(), i)
 			}
 		}
+		let configStr = cfgAcc
 		let intervalMs = ivAcc
 
 		/* join 超时（P3）：正常退出 = stop 置位后最多再等一拍 sleep + tick 执行，
@@ -276,78 +256,106 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 		let holder = DaemonHolder(slot: slot, joinTimeoutMs: joinTimeoutMs)
 		registry.add(holder)	/* 注册：deactivate 先统一置 stop 再 join，防饿死死锁 */
 
+		/* 事件回调统一转调具名静态实现 playImpl/riseImpl/freeImpl——
+		 * 此前三个大闭包内联于 Factory（~144 行难读难测），与 MtVars_Lua
+		 * 已完成的同类重构（见 Lua.cj 构造函数注释）对齐。 */
 		let daemon = MtVars_Daemon(
-			/* play：主线程加锁读采样值 → JSON。值同时以标量键 v0..vN 暴露，
-			 *       供别的硬件变量经引用机制读取（call_lua 只传标量、不传 JsonArray） */
-			things: { _: JsonValue =>
-				let ret = JsonObject()
-				let arr = JsonArray()
-				unsafe {
-					_mutex_lock(holder.slot)
-					let nvals = Int64(CPointer<Int32>(holder.slot + SLOT_NVALS_OFF).read())
-					let count = Int64(CPointer<Int32>(holder.slot + SLOT_COUNT_OFF).read())
-					var nv = nvals
-					if (nv > SLOT_MAXVALS) { nv = SLOT_MAXVALS }
-					for (k in 0..nv) {
-						let v = CPointer<Float64>(holder.slot + SLOT_VALUES_OFF + 8 * k).read()
-						arr.add(JsonFloat(v))
-						ret.put("v${k}", JsonFloat(v))
-					}
-					_mutex_unlock(holder.slot)
-					ret.put("status", JsonString("OK"))
-					ret.put("count", JsonInt(count))
-					ret.put("nvals", JsonInt(nvals))
-					ret.put("values", arr)
-					if (debugEnabled) { logD("Daemon '${name}' play: count=${count} nvals=${nvals}") }
-				}
-				return ret
-			},
-			/* rise：spawn 守护线程（Cangjie 原生并发原语，运行时已附着）。
-			 * chunk/config CString 由守护线程连同 daemon_body 结果一起释放（P6/M4；
-			 * 所有 return 路径都经 finally 释放） */
-			rise: { =>
-				unsafe {
-					let cstr = LibC.mallocCString(chunkPath)
-					let cfg_cstr = LibC.mallocCString(configStr)
-					let slot_p = holder.slot
-					let f = spawn {
-						var r = -1i64
-						try { r = daemon_body(slot_p, cstr, cfg_cstr, intervalMs) }
-						finally { LibC.free(cstr); LibC.free(cfg_cstr) }
-						r
-					}
-					holder.future = Option<Future<Int64>>.Some(f)
-					println("Daemon '${name}' spawned, config: ${configStr}")
-				}
-			},
-			/* free：置停止标志 + future 带超时等待退出 + 销毁 mutex（显式停止，见 issue #3）。
-			 * 超过 joinTimeoutMs 未退出（守护 tick 长时间阻塞等）则放弃等待并跳过 slot 释放——
-			 * 守护线程仍可能在使用该槽 publish/读 stop，立即 destroy/free 会 use-after-free；
-			 * 保留 slot 交给进程退出时由 OS 回收，同步打印警告。 */
-			free: { =>
-				unsafe {
-					daemon_request_stop(holder.slot)
-					if (let Some(f) <- holder.future) {
-						var joined = false
-						var n = 0i64
-						try {
-							n = f.get(Duration.millisecond * holder.joinTimeoutMs)
-							joined = true
-						} catch (e: TimeoutException) {
-							println("Daemon '${name}' not exited within ${holder.joinTimeoutMs}ms, abandoning slot (thread still running)")
-						}
-						if (joined) {
-							println("Daemon '${name}' joined, total publishes=${n}")
-							_mutex_destroy(holder.slot)
-							LibC.free(holder.slot)
-						}
-					} else {
-						_mutex_destroy(holder.slot)
-						LibC.free(holder.slot)
-					}
-				}
-			}
+			things: { _: JsonValue => playImpl(holder, name) },
+			rise: { => riseImpl(holder, name, chunkPath, configStr, intervalMs) },
+			free: { => freeImpl(holder, name) }
 		)
 		return daemon
+	}
+
+	/* ---- interval 列解析与校验（P2/P3-1）----
+	 * interval ≤ 0 会让 daemon_body 的 sleep(0) 空转，守护线程 100% CPU
+	 * 忙循环且占满 schd-worker；解析失败/非数字亦须显式报错。
+	 * 故：解析失败与非正值一律抛出带 表/行/列/值 上下文的异常，而非静默沿用。 */
+	private static func parseInterval(iv: String, name: String, tabName: String, row: Int64): Int64 {
+		let parsed = try {
+			Int64.parse(iv)
+		} catch (e: Exception) {
+			throw IllegalArgumentException(
+				"Daemon '${name}': column 'interval' value '${iv}' is not a valid integer (in table '${tabName}', row ${row}).")
+		}
+		if (parsed <= 0) {
+			throw IllegalArgumentException(
+				"Daemon '${name}': column 'interval' must be > 0 ms, got ${parsed} (in table '${tabName}', row ${row}). interval <= 0 causes a busy-loop that pins a CPU core.")
+		}
+		return parsed
+	}
+
+	/* ---- play 事件实现：主线程加锁读采样值 → JSON。值同时以标量键 v0..vN 暴露，
+	 *      供别的硬件变量经引用机制读取（call_lua 只传标量、不传 JsonArray） ---- */
+	private static func playImpl(holder: DaemonHolder, name: String): JsonValue {
+		let ret = JsonObject()
+		let arr = JsonArray()
+		unsafe {
+			_mutex_lock(holder.slot)
+			let nvals = Int64(CPointer<Int32>(holder.slot + SLOT_NVALS_OFF).read())
+			let count = Int64(CPointer<Int32>(holder.slot + SLOT_COUNT_OFF).read())
+			var nv = nvals
+			if (nv > SLOT_MAXVALS) { nv = SLOT_MAXVALS }
+			for (k in 0..nv) {
+				let v = CPointer<Float64>(holder.slot + SLOT_VALUES_OFF + 8 * k).read()
+				arr.add(JsonFloat(v))
+				ret.put("v${k}", JsonFloat(v))
+			}
+			_mutex_unlock(holder.slot)
+			ret.put("status", JsonString("OK"))
+			ret.put("count", JsonInt(count))
+			ret.put("nvals", JsonInt(nvals))
+			ret.put("values", arr)
+			logD({ => "Daemon '${name}' play: count=${count} nvals=${nvals}" })
+		}
+		return ret
+	}
+
+	/* ---- rise 事件实现：spawn 守护线程（Cangjie 原生并发原语，运行时已附着）。
+	 *      chunk/config CString 由守护线程连同 daemon_body 结果一起释放（P6/M4；
+	 *      所有 return 路径都经 finally 释放） ---- */
+	private static func riseImpl(holder: DaemonHolder, name: String, chunkPath: String,
+			configStr: String, intervalMs: Int64): Unit {
+		unsafe {
+			let cstr = LibC.mallocCString(chunkPath)
+			let cfg_cstr = LibC.mallocCString(configStr)
+			let slot_p = holder.slot
+			let f = spawn {
+				var r = -1i64
+				try { r = daemon_body(slot_p, cstr, cfg_cstr, intervalMs) }
+				finally { LibC.free(cstr); LibC.free(cfg_cstr) }
+				r
+			}
+			holder.future = Option<Future<Int64>>.Some(f)
+			println("Daemon '${name}' spawned, config: ${configStr}")
+		}
+	}
+
+	/* ---- free 事件实现：置停止标志 + future 带超时等待退出 + 销毁 mutex
+	 *      （显式停止，见 issue #3）。
+	 *      超过 joinTimeoutMs 未退出（守护 tick 长时间阻塞等）则放弃等待并跳过
+	 *      slot 释放——守护线程仍可能在使用该槽 publish/读 stop，立即 destroy/free
+	 *      会 use-after-free；保留 slot 交给进程退出时由 OS 回收，同步打印警告。 ---- */
+	private static func freeImpl(holder: DaemonHolder, name: String): Unit {
+		daemon_request_stop(holder.slot)
+		if (let Some(f) <- holder.future) {
+			try {
+				let n = f.get(Duration.millisecond * holder.joinTimeoutMs)
+				println("Daemon '${name}' joined, total publishes=${n}")
+				releaseSlot(holder.slot)
+			} catch (e: TimeoutException) {
+				println("Daemon '${name}' not exited within ${holder.joinTimeoutMs}ms, abandoning slot (thread still running)")
+			}
+		} else {
+			releaseSlot(holder.slot)
+		}
+	}
+
+	/* ---- 销毁 mutex 并释放共享槽（freeImpl 两分支共用） ---- */
+	private static func releaseSlot(slot: CPointer<UInt8>): Unit {
+		unsafe {
+			_mutex_destroy(slot)
+			LibC.free(slot)
+		}
 	}
 }

@@ -34,6 +34,33 @@ public func luaErrorString(L: lua_State): String {
 	return "<non-string error object, Lua type ${t}>"
 }
 
+/* ---- FFI C 字符串作用域辅助 ----
+ *  malloc 失败即抛（杜绝空指针传入 Lua C API）；body 无论正常返回还是抛异常，
+ *  finally 都会释放。此前 mallocCString/free 手工配对在本文件与 Daemon.cj
+ *  重复约 18 处，漏 free / 提前 free 均只能靠肉眼审查。 */
+func withCString<T>(s: String, body: (CString) -> T): T {
+	let cs = unsafe { LibC.mallocCString(s) }
+	if (cs.isNull()) { throw IllegalMemoryException("LibC.mallocCString()") }
+	try {
+		return body(cs)
+	} finally {
+		unsafe { LibC.free(cs) }
+	}
+}
+
+/* ---- 探测 Lua 全局变量类型（getglobal + type + pop，栈深不变）----
+ *  用于判断驱动是否定义了可选入口（read / destroy）。 */
+func luaGlobalType(L: lua_State, name: String): C_Int {
+	withCString(name) { cn: CString =>
+		unsafe {
+			Lua_getglobal(L, cn)
+			let tp = Lua_type(L, -1)
+			Lua_pop(L, 1)
+			tp
+		}
+	}
+}
+
 /* ---- 收紧 Lua 沙箱（issue #9 M1 可落地部分）----
  *  保留 os.getenv（模块路径）/ os.time|clock / dofile / require（HAL 的 ffi 依赖），
  *  中和可直接破坏宿主的入口：shell 执行（os.execute / io.popen）、进程退出（os.exit）、
@@ -41,34 +68,27 @@ public func luaErrorString(L: lua_State): String {
  *  io.input/io.output 在 LuaJIT 内部直调 fopen、不经过 io.open，须单独中和）。
  *  各全局缺表时跳过对应组，不中断启动。 */
 public func sandbox_lua(L: lua_State): Unit {
-	unsafe {
-		let osKeys = ["execute", "exit", "remove", "rename"]
-		let kos = LibC.mallocCString("os")
-		Lua_getglobal(L, kos)
-		if (Lua_type(L, -1) == LUA_TTABLE) {
-			for (name in osKeys) {
-				let kn = LibC.mallocCString(name)
-				Lua_pushnil(L)
-				Lua_setfield(L, -2, kn)	/* 表在 -2：pushnil 后值在栈顶，-1 会索引 nil 致 PANIC */
-				LibC.free(kn)
+	let groups = [
+		("os", ["execute", "exit", "remove", "rename"]),
+		("io", ["popen", "open", "lines", "input", "output"]),
+	]
+	for ((tab, keys) in groups) {
+		withCString(tab) { kt: CString =>
+			unsafe {
+				Lua_getglobal(L, kt)
+				if (Lua_type(L, -1) == LUA_TTABLE) {
+					for (name in keys) {
+						withCString(name) { kn: CString =>
+							unsafe {
+								Lua_pushnil(L)
+								Lua_setfield(L, -2, kn)	/* 表在 -2：pushnil 后值在栈顶，-1 会索引 nil 致 PANIC */
+							}
+						}
+					}
+				}
+				Lua_pop(L, 1)
 			}
 		}
-		Lua_pop(L, 1)
-		LibC.free(kos)
-
-		let ioKeys = ["popen", "open", "lines", "input", "output"]
-		let kio = LibC.mallocCString("io")
-		Lua_getglobal(L, kio)
-		if (Lua_type(L, -1) == LUA_TTABLE) {
-			for (name in ioKeys) {
-				let kn = LibC.mallocCString(name)
-				Lua_pushnil(L)
-				Lua_setfield(L, -2, kn)	/* 同上：表在 -2 */
-				LibC.free(kn)
-			}
-		}
-		Lua_pop(L, 1)
-		LibC.free(kio)
 	}
 }
 
@@ -146,27 +166,19 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 		try {
 			/* 获取元数据（P8/M2：一次收集——静态列缓存重放 + 引用列实时快照） */
 			let metadata = getMetadata()
-			let metaFields: HashMap<String, JsonValue> = metadata.getFields()
 
-			/*  从元数据浅拷贝（不污染共享源；转发侧复用同一份干净元数据）  */
+			/*  从元数据浅拷贝（不污染共享源；转发侧复用同一份干净元数据），
+			 *  再合并 @Action 传入的实时参数  */
 			let obj = JsonObject()
-			for (k in metaFields.keys()) {
-				obj.put(k, metaFields.get(k).getOrThrow())
-			}
+			jsonMergeInto(obj, metadata)
 			obj.put("mode", JsonString("call"))
-
-			/*  合并两张（json_obj）表（元数据和参数）  */
-			let fields: HashMap<String, JsonValue> = json.asObject().getFields()
-			for (k in fields.keys()) {
-				let val = fields.get(k).getOrThrow()
-				obj.put(k, val)
-			}
-			if (debugEnabled) { logD("Lua scripts call parameters: ${obj.toString()}") }
+			jsonMergeInto(obj, json.asObject())
+			logD({ => "Lua scripts call parameters: ${obj.toString()}" })
 
 			/* 调用Lua解释器 */
 			let res = call_lua(L, obj)
 
-			if (debugEnabled) { logD("Lua script call result: ${res.toString()}") }
+			logD({ => "Lua script call result: ${res.toString()}" })
 			/* ---- 检查本驱动 call 的返回契约（含显式 ERR 即中断） ---- */
 			MatrixVars_Hardware.ensureOk(res, ctx: "call ${luapath}")
 
@@ -176,17 +188,12 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 				 * （原实现二次 getMetadata()：重复 O(cols·rows) 扫描且引用列被
 				 *   read() 两遍；P8/M2 后一次收集两次浅拷贝） */
 				let payload = JsonObject()
-				for (k in metaFields.keys()) {
-					payload.put(k, metaFields.get(k).getOrThrow())
-				}
-				let retFields: HashMap<String, JsonValue> = res.asObject().getFields()
-				for (k in retFields.keys()) {
-					payload.put(k, retFields.get(k).getOrThrow())
-				}
-				if (debugEnabled) { logD("Forward to controller: ${payload.toString()}") }
+				jsonMergeInto(payload, metadata)
+				jsonMergeInto(payload, res.asObject())
+				logD({ => "Forward to controller: ${payload.toString()}" })
 
 				let ctrl_res = ctrl.play(payload)
-				if (debugEnabled) { logD("Controller result: ${ctrl_res.toString()}") }
+				logD({ => "Controller result: ${ctrl_res.toString()}" })
 
 				/* ---- 检查 controller 返回值（如 PCA9685 写寄存器失败） ---- */
 				MatrixVars_Hardware.ensureOk(ctrl_res, ctx: "controller of ${luapath}")
@@ -210,21 +217,10 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 	 *  （如滤波器未 pump 前被 build 期引用），不应像显式 play 那样 halt-on-error。
 	 */
 	private static func readImpl(L: lua_State, getMetadata: () -> JsonObject): JsonValue {
-		unsafe {
-			let rc = LibC.mallocCString("read")
-			Lua_getglobal(L, rc)
-			let tp = Lua_type(L, -1)
-			Lua_pop(L, 1)
-			LibC.free(rc)
-			if (tp != LUA_TNIL) {
-				let metadata = getMetadata()
-				metadata.put("mode", JsonString("read"))
-				return call_lua(L, metadata)
-			}
-		}
-		/* Lua 未定义 read：回退实时 call 语义 */
+		/* Lua 定义了 read → 快照读；未定义 → 回退实时 call 语义 */
+		let mode = if (luaGlobalType(L, "read") != LUA_TNIL) { "read" } else { "call" }
 		let metadata = getMetadata()
-		metadata.put("mode", JsonString("call"))
+		metadata.put("mode", JsonString(mode))
 		return call_lua(L, metadata)
 	}
 
@@ -238,11 +234,11 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 		/* 获取元数据并注入 build 指令 */
 		let metadata = getMetadata()
 		metadata.put("mode", JsonString("build"))
-		logD("Lua scripts build parameters: ${metadata.toString()}")
+		logD({ => "Lua scripts build parameters: ${metadata.toString()}" })
 
 		let res = call_lua(L, metadata)
 
-		logD("Lua script build result: ${res.toString()}")
+		logD({ => "Lua script build result: ${res.toString()}" })
 
 		/* ---- 检查 build 返回契约：失败即抛（main 的 finally 会清理已建硬件） ---- */
 		MatrixVars_Hardware.ensureOk(res, ctx: "build ${luapath}")
@@ -255,27 +251,20 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 		 * （0.3.0 后 pcall 失败已显式返回 ERR 契约，噪音随之升级为 deactivate warning）。
 		 * 此类状态机无 destroy 可调：跳过调用、释放状态机后正常返回，不抛 ERR，
 		 * 与 Daemon/其他硬件变量"未构建即不解析"的语义对齐。 */
-		unsafe {
-			let dc = LibC.mallocCString("destroy")
-			Lua_getglobal(L, dc)
-			let tp = Lua_type(L, -1)
-			Lua_pop(L, 1)
-			LibC.free(dc)
-			if (tp == LUA_TNIL) {
-				logD("Lua '${luapath}' has no global destroy (not built); skipping destroy call, releasing state")
-				destroy_lua(L)
-				return
-			}
+		if (luaGlobalType(L, "destroy") == LUA_TNIL) {
+			logD({ => "Lua '${luapath}' has no global destroy (not built); skipping destroy call, releasing state" })
+			destroy_lua(L)
+			return
 		}
 
 		/* 获取元数据并注入 destroy 指令 */
 		let metadata = getMetadata()
 		metadata.put("mode", JsonString("destroy"))
-		logD("Lua scripts destroy parameters: ${metadata.toString()}")
+		logD({ => "Lua scripts destroy parameters: ${metadata.toString()}" })
 
 		let res = call_lua(L, metadata)
 
-		logD("Lua script destroy result: ${res.toString()}")
+		logD({ => "Lua script destroy result: ${res.toString()}" })
 		/* ---- 先释放 Lua 状态机，再检查返回契约——避免检查抛异常时泄漏 ---- */
 		destroy_lua(L)
 
@@ -289,22 +278,19 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 	 *  NOTE(20260618-qing): 构建完毕会运行一次 */
 	private static func build_lua(L: lua_State, luapath: String): Bool {
 		unsafe {
-			let filename_c = LibC.mallocCString(luapath)
-			/* malloc 失败返回空指针，用 isNull() 判别（isEmpty() 语义含空串，区分度不足） */
-			if (filename_c.isNull()) { throw IllegalMemoryException("LibC.mallocCString()")  }
-
 			/*  加载Lua标准库（os/io等，HAL.lua 依赖；不再注册硬件cfunc）  */
 			Lua_loadlib(L)
 			sandbox_lua(L)	/* 中和 os.execute/io.popen 等宿主入口（issue #9 M1） */
 
-			/* -------- 设置Lua状态机 -------- */
-			var status =  Lua_loadfilex(L, filename_c, CPointer<C_Char>())
-			LibC.free(filename_c)
+			/* -------- 设置Lua状态机（malloc 失败由 withCString 抛 IllegalMemoryException）-------- */
+			let status = withCString(luapath) { fc: CString =>
+				unsafe { Lua_loadfilex(L, fc, CPointer<C_Char>()) }
+			}
 
 			if (status == LUA_OK) {
-				var status = Lua_pcall(L, 0, LUA_MULTRET, 0)
-				logD("lua build status: ${status}")
-				if (status == LUA_OK) { return true  }
+				let pcStatus = Lua_pcall(L, 0, LUA_MULTRET, 0)
+				logD({ => "lua build status: ${pcStatus}" })
+				if (pcStatus == LUA_OK) { return true  }
 			}
 
 			/* -------- 从栈顶获取错误信息（判型防空指针，见 luaErrorString） -------- */
@@ -329,9 +315,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 	private static func push_lua_value(L: lua_State, val: JsonValue): Unit {
 		if (val is JsonString) {
 			let v = val.asString().getValue()
-			let sv = unsafe { LibC.mallocCString(v) }
-			unsafe { Lua_pushstring(L, sv) }
-			unsafe { LibC.free(sv) }
+			withCString(v) { sv: CString => unsafe { Lua_pushstring(L, sv) } }
 		}
 		else if (val is JsonInt) {
 			unsafe { Lua_pushinteger(L, Int64(val.asInt().getValue())) }
@@ -360,13 +344,11 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			let fs: HashMap<String, JsonValue> = obj.getFields()
 			for (k in fs.keys()) {
 				push_lua_value(L, fs.get(k).getOrThrow())
-				let sk = unsafe { LibC.mallocCString(k) }
-				unsafe { Lua_setfield(L, -2, sk) }
-				unsafe { LibC.free(sk) }
+				withCString(k) { sk: CString => unsafe { Lua_setfield(L, -2, sk) } }
 			}
 		}
 		else {
-			logD("push_lua_value: unsupported JsonValue type, pushed nil")
+			logD({ => "push_lua_value: unsupported JsonValue type, pushed nil" })
 			unsafe { Lua_pushnil(L) }
 		}
 	}
@@ -432,7 +414,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			return JsonArray()	/* 空表 → 空数组 */
 		}
 		else {
-			logD("lua_value_to_json: unsupported Lua type ${t}, returned null")
+			logD({ => "lua_value_to_json: unsupported Lua type ${t}, returned null" })
 			return JsonNull()
 		}
 	}
@@ -452,9 +434,7 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 
 			/* ---- ---- */
 			let mode = obj.get("mode").getOrThrow().asString().getValue()
-			let cstr = LibC.mallocCString(mode)
-			Lua_getglobal(L, cstr)
-			LibC.free(cstr)
+			withCString(mode) { cstr: CString => unsafe { Lua_getglobal(L, cstr) } }
 
 			/* ----在Lua状态机里 创建Lua表 ---- */
 			Lua_createtable(L, 0, 0)
@@ -465,13 +445,11 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 			for (k in fields.keys()) {
 				let val = fields.get(k).getOrThrow()
 				push_lua_value(L, val)
-				let sk = LibC.mallocCString(k)
-				Lua_setfield(L, -2, sk)
-				LibC.free(sk)
+				withCString(k) { sk: CString => unsafe { Lua_setfield(L, -2, sk) } }
 			}
 
-			var status = Lua_pcall(L, 1, LUA_MULTRET, 0)
-			if (debugEnabled) { logD("lua status: ${status}") }
+			let status = Lua_pcall(L, 1, LUA_MULTRET, 0)
+			logD({ => "lua status: ${status}" })
 			if (status == LUA_OK) {
 				if (Lua_type(L, -1) == LUA_TTABLE) {
 					/* ---- 栈顶是表  压入 nil 作为遍历的起始键 ---- */
@@ -484,13 +462,13 @@ public class MtVars_Lua <: MatrixVars_Hardware {
 						 * 其余不可转换类型回 JsonNull 而非跳过）。 */
 						let keyType = Lua_type(L, -2)
 						if (keyType != LUA_TSTRING) {
-							logD("Lua return field skipped: key type ${keyType}")
+							logD({ => "Lua return field skipped: key type ${keyType}" })
 							Lua_pop(L, 1)	/* 弹出值，保留键供下一次 Lua_next */
 							continue
 						}
 						let key = Lua_tostring(L, -2)
 						let val = lua_value_to_json(L, -1)
-						if (debugEnabled) { logD("${key}: ${val.toString()}") }
+						logD({ => "${key}: ${val.toString()}" })
 						ret.put(key.toString(), val)
 						Lua_pop(L, 1)
 					}

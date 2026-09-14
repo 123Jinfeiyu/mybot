@@ -31,13 +31,8 @@ public func openActionSource(options: ReadOnlyMap<String, String>): Option<Input
 	/* ---- TCP 模式（最高优先级）---- */
 	if (options.contains("tcp")) {
 		let portStr = options["tcp"]
-		let port: Int64
-		try {
-			port = Int64.parse(portStr)
-		} catch (e: Exception) {
-			println("--tcp 端口号无效：${portStr}（合法范围 1-65535）")
-			return None
-		}
+		/* 解析失败按 -1 处理，与越界值共用同一校验/报错路径 */
+		let port = try { Int64.parse(portStr) } catch (e: Exception) { -1 }
 		if (port < 1 || port > 65535) {
 			println("--tcp 端口号无效：${portStr}（合法范围 1-65535）")
 			return None

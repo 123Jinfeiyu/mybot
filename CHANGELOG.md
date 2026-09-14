@@ -35,6 +35,15 @@ virtbus 虚拟硬件测试基座、2026-09 审计修复批次、ActionSource 工
 - **2026-09 审计修复批次**：严重四项（LTC2944 控制字写偏、BMM150 三轴多乘 0.3、INA219 SADC 档表错位、MHZ19 帧头扫描死代码）；中低项含 SHT3X 状态位映射、MPU6050 WHO_AM_I 甄别、call-before-build 守卫等。
 - `Lua.cj` 沙箱补中和 `io.input`/`io.output`；Lua 表转 JSON 混合键转对象；守护退出清理顺序修正。
 
+### 重构
+
+- **`logD` 惰性求值**：签名改为接收 `() -> String`，非 debug 模式下插值代码不再执行——从类型上根除"热路径日志插值产生 GC 压力"问题（0.3.3 曾修 7 处、仍漏 10 处的调用点差异随之消除）。
+- **FFI C 字符串作用域辅助 `withCString`**（`Lua.cj`）：`mallocCString`/`free` 手工配对约 18 处收敛为 try/finally 统一释放，malloc 失败一律显式抛错。
+- **`luaGlobalType` 探测辅助**：`readImpl`/`freeImpl` 重复的"getglobal + type + pop"探针合并。
+- **`jsonMergeInto` 浅合并辅助**（`MatrixVars.cj`）：`callImpl` 元数据拷贝/参数合并/转发 payload 与 `MetaProvider.collect` 引用列合并共 5 处重复循环收敛。
+- **`MtVars_Daemon.Factory` 拆分**：play/rise/free 三个内联大闭包提取为具名静态实现 `playImpl`/`riseImpl`/`freeImpl`（与 `MtVars_Lua` 既有同类重构对齐）；配置串与 interval 两遍列扫描合并为一遍；slot 释放两分支去重为 `releaseSlot`。
+- `sandbox_lua` os/io 两段孪生中和逻辑合并为数据驱动循环；ActionSource 端口校验双报错路径合一。
+
 ### 文档
 
 - `BME280.lua` / `SHT3X.lua` 头注释更新为现 HAL 语义，移除过时 cfunc 描述。
