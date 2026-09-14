@@ -34,7 +34,8 @@
 --   3. SOC（0x04）：高字节整数 % + 低字节 /256
 --   4. CRATE（0x16）：16 位带符号，0.208%/hr 每 LSB
 --   5. STATUS（0x1A）：告警位在高字节 bit0~5，清除=写 0（保留 bit14 EnVR）
---   6. VALRT（0x14）：高字节 MAX 低字节 MIN，20mV/LSB，POR 0x00FF
+--   6. VALRT（0x14/0x15）：高字节 MIN（地址 0x14）、低字节 MAX（地址 0x15），
+--      20mV/LSB，POR 0x00FF（MIN=0/0V、MAX=255/5.1V）
 --   7. ATHD：CONFIG（0x0C）低 5 位，值 = 32 - 阈值%（00000=32%）
 --   8. QuickStart：MODE（0x06）写 0x4000（本驱动仅在 build 配置时发一次）
 
@@ -131,6 +132,8 @@ function build(data)
 	end
 
 	-- VALRT 过压/欠压阈值（20mV/LSB，读改写保留另一侧）
+	-- datasheet Figure 11：地址 0x14 = VALRT.MIN（16 位字的高字节）、
+	-- 地址 0x15 = VALRT.MAX（低字节），POR 0x00FF（MIN=0/0V、MAX=255/5.1V）
 	local vmax = tonumber(data.valrt_max)
 	local vmin = tonumber(data.valrt_min)
 	if vmax ~= nil or vmin ~= nil then
@@ -141,8 +144,8 @@ function build(data)
 				message = "MAX17048 not responding (read VALRT failed)"
 			}
 		end
-		local hi = math.floor(cur / 256) % 256
-		local lo = cur % 256
+		local min_code = math.floor(cur / 256) % 256	-- 0x14 = MIN
+		local max_code = cur % 256				-- 0x15 = MAX
 		if vmax ~= nil then
 			if vmax < 0 or vmax > 5.1 then
 				return {
@@ -150,8 +153,8 @@ function build(data)
 					message = "Invalid Argument: valrt_max '" .. tostring(data.valrt_max) .. "' (range 0~5.1V)"
 				}
 			end
-			hi = math.floor(vmax / 0.02 + 0.5)
-			if hi > 255 then hi = 255 end
+			max_code = math.floor(vmax / 0.02 + 0.5)
+			if max_code > 255 then max_code = 255 end
 		end
 		if vmin ~= nil then
 			if vmin < 0 or vmin > 5.1 then
@@ -160,10 +163,10 @@ function build(data)
 					message = "Invalid Argument: valrt_min '" .. tostring(data.valrt_min) .. "' (range 0~5.1V)"
 				}
 			end
-			lo = math.floor(vmin / 0.02 + 0.5)
-			if lo > 255 then lo = 255 end
+			min_code = math.floor(vmin / 0.02 + 0.5)
+			if min_code > 255 then min_code = 255 end
 		end
-		if i2c_write_multi(fd, REG_VALRT, hi, lo) ~= 0 then
+		if i2c_write_multi(fd, REG_VALRT, min_code, max_code) ~= 0 then
 			return {
 				result = "ERR",
 				message = "MAX17048 not responding (VALRT write failed)"
