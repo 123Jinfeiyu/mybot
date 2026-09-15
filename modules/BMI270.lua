@@ -156,7 +156,9 @@ local function upload_blob(fd, blob)
 	for i = 1, #blob, CHUNK do
 		local word = math.floor((i - 1) / 2)
 		local bytes = { blob:byte(i, math.min(i + CHUNK - 1, #blob)) }
-		if not i2c_write_multi(fd, REG_INIT_ADDR, word % 16, math.floor(word / 16)) then
+		-- 注意 i2c_write_multi 契约为 0=成功/-1=NACK：不能用 not r
+		-- 判定（Lua 中 -1 为真，地址相写失败会被当成功继续传数据）
+		if i2c_write_multi(fd, REG_INIT_ADDR, word % 16, math.floor(word / 16)) ~= 0 then
 			return false
 		end
 		if i2c_write_multi(fd, REG_INIT_DATA, unpack(bytes)) ~= 0 then

@@ -150,6 +150,11 @@ e2e_cases=(
 	# 气体电阻/v4=GAS_OK 整数，forced 门靠 virt_tick 预武装零睡眠，
 	# 锚 v0 温度（带小数即证明未被 sign=16 取整）
 	'bme688_virt|"v0":2[0-9]\.[0-9]+|10'
+	# BMI270 六轴 IMU：ACCEL_X/Y/Z + GYRO_X/Y/Z 六字段均 sign='16'
+	# 展开的有符号整数码（无 :f），配置 blob 上传 + 150ms 加载门靠
+	# virt_tick 预武装（build 仅睡 114ms），浮点断言锚定 monf 行 Ema
+	# 对 ACCEL_X 正弦码（100~500）的 α 混合输出 out
+	'bmi270_virt|"out":-?[0-9]+\.[0-9]+|10'
 )
 
 run_one_e2e() {
