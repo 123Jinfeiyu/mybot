@@ -168,6 +168,10 @@ e2e_cases=(
 	# v0=CO2:f 整数 ppm（virt_tick 32 拍一周爬坡 400~4368、128ppm 步进，
 	# :f 透传无小数）/v1=TEMP/v2=S；浮点断言锚定 monf 行 Ema 对浓度的 α 混合 out
 	'mhz19_virt|"out":[0-9]+\.[0-9]+|10'
+	# SDS011 激光颗粒物（第二个 UART virt 器件，/dev/serial0@9600 被动查询模式）：
+	# v0=PM25:f / v1=PM10:f 浮点 µg/m³（virt_tick 5 拍一周扬尘爬坡，0.8 步进、
+	# raw 码 mod 10 恒非 0 ⇒ raw 行必带小数，锚 mon0 的 v0 即证明 :f 未取整）
+	'sds011_virt|"v0":[0-9]+\.[0-9]+|10'
 )
 
 run_one_e2e() {
