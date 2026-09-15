@@ -133,7 +133,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 | MHZ19.lua | mhz19.lua | mhz19_virt.sql |
 | MLX90393.lua | mlx90393.lua | mlx90393_virt.sql |
 | MS5611.lua | ms5611.lua | ms5611_virt.sql |
-| MPU6050.lua | mpu6050.lua | mpu_virt.sql |
+| MPU6050.lua | （内嵌驱动文件尾部 `MPU6050_VIRT`） | mpu_virt.sql |
 | MT6826S.lua | mt6826s.lua | mt6826s_virt.sql |
 | PCA9685.lua | （内嵌驱动文件尾部 `PCA9685_VIRT`） | 豁免（写-only） |
 | PCF8574.lua | pcf8574.lua | pcf8574_virt.sql |
@@ -145,7 +145,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 | VL53L4CD.lua | vl53l4cd.lua | vl53l4cd_virt.sql |
 
 - `virtbus/regmap.lua`：通用「寄存器指针 + burst」模型，覆盖 MPU6050/BME280 一类大多数 I2C 传感器（8 位指针；构造传 `{ptr16=true}` 支持 VL53Lx 类 16 位指针）；提供 `set/set_word/get_sword` 预置寄存器、`nack`（读写全断）与 `nack_read/nack_write`（定向故障）、`write_log` 事务留痕、`reset()`。
-- `virtbus/mpu6050.lua`：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`virt_tick(n)` 造确定性合成波形（供 proto=virt 守护逐拍驱动）、`config_writes()` 取 build 配置序列。
+- `MPU6050_VIRT`（2026-09-15 实验性内嵌于 `modules/MPU6050.lua` 驱动脚本尾部，原 `virtbus/mpu6050.lua`；守护 E2E 经 sensor_daemon 回退路径装载）：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`virt_tick(n)` 造确定性合成波形（供 proto=virt 守护逐拍驱动）、`config_writes()` 取 build 配置序列。
 - `virtbus/bme280.lua`：BME280 温压湿环境传感器模型（regmap 包装层）——0xD0 身份（`who(0x58)` 模拟错挂 BMP280）、datasheet 示例校准 NVM 字节布局（0x88 起 T/P 小端系数、0xA1 H1、0xE1 起 7 字节 H 块含 H4/H5 的 s12 nibble 拼装）、0xF7 起 P/T 20bit + H 16bit 数据区、合成 0xF3 STATUS 与 forced 转换状态机（`advance(ms)` 外部虚拟时钟驱动 6ms 转换/`nvm_stuck`/`meas_stuck` 卡死注入；`virt_tick` 走预武装路径无需时钟）、`set_raw(t,p,h)` 注入无符号 ADC 码（0x80000/0x8000 无效读数可测）。
 - `BH1750_VIRT`（2026-09-15 实验性内嵌于 `modules/BH1750.lua` 驱动脚本尾部，原 `virtbus/bh1750.lua`；守护 E2E 经 sensor_daemon「模型文件缺失 → 回退读驱动全局工厂」路径装载）：BH1750 命令式器件模型（opcode 序列、大端计数读回、上电/模式状态解释、`set_count()`、`nack`）；`virt_tick(n)` 造 32 拍一周正弦照度（count 15002±3000 → H 档 LUX 10001.7~15001.7，基线取非 6 的倍数使相位中点拍除不尽 1.2），只改测量值、不产生命令写，供 `proto=virt` 守护逐拍驱动。
 - `virtbus/ads1256.lua`：**首个 SPI 输入器件模型**，ADS1256 24bit ΣΔ ADC 的全双工命令状态机（`xfer` 点定义）——RESET/WAKEUP/SYNC/SELFCAL/RDATAC/SDATAC 命令、WREG/RREG 寄存器访问（RREG 读窗口优先于命令识别，dummy 字节 0x00 不被误判 WAKEUP）、RDATAC 模式 24bit 大端样本帧（驱动丢弃第 4 字节）；固化 MUX 单端 `ch<<4|0x08`/差分 `pos<<4|neg`、ADCON PGA 1~64、DRATE 30k~5SPS 事实；`set_raw`（补码 floor 量化 + clamp）、`set_voltage(v,pga_idx)` 反解、`virt_tick` 32 拍确定性正弦（1.25±1.0V）、`fail_when/fail_data` 帧级故障注入（RESET 不清故障钩子，防负路径假绿）。模块表 `BUS="spi"` 供守护自动分流；除 `xfer` 外公开 API 一律冒号定义。
