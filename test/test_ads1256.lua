@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_ads1256.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「直接 mock HAL.sys.ioctl_p 的 cdata 层」迁移到「真实驱动 + virtbus SPI
--- 注入层（spi_write/write3/read_multi 全局）+ virtbus/ads1256.lua 模型」：
+-- 注入层（spi_write/write3/read_multi 全局）+ 内嵌模型（modules/ADS1256.lua
+-- 尾部 ADS1256_VIRT，2026-09-15 自 virtbus/ads1256.lua 迁入）」：
 -- 事务断言扫 vbus.txlog 的 CS 帧（一次 HAL 传输 = 一条 dir="x"），覆盖
 --   1) 模型协议事实：命令流水、WREG 同帧解析、RDATAC 24bit 样本帧、RREG 回填、
 --      有符号/电压 API、virt_tick 确定性、故障注入；
@@ -14,13 +15,17 @@ local tester = dofile("test/lib/tester.lua")
 local check = tester.check
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local adsmod = dofile("modules/lib/virtbus/ads1256.lua")
 vbus.reset()
 
 local SPI_PATH = "/dev/spidev0.0"
+
+-- 模型内嵌于驱动文件（ADS1256_VIRT 全局工厂，工厂表带 BUS="spi"）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/ADS1256.lua")
+local adsmod = ADS1256_VIRT
+
 local dev = adsmod.new()
 vbus.attach_spi("ADS1256@spidev0.0", SPI_PATH, dev)
-vbus.load_driver("modules/ADS1256.lua")
 
 local fd = spi_open(SPI_PATH)
 check("spi_open 虚拟 fd=3", fd == 3)
