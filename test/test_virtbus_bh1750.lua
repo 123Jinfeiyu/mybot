@@ -60,6 +60,26 @@ tester.check("模型解释掉电状态", light.state.power == false)
 res = build({ fd = fd, address = 0x50, mode = "H" })
 tester.check("地址无器件 build 显式 ERR", tostring(res.result) == "ERR")
 
+-- virt_tick 合成波形（守护 proto=virt 每拍造数）：钉值 + 回卷 + 经真实驱动出浮点
+light:clear_cmds()
+light:virt_tick(0)
+tester.check("virt_tick(0) 相位中点 count=15002", light.count == 15002)
+light:virt_tick(8)
+tester.check("virt_tick(8) 波峰 count=18002", light.count == 18002)
+light:virt_tick(24)
+tester.check("virt_tick(24) 波谷 count=12002", light.count == 12002)
+light:virt_tick(32)
+tester.check("virt_tick 32 拍回卷与 0 拍同值", light.count == 15002)
+res = call({ fd = fd, address = 0x23, mode = "H" })
+tester.check("tick 造数经真实驱动换算 LUX=15002/1.2",
+	tostring(res.result) == "OK" and math.abs(res.LUX - 15002 / 1.2) < 1e-6)
+tester.check("相位中点拍 LUX 带小数（15002 非 6 的倍数）", res.LUX ~= math.floor(res.LUX))
+tester.check("波峰波谷同样除不尽（整数相位无 6 的倍数）",
+	(18002 % 6 ~= 0) and (12002 % 6 ~= 0))
+tester.check("virt_tick 只造测量值、零命令写", #light.cmds == 0)
+light:reset(30000)
+tester.check("reset 回注入初值", light.count == 30000 and #light.cmds == 0)
+
 i2c_close(fd)
 vbus.restore()
 

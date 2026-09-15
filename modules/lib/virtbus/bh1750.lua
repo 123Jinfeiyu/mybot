@@ -87,6 +87,22 @@ function bh1750.new(opts)
 		return self
 	end
 
+	-- ---------------- 守护仿真节拍（proto=virt） ----------------
+	-- 32 拍一周正弦照度（count 15002±3000，H 档 → LUX = count/1.2）。基线取
+	-- 15002 使相位中点拍（n=0/16/32）的 count 非 6 的倍数 ⇒ 除不尽 1.2、必为
+	-- 带小数浮点（12501.666667，单测钉该拍）。余下拍里有少数 count 恰为 6 的
+	-- 倍数（如 17496→14580）、发布值成整数，属真机同样的「整帧整数」现象；
+	-- 守护 20ms 拍与外部 50ms pump 又存在混叠（快照采到哪拍不固定），故 E2E 的
+	-- :f 浮点断言不锚 raw 某一拍，改锚 Ema 混合后的 out。virt_tick 仅造测量数据，
+	-- 不改命令状态与 cmds（真实器件连续模式下照度变化也不产生总线写事务），
+	-- 故 build 前预武装与每拍驱动都不干扰驱动的在位判定与命令留痕。
+	function m:virt_tick(n)
+		n = tonumber(n) or 0
+		local s = math.sin(n * (2 * math.pi / 32))
+		self.count = math.floor(15002 + 3000 * s + 0.5)
+		return self
+	end
+
 	function m:reset(new_count)
 		self.count = new_count or 0
 		self.nack = false
