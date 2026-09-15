@@ -40,9 +40,10 @@ bash test/run_all.sh <过滤词>     # 文件名过滤
 BOT=./build-asan/mybot bash test/run_all.sh _virt   # 内存仿真链路走 Sanitizer
 ```
 
-守门分三段：`test/test_*.lua`（LuaJIT）、mybot virt E2E（I2C/SPI 内存仿真模型，
+守门分四段：`test/test_*.lua`（LuaJIT）、mybot virt E2E（I2C/SPI 内存仿真模型，
 断言 `:f` 浮点透传与守护持续发布）、无硬件契约回归（守护/别名/转发/引用路径，
-含负值契约如 INSERT 拼错表、别名重复、`$` 引用标量必须清晰报错）。
+含负值契约如 INSERT 拼错表、别名重复、`$` 引用标量必须清晰报错）、TCP 动作源
+端到端（复用 `scripts/tcp_e2e.sh`，覆盖 `--tcp` 监听分支，缺 python3 自动跳过）。
 
 ## SQL4cj 关键语义
 
