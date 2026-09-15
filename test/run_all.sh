@@ -141,6 +141,10 @@ e2e_cases=(
 	# 若无 :f 会被 sign=16 截断到 ≤65535），锚定 raw 行 v2 六位整数；
 	# Ema 滤 v1 DIST_KM（-1 与 10~35 混合），通用断言验 monf out≠raw
 	'as3935_virt|"v2":[0-9]{6}[,}]|10'
+	# EMC2101 风扇控制器：v0=TEMP_IN 整数/v1=TEMP_EXT:f 1/8°C 小数/
+	# v2=RPM:f 转速，tick 正弦恒四位数 1800~4200（锚 raw v2 四位整数
+	# 部分，证明 RPM:f 浮点链路；Ema 滤 v1 外温，通用断言验 monf）
+	'emc2101_virt|"v2":[0-9]{4}[,}]|10'
 )
 
 run_one_e2e() {

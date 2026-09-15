@@ -34,8 +34,10 @@
 --   2. 占空比换算的关键：FAN_SETTING(0x4C) 的 100% 对应值不是 63，而是
 --      2 x max(1, PWM_F)，PWM_F 为 0x4D 寄存器（5 位，本驱动保持复位默认
 --      不配置——Hz 公式未核实不暴露），build 现读现算 full_lsb
---   3. 读序锁存坑：外部温度（0x01 MSB + 0x10 LSB）与 TACH（0x47 MSB +
---      0x46 LSB）都必须【先读 MSB 锁存 LSB]，再读 LSB，顺序反了可能撕裂
+--   3. 读序锁存坑（datasheet §6.1 Data Read Interlock，两路方向相反）：
+--      外部温度【先读 MSB 0x01 锁存 LSB 0x10】再读 LSB；TACH 恰好相反，
+--      必须【先读 LSB 0x46 锁存 MSB 0x47】再读 MSB。顺序反了可能撕裂
+--      （Adafruit Arduino/CircuitPython 两库 TACH 均明确 LSB first）
 --   4. 外部温度 11 位二进制补码（8 整数位 + 3 位 1/8°C 分数），0x3F8 =
 --      二极管开路、0x3FF = 短路的特征码（返回 TEMP_EXT=nil + STATUS.0x04）
 --   5. LUT 编程期间必须先禁用（FAN_CONFIG(0x4A) bit5=1），写完再启用；
@@ -64,8 +66,8 @@ local REG_INT_TEMP  = 0x00		-- 内部温度（8 位二进制补码，整数 °C�
 local REG_EXT_MSB   = 0x01		-- 外部温度 MSB（先读锁存 LSB）
 local REG_STATUS    = 0x02		-- 状态位（见头注释）
 local REG_EXT_LSB   = 0x10		-- 外部温度 LSB（高 3 位有效）
-local REG_TACH_LSB  = 0x46		-- TACH LSB（必须在 MSB 之后读）
-local REG_TACH_MSB  = 0x47		-- TACH MSB（先读锁存 LSB）
+local REG_TACH_LSB  = 0x46		-- TACH LSB（先读锁存 MSB）
+local REG_TACH_MSB  = 0x47		-- TACH MSB（必须在 LSB 之后读）
 local REG_FAN_CFG   = 0x4A		-- bit5 = LUT 禁用/编程模式
 local REG_FAN_SET   = 0x4C		-- 手动占空比（0 ~ 2xPWM_F）
 local REG_PWM_F     = 0x4D		-- PWM_F（5 位），100% 对应 2 x max(1, PWM_F)
@@ -336,7 +338,8 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	-- 采样：状态 + 内部温度 + 外部温度（先 MSB 锁存）+ TACH（先 MSB 锁存）
+	-- 采样：状态 + 内部温度 + 外部温度（先 MSB 锁存 LSB）
+	--       + TACH（先 LSB 锁存 MSB，§6.1 两路方向相反）
 	local status = i2c_read_reg(fd, REG_STATUS)
 	if status < 0 then
 		return {
@@ -376,15 +379,15 @@ function call(data)
 		temp_ext = s11(raw11) * 0.125
 	end
 
-	local tmsb = i2c_read_reg(fd, REG_TACH_MSB)		-- 先读 MSB 锁存 LSB
-	if tmsb < 0 then
+	local tlsb = i2c_read_reg(fd, REG_TACH_LSB)		-- §6.1：先读 LSB 锁存 MSB
+	if tlsb < 0 then
 		return {
 			result = "ERR",
 			message = "Failed to read EMC2101 TACH"
 		}
 	end
-	local tlsb = i2c_read_reg(fd, REG_TACH_LSB)
-	if tlsb < 0 then
+	local tmsb = i2c_read_reg(fd, REG_TACH_MSB)
+	if tmsb < 0 then
 		return {
 			result = "ERR",
 			message = "Failed to read EMC2101 TACH"
