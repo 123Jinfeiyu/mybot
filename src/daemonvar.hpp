@@ -7,6 +7,7 @@
  *   offset 72  double values[32]     采样值
  *   offset 328 uint8  stop           停止标志
  */
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -43,10 +44,6 @@ static_assert(offsetof(DaemonSlot, stop) == SLOT_STOP_OFF, "stop offset");
 void daemon_request_stop(DaemonSlot* slot);
 bool daemon_stop_requested(DaemonSlot* slot);
 
-/* 守护线程体：独立 lua_State，注入槽地址 + 配置串，setup 一次 + 逐拍 daemon_tick */
-int64_t daemon_body(DaemonSlot* slot, const std::string& chunk,
-		const std::string& config, int64_t interval_ms);
-
 /* ---- chunk 路径寻址（issue #19 多路径）---- */
 std::string firstExistingModule(const std::string& paths, const std::string& rel);
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath);
@@ -58,11 +55,24 @@ public:
 	int64_t joinTimeoutMs;
 	std::shared_ptr<std::promise<int64_t>> result;
 	std::future<int64_t> fut;
+	/* D1：线程是否已 spawn——未 spawn（build 中途失败路径）promise 永不 set，
+	 * 停机时不能白等 join 超时，直接释放槽。 */
+	std::atomic<bool> spawned{false};
+	/* D2：主线程放弃等待后置位，槽所有权移交守护线程（线程退出时自行释放），
+	 * 主线程此后不再触碰槽——防放弃路径的 use-after-free。 */
+	std::atomic<bool> abandoned{false};
+	/* 自引用（Factory 置位）：守护线程捕获它保生命周期（D1/D2） */
+	std::shared_ptr<DaemonHolder> self;
 
 	explicit DaemonHolder(DaemonSlot* s, int64_t timeout)
 		: slot(s), joinTimeoutMs(timeout), result(std::make_shared<std::promise<int64_t>>()),
 		  fut(result->get_future()) {}
 };
+
+/* 守护线程体：独立 lua_State，注入槽地址 + 配置串，setup 一次 + 逐拍 daemon_tick。
+ * 持 holder 的 shared_ptr 保生命周期；退出时若 abandoned 置位则自行释放槽（D2）。 */
+int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chunk,
+		const std::string& config, int64_t interval_ms);
 
 /* ---- 守护硬件变量 ---- */
 class MtVars_Daemon : public MatrixVars_Hardware {
@@ -71,7 +81,7 @@ class MtVars_Daemon : public MatrixVars_Hardware {
 
 public:
 	static std::unique_ptr<MtVars_Daemon> Factory(const mt::MatrixObject& defs, std::int64_t i,
-			std::vector<std::unique_ptr<DaemonHolder>>& registry);
+			std::vector<std::shared_ptr<DaemonHolder>>& registry);
 };
 
 } // namespace bot

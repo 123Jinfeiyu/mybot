@@ -26,6 +26,10 @@ public:
 	int read() override {
 		if (!file_) { return -1; }
 		int c = std::fgetc(file_);
+		/* R3：区分 EOF 与读错误——磁盘 I/O 错误静默当作脚本结束会截断动作 */
+		if (c == EOF && std::ferror(file_)) {
+			std::cout << "警告：动作脚本读取发生 I/O 错误，按 EOF 处理（脚本可能被截断）" << std::endl;
+		}
 		return c;
 	}
 };

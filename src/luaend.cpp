@@ -108,10 +108,17 @@ Json lua_value_to_json(lua_State* L, int idx) {
 		while (lua_next(L, -2) != 0) {
 			int keyType = lua_type(L, -2);
 			if (keyType == LUA_TNUMBER) {
-				long long k = static_cast<long long>(lua_tonumber(L, -2));
-				Json vj = lua_value_to_json(L, -1);
-				arrVals[k] = vj;
-				arrKeys.push_back(k);
+				double kd = lua_tonumber(L, -2);
+				/* C7 防线：非整数数字键（如 3.5）截断会静默丢数据——转字符串键保留 */
+				long long k = static_cast<long long>(kd);
+				if (static_cast<double>(k) != kd) {
+					Json vj = lua_value_to_json(L, -1);
+					obj.put(std::to_string(kd), vj);
+				} else {
+					Json vj = lua_value_to_json(L, -1);
+					arrVals[k] = vj;
+					arrKeys.push_back(k);
+				}
 			} else if (keyType == LUA_TSTRING) {
 				if (const char* ks = lua_tolstring(L, -2, nullptr)) {
 					Json vj = lua_value_to_json(L, -1);
@@ -148,7 +155,13 @@ Json call_lua(lua_State* L, const Json& json) {
 
 	int top = lua_gettop(L);
 
-	std::string mode = obj.get("mode").value().asString().getValue();
+	/* C4 防线：mode 缺失/非字符串时清晰报错，而非 bad_optional_access 裸异常 */
+	auto modeField = obj.get("mode");
+	if (!modeField || !modeField->isStr()) {
+		throw IllegalArgumentException("call_lua: 'mode' field missing or not a string"
+			" (expected build/call/destroy/read)");
+	}
+	std::string mode = modeField->getValue();
 	lua_getglobal(L, mode.c_str());
 
 	/* 创建 Lua 表，装入全部字段 */
@@ -158,9 +171,13 @@ Json call_lua(lua_State* L, const Json& json) {
 		lua_setfield(L, -2, kv.first.c_str());
 	}
 
+	/* C3 防线：pcall 成功但返回 0 个值时，栈顶是调用前的旧栈顶——
+	 * 以进入本函数时的栈深 top 为基准算返回值个数，nret > 0 才检查
+	 * 返回值（否则会把无关栈上值当返回表遍历）。 */
 	int status = lua_pcall(L, 1, LUA_MULTRET, 0);
 	if (status == LUA_OK) {
-		if (lua_type(L, -1) == LUA_TTABLE) {
+		int nret = lua_gettop(L) - top;
+		if (nret > 0 && lua_type(L, -nret) == LUA_TTABLE) {
 			lua_pushnil(L);
 			while (lua_next(L, -2) != 0) {
 				int keyType = lua_type(L, -2);

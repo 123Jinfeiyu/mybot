@@ -44,7 +44,7 @@ public:
 
 class RobotStruct {
 	std::vector<mt::MatrixObject> matrices_;	/* 结构脚本解析的矩阵对象（声明序） */
-	std::vector<std::unique_ptr<DaemonHolder>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop */
+	std::vector<std::shared_ptr<DaemonHolder>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
 	std::map<std::string, MatrixVars_Hardware*> hardwareVars_;	/* 名字 → 硬件变量 */
 	std::vector<std::unique_ptr<MatrixVars_Hardware>> hwPool_;	/* 所有权（含 run 期注册的别名） */
 	std::vector<MatrixVars_Hardware*> hwSeq_;			/* 声明序：active/deactivate 按序 */

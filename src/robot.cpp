@@ -99,6 +99,9 @@ void RobotStruct::addHardwareVar(const std::string& name, std::unique_ptr<Matrix
 /* ---- 注册别名矩阵：启动期(e=nullopt)与动作脚本期(e=Some)两路 ---- */
 void RobotStruct::registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
 	std::int64_t idxName = matrix.indexOfCol(0, "name");
+	if (idxName < 0) {
+		throw IllegalArgumentException("Alias matrix '" + matrix.getName() + "' has no 'name' column.");
+	}
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		auto aliasVar = MtVars_Alias::Factory(matrix, i);
@@ -132,6 +135,9 @@ void RobotStruct::createHardVars() {
 
 void RobotStruct::createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName) {
 	std::int64_t idxName = matrix.indexOfCol(0, "name");
+	if (idxName < 0) {
+		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
+	}
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
@@ -142,6 +148,9 @@ void RobotStruct::createDaemonVars(const mt::MatrixObject& matrix, const std::st
 
 void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName) {
 	std::int64_t idxName = matrix.indexOfCol(0, "name");
+	if (idxName < 0) {
+		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
+	}
 	std::int64_t idxCtrl = matrix.indexOfCol(0, "controller");
 	auto modulePathOpt = getEnvVar("BOT4CJ_MODULE_PATH");
 	std::string modulePath = modulePathOpt.value_or("./modules");
@@ -242,6 +251,11 @@ void RobotStruct::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	}
 
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(actionDefs.rows()); ++i) {
+		/* D4：SIGINT/SIGTERM 后停止派发新动作帧，让 deactivate 清理链正常执行 */
+		if (stopRequested()) {
+			std::cout << "Stop requested, halting action dispatch (row " << i << ")" << std::endl;
+			break;
+		}
 		Json set = JsonObject();
 		for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
 			parseActionCell(set, actionDefs, i, j);

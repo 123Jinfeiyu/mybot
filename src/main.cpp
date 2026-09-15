@@ -1,4 +1,5 @@
 #include <cstdlib>
+#include <csignal>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -9,6 +10,13 @@
 #include "util.hpp"
 
 namespace bot {
+
+/* ---- D4：SIGINT/SIGTERM 处理器——仅置停止标志（async-signal-safe），
+ * 让主流程走正常 deactivate（驱动 destroy / 守护停机）后再退出，
+ * 避免 Ctrl-C 把舵机留在最后指令位置、I2C 从设备滞留中间态。 */
+extern "C" void onStopSignal(int) {
+	bot::stopRequested().store(true);
+}
 
 /* ---- 命令行参数解析：--key=value 与 --key value 双形态 ---- */
 static std::map<std::string, std::string> parseArgs(int argc, char** argv) {
@@ -80,6 +88,14 @@ int main(int argc, char** argv) {
 			std::cout << "无硬件自检链路：cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql" << std::endl;
 			return 1;
 		}
+
+		/* D4：安装 SIGINT/SIGTERM 处理器（仅置标志），Ctrl-C 走正常清理链 */
+		struct sigaction sa{};
+		sa.sa_handler = onStopSignal;
+		sigemptyset(&sa.sa_mask);
+		sa.sa_flags = 0;	/* 不用 SA_RESTART：让 accept 等阻塞点被 EINTR 打断以便检查标志 */
+		::sigaction(SIGINT, &sa, nullptr);
+		::sigaction(SIGTERM, &sa, nullptr);
 
 		int rc = 0;
 		try {

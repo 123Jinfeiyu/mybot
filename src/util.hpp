@@ -4,6 +4,7 @@
  * 环境变量/BOT4CJ_DEBUG/惰性日志 logD
  */
 
+#include <atomic>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -45,6 +46,13 @@ public:
 inline std::optional<std::string> getEnvVar(const std::string& name) {
 	const char* v = std::getenv(name.c_str());
 	return v == nullptr ? std::nullopt : std::optional<std::string>(std::string(v));
+}
+
+/* D4：信号停止标志——SIGINT/SIGTERM 处理器置位，主流程与阻塞点（TCP accept）
+ * 检查后放弃阻塞，让 deactivate 清理链（destroy / 守护停机）正常走完再退出。 */
+inline std::atomic<bool>& stopRequested() {
+	static std::atomic<bool> flag{false};
+	return flag;
 }
 
 /* BOT4CJ_DEBUG = 1 时开启 call/build/destroy 详细信息转储 */

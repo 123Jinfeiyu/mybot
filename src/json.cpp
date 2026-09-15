@@ -1,7 +1,9 @@
 #include "json.hpp"
 
 #include <charconv>
+#include <cmath>
 #include <cstdio>
+#include <limits>
 #include <stdexcept>
 
 #include "util.hpp"
@@ -51,8 +53,13 @@ const Json& Json::at(std::size_t n) const {
 	return a.arr[n];
 }
 
-/* ---- 最短往返浮点表示（GCC ≥ 11 的 to_chars FP 保证最短往返；整数型补 ".0"）---- */
+/* ---- 最短往返浮点表示（GCC ≥ 11 的 to_chars FP 保证最短往返；整数型补 ".0"）----
+ * C8：NaN/Inf 非法 JSON，输出 null（与多数序列化器一致）。 */
 static std::string formatDouble(double d) {
+	if (d != d || d == std::numeric_limits<double>::infinity() ||
+			d == -std::numeric_limits<double>::infinity()) {
+		return "null";
+	}
 	char buf[64];
 	auto res = std::to_chars(buf, buf + sizeof buf, d, std::chars_format::general);
 	std::string out(buf, res.ptr);

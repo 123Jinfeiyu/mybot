@@ -1,5 +1,6 @@
 #include "daemonvar.hpp"
 
+#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -29,9 +30,18 @@ bool daemon_stop_requested(DaemonSlot* slot) {
 	return s != 0;
 }
 
-/* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ---- */
-int64_t daemon_body(DaemonSlot* slot, const std::string& chunk,
+/* ---- 共享槽释放：销毁 mutex 并释放（由加锁线程独占调用）---- */
+static void releaseSlot(DaemonSlot* slot) {
+	pthread_mutex_destroy(mutexOf(slot));
+	std::free(slot);
+}
+
+/* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
+ * 持 holder 的 shared_ptr 保生命周期；退出时若 abandoned 置位（主线程已放弃等待），
+ * 槽所有权已移交本线程——由本线程释放（D2）。极端竞态下（置位晚于本检查）可能泄漏，宁漏不崩。 */
+int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chunk,
 		const std::string& config, int64_t interval_ms) {
+	DaemonSlot* slot = holder->slot;
 	lua_State* L = luaL_newstate();
 	if (L == nullptr) { return -1; }
 	luaL_openlibs(L);
@@ -81,6 +91,11 @@ int64_t daemon_body(DaemonSlot* slot, const std::string& chunk,
 
 	int64_t n = slot->count;
 	lua_close(L);
+	if (holder->abandoned.load()) {
+		/* D2：主线程已放弃等待，槽所有权在本线程——自行释放 */
+		releaseSlot(slot);
+		holder->slot = nullptr;
+	}
 	return n;
 }
 
@@ -118,6 +133,14 @@ std::string resolveDaemonChunk(const std::string& chunk, const std::string& modu
 
 /* ---- play 事件：主线程加锁读采样值 → JSON（v0..vN 标量键 + values 数组）---- */
 static Json daemonPlay(DaemonHolder* holder) {
+	/* D2：放弃路径下槽所有权已移交守护线程，主线程不再触碰——
+	 * abandoned 置位或槽已置空时按 ERR 契约返回，不碰悬垂指针。 */
+	if (holder->slot == nullptr || holder->abandoned.load()) {
+		Json ret = JsonObject();
+		ret.put("result", JsonString("ERR"));
+		ret.put("message", JsonString("daemon slot already released"));
+		return ret;
+	}
 	Json ret = JsonObject();
 	Json arr = JsonArray();
 	DaemonSlot* slot = holder->slot;
@@ -140,29 +163,38 @@ static Json daemonPlay(DaemonHolder* holder) {
 	return ret;
 }
 
-/* ---- interval 解析与校验（≤0 会空转占满 CPU，显式报错）---- */
+/* ---- interval 解析与校验（≤0 会空转占满 CPU，显式报错）----
+ * C9：strtoll 检查 ERANGE（上溢/下溢），并钳制合理上限——
+ * join 超时按 interval*5 计算，钳制后乘法不溢出。 */
 static int64_t parseInterval(const std::string& iv, const std::string& name,
 		const std::string& tabName, int64_t row) {
 	char* end = nullptr;
+	errno = 0;
 	long long parsed = std::strtoll(iv.c_str(), &end, 10);
 	if (end == iv.c_str() || *end != '\0') {
 		throw IllegalArgumentException(
 			"Daemon '" + name + "': column 'interval' value '" + iv +
 			"' is not a valid integer (in table '" + tabName + "', row " + std::to_string(row) + ").");
 	}
-	if (parsed <= 0) {
+	if (errno == ERANGE || parsed < 0) {
+		throw IllegalArgumentException(
+			"Daemon '" + name + "': column 'interval' value '" + iv +
+			"' is out of range (in table '" + tabName + "', row " + std::to_string(row) + ").");
+	}
+	if (parsed == 0) {
 		throw IllegalArgumentException(
 			"Daemon '" + name + "': column 'interval' must be > 0 ms, got " + std::to_string(parsed) +
 			" (in table '" + tabName + "', row " + std::to_string(row) +
 			"). interval <= 0 causes a busy-loop that pins a CPU core.");
 	}
+	constexpr int64_t kMaxIntervalMs = 3600000;	/* 1 小时：合理上限，保证 joinTimeout=interval*5 不溢出 */
+	if (parsed > kMaxIntervalMs) {
+		throw IllegalArgumentException(
+			"Daemon '" + name + "': column 'interval' " + std::to_string(parsed) +
+			"ms exceeds the maximum " + std::to_string(kMaxIntervalMs) +
+			"ms (in table '" + tabName + "', row " + std::to_string(row) + ").");
+	}
 	return parsed;
-}
-
-/* ---- 共享槽释放：销毁 mutex 并释放（由加锁线程独占调用）---- */
-static void releaseSlot(DaemonSlot* slot) {
-	pthread_mutex_destroy(mutexOf(slot));
-	std::free(slot);
 }
 
 /* ---- rise 事件：spawn 守护线程 ---- */
@@ -170,37 +202,56 @@ static void daemonRise(DaemonHolder* holder, const std::string& name,
 		const std::string& chunkPath, const std::string& configStr, int64_t intervalMs) {
 	DaemonSlot* slot = holder->slot;
 	std::shared_ptr<std::promise<int64_t>> prom = holder->result;
-	std::thread([slot, chunkPath, configStr, intervalMs, prom]() {
-		int64_t r = daemon_body(slot, chunkPath, configStr, intervalMs);
+	std::shared_ptr<DaemonHolder> hkeep = holder->self;	/* 线程持 holder 保生命周期 */
+	std::thread([slot, chunkPath, configStr, intervalMs, prom, hkeep]() {
+		int64_t r = daemon_body(hkeep, chunkPath, configStr, intervalMs);
 		try { prom->set_value(r); } catch (...) { /* future 已被消费/进程退出 */ }
 	}).detach();
+	holder->spawned.store(true);	/* D1：promise 必将被 set，停机可走 join 超时路径 */
 	std::cout << "Daemon '" << name << "' spawned, config: " << configStr << std::endl;
 }
 
 /* ---- free 事件：置停止 + 带超时等待退出 + 销毁 mutex/槽 ----
- * 超时（守护 tick 长时间阻塞）放弃等待并跳过槽释放（保 UAF），交给进程退出回收。 */
+ * D1：未 spawn（build 中途失败）的守护 promise 永不 set——跳过等待直接释放槽。
+ * D2：spawn 过但 join 超时，置 abandoned 把槽所有权移交守护线程自行释放，
+ * 主线程此后不再触碰槽（daemonPlay 对 slot==nullptr 返回 ERR 契约）。 */
 static void daemonFree(DaemonHolder* holder, const std::string& name) {
 	daemon_request_stop(holder->slot);
+	if (!holder->spawned.load()) {
+		std::cout << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
+		releaseSlot(holder->slot);
+		holder->slot = nullptr;
+		return;
+	}
 	if (holder->fut.valid()) {
 		std::future_status st = holder->fut.wait_for(std::chrono::milliseconds(holder->joinTimeoutMs));
 		if (st == std::future_status::ready) {
 			int64_t n = holder->fut.get();
 			std::cout << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
 			releaseSlot(holder->slot);
+			holder->slot = nullptr;
 			return;
 		}
+		holder->abandoned.store(true);
 		std::cout << "Daemon '" << name << "' not exited within " << holder->joinTimeoutMs
-			<< "ms, abandoning slot (thread still running)" << std::endl;
+			<< "ms, abandoning slot (thread will release it on exit)" << std::endl;
 		return;
 	}
 	releaseSlot(holder->slot);
+	holder->slot = nullptr;
 }
 
 /* ---- 守护硬件变量工厂 ---- */
 std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
-		std::vector<std::unique_ptr<DaemonHolder>>& registry) {
+		std::vector<std::shared_ptr<DaemonHolder>>& registry) {
 	int64_t idxName = defs.indexOfCol(0, "name");
 	int64_t idxChunk = defs.indexOfCol(0, "chunk");
+	if (idxName < 0) {
+		throw IllegalArgumentException("Table '" + defs.getName() + "' has no 'name' column.");
+	}
+	if (idxChunk < 0) {
+		throw IllegalArgumentException("Table '" + defs.getName() + "' has no 'chunk' column.");
+	}
 	std::string name = defs(i, idxName);
 	std::string chunkRaw = MatrixVars_Hardware::getMt(defs, i, idxChunk);
 
@@ -238,7 +289,8 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 		throw std::runtime_error("Daemon '" + name + "' failed to initialize slot mutex");
 	}
 
-	auto holder = std::make_unique<DaemonHolder>(slot, joinTimeoutMs);
+	auto holder = std::make_shared<DaemonHolder>(slot, joinTimeoutMs);
+	holder->self = holder;	/* 线程捕获 self 保生命周期 */
 	DaemonHolder* hp = holder.get();
 	registry.push_back(std::move(holder));
 

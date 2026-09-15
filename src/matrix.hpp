@@ -61,6 +61,17 @@ public:
 		return values_[row][col];
 	}
 
+	/* C5 防线：int64 下标判负——indexOfCol 未命中返回 -1，若隐式转 size_t
+	 * 会回绕成 18446744073709551615，报错毫无指向性（缺 name 列的典型路径）。 */
+	const std::string& operator()(std::int64_t row, std::int64_t col) const {
+		if (row < 0 || col < 0) {
+			throw bot::IllegalArgumentException(
+				"Matrix access with negative index: row=" + std::to_string(row) + " col=" + std::to_string(col)
+				+ " (a header column such as 'name' is likely missing)");
+		}
+		return (*this)(static_cast<std::size_t>(row), static_cast<std::size_t>(col));
+	}
+
 	/* 在某一行的列头中寻找 key 的列号 */
 	std::int64_t indexOfCol(std::size_t row, const std::string& key) const {
 		if (row >= values_.size()) { return -1; }

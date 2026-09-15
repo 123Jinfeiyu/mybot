@@ -1,6 +1,7 @@
 #include "actionsource.hpp"
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <cstdlib>
 #include <iostream>
 #include <netinet/in.h>
@@ -29,13 +30,28 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port) {
 		::close(fd);
 		throw std::runtime_error("TCP 监听端口绑定失败");
 	}
-	::listen(fd, 1);
+	/* D5：listen 返回值检查 */
+	if (::listen(fd, 1) < 0) {
+		::close(fd);
+		throw std::runtime_error("TCP 监听失败");
+	}
 
-	int client = ::accept(fd, nullptr, nullptr);
-	::close(fd);
-	if (client < 0) {
+	/* D5/D4：accept 可被信号（EINTR）打断——响应停止标志退出，其余 EINTR 重试 */
+	int client = -1;
+	while (true) {
+		client = ::accept(fd, nullptr, nullptr);
+		if (client >= 0) { break; }
+		if (errno == EINTR) {
+			if (stopRequested()) {
+				::close(fd);
+				throw std::runtime_error("TCP 等待客户端连接被停止信号中断");
+			}
+			continue;
+		}
+		::close(fd);
 		throw std::runtime_error("TCP 接受客户端失败");
 	}
+	::close(fd);
 
 	sockaddr_in peer{};
 	socklen_t plen = sizeof(peer);

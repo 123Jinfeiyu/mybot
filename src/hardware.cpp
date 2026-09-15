@@ -44,6 +44,12 @@ void jsonMergeInto(Json& dst, const Json& src) {
 std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs, std::int64_t i) {
 	std::int64_t idxName = defs.indexOfCol(0, "name");
 	std::int64_t idxAlias = defs.indexOfCol(0, "alias");
+	if (idxName < 0) {
+		throw IllegalArgumentException("Alias matrix '" + defs.getName() + "' has no 'name' column.");
+	}
+	if (idxAlias < 0) {
+		throw IllegalArgumentException("Alias matrix '" + defs.getName() + "' has no 'alias' column.");
+	}
 
 	std::string name = defs(i, idxName);
 	std::string alias = MatrixVars_Hardware::getMt(defs, i, idxAlias);
