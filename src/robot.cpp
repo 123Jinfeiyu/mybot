@@ -179,11 +179,16 @@ void RobotStruct::deactivate() {
 	for (const auto& h : daemonHolders_) {
 		daemon_request_stop(h->slot);
 	}
+	std::string lastWarn;
 	for (auto it = hwSeq_.rbegin(); it != hwSeq_.rend(); ++it) {
 		try {
 			(*it)->destroy();
 		} catch (const std::exception& e) {
-			std::cout << "Deactive warning: " << e.what() << std::endl;
+			/* 同因重复失败（如某次 play 已抛同错）只提示一次，避免刷屏 */
+			if (std::string(e.what()) != lastWarn) {
+				std::cout << "Deactive warning: " << e.what() << std::endl;
+				lastWarn = e.what();
+			}
 		}
 	}
 }

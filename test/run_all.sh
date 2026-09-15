@@ -260,10 +260,42 @@ for spec in "${parse_cases[@]}"; do
 	run_one_parse "$sql" "$mt" "$want_rc" "$expect"
 done
 
+# ======================================================================
+# TCP 动作源端到端：唯一覆盖 actionsource.cpp（--tcp 监听分支）的守门。
+# 复用 scripts/tcp_e2e.sh：起服务端 → Python 客户端下发 relay-test.mt →
+# 校验服务端日志。python3 或编译产物缺位则跳过（不假绿不假红）。
+# 随机高位端口（19000-19999）规避默认 19240 被占/串扰。
+# ======================================================================
+run_one_tcp() {
+	echo "----- tcp-action-source (mybot TCP E2E) -----"
+	if [ ! -x "$bin" ]; then
+		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
+		return 2
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（TCP 客户端），跳过"
+		return 2
+	fi
+	local port tcp_rc tcp_out
+	port=$((19000 + (RANDOM % 1000)))
+	tcp_out="$(BOT="$bin" timeout 40 bash scripts/tcp_e2e.sh "$port" 20 2>&1)"
+	tcp_rc=$?
+	echo "$tcp_out"
+	if [ $tcp_rc -ne 0 ] || ! echo "$tcp_out" | grep -qF "TCP 端到端测试通过"; then
+		fail=$((fail + 1))
+		failed="$failed tcp-action-source(TCP)"
+	else
+		pass=$((pass + 1))
+	fi
+}
+if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
+	run_one_tcp
+fi
+
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E 或无硬件契约回归，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归或 TCP E2E，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败"
