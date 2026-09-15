@@ -1,5 +1,6 @@
 -- test_virtbus_bh1750.lua - 真实驱动在虚拟总线上的链路回归（issue #18）
--- 用 virtbus 虚拟 I2C 总线 + virtbus/bh1750 器件模型加载【真实】BH1750 驱动，
+-- 用 virtbus 虚拟 I2C 总线 + 内嵌模型（modules/BH1750.lua 尾部 BH1750_VIRT，
+-- 2026-09-15 自 virtbus/bh1750.lua 迁入）加载【真实】BH1750 驱动，
 -- 无真机完成：
 --   build（PowerOn + 模式命令）→ call（读照度换算 LUX）→ destroy（PowerDown），
 --   并覆盖故障路径：模型注入 NACK（器件掉线）、地址不在总线（无器件负路径）。
@@ -8,15 +9,15 @@
 -- 用法（项目根目录，LuaJIT）: luajit test/test_virtbus_bh1750.lua（run_all.sh 自动纳入）
 local tester = dofile("test/lib/tester.lua")
 local vbus = dofile("modules/lib/virtbus.lua")
-local bhmod = dofile("modules/lib/virtbus/bh1750.lua")
 vbus.reset()
 
--- 虚拟 BH1750（地址 0x23）：0x7530 → mode H 下 25000 lux
-local light = bhmod.new({ count = 30000 })
-vbus.attach("bh1750@0x23", 0x23, light)
-
--- 加载真实驱动（连带 HAL 首次定义真实 i2c_*），load_driver 自动重注入
+-- 模型内嵌于驱动文件（BH1750_VIRT 全局工厂）：load_driver 完成驱动定义与
+-- 重注入后，从全局取工厂建实例再挂载——建实例/挂载不依赖注入顺序
 vbus.load_driver("modules/BH1750.lua")
+
+-- 虚拟 BH1750（地址 0x23）：0x7530 → mode H 下 25000 lux
+local light = BH1750_VIRT.new({ count = 30000 })
+vbus.attach("bh1750@0x23", 0x23, light)
 
 -- build：应在位判定成功（PowerOn 0x01 / 连续 H 0x10 写成功）
 local fd = i2c_open("/dev/i2c-1")

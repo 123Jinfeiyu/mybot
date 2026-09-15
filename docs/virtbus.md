@@ -98,7 +98,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 
 协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿：
 
-41 个器件与驱动一一对应（`modules/<NAME>.lua` ↔ `lib/virtbus/<name>.lua`），模型是同协议的**独立第二实现**（防互证假绿），两侧文件头互有交叉引用注释——**改协议两处同步**。37 个有守护 E2E，4 个写-only 输出器件豁免；`regmap.lua` 为通用底座、不对应驱动。对照总表：
+41 个器件与驱动一一对应（`modules/<NAME>.lua` ↔ `lib/virtbus/<name>.lua`；PCA9685/BH1750 两个已实验性内嵌进驱动文件尾部 `<驱动名>_VIRT` 全局工厂，守护侧经 sensor_daemon 回退装载），模型是同协议的**独立第二实现**（防互证假绿），两侧文件头互有交叉引用注释——**改协议两处同步**。37 个有守护 E2E，4 个写-only 输出器件豁免；`regmap.lua` 为通用底座、不对应驱动。对照总表：
 
 | 驱动 `modules/` | 模型 `lib/virtbus/` | 守护 E2E `robots/test/` |
 | --- | --- | --- |
@@ -112,7 +112,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 | AS3935.lua | as3935.lua | as3935_virt.sql |
 | AS7262.lua | as7262.lua | as7262_virt.sql |
 | BH1745.lua | bh1745.lua | bh1745_virt.sql |
-| BH1750.lua | bh1750.lua | bh1750_virt.sql |
+| BH1750.lua | （内嵌驱动文件尾部 `BH1750_VIRT`） | bh1750_virt.sql |
 | BMI270.lua | bmi270.lua | bmi270_virt.sql |
 | BME280.lua | bme280.lua | bme280_virt.sql |
 | BME688.lua | bme688.lua | bme688_virt.sql |
@@ -147,7 +147,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 - `virtbus/regmap.lua`：通用「寄存器指针 + burst」模型，覆盖 MPU6050/BME280 一类大多数 I2C 传感器（8 位指针；构造传 `{ptr16=true}` 支持 VL53Lx 类 16 位指针）；提供 `set/set_word/get_sword` 预置寄存器、`nack`（读写全断）与 `nack_read/nack_write`（定向故障）、`write_log` 事务留痕、`reset()`。
 - `virtbus/mpu6050.lua`：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`virt_tick(n)` 造确定性合成波形（供 proto=virt 守护逐拍驱动）、`config_writes()` 取 build 配置序列。
 - `virtbus/bme280.lua`：BME280 温压湿环境传感器模型（regmap 包装层）——0xD0 身份（`who(0x58)` 模拟错挂 BMP280）、datasheet 示例校准 NVM 字节布局（0x88 起 T/P 小端系数、0xA1 H1、0xE1 起 7 字节 H 块含 H4/H5 的 s12 nibble 拼装）、0xF7 起 P/T 20bit + H 16bit 数据区、合成 0xF3 STATUS 与 forced 转换状态机（`advance(ms)` 外部虚拟时钟驱动 6ms 转换/`nvm_stuck`/`meas_stuck` 卡死注入；`virt_tick` 走预武装路径无需时钟）、`set_raw(t,p,h)` 注入无符号 ADC 码（0x80000/0x8000 无效读数可测）。
-- `virtbus/bh1750.lua`：BH1750 命令式器件模型（opcode 序列、大端计数读回、上电/模式状态解释、`set_count()`、`nack`）；`virt_tick(n)` 造 32 拍一周正弦照度（count 15002±3000 → H 档 LUX 10001.7~15001.7，基线取非 6 的倍数使相位中点拍除不尽 1.2），只改测量值、不产生命令写，供 `proto=virt` 守护逐拍驱动。
+- `BH1750_VIRT`（2026-09-15 实验性内嵌于 `modules/BH1750.lua` 驱动脚本尾部，原 `virtbus/bh1750.lua`；守护 E2E 经 sensor_daemon「模型文件缺失 → 回退读驱动全局工厂」路径装载）：BH1750 命令式器件模型（opcode 序列、大端计数读回、上电/模式状态解释、`set_count()`、`nack`）；`virt_tick(n)` 造 32 拍一周正弦照度（count 15002±3000 → H 档 LUX 10001.7~15001.7，基线取非 6 的倍数使相位中点拍除不尽 1.2），只改测量值、不产生命令写，供 `proto=virt` 守护逐拍驱动。
 - `virtbus/ads1256.lua`：**首个 SPI 输入器件模型**，ADS1256 24bit ΣΔ ADC 的全双工命令状态机（`xfer` 点定义）——RESET/WAKEUP/SYNC/SELFCAL/RDATAC/SDATAC 命令、WREG/RREG 寄存器访问（RREG 读窗口优先于命令识别，dummy 字节 0x00 不被误判 WAKEUP）、RDATAC 模式 24bit 大端样本帧（驱动丢弃第 4 字节）；固化 MUX 单端 `ch<<4|0x08`/差分 `pos<<4|neg`、ADCON PGA 1~64、DRATE 30k~5SPS 事实；`set_raw`（补码 floor 量化 + clamp）、`set_voltage(v,pga_idx)` 反解、`virt_tick` 32 拍确定性正弦（1.25±1.0V）、`fail_when/fail_data` 帧级故障注入（RESET 不清故障钩子，防负路径假绿）。模块表 `BUS="spi"` 供守护自动分流；除 `xfer` 外公开 API 一律冒号定义。
 - `virtbus/ad9833.lua`：**首个写-only SPI 输出器件模型**，AD9833 DDS 的 16 位字解码状态机——器件无 SDO，模型只解 MOSI：每 2 字节 CS 帧一个大端字，顶 2 位寻址控制/FREQ0/FREQ1/PHASE；B28 两段加载按 per-register 低半字锁存拼 28 位调谐字（低 14 位在前，顺序反了立刻读到错误频率）、B28=0/HLB 单半字写；反向读取 `freq_hz/phase_deg/wave/muted` 与 FSELECT/PSELECT 活动寄存器；帧级 `fail_when`。写-only 器件无 `virt_tick`、不做守护采样 E2E。
 - `virtbus/tpl0501.lua`：**最小写-only SPI 输出器件模型**，TPL0501 256 抽头数字电位器——协议即一个 SPI 字节（CS 帧移入 8 位、CS 上升沿锁存，无命令字/地址/SDO）；按移位寄存器事实处理多字节帧（只锁存最后 8 位），抽头易失上电默认中点 0x7F（build 零发字）；`wiper/percent/ohms(rtotal)` 反向读取（R=level/255·rtotal，构造可指定 100k/10k 型号）、帧级 `fail_when`。

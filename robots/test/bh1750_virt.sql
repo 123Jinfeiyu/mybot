@@ -1,8 +1,9 @@
 /*
  * BH1750FVI 无硬件端到端（proto=virt，命令式二线环境光传感器——单字节
  * opcode、无寄存器指针，测量值从总线【纯读】2 字节大端 count）：
- * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/bh1750.lua。模型复刻协议事实（与 modules/BH1750.lua
+ * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型——BH1750_VIRT，内嵌于
+ * modules/BH1750.lua 尾部（2026-09-15 迁入，sensor_daemon 经「模型文件缺失
+ * → 回退读驱动全局工厂」路径装载）。模型复刻协议事实（与 modules/BH1750.lua
  * 驱动同源 ROHM 手册）：0x00 PowerDown / 0x01 PowerOn、0x10/0x11/0x13
  * 连续 H/H2/L、0x20/0x21/0x23 单次 H/H2/L、0x40|x 与 0x60|x MTreg 命令对，
  * 单字节写解释进 state{power,mode,once} 并留 cmds 痕；读回 2 字节 count。
