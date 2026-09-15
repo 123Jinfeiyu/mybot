@@ -23,6 +23,8 @@ virtbus 虚拟硬件测试基座、2026-09 审计修复批次、ActionSource 工
 
 - **PCA9685 虚拟器件模型内嵌驱动脚本（单文件驱动+模型实验）**：`modules/lib/virtbus/pca9685.lua` 整体迁入 `modules/PCA9685.lua` 尾部，经全局 `PCA9685_VIRT.new()` 工厂暴露。三条约定：① 生产路径零执行——模型仅在虚拟总线测试中实例化，regmap 底座延迟到 `new()` 内加载，真机 build/call/destroy 不触碰 `lib/virtbus/`；② 工厂经全局表而非文件 return 暴露——生产侧 `Lua.cj` build_lua 以 `LUA_MULTRET` pcall 加载驱动文件且成功路径无 settop，文件返回值会永久滞留 Lua 栈；③ 模型与驱动保持独立实现（模型自带寄存器表/位定义/换算常量），互证防假绿性质不变。`test_pca9685.lua` 接线改为从驱动加载后的全局取工厂（338 断言全绿，PCA_GC 压力档同绿）；模型库余 41 个文件，守护 `proto=virt` 按 `<driver 小写>.lua` 找模型的约定暂不感知内嵌形态（PCA9685 守护 E2E 豁免，无实际影响）。
 - **`test_pca9685.lua` LuaJIT 下 `table.unpack` 崩溃**：补 `unpack or table.unpack` 兼容 shim（同 `sgp30.lua` 等 6 处既有做法，fix-plan-20260915 P0-1）；修复前 111 断言后崩溃退出码 1，修复后 338/338。
+- **pre-push 门禁确认与文档化（P0-4）**：`.git/hooks/pre-push`（本机 2026-09-10 安装，钩子不入库）推送前跑全量 `test/run_all.sh`，非零拒推，`git push --no-verify` 可跳过；已实测「失败拒推」与「全绿放行」两路径。不采用 `core.hooksPath=scripts/git-hooks` 方案——会旁路本机已有的 post-checkout/post-commit 钩子；GitCode CI 流水线就绪后同一脚本可作唯一门禁上管线。
+- **离线测试「零断言/早退假绿」缺口（P0-2）**：`run_all.sh` 原判定仅认「退出码非零或 [FAIL] 行」，零断言安静退出的文件会被记通过（探针实测：`if true then return end` 早退文件判「1 通过」）。三处收紧：`test/lib/tester.lua` 的 summary() 末尾打 `[DONE]` 完成标记（先于 os.exit）；`run_all.sh` 判定升级为三条——未见 `[DONE]` 或 `[PASS]` 计数为 0 一律计失败；9 个自带框架的用例（action_source/fft/h07_fd/jit_warmup/kalman/nn/pthread/slot_addr/uart）补完成标记，其中 test_action_source/test_nn 的静默计数 check 改为逐断言打印 `[PASS]`/`[FAIL]` 与全库对齐。修复后两种假绿探针均翻转为失败，全量回归无误报。
 
 ### 修复
 

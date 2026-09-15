@@ -2,7 +2,7 @@ version = 0
 
 [requires]
   pthread4cj = {version = "1.0.2"}
-  luajit4cj = {version = "1.0.1"}
   ctype4cj = {version = "1.0.4"}
   SQL4cj = {version = "1.0.3"}
   mt2 = {version = "1.0.0"}
+  luajit4cj = {version = "1.0.1"}

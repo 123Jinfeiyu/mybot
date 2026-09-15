@@ -201,6 +201,7 @@ check(has_call("close"), "close 落到 HAL.sys.close")
 -- ==================== 汇总 ====================
 if fails == 0 then
 	print("all passed")
+	print("[DONE] test_uart.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
 else
 	print(fails .. " case(s) failed")
 	os.exit(1)

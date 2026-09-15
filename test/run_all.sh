@@ -9,6 +9,8 @@
 #     防单个用例死循环挂死整个入口
 #   - test_jit_warmup.lua 是真机 ABI 回归测试（需 /dev/i2c-*），无总线环境自动跳过
 #   - test_ioctl_nums.c 为 C 编译期常量自检，不在本入口范围
+#   - 完成标记约定（P0-2）：用例正常跑完须输出 [DONE]（tester.summary 自动打印，
+#     自带框架的用例自行打印）且至少 1 条 [PASS]；缺失按假绿（失败）计
 cd "$(dirname "$0")/.." || exit 1
 
 LUACMD="${LUACMD:-luajit}"
@@ -45,12 +47,19 @@ for t in test/test_*.lua; do
 	out="$($timeout_cmd "$LUACMD" "$t" 2>&1)"
 	rc=$?
 	echo "$out"
-	# 兼容两种失败约定：退出码非零，或打印 [FAIL] 行（124 = timeout 超时）
+	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
+	# 兼容三种失败约定：退出码非零、打印 [FAIL] 行（124 = timeout 超时）、
+	# 或假绿形态（P0-2）：早退/守卫短路导致未见 summary 的 [DONE] 完成标记，
+	# 或一条断言都没跑（[PASS] 计数为 0）——「安静退出」不再视同通过
 	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
 		echo "[FAIL] 用例超时（>${TEST_TIMEOUT}s，疑似死循环）"
 		fail=$((fail + 1))
 		failed="$failed $name"
 	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]"; then
+		fail=$((fail + 1))
+		failed="$failed $name"
+	elif [ "$pass_n" -eq 0 ] || ! echo "$out" | grep -qF "[DONE]"; then
+		echo "[FAIL] 假绿嫌疑：未见 [DONE] 完成标记或 [PASS] 计数为 0（早退/守卫短路/零断言）"
 		fail=$((fail + 1))
 		failed="$failed $name"
 	else

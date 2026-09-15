@@ -11,10 +11,13 @@
 local pass = 0
 local fail = 0
 local function check(name, cond, detail)
-	if cond then pass = pass + 1
+	-- 逐断言打印 [PASS]/[FAIL]（run_all.sh 假绿判定以 [PASS] 计数为据，P0-2）
+	if cond then
+		pass = pass + 1
+		print("[PASS] " .. name)
 	else
 		fail = fail + 1
-		io.write("  [FAIL] " .. name .. (detail and " (" .. tostring(detail) .. ")" or "") .. "\n")
+		print("[FAIL] " .. name .. (detail and " (" .. tostring(detail) .. ")" or ""))
 	end
 end
 
@@ -110,4 +113,5 @@ print(string.rep("-", 44))
 print("nn 前向推理引擎离线桩测试")
 print(string.rep("-", 44))
 print(string.format("通过: %d  失败: %d", pass, fail))
+print("[DONE] test_nn.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
 if fail > 0 then os.exit(1) end

@@ -68,5 +68,6 @@ check(">=2^53 仍逐位还原", slot ~= nil and ffi.cast("uint64_t", slot) == 2^
 
 print("===============================================")
 print(("汇总: %d 通过, %d 失败"):format(passed, failed))
+print("[DONE] test_slot_addr.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
 if failed > 0 then os.exit(1) end
 return 0
