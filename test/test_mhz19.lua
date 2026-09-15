@@ -3,7 +3,8 @@
 --   GC 压力节奏：MHZ19_GC=1 luajit test/test_mhz19.lua
 --
 -- 从「dofile 驱动后手写 uart_* 桩（局部计数、拼应答表）」迁移到
--- 「真实驱动 + virtbus 注入层 + virtbus/mhz19.lua 模型」：协议帧、读轮次、
+-- 「真实驱动 + virtbus 注入层 + 内嵌模型（modules/MHZ19.lua 尾部 MHZ19_VIRT，
+-- 2026-09-15 自 virtbus/mhz19.lua 迁入）」：协议帧、读轮次、
 -- flush 时序全部经 txlog 留痕断言，噪声/不应答/坏校验和/写失败/链路硬错误
 -- 全部由模型与总线级钩子提供，不再手拼桩函数。
 --
@@ -34,15 +35,18 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mm = dofile("modules/lib/virtbus/mhz19.lua")
 vbus.reset()
 
 local PATH = "/dev/serial0"
 local REQ = { 0xFF, 0x01, 0x86, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79 }
 
+-- 模型内嵌于驱动文件（MHZ19_VIRT 全局工厂，工厂表带 BUS="uart"）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/MHZ19.lua")
+local mm = MHZ19_VIRT
+
 local dev = mm.new()
 vbus.attach_uart("MHZ19@" .. PATH, PATH, dev)
-vbus.load_driver("modules/MHZ19.lua")
 
 local fd = uart_open(PATH, 9600)
 check("uart_open 虚拟 fd=3", fd == 3, tostring(fd))
