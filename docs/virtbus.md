@@ -98,7 +98,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 
 协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿：
 
-41 个器件与驱动一一对应（`modules/<NAME>.lua` ↔ `lib/virtbus/<name>.lua`；PCA9685/BH1750 两个已实验性内嵌进驱动文件尾部 `<驱动名>_VIRT` 全局工厂，守护侧经 sensor_daemon 回退装载），模型是同协议的**独立第二实现**（防互证假绿），两侧文件头互有交叉引用注释——**改协议两处同步**。37 个有守护 E2E，4 个写-only 输出器件豁免；`regmap.lua` 为通用底座、不对应驱动。对照总表：
+32 个外置模型与驱动一一对应（`modules/<NAME>.lua` ↔ `lib/virtbus/<name>.lua`；PCA9685/BH1750/MPU6050/MHZ19/ADS1256/TPL0501/AD9833/MCP4725/PCF8574 九个已实验性内嵌进驱动文件尾部 `<驱动名>_VIRT` 全局工厂，守护侧经 sensor_daemon 回退装载），模型是同协议的**独立第二实现**（防互证假绿），两侧文件头互有交叉引用注释——**改协议两处同步**。37 个有守护 E2E，4 个写-only 输出器件豁免；`regmap.lua` 为通用底座、不对应驱动。对照总表：
 
 | 驱动 `modules/` | 模型 `lib/virtbus/` | 守护 E2E `robots/test/` |
 | --- | --- | --- |
@@ -136,7 +136,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 | MPU6050.lua | （内嵌驱动文件尾部 `MPU6050_VIRT`） | mpu_virt.sql |
 | MT6826S.lua | mt6826s.lua | mt6826s_virt.sql |
 | PCA9685.lua | （内嵌驱动文件尾部 `PCA9685_VIRT`） | 豁免（写-only） |
-| PCF8574.lua | pcf8574.lua | pcf8574_virt.sql |
+| PCF8574.lua | （内嵌驱动文件尾部 `PCF8574_VIRT`） | pcf8574_virt.sql |
 | SDS011.lua | sds011.lua | sds011_virt.sql |
 | SGP30.lua | sgp30.lua | sgp30_virt.sql |
 | SHT3X.lua | sht3x.lua | sht3x_virt.sql |
