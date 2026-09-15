@@ -6,7 +6,7 @@
 # eax 滤波后 v0 与阈值 level。守护 interval=20ms（call 零睡眠），一拍消费
 # 间隔内约推进 2~3 个 virt_tick 波形点（32 拍周期三轴正弦，X/Y ±0.30g、
 # Z 带 1g 重力偏置）。
-# 用法：cat scripts/test/adxl345_virt.mt | bash _run.sh --robot=robots/test/adxl345_virt.sql
+# 用法：cat scripts/test/adxl345_virt.mt | bash scripts/run.sh --robot=robots/test/adxl345_virt.sql
 @Action
 t0.delay  eax.out  mon0.go  monf.go;
    200       -        -         -    ;

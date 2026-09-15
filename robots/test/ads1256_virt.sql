@@ -17,7 +17,7 @@
  *
  * 配合 ads1256_virt.mt：300ms 预热等 build（含 60ms 自校准等待），
  * 随后 16 拍 ×50ms pump 两路 Ema 并消费两个 Monitor。守护 interval=20ms。
- * 用法：cat scripts/test/ads1256_virt.mt | bash _run.sh --robot=robots/test/ads1256_virt.sql
+ * 用法：cat scripts/test/ads1256_virt.mt | bash scripts/run.sh --robot=robots/test/ads1256_virt.sql
  */
 CREATE TABLE Timer (
 	name String

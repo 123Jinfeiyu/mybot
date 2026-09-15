@@ -8,7 +8,7 @@
 # 守护 10Hz/interval=20ms；模型 virt_tick 每拍直接装入一拍移动热点热图
 # （25°C 背景 + 旋转热点，热敏 30±2°C），call 读 8 个 16B 像素块即有
 # 数据、零真实睡眠；一拍对应一个 virt_tick。
-# 用法：cat scripts/test/amg8833_virt.mt | bash _run.sh --robot=robots/test/amg8833_virt.sql
+# 用法：cat scripts/test/amg8833_virt.mt | bash scripts/run.sh --robot=robots/test/amg8833_virt.sql
 @Action
 t0.delay  eavg.out  mon0.go  monf.go;
    200       -        -         -    ;

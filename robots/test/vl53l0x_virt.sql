@@ -19,7 +19,7 @@
  * 配合 vl53l0x_virt.mt：300ms 预热等守护 setup（build 无 sleep，参考校准
  * 首次轮询即就绪），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（call 含真实就绪轮询，模型转换延时 5ms）。
- * 用法：cat scripts/test/vl53l0x_virt.mt | bash _run.sh --robot=robots/test/vl53l0x_virt.sql
+ * 用法：cat scripts/test/vl53l0x_virt.mt | bash scripts/run.sh --robot=robots/test/vl53l0x_virt.sql
  */
 CREATE TABLE Timer (
 	name String

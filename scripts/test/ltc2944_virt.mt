@@ -6,7 +6,7 @@
 # 守护 interval=20ms（call 零睡眠），一拍多 tick 推进 virt_tick（合成同相
 # 正弦 V 11.6~12.4V、I 0.4~1.2A @50mΩ、T 25~35°C，32 拍周期；累计电荷
 # 200code/拍单调爬坡，build 前预武装，连续模式无转换门）。
-# 用法：cat scripts/test/ltc2944_virt.mt | bash _run.sh --robot=robots/test/ltc2944_virt.sql
+# 用法：cat scripts/test/ltc2944_virt.mt | bash scripts/run.sh --robot=robots/test/ltc2944_virt.sql
 @Action
 t0.delay  eavg.out  mon0.go  monf.go;
    200       -         -         -    ;

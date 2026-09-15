@@ -5,7 +5,7 @@
 # Monitor——mon0 透传守护 raw/voltage 快照与 count，monf 输出 ev 滤波后
 # v1（电压 V）与阈值 level。守护 interval=20ms，一拍消费间隔内约推进 2~3
 # 个波形点（合成正弦 0.25~2.25V，32 拍周期）。
-# 用法：cat scripts/test/ads1256_virt.mt | bash _run.sh --robot=robots/test/ads1256_virt.sql
+# 用法：cat scripts/test/ads1256_virt.mt | bash scripts/run.sh --robot=robots/test/ads1256_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    300       -        -         -    ;

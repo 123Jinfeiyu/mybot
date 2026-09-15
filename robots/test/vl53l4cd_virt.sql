@@ -22,7 +22,7 @@
  * 配合 vl53l4cd_virt.mt：300ms 预热等守护 setup（build 仅软复位
  * 1+5ms 真实睡眠，轮询首次即就绪），随后 16 拍 ×50ms pump 滤波并消费
  * 两个 Monitor。守护 interval=20ms。
- * 用法：cat scripts/test/vl53l4cd_virt.mt | bash _run.sh --robot=robots/test/vl53l4cd_virt.sql
+ * 用法：cat scripts/test/vl53l4cd_virt.mt | bash scripts/run.sh --robot=robots/test/vl53l4cd_virt.sql
  */
 CREATE TABLE Timer (
 	name String

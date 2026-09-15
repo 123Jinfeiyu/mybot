@@ -5,7 +5,7 @@
 #（VCELL/SOC）与 count，monf 输出 ev 滤波后电池电压与阈值 level。
 # 守护 interval=20ms（call 零睡眠），一拍一拍对应 virt_tick（单节锂电
 # 3.60~4.10V / SOC 72~88%，32 拍周期，build 前预武装，无转换门）。
-# 用法：cat scripts/test/max17043_virt.mt | bash _run.sh --robot=robots/test/max17043_virt.sql
+# 用法：cat scripts/test/max17043_virt.mt | bash scripts/run.sh --robot=robots/test/max17043_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

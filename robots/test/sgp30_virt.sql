@@ -25,7 +25,7 @@
  * 配合 sgp30_virt.mt：400ms 预热等守护 setup（自检 222ms 真实睡眠），
  * 随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护 interval=50ms
  *（call 内含 14ms 测量真实等待）。
- * 用法：cat scripts/test/sgp30_virt.mt | bash _run.sh --robot=robots/test/sgp30_virt.sql
+ * 用法：cat scripts/test/sgp30_virt.mt | bash scripts/run.sh --robot=robots/test/sgp30_virt.sql
  */
 CREATE TABLE Timer (
 	name String

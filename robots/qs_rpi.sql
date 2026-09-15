@@ -1,7 +1,7 @@
 /*
  * 蜘蛛机器人结构脚本（spider.sql 变体：Timer 名为 spk，其余结构相同）
  * 由 SQL4cj 解析：支持 -- 单行注释与斜杠星号块注释（1.0.3 起）
- * 用法：cat scripts/std.mt | bash _run.sh --robot=robots/spider1.sql
+ * 用法：cat scripts/std.mt | bash scripts/run.sh --robot=robots/spider1.sql
  */
 
 /* 别名表：动作脚本(.mt)中可用别名指代硬件参数名 */

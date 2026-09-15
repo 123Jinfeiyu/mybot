@@ -28,7 +28,7 @@
  *
  * 配合 ms5611_virt.mt：300ms 预热等守护 setup，随后 16 拍 ×50ms
  * pump 滤波并消费两个 Monitor。
- * 用法：cat scripts/test/ms5611_virt.mt | bash _run.sh --robot=robots/test/ms5611_virt.sql
+ * 用法：cat scripts/test/ms5611_virt.mt | bash scripts/run.sh --robot=robots/test/ms5611_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -7,7 +7,7 @@
 # 守护 OSR4096（call 内 D1/D2 双段各 10ms 真实等待，共 20ms），
 # interval=50ms 容纳；模型 virt_tick 预武装使转换门不门控，一拍对应
 # 一个 virt_tick（合成正弦 P 1013.25±5hPa、T 22±2°C，32 拍周期）。
-# 用法：cat scripts/test/ms5611_virt.mt | bash _run.sh --robot=robots/test/ms5611_virt.sql
+# 用法：cat scripts/test/ms5611_virt.mt | bash scripts/run.sh --robot=robots/test/ms5611_virt.sql
 @Action
 t0.delay  ep.out  mon0.go  monf.go;
    300       -        -         -    ;

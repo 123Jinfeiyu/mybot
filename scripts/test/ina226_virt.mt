@@ -6,7 +6,7 @@
 # 守护 interval=20ms（call 零睡眠），一拍一拍对应 virt_tick（合成同相
 # 正弦 V 11.6~12.4V、I 0.2~0.8A @R100，32 拍周期，build 前预武装，
 # 连续模式无转换门）。
-# 用法：cat scripts/test/ina226_virt.mt | bash _run.sh --robot=robots/test/ina226_virt.sql
+# 用法：cat scripts/test/ina226_virt.mt | bash scripts/run.sh --robot=robots/test/ina226_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

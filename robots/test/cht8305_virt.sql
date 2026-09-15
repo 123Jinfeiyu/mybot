@@ -26,7 +26,7 @@
  * 配合 cht8305_virt.mt：200ms 预热等守护 setup（build 真实睡眠 10ms，
  * 余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护
  * interval=50ms（call 内含 2×14ms 转换真实等待=28ms，节拍再短会溢出）。
- * 用法：cat scripts/test/cht8305_virt.mt | bash _run.sh --robot=robots/test/cht8305_virt.sql
+ * 用法：cat scripts/test/cht8305_virt.mt | bash scripts/run.sh --robot=robots/test/cht8305_virt.sql
  */
 CREATE TABLE Timer (
 	name String

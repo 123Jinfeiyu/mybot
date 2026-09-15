@@ -4,7 +4,7 @@
 # 每个滤波变量顶层直出 {"v0"=滤波值, "out"=同v0, "raw"=本拍原始值, "result"="OK"}。
 # etmp 的 v0/raw 单位为摄氏度（etmp 滤守护 v6=TEMP）。
 # 首行 t0 预热 200ms 等守护 setup+首发（暖机竞态规避）。
-# 用法：cat scripts/test/mpu_filter.mt | bash _run.sh --robot=robots/test/mpu_filter.sql
+# 用法：cat scripts/test/mpu_filter.mt | bash scripts/run.sh --robot=robots/test/mpu_filter.sql
 @Action
 spk.delay  eax.out  eay.out  eaz.out  egx.out  egy.out  egz.out  etmp.out;
    200       -        -        -        -        -        -        -    ;

@@ -35,7 +35,7 @@ static std::map<std::string, std::string> parseArgs(int argc, char** argv) {
 void print_help() {
 	std::cout << "这是一个机器人动作脚本解析器。" << std::endl;
 	std::cout << "使用--robot选项指定结构脚本，然后使用管道输入动作脚本，示例：" << std::endl;
-	std::cout << "cat scripts/std.mt | ./bot --robot=./robots/spider1.sql" << std::endl;
+	std::cout << "cat scripts/std.mt | ./build/mybot --robot=./robots/spider1.sql" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "动作输入源（优先级从高到低）：" << std::endl;
 	std::cout << "  --tcp <port>    TCP 长驻模式：监听端口等待客户端下发 .mt" << std::endl;
@@ -66,7 +66,7 @@ int main(int argc, char** argv) {
 			auto f = std::make_unique<FileReader>(rpath);
 			if (!f->good()) {
 				std::cout << "无法打开结构脚本 '" << rpath << "'" << std::endl;
-				std::cout << "请确认 --robot 指向存在的结构脚本，示例：cat scripts/std.mt | ./bot --robot=robots/spider1.sql" << std::endl;
+				std::cout << "请确认 --robot 指向存在的结构脚本，示例：cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql" << std::endl;
 				return 1;
 			}
 			fstream = std::move(f);
@@ -77,7 +77,7 @@ int main(int argc, char** argv) {
 			robot = std::make_unique<RobotStruct>(*fstream);
 		} catch (const std::exception& e) {
 			std::cout << "结构脚本解析失败 '" << rpath << "': " << e.what() << std::endl;
-			std::cout << "无硬件自检链路：cat scripts/relay-test.mt | ./bot --robot=robots/relay-test.sql" << std::endl;
+			std::cout << "无硬件自检链路：cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql" << std::endl;
 			return 1;
 		}
 

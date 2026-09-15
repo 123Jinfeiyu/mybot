@@ -6,7 +6,7 @@
 # 守护 PGA=2 ±2.048V / 128SPS / AIN0；模型 virt_tick 造正弦 1.65±0.25V
 # （1.40~1.90V，32 拍周期）并预武装，call 启动转换首读 OS 即就绪，
 # 零真实睡眠；一拍对应一个 virt_tick。
-# 用法：cat scripts/test/ads1115_virt.mt | bash _run.sh --robot=robots/test/ads1115_virt.sql
+# 用法：cat scripts/test/ads1115_virt.mt | bash scripts/run.sh --robot=robots/test/ads1115_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

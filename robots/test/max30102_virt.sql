@@ -30,7 +30,7 @@
  * 配合 max30102_virt.mt：首行 200ms 预热等守护 setup（仅需容纳 build 的
  * RESET 真实睡眠 5ms），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（tick 预武装后 call 零睡眠）。
- * 用法：cat scripts/test/max30102_virt.mt | bash _run.sh --robot=robots/test/max30102_virt.sql
+ * 用法：cat scripts/test/max30102_virt.mt | bash scripts/run.sh --robot=robots/test/max30102_virt.sql
  */
 CREATE TABLE Timer (
 	name String

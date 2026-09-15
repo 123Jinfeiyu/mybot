@@ -75,7 +75,7 @@ std::unique_ptr<Reader> openActionSource(const std::map<std::string, std::string
 		return f;
 	}
 
-	/* 3) 标准输入（管道 cat scripts/xxx.mt | ./bot） */
+	/* 3) 标准输入（管道 cat scripts/xxx.mt | ./build/mybot） */
 	std::string data((std::istreambuf_iterator<char>(std::cin)), std::istreambuf_iterator<char>());
 	return std::make_unique<MemoryReader>(std::move(data));
 }
