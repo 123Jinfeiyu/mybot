@@ -164,6 +164,10 @@ e2e_cases=(
 	# 度数（virt_tick 32 拍线性爬坡，11.25° 步进，非零拍必带小数）/
 	# v1=RAW/v2=STATUS/v3=CRC_OK 整数；锚 v0 浮点（证明 :f 未被取整）
 	'mt6826s_virt|"v0":[0-9]+\.[0-9]+|10'
+	# MH-Z19B NDIR CO₂（首个 UART virt 器件，/dev/serial0@9600 请求-应答帧）：
+	# v0=CO2:f 整数 ppm（virt_tick 32 拍一周爬坡 400~4368、128ppm 步进，
+	# :f 透传无小数）/v1=TEMP/v2=S；浮点断言锚定 monf 行 Ema 对浓度的 α 混合 out
+	'mhz19_virt|"out":[0-9]+\.[0-9]+|10'
 )
 
 run_one_e2e() {
