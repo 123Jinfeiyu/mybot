@@ -121,11 +121,14 @@ Token Lexer::next(bot::Reader& sr) {
 		if (insideQuotes(s)) { s += c; continue; }
 		if (s.empty() && blank) { continue; }
 		else if (!s.empty() && blank) { return Token::parse(s); }
-		else if (s.empty() && c == ';') { flag_ = true; return next(sr); }
+		/* C2 防线：';'/','/'(' 在空 token 时直接产出对应词元（原实现借
+		 * return next(sr) 尾递归绕回顶部消费 pending 标志，连续 N 个分隔符
+		 * 即 N 层真实递归，--tcp 下可被远程输入打爆栈）。语义等价改直返。 */
+		else if (s.empty() && c == ';') { return {TokenType::END, ""}; }
 		else if (!s.empty() && c == ';') { flag_ = true; return Token::parse(s); }
-		else if (s.empty() && c == ',') { comma_ = true; return next(sr); }
+		else if (s.empty() && c == ',') { return {TokenType::COMMA, ""}; }
 		else if (!s.empty() && c == ',') { comma_ = true; return Token::parse(s); }
-		else if (s.empty() && c == '(') { left_ = true; return next(sr); }
+		else if (s.empty() && c == '(') { return {TokenType::LEFT, ""}; }
 		else if (!s.empty() && c == ')') { rght_ = true; return Token::parse(s); }
 		else {
 			s += c;

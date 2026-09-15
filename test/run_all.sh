@@ -219,6 +219,8 @@ parse_cases=(
 	'alias_override.sql|alias_override.mt|1|missing or not a number'
 	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
+	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
+	'lex_semicolons.sql|lex_semicolons.mt|1|Token ;'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4"

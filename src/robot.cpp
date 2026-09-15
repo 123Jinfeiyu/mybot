@@ -38,7 +38,27 @@ void MetaProvider::seed() {
 	refs_ = std::move(rArr);
 }
 
+/* C1 防线：$ 引用列经 read() → getMetadata_() → collect() 互递归取实时快照，
+ * 环配置（如 A.src=$B 且 B.src=$A，或自引用）会无限递归直到栈溢出。
+ * 用线程局部深度计数兜底：正常引用链深度 1，超限即判定为环并清晰报错。 */
+namespace {
+thread_local int t_refDepth = 0;
+constexpr int kMaxRefDepth = 32;
+struct RefDepthGuard {
+	~RefDepthGuard() { --t_refDepth; }
+};
+} // namespace
+
 Json MetaProvider::collect() {
+	if (t_refDepth >= kMaxRefDepth) {
+		throw IllegalArgumentException("circular '$' reference detected: reference chain exceeds "
+			+ std::to_string(kMaxRefDepth) + " levels while resolving table '" + matrix_.getName()
+			+ "' row " + std::to_string(row_)
+			+ ". Check that '$' reference columns do not form a cycle (a variable referencing itself, directly or indirectly).");
+	}
+	++t_refDepth;
+	RefDepthGuard depthGuard;
+
 	seed();
 	Json obj = JsonObject();
 	auto& colsArr = *cols_;

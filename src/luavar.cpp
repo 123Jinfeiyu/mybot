@@ -85,6 +85,12 @@ Json MtVars_Lua::callImpl(const Json& json) {
 /* ---- 无副作用读实现：驱动定义 read() 走快照，否则回退实时 call ----
  * 不做 ensureOk——引用读是数据流而非动作。 */
 Json MtVars_Lua::readImpl() {
+	/* 防御：状态机已释放（未 build 即销毁，或异常路径先销毁后被引用）时清晰报错，
+	 * 而非拿空指针进 LuaJIT 裸崩（C1 环引用负路径实测暴露）。 */
+	if (L_ == nullptr) {
+		throw IllegalArgumentException("read on '" + luapath_
+			+ "': Lua state not built or already released (variable destroyed before being read)");
+	}
 	int mode = luaGlobalType(L_, "read") != LUA_TNIL ? 1 : 0;
 	Json metadata = getMetadata_();
 	metadata.put("mode", JsonString(mode ? "read" : "call"));
