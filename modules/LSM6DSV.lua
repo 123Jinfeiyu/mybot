@@ -30,8 +30,9 @@
 --   2. 与老 ST 芯片（LSM6DSO 系）的两大布局差异，网上老示例勿照搬：
 --      a) ODR 换全新统一码表（4 位域）：1.875/7.5/15/.../7680Hz，
 --         老 104/208/833Hz 档位不复存在
---      b) 量程域挪出 CTRL1/CTRL2：加计 FS 在 CTRL8(0x18)[1:0]、
---         陀螺 FS 在 CTRL6(0x15)[3:0]（±4000dps=0xC，码不连续）
+--      b) 量程域挪出 CTRL1/CTRL2：加计 FS 在 CTRL8(0x17)[1:0]、
+--         陀螺 FS 在 CTRL6(0x15)[3:0]（±4000dps=0xC，码不连续）；
+--         注意 0x18 是 CTRL9（usr_off/lpf2 等使能位），勿再写错地址
 --   3. 数据寄存器小端（LSB 在前）：陀螺仪在前 OUTX_L_G=0x22、
 --      加速度计 OUTX_L_A=0x28（与 BMI270 的"加速计在前"相反）
 --   4. call 两次 6 字节原子读（HAL.i2c_read_multi 的 I2C_RDWR 合并事务；
@@ -64,7 +65,8 @@ local REG_CTRL1    = 0x10		-- bit[3:0]=odr_xl bit[6:4]=op_mode_xl
 local REG_CTRL2    = 0x11		-- bit[3:0]=odr_g   bit[6:4]=op_mode_g
 local REG_CTRL3    = 0x12		-- bit0=sw_reset(自清) bit2=if_inc bit6=bdu
 local REG_CTRL6    = 0x15		-- bit[3:0]=fs_g bit[6:4]=lpf1_g_bw
-local REG_CTRL8    = 0x18		-- bit[1:0]=fs_xl bit[2:4]=hp_lpf2_xl_bw...
+local REG_CTRL8    = 0x17		-- bit[1:0]=fs_xl bit3=xl_dualc_en bit[7:5]=hp_lpf2_xl_bw
+								-- （0x18 是 CTRL9，非量程寄存器！）
 local REG_STATUS   = 0x1E		-- bit0=xlda bit1=gda（本驱动连续模式直读不用）
 local REG_OUT_G    = 0x22		-- 陀螺仪 X_LSB 起 6 字节（小端）
 local REG_OUT_A    = 0x28		-- 加速度计 X_LSB 起 6 字节（小端）

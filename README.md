@@ -367,14 +367,14 @@ cat scripts/test/monitor.mt     | bash _run.sh --robot=robots/test/monitor.sql  
 
 #### 虚拟总线（I2C/SPI，无真机验证驱动链路）
 
-`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*` 函数，真实驱动无需真机与 `/dev/i2c-*`、`/dev/spidev*` 即可完整跑通 build/call/destroy，每次事务记入 `txlog` 供断言，并可注入 NACK 等负路径（与真机"设备不在总线"行为一致）。配套 `lib/virtbus/` 器件模型库收录 38 个协议级器件模型（regmap 通用底座及 MPU6050、BME280、BH1750、ADS1256、AD9833、TPL0501、VL53L0X、VL53L4CD、MCP4725、SHT3X、MCP3421、MS5611、SGP30、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、CHT8305、ADS1015、INA226、INA3221、MAX17043、MAX17048、ADXL345、LPS22HB、PCA9685、BMM150、BH1745、APDS9900、MLX90393、AS3935、EMC2101、BME688、BMI270）。
+`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*` 函数，真实驱动无需真机与 `/dev/i2c-*`、`/dev/spidev*` 即可完整跑通 build/call/destroy，每次事务记入 `txlog` 供断言，并可注入 NACK 等负路径（与真机"设备不在总线"行为一致）。配套 `lib/virtbus/` 器件模型库收录 39 个协议级器件模型（regmap 通用底座及 MPU6050、BME280、BH1750、ADS1256、AD9833、TPL0501、VL53L0X、VL53L4CD、MCP4725、SHT3X、MCP3421、MS5611、SGP30、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、CHT8305、ADS1015、INA226、INA3221、MAX17043、MAX17048、ADXL345、LPS22HB、PCA9685、BMM150、BH1745、APDS9900、MLX90393、AS3935、EMC2101、BME688、BMI270、LSM6DSV）。
 
-`@Daemon` 的 `proto` 列填 `virt` 可做**守护无硬件端到端**：真实驱动 build/call、共享槽 publish、`@Ema/@Kalman` 滤波、`@Monitor` 引用消费整条链路全部走内存仿真（守护启动打印 `VIRTUAL HARDWARE` 横幅，仿真数据禁止用于生产环境）。现有 32 个 E2E 用例，例如：
+`@Daemon` 的 `proto` 列填 `virt` 可做**守护无硬件端到端**：真实驱动 build/call、共享槽 publish、`@Ema/@Kalman` 滤波、`@Monitor` 引用消费整条链路全部走内存仿真（守护启动打印 `VIRTUAL HARDWARE` 横幅，仿真数据禁止用于生产环境）。现有 33 个 E2E 用例，例如：
 
 ```bash
 cat scripts/test/mpu_virt.mt    | bash _run.sh --robot=robots/test/mpu_virt.sql
 cat scripts/test/bme280_virt.mt | bash _run.sh --robot=robots/test/bme280_virt.sql
-# 其余 30 例（ads1256/vl53l0x/vl53l4cd/sht3x/mcp3421/ms5611/sgp30/ina219/ads1115/as7262/max30102/amg8833/pcf8574/ltc2944/cht8305/ads1015/ina226/ina3221/max17043/max17048/adxl345/lps22hb/bmm150/bh1745/apds9900/mlx90393/as3935/emc2101/bme688/bmi270）见 docs/virtbus.md
+# 其余 31 例（ads1256/vl53l0x/vl53l4cd/sht3x/mcp3421/ms5611/sgp30/ina219/ads1115/as7262/max30102/amg8833/pcf8574/ltc2944/cht8305/ads1015/ina226/ina3221/max17043/max17048/adxl345/lps22hb/bmm150/bh1745/apds9900/mlx90393/as3935/emc2101/bme688/bmi270/lsm6dsv）见 docs/virtbus.md
 ```
 
 API 契约、模型回调、txlog 格式、SPI 语义、器件模型明细与全部回归用例，见 **[docs/virtbus.md](docs/virtbus.md)**（相关回归与仓颉级 E2E 均由 `run_all.sh` 自动纳入）。

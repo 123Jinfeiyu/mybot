@@ -155,6 +155,11 @@ e2e_cases=(
 	# virt_tick 预武装（build 仅睡 114ms），浮点断言锚定 monf 行 Ema
 	# 对 ACCEL_X 正弦码（100~500）的 α 混合输出 out
 	'bmi270_virt|"out":-?[0-9]+\.[0-9]+|10'
+	# LSM6DSV16X 六轴 IMU：ACCEL_X/Y/Z + GYRO_X/Y/Z 六字段均 sign='16'
+	# 展开的有符号整数码（无 :f），无 blob/无转换门（build 实睡 110ms：
+	# 10ms 复位轮询+100ms 陀螺启动），浮点断言锚定 monf 行 Ema 对
+	# ACCEL_X 正弦码（100~500）的 α 混合输出 out
+	'lsm6dsv_virt|"out":-?[0-9]+\.[0-9]+|10'
 )
 
 run_one_e2e() {
