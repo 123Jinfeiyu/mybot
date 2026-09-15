@@ -1,0 +1,81 @@
+#pragma once
+/* json.hpp —— 值语义 JSON（等价 bot4cj 用到的 stdx.encoding.json 子集）
+ * 单一 tagged struct + 工厂函数（JsonString(...) 等与 Cangjie 构造风格一致）。
+ * 对象字段以 vector<pair<>,Json> 保插入序（Cangjie HashMap 亦保插入序）；
+ * toString() 输出紧凑 JSON，浮点走最短往返表示（整数型浮点补 ".0"）。
+ */
+
+#include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace bot {
+
+class Json {
+public:
+	enum class T { Null, Bool, Int, Float, Str, Arr, Obj };
+
+	T type = T::Null;
+	bool b = false;
+	std::int64_t i = 0;
+	double d = 0.0;
+	std::string s;
+	std::vector<Json> arr;
+	std::vector<std::pair<std::string, Json>> obj;
+
+	Json() = default;
+	explicit Json(T t) : type(t) {}
+
+	/* ---- 类型测试 ---- */
+	bool isNull() const { return type == T::Null; }
+	bool isBool() const { return type == T::Bool; }
+	bool isInt() const { return type == T::Int; }
+	bool isFloat() const { return type == T::Float; }
+	bool isStr() const { return type == T::Str; }
+	bool isArr() const { return type == T::Arr; }
+	bool isObj() const { return type == T::Obj; }
+
+	/* ---- 带型检查的访问器（错误类型抛 IllegalArgument）---- */
+	const Json& asObject() const;
+	const Json& asArray() const;
+	const Json& asString() const;
+	const Json& asInt() const;
+	const Json& asFloat() const;
+	const Json& asBool() const;
+
+	std::string getValue() const;		/* Str 取值 */
+	std::int64_t getInt() const;		/* Int 取值 */
+	double getFloat() const;		/* Float 取值 */
+	bool getBool() const;			/* Bool 取值 */
+
+	/* ---- 对象操作 ---- */
+	std::optional<Json> get(const std::string& key) const;
+	void put(const std::string& key, Json v);	/* 同名覆盖，保持原序 */
+	const std::vector<std::pair<std::string, Json>>& items() const { return obj; }
+	std::size_t objSize() const { return obj.size(); }
+
+	/* ---- 数组操作 ---- */
+	std::size_t size() const { return arr.size(); }
+	void add(Json v) { arr.push_back(std::move(v)); }
+	const Json& at(std::size_t n) const;
+
+	/* ---- 序列化 ---- */
+	std::string toString() const;
+
+private:
+	static void toStringImpl(const Json& j, std::string& out);
+};
+
+/* ---- Cangjie 风格工厂（JsonString(name) 等直译原调用点）---- */
+inline Json JsonNull() { return Json(Json::T::Null); }
+inline Json JsonBool(bool v) { Json j(Json::T::Bool); j.b = v; return j; }
+inline Json JsonInt(std::int64_t v) { Json j(Json::T::Int); j.i = v; return j; }
+inline Json JsonFloat(double v) { Json j(Json::T::Float); j.d = v; return j; }
+inline Json JsonString(const std::string& v) { Json j(Json::T::Str); j.s = v; return j; }
+inline Json JsonArray() { return Json(Json::T::Arr); }
+inline Json JsonObject() { return Json(Json::T::Obj); }
+
+} // namespace bot
