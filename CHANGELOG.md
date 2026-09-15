@@ -19,8 +19,14 @@ virtbus 虚拟硬件测试基座、2026-09 审计修复批次、ActionSource 工
 - **NN 前向推理引擎 `modules/lib/nn.lua`**（纯 Lua，无 nn4cj 依赖）：全连接 MLP，默认 `{41,80,80,40,17}` 架构；`forward`/`forwardOne`/`zeroInit`/`randInit`/`saveMt`/`loadMt`；16 用例。
 - 离线桩测试：SHT3X、LTC2944、MAX17043、TPL0501、INA219、INA3221；新增 `test_spi.lua`、`test_ads1256.lua`。
 
+### 变更
+
+- **PCA9685 虚拟器件模型内嵌驱动脚本（单文件驱动+模型实验）**：`modules/lib/virtbus/pca9685.lua` 整体迁入 `modules/PCA9685.lua` 尾部，经全局 `PCA9685_VIRT.new()` 工厂暴露。三条约定：① 生产路径零执行——模型仅在虚拟总线测试中实例化，regmap 底座延迟到 `new()` 内加载，真机 build/call/destroy 不触碰 `lib/virtbus/`；② 工厂经全局表而非文件 return 暴露——生产侧 `Lua.cj` build_lua 以 `LUA_MULTRET` pcall 加载驱动文件且成功路径无 settop，文件返回值会永久滞留 Lua 栈；③ 模型与驱动保持独立实现（模型自带寄存器表/位定义/换算常量），互证防假绿性质不变。`test_pca9685.lua` 接线改为从驱动加载后的全局取工厂（338 断言全绿，PCA_GC 压力档同绿）；模型库余 41 个文件，守护 `proto=virt` 按 `<driver 小写>.lua` 找模型的约定暂不感知内嵌形态（PCA9685 守护 E2E 豁免，无实际影响）。
+- **`test_pca9685.lua` LuaJIT 下 `table.unpack` 崩溃**：补 `unpack or table.unpack` 兼容 shim（同 `sgp30.lua` 等 6 处既有做法，fix-plan-20260915 P0-1）；修复前 111 断言后崩溃退出码 1，修复后 338/338。
+
 ### 修复
 
+- **cjpm.lock 恢复入库（P0-3）**：`aaffb0a`（2026-09-14）误删锁文件后 `_set.sh:8` 每次构建都触发 `cjpm update`，依赖版本漂移、历史构建不可复现（与 `.gitignore`/CHANGELOG 0.3.2 的入库声明矛盾）。按当前 cjpm.toml 重建，五依赖（SQL4cj 1.0.3 / ctype4cj 1.0.4 / mt2 1.0.0 / luajit4cj 1.0.1 / pthread4cj 1.0.2）与 0.3.2 锁定版本一致。
 - **5 个测试结构脚本 INSERT 缺列**：按各自 `CREATE TABLE` 补全 `'-'` 占位符，用例由解析失败变为正常走到硬件层。
 - **`h03_arr.sql` 引用列漏写 `$` 前缀**：补为 `'$arr_src'` 后恢复正常。
 - **守护 `interval ≤ 0` CPU 忙循环**：解析失败与 `≤ 0` 一律抛 `IllegalArgumentException`，报错带上下文。

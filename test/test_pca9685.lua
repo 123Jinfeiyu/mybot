@@ -3,7 +3,8 @@
 --   GC 压力节奏：PCA_GC=1 luajit test/test_pca9685.lua
 --
 -- 从 3 个手写桩文件（test_pca9685_channel/float/writefail.lua）整体迁移到
--- 「真实驱动 + virtbus 注入层 + virtbus/pca9685.lua 模型」。本器件是 virtbus
+-- 「真实驱动 + virtbus 注入层 + 内嵌模型（modules/PCA9685.lua 尾部
+-- PCA9685_VIRT，2026-09-15 自 virtbus/pca9685.lua 迁入）」。本器件是 virtbus
 -- 库【8 位字节指针 regmap 包装族 · 纯输出器件】样板（NXP PCA9685 16 路
 -- 12 位 PWM/舵机驱动，0x40 缺省/0x7F 地址上限，引脚可配 0x40~0x7F）：
 --   MODE1 RESTART(bit7) 写 1 永不落盘 + SLEEP 0→1 挂起重启请求、读回动态
@@ -28,17 +29,20 @@ if os.getenv("PCA_GC") == "1" then
 	collectgarbage("setstepmul", 100000)
 end
 
+local unpack = unpack or table.unpack	-- LuaJIT 5.1 无 table.unpack（同 SGP30/BMI270 shim）
+
 local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local pmod = dofile("modules/lib/virtbus/pca9685.lua")
 vbus.reset()
 
-local dev = pmod.new()
+-- 模型内嵌于驱动文件（PCA9685_VIRT 全局工厂）：load_driver 完成驱动定义与
+-- 重注入后，从全局取工厂建实例再挂载——建实例/挂载不依赖注入顺序
+vbus.load_driver("modules/PCA9685.lua")
+local dev = PCA9685_VIRT.new()
 vbus.attach("PCA9685@0x40", 0x40, dev)
 vbus.attach("PCA9685@0x7F", 0x7F, dev)
-vbus.load_driver("modules/PCA9685.lua")
 
 -- 输出器件无转换门：milli_sleep 桩仅累加留痕（build 两段各 5ms）
 local sleep_total = 0
@@ -96,7 +100,7 @@ local function frames_eq(mark, ...)
 	local args = { ... }
 	if #got ~= #args then return false end
 	for i = 1, #args do
-		if not frame_eq(got[i], table.unpack(args[i])) then return false end
+		if not frame_eq(got[i], unpack(args[i])) then return false end
 	end
 	return true
 end
