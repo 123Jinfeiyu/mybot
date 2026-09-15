@@ -27,6 +27,7 @@ virtbus 虚拟硬件测试基座、2026-09 审计修复批次、ActionSource 工
 ### 修复
 
 - **cjpm.lock 恢复入库（P0-3）**：`aaffb0a`（2026-09-14）误删锁文件后 `_set.sh:8` 每次构建都触发 `cjpm update`，依赖版本漂移、历史构建不可复现（与 `.gitignore`/CHANGELOG 0.3.2 的入库声明矛盾）。按当前 cjpm.toml 重建，五依赖（SQL4cj 1.0.3 / ctype4cj 1.0.4 / mt2 1.0.0 / luajit4cj 1.0.1 / pthread4cj 1.0.2）与 0.3.2 锁定版本一致。
+- **守护 play 返回值契约统一**（`src/HV/Daemon.cj` playImpl）：返回键 `status` → `result`，使 `ensureOk`（MatrixVars）对守护链路的 halt-on-error 校验真正生效——此前全仓 54 个驱动均返回 `result`，唯守护发 `status`，按「无 result 字段视为成功」条款守护失败会被静默放行（评估报告 P6 / fix-plan-20260915 P1-6）。改后 37 组守护 E2E 实跑全绿、无新报错。
 - **5 个测试结构脚本 INSERT 缺列**：按各自 `CREATE TABLE` 补全 `'-'` 占位符，用例由解析失败变为正常走到硬件层。
 - **`h03_arr.sql` 引用列漏写 `$` 前缀**：补为 `'$arr_src'` 后恢复正常。
 - **守护 `interval ≤ 0` CPU 忙循环**：解析失败与 `≤ 0` 一律抛 `IllegalArgumentException`，报错带上下文。

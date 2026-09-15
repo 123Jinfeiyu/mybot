@@ -302,7 +302,8 @@ public class MtVars_Daemon <: MatrixVars_Hardware {
 				ret.put("v${k}", JsonFloat(v))
 			}
 			_mutex_unlock(holder.slot)
-			ret.put("status", JsonString("OK"))
+			// 统一驱动返回契约：ensureOk（MatrixVars）据此校验，此前发 status 使守护链路校验失效（P6）
+			ret.put("result", JsonString("OK"))
 			ret.put("count", JsonInt(count))
 			ret.put("nvals", JsonInt(nvals))
 			ret.put("values", arr)
