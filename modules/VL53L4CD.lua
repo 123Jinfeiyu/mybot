@@ -1,5 +1,6 @@
 -- VL53L4CD ToF 激光测距 驱动模块（ST FlightSense，I2C 地址 0x29）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/vl53l4cd.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE VL53L4CD (

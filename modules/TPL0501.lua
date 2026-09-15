@@ -1,5 +1,6 @@
 -- TPL0501 256 抽头数字电位器 驱动模块（SPI，写-only）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/tpl0501.lua（无硬件单测共用；写-only 无测量值，守护 E2E 豁免）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE SPI (

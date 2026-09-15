@@ -1,5 +1,6 @@
 -- max17043.lua —— Maxim MAX17043 单节锂电池 ModelGauge 电量计虚拟器件模型
 -- bot4cj 虚拟硬件库（modules/lib/virtbus/，配合 modules/lib/virtbus.lua 使用）
+-- 对应真实驱动：modules/MAX17043.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 【偶地址稀疏字地图 I2C 器件】（与 INA219/INA226 的「字索引连续地图」同族
 -- 但不同：寄存器指针是字节地址，芯片寄存器全在偶地址且不连续——0x02、0x04、

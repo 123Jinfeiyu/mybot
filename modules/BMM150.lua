@@ -1,5 +1,6 @@
 -- BMM150 三轴地磁传感器 驱动模块（上电挂起态 + 工厂 trim 温度补偿）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/bmm150.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 -- Bosch Sensortec，I2C 地址 0x10/0x11/0x12/0x13（CSB/SDO 引脚四组合，
 -- 模块常见 0x10/0x11），XY ±1300µT / Z ±2500µT，13 位 + RHALL
 --

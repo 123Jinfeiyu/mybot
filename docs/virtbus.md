@@ -98,6 +98,52 @@ vbus.attach("自定义@0x68", 0x68, dev)
 
 协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿：
 
+41 个器件与驱动一一对应（`modules/<NAME>.lua` ↔ `lib/virtbus/<name>.lua`），模型是同协议的**独立第二实现**（防互证假绿），两侧文件头互有交叉引用注释——**改协议两处同步**。37 个有守护 E2E，4 个写-only 输出器件豁免；`regmap.lua` 为通用底座、不对应驱动。对照总表：
+
+| 驱动 `modules/` | 模型 `lib/virtbus/` | 守护 E2E `robots/test/` |
+| --- | --- | --- |
+| AD9833.lua | ad9833.lua | 豁免（写-only） |
+| ADS1015.lua | ads1015.lua | ads1015_virt.sql |
+| ADS1115.lua | ads1115.lua | ads1115_virt.sql |
+| ADS1256.lua | ads1256.lua | ads1256_virt.sql |
+| ADXL345.lua | adxl345.lua | adxl345_virt.sql |
+| AMG8833.lua | amg8833.lua | amg8833_virt.sql |
+| APDS9900.lua | apds9900.lua | apds9900_virt.sql |
+| AS3935.lua | as3935.lua | as3935_virt.sql |
+| AS7262.lua | as7262.lua | as7262_virt.sql |
+| BH1745.lua | bh1745.lua | bh1745_virt.sql |
+| BH1750.lua | bh1750.lua | bh1750_virt.sql |
+| BMI270.lua | bmi270.lua | bmi270_virt.sql |
+| BME280.lua | bme280.lua | bme280_virt.sql |
+| BME688.lua | bme688.lua | bme688_virt.sql |
+| BMM150.lua | bmm150.lua | bmm150_virt.sql |
+| CHT8305.lua | cht8305.lua | cht8305_virt.sql |
+| EMC2101.lua | emc2101.lua | emc2101_virt.sql |
+| INA219.lua | ina219.lua | ina219_virt.sql |
+| INA226.lua | ina226.lua | ina226_virt.sql |
+| INA3221.lua | ina3221.lua | ina3221_virt.sql |
+| LTC2944.lua | ltc2944.lua | ltc2944_virt.sql |
+| LPS22HB.lua | lps22hb.lua | lps22hb_virt.sql |
+| LSM6DSV.lua | lsm6dsv.lua | lsm6dsv_virt.sql |
+| MAX17043.lua | max17043.lua | max17043_virt.sql |
+| MAX17048.lua | max17048.lua | max17048_virt.sql |
+| MAX30102.lua | max30102.lua | max30102_virt.sql |
+| MCP3421.lua | mcp3421.lua | mcp3421_virt.sql |
+| MCP4725.lua | mcp4725.lua | 豁免（写-only） |
+| MHZ19.lua | mhz19.lua | mhz19_virt.sql |
+| MLX90393.lua | mlx90393.lua | mlx90393_virt.sql |
+| MS5611.lua | ms5611.lua | ms5611_virt.sql |
+| MPU6050.lua | mpu6050.lua | mpu_virt.sql |
+| MT6826S.lua | mt6826s.lua | mt6826s_virt.sql |
+| PCA9685.lua | pca9685.lua | 豁免（写-only） |
+| PCF8574.lua | pcf8574.lua | pcf8574_virt.sql |
+| SDS011.lua | sds011.lua | sds011_virt.sql |
+| SGP30.lua | sgp30.lua | sgp30_virt.sql |
+| SHT3X.lua | sht3x.lua | sht3x_virt.sql |
+| TPL0501.lua | tpl0501.lua | 豁免（写-only） |
+| VL53L0X.lua | vl53l0x.lua | vl53l0x_virt.sql |
+| VL53L4CD.lua | vl53l4cd.lua | vl53l4cd_virt.sql |
+
 - `virtbus/regmap.lua`：通用「寄存器指针 + burst」模型，覆盖 MPU6050/BME280 一类大多数 I2C 传感器（8 位指针；构造传 `{ptr16=true}` 支持 VL53Lx 类 16 位指针）；提供 `set/set_word/get_sword` 预置寄存器、`nack`（读写全断）与 `nack_read/nack_write`（定向故障）、`write_log` 事务留痕、`reset()`。
 - `virtbus/mpu6050.lua`：MPU6050 六轴 IMU 模型（regmap 之上固化寄存器事实）——WHO_AM_I 身份（可 `who(0x71)` 模拟错挂）、`set_accel/set_gyro/set_temp_raw` 注入有符号 LSB、`sample()` 一次填满 14 字节 burst、`set_accel_g/set_gyro_dps/set_temp_c` 按 datasheet 灵敏度以物理量造样本（供守护/E2E）、`virt_tick(n)` 造确定性合成波形（供 proto=virt 守护逐拍驱动）、`config_writes()` 取 build 配置序列。
 - `virtbus/bme280.lua`：BME280 温压湿环境传感器模型（regmap 包装层）——0xD0 身份（`who(0x58)` 模拟错挂 BMP280）、datasheet 示例校准 NVM 字节布局（0x88 起 T/P 小端系数、0xA1 H1、0xE1 起 7 字节 H 块含 H4/H5 的 s12 nibble 拼装）、0xF7 起 P/T 20bit + H 16bit 数据区、合成 0xF3 STATUS 与 forced 转换状态机（`advance(ms)` 外部虚拟时钟驱动 6ms 转换/`nvm_stuck`/`meas_stuck` 卡死注入；`virt_tick` 走预武装路径无需时钟）、`set_raw(t,p,h)` 注入无符号 ADC 码（0x80000/0x8000 无效读数可测）。

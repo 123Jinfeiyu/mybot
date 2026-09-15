@@ -1,5 +1,6 @@
 -- modules/lib/virtbus/max30102.lua —— MAX30102 心率/血氧 PPG 传感器虚拟器件模型
 -- bot4cj 虚拟总线器件库（无 BUS 字段 = I2C，attach 动态委托 dev.write/dev.read）
+-- 对应真实驱动：modules/MAX30102.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【首个「环形 FIFO + 读写指针/溢出计数 + rollover + 18 位样本块读」
 -- I2C 器件】（Maxim MAX30102，地址固定 0x57；纯闭包、纯算术无 bitcompat）。

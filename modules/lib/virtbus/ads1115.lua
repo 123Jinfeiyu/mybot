@@ -1,5 +1,6 @@
 -- ads1115.lua —— TI ADS1115 16 位 4 通道 ADC 虚拟器件模型
 -- bot4cj 虚拟硬件库（modules/lib/virtbus/，配合 modules/lib/virtbus.lua 使用）
+-- 对应真实驱动：modules/ADS1115.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 【字寻址 16 位寄存器 + oneshot 转换门/OS 就绪握手器件】（骨架同族 ina219：
 -- 寄存器号 0x00~0x03 各代表一个 16 位字，绝不能套字节地址 regmap；但与

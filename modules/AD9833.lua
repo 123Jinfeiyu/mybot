@@ -1,5 +1,6 @@
 -- AD9833 DDS 可编程波形发生器 驱动模块（SPI，写-only，信号源/激励输出）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/ad9833.lua（无硬件单测共用；写-only 无测量值，守护 E2E 豁免）
 -- Analog Devices，SPI-only（无 I2C）：每字 16 位一帧 CS，模块板载 25MHz 时钟，
 -- 28 位频率分辨率（0.0931Hz/码），输出正弦/三角/方波（VOUT ~0.65Vpp，模块约 1Vpp）
 --

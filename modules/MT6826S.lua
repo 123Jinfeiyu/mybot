@@ -1,5 +1,6 @@
 -- MT6826S 15 位磁编码器 驱动模块（SPI 模式 3，麦歌恩 AMR 在轴安装）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/mt6826s.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE SPI (

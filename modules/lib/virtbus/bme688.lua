@@ -1,5 +1,6 @@
 -- modules/lib/virtbus/bme688.lua —— Bosch BME688 四合一环境传感器虚拟器件模型
 -- bot4cj 虚拟总线器件库（无 BUS 字段 = I2C，attach 动态委托 dev.write/dev.read）
+-- 对应真实驱动：modules/BME688.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【8 位寄存器指针 + 稀疏寄存器图 + 3 块 NVM 校准 + forced 转换状态机 +
 -- 双气体量程路】的器件样板（BME688 兼容 BME680，I2C 地址 0x76/0x77，Chip ID

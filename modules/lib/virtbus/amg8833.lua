@@ -1,5 +1,6 @@
 -- modules/lib/virtbus/amg8833.lua —— AMG8833 Grid-EYE 8x8 红外热电堆阵列虚拟器件模型
 -- bot4cj 虚拟总线器件库（无 BUS 字段 = I2C，attach 动态委托 dev.write/dev.read）
+-- 对应真实驱动：modules/AMG8833.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【8 位字节指针 + 128 字节像素块连续 burst 读 + 帧周期门】样板
 -- （Panasonic AMG8833，地址 0x69 缺省/0x68；纯闭包、纯算术无 bitcompat）。

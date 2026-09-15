@@ -1,5 +1,6 @@
 -- LTC2944 多节电池电量计 驱动模块（I2C，地址固定 0x64）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/ltc2944.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE LTC2944 (

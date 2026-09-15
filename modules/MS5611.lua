@@ -1,5 +1,6 @@
 -- MS5611-01BA03 高分辨率气压计/高度计 驱动模块（TE/MEAS，I2C 0x76~0x77）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/ms5611.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE MS5611 (

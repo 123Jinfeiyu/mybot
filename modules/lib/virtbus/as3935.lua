@@ -1,5 +1,6 @@
 -- modules/lib/virtbus/as3935.lua —— ams AS3935 Franklin 闪电传感器虚拟器件模型
 -- bot4cj 虚拟总线器件库（无 BUS 字段 = I2C，attach 动态委托 dev.write/dev.read）
+-- 对应真实驱动：modules/AS3935.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【8 位字节指针 + 事件型中断锁存（INT 读后清）+ 两条直接命令
 -- （0x3C 软复位 / 0x3D RCO 校准）+ 21 位能量三字节小端】样板（ams

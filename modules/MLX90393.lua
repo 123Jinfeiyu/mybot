@@ -1,5 +1,6 @@
 -- MLX90393 三轴磁力计 驱动模块（Melexis Triaxis Hall，I2C 地址 0x0C~0x0F）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/mlx90393.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE MLX90393 (

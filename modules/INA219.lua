@@ -1,5 +1,6 @@
 -- INA219 单通道高边电流/功率监测计 驱动模块（I2C，地址 0x40~0x4F）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/ina219.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE INA219 (

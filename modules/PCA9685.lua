@@ -1,4 +1,5 @@
 -- PCA9685 PWM控制板
+-- 虚拟器件模型：modules/lib/virtbus/pca9685.lua（无硬件单测共用；写-only 无测量值，守护 E2E 豁免）
 
 
 

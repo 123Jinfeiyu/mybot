@@ -1,5 +1,6 @@
 -- BMI270 六轴 IMU（16 位加速度计 + 16 位陀螺仪）驱动模块
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/bmi270.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 -- Bosch Sensortec，I2C 地址 0x68/0x69（SDO 引脚，与 MPU6050 同址），
 -- 输出六轴原始码：ACCEL_X/Y/Z（g）与 GYRO_X/Y/Z（dps）
 --

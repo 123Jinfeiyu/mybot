@@ -1,5 +1,6 @@
 -- SHT3X 温湿度传感器 驱动模块（I2C，兼容 SHT30/31/35）
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：modules/lib/virtbus/sht3x.lua（无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE SHT3X (

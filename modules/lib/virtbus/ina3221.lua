@@ -1,5 +1,6 @@
 -- ina3221.lua —— TI INA3221 三通道高边电流/电压监测计虚拟器件模型
 -- bot4cj 虚拟硬件库（modules/lib/virtbus/，配合 modules/lib/virtbus.lua 使用）
+-- 对应真实驱动：modules/INA3221.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 【字寻址 16 位寄存器 I2C 器件】（与 ina219/ina226 同族，绝不能套字节地址
 -- regmap——寄存器号各代表一个 16 位字：写 {ptr,hi,lo}，读 2 字节返回该字

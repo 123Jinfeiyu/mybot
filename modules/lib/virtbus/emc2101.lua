@@ -1,5 +1,6 @@
 -- modules/lib/virtbus/emc2101.lua —— Microchip EMC2101 智能风扇控制器虚拟器件模型
 -- bot4cj 虚拟总线器件库（无 BUS 字段 = I2C，attach 动态委托 dev.write/dev.read）
+-- 对应真实驱动：modules/EMC2101.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【8 位字节指针 + 测量反馈（内外双温度/TACH 转速）与输出控制
 -- （手动占空比/片上 LUT 温控）混合 + 双路数据读互锁】样板（Microchip

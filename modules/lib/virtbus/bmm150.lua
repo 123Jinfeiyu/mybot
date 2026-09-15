@@ -1,5 +1,6 @@
 -- modules/lib/virtbus/bmm150.lua —— BMM150 三轴地磁传感器虚拟器件模型
 -- bot4cj 虚拟总线器件库（无 BUS 字段 = I2C，attach 动态委托 dev.write/dev.read）
+-- 对应真实驱动：modules/BMM150.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【8 位字节指针 + 上电挂起态电源门 + 三段工厂 trim NVM + XY/Z 异构
 -- 13/15 位数据块】样板（Bosch BMM150，I2C 地址族 0x10/0x11/0x12/0x13 由

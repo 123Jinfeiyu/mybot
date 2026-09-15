@@ -1,5 +1,6 @@
 -- modules/lib/virtbus/bmi270.lua —— Bosch BMI270 六轴 IMU 虚拟器件模型
 -- bot4cj 虚拟总线器件库（M.BUS="i2c"，attach 动态委托 dev.write/dev.read）
+-- 对应真实驱动：modules/BMI270.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【8 位字节指针 + 配置文件 blob 上传状态机 + 小端六轴连续测量】
 -- 样板（Bosch BMI270，I2C 0x68/0x69，Chip ID 0x24；0x26 为 BMI260 变体）。

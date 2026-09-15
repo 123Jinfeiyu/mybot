@@ -1,5 +1,6 @@
 -- max17048.lua —— Maxim/ADI MAX17048 单节锂电池 ModelGauge 电量计虚拟器件模型
 -- bot4cj 虚拟硬件库（modules/lib/virtbus/，配合 modules/lib/virtbus.lua 使用）
+-- 对应真实驱动：modules/MAX17048.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 【MAX17043 的换代芯片，同地址 0x36 同偶地址稀疏字地图，但寄存器图扩展，
 -- 常数逐条不同，不能与 max17043.lua 互抄】（datasheet MAX17048/17049 Rev.7

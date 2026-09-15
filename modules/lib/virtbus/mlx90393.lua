@@ -1,5 +1,6 @@
 -- mlx90393.lua —— Melexis MLX90393 Triaxis 三轴磁力计虚拟器件模型
 -- bot4cj 虚拟硬件库（modules/lib/virtbus/，配合 modules/lib/virtbus.lua 使用）
+-- 对应真实驱动：modules/MLX90393.lua（同协议独立实现，防互证假绿；改协议两处同步）
 --
 -- 定位：【命令字 + status-first 应答 + 易失内存读写的命令式 I2C 器件】——没有
 -- 寄存器指针事务：每条命令先一笔写（NOP 0x00 无副作用，驱动用它轮询），
