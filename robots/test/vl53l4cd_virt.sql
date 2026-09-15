@@ -1,7 +1,8 @@
 /*
  * VL53L4CD 无硬件端到端（proto=virt，首个 16 位寄存器指针 ptr16 I2C
  * 虚拟器件）：sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/vl53l4cd.lua。模型在 regmap ptr16 底座上复刻
+ * VL53L4CD_VIRT，内嵌于 modules/VL53L4CD.lua 尾部（2026-09-15 迁入，
+ * 守护经回退路径装载）。模型在 regmap ptr16 底座上复刻
  * 软复位（0x0000=0x00/0x01）、91 字节默认配置流（0x002D 地址自增）、
  * VHV 预热/连续启动（0x0087=0x40/0x21）、0x0030 bit4 极性 + 0x0031
  * bit0 data-ready 链与清中断时序；守护跑的是【真实】VL53L4CD.lua 的
