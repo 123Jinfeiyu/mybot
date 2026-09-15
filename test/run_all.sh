@@ -61,14 +61,15 @@ done
 echo "==============================================="
 
 # ======================================================================
-# 仓颉级无硬件端到端：编译产物 + 仓颉 runtime 齐备才跑，缺失则跳过
-# （纯 Lua 环境/CI 无 cjc 时不阻断回归）。用例走真实 bot4cj 二进制：
-# 守护线程→共享槽→Ema→Monitor 全链路，I2C/SPI 器件均为内存仿真模型。
+# mybot（C++ 移植）无硬件端到端：编译产物齐备才跑，缺失则跳过。
+# 用例走真实 mybot 二进制：守护线程→共享槽→Ema→Monitor 全链路，
+# I2C/SPI 器件均为内存仿真模型（modules/lib/virtbus/）。
 #
 # 用例表：用例名|raw 快照浮点断言 ERE（证明 :f 字段未被取整）|count 下限。
 # EMA 混合断言对所有用例通用：某拍 monf 行内 out ≠ raw（滤波确实推进）。
+# 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖。
 # ======================================================================
-bin="target/release/bin/main"
+bin="${BOT:-./build/mybot}"
 e2e_cases=(
 	'mpu_virt|"v6":41\.[0-9]+|10'
 	'bme280_virt|"v0":2[0-9]\.[0-9]+|10'
@@ -123,16 +124,16 @@ e2e_cases=(
 
 run_one_e2e() {
 	local name="$1" float_ere="$2" count_min="$3"
-	echo "----- $name (仓颉 E2E) -----"
+	echo "----- $name (mybot E2E) -----"
 	if [ ! -x "$bin" ]; then
-		echo "[SKIP] 无编译产物 $bin（执行 bash _set.sh 后可跑无硬件端到端）"
+		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
 		return 2
 	fi
-	# 动作时长约 1s，给 30s 上限防挂死；_run.sh 退出码原样透传
+	# 动作时长约 1s，给 30s 上限防挂死；mybot 退出码原样透传
 	if [ -n "$timeout_cmd" ]; then
-		out="$(cat "scripts/test/$name.mt" | timeout 30 bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+		out="$(cat "scripts/test/$name.mt" | timeout 30 "$bin" --robot="robots/test/$name.sql" 2>&1)"
 	else
-		out="$(cat "scripts/test/$name.mt" | bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+		out="$(cat "scripts/test/$name.mt" | "$bin" --robot="robots/test/$name.sql" 2>&1)"
 	fi
 	local rc=$?
 	echo "$out"
@@ -168,16 +169,15 @@ run_one_e2e() {
 	fi
 }
 
-if ! command -v cjc >/dev/null 2>&1 && [ -z "$CANGJIE_HOME" ] && [ ! -d "$HOME/cangjie" ]; then
+if [ ! -x "$bin" ]; then
 	for spec in "${e2e_cases[@]}"; do
 		name="${spec%%|*}"
 		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then
-			echo "----- $name (仓颉 E2E) -----"
-			echo "[SKIP] 无仓颉 runtime（需 cjc 在 PATH、设置 CANGJIE_HOME，或存在 ~/cangjie）"
+			echo "----- $name (mybot E2E) -----"
+			echo "[SKIP] 无编译产物 $bin（先执行：cmake -S . -B build && cmake --build build；BOT=xxx 可指定其他二进制）"
 		fi
 	done
 else
-	[ -z "$CANGJIE_HOME" ] && [ -d "$HOME/cangjie" ] && export CANGJIE_HOME="$HOME/cangjie"
 	for spec in "${e2e_cases[@]}"; do
 		name="${spec%%|*}"
 		rest="${spec#*|}"

@@ -7,7 +7,7 @@
 
 namespace bot {
 
-int MtVars_Lua::topDepth = 0;
+thread_local int MtVars_Lua::topDepth = 0;
 
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
 std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath,

@@ -15,8 +15,10 @@ namespace bot {
 
 class MtVars_Lua : public MatrixVars_Hardware {
 	/* 顶层调用深度计数：只在外层 .mt 直接调用的原子处打印结果，
-	 * 避免被 controller 转发的嵌套 Lua 调用重复输出（单线程串行访问） */
-	static int topDepth;
+	 * 避免被 controller 转发的嵌套 Lua 调用重复输出。
+	 * thread_local：controller 转发是同线程同步调用链，需跨实例共享计数；
+	 * 而守护线程等并发路径各自独立，杜绝共享静态态的跨线程竞态。 */
+	static thread_local int topDepth;
 
 	lua_State* L_;
 	std::string luapath_;

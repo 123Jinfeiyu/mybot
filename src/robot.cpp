@@ -293,13 +293,22 @@ void RobotStruct::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out
 		}
 		case sql4cj::EventType::INSERT_TABLE: {
 			if (out.empty()) { throw std::runtime_error("No table created yet."); }
-			mt::MatrixObject& root = out.back();
+			/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
+			 * （对照 robots/test/insert_typo.sql 的负路径契约） */
+			mt::MatrixObject* root = nullptr;
+			for (auto& m : out) {
+				if (trim(m.getName()) == eve.insert.targetTabName) { root = &m; break; }
+			}
+			if (root == nullptr) {
+				throw IllegalArgumentException(
+					"INSERT INTO '" + eve.insert.targetTabName + "': table is not defined");
+			}
 			for (const auto& row : eve.insert.tableRows) {
 				for (const auto& p : row) {
-					for (char ch : p.value) { root.addRune(ch); }
-					root.submitItem();
+					for (char ch : p.value) { root->addRune(ch); }
+					root->submitItem();
 				}
-				root.submitLine(0);
+				root->submitLine(0);
 			}
 			break;
 		}
