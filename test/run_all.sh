@@ -190,10 +190,59 @@ else
 	done
 fi
 
+# ======================================================================
+# mybot 结构脚本词法/语法解析契约回归（无硬件）：
+#   sqlquote    正值：引号值内 "--"、"/*" 按字面数据解析
+#               （修复前被当注释起始吞 token）；建守护正常 join、退出 0
+#   insert_typo 负值：INSERT 目标表拼错 → 解析期报错退出 1
+# 用例表：SQL|MT|期望退出码|输出必须包含
+# 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
+# ======================================================================
+parse_cases=(
+	'sqlquote.sql|sqlquote.mt|0|joined, total publishes='
+	'insert_typo.sql|insert_typo.mt|1|table is not defined'
+)
+run_one_parse() {
+	local sql="$1" mt="$2" want_rc="$3" expect="$4"
+	echo "----- $sql/$mt (parse regression) -----"
+	if [ ! -x "$bin" ]; then
+		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
+		return 2
+	fi
+	if [ -n "$timeout_cmd" ]; then
+		out="$(cat "scripts/test/$mt" | timeout 30 "$bin" --robot="robots/test/$sql" 2>&1)"
+	else
+		out="$(cat "scripts/test/$mt" | "$bin" --robot="robots/test/$sql" 2>&1)"
+	fi
+	local rc=$?
+	echo "$out"
+	local p_ok=true
+	[ "$rc" -ne "$want_rc" ] && p_ok=false
+	echo "$out" | grep -qF "$expect" || p_ok=false
+	if $p_ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed $sql/$mt(parse)"
+	fi
+}
+for spec in "${parse_cases[@]}"; do
+	sql="${spec%%|*}"
+	rest="${spec#*|}"
+	mt="${rest%%|*}"
+	rest="${rest#*|}"
+	want_rc="${rest%%|*}"
+	expect="${rest##*|}"
+	if [ -n "$filter" ] && [[ "$sql" != *"$filter"* ]] && [[ "$mt" != *"$filter"* ]]; then
+		continue
+	fi
+	run_one_parse "$sql" "$mt" "$want_rc" "$expect"
+done
+
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua 或仓颉 E2E，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E 或解析回归，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败"

@@ -16,6 +16,20 @@ static bool equalWithoutCase(const std::string& s1, const std::string& s2) {
 	return true;
 }
 
+/* ---- 词元引号状态：首字符为引号且未闭合 → 内部字符按字面处理。
+ * SQL 值可用 ' 或 " 包裹；引号内的 "--" 与块注释起始符都是数据而非注释，
+ * 注释识别只在引号外生效（修复引号内 '--' 被当注释吞掉后续 token）。 ---- */
+static bool insideQuotes(const std::string& s) {
+	if (s.empty()) { return false; }
+	char q = s[0];
+	if (q != '\'' && q != '"') { return false; }
+	bool open = true;
+	for (std::size_t i = 1; i < s.size(); ++i) {
+		if (s[i] == q) { open = !open; }
+	}
+	return open;
+}
+
 /* ---- 去掉首尾空白与引号（对应 parseName）---- */
 static std::string parseName(const std::string& s) {
 	std::size_t b = 0, e = s.size();
@@ -114,6 +128,7 @@ Token Lexer::next(bot::Reader& sr) {
 		else if (!s.empty() && c == ')') { rght_ = true; return Token::parse(s); }
 		else {
 			s += c;
+			if (insideQuotes(s)) { continue; }
 			if (s.size() >= 2 && s.compare(s.size() - 2, 2, "--") == 0) {
 				s.resize(s.size() - 2);
 				singleLineComment_ = true;
