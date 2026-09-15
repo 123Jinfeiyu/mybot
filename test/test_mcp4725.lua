@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_mcp4725.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 188 行手写帧桩」迁移到「真实驱动 +
--- virtbus I2C 注入层 + virtbus/mcp4725.lua 模型」。MCP4725 是本库首个
+-- virtbus I2C 注入层 + 内嵌模型（modules/MCP4725.lua 尾部 MCP4725_VIRT，
+-- 2026-09-15 自 virtbus/mcp4725.lua 迁入）」。MCP4725 是本库首个
 -- I2C 命令位嵌入式输出器件——无寄存器指针，命令类型在写流首字节高 3 位
 -- （C2..C0），读为无指针纯读；模型真正解码驱动写下的每帧（快速写/
 -- 写 DAC+EEPROM）并维护 DAC/EEPROM/掉电位/RDY 状态，旧桩只按脚本回吐
@@ -17,13 +18,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mcmod = dofile("modules/lib/virtbus/mcp4725.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（MCP4725_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/MCP4725.lua")
+local mcmod = MCP4725_VIRT
 
 local ADDR = 0x62
 local dev = mcmod.new()
 vbus.attach("MCP4725@0x62", ADDR, dev)
-vbus.load_driver("modules/MCP4725.lua")
 
 -- milli_sleep：累计时长 + 推进 EEPROM 写周期虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0
