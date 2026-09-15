@@ -272,6 +272,33 @@ mock_ioctl_ret = 0
 reset()
 check("spi_read_multi n>8 显式失败返回 -1", spi_read_multi(sfd, 9) == -1)
 
+-- spi_xfer_full：全双工同帧收发（MT6826S 24 位读帧族），tx/rx 缓冲同帧并存
+reset()
+rx_preset = { 0x00, 0x00, 0x5A }
+local xf = spi_xfer_full(sfd, { 0x33, 0x03, 0x00 }, 10)
+check("spi_xfer_full 返回等长 1 基接收表",
+	type(xf) == "table" and #xf == 3 and xf[1] == 0x00 and xf[2] == 0x00 and xf[3] == 0x5A,
+	tostring(xf))
+c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+check("spi_xfer_full 同帧 3 字节、MOSI 原样、delay=10",
+	c ~= nil and c.len == 3
+	and c.tx == string.char(0x33, 0x03, 0x00) and c.delay == 10)
+check("spi_xfer_full 缺表返回 nil", spi_xfer_full(sfd) == nil)
+check("spi_xfer_full 空表返回 nil", spi_xfer_full(sfd, {}) == nil)
+local big65 = {}
+for i = 1, 65 do big65[i] = 0 end
+check("spi_xfer_full 帧长 >64 返回 nil", spi_xfer_full(sfd, big65) == nil)
+check("spi_xfer_full 非法字节返回 nil", spi_xfer_full(sfd, { 0x33, 256, 0x00 }) == nil)
+check("spi_xfer_full 非数值 fd 返回 nil", spi_xfer_full(nil, { 0x33 }) == nil)
+mock_ioctl_ret = -1
+check("spi_xfer_full ioctl 失败返回 nil", spi_xfer_full(sfd, { 0x33, 0x03, 0x00 }) == nil)
+mock_ioctl_ret = 0
+reset()
+spi_xfer_full(sfd, { 0x01, 0x02, 0x03 }, 99999)
+c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+check("spi_xfer_full delay_us 超 __u16 钳 65535",
+	c ~= nil and c.delay == 65535, c and c.delay)
+
 -- delay_us 逐次传输（方案3：驱动显式传入）
 reset()
 mock_ioctl_ret = 0

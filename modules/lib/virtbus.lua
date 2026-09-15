@@ -61,8 +61,9 @@
 --   write_multi 帧长 1~64；spi_read_multi 合并值 n 1~8 越界显式 -1；
 --   delay_us 同 HAL 钳到 65535 并随帧留痕；spi_read 的 MOSI 为全 0（真机
 --   tx_buf=NULL 内核发 0）。无挂载路径/未打开 fd/模型返回失败，传输族一律 -1。
---   注意：MT6826S 驱动绕过全局 spi_* 直调 HAL.sys.ioctl_p 做全双工帧，
---   本层注入不到该路径——迁移它需先在 HAL 提供全局全双工原语。
+--   spi_xfer_full 是第 9 个 SPI 全局：1 基字节表入参/等长 1 基 MISO 表返回
+--   （失败 nil），供「MOSI 命令与 MISO 数据同帧」的全双工协议（MT6826S
+--   24 位读帧）；帧长/字节校验同 spi_write_multi，帧照常走 dev.xfer。
 --
 -- 器件模型故障注入契约：
 --   I2C dev.write(bytes) 显式 return false → 本笔写按 NACK（无返回/return nil = 成功）
@@ -456,6 +457,26 @@ function virtbus.v_spi_read_multi(fd, n, delay_us)
 	return be_merge(rx)
 end
 
+-- 全双工任意长度一帧（对齐 HAL spi_xfer_full）：data 为 1 基字节表（1~64，
+-- 逐字节校验），返回模型 dev.xfer 给的等长 1 基 MISO 表；任何失败返回 nil。
+-- 与写族同一 do_xfer 帧核心：tx/rx 全留痕，delay 钳 65535，模型返 nil 即失败。
+function virtbus.v_spi_xfer_full(fd, data, delay_us)
+	fd = tonumber(fd)
+	if fd == nil or type(data) ~= "table" or #data == 0 then return nil end
+	if #data > 64 then return nil end
+	local tx = {}
+	for i = 1, #data do
+		local b = tonumber(data[i])
+		if b == nil or b ~= math.floor(b) or b < 0 or b > 255 then return nil end
+		tx[i] = b
+	end
+	local entry_delay = spi_delay_of(delay_us)
+	local rx = do_xfer(fd, tx)
+	if rx == nil then return nil end
+	txlog[#txlog].delay = entry_delay
+	return rx
+end
+
 -- 替换全局 i2c_*/spi_* 函数为虚拟实现（幂等：已注入则跳过）
 local VFUNCS = {
 	i2c_open = virtbus.v_i2c_open,
@@ -478,6 +499,7 @@ local VFUNCS = {
 	spi_write3 = virtbus.v_spi_write3,
 	spi_write_multi = virtbus.v_spi_write_multi,
 	spi_read_multi = virtbus.v_spi_read_multi,
+	spi_xfer_full = virtbus.v_spi_xfer_full,
 }
 local REPLACED = {}
 for name in pairs(VFUNCS) do REPLACED[#REPLACED + 1] = name end

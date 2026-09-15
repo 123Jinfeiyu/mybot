@@ -32,20 +32,18 @@
 --      0x005=高 5 位恒 0 + STATUS[2:0]，0x006=CRC。CSN 下降沿锁存四寄存器快照
 --   3. CRC-8（多项式 0x07，MSB 先行）覆盖 0x003~0x005 共 24 位；手册未写明
 --      初值，按 MT68xx 家族惯例取 0x00——若真机 CRC_OK 恒 0 请反馈核对
---   4. HAL 无全双工 SPI 封装：读帧需同帧收发（MOSI 命令 + MISO 数据），
---      本驱动经 HAL.sys.ioctl_p 间接层自组 spi_ioc_transfer 单次全双工传输
---      （结构体 cdef 与 ioctl 号均 HAL 已定义；间接层可离线 mock）
+--   4. 读帧需同帧收发（MOSI 命令 + MISO 数据在末字节），走 HAL 全局全双工
+--      原语 spi_xfer_full（1 基字节表进/等长接收表出），virtbus 可同帧注入
 --   5. 逐寄存器读（0x003~0x006 各一帧）：锁存语义下快照跨 CSN 保持，CRC
 --      校验兜底一致性；不匹配自动重读一轮
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 同时持有 HAL 表：全双工帧走 HAL.sys 间接层（可离线 mock）
+-- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc；dofile 副作用
+-- 定义 spi_* 全局，virtbus 注入后 spi_xfer_full 走内存总线）
 local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
-local HAL = dofile(mpath.resolve("lib/HAL.lua"))
+dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
-local ffi = require("ffi")		-- spi_ioc_transfer 结构体（HAL 已完成 cdef）
 
 -- 调试开关：编码器逐拍读取，默认关闭逐次打印
 local DEBUG = false
@@ -59,37 +57,11 @@ local REG_CRC     = 0x006		-- CRC（覆盖 0x003~0x005）
 
 local ANGLE_MAX = 32768			-- 15 位满量程（360°）
 
--- ==================== 全双工帧（HAL.sys 间接层） ====================
--- tx: 1 基字节值表；返回等长 1 基接收字节表；失败返回 nil
--- 单次 spi_ioc_transfer 全双工传输，delay_us 语义与 HAL spi_xfer 一致
-local function spi_frame(fd, tx, delay_us)
-	local n = #tx
-	local txbuf = ffi.new("uint8_t[?]", n)
-	for i = 1, n do
-		local b = math.floor(tonumber(tx[i]) or -1)
-		if b < 0 or b > 255 then return nil end
-		txbuf[i - 1] = b
-	end
-	local rxbuf = ffi.new("uint8_t[?]", n)
-	local msg = ffi.new("spi_ioc_transfer[1]")
-	msg[0].tx_buf = ffi.cast("unsigned long long", ffi.cast("const uint8_t *", txbuf))
-	msg[0].rx_buf = ffi.cast("unsigned long long", ffi.cast("uint8_t *", rxbuf))
-	msg[0].len = n
-	local du = tonumber(delay_us)
-	if du ~= nil and du > 0 then
-		if du > 65535 then du = 65535 end
-		msg[0].delay_usecs = math.floor(du)
-	end
-	local r = HAL.sys.ioctl_p(fd, HAL.SPI_IOC_MESSAGE_1, msg)
-	if r == nil or r < 0 then return nil end
-	local out = {}
-	for i = 0, n - 1 do out[i + 1] = tonumber(rxbuf[i]) end
-	return out
-end
-
--- 读一个寄存器：24 位帧 [0011|A11..A8, A7..A0, 无效位]，数据在 MISO 末字节
+-- 读一个寄存器：24 位帧 [0011|A11..A8, A7..A0, dummy]，全双工同帧收发，
+-- MISO 在命令+地址段为 Hi-Z，数据在末字节（rx[3]）
 local function read_reg(fd, reg, delay_us)
-	local rx = spi_frame(fd, { CMD_READ * 16 + math.floor(reg / 256) % 16, reg % 256, 0x00 }, delay_us)
+	local rx = spi_xfer_full(fd,
+		{ CMD_READ * 16 + math.floor(reg / 256) % 16, reg % 256, 0x00 }, delay_us)
 	if rx == nil then return nil end
 	return rx[3]
 end

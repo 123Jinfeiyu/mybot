@@ -160,6 +160,10 @@ e2e_cases=(
 	# 10ms 复位轮询+100ms 陀螺启动），浮点断言锚定 monf 行 Ema 对
 	# ACCEL_X 正弦码（100~500）的 α 混合输出 out
 	'lsm6dsv_virt|"out":-?[0-9]+\.[0-9]+|10'
+	# MT6826S 15 位磁编码器（SPI Mode3，首个全双工同帧器件）：v0=ANGLE:f
+	# 度数（virt_tick 32 拍线性爬坡，11.25° 步进，非零拍必带小数）/
+	# v1=RAW/v2=STATUS/v3=CRC_OK 整数；锚 v0 浮点（证明 :f 未被取整）
+	'mt6826s_virt|"v0":[0-9]+\.[0-9]+|10'
 )
 
 run_one_e2e() {
