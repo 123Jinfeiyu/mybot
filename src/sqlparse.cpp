@@ -118,6 +118,7 @@ Token Lexer::next(bot::Reader& sr) {
 
 		bool blank = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0');
 
+		if (insideQuotes(s)) { s += c; continue; }
 		if (s.empty() && blank) { continue; }
 		else if (!s.empty() && blank) { return Token::parse(s); }
 		else if (s.empty() && c == ';') { flag_ = true; return next(sr); }
@@ -128,7 +129,6 @@ Token Lexer::next(bot::Reader& sr) {
 		else if (!s.empty() && c == ')') { rght_ = true; return Token::parse(s); }
 		else {
 			s += c;
-			if (insideQuotes(s)) { continue; }
 			if (s.size() >= 2 && s.compare(s.size() - 2, 2, "--") == 0) {
 				s.resize(s.size() - 2);
 				singleLineComment_ = true;
