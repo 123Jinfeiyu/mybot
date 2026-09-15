@@ -49,7 +49,14 @@ Json MetaProvider::collect() {
 	for (const std::string& name : *refs_) {
 		auto it = hardwareVars_->find(name);
 		if (it != hardwareVars_->end()) {
-			jsonMergeInto(obj, it->second->read().asObject());
+			Json snap = it->second->read();
+			if (!snap.isObj()) {
+				throw IllegalArgumentException("'$" + name
+					+ "': referenced variable returned a non-object (scalar) snapshot; "
+					+ "'$' reference columns merge field snapshots (v0.., status, count), "
+					+ "scalar values are only supported via 'controller' columns.");
+			}
+			jsonMergeInto(obj, snap.asObject());
 		}
 	}
 	return obj;

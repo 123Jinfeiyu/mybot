@@ -191,28 +191,49 @@ else
 fi
 
 # ======================================================================
-# mybot 结构脚本词法/语法解析契约回归（无硬件）：
-#   sqlquote    正值：引号值内 "--"、"/*" 按字面数据解析
-#               （修复前被当注释起始吞 token）；建守护正常 join、退出 0
-#   insert_typo 负值：INSERT 目标表拼错 → 解析期报错退出 1
-# 用例表：SQL|MT|期望退出码|输出必须包含
+# mybot 无硬件契约回归（无需 I2C/SPI 真机）：
+# 正值：退出码 0 + 输出必须包含锚点；负值：退出码非 0（表名拼错、
+# 别名重复、$ 引用标量等应清晰报错绝不裸崩）。覆盖：
+#   sqlquote      引号值内 "--"/"/*"/";"/","/括号/空白按字面解析
+#   insert_typo   INSERT 目标表拼错 → 解析期报错
+#   daemon/filter/ema_chain/monitor/mpu_daemon/multidaemon
+#                 守护采样→消费链路（含 Kalman/Ema/Monitor）
+#   relay-test / ref_prefix   Relay.controller 转发 + note 透传（$ 前缀字面）
+#   alias_inline 动作脚本内联别名生效；alias_override/alias_dup 覆盖/重复负值
+#   ref_alias_scalar  $ 引用指向标量 Alias → 报 "non-object" 而非类型崩溃
+# 用例表：SQL|MT|期望退出码|输出必须包含（MT/SQL 含 "/" 时视为仓库根相对路径）
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
 parse_cases=(
 	'sqlquote.sql|sqlquote.mt|0|joined, total publishes='
 	'insert_typo.sql|insert_typo.mt|1|table is not defined'
+	'daemon.sql|daemon.mt|0|joined, total publishes='
+	'filter.sql|filter.mt|0|joined, total publishes='
+	'ema_chain.sql|ema_chain.mt|0|joined, total publishes='
+	'monitor.sql|monitor.mt|0|joined, total publishes='
+	'mpu_daemon.sql|mpu_daemon.mt|0|joined, total publishes='
+	'multidaemon.sql|multidaemon.mt|0|joined, total publishes='
+	'robots/relay-test.sql|scripts/relay-test.mt|0|note=hello-relay'
+	'ref_prefix.sql|ref_prefix.mt|0|Relay: test=200 note=timer-0'
+	'alias_inline.sql|alias_inline.mt|0|served 1 call(s)'
+	'alias_override.sql|alias_override.mt|1|missing or not a number'
+	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
+	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4"
-	echo "----- $sql/$mt (parse regression) -----"
+	echo "----- $sql/$mt (no-hw contract) -----"
 	if [ ! -x "$bin" ]; then
 		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
 		return 2
 	fi
+	local sql_path="$sql" mt_path="$mt"
+	[[ "$sql" != */* ]] && sql_path="robots/test/$sql"
+	[[ "$mt" != */* ]] && mt_path="scripts/test/$mt"
 	if [ -n "$timeout_cmd" ]; then
-		out="$(cat "scripts/test/$mt" | timeout 30 "$bin" --robot="robots/test/$sql" 2>&1)"
+		out="$(cat "$mt_path" | timeout 30 "$bin" --robot="$sql_path" 2>&1)"
 	else
-		out="$(cat "scripts/test/$mt" | "$bin" --robot="robots/test/$sql" 2>&1)"
+		out="$(cat "$mt_path" | "$bin" --robot="$sql_path" 2>&1)"
 	fi
 	local rc=$?
 	echo "$out"
@@ -223,7 +244,7 @@ run_one_parse() {
 		pass=$((pass + 1))
 	else
 		fail=$((fail + 1))
-		failed="$failed $sql/$mt(parse)"
+		failed="$failed $sql/$mt(no-hw)"
 	fi
 }
 for spec in "${parse_cases[@]}"; do
@@ -242,7 +263,7 @@ done
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E 或解析回归，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E 或无硬件契约回归，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败"
