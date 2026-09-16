@@ -3,7 +3,8 @@
 --   GC 压力节奏：APDS9900_GC=1 luajit test/test_apds9900.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 246 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/apds9900.lua 模型」。APDS-9900（TAOS TSL2771
+-- virtbus 注入层 + 内嵌模型（modules/APDS9900.lua 尾部 APDS9900_VIRT，
+-- 2026-09-15 自 virtbus/apds9900.lua 迁入）」。APDS-9900（TAOS TSL2771
 -- 架构，APDS-9960 前代）不是朴素寄存器指针，而是命令字节寻址（datasheet
 -- AV02-2049EN + Linux 内核 apds990x.c 交叉验证）：
 --   首字节 bit7 COMMAND 必置、bit6:5 TYPE（00 重复字节/01 自动增量/
@@ -36,13 +37,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local amod = dofile("modules/lib/virtbus/apds9900.lua")
 vbus.reset()
 
 local ADDR = 0x39
+-- 模型内嵌于驱动文件（APDS9900_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/APDS9900.lua")
+local amod = APDS9900_VIRT
+
 local dev = amod.new()
 vbus.attach("APDS9900@0x39", ADDR, dev)
-vbus.load_driver("modules/APDS9900.lua")
 
 -- milli_sleep：本驱动 build/call 零睡眠，桩只累计供断言
 local sleep_total = 0

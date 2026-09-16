@@ -1,7 +1,8 @@
 /*
  * APDS-9900 无硬件端到端（proto=virt，环境光 ALS + 近距 PROX 传感器）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/apds9900.lua。模型复刻 TAOS TSL2771 命令字节协议——
+ * APDS9900_VIRT（内嵌于 modules/APDS9900.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻 TAOS TSL2771 命令字节协议——
  * 每笔访问首字节 bit7 COMMAND 必置、bit6:5 TYPE（00 重复字节/01 自动
  * 增量/10 重复字/11 自动增量）、bit4:0 寄存器地址；驱动只用 0x80 字节
  * 访问与 0xA0 字对自增：ENABLE 0x00（bit7:6 保留写抹 0，驱动写 0x00
