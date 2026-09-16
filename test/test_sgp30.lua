@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_sgp30.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的手写桩」迁移到「真实驱动 + virtbus
--- 注入层 + virtbus/sgp30.lua 模型」。本器件是 virtbus 库【16 位命令字 +
+-- 注入层 + 内嵌模型（modules/SGP30.lua 尾部 SGP30_VIRT，2026-09-15
+-- 自 virtbus/sgp30.lua 迁入）」。本器件是 virtbus 库【16 位命令字 +
 -- 每数据字 CRC-8、且命令带读写数据载荷的命令式 I2C 器件】：无寄存器指针，
 -- 写流首两字节恒 0x20xx 命令大端字（无载荷走 i2c_write_reg、带载荷走
 -- i2c_write_multi），应答全部无指针纯读（i2c_read）。CRC-8 poly 0x31/
@@ -21,13 +22,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/sgp30.lua")
 vbus.reset()
 
 local ADDR = 0x58
+-- 模型内嵌于驱动文件（SGP30_VIRT 全局工厂，CRC-8 公开在工厂表字段）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/SGP30.lua")
+local smod = SGP30_VIRT
+
 local dev = smod.new()
 vbus.attach("SGP30@0x58", ADDR, dev)
-vbus.load_driver("modules/SGP30.lua")
 
 local HALT = dofile("modules/lib/HAL.lua")	-- 守卫返回同一张 HAL 表
 
