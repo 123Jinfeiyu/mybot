@@ -31,14 +31,15 @@ function build(data)
 
 
 	-- 重复 build 先关旧 fd 再开新（防御：不依赖调用方保证 build 恰一次）
-	if fd ~= nil and fd > 0 then
+	if fd ~= nil and fd >= 0 then
 		i2c_close(fd)
 		fd = -1
 	end
 
-	-- 开始执行
+	-- 开始执行（i2c_open 成功返回 fd >= 0、失败返回 -1；fd 0 是合法句柄——
+	-- stdin 被关闭时内核就返回 0，用 > 0 判定会把可用总线当成打开失败）
 	fd = i2c_open(path)
-	if fd <= 0 then
+	if fd < 0 then
 		return {
 			result = "ERR",
 			message = "Failed to open I2C file"
@@ -84,8 +85,8 @@ function call(data)
 		return ek
 	end
 
-	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐）
-	if fd == nil or fd <= 0 then
+	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐；fd 0 合法，故判 < 0）
+	if fd == nil or fd < 0 then
 		return {
 			result = "ERR",
 			message = "I2C not opened (build first)"

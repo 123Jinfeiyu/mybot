@@ -371,6 +371,27 @@ expect_err("build 回读失败", function()
 end, "Failed to read back")
 section()
 
+-- build 回显 mismatch：包装 read 翻转 CONFIG 低字节 bit7（0x0080），掩 0x7FFF 后失配。
+-- 守 D-1：回读必须与写入值比对，否则器件 ACK 但配置未生效时（写保护 / pga 列拼错 /
+-- 该地址上是别的型号）build 仍报 OK，而 ÷32768 换算会让电压静默偏差最高 16 倍。
+do
+	local orig_read = dev.read
+	local flipped = false
+	dev.read = function(n)
+		local bb = orig_read(n)
+		if bb and #bb == 2 and not flipped then
+			flipped = true
+			bb[2] = (bb[2] + 0x80) % 256	-- 翻低字节 bit7
+		end
+		return bb
+	end
+	expect_err("build 回显 mismatch", function()
+		return build({ fd = fd, address = "0x48" })
+	end, "echo mismatch")
+	dev.read = orig_read
+end
+section()
+
 -- =====================================================================
 -- 组 3：真实 call
 -- =====================================================================

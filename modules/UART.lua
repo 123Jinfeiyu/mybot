@@ -9,7 +9,11 @@ dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 -- 文件句柄（H-06：local upvalue 共享于本文件 build/call/destroy，不污染全局）
-local fd = 0
+-- 哨兵值必须是 -1 而非 0：HAL 约定 open 成功返回 fd >= 0（见 HAL.lua 的 i2c_open 注释），
+-- 而 stdin 被关闭时（systemd StandardInput=null、--input 配合 0<&-）open 真实返回 0。
+-- 用 0 当「未打开」哨兵会让 build 成功（build 里按 uart_open 返回 < 0 判失败）
+-- 而 call/destroy 拒绝同一个合法句柄。
+local fd = -1
 
 -- 全局波特率（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
 local baud = 9600
@@ -42,9 +46,9 @@ function build(data)
 
 	-- 重复 build 先关旧句柄再开新（与 I2C/GPIO/SPI 的守卫一致；
 	-- 否则旧 fd 泄漏且残留在 HAL.uart_baud 表中）
-	if fd ~= nil and fd > 0 then
+	if fd ~= nil and fd >= 0 then
 		uart_close(fd)
-		fd = 0
+		fd = -1
 	end
 
 	-- 打开串口（raw 8N1 + 非阻塞；波特率白名单在 HAL 内校验）
@@ -76,9 +80,9 @@ function destroy(data)
 
 	dbg_table("-------- UART.lua ender func get a table --------", data)
 
-	if fd ~= nil and fd > 0 then
+	if fd ~= nil and fd >= 0 then
 		uart_close(fd)
-		fd = 0
+		fd = -1
 	end
 
 	return {  result = "OK"  }
@@ -99,7 +103,7 @@ function call(data)
 
 	dbg_table("-------- UART.lua caller func get a table --------", data)
 
-	if fd == nil or fd <= 0 then
+	if fd == nil or fd < 0 then
 		return {
 			result = "ERR",
 			message = "UART not opened (build first)"

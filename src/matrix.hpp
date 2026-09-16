@@ -18,16 +18,12 @@ public:
 	explicit MatrixParseExcept(const std::string& m) : std::runtime_error(m) {}
 };
 
-class BufOverTheLine : public MatrixParseExcept {
-public:
-	explicit BufOverTheLine(std::int64_t line)
-		: MatrixParseExcept("Buffer length over the line. we got line: " + std::to_string(line)) {}
-};
-
 class DoesNotSync : public MatrixParseExcept {
 public:
-	explicit DoesNotSync(std::int64_t line)
-		: MatrixParseExcept("Matrix Line Does Not Sync. we got line: " + std::to_string(line)) {}
+	DoesNotSync(std::int64_t line, std::size_t expected, std::size_t got)
+		: MatrixParseExcept("Matrix Line Does Not Sync. we got line: " + std::to_string(line)
+			+ ": this row has " + std::to_string(got) + " cell(s), but the row above has "
+			+ std::to_string(expected) + " (every row must match the header column count)") {}
 };
 
 class UnknowExcept : public MatrixParseExcept {
@@ -42,6 +38,32 @@ class MatrixObject {
 	std::string tmp_;				/* 字符缓冲区 */
 	std::vector<std::string> grp_;			/* 整行缓冲区 */
 	std::vector<std::vector<std::string>> values_;	/* 原始矩阵 */
+
+	/* "-" 占位符继承的解析结果，惰性前向填充（见 inherited()）。
+	 * 按值存储而非存指针：MatrixObject 会被拷贝（findMt 按值返回），
+	 * 指向 values_ 内部字符串的指针在副本里会悬垂。 */
+	mutable std::vector<std::string> inherited_;
+	mutable bool inheritedReady_ = false;
+
+	void buildInherited() const {
+		inherited_.clear();
+		inheritedReady_ = false;
+		const std::size_t nrow = values_.size();
+		const std::size_t ncol = cols();
+		inherited_.reserve(nrow * ncol);
+		for (std::size_t r = 0; r < nrow; ++r) {
+			for (std::size_t c = 0; c < ncol; ++c) {
+				/* 语义与旧的逐格递归完全一致：row<=1 的 "-" 不继承，
+				 * 原样保留字面值，由调用方决定含义（getMt 返 "-"、parseMtDouble 返 0.0）。 */
+				if (r > 1 && values_[r][c] == "-") {
+					inherited_.push_back(inherited_[(r - 1) * ncol + c]);
+				} else {
+					inherited_.push_back(values_[r][c]);
+				}
+			}
+		}
+		inheritedReady_ = true;
+	}
 
 public:
 	bool hasName() const { return !name_.empty(); }
@@ -70,6 +92,27 @@ public:
 				+ " (a header column such as 'name' is likely missing)");
 		}
 		return (*this)(static_cast<std::size_t>(row), static_cast<std::size_t>(col));
+	}
+
+	/* 取 "-" 占位符解析后的值（首次访问触发一次前向填充，之后 O(1)）。
+	 * 取代旧的逐格递归回溯：那既是 O(n²)，递归深度又随行数增长。 */
+	const std::string& inherited(std::size_t row, std::size_t col) const {
+		if (!inheritedReady_) { buildInherited(); }
+		const std::size_t ncol = cols();
+		if (row >= values_.size() || col >= ncol) {
+			throw bot::IllegalArgumentException(
+				"Matrix access out of bounds: row=" + std::to_string(row) + " col=" + std::to_string(col));
+		}
+		return inherited_[row * ncol + col];
+	}
+
+	const std::string& inherited(std::int64_t row, std::int64_t col) const {
+		if (row < 0 || col < 0) {
+			throw bot::IllegalArgumentException(
+				"Matrix access with negative index: row=" + std::to_string(row) + " col=" + std::to_string(col)
+				+ " (a header column such as 'name' is likely missing)");
+		}
+		return inherited(static_cast<std::size_t>(row), static_cast<std::size_t>(col));
 	}
 
 	/* 在某一行的列头中寻找 key 的列号 */
@@ -114,10 +157,11 @@ public:
 	void submitLine(std::int64_t count) {
 		if (grp_.empty()) { return; }
 		if (!values_.empty() && grp_.size() != values_.back().size()) {
-			throw DoesNotSync(count);
+			throw DoesNotSync(count, values_.back().size(), grp_.size());
 		}
 		values_.push_back(grp_);
 		grp_.clear();
+		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
 	}
 };
 

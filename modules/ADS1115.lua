@@ -113,10 +113,16 @@ function build(data)
         return { result = "ERR", message = "Failed to write ADS1115 config" }
     end
 
-    -- 读回验证
+    -- 读回比对自检（无 ID 寄存器，兼在位探测与配置确认）。
+    -- 比对须掩掉 OS 位（bit15 = OS_START）：其读语义为转换状态（空闲恒读 1），
+    -- 而写入值该位为 0（转换由 call 触发），全 16 位比对在真实器件上永远 mismatch。
     local rd = i2c_read_multi(fd, REG_CONFIG, 2)
     if rd < 0 then
         return { result = "ERR", message = "Failed to read back ADS1115 config" }
+    end
+    if bitc.band(rd, 0x7FFF) ~= bitc.band(config, 0x7FFF) then
+        return { result = "ERR",
+                 message = string.format("ADS1115 config echo mismatch: got 0x%04X (expect 0x%04X)", rd, config) }
     end
 
     print(string.format("ADS1115 init OK: addr=0x%02X, channel=AIN%d, PGA=%s, DR=%s SPS",

@@ -202,7 +202,13 @@ static void daemonRise(DaemonHolder* holder, const std::string& name,
 		const std::string& chunkPath, const std::string& configStr, int64_t intervalMs) {
 	DaemonSlot* slot = holder->slot;
 	std::shared_ptr<std::promise<int64_t>> prom = holder->result;
-	std::shared_ptr<DaemonHolder> hkeep = holder->self;	/* 线程持 holder 保生命周期 */
+	/* self 是 weak_ptr（打破自引用环防泄漏）：此处取回强引用交给线程保生命周期。
+	 * build 期 registry 必持有强引用，lock() 不会失败；万一取空则显式报错，
+	 * 不把空 shared_ptr 交给线程去解引用。 */
+	std::shared_ptr<DaemonHolder> hkeep = holder->self.lock();
+	if (!hkeep) {
+		throw std::runtime_error("Daemon '" + name + "' holder was released before spawn");
+	}
 	std::thread([slot, chunkPath, configStr, intervalMs, prom, hkeep]() {
 		int64_t r = daemon_body(hkeep, chunkPath, configStr, intervalMs);
 		try { prom->set_value(r); } catch (...) { /* future 已被消费/进程退出 */ }

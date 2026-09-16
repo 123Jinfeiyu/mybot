@@ -44,6 +44,10 @@ add_executable(mybot
 
 target_include_directories(mybot PRIVATE src ${LUAJIT_INCLUDE_DIRS})
 
+# README 声称的零告警基线由此处强制执行（此前构建未启用任何告警标志，
+# 基线只能靠人工手工传标志核查）。不加 -Werror：避免在未测试的编译器版本上直接构建失败。
+target_compile_options(mybot PRIVATE -Wall -Wextra -Wpedantic)
+
 target_link_libraries(mybot PRIVATE
   ${LUAJIT_LIBRARIES}
   pthread

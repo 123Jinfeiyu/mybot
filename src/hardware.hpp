@@ -38,11 +38,9 @@ public:
 	/* 伪析构：释放资源 */
 	void destroy() { if (free_) { (*free_)(); } }
 
-	/* 获得项目值；占位符 "-" 且非首行时递归取上一行 */
+	/* 获得项目值；占位符 "-" 且非首行时继承上一行（直查前向填充缓存，不递归） */
 	static std::string getMt(const mt::MatrixObject& obj, std::int64_t row, std::int64_t col) {
-		const std::string& raw = obj(row, col);
-		if (raw == "-" && row > 1) { return getMt(obj, row - 1, col); }
-		return raw;
+		return obj.inherited(row, col);
 	}
 
 	/* 解析项目值（占位符语义 + 类型解析）。本工程只用 Float64 */

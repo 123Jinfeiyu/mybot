@@ -72,15 +72,15 @@ function build(data)
 	end
 
 	-- 重复 build 先关旧 fd 再开新（防御：不依赖调用方保证 build 恰一次；
-	-- 与 I2C/GPIO 的守卫一致——否则旧 fd 永久泄漏）
-	if fd ~= nil and fd > 0 then
+	-- 与 I2C/GPIO 的守卫一致——否则旧 fd 永久泄漏。fd 0 合法，故判 >= 0）
+	if fd ~= nil and fd >= 0 then
 		spi_close(fd)
 		fd = -1
 	end
 
-	-- 开始执行
+	-- 开始执行（spi_open 成功返回 fd >= 0、失败返回 -1）
 	fd = spi_open(path)
-	if fd <= 0 then
+	if fd < 0 then
 		return {
 			result = "ERR",
 			message = "Failed to open SPI file"
@@ -143,8 +143,8 @@ function call(data)
 
 	dbg_table("-------- SPI.Lua caller func get a table --------", data)
 
-	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐）
-	if fd == nil or fd <= 0 then
+	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐；fd 0 合法，故判 < 0）
+	if fd == nil or fd < 0 then
 		return {
 			result = "ERR",
 			message = "SPI not opened (build first)"

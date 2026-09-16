@@ -316,7 +316,7 @@ do
 		"Invalid Arguments Type: table")
 	expect_err("build 缺 fd 报 UART 列提示", function() return build({}) end,
 		"Invalid Argument: fd (UART 列是否引用了 @UART 变量?)")
-	expect_err("build fd<=0 ERR", function() return build({ fd = -1 }) end,
+	expect_err("build fd<0 ERR", function() return build({ fd = -1 }) end,
 		"Invalid Argument: fd")
 	check("fd 非法 build 零事务", #entries(mark) == 1)
 end

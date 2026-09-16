@@ -7,9 +7,11 @@
 namespace bot {
 
 double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int64_t row, std::int64_t col) {
-	const std::string& raw = obj(row, col);
-	if (raw == "-" && row > 1) { return parseMtDouble(obj, row - 1, col); }
-	if (raw == "-") { return 0.0; }
+	/* 继承结果直查前向填充缓存。旧的逐格递归既是 O(n²)（每行每格重走整条链），
+	 * 递归深度又等于连续 "-" 的行数：Release 仅靠 GCC 尾调用优化才没崩，
+	 * Debug/ASAN 构建同输入实测 stack-overflow。 */
+	const std::string& raw = obj.inherited(row, col);
+	if (raw == "-") { return 0.0; }	/* 首数据行即 "-"，无可继承 */
 
 	char* end = nullptr;
 	const char* start = raw.c_str();

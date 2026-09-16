@@ -61,8 +61,12 @@ public:
 	/* D2：主线程放弃等待后置位，槽所有权移交守护线程（线程退出时自行释放），
 	 * 主线程此后不再触碰槽——防放弃路径的 use-after-free。 */
 	std::atomic<bool> abandoned{false};
-	/* 自引用（Factory 置位）：守护线程捕获它保生命周期（D1/D2） */
-	std::shared_ptr<DaemonHolder> self;
+	/* 弱自引用（Factory 置位）：daemonRise 经 lock() 取回 shared_ptr 交给守护线程保生命周期。
+	 * 必须是 weak_ptr——shared_ptr 自引用会让引用计数永不归零，每个守护固定泄漏
+	 * 208B/4 次分配，LeakSanitizer 下所有守护 E2E 用例判失败。
+	 * 改 weak 后所有权语义不变：线程持有 lock() 得到的强引用，abandoned 路径下
+	 * 线程退出时仍是槽的唯一持有者并自行释放（D2）。 */
+	std::weak_ptr<DaemonHolder> self;
 
 	explicit DaemonHolder(DaemonSlot* s, int64_t timeout)
 		: slot(s), joinTimeoutMs(timeout), result(std::make_shared<std::promise<int64_t>>()),
