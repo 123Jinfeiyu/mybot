@@ -33,7 +33,6 @@ local PULSE_180DEG_MS= 2.5	-- 180 度对应脉宽
 
 -- 【配置脚本】
 -- 该脚本负责初始化PCA9685
--- FIXME(20260602-qing): 异常处理
 --
 function build(data)
 

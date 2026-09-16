@@ -2,7 +2,7 @@
 
 > **一句话**：把机器人的「结构、驱动、动作」拆成三份脚本，给它一份动作剧本，它就能照着"演"出来——而且**不接任何硬件也能在开发机上跑通全流程**。
 
-本仓库是 [bot4cj](…/bot4cj.new)（仓颉语言版）的 **C++17 全量移植**：SQL 结构脚本（`.sql`）、Lua 驱动（`.lua`）、动作脚本（`.mt`）三份脚本的设计与用法完全不变，底层运行时由仓颉运行时换成原生 C++（`std::thread` + LuaJIT C API），构建从 `cjpm` 换成 `cmake`。
+本仓库是 bot4cj（仓颉语言版）的 **C++17 全量移植**：SQL 结构脚本（`.sql`）、Lua 驱动（`.lua`）、动作脚本（`.mt`）三份脚本的设计与用法完全不变，底层运行时由仓颉运行时换成原生 C++（`std::thread` + LuaJIT C API），构建从 `cjpm` 换成 `cmake`。
 
 | 脚本 | 像什么 | 负责什么 |
 | ---- | ------ | -------- |
@@ -209,7 +209,7 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 ## 🔧 开发与贡献
 
 ```bash
-git clone <本仓库> && cd bot4cj.cpp
+git clone <本仓库> && cd bot4cj
 cmake -S . -B build && cmake --build build
 bash test/run_all.sh                          # 离线回归（无硬件）
 cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql   # 无硬件自检

@@ -41,7 +41,6 @@ local TEMP_OFFSET_DEG	= 36.53	-- raw=0 对应 36.53°C（片上温度，非环�
 
 -- 【配置脚本】
 -- 该脚本负责初始化MPU6050
--- FIXME(20260602-qing): 异常处理
 --
 function build(data)
 
