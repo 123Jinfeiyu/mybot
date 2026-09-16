@@ -1,7 +1,8 @@
 /*
  * AS7262 无硬件端到端（proto=virt，首个「硬件仅 3 寄存器 + 虚拟寄存器
  * 间接窗口 + TX/RX 就绪握手」I2C 器件）：sensor_daemon 不打开真机 I2C，
- * 而是挂内存仿真模型 modules/lib/virtbus/as7262.lua。I2C 总线上器件只
+ * 而是挂内存仿真模型 AS7262_VIRT（内嵌于 modules/AS7262.lua 尾部，
+ * 2026-09-15 迁入，守护经回退路径装载）。I2C 总线上器件只
  * 暴露 STATUS 0x00（bit1=TX_VALID、bit0=RX_VALID）、写口 0x01、读口
  * 0x02；DEVICE_TYPE/CONTROL/INT_T/六通道等虚拟寄存器（0x00~0x13）全部
  * 经 SparkFun 同款握手访问（读=等TX空→写口发地址→等RX→读读口；
