@@ -2,7 +2,8 @@
  * EMC2101 无硬件端到端（proto=virt，Microchip/SMSC 智能风扇控制器：
  * PWM 输出 + 内外双温度/TACH 转速测量反馈混合器件）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/emc2101.lua。模型复刻 8 位字节指针协议——
+ * EMC2101_VIRT（内嵌于 modules/EMC2101.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻 8 位字节指针协议——
  * 0x4A FAN_CONFIG（bit5=PROG 硬件门，POR=0x20 手动/可编程态；
  * PROG=0 时 0x4C 与 LUT 只读，LUT 激活片上温控闭环）、0x4C
  * FAN_SETTING（6 位占空比，100% 满码=2×max(1,PWM_F)）、0x4D

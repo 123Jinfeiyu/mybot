@@ -3,7 +3,8 @@
 --   GC 压力节奏：EMC2101_GC=1 luajit test/test_emc2101.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 261 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/emc2101.lua 模型」。旧桩三处互证假绿已按
+-- virtbus 注入层 + 内嵌模型（modules/EMC2101.lua 尾部 EMC2101_VIRT，
+-- 2026-09-15 自 virtbus/emc2101.lua 迁入）」。旧桩三处互证假绿已按
 -- SMSC EMC2101 Datasheet Rev.2.54 与 Adafruit Arduino/CircuitPython
 -- 两库交叉钉死、戳破：
 --   1) FAN_CONFIG(0x4A) POR 旧桩给 0x00（LUT 激活）；datasheet
@@ -43,13 +44,19 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mmod = dofile("modules/lib/virtbus/emc2101.lua")
 vbus.reset()
 
 local ADDR = 0x4C
+
+-- 模型内嵌于驱动文件（EMC2101_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/EMC2101.lua")
+local mmod = EMC2101_VIRT
+
+local dev = mmod.new()
+
 local dev = mmod.new()
 vbus.attach("EMC2101@0x4C", ADDR, dev)
-vbus.load_driver("modules/EMC2101.lua")
 
 -- milli_sleep 桩：本器件驱动全程无睡眠，桩只累加（应恒 0）
 local sleep_total = 0
