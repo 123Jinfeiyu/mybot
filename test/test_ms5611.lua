@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_ms5611.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 312 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/ms5611.lua 模型」。本器件是 virtbus 库【首个
+-- virtbus 注入层 + 内嵌模型（modules/MS5611.lua 尾部 MS5611_VIRT，
+-- 2026-09-15 自 virtbus/ms5611.lua 迁入）」。本器件是 virtbus 库【首个
 -- 「单字节命令里编码通道+OSR 档位」+「指针读 PROM/ADC」+ PROM 出厂校准
 -- CRC-4 校验的命令式 I2C 器件】：无寄存器地图——0x1E 复位、0x40+2i/
 -- 0x50+2i 启动 D1/D2 转换走 i2c_write_multi 单字节命令；PROM（0xA0+2i
@@ -24,13 +25,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/ms5611.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（MS5611_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/MS5611.lua")
+local smod = MS5611_VIRT
 
 local ADDR = 0x77
 local dev = smod.new()
 vbus.attach("MS5611@0x77", ADDR, dev)
-vbus.load_driver("modules/MS5611.lua")
 
 local bitc = dofile("modules/bitcompat.lua")
 local ffi = require("ffi")

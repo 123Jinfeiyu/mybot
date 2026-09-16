@@ -2,7 +2,8 @@
  * MS5611 无硬件端到端（proto=virt，首个「单字节命令编码通道+OSR 档位」
  * +「指针读 PROM/ADC」+ PROM 出厂校准 CRC-4 的命令式 I2C 虚拟器件）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/ms5611.lua。模型复刻协议——0x1E 软复位、
+ * MS5611_VIRT（内嵌于 modules/MS5611.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻协议——0x1E 软复位、
  * 0x40+2i/0x50+2i 启动 D1/D2 转换（两区间分别判、仅偶数）、
  * 0xA0+2i 指针读 8 字 PROM（2B）、0x00 指针读 24 位 ADC（3B），
  * word7 CRC-4 位域模型真算（TE/PX4 布局，参与自身运算）。守护跑的是
