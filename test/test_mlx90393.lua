@@ -3,7 +3,8 @@
 --   GC 压力节奏：MLX90393_GC=1 luajit test/test_mlx90393.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 263 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/mlx90393.lua 模型」。旧桩与旧驱动共享同一份
+-- virtbus 注入层 + 内嵌模型（modules/MLX90393.lua 尾部 MLX90393_VIRT，
+-- 2026-09-15 自 virtbus/mlx90393.lua 迁入）」。旧桩与旧驱动共享同一份
 -- 错误假设（status 收尾/bit6/WR 3B/GAIN 在 reg2/[T Z Y X] 序/T/32），
 -- 已整体废弃。本文件按 datasheet 3901090393 Rev012 §15（两份官方资料 +
 -- Adafruit/tedyapo 实现交叉验证）钉死协议：
@@ -37,13 +38,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mmod = dofile("modules/lib/virtbus/mlx90393.lua")
 vbus.reset()
 
 local ADDR = 0x0C
+-- 模型内嵌于驱动文件（MLX90393_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/MLX90393.lua")
+local mmod = MLX90393_VIRT
+
 local dev = mmod.new()
 vbus.attach("MLX90393@0x0C", ADDR, dev)
-vbus.load_driver("modules/MLX90393.lua")
 
 -- milli_sleep 桩：累计并驱动模型虚拟时钟（转换门用）
 local sleep_total = 0

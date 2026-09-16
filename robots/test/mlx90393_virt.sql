@@ -1,7 +1,8 @@
 /*
  * MLX90393 无硬件端到端（proto=virt，Melexis Triaxis 三轴磁力计）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/mlx90393.lua。模型复刻命令式 + status-first 应答
+ * MLX90393_VIRT（内嵌于 modules/MLX90393.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻命令式 + status-first 应答
  * 协议（datasheet 3901090393 Rev012 §15）——没有寄存器指针事务：每条
  * 命令先一笔写、再 Sr 纯读，应答首字节永远是 status（bit7 BURST/
  * bit6 WOC/bit5 SM_MODE 单次完成/bit4 ERROR/bit2 RS 复位自清/bit1:0 D
