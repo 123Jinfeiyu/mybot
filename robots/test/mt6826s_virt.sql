@@ -1,7 +1,8 @@
 /*
  * MT6826S 无硬件端到端（proto=virt，15 位磁编码器，SPI Mode3）：
  *   sensor_daemon 不打开真机 SPI，而是挂内存仿真模型
- *   modules/lib/virtbus/mt6826s.lua（模型模块表 BUS="spi"，守护据此走
+ *   MT6826S_VIRT，内嵌于 modules/MT6826S.lua 尾部（2026-09-15 迁入，
+ *   工厂表 BUS="spi"，守护据此走
  *   attach_spi + spi_open/spi_setup 虚拟注入路径，无 addr 列；mode=3/
  *   bits=8/speed=1MHz 按手册 8.6.2）。
  *

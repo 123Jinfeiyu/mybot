@@ -3,7 +3,8 @@
 --   GC 压力节奏：MT6826S_GC=1 luajit test/test_mt6826s.lua
 --
 -- 从「dofile 驱动后替换 HAL.sys.ioctl_p、ffi.cast 抠 spi_ioc_transfer 缓冲的
--- 手写桩」迁移到「真实驱动 + virtbus 注入层 + virtbus/mt6826s.lua 模型」。
+-- 手写桩」迁移到「真实驱动 + virtbus 注入层 + 内嵌模型（modules/MT6826S.lua
+-- 尾部 MT6826S_VIRT，2026-09-15 自 virtbus/mt6826s.lua 迁入）」。
 -- 迁移同时消除 HAL 缺口：驱动原本绕过全局 spi_* 自组全双工帧，现新增全局
 -- 原语 spi_xfer_full（1 基表进/等长表出，HAL.lua + virtbus 双侧复刻），
 -- 驱动只调全局——真机走 ioctl、无真机走内存模型，协议帧可经 txlog 断言。
@@ -40,13 +41,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mm = dofile("modules/lib/virtbus/mt6826s.lua")
 vbus.reset()
 
 local PATH = "/dev/spidev0.0"
+
+-- 模型内嵌于驱动文件（MT6826S_VIRT 全局工厂，工厂表带 BUS="spi"）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/MT6826S.lua")
+local mm = MT6826S_VIRT
+
 local dev = mm.new()
 vbus.attach_spi("MT6826S@" .. PATH, PATH, dev)
-vbus.load_driver("modules/MT6826S.lua")
 
 local fd = spi_open(PATH)
 check("spi_open 虚拟 fd=3", fd == 3, tostring(fd))
