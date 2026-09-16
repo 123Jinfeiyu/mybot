@@ -122,8 +122,9 @@ cat scripts/one-shake.mt | bash _run.sh --robot=robots/spider1.sql   # 单腿姿
 机器人结构由 `--robot` 指定，动作脚本来源可三选一（`src/ActionSource.cj` 工厂，优先级从高到低）：
 
 ```bash
-# 1) TCP 长驻模式：监听端口等待客户端下发 .mt（适合上位机/远程持续喂动作）
+# 1) TCP 长驻模式：一次 bind 反复 accept，上位机可持续下发 .mt（适合远程连续喂动作）
 bash _run.sh --robot=robots/relay-test.sql --tcp 19240
+bash _run.sh --robot=robots/relay-test.sql --tcp 19240 --tcp-max 100   # 服务满 100 连接后正常收尾退出
 
 # 2) 文件输入：不依赖管道，直接指定动作脚本（Windows 无管道也能跑）
 bash _run.sh --robot=robots/relay-test.sql --input scripts/relay-test.mt
@@ -133,8 +134,19 @@ cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql
 ```
 
 TCP 源直接以字节流（`InputStream.read(Array<Byte>)`）交给核心的 StringReader 解析，
-客户端关闭连接（EOF，read 返 0）即结束本次 run；断连异常同样按 EOF 收尾而非 abort。
-`scripts/tcp_e2e.sh [port]` 提供 Python 客户端 → TCP → 服务端的回环端到端自检。
+客户端关闭连接（EOF，read 返 0）即结束**本次** run；断连异常同样按 EOF 收尾而非 abort。
+长驻模式下硬件只在启动时 `active()` 一次，跨连接保持已建状态；某份脚本解析或执行出错
+只打印 `Aborted: ...（继续服务下一个连接）`，不带走整个控制器。
+
+两点限制：① SDK 1.1.3 的 `TcpServerSocket` 只接受 `bindAt:` 端口、无按地址绑定入口，
+监听面必为 `0.0.0.0`，故访问控制落在**对端判定**上——缺省只接受回环对端（`127.0.0.0/8`、
+`::1`），其余在读取任何字节前关闭；确需远程下发请显式加 `--allow-remote` 并自行套隧道/防火墙
+（Lua 沙箱不是安全边界，放开等价于开放远程执行，见下「安全说明」）。② 仓颉 stdlib 无信号接口，
+`Ctrl-C`/`SIGTERM` 不会执行 `deactivate()` 清理（舵机/PWM 停在最后状态、守护线程随进程终止）；
+需要干净收尾时用 `--tcp-max <n>` 让服务正常退出。
+
+`scripts/tcp_e2e.sh [port]` 提供 Python 客户端 → TCP → 服务端的长驻端到端自检
+（非回环拒绝 + 同进程连服两连接 + `--tcp-max` 收尾），已并入 `test/run_all.sh`。
 
 ## 🔧 环境要求
 
@@ -299,6 +311,8 @@ CREATE TABLE Monitor (name String, src String);
 INSERT INTO Monitor (name, src) VALUES ('mon0', '$imu0');   -- 引用守护 imu0（$ 前缀必填）
 ```
 
+`@Alias` 变量**不可被 `$` 引用**：引用列合并的是被引用变量 `read()` 返回的字段表，而别名的 `read()` 只返回一个字符串——它的作用是展开 `@Action` 列头的参数名（写 `A.angle` 这类列名，而非 `$A` 这类值）。误写为引用时在 build 期显式报错，并给出表/列/行上下文。
+
 ### 基层硬件抽象层（HAL）
 
 总线怎么"开口说话"（打开设备、读写寄存器的底层动作）都封装在 `modules/lib/HAL.lua`，所有驱动共用这一份，**仅支持 LuaJIT**：
@@ -385,9 +399,9 @@ API 契约、模型回调、txlog 格式、SPI 语义、器件模型明细与全
 | --- | --- |
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），框架加载 `<矩阵名>.lua`、驱动 dofile `lib/` 与 `@Daemon` 的 chunk 均按其解析；支持 `:` 分隔多个路径（如 `./modules:./extra_modules`）按序查找，**共享库目录放第一段**（issue #19） |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值、lua status 详细转储；缺省静默，错误信息与生命周期摘要不受影响 |
-| `BOT4CJ_NO_GC` | 设为 `1` 关闭仓颉 GC（导出 `cjEnableGC=0`），**长动作脚本模式**：并发 GC 缺陷（见已知限制）在高分配速率下会概率性崩溃/挂死，关 GC 后实测 5000 行脚本 6/6 稳定通过且耗时约减半；千行级脚本 RSS <100MB，进程退出由 OS 回收内存。**仅限一次性执行**，`--tcp` 长驻模式禁用（内存会无限增长直至 OOM） |
+| `BOT4CJ_NO_GC` | 设为 `1` 关闭仓颉 GC（导出 `cjEnableGC=0`），**长动作脚本模式**：并发 GC 缺陷（见已知限制）在高分配速率下会概率性崩溃/挂死，关 GC 后实测 5000 行脚本 6/6 稳定通过且耗时约减半；千行级脚本 RSS <100MB，进程退出由 OS 回收内存。**仅限一次性执行**：`--tcp` 长驻进程跨连接不退出，关 GC 后每连接的分配都不回收、会持续增长直至 OOM；既要长脚本又要常驻，请用 `--tcp-max <n>` 让进程服务满 n 连接后退出、由外部监督器重启回收 |
 
-安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入；现已支持 TCP 动作输入（`--tcp`），接入外部网络数据源时需另行建立信任边界（输入校验或白名单 API）。
+安全说明：框架加载 Lua 驱动后会中和 `os.execute` / `io.popen`（shell）、`os.exit`（进程退出）、`io.open` / `io.lines` / `io.input` / `io.output` / `os.remove` / `os.rename`（任意文件读写）；`os.getenv`、`dofile`、`require`（HAL 依赖 ffi）保留。**该沙箱是防误用护栏，不是安全边界**——Lua 驱动可经 `require("ffi")` 直调任意 libc，且结构/驱动/动作脚本均为可信输入。TCP 动作输入（`--tcp`）因 SDK 无法按地址绑定，改以**回环对端白名单**收口：缺省只接受 `127.0.0.0/8` / `::1` 发起的连接，其余在读取任何字节前关闭；`--allow-remote` 显式放开即等于开放远程代码执行，只应在自行建立信任边界（SSH 隧道、防火墙、专用网段）后使用。
 
 ## 💡 进阶示例：守护采样 → 滤波 → 消费闭环
 
@@ -421,10 +435,19 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
   ≤800 行 0% 失败，1000~5000 行默认配置失败率约 17%（v0.3.3 logD 条件求值修复后，
   修复前约 50%+），与堆大小基本无关（调堆**不能**解决）。正常步态脚本（数十行）不受影响；
   需要跑长脚本时设 `BOT4CJ_NO_GC=1`（详见环境变量表）。runtime 层根除需仓颉运行时修复
+- **TCP 长驻模式无优雅停机**：仓颉 stdlib 不提供信号接口（1.1.3 无 `std.os` 包，`std.posix` 不含
+  `signal`），`Ctrl-C` / `SIGTERM` 直接终止进程，**不执行 `deactivate()`**——舵机/PWM 停在最后写值、
+  守护线程随进程一起终止。需要干净收尾用 `--tcp-max <n>` 让进程服务满 n 连接后正常退出
+- **TCP 监听面无法按地址收窄**：SDK 的 `TcpServerSocket` 只接受 `bindAt:` 端口，监听必为 `0.0.0.0`；
+  故访问控制以**回环对端白名单**实现（非回环连接在读取任何字节前关闭）。`--allow-remote` 一旦开启，
+  因 Lua 驱动可经 `ffi` 直调 libc，等价于开放远程代码执行——须自行叠加隧道/防火墙
+- **TCP 长驻为顺序服务**：单循环逐连接处理，同一时刻只跑一份动作脚本；客户端不发 EOF（写完不关写半轴）
+  会一直阻塞在该连接上，后续连接排队等待——`std.net` 未暴露读超时，无法在核心侧设上限。
+  上位机须「发完即关」，或为每个动作脚本单开一次连接
 
 ### 待实现功能
 
-- [x] **TCP 传输动作**：已落地 ActionSource 三源动作输入（stdin / 文件 / `--tcp` 长驻，见上文「运行示例」）
+- [x] **TCP 传输动作**：已落地 ActionSource 三源动作输入（stdin / 文件 / `--tcp`）；`--tcp` 为真长驻——一次 bind 反复 accept、逐连接执行一份 `.mt`、缺省只接受回环对端，配 `--tcp-max` / `--allow-remote`（见上文「运行示例」与「已知限制」）
 - [x] **神经网络前向推理（纯 Lua 基准）**：[`modules/lib/nn.lua`](modules/lib/nn.lua) 提供无 nn4cj 依赖的全连接 MLP 前向引擎（默认 `{41,80,80,40,17}` 四层、LeakyReLU/Sigmoid、`.mt` 权重存取）；将推理输出接回仓颉动作链路（历史 nn4cj/`MtVars_NN` 路径）仍待重新接入
 - [ ] **更多操作系统适配**：鸿蒙终端、macOS、开源鸿蒙机器人
 - [ ] **驱动生态扩充**：按模板新增一个 Lua 文件即可即插即用，欢迎社区贡献
@@ -441,8 +464,18 @@ cd bot4cj
 # 安装依赖并构建
 bash _set.sh
 
-# 运行离线测试（桩替身不触硬件）
+# 运行离线测试（桩替身不触硬件；含仓颉单元测试 cjpm test 与端到端夹具）
 bash test/run_all.sh
+
+# 只跑仓颉核心单元测试（src/*_test.cj，不进编译产物）
+cjpm test
+
+# 一条命令跑门禁：构建 + 全量回归 + 覆盖面自证
+bash scripts/ci.sh                    # 无仓颉工具链时自动跳过构建与仓颉 E2E
+bash scripts/ci.sh --filter uart      # 只跑名字含 uart 的用例
+# 门禁含「产物新鲜度」检查：src/*.cj 比 target/release/bin/main 新时判失败
+# （仓颉端到端直接跑该产物，否则绿灯证明的是旧二进制行为）；确认在测旧产物时
+# 用 CI_STALE_OK=1 bash scripts/ci.sh 显式放行
 
 # 运行示例（无硬件自检链路）
 cat scripts/relay-test.mt | bash _run.sh --robot=robots/relay-test.sql

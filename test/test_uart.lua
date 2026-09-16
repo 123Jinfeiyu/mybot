@@ -15,6 +15,7 @@ local calls = {}			-- 操作记录
 local mock_open_fd = 7
 local mock_tcgetattr_ok = true
 local mock_tcsetattr_ok = true
+local mock_cfset_ok = true	-- false = glibc 拒绝该 speed_t（cfset* 返回 -1）
 local mock_write_ret = nil	-- nil = 真实语义（按需返回）
 local read_feed = {}		-- read 桩按调用次序吐 {bytes 或 -1}
 local read_feed_i = 0
@@ -61,12 +62,16 @@ HAL.sys.cfmakeraw = function(ptr)
 	local t = ffi.cast("cj_termios *", ptr)
 	t[0].c_cflag = 0x8BD	-- 模拟 cfmakeraw 后的 cflag（含 CS8，不含 CREAD/CLOCAL）
 end
-HAL.sys.cfsetispeed = function(ptr, baud)
-	calls[#calls + 1] = { op = "cfsetispeed", baud = baud }
-	last_ispeed = baud
+HAL.sys.cfsetispeed = function(ptr, speed)
+	calls[#calls + 1] = { op = "cfsetispeed", speed = speed }
+	last_ispeed = speed
+	if not mock_cfset_ok then return -1 end
+	return 0
 end
-HAL.sys.cfsetospeed = function(ptr, baud)
-	calls[#calls + 1] = { op = "cfsetospeed", baud = baud }
+HAL.sys.cfsetospeed = function(ptr, speed)
+	calls[#calls + 1] = { op = "cfsetospeed", speed = speed }
+	if not mock_cfset_ok then return -1 end
+	return 0
 end
 HAL.sys.tcsetattr = function(fd, act, ptr)
 	calls[#calls + 1] = { op = "tcsetattr", act = act }
@@ -105,6 +110,7 @@ local function reset(feed)
 	last_write = nil
 	last_ispeed = nil
 	mock_tcgetattr_ok, mock_tcsetattr_ok = true, true
+	mock_cfset_ok = true
 	mock_write_ret = nil
 end
 
@@ -114,7 +120,12 @@ check(uart_open("/dev/ttyUSB0", 9600) == 7, "open ttyUSB0@9600 成功")
 check(has_call("open", "flags", HAL.UART_O_FLAGS), "open 旗帜 = RDWR|NOCTTY|NONBLOCK(2306)",
 	tostring(calls[1] and calls[1].flags))
 check(has_call("cfmakeraw"), "cfmakeraw 进入 raw 模式")
-check(last_ispeed == 9600, "cfsetispeed 收到数值波特率 9600", tostring(last_ispeed))
+-- cfsetispeed 收 termios speed_t 而非 Hz（传 9600 会被 glibc 拒为 EINVAL，
+-- 且原实现不查返回值 → 波特率从未设置；旧断言「收到数值波特率 9600」正是
+-- 把该缺陷固化进了测试，见 test_abi_consts.lua 与 <termios.h> 的交叉校验）
+check(last_ispeed == HAL.UART_BAUD_SPT[9600] and last_ispeed == 13,
+	"cfsetispeed 收到 speed_t B9600(13)", tostring(last_ispeed))
+check(last_ispeed ~= 9600, "cfsetispeed 不得再收 Hz 值")
 check(has_call("tcsetattr", "act", HAL.UART_TCSANOW), "tcsetattr(TCSANOW)")
 check(last_tcsetattr ~= nil
 	and last_tcsetattr.c_cc[HAL.UART_VMIN_IDX] == 0
@@ -145,6 +156,14 @@ mock_tcsetattr_ok = false
 check(uart_open("/dev/ttyUSB0", 9600) == -1, "tcsetattr 失败 -> -1")
 check(has_call("close"), "失败路径关闭 fd（2）")
 mock_tcsetattr_ok = true
+
+-- glibc 拒绝该 speed_t（cfset* 返回 -1）：不得把未改速率的结构体继续写回设备
+reset()
+mock_cfset_ok = false
+check(uart_open("/dev/ttyUSB0", 9600) == -1, "cfsetispeed 失败 -> -1")
+check(has_call("close"), "失败路径关闭 fd（3）")
+check(not has_call("tcsetattr"), "cfset 失败后不再下发 tcsetattr")
+mock_cfset_ok = true
 
 -- ==================== uart_write ====================
 reset()

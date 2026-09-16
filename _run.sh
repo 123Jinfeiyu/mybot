@@ -19,7 +19,9 @@ export cjHeapSize="${cjHeapSize:-128MB}"
 # 实测 >800 行长脚本默认堆下失败率 50%+，且与堆大小（64/128/512MB）无关。
 # cjEnableGC=0 下同脚本 6/6 全过（验证实验见 CHANGELOG 0.3.3）。
 # 适用：一次性执行的动作脚本（进程退出由 OS 回收内存，分配量 ~行数×20KB，
-# 千行级脚本 RSS <100MB，安全）。不适用：--tcp 长驻模式（会无限增长直至 OOM）。
+# 千行级脚本 RSS <100MB，安全）。不适用：--tcp 长驻模式——进程跨连接不退出，
+# 关 GC 后每连接的分配都不回收，会无限增长直至 OOM；既要长脚本又要常驻，
+# 用 --tcp-max <n> 让进程服务满 n 连接后退出，由外部监督器重启回收。
 if [ "${BOT4CJ_NO_GC:-0}" = "1" ]; then
 	export cjEnableGC=0
 fi
@@ -54,8 +56,9 @@ if [ ! -x "$bin" ]; then
 	echo "未找到编译产物 target/release/bin/main，请先执行 bash _set.sh 构建" >&2
 	exit 1
 fi
-# 源码新于产物：提醒可能跑的是过期二进制（行为与文档/最新修复不一致的常见原因）
-stale=$(find "$base/src" -name "*.cj" -newer "$bin" -print -quit 2>/dev/null)
+# 源码新于产物：提醒可能跑的是过期二进制（*_test.cj 只被 cjpm test 编译，
+# 不参与产物构建，故排除在外——否则写单测会天天误报产物过期）（行为与文档/最新修复不一致的常见原因）
+stale=$(find "$base/src" -name "*.cj" ! -name "*_test.cj" -newer "$bin" -print -quit 2>/dev/null)
 if [ -n "$stale" ]; then
 	echo "警告: src/ 源码比编译产物新（${stale#$base/}），当前运行的可能是过期二进制；建议先执行 bash _set.sh" >&2
 fi

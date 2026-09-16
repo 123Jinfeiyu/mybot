@@ -661,8 +661,8 @@ end
 -- 常量经 test/test_uart_consts.c 与系统头文件实证（gpio 段同款方法）：
 -- sizeof(struct termios)=60、c_line 偏移 16、c_cc 偏移 17、VMIN=6/VTIME=5、
 -- O_RDWR=2 O_NOCTTY=256 O_NONBLOCK=2048、TCSANOW=0、TCIFLUSH=0、
--- CREAD=128 CLOCAL=2048 CS8=48；现代 glibc 的 B* 波特率常量即数值本身
--- （B9600==9600、B115200==115200），cfsetispeed 直接收 Hz 值
+-- CREAD=128 CLOCAL=2048 CS8=48；B* 是 termios speed_t 而非波特率数值
+-- （B9600==13、B115200==4098），cfsetispeed 只认这些常量——见 UART_BAUD_SPT
 
 ffi.cdef[[
 int  tcgetattr(int fd, void *termios_p);
@@ -696,17 +696,24 @@ HAL.EINTR = 4					-- Linux errno：被信号打断
 
 HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
 
-local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 }
+-- 支持的波特率 → termios speed_t（B* 常量）。cfsetispeed/cfsetospeed 收的是
+-- speed_t 而非 Hz：实测 cfsetispeed(&t, 9600) 返回 -1/EINVAL 且【不改动 c_ispeed】，
+-- 只有 B9600(=13) 这类常量才生效。原实现直传 Hz 且不查返回值——波特率从未
+-- 被设置过，串口停留在驱动当前速率上静默运行。数值取自 Linux UAPI（各架构
+-- 同值），由 test_abi_consts.lua 逐档同 <termios.h> 实测值比对，不靠注释自证。
+local UART_BAUD_SPT = {
+	[1200] = 9,      [2400] = 11,     [4800] = 12,     [9600] = 13,
+	[19200] = 14,    [38400] = 15,    [57600] = 4097,  [115200] = 4098,
+	[230400] = 4099, [460800] = 4100, [921600] = 4103,
+}
+HAL.UART_BAUD_SPT = UART_BAUD_SPT
 
 -- 打开串口（raw 8N1 + 波特率 + 非阻塞），成功返回 fd，失败返回 -1
 function uart_open(path, baud)
 	if type(path) ~= "string" then return -1 end
 	baud = tonumber(baud)
-	local baud_ok = false
-	for _, b in ipairs(UART_BAUDS) do
-		if b == baud then baud_ok = true; break end
-	end
-	if not baud_ok then
+	local speed = UART_BAUD_SPT[baud]
+	if speed == nil then
 		print("HAL: invalid uart baud: " .. tostring(baud))
 		return -1
 	end
@@ -734,8 +741,11 @@ function uart_open(path, baud)
 	t[0].c_cflag = bitlib.bor(tonumber(t[0].c_cflag) or 0, HAL.UART_CREAD_CLOCAL)
 	t[0].c_cc[HAL.UART_VMIN_IDX] = 0	-- 非阻塞读：VMIN=0
 	t[0].c_cc[HAL.UART_VTIME_IDX] = 1	-- 100ms 字间计时器（驱动层另有轮询超时）
-	HAL.sys.cfsetispeed(t, baud)
-	HAL.sys.cfsetospeed(t, baud)
+	if HAL.sys.cfsetispeed(t, speed) ~= 0 or HAL.sys.cfsetospeed(t, speed) ~= 0 then
+		print("HAL: cfset speed failed: " .. tostring(baud) .. " bps（glibc 拒绝该 speed_t）")
+		HAL.sys.close(fd)
+		return -1
+	end
 	if HAL.sys.tcsetattr(fd, HAL.UART_TCSANOW, t) ~= 0 then
 		print("HAL: tcsetattr failed: " .. path)
 		HAL.sys.close(fd)

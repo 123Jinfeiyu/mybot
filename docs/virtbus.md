@@ -2,6 +2,14 @@
 
 > 对应 issue #18。本文是无真机验证驱动链路的完整参考手册；[README](../README.md) 中只保留摘要。
 
+> **本文较长（约 232 KB）**：「器件模型库」一节按器件逐条给出协议事实，单条常超 2000 字符。
+> 定位具体器件请用编辑器搜索 `<器件名>_VIRT`（如 `BME688_VIRT`），或看下方索引。
+>
+> **目录**：[概述](#概述) · [快速上手](#快速上手) · [API](#api) · [模型回调契约](#模型回调契约) ·
+> [txlog 条目格式](#txlog-条目格式) · [SPI 契约](#spi-契约) · [UART 契约](#uart-契约) ·
+> [契约对齐](#契约对齐) · [器件模型库](#器件模型库41-个内嵌于各驱动脚本尾部) ·
+> [守护无硬件端到端](#守护无硬件端到端protovirt) · [回归测试](#回归测试)
+
 ## 概述
 
 `lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部 26 个全局 `i2c_*`（12）/`spi_*`（9）/`uart_*`（5）函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*`、`/dev/spidev*`、`/dev/tty*` 即可完整跑通 build/call/destroy。I2C 器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言；未挂载的地址按 NACK 处理（写 -1、读 -1/nil），模型自身也可 `write` 返回 `false`/`read` 返回 `nil` 注入 NACK（模拟掉线），负路径与真机"设备不在总线"行为一致。指针式读族（`read_reg/multi/reg16`）严格复刻 HAL 的 I2C_RDWR「写指针 + 读」事务，模型能知道当前读的是哪个寄存器；`read/read_bytes` 为无指针纯读。
@@ -94,11 +102,11 @@ vbus.attach("自定义@0x68", 0x68, dev)
 
 虚拟总线逐函数复刻 HAL 返回值——`i2c_write_reg` 为**布尔**（驱动用 `if not` 判定，若错返 -1 会因 Lua 真值规则造成 NACK 假成功）、`write_multi/reg16` 为 0/-1、读族长度约束（合并值 1~6/1~8 越界显式失败，字节表钳 1~16）一致。
 
-## 器件模型库 `lib/virtbus/`
+## 器件模型库（41 个，内嵌于各驱动脚本尾部）
 
 协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿：
 
-32 个外置模型与驱动一一对应（`modules/<NAME>.lua` ↔ `lib/virtbus/<name>.lua`；PCA9685/BH1750/MPU6050/MHZ19/ADS1256/TPL0501/AD9833/MCP4725/PCF8574/VL53L4CD/SDS011/MCP3421/INA219/BME280/LTC2944/MS5611/MT6826S/SHT3X/ADXL345/SGP30/MAX17043/MAX17048/ADS1115/ADS1015/INA226/VL53L0X/APDS9900/INA3221/CHT8305/AMG8833/BMM150/AS3935/MAX30102/LSM6DSV/AS7262/EMC2101/MLX90393/BH1745/BMI270/LPS22HB/BME688 四十一个已实验性内嵌进驱动文件尾部 `<驱动名>_VIRT` 全局工厂，守护侧经 sensor_daemon 回退装载），模型是同协议的**独立第二实现**（防互证假绿），两侧文件头互有交叉引用注释——**改协议两处同步**。37 个有守护 E2E，4 个写-only 输出器件豁免；`regmap.lua` 为通用底座、不对应驱动。对照总表：
+41 个模型与驱动一一对应，模型是同协议的**独立第二实现**（防互证假绿），两侧文件头互有交叉引用注释——**改协议两处同步**。自 2026-09-15 起，41 个模型已整体内嵌于各自驱动脚本尾部（`modules/<NAME>.lua` 尾部的 `<NAME>_VIRT` 全局工厂），守护侧经 sensor_daemon 回退装载；`modules/lib/virtbus/` 现仅余通用寄存器底座 `regmap.lua`（不对应驱动）。器件清单：AD9833/ADS1015/ADS1115/ADS1256/ADXL345/AMG8833/APDS9900/AS3935/AS7262/BH1745/BH1750/BMI270/BME280/BME688/BMM150/CHT8305/EMC2101/INA219/INA226/INA3221/LTC2944/LPS22HB/LSM6DSV/MAX17043/MAX17048/MAX30102/MCP3421/MCP4725/MHZ19/MLX90393/MS5611/MPU6050/MT6826S/PCA9685/PCF8574/SDS011/SGP30/SHT3X/TPL0501/VL53L0X/VL53L4CD。其中 37 个有守护 E2E，4 个写-only 输出器件豁免（PCA9685/TPL0501/AD9833/MCP4725）。对照总表：
 
 | 驱动 `modules/` | 模型 `lib/virtbus/` | 守护 E2E `robots/test/` |
 | --- | --- | --- |
@@ -197,7 +205,10 @@ vbus.attach("自定义@0x68", 0x68, dev)
 使用示例：
 
 ```lua
-local mpmod = dofile("modules/lib/virtbus/mpu6050.lua")
+-- 模型内嵌于驱动文件：dofile 驱动即注册全局 <驱动名>_VIRT 工厂
+-- （外置 modules/lib/virtbus/<name>.lua 已随 41 个模型迁移而删除，仅余 regmap 底座）
+dofile("modules/MPU6050.lua")
+local mpmod = MPU6050_VIRT
 local imu = mpmod.new()                      -- WHO_AM_I 默认 0x68
 imu:sample({ ax = 1, ay = 2, az = 3,         -- 有符号原始 LSB
              gx = -4, gy = -3, gz = -2, temp = 340 })
@@ -206,7 +217,7 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 
 ## 守护无硬件端到端（`proto=virt`）
 
-`@Daemon` 的 `proto` 列填 `virt`，sensor_daemon 不碰真机，而是挂 `lib/virtbus/<driver 小写>.lua` 器件模型——真实驱动 build/call、共享槽 publish、`@Ema/@Kalman`、`@Monitor` 引用消费整条链路全部走内存仿真。挂载族按模型模块表 `BUS` 标记自动分流：I2C 模型（默认）走 `attach(addr)` + `i2c_open`（必须配 `addr`）；**SPI 模型（`BUS="spi"`）走 `attach_spi(name,path,dev)` + `spi_open/spi_setup`**（`path` 缺省 `/dev/spidev0.0`、免 addr，`mode/bits/speed` 从 Daemon 列读取，如 ADS1256 要 Mode1/8bit/1.92MHz，SPI 器件 params 不透传 address）；**UART 模型（`BUS="uart"`）走 `attach_uart(name,path,dev)` + `uart_open(path,baud)`**（`path` 缺省 `/dev/serial0`、免 addr，`baud` 为 Daemon 表框架列不进 params）。模型若提供 `virt_tick(n)`，守护在 build 前先打一拍 `virt_tick(0)` 预武装（build 内含长转换门的器件如 SGP30 220ms 自检，守护不注入 milli_sleep 桩、不推进虚拟时钟，预武装使其读即就绪，并把器件置于已上电稳定 warm 态；无该方法的模型不受影响），随后每拍先驱动它造**确定性合成波形**再采样（无该方法则输出静态初值）；驱动无对应模型/缺必填总线身份时 setup 显式 fail(-8)，守护空转不崩。守护启动打印醒目 `VIRTUAL HARDWARE` 横幅（仿真数据禁止用于生产环境）。
+`@Daemon` 的 `proto` 列填 `virt`，sensor_daemon 不碰真机，而是挂器件模型（先试外置 `lib/virtbus/<driver 小写>.lua`，缺失时回退读驱动内嵌的 `<驱动名>_VIRT` 工厂——41 个模型现均已内嵌，该目录仅余底座 `regmap.lua`）——真实驱动 build/call、共享槽 publish、`@Ema/@Kalman`、`@Monitor` 引用消费整条链路全部走内存仿真。挂载族按模型模块表 `BUS` 标记自动分流：I2C 模型（默认）走 `attach(addr)` + `i2c_open`（必须配 `addr`）；**SPI 模型（`BUS="spi"`）走 `attach_spi(name,path,dev)` + `spi_open/spi_setup`**（`path` 缺省 `/dev/spidev0.0`、免 addr，`mode/bits/speed` 从 Daemon 列读取，如 ADS1256 要 Mode1/8bit/1.92MHz，SPI 器件 params 不透传 address）；**UART 模型（`BUS="uart"`）走 `attach_uart(name,path,dev)` + `uart_open(path,baud)`**（`path` 缺省 `/dev/serial0`、免 addr，`baud` 为 Daemon 表框架列不进 params）。模型若提供 `virt_tick(n)`，守护在 build 前先打一拍 `virt_tick(0)` 预武装（build 内含长转换门的器件如 SGP30 220ms 自检，守护不注入 milli_sleep 桩、不推进虚拟时钟，预武装使其读即就绪，并把器件置于已上电稳定 warm 态；无该方法的模型不受影响），随后每拍先驱动它造**确定性合成波形**再采样（无该方法则输出静态初值）；驱动无对应模型/缺必填总线身份时 setup 显式 fail(-8)，守护空转不崩。守护启动打印醒目 `VIRTUAL HARDWARE` 横幅（仿真数据禁止用于生产环境）。
 
 现有三十七例：
 

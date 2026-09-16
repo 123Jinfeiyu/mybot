@@ -6,7 +6,6 @@ package bot4cj
  */
 
 import std.argopt.*
-import std.env.*
 import std.fs.*
 //import ctype4cj.*
 //import nn4cj.*
@@ -20,6 +19,8 @@ main(args: Array<String>): Int64 {
 		ArgumentSpec.Long("help", ArgumentMode.NoValue),	/* ---- 拉起帮助 ---- */
 		ArgumentSpec.Long("robot", ArgumentMode.RequiredValue),	/* ---- 结构脚本 ---- */
 		ArgumentSpec.Long("tcp", ArgumentMode.RequiredValue),	/* ---- TCP 端口（长驻模式）---- */
+		ArgumentSpec.Long("tcp-max", ArgumentMode.RequiredValue),	/* ---- TCP 服务连接数上限（0=不限）---- */
+		ArgumentSpec.Long("allow-remote", ArgumentMode.NoValue),	/* ---- 放开 TCP 回环对端白名单 ---- */
 		ArgumentSpec.Long("input", ArgumentMode.RequiredValue)	/* ---- 动作脚本文件路径 ---- */
 //		ArgumentSpec.Short(r'i', ArgumentMode.RequiredValue),	/* ---- 输入模型 ---- */
 //		ArgumentSpec.Short(r'o', ArgumentMode.RequiredValue),	/* ---- 输出模型 ---- */
@@ -109,13 +110,18 @@ main(args: Array<String>): Int64 {
 		try {
 			robot.active()
 
-			/* ---- ActionSource：可替换动作输入源（stdin / TCP / 文件）---- */
-			let inputOpt = openActionSource(options)
-			if (let Some(input) <- inputOpt) {
-				robot.run(input)
+			/* ---- ActionSource：TCP 长驻（逐连接重复 run）> 文件 > stdin ---- */
+			let listenerOpt = openTcpListener(options)
+			if (let Some(listener) <- listenerOpt) {
+				serveTcpActions(robot, listener, tcpMaxConnections(options))
 			} else {
-				println("动作输入源打开失败，退出")
-				return 1
+				let inputOpt = openActionSource(options)
+				if (let Some(input) <- inputOpt) {
+					robot.run(input)
+				} else {
+					println("动作输入源打开失败，退出")
+					return 1
+				}
 			}
 		}
 
@@ -154,7 +160,10 @@ func print_help()
 	println("cat scripts/std.mt | ./bot --robot=./robots/spider1.sql")
 	println("")
 	println("动作输入源（优先级从高到低）：")
-	println("  --tcp <port>    TCP 长驻模式：监听端口等待客户端下发 .mt")
+	println("  --tcp <port>    TCP 长驻模式：反复接受连接，每连接下发并执行一份 .mt")
+	println("                  （缺省仅接受回环对端；单脚本报错不退出服务）")
+	println("  --tcp-max <n>   长驻服务 n 个连接后正常收尾退出（0 或缺省 = 不限）")
+	println("  --allow-remote  放开回环白名单（Lua 沙箱非安全边界，等于开放远程执行）")
 	println("  --input <path>  从文件读取动作脚本")
 	println("  （缺省）        从 stdin 管道读取")
 }

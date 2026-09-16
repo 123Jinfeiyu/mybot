@@ -37,10 +37,15 @@ for t in test/test_*.lua; do
 	if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
 		continue
 	fi
-	# 真机测试：文件内声明 "-- requires: i2c" 且本机无 /dev/i2c-* 时跳过
+	# 真机/工具依赖测试：文件内声明 "-- requires: i2c|cc" 且本机不具备时跳过
 	if grep -q '^\-\- requires: i2c' "$t" && ! ls /dev/i2c-* >/dev/null 2>&1; then
 		echo "----- $name -----"
 		echo "[SKIP] 需要 /dev/i2c-* 真机总线（文件标记 -- requires: i2c），本机无 i2c，跳过"
+		continue
+	fi
+	if grep -q '^\-\- requires: cc' "$t" && ! command -v cc >/dev/null 2>&1; then
+		echo "----- $name -----"
+		echo "[SKIP] 需要 C 编译器（文件标记 -- requires: cc），本机无 cc，跳过"
 		continue
 	fi
 	echo "----- $name -----"
@@ -255,6 +260,185 @@ else
 			continue
 		fi
 		run_one_e2e "$name" "$float_ere" "$count_min"
+	done
+fi
+
+# ======================================================================
+# @Alias 专项端到端：别名机制的 4 条契约（纯软件夹具，无需总线）
+#   alias_inline   动作脚本内联 @Alias 展开参数名 → 成功
+#   alias_override 动作脚本重定义覆盖结构脚本的别名 → 下游收不到原参数名，报错退出
+#   alias_dup      同一动作脚本内重复定义别名 → 报错退出
+#   alias_ref      结构脚本 $ 引用列指向别名 → 报错退出并给出表/列/行上下文
+#                  （回归防线：0.3.3 前此处抛裸 JsonException 'Fail to convert to
+#                   JsonObject'，无上下文且 deactivate 期重复抛）
+# 用例表：用例名|期望退出码 0=成功 1=失败|输出 ERE
+# 退出码与文案双重锚定：只查文案会漏掉「报错但退出码为 0」的静默放行
+# ======================================================================
+alias_cases=(
+	'alias_inline|0|"result":"OK"'
+	'alias_override|1|overrides the structure definition'
+	'alias_dup|1|Duplicate alias name'
+	'alias_ref|1|references alias variable'
+)
+
+run_one_alias() {
+	local name="$1" want_rc="$2" ere="$3"
+	echo "----- $name (@Alias E2E) -----"
+	if [ ! -x "$bin" ]; then
+		echo "[SKIP] 无编译产物 $bin（执行 bash _set.sh 后可跑无硬件端到端）"
+		return 2
+	fi
+	local out rc alias_ok=true
+	if [ -n "$timeout_cmd" ]; then
+		out="$(cat "scripts/test/$name.mt" | timeout 30 bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+	else
+		out="$(cat "scripts/test/$name.mt" | bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+	fi
+	rc=$?
+	echo "$out"
+	[ "$rc" -eq "$want_rc" ] || alias_ok=false
+	echo "$out" | grep -qE "$ere" || alias_ok=false
+	# 已知崩溃形态：引用校验缺失时以裸类型异常暴露（带上下文文案不得被其取代）
+	echo "$out" | grep -qF "Fail to convert to JsonObject" && alias_ok=false
+	if $alias_ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed $name(@Alias E2E)"
+	fi
+}
+
+# ======================================================================
+# 结构脚本负向端到端：SQL 解析期的 5 条校验（表未定义/重复列/缺列/未知列/非法列类型）
+# 这些校验的价值在于「不再静默跳过」——INSERT 打到拼错的表名时，硬件实例会无声
+# 消失，错误延迟到动作期以误导信息暴露。断言 = 退出码非 0 且文案含关键字。
+# 用例表：用例名|期望错误文案 ERE
+# ======================================================================
+sql_neg_cases=(
+	'sql_insert_undefined|is not defined'
+	'sql_insert_dup_column|duplicate column'
+	'sql_insert_missing_column|is missing'
+	'sql_insert_unknown_column|unknown column'
+	# 非 String 列类型由 SQL4cj 词法层先拒（文案含类型名），核心侧的
+	# 「Only String is Valid」为兜底分支，此处只锚显式失败与类型名
+	'sql_non_string_column|Int64'
+)
+
+if ! (command -v cjc >/dev/null 2>&1 || [ -n "$CANGJIE_HOME" ] || [ -d "$HOME/cangjie" ]); then
+	for spec in "${sql_neg_cases[@]}"; do
+		name="${spec%%|*}"
+		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then
+			echo "----- $name (SQL 负向 E2E) -----"
+			echo "[SKIP] 无仓颉 runtime（需 cjc 在 PATH、设置 CANGJIE_HOME，或存在 ~/cangjie）"
+		fi
+	done
+else
+	for spec in "${sql_neg_cases[@]}"; do
+		name="${spec%%|*}"
+		ere="${spec#*|}"
+		if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
+			continue
+		fi
+		echo "----- $name (SQL 负向 E2E) -----"
+		if [ ! -x "$bin" ]; then
+			echo "[SKIP] 无编译产物 $bin（执行 bash _set.sh 后可跑无硬件端到端）"
+			continue
+		fi
+		if [ -n "$timeout_cmd" ]; then
+			out="$(cat scripts/test/sql_neg.mt | timeout 30 bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+		else
+			out="$(cat scripts/test/sql_neg.mt | bash _run.sh --robot="robots/test/$name.sql" 2>&1)"
+		fi
+		rc=$?
+		echo "$out"
+		neg_ok=true
+		[ $rc -ne 0 ] || neg_ok=false	# 必须失败退出
+		echo "$out" | grep -qE "$ere" || neg_ok=false
+		if $neg_ok; then
+			pass=$((pass + 1))
+		else
+			fail=$((fail + 1))
+			failed="$failed $name(SQL 负向 E2E)"
+		fi
+	done
+fi
+
+# ======================================================================
+# 仓颉单元测试：src/*_test.cj（cjpm test 编译，不进 cjpm build 产物）
+# 覆盖 MatrixVars 契约 / Daemon 路径与槽常量 / MetaProvider 引用语义 / ActionSource 校验。
+# 需要 cjpm（比 E2E 多一个要求），缺失则跳过并明示。
+# ======================================================================
+if [ -z "$filter" ] || [[ "cj_unit" == *"$filter"* ]]; then
+	echo "----- cj_unit (仓颉单元测试) -----"
+	if ! command -v cjpm >/dev/null 2>&1; then
+		echo "[SKIP] 无 cjpm（需仓颉工具链完整安装）"
+	elif ! (command -v cjc >/dev/null 2>&1 || [ -n "$CANGJIE_HOME" ] || [ -d "$HOME/cangjie" ]); then
+		echo "[SKIP] 无仓颉 runtime"
+	else
+		cj_out="$(timeout 300 cjpm test 2>&1)"
+		cj_rc=$?
+		echo "$cj_out" | grep -aE "^\s*(Summary|PASSED|FAILED|TOTAL)|error:" | head -20
+		# 判定：退出码为 0，且汇总行显示 FAILED: 0 / TOTAL 非 0（防空跑假绿）
+		total="$(printf '%s' "$cj_out" | sed 's/\x1b\[[0-9;]*m//g' | grep -aoE 'TOTAL: [0-9]+' | tail -1 | grep -oE '[0-9]+')"
+		failed_n="$(printf '%s' "$cj_out" | sed 's/\x1b\[[0-9;]*m//g' | grep -aoE 'FAILED: [0-9]+' | tail -1 | grep -oE '[0-9]+')"
+		if [ $cj_rc -ne 0 ] || [ -z "$total" ] || [ "$total" -eq 0 ] || [ "$failed_n" != "0" ]; then
+			echo "[FAIL] 仓颉单元测试 rc=$cj_rc TOTAL=${total:-无} FAILED=${failed_n:-无}"
+			printf '%s\n' "$cj_out" | sed 's/\x1b\[[0-9;]*m//g' | tail -25
+			fail=$((fail + 1))
+			failed="$failed cj_unit(仓颉单元测试)"
+		else
+			echo "[DONE] 仓颉单元测试 $total 例全通过"
+			pass=$((pass + 1))
+		fi
+	fi
+fi
+
+# ======================================================================
+# TCP 长驻端到端（scripts/tcp_e2e.sh）：一次 bind 反复 accept、非回环对端拒绝、
+# --tcp-max 收尾退出。需要 python3 与编译产物，缺任一项跳过并明示（不计失败）。
+# ======================================================================
+if [ -n "$filter" ] && [[ "tcp_e2e" != *"$filter"* ]]; then
+	:	# 过滤器未命中本用例
+elif ! command -v python3 >/dev/null 2>&1; then
+	echo "----- tcp_e2e (TCP 长驻 E2E) -----"
+	echo "[SKIP] 无 python3（tcp_e2e.sh 以其为客户端）"
+elif ! (command -v cjc >/dev/null 2>&1 || [ -n "$CANGJIE_HOME" ] || [ -d "$HOME/cangjie" ]); then
+	echo "----- tcp_e2e (TCP 长驻 E2E) -----"
+	echo "[SKIP] 无仓颉 runtime（需 cjc 在 PATH、设置 CANGJIE_HOME，或存在 ~/cangjie）"
+else
+	echo "----- tcp_e2e (TCP 长驻 E2E) -----"
+	# 端口刻意避开 tcp_e2e.sh 缺省值，防与本机其他调试实例撞端口
+	tcp_out="$($timeout_cmd bash scripts/tcp_e2e.sh 19241 2>&1)"
+	tcp_rc=$?
+	echo "$tcp_out"
+	# 本进程内 source 的环境（CANGJIE_HOME 等）已随子 shell 继承；
+	# 判定以退出码为准，并额外要求摘要行存在（防脚本早退假绿）
+	if [ $tcp_rc -ne 0 ] || ! echo "$tcp_out" | grep -qF "TCP 长驻端到端通过"; then
+		fail=$((fail + 1))
+		failed="$failed tcp_e2e(TCP 长驻 E2E)"
+	else
+		pass=$((pass + 1))
+	fi
+fi
+
+if ! command -v cjc >/dev/null 2>&1 && [ -z "$CANGJIE_HOME" ] && [ ! -d "$HOME/cangjie" ]; then
+	for spec in "${alias_cases[@]}"; do
+		name="${spec%%|*}"
+		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then
+			echo "----- $name (@Alias E2E) -----"
+			echo "[SKIP] 无仓颉 runtime（需 cjc 在 PATH、设置 CANGJIE_HOME，或存在 ~/cangjie）"
+		fi
+	done
+else
+	for spec in "${alias_cases[@]}"; do
+		name="${spec%%|*}"
+		rest="${spec#*|}"
+		want_rc="${rest%%|*}"
+		ere="${rest##*|}"
+		if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
+			continue
+		fi
+		run_one_alias "$name" "$want_rc" "$ere"
 	done
 fi
 

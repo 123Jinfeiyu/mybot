@@ -506,7 +506,16 @@ class MetaProvider {
 				let rs = value.toRuneArray()
 				let arr = Array<Rune>(rs.size - 1, { i => rs[i + 1] })
 				let refName = String(arr)
-				if (let Some(_) <- hardwareVars.get(refName)) {
+				if (let Some(refHV) <- hardwareVars.get(refName)) {
+					/* @Alias 变量不可被引用：引用列合并的是被引用变量 read() 的
+					 * 字段表，而 Alias 的 read() 返回单个字符串（只用于改 @Action
+					 * 列的参数名），无字段可合并。不在本校验点拦截，collect() 的
+					 * asObject() 会抛裸 JsonException（无表/列/行上下文），
+					 * 且 build 失败后 deactivate 的 destroy 路径会再抛一次。 */
+					if (refHV is MtVars_Alias) {
+						throw IllegalArgumentException(
+							"'${value}' (column '${colName}') in table '${matrix.getName()}' row ${row}: references alias variable '${refName}', but aliases cannot be referenced. An @Alias variable expands a parameter name in @Action column headers (write '${refName}.<param>'), not a metadata value.")
+					}
 					rArr.add(refName)
 				} else {
 					throw IllegalArgumentException(
