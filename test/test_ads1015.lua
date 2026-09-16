@@ -3,7 +3,8 @@
 --   GC 压力节奏：ADS_GC=1 luajit test/test_ads1015.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 296 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/ads1015.lua 模型」。与 ADS1115【同一位布局、
+-- virtbus 注入层 + 内嵌模型（modules/ADS1015.lua 尾部 ADS1015_VIRT，
+-- 2026-09-15 自 virtbus/ads1015.lua 迁入）」。与 ADS1115【同一位布局、
 -- 同一 OS 握手范式】，差异仅数据面与速率面：
 --   ① CONVERSION 是 12 位有符号码【左对齐】放 16 位（低 4 位恒 0，
 --      有效码 -2048~2047，驱动读出算术右移 4 位；非 ADS1115 的 s16 直编）；
@@ -36,13 +37,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/ads1015.lua")
 vbus.reset()
 
 local ADDR = 0x48
+
+-- 模型内嵌于驱动文件（ADS1015_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/ADS1015.lua")
+local smod = ADS1015_VIRT
+
 local dev = smod.new()
 vbus.attach("ADS1015@0x48", ADDR, dev)
-vbus.load_driver("modules/ADS1015.lua")
 
 -- milli_sleep：累计时长 + 推进转换虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0
