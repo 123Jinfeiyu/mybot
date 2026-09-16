@@ -3,7 +3,8 @@
 --   GC 压力节奏：BMI270_GC=1 luajit test/test_bmi270.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 271 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/bmi270.lua 模型」。三份独立实现交叉：模型只存
+-- virtbus 注入层 + 内嵌模型（modules/BMI270.lua 尾部 BMI270_VIRT，
+-- 2026-09-15 自 virtbus/bmi270.lua 迁入）」。三份独立实现交叉：模型只存
 -- 协议字节/原始码（不含 blob 内容与 g/dps 换算），本测试从
 -- modules/lib/bmi270_config.lua 独立解码 fifo/full 两个官方 blob 逐字节
 -- 比对，并独立重写字地址编码公式。
@@ -42,13 +43,20 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mm = dofile("modules/lib/virtbus/bmi270.lua")
 vbus.reset()
 
 local ADDR = 0x68
+
+-- 模型内嵌于驱动文件（BMI270_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/BMI270.lua")
+local mm = BMI270_VIRT
+
+local dev = mm.new()
+local mm = BMI270_VIRT
+
 local dev = mm.new()
 vbus.attach("BMI270@0x68", ADDR, dev)
-vbus.load_driver("modules/BMI270.lua")
 
 -- ==================== 独立参考：官方 blob 解码 ====================
 local CONFIG = dofile("modules/lib/bmi270_config.lua")

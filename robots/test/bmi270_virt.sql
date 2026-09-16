@@ -1,7 +1,8 @@
 /*
  * BMI270 无硬件端到端（proto=virt，Bosch 六轴 IMU，I2C 0x68/0x69、
  * CHIP_ID=0x24）：sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/bmi270.lua。模型复刻 8 位字节指针 + 【配置 blob
+ * BMI270_VIRT（内嵌于 modules/BMI270.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻 8 位字节指针 + 【配置 blob
  * 上传状态机】——0x7E/0xB6 软复位、0x00 CHIP_ID=0x24、0x21
  * INTERNAL_STATUS 状态码（0 idle/1 init_ok/2 init_err）、0x7C PWR_CONF
  * AUX/adv_power、0x7D PWR_CTRL、blob 三段上传（INIT_CTRL 0x59 清缓冲
