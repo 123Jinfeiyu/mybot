@@ -155,8 +155,13 @@ end
 -- ST ULD SetRangeTiming 逐行移植：整数除法与 32 位回绕同 C
 -- （1.055 系数 C 端为 float32，此处 double，自主模式间隔可能差 1 tick，无碍）
 -- 指数/尾数编码：值 >255 则循环右移，指数记在高位字节
+-- 防线：tmp 由器件寄存器读回的振荡频率推导，可精确为 0（见 set_range_timing），
+-- 此时 d=0 → tb/0 = +inf → 下面的降位循环永不收敛，build() 挂死在主线程/守护
+-- 线程里且 lua_pcall 无法救援（pcall 只兜 error，不兜死循环）。故显式拒绝退化
+-- 入参，由调用方转成 ERR 契约。
 local function encode_timeout(tb_us, tmp)
 	local d = math.floor(tmp / 64)
+	if d <= 0 then return nil end
 	local ls = math.floor((tb_us + math.floor(d / 2)) / d) - 1
 	local exp = 0
 	while ls > 255 do
@@ -181,6 +186,13 @@ local function set_range_timing(fd, budget_ms, inter_ms)
 	-- C: macro_period_us = (2304 * (0x40000000 / osc)) >> 6（uint32 乘法回绕）
 	local macro = math.floor(2304 * math.floor(0x40000000 / osc)) % 4294967296
 	macro = math.floor(macro / 64)
+	-- 防线：2304 = 256*9 使 macro 恒为 4 的倍数，且 osc ∈ {1,2,4,8,16,32,64}
+	-- （半接线、错地址、器件异常时读回的小 2 的幂）会让 0x40000000/osc 把
+	-- 2^32 因子全部消化掉 → macro 精确为 0 → 下游 encode_timeout 除零死循环。
+	if macro <= 0 then
+		return nil, "Unreasonable oscillator frequency " .. tostring(osc)
+			.. " (macro period is zero)"
+	end
 
 	local tb = budget_ms * 1000
 	if inter_ms == 0 then
@@ -207,6 +219,9 @@ local function set_range_timing(fd, budget_ms, inter_ms)
 	tb = tb * 4096										-- << 12
 	local a = encode_timeout(tb, macro * 16)
 	local b = encode_timeout(tb, macro * 12)
+	if a == nil or b == nil then
+		return nil, "Timeout encoding failed (degenerate timing parameters)"
+	end
 	if i2c_write_reg16(fd, REG_RANGE_CONFIG_A, math.floor(a / 256) % 256, a % 256) ~= 0 then
 		return nil, "Failed to write range config A"
 	end

@@ -22,21 +22,26 @@ class MtVars_Lua : public MatrixVars_Hardware {
 
 	lua_State* L_;
 	std::string luapath_;
+	std::string name_;
 	std::function<Json()> getMetadata_;
 	MatrixVars_Hardware* controller_ = nullptr;
 
-	explicit MtVars_Lua(lua_State* L, std::string luapath, std::function<Json()> getMetadata,
-			MatrixVars_Hardware* controller)
+	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,
+			std::function<Json()> getMetadata, MatrixVars_Hardware* controller)
 		: MatrixVars_Hardware(
 			[this](const Json& json) { return callImpl(json); },
 			[this]() { riseImpl(); },
 			[this]() { freeImpl(); }),
-			L_(L), luapath_(std::move(luapath)), getMetadata_(std::move(getMetadata)), controller_(controller) {}
+			L_(L), luapath_(std::move(luapath)), name_(std::move(name)),
+			getMetadata_(std::move(getMetadata)), controller_(controller) {}
 
 	Json callImpl(const Json& json);
 	Json readImpl();
 	void riseImpl();
 	void freeImpl();
+
+	/* C-1 防线：@Action 参数键与结构元数据键必须互斥（见 callImpl 注释） */
+	void rejectReservedKeys(const Json& metadata, const Json& params) const;
 
 	static bool build_lua(lua_State* L, const std::string& luapath);
 
@@ -48,7 +53,7 @@ public:
 
 	Json read() override { return readImpl(); }
 
-	static std::unique_ptr<MtVars_Lua> Factory(const std::string& luapath,
+	static std::unique_ptr<MtVars_Lua> Factory(const std::string& luapath, const std::string& name,
 			std::function<Json()> getMetadata, MatrixVars_Hardware* controller);
 };
 

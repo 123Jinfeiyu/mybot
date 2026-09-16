@@ -172,7 +172,7 @@ void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::strin
 			}
 		}
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, idxCtrl, &hardwareVars_);
-		addHardwareVar(name, MtVars_Lua::Factory(scriptPath,
+		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv] { return metaProv->collect(); }, ctrl),
 			" (in table '" + mtName + "')");
 	}

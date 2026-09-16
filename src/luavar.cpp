@@ -10,13 +10,13 @@ namespace bot {
 thread_local int MtVars_Lua::topDepth = 0;
 
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
-std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath,
+std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, const std::string& name,
 		std::function<Json()> getMetadata, MatrixVars_Hardware* controller) {
 	lua_State* L = luaL_newstate();
 	if (L == nullptr) {
 		throw std::runtime_error("Lua_check()");
 	}
-	return std::unique_ptr<MtVars_Lua>(new MtVars_Lua(L, luapath, std::move(getMetadata), controller));
+	return std::unique_ptr<MtVars_Lua>(new MtVars_Lua(L, luapath, name, std::move(getMetadata), controller));
 }
 
 /* ---- 构造 Lua 状态机（加载标准库 + 沙箱 + loadfile + pcall）---- */
@@ -37,6 +37,31 @@ bool MtVars_Lua::build_lua(lua_State* L, const std::string& luapath) {
 	return false;
 }
 
+/* ---- C-1 防线：@Action 参数键不得与结构元数据键同名 ----
+ * 动作参数与结构元数据最终合并成同一张 Lua 表，若不加约束，.mt 里写一列
+ * `dev.fd` / `dev.address` / `dev.max` 就能覆盖结构脚本的总线句柄、从机地址、
+ * 舵机限幅——--tcp 模式下等价于远程改总线句柄与行程。
+ * 收口语义：结构元数据由 .sql 独占，.mt 只能引入新的参数键。 */
+void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) const {
+	static const char* const kFrameworkKeys[] = {"mode", "result", "message"};
+
+	for (const auto& kv : params.items()) {
+		const std::string& key = kv.first;
+		const char* why = nullptr;
+		if (metadata.get(key)) { why = "a structure-script metadata column"; }
+		for (const char* fw : kFrameworkKeys) {
+			if (key == fw) { why = "a framework-reserved key"; }
+		}
+		if (why != nullptr) {
+			throw IllegalArgumentException("Hardware variable '" + name_ + "': @Action column '"
+				+ name_ + "." + key + "' is rejected because '" + key + "' is " + why
+				+ " and cannot be supplied by the action script. Action columns may only introduce"
+				+ " new parameter names; bus handles, addresses and range limits come from the"
+				+ " structure script.");
+		}
+	}
+}
+
 /* ---- call 事件实现：元数据 ∪ @Action 实时参数 → Lua call() ---- */
 Json MtVars_Lua::callImpl(const Json& json) {
 	bool top = (MtVars_Lua::topDepth == 0);
@@ -47,6 +72,10 @@ Json MtVars_Lua::callImpl(const Json& json) {
 
 	/* 获取元数据（静态列缓存重放 + 引用列实时快照） */
 	Json metadata = getMetadata_();
+
+	/* 仅顶层（.mt 直接派发）校验：controller 转发的 payload 本就由框架拼装、
+	 * 含上游元数据与返回键，属内部数据流，不受此约束。 */
+	if (top) { rejectReservedKeys(metadata, json.asObject()); }
 
 	/* 从元数据浅拷贝，再合并 @Action 传入的实时参数 */
 	Json obj = JsonObject();
