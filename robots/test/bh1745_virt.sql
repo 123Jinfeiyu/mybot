@@ -1,7 +1,8 @@
 /*
  * BH1745NUC 无硬件端到端（proto=virt，四通道 R/G/B/C 颜色传感器）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/bh1745.lua。模型复刻协议——稀疏字节寄存器图：
+ * BH1745_VIRT（内嵌于 modules/BH1745.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻协议——稀疏字节寄存器图：
  * SYSTEM_CONTROL 0x40（POR 0x0B：bit7 SW reset 自清全片复位+power down、
  * bit6 INT reset 自清仅抬 INT 脚、[5:0] Part ID ROM 0x0B 只读）、
  * MODE_CONTROL1 0x41（[2:0] 积分时间码 0..5=160/320/640/1280/2560/

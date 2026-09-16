@@ -3,7 +3,8 @@
 --   GC 压力节奏：BH1745_GC=1 luajit test/test_bh1745.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 198 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/bh1745.lua 模型」。协议事实照 datasheet
+-- virtbus 注入层 + 内嵌模型（modules/BH1745.lua 尾部 BH1745_VIRT，
+-- 2026-09-15 自 virtbus/bh1745.lua 迁入）」。协议事实照 datasheet
 -- BH1745NUC Rev.002（2016-05-23）逐位核对：
 --   寄存器图 0x40 SYSTEM_CONTROL（bit7 SW reset/bit6 INT reset 自清，
 --     [5:0] Part ID ROM 0x0B）、0x41 MODE1 积分时间码 0..5
@@ -39,13 +40,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/bh1745.lua")
 vbus.reset()
 
 local ADDR = 0x38
+-- 模型内嵌于驱动文件（BH1745_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/BH1745.lua")
+local smod = BH1745_VIRT
+
 local dev = smod.new()
 vbus.attach("BH1745@0x38", ADDR, dev)
-vbus.load_driver("modules/BH1745.lua")
 
 -- milli_sleep：累计时长 + 推模型积分门（守护不打桩，单测验证协议时序）
 local sleep_total = 0
