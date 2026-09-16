@@ -3,7 +3,8 @@
 --   GC 压力节奏：SDS011_GC=1 luajit test/test_sds011.lua
 --
 -- 从「dofile 驱动后手写 uart_* 桩（局部 pending 队列、手拼 ACK/查询表）」迁移到
--- 「真实驱动 + virtbus 注入层 + virtbus/sds011.lua 模型」：19 字节请求帧/10 字节
+-- 「真实驱动 + virtbus 注入层 + 内嵌模型（modules/SDS011.lua 尾部 SDS011_VIRT，
+-- 2026-09-15 自 virtbus/sds011.lua 迁入）」：19 字节请求帧/10 字节
 -- 应答帧、读轮次、flush 时序全部经 txlog 留痕断言；坏校验和/不应答/写失败/
 -- 主动流残留帧/丢单命令应答全部由模型钩子与总线级钩子提供。
 --
@@ -39,7 +40,6 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mm = dofile("modules/lib/virtbus/sds011.lua")
 vbus.reset()
 
 local PATH = "/dev/serial0"
@@ -108,9 +108,13 @@ local function last_dir(es, dir)
 	end
 end
 
+-- 模型内嵌于驱动文件（SDS011_VIRT 全局工厂，工厂表带 BUS="uart"）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/SDS011.lua")
+local mm = SDS011_VIRT
+
 local dev = mm.new()
 vbus.attach_uart("SDS011@" .. PATH, PATH, dev)
-vbus.load_driver("modules/SDS011.lua")
 
 local fd = uart_open(PATH, 9600)
 check("uart_open 虚拟 fd=3", fd == 3, tostring(fd))

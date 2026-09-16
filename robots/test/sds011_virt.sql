@@ -1,7 +1,8 @@
 /*
  * SDS011 无硬件端到端（proto=virt，激光 PM2.5/PM10 颗粒物传感器，UART 9600 8N1）：
  *   sensor_daemon 不打开真机串口，而是挂内存仿真模型
- *   modules/lib/virtbus/sds011.lua（模型模块表 BUS="uart"，守护据此走
+ *   SDS011_VIRT，内嵌于 modules/SDS011.lua 尾部（2026-09-15 迁入，
+ *   工厂表 BUS="uart"，守护据此走
  *   attach_uart + uart_open 虚拟注入路径；path=/dev/serial0、baud=9600，
  *   UART 字节流模型：on_write 应答帧入 per-path 输入环、uart_read 即时 drain）。
  *
