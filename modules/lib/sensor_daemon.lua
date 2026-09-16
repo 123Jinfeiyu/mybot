@@ -253,7 +253,15 @@ params.fd = fd
 if vdev ~= nil and type(vdev.virt_tick) == "function" then
 	pcall(function() vdev:virt_tick(0) end)
 end
-local r = build(params)
+-- 防线：build 抛 Lua error（典型：@Daemon 的 driver 列误配成无全局 build 的模块）
+-- 时，裸调用会跳过 fail() 里的 close_bus()；而 C++ 侧 chunk setup 失败是直接
+-- lua_close 返回，不会调用本文件末尾的 daemon_cleanup（此刻尚未定义）——HAL 没有
+-- ffi.gc，已 open 的总线 fd 就永久泄漏在进程里。故就地 pcall 并走同一条回滚路径。
+local okr, rb = pcall(build, params)
+if not okr then
+	fail(-2, "driver build() raised: " .. tostring(rb)); return
+end
+local r = rb
 if type(r) ~= "table" or r.result ~= "OK" then
 	local why = (type(r) == "table" and r.message) and tostring(r.message) or "driver build() not OK"
 	fail(-2, why); return
@@ -277,7 +285,29 @@ function daemon_tick()
 	-- halt-on-error 中断动作序列）；守护侧是数据流而非动作，坏样本不得发布给下游——
 	-- 按 tick 错误处理、本次不 publish（count 停滞即是诊断线索）
 	local crc_bad = (type(s) == "table" and s.result == "OK" and s.CRC_OK == 0)
-	if type(s) == "table" and s.result == "OK" and not crc_bad then
+	local ok_sample = (type(s) == "table" and s.result == "OK" and not crc_bad)
+	local why = "unknown"
+	if crc_bad then
+		why = "CRC check failed (CRC_OK=0)"
+	elseif ok_sample then
+		-- 防线：@Daemon 的 fields 列拼错字段名时，conv 的 `tonumber(v) or 0` 会
+		-- 把不存在的键静默发布成 0，走的是 result=OK 分支、零日志、count 正常自增
+		-- ——下游 Ema/Kalman/Monitor 于是拿假 0 做闭环决策（真 0 与配置错误不可区分）。
+		-- 配置类错误同样按 tick 错误处理：不发布、count 停滞，日志点名缺哪个字段。
+		local missing = nil
+		for i = 1, #fields do
+			if tonumber(s[fields[i]]) == nil then
+				missing = (missing and (missing .. ", ") or "") .. tostring(fields[i])
+			end
+		end
+		if missing ~= nil then
+			ok_sample = false
+			why = "field(s) absent or non-numeric in driver result: " .. missing
+		end
+	elseif type(s) == "table" and s.message then
+		why = tostring(s.message)
+	end
+	if ok_sample then
 		local vals = {}
 		for i = 1, #fields do
 			vals[i] = conv(s[fields[i]], field_modes[i])
@@ -288,12 +318,6 @@ function daemon_tick()
 		tick_errors = tick_errors + 1
 		tick_total  = tick_total + 1
 		if tick_errors <= 3 or tick_total % 100 == 0 then
-			local why = "unknown"
-			if crc_bad then
-				why = "CRC check failed (CRC_OK=0)"
-			elseif type(s) == "table" and s.message then
-				why = tostring(s.message)
-			end
 			log(string.format("[sensor_daemon] tick error #%d (total %d): %s",
 				tick_errors, tick_total, why))
 		end

@@ -71,6 +71,13 @@ public:
 	explicit DaemonHolder(DaemonSlot* s, int64_t timeout)
 		: slot(s), joinTimeoutMs(timeout), result(std::make_shared<std::promise<int64_t>>()),
 		  fut(result->get_future()) {}
+
+	/* RAII 兜底：槽只在 daemonFree（经 destroy()）里释放。若 Factory 分配槽之后、
+	 * 变量进入销毁序列之前抛出（make_shared 的 bad_alloc 等），或任何绕过
+	 * deactivate 的新出口，都会泄漏 slot + 未销毁的 mutex。未 spawn 时线程不持有
+	 * 槽，析构可安全回收；已 spawn 的槽所有权归 daemonFree / abandoned 路径下的
+	 * 守护线程，此处绝不触碰（防 use-after-free）。 */
+	~DaemonHolder();
 };
 
 /* 守护线程体：独立 lua_State，注入槽地址 + 配置串，setup 一次 + 逐拍 daemon_tick。

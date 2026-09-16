@@ -24,6 +24,12 @@ public:
 			std::optional<NoArg> free = std::nullopt)
 		: things_(std::move(things)), rise_(std::move(rise)), free_(std::move(free)) {}
 
+	/* 硬件变量一律以 unique_ptr 独占持有，且子类持有裸资源句柄
+	 * （lua_State*、共享槽）并在析构/destroy 里释放——隐式拷贝会造成
+	 * 双重释放，且拷贝体的 this 捕获回调仍指向原对象。显式禁用。 */
+	MatrixVars_Hardware(const MatrixVars_Hardware&) = delete;
+	MatrixVars_Hardware& operator=(const MatrixVars_Hardware&) = delete;
+
 	virtual ~MatrixVars_Hardware() = default;
 
 	/* 事件发生器：运行硬件或传感器，返回 Json 结果 */

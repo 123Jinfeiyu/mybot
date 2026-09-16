@@ -293,6 +293,8 @@ parse_cases=(
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
 	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
 	'lex_semicolons.sql|lex_semicolons.mt|1|Token ;'
+	'param_override.sql|param_override.mt|1|is rejected because'
+	'daemon_badfield.sql|daemon_badfield.mt|0|absent or non-numeric in driver result'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4"
@@ -366,10 +368,130 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 	run_one_tcp
 fi
 
+# ======================================================================
+# 审计加固回归（#1/#2/#4）：输入源信任边界与守护 setup 失败回滚。
+#   tcp_host_bad    --tcp-host 非点分 IPv4 → 清晰报错、退出码非 0
+#   action_toolarge 动作脚本超 8MiB 上限 → 拒绝而非把整份输入吃进内存
+#                   （防线前实测 100MB 输入 → RSS 4.2GB）
+#   daemon_build_raise @Daemon 的 driver 误配成无全局 build 的模块 →
+#                   必须走 fail() 回滚（打印 "driver build() raised"），
+#                   而非把 Lua error 抛出 chunk 使 C++ 侧跳过 cleanup
+# 夹具写在 .tmp/（已 gitignore），经 BOT4CJ_MODULE_PATH 多路径注入。
+# ======================================================================
+run_one_hardening() {
+	local name="$1" want_rc="$2" expect="$3"; shift 3
+	echo "----- $name (hardening) -----"
+	if [ ! -x "$bin" ]; then
+		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
+		return 2
+	fi
+	local out rc h_ok
+	out="$("$@" 2>&1)"
+	rc=$?
+	echo "$out" | tail -6
+	h_ok=true
+	[ "$rc" -ne "$want_rc" ] && h_ok=false
+	echo "$out" | grep -qF -- "$expect" || h_ok=false
+	if $h_ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed $name(hardening)"
+	fi
+}
+
+if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$filter"* ]]; then
+	run_one_hardening 'tcp_host_bad' 1 '--tcp-host 地址无效' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19301 --tcp-host 'not-an-ip'
+
+	mkdir -p .tmp
+	# 9MiB 合法动作脚本：超过 8MiB 上限，必须在读取阶段就被拒绝
+	{ echo '@Action'; echo 'relay0.test;'; yes '    200;'; } 2>/dev/null | head -c 9000000 > .tmp/toolarge.mt
+	run_one_hardening 'action_toolarge' 1 'exceeds the byte limit' \
+		timeout 30 "$bin" --robot=robots/relay-test.sql --input .tmp/toolarge.mt
+	rm -f .tmp/toolarge.mt
+
+	mkdir -p .tmp/fixmod
+	cat > .tmp/fixmod/leakdrv.lua <<'LUAEOF'
+-- 审计 #4 回归夹具：只提供 virt 器件模型，故意不定义全局 build/call/destroy，
+-- 复现 @Daemon 的 driver 列误配成「加载成功但没有 build」的模块这一真实坑。
+leakdrv_VIRT = { new = function() return {} end }
+LUAEOF
+	cat > .tmp/fixmod.sql <<'SQLEOF'
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
+CREATE TABLE Daemon (
+	name     String,
+	chunk    String,
+	driver   String,
+	proto    String,
+	addr     String,
+	interval String,
+	fields   String
+);
+INSERT INTO Daemon (name, chunk, driver, proto, addr, interval, fields)
+  VALUES ('ld0', 'lib/sensor_daemon.lua', 'leakdrv', 'virt', '0x68', '10', 'v0');
+SQLEOF
+	printf '@Action\nt0.delay;\n   200;\n    50;\n    50;\n@\n' > .tmp/fixmod.mt
+	run_one_hardening 'daemon_build_raise' 0 'driver build() raised' \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		--robot=.tmp/fixmod.sql --input=.tmp/fixmod.mt
+fi
+
+
+# ======================================================================
+# C++ 层单元测试（test/cpp/）：解析器与值语义工具的白盒覆盖，零第三方框架。
+# 守门契约与 Lua/E2E 段完全一致：退出码 0 + [DONE] 完成标记 + [PASS] 计数非零
+# （三者缺一即判失败，防「用例没跑起来却报绿」）。
+# 测试二进制缺省 ./build/mybot_tests，可用 BOT_TESTS=xxx 覆盖。
+# 命令行过滤器同样传给 C++ 单测；未命中任何用例时按 SKIP 处理
+# （过滤器多为 Lua 用例名，不应因此判红；全仓库无匹配由末尾的空匹配防线兜底）。
+# ======================================================================
+run_cpp_unit() {
+	local tests_bin="${BOT_TESTS:-./build/mybot_tests}"
+	echo "----- cpp-unit (C++ 单测) -----"
+	if [ ! -x "$tests_bin" ]; then
+		echo "[SKIP] 无编译产物 $tests_bin（先执行：cmake -S . -B build && cmake --build build）"
+		return 2
+	fi
+	local out rc pass_n
+	if [ -n "$timeout_cmd" ]; then
+		out="$($timeout_cmd "$tests_bin" $filter 2>&1)"
+	else
+		out="$("$tests_bin" $filter 2>&1)"
+	fi
+	rc=$?
+	echo "$out"
+	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
+		echo "[FAIL] C++ 单测超时（>${TEST_TIMEOUT}s，疑似死循环）"
+		fail=$((fail + 1))
+		failed="$failed cpp-unit(C++)"
+		return
+	fi
+	if echo "$out" | grep -qF "无匹配用例"; then
+		echo "[SKIP] 过滤器 '${filter}' 未命中任何 C++ 用例"
+		return 2
+	fi
+	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
+	if [ "$pass_n" -eq 0 ]; then
+		echo "[FAIL] 假绿嫌疑：[PASS] 计数为 0（早退/零断言）"
+		fail=$((fail + 1))
+		failed="$failed cpp-unit(C++)"
+	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
+		fail=$((fail + 1))
+		failed="$failed cpp-unit(C++)"
+	else
+		pass=$((pass + 1))
+	fi
+}
+run_cpp_unit
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归或 TCP E2E，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E 或 C++ 单测，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败"

@@ -36,6 +36,14 @@ static void releaseSlot(DaemonSlot* slot) {
 	std::free(slot);
 }
 
+/* ---- DaemonHolder RAII 兜底（见头文件注释）：仅回收线程尚未接管所有权（未 spawn）的槽 ---- */
+DaemonHolder::~DaemonHolder() {
+	if (slot != nullptr && !spawned.load()) {
+		releaseSlot(slot);
+		slot = nullptr;
+	}
+}
+
 /* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
  * 持 holder 的 shared_ptr 保生命周期；退出时若 abandoned 置位（主线程已放弃等待），
  * 槽所有权已移交本线程——由本线程释放（D2）。极端竞态下（置位晚于本检查）可能泄漏，宁漏不崩。 */
