@@ -3,7 +3,8 @@
 --   GC 压力节奏：LSM6DSV_GC=1 luajit test/test_lsm6dsv.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 226 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/lsm6dsv.lua 模型」。协议事实依 ST 官方
+-- virtbus 注入层 + 内嵌模型（modules/LSM6DSV.lua 尾部 LSM6DSV_VIRT，
+-- 2026-09-15 自 virtbus/lsm6dsv.lua 迁入）」。协议事实依 ST 官方
 -- lsm6dsv16x_reg.h + Zephyr dts 绑定钉死，三份独立实现交叉（模型只存
 -- 原始码/寄存器事实，灵敏度倒数仅用于物理量逆注入）。
 --
@@ -48,13 +49,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mm = dofile("modules/lib/virtbus/lsm6dsv.lua")
 vbus.reset()
 
 local ADDR = 0x6A
+-- 模型内嵌于驱动文件（LSM6DSV_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/LSM6DSV.lua")
+local mm = LSM6DSV_VIRT
+
 local dev = mm.new()
 vbus.attach("LSM6DSV@0x6A", ADDR, dev)
-vbus.load_driver("modules/LSM6DSV.lua")
 
 -- milli_sleep：模型无转换门，桩只累计时长/清单（不推进任何虚拟时钟）
 local sleep_total = 0

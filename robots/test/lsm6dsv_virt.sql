@@ -1,7 +1,8 @@
 /*
  * LSM6DSV16X 无硬件端到端（proto=virt，ST 六轴 IMU，I2C 0x6A/0x6B、
  * WHO_AM_I 0x0F=0x70）：sensor_daemon 不打开真机 I2C，而是挂内存仿真
- * 模型 modules/lib/virtbus/lsm6dsv.lua。模型复刻 8 位字节指针 +
+ * 模型 LSM6DSV_VIRT（内嵌于 modules/LSM6DSV.lua 尾部，2026-09-15 迁入，
+ * 守护经回退路径装载）。模型复刻 8 位字节指针 +
  * 【CTRL3 软复位/IF_INC 门】+ 双 6 字节小端连续测量窗——0x0F
  * WHO_AM_I=0x70、0x12 CTRL3（bit0 sw_reset 写即自清、bit2 IF_INC
  * 控制 burst 是否自增、bit6 BDU、bit7 BOOT 自清）、0x10/0x11
