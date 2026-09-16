@@ -1,7 +1,8 @@
 /*
  * BME280 无硬件端到端测试（proto=virt）：
  *   sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- *   modules/lib/virtbus/bme280.lua，模型每拍 virt_tick 在原始 ADC 码空间造
+ *   BME280_VIRT（内嵌于 modules/BME280.lua 尾部，2026-09-15 迁入，守护经
+ *   回退路径装载），模型每拍 virt_tick 在原始 ADC 码空间造
  *   确定性合成波形（datasheet 示例工况 T≈25.08°C / P≈100653Pa / H≈45.3%RH
  *   为中心，三通道互差 120° 正弦）。守护启动打印 VIRTUAL HARDWARE 警告横幅。
  *

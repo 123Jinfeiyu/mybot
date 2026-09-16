@@ -1,7 +1,8 @@
 -- test_bme280.lua - BME280 真实驱动在虚拟总线上的离线回归（无真机）
 -- 用法: luajit test/test_bme280.lua（驱动 dofile HAL 加载 ffi，需 LuaJIT）
 --
--- mock 方式：virtbus 内存 I2C 总线 + virtbus/bme280 器件模型（regmap 之上固化
+-- mock 方式：virtbus 内存 I2C 总线 + 内嵌模型（modules/BME280.lua 尾部
+-- BME280_VIRT，2026-09-15 自 virtbus/bme280.lua 迁入；regmap 之上固化
 -- NVM 校准布局、20bit 数据区位场、STATUS 合成与 forced 转换状态机），加载
 -- 【真实】modules/BME280.lua 跑完整 build/call/destroy。milli_sleep 后注桩：
 -- 既累计时长又驱动模型虚拟时钟（6ms 转换/50 次 NVM 轮询/100 次测量轮询）。
@@ -22,13 +23,16 @@
 local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 local vbus = dofile("modules/lib/virtbus.lua")
-local bmemod = dofile("modules/lib/virtbus/bme280.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（BME280_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/BME280.lua")
+local bmemod = BME280_VIRT
 
 local bme = bmemod.new()
 vbus.attach("BME280@0x76", 0x76, bme)
 vbus.attach("BME280@0x77", 0x77, bme)	-- 同一模型挂备地址
-vbus.load_driver("modules/BME280.lua")
 
 -- milli_sleep：累计时长 + 推进模型虚拟时钟（驱动运行时解析全局名，后注桩生效）
 local sleep_total = 0
