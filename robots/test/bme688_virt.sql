@@ -1,7 +1,8 @@
 /*
  * BME688 无硬件端到端（proto=virt，Bosch 四合一温/压/湿/气体电阻
  * 环境传感器，兼容 BME680）：sensor_daemon 不打开真机 I2C，而是挂
- * 内存仿真模型 modules/lib/virtbus/bme688.lua。模型复刻 8 位字节
+ * 内存仿真模型 BME688_VIRT（内嵌于 modules/BME688.lua 尾部，2026-09-15
+ * 迁入，守护经回退路径装载）。模型复刻 8 位字节
  * 指针 + 稀疏寄存器图协议——0xE0/0xB6 软复位、0xD0 CHIP_ID=0x61、
  * 0xF0 变体（0x01=BME688 选高量程气体路/0x00=BME680 低量程）、
  * COEFF1 0x8A×23 / COEFF2 0xE1×14 / COEFF3 0x00×5 共 42 字节

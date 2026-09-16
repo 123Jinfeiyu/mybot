@@ -3,7 +3,8 @@
 --   GC 压力节奏：BME688_GC=1 luajit test/test_bme688.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 364 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/bme688.lua 模型」。三份独立实现交叉：模型只存
+-- virtbus 注入层 + 内嵌模型（modules/BME688.lua 尾部 BME688_VIRT，
+-- 2026-09-15 自 virtbus/bme688.lua 迁入）」。三份独立实现交叉：模型只存
 -- 协议字节/原始码（不含任何补偿），本测试照 Bosch BME68x-Sensor-API
 -- v4.4.8 独立转录 42 字节解析与 float 补偿公式，与真实驱动交叉。
 --
@@ -39,13 +40,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mm = dofile("modules/lib/virtbus/bme688.lua")
 vbus.reset()
 
 local ADDR = 0x76
+-- 模型内嵌于驱动文件（BME688_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/BME688.lua")
+local mm = BME688_VIRT
+
 local dev = mm.new()
 vbus.attach("BME688@0x76", ADDR, dev)
-vbus.load_driver("modules/BME688.lua")
 
 -- ==================== 独立参考：42 字节解析（Bosch API v4.4.8） ====================
 local function s8(v) v = v % 256; if v >= 128 then v = v - 256 end return v end
