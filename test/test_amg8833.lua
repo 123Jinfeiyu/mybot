@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_amg8833.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的手写桩」迁移到「真实驱动 + virtbus
--- 注入层 + virtbus/amg8833.lua 模型」。本器件是 virtbus 库【8 位字节指针 +
+-- 注入层 + 内嵌模型（modules/AMG8833.lua 尾部 AMG8833_VIRT，2026-09-15
+-- 自 virtbus/amg8833.lua 迁入）」。本器件是 virtbus 库【8 位字节指针 +
 -- 128 字节像素块连续 burst 读 + 帧周期门】样板（Panasonic Grid-EYE 8x8
 -- 热电堆，地址 0x69 缺省/0x68）：
 --   寄存器按字节寻址，读指针随字节自增、0xFF 后回绕 0x00；0x80 起 128B
@@ -27,14 +28,18 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/amg8833.lua")
 vbus.reset()
 
 local ADDR = 0x69
+
+-- 模型内嵌于驱动文件（AMG8833_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/AMG8833.lua")
+local smod = AMG8833_VIRT
+
 local dev = smod.new()
 vbus.attach("AMG8833@0x69", ADDR, dev)
 vbus.attach("AMG8833@0x68", 0x68, dev)	-- AD_SELECT 拉高的备用地址，同一模型
-vbus.load_driver("modules/AMG8833.lua")
 
 -- milli_sleep：累计时长 + 推进帧虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0
