@@ -2,7 +2,8 @@
  * INA226 无硬件端到端（proto=virt，与 INA219 同族的「字寻址 16 位寄存器」
  * I2C 虚拟器件——寄存器号各代表一个 16 位字，而非字节地址，不能套字节
  * 地址 regmap）：sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/ina226.lua。模型复刻协议——CONFIG 0x00 复位默认
+ * INA226_VIRT（内嵌于 modules/INA226.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻协议——CONFIG 0x00 复位默认
  * 0x4127（bit14 保留恒 1、bit13:12 恒 0；bit15=RST 软复位，0x8000 不落盘、
  * 全文件恢复默认）、SHUNT 0x01（16 位完整有符号无 PGA，LSB 2.5µV，固定
  * 量程 ±81.92mV）、BUS 0x02（16 位无符号【无移位】直读，LSB 1.25mV，
