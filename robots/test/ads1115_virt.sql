@@ -3,7 +3,8 @@
  * 转换门/OS 就绪握手」I2C 虚拟器件——寄存器号 0x00~0x03 各代表一个 16
  * 位字，不能套字节地址 regmap；与 INA219 同族但驱动走单次转换）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/ads1115.lua。模型复刻协议——0x00 CONVERSION 16
+ * ADS1115_VIRT（内嵌于 modules/ADS1115.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻协议——0x00 CONVERSION 16
  * 位有符号结果、0x01 CONFIG（[15]OS [14:12]MUX [11:9]PGA [8]MODE
  * [7:5]DR）、0x02/0x03 阈值；OS 位读写语义相反（写 1 单次模式启动转换，
  * 读时转换中=0/空闲=1，模型读回 bit15 按转换状态动态合成），转换门
