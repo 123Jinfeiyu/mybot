@@ -3,7 +3,8 @@
 --   GC 压力节奏：AS3935_GC=1 luajit test/test_as3935.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 267 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/as3935.lua 模型」。旧桩三处假绿已被严格模型
+-- virtbus 注入层 + 内嵌模型（modules/AS3935.lua 尾部 AS3935_VIRT，2026-09-15
+-- 自 virtbus/as3935.lua 迁入）」。旧桩三处假绿已被严格模型
 -- 戳破（按 SparkFun_AS3935_Arduino_Library / ESPHome as3935 与 datasheet
 -- DS-AS3935 §8 寄存器表交叉钉死）：
 --   1) 旧桩 regs[reg]=val 允许写只读区、写事件位、污染保留位——严格模型
@@ -38,14 +39,19 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local mmod = dofile("modules/lib/virtbus/as3935.lua")
 vbus.reset()
 
 local ADDR = 0x03
 local EVT_NOISE, EVT_DISTURBER, EVT_LIGHTNING = 0x01, 0x04, 0x08
+-- 模型内嵌于驱动文件（AS3935_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/AS3935.lua")
+local mmod = AS3935_VIRT
+
+local dev = mmod.new()
+
 local dev = mmod.new()
 vbus.attach("AS3935@0x03", ADDR, dev)
-vbus.load_driver("modules/AS3935.lua")
 
 -- milli_sleep 桩：本器件无转换门，只累加（build 4ms / call 每拍 2ms）
 local sleep_total = 0

@@ -1,7 +1,8 @@
 /*
  * AS3935 无硬件端到端（proto=virt，ams Franklin 事件型雷电传感器）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/as3935.lua。模型复刻 8 位字节指针协议——0x00
+ * AS3935_VIRT（内嵌于 modules/AS3935.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻 8 位字节指针协议——0x00
  * AFE_GAIN（POR 0x24=室内，复位后在位甄别依据）、0x01 NF_LEV/WDTH、
  * 0x02 MIN_NUM_LIG/SREJ、0x03 INT（低 4 位事件码【读后清】、bit5
  * MASK_DIST 可写配置）、0x07 S_DIST（1=头顶/2~62=km/0x3F 超量程/0
