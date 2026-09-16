@@ -3,7 +3,8 @@
 --   GC 压力节奏：LTC_GC=1 luajit test/test_ltc2944.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的手写桩」迁移到「真实驱动 + virtbus
--- 注入层 + virtbus/ltc2944.lua 模型」。本器件是 virtbus 库【8 位字节指针 +
+-- 注入层 + 内嵌模型（modules/LTC2944.lua 尾部 LTC2944_VIRT，2026-09-15
+-- 自 virtbus/ltc2944.lua 迁入）」。本器件是 virtbus 库【8 位字节指针 +
 -- 16 位大端寄存器对、指针自增模 26 回绕】样板（ADI LTC2944，固定地址 0x64）：
 --   寄存器文件 0x00~0x19；write 首字节=指针其后数据逐字节落位、read 从指针
 --   连续读自增；0x02 电荷/0x08 电压/0x0E 电流（偏移二进制）/0x14 温度。
@@ -27,13 +28,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/ltc2944.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（LTC2944_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载（中途二次 load_driver 重定义全局
+-- 工厂不影响旧绑定）
+vbus.load_driver("modules/LTC2944.lua")
+local smod = LTC2944_VIRT
 
 -- 固定地址器件：模型只挂 0x64
 local dev = smod.new()
 vbus.attach("LTC2944@0x64", 0x64, dev)
-vbus.load_driver("modules/LTC2944.lua")
 
 -- 驱动不调 milli_sleep；桩仅留痕，断言 build/call 全程零睡眠
 local sleep_total = 0
