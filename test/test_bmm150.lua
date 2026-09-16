@@ -3,7 +3,8 @@
 --   GC 压力节奏：BMM_GC=1 luajit test/test_bmm150.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的手写桩」迁移到「真实驱动 + virtbus
--- 注入层 + virtbus/bmm150.lua 模型」。本器件是 virtbus 库【8 位字节指针 +
+-- 注入层 + 内嵌模型（modules/BMM150.lua 尾部 BMM150_VIRT，2026-09-15
+-- 自 virtbus/bmm150.lua 迁入）」。本器件是 virtbus 库【8 位字节指针 +
 -- 上电挂起态电源门 + 三段工厂 trim NVM + XY/Z 异构 13/15 位数据块】样板
 -- （Bosch BMM150，地址族 0x10~0x13）：
 --   复位后 suspend：仅 0x4B 可访问，CHIP_ID/trim/数据挂起态读 0x00，写
@@ -32,14 +33,21 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/bmm150.lua")
 vbus.reset()
 
 local ADDR = 0x10
+
+-- 模型内嵌于驱动文件（BMM150_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/BMM150.lua")
+local smod = BMM150_VIRT
+
+local dev = smod.new()
+local smod = BMM150_VIRT
+
 local dev = smod.new()
 vbus.attach("BMM150@0x10", ADDR, dev)
 vbus.attach("BMM150@0x11", 0x11, dev)	-- SDO/CSB 引脚组合的另一常见地址
-vbus.load_driver("modules/BMM150.lua")
 
 -- BMM150 无转换门：milli_sleep 只累计（build 实睡 3ms）
 local sleep_total = 0

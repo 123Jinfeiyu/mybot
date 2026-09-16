@@ -1,7 +1,8 @@
 /*
  * BMM150 无硬件端到端（proto=virt，首个「POR 挂起态电源门 + 三段工厂
  * trim NVM + XY/Z 异构 13/15 位数据块」I2C 器件）：sensor_daemon 不打开
- * 真机 I2C，而是挂内存仿真模型 modules/lib/virtbus/bmm150.lua。守护跑的
+ * 真机 I2C，而是挂内存仿真模型 BMM150_VIRT（内嵌于 modules/BMM150.lua
+ * 尾部，2026-09-15 迁入，守护经回退路径装载）。守护跑的
  * 是【真实】BMM150.lua 完整 build（写 0x4B POWER_ON 后真实 milli_sleep
  * 3ms STARTUP→读 CHIP_ID=0x32→读 0x5D/0x62/0x68 三段 16B trim NVM→
  * 写 REP_XY/REP_Z/OP_MODE 配置 regular preset）与 call（从 0x42 起单笔
