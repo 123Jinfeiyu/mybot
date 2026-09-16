@@ -1,7 +1,8 @@
 /*
  * SHT3X 无硬件端到端（proto=virt，首个 16 位命令字 + CRC-8 命令式 I2C
  * 虚拟器件）：sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/sht3x.lua。模型复刻命令式协议——软复位 0x30A2、
+ * SHT3X_VIRT（内嵌于 modules/SHT3X.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻命令式协议——软复位 0x30A2、
  * 读状态 0xF32D（3 字节 status+CRC，bit4 复位检测）、单次高重复性
  * 轮询测量 0x2400（转换未完成纯读 NACK）、6 字节帧 T_MSB T_LSB CRC |
  * RH_MSB RH_LSB CRC（CRC-8 poly 0x31/init 0xFF 模型真算）；守护跑的是
