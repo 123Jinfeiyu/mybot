@@ -7,7 +7,7 @@
 # 守护 GAIN=16x / integ=50（连续全通道一轮约 280ms）；模型 virt_tick
 # 每拍造六通道正弦计数（V 9000±3000，32 拍周期）并预武装 DATA_RDY，
 # call 首读 CONTROL 即就绪、零真实睡眠；一拍对应一个 virt_tick。
-# 用法：cat scripts/test/as7262_virt.mt | bash scripts/run.sh --robot=robots/test/as7262_virt.sql
+# 用法：cat scripts/test/as7262_virt.mt | bash _run.sh --robot=robots/test/as7262_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
   1200       -        -         -    ;

@@ -1,7 +1,8 @@
 -- test_mpu6050.lua - MPU6050 真实驱动在虚拟总线上的离线回归（无真机）
 -- 用法: luajit test/test_mpu6050.lua（驱动 dofile HAL 加载 ffi，需 LuaJIT）
 --
--- mock 方式：virtbus 内存 I2C 总线 + virtbus/mpu6050 寄存器器件模型，加载
+-- mock 方式：virtbus 内存 I2C 总线 + 内嵌模型（modules/MPU6050.lua 尾部
+-- MPU6050_VIRT，2026-09-15 自 virtbus/mpu6050.lua 迁入），加载
 -- 【真实】modules/MPU6050.lua 跑完整 build/call/destroy。模型只提供寄存器层
 -- 事实（WHO_AM_I、14 字节 burst、补码字节），符号扩展与温度换算仍由驱动完成、
 -- 由本测试独立断言。milli_sleep 后注桩以去掉 100ms 稳定等待（驱动运行时解析
@@ -21,13 +22,16 @@
 local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 local vbus = dofile("modules/lib/virtbus.lua")
-local mpmod = dofile("modules/lib/virtbus/mpu6050.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（MPU6050_VIRT 全局工厂）：load_driver 完成驱动定义与
+-- 重注入后，从全局取工厂建实例再挂载——建实例/挂载不依赖注入顺序
+vbus.load_driver("modules/MPU6050.lua")
+local mpmod = MPU6050_VIRT	-- 后续用例沿用 mpmod.REG / mpmod.new()
 
 local imu = mpmod.new()
 vbus.attach("MPU6050@0x68", 0x68, imu)
 vbus.attach("MPU6050@0x69", 0x69, imu)	-- 同一模型挂备地址，支持 0x69 build 用例
-vbus.load_driver("modules/MPU6050.lua")
 
 -- 去掉 build 的 1ms+100ms 实睡眠（累计仍可断言）
 local sleep_total = 0

@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_tpl0501.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「直接替换全局 spi_write 的手写字桩」迁移到「真实驱动 + virtbus SPI
--- 注入层 + virtbus/tpl0501.lua 单字节写-only 模型」：
+-- 注入层 + 内嵌模型（modules/TPL0501.lua 尾部 TPL0501_VIRT，2026-09-15
+-- 自 virtbus/tpl0501.lua 迁入）单字节写-only 模型」：
 -- 旧桩只能记一个 last_spi 值；新模型按器件事实（CS 帧 = 8 位移位寄存器、
 -- CS 上升沿锁存最后字节、上电中点 127）解码，并覆盖 setup Mode0 留痕、
 -- build 零发字、delay 透传、多字节帧移位语义、失败帧仍入 txlog 等旧桩
@@ -17,13 +18,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local potmod = dofile("modules/lib/virtbus/tpl0501.lua")
 vbus.reset()
 
 local SPI_PATH = "/dev/spidev0.0"
+
+-- 模型内嵌于驱动文件（TPL0501_VIRT 全局工厂，工厂表带 BUS="spi"）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/TPL0501.lua")
+local potmod = TPL0501_VIRT
+
 local dev = potmod.new()				-- 缺省 rtotal=100k（TPL0501-100）
 vbus.attach_spi("TPL0501@spidev0.0", SPI_PATH, dev)
-vbus.load_driver("modules/TPL0501.lua")
 
 -- 驱动 build 不开总线（fd 经 @SPI 元数据流入），这里模拟 SPI 硬件变量的开总线
 local fd = spi_open(SPI_PATH)

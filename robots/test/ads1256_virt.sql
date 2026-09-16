@@ -1,7 +1,8 @@
 /*
  * ADS1256 无硬件端到端测试（proto=virt，首个 SPI 虚拟器件）：
  *   sensor_daemon 不打开真机 SPI，而是挂内存仿真模型
- *   modules/lib/virtbus/ads1256.lua（模型模块表 BUS="spi"，守护据此走
+ *   ADS1256_VIRT，内嵌于 modules/ADS1256.lua 尾部（2026-09-15 迁入，
+ *   工厂表 BUS="spi"，守护据此走
  *   attach_spi + spi_open/spi_setup 虚拟注入路径，而非 I2C 的 attach/addr）。
  *
  * 模型只实现 SPI 命令状态机（RESET/WREG/RDATAC/24bit 样本帧）与确定性合成
@@ -17,7 +18,7 @@
  *
  * 配合 ads1256_virt.mt：300ms 预热等 build（含 60ms 自校准等待），
  * 随后 16 拍 ×50ms pump 两路 Ema 并消费两个 Monitor。守护 interval=20ms。
- * 用法：cat scripts/test/ads1256_virt.mt | bash scripts/run.sh --robot=robots/test/ads1256_virt.sql
+ * 用法：cat scripts/test/ads1256_virt.mt | bash _run.sh --robot=robots/test/ads1256_virt.sql
  */
 CREATE TABLE Timer (
 	name String

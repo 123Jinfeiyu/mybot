@@ -96,4 +96,5 @@ check("daemon_cleanup 幂等（仅一次 close）", close_log[100] == 1, close_l
 os.execute("rm -rf " .. d)
 
 log(("H-07 fd-close: %d 通过, %d 失败"):format(pass, fail))
+log("[DONE] test_h07_fd.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
 os.exit(fail == 0 and 0 or 1)

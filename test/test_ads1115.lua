@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_ads1115.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 326 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/ads1115.lua 模型」。本器件是 virtbus 库【首个
+-- virtbus 注入层 + 内嵌模型（modules/ADS1115.lua 尾部 ADS1115_VIRT，
+-- 2026-09-15 自 virtbus/ads1115.lua 迁入）」。本器件是 virtbus 库【首个
 -- 字寻址 16 位寄存器 + oneshot 转换门/OS 就绪握手器件】（字寻址骨架同族
 -- INA219：寄存器号 0x00~0x03 各代表一个 16 位字，绝不能套字节地址
 -- regmap；但 INA219 连续模式无转换门，ADS1115 驱动走单次转换）：
@@ -25,13 +26,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/ads1115.lua")
 vbus.reset()
 
 local ADDR = 0x48
+
+-- 模型内嵌于驱动文件（ADS1115_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/ADS1115.lua")
+local smod = ADS1115_VIRT
+
 local dev = smod.new()
 vbus.attach("ADS1115@0x48", ADDR, dev)
-vbus.load_driver("modules/ADS1115.lua")
 
 -- milli_sleep：累计时长 + 推进转换虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0

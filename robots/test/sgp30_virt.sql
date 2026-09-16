@@ -1,7 +1,8 @@
 /*
  * SGP30 无硬件端到端（proto=virt，16 位命令字 + 每字 CRC-8、且命令带
  * 读写数据载荷的命令式 I2C 虚拟器件）：sensor_daemon 不打开真机 I2C，
- * 而是挂内存仿真模型 modules/lib/virtbus/sgp30.lua。模型复刻命令式协议——
+ * 而是挂内存仿真模型 SGP30_VIRT（内嵌于 modules/SGP30.lua 尾部，
+ * 2026-09-15 迁入，守护经回退路径装载）。模型复刻命令式协议——
  * Measure_test 0x2032（≤220ms，3 字节 0xD400+CRC，build 兼在位探测）、
  * Init_air_quality 0x2003（前 15s 启动相固定 400/0）、Measure_air_quality
  * 0x2008（≤12ms，6 字节 CO2eq+crc | TVOC+crc，CRC-8 poly 0x31/init
@@ -25,7 +26,7 @@
  * 配合 sgp30_virt.mt：400ms 预热等守护 setup（自检 222ms 真实睡眠），
  * 随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护 interval=50ms
  *（call 内含 14ms 测量真实等待）。
- * 用法：cat scripts/test/sgp30_virt.mt | bash scripts/run.sh --robot=robots/test/sgp30_virt.sql
+ * 用法：cat scripts/test/sgp30_virt.mt | bash _run.sh --robot=robots/test/sgp30_virt.sql
  */
 CREATE TABLE Timer (
 	name String

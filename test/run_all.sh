@@ -45,12 +45,19 @@ for t in test/test_*.lua; do
 	out="$($timeout_cmd "$LUACMD" "$t" 2>&1)"
 	rc=$?
 	echo "$out"
-	# 兼容两种失败约定：退出码非零，或打印 [FAIL] 行（124 = timeout 超时）
+	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
+	# 兼容三种失败约定：退出码非零、打印 [FAIL] 行（124 = timeout 超时）、
+	# 或假绿形态（P0-2）：早退/守卫短路导致未见 summary 的 [DONE] 完成标记，
+	# 或一条断言都没跑（[PASS] 计数为 0）——「安静退出」不再视同通过
 	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
 		echo "[FAIL] 用例超时（>${TEST_TIMEOUT}s，疑似死循环）"
 		fail=$((fail + 1))
 		failed="$failed $name"
 	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]"; then
+		fail=$((fail + 1))
+		failed="$failed $name"
+	elif [ "$pass_n" -eq 0 ] || ! echo "$out" | grep -qF "[DONE]"; then
+		echo "[FAIL] 假绿嫌疑：未见 [DONE] 完成标记或 [PASS] 计数为 0（早退/守卫短路/零断言）"
 		fail=$((fail + 1))
 		failed="$failed $name"
 	else
@@ -113,6 +120,65 @@ e2e_cases=(
 	# MAX17043 raw 两字段均 :f 浮点；v0=VCELL（12 位 <<4、1.25mV 全软件
 	# 换算，3.60~4.10V 锂电正弦）/v1=SOC（1/256% 定点），锚定 v0
 	'max17043_virt|"v0":[34]\.[0-9]+|10'
+	# MAX17048 raw 两字段均 :f 浮点；v0=VCELL（16 位直读无移位、78.125µV
+	# 全软件换算，3.60~4.10V 锂电正弦）/v1=SOC（1/256% 定点），锚定 v0
+	'max17048_virt|"v0":[34]\.[0-9]+|10'
+	# BH1745 raw 四通道是无符号 16 位整数计数（:f 透传无小数），浮点断言
+	# 锚定 monf 行 Ema 对 R 计数（19k~25k 正弦）的 α 混合输出 out
+	'bh1745_virt|"out":[12][0-9]{4}\.[0-9]+|10'
+	# BH1750 命令式环境光（单字节 opcode、测量值纯读 2 字节大端 count）：
+	# raw v0=LUX:f 浮点（virt_tick 32 拍正弦 count 12002~18002 → 10001.7~15001.7）。
+	# 正弦里有少数拍 count 恰为 6 的倍数（如 17496→14580）raw 成整数、而守护
+	# 20ms 拍与 50ms pump 存在混叠（快照采到哪拍不固定），故浮点断言锚定 monf
+	# 行 Ema 的 α 混合输出 out（与 bh1745/mhz19 同口径）证明 :f 未被 sign=16 取整
+	'bh1750_virt|"out":1[0-9]{4}\.[0-9]+|10'
+	# APDS9900 raw LUX 本身即 :f 浮点照度（内核两线 IR 补偿，缺省档
+	# 1354~3160 lux 正弦），CH0/CH1/PROX 整数计数 :f 透传；锚定 v0=LUX
+	'apds9900_virt|"v0":[12][0-9]{3}\.[0-9]+|10'
+	# BMM150 raw X/Y/Z 三轴地磁 µT（XY 13 位、Z 15 位 + RHALL 14 位，Bosch
+	# 整数补偿管线收尾 idiv /16，输出恒为整数值、JSON 无小数点），浮点断言
+	# 锚定 monf 行 Ema 对 Y 轴（-27~3µT 正弦，含负值）的 α 混合输出 out
+	'bmm150_virt|"out":-?[0-9]+\.[0-9]+|10'
+	# MLX90393 raw 四字段均 :f 浮点；v0=X/v1=Y/v2=Z（µT，命令式 status-first
+	# 器件，gain0 0.751/1.210µT/LSB 量化后正算回物理量）/v3=T（°C），锚定
+	# v0 的 X 轴 ±30µT 正弦（含负值，带小数即证明未被 sign=16 取整）
+	'mlx90393_virt|"v0":-?[0-9]+\.[0-9]+|10'
+	# AS3935 事件型：v0=CODE 0~3/v1=DIST_KM 公里/-1 两整数，v2=ENERGY
+	# 21 位能量（tick 闪电拍 217157/782842，整数物理量 :f 透传无小数点；
+	# 若无 :f 会被 sign=16 截断到 ≤65535），锚定 raw 行 v2 六位整数；
+	# Ema 滤 v1 DIST_KM（-1 与 10~35 混合），通用断言验 monf out≠raw
+	'as3935_virt|"v2":[0-9]{6}[,}]|10'
+	# EMC2101 风扇控制器：v0=TEMP_IN 整数/v1=TEMP_EXT:f 1/8°C 小数/
+	# v2=RPM:f 转速，tick 正弦恒四位数 1800~4200（锚 raw v2 四位整数
+	# 部分，整除拍 JSON 无小数点、其余拍带小数，两种形态都算通过，避免
+	# 采样相位碰不到整除拍的抖动；Ema 滤 v1 外温，通用断言验 monf）
+	'emc2101_virt|"v2":[0-9]{4}(\.[0-9]+)?[,}]|10'
+	# BME688 四合一：v0=T:f（22~28°C 正弦）/v1=P:f/v2=H:f/v3=GAS:f
+	# 气体电阻/v4=GAS_OK 整数，forced 门靠 virt_tick 预武装零睡眠，
+	# 锚 v0 温度（带小数即证明未被 sign=16 取整）
+	'bme688_virt|"v0":2[0-9]\.[0-9]+|10'
+	# BMI270 六轴 IMU：ACCEL_X/Y/Z + GYRO_X/Y/Z 六字段均 sign='16'
+	# 展开的有符号整数码（无 :f），配置 blob 上传 + 150ms 加载门靠
+	# virt_tick 预武装（build 仅睡 114ms），浮点断言锚定 monf 行 Ema
+	# 对 ACCEL_X 正弦码（100~500）的 α 混合输出 out
+	'bmi270_virt|"out":-?[0-9]+\.[0-9]+|10'
+	# LSM6DSV16X 六轴 IMU：ACCEL_X/Y/Z + GYRO_X/Y/Z 六字段均 sign='16'
+	# 展开的有符号整数码（无 :f），无 blob/无转换门（build 实睡 110ms：
+	# 10ms 复位轮询+100ms 陀螺启动），浮点断言锚定 monf 行 Ema 对
+	# ACCEL_X 正弦码（100~500）的 α 混合输出 out
+	'lsm6dsv_virt|"out":-?[0-9]+\.[0-9]+|10'
+	# MT6826S 15 位磁编码器（SPI Mode3，首个全双工同帧器件）：v0=ANGLE:f
+	# 度数（virt_tick 32 拍线性爬坡，11.25° 步进，非零拍必带小数）/
+	# v1=RAW/v2=STATUS/v3=CRC_OK 整数；锚 v0 浮点（证明 :f 未被取整）
+	'mt6826s_virt|"v0":[0-9]+\.[0-9]+|10'
+	# MH-Z19B NDIR CO₂（首个 UART virt 器件，/dev/serial0@9600 请求-应答帧）：
+	# v0=CO2:f 整数 ppm（virt_tick 32 拍一周爬坡 400~4368、128ppm 步进，
+	# :f 透传无小数）/v1=TEMP/v2=S；浮点断言锚定 monf 行 Ema 对浓度的 α 混合 out
+	'mhz19_virt|"out":[0-9]+\.[0-9]+|10'
+	# SDS011 激光颗粒物（第二个 UART virt 器件，/dev/serial0@9600 被动查询模式）：
+	# v0=PM25:f / v1=PM10:f 浮点 µg/m³（virt_tick 5 拍一周扬尘爬坡，0.8 步进、
+	# raw 码 mod 10 恒非 0 ⇒ raw 行必带小数，锚 mon0 的 v0 即证明 :f 未取整）
+	'sds011_virt|"v0":[0-9]+\.[0-9]+|10'
 	# ADXL345 raw 三轴均 sign='16' 展开的有符号整数码（无 :f 字段），
 	# 浮点断言锚定 monf 行 Ema 对 ACCEL_X 正弦码（±77，含负值）的 α 混合 out
 	'adxl345_virt|"out":-?[0-9]+\.[0-9]+|10'

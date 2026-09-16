@@ -1,7 +1,8 @@
 /*
  * MAX17043 无硬件端到端（proto=virt，偶地址稀疏字地图 I2C 电量计）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/max17043.lua。模型复刻协议——寄存器指针是字节
+ * MAX17043_VIRT（内嵌于 modules/MAX17043.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻协议——寄存器指针是字节
  * 地址且全在不连续偶地址：VCELL 0x02（12 位左移 4 存放、低 4 位恒 0，
  * 驱动读后 >>4，LSB 1.25mV）、SOC 0x04（u16 定点 1/256%，raw/256
  * = 百分比，芯片可报告 >100%）、MODE 0x06（bit15 SLEEP 照存、bit14
@@ -32,7 +33,7 @@
  * 配合 max17043_virt.mt：200ms 预热等守护 setup（build 零睡眠，余量
  * 充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护
  * interval=20ms（call 零睡眠，远快于 50ms 拍点，count 持续增长）。
- * 用法：cat scripts/test/max17043_virt.mt | bash scripts/run.sh --robot=robots/test/max17043_virt.sql
+ * 用法：cat scripts/test/max17043_virt.mt | bash _run.sh --robot=robots/test/max17043_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -3,7 +3,8 @@
 --   GC 压力节奏：MAX17043_GC=1 luajit test/test_max17043.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 150 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/max17043.lua 模型」。MAX17043 是【偶地址稀疏
+-- virtbus 注入层 + 内嵌模型（modules/MAX17043.lua 尾部 MAX17043_VIRT，
+-- 2026-09-15 自 virtbus/max17043.lua 迁入）」。MAX17043 是【偶地址稀疏
 -- 字地图 I2C 器件】（寄存器指针是字节地址，全在偶地址且不连续：
 -- 0x02/0x04/0x06/0x08/0x0C + 只写命令口 0xFE；写恒 {ptr,hi,lo}、读恒
 -- 「写 ptr + 读 2 字节」，跨字 burst 按 +2 偶地址续读，不能套字节地址
@@ -37,13 +38,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/max17043.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（MAX17043_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/MAX17043.lua")
+local smod = MAX17043_VIRT
 
 local ADDR = 0x36
 local dev = smod.new()
 vbus.attach("MAX17043@0x36", ADDR, dev)
-vbus.load_driver("modules/MAX17043.lua")
 
 -- milli_sleep：累计时长（本模型无虚拟时钟，只累计供零睡眠断言）
 local sleep_total = 0
@@ -522,6 +526,7 @@ end)
 check("裸 call 仍 5 txlog", #entries(mark) == 5, tostring(#entries(mark)))
 vbus.attach("MAX17043@0x36", ADDR, dev)
 vbus.load_driver("modules/MAX17043.lua")
+local smod = MAX17043_VIRT
 i2c_set_addr(fd, ADDR)
 
 -- call 负路径

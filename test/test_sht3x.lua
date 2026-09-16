@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_sht3x.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的手写桩」迁移到「真实驱动 + virtbus
--- 注入层 + virtbus/sht3x.lua 模型」。本器件是 virtbus 库【首个 16 位
+-- 注入层 + 内嵌模型（modules/SHT3X.lua 尾部 SHT3X_VIRT，2026-09-15
+-- 自 virtbus/sht3x.lua 迁入）」。本器件是 virtbus 库【首个 16 位
 -- 命令字 + 每数据字 CRC-8 的命令式 I2C 器件】：无寄存器指针，每笔写恰为
 -- 2 字节命令大端字（驱动借 i2c_write_reg(fd,hi,lo) 发送），测量/状态从
 -- 总线纯读（i2c_read，无前置指针写），6 字节测量帧 = T_MSB T_LSB CRC |
@@ -20,13 +21,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/sht3x.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（SHT3X_VIRT 全局工厂，CRC-8 公开在工厂表字段）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/SHT3X.lua")
+local smod = SHT3X_VIRT
 
 local ADDR = 0x44
 local dev = smod.new()
 vbus.attach("SHT3X@0x44", ADDR, dev)
-vbus.load_driver("modules/SHT3X.lua")
 
 -- milli_sleep：累计时长 + 推进转换虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0

@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_mcp3421.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 335 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/mcp3421.lua 模型」。本器件是 virtbus 库【首个
+-- virtbus 注入层 + 内嵌模型（modules/MCP3421.lua 尾部 MCP3421_VIRT，
+-- 2026-09-15 自 virtbus/mcp3421.lua 迁入）」。本器件是 virtbus 库【首个
 -- 单字节配置写 + 数据流纯读、读回帧末字节自带配置回显与 RDY 就绪位的
 -- 命令式 I2C 器件】：无寄存器指针，写恒 1 字节配置（i2c_write_multi），
 -- 读恒无指针纯读（i2c_read 大端合并）；18bit 档 4 字节帧（D[17:16] 在
@@ -20,13 +21,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/mcp3421.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（MCP3421_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/MCP3421.lua")
+local smod = MCP3421_VIRT
 
 local ADDR = 0x68
 local dev = smod.new()
 vbus.attach("MCP3421@0x68", ADDR, dev)
-vbus.load_driver("modules/MCP3421.lua")
 
 -- milli_sleep：累计时长 + 推进转换虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0

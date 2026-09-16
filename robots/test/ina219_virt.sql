@@ -2,7 +2,8 @@
  * INA219 无硬件端到端（proto=virt，首个「字寻址 16 位寄存器」I2C 虚拟
  * 器件——寄存器号 0x00~0x05 各代表一个 16 位字，而非字节地址，不能套
  * 字节地址 regmap）：sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/ina219.lua。模型复刻协议——CONFIG 0x00 复位默认
+ * INA219_VIRT，内嵌于 modules/INA219.lua 尾部（2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻协议——CONFIG 0x00 复位默认
  * 0x399F（bit15=RST 软复位，0x8000 不落盘、全文件恢复默认）、SHUNT
  * 0x01（16 位有符号，LSB 10µV）、BUS 0x02（13 位左移 3，LSB 4mV，
  * 低 3 位 CNVR/OVF 标志），写恒 {ptr,hi,lo}、读恒「写 ptr + 读 2 字节」
@@ -31,7 +32,7 @@
  * 配合 ina219_virt.mt：200ms 预热等守护 setup（build 真实睡约 30ms），
  * 随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护 interval=20ms
  *（call 零睡眠，远快于 50ms 拍点，count 持续增长）。
- * 用法：cat scripts/test/ina219_virt.mt | bash scripts/run.sh --robot=robots/test/ina219_virt.sql
+ * 用法：cat scripts/test/ina219_virt.mt | bash _run.sh --robot=robots/test/ina219_virt.sql
  */
 CREATE TABLE Timer (
 	name String

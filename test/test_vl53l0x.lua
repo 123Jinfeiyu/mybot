@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_vl53l0x.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 410 行手写桩」迁移到「真实驱动 +
--- virtbus I2C 注入层 + virtbus/vl53l0x.lua 分页模型」。模型按（页, 寄存器）
+-- virtbus I2C 注入层 + 内嵌模型（modules/VL53L0X.lua 尾部 VL53L0X_VIRT，
+-- 2026-09-15 自 virtbus/vl53l0x.lua 迁入）分页模型」。模型按（页, 寄存器）
 -- 双键存储，复刻 0xFF 页切换、DataInit 舞步、page6/7 SPAD 握手、SYSRANGE
 -- 模式机与 data-ready/清中断时序，旧桩的全部序列断言逐条保留并补上模型
 -- 协议事实与总线层（指针写+读原子事务、NACK 相位、set_addr 留痕）断言。
@@ -17,13 +18,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local vlmod = dofile("modules/lib/virtbus/vl53l0x.lua")
 vbus.reset()
 
 local ADDR = 0x29
+-- 模型内嵌于驱动文件（VL53L0X_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/VL53L0X.lua")
+local vlmod = VL53L0X_VIRT
+
 local dev = vlmod.new()
 vbus.attach("VL53L0X@0x29", ADDR, dev)
-vbus.load_driver("modules/VL53L0X.lua")
 
 -- milli_sleep：累计时长 + 推进模型虚拟转换倒计时（驱动运行时解析全局名）
 local sleep_total = 0

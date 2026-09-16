@@ -6,7 +6,7 @@
 # 守护 interval=50ms（call 内含 14ms 测量真实等待），一拍一拍对应
 # virt_tick（合成正弦 CO2eq 400~700ppm、TVOC 40~200ppb，32 拍周期，
 # warm 已度过 15s 启动相、预武装零转换等待）。
-# 用法：cat scripts/test/sgp30_virt.mt | bash scripts/run.sh --robot=robots/test/sgp30_virt.sql
+# 用法：cat scripts/test/sgp30_virt.mt | bash _run.sh --robot=robots/test/sgp30_virt.sql
 @Action
 t0.delay  ec.out  mon0.go  monf.go;
    400       -        -         -    ;

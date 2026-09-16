@@ -14,7 +14,7 @@ set -euo pipefail
 
 PORT="${1:-19240}"
 TIMEOUT="${2:-15}"
-BOT="${BOT:-./build/mybot}"
+BOT="${BOT:-./bot}"
 
 echo "=== TCP 端到端回环测试 ==="
 echo "端口: ${PORT}  超时: ${TIMEOUT}s  可执行: ${BOT}"

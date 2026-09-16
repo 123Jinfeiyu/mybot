@@ -1,7 +1,8 @@
 /*
  * MAX30102 无硬件端到端（proto=virt，首个「环形 FIFO + 读写指针/溢出计数
  * + rollover + 18 位样本块读」I2C 器件）：sensor_daemon 不打开真机 I2C，
- * 而是挂内存仿真模型 modules/lib/virtbus/max30102.lua。守护跑的是【真实】
+ * 而是挂内存仿真模型 MAX30102_VIRT（内嵌于 modules/MAX30102.lua 尾部，
+ * 2026-09-15 迁入，守护经回退路径装载）。守护跑的是【真实】
  * MAX30102.lua 完整 build（读 0xFF 甄别 PART_ID=0x15→写 MODE RESET 后
  * 真实 milli_sleep 5ms→FIFO_CFG 固定开 rollover→SPO2_CFG→LED1/2→清
  * WR/OVF/RD 三指针→写 MODE=SpO2 启动）与 call（读 WR/RD 按 (WR-RD)%32
@@ -30,7 +31,7 @@
  * 配合 max30102_virt.mt：首行 200ms 预热等守护 setup（仅需容纳 build 的
  * RESET 真实睡眠 5ms），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（tick 预武装后 call 零睡眠）。
- * 用法：cat scripts/test/max30102_virt.mt | bash scripts/run.sh --robot=robots/test/max30102_virt.sql
+ * 用法：cat scripts/test/max30102_virt.mt | bash _run.sh --robot=robots/test/max30102_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_ad9833.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「直接替换全局 spi_write_multi 的手写字桩」迁移到「真实驱动 + virtbus SPI
--- 注入层 + virtbus/ad9833.lua 16 位字解码模型」：
+-- 注入层 + 内嵌模型（modules/AD9833.lua 尾部 AD9833_VIRT，2026-09-15
+-- 自 virtbus/ad9833.lua 迁入）16 位字解码模型」：
 -- 旧桩只能逐字比对预期常量；新模型把帧真正解码回频率/相位/控制寄存器，
 -- 字节序（低 14 位在前）、B28 两段拼接、波形位/RESET 语义都可独立断言，
 -- 且覆盖 setup Mode2 留痕、非整字帧等旧桩触及不到的总线事实。
@@ -17,13 +18,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local ddsmod = dofile("modules/lib/virtbus/ad9833.lua")
 vbus.reset()
 
 local SPI_PATH = "/dev/spidev0.0"
+
+-- 模型内嵌于驱动文件（AD9833_VIRT 全局工厂，工厂表带 BUS="spi"）：
+-- load_driver 完成驱动定义与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/AD9833.lua")
+local ddsmod = AD9833_VIRT
+
 local dev = ddsmod.new()
 vbus.attach_spi("AD9833@spidev0.0", SPI_PATH, dev)
-vbus.load_driver("modules/AD9833.lua")
 
 local fd = spi_open(SPI_PATH)
 check("spi_open 虚拟 fd=3", fd == 3)

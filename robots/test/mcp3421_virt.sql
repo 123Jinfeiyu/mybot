@@ -1,7 +1,8 @@
 /*
  * MCP3421 无硬件端到端（proto=virt，首个「单字节配置写 + 数据流纯读、
  * 读回帧自带配置回显/RDY 就绪位」的命令式 I2C 虚拟器件）：sensor_daemon
- * 不打开真机 I2C，而是挂内存仿真模型 modules/lib/virtbus/mcp3421.lua。
+ * 不打开真机 I2C，而是挂内存仿真模型 MCP3421_VIRT（内嵌于
+ * modules/MCP3421.lua 尾部，2026-09-15 迁入，守护经回退路径装载）。
  * 模型复刻协议——无寄存器指针：写恒 1 字节配置（[7]RDY [4]O/C
  * [3:2]分辨率 [1:0]PGA），读恒无指针纯读，末字节配置回显 bit7 RDY
  * 兼作就绪握手（0=新数据）；12bit 档 3 字节帧（16 位字顶部重复符号位
@@ -22,7 +23,7 @@
  *
  * 配合 mcp3421_virt.mt：300ms 预热等守护 setup（build 无睡眠），
  * 随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
- * 用法：cat scripts/test/mcp3421_virt.mt | bash scripts/run.sh --robot=robots/test/mcp3421_virt.sql
+ * 用法：cat scripts/test/mcp3421_virt.mt | bash _run.sh --robot=robots/test/mcp3421_virt.sql
  */
 CREATE TABLE Timer (
 	name String

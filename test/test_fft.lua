@@ -180,4 +180,5 @@ do	-- 非共轭对称谱做 ifft_real 应报实数性错误
 end
 
 print(string.format("结果: %d 通过, %d 失败", passed, failed))
+print("[DONE] test_fft.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
 if failed > 0 then os.exit(1) end

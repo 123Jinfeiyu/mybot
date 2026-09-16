@@ -5,7 +5,7 @@
 # 三字段快照与 count，monf 输出 et 滤波后 T（°C）与阈值 level。
 # 守护 interval=50ms（call 内含 16ms 高重复性转换真实等待），一拍一拍
 # 对应 virt_tick（合成正弦 T 20~30°C、RH 30~70%，32 拍周期）。
-# 用法：cat scripts/test/sht3x_virt.mt | bash scripts/run.sh --robot=robots/test/sht3x_virt.sql
+# 用法：cat scripts/test/sht3x_virt.mt | bash _run.sh --robot=robots/test/sht3x_virt.sql
 @Action
 t0.delay  et.out  mon0.go  monf.go;
    300       -        -         -    ;

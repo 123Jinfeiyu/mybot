@@ -8,8 +8,9 @@
 -- DAEMON_CONFIG（"k=v;k=v"，来自 @Daemon 矩阵除 name/chunk 外的列）：
 --   driver   必填，驱动模块名（modules/<driver>.lua，如 MPU6050/BME280/ADS1115/SGP30）
 --   proto    i2c（默认）| spi | uart（uart 时 path=串口设备、baud=波特率）
---            | virt（无硬件仿真：挂 modules/lib/virtbus/<driver 小写>.lua 器件模型，
---            驱动/滤波/消费链路全走内存虚拟 I2C；模型每拍 virt_tick 造合成数据。
+--            | virt（无硬件仿真：挂 lib/virtbus/<driver 小写>.lua 器件模型，缺失时
+--            回退读驱动内嵌的 <驱动名>_VIRT 工厂；驱动/滤波/消费链路全走内存
+--            虚拟总线（I2C/SPI/UART 由模型 BUS 标记决定）。模型每拍 virt_tick 造合成数据。
 --            仅限测试，启动会打印 VIRTUAL HARDWARE 警告横幅，禁止生产使用）
 --   path     总线设备路径（默认 i2c:/dev/i2c-1，spi:/dev/spidev0.0）
 --   addr     器件地址（i2c 如 0x68；spi 忽略）
@@ -27,7 +28,7 @@ if jit then jit.off() end
 
 local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
 local P = dofile(mpath.resolve("lib/pthread.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))	-- i2c/spi 采样
+dofile(mpath.resolve("lib/HAL.lua"))	-- i2c/spi/uart 采样
 
 -- 解析配置串
 local cfg = {}
@@ -41,8 +42,9 @@ local path   = cfg.path or (proto == "spi" and "/dev/spidev0.0" or "/dev/i2c-1")
 local addr   = cfg.addr
 local sign   = tonumber(cfg.sign)
 
--- 实际总线族：proto=virt 时由模型 BUS 标记决定（I2C 模型走 i2c_*，SPI 模型走 spi_*）；
--- close_bus/开总线/params 都按它分流。virt 在模型加载后可能从 i2c 修正为 spi。
+-- 实际总线族：proto=virt 时由模型 BUS 标记决定（I2C 模型走 i2c_*，SPI 模型走 spi_*，
+-- UART 模型走 uart_*）；close_bus/开总线/params 都按它分流。
+-- virt 在模型加载后可能从 i2c 修正为 spi/uart。
 local bus_kind = (proto == "uart") and "uart" or (proto == "spi") and "spi" or "i2c"
 
 -- fields 解析："名字" 或 "名字:模式"；模式 ""=跟随全局 sign，"f"/"float"=原样，
@@ -112,8 +114,9 @@ local ok_load, load_err = true, nil
 
 if proto == "virt" then
 	-- ---- 无硬件仿真：加载虚拟总线 + 与 driver 同名的器件模型 ----
-	-- 约定：modules/lib/virtbus/<driver 小写>.lua 必须存在且 new() 返回模型；
-	-- 模型每拍 virt_tick(n) 造数（无此方法则输出静态初值）。
+	-- 约定（二选一）：① modules/lib/virtbus/<driver 小写>.lua 存在且 new() 返回
+	-- 模型；② 文件缺失时回退读驱动文件内嵌的全局 <驱动名>_VIRT 工厂（单文件
+	-- 驱动+模型形态）。模型每拍 virt_tick(n) 造数（无此方法则输出静态初值）。
 	-- HAL 已在本 chunk 顶部 dofile（__BOT4CJ_HAL guard 使驱动内的再次 dofile
 	-- 不覆盖全局），load_driver 仍重注入一次以固定「驱动加载后全局为虚拟函数」。
 	local vrok
@@ -122,24 +125,44 @@ if proto == "virt" then
 		fail(-8, "virt: cannot load lib/virtbus.lua: " .. tostring(vbus)); return
 	end
 	local model_path = mpath.resolve("lib/virtbus/" .. string.lower(tostring(driver)) .. ".lua")
-	local vmod
+	local vmod, drv_preloaded = nil, false
 	vrok, vmod = pcall(dofile, model_path)
 	if not vrok or type(vmod) ~= "table" or type(vmod.new) ~= "function" then
-		fail(-8, "virt: no virtual device model for driver '" .. tostring(driver)
-			.. "': " .. model_path); return
+		-- 回退（单文件驱动+模型约定，2026-09-15 起）：模型文件缺失时加载驱动
+		-- 文件本身，取其内嵌的全局 <驱动名>_VIRT 工厂（如 BH1750_VIRT）。
+		-- 驱动此时已加载完毕，末尾跳过 load_driver 二次 dofile，仅重注入
+		-- （等价 load_driver 后半段：先置 _injected=false 再 inject）。
+		local drv_ok, drv_err = pcall(dofile, drvpath)
+		if not drv_ok then
+			fail(-8, "virt: no virtual device model for driver '" .. tostring(driver)
+				.. "' (model file missing and driver load failed: " .. tostring(drv_err) .. ")"); return
+		end
+		vmod = rawget(_G, tostring(driver) .. "_VIRT")
+		if type(vmod) ~= "table" or type(vmod.new) ~= "function" then
+			fail(-8, "virt: no virtual device model for driver '" .. tostring(driver)
+				.. "': neither " .. model_path .. " nor embedded " .. tostring(driver) .. "_VIRT"); return
+		end
+		drv_preloaded = true
 	end
 	vrok, vdev = pcall(vmod.new)
 	if not vrok or type(vdev) ~= "table" then
 		fail(-8, "virt: model new() failed: " .. tostring(vdev)); return
 	end
 	-- SPI 模型（模块表 BUS="spi"，兼容实例自带 BUS）：路径即片选身份，
-	-- 走 attach_spi；I2C 模型维持 addr 挂载。
+	-- 走 attach_spi；UART 模型（BUS="uart"）按 tty 路径走 attach_uart
+	-- （应答环挂载）；I2C 模型维持 addr 挂载。
 	local is_spi = (vmod.BUS == "spi" or vdev.BUS == "spi")
+	local is_uart = (vmod.BUS == "uart" or vdev.BUS == "uart")
 	if is_spi then
 		bus_kind = "spi"
 		-- 用户未显式给 path 时，proto=virt 上面默认成了 /dev/i2c-1，这里修正
 		if not cfg.path then path = "/dev/spidev0.0" end
 		vbus.attach_spi("VIRT:" .. tostring(driver) .. "@" .. path, path, vdev)
+	elseif is_uart then
+		bus_kind = "uart"
+		-- 同上：virt 的 uart 模型缺省挂 /dev/serial0（HAL 路径白名单内）
+		if not cfg.path then path = "/dev/serial0" end
+		vbus.attach_uart("VIRT:" .. tostring(driver) .. "@" .. path, path, vdev)
 	else
 		local addr_n = tonumber(addr)
 		if not addr_n then
@@ -147,7 +170,13 @@ if proto == "virt" then
 		end
 		vbus.attach("VIRT:" .. tostring(driver) .. "@" .. tostring(addr), addr_n, vdev)
 	end
-	ok_load, load_err = pcall(vbus.load_driver, drvpath)
+	if drv_preloaded then
+		vbus._injected = false
+		vbus.inject()
+		ok_load, load_err = true, nil
+	else
+		ok_load, load_err = pcall(vbus.load_driver, drvpath)
+	end
 else
 	ok_load, load_err = pcall(dofile, drvpath)
 end
@@ -279,6 +308,6 @@ function daemon_cleanup()
 		destroy(params)
 	end
 	close_bus()
-	-- virt：还原全局 i2c_*/spi_*（独立守护 lua_State 随之销毁，主要为状态对称）
+	-- virt：还原全局 i2c_*/spi_*/uart_*（独立守护 lua_State 随之销毁，主要为状态对称）
 	if vbus ~= nil then vbus.restore() end
 end

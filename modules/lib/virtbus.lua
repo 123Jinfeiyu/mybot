@@ -1,9 +1,9 @@
 -- virtbus.lua —— 虚拟总线（issue #18：设计虚拟硬件用于无真机驱动链路验证）
 -- bot4cj 仓颉语言机器人框架
 --
--- 概念：inject 后替换 HAL 的全部全局 i2c_*/spi_* 函数，真实驱动（经 HAL/驱动 dofile
+-- 概念：inject 后替换 HAL 的全部全局 i2c_*/spi_*/uart_* 函数，真实驱动（经 HAL/驱动 dofile
 -- 链路）在纯内存的虚拟总线上完成 build/call/destroy——无真机、无 /dev/i2c-*、
--- 无 /dev/spidev*。器件行为由 attach 时提供的模型回调决定，事务序列记入 txlog
+-- 无 /dev/spidev*、无 /dev/tty*。器件行为由 attach 时提供的模型回调决定，事务序列记入 txlog
 -- 供断言。
 --
 -- 用法（I2C）：
@@ -26,6 +26,12 @@
 --                            --   {dir="setup", path=path, mode=,bits=,speed=}
 --                            --   {dir="x", path=path, tx={...}, rx={...},
 --                            --    delay=us, ok=bool}
+--                            --   UART（字节流；应答经 per-path 环回传）：
+--                            --   {dir="uopen", path=path, baud=baud}
+--                            --   {dir="uw", path=path, bytes={...}, ok=bool}
+--                            --   {dir="ur", path=path, n=请求长度, bytes={...}[,err=true]}
+--                            --   {dir="uf", path=path}   （flush 清输入环）
+--                            -- close 与 I2C/SPI 同款静默不留痕
 --   vbus.reset()           -- 清空器件/日志/线索并 restore
 --   vbus.restore()         -- 还原原始 i2c_*/spi_* 全局函数
 --
@@ -37,9 +43,22 @@
 --                        纯写（spi_write*）在真机上也会移入字节（被调用方丢弃），
 --                        txlog 照记 rx，模型可借此模拟「写命令的同帧状态回传」
 --                        （ADS1256 命令态/DATA 就绪轮询一类协议的事实）。
+--   UART dev.on_write(bytes) 收主机写出的 1 基字节表（TX 恒成功的前提）：
+--                        返回表 = 把应答字节逐字节追加进该 path 的输入环，
+--                        供后续 uart_read 取走；返回 nil/无 = 不应答
+--                        （驱动读到空表 = 超时无数据）；返回 false = 本笔写失败
+--                        （uart_write 返 -1，模拟 TX 错误）。
+--                        环是 per-path 字节队列而非寄存器映射——UART 无地址、
+--                        无帧同步，驱动侧「前导噪声 + 跨轮聚合读扫描」协议
+--                        （MHZ19/SDS011）只要在环里前置噪声字节即可复刻。
 --
 -- SPI 挂载身份是 spidev 路径（/dev/spidev<bus>.<cs>，路径即片选）：
 --   vbus.attach_spi("电位器", "/dev/spidev0.0", { xfer = function(tx) ... end })
+--
+-- UART 挂载身份是 tty 路径（请求-应答式字节流器件）：
+--   vbus.attach_uart("CO2", "/dev/serial0", {
+--       on_write = function(bytes) ... return reply end,  -- 收主机帧，返回应答表/nil/false
+--   })
 --
 -- 语义对齐 HAL（返回值契约逐函数与 HAL.lua 相同，驱动用 `if not` / `==0` 等
 -- 不同判定时行为才不会在虚拟总线上失真）：
@@ -61,13 +80,27 @@
 --   write_multi 帧长 1~64；spi_read_multi 合并值 n 1~8 越界显式 -1；
 --   delay_us 同 HAL 钳到 65535 并随帧留痕；spi_read 的 MOSI 为全 0（真机
 --   tx_buf=NULL 内核发 0）。无挂载路径/未打开 fd/模型返回失败，传输族一律 -1。
---   注意：MT6826S 驱动绕过全局 spi_* 直调 HAL.sys.ioctl_p 做全双工帧，
---   本层注入不到该路径——迁移它需先在 HAL 提供全局全双工原语。
+--   spi_xfer_full 是第 9 个 SPI 全局：1 基字节表入参/等长 1 基 MISO 表返回
+--   （失败 nil），供「MOSI 命令与 MISO 数据同帧」的全双工协议（MT6826S
+--   24 位读帧）；帧长/字节校验同 spi_write_multi，帧照常走 dev.xfer。
+--
+--   uart_open 路径/波特率白名单同 HAL（^/dev/tty[A-Za-z0-9]+$ 或
+--   ^/dev/serial%d+$；baud ∈ HAL 的 UART_BAUDS 表），fd 与 I2C/SPI 共用编号
+--   空间；非法入参 -1（校验顺序同 HAL：先 baud 后 path）。
+--   uart_write 入参校验同 HAL（非表/空/超 512/逐字节 byte_of 非法 → -1 且不发
+--   事务），通过后 TX 面向控制器恒成功（无挂载也返回 #data，只是无人应答）；
+--   模型 on_write 返回表 → 应答入环、返回 false → 本笔 -1。
+--   uart_read 校验同 HAL（fd 无效/n<1 → nil，n>512 钳 512），从环即时 drain
+--   至多 n 字节（不模拟时序——虚拟层无波特率时钟）：环空返回空表 = 超时无数据，
+--   总线级 virtbus.uart_fail_read=true 时返回 nil（模拟链路硬错误，事务记
+--   err=true）。uart_flush 清环返 0（无效 fd -1）；uart_close 静默清登记。
 --
 -- 器件模型故障注入契约：
 --   I2C dev.write(bytes) 显式 return false → 本笔写按 NACK（无返回/return nil = 成功）
 --   I2C dev.read(n) 返回 nil               → 本笔读按 NACK
 --   SPI dev.xfer(tx) 返回 nil/false        → 本帧传输失败（全部传输族返 -1）
+--   UART dev.on_write(bytes) 返回 false    → 本笔写失败（uart_write 返 -1）
+--   UART virtbus.uart_fail_read = true     → 全部 uart_read 返 nil（链路硬错误）
 --
 -- 设备模型库：modules/lib/virtbus/（regmap.lua 通用寄存器组、bh1750.lua 等现成模型）。
 -- 加载真实驱动建议用 vbus.load_driver(path)：驱动首次 dofile HAL 会覆盖注入的全局
@@ -79,29 +112,42 @@ virtbus._VERSION = "0.2.0"
 
 local devs = {}          -- I2C addr -> { name=, write=, read= } 器件模型
 local spi_devs = {}      -- SPI path -> { name=, xfer= } 器件模型
-local txlog = {}         -- 事务序列（I2C/SPI 共用一条时间线）
+local uart_devs = {}     -- UART path -> { name=, model=, on_write= } 器件模型
+local uart_rings = {}    -- UART path -> { data={}, pos= } 输入环（设备→主机字节队列）
+local txlog = {}         -- 事务序列（I2C/SPI/UART 共用一条时间线）
 local originals = {}     -- 原始全局函数（restore 用）
 local next_fd = 3
 local fd_addr = {}       -- fd -> addr（i2c_set_addr 记录）
 local open_paths = {}    -- fd -> path（I2C）
 local spi_paths = {}     -- fd -> path（SPI）
+local uart_paths = {}    -- fd -> path（UART）
 virtbus.txlog = txlog
 virtbus.devs = devs
 virtbus.spi_devs = spi_devs
+virtbus.uart_devs = uart_devs
+virtbus.uart_fail_read = false  -- 总线级故障注入：true → uart_read 一律返 nil
 
--- 复位：清空器件/日志/线索并还原全局 i2c_*/spi_*
+-- HAL uart_open 的波特率白名单镜像（语义对齐 HAL.lua UART_BAUDS）
+local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 }
+
+-- 复位：清空器件/日志/线索并还原全局 i2c_*/spi_*/uart_*
 function virtbus.reset()
 	virtbus.restore()
 	devs = {}
 	spi_devs = {}
+	uart_devs = {}
+	uart_rings = {}
 	txlog = {}
 	fd_addr = {}
 	open_paths = {}
 	spi_paths = {}
+	uart_paths = {}
 	next_fd = 3
 	virtbus.txlog = txlog
 	virtbus.devs = devs
 	virtbus.spi_devs = spi_devs
+	virtbus.uart_devs = uart_devs
+	virtbus.uart_fail_read = false
 end
 
 -- 挂载器件模型：name 仅日志用；dev.write(bytes)/dev.read(n) 缺省为空实现。
@@ -136,6 +182,20 @@ function virtbus.attach_spi(name, path, dev)
 			local t = {}
 			for i = 1, #tx do t[i] = 0 end
 			return t
+		end,
+	}
+end
+
+-- 挂载 UART 器件模型：name 仅日志用；path 为 tty 路径（路径即设备身份）。
+-- dev.on_write(bytes) 三态：返回表 = 应答入环；返回 nil/无 = 不应答；
+-- 返回 false = 本笔写失败。同款动态委托：attach 后替换 dev.on_write 即时生效。
+function virtbus.attach_uart(name, path, dev)
+	if type(path) ~= "string" then return end
+	uart_devs[path] = {
+		name = name,
+		model = dev,
+		on_write = function(bytes)
+			if dev.on_write then return dev.on_write(bytes) end
 		end,
 	}
 end
@@ -456,7 +516,163 @@ function virtbus.v_spi_read_multi(fd, n, delay_us)
 	return be_merge(rx)
 end
 
--- 替换全局 i2c_*/spi_* 函数为虚拟实现（幂等：已注入则跳过）
+-- 全双工任意长度一帧（对齐 HAL spi_xfer_full）：data 为 1 基字节表（1~64，
+-- 逐字节校验），返回模型 dev.xfer 给的等长 1 基 MISO 表；任何失败返回 nil。
+-- 与写族同一 do_xfer 帧核心：tx/rx 全留痕，delay 钳 65535，模型返 nil 即失败。
+function virtbus.v_spi_xfer_full(fd, data, delay_us)
+	fd = tonumber(fd)
+	if fd == nil or type(data) ~= "table" or #data == 0 then return nil end
+	if #data > 64 then return nil end
+	local tx = {}
+	for i = 1, #data do
+		local b = tonumber(data[i])
+		if b == nil or b ~= math.floor(b) or b < 0 or b > 255 then return nil end
+		tx[i] = b
+	end
+	local entry_delay = spi_delay_of(delay_us)
+	local rx = do_xfer(fd, tx)
+	if rx == nil then return nil end
+	txlog[#txlog].delay = entry_delay
+	return rx
+end
+
+-- ======================================================================
+-- UART（tty 字节流：path 即设备身份；模型 on_write 应答进 per-path 输入环，
+-- uart_read 从环即时 drain——虚拟层不模拟波特率时钟/轮询时序）
+-- ======================================================================
+
+-- 输入环：{ data = 追加式字节数组, pos = 下一个未消费下标 }
+local function ring_of(path)
+	local r = uart_rings[path]
+	if r == nil then
+		r = { data = {}, pos = 1 }
+		uart_rings[path] = r
+	end
+	return r
+end
+
+local function ring_push(path, bytes)
+	local r = ring_of(path)
+	for i = 1, #bytes do
+		r.data[#r.data + 1] = tonumber(bytes[i]) or 0
+	end
+	-- 全读完则归零，避免长驻进程里 data 无界增长
+	if r.pos > #r.data then
+		r.data = {}
+		r.pos = 1
+	end
+end
+
+-- byte_of / uint_of 校验语义镜像 HAL（floor 后判范围）
+local function uart_byte_of(v)
+	local n = tonumber(v)
+	if n == nil then return nil end
+	n = math.floor(n)
+	if n < 0 or n > 255 then return nil end
+	return n
+end
+
+local function uart_uint_of(v)
+	local n = tonumber(v)
+	if n == nil then return nil end
+	return math.floor(n)
+end
+
+-- 校验顺序同 HAL：先 baud 白名单，再 path 白名单；fd 与 I2C/SPI 共用编号空间
+function virtbus.v_uart_open(path, baud)
+	baud = tonumber(baud)
+	local baud_ok = false
+	for _, b in ipairs(UART_BAUDS) do
+		if b == baud then baud_ok = true; break end
+	end
+	if not baud_ok then return -1 end
+	if type(path) ~= "string"
+	   or (string.match(path, "^/dev/tty[A-Za-z0-9]+$") == nil
+	       and string.match(path, "^/dev/serial%d+$") == nil) then
+		return -1
+	end
+	local fd = next_fd
+	next_fd = next_fd + 1
+	uart_paths[fd] = path
+	txlog[#txlog + 1] = { dir = "uopen", path = path, baud = baud }
+	return fd
+end
+
+function virtbus.v_uart_close(fd)
+	fd = tonumber(fd)
+	if fd == nil or fd < 0 then return -1 end
+	uart_paths[fd] = nil
+	return 0
+end
+
+-- flush 语义对齐 HAL TCIFLUSH：只清输入环（丢弃设备已发未读字节），留痕
+function virtbus.v_uart_flush(fd)
+	fd = tonumber(fd)
+	if fd == nil or fd < 0 or uart_paths[fd] == nil then return -1 end
+	local path = uart_paths[fd]
+	uart_rings[path] = nil
+	txlog[#txlog + 1] = { dir = "uf", path = path }
+	return 0
+end
+
+-- 入参校验同 HAL（非表/空/超 512/逐字节非法 → -1 且不发事务）；通过后
+-- TX 面向控制器恒成功（无挂载也返回字节数，只是无人应答——真机语义）。
+function virtbus.v_uart_write(fd, data)
+	fd = tonumber(fd)
+	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
+	if #data > 512 then return -1 end
+	if uart_paths[fd] == nil then return -1 end
+	local tx = {}
+	for i = 1, #data do
+		local b = uart_byte_of(data[i])
+		if b == nil then return -1 end
+		tx[i] = b
+	end
+	local path = uart_paths[fd]
+	local entry = { dir = "uw", path = path, bytes = tx, ok = false }
+	txlog[#txlog + 1] = entry
+	local dev = uart_devs[path]
+	if dev == nil then
+		entry.ok = true
+		return #tx
+	end
+	local resp = dev.on_write(tx)
+	if resp == false then return -1 end
+	if type(resp) == "table" then ring_push(path, resp) end
+	entry.ok = true
+	return #tx
+end
+
+-- 校验同 HAL（fd 无效 / n uint_of 非法或 <1 → nil；n>512 钳 512）。
+-- 环 drain 至多 n 字节即时返回：环空 = 空表（对齐"超时无数据"），
+-- uart_fail_read = 链路硬错误 → nil（事务记 err=true）。
+function virtbus.v_uart_read(fd, n, _timeout_ms)
+	fd = tonumber(fd)
+	n = uart_uint_of(n)
+	if fd == nil or n == nil or n < 1 then return nil end
+	local path = uart_paths[fd]
+	if path == nil then return nil end
+	if n > 512 then n = 512 end
+	if virtbus.uart_fail_read then
+		txlog[#txlog + 1] = { dir = "ur", path = path, n = n, bytes = {}, err = true }
+		return nil
+	end
+	local out = {}
+	local r = uart_rings[path]
+	if r ~= nil then
+		while #out < n and r.pos <= #r.data do
+			out[#out + 1] = r.data[r.pos]
+			r.pos = r.pos + 1
+		end
+		if r.pos > #r.data then
+			uart_rings[path] = nil
+		end
+	end
+	txlog[#txlog + 1] = { dir = "ur", path = path, n = n, bytes = out }
+	return out
+end
+
+-- 替换全局 i2c_*/spi_*/uart_* 函数为虚拟实现（幂等：已注入则跳过）
 local VFUNCS = {
 	i2c_open = virtbus.v_i2c_open,
 	i2c_close = virtbus.v_i2c_close,
@@ -478,6 +694,12 @@ local VFUNCS = {
 	spi_write3 = virtbus.v_spi_write3,
 	spi_write_multi = virtbus.v_spi_write_multi,
 	spi_read_multi = virtbus.v_spi_read_multi,
+	spi_xfer_full = virtbus.v_spi_xfer_full,
+	uart_open = virtbus.v_uart_open,
+	uart_close = virtbus.v_uart_close,
+	uart_flush = virtbus.v_uart_flush,
+	uart_write = virtbus.v_uart_write,
+	uart_read = virtbus.v_uart_read,
 }
 local REPLACED = {}
 for name in pairs(VFUNCS) do REPLACED[#REPLACED + 1] = name end
@@ -501,8 +723,8 @@ function virtbus.restore()
 end
 
 -- 加载真实驱动文件并确保虚拟总线处于注入态。
--- 驱动顶部首次 dofile HAL.lua 会用真实 ffi 函数定义全局 i2c_*/spi_*，把先前的
--- 虚拟注入覆盖掉；故加载后强制重注入。先加载再注入时，originals 捕获的是
+-- 驱动顶部首次 dofile HAL.lua 会用真实 ffi 函数定义全局 i2c_*/spi_*/uart_*，
+-- 把先前的虚拟注入覆盖掉；故加载后强制重注入。先加载再注入时，originals 捕获的是
 -- 真实 HAL 函数，restore()/reset() 能真正还原 HAL（而不是把全局置空）。
 -- 约定：一个 Lua 状态机内只走一次「加载驱动 + 注入」流程——多驱动并存请先
 -- dofile 全部驱动再统一注入（run_all.sh 每个用例本就是独立 luajit 进程）。

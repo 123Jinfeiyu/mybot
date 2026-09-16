@@ -1,7 +1,8 @@
 /*
  * ADXL345 无硬件端到端（proto=virt，8 位指针 + 6 字节小端 burst IMU）：
  * sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/adxl345.lua。模型复刻协议——DEVID(0x00)=0xE5 只读、
+ * ADXL345_VIRT（内嵌于 modules/ADXL345.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型复刻协议——DEVID(0x00)=0xE5 只读、
  * DATA_FORMAT(0x31) build 先读回再 RMW（保高 4 位、置 FULL_RES bit3 与
  * 量程码）、BW_RATE(0x2C) 低 4 位速率码（缺省 0x0A=100Hz）、POWER_CTL
  * (0x2D) 写 0x08 进测量态；数据区 0x32 起 6 字节【小端】补码
@@ -32,7 +33,7 @@
  * 配合 adxl345_virt.mt：200ms 预热等守护 setup（build 睡 22ms，余量
  * 充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护
  * interval=20ms（call 零睡眠，远快于 50ms 拍点，count 持续增长）。
- * 用法：cat scripts/test/adxl345_virt.mt | bash scripts/run.sh --robot=robots/test/adxl345_virt.sql
+ * 用法：cat scripts/test/adxl345_virt.mt | bash _run.sh --robot=robots/test/adxl345_virt.sql
  */
 CREATE TABLE Timer (
 	name String

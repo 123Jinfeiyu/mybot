@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_vl53l4cd.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 300 行手写 16 位寄存器桩」迁移到
--- 「真实驱动 + virtbus I2C 注入层 + virtbus/vl53l4cd.lua 模型」。本器件是
+-- 「真实驱动 + virtbus I2C 注入层 + 内嵌模型（modules/VL53L4CD.lua 尾部
+-- VL53L4CD_VIRT，2026-09-15 自 virtbus/vl53l4cd.lua 迁入）」。本器件是
 -- virtbus 库【首个 16 位寄存器指针（ptr16）真实器件】——寄存器窗线性
 -- 16 位寻址、指针事务为 2 字节大端地址、多字节写按地址自增（91 字节
 -- 配置流就是一笔 0x002D 起的流写），与同系列 VL53L0X（8 位指针+分页）
@@ -20,13 +21,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local tmod = dofile("modules/lib/virtbus/vl53l4cd.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（VL53L4CD_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/VL53L4CD.lua")
+local tmod = VL53L4CD_VIRT
 
 local ADDR = 0x29
 local dev = tmod.new()
 vbus.attach("VL53L4CD@0x29", ADDR, dev)
-vbus.load_driver("modules/VL53L4CD.lua")
 
 -- milli_sleep：累计时长 + 推进转换倒计时虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0

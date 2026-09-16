@@ -1,6 +1,6 @@
 /*
  * 继电器测试结构脚本
- * 用法：cat test/xxx.mt | ./build/mybot --robot=robots/relay-test.sql
+ * 用法：cat test/xxx.mt | ./bot --robot=robots/relay-test.sql
  */
 
 /* Timer：时基矩阵，Relay 挂载其下 */

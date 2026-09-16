@@ -3,7 +3,8 @@
 --   GC 压力节奏：PCF_GC=1 luajit test/test_pcf8574.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的手写桩」迁移到「真实驱动 + virtbus
--- 注入层 + virtbus/pcf8574.lua 模型」。本器件是 virtbus 库【无寄存器图 ·
+-- 注入层 + 内嵌模型（modules/PCF8574.lua 尾部 PCF8574_VIRT，2026-09-15
+-- 自 virtbus/pcf8574.lua 迁入）」。本器件是 virtbus 库【无寄存器图 ·
 -- 单字节 P 口写 + 无指针纯读】极简样板（NXP PCF8574/PCF8574A，地址族
 -- 0x20~0x27 / 0x38~0x3F）：
 --   写事务无寄存器地址，每个数据字节直接进 P 口输出锁存（驱动恒 1B）；
@@ -28,8 +29,12 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/pcf8574.lua")
 vbus.reset()
+
+-- 模型内嵌于驱动文件（PCF8574_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/PCF8574.lua")
+local smod = PCF8574_VIRT
 
 -- 同一模型挂地址族边界（0x20/0x27 = PCF8574，0x38/0x3F = PCF8574A 都要 build 成功）
 local dev = smod.new()
@@ -37,7 +42,6 @@ vbus.attach("PCF8574@0x20", 0x20, dev)
 vbus.attach("PCF8574@0x27", 0x27, dev)
 vbus.attach("PCF8574A@0x38", 0x38, dev)
 vbus.attach("PCF8574A@0x3F", 0x3F, dev)
-vbus.load_driver("modules/PCF8574.lua")
 
 -- 驱动不调 milli_sleep；桩仅留痕，断言 build/call 全程零睡眠
 local sleep_total = 0

@@ -70,6 +70,7 @@ expect_err("channel=-1",         {fd = 3, address = "0x40", channel = -1,   angl
 expect_err("channel=255",        {fd = 3, address = "0x40", channel = 255,  angle = 45})
 expect_err("string channel='20'",{fd = 3, address = "0x40", channel = "20", angle = 45})
 
+print("[DONE] pca9685_channel")
 if fails == 0 then
 	print("all passed")
 else

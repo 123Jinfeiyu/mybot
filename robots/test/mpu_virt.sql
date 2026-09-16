@@ -1,7 +1,8 @@
 /*
  * MPU6050 无硬件端到端测试（proto=virt）：
- *   sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- *   modules/lib/virtbus/mpu6050.lua，模型每拍 virt_tick 造确定性合成波形
+ *   sensor_daemon 不打开真机 I2C，而是挂内存仿真模型——MPU6050_VIRT，内嵌于
+ *   modules/MPU6050.lua 尾部（2026-09-15 迁入，守护经回退路径装载），
+ *   模型每拍 virt_tick 造确定性合成波形
  *   （accel 三轴正弦 ±20000 LSB、gyro 余弦 ±10000 LSB、温度约 41°C 慢漂）。
  *   守护启动会打印 VIRTUAL HARDWARE 警告横幅。
  *
@@ -13,7 +14,7 @@
  *
  * 配合 mpu_virt.mt：200ms 预热等守护 setup（含驱动 build 的 100ms sleep），
  * 随后 20 拍 ×50ms pump 七路滤波并消费两个 Monitor。
- * 用法：cat scripts/test/mpu_virt.mt | bash scripts/run.sh --robot=robots/test/mpu_virt.sql
+ * 用法：cat scripts/test/mpu_virt.mt | bash _run.sh --robot=robots/test/mpu_virt.sql
  */
 CREATE TABLE Timer (
 	name String

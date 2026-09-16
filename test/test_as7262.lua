@@ -2,7 +2,8 @@
 -- 用法（项目根目录）: luajit test/test_as7262.lua（驱动依赖 HAL ffi，需 LuaJIT）
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 272 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/as7262.lua 模型」。本器件是 virtbus 库【首个
+-- virtbus 注入层 + 内嵌模型（modules/AS7262.lua 尾部 AS7262_VIRT，2026-09-15
+-- 自 virtbus/as7262.lua 迁入）」。本器件是 virtbus 库【首个
 -- 「硬件仅 3 寄存器 + 虚拟寄存器间接窗口 + TX/RX 就绪握手」I2C 器件】
 -- （ams AS7262 六通道可见光光谱传感器，地址 0x49）：
 --   I2C 总线上器件只暴露 STATUS 0x00（bit1=TX_VALID 写口忙、bit0=RX_VALID
@@ -31,13 +32,16 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/as7262.lua")
 vbus.reset()
 
 local ADDR = 0x49
+-- 模型内嵌于驱动文件（AS7262_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/AS7262.lua")
+local smod = AS7262_VIRT
+
 local dev = smod.new()
 vbus.attach("AS7262@0x49", ADDR, dev)
-vbus.load_driver("modules/AS7262.lua")
 
 -- milli_sleep：累计时长 + 推进转换虚拟时钟（驱动运行时解析全局名）
 local sleep_total = 0

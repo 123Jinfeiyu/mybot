@@ -519,6 +519,30 @@ function spi_read_multi(fd, n, delay_us)
 	return v
 end
 
+-- 全双工一帧任意长度（单次传输，CS 保持低）：MOSI 发 data 的同时逐位移入
+-- MISO。data 为 1 基字节值表（1~64 字节，同 spi_write_multi），返回等长
+-- 1 基接收字节表；任何参数/传输失败返回 nil。delay_us 可选（CS 拉高前等待）。
+-- 用于「MOSI 命令段与 MISO 数据段同帧」的协议：spi_read_multi 只发 dummy，
+-- 拿不回与命令同帧移位的回传数据（MT6826S 的 24 位读帧：前两字节发
+-- 命令+地址，MISO 数据在第 3 字节）。
+function spi_xfer_full(fd, data, delay_us)
+	fd = tonumber(fd)
+	if fd == nil or type(data) ~= "table" or #data == 0 then return nil end
+	if #data > 64 then return nil end
+	local n = #data
+	local txbuf = ffi.new("uint8_t[?]", n)
+	for i = 1, n do
+		local b = byte_of(data[i])
+		if b == nil then return nil end
+		txbuf[i - 1] = b
+	end
+	local rxbuf = ffi.new("uint8_t[?]", n)
+	if not spi_xfer(fd, txbuf, rxbuf, n, delay_us) then return nil end
+	local out = {}
+	for i = 0, n - 1 do out[i + 1] = tonumber(rxbuf[i]) end
+	return out
+end
+
 ------------------------------------------------------------------
 -- GPIO（gpiod uAPI ABI v1：/dev/gpiochipN ioctl）
 ------------------------------------------------------------------

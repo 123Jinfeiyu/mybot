@@ -70,6 +70,7 @@ try("float angle=44.7",        {fd = 3, address = "0x40", channel = 6, angle = 4
 try("string angle='250'",      {fd = 3, address = "0x40", channel = "6", angle = "250"})
 try("string angle='-30'",      {fd = 3, address = "0x40", channel = "6", angle = "-30"})
 
+print("[DONE] pca9685_float")
 if fails == 0 then
 	print("all passed")
 else

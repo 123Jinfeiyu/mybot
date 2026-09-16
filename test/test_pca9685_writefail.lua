@@ -59,6 +59,7 @@ expect_err("call PWM 写失败 -> ERR",
 expect_err("destroy 写失败 -> ERR", function() return destroy(base) end, "restart")
 fail_write = false
 
+print("[DONE] pca9685_writefail")
 if fails == 0 then
 	print("all passed")
 else

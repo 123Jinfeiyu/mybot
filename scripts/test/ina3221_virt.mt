@@ -7,7 +7,7 @@
 # 对应 virt_tick（三通道合成同相正弦：ch1 11.6~12.4V/0.2~0.8A、
 # ch2 11.6~12.4V/0.6~1.4A、ch3 4.8~5.2V/0.152~0.448A，32 拍周期，
 # build 前预武装，连续模式无转换门）。
-# 用法：cat scripts/test/ina3221_virt.mt | bash scripts/run.sh --robot=robots/test/ina3221_virt.sql
+# 用法：cat scripts/test/ina3221_virt.mt | bash _run.sh --robot=robots/test/ina3221_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

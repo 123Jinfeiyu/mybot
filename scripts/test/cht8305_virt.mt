@@ -6,7 +6,7 @@
 # 守护 interval=50ms（call 含 2×14ms 转换门真实等待共 28ms），一拍一 tick
 # 推进 virt_tick（合成反相正弦 T 20~30°C、H 60~40%RH，32 拍周期；build 前
 # 预武装，测量指针写零等待，武装跨软复位保留）。
-# 用法：cat scripts/test/cht8305_virt.mt | bash scripts/run.sh --robot=robots/test/cht8305_virt.sql
+# 用法：cat scripts/test/cht8305_virt.mt | bash _run.sh --robot=robots/test/cht8305_virt.sql
 @Action
 t0.delay  eavg.out  mon0.go  monf.go;
    200       -         -         -    ;

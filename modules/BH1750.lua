@@ -1,5 +1,7 @@
 -- BH1750 环境光传感器（I2C，数字光照强度）驱动模块
 -- bot4cj 仓颉语言机器人框架
+-- 虚拟器件模型：内嵌本文件尾部 BH1750_VIRT（2026-09-15 自 modules/lib/virtbus/bh1750.lua
+-- 迁入，单文件驱动+模型实验第二个；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
 -- 特点：
 --   - 二线命令式协议：指令为单字节 opcode（无寄存器指针），
@@ -208,4 +210,126 @@ function destroy(data)
 
 	return {  result = "OK"  }
 
+end
+
+-- =====================================================================
+-- 【内嵌虚拟器件模型】BH1750_VIRT —— 2026-09-15 自 modules/lib/virtbus/bh1750.lua
+-- 整体迁入（单文件驱动+模型第二个，守护 E2E 走 sensor_daemon 回退路径）。
+-- 约定同 PCA9685_VIRT：① 生产路径零执行（new() 仅虚拟总线测试调用，本模型
+-- 纯闭包无外部依赖）；② 工厂经全局表而非文件 return（生产侧 Lua.cj build_lua
+-- 以 LUA_MULTRET pcall 加载驱动且成功路径无 settop，文件返回值会滞留 Lua 栈）；
+-- ③ 模型与驱动保持独立实现（模型自带 opcode 解释/换算基线，不引用上方驱动
+-- 局部量），互证防假绿性质不变。
+--
+-- BH1750 是命令式器件（单字节 opcode，无寄存器指针；测量值从总线纯读 2 字节），
+-- 与 regmap 的寄存器形态不同，故单独建模。协议事实（ROHM 手册）：
+--   0x00 PowerDown   0x01 PowerOn
+--   0x10/0x11/0x13  连续 H / H2 / L
+--   0x20/0x21/0x23  单次 H / H2 / L
+--   0x40|x / 0x60|x MTreg 高低字节（本模型记录但不改变测量时序）
+--   测量结果 = 2 字节大端 count（驱动换算 LUX = count * lsb * 69 / (1.2 * mtreg)）
+--
+-- 用法：
+--   vbus.load_driver("modules/BH1750.lua")     -- 定义全局 build/call/destroy 与 BH1750_VIRT
+--   local light = BH1750_VIRT.new({ count = 30000 })  -- 30000 counts，H 档 → 25000 lux
+--   vbus.attach("bh1750@0x23", 0x23, light)
+--
+--   light:set_count(1234)   -- 用例动态设置读数
+--   light.cmds              -- 收到的单字节命令序列（断言 build/destroy 行为）
+--   light.nack = true       -- 故障注入：模拟器件掉线（写 false / 读 nil）
+--   light.state             -- {power=, mode=, once=} 命令解释后的粗状态
+-- =====================================================================
+
+BH1750_VIRT = { _VERSION = "0.1.0" }
+
+-- opcode → 状态解释（仅记录协议层事实）
+local function bh1750_interpret(state, cmd)
+	if cmd == 0x00 then
+		state.power = false
+	elseif cmd == 0x01 then
+		state.power = true
+	elseif cmd == 0x10 or cmd == 0x20 then
+		state.power, state.mode, state.once = true, "H", cmd == 0x20
+	elseif cmd == 0x11 or cmd == 0x21 then
+		state.power, state.mode, state.once = true, "H2", cmd == 0x21
+	elseif cmd == 0x13 or cmd == 0x23 then
+		state.power, state.mode, state.once = true, "L", cmd == 0x23
+	end
+	-- 0x40..0x7F 段为 MTreg 命令对，不属于测量模式，状态不变
+end
+
+function BH1750_VIRT.new(opts)
+	opts = opts or {}
+	local m = {}
+	m.count = opts.count or 0	-- 当前测量计数值（0~65535，大端双字节读回）
+	m.nack = false
+	m.cmds = {}					-- 收到的单字节命令序列（MTreg 等多字节写不入此列）
+	m.last_cmd = nil
+	m.state = { power = false, mode = nil, once = false }
+
+	-- virtbus 设备接口（点定义闭包，总线无 self 调用）
+	function m.write(bytes)
+		if type(bytes) ~= "table" or #bytes == 0 then return false end
+		if m.nack then return false end
+		if #bytes == 1 then
+			local cmd = bytes[1]
+			m.cmds[#m.cmds + 1] = cmd
+			m.last_cmd = cmd
+			bh1750_interpret(m.state, cmd)
+		end
+		-- 单字节以外的写事务 BH1750 协议不存在（MTreg 也是单字节命令对），
+		-- 模型不报错：真实器件对非法写静默忽略，保持与真机一致的宽松度
+		return true
+	end
+
+	function m.read(n)
+		if m.nack then return nil end
+		local c = math.floor(tonumber(m.count) or 0) % 65536
+		local t = { math.floor(c / 256) % 256, c % 256 }
+		-- 驱动固定读 2 字节；按请求长度截断/补零，行为对调用方可见
+		n = math.floor(tonumber(n) or 2)
+		if n < 1 then n = 1 end
+		local out = {}
+		for i = 1, n do out[i] = t[i] or 0 end
+		return out
+	end
+
+	-- ---------------- 测试辅助 ----------------
+
+	function m:set_count(c)
+		self.count = c
+		return self
+	end
+
+	function m:clear_cmds()
+		self.cmds = {}
+		return self
+	end
+
+	-- ---------------- 守护仿真节拍（proto=virt） ----------------
+	-- 32 拍一周正弦照度（count 15002±3000，H 档 → LUX = count/1.2）。基线取
+	-- 15002 使相位中点拍（n=0/16/32）的 count 非 6 的倍数 ⇒ 除不尽 1.2、必为
+	-- 带小数浮点（12501.666667，单测钉该拍）。余下拍里有少数 count 恰为 6 的
+	-- 倍数（如 17496→14580）、发布值成整数，属真机同样的「整帧整数」现象；
+	-- 守护 20ms 拍与外部 50ms pump 又存在混叠（快照采到哪拍不固定），故 E2E 的
+	-- :f 浮点断言不锚 raw 某一拍，改锚 Ema 混合后的 out。virt_tick 仅造测量数据，
+	-- 不改命令状态与 cmds（真实器件连续模式下照度变化也不产生总线写事务），
+	-- 故 build 前预武装与每拍驱动都不干扰驱动的在位判定与命令留痕。
+	function m:virt_tick(n)
+		n = tonumber(n) or 0
+		local s = math.sin(n * (2 * math.pi / 32))
+		self.count = math.floor(15002 + 3000 * s + 0.5)
+		return self
+	end
+
+	function m:reset(new_count)
+		self.count = new_count or 0
+		self.nack = false
+		self.cmds = {}
+		self.last_cmd = nil
+		self.state = { power = false, mode = nil, once = false }
+		return self
+	end
+
+	return m
 end

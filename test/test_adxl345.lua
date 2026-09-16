@@ -3,7 +3,8 @@
 --   GC 压力节奏：ADXL_GC=1 luajit test/test_adxl345.lua
 --
 -- 从「dofile 驱动后覆盖 i2c_* 全局的 176 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/adxl345.lua 模型」。ADXL345 是【8 位寄存器指针 +
+-- virtbus 注入层 + 内嵌模型（modules/ADXL345.lua 尾部 ADXL345_VIRT，
+-- 2026-09-15 自 virtbus/adxl345.lua 迁入）」。ADXL345 是【8 位寄存器指针 +
 -- 6 字节小端 burst + FULL_RES 恒定灵敏度 IMU】（regmap 包装族，与 MPU6050
 -- 大端模型成对侧）：
 --   0x00 DEVID 只读 0xE5；0x2C BW_RATE POR 0x0A（100Hz）；0x2D POWER_CTL；
@@ -29,14 +30,18 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local amod = dofile("modules/lib/virtbus/adxl345.lua")
 vbus.reset()
 
 local ADDR = 0x53
+
+-- 模型内嵌于驱动文件（ADXL345_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/ADXL345.lua")
+local amod = ADXL345_VIRT
+
 local dev = amod.new()
 vbus.attach("ADXL345@0x53", ADDR, dev)
 vbus.attach("ADXL345@0x1D", 0x1D, dev)	-- 同一模型挂备地址
-vbus.load_driver("modules/ADXL345.lua")
 
 -- milli_sleep：本器件无虚拟时钟，桩只累计（build 等两个测量周期可断言）
 local sleep_total = 0

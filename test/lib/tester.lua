@@ -58,6 +58,11 @@ local function summary(tag)
 	if tester.failed > 0 then
 		print("失败用例:")
 		for _, l in ipairs(tester.failed_labels) do print("  - " .. l) end
+	end
+	-- 完成标记（P0-2 假绿治理）：run_all.sh 以「未见 [DONE] 或 [PASS] 计数为 0」
+	-- 识别早退/守卫短路/零断言文件——summary 跑到头必须留痕，须先于 os.exit 打印
+	print("[DONE] " .. tostring(tag or ""))
+	if tester.failed > 0 then
 		os.exit(1)
 	end
 end

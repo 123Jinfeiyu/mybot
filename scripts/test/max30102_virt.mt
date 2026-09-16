@@ -7,7 +7,7 @@
 # 守护 SpO2/100sps/n=2；模型 virt_tick 每拍直接向环形 FIFO 推一拍正弦
 # 计数（RED 50000±18000、IR 60000±22000，32 拍周期），call 读 FIFO_DATA
 # 流式口即有样本、零真实睡眠；一拍对应一个 virt_tick，空 FIFO 拍跳过。
-# 用法：cat scripts/test/max30102_virt.mt | bash scripts/run.sh --robot=robots/test/max30102_virt.sql
+# 用法：cat scripts/test/max30102_virt.mt | bash _run.sh --robot=robots/test/max30102_virt.sql
 @Action
 t0.delay  eir.out  mon0.go  monf.go;
    200       -        -         -    ;

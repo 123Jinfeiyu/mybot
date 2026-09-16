@@ -1,6 +1,6 @@
 /*
  * PWM 硬件脉宽调制测试（配套 pwm.mt）
- * 用法：cat scripts/test/pwm.mt | bash scripts/run.sh --robot=robots/test/pwm.sql
+ * 用法：cat scripts/test/pwm.mt | bash _run.sh --robot=robots/test/pwm.sql
  *
  * 实机前提：
  *   1) 启用硬件 PWM：/boot/firmware/config.txt 加 dtoverlay=pwm（或 pwm-2chan），

@@ -5,7 +5,7 @@
 # monf 输出 ev 滤波后电压（V）与阈值 level。
 # 守护 12bit/×1/连续档（转换门 5ms），模型 virt_tick 预武装首读就绪，
 # call 零真实睡眠；一拍对应一个 virt_tick（合成正弦 ±1.5V，32 拍周期）。
-# 用法：cat scripts/test/mcp3421_virt.mt | bash scripts/run.sh --robot=robots/test/mcp3421_virt.sql
+# 用法：cat scripts/test/mcp3421_virt.mt | bash _run.sh --robot=robots/test/mcp3421_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    300       -        -         -    ;

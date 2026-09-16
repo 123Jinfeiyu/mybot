@@ -21,7 +21,7 @@
  * 配合 pcf8574_virt.mt：首行 200ms 预热等守护 setup（build 无真实睡眠，
  * 余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（纯读 call 零睡眠）。
- * 用法：cat scripts/test/pcf8574_virt.mt | bash scripts/run.sh --robot=robots/test/pcf8574_virt.sql
+ * 用法：cat scripts/test/pcf8574_virt.mt | bash _run.sh --robot=robots/test/pcf8574_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -46,4 +46,5 @@ if bad > 0 then
 else
 	print(string.format("[PASS] i2c-%d 上 %d 次 i2c_read_reg(I2C_RDWR) 全部正常（含 JIT 编译后路径）",
 		bus_used, N))
+	print("[DONE] test_jit_warmup.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
 end
