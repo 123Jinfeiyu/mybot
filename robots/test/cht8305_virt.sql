@@ -2,7 +2,8 @@
  * CHT8305 无硬件端到端（proto=virt，「8 位字寄存器指针 + 无指针纯读 +
  * 每通道转换门 + 双 ROM ID 甄别」I2C 虚拟器件——申矽凌微 SensyLink
  * CHT8305C，AD0 选 0x40~0x43，悬空 0x40）：sensor_daemon 不打开真机
- * I2C，而是挂内存仿真模型 modules/lib/virtbus/cht8305.lua。模型复刻
+ * I2C，而是挂内存仿真模型 CHT8305_VIRT（内嵌于 modules/CHT8305.lua 尾部，
+ * 2026-09-15 迁入，守护经回退路径装载）。模型复刻
  * 指针式字寄存器协议——6 指针稀疏地图（0x00 T/0x01 H 只读测量字、
  * 0x02 配置、0x03 告警限、0xFE MID=0x5959、0xFF DID=0x8305，其余整笔
  * NACK）、纯指针写恰 1 字节、字写 {ptr,MSB,LSB} 大端、纯读 i2c_read

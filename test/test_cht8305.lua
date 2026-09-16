@@ -3,7 +3,8 @@
 --   GC 压力节奏：CHT_GC=1 luajit test/test_cht8305.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的手写桩」迁移到「真实驱动 + virtbus
--- 注入层 + virtbus/cht8305.lua 模型」。本器件是 virtbus 库【8 位「字寄存器」
+-- 注入层 + 内嵌模型（modules/CHT8305.lua 尾部 CHT8305_VIRT，2026-09-15
+-- 自 virtbus/cht8305.lua 迁入）」。本器件是 virtbus 库【8 位「字寄存器」
 -- 指针 + 无指针纯读 + 每通道转换门 + 双 ROM ID 甄别】样板（SensyLink
 -- CHT8305C，地址 0x40~0x43，悬空 0x40）：
 --   指针索引 16 位字寄存器（非字节）：0x00 T/0x01 H 测量只读字、0x02 配置
@@ -32,14 +33,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/cht8305.lua")
 vbus.reset()
 
 -- 悬空地址 0x40；同一模型可多挂（0x40~0x43），本文件主测 0x40
+-- 模型内嵌于驱动文件（CHT8305_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/CHT8305.lua")
+local smod = CHT8305_VIRT
+
 local dev = smod.new()
 vbus.attach("CHT8305@0x40", 0x40, dev)
 vbus.attach("CHT8305@0x41", 0x41, dev)
-vbus.load_driver("modules/CHT8305.lua")
 
 -- milli_sleep 桩：累加 + 推模型虚拟时钟（build 10ms、call 2×14ms）
 local sleep_total = 0
