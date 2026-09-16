@@ -3,7 +3,8 @@
 --   GC 压力节奏：INA3221_GC=1 luajit test/test_ina3221.lua
 --
 -- 从「dofile 驱动后替换 i2c_* 全局的 210 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/ina3221.lua 模型」。INA3221 与 INA219/INA226
+-- virtbus 注入层 + 内嵌模型（modules/INA3221.lua 尾部 INA3221_VIRT，
+-- 2026-09-15 自 virtbus/ina3221.lua 迁入）」。INA3221 与 INA219/INA226
 -- 同为【字寻址 16 位寄存器 I2C 器件】（寄存器号各代表一个 16 位字，写恒
 -- {ptr,hi,lo}、读恒「写 ptr + 读 2 字节」，绝不能套字节地址 regmap），
 -- 但它是【三通道】且协议事实逐条不同（勿照搬任何常数）：
@@ -39,13 +40,17 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local smod = dofile("modules/lib/virtbus/ina3221.lua")
 vbus.reset()
 
 local ADDR = 0x40
+
+-- 模型内嵌于驱动文件（INA3221_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/INA3221.lua")
+local smod = INA3221_VIRT
+
 local dev = smod.new()
 vbus.attach("INA3221@0x40", ADDR, dev)
-vbus.load_driver("modules/INA3221.lua")
 
 -- milli_sleep：累计时长（本模型无虚拟时钟，只累计供睡眠断言）
 local sleep_total = 0
