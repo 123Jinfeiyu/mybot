@@ -2,7 +2,8 @@
  * LPS22HB 无硬件端到端（proto=virt，「8 位寄存器指针 + 5 字节小端 burst +
  * 地址 bit7 自动增量 + 三个自清零命令位 + 单次转换门」I2C 气压计——ST
  * MEMS，SA0 选 0x5D/0x5C）：sensor_daemon 不打开真机 I2C，而是挂内存
- * 仿真模型 modules/lib/virtbus/lps22hb.lua。模型复刻协议——
+ * 仿真模型 LPS22HB_VIRT（内嵌于 modules/LPS22HB.lua 尾部，2026-09-15 迁入，
+ * 守护经回退路径装载）。模型复刻协议——
  * WHO_AM_I(0x0F)=0xB1 只读（0xBD=LPS25HB 代际拦截）、CTRL_REG2(0x11)
  * bit2 SWRESET 自清零（build 写 0x04 后 1ms 轮询至 0，耗尽 20ms 也不致命）、
  * CTRL_REG1(0x10) 写 0x02（BDU+ODR=000 单次/power-down）；call 先读

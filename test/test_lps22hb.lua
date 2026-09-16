@@ -3,7 +3,8 @@
 --   GC 压力节奏：LPS_GC=1 luajit test/test_lps22hb.lua
 --
 -- 从「dofile 驱动后覆盖 i2c_* 全局的 210 行手写桩」迁移到「真实驱动 +
--- virtbus 注入层 + virtbus/lps22hb.lua 模型」。LPS22HB 是【8 位寄存器指针 +
+-- virtbus 注入层 + 内嵌模型（modules/LPS22HB.lua 尾部 LPS22HB_VIRT，
+-- 2026-09-15 自 virtbus/lps22hb.lua 迁入）」。LPS22HB 是【8 位寄存器指针 +
 -- 5 字节小端 burst + 地址 bit7 自动增量 + 三个自清零命令位 + 单次转换门】
 -- 气压计（regmap 包装族，旧桩只建了 3 个寄存器，无增量位/无 STATUS/无连续
 -- 模式/无 BOOT，本测逐一补齐）：
@@ -33,14 +34,18 @@ local tester = dofile("test/lib/tester.lua")
 local check, expect_ok, expect_err = tester.check, tester.expect_ok, tester.expect_err
 
 local vbus = dofile("modules/lib/virtbus.lua")
-local lmod = dofile("modules/lib/virtbus/lps22hb.lua")
 vbus.reset()
 
 local ADDR = 0x5D
+
+-- 模型内嵌于驱动文件（LPS22HB_VIRT 全局工厂）：load_driver 完成驱动定义
+-- 与重注入后，从全局取工厂建实例再挂载
+vbus.load_driver("modules/LPS22HB.lua")
+local lmod = LPS22HB_VIRT
+
 local dev = lmod.new()
 vbus.attach("LPS22HB@0x5D", ADDR, dev)
 vbus.attach("LPS22HB@0x5C", 0x5C, dev)	-- 同一模型挂备地址
-vbus.load_driver("modules/LPS22HB.lua")
 
 -- milli_sleep 桩：累计睡眠量同时推进器件虚拟时钟（SWRESET/ONE_SHOT 门）
 local sleep_total = 0
