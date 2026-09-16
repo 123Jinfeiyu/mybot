@@ -64,19 +64,22 @@ BOT4CJ_DEBUG=1 cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-te
 ### 一键回归测试
 
 ```bash
-bash test/run_all.sh          # 全部：Lua 单测 + virt E2E + 无硬件契约 + TCP E2E
+bash test/run_all.sh          # 全部：Lua 单测 + virt E2E + 无硬件契约 + TCP E2E + C++ 单测
 bash test/run_all.sh pca9685  # 文件名过滤
 bash test/run_all.sh tcp      # 只跑 TCP 动作源
 ```
 
-守门共四段，全部在无 /dev/i2c 的开发机上运行：
+守门共六段，全部在无 /dev/i2c 的开发机上运行：
 
 1. **Lua 离线单测**（`test/test_*.lua`，LuaJIT 运行；真机 i2c 用例自动跳过）
 2. **virt 端到端**（`robots/test/*_virt.sql`，23 例走内存仿真总线 `virtbus`，断言 `:f` 浮点透传与守护持续发布）
-3. **无硬件契约回归**（守护/别名/转发/引用路径；负值契约如 INSERT 拼错表、别名重复、`$` 引用标量必须**清晰报错**而非裸崩）
+3. **无硬件契约回归**（守护/别名/转发/引用路径；负值契约如 INSERT 拼错表、别名重复、`$` 引用标量、动作参数覆盖结构元数据必须**清晰报错**而非裸崩）
 4. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
+5. **输入边界加固**（`--tcp-host` 非法地址、动作脚本超 8 MiB 上限、`@Daemon` 驱动误配无 `build` 时的回滚路径）
+6. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标；零第三方框架，覆盖 JSON 值语义、`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测）
 
-Sanitizer 二进制同样可跑全部 E2E：`BOT=./build-asan/mybot bash test/run_all.sh _virt`。
+Sanitizer 二进制同样可跑全部 E2E 与 C++ 单测：`BOT=./build-asan/mybot BOT_TESTS=./build-asan/mybot_tests bash test/run_all.sh _virt`。
+单独跑 C++ 单测：`./build/mybot_tests [用例名过滤]`。
 
 ### 接第一块 PCA9685
 
@@ -214,6 +217,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql   # 无�
 
 - 新增驱动：在 `modules/` 加一个 `<矩阵名>.lua`（dofile HAL，实现 build/call/destroy 语义）
 - 新增回归：`robots/test/<用例>.sql` + `scripts/test/<用例>.mt`，按守门契约接入 `test/run_all.sh` 的 e2e 列表或无硬件契约列表（含负值契约）
+- 新增 C++ 单测：在 `test/cpp/test_*.cpp` 用 `TH_TEST` / `TH_CHECK` / `TH_CHECK_THROWS_MSG` 补用例（`test/cpp/harness.hpp`，无第三方框架），并在 `CMakeLists.txt` 的 `mybot_tests` 源列表里加一行
 - 代码规范：本项目 `.cpp` 全量 `-Wall -Wextra -Wpedantic` 零告警为基线，改动请保持
 
 ## 📋 更新日志

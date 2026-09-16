@@ -29,8 +29,9 @@ else()
   set(LUAJIT_LIBRARIES ${LUAJIT_LIBRARY})
 endif()
 
-add_executable(mybot
-  src/main.cpp
+# 被测主体（不含入口 main.cpp）：mybot 与 mybot_tests 共用同一份，
+# 保证单测编译的正是发布二进制里的那套实现，而不是第二份拷贝。
+set(MYBOT_CORE_SOURCES
   src/json.cpp
   src/matrix.cpp
   src/sqlparse.cpp
@@ -40,6 +41,11 @@ add_executable(mybot
   src/daemonvar.cpp
   src/robot.cpp
   src/actionsource.cpp
+)
+
+add_executable(mybot
+  src/main.cpp
+  ${MYBOT_CORE_SOURCES}
 )
 
 target_include_directories(mybot PRIVATE src ${LUAJIT_INCLUDE_DIRS})
@@ -54,6 +60,35 @@ target_link_libraries(mybot PRIVATE
   dl
   m
 )
+
+# ======================================================================
+# C++ 层单元测试（test/cpp/）：零第三方框架，harness.hpp 自带断言与注册。
+# 与被测程序共用同一套源文件（除 main.cpp），因此不需要 mybot 变成库目标；
+# 告警标志与链接库也保持完全一致，避免「测试构建干净、主构建不干净」的错位。
+# ======================================================================
+add_executable(mybot_tests
+  test/cpp/main.cpp
+  test/cpp/test_json.cpp
+  test/cpp/test_matrix.cpp
+  test/cpp/test_sqlparse.cpp
+  test/cpp/test_hardware.cpp
+  test/cpp/test_robot.cpp
+  test/cpp/test_luavar.cpp
+  test/cpp/test_actionsource.cpp
+  ${MYBOT_CORE_SOURCES}
+)
+
+target_include_directories(mybot_tests PRIVATE src test/cpp ${LUAJIT_INCLUDE_DIRS})
+target_compile_options(mybot_tests PRIVATE -Wall -Wextra -Wpedantic)
+target_link_libraries(mybot_tests PRIVATE
+  ${LUAJIT_LIBRARIES}
+  pthread
+  dl
+  m
+)
+
+enable_testing()
+add_test(NAME cpp_unit COMMAND mybot_tests)
 
 # 安装产物：mybot 直跑 ./build/mybot（bot4cj 原 _run.sh 的等价物，见 test/run_all.sh）
 install(TARGETS mybot RUNTIME DESTINATION bin)
