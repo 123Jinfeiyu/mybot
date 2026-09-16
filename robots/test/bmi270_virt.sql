@@ -41,7 +41,7 @@
  * 配合 bmi270_virt.mt：200ms 预热等守护 setup，随后 16 拍 ×50ms pump
  * 滤波并消费两个 Monitor。守护 interval=50ms（call 零睡眠），32 拍
  * 码钉循环多轮。
- * 用法：cat scripts/test/bmi270_virt.mt | bash _run.sh --robot=robots/test/bmi270_virt.sql
+ * 用法：cat scripts/test/bmi270_virt.mt | ./build/mybot --robot=robots/test/bmi270_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -26,7 +26,7 @@
  * 2 命令 4 事务，真实驱动 build/call 均零睡眠），随后 16 拍 ×50ms pump Ema
  * 并消费两个 Monitor。守护 interval=20ms（真机测量周期约 1s，真机须 >=1s；
  * 虚拟模型每拍 virt_tick 造新值，无重复值问题）。
- * 用法：cat scripts/test/sds011_virt.mt | bash _run.sh --robot=robots/test/sds011_virt.sql
+ * 用法：cat scripts/test/sds011_virt.mt | ./build/mybot --robot=robots/test/sds011_virt.sql
  */
 CREATE TABLE Timer (
 	name String

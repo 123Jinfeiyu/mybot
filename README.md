@@ -246,9 +246,9 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 
 ### 虚拟总线（virtbus，无真机验证驱动链路）
 
-`lib/virtbus.lua` 注入后替换 HAL 的全部 `i2c_*`/`spi_*` 全局函数，真实驱动无需真机即可跑通 build/call/destroy，每次事务记入 `txlog` 供断言，可注入 NACK 负路径。`lib/virtbus/` 收录 28 个协议级器件模型（regmap 通用底座 + MPU6050、BME280、BH1750、ADS1256、TPL0501、VL53L0X、VL53L4CD、MCP4725、SHT3X、MCP3421、INA219、ADS1115、AS7262、MAX30102、AMG8833、PCF8574、LTC2944、ADS1015、INA226、INA3221、MAX17043、ADXL345、LPS22HB、PCA9685 等）。
+`lib/virtbus.lua` 注入后替换 HAL 的全部 `i2c_*`/`spi_*` 全局函数，真实驱动无需真机即可跑通 build/call/destroy，每次事务记入 `txlog` 供断言，可注入 NACK 负路径。器件模型已内嵌进各驱动文件尾部，成为全局工厂 `<DRIVER>_VIRT`（共 41 个，如 MPU6050、BME280、BH1750、ADS1256、ADXL345、SHT3X、VL53L0X、VL53L4CD、INA219/226/3221、SGP30、BME688、BMI270 等），随 `load_driver()` dofile 驱动一并定义；`lib/virtbus/` 目录现仅保留通用底座 `regmap.lua`。
 
-`@Daemon` 的 `proto` 列填 `virt` 即可做**守护无硬件端到端**：真实驱动 build/call、共享槽 publish、`@Ema/@Kalman` 滤波、`@Monitor` 消费全链路走内存仿真（启动打印 `VIRTUAL HARDWARE` 横幅，仿真数据禁止用于生产）。23 例已接入 `run_all.sh`：
+`@Daemon` 的 `proto` 列填 `virt` 即可做**守护无硬件端到端**：真实驱动 build/call、共享槽 publish、`@Ema/@Kalman` 滤波、`@Monitor` 消费全链路走内存仿真（启动打印 `VIRTUAL HARDWARE` 横幅，仿真数据禁止用于生产）。37 例已接入 `run_all.sh`：
 
 ```bash
 cat scripts/test/mpu_virt.mt    | ./build/mybot --robot=robots/test/mpu_virt.sql

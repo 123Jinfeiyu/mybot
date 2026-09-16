@@ -4,7 +4,7 @@
  * ——修复前词法器会把它们当注释/分隔符拆分 token，导致解析失败或数据被切碎。
  * 修复后本结构脚本应完整解析、正常建守护、退出 0。
  *
- * 用法：cat scripts/test/sqlquote.mt | bash scripts/run.sh --robot=robots/test/sqlquote.sql
+ * 用法：cat scripts/test/sqlquote.mt | ./build/mybot --robot=robots/test/sqlquote.sql
  * 期望退出码 0，输出含 "joined, total publishes="
  */
 CREATE TABLE Daemon (

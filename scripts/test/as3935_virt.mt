@@ -8,7 +8,7 @@
 # （call 前真实睡 2ms 等中断锁存稳定），一拍对应一次 virt_tick：
 # 8 拍事件脚本（none/none/闪电/none/噪声/none/闪电/干扰，闪电距离
 # 10~35km、能量 1e5~9e5 正弦，build 前预武装拍 0=none）。
-# 用法：cat scripts/test/as3935_virt.mt | bash _run.sh --robot=robots/test/as3935_virt.sql
+# 用法：cat scripts/test/as3935_virt.mt | ./build/mybot --robot=robots/test/as3935_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

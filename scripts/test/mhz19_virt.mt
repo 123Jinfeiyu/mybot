@@ -6,7 +6,7 @@
 # TEMP 近似摄氏度、S 状态字节）与 count，monf 输出 ev 滤波后浓度（带小数
 # 即证明 :f 未被取整）。守护 interval=20ms，一拍消费间隔内约推进 2~3 个
 # 模型点（virt_tick 32 拍一周爬坡 400~4368ppm，128ppm 步进）。
-# 用法：cat scripts/test/mhz19_virt.mt | bash _run.sh --robot=robots/test/mhz19_virt.sql
+# 用法：cat scripts/test/mhz19_virt.mt | ./build/mybot --robot=robots/test/mhz19_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

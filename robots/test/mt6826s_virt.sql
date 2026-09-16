@@ -23,7 +23,7 @@
  *
  * 配合 mt6826s_virt.mt：200ms 预热等 build（真实驱动零睡眠，余量充裕），
  * 随后 16 拍 ×50ms pump Ema 并消费两个 Monitor。守护 interval=20ms。
- * 用法：cat scripts/test/mt6826s_virt.mt | bash _run.sh --robot=robots/test/mt6826s_virt.sql
+ * 用法：cat scripts/test/mt6826s_virt.mt | ./build/mybot --robot=robots/test/mt6826s_virt.sql
  */
 CREATE TABLE Timer (
 	name String

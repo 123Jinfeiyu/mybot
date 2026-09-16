@@ -33,7 +33,7 @@
  * 配合 as7262_virt.mt：首行 1200ms 预热等守护 setup（必须容纳 build 的
  * RST 真实睡眠 1000ms），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（武装后 call 零睡眠，远快于 50ms 拍点，count 增长）。
- * 用法：cat scripts/test/as7262_virt.mt | bash _run.sh --robot=robots/test/as7262_virt.sql
+ * 用法：cat scripts/test/as7262_virt.mt | ./build/mybot --robot=robots/test/as7262_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -5,7 +5,7 @@
  * 抛 Json 类型崩溃（asObject called on the wrong Json kind=4）。
  * 修复后应给出清晰报错并退出非 0，绝不裸崩。
  *
- * 用法：cat scripts/test/ref_alias_scalar.mt | bash scripts/run.sh --robot=robots/test/ref_alias_scalar.sql
+ * 用法：cat scripts/test/ref_alias_scalar.mt | ./build/mybot --robot=robots/test/ref_alias_scalar.sql
  * 期望退出码非 0，输出含 "referenced variable returned a non-object"
  */
 CREATE TABLE Alias (

@@ -1,6 +1,6 @@
 # AD9833 DDS 波形发生器测试（频率扫描式变更 + 静音）
 # 结构脚本：robots/test/ad9833.sql（SPI mode=2 + sig0 1kHz sine + Timer）
-# 运行：cat scripts/test/ad9833.mt | ./target/release/bin/main --robot=robots/test/ad9833.sql
+# 运行：cat scripts/test/ad9833.mt | ./build/mybot --robot=robots/test/ad9833.sql
 #
 # 实机测试（需 /dev/spidev0.0 + AD9833 模块；示波器/频率计看 VOUT）。
 # @Action 数值参数映射：freq 列改频率（Hz）、mute 列 1/0 静音/放行；

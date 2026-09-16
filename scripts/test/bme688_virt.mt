@@ -7,7 +7,7 @@
 # 守护 interval=50ms（forced 门 160ms，但 virt_tick 预武装触发即
 # 就绪零睡眠，一拍即一次采样）：32 拍确定性码钉循环多轮
 # （T 22~28°C / P 100725~101925Pa / H 35~65%RH / GAS 6~18kΩ）。
-# 用法：cat scripts/test/bme688_virt.mt | bash _run.sh --robot=robots/test/bme688_virt.sql
+# 用法：cat scripts/test/bme688_virt.mt | ./build/mybot --robot=robots/test/bme688_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

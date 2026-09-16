@@ -7,7 +7,7 @@
 # 输出 ev 滤波后 R 计数与阈值 level。守护 interval=20ms（call 零睡眠），
 # 一拍一拍对应 virt_tick（R 19000~25000 同相正弦，32 拍周期，build 前
 # 预武装，MODE 写只清 VALID 不清数据区）。
-# 用法：cat scripts/test/bh1745_virt.mt | bash _run.sh --robot=robots/test/bh1745_virt.sql
+# 用法：cat scripts/test/bh1745_virt.mt | ./build/mybot --robot=robots/test/bh1745_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

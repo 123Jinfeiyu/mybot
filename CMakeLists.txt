@@ -51,5 +51,5 @@ target_link_libraries(mybot PRIVATE
   m
 )
 
-# 生产就位后 _run.sh 等价物：mybot 直跑产物（见 scripts/run.sh）
+# 安装产物：mybot 直跑 ./build/mybot（bot4cj 原 _run.sh 的等价物，见 test/run_all.sh）
 install(TARGETS mybot RUNTIME DESTINATION bin)

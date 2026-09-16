@@ -40,7 +40,7 @@
  * 余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（连续测量，一拍对应一次 virt_tick，
  * count 持续增长、32 拍正弦循环多轮）。
- * 用法：cat scripts/test/emc2101_virt.mt | bash _run.sh --robot=robots/test/emc2101_virt.sql
+ * 用法：cat scripts/test/emc2101_virt.mt | ./build/mybot --robot=robots/test/emc2101_virt.sql
  */
 CREATE TABLE Timer (
 	name String

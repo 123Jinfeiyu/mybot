@@ -40,7 +40,7 @@
  * 配合 lsm6dsv_virt.mt：200ms 预热等守护 setup（build 实睡 110ms），
  * 随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护 interval=50ms
  *（call 零睡眠），32 拍码钉循环多轮。
- * 用法：cat scripts/test/lsm6dsv_virt.mt | bash _run.sh --robot=robots/test/lsm6dsv_virt.sql
+ * 用法：cat scripts/test/lsm6dsv_virt.mt | ./build/mybot --robot=robots/test/lsm6dsv_virt.sql
  */
 CREATE TABLE Timer (
 	name String

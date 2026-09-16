@@ -31,7 +31,7 @@
  * 配合 lps22hb_virt.mt：200ms 预热等守护 setup（武装路径 build/call 均
  * 零睡眠，余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=50ms（武装 call 零睡眠，count 持续增长）。
- * 用法：cat scripts/test/lps22hb_virt.mt | bash _run.sh --robot=robots/test/lps22hb_virt.sql
+ * 用法：cat scripts/test/lps22hb_virt.mt | ./build/mybot --robot=robots/test/lps22hb_virt.sql
  */
 CREATE TABLE Timer (
 	name String

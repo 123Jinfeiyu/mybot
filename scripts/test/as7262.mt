@@ -1,6 +1,6 @@
 # AS7262 六通道光谱传感器测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/as7262.sql（I2C + spec0@0x49 + Timer + spec-d0 守护）
-# 运行：cat scripts/test/as7262.mt | ./target/release/bin/main --robot=robots/test/as7262.sql
+# 运行：cat scripts/test/as7262.mt | ./build/mybot --robot=robots/test/as7262.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x49 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/AS7262 的 build 一旦返回 ERR
