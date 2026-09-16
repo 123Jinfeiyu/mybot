@@ -1,7 +1,8 @@
 /*
  * VL53L0X 无硬件端到端测试（proto=virt，首个 8 位寄存器指针 + 0xFF 分页的
  * I2C 虚拟器件）：sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/vl53l0x.lua。模型按（页, 寄存器）双键存储，复刻
+ * VL53L0X_VIRT（内嵌于 modules/VL53L0X.lua 尾部，2026-09-15 迁入，守护经
+ * 回退路径装载）。模型按（页, 寄存器）双键存储，复刻
  * DataInit 舞步、page6/7 SPAD 握手、SYSRANGE 连续模式与 data-ready/清中断
  * 时序；守护跑的是【真实】VL53L0X.lua 的完整 build（约 90 条 tuning 写、
  * 两轮参考校准）与 call（0x13 就绪轮询、12 字节结果块、ST 状态码映射）。
