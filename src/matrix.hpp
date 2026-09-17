@@ -34,9 +34,9 @@ public:
 
 /* ------------- 矩阵对象 ------------- */
 class MatrixObject {
+	friend class MatrixBuilder;
+
 	std::string name_;
-	std::string tmp_;				/* 字符缓冲区 */
-	std::vector<std::string> grp_;			/* 整行缓冲区 */
 	std::vector<std::vector<std::string>> values_;	/* 原始矩阵 */
 
 	/* "-" 占位符继承的解析结果，惰性前向填充（见 inherited()）。
@@ -137,11 +137,34 @@ public:
 		out << "@\n";
 	}
 
+	/* 解析期追加一行（R-4）：宽度一致性校验 + 继承缓存作废。
+	 * 头行与 INSERT 行都经此入口，保证校验只此一处。 */
+	void appendRow(std::vector<std::string> row, std::int64_t count) {
+		if (!values_.empty() && row.size() != values_.back().size()) {
+			throw DoesNotSync(count, values_.back().size(), row.size());
+		}
+		values_.push_back(std::move(row));
+		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
+	}
+};
+
+/* ------------- 解析期增量构建器（R-4）-------------
+ * 字符缓冲 + 整行缓冲是解析器状态机的专属物，此前挂在 MatrixObject
+ * 上让它同时是「构建器」与「只读值」；拆开后 MatrixObject 只有
+ * appendRow 一个收窄的写入口（SQL INSERT 追加行用）。 */
+class MatrixBuilder {
+	std::string tmp_;				/* 字符缓冲区 */
+	std::vector<std::string> grp_;			/* 整行缓冲区 */
+	MatrixObject obj_;
+
+public:
+	bool hasName() const { return obj_.hasName(); }
+
 	void addRune(char c) { tmp_ += c; }
 
 	void submitName() {
 		if (tmp_.empty()) { return; }
-		name_ = tmp_;
+		obj_.name_ = tmp_;
 		tmp_.clear();
 	}
 
@@ -153,19 +176,22 @@ public:
 
 	void submitLine(std::int64_t count) {
 		if (grp_.empty()) { return; }
-		if (!values_.empty() && grp_.size() != values_.back().size()) {
-			throw DoesNotSync(count, values_.back().size(), grp_.size());
-		}
-		values_.push_back(grp_);
+		obj_.appendRow(std::move(grp_), count);
 		grp_.clear();
-		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
 	}
+
+	/* 整串直灌入口（SQL 事件路径：token 本就完整，无需逐字符） */
+	void name(const std::string& n) { obj_.name_ = n; }
+	void item(const std::string& s) { grp_.push_back(s); }
+	void line(std::int64_t count) { submitLine(count); }
+
+	MatrixObject take() { return std::move(obj_); }
 };
 
 /* ------------- 矩阵式解析器 ------------- */
 class MatrixParser {
 	bot::Reader& input_;
-	MatrixObject obj_;
+	MatrixBuilder builder_;
 	bool flag_ = false;	/* 结束标志 */
 	bool nl_ = true;	/* new line */
 	bool cm_ = false;	/* comment */

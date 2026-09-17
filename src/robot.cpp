@@ -355,15 +355,13 @@ void RobotStruct::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out
 		if (eve.type == sql4cj::EventType::END) { break; }
 		switch (eve.type) {
 		case sql4cj::EventType::CREATE_TABLE: {
-			mt::MatrixObject m;
-			for (char ch : eve.create.tableName) { m.addRune(ch); }
-			m.submitName();
-			for (const auto& col : eve.create.tableColumns) {
-				for (char ch : col.name) { m.addRune(ch); }
-				m.submitItem();
-			}
-			m.submitLine(0);
-			out.push_back(std::move(m));
+			/* R-4：SQL 事件里的 token 本就完整，直接灌入构建器，
+			 * 不再逐字符 addRune 重放（仓颉流 API 的残留）。 */
+			mt::MatrixBuilder b;
+			b.name(eve.create.tableName);
+			for (const auto& col : eve.create.tableColumns) { b.item(col.name); }
+			b.line(0);
+			out.push_back(b.take());
 			break;
 		}
 		case sql4cj::EventType::INSERT_TABLE: {
@@ -379,11 +377,10 @@ void RobotStruct::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out
 					"INSERT INTO '" + eve.insert.targetTabName + "': table is not defined");
 			}
 			for (const auto& row : eve.insert.tableRows) {
-				for (const auto& p : row) {
-					for (char ch : p.value) { root->addRune(ch); }
-					root->submitItem();
-				}
-				root->submitLine(0);
+				std::vector<std::string> values;
+				values.reserve(row.size());
+				for (const auto& p : row) { values.push_back(p.value); }
+				root->appendRow(std::move(values), 0);
 			}
 			break;
 		}
