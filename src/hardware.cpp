@@ -96,8 +96,7 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 
 	std::cerr << "Create an Alias vars: " << name << ", which means " << alias << std::endl;
 
-	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(
-		[alias](const Json&) { return JsonString(alias); }));
+	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(std::move(alias)));
 }
 
 } // namespace bot

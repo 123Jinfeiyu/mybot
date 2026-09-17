@@ -3,6 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 
+#include "robot.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -11,12 +12,17 @@ thread_local int MtVars_Lua::topDepth = 0;
 
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
 std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, const std::string& name,
-		std::function<Json(bool)> getMetadata, MatrixVars_Hardware* controller) {
+		std::function<Json(bool)> getMetadata, std::string ctrlName, HwRegistry* registry) {
+	if (!ctrlName.empty() && registry == nullptr) {
+		throw std::runtime_error("MtVars_Lua::Factory: controller '" + ctrlName
+			+ "' requires a registry for lookup");
+	}
 	lua_State* L = luaL_newstate();
 	if (L == nullptr) {
 		throw std::runtime_error("Lua_check()");
 	}
-	return std::unique_ptr<MtVars_Lua>(new MtVars_Lua(L, luapath, name, std::move(getMetadata), controller));
+	return std::unique_ptr<MtVars_Lua>(new MtVars_Lua(L, luapath, name,
+		std::move(getMetadata), std::move(ctrlName), registry));
 }
 
 /* ---- 构造 Lua 状态机（加载标准库 + 沙箱 + loadfile + pcall）---- */
@@ -95,13 +101,18 @@ Json MtVars_Lua::callImpl(const Json& json) {
 	MatrixVars_Hardware::ensureOk(res, "call " + luapath_);
 
 	/* controller 转发：元数据 ∪ 自己 Lua 的返回表 */
-	if (controller_ != nullptr) {
+	if (!ctrlName_.empty()) {
+		MatrixVars_Hardware* controller = registry_->find(ctrlName_);
+		if (controller == nullptr) {
+			throw IllegalArgumentException("controller '" + ctrlName_ + "' of hardware variable '"
+				+ name_ + "' is no longer registered (declaration order guarantees it exists)");
+		}
 		Json payload = JsonObject();
 		jsonMergeInto(payload, metadata);
 		jsonMergeInto(payload, res.asObject());
 		logD([&payload] { return "Forward to controller: " + payload.toString(); });
 
-		Json ctrl_res = controller_->play(payload);
+		Json ctrl_res = controller->play(payload);
 		logD([&ctrl_res] { return "Controller result: " + ctrl_res.toString(); });
 
 		/* 检查 controller 返回值（如 PCA9685 写寄存器失败） */

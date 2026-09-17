@@ -13,6 +13,8 @@
 
 namespace bot {
 
+class HwRegistry;	/* 完整定义在 robot.hpp（luavar.cpp 内联实现查找） */
+
 class MtVars_Lua : public MatrixVars_Hardware {
 	/* 顶层调用深度计数：只在外层 .mt 直接调用的原子处打印结果，
 	 * 避免被 controller 转发的嵌套 Lua 调用重复输出。
@@ -27,16 +29,16 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	 * 引用解析 read() 缺省实现是一次真实硬件事务，且对已释放变量会抛错，
 	 * 让器件的去初始化被静默跳过（F-04）。 */
 	std::function<Json(bool staticOnly)> getMetadata_;
-	MatrixVars_Hardware* controller_ = nullptr;
+	/* controller 按名在注册表里查找（R-3）：声明序保证「先于本变量注册、
+	 * 后于本变量销毁」，查找式引用把这一约定变成运行期可校验的。 */
+	std::string ctrlName_;
+	HwRegistry* registry_;
 
 	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,
-			std::function<Json(bool)> getMetadata, MatrixVars_Hardware* controller)
-		: MatrixVars_Hardware(
-			[this](const Json& json) { return callImpl(json); },
-			[this]() { riseImpl(); },
-			[this]() { freeImpl(); }),
-			L_(L), luapath_(std::move(luapath)), name_(std::move(name)),
-			getMetadata_(std::move(getMetadata)), controller_(controller) {}
+			std::function<Json(bool)> getMetadata, std::string ctrlName, HwRegistry* registry)
+		: L_(L), luapath_(std::move(luapath)), name_(std::move(name)),
+		  getMetadata_(std::move(getMetadata)), ctrlName_(std::move(ctrlName)),
+		  registry_(registry) {}
 
 	Json callImpl(const Json& json);
 	Json readImpl();
@@ -54,10 +56,13 @@ public:
 		if (L_) { lua_close(L_); }
 	}
 
+	Json play(const Json& json) override { return callImpl(json); }
 	Json read() override { return readImpl(); }
+	void build() override { riseImpl(); }
+	void destroy() override { freeImpl(); }
 
 	static std::unique_ptr<MtVars_Lua> Factory(const std::string& luapath, const std::string& name,
-			std::function<Json(bool)> getMetadata, MatrixVars_Hardware* controller);
+			std::function<Json(bool)> getMetadata, std::string ctrlName = "", HwRegistry* registry = nullptr);
 };
 
 } // namespace bot

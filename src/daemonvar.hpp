@@ -88,12 +88,26 @@ public:
 int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chunk,
 		const std::string& config, int64_t interval_ms);
 
-/* ---- 守护硬件变量 ---- */
+/* ---- 守护硬件变量（R-3：真实子类，持 holder 的 shared_ptr 而非裸指针捕获）----
+ * build/destroy 的参数（chunk 路径/配置串/interval）在 Factory 时定型为成员。 */
 class MtVars_Daemon : public MatrixVars_Hardware {
-	explicit MtVars_Daemon(PlayFn things, std::optional<NoArg> rise, std::optional<NoArg> free)
-		: MatrixVars_Hardware(std::move(things), std::move(rise), std::move(free)) {}
+	std::shared_ptr<DaemonHolder> holder_;
+	std::string name_;
+	std::string chunkPath_;
+	std::string configStr_;
+	int64_t intervalMs_;
+
+	explicit MtVars_Daemon(std::shared_ptr<DaemonHolder> holder, std::string name,
+			std::string chunkPath, std::string configStr, int64_t intervalMs)
+		: holder_(std::move(holder)), name_(std::move(name)),
+		  chunkPath_(std::move(chunkPath)), configStr_(std::move(configStr)),
+		  intervalMs_(intervalMs) {}
 
 public:
+	Json play(const Json&) override;
+	void build() override;
+	void destroy() override;
+
 	static std::unique_ptr<MtVars_Daemon> Factory(const mt::MatrixObject& defs, std::int64_t i,
 			std::vector<std::shared_ptr<DaemonHolder>>& registry);
 };

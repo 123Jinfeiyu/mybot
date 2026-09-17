@@ -7,15 +7,27 @@
  */
 
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
+#include "hardware.hpp"
 #include "matrix.hpp"
 #include "sqlparse.hpp"
 #include "util.hpp"
 
 namespace fx {
+
+/* 测试用 lambda 硬件变量：play 委托给注入的函数对象（基类已是纯虚接口，
+ * 测试不能再直接 new MatrixVars_Hardware(lambda)） */
+class LambdaHw : public bot::MatrixVars_Hardware {
+	std::function<bot::Json(const bot::Json&)> fn_;
+public:
+	explicit LambdaHw(std::function<bot::Json(const bot::Json&)> fn) : fn_(std::move(fn)) {}
+	bot::Json play(const bot::Json& in) override { return fn_(in); }
+};
 
 /* 解析出恰好一个矩阵对象；解析失败或多解都视为用例前置条件不成立 */
 inline mt::MatrixObject oneMatrix(const std::string& text) {

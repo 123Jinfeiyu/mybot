@@ -173,16 +173,16 @@ void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::strin
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
-		MatrixVars_Hardware* ctrl = nullptr;
+		std::string ctrlName;
 		if (idxCtrl >= 0) {
-			std::string ctrlName = MatrixVars_Hardware::getMt(matrix, i, idxCtrl);
-			if (ctrlName != "-") {
-				ctrl = registry_.find(ctrlName);
-				if (ctrl == nullptr) {
+			std::string rawCtrl = MatrixVars_Hardware::getMt(matrix, i, idxCtrl);
+			if (rawCtrl != "-") {
+				if (registry_.find(rawCtrl) == nullptr) {
 					throw IllegalArgumentException("Hardware variable '" + name + "' declares controller '"
-						+ ctrlName + "' in table '" + mtName
+						+ rawCtrl + "' in table '" + mtName
 						+ "', but it is not defined yet. The controller must be defined before the matrix that references it.");
 				}
+				ctrlName = rawCtrl;
 			}
 		}
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, idxCtrl, &registry_);
@@ -190,7 +190,7 @@ void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::strin
 		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv](bool staticOnly) {
 				return staticOnly ? metaProv->collectStatic() : metaProv->collect();
-			}, ctrl),
+			}, ctrlName, &registry_),
 			" (in table '" + mtName + "')");
 	}
 }

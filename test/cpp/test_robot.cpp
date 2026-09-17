@@ -9,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 
+#include "fixtures.hpp"
 #include "harness.hpp"
 #include "matrix.hpp"
 #include "robot.hpp"
@@ -160,7 +161,7 @@ TH_TEST(run_rejects_alias_matrix_without_columns) {
 namespace {
 
 std::unique_ptr<bot::MatrixVars_Hardware> dummyHw() {
-	return std::unique_ptr<bot::MatrixVars_Hardware>(new bot::MatrixVars_Hardware(
+	return std::unique_ptr<bot::MatrixVars_Hardware>(new fx::LambdaHw(
 		[](const bot::Json&) { return bot::JsonNull(); }));
 }
 

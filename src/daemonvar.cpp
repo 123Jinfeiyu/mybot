@@ -316,13 +316,23 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 
 	auto holder = std::make_shared<DaemonHolder>(slot, joinTimeoutMs);
 	holder->self = holder;	/* 线程捕获 self 保生命周期 */
-	DaemonHolder* hp = holder.get();
-	registry.push_back(std::move(holder));
+	registry.push_back(holder);
 
 	return std::unique_ptr<MtVars_Daemon>(new MtVars_Daemon(
-		[hp](const Json&) { return daemonPlay(hp); },
-		[hp, name, chunkPath, configStr, intervalMs]() { daemonRise(hp, name, chunkPath, configStr, intervalMs); },
-		[hp, name]() { daemonFree(hp, name); }));
+		std::move(holder), name, chunkPath, configStr, intervalMs));
+}
+
+/* ---- 守护硬件变量：play/build/destroy 直通守护事件（R-3）---- */
+Json MtVars_Daemon::play(const Json&) {
+	return daemonPlay(holder_.get());
+}
+
+void MtVars_Daemon::build() {
+	daemonRise(holder_.get(), name_, chunkPath_, configStr_, intervalMs_);
+}
+
+void MtVars_Daemon::destroy() {
+	daemonFree(holder_.get(), name_);
 }
 
 } // namespace bot

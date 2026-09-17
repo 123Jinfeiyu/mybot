@@ -39,33 +39,24 @@ using bot::MetaProvider;
 /* ---------------- 基类生命周期 ---------------- */
 
 TH_TEST(hardware_base_class_is_not_copyable) {
-	/* 子类持有 lua_State* / 共享槽等裸句柄，隐式拷贝即双重释放 */
+	/* 硬件变量一律经 unique_ptr 独占持有（子类持 lua_State 指针与共享槽等裸句柄） */
 	TH_CHECK(!std::is_copy_constructible<MatrixVars_Hardware>::value);
 	TH_CHECK(!std::is_copy_assignable<MatrixVars_Hardware>::value);
 }
 
-TH_TEST(hardware_build_destroy_are_optional_hooks) {
-	int built = 0;
-	int freed = 0;
-	MatrixVars_Hardware bare([](const Json&) { return JsonObject(); });
+TH_TEST(hardware_build_destroy_default_to_noop) {
+	/* R-3：build/destroy 是虚方法，基类缺省无操作；子类按需覆写。
+	 * 「只 build 一次」由 RobotStruct::active() 那一层保证。 */
+	fx::LambdaHw bare([](const Json&) { return JsonObject(); });
 	bare.build();
 	bare.destroy();
-	TH_CHECK(built == 0 && freed == 0);
-
-	MatrixVars_Hardware hooked([](const Json&) { return JsonObject(); },
-		[&built] { ++built; }, [&freed] { ++freed; });
-	hooked.build();
-	/* build/destroy 自身不做幂等保护：调用一次就转发一次，
-	 * 「只 build 一次」由 RobotStruct::active() 那一层保证。 */
-	hooked.build();
-	hooked.destroy();
-	TH_CHECK(built == 2 && freed == 1);
+	TH_CHECK(true);
 }
 
 TH_TEST(hardware_read_defaults_to_play_with_empty_object) {
 	/* P4/M1：read() 缺省实现 = play({})，驱动侧无需为只读快照另写入口 */
 	Json seen = JsonNull();
-	MatrixVars_Hardware v([&seen](const Json& in) {
+	fx::LambdaHw v([&seen](const Json& in) {
 		seen = in;
 		Json out = JsonObject();
 		out.put("count", JsonInt(3));
@@ -226,7 +217,7 @@ TH_TEST(metaprovider_freezes_literal_columns_after_first_collect) {
 TH_TEST(metaprovider_merges_live_snapshot_of_reference_column) {
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $t0;\n@\n");
 	int reads = 0;
-	auto t0 = std::unique_ptr<MatrixVars_Hardware>(new MatrixVars_Hardware([&reads](const Json&) {
+	auto t0 = std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw([&reads](const Json&) {
 		++reads;
 		Json snap = JsonObject();
 		snap.put("count", JsonInt(reads));
@@ -254,7 +245,7 @@ TH_TEST(metaprovider_unknown_reference_reports_clearly) {
 
 TH_TEST(metaprovider_scalar_reference_is_rejected) {
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $alias0;\n@\n");
-	auto alias0 = std::unique_ptr<MatrixVars_Hardware>(new MatrixVars_Hardware(
+	auto alias0 = std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw(
 		[](const Json&) { return JsonString("timer-0"); }));
 	bot::HwRegistry reg;
 	reg.add("alias0", std::move(alias0));
@@ -268,7 +259,7 @@ TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $loop;\n@\n");
 	std::function<Json()> reenter;
 	bot::HwRegistry reg;
-	reg.add("loop", std::unique_ptr<MatrixVars_Hardware>(new MatrixVars_Hardware(
+	reg.add("loop", std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw(
 		[&reenter](const Json&) { return reenter(); })));
 	MetaProvider prov(m, 1, -1, &reg);
 	reenter = [&prov]() { return prov.collect(); };
