@@ -1,6 +1,6 @@
 # 硬件变量（驱动）清单
 
-> `modules/` 下共 55 个 Lua 模块（53 个驱动 + `bitcompat` 兼容库），按类别速查。结构脚本里每张 `CREATE TABLE <矩阵名>` 对应加载 `modules/<矩阵名>.lua`。各驱动的协议细节与其内嵌 `<矩阵名>_VIRT` 仿真模型见 [virtbus.md](virtbus.md)。
+> `modules/` 下共 56 个 Lua 模块（54 个驱动 + `bitcompat` 兼容库），按类别速查。结构脚本里每张 `CREATE TABLE <矩阵名>` 对应加载 `modules/<矩阵名>.lua`。各驱动的协议细节与其内嵌 `<矩阵名>_VIRT` 仿真模型见 [virtbus.md](virtbus.md)。
 
 ## 舵机 / 输出执行器
 
@@ -8,6 +8,7 @@
 | --- | --- |
 | `PCA9685` | 16 路 PWM 舵机控制器（I2C），`Servo` 的 controller |
 | `Servo` | 舵机抽象（角度 → 脉宽，max/min/offset 标定） |
+| `SCSCL` | 飞特总线舵机（UART，FT-SCS 大端帧；位置/时间/速度/扭矩 + 反馈块读取） |
 | `Timer` | 定时/延时（relay-test 链路的执行端） |
 | `MCP4725` | 12 位 DAC（I2C） |
 | `AD9833` | DDS 波形发生器（SPI，写-only） |

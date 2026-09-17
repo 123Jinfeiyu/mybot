@@ -328,6 +328,10 @@ fi
 #                 首条【非守护】virt 覆盖：@Action 直写舵机驱动板走内存仿真
 #                 （drv_common 入口前置注入 + adopt_fd 跨状态机采纳 fd）；
 #                 正值断言虚拟横幅，负值断言通道越界被守卫（证明该链路非空断言）
+#   scscl_virt / scscl_badid
+#                 首个【UART 非守护】virt 覆盖（BUS="uart" 模型 attach_uart +
+#                 adopt uart fd）：@Action 直写总线舵机（SCSCL，大端帧/1M 波特率）；
+#                 负值断言站号非法在 build 期被守卫
 # 用例表：SQL|MT|期望退出码|输出必须包含（MT/SQL 含 "/" 时视为仓库根相对路径）
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
@@ -355,6 +359,8 @@ parse_cases=(
 	'daemon_badfield.sql|daemon_badfield.mt|0|absent or non-numeric in driver result'
 	'pca9685_virt.sql|pca9685_virt.mt|0|VIRTUAL HARDWARE'
 	'pca9685_badchan.sql|pca9685_badchan.mt|1|out of range 0-15'
+	'scscl_virt.sql|scscl_virt.mt|0|VIRTUAL HARDWARE'
+	'scscl_badid.sql|scscl_badid.mt|1|Invalid Argument: id'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4"

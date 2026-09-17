@@ -113,11 +113,15 @@ function call(data)
 		}
 	end
 
-	-- 返回字典（fd 经引用机制流入设备驱动元数据）
+	-- 返回字典（fd 经引用机制流入设备驱动元数据）。
+	local path = data.path
+	-- path 一并下发：虚拟总线路径下设备驱动按 tty 路径定位器件模型
+	-- （drv_common proto=virt 前置的 attach_uart/adopt 需要）。
  	return {
 		result = "OK",
 		fd     = fd,
-		baud   = baud
+		baud   = baud,
+		path   = path
 	}
 
 end

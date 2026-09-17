@@ -136,8 +136,8 @@ virtbus.spi_devs = spi_devs
 virtbus.uart_devs = uart_devs
 virtbus.uart_fail_read = false  -- 总线级故障注入：true → uart_read 一律返 nil
 
--- HAL uart_open 的波特率白名单镜像（语义对齐 HAL.lua UART_BAUDS）
-local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 }
+-- HAL uart_open 的波特率白名单镜像（语义对齐 HAL.lua UART_BAUDS，含 500k/1M）
+local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1000000 }
 
 -- 复位：清空器件/日志/线索并还原全局 i2c_*/spi_*/uart_*
 function virtbus.reset()
@@ -748,15 +748,25 @@ function virtbus.inject()
 end
 
 -- 采纳「在别的 lua_State 里创建的虚拟 fd」：真实 fd 是进程级整数，跨状态机可用；
--- 而本模块的 open_paths/fd_addr 是逐状态机的表。多状态机拓扑里总线变量（modules/I2C.lua）
--- 在自己的状态里 i2c_open 拿到 fd，设备变量在自己的状态里对同一个 fd 调
--- i2c_set_addr 与读写——不先登记的话 v_i2c_set_addr 会因 open_paths[fd] 为空而失败。
--- 器件模型由各状态机自己 attach（模型是状态局内的内存，本就不跨状态共享）。
-function virtbus.adopt_fd(fd, path, addr)
+-- 而本模块的 open_paths/fd_addr/uart_paths 是逐状态机的表。多状态机拓扑里总线变量
+-- （modules/I2C.lua、modules/UART.lua）在自己的状态里 open 拿到 fd，设备变量在自己的
+-- 状态里对同一个 fd 读写信道——不先登记的话 v_i2c_set_addr / v_uart_* 会因
+-- open_paths[fd] / uart_paths[fd] 为空而失败。
+-- bus 缺省按 I2C/SPI 处理（open_paths + fd_addr）；bus="uart" 时登记 uart_paths
+-- （UART 器件身份是 tty 路径，无地址）。器件模型由各状态机自己 attach
+-- （模型是状态局内的内存，本就不跨状态共享）。
+function virtbus.adopt_fd(fd, path, addr, bus)
 	fd = tonumber(fd)
 	if fd == nil then return false end
+	next_fd = math.max(next_fd, fd + 1)		-- 别让后续分配撞上采纳来的编号
+	if bus == "uart" then
+		if uart_paths[fd] == nil then
+			uart_paths[fd] = tostring(path or "virt-adopted")
+		end
+		log_tx("adopt", nil, { raw = tostring(path) })
+		return true
+	end
 	if open_paths[fd] == nil then
-		next_fd = math.max(next_fd, fd + 1)		-- 别让后续分配撞上采纳来的编号
 		open_paths[fd] = tostring(path or "virt-adopted")
 	end
 	addr = tonumber(addr)

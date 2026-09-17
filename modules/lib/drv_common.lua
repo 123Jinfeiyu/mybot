@@ -55,20 +55,53 @@ local function virt_setup(data)
 		return virt_state:sub(7)
 	end
 
-	if addr ~= nil then
+	-- 工厂表 → 实例（与 sensor_daemon 同约定）：挂载的必须是实例——virtbus 的
+	-- 动态委托取 dev.write / dev.on_write，工厂表身上没有这些方法，直接把工厂
+	-- attach 会让「写静默成功、读永远无应答」（PCA9685 直写 E2E 的旧缺口，
+	-- SCSCL 的 PING 探测把该缺口暴露为构建失败）。BUS 标记先取工厂（实例可省）。
+	local bus = (model ~= nil) and rawget(model, "BUS") or nil
+	if model ~= nil and type(model.new) == "function" then
+		local ok_new, inst = pcall(model.new)
+		if not ok_new or type(inst) ~= "table" then
+			virt_state = "error:" .. tostring(driver or "device")
+				.. " model new() failed: " .. tostring(inst)
+			return virt_state:sub(7)
+		end
+		model = inst
+		if bus == nil then bus = rawget(inst, "BUS") end
+	end
+
+	if bus == "uart" then
+		-- UART 器件模型（约定工厂表 BUS="uart"）：身份是 tty 路径，路径来自
+		-- @UART 引用快照（modules/UART.lua 的 call 下发 fd/baud/path）。
+		if type(data.path) ~= "string" then
+			virt_state = "error:" .. tostring(driver)
+				.. " is a BUS=\"uart\" model but metadata has no tty path"
+				.. " (缺 @UART 引用列或 UART call 未下发 path?)"
+			return virt_state:sub(7)
+		end
+		vbus.attach_uart("VIRT:" .. driver .. "@" .. data.path, data.path, model)
+	elseif addr ~= nil then
 		-- attach 器件模型只属于带 address 的设备行；总线行（I2C/SPI/UART）无
 		-- address，跳过 attach，仅靠下面的 inject 让自己的 open 变成虚拟 open。
 		vbus.attach("VIRT:" .. driver .. "@" .. tostring(addr), addr, model)
 	end
-	-- fd 由总线变量（modules/I2C.lua）在它自己的状态机里 open 出来；本状态机要
-	-- 先把这个进程级整数登记进本地 virtbus，否则 i2c_set_addr 认不出该句柄。
-	if data.fd ~= nil then vbus.adopt_fd(data.fd, data.path, addr) end
+	-- fd 由总线变量（modules/I2C.lua、modules/UART.lua）在它自己的状态机里 open
+	-- 出来；本状态机要先把这个进程级整数登记进本地 virtbus，否则 i2c_set_addr /
+	-- uart_read 等认不出该句柄。
+	if data.fd ~= nil then vbus.adopt_fd(data.fd, data.path, addr, bus) end
 	vbus.inject()
 	virt_state = "done"
 
-	print(" [drv_common] *** VIRTUAL HARDWARE -- NO REAL DEVICE *** ("
-		.. tostring(addr and driver or (data.name or "bus"))
-		.. (addr and (" @0x" .. string.format("%X", addr)) or "") .. ")")
+	local what
+	if addr ~= nil then
+		what = tostring(driver) .. (" @0x" .. string.format("%X", addr))
+	elseif bus == "uart" then
+		what = tostring(driver) .. " @" .. tostring(data.path)
+	else
+		what = tostring(data.name or "bus")
+	end
+	print(" [drv_common] *** VIRTUAL HARDWARE -- NO REAL DEVICE *** (" .. what .. ")")
 	return nil
 end
 
