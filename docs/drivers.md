@@ -8,7 +8,7 @@
 | --- | --- |
 | `PCA9685` | 16 路 PWM 舵机控制器（I2C），`Servo` 的 controller |
 | `Servo` | 舵机抽象（角度 → 脉宽，max/min/offset 标定） |
-| `SCSCL` | 飞特总线舵机（UART，FT-SCS 大端帧；位置/时间/速度/扭矩 + 反馈块读取） |
+| `SCSCL` | 飞特总线舵机（UART，FT-SCS 大端帧；位置/时间/速度/扭矩 + 反馈块读取 + 站号烧写） |
 | `Timer` | 定时/延时（relay-test 链路的执行端） |
 | `MCP4725` | 12 位 DAC（I2C） |
 | `AD9833` | DDS 波形发生器（SPI，写-only） |

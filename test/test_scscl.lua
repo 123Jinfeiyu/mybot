@@ -20,6 +20,8 @@
 --   4) 真实 call：位置/时间/速度大端帧、限幅管线、扭矩单发与合帧、正负路径
 --   5) 真实 read：反馈块解码、advance 后位置/移动标志、噪声聚合、负路径
 --   6) destroy：扭矩关闭帧、未建路径零事务、失败路径
+--   7) set_id 烧号：解锁→广播写号帧序、模型站号切换与 persisted 语义、
+--      独占忽略同行参数、旧/新站号 PING 对照、负路径
 
 if os.getenv("SCSCL_GC") == "1" then
 	collectgarbage("setpause", 1)
@@ -291,6 +293,35 @@ do
 	dev.on_write(MOVE)
 	dev:virt_tick(0)
 	check("virt_tick 推进 20ms → 6 步（300 步/s）", dev:present_position() == 6)
+
+	-- 站号烧写寄存器事实（0x05 站号 / 0x30 EPROM 锁 / persisted_id 掉电语义）
+	dev:reset()
+	check("POR：站号 1 / 锁 1 / persisted=1",
+		dev:id() == 1 and dev:lock() == 1 and dev:persisted_id() == 1)
+	local PING1 = { 0xFF, 0xFF, 0x01, 0x02, 0x01, 0xFB }
+	local ID_W7 = { 0xFF, 0xFF, 0x01, 0x04, 0x03, 0x05, 0x07, 0 }
+	ID_W7[8] = cs(ID_W7, 3, 7)
+	check("上锁写 0x05：站号立即切换但掉电不保存（persisted 仍 1）",
+		dev.on_write(ID_W7) ~= nil and dev:id() == 7 and dev:persisted_id() == 1)
+	local PING7 = { 0xFF, 0xFF, 0x07, 0x02, 0x01, 0 }
+	PING7[6] = cs(PING7, 3, 5)
+	check("切换后旧站号不应答 / 新站号应答",
+		dev.on_write(PING1) == nil and dev.on_write(PING7) ~= nil)
+	local LOCK0 = { 0xFF, 0xFF, 0x01, 0x04, 0x03, 0x30, 0x00, 0 }
+	LOCK0[8] = cs(LOCK0, 3, 7)
+	dev:set_id(1)	-- 注入回 1（同时视为已保存）
+	dev.on_write(LOCK0)
+	check("解锁后 lock=0", dev:lock() == 0)
+	local ID_W9 = { 0xFF, 0xFF, 0x01, 0x04, 0x03, 0x05, 0x09, 0 }
+	ID_W9[8] = cs(ID_W9, 3, 7)
+	dev.on_write(ID_W9)
+	check("解锁写 0x05：persisted 同步更新",
+		dev:id() == 9 and dev:persisted_id() == 9)
+	-- 广播写 0x05：不应答但立即切换
+	local BID = { 0xFF, 0xFF, 0xFE, 0x04, 0x03, 0x05, 0x08, 0 }
+	BID[8] = cs(BID, 3, 7)
+	check("广播写 0x05 不应答且切站号",
+		dev.on_write(BID) == nil and dev:id() == 8 and dev:persisted_id() == 8)
 end
 
 -- ==================== 组 2：虚拟原语（新白名单 / uart 采纳） ====================
@@ -547,6 +578,85 @@ do
 	dev:fail_write(false)
 	expect_err("destroy 非表 ERR", function() return destroy(nil) end,
 		"Invalid Arguments Type: table")
+end
+
+-- ==================== 组 7：set_id 烧号 ====================
+do
+	local mark = section()		-- 模型回 id=1 / 锁 1
+	dev:set_present_position(0)
+
+	-- 正常烧号：解锁帧（0x30=0，发往当前站号）→ 广播写号帧（0xFE/0x05=7）
+	local r = expect_ok("set_id=7 OK", function()
+		return call(meta({ set_id = 7 }))
+	end)
+	check("返回 set_id=7 且带生效说明",
+		r.set_id == 7 and r.note == "断电重启后生效")
+	local es = entries(mark)
+	check("恰两帧 uw（无位置帧混入）", count_dir(es, "uw") == 2)
+	check("解锁帧 = FF FF 01 04 03 30 00 C7（发往当前站号）",
+		same_bytes(es[1].bytes, { 0xFF, 0xFF, 0x01, 0x04, 0x03, 0x30, 0x00, 0xC7 }),
+		table.concat(es[1].bytes, ","))
+	check("写号帧 = FF FF FE 04 03 05 07 EE（广播，与手册例 3 同型）",
+		same_bytes(es[2].bytes, { 0xFF, 0xFF, 0xFE, 0x04, 0x03, 0x05, 0x07, 0xEE }),
+		table.concat(es[2].bytes, ","))
+	check("模型：站号=7 / 已解锁 / 已持久化",
+		dev:id() == 7 and dev:lock() == 0 and dev:persisted_id() == 7)
+	check("驱动先解锁后写号（persisted 更新即证明顺序正确）",
+		dev:persisted_id() == 7)
+
+	-- 烧号后：旧站号 PING 超时、新站号可正常 build（模型站号已切换不 reset）
+	expect_err("烧号后旧站号 build 超时 ERR", function()
+		return build(meta({ id = 1 }))
+	end, "No PING response")
+	expect_ok("烧号后新站号 build OK", function()
+		return build(meta({ id = 7 }))
+	end)
+
+	-- set_id 独占：同行携带的 position/torque 数值被忽略（"-" 继承的产物）
+	mark = section()
+	r = expect_ok("set_id 与 position 同行：忽略位置", function()
+		return call(meta({ set_id = 8, position = 512, speed = 300, torque = 1 }))
+	end)
+	local es2 = entries(mark)
+	check("仅两帧且分别为 0x30 解锁与 0x05 写号（无位置/扭矩帧）",
+		count_dir(es2, "uw") == 2
+		and es2[1].bytes[6] == 0x30 and es2[2].bytes[6] == 0x05
+		and es2[2].bytes[3] == 0xFE)
+	check("同行位置被忽略：模型未收到位置写", dev:goal_position() == 0 and r.set_id == 8)
+
+	-- set_id<=0（"-" 首行解析为 0 的形态）不触发烧号：与位置照常共存
+	mark = section()
+	r = expect_ok("set_id=0 不烧号，位置照常", function()
+		return call(meta({ set_id = 0, position = 100, speed = 0, time = 0 }))
+	end)
+	check("仅位置帧（无 0x05/0x30 帧）",
+		count_dir(entries(mark), "uw") == 1
+		and entries(mark)[1].bytes[6] == 0x2A and dev:goal_position() == 100)
+	check("模型未发生站号切换", dev:id() == 1 and dev:persisted_id() == 1)
+
+	-- 负路径
+	section()
+	expect_err("set_id=0 且无位置 ERR（提示含 set_id）", function()
+		return call(meta({ set_id = 0 }))
+	end, "set_id")
+	expect_err("set_id=254 ERR", function()
+		return call(meta({ set_id = 254 }))
+	end, "Invalid Argument: set_id")
+	expect_err("set_id 非整数 ERR", function()
+		return call(meta({ set_id = 1.5 }))
+	end, "Invalid Argument: set_id")
+	expect_err("空参 ERR 提示含 set_id", function()
+		return call(meta({}))
+	end, "set_id")
+	dev:fail_write(true)
+	expect_err("解锁帧 TX 失败 ERR", function()
+		return call(meta({ set_id = 5 }))
+	end, "Failed to write EPROM unlock")
+	dev:fail_write(false)
+	expect_ok("故障撤销后恢复烧号", function()
+		return call(meta({ set_id = 5 }))
+	end)
+	check("模型站号=5 持久化", dev:id() == 5 and dev:persisted_id() == 5)
 end
 
 tester.summary("SCSCL")

@@ -32,6 +32,12 @@
 --   time     运行时间 ms（0~9999；speed=0 时生效——指定从当前位到目标位的
 --            运动耗时，多关节同时启停用它，见内存表 0x2C）
 --   torque   扭矩开关 0 自由 / 1 使能 / 2 阻尼（单独下发 0x28）
+--   set_id   站号烧写 1~253（解锁 EPROM 0x30=0 → 广播 0xFE 写 0x05，
+--            掉电重启生效；独占本次调用，同行其他参数忽略——烧号是
+--            一次性操作，.mt 里单独一行；<=0 或未给 = 不烧号，
+--            首行 "-" 解析为 0 即此语义，烧号行之后请显式写 0）。
+--            真机烧号请只接目标舵机：广播会命中总线上所有舵机；
+--            波特率不会随烧号改变
 -- 写指令「发完即走」不读应答：应答状态级别可被配成 0（除读/PING 不应答），
 -- 且半双工单总线（方向控制转接板/回显）下回显帧会污染应答解析。
 -- 反馈读取走全局 read()（0x02 读 0x38 起 11 字节，无副作用）：位置/速度/
@@ -52,13 +58,16 @@ local INST_PING  = 0x01
 local INST_READ  = 0x02
 local INST_WRITE = 0x03
 
+local REG_SERVO_ID         = 0x05	-- 1B：站号（EPROM；改号须先解锁再广播写，掉电重启生效）
 local REG_TORQUE_ENABLE    = 0x28	-- 1B：0 自由 / 1 使能 / 2 阻尼
 local REG_GOAL_POSITION    = 0x2A	-- 2B 大端：目标位置 0~1023 步
 local REG_RUN_TIME         = 0x2C	-- 2B 大端：运行时间 ms（speed=0 时生效）
 local REG_RUN_SPEED        = 0x2E	-- 2B 大端：运行速度 步/s
+local REG_LOCK             = 0x30	-- 1B：EPROM 写锁（0 解锁（写值掉电保存）/ 1 上锁）
 local REG_PRESENT_POSITION = 0x38	-- 反馈块起点：位置2 速度2 负载2 电压1 温度1 异步1 状态1 移动1
 local FEEDBACK_LEN         = 11
 local REPLY_TIMEOUT_MS     = 100	-- 1M 波特下一帧微秒级到达，100ms 余量
+local ADDR_BROADCAST       = 0xFE	-- 广播站号（改号指令用；除 PING 外广播不应答）
 
 -- FT-SCS 校验和：~(ID+LEN+INST+参数) 取低 8 位 = 0xFF - (Σ mod 256)
 -- （注意与 MHZ19 的 (0x100-Σ)%256 不同式；PING 经典帧 FF FF 01 02 01 FB 实证）
@@ -218,8 +227,41 @@ function call(data)
 
 	local has_pos = tonumber(data.position) ~= nil
 	local torque = tonumber(data.torque)
+	local set_id = tonumber(data.set_id)
+
+	-- 【站号烧写】set_id 在 1~253 时触发且独占本次调用：.mt 矩阵行必须给满
+	-- 所有列，未写的列用 "-"（首行解析为 0、后续行继承上一行）——故 set_id<=0
+	-- 一律视为「本行不烧号」，与位置/扭矩照常共存（首行 "-" 即此形态）。
+	-- 烧号行触发时同行其他动作参数一律忽略（框架无法区分显式数值与 "-" 继承）。
+	-- 注意：烧号行之后的行如果 set_id 写 "-" 会继承本次数值再次烧号，
+	-- 请在烧号行之后显式写 0（或把烧号行放在动作脚本最后）。
+	if set_id ~= nil and set_id > 0 then
+		if set_id > 253 or set_id ~= math.floor(set_id) then
+			return err("Invalid Argument: set_id (1~253)")
+		end
+		-- 手册流程：先解锁 EPROM 写锁（0x30=0，否则写值掉电不保存），
+		-- 再用广播 ID 0xFE 写 0x05 新站号（对应手册《SCS通信协议》例 3）。
+		-- 锁标志是 SRAM，掉电重启自动回 1，故不回锁；新站号重启后生效
+		-- （重启前旧站号已不应答）。
+		-- 注意：广播会命中总线上所有舵机——真机烧号请只接目标舵机。
+		local f1 = build_frame(id, INST_WRITE, { REG_LOCK, 0 })
+		local w1 = uart_write(fd, f1)
+		if w1 ~= #f1 then
+			return err("Failed to write EPROM unlock (" .. tostring(w1) .. ")")
+		end
+		local f2 = build_frame(ADDR_BROADCAST, INST_WRITE, { REG_SERVO_ID, set_id })
+		local w2 = uart_write(fd, f2)
+		if w2 ~= #f2 then
+			return err("Failed to write servo id (" .. tostring(w2) .. ")")
+		end
+		if os.getenv("BOT4CJ_DEBUG") == "1" then
+			print(string.format("SCSCL: burn id %d -> %d (断电重启生效)", id, set_id))
+		end
+		return {  result = "OK",  id = id,  set_id = set_id,  note = "断电重启后生效"  }
+	end
+
 	if not has_pos and torque == nil then
-		return err("Invalid Argument: position (missing; 或改为只发 torque)")
+		return err("Invalid Argument: position (missing; 或改为只发 torque / set_id)")
 	end
 
 	-- 扭矩开关：单独一帧先下发（0x28）
@@ -329,8 +371,12 @@ end
 --   CS = 0xFF - (Σ(ID..参数) mod 256)；广播 ID 0xFE（PING 也应答，其余不应答）；
 --   站号不匹配不应答；非法帧（帧头/长度/校验和）不应答（真机对垃圾字节流
 --   不回帧的事实，驱动侧表现为读超时）。
---   寄存器（大端）：0x28 扭矩开关、0x2A 目标位置、0x2C 运行时间、0x2E 运行速度、
---   0x38~0x42 反馈块（位置/速度/负载/电压/温度/异步/状态/移动）。
+--   寄存器（大端）：0x05 站号、0x28 扭矩开关、0x2A 目标位置、0x2C 运行时间、
+--   0x2E 运行速度、0x30 EPROM 写锁、0x38~0x42 反馈块（位置/速度/负载/电压/
+--   温度/异步/状态/移动）。
+--   站号语义：写 0x05 立即切换站号（旧站号不再应答）；掉电保存靠解锁——
+--   persisted_id 仅在 0x30=0 时随写更新（模拟「上锁写入掉电不保存」），
+--   锁标志是 SRAM，重启回 1。
 --   运动学：advance(ms) 推进——速度优先（0x2E>0），其次运行时间折算
 --   （speed = 距离/时间），都为 0 用出厂默认速度；到位 moving=0、速度反馈归零。
 --
@@ -355,10 +401,12 @@ function SCSCL_VIRT.new()
 	local regs
 	local function por()
 		regs = {
+			[0x05] = 1,					-- 站号：POR 1
 			[0x28] = 0,					-- 扭矩开关：POR 0（自由）
 			[0x2A] = 0, [0x2B] = 0,		-- 目标位置
 			[0x2C] = 0, [0x2D] = 0,		-- 运行时间
 			[0x2E] = 0x03, [0x2F] = 0xE8,	-- 运行速度 1000 步/s
+			[0x30] = 1,					-- EPROM 写锁：POR 1（上锁）
 			[0x38] = 0, [0x39] = 0,		-- 位置反馈
 			[0x3A] = 0, [0x3B] = 0,		-- 速度反馈
 			[0x3C] = 0, [0x3D] = 0,		-- 负载反馈
@@ -371,7 +419,8 @@ function SCSCL_VIRT.new()
 	end
 	por()
 
-	local servo_id = 1
+	local servo_id = 1			-- 当前生效站号（写 0x05 立即切换）
+	local persisted_id = 1		-- 掉电保存的站号（仅解锁 0x30=0 时随写更新）
 
 	-- ---- 故障注入 ----
 	local no_reply = false		-- 收合法请求也不应答（驱动读超时）
@@ -421,6 +470,16 @@ function SCSCL_VIRT.new()
 		end
 		for k = 0, #data - 1 do
 			regs[addr + k] = data[k + 1]
+		end
+		-- 站号写（0x05）：立即切换（旧站号不再应答）；掉电保存语义——
+		-- 仅在写时已解锁（0x30=0）才更新 persisted_id（上锁写的值重启即丢）
+		for k = 0, #data - 1 do
+			if addr + k == 0x05 then
+				local v = regs[0x05]
+				if v < 1 then v = 1 elseif v > 253 then v = 253 end
+				servo_id = v
+				if regs[0x30] == 0 then persisted_id = v end
+			end
 		end
 		-- 目标位置一变，移动标志立即反映（位置由 advance 推进）
 		regs[0x42] = (u16(regs[0x38], regs[0x39]) ~= goal_pos()) and 1 or 0
@@ -532,9 +591,16 @@ function SCSCL_VIRT.new()
 		v = math.floor(tonumber(v) or 0)
 		if v < 1 then v = 1 elseif v > 253 then v = 253 end
 		servo_id = v
+		regs[0x05] = v
+		persisted_id = v	-- 注入即视为已保存（与「解锁后写入」等效）
 		return self
 	end
 	function self:id() return servo_id end
+
+	-- 站号烧写观察口：lock=POR 上锁/解锁状态；persisted_id=掉电后仍生效的站号
+	-- （解锁后写 0x05 才同步更新——测试据此证明驱动先解锁再写号）
+	function self:lock() return regs[0x30] end
+	function self:persisted_id() return persisted_id end
 
 	-- 位置反馈注入（钳 0~1023）
 	function self:set_present_position(v)
@@ -605,7 +671,7 @@ function SCSCL_VIRT.new()
 	-- （同其余 virtbus 模型约定——负路径 section 重开时钩子必须仍在才不假绿）
 	function self:reset()
 		por()
-		servo_id = 1
+		servo_id, persisted_id = 1, 1
 		requests = {}
 		return self
 	end
