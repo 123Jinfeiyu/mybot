@@ -5,6 +5,25 @@
 
 namespace bot {
 
+/* ---- HwRegistry：结构期注册（重名即抛）---- */
+void HwRegistry::add(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
+		const std::string& source) {
+	if (byName_.count(name)) {
+		throw IllegalArgumentException("Duplicate hardware variable name: '" + name + "'" + source);
+	}
+	MatrixVars_Hardware* p = hw.get();
+	byName_.emplace(name, p);
+	seq_.push_back(p);
+	pool_.push_back(std::move(hw));
+}
+
+/* ---- HwRegistry：会话期别名覆盖（不进销毁序，只改名字索引）---- */
+void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw) {
+	MatrixVars_Hardware* p = hw.get();
+	byName_[name] = p;
+	pool_.push_back(std::move(hw));
+}
+
 /* ---- MetaProvider：P8/M2 元数据收集 ----
  * 字面列与 "-" 继承结果首采冻结，之后每次浅拷贝重放；
  * "-" 整列缺省 → 跳过（Lua 侧 tonumber(nil) or 缺省）；
@@ -21,7 +40,7 @@ void MetaProvider::seed() {
 		if (j == idxName || j == skipCol_) { continue; }
 		if (value.rfind("$", 0) == 0) {
 			std::string refName = value.substr(1);
-			if (hardwareVars_->count(refName)) {
+			if (registry_->contains(refName)) {
 				rArr.push_back(refName);
 			} else {
 				throw IllegalArgumentException("'" + value + "' (column '" + colName
@@ -72,9 +91,8 @@ Json MetaProvider::collect() {
 
 	Json obj = collectStatic();
 	for (const std::string& name : *refs_) {
-		auto it = hardwareVars_->find(name);
-		if (it != hardwareVars_->end()) {
-			Json snap = it->second->read();
+		if (MatrixVars_Hardware* hv = registry_->find(name)) {
+			Json snap = hv->read();
 			if (!snap.isObj()) {
 				throw IllegalArgumentException("'$" + name
 					+ "': referenced variable returned a non-object (scalar) snapshot; "
@@ -92,13 +110,7 @@ Json MetaProvider::collect() {
 /* ---- 安全添加硬件变量（不可覆盖：insert_or_assign 语义会造成隐式改名）---- */
 void RobotStruct::addHardwareVar(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
 		const std::string& source) {
-	if (hardwareVars_.count(name)) {
-		throw IllegalArgumentException("Duplicate hardware variable name: '" + name + "'" + source);
-	}
-	MatrixVars_Hardware* p = hw.get();
-	hardwareVars_.emplace(name, p);
-	hwSeq_.push_back(p);
-	hwPool_.push_back(std::move(hw));
+	registry_.add(name, std::move(hw), source);
 }
 
 /* ---- 注册别名矩阵：启动期(e=nullopt)与动作脚本期(e=Some)两路 ---- */
@@ -115,12 +127,10 @@ void RobotStruct::registerAliasMatrix(const mt::MatrixObject& matrix, std::set<s
 				throw IllegalArgumentException("Duplicate alias name '" + name + "' within the action script");
 			}
 			session->insert(name);
-			if (hardwareVars_.count(name)) {
+			if (registry_.contains(name)) {
 				std::cerr << "Alias '" << name << "' defined in action script overrides the structure definition" << std::endl;
 			}
-			MatrixVars_Hardware* p = aliasVar.get();
-			hardwareVars_[name] = p;	/* 会话期覆盖式注册（结构定义被动作脚本别名覆盖） */
-			hwPool_.push_back(std::move(aliasVar));
+			registry_.override(name, std::move(aliasVar));	/* 会话期覆盖式注册（结构定义被动作脚本别名覆盖） */
 		} else {
 			addHardwareVar(name, std::move(aliasVar), " (in @Alias matrix)");
 		}
@@ -167,16 +177,15 @@ void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::strin
 		if (idxCtrl >= 0) {
 			std::string ctrlName = MatrixVars_Hardware::getMt(matrix, i, idxCtrl);
 			if (ctrlName != "-") {
-				auto it = hardwareVars_.find(ctrlName);
-				if (it != hardwareVars_.end()) { ctrl = it->second; }
-				else {
+				ctrl = registry_.find(ctrlName);
+				if (ctrl == nullptr) {
 					throw IllegalArgumentException("Hardware variable '" + name + "' declares controller '"
 						+ ctrlName + "' in table '" + mtName
 						+ "', but it is not defined yet. The controller must be defined before the matrix that references it.");
 				}
 			}
 		}
-		auto metaProv = std::make_shared<MetaProvider>(matrix, i, idxCtrl, &hardwareVars_);
+		auto metaProv = std::make_shared<MetaProvider>(matrix, i, idxCtrl, &registry_);
 		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
 		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv](bool staticOnly) {
@@ -210,7 +219,7 @@ void RobotStruct::active() {
 	 * 驱动 build 的真机事务中途才报错；装配完成后、任何 build 之前统一
 	 * 校验存在性（此时全部变量已注册，前向引用合法）。 */
 	for (const auto& p : metaProviders_) { p->validate(); }
-	for (MatrixVars_Hardware* item : hwSeq_) {
+	for (MatrixVars_Hardware* item : registry_.sequence()) {
 		item->build();
 	}
 }
@@ -222,7 +231,8 @@ void RobotStruct::deactivate() {
 	}
 	std::string lastWarn;
 	std::size_t failed = 0;
-	for (auto it = hwSeq_.rbegin(); it != hwSeq_.rend(); ++it) {
+	const auto& seq = registry_.sequence();
+	for (auto it = seq.rbegin(); it != seq.rend(); ++it) {
 		try {
 			(*it)->destroy();
 		} catch (const std::exception& e) {
@@ -237,7 +247,7 @@ void RobotStruct::deactivate() {
 	/* F-04：清理失败显式汇总——静默跳过的去初始化会让器件滞留最后指令状态
 	 * （如 MAX30102 未关断、BH1750 未断电），必须让调用方看见 */
 	if (failed > 0) {
-		std::cerr << "Deactivate: " << failed << " of " << hwSeq_.size()
+		std::cerr << "Deactivate: " << failed << " of " << seq.size()
 			<< " hardware variable(s) failed to destroy (see warnings above)" << std::endl;
 	}
 }
@@ -281,8 +291,8 @@ void RobotStruct::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 			parseActionCell(set, actionDefs, i, j);
 		}
 		for (const std::string& name_dev : order) {
-			auto it = hardwareVars_.find(name_dev);
-			if (it == hardwareVars_.end()) {
+			MatrixVars_Hardware* hv = registry_.find(name_dev);
+			if (hv == nullptr) {
 				throw IllegalArgumentException("Hardware variable '" + name_dev
 					+ "' is used in @Action (row " + std::to_string(i)
 					+ ") but not defined in your hardware declaration section.");
@@ -293,7 +303,7 @@ void RobotStruct::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 					+ "' is missing in action row " + std::to_string(i) + ".");
 			}
 			const Json& params = *paramsOpt;
-			Json res = it->second->play(params);
+			Json res = hv->play(params);
 			MatrixVars_Hardware::ensureOk(res, "play " + name_dev + " (row " + std::to_string(i) + ")");
 		}
 	}
@@ -318,9 +328,9 @@ void RobotStruct::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 	double val_fp64 = MatrixVars_Hardware::parseMtDouble(actionDefs, i, j);
 
 	Json ret = JsonObject();
-	auto hit = hardwareVars_.find(name_param_orig);
-	if (hit != hardwareVars_.end() && dynamic_cast<MtVars_Alias*>(hit->second)) {
-		ret = hit->second->read();
+	MatrixVars_Hardware* hit = registry_.find(name_param_orig);
+	if (hit != nullptr && dynamic_cast<MtVars_Alias*>(hit)) {
+		ret = hit->read();
 		name_param = ret.asString().getValue();
 	}
 

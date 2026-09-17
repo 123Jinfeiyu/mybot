@@ -208,8 +208,8 @@ TH_TEST(json_merge_into_overwrites_in_place) {
 TH_TEST(metaprovider_skips_name_controller_and_dash_columns) {
 	mt::MatrixObject m = fx::oneMatrix(
 		"@Relay\nname controller note servo;\nr0 t0 hello -;\n@\n");
-	std::map<std::string, MatrixVars_Hardware*> vars;
-	MetaProvider prov(m, 1, m.indexOfCol(0, "controller"), &vars);
+	bot::HwRegistry reg;
+	MetaProvider prov(m, 1, m.indexOfCol(0, "controller"), &reg);
 	Json meta = prov.collect();
 	TH_CHECK(meta.toString() == R"({"note":"hello"})");
 }
@@ -217,8 +217,8 @@ TH_TEST(metaprovider_skips_name_controller_and_dash_columns) {
 TH_TEST(metaprovider_freezes_literal_columns_after_first_collect) {
 	/* P8/M2：字面列首采即冻结，之后每次只是重放缓存（避免逐帧重扫矩阵） */
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note;\nr0 hello;\n@\n");
-	std::map<std::string, MatrixVars_Hardware*> vars;
-	MetaProvider prov(m, 1, -1, &vars);
+	bot::HwRegistry reg;
+	MetaProvider prov(m, 1, -1, &reg);
 	TH_CHECK(prov.collect().toString() == R"({"note":"hello"})");
 	TH_CHECK(prov.collect().toString() == R"({"note":"hello"})");
 }
@@ -226,15 +226,15 @@ TH_TEST(metaprovider_freezes_literal_columns_after_first_collect) {
 TH_TEST(metaprovider_merges_live_snapshot_of_reference_column) {
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $t0;\n@\n");
 	int reads = 0;
-	MatrixVars_Hardware t0([&reads](const Json&) {
+	auto t0 = std::unique_ptr<MatrixVars_Hardware>(new MatrixVars_Hardware([&reads](const Json&) {
 		++reads;
 		Json snap = JsonObject();
 		snap.put("count", JsonInt(reads));
 		return snap;
-	});
-	std::map<std::string, MatrixVars_Hardware*> vars;
-	vars["t0"] = &t0;
-	MetaProvider prov(m, 1, -1, &vars);
+	}));
+	bot::HwRegistry reg;
+	reg.add("t0", std::move(t0));
+	MetaProvider prov(m, 1, -1, &reg);
 
 	Json first = prov.collect();
 	Json second = prov.collect();
@@ -246,18 +246,19 @@ TH_TEST(metaprovider_merges_live_snapshot_of_reference_column) {
 
 TH_TEST(metaprovider_unknown_reference_reports_clearly) {
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $ghost;\n@\n");
-	std::map<std::string, MatrixVars_Hardware*> vars;
-	MetaProvider prov(m, 1, -1, &vars);
+	bot::HwRegistry reg;
+	MetaProvider prov(m, 1, -1, &reg);
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is not defined", prov.collect());
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "$ghost", prov.collect());
 }
 
 TH_TEST(metaprovider_scalar_reference_is_rejected) {
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $alias0;\n@\n");
-	MatrixVars_Hardware alias0([](const Json&) { return JsonString("timer-0"); });
-	std::map<std::string, MatrixVars_Hardware*> vars;
-	vars["alias0"] = &alias0;
-	MetaProvider prov(m, 1, -1, &vars);
+	auto alias0 = std::unique_ptr<MatrixVars_Hardware>(new MatrixVars_Hardware(
+		[](const Json&) { return JsonString("timer-0"); }));
+	bot::HwRegistry reg;
+	reg.add("alias0", std::move(alias0));
+	MetaProvider prov(m, 1, -1, &reg);
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-object", prov.collect());
 }
 
@@ -265,11 +266,11 @@ TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	/* C1 防线：$ 引用成环（这里经一个回入 collect() 的变量构造自引用）
 	 * 必须被线程局部深度计数拦下并说人话，而不是无限互递归直到 SIGSEGV。 */
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $loop;\n@\n");
-	std::map<std::string, MatrixVars_Hardware*> vars;
 	std::function<Json()> reenter;
-	MatrixVars_Hardware loop([&reenter](const Json&) { return reenter(); });
-	vars["loop"] = &loop;
-	MetaProvider prov(m, 1, -1, &vars);
+	bot::HwRegistry reg;
+	reg.add("loop", std::unique_ptr<MatrixVars_Hardware>(new MatrixVars_Hardware(
+		[&reenter](const Json&) { return reenter(); })));
+	MetaProvider prov(m, 1, -1, &reg);
 	reenter = [&prov]() { return prov.collect(); };
 
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "circular", prov.collect());
@@ -278,7 +279,7 @@ TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	/* 深度计数是 thread_local + RAII 递减：抛异常后必须已归零，
 	 * 否则后续任何一次 collect() 都会被误判成环。 */
 	mt::MatrixObject clean = fx::oneMatrix("@Relay\nname note;\nr0 hello;\n@\n");
-	MetaProvider other(clean, 1, -1, &vars);
+	MetaProvider other(clean, 1, -1, &reg);
 	TH_CHECK(other.collect().toString() == R"({"note":"hello"})");
 }
 

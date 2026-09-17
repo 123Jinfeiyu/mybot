@@ -154,3 +154,47 @@ TH_TEST(run_rejects_alias_matrix_without_columns) {
 	const std::string msg = runTexts(kBasicSql, "@Alias\nfoo;\nbar;\n@\n");
 	TH_CHECK(msg.find("Alias matrix 'Alias' has no 'name' column") != std::string::npos);
 }
+
+/* ---------------- HwRegistry（R-2：单一注册表） ---------------- */
+
+namespace {
+
+std::unique_ptr<bot::MatrixVars_Hardware> dummyHw() {
+	return std::unique_ptr<bot::MatrixVars_Hardware>(new bot::MatrixVars_Hardware(
+		[](const bot::Json&) { return bot::JsonNull(); }));
+}
+
+} // namespace
+
+TH_TEST(hw_registry_add_and_find) {
+	bot::HwRegistry reg;
+	reg.add("a", dummyHw(), " (in table 'T')");
+	reg.add("b", dummyHw());
+	TH_CHECK(reg.contains("a"));
+	TH_CHECK(reg.find("a") != nullptr);
+	TH_CHECK(reg.find("missing") == nullptr);
+	/* 销毁序 = 声明序，会话别名不进入 */
+	TH_CHECK(reg.sequence().size() == 2);
+}
+
+TH_TEST(hw_registry_rejects_duplicate_name) {
+	bot::HwRegistry reg;
+	reg.add("a", dummyHw(), " (in table 'T')");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Duplicate hardware variable name: 'a'",
+		reg.add("a", dummyHw(), " (in table 'U')"));
+	/* 失败不破坏既有注册 */
+	TH_CHECK(reg.sequence().size() == 1);
+	TH_CHECK(reg.find("a") != nullptr);
+}
+
+TH_TEST(hw_registry_session_override_shadows_but_keeps_destroy_order) {
+	bot::HwRegistry reg;
+	reg.add("a", dummyHw());
+	bot::MatrixVars_Hardware* structureVar = reg.find("a");
+	reg.override("a", dummyHw());
+	/* 名字索引指向别名，但结构变量仍在销毁序中 */
+	TH_CHECK(reg.find("a") != nullptr);
+	TH_CHECK(reg.find("a") != structureVar);
+	TH_CHECK(reg.sequence().size() == 1);
+	TH_CHECK(reg.sequence()[0] == structureVar);
+}
