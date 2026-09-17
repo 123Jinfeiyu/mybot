@@ -113,6 +113,8 @@ target_link_libraries(mybot_tests PRIVATE mybot_common)
 
 enable_testing()
 add_test(NAME cpp_unit COMMAND mybot_tests)
+# 用例以相对路径（./modules/...、robots/test/...）读 fixtures，必须以仓库根为工作目录
+set_tests_properties(cpp_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # ======================================================================
 # 常量一致性自检（F-24）：HAL.lua 硬编码的 ioctl/termios 编号与系统头文件
@@ -123,6 +125,32 @@ add_executable(test_ioctl_nums test/test_ioctl_nums.c)
 add_executable(test_uart_consts test/test_uart_consts.c)
 add_test(NAME const_ioctl COMMAND test_ioctl_nums)
 add_test(NAME const_uart COMMAND test_uart_consts)
+
+# ======================================================================
+# Lua 离线回归逐用例注册（run_all.sh 保持主编排入口不变）：
+# 每个 test_*.lua 都是 `luajit test/xxx.lua` 可单跑的独立用例（HAL 依赖 ffi
+# 必须 LuaJIT）；唯一例外 test_jit_warmup.lua 带 "-- requires: i2c" 真机标记，
+# 与 run_all.sh 同语义按有无 /dev/i2c-* 决定执行或跳过。
+# 收益：ctest -R lua_ 获得逐用例粒度与超时，不必整段跑完 1013 行守门脚本。
+# ======================================================================
+file(GLOB MYBOT_LUA_TESTS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/test_*.lua)
+find_program(LUAJIT_EXECUTABLE NAMES luajit)
+if(LUAJIT_EXECUTABLE)
+	foreach(lua_test IN LISTS MYBOT_LUA_TESTS)
+		get_filename_component(lua_name "${lua_test}" NAME)
+		if(lua_name STREQUAL "test_jit_warmup.lua")
+			# 真机 ABI 回归：无 /dev/i2c-* 时按 skip 计，有真机则照跑
+			add_test(NAME lua_${lua_name}
+				COMMAND ${CMAKE_SOURCE_DIR}/test/cpp/run_if_i2c.sh ${LUAJIT_EXECUTABLE} "${lua_test}")
+		else()
+			add_test(NAME lua_${lua_name} COMMAND ${LUAJIT_EXECUTABLE} "${lua_test}")
+		endif()
+		set_tests_properties(lua_${lua_name} PROPERTIES
+			WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+			TIMEOUT 60
+			ENVIRONMENT "LUACMD=${LUAJIT_EXECUTABLE}")
+	endforeach()
+endif()
 
 # 安装产物：mybot 直跑 ./build/mybot（bot4cj 原 _run.sh 的等价物，见 test/run_all.sh）
 install(TARGETS mybot RUNTIME DESTINATION bin)
