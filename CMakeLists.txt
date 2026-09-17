@@ -75,6 +75,15 @@ add_executable(mybot
   ${MYBOT_CORE_SOURCES}
 )
 
+# mtmerge：.mt 动作脚本合成器（离线编译目标，不依赖 LuaJIT 运行时；
+# 复用 mybot_common 的头文件与告警基线，core 源码里只需 matrix/sqlparse/util
+# 一层，但直接链整份 core 以与 mybot 单测同一策略，避免第二份拷贝）
+add_executable(mtmerge
+  src/mtmerge.cpp
+  ${MYBOT_CORE_SOURCES}
+)
+target_link_libraries(mtmerge PRIVATE mybot_common)
+
 # README 声称的零告警基线由此处强制执行（此前构建未启用任何告警标志，
 # 基线只能靠人工手工传标志核查）。不加 -Werror：避免在未测试的编译器版本上直接构建失败。
 target_link_libraries(mybot PRIVATE mybot_common)
