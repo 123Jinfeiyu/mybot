@@ -641,6 +641,33 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
+# mtmerge 相位语义回归（scripts/mtmerge_e2e.sh）：相位 0/±1 逐格比对、
+# 设备集相交报错、三输入链式、负相位丢行告警、合并产物回喂 mybot 时
+# 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
+# 与上面 5 条 mtmerge 用例互补：这里只盯相位边界，缺产物判失败。
+# ======================================================================
+run_one_mtmerge_phase() {
+	echo "----- mtmerge-phase (相位语义) -----"
+	if [ ! -x "$mtmerge_bin" ]; then
+		artifact_missing "mtmerge 相位回归" "该段用例" "$mtmerge_bin" "$mtmerge_explicit"
+		return 2
+	fi
+	local out rc
+	out="$(MTMERGE="$mtmerge_bin" BOT="$bin" timeout 60 bash scripts/mtmerge_e2e.sh 2>&1)"
+	rc=$?
+	echo "$out"
+	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mtmerge 端到端测试通过"; then
+		fail=$((fail + 1))
+		failed="$failed mtmerge-phase(相位语义)"
+	else
+		pass=$((pass + 1))
+	fi
+}
+if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
+	run_one_mtmerge_phase
+fi
+
+# ======================================================================
 # 审计加固回归（#1/#2/#4）：输入源信任边界与守护 setup 失败回滚。
 #   tcp_host_bad    --tcp-host 非点分 IPv4 → 清晰报错、退出码非 0
 #   action_toolarge 动作脚本超 8MiB 上限 → 拒绝而非把整份输入吃进内存

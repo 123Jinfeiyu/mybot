@@ -54,7 +54,8 @@ class MatrixObject {
 		for (std::size_t r = 0; r < nrow; ++r) {
 			for (std::size_t c = 0; c < ncol; ++c) {
 				/* 语义与旧的逐格递归完全一致：row<=1 的 "-" 不继承，
-				 * 原样保留字面值，由调用方决定含义（getMt 返 "-"、parseMtDouble 返 0.0）。 */
+				 * 原样保留字面值，由调用方决定含义（getMt 返 "-"、parseMtDouble 返 0.0；
+				 * 动作派发另把「首数据行即 '-'」判为未起拍、不投递该参数，见 robot.cpp）。 */
 				if (r > 1 && values_[r][c] == "-") {
 					inherited_.push_back(inherited_[(r - 1) * ncol + c]);
 				} else {

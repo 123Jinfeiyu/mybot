@@ -433,6 +433,20 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 		}
 	}
 
+	/* 相位设备：该设备的参数列里存在真实数值行（典型来自 mtmerge 相位归并，
+	 * 前导行是无可继承的 "-"、后续行有数值）。只有这类设备做未起拍跳过；
+	 * 整列 "-" 的无参设备（旧式写法）保持旧行为——靠 0.0 照常 play，
+	 * 否则依赖 play 触发读数/副作用的所有 E2E（守护快照等）会整体失效。 */
+	std::set<std::string> phaseDevices;
+	for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
+		auto [name_dev, name_param] = parseActionColumn(actionDefs(0, j));
+		if (phaseDevices.count(name_dev) > 0) { continue; }
+		for (std::int64_t r = 1; r < static_cast<std::int64_t>(actionDefs.rows()); ++r) {
+			const std::string& v = actionDefs(r, j);
+			if (v != "-" && !v.empty()) { phaseDevices.insert(name_dev); break; }
+		}
+	}
+
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(actionDefs.rows()); ++i) {
 		/* D4：SIGINT/SIGTERM 后停止派发新动作帧，让 deactivate 清理链正常执行 */
 		if (stopRequested()) {
@@ -441,7 +455,7 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 		}
 		Json set = JsonObject();
 		for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
-			parseActionCell(set, actionDefs, i, j);
+			parseActionCell(set, actionDefs, i, j, phaseDevices);
 		}
 		for (const std::string& name_dev : order) {
 			MatrixVars_Hardware* hv = registry_.find(name_dev);
@@ -452,8 +466,10 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 			}
 			auto paramsOpt = set.get(name_dev);
 			if (!paramsOpt) {
-				throw IllegalArgumentException("Parameter for hardware variable '" + name_dev
-					+ "' is missing in action row " + std::to_string(i) + ".");
+				/* 该设备本行所有参数列都未起拍（无可继承的 "-"，典型来自 mtmerge
+				 * 相位前导）→ 不派发。旧行为会以 0.0 误发一次指令，把「还没轮到」
+				 * 伪装成「指令为 0」；耗尽侧的行尾 "-" 会继承前值，不会走到这里。 */
+				continue;
 			}
 			const Json& params = *paramsOpt;
 			Json res = hv->play(params);
@@ -474,9 +490,15 @@ std::pair<std::string, std::string> ActionRunner::parseActionColumn(const std::s
 
 /* ---- @Action 单元格解析（别名解析 + 数值类型解析 + 分组）---- */
 void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
-		std::int64_t i, std::int64_t j) {
+		std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices) {
 	auto [name_dev, name_param_orig] = parseActionColumn(actionDefs(0, j));
 	std::string name_param = name_param_orig;
+
+	/* 未起拍：本格 "-" 且无前值可继承（首数据行），且该设备属于相位设备
+	 * （后续行有真实数值，典型来自 mtmerge 相位前导）。不向该设备投递该参数
+	 * ——若整行都未起拍，runAction 会整体跳过它，而不是以 0.0 误发一次指令。
+	 * 整列 "-" 的无参设备不属于 phaseDevices，保持旧语义照常 play。 */
+	if (phaseDevices.count(name_dev) > 0 && actionDefs.inherited(i, j) == "-") { return; }
 
 	/* 单元格：$(...) 表达式按求值结果；否则走既有数值/继承解析。
 	 * getMt 已解析 "-" 继承（上一行是表达式时按上一行表达式再算一次）。 */

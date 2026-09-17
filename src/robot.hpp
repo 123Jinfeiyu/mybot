@@ -155,7 +155,7 @@ class ActionRunner {
 			const std::vector<mt::MatrixObject>& ll, const std::string& name);
 	static std::pair<std::string, std::string> parseActionColumn(const std::string& name_HV);
 	void parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
-			std::int64_t i, std::int64_t j);
+			std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices);
 
 public:
 	explicit ActionRunner(HwRegistry& registry) : registry_(registry) {}
