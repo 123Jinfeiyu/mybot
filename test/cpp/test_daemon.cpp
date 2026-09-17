@@ -75,7 +75,9 @@ TH_TEST(daemon_slow_tick_abandons_slot_and_thread_releases_it) {
 	/* 弃槽后主线程读按 ERR 契约返回，不碰悬垂指针 */
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
-	/* 守护线程完成当前拍（~3s）后退出并自行释放槽（D2） */
-	std::this_thread::sleep_for(std::chrono::milliseconds(2500));
+	/* 守护线程完成当前拍（~3s）后退出并自行释放槽（D2）。
+	 * 余量取 4s：3s 慢拍 + 调度延迟——负载高（并行跑测试）时 2.5s 的旧余量
+	 * 曾被吃穿导致偶发失败（审计 L1）。 */
+	std::this_thread::sleep_for(std::chrono::milliseconds(4000));
 	TH_CHECK(registry[0]->slot() == nullptr);
 }
