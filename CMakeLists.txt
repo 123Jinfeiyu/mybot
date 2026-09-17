@@ -1,9 +1,12 @@
 cmake_minimum_required(VERSION 3.16)
-project(mybot LANGUAGES CXX)
+project(mybot LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
@@ -99,6 +102,16 @@ target_link_libraries(mybot_tests PRIVATE mybot_common)
 
 enable_testing()
 add_test(NAME cpp_unit COMMAND mybot_tests)
+
+# ======================================================================
+# 常量一致性自检（F-24）：HAL.lua 硬编码的 ioctl/termios 编号与系统头文件
+# 编译期比对（#error/_Static_assert）——换内核/换架构导致常量漂移时构建即失败；
+# 两个二进制再由 run_all.sh 在执行期跑一遍（构建期断言之外的双保险）。
+# ======================================================================
+add_executable(test_ioctl_nums test/test_ioctl_nums.c)
+add_executable(test_uart_consts test/test_uart_consts.c)
+add_test(NAME const_ioctl COMMAND test_ioctl_nums)
+add_test(NAME const_uart COMMAND test_uart_consts)
 
 # 安装产物：mybot 直跑 ./build/mybot（bot4cj 原 _run.sh 的等价物，见 test/run_all.sh）
 install(TARGETS mybot RUNTIME DESTINATION bin)

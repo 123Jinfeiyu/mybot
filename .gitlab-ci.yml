@@ -1,0 +1,43 @@
+# bot4cj CI（F-22）：最小门禁——构建 + 全量守门 + sanitizer 双跑。
+# GitCode（GitLab 系托管）经 .gitlab-ci.yml 驱动；若托管方不识别本文件
+# 则静默不生效（无副作用），迁移其它平台时按同结构翻译即可。
+#
+# 与本地 pre-push 钩子同一条守门（test/run_all.sh），CI 的职责是让
+# 「守门通过」成为自动结论，而非依赖开发者手工跑绿后推送。
+
+stages:
+  - build
+  - gate
+
+variables:
+  DEBIAN_FRONTEND: noninteractive
+
+.install-deps: &install-deps
+  - apt-get update -qq
+  - apt-get install -y -qq cmake g++ libluajit-5.1-dev luajit python3
+
+build:release:
+  stage: build
+  image: debian:bookworm
+  before_script: *install-deps
+  script:
+    - cmake -S . -B build && cmake --build build -j"$(nproc)"
+  artifacts:
+    paths:
+      - build
+
+gate:release:
+  stage: gate
+  image: debian:bookworm
+  needs: ["build:release"]
+  before_script: *install-deps
+  script:
+    - bash test/run_all.sh
+
+gate:sanitizer:
+  stage: gate
+  image: debian:bookworm
+  needs: ["build:release"]
+  before_script: *install-deps
+  script:
+    - bash test/run_san.sh

@@ -1,6 +1,8 @@
 # 回归测试手册
 
 > 本文是 `test/run_all.sh` 守门脚本的完整说明。[README](../README.md) 中只保留命令入口。
+> CI（`.gitlab-ci.yml`，F-22）在每次推送后自动跑 Release 全量守门 + sanitizer 双跑，
+> 与本地 pre-push 钩子同一条守门。
 
 ## 用法
 
@@ -12,15 +14,15 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 
 全部守门在无 `/dev/i2c` 的开发机上即可运行。
 
-## 七段守门明细
-
+## 守门分段明细
 1. **Lua 离线单测**（`test/test_*.lua`，LuaJIT 运行；真机 i2c 用例自动跳过）
 2. **virt 端到端**（`robots/test/*_virt.sql`，37 例走内存仿真总线 `virtbus`，断言 `:f` 浮点透传与守护持续发布——明细见 [virtbus.md](virtbus.md)「守护无硬件端到端」一节）
 3. **无硬件契约回归**（守护/别名/转发/引用路径；负值契约如 INSERT 拼错表、别名重复、`$` 引用标量、动作参数覆盖结构元数据必须**清晰报错**而非裸崩；含 `PCA9685` 与 `SCSCL` 的**非守护** `@Action` 写路径正/负四条——虚拟总线已不再只服务守护路径，UART 直写路径经 `BUS="uart"` 模型附着 + 跨状态机 fd 采纳）
 4. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 5. **输入边界加固**（`--tcp-host` 非法地址、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限、`@Daemon` 驱动误配无 `build` 时的回滚路径；`mode` 键不得改写 controller 派发目标；驱动 `call()` 漏写 `return` 不得被当成成功；驱动返回自引用表须清晰报错而非宿主栈溢出）
 6. **信号/退出路径**（F-08：播放中 SIGTERM → rc=0 + 停派发行 + 守护 `joined, total publishes=`；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错——覆盖 `main.cpp` 的 sigaction 与 `robot.cpp` 的停机分支）
-7. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标；零第三方框架，覆盖 JSON 值语义、`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、Lua↔Json 边界与转换深度上限）
+7. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标；零第三方框架，覆盖 JSON 值语义、`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、Lua↔Json 边界与转换深度上限、守护 never-spawn/abandon 分支）
+8. **系统常量自检**（F-24，无过滤器全量跑时执行）：`test_ioctl_nums` / `test_uart_consts` 两个 C 自检二进制把 HAL.lua 硬编码的 ioctl/termios 编号与系统头做编译期断言比对（`_Static_assert`），漂移在构建期即失败，执行期再跑一遍作双保险
 
 ## 守门完整性
 

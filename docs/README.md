@@ -18,7 +18,7 @@
 
 ## 测试与贡献
 
-- [回归测试手册](testing.md)——七段守门明细、守门完整性规则、sanitizer 跑法
+- [回归测试手册](testing.md)——守门分段明细、守门完整性规则、sanitizer 跑法
 - [开发与贡献](development.md)——pre-push 钩子、新增驱动/回归/单测流程、代码规范
 - [重构计划](refactoring-plan.md)——dev_cxx 结构重构分阶段方案(含分支归宿决策)
 - [更新日志](changelog.md)

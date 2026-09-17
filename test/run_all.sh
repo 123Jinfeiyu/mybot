@@ -700,6 +700,38 @@ fi
 
 
 # ======================================================================
+# 系统常量自检（F-24）：HAL.lua 硬编码 ioctl/termios 编号与系统头的
+# 一致性已在编译期断言（构建失败即漂移）；此处执行期再跑一遍作为
+# 双保险。二进制与 mybot_tests 同目录构建（BOT_TESTS 指向 sanitizer
+# 构建时同样适用）。只在无过滤器的全量跑里执行——过滤器只匹配用例名，
+# 常量自检不受过滤语义管辖，且不能让「拼错过滤器」的空匹配防线失效。
+# ======================================================================
+run_const_checks() {
+	echo "----- const-check (系统常量自检) -----"
+	local const_dir="$1" ok=true out
+	for prog in test_ioctl_nums test_uart_consts; do
+		local binp="$const_dir/$prog"
+		if [ ! -x "$binp" ]; then
+			artifact_missing "系统常量自检" "$prog" "$binp" "$tests_explicit"
+			return 2
+		fi
+		out="$("$binp" 2>&1)"
+		if [ $? -ne 0 ]; then
+			ok=false
+			echo "[FAIL] $prog 执行失败：$out"
+		else
+			echo "$out"
+		fi
+	done
+	if $ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed const-check"
+	fi
+}
+
+# ======================================================================
 # C++ 层单元测试（test/cpp/）：解析器与值语义工具的白盒覆盖，零第三方框架。
 # 守门契约与 Lua/E2E 段完全一致：退出码 0 + [DONE] 完成标记 + [PASS] 计数非零
 # （三者缺一即判失败，防「用例没跑起来却报绿」）。
@@ -745,6 +777,9 @@ run_cpp_unit() {
 		pass=$((pass + 1))
 	fi
 }
+if [ -z "$filter" ]; then
+	run_const_checks "$(dirname "$tests_bin")"
+fi
 run_cpp_unit
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
