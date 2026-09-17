@@ -184,3 +184,73 @@ TH_TEST(oversized_number_keys_become_string_keys) {
 	TH_CHECK(j.get(std::to_string(1e300)) && j.get(std::to_string(1e300))->getInt() == 2);
 	TH_CHECK(j.get("3") && j.get("3")->getInt() == 9);
 }
+
+/* ---------------- M3：dofile/loadfile 模块路径白名单 ---------------- */
+
+/* 带沙箱的 State（与驱动/守护线程同路：openlibs + sandbox_lua） */
+class SandboxState {
+	lua_State* L_;
+
+public:
+	SandboxState() : L_(luaL_newstate()) {
+		if (L_ == nullptr) { throw std::runtime_error("luaL_newstate failed"); }
+		luaL_openlibs(L_);
+		bot::sandbox_lua(L_);
+	}
+	~SandboxState() { if (L_ != nullptr) { lua_close(L_); } }
+	SandboxState(const SandboxState&) = delete;
+	SandboxState& operator=(const SandboxState&) = delete;
+
+	lua_State* get() const { return L_; }
+
+	/* 执行一段代码，失败时返回错误信息（不抛） */
+	std::string run(const std::string& src) {
+		if (luaL_dostring(L_, src.c_str()) == LUA_OK) {
+			lua_settop(L_, 0);
+			return "";
+		}
+		std::string err = bot::luaErrorString(L_);
+		lua_settop(L_, 0);
+		return err;
+	}
+};
+
+/* 白名单内加载放行（以仓库真实 modules 树为准；CMake 工作目录即仓库根） */
+TH_TEST(sandbox_dofile_allows_module_path) {
+	SandboxState s;
+	std::string err = s.run("dofile('./modules/lib/print_table.lua')");
+	TH_CHECK(err.empty());
+}
+
+/* 白名单外绝对路径被拒，且错误信息带 sandbox 标记可诊断 */
+TH_TEST(sandbox_dofile_rejects_outside_path) {
+	SandboxState s;
+	std::string err = s.run("dofile('/etc/hostname')");
+	TH_CHECK(!err.empty());
+	TH_CHECK(err.find("sandbox") != std::string::npos);
+}
+
+/* '..' 穿越被拒：路径字符串在白名单段之后紧跟 '..'，前缀 + '/' 规则不放行 */
+TH_TEST(sandbox_dofile_rejects_dotdot_traversal) {
+	SandboxState s;
+	std::string err = s.run("dofile('./modules/../CMakeLists.txt')");
+	TH_CHECK(!err.empty());
+	TH_CHECK(err.find("sandbox") != std::string::npos);
+}
+
+/* loadfile 同规（mpath.lua 的存在性探测走同一条受限入口） */
+TH_TEST(sandbox_loadfile_same_rule) {
+	SandboxState s;
+	std::string okErr = s.run("assert(loadfile('./modules/lib/mpath.lua'))");
+	if (!okErr.empty()) { std::printf("[dbg] loadfile in-module err: %s\n", okErr.c_str()); }
+	TH_CHECK(okErr.empty());
+	TH_CHECK(!s.run("assert(loadfile('/etc/passwd'))").empty());
+}
+
+/* 被拒后状态机仍可用（错误走 lua_error，不污染后续调用） */
+TH_TEST(sandbox_rejection_leaves_state_usable) {
+	SandboxState s;
+	(void)s.run("dofile('/etc/hostname')");
+	std::string err = s.run("assert(1 + 1 == 2)");
+	TH_CHECK(err.empty());
+}
