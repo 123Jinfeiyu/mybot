@@ -139,7 +139,10 @@ tester.check("spi_read_multi 6B 边界通过（2^53 精度上限）",
 	spi_read_multi(fd, 6) == 0x010203040506)
 tester.check("spi_read_multi n=7 越界 -1（HAL 上限 6）", spi_read_multi(fd, 7) == -1)
 tester.check("spi_read_multi n=0 非法 -1", spi_read_multi(fd, 0) == -1)
-tester.check("spi_read_multi n=小数 -1", spi_read_multi(fd, 2.5) == -1)
+-- F-07：HAL 的 spi_read_multi 用 uint_of 归一（小数向下取整后仍合法），
+-- 旧 virt 实现按整数严格拒绝——接受集比真机窄，改为逐字对齐 HAL。
+tester.check("spi_read_multi n=2.5 按 HAL uint_of 归一为 2（合并 0x0102）",
+	spi_read_multi(fd, 2.5) == 0x0102)
 
 -- 模型应答短于请求：补 0（不伪造器件数据，超出部分为 0 对调用方可见）
 resp = { 0xAB, 0xCD }

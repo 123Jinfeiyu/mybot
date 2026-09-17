@@ -4,6 +4,7 @@
 
 ## v1.x（C++ 移植版）
 
+- **virtbus 读族入参校验对齐 HAL（F-07）**：寄存器/地址改走 `byte_of`/`uint_of`——`reg=-1`/`reg=300` 不再被 `math.floor(reg) % 256` 静默回绕成 0xFF/44（真机必失败的调用在仿真里曾能成功），`set_addr` 拒绝负数；`n` 参数接受小数并向下取整（与 HAL `uint_of` 接受集一致，旧实现额外收紧）；字节表族 `n` 非法返回 `nil`（旧实现 `nil→1` 静默成功）；`uart_read` 超时超 60000ms 与 HAL 同样失败；`test_virtbus`/`test_virtbus_spi` 补 11 条对齐断言（含"非法寄存器不产生任何总线事务"）
 - **并发与退出路径收口（F-01/F-08/F-23）**：`DaemonHolder::slot` 由裸指针改为 `std::atomic<DaemonSlot*>`（主线程 play/free 与守护线程自释两端读写，取用一律显式 `load()`），守护退出时 `count` 从锁外裸读移入槽内 mutex 临界区（与 stop 纪律对齐）；守门新增「信号/退出路径」段（播放中 SIGTERM → rc=0 + 停派发行 + 守护 join；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错，此前 sigaction/停机分支零覆盖）；`CMakeLists.txt` 新增 `MYBOT_SANITIZE` 开关（address,undefined / thread），`test/run_san.sh` 提供 Release+sanitizer 双跑守门
 - **审计廉价批**：未知/拼错的 `--key` 由「打印帮助 + exit 0」改为报错并以退出码 2 结束（`main.cpp` `isKnownOption`，守门补 `unknown_arg` 负值用例）——拼错 `--robot` 曾是 CI 假成功出口；MS5611 非法 `osr`（非数字 / <256 无档可降）由静默回落最慢档 4096 改为 build 期显式 ERR、且校验先于一切总线动作（test_ms5611.lua 补三条负值断言与零总线事务检查）
 - **结构脚本限流 + 词法器线性化**：`--robot` 结构脚本与动作脚本统一 8 MiB 上限（共用 `kMaxScriptBytes` + `LimitedReader`，报错首词区分 `structure script` / `action script`；`ActionScriptTooLarge` 更名 `ScriptTooLarge` 并携带输入类别）——旧实现只有 `.mt` 有限流，超大 `.sql` 会把全部 token 驻留内存；词法器引号态改增量维护（`sqlparse.cpp`），消除逐字符重扫 token 的 O(n²)：100 KB 引号值 4.84 s → 毫秒级；新增 1 MB 引号值单测（旧实现按平方标度会撞 60 s 单测超时）与引号态等价性回归，守门补 `sql_toolarge` 负值用例

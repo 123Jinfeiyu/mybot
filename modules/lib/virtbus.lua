@@ -273,7 +273,7 @@ end
 
 function virtbus.v_i2c_set_addr(fd, addr)
 	fd = tonumber(fd)
-	addr = tonumber(addr)
+	addr = uint_of(addr)		-- 同 HAL：非负整数（负数/非数字即失败，不静默取整成别的地址）
 	if fd == nil or open_paths[fd] == nil or addr == nil or addr > 0x7F then
 		return false
 	end
@@ -326,18 +326,21 @@ local function do_read(fd, n)
 	return dev.read(n)
 end
 
--- 正整数校验（合并值类接口用）：非法/越界返回 nil
-local function read_n(n, maxv)
-	n = tonumber(n)
-	if n == nil or n ~= math.floor(n) or n < 1 or n > maxv then return nil end
+-- 合并值类接口的 n：对齐 HAL i2c_read/i2c_read_multi/spi_read_multi ——
+-- uint_of 归一（接受小数/字符串数字并向下取整，与真机同）后限 1~6，
+-- 越界或非法显式失败（-1，不静默钳制；静默钳制会放大成错误合并值）
+local function merge_n(n)
+	n = uint_of(n)
+	if n == nil or n < 1 or n > 6 then return nil end
 	return n
 end
 
--- 字节表类接口：钳到 1~16（对齐 HAL i2c_read_multi_bytes/read_bytes）
-local function clamp_n16(n)
-	n = tonumber(n)
-	if n == nil then n = 1 end
-	n = math.floor(n)
+-- 字节表类接口的 n：对齐 HAL i2c_read_bytes/i2c_read_multi_bytes ——
+-- uint_of 归一；非法（nil/负数/非数字）返回 nil = 失败（旧实现 nil→1 会
+-- 让真机必失败的调用在仿真里静默成功）；合法则钳 1~16（表长对调用方可见）
+local function bytes_n(n)
+	n = uint_of(n)
+	if n == nil then return nil end
 	if n < 1 then n = 1 end
 	if n > 16 then n = 16 end
 	return n
@@ -360,16 +363,16 @@ local function be_merge(t)
 end
 
 function virtbus.v_i2c_read_reg(fd, reg)
-	reg = tonumber(reg)
+	reg = byte_of(reg)
 	if reg == nil then return -1 end
-	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, 1)
+	local t = do_read_ptr(fd, { reg }, 1)
 	if t == nil or #t < 1 then return -1 end
 	return t[1]
 end
 
 -- 纯读大端合并：HAL 限定 n 1~6（2^53 精度上限），越界显式 -1（不静默钳制）
 function virtbus.v_i2c_read(fd, n)
-	n = read_n(n, 6)
+	n = merge_n(n)
 	if n == nil then return -1 end
 	local t = do_read(fd, n)
 	if t == nil or #t < 1 then return -1 end
@@ -378,38 +381,38 @@ end
 
 -- 指针读大端合并：HAL 限定 n 1~6（2^53 精度上限）
 function virtbus.v_i2c_read_multi(fd, reg, n)
-	reg = tonumber(reg)
-	n = read_n(n, 6)
+	reg = byte_of(reg)
+	n = merge_n(n)
 	if reg == nil or n == nil then return -1 end
-	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, n)
+	local t = do_read_ptr(fd, { reg }, n)
 	if t == nil or #t < 1 then return -1 end
 	return be_merge(t)
 end
 
--- 指针读字节表：HAL 钳制 n 1~16
+-- 指针读字节表：HAL 钳制 n 1~16，非法 n 失败（nil）
 function virtbus.v_i2c_read_multi_bytes(fd, reg, n)
-	reg = tonumber(reg)
-	if reg == nil then return nil end
-	n = clamp_n16(n)
-	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, n)
+	reg = byte_of(reg)
+	n = bytes_n(n)
+	if reg == nil or n == nil then return nil end
+	local t = do_read_ptr(fd, { reg }, n)
 	if t == nil then return nil end
 	return t
 end
 
 -- 16 位指针读大端合并：HAL 限定 n 1~6
 function virtbus.v_i2c_read_reg16(fd, reg16, n)
-	reg16 = tonumber(reg16)
-	n = read_n(n, 6)
-	if reg16 == nil or reg16 < 0 or reg16 > 0xFFFF or n == nil then return -1 end
-	local r = math.floor(reg16)
-	local t = do_read_ptr(fd, { math.floor(r / 256) % 256, r % 256 }, n)
+	reg16 = uint_of(reg16)
+	n = merge_n(n)
+	if reg16 == nil or reg16 > 0xFFFF or n == nil then return -1 end
+	local t = do_read_ptr(fd, { math.floor(reg16 / 256) % 256, reg16 % 256 }, n)
 	if t == nil or #t < 1 then return -1 end
 	return be_merge(t)
 end
 
--- 纯读字节表：HAL 钳制 n 1~16
+-- 纯读字节表：HAL 钳制 n 1~16，非法 n 失败（nil）
 function virtbus.v_i2c_read_bytes(fd, n)
-	n = clamp_n16(n)
+	n = bytes_n(n)
+	if n == nil then return nil end
 	local t = do_read(fd, n)
 	if t == nil then return nil end
 	return t
@@ -548,11 +551,11 @@ function virtbus.v_spi_write_multi(fd, data, delay_us)
 end
 
 -- 读 n 字节大端合并，n 1~6 越界显式 -1（对齐 HAL 的 2^53 精度上限，
--- 静默钳制会放大成错误合并值）
+-- 静默钳制会放大成错误合并值；n 的归一语义同 HAL 的 uint_of）
 function virtbus.v_spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
-	n = tonumber(n)
-	if fd == nil or n == nil or n ~= math.floor(n) or n < 1 or n > 6 then
+	n = merge_n(n)
+	if fd == nil or n == nil then
 		return -1
 	end
 	local tx = {}
@@ -678,13 +681,17 @@ function virtbus.v_uart_write(fd, data)
 	return #tx
 end
 
--- 校验同 HAL（fd 无效 / n uint_of 非法或 <1 → nil；n>512 钳 512）。
+-- 校验同 HAL（fd 无效 / n uint_of 非法或 <1 → nil；timeout 超上限 → nil；
+-- n>512 钳 512）。
 -- 环 drain 至多 n 字节即时返回：环空 = 空表（对齐"超时无数据"），
 -- uart_fail_read = 链路硬错误 → nil（事务记 err=true）。
-function virtbus.v_uart_read(fd, n, _timeout_ms)
+local UART_READ_MAX_MS = 60000	-- 与 HAL.UART_READ_MAX_MS 同步（超长超时真机必失败）
+function virtbus.v_uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
 	n = uint_of(n)
+	local timeout = tonumber(timeout_ms) or 0
 	if fd == nil or n == nil or n < 1 then return nil end
+	if timeout > UART_READ_MAX_MS then return nil end
 	local path = uart_paths[fd]
 	if path == nil then return nil end
 	if n > 512 then n = 512 end
