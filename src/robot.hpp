@@ -2,6 +2,8 @@
 /* robot.hpp —— 机器人构成模块（移植 bot4cj/src/RobotStruct.cj）
  * 结构脚本（SQL）→ MatrixObject 表 → 硬件变量注册表；
  * @Action 逐行重放，controller/Alias/守护 机制在此装配。
+ * R-1：RobotStruct 收敛为编排门面；脚本装载（ScriptLoader）、硬件装配
+ * （HwFactory）、动作重放（ActionRunner）三个协作对象各司其职。
  */
 
 #include <cstdint>
@@ -74,13 +76,21 @@ public:
 	void validate() { seed(); }
 };
 
-class RobotStruct {
-	std::vector<mt::MatrixObject> matrices_;	/* 结构脚本解析的矩阵对象（声明序） */
-	std::vector<std::shared_ptr<DaemonRunner>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
-	HwRegistry registry_;				/* 硬件变量：所有权 + 销毁序 + 名字索引（R-2） */
-	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
-	 * $ 引用存在性（shared_ptr 与变量同生命周期，防悬垂） */
-	std::vector<std::shared_ptr<MetaProvider>> metaProviders_;
+/* ---- 脚本装载：SQL/矩阵 文本 → MatrixObject（R-1 拆自 RobotStruct）---- */
+class ScriptLoader {
+public:
+	/* SQL4cj → MatrixObject 结构表解析 */
+	static void readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out);
+
+	/* 读取 @Action/@Alias 矩阵外表：自省结局，不破坏读缓存 */
+	static void readMatrix(bot::Reader& file, std::vector<mt::MatrixObject>& out);
+};
+
+/* ---- 硬件装配：矩阵表 → 硬件变量（R-1 拆自 RobotStruct）---- */
+class HwFactory {
+	HwRegistry& registry_;
+	std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders_;
+	std::vector<std::shared_ptr<MetaProvider>>& metaProviders_;
 
 	/* 安全添加硬件变量（查重复键；source 指明声明来源） */
 	void addHardwareVar(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
@@ -94,24 +104,55 @@ class RobotStruct {
 		}
 	}
 
-	void registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session);
-	static void readMatrix(bot::Reader& file, std::vector<mt::MatrixObject>& out);
-	static void readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out);
-
-	void createHardVars();
 	void createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName);
 	void createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName);
 
-	static std::optional<mt::MatrixObject> findMt(
-		const std::vector<mt::MatrixObject>& ll, const std::string& name);
+public:
+	HwFactory(HwRegistry& registry,
+			std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders,
+			std::vector<std::shared_ptr<MetaProvider>>& metaProviders)
+		: registry_(registry), daemonHolders_(daemonHolders), metaProviders_(metaProviders) {}
 
-	void runAction(std::vector<mt::MatrixObject>& actionMatrices);
+	/* 全部硬变量创建：声明序，Alias/Lua/Daemon 分派 */
+	void createHardVars(const std::vector<mt::MatrixObject>& matrices);
+
+	/* 注册别名矩阵：启动期(session=nullptr)与动作脚本期(session)两路 */
+	void registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session);
+};
+
+/* ---- 动作重放：@Action 逐行 play（R-1 拆自 RobotStruct）---- */
+class ActionRunner {
+	HwRegistry& registry_;
+
+	static std::optional<mt::MatrixObject> findMt(
+			const std::vector<mt::MatrixObject>& ll, const std::string& name);
 	static std::pair<std::string, std::string> parseActionColumn(const std::string& name_HV);
 	void parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
-		std::int64_t i, std::int64_t j);
+			std::int64_t i, std::int64_t j);
 
 public:
-	explicit RobotStruct(bot::Reader& input) { readSQL(input, matrices_); }
+	explicit ActionRunner(HwRegistry& registry) : registry_(registry) {}
+
+	/* @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error） */
+	void runAction(std::vector<mt::MatrixObject>& actionMatrices);
+};
+
+/* ---- 机器人编排门面：装配流程 + 生命周期（R-1 后只剩这些）---- */
+class RobotStruct {
+	std::vector<mt::MatrixObject> matrices_;	/* 结构脚本解析的矩阵对象（声明序） */
+	std::vector<std::shared_ptr<DaemonRunner>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
+	HwRegistry registry_;				/* 硬件变量：所有权 + 销毁序 + 名字索引（R-2） */
+	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
+	 * $ 引用存在性（shared_ptr 与变量同生命周期，防悬垂） */
+	std::vector<std::shared_ptr<MetaProvider>> metaProviders_;
+	HwFactory factory_;	/* 依赖上面的容器，声明序保证先构造 */
+	ActionRunner runner_;
+
+public:
+	explicit RobotStruct(bot::Reader& input)
+		: factory_(registry_, daemonHolders_, metaProviders_), runner_(registry_) {
+		ScriptLoader::readSQL(input, matrices_);
+	}
 
 	/* 激活所有硬件变量（两阶段构造：解析 → 创建 + build） */
 	void active();

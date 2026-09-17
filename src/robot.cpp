@@ -105,16 +105,70 @@ Json MetaProvider::collect() {
 	return obj;
 }
 
-/* ---- MatrixObject 工具：第 r 行第 colName 列下标（缺失返回 -1）---- */
+/* ==================== ScriptLoader：SQL/矩阵 文本 → MatrixObject ==================== */
+
+/* ---- SQL4cj → MatrixObject 结构表解析 ---- */
+void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out) {
+	std::vector<sql4cj::Token> tokens = sql4cj::Lexer::parseAll(input);
+	sql4cj::Parser parser(tokens);
+	for (;;) {
+		sql4cj::Event eve = parser.next();
+		if (eve.type == sql4cj::EventType::END) { break; }
+		switch (eve.type) {
+		case sql4cj::EventType::CREATE_TABLE: {
+			/* R-4：SQL 事件里的 token 本就完整，直接灌入构建器，
+			 * 不再逐字符 addRune 重放（仓颉流 API 的残留）。 */
+			mt::MatrixBuilder b;
+			b.name(eve.create.tableName);
+			for (const auto& col : eve.create.tableColumns) { b.item(col.name); }
+			b.line(0);
+			out.push_back(b.take());
+			break;
+		}
+		case sql4cj::EventType::INSERT_TABLE: {
+			if (out.empty()) { throw std::runtime_error("No table created yet."); }
+			/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
+			 * （对照 robots/test/insert_typo.sql 的负路径契约） */
+			mt::MatrixObject* root = nullptr;
+			for (auto& m : out) {
+				if (trim(m.getName()) == eve.insert.targetTabName) { root = &m; break; }
+			}
+			if (root == nullptr) {
+				throw IllegalArgumentException(
+					"INSERT INTO '" + eve.insert.targetTabName + "': table is not defined");
+			}
+			for (const auto& row : eve.insert.tableRows) {
+				std::vector<std::string> values;
+				values.reserve(row.size());
+				for (const auto& p : row) { values.push_back(p.value); }
+				root->appendRow(std::move(values), 0);
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	}
+}
+
+/* ---- 读取 @Action/@Alias 矩阵外表：自省结局，不破坏读缓存 ---- */
+void ScriptLoader::readMatrix(bot::Reader& file, std::vector<mt::MatrixObject>& out) {
+	mt::MatrixParser parser(file);
+	while (auto mat = parser.parse()) {
+		out.push_back(std::move(*mat));
+	}
+}
+
+/* ==================== HwFactory：矩阵表 → 硬件变量 ==================== */
 
 /* ---- 安全添加硬件变量（不可覆盖：insert_or_assign 语义会造成隐式改名）---- */
-void RobotStruct::addHardwareVar(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
+void HwFactory::addHardwareVar(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
 		const std::string& source) {
 	registry_.add(name, std::move(hw), source);
 }
 
 /* ---- 注册别名矩阵：启动期(e=nullopt)与动作脚本期(e=Some)两路 ---- */
-void RobotStruct::registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
+void HwFactory::registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
 	std::int64_t idxName = matrix.indexOfCol(0, "name");
 	if (idxName < 0) {
 		throw IllegalArgumentException("Alias matrix '" + matrix.getName() + "' has no 'name' column.");
@@ -138,8 +192,8 @@ void RobotStruct::registerAliasMatrix(const mt::MatrixObject& matrix, std::set<s
 }
 
 /* ---- 全部硬变量创建：声明序，Alias/Lua/Daemon 分派 ---- */
-void RobotStruct::createHardVars() {
-	for (const auto& matrix : matrices_) {
+void HwFactory::createHardVars(const std::vector<mt::MatrixObject>& matrices) {
+	for (const auto& matrix : matrices) {
 		std::string mtName = matrix.getName();
 		if (mtName == "Alias") { registerAliasMatrix(matrix, nullptr); }
 		else if (mtName == "Action") { /* 结构期 Action 由 MR 动作脚本提供 */ }
@@ -148,7 +202,7 @@ void RobotStruct::createHardVars() {
 	}
 }
 
-void RobotStruct::createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName) {
+void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName) {
 	std::int64_t idxName = matrix.indexOfCol(0, "name");
 	if (idxName < 0) {
 		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
@@ -161,7 +215,7 @@ void RobotStruct::createDaemonVars(const mt::MatrixObject& matrix, const std::st
 	}
 }
 
-void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName) {
+void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName) {
 	std::int64_t idxName = matrix.indexOfCol(0, "name");
 	if (idxName < 0) {
 		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
@@ -195,8 +249,10 @@ void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::strin
 	}
 }
 
+/* ==================== ActionRunner：@Action 逐行重放 ==================== */
+
 /* ---- 按表名查找（trim 后比较）；不存在返回 empty ---- */
-std::optional<mt::MatrixObject> RobotStruct::findMt(
+std::optional<mt::MatrixObject> ActionRunner::findMt(
 		const std::vector<mt::MatrixObject>& ll, const std::string& name) {
 	for (const auto& m : ll) {
 		if (trim(m.getName()) == name) { return m; }
@@ -204,68 +260,8 @@ std::optional<mt::MatrixObject> RobotStruct::findMt(
 	return std::nullopt;
 }
 
-/* ---- 读取 @Action/@Alias 矩阵外表：自省结局，不破坏读缓存 ---- */
-void RobotStruct::readMatrix(bot::Reader& file, std::vector<mt::MatrixObject>& out) {
-	mt::MatrixParser parser(file);
-	while (auto mat = parser.parse()) {
-		out.push_back(std::move(*mat));
-	}
-}
-
-/* ---- 构建硬件：两阶段（build 失败上抛，active 由 finally 清理）---- */
-void RobotStruct::active() {
-	createHardVars();
-	/* F-05：$ 引用解析本是惰性的（首次 collect 时）——指向未定义变量会在
-	 * 驱动 build 的真机事务中途才报错；装配完成后、任何 build 之前统一
-	 * 校验存在性（此时全部变量已注册，前向引用合法）。 */
-	for (const auto& p : metaProviders_) { p->validate(); }
-	for (MatrixVars_Hardware* item : registry_.sequence()) {
-		item->build();
-	}
-}
-
-/* ---- 消除硬件：先统一置守护 stop（不逐个 join，避免同步饿死），再逆序 destroy ---- */
-void RobotStruct::deactivate() {
-	for (const auto& h : daemonHolders_) {
-		h->requestStop();
-	}
-	std::string lastWarn;
-	std::size_t failed = 0;
-	const auto& seq = registry_.sequence();
-	for (auto it = seq.rbegin(); it != seq.rend(); ++it) {
-		try {
-			(*it)->destroy();
-		} catch (const std::exception& e) {
-			++failed;
-			/* 同因重复失败（如某次 play 已抛同错）只提示一次，避免刷屏 */
-			if (std::string(e.what()) != lastWarn) {
-				std::cerr << "Deactive warning: " << e.what() << std::endl;
-				lastWarn = e.what();
-			}
-		}
-	}
-	/* F-04：清理失败显式汇总——静默跳过的去初始化会让器件滞留最后指令状态
-	 * （如 MAX30102 未关断、BH1750 未断电），必须让调用方看见 */
-	if (failed > 0) {
-		std::cerr << "Deactivate: " << failed << " of " << seq.size()
-			<< " hardware variable(s) failed to destroy (see warnings above)" << std::endl;
-	}
-}
-
-/* ---- 执行 @Action 矩阵 + 内联 @Alias ---- */
-void RobotStruct::run(bot::Reader& input) {
-	std::vector<mt::MatrixObject> actionMatrices;
-	readMatrix(input, actionMatrices);
-
-	std::set<std::string> session;
-	for (auto& matrix : actionMatrices) {
-		if (trim(matrix.getName()) == "Alias") { registerAliasMatrix(matrix, &session); }
-	}
-	runAction(actionMatrices);
-}
-
 /* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
-void RobotStruct::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
+void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	auto actionDefsOpt = findMt(actionMatrices, "Action");
 	if (!actionDefsOpt) {
 		throw IllegalArgumentException("No @Action matrix found in the script. Please define @Action in your .mt file.");
@@ -310,7 +306,7 @@ void RobotStruct::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 }
 
 /* ---- @Action 列头解析：<device>.<param> ---- */
-std::pair<std::string, std::string> RobotStruct::parseActionColumn(const std::string& name_HV) {
+std::pair<std::string, std::string> ActionRunner::parseActionColumn(const std::string& name_HV) {
 	std::size_t dot = name_HV.find('.');
 	if (dot == std::string::npos || name_HV.find('.', dot + 1) != std::string::npos) {
 		throw IllegalArgumentException("Action column '" + name_HV
@@ -320,7 +316,7 @@ std::pair<std::string, std::string> RobotStruct::parseActionColumn(const std::st
 }
 
 /* ---- @Action 单元格解析（别名解析 + 数值类型解析 + 分组）---- */
-void RobotStruct::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
+void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 		std::int64_t i, std::int64_t j) {
 	auto [name_dev, name_param_orig] = parseActionColumn(actionDefs(0, j));
 	std::string name_param = name_param_orig;
@@ -346,48 +342,58 @@ void RobotStruct::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 	set.put(name_dev, set_params);
 }
 
-/* ---- SQL4cj → MatrixObject 结构表解析 ---- */
-void RobotStruct::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out) {
-	std::vector<sql4cj::Token> tokens = sql4cj::Lexer::parseAll(input);
-	sql4cj::Parser parser(tokens);
-	for (;;) {
-		sql4cj::Event eve = parser.next();
-		if (eve.type == sql4cj::EventType::END) { break; }
-		switch (eve.type) {
-		case sql4cj::EventType::CREATE_TABLE: {
-			/* R-4：SQL 事件里的 token 本就完整，直接灌入构建器，
-			 * 不再逐字符 addRune 重放（仓颉流 API 的残留）。 */
-			mt::MatrixBuilder b;
-			b.name(eve.create.tableName);
-			for (const auto& col : eve.create.tableColumns) { b.item(col.name); }
-			b.line(0);
-			out.push_back(b.take());
-			break;
-		}
-		case sql4cj::EventType::INSERT_TABLE: {
-			if (out.empty()) { throw std::runtime_error("No table created yet."); }
-			/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
-			 * （对照 robots/test/insert_typo.sql 的负路径契约） */
-			mt::MatrixObject* root = nullptr;
-			for (auto& m : out) {
-				if (trim(m.getName()) == eve.insert.targetTabName) { root = &m; break; }
+/* ==================== RobotStruct：编排门面 ==================== */
+
+/* ---- 构建硬件：两阶段（build 失败上抛，active 由 finally 清理）---- */
+void RobotStruct::active() {
+	factory_.createHardVars(matrices_);
+	/* F-05：$ 引用解析本是惰性的（首次 collect 时）——指向未定义变量会在
+	 * 驱动 build 的真机事务中途才报错；装配完成后、任何 build 之前统一
+	 * 校验存在性（此时全部变量已注册，前向引用合法）。 */
+	for (const auto& p : metaProviders_) { p->validate(); }
+	for (MatrixVars_Hardware* item : registry_.sequence()) {
+		item->build();
+	}
+}
+
+/* ---- 消除硬件：先统一置守护 stop（不逐个 join，避免同步饿死），再逆序 destroy ---- */
+void RobotStruct::deactivate() {
+	for (const auto& h : daemonHolders_) {
+		h->requestStop();
+	}
+	std::string lastWarn;
+	std::size_t failed = 0;
+	const auto& seq = registry_.sequence();
+	for (auto it = seq.rbegin(); it != seq.rend(); ++it) {
+		try {
+			(*it)->destroy();
+		} catch (const std::exception& e) {
+			++failed;
+			/* 同因重复失败（如某次 play 已抛同错）只提示一次，避免刷屏 */
+			if (std::string(e.what()) != lastWarn) {
+				std::cerr << "Deactive warning: " << e.what() << std::endl;
+				lastWarn = e.what();
 			}
-			if (root == nullptr) {
-				throw IllegalArgumentException(
-					"INSERT INTO '" + eve.insert.targetTabName + "': table is not defined");
-			}
-			for (const auto& row : eve.insert.tableRows) {
-				std::vector<std::string> values;
-				values.reserve(row.size());
-				for (const auto& p : row) { values.push_back(p.value); }
-				root->appendRow(std::move(values), 0);
-			}
-			break;
-		}
-		default:
-			break;
 		}
 	}
+	/* F-04：清理失败显式汇总——静默跳过的去初始化会让器件滞留最后指令状态
+	 * （如 MAX30102 未关断、BH1750 未断电），必须让调用方看见 */
+	if (failed > 0) {
+		std::cerr << "Deactivate: " << failed << " of " << seq.size()
+			<< " hardware variable(s) failed to destroy (see warnings above)" << std::endl;
+	}
+}
+
+/* ---- 执行 @Action 矩阵 + 内联 @Alias ---- */
+void RobotStruct::run(bot::Reader& input) {
+	std::vector<mt::MatrixObject> actionMatrices;
+	ScriptLoader::readMatrix(input, actionMatrices);
+
+	std::set<std::string> session;
+	for (auto& matrix : actionMatrices) {
+		if (trim(matrix.getName()) == "Alias") { factory_.registerAliasMatrix(matrix, &session); }
+	}
+	runner_.runAction(actionMatrices);
 }
 
 } // namespace bot
