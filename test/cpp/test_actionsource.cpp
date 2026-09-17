@@ -112,3 +112,24 @@ TH_TEST(open_action_source_rejects_bad_tcp_idle) {
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
+
+/* ---------------- M1：恒时比较 safeEquals ---------------- */
+
+TH_TEST(safe_equals_matches_identical_strings) {
+	TH_CHECK(bot::safeEquals("", ""));
+	TH_CHECK(bot::safeEquals("token", "token"));
+	TH_CHECK(bot::safeEquals(std::string("a\0b", 3), std::string("a\0b", 3)));
+}
+
+TH_TEST(safe_equals_rejects_mismatched_content) {
+	/* 首字节即错与末字节才错都拒绝（恒时语义对结果无差别） */
+	TH_CHECK(!bot::safeEquals("token", "Xoken"));
+	TH_CHECK(!bot::safeEquals("token", "tokeX"));
+	TH_CHECK(!bot::safeEquals("token", "tokEn"));
+}
+
+TH_TEST(safe_equals_rejects_length_difference) {
+	TH_CHECK(!bot::safeEquals("token", "tokenx"));
+	TH_CHECK(!bot::safeEquals("token", "toke"));
+	TH_CHECK(!bot::safeEquals("", "x"));
+}

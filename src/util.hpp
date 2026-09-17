@@ -69,6 +69,20 @@ inline std::atomic<bool>& stopRequested() {
 	return flag;
 }
 
+/* ---- 恒时字符串比较（审计 M1）----
+ * std::string 的 == / != 短路：首个不匹配字节即返回，比较耗时与「匹配到
+ * 哪一位」相关，--tcp 0.0.0.0 暴露场景下可被计时侧信道逐字节猜令牌。
+ * 异或累积全部字节：耗时只取决于长度，与匹配位置无关。
+ * 长度不等提前返回：凭据行的长度本就暴露给网络观察者，不是秘密。 */
+inline bool safeEquals(const std::string& a, const std::string& b) {
+	if (a.size() != b.size()) { return false; }
+	unsigned char diff = 0;
+	for (std::size_t i = 0; i < a.size(); ++i) {
+		diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+	}
+	return diff == 0;
+}
+
 /* BOT4CJ_DEBUG = 1 时开启 call/build/destroy 详细信息转储 */
 class DebugSwitch {
 public:

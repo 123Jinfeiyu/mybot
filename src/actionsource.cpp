@@ -49,7 +49,8 @@ int TcpStreamReader::read() {
 }
 
 /* ---- 可选口令校验：对端必须先送一行 "<token>\n" 才允许下发动作脚本 ----
- * 口令为空时跳过（不破坏既有单连接直发脚本的用法）。 */
+ * 口令为空时跳过（不破坏既有单连接直发脚本的用法）。
+ * 比较走 util.hpp 的 safeEquals 恒时实现（审计 M1）。 */
 static bool checkTcpToken(int client, const std::string& token) {
 	std::string line;
 	char c;
@@ -62,7 +63,7 @@ static bool checkTcpToken(int client, const std::string& token) {
 		if (c == '\n') { break; }
 		line += c;
 	}
-	if (line != token) {
+	if (!safeEquals(line, token)) {
 		std::cerr << "TCP 口令校验失败：凭据不匹配，拒绝接收动作脚本" << std::endl;
 		return false;
 	}
