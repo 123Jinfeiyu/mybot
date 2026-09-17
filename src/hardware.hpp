@@ -56,8 +56,8 @@ void jsonMergeInto(Json& dst, const Json& src);
 /* ---- 标量文本硬件变量（@Alias / @Vars 共用）----
  * play/read 返回一个 JsonString，无资源可 build/destroy：
  *   @Alias 的值是目标参数名（@Action 列 dev.<name> 的参数位二次解析成真实参数名）；
- *   @Vars  的值是命名文本（同样可在 @Action 参数位替换，也可被结构脚本用
- *          $<name> 引用为文本常量）。
+ *   @Vars  的值是命名数值（仅支持 Number；同样可在 @Action 参数位替换，
+ *          也可被结构脚本用 $<name> 引用）。
  * 框架据此两者做「参数名替换」：见 robot.cpp parseActionCell 的 MtVars_Text 判定。 */
 class MtVars_Text : public MatrixVars_Hardware {
 protected:
@@ -77,10 +77,10 @@ public:
 	static std::unique_ptr<MtVars_Alias> Factory(const mt::MatrixObject& defs, std::int64_t i);
 };
 
-/* ---- 命名文本变量 @Vars（列 name / value）----
- * 与 @Alias 同构，但值语义是「文本常量」而非参数名；SQL 解析器只支持 String，
- * 故值一律按文本保存。除 @Action 参数位替换外，独特的用途是被结构脚本元数据列
- * 以 $<name> 引用：该列取其文本值（如 I2C 的 path 列写 $i2cpath）。 */
+/* ---- 命名数值变量 @Vars（列 name / value）----
+ * 与 @Alias 同构，但值语义是「数值常量」而非参数名：value 必须是数值字面量
+ * （仅支持 Number，非数值在 Factory 处即报错），但内部仍按文本驻留、不做转换。
+ * 除 @Action 参数位替换外，独特的用途是被结构脚本元数据列以 $<name> 引用。 */
 class MtVars_Vars : public MtVars_Text {
 	explicit MtVars_Vars(std::string value) : MtVars_Text(std::move(value)) {}
 

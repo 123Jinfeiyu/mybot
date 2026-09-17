@@ -99,7 +99,7 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(std::move(alias)));
 }
 
-/* ---- 命名文本变量 @Vars ---- */
+/* ---- 命名数值变量 @Vars ---- */
 std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, std::int64_t i) {
 	std::int64_t idxName = defs.indexOfCol(0, "name");
 	std::int64_t idxValue = defs.indexOfCol(0, "value");
@@ -112,6 +112,13 @@ std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, 
 
 	std::string name = defs(i, idxName);
 	std::string value = MatrixVars_Hardware::getMt(defs, i, idxValue);
+
+	/* @Vars 仅支持 Number：值必须是数值字面量（整数/小数/带符号/科学计数法）。
+	 * 仍按文本驻留（不转换），与结构脚本 Number 列同一判定。 */
+	if (!isNumericLiteral(value)) {
+		throw IllegalArgumentException("Vars '" + name + "' in matrix '" + defs.getName()
+			+ "': value '" + value + "' is not a valid Number (only Number is supported).");
+	}
 
 	std::cerr << "Create a Vars: " << name << " = " << value << std::endl;
 

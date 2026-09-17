@@ -2,12 +2,12 @@
 # 运行：cat scripts/test/vars_dup.mt | ./build/mybot --robot=robots/test/alias_dup.sql
 @Vars
 name  value;
-   A   delay;
+   A   1;
 @
 
 @Vars
 name  value;
-   A   angle;
+   A   2;
 @
 
 @Action

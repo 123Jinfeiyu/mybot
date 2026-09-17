@@ -1,21 +1,8 @@
 #include "sqlparse.hpp"
 
-#include <cmath>
-#include <cstdlib>
 #include <stdexcept>
 
 namespace sql4cj {
-
-/* Number 列的解析期数值校验：strtod 全串消费 + 有限值（拒绝 nan/inf，
- * 与动作矩阵单元格 parseMtDouble 的数值语义一致）。运行期不转换，值仍按文本存。 */
-static bool isNumericLiteral(const std::string& s) {
-	std::string v = bot::trim(s);
-	if (v.empty()) { return false; }
-	char* end = nullptr;
-	double d = std::strtod(v.c_str(), &end);
-	if (end == v.c_str() || *end != '\0') { return false; }
-	return std::isfinite(d);
-}
 
 /* ---- ASCII 不区分大小写比较 ---- */
 static bool equalWithoutCase(const std::string& s1, const std::string& s2) {
@@ -307,7 +294,7 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 		for (const VarRaw& p : arr) {
 			auto typeIt = schemaIt->second.find(p.columnName);
 			if (typeIt != schemaIt->second.end() && typeIt->second == VarType::Number
-					&& !isNumericLiteral(p.value)) {
+					&& !bot::isNumericLiteral(p.value)) {
 				throw bot::IllegalArgumentException("Column '" + p.columnName + "' of table '"
 					+ eve.targetTabName + "' is declared Number, but value '" + p.value
 					+ "' is not numeric.");

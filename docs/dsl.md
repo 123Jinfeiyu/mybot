@@ -41,9 +41,9 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 @
 ```
 
-- 可内联 `@Alias` 别名矩阵（如把 `s1.A` 写成 `s1.angle`）；`@Vars` 命名文本变量同构（列 `name`/`value`），也可内联
-- 结构与动作两侧都可定义别名/文本变量，同名时**动作脚本的定义覆盖**（打印覆盖日志）
-- 同一动作脚本内重复定义同名别名（或文本变量）报错（负值契约）
+- 可内联 `@Alias` 别名矩阵（如把 `s1.A` 写成 `s1.angle`）；`@Vars` 命名数值变量同构（列 `name`/`value`），也可内联
+- 结构与动作两侧都可定义别名/数值变量，同名时**动作脚本的定义覆盖**（打印覆盖日志）
+- 同一动作脚本内重复定义同名别名（或数值变量）报错（负值契约）
 
 ## controller 引用（转交任务）
 
@@ -57,7 +57,7 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 
 ## `$` 引用列
 
-元数据列可以按值引用另一个硬件变量：值以 `$` 开头（如 `$imu0`），被引用方的 `read()` 快照字段实时合并进本变量元数据；**不带 `$` 的裸名一律按字面值**。`$` 指向未定义变量在 **build 前**（全部表装配完成后）显式报错；指向**标量**（如 Alias 的 JsonString）也会清晰报错——标量引用请走 `controller` 列（唯一例外是 `@Vars` 文本变量，见下节）：
+元数据列可以按值引用另一个硬件变量：值以 `$` 开头（如 `$imu0`），被引用方的 `read()` 快照字段实时合并进本变量元数据；**不带 `$` 的裸名一律按字面值**。`$` 指向未定义变量在 **build 前**（全部表装配完成后）显式报错；指向**标量**（如 Alias 的 JsonString）也会清晰报错——标量引用请走 `controller` 列（唯一例外是 `@Vars` 数值变量，见下节）：
 
 ```sql
 CREATE TABLE Monitor (name String, src String);
@@ -72,22 +72,24 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$imu0');   -- 引用守护 imu0
 
 这条约束同时是**销毁期 `fd` 有效性的来源**：`fd` 只由接口器件自己的 `destroy` 关闭，而倒序销毁 + 上面的声明顺序 ⇒ 接口器件最后关闭 `fd`，所有挂在它上面的器件在 `destroy` 期间（关断/断电/写寄存器这类去初始化）`fd` 始终有效。`$` 引用列因此必须在 `destroy` 阶段解析——若你把器件去初始化写成依赖 `fd` 的形式，请务必保证总线表在器件表之前。
 
-## `@Vars` 命名文本变量
+## `@Vars` 命名数值变量
 
-`@Vars` 与 `@Alias` 同构（列 `name` / `value`），存放**命名文本值**。SQL 解析器只支持 String，故值一律按文本保存。它有两种消费方式：
+`@Vars` 与 `@Alias` 同构（列 `name` / `value`），但**仅支持 Number**：`value` 必须是数值字面量（整数/小数/带符号/科学计数法），非数值（含空值、`nan`/`inf`）在注册期即报错。值仍按文本驻留、不做转换（与结构脚本 `Number` 列共用同一判定）。它有两种消费方式：
 
-1. **结构脚本 `$` 文本常量**：元数据列写 `$<name>`，该列取变量的文本值——这是唯一允许 `$` 指向标量的变量类型（`Alias` 等标量仍按上节报错）：
+1. **结构脚本 `$` 数值常量**：元数据列写 `$<name>`，该列取变量的数值文本——这是唯一允许 `$` 指向标量的变量类型（`Alias` 等标量仍按上节报错）：
 
    ```sql
-   CREATE TABLE Vars (name String, value String);
-   INSERT INTO Vars (name, value) VALUES ('i2cpath', '/dev/i2c-1');
-   CREATE TABLE I2C (name String, path String);
-   INSERT INTO I2C (name, path) VALUES ('i2c-1', '$i2cpath');   -- path 即 /dev/i2c-1
+   CREATE TABLE Vars (name String, value Number);
+   INSERT INTO Vars (name, value) VALUES ('smax', 90);
+   CREATE TABLE Servo (name String, max String, min String, offset String,
+                       controller String, channel String);
+   INSERT INTO Servo (name, max, min, offset, controller, channel)
+     VALUES ('s1', '$smax', '-', '-', 'pca9685-0', '0');   -- max 即 90
    ```
 
-2. **动作脚本参数位替换**：与 `@Alias` 完全一致，`dev.<name>` 的参数位用值替换成真实参数名。`@Vars` 可在结构脚本定义，也可在 `.mt` 内联；同名时动作脚本覆盖结构定义，同一动作脚本内重名报错。
+2. **动作脚本参数位替换**：沿用 `@Alias` 的规则，`dev.<name>` 的参数位用 `value` 替换成参数名（值被限定为 Number，故实际以第 1 种 `$` 常量用法为主）。`@Vars` 可在结构脚本定义，也可在 `.mt` 内联；同名时动作脚本覆盖结构定义，同一动作脚本内重名报错。
 
-与 `$` 对象快照不同，`@Vars` 不做字段合并，只把文本写到承载 `$` 的那一列；它无资源，`build`/`destroy` 为空操作。回归见 `vars_text`（正值）与 `vars_bad`/`vars_dup`（负值）。
+与 `$` 对象快照不同，`@Vars` 不做字段合并，只把数值文本写到承载 `$` 的那一列；它无资源，`build`/`destroy` 为空操作。回归见 `vars_num`（正值）与 `vars_bad`/`vars_nonnum`/`vars_dup`（负值）。
 
 ## mtmerge 合成器（.mt 两两归并）
 

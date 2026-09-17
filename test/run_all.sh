@@ -323,8 +323,8 @@ fi
 #                 守护采样→消费链路（含 Kalman/Ema/Monitor）
 #   relay-test / ref_prefix   Relay.controller 转发 + note 透传（$ 前缀字面）
 #   alias_inline 动作脚本内联别名生效；alias_override/alias_dup 覆盖/重复负值
-#   vars_text    @Vars 命名文本：结构表 $ 文本常量填充 Relay.note + .mt 内联 @Vars 参数位替换
-#   vars_bad/vars_dup  Vars 缺 value 列 / 动作脚本内重复定义 → 负值契约
+#   vars_num     @Vars 仅支持 Number：结构表 $ 数值常量填充 Relay.note
+#   vars_bad/vars_nonnum/vars_dup  Vars 缺 value 列 / 非数值 / 动作脚本内重复定义 → 负值契约
 #   mt_noblank  矩阵间只有单个换行（无空行）→ 第 2+ 个矩阵名仍须正确识别
 #   mt_crlf     同上但 CRLF 行尾 → 修复不得只按 LF 语义而破坏 CRLF
 #   mt_ragged   行内单元格数与表头不齐 → 须报 "Does Not Sync" 且行号准确
@@ -370,8 +370,9 @@ parse_cases=(
 	'robots/relay-test.sql|mt_ragged.mt|1|Does Not Sync. we got line: 6'
 	'alias_override.sql|alias_override.mt|1|missing or not a number'
 	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
-	'vars_text.sql|vars_text.mt|0|note=hello-vars'
+	'vars_num.sql|vars_num.mt|0|note=200'
 	"vars_bad.sql|vars_bad.mt|1|has no 'value' column"
+	'vars_nonnum.sql|vars_nonnum.mt|1|is not a valid Number'
 	'alias_dup.sql|vars_dup.mt|1|Duplicate Vars name'
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
 	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
@@ -479,7 +480,7 @@ name alias;
 
 @Vars
 name value;
-  K  hello;
+  K  1;
 @
 
 @Action
@@ -495,7 +496,7 @@ name alias;
 
 @Vars
 name value;
-  L  world;
+  L  2;
 @
 
 @Action
@@ -517,7 +518,7 @@ MTEOF
 	cat > .tmp/mtm/dup_vars.mt <<'MTEOF'
 @Vars
 name value;
-  K  other;
+  K  3;
 @
 
 @Action
@@ -566,7 +567,7 @@ SQLEOF
 
 	# 正值：Alias/Vars 两侧行都并入，@Action 设备集不相交照常归并
 	run_one_mtmerge 'mtmerge_merge' 0 \
-		'A angle|B delay|K hello|L world|s1.A spk.B' \
+		'A angle|B delay|K 1|L 2|s1.A spk.B' \
 		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt
 
 	# 同一输入内多个 @Alias 块都要并入（不得只看第一个而静默丢弃其余块）

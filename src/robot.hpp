@@ -62,7 +62,7 @@ class MetaProvider {
 	std::optional<std::vector<std::string>> cols_;
 	std::optional<std::vector<std::string>> vals_;
 	/* 引用列：每项 (承载 $ 的列名, 被引用变量名)。对象快照按字段并入元数据；
-	 * @Vars 这类标量文本变量则把文本写到该列名下（见 collect / collectForDestroy）。 */
+	 * @Vars 这类标量数值变量则把值写到该列名下（见 collect / collectForDestroy）。 */
 	std::optional<std::vector<std::pair<std::string, std::string>>> refs_;
 
 	void seed();
@@ -113,7 +113,7 @@ class HwFactory {
 	void createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName);
 	void createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName);
 
-	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名文本值) */
+	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名数值) */
 	enum class ScalarKind { Alias, Vars };
 
 	/* 注册标量文本矩阵的公共实现（启动期/动作脚本期两路，见实现处） */
@@ -134,7 +134,7 @@ public:
 		registerScalarMatrix(matrix, session, ScalarKind::Alias);
 	}
 
-	/* 注册 @Vars 命名文本矩阵 */
+	/* 注册 @Vars 命名数值矩阵 */
 	void registerVarsMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
 		registerScalarMatrix(matrix, session, ScalarKind::Vars);
 	}

@@ -99,7 +99,7 @@ Json MetaProvider::collect() {
 			if (snap.isObj()) {
 				jsonMergeInto(obj, snap.asObject());
 			} else if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
-				/* @Vars 文本常量：把文本写回承载 $ 的列（如 I2C 的 path 列写 $i2cpath） */
+				/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
 				obj.put(colName, snap);
 			} else {
 				throw IllegalArgumentException("'$" + name

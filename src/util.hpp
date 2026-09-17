@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -105,6 +106,18 @@ inline std::string trim(const std::string& s) {
 	while (b < e && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
 	while (e > b && (s[e-1] == ' ' || s[e-1] == '\t' || s[e-1] == '\r' || s[e-1] == '\n')) --e;
 	return s.substr(b, e - b);
+}
+
+/* 数值字面量判定：strtod 全串消费 + 有限值（拒绝空值/nan/inf）。与动作矩阵
+ * 单元格的数值语义一致（parseMtDouble）。供「仅校验、不转换」的两处复用：
+ * 结构脚本 Number 列、@Vars 的 value（值仍按文本驻留）。 */
+inline bool isNumericLiteral(const std::string& s) {
+	std::string v = trim(s);
+	if (v.empty()) { return false; }
+	char* end = nullptr;
+	double d = std::strtod(v.c_str(), &end);
+	if (end == v.c_str() || *end != '\0') { return false; }
+	return std::isfinite(d);
 }
 
 } // namespace bot

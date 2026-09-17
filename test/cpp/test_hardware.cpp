@@ -256,22 +256,22 @@ TH_TEST(metaprovider_scalar_reference_is_rejected) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-object", prov.collect());
 }
 
-TH_TEST(metaprovider_vars_reference_fills_column_with_text) {
-	/* @Vars 文本常量：$ 引用不再做「字段快照合并」，而是把文本写回承载 $ 的列
-	 * （如 I2C 的 path、Relay 的 note）；运行时与 destroy 期都要解析。 */
-	mt::MatrixObject vm = fx::oneMatrix("@Vars\nname value;\ngreeting hello-vars;\n@\n");
+TH_TEST(metaprovider_vars_reference_fills_column_with_number) {
+	/* @Vars 数值常量：$ 引用不再做「字段快照合并」，而是把数值文本写回承载 $ 的列；
+	 * 运行时与 destroy 期都要解析。 */
+	mt::MatrixObject vm = fx::oneMatrix("@Vars\nname value;\nspd 42;\n@\n");
 	std::unique_ptr<MatrixVars_Hardware> vars = bot::MtVars_Vars::Factory(vm, 1);
 	bot::HwRegistry reg;
-	reg.add("greeting", std::move(vars));
+	reg.add("spd", std::move(vars));
 
-	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note src;\nr0 hello $greeting;\n@\n");
+	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note src;\nr0 hello $spd;\n@\n");
 	MetaProvider prov(m, 1, -1, &reg);
 	Json meta = prov.collect();
 	TH_CHECK(meta.get("note")->getValue() == "hello");
-	TH_CHECK(meta.get("src")->getValue() == "hello-vars");
+	TH_CHECK(meta.get("src")->getValue() == "42");
 
 	Json dmeta = prov.collectForDestroy();
-	TH_CHECK(dmeta.get("src")->getValue() == "hello-vars");
+	TH_CHECK(dmeta.get("src")->getValue() == "42");
 }
 
 TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
@@ -402,14 +402,30 @@ TH_TEST(vars_matrix_requires_name_and_value_columns) {
 		bot::MtVars_Vars::Factory(noValue, 1));
 }
 
-TH_TEST(vars_matrix_reads_its_text_value) {
-	mt::MatrixObject m = fx::oneMatrix("@Vars\nname value;\ngreeting hello-vars;\n@\n");
+TH_TEST(vars_matrix_reads_its_numeric_value) {
+	mt::MatrixObject m = fx::oneMatrix("@Vars\nname value;\nspd 42;\n@\n");
 	std::unique_ptr<bot::MtVars_Vars> v = bot::MtVars_Vars::Factory(m, 1);
-	/* read()/play() 均返回文本标量（供 $ 文本常量与 @Action 参数位替换） */
-	TH_CHECK(v->read().getValue() == "hello-vars");
-	TH_CHECK(v->play(JsonObject()).getValue() == "hello-vars");
+	/* read()/play() 均返回数值文本（供 $ 数值常量与 @Action 参数位替换） */
+	TH_CHECK(v->read().getValue() == "42");
+	TH_CHECK(v->play(JsonObject()).getValue() == "42");
 	/* "-" 继承：第二行未写 value 时沿用上一行 */
-	mt::MatrixObject m2 = fx::oneMatrix("@Vars\nname value;\nA delay;\nB -;\n@\n");
+	mt::MatrixObject m2 = fx::oneMatrix("@Vars\nname value;\nA 1;\nB -;\n@\n");
 	std::unique_ptr<bot::MtVars_Vars> v2 = bot::MtVars_Vars::Factory(m2, 2);
-	TH_CHECK(v2->read().getValue() == "delay");
+	TH_CHECK(v2->read().getValue() == "1");
+}
+
+TH_TEST(vars_matrix_rejects_non_numeric_value) {
+	/* @Vars 仅支持 Number：非数值字面量（含空值/nan/inf）在 Factory 处即报错，
+	 * 与结构脚本 Number 列同一判定；合法格式（整数/小数/符号/科学计数法）通过。 */
+	mt::MatrixObject bad = fx::oneMatrix("@Vars\nname value;\nspd fast;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is not a valid Number",
+		bot::MtVars_Vars::Factory(bad, 1));
+
+	mt::MatrixObject nanv = fx::oneMatrix("@Vars\nname value;\nspd nan;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is not a valid Number",
+		bot::MtVars_Vars::Factory(nanv, 1));
+
+	mt::MatrixObject ok = fx::oneMatrix("@Vars\nname value;\na -1.5;\nb 2e3;\n@\n");
+	TH_CHECK(bot::MtVars_Vars::Factory(ok, 1)->read().getValue() == "-1.5");
+	TH_CHECK(bot::MtVars_Vars::Factory(ok, 2)->read().getValue() == "2e3");
 }
