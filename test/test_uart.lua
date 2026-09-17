@@ -17,6 +17,7 @@ local calls = {}			-- 操作记录
 local mock_open_fd = 7
 local mock_tcgetattr_ok = true
 local mock_tcsetattr_ok = true
+local mock_cfspeed_ok = true	-- false = cfsetispeed/cfsetospeed 返回 -1
 local mock_write_ret = nil	-- nil = 真实语义（按需返回）
 local read_feed = {}		-- read 桩按调用次序吐 {bytes 或 -1}
 local read_feed_i = 0
@@ -67,12 +68,17 @@ HAL.sys.cfmakeraw = function(ptr)
 	local t = ffi.cast("cj_termios *", ptr)
 	t[0].c_cflag = 0x8BD	-- 模拟 cfmakeraw 后的 cflag（含 CS8，不含 CREAD/CLOCAL）
 end
+-- cfset*speed 收到的是 glibc 常量而非 Hz（见 HAL 段首注释）；返回 0 表成功
 HAL.sys.cfsetispeed = function(ptr, baud)
 	calls[#calls + 1] = { op = "cfsetispeed", baud = baud }
+	if mock_cfspeed_ok == false then return -1 end
 	last_ispeed = baud
+	return 0
 end
 HAL.sys.cfsetospeed = function(ptr, baud)
 	calls[#calls + 1] = { op = "cfsetospeed", baud = baud }
+	if mock_cfspeed_ok == false then return -1 end
+	return 0
 end
 HAL.sys.tcsetattr = function(fd, act, ptr)
 	calls[#calls + 1] = { op = "tcsetattr", act = act }
@@ -111,6 +117,7 @@ local function reset(feed)
 	last_write = nil
 	last_ispeed = nil
 	mock_tcgetattr_ok, mock_tcsetattr_ok = true, true
+	mock_cfspeed_ok = true
 	mock_write_ret = nil
 end
 
@@ -120,7 +127,7 @@ check(uart_open("/dev/ttyUSB0", 9600) == 7, "open ttyUSB0@9600 成功")
 check(has_call("open", "flags", HAL.UART_O_FLAGS), "open 旗帜 = RDWR|NOCTTY|NONBLOCK(2306)",
 	tostring(calls[1] and calls[1].flags))
 check(has_call("cfmakeraw"), "cfmakeraw 进入 raw 模式")
-check(last_ispeed == 9600, "cfsetispeed 收到数值波特率 9600", tostring(last_ispeed))
+check(last_ispeed == 13, "cfsetispeed 收到 glibc 常量 B9600=13（非数值 Hz）", tostring(last_ispeed))
 check(has_call("tcsetattr", "act", HAL.UART_TCSANOW), "tcsetattr(TCSANOW)")
 check(last_tcsetattr ~= nil
 	and last_tcsetattr.c_cc[HAL.UART_VMIN_IDX] == 0
@@ -140,6 +147,15 @@ check(uart_open("/dev/serial0", 9600) == 7, "open /dev/serial0（树莓派软链
 check(uart_open("/dev/ttyUSB0", 1234) == -1, "波特率白名单拒绝 1234")
 check(uart_open("/dev/ttyUSB0", "9600") == 7, "字符串波特率经 tonumber 接受")
 
+-- 高波特率档：常数映射（SCSCL 总线舵机出厂默认 500k/1M）
+check(uart_open("/dev/ttyUSB0", 115200) == 7, "115200 白名单接受")
+check(last_ispeed == 0x1002, "115200 -> B115200=0x1002", string.format("0x%X", last_ispeed or 0))
+check(uart_open("/dev/ttyUSB0", 500000) == 7, "500000 白名单接受")
+check(last_ispeed == 0x1005, "500000 -> B500000=0x1005", string.format("0x%X", last_ispeed or 0))
+check(uart_open("/dev/ttyUSB0", 1000000) == 7, "1000000 白名单接受")
+check(last_ispeed == 0x1008, "1000000 -> B1000000=0x1008", string.format("0x%X", last_ispeed or 0))
+check(uart_open("/dev/ttyUSB0", 576000) == -1, "波特率白名单拒绝 576000（未列入）")
+
 reset()
 mock_tcgetattr_ok = false
 check(uart_open("/dev/ttyUSB0", 9600) == -1, "tcgetattr 失败 -> -1")
@@ -151,6 +167,12 @@ mock_tcsetattr_ok = false
 check(uart_open("/dev/ttyUSB0", 9600) == -1, "tcsetattr 失败 -> -1")
 check(has_call("close"), "失败路径关闭 fd（2）")
 mock_tcsetattr_ok = true
+
+reset()
+mock_cfspeed_ok = false
+check(uart_open("/dev/ttyUSB0", 9600) == -1, "cfsetispeed 失败 -> -1（返回码被检查）")
+check(has_call("close"), "失败路径关闭 fd（3）")
+mock_cfspeed_ok = true
 
 -- ==================== uart_write ====================
 reset()

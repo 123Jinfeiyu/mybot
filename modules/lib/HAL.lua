@@ -664,8 +664,12 @@ end
 -- 常量经 test/test_uart_consts.c 与系统头文件实证（gpio 段同款方法）：
 -- sizeof(struct termios)=60、c_line 偏移 16、c_cc 偏移 17、VMIN=6/VTIME=5、
 -- O_RDWR=2 O_NOCTTY=256 O_NONBLOCK=2048、TCSANOW=0、TCIFLUSH=0、
--- CREAD=128 CLOCAL=2048 CS8=48；现代 glibc 的 B* 波特率常量即数值本身
--- （B9600==9600、B115200==115200），cfsetispeed 直接收 Hz 值
+-- CREAD=128 CLOCAL=2048 CS8=48。
+-- 【波特率必须传 glibc 的 B* 常量，不能传数值 Hz】：cfsetispeed/cfsetospeed
+-- 对数值（9600/115200/…）返回 EINVAL 且不修改结构体——旧实现「传 Hz」看似
+-- 成功，实际波特率从未生效（真机 /dev/serial0 实证：请求 115200 后 B 字段
+-- 仍为原值）。UART_B_CONST 为 Hz → 常量映射，值来自系统头文件
+-- （B9600=13、B115200=0x1002、B500000=0x1005、B1000000=0x1008）
 
 ffi.cdef[[
 int  tcgetattr(int fd, void *termios_p);
@@ -700,7 +704,16 @@ HAL.EINTR = 4					-- Linux errno：被信号打断
 HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
 HAL.uart_orig = {}				-- fd -> open 前的原始 termios（close 恢复用）
 
-local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 }
+local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1000000 }
+
+-- Hz → glibc speed_t 常量（linux B* 值，test_uart_consts.c 实证）。
+-- 白名单与映射表必须同步维护：白名单通过而映射缺失时 uart_open 明确失败，
+-- 不会退回「静默不生效」的旧行为。
+local UART_B_CONST = {
+	[1200] = 9, [2400] = 11, [4800] = 12, [9600] = 13, [19200] = 14, [38400] = 15,
+	[57600] = 0x1001, [115200] = 0x1002, [230400] = 0x1003, [460800] = 0x1004,
+	[500000] = 0x1005, [921600] = 0x1007, [1000000] = 0x1008,
+}
 
 -- 打开串口（raw 8N1 + 波特率 + 非阻塞），成功返回 fd，失败返回 -1
 function uart_open(path, baud)
@@ -712,6 +725,11 @@ function uart_open(path, baud)
 	end
 	if not baud_ok then
 		print("HAL: invalid uart baud: " .. tostring(baud))
+		return -1
+	end
+	local bconst = UART_B_CONST[baud]
+	if bconst == nil then
+		print("HAL: uart baud has no termios constant: " .. tostring(baud))
 		return -1
 	end
 	-- 路径白名单：常规 tty 命名 + /dev/serialN（树莓派软链惯例）
@@ -743,8 +761,13 @@ function uart_open(path, baud)
 	t[0].c_cflag = bitlib.bor(tonumber(t[0].c_cflag) or 0, HAL.UART_CREAD_CLOCAL)
 	t[0].c_cc[HAL.UART_VMIN_IDX] = 0	-- 非阻塞读：VMIN=0
 	t[0].c_cc[HAL.UART_VTIME_IDX] = 1	-- 100ms 字间计时器（驱动层另有轮询超时）
-	HAL.sys.cfsetispeed(t, baud)
-	HAL.sys.cfsetospeed(t, baud)
+	-- 传 glibc 常量而非 Hz（见段首注释）；返回码必查：EINVAL 时结构体未被
+	-- 修改，放行等于「以为设了波特率其实没设」
+	if HAL.sys.cfsetispeed(t, bconst) ~= 0 or HAL.sys.cfsetospeed(t, bconst) ~= 0 then
+		print("HAL: failed to set uart speed: " .. path .. " @" .. tostring(baud) .. " baud")
+		HAL.sys.close(fd)
+		return -1
+	end
 	if HAL.sys.tcsetattr(fd, HAL.UART_TCSANOW, t) ~= 0 then
 		print("HAL: tcsetattr failed: " .. path)
 		HAL.sys.close(fd)
