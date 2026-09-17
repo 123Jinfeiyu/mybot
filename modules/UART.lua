@@ -51,7 +51,8 @@ function build(data)
 		fd = -1
 	end
 
-	-- 打开串口（raw 8N1 + 非阻塞；波特率白名单在 HAL 内校验）
+	-- 打开串口（raw 8N1 + 非阻塞；波特率白名单在 HAL 内校验；
+	-- open 前的 termios 由 HAL 快照，关闭时自动恢复）
 	local opened = uart_open(path, uart_baud)
 	if opened == nil or opened < 0 then
 		return {
@@ -71,6 +72,8 @@ function build(data)
 end
 
 -- 【销毁UART】关闭串口句柄
+-- uart_close 先恢复 build 时快照的原始 termios 再 close：板载 UART 的
+-- raw 模式/波特率跨 close 保留在 tty 上，恢复后不残留给后续使用者
 function destroy(data)
 
 	local ok, ek = arg_table(data)

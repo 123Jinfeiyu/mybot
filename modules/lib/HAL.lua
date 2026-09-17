@@ -657,6 +657,9 @@ end
 
 ------------------------------------------------------------------
 -- UART（termios raw 8N1：/dev/tty*、/dev/serial*；非阻塞轮询读）
+-- 生命周期：open 时快照原始 termios（HAL.uart_orig[fd]），close 时先
+-- tcsetattr 恢复再关闭——板载 UART 的 termios 跨 close 保留在 tty 上，
+-- 残留 raw 模式/波特率会影响后续使用者（getty、其他程序）。
 ------------------------------------------------------------------
 -- 常量经 test/test_uart_consts.c 与系统头文件实证（gpio 段同款方法）：
 -- sizeof(struct termios)=60、c_line 偏移 16、c_cc 偏移 17、VMIN=6/VTIME=5、
@@ -695,6 +698,7 @@ HAL.EAGAIN = 11					-- Linux errno：非阻塞读暂无数据
 HAL.EINTR = 4					-- Linux errno：被信号打断
 
 HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
+HAL.uart_orig = {}				-- fd -> open 前的原始 termios（close 恢复用）
 
 local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 }
 
@@ -727,6 +731,11 @@ function uart_open(path, baud)
 		HAL.sys.close(fd)
 		return -1
 	end
+	-- 快照 open 前的原始 termios（整 60 字节按值拷贝；t 随后被 cfmakeraw
+	-- 就地改写）。仅在内核侧配置成功后登记（见函数尾），失败路径不产生
+	-- 残留快照。
+	local orig = ffi.new("cj_termios[1]")
+	ffi.copy(orig, t, ffi.sizeof("cj_termios"))
 	HAL.sys.cfmakeraw(t)				-- raw 模式（无回显/无行缓冲/8N1 基础）
 	-- CREAD|CLOCAL 用真位或置位（cfmakeraw 不清这两位，加法会进位污染高位；
 	-- HAL 仅支持 LuaJIT，内建 bit 库可用）
@@ -741,15 +750,26 @@ function uart_open(path, baud)
 		HAL.sys.close(fd)
 		return -1
 	end
+	HAL.uart_orig[fd] = orig
 	HAL.uart_baud[fd] = baud
 	return fd
 end
 
--- 关闭串口
+-- 关闭串口：先恢复 open 前快照的 termios（销毁重置），再关闭 fd。
+-- 恢复失败（设备已拔出等）告警但不阻断关闭，返回值仍是 close 的结果。
+-- 注：多个变量共用同一物理串口时各自独立快照/恢复（每变量独立 lua_State），
+-- 后关闭者以自己 open 时看到的配置为准，不做跨变量引用计数。
 function uart_close(fd)
 	fd = tonumber(fd)
 	if fd == nil or fd < 0 then return -1 end
 	HAL.uart_baud[fd] = nil
+	local orig = HAL.uart_orig[fd]
+	if orig ~= nil then
+		HAL.uart_orig[fd] = nil
+		if HAL.sys.tcsetattr(fd, HAL.UART_TCSANOW, orig) ~= 0 then
+			print("HAL: failed to restore uart termios on close (fd " .. tostring(fd) .. ")")
+		end
+	end
 	return HAL.sys.close(fd)
 end
 

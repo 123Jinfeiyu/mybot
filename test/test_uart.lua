@@ -1,4 +1,6 @@
 -- HAL.lua uart 段 离线测试（mock HAL.sys 系统调用，不触碰真实串口）
+-- 覆盖：open 路径/波特率白名单、raw 8N1 配置、read/write/flush、
+-- close 恢复 open 前 termios（销毁重置）及恢复失败/无快照等分支
 -- 用法: luajit test_uart.lua（HAL 依赖 ffi，需 LuaJIT）
 --
 -- mock 注入 HAL.sys 的 termios/read/write/usleep/close 条目（test_hal_ffi
@@ -54,6 +56,10 @@ HAL.sys.errno = function() return 11 end	-- EAGAIN
 HAL.sys.tcgetattr = function(fd, ptr)
 	calls[#calls + 1] = { op = "tcgetattr", fd = fd }
 	if not mock_tcgetattr_ok then return -1 end
+	-- 模拟 open 前设备侧的常规（非 raw）配置：close 恢复断言据此比对
+	local t = ffi.cast("cj_termios *", ptr)
+	t[0].c_cflag = 0x1234
+	t[0].c_cc[HAL.UART_VMIN_IDX] = 4
 	return 0
 end
 HAL.sys.cfmakeraw = function(ptr)
@@ -190,13 +196,52 @@ check(uart_read(7, 100) == nil or true, "参数校验不炸")	-- fd nil -> nil �
 reset()
 check(uart_read(7, 0, 100) == nil, "n=0 拒绝（返回 nil）")
 
--- ==================== uart_flush / uart_close ====================
+-- ==================== uart_flush ====================
 reset()
 check(uart_flush(7) == 0, "flush 返回 0")
 check(has_call("tcflush", "q", HAL.UART_TCIFLUSH), "tcflush(TCIFLUSH)")
+
+-- ==================== uart_close：销毁时恢复原始 termios ====================
+-- open 建立快照（mock tcgetattr 以 cflag=0x1234/VMIN=4 模拟设备原始配置）
+reset()
+check(uart_open("/dev/ttyUSB0", 9600) == 7, "open 建立恢复快照")
 reset()
 check(uart_close(7) == 0, "close 返回 0")
+check(has_call("tcsetattr", "act", HAL.UART_TCSANOW), "close 前 tcsetattr(TCSANOW) 恢复")
+check(last_tcsetattr ~= nil and last_tcsetattr.c_cflag == 0x1234
+	and last_tcsetattr.c_cc[HAL.UART_VMIN_IDX] == 4,
+	"恢复的是 open 前原始 termios（cflag/VMIN）",
+	last_tcsetattr and string.format("0x%X", last_tcsetattr.c_cflag) or "nil")
 check(has_call("close"), "close 落到 HAL.sys.close")
+
+-- 快照一次性：恢复并清除后，重复 close 不再 tcsetattr
+reset()
+check(uart_close(7) == 0, "重复 close 仍返回 0")
+check(not has_call("tcsetattr"), "无快照不再 tcsetattr")
+check(has_call("close"), "重复 close 仍落到 HAL.sys.close")
+
+-- 未打开过的 fd：无快照直接关闭，不试图恢复
+check(uart_close(99) == 0, "未打开 fd 直接 close")
+check(not has_call("tcsetattr"), "未打开 fd 不 tcsetattr")
+
+-- 恢复失败（设备已拔出等）：告警但关闭不被阻断，返回值仍是 close 的结果
+reset()
+check(uart_open("/dev/ttyUSB0", 9600) == 7, "open 重建快照（恢复失败路径）")
+reset()
+mock_tcsetattr_ok = false
+check(uart_close(7) == 0, "恢复失败仍返回 close 结果")
+check(has_call("tcsetattr"), "恢复失败已尝试 tcsetattr")
+check(has_call("close"), "恢复失败仍关闭 fd")
+mock_tcsetattr_ok = true
+
+-- open 配置失败路径不登记快照：此后 close 不产生恢复调用
+reset()
+mock_tcsetattr_ok = false
+check(uart_open("/dev/ttyUSB0", 9600) == -1, "open tcsetattr 失败 -> -1（不登记快照）")
+mock_tcsetattr_ok = true
+reset()
+check(uart_close(7) == 0, "配置失败的 fd close 返回 0")
+check(not has_call("tcsetattr"), "失败路径不产生残留快照")
 
 -- ==================== 汇总 ====================
 if fails == 0 then
