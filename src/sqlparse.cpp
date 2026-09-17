@@ -1,8 +1,21 @@
 #include "sqlparse.hpp"
 
+#include <cmath>
+#include <cstdlib>
 #include <stdexcept>
 
 namespace sql4cj {
+
+/* Number 列的解析期数值校验：strtod 全串消费 + 有限值（拒绝 nan/inf，
+ * 与动作矩阵单元格 parseMtDouble 的数值语义一致）。运行期不转换，值仍按文本存。 */
+static bool isNumericLiteral(const std::string& s) {
+	std::string v = bot::trim(s);
+	if (v.empty()) { return false; }
+	char* end = nullptr;
+	double d = std::strtod(v.c_str(), &end);
+	if (end == v.c_str() || *end != '\0') { return false; }
+	return std::isfinite(d);
+}
 
 /* ---- ASCII 不区分大小写比较 ---- */
 static bool equalWithoutCase(const std::string& s1, const std::string& s2) {
@@ -39,6 +52,7 @@ Token Token::parse(const std::string& s) {
 	if (equalWithoutCase(s, "create")) { return {TokenType::CREATE, s}; }
 	if (equalWithoutCase(s, "table")) { return {TokenType::TABLE, s}; }
 	if (equalWithoutCase(s, "string")) { return {TokenType::STRING, s}; }
+	if (equalWithoutCase(s, "number")) { return {TokenType::NUMBER, s}; }
 	if (equalWithoutCase(s, "insert")) { return {TokenType::INSERT, s}; }
 	if (equalWithoutCase(s, "into")) { return {TokenType::INTO, s}; }
 	if (equalWithoutCase(s, "values")) { return {TokenType::VALUES, s}; }
@@ -58,6 +72,7 @@ std::string Token::serialize() const {
 		case TokenType::CREATE: return "CREATE";
 		case TokenType::TABLE: return "TABLE";
 		case TokenType::STRING: return "STRING";
+		case TokenType::NUMBER: return "NUMBER";
 		case TokenType::INSERT: return "INSERT";
 		case TokenType::INTO: return "INTO";
 		case TokenType::VALUES: return "VALUES";
@@ -204,10 +219,12 @@ void Parser::nextCreateTable(CreateTableEvent& eve) {
 		}
 		std::string colName = t.name;
 		t = expect();
-		if (t.type != TokenType::STRING) {
+		if (t.type != TokenType::STRING && t.type != TokenType::NUMBER) {
 			throw bot::IllegalArgumentException("Token " + t.serialize());
 		}
-		eve.tableColumns.push_back({colName, VarType::String_});
+		VarType vt = (t.type == TokenType::NUMBER) ? VarType::Number : VarType::String_;
+		eve.tableColumns.push_back({colName, vt});
+		columnTypes_[eve.tableName][colName] = vt;
 		t = expect();
 		if (t.type == TokenType::RGHT) { break; }
 		if (t.type != TokenType::COMMA) {
@@ -281,6 +298,21 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 	std::vector<VarRaw> arr;
 	for (std::size_t i = 0; i < paramNames.size(); ++i) {
 		arr.push_back({paramNames[i], paramValues[i]});
+	}
+	/* Number 列的解析期校验（一次）：值必须是数值字面量，否则结构脚本在装配前
+	 * 就以清晰报错结束，而不是把 'abc' 当字符串静默传给驱动。表未在本脚本中
+	 * CREATE（拼错/外置）则无从校验，留给消费方的「表未定义」处理。 */
+	auto schemaIt = columnTypes_.find(eve.targetTabName);
+	if (schemaIt != columnTypes_.end()) {
+		for (const VarRaw& p : arr) {
+			auto typeIt = schemaIt->second.find(p.columnName);
+			if (typeIt != schemaIt->second.end() && typeIt->second == VarType::Number
+					&& !isNumericLiteral(p.value)) {
+				throw bot::IllegalArgumentException("Column '" + p.columnName + "' of table '"
+					+ eve.targetTabName + "' is declared Number, but value '" + p.value
+					+ "' is not numeric.");
+			}
+		}
 	}
 	eve.tableRows.push_back(std::move(arr));
 	nextEnd();

@@ -317,6 +317,8 @@ fi
 # 别名重复、$ 引用标量等应清晰报错绝不裸崩）。覆盖：
 #   sqlquote      引号值内 "--"/"/*"/";"/","/括号/空白按字面解析
 #   insert_typo   INSERT 目标表拼错 → 解析期报错
+#   number_type   CREATE TABLE 支持 Number 列（解析期一次数值校验，值仍文本驻留）
+#   number_bad    Number 列写入非数值字面量 → 解析期清晰报错
 #   daemon/filter/ema_chain/monitor/mpu_daemon/multidaemon
 #                 守护采样→消费链路（含 Kalman/Ema/Monitor）
 #   relay-test / ref_prefix   Relay.controller 转发 + note 透传（$ 前缀字面）
@@ -352,6 +354,8 @@ fi
 parse_cases=(
 	'sqlquote.sql|sqlquote.mt|0|joined, total publishes='
 	'insert_typo.sql|insert_typo.mt|1|table is not defined'
+	'number_type.sql|number_type.mt|0|note=hello-number'
+	'number_bad.sql|number_bad.mt|1|declared Number'
 	'daemon.sql|daemon.mt|0|joined, total publishes='
 	'filter.sql|filter.mt|0|joined, total publishes='
 	'ema_chain.sql|ema_chain.mt|0|joined, total publishes='

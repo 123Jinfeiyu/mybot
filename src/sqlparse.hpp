@@ -2,6 +2,7 @@
 /* sqlparse.hpp —— 结构脚本 SQL 解析器（移植 SQL4cj：Lexer / Parser / Event） */
 
 #include <cstddef>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -11,7 +12,7 @@ namespace sql4cj {
 
 /* ------------- Token ------------- */
 enum class TokenType {
-	SELECT, FROM, CREATE, TABLE, STRING,
+	SELECT, FROM, CREATE, TABLE, STRING, NUMBER,
 	INSERT, INTO, VALUES,
 	END, COMMA, LEFT, RGHT,
 	UNEXPECTED_END, UNKNOWN,
@@ -29,7 +30,9 @@ struct Token {
 };
 
 /* ------------- 事件载荷 ------------- */
-enum class VarType { String_ = 0, Integer };
+/* 列类型：本方言的值一律以字符串驻留（MatrixObject 只存 String），Number 目前
+ * 仅在解析期对字面量做一次数值校验，运行期仍按文本传递。 */
+enum class VarType { String_ = 0, Number };
 
 struct TableColumn {
 	std::string name;
@@ -89,6 +92,9 @@ public:
 class Parser {
 	std::vector<Token> tokenSerial_;
 	std::size_t idx_ = 0;
+	/* 建表期登记的列类型：表名 -> (列名 -> 类型)。供 INSERT 对 Number 列做
+	 * 一次解析期数值校验；运行期不保留类型（值仍是字符串）。 */
+	std::map<std::string, std::map<std::string, VarType>> columnTypes_;
 
 	/* 消费下一个 token 或抛错 */
 	const Token& expect() {

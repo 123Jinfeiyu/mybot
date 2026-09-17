@@ -19,6 +19,7 @@ using sql4cj::Event;
 using sql4cj::EventType;
 using sql4cj::Token;
 using sql4cj::TokenType;
+using sql4cj::VarType;
 
 namespace {
 
@@ -44,9 +45,13 @@ TH_TEST(token_keyword_matching_is_ascii_case_insensitive) {
 	TH_CHECK(Token::parse("cReAtE").type == TokenType::CREATE);
 	TH_CHECK(Token::parse("String").type == TokenType::STRING);
 	TH_CHECK(Token::parse("STRING").type == TokenType::STRING);
+	TH_CHECK(Token::parse("Number").type == TokenType::NUMBER);
+	TH_CHECK(Token::parse("NUMBER").type == TokenType::NUMBER);
+	TH_CHECK(Token::parse("nUmBeR").type == TokenType::NUMBER);
 	TH_CHECK(Token::parse("VALUES").type == TokenType::VALUES);
 	/* 长度不同即不是关键字：不能被前缀匹配误判 */
 	TH_CHECK(Token::parse("Strings").type == TokenType::NAME);
+	TH_CHECK(Token::parse("Numbers").type == TokenType::NAME);
 	TH_CHECK(Token::parse("Createx").type == TokenType::NAME);
 	TH_CHECK(Token::parse("Relay").type == TokenType::NAME);
 	TH_CHECK(Token::parse("Relay").name == "Relay");
@@ -216,6 +221,58 @@ TH_TEST(parser_insert_event_pairs_names_with_values) {
 	TH_CHECK(eves[1].insert.tableRows[0][0].columnName == "name");
 	TH_CHECK(eves[1].insert.tableRows[0][0].value == "r0");
 	TH_CHECK(eves[2].insert.tableRows[0][0].value == "r1");
+}
+
+TH_TEST(parser_create_table_records_number_column_type) {
+	std::vector<Event> eves = events("CREATE TABLE T ( a String, b Number, c Number );");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].create.tableColumns.size() == 3);
+	TH_CHECK(eves[0].create.tableColumns[0].type_ == VarType::String_);
+	TH_CHECK(eves[0].create.tableColumns[1].type_ == VarType::Number);
+	TH_CHECK(eves[0].create.tableColumns[2].type_ == VarType::Number);
+}
+
+TH_TEST(parser_number_column_accepts_numeric_values) {
+	/* Integer / 小数 / 带符号 / 引号包裹的数值字面量都算数值；
+	 * 值仍按文本驻留（本层不做类型转换）。 */
+	std::vector<Event> eves = events(
+		"CREATE TABLE T ( v Number );\n"
+		"INSERT INTO T ( v ) VALUES ( 42 );\n"
+		"INSERT INTO T ( v ) VALUES ( -1.5 );\n"
+		"INSERT INTO T ( v ) VALUES ( +2e3 );\n"
+		"INSERT INTO T ( v ) VALUES ( '7' );\n");
+	TH_CHECK(eves.size() == 5);
+	TH_CHECK(eves[1].insert.tableRows[0][0].value == "42");
+	TH_CHECK(eves[2].insert.tableRows[0][0].value == "-1.5");
+	TH_CHECK(eves[3].insert.tableRows[0][0].value == "+2e3");
+	TH_CHECK(eves[4].insert.tableRows[0][0].value == "7");
+}
+
+TH_TEST(parser_number_column_rejects_non_numeric_value) {
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "declared Number",
+		events("CREATE TABLE T ( v Number );\nINSERT INTO T ( v ) VALUES ( abc );"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not numeric",
+		events("CREATE TABLE T ( v Number );\nINSERT INTO T ( v ) VALUES ( 'x1' );"));
+	/* 空值与 nan/inf 字面量同样拒绝（与动作矩阵数值语义一致） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not numeric",
+		events("CREATE TABLE T ( v Number );\nINSERT INTO T ( v ) VALUES ( '' );"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not numeric",
+		events("CREATE TABLE T ( v Number );\nINSERT INTO T ( v ) VALUES ( nan );"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not numeric",
+		events("CREATE TABLE T ( v Number );\nINSERT INTO T ( v ) VALUES ( inf );"));
+}
+
+TH_TEST(parser_number_check_is_by_column_name_only) {
+	/* String 列的自由文本不受影响；Number 校验按列名匹配，不误伤同表其它列 */
+	const std::vector<Event> eves = events(
+		"CREATE TABLE T ( name String, v Number );\n"
+		"INSERT INTO T ( name, v ) VALUES ( abc, 12 );\n");
+	TH_CHECK(eves[1].insert.tableRows[0][0].value == "abc");
+	TH_CHECK(eves[1].insert.tableRows[0][1].value == "12");
+
+	/* 表未在本脚本中 CREATE 时无从校验（消费方负责「表未定义」报错） */
+	const std::vector<Event> other = events("INSERT INTO Other ( v ) VALUES ( abc );");
+	TH_CHECK(other[0].insert.tableRows[0][0].value == "abc");
 }
 
 TH_TEST(parser_rejects_multi_row_values_tuple) {
