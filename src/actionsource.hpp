@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -15,6 +16,20 @@
 #include "util.hpp"
 
 namespace bot {
+
+/* 命令行选项的类型化视图（main 经白名单校验后构造）。
+ * tcpPort/tcpIdle 保留原始字符串：数值形态与范围校验在 openActionSource
+ * 内完成（报错文案与退出路径不变），本结构只消灭 stringly-typed 键与查找。 */
+struct CliOptions {
+	std::optional<std::string> robot;
+	bool help = false;
+	bool tcp = false;
+	std::string tcpPort;
+	std::string tcpHost = "127.0.0.1";
+	std::string tcpToken;
+	std::string tcpIdle;
+	std::optional<std::string> input;
+};
 
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。
  * run()/readSQL() 会把输入整体驻留后再装配（@Alias 必须先于 @Action 生效、
@@ -42,6 +57,11 @@ class FileReader : public Reader {
 public:
 	explicit FileReader(const std::string& path) : file_(std::fopen(path.c_str(), "rb")) {}
 	~FileReader() override { if (file_) { std::fclose(file_); } }
+
+	/* 持 FILE* 句柄：拷贝会造成双重 fclose（F-25） */
+	FileReader(const FileReader&) = delete;
+	FileReader& operator=(const FileReader&) = delete;
+
 	bool good() const { return file_ != nullptr; }
 
 	int read() override {
@@ -49,7 +69,7 @@ public:
 		int c = std::fgetc(file_);
 		/* R3：区分 EOF 与读错误——磁盘 I/O 错误静默当作脚本结束会截断动作 */
 		if (c == EOF && std::ferror(file_)) {
-			std::cout << "警告：动作脚本读取发生 I/O 错误，按 EOF 处理（脚本可能被截断）" << std::endl;
+			std::cerr << "警告：动作脚本读取发生 I/O 错误，按 EOF 处理（脚本可能被截断）" << std::endl;
 		}
 		return c;
 	}
@@ -65,6 +85,10 @@ class TcpStreamReader : public Reader {
 public:
 	explicit TcpStreamReader(int fd, int idleSec) : fd_(fd), idleSec_(idleSec) {}
 	~TcpStreamReader() override { if (fd_ >= 0) { ::close(fd_); } }
+
+	/* 持 socket fd：拷贝会造成双重 close（F-25） */
+	TcpStreamReader(const TcpStreamReader&) = delete;
+	TcpStreamReader& operator=(const TcpStreamReader&) = delete;
 
 	int read() override;
 };
@@ -90,6 +114,6 @@ public:
 
 /* 打开动作输入源：tcp 优先 > 文件 > 标准输入（MemoryReader 整读）。
  * 返回的读取器一律带字节上限；TCP 通道另含绑定地址、空闲超时与可选口令。 */
-std::unique_ptr<Reader> openActionSource(const std::map<std::string, std::string>& options);
+std::unique_ptr<Reader> openActionSource(const CliOptions& options);
 
 } // namespace bot

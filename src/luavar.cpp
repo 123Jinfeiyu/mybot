@@ -32,7 +32,7 @@ bool MtVars_Lua::build_lua(lua_State* L, const std::string& luapath) {
 	}
 
 	/* 栈顶错误信息（判型防空指针）+ 恢复栈 */
-	std::cout << luaErrorString(L) << std::endl;
+	std::cerr << luaErrorString(L) << std::endl;
 	lua_settop(L, 0);
 	return false;
 }
@@ -170,7 +170,7 @@ void MtVars_Lua::freeImpl() {
 	try {
 		metadata = getMetadata_(true);
 	} catch (const std::exception& e) {
-		std::cout << "警告：destroy 参数收集失败（" << e.what()
+		std::cerr << "警告：destroy 参数收集失败（" << e.what()
 			<< "），以空表调用 destroy 以保证器件去初始化" << std::endl;
 	}
 	metadata.put("mode", JsonString("destroy"));

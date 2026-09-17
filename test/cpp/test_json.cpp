@@ -72,11 +72,12 @@ TH_TEST(json_get_requires_object_receiver) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "asObject", JsonInt(1).get("k"));
 }
 
-TH_TEST(json_put_on_non_object_replaces_with_object) {
+TH_TEST(json_put_on_non_object_throws) {
+	/* F-19：put 对非对象显式报错——旧行为把整个值静默换成空对象，数据丢失 */
 	Json j = JsonInt(42);
-	j.put("k", JsonInt(1));
-	TH_CHECK(j.isObj());
-	TH_CHECK(j.toString() == R"({"k":1})");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "put", j.put("k", JsonInt(1)));
+	TH_CHECK(j.isInt());
+	TH_CHECK(j.getInt() == 42);
 }
 
 TH_TEST(json_array_index_bounds) {

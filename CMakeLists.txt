@@ -55,28 +55,30 @@ set(MYBOT_CORE_SOURCES
   src/actionsource.cpp
 )
 
-add_executable(mybot
-  src/main.cpp
-  ${MYBOT_CORE_SOURCES}
-)
-
-target_include_directories(mybot PRIVATE src ${LUAJIT_INCLUDE_DIRS})
-
-# README 声称的零告警基线由此处强制执行（此前构建未启用任何告警标志，
-# 基线只能靠人工手工传标志核查）。不加 -Werror：避免在未测试的编译器版本上直接构建失败。
-target_compile_options(mybot PRIVATE -Wall -Wextra -Wpedantic)
-
-target_link_libraries(mybot PRIVATE
+# 两个目标的公共配置：零告警基线 + LuaJIT 头/库 + 平台库，一处声明一致套用，
+# 避免「测试构建干净、主构建不干净」的错位（原先两份拷贝靠人工同步）。
+add_library(mybot_common INTERFACE)
+target_compile_options(mybot_common INTERFACE -Wall -Wextra -Wpedantic)
+target_include_directories(mybot_common INTERFACE src ${LUAJIT_INCLUDE_DIRS})
+target_link_libraries(mybot_common INTERFACE
   ${LUAJIT_LIBRARIES}
   pthread
   dl
   m
 )
 
+add_executable(mybot
+  src/main.cpp
+  ${MYBOT_CORE_SOURCES}
+)
+
+# README 声称的零告警基线由此处强制执行（此前构建未启用任何告警标志，
+# 基线只能靠人工手工传标志核查）。不加 -Werror：避免在未测试的编译器版本上直接构建失败。
+target_link_libraries(mybot PRIVATE mybot_common)
+
 # ======================================================================
 # C++ 层单元测试（test/cpp/）：零第三方框架，harness.hpp 自带断言与注册。
-# 与被测程序共用同一套源文件（除 main.cpp），因此不需要 mybot 变成库目标；
-# 告警标志与链接库也保持完全一致，避免「测试构建干净、主构建不干净」的错位。
+# 与被测程序共用同一套源文件（除 main.cpp），因此不需要 mybot 变成库目标。
 # ======================================================================
 add_executable(mybot_tests
   test/cpp/main.cpp
@@ -91,14 +93,8 @@ add_executable(mybot_tests
   ${MYBOT_CORE_SOURCES}
 )
 
-target_include_directories(mybot_tests PRIVATE src test/cpp ${LUAJIT_INCLUDE_DIRS})
-target_compile_options(mybot_tests PRIVATE -Wall -Wextra -Wpedantic)
-target_link_libraries(mybot_tests PRIVATE
-  ${LUAJIT_LIBRARIES}
-  pthread
-  dl
-  m
-)
+target_include_directories(mybot_tests PRIVATE test/cpp)
+target_link_libraries(mybot_tests PRIVATE mybot_common)
 
 enable_testing()
 add_test(NAME cpp_unit COMMAND mybot_tests)

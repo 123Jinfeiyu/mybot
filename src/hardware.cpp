@@ -94,7 +94,7 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 	std::string name = defs(i, idxName);
 	std::string alias = MatrixVars_Hardware::getMt(defs, i, idxAlias);
 
-	std::cout << "Create an Alias vars: " << name << ", which means " << alias << std::endl;
+	std::cerr << "Create an Alias vars: " << name << ", which means " << alias << std::endl;
 
 	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(
 		[alias](const Json&) { return JsonString(alias); }));

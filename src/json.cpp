@@ -37,12 +37,12 @@ std::optional<Json> Json::get(const std::string& key) const {
 }
 
 void Json::put(const std::string& key, Json v) {
-	Json& o = *this;
-	if (o.type != T::Obj) { o = Json(T::Obj); }
-	for (auto& kv : o.obj) {
+	/* F-19：非对象显式报错——旧行为静默把整个值替换成空对象，数据丢失 */
+	if (type != T::Obj) { typeError("put", type); }
+	for (auto& kv : obj) {
 		if (kv.first == key) { kv.second = std::move(v); return; }
 	}
-	o.obj.emplace_back(key, std::move(v));
+	obj.emplace_back(key, std::move(v));
 }
 
 const Json& Json::at(std::size_t n) const {

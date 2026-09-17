@@ -9,7 +9,6 @@
  */
 
 #include <cstddef>
-#include <map>
 #include <memory>
 #include <string>
 
@@ -77,35 +76,39 @@ TH_TEST(too_large_survives_matrix_parser_without_downgrade) {
 }
 
 TH_TEST(open_action_source_rejects_missing_input_file) {
-	std::map<std::string, std::string> opts;
-	opts["input"] = "./definitely-not-here-9f3a1c.mt";
+	bot::CliOptions opts;
+	opts.input = "./definitely-not-here-9f3a1c.mt";
 	TH_CHECK(bot::openActionSource(opts) == nullptr);
 }
 
 TH_TEST(open_action_source_rejects_bad_tcp_port) {
-	std::map<std::string, std::string> opts;
+	bot::CliOptions opts;
 	for (const char* bad : {"0", "-1", "65536", "abc", ""}) {
-		opts["tcp"] = bad;
+		opts = bot::CliOptions{};
+		opts.tcp = true;
+		opts.tcpPort = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
 
 TH_TEST(open_action_source_rejects_bad_tcp_host) {
-	std::map<std::string, std::string> opts;
-	opts["tcp"] = "19999";
+	bot::CliOptions opts;
+	opts.tcp = true;
+	opts.tcpPort = "19999";
 	for (const char* bad : {"not-an-ip", "localhost", "999.1.1.1", "127.0.0.1:80"}) {
-		opts["tcp-host"] = bad;
+		opts.tcpHost = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
 
 TH_TEST(open_action_source_rejects_bad_tcp_idle) {
 	/* 空闲超时非法即拒绝：缺省 30s 的兜底不能被 "0" 变成「永不超时」 */
-	std::map<std::string, std::string> opts;
-	opts["tcp"] = "19999";
-	opts["tcp-host"] = "127.0.0.1";
+	bot::CliOptions opts;
+	opts.tcp = true;
+	opts.tcpPort = "19999";
+	opts.tcpHost = "127.0.0.1";
 	for (const char* bad : {"0", "-5", "86401", "soon"}) {
-		opts["tcp-idle"] = bad;
+		opts.tcpIdle = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }

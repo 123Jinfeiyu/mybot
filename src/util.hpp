@@ -5,6 +5,7 @@
  */
 
 #include <atomic>
+#include <cerrno>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -48,6 +49,19 @@ inline std::optional<std::string> getEnvVar(const std::string& name) {
 	return v == nullptr ? std::nullopt : std::optional<std::string>(std::string(v));
 }
 
+/* 严格整数解析的失败形态：调用方按场景给出人话报错（本项目错误信息惯例） */
+enum class IntParse { OK, NOT_INT, OVERFLOW };
+
+/* strtoll + ERANGE + 全串消费；负号等细节语义由调用方按场景裁决 */
+inline std::pair<IntParse, long long> parseLongStrict(const std::string& s) {
+	char* end = nullptr;
+	errno = 0;
+	long long v = std::strtoll(s.c_str(), &end, 10);
+	if (end == s.c_str() || *end != '\0') { return {IntParse::NOT_INT, 0}; }
+	if (errno != 0) { return {IntParse::OVERFLOW, 0}; }
+	return {IntParse::OK, v};
+}
+
 /* D4：信号停止标志——SIGINT/SIGTERM 处理器置位，主流程与阻塞点（TCP accept）
  * 检查后放弃阻塞，让 deactivate 清理链（destroy / 守护停机）正常走完再退出。 */
 inline std::atomic<bool>& stopRequested() {
@@ -69,7 +83,7 @@ public:
 
 /* 惰性调试日志：仅 debug 模式才求值消息体（对应 Cangjie logD(() -> String)） */
 inline void logD(const std::function<std::string()>& msg) {
-	if (DebugSwitch::enabled()) { std::cout << msg() << std::endl; }
+	if (DebugSwitch::enabled()) { std::cerr << msg() << std::endl; }
 }
 
 inline std::string trim(const std::string& s) {

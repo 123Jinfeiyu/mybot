@@ -1,6 +1,5 @@
 #include "daemonvar.hpp"
 
-#include <cerrno>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -70,13 +69,13 @@ int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chu
 	/* 跑 chunk 一次完成 setup 并定义全局 daemon_tick */
 	int st = luaL_loadfile(L, chunk.c_str());
 	if (st != LUA_OK) {
-		std::cout << "[daemon] chunk load error: " << luaErrorString(L) << std::endl;
+		std::cerr << "[daemon] chunk load error: " << luaErrorString(L) << std::endl;
 		lua_close(L);
 		return -1;
 	}
 	int setupStatus = lua_pcall(L, 0, LUA_MULTRET, 0);
 	if (setupStatus != LUA_OK) {
-		std::cout << "[daemon] chunk setup error: " << luaErrorString(L) << std::endl;
+		std::cerr << "[daemon] chunk setup error: " << luaErrorString(L) << std::endl;
 		lua_close(L);
 		return -1;
 	}
@@ -87,7 +86,7 @@ int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chu
 		lua_getglobal(L, "daemon_tick");
 		int st2 = lua_pcall(L, 0, LUA_MULTRET, 0);
 		if (st2 != LUA_OK) {
-			std::cout << "[daemon] tick error: " << luaErrorString(L) << std::endl;
+			std::cerr << "[daemon] tick error: " << luaErrorString(L) << std::endl;
 		}
 		lua_settop(L, 0);
 		std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
@@ -98,7 +97,7 @@ int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chu
 	if (lua_type(L, -1) == LUA_TFUNCTION) {
 		int st3 = lua_pcall(L, 0, LUA_MULTRET, 0);
 		if (st3 != LUA_OK) {
-			std::cout << "[daemon] cleanup error: " << luaErrorString(L) << std::endl;
+			std::cerr << "[daemon] cleanup error: " << luaErrorString(L) << std::endl;
 		}
 	}
 	lua_settop(L, 0);
@@ -184,23 +183,22 @@ static Json daemonPlay(DaemonHolder* holder) {
 }
 
 /* ---- interval 解析与校验（≤0 会空转占满 CPU，显式报错）----
- * C9：strtoll 检查 ERANGE（上溢/下溢），并钳制合理上限——
+ * C9：解析经 util 的 parseLongStrict（NOT_INT/OVERFLOW 分型），并钳制合理上限——
  * join 超时按 interval*5 计算，钳制后乘法不溢出。 */
 static int64_t parseInterval(const std::string& iv, const std::string& name,
 		const std::string& tabName, int64_t row) {
-	char* end = nullptr;
-	errno = 0;
-	long long parsed = std::strtoll(iv.c_str(), &end, 10);
-	if (end == iv.c_str() || *end != '\0') {
+	auto parsed_ = parseLongStrict(iv);
+	if (parsed_.first == IntParse::NOT_INT) {
 		throw IllegalArgumentException(
 			"Daemon '" + name + "': column 'interval' value '" + iv +
 			"' is not a valid integer (in table '" + tabName + "', row " + std::to_string(row) + ").");
 	}
-	if (errno == ERANGE || parsed < 0) {
+	if (parsed_.first == IntParse::OVERFLOW || parsed_.second < 0) {
 		throw IllegalArgumentException(
 			"Daemon '" + name + "': column 'interval' value '" + iv +
 			"' is out of range (in table '" + tabName + "', row " + std::to_string(row) + ").");
 	}
+	long long parsed = parsed_.second;
 	if (parsed == 0) {
 		throw IllegalArgumentException(
 			"Daemon '" + name + "': column 'interval' must be > 0 ms, got " + std::to_string(parsed) +
@@ -234,7 +232,7 @@ static void daemonRise(DaemonHolder* holder, const std::string& name,
 		try { prom->set_value(r); } catch (...) { /* future 已被消费/进程退出 */ }
 	}).detach();
 	holder->spawned.store(true);	/* D1：promise 必将被 set，停机可走 join 超时路径 */
-	std::cout << "Daemon '" << name << "' spawned, config: " << configStr << std::endl;
+	std::cerr << "Daemon '" << name << "' spawned, config: " << configStr << std::endl;
 }
 
 /* ---- free 事件：置停止 + 带超时等待退出 + 销毁 mutex/槽 ----
@@ -245,7 +243,7 @@ static void daemonFree(DaemonHolder* holder, const std::string& name) {
 	DaemonSlot* slot = holder->slot.load();
 	daemon_request_stop(slot);
 	if (!holder->spawned.load()) {
-		std::cout << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
+		std::cerr << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
 		releaseSlot(slot);
 		holder->slot.store(nullptr);
 		return;
@@ -254,13 +252,13 @@ static void daemonFree(DaemonHolder* holder, const std::string& name) {
 		std::future_status st = holder->fut.wait_for(std::chrono::milliseconds(holder->joinTimeoutMs));
 		if (st == std::future_status::ready) {
 			int64_t n = holder->fut.get();
-			std::cout << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
+			std::cerr << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
 			releaseSlot(slot);
 			holder->slot.store(nullptr);
 			return;
 		}
 		holder->abandoned.store(true);
-		std::cout << "Daemon '" << name << "' not exited within " << holder->joinTimeoutMs
+		std::cerr << "Daemon '" << name << "' not exited within " << holder->joinTimeoutMs
 			<< "ms, abandoning slot (thread will release it on exit)" << std::endl;
 		return;
 	}
@@ -285,7 +283,7 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 	auto modulePathOpt = getEnvVar("BOT4CJ_MODULE_PATH");
 	std::string modulePath = modulePathOpt.value_or("./modules");
 	std::string chunkPath = resolveDaemonChunk(chunkRaw, modulePath);
-	std::cout << "Create a Daemon hard-Var: " << name << ", chunk: " << chunkPath << std::endl;
+	std::cerr << "Create a Daemon hard-Var: " << name << ", chunk: " << chunkPath << std::endl;
 
 	/* 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms） */
 	std::string cfgAcc;

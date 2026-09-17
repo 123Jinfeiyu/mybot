@@ -234,7 +234,7 @@ Json call_lua(lua_State* L, const Json& json) {
 		}
 	} else {
 		std::string errStr = luaErrorString(L);
-		std::cout << "Lua 错误详情: " << errStr << std::endl;
+		std::cerr << "Lua 错误详情: " << errStr << std::endl;
 		ret.put("result", JsonString("ERR"));
 		ret.put("message", JsonString(errStr));
 	}

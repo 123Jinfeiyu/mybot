@@ -1,9 +1,10 @@
+#include <algorithm>
 #include <cstdlib>
 #include <csignal>
 #include <iostream>
-#include <map>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "actionsource.hpp"
 #include "robot.hpp"
@@ -18,9 +19,15 @@ extern "C" void onStopSignal(int) {
 	bot::stopRequested().store(true);
 }
 
-/* ---- 命令行参数解析：--key=value 与 --key value 双形态 ---- */
-static std::map<std::string, std::string> parseArgs(int argc, char** argv) {
-	std::map<std::string, std::string> opts;
+/* ---- 命令行参数解析：--key=value 与 --key value 双形态 ----
+ * 未知键收进 unknown（F-20：由调用方统一拒绝，退出码 2）。 */
+struct ParsedArgs {
+	bot::CliOptions opts;
+	std::vector<std::string> unknown;
+};
+
+static ParsedArgs parseArgs(int argc, char** argv) {
+	ParsedArgs out;
 	for (int k = 1; k < argc; ++k) {
 		std::string a = argv[k];
 		if (a.rfind("--", 0) != 0) { continue; }	/* 忽略位置参数 */
@@ -35,18 +42,16 @@ static std::map<std::string, std::string> parseArgs(int argc, char** argv) {
 		} else {
 			val = "1";
 		}
-		opts[key] = val;
+		if (key == "robot") { out.opts.robot = val; }
+		else if (key == "help") { out.opts.help = true; }
+		else if (key == "tcp") { out.opts.tcp = true; out.opts.tcpPort = val; }
+		else if (key == "tcp-host") { out.opts.tcpHost = val; }
+		else if (key == "tcp-token") { out.opts.tcpToken = val; }
+		else if (key == "tcp-idle") { out.opts.tcpIdle = val; }
+		else if (key == "input") { out.opts.input = val; }
+		else { out.unknown.push_back(key); }
 	}
-	return opts;
-}
-
-/* ---- 已知的 --key 白名单（须与 print_help 的参数表保持同步）---- */
-static bool isKnownOption(const std::string& key) {
-	static const char* const kKnown[] = {
-		"robot", "help", "tcp", "tcp-host", "tcp-token", "tcp-idle", "input",
-	};
-	for (const char* k : kKnown) { if (key == k) { return true; } }
-	return false;
+	return out;
 }
 
 void print_help() {
@@ -71,10 +76,11 @@ void print_help() {
 int main(int argc, char** argv) {
 	using namespace bot;
 
-	auto options = parseArgs(argc, argv);
+	auto args = parseArgs(argc, argv);
+	const CliOptions& options = args.opts;
 
 	/* ---- 拉起帮助手册 ---- */
-	if (options.count("help")) {
+	if (options.help) {
 		print_help();
 		return 0;
 	}
@@ -82,24 +88,25 @@ int main(int argc, char** argv) {
 	/* ---- F-20：未知/拼错的 --key 一律拒绝（退出码 2）----
 	 * 旧行为是静默忽略：`--robott=foo` 打印帮助后 exit 0（CI 里的假成功），
 	 * `--robot` 拼错还会让程序在「没给结构脚本」的路径上看似正常退出。 */
-	for (const auto& kv : options) {
-		if (!isKnownOption(kv.first)) {
-			std::cout << "未知参数：--" << kv.first << "；用 --help 查看支持的参数" << std::endl;
-			return 2;
+	if (!args.unknown.empty()) {
+		std::sort(args.unknown.begin(), args.unknown.end());
+		for (const auto& key : args.unknown) {
+			std::cerr << "未知参数：--" << key << "；用 --help 查看支持的参数" << std::endl;
 		}
+		return 2;
 	}
 
 	/* ---- 结构脚本 + 动作输入源分支 ---- */
-	if (options.count("robot")) {
-		std::string rpath = options["robot"];
+	if (options.robot) {
+		std::string rpath = *options.robot;
 
 		/* 友好报错：结构脚本打不开 → 人话提示，不裸栈回溯 */
 		std::unique_ptr<Reader> fstream;
 		{
 			auto f = std::make_unique<FileReader>(rpath);
 			if (!f->good()) {
-				std::cout << "无法打开结构脚本 '" << rpath << "'" << std::endl;
-				std::cout << "请确认 --robot 指向存在的结构脚本，示例：cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql" << std::endl;
+				std::cerr << "无法打开结构脚本 '" << rpath << "'" << std::endl;
+				std::cerr << "请确认 --robot 指向存在的结构脚本，示例：cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql" << std::endl;
 				return 1;
 			}
 			/* F-02：结构脚本与动作脚本共用同一字节上限——readSQL 先把全部
@@ -111,8 +118,8 @@ int main(int argc, char** argv) {
 		try {
 			robot = std::make_unique<RobotStruct>(*fstream);
 		} catch (const std::exception& e) {
-			std::cout << "结构脚本解析失败 '" << rpath << "': " << e.what() << std::endl;
-			std::cout << "无硬件自检链路：cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql" << std::endl;
+			std::cerr << "结构脚本解析失败 '" << rpath << "': " << e.what() << std::endl;
+			std::cerr << "无硬件自检链路：cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql" << std::endl;
 			return 1;
 		}
 
@@ -133,11 +140,11 @@ int main(int argc, char** argv) {
 			if (input) {
 				robot->run(*input);
 			} else {
-				std::cout << "动作输入源打开失败，退出" << std::endl;
+				std::cerr << "动作输入源打开失败，退出" << std::endl;
 				rc = 1;
 			}
 		} catch (const std::exception& e) {
-			std::cout << "Aborted: " << e.what() << std::endl;
+			std::cerr << "Aborted: " << e.what() << std::endl;
 			rc = 1;
 		}
 

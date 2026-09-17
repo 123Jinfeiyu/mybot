@@ -116,7 +116,7 @@ void RobotStruct::registerAliasMatrix(const mt::MatrixObject& matrix, std::set<s
 			}
 			session->insert(name);
 			if (hardwareVars_.count(name)) {
-				std::cout << "Alias '" << name << "' defined in action script overrides the structure definition" << std::endl;
+				std::cerr << "Alias '" << name << "' defined in action script overrides the structure definition" << std::endl;
 			}
 			MatrixVars_Hardware* p = aliasVar.get();
 			hardwareVars_[name] = p;	/* 会话期覆盖式注册（结构定义被动作脚本别名覆盖） */
@@ -229,7 +229,7 @@ void RobotStruct::deactivate() {
 			++failed;
 			/* 同因重复失败（如某次 play 已抛同错）只提示一次，避免刷屏 */
 			if (std::string(e.what()) != lastWarn) {
-				std::cout << "Deactive warning: " << e.what() << std::endl;
+				std::cerr << "Deactive warning: " << e.what() << std::endl;
 				lastWarn = e.what();
 			}
 		}
@@ -237,7 +237,7 @@ void RobotStruct::deactivate() {
 	/* F-04：清理失败显式汇总——静默跳过的去初始化会让器件滞留最后指令状态
 	 * （如 MAX30102 未关断、BH1750 未断电），必须让调用方看见 */
 	if (failed > 0) {
-		std::cout << "Deactivate: " << failed << " of " << hwSeq_.size()
+		std::cerr << "Deactivate: " << failed << " of " << hwSeq_.size()
 			<< " hardware variable(s) failed to destroy (see warnings above)" << std::endl;
 	}
 }
@@ -273,7 +273,7 @@ void RobotStruct::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(actionDefs.rows()); ++i) {
 		/* D4：SIGINT/SIGTERM 后停止派发新动作帧，让 deactivate 清理链正常执行 */
 		if (stopRequested()) {
-			std::cout << "Stop requested, halting action dispatch (row " << i << ")" << std::endl;
+			std::cerr << "Stop requested, halting action dispatch (row " << i << ")" << std::endl;
 			break;
 		}
 		Json set = JsonObject();
