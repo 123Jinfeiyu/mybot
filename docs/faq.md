@@ -27,3 +27,18 @@ A: HAL 已用 `I2C_RDWR` 原子事务，地址由每条 i2c_msg 携带，不需�
 ### Q: 报错提示看不懂怎么办？
 
 A: 结构脚本报错会指明是哪张表哪一行哪一列；动作脚本报错会说明是哪个硬件变量与参数。按提示修正即可。
+
+### Q: 不知道 SCSCL 舵机现在的站号（二手舵机 / 被别人改过号）怎么办？
+
+A: 结构脚本的 `id` 列描述的是**舵机此刻的真实站号**，不是你想设的值——不知道就没法装配（`build()` 会 PING 它，不应答即报 `No PING response`）。`modules/SCSCL.lua` 把 `id` 限死在 1~253，广播地址 `0xFE` 被明确拒绝（驱动不承担扫总线职责，且放行广播会让一个 typo 同时动到总线所有舵机），所以用独立扫描工具：
+
+```bash
+luajit scripts/scscl_scan.lua --scan            # 逐号 1~253 定向 PING（多舵机用这个，不会冲突）
+luajit scripts/scscl_scan.lua                   # 广播 PING（只挂一块舵机时最快）
+luajit scripts/scscl_scan.lua --scan --to 32    # 限定范围，省时间
+luajit scripts/scscl_scan.lua --raw             # 附原始字节 dump，用来分辨「线路不通」与「协议对不上」
+```
+
+全程只发 PING(0x01)，不写任何寄存器、不碰 EPROM，可反复跑。输出末尾会给出可直接粘贴的 `INSERT INTO SCSCL ...` 片段。注意两点：打开 `/dev/serial0` 需要 root 或 `dialout` 组；广播 PING 会让总线上**每块**舵机同时应答，半双工单总线会帧冲突，所以只适合只挂一块时"捉"它——多舵机请用 `--scan`。
+
+想把舵机换成你指定的号：在 `.mt` 里单开一行写 `set_id=N`（解锁 EPROM → 广播写号，断电重启生效；真机烧号只接目标舵机），重启后再把 `.sql` 的 `id` 改成 N。完整流程见 `modules/SCSCL.lua` 头部注释。
