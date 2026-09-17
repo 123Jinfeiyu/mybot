@@ -11,7 +11,7 @@ thread_local int MtVars_Lua::topDepth = 0;
 
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
 std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, const std::string& name,
-		std::function<Json()> getMetadata, MatrixVars_Hardware* controller) {
+		std::function<Json(bool)> getMetadata, MatrixVars_Hardware* controller) {
 	lua_State* L = luaL_newstate();
 	if (L == nullptr) {
 		throw std::runtime_error("Lua_check()");
@@ -71,7 +71,7 @@ Json MtVars_Lua::callImpl(const Json& json) {
 	if (top) { std::cout << "----------" << std::endl; }
 
 	/* 获取元数据（静态列缓存重放 + 引用列实时快照） */
-	Json metadata = getMetadata_();
+	Json metadata = getMetadata_(false);
 
 	/* 仅顶层（.mt 直接派发）校验：controller 转发的 payload 本就由框架拼装、
 	 * 含上游元数据与返回键，属内部数据流，不受此约束。 */
@@ -125,7 +125,7 @@ Json MtVars_Lua::readImpl() {
 			+ "': Lua state not built or already released (variable destroyed before being read)");
 	}
 	int mode = luaGlobalType(L_, "read") != LUA_TNIL ? 1 : 0;
-	Json metadata = getMetadata_();
+	Json metadata = getMetadata_(false);
 	metadata.put("mode", JsonString(mode ? "read" : "call"));
 	return call_lua(L_, metadata);
 }
@@ -137,7 +137,7 @@ void MtVars_Lua::riseImpl() {
 			+ "'. Please check if the file exists and is valid Lua code.");
 	}
 
-	Json metadata = getMetadata_();
+	Json metadata = getMetadata_(false);
 	metadata.put("mode", JsonString("build"));
 	logD([&metadata] { return "Lua scripts build parameters: " + metadata.toString(); });
 
@@ -161,7 +161,18 @@ void MtVars_Lua::freeImpl() {
 		return;
 	}
 
-	Json metadata = getMetadata_();
+	/* F-04：destroy 只取字面列，不解析 $ 引用——引用缺省实现 read() 是一次
+	 * 真实硬件事务（且对已释放变量主动抛错），异常一旦传出，本驱动的
+	 * destroy 根本不会被调用：MAX30102 的 BIT_SHDN、BH1750 的 POWER_DOWN
+	 * 这类去初始化就静默丢失，器件滞留最后指令状态。收集失败降级为空表，
+	 * 保证去初始化调用仍然发生。 */
+	Json metadata = JsonObject();
+	try {
+		metadata = getMetadata_(true);
+	} catch (const std::exception& e) {
+		std::cout << "警告：destroy 参数收集失败（" << e.what()
+			<< "），以空表调用 destroy 以保证器件去初始化" << std::endl;
+	}
 	metadata.put("mode", JsonString("destroy"));
 	logD([&metadata] { return "Lua scripts destroy parameters: " + metadata.toString(); });
 

@@ -4,6 +4,7 @@
 
 ## v1.x（C++ 移植版）
 
+- **`$` 引用校验前移 + destroy 静态元数据（F-04/F-05）**：`$` 引用存在性校验从惰性（首次 collect 时）提前到全部表装配完成后、任何驱动 `build` 之前（`active()` 统一校验，失败不碰真机；前向引用仍合法，与 `controller` 列的「必须先行声明」明确区分并写入 `docs/dsl.md`）；`destroy` 改为只取字面列（`MetaProvider::collectStatic`），不再解析 `$` 引用——引用的缺省实现 `read()` 是一次真实硬件事务、且对已释放变量主动抛错，异常一旦传出驱动的去初始化就被静默跳过（MAX30102 未关断 / BH1750 未断电，器件滞留最后指令状态）；收集失败降级为空表保证 `destroy` 仍被调用，`deactivate` 末尾显式汇总失败数量。守门新增 `ref_forward`（前向引用 + 断言无 `Deactive warning`）与 `ref_undefined`（未定义引用 → 装配期报错且先于任何 build，断言无 `spawned, config:`）；用例表新增可选第 5 字段「输出必须不含」
 - **virtbus 读族入参校验对齐 HAL（F-07）**：寄存器/地址改走 `byte_of`/`uint_of`——`reg=-1`/`reg=300` 不再被 `math.floor(reg) % 256` 静默回绕成 0xFF/44（真机必失败的调用在仿真里曾能成功），`set_addr` 拒绝负数；`n` 参数接受小数并向下取整（与 HAL `uint_of` 接受集一致，旧实现额外收紧）；字节表族 `n` 非法返回 `nil`（旧实现 `nil→1` 静默成功）；`uart_read` 超时超 60000ms 与 HAL 同样失败；`test_virtbus`/`test_virtbus_spi` 补 11 条对齐断言（含"非法寄存器不产生任何总线事务"）
 - **并发与退出路径收口（F-01/F-08/F-23）**：`DaemonHolder::slot` 由裸指针改为 `std::atomic<DaemonSlot*>`（主线程 play/free 与守护线程自释两端读写，取用一律显式 `load()`），守护退出时 `count` 从锁外裸读移入槽内 mutex 临界区（与 stop 纪律对齐）；守门新增「信号/退出路径」段（播放中 SIGTERM → rc=0 + 停派发行 + 守护 join；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错，此前 sigaction/停机分支零覆盖）；`CMakeLists.txt` 新增 `MYBOT_SANITIZE` 开关（address,undefined / thread），`test/run_san.sh` 提供 Release+sanitizer 双跑守门
 - **审计廉价批**：未知/拼错的 `--key` 由「打印帮助 + exit 0」改为报错并以退出码 2 结束（`main.cpp` `isKnownOption`，守门补 `unknown_arg` 负值用例）——拼错 `--robot` 曾是 CI 假成功出口；MS5611 非法 `osr`（非数字 / <256 无档可降）由静默回落最慢档 4096 改为 build 期显式 ERR、且校验先于一切总线动作（test_ms5611.lua 补三条负值断言与零总线事务检查）

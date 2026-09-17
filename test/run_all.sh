@@ -324,6 +324,9 @@ fi
 #   mt_crlf     同上但 CRLF 行尾 → 修复不得只按 LF 语义而破坏 CRLF
 #   mt_ragged   行内单元格数与表头不齐 → 须报 "Does Not Sync" 且行号准确
 #   ref_alias_scalar  $ 引用指向标量 Alias → 报 "non-object" 而非类型崩溃
+#   ref_forward    $ 前向引用合法（装配后统一校验）+ destroy 只取字面列
+#                  （不再出现读已释放引用的 Deactive warning，F-04/F-05）
+#   ref_undefined  $ 指向未定义变量 → 装配期报错且先于任何驱动 build（无 spawned）
 #   pca9685_virt / pca9685_badchan
 #                 首条【非守护】virt 覆盖：@Action 直写舵机驱动板走内存仿真
 #                 （drv_common 入口前置注入 + adopt_fd 跨状态机采纳 fd）；
@@ -332,7 +335,7 @@ fi
 #                 首个【UART 非守护】virt 覆盖（BUS="uart" 模型 attach_uart +
 #                 adopt uart fd）：@Action 直写总线舵机（SCSCL，大端帧/1M 波特率）；
 #                 负值断言站号非法在 build 期被守卫
-# 用例表：SQL|MT|期望退出码|输出必须包含（MT/SQL 含 "/" 时视为仓库根相对路径）
+# 用例表：SQL|MT|期望退出码|输出必须包含|输出必须不含（第 5 字段可省；MT/SQL 含 "/" 时视为仓库根相对路径）
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
 parse_cases=(
@@ -354,6 +357,8 @@ parse_cases=(
 	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
 	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
+	'ref_forward.sql|ref_forward.mt|0|joined, total publishes=|Deactive warning'
+	'ref_undefined.sql|ref_undefined.mt|1|but it is not defined|spawned, config:'
 	'lex_semicolons.sql|lex_semicolons.mt|1|Token ;'
 	'param_override.sql|param_override.mt|1|is rejected because'
 	'daemon_badfield.sql|daemon_badfield.mt|0|absent or non-numeric in driver result'
@@ -363,7 +368,7 @@ parse_cases=(
 	'scscl_badid.sql|scscl_badid.mt|1|Invalid Argument: id'
 )
 run_one_parse() {
-	local sql="$1" mt="$2" want_rc="$3" expect="$4"
+	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5"
 	echo "----- $sql/$mt (no-hw contract) -----"
 	local sql_path="$sql" mt_path="$mt"
 	[[ "$sql" != */* ]] && sql_path="robots/test/$sql"
@@ -378,6 +383,11 @@ run_one_parse() {
 	local p_ok=true
 	[ "$rc" -ne "$want_rc" ] && p_ok=false
 	echo "$out" | grep -qF "$expect" || p_ok=false
+	# 可选「禁止出现」断言（用例表第 5 字段）：用于「修复后不再出现的旧症状」
+	# （如 $ 引用已释放变量的 Deactive warning、build 期不该发生的 spawned）
+	if [ -n "$forbid" ]; then
+		echo "$out" | grep -qF "$forbid" && p_ok=false
+	fi
 	if $p_ok; then
 		pass=$((pass + 1))
 	else
@@ -395,11 +405,13 @@ else
 		mt="${rest%%|*}"
 		rest="${rest#*|}"
 		want_rc="${rest%%|*}"
-		expect="${rest##*|}"
+		rest="${rest#*|}"
+		expect="${rest%%|*}"
+		if [ "$expect" = "$rest" ]; then forbid=""; else forbid="${rest#*|}"; fi
 		if [ -n "$filter" ] && [[ "$sql" != *"$filter"* ]] && [[ "$mt" != *"$filter"* ]]; then
 			continue
 		fi
-		run_one_parse "$sql" "$mt" "$want_rc" "$expect"
+		run_one_parse "$sql" "$mt" "$want_rc" "$expect" "$forbid"
 	done
 fi
 

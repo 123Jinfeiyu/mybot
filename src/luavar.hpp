@@ -23,11 +23,14 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	lua_State* L_;
 	std::string luapath_;
 	std::string name_;
-	std::function<Json()> getMetadata_;
+	/* staticOnly=true 时只取字面列（不解析 $ 引用）——destroy 阶段用：
+	 * 引用解析 read() 缺省实现是一次真实硬件事务，且对已释放变量会抛错，
+	 * 让器件的去初始化被静默跳过（F-04）。 */
+	std::function<Json(bool staticOnly)> getMetadata_;
 	MatrixVars_Hardware* controller_ = nullptr;
 
 	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,
-			std::function<Json()> getMetadata, MatrixVars_Hardware* controller)
+			std::function<Json(bool)> getMetadata, MatrixVars_Hardware* controller)
 		: MatrixVars_Hardware(
 			[this](const Json& json) { return callImpl(json); },
 			[this]() { riseImpl(); },
@@ -54,7 +57,7 @@ public:
 	Json read() override { return readImpl(); }
 
 	static std::unique_ptr<MtVars_Lua> Factory(const std::string& luapath, const std::string& name,
-			std::function<Json()> getMetadata, MatrixVars_Hardware* controller);
+			std::function<Json(bool)> getMetadata, MatrixVars_Hardware* controller);
 };
 
 } // namespace bot

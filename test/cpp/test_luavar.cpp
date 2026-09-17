@@ -43,8 +43,9 @@ Json params(std::initializer_list<const char*> keys) {
 }
 
 std::unique_ptr<MtVars_Lua> makeVar() {
-	return MtVars_Lua::Factory("./definitely-not-here-9f3a1c.lua", "relay0", &relayMetadata,
-		nullptr);
+	/* 第二参 staticOnly：destroy 路径只取字面列（F-04）——本夹具不需要区分 */
+	return MtVars_Lua::Factory("./definitely-not-here-9f3a1c.lua", "relay0",
+		[](bool) { return relayMetadata(); }, nullptr);
 }
 
 } // namespace

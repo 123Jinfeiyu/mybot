@@ -40,6 +40,10 @@ public:
 		: matrix_(matrix), row_(row), skipCol_(skipCol), hardwareVars_(hardwareVars) {}
 
 	Json collect();
+	/* F-04：仅静态列（不解析 $ 引用）——destroy 阶段用 */
+	Json collectStatic();
+	/* F-05：装配完成后、build 前做引用存在性校验（seed 未通过即抛出） */
+	void validate() { seed(); }
 };
 
 class RobotStruct {
@@ -48,6 +52,9 @@ class RobotStruct {
 	std::map<std::string, MatrixVars_Hardware*> hardwareVars_;	/* 名字 → 硬件变量 */
 	std::vector<std::unique_ptr<MatrixVars_Hardware>> hwPool_;	/* 所有权（含 run 期注册的别名） */
 	std::vector<MatrixVars_Hardware*> hwSeq_;			/* 声明序：active/deactivate 按序 */
+	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
+	 * $ 引用存在性（shared_ptr 与变量同生命周期，防悬垂） */
+	std::vector<std::shared_ptr<MetaProvider>> metaProviders_;
 
 	/* 安全添加硬件变量（查重复键；source 指明声明来源） */
 	void addHardwareVar(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,

@@ -26,7 +26,7 @@ void MetaProvider::seed() {
 			} else {
 				throw IllegalArgumentException("'" + value + "' (column '" + colName
 					+ "') in table '" + matrix_.getName() + "' row " + std::to_string(row_)
-					+ ": references hardware variable '" + refName + "', but it is not defined.");
+					+ ": references hardware variable '" + refName + "', but it is not defined. ('$' may forward-reference a variable declared later in the script, but the name must exist; checked after all tables are registered and before any driver build.)");
 			}
 		} else {
 			cArr.push_back(colName);
@@ -49,6 +49,17 @@ struct RefDepthGuard {
 };
 } // namespace
 
+Json MetaProvider::collectStatic() {
+	seed();
+	Json obj = JsonObject();
+	auto& colsArr = *cols_;
+	auto& valsArr = *vals_;
+	for (std::size_t k = 0; k < colsArr.size(); ++k) {
+		obj.put(colsArr[k], JsonString(valsArr[k]));
+	}
+	return obj;
+}
+
 Json MetaProvider::collect() {
 	if (t_refDepth >= kMaxRefDepth) {
 		throw IllegalArgumentException("circular '$' reference detected: reference chain exceeds "
@@ -59,13 +70,7 @@ Json MetaProvider::collect() {
 	++t_refDepth;
 	RefDepthGuard depthGuard;
 
-	seed();
-	Json obj = JsonObject();
-	auto& colsArr = *cols_;
-	auto& valsArr = *vals_;
-	for (std::size_t k = 0; k < colsArr.size(); ++k) {
-		obj.put(colsArr[k], JsonString(valsArr[k]));
-	}
+	Json obj = collectStatic();
 	for (const std::string& name : *refs_) {
 		auto it = hardwareVars_->find(name);
 		if (it != hardwareVars_->end()) {
@@ -172,8 +177,11 @@ void RobotStruct::createLuaVars(const mt::MatrixObject& matrix, const std::strin
 			}
 		}
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, idxCtrl, &hardwareVars_);
+		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
 		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
-			[metaProv] { return metaProv->collect(); }, ctrl),
+			[metaProv](bool staticOnly) {
+				return staticOnly ? metaProv->collectStatic() : metaProv->collect();
+			}, ctrl),
 			" (in table '" + mtName + "')");
 	}
 }
@@ -198,6 +206,10 @@ void RobotStruct::readMatrix(bot::Reader& file, std::vector<mt::MatrixObject>& o
 /* ---- 构建硬件：两阶段（build 失败上抛，active 由 finally 清理）---- */
 void RobotStruct::active() {
 	createHardVars();
+	/* F-05：$ 引用解析本是惰性的（首次 collect 时）——指向未定义变量会在
+	 * 驱动 build 的真机事务中途才报错；装配完成后、任何 build 之前统一
+	 * 校验存在性（此时全部变量已注册，前向引用合法）。 */
+	for (const auto& p : metaProviders_) { p->validate(); }
 	for (MatrixVars_Hardware* item : hwSeq_) {
 		item->build();
 	}
@@ -209,16 +221,24 @@ void RobotStruct::deactivate() {
 		daemon_request_stop(h->slot.load());
 	}
 	std::string lastWarn;
+	std::size_t failed = 0;
 	for (auto it = hwSeq_.rbegin(); it != hwSeq_.rend(); ++it) {
 		try {
 			(*it)->destroy();
 		} catch (const std::exception& e) {
+			++failed;
 			/* 同因重复失败（如某次 play 已抛同错）只提示一次，避免刷屏 */
 			if (std::string(e.what()) != lastWarn) {
 				std::cout << "Deactive warning: " << e.what() << std::endl;
 				lastWarn = e.what();
 			}
 		}
+	}
+	/* F-04：清理失败显式汇总——静默跳过的去初始化会让器件滞留最后指令状态
+	 * （如 MAX30102 未关断、BH1750 未断电），必须让调用方看见 */
+	if (failed > 0) {
+		std::cout << "Deactivate: " << failed << " of " << hwSeq_.size()
+			<< " hardware variable(s) failed to destroy (see warnings above)" << std::endl;
 	}
 }
 
