@@ -60,7 +60,8 @@ void print_help() {
 	std::cout << "cat scripts/std.mt | ./build/mybot --robot=./robots/spider1.sql" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "动作输入源（优先级从高到低）：" << std::endl;
-	std::cout << "  --tcp <port>       TCP 长驻模式：监听端口等待客户端下发 .mt" << std::endl;
+	std::cout << "  --tcp <port>       TCP 模式：监听端口接受一次连接，读取对端下发的 .mt" << std::endl;
+	std::cout << "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）" << std::endl;
 	std::cout << "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1（跨机需显式给 0.0.0.0）" << std::endl;
 	std::cout << "  --tcp-token <tok>  TCP 可选口令：对端须先发一行 \"<tok>\\n\" 再发脚本" << std::endl;
 	std::cout << "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）" << std::endl;

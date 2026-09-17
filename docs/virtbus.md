@@ -17,7 +17,7 @@
 
 ## 概述
 
-`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*`、`/dev/spidev*` 即可完整跑通 build/call/destroy。
+`lib/virtbus.lua` 提供纯内存的虚拟总线：`inject()` 后替换 HAL 的全部全局 `i2c_*`/`spi_*`/`uart_*` 函数，真实驱动（如 BH1750）无需真机与 `/dev/i2c-*`、`/dev/spidev*`、`/dev/serial*` 即可完整跑通 build/call/destroy。
 
 **器件行为**：I2C 器件行为由 `attach(name, addr, dev)` 挂载的模型回调决定（`write(bytes)` 收命令/寄存器写、`read(n)` 返回 n 字节），每次事务记入 `vbus.txlog` 供断言。
 
@@ -54,7 +54,8 @@ vbus.reset()           -- 还原全局 i2c_* 并清空
 | --- | --- |
 | `vbus.attach(name, addr, dev)` | 在 7 位 I2C 地址挂模型；`name` 仅日志用。保存模型引用并**动态委托**——attach 后替换 `dev.write/read` 或改模型字段（如 `dev.nack=true`）即时生效，无需重挂；同一模型可挂多个地址（主/备地址测试） |
 | `vbus.attach_spi(name, path, dev)` | 按 spidev 路径（`/dev/spidev<bus>.<cs>`，路径即片选）挂 SPI 模型；动态委托 `dev.xfer`，同路径多 fd 命中同一模型 |
-| `vbus.inject()` | 替换全部 20 个全局 `i2c_*`（12）/`spi_*`（8）为虚拟实现；幂等（已注入直接返回）；I2C/SPI 在同一注入态下并存 |
+| `vbus.attach_uart(name, path, dev)` | 按 tty 路径（如 `/dev/serial0`）挂 UART 模型；写事务委托 `dev.on_write(bytes)`，供 `BUS="uart"` 驱动（如 SCSCL）离线直写 |
+| `vbus.inject()` | 替换全部 26 个全局 `i2c_*`（12）/`spi_*`（9）/`uart_*`（5）为虚拟实现；幂等（已注入直接返回）；三类总线在同一注入态下并存 |
 | `vbus.restore()` | 还原注入前捕获的原始全局函数（真实 HAL 函数） |
 | `vbus.reset()` | `restore()` + 清空器件表、txlog、fd 线索（含 SPI）；每个用例开头调用保证隔离 |
 | `vbus.load_driver(path)` | `dofile` 真实驱动后强制重注入（驱动首次 dofile HAL 会用真实 ffi 函数覆盖全局 `i2c_*/spi_*`）；并保证 `restore()` 能还原到真实 HAL 而非置空 |
@@ -114,7 +115,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
   | `"setup"` | `spi_setup` 校验留痕 | `path, mode, bits, speed` |
   | `"x"` | 一次 CS 帧传输 | `path, tx={...}, rx={...}, delay=us, ok=bool` |
 
-- 现状边界：`spi_*` 全局族可注入（覆盖 TPL0501/AD9833/ADS1256 用法）；MT6826S 驱动绕过全局直调 `HAL.sys.ioctl_p` 打全双工帧，本层拦截不到，迁移它需先在 HAL 增加全局全双工传输原语。
+- 现状边界：`spi_*` 全局族可注入（覆盖 TPL0501/AD9833/ADS1256 用法）；MT6826S 经 `spi_xfer_full`（既在 HAL 也在 `VFUNCS` 注入面内）打全双工帧，虚拟化后可离线测。
 
 ## 契约对齐
 
@@ -479,7 +480,7 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 
 **失败行为**：驱动无对应模型/缺必填总线身份时 setup 显式 fail(-8)，守护空转不崩。守护启动打印醒目 `VIRTUAL HARDWARE` 横幅（仿真数据禁止用于生产环境）。
 
-现有三十七例：23 例既有明细见下；2026-09-15 随单文件模型内嵌迁移新增十四例——`max17048_virt` `bh1745_virt` `bh1750_virt` `apds9900_virt` `bmm150_virt` `mlx90393_virt` `as3935_virt` `emc2101_virt` `bme688_virt` `bmi270_virt` `lsm6dsv_virt` `mt6826s_virt` `mhz19_virt` `sds011_virt`（协议细节见各驱动尾部 `_VIRT` 注释与 `test/run_all.sh` 的 e2e_cases）。
+现有三十九例：23 例既有明细见下；2026-09-15 随单文件模型内嵌迁移新增十四例——`max17048_virt` `bh1745_virt` `bh1750_virt` `apds9900_virt` `bmm150_virt` `mlx90393_virt` `as3935_virt` `emc2101_virt` `bme688_virt` `bmi270_virt` `lsm6dsv_virt` `mt6826s_virt` `mhz19_virt` `sds011_virt`（协议细节见各驱动尾部 `_VIRT` 注释与 `test/run_all.sh` 的 e2e_cases）。
 
 ### `mpu_virt`
 

@@ -16,9 +16,10 @@
 | 4 | MatrixBuilder / appendRow 解析管线解耦 | `6e74239` | 双跑 141/0/0,单测 104 |
 | 5 | DaemonRunner 状态机内聚 + abandon/never-spawn 确定性夹具(F-08 尾项) | `41991aa` | 双跑 141/0/0,单测 106 |
 | 6 | RobotStruct 拆分 ScriptLoader/HwFactory/ActionRunner | `781a160` | 双跑 141/0/0,单测 106 |
+| 7 | C 常量自检接入守门第 8 段 + .gitlab-ci.yml + tcp_e2e 加固(F-22/24/28) | `63cacbf` | 双跑 142/0/0,单测 106 |
+| 8 | F-27 文档漂移清扫(TCP 措辞/architecture_analysis 历史标注/virtbus 计数/README 版本) | 本提交 | 纯文档 |
 
-剩余:阶段 7(CI/C 自检接入,须用户确认后动)、阶段 8(文档对齐)、
-推送待用户确认(本地 7 个提交未推送)。
+剩余:阶段 0 分支归宿(用户暂不决策);推送待确认(阶段 7/8 两提交未推送)。
 
 ---
 
@@ -27,7 +28,7 @@
 ```
 src/ 10 对 .hpp/.cpp ≈ 3100 行,零第三方依赖,-Wall -Wextra -Wpedantic 零告警
 modules/ 56 个 Lua 驱动 + lib/ 运行时(HAL 1089 行 / virtbus 808 行)
-test/cpp/ 101 单测;test/run_all.sh 762 行七段守门(141 用例全绿)
+test/cpp/ 106 单测;test/run_all.sh 八段守门(142 用例全绿)
 ```
 
 数据流与职责边界(读码确认):

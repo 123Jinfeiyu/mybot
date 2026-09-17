@@ -13,7 +13,7 @@
 ## 项目信息
 
 - **实现**：C++17（零第三方 C++ 依赖，仅 LuaJIT + pthread + dl）
-- **构建**：CMake ≥ 3.16；测试环境 g++ 15.3
+- **构建**：CMake ≥ 3.16；测试环境 g++ 14.2（≥ 14 已验证）
 - **平台**：Linux（aarch64 / x86_64），树莓派实测可使用
 - **驱动生态**：`modules/` 下 50+ 硬件驱动（舵机、IMU、气压、测距、ADC、电源……），分类清单见 [docs/drivers.md](docs/drivers.md)
 
@@ -87,7 +87,7 @@ cat scripts/tilt-r.mt     | ./build/mybot --robot=robots/spider1.sql  # 右倾
 cat scripts/one-shake.mt  | ./build/mybot --robot=robots/spider1.sql  # 单腿姿势
 ```
 
-动作输入源三选一（TCP 长驻 / 文件 / stdin 管道），完整参数与环境变量见 [docs/reference.md](docs/reference.md)。
+动作输入源三选一（TCP 单连接 / 文件 / stdin 管道），完整参数与环境变量见 [docs/reference.md](docs/reference.md)。
 
 ## 📖 深入文档（docs/）
 

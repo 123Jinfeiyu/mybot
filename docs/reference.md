@@ -20,7 +20,7 @@
 | --- | --- |
 | `--robot <path>` | **必选**，机器人结构脚本 `.sql` 路径；打不开或解析失败会给出人话提示并退出 1 |
 | `--help` | 打印帮助手册 |
-| `--tcp <port>` | TCP 长驻模式：监听端口等待客户端下发 `.mt`（适合上位机/远程持续喂动作） |
+| `--tcp <port>` | TCP 模式：监听端口接受**一次**连接并读取对端下发的 `.mt`（EOF 或空闲超时按输入结束；单连接一次性批量下发，非流式长驻） |
 | `--tcp-host <addr>` | TCP 监听地址，缺省 `127.0.0.1`（跨机需显式给 `0.0.0.0`） |
 | `--tcp-token <tok>` | TCP 可选口令：对端须先发一行 `"<tok>\n"` 再发脚本 |
 | `--tcp-idle <sec>` | TCP 空闲超时，缺省 30s（超时按输入结束处理） |
@@ -34,7 +34,7 @@ Ctrl-C（SIGINT/SIGTERM）只置停止标志，走正常清理链 `deactivate()`
 `src/actionsource.cpp` 工厂按 **TCP > 文件 > stdin** 的优先级三选一：
 
 ```bash
-# 1) TCP 长驻模式：监听端口等待客户端下发 .mt
+# 1) TCP 模式：监听端口接受一次连接并读取 .mt（EOF/空闲超时结束）
 ./build/mybot --robot=robots/relay-test.sql --tcp 19240
 
 # 2) 文件输入：不依赖管道
