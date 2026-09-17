@@ -1,6 +1,6 @@
 # @Daemon 守护线程（后台采样）
 
-> 本文介绍 `@Daemon` 守护线程的并发模型、万能采样 chunk 与滤波器链路。[README](../README.md) 中只保留速览。
+> 本文介绍 `@Daemon` 守护线程的并发模型、万能采样 chunk 与滤波器链路。[README](../README.md) 只留入口链接，机制细节以本文为准。
 
 ## 概述
 

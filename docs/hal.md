@@ -1,6 +1,6 @@
 # HAL：基层硬件抽象
 
-> 本文介绍 bot4cj 硬件抽象层 `modules/lib/HAL.lua` 的实现原理与驱动沙箱。[README](../README.md) 中只保留速览。
+> 本文介绍 bot4cj 硬件抽象层 `modules/lib/HAL.lua` 的实现原理与驱动沙箱。[README](../README.md) 只留入口链接，实现细节以本文为准。
 
 ## 概述
 
