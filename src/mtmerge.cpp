@@ -6,6 +6,8 @@
  *   - 较短一方行数耗尽后补字面 "-"（继承链自然延伸，保持最后姿势）；
  *   - 列 = A 全列（原序） ∪ B 全列（原序）；产物为规范 .mt 文本，
  *     可直接喂给 mybot，也可继续喂回 mtmerge 做下一轮两两归并。
+ *   - @Alias / @Vars 按行叠加（不做相位）：各输入的 data 行拼接；同名行
+ *     （name 列）即报错退出 2；两侧列头必须一致。
  *
  * 用法：./build/mtmerge [--phase=N] [--out merged.mt] a.mt b.mt [c.mt ...]
  * N 个输入按序两两归并：先合 a+b，结果再合 c，依此类推。
@@ -27,12 +29,84 @@
 
 namespace {
 
-/* 找到第一个数据矩阵（@Action）；找不到即报错。
- * mtmerge 只关心矩阵本身：mybot 侧的 @Alias 已在装配期展开成列头替换，
- * 到这里时列头就是最终形态，无需再解析别名。 */
-const mt::MatrixObject& actionOf(const mt::MatrixObject& m, const std::string& path) {
-	if (m.hasName()) { return m; }
-	throw bot::IllegalArgumentException("'" + path + "': no named @Action matrix found");
+/* 按矩阵名查找（trim 后比较）；不存在返回 nullptr。 */
+const mt::MatrixObject* findNamed(const std::vector<mt::MatrixObject>& ll, const std::string& name) {
+	for (const auto& m : ll) {
+		if (bot::trim(m.getName()) == name) { return &m; }
+	}
+	return nullptr;
+}
+
+/* @Action：找到列头即最终形态（别名替换由 mybot 在装配期完成）。找不到即报错。 */
+const mt::MatrixObject& requireAction(const std::vector<mt::MatrixObject>& parsed,
+		const std::string& path) {
+	const mt::MatrixObject* act = findNamed(parsed, "Action");
+	if (act == nullptr) {
+		throw bot::IllegalArgumentException("'" + path + "': no @Action matrix found");
+	}
+	return *act;
+}
+
+/* @Alias / @Vars：按行叠加（不含相位）。列头必须完全一致；name 列（首个名为
+ * 'name' 的列）出现同名行即报错——同一名字不能映射到两个不同的值/别名。 */
+mt::MatrixObject mergeScalarRows(const mt::MatrixObject& acc, const mt::MatrixObject& next,
+		const std::string& label, const std::string& pa, const std::string& pb) {
+	if (acc.cols() != next.cols()) {
+		throw bot::IllegalArgumentException(label + " matrix column count differs: '" + pa
+			+ "' has " + std::to_string(acc.cols()) + ", '" + pb + "' has "
+			+ std::to_string(next.cols()));
+	}
+	for (std::size_t j = 0; j < acc.cols(); ++j) {
+		if (acc(0, j) != next(0, j)) {
+			throw bot::IllegalArgumentException(label + " matrix header differs at column "
+				+ std::to_string(j) + ": '" + acc(0, j) + "' (" + pa + ") vs '" + next(0, j)
+				+ "' (" + pb + ")");
+		}
+	}
+	std::int64_t idxName = acc.indexOfCol(0, "name");
+	if (idxName < 0) {
+		throw bot::IllegalArgumentException(label + " matrix has no 'name' column");
+	}
+
+	mt::MatrixBuilder b;
+	b.name(acc.getName());
+	for (std::size_t j = 0; j < acc.cols(); ++j) { b.item(acc(0, j)); }
+	b.line(0);
+
+	std::set<std::string> seen;
+	auto appendRows = [&](const mt::MatrixObject& m) {
+		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
+			std::string name = m(r, idxName);
+			if (!seen.insert(name).second) {
+				throw bot::IllegalArgumentException("duplicate " + label + " name '" + name
+					+ "' (merging '" + pa + "' and '" + pb + "'; names must be unique"
+					+ " across merged scripts)");
+			}
+			for (std::size_t j = 0; j < m.cols(); ++j) {
+				b.item(m(static_cast<std::size_t>(r), j));
+			}
+			b.line(0);
+		}
+	};
+	appendRows(acc);
+	appendRows(next);
+	return b.take();
+}
+
+/* 收集同一输入内所有 <name> 矩阵并按行叠加（一个 .mt 里可以出现多个 @Alias/@Vars
+ * 块，mybot 会全部注册；mtmerge 不能只看第一个而静默丢掉其余块）。 */
+std::optional<mt::MatrixObject> foldNamed(const std::vector<mt::MatrixObject>& parsed,
+		const std::string& name, const std::string& path) {
+	std::optional<mt::MatrixObject> acc;
+	for (const auto& m : parsed) {
+		if (bot::trim(m.getName()) != name) { continue; }
+		if (!acc) {
+			acc = m;
+		} else {
+			acc = mergeScalarRows(*acc, m, name, path, path);
+		}
+	}
+	return acc;
 }
 
 /* 设备名集合：列头按 <device>.<param> 切分（与 ActionRunner::parseActionColumn 同规则）。
@@ -111,9 +185,10 @@ void printHelp() {
 	std::cout << "用法：mtmerge [--phase=N] [--out merged.mt] a.mt b.mt [c.mt ...]" << std::endl;
 	std::cout << "把设备集不相交的 @Action 行列式脚本合并为一个（N 个输入按序两两归并）。" << std::endl;
 	std::cout << "  --phase=N  第 2 个（及后续每个）输入相对已合并结果的行相位：" << std::endl;
-	std::cout << "             N>0 滞后 N 行，N<0 提前，缺省 0" << std::endl;
+	std::cout << "             N>0 滞后 N 行，N<0 提前，缺省 0（仅作用于 @Action）" << std::endl;
 	std::cout << "  --out=F    写入文件；缺省打印 stdout（可管道给 mybot）" << std::endl;
 	std::cout << "冲突语义：同一设备（<device>.<param> 的 device 名）出现在两个输入中即报错退出 2。" << std::endl;
+	std::cout << "          @Alias / @Vars 按行叠加，同名行（name 列）即报错退出 2。" << std::endl;
 }
 
 } // namespace
@@ -156,10 +231,12 @@ int main(int argc, char** argv) {
 	}
 
 	try {
-		/* 逐个读入 .mt（字节上限与 mybot 动作脚本一致），按序两两归并：
-		 * 累积器先吃第 1 个输入，之后每个输入带同一个 phase 参与归并。 */
-		std::optional<mt::MatrixObject> acc;
-		std::string accName;
+		/* 逐个读入 .mt（字节上限与 mybot 动作脚本一致）：
+		 *   @Action 按序两两归并（每个输入带同一个 phase）；
+		 *   @Alias / @Vars 按行叠加，同名即报错。
+		 * 累积器先吃第 1 个输入，之后两两归并。 */
+		std::optional<mt::MatrixObject> accAction, accAlias, accVars;
+		std::string accActionPath, accAliasPath, accVarsPath;
 		for (const auto& path : inputs) {
 			std::ifstream f(path, std::ios::binary);
 			if (!f) {
@@ -177,25 +254,52 @@ int main(int argc, char** argv) {
 			if (parsed.empty()) {
 				throw bot::IllegalArgumentException("'" + path + "': no matrix found");
 			}
-			const mt::MatrixObject& act = actionOf(parsed.front(), path);
-			if (!acc) {
-				acc = act;	/* 拷贝：parsed 出作用域后仍需持有 */
-				accName = path;
-				continue;
+			const mt::MatrixObject& act = requireAction(parsed, path);
+			std::optional<mt::MatrixObject> alias = foldNamed(parsed, "Alias", path);
+			std::optional<mt::MatrixObject> vars = foldNamed(parsed, "Vars", path);
+
+			if (!accAction) {
+				accAction = act;	/* 拷贝：parsed 出作用域后仍需持有 */
+				accActionPath = path;
+			} else {
+				accAction = mergeTwo(*accAction, act, phase, accActionPath, path);
+				accActionPath += "+" + path;
 			}
-			acc = mergeTwo(*acc, act, phase, accName, path);
-			accName += "+" + path;
+			if (alias) {
+				if (!accAlias) {
+					accAlias = std::move(*alias);
+					accAliasPath = path;
+				} else {
+					accAlias = mergeScalarRows(*accAlias, *alias, "Alias", accAliasPath, path);
+					accAliasPath += "+" + path;
+				}
+			}
+			if (vars) {
+				if (!accVars) {
+					accVars = std::move(*vars);
+					accVarsPath = path;
+				} else {
+					accVars = mergeScalarRows(*accVars, *vars, "Vars", accVarsPath, path);
+					accVarsPath += "+" + path;
+				}
+			}
 		}
 
+		/* 产物顺序：@Alias、@Vars（若存在），最后 @Action。 */
+		std::vector<mt::MatrixObject> outMats;
+		if (accAlias) { outMats.push_back(std::move(*accAlias)); }
+		if (accVars) { outMats.push_back(std::move(*accVars)); }
+		outMats.push_back(std::move(*accAction));
+
 		if (outPath.empty()) {
-			mt::MatrixSaver::save({ *acc }, std::cout);
+			mt::MatrixSaver::save(outMats, std::cout);
 		} else {
 			std::ofstream out(outPath, std::ios::binary);
 			if (!out) {
 				std::cerr << "mtmerge: 无法写入 '" << outPath << "'" << std::endl;
 				return 1;
 			}
-			mt::MatrixSaver::save({ *acc }, out);
+			mt::MatrixSaver::save(outMats, out);
 		}
 	} catch (const std::exception& e) {
 		std::cerr << "mtmerge: " << e.what() << std::endl;

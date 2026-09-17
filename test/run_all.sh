@@ -435,6 +435,171 @@ else
 fi
 
 # ======================================================================
+# mtmerge 合成器：@Action 相位归并 + @Alias/@Vars 按行叠加（同名报错）。
+# 纯离线；最后一条把产物回喂 mybot，证明内联 Alias/Vars 在合并产物里仍生效。
+# 缺 ./build/mtmerge 判失败（本段是 mtmerge 的唯一覆盖）。
+# ======================================================================
+mtmerge_bin="${MTMERGE:-./build/mtmerge}"
+mtmerge_explicit=0
+[ -n "${MTMERGE:-}" ] && mtmerge_explicit=1
+mtmerge_reported=""
+run_one_mtmerge() {
+	local name="$1" want_rc="$2" expects="$3"; shift 3
+	echo "----- $name (mtmerge) -----"
+	if [ ! -x "$mtmerge_bin" ]; then
+		if [ -z "$mtmerge_reported" ]; then
+			mtmerge_reported=1
+			artifact_missing "mtmerge 合成器" "5 条用例" "$mtmerge_bin" "$mtmerge_explicit"
+		fi
+		return 2
+	fi
+	local out rc ok=true e
+	out="$("$@" 2>&1)"
+	rc=$?
+	echo "$out"
+	[ "$rc" -ne "$want_rc" ] && ok=false
+	local IFS='|'
+	for e in $expects; do
+		echo "$out" | grep -qF -- "$e" || ok=false
+	done
+	if $ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed $name(mtmerge)"
+	fi
+}
+if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
+	mkdir -p .tmp/mtm
+	cat > .tmp/mtm/a.mt <<'MTEOF'
+@Alias
+name alias;
+  A  angle;
+@
+
+@Vars
+name value;
+  K  hello;
+@
+
+@Action
+s1.A;
+  45;
+@
+MTEOF
+	cat > .tmp/mtm/b.mt <<'MTEOF'
+@Alias
+name alias;
+  B  delay;
+@
+
+@Vars
+name value;
+  L  world;
+@
+
+@Action
+spk.B;
+  200;
+@
+MTEOF
+	cat > .tmp/mtm/dup_alias.mt <<'MTEOF'
+@Alias
+name alias;
+  A  other;
+@
+
+@Action
+s2.A;
+  10;
+@
+MTEOF
+	cat > .tmp/mtm/dup_vars.mt <<'MTEOF'
+@Vars
+name value;
+  K  other;
+@
+
+@Action
+s2.K;
+  10;
+@
+MTEOF
+	cat > .tmp/mtm/multiblock.mt <<'MTEOF'
+@Alias
+name alias;
+  C  freq;
+@
+
+@Alias
+name alias;
+  D  speed;
+@
+
+@Action
+s3.C;
+  1;
+@
+MTEOF
+	cat > .tmp/mtm/robot.sql <<'SQLEOF'
+CREATE TABLE dummy (
+	name String
+);
+INSERT INTO dummy (name) VALUES ('dummy-0');
+
+CREATE TABLE Servo (
+	name       String,
+	max        String,
+	min        String,
+	offset     String,
+	controller String,
+	channel    String
+);
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s1', '90', '-', '0', 'dummy-0', '6');
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s2', '90', '-', '0', '-', '5');
+
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('spk');
+SQLEOF
+
+	# 正值：Alias/Vars 两侧行都并入，@Action 设备集不相交照常归并
+	run_one_mtmerge 'mtmerge_merge' 0 \
+		'A angle|B delay|K hello|L world|s1.A spk.B' \
+		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt
+
+	# 同一输入内多个 @Alias 块都要并入（不得只看第一个而静默丢弃其余块）
+	run_one_mtmerge 'mtmerge_multiblock' 0 \
+		'C freq|D speed|s1.A s3.C' \
+		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/multiblock.mt
+
+	# 负值：同名 Alias / Vars 行（跨输入）必须报错退出 2
+	run_one_mtmerge 'mtmerge_alias_dup' 2 "duplicate Alias name 'A'" \
+		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/dup_alias.mt
+	run_one_mtmerge 'mtmerge_vars_dup' 2 "duplicate Vars name 'K'" \
+		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/dup_vars.mt
+
+	# 端到端：合并产物回喂 mybot，内联 Alias(A->angle, B->delay) 生效
+	echo "----- mtmerge_e2e (mtmerge) -----"
+	if [ ! -x "$mtmerge_bin" ]; then
+		[ -z "$mtmerge_reported" ] && { mtmerge_reported=1; artifact_missing "mtmerge 合成器" "5 条用例" "$mtmerge_bin" "$mtmerge_explicit"; }
+	elif [ ! -x "$bin" ]; then
+		artifact_missing "mtmerge 回喂 mybot" "1 条用例" "$bin" "$bot_explicit"
+	else
+		out="$( ("$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt | "$bin" --robot=.tmp/mtm/robot.sql) 2>&1 )"
+		rc=$?
+		echo "$out" | tail -4
+		if [ "$rc" -eq 0 ] && echo "$out" | grep -qF 'Dummy served 1 call(s)'; then
+			pass=$((pass + 1))
+		else
+			fail=$((fail + 1))
+			failed="$failed mtmerge_e2e(mtmerge)"
+		fi
+	fi
+fi
+
+# ======================================================================
 # TCP 动作源端到端：唯一覆盖 actionsource.cpp（--tcp 监听分支）的守门。
 # 复用 scripts/tcp_e2e.sh：起服务端 → Python 客户端下发 relay-test.mt →
 # 校验服务端日志。缺编译产物判失败（本段是 actionsource.cpp 监听分支的唯一覆盖）；
