@@ -43,9 +43,10 @@ static void releaseSlot(DaemonSlot* slot) {
 
 /* ---- DaemonHolder RAII 兜底（见头文件注释）：仅回收线程尚未接管所有权（未 spawn）的槽 ---- */
 DaemonHolder::~DaemonHolder() {
-	if (slot != nullptr && !spawned.load()) {
-		releaseSlot(slot);
-		slot = nullptr;
+	DaemonSlot* s = slot.load();
+	if (s != nullptr && !spawned.load()) {
+		releaseSlot(s);
+		slot.store(nullptr);
 	}
 }
 
@@ -54,7 +55,7 @@ DaemonHolder::~DaemonHolder() {
  * 槽所有权已移交本线程——由本线程释放（D2）。极端竞态下（置位晚于本检查）可能泄漏，宁漏不崩。 */
 int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chunk,
 		const std::string& config, int64_t interval_ms) {
-	DaemonSlot* slot = holder->slot;
+	DaemonSlot* slot = holder->slot.load();
 	lua_State* L = luaL_newstate();
 	if (L == nullptr) { return -1; }
 	luaL_openlibs(L);
@@ -102,12 +103,17 @@ int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chu
 	}
 	lua_settop(L, 0);
 
-	int64_t n = slot->count;
+	/* F-01：count 与 stop 同规——都在槽内 mutex 临界区读取（此前锁外裸读，
+	 * 与 daemonvar.hpp 的 stop 纪律不对称） */
+	int64_t n;
+	pthread_mutex_lock(mutexOf(slot));
+	n = slot->count;
+	pthread_mutex_unlock(mutexOf(slot));
 	lua_close(L);
 	if (holder->abandoned.load()) {
 		/* D2：主线程已放弃等待，槽所有权在本线程——自行释放 */
 		releaseSlot(slot);
-		holder->slot = nullptr;
+		holder->slot.store(nullptr);
 	}
 	return n;
 }
@@ -147,8 +153,10 @@ std::string resolveDaemonChunk(const std::string& chunk, const std::string& modu
 /* ---- play 事件：主线程加锁读采样值 → JSON（v0..vN 标量键 + values 数组）---- */
 static Json daemonPlay(DaemonHolder* holder) {
 	/* D2：放弃路径下槽所有权已移交守护线程，主线程不再触碰——
-	 * abandoned 置位或槽已置空时按 ERR 契约返回，不碰悬垂指针。 */
-	if (holder->slot == nullptr || holder->abandoned.load()) {
+	 * abandoned 置位或槽已置空时按 ERR 契约返回，不碰悬垂指针。
+	 * F-01：槽指针原子读取，取回局部指针后再解引用。 */
+	DaemonSlot* slot = holder->slot.load();
+	if (slot == nullptr || holder->abandoned.load()) {
 		Json ret = JsonObject();
 		ret.put("result", JsonString("ERR"));
 		ret.put("message", JsonString("daemon slot already released"));
@@ -156,7 +164,6 @@ static Json daemonPlay(DaemonHolder* holder) {
 	}
 	Json ret = JsonObject();
 	Json arr = JsonArray();
-	DaemonSlot* slot = holder->slot;
 	pthread_mutex_lock(mutexOf(slot));
 	int32_t nvals = slot->nvals;
 	int32_t count = slot->count;
@@ -213,7 +220,7 @@ static int64_t parseInterval(const std::string& iv, const std::string& name,
 /* ---- rise 事件：spawn 守护线程 ---- */
 static void daemonRise(DaemonHolder* holder, const std::string& name,
 		const std::string& chunkPath, const std::string& configStr, int64_t intervalMs) {
-	DaemonSlot* slot = holder->slot;
+	DaemonSlot* slot = holder->slot.load();
 	std::shared_ptr<std::promise<int64_t>> prom = holder->result;
 	/* self 是 weak_ptr（打破自引用环防泄漏）：此处取回强引用交给线程保生命周期。
 	 * build 期 registry 必持有强引用，lock() 不会失败；万一取空则显式报错，
@@ -235,11 +242,12 @@ static void daemonRise(DaemonHolder* holder, const std::string& name,
  * D2：spawn 过但 join 超时，置 abandoned 把槽所有权移交守护线程自行释放，
  * 主线程此后不再触碰槽（daemonPlay 对 slot==nullptr 返回 ERR 契约）。 */
 static void daemonFree(DaemonHolder* holder, const std::string& name) {
-	daemon_request_stop(holder->slot);
+	DaemonSlot* slot = holder->slot.load();
+	daemon_request_stop(slot);
 	if (!holder->spawned.load()) {
 		std::cout << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
-		releaseSlot(holder->slot);
-		holder->slot = nullptr;
+		releaseSlot(slot);
+		holder->slot.store(nullptr);
 		return;
 	}
 	if (holder->fut.valid()) {
@@ -247,8 +255,8 @@ static void daemonFree(DaemonHolder* holder, const std::string& name) {
 		if (st == std::future_status::ready) {
 			int64_t n = holder->fut.get();
 			std::cout << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
-			releaseSlot(holder->slot);
-			holder->slot = nullptr;
+			releaseSlot(slot);
+			holder->slot.store(nullptr);
 			return;
 		}
 		holder->abandoned.store(true);
@@ -256,8 +264,8 @@ static void daemonFree(DaemonHolder* holder, const std::string& name) {
 			<< "ms, abandoning slot (thread will release it on exit)" << std::endl;
 		return;
 	}
-	releaseSlot(holder->slot);
-	holder->slot = nullptr;
+	releaseSlot(slot);
+	holder->slot.store(nullptr);
 }
 
 /* ---- 守护硬件变量工厂 ---- */

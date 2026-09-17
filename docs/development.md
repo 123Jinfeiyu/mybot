@@ -9,6 +9,7 @@ git clone <本仓库> && cd bot4cj
 bash scripts/install-hooks.sh                 # 装 pre-push 守门钩子（一次性）
 cmake -S . -B build && cmake --build build
 bash test/run_all.sh                          # 离线回归（无硬件）
+bash test/run_san.sh                          # 双跑：Release + sanitizer（改动并发/生命周期/内存相关时建议跑）
 cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql   # 无硬件自检
 ```
 

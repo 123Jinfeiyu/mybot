@@ -620,6 +620,72 @@ SQLEOF
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
 fi
 
+# ======================================================================
+# F-08 信号/退出路径：SIGTERM/SIGINT 只置停止标志，随后必须走正常清理链
+# （runAction 停派发 → deactivate → 守护 join → 驱动 destroy），不能裸死。
+# 此前 main.cpp 的 sigaction 与 robot.cpp 的停机分支全仓零覆盖。
+#   signal_halt  播放中发 SIGTERM（12s 长动作，1s 后打断）
+#                → rc=0 + 停派发行 + 「joined, total publishes=」行
+#   signal_accept --tcp 等待客户端时发 SIGTERM → rc=1 + 明确中断报错（accept
+#                 被 EINTR 打断并检查停止标志的路径）
+# 夹具写在 .tmp/（gitignore）：Timer 长动作 + 无硬件守护（lib/daemon_probe.lua）。
+# ======================================================================
+run_one_signal() {
+	local name="$1" want_rc="$2" p1="$3" p2="$4"; shift 4
+	echo "----- $name (signal) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "信号停机" "2 条用例" "$bin" "$bot_explicit"
+		return 2
+	fi
+	local out rc pid watchdog
+	out="$("$@" 2>&1 &
+		pid=$!
+		sleep 1
+		kill -TERM "$pid" 2>/dev/null
+		# 防挂死看门狗：wait 本身无超时，10s 后 SIGKILL（rc 随之失配 → 判失败），
+		# 避免「停机路径回归成死等」把整个守门挂死
+		( sleep 10; kill -KILL "$pid" 2>/dev/null ) &
+		watchdog=$!
+		wait "$pid" 2>/dev/null
+		rc=$?
+		kill "$watchdog" 2>/dev/null
+		echo "__RC__=$rc")"
+	rc="$(printf '%s\n' "$out" | sed -n 's/^__RC__=//p')"
+	printf '%s\n' "$out" | sed '/^__RC__=/d' | tail -8
+	local s_ok=true
+	[ "$rc" != "$want_rc" ] && s_ok=false
+	printf '%s\n' "$out" | grep -qF -- "$p1" || s_ok=false
+	if [ -n "$p2" ]; then
+		printf '%s\n' "$out" | grep -qF -- "$p2" || s_ok=false
+	fi
+	if $s_ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed $name(signal)"
+	fi
+}
+if [ -z "$filter" ] || [[ "signal" == *"$filter"* ]]; then
+	mkdir -p .tmp
+	cat > .tmp/signal_robot.sql <<'SQLEOF'
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
+CREATE TABLE Daemon (
+	name  String,
+	chunk String
+);
+INSERT INTO Daemon (name, chunk) VALUES ('d0', 'lib/daemon_probe.lua');
+SQLEOF
+	{ echo '@Action'; echo 't0.delay;'; for _ in $(seq 1 60); do echo '   200;'; done; echo '@'; } > .tmp/signal_long.mt
+	run_one_signal 'signal_halt' 0 'Stop requested, halting action dispatch' 'joined, total publishes=' \
+		"$bin" --robot=.tmp/signal_robot.sql --input=.tmp/signal_long.mt
+	run_one_signal 'signal_accept' 1 'TCP 等待客户端连接被停止信号中断' '' \
+		"$bin" --robot=robots/relay-test.sql --tcp $((18000 + RANDOM % 1000))
+fi
+
 
 # ======================================================================
 # C++ 层单元测试（test/cpp/）：解析器与值语义工具的白盒覆盖，零第三方框架。

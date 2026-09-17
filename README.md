@@ -60,11 +60,12 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 ### 一键回归测试
 
 ```bash
-bash test/run_all.sh          # 全部六段守门，开发机无硬件可跑
+bash test/run_all.sh          # 全部七段守门，开发机无硬件可跑
+bash test/run_san.sh          # 双跑：Release + ASan/UBSan 两套产物各跑全量
 bash test/run_all.sh pca9685  # 文件名过滤
 ```
 
-六段守门的明细、守门完整性规则与 sanitizer 跑法见 [docs/testing.md](docs/testing.md)。
+七段守门的明细、守门完整性规则与 sanitizer 跑法见 [docs/testing.md](docs/testing.md)。
 
 ### 接第一块 PCA9685
 

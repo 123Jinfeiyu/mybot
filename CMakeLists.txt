@@ -29,6 +29,18 @@ else()
   set(LUAJIT_LIBRARIES ${LUAJIT_LIBRARY})
 endif()
 
+# Sanitizer 开关（F-23）：随仓库分发、两个目标一致套用，避免各人手工拼
+# CXX_FLAGS 造成「测试构建干净、主构建不干净」的错位。用法：
+#   cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+#     -DMYBOT_SANITIZE=address,undefined
+#   cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=thread
+set(MYBOT_SANITIZE "" CACHE STRING
+  "Sanitizer list applied to all targets (e.g. address,undefined or thread)")
+if(MYBOT_SANITIZE)
+  add_compile_options(-fsanitize=${MYBOT_SANITIZE} -fno-omit-frame-pointer -g)
+  add_link_options(-fsanitize=${MYBOT_SANITIZE})
+endif()
+
 # 被测主体（不含入口 main.cpp）：mybot 与 mybot_tests 共用同一份，
 # 保证单测编译的正是发布二进制里的那套实现，而不是第二份拷贝。
 set(MYBOT_CORE_SOURCES

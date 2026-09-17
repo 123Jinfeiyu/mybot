@@ -51,7 +51,10 @@ std::string resolveDaemonChunk(const std::string& chunk, const std::string& modu
 /* ---- 可变状态持有者：持有 slot、超时与 promise（守护线程经 shared_ptr 回写）---- */
 class DaemonHolder {
 public:
-	DaemonSlot* slot;
+	/* F-01：slot 由主线程（daemonPlay / daemonFree）与守护线程（退出时自释，D2 路径）
+	 * 两端读写——必须原子化，否则是形式上的数据竞争（UB）。取用一律显式 load()，
+	 * 拿到局部指针后再解引用（解引用期间槽由本线程的调用路径保证存活）。 */
+	std::atomic<DaemonSlot*> slot;
 	int64_t joinTimeoutMs;
 	std::shared_ptr<std::promise<int64_t>> result;
 	std::future<int64_t> fut;
