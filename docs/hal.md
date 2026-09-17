@@ -38,3 +38,5 @@
 ## 驱动沙箱
 
 加载驱动**前**先中和 `os.execute`/`io.popen`（shell）、`os.exit`、`io.open`/`io.lines`/`io.input`/`io.output`/`os.remove`/`os.rename`（任意文件读写）——`luavar.cpp` 先调 `sandbox_lua` 再 `luaL_loadfile`。这是**防误用护栏，不是安全边界**——驱动可经 `require("ffi")` 直调任意 libc，脚本均为可信输入；接入 `--tcp` 外部数据源时需另行建立信任边界。
+
+**dofile/loadfile 白名单（M3）**：`dofile`/`loadfile` 未被禁用而是**白名单化**——仅允许加载 `BOT4CJ_MODULE_PATH`（缺省 `./modules`，`:` 分段）内的路径，且路径不得含 `..`（目录穿越拒绝），越界加载明确报错（`sandbox: dofile/loadfile only allowed inside the module path ...`）。驱动/`@Daemon` chunk 按模块路径经 `mpath.resolve` 解析，正常使用不受影响；实现见 `src/luaend.cpp`。
