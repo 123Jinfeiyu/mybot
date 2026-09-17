@@ -20,15 +20,18 @@ namespace bot {
 static constexpr int kTcpIdleSecDefault = 30;
 
 /* ---- TcpStreamReader::read：区分 EOF / 超时 / 信号 / 链路错误 ----
- * 原实现把「出错」与「对端关闭」一律折成 -1（EOF），脚本被静默截断后
- * 只报 "No @Action matrix found"，无从定位；此处分别提示。 */
+ * 内部 64KiB 缓冲（审计 M2）：缓冲区空时一次 recv 尽量填满，之后逐字节
+ * 从缓冲出队；8MiB 上限的脚本从 ~800 万次系统调用降到 ~130 次。
+ * 错误/超时/信号语义与旧逐字节版完全一致。 */
 int TcpStreamReader::read() {
 	if (fd_ < 0) { return -1; }
-	char c;
+	if (pos_ < buf_.size()) { return static_cast<unsigned char>(buf_[pos_++]); }
+	buf_.resize(kBufCap);
 	while (true) {
-		ssize_t n = ::recv(fd_, &c, 1, 0);
-		if (n == 1) { return static_cast<unsigned char>(c); }
-		if (n == 0) { return -1; }	/* 对端正常关闭写端 → EOF */
+		ssize_t n = ::recv(fd_, buf_.data(), buf_.size(), 0);
+		if (n > 0) { pos_ = 0; buf_.resize(static_cast<std::size_t>(n)); return static_cast<unsigned char>(buf_[pos_++]); }
+		if (n == 0) { buf_.clear(); return -1; }	/* 对端正常关闭写端 → EOF */
+		buf_.clear();
 		if (errno == EINTR) {
 			/* 信号打断：停止标志置位则按 EOF 收尾，让 deactivate 正常走完 */
 			if (stopRequested()) { return -1; }

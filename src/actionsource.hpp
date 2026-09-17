@@ -75,12 +75,16 @@ public:
 	}
 };
 
-/* 已连接 TCP 客户端（recv 逐字节；EOF=0/错误=-1）
+/* 已连接 TCP 客户端（内部 64KiB 缓冲，一次 recv 填满后逐字节出队，审计 M2；
+ * EOF=0/错误=-1）
  * 空闲超时：对端连上后不再发字节时不能永久挂死进程（秒级由调用方给定）。 */
 class TcpStreamReader : public Reader {
 	int fd_;
 	int idleSec_;
 	bool timedOut_ = false;
+	std::string buf_;
+	std::size_t pos_ = 0;
+	static constexpr std::size_t kBufCap = 64u << 10;
 
 public:
 	explicit TcpStreamReader(int fd, int idleSec) : fd_(fd), idleSec_(idleSec) {}
