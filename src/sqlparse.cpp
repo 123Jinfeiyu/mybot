@@ -2,6 +2,8 @@
 
 #include <stdexcept>
 
+#include "expr.hpp"
+
 namespace sql4cj {
 
 /* ---- ASCII 不区分大小写比较 ---- */
@@ -293,8 +295,14 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 	if (schemaIt != columnTypes_.end()) {
 		for (const VarRaw& p : arr) {
 			auto typeIt = schemaIt->second.find(p.columnName);
-			if (typeIt != schemaIt->second.end() && typeIt->second == VarType::Number
-					&& !bot::isNumericLiteral(p.value)) {
+			if (typeIt == schemaIt->second.end() || typeIt->second != VarType::Number) { continue; }
+			/* Number 列允许数值字面量或 $(<表达式>)（表达式语法在此早校验，
+			 * 标识符的可达性由 @Vars/元数据层在装配后判定）。 */
+			if (auto body = bot::exprBody(p.value)) {
+				bot::Expression::parse(*body);
+				continue;
+			}
+			if (!bot::isNumericLiteral(p.value)) {
 				throw bot::IllegalArgumentException("Column '" + p.columnName + "' of table '"
 					+ eve.targetTabName + "' is declared Number, but value '" + p.value
 					+ "' is not numeric.");

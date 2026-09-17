@@ -24,15 +24,34 @@ void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Ha
 	pool_.push_back(std::move(hw));
 }
 
+/* 表达式标识符求值：查注册表，必须是 @Vars（数值），递归取数。
+ * 环（A→B→A）由 MtVars_Vars::numericValue 的深度计数兜底。 */
+namespace {
+double resolveVarsNumber(const HwRegistry* reg, const std::string& name) {
+	MatrixVars_Hardware* hv = reg->find(name);
+	if (hv == nullptr) {
+		throw IllegalArgumentException("expression references '" + name
+			+ "', but it is not a defined hardware variable");
+	}
+	MtVars_Vars* v = dynamic_cast<MtVars_Vars*>(hv);
+	if (v == nullptr) {
+		throw IllegalArgumentException("expression references '" + name
+			+ "', which is not an @Vars; only numeric @Vars may appear in an expression");
+	}
+	return v->numericValue();
+}
+} // namespace
+
 /* ---- MetaProvider：P8/M2 元数据收集 ----
  * 字面列与 "-" 继承结果首采冻结，之后每次浅拷贝重放；
  * "-" 整列缺省 → 跳过（Lua 侧 tonumber(nil) or 缺省）；
  * name 列、controller(skipCol) 列 → 跳过；
- * 引用列（值以 $ 前缀显式标记）→ 运行期每次实时 read() 快照，不入缓存。 */
+ * 引用列（值以 $ 前缀显式标记）→ 运行期每次实时 read() 快照，不入缓存；
+ * $(...) 表达式引用 → seed 期解析/校验标识符，collect 期惰性求值。 */
 void MetaProvider::seed() {
 	if (cols_) { return; }
 	std::vector<std::string> cArr, vArr;
-	std::vector<std::pair<std::string, std::string>> rArr;
+	std::vector<MetaRef> rArr;
 	std::int64_t idxName = matrix_.indexOfCol(0, "name");
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix_.cols()); ++j) {
 		const std::string& colName = matrix_(0, j);
@@ -40,13 +59,35 @@ void MetaProvider::seed() {
 		if (value == "-") { continue; }
 		if (j == idxName || j == skipCol_) { continue; }
 		if (value.rfind("$", 0) == 0) {
-			std::string refName = value.substr(1);
-			if (registry_->contains(refName)) {
-				rArr.push_back({colName, refName});
+			if (auto body = exprBody(value)) {
+				MetaRef ref;
+				ref.col = colName;
+				ref.expr = std::make_shared<Expression>(Expression::parse(*body));
+				/* 标识符存在性：与 $name 一样在 build 前统一校验（允许前向引用） */
+				std::set<std::string> names;
+				ref.expr->collectVars(names);
+				for (const std::string& nm : names) {
+					if (!registry_->contains(nm)) {
+						throw IllegalArgumentException("'" + value + "' (column '" + colName
+							+ "') in table '" + matrix_.getName() + "' row " + std::to_string(row_)
+							+ ": expression references '" + nm + "', but it is not defined. "
+							+ "(identifiers in a $(...) expression are checked after all tables"
+							+ " are registered and before any driver build.)");
+					}
+				}
+				rArr.push_back(std::move(ref));
 			} else {
-				throw IllegalArgumentException("'" + value + "' (column '" + colName
-					+ "') in table '" + matrix_.getName() + "' row " + std::to_string(row_)
-					+ ": references hardware variable '" + refName + "', but it is not defined. ('$' may forward-reference a variable declared later in the script, but the name must exist; checked after all tables are registered and before any driver build.)");
+				std::string refName = value.substr(1);
+				if (registry_->contains(refName)) {
+					MetaRef ref;
+					ref.col = colName;
+					ref.var = refName;
+					rArr.push_back(std::move(ref));
+				} else {
+					throw IllegalArgumentException("'" + value + "' (column '" + colName
+						+ "') in table '" + matrix_.getName() + "' row " + std::to_string(row_)
+						+ ": references hardware variable '" + refName + "', but it is not defined. ('$' may forward-reference a variable declared later in the script, but the name must exist; checked after all tables are registered and before any driver build.)");
+				}
 			}
 		} else {
 			cArr.push_back(colName);
@@ -91,9 +132,17 @@ Json MetaProvider::collect() {
 	RefDepthGuard depthGuard;
 
 	Json obj = staticPart();
-	for (const auto& ref : *refs_) {
-		const std::string& colName = ref.first;
-		const std::string& name = ref.second;
+	for (const MetaRef& ref : *refs_) {
+		if (ref.expr) {
+			/* $(...) 表达式：把求值结果格式化后写回承载 $ 的列 */
+			double v = ref.expr->eval([this](const std::string& nm) {
+				return resolveVarsNumber(registry_, nm);
+			});
+			obj.put(ref.col, JsonString(formatNumber(v)));
+			continue;
+		}
+		const std::string& colName = ref.col;
+		const std::string& name = ref.var;
 		if (MatrixVars_Hardware* hv = registry_->find(name)) {
 			Json snap = hv->read();
 			if (snap.isObj()) {
@@ -106,7 +155,7 @@ Json MetaProvider::collect() {
 					+ "': referenced variable returned a non-object (scalar) snapshot; "
 					+ "the '$' reference column '" + colName
 					+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
-					+ " carry a text value that can fill a column; Alias/scalar variables are"
+					+ " carry a numeric value that can fill a column; Alias/scalar variables are"
 					+ " only supported via 'controller' columns.");
 			}
 		}
@@ -139,9 +188,25 @@ Json MetaProvider::collect() {
  * 把 message 混进去初始化参数没有意义）。 */
 Json MetaProvider::collectForDestroy() {
 	Json obj = staticPart();
-	for (const auto& ref : *refs_) {
-		const std::string& colName = ref.first;
-		const std::string& name = ref.second;
+	for (const MetaRef& ref : *refs_) {
+		if (ref.expr) {
+			/* 表达式只引用 @Vars（无资源），destroy 期照常求值；异常只跳过该列 */
+			try {
+				double v = ref.expr->eval([this](const std::string& nm) {
+					return resolveVarsNumber(registry_, nm);
+				});
+				obj.put(ref.col, JsonString(formatNumber(v)));
+			} catch (const std::exception& e) {
+				logD([&] {
+					return "destroy metadata: '" + matrix_.getName() + "' row "
+						+ std::to_string(row_) + " skipped expression column '" + ref.col
+						+ "' (" + e.what() + ")";
+				});
+			}
+			continue;
+		}
+		const std::string& colName = ref.col;
+		const std::string& name = ref.var;
 		MatrixVars_Hardware* hv = registry_->find(name);
 		if (hv == nullptr) { continue; }
 		Json snap = JsonObject();
@@ -258,7 +323,12 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 		if (kind == ScalarKind::Alias) {
 			var = MtVars_Alias::Factory(matrix, i);
 		} else {
-			var = MtVars_Vars::Factory(matrix, i);
+			/* Vars 表达式惰性求值：标识符经注册表解析（环由 Vars 深度计数兜底；
+			 * registry_ 的生命周期长于 factory_，捕获其地址安全） */
+			const HwRegistry* reg = &registry_;
+			var = MtVars_Vars::Factory(matrix, i, [reg](const std::string& nm) {
+				return resolveVarsNumber(reg, nm);
+			});
 		}
 		if (session) {
 			if (session->count(name)) {
@@ -408,7 +478,18 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 	auto [name_dev, name_param_orig] = parseActionColumn(actionDefs(0, j));
 	std::string name_param = name_param_orig;
 
-	double val_fp64 = MatrixVars_Hardware::parseMtDouble(actionDefs, i, j);
+	/* 单元格：$(...) 表达式按求值结果；否则走既有数值/继承解析。
+	 * getMt 已解析 "-" 继承（上一行是表达式时按上一行表达式再算一次）。 */
+	double val_fp64;
+	std::string raw = MatrixVars_Hardware::getMt(actionDefs, i, j);
+	if (auto body = exprBody(raw)) {
+		Expression e = Expression::parse(*body);
+		val_fp64 = e.eval([this](const std::string& nm) {
+			return resolveVarsNumber(&registry_, nm);
+		});
+	} else {
+		val_fp64 = MatrixVars_Hardware::parseMtDouble(actionDefs, i, j);
+	}
 
 	Json ret = JsonObject();
 	MatrixVars_Hardware* hit = registry_.find(name_param_orig);

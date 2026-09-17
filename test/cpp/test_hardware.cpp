@@ -274,6 +274,27 @@ TH_TEST(metaprovider_vars_reference_fills_column_with_number) {
 	TH_CHECK(dmeta.get("src")->getValue() == "42");
 }
 
+TH_TEST(metaprovider_expression_reference_evaluates) {
+	/* 元数据列写 $(...)：seed 解析/校验标识符，collect 惰性求值写回该列 */
+	bot::HwRegistry reg;
+	reg.add("v1", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\nv1 10;\n@\n"), 1));
+	reg.add("v2", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\nv2 5;\n@\n"), 1));
+
+	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note;\nr0 $(v1+v2+10);\n@\n");
+	MetaProvider prov(m, 1, -1, &reg);
+	TH_CHECK(prov.collect().get("note")->getValue() == "25");
+	TH_CHECK(prov.collectForDestroy().get("note")->getValue() == "25");
+}
+
+TH_TEST(metaprovider_expression_undefined_identifier_reports) {
+	bot::HwRegistry reg;
+	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note;\nr0 $(ghost+1);\n@\n");
+	MetaProvider prov(m, 1, -1, &reg);
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "ghost", prov.collect());
+}
+
 TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	/* C1 防线：$ 引用成环（这里经一个回入 collect() 的变量构造自引用）
 	 * 必须被线程局部深度计数拦下并说人话，而不是无限互递归直到 SIGSEGV。 */
@@ -418,14 +439,62 @@ TH_TEST(vars_matrix_rejects_non_numeric_value) {
 	/* @Vars 仅支持 Number：非数值字面量（含空值/nan/inf）在 Factory 处即报错，
 	 * 与结构脚本 Number 列同一判定；合法格式（整数/小数/符号/科学计数法）通过。 */
 	mt::MatrixObject bad = fx::oneMatrix("@Vars\nname value;\nspd fast;\n@\n");
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is not a valid Number",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "neither a Number",
 		bot::MtVars_Vars::Factory(bad, 1));
 
 	mt::MatrixObject nanv = fx::oneMatrix("@Vars\nname value;\nspd nan;\n@\n");
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is not a valid Number",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "neither a Number",
 		bot::MtVars_Vars::Factory(nanv, 1));
 
 	mt::MatrixObject ok = fx::oneMatrix("@Vars\nname value;\na -1.5;\nb 2e3;\n@\n");
 	TH_CHECK(bot::MtVars_Vars::Factory(ok, 1)->read().getValue() == "-1.5");
 	TH_CHECK(bot::MtVars_Vars::Factory(ok, 2)->read().getValue() == "2e3");
+}
+
+namespace {
+
+/* 与生产 resolver 同契约：查注册表、必须是 Vars、递归取数 */
+std::function<double(const std::string&)> regResolver(const bot::HwRegistry* reg) {
+	return [reg](const std::string& name) -> double {
+		bot::MatrixVars_Hardware* hv = reg->find(name);
+		if (hv == nullptr) {
+			throw bot::IllegalArgumentException("expression references undefined '" + name + "'");
+		}
+		bot::MtVars_Vars* v = dynamic_cast<bot::MtVars_Vars*>(hv);
+		if (v == nullptr) {
+			throw bot::IllegalArgumentException("expression references non-Vars '" + name + "'");
+		}
+		return v->numericValue();
+	};
+}
+
+} // namespace
+
+TH_TEST(vars_expression_evaluates_lazily_and_tracks_override) {
+	bot::HwRegistry reg;
+	reg.add("v1", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\nv1 10;\n@\n"), 1));
+	reg.add("v2", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\nv2 5;\n@\n"), 1));
+
+	std::unique_ptr<bot::MtVars_Vars> v3 = bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\nv3 $(v1+v2+10);\n@\n"), 1, regResolver(&reg));
+	TH_CHECK(v3->read().getValue() == "25");
+	TH_CHECK(v3->play(JsonObject()).getValue() == "25");
+
+	/* 惰性求值：覆盖 v2 后 v3 再读应反映新值（无需重建 v3） */
+	reg.override("v2", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\nv2 7;\n@\n"), 1));
+	TH_CHECK(v3->read().getValue() == "27");
+}
+
+TH_TEST(vars_expression_cycle_is_detected) {
+	bot::HwRegistry reg;
+	/* a=$(b+1), b=$(a+1)：互相引用必须被深度计数拦下，而非栈溢出 */
+	reg.add("a", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\na $(b+1);\n@\n"), 1, regResolver(&reg)));
+	reg.add("b", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\nb $(a+1);\n@\n"), 1, regResolver(&reg)));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "circular @Vars",
+		reg.find("a")->read());
 }

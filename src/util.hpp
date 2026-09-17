@@ -7,6 +7,7 @@
 #include <atomic>
 #include <cerrno>
 #include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
@@ -118,6 +119,14 @@ inline bool isNumericLiteral(const std::string& s) {
 	double d = std::strtod(v.c_str(), &end);
 	if (end == v.c_str() || *end != '\0') { return false; }
 	return std::isfinite(d);
+}
+
+/* 数值 → 文本：%.15g（整数不带小数点、去掉多余零），供 @Vars 表达式结果
+ * 回写文本。程序不调用 setlocale，小数点恒为 '.'。 */
+inline std::string formatNumber(double v) {
+	char buf[64];
+	std::snprintf(buf, sizeof(buf), "%.15g", v);
+	return std::string(buf);
 }
 
 } // namespace bot

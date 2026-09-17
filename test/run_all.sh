@@ -325,6 +325,8 @@ fi
 #   alias_inline 动作脚本内联别名生效；alias_override/alias_dup 覆盖/重复负值
 #   vars_num     @Vars 仅支持 Number：结构表 $ 数值常量填充 Relay.note
 #   vars_bad/vars_nonnum/vars_dup  Vars 缺 value 列 / 非数值 / 动作脚本内重复定义 → 负值契约
+#   expr_num     $(...) 表达式：Vars 内 + SQL 元数据列 + @Action 单元格三处
+#   expr_undefined 元数据列表达式引用未定义标识符 → 装配期报错（先于任何 build）
 #   mt_noblank  矩阵间只有单个换行（无空行）→ 第 2+ 个矩阵名仍须正确识别
 #   mt_crlf     同上但 CRLF 行尾 → 修复不得只按 LF 语义而破坏 CRLF
 #   mt_ragged   行内单元格数与表头不齐 → 须报 "Does Not Sync" 且行号准确
@@ -372,8 +374,10 @@ parse_cases=(
 	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
 	'vars_num.sql|vars_num.mt|0|note=200'
 	"vars_bad.sql|vars_bad.mt|1|has no 'value' column"
-	'vars_nonnum.sql|vars_nonnum.mt|1|is not a valid Number'
+	'vars_nonnum.sql|vars_nonnum.mt|1|neither a Number'
 	'alias_dup.sql|vars_dup.mt|1|Duplicate Vars name'
+	'expr_num.sql|expr_num.mt|0|note=50'
+	'expr_undefined.sql|expr_undefined.mt|1|ghost'
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
 	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
 	'ref_forward.sql|ref_forward.mt|0|joined, total publishes=|Deactive warning'

@@ -183,7 +183,7 @@ TH_TEST(run_rejects_vars_matrix_without_value_column) {
 TH_TEST(run_rejects_non_numeric_vars_value) {
 	/* @Vars 仅支持 Number：非数值在注册阶段即报错 */
 	const std::string msg = runTexts(kBasicSql, "@Vars\nname value;\nspd fast;\n@\n");
-	TH_CHECK(msg.find("is not a valid Number") != std::string::npos);
+	TH_CHECK(msg.find("neither a Number") != std::string::npos);
 }
 
 /* ---------------- HwRegistry（R-2：单一注册表） ---------------- */

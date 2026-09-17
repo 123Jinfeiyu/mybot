@@ -49,6 +49,7 @@ endif()
 set(MYBOT_CORE_SOURCES
   src/json.cpp
   src/matrix.cpp
+  src/expr.cpp
   src/sqlparse.cpp
   src/luaend.cpp
   src/hardware.cpp
@@ -96,6 +97,7 @@ add_executable(mybot_tests
   test/cpp/main.cpp
   test/cpp/test_json.cpp
   test/cpp/test_matrix.cpp
+  test/cpp/test_expr.cpp
   test/cpp/test_sqlparse.cpp
   test/cpp/test_hardware.cpp
   test/cpp/test_robot.cpp

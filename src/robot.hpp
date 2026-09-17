@@ -53,6 +53,14 @@ public:
 	const std::vector<MatrixVars_Hardware*>& sequence() const { return seq_; }
 };
 
+/* 元数据引用列：变量引用（var 非空）或 $(...) 表达式引用（expr 非空）。
+ * 表达式在 seed 期解析（语法早报 + 标识符存在性校验），collect 期惰性求值。 */
+struct MetaRef {
+	std::string col;				/* 承载 $ 的列名 */
+	std::string var;				/* 变量引用（expr 为空时有效） */
+	std::shared_ptr<const Expression> expr;		/* 表达式引用 */
+};
+
 /* P8/M2：元数据静态列缓存（字面列冻结 + 引用列实时 read() 快照） */
 class MetaProvider {
 	const mt::MatrixObject& matrix_;
@@ -61,9 +69,8 @@ class MetaProvider {
 	const HwRegistry* registry_;
 	std::optional<std::vector<std::string>> cols_;
 	std::optional<std::vector<std::string>> vals_;
-	/* 引用列：每项 (承载 $ 的列名, 被引用变量名)。对象快照按字段并入元数据；
-	 * @Vars 这类标量数值变量则把值写到该列名下（见 collect / collectForDestroy）。 */
-	std::optional<std::vector<std::pair<std::string, std::string>>> refs_;
+	/* 引用列：变量快照按字段并入元数据；@Vars 标量/表达式则把值写到该列名下。 */
+	std::optional<std::vector<MetaRef>> refs_;
 
 	void seed();
 	/* 字面列（含 "-" 继承结果）构造——运行期与销毁期两条收集路径共用 */

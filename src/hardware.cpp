@@ -100,7 +100,44 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 }
 
 /* ---- 命名数值变量 @Vars ---- */
-std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, std::int64_t i) {
+
+/* 表达式求值的递归深度上限：Vars 表达式可互相引用（$(v1+v2)），成环
+ * （A→B→A）或自引用会无限递归。线程局部计数兜底，超限判成环并清晰报错。 */
+namespace {
+thread_local int t_varsDepth = 0;
+constexpr int kMaxVarsDepth = 32;
+struct VarsDepthGuard {
+	~VarsDepthGuard() { --t_varsDepth; }
+};
+} // namespace
+
+double MtVars_Vars::numericValue() const {
+	if (t_varsDepth >= kMaxVarsDepth) {
+		throw IllegalArgumentException("circular @Vars expression reference detected (chain exceeds "
+			+ std::to_string(kMaxVarsDepth) + " levels); an expression may not reference itself,"
+			+ " directly or indirectly.");
+	}
+	++t_varsDepth;
+	VarsDepthGuard guard;
+	if (expr_) {
+		if (!resolve_) {
+			throw IllegalArgumentException("Vars expression has no variable resolver"
+				" (it can only be constructed through HwFactory)");
+		}
+		return expr_->eval(resolve_);
+	}
+	char* end = nullptr;
+	return std::strtod(literal_.c_str(), &end);
+}
+
+Json MtVars_Vars::play(const Json&) {
+	/* 字面量保持原文（值按文本驻留，如 "2e3" 不被规范化）；表达式回写求值结果 */
+	if (!expr_) { return JsonString(literal_); }
+	return JsonString(formatNumber(numericValue()));
+}
+
+std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, std::int64_t i,
+		std::function<double(const std::string&)> resolve) {
 	std::int64_t idxName = defs.indexOfCol(0, "name");
 	std::int64_t idxValue = defs.indexOfCol(0, "value");
 	if (idxName < 0) {
@@ -113,16 +150,23 @@ std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, 
 	std::string name = defs(i, idxName);
 	std::string value = MatrixVars_Hardware::getMt(defs, i, idxValue);
 
-	/* @Vars 仅支持 Number：值必须是数值字面量（整数/小数/带符号/科学计数法）。
-	 * 仍按文本驻留（不转换），与结构脚本 Number 列同一判定。 */
+	/* value 允许两种形态：$(<表达式>)（语法在构造期校验，标识符惰性求值）
+	 * 或数值字面量（仅支持 Number）。 */
+	if (auto body = exprBody(value)) {
+		Expression e = Expression::parse(*body);	/* 语法错误早报 */
+		std::cerr << "Create a Vars: " << name << " = " << value << std::endl;
+		return std::unique_ptr<MtVars_Vars>(
+			new MtVars_Vars(std::string(), std::move(e), std::move(resolve)));
+	}
 	if (!isNumericLiteral(value)) {
 		throw IllegalArgumentException("Vars '" + name + "' in matrix '" + defs.getName()
-			+ "': value '" + value + "' is not a valid Number (only Number is supported).");
+			+ "': value '" + value + "' is neither a Number nor a $(...) expression.");
 	}
 
 	std::cerr << "Create a Vars: " << name << " = " << value << std::endl;
 
-	return std::unique_ptr<MtVars_Vars>(new MtVars_Vars(std::move(value)));
+	return std::unique_ptr<MtVars_Vars>(
+		new MtVars_Vars(std::move(value), std::nullopt, std::move(resolve)));
 }
 
 } // namespace bot

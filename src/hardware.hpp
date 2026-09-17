@@ -9,6 +9,7 @@
 #include <optional>
 #include <string>
 
+#include "expr.hpp"
 #include "json.hpp"
 #include "matrix.hpp"
 #include "util.hpp"
@@ -79,13 +80,31 @@ public:
 
 /* ---- 命名数值变量 @Vars（列 name / value）----
  * 与 @Alias 同构，但值语义是「数值常量」而非参数名：value 必须是数值字面量
- * （仅支持 Number，非数值在 Factory 处即报错），但内部仍按文本驻留、不做转换。
- * 除 @Action 参数位替换外，独特的用途是被结构脚本元数据列以 $<name> 引用。 */
+ * （仅支持 Number），或形如 $(<表达式>) 的算术表达式（+ - * / %、括号、
+ * 标识符引用其它 @Vars）。表达式惰性求值（读取时才解析标识符），因此支持
+ * 前向引用与动作脚本覆盖；结果以文本驻留（formatNumber）。
+ * 除 @Action 参数位替换外，独特的用途是被结构脚本元数据列以 $<name> 引用，
+ * 或元数据列/@Action 单元格直接写 $(...)。 */
 class MtVars_Vars : public MtVars_Text {
-	explicit MtVars_Vars(std::string value) : MtVars_Text(std::move(value)) {}
+	std::string literal_;				/* 字面量原文（表达式为空时有效） */
+	std::optional<Expression> expr_;		/* 表达式 AST（惰性求值） */
+	std::function<double(const std::string&)> resolve_;	/* 标识符 → 数值 */
+
+	MtVars_Vars(std::string literal, std::optional<Expression> expr,
+			std::function<double(const std::string&)> resolve)
+		: MtVars_Text(std::string()), literal_(std::move(literal)),
+		  expr_(std::move(expr)), resolve_(std::move(resolve)) {}
 
 public:
-	static std::unique_ptr<MtVars_Vars> Factory(const mt::MatrixObject& defs, std::int64_t i);
+	/* 数值求值：字面量直接解析，表达式经 resolve_ 惰性求值（含环检测）。 */
+	double numericValue() const;
+
+	/* play/read 返回格式化后的数值文本（保持「值按文本驻留」的既有语义） */
+	Json play(const Json&) override;
+
+	/* resolve：表达式标识符求值回调；纯字面量 Vars 可省略，表达式 Vars 必须提供。 */
+	static std::unique_ptr<MtVars_Vars> Factory(const mt::MatrixObject& defs, std::int64_t i,
+			std::function<double(const std::string&)> resolve = {});
 };
 
 } // namespace bot

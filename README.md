@@ -94,7 +94,7 @@ cat scripts/one-shake.mt  | ./build/mybot --robot=robots/spider1.sql  # 单腿�
 从 [docs/README.md](docs/README.md) 进入全部文档。常用入口：
 
 - [命令行与环境变量参考](docs/reference.md)——动作输入源、CLI 参数、安全约束、`BOT4CJ_*`
-- [DSL 参考：结构脚本与动作脚本](docs/dsl.md)——占位符、`@Alias`/`@Vars`、controller 与 `$` 引用完整语义
+- [DSL 参考：结构脚本与动作脚本](docs/dsl.md)——占位符、`@Alias`/`@Vars`、`$(...)` 表达式、controller 与 `$` 引用完整语义
 - [硬件变量（驱动）清单](docs/drivers.md)——50+ 驱动按类别速查
 - [@Daemon 守护线程](docs/daemon.md)——后台采样、滤波器链路
 - [HAL 硬件抽象层](docs/hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱

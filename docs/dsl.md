@@ -42,6 +42,7 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 ```
 
 - 可内联 `@Alias` 别名矩阵（如把 `s1.A` 写成 `s1.angle`）；`@Vars` 命名数值变量同构（列 `name`/`value`），也可内联
+- 单元格数值可写 `$(<表达式>)`（见 [表达式](#表达式-)），如 `$(v1+v2+10)`；`-` 继承会沿用上一行的解析结果
 - 结构与动作两侧都可定义别名/数值变量，同名时**动作脚本的定义覆盖**（打印覆盖日志）
 - 同一动作脚本内重复定义同名别名（或数值变量）报错（负值契约）
 
@@ -64,6 +65,13 @@ CREATE TABLE Monitor (name String, src String);
 INSERT INTO Monitor (name, src) VALUES ('mon0', '$imu0');   -- 引用守护 imu0
 ```
 
+值也可写成 `$(<表达式>)`：对 `@Vars` 做算术并把结果填入该列（完整语义见 [表达式](#表达式-)）。结构脚本里 `(` 是分隔符，必须整体加引号写成 `'$(...)'`：
+
+```sql
+INSERT INTO Servo (name, max, min, offset, controller, channel)
+  VALUES ('s1', '$(smax+5)', '-', '-', 'pca9685-0', '0');
+```
+
 顺序说明：`$` **允许前向引用**（可以指向声明在后的变量）——存在性校验在全部表注册之后、任何驱动 `build` 之前统一执行；与 `controller` 列不同（后者要求被指向的变量必须先声明）。另有两点与顺序相关的行为：`$` 的取值是**每次播放时**的实时快照（不是声明时的值）；销毁阶段（`destroy`）取「字面列 + 引用列的尽力而为快照」——引用仍存活则并入其快照，已被销毁则**只跳过该引用**（本变量的 `destroy` 照样会被调用）。
 
 ### 接口器件（总线）必须声明在器件之前
@@ -74,13 +82,15 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$imu0');   -- 引用守护 imu0
 
 ## `@Vars` 命名数值变量
 
-`@Vars` 与 `@Alias` 同构（列 `name` / `value`），但**仅支持 Number**：`value` 必须是数值字面量（整数/小数/带符号/科学计数法），非数值（含空值、`nan`/`inf`）在注册期即报错。值仍按文本驻留、不做转换（与结构脚本 `Number` 列共用同一判定）。它有两种消费方式：
+`@Vars` 与 `@Alias` 同构（列 `name` / `value`），但**仅支持 Number**：`value` 必须是数值字面量（整数/小数/带符号/科学计数法）或 `$(<表达式>)`（见 [表达式](#表达式-)），否则在注册期即报错。字面量按原文驻留、不做转换（与结构脚本 `Number` 列共用同一判定）；表达式在读取时求值。它有两种消费方式：
 
 1. **结构脚本 `$` 数值常量**：元数据列写 `$<name>`，该列取变量的数值文本——这是唯一允许 `$` 指向标量的变量类型（`Alias` 等标量仍按上节报错）：
 
    ```sql
    CREATE TABLE Vars (name String, value Number);
-   INSERT INTO Vars (name, value) VALUES ('smax', 90);
+   INSERT INTO Vars (name, value) VALUES ('v1', 10);
+   INSERT INTO Vars (name, value) VALUES ('v2', 5);
+   INSERT INTO Vars (name, value) VALUES ('smax', '$(v1+v2+75)');   -- 90
    CREATE TABLE Servo (name String, max String, min String, offset String,
                        controller String, channel String);
    INSERT INTO Servo (name, max, min, offset, controller, channel)
@@ -90,6 +100,24 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$imu0');   -- 引用守护 imu0
 2. **动作脚本参数位替换**：沿用 `@Alias` 的规则，`dev.<name>` 的参数位用 `value` 替换成参数名（值被限定为 Number，故实际以第 1 种 `$` 常量用法为主）。`@Vars` 可在结构脚本定义，也可在 `.mt` 内联；同名时动作脚本覆盖结构定义，同一动作脚本内重名报错。
 
 与 `$` 对象快照不同，`@Vars` 不做字段合并，只把数值文本写到承载 `$` 的那一列；它无资源，`build`/`destroy` 为空操作。回归见 `vars_num`（正值）与 `vars_bad`/`vars_nonnum`/`vars_dup`（负值）。
+
+## 表达式 `$(...)`
+
+`$(<expr>)` 在三处可用，语法一致：`+ - * / %`、括号、一元正负、十进制字面量、标识符（**只能是 `@Vars` 名**）。
+
+1. `@Vars.value`：`INSERT INTO Vars ... VALUES ('v3', '$(v1+v2+10)')`（`.mt` 内联可裸写 `v3 $(v1+v2+10)`）
+2. 结构脚本元数据列：`'$(v1*v2)'`（SQL 里必须整体加引号，否则 `(` 触发切词）
+3. `@Action` 单元格：`$(v3*2)`
+
+规则与边界：
+
+- **仅算术**：无函数调用/赋值；标识符只能指向 `@Vars`（数值），引用 `Alias`/驱动变量会清晰报错。
+- **惰性求值**：读取时才解析标识符，故支持**前向引用**与动作脚本覆盖（同名覆盖后按新值重算）。成环（`a=$(b+1)`、`b=$(a+1)`）由线程局部深度计数拦下并报 `circular @Vars`。
+- **存在性校验**：元数据列表达式里的标识符与 `$name` 一样，在全部表注册后、任何驱动 `build` 之前统一校验（允许前向引用）；`.mt`/`@Vars` 侧的引用在首次读取（build/首帧）时报错。
+- **除零/取模为零** 明确报错；表达式结果以 `%.15g` 格式化回写文本（整数不带小数点）。
+- **空格**：矩阵按空白切格，`$(...)` 内不得含空格；SQL 引号形式内空白是数据，可以写 `$(v1 + v2)`。
+- **深度上限**：括号嵌套超限在解析期拒绝（`$(((...)))` 深嵌套不会打爆宿主栈）。
+- 回归：`expr_num`（正值，三处都覆盖）与 `expr_undefined`（负值）。
 
 ## mtmerge 合成器（.mt 两两归并）
 
