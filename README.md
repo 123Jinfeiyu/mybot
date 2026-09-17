@@ -41,10 +41,9 @@ sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev
 
 ```bash
 cmake -S . -B build && cmake --build build          # Release（产物 ./build/mybot）
-# 排查内存/未定义行为（可选）：
+# 排查内存/未定义行为（可选，MYBOT_SANITIZE 为仓库内置开关）：
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
-  && cmake --build build-asan                        # 产物 ./build-asan/mybot
+  -DMYBOT_SANITIZE=address,undefined && cmake --build build-asan   # 产物 ./build-asan/mybot
 ```
 
 ### 第一条命令：无硬件跑通 Relay → Timer
