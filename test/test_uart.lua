@@ -218,6 +218,15 @@ check(uart_read(7, 100) == nil or true, "参数校验不炸")	-- fd nil -> nil �
 reset()
 check(uart_read(7, 0, 100) == nil, "n=0 拒绝（返回 nil）")
 
+-- 超时上限：超过 UART_READ_MAX_MS 显式返回 nil，不得与参数线性空转
+reset({ -1 })
+check(uart_read(7, 4, HAL.UART_READ_MAX_MS + 1) == nil,
+	"超时超上限（60001ms）显式返回 nil")
+check(not has_call("read"), "超上限不发 read 系统调用（配置错误立即暴露）")
+reset({ { 1, 2 } })
+local got_cap = uart_read(7, 2, HAL.UART_READ_MAX_MS)
+check(type(got_cap) == "table" and #got_cap == 2, "上限值 60000ms 本身放行")
+
 -- ==================== uart_flush ====================
 reset()
 check(uart_flush(7) == 0, "flush 返回 0")

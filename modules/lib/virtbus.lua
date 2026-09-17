@@ -68,8 +68,8 @@
 --     再 dev.read(n)，复刻 HAL I2C_RDWR 的「写指针+读」原子事务——模型据此
 --     知道读的是哪个寄存器（regmap 类器件模型的前提）；指针写 NACK 则整笔读失败
 --   纯读族（i2c_read/read_bytes，无指针命令式器件用）→ 仅 dev.read(n)
---   长度约束同 HAL：read/read_multi/read_reg16 越界（合并值精度上限）显式失败；
---   read_bytes/read_multi_bytes 钳制 n 1~16（表长对调用方可见）
+--   长度约束同 HAL：read/read_multi/read_reg16 合并值 n 1~6 越界（2^53 精度上限）
+--   显式失败；read_bytes/read_multi_bytes 钳制 n 1~16（表长对调用方可见）
 --   返回值按 HAL 原语义组装（大端合并或字节表）；无器件地址命中按 NACK 处理
 --   （写 false/-1、读 -1/nil），与真机"设备不在总线"行为一致，可测负路径
 --
@@ -77,7 +77,7 @@
 --   空间；spi_setup 复刻参数校验（mode 0~3 / bits 7~16 / speed>0），配置留痕
 --   （真机 setup 是控制器 ioctl，无器件也成功——虚拟层同此语义，无挂载也返回 0）。
 --   spi_write/write3/write_multi 字节校验同 HAL（非字节 → -1，不发帧），
---   write_multi 帧长 1~64；spi_read_multi 合并值 n 1~8 越界显式 -1；
+--   write_multi 帧长 1~64；spi_read_multi 合并值 n 1~6 越界显式 -1；
 --   delay_us 同 HAL 钳到 65535 并随帧留痕；spi_read 的 MOSI 为全 0（真机
 --   tx_buf=NULL 内核发 0）。无挂载路径/未打开 fd/模型返回失败，传输族一律 -1。
 --   spi_xfer_full 是第 9 个 SPI 全局：1 基字节表入参/等长 1 基 MISO 表返回
@@ -367,9 +367,9 @@ function virtbus.v_i2c_read_reg(fd, reg)
 	return t[1]
 end
 
--- 纯读大端合并：HAL 限定 n 1~8，越界显式 -1（不静默钳制）
+-- 纯读大端合并：HAL 限定 n 1~6（2^53 精度上限），越界显式 -1（不静默钳制）
 function virtbus.v_i2c_read(fd, n)
-	n = read_n(n, 8)
+	n = read_n(n, 6)
 	if n == nil then return -1 end
 	local t = do_read(fd, n)
 	if t == nil or #t < 1 then return -1 end
@@ -547,11 +547,12 @@ function virtbus.v_spi_write_multi(fd, data, delay_us)
 	return 0
 end
 
--- 读 n 字节大端合并，n 1~8 越界显式 -1（对齐 HAL，静默钳制会放大成错误合并值）
+-- 读 n 字节大端合并，n 1~6 越界显式 -1（对齐 HAL 的 2^53 精度上限，
+-- 静默钳制会放大成错误合并值）
 function virtbus.v_spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
 	n = tonumber(n)
-	if fd == nil or n == nil or n ~= math.floor(n) or n < 1 or n > 8 then
+	if fd == nil or n == nil or n ~= math.floor(n) or n < 1 or n > 6 then
 		return -1
 	end
 	local tx = {}

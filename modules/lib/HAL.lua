@@ -287,14 +287,15 @@ function i2c_read_multi(fd, reg, n)
 end
 
 -- 纯读 n 字节（单条读消息，不写指针，SGP30 这类命令式传感器用），大端合并；失败返回 -1
--- n 有效范围 1~8，越界（含非法值）显式返回 -1：静默钳到 1 字节会被调用方的
--- 拆字节数学放大成错误数据；更长纯读请用 i2c_read_bytes
+-- n 有效范围 1~6（2^53 精度上限，同 i2c_read_multi：7 字节起大端合并值可能
+-- 超 2^53 被静默截断），越界（含非法值）显式返回 -1：静默钳制会被调用方的
+-- 拆字节数学放大成错误数据；更长纯读请用 i2c_read_bytes（字节表不受精度限制）
 function i2c_read(fd, n)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 8 then return -1 end
+	if n < 1 or n > 6 then return -1 end
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[1]")
 	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
@@ -503,13 +504,15 @@ function spi_write_multi(fd, data, delay_us)
 	return -1
 end
 
--- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 有效范围 1~8，
--- 越界显式返回 -1，静默钳制危害同 i2c_read_multi）；delay_us 可选
+-- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 有效范围 1~6，
+-- 2^53 精度上限同 i2c_read_multi——7 字节起合并值可能被静默截断；越界显式
+-- 返回 -1，静默钳制危害同 i2c_read_multi）；更长的全双工帧请用 spi_xfer_full
+-- （MOSI 命令与 MISO 数据同帧、返回字节表）；delay_us 可选
 function spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	if fd == nil or n == nil then return -1 end
-	if n < 1 or n > 8 then return -1 end
+	if n < 1 or n > 6 then return -1 end
 	local buf = ffi.new("uint8_t[?]", n)
 	if not spi_xfer(fd, nil, buf, n, delay_us) then return -1 end
 	local v = 0
@@ -590,7 +593,12 @@ function gpio_request_line(chip_path, offset, direction, default_value, active_l
 		return -1
 	end
 	offset = tonumber(offset)
-	if offset == nil or offset < 0 or offset > 0xFFFFFFFF then return -1 end
+	-- 必须为非负整数：小数（如 17.9）写入 uint32 字段会被静默截断成另一个线号，
+	-- 配置错误显式拒绝而非将错就错
+	if offset == nil or offset < 0 or offset > 0xFFFFFFFF or offset ~= math.floor(offset) then
+		print("HAL: invalid gpio offset: " .. tostring(offset))
+		return -1
+	end
 
 	local chipfd = tonumber(HAL.sys.open(chip_path, O_RDWR))
 	if chipfd == nil or chipfd < 0 then
@@ -700,6 +708,8 @@ HAL.UART_VTIME_IDX = 5			-- c_cc 下标（VTIME）
 HAL.UART_CREAD_CLOCAL = 2176	-- CREAD(128) | CLOCAL(2048)
 HAL.EAGAIN = 11					-- Linux errno：非阻塞读暂无数据
 HAL.EINTR = 4					-- Linux errno：被信号打断
+HAL.UART_READ_MAX_MS = 60000	-- uart_read 轮询上限：iters=timeout_ms+1 按 1ms 空转，
+								-- 超长值（配置笔误）必须立即失败而非阻塞数小时
 
 HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
 HAL.uart_orig = {}				-- fd -> open 前的原始 termios（close 恢复用）
@@ -821,12 +831,19 @@ end
 
 -- 读最多 n 字节（非阻塞轮询，1ms 步进直至 timeout_ms），返回 1 基字节表
 -- （可能为空表 = 超时无数据）；fd 读取错误（EAGAIN/EINTR 之外的 errno）
--- 立即返回 nil——原实现把一切 read 失败当"无数据"空转到超时，错误被吞
+-- 立即返回 nil——原实现把一切 read 失败当"无数据"空转到超时，错误被吞。
+-- timeout_ms 超 UART_READ_MAX_MS 显式失败返回 nil（诊断打印）：iters 与参数
+-- 线性增长，超长值会按 1ms 空转阻塞调用线程数小时，配置笔误必须立即暴露
 function uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	timeout_ms = tonumber(timeout_ms) or 0
 	if fd == nil or n == nil or n < 1 then return nil end
+	if timeout_ms > HAL.UART_READ_MAX_MS then
+		print("HAL: uart_read timeout " .. tostring(timeout_ms) .. "ms exceeds max "
+			.. tostring(HAL.UART_READ_MAX_MS) .. "ms")
+		return nil
+	end
 	if n > 512 then n = 512 end
 	local buf = ffi.new("uint8_t[?]", n)
 	local out = {}

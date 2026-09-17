@@ -74,13 +74,13 @@ vbus.attach("自定义@0x68", 0x68, dev)
 
 - 挂载身份是 spidev 路径（`^/dev/spidev%d+%.%d+$` 白名单同 HAL），虚拟 fd 与 I2C 共用编号空间；同一路径的多个 fd 命中同一模型，`spi_close` 只关自己的 fd。
 - SPI 物理层**全双工、无 ACK**：模型只有一个回调 `xfer(tx)`——收本帧 MOSI 1 基表、返回等长 MISO 表（短补 0/长截断；返回 nil/false = 传输失败）。一次 HAL 传输（`spi_write/write3/write_multi/read/read_multi`）= 一个 CS 帧 = txlog 一条 `x` 记录；**纯写也会移入 MISO 字节**（真机如此，调用方丢弃但 txlog 照记），模型可借此实现「发命令的同帧回状态」协议（如 ADS1256 的命令态/DATA 轮询）；`spi_read*` 的 MOSI 为全 0（等价真机 tx_buf=NULL）。
-- `spi_setup` 复刻 HAL 校验（mode 0~3、bits 7~16、speed 正整数）并留痕；它面向**控制器**，真机上总线无器件也成功——虚拟层同此语义（与 I2C「无地址 NACK」刻意不同）。传输族的字节/帧长校验同 HAL（非字节不发帧直接 -1；`write_multi` 1~64 字节；`read_multi` n 1~8 越界显式 -1），`delay_us` 钳到 65535 随帧留痕。无挂载路径/未打开 fd 的传输一律 -1（虚拟层约定的「设备不在」负路径）。
+- `spi_setup` 复刻 HAL 校验（mode 0~3、bits 7~16、speed 正整数）并留痕；它面向**控制器**，真机上总线无器件也成功——虚拟层同此语义（与 I2C「无地址 NACK」刻意不同）。传输族的字节/帧长校验同 HAL（非字节不发帧直接 -1；`write_multi` 1~64 字节；`read_multi` n 1~6（2^53 精度上限，同 HAL）越界显式 -1），`delay_us` 钳到 65535 随帧留痕。无挂载路径/未打开 fd 的传输一律 -1（虚拟层约定的「设备不在」负路径）。
 - SPI txlog 条目：`{dir="sopen", path}`、`{dir="setup", path, mode, bits, speed}`、`{dir="x", path, tx={...}, rx={...}, delay=us, ok=bool}`（失败帧 `rx=nil, ok=false` 同样记录）。
 - 现状边界：`spi_*` 全局族可注入（覆盖 TPL0501/AD9833/ADS1256 用法）；MT6826S 驱动绕过全局直调 `HAL.sys.ioctl_p` 打全双工帧，本层拦截不到，迁移它需先在 HAL 增加全局全双工传输原语。
 
 ## 契约对齐
 
-虚拟总线逐函数复刻 HAL 返回值——`i2c_write_reg` 为**布尔**（驱动用 `if not` 判定，若错返 -1 会因 Lua 真值规则造成 NACK 假成功）、`write_multi/reg16` 为 0/-1、读族长度约束（合并值 1~6/1~8 越界显式失败，字节表钳 1~16）一致。
+虚拟总线逐函数复刻 HAL 返回值——`i2c_write_reg` 为**布尔**（驱动用 `if not` 判定，若错返 -1 会因 Lua 真值规则造成 NACK 假成功）、`write_multi/reg16` 为 0/-1、读族长度约束（合并值 n 1~6 越界显式失败，字节表钳 1~16）一致。
 
 ## 器件模型库（内嵌于驱动文件尾部）
 

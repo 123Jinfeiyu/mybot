@@ -61,8 +61,10 @@ tester.check("read_reg16 读前送 16 位大端指针",
 	#last_write == 2 and last_write[1] == 0x01 and last_write[2] == 0x02)
 tester.check("器件 read 收到请求长度", last_read_n == 2)
 
--- 长度约束对齐 HAL：合并值类越界显式失败，字节表类钳到 1~16
-tester.check("read n=9 越界显式 -1（HAL 上限 8）", i2c_read(fd, 9) == -1)
+-- 长度约束对齐 HAL：合并值类 n 1~6 越界显式失败（2^53 精度上限），字节表类钳到 1~16
+fake_dev.read = function(n) last_read_n = n; return { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 } end
+tester.check("read n=6 边界通过", i2c_read(fd, 6) == 0x010203040506)
+tester.check("read n=7 越界显式 -1（HAL 上限 6）", i2c_read(fd, 7) == -1)
 tester.check("read n=0 非法显式 -1", i2c_read(fd, 0) == -1)
 tester.check("read_multi n=7 越界显式 -1（HAL 上限 6）", i2c_read_multi(fd, 0x00, 7) == -1)
 tester.check("read_reg16 n=7 越界显式 -1", i2c_read_reg16(fd, 0x0102, 7) == -1)

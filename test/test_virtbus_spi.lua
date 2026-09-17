@@ -134,7 +134,10 @@ resp = { 0x0A, 0x0B, 0x0C, 0x0D }
 tester.check("spi_read_multi 4B 大端合并", spi_read_multi(fd, 4) == 0x0A0B0C0D)
 tester.check("read_multi 模型收 4 个 dummy 字节",
 	#last_x().tx == 4 and last_x().tx[1] == 0 and last_x().tx[4] == 0)
-tester.check("spi_read_multi n=9 越界 -1", spi_read_multi(fd, 9) == -1)
+resp = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 }
+tester.check("spi_read_multi 6B 边界通过（2^53 精度上限）",
+	spi_read_multi(fd, 6) == 0x010203040506)
+tester.check("spi_read_multi n=7 越界 -1（HAL 上限 6）", spi_read_multi(fd, 7) == -1)
 tester.check("spi_read_multi n=0 非法 -1", spi_read_multi(fd, 0) == -1)
 tester.check("spi_read_multi n=小数 -1", spi_read_multi(fd, 2.5) == -1)
 
