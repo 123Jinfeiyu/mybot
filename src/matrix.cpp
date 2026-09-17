@@ -1,22 +1,6 @@
 #include "matrix.hpp"
 
-#include <charconv>
-
 namespace mt {
-
-/* 浮点数写入缓冲区（INSERT 语句 Float 值）：最短往返，整数型浮点补 ".0" */
-void MatrixObject::submitFloat(double fp64) {
-	char buf[64];
-	auto res = std::to_chars(buf, buf + sizeof(buf), fp64);
-	if (res.ec != std::errc()) {
-		tmp_ += std::to_string(fp64);
-		return;
-	}
-	std::string s(buf, res.ptr);
-	auto dot = s.find_first_of(".eE");
-	if (dot == std::string::npos) { s += ".0"; }
-	tmp_ += s;
-}
 
 /* 解析器主体：一个 _next 消费一个字符，返回更新后的行号 */
 std::int64_t MatrixParser::next_(char c, std::int64_t count) {

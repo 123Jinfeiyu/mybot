@@ -2,8 +2,9 @@
  *
  * --tcp / --input / stdin 三条通道共用同一个字节上限包装器。这里钉住：
  *   LimitedReader  第 cap+1 个字节即抛，EOF 不计入配额，未超限时字节原样透传
- *   异常类型       ActionScriptTooLarge 属 MatrixParseExcept 家族，
- *                  调用方按「脚本解析期错误」统一处理即可拿到原文报错
+ *   异常类型       ScriptTooLarge 属 MatrixParseExcept 家族，
+ *                  调用方按「脚本解析期错误」统一处理即可拿到原文报错；
+ *                  kind 标签区分「动作脚本 / 结构脚本」两类输入（F-02）
  *   配置校验       端口 / 监听地址 / 空闲超时非法时一律返回 nullptr（不占端口、不裸崩）
  */
 
@@ -34,9 +35,19 @@ TH_TEST(limited_reader_throws_one_byte_past_the_cap) {
 	TH_CHECK(lim.read() == 'a');
 	TH_CHECK(lim.read() == 'b');
 	TH_CHECK(lim.read() == 'c');
-	TH_CHECK_THROWS_MSG(bot::ActionScriptTooLarge, "exceeds the byte limit of 3", lim.read());
+	TH_CHECK_THROWS_MSG(bot::ScriptTooLarge, "exceeds the byte limit of 3", lim.read());
 	/* 越限后不会「吞掉异常继续放行」：后续每个字节都继续被拒 */
-	TH_CHECK_THROWS(bot::ActionScriptTooLarge, lim.read());
+	TH_CHECK_THROWS(bot::ScriptTooLarge, lim.read());
+}
+
+TH_TEST(limited_reader_kind_label_distinguishes_script_kinds) {
+	/* F-02：同一上限包装器服务 .mt 与 .sql 两类输入，报错首词须能区分类别 */
+	std::unique_ptr<bot::Reader> inner(new bot::MemoryReader("abcd"));
+	bot::LimitedReader lim(std::move(inner), 2, "structure script");
+	TH_CHECK(lim.read() == 'a');
+	TH_CHECK(lim.read() == 'b');
+	TH_CHECK_THROWS_MSG(bot::ScriptTooLarge,
+		"structure script exceeds the byte limit of 2", lim.read());
 }
 
 TH_TEST(limited_reader_eof_does_not_consume_quota) {
@@ -48,7 +59,7 @@ TH_TEST(limited_reader_eof_does_not_consume_quota) {
 
 TH_TEST(action_script_too_large_is_a_matrix_parse_error) {
 	/* 派生关系是「保留原文报错」的前提：调用方按 MatrixParseExcept 处理即可 */
-	bot::ActionScriptTooLarge e(8);
+	bot::ScriptTooLarge e(8);
 	const mt::MatrixParseExcept& base = e;
 	TH_CHECK(std::string(base.what()).find("exceeds the byte limit of 8") != std::string::npos);
 	const std::exception& std_e = base;

@@ -16,19 +16,12 @@ static bool equalWithoutCase(const std::string& s1, const std::string& s2) {
 	return true;
 }
 
-/* ---- 词元引号状态：首字符为引号且未闭合 → 内部字符按字面处理。
- * SQL 值可用 ' 或 " 包裹；引号内的 "--" 与块注释起始符都是数据而非注释，
- * 注释识别只在引号外生效（修复引号内 '--' 被当注释吞掉后续 token）。 ---- */
-static bool insideQuotes(const std::string& s) {
-	if (s.empty()) { return false; }
-	char q = s[0];
-	if (q != '\'' && q != '"') { return false; }
-	bool open = true;
-	for (std::size_t i = 1; i < s.size(); ++i) {
-		if (s[i] == q) { open = !open; }
-	}
-	return open;
-}
+/* ---- 词元引号态（F-02）----
+ * 首字符为引号且未闭合 → 内部字符一律按字面处理；"--" 与块注释起始符在引号内
+ * 是数据而非注释。状态由 Lexer::next 以 (inQuote, quoteChar) 增量维护：旧实现
+ * 每追加一个字符就重扫整个 token（O(n²)，100 KB 引号值实测 4.84 s 纯 CPU）。
+ * 注意：SQL 标准的 '' 双写转义仍不实现——每个同种引号字符都翻转引号态，
+ * 与旧 insideQuotes 语义逐字相同（值内含奇数引号的状态错乱属已知边界）。 ---- */
 
 /* ---- 去掉首尾空白与引号（对应 parseName）---- */
 static std::string parseName(const std::string& s) {
@@ -83,10 +76,12 @@ std::string Token::serialize() const {
 Token Lexer::next(bot::Reader& sr) {
 	if (flag_) { flag_ = false; return {TokenType::END, ""}; }
 	if (comma_) { comma_ = false; return {TokenType::COMMA, ""}; }
-	if (left_) { left_ = false; return {TokenType::LEFT, ""}; }
 	if (rght_) { rght_ = false; return {TokenType::RGHT, ""}; }
 
 	std::string s;
+	bool inQuote = false;		/* F-02：引号态由本函数增量维护（O(n)），
+					 * 取代旧实现每字符重扫 token 的 O(n²) */
+	char quoteChar = 0;		/* 打开引号态的字符：' 或 " */
 	while (true) {
 		int ci = sr.read();
 		if (ci < 0) {
@@ -118,7 +113,19 @@ Token Lexer::next(bot::Reader& sr) {
 
 		bool blank = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0');
 
-		if (insideQuotes(s)) { s += c; continue; }
+		/* F-02：引号态内一律按字面追加；同种引号再现即闭合。进入引号态
+		 * 只可能发生在 token 首字符处（与旧 insideQuotes 的 s[0] 判据等价）。 */
+		if (inQuote) {
+			s += c;
+			if (c == quoteChar) { inQuote = false; }
+			continue;
+		}
+		if (s.empty() && (c == '\'' || c == '"')) {
+			inQuote = true;
+			quoteChar = c;
+			s += c;
+			continue;
+		}
 		if (s.empty() && blank) { continue; }
 		else if (!s.empty() && blank) { return Token::parse(s); }
 		/* C2 防线：';'/','/'(' 在空 token 时直接产出对应词元（原实现借

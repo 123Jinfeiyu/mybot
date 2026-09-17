@@ -125,9 +125,6 @@ public:
 		return -1;
 	}
 
-	/* 浮点数写入缓冲区（INSERT 语句 Float 值，mt2 风格数值直写） */
-	void submitFloat(double fp64);
-
 	/* 储存对象 */
 	void save(std::ostream& out) const {
 		out << "@" << getName() << "\n";
@@ -178,7 +175,6 @@ class MatrixParser {
 
 public:
 	explicit MatrixParser(bot::Reader& input) : input_(input) {}
-	void reset(bot::Reader& input) { input_ = input; }
 
 	std::optional<MatrixObject> parse();
 };

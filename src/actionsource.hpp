@@ -3,6 +3,7 @@
  * 通道优先级：--tcp > --input > 标准输入 stdin。
  */
 
+#include <cstddef>
 #include <cstdio>
 #include <map>
 #include <memory>
@@ -15,15 +16,22 @@
 
 namespace bot {
 
-/* 动作脚本字节数超限。归入 MatrixParseExcept 家族：MatrixParser::parse() 对
- * 该族是原样 rethrow（读取点 input_.read() 本就在其 try 之外，两种路径都
- * 不会把报错降级成无信息的 "Parse failed at line N"），调用方按脚本解析期
- * 错误统一处理即可拿到原文。 */
-class ActionScriptTooLarge : public mt::MatrixParseExcept {
+/* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。
+ * run()/readSQL() 会把输入整体驻留后再装配（@Alias 必须先于 @Action 生效、
+ * 矩阵一次性建表），不设上限即等于「输入多大、进程就吃多大内存」；
+ * 实测 100MB 动作输入 → RSS 4.2GB。真实脚本为 KB 级，8MiB 已留三个数量级余量。 */
+inline constexpr std::size_t kMaxScriptBytes = 8u << 20;
+
+/* 脚本字节数超限。kind 指明输入类别（"action script" / "structure script"）。
+ * 归入 MatrixParseExcept 家族：MatrixParser::parse() 对该族是原样 rethrow
+ * （读取点 input_.read() 本就在其 try 之外，两种路径都不会把报错降级成
+ * 无信息的 "Parse failed at line N"），调用方按脚本解析期错误统一处理即可
+ * 拿到原文。 */
+class ScriptTooLarge : public mt::MatrixParseExcept {
 public:
-	explicit ActionScriptTooLarge(std::size_t cap)
-		: MatrixParseExcept("Action script exceeds the byte limit of " + std::to_string(cap)
-			+ ". Real .mt scripts are KB-sized; a larger input almost certainly means a runaway"
+	explicit ScriptTooLarge(std::size_t cap, const std::string& kind = "action script")
+		: MatrixParseExcept(kind + " exceeds the byte limit of " + std::to_string(cap)
+			+ ". Real bot4cj scripts are KB-sized; a larger input almost certainly means a runaway"
 			+ " or malicious producer (the whole script is buffered before playback).") {}
 };
 
@@ -61,19 +69,21 @@ public:
 	int read() override;
 };
 
-/* 字节数上限包装器：所有动作输入通道统一限流（见 openActionSource 注释） */
+/* 字节数上限包装器：所有脚本输入通道统一限流（见 openActionSource 与 main.cpp） */
 class LimitedReader : public Reader {
 	std::unique_ptr<Reader> inner_;
 	std::size_t cap_;
+	std::string kind_;
 	std::size_t seen_ = 0;
 
 public:
-	LimitedReader(std::unique_ptr<Reader> inner, std::size_t cap)
-		: inner_(std::move(inner)), cap_(cap) {}
+	LimitedReader(std::unique_ptr<Reader> inner, std::size_t cap,
+			std::string kind = "action script")
+		: inner_(std::move(inner)), cap_(cap), kind_(std::move(kind)) {}
 
 	int read() override {
 		int c = inner_->read();
-		if (c >= 0 && ++seen_ > cap_) { throw ActionScriptTooLarge(cap_); }
+		if (c >= 0 && ++seen_ > cap_) { throw ScriptTooLarge(cap_, kind_); }
 		return c;
 	}
 };

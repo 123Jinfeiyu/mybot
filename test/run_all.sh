@@ -497,6 +497,19 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 		timeout 30 "$bin" --robot=robots/relay-test.sql --input .tmp/toolarge.mt
 	rm -f .tmp/toolarge.mt
 
+	# F-02：结构脚本（.sql）与动作脚本统一 8 MiB 上限——旧实现只有 .mt 限流，
+	# 超大 .sql 会把全部 token 驻留内存（长引号值还会按 O(n²) 钉死一核）。
+	# 行长压到 ~120 B（token 数 ~76 万），避免守门内存峰值被 sanitizer 放大。
+	pad="$(printf 'x%.0s' $(seq 1 100))"
+	{ echo 'CREATE TABLE T ( name String );'; yes "INSERT INTO T ( name ) VALUES ('$pad');"; } 2>/dev/null | head -c 9000000 > .tmp/sql_toolarge.sql
+	run_one_hardening 'sql_toolarge' 1 'exceeds the byte limit' \
+		timeout 30 "$bin" --robot=.tmp/sql_toolarge.sql --input /dev/null
+	rm -f .tmp/sql_toolarge.sql
+
+	# F-20：未知/拼错的 --key 不再「打印帮助 + exit 0」——CI 里的假成功出口
+	run_one_hardening 'unknown_arg' 2 '未知参数：--robott' \
+		timeout 20 "$bin" --robott=robots/relay-test.sql
+
 	mkdir -p .tmp/fixmod
 	cat > .tmp/fixmod/leakdrv.lua <<'LUAEOF'
 -- 审计 #4 回归夹具：只提供 virt 器件模型，故意不定义全局 build/call/destroy，

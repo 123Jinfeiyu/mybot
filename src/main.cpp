@@ -40,6 +40,15 @@ static std::map<std::string, std::string> parseArgs(int argc, char** argv) {
 	return opts;
 }
 
+/* ---- 已知的 --key 白名单（须与 print_help 的参数表保持同步）---- */
+static bool isKnownOption(const std::string& key) {
+	static const char* const kKnown[] = {
+		"robot", "help", "tcp", "tcp-host", "tcp-token", "tcp-idle", "input",
+	};
+	for (const char* k : kKnown) { if (key == k) { return true; } }
+	return false;
+}
+
 void print_help() {
 	std::cout << "这是一个机器人动作脚本解析器。" << std::endl;
 	std::cout << "使用--robot选项指定结构脚本，然后使用管道输入动作脚本，示例：" << std::endl;
@@ -54,7 +63,7 @@ void print_help() {
 	std::cout << "  （缺省）           从 stdin 管道读取" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "安全约束：动作脚本只能引入新的参数键，不得覆盖结构脚本的元数据列" << std::endl;
-	std::cout << "（fd / address / max / min / offset 等），且单次输入上限 8 MiB。" << std::endl;
+	std::cout << "（fd / address / max / min / offset 等）；结构脚本与动作脚本单次输入上限均为 8 MiB。" << std::endl;
 }
 
 } // namespace bot
@@ -70,12 +79,22 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 
+	/* ---- F-20：未知/拼错的 --key 一律拒绝（退出码 2）----
+	 * 旧行为是静默忽略：`--robott=foo` 打印帮助后 exit 0（CI 里的假成功），
+	 * `--robot` 拼错还会让程序在「没给结构脚本」的路径上看似正常退出。 */
+	for (const auto& kv : options) {
+		if (!isKnownOption(kv.first)) {
+			std::cout << "未知参数：--" << kv.first << "；用 --help 查看支持的参数" << std::endl;
+			return 2;
+		}
+	}
+
 	/* ---- 结构脚本 + 动作输入源分支 ---- */
 	if (options.count("robot")) {
 		std::string rpath = options["robot"];
 
 		/* 友好报错：结构脚本打不开 → 人话提示，不裸栈回溯 */
-		std::unique_ptr<FileReader> fstream;
+		std::unique_ptr<Reader> fstream;
 		{
 			auto f = std::make_unique<FileReader>(rpath);
 			if (!f->good()) {
@@ -83,7 +102,9 @@ int main(int argc, char** argv) {
 				std::cout << "请确认 --robot 指向存在的结构脚本，示例：cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql" << std::endl;
 				return 1;
 			}
-			fstream = std::move(f);
+			/* F-02：结构脚本与动作脚本共用同一字节上限——readSQL 先把全部
+			 * token 驻留内存，不设限即「输入多大、进程就吃多大内存」。 */
+			fstream = std::make_unique<LimitedReader>(std::move(f), kMaxScriptBytes, "structure script");
 		}
 
 		std::unique_ptr<RobotStruct> robot;

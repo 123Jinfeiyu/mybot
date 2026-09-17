@@ -318,7 +318,6 @@ void RobotStruct::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 
 /* ---- SQL4cj → MatrixObject 结构表解析 ---- */
 void RobotStruct::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out) {
-	sql4cj::Lexer lexer;
 	std::vector<sql4cj::Token> tokens = sql4cj::Lexer::parseAll(input);
 	sql4cj::Parser parser(tokens);
 	for (;;) {

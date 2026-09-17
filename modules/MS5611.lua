@@ -15,8 +15,9 @@
 --     VALUES ('baro0', 'i2c-1', '0x77', '-');
 --
 -- 列说明（均可选，'-' 归缺省）：
---   osr = 过采样率 256/512/1024/2048/4096（非法值向下降档，缺省 4096 最高
---         分辨率 0.012mbar；档位越高单次转换越慢，4096 时一次 call 约 20ms）
+--   osr = 过采样率 256/512/1024/2048/4096（缺省 4096 最高分辨率 0.012mbar；
+--         超档值向下降档到不大于它的最大档；<256 或非数字显式报错，不静默选档。
+--         档位越高单次转换越慢，4096 时一次 call 约 20ms）
 --   p0  = 参考海平面气压 hPa（缺省 1013.25，ALT_M 换算用；本地天气下按
 --         气象台实测值校准可显著提高海拔精度）
 --
@@ -75,14 +76,22 @@ local wait_ms						-- 当前档位转换等待
 local p0_hpa						-- ALT_M 参考海平面气压
 
 -- ==================== 底层辅助 ====================
--- 数值列 -> 向下降档到不大于 n 的最大 OSR 档；非法/'-' 归缺省
+-- 数值列 -> 向下降档到不大于 n 的最大 OSR 档；'-'/缺省归默认档（4096）。
+-- 非法值（非数字 / < 256 无档可降）返回 nil + 原因，由 build 显式报 ERR——
+-- 旧实现一律回落 #OSR_TAB（4096 = 最慢档），osr='100' 或拼成 '10O' 会静默
+-- 把采样率拉到最低（20ms/call）且无从察觉，与「向下降档」的注释相反。
 local function osr_idx_of(v)
+	if v == nil or v == "-" then return #OSR_TAB end
 	local n = tonumber(v)
-	if n == nil or n <= 0 then return #OSR_TAB end
+	if n == nil then
+		return nil, "osr is not a number: '" .. tostring(v)
+			.. "' (valid: 256/512/1024/2048/4096 or '-')"
+	end
 	for i = #OSR_TAB, 1, -1 do
 		if n >= OSR_TAB[i] then return i end
 	end
-	return #OSR_TAB
+	return nil, "osr=" .. tostring(v) .. " is below the lowest ratio 256;"
+		.. " there is no ratio to step down to (valid: 256/512/1024/2048/4096 or '-')"
 end
 
 -- floor(x / 2^k)：与算术移位同语义（负数向 -Inf 取整，内核驱动一致）
@@ -166,6 +175,15 @@ function build(data)
 		}
 	end
 
+	-- OSR 档位校验先于一切总线动作：非法值不碰硬件
+	local oi, oerr = osr_idx_of(data.osr)
+	if oi == nil then
+		return {
+			result = "ERR",
+			message = "Invalid Argument: " .. oerr
+		}
+	end
+
 	if not i2c_set_addr(fd, addr) then
 		return {
 			result = "ERR",
@@ -174,7 +192,6 @@ function build(data)
 	end
 
 	-- OSR 档位与等待时间
-	local oi = osr_idx_of(data.osr)
 	conv_cmd_d1 = CMD_CONV_D1 + 2 * (oi - 1)
 	conv_cmd_d2 = CMD_CONV_D2 + 2 * (oi - 1)
 	wait_ms = WAIT_TAB[oi]

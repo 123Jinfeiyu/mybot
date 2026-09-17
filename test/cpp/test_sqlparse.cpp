@@ -112,6 +112,46 @@ TH_TEST(lexer_quoted_semicolon_and_comma_are_data) {
 	TH_CHECK(ends == 1);
 }
 
+TH_TEST(lexer_quote_state_is_incremental_on_large_values) {
+	/* F-02：旧实现每追加一个字符就重扫整个 token（insideQuotes O(长度)），
+	 * 100 KB 引号值实测 4.84 s 纯 CPU；1 MB 按平方标度需 ~8 分钟，会把
+	 * run_all.sh 的 60 s 单测超时打红。增量引号态后线性通过，
+	 * 同时钉住大值逐字节保真。 */
+	const std::size_t n = 1u << 20;
+	std::string sql = "INSERT INTO T ( v ) VALUES ( '";
+	sql.append(n, 'x');
+	sql += "' );";
+	std::vector<Token> ts = fx::tokens(sql);
+	const Token* val = nullptr;
+	for (const Token& t : ts) {
+		if (t.type == TokenType::NAME && t.name.size() == n) { val = &t; }
+	}
+	TH_CHECK(val != nullptr);
+	if (val != nullptr) {
+		TH_CHECK(val->name.front() == 'x' && val->name.back() == 'x');
+	}
+	TH_CHECK(ts.back().type == TokenType::END);
+}
+
+TH_TEST(lexer_quote_state_matches_legacy_semantics) {
+	/* 增量状态与旧 insideQuotes 的逐字符等价性回归（三处易错点）：
+	 *   1) 引号内的空白是数据，不得断词；
+	 *   2) 只有打开引号态的那一种引号字符能闭合——'a"b' 里的 " 是数据；
+	 *   3) 引号闭合后同 token 续写（'a'b）仍是一个 NAME，name 只剥首尾引号。 */
+	auto nameOf = [](const std::string& text, const std::string& want) {
+		for (const Token& t : fx::tokens(text)) {
+			if (t.type == TokenType::NAME && t.name == want) { return true; }
+		}
+		return false;
+	};
+	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'a b c' );", "a b c"));
+	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'a\"b' );", "a\"b"));
+	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'a'b );", "a'b"));
+	/* 已知边界（不是期望语义）：'' 双写转义不实现，原样保留在值里。
+	 * 若日后实现 SQL 标准转义，本断言必须同步改。 */
+	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'it''s' );", "it''s"));
+}
+
 TH_TEST(lexer_comments_outside_quotes_are_skipped) {
 	std::vector<Token> a = fx::tokens("CREATE TABLE T ( -- 行注释\n name String );");
 	std::vector<Token> b = fx::tokens("CREATE TABLE T ( name String );");

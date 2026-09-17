@@ -13,11 +13,8 @@
 
 namespace bot {
 
-/* ---- 动作脚本字节上限 ----
- * run() 会把输入的全部矩阵一次性驻留后再播放（@Alias 必须先于 @Action 生效），
- * 不设上限即等于「输入多大、进程就吃多大内存」；实测 100MB 输入 → RSS 4.2GB。
- * 真实 .mt 为 KB 级，8MiB 已留三个数量级余量。 */
-static constexpr std::size_t kMaxActionScriptBytes = 8u << 20;
+/* ---- 动作脚本字节上限（kMaxScriptBytes）----
+ * 上限常量与理由见 actionsource.hpp（动作/结构脚本共用；RSS 实测见该处注释）。 */
 
 /* ---- TCP 空闲超时缺省值（秒）：连上后不再发字节的对端不能永久挂住进程 ---- */
 static constexpr int kTcpIdleSecDefault = 30;
@@ -213,8 +210,8 @@ std::unique_ptr<Reader> openActionSource(const std::map<std::string, std::string
 		for (;;) {
 			std::cin.read(buf, static_cast<std::streamsize>(sizeof buf));
 			data.append(buf, static_cast<std::size_t>(std::cin.gcount()));
-			if (data.size() > kMaxActionScriptBytes) {
-				std::cout << "动作脚本超过 " << kMaxActionScriptBytes
+			if (data.size() > kMaxScriptBytes) {
+				std::cout << "动作脚本超过 " << kMaxScriptBytes
 					<< " 字节上限，已拒绝（正常 .mt 为 KB 级）" << std::endl;
 				return nullptr;
 			}
@@ -224,7 +221,7 @@ std::unique_ptr<Reader> openActionSource(const std::map<std::string, std::string
 	}
 
 	if (!raw) { return nullptr; }
-	return std::make_unique<LimitedReader>(std::move(raw), kMaxActionScriptBytes);
+	return std::make_unique<LimitedReader>(std::move(raw), kMaxScriptBytes);
 }
 
 } // namespace bot
