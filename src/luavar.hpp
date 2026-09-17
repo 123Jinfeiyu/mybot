@@ -25,10 +25,11 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	lua_State* L_;
 	std::string luapath_;
 	std::string name_;
-	/* staticOnly=true 时只取字面列（不解析 $ 引用）——destroy 阶段用：
-	 * 引用解析 read() 缺省实现是一次真实硬件事务，且对已释放变量会抛错，
-	 * 让器件的去初始化被静默跳过（F-04）。 */
-	std::function<Json(bool staticOnly)> getMetadata_;
+	/* forDestroy=true 时走销毁期收集（MetaProvider::collectForDestroy）：
+	 * 字面列 + 引用列的「尽力而为」快照——总线句柄 fd / 从机 address 正藏在
+	 * 引用列里，去初始化（关断/断电/写寄存器）必须用它们；单个引用已释放时
+	 * 只跳过该引用，不会让本驱动的 destroy 被跳过（F-04′）。 */
+	std::function<Json(bool forDestroy)> getMetadata_;
 	/* controller 按名在注册表里查找（R-3）：声明序保证「先于本变量注册、
 	 * 后于本变量销毁」，查找式引用把这一约定变成运行期可校验的。 */
 	std::string ctrlName_;

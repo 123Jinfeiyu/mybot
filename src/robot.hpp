@@ -63,6 +63,8 @@ class MetaProvider {
 	std::optional<std::vector<std::string>> refs_;
 
 	void seed();
+	/* 字面列（含 "-" 继承结果）构造——运行期与销毁期两条收集路径共用 */
+	Json staticPart();
 
 public:
 	MetaProvider(const mt::MatrixObject& matrix, std::int64_t row, std::int64_t skipCol,
@@ -70,8 +72,9 @@ public:
 		: matrix_(matrix), row_(row), skipCol_(skipCol), registry_(registry) {}
 
 	Json collect();
-	/* F-04：仅静态列（不解析 $ 引用）——destroy 阶段用 */
-	Json collectStatic();
+	/* F-04′：字面列 + 引用列的「尽力而为」快照——destroy 阶段用。
+	 * 单个引用解析失败只跳过该引用，绝不放弃整轮 destroy（理由见 robot.cpp 实现处）。 */
+	Json collectForDestroy();
 	/* F-05：装配完成后、build 前做引用存在性校验（seed 未通过即抛出） */
 	void validate() { seed(); }
 };

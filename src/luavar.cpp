@@ -172,11 +172,14 @@ void MtVars_Lua::freeImpl() {
 		return;
 	}
 
-	/* F-04：destroy 只取字面列，不解析 $ 引用——引用缺省实现 read() 是一次
-	 * 真实硬件事务（且对已释放变量主动抛错），异常一旦传出，本驱动的
-	 * destroy 根本不会被调用：MAX30102 的 BIT_SHDN、BH1750 的 POWER_DOWN
-	 * 这类去初始化就静默丢失，器件滞留最后指令状态。收集失败降级为空表，
-	 * 保证去初始化调用仍然发生。 */
+	/* F-04′：destroy 的元数据取「字面列 + 引用列的尽力而为快照」。
+	 * 必须带上引用列：总线句柄 fd / 从机 address 是器件行经 `$i2c-N` / `$uart-N`
+	 * 从接口器件快照来的，而 drv_common 的 i2c_pair 要用它们——只取字面列会让
+	 * PCA9685/MPU6050/BH1750 的 destroy 响亮失败，让带 `if fd ~= nil` 守卫的
+	 * 十余个传感器静默丢失去初始化（MAX30102 的 BIT_SHDN、BH1750 的 POWER_DOWN
+	 * 不再下发，器件滞留最后指令状态）。
+	 * 单个引用已释放只在 collectForDestroy 内跳过那一条，异常不会传到这里；
+	 * 外层 try 是最后一道兜底：无论如何 destroy 调用本身都必须发生。 */
 	Json metadata = JsonObject();
 	try {
 		metadata = getMetadata_(true);

@@ -336,6 +336,14 @@ fi
 #                 首个【UART 非守护】virt 覆盖（BUS="uart" 模型 attach_uart +
 #                 adopt uart fd）：@Action 直写总线舵机（SCSCL，大端帧/1M 波特率）；
 #                 负值断言站号非法在 build 期被守卫
+#   pca9685_virt  第 5 字段禁 "Deactive warning"（F-04′）：destroy 期元数据必须
+#                 带着 $i2c-v 的 fd 快照，否则去初始化报 Invalid Argument: fd or address
+#                 （该失败只打警告不改退出码，故只能靠禁断言抓）
+#   ref_bus_forward 接口器件前向引用（总线声明在器件之后）→ build 期即失败（F-04′）：
+#                 fd 由器件行经 $i2c-N 从 @I2C 快照而来，而「总线必须先于器件声明」
+#                 是 build 期强制的（器件 build 要 fd）——同一条不变式也保证倒序销毁时
+#                 总线最后关闭 fd。全程不触总线：PCA9685 build 在 i2c_pair 处即返回，
+#                 @I2C 的 build 根本未执行，故插着真舵机的机器上同样安全。
 # 用例表：SQL|MT|期望退出码|输出必须包含|输出必须不含（第 5 字段可省；MT/SQL 含 "/" 时视为仓库根相对路径）
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
@@ -363,10 +371,11 @@ parse_cases=(
 	'lex_semicolons.sql|lex_semicolons.mt|1|Token ;'
 	'param_override.sql|param_override.mt|1|is rejected because'
 	'daemon_badfield.sql|daemon_badfield.mt|0|absent or non-numeric in driver result'
-	'pca9685_virt.sql|pca9685_virt.mt|0|VIRTUAL HARDWARE'
+	'pca9685_virt.sql|pca9685_virt.mt|0|VIRTUAL HARDWARE|Deactive warning'
 	'pca9685_badchan.sql|pca9685_badchan.mt|1|out of range 0-15'
 	'scscl_virt.sql|scscl_virt.mt|0|VIRTUAL HARDWARE'
 	'scscl_badid.sql|scscl_badid.mt|1|Invalid Argument: id'
+	'ref_bus_forward.sql|ref_bus_forward.mt|1|Invalid Argument: fd or address'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5"

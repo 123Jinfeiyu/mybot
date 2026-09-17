@@ -43,7 +43,8 @@ Json params(std::initializer_list<const char*> keys) {
 }
 
 std::unique_ptr<MtVars_Lua> makeVar() {
-	/* 第二参 staticOnly：destroy 路径只取字面列（F-04）——本夹具不需要区分。
+	/* 第二参 forDestroy：true 走销毁期收集（字面列 + 引用列尽力而为快照，F-04′）
+	 * ——本夹具不注入引用列，两条路径结果相同，故不区分。
 	 * 无 controller：ctrlName/registry 走缺省值。 */
 	return MtVars_Lua::Factory("./definitely-not-here-9f3a1c.lua", "relay0",
 		[](bool) { return relayMetadata(); });

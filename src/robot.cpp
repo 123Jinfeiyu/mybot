@@ -68,7 +68,7 @@ struct RefDepthGuard {
 };
 } // namespace
 
-Json MetaProvider::collectStatic() {
+Json MetaProvider::staticPart() {
 	seed();
 	Json obj = JsonObject();
 	auto& colsArr = *cols_;
@@ -89,7 +89,7 @@ Json MetaProvider::collect() {
 	++t_refDepth;
 	RefDepthGuard depthGuard;
 
-	Json obj = collectStatic();
+	Json obj = staticPart();
 	for (const std::string& name : *refs_) {
 		if (MatrixVars_Hardware* hv = registry_->find(name)) {
 			Json snap = hv->read();
@@ -101,6 +101,64 @@ Json MetaProvider::collect() {
 			}
 			jsonMergeInto(obj, snap.asObject());
 		}
+	}
+	return obj;
+}
+
+/* F-04′：destroy 阶段的元数据收集——字面列 + 引用列的「尽力而为」快照。
+ *
+ * 为什么不能只取字面列（F-04 的原实现 collectStatic）：总线句柄 fd 与从机
+ * address 都不是字面列，而是器件行经 `$i2c-N` / `$uart-N` 从接口器件的快照
+ * 来的（modules/I2C.lua 的 call 下发 fd）。modules/lib/drv_common.lua 的
+ * i2c_pair 要用它们，于是丢字段的后果按驱动分两档：
+ *   * 走 i2c_pair 的 PCA9685 / MPU6050 / BH1750 —— destroy 响亮报错
+ *     （Deactive warning: ... Invalid Argument: fd or address）；
+ *   * 走 `if fd ~= nil ...` 守卫的 ADS1015 / ADS1115 / ADS1256 / APDS9900 /
+ *     BME280 / BME688 / MAX30102 / MCP3421 / SGP30 / VL53L0X / VL53L4CD /
+ *     SCSCL —— 静默跳过整个去初始化，器件滞留在最后指令状态且一声不响。
+ *
+ * 为什么可以放心解析引用：接口器件（I2C/SPI/UART）的 fd 只由它自己的 destroy
+ * 关闭，而「总线必须先于器件声明」在 build 期就被强制了——器件 build 要用 fd，
+ * 就必须让总线先 build（总线前向引用在 build 期即失败，见 ref_bus_forward 用例）。
+ * 于是倒序销毁天然保证总线最后关闭，器件 destroy 期间 fd 始终有效。
+ *
+ * 与 F-04 的原始诉求不冲突：要守的是「destroy 这个调用绝不被跳过」，不是
+ * 「不许解析引用」。这里对每个引用**单独** try——抛错（引用已被销毁）只跳过
+ * 该引用本身。会被跳过的只可能是「数据前向引用」链（如 Monitor→Ema→Daemon，
+ * 引用者在倒序里反而最后销毁），而 v0/out/count 这类字段本就不是器件去初始化
+ * 所需。ERR 快照同理跳过（守护槽已移交时 readSample 按 ERR 契约返回对象而非抛错，
+ * 把 message 混进去初始化参数没有意义）。 */
+Json MetaProvider::collectForDestroy() {
+	Json obj = staticPart();
+	for (const std::string& name : *refs_) {
+		MatrixVars_Hardware* hv = registry_->find(name);
+		if (hv == nullptr) { continue; }
+		Json snap = JsonObject();
+		try {
+			snap = hv->read();
+		} catch (const std::exception& e) {
+			logD([&] {
+				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
+					+ " skipped '$" + name + "' (already released: " + e.what() + ")";
+			});
+			continue;
+		}
+		if (!snap.isObj()) {
+			logD([&] {
+				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
+					+ " skipped '$" + name + "' (non-object snapshot)";
+			});
+			continue;
+		}
+		auto rs = snap.get("result");
+		if (rs && rs->isStr() && rs->asString().getValue() == "ERR") {
+			logD([&] {
+				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
+					+ " skipped '$" + name + "' (reference reported ERR)";
+			});
+			continue;
+		}
+		jsonMergeInto(obj, snap.asObject());
 	}
 	return obj;
 }
@@ -242,8 +300,8 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, idxCtrl, &registry_);
 		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
 		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
-			[metaProv](bool staticOnly) {
-				return staticOnly ? metaProv->collectStatic() : metaProv->collect();
+			[metaProv](bool forDestroy) {
+				return forDestroy ? metaProv->collectForDestroy() : metaProv->collect();
 			}, ctrlName, &registry_),
 			" (in table '" + mtName + "')");
 	}
@@ -356,7 +414,12 @@ void RobotStruct::active() {
 	}
 }
 
-/* ---- 消除硬件：先统一置守护 stop（不逐个 join，避免同步饿死），再逆序 destroy ---- */
+/* ---- 消除硬件：先统一置守护 stop（不逐个 join，避免同步饿死），再逆序 destroy ----
+ * 倒序不只是一个习惯，它承担一条资源不变式：接口器件（I2C/SPI/UART）的 fd 只在
+ * 它自己的 destroy 里关闭，而挂在它上面的器件 destroy 要用同一个 fd 做去初始化
+ * （写寄存器/关断/断电）——倒序保证接口器件最后关闭 fd，器件 destroy 期间句柄有效。
+ * 该顺序的源头是 build 期约束：器件 build 要经 `$` 引用拿 fd，就必须让总线先 build，
+ * 即总线必须先声明（总线前向引用在 build 期失败，见 robots/test/ref_bus_forward.sql）。 */
 void RobotStruct::deactivate() {
 	for (const auto& h : daemonHolders_) {
 		h->requestStop();

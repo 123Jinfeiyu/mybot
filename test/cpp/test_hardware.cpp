@@ -4,6 +4,8 @@
  *   parseMtDouble  动作矩阵单元格的类型解析（含 "-" 继承与首行占位符语义）
  *   ensureOk       halt-on-error 契约（result=="ERR" 即抛，trim 后比较）
  *   MetaProvider   字面列首采冻结 / "-" 列跳过 / name+controller 跳过 / $ 引用实时快照
+ *   F-04′ 防线    destroy 期元数据：引用列快照必须带上（总线 fd 由此而来），
+ *                  引用已释放只跳过该引用而非放弃整轮收集
  *   C1 防线        $ 引用成环时深度计数兜底，清晰报错而非栈溢出
  *   N3 防线        非表结果判契约违反（旧实现原样放行＝把「硬件没动」报成成功）
  */
@@ -11,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <functional>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -272,6 +275,82 @@ TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	mt::MatrixObject clean = fx::oneMatrix("@Relay\nname note;\nr0 hello;\n@\n");
 	MetaProvider other(clean, 1, -1, &reg);
 	TH_CHECK(other.collect().toString() == R"({"note":"hello"})");
+}
+
+TH_TEST(metaprovider_destroy_keeps_reference_snapshot) {
+	/* F-04′：destroy 期的元数据必须带上引用列快照。器件行的总线句柄 fd 与从机
+	 * address 不是字面列，而是经 `$i2c-N` 从接口器件快照来的，drv_common 的
+	 * i2c_pair 要用它们——只取字面列会让 PCA9685/MPU6050/BH1750 报
+	 * "Invalid Argument: fd or address"，让十余个带 `if fd ~= nil` 守卫的
+	 * 传感器静默丢失去初始化。 */
+	mt::MatrixObject m = fx::oneMatrix(
+		"@PCA9685\nname I2C address;\npca-0 $bus 0x40;\n@\n");
+	Json snap = JsonObject();
+	snap.put("result", JsonString("OK"));
+	snap.put("fd", JsonInt(7));
+	auto bus = std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw(
+		[snap](const Json&) { return snap; }));
+	bot::HwRegistry reg;
+	reg.add("bus", std::move(bus));
+
+	MetaProvider prov(m, 1, -1, &reg);
+	Json meta = prov.collectForDestroy();
+	TH_CHECK(meta.get("address") != std::nullopt);
+	TH_CHECK(meta.get("address")->getValue() == "0x40");
+	TH_CHECK(meta.get("fd") != std::nullopt);
+	TH_CHECK(meta.get("fd")->getInt() == 7);
+	/* 引用列本身（列名 I2C）不入元数据，只并入被引用方的快照字段 */
+	TH_CHECK(meta.get("I2C") == std::nullopt);
+	TH_CHECK(meta.get("name") == std::nullopt);
+}
+
+TH_TEST(metaprovider_destroy_skips_released_reference_without_aborting) {
+	/* 引用已被销毁（数据前向引用链，如 Monitor→Ema→Daemon：引用者在倒序销毁里
+	 * 反而最后出栈）——只跳过该引用，绝不抛错。F-04 要守的是「destroy 调用
+	 * 本身绝不被跳过」，不是「不许解析引用」。 */
+	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note src;\nr0 hello $dead;\n@\n");
+	auto dead = std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw(
+		[](const Json&) -> Json {
+			throw bot::IllegalArgumentException(
+				"read on 'x': Lua state not built or already released");
+		}));
+	bot::HwRegistry reg;
+	reg.add("dead", std::move(dead));
+
+	MetaProvider prov(m, 1, -1, &reg);
+	/* 运行期（play/build）仍必须响亮报错，不许静默吞掉 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "already released", prov.collect());
+
+	/* 销毁期只跳过该引用：字面列照常返回，且不抛异常 */
+	Json meta = prov.collectForDestroy();
+	TH_CHECK(meta.get("note") != std::nullopt);
+	TH_CHECK(meta.get("note")->getValue() == "hello");
+
+	/* 深度计数是 thread_local + RAII：collectForDestroy 吞掉异常后必须已归零，
+	 * 否则后续任何一次 collect() 都会被误判成引用成环。 */
+	mt::MatrixObject clean = fx::oneMatrix("@Relay\nname note;\nr0 hello;\n@\n");
+	MetaProvider other(clean, 1, -1, &reg);
+	TH_CHECK(other.collect().toString() == R"({"note":"hello"})");
+}
+
+TH_TEST(metaprovider_destroy_skips_err_reference_snapshot) {
+	/* 守护槽已移交时 readSample 按 ERR 契约返回对象而非抛错；ERR 快照不是可用
+	 * 元数据，必须跳过——否则 message/result 会被混进去初始化参数。 */
+	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note src;\nr0 hello $d0;\n@\n");
+	Json errSnap = JsonObject();
+	errSnap.put("result", JsonString("ERR"));
+	errSnap.put("message", JsonString("sample slot not available"));
+	auto d0 = std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw(
+		[errSnap](const Json&) { return errSnap; }));
+	bot::HwRegistry reg;
+	reg.add("d0", std::move(d0));
+
+	MetaProvider prov(m, 1, -1, &reg);
+	Json meta = prov.collectForDestroy();
+	TH_CHECK(meta.get("note") != std::nullopt);
+	TH_CHECK(meta.get("note")->getValue() == "hello");
+	TH_CHECK(meta.get("result") == std::nullopt);
+	TH_CHECK(meta.get("message") == std::nullopt);
 }
 
 TH_TEST(alias_matrix_requires_name_and_alias_columns) {
