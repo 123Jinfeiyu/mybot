@@ -1,6 +1,7 @@
 #include "luaend.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <map>
 #include <vector>
@@ -114,15 +115,26 @@ Json lua_value_to_json(lua_State* L, int idx, int depth) {
 			int keyType = lua_type(L, -2);
 			if (keyType == LUA_TNUMBER) {
 				double kd = lua_tonumber(L, -2);
-				/* C7 防线：非整数数字键（如 3.5）截断会静默丢数据——转字符串键保留 */
-				long long k = static_cast<long long>(kd);
-				if (static_cast<double>(k) != kd) {
+				/* L3 防线：NaN / 超出 int64 范围的键在 static_cast<long long> 时是
+				 * 未定义行为。先验后与 C7 非整键同路转字符串键保留数据。
+				 * 显式常量：LLONG_MAX 的 double 表示向上舍入为 2^63，用其比较会
+				 * 放行溢出值，故直接以 ±2^63 为界。 */
+				constexpr double kMinIntKey = -9223372036854775808.0;	/* -2^63 */
+				constexpr double kMaxIntKey = 9223372036854775808.0;	/* 2^63 */
+				if (!std::isfinite(kd) || kd >= kMaxIntKey || kd < kMinIntKey) {
 					Json vj = lua_value_to_json(L, -1, depth + 1);
 					obj.put(std::to_string(kd), vj);
 				} else {
-					Json vj = lua_value_to_json(L, -1, depth + 1);
-					arrVals[k] = vj;
-					arrKeys.push_back(k);
+					/* C7 防线：非整数数字键（如 3.5）截断会静默丢数据——转字符串键保留 */
+					long long k = static_cast<long long>(kd);
+					if (static_cast<double>(k) != kd) {
+						Json vj = lua_value_to_json(L, -1, depth + 1);
+						obj.put(std::to_string(kd), vj);
+					} else {
+						Json vj = lua_value_to_json(L, -1, depth + 1);
+						arrVals[k] = vj;
+						arrKeys.push_back(k);
+					}
 				}
 			} else if (keyType == LUA_TSTRING) {
 				if (const char* ks = lua_tolstring(L, -2, nullptr)) {

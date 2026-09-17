@@ -1,5 +1,6 @@
 #include "hardware.hpp"
 
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <stdexcept>
@@ -19,6 +20,11 @@ double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int6
 	if (end == start || *end != '\0') {
 		throw std::invalid_argument("cannot parse matrix cell '" + raw + "' as Float64");
 	}
+	/* L2：strtod 接受 nan/inf 字面量，会以非有限值流入驱动（舵机角度 NaN
+	 * 比较恒假，脉冲宽度计算不可预测）——解析层显式拒绝。 */
+	if (!std::isfinite(v)) {
+		throw std::invalid_argument("matrix cell '" + raw + "' is not a finite Float64");
+	}
 	return v;
 }
 
@@ -36,12 +42,33 @@ Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 			+ " column (dev.alias), not the device part.");
 	}
 	const Json& obj = res;
+	/* L1：空表拦截——驱动 call 返回 {} 说明「什么都没干」，旧实现见无 result 键
+	 * 即判成功（call_lua 的 N3 只拦得住「漏写 return」）。注意不能一刀切要求
+	 * result 键必在：Relay/Servo 的 call 刻意返回无 result 的数据表（controller
+	 * 转发语义），daemonPlay 输出 status/count 也无 result 键——两者均为非空表。 */
+	if (obj.objSize() == 0) {
+		throw std::runtime_error("Hardware call (" + ctx + ") returned an empty table ({}),"
+			" which reads as success although the driver produced nothing. Every driver"
+			" build/call/destroy must return a table with result=\"OK\" or result=\"ERR\""
+			" (data fields may accompany).");
+	}
 	auto rs = obj.get("result");
-	if (rs && rs->isStr() && trim(rs->getValue()) == "ERR") {
-		std::string msg = "Hardware call failed (" + ctx + ")";
-		auto m = obj.get("message");
-		if (m && m->isStr()) { msg += ": " + m->getValue(); }
-		throw std::runtime_error(msg);
+	if (rs) {
+		if (!rs->isStr()) {
+			throw std::runtime_error("Hardware call (" + ctx + ") returned a non-string"
+				" 'result' field; the driver contract requires result=\"OK\" or result=\"ERR\".");
+		}
+		std::string v = trim(rs->getValue());
+		if (v == "ERR") {
+			std::string msg = "Hardware call failed (" + ctx + ")";
+			auto m = obj.get("message");
+			if (m && m->isStr()) { msg += ": " + m->getValue(); }
+			throw std::runtime_error(msg);
+		}
+		if (v != "OK") {
+			throw std::runtime_error("Hardware call (" + ctx + ") returned result=\"" + v
+				+ "\"; the driver contract only allows result=\"OK\" or result=\"ERR\".");
+		}
 	}
 	return res;
 }

@@ -110,6 +110,20 @@ TH_TEST(parseMtDouble_rejects_non_numeric_cell) {
 		bot::MatrixVars_Hardware::parseMtDouble(m2, 1, 0));
 }
 
+TH_TEST(parseMtDouble_rejects_non_finite_cells) {
+	/* L2：strtod 接受 nan/inf 字面量，非有限值流入舵机驱动即不可预测——
+	 * 解析层显式拒绝并带原文。 */
+	const char* bad[] = {"nan", "-nan", "inf", "-inf", "infinity"};
+	for (const char* v : bad) {
+		mt::MatrixObject m = fx::oneMatrix("@Action\nrelay0.deg;\n" + std::string(v) + ";\n@\n");
+		TH_CHECK_THROWS_MSG(std::invalid_argument, v,
+			bot::MatrixVars_Hardware::parseMtDouble(m, 1, 0));
+	}
+	/* 正常有限值不受影响 */
+	mt::MatrixObject ok = fx::oneMatrix("@Action\nrelay0.deg;\n1.25e2;\n@\n");
+	TH_CHECK(bot::MatrixVars_Hardware::parseMtDouble(ok, 1, 0) == 125.0);
+}
+
 /* ---------------- ensureOk ---------------- */
 
 TH_TEST(ensureOk_accepts_ok_objects_and_rejects_non_tables) {
@@ -127,8 +141,29 @@ TH_TEST(ensureOk_accepts_ok_objects_and_rejects_non_tables) {
 	ok.put("value", JsonFloat(1.25));
 	TH_CHECK(MatrixVars_Hardware::ensureOk(ok, "play x").get("value")->getFloat() == 1.25);
 
+	/* L1 收紧：空表 {} 即「什么都没干」，旧实现判成功——现按契约错误拒绝 */
 	Json plain = JsonObject();
-	TH_CHECK(MatrixVars_Hardware::ensureOk(plain).objSize() == 0);
+	TH_CHECK_THROWS_MSG(std::runtime_error, "empty table",
+		MatrixVars_Hardware::ensureOk(plain));
+
+	/* 无 result 键但非空的数据表仍然通过：Relay/Servo 的 call 刻意返回
+	 * {delay=..}/{channel=..} 走 controller 转发语义 */
+	Json relay = JsonObject();
+	relay.put("delay", JsonFloat(200.0));
+	TH_CHECK(MatrixVars_Hardware::ensureOk(relay, "call Relay").get("delay")->getFloat() == 200.0);
+}
+
+TH_TEST(ensureOk_rejects_invalid_result_values) {
+	/* result 键存在时只允许 "OK"/"ERR"，其余值一律契约错误（现驱动只有两值） */
+	Json warn = JsonObject();
+	warn.put("result", JsonString("WARN"));
+	TH_CHECK_THROWS_MSG(std::runtime_error, "WARN",
+		MatrixVars_Hardware::ensureOk(warn, "play x"));
+
+	Json num = JsonObject();
+	num.put("result", JsonInt(1));
+	TH_CHECK_THROWS_MSG(std::runtime_error, "non-string",
+		MatrixVars_Hardware::ensureOk(num, "play x"));
 }
 
 TH_TEST(ensureOk_throws_on_err_contract) {

@@ -163,3 +163,24 @@ TH_TEST(nested_arrays_survive_the_conversion) {
 	TH_CHECK(w && w->isArr() && w->size() == 2);
 	TH_CHECK(w && w->at(1).isArr() && w->at(1).at(0).getInt() == 3);
 }
+
+/* ---------------- L3：数字键转换去 UB ---------------- */
+
+TH_TEST(oversized_number_keys_become_string_keys) {
+	State s;
+	/* Lua 表数字键可为超大数（t[1e300]=2）；NaN 键 LuaJIT 在赋值期即报
+	 * "table index is NaN"，到不了转换层（isfinite 守卫是纵深防御）。
+	 * 旧实现把键 static_cast<long long>——1e300 超界即未定义行为；
+	 * 现与 C7 同路转字符串键保数据。 */
+	s.chunk("T = {}\n"
+		"T[1e300] = 2\n"
+		"T[3] = 9\n");
+	lua_getglobal(s.get(), "T");
+	Json j = bot::lua_value_to_json(s.get(), -1);
+	lua_pop(s.get(), 1);
+
+	/* 混合键表整体转对象：超大数键原样进字符串键，整数键 3 并入为 "3" */
+	TH_CHECK(j.isObj());
+	TH_CHECK(j.get(std::to_string(1e300)) && j.get(std::to_string(1e300))->getInt() == 2);
+	TH_CHECK(j.get("3") && j.get("3")->getInt() == 9);
+}

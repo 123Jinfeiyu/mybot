@@ -99,26 +99,14 @@ class Parser {
 		return tokenSerial_[idx_++];
 	}
 
+	/* M-1：CREATE/INSERT 的列段与参数段原为按元素互递归的下降链
+	 * （nextTableColumnName↔nextTableColumnsIsEnd 等），递归深度 = 列数/参数数，
+	 * 实测 3 万列结构脚本即栈溢出裸崩。改显式循环：token 消费顺序与错误
+	 * 消息（Token <serialize()>）与旧实现逐一相同，仅执行模型变化。 */
 	void nextCreateTable(CreateTableEvent& eve);
-	void nextTableColumns(CreateTableEvent& eve);
-	void nextTableColumnName(CreateTableEvent& eve);
-	void nextTableColumnType(CreateTableEvent& eve, const std::string& colName);
-	void nextTableColumnsIsEnd(CreateTableEvent& eve);
 	void nextEnd();
 
 	void nextInsertInto(InsertTableEvent& eve);
-	void nextInsertParams(InsertTableEvent& eve);
-	void nextInsertParamName(InsertTableEvent& eve, std::vector<std::string>& paramNames);
-	void nextInsertParamNamesIsEnd(InsertTableEvent& eve, std::vector<std::string>& paramNames);
-	void nextInsertParamValues(InsertTableEvent& eve, const std::vector<std::string>& paramNames);
-	void nextInsertParamValuesStart(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, std::vector<std::string>& paramValues);
-	void nextInsertParamValue(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, std::vector<std::string>& paramValues);
-	void nextInsertParamValuesIsEnd(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, std::vector<std::string>& paramValues);
-	void mergeAndAddInsertParamsToEve(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, const std::vector<std::string>& paramValues);
 
 public:
 	explicit Parser(const std::vector<Token>& tokenSerial) : tokenSerial_(tokenSerial) {}

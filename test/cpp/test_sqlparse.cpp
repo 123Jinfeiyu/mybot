@@ -220,3 +220,45 @@ TH_TEST(parser_next_after_last_event_returns_end) {
 		TH_CHECK(parser.next().type == EventType::END);
 	}
 }
+
+/* ---------------- M-1 深层输入不得栈溢出 ---------------- */
+
+TH_TEST(parser_deep_column_list_is_iterative) {
+	/* M-1：列段原为按元素互递归，3 万列即打爆 8MB 栈（Release 实测 SIGSEGV）。
+	 * 迭代化后必须在常量栈上解析出完整事件。 */
+	const int n = 60000;
+	std::string sql = "CREATE TABLE T (";
+	for (int k = 0; k < n; ++k) {
+		if (k) { sql += ", "; }
+		sql += "c" + std::to_string(k) + " String";
+	}
+	sql += ");";
+	std::vector<Event> eves = events(sql);
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::CREATE_TABLE);
+	TH_CHECK(static_cast<int>(eves[0].create.tableColumns.size()) == n);
+	TH_CHECK(eves[0].create.tableColumns[n - 1].name == "c" + std::to_string(n - 1));
+}
+
+TH_TEST(parser_deep_param_list_is_iterative) {
+	/* M-1 同款：INSERT 参数/值段原为互递归，8 万参数实测栈溢出。 */
+	const int n = 60000;
+	std::string sql = "CREATE TABLE T ( name String );\nINSERT INTO T (";
+	for (int k = 0; k < n; ++k) {
+		if (k) { sql += ", "; }
+		sql += "p" + std::to_string(k);
+	}
+	sql += ") VALUES (";
+	for (int k = 0; k < n; ++k) {
+		if (k) { sql += ", "; }
+		sql += "v" + std::to_string(k);
+	}
+	sql += ");";
+	std::vector<Event> eves = events(sql);
+	TH_CHECK(eves.size() == 2);
+	TH_CHECK(eves[1].type == EventType::INSERT_TABLE);
+	TH_CHECK(eves[1].insert.tableRows.size() == 1);
+	TH_CHECK(static_cast<int>(eves[1].insert.tableRows[0].size()) == n);
+	TH_CHECK(eves[1].insert.tableRows[0][n - 1].columnName == "p" + std::to_string(n - 1));
+	TH_CHECK(eves[1].insert.tableRows[0][n - 1].value == "v" + std::to_string(n - 1));
+}

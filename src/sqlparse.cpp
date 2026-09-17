@@ -185,41 +185,29 @@ void Parser::nextCreateTable(CreateTableEvent& eve) {
 		throw bot::IllegalArgumentException("Token " + t.serialize());
 	}
 	eve.tableName = t.name;
-	nextTableColumns(eve);
-}
 
-void Parser::nextTableColumns(CreateTableEvent& eve) {
-	Token t = expect();
+	t = expect();
 	if (t.type != TokenType::LEFT) {
 		throw bot::IllegalArgumentException("Token " + t.serialize());
 	}
-	nextTableColumnName(eve);
-}
-
-void Parser::nextTableColumnName(CreateTableEvent& eve) {
-	Token t = expect();
-	if (t.type != TokenType::NAME) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
+	for (;;) {
+		t = expect();
+		if (t.type != TokenType::NAME) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
+		std::string colName = t.name;
+		t = expect();
+		if (t.type != TokenType::STRING) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
+		eve.tableColumns.push_back({colName, VarType::String_});
+		t = expect();
+		if (t.type == TokenType::RGHT) { break; }
+		if (t.type != TokenType::COMMA) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
 	}
-	nextTableColumnType(eve, t.name);
-}
-
-void Parser::nextTableColumnType(CreateTableEvent& eve, const std::string& colName) {
-	Token t = expect();
-	if (t.type != TokenType::STRING) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
-	}
-	eve.tableColumns.push_back({colName, VarType::String_});
-	nextTableColumnsIsEnd(eve);
-}
-
-void Parser::nextTableColumnsIsEnd(CreateTableEvent& eve) {
-	Token t = expect();
-	switch (t.type) {
-		case TokenType::RGHT: nextEnd(); break;
-		case TokenType::COMMA: nextTableColumnName(eve); break;
-		default: throw bot::IllegalArgumentException("Token " + t.serialize());
-	}
+	nextEnd();
 }
 
 void Parser::nextEnd() {
@@ -239,79 +227,47 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 		throw bot::IllegalArgumentException("Token " + n.serialize());
 	}
 	eve.targetTabName = n.name;
-	nextInsertParams(eve);
-}
 
-void Parser::nextInsertParams(InsertTableEvent& eve) {
-	Token t = expect();
+	std::vector<std::string> paramNames;
+	t = expect();
 	if (t.type != TokenType::LEFT) {
 		throw bot::IllegalArgumentException("Token " + t.serialize());
 	}
-	std::vector<std::string> paramNames;
-	nextInsertParamName(eve, paramNames);
-}
-
-void Parser::nextInsertParamName(InsertTableEvent& eve, std::vector<std::string>& paramNames) {
-	Token t = expect();
-	if (t.type != TokenType::NAME) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
+	for (;;) {
+		t = expect();
+		if (t.type != TokenType::NAME) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
+		paramNames.push_back(t.name);
+		t = expect();
+		if (t.type == TokenType::RGHT) { break; }
+		if (t.type != TokenType::COMMA) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
 	}
-	paramNames.push_back(t.name);
-	nextInsertParamNamesIsEnd(eve, paramNames);
-}
 
-void Parser::nextInsertParamNamesIsEnd(InsertTableEvent& eve, std::vector<std::string>& paramNames) {
-	Token t = expect();
-	switch (t.type) {
-		case TokenType::RGHT: nextInsertParamValues(eve, paramNames); break;
-		case TokenType::COMMA: nextInsertParamName(eve, paramNames); break;
-		default: throw bot::IllegalArgumentException("Token " + t.serialize());
-	}
-}
-
-void Parser::nextInsertParamValues(InsertTableEvent& eve, const std::vector<std::string>& paramNames) {
-	Token t = expect();
+	t = expect();
 	if (t.type != TokenType::VALUES) {
 		throw bot::IllegalArgumentException("Token " + t.serialize());
 	}
 	std::vector<std::string> paramValues;
-	nextInsertParamValuesStart(eve, paramNames, paramValues);
-}
-
-void Parser::nextInsertParamValuesStart(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, std::vector<std::string>& paramValues) {
-	Token t = expect();
+	t = expect();
 	if (t.type != TokenType::LEFT) {
 		throw bot::IllegalArgumentException("Token " + t.serialize());
 	}
-	nextInsertParamValue(eve, paramNames, paramValues);
-}
-
-void Parser::nextInsertParamValue(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, std::vector<std::string>& paramValues) {
-	Token t = expect();
-	if (t.type != TokenType::NAME) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
+	for (;;) {
+		t = expect();
+		if (t.type != TokenType::NAME) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
+		paramValues.push_back(t.name);
+		t = expect();
+		if (t.type == TokenType::RGHT) { break; }
+		if (t.type != TokenType::COMMA) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
 	}
-	paramValues.push_back(t.name);
-	nextInsertParamValuesIsEnd(eve, paramNames, paramValues);
-}
 
-void Parser::nextInsertParamValuesIsEnd(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, std::vector<std::string>& paramValues) {
-	Token t = expect();
-	switch (t.type) {
-		case TokenType::RGHT:
-			mergeAndAddInsertParamsToEve(eve, paramNames, paramValues);
-			nextEnd();
-			break;
-		case TokenType::COMMA: nextInsertParamValue(eve, paramNames, paramValues); break;
-		default: throw bot::IllegalArgumentException("Token " + t.serialize());
-	}
-}
-
-void Parser::mergeAndAddInsertParamsToEve(InsertTableEvent& eve,
-		const std::vector<std::string>& paramNames, const std::vector<std::string>& paramValues) {
 	if (paramNames.size() != paramValues.size()) {
 		throw bot::IllegalArgumentException("Insert params");
 	}
@@ -320,6 +276,7 @@ void Parser::mergeAndAddInsertParamsToEve(InsertTableEvent& eve,
 		arr.push_back({paramNames[i], paramValues[i]});
 	}
 	eve.tableRows.push_back(std::move(arr));
+	nextEnd();
 }
 
 } // namespace sql4cj

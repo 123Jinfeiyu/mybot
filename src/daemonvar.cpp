@@ -13,6 +13,11 @@
 
 namespace bot {
 
+/* L4：共享槽布局硬编码 mutex 预留 64 字节（daemonvar.hpp），超出即越界写 count——
+ * glibc aarch64=48B / x86_64=40B 远小于 64，但异种 libc 应在编译期就失败。 */
+static_assert(sizeof(pthread_mutex_t) <= 64,
+	"DaemonSlot reserves 64 bytes for pthread_mutex_t; this libc's pthread_mutex_t is larger");
+
 static pthread_mutex_t* mutexOf(DaemonSlot* slot) {
 	return reinterpret_cast<pthread_mutex_t*>(slot->mutex);
 }
