@@ -40,9 +40,9 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 @
 ```
 
-- 可内联 `@Alias` 别名矩阵（如把 `s1.A` 写成 `s1.angle`）
-- 结构与动作两侧都可定义别名，同名时**动作脚本的定义覆盖**（打印覆盖日志）
-- 同一动作脚本内重复定义同名别名报错（负值契约）
+- 可内联 `@Alias` 别名矩阵（如把 `s1.A` 写成 `s1.angle`）；`@Vars` 命名文本变量同构（列 `name`/`value`），也可内联
+- 结构与动作两侧都可定义别名/文本变量，同名时**动作脚本的定义覆盖**（打印覆盖日志）
+- 同一动作脚本内重复定义同名别名（或文本变量）报错（负值契约）
 
 ## controller 引用（转交任务）
 
@@ -56,7 +56,7 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 
 ## `$` 引用列
 
-元数据列可以按值引用另一个硬件变量：值以 `$` 开头（如 `$imu0`），被引用方的 `read()` 快照字段实时合并进本变量元数据；**不带 `$` 的裸名一律按字面值**。`$` 指向未定义变量在 **build 前**（全部表装配完成后）显式报错；指向**标量**（如 Alias 的 JsonString）也会清晰报错——标量引用请走 `controller` 列：
+元数据列可以按值引用另一个硬件变量：值以 `$` 开头（如 `$imu0`），被引用方的 `read()` 快照字段实时合并进本变量元数据；**不带 `$` 的裸名一律按字面值**。`$` 指向未定义变量在 **build 前**（全部表装配完成后）显式报错；指向**标量**（如 Alias 的 JsonString）也会清晰报错——标量引用请走 `controller` 列（唯一例外是 `@Vars` 文本变量，见下节）：
 
 ```sql
 CREATE TABLE Monitor (name String, src String);
@@ -70,6 +70,23 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$imu0');   -- 引用守护 imu0
 总线句柄 `fd` 与从机 `address` 不是字面列，而是器件行经 `$i2c-N` / `$uart-N` 从 `I2C` / `UART` 表的 `call` 快照拿到的。因此 **`I2C` / `SPI` / `UART` 表必须声明在挂载其上的器件之前**：器件 `build` 要用 `fd`，而 `build` 按声明序执行——总线写在后面前向引用时，器件 `build` 会在 `Invalid Argument: fd or address` 上失败（`robots/test/ref_bus_forward.sql` 为正身负值用例）。
 
 这条约束同时是**销毁期 `fd` 有效性的来源**：`fd` 只由接口器件自己的 `destroy` 关闭，而倒序销毁 + 上面的声明顺序 ⇒ 接口器件最后关闭 `fd`，所有挂在它上面的器件在 `destroy` 期间（关断/断电/写寄存器这类去初始化）`fd` 始终有效。`$` 引用列因此必须在 `destroy` 阶段解析——若你把器件去初始化写成依赖 `fd` 的形式，请务必保证总线表在器件表之前。
+
+## `@Vars` 命名文本变量
+
+`@Vars` 与 `@Alias` 同构（列 `name` / `value`），存放**命名文本值**。SQL 解析器只支持 String，故值一律按文本保存。它有两种消费方式：
+
+1. **结构脚本 `$` 文本常量**：元数据列写 `$<name>`，该列取变量的文本值——这是唯一允许 `$` 指向标量的变量类型（`Alias` 等标量仍按上节报错）：
+
+   ```sql
+   CREATE TABLE Vars (name String, value String);
+   INSERT INTO Vars (name, value) VALUES ('i2cpath', '/dev/i2c-1');
+   CREATE TABLE I2C (name String, path String);
+   INSERT INTO I2C (name, path) VALUES ('i2c-1', '$i2cpath');   -- path 即 /dev/i2c-1
+   ```
+
+2. **动作脚本参数位替换**：与 `@Alias` 完全一致，`dev.<name>` 的参数位用值替换成真实参数名。`@Vars` 可在结构脚本定义，也可在 `.mt` 内联；同名时动作脚本覆盖结构定义，同一动作脚本内重名报错。
+
+与 `$` 对象快照不同，`@Vars` 不做字段合并，只把文本写到承载 `$` 的那一列；它无资源，`build`/`destroy` 为空操作。回归见 `vars_text`（正值）与 `vars_bad`/`vars_dup`（负值）。
 
 ## mtmerge 合成器（.mt 两两归并）
 

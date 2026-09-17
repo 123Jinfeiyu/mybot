@@ -53,17 +53,39 @@ public:
 /* JsonObject 浅合并：把 src 的所有字段写入 dst（同名覆盖） */
 void jsonMergeInto(Json& dst, const Json& src);
 
-/* ---- 别名硬件变量 ----
- * play 返回目标列名字符串（供 @Action 列名二次解析），无资源可 build/destroy。 */
-class MtVars_Alias : public MatrixVars_Hardware {
-	std::string alias_;
+/* ---- 标量文本硬件变量（@Alias / @Vars 共用）----
+ * play/read 返回一个 JsonString，无资源可 build/destroy：
+ *   @Alias 的值是目标参数名（@Action 列 dev.<name> 的参数位二次解析成真实参数名）；
+ *   @Vars  的值是命名文本（同样可在 @Action 参数位替换，也可被结构脚本用
+ *          $<name> 引用为文本常量）。
+ * 框架据此两者做「参数名替换」：见 robot.cpp parseActionCell 的 MtVars_Text 判定。 */
+class MtVars_Text : public MatrixVars_Hardware {
+protected:
+	std::string text_;
 
-	explicit MtVars_Alias(std::string alias) : alias_(std::move(alias)) {}
+	explicit MtVars_Text(std::string text) : text_(std::move(text)) {}
 
 public:
-	Json play(const Json&) override { return JsonString(alias_); }
+	Json play(const Json&) override { return JsonString(text_); }
+};
 
+/* ---- 别名硬件变量 ---- */
+class MtVars_Alias : public MtVars_Text {
+	explicit MtVars_Alias(std::string alias) : MtVars_Text(std::move(alias)) {}
+
+public:
 	static std::unique_ptr<MtVars_Alias> Factory(const mt::MatrixObject& defs, std::int64_t i);
+};
+
+/* ---- 命名文本变量 @Vars（列 name / value）----
+ * 与 @Alias 同构，但值语义是「文本常量」而非参数名；SQL 解析器只支持 String，
+ * 故值一律按文本保存。除 @Action 参数位替换外，独特的用途是被结构脚本元数据列
+ * 以 $<name> 引用：该列取其文本值（如 I2C 的 path 列写 $i2cpath）。 */
+class MtVars_Vars : public MtVars_Text {
+	explicit MtVars_Vars(std::string value) : MtVars_Text(std::move(value)) {}
+
+public:
+	static std::unique_ptr<MtVars_Vars> Factory(const mt::MatrixObject& defs, std::int64_t i);
 };
 
 } // namespace bot

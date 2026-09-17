@@ -156,6 +156,29 @@ TH_TEST(run_rejects_alias_matrix_without_columns) {
 	TH_CHECK(msg.find("Alias matrix 'Alias' has no 'name' column") != std::string::npos);
 }
 
+TH_TEST(run_registers_inline_vars_before_dispatch) {
+	/* @Vars 先于 @Action 生效；派发因设备未声明而失败——错误必须来自派发，
+	 * 而不是 Vars 注册阶段。 */
+	const std::string msg = runTexts(kBasicSql,
+		"@Vars\nname value;\nspd delay;\n@\n"
+		"@Action\nrelay9.spd;\n  200;\n@\n");
+	TH_CHECK(msg.find("no 'value' column") == std::string::npos);
+	TH_CHECK(msg.find("Duplicate Vars name") == std::string::npos);
+	TH_CHECK(msg.find("'relay9'") != std::string::npos);
+}
+
+TH_TEST(run_rejects_duplicate_vars_in_one_action_script) {
+	const std::string msg = runTexts(kBasicSql,
+		"@Vars\nname value;\nspd delay;\nspd pos;\n@\n"
+		"@Action\nrelay0.spd;\n  200;\n@\n");
+	TH_CHECK(msg.find("Duplicate Vars name 'spd'") != std::string::npos);
+}
+
+TH_TEST(run_rejects_vars_matrix_without_value_column) {
+	const std::string msg = runTexts(kBasicSql, "@Vars\nname;\nspd;\n@\n");
+	TH_CHECK(msg.find("Vars matrix 'Vars' has no 'value' column") != std::string::npos);
+}
+
 /* ---------------- HwRegistry（R-2：单一注册表） ---------------- */
 
 namespace {

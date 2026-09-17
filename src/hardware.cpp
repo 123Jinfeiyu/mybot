@@ -38,8 +38,8 @@ Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 		throw std::runtime_error("Hardware call (" + ctx + ") returned a non-table result ("
 			+ kKindName[static_cast<int>(res.type)] + "). Every driver build/call/destroy must"
 			+ " return a table with result=\"OK\" or result=\"ERR\". If the name in the context"
-			+ " above is an @Alias, note that aliases belong in the parameter part of an @Action"
-			+ " column (dev.alias), not the device part.");
+			+ " above is an @Alias or @Vars entry, note that they belong in the parameter part"
+			+ " of an @Action column (dev.alias), not the device part.");
 	}
 	const Json& obj = res;
 	/* L1：空表拦截——驱动 call 返回 {} 说明「什么都没干」，旧实现见无 result 键
@@ -97,6 +97,25 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 	std::cerr << "Create an Alias vars: " << name << ", which means " << alias << std::endl;
 
 	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(std::move(alias)));
+}
+
+/* ---- 命名文本变量 @Vars ---- */
+std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, std::int64_t i) {
+	std::int64_t idxName = defs.indexOfCol(0, "name");
+	std::int64_t idxValue = defs.indexOfCol(0, "value");
+	if (idxName < 0) {
+		throw IllegalArgumentException("Vars matrix '" + defs.getName() + "' has no 'name' column.");
+	}
+	if (idxValue < 0) {
+		throw IllegalArgumentException("Vars matrix '" + defs.getName() + "' has no 'value' column.");
+	}
+
+	std::string name = defs(i, idxName);
+	std::string value = MatrixVars_Hardware::getMt(defs, i, idxValue);
+
+	std::cerr << "Create a Vars: " << name << " = " << value << std::endl;
+
+	return std::unique_ptr<MtVars_Vars>(new MtVars_Vars(std::move(value)));
 }
 
 } // namespace bot

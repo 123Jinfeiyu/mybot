@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "daemonvar.hpp"
@@ -60,7 +61,9 @@ class MetaProvider {
 	const HwRegistry* registry_;
 	std::optional<std::vector<std::string>> cols_;
 	std::optional<std::vector<std::string>> vals_;
-	std::optional<std::vector<std::string>> refs_;
+	/* 引用列：每项 (承载 $ 的列名, 被引用变量名)。对象快照按字段并入元数据；
+	 * @Vars 这类标量文本变量则把文本写到该列名下（见 collect / collectForDestroy）。 */
+	std::optional<std::vector<std::pair<std::string, std::string>>> refs_;
 
 	void seed();
 	/* 字面列（含 "-" 继承结果）构造——运行期与销毁期两条收集路径共用 */
@@ -110,17 +113,31 @@ class HwFactory {
 	void createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName);
 	void createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName);
 
+	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名文本值) */
+	enum class ScalarKind { Alias, Vars };
+
+	/* 注册标量文本矩阵的公共实现（启动期/动作脚本期两路，见实现处） */
+	void registerScalarMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session,
+			ScalarKind kind);
+
 public:
 	HwFactory(HwRegistry& registry,
 			std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders,
 			std::vector<std::shared_ptr<MetaProvider>>& metaProviders)
 		: registry_(registry), daemonHolders_(daemonHolders), metaProviders_(metaProviders) {}
 
-	/* 全部硬变量创建：声明序，Alias/Lua/Daemon 分派 */
+	/* 全部硬变量创建：声明序，Alias/Vars/Lua/Daemon 分派 */
 	void createHardVars(const std::vector<mt::MatrixObject>& matrices);
 
-	/* 注册别名矩阵：启动期(session=nullptr)与动作脚本期(session)两路 */
-	void registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session);
+	/* 注册 @Alias 别名矩阵 */
+	void registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
+		registerScalarMatrix(matrix, session, ScalarKind::Alias);
+	}
+
+	/* 注册 @Vars 命名文本矩阵 */
+	void registerVarsMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
+		registerScalarMatrix(matrix, session, ScalarKind::Vars);
+	}
 };
 
 /* ---- 动作重放：@Action 逐行 play（R-1 拆自 RobotStruct）---- */

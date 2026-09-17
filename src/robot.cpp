@@ -31,7 +31,8 @@ void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Ha
  * 引用列（值以 $ 前缀显式标记）→ 运行期每次实时 read() 快照，不入缓存。 */
 void MetaProvider::seed() {
 	if (cols_) { return; }
-	std::vector<std::string> cArr, vArr, rArr;
+	std::vector<std::string> cArr, vArr;
+	std::vector<std::pair<std::string, std::string>> rArr;
 	std::int64_t idxName = matrix_.indexOfCol(0, "name");
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix_.cols()); ++j) {
 		const std::string& colName = matrix_(0, j);
@@ -41,7 +42,7 @@ void MetaProvider::seed() {
 		if (value.rfind("$", 0) == 0) {
 			std::string refName = value.substr(1);
 			if (registry_->contains(refName)) {
-				rArr.push_back(refName);
+				rArr.push_back({colName, refName});
 			} else {
 				throw IllegalArgumentException("'" + value + "' (column '" + colName
 					+ "') in table '" + matrix_.getName() + "' row " + std::to_string(row_)
@@ -90,16 +91,24 @@ Json MetaProvider::collect() {
 	RefDepthGuard depthGuard;
 
 	Json obj = staticPart();
-	for (const std::string& name : *refs_) {
+	for (const auto& ref : *refs_) {
+		const std::string& colName = ref.first;
+		const std::string& name = ref.second;
 		if (MatrixVars_Hardware* hv = registry_->find(name)) {
 			Json snap = hv->read();
-			if (!snap.isObj()) {
+			if (snap.isObj()) {
+				jsonMergeInto(obj, snap.asObject());
+			} else if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
+				/* @Vars 文本常量：把文本写回承载 $ 的列（如 I2C 的 path 列写 $i2cpath） */
+				obj.put(colName, snap);
+			} else {
 				throw IllegalArgumentException("'$" + name
 					+ "': referenced variable returned a non-object (scalar) snapshot; "
-					+ "'$' reference columns merge field snapshots (v0.., status, count), "
-					+ "scalar values are only supported via 'controller' columns.");
+					+ "the '$' reference column '" + colName
+					+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
+					+ " carry a text value that can fill a column; Alias/scalar variables are"
+					+ " only supported via 'controller' columns.");
 			}
-			jsonMergeInto(obj, snap.asObject());
 		}
 	}
 	return obj;
@@ -130,7 +139,9 @@ Json MetaProvider::collect() {
  * 把 message 混进去初始化参数没有意义）。 */
 Json MetaProvider::collectForDestroy() {
 	Json obj = staticPart();
-	for (const std::string& name : *refs_) {
+	for (const auto& ref : *refs_) {
+		const std::string& colName = ref.first;
+		const std::string& name = ref.second;
 		MatrixVars_Hardware* hv = registry_->find(name);
 		if (hv == nullptr) { continue; }
 		Json snap = JsonObject();
@@ -141,6 +152,10 @@ Json MetaProvider::collectForDestroy() {
 				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
 					+ " skipped '$" + name + "' (already released: " + e.what() + ")";
 			});
+			continue;
+		}
+		if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
+			obj.put(colName, snap);
 			continue;
 		}
 		if (!snap.isObj()) {
@@ -225,26 +240,39 @@ void HwFactory::addHardwareVar(const std::string& name, std::unique_ptr<MatrixVa
 	registry_.add(name, std::move(hw), source);
 }
 
-/* ---- 注册别名矩阵：启动期(e=nullopt)与动作脚本期(e=Some)两路 ---- */
-void HwFactory::registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
+/* ---- 注册标量文本矩阵（@Alias / @Vars）：启动期(session=nullptr)与动作脚本期(session)两路 ----
+ * 两者共用一条注册路径：结构期重名即抛；动作脚本内重名报错、同名覆盖结构定义。 */
+void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session,
+		ScalarKind kind) {
+	const char* label = (kind == ScalarKind::Alias) ? "Alias" : "Vars";
+	/* 重复报错沿用「Duplicate alias name」既有措辞（有负值回归守门），Vars 用自身名 */
+	const char* dupLabel = (kind == ScalarKind::Alias) ? "alias" : "Vars";
 	std::int64_t idxName = matrix.indexOfCol(0, "name");
 	if (idxName < 0) {
-		throw IllegalArgumentException("Alias matrix '" + matrix.getName() + "' has no 'name' column.");
+		throw IllegalArgumentException(std::string(label) + " matrix '" + matrix.getName()
+			+ "' has no 'name' column.");
 	}
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
-		auto aliasVar = MtVars_Alias::Factory(matrix, i);
+		std::unique_ptr<MatrixVars_Hardware> var;
+		if (kind == ScalarKind::Alias) {
+			var = MtVars_Alias::Factory(matrix, i);
+		} else {
+			var = MtVars_Vars::Factory(matrix, i);
+		}
 		if (session) {
 			if (session->count(name)) {
-				throw IllegalArgumentException("Duplicate alias name '" + name + "' within the action script");
+				throw IllegalArgumentException("Duplicate " + std::string(dupLabel) + " name '"
+					+ name + "' within the action script");
 			}
 			session->insert(name);
 			if (registry_.contains(name)) {
-				std::cerr << "Alias '" << name << "' defined in action script overrides the structure definition" << std::endl;
+				std::cerr << label << " '" << name
+					<< "' defined in action script overrides the structure definition" << std::endl;
 			}
-			registry_.override(name, std::move(aliasVar));	/* 会话期覆盖式注册（结构定义被动作脚本别名覆盖） */
+			registry_.override(name, std::move(var));	/* 会话期覆盖式注册（结构定义被动作脚本别名覆盖） */
 		} else {
-			addHardwareVar(name, std::move(aliasVar), " (in @Alias matrix)");
+			addHardwareVar(name, std::move(var), std::string(" (in @") + label + " matrix)");
 		}
 	}
 }
@@ -254,6 +282,7 @@ void HwFactory::createHardVars(const std::vector<mt::MatrixObject>& matrices) {
 	for (const auto& matrix : matrices) {
 		std::string mtName = matrix.getName();
 		if (mtName == "Alias") { registerAliasMatrix(matrix, nullptr); }
+		else if (mtName == "Vars") { registerVarsMatrix(matrix, nullptr); }
 		else if (mtName == "Action") { /* 结构期 Action 由 MR 动作脚本提供 */ }
 		else if (mtName == "Daemon") { createDaemonVars(matrix, mtName); }
 		else if (matrix.rows() > 0) { createLuaVars(matrix, mtName); }
@@ -383,7 +412,8 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 
 	Json ret = JsonObject();
 	MatrixVars_Hardware* hit = registry_.find(name_param_orig);
-	if (hit != nullptr && dynamic_cast<MtVars_Alias*>(hit)) {
+	if (hit != nullptr && dynamic_cast<MtVars_Text*>(hit)) {
+		/* @Alias / @Vars：参数位名字替换（值即目标参数名） */
 		ret = hit->read();
 		name_param = ret.asString().getValue();
 	}
@@ -454,7 +484,9 @@ void RobotStruct::run(bot::Reader& input) {
 
 	std::set<std::string> session;
 	for (auto& matrix : actionMatrices) {
-		if (trim(matrix.getName()) == "Alias") { factory_.registerAliasMatrix(matrix, &session); }
+		std::string mtName = trim(matrix.getName());
+		if (mtName == "Alias") { factory_.registerAliasMatrix(matrix, &session); }
+		else if (mtName == "Vars") { factory_.registerVarsMatrix(matrix, &session); }
 	}
 	runner_.runAction(actionMatrices);
 }

@@ -256,6 +256,24 @@ TH_TEST(metaprovider_scalar_reference_is_rejected) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-object", prov.collect());
 }
 
+TH_TEST(metaprovider_vars_reference_fills_column_with_text) {
+	/* @Vars 文本常量：$ 引用不再做「字段快照合并」，而是把文本写回承载 $ 的列
+	 * （如 I2C 的 path、Relay 的 note）；运行时与 destroy 期都要解析。 */
+	mt::MatrixObject vm = fx::oneMatrix("@Vars\nname value;\ngreeting hello-vars;\n@\n");
+	std::unique_ptr<MatrixVars_Hardware> vars = bot::MtVars_Vars::Factory(vm, 1);
+	bot::HwRegistry reg;
+	reg.add("greeting", std::move(vars));
+
+	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note src;\nr0 hello $greeting;\n@\n");
+	MetaProvider prov(m, 1, -1, &reg);
+	Json meta = prov.collect();
+	TH_CHECK(meta.get("note")->getValue() == "hello");
+	TH_CHECK(meta.get("src")->getValue() == "hello-vars");
+
+	Json dmeta = prov.collectForDestroy();
+	TH_CHECK(dmeta.get("src")->getValue() == "hello-vars");
+}
+
 TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	/* C1 防线：$ 引用成环（这里经一个回入 collect() 的变量构造自引用）
 	 * 必须被线程局部深度计数拦下并说人话，而不是无限互递归直到 SIGSEGV。 */
@@ -372,4 +390,26 @@ TH_TEST(alias_matrix_reads_its_target_column) {
 	mt::MatrixObject m2 = fx::oneMatrix("@Alias\nname alias;\nspeed duty;\nfast -;\n@\n");
 	std::unique_ptr<bot::MtVars_Alias> alias2 = bot::MtVars_Alias::Factory(m2, 2);
 	TH_CHECK(alias2->read().getValue() == "duty");
+}
+
+TH_TEST(vars_matrix_requires_name_and_value_columns) {
+	mt::MatrixObject noName = fx::oneMatrix("@Vars\nvalue;\nx;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "no 'name' column",
+		bot::MtVars_Vars::Factory(noName, 1));
+
+	mt::MatrixObject noValue = fx::oneMatrix("@Vars\nname;\nx;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "no 'value' column",
+		bot::MtVars_Vars::Factory(noValue, 1));
+}
+
+TH_TEST(vars_matrix_reads_its_text_value) {
+	mt::MatrixObject m = fx::oneMatrix("@Vars\nname value;\ngreeting hello-vars;\n@\n");
+	std::unique_ptr<bot::MtVars_Vars> v = bot::MtVars_Vars::Factory(m, 1);
+	/* read()/play() 均返回文本标量（供 $ 文本常量与 @Action 参数位替换） */
+	TH_CHECK(v->read().getValue() == "hello-vars");
+	TH_CHECK(v->play(JsonObject()).getValue() == "hello-vars");
+	/* "-" 继承：第二行未写 value 时沿用上一行 */
+	mt::MatrixObject m2 = fx::oneMatrix("@Vars\nname value;\nA delay;\nB -;\n@\n");
+	std::unique_ptr<bot::MtVars_Vars> v2 = bot::MtVars_Vars::Factory(m2, 2);
+	TH_CHECK(v2->read().getValue() == "delay");
 }

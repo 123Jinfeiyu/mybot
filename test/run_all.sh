@@ -321,6 +321,8 @@ fi
 #                 守护采样→消费链路（含 Kalman/Ema/Monitor）
 #   relay-test / ref_prefix   Relay.controller 转发 + note 透传（$ 前缀字面）
 #   alias_inline 动作脚本内联别名生效；alias_override/alias_dup 覆盖/重复负值
+#   vars_text    @Vars 命名文本：结构表 $ 文本常量填充 Relay.note + .mt 内联 @Vars 参数位替换
+#   vars_bad/vars_dup  Vars 缺 value 列 / 动作脚本内重复定义 → 负值契约
 #   mt_noblank  矩阵间只有单个换行（无空行）→ 第 2+ 个矩阵名仍须正确识别
 #   mt_crlf     同上但 CRLF 行尾 → 修复不得只按 LF 语义而破坏 CRLF
 #   mt_ragged   行内单元格数与表头不齐 → 须报 "Does Not Sync" 且行号准确
@@ -364,6 +366,9 @@ parse_cases=(
 	'robots/relay-test.sql|mt_ragged.mt|1|Does Not Sync. we got line: 6'
 	'alias_override.sql|alias_override.mt|1|missing or not a number'
 	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
+	'vars_text.sql|vars_text.mt|0|note=hello-vars'
+	"vars_bad.sql|vars_bad.mt|1|has no 'value' column"
+	'alias_dup.sql|vars_dup.mt|1|Duplicate Vars name'
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
 	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
 	'ref_forward.sql|ref_forward.mt|0|joined, total publishes=|Deactive warning'
