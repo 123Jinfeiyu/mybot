@@ -107,6 +107,15 @@
 -- i2c_*/spi_*，本助手自动重注入（test_virtbus_bh1750 早期手动 restore+inject 的封装）。
 --
 -- 本文件为纯 Lua（不依赖 ffi），可用 lua5.4/luajit 离线跑。
+--
+-- 重入口守卫：下面的 devs/fd_addr/open_paths/txlog 全是文件级 local 表，二次
+-- dofile 会造出第二份互不可见的注册表，而 inject() 替换出去的全局函数只认第一次
+-- 那份——「attach 到 A 表、全局走 B 表」属静默失效。守护路径与非守护驱动路径会
+-- 先后加载本库，故同一状态机内一律复用同一实例（要干净状态请调 vbus.reset()）。
+if __BOT4CJ_VIRTBUS ~= nil then
+	return __BOT4CJ_VIRTBUS
+end
+
 local virtbus = {}
 virtbus._VERSION = "0.2.0"
 
@@ -211,6 +220,27 @@ local function dev_of(fd)
 	return devs[addr]
 end
 
+-- ---- 参数归一化：逐字对齐 modules/lib/HAL.lua 的 byte_of / uint_of ----
+-- 三条总线共用（I2C/SPI/UART 的入参校验语义必须与真机一致，否则 virt 会接受
+-- 真机直接失败的调用——驱动带越界实参时「仿真绿、真机红」）。
+-- 归一化为 0~255 的整数，非法返回 nil
+local function byte_of(v)
+	local n = tonumber(v)
+	if n == nil then return nil end
+	n = math.floor(n)
+	if n < 0 or n > 255 then return nil end
+	return n
+end
+
+-- 归一化为非负整数，非法返回 nil
+local function uint_of(v)
+	local n = tonumber(v)
+	if n == nil then return nil end
+	n = math.floor(n)
+	if n < 0 then return nil end
+	return n
+end
+
 -- ---- 写族：组合字节表后交给器件，返回 0 = 成功，-1 = NACK ----
 -- 模型可显式 return false 模拟本笔写 NACK（返回 nil/无返回按成功）
 local function do_write(fd, bytes)
@@ -256,18 +286,35 @@ end
 -- `if not i2c_write_reg(...)` 判定；不能像 write_multi 那样返回 0/-1
 -- （Lua 中 -1 为真，NACK 会被驱动当成功——假绿）。
 function virtbus.v_i2c_write_reg(fd, reg, val)
+	fd = tonumber(fd)
+	reg, val = byte_of(reg), byte_of(val)
+	if fd == nil or reg == nil or val == nil then return false end
 	return do_write(fd, { reg, val }) == 0
 end
 
 function virtbus.v_i2c_write_multi(fd, reg, ...)
+	fd = tonumber(fd)
+	reg = byte_of(reg)
+	if fd == nil or reg == nil then return -1 end
 	local bytes = { reg }
-	for _, v in ipairs({ ... }) do bytes[#bytes + 1] = v end
+	for _, v in ipairs({ ... }) do
+		local b = byte_of(v)
+		if b == nil then return -1 end		-- 同 HAL：任一字节非法即整笔失败，不发事务
+		bytes[#bytes + 1] = b
+	end
 	return do_write(fd, bytes)
 end
 
 function virtbus.v_i2c_write_reg16(fd, reg16, ...)
+	fd = tonumber(fd)
+	reg16 = uint_of(reg16)
+	if fd == nil or reg16 == nil or reg16 > 0xFFFF then return -1 end
 	local bytes = { math.floor(reg16 / 256) % 256, reg16 % 256 }
-	for _, v in ipairs({ ... }) do bytes[#bytes + 1] = v end
+	for _, v in ipairs({ ... }) do
+		local b = byte_of(v)
+		if b == nil then return -1 end
+		bytes[#bytes + 1] = b
+	end
 	return do_write(fd, bytes)
 end
 
@@ -563,20 +610,7 @@ local function ring_push(path, bytes)
 	end
 end
 
--- byte_of / uint_of 校验语义镜像 HAL（floor 后判范围）
-local function uart_byte_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 or n > 255 then return nil end
-	return n
-end
-
-local function uart_uint_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	return math.floor(n)
-end
+-- 入参校验用文件顶部的共用 byte_of / uint_of（与 HAL 逐字对齐）
 
 -- 校验顺序同 HAL：先 baud 白名单，再 path 白名单；fd 与 I2C/SPI 共用编号空间
 function virtbus.v_uart_open(path, baud)
@@ -624,7 +658,7 @@ function virtbus.v_uart_write(fd, data)
 	if uart_paths[fd] == nil then return -1 end
 	local tx = {}
 	for i = 1, #data do
-		local b = uart_byte_of(data[i])
+		local b = byte_of(data[i])
 		if b == nil then return -1 end
 		tx[i] = b
 	end
@@ -648,7 +682,7 @@ end
 -- uart_fail_read = 链路硬错误 → nil（事务记 err=true）。
 function virtbus.v_uart_read(fd, n, _timeout_ms)
 	fd = tonumber(fd)
-	n = uart_uint_of(n)
+	n = uint_of(n)
 	if fd == nil or n == nil or n < 1 then return nil end
 	local path = uart_paths[fd]
 	if path == nil then return nil end
@@ -713,6 +747,24 @@ function virtbus.inject()
 	virtbus._injected = true
 end
 
+-- 采纳「在别的 lua_State 里创建的虚拟 fd」：真实 fd 是进程级整数，跨状态机可用；
+-- 而本模块的 open_paths/fd_addr 是逐状态机的表。多状态机拓扑里总线变量（modules/I2C.lua）
+-- 在自己的状态里 i2c_open 拿到 fd，设备变量在自己的状态里对同一个 fd 调
+-- i2c_set_addr 与读写——不先登记的话 v_i2c_set_addr 会因 open_paths[fd] 为空而失败。
+-- 器件模型由各状态机自己 attach（模型是状态局内的内存，本就不跨状态共享）。
+function virtbus.adopt_fd(fd, path, addr)
+	fd = tonumber(fd)
+	if fd == nil then return false end
+	if open_paths[fd] == nil then
+		next_fd = math.max(next_fd, fd + 1)		-- 别让后续分配撞上采纳来的编号
+		open_paths[fd] = tostring(path or "virt-adopted")
+	end
+	addr = tonumber(addr)
+	if addr ~= nil then fd_addr[fd] = addr end
+	log_tx("adopt", addr, { raw = tostring(path) })
+	return true
+end
+
 function virtbus.restore()
 	if not virtbus._injected then return end
 	for _, name in ipairs(REPLACED) do
@@ -735,4 +787,5 @@ function virtbus.load_driver(path)
 	return virtbus
 end
 
+__BOT4CJ_VIRTBUS = virtbus		-- 供文件头的重入口守卫取用
 return virtbus

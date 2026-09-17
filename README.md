@@ -72,14 +72,16 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 守门共六段，全部在无 /dev/i2c 的开发机上运行：
 
 1. **Lua 离线单测**（`test/test_*.lua`，LuaJIT 运行；真机 i2c 用例自动跳过）
-2. **virt 端到端**（`robots/test/*_virt.sql`，23 例走内存仿真总线 `virtbus`，断言 `:f` 浮点透传与守护持续发布）
-3. **无硬件契约回归**（守护/别名/转发/引用路径；负值契约如 INSERT 拼错表、别名重复、`$` 引用标量、动作参数覆盖结构元数据必须**清晰报错**而非裸崩）
+2. **virt 端到端**（`robots/test/*_virt.sql`，37 例走内存仿真总线 `virtbus`，断言 `:f` 浮点透传与守护持续发布）
+3. **无硬件契约回归**（守护/别名/转发/引用路径；负值契约如 INSERT 拼错表、别名重复、`$` 引用标量、动作参数覆盖结构元数据必须**清晰报错**而非裸崩；含 `PCA9685` 的**非守护** `@Action` 写路径正/负两条——虚拟总线已不再只服务守护路径）
 4. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
-5. **输入边界加固**（`--tcp-host` 非法地址、动作脚本超 8 MiB 上限、`@Daemon` 驱动误配无 `build` 时的回滚路径）
-6. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标；零第三方框架，覆盖 JSON 值语义、`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测）
+5. **输入边界加固**（`--tcp-host` 非法地址、动作脚本超 8 MiB 上限、`@Daemon` 驱动误配无 `build` 时的回滚路径；`mode` 键不得改写 controller 派发目标；驱动 `call()` 漏写 `return` 不得被当成成功；驱动返回自引用表须清晰报错而非宿主栈溢出）
+6. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标；零第三方框架，覆盖 JSON 值语义、`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、Lua↔Json 边界与转换深度上限）
 
 Sanitizer 二进制同样可跑全部 E2E 与 C++ 单测：`BOT=./build-asan/mybot BOT_TESTS=./build-asan/mybot_tests bash test/run_all.sh _virt`。
 单独跑 C++ 单测：`./build/mybot_tests [用例名过滤]`。
+
+**守门完整性**：编译产物（`mybot` / `mybot_tests`）缺失时，对应分段**判失败**而不是静默跳过——否则「不构建」也能报出「0 失败」，而实际只有 Lua 段在跑。仅两类环境软依赖按跳过处理：真机 i2c 用例（本机无 `/dev/i2c-*`）与 TCP 段缺 `python3`；汇总行如实体报 `N 通过, N 失败, N 跳过` 并列出未执行清单。只想跑 Lua 段：`ALLOW_SKIP=1 bash test/run_all.sh`（显式指定的 `BOT=` / `BOT_TESTS=` 指向不存在的文件时一律判失败，`ALLOW_SKIP` 也不放行）。
 
 ### 接第一块 PCA9685
 
@@ -178,7 +180,7 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 - **controller 引用**：硬件干完自己的活，把结果转交给另一个硬件继续处理
 - **`$` 引用列**：按值引用另一硬件变量，其实时快照合并进本变量元数据
 - **@Daemon 守护线程**：独立线程 + 独立 Lua 状态后台采样，主线程随取随读；支持 `Kalman`/`Ema` 滤波链
-- **virtbus 虚拟总线**：内存仿真 I2C/SPI，真实驱动无需真机即可跑通 build/call/destroy
+- **virtbus 虚拟总线**：内存仿真 I2C/SPI/UART，真实驱动无需真机即可跑通 build/call/destroy。注入不限于守护路径——任何驱动行声明 `proto='virt'` 即由 `lib/drv_common.lua` 的入口前置在该变量自己的状态机里注入，并挂上驱动文件内嵌的 `<矩阵名>_VIRT` 模型（`@Action` 直写的舵机/DAC 走这条路；总线行与器件行都需声明，器件缺模型时报错而非静默回落真机）
 - **沙箱**：驱动加载后中和 shell/文件读写等危险 API——防误用护栏，不是安全边界
 
 ### 环境变量

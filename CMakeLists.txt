@@ -73,6 +73,7 @@ add_executable(mybot_tests
   test/cpp/test_sqlparse.cpp
   test/cpp/test_hardware.cpp
   test/cpp/test_robot.cpp
+  test/cpp/test_luaend.cpp
   test/cpp/test_luavar.cpp
   test/cpp/test_actionsource.cpp
   ${MYBOT_CORE_SOURCES}

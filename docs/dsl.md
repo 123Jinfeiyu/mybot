@@ -52,6 +52,8 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 2. 框架把「该行元数据（跳过 `name`/`controller` 列）∪ 自己 Lua 返回表」发给 `controller` 指定的硬件变量
 3. `controller` 支持 `-` 继承上一行；被引用方必须在结构脚本中先定义
 
+转发 payload 里混着上游返回表的键，故派发目标 `mode` 由**框架独占**（在合并参数之后才写入）——上游驱动返回 `{mode="print"}` 之类的键不会改写下游的派发目标。驱动的 `build`/`call`/`destroy` 必须返回带 `result` 键的表（`"OK"` 或 `"ERR"`）：返回非表或漏写 `return` 会被判契约违反并中断，而不会被静默当成成功。`result`/`message`/`mode` 三个键名另由框架保留，`.mt` 动作脚本不得用它们作参数列（`MtVars_Lua::rejectReservedKeys`，即 `--help` 里「安全约束」一条的代码正身）。
+
 ## `$` 引用列
 
 元数据列可以按值引用另一个硬件变量：值以 `$` 开头（如 `$imu0`），被引用方的 `read()` 快照字段实时合并进本变量元数据；**不带 `$` 的裸名一律按字面值**。`$` 指向未定义变量在 build 期显式报错；指向**标量**（如 Alias 的 JsonString）也会清晰报错——标量引用请走 `controller` 列：

@@ -52,7 +52,8 @@ public:
 	/* 解析项目值（占位符语义 + 类型解析）。本工程只用 Float64 */
 	static double parseMtDouble(const mt::MatrixObject& obj, std::int64_t row, std::int64_t col);
 
-	/* 硬件调用结果契约检查（halt-on-error）：result=="ERR"（trim 后）即抛 */
+	/* 硬件调用结果契约检查（halt-on-error）：result=="ERR"（trim 后）即抛；
+	 * 结果不是表也即抛（表外读不到 result，静默放行＝把「没动」报成成功） */
 	static Json ensureOk(const Json& res, const std::string& ctx = "");
 
 protected:

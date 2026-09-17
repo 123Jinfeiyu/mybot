@@ -176,9 +176,12 @@ check("空表=false", dev.write({}) == false)
 check("非字节 256 整笔 NACK", dev.write({ 0x01, 256 }) == false)
 check("非字节 -1 整笔 NACK", i2c_write_multi(fd, 0x01, -1) == -1)
 check("坏帧后 CONTROL 仍 POR 0", dev:control() == 0)
--- 模型侧整笔拒收：write_count 不增；但主机发起的尝试仍照实记 txlog（1 笔 HAL 写）
+-- 模型侧整笔拒收：write_count 不增。主机侧的非法实参（走 i2c_write_multi）在
+-- HAL 的 byte_of 处即被拒、根本不发起事务，故 txlog 也不留痕——此前 virt 会把
+-- 坏帧照送再 NACK，比真机多出一笔总线活动，该偏差已随写族校验对齐 HAL 而消除。
+-- （174-176 行是直接调 dev.write，不经总线层，行为不变）
 check("坏帧模型侧不留痕", dev:write_count() == 0)
-check("坏帧尝试仍上总线留痕（NACK）", nwr(m) == 1, tostring(nwr(m)))
+check("坏帧不入总线（同 HAL：校验失败不发事务）", nwr(m) == 0, tostring(nwr(m)))
 check("read(0) 钳 1B", #dev.read(0) == 1)
 check("read(99) 钳 16B", #dev.read(99) == 16)
 check("read(非数) 钳 1B", #dev.read("x") == 1)

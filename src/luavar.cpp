@@ -80,8 +80,12 @@ Json MtVars_Lua::callImpl(const Json& json) {
 	/* 从元数据浅拷贝，再合并 @Action 传入的实时参数 */
 	Json obj = JsonObject();
 	jsonMergeInto(obj, metadata);
-	obj.put("mode", JsonString("call"));
 	jsonMergeInto(obj, json.asObject());
+	/* C-1 续：mode 必须在参数合并「之后」写入，由框架独占。controller payload 里
+	 * 混着上游驱动返回表的键，若 mode 能被带进来，就会覆盖这里的 "call"，
+	 * 使 call_lua 去 getglobal 一个外部可控的名字——实测可让下游驱动的 call()
+	 * 完全不被执行、返回空表、退出码仍为 0（既跳过动作又绕过返回契约）。 */
+	obj.put("mode", JsonString("call"));
 	logD([&obj] { return "Lua scripts call parameters: " + obj.toString(); });
 
 	Json res = call_lua(L_, obj);

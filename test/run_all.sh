@@ -8,6 +8,12 @@
 #   - 单测超时 TEST_TIMEOUT 秒（默认 60，需 coreutils timeout；缺失则不限时）——
 #     防单个用例死循环挂死整个入口
 #   - test_jit_warmup.lua 是真机 ABI 回归测试（需 /dev/i2c-*），无总线环境自动跳过
+#   - 守门完整性：编译产物（mybot / mybot_tests）缺失的分段**判失败**而非静默跳过——
+#     否则整段 C++ 守门可以在不构建的情况下消失而汇总仍报「0 失败」。
+#     仅两类例外按跳过计（汇总里以「N 跳过 + 未执行清单」显式可见）：
+#     真机 i2c 用例（本机无 /dev/i2c-*）、TCP 段缺 python3（README 声明的软依赖）。
+#     只想跑 Lua 段的逃生口：ALLOW_SKIP=1 bash test/run_all.sh
+#     （显式给了 BOT=/BOT_TESTS= 却指向不存在的文件，一律判失败，ALLOW_SKIP 也不放行）
 #   - test_ioctl_nums.c 为 C 编译期常量自检，不在本入口范围
 cd "$(dirname "$0")/.." || exit 1
 
@@ -29,6 +35,62 @@ filter="${1:-}"
 pass=0
 fail=0
 failed=""
+skip=0
+hardening_reported=""
+skipped_list=""
+
+# ---- 编译产物（全局解析，供各分段共用）----
+# 缺省路径可被 BOT / BOT_TESTS 覆盖；是否「显式指定」决定下面的降级策略。
+bin="${BOT:-./build/mybot}"
+tests_bin="${BOT_TESTS:-./build/mybot_tests}"
+bot_explicit=0
+[ -n "${BOT:-}" ] && bot_explicit=1
+tests_explicit=0
+[ -n "${BOT_TESTS:-}" ] && tests_explicit=1
+
+# ---- 产物缺失的分段不得静默消失（N1 防线）----
+# 原语义是「无编译产物则逐条 [SKIP]」，于是整段 C++ 守门（37 E2E + 21 契约 +
+# TCP + 加固 + C++ 单测）可以在产物不存在时整体不跑，汇总仍是「N 通过, 0 失败」
+# 且退出码 0——只剩 Lua 段在跑。守门必须完整：缺产物即判失败。
+# 仅当 ALLOW_SKIP=1（明知故犯，如源码态只想跑 Lua）**且**该路径是缺省值时才降级
+# 为 SKIP；调用方显式给了 BOT=/BOT_TESTS= 却说文件不在，本就是要测它，绝不放行。
+artifact_missing() {
+	local phase="$1" count="$2" path="$3" explicit="$4"
+	if [ "$ALLOW_SKIP" = "1" ] && [ "$explicit" != "1" ]; then
+		echo "[SKIP] $phase —— $count未执行（缺编译产物 $path，ALLOW_SKIP=1 放行）"
+		skip=$((skip + 1))
+		skipped_list="$skipped_list $phase"
+		return 0
+	fi
+	echo "[FAIL] 守门不完整：$phase —— $count未执行（缺可执行产物 $path）"
+	echo "       先构建：cmake -S . -B build && cmake --build build"
+	echo "       只想跑 Lua 段请显式声明：ALLOW_SKIP=1 bash test/run_all.sh"
+	fail=$((fail + 1))
+	failed="$failed $phase(缺产物)"
+	return 1
+}
+
+# 当前过滤器下某分段的声明用例数（把「整段未执行」折算成准确条数）
+count_e2e_declared() {
+	local n=0 spec name
+	for spec in "${e2e_cases[@]}"; do
+		name="${spec%%|*}"
+		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then n=$((n + 1)); fi
+	done
+	echo "$n"
+}
+count_parse_declared() {
+	local n=0 spec sql rest mt
+	for spec in "${parse_cases[@]}"; do
+		sql="${spec%%|*}"
+		rest="${spec#*|}"
+		mt="${rest%%|*}"
+		if [ -z "$filter" ] || [[ "$sql" == *"$filter"* ]] || [[ "$mt" == *"$filter"* ]]; then
+			n=$((n + 1))
+		fi
+	done
+	echo "$n"
+}
 
 for t in test/test_*.lua; do
 	name="$(basename "$t")"
@@ -39,6 +101,8 @@ for t in test/test_*.lua; do
 	if grep -q '^\-\- requires: i2c' "$t" && ! ls /dev/i2c-* >/dev/null 2>&1; then
 		echo "----- $name -----"
 		echo "[SKIP] 需要 /dev/i2c-* 真机总线（文件标记 -- requires: i2c），本机无 i2c，跳过"
+		skip=$((skip + 1))
+		skipped_list="$skipped_list $name"
 		continue
 	fi
 	echo "----- $name -----"
@@ -68,7 +132,7 @@ done
 echo "==============================================="
 
 # ======================================================================
-# mybot（C++ 移植）无硬件端到端：编译产物齐备才跑，缺失则跳过。
+# mybot（C++ 移植）无硬件端到端：编译产物缺失即判失败（见 artifact_missing）。
 # 用例走真实 mybot 二进制：守护线程→共享槽→Ema→Monitor 全链路，
 # I2C/SPI 器件均为内存仿真模型（modules/lib/virtbus/）。
 #
@@ -76,7 +140,6 @@ echo "==============================================="
 # EMA 混合断言对所有用例通用：某拍 monf 行内 out ≠ raw（滤波确实推进）。
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖。
 # ======================================================================
-bin="${BOT:-./build/mybot}"
 e2e_cases=(
 	'mpu_virt|"v6":41\.[0-9]+|10'
 	'bme280_virt|"v0":2[0-9]\.[0-9]+|10'
@@ -191,10 +254,6 @@ e2e_cases=(
 run_one_e2e() {
 	local name="$1" float_ere="$2" count_min="$3"
 	echo "----- $name (mybot E2E) -----"
-	if [ ! -x "$bin" ]; then
-		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
-		return 2
-	fi
 	# 动作时长约 1s，给 30s 上限防挂死；mybot 退出码原样透传
 	if [ -n "$timeout_cmd" ]; then
 		out="$(cat "scripts/test/$name.mt" | timeout 30 "$bin" --robot="robots/test/$name.sql" 2>&1)"
@@ -236,13 +295,8 @@ run_one_e2e() {
 }
 
 if [ ! -x "$bin" ]; then
-	for spec in "${e2e_cases[@]}"; do
-		name="${spec%%|*}"
-		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then
-			echo "----- $name (mybot E2E) -----"
-			echo "[SKIP] 无编译产物 $bin（先执行：cmake -S . -B build && cmake --build build；BOT=xxx 可指定其他二进制）"
-		fi
-	done
+	n_declared="$(count_e2e_declared)"
+	[ "$n_declared" -gt 0 ] && artifact_missing "mybot E2E" "$n_declared 条用例" "$bin" "$bot_explicit"
 else
 	for spec in "${e2e_cases[@]}"; do
 		name="${spec%%|*}"
@@ -270,6 +324,10 @@ fi
 #   mt_crlf     同上但 CRLF 行尾 → 修复不得只按 LF 语义而破坏 CRLF
 #   mt_ragged   行内单元格数与表头不齐 → 须报 "Does Not Sync" 且行号准确
 #   ref_alias_scalar  $ 引用指向标量 Alias → 报 "non-object" 而非类型崩溃
+#   pca9685_virt / pca9685_badchan
+#                 首条【非守护】virt 覆盖：@Action 直写舵机驱动板走内存仿真
+#                 （drv_common 入口前置注入 + adopt_fd 跨状态机采纳 fd）；
+#                 正值断言虚拟横幅，负值断言通道越界被守卫（证明该链路非空断言）
 # 用例表：SQL|MT|期望退出码|输出必须包含（MT/SQL 含 "/" 时视为仓库根相对路径）
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
@@ -295,14 +353,12 @@ parse_cases=(
 	'lex_semicolons.sql|lex_semicolons.mt|1|Token ;'
 	'param_override.sql|param_override.mt|1|is rejected because'
 	'daemon_badfield.sql|daemon_badfield.mt|0|absent or non-numeric in driver result'
+	'pca9685_virt.sql|pca9685_virt.mt|0|VIRTUAL HARDWARE'
+	'pca9685_badchan.sql|pca9685_badchan.mt|1|out of range 0-15'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4"
 	echo "----- $sql/$mt (no-hw contract) -----"
-	if [ ! -x "$bin" ]; then
-		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
-		return 2
-	fi
 	local sql_path="$sql" mt_path="$mt"
 	[[ "$sql" != */* ]] && sql_path="robots/test/$sql"
 	[[ "$mt" != */* ]] && mt_path="scripts/test/$mt"
@@ -323,33 +379,42 @@ run_one_parse() {
 		failed="$failed $sql/$mt(no-hw)"
 	fi
 }
-for spec in "${parse_cases[@]}"; do
-	sql="${spec%%|*}"
-	rest="${spec#*|}"
-	mt="${rest%%|*}"
-	rest="${rest#*|}"
-	want_rc="${rest%%|*}"
-	expect="${rest##*|}"
-	if [ -n "$filter" ] && [[ "$sql" != *"$filter"* ]] && [[ "$mt" != *"$filter"* ]]; then
-		continue
-	fi
-	run_one_parse "$sql" "$mt" "$want_rc" "$expect"
-done
+if [ ! -x "$bin" ]; then
+	n_declared="$(count_parse_declared)"
+	[ "$n_declared" -gt 0 ] && artifact_missing "无硬件契约" "$n_declared 条用例" "$bin" "$bot_explicit"
+else
+	for spec in "${parse_cases[@]}"; do
+		sql="${spec%%|*}"
+		rest="${spec#*|}"
+		mt="${rest%%|*}"
+		rest="${rest#*|}"
+		want_rc="${rest%%|*}"
+		expect="${rest##*|}"
+		if [ -n "$filter" ] && [[ "$sql" != *"$filter"* ]] && [[ "$mt" != *"$filter"* ]]; then
+			continue
+		fi
+		run_one_parse "$sql" "$mt" "$want_rc" "$expect"
+	done
+fi
 
 # ======================================================================
 # TCP 动作源端到端：唯一覆盖 actionsource.cpp（--tcp 监听分支）的守门。
 # 复用 scripts/tcp_e2e.sh：起服务端 → Python 客户端下发 relay-test.mt →
-# 校验服务端日志。python3 或编译产物缺位则跳过（不假绿不假红）。
+# 校验服务端日志。缺编译产物判失败（本段是 actionsource.cpp 监听分支的唯一覆盖）；
+# 缺 python3 仍按 README 声明的软依赖跳过并计入汇总。
 # 随机高位端口（19000-19999）规避默认 19240 被占/串扰。
 # ======================================================================
 run_one_tcp() {
 	echo "----- tcp-action-source (mybot TCP E2E) -----"
 	if [ ! -x "$bin" ]; then
-		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
+		artifact_missing "TCP 动作源" "该用例" "$bin" "$bot_explicit"
 		return 2
 	fi
+	# python3 是 README 声明的可选软依赖（缺则本段自动跳过），仍计入 skip 供汇总可见
 	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（TCP 客户端），跳过"
+		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
+		skip=$((skip + 1))
+		skipped_list="$skipped_list tcp-action-source(缺python3)"
 		return 2
 	fi
 	local port tcp_rc tcp_out
@@ -376,13 +441,28 @@ fi
 #   daemon_build_raise @Daemon 的 driver 误配成无全局 build 的模块 →
 #                   必须走 fail() 回滚（打印 "driver build() raised"），
 #                   而非把 Lua error 抛出 chunk 使 C++ 侧跳过 cleanup
+#   mode_key_cannot_override_dispatch
+#                   上游驱动返回值里的 mode 键不得改写 controller 的派发目标
+#                   （N2：mode 由框架独占，必须最后写入）
+#   driver_returns_nothing
+#                   驱动 call() 漏写 return 不得被当成成功（N3：非表返回即契约违反）
+#   driver_returns_cyclic_table
+#                   驱动返回自引用表曾是宿主栈溢出裸 SIGSEGV（C-9：转换深度上限，
+#                   超限时就地转 ERR——不清栈会让该 lua_State 之后无法复用）
 # 夹具写在 .tmp/（已 gitignore），经 BOT4CJ_MODULE_PATH 多路径注入。
 # ======================================================================
 run_one_hardening() {
 	local name="$1" want_rc="$2" expect="$3"; shift 3
 	echo "----- $name (hardening) -----"
 	if [ ! -x "$bin" ]; then
-		echo "[SKIP] 无编译产物 $bin（先执行 cmake --build build）"
+		# 本段各用例同因（缺 mybot）：只折算一次失败、打印一遍指引
+		if [ -z "$hardening_reported" ]; then
+			hardening_reported=1
+			# 条数从本文件的调用点数出来，避免「加用例忘改数字」的消息漂移
+			artifact_missing "输入边界加固" \
+				"$(grep -c "^[[:space:]]*run_one_hardening '" "$0") 条用例" \
+				"$bin" "$bot_explicit"
+		fi
 		return 2
 	fi
 	local out rc h_ok
@@ -439,6 +519,86 @@ SQLEOF
 	run_one_hardening 'daemon_build_raise' 0 'driver build() raised' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod.sql --input=.tmp/fixmod.mt
+
+	# N2 回归：上游驱动的返回表里混进 mode 键（controller payload 会原样带着它），
+	# mode 必须由框架独占、下游派发目标必须仍是 call——否则上游一句话就能让
+	# 下游驱动的 call() 完全不执行且退出码仍为 0。锚点取下游自己写出的键。
+	cat > .tmp/fixmod/HijUp.lua <<'LUAEOF'
+-- 审计 N2 回归夹具：故意在返回值里塞 mode，模拟被带进 controller payload 的键
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data) return { result = "OK", mode = "print", from_up = "yes" } end
+LUAEOF
+	cat > .tmp/fixmod/HijDown.lua <<'LUAEOF'
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data)
+	if data.mode ~= "call" then
+		return { result = "ERR", message = "controller dispatch target was overridden: " .. tostring(data.mode) }
+	end
+	return { result = "OK", down_served = "yes" }
+end
+LUAEOF
+	cat > .tmp/fixmod_hij.sql <<'SQLEOF'
+CREATE TABLE HijDown (
+	name String
+);
+INSERT INTO HijDown (name) VALUES ('d0');
+
+CREATE TABLE HijUp (
+	name       String,
+	controller String
+);
+INSERT INTO HijUp (name, controller) VALUES ('u0', 'd0');
+SQLEOF
+	printf '@Action\nu0.x;\n   1;\n@\n' > .tmp/fixmod_hij.mt
+	run_one_hardening 'mode_key_cannot_override_dispatch' 0 'down_served' \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		--robot=.tmp/fixmod_hij.sql --input=.tmp/fixmod_hij.mt
+
+	# N3 回归：call() 漏写 return（返回 0 个值）曾被折成空表、被 ensureOk 当成
+	# 成功——硬件没动却报绿。现在必须清晰报错并以非 0 退出。
+	cat > .tmp/fixmod/NoRet.lua <<'LUAEOF'
+-- 审计 N3 回归夹具：call 少写一行 return，等价于返回「无值」
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data)
+	local ignored = data.x
+end
+LUAEOF
+	cat > .tmp/fixmod_noret.sql <<'SQLEOF'
+CREATE TABLE NoRet (
+	name String
+);
+INSERT INTO NoRet (name) VALUES ('n0');
+SQLEOF
+	printf '@Action\nn0.x;\n   1;\n@\n' > .tmp/fixmod_noret.mt
+	run_one_hardening 'driver_returns_nothing' 1 "returned no value" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		--robot=.tmp/fixmod_noret.sql --input=.tmp/fixmod_noret.mt
+
+	# C-9 回归：驱动返回自引用表（t.self = t，最常见的笔误形态）曾是宿主栈溢出
+	# 裸 SIGSEGV（退出码 139，且跳过 deactivate 清理链）——必须变成清晰契约报错。
+	cat > .tmp/fixmod/CycRet.lua <<'LUAEOF'
+-- 审计 C-9 回归夹具：call 返回一张引用自己的表
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data)
+	local t = { result = "OK", v0 = 1.5 }
+	t.self = t
+	return t
+end
+LUAEOF
+	cat > .tmp/fixmod_cyc.sql <<'SQLEOF'
+CREATE TABLE CycRet (
+	name String
+);
+INSERT INTO CycRet (name) VALUES ('c0');
+SQLEOF
+	printf '@Action\nc0.x;\n   1;\n@\n' > .tmp/fixmod_cyc.mt
+	run_one_hardening 'driver_returns_cyclic_table' 1 'nests deeper than' \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
 fi
 
 
@@ -451,10 +611,9 @@ fi
 # （过滤器多为 Lua 用例名，不应因此判红；全仓库无匹配由末尾的空匹配防线兜底）。
 # ======================================================================
 run_cpp_unit() {
-	local tests_bin="${BOT_TESTS:-./build/mybot_tests}"
 	echo "----- cpp-unit (C++ 单测) -----"
 	if [ ! -x "$tests_bin" ]; then
-		echo "[SKIP] 无编译产物 $tests_bin（先执行：cmake -S . -B build && cmake --build build）"
+		artifact_missing "C++ 单测" "全部用例" "$tests_bin" "$tests_explicit"
 		return 2
 	fi
 	local out rc pass_n
@@ -473,6 +632,8 @@ run_cpp_unit() {
 	fi
 	if echo "$out" | grep -qF "无匹配用例"; then
 		echo "[SKIP] 过滤器 '${filter}' 未命中任何 C++ 用例"
+		skip=$((skip + 1))
+		skipped_list="$skipped_list cpp-unit(过滤器未命中)"
 		return 2
 	fi
 	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
@@ -491,10 +652,13 @@ run_cpp_unit
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E 或 C++ 单测，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E、输入边界加固或 C++ 单测，请检查拼写）"
 	exit 1
 fi
-echo "汇总: $pass 通过, $fail 失败"
+echo "汇总: $pass 通过, $fail 失败, $skip 跳过"
+if [ "$skip" -gt 0 ]; then
+	echo "未执行:$skipped_list"
+fi
 if [ $fail -ne 0 ]; then
 	echo "失败用例:$failed"
 	exit 1

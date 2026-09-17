@@ -81,8 +81,12 @@ void push_lua_value(lua_State* L, const Json& val) {
 }
 
 /* ---- 读取 Lua 栈上 idx 处的值并转换为 Json（递归）；表转 JsonArray/JsonObject ----
- * 调用前后栈深不变。 */
-Json lua_value_to_json(lua_State* L, int idx) {
+ * 调用前后栈深不变。
+ * C-9 防线：每层嵌套表压一个 C++ 栈帧，只有碰到标量才终止——驱动返回自引用表
+ * （t.self = t，最常见的笔误形态）即无限递归直到裸 SIGSEGV，无环但极深的表同理。
+ * 用 depth 计数在 kMaxLuaNesting 处抛 LuaNestingTooDeep，由 call_lua 就地转 ERR。
+ * 检查放在进入表分支的最开头（本层还没压任何东西），抛出时栈不受本层污染。 */
+Json lua_value_to_json(lua_State* L, int idx, int depth) {
 	int t = lua_type(L, idx);
 	if (t == LUA_TNUMBER) {
 		double d = lua_tonumber(L, idx);
@@ -100,6 +104,7 @@ Json lua_value_to_json(lua_State* L, int idx) {
 		return JsonNull();
 	}
 	if (t == LUA_TTABLE) {
+		if (depth > kMaxLuaNesting) { throw LuaNestingTooDeep(kMaxLuaNesting); }
 		std::vector<long long> arrKeys;
 		std::map<long long, Json> arrVals;
 		Json obj = JsonObject();
@@ -112,16 +117,16 @@ Json lua_value_to_json(lua_State* L, int idx) {
 				/* C7 防线：非整数数字键（如 3.5）截断会静默丢数据——转字符串键保留 */
 				long long k = static_cast<long long>(kd);
 				if (static_cast<double>(k) != kd) {
-					Json vj = lua_value_to_json(L, -1);
+					Json vj = lua_value_to_json(L, -1, depth + 1);
 					obj.put(std::to_string(kd), vj);
 				} else {
-					Json vj = lua_value_to_json(L, -1);
+					Json vj = lua_value_to_json(L, -1, depth + 1);
 					arrVals[k] = vj;
 					arrKeys.push_back(k);
 				}
 			} else if (keyType == LUA_TSTRING) {
 				if (const char* ks = lua_tolstring(L, -2, nullptr)) {
-					Json vj = lua_value_to_json(L, -1);
+					Json vj = lua_value_to_json(L, -1, depth + 1);
 					obj.put(ks, vj);
 				}
 			}
@@ -187,11 +192,33 @@ Json call_lua(lua_State* L, const Json& json) {
 					continue;
 				}
 				const char* key = lua_tolstring(L, -2, nullptr);
-				Json val = lua_value_to_json(L, -1);
+				Json val;
+				try {
+					val = lua_value_to_json(L, -1);
+				} catch (const LuaNestingTooDeep& e) {
+					/* C-9：就地转 ERR，绝不让它逃出去——call_lua 的调用方里
+					 * freeImpl 是在 call_lua 之后才 lua_close 的，异常一逃就跳过
+					 * 状态机关闭（泄漏），末尾的 lua_settop 也会被跳过而脏掉栈。 */
+					ret = JsonObject();		/* 丢弃已部分填充的字段，只留契约错误 */
+					ret.put("result", JsonString("ERR"));
+					ret.put("message", JsonString("Lua function '" + mode + "' returned "
+						+ e.what()));
+					break;
+				}
 				logD([key, &val] { return std::string(key) + ": " + val.toString(); });
 				ret.put(key, val);
 				lua_pop(L, 1);
 			}
+		} else {
+			/* N3 防线：pcall 成功但首返回值不是表（少写 return → 0 个值，或返回
+			 * nil/数字/字符串）。旧实现折成空表 {}，而 ensureOk 见「无 result 键」
+			 * 即判成功——驱动漏 return 会被静默当成调用成功，硬件根本没动。 */
+			std::string got = nret > 0
+				? std::string("a non-table value (Lua type ") + lua_typename(L, lua_type(L, -nret)) + ")"
+				: "no value";
+			ret.put("result", JsonString("ERR"));
+			ret.put("message", JsonString("Lua function '" + mode + "' returned " + got
+				+ "; the driver contract requires a table like {result=\"OK\", ...}"));
 		}
 	} else {
 		std::string errStr = luaErrorString(L);

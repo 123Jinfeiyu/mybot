@@ -5,6 +5,7 @@
  *   ensureOk       halt-on-error 契约（result=="ERR" 即抛，trim 后比较）
  *   MetaProvider   字面列首采冻结 / "-" 列跳过 / name+controller 跳过 / $ 引用实时快照
  *   C1 防线        $ 引用成环时深度计数兜底，清晰报错而非栈溢出
+ *   N3 防线        非表结果判契约违反（旧实现原样放行＝把「硬件没动」报成成功）
  */
 
 #include <map>
@@ -111,9 +112,15 @@ TH_TEST(parseMtDouble_rejects_non_numeric_cell) {
 
 /* ---------------- ensureOk ---------------- */
 
-TH_TEST(ensureOk_passes_through_non_error_values) {
+TH_TEST(ensureOk_accepts_ok_objects_and_rejects_non_tables) {
+	/* N3：非表结果一律判契约违反——表外没有 result 键可读，原样放行等于把
+	 * 「硬件根本没动」报成成功（驱动漏 return、或把 @Alias 当 @Action 列前缀）。 */
 	Json scalar = JsonInt(7);
-	TH_CHECK(MatrixVars_Hardware::ensureOk(scalar).getInt() == 7);
+	TH_CHECK_THROWS_MSG(std::runtime_error, "non-table result (int)",
+		MatrixVars_Hardware::ensureOk(scalar, "play s1"));
+	Json text = JsonString("angle");
+	TH_CHECK_THROWS_MSG(std::runtime_error, "non-table result (string)",
+		MatrixVars_Hardware::ensureOk(text, "play A"));
 
 	Json ok = JsonObject();
 	ok.put("result", JsonString("OK"));
