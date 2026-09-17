@@ -48,58 +48,77 @@ bool daemon_stop_requested(DaemonSlot* slot);
 std::string firstExistingModule(const std::string& paths, const std::string& rel);
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath);
 
-/* ---- 可变状态持有者：持有 slot、超时与 promise（守护线程经 shared_ptr 回写）---- */
-class DaemonHolder {
-public:
-	/* F-01：slot 由主线程（daemonPlay / daemonFree）与守护线程（退出时自释，D2 路径）
-	 * 两端读写——必须原子化，否则是形式上的数据竞争（UB）。取用一律显式 load()，
-	 * 拿到局部指针后再解引用（解引用期间槽由本线程的调用路径保证存活）。 */
-	std::atomic<DaemonSlot*> slot;
-	int64_t joinTimeoutMs;
-	std::shared_ptr<std::promise<int64_t>> result;
-	std::future<int64_t> fut;
+/* ---- 守护运行器（R-7：状态机内聚）----
+ * 原 DaemonHolder + daemonRise/daemonFree/daemon_body 三个自由函数分散读写
+ * spawned/abandoned/slot/promise 五个字段；收敛后对外只留
+ * start / requestStop / waitForExit / readSample / slot 五个入口。 */
+class DaemonRunner {
+	/* F-01：slot 由主线程（start/waitForExit/readSample）与守护线程（退出时自释，
+	 * D2 路径）两端读写——必须原子化，否则是形式上的数据竞争（UB）。取用一律
+	 * 显式 load()，拿到局部指针后再解引用（解引用期间槽由本线程的调用路径保证存活）。 */
+	std::atomic<DaemonSlot*> slot_;
+	int64_t joinTimeoutMs_;
+	std::shared_ptr<std::promise<int64_t>> result_;
+	std::future<int64_t> fut_;
 	/* D1：线程是否已 spawn——未 spawn（build 中途失败路径）promise 永不 set，
 	 * 停机时不能白等 join 超时，直接释放槽。 */
-	std::atomic<bool> spawned{false};
+	std::atomic<bool> spawned_{false};
 	/* D2：主线程放弃等待后置位，槽所有权移交守护线程（线程退出时自行释放），
 	 * 主线程此后不再触碰槽——防放弃路径的 use-after-free。 */
-	std::atomic<bool> abandoned{false};
-	/* 弱自引用（Factory 置位）：daemonRise 经 lock() 取回 shared_ptr 交给守护线程保生命周期。
-	 * 必须是 weak_ptr——shared_ptr 自引用会让引用计数永不归零，每个守护固定泄漏
-	 * 208B/4 次分配，LeakSanitizer 下所有守护 E2E 用例判失败。
-	 * 改 weak 后所有权语义不变：线程持有 lock() 得到的强引用，abandoned 路径下
-	 * 线程退出时仍是槽的唯一持有者并自行释放（D2）。 */
-	std::weak_ptr<DaemonHolder> self;
+	std::atomic<bool> abandoned_{false};
+	/* 弱自引用（Factory 经 bindSelf 置位）：start 经 lock() 取回 shared_ptr
+	 * 交给守护线程保生命周期。必须是 weak_ptr——shared_ptr 自引用会让引用
+	 * 计数永不归零，每个守护固定泄漏 208B/4 次分配，LeakSanitizer 下所有
+	 * 守护 E2E 用例判失败。 */
+	std::weak_ptr<DaemonRunner> self_;
 
-	explicit DaemonHolder(DaemonSlot* s, int64_t timeout)
-		: slot(s), joinTimeoutMs(timeout), result(std::make_shared<std::promise<int64_t>>()),
-		  fut(result->get_future()) {}
+	/* 守护线程体：独立 lua_State，注入槽地址 + 配置串，setup 一次 + 逐拍
+	 * daemon_tick。退出时若 abandoned 置位则自行释放槽（D2）。 */
+	int64_t body(const std::string& chunk, const std::string& config, int64_t intervalMs);
 
-	/* RAII 兜底：槽只在 daemonFree（经 destroy()）里释放。若 Factory 分配槽之后、
+public:
+	explicit DaemonRunner(DaemonSlot* s, int64_t timeout)
+		: slot_(s), joinTimeoutMs_(timeout), result_(std::make_shared<std::promise<int64_t>>()),
+		  fut_(result_->get_future()) {}
+
+	/* RAII 兜底：槽只在 waitForExit（经 destroy()）里释放。若 Factory 分配槽之后、
 	 * 变量进入销毁序列之前抛出（make_shared 的 bad_alloc 等），或任何绕过
 	 * deactivate 的新出口，都会泄漏 slot + 未销毁的 mutex。未 spawn 时线程不持有
-	 * 槽，析构可安全回收；已 spawn 的槽所有权归 daemonFree / abandoned 路径下的
+	 * 槽，析构可安全回收；已 spawn 的槽所有权归 waitForExit / abandoned 路径下的
 	 * 守护线程，此处绝不触碰（防 use-after-free）。 */
-	~DaemonHolder();
+	~DaemonRunner();
+
+	/* 供线程捕获 self 保生命周期（构造期无法取得自身 shared_ptr） */
+	void bindSelf(std::shared_ptr<DaemonRunner> self) { self_ = std::move(self); }
+
+	/* spawn 守护线程（槽已释放/自引用缺失时显式报错） */
+	void start(const std::string& name, const std::string& chunk,
+			const std::string& config, int64_t intervalMs);
+
+	/* 置停止标志（槽内 mutex 临界区；槽已释放则无事可做） */
+	void requestStop();
+
+	/* 带超时等待线程退出并释放槽；超时则置 abandoned 移交所有权（D2） */
+	void waitForExit(const std::string& name);
+
+	/* 主线程读采样快照；放弃路径下槽所有权已移交，按 ERR 契约返回 */
+	Json readSample();
+
+	DaemonSlot* slot() const { return slot_.load(); }
 };
 
-/* 守护线程体：独立 lua_State，注入槽地址 + 配置串，setup 一次 + 逐拍 daemon_tick。
- * 持 holder 的 shared_ptr 保生命周期；退出时若 abandoned 置位则自行释放槽（D2）。 */
-int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chunk,
-		const std::string& config, int64_t interval_ms);
-
-/* ---- 守护硬件变量（R-3：真实子类，持 holder 的 shared_ptr 而非裸指针捕获）----
+/* ---- 守护硬件变量（R-3：真实子类，持 runner 的 shared_ptr）----
  * build/destroy 的参数（chunk 路径/配置串/interval）在 Factory 时定型为成员。 */
 class MtVars_Daemon : public MatrixVars_Hardware {
-	std::shared_ptr<DaemonHolder> holder_;
+	std::shared_ptr<DaemonRunner> runner_;
 	std::string name_;
 	std::string chunkPath_;
 	std::string configStr_;
 	int64_t intervalMs_;
 
-	explicit MtVars_Daemon(std::shared_ptr<DaemonHolder> holder, std::string name,
+	explicit MtVars_Daemon(std::shared_ptr<DaemonRunner> runner, std::string name,
 			std::string chunkPath, std::string configStr, int64_t intervalMs)
-		: holder_(std::move(holder)), name_(std::move(name)),
+		: runner_(std::move(runner)), name_(std::move(name)),
 		  chunkPath_(std::move(chunkPath)), configStr_(std::move(configStr)),
 		  intervalMs_(intervalMs) {}
 
@@ -109,7 +128,7 @@ public:
 	void destroy() override;
 
 	static std::unique_ptr<MtVars_Daemon> Factory(const mt::MatrixObject& defs, std::int64_t i,
-			std::vector<std::shared_ptr<DaemonHolder>>& registry);
+			std::vector<std::shared_ptr<DaemonRunner>>& registry);
 };
 
 } // namespace bot

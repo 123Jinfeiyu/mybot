@@ -90,6 +90,7 @@ add_executable(mybot_tests
   test/cpp/test_luaend.cpp
   test/cpp/test_luavar.cpp
   test/cpp/test_actionsource.cpp
+  test/cpp/test_daemon.cpp
   ${MYBOT_CORE_SOURCES}
 )
 

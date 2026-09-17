@@ -40,21 +40,20 @@ static void releaseSlot(DaemonSlot* slot) {
 	std::free(slot);
 }
 
-/* ---- DaemonHolder RAII 兜底（见头文件注释）：仅回收线程尚未接管所有权（未 spawn）的槽 ---- */
-DaemonHolder::~DaemonHolder() {
-	DaemonSlot* s = slot.load();
-	if (s != nullptr && !spawned.load()) {
+/* ---- DaemonRunner RAII 兜底（见头文件注释）：仅回收线程尚未接管所有权（未 spawn）的槽 ---- */
+DaemonRunner::~DaemonRunner() {
+	DaemonSlot* s = slot_.load();
+	if (s != nullptr && !spawned_.load()) {
 		releaseSlot(s);
-		slot.store(nullptr);
+		slot_.store(nullptr);
 	}
 }
 
 /* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
- * 持 holder 的 shared_ptr 保生命周期；退出时若 abandoned 置位（主线程已放弃等待），
+ * 线程持 runner 的 shared_ptr 保生命周期；退出时若 abandoned 置位（主线程已放弃等待），
  * 槽所有权已移交本线程——由本线程释放（D2）。极端竞态下（置位晚于本检查）可能泄漏，宁漏不崩。 */
-int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chunk,
-		const std::string& config, int64_t interval_ms) {
-	DaemonSlot* slot = holder->slot.load();
+int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, int64_t intervalMs) {
+	DaemonSlot* slot = slot_.load();
 	lua_State* L = luaL_newstate();
 	if (L == nullptr) { return -1; }
 	luaL_openlibs(L);
@@ -89,7 +88,7 @@ int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chu
 			std::cerr << "[daemon] tick error: " << luaErrorString(L) << std::endl;
 		}
 		lua_settop(L, 0);
-		std::this_thread::sleep_for(std::chrono::milliseconds(interval_ms));
+		std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
 	}
 
 	/* H-07：stop 后、lua_close 前调用 chunk 定义的 daemon_cleanup()（若存在） */
@@ -109,12 +108,105 @@ int64_t daemon_body(std::shared_ptr<DaemonHolder> holder, const std::string& chu
 	n = slot->count;
 	pthread_mutex_unlock(mutexOf(slot));
 	lua_close(L);
-	if (holder->abandoned.load()) {
+	if (abandoned_.load()) {
 		/* D2：主线程已放弃等待，槽所有权在本线程——自行释放 */
 		releaseSlot(slot);
-		holder->slot.store(nullptr);
+		slot_.store(nullptr);
 	}
 	return n;
+}
+
+/* ---- start：spawn 守护线程 ---- */
+void DaemonRunner::start(const std::string& name, const std::string& chunk,
+		const std::string& config, int64_t intervalMs) {
+	if (slot_.load() == nullptr) {
+		throw std::runtime_error("Daemon '" + name + "' slot already released, cannot spawn");
+	}
+	/* self_ 是 weak_ptr（打破自引用环防泄漏）：此处取回强引用交给线程保生命周期。
+	 * build 期 registry 必持有强引用，lock() 不会失败；万一取空则显式报错，
+	 * 不把空 shared_ptr 交给线程去解引用。 */
+	std::shared_ptr<DaemonRunner> keep = self_.lock();
+	if (!keep) {
+		throw std::runtime_error("Daemon '" + name + "' runner was released before spawn");
+	}
+	std::thread([chunk, config, intervalMs, keep]() {
+		int64_t r = keep->body(chunk, config, intervalMs);
+		try { keep->result_->set_value(r); } catch (...) { /* future 已被消费/进程退出 */ }
+	}).detach();
+	spawned_.store(true);	/* D1：promise 必将被 set，停机可走 join 超时路径 */
+	std::cerr << "Daemon '" << name << "' spawned, config: " << config << std::endl;
+}
+
+/* ---- requestStop：置停止标志（槽已释放则无事可做）---- */
+void DaemonRunner::requestStop() {
+	DaemonSlot* slot = slot_.load();
+	if (slot == nullptr) { return; }
+	daemon_request_stop(slot);
+}
+
+/* ---- waitForExit：置停止 + 带超时等待退出 + 销毁 mutex/槽 ----
+ * D1：未 spawn（build 中途失败）的守护 promise 永不 set——跳过等待直接释放槽。
+ * D2：spawn 过但 join 超时，置 abandoned 把槽所有权移交守护线程自行释放，
+ * 主线程此后不再触碰槽（readSample 对 slot==nullptr 返回 ERR 契约）。 */
+void DaemonRunner::waitForExit(const std::string& name) {
+	DaemonSlot* slot = slot_.load();
+	if (slot == nullptr) { return; }	/* 已释放（重复销毁等）——无事可做 */
+	daemon_request_stop(slot);
+	if (!spawned_.load()) {
+		std::cerr << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
+		releaseSlot(slot);
+		slot_.store(nullptr);
+		return;
+	}
+	if (fut_.valid()) {
+		std::future_status st = fut_.wait_for(std::chrono::milliseconds(joinTimeoutMs_));
+		if (st == std::future_status::ready) {
+			int64_t n = fut_.get();
+			std::cerr << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
+			releaseSlot(slot);
+			slot_.store(nullptr);
+			return;
+		}
+		abandoned_.store(true);
+		std::cerr << "Daemon '" << name << "' not exited within " << joinTimeoutMs_
+			<< "ms, abandoning slot (thread will release it on exit)" << std::endl;
+		return;
+	}
+	releaseSlot(slot);
+	slot_.store(nullptr);
+}
+
+/* ---- readSample：主线程加锁读采样值 → JSON（v0..vN 标量键 + values 数组）---- */
+Json DaemonRunner::readSample() {
+	/* D2：放弃路径下槽所有权已移交守护线程，主线程不再触碰——
+	 * abandoned 置位或槽已置空时按 ERR 契约返回，不碰悬垂指针。
+	 * F-01：槽指针原子读取，取回局部指针后再解引用。 */
+	DaemonSlot* slot = slot_.load();
+	if (slot == nullptr || abandoned_.load()) {
+		Json ret = JsonObject();
+		ret.put("result", JsonString("ERR"));
+		ret.put("message", JsonString("daemon slot already released"));
+		return ret;
+	}
+	Json ret = JsonObject();
+	Json arr = JsonArray();
+	pthread_mutex_lock(mutexOf(slot));
+	int32_t nvals = slot->nvals;
+	int32_t count = slot->count;
+	int32_t nv = nvals;
+	if (nv > SLOT_MAXVALS) { nv = SLOT_MAXVALS; }
+	for (int32_t k = 0; k < nv; ++k) {
+		double v = slot->values[k];
+		arr.add(JsonFloat(v));
+		ret.put("v" + std::to_string(k), JsonFloat(v));
+	}
+	pthread_mutex_unlock(mutexOf(slot));
+	ret.put("status", JsonString("OK"));
+	ret.put("count", JsonInt(count));
+	ret.put("nvals", JsonInt(nvals));
+	ret.put("values", std::move(arr));
+	logD([count, nvals] { return "Daemon play: count=" + std::to_string(count) + " nvals=" + std::to_string(nvals); });
+	return ret;
 }
 
 /* ---- issue #19：多模块路径按序查找第一个存在的文件 ----
@@ -147,39 +239,6 @@ std::string resolveDaemonChunk(const std::string& chunk, const std::string& modu
 	if (modulePath.rfind("./", 0) == 0) { noDot = modulePath.substr(2); }
 	if (chunk.rfind(noDot + "/", 0) == 0) { return chunk; }
 	return firstExistingModule(modulePath, chunk);
-}
-
-/* ---- play 事件：主线程加锁读采样值 → JSON（v0..vN 标量键 + values 数组）---- */
-static Json daemonPlay(DaemonHolder* holder) {
-	/* D2：放弃路径下槽所有权已移交守护线程，主线程不再触碰——
-	 * abandoned 置位或槽已置空时按 ERR 契约返回，不碰悬垂指针。
-	 * F-01：槽指针原子读取，取回局部指针后再解引用。 */
-	DaemonSlot* slot = holder->slot.load();
-	if (slot == nullptr || holder->abandoned.load()) {
-		Json ret = JsonObject();
-		ret.put("result", JsonString("ERR"));
-		ret.put("message", JsonString("daemon slot already released"));
-		return ret;
-	}
-	Json ret = JsonObject();
-	Json arr = JsonArray();
-	pthread_mutex_lock(mutexOf(slot));
-	int32_t nvals = slot->nvals;
-	int32_t count = slot->count;
-	int32_t nv = nvals;
-	if (nv > SLOT_MAXVALS) { nv = SLOT_MAXVALS; }
-	for (int32_t k = 0; k < nv; ++k) {
-		double v = slot->values[k];
-		arr.add(JsonFloat(v));
-		ret.put("v" + std::to_string(k), JsonFloat(v));
-	}
-	pthread_mutex_unlock(mutexOf(slot));
-	ret.put("status", JsonString("OK"));
-	ret.put("count", JsonInt(count));
-	ret.put("nvals", JsonInt(nvals));
-	ret.put("values", std::move(arr));
-	logD([count, nvals] { return "Daemon play: count=" + std::to_string(count) + " nvals=" + std::to_string(nvals); });
-	return ret;
 }
 
 /* ---- interval 解析与校验（≤0 会空转占满 CPU，显式报错）----
@@ -215,60 +274,9 @@ static int64_t parseInterval(const std::string& iv, const std::string& name,
 	return parsed;
 }
 
-/* ---- rise 事件：spawn 守护线程 ---- */
-static void daemonRise(DaemonHolder* holder, const std::string& name,
-		const std::string& chunkPath, const std::string& configStr, int64_t intervalMs) {
-	DaemonSlot* slot = holder->slot.load();
-	std::shared_ptr<std::promise<int64_t>> prom = holder->result;
-	/* self 是 weak_ptr（打破自引用环防泄漏）：此处取回强引用交给线程保生命周期。
-	 * build 期 registry 必持有强引用，lock() 不会失败；万一取空则显式报错，
-	 * 不把空 shared_ptr 交给线程去解引用。 */
-	std::shared_ptr<DaemonHolder> hkeep = holder->self.lock();
-	if (!hkeep) {
-		throw std::runtime_error("Daemon '" + name + "' holder was released before spawn");
-	}
-	std::thread([slot, chunkPath, configStr, intervalMs, prom, hkeep]() {
-		int64_t r = daemon_body(hkeep, chunkPath, configStr, intervalMs);
-		try { prom->set_value(r); } catch (...) { /* future 已被消费/进程退出 */ }
-	}).detach();
-	holder->spawned.store(true);	/* D1：promise 必将被 set，停机可走 join 超时路径 */
-	std::cerr << "Daemon '" << name << "' spawned, config: " << configStr << std::endl;
-}
-
-/* ---- free 事件：置停止 + 带超时等待退出 + 销毁 mutex/槽 ----
- * D1：未 spawn（build 中途失败）的守护 promise 永不 set——跳过等待直接释放槽。
- * D2：spawn 过但 join 超时，置 abandoned 把槽所有权移交守护线程自行释放，
- * 主线程此后不再触碰槽（daemonPlay 对 slot==nullptr 返回 ERR 契约）。 */
-static void daemonFree(DaemonHolder* holder, const std::string& name) {
-	DaemonSlot* slot = holder->slot.load();
-	daemon_request_stop(slot);
-	if (!holder->spawned.load()) {
-		std::cerr << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
-		releaseSlot(slot);
-		holder->slot.store(nullptr);
-		return;
-	}
-	if (holder->fut.valid()) {
-		std::future_status st = holder->fut.wait_for(std::chrono::milliseconds(holder->joinTimeoutMs));
-		if (st == std::future_status::ready) {
-			int64_t n = holder->fut.get();
-			std::cerr << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
-			releaseSlot(slot);
-			holder->slot.store(nullptr);
-			return;
-		}
-		holder->abandoned.store(true);
-		std::cerr << "Daemon '" << name << "' not exited within " << holder->joinTimeoutMs
-			<< "ms, abandoning slot (thread will release it on exit)" << std::endl;
-		return;
-	}
-	releaseSlot(slot);
-	holder->slot.store(nullptr);
-}
-
 /* ---- 守护硬件变量工厂 ---- */
 std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
-		std::vector<std::shared_ptr<DaemonHolder>>& registry) {
+		std::vector<std::shared_ptr<DaemonRunner>>& registry) {
 	int64_t idxName = defs.indexOfCol(0, "name");
 	int64_t idxChunk = defs.indexOfCol(0, "chunk");
 	if (idxName < 0) {
@@ -314,25 +322,25 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 		throw std::runtime_error("Daemon '" + name + "' failed to initialize slot mutex");
 	}
 
-	auto holder = std::make_shared<DaemonHolder>(slot, joinTimeoutMs);
-	holder->self = holder;	/* 线程捕获 self 保生命周期 */
-	registry.push_back(holder);
+	auto runner = std::make_shared<DaemonRunner>(slot, joinTimeoutMs);
+	runner->bindSelf(runner);	/* 线程捕获 self 保生命周期 */
+	registry.push_back(runner);
 
 	return std::unique_ptr<MtVars_Daemon>(new MtVars_Daemon(
-		std::move(holder), name, chunkPath, configStr, intervalMs));
+		std::move(runner), name, chunkPath, configStr, intervalMs));
 }
 
 /* ---- 守护硬件变量：play/build/destroy 直通守护事件（R-3）---- */
 Json MtVars_Daemon::play(const Json&) {
-	return daemonPlay(holder_.get());
+	return runner_->readSample();
 }
 
 void MtVars_Daemon::build() {
-	daemonRise(holder_.get(), name_, chunkPath_, configStr_, intervalMs_);
+	runner_->start(name_, chunkPath_, configStr_, intervalMs_);
 }
 
 void MtVars_Daemon::destroy() {
-	daemonFree(holder_.get(), name_);
+	runner_->waitForExit(name_);
 }
 
 } // namespace bot

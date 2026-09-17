@@ -76,7 +76,7 @@ public:
 
 class RobotStruct {
 	std::vector<mt::MatrixObject> matrices_;	/* 结构脚本解析的矩阵对象（声明序） */
-	std::vector<std::shared_ptr<DaemonHolder>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
+	std::vector<std::shared_ptr<DaemonRunner>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
 	HwRegistry registry_;				/* 硬件变量：所有权 + 销毁序 + 名字索引（R-2） */
 	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
 	 * $ 引用存在性（shared_ptr 与变量同生命周期，防悬垂） */

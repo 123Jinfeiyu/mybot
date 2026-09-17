@@ -227,7 +227,7 @@ void RobotStruct::active() {
 /* ---- 消除硬件：先统一置守护 stop（不逐个 join，避免同步饿死），再逆序 destroy ---- */
 void RobotStruct::deactivate() {
 	for (const auto& h : daemonHolders_) {
-		daemon_request_stop(h->slot.load());
+		h->requestStop();
 	}
 	std::string lastWarn;
 	std::size_t failed = 0;
