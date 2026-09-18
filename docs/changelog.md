@@ -1,27 +1,41 @@
 # 更新日志
 
-> 从 [README](../README.md) 迁出，记录版本演进要点。
+> 从 [README](../README.md) 迁出，记录版本演进要点。按主题分组，组内大致按时间倒序。
 
 ## v1.x（C++ 移植版）
 
-- **`$(...)` 算术表达式**：`@Vars.value`、结构脚本元数据列、`@Action` 单元格三处均可写 `$(v1+v2+10)`——`+ - * / %`、括号、一元正负、十进制字面量，标识符只能是 `@Vars`（数值），无函数调用。实现为独立递归下降解析器（`src/expr.*`：语法错误带位置、括号嵌套深度上限、除零/取模为零报错、标识符收集）；`MtVars_Vars` 持 AST 惰性求值（支持前向引用与动作脚本覆盖，成环由线程局部深度计数判 `circular @Vars`）；`MetaProvider` 增 `$(...)` 引用列（seed 解析 + 标识符在 build 前存在性校验，collect/collectForDestroy 求值），`ActionRunner::parseActionCell` 识别 `$(...)`；`Number` 列/`@Vars` 校验与表达式共享判定。结果以 `%.15g` 回写文本。守门新增 `expr_num`（三处正值）与 `expr_undefined`（负值），C++ 单测新增 `test_expr` 及 Vars/MetaProvider 表达式用例
-- **mtmerge 归并 `@Alias` / `@Vars`**：多个 .mt 合成时，除 `@Action` 相位归并外，各输入的 `@Alias` / `@Vars` 数据行按行叠加（不做相位）；两侧列头必须一致，同名行（`name` 列）报错退出 2（同一名字不能映射到两个别名/值）。产物顺序为 `@Alias`、`@Vars`（若存在）、`@Action`；@Action 定位改为按矩阵名查找（不再取首个矩阵），因此输入里 `@Alias`/`@Vars` 排在 `@Action` 之前也能正确合成。守门新增 `mtmerge` 段（4 条：正值归并、Alias/Vars 同名负值、产物回喂 mybot 端到端）
-- **结构脚本支持 `Number` 列类型**：`CREATE TABLE` 的列类型除 `String` 外新增 `Number`（词法器识别 `number` 关键字，大小写不敏感），用于声明数值列。值仍按文本驻留（`MatrixObject` 只存 String），`Number` 目前仅在**解析期**做一次数值校验：`Parser` 建表期登记列类型，INSERT 时按列名匹配，非数值字面量（含空值 / `nan` / `inf`）在装配前即清晰报错（`Column 'x' of table 'T' is declared Number, but value 'abc' is not numeric.`），不静默按字符串放行、不做运行期类型转换。守门新增 `number_type`（正）与 `number_bad`（负），C++ 单测覆盖词法、建表类型与解析期校验
-- **新增 `@Vars` 命名数值变量**：与 `@Alias` 同构（列 `name` / `value`），**仅支持 Number**——`value` 必须是数值字面量（整数/小数/带符号/科学计数法），非数值（含空值/`nan`/`inf`）在注册期报错；值仍按文本驻留、不做转换（与结构脚本 `Number` 列共用 `util::isNumericLiteral`）。两种消费方式：结构脚本元数据列写 `$<name>` 取其数值文本——这是唯一允许 `$` 指向标量的变量类型（`Alias` 标量仍按原契约报错）；以及 `.mt` 内联/结构定义后在 `@Action` 参数位做名字替换（与 `@Alias` 一致，实际以 `$` 常量为主要用法）。重名/覆盖语义对齐 `@Alias`（结构期重名即抛；动作脚本内重名报错、同名覆盖结构定义）。实现上引入 `MtVars_Text` 基类供 `MtVars_Alias`/`MtVars_Vars` 共用，`MetaProvider` 引用列携带列名以便值回填，`HwFactory` 注册路径统一为 `registerScalarMatrix`。守门新增 `vars_num`（正值）与 `vars_bad`/`vars_nonnum`/`vars_dup`（负值），C++ 单测覆盖 Factory 数值校验、`$` 回填与派发前注册
-- **destroy 元数据恢复引用列（F-04′）**：此前 `destroy` 只取字面列（F-04 为「保证去初始化调用仍然发生」而整体关闭了 `$` 引用解析），而器件行的总线句柄 `fd` 与从机 `address` 是经 `$i2c-N` / `$uart-N` 从接口器件快照来的——缺 `fd` 后按驱动分两档：走 `i2c_pair` 的 `PCA9685` / `MPU6050` / `BH1750` **响亮报错**（真机实测 `Deactive warning: Hardware call failed (destroy ./modules/PCA9685.lua): Invalid Argument: fd or address`），走 `if fd ~= nil` 守卫的 `ADS1015` / `ADS1115` / `ADS1256` / `APDS9900` / `BME280` / `BME688` / `MAX30102` / `MCP3421` / `SGP30` / `VL53L0X` / `VL53L4CD` / `SCSCL` **静默丢失去初始化**（器件滞留最后指令状态且一声不响）。现改用 `MetaProvider::collectForDestroy()`：字面列 + 逐个引用 `try` 解析（抛错 / 标量 / ERR 快照只跳过该引用），F-04 的原始诉求（`destroy` 绝不被跳过）由「跳过单条引用」而非「放弃整轮收集」承担。`fd` 的生命周期不变——只由接口器件自己的 `destroy` 关闭，而「总线必须先于器件声明」在 `build` 期即被强制（否则器件 `build` 拿不到 `fd`），故倒序销毁天然保证总线最后关闭。守门补 `pca9685_virt` 的 `Deactive warning` 禁断言、`ref_bus_forward` 负值用例，C++ 单测补三条 `collectForDestroy` 用例
-- **结构重构六阶段（R-1~R-8，见 [refactoring-plan.md](refactoring-plan.md) 进度台账）**：错误/告警统一走 stderr、整数解析收敛 `util::parseLongStrict`、`CliOptions` 类型化（F-21/F-25/F-19 同批）；三容器注册表统一为 `HwRegistry`；硬件变量虚方法化（`MtVars_Alias`/`MtVars_Daemon` 成真实子类，controller 改注册表查名，消灭 std::function 回调注入与裸指针捕获）；`MatrixBuilder`/`appendRow` 解析管线解耦；守护状态机收敛为 `DaemonRunner`（并补 never-spawn/abandon 两条确定性夹具，F-08 尾项）；`RobotStruct` 拆分为 ScriptLoader/HwFactory/ActionRunner
-- **门禁基建（F-22/F-24/F-28）**：HAL.lua 硬编码 ioctl/termios 常量改为 C 编译期断言自检（`test_ioctl_nums`/`test_uart_consts`，漂移在构建期即失败）并接入守门第 8 段；新增 `.gitlab-ci.yml` 最小 CI（构建 + Release 全量守门 + sanitizer 双跑）；`tcp_e2e.sh` 日志改 mktemp、服务端退出码必须为 0
-- **文档对齐（F-27）**：TCP 输入源措辞由「长驻」改为单连接语义；`architecture_analysis.html` 顶标历史文档（仓颉版）；virtbus 注入面计数 20→26（含 uart 5）、补 `attach_uart` API 行、MT6826S 边界句更新；virt 用例计数 37→39；README g++ 版本按实测修正；drivers.md 模块拆分闭合（54+bitcompat+dummy）
-- **`$` 引用校验前移 + destroy 静态元数据（F-04/F-05）**：`$` 引用存在性校验从惰性（首次 collect 时）提前到全部表装配完成后、任何驱动 `build` 之前（`active()` 统一校验，失败不碰真机；前向引用仍合法，与 `controller` 列的「必须先行声明」明确区分并写入 `docs/dsl.md`）；`destroy` 改为只取字面列（`MetaProvider::collectStatic`），不再解析 `$` 引用——引用的缺省实现 `read()` 是一次真实硬件事务、且对已释放变量主动抛错，异常一旦传出驱动的去初始化就被静默跳过（MAX30102 未关断 / BH1750 未断电，器件滞留最后指令状态）；收集失败降级为空表保证 `destroy` 仍被调用，`deactivate` 末尾显式汇总失败数量。守门新增 `ref_forward`（前向引用 + 断言无 `Deactive warning`）与 `ref_undefined`（未定义引用 → 装配期报错且先于任何 build，断言无 `spawned, config:`）；用例表新增可选第 5 字段「输出必须不含」
-- **virtbus 读族入参校验对齐 HAL（F-07）**：寄存器/地址改走 `byte_of`/`uint_of`——`reg=-1`/`reg=300` 不再被 `math.floor(reg) % 256` 静默回绕成 0xFF/44（真机必失败的调用在仿真里曾能成功），`set_addr` 拒绝负数；`n` 参数接受小数并向下取整（与 HAL `uint_of` 接受集一致，旧实现额外收紧）；字节表族 `n` 非法返回 `nil`（旧实现 `nil→1` 静默成功）；`uart_read` 超时超 60000ms 与 HAL 同样失败；`test_virtbus`/`test_virtbus_spi` 补 11 条对齐断言（含"非法寄存器不产生任何总线事务"）
-- **并发与退出路径收口（F-01/F-08/F-23）**：`DaemonHolder::slot` 由裸指针改为 `std::atomic<DaemonSlot*>`（主线程 play/free 与守护线程自释两端读写，取用一律显式 `load()`），守护退出时 `count` 从锁外裸读移入槽内 mutex 临界区（与 stop 纪律对齐）；守门新增「信号/退出路径」段（播放中 SIGTERM → rc=0 + 停派发行 + 守护 join；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错，此前 sigaction/停机分支零覆盖）；`CMakeLists.txt` 新增 `MYBOT_SANITIZE` 开关（address,undefined / thread），`test/run_san.sh` 提供 Release+sanitizer 双跑守门
-- **审计廉价批**：未知/拼错的 `--key` 由「打印帮助 + exit 0」改为报错并以退出码 2 结束（`main.cpp` `isKnownOption`，守门补 `unknown_arg` 负值用例）——拼错 `--robot` 曾是 CI 假成功出口；MS5611 非法 `osr`（非数字 / <256 无档可降）由静默回落最慢档 4096 改为 build 期显式 ERR、且校验先于一切总线动作（test_ms5611.lua 补三条负值断言与零总线事务检查）
-- **结构脚本限流 + 词法器线性化**：`--robot` 结构脚本与动作脚本统一 8 MiB 上限（共用 `kMaxScriptBytes` + `LimitedReader`，报错首词区分 `structure script` / `action script`；`ActionScriptTooLarge` 更名 `ScriptTooLarge` 并携带输入类别）——旧实现只有 `.mt` 有限流，超大 `.sql` 会把全部 token 驻留内存；词法器引号态改增量维护（`sqlparse.cpp`），消除逐字符重扫 token 的 O(n²)：100 KB 引号值 4.84 s → 毫秒级；新增 1 MB 引号值单测（旧实现按平方标度会撞 60 s 单测超时）与引号态等价性回归，守门补 `sql_toolarge` 负值用例
-- UART 销毁恢复接口配置：HAL 在 open 时快照原始 termios，uart_close 先 tcsetattr 恢复再关闭（raw 模式/波特率不残留给后续使用者；恢复失败告警不阻断关闭），test_uart.lua 补恢复/失败分支回归
-- **UART 波特率修复（真机实证）**：cfsetispeed/cfsetospeed 必须传 glibc 常量——旧实现传数值 Hz 被 EINVAL 拒绝且返回码未查，波特率实际从未生效（/dev/serial0 真机复验：请求 115200 后 B 字段仍为原值）；白名单扩 500000/1000000（SCSCL 出厂默认档），常量映射与白名单同步维护、缺失即明确失败
-- **新增 `SCSCL` 总线舵机驱动**（飞特 FT-SCS 协议，UART）：build PING 探测与站号校验、call 位置/时间/速度/扭矩（0x2A 起六字节大端，运行时间=speed 0 时生效的到位耗时）、read 无副作用反馈块（0x38 起 11 字节）、destroy 扭矩关闭；call 另支持 `set_id` **站号烧写**（独占该次调用：解锁 EPROM 0x30=0 → 广播 0xFE 写 0x05，掉电重启生效；`set_id<=0`（首行 "-" 解析为 0）即不烧号，烧号行独立成行、真机须只接目标舵机）；尾部内嵌 `SCSCL_VIRT` 协议模型（帧/校验和/广播与站号过滤/寄存器地图/站号切换与 persisted 掉电语义/advance 运动学），test_scscl.lua 145 断言 + `scscl_virt`/`scscl_badid` 两条 @Action E2E 接入守门
-- **非守护 virt 前置修复**：`drv_common` 原把 `*_VIRT` 工厂表直接 attach（工厂无 write/on_write → 写静默成功、读永远无应答，PCA9685 直写 E2E 的旧缺口），改为与 `sensor_daemon` 同约定先 `new()` 实例化；新增 `BUS="uart"` 模型按 tty 路径 `attach_uart` 与跨状态机 uart fd 采纳（UART 引用额外下发 `path`）
-- 词法器引号感知：引号内 `--` / `/* */` / `;` / `,` / 括号 / 空白一律按字面数据解析（`sqlquote` 正负回归）
-- `$` 引用指向标量（Alias）改为清晰报错而非 Json 类型崩溃（`ref_alias_scalar` 负值回归）
-- E2E 守门落地：mybot 直跑 + INSERT 目标表校验；无硬件契约与 TCP 动作源全部自动化
-- `deactivate` 同因告警去重；`scripts/run.sh` 启动器与文档一致性清理
+### 语言与 DSL
+
+- **`$(...)` 算术表达式**：`@Vars.value`、结构脚本元数据列、`@Action` 单元格三处可用；支持 `+ - * / %`、括号、一元正负，标识符仅限 `@Vars`。独立递归下降解析器（`src/expr.*`）：语法错误带位置、括号深度/运算符数双上限、除零报错、非有限结果（inf/nan）出口防线。`MtVars_Vars` 持 AST 惰性求值（前向引用、动作脚本覆盖、成环检测）。守门 `expr_num`/`expr_undefined`，单测 `test_expr`
+- **`@Vars` 命名数值变量**：与 `@Alias` 同构（列 `name`/`value`），仅支持数值字面量（含 `$(...)` 表达式），非数值注册期即报错。两种消费方式：结构脚本元数据列 `$<name>`（唯一允许 `$` 指向标量的类型）；动作脚本参数位替换。`.mt` 内联 `@Vars` 不得覆盖结构定义。守门 `vars_num` 正值 + `vars_bad`/`vars_nonnum`/`vars_dup`/`vars_override` 负值
+- **结构脚本 `Number` 列类型**：`CREATE TABLE` 除 `String` 外支持 `Number`，解析期做一次数值校验（拒绝空值/`nan`/`inf`），值仍按文本驻留。守门 `number_type`/`number_bad`
+- **词法器引号感知**：引号内 `--`、`/* */`、`;`、`,`、括号、空白一律按字面数据（`sqlquote` 正负回归）
+- **词法器线性化 + 脚本限流**：引号态增量维护，消除逐字符重扫 token 的 O(n²)（100 KB 引号值 4.84 s → 毫秒级）；`.sql` 与 `.mt` 统一 8 MiB 上限（`LimitedReader`，报错区分输入类别）
+- **mtmerge 归并 `@Alias`/`@Vars`**：多 .mt 合成时按行叠加，两侧列头须一致，同名行报错退出 2；`@Action` 按矩阵名定位。守门新增 mtmerge 段（正值归并、同名负值、产物回喂端到端）
+
+### 执行引擎与安全
+
+- **`$` 引用校验前移**：存在性校验从惰性提前到全部表装配完成后、任何驱动 `build` 之前——失败不碰真机；前向引用仍合法。守门 `ref_forward`/`ref_undefined`
+- **destroy 元数据恢复引用列**：`destroy` 改为「字面列 + 引用列尽力而为快照」——引用仍存活则并入快照，已释放只跳过该引用、`destroy` 本身绝不跳过。修复此前 `fd` 缺失导致 PCA9685/MPU6050 响亮报错、十余款器件静默丢失去初始化的问题。单测补三条 `collectForDestroy` 用例
+- **并发与退出路径收口**：守护槽指针改 `std::atomic`（显式 `load()`）；守护退出 `count` 移入槽内 mutex 临界区；守护槽弃管以「退出检查点 + 原子 exchange 唯一胜者」裁决，消除泄漏竞态（审计 #2）；守门新增信号/退出路径段（播放中与 TCP 等待中 SIGTERM 两分支）
+- **TCP 动作源加固**：非回环监听强制口令 + 恒时比较 + 先取脚本后上电（审计 H-2/M1/M2）；凭据行超长 fail-closed 拒绝、SO_RCVTIMEO 设置失败显式报错（审计 #6/#9）；裸 `--tcp` 不再静默回落端口 1，报「缺端口号」
+- **表达式有限值防线**：`Expression::eval` 出口 `isfinite` 拒绝 inf/nan，堵住远程动作脚本经 `$(1e308*1e308)` 向驱动注入非有限参数的路径
+- **沙箱与加载防线**：`call_lua` 拒绝含 NUL 的键/值（堵 reserved-key 截断绕过，审计 #1）；dofile/loadfile 白名单按分量精确匹配、容忍尾斜杠（审计 #7/#8）
+- **审计廉价批**：未知/拼错 `--key` 报错退出 2（不再打印帮助假成功）；MS5611 非法 `osr` build 期显式 ERR 且先于总线动作
+- **`$` 引用指向标量**清晰报错而非 Json 类型崩溃（`ref_alias_scalar`）
+
+### 驱动与总线
+
+- **新增 `SCSCL` 总线舵机驱动**（飞特 FT-SCS 协议，UART）：PING 探测、位置/时间/速度/扭矩、反馈块读取、`set_id` 站号烧写（须结构期 `allow_burn` 授权，负值守门 `scscl_burn_guard`）；内嵌 `SCSCL_VIRT` 协议模型，145 断言 + 2 条 E2E
+- **UART 波特率修复（真机实证）**：`cfset*speed` 必须传 glibc 常量——旧实现传数值 Hz 被 EINVAL 拒绝且未查返回码，波特率从未生效；白名单扩 500000/1000000
+- **UART 销毁恢复接口配置**：open 时快照原始 termios，close 先恢复再关闭（raw 模式/波特率不残留）
+- **virtbus 读族入参校验对齐 HAL**：非法寄存器/地址不再被取模静默回绕，超时上限对齐；补 11 条对齐断言
+- **非守护 virt 前置修复**：`drv_common` 改为先实例化再 attach（旧实现工厂直挂导致写静默成功、读永远无应答）；新增 `BUS="uart"` 模型与跨状态机 uart fd 采纳
+
+### 工程化与守门
+
+- **结构重构六阶段（R-1~R-8）**：错误统一 stderr、`CliOptions` 类型化、`HwRegistry` 统一三容器、硬件变量虚方法化（消灭 std::function 回调与裸指针捕获）、`MatrixBuilder` 解析管线解耦、守护状态机收敛为 `DaemonRunner`、`RobotStruct` 拆分为 ScriptLoader/HwFactory/ActionRunner。进度台账见 [refactoring-plan.md](refactoring-plan.md)
+- **门禁基建**：HAL 硬编码 ioctl/termios 常量改 C 编译期断言自检（漂移构建期即失败）；`.gitlab-ci.yml` 最小 CI（构建 + 全量守门 + sanitizer 双跑 + TSan 软门禁）；`tcp_e2e.sh` 加固
+- **测试覆盖缺口补齐五项**：守护并发压测 + TSan、TCP 异常注入六场景（`tcp_adversarial.sh`）、tick 期持续 NACK E2E、fd 泄漏检测（`virtbus.fd_count()` + `/proc` 探针）、离线 ABI 回归（`test_abi_ioctl.lua`）
+- **E2E 守门落地**：mybot 直跑 + INSERT 目标表校验；无硬件契约与 TCP 动作源全部自动化；`deactivate` 同因告警去重
+- **文档对齐（F-27）**：TCP 措辞改单连接语义、`architecture_analysis.html` 顶标历史文档、virtbus 计数与 README 版本修正

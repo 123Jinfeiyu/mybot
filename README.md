@@ -13,7 +13,7 @@
 ## 项目信息
 
 - **实现**：C++17（零第三方 C++ 依赖，仅 LuaJIT + pthread + dl）
-- **构建**：CMake ≥ 3.16；测试环境 g++ 14.2（≥ 14 已验证）
+- **构建**：CMake ≥ 3.16；g++ ≥ 14 已验证（CI 基线 debian:bookworm，本地实测至 g++ 15）
 - **平台**：Linux（aarch64 / x86_64），树莓派实测可使用
 - **驱动生态**：`modules/` 下 50+ 硬件驱动（舵机、IMU、气压、测距、ADC、电源……），分类清单见 [docs/drivers.md](docs/drivers.md)
 
