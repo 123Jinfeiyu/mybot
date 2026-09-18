@@ -108,15 +108,10 @@ HAL.sys.tcflush = function(fd, q)
 end
 
 -- ==================== 断言辅助 ====================
-local fails = 0
-local function check(cond, label, extra)
-	if cond then
-		print(string.format("[PASS] %s", label))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %s%s", label, extra and (" (" .. tostring(extra) .. ")") or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua。本文件调用点是 check(cond, label, extra)
+-- 的「条件在前」序，逐个改序收益为零，故保留一个薄委托（断言实现单点在 tester）。
+local tester = dofile("test/lib/tester.lua")
+local check = function(cond, label, extra) tester.check(label, cond, extra) end
 
 local function has_call(op, key, val)
 	for _, c in ipairs(calls) do
@@ -292,10 +287,4 @@ check(uart_close(7) == 0, "配置失败的 fd close 返回 0")
 check(not has_call("tcsetattr"), "失败路径不产生残留快照")
 
 -- ==================== 汇总 ====================
-if fails == 0 then
-	print("all passed")
-	print("[DONE] test_uart.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-else
-	print(fails .. " case(s) failed")
-	os.exit(1)
-end
+tester.summary("test_uart.lua")

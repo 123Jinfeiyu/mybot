@@ -21,42 +21,27 @@ end
 function i2c_read_reg(fd, reg) return 0 end
 function milli_sleep(ms) end
 
-local fails = 0
-
-local function result_of(ok, res)
-	if ok and type(res) == "table" then return tostring(res.result) end
-	return tostring(res)
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 result_of/成败分支曾自成一套）
+local tester = dofile("test/lib/tester.lua")
+local result_of = tester.result_of
 
 -- 合法调用应恰好写 4 个寄存器（LEDx_ON/OFF 共 4 字节）
 local function expect_ok(label, data)
 	writes = {}
 	local ok, res = pcall(call, data)
-	local ok_result = (result_of(ok, res) == "OK") and #writes == 4
-	if ok_result then
-		print(string.format("[PASS] %-24s writes=4", label))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %-24s result=%s writes=%d", label,
-			result_of(ok, res), #writes))
-	end
+	tester.check(string.format("%-24s writes=4", label),
+		result_of(ok, res) == "OK" and #writes == 4,
+		string.format("result=%s writes=%d", result_of(ok, res), #writes))
 end
 
 -- 越界通道必须拒绝且一个寄存器都不写
 local function expect_err(label, data)
 	writes = {}
 	local ok, res = pcall(call, data)
-	local is_err = (result_of(ok, res) == "ERR")
-		and type(res) == "table"
-		and tostring(res.message):find("channel") ~= nil
-		and #writes == 0
-	if is_err then
-		print(string.format("[PASS] %-24s message=%s", label, tostring(res.message)))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %-24s result=%s writes=%d", label,
-			result_of(ok, res), #writes))
-	end
+	local msg = type(res) == "table" and tostring(res.message) or tostring(res)
+	tester.check(string.format("%-24s message 含 channel", label),
+		result_of(ok, res) == "ERR" and msg:find("channel", 1, true) ~= nil and #writes == 0,
+		string.format("result=%s writes=%d msg=%s", result_of(ok, res), #writes, msg))
 end
 
 -- 合法边界
@@ -70,10 +55,4 @@ expect_err("channel=-1",         {fd = 3, address = "0x40", channel = -1,   angl
 expect_err("channel=255",        {fd = 3, address = "0x40", channel = 255,  angle = 45})
 expect_err("string channel='20'",{fd = 3, address = "0x40", channel = "20", angle = 45})
 
-print("[DONE] pca9685_channel")
-if fails == 0 then
-	print("all passed")
-else
-	print(fails .. " case(s) failed")
-	os.exit(1)
-end
+tester.summary("pca9685_channel")

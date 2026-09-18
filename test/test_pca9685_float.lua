@@ -21,7 +21,8 @@ end
 function i2c_read_reg(fd, reg) return 0 end
 function milli_sleep(ms) end
 
-local fails = 0
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 fails/成败分支曾自成一套）
+local tester = dofile("test/lib/tester.lua")
 
 -- 驱动同款换算：offval = floor((0.5 + 2.0*angle/180) * 4096 / 20)，入参先限幅
 local function expect_offval(angle)
@@ -35,8 +36,7 @@ local function try(label, data)
 	writes = {}
 	local ok, res = pcall(call, data)
 	if not ok then
-		fails = fails + 1
-		print(string.format("[FAIL] %-28s error: %s", label, tostring(res)))
+		tester.check(label, false, "call error: " .. tostring(res))
 		return
 	end
 	-- 取出 OFF 寄存器低两字节（reg+2, reg+3）合成 offval
@@ -46,14 +46,9 @@ local function try(label, data)
 		if w.reg == 0x06 + 4 * 6 + 3 and offval then offval = offval + w.val * 256 end
 	end
 	local want = expect_offval(tonumber(data.angle))
-	if offval == want and #writes == 4 then
-		print(string.format("[PASS] %-28s writes=%d offval=%s",
-			label, #writes, tostring(offval)))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %-28s writes=%d offval=%s (want %s)",
-			label, #writes, tostring(offval), tostring(want)))
-	end
+	tester.check(string.format("%-28s writes=%d offval=%s", label, #writes, tostring(offval)),
+		offval == want and #writes == 4,
+		string.format("want offval=%s writes=4", tostring(want)))
 end
 
 -- 1) 数字角度（@Action 参数经 parseMt 为 JsonFloat，整数/浮点同路）
@@ -70,10 +65,4 @@ try("float angle=44.7",        {fd = 3, address = "0x40", channel = 6, angle = 4
 try("string angle='250'",      {fd = 3, address = "0x40", channel = "6", angle = "250"})
 try("string angle='-30'",      {fd = 3, address = "0x40", channel = "6", angle = "-30"})
 
-print("[DONE] pca9685_float")
-if fails == 0 then
-	print("all passed")
-else
-	print(fails .. " case(s) failed")
-	os.exit(1)
-end
+tester.summary("pca9685_float")

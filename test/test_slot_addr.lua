@@ -7,15 +7,9 @@
 -- 用法（项目根目录）: luajit test/test_slot_addr.lua（run_all.sh 自动纳入）
 -- 前置：LuaJIT ffi；非 LuaJIT（lua5.4）时跳过 ffi 组，仅打印跳过说明。
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1; print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 逐字重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
 local ok_ffi, ffi = pcall(require, "ffi")
@@ -66,8 +60,4 @@ pcall_ok, slot = pcall(P.slot_attach, 2^55)
 check(">=2^53 不拦截（告警放行）", pcall_ok)
 check(">=2^53 仍逐位还原", slot ~= nil and ffi.cast("uint64_t", slot) == 2^55)
 
-print("===============================================")
-print(("汇总: %d 通过, %d 失败"):format(passed, failed))
-print("[DONE] test_slot_addr.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if failed > 0 then os.exit(1) end
-return 0
+tester.summary("test_slot_addr.lua")

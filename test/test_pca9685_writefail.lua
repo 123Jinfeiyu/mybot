@@ -26,27 +26,18 @@ end
 function i2c_read_reg(fd, reg) return 0 end
 function milli_sleep(ms) end
 
-local fails = 0
-
-local function result_of(ok, res)
-	if ok and type(res) == "table" then return tostring(res.result) end
-	return tostring(res)
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 result_of/成败分支曾自成一套）
+local tester = dofile("test/lib/tester.lua")
+local result_of = tester.result_of
 
 local function expect_err(label, fn, msgpat)
 	writes = {}
 	local ok, res = pcall(fn)
 	local msg = type(res) == "table" and tostring(res.message) or tostring(res)
-	local is_err = result_of(ok, res) == "ERR"
-		and msg:find(msgpat, 1, true) ~= nil
-		and #writes <= 1	-- 失败即返回，不得继续写后续寄存器
-	if is_err then
-		print(string.format("[PASS] %-26s message=%s", label, msg))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %-26s result=%s msg=%s", label,
-			result_of(ok, res), msg))
-	end
+	tester.check(string.format("%-26s message=%s", label, msg),
+		result_of(ok, res) == "ERR" and msg:find(msgpat, 1, true) ~= nil
+			and #writes <= 1,	-- 失败即返回，不得继续写后续寄存器
+		string.format("result=%s writes=%d", result_of(ok, res), #writes))
 end
 
 local base = { fd = 3, address = "0x40" }
@@ -59,10 +50,4 @@ expect_err("call PWM 写失败 -> ERR",
 expect_err("destroy 写失败 -> ERR", function() return destroy(base) end, "restart")
 fail_write = false
 
-print("[DONE] pca9685_writefail")
-if fails == 0 then
-	print("all passed")
-else
-	print(fails .. " case(s) failed")
-	os.exit(1)
-end
+tester.summary("pca9685_writefail")

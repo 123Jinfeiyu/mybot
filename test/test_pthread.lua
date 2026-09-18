@@ -2,15 +2,9 @@
 -- 并发正确性（守护线程 publish + 主线程 latest）由仓颉侧 @Daemon 压测覆盖，此处只验证原语。
 -- 用法（项目根目录）: luajit test/test_pthread.lua
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1; print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 逐字重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local P = dofile("modules/lib/pthread.lua")
 
@@ -85,6 +79,4 @@ do
 	check("跨句柄停止标志可见", P.should_stop(attached) == true)
 end
 
-print(string.format("结果: %d 通过, %d 失败", passed, failed))
-print("[DONE] test_pthread.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if failed > 0 then os.exit(1) end
+tester.summary("test_pthread.lua")

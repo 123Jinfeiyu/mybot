@@ -20,15 +20,9 @@ if HAL.backend ~= "ffi" then
 	return
 end
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1; print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 逐字重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local ffi = require("ffi")
 ffi.cdef([[
@@ -91,6 +85,4 @@ check("FIONREAD 计数与写入字节数一致", bad_count == 0, string.format("
 HAL.sys.close(rfd)
 HAL.sys.close(wfd)
 
-print(string.format("结果: %d 通过, %d 失败", passed, failed))
-print("[DONE] test_abi_ioctl.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if failed > 0 then os.exit(1) end
+tester.summary("test_abi_ioctl.lua")

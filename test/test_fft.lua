@@ -2,16 +2,9 @@
 -- 核心验证：与 O(N²) 暴力 DFT 交叉对照 + 三层 API 往返 + 已知解析值 + 错误路径
 -- 用法（项目根目录）: lua5.4 test/test_fft.lua
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1
-		print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 逐字重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local FFT = dofile("modules/lib/fft.lua")
 
@@ -179,6 +172,4 @@ do	-- 非共轭对称谱做 ifft_real 应报实数性错误
 	check("ifft_real 非实数谱报错", pcall(FFT.ifft_real, re, im) == false)
 end
 
-print(string.format("结果: %d 通过, %d 失败", passed, failed))
-print("[DONE] test_fft.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if failed > 0 then os.exit(1) end
+tester.summary("test_fft.lua")
