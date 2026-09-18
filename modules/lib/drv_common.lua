@@ -18,6 +18,19 @@ function err(msg)
 	return {  result = "ERR",  message = msg  }
 end
 
+-- ---- build 全程守卫（fd 回滚防线）------------------------------------------
+-- 教训同 sensor_daemon 的 build 就地 pcall：build 在打开总线句柄之后若抛
+-- Lua error（后续接入的配置步骤、器件自检等），裸调用会跳过 fd 回滚；宿主
+-- 随即 lua_close（HAL 无 ffi.gc 终结器），fd 永久泄漏在进程里。此处统一
+-- pcall：异常折成 ERR 契约表，折返前尽力执行 rollback 关闭已打开的句柄。
+-- rollback 必须幂等：正常路径的「重复 build 先关旧句柄」守卫已关过时不得误关。
+function guard_build(rollback, fn, data)
+	local ok, r = pcall(fn, data)
+	if ok then return r end
+	if type(rollback) == "function" then pcall(rollback) end
+	return err("build() raised: " .. tostring(r))
+end
+
 -- ---- 非守护路径的虚拟总线前置（proto=virt 的设备行）---------------------
 -- 背景：注入虚拟总线此前只发生在 sensor_daemon.lua（守护路径）里，所以全部
 -- virt 端到端用例都是守护型，@Action 直接驱动的写路径（舵机/DAC）无从仿真。

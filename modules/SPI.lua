@@ -15,7 +15,15 @@ local fd = -1
 -- 全局传输延时（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
 local delay_us = 0
 
-function build(data)
+-- fd 回滚（C-M3'）：build 中途抛 Lua error 时由 guard_build 调用（幂等）
+local function rollback_fd()
+	if fd ~= nil and fd >= 0 then
+		spi_close(fd)
+		fd = -1
+	end
+end
+
+local function build_impl(data)
 
 	-- 检查该参数是否是一张表
 	local ok, ek = arg_table(data)
@@ -105,6 +113,11 @@ function build(data)
 		fd = fd
 	}
 
+end
+
+-- build 全程守卫：异常折成 ERR 契约并回滚已打开的 fd（drv_common.guard_build）
+function build(data)
+	return guard_build(rollback_fd, build_impl, data)
 end
 
 

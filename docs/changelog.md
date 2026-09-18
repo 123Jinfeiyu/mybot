@@ -32,6 +32,9 @@
 - **UART 销毁恢复接口配置**：open 时快照原始 termios，close 先恢复再关闭（raw 模式/波特率不残留）
 - **virtbus 读族入参校验对齐 HAL**：非法寄存器/地址不再被取模静默回绕，超时上限对齐；补 11 条对齐断言
 - **非守护 virt 前置修复**：`drv_common` 改为先实例化再 attach（旧实现工厂直挂导致写静默成功、读永远无应答）；新增 `BUS="uart"` 模型与跨状态机 uart fd 采纳
+- **驱动 build 全程守卫（C-M3'）**：`drv_common.guard_build` 统一 pcall——build 在打开总线句柄后抛 Lua error 时折成 ERR 契约并回滚关闭句柄（I2C/SPI/UART/GPIO 全部接入，堵宿主 lua_close 后 fd 永久泄漏的纵深防御）；SPI 桩实证
+- **sensor_daemon 浮点防线**：浮点物理量配 `sign=16`/`:s16` 会被 floor 截断成整数假值静默发布（与字段拼错发 0 同族）——拒绝发布、tick 错误点名让配置改 `:f`；新增 virt E2E `float_s16_daemon`
+- **UART call 下发 build 缓存的 path**（C-L6）：不信任 call 元数据，virt 模式按错误 tty 路径 attach 模型的缺口关闭；GPIO 成功打印纳入 DEBUG 门控（C-L7）
 
 ### 工程化与守门
 

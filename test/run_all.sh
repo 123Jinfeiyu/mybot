@@ -364,6 +364,7 @@ parse_cases=(
 	'ema_chain.sql|ema_chain.mt|0|joined, total publishes='
 	'monitor.sql|monitor.mt|0|joined, total publishes='
 	'mpu_daemon.sql|mpu_daemon.mt|0|joined, total publishes='
+	'float_s16_daemon.sql|float_s16_daemon.mt|1|would be truncated to integer'
 	'multidaemon.sql|multidaemon.mt|0|joined, total publishes='
 	'robots/relay-test.sql|scripts/relay-test.mt|0|note=hello-relay'
 	'ref_prefix.sql|ref_prefix.mt|0|Relay: test=200 note=timer-0'

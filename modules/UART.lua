@@ -18,7 +18,21 @@ local fd = -1
 -- 全局波特率（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
 local baud = 9600
 
-function build(data)
+-- build 时缓存的总线路径（C-L6：call 返回 build 时保存的 path——原实现取
+-- call 参数里的 path，调用方元数据与 build 不一致时 virt 模式会按错误路径
+-- attach 模型）
+local open_path = nil
+
+-- fd 回滚（C-M3'）：build 中途抛 Lua error 时由 guard_build 调用（幂等）
+local function rollback_fd()
+	if fd ~= nil and fd >= 0 then
+		uart_close(fd)
+		fd = -1
+	end
+	open_path = nil
+end
+
+local function build_impl(data)
 
 	-- 检查该参数是否是一张表
 	local ok, ek = arg_table(data)
@@ -63,12 +77,18 @@ function build(data)
 
 	fd = opened
 	baud = uart_baud
+	open_path = path
 
 	if os.getenv("BOT4CJ_DEBUG") == "1" then
 		print("UART opened: " .. path .. " @ " .. tostring(baud) .. " baud, fd=" .. tostring(fd))
 	end
 	return {  result = "OK"  }
 
+end
+
+-- build 全程守卫：异常折成 ERR 契约并回滚已打开的 fd（drv_common.guard_build）
+function build(data)
+	return guard_build(rollback_fd, build_impl, data)
 end
 
 -- 【销毁UART】关闭串口句柄
@@ -114,14 +134,14 @@ function call(data)
 	end
 
 	-- 返回字典（fd 经引用机制流入设备驱动元数据）。
-	local path = data.path
-	-- path 一并下发：虚拟总线路径下设备驱动按 tty 路径定位器件模型
-	-- （drv_common proto=virt 前置的 attach_uart/adopt 需要）。
+	-- path 用 build 时缓存的值（C-L6）：virt 模式下设备驱动按 tty 路径定位
+	-- 器件模型（drv_common proto=virt 前置的 attach_uart/adopt 需要），
+	-- 以 build 时的真实打开路径为准，不信任 call 元数据。
  	return {
 		result = "OK",
 		fd     = fd,
 		baud   = baud,
-		path   = path
+		path   = open_path or data.path
 	}
 
 end

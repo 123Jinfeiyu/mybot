@@ -202,9 +202,13 @@ end
 --   "f"   原样透传（换算后的浮点物理量，如 MPU6050 TEMP °C、INA226 V/I/P、MLX90393 µT）
 --   "s16" 16 位二进制补码符号扩展（整型路径，先取整保证 % 65536 可用）
 --   ""    跟随全局 sign 列（sign=16 时补码，否则原样）
+local function effective_bits(mode)
+	return (mode == "s16") and 16 or (mode == "" and sign or nil)
+end
+
 local function conv(v, mode)
 	v = tonumber(v) or 0
-	local bits = (mode == "s16") and 16 or (mode == "" and sign or nil)
+	local bits = effective_bits(mode)
 	if bits == 16 then
 		v = math.floor(v) % 65536
 		if v >= 32768 then v = v - 65536 end
@@ -295,14 +299,26 @@ function daemon_tick()
 		-- ——下游 Ema/Kalman/Monitor 于是拿假 0 做闭环决策（真 0 与配置错误不可区分）。
 		-- 配置类错误同样按 tick 错误处理：不发布、count 停滞，日志点名缺哪个字段。
 		local missing = nil
+		local float_s16 = nil
 		for i = 1, #fields do
-			if tonumber(s[fields[i]]) == nil then
+			local raw = tonumber(s[fields[i]])
+			if raw == nil then
 				missing = (missing and (missing .. ", ") or "") .. tostring(fields[i])
+			elseif raw % 1 ~= 0 and effective_bits(field_modes[i]) == 16 then
+				-- 防线：浮点物理量（SHT3X 的 T/RH、BME280 的 T/P/H 等已换算值）
+				-- 配 s16 补码会被 floor 截断成整数假值（23.56 → 23），tonumber
+				-- 照样通过、零日志静默发布错值——与字段拼错发 0 同族的数据破坏，
+				-- 拒绝发布，点名让配置改用 ':f' 或去掉 sign 后缀。
+				float_s16 = (float_s16 and (float_s16 .. ", ") or "") .. tostring(fields[i])
 			end
 		end
 		if missing ~= nil then
 			ok_sample = false
 			why = "field(s) absent or non-numeric in driver result: " .. missing
+		elseif float_s16 ~= nil then
+			ok_sample = false
+			why = "float value(s) with s16 mode would be truncated to integer: " .. float_s16
+				.. " (use ':f' suffix or drop sign=16 for these fields)"
 		end
 	elseif type(s) == "table" and s.message then
 		why = tostring(s.message)

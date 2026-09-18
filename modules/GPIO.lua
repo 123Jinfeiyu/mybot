@@ -44,8 +44,15 @@ local DEBUG = false
 local hfd = -1		-- GPIO 句柄 fd
 local is_output = false
 
--- 【配置脚本】请求 GPIO 线句柄
-function build(data)
+-- 句柄回滚（C-M3'）：build 中途抛 Lua error 时由 guard_build 调用（幂等）
+local function rollback_hfd()
+	if hfd >= 0 then
+		gpio_free_line(hfd)
+		hfd = -1
+	end
+end
+
+local function build_impl(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
 		return {
@@ -104,10 +111,18 @@ function build(data)
 	end
 	is_output = (direction == "out")
 
-	print(string.format("GPIO init OK: %s line %d, %s%s",
-		chip, offset, direction, active_low and " (active low)" or ""))
+	-- C-L7：与其他驱动的 DEBUG 约定一致——GPIO 点动高频，成功打印须门控
+	if DEBUG then
+		print(string.format("GPIO init OK: %s line %d, %s%s",
+			chip, offset, direction, active_low and " (active low)" or ""))
+	end
 	return {  result = "OK"  }
 
+end
+
+-- build 全程守卫：异常折成 ERR 契约并回滚已请求的线句柄（drv_common.guard_build）
+function build(data)
+	return guard_build(rollback_hfd, build_impl, data)
 end
 
 -- 【销毁GPIO】释放线占用（句柄 fd 关闭即解绑）

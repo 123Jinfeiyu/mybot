@@ -12,7 +12,17 @@ dofile(mpath.resolve("lib/drv_common.lua"))
 -- 每个硬件变量独立 lua_State，故天然隔离）
 local fd = -1
 
-function build(data)
+-- fd 回滚（C-M3'）：build 中途抛 Lua error 时由 guard_build 调用——裸调用
+-- 会跳过句柄回收，宿主 lua_close 后 fd 永久泄漏（HAL 无 ffi.gc 终结器）。
+-- 幂等：重复 build 的「先关旧 fd」守卫已关过时是 no-op。
+local function rollback_fd()
+	if fd ~= nil and fd >= 0 then
+		i2c_close(fd)
+		fd = -1
+	end
+end
+
+local function build_impl(data)
 
 	-- 检查该参数是否是一张表
 	local ok, ek = arg_table(data)
@@ -46,13 +56,18 @@ function build(data)
 		}
 	end
 
-	
+
 	-- 返回结果
 	return {
 		result = "OK",
 		fd = fd
 	}
 
+end
+
+-- build 全程守卫：异常折成 ERR 契约并回滚已打开的 fd（drv_common.guard_build）
+function build(data)
+	return guard_build(rollback_fd, build_impl, data)
 end
 
 
