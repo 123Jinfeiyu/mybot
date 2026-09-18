@@ -40,8 +40,8 @@ class MatrixObject {
 	std::vector<std::vector<std::string>> values_;	/* 原始矩阵 */
 
 	/* "-" 占位符继承的解析结果，惰性前向填充（见 inherited()）。
-	 * 按值存储而非存指针：MatrixObject 会被拷贝（findMt 按值返回），
-	 * 指向 values_ 内部字符串的指针在副本里会悬垂。 */
+	 * 按值存储而非存指针：MatrixObject 是可拷贝值类型（parse/take 均按值
+	 * 交付），指向 values_ 内部字符串的指针在副本里会悬垂。 */
 	mutable std::vector<std::string> inherited_;
 	mutable bool inheritedReady_ = false;
 

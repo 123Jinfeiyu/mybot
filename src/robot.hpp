@@ -151,11 +151,20 @@ public:
 class ActionRunner {
 	HwRegistry& registry_;
 
-	static std::optional<mt::MatrixObject> findMt(
+	/* C-M3：$(...) 表达式 AST 按列缓存——"-" 继承链上同一表达式文本
+	 * 原实现每行每格重解析一次（O(行数²) 字符扫描）。body 为上次解析的
+	 * 表达式文本，不同则重解析（继承传播的是同一文本，命中即 O(1)）。 */
+	struct ColExprCache {
+		std::string body;
+		Expression ast;
+	};
+
+	static const mt::MatrixObject* findMt(
 			const std::vector<mt::MatrixObject>& ll, const std::string& name);
 	static std::pair<std::string, std::string> parseActionColumn(const std::string& name_HV);
 	void parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
-			std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices);
+			std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
+			const std::pair<std::string, std::string>& colHead, ColExprCache& exprCache);
 
 public:
 	explicit ActionRunner(HwRegistry& registry) : registry_(registry) {}

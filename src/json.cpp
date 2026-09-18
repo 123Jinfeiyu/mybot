@@ -36,6 +36,14 @@ std::optional<Json> Json::get(const std::string& key) const {
 	return std::nullopt;
 }
 
+Json* Json::getPtr(const std::string& key) {
+	if (type != T::Obj) { return nullptr; }
+	for (auto& kv : obj) {
+		if (kv.first == key) { return &kv.second; }
+	}
+	return nullptr;
+}
+
 void Json::put(const std::string& key, Json v) {
 	/* F-19：非对象显式报错——旧行为静默把整个值替换成空对象，数据丢失 */
 	if (type != T::Obj) { typeError("put", type); }

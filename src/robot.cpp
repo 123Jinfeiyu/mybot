@@ -419,28 +419,32 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 
 /* ==================== ActionRunner：@Action 逐行重放 ==================== */
 
-/* ---- 按表名查找（trim 后比较）；不存在返回 empty ---- */
-std::optional<mt::MatrixObject> ActionRunner::findMt(
+/* ---- 按表名查找（trim 后比较）；不存在返回 nullptr ---- */
+const mt::MatrixObject* ActionRunner::findMt(
 		const std::vector<mt::MatrixObject>& ll, const std::string& name) {
 	for (const auto& m : ll) {
-		if (trim(m.getName()) == name) { return m; }
+		if (trim(m.getName()) == name) { return &m; }
 	}
-	return std::nullopt;
+	return nullptr;
 }
 
 /* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
 void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
-	auto actionDefsOpt = findMt(actionMatrices, "Action");
-	if (!actionDefsOpt) {
+	const mt::MatrixObject* actionDefsPtr = findMt(actionMatrices, "Action");
+	if (actionDefsPtr == nullptr) {
 		throw IllegalArgumentException("No @Action matrix found in the script. Please define @Action in your .mt file.");
 	}
-	mt::MatrixObject& actionDefs = *actionDefsOpt;
+	const mt::MatrixObject& actionDefs = *actionDefsPtr;
 
+	/* 列头只解析一次（C-M3）：原实现在 order/相位检测/每行每格三处
+	 * 重复做 <device>.<param> 切分 */
+	std::vector<std::pair<std::string, std::string>> colHeads;
+	colHeads.reserve(static_cast<std::size_t>(actionDefs.cols()));
 	std::vector<std::string> order;
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
-		auto [name_dev, name_param] = parseActionColumn(actionDefs(0, j));
-		if (std::find(order.begin(), order.end(), name_dev) == order.end()) {
-			order.push_back(name_dev);
+		colHeads.push_back(parseActionColumn(actionDefs(0, j)));
+		if (std::find(order.begin(), order.end(), colHeads.back().first) == order.end()) {
+			order.push_back(colHeads.back().first);
 		}
 	}
 
@@ -450,7 +454,7 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	 * 否则依赖 play 触发读数/副作用的所有 E2E（守护快照等）会整体失效。 */
 	std::set<std::string> phaseDevices;
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
-		auto [name_dev, name_param] = parseActionColumn(actionDefs(0, j));
+		const std::string& name_dev = colHeads[static_cast<std::size_t>(j)].first;
 		if (phaseDevices.count(name_dev) > 0) { continue; }
 		for (std::int64_t r = 1; r < static_cast<std::int64_t>(actionDefs.rows()); ++r) {
 			const std::string& v = actionDefs(r, j);
@@ -458,6 +462,7 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 		}
 	}
 
+	std::vector<ColExprCache> exprCache(static_cast<std::size_t>(actionDefs.cols()));
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(actionDefs.rows()); ++i) {
 		/* D4：SIGINT/SIGTERM 后停止派发新动作帧，让 deactivate 清理链正常执行 */
 		if (stopRequested()) {
@@ -466,7 +471,8 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 		}
 		Json set = JsonObject();
 		for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
-			parseActionCell(set, actionDefs, i, j, phaseDevices);
+			parseActionCell(set, actionDefs, i, j, phaseDevices,
+				colHeads[static_cast<std::size_t>(j)], exprCache[static_cast<std::size_t>(j)]);
 		}
 		for (const std::string& name_dev : order) {
 			MatrixVars_Hardware* hv = registry_.find(name_dev);
@@ -501,8 +507,10 @@ std::pair<std::string, std::string> ActionRunner::parseActionColumn(const std::s
 
 /* ---- @Action 单元格解析（别名解析 + 数值类型解析 + 分组）---- */
 void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
-		std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices) {
-	auto [name_dev, name_param_orig] = parseActionColumn(actionDefs(0, j));
+		std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
+		const std::pair<std::string, std::string>& colHead, ColExprCache& exprCache) {
+	const std::string& name_dev = colHead.first;
+	const std::string& name_param_orig = colHead.second;
 	std::string name_param = name_param_orig;
 
 	/* 未起拍：本格 "-" 且无前值可继承（首数据行），且该设备属于相位设备
@@ -516,8 +524,12 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 	double val_fp64;
 	std::string raw = MatrixVars_Hardware::getMt(actionDefs, i, j);
 	if (auto body = exprBody(raw)) {
-		Expression e = Expression::parse(*body);
-		val_fp64 = e.eval([this](const std::string& nm) {
+		/* C-M3：AST 按列缓存——"-" 继承链上同一表达式文本原每行重解析 */
+		if (exprCache.body != *body) {
+			exprCache.body = *body;
+			exprCache.ast = Expression::parse(*body);
+		}
+		val_fp64 = exprCache.ast.eval([this](const std::string& nm) {
 			return resolveVarsNumber(&registry_, nm);
 		});
 	} else {
@@ -532,16 +544,14 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 		name_param = ret.asString().getValue();
 	}
 
-	Json set_params;
-	auto obj_ = set.get(name_dev);
-	if (obj_) {
-		set_params = *obj_;	/* 拷贝：asObject() 引用临时副本会悬垂，需写回 */
-	} else {
-		set_params = JsonObject();
+	/* C-M3：getPtr 就地取子对象更新字段，消除逐拍 get 拷出 + put 写回的
+	 * 两次深拷贝（原 asObject() 引用临时副本会悬垂，只能整份拷贝写回） */
+	Json* set_params = set.getPtr(name_dev);
+	if (set_params == nullptr) {
 		set.put(name_dev, JsonObject());
+		set_params = set.getPtr(name_dev);
 	}
-	set_params.put(name_param, JsonFloat(val_fp64));
-	set.put(name_dev, set_params);
+	set_params->put(name_param, JsonFloat(val_fp64));
 }
 
 /* ==================== RobotStruct：编排门面 ==================== */

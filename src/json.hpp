@@ -53,6 +53,10 @@ public:
 
 	/* ---- 对象操作 ---- */
 	std::optional<Json> get(const std::string& key) const;
+	/* 就地取子对象指针（不存在返回 nullptr）：热路径逐拍更新子字段时
+	 * 免去 get 拷出 + put 写回的两次深拷贝。指针在下次 put/erase 本对象
+	 * 字段前有效（调用点仅对取到的子对象继续 put，无失效窗口）。 */
+	Json* getPtr(const std::string& key);
 	void put(const std::string& key, Json v);	/* 同名覆盖，保持原序 */
 	const std::vector<std::pair<std::string, Json>>& items() const { return obj; }
 	std::size_t objSize() const { return obj.size(); }
