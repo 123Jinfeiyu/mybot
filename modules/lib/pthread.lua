@@ -159,7 +159,9 @@ function P.publish(slot, vals)
 	for i = 1, n do
 		slot[0].values[i - 1] = vals[i]
 	end
-	slot[0].count = slot[0].count + 1
+	-- 审计 #10：count 为槽内 int32，1ms interval 高频守护约 25 天即到
+	-- 2^31 上限——先回绕再写入，避免 ffi 截断 2^31 成负数（UB）
+	slot[0].count = (slot[0].count + 1) % 0x7FFFFFFF
 	mutex_call("unlock", m)
 end
 

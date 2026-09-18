@@ -34,6 +34,20 @@ int luaGlobalType(lua_State* L, const char* name) {
 	return tp;
 }
 
+/* ---- '..' 路径分量判定（审计 #8）：逐段与 ".." 精确比较，
+ * 不误伤含 '..' 子串的合法模块名 ---- */
+static bool hasDotDotComponent(const char* path) {
+	const char* p = path;
+	while (*p != '\0') {
+		const char* e = std::strchr(p, '/');
+		std::size_t len = e != nullptr ? static_cast<std::size_t>(e - p) : std::strlen(p);
+		if (len == 2 && p[0] == '.' && p[1] == '.') { return true; }
+		if (e == nullptr) { break; }
+		p = e + 1;
+	}
+	return false;
+}
+
 /* ---- 受限 dofile/loadfile 的路径校验（M3 收口）----
  * upvalue：1 = 白名单路径表（array 部分，每项一个允许前缀），2 = 原函数。
  * 白名单在 sandbox_lua 内由 BOT4CJ_MODULE_PATH（缺省 ./modules）逐段构建。
@@ -62,9 +76,10 @@ static int restrictedLoader(lua_State* L) {
 		return luaL_error(L, "sandbox: dofile/loadfile only allowed inside the module path (BOT4CJ_MODULE_PATH or ./modules), rejected: %s", path);
 	}
 	/* 前缀匹配挡不住 './modules/../CMakeLists.txt' 这类穿越（前缀后紧跟 '/'），
-	 * 显式拒绝任何含 '..' 分量的路径；白名单前缀本身不含 '..'，全路径检查即可。 */
-	if (std::strstr(path, "..") != nullptr) {
-		return luaL_error(L, "sandbox: dofile/loadfile path must not contain '..' (traversal rejected): %s", path);
+	 * 拒绝任何含 '..' 路径分量的请求；按分量精确比较而非子串匹配——审计 #8：
+	 * strstr 会误拒含 '..' 子串的合法模块名（foo..bar.lua 之类）。 */
+	if (hasDotDotComponent(path)) {
+		return luaL_error(L, "sandbox: dofile/loadfile path must not contain '..' component (traversal rejected): %s", path);
 	}
 
 	lua_pushvalue(L, lua_upvalueindex(2));		/* 原函数 */
@@ -110,6 +125,10 @@ void sandbox_lua(lua_State* L) {
 			? modulePath.substr(b) : modulePath.substr(b, e - b);
 		if (e == std::string::npos) { b = modulePath.size() + 1; }
 		else { b = e + 1; }
+		/* 审计 #7：分段以 '/' 结尾时放行条件 path[len]=='/' 永不成立，
+		 * 整段静默失效（fail-closed 的可用性缺陷）——构建白名单时剥掉
+		 * 尾斜杠，与 mpath.lua 的路径归一对齐。单独的 "/" 段保留原样。 */
+		while (p.size() > 1 && p.back() == '/') { p.pop_back(); }
 		if (p.empty()) { continue; }
 		lua_pushlstring(L, p.data(), p.size());
 		lua_rawseti(L, -2, ++n);

@@ -228,7 +228,9 @@ int main(int argc, char** argv) {
 			std::cerr << "mtmerge: --" << key << " 缺少值" << std::endl;
 			std::exit(2);
 		};
-		if (a.rfind("--phase", 0) == 0) {
+		/* 审计 #10：参数键精确匹配——旧 rfind 前缀匹配会把 --phaseX=5
+		 * 静默当作 --phase 接受，与「未知参数一律拒绝」纪律不一致。 */
+		if (a == "--phase" || a.rfind("--phase=", 0) == 0) {
 			std::string v = takeVal("phase");
 			auto [st, num] = bot::parseLongStrict(v);
 			if (st != bot::IntParse::OK) {
@@ -243,7 +245,7 @@ int main(int argc, char** argv) {
 				return 2;
 			}
 			phase = num;
-		} else if (a.rfind("--out", 0) == 0) {
+		} else if (a == "--out" || a.rfind("--out=", 0) == 0) {
 			outPath = takeVal("out");
 		} else if (a.rfind("--", 0) == 0) {
 			std::cerr << "mtmerge: 未知参数 '" << a << "'" << std::endl;

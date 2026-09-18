@@ -66,6 +66,14 @@ static bool checkTcpToken(int client, const std::string& token) {
 		if (c == '\n') { break; }
 		line += c;
 	}
+	if (line.size() > token.size() + 1) {
+		/* 审计 #6：凭据行超长，显式 fail-closed 拒绝。复核结论：line 是
+		 * std::string 累积、safeEquals 带长度比较，超长行本就因长度不等
+		 * 被拒，不存在截断放行；此处提前拦截只为给出明确诊断（而非笼统
+		 * 的「凭据不匹配」），并让 +1 的循环上限语义自解释。 */
+		std::cerr << "TCP 口令校验失败：凭据行超长（fail-closed，不截断比较）" << std::endl;
+		return false;
+	}
 	if (!safeEquals(line, token)) {
 		std::cerr << "TCP 口令校验失败：凭据不匹配，拒绝接收动作脚本" << std::endl;
 		return false;
@@ -142,10 +150,16 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 	}
 	std::cerr << "TCP 客户端已连接：" << ip << ":" << ntohs(peer.sin_port) << std::endl;
 
-	/* 空闲超时同时覆盖口令校验与脚本读取两段，避免「连上不发」挂死进程 */
+	/* 空闲超时同时覆盖口令校验与脚本读取两段，避免「连上不发」挂死进程。
+	 * 审计 #9：设置失败必须显式失败——该选项正是空闲 DoS 的防线，静默
+	 * 失效等于防线整体消失。 */
 	timeval tv{};
 	tv.tv_sec = idleSec;
-	::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+	if (::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+		::close(client);
+		throw std::runtime_error(std::string("设置 TCP 接收空闲超时失败：")
+			+ std::strerror(errno));
+	}
 
 	if (!token.empty() && !checkTcpToken(client, token)) {
 		::close(client);

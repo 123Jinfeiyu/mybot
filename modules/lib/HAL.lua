@@ -179,7 +179,9 @@ end
 function i2c_set_addr(fd, addr)
 	fd = tonumber(fd)
 	addr = uint_of(addr)
-	if fd == nil or addr == nil or addr > 0x7F then
+	-- 审计 #10：fd<0（open 失败返回 -1）不得登记进地址表，否则后续误用
+	-- 该句柄时排查困难——在登记处就拒绝
+	if fd == nil or fd < 0 or addr == nil or addr > 0x7F then
 		print("HAL: i2c_set_addr invalid args: " .. tostring(fd) .. ", " .. tostring(addr))
 		return false
 	end
@@ -381,6 +383,12 @@ end
 function milli_sleep(ms)
 	ms = tonumber(ms)
 	if ms == nil or ms <= 0 then return end
+	-- 审计 #10：usleep 形参是 unsigned int（usec），ms 超过 4294967 时
+	-- ms*1000 回绕成短睡/长睡错乱——钳制到 uint32 上限内并显式提示
+	if ms > 4294967 then
+		print("HAL: milli_sleep " .. tostring(ms) .. "ms exceeds uint32 usec range, clamped to 4294967ms")
+		ms = 4294967
+	end
 	HAL.sys.usleep(math.floor(ms * 1000))
 end
 
@@ -876,12 +884,23 @@ function uart_read(fd, n, timeout_ms)
 	local buf = ffi.new("uint8_t[?]", n)
 	local out = {}
 	local iters = math.max(0, math.floor(timeout_ms)) + 1
+	local eof_streak = 0
 	for it = 1, iters do
 		local want = n - #out
 		local r = tonumber(HAL.sys.read(fd, buf, want))
 		if r ~= nil and r > 0 then
+			eof_streak = 0
 			for i = 0, r - 1 do out[#out + 1] = tonumber(buf[i]) end
 			if #out >= n then break end
+		elseif r == 0 then
+			-- 审计 #10：read()==0 是 EOF（USB 串口拔出/对端关闭），不是
+			-- "暂无数据"——旧实现当作空转满超时，拔线后错误被吞。连续
+			-- 3 次 EOF 即判定设备已消失，立即失败。
+			eof_streak = eof_streak + 1
+			if eof_streak >= 3 then
+				print("HAL: uart_read hit EOF (device gone?) fd=" .. tostring(fd))
+				return nil
+			end
 		elseif r == nil or r < 0 then
 			-- EAGAIN=暂无数据、EINTR=被信号打断：继续轮询；其余错误显式失败
 			local e = HAL.sys.errno()
