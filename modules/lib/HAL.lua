@@ -673,11 +673,16 @@ end
 -- sizeof(struct termios)=60、c_line 偏移 16、c_cc 偏移 17、VMIN=6/VTIME=5、
 -- O_RDWR=2 O_NOCTTY=256 O_NONBLOCK=2048、TCSANOW=0、TCIFLUSH=0、
 -- CREAD=128 CLOCAL=2048 CS8=48。
--- 【波特率必须传 glibc 的 B* 常量，不能传数值 Hz】：cfsetispeed/cfsetospeed
--- 对数值（9600/115200/…）返回 EINVAL 且不修改结构体——旧实现「传 Hz」看似
--- 成功，实际波特率从未生效（真机 /dev/serial0 实证：请求 115200 后 B 字段
--- 仍为原值）。UART_B_CONST 为 Hz → 常量映射，值来自系统头文件
--- （B9600=13、B115200=0x1002、B500000=0x1005、B1000000=0x1008）
+-- 【波特率必须传当版 glibc 的 B* 常量编码，不能想当然】编码随 glibc 版本
+-- 分叉（glibc 2025-06 commit 5cf101a8，2.42 起生效）：
+--   < 2.42：B* 是旧 ABI 编号（B9600=13、B115200=0x1002）——cfsetispeed/
+--           cfsetospeed 对字面 Hz（9600/115200/…）返回 EINVAL 且不修改
+--           结构体，旧实现「传 Hz」看似成功实际波特率从未生效（真机
+--           /dev/serial0 实证：请求 115200 后 B 字段仍为原值）；
+--   ≥ 2.42：B* 即字面 Hz（B9600=9600）——反向地，旧编号 13 会被当成
+--           「13 波特」静默生效。
+-- 因此 UART_B_CONST 按运行时 glibc 版本（gnu_get_libc_version）二选一；
+-- test_uart_consts.c 以 #if 分支与两套表同步断言（审计 P0-3）。
 
 ffi.cdef[[
 int  tcgetattr(int fd, void *termios_p);
@@ -716,14 +721,37 @@ HAL.uart_orig = {}				-- fd -> open 前的原始 termios（close 恢复用）
 
 local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1000000 }
 
--- Hz → glibc speed_t 常量（linux B* 值，test_uart_consts.c 实证）。
+-- Hz → speed_t 常量：旧 ABI 编码表（glibc < 2.42，test_uart_consts.c 旧分支断言）。
 -- 白名单与映射表必须同步维护：白名单通过而映射缺失时 uart_open 明确失败，
 -- 不会退回「静默不生效」的旧行为。
-local UART_B_CONST = {
+local UART_B_CONST_LEGACY = {
 	[1200] = 9, [2400] = 11, [4800] = 12, [9600] = 13, [19200] = 14, [38400] = 15,
 	[57600] = 0x1001, [115200] = 0x1002, [230400] = 0x1003, [460800] = 0x1004,
 	[500000] = 0x1005, [921600] = 0x1007, [1000000] = 0x1008,
 }
+-- Hz → speed_t 常量：字面 Hz 编码表（glibc ≥ 2.42，test_uart_consts.c 新分支断言）
+local UART_B_CONST_HZ = {
+	[1200] = 1200, [2400] = 2400, [4800] = 4800, [9600] = 9600, [19200] = 19200,
+	[38400] = 38400, [57600] = 57600, [115200] = 115200, [230400] = 230400,
+	[460800] = 460800, [500000] = 500000, [921600] = 921600, [1000000] = 1000000,
+}
+-- 运行时探测：glibc ≥ 2.42 用 Hz 表，否则旧 ABI 编号表（见段首注释）。
+-- 探测失败（非常规 libc 等）按旧编码处理：旧编码在 <2.42 上正确，在 ≥2.42
+-- 上会静默设错——故本探测与 test_uart_baud.lua 回归、test_uart_consts.c
+-- 构建期断言三重把关，编码分叉时尽可能早地暴露。
+local function glibc_uses_hz_baud()
+	local ok, ver = pcall(function()
+		ffi.cdef[[ const char* gnu_get_libc_version(void); ]]
+		local p = ffi.C.gnu_get_libc_version()
+		-- 返回值是 const char* cdata，须经 ffi.string 转 Lua 串才能 pattern match
+		local major, minor = string.match(p ~= nil and ffi.string(p) or "", "(%d+)%.(%d+)")
+		if major == nil then return 0 end
+		return tonumber(major) * 1000 + tonumber(minor)
+	end)
+	return ok == true and ver >= 2042	-- 2042 == glibc 2.42
+end
+local UART_B_CONST = glibc_uses_hz_baud() and UART_B_CONST_HZ or UART_B_CONST_LEGACY
+HAL.UART_B_CONST = UART_B_CONST		-- 导出供 test_uart_baud.lua 回归核对
 
 -- 打开串口（raw 8N1 + 波特率 + 非阻塞），成功返回 fd，失败返回 -1
 function uart_open(path, baud)

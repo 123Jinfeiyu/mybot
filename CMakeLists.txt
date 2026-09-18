@@ -149,6 +149,9 @@ if(LUAJIT_EXECUTABLE)
 			WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 			TIMEOUT 60
 			ENVIRONMENT "LUACMD=${LUAJIT_EXECUTABLE}")
+		# 真机用例包装（run_if_i2c.sh）在无 /dev/i2c-* 时以 125 退出表示"不适用"，
+		# 须显式声明为 skip 返回码，否则 ctest 会把跳过记成 Failed
+		set_tests_properties(lua_${lua_name} PROPERTIES SKIP_RETURN_CODE 125)
 	endforeach()
 endif()
 

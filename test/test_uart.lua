@@ -12,6 +12,22 @@ local ffi = require("ffi")
 local bit = require("bit")
 local HAL = dofile("modules/lib/HAL.lua")
 
+-- 波特率期望编码随 glibc 版本分叉（glibc 2.42 起 B* 即字面 Hz，见 HAL.lua
+-- uart 段首注释与 test_uart_baud.lua）：此处独立推导期望值，避免与 HAL 的
+-- 探测逻辑同义反复。旧版 B9600=13，2.42+ B9600=9600（余档同形）。
+ffi.cdef[[ const char* gnu_get_libc_version(void); ]]
+local vstr_p = ffi.C.gnu_get_libc_version()
+local v_major, v_minor = string.match(vstr_p ~= nil and ffi.string(vstr_p) or "", "(%d+)%.(%d+)")
+local glibc_hz_baud = v_major ~= nil
+	and (tonumber(v_major) * 1000 + tonumber(v_minor)) >= 2042
+-- 旧 ABI 编码表（glibc < 2.42；与 HAL.lua UART_B_CONST_LEGACY 同源）
+local LEGACY_BCONST = {
+	[1200] = 9, [2400] = 11, [4800] = 12, [9600] = 13, [19200] = 14, [38400] = 15,
+	[57600] = 0x1001, [115200] = 0x1002, [230400] = 0x1003, [460800] = 0x1004,
+	[500000] = 0x1005, [921600] = 0x1007, [1000000] = 0x1008,
+}
+local function expect_bconst(hz) return glibc_hz_baud and hz or LEGACY_BCONST[hz] end
+
 -- ==================== HAL.sys mock ====================
 local calls = {}			-- 操作记录
 local mock_open_fd = 7
@@ -127,7 +143,8 @@ check(uart_open("/dev/ttyUSB0", 9600) == 7, "open ttyUSB0@9600 成功")
 check(has_call("open", "flags", HAL.UART_O_FLAGS), "open 旗帜 = RDWR|NOCTTY|NONBLOCK(2306)",
 	tostring(calls[1] and calls[1].flags))
 check(has_call("cfmakeraw"), "cfmakeraw 进入 raw 模式")
-check(last_ispeed == 13, "cfsetispeed 收到 glibc 常量 B9600=13（非数值 Hz）", tostring(last_ispeed))
+check(last_ispeed == expect_bconst(9600), "cfsetispeed 收到当版 glibc 编码 B9600（非错编码）",
+	tostring(last_ispeed))
 check(has_call("tcsetattr", "act", HAL.UART_TCSANOW), "tcsetattr(TCSANOW)")
 check(last_tcsetattr ~= nil
 	and last_tcsetattr.c_cc[HAL.UART_VMIN_IDX] == 0
@@ -149,11 +166,11 @@ check(uart_open("/dev/ttyUSB0", "9600") == 7, "字符串波特率经 tonumber �
 
 -- 高波特率档：常数映射（SCSCL 总线舵机出厂默认 500k/1M）
 check(uart_open("/dev/ttyUSB0", 115200) == 7, "115200 白名单接受")
-check(last_ispeed == 0x1002, "115200 -> B115200=0x1002", string.format("0x%X", last_ispeed or 0))
+check(last_ispeed == expect_bconst(115200), "115200 -> 当版 glibc B115200 编码", string.format("0x%X", last_ispeed or 0))
 check(uart_open("/dev/ttyUSB0", 500000) == 7, "500000 白名单接受")
-check(last_ispeed == 0x1005, "500000 -> B500000=0x1005", string.format("0x%X", last_ispeed or 0))
+check(last_ispeed == expect_bconst(500000), "500000 -> 当版 glibc B500000 编码", string.format("0x%X", last_ispeed or 0))
 check(uart_open("/dev/ttyUSB0", 1000000) == 7, "1000000 白名单接受")
-check(last_ispeed == 0x1008, "1000000 -> B1000000=0x1008", string.format("0x%X", last_ispeed or 0))
+check(last_ispeed == expect_bconst(1000000), "1000000 -> 当版 glibc B1000000 编码", string.format("0x%X", last_ispeed or 0))
 check(uart_open("/dev/ttyUSB0", 576000) == -1, "波特率白名单拒绝 576000（未列入）")
 
 reset()

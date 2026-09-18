@@ -20,45 +20,60 @@ _Static_assert(offsetof(struct termios, c_cc) == 17,
 #error "VTIME != 5 (HAL.UART_VTIME_IDX)"
 #endif
 
-/* UART_B_CONST：Hz → glibc speed_t 常量（HAL.lua 映射表） */
-#if B1200 != 9
-#error "B1200 != 9 (HAL.lua UART_B_CONST)"
-#endif
+/* UART_B_CONST：Hz → glibc speed_t 常量（HAL.lua 映射表）。
+ * B* 宏取值随 glibc 版本分叉（glibc 2025-06 commit 5cf101a8，2.42 起生效）：
+ *   < 2.42：旧 ABI 编号（B1200=9、B9600=13、B115200=0x1002…）
+ *   ≥ 2.42：字面 Hz（B1200=1200、B9600=9600…）
+ * HAL.lua 运行时探测 glibc 版本后二选一（UART_B_CONST_LEGACY / _HZ）；
+ * 本文件以 #if 分支与两套表同步断言（审计 P0-3）。 */
+#if defined(B9600) && B9600 == 13 && B1200 == 9
+/* ---- 旧 ABI 编码分支（glibc < 2.42）：对应 HAL.lua UART_B_CONST_LEGACY ---- */
 #if B2400 != 11
-#error "B2400 != 11 (HAL.lua UART_B_CONST)"
+#error "B2400 != 11 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B4800 != 12
-#error "B4800 != 12 (HAL.lua UART_B_CONST)"
-#endif
-#if B9600 != 13
-#error "B9600 != 13 (HAL.lua UART_B_CONST)"
+#error "B4800 != 12 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B19200 != 14
-#error "B19200 != 14 (HAL.lua UART_B_CONST)"
+#error "B19200 != 14 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B38400 != 15
-#error "B38400 != 15 (HAL.lua UART_B_CONST)"
+#error "B38400 != 15 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B57600 != 0x1001
-#error "B57600 != 0x1001 (HAL.lua UART_B_CONST)"
+#error "B57600 != 0x1001 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B115200 != 0x1002
-#error "B115200 != 0x1002 (HAL.lua UART_B_CONST)"
+#error "B115200 != 0x1002 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B230400 != 0x1003
-#error "B230400 != 0x1003 (HAL.lua UART_B_CONST)"
+#error "B230400 != 0x1003 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B460800 != 0x1004
-#error "B460800 != 0x1004 (HAL.lua UART_B_CONST)"
+#error "B460800 != 0x1004 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B500000 != 0x1005
-#error "B500000 != 0x1005 (HAL.lua UART_B_CONST)"
+#error "B500000 != 0x1005 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B921600 != 0x1007
-#error "B921600 != 0x1007 (HAL.lua UART_B_CONST)"
+#error "B921600 != 0x1007 (HAL.lua UART_B_CONST_LEGACY)"
 #endif
 #if B1000000 != 0x1008
-#error "B1000000 != 0x1008 (HAL.lua UART_B_CONST)"
+#error "B1000000 != 0x1008 (HAL.lua UART_B_CONST_LEGACY)"
+#endif
+#elif defined(B9600) && B9600 == 9600 && B1200 == 1200
+/* ---- 字面 Hz 编码分支（glibc >= 2.42）：对应 HAL.lua UART_B_CONST_HZ ---- */
+#if B2400 != 2400 || B4800 != 4800 || B19200 != 19200 || B38400 != 38400
+#error "B* 低段常量不是字面 Hz (HAL.lua UART_B_CONST_HZ)"
+#endif
+#if B57600 != 57600 || B115200 != 115200 || B230400 != 230400 || B460800 != 460800
+#error "B* 高段常量不是字面 Hz (HAL.lua UART_B_CONST_HZ)"
+#endif
+#if B500000 != 500000 || B921600 != 921600 || B1000000 != 1000000
+#error "B* 超高速段常量不是字面 Hz (HAL.lua UART_B_CONST_HZ)"
+#endif
+#else
+#error "未知的 B* 常量编码：HAL.lua 波特率映射表与 test_uart_consts.c 需要适配（参见 glibc 2.42 termios 编码变更）"
 #endif
 
 #if (O_RDWR | O_NOCTTY | O_NONBLOCK) != 2306
