@@ -29,11 +29,12 @@
 | （缺省） | 从 stdin 管道读取 |
 | `--agent` | **agent 模式**：机器人结构脚本加载后硬件常驻内存，由大模型工具循环决定执行哪些动作脚本（与上面的动作输入源互斥，详细见 [agent.md](agent.md)） |
 | `--task <文本>` | agent 模式一次性任务，跑完即退出；缺省则进交互 REPL |
+| `--llm-config <路径>` | agent 配置文件（JSON）：接入点、API key、模型、采样与 agent 参数（缺省自动查找 `./mybot.llm.json` 等；详见 [agent.md](agent.md)） |
 | `--llm-driver <表名>` | agent 的**协议驱动**表名 = `modules/<表名>.lua`（内置 `LlmOpenAI`、`LlmDeepSeek`；缺省 `LlmOpenAI`） |
 | `--llm-var <变量名>` | 承载驱动变量的名字（缺省 `llm0`）；结构脚本已声明同名变量则直接用，否则自动注入 |
-| `--llm-endpoint <URL>` | agent 模型接入点；不给则用驱动自带的缺省值 |
-| `--llm-model <名称>` | agent 模型名；不给则用驱动自带的缺省值 |
-| `--llm-key <KEY>` | agent API key；会写进本进程环境变量 `BOT4CJ_LLM_KEY`（不推荐：argv 对本机所有用户可读，优先用环境变量） |
+| `--llm-endpoint <URL>` | agent 模型接入点（覆盖配置文件；不给则用配置或驱动缺省） |
+| `--llm-model <名称>` | agent 模型名（覆盖配置文件；不给则用配置或驱动缺省） |
+| `--llm-key <KEY>` | agent API key（覆盖配置文件）；会写进本进程环境变量 `BOT4CJ_LLM_KEY`（不推荐：argv 对本机所有用户可读） |
 | `--llm-max-turns <N>` | 单次任务最大模型轮数，范围 1-100（缺省 8） |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数（缺省 4096） |
 | `--llm-timeout <秒>` | 单次模型调用超时（缺省 180） |
@@ -41,6 +42,9 @@
 | `--agent-no-shell` | 不向智能体提供 `run_command`（去掉任意 shell 执行能力） |
 
 agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--input` 同时给出，一律报错并以退出码 **2** 结束。
+
+**agent 取值优先级**：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。接入点、密钥、模型等都可写进
+配置文件（模板 `mybot.llm.json.example`），字段表与查找顺序见 [agent.md](agent.md)。
 
 Ctrl-C（SIGINT/SIGTERM）只置停止标志，走正常清理链 `deactivate()`。
 
@@ -89,6 +93,8 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
 | `BOT4CJ_LLM_KEY` | agent 模式的 API key。回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。由 **Lua 驱动自己读取**（不进宿主的参数表，也不进 `BOT4CJ_DEBUG` 转储）；该变量名含 `key`，会被 `run_command` 的环境清洗剔除，不会泄漏给子进程 |
-| `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经驱动参数 `reasoning_effort` 传入，参数优先 |
+| `BOT4CJ_LLM_CONFIG` | agent 配置文件路径（优先级低于 `--llm-config`、高于缺省查找） |
+| `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | agent 接入点 / 模型名（覆盖配置文件，低于命令行） |
+| `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

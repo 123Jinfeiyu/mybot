@@ -705,13 +705,14 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
-# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，三个场景。
+# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，四个场景。
 #   1) 默认协议驱动（LlmOpenAI）：工具循环真的迭代、动作脚本在**常驻**机器人上
 #      被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；
 #   2) --llm-driver LlmDeepSeek：断言 thinking / 不发 temperature /
 #      历史 reasoning_content 被回传（官方文档里的 400 级有状态要求）；
 #   3) --llm-timeout 在 4s 内生效：专防 curl_easy_setopt 退回裸变参调用
-#      （那时整型选项被静默忽略，实测会跑满 5s 且可能 rc=0）。
+#      （那时整型选项被静默忽略，实测会跑满 5s 且可能 rc=0）；
+#   4) --llm-config 配置文件：URL/KEY/MODEL 全部来自文件，且环境里不放任何密钥。
 #
 # 环境软依赖：python3（假模型服务）与 libcurl（agent 模式的运行期依赖，
 # Lua 驱动经 ffi 加载）。任一缺失按 SKIP 计入「未执行清单」，不是静默消失；

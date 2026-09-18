@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "agentloop.hpp"
+#include "llmconfig.hpp"
 #include "agenttools.hpp"
 #include "robot.hpp"
 #include "util.hpp"
@@ -68,36 +69,84 @@ std::string resolveLlmKeyFromEnv() {
 	return "";
 }
 
+namespace {
+
+/* 选配置文件：命令行 > 环境变量 BOT4CJ_LLM_CONFIG > 缺省查找。找不到即返回空串
+ * （配置文件是可选的）；显式给了路径却读不到由 loadLlmConfigFile 报错——不能
+ * 静默回落到缺省，否则用户会以为配置生效了。 */
+std::string pickConfigPath(const CliOptions& opts) {
+	if (!opts.llmConfig.empty()) { return opts.llmConfig; }
+	if (auto env = getEnvVar("BOT4CJ_LLM_CONFIG"); env && !env->empty()) { return *env; }
+	return findDefaultLlmConfig();
+}
+
+} // namespace
+
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
-	/* API key 只做「存在性」校验，不落进配置结构：真正读取它的是 Lua 驱动
-	 * （从环境变量），这样密钥既不在驱动的参数表里，也不会被 BOT4CJ_DEBUG
-	 * 的参数转储打进日志。 */
-	if (resolveLlmKeyFromEnv().empty()) {
-		err = "缺少 API key：请设置环境变量 BOT4CJ_LLM_KEY"
-			"（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）";
+	/* ---- 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） ---- */
+	LlmFileConfig file;
+	std::string cfgPath = pickConfigPath(opts);
+	if (!cfgPath.empty()) {
+		if (!loadLlmConfigFile(cfgPath, file, err)) { return false; }
+		out.configPath = cfgPath;
+	}
+
+	/* ---- 2) endpoint/model：命令行 > 环境变量 > 配置文件 > 驱动内置 DEFAULTS ---- */
+	auto pickString = [](const std::string& cli, const char* envName,
+			const std::optional<std::string>& fromFile) -> std::string {
+		if (!cli.empty()) { return cli; }
+		if (envName != nullptr) {
+			if (auto v = getEnvVar(envName); v && !v->empty()) { return *v; }
+		}
+		return fromFile.value_or("");
+	};
+	out.endpoint = pickString(opts.llmEndpoint, "BOT4CJ_LLM_ENDPOINT", file.endpoint);
+	out.model = pickString(opts.llmModel, "BOT4CJ_LLM_MODEL", file.model);
+
+	/* ---- 3) 协议驱动与变量名 ---- */
+	out.driverTable = pickString(opts.llmDriver, nullptr, file.driver);
+	if (out.driverTable.empty()) { out.driverTable = "LlmOpenAI"; }
+	out.llmVar = pickString(opts.llmVar, nullptr, file.var);
+	if (out.llmVar.empty()) { out.llmVar = "llm0"; }
+	if (!isSafeIdent(out.driverTable)) {
+		err = "协议驱动表名必须是安全标识符（字母/数字/下划线），实际是 '"
+			+ out.driverTable + "'（来自 --llm-driver 或配置文件的 driver 字段）";
+		return false;
+	}
+	if (!isSafeIdent(out.llmVar)) {
+		err = "驱动变量名必须是安全标识符（字母/数字/下划线），实际是 '"
+			+ out.llmVar + "'（来自 --llm-var 或配置文件的 var 字段）";
 		return false;
 	}
 
-	/* endpoint/model 缺省为空 = 交给驱动自带的 DEFAULTS（见 modules/lib/llm_wire_*.lua） */
-	if (!opts.llmEndpoint.empty()) { out.endpoint = opts.llmEndpoint; }
-	if (!opts.llmModel.empty()) { out.model = opts.llmModel; }
+	/* ---- 4) API key：命令行 > 环境变量链 > 配置文件 api_key > 配置文件 api_key_file ---- */
+	out.resolvedApiKey = resolveLlmKeyFromEnv();
+	if (!opts.llmKey.empty()) { out.resolvedApiKey = opts.llmKey; }
+	if (out.resolvedApiKey.empty() && file.apiKey) { out.resolvedApiKey = *file.apiKey; }
+	if (out.resolvedApiKey.empty() && file.apiKeyFile) {
+		std::string keyErr;
+		if (!readApiKeyFile(*file.apiKeyFile, out.resolvedApiKey, keyErr)) {
+			err = "读取配置文件的 api_key_file 失败: " + keyErr;
+			return false;
+		}
+		out.configWarning = secretFilePermissionWarning(*file.apiKeyFile);
+	}
+	if (out.resolvedApiKey.empty()) {
+		err = "缺少 API key：可用 --llm-key、配置文件的 api_key / api_key_file 字段，"
+			"或环境变量 BOT4CJ_LLM_KEY（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）";
+		return false;
+	}
+	/* 配置文件里内联密钥时也提醒权限（明文密钥常在随手 chmod 644 的文件里） */
+	if (out.configWarning.empty() && !cfgPath.empty() && file.apiKey) {
+		out.configWarning = secretFilePermissionWarning(cfgPath);
+	}
 
-	if (!opts.llmDriver.empty()) {
-		if (!isSafeIdent(opts.llmDriver)) {
-			err = "选项 --llm-driver 必须是安全标识符（字母/数字/下划线），实际是 '"
-				+ opts.llmDriver + "'";
-			return false;
-		}
-		out.driverTable = opts.llmDriver;
-	}
-	if (!opts.llmVar.empty()) {
-		if (!isSafeIdent(opts.llmVar)) {
-			err = "选项 --llm-var 必须是安全标识符（字母/数字/下划线），实际是 '"
-				+ opts.llmVar + "'";
-			return false;
-		}
-		out.llmVar = opts.llmVar;
-	}
+	/* ---- 5) 采样/超时/轮次：命令行 > 配置文件 > 内建缺省 ---- */
+	if (file.maxTokens) { out.maxTokens = *file.maxTokens; }
+	if (file.temperature) { out.temperature = *file.temperature; }
+	if (file.topP) { out.topP = *file.topP; }
+	if (file.timeoutSec) { out.timeoutSec = *file.timeoutSec; }
+	if (file.maxTurns) { out.maxTurns = *file.maxTurns; }
 
 	if (!opts.llmMaxTurns.empty()
 		&& !parseIntOption(opts.llmMaxTurns, "llm-max-turns", 1, 100, out.maxTurns, err)) {
@@ -115,8 +164,14 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		out.timeoutSec = timeoutSec;
 	}
 
+	/* ---- 6) agent 行为 ---- */
+	/* 驱动特有字段：原样透传给驱动（如 DeepSeek 的 thinking / reasoning_effort） */
+	out.reasoningEffort = file.reasoningEffort.value_or("");
+	out.thinking = file.thinking.value_or("");
+
 	out.scriptsDir = opts.scriptsDir.empty() ? "scripts" : opts.scriptsDir;
-	out.allowShell = !opts.agentNoShell;
+	if (opts.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
+	out.allowShell = opts.agentNoShell ? false : file.allowShell.value_or(true);
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
 	return true;
@@ -129,7 +184,7 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 		+ "。硬件已加载并上电常驻（动作脚本执行完不会断电），"
 		"因此你可以在一次任务里连续执行多个动作脚本。\n";
 	p += "模型接入由 Lua 协议驱动 `" + cfg.driverTable + "`（变量 `" + cfg.llmVar
-		+ "`）提供；如需换接入点或模型，改结构脚本/命令行参数即可。\n\n";
+		+ "`）提供；接入点、密钥与模型来自配置文件或命令行。\n\n";
 
 	p += "## 机器人结构（接线图）\n";
 	std::string sql = readHead(cfg.structurePath, 16u << 10);

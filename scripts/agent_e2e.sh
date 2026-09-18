@@ -60,8 +60,8 @@ check_absent() { # $1=文件 $2=子串 $3=说明
 	fi
 }
 
-start_server() { # $1=port $2=capture $3=mode
-	python3 scripts/fake_llm_server.py "$1" "$2" "$3" &
+start_server() { # $1=port $2=capture $3=mode $4=headers
+	python3 scripts/fake_llm_server.py "$1" "$2" "${3:-ok}" "${4:-}" &
 	SRV=$!
 	for _ in $(seq 1 50); do
 		if python3 - "$1" <<'PY' 2>/dev/null
@@ -160,6 +160,44 @@ else
 	echo "         很可能 curl_easy_setopt 退回了裸变参调用，整型选项被静默忽略"
 	fail=1
 fi
+
+# ============ 场景 4：URL / KEY / MODEL 全部来自配置文件 ============
+echo "----- 场景 4：--llm-config 配置文件 -----"
+PORT=$((21200 + RANDOM % 300))
+CAP4="$tmp/req-cfg.json"
+HDR4="$tmp/hdr-cfg.txt"
+CFG4="$tmp/mybot.llm.json"
+cat > "$CFG4" <<JSON
+{
+  "driver": "LlmOpenAI",
+  "endpoint": "http://127.0.0.1:$PORT/v1/chat/completions",
+  "model": "cfg-model-from-file",
+  "api_key": "cfg-key-from-file",
+  "timeout": 30,
+  "max_tokens": 1234,
+  "temperature": 0.25,
+  "max_turns": 6
+}
+JSON
+chmod 600 "$CFG4"	# 密钥文件应收紧权限（否则驱动会打印告警）
+start_server "$PORT" "$CAP4" ok "$HDR4" || exit 1
+# 只给 --llm-config：环境里**不放**任何密钥，证明 URL/KEY/MODEL 确实来自文件
+out4="$(env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY \
+	timeout 60 "$BOT" --robot=robots/relay-test.sql --agent --task "$TASK" \
+	--llm-config "$CFG4" --scripts-dir scripts 2>&1)"
+rc4=$?
+stop_server
+echo "$out4"
+if [ "$rc4" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc4"
+	fail=1
+fi
+check "$out4" "AGENT-E2E-完成" "仅凭配置文件跑通完整工具循环"
+check "$out4" "配置文件: $CFG4" "会话开始如实告知用了哪个配置文件"
+check_present "$CAP4" '"model":"cfg-model-from-file"' "模型名来自配置文件"
+check_present "$CAP4" '"max_tokens":1234' "max_tokens 来自配置文件"
+check_present "$CAP4" '"temperature":0.25' "temperature 来自配置文件"
+check_present "$HDR4" "cfg-key-from-file" "API key 来自配置文件（Authorization 头）"
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

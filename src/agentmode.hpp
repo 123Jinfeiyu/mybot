@@ -34,11 +34,23 @@ struct AgentModeConfig {
 	double temperature = 0.7;
 	double topP = 0.9;
 	long timeoutSec = 180;		/* 单次模型调用超时（秒） */
+	/* 驱动特有字段：原样透传给协议驱动（如 DeepSeek 的 thinking / reasoning_effort） */
+	std::string reasoningEffort;
+	std::string thinking;
 	std::string scriptsDir = "scripts";
 	std::string structurePath;
 	std::string task;		/* 非空 = 一次性执行；空 = 交互 REPL */
 	bool allowShell = true;		/* false = 不注册 run_command */
 	bool verbose = true;
+
+	/* ---- 由 buildAgentConfig 填出的旁路信息 ---- */
+	/* 最终解析出的 API key。**只**用于注入进程环境变量，绝不进驱动的参数表
+	 * （否则 BOT4CJ_DEBUG 的参数转储会把密钥打进日志）。 */
+	std::string resolvedApiKey;
+	/* 实际使用的配置文件路径（空 = 没用配置文件），用于在会话开始时如实告知 */
+	std::string configPath;
+	/* 配置文件相关的告警（如密钥文件权限过松），空表示无 */
+	std::string configWarning;
 };
 
 /* API key 只从环境变量取（BOT4CJ_LLM_KEY → ROBOT_AGENT_API_KEY → DEEPSEEK_API_KEY）：

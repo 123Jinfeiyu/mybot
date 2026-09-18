@@ -110,6 +110,11 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 			if (noValue) { out.missingValue.push_back(key); }
 			else { out.opts.llmKey = val; }
 		}
+		else if (key == "llm-config") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmConfig = val; }
+		}
 		else if (key == "llm-driver") {
 			out.opts.agentOptionsUsed = true;
 			if (noValue) { out.missingValue.push_back(key); }
@@ -161,24 +166,28 @@ void print_help() {
 	std::cout << "模型调用由 Lua 协议驱动承担（不链接任何 HTTP 库，运行期只需 libcurl）。" << std::endl;
 	std::cout << "  --agent            开启 agent 模式（缺省交互 REPL；硬件全程上电常驻）" << std::endl;
 	std::cout << "  --task <文本>      一次性任务，跑完即退出；缺省则进入交互 REPL" << std::endl;
+	std::cout << "  --llm-config <路径>  配置文件（JSON）：目标 URL、API key、模型、采样与 agent 参数" << std::endl;
+	std::cout << "                       缺省按 ./mybot.llm.json -> $HOME/.config/mybot/llm.json 查找；" << std::endl;
+	std::cout << "                       也可用环境变量 BOT4CJ_LLM_CONFIG 指定" << std::endl;
 	std::cout << "  --llm-driver <表名>  协议驱动表名 = modules/<表名>.lua" << std::endl;
 	std::cout << "                       内置：LlmOpenAI（缺省，OpenAI 兼容）、LlmDeepSeek" << std::endl;
 	std::cout << "  --llm-var <变量名>   承载驱动的变量名（缺省 llm0）；结构脚本已声明则直接用" << std::endl;
-	std::cout << "  --llm-endpoint <URL>  接入点，缺省用驱动自带值" << std::endl;
-	std::cout << "  --llm-model <名称>    模型名，缺省用驱动自带值" << std::endl;
-	std::cout << "  --llm-key <KEY>       API key；会写入本进程环境变量 BOT4CJ_LLM_KEY。" << std::endl;
-	std::cout << "                       更推荐直接设环境变量：argv 对 /proc/<pid>/cmdline 可读" << std::endl;
-	std::cout << "                       兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY" << std::endl;
+	std::cout << "  --llm-endpoint <URL>  接入点（覆盖配置文件）" << std::endl;
+	std::cout << "  --llm-model <名称>    模型名（覆盖配置文件）" << std::endl;
+	std::cout << "  --llm-key <KEY>       API key（覆盖配置文件）；会写入本进程环境变量" << std::endl;
+	std::cout << "                       BOT4CJ_LLM_KEY。更推荐直接写进配置文件或设环境变量" << std::endl;
+	std::cout << "                       （argv 对 /proc/<pid>/cmdline 可读）" << std::endl;
 	std::cout << "  --llm-max-turns <N>   单次任务的最大模型轮数（缺省 8，范围 1-100）" << std::endl;
 	std::cout << "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096）" << std::endl;
 	std::cout << "  --llm-timeout <秒>    单次模型调用超时（缺省 180）" << std::endl;
 	std::cout << "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt" << std::endl;
 	std::cout << "  --agent-no-shell      不向智能体提供 run_command（去掉任意 shell 执行能力）" << std::endl;
+	std::cout << "取值优先级：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。" << std::endl;
 	std::cout << "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/exit 退出。" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "示例：" << std::endl;
 	std::cout << "  ./build/mybot --robot=robots/relay-test.sql --agent --task \"让继电器动作一次\"" << std::endl;
-	std::cout << "  ./build/mybot --robot=robots/spider1.sql --agent --llm-driver LlmDeepSeek" << std::endl;
+	std::cout << "  ./build/mybot --robot=robots/spider1.sql --agent --llm-config mybot.llm.json" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "安全约束：动作脚本只能引入新的参数键，不得覆盖结构脚本的元数据列" << std::endl;
 	std::cout << "（fd / address / max / min / offset 等）；结构脚本与动作脚本单次输入上限均为 8 MiB。" << std::endl;
@@ -243,20 +252,25 @@ int main(int argc, char** argv) {
 	if (options.robot) {
 		std::string rpath = *options.robot;
 
-		/* --llm-key 转成环境变量后就地使用：驱动从环境变量读密钥，宿主的参数表
-		 * 与 BOT4CJ_DEBUG 参数转储里都不会出现密钥（argv 本身可被 /proc 读到，
-		 * 故 --help 里仍推荐直接设环境变量）。 */
-		if (options.agent && !options.llmKey.empty()) {
-			::setenv("BOT4CJ_LLM_KEY", options.llmKey.c_str(), 1);
-		}
-
-		/* agent 配置先组装并校验：结构装载与上电都在其后，配置错误不碰真机 */
+		/* agent 配置先组装并校验（含配置文件读取与优先级合并）：
+		 * 结构装载与上电都在其后，配置错误不碰真机 */
 		agent::AgentModeConfig agentCfg;
 		if (options.agent) {
 			std::string cfgErr;
 			if (!agent::buildAgentConfig(options, agentCfg, cfgErr)) {
 				std::cerr << "错误: " << cfgErr << std::endl;
 				return 2;
+			}
+			/* 密钥只在进程环境里流转：驱动的参数表与 BOT4CJ_DEBUG 的参数转储
+			 * 都不该出现它。真正读它的是 Lua 驱动自己。 */
+			if (!agentCfg.resolvedApiKey.empty()) {
+				::setenv("BOT4CJ_LLM_KEY", agentCfg.resolvedApiKey.c_str(), 1);
+			}
+			if (!agentCfg.configPath.empty()) {
+				std::cerr << "配置文件: " << agentCfg.configPath << std::endl;
+			}
+			if (!agentCfg.configWarning.empty()) {
+				std::cerr << agentCfg.configWarning << std::endl;
 			}
 		}
 
@@ -324,6 +338,8 @@ int main(int argc, char** argv) {
 				dcfg.temperature = agentCfg.temperature;
 				dcfg.topP = agentCfg.topP;
 				dcfg.timeoutSec = agentCfg.timeoutSec;
+				dcfg.reasoningEffort = agentCfg.reasoningEffort;
+				dcfg.thinking = agentCfg.thinking;
 				std::unique_ptr<agent::ChatTransport> transport =
 					agent::makeDriverTransport(driver, dcfg);
 

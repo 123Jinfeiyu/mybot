@@ -28,6 +28,11 @@ public:
 		Json req = buildDriverRequest(cfg_.model, messages, tools,
 			cfg_.maxTokens, cfg_.temperature, cfg_.topP, cfg_.timeoutSec);
 		if (!cfg_.endpoint.empty()) { req.put("endpoint", JsonString(cfg_.endpoint)); }
+		/* 驱动特有字段：宿主不理解它们，只负责按配置透传 */
+		if (!cfg_.reasoningEffort.empty()) {
+			req.put("reasoning_effort", JsonString(cfg_.reasoningEffort));
+		}
+		if (!cfg_.thinking.empty()) { req.put("thinking", JsonString(cfg_.thinking)); }
 
 		/* playQuiet：与 play 同一路径但不回显结果表——模型响应绝不能混进
 		 * stdout。驱动的 ERR 契约由内部 ensureOk 抛出（带驱动给的 message）。 */

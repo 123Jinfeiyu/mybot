@@ -3,3 +3,8 @@ build-*/
 *.o
 .tmp/
 target/
+
+# agent 模式的 LLM 配置：内含 API key，别提交（示例见 mybot.llm.json.example）
+mybot.llm.json
+mybot.llm.conf.json
+*.llm.json

@@ -23,6 +23,9 @@ struct AgentDriverConfig {
 	double temperature = 0.7;
 	double topP = 0.9;
 	long timeoutSec = 180;
+	/* 驱动特有字段：非空即原样放进请求（如 DeepSeek 的 thinking / reasoning_effort） */
+	std::string reasoningEffort;
+	std::string thinking;
 };
 
 /* driver 必须是 Lua 驱动变量（modules/Llm*.lua 注册而成），否则抛

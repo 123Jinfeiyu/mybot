@@ -11,8 +11,9 @@
 响应里带 reasoning_content：这样 DeepSeek 驱动必须把它回传到下一轮请求，
 守门脚本才能在抓到的报文里断言这条有状态协议要求确实生效。
 
-用法: python3 scripts/fake_llm_server.py <port> [capture_file] [mode]
+用法: python3 scripts/fake_llm_server.py <port> [capture_file] [mode] [headers_file]
       mode: ok（默认） | slow（睡 5 秒再答，用于验证 --llm-timeout 真的生效）
+      headers_file: 非空则把收到的请求头逐行写入（用来断言 API key 的来源）
 """
 import json
 import sys
@@ -21,7 +22,8 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1])
 CAPTURE = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
-MODE = sys.argv[3] if len(sys.argv) > 3 else "ok"
+MODE = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "ok"
+HEADERS = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
 
 
 def tool_call(name, arguments):
@@ -72,6 +74,13 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with open(CAPTURE, "wb") as f:
                     f.write(raw)
+            except OSError:
+                pass
+        if HEADERS:
+            try:
+                with open(HEADERS, "w") as f:
+                    for k, v in self.headers.items():
+                        f.write("%s: %s\n" % (k, v))
             except OSError:
                 pass
         if MODE == "slow":

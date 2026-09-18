@@ -44,24 +44,69 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | --- | --- | --- |
 | `--agent` | 开启 agent 模式 | 关 |
 | `--task <文本>` | 一次性任务，跑完即退出；不给则进交互 REPL | — |
+| `--llm-config <路径>` | **配置文件**（JSON）：接入点、密钥、模型、采样与 agent 参数 | 见下（自动查找） |
 | `--llm-driver <表名>` | **协议驱动**表名 = `modules/<表名>.lua` | `LlmOpenAI` |
 | `--llm-var <变量名>` | 承载驱动的硬件变量名 | `llm0` |
-| `--llm-endpoint <URL>` | 接入点；不给则用驱动自带的缺省值 | 驱动缺省 |
-| `--llm-model <名称>` | 模型名；不给则用驱动自带的缺省值 | 驱动缺省 |
-| `--llm-key <KEY>` | API key；会写进本进程环境变量 `BOT4CJ_LLM_KEY` | 环境变量，见下 |
+| `--llm-endpoint <URL>` | 接入点（覆盖配置文件） | 配置文件 / 驱动缺省 |
+| `--llm-model <名称>` | 模型名（覆盖配置文件） | 配置文件 / 驱动缺省 |
+| `--llm-key <KEY>` | API key（覆盖配置文件） | 配置文件 / 环境变量，见下 |
 | `--llm-max-turns <N>` | 单次任务的最大模型轮数（1-100） | 8 |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数 | 4096 |
 | `--llm-timeout <秒>` | 单次模型调用超时 | 180 |
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--agent-no-shell` | **不**注册 `run_command`（去掉任意 shell 执行能力） | 关（即默认提供） |
 
-固定 `temperature=0.7`、`top_p=0.9`、非流式；DeepSeek 驱动会按思考模式规则调整（见下）。
+取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
 
 `--task` / `--llm-*` / `--scripts-dir` / `--agent-no-shell` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。
 
-API key 取值链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。
-**推荐直接设环境变量**：`--llm-key` 会出现在 `/proc/<pid>/cmdline`，本机所有用户可读。
-宿主只检查密钥「存在」，真正读取它的是 Lua 驱动（自己读环境变量）——密钥不会进入驱动的参数表，也不会被 `BOT4CJ_DEBUG` 的参数转储打进日志。
+## 配置文件（推荐）
+
+目标 URL、API key、模型等信息放在一份 JSON 配置里，命令行只留 `--llm-config`：
+
+```json
+{
+  "driver": "LlmOpenAI",
+  "endpoint": "https://moma.cmecloud.cn/v1/chat/completions",
+  "model": "zhipu/glm-5.3-flash",
+  "api_key": "sk-xxx",
+
+  "timeout": 180,
+  "max_tokens": 4096,
+  "temperature": 0.7,
+  "top_p": 0.9,
+  "reasoning_effort": "",
+  "thinking": "",
+
+  "max_turns": 8,
+  "scripts_dir": "scripts",
+  "allow_shell": true
+}
+```
+
+```bash
+./build/mybot --robot=robots/spider1.sql --agent            # 自动查找配置文件
+./build/mybot --robot=robots/spider1.sql --agent --llm-config /etc/mybot/llm.json
+```
+
+- **查找顺序**：`--llm-config` → 环境变量 `BOT4CJ_LLM_CONFIG` → `./mybot.llm.json` → `./mybot.llm.conf.json` → `$HOME/.config/mybot/llm.json`。都没有也能跑（走命令行/环境变量）。
+  会话开始时会把实际使用的配置文件打印到 stderr，不会「偷偷」用了哪一份。
+- **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
+  `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`。
+  全部可选；空串按「未配置」处理（方便留空占位）。
+- **严格解析**：不是合法 JSON、字段类型/范围不符、**出现未知字段**一律拒绝并退出 2。
+  拼错一个键（如 `apikey`）而静默走缺省，会让人以为配置生效了——与「未知 `--key` 退出 2」同一口径。
+- **密钥可以放在别处**：`api_key_file` 指向一个只存密钥的文件（末尾换行会自动剥掉）。
+  若该文件或内联了 `api_key` 的配置文件对同组/其他用户可读，启动时会打印 `chmod 600` 提醒（只提醒，不阻断）。
+- **别提交密钥**：仓库 `.gitignore` 已忽略 `mybot.llm.json` / `*.llm.json`；
+  模板见仓库根的 `mybot.llm.json.example`。
+- **驱动特有字段**（如 DeepSeek 的 `thinking` / `reasoning_effort`）由宿主原样透传给驱动，
+  宿主不理解其语义——协议差异仍然只属于协议驱动。
+
+为什么是 JSON 而不是 Lua：配置文件是**数据**，不是代码。Lua 配置要由宿主内嵌状态机去执行，
+等于让一份常被复制/分发的文件获得任意代码执行能力；而仓库已有严格 JSON 解析器，复用它零成本。
+
+
 
 ## 模型调用：一颗 Lua 协议驱动
 
@@ -161,7 +206,12 @@ INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
    不需要 shell 能力时加 `--agent-no-shell`。
 2. **子进程环境已清洗**：名称含 `key` / `token` / `secret` / `password` / `passwd` / `credential` 的变量不会传给子进程——
    这天然覆盖 `BOT4CJ_LLM_KEY`，模型无法用 `run_command` 读走自己的 API key。
-3. **API key 不落盘、不进参数表**：宿主不接收密钥，驱动自己读环境变量；`BOT4CJ_DEBUG` 的参数转储里也不会出现。
+3. **API key 不进驱动参数表、不进调试转储**：密钥可由配置文件、`--llm-key` 或环境变量提供，
+   但宿主只会把它注入本进程环境变量 `BOT4CJ_LLM_KEY`（真正读它的是 Lua 驱动）——
+   驱动的参数表与 `BOT4CJ_DEBUG` 的参数转储里都不会出现它。
+   环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`（配置文件里也能写 `api_key`/`api_key_file`）。
+   落盘的密钥请 `chmod 600`：启动时对「同组/其他用户可读」会打印提醒；仓库 `.gitignore` 已挡住 `mybot.llm.json` 一类文件名。
+   另外 `--llm-key` 会出现在 `/proc/<pid>/cmdline`（本机所有用户可读），能用配置文件或环境变量就别用它。
 4. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
    不是对抗恶意模型的边界——真正的边界仍然是「模型输出即不可信输入」这条工程常识。
 5. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。
@@ -188,6 +238,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | 文件 | 职责 | 依赖 |
 | --- | --- | --- |
 | `src/jsonparse.{hpp,cpp}` | 严格 JSON 文本解析（宿主侧） | 无 |
+| `src/llmconfig.{hpp,cpp}` | 配置文件读取（JSON、严格校验、缺省查找、密钥文件与权限体检） | 无 |
 | `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
 | `src/agenttools.{hpp,cpp}` | 工具注册表与四个工具、脚本路径沙箱、硬件描述 | 无 |
 | `src/agentloop.{hpp,cpp}` | 工具循环（历史、轮次上限、回滚、extras 透传） | 无 |
@@ -204,15 +255,16 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 ## 测试
 
 ```bash
-bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（三场景）
+bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（四场景）
 luajit test/test_json_lua.lua    # Lua JSON 编解码
 luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
-./build/mybot_tests agent        # C++：proto / driver / tools / loop
+./build/mybot_tests agent        # C++：proto / driver / tools / loop / config
 ```
 
-- `scripts/agent_e2e.sh` 用本地假模型服务跑三个场景：默认驱动完整工具循环（并抓报文断言
+- `scripts/agent_e2e.sh` 用本地假模型服务跑四个场景：默认驱动完整工具循环（并抓报文断言
   OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
-  `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）。
+  `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）、
+  `--llm-config` 配置文件（URL/KEY/MODEL 全部来自文件，且**环境里不放任何密钥**）。
 - 全量守门 `bash test/run_all.sh` 已包含上述全部；缺 python3 或 libcurl 时按 **SKIP**
   计入「未执行清单」（可见，不假绿）。
 

@@ -1,0 +1,22 @@
+{
+  "driver": "LlmOpenAI",
+  "var": "llm0",
+
+  "endpoint": "https://moma.cmecloud.cn/v1/chat/completions",
+  "model": "zhipu/glm-5.3-flash",
+
+  "api_key": "sk-REPLACE-ME",
+  "api_key_file": "",
+
+  "timeout": 180,
+  "max_tokens": 4096,
+  "temperature": 0.7,
+  "top_p": 0.9,
+
+  "reasoning_effort": "",
+  "thinking": "",
+
+  "max_turns": 8,
+  "scripts_dir": "scripts",
+  "allow_shell": true
+}

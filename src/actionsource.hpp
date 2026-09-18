@@ -43,6 +43,7 @@ struct CliOptions {
 	std::string llmEndpoint;
 	std::string llmModel;
 	std::string llmKey;		/* 取出后立刻 setenv，不落进驱动参数表/日志 */
+	std::string llmConfig;		/* --llm-config：配置文件路径（缺省自动查找） */
 	std::string llmDriver;		/* --llm-driver：协议驱动表名（= modules/<名>.lua） */
 	std::string llmVar;		/* --llm-var：承载驱动变量的名字 */
 	std::string llmMaxTurns;

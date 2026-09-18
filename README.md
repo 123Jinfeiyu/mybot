@@ -116,6 +116,15 @@ DEEPSEEK_API_KEY=sk-xxx ./build/mybot --robot=robots/spider1.sql \
 内置 `LlmOpenAI` 与 `LlmDeepSeek`（思考模式 / `reasoning_content` 回传 / 采样参数限制都在驱动里）。
 运行期需要 `libcurl.so`（`apt install libcurl4`，Raspberry Pi OS 通常已装）；缺它时驱动会给出清晰报错且机器人不上电。
 
+**目标 URL、API key、模型等信息放配置文件里**（模板 `mybot.llm.json.example`）：
+
+```bash
+cp mybot.llm.json.example mybot.llm.json && chmod 600 mybot.llm.json   # 填 endpoint/model/api_key
+./build/mybot --robot=robots/spider1.sql --agent                        # 自动查找 ./mybot.llm.json
+```
+
+取值优先级：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。字段表、查找顺序与严格校验规则见 [docs/agent.md](docs/agent.md)。
+
 ## 📖 深入文档（docs/）
 
 从 [docs/README.md](docs/README.md) 进入全部文档。常用入口：
