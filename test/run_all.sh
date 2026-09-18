@@ -718,7 +718,7 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
-# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，四个场景。
+# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，五个场景。
 #   1) 默认协议驱动（LlmOpenAI）：工具循环真的迭代、动作脚本在**常驻**机器人上
 #      被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；
 #   2) --llm-driver LlmDeepSeek：断言 thinking / 不发 temperature /
@@ -726,6 +726,7 @@ fi
 #   3) --llm-timeout 在 4s 内生效：专防 curl_easy_setopt 退回裸变参调用
 #      （那时整型选项被静默忽略，实测会跑满 5s 且可能 rc=0）；
 #   4) --llm-config 配置文件：URL/KEY/MODEL 全部来自文件，且环境里不放任何密钥。
+#   5) capture_image 拍照：断言线上报文带 image_url 多模态内容（data URL 包真 JPEG）。
 #
 # 环境软依赖：python3（假模型服务）与 libcurl（agent 模式的运行期依赖，
 # Lua 驱动经 ffi 加载）。任一缺失按 SKIP 计入「未执行清单」，不是静默消失；
@@ -970,6 +971,23 @@ SQLEOF
 	run_one_hardening 'driver_returns_cyclic_table' 1 'nests deeper than' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
+
+	# ---- agent CLI 负路径三连（F-20 同族，main.cpp 的组合校验此前无守门用例，
+	# docs/testing.md §9 却已声称覆盖——补齐让声称成真）----
+	# 1) agent 专属选项出现在非 agent 模式：意图与参数不一致，显式拒绝退出 2
+	run_one_hardening 'agent_opt_outside_agent' 2 '只在 --agent 模式下有效' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
+
+	# 2) --agent 与 --tcp/--input 互斥：两者都要求主导输入源，显式拒绝退出 2
+	run_one_hardening 'agent_tcp_mutex' 2 '--agent 与 --tcp/--input 互斥' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399
+
+	# 3) agent 模式缺 API key：buildAgentConfig 失败退出 2。三个密钥环境变量
+	#    全清 + --llm-config none（防 CWD 的 mybot.llm.json / ~/.config 污染，
+	#    agent_e2e.sh 同款口径），保证「缺 key」与密钥来源无关地成立
+	run_one_hardening 'agent_missing_key' 2 '缺少 API key' \
+		env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --task 'x' --llm-config none
 fi
 
 # ======================================================================
