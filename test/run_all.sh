@@ -15,6 +15,8 @@
 #     只想跑 Lua 段的逃生口：ALLOW_SKIP=1 bash test/run_all.sh
 #     （显式给了 BOT=/BOT_TESTS= 却指向不存在的文件，一律判失败，ALLOW_SKIP 也不放行）
 #   - test_ioctl_nums.c 为 C 编译期常量自检，不在本入口范围
+# 本文件绝对路径：下面 cd 之后相对 $0 不再可解析，而 count_calls 靠它数用例
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.." || exit 1
 
 LUACMD="${LUACMD:-luajit}"
@@ -39,6 +41,18 @@ skip=0
 hardening_reported=""
 skipped_list=""
 
+# ---- 记账单点（N-31）----
+# 11 个 runner 原各写一遍「if ok; then pass++; else fail++; failed+=…」三行，
+# 加一段就再抄一遍、改口径（如新增「跳过」类别或改汇总措辞）要全文件找。
+# 收敛为三个函数：通过只计数；失败/跳过额外把可读标签写进汇总清单。
+record_pass() { pass=$((pass + 1)); }
+record_fail() { fail=$((fail + 1)); failed="$failed $1"; }
+record_skip() { skip=$((skip + 1)); skipped_list="$skipped_list $1"; }
+
+# 某 runner 的声明用例数：数本文件里的调用点，让「加用例忘改数字」的消息漂移
+# 无从发生（artifact_missing 的条数文案一律由此推导）。
+count_calls() { grep -c "^[[:space:]]*$1 '" "$SELF"; }
+
 # ---- 编译产物（全局解析，供各分段共用）----
 # 缺省路径可被 BOT / BOT_TESTS 覆盖；是否「显式指定」决定下面的降级策略。
 bin="${BOT:-./build/mybot}"
@@ -49,8 +63,8 @@ tests_explicit=0
 [ -n "${BOT_TESTS:-}" ] && tests_explicit=1
 
 # ---- 产物缺失的分段不得静默消失（N1 防线）----
-# 原语义是「无编译产物则逐条 [SKIP]」，于是整段 C++ 守门（37 E2E + 21 契约 +
-# TCP + 加固 + C++ 单测）可以在产物不存在时整体不跑，汇总仍是「N 通过, 0 失败」
+# 原语义是「无编译产物则逐条 [SKIP]」，于是整段 C++ 守门（E2E + 无硬件契约 +
+# TCP/信号/加固 + C++ 单测）可以在产物不存在时整体不跑，汇总仍是「N 通过, 0 失败」
 # 且退出码 0——只剩 Lua 段在跑。守门必须完整：缺产物即判失败。
 # 仅当 ALLOW_SKIP=1（明知故犯，如源码态只想跑 Lua）**且**该路径是缺省值时才降级
 # 为 SKIP；调用方显式给了 BOT=/BOT_TESTS= 却说文件不在，本就是要测它，绝不放行。
@@ -58,15 +72,13 @@ artifact_missing() {
 	local phase="$1" count="$2" path="$3" explicit="$4"
 	if [ "$ALLOW_SKIP" = "1" ] && [ "$explicit" != "1" ]; then
 		echo "[SKIP] $phase —— $count未执行（缺编译产物 $path，ALLOW_SKIP=1 放行）"
-		skip=$((skip + 1))
-		skipped_list="$skipped_list $phase"
+		record_skip "$phase"
 		return 0
 	fi
 	echo "[FAIL] 守门不完整：$phase —— $count未执行（缺可执行产物 $path）"
 	echo "       先构建：cmake -S . -B build && cmake --build build"
 	echo "       只想跑 Lua 段请显式声明：ALLOW_SKIP=1 bash test/run_all.sh"
-	fail=$((fail + 1))
-	failed="$failed $phase(缺产物)"
+	record_fail "$phase(缺产物)"
 	return 1
 }
 
@@ -101,8 +113,7 @@ for t in test/test_*.lua; do
 	if grep -q '^\-\- requires: i2c' "$t" && ! ls /dev/i2c-* >/dev/null 2>&1; then
 		echo "----- $name -----"
 		echo "[SKIP] 需要 /dev/i2c-* 真机总线（文件标记 -- requires: i2c），本机无 i2c，跳过"
-		skip=$((skip + 1))
-		skipped_list="$skipped_list $name"
+		record_skip "$name"
 		continue
 	fi
 	echo "----- $name -----"
@@ -115,17 +126,14 @@ for t in test/test_*.lua; do
 	# 或一条断言都没跑（[PASS] 计数为 0）——「安静退出」不再视同通过
 	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
 		echo "[FAIL] 用例超时（>${TEST_TIMEOUT}s，疑似死循环）"
-		fail=$((fail + 1))
-		failed="$failed $name"
+		record_fail "$name"
 	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]"; then
-		fail=$((fail + 1))
-		failed="$failed $name"
+		record_fail "$name"
 	elif [ "$pass_n" -eq 0 ] || ! echo "$out" | grep -qF "[DONE]"; then
 		echo "[FAIL] 假绿嫌疑：未见 [DONE] 完成标记或 [PASS] 计数为 0（早退/守卫短路/零断言）"
-		fail=$((fail + 1))
-		failed="$failed $name"
+		record_fail "$name"
 	else
-		pass=$((pass + 1))
+		record_pass
 	fi
 done
 
@@ -288,10 +296,9 @@ run_one_e2e() {
 	done < <(printf '%s' "$out" | grep -F '"raw"')
 	[ "$mixed_n" -ge 1 ] || e2e_ok=false
 	if $e2e_ok; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed $name(E2E)"
+		record_fail "$name(E2E)"
 	fi
 }
 
@@ -431,10 +438,9 @@ run_one_parse() {
 		echo "$out" | grep -qF "$forbid" && p_ok=false
 	fi
 	if $p_ok; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed $sql/$mt(no-hw)"
+		record_fail "$sql/$mt(no-hw)"
 	fi
 }
 if [ ! -x "$bin" ]; then
@@ -466,13 +472,16 @@ mtmerge_bin="${MTMERGE:-./build/mtmerge}"
 mtmerge_explicit=0
 [ -n "${MTMERGE:-}" ] && mtmerge_explicit=1
 mtmerge_reported=""
+# 本节用例数 = run_one_mtmerge 调用点 + 1 条「产物回喂 mybot」E2E（下方内联）。
+# 数调用点而非写死数字：加用例忘改文案的漂移在此消除（N-31）。
+mtmerge_cases_n=$(( $(count_calls run_one_mtmerge) + 1 ))
 run_one_mtmerge() {
 	local name="$1" want_rc="$2" expects="$3"; shift 3
 	echo "----- $name (mtmerge) -----"
 	if [ ! -x "$mtmerge_bin" ]; then
 		if [ -z "$mtmerge_reported" ]; then
 			mtmerge_reported=1
-			artifact_missing "mtmerge 合成器" "5 条用例" "$mtmerge_bin" "$mtmerge_explicit"
+			artifact_missing "mtmerge 合成器" "$mtmerge_cases_n 条用例" "$mtmerge_bin" "$mtmerge_explicit"
 		fi
 		return 2
 	fi
@@ -486,10 +495,9 @@ run_one_mtmerge() {
 		echo "$out" | grep -qF -- "$e" || ok=false
 	done
 	if $ok; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed $name(mtmerge)"
+		record_fail "$name(mtmerge)"
 	fi
 }
 if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
@@ -606,18 +614,17 @@ SQLEOF
 	# 端到端：合并产物回喂 mybot，内联 Alias(A->angle, B->delay) 生效
 	echo "----- mtmerge_e2e (mtmerge) -----"
 	if [ ! -x "$mtmerge_bin" ]; then
-		[ -z "$mtmerge_reported" ] && { mtmerge_reported=1; artifact_missing "mtmerge 合成器" "5 条用例" "$mtmerge_bin" "$mtmerge_explicit"; }
+		[ -z "$mtmerge_reported" ] && { mtmerge_reported=1; artifact_missing "mtmerge 合成器" "$mtmerge_cases_n 条用例" "$mtmerge_bin" "$mtmerge_explicit"; }
 	elif [ ! -x "$bin" ]; then
-		artifact_missing "mtmerge 回喂 mybot" "1 条用例" "$bin" "$bot_explicit"
+		artifact_missing "mtmerge 回喂 mybot" "该用例（回喂 E2E）" "$bin" "$bot_explicit"
 	else
 		out="$( ("$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt | "$bin" --robot=.tmp/mtm/robot.sql) 2>&1 )"
 		rc=$?
 		echo "$out" | tail -4
 		if [ "$rc" -eq 0 ] && echo "$out" | grep -qF 'Dummy served 1 call(s)'; then
-			pass=$((pass + 1))
+			record_pass
 		else
-			fail=$((fail + 1))
-			failed="$failed mtmerge_e2e(mtmerge)"
+			record_fail "mtmerge_e2e(mtmerge)"
 		fi
 	fi
 fi
@@ -638,8 +645,7 @@ run_one_tcp() {
 	# python3 是 README 声明的可选软依赖（缺则本段自动跳过），仍计入 skip 供汇总可见
 	if ! command -v python3 >/dev/null 2>&1; then
 		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
-		skip=$((skip + 1))
-		skipped_list="$skipped_list tcp-action-source(缺python3)"
+		record_skip "tcp-action-source(缺python3)"
 		return 2
 	fi
 	local port tcp_rc tcp_out
@@ -648,10 +654,9 @@ run_one_tcp() {
 	tcp_rc=$?
 	echo "$tcp_out"
 	if [ $tcp_rc -ne 0 ] || ! echo "$tcp_out" | grep -qF "TCP 端到端测试通过"; then
-		fail=$((fail + 1))
-		failed="$failed tcp-action-source(TCP)"
+		record_fail "tcp-action-source(TCP)"
 	else
-		pass=$((pass + 1))
+		record_pass
 	fi
 }
 if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
@@ -661,19 +666,21 @@ fi
 # ======================================================================
 # TCP 异常注入（审计覆盖缺口 #2）：tcp_e2e.sh 只有 happy path，半包/断连/
 # 空闲挂死/垃圾帧/口令负路径此前零覆盖。复用 scripts/tcp_adversarial.sh
-# 六场景矩阵（详见该脚本头注释），每场景独立服务端 + 看门狗——「挂死不退」
+# 场景矩阵（详见该脚本头注释），每场景独立服务端 + 看门狗——「挂死不退」
 # 本身是被断言的故障形态。缺 python3 按 SKIP 计（与 TCP 段同约定）。
+# 场景数从该脚本的 run_scenario 调用点数出来（本文件不做第二份计数）。
 # ======================================================================
 run_one_tcp_adv() {
 	echo "----- tcp-adversarial (TCP 异常注入) -----"
 	if [ ! -x "$bin" ]; then
-		artifact_missing "TCP 异常注入" "6 个场景" "$bin" "$bot_explicit"
+		artifact_missing "TCP 异常注入" \
+			"$(grep -c '^run_scenario [a-z]' scripts/tcp_adversarial.sh) 个场景" \
+			"$bin" "$bot_explicit"
 		return 2
 	fi
 	if ! command -v python3 >/dev/null 2>&1; then
 		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
-		skip=$((skip + 1))
-		skipped_list="$skipped_list tcp-adversarial(缺python3)"
+		record_skip "tcp-adversarial(缺python3)"
 		return 2
 	fi
 	local out rc
@@ -681,10 +688,9 @@ run_one_tcp_adv() {
 	rc=$?
 	echo "$out"
 	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "TCP 异常注入测试通过"; then
-		fail=$((fail + 1))
-		failed="$failed tcp-adversarial(异常注入)"
+		record_fail "tcp-adversarial(异常注入)"
 	else
-		pass=$((pass + 1))
+		record_pass
 	fi
 }
 if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
@@ -695,12 +701,12 @@ fi
 # mtmerge 相位语义回归（scripts/mtmerge_e2e.sh）：相位 0/±1 逐格比对、
 # 设备集相交报错、三输入链式、负相位丢行告警、合并产物回喂 mybot 时
 # 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
-# 与上面 5 条 mtmerge 用例互补：这里只盯相位边界，缺产物判失败。
+# 与上面的逐条 mtmerge 用例互补：这里只盯相位边界，缺产物判失败。
 # ======================================================================
 run_one_mtmerge_phase() {
 	echo "----- mtmerge-phase (相位语义) -----"
 	if [ ! -x "$mtmerge_bin" ]; then
-		artifact_missing "mtmerge 相位回归" "该段用例" "$mtmerge_bin" "$mtmerge_explicit"
+		artifact_missing "mtmerge 相位回归" "该段（scripts/mtmerge_e2e.sh）" "$mtmerge_bin" "$mtmerge_explicit"
 		return 2
 	fi
 	local out rc
@@ -708,10 +714,9 @@ run_one_mtmerge_phase() {
 	rc=$?
 	echo "$out"
 	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mtmerge 端到端测试通过"; then
-		fail=$((fail + 1))
-		failed="$failed mtmerge-phase(相位语义)"
+		record_fail "mtmerge-phase(相位语义)"
 	else
-		pass=$((pass + 1))
+		record_pass
 	fi
 }
 if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
@@ -745,7 +750,7 @@ run_one_hardening() {
 			hardening_reported=1
 			# 条数从本文件的调用点数出来，避免「加用例忘改数字」的消息漂移
 			artifact_missing "输入边界加固" \
-				"$(grep -c "^[[:space:]]*run_one_hardening '" "$0") 条用例" \
+				"$(count_calls run_one_hardening) 条用例" \
 				"$bin" "$bot_explicit"
 		fi
 		return 2
@@ -758,10 +763,9 @@ run_one_hardening() {
 	[ "$rc" -ne "$want_rc" ] && h_ok=false
 	echo "$out" | grep -qF -- "$expect" || h_ok=false
 	if $h_ok; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed $name(hardening)"
+		record_fail "$name(hardening)"
 	fi
 }
 
@@ -1031,10 +1035,9 @@ SQLEOF
 	{ [ -z "$count_max" ] || [ "$count_max" -lt 6 ] || [ "$count_max" -gt 10 ]; } && n_ok=false
 	{ [ -z "$publishes" ] || [ "$publishes" -lt 6 ] || [ "$publishes" -gt 10 ]; } && n_ok=false
 	if $n_ok; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed daemon_nack(故障注入)"
+		record_fail "daemon_nack(故障注入)"
 	fi
 }
 if [ -z "$filter" ] || [[ "nack" == *"$filter"* ]]; then
@@ -1093,10 +1096,9 @@ SQLEOF
 		if [ -z "$max" ] || [ "$n" -gt "$max" ]; then max=$n; fi
 	done
 	if [ "$rc" -eq 0 ] && [ -n "$min" ] && [ -n "$max" ] && [ "$max" -le $((min + 2)) ] && [ "$max" -le 64 ]; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed fd-probe(fd泄漏)"
+		record_fail "fd-probe(fd泄漏)"
 		echo "[FAIL] fd 计数不平稳或有界性被破坏（min=$min max=$max rc=$rc）"
 	fi
 }
@@ -1118,7 +1120,7 @@ run_one_signal() {
 	local name="$1" want_rc="$2" p1="$3" p2="$4"; shift 4
 	echo "----- $name (signal) -----"
 	if [ ! -x "$bin" ]; then
-		artifact_missing "信号停机" "2 条用例" "$bin" "$bot_explicit"
+		artifact_missing "信号停机" "$(count_calls run_one_signal) 条用例" "$bin" "$bot_explicit"
 		return 2
 	fi
 	local out rc pid watchdog
@@ -1143,10 +1145,9 @@ run_one_signal() {
 		printf '%s\n' "$out" | grep -qF -- "$p2" || s_ok=false
 	fi
 	if $s_ok; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed $name(signal)"
+		record_fail "$name(signal)"
 	fi
 }
 if [ -z "$filter" ] || [[ "signal" == *"$filter"* ]]; then
@@ -1196,10 +1197,9 @@ run_const_checks() {
 		fi
 	done
 	if $ok; then
-		pass=$((pass + 1))
+		record_pass
 	else
-		fail=$((fail + 1))
-		failed="$failed const-check"
+		record_fail "const-check"
 	fi
 }
 
@@ -1227,26 +1227,22 @@ run_cpp_unit() {
 	echo "$out"
 	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
 		echo "[FAIL] C++ 单测超时（>${TEST_TIMEOUT}s，疑似死循环）"
-		fail=$((fail + 1))
-		failed="$failed cpp-unit(C++)"
+		record_fail "cpp-unit(C++)"
 		return
 	fi
 	if echo "$out" | grep -qF "无匹配用例"; then
 		echo "[SKIP] 过滤器 '${filter}' 未命中任何 C++ 用例"
-		skip=$((skip + 1))
-		skipped_list="$skipped_list cpp-unit(过滤器未命中)"
+		record_skip "cpp-unit(过滤器未命中)"
 		return 2
 	fi
 	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
 	if [ "$pass_n" -eq 0 ]; then
 		echo "[FAIL] 假绿嫌疑：[PASS] 计数为 0（早退/零断言）"
-		fail=$((fail + 1))
-		failed="$failed cpp-unit(C++)"
+		record_fail "cpp-unit(C++)"
 	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
-		fail=$((fail + 1))
-		failed="$failed cpp-unit(C++)"
+		record_fail "cpp-unit(C++)"
 	else
-		pass=$((pass + 1))
+		record_pass
 	fi
 }
 if [ -z "$filter" ]; then
