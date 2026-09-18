@@ -63,6 +63,16 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 
 `modules/Monitor.lua` 即此类示例：`call()` 里 `data.v0` 拿到实时采样值，决策后可经 controller 转发执行器。
 
+## 配置 schema 加载期校验
+
+`@Daemon` 的框架列在**结构脚本加载期**（`src/daemonvar.cpp` 的工厂，与 `interval` 校验同处）即校验，非法值当场报错并点名守护名/列/表/行号——不等守护线程 setup 才失败，也不静默降级：
+
+- `proto`：只接受 `i2c`（缺省）/ `spi` / `uart` / `virt`。拼错（如 `i2`）此前会静默落进 i2c 分支去开总线；
+- `fields`：`<名>[:<模式>]`，模式 ∈ 缺省（跟随 `sign`）/ `f` / `float` / `s16`；空项（`A||B`、首尾分隔符）与未知模式（`TEMP:xyz`）此前分别被静默丢弃、静默当浮点透传；
+- `sign`：必须是整数（如 `16`）；非数值此前被 `tonumber` 折成 nil，符号扩展静默失效。
+
+矩阵空占位符 `-` 一律视作「未提供」。其余任意键是驱动的 build 参数（`channel`/`pga`/`rshunt`/`osr`…），框架不拦截。
+
 ## setup 失败的响亮契约
 
 守护 setup 失败（驱动缺失/加载失败、开总线失败等）是**永久性**失败，**绝不伪装成采样值**：

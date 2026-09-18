@@ -31,6 +31,10 @@ local P = dofile(mpath.resolve("lib/pthread.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))	-- i2c/spi/uart 采样
 
 -- 解析配置串
+-- 注：proto/fields/sign 的**语法**在结构脚本加载期已由宿主校验（src/daemonvar.cpp
+-- 的 checkDaemonProto/checkDaemonFields/checkDaemonSign，报错带守护名/列/表/行号）；
+-- 下面的解析对非法值仍保持宽容（打日志/透传），仅作为绕过框架直接注入
+-- DAEMON_CONFIG（如 test/test_h07_fd.lua）时的兜底，两处规则改动须同步。
 local cfg = {}
 for k, v in string.gmatch(DAEMON_CONFIG or "", "([^;=]+)=([^;]*)") do
 	cfg[k] = v

@@ -334,6 +334,75 @@ static int64_t parseInterval(const std::string& iv, const std::string& name,
 	return parsed;
 }
 
+/* ---- DAEMON_CONFIG schema 校验（E2 / N-27 尾）----
+ * DAEMON_CONFIG 最终由 chunk 解释，但**非法值必须在结构脚本加载期就报错**：
+ * 等到守护线程 setup 才失败，调用方只拿得到「守护启动失败 + status 码」，
+ * 不知道是哪张表、哪一行、哪个键；而拼错的 proto 此前会静默按 i2c 走、
+ * 非法的 fields 模式会静默当浮点透传——都是「跑起来了但结果不对」的隐蔽故障。
+ * 只校验框架列（proto/fields/sign，语义见 docs/daemon.md）；其余任意键是驱动
+ * 的 build 参数（channel/pga/rshunt/osr…），框架不得拦截。
+ * 语法以 modules/lib/sensor_daemon.lua 的解析为准，两处规则改动须同步。
+ * 矩阵空占位符 "-" 与空串一律视作「未提供」（与 interval 校验的 `v != "-"` 同）。 */
+static bool daemonConfigMissing(const std::string& v) { return v.empty() || v == "-"; }
+
+/* proto 白名单：i2c（缺省）/ spi / uart / virt（virt=无硬件仿真）。
+ * 未知值旧实现静默落进 i2c 分支——拼错 "i2" 会真去开 I2C 总线。 */
+static void checkDaemonProto(const std::string& v, const std::string& name,
+		const std::string& tabName, int64_t row) {
+	if (v == "i2c" || v == "spi" || v == "uart" || v == "virt") { return; }
+	throw IllegalArgumentException(
+		"Daemon '" + name + "': column 'proto' value '" + v +
+		"' is not a supported bus (expected i2c|spi|uart|virt) (in table '" + tabName +
+		"', row " + std::to_string(row) + ").");
+}
+
+/* sign：符号扩展位宽（16 = 16 位补码）。非数值此前被 tonumber 折成 nil，
+ * 于是 sign=16x 这类拼错会让符号扩展静默失效（读数全是无符号大数）。 */
+static void checkDaemonSign(const std::string& v, const std::string& name,
+		const std::string& tabName, int64_t row) {
+	if (parseLongStrict(v).first == IntParse::OK) { return; }
+	throw IllegalArgumentException(
+		"Daemon '" + name + "': column 'sign' value '" + v +
+		"' is not a valid integer (expected a bit width such as 16) (in table '" + tabName +
+		"', row " + std::to_string(row) + ").");
+}
+
+static bool daemonFieldModeChar(char c) {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+/* fields 语法：<名>[:<模式>]，分隔符 ',' 或 '|'，模式 ∈ 缺省（跟随全局 sign）/
+ * f / float / s16。空项（重复或首尾分隔符）与未知模式都在此报错——旧实现把
+ * 空项 print 后丢弃、把未知模式当浮点透传（语义被悄悄改写，且只落在守护日志里）。 */
+static void checkDaemonFields(const std::string& v, const std::string& name,
+		const std::string& tabName, int64_t row) {
+	auto bad = [&](const std::string& why, const std::string& tok) {
+		throw IllegalArgumentException(
+			"Daemon '" + name + "': column 'fields' " + why + ": '" + tok + "' (in table '" +
+			tabName + "', row " + std::to_string(row) + ").");
+	};
+	std::size_t pos = 0;
+	while (pos <= v.size()) {
+		std::size_t sep = v.find_first_of(",|", pos);
+		std::string tok = v.substr(pos, (sep == std::string::npos ? v.size() : sep) - pos);
+		if (tok.empty()) {
+			bad("has an empty field name (check for doubled or leading/trailing separators)", v);
+		}
+		std::size_t colon = tok.find(':');
+		std::string fname = (colon == std::string::npos) ? tok : tok.substr(0, colon);
+		std::string mode = (colon == std::string::npos) ? std::string() : tok.substr(colon + 1);
+		if (fname.empty()) { bad("has an empty field name", tok); }
+		for (char c : mode) {
+			if (!daemonFieldModeChar(c)) { bad("has a malformed field mode", tok); }
+		}
+		if (!(mode.empty() || mode == "f" || mode == "float" || mode == "s16")) {
+			bad("has an unknown field mode ':" + mode + "' (expected :f, :float or :s16)", tok);
+		}
+		if (sep == std::string::npos) { break; }
+		pos = sep + 1;
+	}
+}
+
 /* ---- 守护硬件变量工厂 ---- */
 std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
 		std::vector<std::shared_ptr<DaemonRunner>>& registry) {
@@ -354,7 +423,8 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 	/* N-12：装配期进度走 logD（spawn/join 是运行期生命周期事件，保留 stderr） */
 	logD([&] { return "Create a Daemon hard-Var: " + name + ", chunk: " + chunkPath; });
 
-	/* 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms） */
+	/* 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms），
+	 * 并对框架列做加载期 schema 校验（E2：非法 proto/fields/sign 在此早报） */
 	std::string cfgAcc;
 	int64_t ivAcc = 5;
 	for (int64_t j = 0; j < static_cast<int64_t>(defs.cols()); ++j) {
@@ -364,6 +434,12 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 		cfgAcc += colName + "=" + v + ";";
 		if (colName == "interval" && v != "-") {
 			ivAcc = parseInterval(v, name, defs.getName(), i);
+		} else if (colName == "proto" && !daemonConfigMissing(v)) {
+			checkDaemonProto(v, name, defs.getName(), i);
+		} else if (colName == "fields" && !daemonConfigMissing(v)) {
+			checkDaemonFields(v, name, defs.getName(), i);
+		} else if (colName == "sign" && !daemonConfigMissing(v)) {
+			checkDaemonSign(v, name, defs.getName(), i);
 		}
 	}
 	std::string configStr = cfgAcc;
