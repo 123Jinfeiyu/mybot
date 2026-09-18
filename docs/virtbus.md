@@ -5,6 +5,7 @@
 ## 目录
 
 - [概述](#概述)
+- [术语与约定](#术语与约定)
 - [快速上手](#快速上手)
 - [API](#api)
 - [模型回调契约](#模型回调契约)
@@ -27,6 +28,23 @@
 **事务保真**：指针式读族（`read_reg/multi/reg16`）严格复刻 HAL 的 I2C_RDWR「写指针 + 读」事务，模型能知道当前读的是哪个寄存器；`read/read_bytes` 为无指针纯读。
 
 **运行时依赖**：virtbus.lua 本身是**纯 Lua、无 ffi 依赖**（lua5.4/luajit 都能离线跑总线契约）；只有经 `load_driver` 加载真实驱动时才需要 LuaJIT（HAL.lua 依赖 ffi）。
+
+## 术语与约定
+
+本文反复出现的术语先在此对齐，各节不再重复解释：
+
+| 术语 | 含义 |
+| --- | --- |
+| txlog | 虚拟总线的事务流水账：每笔 I2C/SPI/UART 事务按时间序追加一条记录（格式见 [txlog 条目格式](#txlog-条目格式)），是驱动行为断言的唯一凭据 |
+| NACK | 「设备不在总线 / 不应答」：未挂载地址、模型显式拒绝（`write` 返 `false`、`read` 返 `nil`）都按 NACK 处理，与真机行为一致 |
+| regmap / regmap 包装族 | 通用「寄存器指针 + burst 自增」模型底座 `virtbus/regmap.lua`；多数 I2C 传感器模型在其上薄包装、固化各自的寄存器事实 |
+| 指针式 / 命令式 / 字寻址 | 三类 I2C 访问范式：先写寄存器指针再读（regmap 族）；无指针、靠命令字驱动（BH1750 / SHT3X / MS5611…）；寄存器号是 16 位字地址而非字节地址（INA219 族） |
+| 转换门 | 器件完成一次测量所需的时间窗：门内读数 NACK，由 `advance(ms)` 虚拟时钟推进（不真实睡眠） |
+| virt_tick / 预武装 | 模型可选提供的确定性合成波形接口；守护 build 前先打一拍 `virt_tick(0)` 使器件「读即就绪」，之后每拍先驱动它造波形再采样 |
+| `<矩阵名>_VIRT` | 内嵌在驱动文件尾部的器件仿真模型工厂，与驱动独立实现、互证防假绿；经 `load_driver()` 一并加载 |
+| `BUS` 标记 | 模型模块表用 `BUS="uart"` / `BUS="spi"` 声明总线类型（缺省 I2C），守护与直写路径据此自动分流 |
+| `:f` / `sign=16` | 守护采样字段模式：`:f` 浮点原样透传，`sign=16` 按 16 位补码展开为有符号整数（详见 [daemon.md](daemon.md)） |
+| 防假绿 | 模型只复现协议事实、不自造测量值——测量值一律由用例注入，避免模型与驱动按同一错误理解互证出「都错但一致」的假通过 |
 
 ## 快速上手
 
@@ -342,8 +360,10 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 - I2C 总线上只暴露 STATUS 0x00（bit1=TX_VALID、bit0=RX_VALID）、写口 WRITE 0x01、读口 READ 0x02 三个寄存器，DEVICE_TYPE/CONTROL/INT_T/TEMP/六通道等虚拟寄存器（0x00~0x13）全部经 SparkFun 同款握手访问——读=预冲刷滞留 RX→等 TX 空→写口发地址（bit7=0）→等 RX=1→读读口（一次 virtual_read 共 4 次硬件读事务），写=等 TX 空→写口发 地址|0x80→再等 TX 空→写口发数据（共 2 次硬件读事务）
 - 模型零延迟握手（TX 正常恒空、读命令锁存后 RX 立即置 1、读口消费清 0），`set_tx_stuck`（STATUS 恒 TX_VALID）/`set_rx_stuck`（读命令不置 RX）喂驱动 50×5ms=250ms 超时
 - **写口字节按握手状态机位置解释、不按 bit7**：空闲态 bit7=1 写地址相位/bit7=0 读地址相位，进数据相位后下一字节无条件是数据（如 RST 数据 0x88）
-- CONTROL 0x04 中 bit7=RST（自清除不落盘、reseed+reset_count+1）、[5:4]=GAIN、[3:2]=BANK、bit1=DATA_RDY **只读、由模型动态合成**——影子寄存器 bit1/bit7 由写入侧保证恒 0，读时直接加就绪位；**按位清位只能用减法（位权 2 的幂）或 floor(v/2^n)%2 判位，严禁对非 2 的幂取模（0x7D/0xFD 之误曾致 DATA_RDY 位残留、驱动永久等不到就绪）**
-- BANK=2 连续全通道一轮转换门=INT_T×5.6ms 由 `advance(ms)` 推进（POR remaining=0 表示零周期首轮在途，nil 才是空闲可重排），完成事件才把注入结果锁入六通道数据寄存器（MSB 偶地址）并置 DATA_RDY，RMW 清 bit1 后按 BANK/INT_T 重排；`set_result` 只入注入表
+- CONTROL 0x04 中 bit7=RST（自清除不落盘、reseed+reset_count+1）、[5:4]=GAIN、[3:2]=BANK、bit1=DATA_RDY **只读、由模型动态合成**——影子寄存器 bit1/bit7 由写入侧保证恒 0，读时直接加就绪位
+  - **按位清位只能用减法（位权 2 的幂）或 floor(v/2^n)%2 判位，严禁对非 2 的幂取模（0x7D/0xFD 之误曾致 DATA_RDY 位残留、驱动永久等不到就绪）**
+- BANK=2 连续全通道一轮转换门=INT_T×5.6ms 由 `advance(ms)` 推进（POR remaining=0 表示零周期首轮在途，nil 才是空闲可重排），完成事件才把注入结果锁入六通道数据寄存器（MSB 偶地址）并置 DATA_RDY，RMW 清 bit1 后按 BANK/INT_T 重排
+  - `set_result` 只入注入表
 - `set_result/set_results/set_channel_raw`（绕过转换直写、u16 钳）、`set_temp`（补码 °C）、`set_device_type`、六类故障钩子与 reset 保留
 - virt_tick 32 拍六通道正弦计数（V 9000±3000、相位各差 π/6，n0 V=9000、n8 峰 12000、n24 谷 6000）+ 温度 25±4°C，直接装数据寄存器并预武装 DATA_RDY（remaining=nil，守护 call 零真实睡眠）
 
@@ -353,9 +373,11 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 
 - 寄存器是普通 8 位指针，核心全在 FIFO 状态机——WR 0x04/OVF 0x05/RD 0x06 三个 5 位指针均可写（build 写 0 清队列，写值 %32）、32 深环形 `slots`，驱动口径可用数 `(WR-RD)%32`（0 既空也满，满状态靠物理 count 区分；**积压整圈后指针差回绕、avail 被低估为 0 是真实硬件行为**）
 - FIFO_DATA 0x07 是流式口，HR 模式（MODE=2）每样本 3 字节仅 RED、SpO2（MODE=3）6 字节 RED+IR，每通道 18 位 MSB 对齐三字节帧（24 位帧=sample<<6、低 6 位恒 0、满码 0x3FFFF 即 SAT），`next_byte()` 随字节位置取槽，**读满一个样本全部字节 RD 才硬件自增并释放槽，半样本事务结束后重新寻址 0x07（写指针即重置 byte_idx）仍从同一槽读起，空槽读 0x00 且 RD 不动**，长读可跨样本连续消费
-- **rollover 语义是本模型核心**：关（POR FIFO_CFG=0）且满→新样本丢弃、OVF++（饱和 31）、WR 停住；开（驱动 build 固定置 bit3）且满→覆盖最旧槽并把 RD 自动推进一步、OVF 不增——故 push 40（超 32）后 WR=RD=8、avail=0（旧无限数组桩给 avail=8 是假绿）
+- **rollover 语义是本模型核心**：关（POR FIFO_CFG=0）且满→新样本丢弃、OVF++（饱和 31）、WR 停住
+  - 开（驱动 build 固定置 bit3）且满→覆盖最旧槽并把 RD 自动推进一步、OVF 不增——故 push 40（超 32）后 WR=RD=8、avail=0（旧无限数组桩给 avail=8 是假绿）
 - MODE 0x09 bit6=RESET 自清除不落盘（reseed 回 POR+清 FIFO、reset_count+1，part_id/注入队列/故障钩子保留）、bit7=SHDN 停采（配置保留）、写有效模式即启动
-- 有效输出周期=1000×2^SMP_AVE/SR（SR 码 50~3200sps）由 `advance(ms)` 按周期门产样（可跨多拍），`queue_sample(s)` 注入到点样本优先于确定性正弦、`set_never_sample` 喂 wait 耗尽；`push_sample(s)` 立即注入
+- 有效输出周期=1000×2^SMP_AVE/SR（SR 码 50~3200sps）由 `advance(ms)` 按周期门产样（可跨多拍），`queue_sample(s)` 注入到点样本优先于确定性正弦、`set_never_sample` 喂 wait 耗尽
+  - `push_sample(s)` 立即注入
 - `set_part_id`（喂错挂甄别）、六类故障钩子与 reset 保留
 - virt_tick 32 拍 PPG 双正弦直接推 FIFO（RED 50000±18000、IR 60000±22000，n0 50000/60000、n8 峰 68000/82000、n24 谷 32000/38000，远低于满码 SAT 恒 0），守护每拍先 tick 后 call、零真实睡眠
 
@@ -363,10 +385,12 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 
 **首个「8 位字节指针 + 128 字节像素块连续 burst 读 + 帧周期门」I2C 器件模型**（Panasonic Grid-EYE AMG8833 8x8 红外热电堆阵列，地址 0x69 缺省/0x68 可挂同一模型，纯闭包不用 regmap、纯算术无 bitcompat）：
 
-- 寄存器按字节寻址，读指针随字节自增、0xFF 后回绕 0x00；0x80 起 128 字节 = 64 像素 ×2B，**12 位补码小端（LSB 在偶地址 0x80+2i）、0.25°C/LSB、MSB 高 4 位恒 0**，热敏电阻 0x0E/0x0F 同构小端、0.0625°C/LSB
+- 寄存器按字节寻址，读指针随字节自增、0xFF 后回绕 0x00
+  - 0x80 起 128 字节 = 64 像素 ×2B，**12 位补码小端（LSB 在偶地址 0x80+2i）、0.25°C/LSB、MSB 高 4 位恒 0**，热敏电阻 0x0E/0x0F 同构小端、0.0625°C/LSB
 - RST 0x01 是**命令寄存器、写值不落盘**：0x3F 初始复位（全部寄存器/数据区回 POR、帧计时重启，reset_count+1，故障钩子保留）、0x30 标志复位（仅 flag_count，中断组本模型恒 0）
 - PCTL 0x00 仅 0x00=normal（0x10 sleep/0x20·0x21 stand-by 均停采、remaining=nil），FPSC 0x02 bit0 选帧率（写即按新周期 100/1000ms 重排首帧）
-- normal 下帧事件由 `advance(ms)` 按周期门驱动（99/100、999/1000ms 边界、可跨多拍）：**到点只装载 `queue_frame*` 显式排队的注入帧，无注入则像素保持上一帧（POR 全 0）——模型没有「场景」概念，绝不自造测量值**；像素/热敏只读区写 ACK 但忽略，测量值只能由注入 API 改变
+- normal 下帧事件由 `advance(ms)` 按周期门驱动（99/100、999/1000ms 边界、可跨多拍）：**到点只装载 `queue_frame*` 显式排队的注入帧，无注入则像素保持上一帧（POR 全 0）——模型没有「场景」概念，绝不自造测量值**
+  - 像素/热敏只读区写 ACK 但忽略，测量值只能由注入 API 改变
 - `set_pixel_raw/set_pixel_c/set_frame_raw/set_frame_c`（0 基 64 元素）、`queue_frame_raw/queue_frame_c`（下一次帧事件装载）、`set_therm_raw/set_therm_c/clear_frame` 注入，六类故障钩子与 reset 保留
 - virt_tick 32 拍确定性**移动热点热图**（25°C 背景 + 绕 (3.5,3.5) 旋转的线性衰减热点，n0 热点 [3][6] 约 45°C、n8 旋转到第 6 行；热敏 30±2°C 正弦）直接装入数据寄存器、绕过帧门，守护 build 前 virt_tick(0) 即预武装，build 睡醒 call 恒有聚合数据、零额外等待
 
@@ -375,7 +399,8 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 **首个「无寄存器图 · 单字节 P 口写 + 无指针纯读」极简 I2C 器件模型**（NXP PCF8574/PCF8574A 8 位准双向 IO 扩展器，地址族 0x20~0x27/0x38~0x3F，纯闭包、纯算术无 bitcompat，约 170 行）：
 
 - **没有寄存器指针/寄存器地图**——写事务的每个数据字节直接进 P 口输出锁存（逐字节 ACK、末字节留口，驱动恒写 1B；非字节整笔 NACK、锁存不动），读事务是无指针纯读（n 钳 1~16，连续读重复返回当前引脚态）
-- **准双向无方向寄存器**：锁存写 1=弱上拉（可被外部拉低当输入）、写 0=强驱动低，引脚读值 = latch & ~pull_low（8 位按位与用逐位 floor/% 纯算，不引 bitcompat；强驱低位恒 0）；POR 锁存 0xFF
+- **准双向无方向寄存器**：锁存写 1=弱上拉（可被外部拉低当输入）、写 0=强驱动低，引脚读值 = latch & ~pull_low（8 位按位与用逐位 floor/% 纯算，不引 bitcompat；强驱低位恒 0）
+  - POR 锁存 0xFF
 - `pull_low` 是测试侧外部激励（按键/开漏），只能由 `set_pull_low/pull(i)/release(i)/release_all` 注入、模型不自造电平，`set_latch` 供特殊注入，种子构造 `new{latch=,pull_low=}`
 - `fail_write(帧谓词)/fail_read(n 谓词)` + nack/nack_read/nack_write、reset 保留钩子清激励/留痕、reset_logs 只清计数
 - 无 ID 寄存器（build 靠一次纯读 ACK 在位甄别、无 milli_sleep）
@@ -385,10 +410,13 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 
 **首个「8 位字节指针 + 16 位大端寄存器对、指针自增模 26 回绕」I2C 器件模型**（ADI LTC2944 多节电池电量计，固定地址 0x64，纯闭包、纯算术无 bitcompat，约 250 行；区别 AMG8833 的 256 字节空间模 256 与 INA219 的字寻址）：
 
-- 寄存器文件仅 **0x00~0x19 共 26 字节**（0x1A~0xFF 保留不建模，写指针按模 26 折回文件内）——write 首字节=指针、其后数据逐字节落位且 ptr 模 26 自增（纯指针写停该址、多字节写停末址+1），read(n)（n 钳 1~16）从 ptr 连续读、每字节后 ptr=(ptr+1)%26，越过 0x19 回 0x00，**读 NACK 时指针不前进**（fail_read 谓词在推进前判定，签名 `(ptr,n)`）；非 table/空表/非字节整笔 NACK 且寄存器不动
+- 寄存器文件仅 **0x00~0x19 共 26 字节**（0x1A~0xFF 保留不建模，写指针按模 26 折回文件内）——write 首字节=指针、其后数据逐字节落位且 ptr 模 26 自增（纯指针写停该址、多字节写停末址+1），read(n)（n 钳 1~16）从 ptr 连续读、每字节后 ptr=(ptr+1)%26，越过 0x19 回 0x00，**读 NACK 时指针不前进**（fail_read 谓词在推进前判定，签名 `(ptr,n)`）
+  - 非 table/空表/非字节整笔 NACK 且寄存器不动
 - 四对 16 位大端测量寄存器（MSB 偶址）：0x02 累计电荷 u16（**可主机写**用于清零/预置）/0x08 电压/0x0E 电流（**偏移二进制**，中点 0x7FFF=0A）/0x14 温度，04/06/0A/0C/10/12/16/18 八阈值对驱动不碰但在文件内，burst 跨对/回绕连读照实
-- **charge_msb_clobbered 哨兵协议基础**：CONTROL(0x01) 是 8 位寄存器、正确写帧恰 {0x01,ctrl} 两字节；错误 3 字节 {0x01,0x00,ctrl} 经指针自增把 0x00 落 CONTROL（[7:6]=00 休眠）、ctrl 落 CHG_MSB(0x02) 毁电荷——模型忠实落位，由测试抓驱动永不发越界帧
-- POR STATUS/CONTROL/四测量全 0（CONTROL=0 非自动模式），种子构造 `new{status,control,charge,voltage,current,temp}` 非法值回 POR；物理量逆注入与驱动同源常数 `set_voltage_v/set_current_a(a,rsense)/set_temp_c/set_charge_mah(mah,m,rsense)` + clamp_u16
+- **charge_msb_clobbered 哨兵协议基础**：CONTROL(0x01) 是 8 位寄存器、正确写帧恰 {0x01,ctrl} 两字节
+  - 错误 3 字节 {0x01,0x00,ctrl} 经指针自增把 0x00 落 CONTROL（[7:6]=00 休眠）、ctrl 落 CHG_MSB(0x02) 毁电荷——模型忠实落位，由测试抓驱动永不发越界帧
+- POR STATUS/CONTROL/四测量全 0（CONTROL=0 非自动模式），种子构造 `new{status,control,charge,voltage,current,temp}` 非法值回 POR
+  - 物理量逆注入与驱动同源常数 `set_voltage_v/set_current_a(a,rsense)/set_temp_c/set_charge_mah(mah,m,rsense)` + clamp_u16
 - 六类故障钩子（fail_write 帧谓词/fail_read(ptr,n) + nack 三件）、reset 回 POR+ptr 归零+清留痕但保留钩子、reset_logs 只清计数
 - 无 ID 寄存器（build 靠指针读 STATUS 2B ACK 兼在位甄别 + CONTROL 单字节写，零 milli_sleep）；连续 ADC 结果常驻、**无转换门/无 advance**（同 INA219 族）
 - virt_tick 32 拍同相正弦 V 12.0±0.4V、I 0.8±0.4A @50mΩ（满量程 ±1.28A，峰值 1.2A 不削顶）、T 30±5°C，累计电荷 (10000+200n)%65536 单调爬坡
@@ -398,10 +426,15 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 **首个「8 位字寄存器指针 + 无指针纯读 + 每通道转换门 + 双 ROM ID 甄别」I2C 器件模型**（申矽凌微 SensyLink CHT8305C 数字温湿度传感器，AD0 选 0x40~0x43 四地址、悬空 0x40，纯闭包、纯算术无 bitcompat，约 340 行；指针索引的是 **16 位字而非字节**，区别 LTC2944 字节文件模 26、AMG8833 的 256 字节空间与 INA219 的「写帧恰 3B」字寻址）：
 
 - 寄存器地图仅 6 个指针——0x00 T 测量字/0x01 H 测量字（只读 u16，POR 无码）、0x02 配置字（POR 0x0000，bit15 软复位）、0x03 告警限字（R/W 原样存）、0xFE MID=0x5959、0xFF DID=0x8305（ROM），**0x04~0xFD 未定义指针整笔 NACK**
-- write 帧校验非 table/空表/非字节整笔 NACK 且寄存器/指针不动；`#bytes==1` 纯指针写选字（写 0x00/0x01 兼作转换触发），多字节字写数据从 start 起按字大端打包（put_hi/put_lo 纯算术保留另一半）、字指针每 2 字节自增、越过地图余字节忽略但帧 ACK、帧末 ptr 停最后访问字+1；只读字（T/H/MID/DID）数据写 **ACK 但丢弃不落盘**
-- **半字高字节软复位**：写 0x02 的高数据字节 ≥0x80（即配置 bit15；驱动帧恰 `{0x02,0x80}` 两字节半字写，模型不替驱动补 LSB）触发 reseed + reset_count++，bit15 自清 config 回 0；低字节 0x80 不触发
+- write 帧校验非 table/空表/非字节整笔 NACK 且寄存器/指针不动
+  - `#bytes==1` 纯指针写选字（写 0x00/0x01 兼作转换触发），多字节字写数据从 start 起按字大端打包（put_hi/put_lo 纯算术保留另一半）、字指针每 2 字节自增、越过地图余字节忽略但帧 ACK、帧末 ptr 停最后访问字+1
+  - 只读字（T/H/MID/DID）数据写 **ACK 但丢弃不落盘**
+- **半字高字节软复位**：写 0x02 的高数据字节 ≥0x80（即配置 bit15；驱动帧恰 `{0x02,0x80}` 两字节半字写，模型不替驱动补 LSB）触发 reseed + reset_count++，bit15 自清 config 回 0
+  - 低字节 0x80 不触发
 - read(n)（n 钳 1~8）NACK 判定在指针推进前（d.nack/nack_read/read_pred(ptr,n)/VALID/转换未就绪均返 nil 指针不动），从 ptr 连续按字大端输出（高字节偶数位），覆盖 ceil(n/2) 字后 ptr 停末字+1，越过 0xFF 后 ptr=0x100 再读 NACK
-- **每通道 14ms 转换门**：写 T/H 指针启动（GATE_MS 与驱动 T_CONV_MS 同值，13ms NACK/14ms 就绪边界），门内读 NACK（轮询语义），`advance(ms)` 推 remaining，完成后结果保持到下次同通道指针写（重触发需再等）；config/alert/ID 无门随时读，POR T/H 为 nil 读 NACK；T/H 两门通道独立
+- **每通道 14ms 转换门**：写 T/H 指针启动（GATE_MS 与驱动 T_CONV_MS 同值，13ms NACK/14ms 就绪边界），门内读 NACK（轮询语义），`advance(ms)` 推 remaining，完成后结果保持到下次同通道指针写（重触发需再等）
+  - config/alert/ID 无门随时读，POR T/H 为 nil 读 NACK
+  - T/H 两门通道独立
 - 物理逆注入 `set_temp_c(t)` raw=clamp((t+40)·65535/165)、`set_humi_pct(h)` raw=clamp(h·65535/100)（clamp 取最近 LSB），`set_raw(t,h)` 不改就绪态，`who(mid,did)` 覆写 ROM ID（软复位不恢复，喂 build 双 ID 负路径），`set_never_ready(on)` 令 advance/武装全无效
 - 六类故障钩子、reset 保留钩子与武装、reset_logs 只清留痕
 - virt_tick 32 拍**反相**正弦（T=25+5s 20~30°C、H=50−10s 60~40%RH，温峰湿谷），装码 + 双置 ready + **预武装**（virt_tick 后测量指针写零等待，武装跨软复位保留——守护 build 前 tick 一次，build 内复位不断流）
@@ -437,8 +470,10 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 - CONFIG 0x00 POR **0x7127**（[14:12] 三通道使能、[11:9] AVG、[8:6]/[5:3] 双 CT、[2:0] MODE；**全 16 位有定义无保留位**，写啥读啥——非 INA226 bit14 恒 1 读合成），写 CONFIG 且 hi≥0x80 软复位（0x8000 不落盘、reseed 原地清 regs、reset_count+1，0x8001 同复位）
 - **三通道各一对结果寄存器** SHUNT1/BUS1=0x01/02、CH2=0x03/04、CH3=0x05/0x06，分流/总线**同为 13 位有效、左移 3 位存放（低 3 位恒 0）**：码域 API `set_shunt_raw(ch,code)` 收 s13 有符号 -4096~4095（4095→字 0x7FF8、-4096→0x8000、-1→0xFFF8）LSB 40µV 满量程 ±163.84mV，`set_bus_raw(ch,code)` 收 u13 0~8191（满码字 0xFFF8）LSB 8mV 满码 65.528V——非 INA226 的 16 位不挪位 2.5µV/1.25mV
 - 芯片内无电流/功率/校准寄存器，0x07~0x0E 告警限/分流和、0x0F MASK/ENABLE、0x10/0x11 POWER-VALID 驱动不碰照读照写
-- 真 ROM ID 0xFE=0x5449（'TI'）/0xFF=**0x3220**（区别 INA226 DIE=0x2260）只读，`who(mfg,die)` 覆写软复位不恢复、`set_reset_cfg(word)` 覆写复位默认；通道号非法（非 1~3）注入静默忽略、观察口返 nil
-- 写恰 1B=纯指针、恰 3B=字写，2/4/0/非 table 全 NACK，读 2B 取当前 ptr 字 hi/lo、n>2 按字自增奇数尾补 0；通道使能位只照存不模拟转换引擎（驱动恒使能三通道），连续模式无转换门/无 advance
+- 真 ROM ID 0xFE=0x5449（'TI'）/0xFF=**0x3220**（区别 INA226 DIE=0x2260）只读，`who(mfg,die)` 覆写软复位不恢复、`set_reset_cfg(word)` 覆写复位默认
+  - 通道号非法（非 1~3）注入静默忽略、观察口返 nil
+- 写恰 1B=纯指针、恰 3B=字写，2/4/0/非 table 全 NACK，读 2B 取当前 ptr 字 hi/lo、n>2 按字自增奇数尾补 0
+  - 通道使能位只照存不模拟转换引擎（驱动恒使能三通道），连续模式无转换门/无 advance
 - `set_word/set_bus_v(ch,v)/set_shunt_v(ch,v)/set_vi(ch,bus_v,shunt_v)/set_current_a(ch,a,r)`（缺省 R=10mΩ CJMCU 板载）注入、六类故障钩子、reset 保留钩子与 who/reset_cfg 身份、`config_writes()` 留痕
 - virt_tick 32 拍三通道同相正弦（ch1 12.0±0.4V/0.5±0.3A、ch2 12.0±0.4V/1.0±0.4A、ch3 5.0±0.2V/0.3±0.15A，均按 10mΩ 反推分流 1.5~14mV 远在量程内，n0/n8 峰/n24 谷/n32 周期）
 
@@ -447,7 +482,8 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 **首个「偶地址稀疏字地图 + 纯只读驱动 + CMD 全片复位」电量计模型**（Maxim MAX17043 单节锂电 ModelGauge 电量计，地址固定 0x36 无地址引脚，纯闭包不用 regmap、纯算术无 bitcompat；寄存器指针是**字节地址**且全在不连续偶地址，区别 INA219/INA226 的连续字索引与 LTC2944 的字节文件模 26）：
 
 - 地图仅 0x02 VCELL（**12 位左移 4 存放、低 4 位恒 0**，驱动读后 >>4，LSB 1.25mV，码域 0~4095、满码字 0xFFF0=5.11875V——旧桩误把 0x7FF0 当满程超出 12 位）、0x04 SOC（**u16 定点 1/256%**，raw/256=百分比，芯片可报告 >100%、满码 255.996%，驱动不钳）、0x06 MODE（bit15 SLEEP 照存、**bit14 QuickStart 写 1 自清不落盘**，存 word%0x4000+floor(word/0x8000)·0x8000）、0x08 VERSION（家族内不固定、build 只读出做存在性检查**不判值**）、0x0C CONFIG（POR **0x971C**，bit15 是 RCOMP 的 MSB **不是复位位**，全字照存）+ 只写命令口 0xFE（**恰写 0x0054 触发全片复位**、reset_count+1、寄存器回 POR，其他值 ACK 忽略、不可读）
-- VCELL/SOC/VERSION 只读：字写 ACK 但丢弃，测量值只能由注入 API 改；写恰 1B=纯指针（任何地址 ACK）、恰 3B=字写（白名单外偶/奇地址整笔 NACK），2/4/0/非 table 全 NACK 且指针不动
+- VCELL/SOC/VERSION 只读：字写 ACK 但丢弃，测量值只能由注入 API 改
+  - 写恰 1B=纯指针（任何地址 ACK）、恰 3B=字写（白名单外偶/奇地址整笔 NACK），2/4/0/非 table 全 NACK 且指针不动
 - 读 2B 取当前 ptr 字 hi/lo，n>2 字节流按偶地址每 2 字节一字连续（**读 3B=当前字 hi/lo+下一偶地址字 hi，无「奇尾补 0」**），连续可读区间 0x02~0x08 四字、遇保留 0x0A 整笔 NACK，不可读指针（含 CMD 0xFE）返 nil
 - 芯片转换自由运行、结果恒有值，**无转换门/无 advance**；CMD 复位后 who() 覆写的 VERSION 不恢复（同 INA 族身份钩子语义）
 - `set_vcell_raw(code)`（钳 0~4095 内部 ×16）/`set_soc_raw(word)`（u16 不钳 100%）/`set_vcell_v(v)`（round(v/1.25mV)）/`set_soc_pct(p)`（round(p·256)）/`set_word` 注入、who(ver)/set_reset_cfg(word)/六类故障钩子/reset 保留钩子与身份/config_writes() 留痕
@@ -462,8 +498,11 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 3. build 对 DATA_FORMAT **先读回再 RMW** `(df&0xF0)|0x08|range`（保高 4 位，MPU6050 直接写），模型照实存每一笔
 4. build 等待**两个测量周期** ceil(2000/odr)+2 ms（缺省 100Hz→22ms，MPU6050 固定 100ms）
 
-- 寄存器仅播种 DEVID=**0xE5**（build 在读指针+读后判值兼在位甄别）与 BW_RATE POR=**0x0A**（100Hz），DATA_FORMAT/POWER_CTL 不播种读 0；BW_RATE bit4=低功耗档与 [3:0] 速率码独立，仅高性能码 0x7~0x0F 映射 ODR {12.5…3200}，低功耗码 odr_hz 返 **nil 不臆断**
-- 包装层覆盖底座 write/read 点定义（**无 self 绝不能冒号**）：1B 纯指针写任意地址（含只读/保留区）均 ACK 并设 ptr（I2C_RDWR 读的指针消息）；≥2B 写落只读白名单（0x00 + 0x32~0x37）的数据字节 **ACK 但丢弃**；write 先 log_copy 留痕再判 nack/write_pred，read 加 read_pred(ptr,n) 包 base_read（regmap 语义事实：多字节写不移动读指针、读自增模 256）
+- 寄存器仅播种 DEVID=**0xE5**（build 在读指针+读后判值兼在位甄别）与 BW_RATE POR=**0x0A**（100Hz），DATA_FORMAT/POWER_CTL 不播种读 0
+  - BW_RATE bit4=低功耗档与 [3:0] 速率码独立，仅高性能码 0x7~0x0F 映射 ODR {12.5…3200}，低功耗码 odr_hz 返 **nil 不臆断**
+- 包装层覆盖底座 write/read 点定义（**无 self 绝不能冒号**）：1B 纯指针写任意地址（含只读/保留区）均 ACK 并设 ptr（I2C_RDWR 读的指针消息）
+  - ≥2B 写落只读白名单（0x00 + 0x32~0x37）的数据字节 **ACK 但丢弃**
+  - write 先 log_copy 留痕再判 nack/write_pred，read 加 read_pred(ptr,n) 包 base_read（regmap 语义事实：多字节写不移动读指针、读自增模 256）
 - `set_accel_raw(x,y,z)`（s16 钳 ±32768，nil 轴保持）/`accel_raw()`/`set_accel_g/accel_g`（×256 四舍五入）注入、who(devid)/devid/df/bw/power/measure/low_power/odr_code 观察口、六类故障钩子（nack/nack_read/nack_write + fail_write/fail_read 谓词）、clear_faults/reset_logs/config_writes/write_count/pointer、reset() reseed（保留 who 身份与故障钩子）
 - 芯片连续转换结果常驻、**无转换门/无 advance**
 - virt_tick 32 拍周期三轴互差 120° 正弦（X/Y=±0.30g 小幅晃动、Z=1g 重力±0.05g 起伏全程为正，n0={0,67,245}、n8={77,-38,250}、n24={-77,38,262}，均远在最小 ±2g 削顶 ±512 码内）
@@ -478,7 +517,8 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 4. STATUS(0x27) **动态合成** bit0 P_DA/bit1 T_DA，转换完成置双 DA、读 PRESS_H(0x2A) 清 P_DA、读 TEMP_H(0x2C) 清 T_DA（MSB 读清除）
 5. CTRL_REG1(0x10) [6:4] ODR 非 0 进连续模式——码 1..5 周期 1000/100/40/20/(40/3)ms（1/10/25/50/75Hz）由 `advance(ms)` 按周期 load_sample，码 6/7 保留 odr_hz 返 nil 不臆断，码 0=power-down/单次
 
-- 寄存器仅播种 WHO_AM_I=**0xB1**（0xBD=LPS25HB 代际参照，who() 可覆写喂错挂），CTRL_REG1/2 与输出区不播种读 0；只读白名单（0x0F/0x27/0x28~0x2C）≥2B 写 **ACK 但丢弃**，1B 纯指针写任意地址（含只读/保留区）ACK 设 ptr（regmap 语义：多字节写不移动读指针）
+- 寄存器仅播种 WHO_AM_I=**0xB1**（0xBD=LPS25HB 代际参照，who() 可覆写喂错挂），CTRL_REG1/2 与输出区不播种读 0
+  - 只读白名单（0x0F/0x27/0x28~0x2C）≥2B 写 **ACK 但丢弃**，1B 纯指针写任意地址（含只读/保留区）ACK 设 ptr（regmap 语义：多字节写不移动读指针）
 - `set_press_raw`（s24 钳 ±8388608，同时写输出寄存器+pending 下一次转换装载样本）/`set_temp_raw`（s16 钳 ±32768，**收有符号码 -100，非无符号补码 65436**）/`set_press_hpa/set_temp_c`（×4096/×100 四舍五入）/`press_raw/temp_raw/press_hpa/temp_c`
 - `advance(ms)` 推复位/转换/连续三时钟、`arm()` 预武装（SWRESET 即时完成**不消费**武装、ONE_SHOT 一次性消费、武装跨 reset 保留）、`set_never_ready`（所有门/武装/连续出样全停，喂驱动 wait 超时——**超时组必须先正常 build 再开，否则 reset_busy 残留会让 call 的 RMW 触发帧误入复位分支**）
 - 六类故障钩子（nack/nack_read/nack_write + fail_write 帧谓词/fail_read(ptr,n) 谓词）、config_writes/write_count（只计 ≥2B 写）/pointer/clear_faults/reset_logs、reset() 回 POR 但**保留 who 身份、pending 注入、故障钩子**（清武装/never_ready/boot_count）
@@ -488,10 +528,13 @@ BH1750 命令式器件模型：opcode 序列、大端计数读回、上电/模�
 
 **首个 UART 总线舵机模型**（飞特 Feetech 电位器型 SCS 舵机，TTL 单总线，纯闭包无 bitcompat，约 230 行；`BUS="uart"`，身份是 tty 路径）：
 
-- 协议层只存 FT-SCS 帧事实——指令帧 `FF FF ID LEN INST 参数 CS`、应答帧 `FF FF ID LEN ERROR 参数 CS`，总长 = LEN + 4，**CS = 0xFF − (Σ(ID..参数) mod 256)**（覆盖自 ID 起、两个 FF 字头不计入；与 MH-Z19 的补码式不同，测试侧另有第三份独立实现交叉）；非法帧（帧头/LEN/校验和）不应答、非本站 ID 静默、广播 0xFE 执行但不应答（**PING 广播也应答**、应答带本站 ID）、只读/地图外地址整笔不应答
+- 协议层只存 FT-SCS 帧事实——指令帧 `FF FF ID LEN INST 参数 CS`、应答帧 `FF FF ID LEN ERROR 参数 CS`，总长 = LEN + 4，**CS = 0xFF − (Σ(ID..参数) mod 256)**（覆盖自 ID 起、两个 FF 字头不计入；与 MH-Z19 的补码式不同，测试侧另有第三份独立实现交叉）
+  - 非法帧（帧头/LEN/校验和）不应答、非本站 ID 静默、广播 0xFE 执行但不应答（**PING 广播也应答**、应答带本站 ID）、只读/地图外地址整笔不应答
 - 寄存器为**大端**字节地图：0x05 站号、0x28 扭矩（0 自由/1 使能/2 阻尼）、0x2A 目标位置、0x2C 运行时间、0x2E 运行速度、0x30 EPROM 写锁、0x38~0x42 反馈块（位置/速度/负载/电压/温度/异步/状态/移动）
 - **站号烧写语义**：写 0x05 立即切换站号（旧站号不再应答），`persisted_id` 仅在解锁（0x30=0）时随写更新（模拟「上锁写入掉电不保存」），锁标志是 SRAM 重启回 1——驱动侧 `set_id` 动作参数即「解锁帧→广播写 0x05 帧」两步，测试以 `lock/persisted_id` 观察口证明顺序正确
-- 运动学 `advance(ms)` 确定性推进：速度优先（0x2E>0），其次运行时间折算（speed=距离/时间），都为 0 用出厂默认 1000 步/s；到位 `moving=0` 且速度反馈归零；`virt_tick(n)` = 20ms 一拍
+- 运动学 `advance(ms)` 确定性推进：速度优先（0x2E>0），其次运行时间折算（speed=距离/时间），都为 0 用出厂默认 1000 步/s
+  - 到位 `moving=0` 且速度反馈归零
+  - `virt_tick(n)` = 20ms 一拍
 - 注入/观察 API：`set_id/set_present_position/set_voltage_raw/set_temp_c/set_status/set_load`、`goal_position/run_time/run_speed/torque_enable/moving/lock/persisted_id`
 - 四故障钩子 `no_reply/fail_write/corrupt_checksum/noise`（noise 前置 3 个无帧头字节喂跨轮聚合读）、`reset` 回 POR 但保留钩子、`reset_logs` 只清留痕
 
@@ -570,7 +613,8 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 - **守护**：CO2EQ:f/TVOC:f/CRC_OK 三字段（湿度补偿与 baseline 路径在守护原始串不可用，本用例不配）
 - **build**：Measure_test 0x2032→222ms 真实睡眠→3B 自检字+CRC 兼在位甄别→Init_air_quality 0x2003→12ms
 - **call**：Measure 0x2008→14ms 真实等待→6B 双 CRC 帧解析（坏 CRC 不报错仅 CRC_OK=0 降级）
-- **模型**：真算 CRC-8/写载荷内嵌 CRC 逐字校验/三应答门 220·12·10ms/15s IAQ 启动相与 400~700ppm、40~200ppb 正弦；守护 build 前 virt_tick(0) 预武装首次发挥作用
+- **模型**：真算 CRC-8/写载荷内嵌 CRC 逐字校验/三应答门 220·12·10ms/15s IAQ 启动相与 400~700ppm、40~200ppb 正弦
+  - 守护 build 前 virt_tick(0) 预武装首次发挥作用
 - **时序**：interval=50ms，首行预热 400ms 容纳 234ms 真实 build 睡眠，实测 16 拍 CO2 607~700ppm、TVOC 40~194ppb
 
 ### `ina219_virt`：首个「字寻址 16 位寄存器」I2C E2E
@@ -595,14 +639,16 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 - **build**：读 CONTROL→写 RST 位后 milli_sleep 1000ms（真实睡眠）→经握手读 DEVICE_TYPE=0x3E 兼芯片甄别→写 INT_T→RMW 配 GAIN/BANK=2
 - **call**：轮询 CONTROL bit1=DATA_RDY→偶/奇地址读六通道 16 位计数+0x06 温度补码→RMW 清 DATA_RDY
 - **模型**：三硬件寄存器间接窗口与零延迟握手/DATA_RDY 只读动态合成/INT_T×5.6ms 转换门与六通道正弦计数；每拍 virt_tick 预武装后 call 首读 CONTROL 即就绪、零真实睡眠
-- **时序**：**build 的 RST 是真实 1000ms 睡眠（守护不打 milli_sleep 桩、不推进虚拟时钟），首行预热须 1200ms 容纳**；interval=20ms，实测 16 拍守护发布 30+ 次、V 计数 6000~12000、温度随正弦（Ema α=0.2 对 V 计数滤波，raw 计数为整数故浮点断言锚定 monf 行 Ema 输出 out）
+- **时序**：**build 的 RST 是真实 1000ms 睡眠（守护不打 milli_sleep 桩、不推进虚拟时钟），首行预热须 1200ms 容纳**
+  - interval=20ms，实测 16 拍守护发布 30+ 次、V 计数 6000~12000、温度随正弦（Ema α=0.2 对 V 计数滤波，raw 计数为整数故浮点断言锚定 monf 行 Ema 输出 out）
 
 ### `max30102_virt`：首个「环形 FIFO + 读写指针/rollover + 18 位样本块读」I2C E2E
 
 - **守护**：IR:f/RED:f 两字段（均为无符号 18 位计数 0~262143，全字段 `:f` 原样透传，切不可走 sign=16 补码；Daemon 额外列 opmode/rate/n 自动透传——模式列名特意用 opmode 避开守护保留的 mode 键，SpO2/100sps/n=2）
 - **build**：读 0xFF 甄别 PART_ID=0x15→写 MODE RESET 后 milli_sleep 5ms（真实睡眠）→FIFO_CFG 固定开 rollover→SPO2_CFG→LED1/2→清 WR/OVF/RD 三指针→写 MODE=SpO2 启动，共 9 笔写
 - **call**：读 WR/RD 按 (WR-RD)%32 算可用数→空 FIFO 跳拍不发布→从 FIFO_DATA 0x07 流式口逐样本读 6 字节解码 18 位 RED+IR（满码只置 SAT 不报错）
-- **模型**：32 深真实环形槽/rollover 覆盖推 RD 与关闭丢新 OVF 饱和/流式字节位置/1000×2^avg/SR 周期门与 PPG 双正弦；守护不推进虚拟时钟，每拍 virt_tick 直接向 FIFO 推一拍新鲜样本、call 零真实睡眠（n=2 而每拍仅 1 个时 want=min(2,1)=1 照常发布）
+- **模型**：32 深真实环形槽/rollover 覆盖推 RD 与关闭丢新 OVF 饱和/流式字节位置/1000×2^avg/SR 周期门与 PPG 双正弦
+  - 守护不推进虚拟时钟，每拍 virt_tick 直接向 FIFO 推一拍新鲜样本、call 零真实睡眠（n=2 而每拍仅 1 个时 want=min(2,1)=1 照常发布）
 - **时序**：interval=20ms，首行预热 200ms（仅需容纳 RESET 真实睡眠 5ms），实测守护发布 44~46 次、IR 38000~82000、RED 32000~68000（Ema α=0.2 对 IR 计数滤波，raw 计数为整数故浮点断言锚定 monf 行 Ema 输出 out）
 
 ### `amg8833_virt`：首个「8 位字节指针 + 128 字节像素块 burst 读 + 帧周期门」I2C E2E
@@ -610,7 +656,8 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 - **守护**：MAXT:f/AVGT:f/MAXR:f/MAXC:f/THERM:f 五字段（64 像素原始数据不过桥，只发布聚合标量；行列编号为整数，全字段 `:f` 原样透传、sign 列占位）
 - **build**：PCTL=normal→RST=0x3F 初始复位后 milli_sleep 5ms（真实睡眠）→关中断→FPSC 10Hz→再 milli_sleep 120ms 等首帧（1Hz 为 1020ms），共四笔写
 - **call**：读 0x0E 热敏 2B→从 0x80 起 8 次 16B 块读 64 像素（12 位补码小端 0.25°C/LSB，MSB 高 4 位 0）→聚合 MAXT/MINT/AVGT/热点行列/THERM，共 9 个读事务
-- **模型**：字节指针 burst 自增与 0xFF 回绕/12 位小端像素与热敏编解码/RST 0x3F·0x30 命令语义/PCTL·FPSC 帧门（100/1000ms）与移动热点热图；守护不推进虚拟时钟，build 前 virt_tick(0) 预武装即把热图装入像素寄存器，build 睡醒 call 恒有数据、零额外等待
+- **模型**：字节指针 burst 自增与 0xFF 回绕/12 位小端像素与热敏编解码/RST 0x3F·0x30 命令语义/PCTL·FPSC 帧门（100/1000ms）与移动热点热图
+  - 守护不推进虚拟时钟，build 前 virt_tick(0) 预武装即把热图装入像素寄存器，build 睡醒 call 恒有数据、零额外等待
 - **时序**：interval=20ms，首行预热 200ms（容纳 build 真实睡眠 5+120=125ms），实测 16 拍守护发布 36~40 次、MAXT=45°C、AVGT≈39.4°C、热点行列随拍在 [3][6]~[6][3] 间旋转、THERM 30~32°C（Ema α=0.2 对 AVGT 滤波，MAXR/MAXC 为整数故浮点断言锚定 monf 行 Ema 输出 out）
 
 ### `pcf8574_virt`：首个无寄存器图单字节 P 口/准双向极简 I2C E2E
@@ -626,7 +673,8 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 - **守护**：CHARGE:f/V:f/I:f/T:f 四字段（全字段 `:f` 原样透传、sign 列占位；Daemon 额外列 rsense/prescaler 自动透传，50mΩ/M4096）
 - **build**：set→指针读 STATUS(0x00) 2B 兼在位甄别（无 ID 寄存器）→CONTROL(0x01) 单字节写 0xC0|码<<3，共 4 事务零睡眠（charge_msb_clobbered 哨兵：无首址 0x01 的 ≥3 字节帧、预置电荷不被踩）
 - **call**：set 后依次指针读 0x02/0x08/0x0E/0x14 四对大端，共 9 事务（set+4×写指针 1B/读 2B）零睡眠（V=raw/65535×70.8、I=(raw-0x7FFF)/0x7FFF×0.064/rsense 偏移二进制、T=raw/65535×510−273.15、CHARGE=code×0.34e-6×1000×(M×0.05)/(rsense×4096) 全软件换算）
-- **模型**：26 字节文件模 26 回绕/四对大端与可主机写电荷/偏移二进制电流/clobber 忠实落位与 V 12.0±0.4V、I 0.8±0.4A、T 30±5°C 同相正弦+电荷 200code/拍爬坡；守护不推进虚拟时钟，每拍 virt_tick 直接装寄存器、call 零真实睡眠
+- **模型**：26 字节文件模 26 回绕/四对大端与可主机写电荷/偏移二进制电流/clobber 忠实落位与 V 12.0±0.4V、I 0.8±0.4A、T 30±5°C 同相正弦+电荷 200code/拍爬坡
+  - 守护不推进虚拟时钟，每拍 virt_tick 直接装寄存器、call 零真实睡眠
 - **时序**：interval=20ms，首行预热 200ms（build/call 均无睡眠，余量充裕），实测 16 拍守护发布 40~49 次、V 11.6~12.4V、I 0.4~1.2A、T 25~35°C、CHARGE 随拍爬坡（Ema α=0.2 对 v1=V 滤波，raw 四字段均为浮点，浮点断言直接锚守护行 `"v1":1[12]\.`）
 
 ### `cht8305_virt`：首个「8 位字寄存器指针 + 无指针纯读 + 每通道转换门 + 双 ROM ID 甄别」I2C E2E
@@ -634,14 +682,16 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 - **守护**：T:f/H:f 两字段（全字段 `:f` 原样透传、sign 列占位）
 - **build**：set→{0x02,0x80} 半字软复位（高字节 bit7=bit15，驱动不补 LSB）→真实 sleep 10ms→{0xFE} 指针写+纯读 MID=0x5959→{0xFF}+纯读 DID=0x8305 双 ROM 自检，共 6 事务
 - **call**：set→{0x00} T 指针写→真实 sleep 14ms 转换等待→无指针纯读 2B→{0x01} H 同，共 5 事务、28ms 真实睡眠（读用 i2c_read 纯读族非 i2c_read_multi；T=raw×165/65535−40、H=raw×100/65535 全软件换算）
-- **模型**：6 指针稀疏字地图（0x04~0xFD 整笔 NACK）/大端字打包与字自增/只读字写丢弃/半字高字节软复位/MID·DID ROM 甄别/每通道 14ms 门（13·14ms 边界、通道独立）与 T 20~30°C、H 60~40%RH **反相**正弦；守护 build 前 virt_tick(0) 预武装（武装跨 build 内软复位保留），测量指针写零等待、驱动 28ms 在守护线程照真睡但不影响结果
+- **模型**：6 指针稀疏字地图（0x04~0xFD 整笔 NACK）/大端字打包与字自增/只读字写丢弃/半字高字节软复位/MID·DID ROM 甄别/每通道 14ms 门（13·14ms 边界、通道独立）与 T 20~30°C、H 60~40%RH **反相**正弦
+  - 守护 build 前 virt_tick(0) 预武装（武装跨 build 内软复位保留），测量指针写零等待、驱动 28ms 在守护线程照真睡但不影响结果
 - **时序**：interval=50ms 容纳 28ms call+10ms build，首行预热 200ms，实测 16 拍守护发布 13 次、T 25.97→30.0°C 爬坡、H 48.05→40%RH 反向走低（Ema α=0.2 对 v0=T 滤波，raw 两字段均浮点，浮点断言直接锚守护行 `"v0":2[0-9]\.`）
 
 ### `ads1015_virt`：ADS1115 的 12 位快速孪生 E2E
 
 - **守护**：voltage:f 单字段（Daemon 额外列 pga/dr/channel 自动透传，PGA=2/DR=4=1600SPS/AIN0）
 - **驱动**：与 ADS1115 完全同构的 build（写 CONFIG 0x4583→2B 回读零睡眠）与 call（读 CONFIG 保 PGA/DR→0xC583 启动→1ms 步进轮询 OS bit15→读 0x00 CONVERSION），区别仅在结果解码：CONVERSION 是 12 位码左对齐（低 4 位 0），算术右移 4 位后 V=raw12·FS/**2048**（非 ADS1115 的 /32768）
-- **模型**：与 ads1115 同构的字寻址纯闭包/OS 动态合成/转换门（默认 1600SPS 门 0.625ms，超时预算 100 次轮询）/通道码表隔离，数据面 12 位左对齐钳 ±2048；virt_tick 同样造 AIN0 1.65±0.25V（1.40~1.90V）正弦并预武装，call 零真实睡眠
+- **模型**：与 ads1115 同构的字寻址纯闭包/OS 动态合成/转换门（默认 1600SPS 门 0.625ms，超时预算 100 次轮询）/通道码表隔离，数据面 12 位左对齐钳 ±2048
+  - virt_tick 同样造 AIN0 1.65±0.25V（1.40~1.90V）正弦并预武装，call 零真实睡眠
 - **时序**：interval=20ms，首行预热 200ms（build 无睡眠），实测 16 拍守护发布 39~42 次、电压 1.40~1.90V
 
 ### `ina226_virt`：INA219 的高精度同族 E2E（真双 ROM ID 甄别）
@@ -681,7 +731,8 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 - **守护**：P:f/T:f 两字段（气压 hPa/温度 °C 均为浮点，全字段 `:f` 原样透传、sign 列占位；Daemon 额外列 wait 自动透传，wait=50 单次转换超时预算 ms）
 - **build**：set→写 ptr0x0F 读 WHO_AM_I=0xB1 兼在位甄别（0xBD=LPS25HB 代际拦截）→写 0x11=0x04 SWRESET→1ms 步进轮询读 0x11 bit2（**耗尽 20ms 预算也不报错、继续配置**）→写 CTRL_REG1=0x02，共 11 事务（门路径含 2ms 轮询睡眠）
 - **call**：set→读 CTRL_REG2 后 RMW 写 bit0 ONE_SHOT（保高位 `c2-c2%2+1`）→1ms 步进轮询 bit0 自清（超 wait_ms 报 timeout）→i2c_read_multi(0xA8,5) 小端 5B burst（指针 0xA8=0x28|**0x80 地址 bit7 本次访问自动增量**）→气压 s24/4096 hPa、温度 s16/100 °C 全软件换算，共 14 事务（门路径含 3ms 轮询睡眠）
-- **模型**：7 位地址空间（指针模 128、bit7 与全局 IF_ADD_INC OR 决定 burst 自增）/CTRL_REG2 三自清零命令位（BOOT 即时仅计数、SWRESET 2ms 门内动态合成 bit2=1、ONE_SHOT 仅 idle 模式 3ms 转换门，落盘位仅 bit4/bit3）/STATUS 动态合成双 DA（读 MSB 清位）/小端 5B 编解码与 P 1008.25~1018.25hPa、T 20~24°C 同相正弦；守护 build 前 virt_tick(0) 预武装（**武装跨 SWRESET 保留、SWRESET 不消费武装、ONE_SHOT 一次性消费**），build/call 武装路径零真实睡眠
+- **模型**：7 位地址空间（指针模 128、bit7 与全局 IF_ADD_INC OR 决定 burst 自增）/CTRL_REG2 三自清零命令位（BOOT 即时仅计数、SWRESET 2ms 门内动态合成 bit2=1、ONE_SHOT 仅 idle 模式 3ms 转换门，落盘位仅 bit4/bit3）/STATUS 动态合成双 DA（读 MSB 清位）/小端 5B 编解码与 P 1008.25~1018.25hPa、T 20~24°C 同相正弦
+  - 守护 build 前 virt_tick(0) 预武装（**武装跨 SWRESET 保留、SWRESET 不消费武装、ONE_SHOT 一次性消费**），build/call 武装路径零真实睡眠
 - **时序**：interval=50ms，首行预热 200ms，实测 16 拍守护发布 20 次、P 1010~1015hPa、T 20.9~21.6°C（Ema α=0.2 对 v0=P 滤波，raw 两字段均浮点，浮点断言直接锚守护行 `"v0":10[01][0-9]\.`）
 
 ```bash

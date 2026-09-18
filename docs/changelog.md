@@ -52,3 +52,4 @@
 - **测试覆盖缺口补齐五项**：守护并发压测 + TSan、TCP 异常注入（`tcp_adversarial.sh`，后扩为七场景）、tick 期持续 NACK E2E、fd 泄漏检测（`virtbus.fd_count()` + `/proc` 探针）、离线 ABI 回归（`test_abi_ioctl.lua`）
 - **E2E 守门落地**：mybot 直跑 + INSERT 目标表校验；无硬件契约与 TCP 动作源全部自动化；`deactivate` 同因告警去重
 - **文档对齐（F-27）**：TCP 措辞改单连接语义、架构历史文档顶标、virtbus 计数与 README 版本修正
+- **文档可读性梳理（2026-09-19）**：docs 全量通读排版——巨型表格单元格与列表项拆为子列表（reference 的 TCP 安全设计、hal 的 UART 约束、testing 守门分段 3/7/9/15、virtbus 各模型节），virtbus.md 新增「术语与约定」速查表；纯排版调整，事实内容不变

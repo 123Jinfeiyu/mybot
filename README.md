@@ -112,10 +112,15 @@ export BOT4CJ_LLM_KEY=sk-xxx
 ./build/mybot --robot=robots/spider1.sql --agent                             # 交互 REPL
 ```
 
-智能体可用工具：`list_action_scripts`（枚举 .mt）、`run_action_script`（在常驻机器人上执行）、
-`list_hardware`（器件清单）、`capture_image`（**拍照并把画面送进上下文**，多模态模型据此「看」环境）、
-`run_command`（shell，可用 `--agent-no-shell` 关闭）。摄像头同样是 Lua 驱动（V4L2 + MJPEG，
-无第三方库），也支持 `--camera-src <图片>` 在无摄像头时跑通全链路。
+智能体可用五个工具：
+
+- `list_action_scripts`——枚举 `.mt` 动作脚本
+- `run_action_script`——在常驻机器人上执行指定脚本
+- `list_hardware`——打印器件清单（只读，不触发任何动作）
+- `capture_image`——**拍照并把画面送进上下文**，多模态模型据此「看」环境
+- `run_command`——执行 shell 命令（可用 `--agent-no-shell` 关闭）
+
+摄像头同样是 Lua 驱动（V4L2 + MJPEG，无第三方库），也支持 `--camera-src <图片>` 在无摄像头时跑通全链路。
 完整选项、工作流程、安全说明与源码分层见 **[docs/agent.md](docs/agent.md)**。
 
 **模型调用是一颗 Lua 协议驱动**（和舵机、传感器平级），所以宿主不链接任何 HTTP 库——

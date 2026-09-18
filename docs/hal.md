@@ -18,8 +18,14 @@
 | I2C | `I2C_RDWR` ioctl **原子事务**：读的「写指针 + 读」合并为单次内核传输，消除并发访问同一器件时的寄存器指针竞态；地址由每条 i2c_msg 携带，不再需要 `I2C_SLAVE`（没有 EBUSY 问题）。16 位指针器件（VL53Lx ToF 族）同样合并为单事务 |
 | SPI | spidev ioctl；mode/bits/speed 经 ioctl 持久化在 fd，`delay_us` 无 per-fd 持久化途径、由驱动在每次传输显式传入（`spi_write*`/`spi_read*`/`spi_xfer_full` 尾参） |
 | GPIO | 内核 gpiod uAPI v1（`/dev/gpiochipN` ioctl，deprecated 但全内核支持）；offset 必须为非负整数（小数会被 uint32 静默截断成另一个线号，显式拒绝） |
-| UART | termios raw 8N1 + 非阻塞（VMIN=0/VTIME=1）；open 快照原始 termios，close 先恢复再关闭（板载 UART 的配置跨 close 保留在 tty 上）；波特率必须传 glibc `B*` 常量（`UART_B_CONST` 映射，缺失/非法即失败，数值 Hz 会被 EINVAL 静默忽略）；读取按 1ms 步进轮询，`timeout_ms` 超 `UART_READ_MAX_MS`（60000）显式失败 |
+| UART | termios raw 8N1 + 非阻塞（VMIN=0/VTIME=1）；另有多条易踩坑约束，见下方要点 |
 | PWM | sysfs（`/sys/class/pwm/pwmchipN/pwmM`，ffi 直写、不经 io 库）；写序固定 duty=0 → period → duty_cycle（否则降频被 EINVAL 拒绝）；export 前置校验 npwm 范围，errno 给人话提示 |
+
+UART 的易踩坑约束：
+
+- open 时快照原始 termios，close 先恢复再关闭——板载 UART 的配置跨 close 保留在 tty 上
+- 波特率必须传 glibc `B*` 常量（`UART_B_CONST` 映射）：缺失/非法即失败，数值 Hz 会被 EINVAL 静默忽略
+- 读取按 1ms 步进轮询，`timeout_ms` 超 `UART_READ_MAX_MS`（60000）显式失败
 
 **合并读长度上限**：`i2c_read` / `i2c_read_multi` / `i2c_read_reg16` / `spi_read_multi` 的大端合并值受 2^53 精度限制，n 有效范围 **1~6**，越界显式失败（静默钳制会被调用方的拆字节数学放大成错误数据）；更长块读取用字节表族 `i2c_read_bytes` / `i2c_read_multi_bytes`（n 钳 1~16，表长对调用方可见）或 `spi_xfer_full`（全双工帧，返回等长字节表）。
 
