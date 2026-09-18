@@ -50,6 +50,10 @@ bool daemon_stop_requested(DaemonSlot* slot);
 std::string firstExistingModule(const std::string& paths, const std::string& rel);
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath);
 
+/* N-7：本次进程内被弃管（join 超时 abandoned）的守护线程数——
+ * 供 main 退出前统一告警（弃管线程的 lua_State 在 exit 路径上不可回收） */
+int abandonedDaemonCount();
+
 /* ---- 守护运行器（R-7：状态机内聚）----
  * 原 DaemonHolder + daemonRise/daemonFree/daemon_body 三个自由函数分散读写
  * spawned/abandoned/slot/promise 五个字段；收敛后对外只留

@@ -194,6 +194,12 @@ int main(int argc, char** argv) {
 
 		/* 无论有没有成功激活，都进行清理（对应 Cangjie finally） */
 		robot->deactivate();
+		/* N-7：弃管守护的 lua_State 在 exit 路径不可回收——退出前让泄漏可见 */
+		if (int abandoned = abandonedDaemonCount(); abandoned > 0) {
+			std::cerr << "Warning: " << abandoned << " daemon thread(s) abandoned at shutdown"
+				<< " (join timeout); their Lua states are released by process exit only"
+				<< std::endl;
+		}
 		return rc;
 	}
 

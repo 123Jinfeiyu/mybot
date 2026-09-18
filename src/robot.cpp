@@ -19,6 +19,13 @@ void HwRegistry::add(const std::string& name, std::unique_ptr<MatrixVars_Hardwar
 
 /* ---- HwRegistry：会话期别名覆盖（不进销毁序，只改名字索引）---- */
 void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw) {
+	/* N-6：被引用为 controller 的名字不得覆盖——否则 controller 转发按名
+	 * 查到别名（MtVars_Alias），报出的 "non-table result" 与真实成因
+	 * （控制器被动作脚本覆盖）完全脱节。 */
+	if (controllerRefs_.count(name)) {
+		throw IllegalArgumentException("action script alias must not override '"
+			+ name + "': it is referenced as a controller by another hardware variable");
+	}
 	MatrixVars_Hardware* p = hw.get();
 	byName_[name] = p;
 	pool_.push_back(std::move(hw));
@@ -82,6 +89,10 @@ void MetaProvider::seed() {
 					MetaRef ref;
 					ref.col = colName;
 					ref.var = refName;
+					/* N-5：build 前锁定目标（seed 只在此处发生——validate() 于
+					 * active() 内、全部变量注册后、任何 build/会话覆盖前调用），
+					 * collect/destroy 期不再按名重查，会话别名覆盖不改变引用绑定 */
+					ref.target = registry_->find(refName);
 					rArr.push_back(std::move(ref));
 				} else {
 					throw IllegalArgumentException("'" + value + "' (column '" + colName
@@ -143,21 +154,22 @@ Json MetaProvider::collect() {
 		}
 		const std::string& colName = ref.col;
 		const std::string& name = ref.var;
-		if (MatrixVars_Hardware* hv = registry_->find(name)) {
-			Json snap = hv->read();
-			if (snap.isObj()) {
-				jsonMergeInto(obj, snap.asObject());
-			} else if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
-				/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
-				obj.put(colName, snap);
-			} else {
-				throw IllegalArgumentException("'$" + name
-					+ "': referenced variable returned a non-object (scalar) snapshot; "
-					+ "the '$' reference column '" + colName
-					+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
-					+ " carry a numeric value that can fill a column; Alias/scalar variables are"
-					+ " only supported via 'controller' columns.");
-			}
+		/* N-5：使用 seed 期锁定的目标指针，不按名重查（会话覆盖不影响绑定） */
+		MatrixVars_Hardware* hv = ref.target;
+		if (hv == nullptr) { continue; }
+		Json snap = hv->read();
+		if (snap.isObj()) {
+			jsonMergeInto(obj, snap.asObject());
+		} else if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
+			/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
+			obj.put(colName, snap);
+		} else {
+			throw IllegalArgumentException("'$" + name
+				+ "': referenced variable returned a non-object (scalar) snapshot; "
+				+ "the '$' reference column '" + colName
+				+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
+				+ " carry a numeric value that can fill a column; Alias/scalar variables are"
+				+ " only supported via 'controller' columns.");
 		}
 	}
 	return obj;
@@ -207,7 +219,9 @@ Json MetaProvider::collectForDestroy() {
 		}
 		const std::string& colName = ref.col;
 		const std::string& name = ref.var;
-		MatrixVars_Hardware* hv = registry_->find(name);
+		/* N-5：seed 期锁定的目标指针——destroy 期不按名重查，会话别名覆盖
+		 * 不会让销毁期快照解析到覆盖者（别名）上 */
+		MatrixVars_Hardware* hv = ref.target;
 		if (hv == nullptr) { continue; }
 		Json snap = JsonObject();
 		try {
@@ -404,6 +418,8 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 						+ rawCtrl + "' in table '" + mtName
 						+ "', but it is not defined yet. The controller must be defined before the matrix that references it.");
 				}
+				/* N-6：登记 controller 引用，会话期覆盖将拒绝触碰该名字 */
+				registry_.addControllerRef(rawCtrl);
 				ctrlName = rawCtrl;
 			}
 		}

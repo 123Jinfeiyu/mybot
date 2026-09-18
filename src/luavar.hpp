@@ -31,8 +31,11 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	 * 只跳过该引用，不会让本驱动的 destroy 被跳过（F-04′）。 */
 	std::function<Json(bool forDestroy)> getMetadata_;
 	/* controller 按名在注册表里查找（R-3）：声明序保证「先于本变量注册、
-	 * 后于本变量销毁」，查找式引用把这一约定变成运行期可校验的。 */
+	 * 后于本变量销毁」，查找式引用把这一约定变成运行期可校验的。
+	 * N-6：首次转发时把目标指针缓存进 ctrl_（注册表会拒绝会话期覆盖
+	 * controller 名字，指针终身有效），后续转发不再逐次查表。 */
 	std::string ctrlName_;
+	MatrixVars_Hardware* ctrl_ = nullptr;
 	HwRegistry* registry_;
 
 	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,

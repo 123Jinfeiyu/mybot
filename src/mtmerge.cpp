@@ -159,18 +159,21 @@ mt::MatrixObject mergeTwo(const mt::MatrixObject& acc, const mt::MatrixObject& n
 	const std::int64_t rowsAcc = static_cast<std::int64_t>(acc.rows()) - 1;	/* 去表头 */
 	const std::int64_t rowsNext = static_cast<std::int64_t>(next.rows()) - 1;
 
-	/* 负相位把 next 整体上移：其开头 |phase| 行落到输出窗口之外而被丢弃
-	 * （|phase| >= 行数时全部内容丢失，产物不含该输入的任何动作）。这是静默
-	 * 丢动作的入口，必须显式告警——合并产物「少了一段」不能靠肉眼比对发现。 */
+	/* 负相位把 next 整体上移：其开头 |phase| 行落到输出窗口之外而被丢弃。
+	 * 部分丢弃只告警（产物仍含该输入的其余动作）；**全部**丢弃则报错退出 2
+	 * （N-8）：产物不含该输入的任何动作、脚本管道化后警告必被淹没——与
+	 * 「设备集相交报错退出 2」同一严格风格，拒绝静默丢动作。 */
 	if (phase < 0) {
 		const std::int64_t dropped = std::min(-phase, rowsNext);
+		if (dropped == rowsNext && rowsNext > 0) {
+			throw bot::IllegalArgumentException("phase " + std::to_string(phase)
+				+ " drops all " + std::to_string(rowsNext) + " row(s) of '" + pb
+				+ "' (the merged output would contain no action from this input);"
+				+ " use a smaller negative phase");
+		}
 		if (dropped > 0) {
 			std::cerr << "mtmerge: 警告：相位 " << phase << " 使 '" << pb << "' 的前 "
-				<< dropped << " 行被丢弃";
-			if (dropped == rowsNext) {
-				std::cerr << "（全部内容，产物不含该输入的任何动作）";
-			}
-			std::cerr << std::endl;
+				<< dropped << " 行被丢弃" << std::endl;
 		}
 	}
 
@@ -203,8 +206,11 @@ void printHelp() {
 	std::cout << "把设备集不相交的 @Action 行列式脚本合并为一个（N 个输入按序两两归并）。" << std::endl;
 	std::cout << "  --phase=N  第 2 个（及后续每个）输入相对已合并结果的行相位：" << std::endl;
 	std::cout << "             N>0 滞后 N 行（前导行填 \"-\"，派发时该设备未起拍被跳过）；" << std::endl;
-	std::cout << "             N<0 提前（开头 |N| 行被丢弃，会在 stderr 告警），缺省 0（仅作用于 @Action）" << std::endl;
+	std::cout << "             N<0 提前（开头 |N| 行被丢弃，部分丢弃在 stderr 告警；" << std::endl;
+	std::cout << "             全部丢弃报错退出 2），缺省 0（仅作用于 @Action）" << std::endl;
 	std::cout << "  --out=F    写入文件；缺省打印 stdout（可管道给 mybot）" << std::endl;
+	std::cout << "退出码：0 成功；1 文件打不开/写不进；2 语义错误（设备集相交、@Alias/@Vars" << std::endl;
+	std::cout << "        同名行、负相位把某输入全部丢弃、参数非法/缺少值、输入超限）。" << std::endl;
 	std::cout << "冲突语义：同一设备（<device>.<param> 的 device 名）出现在两个输入中即报错退出 2。" << std::endl;
 	std::cout << "          @Alias / @Vars 按行叠加，同名行（name 列）即报错退出 2。" << std::endl;
 }

@@ -51,6 +51,22 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 - `result` / `message` / `mode` 三个键名由框架保留，`.mt` 不得用作参数列（`MtVars_Lua::rejectReservedKeys`）
 - 驱动沙箱会禁用 shell 与任意文件读写，但这是**防误用护栏而非安全边界**——接入 `--tcp` 外部数据源时需另行建立信任边界（详见 [hal.md](hal.md)）
 
+### 沙箱威胁模型（N-9，显式声明）
+
+`modules/` 下的驱动与 `@Daemon` chunk 按**可信输入**对待，沙箱的边界是
+「驱动作者边界」而非「网络攻击边界」：
+
+- 驱动可经 `require("ffi")` 调 `ffi.C`/`ffi.load` 触达任意 native 符号，
+  `os.execute` 中和与文件 I/O 白名单在 ffi 面前形同虚设——这是设计取舍
+  （驱动本来就持有真实总线的读写能力，I2C/SPI 事务本身即不可逆向沙箱化）
+- 结构脚本与动作脚本落盘前只是数据；**驱动文件（`modules/**/*.lua`）是
+  任意原生代码执行的入口**，其信任级别等同运行 mybot 的用户
+- `--tcp` 模式下外部对端只能提交**动作脚本**（受 C-1/metadata/rejectReservedKeys
+  多层防线约束），不能注入驱动；但动作脚本可触达驱动已暴露的任意 call 路径——
+  驱动作者须自行保证参数校验（如 SCSCL 的烧号须结构期 `allow_burn` 授权）
+- 若需对抗恶意输入源，应在进程外建立隔离（专用用户、容器、网络命名空间），
+  库内 Lua 沙箱对此无能为力
+
 ## 环境变量
 
 | 变量 | 说明 |

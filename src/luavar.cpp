@@ -102,7 +102,10 @@ Json MtVars_Lua::callImpl(const Json& json) {
 
 	/* controller 转发：元数据 ∪ 自己 Lua 的返回表 */
 	if (!ctrlName_.empty()) {
-		MatrixVars_Hardware* controller = registry_->find(ctrlName_);
+		/* N-6：首次转发缓存目标指针。注册表对 controller 名字的会话期
+		 * 覆盖已拒绝（HwRegistry::override），指针终身有效。 */
+		if (ctrl_ == nullptr) { ctrl_ = registry_->find(ctrlName_); }
+		MatrixVars_Hardware* controller = ctrl_;
 		if (controller == nullptr) {
 			throw IllegalArgumentException("controller '" + ctrlName_ + "' of hardware variable '"
 				+ name_ + "' is no longer registered (declaration order guarantees it exists)");

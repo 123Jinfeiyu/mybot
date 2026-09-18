@@ -5,7 +5,7 @@
 #   1. 相位 0 / 正 / 负 的逐格归并（规范化文本精确比对）
 #   2. 设备集相交 → 退出码 2 且点名冲突设备
 #   3. 三输入链式归并
-#   4. 负相位丢内容告警（含全部丢弃）
+#   4. 负相位丢内容：部分丢弃告警，全部丢弃报错退出 2（N-8，不再静默）
 #   5. 合并产物回喂 mybot：相位前导 "-" 的设备必须被跳过（不得 play 0.0）
 #
 # 用法：./scripts/mtmerge_e2e.sh
@@ -183,23 +183,15 @@ EOF
 )"
 assert_eq "chain3" "$exp" "$got"
 
-# ---------------- 4. 负相位丢内容告警 ----------------
+# ---------------- 4. 负相位丢内容：部分丢弃告警 / 全部丢弃报错（N-8） ----------------
 err="$( "$MTMERGE" --phase=-1 "$WORK/a.mt" "$WORK/b.mt" 2>&1 >/dev/null )"
 assert_contains "warn_partial" "'$WORK/b.mt' 的前 1 行被丢弃" "$err"
 
-err="$( "$MTMERGE" --phase=-5 "$WORK/a.mt" "$WORK/b.mt" 2>&1 >/dev/null )"
-assert_contains "warn_all" "全部内容" "$err"
-
-got="$( "$MTMERGE" --phase=-5 "$WORK/a.mt" "$WORK/b.mt" 2>/dev/null | norm )"
-exp="$(norm <<'EOF'
-@Action
-s1.A s2.B s3.C;
-10 20 -;
-11 - -;
-@
-EOF
-)"
-assert_eq "phase_neg_all" "$exp" "$got"
+# 全部丢弃（phase=-5 ≥ b.mt 全部 3 行）：报错退出 2，不再静默产出空动作产物
+rc=0
+err="$( "$MTMERGE" --phase=-5 "$WORK/a.mt" "$WORK/b.mt" 2>&1 >/dev/null )" || rc=$?
+assert_rc "err_all_rc" 2 "$rc"
+assert_contains "err_all_msg" "drops all 3 row(s)" "$err"
 
 # ---------------- 5. 回喂 mybot：前导 "-" 必须跳过 ----------------
 cat > "$WORK/two_relay.sql" <<'EOF'

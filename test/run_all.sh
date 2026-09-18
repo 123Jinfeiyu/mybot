@@ -335,6 +335,9 @@ fi
 #   ref_forward    $ 前向引用合法（装配后统一校验）+ destroy 只取字面列
 #                  （不再出现读已释放引用的 Deactive warning，F-04/F-05）
 #   ref_undefined  $ 指向未定义变量 → 装配期报错且先于任何驱动 build（无 spawned）
+#   ref_override   N-5：会话 @Alias 覆盖结构 @Vars 名字，$ 引用列仍绑定结构期
+#                  变量（seed 期锁定目标指针）——note=200 而非按名重查到别名报
+#                  "referenced variable returned a non-object"
 #   pca9685_virt / pca9685_badchan
 #                 首条【非守护】virt 覆盖：@Action 直写舵机驱动板走内存仿真
 #                 （drv_common 入口前置注入 + adopt_fd 跨状态机采纳 fd）；
@@ -386,6 +389,7 @@ parse_cases=(
 	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
 	'ref_forward.sql|ref_forward.mt|0|joined, total publishes=|Deactive warning'
 	'ref_undefined.sql|ref_undefined.mt|1|but it is not defined|spawned, config:'
+	'ref_override.sql|ref_override.mt|0|note=200|referenced variable returned a non-object'
 	'lex_semicolons.sql|lex_semicolons.mt|1|Token ;'
 	'param_override.sql|param_override.mt|1|is rejected because'
 	'daemon_badfield.sql|daemon_badfield.mt|0|absent or non-numeric in driver result'

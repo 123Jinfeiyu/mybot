@@ -32,6 +32,10 @@ class HwRegistry {
 	std::vector<std::unique_ptr<MatrixVars_Hardware>> pool_;	/* 所有权（含 run 期别名） */
 	std::vector<MatrixVars_Hardware*> seq_;			/* 销毁序：结构声明序，active/deactivate 按序 */
 	std::map<std::string, MatrixVars_Hardware*> byName_;	/* 名字索引 */
+	/* N-6：被引用为 controller 的名字集合——会话期覆盖不得触碰，
+	 * 否则 controller 转发按名查到别名（MtVars_Alias），报出的
+	 * "non-table result" 与真实成因（控制器被覆盖）完全脱节。 */
+	std::set<std::string> controllerRefs_;
 
 public:
 	/* 结构期注册：重名即抛（source 指明声明来源，如 " (in table 'X')"） */
@@ -39,8 +43,12 @@ public:
 			const std::string& source = "");
 
 	/* 会话期别名覆盖：不进入销毁序（别名无资源可释放），只改写名字索引。
-	 * 被覆盖的结构变量仍在销毁序中，deactivate 照常清理。 */
+	 * 被覆盖的结构变量仍在销毁序中，deactivate 照常清理。
+	 * 名字被引用为 controller 时拒绝覆盖（N-6）。 */
 	void override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw);
+
+	/* 登记 controller 引用（createLuaVars 装配期调用） */
+	void addControllerRef(const std::string& name) { controllerRefs_.insert(name); }
 
 	MatrixVars_Hardware* find(const std::string& name) const {
 		auto it = byName_.find(name);
@@ -54,10 +62,16 @@ public:
 };
 
 /* 元数据引用列：变量引用（var 非空）或 $(...) 表达式引用（expr 非空）。
- * 表达式在 seed 期解析（语法早报 + 标识符存在性校验），collect 期惰性求值。 */
+ * 表达式在 seed 期解析（语法早报 + 标识符存在性校验），collect 期惰性求值。
+ * N-5：var 引用在 seed 期（build 前，先于任何会话别名覆盖）锁定目标指针
+ * target——collect/collectForDestroy 不再按名重查。否则 --tcp 会话别名
+ * 覆盖后，结构变量的销毁期快照会解析到覆盖者（别名），拿到错误的 fd/addr
+ * 快照做去初始化。锁定期语义：$ 引用绑定结构期变量，会话覆盖不影响它。
+ * target 为非所有权指针，HwRegistry::pool_ 只增不减，生命周期安全。 */
 struct MetaRef {
 	std::string col;				/* 承载 $ 的列名 */
 	std::string var;				/* 变量引用（expr 为空时有效） */
+	MatrixVars_Hardware* target = nullptr;	/* seed 期锁定的引用目标 */
 	std::shared_ptr<const Expression> expr;		/* 表达式引用 */
 };
 

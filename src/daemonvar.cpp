@@ -1,5 +1,6 @@
 #include "daemonvar.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -11,6 +12,13 @@
 #include "util.hpp"
 
 namespace bot {
+
+/* N-7：abandoned 守护线程进程级计数——join 超时弃管的线程在进程退出时
+ * 被 detach 硬杀，其私有 lua_State 泄漏在 exit 路径上无法观察（「宁漏不崩」
+ * 已声明，但缺运行时可见性）。计数供 main 退出前统一告警。 */
+static std::atomic<int> g_abandonedDaemons{0};
+
+int abandonedDaemonCount() { return g_abandonedDaemons.load(); }
 
 /* L4：共享槽布局硬编码 mutex 预留 64 字节（daemonvar.hpp），超出即越界写 count——
  * glibc aarch64=48B / x86_64=40B 远小于 64，但异种 libc 应在编译期就失败。 */
@@ -202,6 +210,7 @@ void DaemonRunner::waitForExit(const std::string& name) {
 			return;
 		}
 		abandoned_.store(true);
+		g_abandonedDaemons.fetch_add(1);	/* N-7：进程退出前统一告警 */
 		/* 审计 #2：置弃管后检查线程是否已过「退出检查点」。
 		 * - 未过：线程离开 tick 循环后必在复查中看到 abandoned 并自行
 		 *   exchange 认领释放——本方不得触碰槽（线程可能仍在拍内）。
