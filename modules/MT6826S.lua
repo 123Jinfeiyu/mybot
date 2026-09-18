@@ -119,10 +119,7 @@ function build(data)
 
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 	dev_delay = tonumber(data.delay) or 0
 
@@ -132,10 +129,7 @@ function build(data)
 	-- 在位自检：读固定值寄存器（0x005 高 5 位恒 0；0x004 bit0 恒 0）
 	local raw, st, ok = read_snapshot(fd)
 	if raw == nil then
-		return {
-			result = "ERR",
-			message = "MT6826S not responding (fixed-bit check failed, check SPI mode 3 and wiring)"
-		}
+		return err("MT6826S not responding (fixed-bit check failed, check SPI mode 3 and wiring)")
 	end
 
 	print(string.format("MT6826S init OK: fd=%d delay=%dus zero=%.1fdeg status=%d crc_ok=%s",
@@ -159,10 +153,7 @@ function call(data)
 
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	local raw, st, ok = read_snapshot(fd)
@@ -171,10 +162,7 @@ function call(data)
 		raw, st, ok = read_snapshot(fd)
 	end
 	if raw == nil then
-		return {
-			result = "ERR",
-			message = "MT6826S not responding (read failed)"
-		}
+		return err("MT6826S not responding (read failed)")
 	end
 
 	local deg = raw * 360.0 / ANGLE_MAX

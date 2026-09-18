@@ -77,33 +77,21 @@ function build(data)
 	-- WHO_AM_I 自检
 	local id = i2c_read_reg(fd, REG_WHOAMI)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (read WHO_AM_I failed, check address 0x5C/0x5D and wiring)"
-		}
+		return err("LPS22HB not responding (read WHO_AM_I failed, check address 0x5C/0x5D and wiring)")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("LPS22HB unexpected WHO_AM_I 0x%02X (expect 0xB1; 0xBD=LPS25HB)", id)
-		}
+		return err(string.format("LPS22HB unexpected WHO_AM_I 0x%02X (expect 0xB1; 0xBD=LPS25HB)", id))
 	end
 
 	-- 软复位（SWRESET 自清零），轮询至完成
 	if not i2c_write_reg(fd, REG_CTRL2, BIT_SWRESET) then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (soft reset write failed)"
-		}
+		return err("LPS22HB not responding (soft reset write failed)")
 	end
 	local waited = 0
 	while waited < 20 do
 		local c2 = i2c_read_reg(fd, REG_CTRL2)
 		if c2 < 0 then
-			return {
-				result = "ERR",
-				message = "LPS22HB not responding (reset poll failed)"
-			}
+			return err("LPS22HB not responding (reset poll failed)")
 		end
 		if math.floor(c2 / 4) % 2 == 0 then break end
 		milli_sleep(1)
@@ -112,10 +100,7 @@ function build(data)
 
 	-- 单次模式 + BDU（输出寄存器读期间不刷新，防撕裂）
 	if not i2c_write_reg(fd, REG_CTRL1, CTRL1_VALUE) then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (CTRL_REG1 write failed)"
-		}
+		return err("LPS22HB not responding (CTRL_REG1 write failed)")
 	end
 
 	local wait = tonumber(data.wait)
@@ -151,16 +136,10 @@ function call(data)
 	-- 触发单次转换（读改写保留其余位；ONE_SHOT 硬件自清零）
 	local c2 = i2c_read_reg(fd, REG_CTRL2)
 	if c2 < 0 then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (read CTRL_REG2 failed)"
-		}
+		return err("LPS22HB not responding (read CTRL_REG2 failed)")
 	end
 	if not i2c_write_reg(fd, REG_CTRL2, c2 - c2 % 2 + BIT_ONESHOT) then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (trigger write failed)"
-		}
+		return err("LPS22HB not responding (trigger write failed)")
 	end
 
 	-- 轮询 ONE_SHOT 位清零（转换完成）
@@ -168,17 +147,11 @@ function call(data)
 	while true do
 		local v = i2c_read_reg(fd, REG_CTRL2)
 		if v < 0 then
-			return {
-				result = "ERR",
-				message = "LPS22HB not responding (poll failed)"
-			}
+			return err("LPS22HB not responding (poll failed)")
 		end
 		if v % 2 == 0 then break end
 		if waited >= wait_ms then
-			return {
-				result = "ERR",
-				message = "LPS22HB conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)"
-			}
+			return err("LPS22HB conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)")
 		end
 		milli_sleep(1)
 		waited = waited + 1
@@ -187,10 +160,7 @@ function call(data)
 	-- 5 字节突发读：气压 24 位（小端）+ 温度 16 位（小端）
 	local v = i2c_read_multi(fd, REG_PRESS, 5)
 	if v < 0 then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (read data failed)"
-		}
+		return err("LPS22HB not responding (read data failed)")
 	end
 	local b = {}
 	for i = 0, 4 do b[i + 1] = math.floor(v / 256 ^ (4 - i)) % 256 end

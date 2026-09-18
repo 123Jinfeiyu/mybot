@@ -202,10 +202,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -226,34 +223,22 @@ function build(data)
 	-----------------------------------------------------
 	-- 在位探测 + 完整性自检（0x2032 -> 0xD400，约 220ms）
 	if not send_cmd(fd, CMD_SELFTEST) then
-		return {
-			result = "ERR",
-			message = "SGP30 not responding (selftest write failed, check address 0x58 and wiring)"
-		}
+		return err("SGP30 not responding (selftest write failed, check address 0x58 and wiring)")
 	end
 	milli_sleep(T_SELFTEST_MS)
 	local st = read_bytes(fd, 3)
 	if st == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SGP30 selftest"
-		}
+		return err("Failed to read SGP30 selftest")
 	end
 	local st_word = st[1] * 256 + st[2]
 	if st_word ~= SELFTEST_MAGIC or crc8(st_word) ~= st[3] then
-		return {
-			result = "ERR",
-			message = string.format("SGP30 selftest failed: got 0x%04X (expect 0x%04X + valid CRC)",
-				st_word, SELFTEST_MAGIC)
-		}
+		return err(string.format("SGP30 selftest failed: got 0x%04X (expect 0x%04X + valid CRC)",
+				st_word, SELFTEST_MAGIC))
 	end
 
 	-- 进入持续测量模式
 	if not send_cmd(fd, CMD_INIT) then
-		return {
-			result = "ERR",
-			message = "Failed to send SGP30 Init_air_quality"
-		}
+		return err("Failed to send SGP30 Init_air_quality")
 	end
 	milli_sleep(T_INIT_MS)
 
@@ -298,10 +283,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -325,20 +307,14 @@ function call(data)
 	end
 
 	if not send_cmd(fd, CMD_MEASURE) then
-		return {
-			result = "ERR",
-			message = "SGP30 not responding (measure write failed)"
-		}
+		return err("SGP30 not responding (measure write failed)")
 	end
 
 	milli_sleep(T_MEASURE_MS)	-- 等待测量完成（数据手册最大 12ms + 余量）
 
 	local b = read_bytes(fd, 6)	-- 纯读6字节（不写任何指针字节）
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SGP30"
-		}
+		return err("Failed to read SGP30")
 	end
 
 	-- 6 字节（大端）：CO2eq + CRC, TVOC + CRC

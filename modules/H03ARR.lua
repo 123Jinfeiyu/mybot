@@ -26,7 +26,7 @@ function call(data)
 		for i = 1, n do sum = sum + values[i] end
 		first = values[1] or 0
 	else
-		return { result = "ERR", message = "H-03 input: values is not a Lua table (got " .. type(values) .. ")" }
+		return err("H-03 input: values is not a Lua table (got " .. type(values) .. ")")
 	end
 
 	-- 出参方向：返回表内含 list 数组，应被还原为 JsonArray

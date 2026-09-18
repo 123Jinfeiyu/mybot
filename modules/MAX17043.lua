@@ -62,10 +62,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -81,10 +78,7 @@ function build(data)
 	-- 版本号（家族内不固定，仅日志；读不到 = 器件不在/总线不通）
 	local ver = read_reg16(fd, REG_VER)
 	if ver == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MAX17043 version"
-		}
+		return err("Failed to read MAX17043 version")
 	end
 
 	if os.getenv("BOT4CJ_DEBUG") == "1" then
@@ -112,10 +106,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -130,17 +121,11 @@ function call(data)
 	-----------------------------------------------------
 	local v = read_reg16(fd, REG_VCELL)
 	if v == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MAX17043 VCELL"
-		}
+		return err("Failed to read MAX17043 VCELL")
 	end
 	local s = read_reg16(fd, REG_SOC)
 	if s == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MAX17043 SOC"
-		}
+		return err("Failed to read MAX17043 SOC")
 	end
 
 	-- 返回字典：SOC 保留 1/256% 小数精度（内核取整为 >>8）

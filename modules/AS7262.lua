@@ -174,10 +174,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -203,39 +200,36 @@ function build(data)
 	-- 软复位（RST 位，自清除；SparkFun 同款等 1s 不轮询启动）
 	local ctl = virtual_read(fd, V_CONTROL_SETUP)
 	if ctl == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 CONTROL_SETUP"  }
+		return err("Failed to read AS7262 CONTROL_SETUP")
 	end
 	if virtual_write(fd, V_CONTROL_SETUP, bitc.bor(ctl % 256, BIT_RST)) == nil then
-		return {  result = "ERR", message = "Failed to reset AS7262"  }
+		return err("Failed to reset AS7262")
 	end
 	milli_sleep(T_RESET_MS)
 
 	-- 器件甄别（虚拟寄存器 0x00 = 0x3E）
 	local dtype = virtual_read(fd, V_DEVICE_TYPE)
 	if dtype == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 device type"  }
+		return err("Failed to read AS7262 device type")
 	end
 	if dtype ~= DEV_TYPE_AS7262 then
-		return {
-			result = "ERR",
-			message = string.format("Device type = 0x%02X (expect 0x3E AS7262, not AS7262?)", dtype)
-		}
+		return err(string.format("Device type = 0x%02X (expect 0x3E AS7262, not AS7262?)", dtype))
 	end
 
 	-- 积分时间
 	if virtual_write(fd, V_INT_T, integ) == nil then
-		return {  result = "ERR", message = "Failed to write AS7262 integration time"  }
+		return err("Failed to write AS7262 integration time")
 	end
 
 	-- 增益（[5:4]）与模式 2 连续全通道（[3:2]），读-改-写合并一次
 	ctl = virtual_read(fd, V_CONTROL_SETUP)
 	if ctl == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 CONTROL_SETUP"  }
+		return err("Failed to read AS7262 CONTROL_SETUP")
 	end
 	local v = bitc.band(ctl % 256, bitc.band(MASK_GAIN, MASK_BANK))
 	v = bitc.bor(v, bitc.bor(bitc.lshift(gain, 4), bitc.lshift(BANK_ALL_CONT, 2)))
 	if virtual_write(fd, V_CONTROL_SETUP, v) == nil then
-		return {  result = "ERR", message = "Failed to write AS7262 gain/mode"  }
+		return err("Failed to write AS7262 gain/mode")
 	end
 
 	print(string.format("AS7262 init OK: addr=0x%02X, gain=%dx, integ=%d (每轮约%.0fms), timeout=%dms",
@@ -262,10 +256,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -283,14 +274,11 @@ function call(data)
 	while true do
 		local ctl = virtual_read(fd, V_CONTROL_SETUP)
 		if ctl == nil then
-			return {  result = "ERR", message = "Failed to poll AS7262 data-ready"  }
+			return err("Failed to poll AS7262 data-ready")
 		end
 		if bitc.band(ctl % 256, BIT_DATA_RDY) ~= 0 then break end
 		if left <= 0 then
-			return {
-				result = "ERR",
-				message = string.format("AS7262 data-ready timeout (%dms)", poll_timeout or 1000)
-			}
+			return err(string.format("AS7262 data-ready timeout (%dms)", poll_timeout or 1000))
 		end
 		milli_sleep(POLL_MS)
 		left = left - POLL_MS
@@ -301,7 +289,7 @@ function call(data)
 	for _, ch in ipairs(CHANS) do
 		local v = read_channel(fd, ch[2])
 		if v == nil then
-			return {  result = "ERR", message = "Failed to read AS7262 channel " .. ch[1]  }
+			return err("Failed to read AS7262 channel " .. ch[1])
 		end
 		vals[ch[1]] = v
 	end
@@ -309,7 +297,7 @@ function call(data)
 	-- 片上温度（二进制补码）
 	local tb = virtual_read(fd, V_DEVICE_TEMP)
 	if tb == nil or tb < 0 then
-		return {  result = "ERR", message = "Failed to read AS7262 temperature"  }
+		return err("Failed to read AS7262 temperature")
 	end
 	local temp_c = tb
 	if temp_c >= 128 then temp_c = temp_c - 256 end
@@ -317,10 +305,10 @@ function call(data)
 	-- 清 DATA_RDY（SparkFun 同款 RMW 清位；连续模式下芯片随即开始下一轮）
 	local ctl = virtual_read(fd, V_CONTROL_SETUP)
 	if ctl == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 CONTROL_SETUP"  }
+		return err("Failed to read AS7262 CONTROL_SETUP")
 	end
 	if virtual_write(fd, V_CONTROL_SETUP, bitc.band(ctl % 256, bitc.bxor(BIT_DATA_RDY, 0xFF))) == nil then
-		return {  result = "ERR", message = "Failed to clear AS7262 data-ready"  }
+		return err("Failed to clear AS7262 data-ready")
 	end
 
 	local ret = {

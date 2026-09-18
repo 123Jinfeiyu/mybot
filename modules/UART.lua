@@ -44,18 +44,12 @@ local function build_impl(data)
 
 	local path = data.path
 	if path == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: path"
-		}
+		return err("Invalid Arguments: path")
 	end
 
 	local uart_baud = tonumber(data.baud)
 	if uart_baud == nil or uart_baud <= 0 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: baud (positive number)"
-		}
+		return err("Invalid Arguments: baud (positive number)")
 	end
 
 	-- 重复 build 先关旧句柄再开新（与 I2C/GPIO/SPI 的守卫一致；
@@ -69,10 +63,7 @@ local function build_impl(data)
 	-- open 前的 termios 由 HAL 快照，关闭时自动恢复）
 	local opened = uart_open(path, uart_baud)
 	if opened == nil or opened < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to open UART file"
-		}
+		return err("Failed to open UART file")
 	end
 
 	fd = opened
@@ -118,19 +109,13 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	dbg_table("-------- UART.lua caller func get a table --------", data)
 
 	if fd == nil or fd < 0 then
-		return {
-			result = "ERR",
-			message = "UART not opened (build first)"
-		}
+		return err("UART not opened (build first)")
 	end
 
 	-- 返回字典（fd 经引用机制流入设备驱动元数据）。

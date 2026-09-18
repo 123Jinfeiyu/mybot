@@ -127,10 +127,7 @@ function build(data)
 
 	local fd = tonumber(data.fd)
 	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd (UART 列是否引用了 @UART 变量?)"
-		}
+		return err("Invalid Argument: fd (UART 列是否引用了 @UART 变量?)")
 	end
 
 	local timeout = tonumber(data.timeout)
@@ -138,18 +135,13 @@ function build(data)
 	cfg_timeout = math.floor(timeout)
 
 	-- 切被动模式（器件 ACK 应答回读校验）
-	local f, err = exec(fd, CMD_REPORT, 0x01, cfg_timeout)
+	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+	local f, emsg = exec(fd, CMD_REPORT, 0x01, cfg_timeout)
 	if f == nil then
-		return {
-			result = "ERR",
-			message = "SDS011 not responding (set passive mode: " .. err .. ")"
-		}
+		return err("SDS011 not responding (set passive mode: " .. emsg .. ")")
 	end
 	if f[3] ~= CMD_REPORT or f[4] ~= 0x01 then
-		return {
-			result = "ERR",
-			message = "SDS011 passive mode rejected"
-		}
+		return err("SDS011 passive mode rejected")
 	end
 
 	-- 固件版本（横幅展示，同时确认查询链路）
@@ -181,10 +173,7 @@ function call(data)
 
 	local fd = tonumber(data.fd)
 	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -195,17 +184,11 @@ function call(data)
 		if tostring(power) == "sleep" then d0 = 0
 		elseif tostring(power) == "work" then d0 = 1
 		else
-			return {
-				result = "ERR",
-				message = "Invalid Argument: power '" .. tostring(power) .. "' (sleep|work)"
-			}
+			return err("Invalid Argument: power '" .. tostring(power) .. "' (sleep|work)")
 		end
-		local f, err = exec(fd, CMD_SLEEP, d0, cfg_timeout or READ_TIMEOUT_MS)
+		local f, emsg = exec(fd, CMD_SLEEP, d0, cfg_timeout or READ_TIMEOUT_MS)
 		if f == nil then
-			return {
-				result = "ERR",
-				message = "SDS011 not responding (power: " .. err .. ")"
-			}
+			return err("SDS011 not responding (power: " .. emsg .. ")")
 		end
 		return {
 			result = "OK",
@@ -215,12 +198,9 @@ function call(data)
 
 	-----------------------------------------------------
 	-- 查询读数
-	local f, err = exec(fd, CMD_QUERY, nil, cfg_timeout or READ_TIMEOUT_MS)
+	local f, emsg = exec(fd, CMD_QUERY, nil, cfg_timeout or READ_TIMEOUT_MS)
 	if f == nil then
-		return {
-			result = "ERR",
-			message = "SDS011 not responding (query: " .. err .. ")"
-		}
+		return err("SDS011 not responding (query: " .. emsg .. ")")
 	end
 
 	local pm25 = (f[3] + f[4] * 256) / 10.0

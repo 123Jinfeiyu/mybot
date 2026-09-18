@@ -90,10 +90,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -103,10 +100,7 @@ function build(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd (UART 列是否引用了 @UART 变量?)"
-		}
+		return err("Invalid Argument: fd (UART 列是否引用了 @UART 变量?)")
 	end
 
 	-- 丢弃上电以来的陈旧字节
@@ -135,10 +129,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -148,10 +139,7 @@ function call(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -162,19 +150,13 @@ function call(data)
 	uart_flush(fd)		-- 丢弃陈旧字节，防止旧应答错位
 	local wn = uart_write(fd, req)
 	if wn ~= FRAME_LEN then
-		return {
-			result = "ERR",
-			message = "Failed to write MHZ19 request (" .. tostring(wn) .. ")"
-		}
+		return err("Failed to write MHZ19 request (" .. tostring(wn) .. ")")
 	end
 
 	-- 多轮累积聚合读：容忍前导噪声与跨轮分片（校验和在 read_frame 内兜底）
 	local f, ferr = read_frame(fd, READ_TIMEOUT_MS)
 	if f == nil then
-		return {
-			result = "ERR",
-			message = "MHZ19 no valid response: " .. tostring(ferr)
-		}
+		return err("MHZ19 no valid response: " .. tostring(ferr))
 	end
 
 	local co2 = f[3] * 256 + f[4]

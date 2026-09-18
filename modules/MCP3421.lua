@@ -111,10 +111,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -129,10 +126,10 @@ function build(data)
 	-----------------------------------------------------
 	-- 解析配置
 	local res, e1 = cfg_num(data.res, 18, RES_CODE, "res(bits)")
-	if e1 then return { result = "ERR", message = e1 } end
+	if e1 then return err(e1) end
 
 	local pga, e2 = cfg_num(data.pga, 1, PGA_CODE, "pga(gain)")
-	if e2 then return { result = "ERR", message = e2 } end
+	if e2 then return err(e2) end
 
 	local opmode_s = data.opmode
 	if opmode_s == nil or opmode_s == "-" or opmode_s == "" then opmode_s = "cont" end
@@ -141,10 +138,7 @@ function build(data)
 	if opmode_s == "cont" then cont = true
 	elseif opmode_s == "oneshot" then cont = false
 	else
-		return {
-			result = "ERR",
-			message = "Invalid Argument: opmode '" .. opmode_s .. "' (cont|oneshot)"
-		}
+		return err("Invalid Argument: opmode '" .. opmode_s .. "' (cont|oneshot)")
 	end
 
 	local wait = tonumber(data.wait)
@@ -157,10 +151,7 @@ function build(data)
 	-----------------------------------------------------
 	-- 写配置（MCP3421 无寄存器指针：单字节写入即配置）
 	if i2c_write_multi(fd, cfg) ~= 0 then
-		return {
-			result = "ERR",
-			message = "MCP3421 not responding (config write failed, check address 0x68 and wiring)"
-		}
+		return err("MCP3421 not responding (config write failed, check address 0x68 and wiring)")
 	end
 
 	-- 读回回显校验（兼在位探测）：RDY 位随转换状态浮动，仅比对低 6 位
@@ -168,17 +159,11 @@ function build(data)
 	local nbytes = (res == 18) and 4 or 3
 	local v = i2c_read(fd, nbytes)
 	if v < 0 then
-		return {
-			result = "ERR",
-			message = "MCP3421 not responding (echo read failed)"
-		}
+		return err("MCP3421 not responding (echo read failed)")
 	end
 	local echo = v % 256
 	if echo % 64 ~= cfg % 64 then
-		return {
-			result = "ERR",
-			message = string.format("MCP3421 config echo mismatch: got 0x%02X (expect 0x%02X masked 0x%02X)", echo, cfg, MASK_ECHO)
-		}
+		return err(string.format("MCP3421 config echo mismatch: got 0x%02X (expect 0x%02X masked 0x%02X)", echo, cfg, MASK_ECHO))
 	end
 
 	cfg_res = res
@@ -200,10 +185,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -222,10 +204,7 @@ function call(data)
 	-- 单次模式：每次 call 重写配置触发新转换；连续模式芯片自行持续转换
 	if not cfg_cont then
 		if i2c_write_multi(fd, cfg_trigger) ~= 0 then
-			return {
-				result = "ERR",
-				message = "MCP3421 not responding (trigger write failed)"
-			}
+			return err("MCP3421 not responding (trigger write failed)")
 		end
 	end
 
@@ -234,10 +213,7 @@ function call(data)
 	while true do
 		local v = i2c_read(fd, cfg_nbytes)
 		if v < 0 then
-			return {
-				result = "ERR",
-				message = "MCP3421 not responding (read failed)"
-			}
+			return err("MCP3421 not responding (read failed)")
 		end
 		local raw, echo = decode(v)
 		if math.floor(echo / 128) % 2 == 0 then
@@ -248,10 +224,7 @@ function call(data)
 			}
 		end
 		if waited >= wait_ms then
-			return {
-				result = "ERR",
-				message = "MCP3421 conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)"
-			}
+			return err("MCP3421 conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)")
 		end
 		milli_sleep(5)
 		waited = waited + 5

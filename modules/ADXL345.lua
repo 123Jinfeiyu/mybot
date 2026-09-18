@@ -116,10 +116,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -139,48 +136,30 @@ function build(data)
 	-- 芯片甄别
 	local id = i2c_read_reg(fd, REG_DEVID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read ADXL345 DEVID"
-		}
+		return err("Failed to read ADXL345 DEVID")
 	end
 	if id ~= DEVID then
-		return {
-			result = "ERR",
-			message = string.format("DEVID = 0x%02X (expect 0xE5, not ADXL345?)", id)
-		}
+		return err(string.format("DEVID = 0x%02X (expect 0xE5, not ADXL345?)", id))
 	end
 
 	-- 数据格式：保留高位、置 FULL_RES + 量程
 	local df = i2c_read_reg(fd, REG_DATA_FORMAT)
 	if df < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read ADXL345 DATA_FORMAT"
-		}
+		return err("Failed to read ADXL345 DATA_FORMAT")
 	end
 	if not i2c_write_reg(fd, REG_DATA_FORMAT,
 		bitc.bor(bitc.band(df, 0xF0), bitc.bor(FULL_RES, range_v))) then
-		return {
-			result = "ERR",
-			message = "Failed to write ADXL345 DATA_FORMAT"
-		}
+		return err("Failed to write ADXL345 DATA_FORMAT")
 	end
 
 	-- 数据率（高性能档，清低功耗位）
 	if not i2c_write_reg(fd, REG_BW_RATE, odr_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write ADXL345 BW_RATE"
-		}
+		return err("Failed to write ADXL345 BW_RATE")
 	end
 
 	-- 进入测量模式（清 Sleep/Link 位，同 Adafruit 参考）
 	if not i2c_write_reg(fd, REG_POWER_CTL, MEASURE) then
-		return {
-			result = "ERR",
-			message = "Failed to write ADXL345 POWER_CTL"
-		}
+		return err("Failed to write ADXL345 POWER_CTL")
 	end
 
 	-- 等两个测量周期，首拍数据就绪
@@ -212,10 +191,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -230,10 +206,7 @@ function call(data)
 	-----------------------------------------------------
 	local b = read_bytes6(fd, REG_DATAX0)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read ADXL345 accel data"
-		}
+		return err("Failed to read ADXL345 accel data")
 	end
 
 	local ret = {

@@ -141,10 +141,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -164,54 +161,33 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位
 	if not write_reg16(fd, REG_CONFIG, CFG_RST) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA226 reset"
-		}
+		return err("Failed to write INA226 reset")
 	end
 	milli_sleep(10)
 
 	-- ID 寄存器甄别芯片（INA219 没有的手段，INA3221 同款）
 	local mfg = read_reg16(fd, REG_MFG)
 	if mfg == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 manufacturer ID"
-		}
+		return err("Failed to read INA226 manufacturer ID")
 	end
 	if mfg ~= 0x5449 then
-		return {
-			result = "ERR",
-			message = string.format("Manufacturer ID = 0x%04X (expect 0x5449 'TI', not INA226?)", mfg)
-		}
+		return err(string.format("Manufacturer ID = 0x%04X (expect 0x5449 'TI', not INA226?)", mfg))
 	end
 	local die = read_reg16(fd, REG_DIE)
 	if die == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 die ID"
-		}
+		return err("Failed to read INA226 die ID")
 	end
 	if die ~= 0x2260 then
-		return {
-			result = "ERR",
-			message = string.format("Die ID = 0x%04X (expect 0x2260, not INA226?)", die)
-		}
+		return err(string.format("Die ID = 0x%04X (expect 0x2260, not INA226?)", die))
 	end
 
 	-- 辅助校验：软复位后配置默认值
 	local cfg = read_reg16(fd, REG_CONFIG)
 	if cfg == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 config"
-		}
+		return err("Failed to read INA226 config")
 	end
 	if cfg ~= CFG_DEFAULT then
-		return {
-			result = "ERR",
-			message = string.format("Config after reset = 0x%04X (expect 0x%04X)", cfg, CFG_DEFAULT)
-		}
+		return err(string.format("Config after reset = 0x%04X (expect 0x%04X)", cfg, CFG_DEFAULT))
 	end
 
 	-- 写工作配置：保留位 + 平均 + 双通道转换时间 + 连续模式
@@ -220,10 +196,7 @@ function build(data)
 		bitc.bor(bitc.lshift(ct_code_v, 6),
 		bitc.bor(bitc.lshift(ct_code_v, 3), CFG_MODE_CONT))))
 	if not write_reg16(fd, REG_CONFIG, config) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA226 config"
-		}
+		return err("Failed to write INA226 config")
 	end
 
 	-- 等待一个转换循环（总线 + 分流 各 ct x 平均次数），首拍数据就绪
@@ -253,10 +226,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -271,26 +241,17 @@ function call(data)
 	-- build 前置守卫：rshunt 仅 build 赋值，未 build 先 call 会做 nil 除法
 	-- 裸 error（与 INA219 的守卫对齐）
 	if rshunt == nil then
-		return {
-			result = "ERR",
-			message = "INA226 not built (build first)"
-		}
+		return err("INA226 not built (build first)")
 	end
 
 	-----------------------------------------------------
 	local s = read_reg16(fd, REG_SHUNT)
 	if s == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 shunt voltage"
-		}
+		return err("Failed to read INA226 shunt voltage")
 	end
 	local b = read_reg16(fd, REG_BUS)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 bus voltage"
-		}
+		return err("Failed to read INA226 bus voltage")
 	end
 
 	-----------------------------------------------------

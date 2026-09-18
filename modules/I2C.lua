@@ -33,10 +33,7 @@ local function build_impl(data)
 
 	local path = data.path
 	if path == nil then	-- 检查文件句柄参数是否存在
-		return {
-			result = "ERR",
-			message = "No I2C path"
-		}
+		return err("No I2C path")
 	end
 
 
@@ -50,10 +47,7 @@ local function build_impl(data)
 	-- stdin 被关闭时内核就返回 0，用 > 0 判定会把可用总线当成打开失败）
 	fd = i2c_open(path)
 	if fd < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to open I2C file"
-		}
+		return err("Failed to open I2C file")
 	end
 
 
@@ -102,10 +96,7 @@ function call(data)
 
 	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐；fd 0 合法，故判 < 0）
 	if fd == nil or fd < 0 then
-		return {
-			result = "ERR",
-			message = "I2C not opened (build first)"
-		}
+		return err("I2C not opened (build first)")
 	end
 
 	return {  result = "OK",  fd = fd  }

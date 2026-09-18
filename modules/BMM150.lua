@@ -210,10 +210,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -230,66 +227,42 @@ function build(data)
 	if pname == "-" or pname == "" then pname = "regular" end
 	local p = PRESETS[pname]
 	if p == nil then
-		return {
-			result = "ERR",
-			message = "Invalid preset: '" .. tostring(data.preset) ..
-				"' (expect lowpower/regular/enhanced/highaccuracy)"
-		}
+		return err("Invalid preset: '" .. tostring(data.preset) ..
+				"' (expect lowpower/regular/enhanced/highaccuracy)")
 	end
 
 	-----------------------------------------------------
 	-- 上电：芯片复位后处于 suspend 挂起态，先写 Power Control 再等 3ms，
 	-- 之后才允许读 CHIP_ID / trim
 	if not i2c_write_reg(fd, REG_POWER, POWER_ON) then
-		return {
-			result = "ERR",
-			message = "Failed to power on BMM150"
-		}
+		return err("Failed to power on BMM150")
 	end
 	milli_sleep(STARTUP_MS)
 
 	local id = i2c_read_reg(fd, REG_CHIP_ID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BMM150 CHIP_ID"
-		}
+		return err("Failed to read BMM150 CHIP_ID")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("CHIP_ID = 0x%02X (expect 0x32, not BMM150?)", id)
-		}
+		return err(string.format("CHIP_ID = 0x%02X (expect 0x32, not BMM150?)", id))
 	end
 
 	-- 工厂 trim 16 字节（补偿必需，无 trim 数据则输出无意义）
 	trim = read_trim(fd)
 	if trim == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMM150 trim registers"
-		}
+		return err("Failed to read BMM150 trim registers")
 	end
 
 	-- 预设：重复次数 + ODR，随后进 normal 模式（bit[2:1] = 0）
 	if not i2c_write_reg(fd, REG_REP_XY, p.rxy) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMM150 REP_XY"
-		}
+		return err("Failed to write BMM150 REP_XY")
 	end
 	if not i2c_write_reg(fd, REG_REP_Z, p.rz) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMM150 REP_Z"
-		}
+		return err("Failed to write BMM150 REP_Z")
 	end
 	local mode = p.odr * 8		-- ODR 置 bit[4:3] + normal 模式（bit[2:1]=0）
 	if not i2c_write_reg(fd, REG_OP_MODE, mode) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMM150 OP_MODE"
-		}
+		return err("Failed to write BMM150 OP_MODE")
 	end
 
 	print(string.format("BMM150 init OK: addr=0x%02X, preset=%s (odr=%dHz)",
@@ -316,10 +289,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -333,18 +303,12 @@ function call(data)
 
 	-----------------------------------------------------
 	if trim == nil then
-		return {
-			result = "ERR",
-			message = "BMM150 not built (trim data missing)"
-		}
+		return err("BMM150 not built (trim data missing)")
 	end
 
 	local m = i2c_read_multi_bytes(fd, REG_DATA, 8)
 	if m == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMM150 data"
-		}
+		return err("Failed to read BMM150 data")
 	end
 
 	-- 13 位有符号拆装（MSB 寄存器存符号扩展位，Bosch 构造法）：

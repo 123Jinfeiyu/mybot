@@ -121,10 +121,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -143,26 +140,17 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位
 	if not write_reg16(fd, REG_CONFIG, CFG_RST) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA219 reset"
-		}
+		return err("Failed to write INA219 reset")
 	end
 	milli_sleep(10)
 
 	-- 无 ID 寄存器：读回配置默认值甄别芯片（INA3221 的 0xFE/0xFF 手段在此不存在）
 	local cfg = read_reg16(fd, REG_CONFIG)
 	if cfg == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA219 config"
-		}
+		return err("Failed to read INA219 config")
 	end
 	if cfg ~= CFG_DEFAULT then
-		return {
-			result = "ERR",
-			message = string.format("Config after reset = 0x%04X (expect 0x%04X, not INA219?)", cfg, CFG_DEFAULT)
-		}
+		return err(string.format("Config after reset = 0x%04X (expect 0x%04X, not INA219?)", cfg, CFG_DEFAULT))
 	end
 
 	-- 写工作配置：32V 档 + PGA /8 + 平均 + 连续模式
@@ -171,10 +159,7 @@ function build(data)
 		bitc.bor(bitc.lshift(avg_code_v, 7),
 		bitc.bor(bitc.lshift(avg_code_v, 3), CFG_MODE_CONT))))
 	if not write_reg16(fd, REG_CONFIG, config) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA219 config"
-		}
+		return err("Failed to write INA219 config")
 	end
 
 	-- 等待一个转换循环（总线 + 分流 各 532µs x 平均次数），首拍数据就绪
@@ -204,10 +189,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -216,10 +198,7 @@ function call(data)
 
 	-- build 前调用时 rshunt 为 nil，除法会抛裸 Lua error（pcall 兜底信息难看）
 	if rshunt == nil then
-		return {
-			result = "ERR",
-			message = "INA219 not built (build first)"
-		}
+		return err("INA219 not built (build first)")
 	end
 
 	-----------------------------------------------------
@@ -230,17 +209,11 @@ function call(data)
 	-----------------------------------------------------
 	local s = read_reg16(fd, REG_SHUNT)
 	if s == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA219 shunt voltage"
-		}
+		return err("Failed to read INA219 shunt voltage")
 	end
 	local b = read_reg16(fd, REG_BUS)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA219 bus voltage"
-		}
+		return err("Failed to read INA219 bus voltage")
 	end
 
 	-----------------------------------------------------

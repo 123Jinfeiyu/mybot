@@ -32,7 +32,7 @@ function build(data)
 	if data.field ~= nil and data.field ~= "" then field = data.field end
 	local ok, inst = pcall(EmaLib.new, alpha, data.init)
 	if not ok then
-		return { result = "ERR", message = tostring(inst) }
+		return err(tostring(inst))
 	end
 	f = inst
 	return { result = "OK", alpha = alpha, field = field }
@@ -44,13 +44,13 @@ function call(data)
 		return ek
 	end
 	if f == nil then
-		return { result = "ERR", message = "Ema not built" }
+		return err("Ema not built")
 	end
 	-- 输入优先级：@Action 直接传入的 in > 引用源的 field 字段（in 是 Lua 关键字，用 ["in"]）
 	local raw = tonumber(data["in"])
 	if raw == nil then raw = tonumber(data[field]) end
 	if raw == nil then
-		return { result = "ERR", message = "no input value (field=" .. tostring(field) .. ")" }
+		return err("no input value (field=" .. tostring(field) .. ")")
 	end
 	local out = f:filter(raw)
 	last = { result = "OK", out = out, v0 = out, raw = raw }
@@ -60,7 +60,7 @@ end
 -- P4/M1：引用语义 = 无副作用读快照（不推进滤波状态）
 function read(data)
 	if last == nil then
-		return { result = "ERR", message = "no sample yet" }
+		return err("no sample yet")
 	end
 	return last
 end

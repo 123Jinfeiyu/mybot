@@ -36,47 +36,32 @@ local function build_impl(data)
 
 	-- 检查文件句柄参数是否存在
 	if path == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: path"
-		}
+		return err("Invalid Arguments: path")
 	end
 
 	-- 模式（0~3：CPOL/CPHA 组合，与 Linux spidev 一致）
 	local spi_mode = tonumber(data.spi_mode)
 	if spi_mode == nil or spi_mode < 0 or spi_mode > 3 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: spi_mode (0~3)"
-		}
+		return err("Invalid Arguments: spi_mode (0~3)")
 	end
 
 	-- 比特（每字位数，7~16）
 	local bits = tonumber(data.bits)
 	if bits == nil or bits < 7 or bits > 16 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: bits (7~16)"
-		}
+		return err("Invalid Arguments: bits (7~16)")
 	end
 
 
 	-- 速率（Hz，必须为正）
 	local speed = tonumber(data.speed)
 	if speed == nil or speed <= 0 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: speed (>0)"
-		}
+		return err("Invalid Arguments: speed (>0)")
 	end
 
 	-- 延时（单次传输后 CS 拉高前等待，us，非负）
 	local delay = tonumber(data.delay)
 	if delay == nil or delay < 0 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: delay (>=0)"
-		}
+		return err("Invalid Arguments: delay (>=0)")
 	end
 
 	-- 重复 build 先关旧 fd 再开新（防御：不依赖调用方保证 build 恰一次；
@@ -89,10 +74,7 @@ local function build_impl(data)
 	-- 开始执行（spi_open 成功返回 fd >= 0、失败返回 -1）
 	fd = spi_open(path)
 	if fd < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to open SPI file"
-		}
+		return err("Failed to open SPI file")
 	end
 
 	delay_us = delay or 0
@@ -102,10 +84,7 @@ local function build_impl(data)
 		-- 后续 call 会把它流给下游设备驱动
 		spi_close(fd)
 		fd = -1
-		return {
-			result = "ERR",
-			message = "Failed to setup SPI device"
-		}
+		return err("Failed to setup SPI device")
 	end
 
 	return {
@@ -158,10 +137,7 @@ function call(data)
 
 	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐；fd 0 合法，故判 < 0）
 	if fd == nil or fd < 0 then
-		return {
-			result = "ERR",
-			message = "SPI not opened (build first)"
-		}
+		return err("SPI not opened (build first)")
 	end
 
 	return {

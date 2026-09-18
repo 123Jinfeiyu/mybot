@@ -77,10 +77,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -92,19 +89,13 @@ function build(data)
 	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-- 地址列 '-'/缺省按器件缺省 0x69（AD_SELECT 拉低）
 	local addr = tonumber(data.address) or 0x69
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-- 帧率列：1 -> 1Hz，其余/'-' 缺省 10Hz
@@ -113,29 +104,17 @@ function build(data)
 	-----------------------------------------------------
 	-- 进入 normal 模式 -> 初始复位 -> 关中断 -> 帧率（Adafruit 参考顺序）
 	if not i2c_write_reg(fd, REG_PCTL, NORMAL_MODE) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 power control"
-		}
+		return err("Failed to write AMG8833 power control")
 	end
 	if not i2c_write_reg(fd, REG_RST, INITIAL_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 initial reset"
-		}
+		return err("Failed to write AMG8833 initial reset")
 	end
 	milli_sleep(5)
 	if not i2c_write_reg(fd, REG_INTC, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 interrupt control"
-		}
+		return err("Failed to write AMG8833 interrupt control")
 	end
 	if not i2c_write_reg(fd, REG_FPSC, fps_1hz and 0x01 or 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 frame rate"
-		}
+		return err("Failed to write AMG8833 frame rate")
 	end
 
 	-- 等一个完整帧周期，首拍数据就绪
@@ -166,10 +145,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -180,29 +156,20 @@ function call(data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address) or 0x69	-- 与 build 同款缺省（AD_SELECT 拉低）
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-- 共享总线 fd 的从地址是 per-fd 状态：每次 call 显式 set_addr，
 	-- 否则两次 call 之间别的器件寻址会把本器件读数打到错误从地址
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-----------------------------------------------------
 	-- 基板热敏电阻（12 位补码，0.0625°C/LSB）
 	local tb = i2c_read_multi_bytes(fd, REG_THERM, 2)
 	if tb == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read AMG8833 thermistor"
-		}
+		return err("Failed to read AMG8833 thermistor")
 	end
 	local therm = s12((tb[2] % 0x10) * 256 + tb[1]) * 0.0625
 
@@ -213,10 +180,7 @@ function call(data)
 	for chunk = 0, 7 do
 		local b = i2c_read_multi_bytes(fd, REG_DATA + chunk * PIXEL_CHUNK, PIXEL_CHUNK)
 		if b == nil then
-			return {
-				result = "ERR",
-				message = "Failed to read AMG8833 pixels (chunk " .. chunk .. ")"
-			}
+			return err("Failed to read AMG8833 pixels (chunk " .. chunk .. ")")
 		end
 		for p = 0, 7 do
 			local raw = s12((b[p * 2 + 2] % 0x10) * 256 + b[p * 2 + 1])

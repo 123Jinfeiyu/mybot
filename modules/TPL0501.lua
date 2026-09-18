@@ -59,10 +59,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -72,10 +69,7 @@ function build(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	local rt = tonumber(data.rtotal)
@@ -105,10 +99,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -118,10 +109,7 @@ function call(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -130,34 +118,22 @@ function call(data)
 	if data.level ~= nil then
 		level = tonumber(data.level)
 		if level == nil then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: level (not a number)"
-			}
+			return err("Invalid Argument: level (not a number)")
 		end
 	elseif data.percent ~= nil then
 		local pct = tonumber(data.percent)
 		if pct == nil then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: percent (not a number)"
-			}
+			return err("Invalid Argument: percent (not a number)")
 		end
 		level = math.floor(pct / 100.0 * WIPER_MAX + 0.5)
 	elseif data.ohms ~= nil then
 		local ohms = tonumber(data.ohms)
 		if ohms == nil then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: ohms (not a number)"
-			}
+			return err("Invalid Argument: ohms (not a number)")
 		end
 		level = math.floor(ohms / (rtotal or DEF_RTOTAL) * WIPER_MAX + 0.5)
 	else
-		return {
-			result = "ERR",
-			message = "Invalid Argument: need level / percent / ohms"
-		}
+		return err("Invalid Argument: need level / percent / ohms")
 	end
 
 	-- 限幅到 0~255
@@ -168,10 +144,7 @@ function call(data)
 	-----------------------------------------------------
 	-- 写抽头：一个 SPI 字节即完整操作；delay 经元数据从 @SPI 流入
 	if spi_write(fd, level, tonumber(data.delay)) ~= 0 then
-		return {
-			result = "ERR",
-			message = "Failed to write TPL0501 wiper"
-		}
+		return err("Failed to write TPL0501 wiper")
 	end
 
 	if DEBUG then

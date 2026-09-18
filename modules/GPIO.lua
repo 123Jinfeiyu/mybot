@@ -55,10 +55,7 @@ end
 local function build_impl(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -70,26 +67,17 @@ local function build_impl(data)
 	-----------------------------------------------------
 	local chip = data.chip
 	if chip == nil or chip == "" or chip == "0" then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: chip (missing; also note offset must not be '-')"
-		}
+		return err("Invalid Argument: chip (missing; also note offset must not be '-')")
 	end
 
 	local offset = tonumber(data.offset)
 	if offset == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: offset (must not be '-')"
-		}
+		return err("Invalid Argument: offset (must not be '-')")
 	end
 
 	local direction = data.direction
 	if direction ~= "out" and direction ~= "in" then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: direction (out|in)"
-		}
+		return err("Invalid Argument: direction (out|in)")
 	end
 
 	local active_low = (data.active == "low")
@@ -104,10 +92,7 @@ local function build_impl(data)
 
 	hfd = gpio_request_line(chip, offset, direction, init, active_low)
 	if hfd < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to request GPIO line " .. tostring(offset) .. " on " .. tostring(chip)
-		}
+		return err("Failed to request GPIO line " .. tostring(offset) .. " on " .. tostring(chip))
 	end
 	is_output = (direction == "out")
 
@@ -146,10 +131,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -159,28 +141,19 @@ function call(data)
 	end
 
 	if hfd < 0 then
-		return {
-			result = "ERR",
-			message = "GPIO not initialized (build first)"
-		}
+		return err("GPIO not initialized (build first)")
 	end
 
 	-----------------------------------------------------
 	if is_output then
 		local v = tonumber(data.value)
 		if v == nil then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: value (0 or 1)"
-			}
+			return err("Invalid Argument: value (0 or 1)")
 		end
 		local norm = (v ~= 0) and 1 or 0		-- 非 0 归一为 1（内核语义）
 
 		if not gpio_set_value(hfd, norm) then
-			return {
-				result = "ERR",
-				message = "Failed to set GPIO value"
-			}
+			return err("Failed to set GPIO value")
 		end
 
 		if DEBUG then
@@ -193,10 +166,7 @@ function call(data)
 	-- 输入模式：读值
 	local v = gpio_get_value(hfd)
 	if v < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to get GPIO value"
-		}
+		return err("Failed to get GPIO value")
 	end
 
 	if DEBUG then

@@ -91,10 +91,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -109,41 +106,26 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位（HAL 的 i2c_write_reg 是 2 字节原子写，返回 true/false）
 	if not i2c_write_reg(fd, CMD_SOFT_RESET[1], CMD_SOFT_RESET[2]) then
-		return {
-			result = "ERR",
-			message = "Failed to write SHT3X soft reset"
-		}
+		return err("Failed to write SHT3X soft reset")
 	end
 	milli_sleep(2)			-- 复位就绪约 1.5ms
 
 	-- 读状态寄存器验证响应
 	if not i2c_write_reg(fd, CMD_READ_STATUS[1], CMD_READ_STATUS[2]) then
-		return {
-			result = "ERR",
-			message = "Failed to write SHT3X read status"
-		}
+		return err("Failed to write SHT3X read status")
 	end
 	milli_sleep(1)
 	local sb = read_bytes(fd, 3)
 	if sb == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SHT3X status"
-		}
+		return err("Failed to read SHT3X status")
 	end
 
 	local status = sb[0] * 256 + sb[1]
 	if crc8(status) ~= sb[2] then
-		return {
-			result = "ERR",
-			message = "SHT3X status CRC mismatch"
-		}
+		return err("SHT3X status CRC mismatch")
 	end
 	if bitc.band(status, ST_CMD_STATUS) ~= 0 then
-		return {
-			result = "ERR",
-			message = "SHT3X command status error (bit1: last command not processed)"
-		}
+		return err("SHT3X command status error (bit1: last command not processed)")
 	end
 	if bitc.band(status, ST_RESET_SEEN) == 0 then
 		print("SHT3X: reset flag (bit4) not set in status, continuing")
@@ -172,10 +154,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -190,19 +169,13 @@ function call(data)
 	-----------------------------------------------------
 	-- 单次测量（0x2400 轮询·高重复性），等待转换完成
 	if not i2c_write_reg(fd, CMD_MEAS_HIGH[1], CMD_MEAS_HIGH[2]) then
-		return {
-			result = "ERR",
-			message = "Failed to write SHT3X measure command"
-		}
+		return err("Failed to write SHT3X measure command")
 	end
 	milli_sleep(MEAS_WAIT_MS)
 
 	local b = read_bytes(fd, 6)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SHT3X measurement"
-		}
+		return err("Failed to read SHT3X measurement")
 	end
 
 	-----------------------------------------------------

@@ -163,10 +163,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -181,16 +178,10 @@ function build(data)
 	-- 在位探测 + 型号自检（Part ID 固定 0x15）
 	local pid = i2c_read_reg(fd, REG_PART_ID)
 	if pid < 0 then
-		return {
-			result = "ERR",
-			message = "MAX30102 not responding (read Part ID failed, check address 0x57 and wiring)"
-		}
+		return err("MAX30102 not responding (read Part ID failed, check address 0x57 and wiring)")
 	end
 	if pid ~= PART_ID then
-		return {
-			result = "ERR",
-			message = string.format("MAX30102 unexpected Part ID 0x%02X (expect 0x%02X)", pid, PART_ID)
-		}
+		return err(string.format("MAX30102 unexpected Part ID 0x%02X (expect 0x%02X)", pid, PART_ID))
 	end
 
 	-----------------------------------------------------
@@ -202,10 +193,7 @@ function build(data)
 	if opmode_s == "spo2" then is_spo2 = true
 	elseif opmode_s == "hr" then is_spo2 = false
 	else
-		return {
-			result = "ERR",
-			message = "Invalid Argument: opmode '" .. opmode_s .. "' (hr|spo2)"
-		}
+		return err("Invalid Argument: opmode '" .. opmode_s .. "' (hr|spo2)")
 	end
 
 	local rate, e1 = cfg_choice(data.rate, 100, RATE_CODE, "rate(sps)")
@@ -213,13 +201,10 @@ function build(data)
 	local adc,  e3 = cfg_choice(data.adc, 4096, ADC_CODE, "adc(nA)")
 	local avg,  e4 = cfg_choice(data.avg, 1, AVG_CODE, "avg")
 	if e1 or e2 or e3 or e4 then
-		return { result = "ERR", message = e1 or e2 or e3 or e4 }
+		return err(e1 or e2 or e3 or e4)
 	end
 	if rate > PW_MAX_RATE[pw] then
-		return {
-			result = "ERR",
-			message = string.format("Invalid Argument: rate %d sps exceeds limit %d sps for pw %dus", rate, PW_MAX_RATE[pw], pw)
-		}
+		return err(string.format("Invalid Argument: rate %d sps exceeds limit %d sps for pw %dus", rate, PW_MAX_RATE[pw], pw))
 	end
 
 	local led1, e5 = cfg_led_code(data.led1, "led1(mA)")
@@ -229,16 +214,13 @@ function build(data)
 	local n,     e7 = cfg_range(data.n, 1, 1, 8, "n(samples)")
 	local wait,  e8 = cfg_range(data.wait, 0, 0, 60000, "wait(ms)")
 	if e5 or e6 or e7 or e8 then
-		return { result = "ERR", message = e5 or e6 or e7 or e8 }
+		return err(e5 or e6 or e7 or e8)
 	end
 
 	-----------------------------------------------------
 	-- 复位（RESET 位自清零，全部寄存器回上电默认，约 1ms）
 	if not i2c_write_reg(fd, REG_MODE, BIT_RESET) then
-		return {
-			result = "ERR",
-			message = "MAX30102 not responding (reset write failed)"
-		}
+		return err("MAX30102 not responding (reset write failed)")
 	end
 	milli_sleep(5)
 
@@ -259,10 +241,7 @@ function build(data)
 	wr(REG_FIFO_RD, 0, "FIFO read pointer clear")
 	wr(REG_MODE, is_spo2 and MODE_SPO2 or MODE_HR, "mode")		-- 写模式即启动采样
 	if wfail ~= nil then
-		return {
-			result = "ERR",
-			message = wfail
-		}
+		return err(wfail)
 	end
 
 	cfg_is_spo2 = is_spo2
@@ -282,10 +261,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -307,10 +283,7 @@ function call(data)
 	-- 可读样本数；FIFO 空时可等（直连路径用；守护路径 wait 保持 0）
 	local avail = fifo_avail(fd)
 	if avail == -1 then
-		return {
-			result = "ERR",
-			message = "MAX30102 not responding (read FIFO pointers failed)"
-		}
+		return err("MAX30102 not responding (read FIFO pointers failed)")
 	end
 	if avail == 0 and wait_req > 0 then
 		local waited = 0
@@ -319,18 +292,12 @@ function call(data)
 			waited = waited + 10
 			avail = fifo_avail(fd)
 			if avail == -1 then
-				return {
-					result = "ERR",
-					message = "MAX30102 not responding (read FIFO pointers failed)"
-				}
+				return err("MAX30102 not responding (read FIFO pointers failed)")
 			end
 		end
 	end
 	if avail == 0 then
-		return {
-			result = "ERR",
-			message = "MAX30102 FIFO empty (no new sample yet)"
-		}
+		return err("MAX30102 FIFO empty (no new sample yet)")
 	end
 
 	-- 逐样本弹出（FIFO 序：旧 -> 新），至多 n 个
@@ -341,10 +308,7 @@ function call(data)
 		local red, ir = fifo_read_sample(fd)
 		if red == nil then
 			if k == 1 then
-				return {
-					result = "ERR",
-					message = "MAX30102 not responding (FIFO data read failed)"
-				}
+				return err("MAX30102 not responding (FIFO data read failed)")
 			end
 			break	-- 首样本之后传输失败：返回已得部分，不空手而归
 		end

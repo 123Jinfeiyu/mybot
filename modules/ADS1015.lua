@@ -110,7 +110,7 @@ function build(data)
     local hi = math.floor(config / 256) % 256
     local lo = config % 256
     if i2c_write_multi(fd, REG_CONFIG, hi, lo) ~= 0 then
-        return { result = "ERR", message = "Failed to write ADS1015 config" }
+        return err("Failed to write ADS1015 config")
     end
 
     -- 读回比对自检（无 ID 寄存器，兼在位探测与配置确认）。
@@ -118,11 +118,10 @@ function build(data)
     -- 与写入值（OS=0）必然不同，全 16 位比对在真实器件上永远 mismatch。
     local rd = i2c_read_multi(fd, REG_CONFIG, 2)
     if rd < 0 then
-        return { result = "ERR", message = "Failed to read back ADS1015 config" }
+        return err("Failed to read back ADS1015 config")
     end
     if bitc.band(rd, 0x7FFF) ~= bitc.band(config, 0x7FFF) then
-        return { result = "ERR",
-                 message = string.format("ADS1015 config echo mismatch: got 0x%04X (expect 0x%04X)", rd, config) }
+        return err(string.format("ADS1015 config echo mismatch: got 0x%04X (expect 0x%04X)", rd, config))
     end
 
     print(string.format("ADS1015 init OK: addr=0x%02X, channel=AIN%d, PGA=%s, DR=%s SPS",
@@ -176,18 +175,18 @@ function call(data)
         -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
         local pos, neg = tonumber(data.pos), tonumber(data.neg)
         if pos == nil or neg == nil then
-            return { result = "ERR", message = "Invalid diff pair: pos/neg not a number" }
+            return err("Invalid diff pair: pos/neg not a number")
         end
         local diff_map = { ["0,1"] = MUX_DIFF_AIN0_AIN1, ["0,3"] = MUX_DIFF_AIN0_AIN3,
                            ["1,3"] = MUX_DIFF_AIN1_AIN3, ["2,3"] = MUX_DIFF_AIN2_AIN3 }
         mux = diff_map[pos .. "," .. neg]
         if mux == nil then
-            return { result = "ERR", message = "Unsupported diff pair, use 0-1/0-3/1-3/2-3" }
+            return err("Unsupported diff pair, use 0-1/0-3/1-3/2-3")
         end
     else
         local channel = tonum(data.channel, 0)
         if channel < 0 or channel > 3 then
-            return { result = "ERR", message = "Invalid channel: 0~3" }
+            return err("Invalid channel: 0~3")
         end
         mux = bitc.bor(MUX_SINGLE_AIN0, bitc.lshift(channel, 12))
     end
@@ -195,13 +194,13 @@ function call(data)
     -- 读回当前配置，保留 PGA/DR，只改 MUX 并启动单次转换
     local config = i2c_read_multi(fd, REG_CONFIG, 2)
     if config < 0 then
-        return { result = "ERR", message = "Failed to read config" }
+        return err("Failed to read config")
     end
     local new_config = bitc.bor(bitc.bor(bitc.band(config, 0x8FFF), mux), OS_START)   -- 清 MUX 位，设通道，启动转换
 
     if i2c_write_multi(fd, REG_CONFIG,
         math.floor(new_config / 256) % 256, new_config % 256) ~= 0 then
-        return { result = "ERR", message = "Failed to start conversion" }
+        return err("Failed to start conversion")
     end
 
     -- 轮询 OS 位：读到 0 表示正在转换，读到 1 表示转换完成/空闲
@@ -217,13 +216,13 @@ function call(data)
         milli_sleep(1)
     end
     if not ready then
-        return { result = "ERR", message = "Conversion timeout" }
+        return err("Conversion timeout")
     end
 
     -- 读转换结果（12 位左对齐于 16 位，低 4 位恒 0）
     local raw16 = i2c_read_multi(fd, REG_CONVERSION, 2)
     if raw16 < 0 then
-        return { result = "ERR", message = "Failed to read conversion" }
+        return err("Failed to read conversion")
     end
 
     -- pga 缺省时回读芯片配置的 PGA 字段（3 位，0~7）：6/7 与 5 同为 ±0.256V

@@ -83,10 +83,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -99,17 +96,11 @@ function build(data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address) or 0x62
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-- 参考电压列（'-' 缺省 5.0；非正数同缺省，防除零）
@@ -120,10 +111,7 @@ function build(data)
 	-----------------------------------------------------
 	local r = i2c_read(fd, 5)
 	if r < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read MCP4725 (器件在位检查)"
-		}
+		return err("Failed to read MCP4725 (器件在位检查)")
 	end
 	local rb = decode_readback(r)
 
@@ -152,10 +140,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -167,10 +152,7 @@ function call(data)
 	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -183,10 +165,7 @@ function call(data)
 	if level == nil and volt == nil and percent == nil then
 		local r = i2c_read(fd, 5)
 		if r < 0 then
-			return {
-				result = "ERR",
-				message = "Failed to read MCP4725"
-			}
+			return err("Failed to read MCP4725")
 		end
 		local rb = decode_readback(r)
 		return {
@@ -216,10 +195,7 @@ function call(data)
 		-- 写 DAC+EEPROM（3 字节，C2..C0=011）
 		if i2c_write_multi(fd, CMD_DAC_EEPROM,
 			math.floor(code / 16) % 256, (code * 16) % 256) ~= 0 then
-			return {
-				result = "ERR",
-				message = "Failed to write MCP4725 DAC+EEPROM"
-			}
+			return err("Failed to write MCP4725 DAC+EEPROM")
 		end
 		-- 轮询 RDY（50ms 步进 500ms 超时；1 字节读的合并值即 byte0）
 		for _ = 1, 10 do
@@ -228,10 +204,7 @@ function call(data)
 			-- 总线读失败（-1）必须与"未就绪"区分：断线误报成
 			-- "EEPROM 写超时"会把排障引向错误方向（2026-09 审计）
 			if r < 0 then
-				return {
-					result = "ERR",
-					message = "MCP4725 EEPROM write: bus read failed while polling RDY"
-				}
+				return err("MCP4725 EEPROM write: bus read failed while polling RDY")
 			end
 			if r >= RDY_MASK then
 				dbg(string.format("MCP4725 EEPROM write done: code=%d", code))
@@ -244,18 +217,12 @@ function call(data)
 				}
 			end
 		end
-		return {
-			result = "ERR",
-			message = "MCP4725 EEPROM write timeout (RDY not set in 500ms)"
-		}
+		return err("MCP4725 EEPROM write timeout (RDY not set in 500ms)")
 	end
 
 	-- 快速写（2 字节，仅 DAC，适合高频更新）
 	if i2c_write_multi(fd, CMD_FAST + math.floor(code / 256) % 256, code % 256) ~= 0 then
-		return {
-			result = "ERR",
-			message = "Failed to write MCP4725 DAC"
-		}
+		return err("Failed to write MCP4725 DAC")
 	end
 
 	dbg(string.format("MCP4725 set: code=%d", code))

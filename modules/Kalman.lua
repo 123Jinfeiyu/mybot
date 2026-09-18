@@ -38,7 +38,7 @@ function build(data)
 	-- 非法配置不得以裸 Lua 异常逃出 build（与 Ema.lua 的 pcall 一致）
 	local ok_new, kf_new = pcall(KalmanLib.new, Q, R)
 	if not ok_new then
-		return { result = "ERR", message = "Invalid Kalman Q/R: " .. tostring(kf_new) }
+		return err("Invalid Kalman Q/R: " .. tostring(kf_new))
 	end
 	kf = kf_new
 	return { result = "OK", Q = Q, R = R, field = field }
@@ -50,7 +50,7 @@ function call(data)
 		return ek
 	end
 	if kf == nil then
-		return { result = "ERR", message = "Kalman not built" }
+		return err("Kalman not built")
 	end
 
 	-- 输入优先级：@Action 直接传入的 in > 引用源的 field 字段
@@ -58,7 +58,7 @@ function call(data)
 	local raw = tonumber(data["in"])
 	if raw == nil then raw = tonumber(data[field]) end
 	if raw == nil then
-		return { result = "ERR", message = "no input value (field=" .. tostring(field) .. ")" }
+		return err("no input value (field=" .. tostring(field) .. ")")
 	end
 
 	local out = kf:filter(raw)
@@ -70,7 +70,7 @@ end
 -- P4/M1：引用语义 = 无副作用读快照（不推进滤波状态）
 function read(data)
 	if last == nil then
-		return { result = "ERR", message = "no sample yet" }
+		return err("no sample yet")
 	end
 	return last
 end

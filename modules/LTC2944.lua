@@ -106,10 +106,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -131,10 +128,7 @@ function build(data)
 	-- 存在性检查（无 ID 寄存器，读不到即失败）
 	local status = read_reg16(fd, REG_STATUS)
 	if status == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 status"
-		}
+		return err("Failed to read LTC2944 status")
 	end
 
 	-- 控制字：自动模式（[7:6]=11）| 预分频码（[5:3]）
@@ -145,10 +139,7 @@ function build(data)
 	end
 	local control = bitc.bor(0xC0, bitc.lshift(code, 3))
 	if not i2c_write_reg(fd, REG_CONTROL, control) then
-		return {
-			result = "ERR",
-			message = "Failed to write LTC2944 control"
-		}
+		return err("Failed to write LTC2944 control")
 	end
 
 	print(string.format("LTC2944 init OK: addr=0x%02X, rsense=%.4f Ω, prescaler M=%d, status=0x%04X",
@@ -175,10 +166,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -194,40 +182,25 @@ function call(data)
 
 	-- build 前置守卫：rsense/presc_m 仅 build 赋值，未 build 先 call 会做 nil 算术
 	if rsense == nil or presc_m == nil then
-		return {
-			result = "ERR",
-			message = "LTC2944 not initialized (build first)"
-		}
+		return err("LTC2944 not initialized (build first)")
 	end
 
 	-----------------------------------------------------
 	local chg = read_reg16(fd, REG_CHG_MSB)
 	if chg == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 charge"
-		}
+		return err("Failed to read LTC2944 charge")
 	end
 	local vraw = read_reg16(fd, REG_V_MSB)
 	if vraw == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 voltage"
-		}
+		return err("Failed to read LTC2944 voltage")
 	end
 	local iraw = read_reg16(fd, REG_I_MSB)
 	if iraw == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 current"
-		}
+		return err("Failed to read LTC2944 current")
 	end
 	local traw = read_reg16(fd, REG_T_MSB)
 	if traw == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 temperature"
-		}
+		return err("Failed to read LTC2944 temperature")
 	end
 
 	-----------------------------------------------------

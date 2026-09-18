@@ -147,10 +147,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -171,31 +168,19 @@ function build(data)
 	-- 芯片甄别
 	local id = i2c_read_reg(fd, REG_WHO_AM_I)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X WHO_AM_I"
-		}
+		return err("Failed to read LSM6DSV16X WHO_AM_I")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO 系，V32X 等家族亦不同)", id)
-		}
+		return err(string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO 系，V32X 等家族亦不同)", id))
 	end
 
 	-- 软复位：读改写置 bit0（保留 IF_INC），轮询自清（10ms 步进 10 次）
 	local c3 = read_reg8(fd, REG_CTRL3)
 	if c3 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X CTRL3"
-		}
+		return err("Failed to read LSM6DSV16X CTRL3")
 	end
 	if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(c3, SW_RESET)) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X soft reset"
-		}
+		return err("Failed to write LSM6DSV16X soft reset")
 	end
 	local settled = false
 	for _ = 1, 10 do
@@ -205,60 +190,36 @@ function build(data)
 		if bitc.band(s, SW_RESET) == 0 then settled = true; break end
 	end
 	if not settled then
-		return {
-			result = "ERR",
-			message = "LSM6DSV16X soft reset not completed (sw_reset bit stuck)"
-		}
+		return err("LSM6DSV16X soft reset not completed (sw_reset bit stuck)")
 	end
 
 	-- 置 BDU（输出寄存器不被读撕裂），保 IF_INC（地址自增，突发读前提）；
 	-- bitcompat 无 bnot，清 bit0 用字面掩码 0xFE（此时复位已完成 bit0 必为 0）
 	c3 = read_reg8(fd, REG_CTRL3)
 	if c3 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X CTRL3"
-		}
+		return err("Failed to read LSM6DSV16X CTRL3")
 	end
 	if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(bitc.band(c3, 0xFE), bitc.bor(BDU_MASK, IF_INC_MASK))) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL3 (BDU)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL3 (BDU)")
 	end
 
 	-- ODR（op_mode=0 高性能模式）+ 量程（CTRL6/CTRL8 读改写保留滤波域）
 	if not i2c_write_reg(fd, REG_CTRL1, odr_xl_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL1 (accel ODR)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL1 (accel ODR)")
 	end
 	if not i2c_write_reg(fd, REG_CTRL2, odr_xl_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL2 (gyro ODR)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL2 (gyro ODR)")
 	end
 	local c6 = read_reg8(fd, REG_CTRL6)
 	local c8 = read_reg8(fd, REG_CTRL8)
 	if c6 == nil or c8 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X CTRL6/CTRL8"
-		}
+		return err("Failed to read LSM6DSV16X CTRL6/CTRL8")
 	end
 	if not i2c_write_reg(fd, REG_CTRL6, bitc.bor(bitc.band(c6, 0xF0), fs_g_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL6 (gyro FS)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL6 (gyro FS)")
 	end
 	if not i2c_write_reg(fd, REG_CTRL8, bitc.bor(bitc.band(c8, 0xFC), fs_xl_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL8 (accel FS)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL8 (accel FS)")
 	end
 
 	-- 陀螺仪启动等待（ST 惯例 ~70-80ms，取 100ms 余量，首拍数据就绪）
@@ -289,10 +250,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -307,17 +265,11 @@ function call(data)
 	-----------------------------------------------------
 	local g = read_bytes6(fd, REG_OUT_G)
 	if g == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X gyro data"
-		}
+		return err("Failed to read LSM6DSV16X gyro data")
 	end
 	local a = read_bytes6(fd, REG_OUT_A)
 	if a == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X accel data"
-		}
+		return err("Failed to read LSM6DSV16X accel data")
 	end
 
 	-- 返回字典（小端拼字：值 = MSB<<8 | LSB）

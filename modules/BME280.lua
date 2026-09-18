@@ -112,11 +112,10 @@ function build(data)
     -- 校验芯片ID
     local id = i2c_read_multi(fd, REG_ID, 1)
     if id < 0 then
-        return { result = "ERR", message = "Failed to read chip id" }
+        return err("Failed to read chip id")
     end
     if id ~= CHIP_ID_BME280 then
-        return { result = "ERR",
-                 message = string.format("Unexpected chip id: 0x%02X (BMP280?)", id) }
+        return err(string.format("Unexpected chip id: 0x%02X (BMP280?)", id))
     end
 
     -- 软复位，等待NVM校准数据拷贝完成（im_update位清零）
@@ -132,13 +131,13 @@ function build(data)
         milli_sleep(1)
     end
     if not copied then
-        return { result = "ERR", message = "Calibration copy timeout" }
+        return err("Calibration copy timeout")
     end
 
     -- 校准系数：0x88~0x9F共24字节（小端），按4字节块读取
     local b = read_block(fd, REG_TP_CAL, 24)
     if b == nil then
-        return { result = "ERR", message = "Failed to read calibration" }
+        return err("Failed to read calibration")
     end
     dig_T1 = u16le(b, 1);  dig_T2 = s16le(b, 3);  dig_T3 = s16le(b, 5)
     dig_P1 = u16le(b, 7);  dig_P2 = s16le(b, 9);  dig_P3 = s16le(b, 11)
@@ -147,7 +146,7 @@ function build(data)
 
     local h1 = i2c_read_multi(fd, REG_H1, 1)
     if h1 < 0 then
-        return { result = "ERR", message = "Failed to read calibration" }
+        return err("Failed to read calibration")
     end
     dig_H1 = h1
 
@@ -155,7 +154,7 @@ function build(data)
     -- 共7字节：HAL 合并读上限 6，走字节表版一次事务读全块（不合并、无 2^53 精度问题）
     local e = i2c_read_multi_bytes(fd, REG_H_CAL, 7)
     if e == nil then
-        return { result = "ERR", message = "Failed to read calibration" }
+        return err("Failed to read calibration")
     end
     dig_H2 = s16le(e, 1)
     dig_H3 = e[3]
@@ -172,7 +171,7 @@ function build(data)
     local chk_hum = i2c_read_multi(fd, REG_CTRL_HUM, 1)
     local chk_meas = i2c_read_multi(fd, REG_CTRL_MEAS, 1)
     if chk_hum ~= OSRS_H_X1 or chk_meas ~= (bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP)) then
-        return { result = "ERR", message = "Failed to configure BME280" }
+        return err("Failed to configure BME280")
     end
 
     cal_ok = true
@@ -205,7 +204,7 @@ function call(data)
     end
 
     if not cal_ok then
-        return { result = "ERR", message = "BME280 not initialized, run build first" }
+        return err("BME280 not initialized, run build first")
     end
 
     -- 校验收敛至 drv_common.i2c_pair（报错口径不变）
@@ -216,7 +215,7 @@ function call(data)
     -- 审计 #3：触发写必须判错——NACK 时 STATUS.measuring 本就为 0，轮询会
     -- 立即通过并把上一次的陈旧数据以 result=OK 发布
     if not i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_FORCED)) then
-        return { result = "ERR", message = "Failed to trigger forced measurement" }
+        return err("Failed to trigger forced measurement")
     end
 
     -- x1过采样单次测量约6~9ms，先等5ms再轮询measuring位，最多再等100ms
@@ -231,7 +230,7 @@ function call(data)
         milli_sleep(1)
     end
     if not ready then
-        return { result = "ERR", message = "Measurement timeout" }
+        return err("Measurement timeout")
     end
 
     -- 数据区 0xF7~0xFE（大端）：P(20bit) T(20bit) H(16bit)，单事务 8 字节读
@@ -239,7 +238,7 @@ function call(data)
     -- 字节表版无 2^53 精度限制，8 字节单事务合法）
     local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
     if b == nil then
-        return { result = "ERR", message = "Failed to read measurement" }
+        return err("Failed to read measurement")
     end
 
     local adc_P = bitc.bor(bitc.bor(bitc.lshift(b[1], 12), bitc.lshift(b[2], 4)), bitc.rshift(b[3], 4))
@@ -247,10 +246,10 @@ function call(data)
     local adc_H = bitc.bor(bitc.lshift(b[7], 8), b[8])
 
     if adc_T == 0x80000 then
-        return { result = "ERR", message = "Invalid temperature reading" }
+        return err("Invalid temperature reading")
     end
     if adc_H == 0x8000 then
-        return { result = "ERR", message = "Invalid humidity reading" }
+        return err("Invalid humidity reading")
     end
 
     -- 温度补偿（数据手册附录8.3浮点版），t_fine 供气压/湿度复用
@@ -268,7 +267,7 @@ function call(data)
     var1 = (dig_P3 * var1 * var1 / 524288.0 + dig_P2 * var1) / 524288.0
     var1 = (1.0 + var1 / 32768.0) * dig_P1
     if var1 == 0 then
-        return { result = "ERR", message = "Pressure compensation failed" }
+        return err("Pressure compensation failed")
     end
     local p = 1048576.0 - adc_P
     p = (p - var2 / 4096.0) * 6250.0 / var1

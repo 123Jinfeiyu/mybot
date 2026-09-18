@@ -99,10 +99,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -122,10 +119,7 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位（bit7 自清，随后系统控制仅剩 Part ID）
 	if not i2c_write_reg(fd, REG_SYS_CTRL, SW_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 soft reset"
-		}
+		return err("Failed to write BH1745 soft reset")
 	end
 	milli_sleep(5)
 
@@ -133,38 +127,23 @@ function build(data)
 	local sys = i2c_read_reg(fd, REG_SYS_CTRL)
 	local mfr = i2c_read_reg(fd, REG_MFR_ID)
 	if sys < 0 or mfr < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BH1745 ID registers"
-		}
+		return err("Failed to read BH1745 ID registers")
 	end
 	local part = sys % 64		-- [5:0] Part ID（算术取低位）
 	if part ~= PART_ID or mfr ~= MFR_ID then
-		return {
-			result = "ERR",
-			message = string.format("Not BH1745: PART_ID=0x%02X (expect 0x0B), MFR_ID=0x%02X (expect 0xE0)",
-				part, mfr)
-		}
+		return err(string.format("Not BH1745: PART_ID=0x%02X (expect 0x0B), MFR_ID=0x%02X (expect 0xE0)",
+			part, mfr))
 	end
 
 	-- 测量时间（MODE1 [2:0]）+ 增益（MODE2 [1:0]）+ 启动测量（bit4）
 	if not i2c_write_reg(fd, REG_MODE1, mt_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 mode control 1"
-		}
+		return err("Failed to write BH1745 mode control 1")
 	end
 	if not i2c_write_reg(fd, REG_MODE2, bitc.bor(RGBC_EN, gain_code_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 mode control 2"
-		}
+		return err("Failed to write BH1745 mode control 2")
 	end
 	if not i2c_write_reg(fd, REG_MODE3, 0x02) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 mode control 3"
-		}
+		return err("Failed to write BH1745 mode control 3")
 	end
 
 	-- 等一个完整测量时间，首拍数据就绪
@@ -193,10 +172,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -212,10 +188,7 @@ function call(data)
 	-- 8 字节一次原子读（字节表接口：合并数值接口 6 字节以上超 Lua number 精度）
 	local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BH1745 colour data"
-		}
+		return err("Failed to read BH1745 colour data")
 	end
 
 	-- 8 字节按小端拆 4 个 16 位通道（偶地址 LSB）：R/G/B/C

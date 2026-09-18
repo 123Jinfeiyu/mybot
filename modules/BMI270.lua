@@ -181,10 +181,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -206,62 +203,38 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位（含 450µs 复位延时，取 2ms 余量）
 	if not i2c_write_reg(fd, REG_CMD, CMD_SOFT_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 soft reset"
-		}
+		return err("Failed to write BMI270 soft reset")
 	end
 	milli_sleep(2)
 
 	-- 芯片甄别（0x26 = BMI260 变体，blob 不通用）
 	local id = i2c_read_reg(fd, REG_CHIP_ID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 chip ID"
-		}
+		return err("Failed to read BMI270 chip ID")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("Chip ID = 0x%02X (expect 0x24; 0x26 means BMI260 variant?)", id)
-		}
+		return err(string.format("Chip ID = 0x%02X (expect 0x24; 0x26 means BMI260 variant?)", id))
 	end
 
 	-- 关高级省电（上传前提）+ 全传感器下电（复位后本就为 0，显式写保平安）
 	if not i2c_write_reg(fd, REG_PWR_CONF, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 PWR_CONF"
-		}
+		return err("Failed to write BMI270 PWR_CONF")
 	end
 	milli_sleep(1)
 	if not i2c_write_reg(fd, REG_PWR_CTRL, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 PWR_CTRL"
-		}
+		return err("Failed to write BMI270 PWR_CTRL")
 	end
 	milli_sleep(1)
 
 	-- 上传配置文件 blob
 	if not i2c_write_reg(fd, REG_INIT_CTRL, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 INIT_CTRL"
-		}
+		return err("Failed to write BMI270 INIT_CTRL")
 	end
 	if not upload_blob(fd, blob) then
-		return {
-			result = "ERR",
-			message = "Failed to upload BMI270 config file (" .. blob_name .. ")"
-		}
+		return err("Failed to upload BMI270 config file (" .. blob_name .. ")")
 	end
 	if not i2c_write_reg(fd, REG_INIT_CTRL, 0x01) then
-		return {
-			result = "ERR",
-			message = "Failed to start BMI270 config load"
-		}
+		return err("Failed to start BMI270 config load")
 	end
 
 	-- 轮询内部状态码（0x01 = BMI2_INIT_OK），10ms 步进 50 次（500ms 超时）
@@ -272,70 +245,43 @@ function build(data)
 		if st == INIT_OK or st < 0 then break end
 	end
 	if st < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 internal status"
-		}
+		return err("Failed to read BMI270 internal status")
 	end
 	if st ~= INIT_OK then
-		return {
-			result = "ERR",
-			message = string.format("BMI270 config load failed: internal status 0x%02X (expect 0x01 INIT_OK)",
-				st)
-		}
+		return err(string.format("BMI270 config load failed: internal status 0x%02X (expect 0x01 INIT_OK)",
+				st))
 	end
 
 	-- ODR：读改写 [3:0] 域，保留复位默认滤波/性能位
 	local acc_conf = read_reg8(fd, REG_ACC_CONF)
 	local gyr_conf = read_reg8(fd, REG_GYR_CONF)
 	if acc_conf == nil or gyr_conf == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 CONF registers"
-		}
+		return err("Failed to read BMI270 CONF registers")
 	end
 	if not i2c_write_reg(fd, REG_ACC_CONF,
 		bitc.bor(bitc.band(acc_conf, 0xF0), odr_code_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 ACC_CONF"
-		}
+		return err("Failed to write BMI270 ACC_CONF")
 	end
 	if not i2c_write_reg(fd, REG_GYR_CONF,
 		bitc.bor(bitc.band(gyr_conf, 0xF0), odr_code_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 GYR_CONF"
-		}
+		return err("Failed to write BMI270 GYR_CONF")
 	end
 
 	-- 量程
 	if not i2c_write_reg(fd, REG_ACC_RANGE, acc_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 ACC_RANGE"
-		}
+		return err("Failed to write BMI270 ACC_RANGE")
 	end
 	if not i2c_write_reg(fd, REG_GYR_RANGE, gyr_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 GYR_RANGE"
-		}
+		return err("Failed to write BMI270 GYR_RANGE")
 	end
 
 	-- 上电：加速度计 + 陀螺仪（温度恒开；保留其余位）
 	local pc = read_reg8(fd, REG_PWR_CTRL)
 	if pc == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 PWR_CTRL"
-		}
+		return err("Failed to read BMI270 PWR_CTRL")
 	end
 	if not i2c_write_reg(fd, REG_PWR_CTRL, bitc.bor(pc, PWR_ACC_GYR)) then
-		return {
-			result = "ERR",
-			message = "Failed to enable BMI270 acc+gyr"
-		}
+		return err("Failed to enable BMI270 acc+gyr")
 	end
 
 	-- 陀螺仪启动等待（数据手册 ~40ms，取 100ms 余量，首拍数据就绪）
@@ -366,10 +312,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -385,10 +328,7 @@ function call(data)
 	-- 0x0C~0x17 地址连续：acc+gyr 12 字节单事务读，防两笔事务间撕裂（C-L1）
 	local d = i2c_read_multi_bytes(fd, REG_ACC_DATA, 12)
 	if d == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 sensor data"
-		}
+		return err("Failed to read BMI270 sensor data")
 	end
 	local a = { d[1], d[2], d[3], d[4], d[5], d[6] }
 	local g = { d[7], d[8], d[9], d[10], d[11], d[12] }

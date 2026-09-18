@@ -122,10 +122,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -148,24 +145,15 @@ function build(data)
 	local manuf = read_reg16(fd, REG_MANUF)
 	local die = read_reg16(fd, REG_DIE)
 	if manuf == nil or die == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA3221 IDs"
-		}
+		return err("Failed to read INA3221 IDs")
 	end
 	if manuf ~= ID_MANUF or die ~= ID_DIE then
-		return {
-			result = "ERR",
-			message = string.format("Unexpected IDs: manuf=0x%04X die=0x%04X (not INA3221?)", manuf, die)
-		}
+		return err(string.format("Unexpected IDs: manuf=0x%04X die=0x%04X (not INA3221?)", manuf, die))
 	end
 
 	-- 软复位，随后写入工作配置
 	if not write_reg16(fd, REG_CONFIG, CFG_RST) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA3221 reset"
-		}
+		return err("Failed to write INA3221 reset")
 	end
 	milli_sleep(10)
 
@@ -175,10 +163,7 @@ function build(data)
 		bitc.bor(bitc.lshift(CT_1100US, 6),
 		bitc.bor(bitc.lshift(CT_1100US, 3), CFG_MODE_CONT))))
 	if not write_reg16(fd, REG_CONFIG, config) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA3221 config"
-		}
+		return err("Failed to write INA3221 config")
 	end
 
 	-- 等待一个完整转换循环（3 通道 x (总线CT+分流CT) x 平均次数），首拍数据就绪
@@ -209,10 +194,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -227,10 +209,7 @@ function call(data)
 	-- build 前置守卫：rshunt1..3 仅 build 赋值，未 build 先 call 会做 nil 除法
 	-- 裸 error（与 INA219 的守卫对齐）
 	if rshunt1 == nil or rshunt2 == nil or rshunt3 == nil then
-		return {
-			result = "ERR",
-			message = "INA3221 not built (build first)"
-		}
+		return err("INA3221 not built (build first)")
 	end
 
 	-----------------------------------------------------
@@ -239,10 +218,7 @@ function call(data)
 	for i, reg in ipairs(regs) do
 		raw[i] = read_reg16(fd, reg)
 		if raw[i] == nil then
-			return {
-				result = "ERR",
-				message = "Failed to read INA3221 register 0x" .. string.format("%02X", reg)
-			}
+			return err("Failed to read INA3221 register 0x" .. string.format("%02X", reg))
 		end
 	end
 

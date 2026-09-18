@@ -155,10 +155,7 @@ end
 function build(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+		return err("Invalid Arguments Type: table")
 	end
 
 	if DEBUG then
@@ -174,10 +171,7 @@ function build(data)
 	-- OSR 档位校验先于一切总线动作：非法值不碰硬件
 	local oi, oerr = osr_idx_of(data.osr)
 	if oi == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: " .. oerr
-		}
+		return err("Invalid Argument: " .. oerr)
 	end
 
 	if not i2c_set_addr(fd, addr) then
@@ -197,10 +191,7 @@ function build(data)
 	-----------------------------------------------------
 	-- 复位
 	if not send_cmd(fd, CMD_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to reset MS5611"
-		}
+		return err("Failed to reset MS5611")
 	end
 	milli_sleep(T_RESET_MS)
 
@@ -209,20 +200,14 @@ function build(data)
 	for i = 0, 7 do
 		local w = i2c_read_multi(fd, CMD_PROM_BASE + 2 * i, 2)
 		if w < 0 then
-			return {
-				result = "ERR",
-				message = "Failed to read MS5611 PROM"
-			}
+			return err("Failed to read MS5611 PROM")
 		end
 		prom[i + 1] = w
 	end
 
 	-- CRC-4 自检（兼在位甄别：错挂器件/总线异常过不了这关）
 	if not crc4_ok(prom) then
-		return {
-			result = "ERR",
-			message = string.format("MS5611 PROM CRC mismatch (word0=0x%04X, not MS5611?)", prom[1])
-		}
+		return err(string.format("MS5611 PROM CRC mismatch (word0=0x%04X, not MS5611?)", prom[1]))
 	end
 
 	c1 = prom[2]; c2 = prom[3]; c3 = prom[4]
@@ -252,10 +237,7 @@ end
 function call(data)
 
 	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+		return err("Invalid Arguments: table")
 	end
 
 	if DEBUG then
@@ -270,34 +252,22 @@ function call(data)
 	-----------------------------------------------------
 	-- D1（气压）转换
 	if not send_cmd(fd, conv_cmd_d1) then
-		return {
-			result = "ERR",
-			message = "Failed to start MS5611 D1 conversion"
-		}
+		return err("Failed to start MS5611 D1 conversion")
 	end
 	milli_sleep(wait_ms)
 	local d1 = read_adc24(fd)
 	if d1 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MS5611 D1"
-		}
+		return err("Failed to read MS5611 D1")
 	end
 
 	-- D2（温度）转换
 	if not send_cmd(fd, conv_cmd_d2) then
-		return {
-			result = "ERR",
-			message = "Failed to start MS5611 D2 conversion"
-		}
+		return err("Failed to start MS5611 D2 conversion")
 	end
 	milli_sleep(wait_ms)
 	local d2 = read_adc24(fd)
 	if d2 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MS5611 D2"
-		}
+		return err("Failed to read MS5611 D2")
 	end
 
 	-----------------------------------------------------

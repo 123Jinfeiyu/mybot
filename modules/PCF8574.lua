@@ -65,10 +65,7 @@ function build(data)
 	-- 地址族校验：8574 = 0x20~0x27，8574A = 0x38~0x3F
 	local in_family = (addr >= 0x20 and addr <= 0x27) or (addr >= 0x38 and addr <= 0x3F)
 	if not in_family then
-		return {
-			result = "ERR",
-			message = string.format("PCF8574 invalid address 0x%02X (expect 0x20~0x27 or 0x38~0x3F for PCF8574A)", addr)
-		}
+		return err(string.format("PCF8574 invalid address 0x%02X (expect 0x20~0x27 or 0x38~0x3F for PCF8574A)", addr))
 	end
 	if not i2c_set_addr(fd, addr) then
 		return err("Invalid Argument: fd or address (set_addr failed)")
@@ -77,10 +74,7 @@ function build(data)
 	-- 在位探测：读一次引脚（ACK 即存在性证据）
 	local pins = read_pins(fd)
 	if pins == nil then
-		return {
-			result = "ERR",
-			message = "PCF8574 not responding (read failed, check address and wiring)"
-		}
+		return err("PCF8574 not responding (read failed, check address and wiring)")
 	end
 
 	-- 初始输出锁存（缺省 0xFF：POR 默认全弱上拉，显式写以对齐状态）
@@ -88,16 +82,10 @@ function build(data)
 	if out == nil or data.out == "-" or data.out == "" then out = 0xFF end
 	out = math.floor(out)
 	if out < 0 or out > 255 then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: out '" .. tostring(data.out) .. "' (range 0~255)"
-		}
+		return err("Invalid Argument: out '" .. tostring(data.out) .. "' (range 0~255)")
 	end
 	if i2c_write_multi(fd, out) ~= 0 then
-		return {
-			result = "ERR",
-			message = "PCF8574 not responding (latch write failed)"
-		}
+		return err("PCF8574 not responding (latch write failed)")
 	end
 	cfg_latch = out
 
@@ -132,26 +120,17 @@ function call(data)
 	if out ~= nil then
 		out = math.floor(out)
 		if out < 0 or out > 255 then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: out '" .. tostring(data.out) .. "' (range 0~255)"
-			}
+			return err("Invalid Argument: out '" .. tostring(data.out) .. "' (range 0~255)")
 		end
 		if i2c_write_multi(fd, out) ~= 0 then
-			return {
-				result = "ERR",
-				message = "PCF8574 not responding (latch write failed)"
-			}
+			return err("PCF8574 not responding (latch write failed)")
 		end
 		cfg_latch = out
 	end
 
 	local pins = read_pins(fd)
 	if pins == nil then
-		return {
-			result = "ERR",
-			message = "PCF8574 not responding (read failed)"
-		}
+		return err("PCF8574 not responding (read failed)")
 	end
 
 	return {

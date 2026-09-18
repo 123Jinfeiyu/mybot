@@ -68,18 +68,12 @@ function call(data)
 	-----------------------------------------------------
 	local angle = tonumber(data.angle)
 	if angle == nil then	-- 检查angle参数是否存在且为数值
-		return {
-			result = "ERR",
-			message = "Invalid Argument: angle (missing or not a number)"
-		}
+		return err("Invalid Argument: angle (missing or not a number)")
 	end
 
 	local channel = tonumber(data.channel)
 	if channel == nil then	-- 检查channel参数是否存在且为数值
-		return {
-			result = "ERR",
-			message = "Invalid Argument: channel (missing or not a number)"
-		}
+		return err("Invalid Argument: channel (missing or not a number)")
 	end
 
 	local max    = num_or_zero(data.max)

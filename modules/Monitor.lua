@@ -44,7 +44,7 @@ function call(data)
 	local count = tonumber(data.count)
 	if v0 == nil then
 		-- 守护尚未发布任何采样（启动瞬间）或被引用列缺失
-		return { result = "ERR", message = "no daemon value (v0 missing)" }
+		return err("no daemon value (v0 missing)")
 	end
 
 	local level = (v0 > 1.0) and "HIGH" or "LOW"
@@ -83,7 +83,7 @@ end
 -- P4/M1：引用语义 = 读最近一次决策快照（无副作用）
 function read(data)
 	if last == nil then
-		return { result = "ERR", message = "no sample yet" }
+		return err("no sample yet")
 	end
 	return last
 end

@@ -95,7 +95,7 @@ function build(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
+        return err("Invalid Argument: fd")
     end
     fd = tonumber(fd)
 
@@ -110,43 +110,43 @@ function build(data)
 
     -- 1. 复位并唤醒
     if spi_w(fd, CMD_RESET) ~= 0 then
-        return { result = "ERR", message = "Failed to reset ADS1256" }
+        return err("Failed to reset ADS1256")
     end
     milli_sleep(5)
     if spi_w(fd, CMD_WAKEUP) ~= 0 then
-        return { result = "ERR", message = "Failed to wake ADS1256" }
+        return err("Failed to wake ADS1256")
     end
     milli_sleep(5)
 
     -- 2. STATUS：BIT5 ORDER=0（MSB 优先），BIT4 ACAL=1（自动校准），其余 0
     if write_reg(fd, REG_STATUS, 0x14) ~= 0 then
-        return { result = "ERR", message = "Failed to write STATUS" }
+        return err("Failed to write STATUS")
     end
 
     -- 3. MUX：默认 AIN0 + AINCOM（单端）
     if write_reg(fd, REG_MUX, bitc.bor(bitc.lshift(channel, 4), 0x08)) ~= 0 then
-        return { result = "ERR", message = "Failed to write MUX" }
+        return err("Failed to write MUX")
     end
 
     -- 4. ADCON：PGA 增益
     if write_reg(fd, REG_ADCON, pga_idx) ~= 0 then
-        return { result = "ERR", message = "Failed to write ADCON" }
+        return err("Failed to write ADCON")
     end
 
     -- 5. DRATE：数据速率
     if write_reg(fd, REG_DRATE, drate_tab[drate_idx + 1][1]) ~= 0 then
-        return { result = "ERR", message = "Failed to write DRATE" }
+        return err("Failed to write DRATE")
     end
 
     -- 6. 自校准（约 2 个转换周期，保守等待）
     if spi_w(fd, CMD_SELFCAL) ~= 0 then
-        return { result = "ERR", message = "Failed to start self-calibration" }
+        return err("Failed to start self-calibration")
     end
     milli_sleep(50)
 
     -- 7. 进入连续读模式
     if spi_w(fd, CMD_RDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to enter continuous read mode" }
+        return err("Failed to enter continuous read mode")
     end
 
     print(string.format("ADS1256 init OK: drate=%d SPS, PGA=×%d, channel=AIN%d",
@@ -163,11 +163,11 @@ function destroy(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Arguments: fd" }
+        return err("Invalid Arguments: fd")
     end
 
     if spi_w(tonumber(fd), CMD_SDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to stop continuous read mode" }
+        return err("Failed to stop continuous read mode")
     end
     return { result = "OK" }
 end
@@ -186,7 +186,7 @@ function call(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
+        return err("Invalid Argument: fd")
     end
     fd = tonumber(fd)
 
@@ -197,39 +197,39 @@ function call(data)
         -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
         local pos, neg = tonumber(data.pos), tonumber(data.neg)
         if pos == nil or neg == nil then
-            return { result = "ERR", message = "Invalid diff channel: pos/neg not a number" }
+            return err("Invalid diff channel: pos/neg not a number")
         end
         if pos < 0 or pos > 7 or neg < 0 or neg > 7 then
-            return { result = "ERR", message = "Invalid diff channel: 0~7" }
+            return err("Invalid diff channel: 0~7")
         end
         mux = bitc.bor(bitc.lshift(pos, 4), neg)
     else
         local channel = tonum(data.channel, 0)
         if channel < 0 or channel > 7 then
-            return { result = "ERR", message = "Invalid channel: 0~7" }
+            return err("Invalid channel: 0~7")
         end
         mux = bitc.bor(bitc.lshift(channel, 4), 0x08)    -- AINch vs AINCOM
     end
 
     -- 退出连续模式 → 改通道 → 同步重启转换 → 回到连续模式
     if spi_w(fd, CMD_SDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to stop continuous read mode" }
+        return err("Failed to stop continuous read mode")
     end
     if write_reg(fd, REG_MUX, mux) ~= 0 then
         spi_w(fd, CMD_RDATAC)
-        return { result = "ERR", message = "Failed to write MUX" }
+        return err("Failed to write MUX")
     end
     if spi_w(fd, CMD_SYNC) ~= 0 then
         spi_w(fd, CMD_RDATAC)
-        return { result = "ERR", message = "Failed to sync ADS1256" }
+        return err("Failed to sync ADS1256")
     end
     milli_sleep(1)
     if spi_w(fd, CMD_WAKEUP) ~= 0 then
         spi_w(fd, CMD_RDATAC)
-        return { result = "ERR", message = "Failed to wake ADS1256" }
+        return err("Failed to wake ADS1256")
     end
     if spi_w(fd, CMD_RDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to enter continuous read mode" }
+        return err("Failed to enter continuous read mode")
     end
 
     -- 等待一个完整转换周期（按 drate 估算，最少 1ms）
@@ -244,7 +244,7 @@ function call(data)
     -- 一次读 4 字节，前 3 字节是当前样本（第 4 字节是下一个样本的高字节，丢弃）
     local v = spi_rm(fd, 4)
     if v < 0 then
-        return { result = "ERR", message = "Failed to read data" }
+        return err("Failed to read data")
     end
 
     local raw24 = bitc.band(bitc.rshift(v, 8), 0xFFFFFF)   -- 取前 3 字节
