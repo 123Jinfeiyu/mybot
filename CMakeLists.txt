@@ -84,8 +84,10 @@ add_executable(mybot
 # mtmerge：.mt 动作脚本合成器（离线编译目标，不依赖 LuaJIT 运行时）。
 # N-11：矩阵解析入口（mt::readMatrix）下沉 matrix 层后，它只需
 # matrix/sqlparse 一层 + actionsource 的头文件常量，不再链接整份 core。
+# F1/N-30：归并核心抽到 mtmerge_core（与 mybot_tests 共用，白盒单测可覆盖）。
 add_executable(mtmerge
   src/mtmerge.cpp
+  src/mtmerge_core.cpp
   src/matrix.cpp
   src/expr.cpp
   src/sqlparse.cpp
@@ -113,6 +115,8 @@ add_executable(mybot_tests
   test/cpp/test_actionsource.cpp
   test/cpp/test_daemon.cpp
   test/cpp/test_daemon_concurrency.cpp
+  test/cpp/test_mtmerge.cpp
+  src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
 )
 
