@@ -165,6 +165,11 @@ function Session:post(opts)
 	local code = ffi.new("long[1]")
 	getinfo_long(h, INFO_RESPONSE_CODE, code)
 	if slist ~= nil then curl.curl_slist_free_all(slist) end
+	-- 每请求 cast 出的回调 cdata 用完即释放：LuaJIT 的回调要等 cdata 被 GC
+	-- 才归还槽位，长驻 agent 会话高频请求下会持续累积。此刻 perform 已返回、
+	-- getinfo 已取完，释放安全；下一轮 post 先 curl_easy_reset 再重设
+	-- WRITEFUNCTION，句柄上不会残留会被调用的悬垂指针（审计 2026-09-19）。
+	cb:free()
 
 	if overflow then
 		return { ok = false, err = "响应超过 " .. max_response .. " 字节上限" }
