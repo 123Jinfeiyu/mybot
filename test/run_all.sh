@@ -364,6 +364,10 @@ fi
 #                 首条【非守护】virt 覆盖：@Action 直写舵机驱动板走内存仿真
 #                 （drv_common 入口前置注入 + adopt_fd 跨状态机采纳 fd）；
 #                 正值断言虚拟横幅，负值断言通道越界被守卫（证明该链路非空断言）
+#   mcp4725_virt  第二条【非守护】virt 覆盖（I2C DAC 直写）：同时钉住
+#                 「驱动 build/call 走 arg_table（代调 virt_prepare）」——
+#                 旧风格入口绕过该钩子时，本用例的 i2c_open 会打到真实
+#                 /dev/i2c-99 响亮失败而非仿真（2026-09-19 审计修复回归）
 #   scscl_virt / scscl_badid
 #                 首个【UART 非守护】virt 覆盖（BUS="uart" 模型 attach_uart +
 #                 adopt uart fd）：@Action 直写总线舵机（SCSCL，大端帧/1M 波特率）；
@@ -426,6 +430,7 @@ parse_cases=(
 	'daemon_badfield.sql|daemon_badfield.mt|0|absent or non-numeric in driver result'
 	'pca9685_virt.sql|pca9685_virt.mt|0|VIRTUAL HARDWARE|Deactive warning'
 	'pca9685_badchan.sql|pca9685_badchan.mt|1|out of range 0-15'
+	'mcp4725_virt.sql|mcp4725_virt.mt|0|VIRTUAL HARDWARE'
 	'scscl_virt.sql|scscl_virt.mt|0|VIRTUAL HARDWARE'
 	'scscl_badid.sql|scscl_badid.mt|1|Invalid Argument: id'
 	'scscl_burn_guard.sql|scscl_burn_guard.mt|1|requires allow_burn'
