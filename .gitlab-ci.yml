@@ -62,3 +62,22 @@ gate:tsan:
     - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_concurrent
     - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_multi_runner
     - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_stop_and_exit
+
+# 编译器矩阵（N-35，起步为软门禁）：CI 此前只有 g++ 一条编译路径，同一份源码
+# 在 clang 前端下的接受度与告警差异（-Wall -Wextra -Wpedantic 各家取舍不同）
+# 无人观察——clang 报的可能是真问题，也可能是另一套前端口径。
+# 本 job 只做烟雾验证：clang 能构建 + C++ 单测全绿（Lua 层与编译器无关，
+# 不重复跑整段守门）。构建日志含告警文本，先观察若干轮再决定是否收紧。
+# 注：开发机无 clang，本 job 未经本地预跑验证，故 allow_failure 起步。
+gate:clang:
+  stage: gate
+  image: debian:bookworm
+  needs: ["build:release"]
+  allow_failure: true
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq cmake clang libluajit-5.1-dev luajit
+  script:
+    - cmake -S . -B build-clang -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
+    - cmake --build build-clang -j"$(nproc)"
+    - ./build-clang/mybot_tests
