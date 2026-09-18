@@ -51,7 +51,9 @@ DaemonRunner::~DaemonRunner() {
 
 /* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
  * 线程持 runner 的 shared_ptr 保生命周期；退出时若 abandoned 置位（主线程已放弃等待），
- * 槽所有权已移交本线程——由本线程释放（D2）。极端竞态下（置位晚于本检查）可能泄漏，宁漏不崩。 */
+ * 槽所有权归本线程——以 exchange 认领后释放（D2）。主线程超时置位可能落在
+ * 本线程首次检查之后（审计 #2），故先公告退出检查点再复查，双方以 exchange
+ * 的唯一胜者裁决释放，竞态窗口归零。 */
 int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, int64_t intervalMs) {
 	DaemonSlot* slot = slot_.load();
 	lua_State* L = luaL_newstate();
@@ -108,10 +110,19 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	n = slot->count;
 	pthread_mutex_unlock(mutexOf(slot));
 	lua_close(L);
-	if (abandoned_.load()) {
-		/* D2：主线程已放弃等待，槽所有权在本线程——自行释放 */
-		releaseSlot(slot);
-		slot_.store(nullptr);
+	/* D2 + 审计 #2：主线程超时弃管（置 abandoned）可能恰好落在本线程首次
+	 * 检查之后——先公告退出检查已做（此后本线程对槽至多剩一次 exchange，
+	 * 不再解引用），再复查一次；复查仍为 false 则槽留给主线程（joined 路径
+	 * 或超时后的 exchange 认领）释放，本线程直接返回。 */
+	if (!abandoned_.load()) {
+		exitCheckDone_.store(true);
+		if (!abandoned_.load()) { return n; }
+	}
+	/* 弃管路径：槽所有权归本线程。以 exchange 认领——若主线程超时后已先行
+	 * 认领，此处拿到 nullptr，零接触返回；唯一胜者释放，无双重释放。 */
+	{
+		DaemonSlot* mine = slot_.exchange(nullptr);
+		if (mine != nullptr) { releaseSlot(mine); }
 	}
 	return n;
 }
@@ -172,6 +183,18 @@ void DaemonRunner::waitForExit(const std::string& name) {
 			return;
 		}
 		abandoned_.store(true);
+		/* 审计 #2：置弃管后检查线程是否已过「退出检查点」。
+		 * - 未过：线程离开 tick 循环后必在复查中看到 abandoned 并自行
+		 *   exchange 认领释放——本方不得触碰槽（线程可能仍在拍内）。
+		 * - 已过：线程的全部槽访问已结束（seq_cst 检查点保证可见），
+		 *   且其弃管路径的 exchange 可能尚未执行——由本方 exchange 认领。
+		 *   exchange 的唯一胜者释放：线程先认领则本方拿到 nullptr，
+		 *   本方先认领则线程拿到 nullptr——旧实现此处直接 return，与
+		 *   线程退出检查互错过，槽 + mutex 永久泄漏。 */
+		if (exitCheckDone_.load()) {
+			DaemonSlot* mine = slot_.exchange(nullptr);
+			if (mine != nullptr) { releaseSlot(mine); }
+		}
 		std::cerr << "Daemon '" << name << "' not exited within " << joinTimeoutMs_
 			<< "ms, abandoning slot (thread will release it on exit)" << std::endl;
 		return;

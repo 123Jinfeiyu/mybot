@@ -64,8 +64,17 @@ class DaemonRunner {
 	 * 停机时不能白等 join 超时，直接释放槽。 */
 	std::atomic<bool> spawned_{false};
 	/* D2：主线程放弃等待后置位，槽所有权移交守护线程（线程退出时自行释放），
-	 * 主线程此后不再触碰槽——防放弃路径的 use-after-free。 */
+	 * 主线程此后不再触碰槽——防放弃路径的 use-after-free。
+	 * 审计 #2：置位与线程退出检查之间存在竞态窗口——线程先查（false，决定
+	 * 不自释）、主线程后超时置位（以为线程会自释）→ 双方都不释放，槽 + mutex
+	 * 永久泄漏。收口协议：线程退出循环后先公告「退出检查已做」（exitCheckDone_，
+	 * seq_cst，保证先于它的全部槽访问可见），再复查 abandoned；主线程超时置位
+	 * 后若观察到 exitCheckDone_，以 slot_.exchange(nullptr) 认领——exchange 的
+	 * 唯一胜者释放，既无泄漏也无双重释放（详见 daemonvar.cpp 两处注释）。 */
 	std::atomic<bool> abandoned_{false};
+	/* 退出检查点：守护线程离开 tick 循环、做完全部槽访问后置位（审计 #2 协议）。
+	 * 主线程观察到它即可安全认领槽——此刻线程对槽至多只剩一次 exchange（不解引用）。 */
+	std::atomic<bool> exitCheckDone_{false};
 	/* 弱自引用（Factory 经 bindSelf 置位）：start 经 lock() 取回 shared_ptr
 	 * 交给守护线程保生命周期。必须是 weak_ptr——shared_ptr 自引用会让引用
 	 * 计数永不归零，每个守护固定泄漏 208B/4 次分配，LeakSanitizer 下所有
