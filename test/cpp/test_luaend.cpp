@@ -16,8 +16,10 @@
 #include "harness.hpp"
 #include "json.hpp"
 #include "luaend.hpp"
+#include "util.hpp"
 
 using bot::Json;
+using bot::JsonArray;
 using bot::JsonFloat;
 using bot::JsonInt;
 using bot::JsonObject;
@@ -162,6 +164,57 @@ TH_TEST(nested_arrays_survive_the_conversion) {
 	auto w = res.get("w");
 	TH_CHECK(w && w->isArr() && w->size() == 2);
 	TH_CHECK(w && w->at(1).isArr() && w->at(1).at(0).getInt() == 3);
+}
+
+/* ---------------- 残留审计 #1：NUL 截断绕过防线 ---------------- */
+
+/* .mt 词法不把 '\0' 当分隔符，参数键 "servo.fd\0x" 能通过上游 reserved-key
+ * 的全串比较，但 lua_setfield(..., c_str()) 按 C 串截断成 "servo.fd"——
+ * 等价远程覆盖总线句柄。防线：call_lua 压栈前全量拒绝含 NUL 的键/值。 */
+TH_TEST(call_lua_rejects_a_params_key_with_embedded_nul) {
+	State s;
+	s.chunk("function call(data)\n"
+		"  return { result = \"OK\", saw_fd = data.fd ~= nil }\n"
+		"end\n");
+	Json bad = callParams();
+	bad.put(std::string("fd\0x", 4), JsonInt(9));
+
+	int before = s.top();
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "NUL byte",
+		bot::call_lua(s.get(), bad));
+	/* 异常路径不弄脏栈，状态机仍可继续服务 */
+	TH_CHECK(s.top() == before);
+	s.chunk("function call(data) return { result = \"OK\", v0 = 1 } end\n");
+	TH_CHECK(!isErr(bot::call_lua(s.get(), callParams())));
+}
+
+/* 字符串值同样拒绝（嵌套在数组里也要拦住） */
+TH_TEST(call_lua_rejects_a_string_value_with_embedded_nul) {
+	State s;
+	s.chunk("function call(data) return { result = \"OK\" } end\n");
+	Json inner = JsonArray();
+	inner.add(JsonString("ok"));
+	inner.add(JsonString(std::string("a\0b", 3)));
+	Json bad = callParams();
+	bad.put("payload", inner);
+
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "NUL byte",
+		bot::call_lua(s.get(), bad));
+	TH_CHECK(s.top() == 0);
+}
+
+/* 反方向：驱动返回含 NUL 的字符串，旧实现 lua_tolstring(..., nullptr) 静默
+ * 丢尾——取真实长度保留全量数据（丢数据本身就是错误征兆，不截断藏错）。 */
+TH_TEST(lua_value_to_json_preserves_embedded_nul_from_lua) {
+	State s;
+	s.chunk("function call(data) return { result = \"OK\", blob = \"a\\0b\" } end\n");
+	Json res = bot::call_lua(s.get(), callParams());
+
+	TH_CHECK(!isErr(res));
+	auto blob = res.get("blob");
+	TH_CHECK(blob && blob->isStr());
+	TH_CHECK(blob && blob->getValue().size() == 3);
+	TH_CHECK(blob && blob->getValue()[1] == '\0');
 }
 
 /* ---------------- L3：数字键转换去 UB ---------------- */

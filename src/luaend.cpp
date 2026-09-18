@@ -19,7 +19,8 @@ namespace bot {
 std::string luaErrorString(lua_State* L) {
 	int t = lua_type(L, -1);
 	if (t == LUA_TSTRING || t == LUA_TNUMBER) {
-		if (const char* s = lua_tolstring(L, -1, nullptr)) { return s; }
+		size_t n = 0;
+		if (const char* s = lua_tolstring(L, -1, &n)) { return std::string(s, n); }
 		return "<error tostring failed>";
 	}
 	return "<non-string error object, Lua type " + std::to_string(t) + ">";
@@ -133,6 +134,36 @@ void sandbox_lua(lua_State* L) {
 	lua_pop(L, 1);				/* 弹出白名单表，栈深复原 */
 }
 
+/* ---- NUL 防线（残留审计 #1）：C++ std::string 允许嵌入 '\0'，而 Lua 的
+ * pushstring/setfield/getglobal 全按 C 字符串语义在首个 '\0' 处截断——
+ * .mt 词法不把 '\0' 当分隔符，"servo.fd\0x" 这样的 @Action 参数键能通过
+ * 上游 rejectReservedKeys 的全串比较，却在 setfield 处截断成 "servo.fd"
+ * 覆盖结构元数据键（--tcp 场景等价于远程改总线句柄/从机地址/限幅）。
+ * 收口：在 C++→Lua 边界统一拒绝任何含 '\0' 的键与字符串值，宁可报错也
+ * 不让截断语义悄悄改掉键的含义。必须在压栈之前全量预校验——call_lua 的
+ * 契约是异常路径不弄脏 Lua 栈，压栈中途抛出会跳过末尾的 lua_settop。 ---- */
+static void rejectEmbeddedNul(const Json& val) {
+	if (val.isStr()) {
+		if (val.s.find('\0') != std::string::npos) {
+			throw IllegalArgumentException("call_lua: string values must not contain"
+				" a NUL byte (C-string truncation would silently change its meaning)");
+		}
+	} else if (val.isArr()) {
+		for (std::size_t i = 0; i < val.size(); ++i) { rejectEmbeddedNul(val.at(i)); }
+	} else if (val.isObj()) {
+		for (const auto& kv : val.items()) {
+			if (kv.first.find('\0') != std::string::npos) {
+				/* 注意：错误文本不能内嵌原始键——它含 NUL，what() 经 c_str()
+				 * 打印时会再次被截断，把诊断信息吞掉。只报长度与位置。 */
+				throw IllegalArgumentException("call_lua: object key of length "
+					+ std::to_string(kv.first.size()) + " must not contain a NUL byte"
+					+ " — it would truncate at the Lua boundary and alias another field");
+			}
+			rejectEmbeddedNul(kv.second);
+		}
+	}
+}
+
 /* ---- 将 Json 值递归压入 Lua 栈（数组/对象转 Lua 表，H-03）---- */
 void push_lua_value(lua_State* L, const Json& val) {
 	if (val.isStr()) {
@@ -195,7 +226,10 @@ Json lua_value_to_json(lua_State* L, int idx, int depth) {
 		return JsonNull();
 	}
 	if (t == LUA_TSTRING) {
-		if (const char* s = lua_tolstring(L, idx, nullptr)) { return JsonString(s); }
+		/* 反向 NUL 防线：lua_tolstring(L, idx, nullptr) 同样在 '\0' 截断，
+		 * 驱动返回的含 NUL 字符串会被静默丢尾——取真实长度保留全量数据。 */
+		size_t n = 0;
+		if (const char* s = lua_tolstring(L, idx, &n)) { return JsonString(std::string(s, n)); }
 		return JsonNull();
 	}
 	if (t == LUA_TTABLE) {
@@ -228,9 +262,10 @@ Json lua_value_to_json(lua_State* L, int idx, int depth) {
 					}
 				}
 			} else if (keyType == LUA_TSTRING) {
-				if (const char* ks = lua_tolstring(L, -2, nullptr)) {
+				size_t kn = 0;
+				if (const char* ks = lua_tolstring(L, -2, &kn)) {
 					Json vj = lua_value_to_json(L, -1, depth + 1);
-					obj.put(ks, vj);
+					obj.put(std::string(ks, kn), vj);
 				}
 			}
 			lua_pop(L, 1);			/* 弹出值，保留键供下一次 Lua_next */
@@ -270,6 +305,7 @@ Json call_lua(lua_State* L, const Json& json) {
 			" (expected build/call/destroy/read)");
 	}
 	std::string mode = modeField->getValue();
+	rejectEmbeddedNul(obj);		/* NUL 防线：含 mode 在内全量预校验，栈尚未触碰 */
 	lua_getglobal(L, mode.c_str());
 
 	/* 创建 Lua 表，装入全部字段 */
@@ -294,7 +330,9 @@ Json call_lua(lua_State* L, const Json& json) {
 					lua_pop(L, 1);		/* 弹出值，保留键供下一次 lua_next */
 					continue;
 				}
-				const char* key = lua_tolstring(L, -2, nullptr);
+				size_t keyLen = 0;
+				const char* keyPtr = lua_tolstring(L, -2, &keyLen);
+				std::string key(keyPtr != nullptr ? keyPtr : "", keyPtr != nullptr ? keyLen : 0);
 				Json val;
 				try {
 					val = lua_value_to_json(L, -1);
@@ -308,7 +346,7 @@ Json call_lua(lua_State* L, const Json& json) {
 						+ e.what()));
 					break;
 				}
-				logD([key, &val] { return std::string(key) + ": " + val.toString(); });
+				logD([&key, &val] { return std::string(key) + ": " + val.toString(); });
 				ret.put(key, val);
 				lua_pop(L, 1);
 			}
