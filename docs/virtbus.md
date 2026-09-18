@@ -10,6 +10,7 @@
 - [模型回调契约](#模型回调契约)
 - [txlog 条目格式](#txlog-条目格式)
 - [SPI 契约](#spi-契约)
+- [UART 契约与 txlog](#uart-契约与-txlog)
 - [契约对齐](#契约对齐)
 - [器件模型库（内嵌于驱动文件尾部）](#器件模型库内嵌于驱动文件尾部)
 - [守护无硬件端到端（proto=virt）](#守护无硬件端到端protovirt)
@@ -59,7 +60,7 @@ vbus.reset()           -- 还原全局 i2c_* 并清空
 | `vbus.restore()` | 还原注入前捕获的原始全局函数（真实 HAL 函数） |
 | `vbus.reset()` | `restore()` + 清空器件表、txlog、fd 线索（含 SPI）；每个用例开头调用保证隔离 |
 | `vbus.load_driver(path)` | `dofile` 真实驱动后强制重注入（驱动首次 dofile HAL 会用真实 ffi 函数覆盖全局 `i2c_*/spi_*`）；并保证 `restore()` 能还原到真实 HAL 而非置空 |
-| `vbus.txlog` | 事务序列数组（见下），驱动行为断言的唯一凭据；I2C/SPI 共用一条时间线 |
+| `vbus.txlog` | 事务序列数组（见下），驱动行为断言的唯一凭据；I2C/SPI/UART 共用一条时间线 |
 | `vbus.devs` / `vbus.spi_devs` | 当前 I2C 地址 / SPI 路径 → 挂载项的表 |
 
 `i2c_open` 走与 HAL 相同的路径白名单（仅匹配 `/dev/i2c-%d+`，非法路径返回 -1），虚拟 fd 从 3 起分配；`i2c_set_addr` 后该 fd 的事务才路由到对应模型，未 set_addr 或地址无模型一律按 NACK 处理。
@@ -117,6 +118,20 @@ vbus.attach("自定义@0x68", 0x68, dev)
 
 - 现状边界：`spi_*` 全局族可注入（覆盖 TPL0501/AD9833/ADS1256 用法）；MT6826S 经 `spi_xfer_full`（既在 HAL 也在 `VFUNCS` 注入面内）打全双工帧，虚拟化后可离线测。
 
+## UART 契约与 txlog
+
+`attach_uart(name, path, dev)` 按 tty 路径（如 `/dev/serial0`）挂载，写事务委托 `dev.on_write(bytes)`；
+`on_write` 三态即 UART 版负路径：返回应答字节表 = 数据入主机输入环，返回 `nil` = 设备不应答（驱动侧表现为读超时），返回 `false` = 本笔 TX 失败（`uart_write` 返 -1）。
+
+UART 事务与 I2C/SPI **共用同一条 `txlog`**，条目 dir 为：
+
+| dir | 含义 | 字段 |
+| --- | --- | --- |
+| `"uopen"` | 打开虚拟串口 | `path, baud` |
+| `"uw"` | 写事务（`on_write` 触发点） | `path, bytes={...}, ok=bool` |
+| `"ur"` | 读事务（`n` = 请求长度，`bytes` = 实际取回） | `path, n, bytes={...}[, err=true]` |
+| `"uf"` | `uart_flush`（清输入环） | `path` |
+
 ## 契约对齐
 
 虚拟总线逐函数复刻 HAL 返回值——`i2c_write_reg` 为**布尔**（驱动用 `if not` 判定，若错返 -1 会因 Lua 真值规则造成 NACK 假成功）、`write_multi/reg16` 为 0/-1、读族长度约束（合并值 n 1~6 越界显式失败，字节表钳 1~16）一致。
@@ -133,6 +148,27 @@ vbus.attach("自定义@0x68", 0x68, dev)
 协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿。
 
 > 2026-09-15 结构迁移：原 `lib/virtbus/<driver>.lua` 单文件器件模型已**整体内嵌进对应驱动文件尾部**，成为全局工厂 `<DRIVER>_VIRT`，随 `load_driver()`/守护 dofile 驱动一并定义（如 `modules/MPU6050.lua` 尾部的 `MPU6050_VIRT`）；守护经 `rawget(_G, driver .. "_VIRT")` 回退路径自动取用，模型以 `BUS` 标记分流 I2C/SPI/UART（UART 模型按 tty 路径走 `attach_uart`；非守护 `@Action` 直写路径由 `drv_common` 前置实例化模型并采纳跨状态机 fd）。模型与驱动保持独立实现（自带寄存器表/灵敏度常量、不引用驱动局部量），互证防假绿性质不变；`lib/virtbus/` 目录现仅保留通用底座 `regmap.lua`。下述各模型的 API 与行为描述在迁入后完全不变。
+
+`modules/` 下共有 **42 个内嵌 `*_VIRT` 模型**（`grep -l '_VIRT' modules/*.lua`）；下面先给「尚未单独成节」的一批速览，其后是逐个展开的协议细节。速览批次的协议事实以对应驱动文件尾部注释为准。
+
+### 其余内嵌模型（速览）
+
+| 模型 | 定位 |
+| ---- | ---- |
+| `PCA9685_VIRT`（`modules/PCA9685.lua`） | 16 路 PWM **纯输出**器件（regmap 包装族）：RESTART(bit7) 写 1 永不落盘、EXTCLK 粘滞、PRE_SCALE 仅 SLEEP 可写等个性照实建模；无测量值/无 `virt_tick`，守护 E2E 豁免 |
+| `APDS9900_VIRT`（`modules/APDS9900.lua`） | 命令字节 `COMMAND`+`TYPE` 四态寻址族（重复字节/自增/重复字/自增字），**不是朴素寄存器指针** |
+| `AS3935_VIRT`（`modules/AS3935.lua`） | 8 位字节指针 + 事件型中断锁存（INT 读后清）+ 两条直接命令（0x3C 软复位 / 0x3D RCO 校准）+ 21 位能量三字节小端 |
+| `BH1745_VIRT`（`modules/BH1745.lua`） | ROHM 四通道颜色传感器：稀疏字节寄存器 + 指针（1B 写=纯指针、≥2B 流首址起自增 mod 256），坏帧整笔 NACK 且指针不动 |
+| `BME688_VIRT`（`modules/BME688.lua`） | Bosch 四合一（温/压/湿/气）：3 块 42 字节 NVM 校准 burst + `0xF0` 变体选路 + TPH OSR/GAS_WAIT 门 |
+| `BMI270_VIRT`（`modules/BMI270.lua`） | Bosch 六轴 IMU：配置 blob 三段握手（INIT_CTRL 清零 → INIT_ADDR 双字节寻址 → INIT_DATA 8 字节突发） |
+| `BMM150_VIRT`（`modules/BMM150.lua`） | Bosch 三轴磁力计：上电挂起电源门 + 三段工厂 trim NVM + XY/Z 异构 13/15 位数据块 |
+| `EMC2101_VIRT`（`modules/EMC2101.lua`） | 输出+反馈混合族：PWM 手动/LUT 温控两模式 + s8 内温/11 位补码外温 + TACH interlock + 双 Part ID 甄别 |
+| `LSM6DSV_VIRT`（`modules/LSM6DSV.lua`） | ST 六轴 IMU：CTRL3 软复位/IF_INC 门 + 双 6 字节小端连续测量窗（`0x6C` 老 LSM6DSO 系明确拒绝） |
+| `MAX17048_VIRT`（`modules/MAX17048.lua`） | MAX17043 换代电量计：同地址 0x36 但寄存器图扩展、常数逐条不同——VCELL 16 位直读、SOC 1/256 定点、VERSION 精确甄别 |
+| `MHZ19_VIRT`（`modules/MHZ19.lua`） | UART 请求-应答定长帧（`FF 01 86` 请求 / `FF 86` 应答，9 字节 + 累加和），`BUS="uart"` |
+| `MLX90393_VIRT`（`modules/MLX90393.lua`） | 命令字 + status-first 应答 + 易失内存 RR/WR 读写：无寄存器指针，每命令先写再纯读 |
+| `MT6826S_VIRT`（`modules/MT6826S.lua`） | SPI 全双工 `spi_xfer_full` 族：24 位帧（命令 4 位 + 地址 12 位 + 数据 8 位）+ 角度四寄存器 + CRC-8，`BUS="spi"` |
+| `SDS011_VIRT`（`modules/SDS011.lua`） | UART 被动查询（`AA B4` 请求 19B / `AA C5` 应答 10B，累加和 mod 256），`BUS="uart"` |
 
 ### 通用底座：`virtbus/regmap.lua`
 
@@ -660,9 +696,11 @@ bash test/run_all.sh _virt
 
 ## 回归测试
 
-均由 `run_all.sh` 自动纳入：
+本节列出与虚拟总线/器件模型直接相关的用例，均由 `run_all.sh` 自动纳入；完整用例清单以
+`test/test_*.lua` 与 `test/run_all.sh` 为准（**括号内的断言数只是量级参考，会随用例演进漂移**，
+准确值以 `luajit test/<用例>.lua` 的 `[PASS]` 计数为准）。
 
-### `test/test_virtbus.lua`（纯 Lua，43 断言）
+### `test/test_virtbus.lua`（纯 Lua，54 断言）
 
 功能/指针事务/长度约束/两级 NACK/还原。
 
@@ -670,7 +708,7 @@ bash test/run_all.sh _virt
 
 regmap + ptr16 + 定向故障 + 总线集成。
 
-### `test/test_virtbus_spi.lua`（74 断言）
+### `test/test_virtbus_spi.lua`（75 断言）
 
 - SPI 路径白名单/setup 校验/全双工 CS 帧/delay 钳制/字节与帧长边界/无挂载与模型故障负路径/动态委托/fd 生命周期/I2C+SPI 并存
 - LuaJIT 段另挂虚拟 SPI 跑真实 `modules/SPI.lua` chunk 的 build/call/destroy
@@ -679,11 +717,16 @@ regmap + ptr16 + 定向故障 + 总线集成。
 
 真实 BH1750 build/call/destroy + 动态改读数 + 掉线 + 无器件负路径。
 
+### `test/test_virtbus_fdleak.lua`（LuaJIT，5 断言）
+
+fd 生命周期回归（审计缺口 #4）：用 `virtbus.fd_count()` 快照在纯 Lua 层检出「open 未 close」——
+正常循环、build NACK 失败循环、UART 链路各重复 30 轮，断言 fd 数收敛。
+
 ### `test/test_mpu6050.lua`（LuaJIT，50 断言）
 
 真实 MPU6050 全链路：build 配置序列/WHO_AM_I 甄别/0x69 备地址/14 字节 burst/六轴补码/温度换算/读写两个方向 NACK/virt_tick 仿真波形（原手写桩 test_mpu6050_sign 为其严格子集已合并删除）。
 
-### `test/test_bme280.lua`（LuaJIT，51 断言）
+### `test/test_bme280.lua`（LuaJIT，50 断言）
 
 真实 BME280 全链路：复位/校准块 6×4B+7B 长读/CTRL 回读复核/forced 状态机/20bit 数据位场/0x80000 与 0x8000 无效读数/超时/主备地址/附录 8.3 独立参考交叉验证（迁移时模型按字节宽度编码戳破旧桩 H1=260 的超宽假值，datasheet 真值 H1=75 对应 45.3%RH 档）。
 
@@ -738,7 +781,7 @@ regmap + ptr16 + 定向故障 + 总线集成。
 - **call**：5ms 步进轮询睡眠节拍 270/70/20/5ms/×8 双满码/oneshot 触发写/wait 超时/五路负路径/virt_tick 零等待正负两拍
 - **destroy**：待机写 0x0C/0x0B（旧 335 行手写全局桩整体替换）
 
-### `test/test_ms5611.lua`（LuaJIT，169 断言）——首个通道+OSR 命令字/指针读 PROM+ADC/出厂 CRC-4 命令式器件
+### `test/test_ms5611.lua`（LuaJIT，174 断言）——首个通道+OSR 命令字/指针读 PROM+ADC/出厂 CRC-4 命令式器件
 
 - **模型**：CRC-4 模型/测试独立算法/存储位域三方一致/八字 PROM 指针读与读后失效/读长度约束/转换命令两区间偶数编码（0x4A 保留码 NACK）/五档 datasheet 转换门 0.60~9.04ms 边界/转换中与未启动 ADC NACK/oneshot 结果保持/D1D2 码区分/24 位钳制/set_pt 四物理点逆算闭环/armed 连转/六类钩子（corrupt 只翻 word7 CRC 位域）/virt_tick 峰谷节拍
 - **build**：「0x1E→3ms→八字 0xA0+2i 指针写+2B 读」序列与 CRC mismatch/复位失败/PROM 读失败/指针写失败/fd=99 八路负路径
@@ -759,7 +802,7 @@ regmap + ptr16 + 定向故障 + 总线集成。
 - **call**：rshunt=0.05 下 8.192V/0.8A/6.5536W/两 ptr 写 0x01·0x02+两 2B 读序列/零睡眠/反流 -0.2048A/-1 LSB/±满程 6.4A/标志位不影响/连续三拍不串字/缺省 R100/virt_tick 闭环/六类负路径/未 build 守卫视 0x41 重挂 reload
 - **destroy**：零事务（旧 184 行手写桩整体替换）
 
-### `test/test_ads1115.lua`（LuaJIT，233 断言）——首个字寻址 16 位寄存器 + oneshot 转换门/OS 就绪握手器件
+### `test/test_ads1115.lua`（LuaJIT，234 断言）——首个字寻址 16 位寄存器 + oneshot 转换门/OS 就绪握手器件
 
 - **模型**：POR 0x8583 与阈值 0x8000/0x7FFF/字寻址不串读（CONFIG 空闲读回 OS 动态合成 0xC583）/坏长度 0·2·4·非 table·越界 0x04 全 NACK/OS=0 不启动与 shadow 留存/128SPS 门 7.8125ms 边界（7·7.8 busy，7.82 就绪）/**八档门限 T-1ms busy 表驱动**/s16 四码补码帧/MUX 八通道码表隔离/连续模式 OS 恒 0 立即出数/阈值照读照写/PGA 六档电压量化独立交叉与 ±满程钳制/virt_tick n0·n8 峰·n24 谷·n32 周期与武装一次性消费/卡死武装无效 advance 不推进/六类钩子与 reset 保留
 - **build**：默认配置字 0x4583 与 AIN3·PGA5·DR7 0x7BE3/恰一字写一 2B 回读/零睡眠/参数越界归一/非 table·缺 fd·缺 addr·fd=99·写失败·回读失败六类负路径

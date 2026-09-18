@@ -2,7 +2,8 @@
 
 > 本文是 `test/run_all.sh` 守门脚本的完整说明。[README](../README.md) 中只保留命令入口。
 > CI（`.gitlab-ci.yml`，F-22）在每次推送后自动跑 Release 全量守门 + sanitizer 双跑，
-> 与本地 pre-push 钩子同一条守门。
+> 与本地 pre-push 钩子同一条守门；另有 `gate:tsan`（只跑守护并发相关 C++ 用例）与
+> `gate:clang`（clang 构建 + C++ 单测烟雾）两条 **allow_failure 软门禁**，观察若干轮后再收紧。
 
 ## 用法
 
@@ -14,6 +15,23 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 
 全部守门在无 `/dev/i2c` 的开发机上即可运行。
 
+### ctest 逐用例入口（可选）
+
+`run_all.sh` 是权威编排；CMake 同时把每个 `test/test_*.lua` 与 C++ 单测注册成了独立
+ctest 用例，便于定位单条失败、享受逐用例超时（Lua 用例 60s），不必整段重跑：
+
+```bash
+cd build && ctest --output-on-failure        # 全部注册用例
+cd build && ctest -R lua_test_pca9685        # 按名字过滤（Lua 用例前缀 lua_）
+cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
+```
+
+注册项来自 `CMakeLists.txt`：每个 `test/test_*.lua` 一条（真机用例经
+`test/cpp/run_if_i2c.sh` 包装，无 `/dev/i2c-*` 时以 `SKIP_RETURN_CODE 125` 记为跳过），
+外加 `cpp_unit` / `const_ioctl` / `const_uart` / `const_v4l2`。只跑 ctest
+**不覆盖** `run_all.sh` 的端到端、TCP、agent 与守门完整性分段——提交前仍以
+`bash test/run_all.sh` 为准。
+
 ## 守门分段明细
 
 > 分段顺序与用例条数以 `test/run_all.sh` 为准（本节只讲每段职责，不维护条数）。
@@ -24,7 +42,7 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 4. **mtmerge 合成器**（`@Action` 相位归并 + `@Alias`/`@Vars` 按行叠加同名报错；末尾把产物回喂 `mybot` 证明内联别名仍生效）
 5. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 6. **TCP 异常注入**（复用 `scripts/tcp_adversarial.sh` 场景矩阵：半包/断连/空闲挂死/垃圾帧/口令负路径，每场景独立服务端 + 看门狗）
-7. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假模型服务 `scripts/fake_llm_server.py`，四个场景）：① 默认协议驱动（LlmOpenAI）跑完 `list_hardware → run_action_script → run_command → 最终回答`，断言工具循环真的迭代、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；② `--llm-driver LlmDeepSeek` 断言协议差异——带 `thinking`、不发 `temperature`、历史 `reasoning_content` 被回传（官方文档里的 400 级有状态要求）；③ `--llm-timeout` 必须在 4s 内生效，专防 `curl_easy_setopt` 退回裸变参调用（那时整型选项被静默忽略）；④ `--llm-config` 配置文件断言 URL/KEY/MODEL 全部来自文件、且环境里不放任何密钥；
+7. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假模型服务 `scripts/fake_llm_server.py`，五个场景）：① 默认协议驱动（LlmOpenAI）跑完 `list_hardware → run_action_script → run_command → 最终回答`，断言工具循环真的迭代、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；② `--llm-driver LlmDeepSeek` 断言协议差异——带 `thinking`、不发 `temperature`、历史 `reasoning_content` 被回传（官方文档里的 400 级有状态要求）；③ `--llm-timeout` 必须在 4s 内生效，专防 `curl_easy_setopt` 退回裸变参调用（那时整型选项被静默忽略）；④ `--llm-config` 配置文件断言 URL/KEY/MODEL 全部来自文件、且环境里不放任何密钥；
 ⑤ `capture_image` 拍照后断言线上报文确实带 `image_url` 多模态内容（data URL 包的真 JPEG）。缺 python3 或 libcurl 时按跳过计）
 8. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 9. **输入边界加固**（`--tcp-host` 非法地址、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限、`@Daemon` 驱动误配无 `build` 时的回滚路径；`mode` 键不得改写 controller 派发目标；驱动 `call()` 漏写 `return` 不得被当成成功；驱动返回自引用表须清晰报错而非宿主栈溢出；agent 专属选项出现在非 agent 模式、`--agent` 与 `--tcp/--input` 互斥、缺 API key 均须退出码 2）
@@ -39,7 +57,7 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 
 编译产物（`mybot` / `mybot_tests`）缺失时，对应分段**判失败**而不是静默跳过——否则「不构建」也能报出「0 失败」，而实际只有 Lua 段在跑。仅三类环境软依赖按跳过处理：
 
-- 真机 i2c 用例（本机无 `/dev/i2c-*`）、真机摄像头用例（本机无 `/dev/video*`，文件标记 `-- requires: video`）
+- 真机 i2c 用例（本机无 `/dev/i2c-*`）、真机摄像头用例（本机无 `/dev/video*`，文件标记 `-- requires: video`；可用 `BOT4CJ_TEST_VIDEO=<路径>` 指定设备）
 - TCP / agent 端到端缺 `python3`
 - agent 端到端缺 `libcurl`（agent 模式的运行期依赖，Lua 驱动经 ffi 加载；驱动 build 会明确报「libcurl 不可用」，本入口据此判跳过而非假绿）
 
@@ -59,11 +77,14 @@ cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
 bash test/run_san.sh        # 双跑：Release 全量 + ASan/UBSan 全量，两跑都过才算过
 ```
 
-`run_san.sh` 为第二跑导出 `ASAN_OPTIONS=suppressions=<仓库根>/asan.supp`：agent 模式
+`run_san.sh` 为第二跑导出 `LSAN_OPTIONS=suppressions=<仓库根>/asan.supp`（用 `:` 追加，
+保留调用方已有选项）：agent 模式
 加载 Lua 协议驱动时会经 ffi 拉起 libcurl → libcrypto，后者留下一批进程级初始化残留
 （即使只请求明文 `http://` 也会发生；栈全在 `CRYPTO_malloc` 内，`curl_global_cleanup`
 与 `OPENSSL_cleanup` 之后依然存在）。它与 `tsan.supp` 同性质——外部库的残留噪声，
 且**不加载驱动**的 C++ 单测不受影响，故不会掩盖本项目自身的泄漏。理由详见 `asan.supp`。
+注意：抑制必须走 `LSAN_OPTIONS` 而非 `ASAN_OPTIONS`——ASan 的抑制解析器不认识 `leak:`
+类型，放进 `ASAN_OPTIONS` 会让每个用例都因 `failed to parse suppressions` 失败。
 
 线程竞争用同一开关换 TSan：`-DMYBOT_SANITIZE=thread -B build-tsan`。注意 LuaJIT 是
 未插桩外部库，FFI 侧的槽访问不在 TSan 视野内——TSan 覆盖的是 C++ 侧并发路径

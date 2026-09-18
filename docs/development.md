@@ -13,6 +13,25 @@ bash test/run_san.sh                          # 双跑：Release + sanitizer（�
 cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql   # 无硬件自检
 ```
 
+调试单条用例时可用 ctest 逐用例入口（比整段守门快得多，但**不替代**提交前的
+`run_all.sh`，见 [testing.md](testing.md#ctest-逐用例入口可选)）：
+
+```bash
+cd build && ctest --output-on-failure -R lua_test_pca9685
+cd build && ctest --output-on-failure -R cpp_unit
+```
+
+## 目录约定
+
+| 路径 | 放什么 | 注意 |
+| ---- | ------ | ---- |
+| `src/` | C++17 宿主（解析、注册、派发、守护、agent） | 全量 `-Wall -Wextra -Wpedantic` 零告警 |
+| `modules/` | 驱动 `<矩阵名>.lua` 与库 `lib/` | 驱动契约见 [drivers.md](drivers.md) |
+| `modules/lib/` | HAL、virtbus、mpath、JSON、滤波、模型协议等共享库 | 纯算法库不依赖 HAL，可被 lua5.4 复用 |
+| `robots/`、`scripts/` | 结构脚本与动作脚本；`test/` 子目录为回归夹具 | 夹具必须登记进用例表，否则被孤儿检测判失败 |
+| `test/` | Lua 单测、`cpp/` C++ 单测、`run_all.sh` 总编排 | 编译产物缺失时对应分段判失败 |
+| `docs/` | 深入文档，入口 [docs/README.md](README.md) | 改动后同步索引与链接 |
+
 ## 守门钩子（pre-push）
 
 `scripts/git-hooks/pre-push` 是版本管理的正身，`install-hooks.sh` 以**软链**方式接进 `.git/hooks/`：
@@ -41,3 +60,15 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql   # 无�
 ## 代码规范
 
 本项目 `.cpp` 全量 `-Wall -Wextra -Wpedantic` 零告警为基线，改动请保持。
+
+## 文档约定
+
+- **入口两级**：[README](../README.md) 只留「快速开始 + 入口链接」，机制细节写进 `docs/`；
+  新增 `docs/*.md` 必须同时登记到 [docs/README.md](README.md)。
+- **单一事实源**：文档里的**条数/枚举措辞**尽量指向脚本或目录本身（如「以 `test/run_all.sh` 为准」
+  「以 `modules/` 目录为准」），避免代码演进后文档数字漂移——数字只在确需给读者量级时写死，
+  并在同句给出权威来源。
+- **代码路径要跟着重构走**：文件被拆分/改名时同步更新引用（历史上 `src/luaend.cpp`
+  拆成 `luabridge.cpp` + `luasandbox.cpp`，文档因此滞后过）。
+- **命令要能直接跑**：文档里的命令按仓库根为 CWD 书写，且必须是当前真实可用的形式
+  （如 `--llm-config none`、`LSAN_OPTIONS` 抑制）。改脚本时回头核对文档。

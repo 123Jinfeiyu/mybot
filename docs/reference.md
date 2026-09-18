@@ -24,7 +24,7 @@
 | `--tcp <port>` | TCP 模式：监听端口接受**一次成功连接**并读取对端下发的 `.mt`（EOF 或空闲超时按输入结束；单连接一次性批量下发，非流式长驻）。口令校验失败只关该连接回 accept 等待，**连续 5 次**失败才退出（防单次连接 DoS，也防无限爆破） |
 | `--tcp-host <addr>` | TCP 监听地址，缺省 `127.0.0.1`；跨机监听（如 `0.0.0.0`）**必须**同时提供 `--tcp-token`，否则拒绝启动 |
 | `--tcp-token <tok>` | TCP 口令：跨机监听必填；对端须先发一行 `"<tok>\n"` 再发脚本；校验为**恒时比较**（防时序侧信道，审计 M1）。也可用环境变量 `BOT4CJ_TCP_TOKEN` 传递（argv 出现在 `/proc/*/cmdline`，多用户机器上建议用环境变量） |
-| `--tcp-idle <sec>` | TCP 空闲超时，缺省 30s（超时按输入结束处理）。另有**连接总时长预算**（600s，随该值×20 放大）从连接建立起算：慢滴发送（每 <idle 秒发 1 字节）不能无限期挂住进程 |
+| `--tcp-idle <sec>` | TCP 空闲超时，缺省 30s，合法范围 1-86400（超时按输入结束处理）。另有**连接总时长预算**（600s，随该值×20 放大）从连接建立起算：慢滴发送（每 <idle 秒发 1 字节）不能无限期挂住进程 |
 | `--input <path>` | 从文件读取动作脚本 |
 | （缺省） | 从 stdin 管道读取 |
 | `--agent` | **agent 模式**：机器人结构脚本加载后硬件常驻内存，由大模型工具循环决定执行哪些动作脚本（与上面的动作输入源互斥，详细见 [agent.md](agent.md)） |
@@ -36,7 +36,7 @@
 | `--llm-model <名称>` | agent 模型名（覆盖配置文件；不给则用配置或驱动缺省） |
 | `--llm-key <KEY>` | agent API key（覆盖配置文件）；会写进本进程环境变量 `BOT4CJ_LLM_KEY`（不推荐：argv 对本机所有用户可读） |
 | `--llm-max-turns <N>` | 单次任务最大模型轮数，范围 1-100（缺省 8） |
-| `--llm-max-tokens <N>` | 单次生成最大 token 数（缺省 4096） |
+| `--llm-max-tokens <N>` | 单次生成最大 token 数，范围 1-200000（缺省 4096） |
 | `--llm-timeout <秒>` | 单次模型调用超时（缺省 180） |
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
 | `--agent-no-shell` | 不向智能体提供 `run_command`（去掉任意 shell 执行能力） |
@@ -96,6 +96,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | --- | --- |
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
+| `BOT4CJ_TCP_TOKEN` | TCP 口令（等价 `--tcp-token`，优先级低于命令行）。argv 会出现在 `/proc/<pid>/cmdline`，多用户机器上推荐用本变量传口令 |
 | `BOT4CJ_LLM_KEY` | agent 模式的 API key。回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。由 **Lua 驱动自己读取**（不进宿主的参数表，也不进 `BOT4CJ_DEBUG` 转储）；该变量名含 `key`，会被 `run_command` 的环境清洗剔除，不会泄漏给子进程 |
 | `BOT4CJ_LLM_CONFIG` | agent 配置文件路径（优先级低于 `--llm-config`、高于缺省查找）；设为 `none` 表示不读配置文件 |
 | `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | agent 接入点 / 模型名（覆盖配置文件，低于命令行） |

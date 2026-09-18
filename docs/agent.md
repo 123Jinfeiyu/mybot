@@ -51,7 +51,7 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--llm-model <名称>` | 模型名（覆盖配置文件） | 配置文件 / 驱动缺省 |
 | `--llm-key <KEY>` | API key（覆盖配置文件） | 配置文件 / 环境变量，见下 |
 | `--llm-max-turns <N>` | 单次任务的最大模型轮数（1-100） | 8 |
-| `--llm-max-tokens <N>` | 单次生成最大 token 数 | 4096 |
+| `--llm-max-tokens <N>` | 单次生成最大 token 数（1-200000） | 4096 |
 | `--llm-timeout <秒>` | 单次模型调用超时 | 180 |
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--agent-no-shell` | **不**注册 `run_command`（去掉任意 shell 执行能力） | 关（即默认提供） |
@@ -307,7 +307,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/jsonparse.{hpp,cpp}` | 严格 JSON 文本解析（宿主侧） | 无 |
 | `src/llmconfig.{hpp,cpp}` | 配置文件读取（JSON、严格校验、缺省查找、密钥文件与权限体检） | 无 |
 | `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
-| `src/agenttools.{hpp,cpp}` | 工具注册表与四个工具、脚本路径沙箱、硬件描述 | 无 |
+| `src/agenttools.{hpp,cpp}` | 工具注册表与五个工具、脚本路径沙箱、硬件描述 | 无 |
 | `src/agentloop.{hpp,cpp}` | 工具循环（历史、轮次上限、回滚、extras 透传） | 无 |
 | `src/agentmode.{hpp,cpp}` | CLI 配置组装、系统提示词、一次性/REPL 外壳 | 无 |
 | `src/agentdriver.{hpp,cpp}` | `ChatTransport` 适配：调驱动的 `playQuiet()` | 无 |

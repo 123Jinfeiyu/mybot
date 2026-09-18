@@ -15,7 +15,8 @@
 - **实现**：C++17（零第三方 C++ 依赖，仅 LuaJIT + pthread + dl）
 - **构建**：CMake ≥ 3.16；g++ ≥ 14 已验证（CI 基线 debian:bookworm，本地实测至 g++ 15）
 - **平台**：Linux（aarch64 / x86_64），树莓派实测可使用
-- **驱动生态**：`modules/` 下 50+ 硬件驱动（舵机、IMU、气压、测距、ADC、电源……），分类清单见 [docs/drivers.md](docs/drivers.md)
+- **CI**：`.gitlab-ci.yml` 在每次推送跑「构建 → Release 全量守门 → ASan/UBSan 双跑」，另有 TSan 与 clang 两条软门禁（详见 [docs/testing.md](docs/testing.md)）
+- **驱动生态**：`modules/` 下 59 个模块——47 款器件/执行器驱动（舵机、IMU、气压、测距、ADC、电源……）加总线、滤波与模型协议等框架模块；分类清单见 [docs/drivers.md](docs/drivers.md)（计数以 `modules/` 目录为准）
 
 ## 🧭 三份脚本如何配合
 
@@ -28,6 +29,17 @@
 ```
 
 **不接硬件也能跑**：仓库内置"假零件"（Relay 转发链路、内存仿真虚拟总线），第一条命令就能看到整条链路真实运转。
+
+## 🗂️ 仓库结构
+
+| 路径 | 内容 |
+| ---- | ---- |
+| `src/` | C++17 宿主：SQL/矩阵解析、表达式、硬件注册与派发、守护线程、agent 模式 |
+| `modules/` | Lua 驱动与库：`<矩阵名>.lua` 即一张表的驱动，`lib/` 放 HAL、virtbus、JSON、滤波与模型协议 |
+| `robots/` | 结构脚本 `.sql`（`robots/test/` 为回归夹具） |
+| `scripts/` | 动作脚本 `.mt` 与守门用的端到端 shell / 假模型服务 |
+| `test/` | 三层守门：`test_*.lua`（Lua 离线单测）、`cpp/`（C++ 单测）、`run_all.sh`（总编排） |
+| `docs/` | 深入文档（入口 [docs/README.md](docs/README.md)） |
 
 ## 🚀 快速开始
 
@@ -133,12 +145,12 @@ cp mybot.llm.json.example mybot.llm.json && chmod 600 mybot.llm.json   # 填 end
 
 - [命令行与环境变量参考](docs/reference.md)——动作输入源、CLI 参数、安全约束、`BOT4CJ_*`
 - [DSL 参考：结构脚本与动作脚本](docs/dsl.md)——占位符、`@Alias`/`@Vars`、`$(...)` 表达式、controller 与 `$` 引用完整语义
-- [硬件变量（驱动）清单](docs/drivers.md)——50+ 驱动按类别速查
+- [硬件变量（驱动）清单](docs/drivers.md)——59 个模块（47 款器件/执行器驱动 + 总线/框架模块）按类别速查
 - [@Daemon 守护线程](docs/daemon.md)——后台采样、滤波器链路
-- [agent 模式](docs/agent.md)——大模型工具循环驱动常驻机器人：CLI 选项、工具、安全边界、构建依赖
+- [agent 模式](docs/agent.md)——大模型工具循环驱动常驻机器人：CLI 选项、五个工具、安全边界、运行期 libcurl
 - [HAL 硬件抽象层](docs/hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
 - [虚拟总线 virtbus](docs/virtbus.md)——无真机验证驱动链路的完整参考手册
-- [架构分析](docs/architecture_analysis.html)——分层图与数据流图
+- [架构分析（仓颉版历史文档）](docs/architecture_analysis.html)——附 [分层图](docs/architecture_layers.svg) / [数据流图](docs/architecture_dataflow.svg)；三份均描述仓颉原版，C++ 移植版的分层见 [docs/agent.md](docs/agent.md#源码分层) 与各机制文档
 - [回归测试手册](docs/testing.md) / [开发与贡献](docs/development.md) / [已知限制与 FAQ](docs/faq.md) / [更新日志](docs/changelog.md)
 
 ## ⚠️ 已知限制
