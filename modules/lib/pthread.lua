@@ -181,12 +181,23 @@ function P.latest(slot)
 	return t, c
 end
 
--- 停止标志（守护循环轮询；宿主置位）
+-- 停止标志（守护循环轮询；宿主置位）。
+-- 与 C++ 侧 daemon_request_stop/daemon_stop_requested（daemonvar.cpp 槽内
+-- mutex 临界区）同一契约：两侧读写都必须持锁——宿主置 stop 与守护轮询
+-- 是跨线程并发，裸读写虽有 uint8 对齐单字节访存兜底，但名义上是数据竞争
+-- （TSan 视角），且 mutex 已在槽内、加锁成本可忽略。
 function P.should_stop(slot)
-	return slot[0].stop ~= 0
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
+	local stop = slot[0].stop ~= 0
+	mutex_call("unlock", m)
+	return stop
 end
 function P.signal_stop(slot)
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
 	slot[0].stop = 1
+	mutex_call("unlock", m)
 end
 
 ------------------------------------------------------------------

@@ -40,7 +40,9 @@ static_assert(offsetof(DaemonSlot, nvals) == SLOT_NVALS_OFF, "nvals offset");
 static_assert(offsetof(DaemonSlot, values) == SLOT_VALUES_OFF, "values offset");
 static_assert(offsetof(DaemonSlot, stop) == SLOT_STOP_OFF, "stop offset");
 
-/* stop 标志读写统一经槽内 mutex 临界区（P2 数据竞争防线） */
+/* stop 标志读写统一经槽内 mutex 临界区（P2 数据竞争防线）。
+ * Lua 侧 pthread.lua 的 should_stop/signal_stop 同样持锁——两侧契约一致，
+ * TSan 视角无裸读写竞态。 */
 void daemon_request_stop(DaemonSlot* slot);
 bool daemon_stop_requested(DaemonSlot* slot);
 

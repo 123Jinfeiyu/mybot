@@ -83,8 +83,11 @@ std::optional<MatrixObject> MatrixParser::parse() {
 			count = next_(static_cast<char>(c), count);
 		} catch (const MatrixParseExcept&) {
 			throw;	/* DoesNotSync 等已自带行号与语义，原样上抛，不降级成无信息异常 */
-		} catch (const bot::IllegalArgumentException&) {
-			throw bot::IllegalArgumentException("Parse failed at line " + std::to_string(count));
+		} catch (const bot::IllegalArgumentException& e) {
+			/* N-2：包装保留原文——被包异常往往含列名/具体原因，只留行号
+			 * 会让用户拿着「Parse failed at line N」无从排障。 */
+			throw bot::IllegalArgumentException("Parse failed at line "
+				+ std::to_string(count) + ": " + e.what());
 		} catch (const std::exception&) {
 			throw UnknowExcept(count);
 		}

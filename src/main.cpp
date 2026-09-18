@@ -20,10 +20,13 @@ extern "C" void onStopSignal(int) {
 }
 
 /* ---- 命令行参数解析：--key=value 与 --key value 双形态 ----
- * 未知键收进 unknown（F-20：由调用方统一拒绝，退出码 2）。 */
+ * 未知键收进 unknown（F-20：由调用方统一拒绝，退出码 2）；
+ * 带值键裸写收进 missingValue（N-4：旧实现回落哨兵值 "1"，`--tcp-host` 裸写
+ * 会得到 host="1"、在 TCP 层报「地址无效」，与「漏写值」的用户意图脱节）。 */
 struct ParsedArgs {
 	bot::CliOptions opts;
 	std::vector<std::string> unknown;
+	std::vector<std::string> missingValue;
 };
 
 static ParsedArgs parseArgs(int argc, char** argv) {
@@ -47,17 +50,32 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 			val = argv[++k];
 			noValue = false;
 		}
-		if (key == "robot") { out.opts.robot = noValue ? "1" : val; }
+		if (key == "robot") {
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.robot = val; }
+		}
 		else if (key == "help") { out.opts.help = true; }
 		else if (key == "tcp") {
 			out.opts.tcp = true;
 			/* 裸 --tcp：tcp 置位但端口留空，由 openActionSource 报「缺端口号」 */
 			if (!noValue) { out.opts.tcpPort = val; }
 		}
-		else if (key == "tcp-host") { out.opts.tcpHost = noValue ? "1" : val; }
-		else if (key == "tcp-token") { out.opts.tcpToken = noValue ? "1" : val; }
-		else if (key == "tcp-idle") { out.opts.tcpIdle = noValue ? "1" : val; }
-		else if (key == "input") { out.opts.input = noValue ? "1" : val; }
+		else if (key == "tcp-host") {
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.tcpHost = val; }
+		}
+		else if (key == "tcp-token") {
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.tcpToken = val; }
+		}
+		else if (key == "tcp-idle") {
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.tcpIdle = val; }
+		}
+		else if (key == "input") {
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.input = val; }
+		}
 		else { out.unknown.push_back(key); }
 	}
 	return out;
@@ -105,6 +123,15 @@ int main(int argc, char** argv) {
 		std::sort(args.unknown.begin(), args.unknown.end());
 		for (const auto& key : args.unknown) {
 			std::cerr << "未知参数：--" << key << "；用 --help 查看支持的参数" << std::endl;
+		}
+		return 2;
+	}
+
+	/* N-4：带值键裸写（漏值）在解析层即拒绝，退出码与 unknown 一致 */
+	if (!args.missingValue.empty()) {
+		for (const auto& key : args.missingValue) {
+			std::cerr << "选项 --" << key << " 缺少值；用法：--" << key << " <值>"
+				<< "，用 --help 查看说明" << std::endl;
 		}
 		return 2;
 	}
