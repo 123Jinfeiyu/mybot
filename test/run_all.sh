@@ -643,6 +643,39 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
+# TCP 异常注入（审计覆盖缺口 #2）：tcp_e2e.sh 只有 happy path，半包/断连/
+# 空闲挂死/垃圾帧/口令负路径此前零覆盖。复用 scripts/tcp_adversarial.sh
+# 六场景矩阵（详见该脚本头注释），每场景独立服务端 + 看门狗——「挂死不退」
+# 本身是被断言的故障形态。缺 python3 按 SKIP 计（与 TCP 段同约定）。
+# ======================================================================
+run_one_tcp_adv() {
+	echo "----- tcp-adversarial (TCP 异常注入) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "TCP 异常注入" "6 个场景" "$bin" "$bot_explicit"
+		return 2
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
+		skip=$((skip + 1))
+		skipped_list="$skipped_list tcp-adversarial(缺python3)"
+		return 2
+	fi
+	local out rc
+	out="$(BOT="$bin" timeout 120 bash scripts/tcp_adversarial.sh 2>&1)"
+	rc=$?
+	echo "$out"
+	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "TCP 异常注入测试通过"; then
+		fail=$((fail + 1))
+		failed="$failed tcp-adversarial(异常注入)"
+	else
+		pass=$((pass + 1))
+	fi
+}
+if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
+	run_one_tcp_adv
+fi
+
+# ======================================================================
 # mtmerge 相位语义回归（scripts/mtmerge_e2e.sh）：相位 0/±1 逐格比对、
 # 设备集相交报错、三输入链式、负相位丢行告警、合并产物回喂 mybot 时
 # 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
@@ -852,6 +885,203 @@ SQLEOF
 	run_one_hardening 'driver_returns_cyclic_table' 1 'nests deeper than' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
+fi
+
+# ======================================================================
+# 守护 tick 期故障注入（审计覆盖缺口 #3）：总线持续 NACK → tick error
+# 日志 + count 停滞 + 主流程不受影响（rc=0，仍正常 join/清理）。
+# 旧守门只断言「count 达标」（正向路径）；sensor_daemon「坏样本不发布、
+# count 停滞即诊断线索」的负向设计从未被 E2E 断言。
+# 夹具：NackDrv.lua（.tmp/fixmod，同 hardening 的 BOT4CJ_MODULE_PATH 注入），
+# 内嵌 NackDrv_VIRT 模型：virt_tick 拍号 < 8 时正常应答，此后 I2C 写/读恒
+# NACK——驱动 call 返回 ERR，守护按 tick 错误处理、不再 publish。
+# 断言：rc=0、VIRTUAL HARDWARE 横幅、tick error 日志、count 恰停在 8
+# （setup 预武装 virt_tick(0) 后，拍 0~7 共 8 次发布）、count 有多个取值
+# （证明前 8 拍确实在发布，而非从头就没发布）、joined 行在位。
+# ======================================================================
+run_one_daemon_nack() {
+	echo "----- daemon_nack (守护 tick 故障注入) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "守护 tick 故障注入" "该用例" "$bin" "$bot_explicit"
+		return 2
+	fi
+	mkdir -p .tmp/fixmod
+	cat > .tmp/fixmod/NackDrv.lua <<'LUAEOF'
+-- 守护 tick 故障注入夹具（run_all.sh 生成）：I2C 最小驱动 + 内嵌 virt 模型。
+-- 模型按 virt_tick 拍号切换状态：拍号 < 8 正常应答，>= 8 写/读恒 NACK——
+-- 用于 E2E 断言「tick 期总线持续 NACK → 驱动 ERR → 守护不 publish（count 停滞）」。
+local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+dofile(mpath.resolve("lib/drv_common.lua"))
+
+local NACK_AFTER = 8
+
+function build(data)
+	local ok, ek = arg_table(data)
+	if not ok then return ek end
+	return { result = "OK" }
+end
+
+function call(data)
+	local ok, ek = arg_table(data)
+	if not ok then return ek end
+	local fd, addr, e2 = i2c_pair(data)
+	if fd == nil then return e2 end
+	local v = i2c_read_multi(fd, 0x00, 2)
+	if v < 0 then
+		return { result = "ERR", message = "NACK on measurement read" }
+	end
+	return { result = "OK", v0 = v }
+end
+
+function destroy(data)
+	local ok, ek = arg_table(data)
+	if not ok then return ek end
+	return { result = "OK" }
+end
+
+NackDrv_VIRT = {
+	new = function()
+		local n = -1
+		return {
+			-- 守护经 vdev:virt_tick(k) 冒号调用（带 self）；virtbus 的
+			-- dev.write/read 以单参直调（无 self）——签名不可混用
+			virt_tick = function(_, k) n = k end,
+			write = function(_)
+				if n >= NACK_AFTER then return false end
+				return true
+			end,
+			read = function(len)
+				if n >= NACK_AFTER then return nil end
+				local t = {}
+				for i = 1, len do t[i] = (n + 1) % 256 end
+				return t
+			end,
+		}
+	end,
+}
+LUAEOF
+	cat > .tmp/nack_robot.sql <<'SQLEOF'
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
+CREATE TABLE Daemon (
+	name     String,
+	chunk    String,
+	driver   String,
+	proto    String,
+	path     String,
+	addr     String,
+	interval String,
+	fields   String
+);
+INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
+  VALUES ('d0', 'lib/sensor_daemon.lua', 'NackDrv', 'virt',
+          '/dev/i2c-1', '0x68', '5', 'v0');
+
+/* Monitor 消费守护：mon0.go 每拍调用守护 play()（readSample）——
+ * count 快照由此进入输出 JSON，停滞断言才有观测点 */
+CREATE TABLE Monitor (
+	name String,
+	src  String
+);
+INSERT INTO Monitor (name, src) VALUES ('mon0', '$d0');
+SQLEOF
+	# ~1.1s 动作（200ms 预热 + 5×200ms），interval=5ms → 足够多拍越过 NACK 门限
+	printf '@Action\nt0.delay  mon0.go;\n   200       -    ;\n' > .tmp/nack.mt
+	for _ in 1 2 3 4 5; do printf '   200       -    ;\n' >> .tmp/nack.mt; done
+	printf '@\n' >> .tmp/nack.mt
+	local out rc n_ok count_max count_uniq
+	out="$(env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		--robot=.tmp/nack_robot.sql --input=.tmp/nack.mt 2>&1)"
+	rc=$?
+	echo "$out"
+	n_ok=true
+	[ "$rc" -ne 0 ] && n_ok=false
+	echo "$out" | grep -qF "VIRTUAL HARDWARE" || n_ok=false
+	echo "$out" | grep -qF "tick error" || n_ok=false
+	echo "$out" | grep -qF "joined, total publishes=" || n_ok=false
+	count_max="$(echo "$out" | grep -oE '"count":[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)"
+	# count 停滞：前 8 拍正常发布 → 最大恰为 8（容差 6~10 抗时序抖动）。
+	# 「发布过且随后停滞」的确定性证据是 join 行的 total publishes（恰等于
+	# 正常拍数）——Monitor 200ms 预热后才首次读快照，此时早已停滞，
+	# 故输出里只有 count:8 一个值，不能用 uniq 断言「多值」。
+	publishes="$(echo "$out" | grep -oE 'total publishes=[0-9]+' | grep -oE '[0-9]+' | tail -1)"
+	{ [ -z "$count_max" ] || [ "$count_max" -lt 6 ] || [ "$count_max" -gt 10 ]; } && n_ok=false
+	{ [ -z "$publishes" ] || [ "$publishes" -lt 6 ] || [ "$publishes" -gt 10 ]; } && n_ok=false
+	if $n_ok; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed daemon_nack(故障注入)"
+	fi
+}
+if [ -z "$filter" ] || [[ "nack" == *"$filter"* ]]; then
+	run_one_daemon_nack
+fi
+
+# ======================================================================
+# 进程级 fd 探针（审计覆盖缺口 #4）：长动作 + 守护持续采样期间，
+# 采样 /proc/<pid>/fd 计数——稳态播放期 fd 总数必须有界且平稳，
+# 「每拍/每次调用漏关一个 fd」的泄漏会表现为计数单调增长。
+# 虚拟总线 fd 不占进程 fd 表（纯内存），此处盯的是真实 fd 消耗点：
+# TCP listen/accept、stdin、LuaJIT 内部管道等；Lua 层的精细生命周期
+# 由 test_virtbus_fdleak.lua（virtbus.fd_count）补齐。
+# ======================================================================
+run_one_fd_probe() {
+	echo "----- fd-probe (进程级 fd 泄漏探针) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "fd 泄漏探针" "该用例" "$bin" "$bot_explicit"
+		return 2
+	fi
+	mkdir -p .tmp
+	# 复用 signal 段夹具形态：Timer 长动作 + 无硬件守护（daemon_probe 发布链路）
+	cat > .tmp/fdprobe_robot.sql <<'SQLEOF'
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
+CREATE TABLE Daemon (
+	name  String,
+	chunk String
+);
+INSERT INTO Daemon (name, chunk) VALUES ('d0', 'lib/daemon_probe.lua');
+SQLEOF
+	{ echo '@Action'; echo 't0.delay;'; for _ in $(seq 1 30); do echo '   200;'; done; echo '@'; } > .tmp/fdprobe.mt
+
+	local out pid samples n min max
+	samples=""
+	"$bin" --robot=.tmp/fdprobe_robot.sql --input=.tmp/fdprobe.mt >/dev/null 2>&1 &
+	pid=$!
+	# 采样 ~6s（动作时长）：每 250ms 数一次 /proc/<pid>/fd
+	for _ in $(seq 1 24); do
+		kill -0 "$pid" 2>/dev/null || break
+		if [ -d "/proc/$pid/fd" ]; then
+			n="$(ls "/proc/$pid/fd" 2>/dev/null | wc -l)"
+			samples="$samples $n"
+		fi
+		sleep 0.25
+	done
+	wait "$pid"
+	local rc=$?
+	echo "fd 采样序列:$samples (rc=$rc)"
+	min="" ; max=""
+	for n in $samples; do
+		if [ -z "$min" ] || [ "$n" -lt "$min" ]; then min=$n; fi
+		if [ -z "$max" ] || [ "$n" -gt "$max" ]; then max=$n; fi
+	done
+	if [ "$rc" -eq 0 ] && [ -n "$min" ] && [ -n "$max" ] && [ "$max" -le $((min + 2)) ] && [ "$max" -le 64 ]; then
+		pass=$((pass + 1))
+	else
+		fail=$((fail + 1))
+		failed="$failed fd-probe(fd泄漏)"
+		echo "[FAIL] fd 计数不平稳或有界性被破坏（min=$min max=$max rc=$rc）"
+	fi
+}
+if [ -z "$filter" ] || [[ "fd" == *"$filter"* ]]; then
+	run_one_fd_probe
 fi
 
 # ======================================================================

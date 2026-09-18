@@ -783,6 +783,18 @@ function virtbus.adopt_fd(fd, path, addr, bus)
 	return true
 end
 
+-- fd 泄漏检测（审计覆盖缺口 #4）：三类总线已登记虚拟 fd 的只读合计快照。
+-- 真实 HAL 与虚拟 HAL 共享同一套驱动 open/close 调用模式——驱动若在
+-- build/call 循环里 open 而不 close，此处计数即随轮次增长，可被
+-- test_virtbus_fdleak.lua 在 destroy 后断言归零/回落基线。
+function virtbus.fd_count()
+	local n = 0
+	for _ in pairs(open_paths) do n = n + 1 end
+	for _ in pairs(spi_paths) do n = n + 1 end
+	for _ in pairs(uart_paths) do n = n + 1 end
+	return n
+end
+
 function virtbus.restore()
 	if not virtbus._injected then return end
 	for _, name in ipairs(REPLACED) do

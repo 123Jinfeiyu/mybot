@@ -41,3 +41,20 @@ gate:sanitizer:
   before_script: *install-deps
   script:
     - bash test/run_san.sh
+
+# TSan 常态化（审计覆盖缺口 #1，起步为软门禁）：只跑 mybot_tests 的守护
+# 相关用例（并发压测 + 状态机分支），不跑整段守门——LuaJIT 未按 TSan
+# 清洁维护，全量跑的误报无信号价值（tsan.supp 已按库抑制残留噪声）。
+# allow_failure 观察若干轮、告警收敛后移除该行转硬门禁。
+gate:tsan:
+  stage: gate
+  image: debian:bookworm
+  needs: ["build:release"]
+  allow_failure: true
+  before_script: *install-deps
+  script:
+    - cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=thread
+    - cmake --build build-tsan -j"$(nproc)"
+    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_concurrent
+    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_multi_runner
+    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_stop_and_exit
