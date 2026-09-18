@@ -91,6 +91,8 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 
 - **查找顺序**：`--llm-config` → 环境变量 `BOT4CJ_LLM_CONFIG` → `./mybot.llm.json` → `./mybot.llm.conf.json` → `$HOME/.config/mybot/llm.json`。都没有也能跑（走命令行/环境变量）。
   会话开始时会把实际使用的配置文件打印到 stderr，不会「偷偷」用了哪一份。
+- **显式关闭**：`--llm-config none`（或 `BOT4CJ_LLM_CONFIG=none`）= 本次不读任何配置文件。
+  缺省查找依赖 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`。
   全部可选；空串按「未配置」处理（方便留空占位）。
@@ -149,6 +151,15 @@ agentloop（C++）        工具循环
 `extras` 是 provider 特有字段的透明通道（如 DeepSeek 的 `reasoning_content`）：
 宿主不理解、不修改，只随 assistant 消息逐轮原样带回，由驱动决定怎么用。
 API key 不在这个表里——驱动自己读环境变量。
+
+> **写驱动时注意「空数组」**：宿主把 Json 转成 Lua 表、驱动再编码回 JSON，而 Lua 的
+> `{}` 无法区分空数组与空对象——`[]` 会变成 `{}`。JSON Schema 的 `required` 必须是
+> 数组，DeepSeek 会严格校验并直接 400：
+> `Invalid schema for function 'x': {} is not of type "array"`（实测踩过）。
+> `modules/lib/json.lua` 因此提供显式哨兵 `json.empty_array`，两个内置驱动在 schema
+> 语义已知处把 `required` 规范化成它。自写驱动若产出结构里含空数组，记得用哨兵。
+> 假模型服务 `scripts/fake_llm_server.py` 会像 DeepSeek 一样校验工具 schema，
+> 这类问题在离线守门即可暴露。
 
 ### 内置两个协议驱动
 

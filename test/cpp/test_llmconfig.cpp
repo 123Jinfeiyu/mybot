@@ -428,6 +428,47 @@ TH_TEST(agentconfig_missing_explicit_config_is_an_error) {
 	TH_CHECK(err.find("无法打开") != std::string::npos);
 }
 
+TH_TEST(agentconfig_none_disables_config_lookup) {
+	/* 缺省查找会看 CWD 里的 ./mybot.llm.json；CI/守门与「换台机器跑同一条命令」
+	 * 都需要确定性，故必须有显式关闭开关（实测：开发者个人配置会悄悄改变测试
+	 * 结果——e2e 的「默认驱动」场景被 ./mybot.llm.json 换成了 DeepSeek 驱动）。 */
+	TempDir tmp("none");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({"api_key":"file-key","driver":"LlmDeepSeek"})", fs::perms::owner_all);
+
+	/* A) 关掉配置 + 不给任何环境变量：文件里的 key 必须读不到 → 判缺 key。
+	 *    这是「确实没读文件」最硬的证据（其余断言都会被执行顺序影响）。 */
+	{
+		NoKeyEnv nokey;
+		AgentModeConfig a;
+		std::string e;
+		TH_CHECK(!buildAgentConfig(baseOptions("none"), a, e));	/* 命令行 none */
+		TH_CHECK(e.find("缺少 API key") != std::string::npos);
+	}
+	/* B) 补上环境变量 key 后能建起来，且 driver 仍是内置缺省而非文件里的 LlmDeepSeek */
+	{
+		NoKeyEnv nokey;
+		EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
+		AgentModeConfig a;
+		std::string e;
+		TH_CHECK(buildAgentConfig(baseOptions("none"), a, e));
+		TH_CHECK(a.configPath.empty());
+		TH_CHECK(a.resolvedApiKey == "env-key");
+		TH_CHECK(a.driverTable == "LlmOpenAI");
+	}
+	/* C) 环境变量 none 同样生效（此处不给 --llm-config，本该走缺省查找） */
+	{
+		NoKeyEnv nokey;
+		EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
+		EnvVar envCfg{"BOT4CJ_LLM_CONFIG", "none"};
+		AgentModeConfig a;
+		std::string e;
+		TH_CHECK(buildAgentConfig(baseOptions(""), a, e));
+		TH_CHECK(a.configPath.empty());
+		TH_CHECK(a.driverTable == "LlmOpenAI");
+	}
+}
+
 TH_TEST(agentconfig_config_path_from_env) {
 	TempDir tmp("envcfg");
 	fs::path cfg = tmp.path() / "llm.json";

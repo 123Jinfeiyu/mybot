@@ -70,6 +70,38 @@ do
 	check("OpenAI: 无工具时不发 tool_choice", r.req.tool_choice == nil)
 end
 
+-- ================= 工具 schema 的 required 必须是数组 =================
+do
+	-- 无参工具的 required 在 canonical 侧是空数组，经 Json→Lua 退化为空表，
+	-- 直接编码会变成 {}——DeepSeek 会拒收：
+	--   Invalid schema for function 'x': {} is not of type "array"
+	local d = sample()
+	d.tools = {
+		{ name = "noargs", description = "无参",
+		  parameters = { type = "object", properties = {}, required = {} } },
+		{ name = "noRequiredKey", description = "缺 required 键",
+		  parameters = { type = "object", properties = {} } },
+		{ name = "withArgs", description = "有参",
+		  parameters = { type = "object", properties = { a = { type = "string" } },
+				 required = { "a" } } },
+	}
+	local r = openai.request(d)
+	local tools = r.req.tools
+	check("required 空表 → 显式空数组",
+		tools[1]["function"].parameters.required == json.empty_array)
+	check("缺失 required → 补成空数组",
+		tools[2]["function"].parameters.required == json.empty_array)
+	check("非空 required 原样保留",
+		tools[3]["function"].parameters.required[1] == "a")
+	check("properties 空表仍按对象编码",
+		type(tools[1]["function"].parameters.properties) == "table")
+
+	-- 光有哨兵不够，落到字节上必须真的是 []
+	local encoded = json.encode(r.req)
+	check("线上报文含 \"required\":[]", encoded:find('"required":[]', 1, true) ~= nil)
+	check("非空 required 编码为数组", encoded:find('"required":["a"]', 1, true) ~= nil)
+end
+
 -- ================= DeepSeek =================
 
 do

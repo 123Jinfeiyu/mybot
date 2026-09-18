@@ -69,6 +69,20 @@ local function to_wire_message(msg, inject_reasoning)
 	return { role = role, content = msg.content or "" }
 end
 
+-- JSON Schema 的 required 必须是**数组**。宿主传来的 canonical 工具声明里，
+-- 无参工具的 required 是空数组；它经 Json→Lua 转换后与空对象无法区分，再编码就
+-- 成了 {}。DeepSeek 会严格校验并直接 400：
+--   Invalid schema for function 'x': {} is not of type "array"
+-- 这里在 schema 语义已知的位置补成显式空数组（缺失也补，语义等价且更明确）。
+local function normalize_schema(params)
+	params = params or { type = "object" }
+	local req = params.required
+	if req == nil or (type(req) == "table" and next(req) == nil) then
+		params.required = json.empty_array
+	end
+	return params
+end
+
 -- opts:
 --   inject_reasoning_content : 把 extras.reasoning_content 回填进 assistant 消息
 --   omit_temperature / omit_top_p : 该 provider 不支持该采样参数时不发（而非发一个被忽略的值）
@@ -91,7 +105,11 @@ function M.build_request(data, model, opts)
 		for i, t in ipairs(tools) do
 			wire_tools[i] = {
 				type = "function",
-				["function"] = { name = t.name, description = t.description, parameters = t.parameters },
+				["function"] = {
+					name = t.name,
+					description = t.description,
+					parameters = normalize_schema(t.parameters),
+				},
 			}
 		end
 		req.tools = wire_tools

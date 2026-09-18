@@ -29,7 +29,7 @@
 | （缺省） | 从 stdin 管道读取 |
 | `--agent` | **agent 模式**：机器人结构脚本加载后硬件常驻内存，由大模型工具循环决定执行哪些动作脚本（与上面的动作输入源互斥，详细见 [agent.md](agent.md)） |
 | `--task <文本>` | agent 模式一次性任务，跑完即退出；缺省则进交互 REPL |
-| `--llm-config <路径>` | agent 配置文件（JSON）：接入点、API key、模型、采样与 agent 参数（缺省自动查找 `./mybot.llm.json` 等；详见 [agent.md](agent.md)） |
+| `--llm-config <路径>` | agent 配置文件（JSON）：接入点、API key、模型、采样与 agent 参数。缺省自动查找 `./mybot.llm.json` 等；显式传 `none` 表示本次不读配置文件（CI/复现问题用，详见 [agent.md](agent.md)） |
 | `--llm-driver <表名>` | agent 的**协议驱动**表名 = `modules/<表名>.lua`（内置 `LlmOpenAI`、`LlmDeepSeek`；缺省 `LlmOpenAI`） |
 | `--llm-var <变量名>` | 承载驱动变量的名字（缺省 `llm0`）；结构脚本已声明同名变量则直接用，否则自动注入 |
 | `--llm-endpoint <URL>` | agent 模型接入点（覆盖配置文件；不给则用配置或驱动缺省） |
@@ -93,7 +93,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
 | `BOT4CJ_LLM_KEY` | agent 模式的 API key。回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。由 **Lua 驱动自己读取**（不进宿主的参数表，也不进 `BOT4CJ_DEBUG` 转储）；该变量名含 `key`，会被 `run_command` 的环境清洗剔除，不会泄漏给子进程 |
-| `BOT4CJ_LLM_CONFIG` | agent 配置文件路径（优先级低于 `--llm-config`、高于缺省查找） |
+| `BOT4CJ_LLM_CONFIG` | agent 配置文件路径（优先级低于 `--llm-config`、高于缺省查找）；设为 `none` 表示不读配置文件 |
 | `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | agent 接入点 / 模型名（覆盖配置文件，低于命令行） |
 | `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |
 

@@ -55,6 +55,33 @@ def final_answer():
     }
 
 
+def schema_error(request):
+    """像 DeepSeek 一样严格校验工具 schema，返回错误消息或 None。
+
+    真实 API 会拒绝不合法的 schema（照抄它的原话：
+    `Invalid schema for function 'x': {} is not of type "array"`）。
+    夹具若不校验，这类 bug 就会一路溜到真机才暴露——本函数存在的意义就是
+    把真机的校验前移到离线守门里。
+    """
+    for t in request.get("tools", []):
+        fn = t.get("function") or {}
+        name = fn.get("name")
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            return "Invalid schema for function '%s': parameters must be an object" % name
+        if params.get("type") != "object":
+            return "Invalid schema for function '%s': type must be \"object\"" % name
+        req = params.get("required")
+        if req is not None and not isinstance(req, list):
+            return ('Invalid schema for function \'%s\': %s is not of type "array"'
+                    % (name, json.dumps(req)))
+        props = params.get("properties")
+        if props is not None and not isinstance(props, dict):
+            return ('Invalid schema for function \'%s\': properties is not of type "object"'
+                    % name)
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     def _reply(self, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -91,6 +118,16 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(raw)
         except ValueError:
             request = {}
+        bad = schema_error(request)
+        if bad is not None:
+            data = json.dumps({"error": {"message": bad, "type": "invalid_request_error"}},
+                              ensure_ascii=False).encode("utf-8")
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         tool_results = sum(1 for m in request.get("messages", [])
                            if m.get("role") == "tool")
         if tool_results == 0:

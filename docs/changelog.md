@@ -19,7 +19,15 @@
   指向文件的 `api_key_file`（末尾换行自动剥掉），落盘密钥对同组/其他用户可读时打印 `chmod 600` 提醒；
   `.gitignore` 已挡住 `mybot.llm.json`/`*.llm.json`，模板见 `mybot.llm.json.example`。
   选 JSON 而非 Lua 的理由：配置文件是**数据**不是代码，用 Lua 等于让一份常被复制分发的文件获得任意代码执行能力
-- **守门**：agent 端到端扩为四场景（默认驱动完整工具循环 + 抓报文断言 OpenAI 形态；`--llm-driver LlmDeepSeek` 断言 thinking/无 temperature/`reasoning_content` 回传；`--llm-timeout` 4s 内生效以防 curl 变参 cast 退化；`--llm-config` 断言 URL/KEY/MODEL 全部来自文件且环境里不放任何密钥），新增两个纯 Lua 用例（`test_json_lua`、`test_llm_drivers`）与 C++ 的 `test_agentdriver`（用假 Lua 驱动，不联网）、`test_llmconfig`（解析/校验/优先级）；agent 端到端缺 python3 或 libcurl 按 SKIP 计入未执行清单
+- **修两个由真机 DeepSeek 调用暴露的问题**：① 工具 schema 的 `required` 被写成 `{}` 而非 `[]`
+  ——空 JSON 数组经宿主→Lua 变成空表、再编码就分不清数组与对象，DeepSeek 严格校验并直接 400
+  （`Invalid schema ... {} is not of type "array"`）；`modules/lib/json.lua` 增显式哨兵
+  `json.empty_array`，驱动在 schema 语义已知处规范化 `required`；假模型服务同步改为像 DeepSeek
+  一样校验工具 schema，这类问题从此在离线守门即可暴露。② 缺省配置查找依赖 CWD，
+  开发者个人的 `./mybot.llm.json` 会悄悄改变守门结果（实测把 e2e 的「默认驱动」场景换成了
+  DeepSeek 驱动）；新增 `--llm-config none` / `BOT4CJ_LLM_CONFIG=none` 显式关闭配置文件，
+  agent 端到端三个不测配置的场景一律使用它
+- **守门**：agent 端到端扩为四场景（默认驱动完整工具循环 + 抓报文断言 OpenAI 形态；`--llm-driver LlmDeepSeek` 断言 thinking/无 temperature/`reasoning_content` 回传；`--llm-timeout` 4s 内生效以防 curl 变参 cast 退化；`--llm-config` 断言 URL/KEY/MODEL 全部来自文件且环境里不放任何密钥），新增两个纯 Lua 用例（`test_json_lua`、`test_llm_drivers`）与 C++ 的 `test_agentdriver`（用假 Lua 驱动，不联网）、`test_llmconfig`（解析/校验/优先级/`none` 开关）；agent 端到端缺 python3 或 libcurl 按 SKIP 计入未执行清单
 - **ASan 抑制**：libcurl→libcrypto 的进程级初始化残留在 LSan 下被判为泄漏（栈全在 `CRYPTO_malloc` 内，`curl_global_cleanup`/`OPENSSL_cleanup` 后依旧；连明文 `http://` 请求也触发）。新增仓库根 `asan.supp` 按库抑制，由 `test/run_san.sh` 经 `ASAN_OPTIONS` 加载——与既有 `tsan.supp` 同性质，且不影响不加载驱动的 C++ 单测
 
 ### 语言与 DSL

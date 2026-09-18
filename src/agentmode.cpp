@@ -71,12 +71,26 @@ std::string resolveLlmKeyFromEnv() {
 
 namespace {
 
+/* 显式 "none" = 本次不读配置文件。
+ * 为什么需要：缺省查找会看 CWD 里的 ./mybot.llm.json，于是「同一份配置换台机器就
+ * 变了行为」——CI/守门尤其需要确定性（否则开发者个人配置会悄悄改变测试结果，
+ * 实测踩过）。命令行与环境变量都支持该值。 */
+bool isConfigDisabled(const std::string& s) {
+	std::string t = trim(s);
+	for (char& c : t) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+	return t == "none";
+}
+
 /* 选配置文件：命令行 > 环境变量 BOT4CJ_LLM_CONFIG > 缺省查找。找不到即返回空串
  * （配置文件是可选的）；显式给了路径却读不到由 loadLlmConfigFile 报错——不能
  * 静默回落到缺省，否则用户会以为配置生效了。 */
 std::string pickConfigPath(const CliOptions& opts) {
-	if (!opts.llmConfig.empty()) { return opts.llmConfig; }
-	if (auto env = getEnvVar("BOT4CJ_LLM_CONFIG"); env && !env->empty()) { return *env; }
+	if (!opts.llmConfig.empty()) {
+		return isConfigDisabled(opts.llmConfig) ? std::string() : opts.llmConfig;
+	}
+	if (auto env = getEnvVar("BOT4CJ_LLM_CONFIG"); env && !env->empty()) {
+		return isConfigDisabled(*env) ? std::string() : *env;
+	}
 	return findDefaultLlmConfig();
 }
 

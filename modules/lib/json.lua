@@ -25,6 +25,13 @@ local json = {}
 local null = setmetatable({}, { __tostring = function() return "null" end })
 json.null = null
 
+-- JSON 空数组的显式哨兵。Lua 里 {} 既可能是空数组也可能是空对象，编解码无法自行
+-- 分辨（见文件头约定），而二者在 JSON 里是不同的东西：JSON Schema 的
+-- "required": [] 若被写成 {}，DeepSeek 会直接 400
+-- （Invalid schema: {} is not of type "array"）。需要产出 [] 时写 json.empty_array。
+local empty_array = setmetatable({}, { __tostring = function() return "[]" end })
+json.empty_array = empty_array
+
 -- 与 C++ 侧 kJsonMaxDepth 同值：递归下降解析深嵌套会吃栈，模型可被诱导吐出深嵌套
 local MAX_DEPTH = 64
 
@@ -79,6 +86,10 @@ local function encode_value(v, out, depth)
 	if depth > MAX_DEPTH then error("json.encode: nesting too deep", 0) end
 	if v == null then
 		out[#out + 1] = "null"
+		return
+	end
+	if v == empty_array then
+		out[#out + 1] = "[]"
 		return
 	end
 	local t = type(v)

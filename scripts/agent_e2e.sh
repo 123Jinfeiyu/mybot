@@ -12,6 +12,9 @@
 #      这个用例专门防 curl_easy_setopt 退回**裸变参调用**：那时整型选项被静默忽略，
 #      命令会跑满 5 秒且可能 rc=0（实测过），是这条链路最隐蔽的回归。
 #
+# 场景 1-3 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
+# 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
+#
 # 用法: BOT=./build/mybot bash scripts/agent_e2e.sh
 # 退出码: 0 通过 / 1 失败 / 125 缺 python3（守门按 SKIP 计）
 set -u
@@ -107,7 +110,7 @@ start_server "$PORT" "$CAP1" ok || exit 1
 # 同时覆盖 --llm-key → 进程内环境变量这条路径
 out1="$(timeout 60 "$BOT" --robot=robots/relay-test.sql --agent --task "$TASK" \
 	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
-	--llm-key "e2e-fake-key" --scripts-dir scripts 2>&1)"
+	--llm-key "e2e-fake-key" --llm-config none --scripts-dir scripts 2>&1)"
 rc1=$?
 stop_server
 echo "$out1"
@@ -141,7 +144,7 @@ CAP2="$tmp/req-deepseek.json"
 start_server "$PORT" "$CAP2" ok || exit 1
 # 走环境变量（由驱动自己读），不传 --llm-key
 out2="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql \
-	--agent --llm-driver LlmDeepSeek --task "$TASK" \
+	--agent --llm-driver LlmDeepSeek --llm-config none --task "$TASK" \
 	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
 	--scripts-dir scripts 2>&1)"
 rc2=$?
@@ -165,7 +168,7 @@ PORT=$((20800 + RANDOM % 300))
 start_server "$PORT" "" slow || exit 1
 t0=$(date +%s)
 out3="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 30 "$BOT" --robot=robots/relay-test.sql \
-	--agent --task "随便问一句" --llm-timeout 1 \
+	--agent --llm-config none --task "随便问一句" --llm-timeout 1 \
 	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" 2>&1)"
 rc3=$?
 t1=$(date +%s)
