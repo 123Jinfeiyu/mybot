@@ -1,10 +1,14 @@
 #pragma once
-/* agentproto.hpp —— agent 模式协议层：OpenAI 兼容消息/工具调用编解码 + 传输抽象
+/* agentproto.hpp —— agent 模式的**规范化**协议层（宿主侧）
  *
- * 分层目的（与内置守门的关系）：本层只做「值 ↔ JSON」的纯转换，不碰 HTTP，
- * 因此可以随测试二进制一起编译、离线单测；真正发出网络请求的实现见
- * agenthttp.cpp（依赖 libus_http，构建期可选）。工具循环 agentloop 只认识
- * 这里的 ChatTransport 抽象，测试可注入脚本化传输，无需网络与 API key。
+ * 分层（替换掉原先内嵌 libus_http 的 agenthttp 后）：
+ *   宿主（本文件）  ：规范化消息/工具 → Json；驱动返回的 Json → 规范化响应
+ *   Lua 协议驱动    ：规范化请求 → provider 报文；provider 响应 → 规范化响应
+ *   Lua 传输库      ：llm_http.lua 用 ffi 直驱 libcurl
+ *
+ * 于是「换模型/换厂商」= 换一个 modules/Llm*.lua，宿主不需要重编、也不链接任何
+ * HTTP 库；provider 特有字段（如 DeepSeek 的 reasoning_content）经 extras
+ * 原样逐轮带回，由驱动决定怎么用。
  */
 
 #include <string>
@@ -15,24 +19,26 @@
 namespace bot {
 namespace agent {
 
-/* 一次工具调用。arguments 保留模型给出的原始 JSON 字符串
- * （不在此处解析：解析失败要作为「工具参数错误」回传给模型，而不是
- * 在协议层把整轮对话打断）。 */
+/* 一次工具调用。arguments 保留模型给出的原始 JSON 字符串（不在此处解析：
+ * 解析失败要作为「工具参数错误」回传给模型，而不是在协议层打断整轮对话）。 */
 struct ToolCall {
 	std::string id;
 	std::string name;
 	std::string arguments;
 };
 
-/* 对话消息（OpenAI 兼容子集）：
+/* 规范化对话消息：
  *   role=system/user  → content
- *   role=assistant    → content（可为空）+ toolCalls
- *   role=tool         → toolCallId + content（工具结果） */
+ *   role=assistant    → content（可为空）+ toolCalls + extras
+ *   role=tool         → toolCallId + content
+ * extras 是 provider 特有的附加字段（如 DeepSeek 的 reasoning_content），
+ * 宿主不理解也不修改，只负责逐轮原样带回给驱动。 */
 struct ChatMessage {
 	std::string role;
 	std::string content;
 	std::vector<ToolCall> toolCalls;
 	std::string toolCallId;
+	Json extras;	/* 对象；空表示无 */
 };
 
 /* 暴露给模型的工具声明（parameters 为 JSON Schema object） */
@@ -42,15 +48,15 @@ struct ToolSpec {
 	Json parameters;
 };
 
-/* 一轮模型响应：最终文本，或一组工具调用（模型常先给一句过渡语再发调用，
- * 故两者可同时存在）。 */
+/* 一轮模型响应：最终文本，或一组工具调用（模型常先给一句过渡语再发调用）。 */
 struct ChatResponse {
 	std::string content;
 	std::vector<ToolCall> toolCalls;
+	Json extras;	/* 对象；空表示无 */
 	bool hasToolCalls() const { return !toolCalls.empty(); }
 };
 
-/* 传输抽象：complete() = 一轮模型调用。失败抛 std::exception（子类给出人话报错）。 */
+/* 传输抽象：complete() = 一轮模型调用。失败抛 std::exception。 */
 class ChatTransport {
 public:
 	virtual ~ChatTransport() = default;
@@ -58,21 +64,19 @@ public:
 			const std::vector<ToolSpec>& tools) = 0;
 };
 
-/* 组装非流式请求体（stream=false；agent 模式的工具循环按整轮取响应，
- * 不需要 SSE 增量协议）。tools 为空时不发 tools/tool_choice 字段
- * （部分兼容实现拒绝空数组）。 */
-Json buildChatRequest(const std::string& model,
+/* 规范化请求（宿主 → 驱动）：驱动据此生成 provider 报文。
+ * tools 为空时不发 tools 字段（部分兼容实现拒绝空数组）。 */
+Json buildDriverRequest(const std::string& model,
 		const std::vector<ChatMessage>& messages,
 		const std::vector<ToolSpec>& tools,
-		int maxTokens, double temperature, double topP);
+		int maxTokens, double temperature, double topP, long timeoutSec);
 
-/* 单条消息 → JSON（tool 消息用 tool_call_id 对齐 assistant 的 tool_calls） */
+/* 单条消息 → 规范化 JSON */
 Json messageToJson(const ChatMessage& msg);
 
-/* 解析响应体：choices[0].message → content / tool_calls。
- * 结构不符、含 error 字段、既无文本也无工具调用一律抛 std::runtime_error
- * （带响应片段，便于定位是网关报错还是模型抽风）。 */
-ChatResponse parseChatResponse(const std::string& body);
+/* 解析驱动返回的规范化响应（{result="OK", content, tool_calls, extras}）。
+ * result 非 "OK"、或既无文本也无工具调用一律抛 std::runtime_error。 */
+ChatResponse parseDriverResponse(const Json& res);
 
 /* 解析 tool_call.arguments（模型给的 JSON 字符串）。
  * 空串 → 空对象；非对象或非法 JSON → 抛 IllegalArgumentException

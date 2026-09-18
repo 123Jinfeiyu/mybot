@@ -67,6 +67,10 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 				ChatMessage asst;
 				asst.role = "assistant";
 				asst.content = resp.content;
+				/* provider 附加字段（如 DeepSeek 的 reasoning_content）必须跟着
+				 * 这条 assistant 消息留在历史里——下一轮带 tools 的请求要把它们
+				 * 完整回传，否则 DeepSeek 直接 400。 */
+				asst.extras = resp.extras;
 				messages_.push_back(std::move(asst));
 				return resp.content;
 			}
@@ -90,6 +94,7 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 			asst.role = "assistant";
 			asst.content = resp.content;
 			asst.toolCalls = calls;
+			asst.extras = resp.extras;	/* 同上：附加字段随历史逐轮回传 */
 			messages_.push_back(std::move(asst));
 
 			for (const auto& c : calls) {

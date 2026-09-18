@@ -68,13 +68,15 @@ void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) co
 	}
 }
 
-/* ---- call 事件实现：元数据 ∪ @Action 实时参数 → Lua call() ---- */
-Json MtVars_Lua::callImpl(const Json& json) {
+/* ---- call 事件实现：元数据 ∪ @Action 实时参数 → Lua call() ----
+ * echo=false（playQuiet）时抑制顶层结果回显：agent 模式把驱动当模型传输用，
+ * stdout 必须只留最终回答。其余语义（ERR 契约、controller 转发、元数据合并）不变。 */
+Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 	bool top = (MtVars_Lua::topDepth == 0);
 	++MtVars_Lua::topDepth;
 	struct DepthGuard { ~DepthGuard() { --MtVars_Lua::topDepth; } } guard;
 
-	if (top) { std::cout << "----------" << std::endl; }
+	if (top && echo) { std::cout << "----------" << std::endl; }
 
 	/* 获取元数据（静态列缓存重放 + 引用列实时快照） */
 	Json metadata = getMetadata_(false);
@@ -121,11 +123,11 @@ Json MtVars_Lua::callImpl(const Json& json) {
 		/* 检查 controller 返回值（如 PCA9685 写寄存器失败） */
 		MatrixVars_Hardware::ensureOk(ctrl_res, "controller of " + luapath_);
 
-		if (top) { std::cout << ctrl_res.toString() << std::endl; }
+		if (top && echo) { std::cout << ctrl_res.toString() << std::endl; }
 		return ctrl_res;
 	}
 
-	if (top) { std::cout << res.toString() << std::endl; }
+	if (top && echo) { std::cout << res.toString() << std::endl; }
 	return res;
 }
 

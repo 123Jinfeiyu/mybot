@@ -8,11 +8,20 @@
     2 条 → 调 run_command(echo agent-echo-ok)
     ≥3 条 → 给出最终回答
 
-用法: python3 scripts/fake_llm_server.py <port>
+响应里带 reasoning_content：这样 DeepSeek 驱动必须把它回传到下一轮请求，
+守门脚本才能在抓到的报文里断言这条有状态协议要求确实生效。
+
+用法: python3 scripts/fake_llm_server.py <port> [capture_file] [mode]
+      mode: ok（默认） | slow（睡 5 秒再答，用于验证 --llm-timeout 真的生效）
 """
 import json
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+PORT = int(sys.argv[1])
+CAPTURE = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
+MODE = sys.argv[3] if len(sys.argv) > 3 else "ok"
 
 
 def tool_call(name, arguments):
@@ -21,6 +30,7 @@ def tool_call(name, arguments):
             "message": {
                 "role": "assistant",
                 "content": "调用工具 %s。" % name,
+                "reasoning_content": "先想清楚再决定调用 %s。" % name,
                 "tool_calls": [{
                     "id": "call_%s" % name,
                     "type": "function",
@@ -37,6 +47,7 @@ def final_answer():
             "message": {
                 "role": "assistant",
                 "content": "AGENT-E2E-完成：已查看硬件，继电器动作已执行，命令已运行。",
+                "reasoning_content": "收尾。",
             }
         }]
     }
@@ -45,15 +56,28 @@ def final_answer():
 class Handler(BaseHTTPRequestHandler):
     def _reply(self, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass	# 客户端超时先走了：本服务是守门夹具，不必抱怨
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(n) if n > 0 else b"{}"
+        if CAPTURE:
+            try:
+                with open(CAPTURE, "wb") as f:
+                    f.write(raw)
+            except OSError:
+                pass
+        if MODE == "slow":
+            time.sleep(5)
+            self._reply({"choices": [{"message": {"role": "assistant", "content": "慢响应"}}]})
+            return
         try:
             request = json.loads(raw)
         except ValueError:
@@ -74,4 +98,4 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

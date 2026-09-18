@@ -223,6 +223,18 @@ public:
 	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
 	const HwRegistry& registry() const { return registry_; }
 
+	/* agent 模式：结构脚本是否已声明名为 name 的变量。
+	 * 必须在 active() **之前**可判定，故直接扫矩阵表的 name 列，
+	 * 而不是查注册表（注册表要 active() 里 createHardVars 才装配）。 */
+	bool declaresVariable(const std::string& name) const;
+
+	/* agent 模式：结构脚本未声明 LLM 驱动变量时注入一个（须在 active() 之前调用）。
+	 * 复用脚本装载同一条路径（合成 SQL 文本 → ScriptLoader::readSQL → 追加矩阵），
+	 * 免得为「多一个变量」再造一套矩阵构造 API。
+	 * driverTable 同时是驱动文件名（modules/<driverTable>.lua），与变量名都须是
+	 * 安全标识符——否则合成出来的 SQL 会被注入出别的表。 */
+	void injectLlmDriver(const std::string& driverTable, const std::string& varName);
+
 	/* 储存整个矩阵变量表（预留 API，供 NN 矩阵脚本存储） */
 	void save(std::ostream& out) { mt::MatrixSaver::save(matrices_, out); }
 };

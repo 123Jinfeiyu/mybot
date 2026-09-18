@@ -32,6 +32,11 @@ public:
 	/* 无副作用读（P4/M1）：缺省实现 = play({})（实时读，向后兼容） */
 	virtual Json read() { return play(JsonObject()); }
 
+	/* 程序化调用入口（agent 模式）：语义与 play 完全相同（含 ERR 契约），
+	 * 唯一差别是**不回显结果到 stdout**。Lua 驱动覆写它来抑制顶层结果打印
+	 * ——模型响应绝不能混进「stdout 只输出最终回答」这条约定。 */
+	virtual Json playQuiet(const Json& input) { return play(input); }
+
 	/* 伪初始化：获取资源（缺省无操作） */
 	virtual void build() {}
 

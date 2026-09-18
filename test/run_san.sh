@@ -16,6 +16,12 @@ BOT="${BOT:-./build/mybot}" BOT_TESTS="${BOT_TESTS:-./build/mybot_tests}" \
 
 echo ""
 echo "===== 第二跑：sanitizer（${SAN_BOT:-./build-asan/mybot}） ====="
+# LSan 抑制：agent 模式加载 Lua 协议驱动时会经 ffi 拉起 libcurl → libcrypto，
+# 后者留下一批进程级初始化残留（栈全在 CRYPTO_malloc 内，与 mybot 自身分配无关）。
+# 必须走 LSAN_OPTIONS：ASan 的抑制解析器不认识 `leak:` 类型，放在 ASAN_OPTIONS 里
+# 会直接报 "failed to parse suppressions" 并让每个用例都失败。
+# 用 ':' 追加而非覆盖，保留调用方可能已设置的其他选项。理由见仓库根 asan.supp。
+export LSAN_OPTIONS="suppressions=$(pwd)/asan.supp${LSAN_OPTIONS:+:$LSAN_OPTIONS}"
 BOT="${SAN_BOT:-./build-asan/mybot}" BOT_TESTS="${SAN_BOT_TESTS:-./build-asan/mybot_tests}" \
 	bash test/run_all.sh "$@" || exit 1
 

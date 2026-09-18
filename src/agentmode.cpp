@@ -1,5 +1,6 @@
 #include "agentmode.hpp"
 
+#include <cctype>
 #include <fstream>
 #include <stdexcept>
 #include <utility>
@@ -14,9 +15,6 @@ namespace bot {
 namespace agent {
 
 namespace {
-
-constexpr const char* kDefaultEndpoint = "https://moma.cmecloud.cn/v1/chat/completions";
-constexpr const char* kDefaultModel = "zhipu/glm-5.3-flash";
 
 std::string readHead(const std::string& path, std::size_t cap) {
 	std::ifstream f(path, std::ios::binary);
@@ -47,6 +45,19 @@ bool parseIntOption(const std::string& raw, const char* key, int lo, int hi,
 	return true;
 }
 
+/* 驱动表名/变量名要拼进合成 SQL，且表名会被当成 modules/<表名>.lua 解析——
+ * 与 RobotStruct::injectLlmDriver 同一判据，在此提前拒绝（不碰结构脚本与硬件）。 */
+bool isSafeIdent(const std::string& s) {
+	if (s.empty()) { return false; }
+	unsigned char first = static_cast<unsigned char>(s[0]);
+	if (!(std::isalpha(first) || s[0] == '_')) { return false; }
+	for (char c : s) {
+		unsigned char u = static_cast<unsigned char>(c);
+		if (!(std::isalnum(u) || c == '_')) { return false; }
+	}
+	return true;
+}
+
 } // namespace
 
 std::string resolveLlmKeyFromEnv() {
@@ -58,13 +69,34 @@ std::string resolveLlmKeyFromEnv() {
 }
 
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
-	out.endpoint = opts.llmEndpoint.empty() ? kDefaultEndpoint : opts.llmEndpoint;
-	out.model = opts.llmModel.empty() ? kDefaultModel : opts.llmModel;
-	out.apiKey = opts.llmKey.empty() ? resolveLlmKeyFromEnv() : opts.llmKey;
-	if (out.apiKey.empty()) {
-		err = "缺少 API key：用 --llm-key 传入，或设置环境变量 BOT4CJ_LLM_KEY"
+	/* API key 只做「存在性」校验，不落进配置结构：真正读取它的是 Lua 驱动
+	 * （从环境变量），这样密钥既不在驱动的参数表里，也不会被 BOT4CJ_DEBUG
+	 * 的参数转储打进日志。 */
+	if (resolveLlmKeyFromEnv().empty()) {
+		err = "缺少 API key：请设置环境变量 BOT4CJ_LLM_KEY"
 			"（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）";
 		return false;
+	}
+
+	/* endpoint/model 缺省为空 = 交给驱动自带的 DEFAULTS（见 modules/lib/llm_wire_*.lua） */
+	if (!opts.llmEndpoint.empty()) { out.endpoint = opts.llmEndpoint; }
+	if (!opts.llmModel.empty()) { out.model = opts.llmModel; }
+
+	if (!opts.llmDriver.empty()) {
+		if (!isSafeIdent(opts.llmDriver)) {
+			err = "选项 --llm-driver 必须是安全标识符（字母/数字/下划线），实际是 '"
+				+ opts.llmDriver + "'";
+			return false;
+		}
+		out.driverTable = opts.llmDriver;
+	}
+	if (!opts.llmVar.empty()) {
+		if (!isSafeIdent(opts.llmVar)) {
+			err = "选项 --llm-var 必须是安全标识符（字母/数字/下划线），实际是 '"
+				+ opts.llmVar + "'";
+			return false;
+		}
+		out.llmVar = opts.llmVar;
 	}
 
 	if (!opts.llmMaxTurns.empty()
@@ -95,7 +127,9 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 	p += "你是机器人控制智能体（agent），通过工具控制一台真实机器人。\n";
 	p += "机器人结构脚本：" + cfg.structurePath
 		+ "。硬件已加载并上电常驻（动作脚本执行完不会断电），"
-		"因此你可以在一次任务里连续执行多个动作脚本。\n\n";
+		"因此你可以在一次任务里连续执行多个动作脚本。\n";
+	p += "模型接入由 Lua 协议驱动 `" + cfg.driverTable + "`（变量 `" + cfg.llmVar
+		+ "`）提供；如需换接入点或模型，改结构脚本/命令行参数即可。\n\n";
 
 	p += "## 机器人结构（接线图）\n";
 	std::string sql = readHead(cfg.structurePath, 16u << 10);

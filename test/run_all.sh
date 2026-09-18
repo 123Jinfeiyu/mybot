@@ -11,9 +11,9 @@
 #   - 守门完整性：编译产物（mybot / mybot_tests）缺失的分段**判失败**而非静默跳过——
 #     否则整段 C++ 守门可以在不构建的情况下消失而汇总仍报「0 失败」。
 #     仅三类例外按跳过计（汇总里以「N 跳过 + 未执行清单」显式可见）：
-#     真机 i2c 用例（本机无 /dev/i2c-*）、TCP 段缺 python3（README 声明的软依赖）、
-#     agent 端到端缺 libus_http（--agent 是构建期可选特性，缺库时二进制会明确报
-#     「本构建未启用 agent 模式」，本入口据此判 SKIP 而非假绿）。
+#     真机 i2c 用例（本机无 /dev/i2c-*）、TCP/agent 段缺 python3（README 声明的
+#     软依赖）、agent 端到端缺 libcurl（agent 模式的运行期依赖，Lua 驱动经 ffi
+#     加载；缺它时驱动 build 报「libcurl 不可用」，本入口据此判 SKIP 而非假绿）。
 #     只想跑 Lua 段的逃生口：ALLOW_SKIP=1 bash test/run_all.sh
 #     （显式给了 BOT=/BOT_TESTS= 却指向不存在的文件，一律判失败，ALLOW_SKIP 也不放行）
 #   - test_ioctl_nums.c 为 C 编译期常量自检，不在本入口范围
@@ -705,12 +705,17 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
-# agent 模式端到端（scripts/agent_e2e.sh）：假 OpenAI 兼容服务 + 真实 mybot，
-# 验证工具循环真的迭代、动作脚本在**常驻**机器人上执行、非动作工具可用。
+# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，三个场景。
+#   1) 默认协议驱动（LlmOpenAI）：工具循环真的迭代、动作脚本在**常驻**机器人上
+#      被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；
+#   2) --llm-driver LlmDeepSeek：断言 thinking / 不发 temperature /
+#      历史 reasoning_content 被回传（官方文档里的 400 级有状态要求）；
+#   3) --llm-timeout 在 4s 内生效：专防 curl_easy_setopt 退回裸变参调用
+#      （那时整型选项被静默忽略，实测会跑满 5s 且可能 rc=0）。
 #
-# 本段依赖 libus_http（构建期可选，见 CMakeLists 的 MYBOT_AGENT）。本构建未
-# 启用 agent 模式时按 SKIP 计——以二进制输出的「本构建未启用 agent 模式」文本
-# 判定，不是静默消失；与缺 python3 同级的第三种软跳过。缺编译产物仍判失败。
+# 环境软依赖：python3（假模型服务）与 libcurl（agent 模式的运行期依赖，
+# Lua 驱动经 ffi 加载）。任一缺失按 SKIP 计入「未执行清单」，不是静默消失；
+# 缺编译产物仍判失败。
 # ======================================================================
 run_one_agent_e2e() {
 	echo "----- agent-e2e (agent 模式端到端) -----"
@@ -728,7 +733,7 @@ run_one_agent_e2e() {
 	rc=$?
 	echo "$out"
 	if [ $rc -eq 125 ]; then
-		record_skip "agent-e2e(libus_http未启用)"
+		record_skip "agent-e2e(缺python3或libcurl)"
 	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "agent 模式端到端测试通过"; then
 		record_fail "agent-e2e(agent 模式)"
 	else

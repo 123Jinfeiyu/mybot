@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "actionsource.hpp"
-#include "agenthttp.hpp"
+#include "agentdriver.hpp"
 #include "agentmode.hpp"
 #include "robot.hpp"
 #include "util.hpp"
@@ -110,6 +110,16 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 			if (noValue) { out.missingValue.push_back(key); }
 			else { out.opts.llmKey = val; }
 		}
+		else if (key == "llm-driver") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmDriver = val; }
+		}
+		else if (key == "llm-var") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmVar = val; }
+		}
 		else if (key == "llm-max-turns") {
 			out.opts.agentOptionsUsed = true;
 			if (noValue) { out.missingValue.push_back(key); }
@@ -148,23 +158,27 @@ void print_help() {
 	std::cout << "  （缺省）           从 stdin 管道读取" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "agent 模式（与上面的动作输入源互斥）：机器人结构脚本加载后硬件常驻内存，" << std::endl;
-	std::cout << "由大模型智能体通过工具循环决定执行哪些动作脚本。" << std::endl;
+	std::cout << "模型调用由 Lua 协议驱动承担（不链接任何 HTTP 库，运行期只需 libcurl）。" << std::endl;
 	std::cout << "  --agent            开启 agent 模式（缺省交互 REPL；硬件全程上电常驻）" << std::endl;
 	std::cout << "  --task <文本>      一次性任务，跑完即退出；缺省则进入交互 REPL" << std::endl;
-	std::cout << "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt" << std::endl;
-	std::cout << "  --llm-endpoint <URL>  模型接口（缺省 https://moma.cmecloud.cn/v1/chat/completions）" << std::endl;
-	std::cout << "  --llm-model <名称>    模型名（缺省 zhipu/glm-5.3-flash）" << std::endl;
-	std::cout << "  --llm-key <KEY>       API key；更推荐环境变量 BOT4CJ_LLM_KEY" << std::endl;
-	std::cout << "                        （兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）" << std::endl;
+	std::cout << "  --llm-driver <表名>  协议驱动表名 = modules/<表名>.lua" << std::endl;
+	std::cout << "                       内置：LlmOpenAI（缺省，OpenAI 兼容）、LlmDeepSeek" << std::endl;
+	std::cout << "  --llm-var <变量名>   承载驱动的变量名（缺省 llm0）；结构脚本已声明则直接用" << std::endl;
+	std::cout << "  --llm-endpoint <URL>  接入点，缺省用驱动自带值" << std::endl;
+	std::cout << "  --llm-model <名称>    模型名，缺省用驱动自带值" << std::endl;
+	std::cout << "  --llm-key <KEY>       API key；会写入本进程环境变量 BOT4CJ_LLM_KEY。" << std::endl;
+	std::cout << "                       更推荐直接设环境变量：argv 对 /proc/<pid>/cmdline 可读" << std::endl;
+	std::cout << "                       兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY" << std::endl;
 	std::cout << "  --llm-max-turns <N>   单次任务的最大模型轮数（缺省 8，范围 1-100）" << std::endl;
 	std::cout << "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096）" << std::endl;
 	std::cout << "  --llm-timeout <秒>    单次模型调用超时（缺省 180）" << std::endl;
+	std::cout << "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt" << std::endl;
 	std::cout << "  --agent-no-shell      不向智能体提供 run_command（去掉任意 shell 执行能力）" << std::endl;
 	std::cout << "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/exit 退出。" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "示例：" << std::endl;
 	std::cout << "  ./build/mybot --robot=robots/relay-test.sql --agent --task \"让继电器动作一次\"" << std::endl;
-	std::cout << "  ./build/mybot --robot=robots/spider1.sql --agent" << std::endl;
+	std::cout << "  ./build/mybot --robot=robots/spider1.sql --agent --llm-driver LlmDeepSeek" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "安全约束：动作脚本只能引入新的参数键，不得覆盖结构脚本的元数据列" << std::endl;
 	std::cout << "（fd / address / max / min / offset 等）；结构脚本与动作脚本单次输入上限均为 8 MiB。" << std::endl;
@@ -229,27 +243,19 @@ int main(int argc, char** argv) {
 	if (options.robot) {
 		std::string rpath = *options.robot;
 
-		/* agent 配置与传输先组装好：结构与上电都在其后，配置错误不碰真机 */
+		/* --llm-key 转成环境变量后就地使用：驱动从环境变量读密钥，宿主的参数表
+		 * 与 BOT4CJ_DEBUG 参数转储里都不会出现密钥（argv 本身可被 /proc 读到，
+		 * 故 --help 里仍推荐直接设环境变量）。 */
+		if (options.agent && !options.llmKey.empty()) {
+			::setenv("BOT4CJ_LLM_KEY", options.llmKey.c_str(), 1);
+		}
+
+		/* agent 配置先组装并校验：结构装载与上电都在其后，配置错误不碰真机 */
 		agent::AgentModeConfig agentCfg;
-		std::unique_ptr<agent::ChatTransport> agentTransport;
 		if (options.agent) {
 			std::string cfgErr;
 			if (!agent::buildAgentConfig(options, agentCfg, cfgErr)) {
 				std::cerr << "错误: " << cfgErr << std::endl;
-				return 2;
-			}
-			agent::HttpTransportConfig hcfg;
-			hcfg.endpoint = agentCfg.endpoint;
-			hcfg.apiKey = agentCfg.apiKey;
-			hcfg.model = agentCfg.model;
-			hcfg.maxTokens = agentCfg.maxTokens;
-			hcfg.temperature = agentCfg.temperature;
-			hcfg.topP = agentCfg.topP;
-			hcfg.timeoutSec = agentCfg.timeoutSec;
-			try {
-				agentTransport = agent::makeHttpTransport(hcfg);
-			} catch (const std::exception& e) {
-				std::cerr << "错误: " << e.what() << std::endl;
 				return 2;
 			}
 		}
@@ -277,6 +283,18 @@ int main(int argc, char** argv) {
 			return 1;
 		}
 
+		/* agent 模式：结构脚本没声明驱动变量就按 --llm-driver 注入一颗。
+		 * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的。
+		 * 显式声明优先：脚本作者写了同名变量就照用，不重复注入。 */
+		if (options.agent && !robot->declaresVariable(agentCfg.llmVar)) {
+			try {
+				robot->injectLlmDriver(agentCfg.driverTable, agentCfg.llmVar);
+			} catch (const std::exception& e) {
+				std::cerr << "错误: 无法注入 LLM 驱动变量: " << e.what() << std::endl;
+				return 2;
+			}
+		}
+
 		/* D4：安装 SIGINT/SIGTERM 处理器（仅置标志），Ctrl-C 走正常清理链 */
 		struct sigaction sa{};
 		sa.sa_handler = onStopSignal;
@@ -289,9 +307,27 @@ int main(int argc, char** argv) {
 		try {
 			if (options.agent) {
 				/* agent 模式：上电后硬件常驻，控制权交给智能体工具循环；
-				 * 只有会话结束（--task 跑完 / REPL 退出）才 deactivate。 */
+				 * 只有会话结束（--task 跑完 / REPL 退出）才 deactivate。
+				 * 传输要在 active() 之后才能绑定——驱动变量是那时才装配的。 */
 				robot->active();
-				rc = agent::runAgentMode(agentCfg, *robot, *agentTransport,
+
+				MatrixVars_Hardware* driver = robot->registry().find(agentCfg.llmVar);
+				if (driver == nullptr) {
+					throw std::runtime_error("结构脚本里没有 LLM 驱动变量 '"
+						+ agentCfg.llmVar + "'（驱动表 " + agentCfg.driverTable
+						+ "）；检查 --llm-var/--llm-driver，或用 --help 看内置驱动名");
+				}
+				agent::AgentDriverConfig dcfg;
+				dcfg.model = agentCfg.model;
+				dcfg.endpoint = agentCfg.endpoint;
+				dcfg.maxTokens = agentCfg.maxTokens;
+				dcfg.temperature = agentCfg.temperature;
+				dcfg.topP = agentCfg.topP;
+				dcfg.timeoutSec = agentCfg.timeoutSec;
+				std::unique_ptr<agent::ChatTransport> transport =
+					agent::makeDriverTransport(driver, dcfg);
+
+				rc = agent::runAgentMode(agentCfg, *robot, *transport,
 					std::cin, std::cout, std::cerr);
 			} else {
 				/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/

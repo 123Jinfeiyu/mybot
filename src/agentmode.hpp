@@ -4,6 +4,9 @@
  * 「主要执行流程」的落点：main 在 --agent 下先 active() 机器人，再把控制权
  * 交给本模块的会话循环（一次性任务或交互 REPL），全程硬件常驻；只有会话结束
  * 才 deactivate()。这与管道模式（读一段 .mt → 跑完 → 断电退出）是两条路径。
+ *
+ * 模型调用不在这里，也不在宿主的任何 C++ 代码里：它是一颗 Lua 协议驱动
+ * （table 名 = 驱动名，见 --llm-driver），由 agentdriver 适配成 ChatTransport。
  */
 
 #include <iosfwd>
@@ -19,9 +22,13 @@ class RobotStruct;
 namespace agent {
 
 struct AgentModeConfig {
+	/* 协议驱动：表名即 modules/<表名>.lua；llmVar 是承载它的变量名。
+	 * 结构脚本声明了就优先用；没声明则宿主按这两个名字自动注入。 */
+	std::string driverTable = "LlmOpenAI";
+	std::string llmVar = "llm0";
+	/* 空 = 用驱动自带的缺省接入点/模型（见 modules/lib/llm_wire_*.lua 的 DEFAULTS） */
 	std::string endpoint;
 	std::string model;
-	std::string apiKey;
 	int maxTurns = 8;
 	int maxTokens = 4096;
 	double temperature = 0.7;
@@ -34,7 +41,9 @@ struct AgentModeConfig {
 	bool verbose = true;
 };
 
-/* 环境变量取 API key：BOT4CJ_LLM_KEY → ROBOT_AGENT_API_KEY → DEEPSEEK_API_KEY */
+/* API key 只从环境变量取（BOT4CJ_LLM_KEY → ROBOT_AGENT_API_KEY → DEEPSEEK_API_KEY）：
+ * 宿主不把密钥写进驱动的参数表——否则 BOT4CJ_DEBUG 的参数转储会把密钥打进日志。
+ * 驱动自己也按同一条链读环境变量。 */
 std::string resolveLlmKeyFromEnv();
 
 /* 由 CLI 选项组装配置。失败返回 false 并把「人话报错」写进 err。 */

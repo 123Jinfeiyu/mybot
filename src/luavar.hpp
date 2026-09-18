@@ -44,7 +44,7 @@ class MtVars_Lua : public MatrixVars_Hardware {
 		  getMetadata_(std::move(getMetadata)), ctrlName_(std::move(ctrlName)),
 		  registry_(registry) {}
 
-	Json callImpl(const Json& json);
+	Json callImpl(const Json& json, bool echo);
 	Json readImpl();
 	void riseImpl();
 	void freeImpl();
@@ -60,7 +60,9 @@ public:
 		if (L_) { lua_close(L_); }
 	}
 
-	Json play(const Json& json) override { return callImpl(json); }
+	Json play(const Json& json) override { return callImpl(json, true); }
+	/* agent 模式：同一个 call 路径但不回显结果（stdout 只留最终回答） */
+	Json playQuiet(const Json& json) override { return callImpl(json, false); }
 	Json read() override { return readImpl(); }
 	void build() override { riseImpl(); }
 	void destroy() override { freeImpl(); }

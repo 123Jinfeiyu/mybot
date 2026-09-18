@@ -1,6 +1,7 @@
 #include "robot.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <iostream>
 
 namespace bot {
@@ -602,6 +603,46 @@ void RobotStruct::run(bot::Reader& input) {
 		else if (mtName == "Vars") { factory_.registerVarsMatrix(matrix, &session); }
 	}
 	runner_.runAction(actionMatrices);
+}
+
+/* ---- agent 模式：变量存在性判定（active() 之前可判定）---- */
+bool RobotStruct::declaresVariable(const std::string& name) const {
+	for (const auto& matrix : matrices_) {
+		std::int64_t idx = matrix.indexOfCol(0, "name");
+		if (idx < 0) { continue; }
+		for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
+			if (trim(matrix(i, idx)) == name) { return true; }
+		}
+	}
+	return false;
+}
+
+/* ---- agent 模式：注入 LLM 驱动变量 ---- */
+void RobotStruct::injectLlmDriver(const std::string& driverTable, const std::string& varName) {
+	/* 只接受安全标识符：这两个名字会被拼进合成 SQL，且 driverTable 还会被
+	 * HwFactory 当成 modules/<表名>.lua 去解析——放行引号/分号即等于让
+	 * 命令行参数改写结构脚本。 */
+	auto safeIdent = [](const std::string& s) {
+		if (s.empty()) { return false; }
+		unsigned char first = static_cast<unsigned char>(s[0]);
+		if (!(std::isalpha(first) || s[0] == '_')) { return false; }
+		for (char c : s) {
+			unsigned char u = static_cast<unsigned char>(c);
+			if (!(std::isalnum(u) || c == '_')) { return false; }
+		}
+		return true;
+	};
+	if (!safeIdent(driverTable) || !safeIdent(varName)) {
+		throw IllegalArgumentException("LLM 驱动表名与变量名必须是安全标识符（字母/数字/下划线）: '"
+			+ driverTable + "' / '" + varName + "'");
+	}
+
+	std::string sql = "CREATE TABLE " + driverTable + " (name String);\n"
+		+ "INSERT INTO " + driverTable + " (name) VALUES ('" + varName + "');\n";
+	MemoryReader reader(std::move(sql));
+	std::vector<mt::MatrixObject> extra;
+	ScriptLoader::readSQL(reader, extra);
+	for (auto& m : extra) { matrices_.push_back(std::move(m)); }
 }
 
 } // namespace bot
