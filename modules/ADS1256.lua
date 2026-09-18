@@ -72,10 +72,8 @@ local VREF = 2.5
 local DEBUG = false
 
 -- 辅助：把数据里的字段转成数字（字符串/数字均可），nil 返回默认值
-local function tonum(v, default)
-    if v == nil then return default end
-    return tonumber(v) or default
-end
+-- 数值列 -> tonumber 结果，非法回落缺省（实现收敛至 drv_common.num_or，N-24）
+local tonum = num_or
 
 -- 辅助：写寄存器（WREG：命令 + 计数字节 + 数据，一次传输）
 local function write_reg(fd, reg, val)

@@ -182,3 +182,48 @@ function i2c_pair(data)
 	end
 	return fd, addr, nil
 end
+
+-- ---- 数值列解析（N-24）-----------------------------------------------------
+
+-- 数值列 → 钳到 [lo, hi] 的整数；非法/占位符 '-' 归缺省 def
+-- 全仓 4 份逐字相同的内联实现（VL53L0X / VL53L4CD / AS7262 / AS3935）收敛于此。
+-- 注意这是**钳制**语义（就近取边界），与「越界报 ERR」不同：后者由各驱动
+-- 显式校验（如 APDS9900 的 atime 范围、MS5611 的 OSR 档位）承担。
+function int_of(v, def, lo, hi)
+	local n = tonumber(v)
+	if n == nil then return def end
+	n = math.floor(n)
+	if n < lo then n = lo end
+	if n > hi then n = hi end
+	return n
+end
+
+-- 数值列 → tonumber 结果；缺省/非法回落 def（不钳制、不取整）
+-- 原 ADS1015 / ADS1115 / ADS1256 各自的 tonum 局部量（逐字相同）
+function num_or(v, def)
+	if v == nil then return def end
+	return tonumber(v) or def
+end
+
+-- ---- 分块读寄存器块（N-24）------------------------------------------------
+
+-- 读 reg 起 n 字节，返回 1-based 大端字节表（[1] 为最高位）；任一读失败返回 nil。
+-- 必须分块：HAL 的合并读把整块拼成一个 double，超过 6 字节即超 2^53 精度
+-- （见 lib/HAL.lua 的 i2c_read_multi 注释），故 chunk 缺省 6；需要更小事务
+-- 的驱动显式传参（BME280 校准块传 4）。尾部不足一块时按剩余长度读。
+-- 原 BME688 / BME280 各自的 read_block 局部量（骨架相同，仅 chunk 不同）
+function read_block_bytes(fd, reg, n, chunk)
+	chunk = chunk or 6
+	local out = {}
+	local done = 0
+	while done < n do
+		local len = math.min(chunk, n - done)
+		local v = i2c_read_multi(fd, reg + done, len)
+		if v < 0 then return nil end
+		for i = 0, len - 1 do
+			out[done + i + 1] = math.floor(v / 256 ^ (len - 1 - i)) % 256
+		end
+		done = done + len
+	end
+	return out
+end

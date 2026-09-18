@@ -62,32 +62,8 @@ local dig_P1, dig_P2, dig_P3, dig_P4, dig_P5, dig_P6, dig_P7, dig_P8, dig_P9
 local dig_H1, dig_H2, dig_H3, dig_H4, dig_H5, dig_H6
 local cal_ok = false
 
--- 辅助：整数值拆成 n 个字节（下标1起始，大端序），用 // 与 % 保持在整数域
-local function to_bytes(v, n)
-    local b = {}
-    for i = n, 1, -1 do
-        b[i] = v % 256
-        v = math.floor(v / 256)
-    end
-    return b
-end
-
--- 辅助：从 reg 起按 4 字节块读 n 字节（n 为 4 的倍数），拼接成大端字节数组
--- 失败返回 nil（HAL 合并值只有 -1 表示失败，成功恒为非负）
-local function read_block(fd, reg, n)
-    local b = {}
-    for off = 0, n - 4, 4 do
-        local v = i2c_read_multi(fd, reg + off, 4)
-        if v < 0 then
-            return nil
-        end
-        local seg = to_bytes(v, 4)
-        for i = 1, 4 do
-            b[#b + 1] = seg[i]
-        end
-    end
-    return b
-end
+-- 校准块分块读（实现收敛至 drv_common.read_block_bytes，N-24）：BME280 沿用
+-- 4 字节事务粒度，见调用点传 4。原地的 read_block / to_bytes 局部量随之移除。
 
 -- 辅助：小端16位（校准系数：b[i]=LSB，b[i+1]=MSB）与符号扩展——
 -- 收敛至 bitcompat 单点维护（全仓 ≥10 驱动曾各自内联同一实现），语义逐字不变
@@ -135,7 +111,7 @@ function build(data)
     end
 
     -- 校准系数：0x88~0x9F共24字节（小端），按4字节块读取
-    local b = read_block(fd, REG_TP_CAL, 24)
+    local b = read_block_bytes(fd, REG_TP_CAL, 24, 4)
     if b == nil then
         return err("Failed to read calibration")
     end

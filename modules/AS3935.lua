@@ -103,14 +103,7 @@ local DEF_TUN_CAP = 0
 
 -- ==================== 解析辅助 ====================
 -- 数值列 -> 钳到 [lo, hi] 的整数；非法/'-' 归缺省
-local function int_of(v, def, lo, hi)
-	local n = tonumber(v)
-	if n == nil then return def end
-	n = math.floor(n)
-	if n < lo then n = lo end
-	if n > hi then n = hi end
-	return n
-end
+-- （实现收敛至 drv_common.int_of，N-24）
 
 -- min_lig 列 -> MIN_NUM_LIG 编码：1/5/9/16 四档，非法值向下取合法档
 local function min_lig_code(v)

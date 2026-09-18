@@ -134,14 +134,7 @@ local stop_variable					-- DataInit 舞步取出的关键单次测量参数
 
 -- ==================== 底层辅助 ====================
 -- 数值列 -> 钳到 [lo, hi] 的整数；非法/'-' 归缺省
-local function int_of(v, def, lo, hi)
-	local n = tonumber(v)
-	if n == nil then return def end
-	n = math.floor(n)
-	if n < lo then n = lo end
-	if n > hi then n = hi end
-	return n
-end
+-- （实现收敛至 drv_common.int_of，N-24）
 
 -- long 列 -> 布尔：数值非 0 / 常见真值串生效
 local function truthy_of(v)

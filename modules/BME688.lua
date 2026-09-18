@@ -80,21 +80,7 @@ local s8 = function(v) return bitc.s8(v % 256) end
 local s16 = function(v) return bitc.s16(v % 65536) end
 
 -- 分块读 n 字节（HAL 合并读上限 8 字节；寄存器自动增量跨块连续）
-local function read_block(fd, reg, n)
-	local out = {}
-	local done = 0
-	while done < n do
-		-- HAL 合并读钳制 1~6（8 字节合并值超 2^53 丢精度），按 6 分块
-		local chunk = math.min(6, n - done)
-		local v = i2c_read_multi(fd, reg + done, chunk)
-		if v < 0 then return nil end
-		for i = 0, chunk - 1 do
-			out[done + i + 1] = math.floor(v / 256 ^ (chunk - 1 - i)) % 256
-		end
-		done = done + chunk
-	end
-	return out
-end
+-- 分块读寄存器块（实现收敛至 drv_common.read_block_bytes，chunk 缺省 6，N-24）
 
 -- ==================== 校准解析（get_calib_data，42 字节 1 基表） ====================
 local function parse_calib(b)
@@ -257,9 +243,9 @@ function build(data)
 	end
 
 	-- 读 42 字节校准（3 块）并解析
-	local b1 = read_block(fd, REG_COEFF1, 23)
-	local b2 = read_block(fd, REG_COEFF2, 14)
-	local b3 = read_block(fd, REG_COEFF3, 5)
+	local b1 = read_block_bytes(fd, REG_COEFF1, 23)
+	local b2 = read_block_bytes(fd, REG_COEFF2, 14)
+	local b3 = read_block_bytes(fd, REG_COEFF3, 5)
 	if b1 == nil or b2 == nil or b3 == nil then
 		return err("BME688 not responding (read calibration failed)")
 	end
@@ -366,7 +352,7 @@ function call(data)
 	end
 
 	-- 读 17 字节数据场
-	local f = read_block(fd, REG_FIELD0, 17)
+	local f = read_block_bytes(fd, REG_FIELD0, 17)
 	if f == nil then
 		return err("BME688 not responding (read field failed)")
 	end

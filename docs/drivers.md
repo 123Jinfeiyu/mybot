@@ -134,6 +134,32 @@ if fd == nil then return ek2 end
 - 器件地址硬件固定、`address` 列可省者（`AMG8833` 0x69、`MCP4725` 0x62）
   保持内联校验——`i2c_pair` 视 `address` 为必填，语义不等价
 
+### drv_common 公共原语
+
+| 原语 | 语义 | 越界/失败语义 |
+| --- | --- | --- |
+| `err(msg)` | 构造 `{result="ERR", message=msg}` | — |
+| `arg_table(data)` | 入参必须是表；附带 `proto=virt` 前置 | 返 `(false, err表)` |
+| `i2c_check(data)` | `fd`/`address` 存在性（不碰总线） | 返 `(nil, -1, err表)` |
+| `i2c_pair(data)` | `i2c_check` + `i2c_set_addr` | 同上 |
+| `int_of(v, def, lo, hi)` | 数值列 → 取整并**钳到** `[lo, hi]`；非法/`-` 归 `def` | 钳制（非报错） |
+| `num_or(v, def)` | 数值列 → `tonumber`；缺省/非法回落 `def` | 回落（不钳制、不取整） |
+| `read_block_bytes(fd, reg, n, chunk)` | 从 `reg` 起读 `n` 字节，返 1 基大端字节表；`chunk` 缺省 6 | 任一读失败返 `nil` |
+| `guard_build(rollback, fn, data)` | build 全程 pcall + 失败时回滚句柄 | 抛错折成 ERR 表 |
+
+越界语义是**三选一**，由驱动按器件语义显式选择，不要互相「统一」：
+
+- **报 ERR**：参数非法即拒绝（如 `APDS9900` 的 atime 范围、`MS5611` 的 OSR 档位）
+- **钳制**：就近吸附到合法边界（`int_of`；`ADS1015`/`ADS1115` 的
+  pga/dr/channel 亦为钳制——已复核保留，改报 ERR 属行为变更，需单独评审）
+- **回落缺省**：占位符/非法值取默认（`num_or`）
+
+`chunk` 必须 ≤6：HAL 的合并读把整块拼成一个 `double`，超过 6 字节即超
+2^53 精度（见 `lib/HAL.lua` 的 `i2c_read_multi` 注释）。
+
+> 未收 `poll_reg`（寄存器轮询）：唯一候选是 `VL53L0X` 的 `wait_reg`，
+> `VL53L4CD` 的 `wait_ready` 轮询的是函数而非寄存器——单点抽象不值得。
+
 ### destroy 契约：资源不可用即静默成功
 
 ```lua

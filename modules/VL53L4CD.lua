@@ -109,14 +109,7 @@ local poll_timeout
 
 -- ==================== 底层辅助 ====================
 -- 数值列 -> 钳到 [lo, hi] 的整数；非法/'-' 归缺省
-local function int_of(v, def, lo, hi)
-	local n = tonumber(v)
-	if n == nil then return def end
-	n = math.floor(n)
-	if n < lo then n = lo end
-	if n > hi then n = hi end
-	return n
-end
+-- （实现收敛至 drv_common.int_of，N-24）
 
 -- 写 32 位大端值到 16 位指针寄存器，返回 0 = 成功
 local function wr_reg32(fd, reg16, v)
