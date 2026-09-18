@@ -4,6 +4,14 @@
 
 ## v1.x（C++ 移植版）
 
+### agent 模式（`--agent`）
+
+- **新增 agent 模式**：`--agent` 让大模型工具循环成为主执行流程——结构脚本加载后硬件**常驻内存**，智能体多轮挑选并执行动作脚本，会话结束才 `deactivate()`。与管道模式（读一段 `.mt` 跑完退出）互斥，与 `--tcp`/`--input` 同时给出即退出 2。`--task` 一次性任务；缺省进入交互 REPL（`/hardware`、`/scripts`、`/exit`，历史跨轮保留）
+- **工具集**：`list_action_scripts`（枚举 `.mt`）、`run_action_script`（在常驻实例上执行；路径限定 `--scripts-dir` 之下，拒绝绝对路径/`..`/非 `.mt`，8 MiB 上限）、`list_hardware`（只读清单，不调 `read()`/`play()`，不会误触发执行器）、`run_command`（超时整进程组终止 + 64KB 截断 + 环境变量清洗，`--agent-no-shell` 可关闭）。工具报错折成文本回传模型，不打断会话
+- **协议层**：`src/agentproto.*` 纯值编解码 OpenAI 兼容 `messages`/`tools`/`tool_calls`；`src/agentloop.*` 工具循环（缺 `tool_call_id` 自动合成、轮次上限/传输失败回滚本轮消息以免下一轮 400）；`src/jsonparse.*` 首个外部 JSON 文本入口（严格语法、深度 64/8 MiB 上限、代理对与转义完整）
+- **传输**：`src/agenthttp.*` 基于 libus_http（libus_httpclient + curl/ssl/crypto），网络错误与 408/429/5xx 退避重试（最多 3 次，退避期间响应停止标志）。libus_http 为**构建期可选**依赖：`MYBOT_AGENT` 探测不到时 agent 源码照编、`--agent` 明确报「本构建未启用 agent 模式」，CI 基线（无该库）仍全绿
+- **守门**：新增 agent 端到端（`scripts/agent_e2e.sh` + 本地假 OpenAI 服务 `scripts/fake_llm_server.py`，断言工具循环迭代与常驻实例上的真实执行）与四个 C++ 单测文件（proto/tools/loop/jsonparse，共 26 条）；agent 端到端缺 libus_http 或缺 python3 按 SKIP 计入未执行清单
+
 ### 语言与 DSL
 
 - **`$(...)` 算术表达式**：`@Vars.value`、结构脚本元数据列、`@Action` 单元格三处可用；支持 `+ - * / %`、括号、一元正负，标识符仅限 `@Vars`。独立递归下降解析器（`src/expr.*`）：语法错误带位置、括号深度/运算符数双上限、除零报错、非有限结果（inf/nan）出口防线。`MtVars_Vars` 持 AST 惰性求值（前向引用、动作脚本覆盖、成环检测）。守门 `expr_num`/`expr_undefined`，单测 `test_expr`

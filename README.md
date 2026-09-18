@@ -89,6 +89,24 @@ cat scripts/one-shake.mt  | ./build/mybot --robot=robots/spider1.sql  # 单腿�
 
 动作输入源三选一（TCP 单连接 / 文件 / stdin 管道），完整参数与环境变量见 [docs/reference.md](docs/reference.md)。
 
+## 🤖 agent 模式（可选）
+
+管道模式是「给它一份剧本，演一遍就下台」；**agent 模式**（`--agent`）让**大模型工具循环成为主执行流程**：
+机器人结构脚本加载后硬件**常驻内存**，智能体通过工具挑选并执行动作脚本，多轮决策后才退出。
+
+```bash
+export BOT4CJ_LLM_KEY=sk-xxx
+./build/mybot --robot=robots/relay-test.sql --agent --task "让继电器动作一次"  # 一次性（无硬件自检）
+./build/mybot --robot=robots/spider1.sql --agent                             # 交互 REPL
+```
+
+智能体可用工具：`list_action_scripts`（枚举 .mt）、`run_action_script`（在常驻机器人上执行）、
+`list_hardware`（器件清单）、`run_command`（shell，可用 `--agent-no-shell` 关闭）。
+完整选项、工作流程、安全说明与源码分层见 **[docs/agent.md](docs/agent.md)**。
+
+依赖 **libus_http**（构建期可选，CMake 自动探测）：探测不到时 agent 源码照常编译，
+但 `--agent` 会明确报「本构建未启用 agent 模式」，其它功能与离线守门不受影响。
+
 ## 📖 深入文档（docs/）
 
 从 [docs/README.md](docs/README.md) 进入全部文档。常用入口：
@@ -97,6 +115,7 @@ cat scripts/one-shake.mt  | ./build/mybot --robot=robots/spider1.sql  # 单腿�
 - [DSL 参考：结构脚本与动作脚本](docs/dsl.md)——占位符、`@Alias`/`@Vars`、`$(...)` 表达式、controller 与 `$` 引用完整语义
 - [硬件变量（驱动）清单](docs/drivers.md)——50+ 驱动按类别速查
 - [@Daemon 守护线程](docs/daemon.md)——后台采样、滤波器链路
+- [agent 模式](docs/agent.md)——大模型工具循环驱动常驻机器人：CLI 选项、工具、安全边界、构建依赖
 - [HAL 硬件抽象层](docs/hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
 - [虚拟总线 virtbus](docs/virtbus.md)——无真机验证驱动链路的完整参考手册
 - [架构分析](docs/architecture_analysis.html)——分层图与数据流图

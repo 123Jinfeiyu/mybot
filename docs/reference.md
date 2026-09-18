@@ -26,6 +26,18 @@
 | `--tcp-idle <sec>` | TCP 空闲超时，缺省 30s（超时按输入结束处理）。另有**连接总时长预算**（600s，随该值×20 放大）从连接建立起算：慢滴发送（每 <idle 秒发 1 字节）不能无限期挂住进程 |
 | `--input <path>` | 从文件读取动作脚本 |
 | （缺省） | 从 stdin 管道读取 |
+| `--agent` | **agent 模式**：机器人结构脚本加载后硬件常驻内存，由大模型工具循环决定执行哪些动作脚本（与上面的动作输入源互斥，详细见 [agent.md](agent.md)） |
+| `--task <文本>` | agent 模式一次性任务，跑完即退出；缺省则进交互 REPL |
+| `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
+| `--llm-endpoint <URL>` | agent 模型接口地址（缺省 `https://moma.cmecloud.cn/v1/chat/completions`） |
+| `--llm-model <名称>` | agent 模型名（缺省 `zhipu/glm-5.3-flash`） |
+| `--llm-key <KEY>` | agent API key（不推荐：argv 对本机所有用户可读；优先用环境变量） |
+| `--llm-max-turns <N>` | 单次任务最大模型轮数，范围 1-100（缺省 8） |
+| `--llm-max-tokens <N>` | 单次生成最大 token 数（缺省 4096） |
+| `--llm-timeout <秒>` | 单次模型调用超时（缺省 180） |
+| `--agent-no-shell` | 不向智能体提供 `run_command`（去掉任意 shell 执行能力） |
+
+agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--input` 同时给出，一律报错并以退出码 **2** 结束。
 
 Ctrl-C（SIGINT/SIGTERM）只置停止标志，走正常清理链 `deactivate()`。
 
@@ -73,5 +85,6 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | --- | --- |
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
+| `BOT4CJ_LLM_KEY` | agent 模式的 API key。回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。该变量名含 `key`，会被 `run_command` 的环境清洗剔除，不会泄漏给子进程 |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）
