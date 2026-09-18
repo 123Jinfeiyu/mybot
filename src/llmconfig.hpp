@@ -31,6 +31,10 @@ struct LlmFileConfig {
 	std::optional<int> maxTurns;
 	std::optional<std::string> scriptsDir;
 	std::optional<bool> allowShell;
+	std::optional<std::string> cameraVar;
+	std::optional<std::string> cameraDevice;
+	std::optional<std::string> cameraSrc;
+	std::optional<bool> allowCamera;
 };
 
 /* 解析配置文件。失败返回 false 并把「带字段名的人话报错」写进 err：

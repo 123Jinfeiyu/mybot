@@ -159,8 +159,10 @@ set_tests_properties(cpp_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 # ======================================================================
 add_executable(test_ioctl_nums test/test_ioctl_nums.c)
 add_executable(test_uart_consts test/test_uart_consts.c)
+add_executable(test_v4l2_consts test/test_v4l2_consts.c)
 add_test(NAME const_ioctl COMMAND test_ioctl_nums)
 add_test(NAME const_uart COMMAND test_uart_consts)
+add_test(NAME const_v4l2 COMMAND test_v4l2_consts)
 
 # ======================================================================
 # Lua 离线回归逐用例注册（run_all.sh 保持主编排入口不变）：

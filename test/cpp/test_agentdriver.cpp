@@ -64,7 +64,7 @@ TH_TEST(agentdriver_inject_then_transport_end_to_end) {
 
 	/* 结构脚本没声明 LLM 驱动 → 宿主按 --llm-driver 注入 */
 	TH_CHECK(!robot->declaresVariable("llm0"));
-	robot->injectLlmDriver("AgentFakeDriver", "llm0");
+	robot->injectLuaDriver("AgentFakeDriver", "llm0");
 	TH_CHECK(robot->declaresVariable("llm0"));
 
 	robot->active();	/* 注入必须在 active() 之前，变量是在那时装配的 */
@@ -97,7 +97,7 @@ TH_TEST(agentdriver_inject_then_transport_end_to_end) {
 TH_TEST(agentdriver_driver_err_becomes_exception) {
 	ModulePathGuard guard("modules:test/cpp");
 	auto robot = makeRobot(kTimerRobotSql);
-	robot->injectLlmDriver("AgentFakeDriver", "llm0");
+	robot->injectLuaDriver("AgentFakeDriver", "llm0");
 	robot->active();
 
 	AgentDriverConfig cfg;
@@ -137,10 +137,10 @@ TH_TEST(agentdriver_inject_rejects_unsafe_names) {
 
 	/* 名字会被拼进合成 SQL，且表名还会当 modules/<表名>.lua 解析——
 	 * 放行引号/分号等于让命令行参数改写结构脚本 */
-	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLlmDriver("Bad;DROP TABLE X", "v"));
-	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLlmDriver("Ok", "v';DROP"));
-	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLlmDriver("", "v"));
-	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLlmDriver("1Bad", "v"));
+	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLuaDriver("Bad;DROP TABLE X", "v"));
+	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLuaDriver("Ok", "v';DROP"));
+	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLuaDriver("", "v"));
+	TH_CHECK_THROWS(IllegalArgumentException, robot.injectLuaDriver("1Bad", "v"));
 	TH_CHECK(!robot.declaresVariable("v"));
 }
 

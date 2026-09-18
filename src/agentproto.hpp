@@ -39,6 +39,10 @@ struct ChatMessage {
 	std::vector<ToolCall> toolCalls;
 	std::string toolCallId;
 	Json extras;	/* 对象；空表示无 */
+	/* 多模态图片（data URL）。非空时该消息的 content 在线上会变成
+	 * [{type:"text"},{type:"image_url"}] 数组——OpenAI 协议里 tool 消息只允许
+	 * 文本，所以图片必须由工具循环另起一条 user 消息注入（见 agentloop）。 */
+	std::vector<std::string> images;
 };
 
 /* 暴露给模型的工具声明（parameters 为 JSON Schema object） */

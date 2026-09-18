@@ -91,6 +91,7 @@
 | `Monitor` | 消费 `$` 引用快照的观察/决策变量 |
 | `bitcompat` | Lua 5.1/5.3 位运算兼容库（非驱动） |
 | `LlmOpenAI` | **模型协议驱动**：OpenAI 兼容（当前协议：moma 网关 + zhipu/glm）；经 `lib/llm_http.lua` ffi 直驱 libcurl。agent 模式用，可被 `.mt` 直接调用 |
+| `Camera` | **摄像头驱动**：V4L2 mmap 取帧、只取硬件编码的 MJPEG（ffi，无第三方库）；`src=<图片>` 为仿真模式。agent 模式的 `capture_image` 工具用它 |
 | `LlmDeepSeek` | **模型协议驱动**：DeepSeek（思考模式、`reasoning_content` 回传、采样参数限制）；与 `LlmOpenAI` 共用 `lib/llm_wire_openai.lua` 骨架 |
 
 > 不依赖 HAL 的模块（如滤波器、virtbus 底座）可用 `luajit`/`lua5.4` 独立调试。

@@ -88,6 +88,28 @@ TH_TEST(agentproto_message_without_extras_omits_field) {
 	TH_CHECK(j.get("content")->getValue() == "hi");
 }
 
+TH_TEST(agentproto_image_message_is_multimodal) {
+	ChatMessage m;
+	m.role = "user";
+	m.content = "看一下这张图";
+	m.images.push_back("data:image/jpeg;base64,Zm9vYmFy");
+
+	Json j = messageToJson(m);
+	TH_CHECK(j.get("role")->getValue() == "user");
+	auto content = j.get("content");
+	TH_CHECK(content->isArr());		/* 带图时 content 变成多模态数组 */
+	TH_CHECK(content->size() == 2);
+	TH_CHECK(content->at(0).get("type")->getValue() == "text");
+	TH_CHECK(content->at(0).get("text")->getValue() == "看一下这张图");
+	TH_CHECK(content->at(1).get("type")->getValue() == "image_url");
+	TH_CHECK(content->at(1).get("image_url")->get("url")->getValue()
+		== "data:image/jpeg;base64,Zm9vYmFy");
+
+	/* 无图片时仍是纯字符串（保持既有报文形态不变） */
+	ChatMessage plain = textMsg("user", "你好");
+	TH_CHECK(messageToJson(plain).get("content")->isStr());
+}
+
 TH_TEST(agentproto_tool_result_message) {
 	ChatMessage m;
 	m.role = "tool";

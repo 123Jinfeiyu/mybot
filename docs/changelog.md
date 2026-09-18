@@ -30,6 +30,24 @@
 - **守门**：agent 端到端扩为四场景（默认驱动完整工具循环 + 抓报文断言 OpenAI 形态；`--llm-driver LlmDeepSeek` 断言 thinking/无 temperature/`reasoning_content` 回传；`--llm-timeout` 4s 内生效以防 curl 变参 cast 退化；`--llm-config` 断言 URL/KEY/MODEL 全部来自文件且环境里不放任何密钥），新增两个纯 Lua 用例（`test_json_lua`、`test_llm_drivers`）与 C++ 的 `test_agentdriver`（用假 Lua 驱动，不联网）、`test_llmconfig`（解析/校验/优先级/`none` 开关）；agent 端到端缺 python3 或 libcurl 按 SKIP 计入未执行清单
 - **ASan 抑制**：libcurl→libcrypto 的进程级初始化残留在 LSan 下被判为泄漏（栈全在 `CRYPTO_malloc` 内，`curl_global_cleanup`/`OPENSSL_cleanup` 后依旧；连明文 `http://` 请求也触发）。新增仓库根 `asan.supp` 按库抑制，由 `test/run_san.sh` 经 `ASAN_OPTIONS` 加载——与既有 `tsan.supp` 同性质，且不影响不加载驱动的 C++ 单测
 
+- **摄像头工具 `capture_image`**：把画面送进上下文，多模态模型因而能「看见」环境。
+  摄像头同样是一颗 Lua 驱动 `modules/Camera.lua`（V4L2 mmap + 硬件编码的 MJPEG，ffi 直取，
+  宿主不链接任何采集/编码库；robot_agent 的 C++ 版为此需要 libjpeg）；未声明时按
+  `--camera-var` 自动注入。支持 `--camera-src <图片>` 仿真，无摄像头的开发机也能回归全链路
+  - **图片通道**：OpenAI 协议的 tool 消息只允许文本，故图片不塞进工具结果，而是等本轮
+    全部 tool 消息回传完之后，另起一条带 `image_url` 的 `user` 消息注入（`ChatMessage.images`）；
+    图片随历史保留，REPL 后续任务仍看得到
+  - **摄像头是可选外设**：驱动 build 不碰设备也不返回 ERR（否则没接摄像头的机器人上不了电），
+    设备在首次拍照时按调用参数惰性打开，失败如实报给模型；热插拔靠「失败即释放、下次重开」；
+    起流首帧丢弃（曝光未稳）
+  - **只支持 MJPEG**：仅 YUYV 的设备返回清晰 ERR；CSI/libcamera 不在覆盖范围
+  - **ABI 自检**：V4L2 结构尺寸与 ioctl 编号在驱动加载期 assert，构建期由
+    `test/test_v4l2_consts.c` 与 `<linux/videodev2.h>` 比对（F-24 同族）——ffi 声明小几字节
+    就是越界读写，必须构建期就失败。真机抓帧回归 `test/test_camera_v4l2.lua` 按
+    `-- requires: video` 自动跳过
+- **守门**：agent 端到端加第五场景（拍照 → 断言线上报文真的带 `image_url` 多模态内容，
+  且是以 data URL 包装的真 JPEG）
+
 ### 语言与 DSL
 
 - **`$(...)` 算术表达式**：`@Vars.value`、结构脚本元数据列、`@Action` 单元格三处可用；支持 `+ - * / %`、括号、一元正负，标识符仅限 `@Vars`。独立递归下降解析器（`src/expr.*`）：语法错误带位置、括号深度/运算符数双上限、除零报错、非有限结果（inf/nan）出口防线。`MtVars_Vars` 持 AST 惰性求值（前向引用、动作脚本覆盖、成环检测）。守门 `expr_num`/`expr_undefined`，单测 `test_expr`

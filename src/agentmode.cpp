@@ -178,7 +178,19 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		out.timeoutSec = timeoutSec;
 	}
 
-	/* ---- 6) agent 行为 ---- */
+	/* ---- 6) 摄像头（capture_image） ---- */
+	out.allowCamera = opts.noCamera ? false : file.allowCamera.value_or(true);
+	out.cameraVar = pickString(opts.cameraVar, nullptr, file.cameraVar);
+	if (out.cameraVar.empty()) { out.cameraVar = "cam0"; }
+	if (!isSafeIdent(out.cameraVar)) {
+		err = "摄像头变量名必须是安全标识符（字母/数字/下划线），实际是 '"
+			+ out.cameraVar + "'（来自 --camera-var 或配置文件的 camera_var 字段）";
+		return false;
+	}
+	out.cameraDevice = pickString(opts.cameraDevice, nullptr, file.cameraDevice);
+	out.cameraSrc = pickString(opts.cameraSrc, nullptr, file.cameraSrc);
+
+	/* ---- 7) agent 行为 ---- */
 	/* 驱动特有字段：原样透传给驱动（如 DeepSeek 的 thinking / reasoning_effort） */
 	out.reasoningEffort = file.reasoningEffort.value_or("");
 	out.thinking = file.thinking.value_or("");
@@ -229,6 +241,15 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	tctx.scriptsDir = cfg.scriptsDir;
 	tctx.structurePath = cfg.structurePath;
 	tctx.allowShell = cfg.allowShell;
+	if (cfg.allowCamera) {
+		tctx.camera = robot.registry().find(cfg.cameraVar);
+		tctx.cameraDevice = cfg.cameraDevice;
+		tctx.cameraSrc = cfg.cameraSrc;
+		if (tctx.camera == nullptr && cfg.verbose) {
+			log << "提示: 结构脚本里没有摄像头驱动变量 '" << cfg.cameraVar
+				<< "'，本次不提供 capture_image 工具\n";
+		}
+	}
 
 	AgentToolRegistry tools = makeAgentTools(tctx);
 

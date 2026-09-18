@@ -13,6 +13,7 @@
 
 用法: python3 scripts/fake_llm_server.py <port> [capture_file] [mode] [headers_file]
       mode: ok（默认） | slow（睡 5 秒再答，用于验证 --llm-timeout 真的生效）
+            | camera（先要求拍一张照片，再给最终回答——验证图片真的进了上下文）
       headers_file: 非空则把收到的请求头逐行写入（用来断言 API key 的来源）
 """
 import json
@@ -130,6 +131,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         tool_results = sum(1 for m in request.get("messages", [])
                            if m.get("role") == "tool")
+        if MODE == "camera":
+            if tool_results == 0:
+                self._reply(tool_call("capture_image", {}))
+            else:
+                self._reply(final_answer())
+            return
         if tool_results == 0:
             self._reply(tool_call("list_hardware", {}))
         elif tool_results == 1:

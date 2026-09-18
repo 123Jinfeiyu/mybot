@@ -47,6 +47,28 @@ run_scenario() {
 		> "$srv_log" 2>&1 &
 	local srv_pid=$!
 
+	# 等服务端真正 bind+listen 再让客户端连：否则客户端会落进「进程已起、端口未监听」
+	# 的时间窗，拿到 ConnectionRefused 后被误判成「服务端挂死」（ASan 构建启动慢时尤甚，
+	# 实测偶发）。用 /proc/net/tcp 的 LISTEN(0A) 状态探测，**不产生额外连接**——
+	# 连一下再断会污染 token_retry / token_bruteforce 这类按失败次数计数的场景。
+	local port_hex ready=0
+	port_hex="$(printf '%04X' "$port")"
+	for _ in $(seq 1 100); do
+		if grep -qE ":$port_hex 00000000:0000 0A" /proc/net/tcp 2>/dev/null; then
+			ready=1
+			break
+		fi
+		sleep 0.05
+	done
+	if [ "$ready" -ne 1 ]; then
+		echo "   ✗ 服务端未在 5s 内进入监听状态"
+		kill -KILL "$srv_pid" 2>/dev/null
+		wait "$srv_pid" 2>/dev/null
+		rm -f "$srv_log"
+		fail_scenarios="$fail_scenarios $name(未就绪)"
+		return 1
+	fi
+
 	# 场景客户端；SCENARIO/PORT 环境变量传给 python3
 	SCENARIO="$name" PORT="$port" SCRIPT="$SCRIPT" TOKEN_FILE="$srv_log" \
 		python3 - <<'PYEOF'

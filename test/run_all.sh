@@ -7,7 +7,8 @@
 #   - 统一用 luajit 运行（HAL 依赖 ffi）；可用环境变量 LUACMD 覆盖解释器
 #   - 单测超时 TEST_TIMEOUT 秒（默认 60，需 coreutils timeout；缺失则不限时）——
 #     防单个用例死循环挂死整个入口
-#   - test_jit_warmup.lua 是真机 ABI 回归测试（需 /dev/i2c-*），无总线环境自动跳过
+#   - test_jit_warmup.lua 是真机 ABI 回归（需 /dev/i2c-*）、test_camera_v4l2.lua 是
+#     真机摄像头回归（需 /dev/video*）：文件首行标记 -- requires: i2c / video，无设备自动跳过
 #   - 守门完整性：编译产物（mybot / mybot_tests）缺失的分段**判失败**而非静默跳过——
 #     否则整段 C++ 守门可以在不构建的情况下消失而汇总仍报「0 失败」。
 #     仅三类例外按跳过计（汇总里以「N 跳过 + 未执行清单」显式可见）：
@@ -115,6 +116,13 @@ for t in test/test_*.lua; do
 	if grep -q '^\-\- requires: i2c' "$t" && ! ls /dev/i2c-* >/dev/null 2>&1; then
 		echo "----- $name -----"
 		echo "[SKIP] 需要 /dev/i2c-* 真机总线（文件标记 -- requires: i2c），本机无 i2c，跳过"
+		record_skip "$name"
+		continue
+	fi
+	# 真机摄像头：文件内声明 "-- requires: video" 且本机无 /dev/video* 时跳过
+	if grep -q '^\-\- requires: video' "$t" && ! ls /dev/video* >/dev/null 2>&1; then
+		echo "----- $name -----"
+		echo "[SKIP] 需要 /dev/video* 真机摄像头（文件标记 -- requires: video），本机无 video 设备，跳过"
 		record_skip "$name"
 		continue
 	fi
@@ -1268,7 +1276,7 @@ run_fixture_orphans() {
 run_const_checks() {
 	echo "----- const-check (系统常量自检) -----"
 	local const_dir="$1" ok=true out
-	for prog in test_ioctl_nums test_uart_consts; do
+	for prog in test_ioctl_nums test_uart_consts test_v4l2_consts; do
 		local binp="$const_dir/$prog"
 		if [ ! -x "$binp" ]; then
 			artifact_missing "系统常量自检" "$prog" "$binp" "$tests_explicit"

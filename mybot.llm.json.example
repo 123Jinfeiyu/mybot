@@ -18,5 +18,10 @@
 
   "max_turns": 8,
   "scripts_dir": "scripts",
-  "allow_shell": true
+  "allow_shell": true,
+
+  "camera_var": "cam0",
+  "camera_device": "",
+  "camera_src": "",
+  "allow_camera": true
 }

@@ -18,16 +18,25 @@
 namespace bot {
 
 class RobotStruct;
+class MatrixVars_Hardware;
 
 namespace agent {
 
-/* 一个可被模型调用的工具。execute 返回给模型的文本；抛异常表示工具失败
+/* 工具执行结果。图片走**独立通道**：OpenAI 协议的 tool 消息只允许文本，
+ * 图片必须由工具循环另起一条 user 消息注入（见 agentloop），
+ * 这也是 robot_agent 的既有做法。 */
+struct AgentToolResult {
+	std::string text;
+	std::string imageDataUrl;	/* 非空 = "data:image/jpeg;base64,..." */
+};
+
+/* 一个可被模型调用的工具。execute 返回给模型的内容；抛异常表示工具失败
  * （注册表会折成「工具执行失败: ...」文本回传模型，不打断会话）。 */
 struct AgentTool {
 	std::string name;
 	std::string description;
 	Json parameters;	/* JSON Schema（object） */
-	std::function<std::string(const Json& args)> execute;
+	std::function<AgentToolResult(const Json& args)> execute;
 };
 
 class AgentToolRegistry {
@@ -40,7 +49,7 @@ public:
 
 	/* 派发一次工具调用。未知工具与工具内部异常都折成文本返回
 	 * （模型据此换个做法继续，而不是让整轮 agent 会话崩掉）。 */
-	std::string execute(const std::string& name, const Json& args) const;
+	AgentToolResult execute(const std::string& name, const Json& args) const;
 
 	std::vector<ToolSpec> specs() const;
 };
@@ -53,10 +62,15 @@ struct AgentToolContext {
 	int commandTimeoutSec = 10;		/* run_command 缺省超时 */
 	int maxCommandTimeoutSec = 60;		/* run_command 超时上限 */
 	bool allowShell = true;			/* false = 不注册 run_command（安全阀门） */
+	/* 摄像头：Lua 驱动变量（modules/Camera.lua）。为空 = 不注册 capture_image。
+	 * 抓到的图片经 AgentToolResult.imageDataUrl 进入下一轮对话。 */
+	MatrixVars_Hardware* camera = nullptr;
+	std::string cameraDevice;	/* 空 = 用驱动缺省（/dev/video0） */
+	std::string cameraSrc;		/* 非空 = 模拟图片来源文件（无摄像头也能跑通全链路） */
 };
 
 /* 构造标准工具集：list_action_scripts / run_action_script / list_hardware，
- * 以及（allowShell 时）run_command。 */
+ * （camera 非空时）capture_image，以及（allowShell 时）run_command。 */
 AgentToolRegistry makeAgentTools(const AgentToolContext& ctx);
 
 /* ---- 供工具与系统提示词共用的描述函数 ---- */

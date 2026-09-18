@@ -40,6 +40,10 @@
 | `--llm-timeout <秒>` | 单次模型调用超时（缺省 180） |
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
 | `--agent-no-shell` | 不向智能体提供 `run_command`（去掉任意 shell 执行能力） |
+| `--camera-var <变量名>` | 承载摄像头驱动（`modules/Camera.lua`）的变量名（缺省 `cam0`）；结构脚本已声明则直接用 |
+| `--camera-device <路径>` | 摄像头设备（缺省 `/dev/video0`，需支持 MJPEG） |
+| `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」 |
+| `--no-camera` | 不向智能体提供 `capture_image` |
 
 agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--input` 同时给出，一律报错并以退出码 **2** 结束。
 

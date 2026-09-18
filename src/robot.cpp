@@ -617,8 +617,8 @@ bool RobotStruct::declaresVariable(const std::string& name) const {
 	return false;
 }
 
-/* ---- agent 模式：注入 LLM 驱动变量 ---- */
-void RobotStruct::injectLlmDriver(const std::string& driverTable, const std::string& varName) {
+/* ---- agent 模式：注入 Lua 驱动变量（LLM / 摄像头共用）---- */
+void RobotStruct::injectLuaDriver(const std::string& driverTable, const std::string& varName) {
 	/* 只接受安全标识符：这两个名字会被拼进合成 SQL，且 driverTable 还会被
 	 * HwFactory 当成 modules/<表名>.lua 去解析——放行引号/分号即等于让
 	 * 命令行参数改写结构脚本。 */
@@ -633,7 +633,7 @@ void RobotStruct::injectLlmDriver(const std::string& driverTable, const std::str
 		return true;
 	};
 	if (!safeIdent(driverTable) || !safeIdent(varName)) {
-		throw IllegalArgumentException("LLM 驱动表名与变量名必须是安全标识符（字母/数字/下划线）: '"
+		throw IllegalArgumentException("驱动表名与变量名必须是安全标识符（字母/数字/下划线）: '"
 			+ driverTable + "' / '" + varName + "'");
 	}
 

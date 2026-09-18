@@ -140,6 +140,7 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 		"driver", "var", "endpoint", "model", "api_key", "api_key_file",
 		"timeout", "max_tokens", "temperature", "top_p",
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
+		"camera_var", "camera_device", "camera_src", "allow_camera",
 	};
 	for (const auto& kv : root.items()) {
 		if (kKnown.count(kv.first) == 0) {
@@ -156,6 +157,9 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 	if (!wantString(path, root, "api_key_file", out.apiKeyFile, err)) { return false; }
 	if (!wantString(path, root, "reasoning_effort", out.reasoningEffort, err)) { return false; }
 	if (!wantString(path, root, "scripts_dir", out.scriptsDir, err)) { return false; }
+	if (!wantString(path, root, "camera_var", out.cameraVar, err)) { return false; }
+	if (!wantString(path, root, "camera_device", out.cameraDevice, err)) { return false; }
+	if (!wantString(path, root, "camera_src", out.cameraSrc, err)) { return false; }
 
 	/* thinking 允许 "enabled"/"disabled" 字符串，也允许 true/false 布尔 */
 	if (auto v = root.get("thinking")) {
@@ -192,6 +196,7 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 	if (maxTurns) { out.maxTurns = *maxTurns; }
 
 	if (!wantBool(path, root, "allow_shell", out.allowShell, err)) { return false; }
+	if (!wantBool(path, root, "allow_camera", out.allowCamera, err)) { return false; }
 	return true;
 }
 

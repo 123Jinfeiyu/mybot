@@ -62,6 +62,11 @@ void writeFile(const fs::path& p, const std::string& content) {
 	f << content;
 }
 
+/* 绝大多数工具只回文本；测试里只关心文本时用这个薄封装 */
+std::string execText(const AgentToolRegistry& reg, const std::string& name, const Json& args) {
+	return reg.execute(name, args).text;
+}
+
 } // namespace
 
 TH_TEST(agenttools_script_catalog) {
@@ -107,25 +112,25 @@ TH_TEST(agenttools_run_action_script_on_resident_robot) {
 	ctx.structurePath = "robots/relay-test.sql";
 	AgentToolRegistry tools = makeAgentTools(ctx);
 
-	std::string first = tools.execute("run_action_script",
+	std::string first = execText(tools, "run_action_script",
 		parseJson("{\"script\":\"relay-test.mt\"}"));
 	TH_CHECK(first.find("已执行") != std::string::npos);
 
 	/* agent 模式的核心性质：脚本跑完硬件不释放，第二个脚本照常执行 */
-	std::string second = tools.execute("run_action_script",
+	std::string second = execText(tools, "run_action_script",
 		parseJson("{\"script\":\"relay-test.mt\"}"));
 	TH_CHECK(second.find("已执行") != std::string::npos);
 
-	std::string escaped = tools.execute("run_action_script",
+	std::string escaped = execText(tools, "run_action_script",
 		parseJson("{\"script\":\"../robots/relay-test.sql\"}"));
 	TH_CHECK(escaped.find("失败") != std::string::npos);
 	TH_CHECK(escaped.find("不允许") != std::string::npos);
 
-	std::string missing = tools.execute("run_action_script",
+	std::string missing = execText(tools, "run_action_script",
 		parseJson("{\"script\":\"no-such.mt\"}"));
 	TH_CHECK(missing.find("失败") != std::string::npos);
 
-	std::string noArg = tools.execute("run_action_script", parseJson("{}"));
+	std::string noArg = execText(tools, "run_action_script", parseJson("{}"));
 	TH_CHECK(noArg.find("失败") != std::string::npos);
 
 	robot->deactivate();
@@ -142,7 +147,7 @@ TH_TEST(agenttools_list_hardware) {
 	ctx.robot = robot.get();
 	ctx.structurePath = "robots/relay-test.sql";
 	AgentToolRegistry tools = makeAgentTools(ctx);
-	std::string out = tools.execute("list_hardware", parseJson("{}"));
+	std::string out = execText(tools, "list_hardware", parseJson("{}"));
 	TH_CHECK(out.find("relay0") != std::string::npos);
 	TH_CHECK(out.find("robots/relay-test.sql") != std::string::npos);
 
@@ -164,9 +169,70 @@ TH_TEST(agenttools_registry_dispatch) {
 	TH_CHECK(specs.size() == 3);
 	TH_CHECK(specs[0].parameters.isObj());
 
-	std::string unknown = tools.execute("no_such_tool", parseJson("{}"));
+	std::string unknown = execText(tools, "no_such_tool", parseJson("{}"));
 	TH_CHECK(unknown.find("未知工具") != std::string::npos);
 	TH_CHECK(unknown.find("list_action_scripts") != std::string::npos);
+}
+
+TH_TEST(agenttools_capture_image_via_real_camera_driver) {
+	/* 用**真驱动** modules/Camera.lua 的仿真模式（src=<文件>）跑通「拍照 → 图片通道」，
+	 * 不需要任何摄像头硬件；返回的 base64 必须与源文件逐字节一致 */
+	TempDir tmp("cam");
+	fs::path pic = tmp.path() / "pic.jpg";
+	writeFile(pic, "foobar");	/* base64("foobar") == "Zm9vYmFy" */
+
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.camera = robot.registry().find("cam0");
+	TH_CHECK(ctx.camera != nullptr);
+	ctx.cameraSrc = pic.string();
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	TH_CHECK(tools.contains("capture_image"));
+
+	AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+	TH_CHECK(res.text.find("已拍摄照片") != std::string::npos);
+	TH_CHECK(res.text.find("模拟图片") != std::string::npos);
+	TH_CHECK(res.text.find("6 字节") != std::string::npos);
+	TH_CHECK(res.imageDataUrl == "data:image/jpeg;base64,Zm9vYmFy");
+
+	robot.deactivate();
+}
+
+TH_TEST(agenttools_capture_image_reports_device_failure) {
+	/* 设备打不开时要把驱动的 ERR 折成文本回给模型（不崩会话、也不给假图片） */
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.camera = robot.registry().find("cam0");
+	ctx.cameraDevice = "/dev/video999";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+	TH_CHECK(res.imageDataUrl.empty());
+	TH_CHECK(res.text.find("工具执行失败") != std::string::npos);
+	TH_CHECK(res.text.find("/dev/video999") != std::string::npos);
+
+	robot.deactivate();
+}
+
+TH_TEST(agenttools_no_camera_means_no_tool) {
+	AgentToolContext ctx;
+	ctx.robot = nullptr;
+	ctx.allowShell = false;
+	ctx.camera = nullptr;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	TH_CHECK(!tools.contains("capture_image"));
 }
 
 TH_TEST(agenttools_run_command_basic) {
@@ -174,16 +240,16 @@ TH_TEST(agenttools_run_command_basic) {
 	ctx.allowShell = true;
 	AgentToolRegistry tools = makeAgentTools(ctx);
 
-	std::string out = tools.execute("run_command",
+	std::string out = execText(tools, "run_command",
 		parseJson("{\"command\":\"echo hello-agent\"}"));
 	TH_CHECK(out.find("exit_code=0") != std::string::npos);
 	TH_CHECK(out.find("hello-agent") != std::string::npos);
 
-	std::string fails = tools.execute("run_command",
+	std::string fails = execText(tools, "run_command",
 		parseJson("{\"command\":\"exit 3\"}"));
 	TH_CHECK(fails.find("exit_code=3") != std::string::npos);
 
-	std::string noCmd = tools.execute("run_command", parseJson("{}"));
+	std::string noCmd = execText(tools, "run_command", parseJson("{}"));
 	TH_CHECK(noCmd.find("失败") != std::string::npos);
 }
 
@@ -197,7 +263,7 @@ TH_TEST(agenttools_run_command_cleans_env) {
 	::setenv("BOT4CJ_TEST_SECRET_KEY", "leakme", 1);
 	::setenv("BOT4CJ_TEST_PLAIN", "visible", 1);
 
-	std::string out = tools.execute("run_command", parseJson(
+	std::string out = execText(tools, "run_command", parseJson(
 		"{\"command\":\"if printenv BOT4CJ_TEST_SECRET_KEY >/dev/null; then echo LEAKED; "
 		"else echo CLEAN; fi; printenv BOT4CJ_TEST_PLAIN || echo MISSING\"}"));
 	TH_CHECK(out.find("LEAKED") == std::string::npos);
@@ -214,12 +280,12 @@ TH_TEST(agenttools_run_command_timeout_and_truncate) {
 	AgentToolRegistry tools = makeAgentTools(ctx);
 
 	/* 超时：整进程组终止，不能挂住 agent 会话 */
-	std::string slow = tools.execute("run_command",
+	std::string slow = execText(tools, "run_command",
 		parseJson("{\"command\":\"sleep 5\",\"timeout_seconds\":1}"));
 	TH_CHECK(slow.find("超时") != std::string::npos);
 
 	/* 输出截断：单个流上限 64KB */
-	std::string big = tools.execute("run_command",
+	std::string big = execText(tools, "run_command",
 		parseJson("{\"command\":\"yes a | head -c 200000\"}"));
 	TH_CHECK(big.find("已截断") != std::string::npos);
 }

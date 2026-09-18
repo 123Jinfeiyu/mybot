@@ -134,8 +134,9 @@ check_absent "$CAP1" '"thinking"' "默认驱动不引入 DeepSeek 的 thinking �
 # 模型必须真的收到工具定义：曾经 C++ 侧把工具提前包成 provider 形状，Lua 驱动
 # 又包一层 → function 变空、模型零工具可用，而工具循环表面上仍在跑（假服务不读
 # tools 故未暴露）。这条按结构断言，不看字符串顺序。
-check_json "$CAP1" "len(d.get('tools',[]))==4 and all(t.get('type')=='function' and t.get('function',{}).get('name') and t['function'].get('parameters') for t in d['tools'])" \
-	"模型收到 4 个带名字与 parameters 的工具定义"
+# 用「必须包含」而非精确计数：新增工具（如 capture_image）不该弄红这条断言
+check_json "$CAP1" "all(t.get('type')=='function' and t.get('function',{}).get('name') and t['function'].get('parameters') for t in d.get('tools',[])) and {'list_action_scripts','run_action_script','list_hardware','run_command'} <= {t['function']['name'] for t in d['tools']}" \
+	"模型收到全部工具定义（名字与 parameters 齐备）"
 
 # ============ 场景 2：DeepSeek 协议 ============
 echo "----- 场景 2：LlmDeepSeek（DeepSeek 协议） -----"
@@ -159,8 +160,8 @@ check "$out2" "Relay: test=200" "DeepSeek 场景下动作脚本同样被执行"
 check_present "$CAP2" '"thinking"' "请求带 thinking（DeepSeek 思考模式开关）"
 check_absent "$CAP2" '"temperature"' "思考模式不发 temperature（该模式不支持）"
 check_present "$CAP2" '"reasoning_content"' "历史 reasoning_content 被回传（否则 API 400）"
-check_json "$CAP2" "len(d.get('tools',[]))==4 and all(t.get('function',{}).get('name') for t in d['tools'])" \
-	"DeepSeek 请求同样带齐 4 个工具定义"
+check_json "$CAP2" "all(t.get('function',{}).get('name') for t in d.get('tools',[])) and {'list_action_scripts','run_action_script','list_hardware','run_command'} <= {t['function']['name'] for t in d['tools']}" \
+	"DeepSeek 请求同样带齐全部工具定义"
 
 # ============ 场景 3：超时真的生效（防变参 cast 退化） ============
 echo "----- 场景 3：--llm-timeout 生效 -----"
@@ -220,6 +221,38 @@ check_present "$CAP4" '"model":"cfg-model-from-file"' "模型名来自配置文�
 check_present "$CAP4" '"max_tokens":1234' "max_tokens 来自配置文件"
 check_present "$CAP4" '"temperature":0.25' "temperature 来自配置文件"
 check_present "$HDR4" "cfg-key-from-file" "API key 来自配置文件（Authorization 头）"
+
+# ============ 场景 5：拍照并进入上下文（多模态） ============
+echo "----- 场景 5：capture_image 图片进入上下文 -----"
+PORT=$((21600 + RANDOM % 300))
+CAP5="$tmp/req-camera.json"
+PIC5="$tmp/pic.jpg"
+python3 - "$PIC5" <<'PICEOF'
+import base64, sys
+# 1x1 真 JPEG（160 字节，FFD8 开头 / FFD9 结尾）——驱动只搬运字节，用真图便于断言
+open(sys.argv[1], "wb").write(base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a"
+    "HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA"
+    "AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q=="))
+PICEOF
+start_server "$PORT" "$CAP5" camera || exit 1
+out5="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql \
+	--agent --llm-config none --camera-src "$PIC5" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--task "拍张照片看看周围有什么" 2>&1)"
+rc5=$?
+stop_server
+echo "$out5"
+if [ "$rc5" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc5"
+	fail=1
+fi
+check "$out5" "AGENT-E2E-完成" "拍照之后仍能给出最终回答"
+check "$out5" "capture_image" "工具循环调用了 capture_image"
+check "$out5" "已拍摄照片" "工具返回了照片说明（含模拟来源标注）"
+check_json "$CAP5" "any(isinstance(m.get('content'), list) and any(p.get('type')=='image_url' for p in m['content']) for m in d['messages'])" \
+	"线上报文确实带上了 image_url（多模态内容）"
+check_present "$CAP5" '"data:image/jpeg;base64,/9j/' "注入的是以 data URL 包装的真 JPEG"
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

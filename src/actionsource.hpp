@@ -50,6 +50,11 @@ struct CliOptions {
 	std::string llmMaxTokens;
 	std::string llmTimeout;
 	std::string scriptsDir;
+	/* ---- 摄像头（capture_image） ---- */
+	std::string cameraVar;		/* --camera-var：承载 modules/Camera.lua 的变量名 */
+	std::string cameraDevice;	/* --camera-device：重设设备路径 */
+	std::string cameraSrc;		/* --camera-src：模拟图片来源文件 */
+	bool noCamera = false;		/* --no-camera：不提供拍照工具 */
 };
 
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。

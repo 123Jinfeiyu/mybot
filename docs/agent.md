@@ -55,6 +55,10 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--llm-timeout <秒>` | 单次模型调用超时 | 180 |
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--agent-no-shell` | **不**注册 `run_command`（去掉任意 shell 执行能力） | 关（即默认提供） |
+| `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
+| `--camera-device <路径>` | 摄像头设备（需支持 MJPEG） | `/dev/video0` |
+| `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」 | — |
+| `--no-camera` | **不**注册 `capture_image`（去掉拍照能力） | 关（即默认提供） |
 
 取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
 
@@ -94,7 +98,8 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 - **显式关闭**：`--llm-config none`（或 `BOT4CJ_LLM_CONFIG=none`）= 本次不读任何配置文件。
   缺省查找依赖 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
-  `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`。
+  `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`
+  `camera_var` `camera_device` `camera_src` `allow_camera`。
   全部可选；空串按「未配置」处理（方便留空占位）。
 - **严格解析**：不是合法 JSON、字段类型/范围不符、**出现未知字段**一律拒绝并退出 2。
   拼错一个键（如 `apikey`）而静默走缺省，会让人以为配置生效了——与「未知 `--key` 退出 2」同一口径。
@@ -206,9 +211,60 @@ INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
 | `list_action_scripts` | 列出 `--scripts-dir` 下全部 `.mt`（相对路径 + 首行说明） | 只读 |
 | `run_action_script` | 在**常驻**机器人上执行指定 `.mt` | 只允许 `--scripts-dir` 下的相对路径；拒绝绝对路径、`..`、非 `.mt`；单文件 8 MiB 上限 |
 | `list_hardware` | 列出结构脚本注册的硬件变量（名字 + 种类） | 只读清单；**不**调用 `read()`/`play()`，绝无副作用 |
+| `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节） |
 | `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗；`--agent-no-shell` 可关闭 |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
+
+## 摄像头：capture_image
+
+摄像头也是一颗 Lua 驱动（`modules/Camera.lua`）：V4L2 mmap 取帧、直接拿摄像头硬件编码好的
+**MJPEG**，因此宿主不必链接任何采集/编码库（robot_agent 的 C++ 版为此需要 libjpeg）。
+未声明时宿主会按 `--camera-var` 自动注入（与 LLM 驱动同一注入机制）。
+
+```bash
+# 无摄像头也能跑通全链路：用一张图片当"摄像头"
+./build/mybot --robot=robots/relay-test.sql --agent --camera-src /tmp/pic.jpg \
+  --task "拍张照片看看周围有什么"
+
+# 真实摄像头（缺省 /dev/video0）
+./build/mybot --robot=robots/spider1.sql --agent --task "看看前方有没有障碍物"
+```
+
+### 图片怎么进上下文
+
+OpenAI 协议的 **tool 消息只允许文本**，所以图片不能塞进工具结果里。做法是：
+工具循环先把本轮所有 `tool` 消息回传完（协议要求它们紧跟 assistant 的 `tool_calls`），
+**再**追加一条带图片的 `user` 消息：
+
+```jsonc
+// 规范化消息（宿主 → 驱动）
+{ "role": "user", "content": "以上工具返回的图片如下，请结合画面内容继续。",
+  "images": ["data:image/jpeg;base64,..."] }
+// 驱动展开成线上形态
+{ "role": "user", "content": [
+    { "type": "text", "text": "以上工具返回的图片如下，请结合画面内容继续。" },
+    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } } ] }
+```
+
+图片与文字一样留在会话历史里，REPL 的后续任务仍然看得到它。
+
+> **需要多模态模型**。`capture_image` 只负责把画面送到；模型能不能看图取决于你选的
+> 模型/接入点。DeepSeek 的 `deepseek-chat` 不吃图片输入——它可能忽略图片或直接报错，
+> 换一个支持视觉的模型即可（本项目对协议不做假设，两个内置驱动都如实转发图片）。
+
+### 设计要点
+
+- **摄像头是可选外设**：驱动 `build` 不打开设备、也不返回 ERR，否则一台没接摄像头的
+  机器人会连电都上不了。设备在第一次拍照时按调用参数惰性打开，打不开就如实报给智能体
+  （「无法打开摄像头 /dev/video0（errno=2）…」），模型据此自己决定改做什么。
+- **热插拔**：抓拍失败即释放设备，下次调用重试打开；换设备也靠同一句重开。
+- **首帧丢弃**：起流后的第一帧曝光/白平衡常常未稳，丢弃后再取一帧（与 robot_agent 同做法）。
+- **仿真**：`--camera-src <图片>` 直接读文件并 base64 返回，与真机走同一段返回逻辑，
+  因此「拍照 → 进上下文 → 模型看图」这条链路在没有摄像头的开发机上也能完整回归。
+- **ABI 自检**：V4L2 结构尺寸与 ioctl 编号既在驱动加载期 `assert`，又在构建期由
+  `test/test_v4l2_consts.c` 与 `<linux/videodev2.h>` 比对（F-24 同族）——ffi 声明比内核
+  小几字节就是越界读写，必须让它在构建期就失败。
 
 ## 安全说明（请务必读）
 
@@ -260,22 +316,27 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `modules/lib/llm_wire_openai.lua` | OpenAI 兼容报文整形与响应映射 | 无 |
 | `modules/lib/llm_wire_deepseek.lua` | DeepSeek 差异（thinking / reasoning_content / 采样参数） | 无 |
 | `modules/LlmOpenAI.lua`、`modules/LlmDeepSeek.lua` | 协议驱动（表名 = 文件名） | 无 |
+| `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 
 宿主侧**没有任何一处**知道 provider 报文字段。
 
 ## 测试
 
 ```bash
-bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（四场景）
+bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（五场景）
 luajit test/test_json_lua.lua    # Lua JSON 编解码
 luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
+luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路径）
 ./build/mybot_tests agent        # C++：proto / driver / tools / loop / config
 ```
 
-- `scripts/agent_e2e.sh` 用本地假模型服务跑四个场景：默认驱动完整工具循环（并抓报文断言
+- `scripts/agent_e2e.sh` 用本地假模型服务跑五个场景：默认驱动完整工具循环（并抓报文断言
   OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
   `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）、
-  `--llm-config` 配置文件（URL/KEY/MODEL 全部来自文件，且**环境里不放任何密钥**）。
+  `--llm-config` 配置文件（URL/KEY/MODEL 全部来自文件，且**环境里不放任何密钥**）、
+  `capture_image` 拍照（断言线上报文里真的出现 `image_url` 多模态内容，且是 data URL 包的真 JPEG）。
+- `test/test_camera_v4l2.lua` 是真机抓帧回归，需 `/dev/video*`（文件标记 `-- requires: video`，
+  无设备时守门自动跳过）；`test/test_v4l2_consts.c` 在构建期把 V4L2 常量与内核头对齐。
 - 全量守门 `bash test/run_all.sh` 已包含上述全部；缺 python3 或 libcurl 时按 **SKIP**
   计入「未执行清单」（可见，不假绿）。
 
@@ -286,4 +347,7 @@ luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
 - 无记忆持久化（重启即忘）。
 - 只实现了两个 OpenAI 兼容协议驱动；接非 OpenAI 形态的厂商（如 Anthropic）需要新写一个驱动
   （协议整形全在 Lua 侧，宿主不用改）。
+- **摄像头只支持 MJPEG**：仅提供 YUYV 的设备会返回清晰 ERR（YUYV 要自带 JPEG 编码器或引入
+  libjpeg，都比直接取 MJPEG 贵得多，而 USB 摄像头普遍支持 MJPEG）。树莓派 CSI 摄像头走
+  libcamera、不经 V4L2 这条路径，也不在本驱动范围内。
 - 驱动参数表的嵌套深度受 `kMaxLuaNesting`（8 层）约束：工具 schema 目前最深处为 6 层，留有余量但不宜再加嵌套。

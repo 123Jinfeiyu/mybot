@@ -59,6 +59,27 @@ Json messageToJson(const ChatMessage& msg) {
 	Json m = JsonObject();
 	m.put("role", JsonString(msg.role));
 
+	/* 带图片：content 变成多模态数组（文本在前、图片在后）。
+	 * provider 侧的展开由 Lua 驱动完成——这里只给结构化描述。 */
+	if (!msg.images.empty()) {
+		Json parts = JsonArray();
+		Json text = JsonObject();
+		text.put("type", JsonString("text"));
+		text.put("text", JsonString(msg.content));
+		parts.add(text);
+		for (const auto& url : msg.images) {
+			Json img = JsonObject();
+			img.put("type", JsonString("image_url"));
+			Json inner = JsonObject();
+			inner.put("url", JsonString(url));
+			img.put("image_url", inner);
+			parts.add(img);
+		}
+		m.put("content", parts);
+		if (msg.extras.isObj() && msg.extras.objSize() > 0) { m.put("extras", msg.extras); }
+		return m;
+	}
+
 	if (msg.role == "tool") {
 		m.put("tool_call_id", JsonString(msg.toolCallId));
 		m.put("content", JsonString(msg.content));

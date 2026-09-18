@@ -276,13 +276,13 @@ bool AgentToolRegistry::contains(const std::string& name) const {
 	return false;
 }
 
-std::string AgentToolRegistry::execute(const std::string& name, const Json& args) const {
+AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& args) const {
 	for (const auto& t : tools_) {
 		if (t.name != name) { continue; }
 		try {
 			return t.execute(args);
 		} catch (const std::exception& e) {
-			return std::string("工具执行失败: ") + e.what();
+			return {std::string("工具执行失败: ") + e.what(), ""};
 		}
 	}
 	std::string avail;
@@ -290,7 +290,7 @@ std::string AgentToolRegistry::execute(const std::string& name, const Json& args
 		if (!avail.empty()) { avail += ", "; }
 		avail += t.name;
 	}
-	return "未知工具 " + name + "。可用工具: " + avail;
+	return {"未知工具 " + name + "。可用工具: " + avail, ""};
 }
 
 std::vector<ToolSpec> AgentToolRegistry::specs() const {
@@ -394,8 +394,8 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 		"列出机器人可用的动作脚本（.mt 文件），返回相对路径与说明。"
 		"需要让机器人做动作前先调用它，挑选与目标最匹配的脚本。",
 		toolSchema({}, {}),
-		[ctx](const Json&) -> std::string {
-			return describeActionScripts(ctx.scriptsDir);
+		[ctx](const Json&) -> AgentToolResult {
+			return {describeActionScripts(ctx.scriptsDir), ""};
 		}});
 
 	reg.add(AgentTool{
@@ -406,7 +406,7 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 		"报错时机器人状态可能停在半途，请读清原因再决定下一步。",
 		toolSchema({{"script", stringParam("动作脚本相对路径，如 std.mt 或 test/pwm.mt")}},
 			{"script"}),
-		[ctx](const Json& args) -> std::string {
+		[ctx](const Json& args) -> AgentToolResult {
 			std::string req;
 			try {
 				if (ctx.robot == nullptr) { throw std::runtime_error("没有常驻机器人实例"); }
@@ -419,9 +419,9 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 					std::make_unique<MemoryReader>(std::move(content)),
 					kMaxScriptBytes, "action script");
 				ctx.robot->run(*reader);
-				return "已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）";
+				return {"已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）", ""};
 			} catch (const std::exception& e) {
-				return "动作脚本执行失败 [" + req + "]: " + e.what();
+				return {"动作脚本执行失败 [" + req + "]: " + e.what(), ""};
 			}
 		}});
 
@@ -430,16 +430,57 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 		"列出当前机器人的硬件变量清单（结构脚本注册的驱动、别名、数值变量）。"
 		"只读清单，不会让任何器件动作。",
 		toolSchema({}, {}),
-		[ctx](const Json&) -> std::string {
+		[ctx](const Json&) -> AgentToolResult {
 			std::string out;
 			if (!ctx.structurePath.empty()) { out += "结构脚本: " + ctx.structurePath + "\n"; }
 			if (ctx.robot == nullptr) {
 				out += "(没有常驻机器人实例)";
-				return out;
+				return {out, ""};
 			}
 			out += describeHardware(*ctx.robot);
-			return out;
+			return {out, ""};
 		}});
+
+	if (ctx.camera != nullptr) {
+		reg.add(AgentTool{
+			"capture_image",
+			"拍摄一张机器人当前环境的照片。图片会直接进入你的上下文，你能看到画面内容；"
+			"任务涉及观察环境、寻找物体、判断前方是否有障碍时，先调用它再做结论。",
+			toolSchema({}, {}),
+			[ctx](const Json&) -> AgentToolResult {
+				Json params = JsonObject();
+				/* 只在显式配置时才传 path/src：结构脚本若把同名列声明成元数据列，
+				 * 再传同名参数会被 rejectReservedKeys 拒掉（结构脚本优先）。 */
+				if (!ctx.cameraDevice.empty()) {
+					params.put("path", JsonString(ctx.cameraDevice));
+				}
+				if (!ctx.cameraSrc.empty()) {
+					params.put("src", JsonString(ctx.cameraSrc));
+				}
+				Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
+				auto b64 = res.get("b64");
+				if (!b64 || !b64->isStr() || b64->getValue().empty()) {
+					throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
+				}
+				std::string desc = "已拍摄照片";
+				auto w = res.get("width");
+				auto h = res.get("height");
+				if (w && h && w->isInt() && h->isInt()) {
+					desc += "（" + std::to_string(w->getInt()) + "x"
+						+ std::to_string(h->getInt()) + "）";
+				}
+				auto bytes = res.get("bytes");
+				if (bytes && bytes->isInt()) {
+					desc += "，" + std::to_string(bytes->getInt()) + " 字节";
+				}
+				auto src = res.get("source");
+				if (src && src->isStr() && src->getValue() == "file") {
+					desc += "，来源：模拟图片";
+				}
+				return {desc + "。画面已加入你的上下文。",
+					"data:image/jpeg;base64," + b64->getValue()};
+			}});
+	}
 
 	if (ctx.allowShell) {
 		reg.add(AgentTool{
@@ -450,15 +491,15 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 			toolSchema({{"command", stringParam("要执行的 shell 命令")},
 				    {"timeout_seconds", intParam("超时秒数，默认 10，最大 60")}},
 				{"command"}),
-			[ctx](const Json& args) -> std::string {
+			[ctx](const Json& args) -> AgentToolResult {
 				std::string cmd = requireString(args, "command");
 				int timeoutSec = optionalInt(args, "timeout_seconds", ctx.commandTimeoutSec);
 				if (timeoutSec < 1) { timeoutSec = 1; }
 				if (timeoutSec > ctx.maxCommandTimeoutSec) { timeoutSec = ctx.maxCommandTimeoutSec; }
 				try {
-					return formatRunResult(runShell(cmd, timeoutSec));
+					return {formatRunResult(runShell(cmd, timeoutSec)), ""};
 				} catch (const std::exception& e) {
-					return std::string("命令执行失败: ") + e.what();
+					return {std::string("命令执行失败: ") + e.what(), ""};
 				}
 			}});
 	}

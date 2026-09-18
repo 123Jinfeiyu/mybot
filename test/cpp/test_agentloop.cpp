@@ -47,7 +47,9 @@ ChatResponse answerResponse(const std::string& text) {
 AgentToolRegistry stubTools() {
 	AgentToolRegistry reg;
 	reg.add(AgentTool{"echo", "回显参数", parseJson("{\"type\":\"object\"}"),
-		[](const Json& args) { return "echo:" + args.toString(); }});
+		[](const Json& args) -> AgentToolResult {
+			return {"echo:" + args.toString(), ""};
+		}});
 	return reg;
 }
 
@@ -102,6 +104,47 @@ TH_TEST(agentloop_tool_call_then_answer) {
 	TH_CHECK(second[3].content.find("echo:") != std::string::npos);
 	/* system, user, assistant(tool_calls), tool, assistant(最终回答) */
 	TH_CHECK(session.history().size() == 5);
+}
+
+TH_TEST(agentloop_injects_tool_image_after_all_tool_messages) {
+	FakeTransport transport;
+	transport.script.push_back(callResponse("shot", "{}"));
+	transport.script.push_back(answerResponse("看到了"));
+
+	AgentToolRegistry tools;
+	tools.add(AgentTool{"shot", "拍照", parseJson("{\"type\":\"object\"}"),
+		[](const Json&) -> AgentToolResult {
+			return {"已拍摄照片", "data:image/jpeg;base64,Zm9vYmFy"};
+		}});
+
+	AgentSession session(transport, tools, optsFor(4));
+	TH_CHECK(session.runTurn("看看周围") == "看到了");
+
+	/* system,user,assistant(tool_calls),tool,user(图片) —— 图片必须排在
+	 * 全部 tool 消息**之后**：OpenAI 要求 tool_calls 后紧跟对应 tool 消息，
+	 * 中间插 user 消息会被 400 拒绝（tool 消息本身又只允许文本） */
+	const auto& seen = transport.requests[1];
+	TH_CHECK(seen.size() == 5);
+	TH_CHECK(seen[2].role == "assistant");
+	TH_CHECK(seen[3].role == "tool");
+	TH_CHECK(seen[4].role == "user");
+	TH_CHECK(seen[4].images.size() == 1);
+	TH_CHECK(seen[4].images[0] == "data:image/jpeg;base64,Zm9vYmFy");
+	TH_CHECK(seen[4].toolCallId.empty());
+	/* 历史里也留住了图片（下一轮 REPL 任务仍看得到它） */
+	TH_CHECK(session.history().size() == 6);
+	TH_CHECK(session.history()[4].images.size() == 1);
+}
+
+TH_TEST(agentloop_text_only_tool_adds_no_image_message) {
+	FakeTransport transport;
+	transport.script.push_back(callResponse("echo", "{}"));
+	transport.script.push_back(answerResponse("好"));
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, optsFor(4));
+	TH_CHECK(session.runTurn("任务") == "好");
+	TH_CHECK(transport.requests[1].size() == 4);	/* 没有多余的图片消息 */
 }
 
 TH_TEST(agentloop_unknown_tool_fed_back) {

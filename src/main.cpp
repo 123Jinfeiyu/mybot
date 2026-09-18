@@ -85,6 +85,25 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 			out.opts.agentNoShell = true;
 			out.opts.agentOptionsUsed = true;
 		}
+		else if (key == "no-camera") {
+			out.opts.noCamera = true;
+			out.opts.agentOptionsUsed = true;
+		}
+		else if (key == "camera-var") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.cameraVar = val; }
+		}
+		else if (key == "camera-device") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.cameraDevice = val; }
+		}
+		else if (key == "camera-src") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.cameraSrc = val; }
+		}
 		else if (key == "task") {
 			out.opts.agentOptionsUsed = true;
 			if (noValue) { out.missingValue.push_back(key); }
@@ -182,6 +201,10 @@ void print_help() {
 	std::cout << "  --llm-timeout <秒>    单次模型调用超时（缺省 180）" << std::endl;
 	std::cout << "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt" << std::endl;
 	std::cout << "  --agent-no-shell      不向智能体提供 run_command（去掉任意 shell 执行能力）" << std::endl;
+	std::cout << "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）；结构脚本已声明则直接用" << std::endl;
+	std::cout << "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）" << std::endl;
+	std::cout << "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」" << std::endl;
+	std::cout << "  --no-camera           不向智能体提供 capture_image 工具" << std::endl;
 	std::cout << "取值优先级：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。" << std::endl;
 	std::cout << "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/exit 退出。" << std::endl;
 	std::cout << "" << std::endl;
@@ -302,9 +325,20 @@ int main(int argc, char** argv) {
 		 * 显式声明优先：脚本作者写了同名变量就照用，不重复注入。 */
 		if (options.agent && !robot->declaresVariable(agentCfg.llmVar)) {
 			try {
-				robot->injectLlmDriver(agentCfg.driverTable, agentCfg.llmVar);
+				robot->injectLuaDriver(agentCfg.driverTable, agentCfg.llmVar);
 			} catch (const std::exception& e) {
 				std::cerr << "错误: 无法注入 LLM 驱动变量: " << e.what() << std::endl;
+				return 2;
+			}
+		}
+		/* 摄像头同理（未声明则注入 modules/Camera.lua）。摄像头是可选外设：
+		 * 驱动 build 打不开设备也只记原因、不阻断上电，抓拍时才如实报错。 */
+		if (options.agent && agentCfg.allowCamera
+			&& !robot->declaresVariable(agentCfg.cameraVar)) {
+			try {
+				robot->injectLuaDriver("Camera", agentCfg.cameraVar);
+			} catch (const std::exception& e) {
+				std::cerr << "错误: 无法注入摄像头驱动变量: " << e.what() << std::endl;
 				return 2;
 			}
 		}

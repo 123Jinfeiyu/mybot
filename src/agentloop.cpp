@@ -97,22 +97,41 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 			asst.extras = resp.extras;	/* 同上：附加字段随历史逐轮回传 */
 			messages_.push_back(std::move(asst));
 
+			/* 本轮工具产出的图片：必须等**全部** tool 消息回传之后再注入。
+			 * OpenAI 协议要求 assistant 的 tool_calls 之后紧跟对应的 tool 消息，
+			 * 中间插 user 消息会被判 400；tool 消息本身又只允许文本。 */
+			std::vector<std::string> images;
 			for (const auto& c : calls) {
-				std::string result;
+				AgentToolResult result;
 				try {
 					Json args = parseToolArguments(c.arguments);
 					result = tools_.execute(c.name, args);
 				} catch (const std::exception& e) {
-					result = std::string("工具参数错误: ") + e.what();
+					result = {std::string("工具参数错误: ") + e.what(), ""};
 				}
 				if (opts_.verbose) {
-					log("[工具] " + c.name + "\n" + indentLines(result, 2));
+					std::string shown = result.text;
+					if (!result.imageDataUrl.empty()) {
+						shown += "\n[返回图片 " + std::to_string(result.imageDataUrl.size())
+							+ " 字节，已注入下一轮对话]";
+					}
+					log("[工具] " + c.name + "\n" + indentLines(shown, 2));
 				}
 				ChatMessage tool;
 				tool.role = "tool";
-				tool.content = result;
+				tool.content = result.text;
 				tool.toolCallId = c.id;
 				messages_.push_back(std::move(tool));
+				if (!result.imageDataUrl.empty()) {
+					images.push_back(result.imageDataUrl);
+				}
+			}
+			if (!images.empty()) {
+				ChatMessage img;
+				img.role = "user";
+				img.content = "以上工具返回的图片如下，请结合画面内容继续。";
+				img.images = std::move(images);
+				messages_.push_back(std::move(img));
 			}
 		}
 

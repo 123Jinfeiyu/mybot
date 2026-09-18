@@ -37,6 +37,12 @@ struct AgentModeConfig {
 	/* 驱动特有字段：原样透传给协议驱动（如 DeepSeek 的 thinking / reasoning_effort） */
 	std::string reasoningEffort;
 	std::string thinking;
+	/* 摄像头（capture_image 工具）。allowCamera=false 时不提供该工具；
+	 * 驱动变量解析不到时也只是不提供（摄像头对机器人是可选外设）。 */
+	std::string cameraVar = "cam0";
+	std::string cameraDevice;	/* 空 = 驱动缺省 /dev/video0 */
+	std::string cameraSrc;		/* 非空 = 模拟图片来源文件（无摄像头也能跑通全链路） */
+	bool allowCamera = true;
 	std::string scriptsDir = "scripts";
 	std::string structurePath;
 	std::string task;		/* 非空 = 一次性执行；空 = 交互 REPL */
