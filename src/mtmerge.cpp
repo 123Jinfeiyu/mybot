@@ -211,6 +211,9 @@ void printHelp() {
 
 } // namespace
 
+/* 审计 M-1 防线：--phase 合法范围（±10 万行） */
+static constexpr std::int64_t kMaxPhase = 100000;
+
 int main(int argc, char** argv) {
 	std::int64_t phase = 0;
 	std::string outPath;
@@ -230,6 +233,13 @@ int main(int argc, char** argv) {
 			auto [st, num] = bot::parseLongStrict(v);
 			if (st != bot::IntParse::OK) {
 				std::cerr << "mtmerge: --phase 不是整数 '" << v << "'" << std::endl;
+				return 2;
+			}
+			/* 审计 M-1 防线：相位参与输出行数计算（rowsNext + phase，曾为
+			 * 有符号溢出 UB）与逐行循环，无界值会把产物撑到无界内存；语义
+			 * 上相位是「滞后/提前行数」，10 万行已是极端值。 */
+			if (num > kMaxPhase || num < -kMaxPhase) {
+				std::cerr << "mtmerge: --phase 超出范围 ±" << kMaxPhase << " '" << v << "'" << std::endl;
 				return 2;
 			}
 			phase = num;
@@ -261,10 +271,19 @@ int main(int argc, char** argv) {
 				std::cerr << "mtmerge: 无法打开 '" << path << "'" << std::endl;
 				return 1;
 			}
-			std::string data((std::istreambuf_iterator<char>(f)),
-					std::istreambuf_iterator<char>());
-			if (data.size() > bot::kMaxScriptBytes) {
-				throw bot::ScriptTooLarge(bot::kMaxScriptBytes, "action script");
+			/* 审计 M-2 防线：与 actionsource 的 stdin 通道同款「分块读 +
+			 * 超限即拒」——先整体读入再判上限对超大文件形同虚设
+			 * （限流之前就把全部字节吃进内存）。 */
+			std::string data;
+			char buf[65536];
+			for (;;) {
+				f.read(buf, static_cast<std::streamsize>(sizeof buf));
+				std::streamsize got = f.gcount();
+				if (got <= 0) { break; }
+				data.append(buf, static_cast<std::size_t>(got));
+				if (data.size() > bot::kMaxScriptBytes) {
+					throw bot::ScriptTooLarge(bot::kMaxScriptBytes, "action script");
+				}
 			}
 			bot::MemoryReader in(std::move(data));
 			std::vector<mt::MatrixObject> parsed;

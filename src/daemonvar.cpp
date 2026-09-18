@@ -137,10 +137,13 @@ void DaemonRunner::start(const std::string& name, const std::string& chunk,
 	std::cerr << "Daemon '" << name << "' spawned, config: " << config << std::endl;
 }
 
-/* ---- requestStop：置停止标志（槽已释放则无事可做）---- */
+/* ---- requestStop：置停止标志（槽已释放或已放弃所有权则无事可做）----
+ * 审计 H-3 防线：abandon 路径下槽所有权已移交守护线程（waitForExit 只置
+ * abandoned_ 不清 slot_），此后任何 requestStop 都可能触碰已被守护线程
+ * pthread_mutex_destroy + free 的槽——与 readSample 同一判据，不得只判空。 */
 void DaemonRunner::requestStop() {
 	DaemonSlot* slot = slot_.load();
-	if (slot == nullptr) { return; }
+	if (slot == nullptr || abandoned_.load()) { return; }
 	daemon_request_stop(slot);
 }
 
@@ -150,7 +153,8 @@ void DaemonRunner::requestStop() {
  * 主线程此后不再触碰槽（readSample 对 slot==nullptr 返回 ERR 契约）。 */
 void DaemonRunner::waitForExit(const std::string& name) {
 	DaemonSlot* slot = slot_.load();
-	if (slot == nullptr) { return; }	/* 已释放（重复销毁等）——无事可做 */
+	/* 已释放（重复销毁）或已放弃所有权（重复等待）——无事可做，不得触碰槽 */
+	if (slot == nullptr || abandoned_.load()) { return; }
 	daemon_request_stop(slot);
 	if (!spawned_.load()) {
 		std::cerr << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
