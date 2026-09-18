@@ -92,3 +92,85 @@
 | `bitcompat` | Lua 5.1/5.3 位运算兼容库（非驱动） |
 
 > 不依赖 HAL 的模块（如滤波器、virtbus 底座）可用 `luajit`/`lua5.4` 独立调试。
+
+## 驱动契约
+
+新增驱动照此实现，评审按此核对。公共样板在 `modules/lib/drv_common.lua`。
+
+### 入口函数集
+
+| 函数 | 调用时机 | 约定 |
+| --- | --- | --- |
+| `build(data)` | 装配期（`active()`，按声明序） | 打开/配置资源并做在位自检；**必须有** |
+| `call(data)` | 每拍派发（或 `$` 引用读取） | 一次完整动作/读数；**必须有** |
+| `destroy(data)` | 销毁期（倒序，`deactivate()`） | 尽力释放，见下 |
+| `read`（经 `call`） | 无副作用读 | `$` 引用快照走 `read()`，缺省即 `play({})` |
+
+### 返回值契约（halt-on-error）
+
+每次 `build`/`call`/`destroy` 都必须返回**表**：
+
+- 成功：`return { result = "OK" }`（可附带数据字段 `v0`/`out`/`value`…）
+- 失败：`return err("<文案>")`（`drv_common.err` 构造 `{result="ERR", message=…}`）
+
+宿主侧由 `MatrixVars_Hardware::ensureOk` 统一检查：非表、空表、`result="ERR"`、
+`result` 非 `"OK"`/`"ERR"` 一律抛错。**漏写 `return` 会被判为失败**，不会静默当成功。
+
+### 参数校验顺序
+
+```lua
+local ok, ek = arg_table(data)      -- ① 必须是表；并完成 proto=virt 前置
+if not ok then return ek end
+
+local fd, addr, ek2 = i2c_pair(data) -- ② fd/address 存在性 + i2c_set_addr
+if fd == nil then return ek2 end
+```
+
+- `i2c_pair` = `i2c_check` + `i2c_set_addr`；报错口径固定为
+  `Invalid Argument: fd or address` / `… (set_addr failed)`
+- 若驱动的**额外**校验须先于 `set_addr`（约定「非法配置值不碰总线」，如
+  `MS5611` 的 OSR 档位、`PCF8574` 的地址族），用 `i2c_check`（仅存在性）
+  自行把 `set_addr` 留到校验通过之后
+- 器件地址硬件固定、`address` 列可省者（`AMG8833` 0x69、`MCP4725` 0x62）
+  保持内联校验——`i2c_pair` 视 `address` 为必填，语义不等价
+
+### destroy 契约：资源不可用即静默成功
+
+```lua
+local fd, addr = tonumber(data.fd), tonumber(data.address)
+if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+    ...与器件状态有关的收尾动作...
+end
+return { result = "OK" }
+```
+
+收尾不是校验：器件可能因 build 失败或总线先行释放而拿不到 `fd`，此时报 ERR
+会把正常收尾变成失败（`--tcp` 会话下即退出码非零）。
+例外：`ADS1115` 的 destroy 有显式 ERR 契约回归用例（`test_ads1115.lua`），
+属被测试固定的既有契约，不改范。
+
+### 位运算与 bitcompat
+
+- 位运算一律走 `modules/bitcompat.lua`（LuaJIT 5.1 无位运算符，
+  且它提供 `s8`/`s12`/`s16`/`s16le`/`u16le` 符号扩展原语单点）：
+  `local bitc = dofile(mpath.resolve("bitcompat.lua"))`
+- 符号扩展**不要**再写 `if v >= 0x8000 then v = v - 0x10000 end`
+  （除下述豁免）；调用点直接 `bitc.s16(v)`
+
+### 内嵌虚拟模型（`<矩阵名>_VIRT`）
+
+同文件内定义，`new()` 返回实例，可选 `BUS = "uart"|"spi"` 标记总线类型。
+模型走 `lib/virtbus.lua`，与驱动共享同一套寄存器语义。
+
+## 收敛豁免清单（刻意保留的重复实现）
+
+这些重复是**设计**而非疏漏：两套独立实现互为对照，收敛会同时抹掉双方——
+改动它们的算法/结构前请先确认互证价值。
+
+| 豁免对象 | 位置 | 理由 |
+| --- | --- | --- |
+| 模型侧符号扩展与位运算 | 各驱动 `*_VIRT` 声明之后 | 模型刻意不共用驱动局部量（部分刻意「纯算术无 bitcompat」），与驱动实现互证寄存器语义 |
+| CRC 计算双实现 | 驱动侧 vs 模型侧（如 `SHT3X` CRC-8、`MS5611` CRC-4、`SGP30` CRC-8） | 同上：一处算错时另一处会暴露，收敛后单点错误即失效 |
+| 24 位符号扩展（`0x800000`/`0x1000000`） | `LPS22HB`、`ADS1256` 等 | `bitcompat` 无 `s24` 原语，保持内联 |
+| 器件固定缺省地址的内联校验 | `AMG8833`、`MCP4725` | `address` 列可省，`i2c_pair` 语义不等价（见上） |
+| `ADS1115` destroy 的显式 ERR | `modules/ADS1115.lua` | 有回归用例固定的既有契约 |
