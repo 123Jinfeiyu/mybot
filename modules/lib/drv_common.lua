@@ -50,12 +50,15 @@ end
 -- ---- 非守护路径的虚拟总线前置（proto=virt 的设备行）---------------------
 -- 背景：注入虚拟总线此前只发生在 sensor_daemon.lua（守护路径）里，所以全部
 -- virt 端到端用例都是守护型，@Action 直接驱动的写路径（舵机/DAC）无从仿真。
--- 挂在 arg_table 上是因为它是所有驱动 build/call/destroy 的第一行——本状态机内
--- 必须在驱动碰总线之前完成注入，且不需要改动任何驱动文件。
+-- N-26：本函数是**独立入口**（不再缝进 arg_table 内部）——arg_table 只是它的
+-- 一个调用方；挂载分派与守护路径共用 virtbus.attach_model。这样注入可在
+-- arg_table 之外单独调用/测试，职责不再混在参数校验里。
+-- 注入必须在驱动碰总线之前完成，故 arg_table（各驱动入口第一行）仍代调它。
 local virt_state = "idle"		-- idle → done | error:<原因>；每状态机只尝试一次
 
+-- 独立入口：准备虚拟总线（加载 virtbus → 发现并挂载 *_VIRT 模型 → inject）
 -- 返回 nil 表示无需动作或已就绪；返回字符串表示必须中止本次驱动调用
-local function virt_setup(data)
+function virt_prepare(data)
 	local base = (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+")
 	local ok, vbus = pcall(dofile, base .. "/lib/virtbus.lua")
 	if not ok or type(vbus) ~= "table" then
@@ -100,20 +103,31 @@ local function virt_setup(data)
 		if bus == nil then bus = rawget(inst, "BUS") end
 	end
 
-	if bus == "uart" then
-		-- UART 器件模型（约定工厂表 BUS="uart"）：身份是 tty 路径，路径来自
-		-- @UART 引用快照（modules/UART.lua 的 call 下发 fd/baud/path）。
-		if type(data.path) ~= "string" then
-			virt_state = "error:" .. tostring(driver)
-				.. " is a BUS=\"uart\" model but metadata has no tty path"
-				.. " (缺 @UART 引用列或 UART call 未下发 path?)"
-			return virt_state:sub(7)
+	-- 挂载分派与守护路径共用 virtbus.attach_model（N-26）：
+	--   UART 模型身份是 tty 路径（来自 @UART 引用快照，modules/UART.lua 的
+	--   call 下发 fd/baud/path）；I2C 模型身份是 address。
+	--   总线行（I2C/SPI/UART 变量自身）无 address，跳过 attach，仅靠下面的
+	--   inject 让它的 open 变成虚拟 open。
+	--   注：SPI 模型的直驱挂载未启用（片选路径来源未经确认，保持今日行为
+	--   ——SPI 器件当前一律走守护路径仿真），故 kind=="spi" 时不 attach。
+	if model ~= nil then
+		-- kind 直接用上面已算出的 bus（工厂表 BUS 优先、实例 BUS 兜底）——
+		-- 不能用 model_kind(model)：此时 model 已重赋为**实例**，而实例未必
+		-- 带 BUS 标记（标记常只写在工厂表上），会误判成 i2c 而漏挂 UART/SPI 模型
+		local kind = bus or "i2c"
+		if kind == "uart" then
+			if type(data.path) ~= "string" then
+				virt_state = "error:" .. tostring(driver)
+					.. " is a BUS=\"uart\" model but metadata has no tty path"
+					.. " (缺 @UART 引用列或 UART call 未下发 path?)"
+				return virt_state:sub(7)
+			end
+			vbus.attach_model("VIRT:" .. tostring(driver) .. "@" .. data.path,
+				model, addr, data.path, "uart")
+		elseif kind ~= "spi" and addr ~= nil then
+			vbus.attach_model("VIRT:" .. tostring(driver) .. "@" .. tostring(addr),
+				model, addr, data.path, "i2c")
 		end
-		vbus.attach_uart("VIRT:" .. driver .. "@" .. data.path, data.path, model)
-	elseif addr ~= nil then
-		-- attach 器件模型只属于带 address 的设备行；总线行（I2C/SPI/UART）无
-		-- address，跳过 attach，仅靠下面的 inject 让自己的 open 变成虚拟 open。
-		vbus.attach("VIRT:" .. driver .. "@" .. tostring(addr), addr, model)
 	end
 	-- fd 由总线变量（modules/I2C.lua、modules/UART.lua）在它自己的状态机里 open
 	-- 出来；本状态机要先把这个进程级整数登记进本地 virtbus，否则 i2c_set_addr /
@@ -136,7 +150,8 @@ end
 
 -- 请求参数必须是表；否则返回 ERR
 -- 用法：local ok, e = arg_table(data); if not ok then return e end
--- 附带一次性的虚拟总线前置（见上），故必须保持在各驱动入口的首个调用位置。
+-- 附带一次性的虚拟总线前置（代调独立入口 virt_prepare，见上），故必须保持
+-- 在各驱动入口的首个调用位置。
 function arg_table(data)
 	if type(data) ~= "table" then
 		return false, err("Invalid Arguments Type: table")
@@ -147,7 +162,7 @@ function arg_table(data)
 			return false, err("proto=virt setup failed: " .. virt_state:sub(7))
 		end
 	elseif data.proto == "virt" then
-		local why = virt_setup(data)
+		local why = virt_prepare(data)
 		if why then return false, err("proto=virt setup failed: " .. why) end
 	else
 		virt_state = "done"		-- 真机路径：一次比较即永久关闭本前置

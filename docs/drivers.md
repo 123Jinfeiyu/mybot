@@ -140,6 +140,7 @@ if fd == nil then return ek2 end
 | --- | --- | --- |
 | `err(msg)` | 构造 `{result="ERR", message=msg}` | — |
 | `arg_table(data)` | 入参必须是表；附带 `proto=virt` 前置 | 返 `(false, err表)` |
+| `virt_prepare(data)` | 独立入口：加载 virtbus → 发现并挂载 `*_VIRT` 模型 → inject（`arg_table` 只是它的调用方） | 返 `nil` 或原因串 |
 | `i2c_check(data)` | `fd`/`address` 存在性（不碰总线） | 返 `(nil, -1, err表)` |
 | `i2c_pair(data)` | `i2c_check` + `i2c_set_addr` | 同上 |
 | `int_of(v, def, lo, hi)` | 数值列 → 取整并**钳到** `[lo, hi]`；非法/`-` 归 `def` | 钳制（非报错） |

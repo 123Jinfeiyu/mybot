@@ -233,6 +233,42 @@ local function dev_of(fd)
 	return devs[addr]
 end
 
+-- ---- 模型挂载分派（N-26）--------------------------------------------------
+-- 「判定 BUS 类型 → attach_spi / attach_uart / attach」这套分派原本在
+-- sensor_daemon.lua（守护路径）与 lib/drv_common.lua（@Action 直驱路径）
+-- 各写一份，两处必须同约定，故收敛于此（挂载本就属虚拟总线的领域）。
+--
+-- 判定 BUS 类型：先看工厂表的 BUS 标记，再看实例的（两者可省其一）；缺省 i2c。
+-- 工厂表写在模块表上、实例写在构造结果上都有可能，故两个入参都接受。
+function virtbus.model_kind(factory, inst)
+	local function pick(t)
+		if type(t) ~= "table" then return nil end
+		local k = t.BUS
+		if k == "spi" or k == "uart" or k == "i2c" then return k end
+		return nil
+	end
+	return pick(factory) or pick(inst) or "i2c"
+end
+
+-- 把一个**实例**按 kind 挂到虚拟总线。name 仅日志用；addr/path 用调用方已
+-- 归一化的值（i2c 用 addr，spi/uart 用 path）。返回实际使用的 kind。
+-- 约定：必须挂实例而非工厂表——virtbus 的动态委托取 dev.write/dev.on_write，
+-- 工厂表身上没有这些方法，直接挂上会「写静默成功、读永远无应答」（PCA9685
+-- 直写 E2E 的旧缺口，SCSCL 的 PING 探测把该缺口暴露为构建失败）。
+-- new() 的调用与失败报错留在各调用方（守护/直驱两条路径的文案与后续处理
+-- 不同：守护要 fail(-8) 并中止，直驱要把原因折进 proto=virt setup failed）。
+function virtbus.attach_model(name, dev, addr, path, kind)
+	kind = kind or virtbus.model_kind(dev)
+	if kind == "spi" then
+		virtbus.attach_spi(name, path, dev)
+	elseif kind == "uart" then
+		virtbus.attach_uart(name, path, dev)
+	else
+		virtbus.attach(name, addr, dev)
+	end
+	return kind
+end
+
 -- ---- 参数归一化：取自总线契约单点（与 HAL 同一份实现，N-25）----
 -- 三条总线共用（I2C/SPI/UART 的入参校验语义必须与真机一致，否则 virt 会接受
 -- 真机直接失败的调用——驱动带越界实参时「仿真绿、真机红」）。

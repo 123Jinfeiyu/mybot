@@ -148,28 +148,27 @@ if proto == "virt" then
 	if not vrok or type(vdev) ~= "table" then
 		fail(-8, "virt: model new() failed: " .. tostring(vdev)); return
 	end
-	-- SPI 模型（模块表 BUS="spi"，兼容实例自带 BUS）：路径即片选身份，
-	-- 走 attach_spi；UART 模型（BUS="uart"）按 tty 路径走 attach_uart
-	-- （应答环挂载）；I2C 模型维持 addr 挂载。
-	local is_spi = (vmod.BUS == "spi" or vdev.BUS == "spi")
-	local is_uart = (vmod.BUS == "uart" or vdev.BUS == "uart")
-	if is_spi then
-		bus_kind = "spi"
+	-- BUS 类型判定与 attach 分派收敛至 virtbus.attach_model（N-26）：
+	-- SPI 模型（模块表/实例 BUS="spi"）路径即片选身份，走 attach_spi；
+	-- UART 模型（BUS="uart"）按 tty 路径走 attach_uart（应答环挂载）；
+	-- I2C 模型维持 addr 挂载。
+	local kind = vbus.model_kind(vmod, vdev)
+	bus_kind = kind
+	if kind == "spi" then
 		-- 用户未显式给 path 时，proto=virt 上面默认成了 /dev/i2c-1，这里修正
 		if not cfg.path then path = "/dev/spidev0.0" end
-		vbus.attach_spi("VIRT:" .. tostring(driver) .. "@" .. path, path, vdev)
-	elseif is_uart then
-		bus_kind = "uart"
+	elseif kind == "uart" then
 		-- 同上：virt 的 uart 模型缺省挂 /dev/serial0（HAL 路径白名单内）
 		if not cfg.path then path = "/dev/serial0" end
-		vbus.attach_uart("VIRT:" .. tostring(driver) .. "@" .. path, path, vdev)
 	else
 		local addr_n = tonumber(addr)
 		if not addr_n then
 			fail(-8, "virt: missing/invalid 'addr' for virtual device: " .. tostring(addr)); return
 		end
-		vbus.attach("VIRT:" .. tostring(driver) .. "@" .. tostring(addr), addr_n, vdev)
 	end
+	vbus.attach_model("VIRT:" .. tostring(driver) .. "@"
+		.. (kind == "i2c" and tostring(addr) or path),
+		vdev, tonumber(addr), path, kind)
 	if drv_preloaded then
 		vbus._injected = false
 		vbus.inject()
