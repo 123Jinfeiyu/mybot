@@ -74,13 +74,20 @@ bool isIdentStart(char c) {
 }
 bool isIdentChar(char c) { return isIdentStart(c) || isDigit(c); }
 
-/* 递归下降解析器。括号递归设深度上限：脚本字节上限 8 MiB 下，深嵌套
- * （如数万层 '('）会打爆宿主栈——必须在解析期就拒绝，而不是求值/崩溃。 */
+/* 递归下降解析器。两处深度上限：
+ * ① 括号递归（depth_）：8 MiB 脚本字节上限下，数万层 '(' 会打爆宿主栈；
+ * ② 运算符链（ops_）：平铺的 '+'/'*' 链不经过括号递归，由 parseExpr/parseTerm
+ *    的循环就地折叠成左深树——kMaxDepth 拦不住它，而 BinNode::eval 的递归
+ *    深度等于树深，无界链会在求值期 SIGSEGV（且崩溃点在硬件 build 之后，
+ *    绕过 deactivate 清理链）。限制单表达式运算符总数后，树深上界为
+ *    kMaxDepth + kMaxOps，求值递归安全。 */
 class ExprParser {
 	const std::string& s_;
 	std::size_t pos_ = 0;
 	int depth_ = 0;
+	int ops_ = 0;
 	static constexpr int kMaxDepth = 128;
+	static constexpr int kMaxOps = 512;
 
 	[[noreturn]] void fail(const std::string& msg) const {
 		throw IllegalArgumentException("invalid expression '" + s_ + "': " + msg
@@ -104,6 +111,7 @@ class ExprParser {
 			char c = peek();
 			if (c != '+' && c != '-') { break; }
 			++pos_;
+			if (++ops_ > kMaxOps) { fail("too many operators in one expression"); }
 			node = std::make_shared<BinNode>(c, std::move(node), parseTerm());
 		}
 		return node;
@@ -116,6 +124,7 @@ class ExprParser {
 			char c = peek();
 			if (c != '*' && c != '/' && c != '%') { break; }
 			++pos_;
+			if (++ops_ > kMaxOps) { fail("too many operators in one expression"); }
 			node = std::make_shared<BinNode>(c, std::move(node), parseUnary());
 		}
 		return node;

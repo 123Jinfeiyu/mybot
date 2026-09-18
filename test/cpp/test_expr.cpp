@@ -95,6 +95,20 @@ TH_TEST(expr_deep_nesting_is_rejected_not_crashed) {
 		Expression::parse(deep));
 }
 
+TH_TEST(expr_operator_chain_is_rejected_not_crashed) {
+	/* 平铺运算符链不经过括号递归（kMaxDepth 拦不住），左深树会让 eval 的
+	 * 递归深度等于树深——无界链在求值期 SIGSEGV（审计 C-1 实证：600 KB
+	 * 的 '+1' 链稳定崩溃）。必须在解析期就拒绝。 */
+	std::string chain = "1";
+	for (int i = 0; i < 2000; ++i) { chain += "+1"; }	/* 2000 个运算符，超 kMaxOps=512 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "too many operators",
+		Expression::parse(chain));
+	/* 上限内的合法长链（512 个）必须正常求值，确保防线没有误伤 */
+	std::string ok = "0";
+	for (int i = 0; i < 500; ++i) { ok += "+1"; }
+	TH_CHECK(evalWith(ok, {}) == 500.0);
+}
+
 TH_TEST(expr_collect_vars) {
 	std::set<std::string> names;
 	Expression::parse("v1+v2*3-(-x)").collectVars(names);
