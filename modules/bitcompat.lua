@@ -13,6 +13,39 @@
 
 local M = {}
 
+------------------------------------------------------------------
+-- 符号扩展原语（寄存器原码 → 有符号值）——纯算术，双解释器共用，
+-- 必须先于 LuaJIT 早退分支定义（bit 库路径提前 return）
+-- 全仓 ≥10 个驱动各自内联同一实现（s16/s12/s8/s16le），收敛于此单点维护：
+--   M.u16le(b, i)   字节表 b 自下标 i 起小端 2 字节 → 无符号 16 位
+--   M.s16le(b, i)   同上 → 有符号（补码）
+--   M.s16(v)  16 位补码 → 有符号；M.s12(v)；M.s8(v)
+------------------------------------------------------------------
+function M.u16le(b, i)
+	return b[i] + b[i + 1] * 256
+end
+
+function M.s16le(b, i)
+	local v = b[i] + b[i + 1] * 256
+	if v >= 0x8000 then v = v - 0x10000 end
+	return v
+end
+
+function M.s16(v)
+	if v >= 0x8000 then v = v - 0x10000 end
+	return v
+end
+
+function M.s12(v)
+	if v >= 0x800 then v = v - 0x1000 end
+	return v
+end
+
+function M.s8(v)
+	if v >= 0x80 then v = v - 0x100 end
+	return v
+end
+
 local ok, bit = pcall(require, "bit")
 if ok then
 	M.bor    = bit.bor

@@ -89,23 +89,10 @@ local function read_block(fd, reg, n)
     return b
 end
 
--- 辅助：小端16位（校准系数：b[i]=LSB，b[i+1]=MSB）
-local function u16le(b, i) return b[i] + b[i + 1] * 256 end
-local function s16le(b, i)
-    local v = b[i] + b[i + 1] * 256
-    if v >= 0x8000 then v = v - 0x10000 end
-    return v
-end
-
--- 辅助：符号扩展
-local function s12(v)
-    if v >= 0x800 then v = v - 0x1000 end
-    return v
-end
-local function s8(v)
-    if v >= 0x80 then v = v - 0x100 end
-    return v
-end
+-- 辅助：小端16位（校准系数：b[i]=LSB，b[i+1]=MSB）与符号扩展——
+-- 收敛至 bitcompat 单点维护（全仓 ≥10 驱动曾各自内联同一实现），语义逐字不变
+local u16le, s16le = bitc.u16le, bitc.s16le
+local s12, s8 = bitc.s12, bitc.s8
 
 -- 【配置脚本】初始化BME280：校验ID、软复位、读校准系数、配置过采样
 function build(data)
@@ -118,15 +105,9 @@ function build(data)
         dbg_table("-------- BME280 builder func get a table --------", data)
     end
 
-    local fd = tonumber(data.fd)
-    local addr = tonumber(data.address)
-    if fd == nil or addr == nil then
-        return { result = "ERR", message = "Invalid Argument: fd or address" }
-    end
-
-    if not i2c_set_addr(fd, addr) then
-        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
-    end
+    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+    local fd, addr, ek = i2c_pair(data)
+    if fd == nil then return ek end
 
     -- 校验芯片ID
     local id = i2c_read_multi(fd, REG_ID, 1)
@@ -227,15 +208,9 @@ function call(data)
         return { result = "ERR", message = "BME280 not initialized, run build first" }
     end
 
-    local fd = tonumber(data.fd)
-    local addr = tonumber(data.address)
-    if fd == nil or addr == nil then
-        return { result = "ERR", message = "Invalid Argument: fd or address" }
-    end
-
-    if not i2c_set_addr(fd, addr) then
-        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
-    end
+    -- 校验收敛至 drv_common.i2c_pair（报错口径不变）
+    local fd, addr, ek = i2c_pair(data)
+    if fd == nil then return ek end
 
     -- 单次触发测量（forced模式，完成后自动回到睡眠）
     -- 审计 #3：触发写必须判错——NACK 时 STATUS.measuring 本就为 0，轮询会

@@ -35,6 +35,7 @@
 - **驱动 build 全程守卫（C-M3'）**：`drv_common.guard_build` 统一 pcall——build 在打开总线句柄后抛 Lua error 时折成 ERR 契约并回滚关闭句柄（I2C/SPI/UART/GPIO 全部接入，堵宿主 lua_close 后 fd 永久泄漏的纵深防御）；SPI 桩实证
 - **sensor_daemon 浮点防线**：浮点物理量配 `sign=16`/`:s16` 会被 floor 截断成整数假值静默发布（与字段拼错发 0 同族）——拒绝发布、tick 错误点名让配置改 `:f`；新增 virt E2E `float_s16_daemon`
 - **UART call 下发 build 缓存的 path**（C-L6）：不信任 call 元数据，virt 模式按错误 tty 路径 attach 模型的缺口关闭；GPIO 成功打印纳入 DEBUG 门控（C-L7）
+- **驱动样板收敛第一刀**：SHT3X/BME280/BMI270 六处手搓 fd/address + set_addr 校验迁至 `drv_common.i2c_pair`（报错口径不变）；`bitcompat` 新增符号扩展原语 `s16/s12/s8/s16le/u16le`（置于 LuaJIT 早退分支前，双解释器共用），BME280 校准系数解析改用之——全仓 ≥10 驱动各自内联的同款 helper 开始单点化
 
 ### 工程化与守门
 
