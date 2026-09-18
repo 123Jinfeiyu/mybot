@@ -10,8 +10,10 @@
 #   - test_jit_warmup.lua 是真机 ABI 回归测试（需 /dev/i2c-*），无总线环境自动跳过
 #   - 守门完整性：编译产物（mybot / mybot_tests）缺失的分段**判失败**而非静默跳过——
 #     否则整段 C++ 守门可以在不构建的情况下消失而汇总仍报「0 失败」。
-#     仅两类例外按跳过计（汇总里以「N 跳过 + 未执行清单」显式可见）：
-#     真机 i2c 用例（本机无 /dev/i2c-*）、TCP 段缺 python3（README 声明的软依赖）。
+#     仅三类例外按跳过计（汇总里以「N 跳过 + 未执行清单」显式可见）：
+#     真机 i2c 用例（本机无 /dev/i2c-*）、TCP 段缺 python3（README 声明的软依赖）、
+#     agent 端到端缺 libus_http（--agent 是构建期可选特性，缺库时二进制会明确报
+#     「本构建未启用 agent 模式」，本入口据此判 SKIP 而非假绿）。
 #     只想跑 Lua 段的逃生口：ALLOW_SKIP=1 bash test/run_all.sh
 #     （显式给了 BOT=/BOT_TESTS= 却指向不存在的文件，一律判失败，ALLOW_SKIP 也不放行）
 #   - test_ioctl_nums.c 为 C 编译期常量自检，不在本入口范围
@@ -703,6 +705,41 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
+# agent 模式端到端（scripts/agent_e2e.sh）：假 OpenAI 兼容服务 + 真实 mybot，
+# 验证工具循环真的迭代、动作脚本在**常驻**机器人上执行、非动作工具可用。
+#
+# 本段依赖 libus_http（构建期可选，见 CMakeLists 的 MYBOT_AGENT）。本构建未
+# 启用 agent 模式时按 SKIP 计——以二进制输出的「本构建未启用 agent 模式」文本
+# 判定，不是静默消失；与缺 python3 同级的第三种软跳过。缺编译产物仍判失败。
+# ======================================================================
+run_one_agent_e2e() {
+	echo "----- agent-e2e (agent 模式端到端) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "agent 模式端到端" "该段（scripts/agent_e2e.sh）" "$bin" "$bot_explicit"
+		return 2
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（假模型服务），跳过本段"
+		record_skip "agent-e2e(缺python3)"
+		return 2
+	fi
+	local out rc
+	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh 2>&1)"
+	rc=$?
+	echo "$out"
+	if [ $rc -eq 125 ]; then
+		record_skip "agent-e2e(libus_http未启用)"
+	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "agent 模式端到端测试通过"; then
+		record_fail "agent-e2e(agent 模式)"
+	else
+		record_pass
+	fi
+}
+if [ -z "$filter" ] || [[ "agent" == *"$filter"* ]]; then
+	run_one_agent_e2e
+fi
+
+# ======================================================================
 # mtmerge 相位语义回归（scripts/mtmerge_e2e.sh）：相位 0/±1 逐格比对、
 # 设备集相交报错、三输入链式、负相位丢行告警、合并产物回喂 mybot 时
 # 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
@@ -1296,7 +1333,7 @@ run_cpp_unit
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E、输入边界加固或 C++ 单测，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E、agent E2E、输入边界加固或 C++ 单测，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败, $skip 跳过"

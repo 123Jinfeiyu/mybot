@@ -44,10 +44,42 @@ if(MYBOT_SANITIZE)
   add_link_options(-fsanitize=${MYBOT_SANITIZE})
 endif()
 
+# ======================================================================
+# agent 模式（可选）：--agent 让大模型工具循环成为主执行流程，机器人结构脚本
+# 加载后硬件常驻内存。唯一外部依赖是 libus_http（OpenAI 兼容 HTTP 客户端：
+# libcurl + OpenSSL + header-only Boost.Beast）。
+#
+# 找不到时**不让构建失败**：agent 源码照编，只把 --agent 变成运行期明确报
+# 「本构建未启用 agent 模式」。CI 基线 debian:bookworm 没有 libus_http，这条
+# 降级路径正是「零第三方依赖」的既有承诺与 CI 全绿能同时成立的原因。
+#   -DMYBOT_AGENT=OFF   显式关闭（连探测都不做）
+# ======================================================================
+option(MYBOT_AGENT "Enable agent mode (requires libus_http)" ON)
+set(MYBOT_HAVE_AGENT FALSE)
+if(MYBOT_AGENT)
+  find_path(US_HTTP_INCLUDE_DIR
+    NAMES us/HttpClient.hpp
+    HINTS ${CMAKE_CURRENT_SOURCE_DIR}/../libus_http/inc
+          ${CMAKE_CURRENT_SOURCE_DIR}/../libhttp/inc)
+  find_library(US_HTTPCLIENT_LIBRARY
+    NAMES us_httpclient
+    HINTS ${CMAKE_CURRENT_SOURCE_DIR}/../libus_http/build
+          ${CMAKE_CURRENT_SOURCE_DIR}/../libhttp/build)
+  if(US_HTTP_INCLUDE_DIR AND US_HTTPCLIENT_LIBRARY)
+    set(MYBOT_HAVE_AGENT TRUE)
+  endif()
+endif()
+if(MYBOT_HAVE_AGENT)
+  message(STATUS "agent mode: ON (libus_http: ${US_HTTPCLIENT_LIBRARY})")
+else()
+  message(STATUS "agent mode: OFF (libus_http not found; --agent will report unsupported)")
+endif()
+
 # 被测主体（不含入口 main.cpp）：mybot 与 mybot_tests 共用同一份，
 # 保证单测编译的正是发布二进制里的那套实现，而不是第二份拷贝。
 set(MYBOT_CORE_SOURCES
   src/json.cpp
+  src/jsonparse.cpp
   src/matrix.cpp
   src/expr.cpp
   src/sqlparse.cpp
@@ -58,6 +90,11 @@ set(MYBOT_CORE_SOURCES
   src/daemonvar.cpp
   src/robot.cpp
   src/actionsource.cpp
+  src/agentproto.cpp
+  src/agenttools.cpp
+  src/agentloop.cpp
+  src/agentmode.cpp
+  src/agenthttp.cpp
 )
 
 # 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，
@@ -75,6 +112,16 @@ target_link_libraries(mybot_common INTERFACE
   dl
   m
 )
+
+# agent 模式的 libus_http 链接（含它自身的传递依赖 curl/ssl/crypto：
+# libus_httpclient.so 未把 curl 记进 DT_NEEDED，不显式带会「DSO missing」）
+if(MYBOT_HAVE_AGENT)
+  target_compile_definitions(mybot_common INTERFACE MYBOT_HAVE_AGENT=1)
+  target_include_directories(mybot_common INTERFACE ${US_HTTP_INCLUDE_DIR})
+  target_link_libraries(mybot_common INTERFACE ${US_HTTPCLIENT_LIBRARY} ssl crypto curl)
+  get_filename_component(US_HTTP_LIB_DIR "${US_HTTPCLIENT_LIBRARY}" DIRECTORY)
+  target_link_options(mybot_common INTERFACE "-Wl,-rpath,${US_HTTP_LIB_DIR}")
+endif()
 
 add_executable(mybot
   src/main.cpp
@@ -105,6 +152,7 @@ target_link_libraries(mybot PRIVATE mybot_common)
 add_executable(mybot_tests
   test/cpp/main.cpp
   test/cpp/test_json.cpp
+  test/cpp/test_jsonparse.cpp
   test/cpp/test_matrix.cpp
   test/cpp/test_expr.cpp
   test/cpp/test_sqlparse.cpp
@@ -116,6 +164,9 @@ add_executable(mybot_tests
   test/cpp/test_daemon.cpp
   test/cpp/test_daemon_concurrency.cpp
   test/cpp/test_mtmerge.cpp
+  test/cpp/test_agentproto.cpp
+  test/cpp/test_agenttools.cpp
+  test/cpp/test_agentloop.cpp
   src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
 )

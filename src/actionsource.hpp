@@ -30,6 +30,23 @@ struct CliOptions {
 	std::string tcpToken;
 	std::string tcpIdle;
 	std::optional<std::string> input;
+
+	/* ---- agent 模式（--agent）----
+	 * agent 模式与动作输入源（--tcp / --input / stdin）互斥：前者让智能体
+	 * 工具循环成为主流程，后者是「读一段 .mt 就跑完退出」的一次性流程。
+	 * 数值型选项沿用 tcpPort/tcpIdle 的惯例保留原始字符串，统一在
+	 * agent::buildAgentConfig 内校验（报错文案与退出路径单点）。 */
+	bool agent = false;
+	bool agentOptionsUsed = false;	/* 出现过 agent 专属选项（非 agent 场景据此报错） */
+	std::string agentTask;		/* --task：非空 = 一次性任务，空 = 交互 REPL */
+	bool agentNoShell = false;	/* --agent-no-shell：不注册 run_command */
+	std::string llmEndpoint;
+	std::string llmModel;
+	std::string llmKey;
+	std::string llmMaxTurns;
+	std::string llmMaxTokens;
+	std::string llmTimeout;
+	std::string scriptsDir;
 };
 
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。

@@ -1,0 +1,470 @@
+#include "agenttools.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <fcntl.h>
+#include <filesystem>
+#include <fstream>
+#include <memory>
+#include <poll.h>
+#include <sstream>
+#include <stdexcept>
+#include <string_view>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <utility>
+
+#include "actionsource.hpp"
+#include "daemonvar.hpp"
+#include "hardware.hpp"
+#include "luavar.hpp"
+#include "robot.hpp"
+#include "util.hpp"
+
+namespace fs = std::filesystem;
+
+/* 进程环境块。glibc 不在 <unistd.h> 里声明它，必须在**全局作用域**声明：
+ * 放进匿名命名空间会变成另一个符号（bot::agent::{anon}::environ），链接期
+ * 报 undefined reference。 */
+extern char** environ;
+
+namespace bot {
+namespace agent {
+
+namespace {
+
+/* ---- 参数取值 ---- */
+
+std::string requireString(const Json& args, const std::string& key) {
+	if (!args.isObj()) { throw IllegalArgumentException("工具参数必须是 JSON 对象"); }
+	auto v = args.get(key);
+	if (!v || !v->isStr() || v->getValue().empty()) {
+		throw IllegalArgumentException("缺少字符串参数 " + key);
+	}
+	return v->getValue();
+}
+
+int optionalInt(const Json& args, const std::string& key, int fallback) {
+	auto v = args.get(key);
+	if (!v) { return fallback; }
+	if (v->isInt()) { return static_cast<int>(v->getInt()); }
+	if (v->isFloat()) { return static_cast<int>(v->getFloat()); }
+	return fallback;
+}
+
+/* ---- 文件读取（带上限，拒绝而非截断）---- */
+
+std::string readFileLimited(const std::string& path, std::size_t cap) {
+	std::ifstream f(path, std::ios::binary);
+	if (!f) { throw IllegalArgumentException("无法打开文件 " + path); }
+	std::string data;
+	data.resize(cap + 1);
+	f.read(&data[0], static_cast<std::streamsize>(cap + 1));
+	std::streamsize n = f.gcount();
+	if (n < 0) { n = 0; }
+	data.resize(static_cast<std::size_t>(n));
+	if (data.size() > cap) {
+		throw IllegalArgumentException("文件超过 " + std::to_string(cap) + " 字节上限: " + path);
+	}
+	return data;
+}
+
+/* 动作脚本首行注释作为说明（"# 标准动作" → "标准动作"）。 */
+std::string firstComment(const std::string& content) {
+	std::istringstream ss(content);
+	std::string line;
+	for (int i = 0; i < 20 && std::getline(ss, line); ++i) {
+		std::string t = trim(line);
+		if (t.empty()) { continue; }
+		if (t[0] == '#') { return trim(t.substr(1)); }
+		break;	/* 首行非注释即认为无说明 */
+	}
+	return "";
+}
+
+/* ---- run_command 的实现（超时 / 进程组终止 / 输出截断 / 环境清洗） ---- */
+
+constexpr std::size_t kMaxCommandOutput = 64u * 1024;
+
+struct RunResult {
+	int exitCode = -1;
+	bool timedOut = false;
+	bool interrupted = false;
+	bool truncated = false;
+	std::string out;
+	std::string err;
+};
+
+void appendCapped(std::string& dst, const char* p, std::size_t n, bool& truncated) {
+	std::size_t room = kMaxCommandOutput > dst.size() ? kMaxCommandOutput - dst.size() : 0;
+	if (n > room) {
+		dst.append(p, room);
+		truncated = true;
+	} else {
+		dst.append(p, n);
+	}
+}
+
+extern char** environ;
+
+/* 环境清洗：剔除名称含敏感关键词的变量。模型可能被外部输入（画面/文件内容）
+ * 诱导执行任意命令，不能让子进程继承 LLM API key。
+ * 注意 BOT4CJ_LLM_KEY 含 "key"，天然被本规则覆盖。 */
+std::vector<char*> buildCleanEnvp() {
+	static const char* sensitive[] = {"key", "token", "secret", "password",
+					  "passwd", "credential"};
+	std::vector<char*> envp;
+	for (char** e = ::environ; e && *e; ++e) {
+		std::string_view entry(*e);
+		std::size_t eq = entry.find('=');
+		if (eq == std::string_view::npos) { continue; }
+		std::string name(entry.substr(0, eq));
+		std::transform(name.begin(), name.end(), name.begin(),
+			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+		bool drop = false;
+		for (const char* s : sensitive) {
+			if (name.find(s) != std::string::npos) { drop = true; break; }
+		}
+		if (!drop) { envp.push_back(*e); }
+	}
+	envp.push_back(nullptr);
+	return envp;
+}
+
+RunResult runShell(const std::string& cmd, int timeoutSec) {
+	int po[2] = {-1, -1};
+	int pe[2] = {-1, -1};
+	if (pipe(po) != 0) { throw std::runtime_error("pipe 失败"); }
+	if (pipe(pe) != 0) {
+		close(po[0]);
+		close(po[1]);
+		throw std::runtime_error("pipe 失败");
+	}
+	std::vector<char*> envp = buildCleanEnvp();	/* fork 前构建，子进程直接继承 */
+	pid_t pid = fork();
+	if (pid < 0) {
+		close(po[0]);
+		close(po[1]);
+		close(pe[0]);
+		close(pe[1]);
+		throw std::runtime_error("fork 失败");
+	}
+	if (pid == 0) {
+		setpgid(0, 0);	/* 独立进程组：超时/中断可整组终止（含孙进程） */
+		dup2(po[1], STDOUT_FILENO);
+		dup2(pe[1], STDERR_FILENO);
+		close(po[0]);
+		close(po[1]);
+		close(pe[0]);
+		close(pe[1]);
+		execle("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr), envp.data());
+		_exit(127);
+	}
+	setpgid(pid, pid);	/* 与子进程竞争设置，谁先成功效果一致 */
+	close(po[1]);
+	close(pe[1]);
+	fcntl(po[0], F_SETFL, O_NONBLOCK);
+	fcntl(pe[0], F_SETFL, O_NONBLOCK);
+
+	RunResult r;
+	bool exited = false, outEof = false, errEof = false, killed = false;
+	int status = 0;
+	std::array<char, 4096> buf;
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
+	auto hardDeadline = deadline + std::chrono::seconds(3);
+
+	while (!(exited && outEof && errEof)) {
+		struct pollfd fds[2] = {
+			{outEof ? -1 : po[0], POLLIN, 0},
+			{errEof ? -1 : pe[0], POLLIN, 0},
+		};
+		if (poll(fds, 2, 100) > 0) {
+			for (const auto& fd : fds) {
+				if (fd.fd < 0 || !(fd.revents & (POLLIN | POLLHUP))) { continue; }
+				std::string& sink = (fd.fd == po[0]) ? r.out : r.err;
+				ssize_t n;
+				while ((n = read(fd.fd, buf.data(), buf.size())) > 0) {
+					appendCapped(sink, buf.data(), static_cast<std::size_t>(n), r.truncated);
+				}
+				if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+					close(fd.fd);
+					if (fd.fd == po[0]) { outEof = true; } else { errEof = true; }
+				}
+			}
+		}
+		if (!exited) {
+			pid_t w = waitpid(pid, &status, WNOHANG);
+			if (w == pid) { exited = true; }
+		}
+		auto now = std::chrono::steady_clock::now();
+		bool stop = stopRequested();
+		if (!killed && (now >= deadline || stop)) {
+			kill(-pid, SIGKILL);	/* 整个进程组 */
+			killed = true;
+			r.timedOut = now >= deadline;
+			r.interrupted = stop && now < deadline;
+		}
+		/* 命令自身忽略 SIGKILL 也不可能，但管道可能迟迟不 EOF：硬上限兜底，
+		 * 不让 agent 会话卡在一个 pid 上 */
+		if (now >= hardDeadline) { break; }
+	}
+
+	if (!outEof) { close(po[0]); }
+	if (!errEof) { close(pe[0]); }
+	if (!exited) { waitpid(pid, &status, 0); }
+	r.exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	return r;
+}
+
+std::string formatRunResult(const RunResult& r) {
+	std::string s = "exit_code=" + std::to_string(r.exitCode);
+	if (r.timedOut) { s += "（超时，已终止）"; }
+	if (r.interrupted) { s += "（被中断，已终止）"; }
+	s += "\nstdout:\n" + (r.out.empty() ? std::string("(空)") : r.out);
+	s += "\nstderr:\n" + (r.err.empty() ? std::string("(空)") : r.err);
+	if (r.truncated) { s += "\n[输出超过 64KB，已截断]"; }
+	return s;
+}
+
+/* ---- JSON Schema 小工具 ---- */
+
+Json stringParam(const std::string& desc) {
+	Json p = JsonObject();
+	p.put("type", JsonString("string"));
+	p.put("description", JsonString(desc));
+	return p;
+}
+
+Json intParam(const std::string& desc) {
+	Json p = JsonObject();
+	p.put("type", JsonString("integer"));
+	p.put("description", JsonString(desc));
+	return p;
+}
+
+Json toolSchema(const std::vector<std::pair<std::string, Json>>& props,
+		const std::vector<std::string>& required) {
+	Json properties = JsonObject();
+	for (const auto& [name, schema] : props) { properties.put(name, schema); }
+	Json req = JsonArray();
+	for (const auto& r : required) { req.add(JsonString(r)); }
+	Json s = JsonObject();
+	s.put("type", JsonString("object"));
+	s.put("properties", properties);
+	s.put("required", req);
+	return s;
+}
+
+const char* kindOf(const MatrixVars_Hardware* hw) {
+	if (dynamic_cast<const MtVars_Alias*>(hw) != nullptr) { return "别名"; }
+	if (dynamic_cast<const MtVars_Vars*>(hw) != nullptr) { return "数值变量"; }
+	if (dynamic_cast<const MtVars_Lua*>(hw) != nullptr) { return "驱动"; }
+	if (dynamic_cast<const MtVars_Daemon*>(hw) != nullptr) { return "守护"; }
+	return "未知";
+}
+
+} // namespace
+
+bool AgentToolRegistry::contains(const std::string& name) const {
+	for (const auto& t : tools_) {
+		if (t.name == name) { return true; }
+	}
+	return false;
+}
+
+std::string AgentToolRegistry::execute(const std::string& name, const Json& args) const {
+	for (const auto& t : tools_) {
+		if (t.name != name) { continue; }
+		try {
+			return t.execute(args);
+		} catch (const std::exception& e) {
+			return std::string("工具执行失败: ") + e.what();
+		}
+	}
+	std::string avail;
+	for (const auto& t : tools_) {
+		if (!avail.empty()) { avail += ", "; }
+		avail += t.name;
+	}
+	return "未知工具 " + name + "。可用工具: " + avail;
+}
+
+std::vector<ToolSpec> AgentToolRegistry::specs() const {
+	std::vector<ToolSpec> out;
+	out.reserve(tools_.size());
+	for (const auto& t : tools_) { out.push_back(ToolSpec{t.name, t.description, t.parameters}); }
+	return out;
+}
+
+std::string resolveActionScriptPath(const std::string& scriptsDir, const std::string& requested) {
+	std::string s = trim(requested);
+	if (s.empty()) { throw IllegalArgumentException("缺少 script 参数（动作脚本相对路径）"); }
+	if (s[0] == '/') {
+		throw IllegalArgumentException("script 必须是脚本目录下的相对路径，不接受绝对路径: " + s);
+	}
+	if (s.find('\0') != std::string::npos) {
+		throw IllegalArgumentException("script 含非法字符（NUL）");
+	}
+	std::vector<std::string> parts;
+	std::size_t b = 0;
+	while (b <= s.size()) {
+		std::size_t e = s.find('/', b);
+		std::string part = (e == std::string::npos) ? s.substr(b) : s.substr(b, e - b);
+		if (part.empty() || part == ".") {
+			throw IllegalArgumentException("script 路径含空段或 '.' : " + s);
+		}
+		if (part == "..") {
+			throw IllegalArgumentException("script 不允许越出脚本目录: " + s);
+		}
+		parts.push_back(part);
+		if (e == std::string::npos) { break; }
+		b = e + 1;
+	}
+	if (parts.back().size() < 3 || parts.back().compare(parts.back().size() - 3, 3, ".mt") != 0) {
+		throw IllegalArgumentException("只允许执行 .mt 动作脚本: " + s);
+	}
+	std::string full = scriptsDir;
+	while (full.size() > 1 && full.back() == '/') { full.pop_back(); }
+	for (const auto& p : parts) { full += "/" + p; }
+	return full;
+}
+
+std::string describeActionScripts(const std::string& scriptsDir) {
+	fs::path root(scriptsDir);
+	std::error_code ec;
+	if (!fs::is_directory(root, ec)) {
+		return "(动作脚本目录不存在: " + scriptsDir + ")";
+	}
+	std::vector<std::string> rels;
+	try {
+		for (const auto& e :
+		     fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied)) {
+			std::error_code tec;
+			if (!e.is_regular_file(tec)) { continue; }
+			if (e.path().extension() != ".mt") { continue; }
+			std::error_code rec;
+			fs::path rel = fs::relative(e.path(), root, rec);
+			if (rec) { continue; }
+			rels.push_back(rel.generic_string());
+		}
+	} catch (const fs::filesystem_error&) {
+		/* 个别子目录不可读：已收集的照常输出，不因一处权限问题整段失败 */
+	}
+	std::sort(rels.begin(), rels.end());
+	if (rels.empty()) { return "(脚本目录下没有 .mt 动作脚本: " + scriptsDir + ")"; }
+	std::string out;
+	for (const auto& rel : rels) {
+		std::string desc;
+		try {
+			desc = firstComment(readFileLimited((root / rel).string(), 4096));
+		} catch (const std::exception&) {
+			desc.clear();
+		}
+		out += "  " + rel;
+		if (!desc.empty()) { out += "  — " + desc; }
+		out += "\n";
+	}
+	return out;
+}
+
+std::string describeHardware(RobotStruct& robot) {
+	const auto& m = robot.registry().byName();
+	if (m.empty()) { return "(没有注册任何硬件变量)"; }
+	std::size_t width = 0;
+	for (const auto& [name, hw] : m) {
+		(void)hw;
+		width = std::max(width, name.size());
+	}
+	std::string out = "已注册硬件变量（" + std::to_string(m.size()) + " 个）:\n";
+	for (const auto& [name, hw] : m) {
+		out += "  " + name + std::string(width - name.size() + 2, ' ') + kindOf(hw) + "\n";
+	}
+	return out;
+}
+
+AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
+	AgentToolRegistry reg;
+
+	reg.add(AgentTool{
+		"list_action_scripts",
+		"列出机器人可用的动作脚本（.mt 文件），返回相对路径与说明。"
+		"需要让机器人做动作前先调用它，挑选与目标最匹配的脚本。",
+		toolSchema({}, {}),
+		[ctx](const Json&) -> std::string {
+			return describeActionScripts(ctx.scriptsDir);
+		}});
+
+	reg.add(AgentTool{
+		"run_action_script",
+		"在常驻的机器人上执行一个动作脚本（.mt），例如站立、前进、转向、举爪。"
+		"脚本执行完毕后硬件保持上电常驻，可以接着执行下一个脚本。"
+		"script 必须是 list_action_scripts 返回的相对路径。返回执行成功或报错原因；"
+		"报错时机器人状态可能停在半途，请读清原因再决定下一步。",
+		toolSchema({{"script", stringParam("动作脚本相对路径，如 std.mt 或 test/pwm.mt")}},
+			{"script"}),
+		[ctx](const Json& args) -> std::string {
+			std::string req;
+			try {
+				if (ctx.robot == nullptr) { throw std::runtime_error("没有常驻机器人实例"); }
+				req = requireString(args, "script");
+				std::string path = resolveActionScriptPath(ctx.scriptsDir, req);
+				std::string content = readFileLimited(path, kMaxScriptBytes);
+				if (trim(content).empty()) { throw IllegalArgumentException("脚本内容为空: " + path); }
+				const std::size_t bytes = content.size();
+				auto reader = std::make_unique<LimitedReader>(
+					std::make_unique<MemoryReader>(std::move(content)),
+					kMaxScriptBytes, "action script");
+				ctx.robot->run(*reader);
+				return "已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）";
+			} catch (const std::exception& e) {
+				return "动作脚本执行失败 [" + req + "]: " + e.what();
+			}
+		}});
+
+	reg.add(AgentTool{
+		"list_hardware",
+		"列出当前机器人的硬件变量清单（结构脚本注册的驱动、别名、数值变量）。"
+		"只读清单，不会让任何器件动作。",
+		toolSchema({}, {}),
+		[ctx](const Json&) -> std::string {
+			std::string out;
+			if (!ctx.structurePath.empty()) { out += "结构脚本: " + ctx.structurePath + "\n"; }
+			if (ctx.robot == nullptr) {
+				out += "(没有常驻机器人实例)";
+				return out;
+			}
+			out += describeHardware(*ctx.robot);
+			return out;
+		}});
+
+	if (ctx.allowShell) {
+		reg.add(AgentTool{
+			"run_command",
+			"在机器人主机上执行 shell 命令，返回退出码、标准输出与标准错误。"
+			"适合查看系统状态、读取日志、检查设备节点；不要用它直接驱动硬件"
+			"（驱动硬件请用 run_action_script）。命令有超时限制，输出超过 64KB 会截断。",
+			toolSchema({{"command", stringParam("要执行的 shell 命令")},
+				    {"timeout_seconds", intParam("超时秒数，默认 10，最大 60")}},
+				{"command"}),
+			[ctx](const Json& args) -> std::string {
+				std::string cmd = requireString(args, "command");
+				int timeoutSec = optionalInt(args, "timeout_seconds", ctx.commandTimeoutSec);
+				if (timeoutSec < 1) { timeoutSec = 1; }
+				if (timeoutSec > ctx.maxCommandTimeoutSec) { timeoutSec = ctx.maxCommandTimeoutSec; }
+				try {
+					return formatRunResult(runShell(cmd, timeoutSec));
+				} catch (const std::exception& e) {
+					return std::string("命令执行失败: ") + e.what();
+				}
+			}});
+	}
+
+	return reg;
+}
+
+} // namespace agent
+} // namespace bot

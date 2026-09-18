@@ -63,6 +63,10 @@ public:
 
 	/* 销毁序视图（build 正向 / destroy 反向）；会话别名不在其中 */
 	const std::vector<MatrixVars_Hardware*>& sequence() const { return seq_; }
+
+	/* agent 模式：只读名字索引（硬件清单）。只给 const 视图——
+	 * 清单是「描述」用途，不应成为第二条改写注册表的路径。 */
+	const std::map<std::string, MatrixVars_Hardware*>& byName() const { return byName_; }
 };
 
 /* 元数据引用列：变量引用（var 非空）或 $(...) 表达式引用（expr 非空）。
@@ -215,6 +219,9 @@ public:
 
 	/* 执行 @Action 矩阵（含内联 @Alias 注册） */
 	void run(bot::Reader& input);
+
+	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
+	const HwRegistry& registry() const { return registry_; }
 
 	/* 储存整个矩阵变量表（预留 API，供 NN 矩阵脚本存储） */
 	void save(std::ostream& out) { mt::MatrixSaver::save(matrices_, out); }

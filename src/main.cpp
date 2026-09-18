@@ -7,6 +7,8 @@
 #include <vector>
 
 #include "actionsource.hpp"
+#include "agenthttp.hpp"
+#include "agentmode.hpp"
 #include "robot.hpp"
 #include "util.hpp"
 
@@ -76,6 +78,53 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 			if (noValue) { out.missingValue.push_back(key); }
 			else { out.opts.input = val; }
 		}
+		/* ---- agent 模式（--agent 及其专属选项）----
+		 * 裸写（漏值）一律进 missingValue，与既有 --tcp-host 等同口径 */
+		else if (key == "agent") { out.opts.agent = true; out.opts.agentOptionsUsed = true; }
+		else if (key == "agent-no-shell") {
+			out.opts.agentNoShell = true;
+			out.opts.agentOptionsUsed = true;
+		}
+		else if (key == "task") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.agentTask = val; }
+		}
+		else if (key == "scripts-dir") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.scriptsDir = val; }
+		}
+		else if (key == "llm-endpoint") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmEndpoint = val; }
+		}
+		else if (key == "llm-model") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmModel = val; }
+		}
+		else if (key == "llm-key") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmKey = val; }
+		}
+		else if (key == "llm-max-turns") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmMaxTurns = val; }
+		}
+		else if (key == "llm-max-tokens") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmMaxTokens = val; }
+		}
+		else if (key == "llm-timeout") {
+			out.opts.agentOptionsUsed = true;
+			if (noValue) { out.missingValue.push_back(key); }
+			else { out.opts.llmTimeout = val; }
+		}
 		else { out.unknown.push_back(key); }
 	}
 	return out;
@@ -97,6 +146,25 @@ void print_help() {
 	std::cout << "                     另有连接总时长预算（600s，随该值 x20 放大）防慢滴挂住进程" << std::endl;
 	std::cout << "  --input <path>     从文件读取动作脚本" << std::endl;
 	std::cout << "  （缺省）           从 stdin 管道读取" << std::endl;
+	std::cout << "" << std::endl;
+	std::cout << "agent 模式（与上面的动作输入源互斥）：机器人结构脚本加载后硬件常驻内存，" << std::endl;
+	std::cout << "由大模型智能体通过工具循环决定执行哪些动作脚本。" << std::endl;
+	std::cout << "  --agent            开启 agent 模式（缺省交互 REPL；硬件全程上电常驻）" << std::endl;
+	std::cout << "  --task <文本>      一次性任务，跑完即退出；缺省则进入交互 REPL" << std::endl;
+	std::cout << "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt" << std::endl;
+	std::cout << "  --llm-endpoint <URL>  模型接口（缺省 https://moma.cmecloud.cn/v1/chat/completions）" << std::endl;
+	std::cout << "  --llm-model <名称>    模型名（缺省 zhipu/glm-5.3-flash）" << std::endl;
+	std::cout << "  --llm-key <KEY>       API key；更推荐环境变量 BOT4CJ_LLM_KEY" << std::endl;
+	std::cout << "                        （兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）" << std::endl;
+	std::cout << "  --llm-max-turns <N>   单次任务的最大模型轮数（缺省 8，范围 1-100）" << std::endl;
+	std::cout << "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096）" << std::endl;
+	std::cout << "  --llm-timeout <秒>    单次模型调用超时（缺省 180）" << std::endl;
+	std::cout << "  --agent-no-shell      不向智能体提供 run_command（去掉任意 shell 执行能力）" << std::endl;
+	std::cout << "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/exit 退出。" << std::endl;
+	std::cout << "" << std::endl;
+	std::cout << "示例：" << std::endl;
+	std::cout << "  ./build/mybot --robot=robots/relay-test.sql --agent --task \"让继电器动作一次\"" << std::endl;
+	std::cout << "  ./build/mybot --robot=robots/spider1.sql --agent" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "安全约束：动作脚本只能引入新的参数键，不得覆盖结构脚本的元数据列" << std::endl;
 	std::cout << "（fd / address / max / min / offset 等）；结构脚本与动作脚本单次输入上限均为 8 MiB。" << std::endl;
@@ -136,9 +204,55 @@ int main(int argc, char** argv) {
 		return 2;
 	}
 
+	/* ---- agent 模式选项校验（先于结构脚本装载与任何硬件上电）----
+	 * F-20 同族口径：选项组合错必须显式拒绝并退出 2，不能静默忽略。
+	 *   1) agent 专属选项出现在非 agent 模式下 → 用户意图与参数不一致；
+	 *   2) --agent 与 --tcp/--input 互斥 → 两者都要求主导输入源。 */
+	if (!options.agent && options.agentOptionsUsed) {
+		std::cerr << "参数错误：--task / --llm-* / --agent-no-shell / --scripts-dir "
+			"只在 --agent 模式下有效；用 --help 查看 agent 模式说明" << std::endl;
+		return 2;
+	}
+	if (options.agent && (options.tcp || options.input)) {
+		std::cerr << "参数错误：--agent 与 --tcp/--input 互斥"
+			"（agent 模式以智能体工具循环为主流程，不接受一次性动作输入源）"
+			<< std::endl;
+		return 2;
+	}
+	/* agent 模式没有结构脚本就无从常驻，必须显式拒绝而不是打印帮助后退出 0 */
+	if (options.agentOptionsUsed && !options.robot) {
+		std::cerr << "参数错误：agent 模式需要同时提供 --robot <结构脚本>" << std::endl;
+		return 2;
+	}
+
 	/* ---- 结构脚本 + 动作输入源分支 ---- */
 	if (options.robot) {
 		std::string rpath = *options.robot;
+
+		/* agent 配置与传输先组装好：结构与上电都在其后，配置错误不碰真机 */
+		agent::AgentModeConfig agentCfg;
+		std::unique_ptr<agent::ChatTransport> agentTransport;
+		if (options.agent) {
+			std::string cfgErr;
+			if (!agent::buildAgentConfig(options, agentCfg, cfgErr)) {
+				std::cerr << "错误: " << cfgErr << std::endl;
+				return 2;
+			}
+			agent::HttpTransportConfig hcfg;
+			hcfg.endpoint = agentCfg.endpoint;
+			hcfg.apiKey = agentCfg.apiKey;
+			hcfg.model = agentCfg.model;
+			hcfg.maxTokens = agentCfg.maxTokens;
+			hcfg.temperature = agentCfg.temperature;
+			hcfg.topP = agentCfg.topP;
+			hcfg.timeoutSec = agentCfg.timeoutSec;
+			try {
+				agentTransport = agent::makeHttpTransport(hcfg);
+			} catch (const std::exception& e) {
+				std::cerr << "错误: " << e.what() << std::endl;
+				return 2;
+			}
+		}
 
 		/* 友好报错：结构脚本打不开 → 人话提示，不裸栈回溯 */
 		std::unique_ptr<Reader> fstream;
@@ -173,19 +287,27 @@ int main(int argc, char** argv) {
 
 		int rc = 0;
 		try {
-			/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/
-			 * 读取阶段任何失败（无客户端连接、口令错、停止信号）都发生在
-			 * 硬件 build 之前——不再出现「硬件已 build、带电空等客户端」；
-			 * 三种输入源本就一次性读全，open 失败时 deactivate 也不会执行
-			 * 任何 destroy 之外的驱动副作用。 */
-			std::unique_ptr<Reader> input = openActionSource(options);
-			if (!input) {
-				std::cerr << "动作输入源打开失败，退出" << std::endl;
-				rc = 1;
-			} else {
+			if (options.agent) {
+				/* agent 模式：上电后硬件常驻，控制权交给智能体工具循环；
+				 * 只有会话结束（--task 跑完 / REPL 退出）才 deactivate。 */
 				robot->active();
+				rc = agent::runAgentMode(agentCfg, *robot, *agentTransport,
+					std::cin, std::cout, std::cerr);
+			} else {
+				/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/
+				 * 读取阶段任何失败（无客户端连接、口令错、停止信号）都发生在
+				 * 硬件 build 之前——不再出现「硬件已 build、带电空等客户端」；
+				 * 三种输入源本就一次性读全，open 失败时 deactivate 也不会执行
+				 * 任何 destroy 之外的驱动副作用。 */
+				std::unique_ptr<Reader> input = openActionSource(options);
+				if (!input) {
+					std::cerr << "动作输入源打开失败，退出" << std::endl;
+					rc = 1;
+				} else {
+					robot->active();
 
-				robot->run(*input);
+					robot->run(*input);
+				}
 			}
 		} catch (const std::exception& e) {
 			std::cerr << "Aborted: " << e.what() << std::endl;
