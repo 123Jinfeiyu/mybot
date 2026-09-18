@@ -56,7 +56,9 @@ void Json::put(const std::string& key, Json v) {
 const Json& Json::at(std::size_t n) const {
 	const Json& a = asArray();
 	if (n >= a.arr.size()) {
-		throw std::out_of_range("JsonArray index out of range");
+		/* C-L3'：统一用项目惯例的 bot::IllegalArgumentException——全项目其余
+		 * 访问器（asObject/asArray/typeError）都抛它，上层统一 catch 才不漏接 */
+		throw IllegalArgumentException("JsonArray index out of range");
 	}
 	return a.arr[n];
 }

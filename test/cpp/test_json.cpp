@@ -87,7 +87,8 @@ TH_TEST(json_array_index_bounds) {
 	TH_CHECK(a.size() == 2);
 	TH_CHECK(a.at(1).getValue() == "b");
 	TH_CHECK(a.toString() == R"([10,"b"])");
-	TH_CHECK_THROWS_MSG(std::out_of_range, "index out of range", a.at(2));
+	/* C-L3'：与全项目其余访问器统一抛 bot::IllegalArgumentException */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "index out of range", a.at(2));
 	TH_CHECK(JsonArray().toString() == "[]");
 	TH_CHECK(JsonObject().toString() == "{}");
 }

@@ -95,15 +95,30 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	}
 	lua_settop(L, 0);
 
-	/* 逐拍循环：每拍 getglobal(daemon_tick)+pcall 采样一次；拍间 std::thread sleep */
+	/* 逐拍循环：每拍 getglobal(daemon_tick)+pcall 采样一次；拍间 std::thread sleep。
+	 * C-L2：错误限频 + 指数退避——tick 持续抛错（如 daemon_tick 未定义/加载
+	 * 失败）原实现按拍频刷 stderr（缺省 5ms ≈ 200 行/秒）且永不退避。前 3 次
+	 * 逐条打印定位问题，之后每 100 次一条摘要；拍间 sleep 按 2^n 退避
+	 * （上限 ×256，避免长 interval 停机阻塞被进一步放大），成功一拍即清零。 */
+	int64_t tickErrors = 0;
 	while (!daemon_stop_requested(slot)) {
 		lua_getglobal(L, "daemon_tick");
 		int st2 = lua_pcall(L, 0, LUA_MULTRET, 0);
 		if (st2 != LUA_OK) {
-			std::cerr << "[daemon] tick error: " << luaErrorString(L) << std::endl;
+			++tickErrors;
+			if (tickErrors <= 3 || tickErrors % 100 == 0) {
+				std::cerr << "[daemon] tick error #" << tickErrors << ": "
+					<< luaErrorString(L) << std::endl;
+			}
+		} else {
+			tickErrors = 0;
 		}
 		lua_settop(L, 0);
-		std::this_thread::sleep_for(std::chrono::milliseconds(intervalMs));
+		int64_t sleepMs = intervalMs;
+		if (tickErrors > 0) {
+			sleepMs = intervalMs * (int64_t(1) << std::min<int64_t>(tickErrors, 8));
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
 	}
 
 	/* H-07：stop 后、lua_close 前调用 chunk 定义的 daemon_cleanup()（若存在） */
