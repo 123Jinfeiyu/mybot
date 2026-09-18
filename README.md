@@ -13,7 +13,7 @@
 ## 项目信息
 
 - **实现**：C++17（零第三方 C++ 依赖，仅 LuaJIT + pthread + dl）
-- **构建**：CMake ≥ 3.16；g++ ≥ 14 已验证（CI 基线 debian:bookworm，本地实测至 g++ 15）
+- **构建**：CMake ≥ 3.16；本地实测 g++ 14 / 15（CI 基线 debian:bookworm，其缺省 g++ 为 12）
 - **平台**：Linux（aarch64 / x86_64），树莓派实测可使用
 - **CI**：`.gitlab-ci.yml` 在每次推送跑「构建 → Release 全量守门 → ASan/UBSan 双跑」，另有 TSan 与 clang 两条软门禁（详见 [docs/testing.md](docs/testing.md)）
 - **驱动生态**：`modules/` 下 59 个模块——47 款器件/执行器驱动（舵机、IMU、气压、测距、ADC、电源……）加总线、滤波与模型协议等框架模块；分类清单见 [docs/drivers.md](docs/drivers.md)（计数以 `modules/` 目录为准）
