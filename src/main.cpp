@@ -62,8 +62,9 @@ void print_help() {
 	std::cout << "动作输入源（优先级从高到低）：" << std::endl;
 	std::cout << "  --tcp <port>       TCP 模式：监听端口接受一次连接，读取对端下发的 .mt" << std::endl;
 	std::cout << "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）" << std::endl;
-	std::cout << "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1（跨机需显式给 0.0.0.0）" << std::endl;
-	std::cout << "  --tcp-token <tok>  TCP 可选口令：对端须先发一行 \"<tok>\\n\" 再发脚本" << std::endl;
+	std::cout << "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1；跨机监听（如 0.0.0.0）" << std::endl;
+	std::cout << "                     必须同时提供 --tcp-token，否则拒绝启动" << std::endl;
+	std::cout << "  --tcp-token <tok>  TCP 口令：跨机监听必填；对端须先发一行 \"<tok>\\n\" 再发脚本" << std::endl;
 	std::cout << "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）" << std::endl;
 	std::cout << "  --input <path>     从文件读取动作脚本" << std::endl;
 	std::cout << "  （缺省）           从 stdin 管道读取" << std::endl;
@@ -134,15 +135,19 @@ int main(int argc, char** argv) {
 
 		int rc = 0;
 		try {
-			robot->active();
-
-			/* ActionSource：可替换动作输入源（stdin / TCP / 文件） */
+			/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/
+			 * 读取阶段任何失败（无客户端连接、口令错、停止信号）都发生在
+			 * 硬件 build 之前——不再出现「硬件已 build、带电空等客户端」；
+			 * 三种输入源本就一次性读全，open 失败时 deactivate 也不会执行
+			 * 任何 destroy 之外的驱动副作用。 */
 			std::unique_ptr<Reader> input = openActionSource(options);
-			if (input) {
-				robot->run(*input);
-			} else {
+			if (!input) {
 				std::cerr << "动作输入源打开失败，退出" << std::endl;
 				rc = 1;
+			} else {
+				robot->active();
+
+				robot->run(*input);
 			}
 		} catch (const std::exception& e) {
 			std::cerr << "Aborted: " << e.what() << std::endl;

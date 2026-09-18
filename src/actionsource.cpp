@@ -92,6 +92,16 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 	int one = 1;
 	::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
+	/* 审计 H-2 防线：非回环监听必须设口令（缺省即拒绝 bind，不再仅告警）。
+	 * 动作脚本会直接驱动真实硬件，未鉴权暴露到网络等价于把舵机交给任何
+	 * 可达本端口的对端。回环 127.0.0.1 不受限。 */
+	if (addr.s_addr != htonl(INADDR_LOOPBACK) && token.empty()) {
+		::close(fd);
+		throw std::runtime_error("监听地址 " + host + " 非回环且未设 --tcp-token："
+			"动作脚本会直接驱动真实硬件，跨机监听必须显式提供口令"
+			"（仅本机调试请用缺省回环地址 127.0.0.1）");
+	}
+
 	sockaddr_in sa{};
 	sa.sin_family = AF_INET;
 	sa.sin_addr = addr;
@@ -105,12 +115,6 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 	if (::listen(fd, 1) < 0) {
 		::close(fd);
 		throw std::runtime_error("TCP 监听失败");
-	}
-
-	/* 对外暴露且无口令时显式告警：动作脚本会直接驱动真实舵机 */
-	if (addr.s_addr != htonl(INADDR_LOOPBACK) && token.empty()) {
-		std::cerr << "警告：监听地址 " << host << " 非回环且未设 --tcp-token，"
-			"任何可达本端口的对端都能下发动作脚本。请确认这是预期配置。" << std::endl;
 	}
 
 	/* D5/D4：accept 可被信号（EINTR）打断——响应停止标志退出，其余 EINTR 重试 */

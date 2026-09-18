@@ -721,7 +721,8 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19301 --tcp-host 'not-an-ip'
 
 	# 审计 H-2：非回环监听必须设 --tcp-token，缺省即拒绝启动（不再仅告警）
-	# （tcp_noloop_requires_token 用例与 TCP 加固提交同批，占位注释）
+	run_one_hardening 'tcp_noloop_requires_token' 1 '非回环且未设 --tcp-token' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19302 --tcp-host 0.0.0.0
 
 	mkdir -p .tmp
 	# 9MiB 合法动作脚本：超过 8MiB 上限，必须在读取阶段就被拒绝
