@@ -85,7 +85,7 @@
 --   24 位读帧）；帧长/字节校验同 spi_write_multi，帧照常走 dev.xfer。
 --
 --   uart_open 路径/波特率白名单同 HAL（^/dev/tty[A-Za-z0-9]+$ 或
---   ^/dev/serial%d+$；baud ∈ HAL 的 UART_BAUDS 表），fd 与 I2C/SPI 共用编号
+--   ^/dev/serial%d+$；baud ∈ 总线契约的 UART_BAUDS 表），fd 与 I2C/SPI 共用编号
 --   空间；非法入参 -1（校验顺序同 HAL：先 baud 后 path）。
 --   uart_write 入参校验同 HAL（非表/空/超 512/逐字节 byte_of 非法 → -1 且不发
 --   事务），通过后 TX 面向控制器恒成功（无挂载也返回 #data，只是无人应答）；
@@ -136,8 +136,21 @@ virtbus.spi_devs = spi_devs
 virtbus.uart_devs = uart_devs
 virtbus.uart_fail_read = false  -- 总线级故障注入：true → uart_read 一律返 nil
 
--- HAL uart_open 的波特率白名单镜像（语义对齐 HAL.lua UART_BAUDS，含 500k/1M）
-local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1000000 }
+-- ---- 总线契约单点（N-25）----
+-- 路径白名单 / 波特率表 / 各长度上限 / byte_of·uint_of 归一化 与 HAL 共用
+-- 同一份（modules/lib/bus_contract.lua）——此前是两库逐字手工镜像，漂移即
+-- 「仿真绿真机红」且无任何报错。定位方式与 drv_common 一致（首段模块路径），
+-- 再以仓库缺省布局兜底（本库常被测试以 dofile("modules/lib/virtbus.lua") 加载）。
+local bus
+do
+	local base = (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+")
+	local ok, m = pcall(dofile, base .. "/lib/bus_contract.lua")
+	if not (ok and type(m) == "table") then
+		m = dofile("./modules/lib/bus_contract.lua")
+	end
+	bus = m
+end
+virtbus.bus_contract = bus
 
 -- 复位：清空器件/日志/线索并还原全局 i2c_*/spi_*/uart_*
 function virtbus.reset()
@@ -220,26 +233,10 @@ local function dev_of(fd)
 	return devs[addr]
 end
 
--- ---- 参数归一化：逐字对齐 modules/lib/HAL.lua 的 byte_of / uint_of ----
+-- ---- 参数归一化：取自总线契约单点（与 HAL 同一份实现，N-25）----
 -- 三条总线共用（I2C/SPI/UART 的入参校验语义必须与真机一致，否则 virt 会接受
 -- 真机直接失败的调用——驱动带越界实参时「仿真绿、真机红」）。
--- 归一化为 0~255 的整数，非法返回 nil
-local function byte_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 or n > 255 then return nil end
-	return n
-end
-
--- 归一化为非负整数，非法返回 nil
-local function uint_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 then return nil end
-	return n
-end
+local byte_of, uint_of = bus.byte_of, bus.uint_of
 
 -- ---- 写族：组合字节表后交给器件，返回 0 = 成功，-1 = NACK ----
 -- 模型可显式 return false 模拟本笔写 NACK（返回 nil/无返回按成功）
@@ -253,7 +250,7 @@ end
 
 function virtbus.v_i2c_open(path)
 	-- 与 HAL 相同的路径白名单校验；合法即分配虚拟 fd
-	if type(path) ~= "string" or string.match(path, "^/dev/i2c%-%d+$") == nil then
+	if not bus.i2c_path_ok(path) then
 		return -1
 	end
 	local fd = next_fd
@@ -331,7 +328,7 @@ end
 -- 越界或非法显式失败（-1，不静默钳制；静默钳制会放大成错误合并值）
 local function merge_n(n)
 	n = uint_of(n)
-	if n == nil or n < 1 or n > 6 then return nil end
+	if n == nil or n < 1 or n > bus.MERGED_READ_MAX then return nil end
 	return n
 end
 
@@ -342,7 +339,7 @@ local function bytes_n(n)
 	n = uint_of(n)
 	if n == nil then return nil end
 	if n < 1 then n = 1 end
-	if n > 16 then n = 16 end
+	if n > bus.BYTES_READ_MAX then n = bus.BYTES_READ_MAX end
 	return n
 end
 
@@ -425,7 +422,7 @@ end
 function virtbus.v_spi_open(path)
 	-- 与 HAL 相同的路径白名单校验（^/dev/spidev<bus>.<cs>$）；合法即分配虚拟 fd。
 	-- fd 与 I2C 共用编号空间（真机上本就是同一个进程 fd 表）。
-	if type(path) ~= "string" or string.match(path, "^/dev/spidev%d+%.%d+$") == nil then
+	if not bus.spi_path_ok(path) then
 		return -1
 	end
 	local fd = next_fd
@@ -536,11 +533,11 @@ end
 function virtbus.v_spi_write_multi(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 64 then return -1 end
+	if #data > bus.SPI_IO_MAX_BYTES then return -1 end
 	local tx = {}
 	for i = 1, #data do
-		local b = tonumber(data[i])
-		if b == nil or b ~= math.floor(b) or b < 0 or b > 255 then return -1 end
+		local b = byte_of(data[i])
+		if b == nil then return -1 end
 		tx[i] = b
 	end
 	local entry_delay = spi_delay_of(delay_us)
@@ -573,7 +570,7 @@ end
 function virtbus.v_spi_xfer_full(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return nil end
-	if #data > 64 then return nil end
+	if #data > bus.SPI_IO_MAX_BYTES then return nil end
 	local tx = {}
 	for i = 1, #data do
 		local b = tonumber(data[i])
@@ -619,14 +616,8 @@ end
 -- 校验顺序同 HAL：先 baud 白名单，再 path 白名单；fd 与 I2C/SPI 共用编号空间
 function virtbus.v_uart_open(path, baud)
 	baud = tonumber(baud)
-	local baud_ok = false
-	for _, b in ipairs(UART_BAUDS) do
-		if b == baud then baud_ok = true; break end
-	end
-	if not baud_ok then return -1 end
-	if type(path) ~= "string"
-	   or (string.match(path, "^/dev/tty[A-Za-z0-9]+$") == nil
-	       and string.match(path, "^/dev/serial%d+$") == nil) then
+	if not bus.baud_ok(baud) then return -1 end
+	if not bus.uart_path_ok(path) then
 		return -1
 	end
 	local fd = next_fd
@@ -658,7 +649,7 @@ end
 function virtbus.v_uart_write(fd, data)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 512 then return -1 end
+	if #data > bus.UART_IO_MAX_BYTES then return -1 end
 	if uart_paths[fd] == nil then return -1 end
 	local tx = {}
 	for i = 1, #data do
@@ -685,16 +676,16 @@ end
 -- n>512 钳 512）。
 -- 环 drain 至多 n 字节即时返回：环空 = 空表（对齐"超时无数据"），
 -- uart_fail_read = 链路硬错误 → nil（事务记 err=true）。
-local UART_READ_MAX_MS = 60000	-- 与 HAL.UART_READ_MAX_MS 同步（超长超时真机必失败）
+-- 超时上限取自总线契约单点 bus.UART_READ_MAX_MS（N-25）
 function virtbus.v_uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	local timeout = tonumber(timeout_ms) or 0
 	if fd == nil or n == nil or n < 1 then return nil end
-	if timeout > UART_READ_MAX_MS then return nil end
+	if timeout > bus.UART_READ_MAX_MS then return nil end
 	local path = uart_paths[fd]
 	if path == nil then return nil end
-	if n > 512 then n = 512 end
+	if n > bus.UART_IO_MAX_BYTES then n = bus.UART_IO_MAX_BYTES end
 	if virtbus.uart_fail_read then
 		txlog[#txlog + 1] = { dir = "ur", path = path, n = n, bytes = {}, err = true }
 		return nil

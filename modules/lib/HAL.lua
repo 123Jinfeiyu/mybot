@@ -127,25 +127,25 @@ HAL.sys = {
 }
 
 ------------------------------------------------------------------
--- 参数归一化
+-- 总线契约单点（N-25）
 ------------------------------------------------------------------
--- 归一化为 0~255 的整数，非法返回 nil
-local function byte_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 or n > 255 then return nil end
-	return n
+-- 路径白名单 / UART 波特率表 / 各长度上限 / byte_of·uint_of 归一化 与
+-- virtbus 共用同一份（modules/lib/bus_contract.lua），此前是两库逐字手工
+-- 镜像、漂移即「仿真绿真机红」且无报错。定位方式与 drv_common 一致
+-- （BOT4CJ_MODULE_PATH 首段），再以仓库缺省布局兜底——本文件是全部驱动的
+-- 地基，加载失败会全线停摆，故兜底一次。
+local bus
+do
+	local base = (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+")
+	local ok, m = pcall(dofile, base .. "/lib/bus_contract.lua")
+	if not (ok and type(m) == "table") then
+		m = dofile("./modules/lib/bus_contract.lua")
+	end
+	bus = m
 end
 
--- 归一化为非负整数，非法返回 nil
-local function uint_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 then return nil end
-	return n
-end
+-- 参数归一化（0~255 整数 / 非负整数，非法 nil）
+local byte_of, uint_of = bus.byte_of, bus.uint_of
 
 ------------------------------------------------------------------
 -- I2C（fd 为真实内核句柄，跨 Lua 状态机有效）
@@ -153,8 +153,7 @@ end
 
 -- 打开 I2C 总线，成功返回 fd（>=0），失败返回 -1
 function i2c_open(path)
-	if type(path) ~= "string" then return -1 end
-	if string.match(path, "^/dev/i2c%-%d+$") == nil then
+	if not bus.i2c_path_ok(path) then
 		print("HAL: invalid i2c path: " .. tostring(path))
 		return -1
 	end
@@ -262,7 +261,7 @@ function i2c_read_multi_bytes(fd, reg, n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or reg == nil or n == nil or addr == nil then return nil end
 	if n < 1 then n = 1 end
-	if n > 16 then n = 16 end
+	if n > bus.BYTES_READ_MAX then n = bus.BYTES_READ_MAX end
 	local wb = ffi.new("uint8_t[1]", reg)
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[2]")
@@ -280,7 +279,7 @@ end
 -- 长度错位放大成错误合并值；更长块读请用 i2c_read_multi_bytes。
 function i2c_read_multi(fd, reg, n)
 	n = uint_of(n)
-	if n == nil or n < 1 or n > 6 then return -1 end
+	if n == nil or n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local t = i2c_read_multi_bytes(fd, reg, n)
 	if t == nil then return -1 end
 	local v = 0
@@ -297,7 +296,7 @@ function i2c_read(fd, n)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 6 then return -1 end
+	if n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[1]")
 	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
@@ -344,7 +343,7 @@ function i2c_read_reg16(fd, reg16, n)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or reg16 == nil or reg16 > 0xFFFF or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 6 then return -1 end
+	if n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local wb = ffi.new("uint8_t[2]", math.floor(reg16 / 256) % 256, reg16 % 256)
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[2]")
@@ -366,7 +365,7 @@ function i2c_read_bytes(fd, n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or n == nil or addr == nil then return nil end
 	if n < 1 then n = 1 end
-	if n > 16 then n = 16 end
+	if n > bus.BYTES_READ_MAX then n = bus.BYTES_READ_MAX end
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[1]")
 	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
@@ -399,7 +398,7 @@ end
 -- 打开 SPI 设备，成功返回 fd（>=0），失败返回 -1
 function spi_open(path)
 	if type(path) ~= "string" then return -1 end
-	if string.match(path, "^/dev/spidev%d+%.%d+$") == nil then
+	if not bus.spi_path_ok(path) then
 		print("HAL: invalid spi path: " .. tostring(path))
 		return -1
 	end
@@ -501,7 +500,7 @@ end
 function spi_write_multi(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 64 then return -1 end
+	if #data > bus.SPI_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i = 1, #data do
 		local b = byte_of(data[i])
@@ -520,7 +519,7 @@ function spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	if fd == nil or n == nil then return -1 end
-	if n < 1 or n > 6 then return -1 end
+	if n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local buf = ffi.new("uint8_t[?]", n)
 	if not spi_xfer(fd, nil, buf, n, delay_us) then return -1 end
 	local v = 0
@@ -539,7 +538,7 @@ end
 function spi_xfer_full(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return nil end
-	if #data > 64 then return nil end
+	if #data > bus.SPI_IO_MAX_BYTES then return nil end
 	local n = #data
 	local txbuf = ffi.new("uint8_t[?]", n)
 	for i = 1, n do
@@ -721,13 +720,13 @@ HAL.UART_VTIME_IDX = 5			-- c_cc 下标（VTIME）
 HAL.UART_CREAD_CLOCAL = 2176	-- CREAD(128) | CLOCAL(2048)
 HAL.EAGAIN = 11					-- Linux errno：非阻塞读暂无数据
 HAL.EINTR = 4					-- Linux errno：被信号打断
-HAL.UART_READ_MAX_MS = 60000	-- uart_read 轮询上限：iters=timeout_ms+1 按 1ms 空转，
+HAL.UART_READ_MAX_MS = bus.UART_READ_MAX_MS	-- uart_read 轮询上限：iters=timeout_ms+1 按 1ms 空转，
 								-- 超长值（配置笔误）必须立即失败而非阻塞数小时
 
 HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
 HAL.uart_orig = {}				-- fd -> open 前的原始 termios（close 恢复用）
 
-local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 500000, 921600, 1000000 }
+-- UART 波特率白名单与长度上限均取自总线契约单点（bus_contract.lua，N-25）
 
 -- Hz → speed_t 常量：旧 ABI 编码表（glibc < 2.42，test_uart_consts.c 旧分支断言）。
 -- 白名单与映射表必须同步维护：白名单通过而映射缺失时 uart_open 明确失败，
@@ -765,11 +764,7 @@ HAL.UART_B_CONST = UART_B_CONST		-- 导出供 test_uart_baud.lua 回归核对
 function uart_open(path, baud)
 	if type(path) ~= "string" then return -1 end
 	baud = tonumber(baud)
-	local baud_ok = false
-	for _, b in ipairs(UART_BAUDS) do
-		if b == baud then baud_ok = true; break end
-	end
-	if not baud_ok then
+	if not bus.baud_ok(baud) then
 		print("HAL: invalid uart baud: " .. tostring(baud))
 		return -1
 	end
@@ -779,8 +774,7 @@ function uart_open(path, baud)
 		return -1
 	end
 	-- 路径白名单：常规 tty 命名 + /dev/serialN（树莓派软链惯例）
-	if string.match(path, "^/dev/tty[A-Za-z0-9]+$") == nil
-		and string.match(path, "^/dev/serial%d+$") == nil then
+	if not bus.uart_path_ok(path) then
 		print("HAL: invalid uart path: " .. tostring(path))
 		return -1
 	end
@@ -853,7 +847,7 @@ end
 function uart_write(fd, data)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 512 then return -1 end
+	if #data > bus.UART_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i = 1, #data do
 		local b = byte_of(data[i])
@@ -880,7 +874,7 @@ function uart_read(fd, n, timeout_ms)
 			.. tostring(HAL.UART_READ_MAX_MS) .. "ms")
 		return nil
 	end
-	if n > 512 then n = 512 end
+	if n > bus.UART_IO_MAX_BYTES then n = bus.UART_IO_MAX_BYTES end
 	local buf = ffi.new("uint8_t[?]", n)
 	local out = {}
 	local iters = math.max(0, math.floor(timeout_ms)) + 1
