@@ -39,7 +39,7 @@
 
 ### 工程化与守门
 
-- **结构重构六阶段（R-1~R-8）**：错误统一 stderr、`CliOptions` 类型化、`HwRegistry` 统一三容器、硬件变量虚方法化（消灭 std::function 回调与裸指针捕获）、`MatrixBuilder` 解析管线解耦、守护状态机收敛为 `DaemonRunner`、`RobotStruct` 拆分为 ScriptLoader/HwFactory/ActionRunner。进度台账见 [refactoring-plan.md](refactoring-plan.md)
+- **结构重构六阶段（R-1~R-8）**：错误统一 stderr、`CliOptions` 类型化、`HwRegistry` 统一三容器、硬件变量虚方法化（消灭 std::function 回调与裸指针捕获）、`MatrixBuilder` 解析管线解耦、守护状态机收敛为 `DaemonRunner`、`RobotStruct` 拆分为 ScriptLoader/HwFactory/ActionRunner
 - **门禁基建**：HAL 硬编码 ioctl/termios 常量改 C 编译期断言自检（漂移构建期即失败）；`.gitlab-ci.yml` 最小 CI（构建 + 全量守门 + sanitizer 双跑 + TSan 软门禁）；`tcp_e2e.sh` 加固
 - **测试覆盖缺口补齐五项**：守护并发压测 + TSan、TCP 异常注入六场景（`tcp_adversarial.sh`）、tick 期持续 NACK E2E、fd 泄漏检测（`virtbus.fd_count()` + `/proc` 探针）、离线 ABI 回归（`test_abi_ioctl.lua`）
 - **E2E 守门落地**：mybot 直跑 + INSERT 目标表校验；无硬件契约与 TCP 动作源全部自动化；`deactivate` 同因告警去重

@@ -14,11 +14,10 @@
 - [@Daemon 守护线程](daemon.md)——并发模型、万能采样 chunk、滤波器链路、采样→滤波→消费闭环
 - [HAL 硬件抽象层](hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
 - [虚拟总线 virtbus](virtbus.md)——无真机验证驱动链路的完整参考手册（含器件模型库与回归清单）
-- [架构分析](architecture_analysis.html)——分层图与数据流图（**历史文档：仓颉版**，C++ 版架构见 [重构计划](refactoring-plan.md)）
+- [架构分析](architecture_analysis.html)——分层图与数据流图（**历史文档：仓颉版**）
 
 ## 测试与贡献
 
 - [回归测试手册](testing.md)——守门分段明细、守门完整性规则、sanitizer 跑法
 - [开发与贡献](development.md)——pre-push 钩子、新增驱动/回归/单测流程、代码规范
-- [重构计划](refactoring-plan.md)——dev_cxx 结构重构分阶段方案(含分支归宿决策)
 - [更新日志](changelog.md)
