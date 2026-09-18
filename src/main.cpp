@@ -33,22 +33,31 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 		if (a.rfind("--", 0) != 0) { continue; }	/* 忽略位置参数 */
 		std::string key = a.substr(2);
 		std::string val;
+		/* 审计中-3：区分「布尔型 flag」与「带值 key」——裸写（无 '=' 且
+		 * 下一参数以 -- 开头或不存在）时不再回落 val="1"。旧实现 `--tcp`
+		 * 单独使用会静默得到端口 1，随后 bind 失败的报错与用户意图
+		 * （漏写端口号）相去甚远。 */
+		bool noValue = true;
 		auto eq = key.find('=');
 		if (eq != std::string::npos) {
 			val = key.substr(eq + 1);
 			key = key.substr(0, eq);
-		} else if (k + 1 < argc) {
+			noValue = false;
+		} else if (k + 1 < argc && std::string(argv[k + 1]).rfind("--", 0) != 0) {
 			val = argv[++k];
-		} else {
-			val = "1";
+			noValue = false;
 		}
-		if (key == "robot") { out.opts.robot = val; }
+		if (key == "robot") { out.opts.robot = noValue ? "1" : val; }
 		else if (key == "help") { out.opts.help = true; }
-		else if (key == "tcp") { out.opts.tcp = true; out.opts.tcpPort = val; }
-		else if (key == "tcp-host") { out.opts.tcpHost = val; }
-		else if (key == "tcp-token") { out.opts.tcpToken = val; }
-		else if (key == "tcp-idle") { out.opts.tcpIdle = val; }
-		else if (key == "input") { out.opts.input = val; }
+		else if (key == "tcp") {
+			out.opts.tcp = true;
+			/* 裸 --tcp：tcp 置位但端口留空，由 openActionSource 报「缺端口号」 */
+			if (!noValue) { out.opts.tcpPort = val; }
+		}
+		else if (key == "tcp-host") { out.opts.tcpHost = noValue ? "1" : val; }
+		else if (key == "tcp-token") { out.opts.tcpToken = noValue ? "1" : val; }
+		else if (key == "tcp-idle") { out.opts.tcpIdle = noValue ? "1" : val; }
+		else if (key == "input") { out.opts.input = noValue ? "1" : val; }
 		else { out.unknown.push_back(key); }
 	}
 	return out;

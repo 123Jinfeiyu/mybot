@@ -175,6 +175,12 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 
 	/* 1) TCP 通道 */
 	if (options.tcp) {
+		/* 审计中-3：裸 --tcp（漏写端口号）在此明确报错，而非静默按端口 1
+		 * 走到 bind 特权端口失败、给出与用户意图相去甚远的错误 */
+		if (options.tcpPort.empty()) {
+			std::cerr << "--tcp 需要端口号，例如 --tcp 9000（合法范围 1-65535）" << std::endl;
+			return nullptr;
+		}
 		auto portParsed = parseLongStrict(options.tcpPort);
 		if (portParsed.first != IntParse::OK || portParsed.second < 1 || portParsed.second > 65535) {
 			std::cerr << "--tcp 端口号无效：" << options.tcpPort

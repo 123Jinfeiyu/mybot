@@ -327,6 +327,7 @@ fi
 #   vars_bad/vars_nonnum/vars_dup  Vars 缺 value 列 / 非数值 / 动作脚本内重复定义 → 负值契约
 #   expr_num     $(...) 表达式：Vars 内 + SQL 元数据列 + @Action 单元格三处
 #   expr_undefined 元数据列表达式引用未定义标识符 → 装配期报错（先于任何 build）
+#   expr_overflow 元数据列表达式溢出为 inf → 求值期报错（有限值防线，inf/nan 不入驱动）
 #   mt_noblank  矩阵间只有单个换行（无空行）→ 第 2+ 个矩阵名仍须正确识别
 #   mt_crlf     同上但 CRLF 行尾 → 修复不得只按 LF 语义而破坏 CRLF
 #   mt_ragged   行内单元格数与表头不齐 → 须报 "Does Not Sync" 且行号准确
@@ -379,6 +380,7 @@ parse_cases=(
 	'vars_num.sql|vars_override.mt|1|must not override the'
 	'expr_num.sql|expr_num.mt|0|note=50'
 	'expr_undefined.sql|expr_undefined.mt|1|ghost'
+	'expr_overflow.sql|expr_overflow.mt|1|non-finite'
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
 	'ref_cycle.sql|ref_cycle.mt|1|reference detected'
 	'ref_forward.sql|ref_forward.mt|0|joined, total publishes=|Deactive warning'
@@ -756,6 +758,10 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# 审计 H-2：非回环监听必须设 --tcp-token，缺省即拒绝启动（不再仅告警）
 	run_one_hardening 'tcp_noloop_requires_token' 1 '非回环且未设 --tcp-token' \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19302 --tcp-host 0.0.0.0
+
+	# 审计中-3：裸 --tcp（漏写端口号）明确报错，不再静默回落端口 1 走到 bind 失败
+	run_one_hardening 'tcp_no_port' 1 '--tcp 需要端口号' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp
 
 	mkdir -p .tmp
 	# 9MiB 合法动作脚本：超过 8MiB 上限，必须在读取阶段就被拒绝

@@ -110,7 +110,12 @@ public:
 	/* 带超时等待线程退出并释放槽；超时则置 abandoned 移交所有权（D2） */
 	void waitForExit(const std::string& name);
 
-	/* 主线程读采样快照；放弃路径下槽所有权已移交，按 ERR 契约返回 */
+	/* 主线程读采样快照；放弃路径下槽所有权已移交，按 ERR 契约返回。
+	 * 并发契约（审计中-2，显式化）：play/readSample 与 destroy/waitForExit
+	 * 必须同线程顺序执行（生产路径均在主线程）。本方法只对「abandoned 已
+	 * 置位」按 ERR 返回，不防御与 destroy 并发时的 TOCTOU（load 到槽之后
+	 * abandoned 才置位）——那需要完整的所有权仲裁。防线是本条契约而非
+	 * 代码；TSan 实测记录见 test/cpp/test_daemon_concurrency.cpp。 */
 	Json readSample();
 
 	DaemonSlot* slot() const { return slot_.load(); }

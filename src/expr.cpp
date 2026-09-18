@@ -222,7 +222,17 @@ Expression Expression::parse(const std::string& text) {
 
 double Expression::eval(const std::function<double(const std::string&)>& resolve) const {
 	if (!impl_) { throw IllegalArgumentException("evaluation of an empty expression"); }
-	return impl_->eval(resolve);
+	double v = impl_->eval(resolve);
+	/* 有限值防线：字面量在 parseNumber 已拒 inf/nan，但中间结果仍可能溢出
+	 * （如 1e308*1e308 → inf；inf-inf → nan）。IEEE 语义下任何非有限中间
+	 * 结果必然传播到根节点，故在出口处一次检查即可封死旁路——否则 inf/nan
+	 * 会经 JsonFloat/lua_pushnumber 流入驱动参数（正是 hardware.cpp 字面量
+	 * 防线要拦的形态，TCP 模式下可由远程动作脚本触发）。 */
+	if (!std::isfinite(v)) {
+		throw IllegalArgumentException("expression evaluates to a non-finite value"
+			" (inf/nan), which is rejected");
+	}
+	return v;
 }
 
 void Expression::collectVars(std::set<std::string>& out) const {

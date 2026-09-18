@@ -1,7 +1,7 @@
 /* test_expr.cpp —— 算术表达式（$(...) 内部）解析与求值
  *
- * 覆盖：优先级/结合性、一元正负、括号、除零与取模为零、语法错误、
- * 标识符收集、嵌套深度上限（防深括号打爆栈）、$(...) 外壳识别。
+ * 覆盖：优先级/结合性、一元正负、括号、除零与取模为零、非有限值拒绝、
+ * 语法错误、标识符收集、嵌套深度上限（防深括号打爆栈）、$(...) 外壳识别。
  */
 
 #include <functional>
@@ -71,6 +71,22 @@ TH_TEST(expr_division_and_modulo_by_zero) {
 		evalWith("1/0", {}));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "modulo by zero",
 		evalWith("1%0", {}));
+}
+
+TH_TEST(expr_nonfinite_is_rejected) {
+	/* 有限值防线（审计中-1）：字面量本身合法（parseNumber 已拒 inf/nan），
+	 * 但中间结果可溢出（1e308*1e308 → inf；inf-inf → nan）。IEEE 语义下任何
+	 * 非有限中间结果必然传播到根节点，求值出口一次检查即可封死旁路——
+	 * 否则 inf/nan 经 JsonFloat/lua_pushnumber 流入驱动参数。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-finite",
+		evalWith("1e308*1e308", {}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-finite",
+		evalWith("1e308*1e308-1e308*1e308", {}));
+	/* 标识符路径同样覆盖（resolve 返回有限值，溢出发生在运算） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-finite",
+		evalWith("v1*1e308*1e308", {{"v1", 10.0}}));
+	/* 上限内的合法大数必须正常求值，确保防线没有误伤 */
+	TH_CHECK(evalWith("1e308", {}) == 1e308);
 }
 
 TH_TEST(expr_syntax_errors_are_clear) {
