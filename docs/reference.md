@@ -9,7 +9,8 @@
 | Linux | HAL 经 ffi 直调 glibc（open/ioctl/read/write/usleep） | ✅ 必需 |
 | CMake ≥ 3.16、C++17 编译器 | g++ / clang++ | ✅ 必需 |
 | LuaJIT 2.1（`libluajit-5.1-dev`） | 驱动与 HAL 全部在 LuaJIT 上 | ✅ 必需 |
-| Python 3 | 仅 `scripts/tcp_e2e.sh` 的 TCP 客户端需要（缺则守门自动跳过） | ⭕ 可选 |
+| Python 3 | `scripts/tcp_e2e.sh` 的 TCP 客户端与假模型服务需要（缺则守门自动跳过） | ⭕ 可选 |
+| libcurl（`libcurl.so`） | **仅 agent 模式**：`modules/lib/llm_http.lua` 经 ffi 加载它发 HTTPS 请求；无需开发包头文件 | ⭕ 可选（缺则 agent 驱动 build 报错，机器人不上电） |
 | `/dev/i2c-*` | 真机总线 | ⭕ 可选（无总线时全流程可用内存仿真跑） |
 
 ## 命令行参数
@@ -28,13 +29,15 @@
 | （缺省） | 从 stdin 管道读取 |
 | `--agent` | **agent 模式**：机器人结构脚本加载后硬件常驻内存，由大模型工具循环决定执行哪些动作脚本（与上面的动作输入源互斥，详细见 [agent.md](agent.md)） |
 | `--task <文本>` | agent 模式一次性任务，跑完即退出；缺省则进交互 REPL |
-| `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
-| `--llm-endpoint <URL>` | agent 模型接口地址（缺省 `https://moma.cmecloud.cn/v1/chat/completions`） |
-| `--llm-model <名称>` | agent 模型名（缺省 `zhipu/glm-5.3-flash`） |
-| `--llm-key <KEY>` | agent API key（不推荐：argv 对本机所有用户可读；优先用环境变量） |
+| `--llm-driver <表名>` | agent 的**协议驱动**表名 = `modules/<表名>.lua`（内置 `LlmOpenAI`、`LlmDeepSeek`；缺省 `LlmOpenAI`） |
+| `--llm-var <变量名>` | 承载驱动变量的名字（缺省 `llm0`）；结构脚本已声明同名变量则直接用，否则自动注入 |
+| `--llm-endpoint <URL>` | agent 模型接入点；不给则用驱动自带的缺省值 |
+| `--llm-model <名称>` | agent 模型名；不给则用驱动自带的缺省值 |
+| `--llm-key <KEY>` | agent API key；会写进本进程环境变量 `BOT4CJ_LLM_KEY`（不推荐：argv 对本机所有用户可读，优先用环境变量） |
 | `--llm-max-turns <N>` | 单次任务最大模型轮数，范围 1-100（缺省 8） |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数（缺省 4096） |
 | `--llm-timeout <秒>` | 单次模型调用超时（缺省 180） |
+| `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
 | `--agent-no-shell` | 不向智能体提供 `run_command`（去掉任意 shell 执行能力） |
 
 agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--input` 同时给出，一律报错并以退出码 **2** 结束。
@@ -85,6 +88,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | --- | --- |
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
-| `BOT4CJ_LLM_KEY` | agent 模式的 API key。回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。该变量名含 `key`，会被 `run_command` 的环境清洗剔除，不会泄漏给子进程 |
+| `BOT4CJ_LLM_KEY` | agent 模式的 API key。回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。由 **Lua 驱动自己读取**（不进宿主的参数表，也不进 `BOT4CJ_DEBUG` 转储）；该变量名含 `key`，会被 `run_command` 的环境清洗剔除，不会泄漏给子进程 |
+| `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经驱动参数 `reasoning_effort` 传入，参数优先 |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

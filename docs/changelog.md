@@ -8,9 +8,11 @@
 
 - **新增 agent 模式**：`--agent` 让大模型工具循环成为主执行流程——结构脚本加载后硬件**常驻内存**，智能体多轮挑选并执行动作脚本，会话结束才 `deactivate()`。与管道模式（读一段 `.mt` 跑完退出）互斥，与 `--tcp`/`--input` 同时给出即退出 2。`--task` 一次性任务；缺省进入交互 REPL（`/hardware`、`/scripts`、`/exit`，历史跨轮保留）
 - **工具集**：`list_action_scripts`（枚举 `.mt`）、`run_action_script`（在常驻实例上执行；路径限定 `--scripts-dir` 之下，拒绝绝对路径/`..`/非 `.mt`，8 MiB 上限）、`list_hardware`（只读清单，不调 `read()`/`play()`，不会误触发执行器）、`run_command`（超时整进程组终止 + 64KB 截断 + 环境变量清洗，`--agent-no-shell` 可关闭）。工具报错折成文本回传模型，不打断会话
-- **协议层**：`src/agentproto.*` 纯值编解码 OpenAI 兼容 `messages`/`tools`/`tool_calls`；`src/agentloop.*` 工具循环（缺 `tool_call_id` 自动合成、轮次上限/传输失败回滚本轮消息以免下一轮 400）；`src/jsonparse.*` 首个外部 JSON 文本入口（严格语法、深度 64/8 MiB 上限、代理对与转义完整）
-- **传输**：`src/agenthttp.*` 基于 libus_http（libus_httpclient + curl/ssl/crypto），网络错误与 408/429/5xx 退避重试（最多 3 次，退避期间响应停止标志）。libus_http 为**构建期可选**依赖：`MYBOT_AGENT` 探测不到时 agent 源码照编、`--agent` 明确报「本构建未启用 agent 模式」，CI 基线（无该库）仍全绿
-- **守门**：新增 agent 端到端（`scripts/agent_e2e.sh` + 本地假 OpenAI 服务 `scripts/fake_llm_server.py`，断言工具循环迭代与常驻实例上的真实执行）与四个 C++ 单测文件（proto/tools/loop/jsonparse，共 26 条）；agent 端到端缺 libus_http 或缺 python3 按 SKIP 计入未执行清单
+- **协议层**：`src/agentproto.*` 规范化消息/工具 ⇄ Json（宿主不认识任何 provider 报文字段）；`src/agentloop.*` 工具循环（缺 `tool_call_id` 自动合成、轮次上限/传输失败回滚本轮消息以免下一轮 400、`extras` 随 assistant 消息逐轮透传）；`src/jsonparse.*` 首个外部 JSON 文本入口（严格语法、深度 64/8 MiB 上限、代理对与转义完整）
+- **模型调用改为 Lua 协议驱动**（本项替换了最初基于 libus_http 的 C++ 实现，`src/agenthttp.*` 已删除）：模型调用与舵机、传感器一样是一颗 `modules/*.lua` 驱动，宿主经 `src/agentdriver.*` 适配成 `ChatTransport`。于是**恢复零链接期依赖**（仅 LuaJIT + pthread + dl；运行期需 libcurl，由 `modules/lib/llm_http.lua` 经 ffi 加载），换模型/换厂商 = 换一个 Lua 文件。为此新增 `modules/lib/json.lua`（Lua 侧严格 JSON 编解码）、`modules/lib/llm_http.lua`（ffi 直驱 libcurl；**整型选项必须 cast 成定签名再调**，裸变参会被静默忽略——实测超时失效）、`modules/lib/llm_wire_openai.lua` 与 `modules/lib/llm_wire_deepseek.lua`（协议整形）
+- **两个可选的协议驱动**：`LlmOpenAI`（当前协议：moma 网关 + zhipu/glm）与 `LlmDeepSeek`。后者承担三处实质差异——思考模式开关（`thinking`/`reasoning_effort`）、**带 `tools` 时必须回传历史 `reasoning_content`（否则 API 400）**、思考模式不支持 `temperature` 且 `top_p` 下限被抬到 0.95。用 `--llm-driver` 切换；结构脚本未声明驱动变量时宿主自动注入（表名与变量名校验为安全标识符）。API key 由驱动自己读环境变量，宿主只校验其存在，密钥不进参数表/调试转储
+- **守门**：agent 端到端扩为三场景（默认驱动的完整工具循环 + 抓报文断言 OpenAI 形态；`--llm-driver LlmDeepSeek` 断言 thinking/无 temperature/`reasoning_content` 回传；`--llm-timeout` 4s 内生效以防 curl 变参 cast 退化），新增两个纯 Lua 用例（`test_json_lua`、`test_llm_drivers`）与 C++ 的 `test_agentdriver`（用假 Lua 驱动，不联网）；agent 端到端缺 python3 或 libcurl 按 SKIP 计入未执行清单
+- **ASan 抑制**：libcurl→libcrypto 的进程级初始化残留在 LSan 下被判为泄漏（栈全在 `CRYPTO_malloc` 内，`curl_global_cleanup`/`OPENSSL_cleanup` 后依旧；连明文 `http://` 请求也触发）。新增仓库根 `asan.supp` 按库抑制，由 `test/run_san.sh` 经 `ASAN_OPTIONS` 加载——与既有 `tsan.supp` 同性质，且不影响不加载驱动的 C++ 单测
 
 ### 语言与 DSL
 

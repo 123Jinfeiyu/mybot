@@ -24,7 +24,7 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 4. **mtmerge 合成器**（`@Action` 相位归并 + `@Alias`/`@Vars` 按行叠加同名报错；末尾把产物回喂 `mybot` 证明内联别名仍生效）
 5. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 6. **TCP 异常注入**（复用 `scripts/tcp_adversarial.sh` 场景矩阵：半包/断连/空闲挂死/垃圾帧/口令负路径，每场景独立服务端 + 看门狗）
-7. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假 OpenAI 服务 `scripts/fake_llm_server.py`：断言工具循环真的迭代 `list_hardware → run_action_script → run_command → 最终回答`、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout；缺 python3 或本构建未启用 agent 模式时按跳过计）
+7. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假模型服务 `scripts/fake_llm_server.py`，三个场景）：① 默认协议驱动（LlmOpenAI）跑完 `list_hardware → run_action_script → run_command → 最终回答`，断言工具循环真的迭代、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；② `--llm-driver LlmDeepSeek` 断言协议差异——带 `thinking`、不发 `temperature`、历史 `reasoning_content` 被回传（官方文档里的 400 级有状态要求）；③ `--llm-timeout` 必须在 4s 内生效，专防 `curl_easy_setopt` 退回裸变参调用（那时整型选项被静默忽略）。缺 python3 或 libcurl 时按跳过计）
 8. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 9. **输入边界加固**（`--tcp-host` 非法地址、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限、`@Daemon` 驱动误配无 `build` 时的回滚路径；`mode` 键不得改写 controller 派发目标；驱动 `call()` 漏写 `return` 不得被当成成功；驱动返回自引用表须清晰报错而非宿主栈溢出；agent 专属选项出现在非 agent 模式、`--agent` 与 `--tcp/--input` 互斥、缺 API key 均须退出码 2）
 10. **守护 tick 故障注入**（总线持续 NACK → 驱动 ERR → 守护不发布、`count` 停滞，主流程仍正常 join）
@@ -32,15 +32,15 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 12. **信号/退出路径**（F-08：播放中 SIGTERM → rc=0 + 停派发行 + 守护 `joined, total publishes=`；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错——覆盖 `main.cpp` 的 sigaction 与 `robot.cpp` 的停机分支）
 13. **fixture 孤儿检测**（F3/N-32，无过滤器全量跑时执行）：`robots/test/*.sql` 与 `scripts/test/*.mt` 中未被任何用例表引用的夹具判失败；实机夹具（需 `/dev/i2c-*`、`/dev/spidev*`、`/dev/gpiochip*`、`/dev/pwmchip*`）在脚本的 `orphan_whitelist` 显式声明
 14. **系统常量自检**（F-24，无过滤器全量跑时执行）：`test_ioctl_nums` / `test_uart_consts` 两个 C 自检二进制把 HAL.lua 硬编码的 ioctl/termios 编号与系统头做编译期断言比对（`_Static_assert`），漂移在构建期即失败，执行期再跑一遍作双保险
-15. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标；零第三方框架，覆盖 JSON 值语义、JSON 文本解析、`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、Lua↔Json 边界与转换深度上限、守护 never-spawn/abandon 分支、mtmerge 归并核心白盒，以及 agent 模式的协议编解码 / 工具派发与路径沙箱 / 工具循环轮次上限与回滚）
+15. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标；零第三方框架，覆盖 JSON 值语义、JSON 文本解析、`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、Lua↔Json 边界与转换深度上限、守护 never-spawn/abandon 分支、mtmerge 归并核心白盒，以及 agent 模式的规范化协议编解码 / 驱动注入与 `ChatTransport` 适配（用假 Lua 驱动，不联网）/ 工具派发与路径沙箱 / 工具循环轮次上限与回滚与 extras 透传）。另有两条纯 Lua 用例：`test/test_json_lua.lua`（Lua 侧 JSON 编解码）与 `test/test_llm_drivers.lua`（两个协议驱动的报文整形规则，不碰网络）
 
 ## 守门完整性
 
 编译产物（`mybot` / `mybot_tests`）缺失时，对应分段**判失败**而不是静默跳过——否则「不构建」也能报出「0 失败」，而实际只有 Lua 段在跑。仅三类环境软依赖按跳过处理：
 
 - 真机 i2c 用例（本机无 `/dev/i2c-*`）
-- TCP 段缺 `python3`
-- agent 模式端到端缺 `libus_http`（构建期可选依赖；二进制会明确输出「本构建未启用 agent 模式」，本入口据此判跳过而非假绿）
+- TCP / agent 端到端缺 `python3`
+- agent 端到端缺 `libcurl`（agent 模式的运行期依赖，Lua 驱动经 ffi 加载；驱动 build 会明确报「libcurl 不可用」，本入口据此判跳过而非假绿）
 
 汇总行如实体报 `N 通过, N 失败, N 跳过` 并列出未执行清单。
 
@@ -57,6 +57,12 @@ cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
   -DMYBOT_SANITIZE=address,undefined && cmake --build build-asan
 bash test/run_san.sh        # 双跑：Release 全量 + ASan/UBSan 全量，两跑都过才算过
 ```
+
+`run_san.sh` 为第二跑导出 `ASAN_OPTIONS=suppressions=<仓库根>/asan.supp`：agent 模式
+加载 Lua 协议驱动时会经 ffi 拉起 libcurl → libcrypto，后者留下一批进程级初始化残留
+（即使只请求明文 `http://` 也会发生；栈全在 `CRYPTO_malloc` 内，`curl_global_cleanup`
+与 `OPENSSL_cleanup` 之后依然存在）。它与 `tsan.supp` 同性质——外部库的残留噪声，
+且**不加载驱动**的 C++ 单测不受影响，故不会掩盖本项目自身的泄漏。理由详见 `asan.supp`。
 
 线程竞争用同一开关换 TSan：`-DMYBOT_SANITIZE=thread -B build-tsan`。注意 LuaJIT 是
 未插桩外部库，FFI 侧的槽访问不在 TSan 视野内——TSan 覆盖的是 C++ 侧并发路径

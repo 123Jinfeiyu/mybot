@@ -90,8 +90,11 @@
 | `Ema` | 指数移动平均（配 `alpha`∈(0,1]） |
 | `Monitor` | 消费 `$` 引用快照的观察/决策变量 |
 | `bitcompat` | Lua 5.1/5.3 位运算兼容库（非驱动） |
+| `LlmOpenAI` | **模型协议驱动**：OpenAI 兼容（当前协议：moma 网关 + zhipu/glm）；经 `lib/llm_http.lua` ffi 直驱 libcurl。agent 模式用，可被 `.mt` 直接调用 |
+| `LlmDeepSeek` | **模型协议驱动**：DeepSeek（思考模式、`reasoning_content` 回传、采样参数限制）；与 `LlmOpenAI` 共用 `lib/llm_wire_openai.lua` 骨架 |
 
 > 不依赖 HAL 的模块（如滤波器、virtbus 底座）可用 `luajit`/`lua5.4` 独立调试。
+> 模型协议驱动的规范化协议、切换方式与安全边界见 [agent.md](agent.md)。
 
 ## 驱动契约
 

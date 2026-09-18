@@ -104,8 +104,17 @@ export BOT4CJ_LLM_KEY=sk-xxx
 `list_hardware`（器件清单）、`run_command`（shell，可用 `--agent-no-shell` 关闭）。
 完整选项、工作流程、安全说明与源码分层见 **[docs/agent.md](docs/agent.md)**。
 
-依赖 **libus_http**（构建期可选，CMake 自动探测）：探测不到时 agent 源码照常编译，
-但 `--agent` 会明确报「本构建未启用 agent 模式」，其它功能与离线守门不受影响。
+**模型调用是一颗 Lua 协议驱动**（和舵机、传感器平级），所以宿主不链接任何 HTTP 库——
+「零第三方 C++ 依赖」在这条路径上依然成立；换模型/换厂商 = 换一个 Lua 文件：
+
+```bash
+./build/mybot --robot=robots/spider1.sql --agent                        # 缺省 LlmOpenAI（当前协议）
+DEEPSEEK_API_KEY=sk-xxx ./build/mybot --robot=robots/spider1.sql \
+    --agent --llm-driver LlmDeepSeek                                    # 换 DeepSeek 协议
+```
+
+内置 `LlmOpenAI` 与 `LlmDeepSeek`（思考模式 / `reasoning_content` 回传 / 采样参数限制都在驱动里）。
+运行期需要 `libcurl.so`（`apt install libcurl4`，Raspberry Pi OS 通常已装）；缺它时驱动会给出清晰报错且机器人不上电。
 
 ## 📖 深入文档（docs/）
 

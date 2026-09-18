@@ -2,6 +2,7 @@
 
 > **一句话**：管道模式是「给它一份剧本，它照着演一遍就下台」；agent 模式是
 > 「**让它一直站在台上**，由大模型看着可用剧本，一步一步决定下一段演什么」。
+> 而**模型调用本身是一颗 Lua 驱动**——和舵机、传感器平级，不引入任何链接期依赖。
 
 ## 与管道模式的差别
 
@@ -24,10 +25,11 @@ export BOT4CJ_LLM_KEY=sk-xxx
 ./build/mybot --robot=robots/relay-test.sql --agent --task "让继电器动作一次"
 ```
 
-蜘蛛机器人交互式控制：
+换 DeepSeek 协议（同样的机器人与动作脚本，只换协议驱动）：
 
 ```bash
-./build/mybot --robot=robots/spider1.sql --agent
+export DEEPSEEK_API_KEY=sk-xxx
+./build/mybot --robot=robots/spider1.sql --agent --llm-driver LlmDeepSeek
 mybot> 站起来
 mybot> 先前走两步，然后向左转
 mybot> /exit
@@ -42,41 +44,104 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | --- | --- | --- |
 | `--agent` | 开启 agent 模式 | 关 |
 | `--task <文本>` | 一次性任务，跑完即退出；不给则进交互 REPL | — |
-| `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
-| `--llm-endpoint <URL>` | OpenAI 兼容接口地址 | `https://moma.cmecloud.cn/v1/chat/completions` |
-| `--llm-model <名称>` | 模型名 | `zhipu/glm-5.3-flash` |
-| `--llm-key <KEY>` | API key（不推荐，见安全说明） | 环境变量，见下 |
+| `--llm-driver <表名>` | **协议驱动**表名 = `modules/<表名>.lua` | `LlmOpenAI` |
+| `--llm-var <变量名>` | 承载驱动的硬件变量名 | `llm0` |
+| `--llm-endpoint <URL>` | 接入点；不给则用驱动自带的缺省值 | 驱动缺省 |
+| `--llm-model <名称>` | 模型名；不给则用驱动自带的缺省值 | 驱动缺省 |
+| `--llm-key <KEY>` | API key；会写进本进程环境变量 `BOT4CJ_LLM_KEY` | 环境变量，见下 |
 | `--llm-max-turns <N>` | 单次任务的最大模型轮数（1-100） | 8 |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数 | 4096 |
 | `--llm-timeout <秒>` | 单次模型调用超时 | 180 |
+| `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--agent-no-shell` | **不**注册 `run_command`（去掉任意 shell 执行能力） | 关（即默认提供） |
 
-采样参数固定为 `temperature=0.7`、`top_p=0.9`（非流式，`stream=false`）。
+固定 `temperature=0.7`、`top_p=0.9`、非流式；DeepSeek 驱动会按思考模式规则调整（见下）。
 
 `--task` / `--llm-*` / `--scripts-dir` / `--agent-no-shell` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。
 
-API key 取值顺序：`--llm-key` → 环境变量 `BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。
-推荐用环境变量或 `_run.sh` 之类的启动脚本注入：`--llm-key` 会出现在 `/proc/<pid>/cmdline`，本机所有用户可读。
+API key 取值链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。
+**推荐直接设环境变量**：`--llm-key` 会出现在 `/proc/<pid>/cmdline`，本机所有用户可读。
+宿主只检查密钥「存在」，真正读取它的是 Lua 驱动（自己读环境变量）——密钥不会进入驱动的参数表，也不会被 `BOT4CJ_DEBUG` 的参数转储打进日志。
 
-## 工作流程
+## 模型调用：一颗 Lua 协议驱动
 
-```text
-mybot --robot=X.sql --agent [--task "..."]
-  ├─ 解析结构脚本（失败即退出，不上电）
-  ├─ 组装 agent 配置 + 建 HTTP 传输（缺 key / 缺库在此报错，仍不上电）
-  ├─ robot.active()                     ← 硬件上电并【常驻】
-  └─ agent 工具循环
-       ├─ 系统提示词 = 角色 + 结构脚本 + 硬件清单 + 动作脚本清单 + 行为约束
-       ├─ user 消息 = 任务
-       ├─ 模型 → tool_calls → 派发工具 → 结果作为 tool 消息回传 → 再问模型
-       │    （循环，最多 --llm-max-turns 轮）
-       └─ 模型给出纯文本 → stdout 输出最终回答
-  └─ robot.deactivate()                 ← 会话结束才去初始化
+```
+agentloop（C++）        工具循环
+  └─ agentproto（C++）  规范化消息/工具 ⇄ Json
+       └─ agentdriver（C++）  ChatTransport：把请求交给驱动变量、取回响应
+            └─ llm0 = modules/LlmOpenAI.lua      ← 普通硬件变量
+                 └─ lib/llm_wire_openai.lua      ← 协议整形（provider 报文）
+                      └─ lib/llm_http.lua        ← ffi 直驱 libcurl（HTTPS/TLS）
 ```
 
-- **stdout 只输出最终回答**（末轮文本）；模型过渡语、工具调用与工具结果全在 stderr，便于脚本管道处理。
-- **轮次上限/传输失败会回滚本轮消息**：半截的 `tool_calls` 序列会让下一轮请求被服务端 400 拒绝，REPL 因此可以继续下一条任务。
-- REPL 的会话历史跨轮保留（机器人「记得」之前做过什么），因此上下文会随任务数增长；长会话建议适时重启。
+**为什么不把 HTTP 写进宿主**：
+
+- 换模型/换厂商 = **换一个 Lua 文件**，宿主不重编、不链接任何 HTTP 库；
+- 项目「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」的承诺在这条路径上依然成立；
+- 驱动生态的一切照旧适用：`build/call/destroy` 契约、`guard_build` 回滚、`docs/drivers.md`、
+  `test/test_*.lua` 离线用例；模型驱动也能被 `.mt` 动作脚本或 `@Daemon` 调用；
+- 协议差异（如 DeepSeek 的思考模式）**只能**由驱动承担——它有状态，宿主一无所知。
+
+### 规范化协议（宿主 ⇄ 驱动）
+
+宿主传进 `call()` 的参数：
+
+```lua
+{ model=, endpoint=, timeout=, max_tokens=, temperature=, top_p=,
+  messages = { {role="system"|"user", content=},
+               {role="assistant", content=, tool_calls={{id=,name=,arguments=}}, extras={}},
+               {role="tool", tool_call_id=, content=} },
+  tools = { {name=, description=, parameters={...}} } }
+```
+
+驱动返回：
+
+```lua
+{ result="OK", content=, tool_calls={{id=,name=,arguments=}}, extras={} }
+{ result="ERR", message="人话报错" }
+```
+
+`extras` 是 provider 特有字段的透明通道（如 DeepSeek 的 `reasoning_content`）：
+宿主不理解、不修改，只随 assistant 消息逐轮原样带回，由驱动决定怎么用。
+API key 不在这个表里——驱动自己读环境变量。
+
+### 内置两个协议驱动
+
+| 驱动 | 接入点（缺省） | 模型（缺省） | 特点 |
+| --- | --- | --- | --- |
+| `LlmOpenAI` | `https://moma.cmecloud.cn/v1/chat/completions` | `zhipu/glm-5.3-flash` | OpenAI 兼容：「当前协议」 |
+| `LlmDeepSeek` | `https://api.deepseek.com/chat/completions` | `deepseek-chat` | DeepSeek：思考模式 + `reasoning_content` |
+
+两者都是 OpenAI 报文骨架，但 DeepSeek 有三处**实质差异**，由 `lib/llm_wire_deepseek.lua` 承担：
+
+1. **思考模式开关**：请求体带 `{"thinking":{"type":"enabled"}}`，强度用 `reasoning_effort`
+   （可经参数或环境变量 `BOT4CJ_LLM_REASONING_EFFORT` 给；传 `thinking="disabled"` 关闭）。
+2. **`reasoning_content` 回传**：与 `content` 同级返回。**请求带 `tools` 时，历史轮次的
+   `reasoning_content` 必须完整回传，否则 API 返回 400**——这是有状态要求，
+   宿主靠 `extras` 逐轮带回、驱动负责回填，`scripts/agent_e2e.sh` 有专门断言。
+3. **采样参数限制**：思考模式不支持 `temperature`（传了也被静默忽略），`top_p` 生效但
+   下限被抬到 0.95；非思考模式 `top_p` 恒为 1.0。驱动按模式决定发什么，
+   避免「发了一个看起来生效、其实被忽略」的参数。
+
+### 结构脚本声明 vs 自动注入
+
+优先用**结构脚本声明**（结构脚本是唯一事实源）：
+
+```sql
+CREATE TABLE LlmDeepSeek (name String);
+INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
+```
+
+没声明时宿主按 `--llm-driver`/`--llm-var` **自动注入**一个——所以任何既有
+`robots/*.sql` 都能直接 `--agent` 跑起来，切换协议也只需换一个命令行选项。
+表名与变量名都会校验为安全标识符（它们会被拼进合成 SQL，且表名还会当
+`modules/<表名>.lua` 解析）。
+
+### 自己写第三个驱动
+
+照 `modules/LlmDeepSeek.lua` 抄一份：`build` 里调 `llm_http.load()` 做环境自检、
+`call` 里把规范化请求整形后交给 `llm_wire_openai.lua` 的通用实现，或完全自己实现。
+`result`/`message`/`mode` 三个键名由框架保留。
 
 ## 给智能体的工具
 
@@ -96,63 +161,66 @@ mybot --robot=X.sql --agent [--task "..."]
    不需要 shell 能力时加 `--agent-no-shell`。
 2. **子进程环境已清洗**：名称含 `key` / `token` / `secret` / `password` / `passwd` / `credential` 的变量不会传给子进程——
    这天然覆盖 `BOT4CJ_LLM_KEY`，模型无法用 `run_command` 读走自己的 API key。
-3. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
+3. **API key 不落盘、不进参数表**：宿主不接收密钥，驱动自己读环境变量；`BOT4CJ_DEBUG` 的参数转储里也不会出现。
+4. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
    不是对抗恶意模型的边界——真正的边界仍然是「模型输出即不可信输入」这条工程常识。
-4. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。
-5. **上电时机**：配置错误、缺 key、缺 libus_http 都在 `active()` 之前报错退出，不会出现「带电空等」。
+5. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。
+6. **驱动获得网络能力**：`modules/Llm*.lua` 会把请求发到配置的接入点。按本项目的威胁模型，
+   `modules/**/*.lua` 本就是「任意原生代码执行入口，信任级等同 mybot 用户」（见 [reference.md](reference.md) 的沙箱威胁模型），
+   故这不是新增信任假设，但接外部接入点时请自行确认其可信度。
+7. **上电时机**：配置错误、缺 key、驱动名非法都在 `active()` 之前报错退出，不会出现「带电空等」。
 
-## 构建（可选依赖）
+## 运行期依赖：libcurl
 
-agent 模式的唯一外部依赖是 **libus_http**（OpenAI 兼容 HTTP 客户端：libcurl + OpenSSL + header-only Boost.Beast）。
-CMake 自动探测：
-
-- **找到** `us/HttpClient.hpp` + `libus_httpclient.so` → 编译真实传输，`--agent` 可用；
-- **找不到** → agent 源码照编，但 `--agent` 会明确报「本构建未启用 agent 模式」并退出 2。
-  CI 基线 `debian:bookworm` 没有该库，这条降级路径让「零第三方依赖」承诺与 CI 全绿同时成立。
+agent 模式**不需要构建期依赖**（`cmake` 探测不到任何东西也不会失败），但运行期需要
+`libcurl.so`：`modules/lib/llm_http.lua` 用 LuaJIT ffi 在 `build()` 阶段按
+`libcurl.so.4` → `libcurl-gnutls.so.4` → `libcurl.so` 顺序加载。缺它时驱动 build 返回
+清晰 ERR（提示 `apt install libcurl4`），机器人不会上电。
 
 ```bash
-# 默认：自动探测
-cmake -S . -B build && cmake --build build
-
-# 显式关闭（连探测都不做）
-cmake -S . -B build -DMYBOT_AGENT=OFF
-
-# 非系统安装位置：指向源码树即可（先在该仓库 make）
-# 探测提示路径：../libus_http/inc 与 ../libus_http/build
+sudo apt install libcurl4     # Debian/Ubuntu/Raspberry Pi OS 通常已随 curl 装好
 ```
 
-配置结果会打印在 cmake 输出里：`agent mode: ON (libus_http: ...)` / `agent mode: OFF (...)`。
+HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也不需要开发包头文件。
 
 ## 源码分层
 
-| 文件 | 职责 | 是否依赖 libus_http |
+| 文件 | 职责 | 依赖 |
 | --- | --- | --- |
-| `src/jsonparse.{hpp,cpp}` | 严格 JSON 文本解析（外部 JSON 首次入口） | 否 |
-| `src/agentproto.{hpp,cpp}` | OpenAI 兼容消息/工具编解码、`ChatTransport` 抽象 | 否 |
-| `src/agenttools.{hpp,cpp}` | 工具注册表与四个工具、脚本路径沙箱、硬件描述 | 否 |
-| `src/agentloop.{hpp,cpp}` | 工具循环（消息历史、轮次上限、回滚） | 否 |
-| `src/agentmode.{hpp,cpp}` | CLI 配置组装、系统提示词、一次性/REPL 外壳 | 否 |
-| `src/agenthttp.{hpp,cpp}` | `ChatTransport` 的 libus_http 实现（含退避重试） | **是**（`MYBOT_HAVE_AGENT`） |
+| `src/jsonparse.{hpp,cpp}` | 严格 JSON 文本解析（宿主侧） | 无 |
+| `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
+| `src/agenttools.{hpp,cpp}` | 工具注册表与四个工具、脚本路径沙箱、硬件描述 | 无 |
+| `src/agentloop.{hpp,cpp}` | 工具循环（历史、轮次上限、回滚、extras 透传） | 无 |
+| `src/agentmode.{hpp,cpp}` | CLI 配置组装、系统提示词、一次性/REPL 外壳 | 无 |
+| `src/agentdriver.{hpp,cpp}` | `ChatTransport` 适配：调驱动的 `playQuiet()` | 无 |
+| `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
+| `modules/lib/llm_http.lua` | ffi 直驱 libcurl 的 HTTP 传输 | 运行期 libcurl |
+| `modules/lib/llm_wire_openai.lua` | OpenAI 兼容报文整形与响应映射 | 无 |
+| `modules/lib/llm_wire_deepseek.lua` | DeepSeek 差异（thinking / reasoning_content / 采样参数） | 无 |
+| `modules/LlmOpenAI.lua`、`modules/LlmDeepSeek.lua` | 协议驱动（表名 = 文件名） | 无 |
 
-除 `agenthttp.cpp` 外全部与传输无关，因此工具循环可以完全离线单测（注入脚本化传输）。
+宿主侧**没有任何一处**知道 provider 报文字段。
 
 ## 测试
 
 ```bash
-bash scripts/agent_e2e.sh        # 离线端到端：假 OpenAI 服务 + 真实工具循环
-./build/mybot_tests agent        # C++ 单测：proto / tools / loop
+bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（三场景）
+luajit test/test_json_lua.lua    # Lua JSON 编解码
+luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
+./build/mybot_tests agent        # C++：proto / driver / tools / loop
 ```
 
-- `test/cpp/test_agentproto.cpp`、`test_agenttools.cpp`、`test_agentloop.cpp`、`test_jsonparse.cpp`
-  覆盖请求组包、响应解析、工具派发、轮次上限回滚、中断、路径沙箱、环境清洗、超时截断。
-- `scripts/agent_e2e.sh` 用一个**本地假模型服务**（`scripts/fake_llm_server.py`）驱动
-  `list_hardware → run_action_script → run_command → 最终回答` 的完整循环，断言动作脚本真的被执行。
-- 全量守门 `bash test/run_all.sh` 已包含该段；本构建未启用 agent 模式时按 **SKIP** 计入
-  「未执行清单」（可见，不假绿）。
+- `scripts/agent_e2e.sh` 用本地假模型服务跑三个场景：默认驱动完整工具循环（并抓报文断言
+  OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
+  `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）。
+- 全量守门 `bash test/run_all.sh` 已包含上述全部；缺 python3 或 libcurl 时按 **SKIP**
+  计入「未执行清单」（可见，不假绿）。
 
 ## 已知限制
 
 - **非流式**：`stream=false`，长回答要等整轮生成完；接口超时用 `--llm-timeout` 调整。
 - REPL 历史无自动裁剪，长会话上下文持续增长。
 - 无记忆持久化（重启即忘）。
-- 只支持对话式工具调用协议（OpenAI 兼容 `tools` / `tool_calls`），未适配其它厂商私有协议。
+- 只实现了两个 OpenAI 兼容协议驱动；接非 OpenAI 形态的厂商（如 Anthropic）需要新写一个驱动
+  （协议整形全在 Lua 侧，宿主不用改）。
+- 驱动参数表的嵌套深度受 `kMaxLuaNesting`（8 层）约束：工具 schema 目前最深处为 6 层，留有余量但不宜再加嵌套。
