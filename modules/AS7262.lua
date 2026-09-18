@@ -299,8 +299,7 @@ function call(data)
 	if tb == nil or tb < 0 then
 		return err("Failed to read AS7262 temperature")
 	end
-	local temp_c = tb
-	if temp_c >= 128 then temp_c = temp_c - 256 end
+	local temp_c = bitc.s8(tb)
 
 	-- 清 DATA_RDY（SparkFun 同款 RMW 清位；连续模式下芯片随即开始下一轮）
 	local ctl = virtual_read(fd, V_CONTROL_SETUP)

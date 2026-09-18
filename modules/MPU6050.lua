@@ -138,7 +138,7 @@ function call(data)
 	-- 16 位补码符号扩展：高/低字节合并成有符号数
 	local function s16(hi, lo)
 		local v = bitc.bor(bitc.lshift(hi, 8), lo)
-		if v >= 32768 then v = v - 65536 end	-- 负值还原
+		v = bitc.s16(v)	-- 负值还原
 		return v
 	end
 

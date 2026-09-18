@@ -81,10 +81,7 @@ local SHUNT_LSB_V = 10e-6			-- 分流寄存器 LSB：10µV（16 位有符号）
 local BUS_LSB_V   = 0.004			-- 总线寄存器 LSB：4mV（>>3 后 13 位无符号）
 
 -- 16 位有符号还原（分流寄存器用）
-local function s16(v)
-	if v >= 0x8000 then v = v - 0x10000 end
-	return v
-end
+local s16 = bitc.s16
 
 -- 读 16 位寄存器原始值；失败（-1）返回 nil（2 字节合并恒为正且精确，无回绕）
 local function read_reg16(fd, reg)

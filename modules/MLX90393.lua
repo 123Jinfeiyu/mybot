@@ -131,10 +131,7 @@ local sens_z			-- Z 轴 µT/LSB
 local poll_timeout_ms	-- 就绪轮询超时 ms
 
 -- 16 位有符号还原
-local function s16(v)
-	if v >= 0x8000 then v = v - 0x10000 end
-	return v
-end
+local s16 = bitc.s16
 
 -- 发送 1 字节命令，成功返回 true
 local function send_cmd(fd, cmd)

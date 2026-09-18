@@ -58,10 +58,7 @@ local dr_names = { "128", "250", "490", "920", "1600", "2400", "3300", "3300" }
 local DEBUG = false
 
 -- 辅助：把 16 位无符号值符号扩展为有符号数
-local function sign16(v)
-    if v >= 0x8000 then return v - 0x10000 end
-    return v
-end
+local sign16 = bitc.s16
 
 -- 辅助：把数据里的字段转成数字（字符串/数字均可），nil 返回默认值
 local function tonum(v, default)

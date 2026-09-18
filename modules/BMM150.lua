@@ -50,6 +50,7 @@ local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：采样周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -102,16 +103,8 @@ local function idiv(a, b)
 end
 -- uint16/int16/int8 回绕（Bosch 公式中的显式窄化转换）
 local function u16(v) return v % 0x10000 end
-local function s16(v)
-	v = v % 0x10000
-	if v >= 0x8000 then v = v - 0x10000 end
-	return v
-end
-local function s8(v)
-	v = v % 0x100
-	if v >= 0x80 then v = v - 0x100 end
-	return v
-end
+local s16 = function(v) return bitc.s16(v % 0x10000) end
+local s8 = function(v) return bitc.s8(v % 0x100) end
 
 -- ==================== trim 寄存器解析 ====================
 -- 三段直读 0x5Dx2 / 0x62x4 / 0x68x10，拼装依 bmm150.c read_trim_registers

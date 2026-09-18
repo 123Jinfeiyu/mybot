@@ -91,10 +91,7 @@ local EXT_SHORT       = 0x3FF		-- 外部温度特征码：短路
 local full_lsb = 63				-- 100% 对应的 FAN_SETTING 值（build 按 PWM_F 现算）
 
 -- 8 位二进制补码还原（内部温度）
-local function s8(v)
-	if v >= 0x80 then v = v - 0x100 end
-	return v
-end
+local s8 = bitc.s8
 
 -- 11 位二进制补码还原（外部温度）
 local function s11(v)

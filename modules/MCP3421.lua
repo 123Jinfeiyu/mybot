@@ -46,6 +46,7 @@ local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -100,7 +101,7 @@ local function decode(v)
 	else
 		-- 3 字节：16 位字（顶部为重复符号位）+ 回显；int16 即该分辨率有符号值
 		local w = math.floor(v / 256) % 65536
-		if w >= 0x8000 then w = w - 0x10000 end
+		w = bitc.s16(w)
 		raw = w
 	end
 	return raw, echo

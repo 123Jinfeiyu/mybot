@@ -42,6 +42,7 @@ local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：热像高频采样，默认关闭逐次打印
 local DEBUG = false
@@ -67,11 +68,7 @@ local PIXEL_COUNT   = 64
 local fps_1hz = false
 
 -- 12 位二进制补码还原（像素/热敏电阻共用）
-local function s12(v)
-	v = v % 0x1000
-	if v >= 0x800 then v = v - 0x1000 end
-	return v
-end
+local s12 = function(v) return bitc.s12(v % 0x1000) end
 
 -- 【配置脚本】normal -> 初始复位 -> 关中断 -> 帧率 -> 等首拍
 function build(data)

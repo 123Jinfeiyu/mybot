@@ -38,6 +38,7 @@ local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -74,17 +75,9 @@ local MODE_MSK      = 0x03
 local MODE_FORCED   = 0x01
 
 -- ==================== 工具 ====================
-local function s8(v)
-	v = v % 256
-	if v >= 128 then v = v - 256 end
-	return v
-end
+local s8 = function(v) return bitc.s8(v % 256) end
 
-local function s16(v)
-	v = v % 65536
-	if v >= 32768 then v = v - 65536 end
-	return v
-end
+local s16 = function(v) return bitc.s16(v % 65536) end
 
 -- 分块读 n 字节（HAL 合并读上限 8 字节；寄存器自动增量跨块连续）
 local function read_block(fd, reg, n)

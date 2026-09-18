@@ -37,6 +37,7 @@ local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：气压计低频读取，默认关闭逐次打印
 local DEBUG = false
@@ -167,7 +168,7 @@ function call(data)
 	local pres = b[1] + b[2] * 256 + b[3] * 65536
 	if pres >= 0x800000 then pres = pres - 0x1000000 end		-- 24 位补码
 	local temp = b[4] + b[5] * 256
-	if temp >= 0x8000 then temp = temp - 0x10000 end			-- 16 位补码
+	temp = bitc.s16(temp)			-- 16 位补码
 
 	return {
 		result = "OK",

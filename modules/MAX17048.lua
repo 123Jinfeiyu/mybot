@@ -72,11 +72,7 @@ local STATUS_FLAGS    = 0x3F00	-- 高字节 bit0~5 的 16 位掩码
 local STATUS_ENVR     = 0x4000
 
 -- ==================== 工具 ====================
-local function s16(v)
-	v = v % 65536
-	if v >= 32768 then v = v - 65536 end
-	return v
-end
+local s16 = function(v) return bitc.s16(v % 65536) end
 
 -- ==================== 模块级配置 ====================
 local cfg_lsb_v		-- VCELL 每 LSB 伏特（17048: 78.125uV / 17049: 156.25uV）
