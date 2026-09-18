@@ -39,9 +39,18 @@ TH_TEST(agentproto_request_shape) {
 	TH_CHECK(req.get("messages")->at(0).get("role")->getValue() == "system");
 	TH_CHECK(req.get("messages")->at(1).get("content")->getValue() == "你好");
 	TH_CHECK(req.get("tools")->size() == 1);
-	TH_CHECK(req.get("tools")->at(0).get("type")->getValue() == "function");
-	TH_CHECK(req.get("tools")->at(0).get("function")->get("name")->getValue()
-		== "list_action_scripts");
+	/* 规范化协议里工具是**扁平**的 {name, description, parameters}：包成
+	 * {"type":"function","function":{...}} 是 Lua 驱动的事。这里若提前包一层，
+	 * 驱动会再包一层，function 变空 —— 模型看不到任何工具，而循环表面上还在跑
+	 * （曾真实发生过，端到端也没抓住，故此处显式钉住「不得出现 provider 字段」）。
+	 * 注意 get() 返回的是 optional 值，必须先接住再取引用，否则引用悬垂。 */
+	auto toolsOpt = req.get("tools");
+	const Json& tool = toolsOpt->at(0);
+	TH_CHECK(tool.get("name")->getValue() == "list_action_scripts");
+	TH_CHECK(tool.get("description")->getValue() == "列出脚本");
+	TH_CHECK(tool.get("parameters")->isObj());
+	TH_CHECK(tool.get("type") == std::nullopt);
+	TH_CHECK(tool.get("function") == std::nullopt);
 
 	/* 序列化 → 再解析：验证产出的是可交给 Lua 驱动的合法 JSON */
 	Json round = parseJson(req.toString());

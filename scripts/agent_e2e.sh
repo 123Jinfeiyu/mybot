@@ -59,6 +59,18 @@ check_absent() { # $1=文件 $2=子串 $3=说明
 		echo "  [OK] $3"
 	fi
 }
+check_json() { # $1=JSON文件 $2=python 真值表达式 $3=说明
+	if python3 -c "
+import json, sys
+d = json.load(open('$1'))
+sys.exit(0 if ($2) else 1)
+" 2>/dev/null; then
+		echo "  [OK] $3"
+	else
+		echo "  [FAIL] $3"
+		fail=1
+	fi
+}
 
 start_server() { # $1=port $2=capture $3=mode $4=headers
 	python3 scripts/fake_llm_server.py "$1" "$2" "${3:-ok}" "${4:-}" &
@@ -116,6 +128,11 @@ check "$out1" "agent-echo-ok" "run_command 执行了 shell 命令"
 check "$out1" "已执行动作脚本 relay-test.mt" "动作脚本执行结果回传给了模型"
 check_present "$CAP1" '"temperature"' "默认驱动发的是 OpenAI 形态报文（带 temperature）"
 check_absent "$CAP1" '"thinking"' "默认驱动不引入 DeepSeek 的 thinking 字段"
+# 模型必须真的收到工具定义：曾经 C++ 侧把工具提前包成 provider 形状，Lua 驱动
+# 又包一层 → function 变空、模型零工具可用，而工具循环表面上仍在跑（假服务不读
+# tools 故未暴露）。这条按结构断言，不看字符串顺序。
+check_json "$CAP1" "len(d.get('tools',[]))==4 and all(t.get('type')=='function' and t.get('function',{}).get('name') and t['function'].get('parameters') for t in d['tools'])" \
+	"模型收到 4 个带名字与 parameters 的工具定义"
 
 # ============ 场景 2：DeepSeek 协议 ============
 echo "----- 场景 2：LlmDeepSeek（DeepSeek 协议） -----"
@@ -139,6 +156,8 @@ check "$out2" "Relay: test=200" "DeepSeek 场景下动作脚本同样被执行"
 check_present "$CAP2" '"thinking"' "请求带 thinking（DeepSeek 思考模式开关）"
 check_absent "$CAP2" '"temperature"' "思考模式不发 temperature（该模式不支持）"
 check_present "$CAP2" '"reasoning_content"' "历史 reasoning_content 被回传（否则 API 400）"
+check_json "$CAP2" "len(d.get('tools',[]))==4 and all(t.get('function',{}).get('name') for t in d['tools'])" \
+	"DeepSeek 请求同样带齐 4 个工具定义"
 
 # ============ 场景 3：超时真的生效（防变参 cast 退化） ============
 echo "----- 场景 3：--llm-timeout 生效 -----"

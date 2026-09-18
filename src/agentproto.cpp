@@ -16,15 +16,16 @@ std::string snippet(const std::string& s, std::size_t n = 400) {
 	return s.size() <= n ? s : s.substr(0, n) + "...(截断)";
 }
 
+/* 规范化工具声明：**扁平**的 {name, description, parameters}。
+ * 包成 provider 的 {"type":"function","function":{...}} 是 Lua 驱动的职责
+ * （见 modules/lib/llm_wire_openai.lua）。此处若提前包一层，驱动会再包一层，
+ * 结果 function 里空无一物 —— 模型一个工具都看不到，而工具循环表面上还在跑。 */
 Json toolSpecJson(const ToolSpec& t) {
 	Json fn = JsonObject();
 	fn.put("name", JsonString(t.name));
 	fn.put("description", JsonString(t.description));
 	fn.put("parameters", t.parameters);
-	Json entry = JsonObject();
-	entry.put("type", JsonString("function"));
-	entry.put("function", fn);
-	return entry;
+	return fn;
 }
 
 } // namespace
