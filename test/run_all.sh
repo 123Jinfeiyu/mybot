@@ -390,6 +390,11 @@ parse_cases=(
 	'alias_inline.sql|alias_inline.mt|0|served 1 call(s)'
 	'alias_inline.sql|mt_noblank.mt|0|served 1 call(s)'
 	'alias_inline.sql|mt_crlf.mt|0|served 1 call(s)'
+	# 孤儿检测（F3/N-32）发现的两条「夹具在但没登记」用例：都是纯逻辑离线可跑
+	#   servo      控制器为 dummy：offset 漂移 / |min|/|max| 限幅 / 负 max 反向
+	#   h03_arr    数组参数跨语言双向往返：JsonArray→Lua 表（# 与下标）→ 回 JsonArray
+	'servo.sql|servo.mt|0|Dummy served 2 call(s)'
+	'h03_arr.sql|h03_arr.mt|0|"list":[10,20,30]'
 	'robots/relay-test.sql|mt_ragged.mt|1|Does Not Sync. we got line: 6'
 	'alias_override.sql|alias_override.mt|1|missing or not a number'
 	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
@@ -1173,6 +1178,44 @@ fi
 
 
 # ======================================================================
+# fixture 孤儿检测（F3/N-32）：robots/test/*.sql 与 scripts/test/*.mt 里没被
+# 任何用例表/脚本引用的夹具会静默失效——新写了回归夹具却忘了接进用例表，
+# 守门全绿而该夹具从未跑过一次。判据：文件 stem（去扩展名）是否作为**子串**
+# 出现在用例表正文 / scripts/*.sh / CMakeLists.txt 中。
+# 用子串而非整词：同一器件的多个变体（ads1115.sql 实机版 / ads1115_virt.sql
+# 离线版）共享前缀，注册了其一即视为该名字空间已被守门认知；只有全新的、
+# 没人提过的名字才会被判为孤儿（这正是「漏登记」的形态）。
+# 实机夹具（需 /dev/i2c-*、/dev/spidev*、/dev/gpiochip*、/dev/pwmchip*，
+# 离线守门跑不了）在下方白名单显式登记，每个都对应文件头注释的「实机测试」；
+# 白名单外出现孤儿即判失败——或接进用例表，或在此声明为实机夹具。
+# 与「用例表引用的文件必须存在」互补：这里管漏登记，那里管空引用。
+# 只在无过滤器的全量跑里执行（与常量自检同理由）。
+# ======================================================================
+orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501"
+run_fixture_orphans() {
+	echo "----- fixture-orphans (夹具孤儿检测) -----"
+	local f stem n=0 orphans=""
+	for f in robots/test/*.sql scripts/test/*.mt; do
+		stem="$(basename "$f")"; stem="${stem%.*}"
+		case " $orphan_whitelist " in *" $stem "*) continue ;; esac
+		# 登记来源只看用例表正文（e2e_cases/parse_cases）+ 其它守门脚本 + CMake 目标。
+		# 刻意不 grep 本文件全文：注释里顺带提一句名字并不等于接进了表。
+		sed -n '/^e2e_cases=(/,/^)/p; /^parse_cases=(/,/^)/p' "$SELF" | grep -qF "$stem" && continue
+		grep -qF "$stem" scripts/*.sh CMakeLists.txt 2>/dev/null && continue
+		orphans="$orphans $f"
+		n=$((n + 1))
+	done
+	if [ "$n" -eq 0 ]; then
+		echo "[PASS] 无孤儿夹具（实机白名单 $(echo $orphan_whitelist | wc -w) 个）"
+		record_pass
+	else
+		echo "[FAIL] $n 个夹具未被任何用例表引用（接进用例表，或加入 orphan_whitelist 声明为实机夹具）："
+		for f in $orphans; do echo "       $f"; done
+		record_fail "fixture-orphans"
+	fi
+}
+
+# ======================================================================
 # 系统常量自检（F-24）：HAL.lua 硬编码 ioctl/termios 编号与系统头的
 # 一致性已在编译期断言（构建失败即漂移）；此处执行期再跑一遍作为
 # 双保险。二进制与 mybot_tests 同目录构建（BOT_TESTS 指向 sanitizer
@@ -1246,6 +1289,7 @@ run_cpp_unit() {
 	fi
 }
 if [ -z "$filter" ]; then
+	run_fixture_orphans
 	run_const_checks "$(dirname "$tests_bin")"
 fi
 run_cpp_unit
