@@ -186,7 +186,8 @@ void print_help() {
 	std::cout << "  --agent            开启 agent 模式（缺省交互 REPL；硬件全程上电常驻）" << std::endl;
 	std::cout << "  --task <文本>      一次性任务，跑完即退出；缺省则进入交互 REPL" << std::endl;
 	std::cout << "  --llm-config <路径>  配置文件（JSON）：目标 URL、API key、模型、采样与 agent 参数" << std::endl;
-	std::cout << "                       缺省按 ./mybot.llm.json -> $HOME/.config/mybot/llm.json 查找；" << std::endl;
+	std::cout << "                       缺省按 ./mybot.llm.json -> ./mybot.llm.conf.json ->" << std::endl;
+	std::cout << "                       $HOME/.config/mybot/llm.json 查找；传 none 表示本次不读配置文件；" << std::endl;
 	std::cout << "                       也可用环境变量 BOT4CJ_LLM_CONFIG 指定" << std::endl;
 	std::cout << "  --llm-driver <表名>  协议驱动表名 = modules/<表名>.lua" << std::endl;
 	std::cout << "                       内置：LlmOpenAI（缺省，OpenAI 兼容）、LlmDeepSeek" << std::endl;

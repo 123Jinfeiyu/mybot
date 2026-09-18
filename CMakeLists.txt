@@ -169,7 +169,7 @@ add_test(NAME const_v4l2 COMMAND test_v4l2_consts)
 # 每个 test_*.lua 都是 `luajit test/xxx.lua` 可单跑的独立用例（HAL 依赖 ffi
 # 必须 LuaJIT）；唯一例外 test_jit_warmup.lua 带 "-- requires: i2c" 真机标记，
 # 与 run_all.sh 同语义按有无 /dev/i2c-* 决定执行或跳过。
-# 收益：ctest -R lua_ 获得逐用例粒度与超时，不必整段跑完 1013 行守门脚本。
+# 收益：ctest -R lua_ 获得逐用例粒度与超时，不必整段跑完 run_all.sh 守门脚本。
 # ======================================================================
 file(GLOB MYBOT_LUA_TESTS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/test_*.lua)
 find_program(LUAJIT_EXECUTABLE NAMES luajit)

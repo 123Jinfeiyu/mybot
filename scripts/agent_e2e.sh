@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 三个场景：
+# 五个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -11,8 +11,12 @@
 #   3) --llm-timeout 真的生效——用睡 5 秒的服务端配 1 秒超时，必须在 4 秒内失败。
 #      这个用例专门防 curl_easy_setopt 退回**裸变参调用**：那时整型选项被静默忽略，
 #      命令会跑满 5 秒且可能 rc=0（实测过），是这条链路最隐蔽的回归。
+#   4) --llm-config 配置文件——断言 URL / KEY / MODEL 全部来自文件，且进程环境里
+#      不放任何密钥。
+#   5) capture_image——拍照并把画面注入上下文，断言线上报文确实带 image_url
+#      多模态内容（以 data URL 包装的真 JPEG）。
 #
-# 场景 1-3 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
+# 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
 # 用法: BOT=./build/mybot bash scripts/agent_e2e.sh
