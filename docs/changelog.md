@@ -10,6 +10,7 @@
 - **工具集**：`list_action_scripts`（枚举 `.mt`）、`run_action_script`（在常驻实例上执行；路径限定 `--scripts-dir` 之下，拒绝绝对路径/`..`/非 `.mt`，8 MiB 上限）、`list_hardware`（只读清单，不调 `read()`/`play()`，不会误触发执行器）、`run_command`（超时整进程组终止 + 64KB 截断 + 环境变量清洗，`--agent-no-shell` 可关闭）。工具报错折成文本回传模型，不打断会话（工具集后续追加 `capture_image`，见下）
 - **协议层**：`src/agentproto.*` 规范化消息/工具 ⇄ Json（宿主不认识任何 provider 报文字段）；`src/agentloop.*` 工具循环（缺 `tool_call_id` 自动合成、轮次上限/传输失败回滚本轮消息以免下一轮 400、`extras` 随 assistant 消息逐轮透传）；`src/jsonparse.*` 首个外部 JSON 文本入口（严格语法、深度 64/8 MiB 上限、代理对与转义完整）
 - **模型调用改为 Lua 协议驱动**（本项替换了最初基于 libus_http 的 C++ 实现，`src/agenthttp.*` 已删除）：模型调用与舵机、传感器一样是一颗 `modules/*.lua` 驱动，宿主经 `src/agentdriver.*` 适配成 `ChatTransport`。于是**恢复零链接期依赖**（仅 LuaJIT + pthread + dl；运行期需 libcurl，由 `modules/lib/llm_http.lua` 经 ffi 加载），换模型/换厂商 = 换一个 Lua 文件。为此新增 `modules/lib/json.lua`（Lua 侧严格 JSON 编解码）、`modules/lib/llm_http.lua`（ffi 直驱 libcurl；**整型选项必须 cast 成定签名再调**，裸变参会被静默忽略——实测超时失效）、`modules/lib/llm_wire_openai.lua` 与 `modules/lib/llm_wire_deepseek.lua`（协议整形）
+- **llm_http 写回调资源即用即释**：每请求 `ffi.cast` 出的写回调 cdata 在 perform/getinfo 完成后 `cb:free()`——LuaJIT 回调槽位要等 cdata 被 GC 才归还，长驻 agent 会话高频请求下会持续累积（2026-09-19 审计）
 - **两个可选的协议驱动**：`LlmOpenAI`（当前协议：moma 网关 + zhipu/glm）与 `LlmDeepSeek`。后者承担三处实质差异——思考模式开关（`thinking`/`reasoning_effort`）、**带 `tools` 时必须回传历史 `reasoning_content`（否则 API 400）**、思考模式不支持 `temperature` 且 `top_p` 下限被抬到 0.95。用 `--llm-driver` 切换；结构脚本未声明驱动变量时宿主自动注入（表名与变量名校验为安全标识符）。API key 由驱动自己读环境变量，宿主只校验其存在，密钥不进参数表/调试转储
 - **配置文件（`--llm-config`）**：目标 URL、API key、模型、采样与 agent 参数收进一份 JSON
   （`src/llmconfig.*`）。取值优先级**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**；查找顺序
@@ -71,7 +72,8 @@
 
 ### 驱动与总线
 
-- **新增 `SCSCL` 总线舵机驱动**（飞特 FT-SCS 协议，UART）：PING 探测、位置/时间/速度/扭矩、反馈块读取、`set_id` 站号烧写（须结构期 `allow_burn` 授权，负值守门 `scscl_burn_guard`）；内嵌 `SCSCL_VIRT` 协议模型，145 断言 + 2 条 E2E
+- **驱动入口收敛第二刀（MCP4725/TPL0501）**：build/call 的手搓参数校验迁至 `drv_common.arg_table`（入口第一行，代调 `virt_prepare`）——旧风格入口绕过直驱 virt 注入钩子，`proto=virt` 的 @Action 直写会绕开仿真打到真实总线（2026-09-19 审计发现 27 个旧风格驱动，本刀先迁两颗写路径 DAC）；新增 E2E `mcp4725_virt`（第二条【非守护】virt 用例）钉住该能力，`call` 报错文案与 `arg_table` 口径统一
+- **新增 `SCSCL` 总线舵机驱动**（飞特 FT-SCS 协议，UART）：PING 探测、位置/时间/速度/扭矩、反馈块读取、`set_id` 站号烧写（须结构期 `allow_burn` 授权，负值守门 `scscl_burn_guard`）；内嵌 `SCSCL_VIRT` 协议模型，147 断言 + 2 条 E2E
 - **UART 波特率修复（真机实证）**：`cfset*speed` 必须传 glibc 常量——旧实现传数值 Hz 被 EINVAL 拒绝且未查返回码，波特率从未生效；白名单扩 500000/1000000
 - **UART 销毁恢复接口配置**：open 时快照原始 termios，close 先恢复再关闭（raw 模式/波特率不残留）
 - **virtbus 读族入参校验对齐 HAL**：非法寄存器/地址不再被取模静默回绕，超时上限对齐；补 11 条对齐断言
@@ -83,6 +85,8 @@
 
 ### 工程化与守门
 
+- **agent CLI 负路径守门补齐**：agent 专属选项出现在非 agent 模式、`--agent` 与 `--tcp/--input` 互斥、缺 API key 三条组合校验此前「代码已强制（F-20 同族）、testing.md §9 已声称覆盖、守门却无用例」——补 3 条 hardening 用例让声称成真；缺 key 用例清空三个密钥环境变量 + `--llm-config none`，与开发者本机配置隔离（2026-09-19 审计）
+- **`run_san.sh --asan-only`**：跳过脚本内 Release 第一跑只跑 sanitizer——CI 的 gate:sanitizer 复用 gate:release 已跑过的 Release 全量，同一条 pipeline 不再把整段守门跑两遍（本地缺省仍双跑）（2026-09-19 审计）
 - **结构重构六阶段（R-1~R-8）**：错误统一 stderr、`CliOptions` 类型化、`HwRegistry` 统一三容器、硬件变量虚方法化（消灭 std::function 回调与裸指针捕获）、`MatrixBuilder` 解析管线解耦、守护状态机收敛为 `DaemonRunner`、`RobotStruct` 拆分为 ScriptLoader/HwFactory/ActionRunner
 - **门禁基建**：HAL 硬编码 ioctl/termios 常量改 C 编译期断言自检（漂移构建期即失败）；`.gitlab-ci.yml` 最小 CI（构建 + 全量守门 + sanitizer 双跑 + TSan 软门禁）；`tcp_e2e.sh` 加固
 - **测试覆盖缺口补齐五项**：守护并发压测 + TSan、TCP 异常注入六场景（`tcp_adversarial.sh`，后扩为七场景）、tick 期持续 NACK E2E、fd 泄漏检测（`virtbus.fd_count()` + `/proc` 探针）、离线 ABI 回归（`test_abi_ioctl.lua`）
