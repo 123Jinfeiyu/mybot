@@ -19,6 +19,21 @@ namespace bot {
 /* ---- TCP 空闲超时缺省值（秒）：连上后不再发字节的对端不能永久挂住进程 ---- */
 static constexpr int kTcpIdleSecDefault = 30;
 
+/* ---- TCP 口令连续失败上限（C-M1）：口令失败不再直接终止进程——任意对端
+ * 先 connect 一次即可让一次运行崩溃退出（单次性 DoS + 硬件走一遍
+ * deactivate）。改为关连接回 accept 等待，连败到上限才放弃（防无限爆破）。 */
+static constexpr int kTcpAuthMaxFails = 5;
+
+/* ---- 连接总时长预算（C-M2，秒）：SO_RCVTIMEO 只约束单次 recv，慢滴对端
+ * 每 <idle 秒发 1 字节即可击穿空闲超时、把进程挂到天级。从连接建立起算
+ * wall-clock 上限：真实脚本 KB 级、秒级传完；600s 已覆盖极慢链路，随
+ * --tcp-idle 放大（用户显式调长超时视为有意容忍慢链路），下限 600s。 */
+static int tcpTotalBudgetSec(int idleSec) {
+	int budget = idleSec * 20;
+	if (budget < 600) { budget = 600; }
+	return budget;
+}
+
 /* ---- TcpStreamReader::read：区分 EOF / 超时 / 信号 / 链路错误 ----
  * 内部 64KiB 缓冲（审计 M2）：缓冲区空时一次 recv 尽量填满，之后逐字节
  * 从缓冲出队；8MiB 上限的脚本从 ~800 万次系统调用降到 ~130 次。
@@ -26,6 +41,16 @@ static constexpr int kTcpIdleSecDefault = 30;
 int TcpStreamReader::read() {
 	if (fd_ < 0) { return -1; }
 	if (pos_ < buf_.size()) { return static_cast<unsigned char>(buf_[pos_++]); }
+	/* C-M2：总时长预算超限——慢滴对端每次 recv 都在 idle 窗口内到达，
+	 * 空闲超时永不触发；wall-clock 上限是唯一的硬性防线 */
+	if (std::chrono::steady_clock::now() > deadline_) {
+		if (!overBudget_) {
+			overBudget_ = true;
+			std::cerr << "TCP 动作源超出连接总时长预算，按输入结束处理"
+				<< "（脚本可能被截断；慢滴发送不能无限期挂住进程）" << std::endl;
+		}
+		return -1;
+	}
 	buf_.resize(kBufCap);
 	while (true) {
 		ssize_t n = ::recv(fd_, buf_.data(), buf_.size(), 0);
@@ -125,48 +150,67 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 		throw std::runtime_error("TCP 监听失败");
 	}
 
-	/* D5/D4：accept 可被信号（EINTR）打断——响应停止标志退出，其余 EINTR 重试 */
+	/* D5/D4：accept 可被信号（EINTR）打断——响应停止标志退出，其余 EINTR 重试。
+	 * C-M1：口令失败不再 throw 终止进程（任意对端 connect 一次即 DoS）——
+	 * 关连接回 accept 等待，连续 kTcpAuthMaxFails 次失败才放弃。 */
 	int client = -1;
+	int authFails = 0;
 	while (true) {
 		client = ::accept(fd, nullptr, nullptr);
-		if (client >= 0) { break; }
-		if (errno == EINTR) {
-			if (stopRequested()) {
-				::close(fd);
-				throw std::runtime_error("TCP 等待客户端连接被停止信号中断");
+		if (client < 0) {
+			if (errno == EINTR) {
+				if (stopRequested()) {
+					::close(fd);
+					throw std::runtime_error("TCP 等待客户端连接被停止信号中断");
+				}
+				continue;
 			}
+			::close(fd);
+			throw std::runtime_error("TCP 接受客户端失败");
+		}
+
+		sockaddr_in peer{};
+		socklen_t plen = sizeof(peer);
+		char ip[INET_ADDRSTRLEN] = "?";
+		if (::getpeername(client, reinterpret_cast<sockaddr*>(&peer), &plen) == 0) {
+			::inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
+		}
+		std::cerr << "TCP 客户端已连接：" << ip << ":" << ntohs(peer.sin_port) << std::endl;
+
+		/* 空闲超时同时覆盖口令校验与脚本读取两段，避免「连上不发」挂死进程。
+		 * 审计 #9：设置失败必须显式失败——该选项正是空闲 DoS 的防线，静默
+		 * 失效等于防线整体消失。 */
+		timeval tv{};
+		tv.tv_sec = idleSec;
+		if (::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+			::close(client);
+			::close(fd);
+			throw std::runtime_error(std::string("设置 TCP 接收空闲超时失败：")
+				+ std::strerror(errno));
+		}
+
+		if (!token.empty() && !checkTcpToken(client, token)) {
+			::close(client);
+			++authFails;
+			if (authFails >= kTcpAuthMaxFails) {
+				::close(fd);
+				throw std::runtime_error("TCP 口令连续 " + std::to_string(authFails)
+					+ " 次校验失败，停止等待（可能为扫描/爆破）");
+			}
+			std::cerr << "关闭该连接，继续等待下一个客户端（剩余尝试 "
+				<< (kTcpAuthMaxFails - authFails) << " 次）" << std::endl;
 			continue;
 		}
-		::close(fd);
-		throw std::runtime_error("TCP 接受客户端失败");
+		break;
 	}
 	::close(fd);
 
-	sockaddr_in peer{};
-	socklen_t plen = sizeof(peer);
-	char ip[INET_ADDRSTRLEN] = "?";
-	if (::getpeername(client, reinterpret_cast<sockaddr*>(&peer), &plen) == 0) {
-		::inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
-	}
-	std::cerr << "TCP 客户端已连接：" << ip << ":" << ntohs(peer.sin_port) << std::endl;
+	/* C-M2：总时长预算从连接建立起算（含口令校验段；口令行长度有上限且
+	 * 每次 recv 受 idle 超时约束，主防线覆盖无界的脚本读取段） */
+	const auto deadline = std::chrono::steady_clock::now()
+		+ std::chrono::seconds(tcpTotalBudgetSec(idleSec));
 
-	/* 空闲超时同时覆盖口令校验与脚本读取两段，避免「连上不发」挂死进程。
-	 * 审计 #9：设置失败必须显式失败——该选项正是空闲 DoS 的防线，静默
-	 * 失效等于防线整体消失。 */
-	timeval tv{};
-	tv.tv_sec = idleSec;
-	if (::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
-		::close(client);
-		throw std::runtime_error(std::string("设置 TCP 接收空闲超时失败：")
-			+ std::strerror(errno));
-	}
-
-	if (!token.empty() && !checkTcpToken(client, token)) {
-		::close(client);
-		throw std::runtime_error("TCP 客户端口令校验未通过");
-	}
-
-	return std::make_unique<TcpStreamReader>(client, idleSec);
+	return std::make_unique<TcpStreamReader>(client, idleSec, deadline);
 }
 
 /* ---- 打开动作输入源：tcp 优先 > 文件 > 标准输入 ---- */
@@ -201,7 +245,14 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 			idleSec = static_cast<int>(idleParsed.second);
 		}
 
-		raw = openTcpActionSource(portParsed.second, host, options.tcpToken, idleSec);
+		/* C-L4：口令可经环境变量传递——--tcp-token 出现在 /proc/<pid>/cmdline，
+		 * 多用户机器上凭据对同机其他用户可见；环境变量只在进程环境里。 */
+		std::string token = options.tcpToken;
+		if (token.empty()) {
+			if (const char* envToken = std::getenv("BOT4CJ_TCP_TOKEN")) { token = envToken; }
+		}
+
+		raw = openTcpActionSource(portParsed.second, host, token, idleSec);
 	}
 	/* 2) 文件通道 */
 	else if (options.input) {

@@ -97,22 +97,37 @@ elif scenario == "garbage_binary":
     time.sleep(0.2)
     s.close()
 
-elif scenario == "token_wrong":
-    # 错误口令：等长但错误的 token（超长的会落进 overlong 分支）——
-    # 必须以「凭据不匹配」拒绝，脚本根本不被接受
+elif scenario == "token_retry":
+    # C-M1 回归：口令失败不再终止进程——1 次错口令被拒后，第 2 个连接
+    # 用正确口令 + 脚本必须被接受（服务端回 accept 等待）
     s = connect()
     s.sendall(b"wrongtok\n")
+    time.sleep(0.2)
+    s.close()
+    time.sleep(0.5)
+    s = connect()
+    s.sendall(b"tok_real\n")
     s.sendall(script)
     s.shutdown(socket.SHUT_WR)
     time.sleep(0.2)
     s.close()
 
+elif scenario == "token_bruteforce":
+    # C-M1 上限：连续 5 次错误口令后服务端放弃等待并以非 0 退出（防无限爆破）
+    for _ in range(5):
+        s = connect()
+        s.sendall(b"wrongtok\n")
+        time.sleep(0.2)
+        s.close()
+
 elif scenario == "token_overlong":
-    # 超长凭据行：> token+1 字节且无换行——fail-closed 拒绝（审计 #6 回归）
-    s = connect()
-    s.sendall(b"x" * 64)
-    time.sleep(0.5)
-    s.close()
+    # 超长凭据行：> token+1 字节且无换行——fail-closed 拒绝（审计 #6 回归）；
+    # 同样打满 5 次让服务端按爆破上限退出
+    for _ in range(5):
+        s = connect()
+        s.sendall(b"x" * 64)
+        time.sleep(0.5)
+        s.close()
 
 else:
     print(f"未知场景 {scenario}", file=sys.stderr)
@@ -170,10 +185,13 @@ run_scenario idle_silent nonzero "空闲超过" -
 # （垃圾字节的词法报错文本不固定，只锚退出码与「非信号崩」；服务器日志照打）
 run_scenario garbage_binary nonzero - -
 
-# 5. 错误口令：凭据不匹配拒绝（脚本根本不被接受）
-run_scenario token_wrong nonzero "凭据不匹配" - --tcp-token tok_real
+# 5. 口令失败重试：1 次错口令被拒 → 正确口令的后续连接被接受，rc=0（C-M1 回归）
+run_scenario token_retry zero "TCP 口令校验通过" - --tcp-token tok_real
 
-# 6. 超长凭据行：fail-closed 拒绝（审计 #6 防线）
+# 6. 口令爆破上限：连续 5 次错误口令后放弃等待，rc≠0（防无限爆破）
+run_scenario token_bruteforce nonzero "连续 5 次校验失败" - --tcp-token tok_real
+
+# 7. 超长凭据行：fail-closed 拒绝（审计 #6 防线），同样按爆破上限退出
 run_scenario token_overlong nonzero "凭据行超长" - --tcp-token tok_real
 
 echo ""

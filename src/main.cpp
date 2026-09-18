@@ -69,12 +69,14 @@ void print_help() {
 	std::cout << "cat scripts/std.mt | ./build/mybot --robot=./robots/spider1.sql" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "动作输入源（优先级从高到低）：" << std::endl;
-	std::cout << "  --tcp <port>       TCP 模式：监听端口接受一次连接，读取对端下发的 .mt" << std::endl;
+	std::cout << "  --tcp <port>       TCP 模式：监听端口接受一次成功连接，读取对端下发的 .mt" << std::endl;
 	std::cout << "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）" << std::endl;
 	std::cout << "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1；跨机监听（如 0.0.0.0）" << std::endl;
 	std::cout << "                     必须同时提供 --tcp-token，否则拒绝启动" << std::endl;
-	std::cout << "  --tcp-token <tok>  TCP 口令：跨机监听必填；对端须先发一行 \"<tok>\\n\" 再发脚本" << std::endl;
-	std::cout << "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）" << std::endl;
+	std::cout << "  --tcp-token <tok>  TCP 口令：跨机监听必填；对端须先发一行 \"<tok>\\n\" 再发脚本；" << std::endl;
+	std::cout << "                     校验失败关连接回等，连续 5 次才退出；也可用环境变量 BOT4CJ_TCP_TOKEN" << std::endl;
+	std::cout << "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）；" << std::endl;
+	std::cout << "                     另有连接总时长预算（600s，随该值 x20 放大）防慢滴挂住进程" << std::endl;
 	std::cout << "  --input <path>     从文件读取动作脚本" << std::endl;
 	std::cout << "  （缺省）           从 stdin 管道读取" << std::endl;
 	std::cout << "" << std::endl;

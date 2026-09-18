@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdio>
+#include <chrono>
 #include <map>
 #include <memory>
 #include <optional>
@@ -77,17 +78,24 @@ public:
 
 /* 已连接 TCP 客户端（内部 64KiB 缓冲，一次 recv 填满后逐字节出队，审计 M2；
  * EOF=0/错误=-1）
- * 空闲超时：对端连上后不再发字节时不能永久挂死进程（秒级由调用方给定）。 */
+ * 空闲超时：对端连上后不再发字节时不能永久挂死进程（秒级由调用方给定）。
+ * 总时长预算（C-M2）：空闲超时按「每字节」重置——慢滴对端每 <idle 秒发
+ * 1 字节即可无限期挂住进程。从连接建立时刻起算 wall-clock 上限，超限按
+ * 输入结束处理（脚本按截断语义走后续报错路径）。 */
 class TcpStreamReader : public Reader {
 	int fd_;
 	int idleSec_;
+	std::chrono::steady_clock::time_point deadline_;
 	bool timedOut_ = false;
+	bool overBudget_ = false;
 	std::string buf_;
 	std::size_t pos_ = 0;
 	static constexpr std::size_t kBufCap = 64u << 10;
 
 public:
-	explicit TcpStreamReader(int fd, int idleSec) : fd_(fd), idleSec_(idleSec) {}
+	explicit TcpStreamReader(int fd, int idleSec,
+			std::chrono::steady_clock::time_point deadline)
+		: fd_(fd), idleSec_(idleSec), deadline_(deadline) {}
 	~TcpStreamReader() override { if (fd_ >= 0) { ::close(fd_); } }
 
 	/* 持 socket fd：拷贝会造成双重 close（F-25） */
