@@ -94,13 +94,14 @@ TH_TEST(parseMtDouble_first_row_dash_is_zero) {
 }
 
 TH_TEST(parseMtDouble_rejects_non_numeric_cell) {
-	/* 报错必须带上出错单元格原文，否则用户无法在网格里定位 */
+	/* 报错必须带上出错单元格原文，否则用户无法在网格里定位
+	 * （N-12：统一抛 IllegalArgumentException，全库单一解析错误类型） */
 	mt::MatrixObject m = fx::oneMatrix("@Action\nrelay0.deg;\nabc;\n@\n");
-	TH_CHECK_THROWS_MSG(std::invalid_argument, "abc",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "abc",
 		bot::MatrixVars_Hardware::parseMtDouble(m, 1, 0));
 	/* 尾部残留字符同样算非法（"12abc" 不能悄悄读成 12） */
 	mt::MatrixObject m2 = fx::oneMatrix("@Action\nrelay0.deg;\n12abc;\n@\n");
-	TH_CHECK_THROWS_MSG(std::invalid_argument, "12abc",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "12abc",
 		bot::MatrixVars_Hardware::parseMtDouble(m2, 1, 0));
 }
 
@@ -110,7 +111,7 @@ TH_TEST(parseMtDouble_rejects_non_finite_cells) {
 	const char* bad[] = {"nan", "-nan", "inf", "-inf", "infinity"};
 	for (const char* v : bad) {
 		mt::MatrixObject m = fx::oneMatrix("@Action\nrelay0.deg;\n" + std::string(v) + ";\n@\n");
-		TH_CHECK_THROWS_MSG(std::invalid_argument, v,
+		TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, v,
 			bot::MatrixVars_Hardware::parseMtDouble(m, 1, 0));
 	}
 	/* 正常有限值不受影响 */

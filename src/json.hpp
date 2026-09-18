@@ -82,4 +82,8 @@ inline Json JsonString(const std::string& v) { Json j(Json::T::Str); j.s = v; re
 inline Json JsonArray() { return Json(Json::T::Arr); }
 inline Json JsonObject() { return Json(Json::T::Obj); }
 
+/* JsonObject 浅合并：把 src 的所有字段写入 dst（同名覆盖）。
+ * N-15：原驻 hardware.cpp（元数据组装用），属 Json 值层操作，归位于此。 */
+void jsonMergeInto(Json& dst, const Json& src);
+
 } // namespace bot

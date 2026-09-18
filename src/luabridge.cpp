@@ -1,12 +1,16 @@
+/* luabridge.cpp —— Json↔Lua 桥接与 call_lua 单入口（N-17：自 luaend.cpp 拆分）
+ *
+ * 职责单一化：错误串、全局类型探测、Json↔Lua 递归互转（双向深度防线）、
+ * call_lua 调用契约。进程内沙箱见 luasandbox.cpp；
+ * 伞头 luaend.hpp 的对外声明不变。
+ */
+
 #include "luaend.hpp"
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
-#include <iostream>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "util.hpp"
@@ -32,125 +36,6 @@ int luaGlobalType(lua_State* L, const char* name) {
 	int tp = lua_type(L, -1);
 	lua_pop(L, 1);
 	return tp;
-}
-
-/* ---- '..' 路径分量判定（审计 #8）：逐段与 ".." 精确比较，
- * 不误伤含 '..' 子串的合法模块名 ---- */
-static bool hasDotDotComponent(const char* path) {
-	const char* p = path;
-	while (*p != '\0') {
-		const char* e = std::strchr(p, '/');
-		std::size_t len = e != nullptr ? static_cast<std::size_t>(e - p) : std::strlen(p);
-		if (len == 2 && p[0] == '.' && p[1] == '.') { return true; }
-		if (e == nullptr) { break; }
-		p = e + 1;
-	}
-	return false;
-}
-
-/* ---- 受限 dofile/loadfile 的路径校验（M3 收口）----
- * upvalue：1 = 白名单路径表（array 部分，每项一个允许前缀），2 = 原函数。
- * 白名单在 sandbox_lua 内由 BOT4CJ_MODULE_PATH（缺省 ./modules）逐段构建。
- * 放行条件：路径以某前缀开头且紧随 '/'（或恰好等于前缀本身），
- * 保证只能加载模块树内的文件，'..' 穿越依赖前缀逐字符比对天然失效。 */
-static int restrictedLoader(lua_State* L) {
-	luaL_checktype(L, 1, LUA_TSTRING);
-	const char* path = lua_tostring(L, 1);
-
-	lua_pushvalue(L, lua_upvalueindex(1));		/* 白名单表 */
-	lua_pushnil(L);
-	bool allowed = false;
-	while (lua_next(L, -2) != 0) {
-		const char* prefix = lua_tostring(L, -1);
-		size_t len = prefix != nullptr ? lua_objlen(L, -1) : 0;
-		if (prefix != nullptr
-				&& strncmp(path, prefix, len) == 0
-				&& (path[len] == '/' || path[len] == '\0')) {
-			allowed = true;
-		}
-		lua_pop(L, 1);		/* 弹值留键 */
-	}
-	lua_pop(L, 1);			/* 弹白名单表 */
-
-	if (!allowed) {
-		return luaL_error(L, "sandbox: dofile/loadfile only allowed inside the module path (BOT4CJ_MODULE_PATH or ./modules), rejected: %s", path);
-	}
-	/* 前缀匹配挡不住 './modules/../CMakeLists.txt' 这类穿越（前缀后紧跟 '/'），
-	 * 拒绝任何含 '..' 路径分量的请求；按分量精确比较而非子串匹配——审计 #8：
-	 * strstr 会误拒含 '..' 子串的合法模块名（foo..bar.lua 之类）。 */
-	if (hasDotDotComponent(path)) {
-		return luaL_error(L, "sandbox: dofile/loadfile path must not contain '..' component (traversal rejected): %s", path);
-	}
-
-	lua_pushvalue(L, lua_upvalueindex(2));		/* 原函数 */
-	lua_pushvalue(L, 1);						/* path */
-	lua_call(L, 1, 1);
-	return 1;
-}
-
-/* ---- 收紧 Lua 沙箱（issue #9 M1 可落地部分；M3 补 dofile/loadfile 收口）----
- * 保留 os.getenv/product、os.time|clock、require（驱动仅取 ffi/bit）；
- * 中和可直接破坏宿主的入口：os.execute/exit/remove/rename、io 五件套，
- * 并把全局 dofile/loadfile 限制到模块路径白名单内（驱动经 mpath.resolve
- * 加载 lib 目录下脚本的既有用法不变，'..' 穿越与绝对路径外读被拒绝）。
- * 各全局缺表时跳过对应组。 */
-void sandbox_lua(lua_State* L) {
-	struct Group { const char* tab; const char* keys[5]; int n; };
-	static const Group groups[] = {
-		{"os", {"execute", "exit", "remove", "rename", nullptr}, 4},
-		{"io", {"popen", "open", "lines", "input", "output"}, 5},
-	};
-	for (const auto& g : groups) {
-		lua_getglobal(L, g.tab);
-		if (lua_type(L, -1) == LUA_TTABLE) {
-			for (int i = 0; i < g.n; ++i) {
-				lua_pushnil(L);
-				lua_setfield(L, -2, g.keys[i]);	/* 表在 -2 */
-			}
-		}
-		lua_pop(L, 1);
-	}
-
-	/* M3：dofile/loadfile 白名单化。白名单来自 BOT4CJ_MODULE_PATH（':' 分段，
-	 * 去空），缺省 "./modules"——与 modules/lib/mpath.lua 的 paths() 同语义。 */
-	lua_createtable(L, 0, 0);
-	std::string modulePath;
-	if (const char* env = std::getenv("BOT4CJ_MODULE_PATH")) { modulePath = env; }
-	if (modulePath.empty()) { modulePath = "./modules"; }
-	int n = 0;
-	std::size_t b = 0;
-	while (b <= modulePath.size()) {
-		std::size_t e = modulePath.find(':', b);
-		std::string p = (e == std::string::npos)
-			? modulePath.substr(b) : modulePath.substr(b, e - b);
-		if (e == std::string::npos) { b = modulePath.size() + 1; }
-		else { b = e + 1; }
-		/* 审计 #7：分段以 '/' 结尾时放行条件 path[len]=='/' 永不成立，
-		 * 整段静默失效（fail-closed 的可用性缺陷）——构建白名单时剥掉
-		 * 尾斜杠，与 mpath.lua 的路径归一对齐。单独的 "/" 段保留原样。 */
-		while (p.size() > 1 && p.back() == '/') { p.pop_back(); }
-		if (p.empty()) { continue; }
-		lua_pushlstring(L, p.data(), p.size());
-		lua_rawseti(L, -2, ++n);
-	}
-	/* 白名单为空不可能（缺省值兜底），仍防御：空表时 restrictedLoader 全拒 */
-
-	/* pushcclosure 的 upvalue 编号：先压的值 = index 1。restrictedLoader 约定
-	 * upvalue(1)=白名单表、(2)=原函数——故压入原函数后用 insert 把表拷贝
-	 * 挪到其下方，再 pushcclosure 恰好消耗这两个值。 */
-	lua_getglobal(L, "dofile");
-	lua_pushvalue(L, 1);		/* 白名单表拷贝 */
-	lua_insert(L, -2);			/* 顺序调整为 [表, 原函数] */
-	lua_pushcclosure(L, restrictedLoader, 2);
-	lua_setglobal(L, "dofile");
-
-	lua_getglobal(L, "loadfile");
-	lua_pushvalue(L, 1);
-	lua_insert(L, -2);
-	lua_pushcclosure(L, restrictedLoader, 2);
-	lua_setglobal(L, "loadfile");
-
-	lua_pop(L, 1);				/* 弹出白名单表，栈深复原 */
 }
 
 /* ---- NUL 防线（残留审计 #1）：C++ std::string 允许嵌入 '\0'，而 Lua 的
@@ -183,8 +68,13 @@ static void rejectEmbeddedNul(const Json& val) {
 	}
 }
 
-/* ---- 将 Json 值递归压入 Lua 栈（数组/对象转 Lua 表，H-03）---- */
-void push_lua_value(lua_State* L, const Json& val) {
+/* ---- 将 Json 值递归压入 Lua 栈（数组/对象转 Lua 表，H-03）----
+ * N-15 深度防线：与读回方向（lua_value_to_json 的 C-9）对称——参数侧的
+ * 自引用/超深嵌套同样无限递归，depth 计数在 kMaxLuaNesting 处抛
+ * LuaNestingTooDeep（call_lua 就地转 ERR）。注意压栈是分步副作用，抛出后
+ * 由 call_lua 的 lua_settop(L, top) 复原栈。 */
+static void push_lua_value_impl(lua_State* L, const Json& val, int depth) {
+	if (depth > kMaxLuaNesting) { throw LuaNestingTooDeep(kMaxLuaNesting); }
 	if (val.isStr()) {
 		lua_pushstring(L, val.s.c_str());
 	} else if (val.isInt()) {
@@ -198,19 +88,23 @@ void push_lua_value(lua_State* L, const Json& val) {
 	} else if (val.isArr()) {
 		lua_createtable(L, static_cast<int>(val.size()), 0);
 		for (std::size_t i = 0; i < val.size(); ++i) {
-			push_lua_value(L, val.at(i));
+			push_lua_value_impl(L, val.at(i), depth + 1);
 			lua_rawseti(L, -2, static_cast<int>(i + 1));
 		}
 	} else if (val.isObj()) {
 		lua_createtable(L, 0, 0);
 		for (const auto& kv : val.items()) {
-			push_lua_value(L, kv.second);
+			push_lua_value_impl(L, kv.second, depth + 1);
 			lua_setfield(L, -2, kv.first.c_str());
 		}
 	} else {
 		logD([] { return "push_lua_value: unsupported JsonValue type, pushed nil"; });
 		lua_pushnil(L);
 	}
+}
+
+void push_lua_value(lua_State* L, const Json& val) {
+	push_lua_value_impl(L, val, 0);
 }
 
 /* ---- 读取 Lua 栈上 idx 处的值并转换为 Json（递归）；表转 JsonArray/JsonObject ----
@@ -382,7 +276,9 @@ Json call_lua(lua_State* L, const Json& json) {
 		}
 	} else {
 		std::string errStr = luaErrorString(L);
-		std::cerr << "Lua 错误详情: " << errStr << std::endl;
+		/* N-12：详情已在 message 字段达调用方（ensureOk 会带上下文抛出），
+		 * stderr 双通道冗余打印降为 logD */
+		logD([&] { return "Lua error details: " + errStr; });
 		ret.put("result", JsonString("ERR"));
 		ret.put("message", JsonString(errStr));
 	}

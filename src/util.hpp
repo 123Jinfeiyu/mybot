@@ -28,6 +28,19 @@ public:
 	explicit IllegalArgumentException(const std::string& m) : std::runtime_error(m) {}
 };
 
+/* 递归深度 RAII 计数（N-15，收敛此前 hardware/robot 各自的局部 Guard 结构体）：
+ * 构造 ++depth，析构 --depth（异常安全）。上限检查与报错文案由调用方决定，
+ * 本类只保证「计数与回退不脱节」。求值环（@Vars 互引、$ 引用列回环）在
+ * 结构上是无限递归，只能靠计数兜底。 */
+class RecursionGuard {
+	int& depth_;
+public:
+	explicit RecursionGuard(int& depth) : depth_(depth) { ++depth_; }
+	~RecursionGuard() { --depth_; }
+	RecursionGuard(const RecursionGuard&) = delete;
+	RecursionGuard& operator=(const RecursionGuard&) = delete;
+};
+
 /* 字节流抽象：结构/动作脚本统一按字符消费 */
 class Reader {
 public:
@@ -49,6 +62,29 @@ public:
 inline std::optional<std::string> getEnvVar(const std::string& name) {
 	const char* v = std::getenv(name.c_str());
 	return v == nullptr ? std::nullopt : std::optional<std::string>(std::string(v));
+}
+
+/* N-19：Lua 驱动模块根目录——BOT4CJ_MODULE_PATH（':' 分段），缺省 ./modules。
+ * 此前宿主三处各自读取（luaend 白名单 / daemonvar chunk / robot 驱动脚本），
+ * 其中 luaend 还是手工 getenv、空串语义与另两处不一致，收敛单点。 */
+inline std::string modulePaths() {
+	auto v = getEnvVar("BOT4CJ_MODULE_PATH");
+	return (v && !v->empty()) ? *v : "./modules";
+}
+
+/* ':' 分段切分模块路径：去空段、剥尾斜杠（审计 #7 同源：fail-closed 白名单
+ * 里尾斜杠分段会静默失效），单独 "/" 段保留原样。 */
+inline std::vector<std::string> splitModulePaths(const std::string& paths) {
+	std::vector<std::string> out;
+	std::size_t b = 0;
+	while (b <= paths.size()) {
+		std::size_t e = paths.find(':', b);
+		std::string p = (e == std::string::npos) ? paths.substr(b) : paths.substr(b, e - b);
+		if (e == std::string::npos) { b = paths.size() + 1; } else { b = e + 1; }
+		while (p.size() > 1 && p.back() == '/') { p.pop_back(); }
+		if (!p.empty()) { out.push_back(std::move(p)); }
+	}
+	return out;
 }
 
 /* 严格整数解析的失败形态：调用方按场景给出人话报错（本项目错误信息惯例） */

@@ -18,12 +18,14 @@ double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int6
 	const char* start = raw.c_str();
 	double v = std::strtod(start, &end);
 	if (end == start || *end != '\0') {
-		throw std::invalid_argument("cannot parse matrix cell '" + raw + "' as Float64");
+		/* N-12：统一抛 IllegalArgumentException（此前是全库唯一的
+		 * std::invalid_argument 孤例，catch 侧无法按同一类型收口） */
+		throw IllegalArgumentException("cannot parse matrix cell '" + raw + "' as Float64");
 	}
 	/* L2：strtod 接受 nan/inf 字面量，会以非有限值流入驱动（舵机角度 NaN
 	 * 比较恒假，脉冲宽度计算不可预测）——解析层显式拒绝。 */
 	if (!std::isfinite(v)) {
-		throw std::invalid_argument("matrix cell '" + raw + "' is not a finite Float64");
+		throw IllegalArgumentException("matrix cell '" + raw + "' is not a finite Float64");
 	}
 	return v;
 }
@@ -73,13 +75,6 @@ Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 	return res;
 }
 
-void jsonMergeInto(Json& dst, const Json& src) {
-	const Json& s = src.asObject();
-	for (const auto& kv : s.items()) {
-		dst.put(kv.first, kv.second);
-	}
-}
-
 /* ---- 别名硬件变量 ---- */
 std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs, std::int64_t i) {
 	std::int64_t idxName = defs.indexOfCol(0, "name");
@@ -92,9 +87,10 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 	}
 
 	std::string name = defs(i, idxName);
-	std::string alias = MatrixVars_Hardware::getMt(defs, i, idxAlias);
+	std::string alias = defs.inherited(i, idxAlias);
 
-	std::cerr << "Create an Alias vars: " << name << ", which means " << alias << std::endl;
+	/* N-12：装配期进度走 logD（数据走 stdout、错误走 stderr 的通道纪律） */
+	logD([&] { return "Create an Alias vars: " + name + ", which means " + alias; });
 
 	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(std::move(alias)));
 }
@@ -102,13 +98,11 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 /* ---- 命名数值变量 @Vars ---- */
 
 /* 表达式求值的递归深度上限：Vars 表达式可互相引用（$(v1+v2)），成环
- * （A→B→A）或自引用会无限递归。线程局部计数兜底，超限判成环并清晰报错。 */
+ * （A→B→A）或自引用会无限递归。线程局部计数兜底，超限判成环并清晰报错。
+ * N-15：RAII 计数收敛为 util 的 RecursionGuard。 */
 namespace {
 thread_local int t_varsDepth = 0;
 constexpr int kMaxVarsDepth = 32;
-struct VarsDepthGuard {
-	~VarsDepthGuard() { --t_varsDepth; }
-};
 } // namespace
 
 double MtVars_Vars::numericValue() const {
@@ -117,8 +111,7 @@ double MtVars_Vars::numericValue() const {
 			+ std::to_string(kMaxVarsDepth) + " levels); an expression may not reference itself,"
 			+ " directly or indirectly.");
 	}
-	++t_varsDepth;
-	VarsDepthGuard guard;
+	RecursionGuard guard(t_varsDepth);
 	if (expr_) {
 		if (!resolve_) {
 			throw IllegalArgumentException("Vars expression has no variable resolver"
@@ -148,13 +141,13 @@ std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, 
 	}
 
 	std::string name = defs(i, idxName);
-	std::string value = MatrixVars_Hardware::getMt(defs, i, idxValue);
+	std::string value = defs.inherited(i, idxValue);
 
 	/* value 允许两种形态：$(<表达式>)（语法在构造期校验，标识符惰性求值）
 	 * 或数值字面量（仅支持 Number）。 */
 	if (auto body = exprBody(value)) {
 		Expression e = Expression::parse(*body);	/* 语法错误早报 */
-		std::cerr << "Create a Vars: " << name << " = " << value << std::endl;
+		logD([&] { return "Create a Vars: " + name + " = " + value; });
 		return std::unique_ptr<MtVars_Vars>(
 			new MtVars_Vars(std::string(), std::move(e), std::move(resolve)));
 	}
@@ -163,7 +156,7 @@ std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, 
 			+ "': value '" + value + "' is neither a Number nor a $(...) expression.");
 	}
 
-	std::cerr << "Create a Vars: " << name << " = " << value << std::endl;
+	logD([&] { return "Create a Vars: " + name + " = " + value; });
 
 	return std::unique_ptr<MtVars_Vars>(
 		new MtVars_Vars(std::move(value), std::nullopt, std::move(resolve)));

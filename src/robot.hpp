@@ -50,6 +50,10 @@ public:
 	/* 登记 controller 引用（createLuaVars 装配期调用） */
 	void addControllerRef(const std::string& name) { controllerRefs_.insert(name); }
 
+	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛）——
+	 * MetaProvider 的 $(...) 求值、HwFactory 装配、runAction 表达式列共用 */
+	std::function<double(const std::string&)> makeVarsResolver() const;
+
 	MatrixVars_Hardware* find(const std::string& name) const {
 		auto it = byName_.find(name);
 		return it == byName_.end() ? nullptr : it->second;
@@ -89,6 +93,9 @@ class MetaProvider {
 	void seed();
 	/* 字面列（含 "-" 继承结果）构造——运行期与销毁期两条收集路径共用 */
 	Json staticPart();
+	/* N-16：collect / collectForDestroy 公共内核（forDestroy=false 时
+	 * 引用解析失败照常上抛；true 时逐引用尽力而为、logD 跳过） */
+	Json collectRefs(bool forDestroy);
 
 public:
 	MetaProvider(const mt::MatrixObject& matrix, std::int64_t row, std::int64_t skipCol,
@@ -103,14 +110,12 @@ public:
 	void validate() { seed(); }
 };
 
-/* ---- 脚本装载：SQL/矩阵 文本 → MatrixObject（R-1 拆自 RobotStruct）---- */
+/* ---- 脚本装载：SQL/矩阵 文本 → MatrixObject（R-1 拆自 RobotStruct）----
+ * N-11：矩阵文本解析（readMatrix）已下沉 mt 层，本类只剩 SQL 事件装配。 */
 class ScriptLoader {
 public:
 	/* SQL4cj → MatrixObject 结构表解析 */
 	static void readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out);
-
-	/* 读取 @Action/@Alias 矩阵外表：自省结局，不破坏读缓存 */
-	static void readMatrix(bot::Reader& file, std::vector<mt::MatrixObject>& out);
 };
 
 /* ---- 硬件装配：矩阵表 → 硬件变量（R-1 拆自 RobotStruct）---- */
@@ -173,9 +178,7 @@ class ActionRunner {
 		Expression ast;
 	};
 
-	static const mt::MatrixObject* findMt(
-			const std::vector<mt::MatrixObject>& ll, const std::string& name);
-	static std::pair<std::string, std::string> parseActionColumn(const std::string& name_HV);
+	/* N-10：按名查矩阵与列头切分下沉 mt 层（findByName / splitActionColumn） */
 	void parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 			std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
 			const std::pair<std::string, std::string>& colHead, ColExprCache& exprCache);

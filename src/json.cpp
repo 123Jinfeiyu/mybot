@@ -80,6 +80,13 @@ static std::string formatDouble(double d) {
 	return out;
 }
 
+void jsonMergeInto(Json& dst, const Json& src) {
+	const Json& s = src.asObject();
+	for (const auto& kv : s.items()) {
+		dst.put(kv.first, kv.second);
+	}
+}
+
 static void escapeString(std::string& out, const std::string& s) {
 	out += '"';
 	for (unsigned char c : s) {

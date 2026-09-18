@@ -265,19 +265,11 @@ Json DaemonRunner::readSample() {
 }
 
 /* ---- issue #19：多模块路径按序查找第一个存在的文件 ----
- * 全部不存在返回最后一个路径拼接（保持原有"文件不存在"加载报错语义）。 */
+ * 全部不存在返回最后一个路径拼接（保持原有"文件不存在"加载报错语义）。
+ * N-19：':' 分段/去空/剥尾斜杠统一走 util 的 splitModulePaths。 */
 std::string firstExistingModule(const std::string& paths, const std::string& rel) {
 	std::string last = paths + "/" + rel;
-	std::size_t b = 0;
-	while (b <= paths.size()) {
-		std::size_t e = paths.find(':', b);
-		std::string p = (e == std::string::npos) ? paths.substr(b) : paths.substr(b, e - b);
-		if (e == std::string::npos) {
-			b = paths.size() + 1;
-		} else {
-			b = e + 1;
-		}
-		if (p.empty()) { continue; }
+	for (const std::string& p : splitModulePaths(paths)) {
 		std::string cand = p + "/" + rel;
 		std::ifstream f(cand, std::ios::binary);
 		if (f.good()) { return cand; }
@@ -341,12 +333,13 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 		throw IllegalArgumentException("Table '" + defs.getName() + "' has no 'chunk' column.");
 	}
 	std::string name = defs(i, idxName);
-	std::string chunkRaw = MatrixVars_Hardware::getMt(defs, i, idxChunk);
+	std::string chunkRaw = defs.inherited(i, idxChunk);
 
-	auto modulePathOpt = getEnvVar("BOT4CJ_MODULE_PATH");
-	std::string modulePath = modulePathOpt.value_or("./modules");
+	/* N-19：模块根目录统一走 util::modulePaths（空串也归一为缺省） */
+	std::string modulePath = modulePaths();
 	std::string chunkPath = resolveDaemonChunk(chunkRaw, modulePath);
-	std::cerr << "Create a Daemon hard-Var: " << name << ", chunk: " << chunkPath << std::endl;
+	/* N-12：装配期进度走 logD（spawn/join 是运行期生命周期事件，保留 stderr） */
+	logD([&] { return "Create a Daemon hard-Var: " + name + ", chunk: " + chunkPath; });
 
 	/* 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms） */
 	std::string cfgAcc;
@@ -354,7 +347,7 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 	for (int64_t j = 0; j < static_cast<int64_t>(defs.cols()); ++j) {
 		const std::string& colName = defs(0, j);
 		if (colName == "name" || colName == "chunk") { continue; }
-		std::string v = MatrixVars_Hardware::getMt(defs, i, j);
+		std::string v = defs.inherited(i, j);
 		cfgAcc += colName + "=" + v + ";";
 		if (colName == "interval" && v != "-") {
 			ivAcc = parseInterval(v, name, defs.getName(), i);

@@ -1,6 +1,8 @@
 #pragma once
 /* luaend.hpp —— Lua 状态机辅助（移植 bot4cj/src/HV/Lua.cj 的公共部分）
  * 错误串、全局类型探测、沙箱、Json↔Lua 递归互转、call_lua 单入口。
+ * N-17：实现拆为 luabridge.cpp（桥接/call_lua）与 luasandbox.cpp（沙箱），
+ * 本伞头的对外声明不变。
  */
 
 extern "C" {
@@ -42,7 +44,10 @@ public:
 			+ "self-referential table (t.x = t) or an unintended recursive structure") {}
 };
 
-/* 将 Json 递归压入 Lua 栈（数组/对象转 Lua 表）；返回后栈顶即该值 */
+/* 将 Json 递归压入 Lua 栈（数组/对象转 Lua 表）；返回后栈顶即该值。
+ * N-15：与读回方向（lua_value_to_json 的 C-9）对称的深度防线——驱动参数
+ * 里的自引用结构（如把含自己的元数据表原样传回）在此侧同样只可能靠计数兜底；
+ * 超 kMaxLuaNesting 抛 LuaNestingTooDeep（call_lua 就地转 ERR）。 */
 void push_lua_value(lua_State* L, const Json& val);
 
 /* 将 Lua 栈上 idx 处的值递归转为 Json（int→字面整 判 Int，否则 Float）。

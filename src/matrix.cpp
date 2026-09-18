@@ -2,7 +2,24 @@
 
 namespace mt {
 
-/* 解析器主体：一个 _next 消费一个字符，返回更新后的行号 */
+/* 解析器主体：一个 _next 消费一个字符，返回更新后的行号。
+ *
+ * N-18 状态转移表（三状态位组合驱动，全部 8 分支罗列如下）：
+ *   输入            │ 条件                      │ 动作
+ *   ────────────────┼───────────────────────────┼──────────────────────────────
+ *   '#'             │ 非注释态                  │ 进注释态；名字态提交名字，
+ *                   │                           │ 数据态提交挂起单元（C-M）
+ *   '\n'            │ 注释态                    │ 退注释态，行号 +1
+ *   其他            │ 注释态                    │ 忽略
+ *   空白/'\r''\n'   │ 行首态（nl_）             │ 忽略
+ *   '@'             │ 行首态且无矩阵名          │ 进名字态（开新矩阵）
+ *   '@'             │ 行首态且已有矩阵名        │ 置结束标志（闭矩阵）
+ *   其他            │ 行首态                    │ 退行首态，字符起头新单元
+ *   空白/换行       │ 名字态（nm_）             │ 提交名字，回行首态
+ *   空白/换行       │ 数据态                    │ 提交单元
+ *   ';'             │ 非行首                    │ 提交单元并收口一行
+ *   其他            │ 非行首                    │ 追加进当前单元
+ */
 std::int64_t MatrixParser::next_(char c, std::int64_t count) {
 	/* ------------ COMMENTS ------------ */
 	if (!cm_ && c == '#') {
@@ -95,6 +112,15 @@ std::optional<MatrixObject> MatrixParser::parse() {
 
 	if (!builder_.hasName()) { return std::nullopt; }
 	return builder_.take();
+}
+
+/* 逐个解析矩阵外表直到 EOF（N-11：自 ScriptLoader::readMatrix 下沉，
+ * mtmerge 与 mybot 运行端共用同一入口） */
+void readMatrix(bot::Reader& file, std::vector<MatrixObject>& out) {
+	MatrixParser parser(file);
+	while (auto mat = parser.parse()) {
+		out.push_back(std::move(*mat));
+	}
 }
 
 } // namespace mt

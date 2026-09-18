@@ -38,10 +38,8 @@ public:
 	/* 伪析构：释放资源（缺省无操作） */
 	virtual void destroy() {}
 
-	/* 获得项目值；占位符 "-" 且非首行时继承上一行（直查前向填充缓存，不递归） */
-	static std::string getMt(const mt::MatrixObject& obj, std::int64_t row, std::int64_t col) {
-		return obj.inherited(row, col);
-	}
+	/* 获得项目值；占位符 "-" 且非首行时继承上一行——直接用
+	 * mt::MatrixObject::inherited(row, col)（N-15：删去无谓的 getMt 包装） */
 
 	/* 解析项目值（占位符语义 + 类型解析）。本工程只用 Float64 */
 	static double parseMtDouble(const mt::MatrixObject& obj, std::int64_t row, std::int64_t col);
@@ -50,9 +48,6 @@ public:
 	 * 结果不是表也即抛（表外读不到 result，静默放行＝把「没动」报成成功） */
 	static Json ensureOk(const Json& res, const std::string& ctx = "");
 };
-
-/* JsonObject 浅合并：把 src 的所有字段写入 dst（同名覆盖） */
-void jsonMergeInto(Json& dst, const Json& src);
 
 /* ---- 标量文本硬件变量（@Alias / @Vars 共用）----
  * play/read 返回一个 JsonString，无资源可 build/destroy：

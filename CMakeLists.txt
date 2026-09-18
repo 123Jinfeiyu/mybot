@@ -51,7 +51,8 @@ set(MYBOT_CORE_SOURCES
   src/matrix.cpp
   src/expr.cpp
   src/sqlparse.cpp
-  src/luaend.cpp
+  src/luabridge.cpp
+  src/luasandbox.cpp
   src/hardware.cpp
   src/luavar.cpp
   src/daemonvar.cpp
@@ -59,12 +60,16 @@ set(MYBOT_CORE_SOURCES
   src/actionsource.cpp
 )
 
-# 两个目标的公共配置：零告警基线 + LuaJIT 头/库 + 平台库，一处声明一致套用，
+# 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，
 # 避免「测试构建干净、主构建不干净」的错位（原先两份拷贝靠人工同步）。
+add_library(mybot_warnings INTERFACE)
+target_compile_options(mybot_warnings INTERFACE -Wall -Wextra -Wpedantic)
+target_include_directories(mybot_warnings INTERFACE src ${LUAJIT_INCLUDE_DIRS})
+
+# Lua 运行时链接（仅 mybot / mybot_tests；mtmerge 是纯离线矩阵工具）
 add_library(mybot_common INTERFACE)
-target_compile_options(mybot_common INTERFACE -Wall -Wextra -Wpedantic)
-target_include_directories(mybot_common INTERFACE src ${LUAJIT_INCLUDE_DIRS})
 target_link_libraries(mybot_common INTERFACE
+  mybot_warnings
   ${LUAJIT_LIBRARIES}
   pthread
   dl
@@ -76,14 +81,16 @@ add_executable(mybot
   ${MYBOT_CORE_SOURCES}
 )
 
-# mtmerge：.mt 动作脚本合成器（离线编译目标，不依赖 LuaJIT 运行时；
-# 复用 mybot_common 的头文件与告警基线，core 源码里只需 matrix/sqlparse/util
-# 一层，但直接链整份 core 以与 mybot 单测同一策略，避免第二份拷贝）
+# mtmerge：.mt 动作脚本合成器（离线编译目标，不依赖 LuaJIT 运行时）。
+# N-11：矩阵解析入口（mt::readMatrix）下沉 matrix 层后，它只需
+# matrix/sqlparse 一层 + actionsource 的头文件常量，不再链接整份 core。
 add_executable(mtmerge
   src/mtmerge.cpp
-  ${MYBOT_CORE_SOURCES}
+  src/matrix.cpp
+  src/expr.cpp
+  src/sqlparse.cpp
 )
-target_link_libraries(mtmerge PRIVATE mybot_common)
+target_link_libraries(mtmerge PRIVATE mybot_warnings)
 
 # README 声称的零告警基线由此处强制执行（此前构建未启用任何告警标志，
 # 基线只能靠人工手工传标志核查）。不加 -Werror：避免在未测试的编译器版本上直接构建失败。

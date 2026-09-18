@@ -25,23 +25,14 @@
 
 #include "actionsource.hpp"
 #include "matrix.hpp"
-#include "robot.hpp"
 #include "util.hpp"
 
 namespace {
 
-/* 按矩阵名查找（trim 后比较）；不存在返回 nullptr。 */
-const mt::MatrixObject* findNamed(const std::vector<mt::MatrixObject>& ll, const std::string& name) {
-	for (const auto& m : ll) {
-		if (bot::trim(m.getName()) == name) { return &m; }
-	}
-	return nullptr;
-}
-
 /* @Action：找到列头即最终形态（别名替换由 mybot 在装配期完成）。找不到即报错。 */
 const mt::MatrixObject& requireAction(const std::vector<mt::MatrixObject>& parsed,
 		const std::string& path) {
-	const mt::MatrixObject* act = findNamed(parsed, "Action");
+	const mt::MatrixObject* act = mt::findByName(parsed, "Action");
 	if (act == nullptr) {
 		throw bot::IllegalArgumentException("'" + path + "': no @Action matrix found");
 	}
@@ -110,28 +101,18 @@ std::optional<mt::MatrixObject> foldNamed(const std::vector<mt::MatrixObject>& p
 	return acc;
 }
 
-/* 设备名集合：列头按 <device>.<param> 切分（与 ActionRunner::parseActionColumn 同规则）。
- * mtmerge 是独立产物，不依赖 robot.cpp 的 ActionRunner，故此处内联同一切分规则。 */
-std::pair<std::string, std::string> splitColumn(const std::string& nameHV) {
-	std::size_t dot = nameHV.find('.');
-	if (dot == std::string::npos || nameHV.find('.', dot + 1) != std::string::npos) {
-		throw bot::IllegalArgumentException("Action column '" + nameHV
-			+ "' is not valid (expected format: <device>.<param>)");
-	}
-	return { nameHV.substr(0, dot), nameHV.substr(dot + 1) };
-}
-
 /* 校验设备集不相交：相交即抛，指明冲突设备与两侧列头（装配期静态可判，
- * 不静默串行化——把竞态伪装成功能是本项目一贯拒绝的行为）。 */
+ * 不静默串行化——把竞态伪装成功能是本项目一贯拒绝的行为）。
+ * 列头切分用 mt::splitActionColumn（N-10：与 ActionRunner 同一单点）。 */
 void checkDisjoint(const mt::MatrixObject& a, const mt::MatrixObject& b,
 		const std::string& pa, const std::string& pb) {
 	std::map<std::string, std::string> seen;	/* device -> 首个列头原文 */
 	for (std::size_t j = 0; j < a.cols(); ++j) {
-		auto [dev, param] = splitColumn(a(0, j));
+		auto [dev, param] = mt::splitActionColumn(a(0, j));
 		seen.emplace(dev, a(0, j));
 	}
 	for (std::size_t j = 0; j < b.cols(); ++j) {
-		auto [dev, param] = splitColumn(b(0, j));
+		auto [dev, param] = mt::splitActionColumn(b(0, j));
 		auto it = seen.find(dev);
 		if (it != seen.end()) {
 			throw bot::IllegalArgumentException("device '" + dev + "' appears in both scripts: '"
@@ -295,7 +276,7 @@ int main(int argc, char** argv) {
 			}
 			bot::MemoryReader in(std::move(data));
 			std::vector<mt::MatrixObject> parsed;
-			bot::ScriptLoader::readMatrix(in, parsed);
+			mt::readMatrix(in, parsed);
 			if (parsed.empty()) {
 				throw bot::IllegalArgumentException("'" + path + "': no matrix found");
 			}

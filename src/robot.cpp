@@ -31,6 +31,17 @@ void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Ha
 	pool_.push_back(std::move(hw));
 }
 
+/* N-15：表达式标识符求值器单点——三个调用面（元数据 $(...)、@Vars 装配、
+ * 动作表达式列）此前各自内联同一形态的 lambda。 */
+namespace {
+double resolveVarsNumber(const HwRegistry* reg, const std::string& name);
+} // namespace
+
+std::function<double(const std::string&)> HwRegistry::makeVarsResolver() const {
+	const HwRegistry* reg = this;
+	return [reg](const std::string& nm) { return resolveVarsNumber(reg, nm); };
+}
+
 /* 表达式标识符求值：查注册表，必须是 @Vars（数值），递归取数。
  * 环（A→B→A）由 MtVars_Vars::numericValue 的深度计数兜底。 */
 namespace {
@@ -62,7 +73,7 @@ void MetaProvider::seed() {
 	std::int64_t idxName = matrix_.indexOfCol(0, "name");
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix_.cols()); ++j) {
 		const std::string& colName = matrix_(0, j);
-		std::string value = MatrixVars_Hardware::getMt(matrix_, row_, j);
+		std::string value = matrix_.inherited(row_, j);
 		if (value == "-") { continue; }
 		if (j == idxName || j == skipCol_) { continue; }
 		if (value.rfind("$", 0) == 0) {
@@ -112,13 +123,11 @@ void MetaProvider::seed() {
 
 /* C1 防线：$ 引用列经 read() → getMetadata_() → collect() 互递归取实时快照，
  * 环配置（如 A.src=$B 且 B.src=$A，或自引用）会无限递归直到栈溢出。
- * 用线程局部深度计数兜底：正常引用链深度 1，超限即判定为环并清晰报错。 */
+ * 用线程局部深度计数兜底：正常引用链深度 1，超限即判定为环并清晰报错。
+ * N-15：RAII 计数收敛为 util 的 RecursionGuard。 */
 namespace {
 thread_local int t_refDepth = 0;
 constexpr int kMaxRefDepth = 32;
-struct RefDepthGuard {
-	~RefDepthGuard() { --t_refDepth; }
-};
 } // namespace
 
 Json MetaProvider::staticPart() {
@@ -133,82 +142,60 @@ Json MetaProvider::staticPart() {
 }
 
 Json MetaProvider::collect() {
-	if (t_refDepth >= kMaxRefDepth) {
+	return collectRefs(/*forDestroy=*/false);
+}
+
+/* N-16：collect 与 collectForDestroy 的公共内核（此前是 ~60 行双胞胎，
+ * N-5 锁定指针等语义改动要改两处、靠评审对齐——现在只有一个实现）。
+ * forDestroy 差异点：错误不再上抛（destroy 是清理路径，逐引用尽力而为）：
+ * 表达式求值失败 / read 失败 / 非对象快照 → logD 跳过该列；ERR 快照跳过。 */
+Json MetaProvider::collectRefs(bool forDestroy) {
+	if (forDestroy) {
+		/* F-04′：destroy 阶段的元数据收集——字面列 + 引用列的「尽力而为」快照。
+		 *
+		 * 为什么不能只取字面列（F-04 的原实现 collectStatic）：总线句柄 fd 与从机
+		 * address 都不是字面列，而是器件行经 `$i2c-N` / `$uart-N` 从接口器件的快照
+		 * 来的（modules/I2C.lua 的 call 下发 fd）。modules/lib/drv_common.lua 的
+		 * i2c_pair 要用它们，于是丢字段的后果按驱动分两档：
+		 *   * 走 i2c_pair 的 PCA9685 / MPU6050 / BH1750 —— destroy 响亮报错
+		 *     （Deactive warning: ... Invalid Argument: fd or address）；
+		 *   * 走 `if fd ~= nil ...` 守卫的 ADS1015 / ADS1115 / ADS1256 / APDS9900 /
+		 *     BME280 / BME688 / MAX30102 / MCP3421 / SGP30 / VL53L0X / VL53L4CD /
+		 *     SCSCL —— 静默跳过整个去初始化，器件滞留在最后指令状态且一声不响。
+		 *
+		 * 为什么可以放心解析引用：接口器件（I2C/SPI/UART）的 fd 只由它自己的 destroy
+		 * 关闭，而「总线必须先于器件声明」在 build 期就被强制了——器件 build 要用 fd，
+		 * 就必须让总线先 build（总线前向引用在 build 期即失败，见 ref_bus_forward 用例）。
+		 * 于是倒序销毁天然保证总线最后关闭，器件 destroy 期间 fd 始终有效。
+		 *
+		 * 与 F-04 的原始诉求不冲突：要守的是「destroy 这个调用绝不被跳过」，不是
+		 * 「不许解析引用」。这里对每个引用**单独** try——抛错（引用已被销毁）只跳过
+		 * 该引用本身。会被跳过的只可能是「数据前向引用」链（如 Monitor→Ema→Daemon，
+		 * 引用者在倒序里反而最后销毁），而 v0/out/count 这类字段本就不是器件去初始化
+		 * 所需。ERR 快照同理跳过（守护槽已移交时 readSample 按 ERR 契约返回对象而非抛错，
+		 * 把 message 混进去初始化参数没有意义）。 */
+	} else if (t_refDepth >= kMaxRefDepth) {
+		/* C1 防线：$ 引用列经 read() → getMetadata_() → collect() 互递归取实时
+		 * 快照，环配置（如 A.src=$B 且 B.src=$A，或自引用）会无限递归直到栈
+		 * 溢出——深度计数兜底，超限判环并清晰报错。（destroy 期不递归进入
+		 * 本函数，被引用方的 collect 自带同一防线。） */
 		throw IllegalArgumentException("circular '$' reference detected: reference chain exceeds "
 			+ std::to_string(kMaxRefDepth) + " levels while resolving table '" + matrix_.getName()
 			+ "' row " + std::to_string(row_)
 			+ ". Check that '$' reference columns do not form a cycle (a variable referencing itself, directly or indirectly).");
 	}
-	++t_refDepth;
-	RefDepthGuard depthGuard;
+	RecursionGuard depthGuard(t_refDepth);
 
 	Json obj = staticPart();
 	for (const MetaRef& ref : *refs_) {
 		if (ref.expr) {
-			/* $(...) 表达式：把求值结果格式化后写回承载 $ 的列 */
-			double v = ref.expr->eval([this](const std::string& nm) {
-				return resolveVarsNumber(registry_, nm);
-			});
-			obj.put(ref.col, JsonString(formatNumber(v)));
-			continue;
-		}
-		const std::string& colName = ref.col;
-		const std::string& name = ref.var;
-		/* N-5：使用 seed 期锁定的目标指针，不按名重查（会话覆盖不影响绑定） */
-		MatrixVars_Hardware* hv = ref.target;
-		if (hv == nullptr) { continue; }
-		Json snap = hv->read();
-		if (snap.isObj()) {
-			jsonMergeInto(obj, snap.asObject());
-		} else if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
-			/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
-			obj.put(colName, snap);
-		} else {
-			throw IllegalArgumentException("'$" + name
-				+ "': referenced variable returned a non-object (scalar) snapshot; "
-				+ "the '$' reference column '" + colName
-				+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
-				+ " carry a numeric value that can fill a column; Alias/scalar variables are"
-				+ " only supported via 'controller' columns.");
-		}
-	}
-	return obj;
-}
-
-/* F-04′：destroy 阶段的元数据收集——字面列 + 引用列的「尽力而为」快照。
- *
- * 为什么不能只取字面列（F-04 的原实现 collectStatic）：总线句柄 fd 与从机
- * address 都不是字面列，而是器件行经 `$i2c-N` / `$uart-N` 从接口器件的快照
- * 来的（modules/I2C.lua 的 call 下发 fd）。modules/lib/drv_common.lua 的
- * i2c_pair 要用它们，于是丢字段的后果按驱动分两档：
- *   * 走 i2c_pair 的 PCA9685 / MPU6050 / BH1750 —— destroy 响亮报错
- *     （Deactive warning: ... Invalid Argument: fd or address）；
- *   * 走 `if fd ~= nil ...` 守卫的 ADS1015 / ADS1115 / ADS1256 / APDS9900 /
- *     BME280 / BME688 / MAX30102 / MCP3421 / SGP30 / VL53L0X / VL53L4CD /
- *     SCSCL —— 静默跳过整个去初始化，器件滞留在最后指令状态且一声不响。
- *
- * 为什么可以放心解析引用：接口器件（I2C/SPI/UART）的 fd 只由它自己的 destroy
- * 关闭，而「总线必须先于器件声明」在 build 期就被强制了——器件 build 要用 fd，
- * 就必须让总线先 build（总线前向引用在 build 期即失败，见 ref_bus_forward 用例）。
- * 于是倒序销毁天然保证总线最后关闭，器件 destroy 期间 fd 始终有效。
- *
- * 与 F-04 的原始诉求不冲突：要守的是「destroy 这个调用绝不被跳过」，不是
- * 「不许解析引用」。这里对每个引用**单独** try——抛错（引用已被销毁）只跳过
- * 该引用本身。会被跳过的只可能是「数据前向引用」链（如 Monitor→Ema→Daemon，
- * 引用者在倒序里反而最后销毁），而 v0/out/count 这类字段本就不是器件去初始化
- * 所需。ERR 快照同理跳过（守护槽已移交时 readSample 按 ERR 契约返回对象而非抛错，
- * 把 message 混进去初始化参数没有意义）。 */
-Json MetaProvider::collectForDestroy() {
-	Json obj = staticPart();
-	for (const MetaRef& ref : *refs_) {
-		if (ref.expr) {
-			/* 表达式只引用 @Vars（无资源），destroy 期照常求值；异常只跳过该列 */
+			/* $(...) 表达式：把求值结果格式化后写回承载 $ 的列。
+			 * 表达式只引用 @Vars（无资源），destroy 期照常求值。 */
 			try {
-				double v = ref.expr->eval([this](const std::string& nm) {
-					return resolveVarsNumber(registry_, nm);
-				});
+				double v = ref.expr->eval(registry_->makeVarsResolver());
 				obj.put(ref.col, JsonString(formatNumber(v)));
 			} catch (const std::exception& e) {
+				if (!forDestroy) { throw; }
 				logD([&] {
 					return "destroy metadata: '" + matrix_.getName() + "' row "
 						+ std::to_string(row_) + " skipped expression column '" + ref.col
@@ -219,14 +206,15 @@ Json MetaProvider::collectForDestroy() {
 		}
 		const std::string& colName = ref.col;
 		const std::string& name = ref.var;
-		/* N-5：seed 期锁定的目标指针——destroy 期不按名重查，会话别名覆盖
-		 * 不会让销毁期快照解析到覆盖者（别名）上 */
+		/* N-5：seed 期锁定的目标指针——collect/destroy 期都不按名重查，
+		 * 会话别名覆盖不影响引用绑定（含销毁期快照归属） */
 		MatrixVars_Hardware* hv = ref.target;
 		if (hv == nullptr) { continue; }
-		Json snap = JsonObject();
+		Json snap;
 		try {
 			snap = hv->read();
 		} catch (const std::exception& e) {
+			if (!forDestroy) { throw; }
 			logD([&] {
 				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
 					+ " skipped '$" + name + "' (already released: " + e.what() + ")";
@@ -234,27 +222,42 @@ Json MetaProvider::collectForDestroy() {
 			continue;
 		}
 		if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
+			/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
 			obj.put(colName, snap);
 			continue;
 		}
 		if (!snap.isObj()) {
+			if (!forDestroy) {
+				throw IllegalArgumentException("'$" + name
+					+ "': referenced variable returned a non-object (scalar) snapshot; "
+					+ "the '$' reference column '" + colName
+					+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
+					+ " carry a numeric value that can fill a column; Alias/scalar variables are"
+					+ " only supported via 'controller' columns.");
+			}
 			logD([&] {
 				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
 					+ " skipped '$" + name + "' (non-object snapshot)";
 			});
 			continue;
 		}
-		auto rs = snap.get("result");
-		if (rs && rs->isStr() && rs->asString().getValue() == "ERR") {
-			logD([&] {
-				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
-					+ " skipped '$" + name + "' (reference reported ERR)";
-			});
-			continue;
+		if (forDestroy) {
+			auto rs = snap.get("result");
+			if (rs && rs->isStr() && rs->asString().getValue() == "ERR") {
+				logD([&] {
+					return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
+						+ " skipped '$" + name + "' (reference reported ERR)";
+				});
+				continue;
+			}
 		}
 		jsonMergeInto(obj, snap.asObject());
 	}
 	return obj;
+}
+
+Json MetaProvider::collectForDestroy() {
+	return collectRefs(/*forDestroy=*/true);
 }
 
 /* ==================== ScriptLoader：SQL/矩阵 文本 → MatrixObject ==================== */
@@ -280,11 +283,9 @@ void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& ou
 		case sql4cj::EventType::INSERT_TABLE: {
 			if (out.empty()) { throw std::runtime_error("No table created yet."); }
 			/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
-			 * （对照 robots/test/insert_typo.sql 的负路径契约） */
-			mt::MatrixObject* root = nullptr;
-			for (auto& m : out) {
-				if (trim(m.getName()) == eve.insert.targetTabName) { root = &m; break; }
-			}
+			 * （对照 robots/test/insert_typo.sql 的负值契约；N-10：查找
+			 * 收敛到 mt::findByName 单点） */
+			mt::MatrixObject* root = mt::findByName(out, eve.insert.targetTabName);
 			if (root == nullptr) {
 				throw IllegalArgumentException(
 					"INSERT INTO '" + eve.insert.targetTabName + "': table is not defined");
@@ -300,14 +301,6 @@ void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& ou
 		default:
 			break;
 		}
-	}
-}
-
-/* ---- 读取 @Action/@Alias 矩阵外表：自省结局，不破坏读缓存 ---- */
-void ScriptLoader::readMatrix(bot::Reader& file, std::vector<mt::MatrixObject>& out) {
-	mt::MatrixParser parser(file);
-	while (auto mat = parser.parse()) {
-		out.push_back(std::move(*mat));
 	}
 }
 
@@ -339,11 +332,8 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 			var = MtVars_Alias::Factory(matrix, i);
 		} else {
 			/* Vars 表达式惰性求值：标识符经注册表解析（环由 Vars 深度计数兜底；
-			 * registry_ 的生命周期长于 factory_，捕获其地址安全） */
-			const HwRegistry* reg = &registry_;
-			var = MtVars_Vars::Factory(matrix, i, [reg](const std::string& nm) {
-				return resolveVarsNumber(reg, nm);
-			});
+			 * registry_ 的生命周期长于 factory_，解析器捕获其地址安全） */
+			var = MtVars_Vars::Factory(matrix, i, registry_.makeVarsResolver());
 		}
 		if (session) {
 			if (session->count(name)) {
@@ -403,15 +393,14 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
 	}
 	std::int64_t idxCtrl = matrix.indexOfCol(0, "controller");
-	auto modulePathOpt = getEnvVar("BOT4CJ_MODULE_PATH");
-	std::string modulePath = modulePathOpt.value_or("./modules");
+	std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
 	std::string scriptPath = firstExistingModule(modulePath, mtName + ".lua");
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
 		std::string ctrlName;
 		if (idxCtrl >= 0) {
-			std::string rawCtrl = MatrixVars_Hardware::getMt(matrix, i, idxCtrl);
+			std::string rawCtrl = matrix.inherited(i, idxCtrl);
 			if (rawCtrl != "-") {
 				if (registry_.find(rawCtrl) == nullptr) {
 					throw IllegalArgumentException("Hardware variable '" + name + "' declares controller '"
@@ -435,30 +424,21 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 
 /* ==================== ActionRunner：@Action 逐行重放 ==================== */
 
-/* ---- 按表名查找（trim 后比较）；不存在返回 nullptr ---- */
-const mt::MatrixObject* ActionRunner::findMt(
-		const std::vector<mt::MatrixObject>& ll, const std::string& name) {
-	for (const auto& m : ll) {
-		if (trim(m.getName()) == name) { return &m; }
-	}
-	return nullptr;
-}
-
 /* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
 void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
-	const mt::MatrixObject* actionDefsPtr = findMt(actionMatrices, "Action");
+	const mt::MatrixObject* actionDefsPtr = mt::findByName(actionMatrices, "Action");
 	if (actionDefsPtr == nullptr) {
 		throw IllegalArgumentException("No @Action matrix found in the script. Please define @Action in your .mt file.");
 	}
 	const mt::MatrixObject& actionDefs = *actionDefsPtr;
 
 	/* 列头只解析一次（C-M3）：原实现在 order/相位检测/每行每格三处
-	 * 重复做 <device>.<param> 切分 */
+	 * 重复做 <device>.<param> 切分（切分规则单点在 mt::splitActionColumn） */
 	std::vector<std::pair<std::string, std::string>> colHeads;
 	colHeads.reserve(static_cast<std::size_t>(actionDefs.cols()));
 	std::vector<std::string> order;
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
-		colHeads.push_back(parseActionColumn(actionDefs(0, j)));
+		colHeads.push_back(mt::splitActionColumn(actionDefs(0, j)));
 		if (std::find(order.begin(), order.end(), colHeads.back().first) == order.end()) {
 			order.push_back(colHeads.back().first);
 		}
@@ -511,16 +491,6 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	}
 }
 
-/* ---- @Action 列头解析：<device>.<param> ---- */
-std::pair<std::string, std::string> ActionRunner::parseActionColumn(const std::string& name_HV) {
-	std::size_t dot = name_HV.find('.');
-	if (dot == std::string::npos || name_HV.find('.', dot + 1) != std::string::npos) {
-		throw IllegalArgumentException("Action column '" + name_HV
-			+ "' is not valid (expected format: <device>.<param>)");
-	}
-	return { name_HV.substr(0, dot), name_HV.substr(dot + 1) };
-}
-
 /* ---- @Action 单元格解析（别名解析 + 数值类型解析 + 分组）---- */
 void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 		std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
@@ -536,18 +506,16 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 	if (phaseDevices.count(name_dev) > 0 && actionDefs.inherited(i, j) == "-") { return; }
 
 	/* 单元格：$(...) 表达式按求值结果；否则走既有数值/继承解析。
-	 * getMt 已解析 "-" 继承（上一行是表达式时按上一行表达式再算一次）。 */
+	 * inherited 已解析 "-" 继承（上一行是表达式时按上一行表达式再算一次）。 */
 	double val_fp64;
-	std::string raw = MatrixVars_Hardware::getMt(actionDefs, i, j);
+	std::string raw = actionDefs.inherited(i, j);
 	if (auto body = exprBody(raw)) {
 		/* C-M3：AST 按列缓存——"-" 继承链上同一表达式文本原每行重解析 */
 		if (exprCache.body != *body) {
 			exprCache.body = *body;
 			exprCache.ast = Expression::parse(*body);
 		}
-		val_fp64 = exprCache.ast.eval([this](const std::string& nm) {
-			return resolveVarsNumber(&registry_, nm);
-		});
+		val_fp64 = exprCache.ast.eval(registry_.makeVarsResolver());
 	} else {
 		val_fp64 = MatrixVars_Hardware::parseMtDouble(actionDefs, i, j);
 	}
@@ -620,7 +588,7 @@ void RobotStruct::deactivate() {
 /* ---- 执行 @Action 矩阵 + 内联 @Alias ---- */
 void RobotStruct::run(bot::Reader& input) {
 	std::vector<mt::MatrixObject> actionMatrices;
-	ScriptLoader::readMatrix(input, actionMatrices);
+	mt::readMatrix(input, actionMatrices);
 
 	std::set<std::string> session;
 	for (auto& matrix : actionMatrices) {

@@ -54,7 +54,7 @@ class MatrixObject {
 		for (std::size_t r = 0; r < nrow; ++r) {
 			for (std::size_t c = 0; c < ncol; ++c) {
 				/* 语义与旧的逐格递归完全一致：row<=1 的 "-" 不继承，
-				 * 原样保留字面值，由调用方决定含义（getMt 返 "-"、parseMtDouble 返 0.0；
+				 * 原样保留字面值，由调用方决定含义（inherited 返 "-"、parseMtDouble 返 0.0；
 				 * 动作派发另把「首数据行即 '-'」判为未起拍、不投递该参数，见 robot.cpp）。 */
 				if (r > 1 && values_[r][c] == "-") {
 					inherited_.push_back(inherited_[(r - 1) * ncol + c]);
@@ -205,6 +205,43 @@ public:
 
 	std::optional<MatrixObject> parse();
 };
+
+/* ------------- 共享查询与切分（N-10：单一事实源）-------------
+ * 此前「按名查矩阵」在 ActionRunner/mtmerge/readSQL 各有一份、「列头切分」
+ * 在 ActionRunner/mtmerge 各有一份，规则靠注释人工同步——mtmerge 产物一旦
+ * 与运行端解释漂移，合成的脚本会被以不同方式解读。 */
+
+/* 按矩阵名查找（trim 后比较）；不存在返回 nullptr */
+inline const MatrixObject* findByName(const std::vector<MatrixObject>& ll,
+		const std::string& name) {
+	for (const auto& m : ll) {
+		if (bot::trim(m.getName()) == name) { return &m; }
+	}
+	return nullptr;
+}
+
+inline MatrixObject* findByName(std::vector<MatrixObject>& ll, const std::string& name) {
+	for (auto& m : ll) {
+		if (bot::trim(m.getName()) == name) { return &m; }
+	}
+	return nullptr;
+}
+
+/* @Action 列头解析：<device>.<param>（恰好一个点）。ActionRunner 派发与
+ * mtmerge 相位归并共用同一切分规则与报错文案。 */
+inline std::pair<std::string, std::string> splitActionColumn(const std::string& name_HV) {
+	std::size_t dot = name_HV.find('.');
+	if (dot == std::string::npos || name_HV.find('.', dot + 1) != std::string::npos) {
+		throw bot::IllegalArgumentException("Action column '" + name_HV
+			+ "' is not valid (expected format: <device>.<param>)");
+	}
+	return { name_HV.substr(0, dot), name_HV.substr(dot + 1) };
+}
+
+/* 读取矩阵式外表（@Action/@Alias/@Vars…）到 out：自省结局，不破坏读缓存。
+ * 原 ScriptLoader::readMatrix——mtmerge 只需这一层，放回 matrix 后
+ * mtmerge 不再链接 robot/LuaJIT（N-11）。 */
+void readMatrix(bot::Reader& file, std::vector<MatrixObject>& out);
 
 /* ------------- 矩阵式储存器 ------------- */
 class MatrixSaver {
