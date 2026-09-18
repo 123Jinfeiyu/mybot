@@ -390,6 +390,7 @@ parse_cases=(
 	'pca9685_badchan.sql|pca9685_badchan.mt|1|out of range 0-15'
 	'scscl_virt.sql|scscl_virt.mt|0|VIRTUAL HARDWARE'
 	'scscl_badid.sql|scscl_badid.mt|1|Invalid Argument: id'
+	'scscl_burn_guard.sql|scscl_burn_guard.mt|1|requires allow_burn'
 	'ref_bus_forward.sql|ref_bus_forward.mt|1|Invalid Argument: fd or address'
 )
 run_one_parse() {
@@ -718,6 +719,9 @@ run_one_hardening() {
 if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$filter"* ]]; then
 	run_one_hardening 'tcp_host_bad' 1 '--tcp-host 地址无效' \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19301 --tcp-host 'not-an-ip'
+
+	# 审计 H-2：非回环监听必须设 --tcp-token，缺省即拒绝启动（不再仅告警）
+	# （tcp_noloop_requires_token 用例与 TCP 加固提交同批，占位注释）
 
 	mkdir -p .tmp
 	# 9MiB 合法动作脚本：超过 8MiB 上限，必须在读取阶段就被拒绝

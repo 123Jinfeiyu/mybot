@@ -585,9 +585,18 @@ do
 	local mark = section()		-- 模型回 id=1 / 锁 1
 	dev:set_present_position(0)
 
-	-- 正常烧号：解锁帧（0x30=0，发往当前站号）→ 广播写号帧（0xFE/0x05=7）
-	local r = expect_ok("set_id=7 OK", function()
+	-- 审计 H-3 防线负路径：结构期未声明 allow_burn → set_id 烧号拒绝
+	local mark_guard = section()
+	expect_err("未授权 allow_burn：set_id 烧号拒绝", function()
 		return call(meta({ set_id = 7 }))
+	end, "requires allow_burn")
+	check("拒绝路径零总线事务（未解锁 EPROM、未广播写号）",
+		count_dir(entries(mark_guard), "uw") == 0)
+
+	-- 正常烧号（结构元数据带 allow_burn=1 授权）：解锁帧（0x30=0，发往当前站号）
+	-- → 广播写号帧（0xFE/0x05=7）
+	local r = expect_ok("set_id=7 OK", function()
+		return call(meta({ set_id = 7, allow_burn = 1 }))
 	end)
 	check("返回 set_id=7 且带生效说明",
 		r.set_id == 7 and r.note == "断电重启后生效")
@@ -615,7 +624,7 @@ do
 	-- set_id 独占：同行携带的 position/torque 数值被忽略（"-" 继承的产物）
 	mark = section()
 	r = expect_ok("set_id 与 position 同行：忽略位置", function()
-		return call(meta({ set_id = 8, position = 512, speed = 300, torque = 1 }))
+		return call(meta({ set_id = 8, position = 512, speed = 300, torque = 1, allow_burn = 1 }))
 	end)
 	local es2 = entries(mark)
 	check("仅两帧且分别为 0x30 解锁与 0x05 写号（无位置/扭矩帧）",
@@ -650,11 +659,11 @@ do
 	end, "set_id")
 	dev:fail_write(true)
 	expect_err("解锁帧 TX 失败 ERR", function()
-		return call(meta({ set_id = 5 }))
+		return call(meta({ set_id = 5, allow_burn = 1 }))
 	end, "Failed to write EPROM unlock")
 	dev:fail_write(false)
 	expect_ok("故障撤销后恢复烧号", function()
-		return call(meta({ set_id = 5 }))
+		return call(meta({ set_id = 5, allow_burn = 1 }))
 	end)
 	check("模型站号=5 持久化", dev:id() == 5 and dev:persisted_id() == 5)
 end

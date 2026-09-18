@@ -239,6 +239,16 @@ function call(data)
 		if set_id > 253 or set_id ~= math.floor(set_id) then
 			return err("Invalid Argument: set_id (1~253)")
 		end
+		-- 审计 H-3 防线：烧号是不可逆持久化硬件写（EPROM 解锁 + 广播 0xFE
+		-- 命中全总线），而 set_id 是纯动作参数（不在结构元数据中，框架的
+		-- rejectReservedKeys 拦不住）——一行 .mt 即可远程触发（--tcp 下即
+		-- 可达）。故必须由结构脚本显式声明 allow_burn 列（值为 1）授权；
+		-- 未授权结构脚本的 set_id 动作参数一律拒绝。allow_burn 在元数据中
+		-- 后，.mt 侧同名参数键也会被 rejectReservedKeys 拒绝，无法旁路。
+		if tonumber(data.allow_burn) ~= 1 then
+			return err("Invalid Argument: set_id requires allow_burn=1 in the structure script"
+				.. " (烧号为不可逆广播写，须结构期显式授权)")
+		end
 		-- 手册流程：先解锁 EPROM 写锁（0x30=0，否则写值掉电不保存），
 		-- 再用广播 ID 0xFE 写 0x05 新站号（对应手册《SCS通信协议》例 3）。
 		-- 锁标志是 SRAM，掉电重启自动回 1，故不回锁；新站号重启后生效

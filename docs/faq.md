@@ -45,4 +45,4 @@ luajit scripts/scscl_scan.lua --raw             # 附原始字节 dump，用来�
 
 全程只发 PING(0x01)，不写任何寄存器、不碰 EPROM，可反复跑。输出末尾会给出可直接粘贴的 `INSERT INTO SCSCL ...` 片段。注意两点：打开 `/dev/serial0` 需要 root 或 `dialout` 组；广播 PING 会让总线上**每块**舵机同时应答，半双工单总线会帧冲突，所以只适合只挂一块时"捉"它——多舵机请用 `--scan`。
 
-想把舵机换成你指定的号：在 `.mt` 里单开一行写 `set_id=N`（解锁 EPROM → 广播写号，断电重启生效；真机烧号只接目标舵机），重启后再把 `.sql` 的 `id` 改成 N。完整流程见 `modules/SCSCL.lua` 头部注释。
+想把舵机换成你指定的号：在 `.sql` 的 SCSCL 表显式声明授权列（`allow_burn String` 且该行值为 `1`——烧号是不可逆广播写，须结构期授权），然后在 `.mt` 里单开一行写 `set_id=N`（解锁 EPROM → 广播写号，断电重启生效；真机烧号只接目标舵机），重启后再把 `.sql` 的 `id` 改成 N。未声明 `allow_burn` 的结构脚本会拒绝 `set_id` 烧号（回归 `scscl_burn_guard`）。完整流程见 `modules/SCSCL.lua` 头部注释。

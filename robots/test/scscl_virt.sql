@@ -22,18 +22,21 @@ CREATE TABLE UART (
 INSERT INTO UART (name, path, baud, proto)
   VALUES ('uart-0', '/dev/serial9', '1000000', 'virt');
 
-/* id 是结构元数据（站号），位置/时间/速度才是动作参数 */
+/* id 是结构元数据（站号），位置/时间/速度才是动作参数。
+ * allow_burn=1 是审计 H-3 防线的结构期授权列：set_id 烧号（不可逆广播写）
+ * 只有在结构脚本显式声明后才可由动作参数触发——本表授权以覆盖正值链路。 */
 CREATE TABLE SCSCL (
-	name   String,
-	UART   String,
-	id     String,
-	max    String,
-	min    String,
-	offset String,
-	proto  String
+        name       String,
+        UART       String,
+        id         String,
+        max        String,
+        min        String,
+        offset     String,
+        allow_burn String,
+        proto      String
 );
-INSERT INTO SCSCL (name, UART, id, max, min, offset, proto)
-  VALUES ('s1', '$uart-0', '1', '1023', '0', '0', 'virt');
+INSERT INTO SCSCL (name, UART, id, max, min, offset, allow_burn, proto)
+  VALUES ('s1', '$uart-0', '1', '1023', '0', '0', '1', 'virt');
 
 CREATE TABLE Timer (
 	name String
