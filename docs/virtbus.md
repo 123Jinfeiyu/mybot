@@ -480,7 +480,7 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 
 **失败行为**：驱动无对应模型/缺必填总线身份时 setup 显式 fail(-8)，守护空转不崩。守护启动打印醒目 `VIRTUAL HARDWARE` 横幅（仿真数据禁止用于生产环境）。
 
-现有三十九例：23 例既有明细见下；2026-09-15 随单文件模型内嵌迁移新增十四例——`max17048_virt` `bh1745_virt` `bh1750_virt` `apds9900_virt` `bmm150_virt` `mlx90393_virt` `as3935_virt` `emc2101_virt` `bme688_virt` `bmi270_virt` `lsm6dsv_virt` `mt6826s_virt` `mhz19_virt` `sds011_virt`（协议细节见各驱动尾部 `_VIRT` 注释与 `test/run_all.sh` 的 e2e_cases）。
+**用例条数以单一事实源为准**：E2E 用例表在 `test/run_all.sh` 的 `e2e_cases`（`bash test/run_all.sh _virt` 即全跑），本节只逐条讲协议细节、不维护总数。2026-09-15 随单文件模型内嵌迁移新增十四例——`max17048_virt` `bh1745_virt` `bh1750_virt` `apds9900_virt` `bmm150_virt` `mlx90393_virt` `as3935_virt` `emc2101_virt` `bme688_virt` `bmi270_virt` `lsm6dsv_virt` `mt6826s_virt` `mhz19_virt` `sds011_virt`（协议细节见各驱动尾部 `_VIRT` 注释与 `test/run_all.sh` 的 e2e_cases）。
 
 ### `mpu_virt`
 
@@ -652,15 +652,11 @@ vbus.attach("MPU6050@0x68", 0x68, imu)
 # 单跑一例（以 mpu_virt 为例，其余替换用例名即可）：
 cat scripts/test/mpu_virt.mt | ./build/mybot --robot=robots/test/mpu_virt.sql
 
-# 一次全跑 23 例：
-for c in mpu bme280 ads1256 vl53l0x vl53l4cd sht3x mcp3421 ms5611 sgp30 \
-         ina219 ads1115 as7262 max30102 amg8833 pcf8574 ltc2944 cht8305 \
-         ads1015 ina226 ina3221 max17043 adxl345 lps22hb; do
-    cat "scripts/test/${c}_virt.mt" | ./build/mybot --robot="robots/test/${c}_virt.sql" || break
-done
+# 一次全跑本类用例（条数以 run_all.sh 的 e2e_cases 为准）：
+bash test/run_all.sh _virt
 ```
 
-`run_all.sh` 在检测到编译产物 `./build/mybot` 时，按用例表（用例名｜`:f` 浮点字段断言｜count 下限）自动执行原生级 E2E：通用断言横幅、无错误、守护持续发布 count 增长、EMA 至少一拍 `out ≠ raw`（键序无关的逐行数值比对），另加每用例的浮点字段未被取整断言；产物缺失则逐例跳过，不阻断纯 Lua 回归（`BOT=xxx` 可覆盖产物路径）。
+`run_all.sh` 按用例表（用例名｜`:f` 浮点字段断言｜count 下限）用编译产物 `./build/mybot` 执行原生级 E2E：通用断言横幅、无错误、守护持续发布 count 增长、EMA 至少一拍 `out ≠ raw`（键序无关的逐行数值比对），另加每用例的浮点字段未被取整断言。**产物缺失时整段判失败而非逐例跳过**（否则「不构建」也能报 0 失败）：只想跑纯 Lua 段需显式 `ALLOW_SKIP=1 bash test/run_all.sh`；产物路径可用 `BOT=xxx` 覆盖，显式给了不存在的路径一律判失败。
 
 ## 回归测试
 

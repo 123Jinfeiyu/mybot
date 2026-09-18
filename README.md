@@ -59,7 +59,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 ### 一键回归测试
 
 ```bash
-bash test/run_all.sh          # 全部八段守门，开发机无硬件可跑
+bash test/run_all.sh          # 全部离线守门（分段明细见 docs/testing.md），开发机无硬件可跑
 bash test/run_san.sh          # 双跑：Release + ASan/UBSan 两套产物各跑全量
 bash test/run_all.sh pca9685  # 文件名过滤
 ```

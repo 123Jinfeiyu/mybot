@@ -1,6 +1,6 @@
 # 硬件变量（驱动）清单
 
-> `modules/` 下共 56 个 Lua 模块（54 个驱动 + `bitcompat` 兼容库 + `dummy` 空驱动），按类别速查。结构脚本里每张 `CREATE TABLE <矩阵名>` 对应加载 `modules/<矩阵名>.lua`。各驱动的协议细节与其内嵌 `<矩阵名>_VIRT` 仿真模型见 [virtbus.md](virtbus.md)。
+> **清单与计数以 `modules/` 目录为准**（本页是速查索引，可能滞后于代码；`ls modules/*.lua` 即权威清单）。结构脚本里每张 `CREATE TABLE <矩阵名>` 对应加载 `modules/<矩阵名>.lua`。各驱动的协议细节与其内嵌 `<矩阵名>_VIRT` 仿真模型见 [virtbus.md](virtbus.md)。
 
 ## 舵机 / 输出执行器
 
