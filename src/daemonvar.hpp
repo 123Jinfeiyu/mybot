@@ -6,6 +6,11 @@
  *   offset 68  int32  nvals          本次值个数
  *   offset 72  double values[32]     采样值
  *   offset 328 uint8  stop           停止标志
+ *   offset 332 int32  status         守护 setup 状态（N-27：0=正常；负=失败码）
+ *
+ * status 与 stop 之间那 3 字节是 stop 之后的既有对齐填充——status 落在这里
+ * **不改变槽尺寸**（仍 336B），也保持 count/nvals/values/stop 偏移不变；
+ * 具名 reserved_ 只为显式占位，避免将来插字段时把 status 挤进隐式填充区。
  */
 #include <atomic>
 #include <cstddef>
@@ -24,6 +29,7 @@ constexpr int32_t SLOT_COUNT_OFF = 64;
 constexpr int32_t SLOT_NVALS_OFF = 68;
 constexpr int32_t SLOT_VALUES_OFF = 72;
 constexpr int32_t SLOT_STOP_OFF = 328;
+constexpr int32_t SLOT_STATUS_OFF = 332;
 constexpr int32_t SLOT_SIZE = 336;
 constexpr int32_t SLOT_MAXVALS = 32;
 
@@ -33,16 +39,19 @@ struct DaemonSlot {
 	std::int32_t nvals;
 	double values[SLOT_MAXVALS];
 	std::uint8_t stop;
+	std::uint8_t reserved_[3];	/* stop 之后的既有填充，显式具名 */
+	std::int32_t status;
 };
 static_assert(sizeof(DaemonSlot) == SLOT_SIZE, "DaemonSlot size must be 336 bytes");
 static_assert(offsetof(DaemonSlot, count) == SLOT_COUNT_OFF, "count offset");
 static_assert(offsetof(DaemonSlot, nvals) == SLOT_NVALS_OFF, "nvals offset");
 static_assert(offsetof(DaemonSlot, values) == SLOT_VALUES_OFF, "values offset");
 static_assert(offsetof(DaemonSlot, stop) == SLOT_STOP_OFF, "stop offset");
+static_assert(offsetof(DaemonSlot, status) == SLOT_STATUS_OFF, "status offset");
 
 /* stop 标志读写统一经槽内 mutex 临界区（P2 数据竞争防线）。
  * Lua 侧 pthread.lua 的 should_stop/signal_stop 同样持锁——两侧契约一致，
- * TSan 视角无裸读写竞态。 */
+ * TSan 视角无裸读写竞态。status 同理（get/set_status 持锁）。 */
 void daemon_request_stop(DaemonSlot* slot);
 bool daemon_stop_requested(DaemonSlot* slot);
 

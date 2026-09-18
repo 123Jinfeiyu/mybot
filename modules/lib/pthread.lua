@@ -65,6 +65,8 @@ typedef struct {
 	int32_t  nvals;
 	double   values[32];
 	uint8_t  stop;
+	uint8_t  reserved[3];
+	int32_t  status;
 } daemon_slot_t;
 ]]
 
@@ -200,17 +202,38 @@ function P.signal_stop(slot)
 	mutex_call("unlock", m)
 end
 
+-- 守护 setup 状态（N-27）：0 = 正常；负 = 失败码（sensor_daemon.fail 写入）。
+-- 与 stop 同一契约：读写都持槽内 mutex。宿主的读路径据此把「守护启动失败」
+-- 报成错误，而不是把失败码当成一个采样值（旧实现把 -2 发进 v0，下游会把它
+-- 当温度做闭环——只有 count 停滞这种间接迹象）。
+function P.get_status(slot)
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
+	local st = slot[0].status
+	mutex_call("unlock", m)
+	return st
+end
+
+function P.set_status(slot, code)
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
+	slot[0].status = code
+	mutex_call("unlock", m)
+end
+
 ------------------------------------------------------------------
 -- 跨语言槽布局核对（Low：槽布局人工维护）
--- 宿主侧 HV/Daemon.cj 手写 SLOT_*_OFF 与 @C struct DaemonSlot 一致；
+-- 宿主侧 src/daemonvar.hpp 手写 SLOT_*_OFF 与 struct DaemonSlot 一致；
 -- 本库用 ffi 的运行时 struct 布局（编译器填充后的事实）逐项断言，
--- 把「仓颉定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
--- 仓颉侧基准（Daemon.cj:23-28，SLOT_SIZE=336）：
+-- 把「C++ 定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
+-- 基准（daemonvar.hpp，SLOT_SIZE=336）：
 --   offset  0   char    mutex[64]     (pthread_mutex_t, 预留 64)
 --   offset 64  int32   count
 --   offset 68  int32   nvals
 --   offset 72  double  values[32]
 --   offset 328 uint8   stop
+--   offset 332 int32   status         (N-27：0=正常，负=setup 失败码)
+-- status 落在 stop 之后的既有对齐填充里，故槽尺寸仍为 336B。
 -- ffi.offsetof/sizeof 并非所有 arch 都可用——不可用时跳过断言（回退旧行为）。
 -- ffi 命名空间内未声明原生 pthread_mutex_t（HAL 只声明大小截断的别名），
 -- 故真实 mutex 尺寸无法直接 sizeof；仅在可解析时做 ≤64B 预留校验。
@@ -231,6 +254,7 @@ local function assert_layout()
 			{ "nvals",   68,  ffi.offsetof("daemon_slot_t", "nvals") },
 			{ "values",  72,  ffi.offsetof("daemon_slot_t", "values") },
 			{ "stop",   328,  ffi.offsetof("daemon_slot_t", "stop") },
+			{ "status", 332,  ffi.offsetof("daemon_slot_t", "status") },
 			{ "size",   336,  ffi.sizeof("daemon_slot_t") },
 		}
 		for _, c in ipairs(checks) do

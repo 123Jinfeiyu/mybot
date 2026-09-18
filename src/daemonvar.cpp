@@ -248,6 +248,7 @@ Json DaemonRunner::readSample() {
 	pthread_mutex_lock(mutexOf(slot));
 	int32_t nvals = slot->nvals;
 	int32_t count = slot->count;
+	int32_t slotStatus = slot->status;
 	int32_t nv = nvals;
 	if (nv > SLOT_MAXVALS) { nv = SLOT_MAXVALS; }
 	for (int32_t k = 0; k < nv; ++k) {
@@ -256,6 +257,18 @@ Json DaemonRunner::readSample() {
 		ret.put("v" + std::to_string(k), JsonFloat(v));
 	}
 	pthread_mutex_unlock(mutexOf(slot));
+	/* N-27：守护 setup 失败绝不伪装成采样值。旧实现把失败码（-2/-8/-9…）发进
+	 * v0，下游 $ 引用无从甄别——配置错误会被当作温度做闭环，只有 count 停滞
+	 * 这种间接迹象。现在 status ≠ 0 直接抛错：这是**永久性**失败（守护不会
+	 * 自愈），必须在动作链上响亮中止，而不是让消费方报告「某字段缺失」这类
+	 * 间接症状（Monitor 只会说 no daemon value (v0 missing)）。
+	 * 与「尚未出首帧」区分：那是瞬时状态，由消费方（Monitor/Ema/Kalman）
+	 * 自己按 ERR 契约表达，不在此抛。 */
+	if (slotStatus != 0) {
+		throw std::runtime_error("daemon setup failed (slot status "
+			+ std::to_string(slotStatus) + "); no samples are published"
+			+ " — the failure code and reason are in the daemon log");
+	}
 	ret.put("status", JsonString("OK"));
 	ret.put("count", JsonInt(count));
 	ret.put("nvals", JsonInt(nvals));

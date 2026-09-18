@@ -15,6 +15,7 @@ INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/daemon_probe.lua');
 
 - 每个守护 = 独立线程 + **独立 Lua 状态**，规避 LuaJIT VM 非线程安全
 - 共享内存槽 + pthread 互斥锁：守护侧 `P.publish(slot,{...})` 写，主线程侧 `play()` 加锁读
+- 共享槽 336B：`mutex[64]` / `count` / `nvals` / `values[32]` / `stop` / `status`（C++ 侧 `src/daemonvar.hpp` 的 `static_assert` 与 Lua 侧 `pthread.lua` 的 `assert_layout` 双侧互锁，布局漂移在守护启动时即暴露）
 - chunk 先跑一次完成 setup 并定义全局 `daemon_tick`，之后逐拍 `pcall`；**拍间用线程 sleep 让出**，切忌在 chunk 内 ffi `usleep` 自旋（阻塞调度不放）
 - `@Daemon` 除 `name`/`chunk` 外的列序列化为 `DAEMON_CONFIG` 串注入 chunk
 
@@ -61,6 +62,14 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 ```
 
 `modules/Monitor.lua` 即此类示例：`call()` 里 `data.v0` 拿到实时采样值，决策后可经 controller 转发执行器。
+
+## setup 失败的响亮契约
+
+守护 setup 失败（驱动缺失/加载失败、开总线失败等）是**永久性**失败，**绝不伪装成采样值**：
+
+- 失败码（-9 缺 driver、-8 驱动加载失败、-1 开总线失败、-3 spi setup 失败、-2 build 失败）写进槽的 `status` 字段（`P.set_status`），不是发进 v0 的一个负样本——否则下游 `$` 引用无从甄别，配置错误会被当温度做闭环，只有 `count` 停滞这种间接迹象；
+- 宿主侧读路径见 `status ≠ 0` 即抛错（`daemon setup failed (slot status -8); no samples are published`），动作链响亮中止；失败码与原因以守护日志为准；
+- 与「尚未出首帧」区分：那是**瞬时**状态，由消费方（`@Monitor`/`@Ema`/`@Kalman`）按 ERR 契约自行表达，不在读路径抛。
 
 ## 注意事项
 

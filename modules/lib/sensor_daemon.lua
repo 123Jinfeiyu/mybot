@@ -95,15 +95,18 @@ local function close_bus()
 	end
 end
 
--- setup 失败：打日志 → 关总线 fd → 发布错误标志一次 → daemon_tick 置空转
+-- setup 失败：打日志 → 关总线 fd → 写 status 失败码 → daemon_tick 置空转
 -- （daemon_body 仍会逐拍调用直到 stop）。
 -- 错误码：-9 缺 driver、-8 驱动加载失败、-1 开总线失败、-3 spi setup 失败、-2 build 失败。
--- 注意：错误码经 v0 发布（槽布局无独立 status 字段）——下游消费者若把 v0
--- 当实测值需自行甄别（特征：count 恒为 1 且 v0 为负整数）；诊断以日志行为准。
+-- N-27：失败码写进槽的独立 status 字段（P.set_status），**不再伪装成 v0 采样值**
+-- ——旧实现 `P.publish(slot, { code })` 会把 -2 发布成一个负样本，下游 $ 引用
+-- 没有甄别手段（配置错误会被当温度做闭环，只有 count 停滞这种间接迹象）。
+-- 现在宿主的读路径见 status ≠ 0 即按 ERR 报错，失败是响亮的。
 local function fail(code, msg)
 	log("[sensor_daemon] setup failed (" .. tostring(code) .. "): " .. tostring(msg))
 	close_bus()
-	P.publish(slot, { code })
+	P.set_status(slot, code)
+	P.publish(slot, {})	-- 只推进 count（nvals=0），不发布任何假样本
 	function daemon_tick() end
 end
 

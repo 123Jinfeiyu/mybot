@@ -321,6 +321,8 @@ fi
 #   number_bad    Number 列写入非数值字面量 → 解析期清晰报错
 #   daemon/filter/ema_chain/monitor/mpu_daemon/multidaemon
 #                 守护采样→消费链路（含 Kalman/Ema/Monitor）
+#   daemon_setup_fail  守护 setup 失败响亮契约（N-27）：失败码进槽 status 字段
+#                 而非伪装成 v0 采样值，宿主按 ERR 报错并含 "slot status -8"
 #   relay-test / ref_prefix   Relay.controller 转发 + note 透传（$ 前缀字面）
 #   alias_inline 动作脚本内联别名生效；alias_override/alias_dup 覆盖/重复负值
 #   vars_num     @Vars 仅支持 Number：结构表 $ 数值常量填充 Relay.note
@@ -367,6 +369,7 @@ parse_cases=(
 	'ema_chain.sql|ema_chain.mt|0|joined, total publishes='
 	'monitor.sql|monitor.mt|0|joined, total publishes='
 	'mpu_daemon.sql|mpu_daemon.mt|0|joined, total publishes='
+	'daemon_setup_fail.sql|daemon_setup_fail.mt|1|slot status -8'
 	'float_s16_daemon.sql|float_s16_daemon.mt|1|would be truncated to integer'
 	'multidaemon.sql|multidaemon.mt|0|joined, total publishes='
 	'robots/relay-test.sql|scripts/relay-test.mt|0|note=hello-relay'

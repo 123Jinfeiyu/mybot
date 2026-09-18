@@ -251,6 +251,11 @@ Json MetaProvider::collectRefs(bool forDestroy) {
 				continue;
 			}
 		}
+		/* 正常路径下 ERR 快照**仍按普通字段合并**（不做上抛）：被引用方报 ERR
+		 * 有其合法成因——守护尚未出首帧（"no sample yet"）、$ 前向引用的对象
+		 * 此刻还没 build 起来（ref_forward 用例）——这些是瞬时状态，消费方
+		 * （如 Monitor）自带缺字段守卫。**永久性**失败（守护 setup 失败）由
+		 * 被引用方直接抛异常上达（见 daemonvar.cpp readSample），不靠这里甄别。 */
 		jsonMergeInto(obj, snap.asObject());
 	}
 	return obj;
