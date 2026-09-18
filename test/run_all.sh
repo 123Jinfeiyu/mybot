@@ -376,6 +376,7 @@ parse_cases=(
 	"vars_bad.sql|vars_bad.mt|1|has no 'value' column"
 	'vars_nonnum.sql|vars_nonnum.mt|1|neither a Number'
 	'alias_dup.sql|vars_dup.mt|1|Duplicate Vars name'
+	'vars_num.sql|vars_override.mt|1|must not override the'
 	'expr_num.sql|expr_num.mt|0|note=50'
 	'expr_undefined.sql|expr_undefined.mt|1|ghost'
 	'ref_alias_scalar.sql|ref_alias_scalar.mt|1|referenced variable returned a non-object'
