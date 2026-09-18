@@ -42,9 +42,11 @@ gate:sanitizer:
   script:
     # run_san.sh 第二跑要求 build-asan 产物（explicit=1 缺产物即判失败），
     # 故本 job 必须自建 sanitizer 产物——只继承 build:release 的 Release 产物不够。
+    # --asan-only：跳过脚本内第一跑（Release 全量）——gate:release 已跑过，
+    # 不加会把整段守门在同一条 pipeline 里跑两遍。
     - cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=address,undefined
     - cmake --build build-asan -j"$(nproc)"
-    - bash test/run_san.sh
+    - bash test/run_san.sh --asan-only
 
 # TSan 常态化（审计覆盖缺口 #1，起步为软门禁）：只跑 mybot_tests 的守护
 # 相关用例（并发压测 + 状态机分支），不跑整段守门——LuaJIT 未按 TSan

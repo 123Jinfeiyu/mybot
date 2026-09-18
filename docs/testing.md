@@ -74,7 +74,9 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 ```bash
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
   -DMYBOT_SANITIZE=address,undefined && cmake --build build-asan
-bash test/run_san.sh        # 双跑：Release 全量 + ASan/UBSan 全量，两跑都过才算过
+bash test/run_san.sh              # 双跑：Release 全量 + ASan/UBSan 全量，两跑都过才算过
+bash test/run_san.sh --asan-only  # 只跑 sanitizer 跑（CI 的 gate:sanitizer 用法：
+                                  # Release 全量交给 gate:release，不重复跑一遍）
 ```
 
 `run_san.sh` 为第二跑导出 `LSAN_OPTIONS=suppressions=<仓库根>/asan.supp`（用 `:` 追加，

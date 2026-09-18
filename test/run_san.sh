@@ -6,15 +6,26 @@
 #   cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
 #     -DMYBOT_SANITIZE=address,undefined && cmake --build build-asan
 #
-# 用法：bash test/run_san.sh [过滤器]
+# 用法：bash test/run_san.sh [--asan-only] [过滤器]
+#   --asan-only  跳过第一跑（Release 全量）只跑 sanitizer 跑——供 CI 的
+#                gate:sanitizer 复用 gate:release 已跑过的 Release 全量，
+#                免得同一条 pipeline 把整段守门跑两遍；本地仍建议缺省双跑。
 #   BOT/SAN_BOT（BOT_TESTS/SAN_BOT_TESTS）可覆盖两跑的二进制路径。
 cd "$(dirname "$0")/.." || exit 1
 
-echo "===== 第一跑：Release（${BOT:-./build/mybot}） ====="
-BOT="${BOT:-./build/mybot}" BOT_TESTS="${BOT_TESTS:-./build/mybot_tests}" \
-	bash test/run_all.sh "$@" || exit 1
+only_asan=0
+if [ "${1:-}" = "--asan-only" ]; then
+	only_asan=1
+	shift
+fi
 
-echo ""
+if [ "$only_asan" = 0 ]; then
+	echo "===== 第一跑：Release（${BOT:-./build/mybot}） ====="
+	BOT="${BOT:-./build/mybot}" BOT_TESTS="${BOT_TESTS:-./build/mybot_tests}" \
+		bash test/run_all.sh "$@" || exit 1
+
+	echo ""
+fi
 echo "===== 第二跑：sanitizer（${SAN_BOT:-./build-asan/mybot}） ====="
 # LSan 抑制：agent 模式加载 Lua 协议驱动时会经 ffi 拉起 libcurl → libcrypto，
 # 后者留下一批进程级初始化残留（栈全在 CRYPTO_malloc 内，与 mybot 自身分配无关）。
@@ -26,4 +37,8 @@ BOT="${SAN_BOT:-./build-asan/mybot}" BOT_TESTS="${SAN_BOT_TESTS:-./build-asan/my
 	bash test/run_all.sh "$@" || exit 1
 
 echo ""
-echo "双跑守门通过：Release + sanitizer 两跑均全绿"
+if [ "$only_asan" = 0 ]; then
+	echo "双跑守门通过：Release + sanitizer 两跑均全绿"
+else
+	echo "sanitizer 跑通过（--asan-only：Release 全量由 gate:release 负责）"
+fi
