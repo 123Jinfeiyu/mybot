@@ -491,7 +491,8 @@ do
 	expect_err("fd 非法 ERR", function()
 		return call(meta({ fd = -1, position = 100 }))
 	end, "Invalid Argument: fd")
-	expect_err("非表 ERR", function() return call(nil) end, "Invalid Arguments: table")
+	-- 审计 #4：call/read 入口改走 arg_table，非表报错文案与其统一
+	expect_err("非表 ERR", function() return call(nil) end, "Invalid Arguments Type: table")
 
 	-- 写失败（TX 错误）→ ERR；恢复后正常
 	dev:fail_write(true)
@@ -548,7 +549,7 @@ do
 	dev:corrupt_checksum(false)
 	expect_err("read fd 非法 ERR", function() return read(meta({ fd = -1 })) end,
 		"Invalid Argument: fd")
-	expect_err("read 非表 ERR", function() return read(nil) end, "Invalid Arguments: table")
+	expect_err("read 非表 ERR", function() return read(nil) end, "Invalid Arguments Type: table")
 
 	-- 总线级硬错误
 	vbus.uart_fail_read = true

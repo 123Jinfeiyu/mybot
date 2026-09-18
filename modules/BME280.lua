@@ -237,7 +237,11 @@ function call(data)
     end
 
     -- 单次触发测量（forced模式，完成后自动回到睡眠）
-    i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_FORCED))
+    -- 审计 #3：触发写必须判错——NACK 时 STATUS.measuring 本就为 0，轮询会
+    -- 立即通过并把上一次的陈旧数据以 result=OK 发布
+    if not i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_FORCED)) then
+        return { result = "ERR", message = "Failed to trigger forced measurement" }
+    end
 
     -- x1过采样单次测量约6~9ms，先等5ms再轮询measuring位，最多再等100ms
     milli_sleep(5)

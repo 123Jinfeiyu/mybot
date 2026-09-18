@@ -32,8 +32,7 @@ local function toint(v)
 	return n
 end
 
-function M.band(a, b)
-	a, b = toint(a), toint(b)
+local function band2(a, b)
 	local r, p = 0, 1
 	while a > 0 and b > 0 do
 		local da, db = a % 2, b % 2
@@ -43,8 +42,7 @@ function M.band(a, b)
 	return r
 end
 
-function M.bor(a, b)
-	a, b = toint(a), toint(b)
+local function bor2(a, b)
 	local r, p = 0, 1
 	while a > 0 or b > 0 do
 		local da, db = a % 2, b % 2
@@ -54,8 +52,7 @@ function M.bor(a, b)
 	return r
 end
 
-function M.bxor(a, b)
-	a, b = toint(a), toint(b)
+local function bxor2(a, b)
 	local r, p = 0, 1
 	while a > 0 or b > 0 do
 		local da, db = a % 2, b % 2
@@ -64,6 +61,24 @@ function M.bxor(a, b)
 	end
 	return r
 end
+
+-- LuaJIT 的 bit 库是变参语义（bit.bor(a, b, c, ...)），回退实现同样收口为
+-- 变参归约——否则 AD9833 的 bitc.bor(BIT_B28, wbits, muted and BIT_RESET or 0)
+-- 这类三参调用在 lua5.4 调试路径下第三个参数被静默丢弃（审计 #5：RESET 位
+-- 丢失，硬件收到错误命令且无任何报错）。
+local function fold(op)
+	return function(first, ...)
+		local r = toint(first)
+		for i = 1, select("#", ...) do
+			r = op(r, toint((select(i, ...))))
+		end
+		return r
+	end
+end
+
+M.band  = fold(band2)
+M.bor   = fold(bor2)
+M.bxor  = fold(bxor2)
 
 function M.lshift(a, n)
 	return toint(a) * (2 ^ toint(n))

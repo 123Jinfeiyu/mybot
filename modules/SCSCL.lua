@@ -213,11 +213,11 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	-- 审计 #4：入口必须走 arg_table（含 proto=virt 的虚拟总线前置），
+	-- 与 build/destroy 同规
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- SCSCL caller func get a table --------", data)
@@ -326,11 +326,10 @@ end
 -- 负载/电压按内存表原样返回（负载 0.1% 单位 BIT10 方向位；电压 0.1V 单位）
 function read(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	-- 审计 #4：与 call 同规，入口走 arg_table（含 proto=virt 前置）
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	local fd, id, e = resolve_common(data)

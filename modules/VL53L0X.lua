@@ -209,11 +209,11 @@ end
 -- 【配置脚本】器件甄别 -> DataInit -> SPAD -> tuning -> 校准 -> 连续启动
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	-- 审计 #4：入口必须走 arg_table（含 proto=virt 的虚拟总线前置）——
+	-- 旧内联 type 检查会让非守护 @Device 场景静默回落真机总线
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -511,11 +511,10 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	-- 审计 #4：与 build 同规，入口走 arg_table（含 proto=virt 前置）
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
