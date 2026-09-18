@@ -213,21 +213,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 基线持久化配置（'-' 占位符/缺省 = 关闭）
 	local bp = data.baseline
@@ -321,21 +309,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 湿度补偿（可选）：输入变化才下发，省一次命令往返

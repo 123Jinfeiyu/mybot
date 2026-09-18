@@ -58,14 +58,10 @@ function build(data)
 		dbg_table("-------- PCF8574 builder func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
+	-- fd/address 存在性收敛至 drv_common.i2c_check（报错口径不变）；set_addr
+	-- 刻意留到地址族校验之后——非法地址不碰总线
+	local fd, addr, ek = i2c_check(data)
+	if fd == nil then return ek end
 	-- 地址族校验：8574 = 0x20~0x27，8574A = 0x38~0x3F
 	local in_family = (addr >= 0x20 and addr <= 0x27) or (addr >= 0x38 and addr <= 0x3F)
 	if not in_family then
@@ -75,10 +71,7 @@ function build(data)
 		}
 	end
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-- 在位探测：读一次引脚（ACK 即存在性证据）

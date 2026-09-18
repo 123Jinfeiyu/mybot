@@ -4,7 +4,9 @@
 -- 收敛 Low 项"样板重复"：各 I2C 驱动内联重复的开头样板：
 --   1. type(data) ~= "table" 参数校验（build/call/destroy 每函数一份）
 --   2. fd/address 存在性 + i2c_set_addr 校验（build 与 call 双份）
---   3. { result = "ERR", message = ... } 返回表构造
+--      —— i2c_pair()（存在性 + set_addr）；额外校验需插在 set_addr 之前的
+--      驱动用 i2c_check()（仅存在性）自行把 set_addr 留到校验之后
+--   3. { result = "ERR", message = ... } 返回表构造（err()）
 -- 行为与各驱动旧内联版本等价；调用点语义不变。
 -- 驱动顶部在 HAL 之后 dofile 加载；依赖 i2c_set_addr（HAL）在此运行时可解析。
 -- 幂等：同状态机内只定义一次（多个驱动文件 dofile 本库时安全）。
@@ -30,6 +32,20 @@ function guard_build(rollback, fn, data)
 	if type(rollback) == "function" then pcall(rollback) end
 	return err("build() raised: " .. tostring(r))
 end
+
+-- ---- destroy 约定：资源不可用即静默成功 ------------------------------------
+-- destroy 的职责是「尽力释放」，不是「校验入参」：器件可能因 build 失败或
+-- 总线已先行释放而拿不到 fd/address，此时返回 ERR 会把一次正常的收尾报成
+-- 失败（--tcp 会话下表现为退出码非零、日志里一串 Deactive warning）。故
+-- destroy 内统一写成：
+--   local fd, addr = tonumber(data.fd), tonumber(data.address)
+--   if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+--       ...与器件状态有关的收尾动作...
+--   end
+--   return { result = "OK" }
+-- 即「资源不可用 → 跳过动作，仍报 OK」。例外：ADS1115 的 destroy 有显式
+-- ERR 契约回归用例（test_ads1115.lua 覆盖缺 fd/缺 addr/set_addr 失败三条），
+-- 属被测试固定的既有契约，不在本约定改范内。
 
 -- ---- 非守护路径的虚拟总线前置（proto=virt 的设备行）---------------------
 -- 背景：注入虚拟总线此前只发生在 sensor_daemon.lua（守护路径）里，所以全部
@@ -139,16 +155,28 @@ function arg_table(data)
 	return true, nil
 end
 
--- I2C 传感器 build/call 公共前置：fd/address 存在性 + set_addr
--- 用法：local fd, addr, e = i2c_pair(data); if fd == nil then return e end
+-- I2C 传感器 fd/address 存在性校验（不含 set_addr）
+-- 用法：local fd, addr, e = i2c_check(data); if fd == nil then return e end
 -- 返回：成功 => (fd, addr, nil)；失败 => (nil, -1, err表)
--- 原各驱动 build 与 call 双份校验语义一致，统一于此
-function i2c_pair(data)
+-- 供「额外校验须插在 set_addr 之前」的驱动使用（如 MS5611 的 OSR 档位、
+-- PCF8574 的地址族）：这些驱动约定非法配置值不碰总线，set_addr（ioctl
+-- I2C_SLAVE）须留到校验通过之后，故不能直接用 i2c_pair。
+function i2c_check(data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address)
 	if fd == nil or addr == nil then
 		return nil, -1, err("Invalid Argument: fd or address")
 	end
+	return fd, addr, nil
+end
+
+-- I2C 传感器 build/call 公共前置：fd/address 存在性 + set_addr
+-- 用法：local fd, addr, e = i2c_pair(data); if fd == nil then return e end
+-- 返回：成功 => (fd, addr, nil)；失败 => (nil, -1, err表)
+-- 原各驱动 build 与 call 双份校验语义一致，统一于此
+function i2c_pair(data)
+	local fd, addr, ek = i2c_check(data)
+	if fd == nil then return nil, -1, ek end
 	if not i2c_set_addr(fd, addr) then
 		return nil, -1, err("Invalid Argument: fd or address (set_addr failed)")
 	end

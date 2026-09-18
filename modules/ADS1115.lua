@@ -74,17 +74,9 @@ function build(data)
         dbg_table("-------- ADS1115 builder func get a table --------", data)
     end
 
-    local fd = data.fd
-    if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
-    end
-    fd = tonumber(fd)
-
-    local addr = data.address
-    if addr == nil then
-        return { result = "ERR", message = "Invalid Arguments: addr" }
-    end
-    addr = tonumber(addr)
+    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径统一）
+    local fd, addr, ek = i2c_pair(data)
+    if fd == nil then return ek end
 
     -- 可配置项（缺省：AIN0 单端 / ±2.048V / 128SPS / 单次 / 禁比较器）
     local pga_idx = tonum(data.pga, 2)
@@ -100,10 +92,6 @@ function build(data)
     config = bitc.bor(config, MODE_SINGLE)                -- 单次模式
     config = bitc.bor(config, bitc.lshift(dr_idx, 5))     -- 数据速率
     config = bitc.bor(config, COMP_QUE_DISABLE)           -- 禁用比较器
-
-    if not i2c_set_addr(fd, addr) then
-        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
-    end
 
     -- 写 16 位配置寄存器（burst 写：reg + 高字节 + 低字节）
     local hi = math.floor(config / 256) % 256
@@ -143,11 +131,11 @@ function destroy(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Arguments: fd" }
+        return err("Invalid Arguments: fd")
     end
     local addr = data.address
     if addr == nil then
-        return { result = "ERR", message = "Invalid Arguments: addr" }
+        return err("Invalid Arguments: addr")
     end
 
     if not i2c_set_addr(tonumber(fd), tonumber(addr)) then
@@ -176,21 +164,9 @@ function call(data)
         dbg_table("-------- ADS1115 caller func get a table --------", data)
     end
 
-    local fd = data.fd
-    if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
-    end
-    fd = tonumber(fd)
-
-    local addr = data.address
-    if addr == nil then
-        return { result = "ERR", message = "Invalid Argument: addr" }
-    end
-    addr = tonumber(addr)
-
-    if not i2c_set_addr(fd, addr) then
-        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
-    end
+    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径统一）
+    local fd, addr, ek = i2c_pair(data)
+    if fd == nil then return ek end
 
     -- 差分 / 单端模式选择
     local mux

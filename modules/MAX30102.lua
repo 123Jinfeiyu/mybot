@@ -174,21 +174,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 在位探测 + 型号自检（Part ID 固定 0x15）
 	local pid = i2c_read_reg(fd, REG_PART_ID)
@@ -305,21 +293,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- n/wait 取本次调用参数（缺省用 build 配置）——直连路径可按行动态批量读/等待

@@ -166,14 +166,10 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
+	-- fd/address 存在性收敛至 drv_common.i2c_check（报错口径不变）；set_addr
+	-- 刻意留到 OSR 校验之后——非法档位不碰总线（见下）
+	local fd, addr, ek = i2c_check(data)
+	if fd == nil then return ek end
 
 	-- OSR 档位校验先于一切总线动作：非法值不碰硬件
 	local oi, oerr = osr_idx_of(data.osr)
@@ -185,10 +181,7 @@ function build(data)
 	end
 
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-- OSR 档位与等待时间
@@ -270,21 +263,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- D1（气压）转换

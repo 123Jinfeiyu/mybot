@@ -236,21 +236,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- gain 列 -> GAIN_SEL：取整后钳到 0~7（非法/'-' 归缺省 0）
 	local gain = tonumber(data.gain)
@@ -355,21 +343,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- build 前置守卫：poll_timeout_ms/sens_xy 仅 build 赋值，
 	-- 未 build 先 call 会对 nil 做比较/算术裸 error（与 INA219/LTC2944 对齐）

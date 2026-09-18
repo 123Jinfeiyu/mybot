@@ -88,6 +88,8 @@ function build(data)
 	end
 
 	-----------------------------------------------------
+	-- 豁免 i2c_pair：本器件地址硬件固定（AD_SELECT 拉低 = 0x69），address 列可省，
+	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
 	local fd = tonumber(data.fd)
 	if fd == nil then
 		return {
