@@ -218,8 +218,8 @@ if res then
 		string.format("%s vs %s", tostring(res.H), tostring(refH)))
 end
 check("forced 触发写：0xF4<-0x25（x1/x1 + mode=01）", find_data_write(0xF4, 0x25))
-check("数据块读：0xF7 指针 + n=4（P高/T高）", find_ptr_read(0xF7, 4))
-check("数据块读：0xFB 指针 + n=4（T低/H）", find_ptr_read(0xFB, 4))
+-- C-L1：数据区改单事务 8 字节读（原 0xF7/0xFB 两次 4 字节读有撕裂窗口）
+check("数据块读：0xF7 指针 + n=8（单事务防撕裂）", find_ptr_read(0xF7, 8))
 
 -- ==================== 转换状态机：忙→到点就绪 ====================
 section()

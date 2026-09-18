@@ -45,9 +45,9 @@
 --      变体）-> 关高级省电(PWR_CONF=0) -> 上电配置上传 -> ODR 读改写 [3:0] 域
 --      （保留复位默认滤波）-> 量程 -> PWR_CTRL |0x06（acc+gyr）-> 等 100ms
 --      陀螺仪启动
---   4. call 用 0x0C/0x12 两次 6 字节原子读（HAL.i2c_read_multi 的 I2C_RDWR
---      合并事务，无指针竞态；不并成一次 12 字节读——HAL 合并读 6 字节以上
---      超 Lua number 精度上限）
+--   4. call 用 0x0C 起单次 12 字节原子读（i2c_read_multi_bytes 的 I2C_RDWR
+--      合并事务，字节表版无 2^53 精度限制；并读防六轴两笔事务间新采样完成
+--      造成 acc/gyr 时间错位——C-L1，与 MPU6050 14 字节 burst 同一结论）
 --   5. 原始码换算（写配置时定）：加速度计 LSB/g = 16384/8192/4096/2048
 --      （±2/4/8/16g）；陀螺仪 LSB/dps = 262.144/131.072/65.536/32.768/16.384
 --      （±125/250/500/1000/2000dps）
@@ -168,17 +168,6 @@ local function upload_blob(fd, blob)
 		end
 	end
 	return true
-end
-
--- 读 6 字节并拆 1 基字节数组；失败返回 nil
-local function read_bytes6(fd, reg)
-	local raw = i2c_read_multi(fd, reg, 6)
-	if raw < 0 then return nil end
-	local b = {}
-	for i = 0, 5 do
-		b[i + 1] = math.floor(raw / 256 ^ (5 - i)) % 256
-	end
-	return b
 end
 
 -- 读 1 字节寄存器；失败返回 nil
@@ -417,20 +406,16 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local a = read_bytes6(fd, REG_ACC_DATA)
-	if a == nil then
+	-- 0x0C~0x17 地址连续：acc+gyr 12 字节单事务读，防两笔事务间撕裂（C-L1）
+	local d = i2c_read_multi_bytes(fd, REG_ACC_DATA, 12)
+	if d == nil then
 		return {
 			result = "ERR",
-			message = "Failed to read BMI270 accel data"
+			message = "Failed to read BMI270 sensor data"
 		}
 	end
-	local g = read_bytes6(fd, REG_GYR_DATA)
-	if g == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 gyro data"
-		}
-	end
+	local a = { d[1], d[2], d[3], d[4], d[5], d[6] }
+	local g = { d[7], d[8], d[9], d[10], d[11], d[12] }
 
 	-- 返回字典（小端拼字：值 = MSB<<8 | LSB）
  	return {

@@ -85,6 +85,13 @@ class DaemonRunner {
 	 * daemon_tick。退出时若 abandoned 置位则自行释放槽（D2）。 */
 	int64_t body(const std::string& chunk, const std::string& config, int64_t intervalMs);
 
+	/* D2 收尾的唯一出口（C-D3）：正常退出与早期失败路径（newstate/loadfile/
+	 * setup 失败）都必须经此返回——先公告退出检查点再复查 abandoned，弃管
+	 * 路径下以 exchange 认领槽并释放（唯一胜者）。此前三条早期 return 绕过
+	 * 该协议：若 luaL_loadfile 阻塞在慢存储上使 setup 慢于主线程 join 超时，
+	 * 主线程弃管后线程直接返回，槽 + mutex 永久泄漏。 */
+	int64_t exitClaim(int64_t n);
+
 public:
 	explicit DaemonRunner(DaemonSlot* s, int64_t timeout)
 		: slot_(s), joinTimeoutMs_(timeout), result_(std::make_shared<std::promise<int64_t>>()),

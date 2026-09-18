@@ -54,6 +54,20 @@ TH_TEST(matrix_comment_lines_do_not_shift_line_numbers) {
 	TH_CHECK_THROWS_MSG(mt::DoesNotSync, "we got line: 6", fx::oneMatrix(text));
 }
 
+TH_TEST(matrix_comment_start_flushes_pending_cell) {
+	/* C-M：注释起始须先提交挂起内容——"50#c\n60" 曾被静默拼成 "5060"，
+	 * 动作数值被篡改。注释等价于空白，两侧单元格必须分开（换行本就是
+	 * 行内分隔符，行仍由 ';' 收口）。 */
+	mt::MatrixObject m = fx::oneMatrix("@Action\na b;\n  50#c\n  60;\n@\n");
+	TH_CHECK(m.rows() == 2);
+	TH_CHECK(fx::cell(m, 1, 0) == "50");
+	TH_CHECK(fx::cell(m, 1, 1) == "60");
+	/* 名字行内注释同样不得把注释文本拼进名字（"Ti#mer" 曾变成名字 "Timer"） */
+	mt::MatrixObject n = fx::oneMatrix("@Ti#mer\nname;\nt0;\n@\n");
+	TH_CHECK(n.getName() == "Ti");
+	TH_CHECK(n.rows() == 2);
+}
+
 TH_TEST(matrix_ragged_row_reports_cell_counts) {
 	/* 报错必须自带「这行几格 / 上一行几格」，否则用户只能逐列数空格 */
 	TH_CHECK_THROWS_MSG(mt::DoesNotSync, "this row has 1 cell(s), but the row above has 2",

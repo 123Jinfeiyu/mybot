@@ -146,11 +146,15 @@ Token Lexer::next(bot::Reader& sr) {
 			if (s.size() >= 2 && s.compare(s.size() - 2, 2, "--") == 0) {
 				s.resize(s.size() - 2);
 				singleLineComment_ = true;
+				/* C3-x：注释起始须先提交挂起 token，否则注释结束后文本拼回同一
+				 * token（"50--c\n60" → "5060"），静默产出错误数值。 */
+				if (!s.empty()) { return Token::parse(s); }
 			}
 			if (s.size() >= 2 && s.compare(s.size() - 2, 2, "/*") == 0) {
 				s.resize(s.size() - 2);
 				multiLineComment_ = true;
 				multiLineComment2_ = false;
+				if (!s.empty()) { return Token::parse(s); }
 			}
 		}
 	}

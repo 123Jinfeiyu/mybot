@@ -15,8 +15,9 @@
 --   1. 寄存器写不逐条判 i2c_write_reg 的 true/false，关键配置一律回读复核
 --      （回读可同时覆盖「写失败」与「器件未应用」两种情形）
 --   2. HAL 合并读 i2c_read_multi 上限 6 字节（合并值超 2^53 丢精度；纯 Lua 算术
---      恒为非负，越界显式 -1）：校准区/数据区按 4 字节块读；湿度校准块 7 字节
---      走字节表版 i2c_read_multi_bytes（长块读的 HAL 指定路径）
+--      恒为非负，越界显式 -1）：校准区按 4 字节块读；湿度校准块 7 字节与
+--      测量数据块 8 字节走字节表版 i2c_read_multi_bytes（长块读/单事务原子读的
+--      HAL 指定路径，数据区单事务读防 forced 模式测量撕裂）
 --   3. 软复位后须等状态寄存器 im_update 位（bit0）清零，才可读取校准系数
 --   4. 校准区 0x88~0x9F 为小端，测量数据区 0xF7~0xFE 为大端
 --   5. 补偿公式为数据手册附录 8.3 的浮点版
@@ -258,8 +259,10 @@ function call(data)
         return { result = "ERR", message = "Measurement timeout" }
     end
 
-    -- 数据区 0xF7~0xFE（大端）：P(20bit) T(20bit) H(16bit)，按4字节块读
-    local b = read_block(fd, REG_DATA, 8)
+    -- 数据区 0xF7~0xFE（大端）：P(20bit) T(20bit) H(16bit)，单事务 8 字节读
+    -- （C-L1：forced 模式下新测量可在两笔事务之间完成，分块读会撕裂 P/T/H；
+    -- 字节表版无 2^53 精度限制，8 字节单事务合法）
+    local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
     if b == nil then
         return { result = "ERR", message = "Failed to read measurement" }
     end

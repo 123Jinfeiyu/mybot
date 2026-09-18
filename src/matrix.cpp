@@ -5,7 +5,18 @@ namespace mt {
 /* 解析器主体：一个 _next 消费一个字符，返回更新后的行号 */
 std::int64_t MatrixParser::next_(char c, std::int64_t count) {
 	/* ------------ COMMENTS ------------ */
-	if (!cm_ && c == '#') { cm_ = true; }
+	if (!cm_ && c == '#') {
+		cm_ = true;
+		/* C-M：注释起始须先提交挂起内容，否则注释结束后文本拼回同一单元
+		 * （"50#c\n60" → "5060"），动作数值被静默篡改。名字态提交名字并退出
+		 * 名字行；数据态仅提交挂起单元，行继续由 ';' 收口。 */
+		if (nm_) {
+			builder_.submitName();
+			nm_ = false;
+		} else {
+			builder_.submitItem();
+		}
+	}
 	else if (cm_ && c == '\n') {
 		nl_ = true;
 		cm_ = false;

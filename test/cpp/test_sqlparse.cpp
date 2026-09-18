@@ -166,6 +166,18 @@ TH_TEST(lexer_comments_outside_quotes_are_skipped) {
 	TH_CHECK(fx::fingerprint(c) == fx::fingerprint(b));
 }
 
+TH_TEST(lexer_comment_start_flushes_pending_token) {
+	/* C3-x：注释起始须先提交挂起 token——"50--c\n60" 曾被静默拼成 "5060"，
+	 * 通过 Number 列校验产出错误数值。注释等价于空白，两侧 token 必须分开。 */
+	std::vector<Token> a = fx::tokens("INSERT INTO T ( v ) VALUES ( 50--c\n60 );");
+	/* 注释等价于空白：基准不带逗号（逗号是分隔符词元，注释不产出词元） */
+	std::vector<Token> b = fx::tokens("INSERT INTO T ( v ) VALUES ( 50 60 );");
+	TH_CHECK(fx::fingerprint(a) == fx::fingerprint(b));
+	/* 块注释同族缺陷同修 */
+	std::vector<Token> c = fx::tokens("INSERT INTO T ( v ) VALUES ( 50/*c*/60 );");
+	TH_CHECK(fx::fingerprint(c) == fx::fingerprint(b));
+}
+
 TH_TEST(lexer_trailing_line_comment_terminates_cleanly) {
 	std::vector<Token> ts = fx::tokens("CREATE TABLE T ( name String ); -- 收尾注释\n");
 	TH_CHECK(!ts.empty());

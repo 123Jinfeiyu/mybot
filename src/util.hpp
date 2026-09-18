@@ -65,10 +65,13 @@ inline std::pair<IntParse, long long> parseLongStrict(const std::string& s) {
 }
 
 /* D4：信号停止标志——SIGINT/SIGTERM 处理器置位，主流程与阻塞点（TCP accept）
- * 检查后放弃阻塞，让 deactivate 清理链（destroy / 守护停机）正常走完再退出。 */
+ * 检查后放弃阻塞，让 deactivate 清理链（destroy / 守护停机）正常走完再退出。
+ * C-L1：命名空间级常量初始化（无 __cxa_guard 守卫），信号处理器内访问
+ * async-signal-safe——函数局部 static 的首次初始化守卫若被同线程信号打断，
+ * 守卫重入可致 abort。保留访问器以稳定调用点。 */
+inline std::atomic<bool> g_stopRequested{false};
 inline std::atomic<bool>& stopRequested() {
-	static std::atomic<bool> flag{false};
-	return flag;
+	return g_stopRequested;
 }
 
 /* ---- 恒时字符串比较（审计 M1）----

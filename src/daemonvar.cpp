@@ -49,6 +49,19 @@ DaemonRunner::~DaemonRunner() {
 	}
 }
 
+/* ---- D2 收尾唯一出口（C-D3，详见 daemonvar.hpp）---- */
+int64_t DaemonRunner::exitClaim(int64_t n) {
+	if (!abandoned_.load()) {
+		exitCheckDone_.store(true);
+		if (!abandoned_.load()) { return n; }
+	}
+	/* 弃管路径：槽所有权归本线程。以 exchange 认领——若主线程超时后已先行
+	 * 认领，此处拿到 nullptr，零接触返回；唯一胜者释放，无双重释放。 */
+	DaemonSlot* mine = slot_.exchange(nullptr);
+	if (mine != nullptr) { releaseSlot(mine); }
+	return n;
+}
+
 /* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
  * 线程持 runner 的 shared_ptr 保生命周期；退出时若 abandoned 置位（主线程已放弃等待），
  * 槽所有权归本线程——以 exchange 认领后释放（D2）。主线程超时置位可能落在
@@ -57,7 +70,7 @@ DaemonRunner::~DaemonRunner() {
 int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, int64_t intervalMs) {
 	DaemonSlot* slot = slot_.load();
 	lua_State* L = luaL_newstate();
-	if (L == nullptr) { return -1; }
+	if (L == nullptr) { return exitClaim(-1); }
 	luaL_openlibs(L);
 	sandbox_lua(L);
 
@@ -72,13 +85,13 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	if (st != LUA_OK) {
 		std::cerr << "[daemon] chunk load error: " << luaErrorString(L) << std::endl;
 		lua_close(L);
-		return -1;
+		return exitClaim(-1);
 	}
 	int setupStatus = lua_pcall(L, 0, LUA_MULTRET, 0);
 	if (setupStatus != LUA_OK) {
 		std::cerr << "[daemon] chunk setup error: " << luaErrorString(L) << std::endl;
 		lua_close(L);
-		return -1;
+		return exitClaim(-1);
 	}
 	lua_settop(L, 0);
 
@@ -113,18 +126,9 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	/* D2 + 审计 #2：主线程超时弃管（置 abandoned）可能恰好落在本线程首次
 	 * 检查之后——先公告退出检查已做（此后本线程对槽至多剩一次 exchange，
 	 * 不再解引用），再复查一次；复查仍为 false 则槽留给主线程（joined 路径
-	 * 或超时后的 exchange 认领）释放，本线程直接返回。 */
-	if (!abandoned_.load()) {
-		exitCheckDone_.store(true);
-		if (!abandoned_.load()) { return n; }
-	}
-	/* 弃管路径：槽所有权归本线程。以 exchange 认领——若主线程超时后已先行
-	 * 认领，此处拿到 nullptr，零接触返回；唯一胜者释放，无双重释放。 */
-	{
-		DaemonSlot* mine = slot_.exchange(nullptr);
-		if (mine != nullptr) { releaseSlot(mine); }
-	}
-	return n;
+	 * 或超时后的 exchange 认领）释放，本线程直接返回。C-D3：收尾统一走
+	 * exitClaim（与早期失败路径同一出口）。 */
+	return exitClaim(n);
 }
 
 /* ---- start：spawn 守护线程 ---- */
