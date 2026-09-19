@@ -253,7 +253,10 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	 * 写错属于配置错误，必须在结构装载与上电之前失败，而不是等系统提示词
 	 * 拼装时才炸（main 的约定「配置错误不碰真机」）。 */
 	out.promptFiles = !opts.promptFiles.empty() ? opts.promptFiles
-						: file.promptFiles.value_or({});
+						: file.promptFiles.value_or(std::vector<std::string>{});
+		/* 不写 value_or({})：花括号实参要求模板参数 _Up 可推导，libstdc++ 15
+		 * 给 _Up 加了默认值才兜得住，g++12/14 推导失败直接报错（CI 基线
+		 * debian:bookworm 即 g++12）。 */
 	if (!out.promptFiles.empty()
 		&& !loadPromptPack(out.promptFiles, out.promptPack, err)) {
 		return false;
