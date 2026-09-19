@@ -1,4 +1,4 @@
-# 俯卧撑
+# 蜘蛛髋关节90度，进行俯卧撑动作
 @Action
 s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	# column name
   90     0    90     0    90     0    90     0    90     90   1000        200;
