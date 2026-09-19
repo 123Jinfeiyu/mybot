@@ -54,6 +54,16 @@ public:
 	static Json ensureOk(const Json& res, const std::string& ctx = "");
 };
 
+/* ERR 契约结果的单点组装：result="ERR" + message。与 ensureOk（消费侧）
+ * 同属契约形态的单一事实源——此前 call_lua 三条错误路径与守护 readSample
+ * 的放弃路径各自手写两行 put，形态靠约定同步。 */
+inline Json makeErrResult(const std::string& message) {
+	Json ret = JsonObject();
+	ret.put("result", JsonString("ERR"));
+	ret.put("message", JsonString(message));
+	return ret;
+}
+
 /* ---- 标量文本硬件变量（@Alias / @Vars 共用）----
  * play/read 返回一个 JsonString，无资源可 build/destroy：
  *   @Alias 的值是目标参数名（@Action 列 dev.<name> 的参数位二次解析成真实参数名）；

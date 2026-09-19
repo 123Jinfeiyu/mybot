@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "util.hpp"
+#include "hardware.hpp"
 
 namespace bot {
 
@@ -236,8 +237,7 @@ Json call_lua(lua_State* L, const Json& json) {
 		 * 压栈是分步副作用：已压入的全局函数/表/标量由末尾 lua_settop(L, top)
 		 * 统一复原，故此处只需把结果折成 ERR 并跳过调用。 */
 		paramsPushed = false;
-		ret.put("result", JsonString("ERR"));
-		ret.put("message", JsonString("Lua function '" + mode + "' received " + e.what()));
+		ret = makeErrResult("Lua function '" + mode + "' received " + e.what());
 	}
 
 	if (paramsPushed) {
@@ -266,10 +266,9 @@ Json call_lua(lua_State* L, const Json& json) {
 						/* C-9：就地转 ERR，绝不让它逃出去——call_lua 的调用方里
 						 * freeImpl 是在 call_lua 之后才 lua_close 的，异常一逃就跳过
 						 * 状态机关闭（泄漏），末尾的 lua_settop 也会被跳过而脏掉栈。 */
-						ret = JsonObject();		/* 丢弃已部分填充的字段，只留契约错误 */
-						ret.put("result", JsonString("ERR"));
-						ret.put("message", JsonString("Lua function '" + mode + "' returned "
-							+ e.what()));
+						/* makeErrResult 自带全新对象：丢弃已部分填充的字段，只留契约错误 */
+						ret = makeErrResult("Lua function '" + mode + "' returned "
+							+ e.what());
 						break;
 					}
 					logD([&key, &val] { return std::string(key) + ": " + val.toString(); });
@@ -283,17 +282,15 @@ Json call_lua(lua_State* L, const Json& json) {
 				std::string got = nret > 0
 					? std::string("a non-table value (Lua type ") + lua_typename(L, lua_type(L, -nret)) + ")"
 					: "no value";
-				ret.put("result", JsonString("ERR"));
-				ret.put("message", JsonString("Lua function '" + mode + "' returned " + got
-					+ "; the driver contract requires a table like {result=\"OK\", ...}"));
+				ret = makeErrResult("Lua function '" + mode + "' returned " + got
+					+ "; the driver contract requires a table like {result=\"OK\", ...}");
 			}
 		} else {
 			std::string errStr = luaErrorString(L);
 			/* N-12：详情已在 message 字段达调用方（ensureOk 会带上下文抛出），
 			 * stderr 双通道冗余打印降为 logD */
 			logD([&] { return "Lua error details: " + errStr; });
-			ret.put("result", JsonString("ERR"));
-			ret.put("message", JsonString(errStr));
+			ret = makeErrResult(errStr);
 		}
 	}
 

@@ -250,10 +250,7 @@ Json DaemonRunner::readSample() {
 	 * F-01：槽指针原子读取，取回局部指针后再解引用。 */
 	DaemonSlot* slot = slot_.load();
 	if (slot == nullptr || abandoned_.load()) {
-		Json ret = JsonObject();
-		ret.put("result", JsonString("ERR"));
-		ret.put("message", JsonString("daemon slot already released"));
-		return ret;
+		return makeErrResult("daemon slot already released");
 	}
 	Json ret = JsonObject();
 	Json arr = JsonArray();
