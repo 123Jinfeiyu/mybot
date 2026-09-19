@@ -355,3 +355,20 @@ TH_TEST(agenttools_run_command_rejects_out_of_range_timeout) {
 		parseJson("{\"command\":\"echo ok-frac\",\"timeout_seconds\":2.9}"));
 	TH_CHECK(frac.find("exit_code=0") != std::string::npos);
 }
+
+TH_TEST(agenttools_run_command_interrupts_on_stop_signal) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 停止信号（SIGINT/SIGTERM 置位全局标志）应整组终止子进程并如实标注「被中断」，
+	 * 而不是等满 timeout——该分支此前无用例覆盖（0.6 改动其成因记录语义）。 */
+	struct StopFlagGuard {
+		StopFlagGuard() { stopRequested() = true; }
+		~StopFlagGuard() { stopRequested() = false; }	/* 全局标志，勿污染后续用例 */
+	} guard;
+
+	std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"sleep 5\",\"timeout_seconds\":30}"));
+	TH_CHECK(out.find("被中断") != std::string::npos);
+}

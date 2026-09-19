@@ -1,3 +1,9 @@
+/* pipe2 需要 _GNU_SOURCE（glibc 仅在 __USE_GNU 下声明）。g++/clang 编 C++ 时通常
+ * 已定义，此处显式兜底并置于任何头文件之前（重复定义会触发 -Wpedantic 告警）。 */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include "agenttools.hpp"
 
 #include <algorithm>
@@ -180,8 +186,11 @@ std::vector<char*> buildCleanEnvp() {
 RunResult runShell(const std::string& cmd, int timeoutSec) {
 	int po[2] = {-1, -1};
 	int pe[2] = {-1, -1};
-	if (pipe(po) != 0) { throw std::runtime_error("pipe 失败"); }
-	if (pipe(pe) != 0) {
+	/* O_CLOEXEC 用 pipe2 原子设置（无 pipe→fork 之间的窗口）：本进程有守护线程
+	 * 会并发 fork/exec，未标 CLOEXEC 的读端会被无关子进程继承，写端迟迟不 EOF
+	 * ——只能靠硬上限兜底（且被继承的 fd 本身即泄漏）。 */
+	if (pipe2(po, O_CLOEXEC) != 0) { throw std::runtime_error("pipe 失败"); }
+	if (pipe2(pe, O_CLOEXEC) != 0) {
 		close(po[0]);
 		close(po[1]);
 		throw std::runtime_error("pipe 失败");
@@ -245,10 +254,14 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		auto now = std::chrono::steady_clock::now();
 		bool stop = stopRequested();
 		if (!killed && (now >= deadline || stop)) {
-			kill(-pid, SIGKILL);	/* 整个进程组 */
-			killed = true;
+			/* 成因只在首次越限时记录：此后 now 会越过 deadline，若每轮重算会把
+			 * 「先收到停止信号」误翻成 timedOut。 */
 			r.timedOut = now >= deadline;
 			r.interrupted = stop && now < deadline;
+			/* 整组 SIGKILL。失败（EPERM 等）不置 killed、下轮重试——原实现只尝试
+			 * 一次且不查返回值，一旦 kill 未生效就靠下方 waitpid 无限等待挂死。
+			 * ESRCH 表示进程组已不存在（已自行退出），等价于终止成功。 */
+			if (kill(-pid, SIGKILL) == 0 || errno == ESRCH) { killed = true; }
 		}
 		/* 命令自身忽略 SIGKILL 也不可能，但管道可能迟迟不 EOF：硬上限兜底，
 		 * 不让 agent 会话卡在一个 pid 上 */
@@ -257,8 +270,20 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 
 	if (!outEof) { close(po[0]); }
 	if (!errEof) { close(pe[0]); }
-	if (!exited) { waitpid(pid, &status, 0); }
-	r.exitCode = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	/* 收尾回收绝不无超时阻塞：kill 未生效（D 态 / 权限）时原实现会在无超时的
+	 * waitpid 上无限等待，把 agent 会话挂死。改为 WNOHANG 轮询到固定宽限，
+	 * 仍未回收则放弃（进程交由 init 收尸），exitCode 保持 -1。 */
+	if (!exited) {
+		const auto reapDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+		for (;;) {
+			pid_t w = waitpid(pid, &status, WNOHANG);
+			if (w == pid) { exited = true; break; }
+			if (w < 0) { break; }	/* ECHILD 等：已无可回收 */
+			if (std::chrono::steady_clock::now() >= reapDeadline) { break; }
+			poll(nullptr, 0, 10);	/* 10ms 退避，避免忙等 */
+		}
+	}
+	r.exitCode = (exited && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
 	return r;
 }
 
