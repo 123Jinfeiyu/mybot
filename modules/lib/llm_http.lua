@@ -38,7 +38,8 @@ int curl_global_init(long flags);
 local M = {}
 
 -- CURLOPT/CURLINFO 常量（curl ABI 稳定；漂移由 test/test_curl_consts.c 编译期
--- 与 curl.h 比对，项目 F-24 常量自检的同一套做法）
+-- 与 curl.h 比对——F-24 常量自检同族。libcurl 开发头文件非构建依赖，构建机
+-- 没装时该自检不产出、run_all.sh 按跳过计；CI 已安装以保证门禁覆盖）
 local OPT_URL = 10002
 local OPT_POSTFIELDS = 10015
 local OPT_POSTFIELDSIZE = 60

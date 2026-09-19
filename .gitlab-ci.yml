@@ -14,7 +14,9 @@ variables:
 
 .install-deps: &install-deps
   - apt-get update -qq
-  - apt-get install -y -qq cmake g++ libluajit-5.1-dev luajit python3
+  # libcurl4-openssl-dev：非构建依赖，只为 test_curl_consts 常量自检
+  # （llm_http.lua 硬编码 CURLOPT 编号与 curl.h 编译期比对，F-24 同族）
+  - apt-get install -y -qq cmake g++ libluajit-5.1-dev luajit python3 libcurl4-openssl-dev
 
 build:release:
   stage: build

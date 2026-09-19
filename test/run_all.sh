@@ -536,10 +536,11 @@ run_one_parse() {
 		record_fail "$sql/$mt(no-hw)"
 	fi
 }
-if [ ! -x "$bin" ]; then
-	n_declared="$(count_parse_declared)"
-	[ "$n_declared" -gt 0 ] && artifact_missing "无硬件契约" "$n_declared 条用例" "$bin" "$bot_explicit"
-else
+# parse_cases 的切分与过滤循环（原先内联在顶层——bash 的 local 只能在函数内
+# 使用，循环体里的 `local f` 每次迭代都向 stderr 报错一次且变量泄漏为全局）。
+# 收进函数后切分变量按函数局部作用域，`filter` 仍读全局。
+run_parse_cases() {
+	local spec sql rest mt want_rc f expect forbid via
 	for spec in "${parse_cases[@]}"; do
 		sql="${spec%%|*}"
 		rest="${spec#*|}"
@@ -548,7 +549,6 @@ else
 		want_rc="${rest%%|*}"
 		rest="${rest#*|}"
 		# 剩余字段：expect[|forbid[|via]]（via="I" = --input 文件通道，见用例表注释）
-		local f
 		IFS='|' read -ra f <<< "$rest"
 		expect="${f[0]:-}"
 		forbid="${f[1]:-}"
@@ -558,6 +558,12 @@ else
 		fi
 		run_one_parse "$sql" "$mt" "$want_rc" "$expect" "$forbid" "$via"
 	done
+}
+if [ ! -x "$bin" ]; then
+	n_declared="$(count_parse_declared)"
+	[ "$n_declared" -gt 0 ] && artifact_missing "无硬件契约" "$n_declared 条用例" "$bin" "$bot_explicit"
+else
+	run_parse_cases
 fi
 
 # ======================================================================
@@ -1505,9 +1511,18 @@ run_fixture_orphans() {
 run_const_checks() {
 	echo "----- const-check (系统常量自检) -----"
 	local const_dir="$1" ok=true out
-	for prog in test_ioctl_nums test_uart_consts test_v4l2_consts; do
+	for prog in test_ioctl_nums test_uart_consts test_v4l2_consts test_curl_consts; do
 		local binp="$const_dir/$prog"
 		if [ ! -x "$binp" ]; then
+			# test_curl_consts 是唯一可选构建项：libcurl 开发头文件不参与
+			# mybot 构建（运行期只要 libcurl.so），头文件缺失时该自检不产出
+			# 二进制——按跳过计（与缺 python3 同一口径），不判失败；
+			# 其余三个无外部依赖，缺产物仍按「构建产物缺失」硬失败。
+			if [ "$prog" = "test_curl_consts" ]; then
+				echo "[SKIP] $prog 未构建（构建机缺 libcurl 开发头文件）——CURLOPT 常量漂移自检未执行"
+				record_skip "const-curl(缺libcurl头文件)"
+				continue
+			fi
 			artifact_missing "系统常量自检" "$prog" "$binp" "$tests_explicit"
 			return 2
 		fi

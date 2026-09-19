@@ -171,6 +171,21 @@ add_test(NAME const_uart COMMAND test_uart_consts)
 add_test(NAME const_v4l2 COMMAND test_v4l2_consts)
 
 # ======================================================================
+# libcurl 常量自检（F-24 同族）：llm_http.lua 硬编码的 CURLOPT/CURLINFO 编号
+# 与 curl.h 编译期比对。libcurl 开发头文件**不是**构建依赖（mybot 运行期才
+# dlopen libcurl.so），故找到头文件才构建本目标；run_all.sh 对缺失产物按
+# 跳过计（与缺 python3 同口径），CI 安装 libcurl4-openssl-dev 保证门禁覆盖。
+# ======================================================================
+find_path(CURL_INCLUDE_DIR curl/curl.h)
+if(CURL_INCLUDE_DIR)
+  add_executable(test_curl_consts test/test_curl_consts.c)
+  target_include_directories(test_curl_consts PRIVATE ${CURL_INCLUDE_DIR})
+  add_test(NAME const_curl COMMAND test_curl_consts)
+else()
+  message(STATUS "libcurl headers not found - test_curl_consts not built (CURLOPT const check skipped)")
+endif()
+
+# ======================================================================
 # Lua 离线回归逐用例注册（run_all.sh 保持主编排入口不变）：
 # 每个 test_*.lua 都是 `luajit test/xxx.lua` 可单跑的独立用例（HAL 依赖 ffi
 # 必须 LuaJIT）；唯一例外 test_jit_warmup.lua 带 "-- requires: i2c" 真机标记，
