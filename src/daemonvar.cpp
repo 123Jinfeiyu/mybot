@@ -167,11 +167,23 @@ void DaemonRunner::start(const std::string& name, const std::string& chunk,
 	if (!keep) {
 		throw std::runtime_error("Daemon '" + name + "' runner was released before spawn");
 	}
-	std::thread([chunk, config, intervalMs, keep]() {
-		int64_t r = keep->body(chunk, config, intervalMs);
-		try { keep->result_->set_value(r); } catch (...) { /* future 已被消费/进程退出 */ }
-	}).detach();
-	spawned_.store(true);	/* D1：promise 必将被 set，停机可走 join 超时路径 */
+	/* D1 + 审计：spawned_ 必须在守护线程可能开始执行**之前**置位。
+	 * std::thread 构造即已启动线程，故不能只把 store 挪到 detach() 之前——
+	 * 那仍留着「线程已进入 body（读写槽）而 spawned_ 仍为 false」的窗口：
+	 * 此刻并发的 waitForExit 读到 false，会走「从未 spawn」分支直接
+	 * releaseSlot，线程随后触碰已释放内存（use-after-free）。
+	 * 置位前移到线程构造之前；构造抛异常则回滚，保持「未 spawn →
+	 * promise 永不 set → 停机直接释放槽」的既有 D1 语义。 */
+	spawned_.store(true, std::memory_order_release);
+	try {
+		std::thread([chunk, config, intervalMs, keep]() {
+			int64_t r = keep->body(chunk, config, intervalMs);
+			try { keep->result_->set_value(r); } catch (...) { /* future 已被消费/进程退出 */ }
+		}).detach();
+	} catch (...) {
+		spawned_.store(false, std::memory_order_release);
+		throw;
+	}
 	std::cerr << "Daemon '" << name << "' spawned, config: " << config << std::endl;
 }
 

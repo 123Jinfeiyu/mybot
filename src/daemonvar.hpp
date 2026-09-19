@@ -76,7 +76,9 @@ class DaemonRunner {
 	std::shared_ptr<std::promise<int64_t>> result_;
 	std::future<int64_t> fut_;
 	/* D1：线程是否已 spawn——未 spawn（build 中途失败路径）promise 永不 set，
-	 * 停机时不能白等 join 超时，直接释放槽。 */
+	 * 停机时不能白等 join 超时，直接释放槽。
+	 * 不变式：置位必须先于守护线程构造（start 实现），否则线程已读写槽而本
+	 * 标志仍为 false 的窗口内，waitForExit 会误判「未 spawn」提前释放槽。 */
 	std::atomic<bool> spawned_{false};
 	/* D2：主线程放弃等待后置位，槽所有权移交守护线程（线程退出时自行释放），
 	 * 主线程此后不再触碰槽——防放弃路径的 use-after-free。
