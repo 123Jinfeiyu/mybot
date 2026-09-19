@@ -111,6 +111,7 @@ int fclose(void *stream);
 int fseek(void *stream, long offset, int whence);
 long ftell(void *stream);
 unsigned long fread(void *ptr, unsigned long size, unsigned long n, void *stream);
+char *realpath(const char *path, char *resolved);
 ]]
 
 -- ABI 自检：与内核头不符即立刻失败，绝不放行到 ioctl（那时是越界读写，不是报错）
@@ -188,6 +189,61 @@ local function base64(data)
 		out[n + 4] = "="
 	end
 	return table.concat(out)
+end
+
+------------------------------------------------------------------
+-- 仿真路径白名单（P1-2 防线，2026-09-19 评估）
+------------------------------------------------------------------
+-- 仿真模式直接经 ffi.C.fopen 读文件并 base64 回传，若不设约束，就等于给出一条
+-- 「读任意路径」的原语——事实绕过沙箱对 io.open 的封禁（权限允许时 /etc/shadow
+-- 也会被读走并进入模型上下文）。因此只放行白名单目录**之内**的文件：
+--   1) 宿主传入的 src_root（agent 模式取 --camera-src 的所在目录）；
+--   2) 环境变量 BOT4CJ_CAMERA_SRC_DIR（冒号分隔，供结构脚本直驱场景显式放行）。
+-- 两者都没有 = 仿真模式整体禁用（默认拒绝）。判定用 realpath，符号链接会被
+-- 展开后再比较，故「白名单目录内放个软链指向外部」同样被拒。
+local PATH_MAX = 4096
+
+local function real_path(path)
+	local buf = ffi.new("char[?]", PATH_MAX)
+	local p = ffi.C.realpath(path, buf)
+	if p == nil then return nil end
+	return ffi.string(p)
+end
+
+local function path_within(path, root)
+	return path == root or path:sub(1, #root + 1) == root .. "/"
+end
+
+local function allowed_roots(data)
+	local roots = {}
+	local function add(p)
+		if type(p) ~= "string" or p == "" then return end
+		local r = real_path(p)
+		if r ~= nil then roots[#roots + 1] = r end
+	end
+	add(data.src_root)
+	local env = os.getenv("BOT4CJ_CAMERA_SRC_DIR")
+	if type(env) == "string" then
+		for seg in env:gmatch("[^:]+") do add(seg) end
+	end
+	return roots
+end
+
+-- 返回白名单内的规范化路径；越界/不存在/未放行都返回 nil + 原因
+local function resolve_sim_path(data)
+	local src = data.src
+	if type(src) ~= "string" or src == "" then return nil, "缺少模拟图片路径" end
+	local real = real_path(src)
+	if real == nil then return nil, "无法打开模拟图片 " .. src end
+	local roots = allowed_roots(data)
+	if #roots == 0 then
+		return nil, "仿真图片未放行：" .. src
+			.. "（请用 --camera-src 指定，或在 BOT4CJ_CAMERA_SRC_DIR 里列出允许目录）"
+	end
+	for _, root in ipairs(roots) do
+		if path_within(real, root) then return real end
+	end
+	return nil, "模拟图片超出允许目录（白名单）：" .. src
 end
 
 ------------------------------------------------------------------
@@ -343,23 +399,34 @@ end
 function build(data)
 	local src = data.src
 	if src ~= nil and src ~= "" then
-		local bytes, err = read_file(src)
+		local real, perr = resolve_sim_path(data)
+		if real == nil then return { result = "ERR", message = perr } end
+		local bytes, err = read_file(real)
 		if bytes == nil then return { result = "ERR", message = err } end
-		state.sim = { path = src, bytes = bytes }
+		state.sim = { path = real, bytes = bytes }
 	end
 	return { result = "OK" }
 end
 
 function call(data)
 	-- 仿真优先：src 由宿主在调用时传入；没给但 build 阶段已按元数据加载过，
-	-- 就继续用那一份（src 是会话级配置，不该因为调用没重复传参而失效）
+	-- 就继续用那一份（src 是会话级配置，不该因为调用没重复传参而失效）。
+	-- 沿用 build 已放行的那份时不再重新校验：路径当时已 realpath 规范化，
+	-- 且本次调用不带 src_root 也没有可校验的依据。
+	local real = nil
 	local src = data.src
-	if (src == nil or src == "") and state.sim ~= nil then src = state.sim.path end
 	if src ~= nil and src ~= "" then
-		if state.sim == nil or state.sim.path ~= src then
-			local bytes, err = read_file(src)
+		local perr
+		real, perr = resolve_sim_path(data)
+		if real == nil then return { result = "ERR", message = perr } end
+	elseif state.sim ~= nil then
+		real = state.sim.path
+	end
+	if real ~= nil then
+		if state.sim == nil or state.sim.path ~= real then
+			local bytes, err = read_file(real)
 			if bytes == nil then return { result = "ERR", message = err } end
-			state.sim = { path = src, bytes = bytes }
+			state.sim = { path = real, bytes = bytes }
 		end
 		return {
 			result = "OK",
@@ -375,6 +442,11 @@ function call(data)
 	-- 真机：路径以本次调用参数为准（空则用缺省）；换设备/热插拔都靠这句重开
 	local path = data.path
 	if path == nil or path == "" then path = DEFAULT_DEVICE end
+	-- P1-2 防线：只放行 /dev/videoN 设备节点。否则 path 等价于一个「打开任意
+	-- 路径」的原语（普通文件、其他设备节点都会被 HAL.sys.open 照单全收）。
+	if type(path) ~= "string" or path:match("^/dev/video%d+$") == nil then
+		return { result = "ERR", message = "摄像头设备路径只允许 /dev/videoN：" .. tostring(path) }
+	end
 	if state.fd < 0 or state.path ~= path then
 		device_close()
 		local ok, err = device_open(path, data)

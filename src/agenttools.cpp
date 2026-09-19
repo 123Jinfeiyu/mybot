@@ -5,10 +5,12 @@
 #include <cctype>
 #include <cerrno>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <poll.h>
 #include <sstream>
@@ -39,6 +41,11 @@ namespace {
 
 /* ---- 参数取值 ---- */
 
+/* double → int 的合法值域：int 的两个端点都可被 double 精确表示，故直接取界。
+ * 越界或非有限一律拒绝，绝不落到 static_cast（那才是 UB 所在）。 */
+constexpr double kMinIntAsDouble = static_cast<double>(std::numeric_limits<int>::min());
+constexpr double kMaxIntAsDouble = static_cast<double>(std::numeric_limits<int>::max());
+
 std::string requireString(const Json& args, const std::string& key) {
 	if (!args.isObj()) { throw IllegalArgumentException("工具参数必须是 JSON 对象"); }
 	auto v = args.get(key);
@@ -51,8 +58,24 @@ std::string requireString(const Json& args, const std::string& key) {
 int optionalInt(const Json& args, const std::string& key, int fallback) {
 	auto v = args.get(key);
 	if (!v) { return fallback; }
-	if (v->isInt()) { return static_cast<int>(v->getInt()); }
-	if (v->isFloat()) { return static_cast<int>(v->getFloat()); }
+	if (v->isInt()) {
+		long long i = v->getInt();
+		/* 整数路径同样收口：Json 的 int64 直接窄化到 int 会静默回绕 */
+		if (i < std::numeric_limits<int>::min() || i > std::numeric_limits<int>::max()) {
+			throw IllegalArgumentException("参数 " + key + " 超出整数范围");
+		}
+		return static_cast<int>(i);
+	}
+	if (v->isFloat()) {
+		double d = v->getFloat();
+		/* P1-1 防线（2026-09-19 评估）：模型返回的 "timeout_seconds": 1e30 这类值
+		 * 直接 static_cast<int> 是 float-cast-overflow UB（非有限同理）。与
+		 * luabridge.cpp 的 int64 转换同一族判据，此处按 int 宽度取界。 */
+		if (!std::isfinite(d) || d < kMinIntAsDouble || d > kMaxIntAsDouble) {
+			throw IllegalArgumentException("参数 " + key + " 数值超出范围或非有限");
+		}
+		return static_cast<int>(d);
+	}
 	return fallback;
 }
 
@@ -456,6 +479,18 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 				}
 				if (!ctx.cameraSrc.empty()) {
 					params.put("src", JsonString(ctx.cameraSrc));
+					/* src_root 把「允许读取的目录」一并交给驱动（P1-2 防线）：
+					 * 驱动据此只放行该目录内的文件，任意路径读（/etc/shadow 之类）
+					 * 被拒。目录取配置路径的真实所在目录（canonical 展开软链与
+					 * 相对段，与驱动侧 realpath 判据一致）；路径尚不存在时退一步
+					 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是
+					 * 「未放行」。 */
+					std::error_code ec;
+					fs::path real = fs::canonical(ctx.cameraSrc, ec);
+					if (ec) { real = fs::weakly_canonical(ctx.cameraSrc, ec); }
+					std::string root = real.parent_path().string();
+					if (root.empty()) { root = "."; }
+					params.put("src_root", JsonString(root));
 				}
 				Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
 				auto b64 = res.get("b64");

@@ -289,3 +289,27 @@ TH_TEST(agenttools_run_command_timeout_and_truncate) {
 		parseJson("{\"command\":\"yes a | head -c 200000\"}"));
 	TH_CHECK(big.find("已截断") != std::string::npos);
 }
+
+TH_TEST(agenttools_run_command_rejects_out_of_range_timeout) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* P1-1 防线：模型可控的 timeout_seconds 若是 1e30 这类大浮点，直接
+	 * static_cast<int> 是 float-cast-overflow UB（UBSan 实证）。必须折成
+	 * 工具失败文本，且绝不能真去执行命令。 */
+	std::string huge = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo SHOULD_NOT_RUN\",\"timeout_seconds\":1e30}"));
+	TH_CHECK(huge.find("失败") != std::string::npos);
+	TH_CHECK(huge.find("SHOULD_NOT_RUN") == std::string::npos);
+
+	/* 负值不越界，按既有语义夹到下限 1 秒后照常执行 */
+	std::string negative = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo ok-negative\",\"timeout_seconds\":-5}"));
+	TH_CHECK(negative.find("exit_code=0") != std::string::npos);
+
+	/* 区间内的小数正常取整（2.9 → 2） */
+	std::string frac = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo ok-frac\",\"timeout_seconds\":2.9}"));
+	TH_CHECK(frac.find("exit_code=0") != std::string::npos);
+}

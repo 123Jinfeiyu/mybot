@@ -194,4 +194,21 @@ end
 check("API key: 传入优先", openai.api_key({ api_key = "k1" }) == "k1")
 check("API key: 缺失返回 nil", openai.api_key({}) == nil)
 
+-- ================= 超时钳制（P1-3） =================
+
+do
+	local http = dofile("modules/lib/llm_http.lua")
+	-- libcurl 语义：CURLOPT_TIMEOUT=0 是「不限时」，负值亦透传 → 一个配置项
+	-- 就能让单次模型调用永远挂着。钳到 [1, 600] 后这些值不再可能到达 curl。
+	check("超时 0 → 下限 1", http.clamp_timeout(0, 180) == 1)
+	check("超时负数 → 下限 1", http.clamp_timeout(-5, 180) == 1)
+	check("超时 1e30 → 上限 600", http.clamp_timeout(1e30, 180) == 600)
+	check("超时 99999 → 上限 600", http.clamp_timeout(99999, 180) == 600)
+	check("区间内数值原样", http.clamp_timeout(42, 180) == 42)
+	check("小数向下取整", http.clamp_timeout(2.9, 180) == 2)
+	check("数字字符串可解析", http.clamp_timeout("30", 180) == 30)
+	check("非数字回落缺省", http.clamp_timeout("abc", 180) == 180)
+	check("缺省值按参数生效", http.clamp_timeout(nil, 15) == 15)
+end
+
 tester.summary("llm 协议驱动单测")

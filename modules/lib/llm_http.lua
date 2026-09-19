@@ -53,6 +53,21 @@ local CURL_GLOBAL_ALL = 3
 local DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
 local DEFAULT_TIMEOUT = 180
 local DEFAULT_CONNECT_TIMEOUT = 15
+-- 超时钳制区间（秒）。libcurl 语义下 CURLOPT_TIMEOUT=0 是**不限时**，负数同样
+-- 透传——配置里一个 0 就能让单次模型调用永远挂着，与全仓 fail-fast 相悖；
+-- 上限 600 则防「为了保险配大一点」把交互拖成无界等待。
+local MIN_TIMEOUT = 1
+local MAX_TIMEOUT = 600
+
+-- 单点钳制（P1-3 防线，2026-09-19 评估）：所有超时都从这里流向 curl_easy_setopt，
+-- 非法值（nil/非数字/NaN）回落缺省，越界值夹到区间端点。
+function M.clamp_timeout(v, default)
+	local n = tonumber(v)
+	if n == nil or n ~= n then return default end
+	if n < MIN_TIMEOUT then return MIN_TIMEOUT end
+	if n > MAX_TIMEOUT then return MAX_TIMEOUT end
+	return math.floor(n)
+end
 
 -- 库名按常见发行版顺序探测：Debian/Ubuntu 为 libcurl.so.4（可能是 gnutls 变体），
 -- 开发包提供 libcurl.so
@@ -157,8 +172,9 @@ function Session:post(opts)
 	setopt_long(h, OPT_POSTFIELDSIZE, #body)
 	setopt_ptr(h, OPT_WRITEFUNCTION, cb)
 	if slist ~= nil then setopt_ptr(h, OPT_HTTPHEADER, slist) end
-	setopt_long(h, OPT_TIMEOUT, tonumber(opts.timeout) or DEFAULT_TIMEOUT)
-	setopt_long(h, OPT_CONNECTTIMEOUT, tonumber(opts.connect_timeout) or DEFAULT_CONNECT_TIMEOUT)
+	setopt_long(h, OPT_TIMEOUT, M.clamp_timeout(opts.timeout, DEFAULT_TIMEOUT))
+	setopt_long(h, OPT_CONNECTTIMEOUT,
+		M.clamp_timeout(opts.connect_timeout, DEFAULT_CONNECT_TIMEOUT))
 	setopt_long(h, OPT_NOSIGNAL, 1)
 
 	local rc = curl.curl_easy_perform(h)

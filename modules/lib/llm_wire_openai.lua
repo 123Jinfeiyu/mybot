@@ -190,6 +190,8 @@ function M.perform(endpoint, data, req)
 		url = endpoint,
 		headers = headers,
 		body = body,
+		-- 只给缺省；越界/非法值由 llm_http.clamp_timeout 单点钳到 [1, 600]
+		-- （libcurl 的 timeout=0 是不限时，不能让配置把它透传下去）
 		timeout = tonumber(data.timeout) or 180,
 	})
 	if not res.ok then

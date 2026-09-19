@@ -228,6 +228,11 @@ TH_TEST(llmconfig_rejects_out_of_range) {
 		{R"({"max_turns":0})", "max_turns"},
 		{R"({"max_turns":101})", "max_turns"},
 		{R"({"max_tokens":0})", "max_tokens"},
+		/* P1-5 防线：非有限/超出 int64 的浮点曾直接进 static_cast（UB）。
+		 * 现在必须在范围判定处就被拒，绝不能走到转换。 */
+		{R"({"timeout":1e300})", "timeout"},
+		{R"({"max_tokens":1e300})", "max_tokens"},
+		{R"({"max_turns":1e300})", "max_turns"},
 	};
 	int n = 0;
 	for (const auto& c : cases) {

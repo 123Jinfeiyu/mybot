@@ -37,12 +37,12 @@
 | `--llm-key <KEY>` | agent API key（覆盖配置文件）；会写进本进程环境变量 `BOT4CJ_LLM_KEY`（不推荐：argv 对本机所有用户可读） |
 | `--llm-max-turns <N>` | 单次任务最大模型轮数，范围 1-100（缺省 8） |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数，范围 1-200000（缺省 4096） |
-| `--llm-timeout <秒>` | 单次模型调用超时（缺省 180） |
+| `--llm-timeout <秒>` | 单次模型调用超时，范围 1-600（缺省 180） |
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
 | `--agent-no-shell` | 不向智能体提供 `run_command`（去掉任意 shell 执行能力） |
 | `--camera-var <变量名>` | 承载摄像头驱动（`modules/Camera.lua`）的变量名（缺省 `cam0`）；结构脚本已声明则直接用 |
-| `--camera-device <路径>` | 摄像头设备（缺省 `/dev/video0`，需支持 MJPEG） |
-| `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」 |
+| `--camera-device <路径>` | 摄像头设备（缺省 `/dev/video0`，需支持 MJPEG；驱动只放行 `/dev/videoN`） |
+| `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」；驱动只读该文件**所在目录**内的文件 |
 | `--no-camera` | 不向智能体提供 `capture_image` |
 
 agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--input` 同时给出，一律报错并以退出码 **2** 结束。

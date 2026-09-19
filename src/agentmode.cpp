@@ -172,7 +172,8 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	}
 	if (!opts.llmTimeout.empty()) {
 		int timeoutSec = 0;
-		if (!parseIntOption(opts.llmTimeout, "llm-timeout", 1, 3600, timeoutSec, err)) {
+		/* 上限 600 与 llm_http.clamp_timeout 的下限/上限一致（见该处注释） */
+		if (!parseIntOption(opts.llmTimeout, "llm-timeout", 1, 600, timeoutSec, err)) {
 			return false;
 		}
 		out.timeoutSec = timeoutSec;

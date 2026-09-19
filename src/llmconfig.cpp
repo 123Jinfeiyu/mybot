@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 
 #include <cctype>
+#include <cmath>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -87,17 +88,21 @@ bool wantInt(const std::string& path, const Json& root, const char* key,
 	if (!wantNumber(path, root, key, num, err)) { return false; }
 	if (!num) { return true; }
 	double d = *num;
-	if (d != static_cast<double>(static_cast<long long>(d))) {
+	/* P1-5 防线（2026-09-19 评估）：先判有限与值域，再谈取整。配置里写
+	 * "timeout": 1e300（或 inf/nan）时 static_cast<long long>(d) 是
+	 * float-cast-overflow UB，范围检查根本来不及执行。 */
+	if (!std::isfinite(d) || d < static_cast<double>(lo) || d > static_cast<double>(hi)) {
+		std::ostringstream os;
+		os << d;
+		err = "配置文件 " + path + " 的字段 '" + key + "' 需要在 [" + std::to_string(lo)
+			+ ", " + std::to_string(hi) + "] 范围内，实际是 " + os.str();
+		return false;
+	}
+	if (std::floor(d) != d) {
 		err = typeError(path, key, "整数");
 		return false;
 	}
-	long long v = static_cast<long long>(d);
-	if (v < lo || v > hi) {
-		err = "配置文件 " + path + " 的字段 '" + key + "' 需要在 [" + std::to_string(lo)
-			+ ", " + std::to_string(hi) + "] 范围内，实际是 " + std::to_string(v);
-		return false;
-	}
-	out = static_cast<int>(v);
+	out = static_cast<int>(d);
 	return true;
 }
 
@@ -188,7 +193,9 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 	out.topP = topP;
 
 	std::optional<int> timeoutSec, maxTokens, maxTurns;
-	if (!wantInt(path, root, "timeout", 1, 3600, timeoutSec, err)) { return false; }
+	/* timeout 上限与驱动侧 llm_http.clamp_timeout 的钳制区间一致：宿主接受什么，
+	 * 驱动就照发什么，不做「先接受再悄悄改写」 */
+	if (!wantInt(path, root, "timeout", 1, 600, timeoutSec, err)) { return false; }
 	if (!wantInt(path, root, "max_tokens", 1, 200000, maxTokens, err)) { return false; }
 	if (!wantInt(path, root, "max_turns", 1, 100, maxTurns, err)) { return false; }
 	if (timeoutSec) { out.timeoutSec = *timeoutSec; }

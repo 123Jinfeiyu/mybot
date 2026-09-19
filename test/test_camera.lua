@@ -10,6 +10,26 @@ local check = tester.check
 
 dofile("modules/Camera.lua")	-- 注册全局 build/call/destroy
 
+local ffi = require("ffi")
+ffi.cdef[[
+int symlink(const char *target, const char *linkpath);
+int setenv(const char *name, const char *value, int overwrite);
+int unsetenv(const char *name);
+]]
+-- 用例确定性：环境变量会改变仿真白名单，先清掉
+ffi.C.unsetenv("BOT4CJ_CAMERA_SRC_DIR")
+
+-- 软链与临时目录（不依赖 shell 也能建链，建目录仍需 mkdir）
+local function tmpdir(tag)
+	local d = os.tmpname() .. "." .. tag
+	os.execute("mkdir -p " .. d)
+	return d
+end
+
+local function dirname(p)
+	return p:match("^(.*)/[^/]*$")
+end
+
 local function write_file(path, data)
 	local f = assert(io.open(path, "wb"))
 	f:write(data)
@@ -48,7 +68,7 @@ do
 	for i, v in ipairs(vectors) do
 		local path = os.tmpname()
 		write_file(path, v[1])
-		build({ src = path })
+		build({ src = path, src_root = dirname(path) })
 		local res = call({})
 		check("base64 向量 #" .. i .. " (" .. v[1] .. ")", res.b64 == v[2],
 			tostring(res.b64) .. " 期望 " .. v[2])
@@ -64,7 +84,7 @@ do
 	local payload = "\255\216\255\224" .. string.rep("\0\1\2\3\254\253", 5000) .. "\255\217"
 	write_file(path, payload)
 
-	local b = build({ src = path })
+	local b = build({ src = path, src_root = dirname(path) })
 	check("仿真 build 返回 OK", b.result == "OK")
 	local res = call({})
 	check("仿真抓帧返回 OK", res.result == "OK")
@@ -79,9 +99,66 @@ end
 
 -- ---- 仿真文件不存在：build 失败要清晰，而不是拖到抓帧 ----
 do
-	local b = build({ src = "/no/such/image.jpg" })
+	-- 目录在白名单内（/tmp 存在），只是文件不存在 → 走「打不开」而不是「未放行」
+	local b = build({ src = "/tmp/mybot-no-such-image.jpg", src_root = "/tmp" })
 	check("仿真文件不存在 → build ERR", b.result == "ERR")
-	check("ERR 消息点名文件", tostring(b.message):find("无法打开模拟图片") ~= nil)
+	check("ERR 消息点名文件", tostring(b.message):find("无法打开模拟图片", 1, true) ~= nil,
+		tostring(b.message))
+	destroy({})
+end
+
+-- ---- 仿真白名单（P1-2）：默认拒绝 / 越界拒绝 / 软链逃逸拒绝 / 环境变量放行 ----
+do
+	local root, other = tmpdir("cam-root"), tmpdir("cam-other")
+	local inside, outside = root .. "/pic.jpg", other .. "/secret.bin"
+	write_file(inside, "IN")
+	write_file(outside, "SECRET")
+
+	-- 1) 既无 src_root 也无环境变量：默认拒绝（不给「读任意路径」留口子）
+	local b0 = build({ src = inside })
+	check("未放行目录 → build ERR（默认拒绝）", b0.result == "ERR", tostring(b0.message))
+	check("默认拒绝提示指向 --camera-src",
+		tostring(b0.message):find("未放行", 1, true) ~= nil, tostring(b0.message))
+	destroy({})
+
+	-- 2) 给了 src_root 但 src 在其外：拒绝
+	local b1 = build({ src = outside, src_root = root })
+	check("白名单目录外 → build ERR", b1.result == "ERR", tostring(b1.message))
+	check("越界提示含「白名单」",
+		tostring(b1.message):find("白名单", 1, true) ~= nil, tostring(b1.message))
+	destroy({})
+
+	-- 3) 目录内软链指向外部：realpath 展开后仍被判越界
+	local link = root .. "/link.jpg"
+	if ffi.C.symlink(outside, link) ~= 0 then
+		os.execute("ln -sf " .. outside .. " " .. link)
+	end
+	local b2 = build({ src = link, src_root = root })
+	check("软链逃逸白名单 → build ERR", b2.result == "ERR", tostring(b2.message))
+	check("软链逃逸提示含「白名单」",
+		tostring(b2.message):find("白名单", 1, true) ~= nil, tostring(b2.message))
+	destroy({})
+
+	-- 4) 环境变量放行（结构脚本直驱场景的显式开关）
+	ffi.C.setenv("BOT4CJ_CAMERA_SRC_DIR", root, 1)
+	local b3 = build({ src = inside })
+	check("BOT4CJ_CAMERA_SRC_DIR 放行目录内文件", b3.result == "OK", tostring(b3.message))
+	local r3 = call({})
+	check("环境变量放行后抓帧成功", r3.result == "OK" and r3.source == "file")
+	destroy({})
+	ffi.C.unsetenv("BOT4CJ_CAMERA_SRC_DIR")
+
+	os.execute("rm -rf " .. root .. " " .. other)
+end
+
+-- ---- 设备路径白名单（P1-2）：只放行 /dev/videoN ----
+do
+	local res = call({ path = "/etc/passwd" })
+	check("非 /dev/videoN 设备路径 → ERR", res.result == "ERR")
+	check("提示只允许 /dev/videoN",
+		tostring(res.message):find("/dev/videoN", 1, true) ~= nil, tostring(res.message))
+	check("拒绝时点名给的路径",
+		tostring(res.message):find("/etc/passwd", 1, true) ~= nil, tostring(res.message))
 	destroy({})
 end
 
