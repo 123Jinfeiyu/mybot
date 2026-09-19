@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
 		 * mtmerge 的 takeVal 原本没有「下一参数以 -- 开头即不算值」检查，
 		 * 传 strictLookahead=false 保持原语义。 */
 		if (a == "--phase" || a.rfind("--phase=", 0) == 0) {
-			cli::OptionToken tok = cli::parseKeyValue(k, argc, argv, false);
+			bot::cli::OptionToken tok = bot::cli::parseKeyValue(k, argc, argv, false);
 			if (!tok.hasValue) {
 				std::cerr << "mtmerge: --phase 缺少值" << std::endl;
 				std::exit(2);
@@ -84,7 +84,7 @@ int main(int argc, char** argv) {
 			}
 			phase = num;
 		} else if (a == "--out" || a.rfind("--out=", 0) == 0) {
-			cli::OptionToken tok = cli::parseKeyValue(k, argc, argv, false);
+			bot::cli::OptionToken tok = bot::cli::parseKeyValue(k, argc, argv, false);
 			if (!tok.hasValue) {
 				std::cerr << "mtmerge: --out 缺少值" << std::endl;
 				std::exit(2);
