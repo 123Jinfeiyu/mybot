@@ -27,6 +27,7 @@ using bot::MtVars_Daemon;
 namespace {
 
 const char* const kSlowTickRel = "test_daemon_slow_tick.lua";
+const char* const kNoTickRel = "test_daemon_no_tick.lua";
 
 void writeSlowTickChunk() {
 	std::ofstream out(std::string(".tmp/") + kSlowTickRel, std::ios::binary | std::ios::trunc);
@@ -36,6 +37,14 @@ void writeSlowTickChunk() {
 	    << "  ffi.C.usleep(3000000)\n"
 	    << "  return 1\n"
 	    << "end\n";
+}
+
+/* chunk 本体加载/setup 成功，但不定义 daemon_tick——每拍 pcall(nil) 必错，
+ * 让逐拍循环进入 C-L2 指数退避（这是退避路径唯一的确定性触发手段） */
+void writeNoTickChunk() {
+	std::ofstream out(std::string(".tmp/") + kNoTickRel, std::ios::binary | std::ios::trunc);
+	out << "-- daemon_tick intentionally undefined\n"
+	    << "return\n";
 }
 
 mt::MatrixObject daemonDefs(const std::string& chunk) {
@@ -83,4 +92,28 @@ TH_TEST(daemon_slow_tick_abandons_slot_and_thread_releases_it) {
 	 * 曾被吃穿导致偶发失败（审计 L1）。 */
 	std::this_thread::sleep_for(std::chrono::milliseconds(4000));
 	TH_CHECK(!registry[0]->slotAlive());
+}
+
+/* C-L2 尾：错误退避最长 interval×256，退避睡眠若一次性睡满会吞掉 stop 请求
+ * ——stop 落在一次超过 join 超时（保底 2000ms）的深睡中段时必然走弃管路径，
+ * 停止语义被架空。睡眠分段查 stop 后，退避总时长不变而 stop 响应收敛到
+ * 单片时长（100ms）。
+ * 窗口推演（interval=10ms，join 超时 2000ms）：第 n 次错误退避 10×2^n ms，
+ * 单次超过 join 超时自第 8 错起（2560ms），该次睡眠覆盖墙钟 [2540, 5100]ms；
+ * 在其中段（~2800ms）请求 stop，旧行为要睡满 2560ms 才回头查标志
+ * （剩余 >2000ms → 弃管），新行为 100ms 内退出（≈30 倍余量，不受负载影响）。 */
+TH_TEST(daemon_backoff_sleep_interruptible_by_stop) {
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	writeNoTickChunk();
+	mt::MatrixObject defs = daemonDefs(kNoTickRel);
+	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
+	var->build();
+	/* 等到线程已进入单次超过 join 超时的深退避（第 8 错的 2560ms 睡眠中段） */
+	std::this_thread::sleep_for(std::chrono::milliseconds(2800));
+	int abandonedBefore = bot::abandonedDaemonCount();
+	var->destroy();
+	TH_CHECK(!registry[0]->slotAlive());
+	/* 必须走 joined 路径：弃管计数不增长（旧行为此处 +1） */
+	TH_CHECK(bot::abandonedDaemonCount() == abandonedBefore);
 }

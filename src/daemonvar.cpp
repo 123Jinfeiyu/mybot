@@ -95,11 +95,28 @@ static bool setupDaemonChunk(lua_State* L, DaemonSlot* slot, const std::string& 
 	return true;
 }
 
+/* ---- 分段可打断睡眠：把总时长切成小片逐片睡，每片醒来查一次停止标志 ----
+ * C-L2 尾：错误退避上限 ×256（interval 上限 1h → 最长数天），一次性
+ * sleep_for 会让 requestStop/waitForExit 的停止语义在整个退避睡眠期间被
+ * 架空——join 超时只有 interval×5，必然走弃管路径。分段后退避总时长不变，
+ * stop 响应延迟收敛到单片时长。取 100ms：远小于任何现实 join 超时
+ * （保底 2000ms），轮询成本可忽略（一次 mutex 加锁 / 100ms）。 */
+static void sleepSliced(DaemonSlot* slot, int64_t totalMs) {
+	constexpr int64_t kSliceMs = 100;
+	int64_t waited = 0;
+	while (waited < totalMs && !daemon_stop_requested(slot)) {
+		int64_t slice = std::min(kSliceMs, totalMs - waited);
+		std::this_thread::sleep_for(std::chrono::milliseconds(slice));
+		waited += slice;
+	}
+}
+
 /* ---- 逐拍循环：每拍 getglobal(daemon_tick)+pcall 采样一次；拍间 sleep ----
  * C-L2：错误限频 + 指数退避——tick 持续抛错（如 daemon_tick 未定义/加载
  * 失败）原实现按拍频刷 stderr（缺省 5ms ≈ 200 行/秒）且永不退避。前 3 次
  * 逐条打印定位问题，之后每 100 次一条摘要；拍间 sleep 按 2^n 退避
- * （上限 ×256，避免长 interval 停机阻塞被进一步放大），成功一拍即清零。 */
+ * （上限 ×256，避免长 interval 停机阻塞被进一步放大），成功一拍即清零。
+ * 退避睡眠走 sleepSliced 分段查 stop，不再吞掉停止请求。 */
 static void runTickLoop(lua_State* L, DaemonSlot* slot, int64_t intervalMs) {
 	int64_t tickErrors = 0;
 	while (!daemon_stop_requested(slot)) {
@@ -119,7 +136,7 @@ static void runTickLoop(lua_State* L, DaemonSlot* slot, int64_t intervalMs) {
 		if (tickErrors > 0) {
 			sleepMs = intervalMs * (int64_t(1) << std::min<int64_t>(tickErrors, 8));
 		}
-		std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+		sleepSliced(slot, sleepMs);
 	}
 }
 
