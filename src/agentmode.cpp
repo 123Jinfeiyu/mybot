@@ -99,28 +99,21 @@ AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
 	return d;
 }
 
-bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
-	/* ---- 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） ---- */
-	LlmFileConfig file;
-	std::string cfgPath = pickConfigPath(opts);
-	if (!cfgPath.empty()) {
-		if (!loadLlmConfigFile(cfgPath, file, err)) { return false; }
-		out.configPath = cfgPath;
+namespace {
+
+/* 分层选取（命令行 > 环境变量 > 配置文件 > 空）：envName=null 跳过环境层 */
+std::string pickString(const std::string& cli, const char* envName,
+		const std::optional<std::string>& fromFile) {
+	if (!cli.empty()) { return cli; }
+	if (envName != nullptr) {
+		if (auto v = getEnvVar(envName); v && !v->empty()) { return *v; }
 	}
+	return fromFile.value_or("");
+}
 
-	/* ---- 2) endpoint/model：命令行 > 环境变量 > 配置文件 > 驱动内置 DEFAULTS ---- */
-	auto pickString = [](const std::string& cli, const char* envName,
-			const std::optional<std::string>& fromFile) -> std::string {
-		if (!cli.empty()) { return cli; }
-		if (envName != nullptr) {
-			if (auto v = getEnvVar(envName); v && !v->empty()) { return *v; }
-		}
-		return fromFile.value_or("");
-	};
-	out.endpoint = pickString(opts.llmEndpoint, "BOT4CJ_LLM_ENDPOINT", file.endpoint);
-	out.model = pickString(opts.llmModel, "BOT4CJ_LLM_MODEL", file.model);
-
-	/* ---- 3) 协议驱动与变量名 ---- */
+/* ---- 3) 协议驱动与变量名（阶段 3 拆分）---- */
+bool pickDriverAndVar(const CliOptions& opts, const LlmFileConfig& file,
+		AgentModeConfig& out, std::string& err) {
 	out.driverTable = pickString(opts.llmDriver, nullptr, file.driver);
 	if (out.driverTable.empty()) { out.driverTable = "LlmOpenAI"; }
 	out.llmVar = pickString(opts.llmVar, nullptr, file.var);
@@ -135,8 +128,12 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 			+ out.llmVar + "'（来自 --llm-var 或配置文件的 var 字段）";
 		return false;
 	}
+	return true;
+}
 
-	/* ---- 4) API key：命令行 > 环境变量链 > 配置文件 api_key > 配置文件 api_key_file ---- */
+/* ---- 4) API key：命令行 > 环境变量链 > 配置文件 api_key > 配置文件 api_key_file ---- */
+bool resolveApiKey(const CliOptions& opts, const LlmFileConfig& file,
+		const std::string& cfgPath, AgentModeConfig& out, std::string& err) {
 	out.resolvedApiKey = resolveLlmKeyFromEnv();
 	if (!out.resolvedApiKey.empty()) { out.apiKeySource = ApiKeySource::Env; }
 	if (!opts.llmKey.empty()) {
@@ -165,8 +162,12 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	if (out.configWarning.empty() && !cfgPath.empty() && file.apiKey) {
 		out.configWarning = secretFilePermissionWarning(cfgPath);
 	}
+	return true;
+}
 
-	/* ---- 5) 采样/超时/轮次：命令行 > 配置文件 > 内建缺省 ---- */
+/* ---- 5) 采样/超时/轮次：命令行 > 配置文件 > 内建缺省 ---- */
+bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
+		AgentModeConfig& out, std::string& err) {
 	if (file.maxTokens) { out.maxTokens = *file.maxTokens; }
 	if (file.temperature) { out.temperature = *file.temperature; }
 	if (file.topP) { out.topP = *file.topP; }
@@ -189,8 +190,12 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		}
 		out.timeoutSec = timeoutSec;
 	}
+	return true;
+}
 
-	/* ---- 6) 摄像头（capture_image） ---- */
+/* ---- 6) 摄像头（capture_image） ---- */
+bool pickCamera(const CliOptions& opts, const LlmFileConfig& file,
+		AgentModeConfig& out, std::string& err) {
 	out.allowCamera = opts.noCamera ? false : file.allowCamera.value_or(true);
 	out.cameraVar = pickString(opts.cameraVar, nullptr, file.cameraVar);
 	if (out.cameraVar.empty()) { out.cameraVar = "cam0"; }
@@ -201,6 +206,35 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	}
 	out.cameraDevice = pickString(opts.cameraDevice, nullptr, file.cameraDevice);
 	out.cameraSrc = pickString(opts.cameraSrc, nullptr, file.cameraSrc);
+	return true;
+}
+
+} // namespace
+
+bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
+	/* ---- 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） ---- */
+	LlmFileConfig file;
+	std::string cfgPath = pickConfigPath(opts);
+	if (!cfgPath.empty()) {
+		if (!loadLlmConfigFile(cfgPath, file, err)) { return false; }
+		out.configPath = cfgPath;
+	}
+
+	/* ---- 2) endpoint/model：命令行 > 环境变量 > 配置文件 > 驱动内置 DEFAULTS ---- */
+	out.endpoint = pickString(opts.llmEndpoint, "BOT4CJ_LLM_ENDPOINT", file.endpoint);
+	out.model = pickString(opts.llmModel, "BOT4CJ_LLM_MODEL", file.model);
+
+	/* ---- 3) 协议驱动与变量名 ---- */
+	if (!pickDriverAndVar(opts, file, out, err)) { return false; }
+
+	/* ---- 4) API key ---- */
+	if (!resolveApiKey(opts, file, cfgPath, out, err)) { return false; }
+
+	/* ---- 5) 采样/超时/轮次 ---- */
+	if (!mergeSamplingLayer(opts, file, out, err)) { return false; }
+
+	/* ---- 6) 摄像头 ---- */
+	if (!pickCamera(opts, file, out, err)) { return false; }
 
 	/* ---- 7) agent 行为 ---- */
 	/* 驱动特有字段：原样透传给驱动（如 DeepSeek 的 thinking / reasoning_effort） */
