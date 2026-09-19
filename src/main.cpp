@@ -10,6 +10,7 @@
 #include "agentdriver.hpp"
 #include "agentmode.hpp"
 #include "robot.hpp"
+#include "daemonvar.hpp"	/* abandonedDaemonCount（2.2 后不再经 robot.hpp 传导） */
 #include "util.hpp"
 
 namespace bot {

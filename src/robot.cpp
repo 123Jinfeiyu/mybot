@@ -1,5 +1,9 @@
 #include "robot.hpp"
 
+/* 2.2：robot.hpp 不再传导 Lua 头——本 TU 直接装配 Lua/守护变量，显式引入 */
+#include "daemonvar.hpp"
+#include "luavar.hpp"
+
 #include <algorithm>
 #include <cctype>
 #include <iostream>

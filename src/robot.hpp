@@ -15,15 +15,19 @@
 #include <utility>
 #include <vector>
 
-#include "daemonvar.hpp"
 #include "hardware.hpp"
 #include "json.hpp"
-#include "luavar.hpp"
 #include "matrix.hpp"
 #include "sqlparse.hpp"
 #include "util.hpp"
 
 namespace bot {
+
+/* 重构计划 2.2：本头文件不再传导 LuaJIT 头（luaend.hpp 经 daemonvar/luavar
+ * 拉入 lua.h，所有 include robot.hpp 的 TU 都被迫解析 Lua 头）。DaemonRunner
+ * 只以 shared_ptr 成员出现——shared_ptr 对不完整类型安全（类型擦除删除器），
+ * 前向声明即可；具体头由 robot.cpp 与真正用到的 TU 自行引入。 */
+class DaemonRunner;
 
 /* R-2：硬件变量注册表——所有权、销毁序、名字索引的单一来源。
  * 旧实现三个并行容器（hardwareVars_/hwPool_/hwSeq_）靠 addHardwareVar
