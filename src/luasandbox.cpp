@@ -74,6 +74,31 @@ static int restrictedLoader(lua_State* L) {
  * 并把全局 dofile/loadfile 限制到模块路径白名单内（驱动经 mpath.resolve
  * 加载 lib 目录下脚本的既有用法不变，'..' 穿越与绝对路径外读被拒绝）。
  * 各全局缺表时跳过对应组。 */
+/* M3：dofile/loadfile 白名单表。白名单来自 BOT4CJ_MODULE_PATH（':' 分段，
+ * 去空），缺省 "./modules"——与 modules/lib/mpath.lua 的 paths() 同语义。
+ * 白名单为空不可能（缺省值兜底），仍防御：空表时 restrictedLoader 全拒。 */
+static void pushModuleWhitelist(lua_State* L) {
+	lua_createtable(L, 0, 0);
+	int n = 0;
+	for (const std::string& p : splitModulePaths(modulePaths())) {
+		lua_pushlstring(L, p.data(), p.size());
+		lua_rawseti(L, -2, ++n);
+	}
+}
+
+/* M3：把全局名 name 指向的原加载函数包上白名单校验（restrictedLoader）。
+ * pushcclosure 的 upvalue 编号：先压的值 = index 1。restrictedLoader 约定
+ * upvalue(1)=白名单表、(2)=原函数——故压入原函数后用 insert 把表拷贝
+ * 挪到其下方，再 pushcclosure 恰好消耗这两个值。
+ * （阶段 3 拆分注记：dofile/loadfile 两段此前逐字同构，收敛为本函数。） */
+static void wrapLoader(lua_State* L, const char* name) {
+	lua_getglobal(L, name);
+	lua_pushvalue(L, 1);		/* 白名单表拷贝 */
+	lua_insert(L, -2);			/* 顺序调整为 [表, 原函数] */
+	lua_pushcclosure(L, restrictedLoader, 2);
+	lua_setglobal(L, name);
+}
+
 void sandbox_lua(lua_State* L) {
 	struct Group { const char* tab; const char* keys[5]; int n; };
 	static const Group groups[] = {
@@ -91,30 +116,9 @@ void sandbox_lua(lua_State* L) {
 		lua_pop(L, 1);
 	}
 
-	/* M3：dofile/loadfile 白名单化。白名单来自 BOT4CJ_MODULE_PATH（':' 分段，
-	 * 去空），缺省 "./modules"——与 modules/lib/mpath.lua 的 paths() 同语义。 */
-	lua_createtable(L, 0, 0);
-	int n = 0;
-	for (const std::string& p : splitModulePaths(modulePaths())) {
-		lua_pushlstring(L, p.data(), p.size());
-		lua_rawseti(L, -2, ++n);
-	}
-	/* 白名单为空不可能（缺省值兜底），仍防御：空表时 restrictedLoader 全拒 */
-
-	/* pushcclosure 的 upvalue 编号：先压的值 = index 1。restrictedLoader 约定
-	 * upvalue(1)=白名单表、(2)=原函数——故压入原函数后用 insert 把表拷贝
-	 * 挪到其下方，再 pushcclosure 恰好消耗这两个值。 */
-	lua_getglobal(L, "dofile");
-	lua_pushvalue(L, 1);		/* 白名单表拷贝 */
-	lua_insert(L, -2);			/* 顺序调整为 [表, 原函数] */
-	lua_pushcclosure(L, restrictedLoader, 2);
-	lua_setglobal(L, "dofile");
-
-	lua_getglobal(L, "loadfile");
-	lua_pushvalue(L, 1);
-	lua_insert(L, -2);
-	lua_pushcclosure(L, restrictedLoader, 2);
-	lua_setglobal(L, "loadfile");
+	pushModuleWhitelist(L);
+	wrapLoader(L, "dofile");
+	wrapLoader(L, "loadfile");
 
 	lua_pop(L, 1);				/* 弹出白名单表，栈深复原 */
 }
