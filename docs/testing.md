@@ -62,7 +62,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 13. **fixture 孤儿检测**（F3/N-32，无过滤器全量跑时执行）：`robots/test/*.sql` 与 `scripts/test/*.mt` 中未被任何用例表引用的夹具判失败；实机夹具（需 `/dev/i2c-*`、`/dev/spidev*`、`/dev/gpiochip*`、`/dev/pwmchip*`）在脚本的 `orphan_whitelist` 显式声明
 14. **系统常量自检**（F-24，无过滤器全量跑时执行）：`test_ioctl_nums` / `test_uart_consts` / `test_v4l2_consts` 三个 C 自检二进制把 HAL.lua 硬编码的 ioctl/termios 编号与系统头做编译期断言比对（`_Static_assert`），漂移在构建期即失败，执行期再跑一遍作双保险
 15. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标，零第三方框架），覆盖：
-    - 基础设施：JSON 值语义、JSON 文本解析、Lua↔Json 边界与转换深度上限
+    - 基础设施：JSON 值语义、JSON 文本解析、Lua↔Json 边界与转换深度上限、util 全局助手（安全标识符判据 `isSafeIdent`、深度护栏 `DepthLimitGuard`、CLI 切分 `cli::parseKeyValue`、越界文案模板 `rangeErrorText`）
     - 解析管线：`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、mtmerge 归并核心白盒
     - 守护：never-spawn/abandon 分支
     - agent 模式：规范化协议编解码、配置文件解析与取值优先级、驱动注入与 `ChatTransport` 适配（用假 Lua 驱动，不联网）、工具派发与路径沙箱、工具循环轮次上限与回滚与 extras 透传
