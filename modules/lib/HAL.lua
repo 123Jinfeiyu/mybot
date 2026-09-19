@@ -131,17 +131,17 @@ HAL.sys = {
 ------------------------------------------------------------------
 -- 路径白名单 / UART 波特率表 / 各长度上限 / byte_of·uint_of 归一化 与
 -- virtbus 共用同一份（modules/lib/bus_contract.lua），此前是两库逐字手工
--- 镜像、漂移即「仿真绿真机红」且无报错。定位方式与 drv_common 一致
--- （BOT4CJ_MODULE_PATH 首段），再以仓库缺省布局兜底——本文件是全部驱动的
--- 地基，加载失败会全线停摆，故兜底一次。
+-- 镜像、漂移即「仿真绿真机红」且无报错。定位方式：BOT4CJ_MODULE_PATH 各段
+-- 逐段探测（fix-plan 3-3：此前只取首段，非缺省布局会让本文件地基直接失败），
+-- 再以仓库缺省布局兜底——本文件是全部驱动的地基，加载失败会全线停摆，故兜底一次。
 local bus
 do
-	local base = (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+")
-	local ok, m = pcall(dofile, base .. "/lib/bus_contract.lua")
-	if not (ok and type(m) == "table") then
-		m = dofile("./modules/lib/bus_contract.lua")
+	local probed
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local ok, m = pcall(dofile, p .. "/lib/bus_contract.lua")
+		if ok and type(m) == "table" then probed = m break end
 	end
-	bus = m
+	bus = probed or dofile("./modules/lib/bus_contract.lua")
 end
 
 -- 参数归一化（0~255 整数 / 非负整数，非法 nil）

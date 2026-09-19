@@ -314,9 +314,12 @@ TH_TEST(parser_reports_unexpected_end_of_script) {
 }
 
 TH_TEST(parser_rejects_param_value_count_mismatch) {
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Insert params",
+	/* fix-plan 3-4：数量不匹配报错必须带表名与两侧列数，便于定位拼写/漏列 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Insert into table 'T' has 1 column(s) but 2 value(s).",
 		events("INSERT INTO T ( name ) VALUES ( 'a', 'b' );"));
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Insert params",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Insert into table 'T' has 2 column(s) but 1 value(s).",
 		events("INSERT INTO T ( name, note ) VALUES ( 'a' );"));
 }
 

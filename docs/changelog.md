@@ -38,6 +38,8 @@
 
 ### 执行引擎与安全
 
+- **INSERT 列数不匹配报错升级**（2026-09-20）：报错带表名与两侧列数（`Insert into table 'T' has 1 column(s) but 2 value(s).`）——此前的「Insert params」两个字符无法定位拼写/漏列位置（fix-plan 3-4）
+- **run_command 子进程卫生**（2026-09-20）：stdin 重定向到 `/dev/null`——子命令不再与 agent REPL 抢终端输入；管道 `fcntl(O_NONBLOCK)` 失败即 fatal（对齐全仓 fail-closed 口径，静默跳过会让输出收集循环阻塞挂死会话）（fix-plan 3-1）
 - **API key 对 agent 的 shell 可见性告警**（2026-09-19）：环境变量清洗只覆盖「环境变量」这一来源——`run_command` 的子进程与宿主**同属一个用户**，密钥若来自配置文件 `api_key`、密钥文件 `api_key_file` 或 `--llm-key`，脚本一句 `cat` 就能拿走（`chmod 600` 对同用户无效）。命中上述来源即启动时告警并给规避路径（改用环境变量，或 `--agent-no-shell`）；提示只讲来源、**绝不复述密钥本身**
 - **工具脚本路径沙箱硬化**（2026-09-19 审计）：`readFileLimited` 改用 `open(O_NOFOLLOW)`——`scripts/` 里的软链不再能把目录外文件当动作脚本执行；软链条目一律不进工具清单（此前目录外文件的**首注释会经清单回显进模型上下文**）
 - **浮点窄化值域防线**（2026-09-19 评估）：模型可控数值与配置文件数值在 `static_cast` 前先判有限性与值域——`1e30` 这类值直接转换是 float-cast-overflow UB（UBSan 实证），现一律响亮拒绝
@@ -54,6 +56,8 @@
 
 ### 驱动与总线
 
+- **多路径布局定位收敛**（2026-09-20）：`HAL.lua`/`virtbus.lua` 定位 `bus_contract` 与 `drv_common.virt_prepare` 定位 `virtbus` 改为对 `BOT4CJ_MODULE_PATH` **逐段探测**（此前只取首段——多路径布局下首段没有对应文件时，HAL 地基直接失败、virt 注入误报 cannot load）；配套非缺省布局冒烟用例 `test_multipath_layout.lua`（fix-plan 3-3）
+- **PCA9685 退出 SLEEP 按 datasheet 时序**（2026-09-20）：写 `AI|RESTART` 而非只写 `AI`——唤醒振荡器并立即执行 SLEEP 前排下的重启请求，不再依赖「SLEEP 清零自恢复」留挂起的重启位；prescale 四舍五入手法补注释（fix-plan 3-5 / N7）
 - **驱动入口收敛（两刀）**：SHT3X/BME280/BMI270 六处手搓 fd/address 迁 `drv_common.i2c_pair`；MCP4725/TPL0501 的 build/call 校验迁 `drv_common.arg_table`——旧风格入口绕过直驱 virt 注入钩子，`proto=virt` 的 @Action 直写会绕开仿真打到真实总线
 - **UART 修复**：波特率必须传 glibc `B*` 常量——旧实现传数值 Hz 被 EINVAL 拒绝且未查返回码，波特率从未生效；open 时快照原始 termios、close 先恢复再关闭；call 下发 build 缓存的 path 而非信任 call 元数据（virt 模式按错误 tty 路径 attach 的缺口关闭）
 - **新增 `SCSCL` 总线舵机驱动**（飞特 FT-SCS 协议，UART）：PING 探测、位置/时间/速度/扭矩、反馈块读取、`set_id` 站号烧写（须结构期 `allow_burn` 授权）；内嵌 `SCSCL_VIRT` 协议模型

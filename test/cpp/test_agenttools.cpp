@@ -299,6 +299,19 @@ TH_TEST(agenttools_run_command_cleans_env) {
 	::unsetenv("BOT4CJ_TEST_PLAIN");
 }
 
+TH_TEST(agenttools_run_command_stdin_is_devnull) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* fix-plan 3-1：子命令 stdin 必须指向 /dev/null——`cat` 无参读 stdin，
+	 * 重定向前会一直等到超时（并与 REPL 抢输入）；重定向后立即 EOF 正常退出。 */
+	std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"cat\",\"timeout_seconds\":2}"));
+	TH_CHECK(out.find("exit_code=0") != std::string::npos);
+	TH_CHECK(out.find("超时") == std::string::npos);
+}
+
 TH_TEST(agenttools_run_command_timeout_and_truncate) {
 	AgentToolContext ctx;
 	ctx.allowShell = true;

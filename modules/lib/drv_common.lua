@@ -59,9 +59,15 @@ local virt_state = "idle"		-- idle → done | error:<原因>；每状态机只�
 -- 独立入口：准备虚拟总线（加载 virtbus → 发现并挂载 *_VIRT 模型 → inject）
 -- 返回 nil 表示无需动作或已就绪；返回字符串表示必须中止本次驱动调用
 function virt_prepare(data)
-	local base = (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+")
-	local ok, vbus = pcall(dofile, base .. "/lib/virtbus.lua")
-	if not ok or type(vbus) ~= "table" then
+	-- fix-plan 3-3：BOT4CJ_MODULE_PATH 各段逐段探测（此前只取首段，多路径
+	-- 布局下首段没有 virtbus.lua 即误报 cannot load）。保持原有「无仓库
+	-- 缺省布局兜底」的报错契约：找不到仍走 error 分支（见下）。
+	local vbus
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local ok, v = pcall(dofile, p .. "/lib/virtbus.lua")
+		if ok and type(v) == "table" then vbus = v break end
+	end
+	if type(vbus) ~= "table" then
 		virt_state = "error:cannot load lib/virtbus.lua"
 		return virt_state:sub(7)
 	end

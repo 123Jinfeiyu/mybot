@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cmath>
 #include <csignal>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
@@ -210,6 +211,12 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 	}
 	if (pid == 0) {
 		setpgid(0, 0);	/* 独立进程组：超时/中断可整组终止（含孙进程） */
+		/* fix-plan 3-1：stdin 重定向到 /dev/null——子命令不再与主进程（agent REPL）
+		 * 抢终端输入；打开失败按 fail-closed 直接放弃执行（127）。 */
+		int devnull = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+		if (devnull < 0) { _exit(127); }
+		dup2(devnull, STDIN_FILENO);
+		if (devnull != STDIN_FILENO) { close(devnull); }
 		dup2(po[1], STDOUT_FILENO);
 		dup2(pe[1], STDERR_FILENO);
 		close(po[0]);
@@ -222,8 +229,16 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 	setpgid(pid, pid);	/* 与子进程竞争设置，谁先成功效果一致 */
 	close(po[1]);
 	close(pe[1]);
-	fcntl(po[0], F_SETFL, O_NONBLOCK);
-	fcntl(pe[0], F_SETFL, O_NONBLOCK);
+	/* fix-plan 3-1：fcntl 失败即 fatal（对齐 SO_RCVTIMEO 在 actionsource 的
+	 * fail-closed 口径）——O_NONBLOCK 设置失败会让下方 read 循环在无数据时
+	 * 阻塞挂死整个 agent 会话，绝不能静默跳过。 */
+	if (fcntl(po[0], F_SETFL, O_NONBLOCK) != 0 || fcntl(pe[0], F_SETFL, O_NONBLOCK) != 0) {
+		const int savedErrno = errno;
+		close(po[0]);
+		close(pe[0]);
+		errno = savedErrno;
+		throw std::runtime_error(std::string("fcntl 失败: ") + std::strerror(errno));
+	}
 
 	RunResult r;
 	bool exited = false, outEof = false, errEof = false, killed = false;

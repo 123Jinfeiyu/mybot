@@ -54,6 +54,8 @@ function build(data)
 	-----------------------------------------------------
 	local freq = 50.0							-- 设置PWM频率
 	local prescale_val = OSC_CLK_HZ / (PWM_RESOLUTION * freq) - 1.0	-- 25MHz主频
+	-- datasheet §7.3.1 要求 prescale = round(25MHz/(4096*freq)) - 1：
+	-- 先 +0.5 再 floor 即四舍五入到最近整数（50Hz 时 25M/(4096*50)-1 ≈ 121.07 → 121）
 	local prescale = prescale_val + 0.5
 
 	if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then	-- 触发一次重启（唤醒振荡器）
@@ -68,8 +70,11 @@ function build(data)
 	if not i2c_write_reg(fd, REG_PRESCALE, math.floor(prescale)) then
 		return err("PCA9685 write failed: PRE_SCALE")
 	end
-	if not i2c_write_reg(fd, REG_MODE1, MODE1_AI) then	-- 退出SLEEP并开启地址自增
-		return err("PCA9685 write failed: MODE1 (AI)")
+	-- 退出 SLEEP 用 AI|RESTART（datasheet 推荐时序）：唤醒振荡器并立即执行
+	-- build 开头 SLEEP 前排下的重启请求；只写 AI 会依赖 SLEEP 清零自恢复，
+	-- 重启请求持续挂起（模型 restart_pending 保持 1，MODE1 读回 bit7=1）
+	if not i2c_write_reg(fd, REG_MODE1, bitc.bor(MODE1_AI, MODE1_RESTART)) then
+		return err("PCA9685 write failed: MODE1 (AI|RESTART)")
 	end
 
 	milli_sleep(5)			-- 等待振荡器启动

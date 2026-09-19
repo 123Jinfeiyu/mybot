@@ -139,16 +139,17 @@ virtbus.uart_fail_read = false  -- 总线级故障注入：true → uart_read �
 -- ---- 总线契约单点（N-25）----
 -- 路径白名单 / 波特率表 / 各长度上限 / byte_of·uint_of 归一化 与 HAL 共用
 -- 同一份（modules/lib/bus_contract.lua）——此前是两库逐字手工镜像，漂移即
--- 「仿真绿真机红」且无任何报错。定位方式与 drv_common 一致（首段模块路径），
--- 再以仓库缺省布局兜底（本库常被测试以 dofile("modules/lib/virtbus.lua") 加载）。
+-- 「仿真绿真机红」且无任何报错。定位方式：BOT4CJ_MODULE_PATH 各段逐段探测
+-- （fix-plan 3-3：此前只取首段），再以仓库缺省布局兜底
+-- （本库常被测试以 dofile("modules/lib/virtbus.lua") 加载）。
 local bus
 do
-	local base = (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+")
-	local ok, m = pcall(dofile, base .. "/lib/bus_contract.lua")
-	if not (ok and type(m) == "table") then
-		m = dofile("./modules/lib/bus_contract.lua")
+	local probed
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local ok, m = pcall(dofile, p .. "/lib/bus_contract.lua")
+		if ok and type(m) == "table" then probed = m break end
 	end
-	bus = m
+	bus = probed or dofile("./modules/lib/bus_contract.lua")
 end
 virtbus.bus_contract = bus
 

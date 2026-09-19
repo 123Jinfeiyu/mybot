@@ -267,7 +267,10 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 	std::vector<std::string> paramValues = expectParenNameList();
 
 	if (paramNames.size() != paramValues.size()) {
-		throw bot::IllegalArgumentException("Insert params");
+		/* fix-plan 3-4：报错带表名与两侧列数，定位质量对齐同文件 Number 列报错 */
+		throw bot::IllegalArgumentException("Insert into table '" + eve.targetTabName
+			+ "' has " + std::to_string(paramNames.size()) + " column(s) but "
+			+ std::to_string(paramValues.size()) + " value(s).");
 	}
 	std::vector<VarRaw> arr;
 	for (std::size_t i = 0; i < paramNames.size(); ++i) {

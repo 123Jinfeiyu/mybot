@@ -45,12 +45,13 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 4. **mtmerge 合成器**（`@Action` 相位归并 + `@Alias`/`@Vars` 按行叠加同名报错；末尾把产物回喂 `mybot` 证明内联别名仍生效）
 5. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 6. **TCP 异常注入**（复用 `scripts/tcp_adversarial.sh` 场景矩阵：半包/断连/空闲挂死/垃圾帧/口令负路径，每场景独立服务端 + 看门狗）
-7. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假模型服务 `scripts/fake_llm_server.py`，五个场景；缺 python3 或 libcurl 时按跳过计）：
+7. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假模型服务 `scripts/fake_llm_server.py`，六个场景；缺 python3 或 libcurl 时按跳过计）：
    - ① 默认协议驱动（LlmOpenAI）跑完 `list_hardware → run_action_script → run_command → 最终回答`：断言工具循环真的迭代、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态
    - ② `--llm-driver LlmDeepSeek` 断言协议差异：带 `thinking`、不发 `temperature`、历史 `reasoning_content` 被回传（官方文档里的 400 级有状态要求）
    - ③ `--llm-timeout` 必须在 4s 内生效：专防 `curl_easy_setopt` 退回裸变参调用（那时整型选项被静默忽略）
    - ④ `--llm-config` 配置文件：断言 URL/KEY/MODEL 全部来自文件、且环境里不放任何密钥
    - ⑤ `capture_image` 拍照：断言线上报文确实带 `image_url` 多模态内容（data URL 包的真 JPEG）
+   - ⑥ `--prompt-file` 提示词包：目录 .md 按文件名自然排序、以「## 文件名」分节追加在系统提示词内置段落之后
 8. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 9. **输入边界加固**，覆盖：
    - `--tcp-host` 非法地址、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限
