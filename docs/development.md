@@ -61,6 +61,13 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 本项目 `.cpp` 全量 `-Wall -Wextra -Wpedantic` 零告警为基线，改动请保持。
 
+- **报错文案分语言**（有意分区，非漂移）：结构脚本装配/解析期的报错（`robot`/`sqlparse`/
+  `hardware`/`daemonvar` 等，读者是 `.sql`/`.mt` 脚本作者）用**英文**——这类报错常被
+  截断/转码后进日志或 CI 输出，ASCII 最稳；agent 与运行期操作者可见的报错
+  （`agentloop`/`agentmode`/`agenttools` 等，读者是与机器人对话的人）用**中文**。
+  两区都收口到同一异常体系（`IllegalArgumentException` 为根，运行期硬件失败用
+  `std::runtime_error`），不要新增 `std::invalid_argument` 等散装类型。
+
 ## 文档约定
 
 - **入口两级**：[README](../README.md) 只留「快速开始 + 入口链接」，机制细节写进 `docs/`；

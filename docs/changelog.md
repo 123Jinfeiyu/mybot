@@ -6,6 +6,7 @@
 
 ### agent 模式（`--agent`）
 
+- **REPL 历史按字节预算自动裁剪**：会话历史按估重计量（正文 + 工具调用参数 + base64 图片 + extras 串，即线上体积的下界），超过 `AgentOptions::maxHistoryBytes`（缺省 4 MiB，0 = 关）在下一轮任务开始前按「任务块」（一条任务消息到下一条之前的全部消息）整块裁掉最老的块。整块裁剪保证 assistant.tool_calls 与其 tool 消息、夹在 tool 消息之后的图片 user 消息不被拆散（半截序列会被服务端 400 拒绝）；老块连同其中的 base64 图片一并释放——图片是历史体积主项，按条数裁剪挡不住；system 提示词与最新一个任务无条件保留（正在进行的对话不能裁空）。单测：字节预算裁剪 / 图片随块淘汰 / 预算 0 不裁剪
 - **新增 agent 模式**：`--agent` 让大模型工具循环成为主执行流程——结构脚本加载后硬件**常驻内存**，多轮挑选并执行动作脚本，会话结束才 `deactivate()`；与管道模式互斥（与 `--tcp`/`--input` 同给退出 2）。`--task` 一次性任务，缺省交互 REPL（`/hardware`、`/scripts`、`/exit`，历史跨轮保留）
 - **工具集**：`list_action_scripts`、`run_action_script`（路径限定 `--scripts-dir` 之下，拒绝绝对路径/`..`/非 `.mt`，8 MiB 上限）、`list_hardware`（只读清单，不调 `read()`/`play()`，不误触发执行器）、`capture_image`（见下）、`run_command`（超时整进程组终止 + 64KB 截断 + 环境变量清洗，`--agent-no-shell` 可关闭）。工具报错折成文本回传模型，不打断会话
 - **模型调用是一颗 Lua 协议驱动**（替换最初基于 libus_http 的 C++ 实现，`src/agenthttp.*` 已删除）：与舵机、传感器平级的 `modules/*.lua` 驱动，宿主经 `src/agentdriver.*` 适配成 `ChatTransport`——恢复零链接期依赖（仅 LuaJIT + pthread + dl；运行期需 libcurl，经 ffi 加载），换模型/换厂商 = 换一个 Lua 文件。配套：宿主侧 `src/agentproto.*`（规范化消息/工具 ⇄ Json）、`src/agentloop.*`（缺 `tool_call_id` 自动合成、轮次上限/传输失败回滚本轮消息、`extras` 逐轮透传）、`src/jsonparse.*`（严格 JSON，深度 64/8 MiB 上限）；Lua 侧 `lib/json.lua`、`lib/llm_http.lua`（ffi 直驱 libcurl；整型选项必须 cast 成定签名再调，裸变参被静默忽略——实测超时失效）、`lib/llm_wire_openai.lua` / `lib/llm_wire_deepseek.lua`
@@ -30,6 +31,9 @@
 
 ### 执行引擎与安全
 
+- **守护错误退避可被 stop 打断**：C-L2 退避上限 ×256（interval 上限 1h → 单次退避睡眠可达数天），一次性 `sleep_for` 会吞掉停止请求——stop 落在一次超过 join 超时（保底 2000ms）的深睡中段时必然走弃管路径，`requestStop`/`waitForExit` 的停止语义被架空（弃管兜底仍在，但「join 等它退出」失效）。退避睡眠改为 100ms 分段逐片睡、每片醒来查 `daemon_stop_requested`：退避总时长不变，stop 响应延迟收敛到单片时长。回归测试按窗口推演构造（在第 8 错的 2560ms 深睡中段请求 stop：旧行为必弃管、新行为 ≈30 倍余量内 join），并双向验证（临时禁用 stop 检查 → 测试 FAIL）。单测总数 263 → 267
+- **沙箱残余缺口如实声明**：`luaend.hpp` 的 `sandbox_lua` 注释列明三项有意取舍——`load`/`loadstring` 未包裹（字符串源码不受路径白名单约束）、`luaL_loadfile` 接受 LuaJIT 预编译字节码（白名单只限路径，不区分源码/字节码，字节码加载器是经典 LuaJIT 攻击面）、`ffi` 本身即完整逃逸通道——依据 docs/reference.md 的威胁模型（modules/ 下 .lua 信任级等同 mybot 用户，沙箱防误用与路径穿越、不对抗恶意驱动代码），此前头文件未把前两项列为已声明残余
+- **异常体系与文案惯例收口**：`agentdriver` 两处 `std::invalid_argument`（`logic_error` 谱系）归口 `IllegalArgumentException`（`runtime_error` 谱系，util.hpp 单一根），与「统一按 IAE 收口」纪律一致；`docs/development.md` 声明报错文案分语言惯例（结构脚本装配/解析期英文面向脚本作者，agent 与运行期中文面向操作者），并要求不新增散装异常类型
 - **`$` 引用校验前移**：存在性校验从惰性提前到全部表装配完成后、任何驱动 `build` 之前——失败不碰真机；前向引用仍合法。守门 `ref_forward`/`ref_undefined`；`$` 指向标量清晰报错而非 Json 类型崩溃（`ref_alias_scalar`）
 - **destroy 元数据恢复引用列**：改为「字面列 + 引用列尽力而为快照」——引用仍存活则并入快照，已释放只跳过该引用、`destroy` 本身绝不跳过；修复 `fd` 缺失导致 PCA9685/MPU6050 响亮报错、十余款器件静默丢失去初始化的问题
 - **并发与退出路径收口**：守护槽指针改 `std::atomic`、守护退出 `count` 移入槽内 mutex 临界区、弃管以「退出检查点 + 原子 exchange 唯一胜者」裁决消除泄漏竞态；守门新增信号/退出路径段（播放中与 TCP 等待中 SIGTERM 两分支）

@@ -24,7 +24,19 @@ std::string luaErrorString(lua_State* L);
 /* 探测全局变量类型（getglobal + type + pop，栈深不变） */
 int luaGlobalType(lua_State* L, const char* name);
 
-/* 收紧 Lua 沙箱：中和 os.execute/exit/remove/rename、io.popen/open/lines/input/output */
+/* 收紧 Lua 沙箱：中和 os.execute/exit/remove/rename、io.popen/open/lines/input/output，
+ * dofile/loadfile 白名单化到模块路径内。
+ *
+ * **已声明的沙箱残余**（有意取舍而非遗漏，收紧它们会破坏驱动生态）：
+ *   1. `load`/`loadstring` 未包裹——字符串源码不受路径白名单约束，模块树内
+ *      驱动可自行加载任意字符串代码；
+ *   2. `luaL_loadfile` 接受 LuaJIT 预编译字节码——白名单只限路径，不区分
+ *      源码与字节码，字节码加载器是经典 LuaJIT 攻击面；
+ *   3. `ffi` 本身即完整逃逸通道（调任意 C 符号/mmap/fork）——HAL、V4L2、
+ *      libcurl 直驱全依赖它，不可收紧。
+ * 依据的威胁模型（docs/reference.md）：modules/ 下的 .lua 是信任级等同
+ * mybot 用户的任意原生代码执行入口，本沙箱防「误用与路径穿越」，不对抗
+ * 恶意驱动代码；若要把外部输入当不可信代码送进 Lua，必须先改威胁模型。 */
 void sandbox_lua(lua_State* L);
 
 /* 新建「标准库齐全 + 沙箱已收紧」的 Lua 状态；内存不足返回 nullptr。
