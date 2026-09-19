@@ -77,14 +77,8 @@ Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 
 /* ---- 别名硬件变量 ---- */
 std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs, std::int64_t i) {
-	std::int64_t idxName = defs.indexOfCol(0, "name");
-	std::int64_t idxAlias = defs.indexOfCol(0, "alias");
-	if (idxName < 0) {
-		throw IllegalArgumentException("Alias matrix '" + defs.getName() + "' has no 'name' column.");
-	}
-	if (idxAlias < 0) {
-		throw IllegalArgumentException("Alias matrix '" + defs.getName() + "' has no 'alias' column.");
-	}
+	std::int64_t idxName = defs.requireCol(0, "name", "Alias matrix");
+	std::int64_t idxAlias = defs.requireCol(0, "alias", "Alias matrix");
 
 	std::string name = defs(i, idxName);
 	std::string alias = defs.inherited(i, idxAlias);
@@ -131,14 +125,8 @@ Json MtVars_Vars::play(const Json&) {
 
 std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, std::int64_t i,
 		std::function<double(const std::string&)> resolve) {
-	std::int64_t idxName = defs.indexOfCol(0, "name");
-	std::int64_t idxValue = defs.indexOfCol(0, "value");
-	if (idxName < 0) {
-		throw IllegalArgumentException("Vars matrix '" + defs.getName() + "' has no 'name' column.");
-	}
-	if (idxValue < 0) {
-		throw IllegalArgumentException("Vars matrix '" + defs.getName() + "' has no 'value' column.");
-	}
+	std::int64_t idxName = defs.requireCol(0, "name", "Vars matrix");
+	std::int64_t idxValue = defs.requireCol(0, "value", "Vars matrix");
 
 	std::string name = defs(i, idxName);
 	std::string value = defs.inherited(i, idxValue);

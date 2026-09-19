@@ -415,14 +415,8 @@ static void checkDaemonFields(const std::string& v, const std::string& name,
 /* ---- 守护硬件变量工厂 ---- */
 std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
 		std::vector<std::shared_ptr<DaemonRunner>>& registry) {
-	int64_t idxName = defs.indexOfCol(0, "name");
-	int64_t idxChunk = defs.indexOfCol(0, "chunk");
-	if (idxName < 0) {
-		throw IllegalArgumentException("Table '" + defs.getName() + "' has no 'name' column.");
-	}
-	if (idxChunk < 0) {
-		throw IllegalArgumentException("Table '" + defs.getName() + "' has no 'chunk' column.");
-	}
+	int64_t idxName = defs.requireCol(0, "name", "Table");
+	int64_t idxChunk = defs.requireCol(0, "chunk", "Table");
 	std::string name = defs(i, idxName);
 	std::string chunkRaw = defs.inherited(i, idxChunk);
 

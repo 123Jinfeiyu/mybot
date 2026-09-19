@@ -370,11 +370,7 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 	const char* label = (kind == ScalarKind::Alias) ? "Alias" : "Vars";
 	/* 重复报错沿用「Duplicate alias name」既有措辞（有负值回归守门），Vars 用自身名 */
 	const char* dupLabel = (kind == ScalarKind::Alias) ? "alias" : "Vars";
-	std::int64_t idxName = matrix.indexOfCol(0, "name");
-	if (idxName < 0) {
-		throw IllegalArgumentException(std::string(label) + " matrix '" + matrix.getName()
-			+ "' has no 'name' column.");
-	}
+	std::int64_t idxName = matrix.requireCol(0, "name", std::string(label) + " matrix");
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		std::unique_ptr<MatrixVars_Hardware> var;
@@ -425,10 +421,7 @@ void HwFactory::createHardVars(const std::vector<mt::MatrixObject>& matrices) {
 }
 
 void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName) {
-	std::int64_t idxName = matrix.indexOfCol(0, "name");
-	if (idxName < 0) {
-		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
-	}
+	std::int64_t idxName = matrix.requireCol(0, "name", "Table");
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
@@ -438,10 +431,7 @@ void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::stri
 }
 
 void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName) {
-	std::int64_t idxName = matrix.indexOfCol(0, "name");
-	if (idxName < 0) {
-		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
-	}
+	std::int64_t idxName = matrix.requireCol(0, "name", "Table");
 	std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
 	std::string scriptPath = firstExistingModule(modulePath, mtName + ".lua");
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {

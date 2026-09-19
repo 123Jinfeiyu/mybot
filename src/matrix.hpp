@@ -126,6 +126,22 @@ public:
 		return -1;
 	}
 
+	/* 定位必须存在的列头，未命中就地抛。what 是文案主语（「Alias matrix」/
+	 * 「Vars matrix」/「Table」），报文模板
+	 * "{what} '{表名}' has no '{key}' column."——各调用点既有文案逐字保持。
+	 * 与 C5 负下标防线的关系：那是漏网负下标的兜底（报错发生在访问点），
+	 * 本方法把「缺列」的判定提到定位点、报错主语带表名，指向性更强。
+	 * 容许缺列的场景（如把 name 列当跳过标记的元数据收集）仍用 indexOfCol。 */
+	std::int64_t requireCol(std::size_t row, const std::string& key,
+			const std::string& what) const {
+		std::int64_t idx = indexOfCol(row, key);
+		if (idx < 0) {
+			throw bot::IllegalArgumentException(what + " '" + name_ + "' has no '"
+				+ key + "' column.");
+		}
+		return idx;
+	}
+
 	/* 储存对象 */
 	void save(std::ostream& out) const {
 		out << "@" << getName() << "\n";
