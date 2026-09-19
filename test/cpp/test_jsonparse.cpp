@@ -98,3 +98,11 @@ TH_TEST(jsonparse_depth_limit) {
 	for (int i = 0; i < 40; ++i) { ok += "]"; }
 	TH_CHECK(parseJson(ok).isArr());
 }
+
+TH_TEST(jsonparse_rejects_over_max_bytes) {
+	/* 上限在解析前检查：8MiB+1 的输入即拒，不产生解析开销 */
+	std::string big(bot::kJsonMaxBytes + 1, ' ');
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "exceeds the byte limit",
+		bot::parseJson(big));
+}
+

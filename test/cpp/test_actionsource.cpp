@@ -9,10 +9,13 @@
  */
 
 #include <cstddef>
+#include <chrono>
 #include <dirent.h>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <sys/socket.h>
+#include <unistd.h>
 
 #include "actionsource.hpp"
 #include "harness.hpp"
@@ -76,6 +79,60 @@ TH_TEST(too_large_survives_matrix_parser_without_downgrade) {
 	bot::LimitedReader lim(std::move(inner), 20);
 	mt::MatrixParser parser(lim);
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "exceeds the byte limit of 20", parser.parse());
+}
+
+
+/* ---- TcpStreamReader 分支单测（阶段 4：三份报告点名的盲区）----
+ * 用 AF_UNIX socketpair 充当链路：数据/EOF/空闲超时/总预算四分支。 */
+TH_TEST(tcp_stream_reader_streams_data_then_eof) {
+	int fds[2];
+	TH_CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+	{
+		bot::TcpStreamReader r(fds[0], 5, deadline);
+		TH_CHECK(::write(fds[1], "abc", 3) == 3);
+		TH_CHECK(r.read() == 'a');	/* 一次 recv 填满缓冲，随后逐字节出队 */
+		TH_CHECK(::write(fds[1], "de", 2) == 2);
+		TH_CHECK(r.read() == 'b');
+		TH_CHECK(r.read() == 'c');
+		TH_CHECK(r.read() == 'd');	/* 缓冲耗尽触发下一次 recv */
+		TH_CHECK(r.read() == 'e');
+		::close(fds[1]);		/* 对端关写端 */
+		TH_CHECK(r.read() == -1);	/* n==0 → EOF */
+		TH_CHECK(r.read() == -1);	/* EOF 后保持 EOF */
+	}
+}
+
+TH_TEST(tcp_stream_reader_idle_timeout_yields_eof) {
+	int fds[2];
+	TH_CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+	/* 对端连上但不发数据：recv 受 SO_RCVTIMEO 约束（生产路径由
+	 * acceptAuthenticatedClient 设置，测试自设短超时），EAGAIN → 超时分支 */
+	timeval tv{};
+	tv.tv_sec = 0;
+	tv.tv_usec = 50 * 1000;
+	TH_CHECK(::setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+	{
+		bot::TcpStreamReader r(fds[0], 1, deadline);
+		TH_CHECK(r.read() == -1);	/* 空闲超时按输入结束处理 */
+		TH_CHECK(r.read() == -1);	/* 超时消息只打一次，此后保持 EOF */
+	}
+	::close(fds[1]);
+}
+
+TH_TEST(tcp_stream_reader_over_total_budget_yields_eof_without_recv) {
+	int fds[2];
+	TH_CHECK(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+	/* C-M2：预算在建立时已过——即便对端发来数据也不得再 recv（慢滴对端
+	 * 每次 recv 都在 idle 窗口内到达，wall-clock 预算是唯一硬防线） */
+	const auto deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+	{
+		bot::TcpStreamReader r(fds[0], 60, deadline);
+		TH_CHECK(::write(fds[1], "xx", 2) == 2);
+		TH_CHECK(r.read() == -1);	/* 预算分支优先于 recv */
+	}
+	::close(fds[1]);
 }
 
 TH_TEST(open_action_source_rejects_missing_input_file) {

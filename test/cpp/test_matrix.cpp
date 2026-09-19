@@ -165,3 +165,30 @@ TH_TEST(matrix_does_not_sync_survives_parser_rethrow) {
 		/* 以 std::exception 身份捕获也必须是同一个对象（派生链完整） */
 	}
 }
+
+TH_TEST(matrix_read_save_roundtrip_preserves_cells) {
+	const std::string src = "@Action\nrelay0.test;\n   200;\n   -  50;\n@\n";
+	std::vector<mt::MatrixObject> mats1;
+	bot::MemoryReader in1(src);
+	mt::readMatrix(in1, mats1);
+	TH_CHECK(mats1.size() == 1);
+	TH_CHECK(mats1[0].getName() == "Action");
+	TH_CHECK(mats1[0].rows() == 3);
+
+	std::ostringstream saved;
+	mt::MatrixSaver::save(mats1, saved);
+
+	std::vector<mt::MatrixObject> mats2;
+	bot::MemoryReader in2(saved.str());
+	mt::readMatrix(in2, mats2);
+	TH_CHECK(mats2.size() == 1);
+	TH_CHECK(mats2[0].getName() == mats1[0].getName());
+	TH_CHECK(mats2[0].rows() == mats1[0].rows());
+	TH_CHECK(mats2[0].cols() == mats1[0].cols());
+	for (std::size_t r = 0; r < mats1[0].rows(); ++r) {
+		for (std::size_t c = 0; c < mats1[0].cols(); ++c) {
+			TH_CHECK(mats1[0](r, c) == mats2[0](r, c));
+		}
+	}
+}
+
