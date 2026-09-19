@@ -107,6 +107,21 @@ do
 	destroy({})
 end
 
+-- ---- 入参类型守卫：Camera 是全仓唯一不挂 drv_common.arg_table 样板的驱动，
+-- ---- 非表入参必须按 ERR 契约拒绝，而不是 data.src 索引访问裸抛 Lua error ----
+do
+	local b = build("not-a-table")
+	check("build 非表入参 → ERR（契约表，不裸抛）",
+		type(b) == "table" and b.result == "ERR", tostring(type(b) == "table" and b.message))
+	check("build 非表入参提示类型错误",
+		tostring(type(b) == "table" and b.message):find("Invalid Arguments Type", 1, true) ~= nil,
+		tostring(type(b) == "table" and b.message))
+	local r = call(42)
+	check("call 非表入参 → ERR（契约表，不裸抛）",
+		type(r) == "table" and r.result == "ERR", tostring(type(r) == "table" and r.message))
+	destroy({})
+end
+
 -- ---- 仿真白名单（P1-2）：默认拒绝 / 越界拒绝 / 软链逃逸拒绝 / 环境变量放行 ----
 do
 	local root, other = tmpdir("cam-root"), tmpdir("cam-other")

@@ -165,10 +165,26 @@ end
 
 -- 从规范化请求组装出「接入点 + provider 报文」。
 -- 驱动只调这一个入口；DeepSeek 库覆写 plan 以换缺省值与整形规则。
+-- 内置缺省接入点意味着报文流向一个特定第三方网关：每次进程首次回退时向
+-- stderr 注记一次（io.stderr 未被沙箱中和，驱动注记惯例见 lib/daemon_tid.lua；
+-- 不打印密钥与报文内容，只提示「正在用哪个端点」），让「什么都没配」的会话
+-- 可见自己的数据流向；走显式配置（CLI/配置文件/环境链）不注记。
+local noted_default_endpoint = false
+local function note_default_endpoint(url)
+	if noted_default_endpoint then return end
+	noted_default_endpoint = true
+	io.stderr:write("[llm-wire] 未配置 endpoint，使用驱动内置缺省 " .. url
+		.. "；可经 --llm-endpoint 或配置文件 endpoint 字段覆盖\n")
+	io.stderr:flush()
+end
+
 function M.request(data, plan)
 	local D = M.DEFAULTS
 	local endpoint = data.endpoint
-	if endpoint == nil or endpoint == "" then endpoint = D.endpoint end
+	if endpoint == nil or endpoint == "" then
+		endpoint = D.endpoint
+		note_default_endpoint(endpoint)
+	end
 	local model = data.model
 	if model == nil or model == "" then model = D.model end
 	return { endpoint = endpoint, req = M.build_request(data, model, plan) }

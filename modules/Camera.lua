@@ -397,7 +397,13 @@ end
 ------------------------------------------------------------------
 -- 摄像头是**可选**外设：build 不打开设备、也绝不返回 ERR，否则整机上不了电。
 -- 设备在第一次 call 时按调用参数惰性打开（参数来自宿主，build 阶段拿不到）。
+-- 入参类型校验不可省（全仓其余驱动统一经 drv_common.arg_table 首位校验；
+-- Camera 因不挂总线样板而自行内联同一条——非表入参按 ERR 契约拒绝，
+-- 而不是让 data.src 的索引访问裸抛 Lua error）。
 function build(data)
+	if type(data) ~= "table" then
+		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	end
 	local src = data.src
 	if src ~= nil and src ~= "" then
 		local real, perr = resolve_sim_path(data)
@@ -410,6 +416,9 @@ function build(data)
 end
 
 function call(data)
+	if type(data) ~= "table" then
+		return { result = "ERR", message = "Invalid Arguments Type: table" }
+	end
 	-- 仿真优先：src 由宿主在调用时传入；没给但 build 阶段已按元数据加载过，
 	-- 就继续用那一份（src 是会话级配置，不该因为调用没重复传参而失效）。
 	-- 沿用 build 已放行的那份时不再重新校验：路径当时已 realpath 规范化，

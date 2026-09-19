@@ -174,6 +174,11 @@ API key 不在这个表里——驱动自己读环境变量。
 | `LlmOpenAI` | `https://moma.cmecloud.cn/v1/chat/completions` | `zhipu/glm-5.3-flash` | OpenAI 兼容：「当前协议」 |
 | `LlmDeepSeek` | `https://api.deepseek.com/chat/completions` | `deepseek-chat` | DeepSeek：思考模式 + `reasoning_content` |
 
+> **内置缺省端点是特定第三方网关**：CLI / 配置文件 / 环境链都没配 endpoint
+> 时，报文会发往上表缺省 URL。每次进程首次这样回退时驱动会向 stderr 注记
+> 一行（`[llm-wire] 未配置 endpoint，使用驱动内置缺省 …`），便于发现「什么
+> 都没配就跑起来」的会话；正式使用建议在配置文件里显式指定 endpoint。
+
 两者都是 OpenAI 报文骨架，但 DeepSeek 有三处**实质差异**，由 `lib/llm_wire_deepseek.lua` 承担：
 
 1. **思考模式开关**：请求体带 `{"thinking":{"type":"enabled"}}`，强度用 `reasoning_effort`
