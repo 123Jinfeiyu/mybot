@@ -478,19 +478,21 @@ std::string describeHardware(RobotStruct& robot) {
 	return out;
 }
 
-AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
-	AgentToolRegistry reg;
+/* ---- 各工具的装配函数（阶段 3 拆分）：makeAgentTools 只做组装 ---- */
 
-	reg.add(AgentTool{
+static AgentTool makeListActionScriptsTool(const AgentToolContext& ctx) {
+	return AgentTool{
 		"list_action_scripts",
 		"列出机器人可用的动作脚本（.mt 文件），返回相对路径与说明。"
 		"需要让机器人做动作前先调用它，挑选与目标最匹配的脚本。",
 		toolSchema({}, {}),
 		[ctx](const Json&) -> AgentToolResult {
 			return {describeActionScripts(ctx.scriptsDir), ""};
-		}});
+		}};
+}
 
-	reg.add(AgentTool{
+static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
+	return AgentTool{
 		"run_action_script",
 		"在常驻的机器人上执行一个动作脚本（.mt），例如站立、前进、转向、举爪。"
 		"脚本执行完毕后硬件保持上电常驻，可以接着执行下一个脚本。"
@@ -515,9 +517,11 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 			} catch (const std::exception& e) {
 				return {"动作脚本执行失败 [" + req + "]: " + e.what(), ""};
 			}
-		}});
+		}};
+}
 
-	reg.add(AgentTool{
+static AgentTool makeListHardwareTool(const AgentToolContext& ctx) {
+	return AgentTool{
 		"list_hardware",
 		"列出当前机器人的硬件变量清单（结构脚本注册的驱动、别名、数值变量）。"
 		"只读清单，不会让任何器件动作。",
@@ -531,83 +535,91 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 			}
 			out += describeHardware(*ctx.robot);
 			return {out, ""};
-		}});
+		}};
+}
 
-	if (ctx.camera != nullptr) {
-		reg.add(AgentTool{
-			"capture_image",
-			"拍摄一张机器人当前环境的照片。图片会直接进入你的上下文，你能看到画面内容；"
-			"任务涉及观察环境、寻找物体、判断前方是否有障碍时，先调用它再做结论。",
-			toolSchema({}, {}),
-			[ctx](const Json&) -> AgentToolResult {
-				Json params = JsonObject();
-				/* 只在显式配置时才传 path/src：结构脚本若把同名列声明成元数据列，
-				 * 再传同名参数会被 rejectReservedKeys 拒掉（结构脚本优先）。 */
-				if (!ctx.cameraDevice.empty()) {
-					params.put("path", JsonString(ctx.cameraDevice));
-				}
-				if (!ctx.cameraSrc.empty()) {
-					params.put("src", JsonString(ctx.cameraSrc));
-					/* src_root 把「允许读取的目录」一并交给驱动（P1-2 防线）：
-					 * 驱动据此只放行该目录内的文件，任意路径读（/etc/shadow 之类）
-					 * 被拒。目录取配置路径的真实所在目录（canonical 展开软链与
-					 * 相对段，与驱动侧 realpath 判据一致）；路径尚不存在时退一步
-					 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是
-					 * 「未放行」。 */
-					std::error_code ec;
-					fs::path real = fs::canonical(ctx.cameraSrc, ec);
-					if (ec) { real = fs::weakly_canonical(ctx.cameraSrc, ec); }
-					std::string root = real.parent_path().string();
-					if (root.empty()) { root = "."; }
-					params.put("src_root", JsonString(root));
-				}
-				Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
-				auto b64 = res.get("b64");
-				if (!b64 || !b64->isStr() || b64->getValue().empty()) {
-					throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
-				}
-				std::string desc = "已拍摄照片";
-				auto w = res.get("width");
-				auto h = res.get("height");
-				if (w && h && w->isInt() && h->isInt()) {
-					desc += "（" + std::to_string(w->getInt()) + "x"
-						+ std::to_string(h->getInt()) + "）";
-				}
-				auto bytes = res.get("bytes");
-				if (bytes && bytes->isInt()) {
-					desc += "，" + std::to_string(bytes->getInt()) + " 字节";
-				}
-				auto src = res.get("source");
-				if (src && src->isStr() && src->getValue() == "file") {
-					desc += "，来源：模拟图片";
-				}
-				return {desc + "。画面已加入你的上下文。",
-					"data:image/jpeg;base64," + b64->getValue()};
-			}});
-	}
+static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
+	return AgentTool{
+		"capture_image",
+		"拍摄一张机器人当前环境的照片。图片会直接进入你的上下文，你能看到画面内容；"
+		"任务涉及观察环境、寻找物体、判断前方是否有障碍时，先调用它再做结论。",
+		toolSchema({}, {}),
+		[ctx](const Json&) -> AgentToolResult {
+			Json params = JsonObject();
+			/* 只在显式配置时才传 path/src：结构脚本若把同名列声明成元数据列，
+			 * 再传同名参数会被 rejectReservedKeys 拒掉（结构脚本优先）。 */
+			if (!ctx.cameraDevice.empty()) {
+				params.put("path", JsonString(ctx.cameraDevice));
+			}
+			if (!ctx.cameraSrc.empty()) {
+				params.put("src", JsonString(ctx.cameraSrc));
+				/* src_root 把「允许读取的目录」一并交给驱动（P1-2 防线）：
+				 * 驱动据此只放行该目录内的文件，任意路径读（/etc/shadow 之类）
+				 * 被拒。目录取配置路径的真实所在目录（canonical 展开软链与
+				 * 相对段，与驱动侧 realpath 判据一致）；路径尚不存在时退一步
+				 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是
+				 * 「未放行」。 */
+				std::error_code ec;
+				fs::path real = fs::canonical(ctx.cameraSrc, ec);
+				if (ec) { real = fs::weakly_canonical(ctx.cameraSrc, ec); }
+				std::string root = real.parent_path().string();
+				if (root.empty()) { root = "."; }
+				params.put("src_root", JsonString(root));
+			}
+			Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
+			auto b64 = res.get("b64");
+			if (!b64 || !b64->isStr() || b64->getValue().empty()) {
+				throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
+			}
+			std::string desc = "已拍摄照片";
+			auto w = res.get("width");
+			auto h = res.get("height");
+			if (w && h && w->isInt() && h->isInt()) {
+				desc += "（" + std::to_string(w->getInt()) + "x"
+					+ std::to_string(h->getInt()) + "）";
+			}
+			auto bytes = res.get("bytes");
+			if (bytes && bytes->isInt()) {
+				desc += "，" + std::to_string(bytes->getInt()) + " 字节";
+			}
+			auto src = res.get("source");
+			if (src && src->isStr() && src->getValue() == "file") {
+				desc += "，来源：模拟图片";
+			}
+			return {desc + "。画面已加入你的上下文。",
+				"data:image/jpeg;base64," + b64->getValue()};
+		}};
+}
 
-	if (ctx.allowShell) {
-		reg.add(AgentTool{
-			"run_command",
-			"在机器人主机上执行 shell 命令，返回退出码、标准输出与标准错误。"
-			"适合查看系统状态、读取日志、检查设备节点；不要用它直接驱动硬件"
-			"（驱动硬件请用 run_action_script）。命令有超时限制，输出超过 64KB 会截断。",
-			toolSchema({{"command", stringParam("要执行的 shell 命令")},
-				    {"timeout_seconds", intParam("超时秒数，默认 10，最大 60")}},
-				{"command"}),
-			[ctx](const Json& args) -> AgentToolResult {
-				std::string cmd = requireString(args, "command");
-				int timeoutSec = optionalInt(args, "timeout_seconds", ctx.commandTimeoutSec);
-				if (timeoutSec < 1) { timeoutSec = 1; }
-				if (timeoutSec > ctx.maxCommandTimeoutSec) { timeoutSec = ctx.maxCommandTimeoutSec; }
-				try {
-					return {formatRunResult(runShell(cmd, timeoutSec)), ""};
-				} catch (const std::exception& e) {
-					return {std::string("命令执行失败: ") + e.what(), ""};
-				}
-			}});
-	}
+static AgentTool makeRunCommandTool(const AgentToolContext& ctx) {
+	return AgentTool{
+		"run_command",
+		"在机器人主机上执行 shell 命令，返回退出码、标准输出与标准错误。"
+		"适合查看系统状态、读取日志、检查设备节点；不要用它直接驱动硬件"
+		"（驱动硬件请用 run_action_script）。命令有超时限制，输出超过 64KB 会截断。",
+		toolSchema({{"command", stringParam("要执行的 shell 命令")},
+			    {"timeout_seconds", intParam("超时秒数，默认 10，最大 60")}},
+			{"command"}),
+		[ctx](const Json& args) -> AgentToolResult {
+			std::string cmd = requireString(args, "command");
+			int timeoutSec = optionalInt(args, "timeout_seconds", ctx.commandTimeoutSec);
+			if (timeoutSec < 1) { timeoutSec = 1; }
+			if (timeoutSec > ctx.maxCommandTimeoutSec) { timeoutSec = ctx.maxCommandTimeoutSec; }
+			try {
+				return {formatRunResult(runShell(cmd, timeoutSec)), ""};
+			} catch (const std::exception& e) {
+				return {std::string("命令执行失败: ") + e.what(), ""};
+			}
+		}};
+}
 
+AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
+	AgentToolRegistry reg;
+	reg.add(makeListActionScriptsTool(ctx));
+	reg.add(makeRunActionScriptTool(ctx));
+	reg.add(makeListHardwareTool(ctx));
+	if (ctx.camera != nullptr) { reg.add(makeCaptureImageTool(ctx)); }
+	if (ctx.allowShell) { reg.add(makeRunCommandTool(ctx)); }
 	return reg;
 }
 
