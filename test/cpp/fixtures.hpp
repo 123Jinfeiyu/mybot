@@ -122,7 +122,9 @@ public:
 		const char* v = std::getenv(name.c_str());
 		had_ = v != nullptr;
 		if (had_) { old_ = v; }
-		::setenv(name.c_str(), value, 1);
+		/* value=nullptr 表示「清掉该变量」——NoKeyEnv 等用例依赖此语义 */
+		if (value == nullptr) { ::unsetenv(name.c_str()); }
+		else { ::setenv(name.c_str(), value, 1); }
 	}
 	~EnvVar() {
 		if (had_) { ::setenv(name_.c_str(), old_.c_str(), 1); }

@@ -167,7 +167,7 @@ TH_TEST(matrix_does_not_sync_survives_parser_rethrow) {
 }
 
 TH_TEST(matrix_read_save_roundtrip_preserves_cells) {
-	const std::string src = "@Action\nrelay0.test;\n   200;\n   -  50;\n@\n";
+	const std::string src = "@Action\nrelay0.test relay1.test;\n   200        100;\n   -          50;\n@\n";
 	std::vector<mt::MatrixObject> mats1;
 	bot::MemoryReader in1(src);
 	mt::readMatrix(in1, mats1);
