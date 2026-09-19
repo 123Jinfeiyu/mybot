@@ -48,8 +48,8 @@ void printHelp() {
 
 } // namespace
 
-/* 审计 M-1 防线：--phase 合法范围（±10 万行） */
-static constexpr std::int64_t kMaxPhase = 100000;
+/* 审计 M-1 防线：--phase 合法范围（±10 万行）——常量单点在 mtmerge_core.hpp
+ * （与 @Include 的 phase 列共用），此处只引用。 */
 
 int main(int argc, char** argv) {
 	std::int64_t phase = 0;
@@ -78,8 +78,8 @@ int main(int argc, char** argv) {
 			/* 审计 M-1 防线：相位参与输出行数计算（rowsNext + phase，曾为
 			 * 有符号溢出 UB）与逐行循环，无界值会把产物撑到无界内存；语义
 			 * 上相位是「滞后/提前行数」，10 万行已是极端值。 */
-			if (num > kMaxPhase || num < -kMaxPhase) {
-				std::cerr << "mtmerge: --phase 超出范围 ±" << kMaxPhase << " '" << v << "'" << std::endl;
+			if (num > mtmerge::kMaxPhase || num < -mtmerge::kMaxPhase) {
+				std::cerr << "mtmerge: --phase 超出范围 ±" << mtmerge::kMaxPhase << " '" << v << "'" << std::endl;
 				return 2;
 			}
 			phase = num;

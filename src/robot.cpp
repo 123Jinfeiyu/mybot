@@ -3,6 +3,7 @@
 /* 2.2：robot.hpp 不再传导 Lua 头——本 TU 直接装配 Lua/守护变量，显式引入 */
 #include "daemonvar.hpp"
 #include "luavar.hpp"
+#include "mtinclude.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -696,6 +697,11 @@ void RobotStruct::deactivate() {
 void RobotStruct::run(bot::Reader& input) {
 	std::vector<mt::MatrixObject> actionMatrices;
 	mt::readMatrix(input, actionMatrices);
+	/* @Include 展开（无 @Include 时逐字不动）：先于 @Alias/@Vars 注册与
+	 * @Action 派发——被并入的标量行与动作列与本体的走完全相同的后续
+	 * 路径，展开只发生在矩阵层。归并内核与离线合成器 mtmerge 共用
+	 * （mtmerge_core），两条入口的冲突裁决不会漂移。 */
+	mtinclude::expandIncludes(actionMatrices, actionIncludeBaseDir_);
 
 	std::set<std::string> session;
 	for (auto& matrix : actionMatrices) {

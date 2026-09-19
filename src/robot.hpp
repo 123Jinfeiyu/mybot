@@ -210,6 +210,11 @@ class RobotStruct {
 	std::vector<std::shared_ptr<MetaProvider>> metaProviders_;
 	HwFactory factory_;	/* 依赖上面的容器，声明序保证先构造 */
 	ActionRunner runner_;
+	/* @Include 基准目录（mtinclude::expandIncludes 的相对路径根，缺省 "."）。
+	 * 三个调用面按「脚本集合的根」取值：--input 文件通道=脚本所在目录、
+	 * agent run_action_script=--scripts-dir、stdin/TCP 无脚本位置=缺省 CWD。
+	 * run() 前设置即可，多轮执行（agent 工具）每次设置均生效。 */
+	std::string actionIncludeBaseDir_ = ".";
 
 public:
 	explicit RobotStruct(bot::Reader& input)
@@ -225,6 +230,9 @@ public:
 
 	/* 执行 @Action 矩阵（含内联 @Alias 注册） */
 	void run(bot::Reader& input);
+
+	/* 设置 @Include 的相对路径基准目录（语义见成员注释） */
+	void setActionIncludeBaseDir(std::string dir) { actionIncludeBaseDir_ = std::move(dir); }
 
 	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
 	const HwRegistry& registry() const { return registry_; }

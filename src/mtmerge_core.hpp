@@ -17,6 +17,12 @@
 
 namespace mtmerge {
 
+/* 相位合法范围（±10 万行）：相位参与输出行数计算（rowsNext + phase，曾有
+ * 有符号溢出 UB）与逐行循环，无界值会把产物撑到无界内存；语义上相位是
+ * 「滞后/提前行数」，10 万行已是极端值。mtmerge 的 --phase 与动作脚本
+ * @Include 的 phase 列共用本界（单一事实源，两入口不得漂移）。 */
+inline constexpr std::int64_t kMaxPhase = 100000;
+
 /* @Action：找到列头即最终形态（别名替换由 mybot 在装配期完成）。找不到即报错。 */
 const mt::MatrixObject& requireAction(const std::vector<mt::MatrixObject>& parsed,
 		const std::string& path);

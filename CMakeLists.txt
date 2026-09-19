@@ -64,6 +64,8 @@ set(MYBOT_CORE_SOURCES
   src/matrix.cpp
   src/expr.cpp
   src/sqlparse.cpp
+  src/mtmerge_core.cpp
+  src/mtinclude.cpp
   src/luabridge.cpp
   src/luasandbox.cpp
   src/hardware.cpp
@@ -138,6 +140,7 @@ add_executable(mybot_tests
   test/cpp/test_daemon.cpp
   test/cpp/test_daemon_concurrency.cpp
   test/cpp/test_mtmerge.cpp
+  test/cpp/test_mtinclude.cpp
   test/cpp/test_agentproto.cpp
   test/cpp/test_agentdriver.cpp
   test/cpp/test_agenttools.cpp

@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <csignal>
+#include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -336,6 +337,15 @@ int main(int argc, char** argv) {
 
 		std::unique_ptr<RobotStruct> robot = loadStructure(rpath);
 		if (!robot) { return 1; }
+
+		/* @Include 基准目录：--input 文件通道取脚本所在目录（相对路径直觉，
+		 * 且与「include 名不得越出基准树」的词法规则自洽）；stdin/TCP 无脚本
+		 * 位置，保持缺省 CWD。agent 模式的基准由 run_action_script 工具设为
+		 * --scripts-dir（与该工具的相对路径语义一致），不在此处设置。 */
+		if (options.input) {
+			std::string parent = std::filesystem::path(*options.input).parent_path().string();
+			robot->setActionIncludeBaseDir(parent.empty() ? "." : parent);
+		}
 
 		/* agent 模式：结构脚本没声明驱动变量就按 --llm-driver 注入一颗。
 		 * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的。

@@ -504,6 +504,9 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 				if (ctx.robot == nullptr) { throw std::runtime_error("没有常驻机器人实例"); }
 				req = requireString(args, "script");
 				std::string path = resolveActionScriptPath(ctx.scriptsDir, req);
+				/* @Include 基准目录 = scripts-dir 根：与本工具的相对路径语义
+				 * 一致（include 名同样不得越出该树），多轮执行重复设置幂等 */
+				ctx.robot->setActionIncludeBaseDir(ctx.scriptsDir);
 				std::string content = readFileLimited(path, kMaxScriptBytes);
 				if (trim(content).empty()) { throw IllegalArgumentException("脚本内容为空: " + path); }
 				const std::size_t bytes = content.size();

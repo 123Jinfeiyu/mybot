@@ -149,7 +149,7 @@ cp mybot.llm.json.example mybot.llm.json && chmod 600 mybot.llm.json   # 填 end
 从 [docs/README.md](docs/README.md) 进入全部文档。常用入口：
 
 - [命令行与环境变量参考](docs/reference.md)——动作输入源、CLI 参数、安全约束、`BOT4CJ_*`
-- [DSL 参考：结构脚本与动作脚本](docs/dsl.md)——占位符、`@Alias`/`@Vars`、`$(...)` 表达式、controller/trigger 与 `$` 引用完整语义
+- [DSL 参考：结构脚本与动作脚本](docs/dsl.md)——占位符、`@Alias`/`@Vars`、`$(...)` 表达式、`@Include` 内联归并、controller/trigger 与 `$` 引用完整语义
 - [硬件变量（驱动）清单](docs/drivers.md)——59 个模块（47 款器件/执行器驱动 + 总线/框架模块）按类别速查
 - [@Daemon 守护线程](docs/daemon.md)——后台采样、滤波器链路
 - [agent 模式](docs/agent.md)——大模型工具循环驱动常驻机器人：CLI 选项、五个工具、安全边界、运行期 libcurl

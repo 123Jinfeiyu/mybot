@@ -472,6 +472,20 @@ parse_cases=(
 	'flow_scalar2.sql|flow_scalar2.mt|1|cannot be controller targets'
 	'trig_scalar2.sql|trig_scalar2.mt|1|cannot be trigger targets'
 	'ctrl2_err.sql|ctrl2_err.mt|1|Invalid Argument: delay|note=witness'
+	# @Include 展开（运行端动作脚本归并，归并内核与 mtmerge 共用）：
+	#   include_a/include_b    两个被包含脚本单独跑也合法（正值，登记夹具防孤儿）
+	#   include_inner          主脚本无 @Action：首个 include 顶替累加器
+	#   include_main           归并正例（观察面专段补全量值断言，此处钉 110 出现 + 0 不出现）
+	#   include_nested         被包含文件里再出现 @Include → 深度限 1 拒绝
+	#   include_overlap        主脚本与 include 共享设备 → 设备集相交报错
+	#   include_missing        引用不存在的文件 → 清晰报错
+	'include_demo.sql|include_a.mt|0|test=110'
+	'include_demo.sql|include_b.mt|0|test=220'
+	'include_demo.sql|include_inner.mt|0|test=220'
+	'include_demo.sql|include_main.mt|0|test=110|test=0'
+	'include_demo.sql|include_nested.mt|1|nested @Include'
+	'include_demo.sql|include_overlap.mt|1|appears in both scripts'
+	'include_demo.sql|include_missing.mt|1|cannot open include file'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5"
@@ -757,6 +771,41 @@ SQLEOF
 			record_fail "mtmerge_e2e(mtmerge)"
 		fi
 	fi
+fi
+
+# ======================================================================
+# @Include 归并观察面（parse_cases 只能钉单点断言，这里做全量值断言）：
+# include_main.mt 三路设备合并到单时间轴——r1 滞后 1 拍、r2 滞后 2 拍。
+# 断言：rc=0；两个 include 的全部动作（100/110 与 200/210/220）都在输出里；
+# 相位前导行未起拍的设备不得以 0.0 误发（test=0 禁止出现）；主脚本自己的
+# timer-0 正常走完（slept 结果 JSON 在场）。这是 @Include 展开链路的
+# 端到端正身（被包含文件内容 → 归并 → 派发）。
+# ======================================================================
+run_include_observation() {
+	echo "----- include-main (@Include 归并观察面) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "@Include 归并观察面" "该用例" "$bin" "$bot_explicit"
+		return 2
+	fi
+	local out rc i_ok v
+	out="$(cat scripts/test/include_main.mt | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
+	rc=$?
+	echo "$out"
+	i_ok=true
+	[ "$rc" -ne 0 ] && i_ok=false
+	for v in 100 110 200 210 220; do
+		echo "$out" | grep -qF "test=$v" || i_ok=false
+	done
+	echo "$out" | grep -qF "test=0" && i_ok=false
+	echo "$out" | grep -qF '"slept":200' || i_ok=false
+	if $i_ok; then
+		record_pass
+	else
+		record_fail "include-main(@Include 归并)"
+	fi
+}
+if [ -z "$filter" ] || [[ "include" == *"$filter"* ]]; then
+	run_include_observation
 fi
 
 # ======================================================================
