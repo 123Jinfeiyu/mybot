@@ -56,27 +56,18 @@ DaemonRunner::~DaemonRunner() {
 	std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
 }
 
-/* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
- * 线程持 runner 的 shared_ptr 保生命周期；入口另取槽的强引用副本——
- * 整个 tick 循环期间槽由副本保证存活，弃管（主线程交出引用）后本副本
- * 就是最后所有者，返回时触发删除器。2.4：旧协议的退出检查点 + exchange
- * 唯一胜者仲裁（D2/审计 #2）在引用计数模型下不需要。 */
-int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, int64_t intervalMs) {
-	std::shared_ptr<DaemonSlot> slot = std::atomic_load(&slot_);
-	if (slot == nullptr) { return -1; }	/* 弃管早于本线程首次取槽的交错：槽已移交，无事可做 */
-	lua_State* L = openSandboxedState();
-	if (L == nullptr) { return -1; }
-
-	/* 注入共享槽地址（64 位整数 tag，任意值逐位保真）与配置串为 Lua 全局 */
-	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot.get())));
+/* ---- setup：注入槽地址/配置串/布局表全局，跑 chunk 一次定义 daemon_tick ----
+ * 失败按 load/setup 两段打印分段错误（run_all.sh 守门按两种短语匹配）。
+ * 2.7：DAEMON_SLOT_LAYOUT 注入——pthread.lua 的跨语言布局断言以注入值
+ * 为基准（单一事实源 = daemonvar.hpp 的 struct + 静态断言），Lua 侧手抄
+ * 常量降为无宿主注入环境兜底。 */
+static bool setupDaemonChunk(lua_State* L, DaemonSlot* slot, const std::string& chunk,
+		const std::string& config) {
+	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot)));
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_ADDR");
 	lua_pushstring(L, config.c_str());
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_CONFIG");
 
-	/* 2.7：注入宿主侧槽布局常量——pthread.lua 的跨语言布局断言以注入值
-	 * 为基准（单一事实源 = daemonvar.hpp 的 struct + 静态断言）。此前 Lua
-	 * 侧手抄一份基准值：C++ struct 改动而 Lua 未跟时，两侧各自自洽、
-	 * 漂移不可见；注入后 cdef 与宿主事实不符即在守护启动时 fail-fast。 */
 	lua_createtable(L, 0, 7);
 	auto setOff = [&L](const char* k, int32_t v) {
 		lua_pushinteger(L, v);
@@ -91,28 +82,27 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	setOff("maxvals", SLOT_MAXVALS);
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_LAYOUT");
 
-	/* 跑 chunk 一次完成 setup 并定义全局 daemon_tick */
 	int st = luaL_loadfile(L, chunk.c_str());
 	if (st != LUA_OK) {
 		std::cerr << "[daemon] chunk load error: " << luaErrorString(L) << std::endl;
-		lua_close(L);
-		return -1;
+		return false;
 	}
 	int setupStatus = lua_pcall(L, 0, LUA_MULTRET, 0);
 	if (setupStatus != LUA_OK) {
 		std::cerr << "[daemon] chunk setup error: " << luaErrorString(L) << std::endl;
-		lua_close(L);
-		return -1;
+		return false;
 	}
-	lua_settop(L, 0);
+	return true;
+}
 
-	/* 逐拍循环：每拍 getglobal(daemon_tick)+pcall 采样一次；拍间 std::thread sleep。
-	 * C-L2：错误限频 + 指数退避——tick 持续抛错（如 daemon_tick 未定义/加载
-	 * 失败）原实现按拍频刷 stderr（缺省 5ms ≈ 200 行/秒）且永不退避。前 3 次
-	 * 逐条打印定位问题，之后每 100 次一条摘要；拍间 sleep 按 2^n 退避
-	 * （上限 ×256，避免长 interval 停机阻塞被进一步放大），成功一拍即清零。 */
+/* ---- 逐拍循环：每拍 getglobal(daemon_tick)+pcall 采样一次；拍间 sleep ----
+ * C-L2：错误限频 + 指数退避——tick 持续抛错（如 daemon_tick 未定义/加载
+ * 失败）原实现按拍频刷 stderr（缺省 5ms ≈ 200 行/秒）且永不退避。前 3 次
+ * 逐条打印定位问题，之后每 100 次一条摘要；拍间 sleep 按 2^n 退避
+ * （上限 ×256，避免长 interval 停机阻塞被进一步放大），成功一拍即清零。 */
+static void runTickLoop(lua_State* L, DaemonSlot* slot, int64_t intervalMs) {
 	int64_t tickErrors = 0;
-	while (!daemon_stop_requested(slot.get())) {
+	while (!daemon_stop_requested(slot)) {
 		lua_getglobal(L, "daemon_tick");
 		int st2 = lua_pcall(L, 0, LUA_MULTRET, 0);
 		if (st2 != LUA_OK) {
@@ -131,6 +121,32 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 		}
 		std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
 	}
+}
+
+/* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
+ * 线程持 runner 的 shared_ptr 保生命周期；入口另取槽的强引用副本——
+ * 整个 tick 循环期间槽由副本保证存活，弃管（主线程交出引用）后本副本
+ * 就是最后所有者，返回时触发删除器。2.4：旧协议的退出检查点 + exchange
+ * 唯一胜者仲裁（D2/审计 #2）在引用计数模型下不需要。 */
+int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, int64_t intervalMs) {
+	std::shared_ptr<DaemonSlot> slot = std::atomic_load(&slot_);
+	if (slot == nullptr) { return -1; }	/* 弃管早于本线程首次取槽的交错：槽已移交，无事可做 */
+	lua_State* L = openSandboxedState();
+	if (L == nullptr) { return -1; }
+
+	/* 注入共享槽地址（64 位整数 tag，任意值逐位保真）与配置串为 Lua 全局 */
+	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot.get())));
+	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_ADDR");
+	lua_pushstring(L, config.c_str());
+	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_CONFIG");
+
+	if (!setupDaemonChunk(L, slot.get(), chunk, config)) {
+		lua_close(L);
+		return -1;
+	}
+	lua_settop(L, 0);
+
+	runTickLoop(L, slot.get(), intervalMs);
 
 	/* H-07：stop 后、lua_close 前调用 chunk 定义的 daemon_cleanup()（若存在） */
 	lua_getglobal(L, "daemon_cleanup");
@@ -401,22 +417,16 @@ static void checkDaemonFields(const std::string& v, const std::string& name,
 	}
 }
 
-/* ---- 守护硬件变量工厂 ---- */
-std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
-		std::vector<std::shared_ptr<DaemonRunner>>& registry) {
-	int64_t idxName = defs.requireCol(0, "name", "Table");
-	int64_t idxChunk = defs.requireCol(0, "chunk", "Table");
-	std::string name = defs(i, idxName);
-	std::string chunkRaw = defs.inherited(i, idxChunk);
+/* ---- Factory 拆分（阶段 3）：配置串组装 + 加载期 schema 校验 ----
+ * 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms），
+ * 并对框架列做加载期 schema 校验（E2：非法 proto/fields/sign 在此早报） */
+struct DaemonConfigParts {
+	std::string configStr;
+	int64_t intervalMs;
+};
 
-	/* N-19：模块根目录统一走 util::modulePaths（空串也归一为缺省） */
-	std::string modulePath = modulePaths();
-	std::string chunkPath = resolveDaemonChunk(chunkRaw, modulePath);
-	/* N-12：装配期进度走 logD（spawn/join 是运行期生命周期事件，保留 stderr） */
-	logD([&] { return "Create a Daemon hard-Var: " + name + ", chunk: " + chunkPath; });
-
-	/* 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms），
-	 * 并对框架列做加载期 schema 校验（E2：非法 proto/fields/sign 在此早报） */
+static DaemonConfigParts assembleDaemonConfig(const mt::MatrixObject& defs, int64_t i,
+		const std::string& name) {
 	std::string cfgAcc;
 	int64_t ivAcc = 5;
 	for (int64_t j = 0; j < static_cast<int64_t>(defs.cols()); ++j) {
@@ -434,15 +444,14 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 			checkDaemonSign(v, name, defs.getName(), i);
 		}
 	}
-	std::string configStr = cfgAcc;
-	int64_t intervalMs = ivAcc;
+	return {cfgAcc, ivAcc};
+}
 
-	/* join 超时：interval 5 倍并保底 2000ms */
-	int64_t joinTimeoutMs = (intervalMs * 5 > 2000) ? intervalMs * 5 : 2000;
-
-	/* 分配并清零共享槽，初始化 mutex（malloc 失败立即抛错拒绝空指针解引用）。
-	 * 2.4：槽所有权入 shared_ptr，删除器 = releaseSlot（mutex_destroy + free）——
-	 * 最后一个持有者（主线程 / 守护线程）退场时释放。 */
+/* ---- Factory 拆分（阶段 3）：槽分配 ----
+ * 分配并清零共享槽，初始化 mutex（malloc 失败立即抛错拒绝空指针解引用）。
+ * 2.4：槽所有权入 shared_ptr，删除器 = releaseSlot（mutex_destroy + free）——
+ * 最后一个持有者（主线程 / 守护线程）退场时释放。 */
+static std::shared_ptr<DaemonSlot> allocateSlot(const std::string& name) {
 	DaemonSlot* raw = static_cast<DaemonSlot*>(std::calloc(1, SLOT_SIZE));
 	if (raw == nullptr) {
 		throw std::runtime_error("Daemon '" + name + "' failed to allocate shared slot ("
@@ -452,14 +461,34 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 		std::free(raw);
 		throw std::runtime_error("Daemon '" + name + "' failed to initialize slot mutex");
 	}
+	return std::shared_ptr<DaemonSlot>(raw, releaseSlot);
+}
 
-	auto runner = std::make_shared<DaemonRunner>(
-		std::shared_ptr<DaemonSlot>(raw, releaseSlot), joinTimeoutMs);
+/* ---- 守护硬件变量工厂 ---- */
+std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
+		std::vector<std::shared_ptr<DaemonRunner>>& registry) {
+	int64_t idxName = defs.requireCol(0, "name", "Table");
+	int64_t idxChunk = defs.requireCol(0, "chunk", "Table");
+	std::string name = defs(i, idxName);
+	std::string chunkRaw = defs.inherited(i, idxChunk);
+
+	/* N-19：模块根目录统一走 util::modulePaths（空串也归一为缺省） */
+	std::string modulePath = modulePaths();
+	std::string chunkPath = resolveDaemonChunk(chunkRaw, modulePath);
+	/* N-12：装配期进度走 logD（spawn/join 是运行期生命周期事件，保留 stderr） */
+	logD([&] { return "Create a Daemon hard-Var: " + name + ", chunk: " + chunkPath; });
+
+	auto parts = assembleDaemonConfig(defs, i, name);
+
+	/* join 超时：interval 5 倍并保底 2000ms */
+	int64_t joinTimeoutMs = (parts.intervalMs * 5 > 2000) ? parts.intervalMs * 5 : 2000;
+
+	auto runner = std::make_shared<DaemonRunner>(allocateSlot(name), joinTimeoutMs);
 	runner->bindSelf(runner);	/* 线程捕获 self 保生命周期 */
 	registry.push_back(runner);
 
 	return std::unique_ptr<MtVars_Daemon>(new MtVars_Daemon(
-		std::move(runner), name, chunkPath, configStr, intervalMs));
+		std::move(runner), name, chunkPath, parts.configStr, parts.intervalMs));
 }
 
 /* ---- 守护硬件变量：play/build/destroy 直通守护事件（R-3）---- */
