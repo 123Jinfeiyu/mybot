@@ -513,6 +513,15 @@ parse_cases=(
 	# 同名 @Alias 改绑 relay-b——模板一字不动，播放必须整体换到 relay-b
 	'dev_alias.sql|dev_alias_leg.once.mt|0|note=from-a|note=from-b'
 	'dev_alias.sql|dev_alias_rebind.mt|0|note=from-b|note=from-a|I'
+	# $(...) 类型分派表达式（2026-09-20 设计评估）：'+' 出现文本（@Alias）即
+	# 拼接（数值真值 formatNumber 参与），全数值仍是算术；落点 = @Action 全部
+	# 单元格（设备位/参数位/数据格），求值都在派发期。$(...) 内标识符是严格
+	# 引用（拼接文本只能来自别名），'-' 等运算符对文本显式报错
+	'dev_expr.sql|dev_expr_head.mt|0|note=from-2|note=from-1'
+	'dev_expr.sql|dev_expr_param.mt|0|test=200'
+	'dev_expr.sql|dev_expr_cell.mt|0|"echo":"hello-2"'
+	'dev_expr.sql|dev_expr_minus.mt|1|cannot be applied to a text result'
+	'dev_expr.sql|dev_expr_undefined.mt|1|not a defined hardware variable'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5" via="${6:-}"

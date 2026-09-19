@@ -76,7 +76,7 @@ std::string Token::serialize() const {
 	return "?";
 }
 
-/* 注释态机（阶段 3 拆分）：单行 `--` 与块 `/* *\/` 的状态转移，字符被注释
+/* 注释态机（阶段 3 拆分）：单行 `--` 与块注释的状态转移，字符被注释
  * 态消费即返回 true（调用方 continue）。转移语义与原内联 if/else 链逐项一致。 */
 bool Lexer::consumeCommentChar(char c) {
 	if (singleLineComment_ && c != '\n') { return true; }

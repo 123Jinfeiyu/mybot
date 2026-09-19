@@ -5,29 +5,61 @@
 
 namespace bot {
 
+/* ==================== 值语义 ==================== */
+
+std::string ExprValue::rendered() const {
+	if (isText()) { return text; }
+	if (!std::isfinite(num)) {
+		throw IllegalArgumentException("expression evaluates to a non-finite value"
+			" (inf/nan), which is rejected");
+	}
+	return formatNumber(num);
+}
+
+ExprValueResolver numericResolver(std::function<double(const std::string&)> f) {
+	return [f = std::move(f)](const std::string& name) {
+		return ExprValue::makeNum(f(name));
+	};
+}
+
+double requireNum(ExprValue v) {
+	if (v.isText()) {
+		throw IllegalArgumentException("expression produced a text result"
+			" (an @Alias may only take part in '+' concatenation inside @Action"
+			" cells); a numeric value is required here");
+	}
+	return v.num;
+}
+
 /* ==================== AST 节点 ==================== */
 
 struct Expression::Impl {
 	virtual ~Impl() = default;
-	virtual double eval(const std::function<double(const std::string&)>& resolve) const = 0;
+	virtual ExprValue eval(const ExprValueResolver& resolve) const = 0;
 	virtual void collect(std::set<std::string>& out) const = 0;
 };
 
 namespace {
 
+/* 文本操作数只允许出现在 '+' 里（拼接）；其余运算符对文本无定义。
+ * 文案单点：BinNode 与 UnNode 共用。 */
+[[noreturn]] void throwTextOperand(char op) {
+	throw IllegalArgumentException(std::string("expression operator '") + op
+		+ "' cannot be applied to a text result; only '+' may combine text"
+		+ " (@Alias concatenation)");
+}
+
 struct NumNode : Expression::Impl {
 	double v;
 	explicit NumNode(double x) : v(x) {}
-	double eval(const std::function<double(const std::string&)>&) const override { return v; }
+	ExprValue eval(const ExprValueResolver&) const override { return ExprValue::makeNum(v); }
 	void collect(std::set<std::string>&) const override {}
 };
 
 struct VarNode : Expression::Impl {
 	std::string name;
 	explicit VarNode(std::string n) : name(std::move(n)) {}
-	double eval(const std::function<double(const std::string&)>& resolve) const override {
-		return resolve(name);
-	}
+	ExprValue eval(const ExprValueResolver& resolve) const override { return resolve(name); }
 	void collect(std::set<std::string>& out) const override { out.insert(name); }
 };
 
@@ -36,9 +68,10 @@ struct UnNode : Expression::Impl {
 	std::shared_ptr<const Expression::Impl> child;
 	UnNode(bool n, std::shared_ptr<const Expression::Impl> c)
 		: negate(n), child(std::move(c)) {}
-	double eval(const std::function<double(const std::string&)>& resolve) const override {
-		double v = child->eval(resolve);
-		return negate ? -v : v;
+	ExprValue eval(const ExprValueResolver& resolve) const override {
+		ExprValue v = child->eval(resolve);
+		if (v.isText()) { throwTextOperand('-'); }
+		return negate ? ExprValue::makeNum(-v.num) : v;
 	}
 	void collect(std::set<std::string>& out) const override { child->collect(out); }
 };
@@ -49,19 +82,25 @@ struct BinNode : Expression::Impl {
 	BinNode(char o, std::shared_ptr<const Expression::Impl> a,
 			std::shared_ptr<const Expression::Impl> b)
 		: op(o), l(std::move(a)), r(std::move(b)) {}
-	double eval(const std::function<double(const std::string&)>& resolve) const override {
-		double a = l->eval(resolve);
-		double b = r->eval(resolve);
+	ExprValue eval(const ExprValueResolver& resolve) const override {
+		ExprValue a = l->eval(resolve);
+		ExprValue b = r->eval(resolve);
+		/* '+' 类型分派：出现文本操作数即拼接（数值操作数以真值文本参与），
+		 * 全数值才是算术加。「两个 @Vars 做运算、有一个 @Alias 就拼接」。 */
+		if (op == '+' && (a.isText() || b.isText())) {
+			return ExprValue::makeText(a.rendered() + b.rendered());
+		}
+		if (a.isText() || b.isText()) { throwTextOperand(op); }
 		switch (op) {
-		case '+': return a + b;
-		case '-': return a - b;
-		case '*': return a * b;
+		case '+': return ExprValue::makeNum(a.num + b.num);
+		case '-': return ExprValue::makeNum(a.num - b.num);
+		case '*': return ExprValue::makeNum(a.num * b.num);
 		case '/':
-			if (b == 0.0) { throw IllegalArgumentException("expression division by zero"); }
-			return a / b;
+			if (b.num == 0.0) { throw IllegalArgumentException("expression division by zero"); }
+			return ExprValue::makeNum(a.num / b.num);
 		case '%':
-			if (b == 0.0) { throw IllegalArgumentException("expression modulo by zero"); }
-			return std::fmod(a, b);
+			if (b.num == 0.0) { throw IllegalArgumentException("expression modulo by zero"); }
+			return ExprValue::makeNum(std::fmod(a.num, b.num));
 		}
 		throw IllegalArgumentException("expression internal error: unknown operator");
 	}
@@ -220,15 +259,16 @@ Expression Expression::parse(const std::string& text) {
 	return e;
 }
 
-double Expression::eval(const std::function<double(const std::string&)>& resolve) const {
+ExprValue Expression::eval(const ExprValueResolver& resolve) const {
 	if (!impl_) { throw IllegalArgumentException("evaluation of an empty expression"); }
-	double v = impl_->eval(resolve);
+	ExprValue v = impl_->eval(resolve);
 	/* 有限值防线：字面量在 parseNumber 已拒 inf/nan，但中间结果仍可能溢出
 	 * （如 1e308*1e308 → inf；inf-inf → nan）。IEEE 语义下任何非有限中间
 	 * 结果必然传播到根节点，故在出口处一次检查即可封死旁路——否则 inf/nan
 	 * 会经 JsonFloat/lua_pushnumber 流入驱动参数（正是 hardware.cpp 字面量
-	 * 防线要拦的形态，TCP 模式下可由远程动作脚本触发）。 */
-	if (!std::isfinite(v)) {
+	 * 防线要拦的形态，TCP 模式下可由远程动作脚本触发）。文本结果中不可能
+	 * 藏非有限数值：拼接经 rendered() 渲染数值真值，那里同样拒绝。 */
+	if (v.isNum() && !std::isfinite(v.num)) {
 		throw IllegalArgumentException("expression evaluates to a non-finite value"
 			" (inf/nan), which is rejected");
 	}

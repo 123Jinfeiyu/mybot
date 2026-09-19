@@ -158,6 +158,7 @@ public:
 	bool contains(const std::string& n) const override { return byName_.count(n) > 0; }
 	/* 本夹具无 $(...) 列，求值器不被调用 */
 	std::function<double(const std::string&)> makeVarsResolver() const override { return {}; }
+	std::function<bot::ExprValue(const std::string&)> makeActionExprResolver() const override { return {}; }
 };
 
 std::string writeFlowDriver() {

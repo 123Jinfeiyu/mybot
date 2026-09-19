@@ -57,8 +57,13 @@ public:
 	void addFlowRef(const std::string& name) { flowRefs_.insert(name); }
 
 	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛）——
-	 * MetaProvider 的 $(...) 求值、HwFactory 装配、runAction 表达式列共用 */
+	 * MetaProvider 的 $(...) 求值、HwFactory 装配共用 */
 	std::function<double(const std::string&)> makeVarsResolver() const override;
+
+	/* @Action 求值面（数据格/列头）的标识符求值器：@Vars → 数值真值、
+	 * @Alias → 文本；驱动/守护名抛错（表达式里没有驱动的一席之地——
+	 * 名字是拿来做算术/拼接的，不是拿来做播放的）。仅 Action 路径使用。 */
+	std::function<ExprValue(const std::string&)> makeActionExprResolver() const override;
 
 	MatrixVars_Hardware* find(const std::string& name) const override {
 		auto it = byName_.find(name);
@@ -191,7 +196,7 @@ class ActionRunner {
 	/* N-10：按名查矩阵与列头切分下沉 mt 层（findByName / splitActionColumn） */
 	void parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 			std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
-			const std::pair<std::string, std::string>& colHead,
+			const std::string& resolvedParam,
 			const std::string& resolvedDev, ColExprCache& exprCache);
 
 public:
@@ -203,10 +208,20 @@ public:
 	 * （驱动/守护），一层为止（别名指向别名报错）。未知名字原样返回：派发期
 	 * 按既有「not defined (row N)」报错，保留行号上下文。@Vars 是数值常量，
 	 * 永远不可能合法命名设备，显式拒绝而非落到 not defined。
+	 * 设备位也接受 $(...) 表达式（2026-09-20 设计评估）：求值产物作为设备名
+	 * 候选，走与裸名完全相同的解析——命中别名再解一层（$(p) ≡ p），产物
+	 * 本身不再递归求值（别名值即使形如 "$(…)" 也只按文本查找，环无从建立）。
+	 * 求值在派发期：主从覆盖改绑后的真值在此生效。
 	 * 撞设备两层防线：归并期 checkDisjoint 按列头文本（同名在两个输入里都
-	 * 出现），不同别名指到同一设备只有派发期可见——runAction 在解析后按
-	 * (设备, 参数) 查重，是第二层的落点。 */
+	 * 出现），不同别名/表达式指到同一设备只有派发期可见——runAction 在解析
+	 * 后按 (设备, 参数) 查重，是第二层的落点。 */
 	static std::string resolveActionDevice(const HwLookup& registry, const std::string& dev);
+
+	/* ---- @Action 参数位解析单点（公开静态：白盒单测直接锚定）----
+	 * 参数位允许写 @Alias/@Vars 名（既有语义：命中标量文本即以其值为参数名）
+	 * 与 $(...) 表达式（2026-09-20 设计评估）：求值产物即参数名，**不再解析**
+	 * （参数名不是名字绑定）。派发期内别名/变量不变，每列解析一次。 */
+	static std::string resolveActionParam(const HwLookup& registry, const std::string& param);
 
 	/* @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error） */
 	void runAction(std::vector<mt::MatrixObject>& actionMatrices);

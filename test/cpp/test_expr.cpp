@@ -30,7 +30,29 @@ std::function<double(const std::string&)> varTable(const std::map<std::string, d
 }
 
 double evalWith(const std::string& text, const std::map<std::string, double>& vars) {
-	return Expression::parse(text).eval(varTable(vars));
+	return bot::requireNum(
+		Expression::parse(text).eval(bot::numericResolver(varTable(vars))));
+}
+
+/* 混合变量表：nums 模拟 @Vars（数值）、texts 模拟 @Alias（文本）——
+ * 与生产 makeActionExprResolver 同契约（未定义即抛） */
+bot::ExprValueResolver mixedTable(std::map<std::string, double> nums,
+	std::map<std::string, std::string> texts) {
+	return [nums = std::move(nums), texts = std::move(texts)](const std::string& name)
+			-> bot::ExprValue {
+		if (auto it = nums.find(name); it != nums.end()) {
+			return bot::ExprValue::makeNum(it->second);
+		}
+		if (auto it = texts.find(name); it != texts.end()) {
+			return bot::ExprValue::makeText(it->second);
+		}
+		throw bot::IllegalArgumentException("undefined: " + name);
+	};
+}
+
+bot::ExprValue evalMixed(const std::string& text, std::map<std::string, double> nums,
+	std::map<std::string, std::string> texts) {
+	return Expression::parse(text).eval(mixedTable(std::move(nums), std::move(texts)));
 }
 
 } // namespace
@@ -143,4 +165,47 @@ TH_TEST(expr_body_detects_shell) {
 	TH_CHECK(!exprBody("v1+v2").has_value());
 	TH_CHECK(!exprBody("$(v1) ").has_value());	/* 末尾有空格不算 */
 	TH_CHECK(!exprBody("$(").has_value());
+}
+
+/* ---- 值语义：'+' 类型分派（2026-09-20 设计评估）----
+ * 两个 @Vars 做算术；出现 @Alias（文本）即拼接，数值操作数以真值文本参与；
+ * 其余运算符对文本无定义。 */
+
+TH_TEST(expr_plus_text_operand_concatenates) {
+	/* 文本参与 '+'：拼接；数值侧按真值渲染（%.15g，"2e3"→"2000"、0.5→"0.5"） */
+	TH_CHECK(evalMixed("a+n", {{"n", 2.0}}, {{"a", "relay-"}}).text == "relay-2");
+	TH_CHECK(evalMixed("a+n", {{"n", 2e3}}, {{"a", "relay-"}}).text == "relay-2000");
+	TH_CHECK(evalMixed("a+n", {{"n", 0.5}}, {{"a", "relay-"}}).text == "relay-0.5");
+	/* 数值在前、文本在后（交换律形态）与双文本 */
+	TH_CHECK(evalMixed("n+a", {{"n", 2.0}}, {{"a", "-tail"}}).text == "2-tail");
+	TH_CHECK(evalMixed("a+b", {}, {{"a", "x"}, {"b", "y"}}).text == "xy");
+	/* 全数值仍是算术——类型分派不改变既有语义 */
+	TH_CHECK(evalMixed("n+m", {{"n", 2.0}, {"m", 3.0}}, {}).num == 5.0);
+}
+
+TH_TEST(expr_numeric_operators_reject_text) {
+	/* 除 '+' 外的运算符对文本无定义——报错文案单点（throwTextOperand） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '-' cannot be applied to a text result",
+		evalMixed("a-n", {{"n", 2.0}}, {{"a", "x"}}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '*' cannot be applied to a text result",
+		evalMixed("a*n", {{"n", 2.0}}, {{"a", "x"}}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '/' cannot be applied to a text result",
+		evalMixed("n/a", {{"n", 2.0}}, {{"a", "x"}}));
+	/* 一元负号同样拒绝文本 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '-' cannot be applied to a text result",
+		evalMixed("-a", {}, {{"a", "x"}}));
+}
+
+TH_TEST(expr_concat_rejects_nonfinite_numeric_rendering) {
+	/* 拼接中数值真值渲染必须过有限值防线——inf 变文本 "inf" 是旁路：
+	 * n*n = 1e616 = inf，渲染进文本前必须拒绝 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-finite",
+		evalMixed("a+(n*n)", {{"n", 1e308}}, {{"a", "x"}}));
+}
+
+TH_TEST(expr_require_num_rejects_text_result) {
+	/* 数值语义出口（@Vars 值/元数据列）：文本结果显式拒绝 */
+	TH_CHECK(bot::requireNum(bot::ExprValue::makeNum(2.5)) == 2.5);
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "a numeric value is required here",
+		(void)bot::requireNum(bot::ExprValue::makeText("relay-2")));
 }

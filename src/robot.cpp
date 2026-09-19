@@ -90,6 +90,30 @@ std::function<double(const std::string&)> HwRegistry::makeVarsResolver() const {
 	return [reg](const std::string& nm) { return resolveVarsNumber(reg, nm); };
 }
 
+/* 表达式标识符求值器（@Action 求值面）：@Vars → 数值真值（numericValue，
+ * 经 formatNumber 渲染为拼接文本——"2e3" 的真值是 "2000"）、@Alias → 文本
+ * （别名值）；驱动/守护名与未定义名抛错。仅 Action 路径使用（数据格/列头），
+ * @Vars 值与元数据列维持 vars-only 的 makeVarsResolver。 */
+std::function<ExprValue(const std::string&)> HwRegistry::makeActionExprResolver() const {
+	const HwRegistry* reg = this;
+	return [reg](const std::string& nm) -> ExprValue {
+		MatrixVars_Hardware* hv = reg->find(nm);
+		if (hv == nullptr) {
+			throw IllegalArgumentException("expression references '" + nm
+				+ "', but it is not a defined hardware variable");
+		}
+		if (!hv->isScalarText()) {
+			throw IllegalArgumentException("expression references '" + nm
+				+ "', which is a driver/daemon variable; only @Alias/@Vars may"
+				+ " appear in an expression");
+		}
+		if (std::string_view(hv->kindName()) == "vars") {
+			return ExprValue::makeNum(static_cast<MtVars_Vars*>(hv)->numericValue());
+		}
+		return ExprValue::makeText(hv->read().asString().getValue());	/* kindName 已判型 */
+	};
+}
+
 /* 表达式标识符求值：查注册表，必须是 @Vars（数值），递归取数。
  * 环（A→B→A）由 MtVars_Vars::numericValue 的深度计数兜底。 */
 namespace {
@@ -259,9 +283,12 @@ void MetaProvider::logDestroySkip(const std::string& what, const std::string& wh
 bool MetaProvider::appendRef(Json& obj, const MetaRef& ref, bool forDestroy) {
 	if (ref.expr) {
 		/* $(...) 表达式：把求值结果格式化后写回承载 $ 的列。
-		 * 表达式只引用 @Vars（无资源），destroy 期照常求值。 */
+		 * 表达式只引用 @Vars（无资源），destroy 期照常求值。
+		 * 元数据列只收数值（拼接是 @Action 求值面的能力），requireNum 显式
+		 * 拒绝文本结果。 */
 		try {
-			double v = ref.expr->eval(registry_->makeVarsResolver());
+			double v = requireNum(
+				ref.expr->eval(numericResolver(registry_->makeVarsResolver())));
 			obj.put(ref.col, JsonString(formatNumber(v)));
 		} catch (const std::exception& e) {
 			if (!forDestroy) { throw; }
@@ -535,10 +562,18 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 
 /* ---- 设备列解析单点（契约见 robot.hpp 的声明处）---- */
 std::string ActionRunner::resolveActionDevice(const HwLookup& registry, const std::string& dev) {
-	MatrixVars_Hardware* hv = registry.find(dev);
-	if (hv == nullptr || !hv->isScalarText()) { return dev; }
+	/* $(...) 设备位：求值产物作为设备名候选，走与裸名相同的解析。产物本身
+	 * 不再递归求值——别名值即使形如 "$(…)" 也只按文本查找（下方 read() 出的
+	 * target 直接 find，不过 exprBody），自引用环无从建立。 */
+	std::string name = dev;
+	if (auto body = exprBody(dev)) {
+		ExprValue v = Expression::parse(*body).eval(registry.makeActionExprResolver());
+		name = v.rendered();
+	}
+	MatrixVars_Hardware* hv = registry.find(name);
+	if (hv == nullptr || !hv->isScalarText()) { return name; }
 	if (std::string_view(hv->kindName()) == "vars") {
-		throw IllegalArgumentException("@Vars '" + dev
+		throw IllegalArgumentException("@Vars '" + name
 			+ "' is a numeric constant and cannot name a device in an @Action"
 			" column; use an @Alias or the device name itself.");
 	}
@@ -558,6 +593,21 @@ std::string ActionRunner::resolveActionDevice(const HwLookup& registry, const st
 	return target;
 }
 
+/* ---- 参数位解析单点（契约见 robot.hpp 的声明处）----
+ * 派发期内别名/变量不变（标量文本无副作用、$(...) 是纯求值），每列解析一次；
+ * 解析产物即参数名，不再解析（参数名不是名字绑定）。 */
+std::string ActionRunner::resolveActionParam(const HwLookup& registry, const std::string& param) {
+	if (auto body = exprBody(param)) {
+		ExprValue v = Expression::parse(*body).eval(registry.makeActionExprResolver());
+		return v.rendered();
+	}
+	MatrixVars_Hardware* hv = registry.find(param);
+	if (hv != nullptr && hv->isScalarText()) {
+		return hv->read().asString().getValue();
+	}
+	return param;
+}
+
 /* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
 void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	const mt::MatrixObject* actionDefsPtr = mt::findByName(actionMatrices, "Action");
@@ -568,30 +618,35 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 
 	/* 列头只解析一次（C-M3）：原实现在 order/相位检测/每行每格三处
 	 * 重复做 <device>.<param> 切分（切分规则单点在 mt::splitActionColumn）。
-	 * 设备列解析（resolveActionDevice）：解析后的名字是派发身份——分组、
-	 * 顺序、相位、查重全部按解析名；colHeads 保留原文供报错归因。 */
+	 * 设备列解析（resolveActionDevice）与参数位解析（resolveActionParam）：
+	 * 解析后的名字是派发身份——分组、顺序、相位、查重全部按解析名；
+	 * colHeads 保留原文供报错归因。 */
 	std::vector<std::pair<std::string, std::string>> colHeads;
 	colHeads.reserve(static_cast<std::size_t>(actionDefs.cols()));
 	std::vector<std::string> devResolved;
 	devResolved.reserve(static_cast<std::size_t>(actionDefs.cols()));
+	std::vector<std::string> paramResolved;
+	paramResolved.reserve(static_cast<std::size_t>(actionDefs.cols()));
 	std::vector<std::string> order;
 	/* 解析名查重（撞设备第二层防线）：归并期 checkDisjoint 只见列头文本，
-	 * 不同别名指到同一设备只有这里可见。键 = (解析设备, 参数)——同设备不同
-	 * 参数是合法的一拍多参（合并进同一次 play）；同键重复则逐行静默覆盖
-	 * （含 "-" 继承把两条时间线写进同一键），必须显式报错。 */
-	std::map<std::pair<std::string, std::string>, std::string> seenCell;
+	 * 不同别名/表达式指到同一 (设备, 参数) 只有这里可见。键 = 解析后的
+	 * (设备, 参数)——同设备不同参数是合法的一拍多参（合并进同一次 play）；
+	 * 同键重复则逐行静默覆盖（含 "-" 继承把两条时间线写进同一键），必须
+	 * 显式报错。 */
+	std::map<std::pair<std::string,std::string>,std::string> seenCell;
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
 		colHeads.push_back(mt::splitActionColumn(actionDefs(0, j)));
 		devResolved.push_back(resolveActionDevice(registry_, colHeads.back().first));
+		paramResolved.push_back(resolveActionParam(registry_, colHeads.back().second));
 		if (std::find(order.begin(), order.end(), devResolved.back()) == order.end()) {
 			order.push_back(devResolved.back());
 		}
 		auto cell = seenCell.emplace(
-			std::make_pair(devResolved.back(), colHeads.back().second),
+			std::make_pair(devResolved.back(), paramResolved.back()),
 			actionDefs(0, j));
 		if (!cell.second) {
 			throw IllegalArgumentException("Action column '" + actionDefs(0, j)
-				+ "' targets " + devResolved.back() + "." + colHeads.back().second
+				+ "' targets " + devResolved.back() + "." + paramResolved.back()
 				+ ", already targeted by column '" + cell.first->second
 				+ "'; a device parameter may appear in only one @Action column"
 				+ " (duplicates would silently overwrite each other row by row).");
@@ -622,7 +677,7 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 		Json set = JsonObject();
 		for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
 			parseActionCell(set, actionDefs, i, j, phaseDevices,
-				colHeads[static_cast<std::size_t>(j)],
+				paramResolved[static_cast<std::size_t>(j)],
 				devResolved[static_cast<std::size_t>(j)],
 				exprCache[static_cast<std::size_t>(j)]);
 		}
@@ -647,15 +702,16 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	}
 }
 
-/* ---- @Action 单元格解析（别名解析 + 数值类型解析 + 分组）----
- * resolvedDev 是列头设备位经 resolveActionDevice 解析后的派发身份，
- * set 的分组键与未起拍判定都用它；colHead.first 保留原文仅供诊断。 */
+/* ---- @Action 单元格解析（数值/文本求值 + 分组）----
+ * resolvedDev / resolvedParam 是列头经 resolveActionDevice / resolveActionParam
+ * 解析后的派发身份，set 的分组键与未起拍判定都用它们；colHeads 保留原文
+ * 仅供诊断。参数值可为数值（JsonFloat）或文本（JsonString，$(...) 拼接
+ * 产物）——文本参数与 SQL 元数据列同型，驱动 Lua 侧无感。 */
 void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 		std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
-		const std::pair<std::string, std::string>& colHead,
+		const std::string& resolvedParam,
 		const std::string& resolvedDev, ColExprCache& exprCache) {
-	const std::string& name_param_orig = colHead.second;
-	std::string name_param = name_param_orig;
+	const std::string& name_param = resolvedParam;
 
 	/* 未起拍：本格 "-" 且无前值可继承（首数据行），且该设备属于相位设备
 	 * （后续行有真实数值，典型来自 mtmerge 相位前导）。不向该设备投递该参数
@@ -663,9 +719,10 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 	 * 整列 "-" 的无参设备不属于 phaseDevices，保持旧语义照常 play。 */
 	if (phaseDevices.count(resolvedDev) > 0 && actionDefs.inherited(i, j) == "-") { return; }
 
-	/* 单元格：$(...) 表达式按求值结果；否则走既有数值/继承解析。
+	/* 单元格：$(...) 表达式按求值结果（数值→JsonFloat、文本→JsonString，
+	 * 拼接由 '+' 的类型分派产生）；否则走既有数值/继承解析。
 	 * inherited 已解析 "-" 继承（上一行是表达式时按上一行表达式再算一次）。 */
-	double val_fp64;
+	Json paramVal;
 	std::string raw = actionDefs.inherited(i, j);
 	if (auto body = exprBody(raw)) {
 		/* C-M3：AST 按列缓存——"-" 继承链上同一表达式文本原每行重解析 */
@@ -673,17 +730,10 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 			exprCache.body = *body;
 			exprCache.ast = Expression::parse(*body);
 		}
-		val_fp64 = exprCache.ast.eval(registry_.makeVarsResolver());
+		ExprValue v = exprCache.ast.eval(registry_.makeActionExprResolver());
+		paramVal = v.isText() ? JsonString(v.text) : JsonFloat(v.num);
 	} else {
-		val_fp64 = MatrixVars_Hardware::parseMtDouble(actionDefs, i, j);
-	}
-
-	Json ret;	/* 分支内必被 read() 覆写，缺省 Null 即可（阶段 5：去死赋值） */
-	MatrixVars_Hardware* hit = registry_.find(name_param_orig);
-	if (hit != nullptr && hit->isScalarText()) {
-		/* @Alias / @Vars：参数位名字替换（值即目标参数名） */
-		ret = hit->read();
-		name_param = ret.asString().getValue();
+		paramVal = JsonFloat(MatrixVars_Hardware::parseMtDouble(actionDefs, i, j));
 	}
 
 	/* C-M3：getPtr 就地取子对象更新字段，消除逐拍 get 拷出 + put 写回的
@@ -693,7 +743,7 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 		set.put(resolvedDev, JsonObject());
 		set_params = set.getPtr(resolvedDev);
 	}
-	set_params->put(name_param, JsonFloat(val_fp64));
+	set_params->put(name_param, paramVal);
 }
 
 /* ==================== RobotStruct：编排门面 ==================== */

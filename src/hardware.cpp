@@ -111,7 +111,9 @@ double MtVars_Vars::numericValue() const {
 			throw IllegalArgumentException("Vars expression has no variable resolver"
 				" (it can only be constructed through HwFactory)");
 		}
-		return expr_->eval(resolve_);
+		/* @Vars 的值是数值常量：resolve_ 只产 Num（vars-only 解析器），文本
+		 * 结果不可达；requireNum 是共享 AST 的不变量钉（数值语义出口单点）。 */
+		return requireNum(expr_->eval(numericResolver(resolve_)));
 	}
 	char* end = nullptr;
 	return std::strtod(literal_.c_str(), &end);

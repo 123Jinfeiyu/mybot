@@ -330,3 +330,125 @@ TH_TEST(action_dispatch_rejects_duplicate_resolved_param) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "already targeted by column",
 		bot::ActionRunner(reg).runAction(mats));
 }
+
+/* ---- $(...) 类型分派：别名入式与文本拼接（2026-09-20 设计评估）----
+ * 运算/拼接只发生在 $(...) 之内；'+' 出现文本操作数即拼接（数值真值
+ * formatNumber 参与），全数值仍是算术。求值都在派发期。 */
+
+/* 构造 @Vars 对象（字面量值；resolver 仅 $(...) 值需要，测试不用表达式值） */
+static std::unique_ptr<bot::MtVars_Vars> varsHw(const std::string& name,
+	const std::string& value) {
+	return bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\n   " + name + "  " + value + ";\n@\n"), 1,
+		[](const std::string&) { return 0.0; });
+}
+
+/* 捕获 play 入参的桩驱动（OK 契约），返回登记好的指针引用 */
+static std::unique_ptr<bot::MatrixVars_Hardware> captureHw(bot::Json& played) {
+	return std::make_unique<fx::LambdaHw>([&played](const bot::Json& in) {
+		played = in;
+		auto o = bot::JsonObject();
+		o.put("result", bot::JsonString("OK"));
+		return o;
+	});
+}
+
+TH_TEST(action_device_expr_concat_lands_on_resolved_device) {
+	/* 设备位 $(pfx+n)：别名值 "relay-" + 数值真值 "2" 拼出 "relay-2"，
+	 * 派发落在该名字命名的驱动上 */
+	bot::HwRegistry reg;
+	bot::Json played;
+	reg.add("relay-2", captureHw(played), "");
+	reg.add("pfx", aliasHw("pfx", "relay-"), "");
+	reg.add("n", varsHw("n", "2"), "");
+	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
+		"@Action\n$(pfx+n).test;\n  200;\n@\n");
+	bot::ActionRunner(reg).runAction(mats);
+	TH_CHECK(played.isObj());
+	TH_CHECK(played.get("test").has_value() && played.get("test")->getFloat() == 200.0);
+}
+
+TH_TEST(action_device_expr_product_resolves_like_bare_name) {
+	/* $(p) ≡ p：产物命中别名走与裸名相同的解析（一层为止规则的对称面）；
+	 * 产物是别名名 → 再解一层到驱动（eval 已解引用一次，产物按裸名规则） */
+	bot::HwRegistry reg;
+	reg.add("dev1", dummyHw(), "");
+	reg.add("p", aliasHw("p", "dev1"), "");
+	TH_CHECK(bot::ActionRunner::resolveActionDevice(reg, "$(p)") == "dev1");
+	reg.add("x", aliasHw("x", "leg"), "");
+	reg.add("leg", aliasHw("leg", "dev1"), "");
+	TH_CHECK(bot::ActionRunner::resolveActionDevice(reg, "$(x)") == "dev1");
+}
+
+TH_TEST(action_device_expr_product_naming_vars_rejected) {
+	/* 产物命中 @Vars → 与裸名同样的显式拒绝（数值常量不能命名设备） */
+	bot::HwRegistry reg;
+	reg.add("v", varsHw("v", "35"), "");
+	reg.add("q", aliasHw("q", "v"), "");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is a numeric constant and cannot name a device",
+		(void)bot::ActionRunner::resolveActionDevice(reg, "$(q)"));
+}
+
+TH_TEST(action_device_expr_rejects_driver_and_undefined_reference) {
+	/* 表达式里引用驱动/守护名：名字是拿来做算术/拼接的，不是拿来做播放的；
+	 * 未定义名沿用既有文案 */
+	bot::HwRegistry reg;
+	reg.add("dev1", dummyHw(), "");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "driver/daemon variable; only @Alias/@Vars may appear in an expression",
+		(void)bot::ActionRunner::resolveActionDevice(reg, "$(dev1)"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not a defined hardware variable",
+		(void)bot::ActionRunner::resolveActionDevice(reg, "$(ghost)"));
+}
+
+TH_TEST(action_param_expr_product_is_param_name) {
+	/* 参数位 $(...)：产物即参数名（不再解析）；裸名不命中保持原文。
+	 * $(...) 内标识符是严格引用（未定义即抛）——拼接文本只能来自别名。 */
+	bot::HwRegistry reg;
+	reg.add("p", aliasHw("p", "note"), "");
+	TH_CHECK(bot::ActionRunner::resolveActionParam(reg, "$(p)") == "note");
+	reg.add("a1", aliasHw("a1", "no"), "");
+	reg.add("a2", aliasHw("a2", "te"), "");
+	TH_CHECK(bot::ActionRunner::resolveActionParam(reg, "$(a1+a2)") == "note");
+	TH_CHECK(bot::ActionRunner::resolveActionParam(reg, "note") == "note");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not a defined hardware variable",
+		(void)bot::ActionRunner::resolveActionParam(reg, "$(t+est)"));
+}
+
+TH_TEST(action_cell_text_param_via_concat) {
+	/* 数据格拼接：$(g+n) 产物是文本 → 文本参数（JsonString），与 SQL 元数据
+	 * 列同型；数值格不受影响 */
+	bot::HwRegistry reg;
+	bot::Json played;
+	reg.add("dev1", captureHw(played), "");
+	reg.add("g", aliasHw("g", "hello-"), "");
+	reg.add("n", varsHw("n", "2"), "");
+	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
+		"@Action\ndev1.note;\n  $(g+n);\n@\n");
+	bot::ActionRunner(reg).runAction(mats);
+	TH_CHECK(played.get("note").has_value() && played.get("note")->isStr());
+	TH_CHECK(played.get("note")->getValue() == "hello-2");
+}
+
+TH_TEST(action_cell_numeric_expr_unchanged) {
+	/* 全数值表达式仍是算术（拼接只出现在文本参与时）——既有行为钉 */
+	bot::HwRegistry reg;
+	bot::Json played;
+	reg.add("dev1", captureHw(played), "");
+	reg.add("n", varsHw("n", "2"), "");
+	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
+		"@Action\ndev1.test;\n  $(n*100);\n@\n");
+	bot::ActionRunner(reg).runAction(mats);
+	TH_CHECK(played.get("test").has_value() && played.get("test")->getFloat() == 200.0);
+}
+
+TH_TEST(action_dispatch_rejects_expr_param_colliding_with_bare) {
+	/* 查重键是解析后 (设备, 参数)：$(...) 拼出的参数名与裸名同键也必须抓
+	 * （归并期文本查重不可见，不得逐行静默覆盖） */
+	bot::HwRegistry reg;
+	reg.add("dev1", dummyHw(), "");
+	reg.add("p", aliasHw("p", "note"), "");
+	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
+		"@Action\ndev1.$(p)  dev1.note;\n  200      300;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "already targeted by column",
+		bot::ActionRunner(reg).runAction(mats));
+}

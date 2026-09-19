@@ -86,8 +86,13 @@ public:
 	virtual ~HwLookup() = default;
 	virtual MatrixVars_Hardware* find(const std::string& name) const = 0;
 	virtual bool contains(const std::string& name) const = 0;
-	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛） */
+	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛）——
+	 * @Vars 值与 SQL 元数据列的 $(...) 求值用 */
 	virtual std::function<double(const std::string&)> makeVarsResolver() const = 0;
+	/* @Action 求值面（数据格/列头设备位/参数位）的标识符求值器：
+	 * @Vars → 数值真值、@Alias → 文本（别名值）——'+' 据此做「全数值算术、
+	 * 出现文本即拼接」的类型分派；驱动/守护名与未定义名抛错。 */
+	virtual std::function<ExprValue(const std::string&)> makeActionExprResolver() const = 0;
 };
 
 /* ---- 标量文本硬件变量（@Alias / @Vars 共用）----
@@ -98,7 +103,8 @@ public:
  *   @Vars  的值是命名数值（仅支持 Number；只在参数位替换，也可被结构脚本
  *          用 $<name> 引用）——数值永远不能命名设备，设备位显式拒绝。
  * 框架据此做「名字替换」：见 robot.cpp 的 parseActionCell（参数位）与
- * resolveActionDevice（设备位）。 */
+ * resolveActionDevice（设备位）。两个位置还都接受 $(...) 表达式（别名入式、
+ * '+' 类型分派拼接）——见 expr.hpp 与 resolveActionParam。 */
 class MtVars_Text : public MatrixVars_Hardware {
 protected:
 	std::string text_;
