@@ -69,6 +69,11 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	/* C-1 防线：@Action 参数键与结构元数据键必须互斥（见 callImpl 注释） */
 	void rejectReservedKeys(const Json& metadata, const Json& params) const;
 
+	/* callImpl 的两段（阶段 3 拆分）：trigger 结果并入调用参数 /
+	 * controller 扇出转发（注释与契约见实现处） */
+	void mergeTriggerResults(Json& obj);
+	Json forwardToControllers(const Json& metadata, const Json& res);
+
 	/* flow 目标解析单点（N-6）：trigger/controller 首用把名字锁定为指针，
 	 * 此后不再重查——注册表拒绝会话期覆盖引用名字，指针终身有效。未注册
 	 * 即抛（装配期「先声明」约束保证目标存在，走到这里说明不变式被破坏）。 */

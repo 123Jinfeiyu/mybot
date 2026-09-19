@@ -89,6 +89,49 @@ MatrixVars_Hardware* MtVars_Lua::flowTarget(std::vector<MatrixVars_Hardware*>& p
 	return target;
 }
 
+/* ---- trigger 前置调用（入边，controller 的镜像）：逐个以空参数运行 trigger
+ * 列指向的变量，返回表以触发器名字为键并入调用参数，再运行自己的 Lua call。
+ * - 触发是嵌套调用（topDepth 已 ++）：触发器自己的结果回显与顶层保留键
+ *   检查被自然跳过，其 payload/转发语义与普通 play 完全一致；
+ * - ERR/非表/空表经 ensureOk 响亮中断整帧（与 controller 转发同一契约）；
+ * - 触发器数据在元数据与参数之后并入：顶层参数键同名已被
+ *   rejectReservedKeys 拒绝，controller 转发 payload 的同名键在此让位。 */
+void MtVars_Lua::mergeTriggerResults(Json& obj) {
+	for (std::size_t k = 0; k < trigNames_.size(); ++k) {
+		MatrixVars_Hardware* trigger = flowTarget(trigPtrs_, trigNames_, k, "trigger");
+		logD([&] { return "Trigger call before play: " + trigNames_[k]; });
+		Json tres = trigger->play(JsonObject());
+		logD([&] { return "Trigger result (" + trigNames_[k] + "): " + tres.toString(); });
+		MatrixVars_Hardware::ensureOk(tres, "trigger '" + trigNames_[k] + "' of " + luapath_);
+		obj.put(trigNames_[k], tres);
+	}
+}
+
+/* ---- controller 转发（出边，可多列 = 扇出）：元数据 ∪ 自己 Lua 的返回表构建
+ * 一次，按列声明序逐个转发给 controller——每个 controller 收到同一份
+ * payload（同列族不接力；跨变量链由目标自己的 controller 列表达）。
+ * 出现一个 ERR 即停止并返回：不再转发给其余 controller，异常上抛整帧
+ * 中断（halt-on-error，与触发器同一契约）。全部成功时返回最后一个
+ * controller 的结果——单列与既有行为完全一致。 */
+Json MtVars_Lua::forwardToControllers(const Json& metadata, const Json& res) {
+	Json payload = JsonObject();
+	jsonMergeInto(payload, metadata);
+	jsonMergeInto(payload, res.asObject());
+	logD([&payload] { return "Forward to controller: " + payload.toString(); });
+	Json ctrl_res;
+	for (std::size_t k = 0; k < ctrlNames_.size(); ++k) {
+		MatrixVars_Hardware* controller = flowTarget(ctrlPtrs_, ctrlNames_, k, "controller");
+		ctrl_res = controller->play(payload);
+		logD([&] {
+			return "Controller result (" + ctrlNames_[k] + "): " + ctrl_res.toString();
+		});
+		/* 检查本 controller 返回值（如 PCA9685 写寄存器失败）——ERR 即在此
+		 * 中断，后续 controller 不再被转发 */
+		MatrixVars_Hardware::ensureOk(ctrl_res, "controller '" + ctrlNames_[k] + "' of " + luapath_);
+	}
+	return ctrl_res;
+}
+
 /* ---- call 事件实现：trigger 前置调用 → 元数据 ∪ @Action 实时参数 → Lua call() ----
  * echo=false（playQuiet）时抑制顶层结果回显：agent 模式把驱动当模型传输用，
  * stdout 必须只留最终回答。其余语义（ERR 契约、controller 转发、元数据合并）不变。 */
@@ -117,21 +160,7 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 	Json obj = JsonObject();
 	jsonMergeInto(obj, metadata);
 	jsonMergeInto(obj, json.asObject());
-	/* trigger 前置调用（入边，controller 的镜像）：先逐个以空参数运行 trigger
-	 * 列指向的变量，返回表以触发器名字为键并入调用参数，再运行自己的 Lua call。
-	 * - 触发是嵌套调用（topDepth 已 ++）：触发器自己的结果回显与顶层保留键
-	 *   检查被自然跳过，其 payload/转发语义与普通 play 完全一致；
-	 * - ERR/非表/空表经 ensureOk 响亮中断整帧（与 controller 转发同一契约）；
-	 * - 触发器数据在元数据与参数之后并入：顶层参数键同名已被
-	 *   rejectReservedKeys 拒绝，controller 转发 payload 的同名键在此让位。 */
-	for (std::size_t k = 0; k < trigNames_.size(); ++k) {
-		MatrixVars_Hardware* trigger = flowTarget(trigPtrs_, trigNames_, k, "trigger");
-		logD([&] { return "Trigger call before play: " + trigNames_[k]; });
-		Json tres = trigger->play(JsonObject());
-		logD([&] { return "Trigger result (" + trigNames_[k] + "): " + tres.toString(); });
-		MatrixVars_Hardware::ensureOk(tres, "trigger '" + trigNames_[k] + "' of " + luapath_);
-		obj.put(trigNames_[k], tres);
-	}
+	mergeTriggerResults(obj);
 	/* C-1 续：mode 必须在参数合并「之后」写入，由框架独占。controller payload 里
 	 * 混着上游驱动返回表的键，若 mode 能被带进来，就会覆盖这里的 "call"，
 	 * 使 call_lua 去 getglobal 一个外部可控的名字——实测可让下游驱动的 call()
@@ -145,28 +174,8 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 	/* 本驱动 call 返回契约（含显式 ERR 即中断） */
 	MatrixVars_Hardware::ensureOk(res, "call " + luapath_);
 
-	/* controller 转发（出边，可多列 = 扇出）：元数据 ∪ 自己 Lua 的返回表构建
-	 * 一次，按列声明序逐个转发给 controller——每个 controller 收到同一份
-	 * payload（同列族不接力；跨变量链由目标自己的 controller 列表达）。
-	 * 出现一个 ERR 即停止并返回：不再转发给其余 controller，异常上抛整帧
-	 * 中断（halt-on-error，与触发器同一契约）。全部成功时返回最后一个
-	 * controller 的结果——单列与既有行为完全一致。 */
 	if (!ctrlNames_.empty()) {
-		Json payload = JsonObject();
-		jsonMergeInto(payload, metadata);
-		jsonMergeInto(payload, res.asObject());
-		logD([&payload] { return "Forward to controller: " + payload.toString(); });
-		Json ctrl_res;
-		for (std::size_t k = 0; k < ctrlNames_.size(); ++k) {
-			MatrixVars_Hardware* controller = flowTarget(ctrlPtrs_, ctrlNames_, k, "controller");
-			ctrl_res = controller->play(payload);
-			logD([&] {
-				return "Controller result (" + ctrlNames_[k] + "): " + ctrl_res.toString();
-			});
-			/* 检查本 controller 返回值（如 PCA9685 写寄存器失败）——ERR 即在此
-			 * 中断，后续 controller 不再被转发 */
-			MatrixVars_Hardware::ensureOk(ctrl_res, "controller '" + ctrlNames_[k] + "' of " + luapath_);
-		}
+		Json ctrl_res = forwardToControllers(metadata, res);
 		if (top && echo) { std::cout << ctrl_res.toString() << std::endl; }
 		return ctrl_res;
 	}
