@@ -16,6 +16,7 @@
 -- （F-24 同族做法：常量漂移在构建期即失败）。
 local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
 local HAL = dofile(mpath.resolve("lib/HAL.lua"))	-- 复用底座：open/close/ioctl 已在其中声明
+local mjpeg = dofile(mpath.resolve("lib/mjpeg_frame.lua"))	-- 帧完整性校验（截断帧重取，见库头注释）
 local ffi = require("ffi")
 local bit = require("bit")
 
@@ -464,10 +465,21 @@ function call(data)
 		state.warmed = true
 	end
 
-	local payload, err = grab_one()
+	-- 帧完整性重试：UVC 设备可能吐出熵编码中途截断的帧（机理与实测数据见
+	-- lib/mjpeg_frame.lua 头注释）。截断帧宽松解码器看不出问题，送到模型网关
+	-- 就是 400「图片输入格式/解析错误」——必须整帧丢弃重取。上限 8 帧（30fps
+	-- 下约 0.3s）：实测该类设备约半数帧不完整，8 连缺已属设备/链路异常。
+	local payload, err
+	for _ = 1, 8 do
+		payload, err = grab_one()
+		if payload == nil then break end
+		payload = mjpeg.normalize(payload)
+		if payload ~= nil then break end
+	end
 	if payload == nil then
 		device_close()	-- 失败即释放，下次调用重试打开（支持热插拔）
-		return { result = "ERR", message = err }
+		return { result = "ERR", message = err or
+			"连续 8 帧不完整（MJPEG 帧缺 EOI）：设备/链路异常，请检查摄像头连接" }
 	end
 	return {
 		result = "OK",

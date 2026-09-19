@@ -174,4 +174,32 @@ do
 	destroy({})
 end
 
+-- ---- MJPEG 帧完整性校验（lib/mjpeg_frame.lua）：截断帧重取的判据 ----
+do
+	local mjpeg = dofile("modules/lib/mjpeg_frame.lua")
+
+	local SOI = "\xff\xd8"
+	local EOI = "\xff\xd9"
+	local scan = string.rep("\x5a\xa5", 64)	-- 假熵编码数据（不含 ffd9 组合）
+
+	local full = SOI .. scan .. EOI
+	check("完整帧原样返回", mjpeg.normalize(full) == full)
+	check("EOI 后的尾部填充被截掉（实测设备会跟 2 字节 0x00）",
+		mjpeg.normalize(full .. "\x00\x00") == full)
+	check("截断帧（尾部无 EOI）返回 nil，调用方应重取",
+		mjpeg.normalize(SOI .. scan) == nil)
+
+	-- EXIF 缩略图陷阱：APP 段内嵌完整 JPEG（含它自己的 EOI）。只搜帧尾窗口，
+	-- 内嵌 EOI 不得把截断帧误判成完整，也不得让规范化截在缩略图上。
+	local thumbnail = SOI .. "\x11\x22" .. EOI
+	check("内嵌缩略图的截断帧仍判为截断",
+		mjpeg.normalize(SOI .. thumbnail .. scan) == nil)
+	check("主扫描完整时截到主 EOI（内嵌 EOI 不干扰）",
+		mjpeg.normalize(SOI .. thumbnail .. scan .. EOI .. "\x00")
+			== SOI .. thumbnail .. scan .. EOI)
+
+	check("过短数据一律 nil", mjpeg.normalize(SOI) == nil
+		and mjpeg.normalize("") == nil and mjpeg.normalize(nil) == nil)
+end
+
 tester.summary("Camera.lua 单测")
