@@ -295,22 +295,12 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 		raw = std::move(f);
 	}
 	/* 3) 标准输入（管道 cat scripts/xxx.mt | ./build/mybot）
-	 * 分块读并在超限处立即拒绝：整体 istreambuf_iterator 读法会在限流之前
-	 * 就把全部输入吃进内存，上限形同虚设。 */
+	 * 分块读 + 超限即抛（readAllLimited 单点，与 mtmerge 文件输入共用）：
+	 * 整体 istreambuf_iterator 读法会在限流之前就把全部输入吃进内存，
+	 * 上限形同虚设。超限从「打印后放弃」改为抛 ScriptTooLarge——与文件
+	 * 通道（LimitedReader 同一异常）统一为同一用户可见契约。 */
 	else {
-		std::string data;
-		char buf[65536];
-		for (;;) {
-			std::cin.read(buf, static_cast<std::streamsize>(sizeof buf));
-			data.append(buf, static_cast<std::size_t>(std::cin.gcount()));
-			if (data.size() > kMaxScriptBytes) {
-				std::cerr << "动作脚本超过 " << kMaxScriptBytes
-					<< " 字节上限，已拒绝（正常 .mt 为 KB 级）" << std::endl;
-				return nullptr;
-			}
-			if (std::cin.gcount() < static_cast<std::streamsize>(sizeof buf)) { break; }
-		}
-		raw = std::make_unique<MemoryReader>(std::move(data));
+		raw = std::make_unique<MemoryReader>(readAllLimited(std::cin, kMaxScriptBytes));
 	}
 
 	if (!raw) { return nullptr; }

@@ -116,20 +116,11 @@ int main(int argc, char** argv) {
 				std::cerr << "mtmerge: 无法打开 '" << path << "'" << std::endl;
 				return 1;
 			}
-			/* 审计 M-2 防线：与 actionsource 的 stdin 通道同款「分块读 +
-			 * 超限即拒」——先整体读入再判上限对超大文件形同虚设
-			 * （限流之前就把全部字节吃进内存）。 */
-			std::string data;
-			char buf[65536];
-			for (;;) {
-				f.read(buf, static_cast<std::streamsize>(sizeof buf));
-				std::streamsize got = f.gcount();
-				if (got <= 0) { break; }
-				data.append(buf, static_cast<std::size_t>(got));
-				if (data.size() > bot::kMaxScriptBytes) {
-					throw bot::ScriptTooLarge(bot::kMaxScriptBytes, "action script");
-				}
-			}
+			/* 审计 M-2 防线：与动作 stdin 通道共用的整段受限读取（分块 +
+			 * 超限即抛 ScriptTooLarge，单点在 actionsource.hpp）——先整体
+			 * 读入再判上限对超大文件形同虚设（限流之前就把全部字节吃进
+			 * 内存）。 */
+			std::string data = bot::readAllLimited(f, bot::kMaxScriptBytes, "action script");
 			bot::MemoryReader in(std::move(data));
 			std::vector<mt::MatrixObject> parsed;
 			mt::readMatrix(in, parsed);

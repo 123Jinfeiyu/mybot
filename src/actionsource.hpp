@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <chrono>
+#include <istream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -75,6 +76,26 @@ public:
 			+ ". Real bot4cj scripts are KB-sized; a larger input almost certainly means a runaway"
 			+ " or malicious producer (the whole script is buffered before playback).") {}
 };
+
+/* 整段受限读取：分块累计，超过 cap 立即抛 ScriptTooLarge（inline：mtmerge
+ * 目标不链接本 .cpp，只复用头内定义——与 kMaxScriptBytes/ScriptTooLarge
+ * 同一惯例）。mtmerge 文件输入与动作 stdin 通道共用；此前两份手写循环
+ * 且超限处理不一致（mtmerge 抛、stdin 打印后放弃）——同一上限不该有
+ * 两种用户可见行为。先整读再判上限对超大输入形同虚设（限流之前就把
+ * 全部字节吃进内存），故块读过程中即时拒绝。 */
+inline std::string readAllLimited(std::istream& in, std::size_t cap,
+		const std::string& kind = "action script") {
+	std::string data;
+	char buf[65536];
+	for (;;) {
+		in.read(buf, static_cast<std::streamsize>(sizeof buf));
+		std::streamsize got = in.gcount();
+		if (got <= 0) { break; }
+		data.append(buf, static_cast<std::size_t>(got));
+		if (data.size() > cap) { throw ScriptTooLarge(cap, kind); }
+	}
+	return data;
+}
 
 /* 以 EOF(-1) 表示输入结束的字符流 */
 class FileReader : public Reader {
