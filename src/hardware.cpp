@@ -33,15 +33,15 @@ double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int6
 Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 	if (!res.isObj()) {
 		/* N3 防线：结果不是表就没有 result 键可读，旧实现原样放行等同「成功」。
-		 * 典型两种成因：驱动少写 return（call_lua 已就形态报 ERR），
-		 * 以及把 @Alias 名当 @Action 列前缀用——alias 的 play 返回标量字符串。 */
+		 * 典型成因：驱动少写 return（call_lua 已就形态报 ERR）、驱动把标量当
+		 * 结果表返回。（曾有一条常见成因是把 @Alias 名当 @Action 设备列用
+		 * ——alias 的 play 返回标量字符串；设备列别名解析落地后该路径在派发
+		 * 前就走 resolveActionDevice 了，不再到达这里。） */
 		static const char* const kKindName[] =
 			{"null", "bool", "int", "float", "string", "array", "object"};
 		throw std::runtime_error("Hardware call (" + ctx + ") returned a non-table result ("
 			+ kKindName[static_cast<int>(res.type)] + "). Every driver build/call/destroy must"
-			+ " return a table with result=\"OK\" or result=\"ERR\". If the name in the context"
-			+ " above is an @Alias or @Vars entry, note that they belong in the parameter part"
-			+ " of an @Action column (dev.alias), not the device part.");
+			+ " return a table with result=\"OK\" or result=\"ERR\".");
 	}
 	const Json& obj = res;
 	/* L1：空表拦截——驱动 call 返回 {} 说明「什么都没干」，旧实现见无 result 键

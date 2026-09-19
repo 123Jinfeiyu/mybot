@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <map>
 #include <string_view>
 
 namespace bot {
@@ -532,6 +533,31 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 
 /* ==================== ActionRunner：@Action 逐行重放 ==================== */
 
+/* ---- 设备列解析单点（契约见 robot.hpp 的声明处）---- */
+std::string ActionRunner::resolveActionDevice(const HwLookup& registry, const std::string& dev) {
+	MatrixVars_Hardware* hv = registry.find(dev);
+	if (hv == nullptr || !hv->isScalarText()) { return dev; }
+	if (std::string_view(hv->kindName()) == "vars") {
+		throw IllegalArgumentException("@Vars '" + dev
+			+ "' is a numeric constant and cannot name a device in an @Action"
+			" column; use an @Alias or the device name itself.");
+	}
+	const std::string target = hv->read().asString().getValue();
+	MatrixVars_Hardware* resolved = registry.find(target);
+	if (resolved == nullptr) {
+		throw IllegalArgumentException("@Action device column '" + dev
+			+ "' resolves via @Alias to '" + target + "', but '" + target
+			+ "' is not a defined hardware variable.");
+	}
+	if (resolved->isScalarText()) {
+		throw IllegalArgumentException("@Action device column '" + dev
+			+ "' resolves via @Alias to '" + target + "', which is itself a"
+			" scalar (@Alias/@Vars); the device part must name a driver or daemon"
+			" variable (one level of alias indirection is supported).");
+	}
+	return target;
+}
+
 /* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
 void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	const mt::MatrixObject* actionDefsPtr = mt::findByName(actionMatrices, "Action");
@@ -541,14 +567,34 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	const mt::MatrixObject& actionDefs = *actionDefsPtr;
 
 	/* 列头只解析一次（C-M3）：原实现在 order/相位检测/每行每格三处
-	 * 重复做 <device>.<param> 切分（切分规则单点在 mt::splitActionColumn） */
+	 * 重复做 <device>.<param> 切分（切分规则单点在 mt::splitActionColumn）。
+	 * 设备列解析（resolveActionDevice）：解析后的名字是派发身份——分组、
+	 * 顺序、相位、查重全部按解析名；colHeads 保留原文供报错归因。 */
 	std::vector<std::pair<std::string, std::string>> colHeads;
 	colHeads.reserve(static_cast<std::size_t>(actionDefs.cols()));
+	std::vector<std::string> devResolved;
+	devResolved.reserve(static_cast<std::size_t>(actionDefs.cols()));
 	std::vector<std::string> order;
+	/* 解析名查重（撞设备第二层防线）：归并期 checkDisjoint 只见列头文本，
+	 * 不同别名指到同一设备只有这里可见。键 = (解析设备, 参数)——同设备不同
+	 * 参数是合法的一拍多参（合并进同一次 play）；同键重复则逐行静默覆盖
+	 * （含 "-" 继承把两条时间线写进同一键），必须显式报错。 */
+	std::map<std::pair<std::string, std::string>, std::string> seenCell;
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
 		colHeads.push_back(mt::splitActionColumn(actionDefs(0, j)));
-		if (std::find(order.begin(), order.end(), colHeads.back().first) == order.end()) {
-			order.push_back(colHeads.back().first);
+		devResolved.push_back(resolveActionDevice(registry_, colHeads.back().first));
+		if (std::find(order.begin(), order.end(), devResolved.back()) == order.end()) {
+			order.push_back(devResolved.back());
+		}
+		auto cell = seenCell.emplace(
+			std::make_pair(devResolved.back(), colHeads.back().second),
+			actionDefs(0, j));
+		if (!cell.second) {
+			throw IllegalArgumentException("Action column '" + actionDefs(0, j)
+				+ "' targets " + devResolved.back() + "." + colHeads.back().second
+				+ ", already targeted by column '" + cell.first->second
+				+ "'; a device parameter may appear in only one @Action column"
+				+ " (duplicates would silently overwrite each other row by row).");
 		}
 	}
 
@@ -558,7 +604,7 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	 * 否则依赖 play 触发读数/副作用的所有 E2E（守护快照等）会整体失效。 */
 	std::set<std::string> phaseDevices;
 	for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
-		const std::string& name_dev = colHeads[static_cast<std::size_t>(j)].first;
+		const std::string& name_dev = devResolved[static_cast<std::size_t>(j)];
 		if (phaseDevices.count(name_dev) > 0) { continue; }
 		for (std::int64_t r = 1; r < static_cast<std::int64_t>(actionDefs.rows()); ++r) {
 			const std::string& v = actionDefs(r, j);
@@ -576,7 +622,9 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 		Json set = JsonObject();
 		for (std::int64_t j = 0; j < static_cast<std::int64_t>(actionDefs.cols()); ++j) {
 			parseActionCell(set, actionDefs, i, j, phaseDevices,
-				colHeads[static_cast<std::size_t>(j)], exprCache[static_cast<std::size_t>(j)]);
+				colHeads[static_cast<std::size_t>(j)],
+				devResolved[static_cast<std::size_t>(j)],
+				exprCache[static_cast<std::size_t>(j)]);
 		}
 		for (const std::string& name_dev : order) {
 			MatrixVars_Hardware* hv = registry_.find(name_dev);
@@ -599,11 +647,13 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 	}
 }
 
-/* ---- @Action 单元格解析（别名解析 + 数值类型解析 + 分组）---- */
+/* ---- @Action 单元格解析（别名解析 + 数值类型解析 + 分组）----
+ * resolvedDev 是列头设备位经 resolveActionDevice 解析后的派发身份，
+ * set 的分组键与未起拍判定都用它；colHead.first 保留原文仅供诊断。 */
 void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 		std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
-		const std::pair<std::string, std::string>& colHead, ColExprCache& exprCache) {
-	const std::string& name_dev = colHead.first;
+		const std::pair<std::string, std::string>& colHead,
+		const std::string& resolvedDev, ColExprCache& exprCache) {
 	const std::string& name_param_orig = colHead.second;
 	std::string name_param = name_param_orig;
 
@@ -611,7 +661,7 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 	 * （后续行有真实数值，典型来自 mtmerge 相位前导）。不向该设备投递该参数
 	 * ——若整行都未起拍，runAction 会整体跳过它，而不是以 0.0 误发一次指令。
 	 * 整列 "-" 的无参设备不属于 phaseDevices，保持旧语义照常 play。 */
-	if (phaseDevices.count(name_dev) > 0 && actionDefs.inherited(i, j) == "-") { return; }
+	if (phaseDevices.count(resolvedDev) > 0 && actionDefs.inherited(i, j) == "-") { return; }
 
 	/* 单元格：$(...) 表达式按求值结果；否则走既有数值/继承解析。
 	 * inherited 已解析 "-" 继承（上一行是表达式时按上一行表达式再算一次）。 */
@@ -638,10 +688,10 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 
 	/* C-M3：getPtr 就地取子对象更新字段，消除逐拍 get 拷出 + put 写回的
 	 * 两次深拷贝（原 asObject() 引用临时副本会悬垂，只能整份拷贝写回） */
-	Json* set_params = set.getPtr(name_dev);
+	Json* set_params = set.getPtr(resolvedDev);
 	if (set_params == nullptr) {
-		set.put(name_dev, JsonObject());
-		set_params = set.getPtr(name_dev);
+		set.put(resolvedDev, JsonObject());
+		set_params = set.getPtr(resolvedDev);
 	}
 	set_params->put(name_param, JsonFloat(val_fp64));
 }

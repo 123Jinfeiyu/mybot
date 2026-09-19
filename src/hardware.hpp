@@ -92,10 +92,13 @@ public:
 
 /* ---- 标量文本硬件变量（@Alias / @Vars 共用）----
  * play/read 返回一个 JsonString，无资源可 build/destroy：
- *   @Alias 的值是目标参数名（@Action 列 dev.<name> 的参数位二次解析成真实参数名）；
- *   @Vars  的值是命名数值（仅支持 Number；同样可在 @Action 参数位替换，
- *          也可被结构脚本用 $<name> 引用）。
- * 框架据此两者做「参数名替换」：见 robot.cpp parseActionCell 的 MtVars_Text 判定。 */
+ *   @Alias 的值是名字绑定，两个位置消费：@Action **参数位**（dev.<name> 的
+ *     name 来自别名值）与**设备位**（列头 <alias>.<param> 经
+ *     resolveActionDevice 解析到别名值命名的驱动/守护，一层为止）；
+ *   @Vars  的值是命名数值（仅支持 Number；只在参数位替换，也可被结构脚本
+ *          用 $<name> 引用）——数值永远不能命名设备，设备位显式拒绝。
+ * 框架据此做「名字替换」：见 robot.cpp 的 parseActionCell（参数位）与
+ * resolveActionDevice（设备位）。 */
 class MtVars_Text : public MatrixVars_Hardware {
 protected:
 	std::string text_;

@@ -501,6 +501,18 @@ parse_cases=(
 	'include_demo.sql|fb.once.mt|0|test=200||I'
 	'include_demo.sql|include_scene.once.mt|0|test=220||I'
 	'include_demo.sql|include_diamond.mt|0|test=300'
+	# @Action 设备列别名解析（2026-09-19 设计评估）：设备位写 @Alias 解析穿透到
+	# 真名（一层为止）；不同别名指到同一设备由派发期解析名查重抓——归并期
+	# checkDisjoint 只见列头文本，这是第二层防线的落点
+	'dev_alias.sql|dev_alias_direct.mt|0|note=from-a|note=from-b'
+	'dev_alias.sql|dev_alias_ghost.mt|1|resolves via @Alias to'
+	'dev_alias.sql|dev_alias_chain.mt|1|is itself a scalar'
+	'dev_alias.sql|dev_alias_vars.mt|1|cannot name a device'
+	'dev_alias.sql|dev_alias_dup.mt|1|already targeted by column'
+	# 复用场景（主从覆盖 + 设备列解析组合）：片段缺省绑定 relay-a，主脚本
+	# 同名 @Alias 改绑 relay-b——模板一字不动，播放必须整体换到 relay-b
+	'dev_alias.sql|dev_alias_leg.once.mt|0|note=from-a|note=from-b'
+	'dev_alias.sql|dev_alias_rebind.mt|0|note=from-b|note=from-a|I'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5" via="${6:-}"

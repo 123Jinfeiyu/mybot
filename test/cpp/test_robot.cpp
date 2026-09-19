@@ -229,3 +229,104 @@ TH_TEST(hw_registry_session_override_shadows_but_keeps_destroy_order) {
 	TH_CHECK(reg.sequence().size() == 1);
 	TH_CHECK(reg.sequence()[0] == structureVar);
 }
+
+/* ---- @Action 设备列别名解析（2026-09-19 设计评估；解析单点白盒锚定）---- */
+
+/* 构造 @Alias 对象（一行 name/value 的别名矩阵，行 1 = 数据行） */
+static std::unique_ptr<bot::MtVars_Alias> aliasHw(const std::string& name,
+	const std::string& target) {
+	std::string text = "@Alias\nname  alias;\n   " + name + "  " + target + ";\n@\n";
+	return bot::MtVars_Alias::Factory(fx::oneMatrix(text), 1);
+}
+
+TH_TEST(action_device_alias_resolves_to_driver) {
+	bot::HwRegistry reg;
+	reg.add("dev1", dummyHw(), "");
+	reg.add("leg", aliasHw("leg", "dev1"), "");
+	/* 别名 → 目标名；非标量真名原样；未知名原样（派发期保留行号上下文报错） */
+	TH_CHECK(bot::ActionRunner::resolveActionDevice(reg, "leg") == "dev1");
+	TH_CHECK(bot::ActionRunner::resolveActionDevice(reg, "dev1") == "dev1");
+	TH_CHECK(bot::ActionRunner::resolveActionDevice(reg, "ghost") == "ghost");
+}
+
+TH_TEST(action_device_alias_to_missing_target_throws) {
+	bot::HwRegistry reg;
+	reg.add("leg", aliasHw("leg", "ghost"), "");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "resolves via @Alias to 'ghost'",
+		(void)bot::ActionRunner::resolveActionDevice(reg, "leg"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is not a defined hardware variable",
+		(void)bot::ActionRunner::resolveActionDevice(reg, "leg"));
+}
+
+TH_TEST(action_device_alias_to_another_alias_throws) {
+	/* 一层为止：别名指向别名在解析点即报错，不做链式穿透 */
+	bot::HwRegistry reg;
+	reg.add("leg2", aliasHw("leg2", "dev1"), "");
+	reg.add("leg", aliasHw("leg", "leg2"), "");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is itself a scalar",
+		(void)bot::ActionRunner::resolveActionDevice(reg, "leg"));
+}
+
+TH_TEST(action_device_vars_rejected) {
+	/* @Vars 是数值常量，永远不能命名设备——显式拒绝而非落到 not defined */
+	bot::HwRegistry reg;
+	reg.add("v", bot::MtVars_Vars::Factory(
+		fx::oneMatrix("@Vars\nname value;\n   v  35;\n@\n"), 1,
+		[](const std::string&) { return 0.0; }), "");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is a numeric constant and cannot name a device",
+		(void)bot::ActionRunner::resolveActionDevice(reg, "v"));
+}
+
+TH_TEST(action_dispatch_through_alias_device) {
+	/* 派发端到端（桩驱动）：设备列 leg（别名 → dev1）的参数落到 dev1 的一次 play */
+	bot::HwRegistry reg;
+	bot::Json played;
+	reg.add("dev1", std::make_unique<fx::LambdaHw>(
+		[&played](const bot::Json& in) {
+			played = in;
+			auto o = bot::JsonObject();
+			o.put("result", bot::JsonString("OK"));
+			return o;
+		}), "");
+	reg.add("leg", aliasHw("leg", "dev1"), "");
+	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
+		"@Action\nleg.test;\n  200;\n@\n");
+	bot::ActionRunner(reg).runAction(mats);
+	TH_CHECK(played.isObj());
+	TH_CHECK(played.get("test").has_value() && played.get("test")->getFloat() == 200.0);
+}
+
+TH_TEST(action_dispatch_allows_same_device_different_params) {
+	/* 同一设备两个参数列（别名列 + 真名列都解析到 dev1）合并为一次 play：
+	 * 查重键是 (设备, 参数)，同设备不同参数是合法的一拍多参 */
+	bot::HwRegistry reg;
+	bot::Json played;
+	int plays = 0;
+	reg.add("dev1", std::make_unique<fx::LambdaHw>(
+		[&played, &plays](const bot::Json& in) {
+			played = in;
+			++plays;
+			auto o = bot::JsonObject();
+			o.put("result", bot::JsonString("OK"));
+			return o;
+		}), "");
+	reg.add("leg", aliasHw("leg", "dev1"), "");
+	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
+		"@Action\nleg.test  dev1.note;\n  200      7;\n@\n");
+	bot::ActionRunner(reg).runAction(mats);
+	TH_CHECK(plays == 1);
+	TH_CHECK(played.get("test").has_value() && played.get("test")->getFloat() == 200.0);
+	TH_CHECK(played.get("note").has_value() && played.get("note")->getFloat() == 7.0);
+}
+
+TH_TEST(action_dispatch_rejects_duplicate_resolved_param) {
+	/* 撞设备第二层防线：不同列头（别名 + 真名）解析出同一 (设备, 参数)
+	 * ——归并期文本查重不可见，派发前必须显式报错，不得逐行静默覆盖 */
+	bot::HwRegistry reg;
+	reg.add("dev1", dummyHw(), "");
+	reg.add("leg", aliasHw("leg", "dev1"), "");
+	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
+		"@Action\nleg.test  dev1.test;\n  200      300;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "already targeted by column",
+		bot::ActionRunner(reg).runAction(mats));
+}

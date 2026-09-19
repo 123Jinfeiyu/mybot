@@ -191,10 +191,22 @@ class ActionRunner {
 	/* N-10：按名查矩阵与列头切分下沉 mt 层（findByName / splitActionColumn） */
 	void parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 			std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
-			const std::pair<std::string, std::string>& colHead, ColExprCache& exprCache);
+			const std::pair<std::string, std::string>& colHead,
+			const std::string& resolvedDev, ColExprCache& exprCache);
 
 public:
 	explicit ActionRunner(HwRegistry& registry) : registry_(registry) {}
+
+	/* ---- @Action 设备列解析单点（公开静态：白盒单测直接锚定）----
+	 * 设备位允许写 @Alias（2026-09-19 设计评估）：解析穿透——别名不是播放
+	 * 目标而是名字绑定，read() 出目标名后必须命中**非标量**硬件变量
+	 * （驱动/守护），一层为止（别名指向别名报错）。未知名字原样返回：派发期
+	 * 按既有「not defined (row N)」报错，保留行号上下文。@Vars 是数值常量，
+	 * 永远不可能合法命名设备，显式拒绝而非落到 not defined。
+	 * 撞设备两层防线：归并期 checkDisjoint 按列头文本（同名在两个输入里都
+	 * 出现），不同别名指到同一设备只有派发期可见——runAction 在解析后按
+	 * (设备, 参数) 查重，是第二层的落点。 */
+	static std::string resolveActionDevice(const HwLookup& registry, const std::string& dev);
 
 	/* @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error） */
 	void runAction(std::vector<mt::MatrixObject>& actionMatrices);
