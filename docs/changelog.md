@@ -37,6 +37,7 @@
 - **沙箱与加载防线**：`call_lua` 拒绝含 NUL 的键/值（堵 reserved-key 截断绕过）；dofile/loadfile 白名单按分量精确匹配、容忍尾斜杠；未知/拼错 `--key` 报错退出 2（不再打印帮助假成功）；MS5611 非法 `osr` build 期显式 ERR 且先于总线动作
 - **浮点窄化值域防线**（2026-09-19 评估 P1-1/P1-5）：`agenttools.optionalInt`（模型可控的 `timeout_seconds`）与 `llmconfig.wantInt`（配置文件数值）在做 `static_cast<int>`/`static_cast<long long>` 之前先判有限性与值域——`1e30`/`1e300` 这类值直接转换是 float-cast-overflow UB（UBSan 实证），现一律在转换前响亮拒绝（与 `luabridge.cpp` 的 int64 键/值路径同一族判据）
 - **工具脚本路径沙箱硬化：拒绝符号链接**（2026-09-19 审计中危 #5）：`readFileLimited` 改用 `open(O_RDONLY|O_NOFOLLOW|O_CLOEXEC)` + read 循环（不做 lstat 后再 open 的 check-then-use），`scripts/` 里的软链不再能把目录外文件当动作脚本执行；`describeActionScripts` 修两处——软链条目一律不收（原先 `fs::relative` 内部会 weakly_canonical，把软链解析成带 `..` 的越界路径，**目录外文件的首注释会经清单回显进模型上下文**）、相对路径改 `lexically_relative` 纯词法求（尾斜杠不影响前缀匹配）。守门 `agenttools_run_action_script_rejects_symlink`（正常脚本不受影响 / 软链被拒且不泄露内容 / 清单不列软链 / 尾斜杠目录照常列出）
+- **API key 对 agent 的 shell 可见性告警**（2026-09-19）：环境变量清洗只覆盖「环境变量」这一来源——`run_command` 的子进程与宿主**同属一个用户**，密钥若来自配置文件 `api_key`、密钥文件 `api_key_file` 或 `--llm-key`，脚本一句 `cat` / 读 `/proc/<pid>/cmdline` 就能拿走（`chmod 600` 这类权限位对同用户无效，此前文档把「配置文件」当作规避 `/proc` 暴露的手段，属误导）。`AgentModeConfig` 新增 `apiKeySource` 记录来源，`shellKeyExposureWarning` 在 `run_command` 启用且命中上述来源时启动告警，并给出规避路径（改用环境变量，或 `--agent-no-shell`）；提示只讲来源、**绝不复述密钥本身**；默认行为不变（`run_command` 仍默认开启）。守门 `agentconfig_key_source_is_recorded_and_flagged`（四种来源分别核对）与 `agentconfig_shell_key_warning_is_silent_when_shell_disabled`
 
 ### 驱动与总线
 

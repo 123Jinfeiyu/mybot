@@ -297,6 +297,10 @@ int main(int argc, char** argv) {
 			if (!agentCfg.configWarning.empty()) {
 				std::cerr << agentCfg.configWarning << std::endl;
 			}
+			/* 密钥来源对 agent 的 shell 可见（命令行/配置文件/密钥文件）且
+			 * run_command 启用时如实告警：同用户子进程没有权限壁垒。 */
+			std::string keyWarn = agent::shellKeyExposureWarning(agentCfg);
+			if (!keyWarn.empty()) { std::cerr << keyWarn << std::endl; }
 		}
 
 		/* 友好报错：结构脚本打不开 → 人话提示，不裸栈回溯 */

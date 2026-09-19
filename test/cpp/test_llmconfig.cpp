@@ -412,6 +412,76 @@ TH_TEST(agentconfig_key_from_file_api_key_file) {
 	TH_CHECK(out.configWarning.find("chmod 600") != std::string::npos);
 }
 
+/* ================= shellKeyExposureWarning：密钥对 agent 的 shell 是否可见 =================
+ * run_command 的子进程与宿主同用户，只有「环境变量」这一来源是安全的
+ * （buildCleanEnvp 会剔除含 key/token 等关键词的变量）；文件与命令行都能被直接读走。 */
+
+TH_TEST(agentconfig_key_source_is_recorded_and_flagged) {
+	NoKeyEnv nokey;
+	TempDir tmp("keysrc");
+
+	/* 环境变量来源 → 不告警 */
+	{
+		EnvVar envKey{"BOT4CJ_LLM_KEY", "env-secret-value"};
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(baseOptions("none"), out, err));
+		TH_CHECK(out.apiKeySource == ApiKeySource::Env);
+		TH_CHECK(shellKeyExposureWarning(out).empty());
+	}
+	/* 配置文件内联 api_key → 告警（文件可读） */
+	{
+		fs::path cfg = tmp.path() / "inline.json";
+		writeFile(cfg, R"({"api_key":"inline-secret-value"})", fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK(out.apiKeySource == ApiKeySource::ConfigInline);
+		std::string w = shellKeyExposureWarning(out);
+		TH_CHECK(w.find("api_key") != std::string::npos);
+		/* 告警只讲来源，绝不复述密钥本身 */
+		TH_CHECK(w.find("inline-secret-value") == std::string::npos);
+	}
+	/* 命令行 --llm-key → 告警（经 /proc/<pid>/cmdline 可读） */
+	{
+		CliOptions o = baseOptions("none");
+		o.llmKey = "cli-secret-value";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(o, out, err));
+		TH_CHECK(out.apiKeySource == ApiKeySource::Cli);
+		std::string w = shellKeyExposureWarning(out);
+		TH_CHECK(w.find("/proc") != std::string::npos);
+		TH_CHECK(w.find("cli-secret-value") == std::string::npos);
+	}
+	/* 密钥文件 → 告警（该文件可读） */
+	{
+		fs::path key = tmp.path() / "k.key";
+		writeFile(key, "file-secret-value\n", fs::perms::owner_all);
+		fs::path cfg = tmp.path() / "keyfile.json";
+		writeFile(cfg, std::string("{\"api_key_file\":\"") + key.string() + "\"}",
+			fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK(out.apiKeySource == ApiKeySource::ConfigFile);
+		TH_CHECK(!shellKeyExposureWarning(out).empty());
+	}
+}
+
+TH_TEST(agentconfig_shell_key_warning_is_silent_when_shell_disabled) {
+	NoKeyEnv nokey;
+	CliOptions o = baseOptions("none");
+	o.llmKey = "cli-secret-value";
+	o.agentNoShell = true;		/* --agent-no-shell：没有 run_command，也就没有该风险 */
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(buildAgentConfig(o, out, err));
+	TH_CHECK(!out.allowShell);
+	TH_CHECK(shellKeyExposureWarning(out).empty());
+}
+
 TH_TEST(agentconfig_requires_key_from_somewhere) {
 	NoKeyEnv nokey;
 	TempDir tmp("nokey");

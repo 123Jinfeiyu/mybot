@@ -135,14 +135,22 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 
 	/* ---- 4) API key：命令行 > 环境变量链 > 配置文件 api_key > 配置文件 api_key_file ---- */
 	out.resolvedApiKey = resolveLlmKeyFromEnv();
-	if (!opts.llmKey.empty()) { out.resolvedApiKey = opts.llmKey; }
-	if (out.resolvedApiKey.empty() && file.apiKey) { out.resolvedApiKey = *file.apiKey; }
+	if (!out.resolvedApiKey.empty()) { out.apiKeySource = ApiKeySource::Env; }
+	if (!opts.llmKey.empty()) {
+		out.resolvedApiKey = opts.llmKey;
+		out.apiKeySource = ApiKeySource::Cli;
+	}
+	if (out.resolvedApiKey.empty() && file.apiKey) {
+		out.resolvedApiKey = *file.apiKey;
+		out.apiKeySource = ApiKeySource::ConfigInline;
+	}
 	if (out.resolvedApiKey.empty() && file.apiKeyFile) {
 		std::string keyErr;
 		if (!readApiKeyFile(*file.apiKeyFile, out.resolvedApiKey, keyErr)) {
 			err = "读取配置文件的 api_key_file 失败: " + keyErr;
 			return false;
 		}
+		out.apiKeySource = ApiKeySource::ConfigFile;
 		out.configWarning = secretFilePermissionWarning(*file.apiKeyFile);
 	}
 	if (out.resolvedApiKey.empty()) {
@@ -202,6 +210,31 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
 	return true;
+}
+
+std::string shellKeyExposureWarning(const AgentModeConfig& cfg) {
+	if (!cfg.allowShell) { return ""; }
+	const char* how = nullptr;
+	switch (cfg.apiKeySource) {
+	case ApiKeySource::Cli:
+		how = "--llm-key 命令行参数（同用户进程可从 /proc/<pid>/cmdline 读到）";
+		break;
+	case ApiKeySource::ConfigInline:
+		how = "配置文件的 api_key 字段（配置文件本身可读）";
+		break;
+	case ApiKeySource::ConfigFile:
+		how = "配置文件 api_key_file 指向的密钥文件（该文件可读）";
+		break;
+	case ApiKeySource::Env:		/* 会被 run_command 的环境清洗剔除 */
+	case ApiKeySource::None:
+		return "";
+	}
+	return std::string("警告: run_command 已启用，而 API key 来自 ") + how
+		+ "。run_command 的子进程与宿主同属一个用户，可直接读出该密钥"
+		"（chmod 600 这类文件权限位对此无效）。"
+		"如需避免：改用环境变量 BOT4CJ_LLM_KEY 提供密钥"
+		"（该变量名含 key，会被 run_command 的环境清洗剔除），"
+		"或用 --agent-no-shell 关闭 run_command。";
 }
 
 std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot) {

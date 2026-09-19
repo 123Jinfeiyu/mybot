@@ -275,12 +275,17 @@ OpenAI 协议的 **tool 消息只允许文本**，所以图片不能塞进工具
    不需要 shell 能力时加 `--agent-no-shell`。
 2. **子进程环境已清洗**：名称含 `key` / `token` / `secret` / `password` / `passwd` / `credential` 的变量不会传给子进程——
    这天然覆盖 `BOT4CJ_LLM_KEY`，模型无法用 `run_command` 读走自己的 API key。
+   **但这条只覆盖「环境变量」这一来源**：`run_command` 的子进程与宿主同属一个用户，
+   密钥若来自配置文件（`api_key` 字段）、密钥文件（`api_key_file`）或 `--llm-key`，
+   子进程可以直接 `cat` 出来 / 从 `/proc/<pid>/cmdline` 读到，`chmod 600` 这类权限位对同用户无效。
+   `run_command` 启用时命中这几种来源会在启动时打印告警。
 3. **API key 不进驱动参数表、不进调试转储**：密钥可由配置文件、`--llm-key` 或环境变量提供，
    但宿主只会把它注入本进程环境变量 `BOT4CJ_LLM_KEY`（真正读它的是 Lua 驱动）——
    驱动的参数表与 `BOT4CJ_DEBUG` 的参数转储里都不会出现它。
    环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`（配置文件里也能写 `api_key`/`api_key_file`）。
-   落盘的密钥请 `chmod 600`：启动时对「同组/其他用户可读」会打印提醒；仓库 `.gitignore` 已挡住 `mybot.llm.json` 一类文件名。
-   另外 `--llm-key` 会出现在 `/proc/<pid>/cmdline`（本机所有用户可读），能用配置文件或环境变量就别用它。
+   **想同时挡住「其他本机用户」与「agent 自己的 shell」，只有环境变量这一条路**（它在子进程里被清洗掉）；
+   落盘的密钥请 `chmod 600`，启动时对「同组/其他用户可读」会打印提醒，仓库 `.gitignore` 已挡住 `mybot.llm.json` 一类文件名。
+   另外 `--llm-key` 会出现在 `/proc/<pid>/cmdline`（本机所有用户可读），能用环境变量就别用它。
 4. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
    不是对抗恶意模型的边界——真正的边界仍然是「模型输出即不可信输入」这条工程常识。
 5. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。

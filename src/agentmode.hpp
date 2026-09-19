@@ -21,6 +21,17 @@ class RobotStruct;
 
 namespace agent {
 
+/* API key 的来源。用于「密钥是否对 agent 自己的 shell 可见」的启动告警：
+ * run_command 的子进程与宿主同属一个用户，文件权限位不构成防线，能读到的
+ * 来源只有环境变量是安全的（buildCleanEnvp 会把含 key/token 等关键词的变量剔除）。 */
+enum class ApiKeySource {
+	None,		/* 尚未解析出（buildAgentConfig 此时会直接失败，仅作初值） */
+	Env,		/* 环境变量链——会被 run_command 的环境清洗剔除，安全 */
+	Cli,		/* --llm-key——经 /proc/<pid>/cmdline 对所有同用户进程可读 */
+	ConfigInline,	/* 配置文件 api_key 字段——配置文件本身可读 */
+	ConfigFile,	/* 配置文件 api_key_file 指向的密钥文件——该文件可读 */
+};
+
 struct AgentModeConfig {
 	/* 协议驱动：表名即 modules/<表名>.lua；llmVar 是承载它的变量名。
 	 * 结构脚本声明了就优先用；没声明则宿主按这两个名字自动注入。 */
@@ -53,11 +64,18 @@ struct AgentModeConfig {
 	/* 最终解析出的 API key。**只**用于注入进程环境变量，绝不进驱动的参数表
 	 * （否则 BOT4CJ_DEBUG 的参数转储会把密钥打进日志）。 */
 	std::string resolvedApiKey;
+	/* 密钥来源，用于 shellKeyExposureWarning 判定「是否对 agent 的 shell 可见」 */
+	ApiKeySource apiKeySource = ApiKeySource::None;
 	/* 实际使用的配置文件路径（空 = 没用配置文件），用于在会话开始时如实告知 */
 	std::string configPath;
 	/* 配置文件相关的告警（如密钥文件权限过松），空表示无 */
 	std::string configWarning;
 };
+
+/* run_command 启用（cfg.allowShell）且 API key 来自「agent 的 shell 也能读到」
+ * 的来源（命令行 / 配置文件 / 密钥文件）时，返回启动告警文本；密钥来自环境变量
+ * 或 shell 未启用时返回空串。由调用方打印到 stderr。 */
+std::string shellKeyExposureWarning(const AgentModeConfig& cfg);
 
 /* API key 只从环境变量取（BOT4CJ_LLM_KEY → ROBOT_AGENT_API_KEY → DEEPSEEK_API_KEY）：
  * 宿主不把密钥写进驱动的参数表——否则 BOT4CJ_DEBUG 的参数转储会把密钥打进日志。
