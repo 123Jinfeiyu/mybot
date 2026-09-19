@@ -58,10 +58,11 @@ TH_TEST(limited_reader_eof_does_not_consume_quota) {
 	for (int k = 0; k < 100; ++k) { TH_CHECK(lim.read() == -1); }
 }
 
-TH_TEST(action_script_too_large_is_a_matrix_parse_error) {
-	/* 派生关系是「保留原文报错」的前提：调用方按 MatrixParseExcept 处理即可 */
+TH_TEST(action_script_too_large_is_a_domain_error) {
+	/* 2.5：单一根异常——ScriptTooLarge 直接继承 bot::IllegalArgumentException，
+	 * I/O 层（actionsource）不再倒挂依赖解析层（matrix.hpp） */
 	bot::ScriptTooLarge e(8);
-	const mt::MatrixParseExcept& base = e;
+	const bot::IllegalArgumentException& base = e;
 	TH_CHECK(std::string(base.what()).find("exceeds the byte limit of 8") != std::string::npos);
 	const std::exception& std_e = base;
 	TH_CHECK(std::string(std_e.what()) == std::string(e.what()));
@@ -74,7 +75,7 @@ TH_TEST(too_large_survives_matrix_parser_without_downgrade) {
 	std::unique_ptr<bot::Reader> inner(new bot::MemoryReader(script));
 	bot::LimitedReader lim(std::move(inner), 20);
 	mt::MatrixParser parser(lim);
-	TH_CHECK_THROWS_MSG(mt::MatrixParseExcept, "exceeds the byte limit of 20", parser.parse());
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "exceeds the byte limit of 20", parser.parse());
 }
 
 TH_TEST(open_action_source_rejects_missing_input_file) {

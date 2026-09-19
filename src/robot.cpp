@@ -336,7 +336,7 @@ void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& ou
 			break;
 		}
 		case sql4cj::EventType::INSERT_TABLE: {
-			if (out.empty()) { throw std::runtime_error("No table created yet."); }
+			if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
 			/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
 			 * （对照 robots/test/insert_typo.sql 的负值契约；N-10：查找
 			 * 收敛到 mt::findByName 单点） */

@@ -14,7 +14,6 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-#include "matrix.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -65,14 +64,15 @@ struct CliOptions {
 inline constexpr std::size_t kMaxScriptBytes = 8u << 20;
 
 /* 脚本字节数超限。kind 指明输入类别（"action script" / "structure script"）。
- * 归入 MatrixParseExcept 家族：MatrixParser::parse() 对该族是原样 rethrow
- * （读取点 input_.read() 本就在其 try 之外，两种路径都不会把报错降级成
- * 无信息的 "Parse failed at line N"），调用方按脚本解析期错误统一处理即可
- * 拿到原文。 */
-class ScriptTooLarge : public mt::MatrixParseExcept {
+ * 重构计划 2.5：直接继承单一根异常 bot::IllegalArgumentException——此前
+ * 挂 mt::MatrixParseExcept 让纯 I/O 层倒挂依赖解析层。原文保留性质不变：
+ * 抛出点（整段读取 / LimitedReader::read）都在 MatrixParser::parse() 的
+ * try 之外，不经其「带行号包装」路径；即便未来 read() 移进 try，IAE 分支
+ * 也是包装保留原文而非降级。 */
+class ScriptTooLarge : public bot::IllegalArgumentException {
 public:
 	explicit ScriptTooLarge(std::size_t cap, const std::string& kind = "action script")
-		: MatrixParseExcept(kind + " exceeds the byte limit of " + std::to_string(cap)
+		: IllegalArgumentException(kind + " exceeds the byte limit of " + std::to_string(cap)
 			+ ". Real bot4cj scripts are KB-sized; a larger input almost certainly means a runaway"
 			+ " or malicious producer (the whole script is buffered before playback).") {}
 };

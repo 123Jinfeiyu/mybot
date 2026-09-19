@@ -13,9 +13,13 @@
 
 namespace mt {
 
-class MatrixParseExcept : public std::runtime_error {
+/* 重构计划 2.5：单一根异常——解析家族并入 bot::IllegalArgumentException。
+ * 此前上层要「域错误全捕」必须双 catch（本族 + IAE）；归一后 catch(IAE)
+ * 一处即可。matrix.cpp 的两段 catch 语义不变：本族原样上抛（自带行号）、
+ * 其余 IAE 带行号包装——派生在前、基类在后，次序即语义。 */
+class MatrixParseExcept : public bot::IllegalArgumentException {
 public:
-	explicit MatrixParseExcept(const std::string& m) : std::runtime_error(m) {}
+	explicit MatrixParseExcept(const std::string& m) : bot::IllegalArgumentException(m) {}
 };
 
 class DoesNotSync : public MatrixParseExcept {
