@@ -24,8 +24,8 @@ std::string luaErrorString(lua_State* L);
 /* 探测全局变量类型（getglobal + type + pop，栈深不变） */
 int luaGlobalType(lua_State* L, const char* name);
 
-/* 收紧 Lua 沙箱：中和 os.execute/exit/remove/rename、io.popen/open/lines/input/output，
- * dofile/loadfile 白名单化到模块路径内。
+/* 收紧 Lua 沙箱：中和 os.execute/exit/remove/rename/tmpname、
+ * io.popen/open/lines/input/output，dofile/loadfile 白名单化到模块路径内。
  *
  * **已声明的沙箱残余**（有意取舍而非遗漏，收紧它们会破坏驱动生态）：
  *   1. `load`/`loadstring` 未包裹——字符串源码不受路径白名单约束，模块树内

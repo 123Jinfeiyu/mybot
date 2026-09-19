@@ -43,7 +43,7 @@ UART 的易踩坑约束：
 
 ## 驱动沙箱
 
-加载驱动**前**先中和 `os.execute`/`io.popen`（shell）、`os.exit`、`io.open`/`io.lines`/`io.input`/`io.output`/`os.remove`/`os.rename`（任意文件读写）——`luavar.cpp` 先调 `sandbox_lua` 再 `luaL_loadfile`。这是**防误用护栏，不是安全边界**——驱动可经 `require("ffi")` 直调任意 libc，脚本均为可信输入；接入 `--tcp` 外部数据源时需另行建立信任边界。
+加载驱动**前**先中和 `os.execute`/`io.popen`（shell）、`os.exit`、`io.open`/`io.lines`/`io.input`/`io.output`/`os.remove`/`os.rename`（任意文件读写）、`os.tmpname`（可预测临时路径，符号链接竞争面；全仓驱动无一使用）——`luavar.cpp` 先调 `sandbox_lua` 再 `luaL_loadfile`。这是**防误用护栏，不是安全边界**——驱动可经 `require("ffi")` 直调任意 libc，脚本均为可信输入；接入 `--tcp` 外部数据源时需另行建立信任边界。
 
 **信任边界（S1）**：`ffi.C` 即整个 libc——`ffi.C.system("...")`、`ffi.C.open(path, 0)` 一行即可绕过上述全部中和，`ffi.cast` 更可任意地址读写。因此**驱动脚本必须视为完全信任的代码**，沙箱仅防误写。当前威胁模型下成立：驱动/chunk 文件名只取自本地 `.sql`/`.mt` 表名，远程 TCP 下发的动作数据无法注入 Lua 加载路径；但若 `BOT4CJ_MODULE_PATH` 指向不可信目录、或未来新增远程选择驱动文件的入口，本护栏即失效（引入时须先补回归测试钉死）。另注：白名单前缀匹配不解析 symlink。
 

@@ -73,7 +73,9 @@ static int restrictedLoader(lua_State* L) {
  * 中和可直接破坏宿主的入口：os.execute/exit/remove/rename、io 五件套，
  * 并把全局 dofile/loadfile 限制到模块路径白名单内（驱动经 mpath.resolve
  * 加载 lib 目录下脚本的既有用法不变，'..' 穿越与绝对路径外读被拒绝）。
- * 各全局缺表时跳过对应组。 */
+ * os.tmpname 一并中和：返回可预测路径的临时文件，是多用户主机上符号链接
+ * 竞争的经典面，而全仓驱动与守护 chunk 无一使用它（仅独立 luajit 测试
+ * test_camera.lua 在沙箱外用）。各全局缺表时跳过对应组。 */
 /* M3：dofile/loadfile 白名单表。白名单来自 BOT4CJ_MODULE_PATH（':' 分段，
  * 去空），缺省 "./modules"——与 modules/lib/mpath.lua 的 paths() 同语义。
  * 白名单为空不可能（缺省值兜底），仍防御：空表时 restrictedLoader 全拒。 */
@@ -102,7 +104,7 @@ static void wrapLoader(lua_State* L, const char* name) {
 void sandbox_lua(lua_State* L) {
 	struct Group { const char* tab; const char* keys[5]; int n; };
 	static const Group groups[] = {
-		{"os", {"execute", "exit", "remove", "rename", nullptr}, 4},
+		{"os", {"execute", "exit", "remove", "rename", "tmpname"}, 5},
 		{"io", {"popen", "open", "lines", "input", "output"}, 5},
 	};
 	for (const auto& g : groups) {

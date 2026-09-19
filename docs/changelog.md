@@ -34,6 +34,7 @@
 
 ### 执行引擎与安全
 
+- **沙箱中和 `os.tmpname`（2026-09-19 外部评估）**：返回可预测路径的临时文件是多用户主机上符号链接竞争的经典面，而全仓驱动与守护 chunk 无一使用它（仅独立 luajit 测试 test_camera.lua 在沙箱外用）——并入 os 组中和；单测 `sandbox_neutralizes_os_tmpname` 钉住（含「getenv/time 不受波及」两条），`luaend.hpp` 头注与 hal.md 中和清单同步。C++ 单测 307 → 308
 - **守护错误退避可被 stop 打断**：C-L2 退避上限 ×256（interval 上限 1h → 单次退避睡眠可达数天），一次性 `sleep_for` 会吞掉停止请求——stop 落在一次超过 join 超时（保底 2000ms）的深睡中段时必然走弃管路径，`requestStop`/`waitForExit` 的停止语义被架空（弃管兜底仍在，但「join 等它退出」失效）。退避睡眠改为 100ms 分段逐片睡、每片醒来查 `daemon_stop_requested`：退避总时长不变，stop 响应延迟收敛到单片时长。回归测试按窗口推演构造（在第 8 错的 2560ms 深睡中段请求 stop：旧行为必弃管、新行为 ≈30 倍余量内 join），并双向验证（临时禁用 stop 检查 → 测试 FAIL）。单测总数 263 → 267
 - **沙箱残余缺口如实声明**：`luaend.hpp` 的 `sandbox_lua` 注释列明三项有意取舍——`load`/`loadstring` 未包裹（字符串源码不受路径白名单约束）、`luaL_loadfile` 接受 LuaJIT 预编译字节码（白名单只限路径，不区分源码/字节码，字节码加载器是经典 LuaJIT 攻击面）、`ffi` 本身即完整逃逸通道——依据 docs/reference.md 的威胁模型（modules/ 下 .lua 信任级等同 mybot 用户，沙箱防误用与路径穿越、不对抗恶意驱动代码），此前头文件未把前两项列为已声明残余
 - **异常体系与文案惯例收口**：`agentdriver` 两处 `std::invalid_argument`（`logic_error` 谱系）归口 `IllegalArgumentException`（`runtime_error` 谱系，util.hpp 单一根），与「统一按 IAE 收口」纪律一致；`docs/development.md` 声明报错文案分语言惯例（结构脚本装配/解析期英文面向脚本作者，agent 与运行期中文面向操作者），并要求不新增散装异常类型

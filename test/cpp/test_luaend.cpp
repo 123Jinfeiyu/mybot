@@ -373,6 +373,15 @@ TH_TEST(sandbox_loadfile_same_rule) {
 	TH_CHECK(!s.run("assert(loadfile('/etc/passwd'))").empty());
 }
 
+/* os.tmpname 被中和（可预测临时文件名是多用户主机上的符号链接竞争面，
+ * 全仓驱动/守护 chunk 无一使用；与 os.execute 同组处理） */
+TH_TEST(sandbox_neutralizes_os_tmpname) {
+	SandboxState s;
+	TH_CHECK(s.run("assert(os.tmpname == nil, 'os.tmpname must be neutralized')").empty());
+	/* 中和不波及 os 表其余成员：getenv/time 是驱动合法依赖 */
+	TH_CHECK(s.run("assert(type(os.getenv) == 'function' and type(os.time) == 'function')").empty());
+}
+
 /* 被拒后状态机仍可用（错误走 lua_error，不污染后续调用） */
 TH_TEST(sandbox_rejection_leaves_state_usable) {
 	SandboxState s;
