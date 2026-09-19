@@ -82,6 +82,13 @@ void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) co
  * echo=false（playQuiet）时抑制顶层结果回显：agent 模式把驱动当模型传输用，
  * stdout 必须只留最终回答。其余语义（ERR 契约、controller 转发、元数据合并）不变。 */
 Json MtVars_Lua::callImpl(const Json& json, bool echo) {
+	/* 防御：状态机已释放（未 build 即派发，或异常路径先销毁后被引用）时清晰报错，
+	 * 而非拿空指针进 LuaJIT 裸崩。readImpl/freeImpl 早有同款守卫，call 此前独缺
+	 * ——destroy 之后的晚到派发会直接段错误（防御强度不对称）。 */
+	if (L_ == nullptr) {
+		throw IllegalArgumentException("call on '" + luapath_
+			+ "': Lua state not built or already released (variable destroyed before being called)");
+	}
 	bool top = (MtVars_Lua::topDepth == 0);
 	++MtVars_Lua::topDepth;
 	struct DepthGuard { ~DepthGuard() { --MtVars_Lua::topDepth; } } guard;

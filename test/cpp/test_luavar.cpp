@@ -115,3 +115,15 @@ TH_TEST(read_after_destroy_reports_instead_of_crashing) {
 	/* 二次销毁同样安全（幂等，不重复 lua_close） */
 	v->destroy();
 }
+
+TH_TEST(play_after_destroy_reports_instead_of_crashing) {
+	/* 与 read 同款防御：callImpl（play/playQuiet）此前缺 L_ 空守卫——destroy
+	 * 之后的晚到派发会把空指针送进 LuaJIT（裸崩），而 read 路径却报得清清楚楚。 */
+	auto v = makeVar();
+	v->destroy();
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Lua state not built",
+		v->play(params({"test"})));
+	/* playQuiet 走同一入口，同样受守卫保护 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Lua state not built",
+		v->playQuiet(params({"test"})));
+}
