@@ -86,6 +86,11 @@ TH_TEST(agenttools_script_catalog) {
 
 	TH_CHECK(describeActionScripts((tmp.path() / "missing").string()).find("不存在")
 		!= std::string::npos);
+
+	/* 尾斜杠的 scriptsDir 同样要能列出（相对路径按纯词法求，前缀匹配不受尾斜杠影响） */
+	std::string slash = describeActionScripts(tmp.path().string() + "/");
+	TH_CHECK(slash.find("std.mt") != std::string::npos);
+	TH_CHECK(slash.find("站立动作") != std::string::npos);
 }
 
 TH_TEST(agenttools_script_path_guard) {
@@ -132,6 +137,43 @@ TH_TEST(agenttools_run_action_script_on_resident_robot) {
 
 	std::string noArg = execText(tools, "run_action_script", parseJson("{}"));
 	TH_CHECK(noArg.find("失败") != std::string::npos);
+
+	robot->deactivate();
+}
+
+TH_TEST(agenttools_run_action_script_rejects_symlink) {
+	/* 中危 #5：scripts/ 里的软链曾被 std::ifstream 跟随——能写 scripts/ 的本地
+	 * 进程放一条软链，就能让目录外的任意文件被当动作脚本执行，且其首行注释还会
+	 * 经 list_action_scripts 回显进模型上下文。现在 open(O_NOFOLLOW) 一律拒绝。 */
+	auto robot = makeRelayRobot();
+	TempDir scripts("symlink");
+	TempDir outside("symlink-target");
+	writeFile(scripts.path() / "real.mt", "# 正常脚本\n@Action\nrelay0.test;\n      200;\n@\n");
+	writeFile(outside.path() / "secret.mt", "# 目录外机密\n@Action\nrelay0.test;\n      200;\n@\n");
+	fs::path link = scripts.path() / "link.mt";
+	TH_CHECK(::symlink((outside.path() / "secret.mt").c_str(), link.c_str()) == 0);
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = scripts.path().string();
+	ctx.structurePath = "robots/relay-test.sql";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 正常脚本不受影响 */
+	std::string ok = execText(tools, "run_action_script", parseJson("{\"script\":\"real.mt\"}"));
+	TH_CHECK(ok.find("已执行") != std::string::npos);
+
+	/* 软链被拒，且不泄露目标内容 */
+	std::string bad = execText(tools, "run_action_script", parseJson("{\"script\":\"link.mt\"}"));
+	TH_CHECK(bad.find("失败") != std::string::npos);
+	TH_CHECK(bad.find("符号链接") != std::string::npos);
+	TH_CHECK(bad.find("机密") == std::string::npos);
+
+	/* 清单根本不列软链：既不给越界文件留入口，也不回显其首注释 */
+	std::string list = execText(tools, "list_action_scripts", parseJson("{}"));
+	TH_CHECK(list.find("link.mt") == std::string::npos);
+	TH_CHECK(list.find("目录外机密") == std::string::npos);
+	TH_CHECK(list.find("正常脚本") != std::string::npos);
 
 	robot->deactivate();
 }

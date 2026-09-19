@@ -9,7 +9,6 @@
 #include <csignal>
 #include <fcntl.h>
 #include <filesystem>
-#include <fstream>
 #include <limits>
 #include <memory>
 #include <poll.h>
@@ -81,15 +80,35 @@ int optionalInt(const Json& args, const std::string& key, int fallback) {
 
 /* ---- 文件读取（带上限，拒绝而非截断）---- */
 
+/* 中危 #5 防线（2026-09-19 审计）：打开必须带 O_NOFOLLOW，拒绝符号链接。
+ * 路径的词法校验（resolveActionScriptPath）只保证「请求的名字」在 scripts 目录
+ * 之下，而 open/ifstream 会跟随软链——能写 scripts/ 的本地进程预置一条软链，
+ * 就能让任意文件被当动作脚本执行，且其首行注释还会经 list_action_scripts 回显
+ * 进模型上下文。这里用 open + O_NOFOLLOW 一步到底（不做 lstat 后再 open 的
+ * check-then-use，那中间有 TOCTOU 窗口）。
+ * 残余：O_NOFOLLOW 只看最后一段，路径中间的目录若是软链仍会被穿过——不过能写
+ * scripts/ 的进程本就能直接放真脚本，这不构成增量能力；要彻底收紧得改 openat
+ * 逐段打开，收益不抵复杂度。 */
 std::string readFileLimited(const std::string& path, std::size_t cap) {
-	std::ifstream f(path, std::ios::binary);
-	if (!f) { throw IllegalArgumentException("无法打开文件 " + path); }
+	int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0) {
+		if (errno == ELOOP) { throw IllegalArgumentException("拒绝符号链接: " + path); }
+		throw IllegalArgumentException("无法打开文件 " + path);
+	}
 	std::string data;
-	data.resize(cap + 1);
-	f.read(&data[0], static_cast<std::streamsize>(cap + 1));
-	std::streamsize n = f.gcount();
-	if (n < 0) { n = 0; }
-	data.resize(static_cast<std::size_t>(n));
+	std::array<char, 8192> buf;
+	for (;;) {
+		ssize_t n = ::read(fd, buf.data(), buf.size());
+		if (n < 0) {
+			if (errno == EINTR) { continue; }
+			::close(fd);
+			throw IllegalArgumentException("读取文件失败: " + path);
+		}
+		if (n == 0) { break; }
+		data.append(buf.data(), static_cast<std::size_t>(n));
+		if (data.size() > cap) { break; }	/* 超限即停，别再往下读 */
+	}
+	::close(fd);
 	if (data.size() > cap) {
 		throw IllegalArgumentException("文件超过 " + std::to_string(cap) + " 字节上限: " + path);
 	}
@@ -368,10 +387,14 @@ std::string describeActionScripts(const std::string& scriptsDir) {
 		     fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied)) {
 			std::error_code tec;
 			if (!e.is_regular_file(tec)) { continue; }
+			/* 软链一律不收（中危 #5）：脚本目录里放一条软链，就能把目录外的
+			 * 任意文件拉进来当脚本执行，并让它的首注释经本清单回显给模型。 */
+			if (e.is_symlink(tec)) { continue; }
 			if (e.path().extension() != ".mt") { continue; }
-			std::error_code rec;
-			fs::path rel = fs::relative(e.path(), root, rec);
-			if (rec) { continue; }
+			/* 纯词法求相对路径：fs::relative 内部会 weakly_canonical（跟随
+			 * 软链），对软链目录项会算出带 `..` 的越界路径。 */
+			fs::path rel = e.path().lexically_relative(root);
+			if (rel.empty() || *rel.begin() == "..") { continue; }
 			rels.push_back(rel.generic_string());
 		}
 	} catch (const fs::filesystem_error&) {

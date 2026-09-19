@@ -36,6 +36,7 @@
 - **动作派发热路径优化**：`@Action` 列头只解析一次、`$(...)` 表达式 AST 按列缓存、`Json::getPtr` 就地更新子字段（消除逐拍派发的双深拷贝）、`findMt` 改返回指针
 - **沙箱与加载防线**：`call_lua` 拒绝含 NUL 的键/值（堵 reserved-key 截断绕过）；dofile/loadfile 白名单按分量精确匹配、容忍尾斜杠；未知/拼错 `--key` 报错退出 2（不再打印帮助假成功）；MS5611 非法 `osr` build 期显式 ERR 且先于总线动作
 - **浮点窄化值域防线**（2026-09-19 评估 P1-1/P1-5）：`agenttools.optionalInt`（模型可控的 `timeout_seconds`）与 `llmconfig.wantInt`（配置文件数值）在做 `static_cast<int>`/`static_cast<long long>` 之前先判有限性与值域——`1e30`/`1e300` 这类值直接转换是 float-cast-overflow UB（UBSan 实证），现一律在转换前响亮拒绝（与 `luabridge.cpp` 的 int64 键/值路径同一族判据）
+- **工具脚本路径沙箱硬化：拒绝符号链接**（2026-09-19 审计中危 #5）：`readFileLimited` 改用 `open(O_RDONLY|O_NOFOLLOW|O_CLOEXEC)` + read 循环（不做 lstat 后再 open 的 check-then-use），`scripts/` 里的软链不再能把目录外文件当动作脚本执行；`describeActionScripts` 修两处——软链条目一律不收（原先 `fs::relative` 内部会 weakly_canonical，把软链解析成带 `..` 的越界路径，**目录外文件的首注释会经清单回显进模型上下文**）、相对路径改 `lexically_relative` 纯词法求（尾斜杠不影响前缀匹配）。守门 `agenttools_run_action_script_rejects_symlink`（正常脚本不受影响 / 软链被拒且不泄露内容 / 清单不列软链 / 尾斜杠目录照常列出）
 
 ### 驱动与总线
 
