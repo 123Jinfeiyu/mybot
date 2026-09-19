@@ -165,19 +165,11 @@ void print_help() {
 	std::cout << "结构脚本与动作脚本单次输入上限均为 8 MiB。" << std::endl;
 }
 
-} // namespace bot
+/* ---- 阶段 3 拆分：main 的选项校验 / 结构装载 / 两条流水线 ---- */
 
-int main(int argc, char** argv) {
-	using namespace bot;
-
-	auto args = parseArgs(argc, argv);
+/* F-20/N-4/agent 选项组合校验：违规即打印并返回退出码 2，通过返回 0 */
+int validateOptions(ParsedArgs& args) {
 	const CliOptions& options = args.opts;
-
-	/* ---- 拉起帮助手册 ---- */
-	if (options.help) {
-		print_help();
-		return 0;
-	}
 
 	/* ---- F-20：未知/拼错的 --key 一律拒绝（退出码 2）----
 	 * 旧行为是静默忽略：`--robott=foo` 打印帮助后 exit 0（CI 里的假成功），
@@ -219,6 +211,112 @@ int main(int argc, char** argv) {
 		std::cerr << "参数错误：agent 模式需要同时提供 --robot <结构脚本>" << std::endl;
 		return 2;
 	}
+	return 0;
+}
+
+/* agent 配置组装 + key 注入进程环境 + 告警打印；失败已打印，返回 false。
+ * 密钥只在进程环境里流转：驱动的参数表与 BOT4CJ_DEBUG 的参数转储都不该
+ * 出现它，真正读它的是 Lua 驱动自己。 */
+bool prepareAgentConfig(const CliOptions& options, agent::AgentModeConfig& agentCfg) {
+	std::string cfgErr;
+	if (!agent::buildAgentConfig(options, agentCfg, cfgErr)) {
+		std::cerr << "错误: " << cfgErr << std::endl;
+		return false;
+	}
+	if (!agentCfg.resolvedApiKey.empty()) {
+		::setenv("BOT4CJ_LLM_KEY", agentCfg.resolvedApiKey.c_str(), 1);
+	}
+	if (!agentCfg.configPath.empty()) {
+		std::cerr << "配置文件: " << agentCfg.configPath << std::endl;
+	}
+	if (!agentCfg.configWarning.empty()) {
+		std::cerr << agentCfg.configWarning << std::endl;
+	}
+	/* 密钥来源对 agent 的 shell 可见（命令行/配置文件/密钥文件）且
+	 * run_command 启用时如实告警：同用户子进程没有权限壁垒。 */
+	std::string keyWarn = agent::shellKeyExposureWarning(agentCfg);
+	if (!keyWarn.empty()) { std::cerr << keyWarn << std::endl; }
+	return true;
+}
+
+/* 结构脚本装载（友好报错 + 字节上限）；失败已打印，返回 nullptr */
+std::unique_ptr<RobotStruct> loadStructure(const std::string& rpath) {
+	/* 友好报错：结构脚本打不开 → 人话提示，不裸栈回溯 */
+	std::unique_ptr<Reader> fstream;
+	{
+		auto f = std::make_unique<FileReader>(rpath);
+		if (!f->good()) {
+			std::cerr << "无法打开结构脚本 '" << rpath << "'" << std::endl;
+			std::cerr << "请确认 --robot 指向存在的结构脚本，示例：cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql" << std::endl;
+			return nullptr;
+		}
+		/* F-02：结构脚本与动作脚本共用同一字节上限——readSQL 先把全部
+		 * token 驻留内存，不设限即「输入多大、进程就吃多大内存」。 */
+		fstream = std::make_unique<LimitedReader>(std::move(f), kMaxScriptBytes, "structure script");
+	}
+
+	try {
+		return std::make_unique<RobotStruct>(*fstream);
+	} catch (const std::exception& e) {
+		std::cerr << "结构脚本解析失败 '" << rpath << "': " << e.what() << std::endl;
+		std::cerr << "无硬件自检链路：cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql" << std::endl;
+		return nullptr;
+	}
+}
+
+/* agent 流水线：上电 → 驱动查找/传输适配 → 工具循环。异常上抛由 main
+ * 的 catch 统一折成退出码 1。 */
+int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg) {
+	/* agent 模式：上电后硬件常驻，控制权交给智能体工具循环；
+	 * 只有会话结束（--task 跑完 / REPL 退出）才 deactivate。
+	 * 传输要在 active() 之后才能绑定——驱动变量是那时才装配的。 */
+	robot.active();
+
+	MatrixVars_Hardware* driver = robot.registry().find(agentCfg.llmVar);
+	if (driver == nullptr) {
+		throw std::runtime_error("结构脚本里没有 LLM 驱动变量 '"
+			+ agentCfg.llmVar + "'（驱动表 " + agentCfg.driverTable
+			+ "）；检查 --llm-var/--llm-driver，或用 --help 看内置驱动名");
+	}
+	agent::AgentDriverConfig dcfg = agent::makeDriverConfig(agentCfg);
+	std::unique_ptr<agent::ChatTransport> transport =
+		agent::makeDriverTransport(driver, dcfg);
+
+	return agent::runAgentMode(agentCfg, robot, *transport, std::cin, std::cout, std::cerr);
+}
+
+/* 动作流水线：先取动作脚本、后上电。返回退出码，异常上抛。 */
+int runActionPipeline(RobotStruct& robot, const CliOptions& options) {
+	/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/
+	 * 读取阶段任何失败（无客户端连接、口令错、停止信号）都发生在
+	 * 硬件 build 之前——不再出现「硬件已 build、带电空等客户端」；
+	 * 三种输入源本就一次性读全，open 失败时 deactivate 也不会执行
+	 * 任何 destroy 之外的驱动副作用。 */
+	std::unique_ptr<Reader> input = openActionSource(options);
+	if (!input) {
+		std::cerr << "动作输入源打开失败，退出" << std::endl;
+		return 1;
+	}
+	robot.active();
+	robot.run(*input);
+	return 0;
+}
+
+} // namespace bot
+
+int main(int argc, char** argv) {
+	using namespace bot;
+
+	auto args = parseArgs(argc, argv);
+	const CliOptions& options = args.opts;
+
+	/* ---- 拉起帮助手册 ---- */
+	if (options.help) {
+		print_help();
+		return 0;
+	}
+
+	if (int vrc = validateOptions(args); vrc != 0) { return vrc; }
 
 	/* ---- 结构脚本 + 动作输入源分支 ---- */
 	if (options.robot) {
@@ -227,51 +325,10 @@ int main(int argc, char** argv) {
 		/* agent 配置先组装并校验（含配置文件读取与优先级合并）：
 		 * 结构装载与上电都在其后，配置错误不碰真机 */
 		agent::AgentModeConfig agentCfg;
-		if (options.agent) {
-			std::string cfgErr;
-			if (!agent::buildAgentConfig(options, agentCfg, cfgErr)) {
-				std::cerr << "错误: " << cfgErr << std::endl;
-				return 2;
-			}
-			/* 密钥只在进程环境里流转：驱动的参数表与 BOT4CJ_DEBUG 的参数转储
-			 * 都不该出现它。真正读它的是 Lua 驱动自己。 */
-			if (!agentCfg.resolvedApiKey.empty()) {
-				::setenv("BOT4CJ_LLM_KEY", agentCfg.resolvedApiKey.c_str(), 1);
-			}
-			if (!agentCfg.configPath.empty()) {
-				std::cerr << "配置文件: " << agentCfg.configPath << std::endl;
-			}
-			if (!agentCfg.configWarning.empty()) {
-				std::cerr << agentCfg.configWarning << std::endl;
-			}
-			/* 密钥来源对 agent 的 shell 可见（命令行/配置文件/密钥文件）且
-			 * run_command 启用时如实告警：同用户子进程没有权限壁垒。 */
-			std::string keyWarn = agent::shellKeyExposureWarning(agentCfg);
-			if (!keyWarn.empty()) { std::cerr << keyWarn << std::endl; }
-		}
+		if (options.agent && !prepareAgentConfig(options, agentCfg)) { return 2; }
 
-		/* 友好报错：结构脚本打不开 → 人话提示，不裸栈回溯 */
-		std::unique_ptr<Reader> fstream;
-		{
-			auto f = std::make_unique<FileReader>(rpath);
-			if (!f->good()) {
-				std::cerr << "无法打开结构脚本 '" << rpath << "'" << std::endl;
-				std::cerr << "请确认 --robot 指向存在的结构脚本，示例：cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql" << std::endl;
-				return 1;
-			}
-			/* F-02：结构脚本与动作脚本共用同一字节上限——readSQL 先把全部
-			 * token 驻留内存，不设限即「输入多大、进程就吃多大内存」。 */
-			fstream = std::make_unique<LimitedReader>(std::move(f), kMaxScriptBytes, "structure script");
-		}
-
-		std::unique_ptr<RobotStruct> robot;
-		try {
-			robot = std::make_unique<RobotStruct>(*fstream);
-		} catch (const std::exception& e) {
-			std::cerr << "结构脚本解析失败 '" << rpath << "': " << e.what() << std::endl;
-			std::cerr << "无硬件自检链路：cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql" << std::endl;
-			return 1;
-		}
+		std::unique_ptr<RobotStruct> robot = loadStructure(rpath);
+		if (!robot) { return 1; }
 
 		/* agent 模式：结构脚本没声明驱动变量就按 --llm-driver 注入一颗。
 		 * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的。
@@ -306,40 +363,8 @@ int main(int argc, char** argv) {
 
 		int rc = 0;
 		try {
-			if (options.agent) {
-				/* agent 模式：上电后硬件常驻，控制权交给智能体工具循环；
-				 * 只有会话结束（--task 跑完 / REPL 退出）才 deactivate。
-				 * 传输要在 active() 之后才能绑定——驱动变量是那时才装配的。 */
-				robot->active();
-
-				MatrixVars_Hardware* driver = robot->registry().find(agentCfg.llmVar);
-				if (driver == nullptr) {
-					throw std::runtime_error("结构脚本里没有 LLM 驱动变量 '"
-						+ agentCfg.llmVar + "'（驱动表 " + agentCfg.driverTable
-						+ "）；检查 --llm-var/--llm-driver，或用 --help 看内置驱动名");
-				}
-				agent::AgentDriverConfig dcfg = agent::makeDriverConfig(agentCfg);
-				std::unique_ptr<agent::ChatTransport> transport =
-					agent::makeDriverTransport(driver, dcfg);
-
-				rc = agent::runAgentMode(agentCfg, *robot, *transport,
-					std::cin, std::cout, std::cerr);
-			} else {
-				/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/
-				 * 读取阶段任何失败（无客户端连接、口令错、停止信号）都发生在
-				 * 硬件 build 之前——不再出现「硬件已 build、带电空等客户端」；
-				 * 三种输入源本就一次性读全，open 失败时 deactivate 也不会执行
-				 * 任何 destroy 之外的驱动副作用。 */
-				std::unique_ptr<Reader> input = openActionSource(options);
-				if (!input) {
-					std::cerr << "动作输入源打开失败，退出" << std::endl;
-					rc = 1;
-				} else {
-					robot->active();
-
-					robot->run(*input);
-				}
-			}
+			rc = options.agent ? runAgentPipeline(*robot, agentCfg)
+					   : runActionPipeline(*robot, options);
 		} catch (const std::exception& e) {
 			std::cerr << "Aborted: " << e.what() << std::endl;
 			rc = 1;
