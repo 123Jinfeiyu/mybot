@@ -1,3 +1,4 @@
+#include "fixtures.hpp"
 #include "harness.hpp"
 
 #include <cstdlib>
@@ -16,28 +17,10 @@ namespace fs = std::filesystem;
 
 using namespace bot;
 using namespace bot::agent;
+using fx::TempDir;
+using fx::EnvVar;
 
 namespace {
-
-class TempDir {
-	fs::path dir_;
-
-public:
-	explicit TempDir(const std::string& tag) {
-		dir_ = fs::temp_directory_path()
-			/ ("mybot_llmcfg_" + tag + "_" + std::to_string(::getpid()));
-		std::error_code ec;
-		fs::remove_all(dir_, ec);
-		fs::create_directories(dir_);
-	}
-	~TempDir() {
-		std::error_code ec;
-		fs::remove_all(dir_, ec);
-	}
-	TempDir(const TempDir&) = delete;
-	TempDir& operator=(const TempDir&) = delete;
-	const fs::path& path() const { return dir_; }
-};
 
 void writeFile(const fs::path& p, const std::string& content, fs::perms mode) {
 	std::ofstream f(p, std::ios::binary);
@@ -46,28 +29,6 @@ void writeFile(const fs::path& p, const std::string& content, fs::perms mode) {
 	std::error_code ec;
 	fs::permissions(p, mode, ec);
 }
-
-/* 环境变量守卫：用例之间不得互相污染（密钥链与配置文件选择都读环境变量） */
-class EnvVar {
-	std::string name_;
-	std::string old_;
-	bool had_ = false;
-
-public:
-	EnvVar(const std::string& name, const char* value) : name_(name) {
-		const char* v = std::getenv(name.c_str());
-		had_ = v != nullptr;
-		if (had_) { old_ = v; }
-		if (value == nullptr) { ::unsetenv(name.c_str()); }
-		else { ::setenv(name.c_str(), value, 1); }
-	}
-	~EnvVar() {
-		if (had_) { ::setenv(name_.c_str(), old_.c_str(), 1); }
-		else { ::unsetenv(name_.c_str()); }
-	}
-	EnvVar(const EnvVar&) = delete;
-	EnvVar& operator=(const EnvVar&) = delete;
-};
 
 /* 清空整条密钥链，让「密钥来自哪里」在用例里是确定的 */
 struct NoKeyEnv {

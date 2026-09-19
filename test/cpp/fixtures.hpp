@@ -15,6 +15,13 @@
 
 #include "hardware.hpp"
 #include "matrix.hpp"
+#include <cstdio>
+#include <cstdlib>
+#include <unistd.h>
+#include <filesystem>
+#include <fstream>
+#include <string>
+
 #include "sqlparse.hpp"
 #include "util.hpp"
 
@@ -79,5 +86,50 @@ inline const std::string& cell(const mt::MatrixObject& m, std::int64_t row, std:
 inline const std::string& inh(const mt::MatrixObject& m, std::int64_t row, std::int64_t col) {
 	return m.inherited(row, col);
 }
+
+
+/* ---- 共享测试基建（阶段 4：自 test_llmconfig/test_agenttools 上收）---- */
+
+/* 临时目录：构造即建，析构即清（getpid 隔离并行进程） */
+class TempDir {
+	std::filesystem::path dir_;
+
+public:
+	explicit TempDir(const std::string& tag) {
+		dir_ = std::filesystem::temp_directory_path()
+			/ ("mybot_test_" + tag + "_" + std::to_string(::getpid()));
+		std::error_code ec;
+		std::filesystem::remove_all(dir_, ec);
+		std::filesystem::create_directories(dir_);
+	}
+	~TempDir() {
+		std::error_code ec;
+		std::filesystem::remove_all(dir_, ec);
+	}
+	TempDir(const TempDir&) = delete;
+	TempDir& operator=(const TempDir&) = delete;
+	const std::filesystem::path& path() const { return dir_; }
+};
+
+/* 环境变量守卫：析构恢复原值，用例之间不得互相污染 */
+class EnvVar {
+	std::string name_;
+	std::string old_;
+	bool had_ = false;
+
+public:
+	EnvVar(const std::string& name, const char* value) : name_(name) {
+		const char* v = std::getenv(name.c_str());
+		had_ = v != nullptr;
+		if (had_) { old_ = v; }
+		::setenv(name.c_str(), value, 1);
+	}
+	~EnvVar() {
+		if (had_) { ::setenv(name_.c_str(), old_.c_str(), 1); }
+		else { ::unsetenv(name_.c_str()); }
+	}
+	EnvVar(const EnvVar&) = delete;
+	EnvVar& operator=(const EnvVar&) = delete;
+};
 
 } // namespace fx

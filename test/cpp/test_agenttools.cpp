@@ -1,4 +1,7 @@
+#include "fixtures.hpp"
 #include "harness.hpp"
+
+using fx::TempDir;
 
 #include <cstdlib>
 #include <filesystem>
@@ -35,26 +38,6 @@ std::unique_ptr<RobotStruct> makeRelayRobot() {
 	robot->active();
 	return robot;
 }
-
-class TempDir {
-	fs::path dir_;
-
-public:
-	explicit TempDir(const std::string& tag) {
-		dir_ = fs::temp_directory_path()
-			/ ("mybot_agent_" + tag + "_" + std::to_string(::getpid()));
-		std::error_code ec;
-		fs::remove_all(dir_, ec);
-		fs::create_directories(dir_);
-	}
-	~TempDir() {
-		std::error_code ec;
-		fs::remove_all(dir_, ec);
-	}
-	TempDir(const TempDir&) = delete;
-	TempDir& operator=(const TempDir&) = delete;
-	const fs::path& path() const { return dir_; }
-};
 
 void writeFile(const fs::path& p, const std::string& content) {
 	fs::create_directories(p.parent_path());
