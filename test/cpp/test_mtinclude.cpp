@@ -4,9 +4,13 @@
  * 由 test_mtmerge 覆盖，这里只测展开层的编排与校验）：
  *   - fast path：无 @Include 逐字不动；
  *   - @Action 相位归并（含首个 include 顶替缺省 @Action、phase "-" 继承）；
- *   - @Alias/@Vars 行叠加与同名报错；
- *   - 负路径：设备相交 / 缺 @Action / 嵌套 @Include / 路径词法 / 文件缺失 /
- *     软链拒绝 / 行数与总字节预算；
+ *   - 嵌套片段组合（终止性 = 已展开文件表；*.once.mt 重复包含跳过、
+ *     普通文件重复包含报错；环与自包含终止）；
+ *   - 主从覆盖：同名 @Alias/@Vars「更靠近主脚本者获胜」（注记），
+ *     片段互相之间同名仍报错；
+ *   - 片段以自身目录为包含基准（库片段可搬移）；
+ *   - 负路径：设备相交 / 路径词法 / 文件缺失 / 软链拒绝 / 行数与总字节
+ *     预算 / 深度上限；
  *   - 未知矩阵透传。
  * 文件类用例走 fx::TempDir（进程级隔离，析构即清）。
  */
@@ -14,6 +18,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -39,6 +45,19 @@ void writeFile(const fx::TempDir& dir, const std::string& name, const std::strin
 std::vector<mt::MatrixObject> parseMain(const std::string& text) {
 	return fx::manyMatrices(text);
 }
+
+/* stderr 捕获（注记也是契约：include-once 跳过与主从覆盖必须可见） */
+struct CerrCapture {
+	std::ostringstream buf;
+	std::streambuf* old;
+	CerrCapture() : old(std::cerr.rdbuf(buf.rdbuf())) {}
+	~CerrCapture() { std::cerr.rdbuf(old); }
+	CerrCapture(const CerrCapture&) = delete;
+	CerrCapture& operator=(const CerrCapture&) = delete;
+	bool contains(const std::string& sub) const {
+		return buf.str().find(sub) != std::string::npos;
+	}
+};
 
 } // namespace
 
@@ -130,13 +149,17 @@ TH_TEST(mtinclude_stacks_alias_and_vars) {
 	TH_CHECK(fx::cell(mats[2], 1, 1) == "100");
 }
 
-TH_TEST(mtinclude_rejects_duplicate_alias_across_include) {
+TH_TEST(mtinclude_sibling_alias_collision_still_errors) {
+	/* 片段互相之间同名 @Alias 仍报错（主脚本同名才是覆盖语义） */
 	fx::TempDir dir("inc_dup");
-	writeFile(dir, "b.mt", "@Alias\nname value;\n  ka other;\n@\n@Action\nb.p;\n100;\n@\n");
-	auto mats = parseMain(
+	writeFile(dir, "fa.mt",
 		"@Alias\nname value;\n  ka x;\n@\n"
-		"@Action\na.x;\n1;\n@\n"
-		"@Include\npath;\n  b.mt;\n@\n");
+		"@Action\na.p;\n10;\n@\n");
+	writeFile(dir, "fb.mt",
+		"@Alias\nname value;\n  ka other;\n@\n"
+		"@Action\nb.p;\n100;\n@\n");
+	auto mats = parseMain(
+		"@Include\npath;\n  fa.mt;\n  fb.mt;\n@\n");
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "duplicate Alias name 'ka'",
 		mtinclude::expandIncludes(mats, dir.path().string()));
 }
@@ -153,24 +176,19 @@ TH_TEST(mtinclude_rejects_device_overlap) {
 		mtinclude::expandIncludes(mats, dir.path().string()));
 }
 
-TH_TEST(mtinclude_rejects_missing_action_in_included_file) {
-	fx::TempDir dir("inc_noact");
-	writeFile(dir, "b.mt", "@Alias\nname value;\n  kb delay;\n@\n");
+TH_TEST(mtinclude_vars_only_fragment_contributes_scalars) {
+	/* 被包含文件可以没有 @Action：纯标量片段合法（整体缺失由派发期报错） */
+	fx::TempDir dir("inc_vars_only");
+	writeFile(dir, "v.mt", "@Vars\nname value;\n  kv 5;\n@\n");
 	auto mats = parseMain(
 		"@Action\na.x;\n1;\n@\n"
-		"@Include\npath;\n  b.mt;\n@\n");
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "no @Action matrix found",
-		mtinclude::expandIncludes(mats, dir.path().string()));
-}
-
-TH_TEST(mtinclude_rejects_nested_include) {
-	fx::TempDir dir("inc_nested");
-	writeFile(dir, "inner.mt", "@Include\npath;\n  b.mt;\n@\n");
-	auto mats = parseMain(
-		"@Action\na.x;\n1;\n@\n"
-		"@Include\npath;\n  inner.mt;\n@\n");
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "nested @Include",
-		mtinclude::expandIncludes(mats, dir.path().string()));
+		"@Include\npath;\n  v.mt;\n@\n");
+	mtinclude::expandIncludes(mats, dir.path().string());
+	TH_CHECK(mats.size() == 2);	/* Vars + Action */
+	TH_CHECK(bot::trim(mats[0].getName()) == "Vars");
+	TH_CHECK(fx::cell(mats[0], 1, 0) == "kv");
+	TH_CHECK(bot::trim(mats[1].getName()) == "Action");
+	TH_CHECK(fx::cell(mats[1], 1, 0) == "1");	/* 本体动作不受影响 */
 }
 
 /* ---------------- 负路径：路径词法与文件系统 ---------------- */
@@ -220,12 +238,19 @@ TH_TEST(mtinclude_rejects_symlink) {
 /* ---------------- 预算防线 ---------------- */
 
 TH_TEST(mtinclude_row_budget_rejects_before_reading) {
-	/* 33 行在读取任何文件之前就被拒（文件名故意不存在：证明检查先于 IO） */
+	/* 前 32 行指向真实存在的文件（正常读入），第 33 行故意指向缺失文件：
+	 * 若计数检查不在该行 IO 之前，报错会是 "cannot open" 而非行数上限 */
+	fx::TempDir dir("inc_budget33");
+	for (int i = 0; i < 32; ++i) {
+		writeFile(dir, "f" + std::to_string(i) + ".mt",
+			"@Action\nd" + std::to_string(i) + ".x;\n" + std::to_string(i + 1) + ";\n@\n");
+	}
 	std::string rows;
-	for (int i = 0; i < 33; ++i) { rows += "  nope" + std::to_string(i) + ".mt 0;\n"; }
-	auto mats = parseMain("@Action\na.x;\n1;\n@\n@Include\npath phase;\n" + rows + "@\n");
+	for (int i = 0; i < 32; ++i) { rows += "  f" + std::to_string(i) + ".mt;\n"; }
+	rows += "  nope32.mt;\n";
+	auto mats = parseMain("@Action\na.x;\n1;\n@\n@Include\npath;\n" + rows + "@\n");
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "exceeding the limit of 32",
-		mtinclude::expandIncludes(mats, "."));
+		mtinclude::expandIncludes(mats, dir.path().string()));
 }
 
 TH_TEST(mtinclude_total_byte_budget_rejects) {
@@ -279,4 +304,170 @@ TH_TEST(mtinclude_unknown_matrices_pass_through) {
 	}
 	TH_CHECK(foundFoo);
 	TH_CHECK(mats.size() == 2);
+}
+
+/* ---------------- 嵌套与 include-once ---------------- */
+
+TH_TEST(mtinclude_nested_fragments_compose) {
+	/* 嵌套合法：片段可再包含片段（终止性由已展开文件表保证）；
+	 * 纯组合片段（无自有 @Action）合法 */
+	fx::TempDir dir("inc_nest2");
+	writeFile(dir, "inner.mt", "@Include\npath;\n  b.mt;\n@\n");
+	writeFile(dir, "b.mt", "@Action\nb.p;\n100;\n@\n");
+	auto mats = parseMain(
+		"@Action\na.x;\n1;\n@\n"
+		"@Include\npath;\n  inner.mt;\n@\n");
+	mtinclude::expandIncludes(mats, dir.path().string());
+	const mt::MatrixObject& act = mats[0];
+	TH_CHECK(act.cols() == 2);
+	TH_CHECK(fx::cell(act, 1, 0) == "1");
+	TH_CHECK(fx::cell(act, 1, 1) == "100");
+}
+
+TH_TEST(mtinclude_once_suffix_skips_reinclusion) {
+	/* *.once.mt 被再次包含 → 跳过（stderr 注记），产物只含一份贡献 */
+	fx::TempDir dir("inc_once");
+	writeFile(dir, "hold.once.mt", "@Action\nh.x;\n5;\n@\n");
+	auto mats = parseMain(
+		"@Action\na.x;\n1;\n@\n"
+		"@Include\npath;\n  hold.once.mt;\n  hold.once.mt;\n@\n");
+	CerrCapture cap;
+	mtinclude::expandIncludes(mats, dir.path().string());
+	const mt::MatrixObject& act = mats[0];
+	TH_CHECK(act.cols() == 2);		/* a.x ∪ h.x（第二份未并入） */
+	TH_CHECK(act.rows() == 2);
+	TH_CHECK(fx::cell(act, 1, 1) == "5");
+	TH_CHECK(cap.contains("already included"));
+}
+
+TH_TEST(mtinclude_plain_reinclusion_errors) {
+	/* 普通 .mt 重复包含仍报错（抓笔误：拼写撞上已包含文件） */
+	fx::TempDir dir("inc_twice");
+	writeFile(dir, "b.mt", "@Action\nb.p;\n100;\n@\n");
+	auto mats = parseMain(
+		"@Action\na.x;\n1;\n@\n"
+		"@Include\npath;\n  b.mt;\n  b.mt;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "more than once",
+		mtinclude::expandIncludes(mats, dir.path().string()));
+}
+
+TH_TEST(mtinclude_diamond_shared_fragment) {
+	/* 菱形：D→A,B；A、B 都包含 shared.once.mt——第二次触达被跳过，
+	 * shared 的动作在产物中恰好出现一次 */
+	fx::TempDir dir("inc_diamond");
+	writeFile(dir, "shared.once.mt", "@Action\ns.x;\n300;\n@\n");
+	writeFile(dir, "fa.once.mt",
+		"@Include\npath;\n  shared.once.mt;\n@\n"
+		"@Action\nf1.x;\n100;\n110;\n@\n");
+	writeFile(dir, "fb.once.mt",
+		"@Include\npath;\n  shared.once.mt;\n@\n"
+		"@Action\nf2.x;\n200;\n@\n");
+	auto mats = parseMain(
+		"@Include\npath;\n  fa.once.mt;\n  fb.once.mt;\n@\n");
+	CerrCapture cap;
+	mtinclude::expandIncludes(mats, dir.path().string());
+	const mt::MatrixObject& act = mats[0];
+	TH_CHECK(act.cols() == 3);	/* f1.x ∪ s.x ∪ f2.x */
+	TH_CHECK(act.rows() == 3);	/* max(2,1,1) = 2 数据行 */
+	TH_CHECK(fx::cell(act, 1, 1) == "300");
+	TH_CHECK(fx::cell(act, 2, 1) == "-");	/* shared 耗尽补 "-"，无第二份 */
+	TH_CHECK(fx::cell(act, 1, 2) == "200");
+	TH_CHECK(cap.contains("already included"));
+}
+
+TH_TEST(mtinclude_cycle_terminates) {
+	/* 互包含环（once 片段）：a→b→a——第二次触达 a 被跳过，展开终止 */
+	fx::TempDir dir("inc_cycle");
+	writeFile(dir, "a.once.mt",
+		"@Include\npath;\n  b.once.mt;\n@\n"
+		"@Action\na.x;\n1;\n@\n");
+	writeFile(dir, "b.once.mt", "@Include\npath;\n  a.once.mt;\n@\n");
+	auto mats = parseMain(
+		"@Include\npath;\n  a.once.mt;\n@\n");
+	CerrCapture cap;
+	mtinclude::expandIncludes(mats, dir.path().string());	/* 能返回即未挂死 */
+	const mt::MatrixObject& act = mats[0];
+	TH_CHECK(act.cols() == 1);
+	TH_CHECK(fx::cell(act, 1, 0) == "1");
+	TH_CHECK(cap.contains("already included"));
+}
+
+/* ---------------- 主从覆盖（同名标量行） ---------------- */
+
+TH_TEST(mtinclude_main_wins_over_fragment_vars) {
+	/* 主脚本同名 @Vars 覆盖片段定义（stderr 注记），片段动作引用 $(...)
+	 * 在派发期读到主脚本的值——片段参数化的值通道 */
+	fx::TempDir dir("inc_mainwins");
+	writeFile(dir, "f.mt",
+		"@Vars\nname value;\n  k 2;\n@\n"
+		"@Action\nb.p;\n100;\n@\n");
+	auto mats = parseMain(
+		"@Vars\nname value;\n  k 1;\n@\n"
+		"@Action\na.x;\n1;\n@\n"
+		"@Include\npath;\n  f.mt;\n@\n");
+	CerrCapture cap;
+	mtinclude::expandIncludes(mats, dir.path().string());
+	TH_CHECK(mats.size() == 2);	/* Vars + Action（片段的 k 行被丢弃） */
+	TH_CHECK(bot::trim(mats[0].getName()) == "Vars");
+	TH_CHECK(fx::cell(mats[0], 1, 0) == "k");
+	TH_CHECK(fx::cell(mats[0], 1, 1) == "1");	/* 主脚本的值获胜 */
+	TH_CHECK(bot::trim(mats[1].getName()) == "Action");
+	TH_CHECK(mats[1].cols() == 2);	/* 片段动作照常并入 */
+	TH_CHECK(cap.contains("closer to the main script"));
+}
+
+TH_TEST(mtinclude_sibling_var_collision_still_errors) {
+	/* 片段互相之间同名 @Vars 仍报错（主从覆盖不溶解兄弟碰撞检测） */
+	fx::TempDir dir("inc_sib");
+	writeFile(dir, "fa.mt",
+		"@Vars\nname value;\n  k 1;\n@\n"
+		"@Action\na.p;\n10;\n@\n");
+	writeFile(dir, "fb.mt",
+		"@Vars\nname value;\n  k 2;\n@\n"
+		"@Action\nb.p;\n20;\n@\n");
+	auto mats = parseMain(
+		"@Include\npath;\n  fa.mt;\n  fb.mt;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "duplicate Vars name 'k'",
+		mtinclude::expandIncludes(mats, dir.path().string()));
+}
+
+TH_TEST(mtinclude_upper_fragment_wins_over_lower) {
+	/* 主从覆盖逐层成立：上层片段 F 覆盖其子片段 G 的同名定义 */
+	fx::TempDir dir("inc_upper");
+	writeFile(dir, "g.once.mt",
+		"@Vars\nname value;\n  k 2;\n@\n"
+		"@Action\ng.x;\n7;\n@\n");
+	writeFile(dir, "f.once.mt",
+		"@Vars\nname value;\n  k 1;\n@\n"
+		"@Include\npath;\n  g.once.mt;\n@\n"
+		"@Action\nf.x;\n5;\n@\n");
+	auto mats = parseMain(
+		"@Include\npath;\n  f.once.mt;\n@\n");
+	CerrCapture cap;
+	mtinclude::expandIncludes(mats, dir.path().string());
+	bool found = false;
+	for (const auto& m : mats) {
+		if (bot::trim(m.getName()) != "Vars") { continue; }
+		found = true;
+		TH_CHECK(fx::cell(m, 1, 1) == "1");	/* F 的值获胜 */
+	}
+	TH_CHECK(found);
+	TH_CHECK(cap.contains("closer to the main script"));
+}
+
+TH_TEST(mtinclude_fragment_relative_base) {
+	/* 片段的 @Include 以自身所在目录为基准（库片段可整体搬移） */
+	fx::TempDir dir("inc_fragrel");
+	std::filesystem::create_directories(dir.path() / "sub");
+	writeFile(dir, "sub/g.once.mt",
+		"@Include\npath;\n  h.once.mt;\n@\n"
+		"@Action\ng.x;\n7;\n@\n");
+	writeFile(dir, "sub/h.once.mt", "@Action\nh.x;\n9;\n@\n");
+	auto mats = parseMain(
+		"@Action\na.x;\n1;\n@\n"
+		"@Include\npath;\n  sub/g.once.mt;\n@\n");
+	mtinclude::expandIncludes(mats, dir.path().string());
+	const mt::MatrixObject& act = mats[0];
+	TH_CHECK(act.cols() == 3);	/* a.x ∪ g.x ∪ h.x（h 经片段相对基准解析成功） */
+	TH_CHECK(fx::cell(act, 1, 2) == "9");
 }

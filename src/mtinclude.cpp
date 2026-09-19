@@ -1,24 +1,22 @@
 /* mtinclude.cpp —— @Include 展开（实现契约见 mtinclude.hpp）
  *
- * 语义 = mtmerge（离线合成器）的运行端等价物：主脚本的三块矩阵是累加器，
- * @Include 每行按序并入一个 .mt 文件（@Action 带相位归并、@Alias/@Vars
- * 按行叠加），归并内核（mergeTwo/mergeScalarRows/foldNamed/requireAction）
- * 全部复用 mtmerge_core——两条入口的冲突裁决与报错文案由同一份代码保证
- * 不漂移。展开产物仍是普通矩阵列表：未知矩阵原样透传（与既有行为一致：
- * mybot 只认 Alias/Vars/Action，其余忽略）。
+ * 结构：Expander 持一次 expandIncludes 调用的全部跨层状态（visited 表、
+ * 行数/字节预算），按层递归——每层（主脚本或某个片段）把**自己的**
+ * @Alias/@Vars/@Action 作为累加器初值，再按声明序并入自己 @Include 行
+ * 指向的子片段的有效产物；「自己的定义」名字集在并入子片段前快照，
+ * 作为主从覆盖的判定依据（同层自己获胜，子片段互相之间报错）。
  *
- * 信任边界（务必与 docs/dsl.md 的说明保持一致）：--tcp 下发的动作脚本
- * 此前无法触达本地文件，@Include 是第一个例外。防线按层：
- *   1) 词法：路径必须是 base 树内的相对名——拒绝绝对路径、'..' 分量、
- *      空段、NUL，且只放行 .mt 后缀（规则集与 agent::resolveActionScriptPath
- *      同族，文案按 include 语境另写；'..' 逐段精确比较不误伤子串）；
- *   2) 硬限：@Include 行数 ≤ kMaxIncludes、include 字节总量 ≤ 8 MiB、
- *      单文件 ≤ 8 MiB（kMaxScriptBytes 同一上限）——扇出读盘有界；
- *   3) O_NOFOLLOW：拒绝符号链接（与 agent::readFileLimited 同判据。残余
- *      与该处声明一致：只看最后一段，路径中间的目录软链仍可穿越——能写
- *      base 树的进程本就能直接改脚本，不构成增量能力）；
- *   4) 内容不回显：读取/解析失败只报路径与行号类信息，被包含文件的内容
- *      不会进入报错文本，远端脚本无从借报错探测本地文件内容。
+ * 信任边界（务必与 docs/dsl.md 保持一致）：--tcp 下发的动作脚本可借
+ * @Include 触达本地文件。防线按层：
+ *   1) 词法：路径必须是相对名——拒绝绝对路径、'..' 分量、空段、NUL，
+ *      只放行 .mt 后缀（规则集与 agent::resolveActionScriptPath 同族）；
+ *   2) 硬限：全树 @Include 行数 ≤ kMaxIncludes、嵌套深度 ≤
+ *      kMaxIncludeDepth、字节总量 ≤ 8 MiB、单文件 ≤ 8 MiB；
+ *   3) O_NOFOLLOW：拒绝符号链接（残余同 agent::readFileLimited 的声明：
+ *      路径中间的目录软链仍可穿越——能写 base 树的进程本就能直接改脚本，
+ *      不构成增量能力）；
+ *   4) 内容不回显：读取/解析失败只报路径类信息，被包含文件的内容不会
+ *      进入报错文本。
  */
 
 #include "mtinclude.hpp"
@@ -26,7 +24,9 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <map>
 #include <optional>
+#include <set>
 #include <unistd.h>
 
 #include "actionsource.hpp"
@@ -37,10 +37,15 @@ namespace mtinclude {
 
 namespace {
 
-/* include 字节总量预算：与单文件上限同值（kMaxScriptBytes）。单文件由
- * 读取循环即时拒绝，总量跨多个 include 累计记账——两道都不可少：只限
- * 单文件时 33 个 7MiB 文件仍是 231MiB。 */
 constexpr std::size_t kMaxIncludeTotalBytes = bot::kMaxScriptBytes;
+
+/* include-once 复用标记：文件名后缀（与 _VIRT 工厂后缀同族的命名约定）。
+ * 放在文件而非包含行：片段自己声明复用策略，所有包含点免于各自记忆。 */
+bool endsWithOnceSuffix(const std::string& path) {
+	const std::string suffix = ".once.mt";
+	return path.size() >= suffix.size()
+		&& path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
 
 /* include 路径词法校验（规则集 = agent::resolveActionScriptPath 同族）：
  * 通过则原样返回，失败抛 IllegalArgumentException。 */
@@ -117,7 +122,7 @@ std::string readIncludeFile(const std::string& path, std::size_t& totalBytes) {
 	return data;
 }
 
-/* @Include 矩阵单块行遍历：列头白名单（path 必需、phase 可选）+ 每行的
+/* @Include 矩阵单块行读取：列头白名单（path 必需、phase 可选）+ 每行的
  * 路径/相位解析。phase 沿用矩阵 "-" 继承语义（继承上一行相位，首行 "-" = 0），
  * 数值域与 mtmerge --phase 同界（mtmerge::kMaxPhase）。 */
 struct IncludeRow {
@@ -169,6 +174,227 @@ public:
 	}
 };
 
+/* 一个文件（主脚本或片段）展开后的有效产物。path 供上层归并的报错/注记归因。 */
+struct ScriptParts {
+	std::optional<mt::MatrixObject> alias, vars, action;
+	std::string path;
+};
+
+/* 一层的归并累加器 + 来源标签（报错文案指明冲突两侧）。 */
+struct MergeAcc {
+	std::optional<mt::MatrixObject> alias, vars, action;
+	std::string aliasPath = "<main script>", varsPath = "<main script>",
+		    actionPath = "<main script>";
+};
+
+/* 本层「自己的定义」名字集：并入子片段前快照，主从覆盖的判定依据。 */
+struct LevelOwned {
+	std::set<std::string> alias, vars;
+};
+
+LevelOwned ownedNamesOf(const MergeAcc& acc) {
+	LevelOwned out;
+	auto collect = [](const std::optional<mt::MatrixObject>& m, std::set<std::string>& into) {
+		if (!m) { return; }
+		std::int64_t idx = m->indexOfCol(0, "name");
+		if (idx < 0) { return; }
+		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m->rows()); ++r) {
+			into.insert((*m)(static_cast<std::size_t>(r), static_cast<std::size_t>(idx)));
+		}
+	};
+	collect(acc.alias, out.alias);
+	collect(acc.vars, out.vars);
+	return out;
+}
+
+/* 主从覆盖的执行点：丢弃 next 中与本层自有定义同名的行（stderr 注记），
+ * 其余行原样进入后续归并（子片段互相之间的同名由此仍走 mergeScalarRows
+ * 的重复报错）。全未命中时原样拷贝返回。 */
+mt::MatrixObject dropOwnedRows(const mt::MatrixObject& m, const std::set<std::string>& owned,
+		const std::string& file, const char* kind) {
+	std::int64_t idxName = m.indexOfCol(0, "name");
+	if (idxName < 0) { return m; }	/* 缺 name 列：原样放行，由 mergeScalarRows 报正错 */
+	bool anyDropped = false;
+	for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
+		std::string name = m(static_cast<std::size_t>(r), static_cast<std::size_t>(idxName));
+		if (owned.count(name) > 0) {
+			anyDropped = true;
+			std::cerr << "mtinclude: " << kind << " '" << name << "' from '" << file
+				<< "' ignored; a definition closer to the main script wins" << std::endl;
+		}
+	}
+	if (!anyDropped) { return m; }
+	mt::MatrixBuilder b;
+	b.name(m.getName());
+	for (std::size_t j = 0; j < m.cols(); ++j) { b.item(m(0, j)); }
+	b.line(0);
+	for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
+		std::string name = m(static_cast<std::size_t>(r), static_cast<std::size_t>(idxName));
+		if (owned.count(name) > 0) { continue; }
+		for (std::size_t j = 0; j < m.cols(); ++j) {
+			b.item(m(static_cast<std::size_t>(r), j));
+		}
+		b.line(0);
+	}
+	return b.take();
+}
+
+/* 展开器：一次 expandIncludes 调用的全部跨层状态（visited 表/预算）。 */
+class Expander {
+public:
+	explicit Expander(const std::string& mainBase) : mainBase_(mainBase) {}
+
+	void run(std::vector<mt::MatrixObject>& parsed) {
+		MergeAcc acc;
+		if (auto* act = mt::findByName(parsed, "Action")) { acc.action = *act; }
+		if (auto al = mtmerge::foldNamed(parsed, "Alias", acc.aliasPath)) {
+			acc.alias = std::move(*al);
+		}
+		if (auto va = mtmerge::foldNamed(parsed, "Vars", acc.varsPath)) {
+			acc.vars = std::move(*va);
+		}
+		LevelOwned owned = ownedNamesOf(acc);	/* 快照：仅本层自有定义 */
+		runLevel(parsed, mainBase_, acc, owned);
+
+		/* 产物：@Alias、@Vars、@Action（若存在）+ 主脚本的未知矩阵原样透传
+		 * （mybot 的消费端按名字取用，顺序无关；规范序只为可读与可测） */
+		std::vector<mt::MatrixObject> out;
+		if (acc.alias) { out.push_back(std::move(*acc.alias)); }
+		if (acc.vars) { out.push_back(std::move(*acc.vars)); }
+		if (acc.action) { out.push_back(std::move(*acc.action)); }
+		for (auto& m : parsed) {
+			std::string n = bot::trim(m.getName());
+			if (n == "Alias" || n == "Vars" || n == "Action" || n == "Include") { continue; }
+			out.push_back(std::move(m));
+		}
+		parsed = std::move(out);
+	}
+
+private:
+	std::string mainBase_;
+	std::map<std::string, bool> visited_;	/* resolved 路径 → 是否 include-once 片段 */
+	std::size_t totalBytes_ = 0;
+	std::size_t rowCount_ = 0;
+
+	/* 处理一层：parsed 的 @Include 行按声明序展开并并入 acc。
+	 * owned 是本层「自己的定义」（主从覆盖判据），调用方在并入前快照。 */
+	void runLevel(const std::vector<mt::MatrixObject>& parsed, const std::string& baseDir,
+			MergeAcc& acc, const LevelOwned& owned) {
+		for (const auto& m : parsed) {
+			if (bot::trim(m.getName()) != "Include") { continue; }
+			if (m.rows() == 0) { continue; }	/* 只有名字没有内容的退化块：无事可做 */
+			IncludeBlockReader rows(m);
+			for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
+				if (++rowCount_ > kMaxIncludes) {
+					throw bot::IllegalArgumentException("@Include declares "
+						+ std::to_string(rowCount_ - 1) + " rows before this one,"
+						+ " exceeding the limit of " + std::to_string(kMaxIncludes)
+						+ " across the whole include tree (each row reads a local file)");
+				}
+				IncludeRow spec = rows.row(r);	/* 词法校验先于该行 IO */
+				ScriptParts parts = expandFile(spec.path, baseDir);
+				mergeParts(parts, spec.phase, acc, owned);
+			}
+		}
+	}
+
+	/* 展开一个文件引用（relPath 已词法校验）：visited 表在此实现终止性——
+	 * 每个文件至多展开一次；*.once.mt 再触达跳过（注记），普通文件再触达
+	 * 报错（抓笔误）。递归深度由行数上限界定（每层嵌套消耗一行）。 */
+	ScriptParts expandFile(const std::string& relPath, const std::string& dir) {
+		bool once = endsWithOnceSuffix(relPath);
+		std::string resolved = dir + "/" + relPath;
+		if (visited_.count(resolved) > 0) {
+			if (once) {
+				std::cerr << "mtinclude: '" << resolved
+					<< "' already included, skipped (include-once fragment)" << std::endl;
+				return {};
+			}
+			throw bot::IllegalArgumentException("'" + resolved
+				+ "' is included more than once; if it is a shared fragment,"
+				" rename it to '*.once.mt' (include-once)");
+		}
+		visited_[resolved] = once;	/* 入口即标记：自包含/互包含在第二次触达时终止 */
+
+		std::string data = readIncludeFile(resolved, totalBytes_);
+		bot::MemoryReader in(std::move(data));
+		std::vector<mt::MatrixObject> incParsed;
+		mt::readMatrix(in, incParsed);
+		if (incParsed.empty()) {
+			throw bot::IllegalArgumentException("'" + resolved + "': no matrix found");
+		}
+
+		/* 片段自成一层：自己的标量/动作是累加器初值，自己的 @Include 行
+		 * （以自身目录为基准）按同一套规则并入。被包含文件可以没有
+		 * @Action（纯标量/纯组合片段合法）——整体缺失由派发期报错。 */
+		MergeAcc frag;
+		frag.aliasPath = resolved;
+		frag.varsPath = resolved;
+		frag.actionPath = resolved;
+		if (auto al = mtmerge::foldNamed(incParsed, "Alias", resolved)) {
+			frag.alias = std::move(*al);
+		}
+		if (auto va = mtmerge::foldNamed(incParsed, "Vars", resolved)) {
+			frag.vars = std::move(*va);
+		}
+		if (auto* act = mt::findByName(incParsed, "Action")) { frag.action = *act; }
+		LevelOwned owned = ownedNamesOf(frag);
+		runLevel(incParsed, dirOf(resolved), frag, owned);
+
+		return ScriptParts{std::move(frag.alias), std::move(frag.vars),
+			std::move(frag.action), resolved};
+	}
+
+	/* 子片段的有效产物并入本层累加器：标量走主从覆盖（同层自有定义获胜、
+	 * 子片段互相同名报错），动作走设备集不相交归并（相位归属包含行）。 */
+	void mergeParts(ScriptParts& parts, std::int64_t phase, MergeAcc& acc,
+			const LevelOwned& owned) {
+		if (parts.alias) {
+			mt::MatrixObject filtered = dropOwnedRows(*parts.alias, owned.alias,
+				parts.path, "Alias");
+			if (filtered.rows() > 1) {
+				if (acc.alias) {
+					acc.alias = mtmerge::mergeScalarRows(*acc.alias, filtered, "Alias",
+						acc.aliasPath, parts.path);
+					acc.aliasPath += "+" + parts.path;
+				} else {
+					acc.alias = std::move(filtered);
+					acc.aliasPath = parts.path;
+				}
+			}
+		}
+		if (parts.vars) {
+			mt::MatrixObject filtered = dropOwnedRows(*parts.vars, owned.vars,
+				parts.path, "Vars");
+			if (filtered.rows() > 1) {
+				if (acc.vars) {
+					acc.vars = mtmerge::mergeScalarRows(*acc.vars, filtered, "Vars",
+						acc.varsPath, parts.path);
+					acc.varsPath += "+" + parts.path;
+				} else {
+					acc.vars = std::move(filtered);
+					acc.varsPath = parts.path;
+				}
+			}
+		}
+		if (parts.action) {
+			if (acc.action) {
+				acc.action = mtmerge::mergeTwo(*acc.action, *parts.action, phase,
+					acc.actionPath, parts.path);
+				acc.actionPath += "+" + parts.path;
+			} else {
+				acc.action = std::move(*parts.action);
+				acc.actionPath = parts.path;
+			}
+		}
+	}
+
+	static std::string dirOf(const std::string& resolved) {
+		std::size_t slash = resolved.find_last_of('/');
+		return slash == std::string::npos ? std::string(".") : resolved.substr(0, slash);
+	}
+};
+
 } // namespace
 
 void expandIncludes(std::vector<mt::MatrixObject>& parsed, const std::string& baseDir) {
@@ -183,110 +409,7 @@ void expandIncludes(std::vector<mt::MatrixObject>& parsed, const std::string& ba
 	std::string base = baseDir.empty() ? "." : baseDir;
 	while (base.size() > 1 && base.back() == '/') { base.pop_back(); }
 
-	/* 主脚本自身的三块累加器（标签用于报错文案指明来源侧）：
-	 * @Action 可缺省——首个 include 的 @Action 顶替累加器，此时其相位
-	 * 无对齐目标而不生效，与 mtmerge「--phase 作用于第 2 个及后续输入」
-	 * 的口径一致。@Alias/@Vars 经 foldNamed 收集（同输入多块叠加、
-	 * 同名行报错），标签 "<main script>" 指明是本体而非某个文件。 */
-	std::optional<mt::MatrixObject> accAction, accAlias, accVars;
-	std::string accActionPath = "<main script>", accAliasPath = "<main script>",
-		    accVarsPath = "<main script>";
-	if (auto* act = mt::findByName(parsed, "Action")) { accAction = *act; }
-	auto mainAlias = mtmerge::foldNamed(parsed, "Alias", accAliasPath);
-	if (mainAlias) { accAlias = std::move(*mainAlias); }
-	auto mainVars = mtmerge::foldNamed(parsed, "Vars", accVarsPath);
-	if (mainVars) { accVars = std::move(*mainVars); }
-
-	/* 第一遍（零 IO）：收集全部 @Include 数据行并完成列头/路径/相位的
-	 * 全部词法校验——行数预算与配置错误在任何文件读取之前响亮失败，
-	 * 不给「读到一半才报错」留半途状态 */
-	struct IncludeJob {
-		std::string path;
-		std::int64_t phase = 0;
-	};
-	std::vector<IncludeJob> jobs;
-	for (const auto& m : parsed) {
-		if (bot::trim(m.getName()) != "Include") { continue; }
-		if (m.rows() == 0) { continue; }	/* 只有名字没有内容的退化块：无事可做 */
-		IncludeBlockReader rows(m);
-		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
-			IncludeRow spec = rows.row(r);
-			jobs.push_back(IncludeJob{spec.path, spec.phase});
-		}
-	}
-	if (jobs.size() > kMaxIncludes) {
-		throw bot::IllegalArgumentException("@Include declares " + std::to_string(jobs.size())
-			+ " files, exceeding the limit of " + std::to_string(kMaxIncludes)
-			+ " (include fan-out must stay bounded: each row reads a local file)");
-	}
-
-	/* 第二遍：逐行读取 + 归并（块按出现序、行按声明序，jobs 顺序即此序） */
-	std::size_t totalBytes = 0;
-	for (const IncludeJob& job : jobs) {
-		std::string resolved = base + "/" + job.path;
-		std::string data = readIncludeFile(resolved, totalBytes);
-
-		bot::MemoryReader in(std::move(data));
-		std::vector<mt::MatrixObject> incParsed;
-		mt::readMatrix(in, incParsed);
-		if (incParsed.empty()) {
-			throw bot::IllegalArgumentException("'" + resolved + "': no matrix found");
-		}
-		/* 深度限 1：被包含文件里再出现 @Include 即拒绝——递归包含需要
-		 * 环检测与深度记账，而组合可以通过链式主脚本表达，收益不抵复杂度 */
-		for (const auto& im : incParsed) {
-			if (bot::trim(im.getName()) == "Include") {
-				throw bot::IllegalArgumentException("nested @Include in '" + resolved
-					+ "' is not supported (depth limit 1;"
-					" chain main scripts instead)");
-			}
-		}
-
-		auto incAlias = mtmerge::foldNamed(incParsed, "Alias", resolved);
-		if (incAlias) {
-			if (accAlias) {
-				accAlias = mtmerge::mergeScalarRows(*accAlias, *incAlias, "Alias",
-					accAliasPath, resolved);
-				accAliasPath += "+" + resolved;
-			} else {
-				accAlias = std::move(*incAlias);
-				accAliasPath = resolved;
-			}
-		}
-		auto incVars = mtmerge::foldNamed(incParsed, "Vars", resolved);
-		if (incVars) {
-			if (accVars) {
-				accVars = mtmerge::mergeScalarRows(*accVars, *incVars, "Vars",
-					accVarsPath, resolved);
-				accVarsPath += "+" + resolved;
-			} else {
-				accVars = std::move(*incVars);
-				accVarsPath = resolved;
-			}
-		}
-
-		const mt::MatrixObject& act = mtmerge::requireAction(incParsed, resolved);
-		if (accAction) {
-			accAction = mtmerge::mergeTwo(*accAction, act, job.phase, accActionPath, resolved);
-			accActionPath += "+" + resolved;
-		} else {
-			accAction = act;	/* 拷贝：incParsed 出作用域后仍需持有 */
-			accActionPath = resolved;
-		}
-	}
-
-	/* 产物：@Alias、@Vars、@Action（若存在）+ 主脚本的未知矩阵原样透传
-	 * （mybot 的消费端按名字取用，顺序无关；规范序只为可读与可测） */
-	std::vector<mt::MatrixObject> out;
-	if (accAlias) { out.push_back(std::move(*accAlias)); }
-	if (accVars) { out.push_back(std::move(*accVars)); }
-	if (accAction) { out.push_back(std::move(*accAction)); }
-	for (auto& m : parsed) {
-		std::string n = bot::trim(m.getName());
-		if (n == "Alias" || n == "Vars" || n == "Action" || n == "Include") { continue; }
-		out.push_back(std::move(m));
-	}
-	parsed = std::move(out);
+	Expander(base).run(parsed);
 }
 
 } // namespace mtinclude

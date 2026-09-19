@@ -16,3 +16,4 @@ CREATE TABLE Relay (
 );
 INSERT INTO Relay (name, controller, note) VALUES ('r1', 'timer-0', 'inc-a');
 INSERT INTO Relay (name, controller, note) VALUES ('r2', 'timer-0', 'inc-b');
+INSERT INTO Relay (name, controller, note) VALUES ('r3', 'timer-0', 'inc-shared');

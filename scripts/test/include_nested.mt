@@ -1,4 +1,5 @@
-# 负值契约：被包含文件里再出现 @Include（include_inner.mt 含 @Include）→ 拒绝嵌套
+# 嵌套包含正值：主脚本 → 组合片段（include_scene.once.mt）→ 两个叶子片段。
+# 组合片段没有自有 @Action（纯组合合法），其有效动作 = 两叶按相位归并。
 @Action
 timer-0.delay;
   100;
@@ -6,5 +7,5 @@ timer-0.delay;
 
 @Include
 path;
-  scripts/test/include_inner.mt;
+  scripts/test/include_scene.once.mt;
 @

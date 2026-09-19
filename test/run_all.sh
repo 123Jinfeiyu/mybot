@@ -401,6 +401,8 @@ fi
 #   ctrl2_err   controller 扇出 fail-fast：第一个 controller ERR 即停止，
 #                 后续 controller 不再被转发（relay 目击者禁言断言）
 # 用例表：SQL|MT|期望退出码|输出必须包含|输出必须不含（第 5 字段可省；MT/SQL 含 "/" 时视为仓库根相对路径）
+# 第 6 字段可省，"I" = 用 --input 文件通道代替 stdin 管道（片段以自身目录为
+# include 基准，无法从仓库根以 stdin 单跑——用 I 让它们以正确基准被守门）。
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
 parse_cases=(
@@ -475,25 +477,45 @@ parse_cases=(
 	# @Include 展开（运行端动作脚本归并，归并内核与 mtmerge 共用）：
 	#   include_a/include_b    两个被包含脚本单独跑也合法（正值，登记夹具防孤儿）
 	#   include_inner          主脚本无 @Action：首个 include 顶替累加器
+	#   include_nested         嵌套正值：主脚本 → 组合片段（无自有 @Action）→ 两叶
 	#   include_main           归并正例（观察面专段补全量值断言，此处钉 110 出现 + 0 不出现）
-	#   include_nested         被包含文件里再出现 @Include → 深度限 1 拒绝
 	#   include_overlap        主脚本与 include 共享设备 → 设备集相交报错
 	#   include_missing        引用不存在的文件 → 清晰报错
+	#   include_twice          普通 .mt 重复包含 → 报错（抓笔误；共享用 *.once.mt）
+	#   include_gait.once.mt   参数化片段单独跑：$(amp) 取自身缺省 21
+	#   include_knob           旋钮正值：主脚本 @Vars 覆盖片段 amp → test=35 而非 21
+	#   shared/fa/fb.once.mt   菱形三件套单独跑均合法（fb 单独跑时 shared 未包含过）
+	#   include_diamond        菱形正值：两臂都包含 shared.once.mt，第二路跳过（注记）
 	'include_demo.sql|include_a.mt|0|test=110'
 	'include_demo.sql|include_b.mt|0|test=220'
 	'include_demo.sql|include_inner.mt|0|test=220'
 	'include_demo.sql|include_main.mt|0|test=110|test=0'
-	'include_demo.sql|include_nested.mt|1|nested @Include'
+	'include_demo.sql|include_nested.mt|0|test=220'
 	'include_demo.sql|include_overlap.mt|1|appears in both scripts'
 	'include_demo.sql|include_missing.mt|1|cannot open include file'
+	'include_demo.sql|include_twice.mt|1|more than once'
+	'include_demo.sql|include_gait.once.mt|0|test=21||I'
+	'include_demo.sql|include_knob.mt|0|test=35|test=21'
+	'include_demo.sql|shared.once.mt|0|test=300||I'
+	'include_demo.sql|fa.once.mt|0|test=100||I'
+	'include_demo.sql|fb.once.mt|0|test=200||I'
+	'include_demo.sql|include_scene.once.mt|0|test=220||I'
+	'include_demo.sql|include_diamond.mt|0|test=300'
 )
 run_one_parse() {
-	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5"
+	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5" via="${6:-}"
 	echo "----- $sql/$mt (no-hw contract) -----"
 	local sql_path="$sql" mt_path="$mt"
 	[[ "$sql" != */* ]] && sql_path="robots/test/$sql"
 	[[ "$mt" != */* ]] && mt_path="scripts/test/$mt"
-	if [ -n "$timeout_cmd" ]; then
+	if [ "$via" = "I" ]; then
+		# --input 文件通道：include 基准 = 脚本所在目录（片段夹具的正确基准）
+		if [ -n "$timeout_cmd" ]; then
+			out="$($timeout_cmd "$bin" --robot="$sql_path" --input="$mt_path" 2>&1)"
+		else
+			out="$("$bin" --robot="$sql_path" --input="$mt_path" 2>&1)"
+		fi
+	elif [ -n "$timeout_cmd" ]; then
 		out="$(cat "$mt_path" | timeout 30 "$bin" --robot="$sql_path" 2>&1)"
 	else
 		out="$(cat "$mt_path" | "$bin" --robot="$sql_path" 2>&1)"
@@ -525,12 +547,16 @@ else
 		rest="${rest#*|}"
 		want_rc="${rest%%|*}"
 		rest="${rest#*|}"
-		expect="${rest%%|*}"
-		if [ "$expect" = "$rest" ]; then forbid=""; else forbid="${rest#*|}"; fi
+		# 剩余字段：expect[|forbid[|via]]（via="I" = --input 文件通道，见用例表注释）
+		local f
+		IFS='|' read -ra f <<< "$rest"
+		expect="${f[0]:-}"
+		forbid="${f[1]:-}"
+		via="${f[2]:-}"
 		if [ -n "$filter" ] && [[ "$sql" != *"$filter"* ]] && [[ "$mt" != *"$filter"* ]]; then
 			continue
 		fi
-		run_one_parse "$sql" "$mt" "$want_rc" "$expect" "$forbid"
+		run_one_parse "$sql" "$mt" "$want_rc" "$expect" "$forbid" "$via"
 	done
 fi
 
@@ -774,19 +800,22 @@ SQLEOF
 fi
 
 # ======================================================================
-# @Include 归并观察面（parse_cases 只能钉单点断言，这里做全量值断言）：
-# include_main.mt 三路设备合并到单时间轴——r1 滞后 1 拍、r2 滞后 2 拍。
-# 断言：rc=0；两个 include 的全部动作（100/110 与 200/210/220）都在输出里；
-# 相位前导行未起拍的设备不得以 0.0 误发（test=0 禁止出现）；主脚本自己的
-# timer-0 正常走完（slept 结果 JSON 在场）。这是 @Include 展开链路的
-# 端到端正身（被包含文件内容 → 归并 → 派发）。
+# @Include 归并观察面（parse_cases 只能钉单点断言，这里做多值/计数断言）：
+#   include_main   三路设备合并到单时间轴——r1 滞后 1 拍、r2 滞后 2 拍；
+#                  两个 include 的全部动作（100/110 与 200/210/220）都在输出里；
+#                  相位前导行未起拍的设备不得以 0.0 误发（test=0 禁止出现）；
+#                  主脚本自己的 timer-0 正常走完（slept 结果 JSON 在场）。
+#   diamond        菱形复用：fa/fb 两臂都包含 shared.once.mt——skip 注记恰好
+#                  一条（include-once 生效的直接证据；第二路若未跳过会以
+#                  设备集相交报错退出）；三路动作全部在场。
 # ======================================================================
 run_include_observation() {
-	echo "----- include-main (@Include 归并观察面) -----"
 	if [ ! -x "$bin" ]; then
-		artifact_missing "@Include 归并观察面" "该用例" "$bin" "$bot_explicit"
+		artifact_missing "@Include 归并观察面" "2 条用例" "$bin" "$bot_explicit"
 		return 2
 	fi
+	# ---- include_main ----
+	echo "----- include-main (@Include 归并观察面) -----"
 	local out rc i_ok v
 	out="$(cat scripts/test/include_main.mt | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
 	rc=$?
@@ -802,6 +831,24 @@ run_include_observation() {
 		record_pass
 	else
 		record_fail "include-main(@Include 归并)"
+	fi
+	# ---- diamond ----
+	echo "----- include-diamond (include-once 观察面) -----"
+	local dout d_ok skip_n
+	dout="$(cat scripts/test/include_diamond.mt | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
+	rc=$?
+	echo "$dout"
+	d_ok=true
+	[ "$rc" -ne 0 ] && d_ok=false
+	for v in 100 200 300; do
+		echo "$dout" | grep -qF "test=$v" || d_ok=false
+	done
+	skip_n="$(echo "$dout" | grep -cF "already included")"
+	[ "$skip_n" -eq 1 ] || d_ok=false
+	if $d_ok; then
+		record_pass
+	else
+		record_fail "include-diamond(include-once)"
 	fi
 }
 if [ -z "$filter" ] || [[ "include" == *"$filter"* ]]; then
