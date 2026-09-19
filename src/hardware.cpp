@@ -99,19 +99,19 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 
 /* 表达式求值的递归深度上限：Vars 表达式可互相引用（$(v1+v2)），成环
  * （A→B→A）或自引用会无限递归。线程局部计数兜底，超限判成环并清晰报错。
- * N-15：RAII 计数收敛为 util 的 RecursionGuard。 */
+ * N-15：RAII 计数收敛为 util 的 RecursionGuard；重构计划 1-B2 把「超限
+ * 检查 + 计数」进一步合一为 DepthLimitGuard。 */
 namespace {
 thread_local int t_varsDepth = 0;
 constexpr int kMaxVarsDepth = 32;
 } // namespace
 
 double MtVars_Vars::numericValue() const {
-	if (t_varsDepth >= kMaxVarsDepth) {
-		throw IllegalArgumentException("circular @Vars expression reference detected (chain exceeds "
+	DepthLimitGuard guard(t_varsDepth, &kMaxVarsDepth, [] {
+		return "circular @Vars expression reference detected (chain exceeds "
 			+ std::to_string(kMaxVarsDepth) + " levels); an expression may not reference itself,"
-			+ " directly or indirectly.");
-	}
-	RecursionGuard guard(t_varsDepth);
+			+ " directly or indirectly.";
+	});
 	if (expr_) {
 		if (!resolve_) {
 			throw IllegalArgumentException("Vars expression has no variable resolver"

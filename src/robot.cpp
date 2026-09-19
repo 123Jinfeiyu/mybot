@@ -165,7 +165,8 @@ void MetaProvider::seed() {
 /* C1 防线：$ 引用列经 read() → getMetadata_() → collect() 互递归取实时快照，
  * 环配置（如 A.src=$B 且 B.src=$A，或自引用）会无限递归直到栈溢出。
  * 用线程局部深度计数兜底：正常引用链深度 1，超限即判定为环并清晰报错。
- * N-15：RAII 计数收敛为 util 的 RecursionGuard。 */
+ * N-15：RAII 计数收敛为 util 的 RecursionGuard；重构计划 1-B2 把「超限
+ * 检查 + 计数」合一为 DepthLimitGuard（destroy 收集只计数不设限，见下）。 */
 namespace {
 thread_local int t_refDepth = 0;
 constexpr int kMaxRefDepth = 32;
@@ -215,17 +216,20 @@ Json MetaProvider::collectRefs(bool forDestroy) {
 		 * 引用者在倒序里反而最后销毁），而 v0/out/count 这类字段本就不是器件去初始化
 		 * 所需。ERR 快照同理跳过（守护槽已移交时 readSample 按 ERR 契约返回对象而非抛错，
 		 * 把 message 混进去初始化参数没有意义）。 */
-	} else if (t_refDepth >= kMaxRefDepth) {
-		/* C1 防线：$ 引用列经 read() → getMetadata_() → collect() 互递归取实时
-		 * 快照，环配置（如 A.src=$B 且 B.src=$A，或自引用）会无限递归直到栈
-		 * 溢出——深度计数兜底，超限判环并清晰报错。（destroy 期不递归进入
-		 * 本函数，被引用方的 collect 自带同一防线。） */
-		throw IllegalArgumentException("circular '$' reference detected: reference chain exceeds "
-			+ std::to_string(kMaxRefDepth) + " levels while resolving table '" + matrix_.getName()
-			+ "' row " + std::to_string(row_)
-			+ ". Check that '$' reference columns do not form a cycle (a variable referencing itself, directly or indirectly).");
 	}
-	RecursionGuard depthGuard(t_refDepth);
+	/* C1 防线：$ 引用列经 read() → getMetadata_() → collect() 互递归取实时
+	 * 快照，环配置（如 A.src=$B 且 B.src=$A，或自引用）会无限递归直到栈
+	 * 溢出——深度计数兜底，超限判环并清晰报错。（destroy 期不递归进入
+	 * 本函数，被引用方的 collect 自带同一防线。）destroy 收集（forDestroy）
+	 * 自身不设限只计数：它嵌套触发被引用方的非销毁收集，外层深度正是
+	 * 内层超限判定的输入，故 limit 传 nullptr。 */
+	DepthLimitGuard depthGuard(t_refDepth, forDestroy ? nullptr : &kMaxRefDepth,
+		[&] {
+			return "circular '$' reference detected: reference chain exceeds "
+				+ std::to_string(kMaxRefDepth) + " levels while resolving table '" + matrix_.getName()
+				+ "' row " + std::to_string(row_)
+				+ ". Check that '$' reference columns do not form a cycle (a variable referencing itself, directly or indirectly).";
+		});
 
 	Json obj = staticPart();
 	for (const MetaRef& ref : *refs_) {

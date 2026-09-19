@@ -42,6 +42,27 @@ public:
 	RecursionGuard& operator=(const RecursionGuard&) = delete;
 };
 
+/* 深度上限防线：把「超限检查 + 计数」合并为一个 RAII。RecursionGuard（N-15）
+ * 只收敛了计数一半——上限检查仍由调用方手写，检查与计数分离地各写一份，
+ * 次序/比较符漂移即 off-by-one。构造时超限即抛 onExceed()，未超限则 ++，
+ * 析构 --（异常安全）。
+ * limit 传 nullptr = 只计数不设限：用于「自身不判环、但其计数是嵌套调用
+ * 防线输入」的路径（MetaProvider 的 destroy 收集——它嵌套触发被引用方的
+ * 非销毁收集，外层深度正是内层超限判定的输入）。
+ * 上限值与报错文案语义各异（@Vars 表达式环、$ 引用环），仍由调用方给。 */
+class DepthLimitGuard {
+	int& depth_;
+public:
+	DepthLimitGuard(int& depth, const int* limit, const std::function<std::string()>& onExceed)
+		: depth_(depth) {
+		if (limit != nullptr && depth_ >= *limit) { throw IllegalArgumentException(onExceed()); }
+		++depth_;
+	}
+	~DepthLimitGuard() { --depth_; }
+	DepthLimitGuard(const DepthLimitGuard&) = delete;
+	DepthLimitGuard& operator=(const DepthLimitGuard&) = delete;
+};
+
 /* 字节流抽象：结构/动作脚本统一按字符消费 */
 class Reader {
 public:
