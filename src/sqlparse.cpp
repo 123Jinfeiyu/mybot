@@ -76,6 +76,22 @@ std::string Token::serialize() const {
 	return "?";
 }
 
+/* 注释态机（阶段 3 拆分）：单行 `--` 与块 `/* *\/` 的状态转移，字符被注释
+ * 态消费即返回 true（调用方 continue）。转移语义与原内联 if/else 链逐项一致。 */
+bool Lexer::consumeCommentChar(char c) {
+	if (singleLineComment_ && c != '\n') { return true; }
+	if (singleLineComment_ && c == '\n') { singleLineComment_ = false; return true; }
+	if (multiLineComment_ && !multiLineComment2_ && c != '*') { return true; }
+	if (multiLineComment_ && !multiLineComment2_ && c == '*') { multiLineComment2_ = true; return true; }
+	if (multiLineComment_ && multiLineComment2_ && c != '/') { multiLineComment2_ = false; return true; }
+	if (multiLineComment_ && multiLineComment2_ && c == '/') {
+		multiLineComment_ = false;
+		multiLineComment2_ = false;
+		return true;
+	}
+	return false;
+}
+
 /* ------------- Lexer ------------- */
 Token Lexer::next(bot::Reader& sr) {
 	if (flag_) { flag_ = false; return {TokenType::END, ""}; }
@@ -93,27 +109,7 @@ Token Lexer::next(bot::Reader& sr) {
 			return Token::parse(s);
 		}
 		char c = static_cast<char>(ci);
-
-		if (singleLineComment_ && c != '\n') { continue; }
-		else if (singleLineComment_ && c == '\n') {
-			singleLineComment_ = false;
-			continue;
-		}
-
-		if (multiLineComment_ && !multiLineComment2_ && c != '*') { continue; }
-		else if (multiLineComment_ && !multiLineComment2_ && c == '*') {
-			multiLineComment2_ = true;
-			continue;
-		}
-		else if (multiLineComment_ && multiLineComment2_ && c != '/') {
-			multiLineComment2_ = false;
-			continue;
-		}
-		else if (multiLineComment_ && multiLineComment2_ && c == '/') {
-			multiLineComment_ = false;
-			multiLineComment2_ = false;
-			continue;
-		}
+		if (consumeCommentChar(c)) { continue; }
 
 		bool blank = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0');
 
@@ -234,56 +230,41 @@ void Parser::nextEnd() {
 	}
 }
 
-void Parser::nextInsertInto(InsertTableEvent& eve) {
+/* 期望下一个词元为指定类型，否则抛既有的「Token ...」报错（阶段 3 收敛：
+ * 此前在本函数内五段逐字重复） */
+Token Parser::expectType(TokenType want) {
 	Token t = expect();
-	if (t.type != TokenType::INTO) {
+	if (t.type != want) {
 		throw bot::IllegalArgumentException("Token " + t.serialize());
 	}
-	Token n = expect();
-	if (n.type != TokenType::NAME) {
-		throw bot::IllegalArgumentException("Token " + n.serialize());
+	return t;
+}
+
+/* 括号包裹的名字列表：( n1, n2, ... )——INSERT 的列名清单与 VALUES 清单
+ * 两段逐字同构（阶段 3 收敛） */
+std::vector<std::string> Parser::expectParenNameList() {
+	std::vector<std::string> names;
+	expectType(TokenType::LEFT);
+	for (;;) {
+		Token t = expectType(TokenType::NAME);
+		names.push_back(t.name);
+		t = expect();
+		if (t.type == TokenType::RGHT) { break; }
+		if (t.type != TokenType::COMMA) {
+			throw bot::IllegalArgumentException("Token " + t.serialize());
+		}
 	}
+	return names;
+}
+
+void Parser::nextInsertInto(InsertTableEvent& eve) {
+	expectType(TokenType::INTO);
+	Token n = expectType(TokenType::NAME);
 	eve.targetTabName = n.name;
 
-	std::vector<std::string> paramNames;
-	t = expect();
-	if (t.type != TokenType::LEFT) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
-	}
-	for (;;) {
-		t = expect();
-		if (t.type != TokenType::NAME) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
-		}
-		paramNames.push_back(t.name);
-		t = expect();
-		if (t.type == TokenType::RGHT) { break; }
-		if (t.type != TokenType::COMMA) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
-		}
-	}
-
-	t = expect();
-	if (t.type != TokenType::VALUES) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
-	}
-	std::vector<std::string> paramValues;
-	t = expect();
-	if (t.type != TokenType::LEFT) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
-	}
-	for (;;) {
-		t = expect();
-		if (t.type != TokenType::NAME) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
-		}
-		paramValues.push_back(t.name);
-		t = expect();
-		if (t.type == TokenType::RGHT) { break; }
-		if (t.type != TokenType::COMMA) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
-		}
-	}
+	std::vector<std::string> paramNames = expectParenNameList();
+	expectType(TokenType::VALUES);
+	std::vector<std::string> paramValues = expectParenNameList();
 
 	if (paramNames.size() != paramValues.size()) {
 		throw bot::IllegalArgumentException("Insert params");

@@ -76,6 +76,9 @@ class Lexer {
 public:
 	Token next(bot::Reader& sr);
 
+	/* 阶段 3 拆分：注释态字符消费（单行/块注释状态机，见实现处） */
+	bool consumeCommentChar(char c);
+
 	static std::vector<Token> parseAll(bot::Reader& sr) {
 		Lexer l;
 		std::vector<Token> arr;
@@ -110,6 +113,10 @@ class Parser {
 	 * 消息（Token <serialize()>）与旧实现逐一相同，仅执行模型变化。 */
 	void nextCreateTable(CreateTableEvent& eve);
 	void nextEnd();
+
+	/* 阶段 3 拆分：类型期望断言 / 括号名字清单（契约见实现处） */
+	Token expectType(TokenType want);
+	std::vector<std::string> expectParenNameList();
 
 	void nextInsertInto(InsertTableEvent& eve);
 
