@@ -68,10 +68,15 @@ int abandonedDaemonCount();
  * spawned/abandoned/slot/promise 五个字段；收敛后对外只留
  * start / requestStop / waitForExit / readSample / slot 五个入口。 */
 class DaemonRunner {
-	/* F-01：slot 由主线程（start/waitForExit/readSample）与守护线程（退出时自释，
-	 * D2 路径）两端读写——必须原子化，否则是形式上的数据竞争（UB）。取用一律
-	 * 显式 load()，拿到局部指针后再解引用（解引用期间槽由本线程的调用路径保证存活）。 */
-	std::atomic<DaemonSlot*> slot_;
+	/* F-01→2.4：槽所有权改 shared_ptr。跨线程读写成员经 std::atomic_load/
+	 * atomic_store（C++17 自由函数，seq_cst）；所有权语义由引用计数承担：
+	 * 守护线程体入口取一份强引用副本（整个 tick 循环期间持有），主线程
+	 * waitForExit 弃管时原子交出自己的引用——槽在最后一个持有者退场时
+	 * 由自定义删除器（mutex_destroy + free）释放。
+	 * 取代原 abandoned_/exitCheckDone_ 双原子 + slot 指针 exchange 的
+	 * 「唯一胜者」协议（D2/审计 #2）：引用计数下任何交错都恰好释放一次，
+	 * 无需仲裁。 */
+	std::shared_ptr<DaemonSlot> slot_;
 	int64_t joinTimeoutMs_;
 	std::shared_ptr<std::promise<int64_t>> result_;
 	std::future<int64_t> fut_;
@@ -80,18 +85,6 @@ class DaemonRunner {
 	 * 不变式：置位必须先于守护线程构造（start 实现），否则线程已读写槽而本
 	 * 标志仍为 false 的窗口内，waitForExit 会误判「未 spawn」提前释放槽。 */
 	std::atomic<bool> spawned_{false};
-	/* D2：主线程放弃等待后置位，槽所有权移交守护线程（线程退出时自行释放），
-	 * 主线程此后不再触碰槽——防放弃路径的 use-after-free。
-	 * 审计 #2：置位与线程退出检查之间存在竞态窗口——线程先查（false，决定
-	 * 不自释）、主线程后超时置位（以为线程会自释）→ 双方都不释放，槽 + mutex
-	 * 永久泄漏。收口协议：线程退出循环后先公告「退出检查已做」（exitCheckDone_，
-	 * seq_cst，保证先于它的全部槽访问可见），再复查 abandoned；主线程超时置位
-	 * 后若观察到 exitCheckDone_，以 slot_.exchange(nullptr) 认领——exchange 的
-	 * 唯一胜者释放，既无泄漏也无双重释放（详见 daemonvar.cpp 两处注释）。 */
-	std::atomic<bool> abandoned_{false};
-	/* 退出检查点：守护线程离开 tick 循环、做完全部槽访问后置位（审计 #2 协议）。
-	 * 主线程观察到它即可安全认领槽——此刻线程对槽至多只剩一次 exchange（不解引用）。 */
-	std::atomic<bool> exitCheckDone_{false};
 	/* 弱自引用（Factory 经 bindSelf 置位）：start 经 lock() 取回 shared_ptr
 	 * 交给守护线程保生命周期。必须是 weak_ptr——shared_ptr 自引用会让引用
 	 * 计数永不归零，每个守护固定泄漏 208B/4 次分配，LeakSanitizer 下所有
@@ -99,26 +92,18 @@ class DaemonRunner {
 	std::weak_ptr<DaemonRunner> self_;
 
 	/* 守护线程体：独立 lua_State，注入槽地址 + 配置串，setup 一次 + 逐拍
-	 * daemon_tick。退出时若 abandoned 置位则自行释放槽（D2）。 */
+	 * daemon_tick。入口取槽的强引用副本保全程存活（2.4）。 */
 	int64_t body(const std::string& chunk, const std::string& config, int64_t intervalMs);
 
-	/* D2 收尾的唯一出口（C-D3）：正常退出与早期失败路径（newstate/loadfile/
-	 * setup 失败）都必须经此返回——先公告退出检查点再复查 abandoned，弃管
-	 * 路径下以 exchange 认领槽并释放（唯一胜者）。此前三条早期 return 绕过
-	 * 该协议：若 luaL_loadfile 阻塞在慢存储上使 setup 慢于主线程 join 超时，
-	 * 主线程弃管后线程直接返回，槽 + mutex 永久泄漏。 */
-	int64_t exitClaim(int64_t n);
-
 public:
-	explicit DaemonRunner(DaemonSlot* s, int64_t timeout)
-		: slot_(s), joinTimeoutMs_(timeout), result_(std::make_shared<std::promise<int64_t>>()),
+	explicit DaemonRunner(std::shared_ptr<DaemonSlot> s, int64_t timeout)
+		: slot_(std::move(s)), joinTimeoutMs_(timeout),
+		  result_(std::make_shared<std::promise<int64_t>>()),
 		  fut_(result_->get_future()) {}
 
-	/* RAII 兜底：槽只在 waitForExit（经 destroy()）里释放。若 Factory 分配槽之后、
-	 * 变量进入销毁序列之前抛出（make_shared 的 bad_alloc 等），或任何绕过
-	 * deactivate 的新出口，都会泄漏 slot + 未销毁的 mutex。未 spawn 时线程不持有
-	 * 槽，析构可安全回收；已 spawn 的槽所有权归 waitForExit / abandoned 路径下的
-	 * 守护线程，此处绝不触碰（防 use-after-free）。 */
+	/* RAII 兜底：只原子交出自己的引用，不触碰槽本身——未 spawn 时本成员是
+	 * 唯一所有权（线程从未取副本），交出即由删除器释放；已 spawn 的场景下
+	 * 线程副本保证槽存活到其退出，析构交出引用既不悬垂也不泄漏。 */
 	~DaemonRunner();
 
 	/* 供线程捕获 self 保生命周期（构造期无法取得自身 shared_ptr） */
@@ -128,21 +113,24 @@ public:
 	void start(const std::string& name, const std::string& chunk,
 			const std::string& config, int64_t intervalMs);
 
-	/* 置停止标志（槽内 mutex 临界区；槽已释放则无事可做） */
+	/* 置停止标志（槽已交出/已释放则无事可做） */
 	void requestStop();
 
-	/* 带超时等待线程退出并释放槽；超时则置 abandoned 移交所有权（D2） */
+	/* 带超时等待线程退出并释放槽；超时则弃管——主线程交出自己的引用，
+	 * 槽由守护线程副本兜底到最后（2.4：所有权移交即引用计数自然交接） */
 	void waitForExit(const std::string& name);
 
-	/* 主线程读采样快照；放弃路径下槽所有权已移交，按 ERR 契约返回。
-	 * 并发契约（审计中-2，显式化）：play/readSample 与 destroy/waitForExit
-	 * 必须同线程顺序执行（生产路径均在主线程）。本方法只对「abandoned 已
-	 * 置位」按 ERR 返回，不防御与 destroy 并发时的 TOCTOU（load 到槽之后
-	 * abandoned 才置位）——那需要完整的所有权仲裁。防线是本条契约而非
-	 * 代码；TSan 实测记录见 test/cpp/test_daemon_concurrency.cpp。 */
+	/* 主线程读采样快照；槽已交出/已释放时按 ERR 契约返回。
+	 * 2.4：本方法加载本地强引用副本，读取期间槽由副本保证存活——
+	 * 「play/readSample 与 destroy/waitForExit 同线程顺序执行」契约
+	 * （审计中-2）下的 TOCTOU 缺口（load 到槽之后 destroy 才置空）由
+	 * 代码保证堵死，不再依赖防线注释。TSan 实测记录见
+	 * test/cpp/test_daemon_concurrency.cpp。 */
 	Json readSample();
 
-	DaemonSlot* slot() const { return slot_.load(); }
+	/* 槽是否仍在位（2.4：原裸指针 slot() 入口收窄为布尔，避免调用方
+	 * 拿到绕过所有权模型的裸指针） */
+	bool slotAlive() const { return std::atomic_load(&slot_) != nullptr; }
 };
 
 /* ---- 守护硬件变量（R-3：真实子类，持 runner 的 shared_ptr）----

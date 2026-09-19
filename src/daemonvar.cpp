@@ -42,46 +42,33 @@ bool daemon_stop_requested(DaemonSlot* slot) {
 	return s != 0;
 }
 
-/* ---- 共享槽释放：销毁 mutex 并释放（由加锁线程独占调用）---- */
+/* ---- 共享槽释放（2.4）：作为 shared_ptr 删除器，由「最后一个持有者」
+ * 调用——引用计数保证此刻无任何线程仍在临界区内。 ---- */
 static void releaseSlot(DaemonSlot* slot) {
 	pthread_mutex_destroy(mutexOf(slot));
 	std::free(slot);
 }
 
-/* ---- DaemonRunner RAII 兜底（见头文件注释）：仅回收线程尚未接管所有权（未 spawn）的槽 ---- */
+/* ---- DaemonRunner RAII 兜底（见头文件注释）：只原子交出自己的引用，
+ * 不触碰槽本身——未 spawn 时本成员是唯一所有者，交出即释放；已 spawn 时
+ * 线程副本兜底到最后，既不悬垂也不泄漏。 ---- */
 DaemonRunner::~DaemonRunner() {
-	DaemonSlot* s = slot_.load();
-	if (s != nullptr && !spawned_.load()) {
-		releaseSlot(s);
-		slot_.store(nullptr);
-	}
-}
-
-/* ---- D2 收尾唯一出口（C-D3，详见 daemonvar.hpp）---- */
-int64_t DaemonRunner::exitClaim(int64_t n) {
-	if (!abandoned_.load()) {
-		exitCheckDone_.store(true);
-		if (!abandoned_.load()) { return n; }
-	}
-	/* 弃管路径：槽所有权归本线程。以 exchange 认领——若主线程超时后已先行
-	 * 认领，此处拿到 nullptr，零接触返回；唯一胜者释放，无双重释放。 */
-	DaemonSlot* mine = slot_.exchange(nullptr);
-	if (mine != nullptr) { releaseSlot(mine); }
-	return n;
+	std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
 }
 
 /* ---- 守护线程体：建私有 lua_State，注入槽地址 + 配置，setup 一次 + 逐拍 tick ----
- * 线程持 runner 的 shared_ptr 保生命周期；退出时若 abandoned 置位（主线程已放弃等待），
- * 槽所有权归本线程——以 exchange 认领后释放（D2）。主线程超时置位可能落在
- * 本线程首次检查之后（审计 #2），故先公告退出检查点再复查，双方以 exchange
- * 的唯一胜者裁决释放，竞态窗口归零。 */
+ * 线程持 runner 的 shared_ptr 保生命周期；入口另取槽的强引用副本——
+ * 整个 tick 循环期间槽由副本保证存活，弃管（主线程交出引用）后本副本
+ * 就是最后所有者，返回时触发删除器。2.4：旧协议的退出检查点 + exchange
+ * 唯一胜者仲裁（D2/审计 #2）在引用计数模型下不需要。 */
 int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, int64_t intervalMs) {
-	DaemonSlot* slot = slot_.load();
+	std::shared_ptr<DaemonSlot> slot = std::atomic_load(&slot_);
+	if (slot == nullptr) { return -1; }	/* 弃管早于本线程首次取槽的交错：槽已移交，无事可做 */
 	lua_State* L = openSandboxedState();
-	if (L == nullptr) { return exitClaim(-1); }
+	if (L == nullptr) { return -1; }
 
 	/* 注入共享槽地址（64 位整数 tag，任意值逐位保真）与配置串为 Lua 全局 */
-	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot)));
+	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot.get())));
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_ADDR");
 	lua_pushstring(L, config.c_str());
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_CONFIG");
@@ -91,13 +78,13 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	if (st != LUA_OK) {
 		std::cerr << "[daemon] chunk load error: " << luaErrorString(L) << std::endl;
 		lua_close(L);
-		return exitClaim(-1);
+		return -1;
 	}
 	int setupStatus = lua_pcall(L, 0, LUA_MULTRET, 0);
 	if (setupStatus != LUA_OK) {
 		std::cerr << "[daemon] chunk setup error: " << luaErrorString(L) << std::endl;
 		lua_close(L);
-		return exitClaim(-1);
+		return -1;
 	}
 	lua_settop(L, 0);
 
@@ -107,7 +94,7 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	 * 逐条打印定位问题，之后每 100 次一条摘要；拍间 sleep 按 2^n 退避
 	 * （上限 ×256，避免长 interval 停机阻塞被进一步放大），成功一拍即清零。 */
 	int64_t tickErrors = 0;
-	while (!daemon_stop_requested(slot)) {
+	while (!daemon_stop_requested(slot.get())) {
 		lua_getglobal(L, "daemon_tick");
 		int st2 = lua_pcall(L, 0, LUA_MULTRET, 0);
 		if (st2 != LUA_OK) {
@@ -140,22 +127,20 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	/* F-01：count 与 stop 同规——都在槽内 mutex 临界区读取（此前锁外裸读，
 	 * 与 daemonvar.hpp 的 stop 纪律不对称） */
 	int64_t n;
-	pthread_mutex_lock(mutexOf(slot));
+	pthread_mutex_lock(mutexOf(slot.get()));
 	n = slot->count;
-	pthread_mutex_unlock(mutexOf(slot));
+	pthread_mutex_unlock(mutexOf(slot.get()));
 	lua_close(L);
-	/* D2 + 审计 #2：主线程超时弃管（置 abandoned）可能恰好落在本线程首次
-	 * 检查之后——先公告退出检查已做（此后本线程对槽至多剩一次 exchange，
-	 * 不再解引用），再复查一次；复查仍为 false 则槽留给主线程（joined 路径
-	 * 或超时后的 exchange 认领）释放，本线程直接返回。C-D3：收尾统一走
-	 * exitClaim（与早期失败路径同一出口）。 */
-	return exitClaim(n);
+	/* 2.4：返回即交还本线程的引用副本。弃管路径下这里是最后所有者，
+	 * 删除器（mutex_destroy + free）在本线程执行——与旧协议「线程自行
+	 * 释放」语义一致，仲裁交给引用计数。 */
+	return n;
 }
 
 /* ---- start：spawn 守护线程 ---- */
 void DaemonRunner::start(const std::string& name, const std::string& chunk,
 		const std::string& config, int64_t intervalMs) {
-	if (slot_.load() == nullptr) {
+	if (std::atomic_load(&slot_) == nullptr) {
 		throw std::runtime_error("Daemon '" + name + "' slot already released, cannot spawn");
 	}
 	/* self_ 是 weak_ptr（打破自引用环防泄漏）：此处取回强引用交给线程保生命周期。
@@ -185,74 +170,62 @@ void DaemonRunner::start(const std::string& name, const std::string& chunk,
 	std::cerr << "Daemon '" << name << "' spawned, config: " << config << std::endl;
 }
 
-/* ---- requestStop：置停止标志（槽已释放或已放弃所有权则无事可做）----
- * 审计 H-3 防线：abandon 路径下槽所有权已移交守护线程（waitForExit 只置
- * abandoned_ 不清 slot_），此后任何 requestStop 都可能触碰已被守护线程
- * pthread_mutex_destroy + free 的槽——与 readSample 同一判据，不得只判空。 */
+/* ---- requestStop：置停止标志（槽已交出/已释放则无事可做）----
+ * 审计 H-3 防线在 2.4 模型下的形态：弃管即成员置空，本地强引用副本
+ * 保证检查与上锁之间槽不可能被释放。 */
 void DaemonRunner::requestStop() {
-	DaemonSlot* slot = slot_.load();
-	if (slot == nullptr || abandoned_.load()) { return; }
-	daemon_request_stop(slot);
+	std::shared_ptr<DaemonSlot> slot = std::atomic_load(&slot_);
+	if (slot == nullptr) { return; }
+	daemon_request_stop(slot.get());
 }
 
-/* ---- waitForExit：置停止 + 带超时等待退出 + 销毁 mutex/槽 ----
+/* ---- waitForExit：置停止 + 带超时等待退出 + 交出引用 ----
  * D1：未 spawn（build 中途失败）的守护 promise 永不 set——跳过等待直接释放槽。
- * D2：spawn 过但 join 超时，置 abandoned 把槽所有权移交守护线程自行释放，
- * 主线程此后不再触碰槽（readSample 对 slot==nullptr 返回 ERR 契约）。 */
+ * 2.4：弃管 = 主线程原子交出自己的引用。守护线程的强引用副本保证槽存活到
+ * 其退出，引用计数在最后持有者退场时经删除器释放——旧协议的退出检查点 +
+ * exchange 唯一胜者裁决（审计 #2：双方互错过则槽 + mutex 永久泄漏）在
+ * 计数模型下不需要：任何交错都恰好释放一次。主线程此后 load 恒为 null，
+ * requestStop/readSample 的「不得触碰已弃管槽」由判空兜底。 */
 void DaemonRunner::waitForExit(const std::string& name) {
-	DaemonSlot* slot = slot_.load();
-	/* 已释放（重复销毁）或已放弃所有权（重复等待）——无事可做，不得触碰槽 */
-	if (slot == nullptr || abandoned_.load()) { return; }
-	daemon_request_stop(slot);
+	std::shared_ptr<DaemonSlot> slot = std::atomic_load(&slot_);
+	/* 已释放（重复销毁）或已弃管（重复等待）——无事可做 */
+	if (slot == nullptr) { return; }
+	daemon_request_stop(slot.get());
 	if (!spawned_.load()) {
 		std::cerr << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
-		releaseSlot(slot);
-		slot_.store(nullptr);
-		return;
+		std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
+		return;	/* 线程从未存在，本地副本是唯一剩余所有者，出作用域即释放 */
 	}
 	if (fut_.valid()) {
 		std::future_status st = fut_.wait_for(std::chrono::milliseconds(joinTimeoutMs_));
 		if (st == std::future_status::ready) {
 			int64_t n = fut_.get();
 			std::cerr << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
-			releaseSlot(slot);
-			slot_.store(nullptr);
-			return;
+			std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
+			return;	/* 线程已退场并交出副本，本地副本是最后所有者 */
 		}
-		abandoned_.store(true);
 		g_abandonedDaemons.fetch_add(1);	/* N-7：进程退出前统一告警 */
-		/* 审计 #2：置弃管后检查线程是否已过「退出检查点」。
-		 * - 未过：线程离开 tick 循环后必在复查中看到 abandoned 并自行
-		 *   exchange 认领释放——本方不得触碰槽（线程可能仍在拍内）。
-		 * - 已过：线程的全部槽访问已结束（seq_cst 检查点保证可见），
-		 *   且其弃管路径的 exchange 可能尚未执行——由本方 exchange 认领。
-		 *   exchange 的唯一胜者释放：线程先认领则本方拿到 nullptr，
-		 *   本方先认领则线程拿到 nullptr——旧实现此处直接 return，与
-		 *   线程退出检查互错过，槽 + mutex 永久泄漏。 */
-		if (exitCheckDone_.load()) {
-			DaemonSlot* mine = slot_.exchange(nullptr);
-			if (mine != nullptr) { releaseSlot(mine); }
-		}
+		std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
 		std::cerr << "Daemon '" << name << "' not exited within " << joinTimeoutMs_
 			<< "ms, abandoning slot (thread will release it on exit)" << std::endl;
 		return;
 	}
-	releaseSlot(slot);
-	slot_.store(nullptr);
+	std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
 }
 
 /* ---- readSample：主线程加锁读采样值 → JSON（v0..vN 标量键 + values 数组）---- */
 Json DaemonRunner::readSample() {
-	/* D2：放弃路径下槽所有权已移交守护线程，主线程不再触碰——
-	 * abandoned 置位或槽已置空时按 ERR 契约返回，不碰悬垂指针。
-	 * F-01：槽指针原子读取，取回局部指针后再解引用。 */
-	DaemonSlot* slot = slot_.load();
-	if (slot == nullptr || abandoned_.load()) {
+	/* 2.4：加载本地强引用副本——本次读取期间槽由副本保证存活。原「play/
+	 * readSample 与 destroy 同线程顺序」契约（审计中-2）下的 TOCTOU 缺口
+	 * （load 到槽之后 destroy 才置空）升格为代码保证：即便 destroy 并发
+	 * 置空成员，本副本仍持引用，不存在悬垂解引用。 */
+	std::shared_ptr<DaemonSlot> slot = std::atomic_load(&slot_);
+	if (slot == nullptr) {
 		return makeErrResult("daemon slot already released");
 	}
 	Json ret = JsonObject();
 	Json arr = JsonArray();
-	pthread_mutex_lock(mutexOf(slot));
+	pthread_mutex_lock(mutexOf(slot.get()));
 	int32_t nvals = slot->nvals;
 	int32_t count = slot->count;
 	int32_t slotStatus = slot->status;
@@ -263,7 +236,7 @@ Json DaemonRunner::readSample() {
 		arr.add(JsonFloat(v));
 		ret.put("v" + std::to_string(k), JsonFloat(v));
 	}
-	pthread_mutex_unlock(mutexOf(slot));
+	pthread_mutex_unlock(mutexOf(slot.get()));
 	/* N-27：守护 setup 失败绝不伪装成采样值。旧实现把失败码（-2/-8/-9…）发进
 	 * v0，下游 $ 引用无从甄别——配置错误会被当作温度做闭环，只有 count 停滞
 	 * 这种间接迹象。现在 status ≠ 0 直接抛错：这是**永久性**失败（守护不会
@@ -449,18 +422,21 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 	/* join 超时：interval 5 倍并保底 2000ms */
 	int64_t joinTimeoutMs = (intervalMs * 5 > 2000) ? intervalMs * 5 : 2000;
 
-	/* 分配并清零共享槽，初始化 mutex（malloc 失败立即抛错拒绝空指针解引用） */
-	DaemonSlot* slot = static_cast<DaemonSlot*>(std::calloc(1, SLOT_SIZE));
-	if (slot == nullptr) {
+	/* 分配并清零共享槽，初始化 mutex（malloc 失败立即抛错拒绝空指针解引用）。
+	 * 2.4：槽所有权入 shared_ptr，删除器 = releaseSlot（mutex_destroy + free）——
+	 * 最后一个持有者（主线程 / 守护线程）退场时释放。 */
+	DaemonSlot* raw = static_cast<DaemonSlot*>(std::calloc(1, SLOT_SIZE));
+	if (raw == nullptr) {
 		throw std::runtime_error("Daemon '" + name + "' failed to allocate shared slot ("
 			+ std::to_string(SLOT_SIZE) + " bytes)");
 	}
-	if (pthread_mutex_init(mutexOf(slot), nullptr) != 0) {
-		std::free(slot);
+	if (pthread_mutex_init(mutexOf(raw), nullptr) != 0) {
+		std::free(raw);
 		throw std::runtime_error("Daemon '" + name + "' failed to initialize slot mutex");
 	}
 
-	auto runner = std::make_shared<DaemonRunner>(slot, joinTimeoutMs);
+	auto runner = std::make_shared<DaemonRunner>(
+		std::shared_ptr<DaemonSlot>(raw, releaseSlot), joinTimeoutMs);
 	runner->bindSelf(runner);	/* 线程捕获 self 保生命周期 */
 	registry.push_back(runner);
 

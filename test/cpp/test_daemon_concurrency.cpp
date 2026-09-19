@@ -102,7 +102,7 @@ TH_TEST(daemon_concurrent_readers_during_publish) {
 
 	/* 停机走正常 joined 路径，槽释放后读者再触碰按 ERR 契约返回 */
 	var->destroy();
-	TH_CHECK(registry[0]->slot() == nullptr);
+	TH_CHECK(!registry[0]->slotAlive());
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
 }
@@ -136,7 +136,7 @@ TH_TEST(daemon_multi_runner_staggered_teardown) {
 	 * 与 test_daemon.cpp 的 abandoned 等待同款放宽）。 */
 	std::this_thread::sleep_for(std::chrono::milliseconds(3500));
 	for (std::size_t k = 0; k < registry.size(); ++k) {
-		TH_CHECK(registry[k]->slot() == nullptr);
+		TH_CHECK(!registry[k]->slotAlive());
 	}
 }
 
@@ -173,11 +173,11 @@ TH_TEST(daemon_stop_and_exit_reentry) {
 
 	/* 停机走正常 joined 路径（daemon_probe 快拍，join 不超时） */
 	var->destroy();
-	TH_CHECK(registry[0]->slot() == nullptr);
+	TH_CHECK(!registry[0]->slotAlive());
 	TH_CHECK(no_crash.load());
 
 	/* 退出后再触碰：requestStop / waitForExit / play 全部按契约无事发生 */
 	registry[0]->requestStop();
 	var->destroy();
-	TH_CHECK(registry[0]->slot() == nullptr);
+	TH_CHECK(!registry[0]->slotAlive());
 }
