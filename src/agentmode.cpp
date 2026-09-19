@@ -38,8 +38,7 @@ bool parseIntOption(const std::string& raw, const char* key, int lo, int hi,
 		return false;
 	}
 	if (value < lo || value > hi) {
-		err = std::string("选项 --") + key + " 需要在 [" + std::to_string(lo) + ", "
-			+ std::to_string(hi) + "] 范围内，实际是 " + std::to_string(value);
+		err = rangeErrorText(std::string("选项 --") + key, lo, hi, std::to_string(value));
 		return false;
 	}
 	out = static_cast<int>(value);

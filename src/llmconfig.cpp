@@ -94,8 +94,7 @@ bool wantInt(const std::string& path, const Json& root, const char* key,
 	if (!std::isfinite(d) || d < static_cast<double>(lo) || d > static_cast<double>(hi)) {
 		std::ostringstream os;
 		os << d;
-		err = "配置文件 " + path + " 的字段 '" + key + "' 需要在 [" + std::to_string(lo)
-			+ ", " + std::to_string(hi) + "] 范围内，实际是 " + os.str();
+		err = rangeErrorText("配置文件 " + path + " 的字段 '" + key + "'", lo, hi, os.str());
 		return false;
 	}
 	if (std::floor(d) != d) {
