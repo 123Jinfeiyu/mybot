@@ -18,6 +18,7 @@
 
 ### 语言与 DSL
 
+- **`trigger` 前置调用列**：controller 的镜像入边——当前零件被派发前，框架先以空参数调用 `trigger` 列指向的硬件变量（一次语义完整的 play，其自身 controller 链照走），返回表经 `ensureOk` 契约检查后以**触发器名字为键的子表**并入调用参数（`data.<触发器名> = {…}`），再运行当前零件自己的 `call`。与 controller 共用「先声明」约束（引用图按构造无环，派发期免环检测）、N-6 会话别名覆盖拒绝；目标可为 Lua 驱动或守护变量（守护无首帧 `count=0` 不是错误），`@Alias`/`@Vars` 标量拒绝；只挂 play 路径（含 controller 转发嵌套与 agent `playQuiet`），`read`/`build`/`destroy` 不触发；触发器名与本表元数据列同名/框架保留键装配期拒绝、`.mt` 参数键占用派发期拒绝；controller 转发 payload 不含触发器子表（输入侧数据要继续转发须由驱动显式回显）。守门 `trig_basic`（正值 + 顺序/数据到位观察面专段）与 `trig_forward`/`trig_scalar`/`trig_reserved`/`trig_collide`/`trig_dollar`/`trig_param`/`trig_n6`/`trig_err`（负值）；`MetaProvider` 的结构引用列改按保留列名跳过（`name`/`controller`/`trigger`）
 - **`$(...)` 算术表达式**：`@Vars.value`、结构脚本元数据列、`@Action` 单元格三处可用（`+ - * / %`、括号、一元正负，标识符仅限 `@Vars`）。独立递归下降解析器（`src/expr.*`）：语法错误带位置、括号深度/运算符数双上限、除零报错、出口 `isfinite` 拒绝 inf/nan；AST 惰性求值（前向引用、成环检测）。守门 `expr_num`/`expr_undefined`，单测 `test_expr`
 - **`@Vars` 命名数值变量**：与 `@Alias` 同构（列 `name`/`value`），仅数值字面量或 `$(...)`，非数值注册期即报错。两种消费：结构脚本元数据列 `$<name>`（唯一允许 `$` 指向标量的类型）、动作脚本参数位替换；`.mt` 内联不得覆盖结构定义。守门 `vars_num` 正值 + `vars_bad`/`vars_nonnum`/`vars_dup`/`vars_override` 负值
 - **结构脚本 `Number` 列类型**：解析期一次数值校验（拒绝空值/`nan`/`inf`），值仍按文本驻留。守门 `number_type`/`number_bad`

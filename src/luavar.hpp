@@ -1,12 +1,16 @@
 #pragma once
 /* luavar.hpp —— Lua 状态机硬件变量（移植 bot4cj/src/HV/Lua.cj）
  * Lua 状态机在工厂中提前创建；build() 加载脚本并跑一次 build，destroy() 释放。
- * controller 转发：元数据 ∪ 自己 Lua 返回表 → controller.play(payload)。
+ * controller 转发（出边）：元数据 ∪ 自己 Lua 返回表 → controller.play(payload)。
+ * trigger 前置调用（入边）：先逐个 play trigger 列指向的变量，返回表以触发器
+ * 名字为键并入调用参数，再运行自己的 Lua call——两者方向相反、共用一套
+ * 引用登记（HwRegistry flowRefs）与「先声明」约束。
  */
 
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "hardware.hpp"
 #include "luaend.hpp"
@@ -36,12 +40,20 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	 * controller 名字，指针终身有效），后续转发不再逐次查表。 */
 	std::string ctrlName_;
 	MatrixVars_Hardware* ctrl_ = nullptr;
+	/* trigger 前置引用（入边）：当前零件每次 play 之前，框架先以空参数逐个
+	 * 调用这里的变量，返回表以触发器名字为键并入调用参数。指针同 ctrl_ 一样
+	 * 首用缓存——装配期已校验存在性且 flowRefs_ 拒绝会话期覆盖，指针终身有效。
+	 * 只挂在 callImpl（play/playQuiet）上：read()/build/destroy 不触发。 */
+	std::vector<std::string> trigNames_;
+	std::vector<MatrixVars_Hardware*> trigPtrs_;
 	HwRegistry* registry_;
 
 	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,
-			std::function<Json(bool)> getMetadata, std::string ctrlName, HwRegistry* registry)
+			std::function<Json(bool)> getMetadata, std::string ctrlName,
+			std::vector<std::string> trigNames, HwRegistry* registry)
 		: L_(L), luapath_(std::move(luapath)), name_(std::move(name)),
 		  getMetadata_(std::move(getMetadata)), ctrlName_(std::move(ctrlName)),
+		  trigNames_(std::move(trigNames)), trigPtrs_(trigNames_.size(), nullptr),
 		  registry_(registry) {}
 
 	Json callImpl(const Json& json, bool echo);
@@ -68,7 +80,8 @@ public:
 	void destroy() override { freeImpl(); }
 
 	static std::unique_ptr<MtVars_Lua> Factory(const std::string& luapath, const std::string& name,
-			std::function<Json(bool)> getMetadata, std::string ctrlName = "", HwRegistry* registry = nullptr);
+			std::function<Json(bool)> getMetadata, std::string ctrlName = "",
+			std::vector<std::string> trigNames = {}, HwRegistry* registry = nullptr);
 };
 
 } // namespace bot

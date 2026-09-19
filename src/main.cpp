@@ -214,7 +214,8 @@ void print_help() {
 	std::cout << "  ./build/mybot --robot=robots/spider1.sql --agent --llm-config mybot.llm.json" << std::endl;
 	std::cout << "" << std::endl;
 	std::cout << "安全约束：动作脚本只能引入新的参数键，不得覆盖结构脚本的元数据列" << std::endl;
-	std::cout << "（fd / address / max / min / offset 等）；结构脚本与动作脚本单次输入上限均为 8 MiB。" << std::endl;
+	std::cout << "（fd / address / max / min / offset 等）与触发器引用名（trigger 列）；" << std::endl;
+	std::cout << "结构脚本与动作脚本单次输入上限均为 8 MiB。" << std::endl;
 }
 
 } // namespace bot

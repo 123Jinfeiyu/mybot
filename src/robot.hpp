@@ -1,7 +1,7 @@
 #pragma once
 /* robot.hpp —— 机器人构成模块（移植 bot4cj/src/RobotStruct.cj）
  * 结构脚本（SQL）→ MatrixObject 表 → 硬件变量注册表；
- * @Action 逐行重放，controller/Alias/守护 机制在此装配。
+ * @Action 逐行重放，controller/trigger/Alias/守护 机制在此装配。
  * R-1：RobotStruct 收敛为编排门面；脚本装载（ScriptLoader）、硬件装配
  * （HwFactory）、动作重放（ActionRunner）三个协作对象各司其职。
  */
@@ -32,10 +32,10 @@ class HwRegistry {
 	std::vector<std::unique_ptr<MatrixVars_Hardware>> pool_;	/* 所有权（含 run 期别名） */
 	std::vector<MatrixVars_Hardware*> seq_;			/* 销毁序：结构声明序，active/deactivate 按序 */
 	std::map<std::string, MatrixVars_Hardware*> byName_;	/* 名字索引 */
-	/* N-6：被引用为 controller 的名字集合——会话期覆盖不得触碰，
-	 * 否则 controller 转发按名查到别名（MtVars_Alias），报出的
-	 * "non-table result" 与真实成因（控制器被覆盖）完全脱节。 */
-	std::set<std::string> controllerRefs_;
+	/* N-6：被结构引用列（controller 出边 / trigger 入边）指向的名字集合——
+	 * 会话期覆盖不得触碰，否则派发按名查到别名（MtVars_Alias），报出的
+	 * "non-table result" 与真实成因（引用目标被覆盖）完全脱节。 */
+	std::set<std::string> flowRefs_;
 
 public:
 	/* 结构期注册：重名即抛（source 指明声明来源，如 " (in table 'X')"） */
@@ -44,11 +44,11 @@ public:
 
 	/* 会话期别名覆盖：不进入销毁序（别名无资源可释放），只改写名字索引。
 	 * 被覆盖的结构变量仍在销毁序中，deactivate 照常清理。
-	 * 名字被引用为 controller 时拒绝覆盖（N-6）。 */
+	 * 名字被引用为 controller/trigger 时拒绝覆盖（N-6）。 */
 	void override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw);
 
-	/* 登记 controller 引用（createLuaVars 装配期调用） */
-	void addControllerRef(const std::string& name) { controllerRefs_.insert(name); }
+	/* 登记结构引用列指向的名字（controller/trigger，createLuaVars 装配期调用） */
+	void addFlowRef(const std::string& name) { flowRefs_.insert(name); }
 
 	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛）——
 	 * MetaProvider 的 $(...) 求值、HwFactory 装配、runAction 表达式列共用 */
@@ -83,11 +83,11 @@ struct MetaRef {
 	std::shared_ptr<const Expression> expr;		/* 表达式引用 */
 };
 
-/* P8/M2：元数据静态列缓存（字面列冻结 + 引用列实时 read() 快照） */
+/* P8/M2：元数据静态列缓存（字面列冻结 + 引用列实时 read() 快照）。
+ * name 列与结构引用列（controller/trigger）不进元数据——按保留列名跳过。 */
 class MetaProvider {
 	const mt::MatrixObject& matrix_;
 	std::int64_t row_;
-	std::int64_t skipCol_;
 	const HwRegistry* registry_;
 	std::optional<std::vector<std::string>> cols_;
 	std::optional<std::vector<std::string>> vals_;
@@ -102,9 +102,9 @@ class MetaProvider {
 	Json collectRefs(bool forDestroy);
 
 public:
-	MetaProvider(const mt::MatrixObject& matrix, std::int64_t row, std::int64_t skipCol,
+	MetaProvider(const mt::MatrixObject& matrix, std::int64_t row,
 			const HwRegistry* registry)
-		: matrix_(matrix), row_(row), skipCol_(skipCol), registry_(registry) {}
+		: matrix_(matrix), row_(row), registry_(registry) {}
 
 	Json collect();
 	/* F-04′：字面列 + 引用列的「尽力而为」快照——destroy 阶段用。

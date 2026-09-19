@@ -20,12 +20,12 @@ void HwRegistry::add(const std::string& name, std::unique_ptr<MatrixVars_Hardwar
 
 /* ---- HwRegistry：会话期别名覆盖（不进销毁序，只改名字索引）---- */
 void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw) {
-	/* N-6：被引用为 controller 的名字不得覆盖——否则 controller 转发按名
+	/* N-6：被引用为 controller/trigger 的名字不得覆盖——否则派发按名
 	 * 查到别名（MtVars_Alias），报出的 "non-table result" 与真实成因
-	 * （控制器被动作脚本覆盖）完全脱节。 */
-	if (controllerRefs_.count(name)) {
+	 * （引用目标被动作脚本覆盖）完全脱节。 */
+	if (flowRefs_.count(name)) {
 		throw IllegalArgumentException("action script alias must not override '"
-			+ name + "': it is referenced as a controller by another hardware variable");
+			+ name + "': it is referenced as a controller or trigger by another hardware variable");
 	}
 	MatrixVars_Hardware* p = hw.get();
 	byName_[name] = p;
@@ -64,7 +64,7 @@ double resolveVarsNumber(const HwRegistry* reg, const std::string& name) {
 /* ---- MetaProvider：P8/M2 元数据收集 ----
  * 字面列与 "-" 继承结果首采冻结，之后每次浅拷贝重放；
  * "-" 整列缺省 → 跳过（Lua 侧 tonumber(nil) or 缺省）；
- * name 列、controller(skipCol) 列 → 跳过；
+ * name 列、结构引用列（controller/trigger，按保留列名识别）→ 跳过；
  * 引用列（值以 $ 前缀显式标记）→ 运行期每次实时 read() 快照，不入缓存；
  * $(...) 表达式引用 → seed 期解析/校验标识符，collect 期惰性求值。 */
 void MetaProvider::seed() {
@@ -76,7 +76,7 @@ void MetaProvider::seed() {
 		const std::string& colName = matrix_(0, j);
 		std::string value = matrix_.inherited(row_, j);
 		if (value == "-") { continue; }
-		if (j == idxName || j == skipCol_) { continue; }
+		if (j == idxName || colName == "controller" || colName == "trigger") { continue; }
 		if (value.rfind("$", 0) == 0) {
 			if (auto body = exprBody(value)) {
 				MetaRef ref;
@@ -399,6 +399,7 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
 	}
 	std::int64_t idxCtrl = matrix.indexOfCol(0, "controller");
+	std::int64_t idxTrig = matrix.indexOfCol(0, "trigger");
 	std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
 	std::string scriptPath = firstExistingModule(modulePath, mtName + ".lua");
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
@@ -414,16 +415,65 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 						+ "', but it is not defined yet. The controller must be defined before the matrix that references it.");
 				}
 				/* N-6：登记 controller 引用，会话期覆盖将拒绝触碰该名字 */
-				registry_.addControllerRef(rawCtrl);
+				registry_.addFlowRef(rawCtrl);
 				ctrlName = rawCtrl;
 			}
 		}
-		auto metaProv = std::make_shared<MetaProvider>(matrix, i, idxCtrl, &registry_);
+		std::vector<std::string> trigNames;
+		if (idxTrig >= 0) {
+			std::string rawTrig = matrix.inherited(i, idxTrig);
+			if (rawTrig != "-") {
+				/* trigger 引用（入边）的装配期校验。与 controller 同规则的
+				 * 「先声明」约束在这里顺带买断了一个不变式：两条引用边都只指向
+				 * 更早声明的变量 ⇒ 整个 trigger/controller 调用图按构造是 DAG，
+				 * 派发期无需环检测（前向引用是 $ 数据列的专属能力）。 */
+				if (rawTrig.rfind("$", 0) == 0) {
+					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
+						+ rawTrig + "' in table '" + mtName + "': the trigger column takes a plain"
+						+ " variable name and does not support '$' references (a trigger is an"
+						+ " invocation edge, not a data wire; use a '$' metadata column for snapshots).");
+				}
+				if (rawTrig == "result" || rawTrig == "message" || rawTrig == "mode") {
+					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
+						+ rawTrig + "' in table '" + mtName + "': '" + rawTrig
+						+ "' is a framework-reserved key and cannot name a trigger.");
+				}
+				MatrixVars_Hardware* target = registry_.find(rawTrig);
+				if (target == nullptr) {
+					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
+						+ rawTrig + "' in table '" + mtName
+						+ "', but it is not defined yet. The trigger must be defined before the matrix that references it.");
+				}
+				if (dynamic_cast<MtVars_Text*>(target) != nullptr) {
+					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
+						+ rawTrig + "' in table '" + mtName
+						+ "': '@Alias'/'@Vars' scalars cannot be trigger targets (a trigger is"
+						+ " invoked via play and must return a result table).");
+				}
+				/* 触发器结果以触发器名字为键并入调用参数——与本行元数据列同名会让
+				 * 该键易主，装配期拒绝（列集合此刻已定型）；.mt 参数键同名由
+				 * MtVars_Lua::rejectReservedKeys 在派发期拒绝（.mt 此刻还没加载）。 */
+				for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix.cols()); ++j) {
+					const std::string& colName = matrix(0, j);
+					if (colName == "name" || colName == "controller" || colName == "trigger") { continue; }
+					if (colName == rawTrig) {
+						throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
+							+ rawTrig + "' in table '" + mtName + "': the trigger result is merged"
+							+ " under the trigger name, which collides with metadata column '"
+							+ colName + "'. Rename one of them.");
+					}
+				}
+				/* N-6：登记 trigger 引用，会话期覆盖将拒绝触碰该名字 */
+				registry_.addFlowRef(rawTrig);
+				trigNames.push_back(rawTrig);
+			}
+		}
+		auto metaProv = std::make_shared<MetaProvider>(matrix, i, &registry_);
 		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
 		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv](bool forDestroy) {
 				return forDestroy ? metaProv->collectForDestroy() : metaProv->collect();
-			}, ctrlName, &registry_),
+			}, ctrlName, trigNames, &registry_),
 			" (in table '" + mtName + "')");
 	}
 }

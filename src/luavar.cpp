@@ -12,9 +12,14 @@ thread_local int MtVars_Lua::topDepth = 0;
 
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
 std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, const std::string& name,
-		std::function<Json(bool)> getMetadata, std::string ctrlName, HwRegistry* registry) {
+		std::function<Json(bool)> getMetadata, std::string ctrlName,
+		std::vector<std::string> trigNames, HwRegistry* registry) {
 	if (!ctrlName.empty() && registry == nullptr) {
 		throw std::runtime_error("MtVars_Lua::Factory: controller '" + ctrlName
+			+ "' requires a registry for lookup");
+	}
+	if (!trigNames.empty() && registry == nullptr) {
+		throw std::runtime_error("MtVars_Lua::Factory: trigger '" + trigNames.front()
 			+ "' requires a registry for lookup");
 	}
 	lua_State* L = luaL_newstate();
@@ -22,7 +27,7 @@ std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, cons
 		throw std::runtime_error("Lua_check()");
 	}
 	return std::unique_ptr<MtVars_Lua>(new MtVars_Lua(L, luapath, name,
-		std::move(getMetadata), std::move(ctrlName), registry));
+		std::move(getMetadata), std::move(ctrlName), std::move(trigNames), registry));
 }
 
 /* ---- 构造 Lua 状态机（加载标准库 + 沙箱 + loadfile + pcall）---- */
@@ -58,6 +63,11 @@ void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) co
 		for (const char* fw : kFrameworkKeys) {
 			if (key == fw) { why = "a framework-reserved key"; }
 		}
+		for (const std::string& trig : trigNames_) {
+			if (key == trig) {
+				why = "a trigger reference name (the trigger result is merged under this key)";
+			}
+		}
 		if (why != nullptr) {
 			throw IllegalArgumentException("Hardware variable '" + name_ + "': @Action column '"
 				+ name_ + "." + key + "' is rejected because '" + key + "' is " + why
@@ -68,7 +78,7 @@ void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) co
 	}
 }
 
-/* ---- call 事件实现：元数据 ∪ @Action 实时参数 → Lua call() ----
+/* ---- call 事件实现：trigger 前置调用 → 元数据 ∪ @Action 实时参数 → Lua call() ----
  * echo=false（playQuiet）时抑制顶层结果回显：agent 模式把驱动当模型传输用，
  * stdout 必须只留最终回答。其余语义（ERR 契约、controller 转发、元数据合并）不变。 */
 Json MtVars_Lua::callImpl(const Json& json, bool echo) {
@@ -89,6 +99,28 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 	Json obj = JsonObject();
 	jsonMergeInto(obj, metadata);
 	jsonMergeInto(obj, json.asObject());
+	/* trigger 前置调用（入边，controller 的镜像）：先逐个以空参数运行 trigger
+	 * 列指向的变量，返回表以触发器名字为键并入调用参数，再运行自己的 Lua call。
+	 * - 触发是嵌套调用（topDepth 已 ++）：触发器自己的结果回显与顶层保留键
+	 *   检查被自然跳过，其 payload/转发语义与普通 play 完全一致；
+	 * - ERR/非表/空表经 ensureOk 响亮中断整帧（与 controller 转发同一契约）；
+	 * - 触发器数据在元数据与参数之后并入：顶层参数键同名已被
+	 *   rejectReservedKeys 拒绝，controller 转发 payload 的同名键在此让位。 */
+	for (std::size_t k = 0; k < trigNames_.size(); ++k) {
+		/* N-6：首次触发缓存目标指针。注册表对引用名字的会话期覆盖已拒绝
+		 * （HwRegistry::override），指针终身有效。 */
+		if (trigPtrs_[k] == nullptr) { trigPtrs_[k] = registry_->find(trigNames_[k]); }
+		MatrixVars_Hardware* trigger = trigPtrs_[k];
+		if (trigger == nullptr) {
+			throw IllegalArgumentException("trigger '" + trigNames_[k] + "' of hardware variable '"
+				+ name_ + "' is no longer registered (declaration order guarantees it exists)");
+		}
+		logD([&] { return "Trigger call before play: " + trigNames_[k]; });
+		Json tres = trigger->play(JsonObject());
+		logD([&] { return "Trigger result (" + trigNames_[k] + "): " + tres.toString(); });
+		MatrixVars_Hardware::ensureOk(tres, "trigger '" + trigNames_[k] + "' of " + luapath_);
+		obj.put(trigNames_[k], tres);
+	}
 	/* C-1 续：mode 必须在参数合并「之后」写入，由框架独占。controller payload 里
 	 * 混着上游驱动返回表的键，若 mode 能被带进来，就会覆盖这里的 "call"，
 	 * 使 call_lua 去 getglobal 一个外部可控的名字——实测可让下游驱动的 call()

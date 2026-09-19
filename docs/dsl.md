@@ -63,6 +63,54 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
   `result`/`message`/`mode` 三个键名另由框架保留，`.mt` 动作脚本不得用它们作参数列
   （`MtVars_Lua::rejectReservedKeys`，即 `--help` 里「安全约束」一条的代码正身）。
 
+反方向的调用编排（先把别人的结果收集进来，再调用当前零件）见下一节 [trigger 引用](#trigger-引用前置调用)。
+
+## trigger 引用（前置调用）
+
+trigger 列是 controller 列的镜像：controller 是**出边**（当前零件调完后把结果传走），
+trigger 是**入边**（当前零件被调用之前，先运行 trigger 列指向的硬件变量，把结果收集进当前零件的输入）：
+
+1. 当前零件每次被派发（play）时，框架先以**空参数**调用 `trigger` 列指向的硬件变量——
+   这是一次语义完整的 play：触发器自身的行元数据照常并入其调用参数，它若也带 controller 列则转发链照常走
+2. 触发器返回表经 `ensureOk` 契约检查（`result="ERR"`/非表/空表即整帧响亮中断）
+3. 返回表以**触发器名字为键的子表**并入当前零件的调用参数：`data.<触发器名> = {…}`
+   （多触发器互不踩键；如触发 MPU6050 后驱动按 `data.imu0.ACCEL_X` 取六轴读数）
+4. 再运行当前零件自己的 Lua `call`
+
+```sql
+CREATE TABLE I2C (name String, path String);
+INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');
+
+CREATE TABLE MPU6050 (name String, I2C String, address String);
+INSERT INTO MPU6050 (name, I2C, address) VALUES ('imu0', '$i2c-1', '0x68');
+
+CREATE TABLE Servo (name String, max String, min String, offset String,
+                    controller String, trigger String, channel String);
+INSERT INTO Servo (name, max, min, offset, controller, trigger, channel)
+  VALUES ('s1', '90', '-', '-', 'pca9685-0', 'imu0', '0');   -- 每次出腿前先触发一次 imu0
+```
+
+要点与边界：
+
+- `trigger` 支持 `-` 继承上一行；**被引用方必须先声明**（与 `controller` 同规则）。
+  这条约束顺带保证整个 trigger/controller 调用图按构造无环——派发期无需环检测；
+  `$` 式前向引用是数据引用列的专属能力，写在 trigger 列会被明确拒绝
+- 触发器目标可以是 Lua 驱动变量或守护变量（守护的 `play` 返回最新采样快照，首帧未出时
+  `count=0` 不是错误）；`@Alias`/`@Vars` 标量不能当触发目标（装配期拒绝——触发器经
+  play 调用，必须返回结果表）
+- 触发器只挂在 play 路径（含 controller 转发的嵌套 play 与 agent 的 `playQuiet`）；
+  `read()`/`build`/`destroy` 一律不触发
+- 触发器名不得与本表元数据列同名、不得用框架保留键 `result`/`message`/`mode`
+  （装配期拒绝）；`.mt` 参数列不得占用触发器名（派发期 `rejectReservedKeys` 拒绝）
+  ——触发器结果子表按触发器名并入调用参数，这些名字因此成为调用参数里的保留键
+- 触发器数据在元数据与动作参数之后并入；controller 转发的 payload = 元数据 ∪ 自己返回表，
+  **不含触发器子表**——输入侧数据要继续转发，须由驱动在返回表里显式回显
+- 触发是同步调用：N 个设备都挂同一触发器 = 每帧 N 次触发调用，无帧内去重；
+  高频采样场景请改用守护变量 + `$` 引用读快照，触发器留给「每次执行前必须新鲜测量/先干一件事」的编排
+
+回归：`trig_basic`（正值 + 顺序/到位观察面专段）与 `trig_forward`/`trig_scalar`/
+`trig_reserved`/`trig_collide`/`trig_dollar`/`trig_param`/`trig_n6`/`trig_err`（负值）。
+
 ## `$` 引用列
 
 元数据列可以按值引用另一个硬件变量：值以 `$` 开头（如 `$imu0`），被引用方的 `read()` 快照字段实时合并进本变量元数据；**不带 `$` 的裸名一律按字面值**。`$` 指向未定义变量在 **build 前**（全部表装配完成后）显式报错；指向**标量**（如 Alias 的 JsonString）也会清晰报错——标量引用请走 `controller` 列（唯一例外是 `@Vars` 数值变量，见下节）：

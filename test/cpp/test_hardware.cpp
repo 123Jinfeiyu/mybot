@@ -3,7 +3,7 @@
  * 这两块是「结构脚本 → Lua 驱动入参」的唯一通路，此前只被 E2E 间接覆盖：
  *   parseMtDouble  动作矩阵单元格的类型解析（含 "-" 继承与首行占位符语义）
  *   ensureOk       halt-on-error 契约（result=="ERR" 即抛，trim 后比较）
- *   MetaProvider   字面列首采冻结 / "-" 列跳过 / name+controller 跳过 / $ 引用实时快照
+ *   MetaProvider   字面列首采冻结 / "-" 列跳过 / name+controller+trigger 跳过 / $ 引用实时快照
  *   F-04′ 防线    destroy 期元数据：引用列快照必须带上（总线 fd 由此而来），
  *                  引用已释放只跳过该引用而非放弃整轮收集
  *   C1 防线        $ 引用成环时深度计数兜底，清晰报错而非栈溢出
@@ -200,11 +200,13 @@ TH_TEST(json_merge_into_overwrites_in_place) {
 
 /* ---------------- MetaProvider ---------------- */
 
-TH_TEST(metaprovider_skips_name_controller_and_dash_columns) {
+TH_TEST(metaprovider_skips_name_structural_and_dash_columns) {
+	/* name/controller/trigger 是框架保留列名：一律不进元数据（按名跳过，
+	 * 不再由调用方传列号——漏传 trigger 列会让引用名泄漏进 Lua 入参） */
 	mt::MatrixObject m = fx::oneMatrix(
-		"@Relay\nname controller note servo;\nr0 t0 hello -;\n@\n");
+		"@Relay\nname controller trigger note servo;\nr0 t0 t1 hello -;\n@\n");
 	bot::HwRegistry reg;
-	MetaProvider prov(m, 1, m.indexOfCol(0, "controller"), &reg);
+	MetaProvider prov(m, 1, &reg);
 	Json meta = prov.collect();
 	TH_CHECK(meta.toString() == R"({"note":"hello"})");
 }
@@ -213,7 +215,7 @@ TH_TEST(metaprovider_freezes_literal_columns_after_first_collect) {
 	/* P8/M2：字面列首采即冻结，之后每次只是重放缓存（避免逐帧重扫矩阵） */
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note;\nr0 hello;\n@\n");
 	bot::HwRegistry reg;
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	TH_CHECK(prov.collect().toString() == R"({"note":"hello"})");
 	TH_CHECK(prov.collect().toString() == R"({"note":"hello"})");
 }
@@ -229,7 +231,7 @@ TH_TEST(metaprovider_merges_live_snapshot_of_reference_column) {
 	}));
 	bot::HwRegistry reg;
 	reg.add("t0", std::move(t0));
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 
 	Json first = prov.collect();
 	Json second = prov.collect();
@@ -242,7 +244,7 @@ TH_TEST(metaprovider_merges_live_snapshot_of_reference_column) {
 TH_TEST(metaprovider_unknown_reference_reports_clearly) {
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname src;\nr0 $ghost;\n@\n");
 	bot::HwRegistry reg;
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is not defined", prov.collect());
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "$ghost", prov.collect());
 }
@@ -253,7 +255,7 @@ TH_TEST(metaprovider_scalar_reference_is_rejected) {
 		[](const Json&) { return JsonString("timer-0"); }));
 	bot::HwRegistry reg;
 	reg.add("alias0", std::move(alias0));
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "non-object", prov.collect());
 }
 
@@ -266,7 +268,7 @@ TH_TEST(metaprovider_vars_reference_fills_column_with_number) {
 	reg.add("spd", std::move(vars));
 
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note src;\nr0 hello $spd;\n@\n");
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	Json meta = prov.collect();
 	TH_CHECK(meta.get("note")->getValue() == "hello");
 	TH_CHECK(meta.get("src")->getValue() == "42");
@@ -284,7 +286,7 @@ TH_TEST(metaprovider_expression_reference_evaluates) {
 		fx::oneMatrix("@Vars\nname value;\nv2 5;\n@\n"), 1));
 
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note;\nr0 $(v1+v2+10);\n@\n");
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	TH_CHECK(prov.collect().get("note")->getValue() == "25");
 	TH_CHECK(prov.collectForDestroy().get("note")->getValue() == "25");
 }
@@ -292,7 +294,7 @@ TH_TEST(metaprovider_expression_reference_evaluates) {
 TH_TEST(metaprovider_expression_undefined_identifier_reports) {
 	bot::HwRegistry reg;
 	mt::MatrixObject m = fx::oneMatrix("@Relay\nname note;\nr0 $(ghost+1);\n@\n");
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "ghost", prov.collect());
 }
 
@@ -304,7 +306,7 @@ TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	bot::HwRegistry reg;
 	reg.add("loop", std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw(
 		[&reenter](const Json&) { return reenter(); })));
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	reenter = [&prov]() { return prov.collect(); };
 
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "circular", prov.collect());
@@ -313,7 +315,7 @@ TH_TEST(metaprovider_circular_reference_hits_depth_guard) {
 	/* 深度计数是 thread_local + RAII 递减：抛异常后必须已归零，
 	 * 否则后续任何一次 collect() 都会被误判成环。 */
 	mt::MatrixObject clean = fx::oneMatrix("@Relay\nname note;\nr0 hello;\n@\n");
-	MetaProvider other(clean, 1, -1, &reg);
+	MetaProvider other(clean, 1, &reg);
 	TH_CHECK(other.collect().toString() == R"({"note":"hello"})");
 }
 
@@ -333,7 +335,7 @@ TH_TEST(metaprovider_destroy_keeps_reference_snapshot) {
 	bot::HwRegistry reg;
 	reg.add("bus", std::move(bus));
 
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	Json meta = prov.collectForDestroy();
 	TH_CHECK(meta.get("address") != std::nullopt);
 	TH_CHECK(meta.get("address")->getValue() == "0x40");
@@ -357,7 +359,7 @@ TH_TEST(metaprovider_destroy_skips_released_reference_without_aborting) {
 	bot::HwRegistry reg;
 	reg.add("dead", std::move(dead));
 
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	/* 运行期（play/build）仍必须响亮报错，不许静默吞掉 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "already released", prov.collect());
 
@@ -369,7 +371,7 @@ TH_TEST(metaprovider_destroy_skips_released_reference_without_aborting) {
 	/* 深度计数是 thread_local + RAII：collectForDestroy 吞掉异常后必须已归零，
 	 * 否则后续任何一次 collect() 都会被误判成引用成环。 */
 	mt::MatrixObject clean = fx::oneMatrix("@Relay\nname note;\nr0 hello;\n@\n");
-	MetaProvider other(clean, 1, -1, &reg);
+	MetaProvider other(clean, 1, &reg);
 	TH_CHECK(other.collect().toString() == R"({"note":"hello"})");
 }
 
@@ -385,12 +387,27 @@ TH_TEST(metaprovider_destroy_skips_err_reference_snapshot) {
 	bot::HwRegistry reg;
 	reg.add("d0", std::move(d0));
 
-	MetaProvider prov(m, 1, -1, &reg);
+	MetaProvider prov(m, 1, &reg);
 	Json meta = prov.collectForDestroy();
 	TH_CHECK(meta.get("note") != std::nullopt);
 	TH_CHECK(meta.get("note")->getValue() == "hello");
 	TH_CHECK(meta.get("result") == std::nullopt);
 	TH_CHECK(meta.get("message") == std::nullopt);
+}
+
+TH_TEST(registry_flowref_blocks_session_override) {
+	/* N-6（controller/trigger 共用）：被结构引用列指向的名字，会话期 @Alias
+	 * 不得覆盖——否则派发按名查到别名，报错与真实成因脱节。 */
+	auto hw = std::unique_ptr<MatrixVars_Hardware>(new fx::LambdaHw(
+		[](const Json&) { return JsonObject(); }));
+	bot::HwRegistry reg;
+	reg.add("t0", std::move(hw));
+	reg.addFlowRef("t0");
+
+	std::unique_ptr<bot::MtVars_Alias> alias = bot::MtVars_Alias::Factory(
+		fx::oneMatrix("@Alias\nname alias;\nt0 duty;\n@\n"), 1);
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "referenced as a controller or trigger",
+		reg.override("t0", std::move(alias)));
 }
 
 TH_TEST(alias_matrix_requires_name_and_alias_columns) {

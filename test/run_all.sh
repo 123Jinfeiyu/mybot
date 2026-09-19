@@ -380,6 +380,16 @@ fi
 #                 是 build 期强制的（器件 build 要 fd）——同一条不变式也保证倒序销毁时
 #                 总线最后关闭 fd。全程不触总线：PCA9685 build 在 i2c_pair 处即返回，
 #                 @I2C 的 build 根本未执行，故插着真舵机的机器上同样安全。
+#   trig_basic  trigger 前置调用（controller 的镜像入边）：relay-src 从不出现在
+#                 @Action，其 Relay 打印出现即证明前置调用发生；controller 链
+#                 闭合（Timer 经转发收到 delay=300）。顺序与数据到位的观察面
+#                 （行序、call 参数 dump）在本文件「trigger 前置调用」专段补齐
+#   trig_param  .mt 参数列不得占用触发器名——结果子表按触发器名并入调用参数
+#   trig_forward/trig_scalar/trig_reserved/trig_collide/trig_dollar/trig_n6
+#                 trigger 负值契约：前向引用 / @Alias·@Vars 标量目标 / 框架保留键 /
+#                 与本表元数据列同名 / $ 数据引用写法 / 会话别名覆盖（N-6）
+#   trig_err    触发器 ERR 整帧 halt：触发目标 Timer 缺 delay 参数必报 ERR，
+#                 派发帧响亮中止且退出码 1
 # 用例表：SQL|MT|期望退出码|输出必须包含|输出必须不含（第 5 字段可省；MT/SQL 含 "/" 时视为仓库根相对路径）
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
@@ -435,6 +445,15 @@ parse_cases=(
 	'scscl_badid.sql|scscl_badid.mt|1|Invalid Argument: id'
 	'scscl_burn_guard.sql|scscl_burn_guard.mt|1|requires allow_burn'
 	'ref_bus_forward.sql|ref_bus_forward.mt|1|Invalid Argument: fd or address'
+	'trig_basic.sql|trig_basic.mt|0|note=src'
+	'trig_basic.sql|trig_param.mt|1|is a trigger reference name'
+	'trig_forward.sql|trig_forward.mt|1|The trigger must be defined before'
+	'trig_scalar.sql|trig_scalar.mt|1|cannot be trigger targets'
+	'trig_reserved.sql|trig_reserved.mt|1|cannot name a trigger'
+	'trig_collide.sql|trig_collide.mt|1|collides with metadata column'
+	'trig_dollar.sql|trig_dollar.mt|1|does not support '
+	'trig_n6.sql|trig_n6.mt|1|referenced as a controller or trigger'
+	'trig_err.sql|trig_err.mt|1|Invalid Argument: delay'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5"
@@ -481,6 +500,40 @@ else
 		fi
 		run_one_parse "$sql" "$mt" "$want_rc" "$expect" "$forbid"
 	done
+fi
+
+# ======================================================================
+# trigger 前置调用：顺序与数据到位（BOT4CJ_DEBUG=1）。
+# trig_basic 里 relay-src 从不出现在 @Action——它的 Relay 打印出现即证明
+# trigger 机制发生。正身断言已登记 parse_cases，本节只补需要调试开关的
+# 三条观察面：① 触发器打印先于消费者打印（同一 stdout 行序）；
+# ② 触发器返回表以触发器名为键并入 call 参数 dump；
+# ③ 触发器数据是输入侧——controller 转发 payload（元数据 ∪ 自己返回表）
+#   不含触发器子表（需要转发时由驱动在返回表里显式回显）。
+# ======================================================================
+if [ ! -x "$bin" ]; then
+	artifact_missing "trigger 前置调用" "1 条用例" "$bin" "$bot_explicit"
+else
+	echo "----- trig_basic (trigger 前置调用观察面) -----"
+	tout="$(cat scripts/test/trig_basic.mt | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot=robots/test/trig_basic.sql 2>&1)"
+	trc=$?
+	echo "$tout"
+	t_ok=true
+	[ "$trc" -ne 0 ] && t_ok=false
+	src_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=300 note=src' | head -1 | cut -d: -f1)"
+	sink_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=300 note=sink' | head -1 | cut -d: -f1)"
+	if [ -z "$src_line" ] || [ -z "$sink_line" ]; then
+		t_ok=false
+	elif [ "$src_line" -ge "$sink_line" ]; then
+		t_ok=false
+	fi
+	echo "$tout" | grep -qF '"relay-src":{"delay":300}' || t_ok=false
+	echo "$tout" | grep -F 'Forward to controller:' | grep -qF '"relay-src"' && t_ok=false
+	if $t_ok; then
+		record_pass
+	else
+		record_fail "trig_basic(trigger 观察面)"
+	fi
 fi
 
 # ======================================================================
