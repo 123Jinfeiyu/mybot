@@ -12,10 +12,23 @@ void HwRegistry::add(const std::string& name, std::unique_ptr<MatrixVars_Hardwar
 	if (byName_.count(name)) {
 		throw IllegalArgumentException("Duplicate hardware variable name: '" + name + "'" + source);
 	}
-	MatrixVars_Hardware* p = hw.get();
-	byName_.emplace(name, p);
-	seq_.push_back(p);
+	/* R-2 遗留缺口：三个容器的写入顺序原为 byName_ → seq_ → pool_，一旦后两次
+	 * push_back 抛 bad_alloc，byName_ 已指向 hw 持有的对象，而 hw 随栈展开析构
+	 * ——注册表留下悬垂指针，后续 find/派发即 UB。
+	 * 收口：先 reserve 两个 vector（此后其指针元素 push_back 不再分配），再把所有权
+	 * 落到 pool_，最后登记非所有权索引。唯一可能失败的 map 节点分配排在 pool_ 已
+	 * 提交之后，失败时回滚 pool_ ——对象随 unique_ptr 析构，不留半个条目。 */
+	pool_.reserve(pool_.size() + 1);
+	seq_.reserve(seq_.size() + 1);
 	pool_.push_back(std::move(hw));
+	MatrixVars_Hardware* p = pool_.back().get();
+	try {
+		byName_.emplace(name, p);
+	} catch (...) {
+		pool_.pop_back();
+		throw;
+	}
+	seq_.push_back(p);		/* reserve 之后无分配，不抛 */
 }
 
 /* ---- HwRegistry：会话期别名覆盖（不进销毁序，只改名字索引）---- */
@@ -27,9 +40,17 @@ void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Ha
 		throw IllegalArgumentException("action script alias must not override '"
 			+ name + "': it is referenced as a controller or trigger by another hardware variable");
 	}
-	MatrixVars_Hardware* p = hw.get();
-	byName_[name] = p;
+	/* 强异常安全同 add：先落所有权，再改名字索引；节点分配失败回滚 pool_。
+	 * 覆盖不进 seq_（别名无资源可释放，结构变量仍在销毁序中原位不动）。 */
+	pool_.reserve(pool_.size() + 1);
 	pool_.push_back(std::move(hw));
+	MatrixVars_Hardware* p = pool_.back().get();
+	try {
+		byName_[name] = p;
+	} catch (...) {
+		pool_.pop_back();
+		throw;
+	}
 }
 
 /* N-15：表达式标识符求值器单点——三个调用面（元数据 $(...)、@Vars 装配、
