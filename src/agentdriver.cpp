@@ -47,12 +47,12 @@ public:
 std::unique_ptr<ChatTransport> makeDriverTransport(MatrixVars_Hardware* driver,
 		AgentDriverConfig cfg) {
 	if (driver == nullptr) {
-		throw std::invalid_argument("LLM 驱动变量为空（结构脚本未声明且未注入）");
+		throw IllegalArgumentException("LLM 驱动变量为空（结构脚本未声明且未注入）");
 	}
 	/* 只接受 Lua 驱动：别的硬件变量没有 call 语义，playQuiet 会落到默认实现
 	 * （等于 play），拿回来的表必然缺 content/tool_calls，报错离真实成因很远 */
 	if (std::string_view(driver->kindName()) != "lua") {
-		throw std::invalid_argument("LLM 驱动变量必须是 Lua 驱动（modules/Llm*.lua 注册）");
+		throw IllegalArgumentException("LLM 驱动变量必须是 Lua 驱动（modules/Llm*.lua 注册）");
 	}
 	return std::make_unique<LuaDriverTransport>(driver, std::move(cfg));
 }

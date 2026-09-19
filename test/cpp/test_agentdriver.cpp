@@ -120,7 +120,7 @@ TH_TEST(agentdriver_rejects_non_lua_variable) {
 	robot->active();
 
 	AgentDriverConfig cfg;
-	TH_CHECK_THROWS_MSG(std::invalid_argument, "必须是 Lua 驱动",
+	TH_CHECK_THROWS_MSG(IllegalArgumentException, "必须是 Lua 驱动",
 		makeDriverTransport(robot->registry().find("A"), cfg));
 
 	robot->deactivate();
@@ -128,7 +128,7 @@ TH_TEST(agentdriver_rejects_non_lua_variable) {
 
 TH_TEST(agentdriver_null_driver_rejected) {
 	AgentDriverConfig cfg;
-	TH_CHECK_THROWS(std::invalid_argument, makeDriverTransport(nullptr, cfg));
+	TH_CHECK_THROWS(IllegalArgumentException, makeDriverTransport(nullptr, cfg));
 }
 
 TH_TEST(agentdriver_inject_rejects_unsafe_names) {
