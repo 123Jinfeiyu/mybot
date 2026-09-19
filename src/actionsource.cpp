@@ -47,6 +47,13 @@ public:
 	~FdGuard() { close(); }
 	FdGuard(const FdGuard&) = delete;
 	FdGuard& operator=(const FdGuard&) = delete;
+	/* 移动：交出所有权（源置空，析构不再关闭）——RAII 守卫得以从辅助
+	 * 函数按值返回（阶段 3 拆分 openTcpActionSource 的前提） */
+	FdGuard(FdGuard&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+	FdGuard& operator=(FdGuard&& other) noexcept {
+		if (this != &other) { close(); fd_ = other.fd_; other.fd_ = -1; }
+		return *this;
+	}
 
 	int get() const { return fd_; }
 
@@ -137,19 +144,22 @@ static bool checkTcpToken(int client, const std::string& token) {
 	return true;
 }
 
-/* ---- TCP 动作源：监听 → 接受一个客户端连接 → 可选口令 → 逐字节读脚本 ---- */
-static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::string& host,
-		const std::string& token, int idleSec) {
-	in_addr addr{};
+/* ---- TCP 动作源（阶段 3 拆分）：校验地址 → 监听 → 鉴权 accept → 读脚本 ---- */
+
+/* --tcp-host 校验：点分十进制 IPv4 */
+static bool parseIpv4Host(const std::string& host, in_addr& addr) {
 	if (::inet_pton(AF_INET, host.c_str(), &addr) != 1) {
 		std::cerr << "--tcp-host 地址无效：" << host << "（需点分十进制 IPv4）" << std::endl;
-		return nullptr;
+		return false;
 	}
+	return true;
+}
 
-	std::cerr << "TCP 动作源：监听 " << host << ":" << port << "，等待客户端连接..." << std::endl;
-
-	/* 监听 fd 交给守卫：此后所有出口（throw / return / 客户端的 make_unique
-	 * 分配失败）都自动关闭，不再依赖逐条手工 ::close。 */
+/* 监听套接字：socket + REUSEADDR + H-2 非回环强制口令 + bind + listen */
+static FdGuard setupListenSocket(long long port, const std::string& host,
+		const in_addr& addr, const std::string& token) {
+	/* 监听 fd 交给守卫：此后所有出口（throw / return）都自动关闭，不再
+	 * 依赖逐条手工 ::close。 */
 	FdGuard listenFd(::socket(AF_INET, SOCK_STREAM, 0));
 	if (listenFd.get() < 0) {
 		throw std::runtime_error("无法创建 TCP 套接字");
@@ -178,14 +188,16 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 	if (::listen(listenFd.get(), 1) < 0) {
 		throw std::runtime_error("TCP 监听失败");
 	}
+	return listenFd;
+}
 
-	/* D5/D4：accept 可被信号（EINTR）打断——响应停止标志退出，其余 EINTR 重试。
-	 * C-M1：口令失败不再 throw 终止进程（任意对端 connect 一次即 DoS）——
-	 * 关连接回 accept 等待，连续 kTcpAuthMaxFails 次失败才放弃。 */
+/* accept 循环：EINTR/停止信号响应（D5/D4）+ 对端日志 + 空闲超时（审计 #9）
+ * + 口令失败预算（C-M1：关连接回 accept，连续失败才放弃）。 */
+static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token, int idleSec) {
 	FdGuard clientFd;		/* 每轮重置；本轮失败时由 close() 关闭 */
 	int authFails = 0;
 	while (true) {
-		int client = ::accept(listenFd.get(), nullptr, nullptr);
+		int client = ::accept(listenFd, nullptr, nullptr);
 		if (client < 0) {
 			if (errno == EINTR) {
 				if (stopRequested()) {
@@ -228,6 +240,19 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 		}
 		break;
 	}
+	return clientFd;
+}
+
+/* ---- TCP 动作源：监听 → 接受一个客户端连接 → 可选口令 → 逐字节读脚本 ---- */
+static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::string& host,
+		const std::string& token, int idleSec) {
+	in_addr addr{};
+	if (!parseIpv4Host(host, addr)) { return nullptr; }
+
+	std::cerr << "TCP 动作源：监听 " << host << ":" << port << "，等待客户端连接..." << std::endl;
+
+	FdGuard listenFd = setupListenSocket(port, host, addr, token);
+	FdGuard clientFd = acceptAuthenticatedClient(listenFd.get(), token, idleSec);
 
 	/* C-M2：总时长预算从连接建立起算（含口令校验段；口令行长度有上限且
 	 * 每次 recv 受 idle 超时约束，主防线覆盖无界的脚本读取段） */
