@@ -68,6 +68,12 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	/* C-1 防线：@Action 参数键与结构元数据键必须互斥（见 callImpl 注释） */
 	void rejectReservedKeys(const Json& metadata, const Json& params) const;
 
+	/* flow 目标解析单点（N-6）：trigger/controller 首用把名字锁定为指针，
+	 * 此后不再重查——注册表拒绝会话期覆盖引用名字，指针终身有效。未注册
+	 * 即抛（装配期「先声明」约束保证目标存在，走到这里说明不变式被破坏）。 */
+	MatrixVars_Hardware* flowTarget(std::vector<MatrixVars_Hardware*>& ptrs,
+		const std::vector<std::string>& names, std::size_t k, const char* kind);
+
 	static bool build_lua(lua_State* L, const std::string& luapath);
 
 public:

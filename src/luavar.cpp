@@ -78,6 +78,20 @@ void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) co
 	}
 }
 
+MatrixVars_Hardware* MtVars_Lua::flowTarget(std::vector<MatrixVars_Hardware*>& ptrs,
+		const std::vector<std::string>& names, std::size_t k, const char* kind) {
+	/* N-6：首次触发/转发缓存目标指针。注册表对引用名字的会话期覆盖已拒绝
+	 * （HwRegistry::override），指针终身有效。 */
+	if (ptrs[k] == nullptr) { ptrs[k] = registry_->find(names[k]); }
+	MatrixVars_Hardware* target = ptrs[k];
+	if (target == nullptr) {
+		throw IllegalArgumentException(std::string(kind) + " '" + names[k]
+			+ "' of hardware variable '" + name_
+			+ "' is no longer registered (declaration order guarantees it exists)");
+	}
+	return target;
+}
+
 /* ---- call 事件实现：trigger 前置调用 → 元数据 ∪ @Action 实时参数 → Lua call() ----
  * echo=false（playQuiet）时抑制顶层结果回显：agent 模式把驱动当模型传输用，
  * stdout 必须只留最终回答。其余语义（ERR 契约、controller 转发、元数据合并）不变。 */
@@ -114,14 +128,7 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 	 * - 触发器数据在元数据与参数之后并入：顶层参数键同名已被
 	 *   rejectReservedKeys 拒绝，controller 转发 payload 的同名键在此让位。 */
 	for (std::size_t k = 0; k < trigNames_.size(); ++k) {
-		/* N-6：首次触发缓存目标指针。注册表对引用名字的会话期覆盖已拒绝
-		 * （HwRegistry::override），指针终身有效。 */
-		if (trigPtrs_[k] == nullptr) { trigPtrs_[k] = registry_->find(trigNames_[k]); }
-		MatrixVars_Hardware* trigger = trigPtrs_[k];
-		if (trigger == nullptr) {
-			throw IllegalArgumentException("trigger '" + trigNames_[k] + "' of hardware variable '"
-				+ name_ + "' is no longer registered (declaration order guarantees it exists)");
-		}
+		MatrixVars_Hardware* trigger = flowTarget(trigPtrs_, trigNames_, k, "trigger");
 		logD([&] { return "Trigger call before play: " + trigNames_[k]; });
 		Json tres = trigger->play(JsonObject());
 		logD([&] { return "Trigger result (" + trigNames_[k] + "): " + tres.toString(); });
@@ -154,15 +161,7 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 		logD([&payload] { return "Forward to controller: " + payload.toString(); });
 		Json ctrl_res;
 		for (std::size_t k = 0; k < ctrlNames_.size(); ++k) {
-			/* N-6：首次转发缓存目标指针。注册表对引用名字的会话期覆盖已拒绝
-			 * （HwRegistry::override），指针终身有效。 */
-			if (ctrlPtrs_[k] == nullptr) { ctrlPtrs_[k] = registry_->find(ctrlNames_[k]); }
-			MatrixVars_Hardware* controller = ctrlPtrs_[k];
-			if (controller == nullptr) {
-				throw IllegalArgumentException("controller '" + ctrlNames_[k]
-					+ "' of hardware variable '" + name_
-					+ "' is no longer registered (declaration order guarantees it exists)");
-			}
+			MatrixVars_Hardware* controller = flowTarget(ctrlPtrs_, ctrlNames_, k, "controller");
 			ctrl_res = controller->play(payload);
 			logD([&] {
 				return "Controller result (" + ctrlNames_[k] + "): " + ctrl_res.toString();
