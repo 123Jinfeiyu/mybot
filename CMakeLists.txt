@@ -128,6 +128,7 @@ add_executable(mybot_tests
   test/cpp/test_matrix.cpp
   test/cpp/test_expr.cpp
   test/cpp/test_sqlparse.cpp
+  test/cpp/test_util.cpp
   test/cpp/test_hardware.cpp
   test/cpp/test_robot.cpp
   test/cpp/test_luaend.cpp
