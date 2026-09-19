@@ -165,7 +165,11 @@ UART 事务与 I2C/SPI **共用同一条 `txlog`**，条目 dir 为：
 
 协议层模型，只复现寄存器/字节序/burst 等事实，测量值由用例显式注入，避免模型与驱动按同一错误理解互证而假绿。
 
-> 2026-09-15 结构迁移：原 `lib/virtbus/<driver>.lua` 单文件器件模型已**整体内嵌进对应驱动文件尾部**，成为全局工厂 `<DRIVER>_VIRT`，随 `load_driver()`/守护 dofile 驱动一并定义（如 `modules/MPU6050.lua` 尾部的 `MPU6050_VIRT`）；守护经 `rawget(_G, driver .. "_VIRT")` 回退路径自动取用，模型以 `BUS` 标记分流 I2C/SPI/UART（UART 模型按 tty 路径走 `attach_uart`；非守护 `@Action` 直写路径由 `drv_common` 前置实例化模型并采纳跨状态机 fd）。模型与驱动保持独立实现（自带寄存器表/灵敏度常量、不引用驱动局部量），互证防假绿性质不变；`lib/virtbus/` 目录现仅保留通用底座 `regmap.lua`。下述各模型的 API 与行为描述在迁入后完全不变。
+> **2026-09-15 结构迁移**：原 `lib/virtbus/<driver>.lua` 单文件器件模型已**整体内嵌进对应驱动文件尾部**，成为全局工厂 `<DRIVER>_VIRT`，随 `load_driver()`/守护 dofile 驱动一并定义（如 `modules/MPU6050.lua` 尾部的 `MPU6050_VIRT`）。
+>
+> - 守护经 `rawget(_G, driver .. "_VIRT")` 回退路径自动取用；模型以 `BUS` 标记分流 I2C/SPI/UART——UART 模型按 tty 路径走 `attach_uart`，非守护 `@Action` 直写路径由 `drv_common` 前置实例化模型并采纳跨状态机 fd
+> - 模型与驱动保持**独立实现**（自带寄存器表/灵敏度常量、不引用驱动局部量），互证防假绿性质不变
+> - `lib/virtbus/` 目录现仅保留通用底座 `regmap.lua`；下述各模型的 API 与行为描述在迁入后完全不变
 
 `modules/` 下共有 **42 个内嵌 `*_VIRT` 模型**（`grep -l '_VIRT' modules/*.lua`）；下面先给「尚未单独成节」的一批速览，其后是逐个展开的协议细节。速览批次的协议事实以对应驱动文件尾部注释为准。
 
