@@ -37,6 +37,17 @@ public:
 	 * ——模型响应绝不能混进「stdout 只输出最终回答」这条约定。 */
 	virtual Json playQuiet(const Json& input) { return play(input); }
 
+	/* 种类标识（重构计划 2.3）：语义判定走虚调用，消灭调用方各自的
+	 * dynamic_cast 开关——此前 robot/agenttools/agentdriver 五处按子类
+	 * 判语义，认识全部硬件子类；新增种类时漏改一处即静默误判。
+	 * 叶子类返回稳定 id（"alias"/"vars"/"lua"/"daemon"），展示文案由
+	 * 消费方映射（agenttools kindOf）。 */
+	virtual const char* kindName() const = 0;
+
+	/* 标量文本变量（@Alias/@Vars）：参数位名字替换语义的判据。
+	 * 别名与数值变量共用 MtVars_Text 基类，一处覆盖覆盖两个种类。 */
+	virtual bool isScalarText() const { return false; }
+
 	/* 伪初始化：获取资源（缺省无操作） */
 	virtual void build() {}
 
@@ -93,6 +104,7 @@ protected:
 
 public:
 	Json play(const Json&) override { return JsonString(text_); }
+	bool isScalarText() const override { return true; }
 };
 
 /* ---- 别名硬件变量 ---- */
@@ -100,6 +112,7 @@ class MtVars_Alias : public MtVars_Text {
 	explicit MtVars_Alias(std::string alias) : MtVars_Text(std::move(alias)) {}
 
 public:
+	const char* kindName() const override { return "alias"; }
 	static std::unique_ptr<MtVars_Alias> Factory(const mt::MatrixObject& defs, std::int64_t i);
 };
 
@@ -123,6 +136,8 @@ class MtVars_Vars : public MtVars_Text {
 public:
 	/* 数值求值：字面量直接解析，表达式经 resolve_ 惰性求值（含环检测）。 */
 	double numericValue() const;
+
+	const char* kindName() const override { return "vars"; }
 
 	/* play/read 返回格式化后的数值文本（保持「值按文本驻留」的既有语义） */
 	Json play(const Json&) override;

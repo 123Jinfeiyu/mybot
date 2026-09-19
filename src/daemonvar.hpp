@@ -162,6 +162,7 @@ class MtVars_Daemon : public MatrixVars_Hardware {
 
 public:
 	Json play(const Json&) override;
+	const char* kindName() const override { return "daemon"; }
 	void build() override;
 	void destroy() override;
 

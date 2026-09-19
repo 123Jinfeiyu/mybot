@@ -1,10 +1,11 @@
 #include "agentdriver.hpp"
 
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 #include <vector>
 
-#include "luavar.hpp"
+#include "hardware.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -50,7 +51,7 @@ std::unique_ptr<ChatTransport> makeDriverTransport(MatrixVars_Hardware* driver,
 	}
 	/* 只接受 Lua 驱动：别的硬件变量没有 call 语义，playQuiet 会落到默认实现
 	 * （等于 play），拿回来的表必然缺 content/tool_calls，报错离真实成因很远 */
-	if (dynamic_cast<MtVars_Lua*>(driver) == nullptr) {
+	if (std::string_view(driver->kindName()) != "lua") {
 		throw std::invalid_argument("LLM 驱动变量必须是 Lua 驱动（modules/Llm*.lua 注册）");
 	}
 	return std::make_unique<LuaDriverTransport>(driver, std::move(cfg));

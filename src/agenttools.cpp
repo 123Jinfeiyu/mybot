@@ -26,9 +26,7 @@
 #include <utility>
 
 #include "actionsource.hpp"
-#include "daemonvar.hpp"
 #include "hardware.hpp"
-#include "luavar.hpp"
 #include "robot.hpp"
 #include "util.hpp"
 
@@ -346,11 +344,14 @@ Json toolSchema(const std::vector<std::pair<std::string, Json>>& props,
 	return s;
 }
 
+/* 2.3：种类判定走虚 kindName（叶子类单点），此处只做展示文案映射 */
 const char* kindOf(const MatrixVars_Hardware* hw) {
-	if (dynamic_cast<const MtVars_Alias*>(hw) != nullptr) { return "别名"; }
-	if (dynamic_cast<const MtVars_Vars*>(hw) != nullptr) { return "数值变量"; }
-	if (dynamic_cast<const MtVars_Lua*>(hw) != nullptr) { return "驱动"; }
-	if (dynamic_cast<const MtVars_Daemon*>(hw) != nullptr) { return "守护"; }
+	if (hw == nullptr) { return "未知"; }
+	std::string_view k = hw->kindName();
+	if (k == "alias") { return "别名"; }
+	if (k == "vars") { return "数值变量"; }
+	if (k == "lua") { return "驱动"; }
+	if (k == "daemon") { return "守护"; }
 	return "未知";
 }
 

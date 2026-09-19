@@ -27,6 +27,7 @@ class LambdaHw : public bot::MatrixVars_Hardware {
 public:
 	explicit LambdaHw(std::function<bot::Json(const bot::Json&)> fn) : fn_(std::move(fn)) {}
 	bot::Json play(const bot::Json& in) override { return fn_(in); }
+	const char* kindName() const override { return "test-lambda"; }
 };
 
 /* 解析出恰好一个矩阵对象；解析失败或多解都视为用例前置条件不成立 */

@@ -84,6 +84,7 @@ public:
 	}
 
 	Json play(const Json& json) override { return callImpl(json, true); }
+	const char* kindName() const override { return "lua"; }
 	/* agent 模式：同一个 call 路径但不回显结果（stdout 只留最终回答） */
 	Json playQuiet(const Json& json) override { return callImpl(json, false); }
 	Json read() override { return readImpl(); }

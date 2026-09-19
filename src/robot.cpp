@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <iostream>
+#include <string_view>
 
 namespace bot {
 
@@ -96,12 +97,12 @@ double resolveVarsNumber(const HwRegistry* reg, const std::string& name) {
 		throw IllegalArgumentException("expression references '" + name
 			+ "', but it is not a defined hardware variable");
 	}
-	MtVars_Vars* v = dynamic_cast<MtVars_Vars*>(hv);
-	if (v == nullptr) {
+	if (std::string_view(hv->kindName()) != "vars") {
 		throw IllegalArgumentException("expression references '" + name
 			+ "', which is not an @Vars; only numeric @Vars may appear in an expression");
 	}
-	return v->numericValue();
+	return static_cast<MtVars_Vars*>(hv)->numericValue();	/* kindName 已判型 */
+
 }
 } // namespace
 
@@ -270,7 +271,7 @@ Json MetaProvider::collectRefs(bool forDestroy) {
 			});
 			continue;
 		}
-		if (snap.isStr() && dynamic_cast<MtVars_Vars*>(hv) != nullptr) {
+		if (snap.isStr() && std::string_view(hv->kindName()) == "vars") {
 			/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
 			obj.put(colName, snap);
 			continue;
@@ -484,7 +485,7 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 					+ raw + "' in table '" + mtName
 					+ "', but it is not defined yet. The " + kind + " must be defined before the matrix that references it.");
 			}
-			if (dynamic_cast<MtVars_Text*>(target) != nullptr) {
+			if (target->isScalarText()) {
 				throw IllegalArgumentException("Hardware variable '" + name + "' declares " + kind + " '"
 					+ raw + "' in table '" + mtName + "': '@Alias'/'@Vars' scalars cannot be "
 					+ kind + " targets (both are invoked via play and must return a result table).");
@@ -619,7 +620,7 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 
 	Json ret = JsonObject();
 	MatrixVars_Hardware* hit = registry_.find(name_param_orig);
-	if (hit != nullptr && dynamic_cast<MtVars_Text*>(hit)) {
+	if (hit != nullptr && hit->isScalarText()) {
 		/* @Alias / @Vars：参数位名字替换（值即目标参数名） */
 		ret = hit->read();
 		name_param = ret.asString().getValue();
