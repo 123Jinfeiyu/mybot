@@ -17,7 +17,8 @@
 
 namespace bot {
 
-class HwRegistry;	/* 完整定义在 robot.hpp（luavar.cpp 内联实现查找） */
+/* 2.1：只依赖 HwLookup 只读接口（hardware.hpp），不再前向引用 robot.hpp
+ * 的 HwRegistry——装配层与 Lua 变量层经抽象解耦，测试可注入假实现。 */
 
 class MtVars_Lua : public MatrixVars_Hardware {
 	/* 顶层调用深度计数：只在外层 .mt 直接调用的原子处打印结果，
@@ -49,11 +50,11 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	 * 只挂在 callImpl（play/playQuiet）上：read()/build/destroy 不触发。 */
 	std::vector<std::string> trigNames_;
 	std::vector<MatrixVars_Hardware*> trigPtrs_;
-	HwRegistry* registry_;
+	HwLookup* registry_;
 
 	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,
 			std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames,
-			std::vector<std::string> trigNames, HwRegistry* registry)
+			std::vector<std::string> trigNames, HwLookup* registry)
 		: L_(L), luapath_(std::move(luapath)), name_(std::move(name)),
 		  getMetadata_(std::move(getMetadata)),
 		  ctrlNames_(std::move(ctrlNames)), ctrlPtrs_(ctrlNames_.size(), nullptr),
@@ -91,7 +92,7 @@ public:
 
 	static std::unique_ptr<MtVars_Lua> Factory(const std::string& luapath, const std::string& name,
 			std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames = {},
-			std::vector<std::string> trigNames = {}, HwRegistry* registry = nullptr);
+			std::vector<std::string> trigNames = {}, HwLookup* registry = nullptr);
 };
 
 } // namespace bot

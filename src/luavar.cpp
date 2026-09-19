@@ -3,7 +3,6 @@
 #include <iostream>
 #include <stdexcept>
 
-#include "robot.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -13,7 +12,7 @@ thread_local int MtVars_Lua::topDepth = 0;
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
 std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, const std::string& name,
 		std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames,
-		std::vector<std::string> trigNames, HwRegistry* registry) {
+		std::vector<std::string> trigNames, HwLookup* registry) {
 	if (!ctrlNames.empty() && registry == nullptr) {
 		throw std::runtime_error("MtVars_Lua::Factory: controller '" + ctrlNames.front()
 			+ "' requires a registry for lookup");

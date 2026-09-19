@@ -31,8 +31,10 @@ class DaemonRunner;
 
 /* R-2：硬件变量注册表——所有权、销毁序、名字索引的单一来源。
  * 旧实现三个并行容器（hardwareVars_/hwPool_/hwSeq_）靠 addHardwareVar
- * 手工同步；会话期别名覆盖直接改写 map，不变式被打破。 */
-class HwRegistry {
+ * 手工同步；会话期别名覆盖直接改写 map，不变式被打破。
+ * 实现 HwLookup 只读接口（2.1）：MtVars_Lua 等只依赖该抽象；byName()
+ * 是 agent 清单的具象视图，不进接口（假实现无需维护清单）。 */
+class HwRegistry : public HwLookup {
 	std::vector<std::unique_ptr<MatrixVars_Hardware>> pool_;	/* 所有权（含 run 期别名） */
 	std::vector<MatrixVars_Hardware*> seq_;			/* 销毁序：结构声明序，active/deactivate 按序 */
 	std::map<std::string, MatrixVars_Hardware*> byName_;	/* 名字索引 */
@@ -56,14 +58,14 @@ public:
 
 	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛）——
 	 * MetaProvider 的 $(...) 求值、HwFactory 装配、runAction 表达式列共用 */
-	std::function<double(const std::string&)> makeVarsResolver() const;
+	std::function<double(const std::string&)> makeVarsResolver() const override;
 
-	MatrixVars_Hardware* find(const std::string& name) const {
+	MatrixVars_Hardware* find(const std::string& name) const override {
 		auto it = byName_.find(name);
 		return it == byName_.end() ? nullptr : it->second;
 	}
 
-	bool contains(const std::string& name) const { return byName_.count(name) > 0; }
+	bool contains(const std::string& name) const override { return byName_.count(name) > 0; }
 
 	/* 销毁序视图（build 正向 / destroy 反向）；会话别名不在其中 */
 	const std::vector<MatrixVars_Hardware*>& sequence() const { return seq_; }

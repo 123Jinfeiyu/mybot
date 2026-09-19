@@ -64,6 +64,21 @@ inline Json makeErrResult(const std::string& message) {
 	return ret;
 }
 
+/* ---- 注册表只读查询接口（重构计划 2.1）----
+ * luavar 与 robot 装配层之间只依赖此抽象：MtVars_Lua 经它解析 flow 目标
+ * （N-6 首用锁定指针，虚调用每目标至多一次）与 $(...) 表达式标识符。
+ * 测试可注入假实现建 controller/trigger 夹具，不必装配完整注册表。
+ * 实现方：HwRegistry（robot.hpp）。装配/派发热路径（createHardVars、
+ * ActionRunner 逐行 find）仍持具体 HwRegistry&，不经此接口。 */
+class HwLookup {
+public:
+	virtual ~HwLookup() = default;
+	virtual MatrixVars_Hardware* find(const std::string& name) const = 0;
+	virtual bool contains(const std::string& name) const = 0;
+	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛） */
+	virtual std::function<double(const std::string&)> makeVarsResolver() const = 0;
+};
+
 /* ---- 标量文本硬件变量（@Alias / @Vars 共用）----
  * play/read 返回一个 JsonString，无资源可 build/destroy：
  *   @Alias 的值是目标参数名（@Action 列 dev.<name> 的参数位二次解析成真实参数名）；
