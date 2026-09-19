@@ -138,10 +138,6 @@ class HwFactory {
 	std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders_;
 	std::vector<std::shared_ptr<MetaProvider>>& metaProviders_;
 
-	/* 安全添加硬件变量（查重复键；source 指明声明来源） */
-	void addHardwareVar(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
-			const std::string& source = "");
-
 	/* 重名前置判重（资源泄漏防线：Lua 状态机/共享槽先申请，此处先确认可注册） */
 	void precheckDuplicate(const std::string& name, const std::string& mtName) {
 		if (registry_.contains(name)) {
@@ -246,8 +242,6 @@ public:
 	 * 安全标识符——否则合成出来的 SQL 会被注入出别的表。 */
 	void injectLuaDriver(const std::string& driverTable, const std::string& varName);
 
-	/* 储存整个矩阵变量表（预留 API，供 NN 矩阵脚本存储） */
-	void save(std::ostream& out) { mt::MatrixSaver::save(matrices_, out); }
 };
 
 } // namespace bot

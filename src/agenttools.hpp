@@ -44,7 +44,6 @@ class AgentToolRegistry {
 
 public:
 	void add(AgentTool t) { tools_.push_back(std::move(t)); }
-	const std::vector<AgentTool>& all() const { return tools_; }
 	bool contains(const std::string& name) const;
 
 	/* 派发一次工具调用。未知工具与工具内部异常都折成文本返回

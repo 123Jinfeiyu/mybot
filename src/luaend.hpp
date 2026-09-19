@@ -50,12 +50,6 @@ public:
 			+ "self-referential table (t.x = t) or an unintended recursive structure") {}
 };
 
-/* 将 Json 递归压入 Lua 栈（数组/对象转 Lua 表）；返回后栈顶即该值。
- * N-15：与读回方向（lua_value_to_json 的 C-9）对称的深度防线——驱动参数
- * 里的自引用结构（如把含自己的元数据表原样传回）在此侧同样只可能靠计数兜底；
- * 超 kMaxLuaNesting 抛 LuaNestingTooDeep（call_lua 就地转 ERR）。 */
-void push_lua_value(lua_State* L, const Json& val);
-
 /* 将 Lua 栈上 idx 处的值递归转为 Json（int→字面整 判 Int，否则 Float）。
  * depth 由递归自身逐层传入，调用方留默认 0；超 kMaxLuaNesting 抛 LuaNestingTooDeep */
 Json lua_value_to_json(lua_State* L, int idx, int depth = 0);

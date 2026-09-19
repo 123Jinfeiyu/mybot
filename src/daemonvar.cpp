@@ -308,10 +308,9 @@ std::string firstExistingModule(const std::string& paths, const std::string& rel
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath) {
 	if (chunk.rfind("/", 0) == 0) { return chunk; }
 	if (chunk.rfind(modulePath + "/", 0) == 0) { return chunk; }
-	/* 兼容不带 "./" 的旧写法：缺省 modulePath="./modules" 时 "modules/..." 原样 */
-	std::string noDot = modulePath;
-	if (modulePath.rfind("./", 0) == 0) { noDot = modulePath.substr(2); }
-	if (chunk.rfind(noDot + "/", 0) == 0) { return chunk; }
+	/* 阶段 5：旧写法（"modules/..."，不带 "./"）兼容分支经全仓 robots/、
+	 * docs/ 核查无依赖，已删除——这类 chunk 现走 firstExistingModule，
+	 * 按普通相对 chunk 在模块路径下解析。 */
 	return firstExistingModule(modulePath, chunk);
 }
 

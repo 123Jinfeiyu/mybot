@@ -105,9 +105,10 @@ std::optional<MatrixObject> MatrixParser::parse() {
 			 * 会让用户拿着「Parse failed at line N」无从排障。 */
 			throw bot::IllegalArgumentException("Parse failed at line "
 				+ std::to_string(count) + ": " + e.what());
-		} catch (const std::exception&) {
-			throw UnknowExcept(count);
 		}
+		/* 阶段 5：UnknowExcept 兜底分支删除——非 IAE 的 std 异常（bad_alloc/
+		 * length_error 等）原被降级成「I don't understand what happened」，
+		 * 掩盖真实成因；按 fail-fast 原则原样上抛。 */
 	}
 
 	if (!builder_.hasName()) { return std::nullopt; }

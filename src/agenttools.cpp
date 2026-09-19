@@ -163,8 +163,6 @@ void appendCapped(std::string& dst, const char* p, std::size_t n, bool& truncate
 	}
 }
 
-extern char** environ;
-
 /* 环境清洗：剔除名称含敏感关键词的变量。模型可能被外部输入（画面/文件内容）
  * 诱导执行任意命令，不能让子进程继承 LLM API key。
  * 注意 BOT4CJ_LLM_KEY 含 "key"，天然被本规则覆盖。 */

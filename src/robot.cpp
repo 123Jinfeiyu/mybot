@@ -365,12 +365,6 @@ void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& ou
 
 /* ==================== HwFactory：矩阵表 → 硬件变量 ==================== */
 
-/* ---- 安全添加硬件变量（不可覆盖：insert_or_assign 语义会造成隐式改名）---- */
-void HwFactory::addHardwareVar(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
-		const std::string& source) {
-	registry_.add(name, std::move(hw), source);
-}
-
 /* ---- 注册标量文本矩阵（@Alias / @Vars）：启动期(session=nullptr)与动作脚本期(session)两路 ----
  * 两者共用一条注册路径：结构期重名即抛；动作脚本内重名报错、@Alias 同名覆盖结构定义，
  * @Vars 则拒绝覆盖（见 session 分支内的防线注释）。 */
@@ -412,7 +406,7 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 			}
 			registry_.override(name, std::move(var));	/* 会话期覆盖式注册（结构定义被动作脚本别名覆盖） */
 		} else {
-			addHardwareVar(name, std::move(var), std::string(" (in @") + label + " matrix)");
+			registry_.add(name, std::move(var), std::string(" (in @") + label + " matrix)");
 		}
 	}
 }
@@ -434,7 +428,7 @@ void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::stri
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
-		addHardwareVar(name, MtVars_Daemon::Factory(matrix, i, daemonHolders_),
+		registry_.add(name, MtVars_Daemon::Factory(matrix, i, daemonHolders_),
 			" (in table '" + mtName + "')");
 	}
 }
@@ -527,7 +521,7 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 		FlowRowRefs flow = parseFlowRow(matrix, i, name, mtName, registry_);
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, &registry_);
 		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
-		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
+		registry_.add(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv](bool forDestroy) {
 				return forDestroy ? metaProv->collectForDestroy() : metaProv->collect();
 			}, flow.ctrlNames, flow.trigNames, &registry_),
@@ -633,7 +627,7 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 		val_fp64 = MatrixVars_Hardware::parseMtDouble(actionDefs, i, j);
 	}
 
-	Json ret = JsonObject();
+	Json ret;	/* 分支内必被 read() 覆写，缺省 Null 即可（阶段 5：去死赋值） */
 	MatrixVars_Hardware* hit = registry_.find(name_param_orig);
 	if (hit != nullptr && hit->isScalarText()) {
 		/* @Alias / @Vars：参数位名字替换（值即目标参数名） */

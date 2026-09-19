@@ -30,12 +30,6 @@ public:
 			+ std::to_string(expected) + " (every row must match the header column count)") {}
 };
 
-class UnknowExcept : public MatrixParseExcept {
-public:
-	explicit UnknowExcept(std::int64_t line)
-		: MatrixParseExcept("I don't understand what happened. we got line: " + std::to_string(line)) {}
-};
-
 /* ------------- 矩阵对象 ------------- */
 class MatrixObject {
 	friend class MatrixBuilder;

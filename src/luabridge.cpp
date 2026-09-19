@@ -104,7 +104,8 @@ static void push_lua_value_impl(lua_State* L, const Json& val, int depth) {
 	}
 }
 
-void push_lua_value(lua_State* L, const Json& val) {
+/* 仅本 TU 使用（阶段 5：自 luaend.hpp 伞头收窄为内部符号；depth 0 入口） */
+static void push_lua_value(lua_State* L, const Json& val) {
 	push_lua_value_impl(L, val, 0);
 }
 

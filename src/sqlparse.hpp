@@ -39,7 +39,6 @@ struct TableColumn {
 	VarType type_;
 };
 
-struct BlankEvent {};
 
 struct CreateTableEvent {
 	std::string tableName;
