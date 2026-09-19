@@ -12,10 +12,10 @@ thread_local int MtVars_Lua::topDepth = 0;
 
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
 std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, const std::string& name,
-		std::function<Json(bool)> getMetadata, std::string ctrlName,
+		std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames,
 		std::vector<std::string> trigNames, HwRegistry* registry) {
-	if (!ctrlName.empty() && registry == nullptr) {
-		throw std::runtime_error("MtVars_Lua::Factory: controller '" + ctrlName
+	if (!ctrlNames.empty() && registry == nullptr) {
+		throw std::runtime_error("MtVars_Lua::Factory: controller '" + ctrlNames.front()
 			+ "' requires a registry for lookup");
 	}
 	if (!trigNames.empty() && registry == nullptr) {
@@ -27,7 +27,7 @@ std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, cons
 		throw std::runtime_error("Lua_check()");
 	}
 	return std::unique_ptr<MtVars_Lua>(new MtVars_Lua(L, luapath, name,
-		std::move(getMetadata), std::move(ctrlName), std::move(trigNames), registry));
+		std::move(getMetadata), std::move(ctrlNames), std::move(trigNames), registry));
 }
 
 /* ---- 构造 Lua 状态机（加载标准库 + 沙箱 + loadfile + pcall）---- */
@@ -134,27 +134,36 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 	/* 本驱动 call 返回契约（含显式 ERR 即中断） */
 	MatrixVars_Hardware::ensureOk(res, "call " + luapath_);
 
-	/* controller 转发：元数据 ∪ 自己 Lua 的返回表 */
-	if (!ctrlName_.empty()) {
-		/* N-6：首次转发缓存目标指针。注册表对 controller 名字的会话期
-		 * 覆盖已拒绝（HwRegistry::override），指针终身有效。 */
-		if (ctrl_ == nullptr) { ctrl_ = registry_->find(ctrlName_); }
-		MatrixVars_Hardware* controller = ctrl_;
-		if (controller == nullptr) {
-			throw IllegalArgumentException("controller '" + ctrlName_ + "' of hardware variable '"
-				+ name_ + "' is no longer registered (declaration order guarantees it exists)");
-		}
+	/* controller 转发（出边，可多列 = 扇出）：元数据 ∪ 自己 Lua 的返回表构建
+	 * 一次，按列声明序逐个转发给 controller——每个 controller 收到同一份
+	 * payload（同列族不接力；跨变量链由目标自己的 controller 列表达）。
+	 * 出现一个 ERR 即停止并返回：不再转发给其余 controller，异常上抛整帧
+	 * 中断（halt-on-error，与触发器同一契约）。全部成功时返回最后一个
+	 * controller 的结果——单列与既有行为完全一致。 */
+	if (!ctrlNames_.empty()) {
 		Json payload = JsonObject();
 		jsonMergeInto(payload, metadata);
 		jsonMergeInto(payload, res.asObject());
 		logD([&payload] { return "Forward to controller: " + payload.toString(); });
-
-		Json ctrl_res = controller->play(payload);
-		logD([&ctrl_res] { return "Controller result: " + ctrl_res.toString(); });
-
-		/* 检查 controller 返回值（如 PCA9685 写寄存器失败） */
-		MatrixVars_Hardware::ensureOk(ctrl_res, "controller of " + luapath_);
-
+		Json ctrl_res;
+		for (std::size_t k = 0; k < ctrlNames_.size(); ++k) {
+			/* N-6：首次转发缓存目标指针。注册表对引用名字的会话期覆盖已拒绝
+			 * （HwRegistry::override），指针终身有效。 */
+			if (ctrlPtrs_[k] == nullptr) { ctrlPtrs_[k] = registry_->find(ctrlNames_[k]); }
+			MatrixVars_Hardware* controller = ctrlPtrs_[k];
+			if (controller == nullptr) {
+				throw IllegalArgumentException("controller '" + ctrlNames_[k]
+					+ "' of hardware variable '" + name_
+					+ "' is no longer registered (declaration order guarantees it exists)");
+			}
+			ctrl_res = controller->play(payload);
+			logD([&] {
+				return "Controller result (" + ctrlNames_[k] + "): " + ctrl_res.toString();
+			});
+			/* 检查本 controller 返回值（如 PCA9685 写寄存器失败）——ERR 即在此
+			 * 中断，后续 controller 不再被转发 */
+			MatrixVars_Hardware::ensureOk(ctrl_res, "controller '" + ctrlNames_[k] + "' of " + luapath_);
+		}
 		if (top && echo) { std::cout << ctrl_res.toString() << std::endl; }
 		return ctrl_res;
 	}

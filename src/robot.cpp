@@ -38,6 +38,25 @@ namespace {
 double resolveVarsNumber(const HwRegistry* reg, const std::string& name);
 } // namespace
 
+/* ---- 结构引用列判定（多列支持）----
+ * controller/trigger 之外放行基名+纯数字后缀的编号列（controller2/trigger10…），
+ * 同一行可声明多个转发目标/触发器，执行顺序 = 列声明序（从左到右）。
+ * 基名+非数字后缀（controller2x）不匹配，仍是普通元数据列。 */
+namespace {
+bool flowColumnMatches(const std::string& col, const std::string& base) {
+	if (col.compare(0, base.size(), base) != 0) { return false; }
+	if (col.size() == base.size()) { return true; }
+	for (std::size_t k = base.size(); k < col.size(); ++k) {
+		if (!std::isdigit(static_cast<unsigned char>(col[k]))) { return false; }
+	}
+	return true;
+}
+
+bool isFlowColumn(const std::string& col) {
+	return flowColumnMatches(col, "controller") || flowColumnMatches(col, "trigger");
+}
+} // namespace
+
 std::function<double(const std::string&)> HwRegistry::makeVarsResolver() const {
 	const HwRegistry* reg = this;
 	return [reg](const std::string& nm) { return resolveVarsNumber(reg, nm); };
@@ -76,7 +95,7 @@ void MetaProvider::seed() {
 		const std::string& colName = matrix_(0, j);
 		std::string value = matrix_.inherited(row_, j);
 		if (value == "-") { continue; }
-		if (j == idxName || colName == "controller" || colName == "trigger") { continue; }
+		if (j == idxName || isFlowColumn(colName)) { continue; }
 		if (value.rfind("$", 0) == 0) {
 			if (auto body = exprBody(value)) {
 				MetaRef ref;
@@ -398,82 +417,85 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 	if (idxName < 0) {
 		throw IllegalArgumentException("Table '" + mtName + "' has no 'name' column.");
 	}
-	std::int64_t idxCtrl = matrix.indexOfCol(0, "controller");
-	std::int64_t idxTrig = matrix.indexOfCol(0, "trigger");
 	std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
 	std::string scriptPath = firstExistingModule(modulePath, mtName + ".lua");
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
-		std::string ctrlName;
-		if (idxCtrl >= 0) {
-			std::string rawCtrl = matrix.inherited(i, idxCtrl);
-			if (rawCtrl != "-") {
-				if (registry_.find(rawCtrl) == nullptr) {
-					throw IllegalArgumentException("Hardware variable '" + name + "' declares controller '"
-						+ rawCtrl + "' in table '" + mtName
-						+ "', but it is not defined yet. The controller must be defined before the matrix that references it.");
-				}
-				/* N-6：登记 controller 引用，会话期覆盖将拒绝触碰该名字 */
-				registry_.addFlowRef(rawCtrl);
-				ctrlName = rawCtrl;
-			}
-		}
+		/* 流引用列（controller/trigger 基名或基名+数字）按列声明序逐个解析：
+		 * 多列 = 扇出（controller 各收同一份转发 payload，trigger 依序前置调用），
+		 * 不是同行接力。先声明约束对每个目标独立生效——两条引用边都只指向
+		 * 更早声明的变量 ⇒ 引用图按构造仍是 DAG，派发期无需环检测。 */
+		std::vector<std::string> ctrlNames;
 		std::vector<std::string> trigNames;
-		if (idxTrig >= 0) {
-			std::string rawTrig = matrix.inherited(i, idxTrig);
-			if (rawTrig != "-") {
+		for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix.cols()); ++j) {
+			const std::string& colName = matrix(0, j);
+			const bool isCtrl = flowColumnMatches(colName, "controller");
+			if (!isCtrl && !flowColumnMatches(colName, "trigger")) { continue; }
+			std::string raw = matrix.inherited(i, j);
+			if (raw == "-") { continue; }
+			std::vector<std::string>& names = isCtrl ? ctrlNames : trigNames;
+			const char* kind = isCtrl ? "controller" : "trigger";
+			/* 同列族重复指向：扇出语义下只会对同一目标双调用，装配期拒绝 */
+			if (std::find(names.begin(), names.end(), raw) != names.end()) {
+				throw IllegalArgumentException("Hardware variable '" + name + "' declares "
+					+ kind + " '" + raw + "' more than once in table '" + mtName
+					+ "' (a flow column target must be unique per row).");
+			}
+			if (!isCtrl) {
 				/* trigger 引用（入边）的装配期校验。与 controller 同规则的
 				 * 「先声明」约束在这里顺带买断了一个不变式：两条引用边都只指向
 				 * 更早声明的变量 ⇒ 整个 trigger/controller 调用图按构造是 DAG，
 				 * 派发期无需环检测（前向引用是 $ 数据列的专属能力）。 */
-				if (rawTrig.rfind("$", 0) == 0) {
+				if (raw.rfind("$", 0) == 0) {
 					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-						+ rawTrig + "' in table '" + mtName + "': the trigger column takes a plain"
+						+ raw + "' in table '" + mtName + "': the trigger column takes a plain"
 						+ " variable name and does not support '$' references (a trigger is an"
 						+ " invocation edge, not a data wire; use a '$' metadata column for snapshots).");
 				}
-				if (rawTrig == "result" || rawTrig == "message" || rawTrig == "mode") {
+				if (raw == "result" || raw == "message" || raw == "mode") {
 					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-						+ rawTrig + "' in table '" + mtName + "': '" + rawTrig
+						+ raw + "' in table '" + mtName + "': '" + raw
 						+ "' is a framework-reserved key and cannot name a trigger.");
 				}
-				MatrixVars_Hardware* target = registry_.find(rawTrig);
-				if (target == nullptr) {
-					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-						+ rawTrig + "' in table '" + mtName
-						+ "', but it is not defined yet. The trigger must be defined before the matrix that references it.");
-				}
-				if (dynamic_cast<MtVars_Text*>(target) != nullptr) {
-					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-						+ rawTrig + "' in table '" + mtName
-						+ "': '@Alias'/'@Vars' scalars cannot be trigger targets (a trigger is"
-						+ " invoked via play and must return a result table).");
-				}
+			}
+			MatrixVars_Hardware* target = registry_.find(raw);
+			if (target == nullptr) {
+				throw IllegalArgumentException("Hardware variable '" + name + "' declares " + kind + " '"
+					+ raw + "' in table '" + mtName
+					+ "', but it is not defined yet. The " + kind + " must be defined before the matrix that references it.");
+			}
+			if (dynamic_cast<MtVars_Text*>(target) != nullptr) {
+				throw IllegalArgumentException("Hardware variable '" + name + "' declares " + kind + " '"
+					+ raw + "' in table '" + mtName + "': '@Alias'/'@Vars' scalars cannot be "
+					+ kind + " targets (both are invoked via play and must return a result table).");
+			}
+			if (!isCtrl) {
 				/* 触发器结果以触发器名字为键并入调用参数——与本行元数据列同名会让
-				 * 该键易主，装配期拒绝（列集合此刻已定型）；.mt 参数键同名由
-				 * MtVars_Lua::rejectReservedKeys 在派发期拒绝（.mt 此刻还没加载）。 */
-				for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix.cols()); ++j) {
-					const std::string& colName = matrix(0, j);
-					if (colName == "name" || colName == "controller" || colName == "trigger") { continue; }
-					if (colName == rawTrig) {
+				 * 该键易主，装配期拒绝（排除集 = name + 全部流引用列；列集合此刻已
+				 * 定型）；.mt 参数键同名由 MtVars_Lua::rejectReservedKeys 在派发期
+				 * 拒绝（.mt 此刻还没加载）。 */
+				for (std::int64_t c = 0; c < static_cast<std::int64_t>(matrix.cols()); ++c) {
+					const std::string& other = matrix(0, c);
+					if (other == "name" || isFlowColumn(other)) { continue; }
+					if (other == raw) {
 						throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-							+ rawTrig + "' in table '" + mtName + "': the trigger result is merged"
+							+ raw + "' in table '" + mtName + "': the trigger result is merged"
 							+ " under the trigger name, which collides with metadata column '"
-							+ colName + "'. Rename one of them.");
+							+ other + "'. Rename one of them.");
 					}
 				}
-				/* N-6：登记 trigger 引用，会话期覆盖将拒绝触碰该名字 */
-				registry_.addFlowRef(rawTrig);
-				trigNames.push_back(rawTrig);
 			}
+			/* N-6：登记流引用，会话期覆盖将拒绝触碰该名字 */
+			registry_.addFlowRef(raw);
+			names.push_back(raw);
 		}
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, &registry_);
 		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
 		addHardwareVar(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv](bool forDestroy) {
 				return forDestroy ? metaProv->collectForDestroy() : metaProv->collect();
-			}, ctrlName, trigNames, &registry_),
+			}, ctrlNames, trigNames, &registry_),
 			" (in table '" + mtName + "')");
 	}
 }

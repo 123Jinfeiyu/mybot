@@ -65,6 +65,18 @@ s1.A  s2.A  spk.F  spk.delay;   # column name
 
 反方向的调用编排（先把别人的结果收集进来，再调用当前零件）见下一节 [trigger 引用](#trigger-引用前置调用)。
 
+**多列（扇出）**：controller 之外放行编号列 `controller2`/`controller3`…（基名或基名+纯数字
+后缀；`controller2x` 仍是普通元数据列），一行可声明多个转发目标：
+
+- 按**列声明序**逐个转发，每个 controller 收到**同一份** payload「元数据 ∪ 自己返回表」——
+  同一行的多个 controller **不接力**（controller1 的结果不进 controller2 的输入）；
+  跨变量链式转发仍然可用：目标自己的 controller 列会在它被调到时照常生效
+- **出现一个 ERR 即停止并返回**：不再转发给其余 controller，异常上抛整帧中断（halt-on-error）
+- 全部成功时当前零件的返回值 = **最后一个** controller 的结果（单列与既有行为一致；
+  顶层回显打印的也是它）
+- 同一行的 controller 列指向同一目标在装配期拒绝（同 payload 双转发是配置错误）；
+  controller 目标也不能是 `@Alias`/`@Vars` 标量（装配期拒绝）
+
 ## trigger 引用（前置调用）
 
 trigger 列是 controller 列的镜像：controller 是**出边**（当前零件调完后把结果传走），
@@ -108,8 +120,15 @@ INSERT INTO Servo (name, max, min, offset, controller, trigger, channel)
 - 触发是同步调用：N 个设备都挂同一触发器 = 每帧 N 次触发调用，无帧内去重；
   高频采样场景请改用守护变量 + `$` 引用读快照，触发器留给「每次执行前必须新鲜测量/先干一件事」的编排
 
+**多列**：trigger 之外放行编号列 `trigger2`/`trigger3`…（命名规则与 controller 相同），
+一行可声明多个触发器，按**列声明序**逐个前置调用——某个触发器 ERR 即停止，其后的触发器
+与当前零件都不再执行；返回表各自以触发器名字为键并入，互不踩键。同一行的触发列指向
+同一目标在装配期拒绝。
+
 回归：`trig_basic`（正值 + 顺序/到位观察面专段）与 `trig_forward`/`trig_scalar`/
-`trig_reserved`/`trig_collide`/`trig_dollar`/`trig_param`/`trig_n6`/`trig_err`（负值）。
+`trig_reserved`/`trig_collide`/`trig_dollar`/`trig_param`/`trig_n6`/`trig_err`（负值）；
+多列 `ctrl2_basic`/`trig2_basic`（正值 + 观察面专段）与 `flow_dup`/`flow_dupc`/
+`flow_fwd2`/`flow_scalar2`/`trig_scalar2`/`ctrl2_err`（负值）。
 
 ## `$` 引用列
 

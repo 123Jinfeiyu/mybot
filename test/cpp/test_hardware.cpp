@@ -201,10 +201,11 @@ TH_TEST(json_merge_into_overwrites_in_place) {
 /* ---------------- MetaProvider ---------------- */
 
 TH_TEST(metaprovider_skips_name_structural_and_dash_columns) {
-	/* name/controller/trigger 是框架保留列名：一律不进元数据（按名跳过，
-	 * 不再由调用方传列号——漏传 trigger 列会让引用名泄漏进 Lua 入参） */
+	/* name + 全部流引用列（controller/trigger 基名或基名+数字）是框架保留列：
+	 * 一律不进元数据（按名模式跳过，不再由调用方传列号——漏传会让引用名
+	 * 泄漏进 Lua 入参） */
 	mt::MatrixObject m = fx::oneMatrix(
-		"@Relay\nname controller trigger note servo;\nr0 t0 t1 hello -;\n@\n");
+		"@Relay\nname controller2 trigger trigger3 note servo;\nr0 t0 t1 t2 hello -;\n@\n");
 	bot::HwRegistry reg;
 	MetaProvider prov(m, 1, &reg);
 	Json meta = prov.collect();

@@ -390,6 +390,16 @@ fi
 #                 与本表元数据列同名 / $ 数据引用写法 / 会话别名覆盖（N-6）
 #   trig_err    触发器 ERR 整帧 halt：触发目标 Timer 缺 delay 参数必报 ERR，
 #                 派发帧响亮中止且退出码 1
+#   ctrl2_basic/trig2_basic
+#                 controller/trigger 多列（基名+数字编号列）：扇出广播（每个
+#                 controller 收同一份 payload，返回值取最后者）/ 依序前置调用
+#                 （结果各自按名到位）；行序与同 payload 观察面在本文件
+#                 「trigger 前置调用」专段补齐
+#   flow_dup/flow_dupc/flow_fwd2/flow_scalar2/trig_scalar2
+#                 多列负值契约：同列族重复指向 / controller2 前向引用 /
+#                 编号列拒绝 @Alias·@Vars 标量目标
+#   ctrl2_err   controller 扇出 fail-fast：第一个 controller ERR 即停止，
+#                 后续 controller 不再被转发（relay 目击者禁言断言）
 # 用例表：SQL|MT|期望退出码|输出必须包含|输出必须不含（第 5 字段可省；MT/SQL 含 "/" 时视为仓库根相对路径）
 # 二进制缺省 ./build/mybot，可用 BOT=xxx 覆盖（与 E2E 段同约定）。
 # ======================================================================
@@ -454,6 +464,14 @@ parse_cases=(
 	'trig_dollar.sql|trig_dollar.mt|1|does not support '
 	'trig_n6.sql|trig_n6.mt|1|referenced as a controller or trigger'
 	'trig_err.sql|trig_err.mt|1|Invalid Argument: delay'
+	'ctrl2_basic.sql|ctrl2_basic.mt|0|slept'
+	'trig2_basic.sql|trig2_basic.mt|0|note=s2'
+	'flow_dup.sql|flow_dup.mt|1|more than once'
+	'flow_dupc.sql|flow_dupc.mt|1|more than once'
+	'flow_fwd2.sql|flow_fwd2.mt|1|The controller must be defined before'
+	'flow_scalar2.sql|flow_scalar2.mt|1|cannot be controller targets'
+	'trig_scalar2.sql|trig_scalar2.mt|1|cannot be trigger targets'
+	'ctrl2_err.sql|ctrl2_err.mt|1|Invalid Argument: delay|note=witness'
 )
 run_one_parse() {
 	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5"
@@ -503,16 +521,16 @@ else
 fi
 
 # ======================================================================
-# trigger 前置调用：顺序与数据到位（BOT4CJ_DEBUG=1）。
-# trig_basic 里 relay-src 从不出现在 @Action——它的 Relay 打印出现即证明
-# trigger 机制发生。正身断言已登记 parse_cases，本节只补需要调试开关的
-# 三条观察面：① 触发器打印先于消费者打印（同一 stdout 行序）；
-# ② 触发器返回表以触发器名为键并入 call 参数 dump；
-# ③ 触发器数据是输入侧——controller 转发 payload（元数据 ∪ 自己返回表）
-#   不含触发器子表（需要转发时由驱动在返回表里显式回显）。
+# controller/trigger 多列：顺序与数据到位（BOT4CJ_DEBUG=1）。
+# 正身断言已登记 parse_cases，本节补需要调试开关/行序的三条观察面：
+#   trig_basic  触发先于消费、返回表以触发器名为键并入 call 参数 dump、
+#               触发器数据是输入侧（controller 转发 payload 不含触发器子表）
+#   trig2_basic 两个触发器按列声明序触发（s1 < s2 < sink），返回表各自按名到位
+#   ctrl2_basic 扇出广播：payload 构建一次（Forward dump 恰一次），每个
+#               controller 各收到同一份数据（各自 Controller result dump）
 # ======================================================================
 if [ ! -x "$bin" ]; then
-	artifact_missing "trigger 前置调用" "1 条用例" "$bin" "$bot_explicit"
+	artifact_missing "controller/trigger 多列观察面" "3 条用例" "$bin" "$bot_explicit"
 else
 	echo "----- trig_basic (trigger 前置调用观察面) -----"
 	tout="$(cat scripts/test/trig_basic.mt | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot=robots/test/trig_basic.sql 2>&1)"
@@ -533,6 +551,45 @@ else
 		record_pass
 	else
 		record_fail "trig_basic(trigger 观察面)"
+	fi
+
+	echo "----- trig2_basic (trigger 多列观察面) -----"
+	tout="$(cat scripts/test/trig2_basic.mt | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot=robots/test/trig2_basic.sql 2>&1)"
+	trc=$?
+	echo "$tout"
+	t2_ok=true
+	[ "$trc" -ne 0 ] && t2_ok=false
+	s1_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=300 note=s1' | head -1 | cut -d: -f1)"
+	s2_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=301 note=s2' | head -1 | cut -d: -f1)"
+	sk_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=301 note=sink' | head -1 | cut -d: -f1)"
+	if [ -z "$s1_line" ] || [ -z "$s2_line" ] || [ -z "$sk_line" ]; then
+		t2_ok=false
+	elif [ "$s1_line" -ge "$s2_line" ] || [ "$s2_line" -ge "$sk_line" ]; then
+		t2_ok=false
+	fi
+	echo "$tout" | grep -qF '"relay-src1":{"delay":300}' || t2_ok=false
+	echo "$tout" | grep -qF '"relay-src2":{"delay":301}' || t2_ok=false
+	if $t2_ok; then
+		record_pass
+	else
+		record_fail "trig2_basic(trigger 多列观察面)"
+	fi
+
+	echo "----- ctrl2_basic (controller 多列观察面) -----"
+	tout="$(cat scripts/test/ctrl2_basic.mt | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot=robots/test/ctrl2_basic.sql 2>&1)"
+	trc=$?
+	echo "$tout"
+	c2_ok=true
+	[ "$trc" -ne 0 ] && c2_ok=false
+	# 两个 controller 都被转发（各自的 Controller result dump 带名字）
+	echo "$tout" | grep -qF 'Controller result (dummy-0)' || c2_ok=false
+	echo "$tout" | grep -qF 'Controller result (timer-b)' || c2_ok=false
+	# 扇出广播：payload 只构建一次（同一份数据发给每个 controller）
+	[ "$(printf '%s\n' "$tout" | grep -cF 'Forward to controller:')" = "1" ] || c2_ok=false
+	if $c2_ok; then
+		record_pass
+	else
+		record_fail "ctrl2_basic(controller 多列观察面)"
 	fi
 fi
 

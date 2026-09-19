@@ -34,12 +34,15 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	 * 引用列里，去初始化（关断/断电/写寄存器）必须用它们；单个引用已释放时
 	 * 只跳过该引用，不会让本驱动的 destroy 被跳过（F-04′）。 */
 	std::function<Json(bool forDestroy)> getMetadata_;
-	/* controller 按名在注册表里查找（R-3）：声明序保证「先于本变量注册、
-	 * 后于本变量销毁」，查找式引用把这一约定变成运行期可校验的。
-	 * N-6：首次转发时把目标指针缓存进 ctrl_（注册表会拒绝会话期覆盖
-	 * controller 名字，指针终身有效），后续转发不再逐次查表。 */
-	std::string ctrlName_;
-	MatrixVars_Hardware* ctrl_ = nullptr;
+	/* controller 转发引用（出边，可多列 = 扇出）：call 返回后，框架把「元数据 ∪
+	 * 自己返回表」这同一份 payload 按列声明序逐个转发给这里的变量——同列族
+	 * 不接力（跨变量链由目标自己的 controller 列表达）。任一返回 ERR 即停止：
+	 * 不再转发给其余 controller，异常上抛整帧中断；全部成功时返回最后一个
+	 * controller 的结果（单列与既有行为一致）。
+	 * N-6：首次转发时把目标指针缓存进 ctrlPtrs_（注册表会拒绝会话期覆盖
+	 * 引用名字，指针终身有效），后续转发不再逐次查表。 */
+	std::vector<std::string> ctrlNames_;
+	std::vector<MatrixVars_Hardware*> ctrlPtrs_;
 	/* trigger 前置引用（入边）：当前零件每次 play 之前，框架先以空参数逐个
 	 * 调用这里的变量，返回表以触发器名字为键并入调用参数。指针同 ctrl_ 一样
 	 * 首用缓存——装配期已校验存在性且 flowRefs_ 拒绝会话期覆盖，指针终身有效。
@@ -49,10 +52,11 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	HwRegistry* registry_;
 
 	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,
-			std::function<Json(bool)> getMetadata, std::string ctrlName,
+			std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames,
 			std::vector<std::string> trigNames, HwRegistry* registry)
 		: L_(L), luapath_(std::move(luapath)), name_(std::move(name)),
-		  getMetadata_(std::move(getMetadata)), ctrlName_(std::move(ctrlName)),
+		  getMetadata_(std::move(getMetadata)),
+		  ctrlNames_(std::move(ctrlNames)), ctrlPtrs_(ctrlNames_.size(), nullptr),
 		  trigNames_(std::move(trigNames)), trigPtrs_(trigNames_.size(), nullptr),
 		  registry_(registry) {}
 
@@ -80,7 +84,7 @@ public:
 	void destroy() override { freeImpl(); }
 
 	static std::unique_ptr<MtVars_Lua> Factory(const std::string& luapath, const std::string& name,
-			std::function<Json(bool)> getMetadata, std::string ctrlName = "",
+			std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames = {},
 			std::vector<std::string> trigNames = {}, HwRegistry* registry = nullptr);
 };
 
