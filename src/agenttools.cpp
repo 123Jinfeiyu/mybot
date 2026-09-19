@@ -62,7 +62,9 @@ std::string requireString(const Json& args, const std::string& key) {
 
 int optionalInt(const Json& args, const std::string& key, int fallback) {
 	auto v = args.get(key);
-	if (!v) { return fallback; }
+	/* 键缺失或显式 null 都算「未提供」：模型常给可选字段填 null，
+	 * 这与参数类型写错是两回事，不应混为一谈。 */
+	if (!v || v->isNull()) { return fallback; }
 	if (v->isInt()) {
 		long long i = v->getInt();
 		/* 整数路径同样收口：Json 的 int64 直接窄化到 int 会静默回绕 */
@@ -81,7 +83,10 @@ int optionalInt(const Json& args, const std::string& key, int fallback) {
 		}
 		return static_cast<int>(d);
 	}
-	return fallback;
+	/* 类型不符不再静默回落（原实现 return fallback）：与 requireString 同款严格。
+	 * 静默用缺省值会让模型把「参数被忽略」误读成「参数已生效」，而工具报错会
+	 * 折成文本回传，模型据此就能自我修正。 */
+	throw IllegalArgumentException("参数 " + key + " 类型不符：需要整数");
 }
 
 /* ---- 文件读取（带上限，拒绝而非截断）---- */

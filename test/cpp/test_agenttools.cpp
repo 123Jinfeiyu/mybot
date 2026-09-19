@@ -380,6 +380,31 @@ TH_TEST(agenttools_run_command_rejects_out_of_range_timeout) {
 	TH_CHECK(frac.find("exit_code=0") != std::string::npos);
 }
 
+TH_TEST(agenttools_run_command_rejects_wrong_typed_timeout) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 类型写错必须报错而非静默用缺省值：静默会让模型误以为参数已生效。
+	 * 字符串/布尔/对象/数组四种错误类型都不能真去执行命令。 */
+	for (const char* bad : {"\"10\"", "true", "{}", "[]"}) {
+		std::string json = std::string("{\"command\":\"echo SHOULD_NOT_RUN\",\"timeout_seconds\":")
+			+ bad + "}";
+		std::string out = execText(tools, "run_command", parseJson(json));
+		TH_CHECK(out.find("类型不符") != std::string::npos);
+		TH_CHECK(out.find("SHOULD_NOT_RUN") == std::string::npos);
+	}
+
+	/* 键缺失与显式 null 都算「未提供」：走缺省超时，照常执行 */
+	std::string absent = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo ok-absent\"}"));
+	TH_CHECK(absent.find("exit_code=0") != std::string::npos);
+
+	std::string nulled = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo ok-null\",\"timeout_seconds\":null}"));
+	TH_CHECK(nulled.find("exit_code=0") != std::string::npos);
+}
+
 TH_TEST(agenttools_run_command_interrupts_on_stop_signal) {
 	AgentToolContext ctx;
 	ctx.allowShell = true;
