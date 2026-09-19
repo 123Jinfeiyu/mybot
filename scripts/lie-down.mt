@@ -1,10 +1,36 @@
 # 控制蜘蛛从标准站立动作逐渐躺下
+#
+@Alias
+name   alias;
+ FL0      s1;
+ FL1      s2;
+ FR0      s3;
+ FR1      s4;
+ BL0      s5;
+ BL1      s6;
+ BR0      s7;
+ BR1      s8;
+@
+@Vars
+name   value;
+POS_S0     45;	# THE POSITION OF START
+POS_S1      0;
+INT_S1     10;
+BEAT_T0    80;
+@
+@Include
+phase path;
+    0 scripts/move-fl.mt;
+    0 scripts/move-fr.mt;
+    0 scripts/move-bl.mt;
+    0 scripts/move-br.mt;
+@
 @Action
-s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  s9.A  s10.A  spk.F  spk.delay;	# column name
-  45     -    45     -    45     -    45     -    90     90     10        200;	# stand
-   -    10     -    10     -    10     -    10     -      -      -         20;
-   -    20     -    20     -    20     -    20     -      -      -         20;
-   -    30     -    30     -    30     -    30     -      -      -         20;
-   -    40     -    40     -    40     -    40     -      -      -         20;
-   -    50     -    50     -    50     -    50     -      -      -         20;
+spk.F   spk.delay;
+   10  $(BEAT_T0);	# stand
+    -           -;
+    -           -;
+    -           -;
+    -           -;
+    -           -;
 @
