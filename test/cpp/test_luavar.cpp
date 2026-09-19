@@ -9,7 +9,10 @@
  * 放行路径会一路走到「未 build 的状态机」并由返回契约报错，据此区分两类错误。
  */
 
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -126,4 +129,117 @@ TH_TEST(play_after_destroy_reports_instead_of_crashing) {
 	/* playQuiet 走同一入口，同样受守卫保护 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Lua state not built",
 		v->playQuiet(params({"test"})));
+}
+
+/* ---- controller/trigger 单元夹具（阶段 4；2.1 HwLookup 解耦的直接收益）----
+ * 假注册表只实现只读查找接口；flow 目标是可配置回包并记录 play 输入的桩。
+ * 驱动用真实 Lua 状态（.tmp 下最小 chunk），走完整 callImpl 编排——
+ * 此前这一层只有 E2E 覆盖，单测需要装配完整 HwRegistry 而不可行。 */
+namespace {
+
+/* 记录收到的 play 输入并回放固定应答的桩 */
+struct RecordingHw : bot::MatrixVars_Hardware {
+	std::vector<Json> received;
+	Json reply;
+	explicit RecordingHw(Json r) : reply(std::move(r)) {}
+	Json play(const Json& in) override { received.push_back(in); return reply; }
+	const char* kindName() const override { return "test-stub"; }
+};
+
+class FakeLookup : public bot::HwLookup {
+	std::map<std::string, bot::MatrixVars_Hardware*> byName_;
+
+public:
+	void put(const std::string& n, bot::MatrixVars_Hardware* h) { byName_[n] = h; }
+	bot::MatrixVars_Hardware* find(const std::string& n) const override {
+		auto it = byName_.find(n);
+		return it == byName_.end() ? nullptr : it->second;
+	}
+	bool contains(const std::string& n) const override { return byName_.count(n) > 0; }
+	/* 本夹具无 $(...) 列，求值器不被调用 */
+	std::function<double(const std::string&)> makeVarsResolver() const override { return {}; }
+};
+
+std::string writeFlowDriver() {
+	std::filesystem::create_directories(".tmp");
+	std::string path = ".tmp/test_flow_drv.lua";
+	std::ofstream f(path, std::ios::binary | std::ios::trunc);
+	f << "function build(data) return { result = \"OK\" } end\n"
+	  << "function call(data)\n"
+	  << "  local t = data.trig0 and data.trig0.v0 or 0\n"
+	  << "  return { result = \"OK\", t = t, c = data.c1 or 0 }\n"
+	  << "end\n"
+	  << "function destroy(data) return { result = \"OK\" } end\n";
+	return path;
+}
+
+std::unique_ptr<MtVars_Lua> makeFlowVar(const std::string& path,
+		FakeLookup& lookup, std::vector<std::string> ctrl,
+		std::vector<std::string> trig) {
+	return MtVars_Lua::Factory(path, "dev", [](bool) { return JsonObject(); },
+		std::move(ctrl), std::move(trig), &lookup);
+}
+
+} // namespace
+
+TH_TEST(trigger_result_is_merged_under_trigger_name_before_call) {
+	FakeLookup lookup;
+	RecordingHw trig0(JsonObject());
+	auto trigReply = JsonObject();
+	trigReply.put("result", JsonString("OK"));
+	trigReply.put("v0", JsonFloat(1.5));
+	RecordingHw trig0b(trigReply);
+	lookup.put("trig0", &trig0b);
+	std::string path = writeFlowDriver();
+	auto dev = makeFlowVar(path, lookup, {}, {"trig0"});
+	dev->build();
+	Json res = dev->playQuiet(JsonObject());
+	TH_CHECK(res.get("t")->getFloat() == 1.5);	/* 驱动从 data.trig0.v0 读到触发器结果 */
+	TH_CHECK(trig0b.received.size() == 1);
+	TH_CHECK(trig0b.received[0].isObj() && trig0b.received[0].items().empty());
+	/* 触发以空参数调用（一次语义完整的 play），不是合并后的 payload */
+}
+
+TH_TEST(controller_fanout_sends_same_payload_and_returns_last) {
+	FakeLookup lookup;
+	auto r1 = JsonObject();
+	r1.put("result", JsonString("OK"));
+	r1.put("note", JsonString("one"));
+	RecordingHw c1(r1);
+	auto r2 = JsonObject();
+	r2.put("result", JsonString("OK"));
+	r2.put("note", JsonString("two"));
+	RecordingHw c2(r2);
+	lookup.put("c1", &c1);
+	lookup.put("c2", &c2);
+	std::string path = writeFlowDriver();
+	auto dev = makeFlowVar(path, lookup, {"c1", "c2"}, {});
+	dev->build();
+	Json res = dev->playQuiet(JsonObject());
+	TH_CHECK(res.get("note")->getValue() == "two");	/* 全部成功返回最后一个的结果 */
+	TH_CHECK(c1.received.size() == 1);
+	TH_CHECK(c2.received.size() == 1);
+	/* 每个 controller 收同一份 payload（同列族不接力）：都含驱动返回表 */
+	TH_CHECK(c1.received[0].get("result")->getValue() == "OK");
+	TH_CHECK(c2.received[0].get("result")->getValue() == "OK");
+}
+
+TH_TEST(controller_err_halts_fanout_before_later_controllers) {
+	FakeLookup lookup;
+	auto bad = JsonObject();
+	bad.put("result", JsonString("ERR"));
+	bad.put("message", JsonString("bus NACK"));
+	RecordingHw c1(bad);
+	auto ok = JsonObject();
+	ok.put("result", JsonString("OK"));
+	RecordingHw c2(ok);
+	lookup.put("c1", &c1);
+	lookup.put("c2", &c2);
+	std::string path = writeFlowDriver();
+	auto dev = makeFlowVar(path, lookup, {"c1", "c2"}, {});
+	dev->build();
+	/* ensureOk 以 std::runtime_error 上抛（hardware.cpp ERR 契约） */
+	TH_CHECK_THROWS_MSG(std::runtime_error, "bus NACK", dev->playQuiet(JsonObject()));
+	TH_CHECK(c1.received.size() == 1);
+	TH_CHECK(c2.received.size() == 0);	/* halt-on-error：后续 controller 不再被转发 */
 }
