@@ -132,6 +132,41 @@ inline std::string rangeErrorText(const std::string& subject, long long lo, long
 		+ "] 范围内，实际是 " + actual;
 }
 
+namespace cli {
+
+/* 单个 argv 选项 token 的解析结果。hasValue=false 表示裸 flag——值语义
+ * 由调用方裁决（布尔 flag 置位 / 缺值报错），本层不掺和。 */
+struct OptionToken {
+	std::string key;
+	std::string value;
+	bool hasValue = false;
+};
+
+/* --key=value / --key value / 裸 --key 的切分单点（main.cpp 与 mtmerge.cpp
+ * 此前各写一份）。调用方保证 argv[k] 以 "--" 开头：
+ * - '=' 内联值优先，key 不含 '='；
+ * - 无 '=' 时看 argv[k+1]：strictLookahead=true（mybot CLI，审计中-3）要求
+ *   下一参数不以 "--" 开头才算值——裸 --tcp 不得把后续 flag 吞成端口；
+ *   false（mtmerge takeVal 原语义）只要存在即消费。消费与否同步推进 k。 */
+inline OptionToken parseKeyValue(int& k, int argc, char** argv, bool strictLookahead) {
+	OptionToken tok;
+	std::string a = argv[k];
+	tok.key = a.substr(2);
+	auto eq = tok.key.find('=');
+	if (eq != std::string::npos) {
+		tok.value = tok.key.substr(eq + 1);
+		tok.key = tok.key.substr(0, eq);
+		tok.hasValue = true;
+	} else if (k + 1 < argc
+			&& (!strictLookahead || std::string(argv[k + 1]).rfind("--", 0) != 0)) {
+		tok.value = argv[++k];
+		tok.hasValue = true;
+	}
+	return tok;
+}
+
+} // namespace cli
+
 /* D4：信号停止标志——SIGINT/SIGTERM 处理器置位，主流程与阻塞点（TCP accept）
  * 检查后放弃阻塞，让 deactivate 清理链（destroy / 守护停机）正常走完再退出。
  * C-L1：命名空间级常量初始化（无 __cxa_guard 守卫），信号处理器内访问

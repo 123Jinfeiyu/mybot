@@ -58,17 +58,18 @@ int main(int argc, char** argv) {
 	for (int k = 1; k < argc; ++k) {
 		std::string a = argv[k];
 		if (a == "--help" || a == "-h") { printHelp(); return 0; }
-		auto takeVal = [&](const std::string& key) -> std::string {
-			auto eq = a.find('=');
-			if (eq != std::string::npos) { return a.substr(eq + 1); }
-			if (k + 1 < argc) { return argv[++k]; }
-			std::cerr << "mtmerge: --" << key << " 缺少值" << std::endl;
-			std::exit(2);
-		};
 		/* 审计 #10：参数键精确匹配——旧 rfind 前缀匹配会把 --phaseX=5
-		 * 静默当作 --phase 接受，与「未知参数一律拒绝」纪律不一致。 */
+		 * 静默当作 --phase 接受，与「未知参数一律拒绝」纪律不一致。
+		 * 值的切分（--k=v / --k v / 裸 --k）走 cli::parseKeyValue 单点；
+		 * mtmerge 的 takeVal 原本没有「下一参数以 -- 开头即不算值」检查，
+		 * 传 strictLookahead=false 保持原语义。 */
 		if (a == "--phase" || a.rfind("--phase=", 0) == 0) {
-			std::string v = takeVal("phase");
+			cli::OptionToken tok = cli::parseKeyValue(k, argc, argv, false);
+			if (!tok.hasValue) {
+				std::cerr << "mtmerge: --phase 缺少值" << std::endl;
+				std::exit(2);
+			}
+			std::string v = tok.value;
 			auto [st, num] = bot::parseLongStrict(v);
 			if (st != bot::IntParse::OK) {
 				std::cerr << "mtmerge: --phase 不是整数 '" << v << "'" << std::endl;
@@ -83,7 +84,12 @@ int main(int argc, char** argv) {
 			}
 			phase = num;
 		} else if (a == "--out" || a.rfind("--out=", 0) == 0) {
-			outPath = takeVal("out");
+			cli::OptionToken tok = cli::parseKeyValue(k, argc, argv, false);
+			if (!tok.hasValue) {
+				std::cerr << "mtmerge: --out 缺少值" << std::endl;
+				std::exit(2);
+			}
+			outPath = tok.value;
 		} else if (a.rfind("--", 0) == 0) {
 			std::cerr << "mtmerge: 未知参数 '" << a << "'" << std::endl;
 			return 2;

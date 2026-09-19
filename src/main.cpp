@@ -36,22 +36,14 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 	for (int k = 1; k < argc; ++k) {
 		std::string a = argv[k];
 		if (a.rfind("--", 0) != 0) { continue; }	/* 忽略位置参数 */
-		std::string key = a.substr(2);
-		std::string val;
 		/* 审计中-3：区分「布尔型 flag」与「带值 key」——裸写（无 '=' 且
 		 * 下一参数以 -- 开头或不存在）时不再回落 val="1"。旧实现 `--tcp`
 		 * 单独使用会静默得到端口 1，随后 bind 失败的报错与用户意图
-		 * （漏写端口号）相去甚远。 */
-		bool noValue = true;
-		auto eq = key.find('=');
-		if (eq != std::string::npos) {
-			val = key.substr(eq + 1);
-			key = key.substr(0, eq);
-			noValue = false;
-		} else if (k + 1 < argc && std::string(argv[k + 1]).rfind("--", 0) != 0) {
-			val = argv[++k];
-			noValue = false;
-		}
+		 * （漏写端口号）相去甚远。切分规则在 cli::parseKeyValue 单点。 */
+		cli::OptionToken tok = cli::parseKeyValue(k, argc, argv, /*strictLookahead=*/true);
+		const std::string& key = tok.key;
+		const std::string& val = tok.value;
+		bool noValue = !tok.hasValue;
 		if (key == "robot") {
 			if (noValue) { out.missingValue.push_back(key); }
 			else { out.opts.robot = val; }
