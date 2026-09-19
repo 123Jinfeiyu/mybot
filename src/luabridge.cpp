@@ -223,64 +223,78 @@ Json call_lua(lua_State* L, const Json& json) {
 
 	/* 创建 Lua 表，装入全部字段 */
 	lua_createtable(L, 0, 0);
-	for (const auto& kv : obj.items()) {
-		push_lua_value(L, kv.second);
-		lua_setfield(L, -2, kv.first.c_str());
+	bool paramsPushed = true;
+	try {
+		for (const auto& kv : obj.items()) {
+			push_lua_value(L, kv.second);
+			lua_setfield(L, -2, kv.first.c_str());
+		}
+	} catch (const LuaNestingTooDeep& e) {
+		/* N-15 参数侧深度防线：与返回侧（C-9）对称就地转 ERR，绝不让它逃出去——
+		 * call_lua 的调用方（freeImpl）在 call_lua 之后才 lua_close，异常一逃就
+		 * 跳过状态机关闭（泄漏），末尾的 lua_settop 也会被跳过而脏掉栈。
+		 * 压栈是分步副作用：已压入的全局函数/表/标量由末尾 lua_settop(L, top)
+		 * 统一复原，故此处只需把结果折成 ERR 并跳过调用。 */
+		paramsPushed = false;
+		ret.put("result", JsonString("ERR"));
+		ret.put("message", JsonString("Lua function '" + mode + "' received " + e.what()));
 	}
 
-	/* C3 防线：pcall 成功但返回 0 个值时，栈顶是调用前的旧栈顶——
-	 * 以进入本函数时的栈深 top 为基准算返回值个数，nret > 0 才检查
-	 * 返回值（否则会把无关栈上值当返回表遍历）。 */
-	int status = lua_pcall(L, 1, LUA_MULTRET, 0);
-	if (status == LUA_OK) {
-		int nret = lua_gettop(L) - top;
-		if (nret > 0 && lua_type(L, -nret) == LUA_TTABLE) {
-			lua_pushnil(L);
-			while (lua_next(L, -2) != 0) {
-				int keyType = lua_type(L, -2);
-				if (keyType != LUA_TSTRING) {
-					logD([keyType] { return "Lua return field skipped: key type " + std::to_string(keyType); });
-					lua_pop(L, 1);		/* 弹出值，保留键供下一次 lua_next */
-					continue;
+	if (paramsPushed) {
+		/* C3 防线：pcall 成功但返回 0 个值时，栈顶是调用前的旧栈顶——
+		 * 以进入本函数时的栈深 top 为基准算返回值个数，nret > 0 才检查
+		 * 返回值（否则会把无关栈上值当返回表遍历）。 */
+		int status = lua_pcall(L, 1, LUA_MULTRET, 0);
+		if (status == LUA_OK) {
+			int nret = lua_gettop(L) - top;
+			if (nret > 0 && lua_type(L, -nret) == LUA_TTABLE) {
+				lua_pushnil(L);
+				while (lua_next(L, -2) != 0) {
+					int keyType = lua_type(L, -2);
+					if (keyType != LUA_TSTRING) {
+						logD([keyType] { return "Lua return field skipped: key type " + std::to_string(keyType); });
+						lua_pop(L, 1);		/* 弹出值，保留键供下一次 lua_next */
+						continue;
+					}
+					size_t keyLen = 0;
+					const char* keyPtr = lua_tolstring(L, -2, &keyLen);
+					std::string key(keyPtr != nullptr ? keyPtr : "", keyPtr != nullptr ? keyLen : 0);
+					Json val;
+					try {
+						val = lua_value_to_json(L, -1);
+					} catch (const LuaNestingTooDeep& e) {
+						/* C-9：就地转 ERR，绝不让它逃出去——call_lua 的调用方里
+						 * freeImpl 是在 call_lua 之后才 lua_close 的，异常一逃就跳过
+						 * 状态机关闭（泄漏），末尾的 lua_settop 也会被跳过而脏掉栈。 */
+						ret = JsonObject();		/* 丢弃已部分填充的字段，只留契约错误 */
+						ret.put("result", JsonString("ERR"));
+						ret.put("message", JsonString("Lua function '" + mode + "' returned "
+							+ e.what()));
+						break;
+					}
+					logD([&key, &val] { return std::string(key) + ": " + val.toString(); });
+					ret.put(key, val);
+					lua_pop(L, 1);
 				}
-				size_t keyLen = 0;
-				const char* keyPtr = lua_tolstring(L, -2, &keyLen);
-				std::string key(keyPtr != nullptr ? keyPtr : "", keyPtr != nullptr ? keyLen : 0);
-				Json val;
-				try {
-					val = lua_value_to_json(L, -1);
-				} catch (const LuaNestingTooDeep& e) {
-					/* C-9：就地转 ERR，绝不让它逃出去——call_lua 的调用方里
-					 * freeImpl 是在 call_lua 之后才 lua_close 的，异常一逃就跳过
-					 * 状态机关闭（泄漏），末尾的 lua_settop 也会被跳过而脏掉栈。 */
-					ret = JsonObject();		/* 丢弃已部分填充的字段，只留契约错误 */
-					ret.put("result", JsonString("ERR"));
-					ret.put("message", JsonString("Lua function '" + mode + "' returned "
-						+ e.what()));
-					break;
-				}
-				logD([&key, &val] { return std::string(key) + ": " + val.toString(); });
-				ret.put(key, val);
-				lua_pop(L, 1);
+			} else {
+				/* N3 防线：pcall 成功但首返回值不是表（少写 return → 0 个值，或返回
+				 * nil/数字/字符串）。旧实现折成空表 {}，而 ensureOk 见「无 result 键」
+				 * 即判成功——驱动漏 return 会被静默当成调用成功，硬件根本没动。 */
+				std::string got = nret > 0
+					? std::string("a non-table value (Lua type ") + lua_typename(L, lua_type(L, -nret)) + ")"
+					: "no value";
+				ret.put("result", JsonString("ERR"));
+				ret.put("message", JsonString("Lua function '" + mode + "' returned " + got
+					+ "; the driver contract requires a table like {result=\"OK\", ...}"));
 			}
 		} else {
-			/* N3 防线：pcall 成功但首返回值不是表（少写 return → 0 个值，或返回
-			 * nil/数字/字符串）。旧实现折成空表 {}，而 ensureOk 见「无 result 键」
-			 * 即判成功——驱动漏 return 会被静默当成调用成功，硬件根本没动。 */
-			std::string got = nret > 0
-				? std::string("a non-table value (Lua type ") + lua_typename(L, lua_type(L, -nret)) + ")"
-				: "no value";
+			std::string errStr = luaErrorString(L);
+			/* N-12：详情已在 message 字段达调用方（ensureOk 会带上下文抛出），
+			 * stderr 双通道冗余打印降为 logD */
+			logD([&] { return "Lua error details: " + errStr; });
 			ret.put("result", JsonString("ERR"));
-			ret.put("message", JsonString("Lua function '" + mode + "' returned " + got
-				+ "; the driver contract requires a table like {result=\"OK\", ...}"));
+			ret.put("message", JsonString(errStr));
 		}
-	} else {
-		std::string errStr = luaErrorString(L);
-		/* N-12：详情已在 message 字段达调用方（ensureOk 会带上下文抛出），
-		 * stderr 双通道冗余打印降为 logD */
-		logD([&] { return "Lua error details: " + errStr; });
-		ret.put("result", JsonString("ERR"));
-		ret.put("message", JsonString(errStr));
 	}
 
 	lua_settop(L, top);

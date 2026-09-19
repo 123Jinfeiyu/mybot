@@ -140,6 +140,79 @@ TH_TEST(lua_value_to_json_rejects_one_level_past_the_limit) {
 	lua_pop(s.get(), 1);
 }
 
+/* ---------------- N-15：参数侧深度防线（push 方向） ---------------- */
+
+namespace {
+
+/* n 层嵌套数组包一个标量（最内层是标量），用于构造超深/边界参数值 */
+Json nestedParams(int n) {
+	Json v = JsonInt(1);
+	for (int i = 0; i < n; ++i) {
+		Json arr = JsonArray();
+		arr.add(v);
+		v = arr;
+	}
+	return v;
+}
+
+} // namespace
+
+/* 参数同样不能无限深：C++ 侧 Json 虽不可能自引用，但程序化构造的超深表会让
+ * push_lua_value_impl 无限递归。旧实现在压栈循环里抛出——异常逃出 call_lua，
+ * 末尾 lua_settop 与调用方 freeImpl 的 lua_close 双双被跳过（状态机脏 + 泄漏）。
+ * 现与返回侧（C-9）对称就地折 ERR，且压栈失败即中止本次调用（不真的调驱动）。 */
+TH_TEST(call_lua_turns_too_deep_parameters_into_err_and_restores_stack) {
+	State s;
+	s.chunk("function call(data)\n"
+		"  CALLED = true\n"
+		"  return { result = \"OK\" }\n"
+		"end\n");
+	Json bad = callParams();
+	bad.put("deep", nestedParams(bot::kMaxLuaNesting + 1));
+
+	int before = s.top();
+	Json res = bot::call_lua(s.get(), bad);
+
+	TH_CHECK(isErr(res));
+	auto m = res.get("message");
+	TH_CHECK(m && m->isStr());
+	TH_CHECK(m->getValue().find("nests deeper than") != std::string::npos);
+	/* 修复前这里异常外逃 → 栈脏（走不到断言）；现末尾 lua_settop 复原 */
+	TH_CHECK(s.top() == before);
+	lua_getglobal(s.get(), "CALLED");
+	TH_CHECK(lua_isnil(s.get(), -1));
+	lua_pop(s.get(), 1);
+}
+
+/* 边界内不得误杀：恰好 kMaxLuaNesting 层仍能正常 round-trip */
+TH_TEST(call_lua_accepts_parameters_within_the_depth_limit) {
+	State s;
+	s.chunk("function call(data)\n"
+		"  return { result = \"OK\", seen = data.deep ~= nil }\n"
+		"end\n");
+	Json ok = callParams();
+	ok.put("deep", nestedParams(bot::kMaxLuaNesting));
+
+	Json res = bot::call_lua(s.get(), ok);
+	TH_CHECK(!isErr(res));
+	TH_CHECK(res.get("seen") && res.get("seen")->getBool());
+	TH_CHECK(s.top() == 0);
+}
+
+/* 就地 catch 的全部意义：参数超深折 ERR 后状态机还能用 */
+TH_TEST(the_same_state_keeps_serving_after_a_params_nesting_error) {
+	State s;
+	s.chunk("function call(data) return { result = \"OK\" } end\n");
+	Json bad = callParams();
+	bad.put("deep", nestedParams(bot::kMaxLuaNesting + 1));
+	TH_CHECK(isErr(bot::call_lua(s.get(), bad)));
+
+	s.chunk("function call(data) return { result = \"OK\", v0 = 5 } end\n");
+	Json good = bot::call_lua(s.get(), callParams());
+	TH_CHECK(!isErr(good));
+	TH_CHECK(good.get("v0") && good.get("v0")->getInt() == 5);
+}
+
 /* ---------------- 回归护栏：既有形态不受影响 ---------------- */
 
 TH_TEST(flat_sensor_results_still_round_trip) {
