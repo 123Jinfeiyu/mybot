@@ -73,6 +73,24 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	lua_pushstring(L, config.c_str());
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_CONFIG");
 
+	/* 2.7：注入宿主侧槽布局常量——pthread.lua 的跨语言布局断言以注入值
+	 * 为基准（单一事实源 = daemonvar.hpp 的 struct + 静态断言）。此前 Lua
+	 * 侧手抄一份基准值：C++ struct 改动而 Lua 未跟时，两侧各自自洽、
+	 * 漂移不可见；注入后 cdef 与宿主事实不符即在守护启动时 fail-fast。 */
+	lua_createtable(L, 0, 7);
+	auto setOff = [&L](const char* k, int32_t v) {
+		lua_pushinteger(L, v);
+		lua_setfield(L, -2, k);
+	};
+	setOff("count", SLOT_COUNT_OFF);
+	setOff("nvals", SLOT_NVALS_OFF);
+	setOff("values", SLOT_VALUES_OFF);
+	setOff("stop", SLOT_STOP_OFF);
+	setOff("status", SLOT_STATUS_OFF);
+	setOff("size", SLOT_SIZE);
+	setOff("maxvals", SLOT_MAXVALS);
+	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_LAYOUT");
+
 	/* 跑 chunk 一次完成 setup 并定义全局 daemon_tick */
 	int st = luaL_loadfile(L, chunk.c_str());
 	if (st != LUA_OK) {

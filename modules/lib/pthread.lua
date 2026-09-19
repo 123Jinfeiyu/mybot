@@ -70,7 +70,12 @@ typedef struct {
 } daemon_slot_t;
 ]]
 
-P.SLOT_MAXVALS = 32
+-- 2.7：布局常量的单一事实源在宿主（daemonvar.hpp struct + 静态断言），
+-- 守护启动时经 DAEMON_SLOT_LAYOUT 注入；此处手写值仅为无宿主注入环境兜底。
+local base_layout = DAEMON_SLOT_LAYOUT or
+	{ count = 64, nvals = 68, values = 72, stop = 328, status = 332, size = 336, maxvals = 32 }
+
+P.SLOT_MAXVALS = base_layout.maxvals
 
 ------------------------------------------------------------------
 -- 地址 ↔ 指针
@@ -226,7 +231,9 @@ end
 -- 宿主侧 src/daemonvar.hpp 手写 SLOT_*_OFF 与 struct DaemonSlot 一致；
 -- 本库用 ffi 的运行时 struct 布局（编译器填充后的事实）逐项断言，
 -- 把「C++ 定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
--- 基准（daemonvar.hpp，SLOT_SIZE=336）：
+-- 基准 = 宿主注入的 DAEMON_SLOT_LAYOUT（来自 daemonvar.hpp 的 SLOT_* 常量，
+-- 2.7 起不再手抄：C++ struct 漂移会在守护启动时经注入值与 cdef 比对暴露）。
+-- 无宿主注入时回退手写基准（SLOT_SIZE=336）：
 --   offset  0   char    mutex[64]     (pthread_mutex_t, 预留 64)
 --   offset 64  int32   count
 --   offset 68  int32   nvals
@@ -250,12 +257,12 @@ local function assert_layout()
 			error("pthread_mutex_t size " .. tostring(msz) .. " > 64B slot mutex reserve")
 		end
 		local checks = {
-			{ "count",   64,  ffi.offsetof("daemon_slot_t", "count") },
-			{ "nvals",   68,  ffi.offsetof("daemon_slot_t", "nvals") },
-			{ "values",  72,  ffi.offsetof("daemon_slot_t", "values") },
-			{ "stop",   328,  ffi.offsetof("daemon_slot_t", "stop") },
-			{ "status", 332,  ffi.offsetof("daemon_slot_t", "status") },
-			{ "size",   336,  ffi.sizeof("daemon_slot_t") },
+			{ "count",   base_layout.count,  ffi.offsetof("daemon_slot_t", "count") },
+			{ "nvals",   base_layout.nvals,  ffi.offsetof("daemon_slot_t", "nvals") },
+			{ "values",  base_layout.values, ffi.offsetof("daemon_slot_t", "values") },
+			{ "stop",    base_layout.stop,   ffi.offsetof("daemon_slot_t", "stop") },
+			{ "status",  base_layout.status, ffi.offsetof("daemon_slot_t", "status") },
+			{ "size",    base_layout.size,   ffi.sizeof("daemon_slot_t") },
 		}
 		for _, c in ipairs(checks) do
 			if c[3] ~= c[2] then
