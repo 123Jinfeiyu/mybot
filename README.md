@@ -155,7 +155,7 @@ cp mybot.llm.json.example mybot.llm.json && chmod 600 mybot.llm.json   # 填 end
 - [agent 模式](docs/agent.md)——大模型工具循环驱动常驻机器人：CLI 选项、五个工具、安全边界、运行期 libcurl
 - [HAL 硬件抽象层](docs/hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
 - [虚拟总线 virtbus](docs/virtbus.md)——无真机验证驱动链路的完整参考手册
-- [架构分析（仓颉版历史文档）](docs/architecture_analysis.html)——附 [分层图](docs/architecture_layers.svg) / [数据流图](docs/architecture_dataflow.svg)；三份均描述仓颉原版，C++ 移植版的分层见 [docs/agent.md](docs/agent.md#源码分层) 与各机制文档
+- [架构分析](docs/architecture_analysis.html)——正文已更新为 C++17 版分层与路线图，附 [分层图](docs/architecture_layers.svg) / [数据流图](docs/architecture_dataflow.svg)（两图仍为仓颉原版历史图，核心层名称需按 C++ 版 `src/*.cpp` 对应阅读）；现行分层另见 [docs/agent.md](docs/agent.md#源码分层)
 - [回归测试手册](docs/testing.md) / [开发与贡献](docs/development.md) / [已知限制与 FAQ](docs/faq.md) / [更新日志](docs/changelog.md)
 
 ## ⚠️ 已知限制
