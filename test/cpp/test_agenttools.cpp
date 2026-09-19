@@ -332,6 +332,30 @@ TH_TEST(agenttools_run_command_timeout_and_truncate) {
 	TH_CHECK(big.find("已截断") != std::string::npos);
 }
 
+TH_TEST(agenttools_run_command_truncation_is_per_stream) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 上限是「每流」64KB，不是两流共享：只有触顶的那条流才应报截断。
+	 * 原先用单一 truncated 标志，任一流触顶会把另一流也标成截断。 */
+	std::string outOnly = execText(tools, "run_command",
+		parseJson("{\"command\":\"yes a | head -c 200000\"}"));
+	TH_CHECK(outOnly.find("[stdout 超过") != std::string::npos);
+	TH_CHECK(outOnly.find("[stderr 超过") == std::string::npos);
+
+	std::string errOnly = execText(tools, "run_command",
+		parseJson("{\"command\":\"yes a | head -c 200000 1>&2\"}"));
+	TH_CHECK(errOnly.find("[stderr 超过") != std::string::npos);
+	TH_CHECK(errOnly.find("[stdout 超过") == std::string::npos);
+
+	/* 两流都触顶：两条提示并存 */
+	std::string both = execText(tools, "run_command",
+		parseJson("{\"command\":\"yes a | head -c 200000; yes b | head -c 200000 1>&2\"}"));
+	TH_CHECK(both.find("[stdout 超过") != std::string::npos);
+	TH_CHECK(both.find("[stderr 超过") != std::string::npos);
+}
+
 TH_TEST(agenttools_run_command_rejects_out_of_range_timeout) {
 	AgentToolContext ctx;
 	ctx.allowShell = true;

@@ -142,7 +142,10 @@ struct RunResult {
 	int exitCode = -1;
 	bool timedOut = false;
 	bool interrupted = false;
-	bool truncated = false;
+	/* 截断按流独立记账：kMaxCommandOutput 是「每流」上限（总量可达 2 倍），
+	 * 原实现用单一 truncated 标志，stdout 触顶会连带把 stderr 也报成截断。 */
+	bool outTruncated = false;
+	bool errTruncated = false;
 	std::string out;
 	std::string err;
 };
@@ -235,13 +238,22 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		};
 		if (poll(fds, 2, 100) > 0) {
 			for (const auto& fd : fds) {
-				if (fd.fd < 0 || !(fd.revents & (POLLIN | POLLHUP))) { continue; }
-				std::string& sink = (fd.fd == po[0]) ? r.out : r.err;
-				ssize_t n;
-				while ((n = read(fd.fd, buf.data(), buf.size())) > 0) {
-					appendCapped(sink, buf.data(), static_cast<std::size_t>(n), r.truncated);
+				/* POLLERR/POLLNVAL 必须纳入：这两个位只报错误、不置 POLLIN/POLLHUP，
+				 * 原实现只认后两者 → 出错 fd 既不读也不关，每轮重新就绪，一直空转
+				 * 到硬上限才退出（白耗 3s 且不报告真实成因）。 */
+				if (fd.fd < 0 || !(fd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
+					continue;
 				}
-				if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+				std::string& sink = (fd.fd == po[0]) ? r.out : r.err;
+				bool& truncated = (fd.fd == po[0]) ? r.outTruncated : r.errTruncated;
+				ssize_t n = 0;
+				while ((n = read(fd.fd, buf.data(), buf.size())) > 0) {
+					appendCapped(sink, buf.data(), static_cast<std::size_t>(n), truncated);
+				}
+				/* 终态＝错误位 / 正常 EOF / 非 EAGAIN 的读错误：关闭并标记该流结束 */
+				const bool terminal = (fd.revents & (POLLERR | POLLNVAL))
+					|| n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+				if (terminal) {
 					close(fd.fd);
 					if (fd.fd == po[0]) { outEof = true; } else { errEof = true; }
 				}
@@ -293,7 +305,10 @@ std::string formatRunResult(const RunResult& r) {
 	if (r.interrupted) { s += "（被中断，已终止）"; }
 	s += "\nstdout:\n" + (r.out.empty() ? std::string("(空)") : r.out);
 	s += "\nstderr:\n" + (r.err.empty() ? std::string("(空)") : r.err);
-	if (r.truncated) { s += "\n[输出超过 64KB，已截断]"; }
+	/* 上限取自 kMaxCommandOutput，避免文案与实现漂移（原先硬编码 "64KB"） */
+	const std::string cap = std::to_string(kMaxCommandOutput / 1024) + "KB";
+	if (r.outTruncated) { s += "\n[stdout 超过 " + cap + "，已截断]"; }
+	if (r.errTruncated) { s += "\n[stderr 超过 " + cap + "，已截断]"; }
 	return s;
 }
 
