@@ -6,7 +6,9 @@
  *
  * 只依赖 ChatTransport / AgentToolRegistry 两个抽象，因此可以完全离线单测
  * （脚本化传输 + 真实工具层）。会话历史跨轮保留，REPL 模式下机器人可以
- * 「记得」之前做过什么。
+ * 「记得」之前做过什么；历史按字节预算自动裁剪（trimHistory，见
+ * maxHistoryBytes），老任务块连同其中的 base64 图片一起淘汰——否则长会话
+ * 的请求体与内存无界增长，而 base64 图片是主要体积来源。
  */
 
 #include <iosfwd>
@@ -24,6 +26,12 @@ struct AgentOptions {
 	bool verbose = true;		/* 工具调用与结果打印到日志流 */
 	std::ostream* log = nullptr;	/* 空 = std::cerr */
 	std::string systemPrompt;	/* 系统提示词（含机器人结构与脚本清单） */
+	/* 会话历史的字节预算（估重，见 agentloop.cpp 的 messageWeight），超出时
+	 * 在下一轮任务开始前按整块裁掉最老的任务块；0 = 不裁剪。4 MiB：base64
+	 * 图片与 64KB 截断的工具输出是历史体积主项，该预算把线上请求体稳稳压在
+	 * 常见网关限额之下；仅约束「已完结」的旧轮块，单块超预算不封顶
+	 * （正在进行的对话不能裁空，否则无法推进）。 */
+	std::size_t maxHistoryBytes = 4 * 1024 * 1024;
 };
 
 class AgentSession {
@@ -44,6 +52,11 @@ private:
 	std::vector<ChatMessage> messages_;
 
 	void log(const std::string& text) const;
+
+	/* 历史按 maxHistoryBytes 预算裁剪：以「任务消息」（user 且非图片载体）为
+	 * 界整块裁剪最老的块，system 提示词与最新一块无条件保留。runTurn 开头
+	 * 调用，push 新任务消息之前。 */
+	void trimHistory();
 };
 
 } // namespace agent

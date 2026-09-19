@@ -241,3 +241,101 @@ TH_TEST(agentloop_verbose_logs_tool_activity) {
 	TH_CHECK(session.runTurn("任务") == "好了");
 	TH_CHECK(log.str().find("[工具] echo") != std::string::npos);
 }
+
+/* ---- 历史字节预算裁剪（REPL 长会话）----
+ * 任务块 = 一条任务消息到下一条任务消息之前的全部消息；裁剪以块为单位，
+ * 保证 assistant.tool_calls 与其 tool 消息、图片 user 消息不被拆散。 */
+
+AgentOptions budgetOpts(int maxTurns, std::size_t maxHistoryBytes) {
+	AgentOptions o = optsFor(maxTurns);
+	o.maxHistoryBytes = maxHistoryBytes;
+	o.systemPrompt = "SYS";
+	return o;
+}
+
+bool historyContains(const AgentSession& s, const std::string& text) {
+	for (const ChatMessage& m : s.history()) {
+		if (m.content.find(text) != std::string::npos) { return true; }
+	}
+	return false;
+}
+
+TH_TEST(agentloop_history_trimmed_to_byte_budget) {
+	FakeTransport transport;
+	/* 每块 = user(6B) + assistant(8B) = 14B；system 3B。
+	 * 预算 40B：第 4 轮开始前总量 45B 超限，装得下的只有最近两块（28B），
+	 * 第 1 块被整块裁掉。 */
+	transport.script.push_back(answerResponse("ANSWER-1"));
+	transport.script.push_back(answerResponse("ANSWER-2"));
+	transport.script.push_back(answerResponse("ANSWER-3"));
+	transport.script.push_back(answerResponse("ANSWER-4"));
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, budgetOpts(4, 40));
+	TH_CHECK(session.runTurn("TASK-1") == "ANSWER-1");
+	TH_CHECK(session.runTurn("TASK-2") == "ANSWER-2");
+	TH_CHECK(session.runTurn("TASK-3") == "ANSWER-3");
+	TH_CHECK(session.runTurn("TASK-4") == "ANSWER-4");
+
+	/* system + 保留的两块（2×2 条）+ 本轮 user/assistant */
+	TH_CHECK(session.history().size() == 7);
+	TH_CHECK(session.history()[0].content == "SYS");
+	TH_CHECK(session.history()[1].content == "TASK-2");
+	TH_CHECK(!historyContains(session, "TASK-1"));
+	TH_CHECK(!historyContains(session, "ANSWER-1"));
+	/* 第 4 轮的请求只带裁剪后的历史：system + 第2/3块 + 本轮 user */
+	TH_CHECK(transport.requests[3].size() == 6);
+	for (const ChatMessage& m : transport.requests[3]) {
+		TH_CHECK(m.content.find("TASK-1") == std::string::npos);
+	}
+}
+
+TH_TEST(agentloop_history_trim_drops_old_block_with_its_image) {
+	FakeTransport transport;
+	transport.script.push_back(callResponse("shot", "{}"));	/* 块1：拍照 → 图片消息 */
+	transport.script.push_back(answerResponse("ANSWER-1"));
+	transport.script.push_back(answerResponse("ANSWER-2"));	/* 块2 */
+	transport.script.push_back(answerResponse("ANSWER-3"));	/* 块3 */
+
+	AgentToolRegistry tools;
+	tools.add(AgentTool{"shot", "拍照", parseJson("{\"type\":\"object\"}"),
+		[](const Json&) -> AgentToolResult {
+			return {"已拍摄照片",
+				"data:image/jpeg;base64,AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
+		}});
+
+	AgentSession session(transport, tools, budgetOpts(4, 40));
+	TH_CHECK(session.runTurn("TASK-1") == "ANSWER-1");
+	/* 块1 里的图片 user 消息在预算内时随历史保留 */
+	bool hasImage = false;
+	for (const ChatMessage& m : session.history()) {
+		if (!m.images.empty()) { hasImage = true; }
+	}
+	TH_CHECK(hasImage);
+
+	TH_CHECK(session.runTurn("TASK-2") == "ANSWER-2");
+	TH_CHECK(session.runTurn("TASK-3") == "ANSWER-3");
+	/* 块1（≈90B，大头是 base64 图片）超预算被整块裁掉：图片一并淘汰 */
+	hasImage = false;
+	for (const ChatMessage& m : session.history()) {
+		if (!m.images.empty()) { hasImage = true; }
+	}
+	TH_CHECK(!hasImage);
+	TH_CHECK(!historyContains(session, "TASK-1"));
+	TH_CHECK(session.history().size() == 5);	/* system + 块2(2) + 块3(2) */
+}
+
+TH_TEST(agentloop_history_untrimmed_when_budget_zero) {
+	FakeTransport transport;
+	for (int i = 1; i <= 3; ++i) {
+		transport.script.push_back(answerResponse("ANSWER-" + std::to_string(i)));
+	}
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, budgetOpts(4, 0));	/* 0 = 不裁剪 */
+	TH_CHECK(session.runTurn("TASK-1") == "ANSWER-1");
+	TH_CHECK(session.runTurn("TASK-2") == "ANSWER-2");
+	TH_CHECK(session.runTurn("TASK-3") == "ANSWER-3");
+	TH_CHECK(historyContains(session, "TASK-1"));
+	TH_CHECK(session.history().size() == 7);
+}

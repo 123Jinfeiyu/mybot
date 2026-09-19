@@ -45,7 +45,65 @@ void AgentSession::log(const std::string& text) const {
 	os << text << "\n";
 }
 
+/* ---- trimHistory：历史按字节预算裁剪（REPL 长会话）----
+ * 单位是「任务块」：一条任务消息（user 且不带图片——图片消息属于它前面
+ * 的任务块）直到下一条任务消息之前的全部消息。整块裁剪保证 assistant 的
+ * tool_calls 与其 tool 消息、以及夹在 tool 消息之后的图片 user 消息不被
+ * 拆散——半截序列发给服务端会被 400 拒绝。
+ * 老块连同其中的 base64 图片一起释放：图片是历史体积主项（一张照片数百 KB），
+ * 只按条数裁剪挡不住它们。 */
+namespace {
+
+/* 估算一条消息的线上体积（下界：不计 JSON 语法开销，正文/调用参数/图片/extras
+ * 占绝对大头）。extras 当前只装 reasoning_content 一类文本，整体串行化计入。 */
+std::size_t messageWeight(const ChatMessage& m) {
+	std::size_t n = m.content.size() + m.toolCallId.size();
+	for (const ToolCall& c : m.toolCalls) {
+		n += c.id.size() + c.name.size() + c.arguments.size();
+	}
+	for (const std::string& img : m.images) { n += img.size(); }
+	if (!m.extras.isNull()) { n += m.extras.toString().size(); }
+	return n;
+}
+
+} // namespace
+
+void AgentSession::trimHistory() {
+	if (opts_.maxHistoryBytes == 0 || messages_.size() <= 1) { return; }
+
+	/* 任务块起点（messages_[0] 恒为 system，跳过） */
+	std::vector<std::size_t> starts;
+	for (std::size_t i = 1; i < messages_.size(); ++i) {
+		const ChatMessage& m = messages_[i];
+		if (m.role == "user" && m.images.empty()) { starts.push_back(i); }
+	}
+	if (starts.empty()) { return; }	/* 防御：历史理应至少含一次任务 */
+
+	std::vector<std::size_t> blockWeight(starts.size(), 0);
+	for (std::size_t j = 0; j < starts.size(); ++j) {
+		std::size_t end = (j + 1 < starts.size()) ? starts[j + 1] : messages_.size();
+		for (std::size_t k = starts[j]; k < end; ++k) { blockWeight[j] += messageWeight(messages_[k]); }
+	}
+
+	/* 从最新块向旧累计；最新块无条件保留（不能把对话裁空），其余装得下就留 */
+	std::size_t keep = starts.size() - 1;
+	std::size_t acc = blockWeight[keep];
+	while (keep > 0 && acc + blockWeight[keep - 1] <= opts_.maxHistoryBytes) {
+		--keep;
+		acc += blockWeight[keep];
+	}
+	if (keep == 0) { return; }	/* 全部塞得下，无事可做 */
+
+	std::size_t dropped = starts[keep] - 1;	/* system 之后、最新保留块之前的条数 */
+	messages_.erase(messages_.begin() + 1, messages_.begin() + starts[keep]);
+	if (opts_.verbose) {
+		log("[历史] 超出字节预算，已裁掉最早的 " + std::to_string(dropped)
+			+ " 条消息（含其中的图片）；更早的任务上下文不再可见");
+	}
+}
+
 std::string AgentSession::runTurn(const std::string& userTask) {
+	trimHistory();
 	const std::size_t base = messages_.size();
 
 	ChatMessage user;
