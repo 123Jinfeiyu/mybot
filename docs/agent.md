@@ -54,6 +54,7 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--llm-max-tokens <N>` | 单次生成最大 token 数（1-200000） | 4096 |
 | `--llm-timeout <秒>` | 单次模型调用超时，范围 1-600 | 180 |
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
+| `--prompt-file <路径>` | **提示词包**，可重复传入（文件或目录），拼接后追加到系统提示词（见下节） | — |
 | `--agent-no-shell` | **不**注册 `run_command`（去掉任意 shell 执行能力） | 关（即默认提供） |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
@@ -62,7 +63,7 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 
 取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
 
-`--task` / `--llm-*` / `--scripts-dir` / `--agent-no-shell` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。
+`--task` / `--llm-*` / `--scripts-dir` / `--agent-no-shell` / `--prompt-file` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。
 
 ## 配置文件（推荐）
 
@@ -84,7 +85,8 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 
   "max_turns": 8,
   "scripts_dir": "scripts",
-  "allow_shell": true
+  "allow_shell": true,
+  "prompt_files": ["prompts/spider_robot"]
 }
 ```
 
@@ -99,8 +101,9 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
   缺省查找依赖 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`
-  `camera_var` `camera_device` `camera_src` `allow_camera`。
-  全部可选；空串按「未配置」处理（方便留空占位）。
+  `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera`。
+  全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
+  （每项为文件或目录，语义同 `--prompt-file`），空数组按「未配置」。
 - **严格解析**：不是合法 JSON、字段类型/范围不符、**出现未知字段**一律拒绝并退出 2。
   拼错一个键（如 `apikey`）而静默走缺省，会让人以为配置生效了——与「未知 `--key` 退出 2」同一口径。
 - **密钥可以放在别处**：`api_key_file` 指向一个只存密钥的文件（末尾换行会自动剥掉）。
@@ -272,6 +275,34 @@ OpenAI 协议的 **tool 消息只允许文本**，所以图片不能塞进工具
   `test/test_v4l2_consts.c` 与 `<linux/videodev2.h>` 比对（F-24 同族）——ffi 声明比内核
   小几字节就是越界读写，必须让它在构建期就失败。
 
+## 提示词包：绑定机器人身份
+
+内置系统提示词只讲机器人本体（结构、硬件清单、脚本清单、工作方式）；「这个机器人
+**是谁**、该怎么行事」由提示词包定义，移植自 robot_agent 的 `--prompt-file` 能力：
+
+```bash
+# 目录：收集其中全部 .md，按文件名自然排序（编号即装载顺序）
+./build/mybot --robot=robots/spider1.sql --agent --prompt-file prompts/spider_robot/
+
+# 可重复：显式文件保持传入顺序，与目录可混用
+./build/mybot --robot=robots/spider1.sql --agent \
+	--prompt-file prompts/spider_robot/ --prompt-file my-extra-rules.md
+```
+
+- **拼接规则**：每个文件去首尾空白后为空则跳过；只有一份时保持原文不加标题；
+  多份之间以空行分隔、每份前加 `## 文件名` 分节。整包**追加在系统提示词内置段落
+  之后**，用户输入仍只是 user 消息——markdown 定义「这个机器人怎么做事」，
+  任务文本定义「现在做什么」。
+- **配置文件等价写法**：`"prompt_files": ["prompts/spider_robot"]`（字符串数组，
+  每项为文件或目录）。命令行给过 `--prompt-file` 就整体覆盖配置文件列表，
+  与其他选项的「命令行 > 配置文件」口径一致。
+- **加载时机**：在 `buildAgentConfig`（配置组装期）加载——路径写错、目录里没有
+  `.md` 都在结构装载与上电之前报错退出 2（「配置错误不碰真机」）；单文件 1 MiB
+  上限，超限响亮拒绝而非静默截断（截断过的提示词悄悄丢约束，更难查）。
+- **示例包**：`prompts/spider_robot/` 定义蜘蛛机器人的身份、摄像头与命令行用法、
+  动作脚本语义表、行为纪律（前方有障碍不得前进），展示「大模型大脑 + 脚本驱动
+  硬件」的完整绑定链路。提示词包是纯 Markdown，照着这个目录结构写你自己的即可。
+
 ## 安全说明（请务必读）
 
 1. **`run_command` 是无白名单、无审批的任意 shell 执行**。模型可能被外部输入（文件内容、设备读数、网络数据）诱导执行任意命令。
@@ -321,6 +352,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/agenttools.{hpp,cpp}` | 工具注册表与五个工具、脚本路径沙箱、硬件描述 | 无 |
 | `src/agentloop.{hpp,cpp}` | 工具循环（历史、轮次上限、回滚、extras 透传） | 无 |
 | `src/agentmode.{hpp,cpp}` | CLI 配置组装、系统提示词、一次性/REPL 外壳 | 无 |
+| `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接） | 无 |
 | `src/agentdriver.{hpp,cpp}` | `ChatTransport` 适配：调驱动的 `playQuiet()` | 无 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/lib/llm_http.lua` | ffi 直驱 libcurl 的 HTTP 传输 | 运行期 libcurl |
@@ -341,11 +373,12 @@ luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路
 ./build/mybot_tests agent        # C++：proto / driver / tools / loop / config
 ```
 
-- `scripts/agent_e2e.sh` 用本地假模型服务跑五个场景：默认驱动完整工具循环（并抓报文断言
+- `scripts/agent_e2e.sh` 用本地假模型服务跑六个场景：默认驱动完整工具循环（并抓报文断言
   OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
   `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）、
   `--llm-config` 配置文件（URL/KEY/MODEL 全部来自文件，且**环境里不放任何密钥**）、
-  `capture_image` 拍照（断言线上报文里真的出现 `image_url` 多模态内容，且是 data URL 包的真 JPEG）。
+  `capture_image` 拍照（断言线上报文里真的出现 `image_url` 多模态内容，且是 data URL 包的真 JPEG）、
+  `--prompt-file` 提示词包（断言包内容进入 system 消息、追加在内置段落之后、按文件名自然排序分节）。
 - `test/test_camera_v4l2.lua` 是真机抓帧回归，需 `/dev/video*`（文件标记 `-- requires: video`，
   无设备时守门自动跳过）；`test/test_v4l2_consts.c` 在构建期把 V4L2 常量与内核头对齐。
 - 全量守门 `bash test/run_all.sh` 已包含上述全部；缺 python3 或 libcurl 时按 **SKIP**

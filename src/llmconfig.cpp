@@ -117,6 +117,27 @@ bool wantBool(const std::string& path, const Json& root, const char* key,
 	return true;
 }
 
+bool wantStringArray(const std::string& path, const Json& root, const char* key,
+		std::optional<std::vector<std::string>>& out, std::string& err) {
+	auto v = root.get(key);
+	if (!v) { return true; }
+	if (!v->isArr()) {
+		err = typeError(path, key, "字符串数组");
+		return false;
+	}
+	std::vector<std::string> items;
+	for (const Json& item : v->arr) {
+		if (!item.isStr()) {
+			err = "配置文件 " + path + " 的字段 '" + key + "' 的元素需要字符串";
+			return false;
+		}
+		if (!item.getValue().empty()) { items.push_back(item.getValue()); }
+	}
+	/* 空数组按「未配置」处理：与 wantString 的空串口径一致，占位写法不生效 */
+	if (!items.empty()) { out = std::move(items); }
+	return true;
+}
+
 } // namespace
 
 bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string& err) {
@@ -144,7 +165,7 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 		"driver", "var", "endpoint", "model", "api_key", "api_key_file",
 		"timeout", "max_tokens", "temperature", "top_p",
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
-		"camera_var", "camera_device", "camera_src", "allow_camera",
+		"prompt_files", "camera_var", "camera_device", "camera_src", "allow_camera",
 	};
 	for (const auto& kv : root.items()) {
 		if (kKnown.count(kv.first) == 0) {
@@ -202,6 +223,7 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 	if (maxTurns) { out.maxTurns = *maxTurns; }
 
 	if (!wantBool(path, root, "allow_shell", out.allowShell, err)) { return false; }
+	if (!wantStringArray(path, root, "prompt_files", out.promptFiles, err)) { return false; }
 	if (!wantBool(path, root, "allow_camera", out.allowCamera, err)) { return false; }
 	return true;
 }

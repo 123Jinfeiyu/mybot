@@ -6,6 +6,7 @@
 
 ### agent 模式（`--agent`）
 
+- **提示词包（`--prompt-file` / 配置文件 `prompt_files`）**：从 robot_agent 迁入的机器人绑定能力——一组 Markdown（身份、行为纪律、能力约束）拼接后**追加在系统提示词内置段落之后**，把通用 agent 绑成具体机器人的"大脑"（示例包 `prompts/spider_robot/`）。语义逐字保留：可重复传入、每项为文件或目录；目录收集全部 `.md` 按文件名**自然排序**（`2-身份.md` 排在 `10-x.md` 前，字典序会排反）、编号即装载顺序；单文件保持原文不加标题，多份以 `## 文件名` 分节。适配点：异常改 bool+err 人话报错（与 `loadLlmConfigFile` 同口径）；加载放在 `buildAgentConfig` 配置组装期——路径写错这类配置错误在结构装载与上电之前就退出 2（「配置错误不碰真机」），成品文本存 `AgentModeConfig::promptPack` 供 `buildAgentSystemPrompt` 纯追加；单文件 1 MiB 上限（本仓库所有宿主读取都设限），超限拒绝而非静默截断；配置文件 `prompt_files` 为字符串数组（空数组按未配置、类型不符报错），命令行给过就整体覆盖配置列表（与 `pickString` 同口径）。守门：`test_promptpack`（自然排序/目录展开/分节/负路径/超限）+ `agentconfig_prompt_*`（合并口径/加载时机/系统提示词追加位置）+ e2e 场景 6（线上报文断言包内容进 system 消息、追加在内置段后、分节按自然排序）
 - **REPL 历史按字节预算自动裁剪**：会话历史按估重计量（正文 + 工具调用参数 + base64 图片 + extras 串，即线上体积的下界），超过 `AgentOptions::maxHistoryBytes`（缺省 4 MiB，0 = 关）在下一轮任务开始前按「任务块」（一条任务消息到下一条之前的全部消息）整块裁掉最老的块。整块裁剪保证 assistant.tool_calls 与其 tool 消息、夹在 tool 消息之后的图片 user 消息不被拆散（半截序列会被服务端 400 拒绝）；老块连同其中的 base64 图片一并释放——图片是历史体积主项，按条数裁剪挡不住；system 提示词与最新一个任务无条件保留（正在进行的对话不能裁空）。单测：字节预算裁剪 / 图片随块淘汰 / 预算 0 不裁剪
 - **新增 agent 模式**：`--agent` 让大模型工具循环成为主执行流程——结构脚本加载后硬件**常驻内存**，多轮挑选并执行动作脚本，会话结束才 `deactivate()`；与管道模式互斥（与 `--tcp`/`--input` 同给退出 2）。`--task` 一次性任务，缺省交互 REPL（`/hardware`、`/scripts`、`/exit`，历史跨轮保留）
 - **工具集**：`list_action_scripts`、`run_action_script`（路径限定 `--scripts-dir` 之下，拒绝绝对路径/`..`/非 `.mt`，8 MiB 上限）、`list_hardware`（只读清单，不调 `read()`/`play()`，不误触发执行器）、`capture_image`（见下）、`run_command`（超时整进程组终止 + 64KB 截断 + 环境变量清洗，`--agent-no-shell` 可关闭）。工具报错折成文本回传模型，不打断会话

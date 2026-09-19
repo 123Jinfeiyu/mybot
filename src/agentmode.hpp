@@ -11,6 +11,7 @@
 
 #include <iosfwd>
 #include <string>
+#include <vector>
 
 #include "actionsource.hpp"
 #include "agentdriver.hpp"
@@ -60,6 +61,14 @@ struct AgentModeConfig {
 	std::string task;		/* 非空 = 一次性执行；空 = 交互 REPL */
 	bool allowShell = true;		/* false = 不注册 run_command */
 	bool verbose = true;
+
+	/* ---- 提示词包（--prompt-file / 配置文件 prompt_files）----
+	 * promptFiles 是合并后的输入清单（命令行给过就整体覆盖配置文件列表）；
+	 * promptPack 是 buildAgentConfig 加载拼接好的成品文本（空 = 未使用），
+	 * buildAgentSystemPrompt 直接追加——加载放配置组装期，路径写错这类
+	 * 配置错误在结构装载与上电之前就失败（「配置错误不碰真机」）。 */
+	std::vector<std::string> promptFiles;
+	std::string promptPack;
 
 	/* ---- 由 buildAgentConfig 填出的旁路信息 ---- */
 	/* 最终解析出的 API key。**只**用于注入进程环境变量，绝不进驱动的参数表

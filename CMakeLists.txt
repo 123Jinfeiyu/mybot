@@ -76,6 +76,7 @@ set(MYBOT_CORE_SOURCES
   src/agentloop.cpp
   src/agentmode.cpp
   src/agentdriver.cpp
+  src/promptpack.cpp
 )
 
 # 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，
@@ -141,6 +142,7 @@ add_executable(mybot_tests
   test/cpp/test_agentdriver.cpp
   test/cpp/test_agenttools.cpp
   test/cpp/test_agentloop.cpp
+  test/cpp/test_promptpack.cpp
   src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
 )

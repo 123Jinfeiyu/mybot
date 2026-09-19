@@ -52,6 +52,7 @@ constexpr OptionSpec kValueOptions[] = {
 	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
 	{"task", [](CliOptions& o, const std::string& v) { o.agentTask = v; }, true},
 	{"scripts-dir", [](CliOptions& o, const std::string& v) { o.scriptsDir = v; }, true},
+	{"prompt-file", [](CliOptions& o, const std::string& v) { o.promptFiles.push_back(v); }, true},
 	{"llm-endpoint", [](CliOptions& o, const std::string& v) { o.llmEndpoint = v; }, true},
 	{"llm-model", [](CliOptions& o, const std::string& v) { o.llmModel = v; }, true},
 	{"llm-key", [](CliOptions& o, const std::string& v) { o.llmKey = v; }, true},
@@ -148,6 +149,11 @@ void print_help() {
 	std::cout << "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096）" << std::endl;
 	std::cout << "  --llm-timeout <秒>    单次模型调用超时（缺省 180）" << std::endl;
 	std::cout << "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt" << std::endl;
+	std::cout << "  --prompt-file <路径>  提示词包：可重复传入（文件或目录），全部内容拼接后" << std::endl;
+	std::cout << "                       追加到系统提示词，用于注入机器人身份与行为约束；" << std::endl;
+	std::cout << "                       目录收集其中全部 .md 按文件名自然排序（编号即装载顺序），" << std::endl;
+	std::cout << "                       文件间以 \"## 文件名\" 分节；也可用配置文件 prompt_files 数组" << std::endl;
+	std::cout << "                       （示例：prompts/spider_robot/）" << std::endl;
 	std::cout << "  --agent-no-shell      不向智能体提供 run_command（去掉任意 shell 执行能力）" << std::endl;
 	std::cout << "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）；结构脚本已声明则直接用" << std::endl;
 	std::cout << "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）" << std::endl;
@@ -197,7 +203,8 @@ int validateOptions(ParsedArgs& args) {
 	 *   2) --agent 与 --tcp/--input 互斥 → 两者都要求主导输入源。 */
 	if (!options.agent && options.agentOptionsUsed) {
 		std::cerr << "参数错误：--task / --llm-* / --agent-no-shell / --scripts-dir "
-			"只在 --agent 模式下有效；用 --help 查看 agent 模式说明" << std::endl;
+			"/ --prompt-file 只在 --agent 模式下有效；用 --help 查看 agent 模式说明"
+			<< std::endl;
 		return 2;
 	}
 	if (options.agent && (options.tcp || options.input)) {

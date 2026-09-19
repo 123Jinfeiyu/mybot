@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 五个场景：
+# 六个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -15,6 +15,8 @@
 #      不放任何密钥。
 #   5) capture_image——拍照并把画面注入上下文，断言线上报文确实带 image_url
 #      多模态内容（以 data URL 包装的真 JPEG）。
+#   6) --prompt-file 提示词包——目录 .md 按文件名自然排序、以 "## 文件名" 分节，
+#      整包追加在系统提示词内置段落之后（线上报文逐项断言）。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -257,6 +259,37 @@ check "$out5" "已拍摄照片" "工具返回了照片说明（含模拟来源�
 check_json "$CAP5" "any(isinstance(m.get('content'), list) and any(p.get('type')=='image_url' for p in m['content']) for m in d['messages'])" \
 	"线上报文确实带上了 image_url（多模态内容）"
 check_present "$CAP5" '"data:image/jpeg;base64,/9j/' "注入的是以 data URL 包装的真 JPEG"
+
+# ============ 场景 6：--prompt-file 提示词包进入系统提示词 ============
+echo "----- 场景 6：--prompt-file 提示词包 -----"
+PORT=$((21900 + RANDOM % 300))
+CAP6="$tmp/req-promptpack.json"
+PACK6="$tmp/promptpack"
+mkdir -p "$PACK6"
+# 故意乱序创建：线上断言依赖「文件名自然排序」而非创建顺序
+printf '你是蜘蛛机器人。\n' > "$PACK6/10-尾声.md"
+printf '前方有障碍不要前进。\n' > "$PACK6/2-纪律.md"
+printf '蜘蛛机器人身份。\n' > "$PACK6/1-身份.md"
+start_server "$PORT" "$CAP6" ok || exit 1
+out6="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql \
+	--agent --llm-config none --scripts-dir scripts \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--prompt-file "$PACK6" --task "$TASK" 2>&1)"
+rc6=$?
+stop_server
+echo "$out6"
+if [ "$rc6" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc6"
+	fail=1
+fi
+check "$out6" "AGENT-E2E-完成" "带提示词包仍跑通完整工具循环"
+check_present "$CAP6" '蜘蛛机器人身份。' "提示词包内容进入线上报文"
+check_json "$CAP6" "d['messages'][0]['role']=='system' and '蜘蛛机器人身份。' in d['messages'][0]['content']" \
+	"提示词包在 system 消息里"
+check_json "$CAP6" "'## 工作方式' in d['messages'][0]['content'] and d['messages'][0]['content'].find('## 工作方式') < d['messages'][0]['content'].find('蜘蛛机器人身份。')" \
+	"提示词包追加在内置段落之后"
+check_json "$CAP6" "'## 1-身份.md' in d['messages'][0]['content'] and d['messages'][0]['content'].find('## 1-身份.md') < d['messages'][0]['content'].find('## 2-纪律.md') < d['messages'][0]['content'].find('## 10-尾声.md')" \
+	"目录按文件名自然排序分节（2- 在 10- 之前）"
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

@@ -8,6 +8,7 @@
 
 #include "agentloop.hpp"
 #include "llmconfig.hpp"
+#include "promptpack.hpp"
 #include "agenttools.hpp"
 #include "robot.hpp"
 #include "util.hpp"
@@ -246,6 +247,17 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	out.allowShell = opts.agentNoShell ? false : file.allowShell.value_or(true);
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
+
+	/* ---- 8) 提示词包：命令行给过就整体覆盖配置文件列表（与 pickString 的
+	 * 「命令行 > 配置文件」同口径）。在这里就加载成成品文本——提示词路径
+	 * 写错属于配置错误，必须在结构装载与上电之前失败，而不是等系统提示词
+	 * 拼装时才炸（main 的约定「配置错误不碰真机」）。 */
+	out.promptFiles = !opts.promptFiles.empty() ? opts.promptFiles
+						: file.promptFiles.value_or({});
+	if (!out.promptFiles.empty()
+		&& !loadPromptPack(out.promptFiles, out.promptPack, err)) {
+		return false;
+	}
 	return true;
 }
 
@@ -302,6 +314,11 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 		p += "- run_command 适合查看系统状态、日志与设备节点；驱动硬件请用 run_action_script。\n";
 	}
 	p += "- 用中文回答，结论简洁并说明依据。\n";
+
+	/* 提示词包追加在内置段落之后（robot_agent 同款语义）：内置部分只讲机器人
+	 * 本体，「这个机器人是谁、该怎么行事」由包定义；buildAgentConfig 已把
+	 * 加载失败挡在上电之前，这里不可能拿到坏包。 */
+	if (!cfg.promptPack.empty()) { p += "\n\n" + cfg.promptPack; }
 	return p;
 }
 

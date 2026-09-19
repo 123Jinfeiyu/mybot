@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -50,6 +51,9 @@ struct CliOptions {
 	std::string llmMaxTokens;
 	std::string llmTimeout;
 	std::string scriptsDir;
+	/* --prompt-file：提示词包输入，可重复（每项为文件或目录）。加载与拼接
+	 * 在 agent::buildAgentConfig 完成（配置错误不碰真机），本结构只收集。 */
+	std::vector<std::string> promptFiles;
 	/* ---- 摄像头（capture_image） ---- */
 	std::string cameraVar;		/* --camera-var：承载 modules/Camera.lua 的变量名 */
 	std::string cameraDevice;	/* --camera-device：重设设备路径 */

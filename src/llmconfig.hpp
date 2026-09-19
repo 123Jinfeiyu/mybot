@@ -12,6 +12,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace bot {
 
@@ -31,6 +32,9 @@ struct LlmFileConfig {
 	std::optional<int> maxTurns;
 	std::optional<std::string> scriptsDir;
 	std::optional<bool> allowShell;
+	/* 提示词包输入清单（每项为文件或目录，语义同 --prompt-file）。空数组按
+	 * 未配置；类型不符（非数组/元素非字符串）报错——拼错形态不能静默失效。 */
+	std::optional<std::vector<std::string>> promptFiles;
 	std::optional<std::string> cameraVar;
 	std::optional<std::string> cameraDevice;
 	std::optional<std::string> cameraSrc;

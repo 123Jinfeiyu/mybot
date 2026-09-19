@@ -11,6 +11,7 @@
 #include "actionsource.hpp"
 #include "agentmode.hpp"
 #include "llmconfig.hpp"
+#include "robot.hpp"
 #include "util.hpp"
 
 namespace fs = std::filesystem;
@@ -528,4 +529,136 @@ TH_TEST(agentconfig_config_path_from_env) {
 	TH_CHECK(buildAgentConfig(baseOptions(cfg2.string()), out2, err));
 	TH_CHECK(out2.configPath == cfg2.string());
 	TH_CHECK(out2.resolvedApiKey == "cli-path-key");
+}
+
+/* ================= 提示词包（--prompt-file / 配置文件 prompt_files） =================
+ * 加载发生在 buildAgentConfig（配置组装期，不碰真机）；成品文本由
+ * buildAgentSystemPrompt 追加到内置段落之后。 */
+
+TH_TEST(llmconfig_prompt_files_parses_and_rejects_bad_shapes) {
+	TempDir tmp("pfcfg");
+	fs::path cfg = tmp.path() / "llm.json";
+
+	writeFile(cfg, R"({"prompt_files":["prompts/a","prompts/b"]})", fs::perms::owner_all);
+	LlmFileConfig c;
+	std::string err;
+	TH_CHECK(loadLlmConfigFile(cfg.string(), c, err));
+	TH_CHECK(err.empty());
+	TH_CHECK(c.promptFiles && c.promptFiles->size() == 2);
+	TH_CHECK((*c.promptFiles)[0] == "prompts/a");
+
+	/* 非数组 / 元素非字符串 → 人话报错，不静默失效。
+	 * 每个负路径用例给全新 err：loadLlmConfigFile 的契约是「失败时写入」，
+	 * 不清上一轮的 err 会让下一轮误判失败。 */
+	writeFile(cfg, R"({"prompt_files":"prompts/a"})", fs::perms::owner_all);
+	LlmFileConfig c2;
+	err.clear();
+	TH_CHECK(!loadLlmConfigFile(cfg.string(), c2, err));
+	TH_CHECK(err.find("字符串数组") != std::string::npos);
+
+	writeFile(cfg, R"({"prompt_files":[1]})", fs::perms::owner_all);
+	LlmFileConfig c3;
+	err.clear();
+	TH_CHECK(!loadLlmConfigFile(cfg.string(), c3, err));
+	TH_CHECK(err.find("字符串") != std::string::npos);
+
+	/* 空数组按「未配置」（与 wantString 的空串口径一致） */
+	writeFile(cfg, R"({"prompt_files":[]})", fs::perms::owner_all);
+	LlmFileConfig c4;
+	err.clear();
+	TH_CHECK(loadLlmConfigFile(cfg.string(), c4, err));
+	TH_CHECK(!c4.promptFiles);
+}
+
+/* 目录写进配置文件 → buildAgentConfig 加载成成品文本，分节按自然排序 */
+TH_TEST(agentconfig_prompt_pack_loaded_from_config_file) {
+	NoKeyEnv nokey;
+	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
+	TempDir tmp("ppcfg");
+	fs::path pack = tmp.path() / "pack";
+	/* 本文件的 writeFile 不建父目录，目录输入要先显式创建 */
+	fs::create_directories(pack);
+	writeFile(pack / "10-尾声.md", "按之前的方式操作\n", fs::perms::owner_all);
+	writeFile(pack / "1-身份.md", "你是蜘蛛机器人。\n", fs::perms::owner_all);
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, std::string("{\"prompt_files\":[\"") + pack.string() + "\"]}",
+		fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+	TH_CHECK(out.promptFiles.size() == 1 && out.promptFiles[0] == pack.string());
+	size_t p1 = out.promptPack.find("## 1-身份.md");
+	size_t p10 = out.promptPack.find("## 10-尾声.md");
+	TH_CHECK(p1 != std::string::npos && p10 != std::string::npos);
+	TH_CHECK(p1 < p10);
+}
+
+/* 命令行给过 --prompt-file 就整体覆盖配置文件列表（与 pickString 同口径） */
+TH_TEST(agentconfig_prompt_pack_cli_overrides_config_file) {
+	NoKeyEnv nokey;
+	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
+	TempDir tmp("ppcli");
+	fs::path packDir = tmp.path() / "from-config";
+	fs::create_directories(packDir);	/* writeFile 不建父目录 */
+	writeFile(packDir / "cfg.md", "来自配置文件\n", fs::perms::owner_all);
+	fs::path cliFile = tmp.path() / "from-cli.md";
+	writeFile(cliFile, "来自命令行\n", fs::perms::owner_all);
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, std::string("{\"prompt_files\":[\"") + packDir.string() + "\"]}",
+		fs::perms::owner_all);
+
+	CliOptions o = baseOptions(cfg.string());
+	o.promptFiles.push_back(cliFile.string());
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(buildAgentConfig(o, out, err));
+	TH_CHECK(out.promptPack == "来自命令行");
+	TH_CHECK(out.promptFiles.size() == 1 && out.promptFiles[0] == cliFile.string());
+}
+
+/* 提示词路径写错在配置组装期失败——早于结构装载与上电（不碰真机） */
+TH_TEST(agentconfig_prompt_pack_bad_path_fails_at_config_time) {
+	NoKeyEnv nokey;
+	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
+	CliOptions o = baseOptions("none");
+	o.promptFiles.push_back("/nonexistent/prompts");
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(!buildAgentConfig(o, out, err));
+	TH_CHECK(err.find("不存在") != std::string::npos);
+}
+
+/* 系统提示词：包追加在内置段落（结构/硬件/脚本清单/工作方式）之后 */
+TH_TEST(agentconfig_prompt_pack_appended_after_builtin_sections) {
+	AgentModeConfig cfg;
+	cfg.structurePath = "robots/relay-test.sql";
+	cfg.scriptsDir = "scripts";
+	cfg.promptPack = "###### 身份 ######\n你是测试机器人。";
+
+	MemoryReader reader(
+		"CREATE TABLE Timer (\n"
+		"\tname String\n"
+		");\n"
+		"INSERT INTO Timer (name) VALUES ('timer-0');\n"
+		"CREATE TABLE Relay (\n"
+		"\tname       String,\n"
+		"\tcontroller String,\n"
+		"\tnote       String\n"
+		");\n"
+		"INSERT INTO Relay (name, controller, note) VALUES ('relay0', 'timer-0', 'r');\n");
+	RobotStruct robot(reader);
+
+	std::string p = buildAgentSystemPrompt(cfg, robot);
+	size_t builtin = p.find("## 工作方式");
+	size_t pack = p.find("###### 身份 ######");
+	TH_CHECK(builtin != std::string::npos);
+	TH_CHECK(pack != std::string::npos && pack > builtin);
+
+	/* 未使用提示词包：不追加也不留尾随空行 */
+	AgentModeConfig bare = cfg;
+	bare.promptPack.clear();
+	std::string p2 = buildAgentSystemPrompt(bare, robot);
+	TH_CHECK(p2.find("身份") == std::string::npos);
+	TH_CHECK(p2.find("\n\n\n") == std::string::npos);
 }

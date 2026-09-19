@@ -20,6 +20,7 @@
   "scripts_dir": "scripts",
   "allow_shell": true,
 
+  "prompt_files": [],
   "camera_var": "cam0",
   "camera_device": "",
   "camera_src": "",
