@@ -34,6 +34,36 @@ static int tcpTotalBudgetSec(int idleSec) {
 	return budget;
 }
 
+/* ---- fd RAII 守卫（F-25 同族：持 fd 者禁止拷贝）----
+ * openTcpActionSource 原有近十条手工 ::close，任一条遗漏即 fd 泄漏；客户端 fd
+ * 更在 make_unique 抛出时无人关闭。守卫让每个出口（throw/return/分配失败）自动收口。 */
+namespace {
+
+class FdGuard {
+	int fd_;
+
+public:
+	explicit FdGuard(int fd = -1) : fd_(fd) {}
+	~FdGuard() { close(); }
+	FdGuard(const FdGuard&) = delete;
+	FdGuard& operator=(const FdGuard&) = delete;
+
+	int get() const { return fd_; }
+
+	/* 关闭当前持有的 fd（空则无操作） */
+	void close() {
+		if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
+	}
+
+	/* 接管新 fd：先关闭旧的（accept 重试轮之间用） */
+	void reset(int fd) { close(); fd_ = fd; }
+
+	/* 交还所有权：仅在接管方已确定持有该 fd 后调用，此后守卫不再负责关闭 */
+	int release() { int f = fd_; fd_ = -1; return f; }
+};
+
+} // namespace
+
 /* ---- TcpStreamReader::read：区分 EOF / 超时 / 信号 / 链路错误 ----
  * 内部 64KiB 缓冲（审计 M2）：缓冲区空时一次 recv 尽量填满，之后逐字节
  * 从缓冲出队；8MiB 上限的脚本从 ~800 万次系统调用降到 ~130 次。
@@ -118,18 +148,19 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 
 	std::cerr << "TCP 动作源：监听 " << host << ":" << port << "，等待客户端连接..." << std::endl;
 
-	int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-	if (fd < 0) {
+	/* 监听 fd 交给守卫：此后所有出口（throw / return / 客户端的 make_unique
+	 * 分配失败）都自动关闭，不再依赖逐条手工 ::close。 */
+	FdGuard listenFd(::socket(AF_INET, SOCK_STREAM, 0));
+	if (listenFd.get() < 0) {
 		throw std::runtime_error("无法创建 TCP 套接字");
 	}
 	int one = 1;
-	::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
+	::setsockopt(listenFd.get(), SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one));
 
 	/* 审计 H-2 防线：非回环监听必须设口令（缺省即拒绝 bind，不再仅告警）。
 	 * 动作脚本会直接驱动真实硬件，未鉴权暴露到网络等价于把舵机交给任何
 	 * 可达本端口的对端。回环 127.0.0.1 不受限。 */
 	if (addr.s_addr != htonl(INADDR_LOOPBACK) && token.empty()) {
-		::close(fd);
 		throw std::runtime_error("监听地址 " + host + " 非回环且未设 --tcp-token："
 			"动作脚本会直接驱动真实硬件，跨机监听必须显式提供口令"
 			"（仅本机调试请用缺省回环地址 127.0.0.1）");
@@ -140,39 +171,36 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 	sa.sin_addr = addr;
 	sa.sin_port = htons(static_cast<uint16_t>(port));
 
-	if (::bind(fd, reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
-		::close(fd);
+	if (::bind(listenFd.get(), reinterpret_cast<sockaddr*>(&sa), sizeof(sa)) < 0) {
 		throw std::runtime_error("TCP 监听端口绑定失败");
 	}
 	/* D5：listen 返回值检查 */
-	if (::listen(fd, 1) < 0) {
-		::close(fd);
+	if (::listen(listenFd.get(), 1) < 0) {
 		throw std::runtime_error("TCP 监听失败");
 	}
 
 	/* D5/D4：accept 可被信号（EINTR）打断——响应停止标志退出，其余 EINTR 重试。
 	 * C-M1：口令失败不再 throw 终止进程（任意对端 connect 一次即 DoS）——
 	 * 关连接回 accept 等待，连续 kTcpAuthMaxFails 次失败才放弃。 */
-	int client = -1;
+	FdGuard clientFd;		/* 每轮重置；本轮失败时由 close() 关闭 */
 	int authFails = 0;
 	while (true) {
-		client = ::accept(fd, nullptr, nullptr);
+		int client = ::accept(listenFd.get(), nullptr, nullptr);
 		if (client < 0) {
 			if (errno == EINTR) {
 				if (stopRequested()) {
-					::close(fd);
 					throw std::runtime_error("TCP 等待客户端连接被停止信号中断");
 				}
 				continue;
 			}
-			::close(fd);
 			throw std::runtime_error("TCP 接受客户端失败");
 		}
+		clientFd.reset(client);
 
 		sockaddr_in peer{};
 		socklen_t plen = sizeof(peer);
 		char ip[INET_ADDRSTRLEN] = "?";
-		if (::getpeername(client, reinterpret_cast<sockaddr*>(&peer), &plen) == 0) {
+		if (::getpeername(clientFd.get(), reinterpret_cast<sockaddr*>(&peer), &plen) == 0) {
 			::inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof(ip));
 		}
 		std::cerr << "TCP 客户端已连接：" << ip << ":" << ntohs(peer.sin_port) << std::endl;
@@ -182,18 +210,15 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 		 * 失效等于防线整体消失。 */
 		timeval tv{};
 		tv.tv_sec = idleSec;
-		if (::setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
-			::close(client);
-			::close(fd);
+		if (::setsockopt(clientFd.get(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
 			throw std::runtime_error(std::string("设置 TCP 接收空闲超时失败：")
 				+ std::strerror(errno));
 		}
 
-		if (!token.empty() && !checkTcpToken(client, token)) {
-			::close(client);
+		if (!token.empty() && !checkTcpToken(clientFd.get(), token)) {
+			clientFd.close();	/* 关连接，回 accept 等待下一个 */
 			++authFails;
 			if (authFails >= kTcpAuthMaxFails) {
-				::close(fd);
 				throw std::runtime_error("TCP 口令连续 " + std::to_string(authFails)
 					+ " 次校验失败，停止等待（可能为扫描/爆破）");
 			}
@@ -203,14 +228,18 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 		}
 		break;
 	}
-	::close(fd);
 
 	/* C-M2：总时长预算从连接建立起算（含口令校验段；口令行长度有上限且
 	 * 每次 recv 受 idle 超时约束，主防线覆盖无界的脚本读取段） */
 	const auto deadline = std::chrono::steady_clock::now()
 		+ std::chrono::seconds(tcpTotalBudgetSec(idleSec));
 
-	return std::make_unique<TcpStreamReader>(client, idleSec, deadline);
+	/* 先以 get() 构造（此刻仍由守卫持有），构造成功后才交还所有权：
+	 * 若构造或分配抛异常，守卫负责关闭客户端 fd，不再泄漏（原实现此处
+	 * 把裸 client 交给 make_unique，分配失败即泄漏）。 */
+	auto reader = std::make_unique<TcpStreamReader>(clientFd.get(), idleSec, deadline);
+	clientFd.release();
+	return reader;
 }
 
 /* ---- 打开动作输入源：tcp 优先 > 文件 > 标准输入 ---- */

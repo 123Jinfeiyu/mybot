@@ -9,7 +9,9 @@
  */
 
 #include <cstddef>
+#include <dirent.h>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include "actionsource.hpp"
@@ -111,6 +113,50 @@ TH_TEST(open_action_source_rejects_bad_tcp_idle) {
 		opts.tcpIdle = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
+}
+
+/* ---------------- fd 生命周期（0.5：FdGuard RAII） ---------------- */
+
+namespace {
+
+/* /proc/self/fd 条目数：本函数自身因 opendir 多占一个 fd，前后一致即可比对 */
+std::size_t openFdCount() {
+	DIR* d = ::opendir("/proc/self/fd");
+	if (d == nullptr) { return 0; }
+	std::size_t n = 0;
+	while (::readdir(d) != nullptr) { ++n; }
+	::closedir(d);
+	return n;
+}
+
+/* 必然走到「bind 失败」抛异常的一组 TCP 选项 */
+bot::CliOptions tcpBindFailOptions() {
+	bot::CliOptions opts;
+	opts.tcp = true;
+	opts.tcpHost = "192.0.2.1";	/* TEST-NET-1：文档保留段，不会是本机地址 */
+	opts.tcpPort = "9000";
+	/* 显式非空 token：绕开「非回环必须设口令」的前置拒绝（H-2），
+	 * 也不受 BOT4CJ_TCP_TOKEN 环境影响 */
+	opts.tcpToken = "s3cret";
+	return opts;
+}
+
+} // namespace
+
+TH_TEST(tcp_listen_socket_is_released_when_bind_fails) {
+	/* 0.5：openTcpActionSource 的 fd 出口全部 RAII 化（FdGuard），替换原先
+	 * 近十条手工 ::close。192.0.2.1 非本机地址，bind 必以 EADDRNOTAVAIL 失败
+	 * ——此时监听 fd 已创建，异常路径必须关闭它。预热一次后反复触发并比对
+	 * /proc/self/fd 条目数：任一出口漏关都会累积泄漏。 */
+	TH_CHECK_THROWS_MSG(std::runtime_error, "绑定失败",
+		bot::openActionSource(tcpBindFailOptions()));	/* 预热：排除库级惰性 fd */
+
+	const std::size_t before = openFdCount();
+	for (int i = 0; i < 8; ++i) {
+		TH_CHECK_THROWS_MSG(std::runtime_error, "绑定失败",
+			bot::openActionSource(tcpBindFailOptions()));
+	}
+	TH_CHECK(openFdCount() == before);
 }
 
 /* ---------------- M1：恒时比较 safeEquals ---------------- */
