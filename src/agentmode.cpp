@@ -86,6 +86,19 @@ std::string pickConfigPath(const CliOptions& opts) {
 
 } // namespace
 
+AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
+	AgentDriverConfig d;
+	d.model = cfg.model;
+	d.endpoint = cfg.endpoint;
+	d.maxTokens = cfg.maxTokens;
+	d.temperature = cfg.temperature;
+	d.topP = cfg.topP;
+	d.timeoutSec = cfg.timeoutSec;
+	d.reasoningEffort = cfg.reasoningEffort;
+	d.thinking = cfg.thinking;
+	return d;
+}
+
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
 	/* ---- 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） ---- */
 	LlmFileConfig file;

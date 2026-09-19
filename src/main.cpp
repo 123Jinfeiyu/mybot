@@ -32,6 +32,37 @@ struct ParsedArgs {
 	std::vector<std::string> missingValue;
 };
 
+/* 重构计划 2.6：带值选项表——「agentOnly 标记 + 缺值登记 + 写入字段」
+ * 此前是 19 段逐字重复的 if 链，新增选项靠复制粘贴；现在增项 = 表中加
+ * 一行。布尔 flag 与「--tcp 的 flag+可选端口」形态特殊，留在表外显式处理。 */
+struct OptionSpec {
+	const char* name;
+	void (*set)(CliOptions&, const std::string&);
+	bool agentOnly;
+};
+
+constexpr OptionSpec kValueOptions[] = {
+	{"robot", [](CliOptions& o, const std::string& v) { o.robot = v; }, false},
+	{"tcp-host", [](CliOptions& o, const std::string& v) { o.tcpHost = v; }, false},
+	{"tcp-token", [](CliOptions& o, const std::string& v) { o.tcpToken = v; }, false},
+	{"tcp-idle", [](CliOptions& o, const std::string& v) { o.tcpIdle = v; }, false},
+	{"input", [](CliOptions& o, const std::string& v) { o.input = v; }, false},
+	{"camera-var", [](CliOptions& o, const std::string& v) { o.cameraVar = v; }, true},
+	{"camera-device", [](CliOptions& o, const std::string& v) { o.cameraDevice = v; }, true},
+	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
+	{"task", [](CliOptions& o, const std::string& v) { o.agentTask = v; }, true},
+	{"scripts-dir", [](CliOptions& o, const std::string& v) { o.scriptsDir = v; }, true},
+	{"llm-endpoint", [](CliOptions& o, const std::string& v) { o.llmEndpoint = v; }, true},
+	{"llm-model", [](CliOptions& o, const std::string& v) { o.llmModel = v; }, true},
+	{"llm-key", [](CliOptions& o, const std::string& v) { o.llmKey = v; }, true},
+	{"llm-config", [](CliOptions& o, const std::string& v) { o.llmConfig = v; }, true},
+	{"llm-driver", [](CliOptions& o, const std::string& v) { o.llmDriver = v; }, true},
+	{"llm-var", [](CliOptions& o, const std::string& v) { o.llmVar = v; }, true},
+	{"llm-max-turns", [](CliOptions& o, const std::string& v) { o.llmMaxTurns = v; }, true},
+	{"llm-max-tokens", [](CliOptions& o, const std::string& v) { o.llmMaxTokens = v; }, true},
+	{"llm-timeout", [](CliOptions& o, const std::string& v) { o.llmTimeout = v; }, true},
+};
+
 static ParsedArgs parseArgs(int argc, char** argv) {
 	ParsedArgs out;
 	for (int k = 1; k < argc; ++k) {
@@ -45,34 +76,13 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 		const std::string& key = tok.key;
 		const std::string& val = tok.value;
 		bool noValue = !tok.hasValue;
-		if (key == "robot") {
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.robot = val; }
-		}
-		else if (key == "help") { out.opts.help = true; }
+		/* ---- 布尔 flag 与特殊形态：表外显式处理 ---- */
+		if (key == "help") { out.opts.help = true; }
 		else if (key == "tcp") {
 			out.opts.tcp = true;
 			/* 裸 --tcp：tcp 置位但端口留空，由 openActionSource 报「缺端口号」 */
 			if (!noValue) { out.opts.tcpPort = val; }
 		}
-		else if (key == "tcp-host") {
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.tcpHost = val; }
-		}
-		else if (key == "tcp-token") {
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.tcpToken = val; }
-		}
-		else if (key == "tcp-idle") {
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.tcpIdle = val; }
-		}
-		else if (key == "input") {
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.input = val; }
-		}
-		/* ---- agent 模式（--agent 及其专属选项）----
-		 * 裸写（漏值）一律进 missingValue，与既有 --tcp-host 等同口径 */
 		else if (key == "agent") { out.opts.agent = true; out.opts.agentOptionsUsed = true; }
 		else if (key == "agent-no-shell") {
 			out.opts.agentNoShell = true;
@@ -82,77 +92,21 @@ static ParsedArgs parseArgs(int argc, char** argv) {
 			out.opts.noCamera = true;
 			out.opts.agentOptionsUsed = true;
 		}
-		else if (key == "camera-var") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.cameraVar = val; }
+		else {
+			/* ---- 带值选项：表驱动 ---- */
+			const OptionSpec* spec = nullptr;
+			for (const auto& item : kValueOptions) {
+				if (key == item.name) { spec = &item; break; }
+			}
+			if (spec == nullptr) { out.unknown.push_back(key); }
+			else {
+				/* agentOnly 先于缺值检查置位——裸写 --camera-var 也算
+				 * 「用过 agent 选项」，与既有顺序一致 */
+				if (spec->agentOnly) { out.opts.agentOptionsUsed = true; }
+				if (noValue) { out.missingValue.push_back(key); }
+				else { spec->set(out.opts, val); }
+			}
 		}
-		else if (key == "camera-device") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.cameraDevice = val; }
-		}
-		else if (key == "camera-src") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.cameraSrc = val; }
-		}
-		else if (key == "task") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.agentTask = val; }
-		}
-		else if (key == "scripts-dir") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.scriptsDir = val; }
-		}
-		else if (key == "llm-endpoint") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmEndpoint = val; }
-		}
-		else if (key == "llm-model") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmModel = val; }
-		}
-		else if (key == "llm-key") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmKey = val; }
-		}
-		else if (key == "llm-config") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmConfig = val; }
-		}
-		else if (key == "llm-driver") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmDriver = val; }
-		}
-		else if (key == "llm-var") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmVar = val; }
-		}
-		else if (key == "llm-max-turns") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmMaxTurns = val; }
-		}
-		else if (key == "llm-max-tokens") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmMaxTokens = val; }
-		}
-		else if (key == "llm-timeout") {
-			out.opts.agentOptionsUsed = true;
-			if (noValue) { out.missingValue.push_back(key); }
-			else { out.opts.llmTimeout = val; }
-		}
-		else { out.unknown.push_back(key); }
 	}
 	return out;
 }
@@ -364,15 +318,7 @@ int main(int argc, char** argv) {
 						+ agentCfg.llmVar + "'（驱动表 " + agentCfg.driverTable
 						+ "）；检查 --llm-var/--llm-driver，或用 --help 看内置驱动名");
 				}
-				agent::AgentDriverConfig dcfg;
-				dcfg.model = agentCfg.model;
-				dcfg.endpoint = agentCfg.endpoint;
-				dcfg.maxTokens = agentCfg.maxTokens;
-				dcfg.temperature = agentCfg.temperature;
-				dcfg.topP = agentCfg.topP;
-				dcfg.timeoutSec = agentCfg.timeoutSec;
-				dcfg.reasoningEffort = agentCfg.reasoningEffort;
-				dcfg.thinking = agentCfg.thinking;
+				agent::AgentDriverConfig dcfg = agent::makeDriverConfig(agentCfg);
 				std::unique_ptr<agent::ChatTransport> transport =
 					agent::makeDriverTransport(driver, dcfg);
 

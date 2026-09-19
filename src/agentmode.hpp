@@ -13,6 +13,7 @@
 #include <string>
 
 #include "actionsource.hpp"
+#include "agentdriver.hpp"
 #include "agentproto.hpp"
 
 namespace bot {
@@ -83,6 +84,10 @@ std::string shellKeyExposureWarning(const AgentModeConfig& cfg);
 std::string resolveLlmKeyFromEnv();
 
 /* 由 CLI 选项组装配置。失败返回 false 并把「人话报错」写进 err。 */
+/* AgentModeConfig → AgentDriverConfig 的单一搬运点（重构计划 2.6）：
+ * 请求相关字段的清单变更只改两份结构体与本函数，不再散落 main 的手工赋值 */
+AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg);
+
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err);
 
 /* 系统提示词：机器人结构与硬件清单 + 可用动作脚本 + 工作方式与安全约束 */
