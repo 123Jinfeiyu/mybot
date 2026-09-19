@@ -77,10 +77,8 @@ int64_t DaemonRunner::exitClaim(int64_t n) {
  * 的唯一胜者裁决释放，竞态窗口归零。 */
 int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, int64_t intervalMs) {
 	DaemonSlot* slot = slot_.load();
-	lua_State* L = luaL_newstate();
+	lua_State* L = openSandboxedState();
 	if (L == nullptr) { return exitClaim(-1); }
-	luaL_openlibs(L);
-	sandbox_lua(L);
 
 	/* 注入共享槽地址（64 位整数 tag，任意值逐位保真）与配置串为 Lua 全局 */
 	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot)));

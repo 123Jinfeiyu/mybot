@@ -27,6 +27,12 @@ int luaGlobalType(lua_State* L, const char* name);
 /* 收紧 Lua 沙箱：中和 os.execute/exit/remove/rename、io.popen/open/lines/input/output */
 void sandbox_lua(lua_State* L);
 
+/* 新建「标准库齐全 + 沙箱已收紧」的 Lua 状态；内存不足返回 nullptr。
+ * 此前 luavar 与 daemonvar 各自 luaL_newstate + luaL_openlibs + sandbox_lua
+ * 三连，靠注释约定同步。chunk 的 loadfile/pcall 不在此收口：两条路径的
+ * 失败契约不同（daemon 区分 load/setup 两段报错；luavar 折成 bool）。 */
+lua_State* openSandboxedState();
+
 /* Lua↔Json 转换的嵌套深度上限（C-9 防线）。
  * 这是**语义**上限而非栈预算：8MB 栈容得下上万层，但「返回值嵌套 8 层以上」
  * 不可能是传感器读数——实测全部驱动的 build/call/destroy 返回都是一层扁平表

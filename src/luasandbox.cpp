@@ -119,4 +119,18 @@ void sandbox_lua(lua_State* L) {
 	lua_pop(L, 1);				/* 弹出白名单表，栈深复原 */
 }
 
+/* ---- 新建沙箱化 Lua 状态（重构计划 1 第 12 项）----
+ * luavar 与 daemonvar 此前各自 newstate + openlibs + sandbox 三连。chunk
+ * 的 loadfile/pcall 留在调用方：两条路径失败契约不同（daemon 区分
+ * load/setup 两段报错——run_all.sh 守门按两种短语匹配；luavar 折成
+ * bool），强行合一会稀释报错定位。 */
+lua_State* openSandboxedState() {
+	lua_State* L = luaL_newstate();
+	if (L != nullptr) {
+		luaL_openlibs(L);
+		sandbox_lua(L);
+	}
+	return L;
+}
+
 } // namespace bot

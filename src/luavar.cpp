@@ -22,7 +22,7 @@ std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, cons
 		throw std::runtime_error("MtVars_Lua::Factory: trigger '" + trigNames.front()
 			+ "' requires a registry for lookup");
 	}
-	lua_State* L = luaL_newstate();
+	lua_State* L = openSandboxedState();
 	if (L == nullptr) {
 		throw std::runtime_error("Lua_check()");
 	}
@@ -30,11 +30,9 @@ std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, cons
 		std::move(getMetadata), std::move(ctrlNames), std::move(trigNames), registry));
 }
 
-/* ---- 构造 Lua 状态机（加载标准库 + 沙箱 + loadfile + pcall）---- */
+/* ---- 加载 chunk 并执行一次（loadfile + pcall）----
+ * 标准库与沙箱由 openSandboxedState 在创建状态时装好。 */
 bool MtVars_Lua::build_lua(lua_State* L, const std::string& luapath) {
-	luaL_openlibs(L);
-	sandbox_lua(L);
-
 	int status = luaL_loadfile(L, luapath.c_str());
 	if (status == LUA_OK) {
 		int pcStatus = lua_pcall(L, 0, LUA_MULTRET, 0);
