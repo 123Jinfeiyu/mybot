@@ -46,18 +46,9 @@ bool parseIntOption(const std::string& raw, const char* key, int lo, int hi,
 	return true;
 }
 
-/* 驱动表名/变量名要拼进合成 SQL，且表名会被当成 modules/<表名>.lua 解析——
- * 与 RobotStruct::injectLlmDriver 同一判据，在此提前拒绝（不碰结构脚本与硬件）。 */
-bool isSafeIdent(const std::string& s) {
-	if (s.empty()) { return false; }
-	unsigned char first = static_cast<unsigned char>(s[0]);
-	if (!(std::isalpha(first) || s[0] == '_')) { return false; }
-	for (char c : s) {
-		unsigned char u = static_cast<unsigned char>(c);
-		if (!(std::isalnum(u) || c == '_')) { return false; }
-	}
-	return true;
-}
+/* 驱动表名/变量名的安全判据在 util::isSafeIdent 单点（与
+ * RobotStruct::injectLuaDriver 的注入防线同一份）；在此提前拒绝，
+ * 坏名字走不到结构脚本与硬件装配。 */
 
 } // namespace
 

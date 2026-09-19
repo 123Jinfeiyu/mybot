@@ -714,18 +714,9 @@ bool RobotStruct::declaresVariable(const std::string& name) const {
 void RobotStruct::injectLuaDriver(const std::string& driverTable, const std::string& varName) {
 	/* 只接受安全标识符：这两个名字会被拼进合成 SQL，且 driverTable 还会被
 	 * HwFactory 当成 modules/<表名>.lua 去解析——放行引号/分号即等于让
-	 * 命令行参数改写结构脚本。 */
-	auto safeIdent = [](const std::string& s) {
-		if (s.empty()) { return false; }
-		unsigned char first = static_cast<unsigned char>(s[0]);
-		if (!(std::isalpha(first) || s[0] == '_')) { return false; }
-		for (char c : s) {
-			unsigned char u = static_cast<unsigned char>(c);
-			if (!(std::isalnum(u) || c == '_')) { return false; }
-		}
-		return true;
-	};
-	if (!safeIdent(driverTable) || !safeIdent(varName)) {
+	 * 命令行参数改写结构脚本。判据在 util::isSafeIdent 单点（与 agentmode
+	 * 的 CLI 预检同一防线）。 */
+	if (!isSafeIdent(driverTable) || !isSafeIdent(varName)) {
 		throw IllegalArgumentException("驱动表名与变量名必须是安全标识符（字母/数字/下划线）: '"
 			+ driverTable + "' / '" + varName + "'");
 	}

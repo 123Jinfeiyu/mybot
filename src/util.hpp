@@ -5,6 +5,7 @@
  */
 
 #include <atomic>
+#include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
@@ -122,6 +123,23 @@ inline bool safeEquals(const std::string& a, const std::string& b) {
 		diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
 	}
 	return diff == 0;
+}
+
+/* ---- 安全标识符判定（安全判据必须单点）----
+ * 注入的驱动表名/变量名会被拼进合成 SQL，且表名还被当成
+ * modules/<表名>.lua 去解析——放行引号/分号等价于让命令行参数改写
+ * 结构脚本。此前 agentmode 的 CLI 预检与 RobotStruct::injectLuaDriver
+ * 的注入防线各自手写同一判据（一度逐字相同）：判据漂移（只放宽一处）
+ * 就是防线不一致，故收敛到本单点。 */
+inline bool isSafeIdent(const std::string& s) {
+	if (s.empty()) { return false; }
+	unsigned char first = static_cast<unsigned char>(s[0]);
+	if (!(std::isalpha(first) || s[0] == '_')) { return false; }
+	for (char c : s) {
+		unsigned char u = static_cast<unsigned char>(c);
+		if (!(std::isalnum(u) || c == '_')) { return false; }
+	}
+	return true;
 }
 
 /* BOT4CJ_DEBUG = 1 时开启 call/build/destroy 详细信息转储 */
