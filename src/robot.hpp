@@ -107,6 +107,10 @@ class MetaProvider {
 	 * 引用解析失败照常上抛；true 时逐引用尽力而为、logD 跳过） */
 	Json collectRefs(bool forDestroy);
 
+	/* 阶段 3 拆分：单个引用列的快照并入 / destroy 跳过日志单点（契约见实现处） */
+	bool appendRef(Json& obj, const MetaRef& ref, bool forDestroy);
+	void logDestroySkip(const std::string& what, const std::string& why);
+
 public:
 	MetaProvider(const mt::MatrixObject& matrix, std::int64_t row,
 			const HwRegistry* registry)

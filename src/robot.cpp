@@ -238,77 +238,81 @@ Json MetaProvider::collectRefs(bool forDestroy) {
 
 	Json obj = staticPart();
 	for (const MetaRef& ref : *refs_) {
-		if (ref.expr) {
-			/* $(...) 表达式：把求值结果格式化后写回承载 $ 的列。
-			 * 表达式只引用 @Vars（无资源），destroy 期照常求值。 */
-			try {
-				double v = ref.expr->eval(registry_->makeVarsResolver());
-				obj.put(ref.col, JsonString(formatNumber(v)));
-			} catch (const std::exception& e) {
-				if (!forDestroy) { throw; }
-				logD([&] {
-					return "destroy metadata: '" + matrix_.getName() + "' row "
-						+ std::to_string(row_) + " skipped expression column '" + ref.col
-						+ "' (" + e.what() + ")";
-				});
-			}
-			continue;
-		}
-		const std::string& colName = ref.col;
-		const std::string& name = ref.var;
-		/* N-5：seed 期锁定的目标指针——collect/destroy 期都不按名重查，
-		 * 会话别名覆盖不影响引用绑定（含销毁期快照归属） */
-		MatrixVars_Hardware* hv = ref.target;
-		if (hv == nullptr) { continue; }
-		Json snap;
-		try {
-			snap = hv->read();
-		} catch (const std::exception& e) {
-			if (!forDestroy) { throw; }
-			logD([&] {
-				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
-					+ " skipped '$" + name + "' (already released: " + e.what() + ")";
-			});
-			continue;
-		}
-		if (snap.isStr() && std::string_view(hv->kindName()) == "vars") {
-			/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
-			obj.put(colName, snap);
-			continue;
-		}
-		if (!snap.isObj()) {
-			if (!forDestroy) {
-				throw IllegalArgumentException("'$" + name
-					+ "': referenced variable returned a non-object (scalar) snapshot; "
-					+ "the '$' reference column '" + colName
-					+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
-					+ " carry a numeric value that can fill a column; Alias/scalar variables are"
-					+ " only supported via 'controller' columns.");
-			}
-			logD([&] {
-				return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
-					+ " skipped '$" + name + "' (non-object snapshot)";
-			});
-			continue;
-		}
-		if (forDestroy) {
-			auto rs = snap.get("result");
-			if (rs && rs->isStr() && rs->asString().getValue() == "ERR") {
-				logD([&] {
-					return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
-						+ " skipped '$" + name + "' (reference reported ERR)";
-				});
-				continue;
-			}
-		}
-		/* 正常路径下 ERR 快照**仍按普通字段合并**（不做上抛）：被引用方报 ERR
-		 * 有其合法成因——守护尚未出首帧（"no sample yet"）、$ 前向引用的对象
-		 * 此刻还没 build 起来（ref_forward 用例）——这些是瞬时状态，消费方
-		 * （如 Monitor）自带缺字段守卫。**永久性**失败（守护 setup 失败）由
-		 * 被引用方直接抛异常上达（见 daemonvar.cpp readSample），不靠这里甄别。 */
-		jsonMergeInto(obj, snap.asObject());
+		appendRef(obj, ref, forDestroy);
 	}
 	return obj;
+}
+
+/* ---- destroy 收集的「尽力而为」跳过日志——4 段同模板 logD 收敛单点 ---- */
+void MetaProvider::logDestroySkip(const std::string& what, const std::string& why) {
+	logD([&] {
+		return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
+			+ " skipped " + what + " (" + why + ")";
+	});
+}
+
+/* ---- 单个引用列的快照并入（阶段 3 拆分）----
+ * 返回 false = destroy 收集跳过该引用（尽力而为，仅销毁路径）；
+ * 非销毁路径的失败按 halt-on-error 直接抛。 */
+bool MetaProvider::appendRef(Json& obj, const MetaRef& ref, bool forDestroy) {
+	if (ref.expr) {
+		/* $(...) 表达式：把求值结果格式化后写回承载 $ 的列。
+		 * 表达式只引用 @Vars（无资源），destroy 期照常求值。 */
+		try {
+			double v = ref.expr->eval(registry_->makeVarsResolver());
+			obj.put(ref.col, JsonString(formatNumber(v)));
+		} catch (const std::exception& e) {
+			if (!forDestroy) { throw; }
+			logDestroySkip("expression column '" + ref.col + "'", e.what());
+			return false;
+		}
+		return true;
+	}
+	const std::string& colName = ref.col;
+	const std::string& name = ref.var;
+	/* N-5：seed 期锁定的目标指针——collect/destroy 期都不按名重查，
+	 * 会话别名覆盖不影响引用绑定（含销毁期快照归属） */
+	MatrixVars_Hardware* hv = ref.target;
+	if (hv == nullptr) { return true; }
+	Json snap;
+	try {
+		snap = hv->read();
+	} catch (const std::exception& e) {
+		if (!forDestroy) { throw; }
+		logDestroySkip("$" + name, std::string("already released: ") + e.what());
+		return false;
+	}
+	if (snap.isStr() && std::string_view(hv->kindName()) == "vars") {
+		/* @Vars 数值常量：把值写回承载 $ 的列（如 Servo 的 max 列写 $smax） */
+		obj.put(colName, snap);
+		return true;
+	}
+	if (!snap.isObj()) {
+		if (!forDestroy) {
+			throw IllegalArgumentException("'$" + name
+				+ "': referenced variable returned a non-object (scalar) snapshot; "
+				+ "the '$' reference column '" + colName
+				+ "' merges field snapshots (v0.., status, count). Only @Vars entries"
+				+ " carry a numeric value that can fill a column; Alias/scalar variables are"
+				+ " only supported via 'controller' columns.");
+		}
+		logDestroySkip("$" + name, "non-object snapshot");
+		return false;
+	}
+	if (forDestroy) {
+		auto rs = snap.get("result");
+		if (rs && rs->isStr() && rs->asString().getValue() == "ERR") {
+			logDestroySkip("$" + name, "reference reported ERR");
+			return false;
+		}
+	}
+	/* 正常路径下 ERR 快照**仍按普通字段合并**（不做上抛）：被引用方报 ERR
+	 * 有其合法成因——守护尚未出首帧（"no sample yet"）、$ 前向引用的对象
+	 * 此刻还没 build 起来（ref_forward 用例）——这些是瞬时状态，消费方
+	 * （如 Monitor）自带缺字段守卫。**永久性**失败（守护 setup 失败）由
+	 * 被引用方直接抛异常上达（见 daemonvar.cpp readSample），不靠这里甄别。 */
+	jsonMergeInto(obj, snap.asObject());
+	return true;
 }
 
 Json MetaProvider::collectForDestroy() {
