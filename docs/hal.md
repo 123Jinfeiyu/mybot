@@ -7,7 +7,11 @@
 总线怎么"开口说话"封装在 `modules/lib/HAL.lua`，所有驱动共用，**仅支持 LuaJIT**：
 
 - ffi 直调 glibc，原生性能零 fork；fd 为真实内核句柄，跨 Lua 状态机有效
-- 系统调用统一走 `HAL.sys.*` 间接层，离线单测（`test_hal_ffi.lua`/`test_uart.lua`/`test_pwm.lua`/`test_gpio.lua`）注入 mock 即可验证调用序列与缓冲区内容，不触硬件
+- 系统调用统一走 `HAL.sys.*` 间接层，离线单测（`test_hal_ffi.lua`/`test_uart.lua`/`test_pwm.lua`/`test_gpio.lua`）注入 mock 即可验证调用序列与缓冲区内容，不触硬件；
+  间接层已**后端接口化**（2026-09-20）：`BOT4CJ_HAL_BACKEND` 选择后端（缺省
+  `glibc`，模块 `modules/lib/hal_backend_<名>.lua`），接口契约（函数集与返回码语义）
+  见该文件头注，缺函数加载期 fail-fast；`test_hal_backend_swap.lua` 以整表替换
+  stub 跑通完整 i2c 事务锚定契约完备性。换后端 = 新增一个文件，总线函数与驱动零改动
 - 参数先归一化（字节 0~255、非负整数）再进 ioctl/缓冲区，设备路径走白名单正则；非法参数打印诊断并显式失败，不静默钳制
 - 结构体尺寸与 ioctl 常量经 `test_ioctl_nums.c` / `test_uart_consts.c` 与系统头文件实证；尺寸断言在加载期执行（spi_ioc_transfer=32、i2c_msg=16、gpiohandle_request=364、termios=60），ABI 漂移立即失败
 

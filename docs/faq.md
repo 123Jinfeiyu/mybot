@@ -5,6 +5,12 @@
 ## 已知限制
 
 - **仅支持 Linux**：HAL 经 ffi 直调 glibc，Windows/macOS 未支持
+- **非 glibc libc 未验证**：HAL.sys 已后端接口化（`BOT4CJ_HAL_BACKEND`，缺省
+  glibc，接口契约见 `modules/lib/hal_backend_glibc.lua` 头注），但**仅 glibc 实测**；
+  musl 等平台移植前需逐项验证：termios 常量与 60B 结构体布局断言、UART 波特率
+  编码分叉探测（glibc 2.42 前后两套，`gnu_get_libc_version` 缺失时按旧 ABI 编码
+  处理）、ioctl 编号编译期断言（`test_ioctl_nums.c` 等）在对应 libc 头文件下的取值。
+  后端接口只为「换实现」收敛了入口，不免除对目标 libc 的 ABI 实证（[hal.md](hal.md)）
 - **仅支持 LuaJIT**：总线驱动依赖 ffi（不依赖 HAL 的模块可用 lua5.4 独立调试）。
   缓解：新架构（如 riscv64）可关注 LuaJIT 社区分支移植；纯算法类驱动
   （Ema/Kalman/fft 等）已保持不依赖 HAL，可用 lua5.4 跨解释器复用

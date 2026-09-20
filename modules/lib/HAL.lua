@@ -77,7 +77,17 @@ assert(ffi.sizeof("cj_i2c_msg") == 16,
 
 local HAL = {}
 _G.__BOT4CJ_HAL = HAL
-HAL.backend = "ffi"
+
+-- 平台差异单点（阶段 A-2）：设备根路径常量集中一处——移植 / 仿真桩改这里，
+-- GPIO / PWM 各节只取表值，不再散落字面量（i2c/spi/uart 路径白名单在
+-- bus_contract.lua，同为单点）。
+HAL.platform = {
+	pwm_sysfs_root = "/sys/class/pwm",
+	gpio_prefix    = "/dev/gpiochip",
+}
+HAL.PWM_SYSFS_ROOT = HAL.platform.pwm_sysfs_root	-- 兼容既有引用（pwm_attr_path 等）
+HAL.backend = "ffi"			-- ABI 类标记（ffi=真实句柄后端；test_hal_ffi/test_jit_warmup 按此分流）
+HAL.backend_name = "glibc"	-- 后端模块名（BOT4CJ_HAL_BACKEND 指定，见下方加载段）
 
 ------------------------------------------------------------------
 -- 常量
@@ -96,35 +106,38 @@ HAL.SPI_IOC_MESSAGE_1        = 0x40206b00	-- _IOW('k', 0, spi_ioc_transfer[1])
 ------------------------------------------------------------------
 -- 系统调用间接层（离线单测在此注入 mock）
 ------------------------------------------------------------------
-HAL.sys = {
-	-- mode：可选的 open 第三参（O_CREAT 场景的权限位，如 0x1A4=0644），
-	-- 变参显式 cast 理由同下 ioctl_i
-	open    = function(path, flags, mode)
-		if mode ~= nil then
-			return ffi.C.open(path, flags, ffi.cast("unsigned int", mode))
-		end
-		return ffi.C.open(path, flags)
-	end,
-	close   = function(fd)          return ffi.C.close(fd) end,
-	-- 变参必须显式 cast：JIT 编译后 Lua number 会以 double 位模式传入变参
-	-- （ioctl 收到 0x4050... > 0x7f → EINVAL），解释执行却传 int——
-	-- cast 为 unsigned long cdata 后两种执行路径 ABI 一致（第 58 次调用起复现）
-	ioctl_i = function(fd, req, val)
-		return ffi.C.ioctl(fd, req, ffi.cast("unsigned long", val))
-	end,
-	ioctl_p = function(fd, req, ptr) return ffi.C.ioctl(fd, req, ptr) end,
-	read    = function(fd, buf, n)  return tonumber(ffi.C.read(fd, buf, n)) end,
-	write   = function(fd, buf, n)  return tonumber(ffi.C.write(fd, buf, n)) end,
-	usleep  = function(us)          return ffi.C.usleep(us) end,
-	errno   = function()            return ffi.errno() end,
-	-- UART termios（glibc 直接调用；termios 以 void* 传递避免分架构布局差异）
-	tcgetattr = function(fd, ptr)   return ffi.C.tcgetattr(fd, ptr) end,
-	tcsetattr = function(fd, act, ptr) return ffi.C.tcsetattr(fd, act, ptr) end,
-	cfmakeraw = function(ptr)       ffi.C.cfmakeraw(ptr) end,
-	cfsetispeed = function(ptr, baud) return ffi.C.cfsetispeed(ptr, baud) end,
-	cfsetospeed = function(ptr, baud) return ffi.C.cfsetospeed(ptr, baud) end,
-	tcflush   = function(fd, q)     return ffi.C.tcflush(fd, q) end,
-}
+-- 阶段 A-1 后端接口化：本表由 BOT4CJ_HAL_BACKEND 指定的后端提供
+--（缺省 glibc，modules/lib/hal_backend_<名>.lua）。接口契约见
+-- hal_backend_glibc.lua 头注（open/close/ioctl_i/ioctl_p/read/write/usleep/
+-- errno/version + UART termios 六件），加载后逐项断言、缺函数 fail-fast——
+-- 本文件是全部驱动的地基，契约不完整必须在加载期暴露而非首笔调用时炸。
+-- 定位方式与 bus_contract 相同：BOT4CJ_MODULE_PATH 各段逐段探测，再以
+-- 仓库缺省布局兜底。离线单测仍按函数粒度替换 HAL.sys.* 表项注入 mock，
+-- 用法与后端化之前完全一致。
+do
+	local wanted = os.getenv("BOT4CJ_HAL_BACKEND")
+	if wanted == nil or wanted == "" then wanted = "glibc" end
+	local loaded
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local okb, mod = pcall(dofile, p .. "/lib/hal_backend_" .. wanted .. ".lua")
+		if okb and type(mod) == "table" then loaded = mod break end
+	end
+	if not loaded then
+		local okb, mod = pcall(dofile, "./modules/lib/hal_backend_" .. wanted .. ".lua")
+		if okb and type(mod) == "table" then loaded = mod end
+	end
+	assert(type(loaded) == "table",
+		"HAL: backend not found: modules/lib/hal_backend_" .. wanted .. ".lua (BOT4CJ_HAL_BACKEND=" .. wanted .. ")")
+	for _, k in ipairs({ "open", "close", "ioctl_i", "ioctl_p", "read", "write",
+		"usleep", "errno", "version", "tcgetattr", "tcsetattr", "cfmakeraw",
+		"cfsetispeed", "cfsetospeed", "tcflush" }) do
+		assert(type(loaded[k]) == "function",
+			"HAL: backend '" .. wanted .. "' missing contract function: " .. k
+			.. " (see modules/lib/hal_backend_glibc.lua)")
+	end
+	HAL.sys = loaded
+	HAL.backend_name = wanted
+end
 
 ------------------------------------------------------------------
 -- 总线契约单点（N-25）
@@ -595,7 +608,8 @@ assert(ffi.sizeof("cj_gpiohandle_data") == 64,
 -- active_low：true = 低电平有效（可选）
 function gpio_request_line(chip_path, offset, direction, default_value, active_low)
 	if type(chip_path) ~= "string" then return -1 end
-	if string.match(chip_path, "^/dev/gpiochip%d+$") == nil then
+	-- 前缀取平台差异单点（阶段 A-2）；前缀如引入正则元字符需先转义
+	if string.match(chip_path, "^" .. HAL.platform.gpio_prefix .. "%d+$") == nil then
 		print("HAL: invalid gpiochip path: " .. tostring(chip_path))
 		return -1
 	end
@@ -746,12 +760,12 @@ local UART_B_CONST_HZ = {
 -- 探测失败（非常规 libc 等）按旧编码处理：旧编码在 <2.42 上正确，在 ≥2.42
 -- 上会静默设错——故本探测与 test_uart_baud.lua 回归、test_uart_consts.c
 -- 构建期断言三重把关，编码分叉时尽可能早地暴露。
+-- 阶段 A-1：版本探测经 HAL.sys.version()（后端接口；非 glibc 后端返 nil
+-- 时按旧编码处理，musl 等平台行为与 glibc<2.42 一致）。
 local function glibc_uses_hz_baud()
 	local ok, ver = pcall(function()
-		ffi.cdef[[ const char* gnu_get_libc_version(void); ]]
-		local p = ffi.C.gnu_get_libc_version()
-		-- 返回值是 const char* cdata，须经 ffi.string 转 Lua 串才能 pattern match
-		local major, minor = string.match(p ~= nil and ffi.string(p) or "", "(%d+)%.(%d+)")
+		local v = HAL.sys.version()
+		local major, minor = string.match(v ~= nil and v or "", "(%d+)%.(%d+)")
 		if major == nil then return 0 end
 		return tonumber(major) * 1000 + tonumber(minor)
 	end)
