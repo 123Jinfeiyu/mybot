@@ -470,6 +470,7 @@ parse_cases=(
 	'daemon_fieldmode.sql|daemon_schema.mt|1|unknown field mode'
 	'daemon_fieldempty.sql|daemon_schema.mt|1|empty field name'
 	'daemon_fieldcount.sql|daemon_schema.mt|1|exceeds the shared-slot capacity'
+	'single_consumer.sql|daemon_schema.mt|1|two concurrent consumers'
 	'float_s16_daemon.sql|float_s16_daemon.mt|1|would be truncated to integer'
 	'multidaemon.sql|multidaemon.mt|0|joined, total publishes='
 	'robots/relay-test.sql|scripts/relay-test.mt|0|note=hello-relay'

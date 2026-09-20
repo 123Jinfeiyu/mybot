@@ -186,6 +186,13 @@ class HwFactory {
 	void createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName);
 	void createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName);
 
+	/* 装配前的单消费者判据（审计 1.3）：只对**自己声明** SINGLE_CONSUMER 的驱动
+	 * 生效（其寄存器访问跨多个总线事务，器件侧地址相位会被第二个消费者踩掉）。
+	 * HAL 的每次访问是单次 I2C_RDWR 原子事务，故绝大多数器件允许多消费者，
+	 * 不做一刀切。判据 = (总线设备路径, 归一化地址) 唯一；冲突即报错并点名双方。
+	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
+	void checkSingleConsumer(const std::vector<mt::MatrixObject>& matrices);
+
 	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名数值) */
 	enum class ScalarKind { Alias, Vars };
 

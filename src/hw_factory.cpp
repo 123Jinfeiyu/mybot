@@ -11,7 +11,9 @@
 #include "flowcolumn.hpp"
 
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
+#include <map>
 #include <set>
 #include <utility>
 
@@ -141,8 +143,154 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 	}
 }
 
+/* ==================== 单消费者判据（审计 1.3）====================
+ * HAL 的每次 I2C 访问都是**单次 I2C_RDWR ioctl**（寄存器指针写 + 数据读合并成
+ * 一个内核事务，见 HAL.lua 的 i2c_read_reg / i2c_read_multi_bytes），内核在
+ * adapter 层串行化，两个 fd 也插不进对方的指针相位。所以「主线程驱动 + 守护
+ * 同址采样」对绝大多数器件是安全的——robots/test/ 下 20 个夹具正是刻意这么写的
+ * （.mt 里同时点名设备与守护，注释写明"给守护留采样窗口"）。
+ *
+ * 真正不安全的只有一类：**器件侧状态跨多个事务**的驱动。典型是握手式间接访问
+ * （AS7262：poll HW_STATUS → 写 HW_WRITE=vaddr → poll → 读 HW_READ）——地址相位
+ * 存在器件里，另一个消费者插进来就会读到对方的寄存器，且双方都看不出被踩。
+ *
+ * 判据不放在 C++ 的表里（会与驱动漂移），而是由**驱动自己声明**：模块源里出现
+ * 行首 SINGLE_CONSUMER 标记即视为声明。纯文本扫描、不执行 Lua（与
+ * test/gen_const_check.cmake 从 Lua 源抽常量同一手法）。
+ * 冲突键 = (总线设备路径, 归一化地址)；SPI/UART 无地址概念，键退化为 (路径, "")。
+ * 以 $ 引用消费别人的变量（Monitor/Ema/Kalman）没有 I2C/address 列，天然不登记。 */
+namespace {
+
+/* 行首标记扫描：允许前导空白；注释里的偶提（"-- SINGLE_CONSUMER"）不算声明 */
+bool declaresSingleConsumer(const std::string& path) {
+	static const std::string kMarker = "SINGLE_CONSUMER";
+	std::string text;
+	std::string err;
+	if (!readWholeFileLimited(path, 1u << 20, text, err, "驱动")) { return false; }
+	std::size_t pos = 0;
+	while (pos < text.size()) {
+		const std::size_t nl = text.find('\n', pos);
+		const std::string line = text.substr(pos, nl == std::string::npos ? nl : nl - pos);
+		const std::size_t first = line.find_first_not_of(" \t");
+		if (first != std::string::npos
+			&& line.compare(first, kMarker.size(), kMarker) == 0) { return true; }
+		if (nl == std::string::npos) { break; }
+		pos = nl + 1;
+	}
+	return false;
+}
+
+/* 地址归一化：'0x48' 与 '72' 必须落到同一个键。解析不出来就按原串（去空白）用，
+ * 宁可多一个键（漏判一次）也不要把两个不同地址并成一个（误报）。 */
+std::string normalizeAddress(const std::string& raw) {
+	std::string s = raw;
+	s.erase(0, s.find_first_not_of(" \t"));
+	s.erase(s.find_last_not_of(" \t") + 1);
+	if (s.empty() || s == "-") { return std::string(); }
+	const char* begin = s.c_str();
+	char* end = nullptr;
+	const int base = (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) ? 16 : 10;
+	const long long v = std::strtoll(begin, &end, base);
+	if (end == begin || *end != '\0') { return s; }
+	return std::to_string(static_cast<long long>(v));	/* 十进制规范形 */
+}
+
+/* 结构脚本里的总线引用带 $ 前缀（'$i2c-1'），映射键用裸名 */
+std::string stripRef(const std::string& v) {
+	return (!v.empty() && v[0] == '$') ? v.substr(1) : v;
+}
+
+/* 可选列取值：列不存在或值为占位符 '-' 时返回空串 */
+std::string optCol(const mt::MatrixObject& m, std::int64_t row, const char* col) {
+	const std::int64_t idx = m.indexOfCol(0, col);
+	if (idx < 0) { return std::string(); }
+	const std::string v = m.inherited(row, idx);
+	return (v == "-") ? std::string() : v;
+}
+
+} // namespace
+
+void HwFactory::checkSingleConsumer(const std::vector<mt::MatrixObject>& matrices) {
+	/* ---- 1) 总线名 → 设备路径（I2C/SPI/UART 表的 name/path 列）---- */
+	std::map<std::string, std::string> busPath;
+	for (const auto& m : matrices) {
+		const std::string t = m.getName();
+		if (t != "I2C" && t != "SPI" && t != "UART") { continue; }
+		const std::int64_t idxName = m.indexOfCol(0, "name");
+		const std::int64_t idxPath = m.indexOfCol(0, "path");
+		if (idxName < 0 || idxPath < 0) { continue; }
+		for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
+			busPath[m.inherited(i, idxName)] = m.inherited(i, idxPath);
+		}
+	}
+
+	/* ---- 2) 逐表登记消费者，第二个即冲突 ---- */
+	std::map<std::string, std::string> owner;	/* 键 -> 首个消费者的定位串 */
+	auto claim = [&](const std::string& key, const std::string& who) {
+		if (key.empty()) { return; }
+		const auto it = owner.find(key);
+		if (it != owner.end()) {
+			throw IllegalArgumentException(
+				"Device '" + key + "' would have two concurrent consumers: "
+				+ it->second + " and " + who + ". This driver declares SINGLE_CONSUMER"
+				" (its register access spans multiple bus transactions, so a second"
+				" consumer corrupts the device-side address phase). Drop one of them,"
+				" or sample it from the daemon only and consume via '$' reference.");
+		}
+		owner.emplace(key, who);
+	};
+
+	const std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
+	for (const auto& m : matrices) {
+		const std::string t = m.getName();
+		if (t == "Alias" || t == "Vars" || t == "Action" || m.rows() == 0) { continue; }
+		const std::int64_t idxName = m.indexOfCol(0, "name");
+		if (idxName < 0) { continue; }
+
+		if (t == "Daemon") {
+			/* 守护采样的是 driver 列指名的那颗器件；proto=virt 是内存仿真，
+			 * 不碰真器件，不参与判据（否则无硬件夹具会全线误报）。 */
+			for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
+				const std::string proto = optCol(m, i, "proto");
+				if (proto.empty() || proto == "virt") { continue; }
+				const std::string drv = optCol(m, i, "driver");
+				if (drv.empty()) { continue; }
+				if (!declaresSingleConsumer(firstExistingModule(modulePath, drv + ".lua"))) { continue; }
+				const std::string path = optCol(m, i, "path");
+				if (path.empty()) { continue; }
+				const std::string who = "daemon '" + m.inherited(i, idxName)
+					+ "' (in table '" + t + "', row " + std::to_string(i) + ")";
+				claim(path + " " + normalizeAddress(optCol(m, i, "addr")), who);
+			}
+			continue;
+		}
+
+		if (!declaresSingleConsumer(firstExistingModule(modulePath, t + ".lua"))) { continue; }
+		for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
+			/* 只登记**直接持总线句柄**的行：有 I2C/SPI/UART 引用列才算消费者。
+			 * 经 controller 转发的行（如挂在 PCA9685 上的 14 路 Servo）不自己开总线，
+			 * 也就不是本判据意义上的消费者。 */
+			std::string path;
+			for (const char* busCol : {"I2C", "SPI", "UART"}) {
+				const std::string ref = stripRef(optCol(m, i, busCol));
+				if (ref.empty()) { continue; }
+				const auto it = busPath.find(ref);
+				path = (it != busPath.end()) ? it->second : ref;
+				break;
+			}
+			if (path.empty()) { continue; }
+			const std::string who = "hardware variable '" + m.inherited(i, idxName)
+				+ "' (in table '" + t + "', row " + std::to_string(i) + ")";
+			claim(path + " " + normalizeAddress(optCol(m, i, "address")), who);
+		}
+	}
+}
+
 /* ---- 全部硬变量创建：声明序，Alias/Lua/Daemon 分派 ---- */
 void HwFactory::createHardVars(const std::vector<mt::MatrixObject>& matrices) {
+	/* 装配前先做单消费者判据：此时还没申请任何资源（Lua 状态/共享槽/总线句柄），
+	 * 报错即干净退出，不会留下半装配的机器人。 */
+	checkSingleConsumer(matrices);
 	for (const auto& matrix : matrices) {
 		std::string mtName = matrix.getName();
 		if (mtName == "Alias") { registerAliasMatrix(matrix, nullptr); }

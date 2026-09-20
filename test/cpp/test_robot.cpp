@@ -20,6 +20,7 @@
 
 #include "fixtures.hpp"
 #include "harness.hpp"
+#include "daemonvar.hpp"
 #include "matrix.hpp"
 #include "robot.hpp"
 #include "util.hpp"
@@ -793,4 +794,61 @@ TH_TEST(deactivate_joins_daemons_before_hardware_deinit) {
 	const std::string trace = markerOf(marker);
 	TH_CHECK(trace.find('T') != std::string::npos);
 	TH_CHECK(!trace.empty() && trace.back() == 'D');
+}
+
+/* ==================== 单消费者判据（审计 1.3）====================
+ * 只跑到**装配期**（ScriptLoader::readSQL + HwFactory::createHardVars），不调
+ * build()——判据本就在任何资源申请之前，故这三条用例与主机有没有 /dev/i2c-1
+ * 完全无关，连真机夹具（as7262.sql，守门的 E2E 段不执行它）也能确定性守门。
+ * 三类形态各钉一条，重点是第三条：防止判据被顺手放宽成「一律单消费者」
+ * ——那会打中 robots/test/ 下 20 个刻意写成「直连 + 守护同址」的夹具。 */
+namespace {
+
+std::string readFileAll(const std::string& path) {
+	std::ifstream f(path, std::ios::binary);
+	if (!f) { throw std::runtime_error("夹具不可读: " + path); }
+	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+/* 装配（不 build）：返回空串表示成功，否则返回异常文本 */
+std::string assembleOnly(const std::string& sqlPath) {
+	try {
+		std::vector<mt::MatrixObject> matrices;
+		bot::MemoryReader sr(readFileAll(sqlPath));
+		bot::ScriptLoader::readSQL(sr, matrices);
+		bot::HwRegistry registry;
+		std::vector<std::shared_ptr<bot::DaemonRunner>> daemonHolders;
+		std::vector<std::shared_ptr<bot::MetaProvider>> metaProviders;
+		bot::HwFactory factory(registry, daemonHolders, metaProviders);
+		factory.createHardVars(matrices);
+	} catch (const std::exception& e) {
+		return std::string(e.what());
+	}
+	return std::string();
+}
+
+} // namespace
+
+TH_TEST(single_consumer_rejects_two_consumers_of_a_declaring_driver) {
+	ModulePathGuard guard("modules:test/cpp");
+	const std::string err = assembleOnly("robots/test/single_consumer.sql");
+	TH_CHECK(err.find("two concurrent consumers") != std::string::npos);
+	/* 报错必须点名双方，否则用户不知道该删哪一个 */
+	TH_CHECK(err.find("spec0") != std::string::npos);
+	TH_CHECK(err.find("spec-d0") != std::string::npos);
+}
+
+TH_TEST(single_consumer_accepts_declaring_driver_with_virt_daemon) {
+	ModulePathGuard guard("modules:test/cpp");
+	/* AS7262 声明了 SINGLE_CONSUMER；as7262.sql 的直连变量走真器件、守护走
+	 * proto=virt（内存仿真不算真器件消费者），故仍只有一个消费者 */
+	TH_CHECK(assembleOnly("robots/test/as7262.sql").empty());
+}
+
+TH_TEST(single_consumer_allows_dual_consumers_of_ordinary_drivers) {
+	ModulePathGuard guard("modules:test/cpp");
+	/* ADS1115 未声明 SINGLE_CONSUMER：HAL 的每次访问是单次 I2C_RDWR 原子事务
+	 * （指针写 + 数据读合并），直连变量 adc0 与守护 adc-d0 同为
+	 * /dev/i2c-1 @ 0x48 也安全。这条钉住「判据只针对声明者」。 */
+	TH_CHECK(assembleOnly("robots/test/ads1115.sql").empty());
 }
