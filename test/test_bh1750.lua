@@ -111,6 +111,19 @@ expect_ok("build mtreg=300 钳制到 254", function() return build({ fd = 3, add
 -- 254>>5 = 7 -> 0x47；254&0x1F = 30 -> 0x60|30 = 0x7E
 expect_cmds("build mtreg 钳制上限 254 -> 0x47,0x7E", writes, { CMD_POWER_ON, 0x47, 0x7E, CMD_CONT_H })
 
+-- 非有限 mtreg 回落缺省（2026-09-20 评估）：`tonumber(..) or MTREG_DEFAULT`
+-- 挡不住 NaN，且两条钳制对 NaN 全为假 → 旧实现 mtreg 保持 NaN：`mtreg ~= MTREG_DEFAULT`
+-- 为真故仍发 MTreg 命令（NaN 经位运算成垃圾字节），且等待时长变 NaN、LUX 变 NaN
+-- 却返回 OK。回落缺省后与「未配 mtreg」逐字等价：不发 MTreg 命令、等一帧 120ms。
+writes = {}; sleep_total = 0
+expect_ok("build mtreg='nan' 回落缺省", function() return build({ fd = 3, address = "0x23", mtreg = "nan" }) end)
+expect_cmds("build mtreg='nan' -> 等同缺省（不发 MTreg 命令）", writes, { CMD_POWER_ON, CMD_CONT_H })
+check("build mtreg='nan' 等一帧按缺省 69（120ms）", sleep_total == 120, tostring(sleep_total))
+
+writes = {}; sleep_total = 0
+expect_ok("build mtreg='inf' 回落缺省", function() return build({ fd = 3, address = "0x23", mtreg = "inf" }) end)
+expect_cmds("build mtreg='inf' -> 等同缺省（不发 MTreg 命令）", writes, { CMD_POWER_ON, CMD_CONT_H })
+
 -- ==================== build：错误通道 ====================
 expect_err("build 非法 mode", function() return build({ fd = 3, address = "0x23", mode = "X" }) end, "Invalid mode")
 fail_write = true

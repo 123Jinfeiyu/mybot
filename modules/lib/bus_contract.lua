@@ -55,6 +55,24 @@ function M.uint_of(v)
 	return n
 end
 
+-- 归一化为 [lo, hi] 闭区间内的**整数**：非数字/非有限/非整数/越界一律返回 nil。
+-- 与 byte_of/uint_of 的分工：那两者对小数**静默 floor**（I2C 字节/合并读长度等
+-- 既有语义，接受集与该行为保持逐字不变）；本函数对小数**显式拒绝**——SPI 的
+-- mode/bits/speed 与字节参数走此口径，理由与 HAL 的 GPIO offset 先例一致：
+-- 小数会被静默截断成另一个值（mode=1.9→1、val=300.7→44），配置笔误必须拒绝
+-- 而非将错就错。hi 为 nil 时只判下界（如 speed 仅要求 >= 1）。
+-- 下沉单点的意义同本文件头注：HAL 真机路径与 virtbus 仿真路径对**同一组入参**
+-- 必须给出相同结论，判据散在两库手工镜像必然漂移（此前 spi_setup/spi_write*
+-- 的反向漂移即实证）。返回 number 或 nil；0 是合法值，判空一律用 `== nil`。
+function M.int_of(v, lo, hi)
+	local n = M.finite_of(v)
+	if n == nil then return nil end
+	if n ~= math.floor(n) then return nil end
+	if n < lo then return nil end
+	if hi ~= nil and n > hi then return nil end
+	return n
+end
+
 ------------------------------------------------------------------
 -- 设备路径白名单（Lua pattern）
 ------------------------------------------------------------------

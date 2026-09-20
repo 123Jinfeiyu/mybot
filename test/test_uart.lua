@@ -239,6 +239,14 @@ reset({ { 1, 2 } })
 local got_cap = uart_read(7, 2, HAL.UART_READ_MAX_MS)
 check(type(got_cap) == "table" and #got_cap == 2, "上限值 60000ms 本身放行")
 
+-- 主评估 B：非有限超时（NaN/±inf，含字符串形态）在真机路径显式拒绝返回 nil
+reset()
+check(uart_read(7, 2, 0 / 0) == nil, "NaN 超时返回 nil")
+check(uart_read(7, 2, math.huge) == nil, "+inf 超时返回 nil")
+check(uart_read(7, 2, -math.huge) == nil, "-inf 超时返回 nil")
+check(uart_read(7, 2, "nan") == nil, "字符串 'nan' 超时返回 nil")
+check(uart_read(7, 2, "1e400") == nil, "字符串 '1e400'（溢出为 inf）超时返回 nil")
+
 -- ==================== uart_flush ====================
 reset()
 check(uart_flush(7) == 0, "flush 返回 0")
@@ -285,6 +293,24 @@ mock_tcsetattr_ok = true
 reset()
 check(uart_close(7) == 0, "配置失败的 fd close 返回 0")
 check(not has_call("tcsetattr"), "失败路径不产生残留快照")
+
+-- ==================== virtbus uart_read 超时对偶（主评估 B） ====================
+-- 旧 virtbus 实现：`local timeout = tonumber(timeout_ms) or 0` 之后
+-- `if timeout > bus.UART_READ_MAX_MS then return nil end` —— NaN 与任何数比较
+-- 均为 false，NaN **穿过**上限检查被放行、返回空表；而真机 HAL 显式返回 nil
+-- （上一节已钉死同一组入参）→「仿真绿真机红」。修复改走 bus.finite_of。
+local vbus = dofile("modules/lib/virtbus.lua")
+vbus.reset()
+vbus.inject()
+local vfd = uart_open("/dev/ttyUSB0", 9600)
+check(vfd ~= nil and vfd >= 0, "virtbus：uart_open 成功")
+check(uart_read(vfd, 2, 0 / 0) == nil, "virtbus：NaN 超时返回 nil（旧实现放行返回空表）")
+check(uart_read(vfd, 2, math.huge) == nil, "virtbus：+inf 超时返回 nil")
+check(uart_read(vfd, 2, -math.huge) == nil, "virtbus：-inf 超时返回 nil")
+check(uart_read(vfd, 2, "nan") == nil, "virtbus：字符串 'nan' 超时返回 nil")
+check(type(uart_read(vfd, 2, 10)) == "table", "virtbus：合法超时仍返回表（放行集不变）")
+check(type(uart_read(vfd, 2)) == "table", "virtbus：缺省超时仍返回表（nil→0 语义不变）")
+vbus.reset()
 
 -- ==================== 汇总 ====================
 tester.summary("test_uart.lua")

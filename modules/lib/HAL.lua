@@ -157,8 +157,8 @@ do
 	bus = probed or dofile("./modules/lib/bus_contract.lua")
 end
 
--- 参数归一化（0~255 整数 / 非负整数，非法 nil）
-local byte_of, uint_of = bus.byte_of, bus.uint_of
+-- 参数归一化（0~255 整数 / 非负整数 / 严格整数，非法 nil）
+local byte_of, uint_of, int_of = bus.byte_of, bus.uint_of, bus.int_of
 
 ------------------------------------------------------------------
 -- I2C（fd 为真实内核句柄，跨 Lua 状态机有效）
@@ -434,12 +434,17 @@ end
 -- （spi_write/spi_read/spi_write3/spi_read_multi 均支持）。
 function spi_setup(fd, mode, bits, speed, delay)
 	fd = tonumber(fd)
-	mode, bits, speed = uint_of(mode), uint_of(bits), uint_of(speed)
-	if fd == nil or mode == nil or mode > 3
-	   or bits == nil or bits < 7 or bits > 16
-	   or speed == nil or speed <= 0 then
-		print("HAL: spi_setup invalid args: mode=" .. tostring(mode) ..
-		      " bits=" .. tostring(bits) .. " speed=" .. tostring(speed))
+	-- 诊断打印用归一化前的实参（否则越界值会显示成 nil，丢失定位信息）
+	local raw_mode, raw_bits, raw_speed = mode, bits, speed
+	-- mode/bits/speed 用 int_of（bus_contract 单点）：**拒绝非整数**，不再静默
+	-- 取整——与 virtbus 同判据（旧实现走 uint_of 的 math.floor，spi_setup(fd,
+	-- 1.9, 8, 1e6) 真机上会变成 mode=1 并成功，仿真侧却直接失败）。
+	mode = int_of(mode, 0, 3)
+	bits = int_of(bits, 7, 16)
+	speed = int_of(speed, 1)
+	if fd == nil or mode == nil or bits == nil or speed == nil then
+		print("HAL: spi_setup invalid args: mode=" .. tostring(raw_mode) ..
+		      " bits=" .. tostring(raw_bits) .. " speed=" .. tostring(raw_speed))
 		return -1
 	end
 	if tonumber(delay) ~= nil and tonumber(delay) > 0 then
@@ -481,7 +486,7 @@ end
 -- 写 1 字节，返回 0 = 成功，-1 = 失败；delay_us 可选（CS 拉高前等待）
 function spi_write(fd, val, delay_us)
 	fd = tonumber(fd)
-	val = byte_of(val)
+	val = int_of(val, 0, 255)	-- 严格整数（拒绝小数，不再静默 floor；同 virtbus）
 	if fd == nil or val == nil then return -1 end
 	local buf = ffi.new("uint8_t[1]", val)
 	if spi_xfer(fd, buf, nil, 1, delay_us) then return 0 end
@@ -500,7 +505,8 @@ end
 -- 一次写 3 字节（单次传输，CS 保持低），返回 0 = 成功，-1 = 失败；delay_us 可选
 function spi_write3(fd, b0, b1, b2, delay_us)
 	fd = tonumber(fd)
-	b0, b1, b2 = byte_of(b0), byte_of(b1), byte_of(b2)
+	-- 严格整数（拒绝小数，不再静默 floor；同 virtbus）
+	b0, b1, b2 = int_of(b0, 0, 255), int_of(b1, 0, 255), int_of(b2, 0, 255)
 	if fd == nil or b0 == nil or b1 == nil or b2 == nil then return -1 end
 	local buf = ffi.new("uint8_t[3]", b0, b1, b2)
 	if spi_xfer(fd, buf, nil, 3, delay_us) then return 0 end
@@ -555,7 +561,7 @@ function spi_xfer_full(fd, data, delay_us)
 	local n = #data
 	local txbuf = ffi.new("uint8_t[?]", n)
 	for i = 1, n do
-		local b = byte_of(data[i])
+		local b = int_of(data[i], 0, 255)	-- 严格整数（拒绝小数；同 virtbus）
 		if b == nil then return nil end
 		txbuf[i - 1] = b
 	end
@@ -668,8 +674,12 @@ function gpio_set_value(hfd, v)
 	hfd = tonumber(hfd)
 	if hfd == nil or hfd < 0 then return false end
 	local data = ffi.new("cj_gpiohandle_data")
-	local n = tonumber(v) or 0
-	data.values[0] = (n ~= 0) and 1 or 0
+	-- C2 审计同族（2026-09-20 评估）：与上面的 default_values 同口径——旧的
+	-- `tonumber(v) or 0` 挡不住 NaN（NaN 是 truthy，`(NaN ~= 0)` 为真会把线
+	-- **驱动到高电平**）。非有限值回落 0（安全侧）；有限值保持「非 0 归一为 1」
+	-- 的既有语义（不用 byte_of：它把 300 这类越界值判非法，语义比这里更窄）。
+	local n = bus.finite_of(v)
+	data.values[0] = (n ~= nil and n ~= 0) and 1 or 0
 	return HAL.sys.ioctl_p(hfd, HAL.GPIOHANDLE_SET_LINE_VALUES, data) == 0
 end
 
@@ -957,7 +967,10 @@ end
 -- chip、channel 必须是非负整数（防路径穿越），其余一律拒绝并打印诊断。
 -- 典型：CM0 / Pi Zero 2 W 的 PWM1 复用 GPIO19（ALT5）→ chip=0 channel=1。
 
-HAL.PWM_SYSFS_ROOT = "/sys/class/pwm"
+-- 平台差异单点见本文件顶部 HAL.platform（pwm_sysfs_root）：下面 pwm_chip_path /
+-- pwm_attr_path 直接取 HAL.platform.pwm_sysfs_root，此处**不再**重复赋值
+-- ——曾有一行 `HAL.PWM_SYSFS_ROOT = "/sys/class/pwm"` 把它重置回字面量，
+-- 使移植/仿真桩改 HAL.platform.pwm_sysfs_root 时静默失效。
 HAL.pwm_state = {}			-- "chip/channel" -> {freq, duty, period_ns, duty_ns, enabled}
 
 local O_WRONLY = 1
@@ -995,7 +1008,7 @@ local function pwm_chip_path(chip, attr)
 		print("HAL: invalid pwm chip: " .. tostring(chip))
 		return nil
 	end
-	return HAL.PWM_SYSFS_ROOT .. "/pwmchip" .. c .. "/" .. attr
+	return HAL.platform.pwm_sysfs_root .. "/pwmchip" .. c .. "/" .. attr
 end
 
 -- 通道级属性路径（period / duty_cycle / enable / polarity）
@@ -1005,7 +1018,7 @@ local function pwm_attr_path(chip, channel, attr)
 		print("HAL: invalid pwm chip/channel: " .. tostring(chip) .. "/" .. tostring(channel))
 		return nil
 	end
-	return HAL.PWM_SYSFS_ROOT .. "/pwmchip" .. c .. "/pwm" .. h .. "/" .. attr
+	return HAL.platform.pwm_sysfs_root .. "/pwmchip" .. c .. "/pwm" .. h .. "/" .. attr
 end
 
 -- 向任意 sysfs 文件写入字符串；成功 true，失败打印路径并 false

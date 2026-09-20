@@ -123,7 +123,10 @@ function build(data)
 	mode_t = MODE_T[m]
 	once   = (tostring(data.once) == "1" or tostring(data.once) == "true")
 
-	mtreg = tonumber(data.mtreg) or MTREG_DEFAULT
+	-- mtreg 非有限回落缺省（drv_common 单点）：`tonumber(..) or MTREG_DEFAULT`
+	-- 挡不住 NaN（NaN 是 truthy），两条钳制对 NaN 也全为假 → mtreg=NaN 会让
+	-- LUX 换算与等待时长双双变 NaN 且仍返回 result="OK"（2026-09-20 评估）
+	mtreg = num_or(data.mtreg, MTREG_DEFAULT)
 	if mtreg < MTREG_MIN then mtreg = MTREG_MIN end
 	if mtreg > MTREG_MAX then mtreg = MTREG_MAX end
 

@@ -28,7 +28,9 @@ function build(data)
 	if not ok then
 		return ek
 	end
-	local alpha = tonumber(data.alpha) or 0.2
+	-- 非有限回落缺省（drv_common 单点）：`tonumber(..) or 0.2` 挡不住 NaN
+	-- （NaN 是 truthy），alpha 列写 "nan" 会让整条序列变成 NaN（2026-09-20 评估）
+	local alpha = num_or(data.alpha, 0.2)
 	if data.field ~= nil and data.field ~= "" then field = data.field end
 	local ok, inst = pcall(EmaLib.new, alpha, data.init)
 	if not ok then
@@ -47,8 +49,10 @@ function call(data)
 		return err("Ema not built")
 	end
 	-- 输入优先级：@Action 直接传入的 in > 引用源的 field 字段（in 是 Lua 关键字，用 ["in"]）
-	local raw = tonumber(data["in"])
-	if raw == nil then raw = tonumber(data[field]) end
+	-- 样本列走 finite_of（非有限即 nil）：`tonumber` 放行 NaN 而库会抛错，
+	-- 裸异常逃出 call 不是驱动契约（2026-09-20 评估）
+	local raw = finite_of(data["in"])
+	if raw == nil then raw = finite_of(data[field]) end
 	if raw == nil then
 		return err("no input value (field=" .. tostring(field) .. ")")
 	end

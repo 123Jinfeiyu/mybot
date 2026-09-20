@@ -58,6 +58,7 @@ tester.check("spi_setup bits=17 拒绝", spi_setup(fd, 0, 17, 1e6) == -1)
 tester.check("spi_setup speed=0 拒绝", spi_setup(fd, 0, 8, 0) == -1)
 tester.check("spi_setup speed=小数 拒绝", spi_setup(fd, 0, 8, 999.5) == -1)
 tester.check("spi_setup mode=小数 拒绝", spi_setup(fd, 0.5, 8, 1e6) == -1)
+tester.check("spi_setup bits=小数 拒绝", spi_setup(fd, 0, 8.5, 1e6) == -1)
 tester.check("spi_setup 未打开 fd 拒绝", spi_setup(999, 0, 8, 1e6) == -1)
 -- 真机 setup 是控制器 ioctl，总线上无器件也成功；同路径此时尚未挂载模型
 tester.check("spi_setup 无挂载路径仍成功（控制器语义）", spi_setup(fd_b, 0, 8, 500000) == 0)
@@ -90,6 +91,9 @@ local before_bad = count_dir("x")
 tester.check("spi_write 256 返 -1 且不发帧", spi_write(fd, 256) == -1 and count_dir("x") == before_bad)
 tester.check("spi_write -1 返 -1 且不发帧", spi_write(fd, -1) == -1 and count_dir("x") == before_bad)
 tester.check("spi_write 非数值 返 -1", spi_write(fd, "z") == -1 and count_dir("x") == before_bad)
+-- 主评估 A：字节判据取严格口径（拒绝非整数）——HAL 侧此前静默 floor，两路径相反
+tester.check("spi_write 小数 返 -1 且不发帧", spi_write(fd, 1.9) == -1 and count_dir("x") == before_bad)
+tester.check("spi_write NaN 返 -1", spi_write(fd, 0 / 0) == -1 and count_dir("x") == before_bad)
 
 -- delay 随帧留痕，钳 65535
 spi_write(fd, 0x02, 100)
@@ -105,6 +109,11 @@ tester.check("spi_write3 返回 0", spi_write3(fd, 0x11, 0x22, 0x33) == 0)
 tester.check("write3 模型按序收三字节",
 	#last_tx == 3 and last_tx[1] == 0x11 and last_tx[2] == 0x22 and last_tx[3] == 0x33)
 tester.check("write3 单字节非法整帧不发", spi_write3(fd, 0x11, 0x100, 0x33) == -1)
+-- 主评估 A：write3 任一字节为非整数即整帧拒绝（严格口径，与 HAL 一致）
+tester.check("write3 小数字节整帧不发", spi_write3(fd, 0x11, 0.5, 0x33) == -1)
+-- 主评估 A：spi_xfer_full 逐字节严格整数（此前无人覆盖小数字节）
+tester.check("xfer_full 小数字节返 nil", spi_xfer_full(fd, { 0x30, 0.5 }) == nil)
+tester.check("xfer_full 合法字节返等长表", type(spi_xfer_full(fd, { 0x30, 0x03 })) == "table")
 
 -- write_multi：一次调用一个 CS 帧（不拆），1~64
 resp = {}

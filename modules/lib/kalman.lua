@@ -30,6 +30,15 @@ function Kalman.new(Q, R)
 	if Q == nil or R == nil then
 		error("Kalman.new: Q and R must be numbers")
 	end
+	-- NaN 防线（2026-09-20 评估）：`Q < 0` / `R <= 0` 对 NaN 均为假 → NaN 会
+	-- 穿过检查进入滤波器，输出整条 NaN 序列且驱动返回 OK。±inf 是**允许**的
+	-- 既有语义（Q 无穷 = 只用测量值，见上方参数说明），故只显式拒 NaN。
+	if Q ~= Q then
+		error("Kalman.new: Q must not be NaN (system noise covariance)")
+	end
+	if R ~= R then
+		error("Kalman.new: R must not be NaN (measurement noise covariance)")
+	end
 	if Q < 0 then
 		error("Kalman.new: Q must be >= 0 (system noise covariance)")
 	end
@@ -51,8 +60,8 @@ end
 -- Z(k) 是测量值；W(k)/V(k) 为叠加在测量值上的高斯白噪声，无需显式处理
 function Kalman:filter(dat)
 	dat = tonumber(dat)
-	if dat == nil then
-		error("Kalman:filter: data must be a number")
+	if not (dat ~= nil and dat > -math.huge and dat < math.huge) then
+		error("Kalman:filter: data must be a finite number")
 	end
 	local X_mid = self.A * self.X_last			-- 公式(1)
 	local P_mid = self.A * self.P_last + self.Q		-- 公式(2)

@@ -51,6 +51,38 @@ tester.check("uint_of(0) == 0", bus.uint_of(0) == 0)
 tester.check("uint_of(3.7) == 3", bus.uint_of(3.7) == 3)
 tester.check("uint_of(1000000) == 1000000", bus.uint_of(1000000) == 1000000)
 
+-- ---- bus.int_of：严格整数判据（拒绝非整数）单点 ----
+-- 主评估 A：HAL.spi_setup 走 uint_of（math.floor 静默取整）、virtbus.v_spi_setup
+-- 显式拒绝非整数 —— 同一条判据两库相反，同样破坏总线契约（仿真绿真机红）。
+-- 修复把判据下沉到本函数，HAL 与 virtbus 共同调用。判别性：改前 bus.int_of
+-- 不存在（判据散在 virtbus 里手工镜像）→ 下面「返回 number」的断言必失败；
+-- 此处以 nil 兜底，令失败以 [FAIL] 呈现而非 ``attempt to call nil`` 中断。
+local bus_int_of = bus.int_of or function() return nil end
+
+tester.check("int_of(2, 0, 3) == 2（合法整数透传）", bus_int_of(2, 0, 3) == 2)
+tester.check("int_of(0, 0, 3) == 0（下界 0 是合法值，不被 falsy 吞）", bus_int_of(0, 0, 3) == 0)
+tester.check("int_of(3, 0, 3) == 3（上界含）", bus_int_of(3, 0, 3) == 3)
+tester.check("int_of(4, 0, 3) == nil（越上界拒绝）", bus_int_of(4, 0, 3) == nil)
+tester.check("int_of(-1, 0, 3) == nil（越下界拒绝）", bus_int_of(-1, 0, 3) == nil)
+tester.check("int_of(2.0, 0, 3) == 2（整数取值的浮点接受）", bus_int_of(2.0, 0, 3) == 2)
+tester.check("int_of(1.9, 0, 3) == nil（小数拒绝，不静默 floor）", bus_int_of(1.9, 0, 3) == nil)
+tester.check("int_of(8, 7, 16) == 8（bits 区间内）", bus_int_of(8, 7, 16) == 8)
+tester.check("int_of(7, 7, 16) == 7（bits 下界）", bus_int_of(7, 7, 16) == 7)
+tester.check("int_of(16, 7, 16) == 16（bits 上界）", bus_int_of(16, 7, 16) == 16)
+tester.check("int_of(8.5, 7, 16) == nil（bits 小数拒绝）", bus_int_of(8.5, 7, 16) == nil)
+tester.check("int_of(255, 0, 255) == 255（字节上界）", bus_int_of(255, 0, 255) == 255)
+tester.check("int_of(256, 0, 255) == nil（字节越界）", bus_int_of(256, 0, 255) == nil)
+tester.check("int_of(NaN, 0, 3) == nil", bus_int_of(nan, 0, 3) == nil)
+tester.check("int_of(inf, 0, 3) == nil", bus_int_of(inf, 0, 3) == nil)
+tester.check("int_of(-inf, 0, 3) == nil", bus_int_of(-inf, 0, 3) == nil)
+tester.check("int_of('nan', 0, 3) == nil", bus_int_of("nan", 0, 3) == nil)
+tester.check("int_of(nil, 0, 3) == nil", bus_int_of(nil, 0, 3) == nil)
+tester.check("int_of('8', 7, 16) == 8（字符串整数数字）", bus_int_of("8", 7, 16) == 8)
+tester.check("int_of('7.5', 7, 16) == nil（字符串小数拒绝）", bus_int_of("7.5", 7, 16) == nil)
+tester.check("int_of(1, 1) == 1（上界缺省：只判下界）", bus_int_of(1, 1) == 1)
+tester.check("int_of(1e6, 1) == 1e6（无上界放行大值）", bus_int_of(1e6, 1) == 1e6)
+tester.check("int_of(0, 1) == nil（下界拒绝）", bus_int_of(0, 1) == nil)
+
 -- ---- drv_common.int_of：钳制语义，但非有限值必须回落缺省 ----
 
 tester.check("int_of(NaN, 9, 0, 100) == 9", int_of(nan, 9, 0, 100) == 9)
@@ -70,6 +102,20 @@ tester.check("num_or('nan', 3) == 3", num_or("nan", 3) == 3)
 tester.check("num_or(nil, 3) == 3", num_or(nil, 3) == 3)
 tester.check("num_or('2.5', 3) == 2.5", num_or("2.5", 3) == 2.5)
 tester.check("num_or(0, 3) == 0（0 是合法值，不得被 or 吞）", num_or(0, 3) == 0)
+
+-- ---- drv_common.finite_of：导出给驱动解析「样本列」用（2026-09-20 评估）----
+-- 语义 = tonumber + 非有限拒绝、非法返回 nil（不回落缺省）；Ema/Kalman 的
+-- in/field 样本列依赖它，退回 local 会让那两个驱动静默失去防线。
+
+tester.check("finite_of 已导出为全局（驱动可用）", type(finite_of) == "function")
+tester.check("finite_of('nan') == nil（NaN 不得放行）", finite_of("nan") == nil)
+tester.check("finite_of(NaN) == nil", finite_of(nan) == nil)
+tester.check("finite_of(inf) == nil", finite_of(inf) == nil)
+tester.check("finite_of('-inf') == nil", finite_of("-inf") == nil)
+tester.check("finite_of('x') == nil", finite_of("x") == nil)
+tester.check("finite_of(nil) == nil", finite_of(nil) == nil)
+tester.check("finite_of('2.5') == 2.5", finite_of("2.5") == 2.5)
+tester.check("finite_of(0) == 0（0 合法）", finite_of(0) == 0)
 
 tester.summary("test_bus_contract")
 return 0

@@ -273,7 +273,11 @@ end
 -- ---- 参数归一化：取自总线契约单点（与 HAL 同一份实现，N-25）----
 -- 三条总线共用（I2C/SPI/UART 的入参校验语义必须与真机一致，否则 virt 会接受
 -- 真机直接失败的调用——驱动带越界实参时「仿真绿、真机红」）。
+-- int_of = 严格整数（拒绝非整数）：SPI 的 mode/bits/speed 与字节参数走此口径，
+-- 与 HAL.spi_setup/spi_write/spi_write3/spi_xfer_full 同判据；finite_of 供
+-- uart_read 超时校验复用。
 local byte_of, uint_of = bus.byte_of, bus.uint_of
+local int_of, finite_of = bus.int_of, bus.finite_of
 
 -- ---- 写族：组合字节表后交给器件，返回 0 = 成功，-1 = NACK ----
 -- 模型可显式 return false 模拟本笔写 NACK（返回 nil/无返回按成功）
@@ -482,11 +486,10 @@ end
 -- 这与 I2C 的「无地址 NACK」不同（SPI 物理层无 ACK，设备不在不可发现）。
 function virtbus.v_spi_setup(fd, mode, bits, speed, _delay)
 	fd = tonumber(fd)
-	mode, bits, speed = tonumber(mode), tonumber(bits), tonumber(speed)
+	-- 严格整数判据取自 bus_contract.int_of 单点（拒绝非整数，与 HAL 同口径）
+	mode, bits, speed = int_of(mode, 0, 3), int_of(bits, 7, 16), int_of(speed, 1)
 	if fd == nil or spi_paths[fd] == nil
-	   or mode == nil or mode ~= math.floor(mode) or mode < 0 or mode > 3
-	   or bits == nil or bits ~= math.floor(bits) or bits < 7 or bits > 16
-	   or speed == nil or speed ~= math.floor(speed) or speed <= 0 then
+	   or mode == nil or bits == nil or speed == nil then
 		return -1
 	end
 	txlog[#txlog + 1] = {
@@ -525,8 +528,8 @@ end
 
 function virtbus.v_spi_write(fd, val, delay_us)
 	fd = tonumber(fd)
-	val = tonumber(val)
-	if fd == nil or val == nil or val ~= math.floor(val) or val < 0 or val > 255 then
+	val = int_of(val, 0, 255)	-- 严格整数（bus_contract 单点，与 HAL 同判据）
+	if fd == nil or val == nil then
 		return -1
 	end
 	local tx = { val }
@@ -552,11 +555,9 @@ end
 
 function virtbus.v_spi_write3(fd, b0, b1, b2, delay_us)
 	fd = tonumber(fd)
-	b0, b1, b2 = tonumber(b0), tonumber(b1), tonumber(b2)
-	if fd == nil
-	   or b0 == nil or b0 ~= math.floor(b0) or b0 < 0 or b0 > 255
-	   or b1 == nil or b1 ~= math.floor(b1) or b1 < 0 or b1 > 255
-	   or b2 == nil or b2 ~= math.floor(b2) or b2 < 0 or b2 > 255 then
+	-- 严格整数判据取自 bus_contract.int_of 单点（任一非整数即整帧拒绝，同 HAL）
+	b0, b1, b2 = int_of(b0, 0, 255), int_of(b1, 0, 255), int_of(b2, 0, 255)
+	if fd == nil or b0 == nil or b1 == nil or b2 == nil then
 		return -1
 	end
 	local entry_delay = spi_delay_of(delay_us)
@@ -610,8 +611,8 @@ function virtbus.v_spi_xfer_full(fd, data, delay_us)
 	if #data > bus.SPI_IO_MAX_BYTES then return nil end
 	local tx = {}
 	for i = 1, #data do
-		local b = tonumber(data[i])
-		if b == nil or b ~= math.floor(b) or b < 0 or b > 255 then return nil end
+		local b = int_of(data[i], 0, 255)	-- 严格整数（bus_contract 单点）
+		if b == nil then return nil end
 		tx[i] = b
 	end
 	local entry_delay = spi_delay_of(delay_us)
@@ -717,7 +718,17 @@ end
 function virtbus.v_uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
 	n = uint_of(n)
-	local timeout = tonumber(timeout_ms) or 0
+	-- 非有限超时（NaN/±inf，含 "nan"/"1e400" 等字符串形态）必须显式失败返回 nil：
+	-- 旧写法 `tonumber(timeout_ms) or 0` 会让 NaN 穿过 `timeout > UART_READ_MAX_MS`
+	-- （NaN 与任何数比较均为 false）被当成"不等待"放行，而真机 HAL 显式返回 nil
+	-- ——「仿真绿真机红」。改走总线契约单点 finite_of（virtbus 惯例不打印，只返 nil）。
+	local timeout
+	if timeout_ms ~= nil then
+		timeout = finite_of(timeout_ms)
+		if timeout == nil then return nil end
+	else
+		timeout = 0
+	end
 	if fd == nil or n == nil or n < 1 then return nil end
 	if timeout > bus.UART_READ_MAX_MS then return nil end
 	local path = uart_paths[fd]

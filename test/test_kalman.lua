@@ -76,4 +76,12 @@ check("Kalman.new R<0 报错", pcall(Kalman.new, 1, -1) == false)
 check("Kalman.new Q=0 R>0 合法", pcall(Kalman.new, 0, 1) == true)
 check("filter 非数值报错", pcall(function() Kalman.new(1, 1):filter("xyz") end) == false)
 
+-- 非有限值防线（2026-09-20 评估）：`Q < 0` / `R <= 0` 对 NaN 全为假、旧实现放行
+check("Kalman.new Q=NaN 报错", pcall(Kalman.new, 0/0, 200) == false)
+check("Kalman.new Q='nan' 报错", pcall(Kalman.new, "nan", 200) == false)
+check("Kalman.new R=NaN 报错", pcall(Kalman.new, 20, 0/0) == false)
+check("filter NaN 报错", pcall(function() Kalman.new(20, 200):filter(0/0) end) == false)
+check("filter inf 报错", pcall(function() Kalman.new(20, 200):filter(math.huge) end) == false)
+check("Q=inf 仍合法（既有语义：只用测量值）", pcall(Kalman.new, math.huge, 200) == true)
+
 tester.summary("test_kalman.lua")

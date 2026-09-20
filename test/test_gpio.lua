@@ -145,6 +145,20 @@ check("set: 非 0 归一为 1", gpio_set_value(42, 5) == true and set_values == 
 reset()
 check("set: 0 写 0", gpio_set_value(42, 0) == true and set_values == 0,
 	tostring(set_values))
+-- C2 同族（2026-09-20 评估）：非有限值必须回落 0（安全侧）——旧的
+-- `tonumber(v) or 0` + `(n ~= 0)` 会把 NaN 判为真、把线驱动到高电平
+reset()
+check("set: NaN 回落 0（不驱动到高电平）",
+	gpio_set_value(42, 0/0) == true and set_values == 0, tostring(set_values))
+reset()
+check("set: 字符串 'nan' 回落 0",
+	gpio_set_value(42, "nan") == true and set_values == 0, tostring(set_values))
+reset()
+check("set: +inf 回落 0",
+	gpio_set_value(42, math.huge) == true and set_values == 0, tostring(set_values))
+reset()
+check("set: 非数值回落 0",
+	gpio_set_value(42, "x") == true and set_values == 0, tostring(set_values))
 reset()
 mock_ioctl_ret = -1
 check("set: ioctl 失败返回 false", gpio_set_value(42, 1) == false)
