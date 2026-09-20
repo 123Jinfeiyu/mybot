@@ -8,6 +8,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# 静态分析（fix-plan 2026-09-20 阶段 D-3）：无条件导出 compile_commands.json，
+# 供 clang-tidy 本地/CI 复用（对构建无副作用）。跑法见 docs/development.md 代码规范节。
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()

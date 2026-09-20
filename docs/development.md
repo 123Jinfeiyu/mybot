@@ -83,6 +83,17 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 本项目 `.cpp` 全量 `-Wall -Wextra -Wpedantic` 零告警为基线，改动请保持。
 
+- **静态分析（clang-tidy）**：检查集见仓库根 [.clang-tidy](../.clang-tidy)
+  （bugprone/performance/concurrency 高信号类别）。本地跑法：
+
+  ```bash
+  cmake -S . -B build-tidy    # 导出 build-tidy/compile_commands.json
+  clang-tidy -p build-tidy src/*.cpp
+  ```
+
+  CI 以 `gate:clang-tidy` 软门禁（allow_failure）起步，告警收敛后转硬（与 gate:tsan 同路径）；
+  新增代码不应引入新告警，存量告警处置或入豁免清单。
+
 - **报错文案分语言**（有意分区，非漂移）：结构脚本装配/解析期的报错（`robot`/`sqlparse`/
   `hardware`/`daemonvar` 等，读者是 `.sql`/`.mt` 脚本作者）用**英文**——这类报错常被
   截断/转码后进日志或 CI 输出，ASCII 最稳；agent 与运行期操作者可见的报错

@@ -85,3 +85,22 @@ gate:clang:
     - cmake -S . -B build-clang -DCMAKE_BUILD_TYPE=Release -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
     - cmake --build build-clang -j"$(nproc)"
     - ./build-clang/mybot_tests
+
+# 静态分析软门禁（fix-plan 2026-09-20 阶段 D，扣分点「门禁缺静态分析」：
+# 逻辑竞态之外的误用模式此前只能靠运行期兜底）。只分析 src/（modules 为
+# Lua 不适用）；检查集见仓库根 .clang-tidy（bugprone/performance/concurrency，
+# 格式类不开）。allow_failure 起步，与 gate:tsan 同路径：观察若干轮、
+# 存量告警逐条处置或入豁免清单后，移除该行转硬门禁。
+# 注：首次全量跑出的告警清单留档到当轮评估文档，作为转硬前的基线。
+gate:clang-tidy:
+  stage: gate
+  image: debian:bookworm
+  needs: []  # 只需源码 + 配置，不必等 Release 产物（clang-tidy 自带前端）
+  allow_failure: true
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq cmake clang-tidy libluajit-5.1-dev pkg-config
+  script:
+    - cmake -S . -B build-tidy -DCMAKE_BUILD_TYPE=Release
+    - clang-tidy -p build-tidy --warnings-as-errors='*' src/*.cpp 2>&1 | tee clang-tidy.log | tail -50
+    - echo "告警总数：$(grep -c 'warning:' clang-tidy.log || true)"

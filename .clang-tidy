@@ -1,0 +1,14 @@
+# bot4cj clang-tidy 配置（fix-plan 2026-09-20 阶段 D-2，扣分点「门禁缺静态分析」）
+# 起步检查集：高信号类别（bugprone/performance/concurrency）+ clang 缺省诊断；
+# 格式类检查归 clang-format 管，一律不开。观察若干轮、告警收敛后
+# CI 的 gate:clang-tidy 由 allow_failure 转硬门禁（与 gate:tsan 同路径）。
+---
+Checks: >
+  bugprone-*,
+  performance-*,
+  concurrency-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-implicit-widening-of-multiplication-result,
+WarningsAsErrors: ''
+HeaderFilterRegex: 'src/[^/]*\.hpp'
+FormatStyle: none
