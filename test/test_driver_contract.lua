@@ -277,5 +277,55 @@ check("sweep 覆盖到 VL53L4CD 的 91 字节配置流",
 check("sweep 匹配到调用点（非空扫）", sizedMods + unsizedMods > 10,
 	string.format("定尺寸 %d 个模块 / 未定尺寸 %d 个模块", sizedMods, unsizedMods))
 
+-- ---- SINGLE_CONSUMER 声明者集合的双向钉住（审计 1.3 补救）----
+-- 判据的开关在**驱动源**里（行首 SINGLE_CONSUMER），而"哪些器件需要单消费者"这条
+-- 知识同时写在 docs/drivers.md 与 docs/faq.md。三处任一方漂移都**没有运行期症状**：
+-- 漏标 = 双消费者静默数据错乱（错误高度 / 漏报闪电 / 读错寄存器），
+-- 多标 = 白白禁掉一种安全且常用的形态（直连 + 守护同址）。
+-- 所以必须由守门钉住：① 扫出的集合 == 下面的期望集合（加/删声明必须同步改这里）；
+-- ② 每个声明者都在 docs/drivers.md 里出现（文档不得漏项）。
+local EXPECT_SINGLE_CONSUMER = {
+	AS3935 = true, AS7262 = true, MS5611 = true, VL53L0X = true, VL53L4CD = true,
+}
+
+local declared = {}
+for _, path in ipairs(mods) do
+	local name = path:match("([^/]+)%.lua$") or path
+	local src = readAll(path)
+	if src then
+		-- 与宿主 src/hw_factory.cpp 的 declaresSingleConsumer 同判据：
+		-- 行首（允许前导空白）才算声明，注释里的偶提不算。
+		for line in (src .. "\n"):gmatch("([^\n]*)\n") do
+			if line:match("^%s*SINGLE_CONSUMER") then
+				declared[name] = true
+				break
+			end
+		end
+	end
+end
+
+local missing, unregistered = {}, {}
+for n in pairs(EXPECT_SINGLE_CONSUMER) do
+	if not declared[n] then missing[#missing + 1] = n end
+end
+for n in pairs(declared) do
+	if not EXPECT_SINGLE_CONSUMER[n] then unregistered[#unregistered + 1] = n end
+end
+table.sort(missing)
+table.sort(unregistered)
+check("SINGLE_CONSUMER 声明者集合与期望一致",
+	#missing == 0 and #unregistered == 0,
+	"源里漏标: [" .. table.concat(missing, ",")
+		.. "] 未登记进期望集合: [" .. table.concat(unregistered, ",") .. "]")
+
+local docsrc = readAll("docs/drivers.md") or ""
+local absent = {}
+for n in pairs(declared) do
+	if not docsrc:find(n, 1, true) then absent[#absent + 1] = n end
+end
+table.sort(absent)
+check("每个 SINGLE_CONSUMER 声明者都在 docs/drivers.md 里出现", #absent == 0,
+	"文档缺: [" .. table.concat(absent, ",") .. "]")
+
 tester.summary("test_driver_contract")
 return 0

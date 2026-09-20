@@ -1,5 +1,17 @@
 -- VL53L0X ToF 激光测距 驱动模块（ST FlightSense 第一代，I2C 地址 0x29）
 -- bot4cj 仓颉语言机器人框架
+--
+-- 【单消费者声明】本器件是四个 ToF/光谱类驱动里状态最重的一个：**8 位指针 +
+-- 分页族**。0xFF 是页选择寄存器，start_stop_dance 要在页 1 / 页 0 之间来回切换
+-- 写 0x80 / 0x00 / 0x91；一次测距还要写 REG_SYSRANGE_START、轮询 REG_RESULT_INT
+-- 等 data-ready、再写 REG_INT_CLEAR 清中断。页相位与测距状态机都在**器件侧**、
+-- 跨多个事务，第二个消费者插进来会让两者同时错乱：轻则 wait_reg 超时，
+-- 重则对方在页 0 的写入落到页 1 的寄存器上（写坏配置且不报错）。
+-- 结果读虽然是 i2c_read_multi_bytes 的单事务原子读，但**原子单位是一个事务**，
+-- 覆盖不了整条 start→poll→clear→read 序列。
+-- 装配期判据见 src/hw_factory.cpp 的 checkSingleConsumer；正道是让 @Daemon 做
+-- 唯一采样者、主线程经 '$' 引用读快照。标记必须写在**行首**。
+SINGLE_CONSUMER = "分页族（0xFF 页选择）+ 测距状态机：页相位与就绪标志都在器件侧，跨多事务"
 -- 虚拟器件模型：内嵌本文件尾部 VL53L0X_VIRT（2026-09-15 自 modules/lib/virtbus/vl53l0x.lua
 -- 迁入，单文件驱动+模型实验第二十六个，8 位指针 + 分页族；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --

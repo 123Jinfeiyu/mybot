@@ -811,10 +811,10 @@ std::string readFileAll(const std::string& path) {
 }
 
 /* 装配（不 build）：返回空串表示成功，否则返回异常文本 */
-std::string assembleOnly(const std::string& sqlPath) {
+std::string assembleSql(const std::string& sql) {
 	try {
 		std::vector<mt::MatrixObject> matrices;
-		bot::MemoryReader sr(readFileAll(sqlPath));
+		bot::MemoryReader sr(sql);
 		bot::ScriptLoader::readSQL(sr, matrices);
 		bot::HwRegistry registry;
 		std::vector<std::shared_ptr<bot::DaemonRunner>> daemonHolders;
@@ -827,22 +827,63 @@ std::string assembleOnly(const std::string& sqlPath) {
 	return std::string();
 }
 
+std::string assembleFile(const std::string& path) { return assembleSql(readFileAll(path)); }
+
 } // namespace
 
 TH_TEST(single_consumer_rejects_two_consumers_of_a_declaring_driver) {
 	ModulePathGuard guard("modules:test/cpp");
-	const std::string err = assembleOnly("robots/test/single_consumer.sql");
+	const std::string err = assembleFile("robots/test/single_consumer.sql");
 	TH_CHECK(err.find("two concurrent consumers") != std::string::npos);
 	/* 报错必须点名双方，否则用户不知道该删哪一个 */
 	TH_CHECK(err.find("spec0") != std::string::npos);
 	TH_CHECK(err.find("spec-d0") != std::string::npos);
 }
 
-TH_TEST(single_consumer_accepts_declaring_driver_with_virt_daemon) {
+TH_TEST(single_consumer_accepts_the_five_real_hardware_fixtures) {
 	ModulePathGuard guard("modules:test/cpp");
-	/* AS7262 声明了 SINGLE_CONSUMER；as7262.sql 的直连变量走真器件、守护走
-	 * proto=virt（内存仿真不算真器件消费者），故仍只有一个消费者 */
-	TH_CHECK(assembleOnly("robots/test/as7262.sql").empty());
+	/* 五个声明者驱动的真机夹具：直连变量走真器件、守护走 proto=virt（内存仿真
+	 * 不算真器件消费者），故各自只有一个真消费者，装配必须通过。
+	 * 这几条同时钉住"改回 proto=i2c 就该报错"的正向侧——夹具被改回去时，
+	 * 这里会立刻红，而不是等到有人在真机上读到错数据。 */
+	for (const char* f : {"as7262", "ms5611", "as3935", "vl53l0x", "vl53l4cd"}) {
+		const std::string path = std::string("robots/test/") + f + ".sql";
+		const std::string err = assembleFile(path);
+		TH_CHECK_MSG(err.empty(), path + " 装配失败: " + err);
+	}
+}
+
+TH_TEST(single_consumer_rejects_two_direct_vars_on_same_address) {
+	ModulePathGuard guard("modules:test/cpp");
+	/* 直连 vs 直连（不涉及守护）：同一声明者驱动、同总线同地址的两行 */
+	const std::string err = assembleSql(
+		"CREATE TABLE I2C (name String, path String);\n"
+		"INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');\n"
+		"CREATE TABLE MS5611 (name String, I2C String, address String);\n"
+		"INSERT INTO MS5611 (name, I2C, address) VALUES ('baro0', '$i2c-1', '0x77');\n"
+		"INSERT INTO MS5611 (name, I2C, address) VALUES ('baro1', '$i2c-1', '0x77');\n");
+	TH_CHECK(err.find("two concurrent consumers") != std::string::npos);
+	TH_CHECK(err.find("baro0") != std::string::npos);
+	TH_CHECK(err.find("baro1") != std::string::npos);
+}
+
+TH_TEST(single_consumer_allows_same_driver_on_different_addresses) {
+	ModulePathGuard guard("modules:test/cpp");
+	/* 判据键里必须含地址：同型号两颗器件（0x76 / 0x77）是两个独立消费者，
+	 * 不该被一刀切拦下——否则"按驱动名判重"这种错实现也能通过前面几条用例。 */
+	TH_CHECK(assembleSql(
+		"CREATE TABLE I2C (name String, path String);\n"
+		"INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');\n"
+		"CREATE TABLE MS5611 (name String, I2C String, address String);\n"
+		"INSERT INTO MS5611 (name, I2C, address) VALUES ('baro0', '$i2c-1', '0x76');\n"
+		"INSERT INTO MS5611 (name, I2C, address) VALUES ('baro1', '$i2c-1', '0x77');\n").empty());
+	/* 地址写法不同（十六进制 / 十进制）但指向同一颗器件，仍须判重 */
+	TH_CHECK(!assembleSql(
+		"CREATE TABLE I2C (name String, path String);\n"
+		"INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');\n"
+		"CREATE TABLE MS5611 (name String, I2C String, address String);\n"
+		"INSERT INTO MS5611 (name, I2C, address) VALUES ('baro0', '$i2c-1', '0x77');\n"
+		"INSERT INTO MS5611 (name, I2C, address) VALUES ('baro1', '$i2c-1', '119');\n").empty());
 }
 
 TH_TEST(single_consumer_allows_dual_consumers_of_ordinary_drivers) {
@@ -850,5 +891,5 @@ TH_TEST(single_consumer_allows_dual_consumers_of_ordinary_drivers) {
 	/* ADS1115 未声明 SINGLE_CONSUMER：HAL 的每次访问是单次 I2C_RDWR 原子事务
 	 * （指针写 + 数据读合并），直连变量 adc0 与守护 adc-d0 同为
 	 * /dev/i2c-1 @ 0x48 也安全。这条钉住「判据只针对声明者」。 */
-	TH_CHECK(assembleOnly("robots/test/ads1115.sql").empty());
+	TH_CHECK(assembleFile("robots/test/ads1115.sql").empty());
 }

@@ -1,5 +1,16 @@
 -- VL53L4CD ToF 激光测距 驱动模块（ST FlightSense，I2C 地址 0x29）
 -- bot4cj 仓颉语言机器人框架
+--
+-- 【单消费者声明】16 位指针族，一次测距是**多事务状态机**：写 REG_SYSTEM_START
+-- （0x21 连续 / 0x40 自主 / 0x00 停）→ wait_ready 轮询 HV mux 与 TIO 状态位 →
+-- 读结果块；build 侧另有软复位、量程配置 A/B 与 91 字节配置流。
+-- 测距状态机与 data-ready 标志都在**器件侧**：第二个消费者写 SYSTEM_START 或
+-- 抢先读走就绪标志，会让对方 wait_ready 超时、或把上一帧结果当新帧读走
+-- （数值合法、时间戳错，看不出来）。结果读本身是单事务原子读，但原子单位是
+-- 一个事务，覆盖不了整条序列。
+-- 装配期判据见 src/hw_factory.cpp 的 checkSingleConsumer；正道是让 @Daemon 做
+-- 唯一采样者、主线程经 '$' 引用读快照。标记必须写在**行首**。
+SINGLE_CONSUMER = "测距状态机：SYSTEM_START + 就绪标志在器件侧，一次测距跨多个事务"
 -- 虚拟器件模型：内嵌本文件尾部 VL53L4CD_VIRT（2026-09-15 自 modules/lib/virtbus/vl53l4cd.lua
 -- 迁入，单文件驱动+模型实验第十个，16 位指针族；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
