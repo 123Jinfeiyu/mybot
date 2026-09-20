@@ -275,13 +275,6 @@ local RO_REGS = {}
 for a = 0x50, 0x59 do RO_REGS[a] = true end
 RO_REGS[0x92] = true
 
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo end
-	if v > hi then return hi end
-	return v
-end
-
 function BH1745_VIRT.new(opts)
 	local bh1745 = BH1745_VIRT	-- 模型体沿用原模块表引用（零改动移植）
 

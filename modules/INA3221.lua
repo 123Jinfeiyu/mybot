@@ -326,20 +326,12 @@ local function ina3221_s13(v)
 	return v
 end
 
-local function ina3221_clampi(v, lo, hi)
-	if v < lo then return lo end
-	if v > hi then return hi end
-	return v
-end
-
 function INA3221_VIRT.new(opts)
 	local ina3221 = INA3221_VIRT	-- 模型体沿用原模块表引用（零改动移植）
 
 	opts = opts or {}
 
 	local function s13(v) return ina3221_s13(v) end
-
-	local function clampi(v, lo, hi) return ina3221_clampi(v, lo, hi) end
 
 	local d = {}
 	local regs = {}				-- 字地址（0~255）→ 16 位值

@@ -86,28 +86,22 @@ int optionalInt(const Json& args, const std::string& key, int fallback) {
  * 残余：O_NOFOLLOW 只看最后一段，路径中间的目录若是软链仍会被穿过——不过能写
  * scripts/ 的进程本就能直接放真脚本，这不构成增量能力；要彻底收紧得改 openat
  * 逐段打开，收益不抵复杂度。 */
+/* 动作脚本读取（M2/B2-3 单点）：底层 FD 骨架收敛到 util::readFdNoFollowLimited，
+ * 此处只配中文报错文案（grep 守门锚定原文不变）。 */
 std::string readFileLimited(const std::string& path, std::size_t cap) {
-	int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-	if (fd < 0) {
-		if (errno == ELOOP) { throw IllegalArgumentException("拒绝符号链接: " + path); }
-		throw IllegalArgumentException("无法打开文件 " + path);
-	}
 	std::string data;
-	std::array<char, 8192> buf;
-	for (;;) {
-		ssize_t n = ::read(fd, buf.data(), buf.size());
-		if (n < 0) {
-			if (errno == EINTR) { continue; }
-			::close(fd);
-			throw IllegalArgumentException("读取文件失败: " + path);
-		}
-		if (n == 0) { break; }
-		data.append(buf.data(), static_cast<std::size_t>(n));
-		if (data.size() > cap) { break; }	/* 超限即停，别再往下读 */
-	}
-	::close(fd);
-	if (data.size() > cap) {
+	switch (readFdNoFollowLimited(path, cap, data)) {
+	case FdReadStatus::SYMLINK:
+		throw IllegalArgumentException("拒绝符号链接: " + path);
+	case FdReadStatus::OPEN_FAILED:
+		throw IllegalArgumentException("无法打开文件 " + path);
+	case FdReadStatus::READ_FAILED:
+		throw IllegalArgumentException("读取文件失败: " + path);
+	case FdReadStatus::TOO_LARGE:
 		throw IllegalArgumentException("文件超过 " + std::to_string(cap) + " 字节上限: " + path);
+	case FdReadStatus::TOTAL_TOO_LARGE:
+	case FdReadStatus::OK:
+		return data;
 	}
 	return data;
 }
@@ -201,33 +195,28 @@ std::vector<ToolSpec> AgentToolRegistry::specs() const {
 std::string resolveActionScriptPath(const std::string& scriptsDir, const std::string& requested) {
 	std::string s = trim(requested);
 	if (s.empty()) { throw IllegalArgumentException("缺少 script 参数（动作脚本相对路径）"); }
-	if (s[0] == '/') {
+	/* 段判据单点（M2/B2-1）：agenttools/mtinclude/luasandbox 共用 util::checkRelPath，
+	 * 报错文案留在调用方——此处的枚举分支各自映射回本函数字面。 */
+	switch (checkRelPath(s)) {
+	case RelPathCheck::ABSOLUTE:
 		throw IllegalArgumentException("script 必须是脚本目录下的相对路径，不接受绝对路径: " + s);
-	}
-	if (s.find('\0') != std::string::npos) {
+	case RelPathCheck::NUL:
 		throw IllegalArgumentException("script 含非法字符（NUL）");
+	case RelPathCheck::EMPTY_OR_DOT:
+		throw IllegalArgumentException("script 路径含空段或 '.' : " + s);
+	case RelPathCheck::DOTDOT:
+		throw IllegalArgumentException("script 不允许越出脚本目录: " + s);
+	default:
+		break;
 	}
-	std::vector<std::string> parts;
-	std::size_t b = 0;
-	while (b <= s.size()) {
-		std::size_t e = s.find('/', b);
-		std::string part = (e == std::string::npos) ? s.substr(b) : s.substr(b, e - b);
-		if (part.empty() || part == ".") {
-			throw IllegalArgumentException("script 路径含空段或 '.' : " + s);
-		}
-		if (part == "..") {
-			throw IllegalArgumentException("script 不允许越出脚本目录: " + s);
-		}
-		parts.push_back(part);
-		if (e == std::string::npos) { break; }
-		b = e + 1;
-	}
-	if (parts.back().size() < 3 || parts.back().compare(parts.back().size() - 3, 3, ".mt") != 0) {
+	std::size_t slash = s.rfind('/');
+	std::string last = (slash == std::string::npos) ? s : s.substr(slash + 1);
+	if (last.size() < 3 || last.compare(last.size() - 3, 3, ".mt") != 0) {
 		throw IllegalArgumentException("只允许执行 .mt 动作脚本: " + s);
 	}
 	std::string full = scriptsDir;
 	while (full.size() > 1 && full.back() == '/') { full.pop_back(); }
-	for (const auto& p : parts) { full += "/" + p; }
+	full += "/" + s;
 	return full;
 }
 

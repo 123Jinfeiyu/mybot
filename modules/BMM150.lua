@@ -416,11 +416,6 @@ local TICK_FRAMES = {
 }
 
 -- ==================== 纯算术助手 ====================
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
-
 -- X/Y 13 位：LSB=低 5 位<<3、MSB=floor(v/32) 字节（驱动 s8(msb)*32+lsb/8）
 local function encode_xy(v)
 	v = clampi(v, -4096, 4095)

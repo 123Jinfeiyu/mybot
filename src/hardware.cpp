@@ -14,10 +14,11 @@ double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int6
 	const std::string& raw = obj.inherited(row, col);
 	if (raw == "-") { return 0.0; }	/* 首数据行即 "-"，无可继承 */
 
-	char* end = nullptr;
-	const char* start = raw.c_str();
-	double v = std::strtod(start, &end);
-	if (end == start || *end != '\0') {
+	/* M2/B2-2：解析骨架收敛到 parseFiniteDouble，这里只配报错文案
+	 * （INVALID 与 NONFINITE 分管「不是数」与「不是有限数」两种口径）。 */
+	double v = 0.0;
+	switch (parseFiniteDouble(raw, v)) {
+	case ParseFiniteStatus::INVALID:
 		/* N-12：统一抛 IllegalArgumentException（此前是全库唯一的
 		 * std::invalid_argument 孤例，catch 侧无法按同一类型收口）。
 		 * C4（2026-09-20 审计）：原文经 util::echoSource 转义 + 截断——单元格
@@ -26,12 +27,13 @@ double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int6
 		 * 这里此前漏了（同类缺陷只修一条路径）。 */
 		throw IllegalArgumentException("cannot parse matrix cell '" + echoSource(raw)
 			+ "' as Float64");
-	}
-	/* L2：strtod 接受 nan/inf 字面量，会以非有限值流入驱动（舵机角度 NaN
-	 * 比较恒假，脉冲宽度计算不可预测）——解析层显式拒绝。 */
-	if (!std::isfinite(v)) {
+	case ParseFiniteStatus::NONFINITE:
+		/* L2：strtod 接受 nan/inf 字面量，会以非有限值流入驱动（舵机角度 NaN
+		 * 比较恒假，脉冲宽度计算不可预测）——解析层显式拒绝。 */
 		throw IllegalArgumentException("matrix cell '" + echoSource(raw)
 			+ "' is not a finite Float64");
+	case ParseFiniteStatus::OK:
+		return v;
 	}
 	return v;
 }
@@ -132,11 +134,10 @@ double MtVars_Vars::numericValue() const {
 	}
 	/* 字面量分支：Factory 已用 isNumericLiteral 校验过，这里独立复核一遍——
 	 * 旧实现把 strtod 的 end 丢掉且不查 isfinite，一旦今后新增构造路径绕过
-	 * Factory，畸形字面量会被静默当成数值用（strtod 失败返 0，与真实数值不可分）。 */
-	char* end = nullptr;
-	const char* start = literal_.c_str();
-	const double v = std::strtod(start, &end);
-	if (end == start || *end != '\0' || !std::isfinite(v)) {
+	 * Factory，畸形字面量会被静默当成数值用（strtod 失败返 0，与真实数值不可分）。
+	 * M2/B2-2：判据收敛到 parseFiniteDouble（Factory 即 isNumericLiteral 同源）。 */
+	double v = 0.0;
+	if (parseFiniteDouble(literal_, v) != ParseFiniteStatus::OK) {
 		throw IllegalArgumentException("Vars literal '" + literal_ + "' is not a finite Float64");
 	}
 	return v;

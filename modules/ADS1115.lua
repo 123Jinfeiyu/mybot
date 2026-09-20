@@ -315,12 +315,6 @@ function ADS1115_VIRT.new(opts)
 	local OS_BIT   = 0x8000
 	local MODE_BIT = 0x0100
 
-	local function clampi(v, lo, hi)
-		if v < lo then return lo end
-		if v > hi then return hi end
-		return v
-	end
-
 	local function encode16(raw)
 		return clampi(math.floor(raw + 0.5), -32768, 32767) % 65536
 	end

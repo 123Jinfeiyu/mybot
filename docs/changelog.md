@@ -6,6 +6,31 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-20 审计收口·第三阶段（M2 单点化：重复判据收敛）
+
+> 承接第一、二阶段的**继续修复**：审计归属 M2 的重复判据（同一判据多份拷贝）
+> 逐族收敛为单一事实源，报错文案留在各调用方（grep 守门锚定原文不变）。
+> **无使用者可见行为变更**。
+> 守门快照：Lua/e2e **251 通过 / 0 失败 / 1 跳过**、C++ 单测 **378 / 0**。
+
+- **相对路径判据单点**：`agenttools.cpp`（动作脚本路径）、`mtinclude.cpp`（包含路径）、
+  `luasandbox.cpp`（模块路径 `..` 穿越）三处此前各自实现路径判定，判据漂移即防线
+  不一致。现收敛到 `util.hpp` 的 `checkRelPath`（空/绝对/NUL/`.`/`..` 逐段判定）与
+  `hasDotDotComponent`（独立全段 `..` 扫描，不复用 ABSOLUTE 短路——模块路径白名单
+  允许绝对前缀，短路会漏网）。
+- **受限读取单点**：`agenttools.cpp::readFileLimited` 与 `mtinclude.cpp::readIncludeFile`
+  是同一 FD 骨架（open 三旗 + 8192 循环 + EINTR + 上限）的两份拷贝。收敛到
+  `util.hpp::readFdNoFollowLimited`（返回状态枚举，不抛错）；单文件上限与多文件
+  累计上限（`kMaxIncludeTotalBytes`）在 mtinclude 调用方配置，报错文案各留其位。
+- **有限数值解析单点**：`parseMtDouble`、Vars 字面量分支、`expr.cpp::parseNumber`、
+  `jsonparse.cpp` Float 分支、`isNumericLiteral` 四处此前各自调 `strtod` 且判定口径
+  参差。收敛到 `util.hpp::parseFiniteDouble`（全串消费 + 拒绝非有限，INVALID/NONFINITE
+  两型）；jsonparse 的 ERANGE 越界口径单独保留。
+- **整数钳位单点**：ADS1015/ADS1115/AS3935/BH1745/BMI270/BMM150/EMC2101/INA226/
+  INA3221/LSM6DSV 十份本地 `clampi` 拷贝（floor+tonumber 与裸比两派共存）收敛为
+  `drv_common.clampi` 全局单点，取防御派（非数字回落 0、非法值夹到端点）；
+  裸比派驱动入参本已是数，行为等价。
+
 ### 2026-09-20 审计收口·第二阶段（遗留三处）
 
 > 承接上面审计批次的**继续修复**：核出首轮未收敛处中的三处本阶段收口，另两处（LTC2944 true QLSB、数据手册疑点）仍待人工对照 datasheet。**无使用者可见行为变更**。

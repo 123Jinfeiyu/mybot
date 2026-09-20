@@ -373,11 +373,6 @@ local GYR_DPS = { [0x0] = 125, [0x1] = 250, [0x2] = 500, [0x3] = 1000,
                   [0x4] = 2000, [0xC] = 4000 }
 local GYR_CODE_DEFAULT = 0x2
 
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
-
 local function is_byte(v)
 	return type(v) == "number" and v == math.floor(v) and v >= 0 and v <= 255
 end

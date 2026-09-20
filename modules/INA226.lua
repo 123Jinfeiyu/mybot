@@ -354,13 +354,6 @@ function INA226_VIRT.new(opts)
 
 	opts = opts or {}
 
-	local function clampi(v, lo, hi)
-		if v < lo then return lo end
-		if v > hi then return hi end
-		return v
-	end
-
-
 	local d = {}
 	local regs = {}				-- 字地址（0~255）→ 16 位值
 	local ptr = 0				-- 当前寄存器指针（字地址）

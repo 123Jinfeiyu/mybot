@@ -231,9 +231,8 @@ class ExprParser {
 			}
 		}
 		std::string tok = s_.substr(start, pos_ - start);
-		char* end = nullptr;
-		double v = std::strtod(tok.c_str(), &end);
-		if (end != tok.c_str() + tok.size() || !std::isfinite(v)) {
+		double v = 0.0;
+		if (parseFiniteDouble(tok, v) != ParseFiniteStatus::OK) {
 			fail("invalid numeric literal");
 		}
 		return std::make_shared<NumNode>(v);

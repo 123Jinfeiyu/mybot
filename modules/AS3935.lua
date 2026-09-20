@@ -376,11 +376,6 @@ local TICK_EVENTS = {
 	"noise", "none", "lightning", "disturber",
 }
 
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
-
 	local d = {}
 
 	-- 芯片侧状态

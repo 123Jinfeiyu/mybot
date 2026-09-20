@@ -5,12 +5,15 @@
  */
 
 #include <atomic>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <fcntl.h>
 #include <functional>
 #include <fstream>
 #include <map>
@@ -21,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <unistd.h>
 
 namespace bot {
 
@@ -224,6 +228,50 @@ inline bool isSafeIdent(const std::string& s) {
 	return true;
 }
 
+/* ---- 相对路径段判据（M2/B2-1 单点，2026-09-20）----
+ * 「对相对路径逐 '/' 段判定」此前散落三处：agenttools::resolveActionScriptPath、
+ * mtinclude::validateIncludePath、luasandbox 的 hasDotDotComponent——前两者整段
+ * 逐字相似，第三份只判 '..'。判据是安全边界（越出目录遍历/脚本目录穿越），
+ * 复制即漂移，收敛到此；各调用方保留自己的报错文案（grep 守门锚定不共享）。
+ * 只判不抛：返回枚举，错误文案留给调用方。 */
+enum class RelPathCheck {
+	OK,          /* 无非法段 */
+	ABSOLUTE,    /* 以 '/' 开头（拒绝绝对路径） */
+	EMPTY_OR_DOT,/* 空段或 '.' 段（含 "a//b"、"a/./b"） */
+	DOTDOT,      /* 含 '..' 段（目录穿越） */
+	NUL,         /* 含 '\0' */
+};
+inline RelPathCheck checkRelPath(const std::string& s) {
+	if (s.empty()) { return RelPathCheck::EMPTY_OR_DOT; }
+	if (s[0] == '/') { return RelPathCheck::ABSOLUTE; }
+	if (s.find('\0') != std::string::npos) { return RelPathCheck::NUL; }
+	std::size_t b = 0;
+	while (b <= s.size()) {
+		std::size_t e = s.find('/', b);
+		std::size_t len = (e == std::string::npos) ? s.size() - b : e - b;
+		if (len == 0 || (len == 1 && s[b] == '.')) { return RelPathCheck::EMPTY_OR_DOT; }
+		if (len == 2 && s[b] == '.' && s[b + 1] == '.') { return RelPathCheck::DOTDOT; }
+		if (e == std::string::npos) { break; }
+		b = e + 1;
+	}
+	return RelPathCheck::OK;
+}
+/* '..' 判定（按 '/'-段精确比较，不误伤含 '..' 子串的合法名，如 foo..bar.lua）。
+ * luasandbox 专用：这里的判定**不看**绝对前缀——模块路径白名单本身可能以绝对
+ * 路径打头，'..' 穿越才是要挡的，故独立全段扫描，不复用 checkRelPath 的
+ * ABSOLUTE 短路（否则绝对路径下的 '..' 会漏网）。 */
+inline bool hasDotDotComponent(const std::string& s) {
+	std::size_t b = 0;
+	while (b <= s.size()) {
+		std::size_t e = s.find('/', b);
+		std::size_t len = (e == std::string::npos) ? s.size() - b : e - b;
+		if (len == 2 && s[b] == '.' && s[b + 1] == '.') { return true; }
+		if (e == std::string::npos) { break; }
+		b = e + 1;
+	}
+	return false;
+}
+
 /* BOT4CJ_DEBUG = 1 时开启 call/build/destroy 详细信息转储 */
 class DebugSwitch {
 public:
@@ -248,16 +296,30 @@ inline std::string trim(const std::string& s) {
 	return s.substr(b, e - b);
 }
 
+/* ---- 有限数值解析（M2/B2-2 单点，2026-09-20）----
+ * strtod 全串消费 + 拒绝非有限值：four 处此前是同一判据的四份拷贝——
+ *   hardware.cpp::parseMtDouble（矩阵单元格）、hardware.cpp Vars 字面量分支、
+ *   expr.cpp::parseNumber、jsonparse.cpp 的 Float 分支；
+ * 外加 util.hpp::isNumericLiteral（trim 后同判据）。醒目二分：strtod 静默
+ * 返 0 + end 全消费是「没吃到数」与「读到 nan/inf 却当成功」的含糊——
+ * 判据漂移意味着同一语义下 4 处消息口径各表其是，收敛到此。
+ * 返回三态：INVALID=没消费干净/空串；NONFINITE=消费了但 nan/inf。
+ * **只回状态**——报错文案与消息取舍留在各调用方（grep 守门锚定原文）。 */
+enum class ParseFiniteStatus { OK, INVALID, NONFINITE };
+inline ParseFiniteStatus parseFiniteDouble(const std::string& s, double& out) {
+	char* end = nullptr;
+	out = std::strtod(s.c_str(), &end);
+	if (end == s.c_str() || *end != '\0') { return ParseFiniteStatus::INVALID; }
+	return std::isfinite(out) ? ParseFiniteStatus::OK : ParseFiniteStatus::NONFINITE;
+}
+
 /* 数值字面量判定：strtod 全串消费 + 有限值（拒绝空值/nan/inf）。与动作矩阵
  * 单元格的数值语义一致（parseMtDouble）。供「仅校验、不转换」的两处复用：
  * 结构脚本 Number 列、@Vars 的 value（值仍按文本驻留）。 */
 inline bool isNumericLiteral(const std::string& s) {
 	std::string v = trim(s);
-	if (v.empty()) { return false; }
-	char* end = nullptr;
-	double d = std::strtod(v.c_str(), &end);
-	if (end == v.c_str() || *end != '\0') { return false; }
-	return std::isfinite(d);
+	double d = 0.0;
+	return parseFiniteDouble(v, d) == ParseFiniteStatus::OK;
 }
 
 /* 数值 → 文本：%.15g（整数不带小数点、去掉多余零），供 @Vars 表达式结果
@@ -326,6 +388,57 @@ inline bool readWholeFileLimited(const std::string& path, std::size_t cap,
 	}
 	out = std::move(data);
 	return true;
+}
+
+/* ---- 受限 FD 读取（M2/B2-3 单点，2026-09-20）----
+ * agenttools::readFileLimited 与 mtinclude::readIncludeFile 此前是同一骨架的
+ * 两份拷贝（open 三旗 + 8192 循环 + EINTR + 上限），只报错文案不同——
+ * 读放大/软链穿越判据漂移即防线不一致，收敛到此。
+ * 只读、超限即停；**不抛错**——错误文案留在调用方（grep 守门锚定各处原文）。
+ * totalBytes：非空时累计已读字节（mtinclude 的多文件总量预算用）；
+ * totalCap 与 totalBytes 同用（0 表示不校验总量）。
+ * 注：O_NOFOLLOW 只看最后一段（中间目录软链仍可被穿过）——残余与旧声明相同，
+ * 能写 script 目录的进程本就能直接放真文件，不构成增量能力。 */
+enum class FdReadStatus {
+	OK,              /* 读满成功 */
+	SYMLINK,         /* open 被 O_NOFOLLOW 拒绝（符号链接 ELOOP） */
+	OPEN_FAILED,     /* open 其他失败 */
+	READ_FAILED,     /* read 失败 */
+	TOO_LARGE,       /* 超过单文件上限 */
+	TOTAL_TOO_LARGE, /* 累计超过总量上限 */
+};
+inline FdReadStatus readFdNoFollowLimited(const std::string& path, std::size_t cap,
+		std::string& out, std::size_t* totalBytes = nullptr, std::size_t totalCap = 0) {
+	out.clear();
+	int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0) {
+		if (errno == ELOOP) { return FdReadStatus::SYMLINK; }
+		return FdReadStatus::OPEN_FAILED;
+	}
+	std::array<char, 8192> buf;
+	for (;;) {
+		ssize_t n = ::read(fd, buf.data(), buf.size());
+		if (n < 0) {
+			if (errno == EINTR) { continue; }
+			::close(fd);
+			return FdReadStatus::READ_FAILED;
+		}
+		if (n == 0) { break; }
+		out.append(buf.data(), static_cast<std::size_t>(n));
+		if (out.size() > cap) {			/* 单文件上限先判（与旧语义一致） */
+			::close(fd);
+			return FdReadStatus::TOO_LARGE;
+		}
+		if (totalBytes) {
+			*totalBytes += static_cast<std::size_t>(n);
+			if (totalCap > 0 && *totalBytes > totalCap) {
+				::close(fd);
+				return FdReadStatus::TOTAL_TOO_LARGE;
+			}
+		}
+	}
+	::close(fd);
+	return FdReadStatus::OK;
 }
 
 /* ---- EINTR 重试单点（2026-09-20 重构阶段 4.2）----

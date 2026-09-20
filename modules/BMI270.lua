@@ -411,11 +411,6 @@ local POR_PWR_CTRL  = 0x00
 local ACC_LSB_PER_G = { 16384, 8192, 4096, 2048 }		-- ±2/4/8/16g
 local GYR_LSB_PER_DPS = { 16.384, 32.768, 65.536, 131.072, 262.144 } -- ±2000..±125
 
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
-
 local function is_byte(v)
 	return type(v) == "number" and v == math.floor(v) and v >= 0 and v <= 255
 end

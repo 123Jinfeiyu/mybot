@@ -301,12 +301,6 @@ function ADS1015_VIRT.new(opts)
 	local OS_BIT   = 0x8000
 	local MODE_BIT = 0x0100
 
-	local function clampi(v, lo, hi)
-		if v < lo then return lo end
-		if v > hi then return hi end
-		return v
-	end
-
 	-- 12 位有符号码 → 16 位左对齐存储（低 4 位恒 0）
 	local function encode12(raw)
 		local v = clampi(math.floor(raw + 0.5), -2048, 2047)

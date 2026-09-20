@@ -165,10 +165,13 @@ class Parser {
 			if (errno == 0 && end != nullptr && *end == '\0') { return JsonInt(v); }
 			/* 整数溢出：回落 Float，比整串响应失败更有用（调用方只读小整数） */
 		}
+		/* M2/B2-2：判据收敛到 parseFiniteDouble；ERANGE（上溢到下溢的越界）
+		 * 单独保留——JSON 数字越界的报错口径原就独立于「没消费干净/非有限」。 */
 		errno = 0;
-		char* end = nullptr;
-		double d = std::strtod(text.c_str(), &end);
-		if (errno == ERANGE || end == nullptr || *end != '\0' || !std::isfinite(d)) {
+		double d = 0.0;
+		ParseFiniteStatus st = parseFiniteDouble(text, d);
+		if (errno == ERANGE
+				|| st == ParseFiniteStatus::INVALID || st == ParseFiniteStatus::NONFINITE) {
 			fail("number out of range");
 		}
 		return JsonFloat(d);

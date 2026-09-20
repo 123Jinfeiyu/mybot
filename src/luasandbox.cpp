@@ -14,19 +14,8 @@
 
 namespace bot {
 
-/* ---- '..' 路径分量判定（审计 #8）：逐段与 ".." 精确比较，
- * 不误伤含 '..' 子串的合法模块名 ---- */
-static bool hasDotDotComponent(const char* path) {
-	const char* p = path;
-	while (*p != '\0') {
-		const char* e = std::strchr(p, '/');
-		std::size_t len = e != nullptr ? static_cast<std::size_t>(e - p) : std::strlen(p);
-		if (len == 2 && p[0] == '.' && p[1] == '.') { return true; }
-		if (e == nullptr) { break; }
-		p = e + 1;
-	}
-	return false;
-}
+/* '..' 判定单点（M2/B2-1）：util.hpp 的 hasDotDotComponent（按 '/'-段精确比较，
+ * 不误伤含 '..' 子串的合法模块名，见审计 #8 注记）。 */
 
 /* ---- 受限 dofile/loadfile 的路径校验（M3 收口）----
  * upvalue：1 = 白名单路径表（array 部分，每项一个允许前缀），2 = 原函数。
@@ -57,7 +46,7 @@ static int restrictedLoader(lua_State* L) {
 	}
 	/* 前缀匹配挡不住 './modules/../CMakeLists.txt' 这类穿越（前缀后紧跟 '/'），
 	 * 拒绝任何含 '..' 路径分量的请求；按分量精确比较而非子串匹配——审计 #8：
-	 * strstr 会误拒含 '..' 子串的合法模块名（foo..bar.lua 之类）。 */
+	 * strstr 会误拒含 '..' 子串的合法模块名（foo..bar.lua 之类）。判据单点：util。 */
 	if (hasDotDotComponent(path)) {
 		return luaL_error(L, "sandbox: dofile/loadfile path must not contain '..' component (traversal rejected): %s", path);
 	}

@@ -47,37 +47,31 @@ bool endsWithOnceSuffix(const std::string& path) {
 		&& path.compare(path.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-/* include 路径词法校验（规则集 = agent::resolveActionScriptPath 同族）：
+/* include 路径词法校验（M2/B2-1：段判据单点 util::checkRelPath，与
+ * agent::resolveActionScriptPath、luasandbox 同源；报错文案留在此处）。
  * 通过则原样返回，失败抛 IllegalArgumentException。 */
 std::string validateIncludePath(const std::string& requested) {
 	if (requested.empty()) {
 		throw bot::IllegalArgumentException("@Include path is empty"
 			" (the 'path' column must carry a relative .mt path)");
 	}
-	if (requested[0] == '/') {
+	switch (bot::checkRelPath(requested)) {
+	case bot::RelPathCheck::ABSOLUTE:
 		throw bot::IllegalArgumentException("@Include path must be relative to the"
 			" include base directory, absolute path rejected: " + requested);
-	}
-	if (requested.find('\0') != std::string::npos) {
+	case bot::RelPathCheck::NUL:
 		throw bot::IllegalArgumentException("@Include path contains NUL");
+	case bot::RelPathCheck::EMPTY_OR_DOT:
+		throw bot::IllegalArgumentException("@Include path contains an empty or '.'"
+			" segment: " + requested);
+	case bot::RelPathCheck::DOTDOT:
+		throw bot::IllegalArgumentException("@Include path must not traverse outside"
+			" the include base directory: " + requested);
+	default:
+		break;
 	}
-	std::string last;
-	std::size_t b = 0;
-	while (b <= requested.size()) {
-		std::size_t e = requested.find('/', b);
-		std::string part = (e == std::string::npos) ? requested.substr(b) : requested.substr(b, e - b);
-		if (part.empty() || part == ".") {
-			throw bot::IllegalArgumentException("@Include path contains an empty or '.'"
-				" segment: " + requested);
-		}
-		if (part == "..") {
-			throw bot::IllegalArgumentException("@Include path must not traverse outside"
-				" the include base directory: " + requested);
-		}
-		last = part;
-		if (e == std::string::npos) { break; }
-		b = e + 1;
-	}
+	std::size_t slash = requested.rfind('/');
+	std::string last = (slash == std::string::npos) ? requested : requested.substr(slash + 1);
 	if (last.size() < 3 || last.compare(last.size() - 3, 3, ".mt") != 0) {
 		throw bot::IllegalArgumentException("@Include only accepts .mt action scripts: "
 			+ requested);
@@ -85,40 +79,28 @@ std::string validateIncludePath(const std::string& requested) {
 	return requested;
 }
 
-/* 读取被包含文件：O_NOFOLLOW 拒绝软链，流式累计双上限（单文件/总量），
+/* 读取被包含文件（M2/B2-3 单点）：FD 骨架收敛到 util::readFdNoFollowLimited，
+ * 单文件上限 kMaxScriptBytes / 多文件总量 kMaxIncludeTotalBytes 双预算在此配。
  * 超限即抛（先拒绝后使用——整读进内存再判上限形同虚设）。 */
 std::string readIncludeFile(const std::string& path, std::size_t& totalBytes) {
-	int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-	if (fd < 0) {
-		if (errno == ELOOP) {
-			throw bot::IllegalArgumentException("include rejected: symbolic link: " + path);
-		}
+	std::string data;
+	switch (bot::readFdNoFollowLimited(path, bot::kMaxScriptBytes, data,
+			&totalBytes, kMaxIncludeTotalBytes)) {
+	case bot::FdReadStatus::SYMLINK:
+		throw bot::IllegalArgumentException("include rejected: symbolic link: " + path);
+	case bot::FdReadStatus::OPEN_FAILED:
 		throw bot::IllegalArgumentException("cannot open include file: " + path
 			+ " (" + std::strerror(errno) + ")");
+	case bot::FdReadStatus::READ_FAILED:
+		throw bot::IllegalArgumentException("read include file failed: " + path);
+	case bot::FdReadStatus::TOO_LARGE:
+		throw bot::ScriptTooLarge(bot::kMaxScriptBytes, "included action script");
+	case bot::FdReadStatus::TOTAL_TOO_LARGE:
+		throw bot::ScriptTooLarge(kMaxIncludeTotalBytes,
+			"total size of included action scripts");
+	case bot::FdReadStatus::OK:
+		return data;
 	}
-	std::string data;
-	char buf[8192];
-	for (;;) {
-		ssize_t n = ::read(fd, buf, sizeof buf);
-		if (n < 0) {
-			if (errno == EINTR) { continue; }
-			::close(fd);
-			throw bot::IllegalArgumentException("read include file failed: " + path);
-		}
-		if (n == 0) { break; }
-		data.append(buf, static_cast<std::size_t>(n));
-		totalBytes += static_cast<std::size_t>(n);
-		if (data.size() > bot::kMaxScriptBytes) {
-			::close(fd);
-			throw bot::ScriptTooLarge(bot::kMaxScriptBytes, "included action script");
-		}
-		if (totalBytes > kMaxIncludeTotalBytes) {
-			::close(fd);
-			throw bot::ScriptTooLarge(kMaxIncludeTotalBytes,
-				"total size of included action scripts");
-		}
-	}
-	::close(fd);
 	return data;
 }
 

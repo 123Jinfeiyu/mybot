@@ -400,11 +400,6 @@ local POR_TACH      = 0xFF		-- TACH 两字节均 FF
 local POR_LUT_TEMP  = 0x7F		-- LUT 空槽兜底
 local POR_LUT_DUTY  = 0x3F
 
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
-
 -- 11 位二进制补码还原（外部温度）
 local function s11(v)
 	if v >= 0x400 then v = v - 0x800 end

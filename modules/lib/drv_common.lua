@@ -20,6 +20,16 @@ function err(msg)
 	return {  result = "ERR",  message = msg  }
 end
 
+-- ---- 整数钳位单点（M2/B2-4，2026-09-20）-------------------------------
+-- 收敛散落各驱动（ADS1015/ADS1115/AS3935/BH1745/BMI270/BMM150/EMC2101/
+-- INA226/INA3221/LSM6DSV）的本地 clampi 拷贝：此前 floor+tonumber 与裸比
+-- 两派语法并存，同一语义两样写法，新增驱动照抄哪份都算拷贝。单点取防御派
+-- ——非数字/nil 回落 0、非法值夹到端点；裸比派驱动的入参本已是数，等价。
+function clampi(v, lo, hi)
+	v = math.floor(tonumber(v) or 0)
+	if v < lo then return lo elseif v > hi then return hi else return v end
+end
+
 -- ---- build 全程守卫（fd 回滚防线）------------------------------------------
 -- 教训同 sensor_daemon 的 build 就地 pcall：build 在打开总线句柄之后若抛
 -- Lua error（后续接入的配置步骤、器件自检等），裸调用会跳过 fd 回滚；宿主
