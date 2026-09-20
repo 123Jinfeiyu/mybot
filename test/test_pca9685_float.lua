@@ -65,4 +65,22 @@ try("float angle=44.7",        {fd = 3, address = "0x40", channel = 6, angle = 4
 try("string angle='250'",      {fd = 3, address = "0x40", channel = "6", angle = "250"})
 try("string angle='-30'",      {fd = 3, address = "0x40", channel = "6", angle = "-30"})
 
+-- 5) 非有限角度（审计 P3）：必须按 ERR 契约返回，且**一个寄存器都不写**。
+-- 旧实现里 NaN 会穿过 `angle<0` / `>180` 两道限幅（NaN 比较恒假），一路走到
+-- bitcompat 的守卫抛 Lua error——末梢兜住了（不会写出坏脉宽）但炸在错误的层：
+-- 宿主收到的是异常而不是 ERR 契约，排障看不出是入参问题。
+-- 用 pcall 包住：驱动若退回"抛错"形态，这里是一条带原因的失败，而非文件中止。
+local function try_reject(label, angle)
+	writes = {}
+	local ok, res = pcall(call, {fd = 3, address = "0x40", channel = "6", angle = angle})
+	tester.check(label .. " → ERR 且零总线事务",
+		ok and type(res) == "table" and res.result == "ERR" and #writes == 0,
+		ok and string.format("result=%s writes=%d", tostring(res and res.result), #writes)
+			or ("raised: " .. tostring(res)))
+end
+try_reject("angle='nan'", "nan")
+try_reject("angle='inf'", "1e400")
+try_reject("angle='-inf'", "-1e400")
+try_reject("angle 缺失", nil)
+
 tester.summary("pca9685_float")

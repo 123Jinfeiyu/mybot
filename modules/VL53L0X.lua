@@ -223,7 +223,7 @@ function build(data)
 	if sig == nil then sig = long_range and DEF_SIG_LONG or DEF_SIG end
 	if sig < 0 then sig = 0 end
 	if sig > 511.99 then sig = 511.99 end
-	local timeout = int_of(data.timeout, DEF_TIMEOUT, 1, 10000)
+	local timeout = int_or(data.timeout, DEF_TIMEOUT, 1, 10000)
 	poll_timeout = timeout
 
 	-----------------------------------------------------

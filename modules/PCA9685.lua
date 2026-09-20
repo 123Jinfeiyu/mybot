@@ -148,15 +148,14 @@ function call(data)
 		return err("Invalid Argument: channel (out of range 0-15)")
 	end
 
-	local angle = data.angle
-
 	-----------------------------------------------------
-	if angle == nil then	-- 检查angle参数是否存在
-		return err("Invalid Argument: angle")
-	end
-	angle = tonumber(angle)
-	if angle == nil then	-- 检查angle是否是数值（支持浮点角度）
-		return err("Invalid Argument: angle (not a number)")
+	-- 审计 P3：angle 必须过 finite_of（drv_common 单点，Servo.lua 同款）。
+	-- NaN 与任何数比较恒假，下面两道限幅会整体失效；NaN 一路走到 math.floor
+	-- 再撞 bitcompat 守卫抛 Lua error——末梢虽然兜住了（不会写出坏脉宽），
+	-- 但那是"炸在错误的层"：宿主收到的是异常而非 ERR 契约，排障看不出是入参问题。
+	local angle = finite_of(data.angle)
+	if angle == nil then	-- 缺失 / 非数字 / NaN / ±inf 一律拒
+		return err("Invalid Argument: angle (missing or not a finite number)")
 	end
 	if angle < 0 then angle = 0 end
 	if angle > 180 then angle = 180 end	-- 限幅，防止超出0.5~2.5ms脉宽损伤舵机
@@ -172,6 +171,10 @@ function call(data)
 	local max = PULSE_180DEG_MS	-- 180度对应2.5ms
 	local width = min + (max - min) * (angle / 180.0)
 	local offval = math.floor(width * PWM_RESOLUTION / PERIOD_MS)
+	-- 硬件不变式：OFF 计数只有 12 位有效（bit12 是"全程通/断"开关）。
+	-- angle 已钳到 0~180，正常算不出界；这一道是把不变式写成代码——
+	-- 将来 PULSE_* / PERIOD_MS 常量被改动时，越界不会变成静默的常开输出。
+	if offval < 0 then offval = 0 elseif offval > PWM_RESOLUTION - 1 then offval = PWM_RESOLUTION - 1 end
 	local reg = LED0_ON_L + 4 * channel
 
 	-- ON 计数恒为 0（脉宽自周期起点起算），OFF 计数写入低/高字节。

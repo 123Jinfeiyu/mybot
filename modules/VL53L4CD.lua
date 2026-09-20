@@ -241,9 +241,9 @@ function build(data)
 	local fd, addr, ek = i2c_pair(data)
 	if fd == nil then return ek end
 
-	local budget = int_of(data.budget, DEF_BUDGET, 10, 200)
-	local inter = int_of(data.inter, DEF_INTER, 0, 2147483647)
-	local timeout = int_of(data.timeout, DEF_TIMEOUT, 1, 10000)
+	local budget = int_or(data.budget, DEF_BUDGET, 10, 200)
+	local inter = int_or(data.inter, DEF_INTER, 0, 2147483647)
+	local timeout = int_or(data.timeout, DEF_TIMEOUT, 1, 10000)
 	poll_timeout = timeout
 
 	-----------------------------------------------------

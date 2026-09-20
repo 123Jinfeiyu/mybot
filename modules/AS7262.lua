@@ -182,7 +182,7 @@ function build(data)
 
 	-- 配置列
 	local gain = gain_code_of(data.gain)
-	local integ = int_of(data.integ, DEF_INTEG, 0, 255)
+	local integ = int_or(data.integ, DEF_INTEG, 0, 255)
 	local to = finite_of(data.timeout)
 	if to == nil or to < 1 then
 		-- 自动超时：2 x 一轮积分(2 x integ x 2.8ms) + 500ms

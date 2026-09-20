@@ -151,7 +151,7 @@ if fd == nil then return ek2 end
 | `virt_prepare(data)` | 独立入口：加载 virtbus → 发现并挂载 `*_VIRT` 模型 → inject（`arg_table` 只是它的调用方） | 返 `nil` 或原因串 |
 | `i2c_check(data)` | `fd`/`address` 存在性（不碰总线） | 返 `(nil, -1, err表)` |
 | `i2c_pair(data)` | `i2c_check` + `i2c_set_addr` | 同上 |
-| `int_of(v, def, lo, hi)` | 数值列 → 取整并**钳到** `[lo, hi]`；非法/`-` 归 `def` | 钳制（非报错） |
+| `int_or(v, def, lo, hi)` | 数值列 → 取整并**钳到** `[lo, hi]`；非法/`-` 归 `def` | 钳制（非报错） |
 | `num_or(v, def)` | 数值列 → `tonumber`；缺省/非法回落 `def` | 回落（不钳制、不取整） |
 | `read_block_bytes(fd, reg, n, chunk)` | 从 `reg` 起读 `n` 字节，返 1 基大端字节表；`chunk` 缺省 6 | 任一读失败返 `nil` |
 | `guard_build(rollback, fn, data)` | build 全程 pcall + 失败时回滚句柄 | 抛错折成 ERR 表 |
@@ -159,8 +159,12 @@ if fd == nil then return ek2 end
 越界语义是**三选一**，由驱动按器件语义显式选择，不要互相「统一」：
 
 - **报 ERR**：参数非法即拒绝（如 `APDS9900` 的 atime 范围、`MS5611` 的 OSR 档位）
-- **钳制**：就近吸附到合法边界（`int_of`；`ADS1015`/`ADS1115` 的
+- **钳制**：就近吸附到合法边界（`int_or`；`ADS1015`/`ADS1115` 的
   pga/dr/channel 亦为钳制——已复核保留，改报 ERR 属行为变更，需单独评审）
+  - 名字刻意不叫 `int_of`：`bus_contract` 里已有一个**同名不同元**的严格判据
+    `int_of(v, lo, hi)`（越界/小数返 `nil`，HAL 与 virtbus 用它）。两者在同一个
+    Lua 状态里都可见，重名时按 3 参调用会把 `def` 静默绑到 `lo`、区间整体错位
+    却不报错——比崩溃更难查，故钳制那份改名 `int_or`（"整数，否则取 def"）。
 - **回落缺省**：占位符/非法值取默认（`num_or`）
 
 `chunk` 必须 ≤6：HAL 的合并读把整块拼成一个 `double`，超过 6 字节即超

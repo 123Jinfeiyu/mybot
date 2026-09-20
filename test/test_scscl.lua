@@ -494,6 +494,34 @@ do
 	-- 审计 #4：call/read 入口改走 arg_table，非表报错文案与其统一
 	expect_err("非表 ERR", function() return call(nil) end, "Invalid Arguments Type: table")
 
+	-- 审计 P3：非有限入参。旧实现两处失效——
+	--   ① `tonumber(x) or 0` 对 NaN 无效（NaN 非 nil，`or` 不触发），
+	--      区间检查（`< 0` / `> 1000`）对 NaN 恒假，直通到 build_frame；
+	--   ② 扭矩帧先于位置参数校验下发，位置非法时舵机已被设成刚性，
+	--      却报 "Failed to write goal position"（部分提交 + 报错指向错误的帧）。
+	-- 现在校验段零总线事务：非有限入参不得留下任何物理副作用。
+	mark = section()
+	expect_err("position=nan ERR", function()
+		return call(meta({ position = "nan", torque = 1 }))
+	end, "Invalid Argument: position")
+	expect_err("speed=nan ERR", function()
+		return call(meta({ position = 100, speed = "nan" }))
+	end, "Invalid Argument: speed")
+	expect_err("time=inf ERR", function()
+		return call(meta({ position = 100, time = "1e400" }))
+	end, "Invalid Argument: time")
+	expect_err("torque=nan ERR", function()
+		return call(meta({ torque = "nan" }))
+	end, "Invalid Argument: torque")
+	expect_err("max=nan ERR（软限位不得静默消失成全行程）", function()
+		return call(meta({ position = 300, max = "nan", min = "0" }))
+	end, "Invalid Argument: max")
+	check("非有限入参零总线事务（无部分提交）",
+		count_dir(entries(mark), "uw") == 0,
+		"uw=" .. count_dir(entries(mark), "uw"))
+	check("非有限入参后模型扭矩仍为 0（舵机未被设成刚性）",
+		dev:torque_enable() == 0, tostring(dev:torque_enable()))
+
 	-- 写失败（TX 错误）→ ERR；恢复后正常
 	dev:fail_write(true)
 	expect_err("TX 失败 ERR", function()

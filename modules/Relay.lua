@@ -53,7 +53,11 @@ function call(data)
 	dbg_table("-------- Relay caller func get a table --------", data)
 
 	-----------------------------------------------------
-	local delay = tonumber(data.test)
+	-- 审计 P3：走 finite_of（drv_common 单点）。NaN 非 nil，`== nil` 兜不住，
+	-- 会把 NaN 当 delay 转发给 controller，报错点落在下游 Timer 上，
+	-- 排障看不出源头是本行的入参。保留「缺失/占位符按 0」这条既有语义
+	-- （动作脚本里的 "-" 单元格依赖它），只是把"非法"与"缺失"同等对待。
+	local delay = finite_of(data.test)
 	if delay == nil then
 		delay = 0
 	end

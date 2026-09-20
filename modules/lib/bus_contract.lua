@@ -64,6 +64,10 @@ end
 -- 下沉单点的意义同本文件头注：HAL 真机路径与 virtbus 仿真路径对**同一组入参**
 -- 必须给出相同结论，判据散在两库手工镜像必然漂移（此前 spi_setup/spi_write*
 -- 的反向漂移即实证）。返回 number 或 nil；0 是合法值，判空一律用 `== nil`。
+-- 注意与 drv_common 的 `int_or(v, def, lo, hi)` 分工：那份是**钳制**语义
+-- （越界吸附到边界、非法归缺省），本函数是**拒绝**语义（返 nil）。
+-- 两者曾同名 int_of，在同一 Lua 状态里按 3 参调用会把 def 静默绑到 lo，
+-- 故钳制那份已改名（见 docs/drivers.md 的越界语义三选一）。
 function M.int_of(v, lo, hi)
 	local n = M.finite_of(v)
 	if n == nil then return nil end

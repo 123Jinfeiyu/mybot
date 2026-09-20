@@ -144,12 +144,12 @@ function build(data)
 
 	-- 配置列解析
 	local indoor = (tonumber(data.indoor) or 1) ~= 0
-	local nf     = int_of(data.nf, DEF_NF, 0, 7)
-	local wdth   = int_of(data.wdth, DEF_WDTH, 0, 10)
-	local srej   = int_of(data.srej, DEF_SREJ, 0, 15)
+	local nf     = int_or(data.nf, DEF_NF, 0, 7)
+	local wdth   = int_or(data.wdth, DEF_WDTH, 0, 10)
+	local srej   = int_or(data.srej, DEF_SREJ, 0, 15)
 	local lig_c  = min_lig_code(data.min_lig)
 	local mask   = (tonumber(data.mask_dist) or 0) ~= 0
-	local cap_pF = int_of(data.tun_cap, DEF_TUN_CAP, 0, 120)
+	local cap_pF = int_or(data.tun_cap, DEF_TUN_CAP, 0, 120)
 
 	-----------------------------------------------------
 	-- 软复位（恢复默认配置）

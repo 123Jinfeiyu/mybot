@@ -14,7 +14,7 @@
 local tester = dofile("test/lib/tester.lua")
 
 local bus = dofile("modules/lib/bus_contract.lua")
-dofile("modules/lib/drv_common.lua")		-- 定义 int_of / num_or（纯 Lua，无 HAL 依赖）
+dofile("modules/lib/drv_common.lua")		-- 定义 int_or / num_or（纯 Lua，无 HAL 依赖）
 
 local nan = 0 / 0
 local inf = math.huge
@@ -83,16 +83,16 @@ tester.check("int_of(1, 1) == 1（上界缺省：只判下界）", bus_int_of(1,
 tester.check("int_of(1e6, 1) == 1e6（无上界放行大值）", bus_int_of(1e6, 1) == 1e6)
 tester.check("int_of(0, 1) == nil（下界拒绝）", bus_int_of(0, 1) == nil)
 
--- ---- drv_common.int_of：钳制语义，但非有限值必须回落缺省 ----
+-- ---- drv_common.int_or：钳制语义（原名 int_of，与 bus.int_of 撞名，见下），但非有限值必须回落缺省 ----
 
-tester.check("int_of(NaN, 9, 0, 100) == 9", int_of(nan, 9, 0, 100) == 9)
-tester.check("int_of(inf, 9, 0, 100) == 9", int_of(inf, 9, 0, 100) == 9)
-tester.check("int_of(-inf, 9, 0, 100) == 9", int_of(-inf, 9, 0, 100) == 9)
-tester.check("int_of('nan', 9, 0, 100) == 9", int_of("nan", 9, 0, 100) == 9)
-tester.check("int_of('-' , 9, 0, 100) == 9（占位符）", int_of("-", 9, 0, 100) == 9)
-tester.check("int_of(1e9, 0, 0, 100) == 100（钳上界不变）", int_of(1e9, 0, 0, 100) == 100)
-tester.check("int_of(-5, 0, 0, 100) == 0（钳下界不变）", int_of(-5, 0, 0, 100) == 0)
-tester.check("int_of(42, 0, 0, 100) == 42", int_of(42, 0, 0, 100) == 42)
+tester.check("int_or(NaN, 9, 0, 100) == 9", int_or(nan, 9, 0, 100) == 9)
+tester.check("int_or(inf, 9, 0, 100) == 9", int_or(inf, 9, 0, 100) == 9)
+tester.check("int_or(-inf, 9, 0, 100) == 9", int_or(-inf, 9, 0, 100) == 9)
+tester.check("int_or('nan', 9, 0, 100) == 9", int_or("nan", 9, 0, 100) == 9)
+tester.check("int_or('-' , 9, 0, 100) == 9（占位符）", int_or("-", 9, 0, 100) == 9)
+tester.check("int_or(1e9, 0, 0, 100) == 100（钳上界不变）", int_or(1e9, 0, 0, 100) == 100)
+tester.check("int_or(-5, 0, 0, 100) == 0（钳下界不变）", int_or(-5, 0, 0, 100) == 0)
+tester.check("int_or(42, 0, 0, 100) == 42", int_or(42, 0, 0, 100) == 42)
 
 -- ---- drv_common.num_or：非有限值必须回落缺省 ----
 
@@ -116,6 +116,12 @@ tester.check("finite_of('x') == nil", finite_of("x") == nil)
 tester.check("finite_of(nil) == nil", finite_of(nil) == nil)
 tester.check("finite_of('2.5') == 2.5", finite_of("2.5") == 2.5)
 tester.check("finite_of(0) == 0（0 合法）", finite_of(0) == 0)
+
+-- 改名回归（审计 2.4）：drv_common 的钳制助手原叫 int_of，与 bus_contract 的
+-- 严格判据 int_of(v, lo, hi) **同名不同元**；两者在同一个 Lua 状态里都可见，
+-- 按 3 参调用会把 def 静默绑到 lo、区间整体错位却不报错。钳制那份已改名 int_or
+-- （语义断言见上面「drv_common.int_or」小节），这里只钉住「全局不再有 int_of」。
+tester.check("全局不再有 int_of（避免与 bus_contract.int_of 撞名）", _G.int_of == nil)
 
 tester.summary("test_bus_contract")
 return 0

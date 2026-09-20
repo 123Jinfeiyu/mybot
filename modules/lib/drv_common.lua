@@ -235,7 +235,7 @@ if bus == nil then
 end
 -- 兜底：布局异常导致 bus_contract 不可达时，判定不得静默退化成「NaN 放行」
 -- ——那正是本防线要堵的洞。兜底分支与 finite_of 逐字同判据，仅此一处。
--- 导出为全局（`local` 曾使它只能被本文件内的 int_of/num_or 使用）：驱动解析
+-- 导出为全局（`local` 曾使它只能被本文件内的 int_or/num_or 使用）：驱动解析
 -- **样本列**（`in`/`value` 之类）时需要的正是「tonumber + 非有限拒绝、非法
 -- 返回 nil」这一档语义——用 `or` 兜不住 NaN（NaN 是 truthy），而 num_or 的
 -- 回落缺省语义对样本列并不合适（2026-09-20 评估：Ema/Kalman 的输入样本）。
@@ -252,7 +252,7 @@ end
 -- 显式校验（如 APDS9900 的 atime 范围、MS5611 的 OSR 档位）承担。
 -- NaN/inf 必须回落 def 而非参与钳制：NaN 与任何数比较都为 false，会原样穿
 -- 出去当数值用（2026-09-20 审计 C2）。
-function int_of(v, def, lo, hi)
+function int_or(v, def, lo, hi)
 	local n = finite_of(v)
 	if n == nil then return def end
 	n = math.floor(n)

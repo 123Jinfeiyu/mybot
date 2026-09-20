@@ -135,15 +135,45 @@ local function resolve_common(data)
 	return fd, id, nil
 end
 
+-- 结构元数据列（max/min/offset）的取值判据：缺失与占位符 "-" 都按"未给"
+-- 处理（返回 nil，由调用方取缺省）；给了但不是有限数则返回原因串。
+-- 审计 P3：这里此前是裸 tonumber + `or 0`，NaN 能穿过去——而 NaN 会让
+-- limited_position 的每一道限幅比较恒假（NaN 与任何数比较都是 false），
+-- 软限位**静默消失**变成全行程直通，比报错危险得多。
+local function meta_finite(v, name)
+	if v == nil or v == "-" then return nil, nil end
+	local n = finite_of(v)
+	if n == nil then return nil, name .. " (not a finite number)" end
+	return n, nil
+end
+
+-- 动作参数（speed/time/torque）同款判据，差别只在"未给"时取调用方指定的缺省。
+-- 审计 P3：`tonumber(x) or 0` 对 NaN 无效（NaN 非 nil，`or` 不触发），
+-- NaN 会让后面的区间检查（`< 0` / `> 1000`）恒假、直通到 build_frame，
+-- 最后炸在 HAL 的 byte_of 上——末态安全（不会写坏字节）但层次错、报错不透明。
+local function opt_finite(v, dflt, name)
+	if v == nil or v == "-" then return dflt, nil end
+	local n = finite_of(v)
+	if n == nil then return nil, name .. " (not a finite number)" end
+	return n, nil
+end
+
 -- 位置限幅管线（语义对齐 modules/Servo.lua）：pos+offset → 限幅 [|min|,|max|]
 -- → max<0 反向（1023-p）→ 钳 0..1023 并四舍五入到整步。
 -- 缺省 max=1023 / min=0（全行程）；限位与 offset 属结构元数据（.sql 独占）。
+-- 返回 (位置, nil) 或 (nil, 原因)——原因由调用方拼进 ERR 契约。
 local function limited_position(pos, data)
-	local maxv = tonumber(data.max)
-	local minv = tonumber(data.min)
-	local off = tonumber(data.offset) or 0
+	local maxv, e = meta_finite(data.max, "max")
+	if e ~= nil then return nil, e end
+	local minv
+	minv, e = meta_finite(data.min, "min")
+	if e ~= nil then return nil, e end
+	local off
+	off, e = meta_finite(data.offset, "offset")
+	if e ~= nil then return nil, e end
 	if maxv == nil then maxv = 1023 end
 	if minv == nil then minv = 0 end
+	if off == nil then off = 0 end
 	local p = pos + off
 	local amax, amin = math.abs(maxv), math.abs(minv)
 	if p > amax then p = amax end
@@ -151,7 +181,7 @@ local function limited_position(pos, data)
 	if maxv < 0 then p = 1023 - p end
 	p = math.floor(p + 0.5)
 	if p < 0 then p = 0 elseif p > 1023 then p = 1023 end
-	return p
+	return p, nil
 end
 
 -- 【配置脚本】校验 fd/id，PING 探测舵机在位（不应答/错误状态即失败）
@@ -274,12 +304,45 @@ function call(data)
 		return err("Invalid Argument: position (missing; 或改为只发 torque / set_id)")
 	end
 
-	-- 扭矩开关：单独一帧先下发（0x28）
+	-- ==================== 先校验完，再下发任何一帧 ====================
+	-- 审计 P3（部分提交）：原顺序是"扭矩帧先发、位置参数后校验"。位置/速度/时间
+	-- 非法时，扭矩帧已经落到舵机上了——舵机被设成刚性（顶死负载时可能烧机），
+	-- 而报错却说 "Failed to write goal position"，把排障指向错误的那一帧。
+	-- 现在校验段零总线事务，全部通过后才开始写。
+	local pos, spd, tm
+	if has_pos then
+		local p = finite_of(data.position)
+		if p == nil then
+			return err("Invalid Argument: position (not a finite number)")
+		end
+		local e
+		pos, e = limited_position(p, data)
+		if pos == nil then return err("Invalid Argument: " .. tostring(e)) end
+		spd, e = opt_finite(data.speed, 0, "speed")
+		if e ~= nil then return err("Invalid Argument: " .. e) end
+		if spd < 0 or spd > 1000 then
+			return err("Invalid Argument: speed (0~1000 步/s)")
+		end
+		tm, e = opt_finite(data.time, 0, "time")
+		if e ~= nil then return err("Invalid Argument: " .. e) end
+		if tm < 0 or tm > 9999 then
+			return err("Invalid Argument: time (0~9999 ms)")
+		end
+		spd, tm = math.floor(spd), math.floor(tm)
+	end
 	if torque ~= nil then
+		local e
+		torque, e = opt_finite(data.torque, nil, "torque")
+		if e ~= nil then return err("Invalid Argument: " .. e) end
 		torque = math.floor(torque)
 		if torque < 0 or torque > 2 then
 			return err("Invalid Argument: torque (0 自由|1 使能|2 阻尼)")
 		end
+	end
+
+	-- ==================== 校验通过，开始下发 ====================
+	-- 扭矩开关：单独一帧（0x28），仍在位置帧之前（既有帧序，测试与真机时序依赖它）
+	if torque ~= nil then
 		local f = build_frame(id, INST_WRITE, { REG_TORQUE_ENABLE, torque })
 		local wn = uart_write(fd, f)
 		if wn ~= #f then
@@ -291,17 +354,6 @@ function call(data)
 	if torque ~= nil then res.torque = torque end
 
 	if has_pos then
-		local pos = limited_position(tonumber(data.position), data)
-		local spd = tonumber(data.speed) or 0
-		if spd < 0 or spd > 1000 then
-			return err("Invalid Argument: speed (0~1000 步/s)")
-		end
-		local tm = tonumber(data.time) or 0
-		if tm < 0 or tm > 9999 then
-			return err("Invalid Argument: time (0~9999 ms)")
-		end
-		spd, tm = math.floor(spd), math.floor(tm)
-
 		local f = build_frame(id, INST_WRITE, {
 			REG_GOAL_POSITION, hi8(pos), lo8(pos),
 			hi8(tm), lo8(tm), hi8(spd), lo8(spd),

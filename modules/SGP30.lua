@@ -192,8 +192,13 @@ end
 local function compensation_ticks(data)
 	local tk, rk = data.t_field, data.rh_field
 	if tk == nil or rk == nil then return nil end
-	local t = tonumber(data[tk])
-	local rh = tonumber(data[rk])
+	-- 审计 P3：finite_of 而非 tonumber。NaN 会让下面的区间检查恒假，
+	-- ah_ticks_of 里的 0..0xFFFF 钳位同样拦不住 NaN，一路走到 send_cmd
+	-- 才在 HAL 的 byte_of 处炸——末态是对的（不会写坏字节），但报错落在
+	-- 总线层、看不出是补偿输入非法。本函数的契约就是「输入异常返回 nil」，
+	-- 让它在正确的层返回（调用方跳过补偿，不影响主测量）。
+	local t = finite_of(data[tk])
+	local rh = finite_of(data[rk])
 	if t == nil or rh == nil or rh < 0 or rh > 100 then return nil end
 	return ah_ticks_of(t, rh)
 end
