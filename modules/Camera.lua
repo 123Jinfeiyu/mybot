@@ -14,7 +14,7 @@
 -- 【ABI 自检】ffi 声明一旦与内核头不符（尺寸小了），ioctl 就会越界读写内存。
 -- 加载期 assert 尺寸、构建期 test/test_v4l2_consts.c 再与 <linux/videodev2.h> 比对
 -- （F-24 同族做法：常量漂移在构建期即失败）。
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local HAL = dofile(mpath.resolve("lib/HAL.lua"))	-- 复用底座：open/close/ioctl 已在其中声明
 local mjpeg = dofile(mpath.resolve("lib/mjpeg_frame.lua"))	-- 帧完整性校验（截断帧重取，见库头注释）
 local ffi = require("ffi")

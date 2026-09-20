@@ -312,16 +312,13 @@ Json DaemonRunner::readSample() {
 
 /* ---- issue #19：多模块路径按序查找第一个存在的文件 ----
  * 全部不存在返回最后一个路径拼接（保持原有"文件不存在"加载报错语义）。
- * N-19：':' 分段/去空/剥尾斜杠统一走 util 的 splitModulePaths。 */
+ * N-19：':' 分段/去空/剥尾斜杠统一走 util 的 splitModulePaths。
+ * 阶段 2：逐段探测本身上收到 util::findExistingModule（与 hw_factory、
+ * Lua 侧 mpath.resolve 共用一条规则）。 */
 std::string firstExistingModule(const std::string& paths, const std::string& rel) {
-	std::string last = paths + "/" + rel;
-	for (const std::string& p : splitModulePaths(paths)) {
-		std::string cand = p + "/" + rel;
-		std::ifstream f(cand, std::ios::binary);
-		if (f.good()) { return cand; }
-		last = cand;
-	}
-	return last;
+	if (auto found = findExistingModule(paths, rel)) { return *found; }
+	const std::vector<std::string> ps = splitModulePaths(paths);
+	return (ps.empty() ? paths : ps.back()) + "/" + rel;
 }
 
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath) {

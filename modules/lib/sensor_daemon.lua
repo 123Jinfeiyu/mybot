@@ -26,7 +26,7 @@
 
 if jit then jit.off() end
 
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local P = dofile(mpath.resolve("lib/pthread.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))	-- i2c/spi/uart 采样
 

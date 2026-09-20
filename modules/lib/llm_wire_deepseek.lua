@@ -10,7 +10,7 @@
 --
 -- 拆成独立库（而不是塞在驱动里）是为了让这些规则能离线单测：
 -- test/test_llm_drivers.lua 直接断言 build_request 的产物，不碰网络。
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local openai = dofile(mpath.resolve("lib/llm_wire_openai.lua"))
 
 local M = {}

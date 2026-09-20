@@ -9,7 +9,7 @@
 -- 约定：仅支持非负整数、结果在 32 位有符号范围内
 -- （本项目寄存器域均为 8~24 位，满足约定）。
 --
--- 用法：local bitc = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/bitcompat.lua")
+-- 用法：local bitc = dofile(mpath.resolve("bitcompat.lua"))（mpath 见 modules/lib/mpath.lua）
 
 local M = {}
 

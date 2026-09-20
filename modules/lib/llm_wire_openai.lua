@@ -13,7 +13,7 @@
 -- 重复加载保护（与 HAL.lua 同一做法）
 if _G.__BOT4CJ_LLM_WIRE_OPENAI ~= nil then return _G.__BOT4CJ_LLM_WIRE_OPENAI end
 
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local json = dofile(mpath.resolve("lib/json.lua"))
 local http = dofile(mpath.resolve("lib/llm_http.lua"))
 

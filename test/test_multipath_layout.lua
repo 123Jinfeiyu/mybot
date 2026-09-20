@@ -1,4 +1,4 @@
--- test_multipath_layout.lua - 非缺省多路径布局冒烟（fix-plan 3-3）
+-- test_multipath_layout.lua - 非缺省多路径布局冒烟（fix-plan 3-3 + 2026-09-20 阶段 2）
 -- 背景：HAL.lua / virtbus.lua / drv_common.lua 定位 lib/bus_contract.lua、
 -- lib/virtbus.lua 原先只取 BOT4CJ_MODULE_PATH 首段——多路径布局下首段没有
 -- 对应文件时，HAL 引导直接失败、virt_prepare 误报 cannot load。现逐段探测。
@@ -7,6 +7,15 @@
 --   2) drv_common.virt_prepare 不再误报 cannot load（旧实现在此布局必失败，
 --      是本次修复的判别性用例）；
 --   3) 全部路径段都不存在时仍按原契约报 cannot load（fail 可诊断）。
+--
+-- 【边界：驱动侧多路径由宿主保证（阶段 2）】驱动文件的第一行要找到
+-- lib/mpath.lua 才能解析其它 lib——那一跳现在由宿主 sandbox_lua 完成
+-- （注入全局 __mpath），驱动统一写成 `local mpath = __mpath or <单根回退>`。
+-- 因此「多路径 + 真驱动加载」在 **mybot 运行期**成立，判别性用例是
+-- run_all.sh hardening 段的 multipath_module_path（跑真二进制）。
+-- 本文件是 luajit 直跑（没有宿主），回退分支只支持单根布局，故这里**不**断言
+-- 「多路径下直跑 dofile 驱动」——那是回退分支的既有边界，不是缺陷。
+--
 -- 依赖 ffi 设环境变量（os.setenv 不存在）→ 仅 LuaJIT 可跑，run_all.sh 默认即 luajit。
 -- 用法（项目根目录）: luajit test/test_multipath_layout.lua（run_all.sh 自动纳入）
 local tester = dofile("test/lib/tester.lua")

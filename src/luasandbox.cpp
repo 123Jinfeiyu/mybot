@@ -101,6 +101,47 @@ static void wrapLoader(lua_State* L, const char* name) {
 	lua_setglobal(L, name);
 }
 
+/* ---- 阶段 2：宿主注入模块路径解析器（__mpath）----
+ * 驱动文件的第一行需要先找到 lib/mpath.lua 才能解析其它 lib 文件。此前
+ * 59 个驱动各自用 `(env):match("[^:]+")` **只取首段**，于是
+ * docs/reference.md 承诺的「':' 分隔多路径按序查找」对全部器件驱动不成立
+ * （首段不含 lib/ 时驱动加载即失败）。
+ * 现在由宿主做这一跳：按模块路径逐段探测 lib/mpath.lua（util::findExistingModule），
+ * 加载后注入全局 __mpath，并同时注册 package.preload["mpath"]（供未来
+ * 驱动改写为 require("mpath")）。驱动侧统一写成
+ *     local mpath = __mpath or dofile(<单根回退>)
+ * ——回退分支只在**没有宿主**时走到（luajit 直跑测试、scscl_scan.lua、
+ * virtbus.load_driver），那些场景下仓库根布局固定、单根即正确。
+ * 探测/加载失败一律静默跳过（fail-open）：不改变今天能跑通的任何场景。 */
+static int returnUpvalue(lua_State* L) {
+	lua_pushvalue(L, lua_upvalueindex(1));
+	return 1;
+}
+
+static void injectModulePathResolver(lua_State* L) {
+	auto found = findExistingModule(modulePaths(), "lib/mpath.lua");
+	if (!found) { return; }
+	if (luaL_loadfile(L, found->c_str()) != LUA_OK) { lua_pop(L, 1); return; }
+	if (lua_pcall(L, 0, 1, 0) != LUA_OK) { lua_pop(L, 1); return; }
+	if (lua_type(L, -1) != LUA_TTABLE) { lua_pop(L, 1); return; }
+
+	/* package.preload["mpath"] = function() return <表> end */
+	lua_pushvalue(L, -1);						/* [t, t] */
+	lua_pushcclosure(L, returnUpvalue, 1);		/* [t, loader] */
+	lua_getglobal(L, "package");				/* [t, loader, package] */
+	if (lua_type(L, -1) == LUA_TTABLE) {
+		lua_getfield(L, -1, "preload");			/* [t, loader, package, preload] */
+		if (lua_type(L, -1) == LUA_TTABLE) {
+			lua_pushvalue(L, -3);				/* [..., preload, loader] */
+			lua_setfield(L, -2, "mpath");
+		}
+		lua_pop(L, 1);
+	}
+	lua_pop(L, 1);
+	lua_pop(L, 1);
+	lua_setglobal(L, "__mpath");				/* [] */
+}
+
 void sandbox_lua(lua_State* L) {
 	struct Group { const char* tab; const char* keys[5]; int n; };
 	static const Group groups[] = {
@@ -123,6 +164,10 @@ void sandbox_lua(lua_State* L) {
 	wrapLoader(L, "loadfile");
 
 	lua_pop(L, 1);				/* 弹出白名单表，栈深复原 */
+
+	/* 阶段 2：白名单就绪后再注入解析器（mpath.lua 自身经 dofile 加载，
+	 * 必须走已包装的受限加载器，白名单须先建好） */
+	injectModulePathResolver(L);
 }
 
 /* ---- 新建沙箱化 Lua 状态（重构计划 1 第 12 项）----

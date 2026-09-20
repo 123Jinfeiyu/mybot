@@ -1,4 +1,4 @@
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 -- Kalman.lua - 一维卡尔曼滤波硬件变量驱动（方式 A）
 -- bot4cj 仓颉语言机器人框架
