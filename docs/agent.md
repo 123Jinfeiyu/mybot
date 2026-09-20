@@ -37,6 +37,8 @@ mybot> /exit
 
 REPL 内置命令：`/hardware` 打印硬件清单，`/scripts` 打印动作脚本清单，`/exit`（或 `/quit`、Ctrl-D）退出。
 Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始化后进程才退出。
+模型调用期间（最长 600s）不可中断，此时**再按一次 Ctrl-C 即立即强杀**——跳过清理，
+执行器可能停在最后指令位置，属"停不下来"时的逃生口（详见 [reference.md](reference.md)）。
 
 ## 命令行参数
 

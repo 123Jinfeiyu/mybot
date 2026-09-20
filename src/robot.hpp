@@ -301,12 +301,20 @@ class RobotStruct {
 	 * agent run_action_script=--scripts-dir、stdin/TCP 无脚本位置=缺省 CWD。
 	 * run() 前设置即可，多轮执行（agent 工具）每次设置均生效。 */
 	std::string actionIncludeBaseDir_ = ".";
+	/* 是否已处于「断电」状态：active() 置 false，deactivate() 置 true。
+	 * 析构据此判断要不要补一次断电——断电是生命周期不变式，不是调用点义务
+	 * （见 ~RobotStruct 注释）。缺省 true：只解析结构、从未上电时无事可做。 */
+	bool deactivated_ = true;
 
 public:
 	explicit RobotStruct(bot::Reader& input)
 		: factory_(registry_, daemonHolders_, metaProviders_), runner_(registry_) {
 		ScriptLoader::readSQL(input, matrices_);
 	}
+
+	/* 兜底断电：仍未 deactivate 就补一次（幂等）。存在的理由是物理安全——
+	 * 漏掉断电的代价是执行器停在最后指令位置、I2C 从设备滞留中间态。 */
+	~RobotStruct();
 
 	/* 激活所有硬件变量（两阶段构造：解析 → 创建 + build） */
 	void active();

@@ -1,11 +1,17 @@
 /* test_robot.cpp —— 结构脚本装配（RobotStruct 的解析与派发前置校验）
  *
- * 只覆盖「不需要 Lua 运行时」的两段：
+ * 主体只覆盖「不需要 Lua 运行时」的两段：
  *   构造函数 = readSQL（Lexer + Parser + MatrixObject 拼装）
  *   run()    = 动作矩阵读取 + @Alias 注册 + @Action 派发前的列名/设备名校验
  * 这两段的失败都发生在真机资源申请之前，报错必须精确到表名/列名/行号。
+ *
+ * 例外：文件末尾两条「析构兜底断电」用例需要 Lua 运行时——断电的可观测证据
+ * 由 test/cpp/LifetimeProbe.lua 落成文件痕迹（destroy 每次追加 1 字节）。
  */
 
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -15,6 +21,9 @@
 #include "matrix.hpp"
 #include "robot.hpp"
 #include "util.hpp"
+
+namespace fs = std::filesystem;
+using fx::TempDir;
 
 namespace {
 
@@ -664,4 +673,86 @@ TH_TEST(session_repeated_runs_do_not_grow_the_registry) {
 	TH_CHECK(robot.registry().byName().size() == namesBefore);
 	TH_CHECK(!robot.registry().contains("ghost0"));
 	TH_CHECK(!robot.registry().contains("ghost199"));
+}
+
+/* ==================== 析构兜底断电（审计 P7 / 阶段 1.4）====================
+ * 断电此前只是 main.cpp:203 的一个调用点义务：任何漏掉它的新退出路径（早退
+ * return、catch 之外的意外）都会把执行器留在最后指令位置、I2C 从设备滞留中间态。
+ * 现在它是生命周期不变式——~RobotStruct 补一次，且幂等。
+ * 可观测证据由 test/cpp/LifetimeProbe.lua 提供：destroy 每被调用一次就往
+ * data.path 追加 1 字节 'x'，于是「调用次数 == 文件长度」，两条性质都能直接断言。 */
+namespace {
+
+/* BOT4CJ_MODULE_PATH 临时指向 modules:test/cpp（探针驱动在后者），出作用域还原。
+ * 沙箱按该变量逐段构建 dofile 白名单（src/luasandbox.cpp），不设则探针加载不到。 */
+class ModulePathGuard {
+public:
+	explicit ModulePathGuard(const char* path) : had_(::getenv(kVar) != nullptr) {
+		if (had_) { old_ = ::getenv(kVar); }
+		::setenv(kVar, path, 1);
+	}
+	~ModulePathGuard() {
+		if (had_) { ::setenv(kVar, old_.c_str(), 1); }
+		else { ::unsetenv(kVar); }
+	}
+	ModulePathGuard(const ModulePathGuard&) = delete;
+	ModulePathGuard& operator=(const ModulePathGuard&) = delete;
+
+private:
+	static constexpr const char* kVar = "BOT4CJ_MODULE_PATH";
+	bool had_;
+	std::string old_;
+};
+
+std::string markerOf(const fs::path& p) {
+	std::ifstream f(p, std::ios::binary);
+	if (!f) { return std::string(); }
+	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+std::string probeSql(const fs::path& marker) {
+	return "CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + marker.string() + "');\n";
+}
+
+} // namespace
+
+TH_TEST(destructor_deactivates_when_caller_forgot) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("lifetime-forgot");
+	const fs::path marker = tmp.path() / "destroyed";
+	{
+		bot::MemoryReader sr(probeSql(marker));
+		bot::RobotStruct robot(sr);
+		robot.active();
+		/* 故意不调用 deactivate：作用域结束即析构，兜底必须把 destroy 跑到 */
+	}
+	TH_CHECK(markerOf(marker) == "x");
+}
+
+TH_TEST(destructor_does_not_destroy_twice_after_explicit_deactivate) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("lifetime-idempotent");
+	const fs::path marker = tmp.path() / "destroyed";
+	{
+		bot::MemoryReader sr(probeSql(marker));
+		bot::RobotStruct robot(sr);
+		robot.active();
+		robot.deactivate();	/* main 的正常路径 */
+	}
+	/* 仍是 1 字节：析构认得「已断电」，没有重复 destroy（重复去初始化对
+	 * 真器件不是无害的——已关断的器件再写寄存器可能落在无效状态机上） */
+	TH_CHECK(markerOf(marker) == "x");
+}
+
+TH_TEST(destructor_is_a_noop_when_never_activated) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("lifetime-inactive");
+	const fs::path marker = tmp.path() / "destroyed";
+	{
+		bot::MemoryReader sr(probeSql(marker));
+		bot::RobotStruct robot(sr);
+		/* 只解析结构、从未上电（如 --agent 的配置校验失败早退）：无事可做 */
+	}
+	TH_CHECK(markerOf(marker).empty());
 }

@@ -18,6 +18,9 @@ namespace bot {
 
 /* ---- 构建硬件：两阶段（build 失败上抛，active 由 finally 清理）---- */
 void RobotStruct::active() {
+	/* 先标「已上电」再装配：createHardVars / build 中途抛出时，析构仍会补一次
+	 * deactivate 收拾已经 build 成功的那部分（deactivate 逐项容错，半成品可安全跑）。 */
+	deactivated_ = false;
 	factory_.createHardVars(matrices_);
 	/* F-05：$ 引用解析本是惰性的（首次 collect 时）——指向未定义变量会在
 	 * 驱动 build 的真机事务中途才报错；装配完成后、任何 build 之前统一
@@ -58,6 +61,22 @@ void RobotStruct::deactivate() {
 	if (failed > 0) {
 		std::cerr << "Deactivate: " << failed << " of " << seq.size()
 			<< " hardware variable(s) failed to destroy (see warnings above)" << std::endl;
+	}
+	deactivated_ = true;
+}
+
+/* ---- 兜底断电：让「不漏断电」成为类型保证而不是调用点纪律 ----
+ * main 的正常路径已显式 deactivate，此处覆盖的是**其它**退出路径：新增的早退
+ * return、以及 catch 之外的意外。漏断电的代价是物理的（执行器停在最后指令位置、
+ * I2C 从设备滞留中间态、守护线程还在采样），所以宁可多一层幂等调用。
+ * 析构里异常不得逃出——逃出即 std::terminate，反而连告警都看不到，故整体吞掉留痕。 */
+RobotStruct::~RobotStruct() {
+	if (deactivated_) { return; }
+	try {
+		deactivate();
+	} catch (...) {
+		std::cerr << "Deactivate: failed during destruction"
+			<< " (hardware may remain energized)" << std::endl;
 	}
 }
 

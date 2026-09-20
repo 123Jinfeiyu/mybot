@@ -17,11 +17,22 @@
 
 namespace bot {
 
-/* ---- D4：SIGINT/SIGTERM 处理器——仅置停止标志（async-signal-safe），
+/* ---- D4：SIGINT/SIGTERM 处理器——首次仅置停止标志（async-signal-safe），
  * 让主流程走正常 deactivate（驱动 destroy / 守护停机）后再退出，
- * 避免 Ctrl-C 把舵机留在最后指令位置、I2C 从设备滞留中间态。 */
-extern "C" void onStopSignal(int) {
+ * 避免 Ctrl-C 把舵机留在最后指令位置、I2C 从设备滞留中间态。
+ * 第二次升级为强杀，见函数体注释。 */
+extern "C" void onStopSignal(int sig) {
 	bot::stopRequested().store(true);
+	/* 第二次即升级为强杀：本处理器是永久安装的，若只置标志，运维连按 Ctrl-C
+	 * 也停不下来（agent 模式一次模型调用最长 600s 且不可中断），唯一出路只剩
+	 * 外部的 SIGKILL——而那会跳过 deactivate，把执行器留在带电状态。
+	 * 还原缺省处置再重新触发本信号：signal/raise 均为 async-signal-safe。
+	 * 计数用 sig_atomic_t；同类信号在处理器执行期间默认被屏蔽，无自竞争。 */
+	static volatile sig_atomic_t hits = 0;
+	if (++hits >= 2) {
+		::signal(sig, SIG_DFL);
+		::raise(sig);
+	}
 }
 
 /* ---- 命令行解析 / 校验 / 帮助文本已迁 src/cliargs.*（可单测化）----
@@ -196,6 +207,14 @@ int main(int argc, char** argv) {
 					   : runActionPipeline(*robot, options);
 		} catch (const std::exception& e) {
 			std::cerr << "Aborted: " << e.what() << std::endl;
+			rc = 1;
+		} catch (...) {
+			/* 本机 LuaJIT 用 C++ 异常实现 luaD_throw（导入 _Unwind_RaiseException
+			 * 而无 setjmp/longjmp），从没有 Lua CFRAME 的 C++ 帧抛出的 Lua 错误
+			 * 不是 std::exception——漏了它就直接 std::terminate，下面的
+			 * deactivate 被跳过，执行器停在最后指令位置。 */
+			std::cerr << "Aborted: non-standard exception (Lua error or foreign throw)"
+				<< std::endl;
 			rc = 1;
 		}
 
