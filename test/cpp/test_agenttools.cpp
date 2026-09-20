@@ -9,8 +9,10 @@ using fx::TempDir;
 #include <memory>
 #include <string>
 #include <system_error>
+#include <vector>
 #include <unistd.h>
 
+#include "agent_subprocess.hpp"
 #include "agenttools.hpp"
 #include "jsonparse.hpp"
 #include "robot.hpp"
@@ -229,6 +231,35 @@ TH_TEST(agenttools_capture_image_via_real_camera_driver) {
 	robot.deactivate();
 }
 
+/* 审计 E：一张图就是历史单块的主项，而 maxHistoryBytes 刻意不封顶单块——
+ * 所以宿主侧必须有一道入口硬上限，否则一次拍照就能把请求体顶到网关限额之外。 */
+TH_TEST(agenttools_capture_image_rejects_oversize_image) {
+	TempDir tmp("bignum");
+	/* raw = 3 的倍数且 base64 后刚好越过上限（4 字节一组，无填充歧义） */
+	static_assert(kMaxImageBase64Bytes % 4 == 0);
+	const std::size_t raw = kMaxImageBase64Bytes / 4 * 3 + 3;
+	fs::path pic = tmp.path() / "big.jpg";
+	writeFile(pic, std::string(raw, 'x'));
+
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.camera = robot.registry().find("cam0");
+	ctx.cameraSrc = pic.string();
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+	TH_CHECK(res.text.find("图像过大") != std::string::npos);
+	TH_CHECK(res.imageDataUrl.empty());
+
+	robot.deactivate();
+}
+
 TH_TEST(agenttools_capture_image_reports_device_failure) {
 	/* 设备打不开时要把驱动的 ERR 折成文本回给模型（不崩会话、也不给假图片） */
 	MemoryReader reader("CREATE TABLE Timer (name String);\n"
@@ -330,6 +361,50 @@ TH_TEST(agenttools_run_command_env_filter_is_word_wise) {
 
 	for (const char* v : kDropped) { ::unsetenv(v); }
 	for (const char* v : kKept) { ::unsetenv(v); }
+}
+
+/* 审计 A 的宿主侧防线：/proc/<pid>/environ 对同 UID 进程可读，只清洗子进程继承的
+ * 那份挡不住常驻 agent 自己——main 在注入密钥前后配对调用 collectEnvSecrets /
+ * scrubEnvSecrets 把环境块里的原串抹零。判据与 buildCleanEnvp 同源（本用例顺带
+ * 钉住这一点）：敏感名被抹空，KEYSTONE/MONKEY 这类含子串的无关名一律不动。 */
+TH_TEST(agenttools_env_secret_scrub_hits_only_sensitive_names) {
+	::setenv("BOT4CJ_TEST_SCRUB_KEY", "secret-value", 1);
+	::setenv("BOT4CJ_TEST_SCRUB_PLAIN", "visible-value", 1);
+	::setenv("BOT4CJ_TEST_SCRUB_KEYSTONE", "keep-me", 1);
+
+	scrubEnvSecrets(collectEnvSecrets());
+
+	/* 抹的是整条 "NAME=VALUE"（连名字一起），glibc getenv 按 "NAME=" 前缀匹配，
+	 * 于是该变量在环境里直接消失——这才是我们要的终态：既读不到值，也不留名。 */
+	const char* secret = ::getenv("BOT4CJ_TEST_SCRUB_KEY");
+	TH_CHECK_MSG(secret == nullptr || secret[0] == '\0',
+		std::string("敏感变量未被抹除: ") + (secret == nullptr ? "(null)" : secret));
+	TH_CHECK(std::string(::getenv("BOT4CJ_TEST_SCRUB_PLAIN")) == "visible-value");
+	TH_CHECK(std::string(::getenv("BOT4CJ_TEST_SCRUB_KEYSTONE")) == "keep-me");
+
+	::unsetenv("BOT4CJ_TEST_SCRUB_KEY");
+	::unsetenv("BOT4CJ_TEST_SCRUB_PLAIN");
+	::unsetenv("BOT4CJ_TEST_SCRUB_KEYSTONE");
+}
+
+/* main 的注入链（collect → setenv → scrub）依赖一条 glibc 语义：setenv(overwrite=1)
+ * 把数组槽位换成堆上的新串，于是原串不再被引用、可以安全抹掉。这条不变式一旦不成
+ * 立，表现就是「agent 起来后每次请求都 401」——密钥被抹了个干净。故单独钉住。 */
+TH_TEST(agenttools_scrub_after_reinject_leaves_value_readable) {
+	::setenv("BOT4CJ_TEST_LLM_KEY", "exec-side-value", 1);
+	std::vector<char*> secrets = collectEnvSecrets();
+	::setenv("BOT4CJ_TEST_LLM_KEY", "injected-value", 1);
+	scrubEnvSecrets(secrets);
+
+	TH_CHECK_MSG(std::string(::getenv("BOT4CJ_TEST_LLM_KEY")) == "injected-value",
+		"抹除把注入后的密钥一起弄丢了：驱动将再也取不到 key");
+	bool zeroed = false;
+	for (char* p : secrets) {
+		if (p != nullptr && p[0] == '\0') { zeroed = true; }
+	}
+	TH_CHECK(zeroed);
+
+	::unsetenv("BOT4CJ_TEST_LLM_KEY");
 }
 
 /* B0-5：注入顺序不变式——MetaProvider 持有的 matrix_ 是对 matrices_ 元素的引用，

@@ -5,12 +5,23 @@
 
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace bot {
 namespace agent {
 
 /* run_command 单流输出上限（字节）；formatRunResult 的截断文案取自该值 */
 constexpr std::size_t kMaxCommandOutput = 64u * 1024;
+
+/* 抓取当前环境里敏感变量的**原始字符串指针**。必须在 setenv 之前调用：
+ * setenv(overwrite=1) 会把数组槽位换成堆上的新串，exec 时那份原串就再也找不回。 */
+std::vector<char*> collectEnvSecrets();
+
+/* 就地把这些字符串抹零。动机：/proc/<pid>/environ 对同 UID 进程可读，
+ * 只清洗子进程继承的那份环境挡不住它——常驻 agent 的密钥会一直躺在那儿。
+ * 残余：同 UID 若有 ptrace 权限，仍可从宿主内存读出密钥；本函数是提高门槛
+ * 而非对抗边界，要硬隔离得把 agent 放进专用用户 / 容器 / 网络命名空间。 */
+void scrubEnvSecrets(const std::vector<char*>& pointers);
 
 struct RunResult {
 	int exitCode = -1;

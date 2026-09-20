@@ -23,13 +23,17 @@ class RobotStruct;
 
 namespace agent {
 
-/* API key 的来源。用于「密钥是否对 agent 自己的 shell 可见」的启动告警：
- * run_command 的子进程与宿主同属一个用户，文件权限位不构成防线，能读到的
- * 来源只有环境变量是安全的（buildCleanEnvp 会把含 key/token 等关键词的变量剔除）。
+/* API key 的来源。用于「密钥是否对 agent 自己的 shell 可见」的启动告警。
+ * run_command 的子进程与宿主同属一个用户，文件权限位不构成防线。
+ * 环境变量来源有两道防线：buildCleanEnvp 剔除子进程继承的敏感名变量，
+ * 宿主又在注入密钥后抹掉自己 exec 时环境块里的那些串（否则同 UID 进程
+ * cat /proc/<宿主 pid>/environ 就能读走）。两道都只挡「顺手一读」——
+ * 能 ptrace 宿主的同 UID 进程照样可以从内存里把密钥捞出来，真要对抗
+ * 恶意 shell 得把 agent 放进专用用户 / 容器。
  * 2026-09-20 评估：原 Cli（--llm-key）来源已随该选项一并移除。 */
 enum class ApiKeySource {
 	None,		/* 尚未解析出（buildAgentConfig 此时会直接失败，仅作初值） */
-	Env,		/* 环境变量链——会被 run_command 的环境清洗剔除，安全 */
+	Env,		/* 环境变量链——子进程清洗 + 宿主环境块抹零，两道都过 */
 	ConfigInline,	/* 配置文件 api_key 字段——配置文件本身可读 */
 	ConfigFile,	/* 配置文件 api_key_file 指向的密钥文件——该文件可读 */
 };

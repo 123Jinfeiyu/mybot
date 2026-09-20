@@ -39,8 +39,10 @@ public:
 	AgentSession(ChatTransport& transport, const AgentToolRegistry& tools, AgentOptions opts);
 
 	/* 追加一条 user 消息并跑完工具循环，返回最终回答文本。
-	 * 失败（轮次上限 / 传输错误 / 中断）时回滚本轮全部消息后抛出：
-	 * 半截的 tool_calls 序列会让下一轮请求被服务端 400 拒绝。 */
+	 * 失败时只裁掉「半截的 tool_calls 尾部」（那种序列会被服务端 400 拒绝），
+	 * 已完整回传的部分保留：传输错误发生在第一条请求上时本轮回到原点，而
+	 * 「达到轮次上限」前模型已真实执行过若干动作脚本——硬件不会倒回去，
+	 * 把这段历史也抹掉就等于告诉模型「什么都没发生」。 */
 	std::string runTurn(const std::string& userTask);
 
 	const std::vector<ChatMessage>& history() const { return messages_; }

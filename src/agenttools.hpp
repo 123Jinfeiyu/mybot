@@ -8,6 +8,7 @@
  * 工具层不认识 HTTP/模型：execute(args) 只吃 Json、吐文本，便于离线单测。
  */
 
+#include <cstddef>
 #include <functional>
 #include <string>
 #include <vector>
@@ -21,6 +22,12 @@ class RobotStruct;
 class MatrixVars_Hardware;
 
 namespace agent {
+
+/* 单张图的 base64 上限（宿主侧封顶，与驱动侧 MAX_SIM_BYTES 各管一段）。
+ * 会话历史的字节预算刻意「不封顶单块」（见 agentloop.hpp），而一张照片正是单块的
+ * 主项：驱动仿真图允许 16MiB 原始字节（base64 后约 21MB），一次拍照就能击穿
+ * 4MiB 历史预算、把请求体顶到常见网关限额之外。故在工具入口先拒一次。 */
+constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
 
 /* 工具执行结果。图片走**独立通道**：OpenAI 协议的 tool 消息只允许文本，
  * 图片必须由工具循环另起一条 user 消息注入（见 agentloop），

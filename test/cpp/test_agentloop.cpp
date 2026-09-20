@@ -182,15 +182,28 @@ TH_TEST(agentloop_synthesizes_missing_call_id) {
 	TH_CHECK(transport.requests[1][2].toolCalls[0].id == transport.requests[1][3].toolCallId);
 }
 
-TH_TEST(agentloop_max_turns_rolls_back_history) {
+TH_TEST(agentloop_max_turns_keeps_completed_history) {
 	FakeTransport transport;
 	for (int i = 0; i < 4; ++i) { transport.script.push_back(callResponse("echo", "{}")); }
 
 	AgentToolRegistry tools = stubTools();
 	AgentSession session(transport, tools, optsFor(2));
 	TH_CHECK_THROWS_MSG(std::runtime_error, "轮次上限", session.runTurn("任务"));
-	/* 回滚到只有 system：半截的 tool_calls 序列会让下一轮请求被 400 拒绝 */
-	TH_CHECK(session.history().size() == 1);
+	/* 轮次上限时两轮的 tool_calls 都已完整回传，序列本身可发送：历史必须原样留着。
+	 * 硬件已真动过，抹掉这段就是告诉模型「什么都没发生」。 */
+	TH_CHECK(session.history().size() == 6);	/* system + user + (asst+tool) x2 */
+	/* 协议完整性：每条带 tool_calls 的 assistant 后面跟着等量的 tool 消息，
+	 * 且 id 一一对上（半截序列才会被服务端 400 拒绝） */
+	const auto& h = session.history();
+	for (std::size_t i = 0; i < h.size(); ++i) {
+		if (h[i].role != "assistant" || h[i].toolCalls.empty()) { continue; }
+		const std::size_t n = h[i].toolCalls.size();
+		TH_CHECK(i + n < h.size());
+		for (std::size_t k = 0; k < n; ++k) {
+			TH_CHECK(h[i + 1 + k].role == "tool");
+			TH_CHECK(h[i + 1 + k].toolCallId == h[i].toolCalls[k].id);
+		}
+	}
 }
 
 TH_TEST(agentloop_transport_error_rolls_back_history) {

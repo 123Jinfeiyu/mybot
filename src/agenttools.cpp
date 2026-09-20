@@ -359,19 +359,31 @@ static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 				 * 驱动据此只放行该目录内的文件，任意路径读（/etc/shadow 之类）
 				 * 被拒。目录取配置路径的真实所在目录（canonical 展开软链与
 				 * 相对段，与驱动侧 realpath 判据一致）；路径尚不存在时退一步
-				 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是
-				 * 「未放行」。 */
+				 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是「未放行」。
+				 * 两步都解析不出绝对路径时**不回落成 "."**——那等于放行整个当前
+				 * 工作目录，比本意宽得多；这条判据是边界，宁可拒绝也不猜。 */
 				std::error_code ec;
 				fs::path real = fs::canonical(ctx.cameraSrc, ec);
 				if (ec) { real = fs::weakly_canonical(ctx.cameraSrc, ec); }
-				std::string root = real.parent_path().string();
-				if (root.empty()) { root = "."; }
-				params.put("src_root", JsonString(root));
+				/* parent_path() 只在「有根路径却无根目录」的相对形态上抛
+				 * filesystem_error，绝对路径不会——所以先判绝对再取父目录。 */
+				fs::path parent = real.is_absolute() ? real.parent_path() : fs::path();
+				if (ec || !parent.is_absolute()) {
+					throw IllegalArgumentException("无法解析模拟图片来源所在目录: "
+						+ ctx.cameraSrc);
+				}
+				params.put("src_root", JsonString(parent.string()));
 			}
 			Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
 			auto b64 = res.get("b64");
 			if (!b64 || !b64->isStr() || b64->getValue().empty()) {
 				throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
+			}
+			if (b64->getValue().size() > kMaxImageBase64Bytes) {
+				throw std::runtime_error("图像过大：base64 "
+					+ std::to_string(b64->getValue().size()) + " 字节，超过上限 "
+					+ std::to_string(kMaxImageBase64Bytes)
+					+ " 字节；请降低分辨率或换小图（大图会击穿会话历史预算）");
 			}
 			std::string desc = "已拍摄照片";
 			auto w = res.get("width");

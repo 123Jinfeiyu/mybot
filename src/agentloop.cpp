@@ -106,6 +106,12 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 	trimHistory();
 	const std::size_t base = messages_.size();
 
+	/* 本轮里最后一个「可直接发给服务端」的边界：起点（只有这条 user 消息）算完整，
+	 * 此后每当一条 assistant 的 tool_calls 拿到全部 tool 回传（连同其后的图片消息）
+	 * 就推进一格。异常时只丢弃边界之后写入的部分——需要回滚的从来不是「本轮」，
+	 * 而是「半截的 tool_calls 序列」（服务端会 400 拒绝那种）。 */
+	std::size_t complete = base;
+
 	ChatMessage user;
 	user.role = "user";
 	user.content = userTask;
@@ -191,12 +197,17 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 				img.images = std::move(images);
 				messages_.push_back(std::move(img));
 			}
+			/* 到此为止 tool_calls 与 tool 回传一一对上，这段历史可以原样发送 */
+			complete = messages_.size();
 		}
 
 		throw std::runtime_error("达到工具轮次上限（" + std::to_string(opts_.maxTurns)
 			+ " 轮）仍未得到最终回答；可调大 --llm-max-turns，或把任务拆小");
 	} catch (...) {
-		messages_.resize(base);	/* 回滚本轮，保持历史是完整可发送的序列 */
+		/* 只裁掉半截的尾部：轮次上限这条路径走到这里时 complete 已等于当前长度，
+		 * 于是本轮真实执行过的动作留在历史里——硬件状态不会因为「没拿到最终回答」
+		 * 而回退，模型也不该被告知什么都没发生。 */
+		if (messages_.size() > complete) { messages_.resize(complete); }
 		throw;
 	}
 }

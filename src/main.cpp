@@ -4,10 +4,12 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "actionsource.hpp"
 #include "agentdriver.hpp"
 #include "agentmode.hpp"
+#include "agent_subprocess.hpp"
 #include "cliargs.hpp"
 #include "robot.hpp"
 #include "daemonvar.hpp"	/* abandonedDaemonCount（2.2 后不再经 robot.hpp 传导） */
@@ -29,16 +31,21 @@ extern "C" void onStopSignal(int) {
 
 /* agent 配置组装 + key 注入进程环境 + 告警打印；失败已打印，返回 false。
  * 密钥只在进程环境里流转：驱动的参数表与 BOT4CJ_DEBUG 的参数转储都不该
- * 出现它，真正读它的是 Lua 驱动自己。 */
+ * 出现它，真正读它的是 Lua 驱动自己。
+ * 注入前后各做一件事把「环境来源的密钥」这条路收口：setenv **之前**抓取 exec 时
+ * 环境块里敏感变量的原始串，注入**之后**抹零——/proc/<pid>/environ 对同 UID 进程
+ * 可读，只清洗子进程继承的那份（buildCleanEnvp）挡不住它读常驻宿主的这份。 */
 bool prepareAgentConfig(const CliOptions& options, agent::AgentModeConfig& agentCfg) {
 	std::string cfgErr;
 	if (!agent::buildAgentConfig(options, agentCfg, cfgErr)) {
 		std::cerr << "错误: " << cfgErr << std::endl;
 		return false;
 	}
+	std::vector<char*> envSecrets = agent::collectEnvSecrets();
 	if (!agentCfg.resolvedApiKey.empty()) {
 		::setenv("BOT4CJ_LLM_KEY", agentCfg.resolvedApiKey.c_str(), 1);
 	}
+	agent::scrubEnvSecrets(envSecrets);
 	if (!agentCfg.configPath.empty()) {
 		std::cerr << "配置文件: " << agentCfg.configPath << std::endl;
 	}

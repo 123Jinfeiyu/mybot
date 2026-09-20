@@ -117,7 +117,7 @@ export BOT4CJ_LLM_KEY=sk-xxx
 - `list_action_scripts`——枚举 `.mt` 动作脚本
 - `run_action_script`——在常驻机器人上执行指定脚本
 - `list_hardware`——打印器件清单（只读，不触发任何动作）
-- `capture_image`——**拍照并把画面送进上下文**，多模态模型据此「看」环境
+- `capture_image`——**拍照并把画面送进上下文**，多模态模型据此「看」环境（仅当结构脚本里能解析到摄像头 Lua 驱动变量时提供）
 - `run_command`——执行 shell 命令（**缺省不提供**，需 `--agent-shell` 显式开启）
 
 摄像头同样是 Lua 驱动（V4L2 + MJPEG，无第三方库），也支持 `--camera-src <图片>` 在无摄像头时跑通全链路。

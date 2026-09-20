@@ -66,33 +66,71 @@ static bool isSensitiveWord(const std::string& word) {
 	return false;
 }
 
+namespace {
+
+/* 敏感名判据：按分隔符切词后逐词查表（BOT4CJ_LLM_KEY → {bot4cj, llm, key} →
+ * 命中 key）。buildCleanEnvp 与 collectEnvSecrets 共用同一份，否则「子进程清洗
+ * 名单」与「宿主抹除名单」会各自漂移。 */
+bool isSensitiveEnvName(const std::string& lowerName) {
+	std::size_t i = 0;
+	while (i < lowerName.size()) {
+		if (!std::isalnum(static_cast<unsigned char>(lowerName[i]))) { ++i; continue; }
+		std::size_t j = i;
+		while (j < lowerName.size() && std::isalnum(static_cast<unsigned char>(lowerName[j]))) { ++j; }
+		if (isSensitiveWord(lowerName.substr(i, j - i))) { return true; }
+		i = j;
+	}
+	return false;
+}
+
+/* 环境变量名（'=' 之前）转小写；无 '=' 的畸形条目返回空串表示跳过 */
+std::string lowerEnvName(const char* entry) {
+	std::string_view s(entry);
+	std::size_t eq = s.find('=');
+	if (eq == std::string_view::npos) { return {}; }
+	std::string name(s.substr(0, eq));
+	std::transform(name.begin(), name.end(), name.begin(),
+		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+	return name;
+}
+
+} // namespace
+
 /* 环境清洗：剔除名字**含敏感词（整词）**的变量。模型可能被外部输入（画面/文件
  * 内容）诱导执行任意命令，不能让子进程继承 LLM API key。
- * 判定按分隔符切词（BOT4CJ_LLM_KEY → {bot4cj, llm, key} → 命中 key），
- * 因此不误伤 KEYSTONE/MONKEY；无分隔符的复合名由 isSensitiveWord 的复合表覆盖
- * （APIKEY / PGPASSWORD 仍被剔除）。 */
+ * 判定按分隔符切词，因此不误伤 KEYSTONE/MONKEY；无分隔符的复合名由
+ * isSensitiveWord 的复合表覆盖（APIKEY / PGPASSWORD 仍被剔除）。 */
 std::vector<char*> buildCleanEnvp() {
 	std::vector<char*> envp;
 	for (char** e = ::environ; e && *e; ++e) {
-		std::string_view entry(*e);
-		std::size_t eq = entry.find('=');
-		if (eq == std::string_view::npos) { continue; }
-		std::string name(entry.substr(0, eq));
-		std::transform(name.begin(), name.end(), name.begin(),
-			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-		bool drop = false;
-		std::size_t i = 0;
-		while (i < name.size() && !drop) {
-			if (!std::isalnum(static_cast<unsigned char>(name[i]))) { ++i; continue; }
-			std::size_t j = i;
-			while (j < name.size() && std::isalnum(static_cast<unsigned char>(name[j]))) { ++j; }
-			drop = isSensitiveWord(name.substr(i, j - i));
-			i = j;
-		}
-		if (!drop) { envp.push_back(*e); }
+		if (!isSensitiveEnvName(lowerEnvName(*e))) { envp.push_back(*e); }
 	}
 	envp.push_back(nullptr);
 	return envp;
+}
+
+std::vector<char*> collectEnvSecrets() {
+	std::vector<char*> out;
+	for (char** e = ::environ; e && *e; ++e) {
+		if (isSensitiveEnvName(lowerEnvName(*e))) { out.push_back(*e); }
+	}
+	return out;
+}
+
+/* 逐字节抹零。用 volatile 目的指针，防止编译器把「之后不再读取」的存储优化掉
+ * （被优化掉就等于没抹）。
+ * 抹的是整条 "NAME=VALUE"（连名字一起），而 glibc getenv 按 "NAME=" 前缀匹配，
+ * 于是数组槽位没被 setenv 换掉的那些变量会直接从环境里**消失**（getenv 返回
+ * NULL）。这不影响取值：密钥一律以 BOT4CJ_LLM_KEY 重新注入（堆上的新串，槽位已
+ * 替换），而驱动按 BOT4CJ_LLM_KEY → ROBOT_AGENT_API_KEY → DEEPSEEK_API_KEY 的
+ * 同一顺序取值，排第一的那个一定有值。 */
+void scrubEnvSecrets(const std::vector<char*>& pointers) {
+	for (char* p : pointers) {
+		if (p == nullptr) { continue; }
+		const std::size_t n = std::strlen(p);
+		volatile char* v = p;
+		for (std::size_t i = 0; i < n; ++i) { v[i] = '\0'; }
+	}
 }
 
 /* 有界回收：绝不无超时阻塞——kill 未生效（D 态 / 权限）时无超时 waitpid 会把
