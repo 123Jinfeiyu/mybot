@@ -279,9 +279,21 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 
 	out.scriptsDir = opts.scriptsDir.empty() ? "scripts" : opts.scriptsDir;
 	if (opts.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
-	/* 安全缺省翻转（评估 C12 收口）：run_command 缺省**不提供**，只有
-	 * --agent-shell 或配置 allow_shell=true 才开启；命令行 > 配置文件。 */
-	out.allowShell = opts.agentShell ? true : file.allowShell.value_or(false);
+	/* 安全缺省（评估 C12 翻转 + 审计 4.1 收紧）：run_command 缺省**不提供**，
+	 * 且**只能由命令行 --agent-shell 开启**。配置文件里的 allow_shell=true 一律
+	 * 拒绝加载并指名原因——缺省查找会读 CWD 的 ./mybot.llm.json
+	 * （findDefaultLlmConfig），于是一个未经审查的落地文件就能同时改 endpoint
+	 * （把含结构脚本、硬件清单、摄像头画面的上下文外发）并注册 run_command
+	 * （模型回复直接变成主机 shell）。「这个文件存在」不构成授权，
+	 * 故配置文件只能**关**不能开。 */
+	out.allowShell = opts.agentShell;
+	if (!opts.agentShell && file.allowShell.value_or(false)) {
+		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
+			+ " 设置了 allow_shell=true：run_command 等于把主机 shell 交给模型，"
+			+ "只能由命令行 --agent-shell 显式开启，配置文件不能开"
+			+ "（请把 allow_shell 置回 false 或删除该字段）";
+		return false;
+	}
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
 

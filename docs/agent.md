@@ -106,6 +106,9 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera`。
   全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
   （每项为文件或目录，语义同 `--prompt-file`），空数组按「未配置」。
+  `allow_shell` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，写 `true`
+  会被拒绝加载并退出 2——开启 `run_command` 只能用命令行 `--agent-shell`
+  （理由见 [安全说明](#安全说明请务必读) 第 1 条）。
 - **严格解析**：不是合法 JSON、字段类型/范围不符、**出现未知字段**一律拒绝并退出 2。
   拼错一个键（如 `apikey`）而静默走缺省，会让人以为配置生效了——与「未知 `--key` 退出 2」同一口径。
 - **密钥可以放在别处**：`api_key_file` 指向一个只存密钥的文件（末尾换行会自动剥掉）。
@@ -220,7 +223,7 @@ INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
 | `run_action_script` | 在**常驻**机器人上执行指定 `.mt` | 只允许 `--scripts-dir` 下的相对路径；拒绝绝对路径、`..`、非 `.mt`、**符号链接**；单文件 8 MiB 上限 |
 | `list_hardware` | 列出结构脚本注册的硬件变量（名字 + 种类） | 只读清单；**不**调用 `read()`/`play()`，绝无副作用 |
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节） |
-| `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗；**缺省不注册**，须 `--agent-shell`（或配置 `allow_shell: true`）显式开启 |
+| `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗、继承 fd 全部 CLOEXEC；**缺省不注册**，须命令行 `--agent-shell` 显式开启（配置文件的 `allow_shell` 只能关不能开，写 `true` 会拒绝加载） |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -313,8 +316,11 @@ OpenAI 协议的 **tool 消息只允许文本**，所以图片不能塞进工具
 ## 安全说明（请务必读）
 
 1. **`run_command` 是无白名单、无审批的任意 shell 执行**。模型可能被外部输入（文件内容、设备读数、网络数据）诱导执行任意命令。
-   正因如此**它缺省不注册**：要用 `--agent-shell`（或配置 `allow_shell: true`）显式开启，
-   并在可信环境（你自己的机器人主机）使用；需要对外暴露，请先加命令审批或在进程外隔离（专用用户 / 容器 / 网络命名空间）。
+   正因如此**它缺省不注册，且只能用命令行 `--agent-shell` 开启**：配置文件里的 `allow_shell: true`
+   会被**拒绝加载**并指名原因（配置只能关不能开）。理由是缺省查找会读 CWD 的 `./mybot.llm.json`——
+   同一个未经审查的落地文件既能改 `endpoint`（把含结构脚本、硬件清单、摄像头画面的上下文外发到任意主机），
+   又能开 shell（模型回复直接变成主机命令），「这个文件存在」不构成授权。
+   开启后请在可信环境（你自己的机器人主机）使用；需要对外暴露，请先加命令审批或在进程外隔离（专用用户 / 容器 / 网络命名空间）。
 2. **密钥的环境流转有两道防线**（2026-09-20 审计 A 收口）：
    ① `run_command` 的子进程环境按**整词**清洗——名称含 `key` / `token` / `secret` / `password` /
    `passwd` / `credential` 的变量不传给子进程（`BOT4CJ_LLM_KEY` 天然落在内，`KEYSTONE`/`MONKEY` 不误伤）；

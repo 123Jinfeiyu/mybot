@@ -423,9 +423,10 @@ TH_TEST(agentconfig_key_source_is_recorded_and_flagged) {
 	}
 }
 
-/* 安全缺省翻转（2026-09-20 评估 C12）：run_command 缺省**不注册**——这既让
- * 「密钥对 agent 的 shell 可见」这条告警默认不适用，也让 shell 能力成为
- * 显式选择（--agent-shell 或配置 allow_shell=true）。 */
+/* 安全缺省翻转（2026-09-20 评估 C12）+ 审计 4.1 收紧：run_command 缺省**不注册**，
+ * 且开启是**命令行独占**的显式选择（--agent-shell）；配置文件的 allow_shell
+ * 只能关不能开，写 true 直接拒绝加载。这既让「密钥对 agent 的 shell 可见」
+ * 这条告警默认不适用，也让"一个落地配置文件就能开出主机 shell"不成立。 */
 TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 	NoKeyEnv nokey;
 	TempDir tmp("shell");
@@ -450,13 +451,27 @@ TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 	/* 告警只讲来源，绝不复述密钥本身 */
 	TH_CHECK(w.find("inline-secret-value") == std::string::npos);
 
-	/* 3) 配置文件 allow_shell=true 与命令行同效（两条入口都通） */
+	/* 3) 审计 4.1 收紧：配置文件**不能**开 shell（只能关）。
+	 * 缺省查找会读 CWD 的 ./mybot.llm.json，所以「配置能开」实际等于
+	 * 「一个未经审查的落地文件就能把主机 shell 交给模型」，而同一个文件还能改
+	 * endpoint 把上下文外发——「文件存在」不构成授权。报错必须指名 allow_shell
+	 * 与 --agent-shell，否则用户只看到"配置加载失败"，不知道该删哪个字段。 */
 	fs::path cfg2 = tmp.path() / "shell.json";
 	writeFile(cfg2, R"({"api_key":"inline-secret-value","allow_shell":true})",
 		fs::perms::owner_all);
 	AgentModeConfig out3;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg2.string()), out3, err));
-	TH_CHECK(out3.allowShell);
+	std::string err3;
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg2.string()), out3, err3));
+	TH_CHECK(err3.find("allow_shell") != std::string::npos);
+	TH_CHECK(err3.find("--agent-shell") != std::string::npos);
+
+	/* 4) 命令行已授权时，配置里同向写 true 不该报错（授权来自命令行） */
+	CliOptions o2 = baseOptions(cfg2.string());
+	o2.agentShell = true;
+	AgentModeConfig out4;
+	std::string err4;
+	TH_CHECK(buildAgentConfig(o2, out4, err4));
+	TH_CHECK(out4.allowShell);
 }
 
 TH_TEST(agentconfig_requires_key_from_somewhere) {
