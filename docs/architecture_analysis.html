@@ -95,13 +95,13 @@
 </head>
 <body>
 
-<!-- 版本标注（2026-09-20 更新）：本页正文已更新为现行 C++17 版（bot4cj.cpp）
-     架构描述：无仓颉核心层，等价职责在 src/*.cpp（RobotStruct/HwFactory/
-     ActionRunner 等）；守护共享槽为 336B（values[32]@72 / stop@328 / status@332）。
-     两张 SVG 图仍为仓颉原版历史图，分层职责等价、核心层名称需按 C++ 版对应。 -->
+<!-- 版本标注（2026-09-20 更新）：本页正文与两张配套 SVG（architecture_layers.svg /
+     architecture_dataflow.svg）均已更新为现行 C++17 版（bot4cj.cpp）架构描述：
+     核心层名与 src/*.cpp 逐字对应（RobotStruct/HwFactory/ActionRunner 等）；
+     守护共享槽为 336B（values[32]@72 / stop@328 / status@332）。 -->
 <div style="background:#eff6ff;border:1px solid #93c5fd;color:#1e3a8a;padding:12px 20px;font-size:14px">
-  &#8505;&#65039; 本页正文已更新为<strong>现行 C++17 版（bot4cj.cpp）</strong>架构描述（2026-09-20）。
-  配套两张 SVG 图仍为仓颉原版历史图，分层职责等价，图中「仓颉核心」对应 C++ 版 <code>src/*.cpp</code>。
+  &#8505;&#65039; 本页正文与配套两张 SVG 图均为<strong>现行 C++17 版（bot4cj.cpp）</strong>架构描述（2026-09-20 重绘更新），
+  图中核心层名与 <code>src/*.cpp</code> 逐字对应。
 </div>
 
 <header class="hero">
@@ -162,16 +162,16 @@
 <!-- ============ S2 ============ -->
 <section id="s2">
   <h2 class="sec"><span class="no">02</span>架构全景（分层图）</h2>
-  <p>自顶向下七层：<strong>L7 输入层（声明式脚本）→ C++ 核心层（解析/构建/播放，<code>src/*.cpp</code>）→ L5 LuaJIT 状态机 → L4 驱动+库 → L1–L3 Linux 基座</strong>。右侧主干为主数据流，橙色虚线为 <code>@Daemon</code> 共享内存跨层引用。（下图仍为仓颉原版历史图，「仓颉核心」按 C++ 版 <code>src/*.cpp</code> 对应阅读。）</p>
+  <p>自顶向下七层：<strong>L7 输入层（声明式脚本）→ C++ 核心层（解析/构建/播放，<code>src/*.cpp</code>）→ L5 LuaJIT 状态机 → L4 驱动+库 → L1–L3 Linux 基座</strong>。右侧主干为主数据流，橙色虚线为 <code>@Daemon</code> 共享内存跨层引用。</p>
 
   <div class="figure">
     <figure style="text-align:center">
       <object data="architecture_layers.svg" type="image/svg+xml" style="max-width:100%;height:auto"></object>
-      <figcaption>图 1 · bot4cj 架构全景（L1–L7 分层 + 主数据流 + 守护并发引用）· 仓颉原版历史图</figcaption>
+      <figcaption>图 1 · bot4cj.cpp 架构全景（L1–L7 分层 + 主数据流 + 守护并发引用）· C++17 现行版</figcaption>
     </figure>
     <div class="legend">
       <span><strong style="color:var(--indigo)">蓝/紫</strong> 输入层</span>
-      <span><strong style="color:var(--blue)">蓝</strong> C++ 核心（图中标「仓颉核心」）</span>
+      <span><strong style="color:var(--blue)">蓝</strong> C++ 核心层（<code>src/*.cpp</code>）</span>
       <span><strong style="color:var(--green)">绿</strong> Lua 状态机</span>
       <span><strong style="color:var(--orange)">橙</strong> 驱动+库</span>
       <span><strong style="color:var(--red)">红</strong> Linux 基座</span>
@@ -193,12 +193,12 @@
 <!-- ============ S3 ============ -->
 <section id="s3">
   <h2 class="sec"><span class="no">03</span>数据流 / 时序展开（一次 play 动作）</h2>
-  <p>把"管道输入一帧 .mt"到"内核设备文件落盘"的完整调用链展开成四个纵向阶段，并把 <code>@Daemon</code> 并发旁路（经 336B 共享槽）画在同一张图上。（下图仍为仓颉原版历史图，文件名按 C++ 版对应阅读。）</p>
+  <p>把"管道输入一帧 .mt"到"内核设备文件落盘"的完整调用链展开成四个纵向阶段，并把 <code>@Daemon</code> 并发旁路（经 336B 共享槽）画在同一张图上。</p>
 
   <div class="figure">
     <figure style="text-align:center">
       <object data="architecture_dataflow.svg" type="image/svg+xml" style="max-width:100%;height:auto"></object>
-      <figcaption>图 2 · 一次 play 动作的 4 阶段调用链 + @Daemon 并发分支（共享内存槽 IPC）· 仓颉原版历史图</figcaption>
+      <figcaption>图 2 · 一次 play 动作的 4 阶段调用链 + @Daemon 并发分支（共享内存槽 IPC）· C++17 现行版</figcaption>
     </figure>
   </div>
 
@@ -367,7 +367,7 @@
 </div>
 
 <div class="footer">
-  bot4cpp（bot4cj.cpp）架构分析与扩展路线图 · 基于 C++17 版源码（src/ · modules/ · robots/ · test/）· 2026-09-20 更新 · 配套图 1（分层）/ 图 2（数据流）为仓颉原版历史图
+  bot4cpp（bot4cj.cpp）架构分析与扩展路线图 · 基于 C++17 版源码（src/ · modules/ · robots/ · test/）· 2026-09-20 更新（含配套图 1/图 2 按 C++17 分层重绘）
 </div>
 
 </body>

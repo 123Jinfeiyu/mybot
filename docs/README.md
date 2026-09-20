@@ -27,16 +27,14 @@
 - [HAL 硬件抽象层](hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
 - [虚拟总线 virtbus](virtbus.md)——无真机验证驱动链路的完整参考手册（含器件模型库与回归清单）
 
+## 架构与路线图
+
+- [架构分析与扩展开发路线图](architecture_analysis.html)——C++17 版全景分析（正文与配套两图 2026-09-20 已按现行 `src/*.cpp` 分层重绘更新）
+- [分层架构全景图](architecture_layers.svg)——L1–L7 分层 + 主数据流 + 守护并发引用
+- [一次 play 的数据流 / 时序展开](architecture_dataflow.svg)——四阶段调用链 + @Daemon 并发分支（336B 共享槽 IPC）
+
 ## 测试与贡献
 
 - [回归测试手册](testing.md)——守门分段明细、守门完整性规则、ctest 逐用例入口、sanitizer 与 CI 跑法
-- [开发与贡献](development.md)——pre-push 钩子、新增驱动/回归/单测流程、代码规范
+- [开发与贡献](development.md)——pre-push 钩子、提交信息规范、新增驱动/回归/单测流程、代码规范
 - [更新日志](changelog.md)——按主题分组的版本演进记录
-
-## 历史文档（仓颉原版）
-
-以下三份描述的是**仓颉语言原版** bot4cj，不是本 C++ 移植版；保留用于对照设计意图。C++ 版的分层与数据流以 [agent.md 源码分层](agent.md#源码分层) 及各机制文档为准。
-
-- [架构分析与扩展开发路线图](architecture_analysis.html)
-- [分层架构全景图](architecture_layers.svg)
-- [一次 play 的数据流 / 时序展开](architecture_dataflow.svg)
