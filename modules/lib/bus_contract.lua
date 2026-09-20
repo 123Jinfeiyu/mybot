@@ -129,9 +129,13 @@ M.SPI_IO_MAX_BYTES = 64
 
 -- i2c_write_multi / i2c_write_reg16 单笔**数据**字节上限（不含寄存器指针，
 -- 2026-09-20 审计收口）：此前写函数对变参长度无约束，超长调用会被打包成
--- 超大 buf 发往内核后静默得到 EINVAL / 数据截断（cj_i2c_msg.len 是 u16）。
--- 与 SPI 侧写函数的既有约束同口径：越界即拒绝，而非静默截断。
-M.I2C_IO_MAX_BYTES = 64
+-- 超大 buf 发往内核后静默得到 EINVAL / 数据截断。越界即拒绝，而非静默截断。
+-- 取值不能照搬 SPI_IO_MAX_BYTES：64 是 spidev 逐字节缓冲区的物理约束，
+-- 而 I2C 侧的线上约束是 cj_i2c_msg.len（u16）。本值须覆盖现存最大合法单事务
+-- ——VL53L4CD 默认配置流一次写 91 数据字节（+2 字节指针，见 modules/VL53L4CD.lua
+-- 的 CONFIG_TABLE）——同时仍能拦住「配置笔误导致数百/数千字节写」。
+-- 改动此值前先跑 test_driver_contract.lua 的单笔写字节数 sweep。
+M.I2C_IO_MAX_BYTES = 256
 
 -- uart_read 超时上限（ms）：iters = timeout_ms + 1 按 1ms 空转，配置笔误
 -- （如少写一个单位）必须立即失败而非阻塞数小时
