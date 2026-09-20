@@ -60,7 +60,7 @@ struct AgentToolContext {
 	std::string structurePath;		/* 结构脚本路径（仅用于工具输出标注） */
 	int commandTimeoutSec = 10;		/* run_command 缺省超时 */
 	int maxCommandTimeoutSec = 60;		/* run_command 超时上限 */
-	bool allowShell = true;			/* false = 不注册 run_command（安全阀门） */
+	bool allowShell = false;		/* true = 注册 run_command（安全阀门，缺省关） */
 	/* 摄像头：Lua 驱动变量（modules/Camera.lua）。为空 = 不注册 capture_image。
 	 * 抓到的图片经 AgentToolResult.imageDataUrl 进入下一轮对话。 */
 	MatrixVars_Hardware* camera = nullptr;

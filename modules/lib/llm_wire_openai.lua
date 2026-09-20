@@ -153,7 +153,8 @@ function M.parse_response(decoded)
 	return out
 end
 
--- API key：优先宿主传入（--llm-key），否则按环境变量链取
+-- API key：先看调用参数表（宿主注入），否则按环境变量链取
+-- （2026-09-20 评估：命令行已不提供密钥选项，宿主注入的值同样来自环境变量/配置文件）
 function M.api_key(data)
 	if data.api_key ~= nil and data.api_key ~= "" then return data.api_key end
 	for _, name in ipairs({ "BOT4CJ_LLM_KEY", "ROBOT_AGENT_API_KEY", "DEEPSEEK_API_KEY" }) do

@@ -18,7 +18,7 @@
 
   "max_turns": 8,
   "scripts_dir": "scripts",
-  "allow_shell": true,
+  "allow_shell": false,
 
   "prompt_files": [],
   "camera_var": "cam0",

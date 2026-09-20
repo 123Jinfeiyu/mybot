@@ -186,25 +186,90 @@ TH_TEST(cliargs_help_text_covers_key_sections) {
 }
 
 TH_TEST(cliargs_help_option_set_matches_docs) {
-	/* 帮助里的选项定义行（两空格 + "--"），共 23 条 */
+	/* 帮助里的选项定义行（两空格 + "--"） */
 	const std::set<std::string> defs = optionsWithLinePrefix(bot::helpText(), "  --");
-	TH_CHECK(defs.size() == 23);
 	TH_CHECK(defs.count("--tcp") == 1);
 	TH_CHECK(defs.count("--prompt-file") == 1);
+	TH_CHECK(defs.count("--agent-shell") == 1);
+	/* 已移除的选项不得在帮助里复活（2026-09-20 评估：--llm-key 明文 argv；
+	 * --agent-shell 顶掉 --agent-no-shell，故净减 1） */
+	TH_CHECK(defs.count("--llm-key") == 0);
+	TH_CHECK(defs.count("--agent-no-shell") == 0);
+	TH_CHECK(defs.size() == 22);
 
 	/* docs 侧：reference.md（CLI 参考）与 agent.md（agent 专属选项表）的选项表行 */
-	std::set<std::string> docs = optionsWithLinePrefix(readSourceFile("docs/reference.md"), "| `");
+	const std::set<std::string> ref =
+		optionsWithLinePrefix(readSourceFile("docs/reference.md"), "| `");
+	std::set<std::string> docs = ref;
 	for (const auto& o : optionsWithLinePrefix(readSourceFile("docs/agent.md"), "| `")) {
 		docs.insert(o);
 	}
 	TH_CHECK(docs.size() >= 24);
 
-	/* 方向一：帮助里的每个选项都必须在 docs 有记录（加选项忘改文档即红） */
-	const std::string undocumented = firstMissing(defs, docs, {});
-	TH_CHECK_MSG(undocumented.empty(), "帮助里出现 docs 未记录的选项: " + undocumented);
+	/* 方向一（逐文档，2026-09-20 评估收口）：帮助里的**每个**选项都必须在
+	 * reference.md 有记录。此前只查「并集」，于是 reference.md 缺 --prompt-file
+	 * 被 agent.md 的同名行掩盖——而 reference.md 自称收录全部可调接口。
+	 * agent.md 是 agent 专属子集，不要求它覆盖全部。 */
+	const std::string undocumented = firstMissing(defs, ref, {});
+	TH_CHECK_MSG(undocumented.empty(),
+		"帮助里的选项在 docs/reference.md 无记录（该文档自称收录全部可调接口）: " + undocumented);
 
 	/* 方向二：docs 记录的选项都必须在帮助里有定义行——例外仅 --help（帮助自身的
 	 * 开关，由惯例与错误提示覆盖）与 --robot（帮助首段与示例里已给出用法）。 */
 	const std::string undef = firstMissing(docs, defs, {"--help", "--robot"});
 	TH_CHECK_MSG(undef.empty(), "docs 记录了但帮助缺定义行的选项: " + undef);
+}
+
+TH_TEST(cliargs_removed_options_are_unknown_keys) {
+	/* --llm-key / --agent-no-shell 已从选项表移除（2026-09-20 评估）：
+	 * 残留用法必须显式报错（退出码 2），不得静默忽略成「没传」。 */
+	Argv a({"mybot", "--robot=robots/test.sql", "--agent", "--llm-key=sk-x"});
+	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+	TH_CHECK(p.unknown.size() == 1 && p.unknown[0] == "llm-key");
+	TH_CHECK(bot::validateOptions(p) == 2);
+
+	Argv b({"mybot", "--robot=robots/test.sql", "--agent", "--agent-no-shell"});
+	bot::ParsedArgs q = bot::parseArgs(b.argc(), b.argv());
+	TH_CHECK(q.unknown.size() == 1 && q.unknown[0] == "agent-no-shell");
+	TH_CHECK(bot::validateOptions(q) == 2);
+}
+
+/* 环境变量完整性（2026-09-20 评估）：reference.md 的环境变量表自称「全部」，
+ * 但此前漏了 BOT4CJ_HAL_BACKEND / BOT4CJ_CAMERA_SRC_DIR / BOT4CJ_TEST_VIDEO。
+ * 这里把该声明变成机械判据：源码/脚本里出现的 BOT4CJ_* 环境变量名必须在
+ * reference.md 有记录。内嵌 Lua 重入口守卫用的是 `__BOT4CJ_*` 前缀的全局
+ * （不是环境变量），扫描时按「前面不是下划线」排除掉。 */
+TH_TEST(cliargs_env_vars_documented_in_reference) {
+	static const char* kFiles[] = {
+		"src/agentmode.cpp", "src/agenttools.cpp", "src/actionsource.cpp",
+		"src/luasandbox.cpp", "src/main.cpp", "src/llmconfig.cpp",
+		"modules/lib/HAL.lua", "modules/lib/virtbus.lua", "modules/Camera.lua",
+		"test/lib/device_gate.sh", "scripts/agent_e2e.sh",
+	};
+	const std::string doc = readSourceFile("docs/reference.md");
+	std::set<std::string> found;
+	for (const char* rel : kFiles) {
+		std::string text;
+		try { text = readSourceFile(rel); } catch (const std::exception&) { continue; }
+		for (std::size_t i = 0; i + 7 < text.size(); ++i) {
+			if (text.compare(i, 7, "BOT4CJ_") != 0) { continue; }
+			if (i > 0 && text[i - 1] == '_') { continue; }	/* __BOT4CJ_* = 守卫全局 */
+			std::size_t e = i + 7;
+			while (e < text.size()
+					&& (std::isupper(static_cast<unsigned char>(text[e]))
+						|| std::isdigit(static_cast<unsigned char>(text[e]))
+						|| text[e] == '_')) {
+				++e;
+			}
+			if (e > i + 7) { found.insert(text.substr(i, e - i)); }
+		}
+	}
+	/* 已知被扫描到的集合至少含这 5 个（防扫描本身失效变成空集假绿） */
+	TH_CHECK(found.size() >= 5);
+	std::string missing;
+	for (const auto& v : found) {
+		if (doc.find(v) == std::string::npos) { missing += " " + v; }
+	}
+	TH_CHECK_MSG(missing.empty(),
+		"docs/reference.md 环境变量表缺失（该文档自称收录全部）:" + missing);
 }

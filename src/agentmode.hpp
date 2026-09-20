@@ -25,11 +25,11 @@ namespace agent {
 
 /* API key 的来源。用于「密钥是否对 agent 自己的 shell 可见」的启动告警：
  * run_command 的子进程与宿主同属一个用户，文件权限位不构成防线，能读到的
- * 来源只有环境变量是安全的（buildCleanEnvp 会把含 key/token 等关键词的变量剔除）。 */
+ * 来源只有环境变量是安全的（buildCleanEnvp 会把含 key/token 等关键词的变量剔除）。
+ * 2026-09-20 评估：原 Cli（--llm-key）来源已随该选项一并移除。 */
 enum class ApiKeySource {
 	None,		/* 尚未解析出（buildAgentConfig 此时会直接失败，仅作初值） */
 	Env,		/* 环境变量链——会被 run_command 的环境清洗剔除，安全 */
-	Cli,		/* --llm-key——经 /proc/<pid>/cmdline 对所有同用户进程可读 */
 	ConfigInline,	/* 配置文件 api_key 字段——配置文件本身可读 */
 	ConfigFile,	/* 配置文件 api_key_file 指向的密钥文件——该文件可读 */
 };
@@ -59,7 +59,7 @@ struct AgentModeConfig {
 	std::string scriptsDir = "scripts";
 	std::string structurePath;
 	std::string task;		/* 非空 = 一次性执行；空 = 交互 REPL */
-	bool allowShell = true;		/* false = 不注册 run_command */
+	bool allowShell = false;	/* true = 注册 run_command（缺省关，见 actionsource.hpp 注） */
 	bool verbose = true;
 
 	/* ---- 提示词包（--prompt-file / 配置文件 prompt_files）----
@@ -83,11 +83,12 @@ struct AgentModeConfig {
 };
 
 /* run_command 启用（cfg.allowShell）且 API key 来自「agent 的 shell 也能读到」
- * 的来源（命令行 / 配置文件 / 密钥文件）时，返回启动告警文本；密钥来自环境变量
- * 或 shell 未启用时返回空串。由调用方打印到 stderr。 */
+ * 的来源（配置文件 / 密钥文件）时，返回启动告警文本；密钥来自环境变量
+ * 或 shell 未启用（缺省）时返回空串。由调用方打印到 stderr。 */
 std::string shellKeyExposureWarning(const AgentModeConfig& cfg);
 
-/* API key 只从环境变量取（BOT4CJ_LLM_KEY → ROBOT_AGENT_API_KEY → DEEPSEEK_API_KEY）：
+/* API key 只从环境变量链（BOT4CJ_LLM_KEY → ROBOT_AGENT_API_KEY → DEEPSEEK_API_KEY）
+ * 或配置文件（api_key / api_key_file）取，命令行不提供密钥选项：
  * 宿主不把密钥写进驱动的参数表——否则 BOT4CJ_DEBUG 的参数转储会把密钥打进日志。
  * 驱动自己也按同一条链读环境变量。 */
 std::string resolveLlmKeyFromEnv();

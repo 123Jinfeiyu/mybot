@@ -188,7 +188,7 @@ TH_TEST(agenttools_registry_dispatch) {
 	TH_CHECK(tools.contains("list_action_scripts"));
 	TH_CHECK(tools.contains("run_action_script"));
 	TH_CHECK(tools.contains("list_hardware"));
-	TH_CHECK(!tools.contains("run_command"));	/* --agent-no-shell */
+	TH_CHECK(!tools.contains("run_command"));	/* allowShell=false（安全缺省） */
 
 	std::vector<ToolSpec> specs = tools.specs();
 	TH_CHECK(specs.size() == 3);

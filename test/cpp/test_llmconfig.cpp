@@ -315,7 +315,6 @@ TH_TEST(agentconfig_cli_overrides_file) {
 	CliOptions o = baseOptions(cfg.string());
 	o.llmEndpoint = "https://from-cli/v1";
 	o.llmModel = "cli-model";
-	o.llmKey = "cli-key";
 	o.llmMaxTurns = "3";
 	o.scriptsDir = "cli-scripts";
 
@@ -324,7 +323,8 @@ TH_TEST(agentconfig_cli_overrides_file) {
 	TH_CHECK(buildAgentConfig(o, out, err));
 	TH_CHECK(out.endpoint == "https://from-cli/v1");
 	TH_CHECK(out.model == "cli-model");
-	TH_CHECK(out.resolvedApiKey == "cli-key");
+	/* 密钥不经命令行（--llm-key 已移除），本次仍来自配置文件 */
+	TH_CHECK(out.resolvedApiKey == "file-key");
 	TH_CHECK(out.maxTurns == 3);
 	TH_CHECK(out.scriptsDir == "cli-scripts");
 }
@@ -391,57 +391,72 @@ TH_TEST(agentconfig_key_source_is_recorded_and_flagged) {
 		TH_CHECK(out.apiKeySource == ApiKeySource::Env);
 		TH_CHECK(shellKeyExposureWarning(out).empty());
 	}
-	/* 配置文件内联 api_key → 告警（文件可读） */
+	/* 配置文件内联 api_key → 告警（文件可读）；allowShell 需显式开启才有该告警 */
 	{
 		fs::path cfg = tmp.path() / "inline.json";
 		writeFile(cfg, R"({"api_key":"inline-secret-value"})", fs::perms::owner_all);
+		CliOptions o = baseOptions(cfg.string());
+		o.agentShell = true;
 		AgentModeConfig out;
 		std::string err;
-		TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK(buildAgentConfig(o, out, err));
 		TH_CHECK(out.apiKeySource == ApiKeySource::ConfigInline);
 		std::string w = shellKeyExposureWarning(out);
 		TH_CHECK(w.find("api_key") != std::string::npos);
 		/* 告警只讲来源，绝不复述密钥本身 */
 		TH_CHECK(w.find("inline-secret-value") == std::string::npos);
 	}
-	/* 命令行 --llm-key → 告警（经 /proc/<pid>/cmdline 可读） */
-	{
-		CliOptions o = baseOptions("none");
-		o.llmKey = "cli-secret-value";
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(buildAgentConfig(o, out, err));
-		TH_CHECK(out.apiKeySource == ApiKeySource::Cli);
-		std::string w = shellKeyExposureWarning(out);
-		TH_CHECK(w.find("/proc") != std::string::npos);
-		TH_CHECK(w.find("cli-secret-value") == std::string::npos);
-	}
-	/* 密钥文件 → 告警（该文件可读） */
+	/* 密钥文件 → 告警（该文件可读）；本组用例的 allowShell 由下一行的显式开启提供 */
 	{
 		fs::path key = tmp.path() / "k.key";
 		writeFile(key, "file-secret-value\n", fs::perms::owner_all);
 		fs::path cfg = tmp.path() / "keyfile.json";
 		writeFile(cfg, std::string("{\"api_key_file\":\"") + key.string() + "\"}",
 			fs::perms::owner_all);
+		CliOptions o = baseOptions(cfg.string());
+		o.agentShell = true;		/* run_command 现为显式开启 */
 		AgentModeConfig out;
 		std::string err;
-		TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK(buildAgentConfig(o, out, err));
 		TH_CHECK(out.apiKeySource == ApiKeySource::ConfigFile);
 		TH_CHECK(!shellKeyExposureWarning(out).empty());
 	}
 }
 
-TH_TEST(agentconfig_shell_key_warning_is_silent_when_shell_disabled) {
+/* 安全缺省翻转（2026-09-20 评估 C12）：run_command 缺省**不注册**——这既让
+ * 「密钥对 agent 的 shell 可见」这条告警默认不适用，也让 shell 能力成为
+ * 显式选择（--agent-shell 或配置 allow_shell=true）。 */
+TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 	NoKeyEnv nokey;
-	CliOptions o = baseOptions("none");
-	o.llmKey = "cli-secret-value";
-	o.agentNoShell = true;		/* --agent-no-shell：没有 run_command，也就没有该风险 */
+	TempDir tmp("shell");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({"api_key":"inline-secret-value"})", fs::perms::owner_all);
 
+	/* 1) 缺省：不注册 run_command，告警静默 */
 	AgentModeConfig out;
 	std::string err;
-	TH_CHECK(buildAgentConfig(o, out, err));
+	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
 	TH_CHECK(!out.allowShell);
 	TH_CHECK(shellKeyExposureWarning(out).empty());
+
+	/* 2) --agent-shell：注册 run_command；密钥来自配置文件 → 启动告警 */
+	CliOptions o = baseOptions(cfg.string());
+	o.agentShell = true;
+	AgentModeConfig out2;
+	TH_CHECK(buildAgentConfig(o, out2, err));
+	TH_CHECK(out2.allowShell);
+	std::string w = shellKeyExposureWarning(out2);
+	TH_CHECK(!w.empty());
+	/* 告警只讲来源，绝不复述密钥本身 */
+	TH_CHECK(w.find("inline-secret-value") == std::string::npos);
+
+	/* 3) 配置文件 allow_shell=true 与命令行同效（两条入口都通） */
+	fs::path cfg2 = tmp.path() / "shell.json";
+	writeFile(cfg2, R"({"api_key":"inline-secret-value","allow_shell":true})",
+		fs::perms::owner_all);
+	AgentModeConfig out3;
+	TH_CHECK(buildAgentConfig(baseOptions(cfg2.string()), out3, err));
+	TH_CHECK(out3.allowShell);
 }
 
 TH_TEST(agentconfig_requires_key_from_somewhere) {

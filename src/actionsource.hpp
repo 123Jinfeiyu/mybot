@@ -40,10 +40,12 @@ struct CliOptions {
 	bool agent = false;
 	bool agentOptionsUsed = false;	/* 出现过 agent 专属选项（非 agent 场景据此报错） */
 	std::string agentTask;		/* --task：非空 = 一次性任务，空 = 交互 REPL */
-	bool agentNoShell = false;	/* --agent-no-shell：不注册 run_command */
+	/* 安全缺省（2026-09-20 评估 C12 收口）：run_command 涉及任意 shell 执行，
+	 * 故**缺省不提供**，须显式 --agent-shell 或配置 allow_shell=true 才开启
+	 * （旧行为是缺省提供 + --agent-no-shell 关闭，安全侧默认值反了）。 */
+	bool agentShell = false;	/* --agent-shell：显式开启 run_command */
 	std::string llmEndpoint;
 	std::string llmModel;
-	std::string llmKey;		/* 取出后立刻 setenv，不落进驱动参数表/日志 */
 	std::string llmConfig;		/* --llm-config：配置文件路径（缺省自动查找） */
 	std::string llmDriver;		/* --llm-driver：协议驱动表名（= modules/<名>.lua） */
 	std::string llmVar;		/* --llm-var：承载驱动变量的名字 */

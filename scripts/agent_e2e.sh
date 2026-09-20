@@ -113,10 +113,11 @@ echo "----- 场景 1：LlmOpenAI（当前协议） -----"
 PORT=$((20000 + RANDOM % 300))
 CAP1="$tmp/req-openai.json"
 start_server "$PORT" "$CAP1" ok || exit 1
-# 同时覆盖 --llm-key → 进程内环境变量这条路径
-out1="$(timeout 60 "$BOT" --robot=robots/relay-test.sql --agent --task "$TASK" \
+# 同时覆盖「密钥经环境变量 → 驱动读取」这条路径（--llm-key 已于 2026-09-20 评估移除）；
+# --agent-shell：run_command 缺省不提供，本场景要断言工具循环真的跑了 shell 命令
+out1="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent --task "$TASK" \
 	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
-	--llm-key "e2e-fake-key" --llm-config none --scripts-dir scripts 2>&1)"
+	--agent-shell --llm-config none --scripts-dir scripts 2>&1)"
 rc1=$?
 stop_server
 echo "$out1"
@@ -149,9 +150,9 @@ echo "----- 场景 2：LlmDeepSeek（DeepSeek 协议） -----"
 PORT=$((20400 + RANDOM % 300))
 CAP2="$tmp/req-deepseek.json"
 start_server "$PORT" "$CAP2" ok || exit 1
-# 走环境变量（由驱动自己读），不传 --llm-key
+# 走环境变量（由驱动自己读）；--agent-shell 同场景 1（本场景也断言 run_command 在工具表里）
 out2="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql \
-	--agent --llm-driver LlmDeepSeek --llm-config none --task "$TASK" \
+	--agent --llm-driver LlmDeepSeek --llm-config none --task "$TASK" --agent-shell \
 	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
 	--scripts-dir scripts 2>&1)"
 rc2=$?
@@ -227,6 +228,10 @@ check_present "$CAP4" '"model":"cfg-model-from-file"' "模型名来自配置文�
 check_present "$CAP4" '"max_tokens":1234' "max_tokens 来自配置文件"
 check_present "$CAP4" '"temperature":0.25' "temperature 来自配置文件"
 check_present "$HDR4" "cfg-key-from-file" "API key 来自配置文件（Authorization 头）"
+# 安全缺省（2026-09-20 评估 C12）：配置文件没写 allow_shell、命令行也没 --agent-shell
+# 时，run_command 不得出现在工具表里——这条断言正是「缺省关闭」的判别性守门。
+check_json "$CAP4" "'run_command' not in {t.get('function',{}).get('name') for t in d.get('tools',[])}" \
+	"缺省不提供 run_command（无 --agent-shell / allow_shell 时工具表里没有它）"
 
 # ============ 场景 5：拍照并进入上下文（多模态） ============
 echo "----- 场景 5：capture_image 图片进入上下文 -----"

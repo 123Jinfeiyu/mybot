@@ -141,15 +141,13 @@ bool pickDriverAndVar(const CliOptions& opts, const LlmFileConfig& file,
 	return true;
 }
 
-/* ---- 4) API key：命令行 > 环境变量链 > 配置文件 api_key > 配置文件 api_key_file ---- */
-bool resolveApiKey(const CliOptions& opts, const LlmFileConfig& file,
+/* ---- 4) API key：环境变量链 > 配置文件 api_key > 配置文件 api_key_file ----
+ * 2026-09-20 评估：--llm-key 已移除（命令行密钥会出现在 /proc/<pid>/cmdline，
+ * 同用户进程可直接读到，且与「密钥不进 argv」的自证口径自相矛盾）。 */
+bool resolveApiKey(const LlmFileConfig& file,
 		const std::string& cfgPath, AgentModeConfig& out, std::string& err) {
 	out.resolvedApiKey = resolveLlmKeyFromEnv();
 	if (!out.resolvedApiKey.empty()) { out.apiKeySource = ApiKeySource::Env; }
-	if (!opts.llmKey.empty()) {
-		out.resolvedApiKey = opts.llmKey;
-		out.apiKeySource = ApiKeySource::Cli;
-	}
 	if (out.resolvedApiKey.empty() && file.apiKey) {
 		out.resolvedApiKey = *file.apiKey;
 		out.apiKeySource = ApiKeySource::ConfigInline;
@@ -164,8 +162,10 @@ bool resolveApiKey(const CliOptions& opts, const LlmFileConfig& file,
 		out.configWarning = secretFilePermissionWarning(*file.apiKeyFile);
 	}
 	if (out.resolvedApiKey.empty()) {
-		err = "缺少 API key：可用 --llm-key、配置文件的 api_key / api_key_file 字段，"
-			"或环境变量 BOT4CJ_LLM_KEY（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）";
+		err = "缺少 API key：请设环境变量 BOT4CJ_LLM_KEY"
+			"（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY），"
+			"或在配置文件的 api_key / api_key_file 字段提供"
+			"（命令行不提供密钥选项：argv 对同用户进程可读）";
 		return false;
 	}
 	/* 配置文件里内联密钥时也提醒权限（明文密钥常在随手 chmod 644 的文件里） */
@@ -238,7 +238,7 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	if (!pickDriverAndVar(opts, file, out, err)) { return false; }
 
 	/* ---- 4) API key ---- */
-	if (!resolveApiKey(opts, file, cfgPath, out, err)) { return false; }
+	if (!resolveApiKey(file, cfgPath, out, err)) { return false; }
 
 	/* ---- 5) 采样/超时/轮次 ---- */
 	if (!mergeSamplingLayer(opts, file, out, err)) { return false; }
@@ -253,7 +253,9 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 
 	out.scriptsDir = opts.scriptsDir.empty() ? "scripts" : opts.scriptsDir;
 	if (opts.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
-	out.allowShell = opts.agentNoShell ? false : file.allowShell.value_or(true);
+	/* 安全缺省翻转（评估 C12 收口）：run_command 缺省**不提供**，只有
+	 * --agent-shell 或配置 allow_shell=true 才开启；命令行 > 配置文件。 */
+	out.allowShell = opts.agentShell ? true : file.allowShell.value_or(false);
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
 
@@ -277,9 +279,6 @@ std::string shellKeyExposureWarning(const AgentModeConfig& cfg) {
 	if (!cfg.allowShell) { return ""; }
 	const char* how = nullptr;
 	switch (cfg.apiKeySource) {
-	case ApiKeySource::Cli:
-		how = "--llm-key 命令行参数（同用户进程可从 /proc/<pid>/cmdline 读到）";
-		break;
 	case ApiKeySource::ConfigInline:
 		how = "配置文件的 api_key 字段（配置文件本身可读）";
 		break;
@@ -290,12 +289,13 @@ std::string shellKeyExposureWarning(const AgentModeConfig& cfg) {
 	case ApiKeySource::None:
 		return "";
 	}
-	return std::string("警告: run_command 已启用，而 API key 来自 ") + how
+	return std::string("警告: run_command 已启用（--agent-shell 或 allow_shell=true），"
+		"而 API key 来自 ") + how
 		+ "。run_command 的子进程与宿主同属一个用户，可直接读出该密钥"
 		"（chmod 600 这类文件权限位对此无效）。"
 		"如需避免：改用环境变量 BOT4CJ_LLM_KEY 提供密钥"
 		"（该变量名含 key，会被 run_command 的环境清洗剔除），"
-		"或用 --agent-no-shell 关闭 run_command。";
+		"或去掉 --agent-shell / 把 allow_shell 置回 false（缺省即关闭）。";
 }
 
 std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot) {

@@ -38,7 +38,6 @@ constexpr OptionSpec kValueOptions[] = {
 	{"prompt-file", [](CliOptions& o, const std::string& v) { o.promptFiles.push_back(v); }, true},
 	{"llm-endpoint", [](CliOptions& o, const std::string& v) { o.llmEndpoint = v; }, true},
 	{"llm-model", [](CliOptions& o, const std::string& v) { o.llmModel = v; }, true},
-	{"llm-key", [](CliOptions& o, const std::string& v) { o.llmKey = v; }, true},
 	{"llm-config", [](CliOptions& o, const std::string& v) { o.llmConfig = v; }, true},
 	{"llm-driver", [](CliOptions& o, const std::string& v) { o.llmDriver = v; }, true},
 	{"llm-var", [](CliOptions& o, const std::string& v) { o.llmVar = v; }, true},
@@ -70,8 +69,8 @@ ParsedArgs parseArgs(int argc, char** argv) {
 			if (!noValue) { out.opts.tcpPort = val; }
 		}
 		else if (key == "agent") { out.opts.agent = true; out.opts.agentOptionsUsed = true; }
-		else if (key == "agent-no-shell") {
-			out.opts.agentNoShell = true;
+		else if (key == "agent-shell") {
+			out.opts.agentShell = true;
 			out.opts.agentOptionsUsed = true;
 		}
 		else if (key == "no-camera") {
@@ -126,7 +125,7 @@ int validateOptions(ParsedArgs& args) {
 	 *   1) agent 专属选项出现在非 agent 模式下 → 用户意图与参数不一致；
 	 *   2) --agent 与 --tcp/--input 互斥 → 两者都要求主导输入源。 */
 	if (!options.agent && options.agentOptionsUsed) {
-		std::cerr << "参数错误：--task / --llm-* / --agent-no-shell / --scripts-dir "
+		std::cerr << "参数错误：--task / --llm-* / --agent-shell / --scripts-dir "
 			"/ --prompt-file 只在 --agent 模式下有效；用 --help 查看 agent 模式说明"
 			<< std::endl;
 		return 2;
@@ -176,9 +175,10 @@ std::string helpText() {
 	s += "  --llm-var <变量名>   承载驱动的变量名（缺省 llm0）；结构脚本已声明则直接用\n";
 	s += "  --llm-endpoint <URL>  接入点（覆盖配置文件）\n";
 	s += "  --llm-model <名称>    模型名（覆盖配置文件）\n";
-	s += "  --llm-key <KEY>       API key（覆盖配置文件）；会写入本进程环境变量\n";
-	s += "                       BOT4CJ_LLM_KEY。更推荐直接写进配置文件或设环境变量\n";
-	s += "                       （argv 对 /proc/<pid>/cmdline 可读）\n";
+	s += "  （API key）           只从环境变量 BOT4CJ_LLM_KEY（兼容 ROBOT_AGENT_API_KEY /\n";
+	s += "                       DEEPSEEK_API_KEY）或配置文件的 api_key / api_key_file 取；\n";
+	s += "                       不提供命令行传密钥的选项——argv 对同用户进程可读\n";
+	s += "                       （/proc/<pid>/cmdline）\n";
 	s += "  --llm-max-turns <N>   单次任务的最大模型轮数（缺省 8，范围 1-100）\n";
 	s += "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096）\n";
 	s += "  --llm-timeout <秒>    单次模型调用超时（缺省 180）\n";
@@ -188,7 +188,9 @@ std::string helpText() {
 	s += "                       目录收集其中全部 .md 按文件名自然排序（编号即装载顺序），\n";
 	s += "                       文件间以 \"## 文件名\" 分节；也可用配置文件 prompt_files 数组\n";
 	s += "                       （示例：prompts/spider_robot/）\n";
-	s += "  --agent-no-shell      不向智能体提供 run_command（去掉任意 shell 执行能力）\n";
+	s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
+	s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌，\n";
+	s += "                       要用就显式开启；理由与缓解见 docs/agent.md 安全一节）\n";
 	s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）；结构脚本已声明则直接用\n";
 	s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
 	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
