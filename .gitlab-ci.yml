@@ -1,4 +1,5 @@
-# bot4cj CI（F-22）：最小门禁——构建 + 全量守门 + sanitizer 双跑。
+# bot4cj CI（F-22）：最小门禁——构建 + 全量守门 + sanitizer 单跑（--asan-only），
+# 另有一组软门禁（TSan / clang / clang-tidy / coverage / musl，均 allow_failure）。
 # GitCode（GitLab 系托管）经 .gitlab-ci.yml 驱动；若托管方不识别本文件
 # 则静默不生效（无副作用），迁移其它平台时按同结构翻译即可。
 #
@@ -56,7 +57,12 @@ gate:sanitizer:
 # TSan 常态化（审计覆盖缺口 #1，起步为软门禁）：只跑 mybot_tests 的守护
 # 相关用例（并发压测 + 状态机分支），不跑整段守门——LuaJIT 未按 TSan
 # 清洁维护，全量跑的误报无信号价值（tsan.supp 已按库抑制残留噪声）。
-# allow_failure 观察若干轮、告警收敛后移除该行转硬门禁。
+# halt_on_error=1：TSan 报告数据竞争时以非零退出码结束进程，使本条 job 真能被
+# 竞态判红。此前 halt_on_error=0 下 TSan 报告不改变退出码，job 只可能因测试
+# 自身断言失败而红——对竞态零拦截力。
+# 转硬（移除 allow_failure）条件：抑制清单外连续 2 轮 pipeline 无新增 TSan 报告，
+# 且本机 TSan 运行时环境限制（见 docs/testing.md 的 VMA range 记录）在 CI 镜像上
+# 不再复现——最迟 2026-10-31。在此之前保持 allow_failure: true（如实：尚未转硬）。
 gate:tsan:
   stage: gate
   image: debian:bookworm
@@ -66,16 +72,18 @@ gate:tsan:
   script:
     - cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=thread
     - cmake --build build-tsan -j"$(nproc)"
-    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_concurrent
-    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_multi_runner
-    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=0" ./build-tsan/mybot_tests daemon_stop_and_exit
+    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=1" ./build-tsan/mybot_tests daemon_concurrent
+    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=1" ./build-tsan/mybot_tests daemon_multi_runner
+    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=1" ./build-tsan/mybot_tests daemon_stop_and_exit
 
 # 编译器矩阵（N-35，起步为软门禁）：CI 此前只有 g++ 一条编译路径，同一份源码
 # 在 clang 前端下的接受度与告警差异（-Wall -Wextra -Wpedantic 各家取舍不同）
 # 无人观察——clang 报的可能是真问题，也可能是另一套前端口径。
 # 本 job 只做烟雾验证：clang 能构建 + C++ 单测全绿（Lua 层与编译器无关，
-# 不重复跑整段守门）。构建日志含告警文本，先观察若干轮再决定是否收紧。
-# 注：开发机无 clang，本 job 未经本地预跑验证，故 allow_failure 起步。
+# 不重复跑整段守门）。构建日志含告警文本。
+# 转硬（移除 allow_failure）条件：clang 构建在 CI 基线镜像上连续 2 轮无新增
+# 告警且 C++ 单测全绿——最迟 2026-10-31。在此之前保持 allow_failure: true
+# （如实：开发机无 clang，本 job 未经本地预跑验证，尚未转硬）。
 gate:clang:
   stage: gate
   image: debian:bookworm
@@ -92,9 +100,16 @@ gate:clang:
 # 静态分析软门禁（fix-plan 2026-09-20 阶段 D，扣分点「门禁缺静态分析」：
 # 逻辑竞态之外的误用模式此前只能靠运行期兜底）。只分析 src/（modules 为
 # Lua 不适用）；检查集见仓库根 .clang-tidy（bugprone/performance/concurrency，
-# 格式类不开）。allow_failure 起步，与 gate:tsan 同路径：观察若干轮、
-# 存量告警逐条处置或入豁免清单后，移除该行转硬门禁。
-# 注：首次全量跑出的告警清单留档到当轮评估文档，作为转硬前的基线。
+# 格式类不开）。
+# 退出码：clang-tidy 以 --warnings-as-errors='*' 运行，其非零退出码经
+# 「重定向落文件 → 记 rc → 末尾 [ $rc -eq 0 ]」直接决定 job 结果——此前管道
+# 退出码取自末尾的 tail（恒 0），叠加 allow_failure 使该 job 无论多少告警都不会红。
+# 用 if/fi 而非 `set -o pipefail`：dash 不支持 pipefail，写法要在任意 /bin/sh 下成立。
+# 留档：clang-tidy.log 声明为 artifacts（when: always + expire_in），
+# 「首轮全量告警基线留档」由此有真实落点。
+# 转硬（移除 allow_failure）条件：首轮全量基线已随 artifacts 产出，且存量告警
+# 逐条处置或写入豁免清单后，连续 2 轮 pipeline 无新增告警——最迟 2026-10-31。
+# 在此之前保持 allow_failure: true（如实：尚未转硬）。
 gate:clang-tidy:
   stage: gate
   image: debian:bookworm
@@ -105,5 +120,76 @@ gate:clang-tidy:
     - apt-get install -y -qq cmake clang-tidy libluajit-5.1-dev pkg-config
   script:
     - cmake -S . -B build-tidy -DCMAKE_BUILD_TYPE=Release
-    - clang-tidy -p build-tidy --warnings-as-errors='*' src/*.cpp 2>&1 | tee clang-tidy.log | tail -50
-    - echo "告警总数：$(grep -c 'warning:' clang-tidy.log || true)"
+    # 全量输出落 clang-tidy.log（artifacts 留档），控制台只回放尾部 50 行 + 告警计数。
+    - |
+      if clang-tidy -p build-tidy --warnings-as-errors='*' src/*.cpp > clang-tidy.log 2>&1; then
+        rc=0
+      else
+        rc=$?
+      fi
+      tail -50 clang-tidy.log
+      echo "告警总数：$(grep -c 'warning:' clang-tidy.log || true)"
+      [ "$rc" -eq 0 ]
+  artifacts:
+    when: always
+    expire_in: 4 weeks
+    paths:
+      - clang-tidy.log
+
+# 覆盖率软门禁（fix-plan 2026-09-20，扣分点「测试覆盖率无数据」）：用
+# test/run_coverage.sh 以 -DCMAKE_CXX_FLAGS=--coverage 构建并运行 mybot_tests，
+# 产出 C++ 侧行覆盖报告（优先 gcovr，其次 lcov，都没有时退化为 gcov 原生输出，
+# 缺工具不判失败）。本 job **不进入** run_all.sh 的记账——守门汇总口径不变，
+# 也绝不因缺覆盖率工具把既有硬门禁带红。
+# 转硬（移除 allow_failure）条件：覆盖数据随 artifacts 入库并设定 C++ 侧行覆盖
+# 基线（存量覆盖率 + 允许回落幅度）后——最迟 2026-10-31。在此之前保持
+# allow_failure: true（如实：起步阶段，尚无基线）。
+gate:coverage:
+  stage: gate
+  image: debian:bookworm
+  needs: []  # 独立构建 --coverage 产物，不依赖 build:release
+  allow_failure: true
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq cmake g++ libluajit-5.1-dev luajit python3 gcovr
+  script:
+    - bash test/run_coverage.sh
+  artifacts:
+    when: always
+    expire_in: 4 weeks
+    paths:
+      # 报告落在构建目录内（build-*/ 已被 .gitignore 覆盖，不污染 git status）
+      - build-cov/coverage/
+
+# musl（非 glibc）实证软门禁（fix-plan 2026-09-20）：docs/faq.md 如实声明
+# 「非 glibc libc 未验证」——HAL.lua 经 ffi 直调 glibc，termios 布局断言、
+# 波特率编码、ioctl 常量此前只在 glibc 头文件下实证过。本 job 在 alpine/musl
+# 下构建并运行三个常量自检目标（test_ioctl_nums / test_uart_consts /
+# test_v4l2_consts，均为 _Static_assert/编译期比对，跑起来即证明常量在 musl
+# 头文件下仍成立），能构建的话再跑 mybot_tests。
+# 覆盖边界（如实）：本 job 只覆盖 C++ 与常量自检层，**不覆盖** Lua 层 HAL 的
+# 运行时行为（ffi 直调 glibc 符号、波特率分叉探测仍无 musl 实证）；且开发机
+# 无 musl 工具链/无 docker，本 job 未经本地预跑验证。
+# 转硬（移除 allow_failure）条件：mybot_tests 在 musl 下稳定构建运行、
+# 并补上 Lua 层 HAL 的 musl 运行时实证后——最迟 2026-10-31。
+gate:musl:
+  stage: gate
+  image: alpine:3.20
+  needs: []
+  allow_failure: true
+  before_script:
+    - apk add --no-cache build-base cmake luajit-dev linux-headers pkgconf
+  script:
+    - cmake -S . -B build-musl -DCMAKE_BUILD_TYPE=Release
+    # 常量自检是本 job 的硬内核：构建或运行失败即判红。
+    - cmake --build build-musl -j2 --target test_ioctl_nums test_uart_consts test_v4l2_consts
+    - ./build-musl/test_ioctl_nums
+    - ./build-musl/test_uart_consts
+    - ./build-musl/test_v4l2_consts
+    # mybot_tests 属「能构建则跑」：musl 下的构建失败只记提示，不掩盖上面的结论。
+    - |
+      if cmake --build build-musl -j2 --target mybot_tests; then
+        ./build-musl/mybot_tests
+      else
+        echo "mybot_tests 在 musl 下未能构建（本 job 只覆盖 C++ 与常量自检层，不覆盖 Lua 层 HAL 运行时行为）"
+      fi
