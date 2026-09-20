@@ -117,6 +117,36 @@ TH_TEST(lexer_quoted_semicolon_and_comma_are_data) {
 	TH_CHECK(ends == 1);
 }
 
+/* 评估 2026-09-20：括号是分隔符，与空白无关——此前 '(' 只在「token 起始」
+ * 有分支、')' 只在「token 非空」有分支，于是紧跟标识符的 '(' 被并进名字，
+ * `INSERT INTO T(a,b) VALUES(1,2)` 解析失败（`Token ,`）。SQL 空白不敏感是
+ * 常识，仓内夹具恰好一律写成 `T (a, b)` 故从未暴露。以下两条断言在修复前
+ * 必失败（前者指纹里出现 `name 'Relay(name'`，后者直接抛异常）。 */
+TH_TEST(lexer_parens_without_surrounding_space_are_delimiters) {
+	std::vector<Token> ts = fx::tokens("INSERT INTO Relay(name, delay) VALUES('r0', 200);");
+	TH_CHECK(fx::fingerprint(ts) ==
+		"INSERT INTO name 'Relay' ( name 'name' , name 'delay' ) VALUES ( name 'r0' , name '200' ) ;");
+}
+
+TH_TEST(lexer_parens_token_stream_matches_spaced_form) {
+	/* 同一句话两种写法（紧凑 / 留白）必须产出逐字节相同的词元流 */
+	std::vector<Token> compact = fx::tokens("CREATE TABLE T(a Number);INSERT INTO T(a) VALUES(1);");
+	std::vector<Token> spaced = fx::tokens("CREATE TABLE T ( a Number ); INSERT INTO T ( a ) VALUES ( 1 );");
+	TH_CHECK(fx::fingerprint(compact) == fx::fingerprint(spaced));
+	TH_CHECK(fx::fingerprint(compact) ==
+		"CREATE TABLE name 'T' ( name 'a' NUMBER ) ; INSERT INTO name 'T' ( name 'a' ) VALUES ( name '1' ) ;");
+}
+
+TH_TEST(lexer_lone_parens_before_space) {
+	/* 修复前 `String )` 里的 ')' 会被当成名字（name ')'）；现在与 `String)` 同流 */
+	std::vector<Token> ts = fx::tokens("CREATE TABLE T ( a Number );");
+	TH_CHECK(ts.size() == 8);
+	TH_CHECK(ts[4].type == TokenType::NAME && ts[4].name == "a");
+	TH_CHECK(ts[5].type == TokenType::NUMBER);
+	TH_CHECK(ts[6].type == TokenType::RGHT);
+	TH_CHECK(ts[7].type == TokenType::END);
+}
+
 TH_TEST(lexer_quote_state_is_incremental_on_large_values) {
 	/* F-02：旧实现每追加一个字符就重扫整个 token（insideQuotes O(长度)），
 	 * 100 KB 引号值实测 4.84 s 纯 CPU；1 MB 按平方标度需 ~8 分钟，会把

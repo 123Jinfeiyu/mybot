@@ -68,6 +68,7 @@ class Lexer {
 	bool flag_ = false;		/* 读到分号结尾 */
 	bool comma_ = false;		/* 逗号 */
 	bool rght_ = false;		/* 右括号 */
+	bool left_ = false;		/* 左括号（紧随一个已提交的 token 时挂起） */
 	bool singleLineComment_ = false;
 	bool multiLineComment_ = false;
 	bool multiLineComment2_ = false;

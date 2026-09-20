@@ -97,6 +97,7 @@ Token Lexer::next(bot::Reader& sr) {
 	if (flag_) { flag_ = false; return {TokenType::END, ""}; }
 	if (comma_) { comma_ = false; return {TokenType::COMMA, ""}; }
 	if (rght_) { rght_ = false; return {TokenType::RGHT, ""}; }
+	if (left_) { left_ = false; return {TokenType::LEFT, ""}; }
 
 	std::string s;
 	bool inQuote = false;		/* F-02：引号态由本函数增量维护（O(n)），
@@ -128,14 +129,21 @@ Token Lexer::next(bot::Reader& sr) {
 		}
 		if (s.empty() && blank) { continue; }
 		else if (!s.empty() && blank) { return Token::parse(s); }
-		/* C2 防线：';'/','/'(' 在空 token 时直接产出对应词元（原实现借
+		/* C2 防线：';'/','/'('/')' 在空 token 时直接产出对应词元（原实现借
 		 * return next(sr) 尾递归绕回顶部消费 pending 标志，连续 N 个分隔符
-		 * 即 N 层真实递归，--tcp 下可被远程输入打爆栈）。语义等价改直返。 */
+		 * 即 N 层真实递归，--tcp 下可被远程输入打爆栈）。语义等价改直返。
+		 * 评估 2026-09-20：四个分隔符一律「空 token 直返 / 非空 token 挂
+		 * pending 标志」，此前 '(' 只处理空 token 一侧、')' 只处理非空
+		 * 一侧——`INSERT INTO T(a,b) VALUES(1,2)`（SQL 空白不敏感的常见
+		 * 写法）里 '(' 会被并进名字（`T(a` 之类），解析以 `Token ,` 报错
+		 * 收场，而仓内夹具一律写成 `T (a, b)` 故从未暴露。 */
 		else if (s.empty() && c == ';') { return {TokenType::END, ""}; }
 		else if (!s.empty() && c == ';') { flag_ = true; return Token::parse(s); }
 		else if (s.empty() && c == ',') { return {TokenType::COMMA, ""}; }
 		else if (!s.empty() && c == ',') { comma_ = true; return Token::parse(s); }
 		else if (s.empty() && c == '(') { return {TokenType::LEFT, ""}; }
+		else if (!s.empty() && c == '(') { left_ = true; return Token::parse(s); }
+		else if (s.empty() && c == ')') { return {TokenType::RGHT, ""}; }
 		else if (!s.empty() && c == ')') { rght_ = true; return Token::parse(s); }
 		else {
 			s += c;
