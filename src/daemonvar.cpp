@@ -56,14 +56,15 @@ DaemonRunner::~DaemonRunner() {
 	std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
 }
 
-/* ---- setup：注入槽地址/配置串/布局表全局，跑 chunk 一次定义 daemon_tick ----
- * 失败按 load/setup 两段打印分段错误（run_all.sh 守门按两种短语匹配）。
- * 2.7：DAEMON_SLOT_LAYOUT 注入——pthread.lua 的跨语言布局断言以注入值
- * 为基准（单一事实源 = daemonvar.hpp 的 struct + 静态断言），Lua 侧手抄
- * 常量降为无宿主注入环境兜底。 */
-static bool setupDaemonChunk(lua_State* L, DaemonSlot* slot, const std::string& chunk,
-		const std::string& config) {
-	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot)));
+/* ---- 注入守护线程 Lua 全局（单点，body 与 setup 共用）----
+ * 槽地址经 lua_pushlightuserdata 注入：lightuserdata 在 Lua 域无算术、无
+ * tonumber，「地址被 double 化后 >=2^53 静默丢位」这一风险类别在语言层面
+ * 消除（旧 lua_pushinteger 注入靠「禁止对地址做算术」的契约注释兜底，
+ * 见 pthread.lua slot_attach）。
+ * 配置串 + 布局表：布局常量单一事实源 = daemonvar.hpp 的 struct + 静态断言
+ * （2.7），pthread.lua 手抄常量降为无宿主注入环境兜底。 */
+static void injectDaemonGlobals(lua_State* L, DaemonSlot* slot, const std::string& config) {
+	lua_pushlightuserdata(L, slot);
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_ADDR");
 	lua_pushstring(L, config.c_str());
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_CONFIG");
@@ -81,7 +82,11 @@ static bool setupDaemonChunk(lua_State* L, DaemonSlot* slot, const std::string& 
 	setOff("size", SLOT_SIZE);
 	setOff("maxvals", SLOT_MAXVALS);
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_LAYOUT");
+}
 
+/* ---- setup：跑 chunk 一次定义 daemon_tick ----
+ * 失败按 load/setup 两段打印分段错误（run_all.sh 守门按两种短语匹配）。 */
+static bool setupDaemonChunk(lua_State* L, const std::string& chunk) {
 	int st = luaL_loadfile(L, chunk.c_str());
 	if (st != LUA_OK) {
 		std::cerr << "[daemon] chunk load error: " << luaErrorString(L) << std::endl;
@@ -151,13 +156,10 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	lua_State* L = openSandboxedState();
 	if (L == nullptr) { return -1; }
 
-	/* 注入共享槽地址（64 位整数 tag，任意值逐位保真）与配置串为 Lua 全局 */
-	lua_pushinteger(L, static_cast<lua_Integer>(reinterpret_cast<uintptr_t>(slot.get())));
-	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_ADDR");
-	lua_pushstring(L, config.c_str());
-	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_CONFIG");
+	/* 注入共享槽地址（lightuserdata）+ 配置串 + 布局表为 Lua 全局 */
+	injectDaemonGlobals(L, slot.get(), config);
 
-	if (!setupDaemonChunk(L, slot.get(), chunk, config)) {
+	if (!setupDaemonChunk(L, chunk)) {
 		lua_close(L);
 		return -1;
 	}

@@ -38,6 +38,7 @@
 
 ### 执行引擎与安全
 
+- **守护槽地址注入改 `lightuserdata`**（2026-09-20 外部评估「裸地址注入」收口）：宿主从 `lua_pushinteger` 改 `lua_pushlightuserdata` 注入槽地址——lightuserdata 在 Lua 域**无算术、无 `tonumber`**，「地址被 double 化后在 ≥2^53 静默丢位」整类风险在语言层面消除，不再靠「禁止对地址做算术」的契约注释兜底。`slot_attach` 改三分支接收（lightuserdata / ffi 指针 / 非负整数兜底，整数路径的 ≥2^53 告警与守卫保留——纯 Lua 场景仍需要），三个守护 chunk 的 `P.slot_attach(DAEMON_SLOT_ADDR)` 透传写法零改动。注入收敛为 `injectDaemonGlobals` 单点（原先 `body` 与 setup 两处重复注入同一批全局）。守门：`test_pthread.lua` 补 cdata 指针附着路径断言，lightuserdata 真注入路径由守护 e2e 覆盖
 - **INSERT 列数不匹配报错升级**（2026-09-20）：报错带表名与两侧列数（`Insert into table 'T' has 1 column(s) but 2 value(s).`）——此前的「Insert params」两个字符无法定位拼写/漏列位置（fix-plan 3-4）
 - **run_command 子进程卫生**（2026-09-20）：stdin 重定向到 `/dev/null`——子命令不再与 agent REPL 抢终端输入；管道 `fcntl(O_NONBLOCK)` 失败即 fatal（对齐全仓 fail-closed 口径，静默跳过会让输出收集循环阻塞挂死会话）（fix-plan 3-1）
 - **API key 对 agent 的 shell 可见性告警**（2026-09-19）：环境变量清洗只覆盖「环境变量」这一来源——`run_command` 的子进程与宿主**同属一个用户**，密钥若来自配置文件 `api_key`、密钥文件 `api_key_file` 或 `--llm-key`，脚本一句 `cat` 就能拿走（`chmod 600` 对同用户无效）。命中上述来源即启动时告警并给规避路径（改用环境变量，或 `--agent-no-shell`）；提示只讲来源、**绝不复述密钥本身**
