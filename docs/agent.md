@@ -353,6 +353,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/llmconfig.{hpp,cpp}` | 配置文件读取（JSON、严格校验、缺省查找、密钥文件与权限体检） | 无 |
 | `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
 | `src/agenttools.{hpp,cpp}` | 工具注册表与五个工具、脚本路径沙箱、硬件描述 | 无 |
+| `src/agent_subprocess.{hpp,cpp}` | `run_command` 的子进程实现（超时、进程组终止、输出截断、环境清洗） | 无 |
 | `src/agentloop.{hpp,cpp}` | 工具循环（历史、轮次上限、回滚、extras 透传） | 无 |
 | `src/agentmode.{hpp,cpp}` | CLI 配置组装、系统提示词、一次性/REPL 外壳 | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接） | 无 |

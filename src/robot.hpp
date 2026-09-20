@@ -181,6 +181,33 @@ public:
 	}
 };
 
+/* ---- @Action 派发计划（拆自 runAction 的纯计算前段）----
+ * 列头只解析一次（C-M3）：原实现在 order/相位检测/每行每格三处
+ * 重复做 <device>.<param> 切分（切分规则单点在 mt::splitActionColumn）。
+ * 设备列解析（resolveActionDevice）与参数位解析（resolveActionParam）：
+ * 解析后的名字是派发身份——分组、顺序、相位、查重全部按解析名；
+ * colHeads 保留原文供报错归因。
+ * build 是纯计算（只读注册表，不碰硬件、不派发），可白盒单测。 */
+struct ActionPlan {
+	std::vector<std::pair<std::string, std::string>> colHeads;	/* 原始列头 <device>.<param> */
+	std::vector<std::string> devs;	/* 解析后设备名（派发身份） */
+	std::vector<std::string> params;	/* 解析后参数名 */
+	std::vector<std::string> order;	/* 设备首现顺序（派发序） */
+	/* 解析名查重（撞设备第二层防线）：归并期 checkDisjoint 只见列头文本，
+	 * 不同别名/表达式指到同一 (设备, 参数) 只有这里可见。键 = 解析后的
+	 * (设备, 参数)——同设备不同参数是合法的一拍多参（合并进同一次 play）；
+	 * 同键重复则逐行静默覆盖（含 "-" 继承把两条时间线写进同一键），必须
+	 * 显式报错。 */
+	std::map<std::pair<std::string, std::string>, std::string> seenCell;
+	/* 相位设备：该设备的参数列里存在真实数值行（典型来自 mtmerge 相位归并，
+	 * 前导行是无可继承的 "-"、后续行有数值）。只有这类设备做未起拍跳过；
+	 * 整列 "-" 的无参设备（旧式写法）保持旧行为——靠 0.0 照常 play，
+	 * 否则依赖 play 触发读数/副作用的所有 E2E（守护快照等）会整体失效。 */
+	std::set<std::string> phaseDevices;
+
+	static ActionPlan build(const HwLookup& registry, const mt::MatrixObject& defs);
+};
+
 /* ---- 动作重放：@Action 逐行 play（R-1 拆自 RobotStruct）---- */
 class ActionRunner {
 	HwRegistry& registry_;

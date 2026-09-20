@@ -69,6 +69,7 @@
 
 ### 工程化与守门
 
+- **大文件拆分：`robot.cpp` / `agenttools.cpp`**（2026-09-20 外部评估「单文件过长」收口）：`robot.cpp` 原 846 行挤着五个类（注册表 / 元数据 / 装载+装配 / 动作派发 / 编排门面），按类拆为 `hw_registry` / `meta_provider` / `hw_factory` / `action_runner` 四个 TU，`robot.cpp` 只剩编排门面（114 行）；跨 TU 共用的 controller/trigger 列判定收进 `flowcolumn.hpp`（inline，不进聚合头）。对下游零改动——`robot.hpp` 仍为聚合头、`mybot_tests` 与 `mybot` 共用同一份 `MYBOT_CORE_SOURCES`，`test/cpp/` 一字未动。`runAction` 的纯计算前段（列头解析 / 撞设备查重 / 相位设备判定）抽为 `ActionPlan::build`——不碰硬件的白盒可测单点，`runAction` 由此收缩为「构建计划 → 行循环派发」两段。`agenttools.cpp` 的 `run_command` 子进程机器（超时 / 进程组终止 / 输出截断 / 环境清洗）独立为 `agent_subprocess.*`（643 → 440 行，五个 `make*Tool` 装配函数保持就地分节，不再一工具一文件）。纯搬移：报错文案、派发顺序、退出码逐字不变；Release 零告警 + 全量守门 238/0/1 跳 + C++ 单测 328/0，ASan/UBSan 双跑同绿
 - **守门脚本与「声称的防线」修复**（2026-09-19 外部评估）：`run_all.sh` 的 `local` 用在函数外（每个 parse 用例向 stderr 报错一次）收进函数；`test_curl_consts.c` 落地——llm_http.lua 注释声称的 CURLOPT 漂移防线此前**不存在**，现在真有了（`_Static_assert` 编译期比对硬编码常量与 curl.h；libcurl 开发头文件非构建依赖，缺失产物按跳过计，CI 补装保证覆盖）
 - **死代码清理与测试补强**：删除八处死代码——兜底 catch 曾把 bad_alloc 等非预期异常降级成「I don't understand」含糊报错，现按 fail-fast 原样上抛；controller/trigger 单元夹具钉住三条此前仅 E2E 覆盖的契约
 - **巨函数拆分（十项）**：`sandbox_lua`/`openTcpActionSource`/`makeAgentTools`/`buildAgentConfig`/守护线程体与工厂/sqlparse/`main` 等——报错文案、打印顺序、退出码逐字保持

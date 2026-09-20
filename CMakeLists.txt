@@ -75,8 +75,13 @@ set(MYBOT_CORE_SOURCES
   src/hardware.cpp
   src/luavar.cpp
   src/daemonvar.cpp
+  src/hw_registry.cpp
+  src/meta_provider.cpp
+  src/hw_factory.cpp
+  src/action_runner.cpp
   src/robot.cpp
   src/actionsource.cpp
+  src/agent_subprocess.cpp
   src/agentproto.cpp
   src/agenttools.cpp
   src/agentloop.cpp
