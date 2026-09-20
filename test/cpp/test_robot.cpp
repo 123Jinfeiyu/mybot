@@ -9,11 +9,13 @@
  * 由 test/cpp/LifetimeProbe.lua 落成文件痕迹（destroy 每次追加 1 字节）。
  */
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "fixtures.hpp"
@@ -727,7 +729,7 @@ TH_TEST(destructor_deactivates_when_caller_forgot) {
 		robot.active();
 		/* 故意不调用 deactivate：作用域结束即析构，兜底必须把 destroy 跑到 */
 	}
-	TH_CHECK(markerOf(marker) == "x");
+	TH_CHECK(markerOf(marker) == "D");
 }
 
 TH_TEST(destructor_does_not_destroy_twice_after_explicit_deactivate) {
@@ -742,7 +744,7 @@ TH_TEST(destructor_does_not_destroy_twice_after_explicit_deactivate) {
 	}
 	/* 仍是 1 字节：析构认得「已断电」，没有重复 destroy（重复去初始化对
 	 * 真器件不是无害的——已关断的器件再写寄存器可能落在无效状态机上） */
-	TH_CHECK(markerOf(marker) == "x");
+	TH_CHECK(markerOf(marker) == "D");
 }
 
 TH_TEST(destructor_is_a_noop_when_never_activated) {
@@ -755,4 +757,40 @@ TH_TEST(destructor_is_a_noop_when_never_activated) {
 		/* 只解析结构、从未上电（如 --agent 的配置校验失败早退）：无事可做 */
 	}
 	TH_CHECK(markerOf(marker).empty());
+}
+
+/* ---- 断电屏障的顺序回归（审计 P2 / 阶段 1.1）----
+ * Daemon 表**声明在探针之前**，于是 build 序 = 守护、探针，逆序 destroy =
+ * 探针先、守护后——正是「执行器已去初始化、守护还在拍」的那个形状。
+ * 守护每拍追加 'T'（LifetimeTick.lua），探针 destroy 追加 'D'（LifetimeProbe.lua），
+ * 两者写同一文件，于是末字节就是顺序判据：
+ *   屏障在位 → 守护先退场，之后才 destroy → 末字节 'D'
+ *   屏障缺失 → destroy 之后守护继续拍（join 延后到它自己的 destroy）→ 末字节 'T'
+ * 另断言 trace 里确实有 'T'：守护根本没跑起来的话，末字节 'D' 是假绿。 */
+TH_TEST(deactivate_joins_daemons_before_hardware_deinit) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("lifetime-barrier");
+	const fs::path marker = tmp.path() / "order";
+	TH_CHECK(fs::exists(tmp.path()));
+	::setenv("BOT4CJ_LIFETIME_MARK", marker.c_str(), 1);
+	{
+		bot::MemoryReader sr(
+			"CREATE TABLE Daemon (name String, chunk String, interval String);\n"
+			"INSERT INTO Daemon (name, chunk, interval) VALUES ('d0', 'LifetimeTick.lua', '10');\n"
+			+ probeSql(marker));
+		bot::RobotStruct robot(sr);
+		robot.active();
+		/* 时序（chunk 每拍 = 睡 150ms 后写 'T'，interval=10ms）：
+		 * t≈150ms 第一拍写 T；t≈160ms 第二拍开始睡；t=220ms 这里发停机请求，
+		 * 第二拍仍在途，它的 'T' 要到 t≈310ms 才落地。
+		 * 有屏障 → 先等到 t≈310ms（T）、join 成功，再 destroy 写 'D' → 末字节 D；
+		 * 无屏障 → destroy 立刻写 'D'，t≈310ms 又来一个 'T' → 末字节 T。 */
+		std::this_thread::sleep_for(std::chrono::milliseconds(220));
+		robot.deactivate();
+	}
+	::unsetenv("BOT4CJ_LIFETIME_MARK");
+
+	const std::string trace = markerOf(marker);
+	TH_CHECK(trace.find('T') != std::string::npos);
+	TH_CHECK(!trace.empty() && trace.back() == 'D');
 }

@@ -18,6 +18,14 @@ INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/daemon_probe.lua');
 - 共享槽 336B：`mutex[64]` / `count` / `nvals` / `values[32]` / `stop` / `status`（C++ 侧 `src/daemonvar.hpp` 的 `static_assert` 与 Lua 侧 `pthread.lua` 的 `assert_layout` 双侧互锁，布局漂移在守护启动时即暴露）
 - chunk 先跑一次完成 setup 并定义全局 `daemon_tick`，之后逐拍 `pcall`；**拍间用线程 sleep 让出**，切忌在 chunk 内 ffi `usleep` 自旋（阻塞调度不放）
 - `@Daemon` 除 `name`/`chunk` 外的列序列化为 `DAEMON_CONFIG` 串注入 chunk
+- **停机顺序（断电屏障）**：`deactivate()` 先对全体守护置 `stop`，再**统一等到退场**
+  （全体共享一个 deadline = 各守护 `joinTimeout` 的最大值，避免最坏退出延迟随守护数线性增长），
+  之后才逆序 `destroy()` 硬件。防的是「执行器已断电、某个在途 tick 又写它一次」——
+  最后一次写随机胜出，进程退出时器件可能重新带电。
+  `stop` 只在两拍之间被看见，所以屏障最坏要等一整拍。
+  超时弃管的守护仍可能碰总线（它卡在某一拍里出不来），弃管告警会如实说明：
+  `not exited within <N>ms, abandoning slot (… may still touch the bus after hardware de-init)`，
+  退出前另有统一计数告警（`abandonedDaemonCount`）。
 
 ## 万能采样 chunk（零 per-sensor 代码）
 

@@ -13,6 +13,7 @@
  * 具名 reserved_ 只为显式占位，避免将来插字段时把 status 挤进隐式填充区。
  */
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <future>
@@ -78,6 +79,9 @@ class DaemonRunner {
 	 * 无需仲裁。 */
 	std::shared_ptr<DaemonSlot> slot_;
 	int64_t joinTimeoutMs_;
+	/* 守护名：start() 定型。停机日志要用它，而断电屏障是在 RobotStruct 里
+	 * 逐个等待（那时拿不到 MtVars_Daemon::name_），故名字归 runner 自己持有。 */
+	std::string name_;
 	std::shared_ptr<std::promise<int64_t>> result_;
 	std::future<int64_t> fut_;
 	/* D1：线程是否已 spawn——未 spawn（build 中途失败路径）promise 永不 set，
@@ -116,9 +120,23 @@ public:
 	/* 置停止标志（槽已交出/已释放则无事可做） */
 	void requestStop();
 
-	/* 带超时等待线程退出并释放槽；超时则弃管——主线程交出自己的引用，
-	 * 槽由守护线程副本兜底到最后（2.4：所有权移交即引用计数自然交接） */
-	void waitForExit(const std::string& name);
+	/* 停机等待核心：置停止 + 等到 deadline + 交出引用。
+	 * 返回 true = 线程已退场；false = 超时弃管。
+	 * deadline 由调用方给：单个守护停机（destroy）传 now+joinTimeoutMs_；
+	 * 断电屏障（RobotStruct::deactivate）传**全体共享**的同一个 deadline——
+	 * 逐个累加会让 N 个守护的最坏退出延迟变成 N×joinTimeout（审计 P2）。 */
+	bool waitUntil(const std::chrono::steady_clock::time_point& deadline);
+
+	/* 带自身超时等待线程退出并释放槽；超时则弃管——主线程交出自己的引用，
+	 * 槽由守护线程副本兜底到最后（2.4：所有权移交即引用计数自然交接）。
+	 * 幂等：槽已交出（含被断电屏障先等到/先弃管）即无事可做。 */
+	void waitForExit();
+
+	/* 断电屏障用：算全体共享预算时要取各守护 joinTimeout 的最大值 */
+	int64_t joinTimeoutMs() const { return joinTimeoutMs_; }
+
+	/* 守护名（start 时定型），停机日志用 */
+	const std::string& name() const { return name_; }
 
 	/* 主线程读采样快照；槽已交出/已释放时按 ERR 契约返回。
 	 * 2.4：本方法加载本地强引用副本，读取期间槽由副本保证存活——

@@ -9,6 +9,8 @@
 #include "daemonvar.hpp"
 #include "mtinclude.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <utility>
 
@@ -40,6 +42,24 @@ void RobotStruct::active() {
 void RobotStruct::deactivate() {
 	for (const auto& h : daemonHolders_) {
 		h->requestStop();
+	}
+	/* ---- 断电屏障（审计 P2）----
+	 * 统一等到守护线程退场，然后才动硬件。原实现把 join 延后到各守护自己的
+	 * destroy，于是执行器可能已经断电、而某个守护正在跑的那一拍又写它一次
+	 * ——最后一次写随机胜出，进程退出时器件可能重新带电。
+	 * deadline 全体共享（取各守护 joinTimeout 的最大值）：逐个累加会让最坏
+	 * 退出延迟随守护数量线性增长。等过之后 destroy 里的 waitForExit 幂等直返。
+	 * 超时弃管的守护仍可能碰总线——那一条由 waitUntil 的告警如实说明。 */
+	if (!daemonHolders_.empty()) {
+		int64_t budgetMs = 0;
+		for (const auto& h : daemonHolders_) {
+			budgetMs = std::max(budgetMs, h->joinTimeoutMs());
+		}
+		const auto deadline = std::chrono::steady_clock::now()
+			+ std::chrono::milliseconds(budgetMs);
+		for (const auto& h : daemonHolders_) {
+			h->waitUntil(deadline);
+		}
 	}
 	std::string lastWarn;
 	std::size_t failed = 0;
