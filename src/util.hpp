@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -107,6 +108,21 @@ inline std::vector<std::string> splitModulePaths(const std::string& paths) {
 		if (!p.empty()) { out.push_back(std::move(p)); }
 	}
 	return out;
+}
+
+/* 多模块路径逐段探测（2026-09-20 重构阶段 2）：在 paths（':' 分段）下按序找
+ * 第一个存在的 rel，返回规范化后的完整路径；全部不存在返回 nullopt。
+ * 与 Lua 侧 modules/lib/mpath.lua 的 mpath.resolve 同语义，是宿主侧的单点
+ *（此前 daemonvar 的 firstExistingModule 与 hw_factory 各自实现，Lua 侧更是
+ * 59 个驱动各自用 ":match('[^:]+')" 只取首段——多路径承诺因此对驱动不成立）。 */
+inline std::optional<std::string> findExistingModule(const std::string& paths,
+		const std::string& rel) {
+	for (const std::string& p : splitModulePaths(paths)) {
+		std::string cand = p + "/" + rel;
+		std::ifstream f(cand, std::ios::binary);
+		if (f.good()) { return cand; }
+	}
+	return std::nullopt;
 }
 
 /* 严格整数解析的失败形态：调用方按场景给出人话报错（本项目错误信息惯例） */
@@ -250,6 +266,54 @@ inline std::string formatNumber(double v) {
 	char buf[64];
 	std::snprintf(buf, sizeof(buf), "%.15g", v);
 	return std::string(buf);
+}
+
+/* ---- 整文件受限读取（2026-09-20 重构阶段 4.1）----
+ * 收敛前「带上限地读一个文件」有 4 份实现，超限语义分叉：提示词包响亮拒绝，
+ * 而配置与密钥文件**静默截断**后交给下游——用户看到的是「不是合法 JSON」
+ * 「密钥错误」，真实成因（文件过大）完全丢失，是排障里最难查的一类。
+ * 统一为「超过上限即拒绝」：读满 cap 后再探测 1 字节即可判定，无需读完整个文件。
+ * what 只影响报错主体名（"文件" / "提示词文件" / "密钥文件"），两句报错都保留
+ * 「无法打开」「超过字节上限」两个既有断言锚点。 */
+inline bool readWholeFileLimited(const std::string& path, std::size_t cap,
+		std::string& out, std::string& err, const char* what = "文件") {
+	std::ifstream f(path, std::ios::binary);
+	if (!f) {
+		err = std::string("无法打开") + what + " " + path;
+		return false;
+	}
+	std::string data;
+	data.resize(cap);
+	f.read(&data[0], static_cast<std::streamsize>(cap));
+	std::streamsize n = f.gcount();
+	if (n < 0) { n = 0; }
+	data.resize(static_cast<std::size_t>(n));
+	/* read 已到 EOF 时 peek 返回 EOF；还有剩余字节即超限 */
+	if (f.peek() != std::char_traits<char>::eof()) {
+		err = std::string(what) + " " + path + " 超过字节上限 " + std::to_string(cap);
+		return false;
+	}
+	out = std::move(data);
+	return true;
+}
+
+/* ---- EINTR 重试单点（2026-09-20 重构阶段 4.2）----
+ * main.cpp 安装 SIGINT/SIGTERM 处理器时**明确不用 SA_RESTART**
+ *（为了让 accept 等阻塞点被中断以便检查停止标志），因此 EINTR 在本项目里是
+ * 常态而非异常：可中断系统调用返回 -1/EINTR 的语义是「再试一次」，
+ * 既不是「出错」也不是「EOF」。
+ * 此前这条语义散落在 3 处，其中 2 处误判为终态：run_command 排空把 EINTR 当
+ * EOF（截断子进程输出，并因提前关闭读端给仍在跑的子进程送 SIGPIPE）；
+ * waitpid 的 EINTR 被当「已无子进程」（留下僵尸）。收敛到这里，
+ * 调用点只表达「我要调什么」。
+ * 形状约束：被包装的调用以返回 -1 表示失败、并以 errno 报因。 */
+template <typename Fn>
+auto retryEintr(Fn&& fn) -> decltype(fn()) {
+	for (;;) {
+		auto r = fn();
+		if (r == -1 && errno == EINTR) { continue; }
+		return r;
+	}
 }
 
 } // namespace bot

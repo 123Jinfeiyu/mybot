@@ -130,3 +130,37 @@ TH_TEST(utils_cli_parse_key_value_bare_flag_at_end) {
 	TH_CHECK(tok.value.empty());
 	TH_CHECK(k == 0);
 }
+
+/* ==================== EINTR 重试单点（2026-09-20 重构阶段 0/4.2）====================
+ * main.cpp 安装信号处理器时明确不用 SA_RESTART，故 EINTR 是本项目的常态。
+ * 契约：retryEintr 只在 errno==EINTR 且返回 -1 时重试，其余结果（含其它 errno
+ * 的 -1、0、正值）原样返回，且重试不吞掉调用次数。 */
+TH_TEST(retry_eintr_retries_only_on_eintr) {
+	int calls = 0;
+	int r = bot::retryEintr([&]() -> int {
+		++calls;
+		if (calls < 3) { errno = EINTR; return -1; }
+		return 7;
+	});
+	TH_CHECK(r == 7);
+	TH_CHECK(calls == 3);
+}
+
+TH_TEST(retry_eintr_passes_through_other_errors) {
+	int calls = 0;
+	int r = bot::retryEintr([&]() -> int {
+		++calls;
+		errno = EAGAIN;
+		return -1;
+	});
+	TH_CHECK(r == -1);
+	TH_CHECK(calls == 1);
+	TH_CHECK(errno == EAGAIN);
+}
+
+TH_TEST(retry_eintr_passes_through_zero_and_positive) {
+	int calls = 0;
+	TH_CHECK(bot::retryEintr([&]() -> long { ++calls; return 0; }) == 0);
+	TH_CHECK(bot::retryEintr([&]() -> long { ++calls; return 42; }) == 42);
+	TH_CHECK(calls == 2);
+}

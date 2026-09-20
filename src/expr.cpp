@@ -113,6 +113,18 @@ bool isIdentStart(char c) {
 }
 bool isIdentChar(char c) { return isIdentStart(c) || isDigit(c); }
 
+/* 报错里的原文引用上限（2026-09-20 重构阶段 4.4）：
+ * 旧实现把整条表达式原样拼进报错，而表达式长度只受动作脚本 8 MiB 上限约束
+ * ——一条语法错误即可把用户可控的兆级字节灌进 stderr（实测 10k 层括号 → 20KB），
+ * 且原文可携带 ANSI 控制序列直写操作者终端。截断后仍保留可诊断前缀与
+ * 「invalid expression」这个既有断言锚点，末尾补省略标记表示被截断。 */
+constexpr std::size_t kMaxEchoChars = 80;
+
+std::string echoSource(const std::string& s) {
+	if (s.size() <= kMaxEchoChars) { return s; }
+	return s.substr(0, kMaxEchoChars) + "...";
+}
+
 /* 递归下降解析器。两处深度上限：
  * ① 括号递归（depth_）：8 MiB 脚本字节上限下，数万层 '(' 会打爆宿主栈；
  * ② 运算符链（ops_）：平铺的 '+'/'*' 链不经过括号递归，由 parseExpr/parseTerm
@@ -129,7 +141,7 @@ class ExprParser {
 	static constexpr int kMaxOps = 512;
 
 	[[noreturn]] void fail(const std::string& msg) const {
-		throw IllegalArgumentException("invalid expression '" + s_ + "': " + msg
+		throw IllegalArgumentException("invalid expression '" + echoSource(s_) + "': " + msg
 			+ " at position " + std::to_string(pos_));
 	}
 	char peek() const { return pos_ < s_.size() ? s_[pos_] : '\0'; }

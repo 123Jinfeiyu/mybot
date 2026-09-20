@@ -17,22 +17,12 @@ namespace fs = std::filesystem;
 
 namespace {
 
-/* 读取单个提示词文件。读 cap+1 字节以区分「恰好满」与「超限」：超限是配置
- * 错误，要响亮拒绝而不是静默截断（截断过的提示词悄悄丢约束，比缺文件更难查）。 */
+/* 读取单个提示词文件。超限是配置错误，要响亮拒绝而不是静默截断（截断过的
+ * 提示词悄悄丢约束，比缺文件更难查）——阶段 4.1 起与配置/密钥文件共用
+ * util::readWholeFileLimited（同一超限语义，此前 3 份实现里 2 份会静默截断）。 */
 std::string readTextFile(const std::string& path, std::string& err) {
-	std::ifstream f(path, std::ios::binary);
-	if (!f) {
-		err = "无法读取提示词文件 " + path;
-		return "";
-	}
 	std::string data;
-	data.resize(kMaxPromptFileBytes + 1);
-	f.read(&data[0], static_cast<std::streamsize>(data.size()));
-	std::streamsize n = f.gcount();
-	if (n < 0) { n = 0; }
-	data.resize(static_cast<std::size_t>(n));
-	if (data.size() > kMaxPromptFileBytes) {
-		err = "提示词文件 " + path + " 超过字节上限 " + std::to_string(kMaxPromptFileBytes);
+	if (!readWholeFileLimited(path, kMaxPromptFileBytes, data, err, "提示词文件")) {
 		return "";
 	}
 	return data;

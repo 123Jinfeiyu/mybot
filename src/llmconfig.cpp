@@ -35,20 +35,9 @@ std::string expandHome(const std::string& path) {
 	return *home + path.substr(1);
 }
 
-std::string readWholeFile(const std::string& path, std::size_t cap, std::string& err) {
-	std::ifstream f(path, std::ios::binary);
-	if (!f) {
-		err = "无法打开文件 " + path;
-		return "";
-	}
-	std::string data;
-	data.resize(cap);
-	f.read(&data[0], static_cast<std::streamsize>(cap));
-	std::streamsize n = f.gcount();
-	if (n < 0) { n = 0; }
-	data.resize(static_cast<std::size_t>(n));
-	return data;
-}
+/* 阶段 4.1：本地 readWholeFile 已收敛到 util::readWholeFileLimited——
+ * 旧实现读满 cap 即返回、不查剩余，把超限文件静默截断后伪装成
+ * 「不是合法 JSON」（密钥文件则伪装成「密钥错误」）。 */
 
 /* 字段类型不符时的统一报错（带字段名与期望类型，排障时不用猜） */
 std::string typeError(const std::string& path, const std::string& key, const char* want) {
@@ -141,11 +130,12 @@ bool wantStringArray(const std::string& path, const Json& root, const char* key,
 } // namespace
 
 bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string& err) {
-	std::string text = readWholeFile(path, kMaxConfigBytes, err);
-	if (err.empty() && text.empty()) {
+	std::string text;
+	if (!readWholeFileLimited(path, kMaxConfigBytes, text, err, "配置文件")) { return false; }
+	if (text.empty()) {
 		err = "配置文件为空: " + path;
+		return false;
 	}
-	if (!err.empty()) { return false; }
 
 	Json root;
 	try {
@@ -243,8 +233,8 @@ std::string findDefaultLlmConfig() {
 
 bool readApiKeyFile(const std::string& path, std::string& out, std::string& err) {
 	std::string real = expandHome(path);
-	std::string text = readWholeFile(real, kMaxKeyFileBytes, err);
-	if (!err.empty()) { return false; }
+	std::string text;
+	if (!readWholeFileLimited(real, kMaxKeyFileBytes, text, err, "密钥文件")) { return false; }
 	out = trim(text);	/* 末尾换行混进 Authorization 头会变成 401 */
 	if (out.empty()) {
 		err = "密钥文件为空: " + real;

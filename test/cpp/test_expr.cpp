@@ -209,3 +209,26 @@ TH_TEST(expr_require_num_rejects_text_result) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "a numeric value is required here",
 		(void)bot::requireNum(bot::ExprValue::makeText("relay-2")));
 }
+
+/* ==================== 报错不得回显整条原文（2026-09-20 重构阶段 0/4.4）====================
+ * 缺陷实证：语法错误消息由 "invalid expression '" + 原文 + "'" 拼成（src/expr.cpp），
+ * 原文长度不受限——动作脚本上限 8 MiB，故单条报错最多可把 8 MiB 用户可控字节
+ * 灌进 stderr（实测 10k 层括号即 20KB），并可携带 ANSI 控制序列直写操作者终端。
+ * 契约：报错保留可诊断的前缀（含错误成因），但引用原文的部分必须截断并有省略标记。
+ */
+TH_TEST(expr_parse_error_does_not_echo_the_whole_source) {
+	std::string huge(20000, '(');
+	std::string msg;
+	try {
+		(void)bot::Expression::parse(huge);
+	} catch (const bot::IllegalArgumentException& e) {
+		msg = e.what();
+	}
+	TH_CHECK(!msg.empty());
+	/* 成因仍然可诊断 */
+	TH_CHECK(msg.find("nesting too deep") != std::string::npos);
+	/* 但原文被截断：整条消息远小于原文 */
+	TH_CHECK(msg.size() < 512);
+	TH_CHECK(msg.size() < huge.size() / 10);
+	TH_CHECK(msg.find("...") != std::string::npos || msg.find("…") != std::string::npos);
+}

@@ -115,15 +115,31 @@ int TcpStreamReader::read() {
 
 /* ---- 可选口令校验：对端必须先送一行 "<token>\n" 才允许下发动作脚本 ----
  * 口令为空时跳过（不破坏既有单连接直发脚本的用法）。
- * 比较走 util.hpp 的 safeEquals 恒时实现（审计 M1）。 */
-static bool checkTcpToken(int client, const std::string& token) {
+ * 比较走 util.hpp 的 safeEquals 恒时实现（审计 M1）。
+ * 三态契约见 actionsource.hpp（阶段 4.3：NoCredential 不得计为鉴权失败）。 */
+TcpAuthStatus checkTcpToken(int client, const std::string& token) {
 	std::string line;
 	char c;
 	while (line.size() <= token.size() + 1) {
 		ssize_t n = ::recv(client, &c, 1, 0);
-		if (n != 1) {
-			std::cerr << "TCP 口令校验失败：对端未提供凭据行" << std::endl;
-			return false;
+		if (n < 0) {
+			/* 阶段 4.3 修复：只有「收到凭据但不匹配/超长」才算鉴权失败。
+			 * 空闲超时（SO_RCVTIMEO→EAGAIN）、被信号打断（EINTR）与其它读错误
+			 * 都属「对端没给凭据」——旧实现把它们一并计为口令失败，于是任意
+			 * 未认证对端连上 5 次、每次不发字节即可终止进程，且诊断误报为爆破。 */
+			if (errno == EINTR) {
+				std::cerr << "TCP 口令校验：等待凭据行被信号打断，关闭该连接" << std::endl;
+			} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+				std::cerr << "TCP 口令校验：对端在空闲超时内未提供凭据行，关闭该连接" << std::endl;
+			} else {
+				std::cerr << "TCP 口令校验：接收凭据行失败（" << std::strerror(errno)
+					<< "），关闭该连接" << std::endl;
+			}
+			return TcpAuthStatus::NoCredential;
+		}
+		if (n == 0) {
+			std::cerr << "TCP 口令校验：对端在提供凭据行前关闭了连接" << std::endl;
+			return TcpAuthStatus::NoCredential;
 		}
 		if (c == '\n') { break; }
 		line += c;
@@ -134,14 +150,14 @@ static bool checkTcpToken(int client, const std::string& token) {
 		 * 被拒，不存在截断放行；此处提前拦截只为给出明确诊断（而非笼统
 		 * 的「凭据不匹配」），并让 +1 的循环上限语义自解释。 */
 		std::cerr << "TCP 口令校验失败：凭据行超长（fail-closed，不截断比较）" << std::endl;
-		return false;
+		return TcpAuthStatus::Rejected;
 	}
 	if (!safeEquals(line, token)) {
 		std::cerr << "TCP 口令校验失败：凭据不匹配，拒绝接收动作脚本" << std::endl;
-		return false;
+		return TcpAuthStatus::Rejected;
 	}
 	std::cerr << "TCP 口令校验通过" << std::endl;
-	return true;
+	return TcpAuthStatus::Ok;
 }
 
 /* ---- TCP 动作源（阶段 3 拆分）：校验地址 → 监听 → 鉴权 accept → 读脚本 ---- */
@@ -227,16 +243,27 @@ static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token,
 				+ std::strerror(errno));
 		}
 
-		if (!token.empty() && !checkTcpToken(clientFd.get(), token)) {
-			clientFd.close();	/* 关连接，回 accept 等待下一个 */
-			++authFails;
-			if (authFails >= kTcpAuthMaxFails) {
-				throw std::runtime_error("TCP 口令连续 " + std::to_string(authFails)
-					+ " 次校验失败，停止等待（可能为扫描/爆破）");
+		if (!token.empty()) {
+			TcpAuthStatus st = checkTcpToken(clientFd.get(), token);
+			if (st != TcpAuthStatus::Ok) {
+				clientFd.close();	/* 关连接，回 accept 等待下一个 */
+				/* 阶段 4.3：只有「凭据错」才计入爆破上限；「没给凭据」
+				 * （空闲超时/关闭/中断）不计数，否则未认证对端可用
+				 * 5 次空连接终止进程。 */
+				if (st == TcpAuthStatus::NoCredential) {
+					std::cerr << "关闭该连接，继续等待下一个客户端（未提供凭据，不计入爆破计数）"
+						<< std::endl;
+					continue;
+				}
+				++authFails;
+				if (authFails >= kTcpAuthMaxFails) {
+					throw std::runtime_error("TCP 口令连续 " + std::to_string(authFails)
+						+ " 次校验失败，停止等待（可能为扫描/爆破）");
+				}
+				std::cerr << "关闭该连接，继续等待下一个客户端（剩余尝试 "
+					<< (kTcpAuthMaxFails - authFails) << " 次）" << std::endl;
+				continue;
 			}
-			std::cerr << "关闭该连接，继续等待下一个客户端（剩余尝试 "
-				<< (kTcpAuthMaxFails - authFails) << " 次）" << std::endl;
-			continue;
 		}
 		break;
 	}

@@ -237,3 +237,70 @@ TH_TEST(safe_equals_rejects_length_difference) {
 	TH_CHECK(!bot::safeEquals("token", "toke"));
 	TH_CHECK(!bot::safeEquals("", "x"));
 }
+
+/* ==================== TCP 口令校验三态（2026-09-20 重构阶段 0/4.3）====================
+ * 缺陷实证：`recv != 1` 把 SO_RCVTIMEO 到期（EAGAIN）与「凭据不匹配」混为一谈，
+ * 调用方把两者都计入 authFails，连满 5 次即抛错退出进程。于是任意未认证对端
+ * 只要连上 5 次、每次不发任何字节（每次挂满 --tcp-idle），就能终止进程，
+ * 且诊断误报为「口令连续 5 次校验失败（可能为扫描/爆破）」。
+ * 契约：NoCredential（空闲超时/EOF/中断）不得计为鉴权失败；Rejected 才计数。
+ * 用 socketpair 充当链路，SO_RCVTIMEO 由用例自设（生产路径由 acceptAuthenticatedClient 设）。
+ */
+namespace {
+
+/* 建立一条带短接收超时的 socketpair；fds[0] = 本端（被校验侧） */
+bool makeAuthPair(int fds[2], long usec = 50 * 1000) {
+	if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) { return false; }
+	timeval tv{};
+	tv.tv_sec = 0;
+	tv.tv_usec = usec;
+	return ::setsockopt(fds[0], SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) == 0;
+}
+
+} // namespace
+
+TH_TEST(tcp_token_idle_timeout_is_not_an_auth_failure) {
+	int fds[2];
+	TH_CHECK(makeAuthPair(fds));
+	/* 对端连上但一个字节都不发：必须归类为 NoCredential（不计数），
+	 * 而不是「口令校验失败」 */
+	TH_CHECK(bot::checkTcpToken(fds[0], "secret") == bot::TcpAuthStatus::NoCredential);
+	::close(fds[0]);
+	::close(fds[1]);
+}
+
+TH_TEST(tcp_token_peer_eof_is_not_an_auth_failure) {
+	int fds[2];
+	TH_CHECK(makeAuthPair(fds));
+	::close(fds[1]);			/* 对端直接关闭：recv 返回 0 */
+	TH_CHECK(bot::checkTcpToken(fds[0], "secret") == bot::TcpAuthStatus::NoCredential);
+	::close(fds[0]);
+}
+
+TH_TEST(tcp_token_mismatch_is_rejected) {
+	int fds[2];
+	TH_CHECK(makeAuthPair(fds));
+	TH_CHECK(::write(fds[1], "wrong\n", 6) == 6);
+	TH_CHECK(bot::checkTcpToken(fds[0], "secret") == bot::TcpAuthStatus::Rejected);
+	::close(fds[0]);
+	::close(fds[1]);
+}
+
+TH_TEST(tcp_token_overlong_line_is_rejected) {
+	int fds[2];
+	TH_CHECK(makeAuthPair(fds));
+	/* 凭据行超长：fail-closed 拒绝（且同样计入爆破计数） */
+	TH_CHECK(::write(fds[1], "much-too-long-token\n", 20) == 20);
+	TH_CHECK(bot::checkTcpToken(fds[0], "secret") == bot::TcpAuthStatus::Rejected);
+	::close(fds[0]);
+	::close(fds[1]);
+}
+
+TH_TEST(tcp_token_match_is_ok) {
+	int fds[2];
+	TH_CHECK(makeAuthPair(fds));
+	TH_CHECK(::write(fds[1], "secret\n", 7) == 7);
+	TH_CHECK(bot::checkTcpToken(fds[0], "secret") == bot::TcpAuthStatus::Ok);
+	::close(fds[0]);
+	::close(fds[1]);
+}

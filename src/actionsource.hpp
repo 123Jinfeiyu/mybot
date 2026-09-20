@@ -174,6 +174,18 @@ public:
 	}
 };
 
+/* ---- TCP 口令校验三态（2026-09-20 重构阶段 4.3）----
+ * 必须区分「对端给了凭据但不匹配」与「对端什么都没给」：
+ *   Ok           口令正确
+ *   Rejected     收到凭据行但内容不匹配 / 超长 —— 计入爆破计数
+ *   NoCredential 未收到凭据行（空闲超时 EAGAIN、EOF、EINTR）—— **不得**计为鉴权失败，
+ *                否则任意未认证对端连上不发字节、重复 5 次即可终止进程
+ *                （旧实现把 EAGAIN 与不匹配混为一谈，且误报「连续 5 次校验失败」）。
+ * 暴露为公开函数便于白盒单测（与 ActionRunner::resolveActionDevice 同惯例）。 */
+enum class TcpAuthStatus { Ok, Rejected, NoCredential };
+
+TcpAuthStatus checkTcpToken(int client, const std::string& token);
+
 /* 打开动作输入源：tcp 优先 > 文件 > 标准输入（MemoryReader 整读）。
  * 返回的读取器一律带字节上限；TCP 通道另含绑定地址、空闲超时与可选口令。 */
 std::unique_ptr<Reader> openActionSource(const CliOptions& options);

@@ -662,3 +662,34 @@ TH_TEST(agentconfig_prompt_pack_appended_after_builtin_sections) {
 	TH_CHECK(p2.find("身份") == std::string::npos);
 	TH_CHECK(p2.find("\n\n\n") == std::string::npos);
 }
+
+/* ==================== 超限配置文件必须报「过大」而非「不是合法 JSON」
+ * （2026-09-20 重构阶段 0/4.1）====================
+ * 缺陷实证：readWholeFile 读满 cap 就返回、不检查是否还有剩余，把超限文件
+ * 静默截断后交给 JSON 解析器，于是用户看到「不是合法 JSON」——真实成因
+ * （文件过大 / 被截断）完全丢失；api_key_file 同样被静默截断，表现为
+ * 「密钥错误」这种最难查的形态。promptpack 同场景已给出正确范式（响亮拒绝）。
+ * 契约：超过上限时以「上限」类报错拒绝，且不得伪装成 JSON 语法错误。
+ */
+TH_TEST(llmconfig_oversized_file_reports_the_limit_not_json) {
+	TempDir tmp("oversize");
+	fs::path big = tmp.path() / "big.json";
+	/* 64 KiB 上限 +1：截断后必然不是合法 JSON，从而暴露旧实现的错误归因 */
+	std::string content = "{\"api_key\":\"" + std::string(70 * 1024, 'a') + "\"}";
+	writeFile(big, content, fs::perms::owner_all);
+
+	LlmFileConfig c;
+	std::string err;
+	TH_CHECK(!loadLlmConfigFile(big.string(), c, err));
+	TH_CHECK(err.find("不是合法 JSON") == std::string::npos);
+	TH_CHECK(err.find("上限") != std::string::npos);
+}
+
+TH_TEST(llmconfig_oversized_key_file_reports_the_limit) {
+	TempDir tmp("oversizekey");
+	fs::path big = tmp.path() / "big.key";
+	writeFile(big, std::string(70 * 1024, 'k'), fs::perms::owner_all);
+	std::string out, err;
+	TH_CHECK(!readApiKeyFile(big.string(), out, err));
+	TH_CHECK(err.find("上限") != std::string::npos);
+}

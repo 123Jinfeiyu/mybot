@@ -69,6 +69,22 @@ std::vector<char*> buildCleanEnvp() {
 	return envp;
 }
 
+/* 有界回收：绝不无超时阻塞——kill 未生效（D 态 / 权限）时无超时 waitpid 会把
+ * agent 会话永久挂死。WNOHANG 轮询到固定宽限，仍未回收即放弃（交由 init 收尸）。
+ * EINTR 经 retryEintr 重试（阶段 4.2）：旧实现把 waitpid 的 -1/EINTR 当
+ * 「已无可回收」直接 break，于是留下僵尸且 exitCode 停在 -1。 */
+static bool reapWithGrace(pid_t pid, int& status, int graceMs = 2000) {
+	const auto deadline = std::chrono::steady_clock::now()
+		+ std::chrono::milliseconds(graceMs);
+	for (;;) {
+		pid_t w = bot::retryEintr([&] { return ::waitpid(pid, &status, WNOHANG); });
+		if (w == pid) { return true; }
+		if (w < 0) { return false; }	/* ECHILD 等：确已无可回收 */
+		if (std::chrono::steady_clock::now() >= deadline) { return false; }
+		::poll(nullptr, 0, 10);		/* 10ms 退避，避免忙等 */
+	}
+}
+
 RunResult runShell(const std::string& cmd, int timeoutSec) {
 	int po[2] = {-1, -1};
 	int pe[2] = {-1, -1};
@@ -117,6 +133,12 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		const int savedErrno = errno;
 		close(po[0]);
 		close(pe[0]);
+		/* 子进程已 fork 且在跑：抛错前必须整组终止并回收，否则留下孤儿/僵尸，
+		 * 且它仍持着管道写端（阶段 4.2 补）。宽限取短：本条路径本身已是
+		 * 「参数/资源异常」，不该再让调用方多等。 */
+		::kill(-pid, SIGKILL);
+		int reaped = 0;
+		(void)reapWithGrace(pid, reaped, 200);
 		errno = savedErrno;
 		throw std::runtime_error(std::string("fcntl 失败: ") + std::strerror(errno));
 	}
@@ -144,7 +166,12 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 				std::string& sink = (fd.fd == po[0]) ? r.out : r.err;
 				bool& truncated = (fd.fd == po[0]) ? r.outTruncated : r.errTruncated;
 				ssize_t n = 0;
-				while ((n = read(fd.fd, buf.data(), buf.size())) > 0) {
+				/* 阶段 4.2：read 的 EINTR 必须重试而非当终态——信号处理器未装
+				 * SA_RESTART，Ctrl-C/SIGTERM 期间 EINTR 会真实发生；旧实现把它
+				 * 判成 EOF：丢掉子进程剩余输出，并提前关闭读端给仍在跑的子进程
+				 * 送 SIGPIPE。 */
+				while ((n = bot::retryEintr(
+						[&] { return ::read(fd.fd, buf.data(), buf.size()); })) > 0) {
 					appendCapped(sink, buf.data(), static_cast<std::size_t>(n), truncated);
 				}
 				/* 终态＝错误位 / 正常 EOF / 非 EAGAIN 的读错误：关闭并标记该流结束 */
@@ -157,7 +184,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 			}
 		}
 		if (!exited) {
-			pid_t w = waitpid(pid, &status, WNOHANG);
+			pid_t w = bot::retryEintr([&] { return ::waitpid(pid, &status, WNOHANG); });
 			if (w == pid) { exited = true; }
 		}
 		auto now = std::chrono::steady_clock::now();
@@ -179,19 +206,10 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 
 	if (!outEof) { close(po[0]); }
 	if (!errEof) { close(pe[0]); }
-	/* 收尾回收绝不无超时阻塞：kill 未生效（D 态 / 权限）时原实现会在无超时的
-	 * waitpid 上无限等待，把 agent 会话挂死。改为 WNOHANG 轮询到固定宽限，
-	 * 仍未回收则放弃（进程交由 init 收尸），exitCode 保持 -1。 */
-	if (!exited) {
-		const auto reapDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-		for (;;) {
-			pid_t w = waitpid(pid, &status, WNOHANG);
-			if (w == pid) { exited = true; break; }
-			if (w < 0) { break; }	/* ECHILD 等：已无可回收 */
-			if (std::chrono::steady_clock::now() >= reapDeadline) { break; }
-			poll(nullptr, 0, 10);	/* 10ms 退避，避免忙等 */
-		}
-	}
+	/* 收尾回收绝不无超时阻塞：kill 未生效（D 态 / 权限）时无超时的 waitpid 会把
+	 * agent 会话挂死。轮询到固定宽限仍未回收即放弃（交由 init 收尸），
+	 * exitCode 保持 -1。EINTR 重试见 reapWithGrace。 */
+	if (!exited) { exited = reapWithGrace(pid, status); }
 	r.exitCode = (exited && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
 	return r;
 }
