@@ -452,3 +452,91 @@ TH_TEST(action_dispatch_rejects_expr_param_colliding_with_bare) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "already targeted by column",
 		bot::ActionRunner(reg).runAction(mats));
 }
+
+/* ==================== 会话变量作用域（2026-09-20 重构阶段 0/1）====================
+ * 缺陷实证（本组三条用例在修复前全部为红）：
+ *   动作脚本内联的 @Alias/@Vars 经 HwRegistry::override 注册后**永不回收**——
+ *     ① 跨 run() 残留（agent 长驻模式下无界增长，且脚本 A 的别名对脚本 B 可见）；
+ *     ② 与结构变量同名时**永久遮蔽**结构定义，直到进程退出；
+ *     ③ 注册发生在派发之前（RobotStruct::run 先注册后 runAction），
+ *        于是一个连 @Action 都没有、以报错收场的脚本也已完成注册表改写。
+ * 契约（修复后）：会话别名的作用域 = 单次 run()；run() 出口（含异常路径）完全回滚，
+ * 结构视图与销毁序一字不动，byName() 结构清单不增长。
+ */
+
+/* 跑一遍动作脚本并吞掉异常：本组关心「注册表副作用」，不是派发结果
+ * （没有 active() 时派发必然因设备未注册而失败，注册却已完成） */
+static void runSwallow(bot::RobotStruct& robot, const std::string& mt) {
+	try { bot::MemoryReader mr(mt); robot.run(mr); } catch (const std::exception&) {}
+}
+
+/* 跑一遍动作脚本并返回报错文本（无异常返回空串） */
+static std::string runCapture(bot::RobotStruct& robot, const std::string& mt) {
+	try {
+		bot::MemoryReader mr(mt);
+		robot.run(mr);
+	} catch (const std::exception& e) {
+		return std::string(e.what());
+	}
+	return std::string();
+}
+
+TH_TEST(session_alias_does_not_survive_a_run) {
+	bot::MemoryReader sr(kBasicSql);
+	bot::RobotStruct robot(sr);
+	const std::size_t namesBefore = robot.registry().byName().size();
+	TH_CHECK(!robot.registry().contains("ghost"));
+
+	runSwallow(robot, "@Alias\nname  alias;\n ghost timer-0;\n@\n\n@Action\nghost.delay;\n 1;\n@\n");
+
+	/* 会话结束：别名不再可见，结构名字索引一个不增 */
+	TH_CHECK(!robot.registry().contains("ghost"));
+	TH_CHECK(robot.registry().find("ghost") == nullptr);
+	TH_CHECK(robot.registry().byName().size() == namesBefore);
+}
+
+TH_TEST(session_alias_does_not_shadow_structure_variable) {
+	bot::MemoryReader sr(kBasicSql);
+	bot::RobotStruct robot(sr);
+	robot.active();
+	auto* before = robot.registry().find("relay0");
+	TH_CHECK(before != nullptr && std::string(before->kindName()) == "lua");
+
+	/* 会话内把 relay0 别名为 timer-0（旧实现：结构定义被永久改写） */
+	runSwallow(robot, "@Alias\nname  alias;\n relay0 timer-0;\n@\n");
+
+	auto* after = robot.registry().find("relay0");
+	TH_CHECK(after != nullptr);
+	TH_CHECK(after == before);
+	TH_CHECK(std::string(after->kindName()) == "lua");
+	robot.deactivate();
+}
+
+TH_TEST(failed_action_script_does_not_mutate_registry) {
+	bot::MemoryReader sr(kBasicSql);
+	bot::RobotStruct robot(sr);
+	const std::size_t namesBefore = robot.registry().byName().size();
+
+	/* 有 @Alias、没有 @Action：注册先于派发，旧实现在这里已经改写了注册表 */
+	std::string err = runCapture(robot, "@Alias\nname  alias;\n ghost timer-0;\n@\n");
+	TH_CHECK(err.find("No @Action matrix found") != std::string::npos);
+
+	TH_CHECK(!robot.registry().contains("ghost"));
+	TH_CHECK(robot.registry().byName().size() == namesBefore);
+}
+
+TH_TEST(session_repeated_runs_do_not_grow_the_registry) {
+	/* agent 长驻模式的等价形态：同一 RobotStruct 反复 run()。
+	 * byName() 结构清单规模必须恒定（旧实现每个新别名名字都留一份）。 */
+	bot::MemoryReader sr(kBasicSql);
+	bot::RobotStruct robot(sr);
+	const std::size_t namesBefore = robot.registry().byName().size();
+	/* 200 轮；名字带序号，旧实现会留 200 份 */
+	for (int i = 0; i < 200; ++i) {
+		runSwallow(robot, "@Alias\nname  alias;\n ghost" + std::to_string(i)
+			+ " timer-0;\n@\n");
+	}
+	TH_CHECK(robot.registry().byName().size() == namesBefore);
+	TH_CHECK(!robot.registry().contains("ghost0"));
+	TH_CHECK(!robot.registry().contains("ghost199"));
+}

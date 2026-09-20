@@ -33,25 +33,49 @@ class DaemonRunner;
  * 旧实现三个并行容器（hardwareVars_/hwPool_/hwSeq_）靠 addHardwareVar
  * 手工同步；会话期别名覆盖直接改写 map，不变式被打破。
  * 实现 HwLookup 只读接口（2.1）：MtVars_Lua 等只依赖该抽象；byName()
- * 是 agent 清单的具象视图，不进接口（假实现无需维护清单）。 */
+ * 是 agent 清单的具象视图，不进接口（假实现无需维护清单）。
+ *
+ * 阶段 1（2026-09-20）：会话变量作用域。动作脚本内联的 @Alias/@Vars 走
+ * session_ 覆盖层，生命周期严格等于一次 RobotStruct::run()——此前它们直接
+ * 改写 byName_（永久遮蔽结构定义）且所有权堆在 pool_ 里永不回收（agent 长驻
+ * 模式无界增长）。分层后 pool_/seq_/byName_ 三者只属于结构期，MetaRef::target
+ * 的裸指针不变式从「靠约定」变成「靠构造」。 */
 class HwRegistry : public HwLookup {
-	std::vector<std::unique_ptr<MatrixVars_Hardware>> pool_;	/* 所有权（含 run 期别名） */
+	std::vector<std::unique_ptr<MatrixVars_Hardware>> pool_;	/* 结构期所有权（只增不删） */
 	std::vector<MatrixVars_Hardware*> seq_;			/* 销毁序：结构声明序，active/deactivate 按序 */
-	std::map<std::string, MatrixVars_Hardware*> byName_;	/* 名字索引 */
+	std::map<std::string, MatrixVars_Hardware*> byName_;	/* 结构期名字索引 */
 	/* N-6：被结构引用列（controller 出边 / trigger 入边）指向的名字集合——
 	 * 会话期覆盖不得触碰，否则派发按名查到别名（MtVars_Alias），报出的
 	 * "non-table result" 与真实成因（引用目标被覆盖）完全脱节。 */
 	std::set<std::string> flowRefs_;
+	/* 阶段 1：会话覆盖层。仅由 SessionScope 持有生命周期；不变量是
+	 * 「非空 ⟺ 正在一次 run() 之内」。 */
+	std::map<std::string, std::unique_ptr<MatrixVars_Hardware>> session_;
 
 public:
 	/* 结构期注册：重名即抛（source 指明声明来源，如 " (in table 'X')"） */
 	void add(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
 			const std::string& source = "");
 
-	/* 会话期别名覆盖：不进入销毁序（别名无资源可释放），只改写名字索引。
-	 * 被覆盖的结构变量仍在销毁序中，deactivate 照常清理。
-	 * 名字被引用为 controller/trigger 时拒绝覆盖（N-6）。 */
+	/* 会话期别名覆盖：写进会话覆盖层（不进入销毁序、不触碰结构视图）。
+	 * 名字被引用为 controller/trigger 时拒绝覆盖（N-6）。
+	 * 作用域 = 外层 SessionScope 的生命周期（RobotStruct::run 一次）。 */
 	void override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw);
+
+	/* 会话作用域（阶段 1）：run() 入口构造、出口析构，异常路径同样回滚。
+	 * 构造即清空（防御性：正常路径下构造时必为空），析构把会话变量连同
+	 * 其所有权一起释放——结构定义与结构期所有权一字不动。 */
+	class SessionScope {
+		HwRegistry* reg_;
+	public:
+		explicit SessionScope(HwRegistry& reg) : reg_(&reg) { reg_->session_.clear(); }
+		~SessionScope() { reg_->session_.clear(); }
+		SessionScope(const SessionScope&) = delete;
+		SessionScope& operator=(const SessionScope&) = delete;
+	};
+
+	/* 会话层规模（只读）。测试与诊断用：结构清单 byName() 不得因会话而增长。 */
+	std::size_t sessionSize() const { return session_.size(); }
 
 	/* 登记结构引用列指向的名字（controller/trigger，createLuaVars 装配期调用） */
 	void addFlowRef(const std::string& name) { flowRefs_.insert(name); }
@@ -66,17 +90,25 @@ public:
 	std::function<ExprValue(const std::string&)> makeActionExprResolver() const override;
 
 	MatrixVars_Hardware* find(const std::string& name) const override {
+		/* 会话层优先：run() 之内别名可见（@Action 设备位/参数位解析靠它），
+		 * run() 之外会话层必为空，行为与结构视图完全一致 */
+		auto s = session_.find(name);
+		if (s != session_.end()) { return s->second.get(); }
 		auto it = byName_.find(name);
 		return it == byName_.end() ? nullptr : it->second;
 	}
 
-	bool contains(const std::string& name) const override { return byName_.count(name) > 0; }
+	bool contains(const std::string& name) const override {
+		return session_.count(name) > 0 || byName_.count(name) > 0;
+	}
 
 	/* 销毁序视图（build 正向 / destroy 反向）；会话别名不在其中 */
 	const std::vector<MatrixVars_Hardware*>& sequence() const { return seq_; }
 
 	/* agent 模式：只读名字索引（硬件清单）。只给 const 视图——
-	 * 清单是「描述」用途，不应成为第二条改写注册表的路径。 */
+	 * 清单是「描述」用途，不应成为第二条改写注册表的路径。
+	 * 阶段 1：**只含结构变量**——会话层生命周期严格包含在 run() 之内，
+	 * 而工具调用只发生在两次 run() 之间（那时会话层必为空），故无需合并视图。 */
 	const std::map<std::string, MatrixVars_Hardware*>& byName() const { return byName_; }
 };
 

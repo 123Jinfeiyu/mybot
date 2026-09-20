@@ -71,6 +71,14 @@ void RobotStruct::run(bot::Reader& input) {
 	 * （mtmerge_core），两条入口的冲突裁决不会漂移。 */
 	mtinclude::expandIncludes(actionMatrices, actionIncludeBaseDir_);
 
+	/* 阶段 1：会话变量作用域。内联 @Alias/@Vars 是**本次 run 的**局部绑定，
+	 * 注册进会话覆盖层，函数出口（含异常路径）由 RAII 一并回滚：
+	 *   - 结构定义不再可能被永久遮蔽（旧实现改写 byName_，进程退出前一直生效）；
+	 *   - pool_ 不因重复 run() 增长（agent 长驻模式的泄漏源）；
+	 *   - 一个以报错收场的脚本不会留下任何注册表副作用。
+	 * 作用域起点必须在注册之前、终点在派发之后。 */
+	HwRegistry::SessionScope sessionScope(registry_);
+
 	std::set<std::string> session;
 	for (auto& matrix : actionMatrices) {
 		std::string mtName = trim(matrix.getName());

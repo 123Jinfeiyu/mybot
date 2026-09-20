@@ -38,7 +38,15 @@ void HwRegistry::add(const std::string& name, std::unique_ptr<MatrixVars_Hardwar
 	seq_.push_back(p);		/* reserve 之后无分配，不抛 */
 }
 
-/* ---- HwRegistry：会话期别名覆盖（不进销毁序，只改名字索引）---- */
+/* ---- HwRegistry：会话期别名覆盖（阶段 1：写进会话覆盖层）----
+ * 不变量：会话层非空 ⟺ 正在一次 RobotStruct::run() 之内（由 SessionScope 维护）。
+ * 与结构期彻底分离的收益：
+ *   ① 结构定义不可能被会话变量永久遮蔽——旧实现直接改写 byName_，进程退出前
+ *      一直生效（实测：一个连 @Action 都没有、以报错收场的脚本也能改写注册表）；
+ *   ② pool_ 只属于结构期，MetaRef::target 的裸指针不变式与 MtVars_Lua::flowTarget
+ *      的指针缓存从人工约定升级为构造保证；
+ *   ③ 长驻（agent REPL）反复 run() 不再无界增长——旧实现每轮都往 pool_ 堆一份
+ *      永不回收的旧别名（实测 200 轮 → byName_ 多 200 个名字）。 */
 void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw) {
 	/* N-6：被引用为 controller/trigger 的名字不得覆盖——否则派发按名
 	 * 查到别名（MtVars_Alias），报出的 "non-table result" 与真实成因
@@ -47,17 +55,9 @@ void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Ha
 		throw IllegalArgumentException("action script alias must not override '"
 			+ name + "': it is referenced as a controller or trigger by another hardware variable");
 	}
-	/* 强异常安全同 add：先落所有权，再改名字索引；节点分配失败回滚 pool_。
-	 * 覆盖不进 seq_（别名无资源可释放，结构变量仍在销毁序中原位不动）。 */
-	pool_.reserve(pool_.size() + 1);
-	pool_.push_back(std::move(hw));
-	MatrixVars_Hardware* p = pool_.back().get();
-	try {
-		byName_[name] = p;
-	} catch (...) {
-		pool_.pop_back();
-		throw;
-	}
+	/* 强异常安全：map 节点分配失败时旧条目原样保留（调用前状态），
+	 * 不留半个条目、也不动结构期三个容器。 */
+	session_[name] = std::move(hw);
 }
 
 /* N-15：表达式标识符求值器单点——三个调用面（元数据 $(...)、@Vars 装配、
