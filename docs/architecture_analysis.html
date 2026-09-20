@@ -109,7 +109,7 @@
     <h1>bot4cpp（bot4cj.cpp）架构分析与扩展开发路线图</h1>
     <p>bot4cj（仓颉版）的 C++17 全量移植 · 三脚本分治（结构 .sql / 驱动 .lua / 动作 .mt）+ LuaJIT 驱动层 + Linux HAL。不接任何硬件即可跑通「解析 → 构建 → 播放 → 落盘」全链路。</p>
     <div class="meta">
-      <span>C++17（零第三方 C++ 依赖：LuaJIT + pthread + dl）</span><span>仓库 qingss0/bot4cj.cpp</span><span>59 个模块（47 款器件驱动）</span><span>守门 248/0/1 跳 · C++ 单测 376/0</span>
+      <span>C++17（零第三方 C++ 依赖：LuaJIT + pthread + dl）</span><span>仓库 qingss0/bot4cj.cpp</span><span>59 个模块（47 款器件驱动）</span><span>守门 251/0/1 跳 · C++ 单测 378/0（当时快照）</span>
     </div>
   </div>
 </header>
@@ -251,7 +251,7 @@
 
   <h3>可测试性资产（三层守门体系）</h3>
   <p>测试约定：<code>test/test_&lt;driver&gt;.lua</code> 先 <code>dofile("modules/X.lua")</code> 加载真实 HAL，<strong>再</strong>覆盖全局 <code>i2c_*</code>/<code>spi_*</code>/<code>milli_sleep</code>；位运算/CRC 走 <code>modules/bitcompat.lua</code>（别名 <code>bitc</code>）。C++ 层单测与被测程序共用同一套源文件（<code>test/cpp/</code>，零第三方框架）。</p>
-  <p>当前守门：<strong>Lua/e2e 回归 248 通过 / 0 失败 / 1 跳过（真机用例）+ C++ 单测 376 通过 / 0 失败</strong>；CI 另有 ASan/UBSan 硬门禁，TSan / clang / clang-tidy / 覆盖率 / musl 五条软门禁，以及 ioctl/termios/V4L2/CURL 常量编译期自检（F-24 同族）。本页数字是<strong>当时快照</strong>：权威口径一律以 <code>bash test/run_all.sh</code> 与 <code>./build/mybot_tests</code> 的实时输出为准。</p>
+  <p>当前守门：<strong>Lua/e2e 回归 251 通过 / 0 失败 / 1 跳过（真机用例）+ C++ 单测 378 通过 / 0 失败</strong>；CI 另有 ASan/UBSan 硬门禁，TSan / clang / clang-tidy / 覆盖率 / musl 五条软门禁，以及 ioctl/termios/V4L2/CURL 常量编译期自检（F-24 同族）。本页数字是<strong>当时快照</strong>：权威口径一律以 <code>bash test/run_all.sh</code> 与 <code>./build/mybot_tests</code> 的实时输出为准。</p>
 </section>
 
 <!-- ============ S5 ============ -->
@@ -351,7 +351,7 @@
   <h2 class="sec"><span class="no">07</span>落地检查清单</h2>
   <table class="tbl">
     <tr><th>阶段</th><th>关键改动点（文件）</th><th>验证方式</th><th>回归基线</th></tr>
-    <tr><td><strong>1</strong> 驱动生态</td><td><code>modules/X.lua</code> + <code>robots/*.sql</code> 新表 + <code>test/test_X.lua</code></td><td><code>bash test/run_all.sh</code> 离线桩</td><td>248/0 → 增 N 例 0 fail</td></tr>
+    <tr><td><strong>1</strong> 驱动生态</td><td><code>modules/X.lua</code> + <code>robots/*.sql</code> 新表 + <code>test/test_X.lua</code></td><td><code>bash test/run_all.sh</code> 离线桩</td><td>251/0 → 增 N 例 0 fail</td></tr>
     <tr><td><strong>2</strong> 并发聚合</td><td><code>src/daemonvar.cpp</code> values[32] 参数化 + <code>lib/sensor_daemon.lua</code></td><td>多守护聚合桩测试（test_daemon_concurrency）</td><td>C++ 单测 + TSan 用例保持绿</td></tr>
     <tr><td><strong>3</strong> 网络传输</td><td><strong>已落地</strong>（<code>actionsource.cpp</code> 三输入源）；增强方向：多连接 / WS</td><td>管道/TCP/文件三源等价 e2e（tcp_e2e.sh）</td><td>relay-test 无硬件自校验</td></tr>
     <tr><td><strong>4</strong> 跨 OS</td><td><code>lib/HAL.lua</code> sys 后端接口化 + 路径白名单规则表</td><td>仿真桩（virtbus）跨后端一致性</td><td>ffi 布局断言全平台</td></tr>
