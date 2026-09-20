@@ -144,7 +144,7 @@ local function baseline_save(fd)
 	local b, w1, w2 = baseline_get_raw(fd)
 	if b == nil then dbg("SGP30 baseline: read failed, skip save") return end
 	if w1 == 0 and w2 == 0 then dbg("SGP30 baseline: all-zero, skip save") return end
-	local ffd = HAL.sys.open(baseline_path, O_WRONLY_CREAT_TRUNC, FILE_MODE)
+	local ffd = HAL.sys.open(baseline_path, O_WRONLY_CREAT_TRUNC + HAL.O_CLOEXEC, FILE_MODE)
 	if ffd < 0 then dbg("SGP30 baseline: open for write failed") return end
 	local buf = ffi.new("uint8_t[6]")
 	for i = 0, 5 do buf[i] = b[i + 1] end
@@ -160,7 +160,7 @@ end
 
 -- 恢复（build 调用）：文件不存在/短文件/CRC 不合法/全 0 都安全跳过
 local function baseline_restore(fd)
-	local ffd = HAL.sys.open(baseline_path, O_RDONLY)
+	local ffd = HAL.sys.open(baseline_path, O_RDONLY + HAL.O_CLOEXEC)
 	if ffd < 0 then return "no file" end
 	local buf = ffi.new("uint8_t[6]")
 	local n = HAL.sys.read(ffd, buf, 6)

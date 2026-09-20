@@ -1,6 +1,11 @@
 /* HAL.lua uart 段硬编码常量与系统头文件的一致性自检（F-24，test_ioctl_nums.c 同款方法）
  * 编译期断言：termios 布局/波特率常量/打开标志漂移在构建期即失败。
  * 期望值出处：modules/lib/HAL.lua UART 段（cj_termios 断言与 UART_B_CONST 映射）。 */
+/* O_CLOEXEC 属 POSIX 2008，C11 严格模式下 glibc 不暴露它（见 test_ioctl_nums.c 同款说明）。 */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
 #include <stddef.h>
 #include <termios.h>
@@ -9,8 +14,8 @@
 #include "const_lua.h"		/* A2：配置期由 gen_const_check.cmake 从 HAL.lua 抽取 */
 
 /* A2：先钉住「Lua 源里的值」——此前 C 里手抄一遍、从不读 Lua，Lua 漂移不可见。 */
-_Static_assert(HAL_CONST_UART_O_FLAGS == 2306,
-	"HAL.lua UART_O_FLAGS drifted (expected 2306)");
+_Static_assert(HAL_CONST_UART_O_FLAGS == 526594,
+	"HAL.lua UART_O_FLAGS drifted (expected 526594 = RDWR|NOCTTY|NONBLOCK|CLOEXEC)");
 _Static_assert(HAL_CONST_UART_TCSANOW == 0,
 	"HAL.lua UART_TCSANOW drifted (expected 0)");
 _Static_assert(HAL_CONST_UART_TCIFLUSH == 0,
@@ -124,8 +129,8 @@ _Static_assert(HAL_BAUD_HZ_1000000 == 1000000, "HAL.lua HZ 表 [1000000] drifted
 #error "未知的 B* 常量编码：HAL.lua 波特率映射表与 test_uart_consts.c 需要适配（参见 glibc 2.42 termios 编码变更）"
 #endif
 
-#if (O_RDWR | O_NOCTTY | O_NONBLOCK) != 2306
-#error "O_RDWR|O_NOCTTY|O_NONBLOCK != 2306 (HAL.UART_O_FLAGS)"
+#if (O_RDWR | O_NOCTTY | O_NONBLOCK | O_CLOEXEC) != 526594
+#error "O_RDWR|O_NOCTTY|O_NONBLOCK|O_CLOEXEC != 526594 (HAL.UART_O_FLAGS)"
 #endif
 #if TCSANOW != 0
 #error "TCSANOW != 0 (HAL.UART_TCSANOW)"

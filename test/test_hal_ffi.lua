@@ -109,7 +109,7 @@ end
 reset()
 local fd = i2c_open("/dev/i2c-1")
 check("i2c_open 返回 mock fd", fd == 7, fd)
-check("i2c_open 以 O_RDWR 打开", find("open", "flags", 2) ~= nil)
+check("i2c_open 以 O_RDWR|O_CLOEXEC 打开", find("open", "flags", 2 + HAL.O_CLOEXEC) ~= nil)
 check("i2c_open 非法路径拒绝", i2c_open("../../etc") == -1)
 check("i2c_open 注入路径拒绝", i2c_open("/dev/i2c-1; rm -rf /") == -1)
 

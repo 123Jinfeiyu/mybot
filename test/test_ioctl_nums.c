@@ -11,11 +11,25 @@
  * 两侧都钉死，「声称比对 Lua」不再是一句空话。
  *
  * 用 _Static_assert 而非 #if：_IOW/_IOWR 宏展开含 sizeof，#if 表达式不支持。 */
+/* O_CLOEXEC 属 POSIX 2008：本文件按 C11 严格模式编译（CMAKE_C_STANDARD 11），
+ * glibc 默认特性宏下不暴露它，故在任何头文件之前显式开 _GNU_SOURCE
+ * （与 src/agent_subprocess.cpp 同款兜底，重复定义会触发 -Wpedantic 告警）。 */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
+#include <fcntl.h>
 #include <linux/spi/spidev.h>
 #include <linux/gpio.h>
 
 #include "const_lua.h"		/* 配置期由 gen_const_check.cmake 生成 */
+
+/* ---- open 标志（HAL 全部器件句柄都带 O_CLOEXEC，见 HAL.lua 常量区注释）---- */
+_Static_assert(HAL_CONST_O_CLOEXEC == 0x80000,
+	"HAL.lua O_CLOEXEC drifted (expected 0x80000)");
+_Static_assert(O_CLOEXEC == 0x80000,
+	"O_CLOEXEC != 0x80000 (HAL.lua O_CLOEXEC)");
 
 /* ---- SPI ---- */
 _Static_assert(HAL_CONST_SPI_IOC_WR_MODE == 0x40016b01,

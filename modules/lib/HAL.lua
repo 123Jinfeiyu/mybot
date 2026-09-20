@@ -93,6 +93,12 @@ HAL.backend_name = "glibc"	-- 后端模块名（BOT4CJ_HAL_BACKEND 指定，见�
 -- 常量
 ------------------------------------------------------------------
 local O_RDWR = 2
+-- exec 时自动关闭。**每一个**器件 open 都必须带上它：agent 模式的 run_command
+-- 会 fork /bin/sh，未标 CLOEXEC 的句柄被子进程继承后，模型驱动的命令可以直接
+-- ioctl 它拨动硬件——而且在 robot->deactivate() 之后依然有效（宿主侧另有
+-- close_range 兜底，见 src/agent_subprocess.cpp 的 revokeInheritedFds）。
+-- Linux 各架构同为 0x80000；由 test/test_ioctl_nums.c 与 fcntl.h 双边钉住。
+HAL.O_CLOEXEC = 0x80000
 HAL.I2C_RDWR = 0x0707		-- i2c-dev 原子多消息事务
 HAL.I2C_M_RD = 0x0001		-- i2c_msg.flags：读（0 为写）
 HAL.i2c_addr = {}		-- fd -> 7位从地址（per-state；每条 i2c_msg 自带地址，无需 I2C_SLAVE ioctl）
@@ -170,7 +176,7 @@ function i2c_open(path)
 		print("HAL: invalid i2c path: " .. tostring(path))
 		return -1
 	end
-	local fd = tonumber(HAL.sys.open(path, O_RDWR))
+	local fd = tonumber(HAL.sys.open(path, O_RDWR + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then
 		print("HAL: failed to open i2c bus: " .. path)
 		return -1
@@ -426,7 +432,7 @@ function spi_open(path)
 		print("HAL: invalid spi path: " .. tostring(path))
 		return -1
 	end
-	local fd = tonumber(HAL.sys.open(path, O_RDWR))
+	local fd = tonumber(HAL.sys.open(path, O_RDWR + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then
 		print("HAL: failed to open spi device: " .. path)
 		return -1
@@ -638,7 +644,7 @@ function gpio_request_line(chip_path, offset, direction, default_value, active_l
 		return -1
 	end
 
-	local chipfd = tonumber(HAL.sys.open(chip_path, O_RDWR))
+	local chipfd = tonumber(HAL.sys.open(chip_path, O_RDWR + HAL.O_CLOEXEC))
 	if chipfd == nil or chipfd < 0 then
 		print("HAL: failed to open gpiochip: " .. chip_path)
 		return -1
@@ -751,7 +757,7 @@ typedef struct {
 assert(ffi.sizeof("cj_termios") == 60,
 	"cj_termios size mismatch: expect 60, got " .. ffi.sizeof("cj_termios"))
 
-HAL.UART_O_FLAGS  = 2306		-- O_RDWR(2) | O_NOCTTY(256) | O_NONBLOCK(2048)
+HAL.UART_O_FLAGS  = 526594	-- O_RDWR(2)|O_NOCTTY(256)|O_NONBLOCK(2048)|O_CLOEXEC(524288)
 HAL.UART_TCSANOW  = 0
 HAL.UART_TCIFLUSH = 0
 HAL.UART_VMIN_IDX = 6			-- c_cc 下标（VMIN）
@@ -1035,7 +1041,7 @@ end
 -- 向任意 sysfs 文件写入字符串；成功 true，失败打印路径并 false
 local function sysfs_write(path, val)
 	if type(path) ~= "string" then return false end
-	local fd = tonumber(HAL.sys.open(path, O_WRONLY))
+	local fd = tonumber(HAL.sys.open(path, O_WRONLY + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then
 		print("HAL: pwm open failed: " .. path .. " " .. errno_hint(HAL.sys.errno()))
 		return false
@@ -1062,7 +1068,7 @@ end
 function pwm_npwm(chip)
 	local p = pwm_chip_path(chip, "npwm")
 	if p == nil then return nil end
-	local fd = tonumber(HAL.sys.open(p, O_RDONLY))
+	local fd = tonumber(HAL.sys.open(p, O_RDONLY + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then return nil end
 	local buf = ffi.new("char[16]")
 	local n = tonumber(HAL.sys.read(fd, buf, 16))
@@ -1077,7 +1083,7 @@ end
 function pwm_exported(chip, channel)
 	local path = pwm_attr_path(chip, channel, "enable")
 	if path == nil then return false end
-	local fd = tonumber(HAL.sys.open(path, O_RDONLY))
+	local fd = tonumber(HAL.sys.open(path, O_RDONLY + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then return false end
 	HAL.sys.close(fd)
 	return true

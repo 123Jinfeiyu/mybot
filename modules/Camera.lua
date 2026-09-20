@@ -311,7 +311,7 @@ local function open_fail(msg)
 end
 
 local function device_open(path, data)
-	local fd = HAL.sys.open(path, O_RDWR)
+	local fd = HAL.sys.open(path, O_RDWR + HAL.O_CLOEXEC)
 	if fd < 0 then
 		return open_fail(string.format("无法打开摄像头 %s（errno=%d）：设备不存在、被占用或权限不足",
 			path, HAL.sys.errno()))

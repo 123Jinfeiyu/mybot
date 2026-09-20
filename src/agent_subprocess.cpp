@@ -20,6 +20,8 @@
 #include <poll.h>
 #include <stdexcept>
 #include <string_view>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <utility>
@@ -149,6 +151,33 @@ static bool reapWithGrace(pid_t pid, int& status, int graceMs = 2000) {
 	}
 }
 
+/* 子进程 exec 前吊销继承来的 fd（≥3）。
+ * HAL 侧已给每个器件句柄加 O_CLOEXEC，但宿主不知道来源的句柄同样会被
+ * /bin/sh 继承：第三方 Lua 驱动自己 open 的 fd、dlopen 的 libcurl socket。
+ * 子 shell 一旦拿到绑定 /dev/i2c-1 的 fd，模型驱动的命令就能直接 ioctl 拨动
+ * 硬件——而且是在 robot->deactivate() 之后依然有效，「关掉机器人就安全」这条
+ * 预期会落空。故在子进程侧再兜一层，不依赖调用方是否守规矩。
+ * close_range(2)（Linux ≥ 5.9）一次系统调用给 [3, UINT_MAX] 全部打上
+ * CLOSE_RANGE_CLOEXEC：只打标志不真关，0/1/2 已 dup2 到管道，其余留到 exec
+ * 由内核关闭，语义与 O_CLOEXEC 一致。不可用时退化到逐个 close。
+ * 两条路径都在 fork 之后、exec 之前，且**不分配堆内存**：本进程有守护线程会
+ * 并发 fork，子进程里 malloc 可能撞上父进程持有且永不会释放的锁。 */
+static void revokeInheritedFds() {
+#ifdef SYS_close_range
+	if (::syscall(SYS_close_range, 3U, ~0U, 1U /* CLOSE_RANGE_CLOEXEC */) == 0) { return; }
+#endif
+	/* 退化路径（内核 < 5.9 或 close_range 不可用）：按软上限逐个关。
+	 * 封顶 4096 —— 无上限的 rlim_cur（容器里常见 1048576）会让这段循环
+	 * 跑上百万次系统调用；超出的部分不覆盖，属退化路径的已知缺口。 */
+	long max = 4096;
+	struct rlimit rl{};
+	if (::getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY
+		&& static_cast<long>(rl.rlim_cur) < max) {
+		max = static_cast<long>(rl.rlim_cur);
+	}
+	for (long fd = 3; fd < max; ++fd) { ::close(static_cast<int>(fd)); }
+}
+
 RunResult runShell(const std::string& cmd, int timeoutSec) {
 	int po[2] = {-1, -1};
 	int pe[2] = {-1, -1};
@@ -184,6 +213,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		close(po[1]);
 		close(pe[0]);
 		close(pe[1]);
+		revokeInheritedFds();	/* 必须在 dup2 之后：0/1/2 已指向管道与 /dev/null */
 		execle("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr), envp.data());
 		_exit(127);
 	}

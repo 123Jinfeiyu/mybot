@@ -77,8 +77,8 @@ end
 reset()
 local hfd = gpio_request_line("/dev/gpiochip0", 17, "out", 1, false)
 check("请求成功返回内核线句柄 fd", hfd == 42, hfd)
-check("以 O_RDWR 打开 gpiochip", find("open", "path", "/dev/gpiochip0") ~= nil
-	and find("open", "flags", 2) ~= nil)
+check("以 O_RDWR|O_CLOEXEC 打开 gpiochip", find("open", "path", "/dev/gpiochip0") ~= nil
+	and find("open", "flags", 2 + HAL.O_CLOEXEC) ~= nil)
 do
 	local c = find("ioctl", "req", HAL.GPIO_GET_LINEHANDLE)
 	check("GET_LINEHANDLE 携带 offset=17", c ~= nil and c.lineoffset == 17,

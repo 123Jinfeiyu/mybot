@@ -135,7 +135,8 @@ end
 -- ==================== uart_open：路径/波特率白名单 ====================
 reset()
 check(uart_open("/dev/ttyUSB0", 9600) == 7, "open ttyUSB0@9600 成功")
-check(has_call("open", "flags", HAL.UART_O_FLAGS), "open 旗帜 = RDWR|NOCTTY|NONBLOCK(2306)",
+check(has_call("open", "flags", HAL.UART_O_FLAGS),
+	"open 旗帜 = RDWR|NOCTTY|NONBLOCK|CLOEXEC(526594)",
 	tostring(calls[1] and calls[1].flags))
 check(has_call("cfmakeraw"), "cfmakeraw 进入 raw 模式")
 check(last_ispeed == expect_bconst(9600), "cfsetispeed 收到当版 glibc 编码 B9600（非错编码）",
