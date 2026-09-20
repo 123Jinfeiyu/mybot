@@ -108,8 +108,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	dbg_table("-------- UART.lua caller func get a table --------", data)

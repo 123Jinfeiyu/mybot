@@ -201,8 +201,9 @@ end
 -- 【配置脚本】自检 -> Init -> （可选）恢复基线
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -282,8 +283,9 @@ end
 -- NOTE(20260902-qing): 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

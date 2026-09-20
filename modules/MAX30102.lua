@@ -162,8 +162,9 @@ end
 -- 读 Part ID 自检 -> RESET -> 配置 -> 清 FIFO 指针 -> 写模式启动采样
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -260,8 +261,9 @@ end
 -- 问题（饱和）只置 SAT 标志。返回样本键 RED0..RED{k-1}（+IR0..）与最新样本别名 RED/IR。
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

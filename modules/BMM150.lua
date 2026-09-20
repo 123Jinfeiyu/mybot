@@ -202,8 +202,9 @@ end
 -- 【配置脚本】上电（挂起态 -> 工作态）-> 验 ID -> trim -> preset + normal
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -281,8 +282,9 @@ end
 -- NOTE: 8 字节一次原子读（字节表接口）；溢出轴返回 nil
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

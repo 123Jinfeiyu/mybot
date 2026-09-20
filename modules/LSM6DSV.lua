@@ -146,8 +146,9 @@ end
 -- 【配置脚本】WHO_AM_I 甄别 -> 软复位（自清轮询）-> BDU -> ODR/量程 -> 等启动
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -249,8 +250,9 @@ end
 -- （与 MPU6050/BMI270 驱动同约定，负值由守护 sign='16' 展开）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

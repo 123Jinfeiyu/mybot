@@ -120,8 +120,9 @@ end
 -- ==================== 配置脚本 ====================
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -221,8 +222,9 @@ end
 -- 读最新 ALS 两通道与近距计数，LUX 按内核算法换算。连续转换无"未就绪"态。
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

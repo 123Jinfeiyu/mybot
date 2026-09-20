@@ -115,8 +115,9 @@ end
 -- 【配置脚本】DEVID 甄别 -> FULL_RES+量程 -> 速率 -> 测量模式
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -190,8 +191,9 @@ end
 -- （负值由守护 sign='16' 展开；FULL_RES 下 256 LSB/g 恒定）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

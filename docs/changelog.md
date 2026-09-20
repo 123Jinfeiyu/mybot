@@ -56,6 +56,7 @@
 
 ### 驱动与总线
 
+- **驱动入口全量收敛 arg_table + lint 防线**（2026-09-20）：26 个器件驱动（BMM150/MAX30102/LTC2944/MLX90393/AMG8833/MS5611/AS7262/EMC2101/MHZ19/BH1745/INA219/MAX17043/LSM6DSV/GPIO/UART/INA226/MCP3421/VL53L4CD/ADXL345/AS3935/AD9833/BMI270/APDS9900/SHT3X/SGP30/INA3221）build/call 里残存的 51 处内联 `type(data) ~= "table"` 检查全部迁 `drv_common.arg_table`——手写检查会绕过 arg_table 附带的 `proto=virt` 注入前置（@Action 直写路径绕开仿真打到真实总线）；call 入口报错文案统一为 `Invalid Arguments Type: table`（4 条单测断言同步）。`run_all.sh` 新增 lint 段：器件驱动再出现内联类型检查即判失败（Camera 有意豁免，头注声明）
 - **多路径布局定位收敛**（2026-09-20）：`HAL.lua`/`virtbus.lua` 定位 `bus_contract` 与 `drv_common.virt_prepare` 定位 `virtbus` 改为对 `BOT4CJ_MODULE_PATH` **逐段探测**（此前只取首段——多路径布局下首段没有对应文件时，HAL 地基直接失败、virt 注入误报 cannot load）；配套非缺省布局冒烟用例 `test_multipath_layout.lua`（fix-plan 3-3）
 - **PCA9685 退出 SLEEP 按 datasheet 时序**（2026-09-20）：写 `AI|RESTART` 而非只写 `AI`——唤醒振荡器并立即执行 SLEEP 前排下的重启请求，不再依赖「SLEEP 清零自恢复」留挂起的重启位；prescale 四舍五入手法补注释（fix-plan 3-5 / N7）
 - **驱动入口收敛（两刀）**：SHT3X/BME280/BMI270 六处手搓 fd/address 迁 `drv_common.i2c_pair`；MCP4725/TPL0501 的 build/call 校验迁 `drv_common.arg_table`——旧风格入口绕过直驱 virt 注入钩子，`proto=virt` 的 @Action 直写会绕开仿真打到真实总线

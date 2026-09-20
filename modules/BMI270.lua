@@ -180,8 +180,9 @@ end
 -- 【配置脚本】软复位 -> 验 ID -> 上传 blob -> ODR/量程 -> 上电
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -311,8 +312,9 @@ end
 -- 语义的无符号原始码（与 MPU6050 驱动同约定，负值由守护 sign='16' 展开）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

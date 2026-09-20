@@ -150,6 +150,26 @@ done
 echo "==============================================="
 
 # ======================================================================
+# 驱动入口 lint（fix-plan 2-2 收尾防线）：器件驱动 build/call 入口必须走
+# drv_common.arg_table——内联 `type(data) ~= "table"` 会绕过 arg_table
+# 附带的 proto=virt 注入钩子（@Action 直写路径绕开仿真打到真实总线）。
+# Camera 有意豁免（头注声明：全仓唯一不挂 arg_table 样板的驱动，build
+# 不碰设备、入参走内联类型守卫）。lib/ 内部实现自用，不在检查范围。
+# ======================================================================
+echo "----- lint (驱动入口 arg_table 断言) -----"
+bad="$(grep -l 'type(data) ~= "table"' modules/*.lua | grep -v '^modules/Camera.lua$' || true)"
+if [ -n "$filter" ]; then
+	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+elif [ -n "$bad" ]; then
+	echo "[FAIL] 以下驱动仍存在绕过 arg_table 的内联类型检查："
+	echo "$bad"
+	record_fail "lint-driver-entry-arg_table"
+else
+	echo "[PASS] modules/*.lua 器件驱动入口均走 arg_table（Camera 豁免）"
+	record_pass
+fi
+
+# ======================================================================
 # mybot（C++ 移植）无硬件端到端：编译产物缺失即判失败（见 artifact_missing）。
 # 用例走真实 mybot 二进制：守护线程→共享槽→Ema→Monitor 全链路，
 # I2C/SPI 器件均为内存仿真模型（内嵌于各驱动尾部 <DRIVER>_VIRT 工厂，

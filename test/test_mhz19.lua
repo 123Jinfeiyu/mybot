@@ -432,7 +432,7 @@ do
 
 	-- 入参负路径
 	expect_err("call 非表 ERR", function() return call("x") end,
-		"Invalid Arguments: table")
+		"Invalid Arguments Type: table")
 	expect_err("call 缺 fd ERR", function() return call({}) end,
 		"Invalid Argument: fd")
 	mark = section()

@@ -98,8 +98,9 @@ end
 -- 【配置脚本】软复位 -> 双 ID 甄别 -> 测量时间/增益 -> 启动测量 -> 等首拍
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments Type: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -171,8 +172,9 @@ end
 -- NOTE: 数据小端（0x50=LSB、0x51=MSB，datasheet Rev.002）；一次 8 字节原子读
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return err("Invalid Arguments: table")
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then

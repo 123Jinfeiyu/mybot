@@ -41,11 +41,14 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 装后每次 `git push` 前自动跑 `test/run_all.sh`，未通过即中止。单次绕过：`git push --no-verify`。
 
+放行分支（fail-open，fix-plan 3-6 补记）：仓库根缺 `test/run_all.sh` 时钩子**打印提示后直接放行**（`exit 0`）——这是对「在非仓库根/精简检出里推送」场景的兜底，不是安全设计：钩子的威胁模型是**防手滑**而非防绕过（`--no-verify` 本就随时可绕）。在正常仓库根里该分支不可达；守门的强制力以 CI/复核流程为准。
+
 ## 新增驱动
 
 在 `modules/` 加一个 `<矩阵名>.lua`（dofile HAL，实现 build/call/destroy 语义）。契约要点：
 
 - `build`/`call`/`destroy` 必须返回带 `result` 键的表（`"OK"` 或 `"ERR"`）；返回非表或漏写 `return` 会被判契约违反并中断
+- 入口第一行必须是 `local ok, ek = arg_table(data)` + `if not ok then return ek end`（`drv_common`）——它同时承担入参类型校验与 `proto=virt` 虚拟总线注入前置，手写 `type(data) ~= "table"` 内联检查会绕过注入钩子（`run_all.sh` 的 lint 段会拦；Camera 是唯一豁免，见其头注）
 - `result`/`message`/`mode` 三键由框架保留（见 [dsl.md](dsl.md)）
 - 建议随驱动在文件尾部内嵌 `<矩阵名>_VIRT` 仿真模型，接入 virtbus 回归（见 [virtbus.md](virtbus.md)）
 
