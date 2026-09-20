@@ -15,7 +15,7 @@
 
 ## 命令行参数
 
-程序名为 `mybot`。缺省无参数时打印帮助。参数支持 `--key=value` 与 `--key value` 两种写法（`src/main.cpp:parseArgs`）；未知或拼错的 `--key` 一律报错并以退出码 **2** 结束（不再静默忽略），`--help` 始终优先。
+程序名为 `mybot`。缺省无参数时打印帮助。参数支持 `--key=value` 与 `--key value` 两种写法（`src/cliargs.cpp:parseArgs`）；未知或拼错的 `--key` 一律报错并以退出码 **2** 结束（不再静默忽略），`--help` 始终优先。
 
 | 参数 | 说明 |
 | --- | --- |
@@ -34,12 +34,12 @@
 | `--llm-var <变量名>` | 承载驱动变量的名字（缺省 `llm0`）；结构脚本已声明同名变量则直接用，否则自动注入 |
 | `--llm-endpoint <URL>` | agent 模型接入点（覆盖配置文件；不给则用配置或驱动缺省） |
 | `--llm-model <名称>` | agent 模型名（覆盖配置文件；不给则用配置或驱动缺省） |
-| `--llm-key <KEY>` | agent API key（覆盖配置文件）；会写进本进程环境变量 `BOT4CJ_LLM_KEY`（不推荐：argv 对本机所有用户可读） |
 | `--llm-max-turns <N>` | 单次任务最大模型轮数，范围 1-100（缺省 8） |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数，范围 1-200000（缺省 4096） |
 | `--llm-timeout <秒>` | 单次模型调用超时，范围 1-600（缺省 180） |
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
-| `--agent-no-shell` | 不向智能体提供 `run_command`（去掉任意 shell 执行能力） |
+| `--prompt-file <路径>` | 提示词包：可重复传入（文件或目录），内容按文件名自然排序拼接后追加进系统提示词（详见 [agent.md](agent.md)） |
+| `--agent-shell` | **显式开启**智能体的 `run_command`（任意 shell 执行）；**缺省不提供**该工具。API key 非来自环境变量时启动会打印告警 |
 | `--camera-var <变量名>` | 承载摄像头驱动（`modules/Camera.lua`）的变量名（缺省 `cam0`）；结构脚本已声明则直接用 |
 | `--camera-device <路径>` | 摄像头设备（缺省 `/dev/video0`，需支持 MJPEG；驱动只放行 `/dev/videoN`） |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」；驱动只读该文件**所在目录**内的文件 |
@@ -51,7 +51,7 @@ agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--in
 
 - 口令校验失败只关闭该连接、回到 accept 等待，**连续 5 次**失败才退出——既防单次连接 DoS，也防无限爆破
 - 口令校验为**恒时比较**（防时序侧信道，审计 M1）
-- argv 会出现在 `/proc/*/cmdline`、对本机所有用户可读——多用户机器上传口令/API key 请用环境变量而非命令行
+- argv 会出现在 `/proc/*/cmdline`、对本机所有用户可读——多用户机器上传 TCP 口令请用环境变量而非命令行（API key 同理：宿主**不提供**命令行传密钥的选项，只从环境变量或配置文件取）
 - 连接另有**总时长预算**（600s，随 `--tcp-idle` ×20 放大）从连接建立起算：慢滴发送（每 <idle 秒发 1 字节）不能无限期挂住进程
 
 **agent 取值优先级**：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。接入点、密钥、模型等都可写进
@@ -108,5 +108,8 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_LLM_CONFIG` | agent 配置文件路径（优先级低于 `--llm-config`、高于缺省查找）；设为 `none` 表示不读配置文件 |
 | `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | agent 接入点 / 模型名（覆盖配置文件，低于命令行） |
 | `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |
+| `BOT4CJ_HAL_BACKEND` | HAL 后端模块名：`modules/lib/hal_backend_<名>.lua`（缺省 `glibc`）。加载期逐项断言契约函数齐全，缺函数 fail-fast——移植到别的 libc/平台时替换整个后端 |
+| `BOT4CJ_CAMERA_SRC_DIR` | 摄像头仿真来源的**放行目录**（冒号分隔）：`--camera-src` 之外的路径必须落在这里面，否则驱动拒绝读该文件（缺省禁用任何目录外读取） |
+| `BOT4CJ_TEST_VIDEO` | 仅守门用：真机摄像头用例（`test_camera_v4l2.lua`）的设备路径，指定且存在时该用例不再按跳过计（见 [testing.md](testing.md)） |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

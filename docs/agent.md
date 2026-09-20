@@ -49,21 +49,21 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--llm-var <变量名>` | 承载驱动的硬件变量名 | `llm0` |
 | `--llm-endpoint <URL>` | 接入点（覆盖配置文件） | 配置文件 / 驱动缺省 |
 | `--llm-model <名称>` | 模型名（覆盖配置文件） | 配置文件 / 驱动缺省 |
-| `--llm-key <KEY>` | API key（覆盖配置文件） | 配置文件 / 环境变量，见下 |
 | `--llm-max-turns <N>` | 单次任务的最大模型轮数（1-100） | 8 |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数（1-200000） | 4096 |
 | `--llm-timeout <秒>` | 单次模型调用超时，范围 1-600 | 180 |
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--prompt-file <路径>` | **提示词包**，可重复传入（文件或目录），拼接后追加到系统提示词（见下节） | — |
-| `--agent-no-shell` | **不**注册 `run_command`（去掉任意 shell 执行能力） | 关（即默认提供） |
+| `--agent-shell` | **显式开启** `run_command`（任意 shell 执行） | **不提供**（见「安全」节） |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」（只读该文件所在目录内的文件） | — |
 | `--no-camera` | **不**注册 `capture_image`（去掉拍照能力） | 关（即默认提供） |
 
 取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
+API key 没有命令行入口（只从环境变量或配置文件取）：argv 对同用户进程可读（`/proc/<pid>/cmdline`）。
 
-`--task` / `--llm-*` / `--scripts-dir` / `--agent-no-shell` / `--prompt-file` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。
+`--task` / `--llm-*` / `--scripts-dir` / `--agent-shell` / `--prompt-file` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。
 
 ## 配置文件（推荐）
 
@@ -85,7 +85,7 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 
   "max_turns": 8,
   "scripts_dir": "scripts",
-  "allow_shell": true,
+  "allow_shell": false,
   "prompt_files": ["prompts/spider_robot"]
 }
 ```
@@ -218,7 +218,7 @@ INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
 | `run_action_script` | 在**常驻**机器人上执行指定 `.mt` | 只允许 `--scripts-dir` 下的相对路径；拒绝绝对路径、`..`、非 `.mt`、**符号链接**；单文件 8 MiB 上限 |
 | `list_hardware` | 列出结构脚本注册的硬件变量（名字 + 种类） | 只读清单；**不**调用 `read()`/`play()`，绝无副作用 |
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节） |
-| `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗；`--agent-no-shell` 可关闭 |
+| `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗；**缺省不注册**，须 `--agent-shell`（或配置 `allow_shell: true`）显式开启 |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -311,19 +311,20 @@ OpenAI 协议的 **tool 消息只允许文本**，所以图片不能塞进工具
 ## 安全说明（请务必读）
 
 1. **`run_command` 是无白名单、无审批的任意 shell 执行**。模型可能被外部输入（文件内容、设备读数、网络数据）诱导执行任意命令。
-   仅在可信环境（你自己的机器人主机）使用；需要对外暴露，请先加命令审批或在进程外隔离（专用用户 / 容器 / 网络命名空间）。
-   不需要 shell 能力时加 `--agent-no-shell`。
+   正因如此**它缺省不注册**：要用 `--agent-shell`（或配置 `allow_shell: true`）显式开启，
+   并在可信环境（你自己的机器人主机）使用；需要对外暴露，请先加命令审批或在进程外隔离（专用用户 / 容器 / 网络命名空间）。
 2. **子进程环境已清洗**：名称含 `key` / `token` / `secret` / `password` / `passwd` / `credential` 的变量不会传给子进程——
    这天然覆盖 `BOT4CJ_LLM_KEY`，模型无法用 `run_command` 读走自己的 API key。
    **但这条只覆盖「环境变量」这一来源**：`run_command` 的子进程与宿主同属一个用户，
-   密钥若来自配置文件（`api_key` 字段）、密钥文件（`api_key_file`）或 `--llm-key`，
-   子进程可以直接 `cat` 出来 / 从 `/proc/<pid>/cmdline` 读到，`chmod 600` 这类权限位对同用户无效。
-   `run_command` 启用时命中这几种来源会在启动时打印告警。
-3. **API key 不进驱动参数表、不进调试转储**：密钥可由配置文件、`--llm-key` 或环境变量提供，但宿主只会把它注入本进程环境变量 `BOT4CJ_LLM_KEY`（真正读它的是 Lua 驱动）——驱动的参数表与 `BOT4CJ_DEBUG` 的参数转储里都不会出现它。
+   密钥若来自配置文件（`api_key` 字段）或密钥文件（`api_key_file`），
+   子进程可以直接 `cat` 出来，`chmod 600` 这类权限位对同用户无效。
+   `run_command` 启用时命中这两种来源会在启动时打印告警。
+3. **API key 不进驱动参数表、不进调试转储**：密钥只由配置文件（`api_key`/`api_key_file`）或环境变量提供
+   （宿主**不提供**命令行传密钥的选项），宿主把它注入本进程环境变量 `BOT4CJ_LLM_KEY`（真正读它的是 Lua 驱动）——驱动的参数表与 `BOT4CJ_DEBUG` 的参数转储里都不会出现它。
    - 环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`（配置文件里也能写 `api_key`/`api_key_file`）
    - **想同时挡住「其他本机用户」与「agent 自己的 shell」，只有环境变量这一条路**（它在子进程里被清洗掉）
    - 落盘的密钥请 `chmod 600`，启动时对「同组/其他用户可读」会打印提醒，仓库 `.gitignore` 已挡住 `mybot.llm.json` 一类文件名
-   - `--llm-key` 会出现在 `/proc/<pid>/cmdline`（本机所有用户可读），能用环境变量就别用它
+   - 曾有的 `--llm-key` 已移除：它必然出现在 `/proc/<pid>/cmdline`（本机所有用户可读）
 4. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
    不是对抗恶意模型的边界——真正的边界仍然是「模型输出即不可信输入」这条工程常识。
 5. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。

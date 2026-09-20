@@ -6,6 +6,21 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-20 评估批次（安全缺省翻转 / C2 同族收口 / 门禁硬化）
+
+> 依据一次独立评估（总评 8.5/10，六条扣分点全量落地）。**三条使用者可见的行为变更**单独标注。
+> 守门快照：Lua/e2e **248 通过 / 0 失败 / 1 跳过**、C++ 单测 **376 / 0**。
+
+- **⚠️ 破坏性变更：`run_command` 缺省不再提供**（评估 C12 收口）。任意 shell 执行是 agent 手里最大的一张牌，缺省给上等于把「无审批 RCE」当默认值。现在须 `--agent-shell`（或配置 `allow_shell: true`）显式开启，`--agent-no-shell` 随之移除；`run_command` 缺席时模型调用它会收到「未知工具」文本，会话不中断。
+- **⚠️ 破坏性变更：移除 `--llm-key`**。命令行传密钥必然出现在 `/proc/<pid>/cmdline`（同用户进程可读），与「密钥不进 argv」的自证口径自相矛盾。密钥只从环境变量链（`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`）或配置文件（`api_key` / `api_key_file`）取；残留用法按未知参数退出 2，不会静默忽略。
+- **⚠️ 行为变更：SQL 词法层把括号当分隔符**（与空白无关）。此前 `(` 只在「token 起始」有分支、`)` 只在「token 非空」有分支，`INSERT INTO T(a,b) VALUES(1,2)` 这类紧凑写法会把 `(` 并进名字并以 `Token ,` 报错；现在紧凑与留白两种写法产出逐字节相同的词元流（仓内夹具一直写留白，故缺陷从未暴露）。
+- **C2 同族收口（NaN 防线扫尾）**：`gpio_set_value` 的 `tonumber(v) or 0` + `(v ~= 0)` 会把 NaN 判为真、把线**驱动到高电平**（与已加固的 `default_values` 同一判据两份实现）；`Ema`/`Kalman`/`BH1750` 的列解析同款写法，配合库内「区间比较对 NaN 恒为假」的校验，让 `alpha`/`Q`/`R`/`mtreg` 写 `"nan"` 时一路发布 NaN 却返回 `result="OK"`。现统一回落缺省（`drv_common` 单点，并新导出 `finite_of` 供样本列使用），库层校验改为「必须满足上下界」的正向式，样本列非有限按 `ERR` 契约处理。
+- **真机/仿真判据压回总线契约单点**：SPI 的 `mode`/`bits`/`speed` 与字节参数，真机路径此前 `uint_of` **静默 floor**、虚拟路径显式拒绝小数（`spi_write(fd,1.9)` 真机成功、`proto=virt` 失败）；`uart_read` 的非有限超时反之（真机拒绝、仿真放行）。现下沉 `bus_contract.int_of`（严格整数 + 区间）双向统一，`uart_read` 超时两库同走 `finite_of`。
+- **平台单点修复**：`HAL.PWM_SYSFS_ROOT` 曾被 PWM 段的字面量重新赋值，架空了 `HAL.platform` 表的「改这里即移植」承诺；现 `pwm_chip_path`/`pwm_attr_path` 直读平台表。
+- **CI 门禁硬化**：`gate:clang-tidy` 此前退出码取自管道末端的 `tail`（恒 0，**结构上不可能红**），现改为记录 clang-tidy 自身退出码并以其决定成败，`clang-tidy.log` 入 artifacts（「基线留档」终于有落点）；`gate:tsan` 的 `halt_on_error` 改 1（竞态报告现在真的影响退出码）；三条软门禁补「连续 2 轮无新增告警 → 移除 allow_failure，最迟 2026-10-31」的可判定转硬条件；新增 `gate:coverage`（gcov 覆盖率报告入 artifacts）与 `gate:musl`（alpine 上跑常量自检与 C++ 单测，把「非 glibc libc 未验证」从声明推进到实证）两条软门禁。
+- **文档失实与完整性收口**：`architecture_analysis.html` 的守门数字停在两轮前（235/327）且断言「CI 缺 clang-tidy 静态分析门禁」——而该门禁当天已上线，现同步为 248/376 并改述软门禁现状，另加「本页数字为当时快照」的口径；`reference.md` 补上遗漏的 `--prompt-file` 与三个环境变量（`BOT4CJ_HAL_BACKEND`/`BOT4CJ_CAMERA_SRC_DIR`/`BOT4CJ_TEST_VIDEO`），并修掉指向已搬迁代码的 `src/main.cpp:parseArgs`。
+- **守门自身补盲**：「帮助正文 ↔ docs 选项表」的黄金测试此前取 `reference.md ∪ agent.md` 的**并集**，于是 `reference.md` 单文档缺项永远不会红——现改为逐文档判据（帮助里的每个选项都必须在 `reference.md` 有记录）；并新增环境变量完整性的机械判据（源码/脚本里出现的 `BOT4CJ_*` 环境变量必须在 `reference.md` 有记录，`__BOT4CJ_*` 守卫全局按前缀排除）。
+
 ### 2026-09-20 审计修复批次（C1–C11）
 
 > 依据一次独立审计（`.tmp/audit-report-2026-09-20.md`：14 项缺陷，每项均本机复现或代码核对）。

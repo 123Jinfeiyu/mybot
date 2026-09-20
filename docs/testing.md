@@ -1,11 +1,27 @@
 # 回归测试手册
 
 > 本文是 `test/run_all.sh` 守门脚本的完整说明。[README](../README.md) 中只保留命令入口。
-> CI（`.gitlab-ci.yml`，F-22）在每次推送后自动跑 Release 全量守门 + sanitizer 双跑，
+> CI（`.gitlab-ci.yml`，F-22）在每次推送后自动跑 Release 全量守门 + ASan/UBSan 单跑
+> （`run_san.sh --asan-only`：Release 全量已由 `gate:release` 跑过，不重复），
 > 构建步带 `-DMYBOT_WERROR=ON`（README 声称的「零告警」由此成为门禁而非约定）；
-> 与本地 pre-push 钩子同一条守门。另有 `gate:tsan`（只跑守护并发相关 C++ 用例）、
-> `gate:clang`（clang 构建 + C++ 单测烟雾）与 `gate:clang-tidy`（`src/` 静态分析）
-> 三条 **allow_failure 软门禁**，观察若干轮后再收紧。
+> 与本地 pre-push 钩子同一条守门。
+>
+> 硬门禁 3 条 + `allow_failure` 软门禁 5 条，逐条与 `.gitlab-ci.yml` 一一对应：
+
+| job | 类型 | 内容 |
+| --- | ---- | ---- |
+| `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
+| `gate:release` | 硬 | `bash test/run_all.sh`（Release 全量守门） |
+| `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only` |
+| `gate:tsan` | 软 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
+| `gate:clang` | 软 | clang 构建 + C++ 单测烟雾 |
+| `gate:clang-tidy` | 软 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
+| `gate:coverage` | 软 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`），报告随 artifacts 留档 |
+| `gate:musl` | 软 | alpine/musl 下构建并运行三个常量自检；能构建时再跑 `mybot_tests` |
+
+> 五条软门禁的**转硬条件与最迟日期**写在各自 job 注释里（统一为「连续 2 轮 pipeline
+> 无新增告警/报告 + 最迟 2026-10-31」），如实标注「尚未转硬」。它们**不进入**
+> `run_all.sh` 的记账——守门汇总口径不变。
 
 ## 用法
 
@@ -53,10 +69,10 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 6. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 7. **TCP 异常注入**（复用 `scripts/tcp_adversarial.sh` 场景矩阵：半包/断连/空闲挂死/垃圾帧/口令负路径，每场景独立服务端 + 看门狗）
 8. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假模型服务 `scripts/fake_llm_server.py`，六个场景；缺 python3 或 libcurl 时按跳过计）：
-   - ① 默认协议驱动（LlmOpenAI）跑完 `list_hardware → run_action_script → run_command → 最终回答`：断言工具循环真的迭代、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态
-   - ② `--llm-driver LlmDeepSeek` 断言协议差异：带 `thinking`、不发 `temperature`、历史 `reasoning_content` 被回传（官方文档里的 400 级有状态要求）
+   - ① 默认协议驱动（LlmOpenAI，命令带 `--agent-shell`）跑完 `list_hardware → run_action_script → run_command → 最终回答`：断言工具循环真的迭代、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态
+   - ② `--llm-driver LlmDeepSeek`（同样带 `--agent-shell`）断言协议差异：带 `thinking`、不发 `temperature`、历史 `reasoning_content` 被回传（官方文档里的 400 级有状态要求）
    - ③ `--llm-timeout` 必须在 4s 内生效：专防 `curl_easy_setopt` 退回裸变参调用（那时整型选项被静默忽略）
-   - ④ `--llm-config` 配置文件：断言 URL/KEY/MODEL 全部来自文件、且环境里不放任何密钥
+   - ④ `--llm-config` 配置文件：断言 URL/KEY/MODEL 全部来自文件、且环境里不放任何密钥；同时断言**未给 `--agent-shell` 时工具表里没有 `run_command`**（安全缺省的判别性守门）
    - ⑤ `capture_image` 拍照：断言线上报文确实带 `image_url` 多模态内容（data URL 包的真 JPEG）
    - ⑥ `--prompt-file` 提示词包：目录 .md 按文件名自然排序、以「## 文件名」分节追加在系统提示词内置段落之后
 9. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）

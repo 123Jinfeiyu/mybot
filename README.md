@@ -15,7 +15,7 @@
 - **实现**：C++17（零第三方 C++ 依赖，仅 LuaJIT + pthread + dl）
 - **构建**：CMake ≥ 3.16；本地实测 g++ 14 / 15（CI 基线 debian:bookworm，其缺省 g++ 为 12）
 - **平台**：Linux（aarch64 / x86_64），树莓派实测可使用
-- **CI**：`.gitlab-ci.yml` 在每次推送跑「构建（`-DMYBOT_WERROR=ON`，零告警即门禁）→ Release 全量守门 → ASan/UBSan 双跑」三条硬门禁，另有 TSan、clang 与 clang-tidy 三条软门禁（详见 [docs/testing.md](docs/testing.md)）
+- **CI**：`.gitlab-ci.yml` 在每次推送跑「构建（`-DMYBOT_WERROR=ON`，零告警即门禁）→ Release 全量守门 → ASan/UBSan 单跑（`run_san.sh --asan-only`）」三条硬门禁，另有 TSan、clang、clang-tidy、覆盖率与 musl 五条软门禁（详见 [docs/testing.md](docs/testing.md)）
 - **驱动生态**：`modules/` 下 59 个模块——47 款器件/执行器驱动（舵机、IMU、气压、测距、ADC、电源……）加总线、滤波与模型协议等框架模块；分类清单见 [docs/drivers.md](docs/drivers.md)（计数以 `modules/` 目录为准）
 
 ## 🧭 三份脚本如何配合
@@ -118,7 +118,7 @@ export BOT4CJ_LLM_KEY=sk-xxx
 - `run_action_script`——在常驻机器人上执行指定脚本
 - `list_hardware`——打印器件清单（只读，不触发任何动作）
 - `capture_image`——**拍照并把画面送进上下文**，多模态模型据此「看」环境
-- `run_command`——执行 shell 命令（可用 `--agent-no-shell` 关闭）
+- `run_command`——执行 shell 命令（**缺省不提供**，需 `--agent-shell` 显式开启）
 
 摄像头同样是 Lua 驱动（V4L2 + MJPEG，无第三方库），也支持 `--camera-src <图片>` 在无摄像头时跑通全链路。
 完整选项、工作流程、安全说明与源码分层见 **[docs/agent.md](docs/agent.md)**。
