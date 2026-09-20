@@ -100,4 +100,13 @@ check("拒绝非字符串键", not pcall(json.encode, { [1.5] = "x" }))
 check("拒绝非有限数", not pcall(json.encode, 0 / 0))
 check("拒绝函数", not pcall(json.encode, print))
 
+-- ---- 数组内 null：空洞即稀疏表，重编码报错（头注释已声明的有损点）----
+local sp = json.decode("[1,null,3]")
+check("数组内 null 留下空洞", sp[1] == 1 and sp[2] == nil and sp[3] == 3,
+	"no N/2/3 " .. tostring(sp[1]))
+check("空洞数组重编码报错（数字键非字符串）",
+	not pcall(json.encode, sp))
+check("全 null 数组解码为空表", next(json.decode("[null,null]")) == nil)
+check("全 null 数组重编码为空对象", json.encode(json.decode("[null,null]")) == "{}")
+
 tester.summary("json.lua 单测")

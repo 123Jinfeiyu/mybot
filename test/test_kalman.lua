@@ -84,4 +84,16 @@ check("filter NaN 报错", pcall(function() Kalman.new(20, 200):filter(0/0) end)
 check("filter inf 报错", pcall(function() Kalman.new(20, 200):filter(math.huge) end) == false)
 check("Q=inf 仍合法（既有语义：只用测量值）", pcall(Kalman.new, math.huge, 200) == true)
 
+-- 用例8：Q=inf → kg 取极限 1（kg=inf/inf=NaN 的修复，2026-09-20）
+-- Q=-inf 被 new 的 Q>=0 拒绝；filter 内 -inf 分支纯属防御（P_mid 恒非负）。
+kf = Kalman.new(math.huge, 200)
+v = kf:filter(50)
+check("Q=inf 输出即测量值 50", v == 50, tostring(v))
+check("Q=inf 后 P 回落 R（有限）",
+	kf.P_last == 200 and kf.P_last == kf.P_last, tostring(kf.P_last))
+v = kf:filter(30)
+check("Q=inf 连续拍不产生 NaN", v == 30 and v == v, tostring(v))
+for i = 1, 100 do v = kf:filter(100 + i) end
+check("Q=inf 长跑保持有限", v == 200 and v == v, tostring(v))
+
 tester.summary("test_kalman.lua")

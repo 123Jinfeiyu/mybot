@@ -63,7 +63,9 @@ local REG_T_LSB   = 0x15
 local FS_VOLTAGE_V = 70.8			-- 电压满量程（V）
 local FS_SENSE_V   = 0.064			-- ΔSENSE 满量程（±64mV）
 local FS_TEMP_K    = 510.0			-- 温度满量程（K）
-local CHARGE_LSB_AH = 0.34e-6		-- 电荷 LSB（Ah @ M=4096, 50mΩ）
+local CHARGE_LSB_AH = 0.34e-6		-- 电荷 LSB = 0.34e-3 mAh（= 0.34e-6 Ah，M=4096, 50mΩ）
+					-- 单一事实源：mAh 形态 0.34e-3 由 :34 公式直接给出，
+					-- Ah 形态 0.34e-6 仅在乘 1000 换算处使用，勿混用单位
 
 -- ==================== 预分频 M -> 控制码（[5:3]） ====================
 local presc_tab  = { 1, 4, 16, 64, 256, 1024, 4096 }
@@ -282,7 +284,7 @@ function LTC2944_VIRT.new(opts)
 	local FS_SENSE_V   = 0.064
 	local FS_TEMP_K    = 510.0
 	local ZERO_K       = 273.15
-	local CHARGE_LSB_AH = 0.34e-6
+local CHARGE_LSB_AH = 0.34e-6		-- 与驱动侧同源（仅逆注入用，正算归驱动）
 
 	local function bytev(v)
 		v = tonumber(v)
@@ -421,7 +423,8 @@ function LTC2944_VIRT.new(opts)
 		if t then self:set_temp_raw(clamp_u16((t + ZERO_K) / FS_TEMP_K * 65535)) end
 		return self
 	end
-	-- mAh → code：code = mAh×rsense×4096 / (0.34e-3×1000×M×0.05)
+	-- mAh → code：code = mAh×rsense×4096 / (CHARGE_LSB_AH×1000×M×0.05)
+	--               = mAh×rsense×4096 / (0.34e-3×M×0.05)
 	function d:set_charge_mah(mah, m, rsense)
 		mah = tonumber(mah)
 		m = tonumber(m) or 4096

@@ -509,6 +509,21 @@ if r then
 		tostring(r.CHARGE))
 end
 
+-- mAh ↔ code 往返闭锁（2026-09-20 审计：:424 注释单位笔误收口）：
+-- set_charge_mah 逆注入后 driver call 读回 CHARGE 应还原为所设 mAh
+for _, mh in ipairs({ 0.34, 1.7, 3.4, 8.0 }) do
+	section()
+	build_ok()
+	dev:set_charge_mah(mh, 4096, 0.05)
+	r = expect_ok(string.format("call 往返 charge=%.2f", mh),
+		function() return call({ fd = fd, address = "0x64" }) end)
+	if r then
+		check(string.format("mAh=%.2f 读回一致（±0.5 code 量化）", mh),
+			math.abs(r.CHARGE - mh) <= 0.34e-6 * 1000 * (4096 * 0.05) / (0.05 * 4096) * 0.5,
+			string.format("got %.6f", r.CHARGE))
+	end
+end
+
 -- rsense=0.01：电流量程 ±6.4A、电荷 LSB 放大 5 倍
 section()
 build_ok({ rsense = "0.01", prescaler = "4096" })
