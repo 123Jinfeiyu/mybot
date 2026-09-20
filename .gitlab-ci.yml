@@ -23,7 +23,10 @@ build:release:
   image: debian:bookworm
   before_script: *install-deps
   script:
-    - cmake -S . -B build && cmake --build build -j"$(nproc)"
+    # MYBOT_WERROR=ON（2026-09-20 重构阶段 5.3）：把 README 声称的「零告警
+    # 基线」变成 CI 门禁，而不是靠人工传标志核查。本地缺省 OFF，理由见
+    # CMakeLists.txt 的 option 注释（未预跑的编译器版本不应被 -Werror 挡住）。
+    - cmake -S . -B build -DMYBOT_WERROR=ON && cmake --build build -j"$(nproc)"
   artifacts:
     paths:
       - build

@@ -66,10 +66,12 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 在 `modules/` 加一个 `<矩阵名>.lua`（dofile HAL，实现 build/call/destroy 语义）。契约要点：
 
-- `build`/`call`/`destroy` 必须返回带 `result` 键的表（`"OK"` 或 `"ERR"`）；返回非表或漏写 `return` 会被判契约违反并中断
+- `build`/`call`/`destroy` 必须返回带 `result` 键的表（`"OK"` 或 `"ERR"`）；返回非表或漏写 `return` 会被判契约违反并中断。协议型驱动（如 `Llm*`）同样适用——`call(nil)` 必须返 ERR 契约表而非抛 Lua error
 - 入口第一行必须是 `local ok, ek = arg_table(data)` + `if not ok then return ek end`（`drv_common`）——它同时承担入参类型校验与 `proto=virt` 虚拟总线注入前置，手写 `type(data) ~= "table"` 内联检查会绕过注入钩子（`run_all.sh` 的 lint 段会拦；Camera 是唯一豁免，见其头注）
+- **模块路径引导固定写法**（多路径加载的前提）：`local mpath = __mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")`，后续 lib 一律 `dofile(mpath.resolve("lib/xxx.lua"))`。`__mpath` 由宿主建沙箱时注入（逐段探测），直接写 `(env):match("[^:]+")` 只取首段、多路径布局下会失败；`run_all.sh` 的 lint 段会拦
 - `result`/`message`/`mode` 三键由框架保留（见 [dsl.md](dsl.md)）
 - 建议随驱动在文件尾部内嵌 `<矩阵名>_VIRT` 仿真模型，接入 virtbus 回归（见 [virtbus.md](virtbus.md)）
+- 完成后跑一次 `luajit test/test_driver_contract.lua`（驱动入口契约 sweep：可加载 + 三入口齐全 + 非表入参 ERR 契约，同时覆盖上面两条 lint 的语义面）
 
 ## 新增回归
 
@@ -82,6 +84,12 @@ cd build && ctest --output-on-failure -R cpp_unit
 ## 代码规范
 
 本项目 `.cpp` 全量 `-Wall -Wextra -Wpedantic` 零告警为基线，改动请保持。
+CI 的构建步带 `-DMYBOT_WERROR=ON`（把零告警变成门禁）；本地默认 OFF——未预跑的
+编译器版本不应被 `-Werror` 挡住构建，想本地按 CI 口径验证就显式打开：
+
+```bash
+cmake -S . -B build -DMYBOT_WERROR=ON && cmake --build build
+```
 
 - **静态分析（clang-tidy）**：检查集见仓库根 [.clang-tidy](../.clang-tidy)
   （bugprone/performance/concurrency 高信号类别）。本地跑法：

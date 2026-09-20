@@ -100,6 +100,10 @@
 ## 驱动契约
 
 新增驱动照此实现，评审按此核对。公共样板在 `modules/lib/drv_common.lua`。
+可机器核对的部分由 `luajit test/test_driver_contract.lua`（驱动入口契约 sweep）
+逐模块断言：能加载、三入口齐全、非表入参返回 ERR 契约表而非抛 Lua error——
+豁免只有 `bitcompat`（纯 Lua 库）与 `Camera`（头注声明不挂 `arg_table`）。
+`run_all.sh` 另有两道 grep lint（`arg_table` 首调用、模块路径 `__mpath` 引导）。
 
 ### 入口函数集
 

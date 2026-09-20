@@ -92,8 +92,20 @@ set(MYBOT_CORE_SOURCES
 
 # 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，
 # 避免「测试构建干净、主构建不干净」的错位（原先两份拷贝靠人工同步）。
+#
+# MYBOT_WERROR（2026-09-20 重构阶段 5.3）：把「零告警」从约定升级为门禁。
+# 为什么不无条件加 -Werror：本项目要在**未预跑的编译器版本**上也能构建成功
+#（CI 基线 debian:bookworm 的 g++12、树莓派发行版编译器都可能报出别家前端
+# 才有的告警），无条件 -Werror 会把「换台机器就构建不过」引进来。故做成开关：
+# 本地缺省 OFF（保持原取向），CI 的 build:release 显式 -DMYBOT_WERROR=ON——
+# 门禁落在「有基线、可复现」的那台机器上。
+option(MYBOT_WERROR "Treat -Wall/-Wextra/-Wpedantic warnings as errors" OFF)
+
 add_library(mybot_warnings INTERFACE)
 target_compile_options(mybot_warnings INTERFACE -Wall -Wextra -Wpedantic)
+if(MYBOT_WERROR)
+  target_compile_options(mybot_warnings INTERFACE -Werror)
+endif()
 target_include_directories(mybot_warnings INTERFACE src ${LUAJIT_INCLUDE_DIRS})
 
 # Lua 运行时链接（仅 mybot / mybot_tests；mtmerge 是纯离线矩阵工具）
@@ -197,8 +209,11 @@ endif()
 # ======================================================================
 # Lua 离线回归逐用例注册（run_all.sh 保持主编排入口不变）：
 # 每个 test_*.lua 都是 `luajit test/xxx.lua` 可单跑的独立用例（HAL 依赖 ffi
-# 必须 LuaJIT）；唯一例外 test_jit_warmup.lua 带 "-- requires: i2c" 真机标记，
-# 与 run_all.sh 同语义按有无 /dev/i2c-* 决定执行或跳过。
+# 必须 LuaJIT）。真机用例（文件头 "-- requires: i2c" / "video"）经
+# test/lib/device_gate.sh 包装：本机无对应 /dev/<dev>* 时以 125 退出，
+# 由 SKIP_RETURN_CODE 记为跳过——**不再按文件名特判**（阶段 5.2 前只特判
+# test_jit_warmup.lua，导致同样带 video 标记的 test_camera_v4l2.lua 被裸注册，
+# 无摄像头机器上 ctest 报 Failed 而不是 Skipped）。标记解析与 run_all.sh 同源。
 # 收益：ctest -R lua_ 获得逐用例粒度与超时，不必整段跑完 run_all.sh 守门脚本。
 # ======================================================================
 file(GLOB MYBOT_LUA_TESTS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/test_*.lua)
@@ -206,20 +221,14 @@ find_program(LUAJIT_EXECUTABLE NAMES luajit)
 if(LUAJIT_EXECUTABLE)
 	foreach(lua_test IN LISTS MYBOT_LUA_TESTS)
 		get_filename_component(lua_name "${lua_test}" NAME)
-		if(lua_name STREQUAL "test_jit_warmup.lua")
-			# 真机 ABI 回归：无 /dev/i2c-* 时按 skip 计，有真机则照跑
-			add_test(NAME lua_${lua_name}
-				COMMAND ${CMAKE_SOURCE_DIR}/test/cpp/run_if_i2c.sh ${LUAJIT_EXECUTABLE} "${lua_test}")
-		else()
-			add_test(NAME lua_${lua_name} COMMAND ${LUAJIT_EXECUTABLE} "${lua_test}")
-		endif()
+		add_test(NAME lua_${lua_name}
+			COMMAND ${CMAKE_SOURCE_DIR}/test/lib/device_gate.sh
+				"${lua_test}" ${LUAJIT_EXECUTABLE} "${lua_test}")
 		set_tests_properties(lua_${lua_name} PROPERTIES
 			WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
 			TIMEOUT 60
+			SKIP_RETURN_CODE 125
 			ENVIRONMENT "LUACMD=${LUAJIT_EXECUTABLE}")
-		# 真机用例包装（run_if_i2c.sh）在无 /dev/i2c-* 时以 125 退出表示"不适用"，
-		# 须显式声明为 skip 返回码，否则 ctest 会把跳过记成 Failed
-		set_tests_properties(lua_${lua_name} PROPERTIES SKIP_RETURN_CODE 125)
 	endforeach()
 endif()
 

@@ -112,23 +112,16 @@ for t in test/test_*.lua; do
 	if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
 		continue
 	fi
-	# 真机测试：文件内声明 "-- requires: i2c" 且本机无 /dev/i2c-* 时跳过
-	if grep -q '^\-\- requires: i2c' "$t" && ! ls /dev/i2c-* >/dev/null 2>&1; then
-		echo "----- $name -----"
-		echo "[SKIP] 需要 /dev/i2c-* 真机总线（文件标记 -- requires: i2c），本机无 i2c，跳过"
-		record_skip "$name"
-		continue
-	fi
-	# 真机摄像头：文件内声明 "-- requires: video" 且本机无 /dev/video* 时跳过
-	if grep -q '^\-\- requires: video' "$t" && ! ls /dev/video* >/dev/null 2>&1; then
-		echo "----- $name -----"
-		echo "[SKIP] 需要 /dev/video* 真机摄像头（文件标记 -- requires: video），本机无 video 设备，跳过"
-		record_skip "$name"
-		continue
-	fi
 	echo "----- $name -----"
-	out="$($timeout_cmd "$LUACMD" "$t" 2>&1)"
+	# 真机用例跳过门与 ctest 共用同一实现（阶段 5.2）：标记解析单点，
+	# 不再按设备名各写一条 if（此前 i2c/video 两份，且 ctest 侧只特判文件名）。
+	out="$($timeout_cmd sh test/lib/device_gate.sh "$t" "$LUACMD" "$t" 2>&1)"
 	rc=$?
+	if [ $rc -eq 125 ]; then
+		echo "$out"
+		record_skip "$name"
+		continue
+	fi
 	echo "$out"
 	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
 	# 兼容三种失败约定：退出码非零、打印 [FAIL] 行（124 = timeout 超时）、
@@ -166,6 +159,28 @@ elif [ -n "$bad" ]; then
 	record_fail "lint-driver-entry-arg_table"
 else
 	echo "[PASS] modules/*.lua 器件驱动入口均走 arg_table（Camera 豁免）"
+	record_pass
+fi
+
+# ======================================================================
+# 模块路径引导 lint（2026-09-20 重构阶段 2 收尾防线）：
+# 驱动/lib 找 lib/mpath.lua 必须写成 `__mpath or <单根回退>`——宿主经
+# sandbox_lua 注入 __mpath 后按 BOT4CJ_MODULE_PATH 逐段探测；直用
+# `:match("[^:]+")` 只取首段，多路径布局下加载必失败
+# （docs/reference.md 承诺「按序查找」，判别性用例见 hardening 段
+# multipath_module_path）。只盯这一种**已知坏形态**——lib/ 里用
+# `:gmatch("[^:]+")` 逐段探测的既有实现是对的，不能误伤。
+# ======================================================================
+echo "----- lint (模块路径引导 __mpath 断言) -----"
+bad="$(grep -rn ':match("\[^:\]+")' modules/ | grep -v '__mpath' || true)"
+if [ -n "$filter" ]; then
+	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+elif [ -n "$bad" ]; then
+	echo "[FAIL] 以下模块仍只取首段定位 lib/mpath.lua（未经 __mpath 注入）："
+	echo "$bad"
+	record_fail "lint-module-path-bootstrap"
+else
+	echo "[PASS] modules/ 的模块路径引导均走 __mpath（宿主逐段探测）"
 	record_pass
 fi
 
@@ -1116,6 +1131,14 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# F-20：未知/拼错的 --key 不再「打印帮助 + exit 0」——CI 里的假成功出口
 	run_one_hardening 'unknown_arg' 2 '未知参数：--robott' \
 		timeout 20 "$bin" --robott=robots/relay-test.sql
+
+	# 多路径模块根（2026-09-20 重构阶段 2）：docs/reference.md 承诺
+	# BOT4CJ_MODULE_PATH 支持 ':' 分隔多路径按序查找，但驱动侧引导只取首段
+	# （58 个文件逐字相同的一行）——首段不含 lib/ 时驱动加载即失败。
+	# 判别性要求：首段必须不存在，否则测不出问题。
+	run_one_hardening 'multipath_module_path' 0 'Relay: test=200 note=hello-relay -> delay=200' \
+		env BOT4CJ_MODULE_PATH=".tmp/no-such-module-root:./modules" \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --input scripts/relay-test.mt
 
 	mkdir -p .tmp/fixmod
 	cat > .tmp/fixmod/leakdrv.lua <<'LUAEOF'
