@@ -8,6 +8,42 @@
 repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 cd "$repo_root" || exit 1
 
+# ---------------------------------------------------------------
+# 提交信息校验（fix-plan 2026-09-20 阶段 B-2，先于守门、成本低）：
+# 对待推送范围（@{push}..HEAD）的每个非 merge 提交检查 subject 非空、
+# 长度 >= 10、带类型前缀（规范见 docs/development.md「提交信息规范」）。
+# 历史 `^-^` / `add "speed"` 类零信息提交不再新增；历史不回改。
+# 无 @{push}（推送新分支等）时跳过——与下方守门的放行分支同一取向：
+# 校验不到的对象不猜，防手滑而非防绕过（--no-verify 随时可绕）。
+# ---------------------------------------------------------------
+push_ref="$(git rev-parse --abbrev-ref --symbolic-full-name '@{push}' 2>/dev/null || true)"
+if [ -n "$push_ref" ]; then
+	violations=""
+	for c in $(git rev-list --no-merges "$push_ref..HEAD"); do
+		subj="$(git log -1 --format=%s "$c")"
+		case "$subj" in
+			"")
+				violations="$violations
+  $c: subject 为空" ;;
+			*)
+				if [ "${#subj}" -lt 10 ]; then
+					violations="$violations
+  $c: subject 过短（< 10 字符）：$subj"
+				elif ! printf '%s' "$subj" | grep -Eq '^(feat|fix|docs|test|refactor|gate)(\([^)]*\))?: '; then
+					violations="$violations
+  $c: 缺类型前缀（feat|fix|docs|test|refactor|gate(<scope>)?: ...）：$subj"
+				fi ;;
+		esac
+	done
+	if [ -n "$violations" ]; then
+		echo "pre-push: 提交信息不符合规范，推送已中止：" >&2
+		printf '%s\n' "$violations" >&2
+		echo "  - 末提交用 git commit --amend 补写；更早提交用 git rebase -i 改写（reword）" >&2
+		echo "  - 确认为误判时可用 git push --no-verify 跳过本钩子" >&2
+		exit 1
+	fi
+fi
+
 if [ ! -f test/run_all.sh ]; then
 	echo "pre-push: 未找到 test/run_all.sh（不在 bot4cj 仓库根？），跳过测试直接推送" >&2
 	exit 0

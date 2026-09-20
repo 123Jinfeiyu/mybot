@@ -32,6 +32,19 @@ cd build && ctest --output-on-failure -R cpp_unit
 | `test/` | Lua 单测、`cpp/` C++ 单测、`run_all.sh` 总编排 | 编译产物缺失时对应分段判失败 |
 | `docs/` | 深入文档，入口 [docs/README.md](README.md) | 改动后同步索引与链接 |
 
+## 提交信息规范
+
+主体提交信息质量很高（设计论证、被否决方案留档、守门数据），但历史混有过零信息提交
+（`^-^`、`add "speed"`、`新的动作`），破坏 changelog 可追溯性（外部评估 2026-09-20 扣分点 #2、
+第 3 轮问题清单 R1）。
+据此约定**最小信息底线**（历史不回改，防新增）：
+
+- 格式：`<type>(<scope>): <一句 why>`；scope 可省略（如 `docs: ...`）
+- `type` ∈ `feat` / `fix` / `docs` / `test` / `refactor` / `gate`
+- subject 至少 10 字符，说清「改了什么、为什么」；正文可选，鼓励记录设计取舍与守门数据
+- pre-push 钩子在守门**之前**按本规范校验待推送提交的 subject，不合规即中止
+  （绕过路径同守门：`git push --no-verify`；详见下节钩子说明）
+
 ## 守门钩子（pre-push）
 
 `scripts/git-hooks/pre-push` 是版本管理的正身，`install-hooks.sh` 以**软链**方式接进 `.git/hooks/`：
@@ -39,7 +52,13 @@ cd build && ctest --output-on-failure -R cpp_unit
 - 不用 `core.hooksPath`——那会连带忽略该目录里已有的其它钩子
 - 不用拷贝——避免源更新后留下过期副本
 
-装后每次 `git push` 前自动跑 `test/run_all.sh`，未通过即中止。单次绕过：`git push --no-verify`。
+装后每次 `git push` 前自动做两件事，任一未通过即中止：
+
+1. **提交信息校验**（快、先跑）：对 `@{push}..HEAD` 的每个非 merge 提交检查 subject
+   非空、长度 ≥ 10、带类型前缀（规范见上节）。远端分支无 `@{push}` 时（如推送新分支）跳过校验
+2. **离线守门**：`bash test/run_all.sh`
+
+单次绕过：`git push --no-verify`。
 
 放行分支（fail-open，fix-plan 3-6 补记）：仓库根缺 `test/run_all.sh` 时钩子**打印提示后直接放行**（`exit 0`）——这是对「在非仓库根/精简检出里推送」场景的兜底，不是安全设计：钩子的威胁模型是**防手滑**而非防绕过（`--no-verify` 本就随时可绕）。在正常仓库根里该分支不可达；守门的强制力以 CI/复核流程为准。
 
