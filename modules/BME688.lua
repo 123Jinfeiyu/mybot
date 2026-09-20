@@ -267,7 +267,7 @@ function build(data)
 		return err("Invalid Argument: heatr_dur '" .. tostring(data.heatr_dur) .. "' (range 1~4032)")
 	end
 	local amb_temp = tonumber(data.amb_temp) or 25
-	local wait = tonumber(data.wait)
+	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = 300 end
 
 	-- 写配置：过采样 x1 x1 x1 + IIR x3 + 加热器设定点 0 + 运行气体位

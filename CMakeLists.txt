@@ -46,6 +46,20 @@ set(MYBOT_SANITIZE "" CACHE STRING
 if(MYBOT_SANITIZE)
   add_compile_options(-fsanitize=${MYBOT_SANITIZE} -fno-omit-frame-pointer -g)
   add_link_options(-fsanitize=${MYBOT_SANITIZE})
+  # A1（2026-09-20 审计）：UBSan 缺省是 **recover** 模式——检出未定义行为只把
+  # "runtime error: ..." 打到 stderr，**退出码仍是 0**。而 run_all.sh 只认
+  # 退出码 / [FAIL] 行 / [DONE] 完成标记，于是 docs/testing.md 列为「硬门禁」
+  # 的 gate:sanitizer 对 UBSan 类缺陷（有符号溢出、错位访问、非法移位/枚举）
+  # 结构上不可能变红：实测 `int x=INT_MAX; x=x+1;` 用本工程同款标志编译，
+  # 打印 runtime error 而 exit 0；加 -fno-sanitize-recover=all 后 exit 1。
+  # 只对非 thread 组合施加：TSan 的 halt_on_error 由 gate:tsan 经 TSAN_OPTIONS
+  # 单独控制（见 .gitlab-ci.yml），此处不重复。指名 undefined 而非 ${MYBOT_SANITIZE}：
+  # ASan 本身即 fail-fast（且 run_san.sh 已带 halt_on_error），需要被强制终止的
+  # 只有 recover 语义的 UBSan；这样 -DMYBOT_SANITIZE=address 单独用时也不会
+  # 因指定一个未启用的 sanitizer 而报错。
+  if(NOT MYBOT_SANITIZE STREQUAL "thread")
+    add_compile_options(-fno-sanitize-recover=undefined)
+  endif()
 endif()
 
 # ======================================================================
@@ -185,13 +199,37 @@ add_test(NAME cpp_unit COMMAND mybot_tests)
 set_tests_properties(cpp_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # ======================================================================
-# 常量一致性自检（F-24）：HAL.lua 硬编码的 ioctl/termios 编号与系统头文件
-# 编译期比对（#error/_Static_assert）——换内核/换架构导致常量漂移时构建即失败；
-# 两个二进制再由 run_all.sh 在执行期跑一遍（构建期断言之外的双保险）。
+# 常量一致性自检（F-24）：把 Lua 源里硬编码的 ioctl/termios/V4L2/CURLOPT 编号
+# 与系统头文件编译期比对——换内核/换架构导致常量漂移时构建即失败；四个二进制
+# 再由 run_all.sh 在执行期跑一遍（构建期断言之外的双保险）。
+#
+# A2（2026-09-20 审计）：此前四个自检把 Lua 里的数字**在 C 里又手抄一遍**，
+# 从不读 Lua 源，于是「Lua 侧漂移」这一半完全不被发现（实测改
+# HAL.SPI_IOC_WR_MODE 后四个目标全绿）。现在配置期先用
+# test/gen_const_check.cmake 从 modules/lib/HAL.lua、modules/Camera.lua、
+# modules/lib/llm_http.lua 抽取真实值生成 const_lua.h，断言对**两侧**各钉一次：
+# Lua 抽取值 == 手抄预期值（抽取生效 + Lua 未漂移）+ 预期值 == 系统头。
+# 抽取是纯文本匹配、不执行 Lua，故不引入构建期 luajit 依赖；抽不到即
+# FATAL_ERROR（静默生成空头会让断言退化成自证，正是 A2 的原始缺陷形态）。
 # ======================================================================
+set(MYBOT_CONST_LUA_H "${CMAKE_BINARY_DIR}/const_lua.h")
+execute_process(
+  COMMAND ${CMAKE_COMMAND}
+    -DOUT=${MYBOT_CONST_LUA_H}
+    -DSRC=${CMAKE_SOURCE_DIR}
+    -P ${CMAKE_SOURCE_DIR}/test/gen_const_check.cmake
+  RESULT_VARIABLE _const_gen_rc
+  ERROR_VARIABLE _const_gen_err)
+if(NOT _const_gen_rc EQUAL 0)
+  message(FATAL_ERROR "常量抽取失败（test/gen_const_check.cmake）：\n${_const_gen_err}")
+endif()
+
 add_executable(test_ioctl_nums test/test_ioctl_nums.c)
 add_executable(test_uart_consts test/test_uart_consts.c)
 add_executable(test_v4l2_consts test/test_v4l2_consts.c)
+foreach(_const_target test_ioctl_nums test_uart_consts test_v4l2_consts)
+  target_include_directories(${_const_target} PRIVATE ${CMAKE_BINARY_DIR})
+endforeach()
 add_test(NAME const_ioctl COMMAND test_ioctl_nums)
 add_test(NAME const_uart COMMAND test_uart_consts)
 add_test(NAME const_v4l2 COMMAND test_v4l2_consts)
@@ -205,7 +243,7 @@ add_test(NAME const_v4l2 COMMAND test_v4l2_consts)
 find_path(CURL_INCLUDE_DIR curl/curl.h)
 if(CURL_INCLUDE_DIR)
   add_executable(test_curl_consts test/test_curl_consts.c)
-  target_include_directories(test_curl_consts PRIVATE ${CURL_INCLUDE_DIR})
+  target_include_directories(test_curl_consts PRIVATE ${CURL_INCLUDE_DIR} ${CMAKE_BINARY_DIR})
   add_test(NAME const_curl COMMAND test_curl_consts)
 else()
   message(STATUS "libcurl headers not found - test_curl_consts not built (CURLOPT const check skipped)")

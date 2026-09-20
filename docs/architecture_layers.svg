@@ -50,7 +50,7 @@
     <g>
       <rect x="80" y="268" width="256" height="180" rx="8" fill="#fff" stroke="#3b82f6" stroke-width="1.5"/>
       <text x="208" y="294" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">main.cpp</text>
-      <text x="208" y="320" text-anchor="middle" font-size="12.5" fill="#475569">parseArgs / validateOptions</text>
+      <text x="208" y="320" text-anchor="middle" font-size="12.5" fill="#475569">cliargs.cpp 解析/校验/帮助</text>
       <text x="208" y="342" text-anchor="middle" font-size="12.5" fill="#475569">信号处理仅置 atomic 标志</text>
       <text x="208" y="364" text-anchor="middle" font-size="12.5" fill="#475569">runActionPipeline 动作管线</text>
       <text x="208" y="386" text-anchor="middle" font-size="12.5" fill="#475569">runAgentPipeline agent 管线</text>
@@ -61,10 +61,10 @@
     <g>
       <rect x="352" y="268" width="256" height="180" rx="8" fill="#fff" stroke="#3b82f6" stroke-width="1.5"/>
       <text x="480" y="294" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">robot.cpp · RobotStruct</text>
-      <text x="480" y="320" text-anchor="middle" font-size="12.5" fill="#475569">ScriptLoader 读 .sql/.mt</text>
-      <text x="480" y="342" text-anchor="middle" font-size="12.5" fill="#475569">HwFactory 建硬件变量 + build</text>
-      <text x="480" y="364" text-anchor="middle" font-size="12.5" fill="#475569">ActionRunner 逐行播放 @Action</text>
-      <text x="480" y="386" text-anchor="middle" font-size="12.5" fill="#475569">MetaProvider 引用闭包</text>
+      <text x="480" y="320" text-anchor="middle" font-size="12.5" fill="#475569">装配流程 + 生命周期编排</text>
+      <text x="480" y="342" text-anchor="middle" font-size="12.5" fill="#475569">（五类已拆四个编译单元）</text>
+      <text x="480" y="364" text-anchor="middle" font-size="12.5" fill="#475569">hw_registry / meta_provider</text>
+      <text x="480" y="386" text-anchor="middle" font-size="12.5" fill="#475569">hw_factory / action_runner</text>
       <text x="480" y="412" text-anchor="middle" font-size="11.5" fill="#0ea5e9">编排门面 · 逆序 deactivate</text>
     </g>
 

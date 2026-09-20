@@ -155,7 +155,7 @@
     <p style="margin:0">"不接任何硬件也能跑通全流程" —— 传感器桩替身（virtbus / dummy）与 Relay 转发链路，让 <code>cat action.mt | main --robot relay-test.sql</code> 在裸机即可自校验。这是它区别于"必须挂硬件才能调试"的传统固件的根本优势。</p>
   </div>
 
-  <p>入口 <code>src/main.cpp</code>（约 400 行）只做参数解析与流水线编排：解析 <code>--robot</code> → <code>RobotStruct(file).active()</code> → 动作流水线 <code>run(stdin/TCP/文件)</code> 或 agent 流水线 → <code>deactivate()</code> 清理。真正的复杂度集中在硬件装配与派发层——<code>robot.cpp</code> 是编排门面（114 行），其五类职责按类拆在同层四个编译单元：注册表 <code>hw_registry.cpp</code>、元数据 <code>meta_provider.cpp</code>、装载+装配 <code>hw_factory.cpp</code>、动作派发 <code>action_runner.cpp</code>（含纯计算单点 <code>ActionPlan::build</code>）；再往下是硬件变量层（<code>luavar.cpp</code> / <code>daemonvar.cpp</code> 等）。</p>
+  <p>入口 <code>src/main.cpp</code>（209 行）只做流水线编排与信号安装：装载结构脚本 → <code>RobotStruct::active()</code> → 动作流水线 <code>run(stdin/TCP/文件)</code> 或 agent 流水线 → <code>deactivate()</code> 清理（参数解析/校验/帮助文本已下沉 <code>cliargs.cpp</code>）。真正的复杂度集中在硬件装配与派发层——<code>robot.cpp</code> 是编排门面（132 行），其五类职责按类拆在同层四个编译单元：注册表 <code>hw_registry.cpp</code>、元数据 <code>meta_provider.cpp</code>、装载+装配 <code>hw_factory.cpp</code>、动作派发 <code>action_runner.cpp</code>（含纯计算单点 <code>ActionPlan::build</code>）；再往下是硬件变量层（<code>luavar.cpp</code> / <code>daemonvar.cpp</code> 等）。</p>
   <p>另有可选 <strong>agent 模式</strong>（<code>--agent</code>）：大模型工具循环成为主执行流程，机器人常驻内存。</p>
 </section>
 
@@ -241,7 +241,7 @@
     </div>
     <div class="card">
       <h4><span class="tag t-orange">M5</span>HAL ffi.C 直调 + 可 mock 层</h4>
-      <p><code>HAL.lua</code> 用 <code>ffi.cdef</code> 声明 glibc 与 spidev ABI，布局自检（<code>sizeof(spi_ioc_transfer)==32</code>、<code>cj_i2c_msg==16</code>）。<code>HAL.sys.*</code> 间接层 + I2C_RDWR 原子事务，使桩替身可整体替换 12 个全局 i2c_*/spi_* 函数。</p>
+      <p><code>HAL.lua</code> 用 <code>ffi.cdef</code> 声明 glibc 与 spidev ABI，布局自检（<code>sizeof(spi_ioc_transfer)==32</code>、<code>cj_i2c_msg==16</code>）。<code>HAL.sys.*</code> 间接层 + I2C_RDWR 原子事务，使桩替身可整体替换 26 个全局 i2c_*/spi_*/uart_* 函数（<code>virtbus.lua</code> 的 VFUNCS：12 + 9 + 5）。</p>
     </div>
     <div class="card">
       <h4><span class="tag t-red">M6</span>MetaProvider（元数据闭包）</h4>
@@ -309,7 +309,7 @@
     <div class="num" style="background:var(--green)">2</div>
     <div style="flex:1">
       <h4>并发 / 多路传感器聚合 <span class="pri t-green">中成本 · 高收益</span></h4>
-      <p><code>@Daemon</code> 现有 16 值上限。扩展动作：把 <code>SLOT_MAXVALS</code> 参数化（定长数组 + 索引引用，或链表），<code>sensor_daemon.lua</code> 已支持任意 build/call/destroy 驱动的"万能采样 chunk"，可加<strong>多守护聚合器</strong>（一路守护聚合多路 sensor 输出到同一槽位组），支撑"多 IMU + 多气感 + 里程计"复杂流水线。</p>
+      <p><code>@Daemon</code> 现有 <strong>32</strong> 值上限（<code>SLOT_MAXVALS=32</code>，见 <code>src/daemonvar.hpp</code>；33+ 字段在加载期即被拒）。扩展动作：把 <code>SLOT_MAXVALS</code> 参数化（定长数组 + 索引引用，或链表），<code>sensor_daemon.lua</code> 已支持任意 build/call/destroy 驱动的"万能采样 chunk"，可加<strong>多守护聚合器</strong>（一路守护聚合多路 sensor 输出到同一槽位组），支撑"多 IMU + 多气感 + 里程计"复杂流水线。</p>
     </div>
   </div>
 
@@ -360,7 +360,7 @@
 
   <div class="callout">
     <h4>提交约定</h4>
-    <p style="margin:0">推送前走 pre-push 守门钩子（<code>bash test/run_all.sh</code>），CI（.gitlab-ci.yml）自动跑「构建 → Release 全量守门 → ASan/UBSan 双跑」，另设 TSan 与 clang 软门禁。每个特性独立提交，附守门结果与 changelog 更新。</p>
+    <p style="margin:0">推送前走 pre-push 守门钩子（<code>bash test/run_all.sh</code>），CI（.gitlab-ci.yml）自动跑三条硬门禁「<code>-DMYBOT_WERROR=ON</code> 构建 → Release 全量守门（含守门自检）→ ASan/UBSan 单跑（<code>run_san.sh --asan-only</code>）」，另设 TSan / clang / clang-tidy / 覆盖率 / musl 五条软门禁（均 <code>allow_failure</code>，转硬条件与最迟日期见各 job 注释）。每个特性独立提交，附守门结果与 changelog 更新。</p>
   </div>
 </section>
 

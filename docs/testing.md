@@ -11,16 +11,18 @@
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
 | `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
-| `gate:release` | 硬 | `bash test/run_all.sh`（Release 全量守门） |
-| `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only` |
+| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检：用例是否真被收集/编译）→ `bash test/run_all.sh`（Release 全量守门） |
+| `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
 | `gate:tsan` | 软 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
 | `gate:clang` | 软 | clang 构建 + C++ 单测烟雾 |
 | `gate:clang-tidy` | 软 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
 | `gate:coverage` | 软 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`），报告随 artifacts 留档 |
 | `gate:musl` | 软 | alpine/musl 下构建并运行三个常量自检；能构建时再跑 `mybot_tests` |
 
-> 五条软门禁的**转硬条件与最迟日期**写在各自 job 注释里（统一为「连续 2 轮 pipeline
-> 无新增告警/报告 + 最迟 2026-10-31」），如实标注「尚未转硬」。它们**不进入**
+> 五条软门禁的**转硬条件与最迟日期**写在各自 job 注释里（`tsan`/`clang`/`clang-tidy`
+> 为「连续 2 轮 pipeline 无新增告警/报告 + 最迟 2026-10-31」；`coverage` 另需先设定
+> C++ 侧行覆盖基线，`musl` 另需补 Lua 层 HAL 的运行时实证——两者条件不同，逐条以
+> `.gitlab-ci.yml` 注释为准），如实标注「尚未转硬」。它们**不进入**
 > `run_all.sh` 的记账——守门汇总口径不变。
 
 ## 用法
@@ -77,7 +79,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
    - ⑥ `--prompt-file` 提示词包：目录 .md 按文件名自然排序、以「## 文件名」分节追加在系统提示词内置段落之后
 9. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 10. **输入边界加固**，覆盖：
-   - `--tcp-host` 非法地址、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限
+   - `--tcp-host` 非法地址退出码 1、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限
    - `@Daemon` 驱动误配无 `build` 时的回滚路径
    - `mode` 键不得改写 controller 派发目标；驱动 `call()` 漏写 `return` 不得被当成成功；驱动返回自引用表须清晰报错而非宿主栈溢出
    - agent 专属选项出现在非 agent 模式、`--agent` 与 `--tcp/--input` 互斥、缺 API key，均须退出码 2
@@ -85,7 +87,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 12. **进程级 fd 探针**（长动作 + 守护采样期间轮询 `/proc/<pid>/fd`，稳态 fd 数须有界平稳）
 13. **信号/退出路径**（F-08：播放中 SIGTERM → rc=0 + 停派发行 + 守护 `joined, total publishes=`；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错——覆盖 `main.cpp` 的 sigaction 与 `robot.cpp` 的停机分支）
 14. **fixture 孤儿检测**（F3/N-32，无过滤器全量跑时执行）：`robots/test/*.sql` 与 `scripts/test/*.mt` 中未被任何用例表引用的夹具判失败；判据是**整字段精确匹配**（`e2e_cases` 的用例名、`parse_cases` 的两列文件名、`scripts/*.sh`、`CMakeLists.txt`），不是子串——2026-09-20 审计 C11 修正：子串判据下每个真机夹具 `bme280.mt` 都是已登记仿真用例 `bme280_virt` 的子串，26 对真机夹具（52 个文件）因此被误判成「已登记」而从不执行、检测器却报「无孤儿」。实机夹具（需 `/dev/i2c-*`、`/dev/spidev*`、`/dev/gpiochip*`、`/dev/pwmchip*`、`/dev/serial*`）在脚本的 `orphan_whitelist` 显式声明
-15. **系统常量自检**（F-24，无过滤器全量跑时执行）：`test_ioctl_nums` / `test_uart_consts` / `test_v4l2_consts` 三个 C 自检二进制把 HAL.lua 硬编码的 ioctl/termios 编号与系统头做编译期断言比对（`_Static_assert`），漂移在构建期即失败，执行期再跑一遍作双保险；第四个 `test_curl_consts` 把 `llm_http.lua` 硬编码的 CURLOPT/CURLINFO 编号与 curl.h 比对——libcurl 开发头文件**不是**构建依赖（agent 模式运行期才 dlopen libcurl.so），装了头文件才构建本目标，缺失产物按跳过计（与缺 python3 同口径），CI 安装 `libcurl4-openssl-dev` 保证覆盖
+15. **系统常量自检**（F-24 + A2，无过滤器全量跑时执行）：四个 C 自检二进制把 **Lua 源里**硬编码的编号与系统头做编译期断言比对，漂移在构建期即失败，执行期再跑一遍作双保险。事实源是 Lua，**不是 C 里的手抄副本**：配置期 `test/gen_const_check.cmake` 从 `modules/lib/HAL.lua`、`modules/Camera.lua`、`modules/lib/llm_http.lua` **纯文本抽取**常量生成 `const_lua.h`，每项做**双边断言**——`Lua 抽取值 == 手抄预期值`（抽取生效 + Lua 未漂移）且 `预期值 == 系统头`（内核/架构未漂移）。抽不到任何必需常量即 `FATAL_ERROR`（静默生成空头会让断言退化成自证）。`test_ioctl_nums`（SPI/GPIO/I2C ioctl + 结构尺寸）、`test_uart_consts`（termios 布局 + 两套波特率表 + 打开标志）、`test_v4l2_consts`（V4L2 ioctl + Camera.lua 的 ABI 尺寸表）三者无外部依赖；第四个 `test_curl_consts` 另需 libcurl 开发头文件（**不是**构建依赖——agent 模式运行期才 dlopen libcurl.so），装了才构建本目标，缺失产物按跳过计（与缺 python3 同口径），CI 安装 `libcurl4-openssl-dev` 保证覆盖
 16. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标，零第三方框架），覆盖：
     - 基础设施：JSON 值语义、JSON 文本解析、Lua↔Json 边界与转换深度上限、util 全局助手（安全标识符判据 `isSafeIdent`、深度护栏 `DepthLimitGuard`、CLI 切分 `cli::parseKeyValue`、越界文案模板 `rangeErrorText`）
     - 解析管线：`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、mtmerge 归并核心白盒

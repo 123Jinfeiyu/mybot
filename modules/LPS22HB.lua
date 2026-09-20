@@ -104,7 +104,9 @@ function build(data)
 		return err("LPS22HB not responding (CTRL_REG1 write failed)")
 	end
 
-	local wait = tonumber(data.wait)
+	-- 审计 2026-09-20（中）：非有限入参必须回落缺省——`wait < 0` 对 NaN/inf 恒假，
+	-- NaN 会一路带到下方 `waited >= wait_ms` 的轮询条件（恒假）→ 无界轮询挂死。
+	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = wait_default end
 	cfg_wait = math.floor(wait)
 
@@ -131,7 +133,9 @@ function call(data)
 		return ek
 	end
 
-	local wait_ms = tonumber(data.wait) or cfg_wait or wait_default
+	-- 审计 2026-09-20（中）：同 build —— NaN/inf 会让下方转换完成轮询无界挂死。
+	local wait_ms = finite_of(data.wait)
+	if wait_ms == nil then wait_ms = cfg_wait or wait_default end
 	if wait_ms < 0 then wait_ms = 0 end
 
 	-- 触发单次转换（读改写保留其余位；ONE_SHOT 硬件自清零）

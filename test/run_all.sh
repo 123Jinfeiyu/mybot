@@ -117,9 +117,20 @@ for t in test/test_*.lua; do
 	# 不再按设备名各写一条 if（此前 i2c/video 两份，且 ctest 侧只特判文件名）。
 	out="$($timeout_cmd sh test/lib/device_gate.sh "$t" "$LUACMD" "$t" 2>&1)"
 	rc=$?
+	# A5（2026-09-20 审计）：125 必须**带 device_gate.sh 的 [SKIP] 横幅**才记跳过。
+	# 此前只认退出码，于是任何用例 `os.exit(125)`（或将来某条真实失败凑巧用 125）
+	# 都会被洗成「跳过」而从 pass/fail 记账里消失——与「用例不得静默消失」的
+	# 守门完整性承诺相悖。125 是 ctest 的 SKIP_RETURN_CODE 保留值，非跳过门
+	# 主动产生的 125 一律判失败。
 	if [ $rc -eq 125 ]; then
 		echo "$out"
-		record_skip "$name"
+		if echo "$out" | grep -qF '[SKIP]'; then
+			record_skip "$name"
+		else
+			echo "[FAIL] 退出码 125 但无 [SKIP] 横幅：只有 test/lib/device_gate.sh 的"
+			echo "       无真机设备分支才可记跳过（catches os.exit(125) 洗白，A5）"
+			record_fail "$name"
+		fi
 		continue
 	fi
 	echo "$out"
@@ -458,6 +469,7 @@ parse_cases=(
 	'daemon_badproto.sql|daemon_schema.mt|1|not a supported bus'
 	'daemon_fieldmode.sql|daemon_schema.mt|1|unknown field mode'
 	'daemon_fieldempty.sql|daemon_schema.mt|1|empty field name'
+	'daemon_fieldcount.sql|daemon_schema.mt|1|exceeds the shared-slot capacity'
 	'float_s16_daemon.sql|float_s16_daemon.mt|1|would be truncated to integer'
 	'multidaemon.sql|multidaemon.mt|0|joined, total publishes='
 	'robots/relay-test.sql|scripts/relay-test.mt|0|note=hello-relay'
@@ -471,7 +483,7 @@ parse_cases=(
 	'servo.sql|servo.mt|0|Dummy served 2 call(s)'
 	'h03_arr.sql|h03_arr.mt|0|"list":[10,20,30]'
 	'robots/relay-test.sql|mt_ragged.mt|1|Does Not Sync. we got line: 6'
-	'alias_override.sql|alias_override.mt|1|missing or not a number'
+	'alias_override.sql|alias_override.mt|1|missing or not a finite number'
 	'alias_dup.sql|alias_dup.mt|1|Duplicate alias name'
 	'vars_num.sql|vars_num.mt|0|note=200'
 	"vars_bad.sql|vars_bad.mt|1|has no 'value' column"
@@ -1028,7 +1040,7 @@ run_one_agent_e2e() {
 	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh 2>&1)"
 	rc=$?
 	echo "$out"
-	if [ $rc -eq 125 ]; then
+	if [ $rc -eq 125 ] && echo "$out" | grep -qF '[SKIP]'; then
 		record_skip "agent-e2e(缺python3或libcurl)"
 	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "agent 模式端到端测试通过"; then
 		record_fail "agent-e2e(agent 模式)"

@@ -118,6 +118,67 @@ static int returnUpvalue(lua_State* L) {
 	return 1;
 }
 
+/* ---- A3（2026-09-20 审计）：require 不得绕过 dofile/loadfile 白名单 ----
+ *
+ * 缺陷（本机复现）：dofile/loadfile 被包上 restrictedLoader 后看似只能加载
+ * 模块树内的文件，但 `require` 走的是 package.loaders，其中的 Lua 文件搜索器
+ * 在 **C 里直接 luaL_loadfile**，完全不经过被包装的全局函数；package.path 也
+ * 可写。实测（cwd 在模块树外）：
+ *     dofile("/.../outside/evil_mod.lua")  → rejected by sandbox
+ *     require("evil_mod")                  → 加载成功并返回其内容
+ * 即 hal.md/reference.md「只能加载模块树内的文件」的不变式不成立，且该残余
+ * 未列入文件头声明的清单。
+ *
+ * 收口策略（保能力、不保任意路径读）：
+ *   ① 保留 preload 搜索器 —— `require("ffi")` / `require("bit")` 全仓唯一的
+ *      两个真实 require 都靠它（LuaJIT 把 ffi 注册为 preload；bit 在
+ *      package.loaded），与文件系统无关，正是驱动需要的；
+ *   ② 用**返回错误串**的桩替换 Lua 文件搜索器与 C 搜索器 —— require 失败时
+ *      Lua 把各搜索器的返回值拼成错误信息，于是报错会明确指向「沙箱只允许
+ *      模块树内的文件」，而不是含混的 module not found；
+ *   ③ package.loadlib 置 nil（dlopen 任意 .so 是比读文件更大的面）；
+ *   ④ package.path 清空 —— 文件搜索器已不可达，清空只是让下一个人不会
+ *      误以为路径搜索仍然生效。
+ * 与 dofile/loadfile 同一判据：驱动要用文件就必须走 mpath.resolve + dofile。
+ * 说明：本沙箱是「防误用护栏，不是安全边界」（hal.md 信任边界节，ffi.C 仍是
+ * 完整 libc），本条收口的是**声明与实现的一致性**。 */
+static int disabledFileSearcher(lua_State* L) {
+	lua_pushstring(L, "sandbox: require() may only load preloaded/built-in modules"
+		" (ffi/bit/jit.*); loading a Lua file by module name is disabled"
+		" — use dofile(mpath.resolve(...)) so the module-path whitelist applies");
+	return 1;
+}
+
+static int disabledCSearcher(lua_State* L) {
+	lua_pushstring(L, "sandbox: require() of a C module is disabled"
+		" (package.loadlib/dlopen is not available to drivers)");
+	return 1;
+}
+
+static void restrictRequireLoaders(lua_State* L) {
+	lua_getglobal(L, "package");
+	if (lua_type(L, -1) != LUA_TTABLE) { lua_pop(L, 1); return; }
+	/* loaders[2] = Lua 文件搜索器、loaders[3] = C 搜索器（LuaJIT 5.1 布局）；
+	 * loaders[1] 是 preload 搜索器，必须原样保留（ffi/bit/mpath 靠它）。
+	 * loadlib 另行置 nil。返回错误串而非 nil：错误信息里就能看见「被沙箱拒绝」
+	 * 而不是「没找到模块」。 */
+	lua_getfield(L, -1, "loaders");
+	if (lua_type(L, -1) == LUA_TTABLE) {
+		lua_pushcfunction(L, disabledFileSearcher);
+		lua_rawseti(L, -2, 2);
+		lua_pushcfunction(L, disabledCSearcher);
+		lua_rawseti(L, -2, 3);
+	}
+	lua_pop(L, 1);
+	lua_pushnil(L);
+	lua_setfield(L, -2, "loadlib");
+	lua_pushstring(L, "");
+	lua_setfield(L, -2, "path");
+	lua_pushstring(L, "");
+	lua_setfield(L, -2, "cpath");
+	lua_pop(L, 1);
+}
+
 static void injectModulePathResolver(lua_State* L) {
 	auto found = findExistingModule(modulePaths(), "lib/mpath.lua");
 	if (!found) { return; }
@@ -162,6 +223,9 @@ void sandbox_lua(lua_State* L) {
 	pushModuleWhitelist(L);
 	wrapLoader(L, "dofile");
 	wrapLoader(L, "loadfile");
+
+	/* A3：require 的文件/C 搜索器收口（preload 保留，mpath 注入见下）。 */
+	restrictRequireLoaders(L);
 
 	lua_pop(L, 1);				/* 弹出白名单表，栈深复原 */
 

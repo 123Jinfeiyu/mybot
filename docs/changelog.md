@@ -6,6 +6,22 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-20 审计修复批次（防线真实性 / 非有限值收口 / 门禁闭环）
+
+> 依据一次独立审计（总评 8.5/10）。本轮主题是**「声称的防线是否真能拦住」**：查出的首要问题不是功能缺失，而是若干防线结构上无法变红。**两条使用者可见的行为变更**单独标注。
+> 守门快照：Lua/e2e **250 通过 / 0 失败 / 2 跳过**、C++ 单测 **378 / 0**。
+
+- **门禁闭环（A1/A2/A4/A5）**：
+  - **A1 UBSan 硬门禁此前形同虚设**：构建只加 `-fsanitize=address,undefined`，而 UBSan 缺省是 recover 模式——检出未定义行为只打印 `runtime error:`、**退出码仍为 0**，于是 `docs/testing.md` 列为硬门禁的 `gate:sanitizer` 对有符号溢出/错位访问/非法移位类缺陷结构上不可能变红。现补 `-fno-sanitize-recover=undefined`（同一段溢出代码实测：修复前 exit 0，修复后 exit 1）。
+  - **A2 四个「常量自检」是自指的**：`test_ioctl_nums` / `test_uart_consts` / `test_v4l2_consts` / `test_curl_consts` 把 Lua 里的数字**在 C 里又手抄一遍**、只与系统头比对，从不读 Lua 源——实测把 `HAL.SPI_IOC_WR_MODE` 改成 `0xDEADBEEF` 后四个目标全绿。现配置期由 `test/gen_const_check.cmake` 从 `HAL.lua` / `Camera.lua` / `llm_http.lua` 纯文本抽取生成 `const_lua.h`，每项双边断言（Lua 值 == 预期值 == 系统头）；抽不到必需常量即配置失败。
+  - **A4 守门自检此前只被可选安装的 pre-push 钩子调用**，CI 零引用——「新 C++ 用例没登记进 CMakeLists 就永不编译」「Lua 用例命名不符就永不被收集」在 CI 上无人拦。现 `gate:release` 先跑 `test/run_all_selftest.sh` 再跑全量守门。
+  - **A5 `rc==125` 洗白**：守门对**任意** 125 记跳过，于是 `os.exit(125)` 可把用例从 pass/fail 记账里抹掉。现要求同时出现 `device_gate.sh` 的 `[SKIP]` 横幅，否则判失败（agent 端到端段同规）。
+- **⚠️ 行为变更：`require` 不再能按模块名加载文件（A3）**。`dofile`/`loadfile` 被白名单包装后，`require` 仍走 `package.loaders` 里的 Lua 文件搜索器（C 层直接 `luaL_loadfile`），实测能从模块树外加载任意 `.lua`——与「只能加载模块树内的文件」的文档承诺矛盾。现保留 preload 搜索器（驱动仅有的两个真实 `require`——`ffi`/`bit`——都靠它，与文件系统无关；宿主另把 `mpath` 注册进 `package.preload`），把 Lua 文件搜索器与 C 搜索器换成返回说明性错误串的桩，`package.loadlib` 置 `nil`、`package.path`/`cpath` 清空。驱动要用文件仍走 `mpath.resolve` + `dofile`；违反者会看到明确的沙箱报错。
+- **⚠️ 行为变更：非有限值（NaN/±inf）不再被静默接受**（审计「非有限值类」）。Lua 里只有 `nil`/`false` 为假，而 NaN 与任何数比较恒为 false，于是 `x < 0` / `x > 180` 这类区间判定对 NaN 全部放行。逐点收口：`GPIO.call` 的 `value="nan"` 此前会把线**驱动到高电平**并返回 OK（绕开 HAL 的 NaN→0 fail-safe 缺省）；`MAX30102`/`LPS22HB`/`AS7262`/`MCP3421`/`BME688` 的 `wait`/`timeout` 非有限会让轮询**无界挂死**（实测 `timeout 10s` → exit 124，无 ERR、pcall 救不回）；`Servo` 的 0–180 执行器保护钳位、`Timer` 的延时、`PWM`/`HAL.pwm_config` 的频率与占空比同族。判据统一走既有的 `finite_of`（`bus_contract` 单点），并在全仓首次补上非有限值的离线覆盖（`test_servo_timer_nan.lua` 等）。
+- **守护字段数超槽宽改为加载期报错**：共享槽只有 `values[32]`，而 `fields` 此前不校验数量、Lua 侧 `publish` 静默钳制、C++ 侧 `readSample` 按 32 截断——33+ 字段的 `@Daemon` 能通过全部加载期校验并「正常」运行，多余字段永远拿不到值，事后只表现为下游「某字段缺失」。现在加载期直接拒绝并指出槽宽上限。
+- **守护退出路径的资源释放**：`daemon_cleanup` 此前**裸调** `destroy()`——驱动去初始化抛异常时 `close_bus()` 不再执行，总线 fd 泄漏到进程退出（宿主只 `pcall` cleanup 本身随即 `lua_close`，HAL 无 `ffi.gc` 兜底）。现以 `pcall` 包裹并注记失败原因，无条件释放总线。
+- **文档失实收口**：`architecture_analysis.html` 的「`@Daemon` 现有 **16** 值上限」（同页另两处写 32，且 `SLOT_MAXVALS=32`）改为 32；CI 描述「ASan/UBSan **双跑**、另设 TSan 与 clang 软门禁」改为「单跑 + 五条软门禁」；`main.cpp`/`robot.cpp` 的行数与职责（CLI 已下沉 `cliargs.cpp`）按现行源码更正；两张 SVG 的 main.cpp/robot.cpp 归属同步；`docs/testing.md` 的 `--tcp-host` 非法地址退出码由「2」更正为实测的 **1**，并说明五条软门禁的转硬条件并非统一。
+
 ### 2026-09-20 评估批次（安全缺省翻转 / C2 同族收口 / 门禁硬化）
 
 > 依据一次独立评估（总评 8.5/10，六条扣分点全量落地）。**三条使用者可见的行为变更**单独标注。

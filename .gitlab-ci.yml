@@ -38,6 +38,12 @@ gate:release:
   needs: ["build:release"]
   before_script: *install-deps
   script:
+    # A4（2026-09-20 审计）：守门自检此前只被**可选安装**的 pre-push 钩子调用，
+    # CI 里零引用——于是「新加的 test/cpp/*.cpp 没登记进 CMakeLists.txt 就永不
+    # 编译」「test/foo.lua 命名不符就永不被收集」这两类静默消失，在 CI 上没人拦。
+    # 它便宜（纯解析 + 两个 glob）且判别力明确，放在全量守门之前：用例没被收集
+    # 就没必要等跑完两百多条。
+    - bash test/run_all_selftest.sh
     - bash test/run_all.sh
 
 gate:sanitizer:

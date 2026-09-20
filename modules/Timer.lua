@@ -63,9 +63,13 @@ function call(data)
 		return err("Invalid Argument: delay")
 	end
 
-	delay = tonumber(delay)
-	if delay == nil then	-- 检查延时参数是否是数值
-		return err("Invalid Argument: delay (not a number)")
+	-- 审计 2026-09-20（中）：必须过 finite_of。tonumber("nan") 得到 NaN，
+	-- `delay < 0` 对 NaN 恒假故放行；math.floor(NaN+0.5) 仍是 NaN，
+	-- `ms > 4294967` 同样恒假——于是请求变成「睡 NaN 毫秒」：FFI 侧把 NaN
+	-- 转成 unsigned int 得 0，实际几乎不睡（节拍丢失）却返回 slept=nan。
+	delay = finite_of(delay)
+	if delay == nil then	-- 检查延时参数是否是数值（含非有限）
+		return err("Invalid Argument: delay (not a finite number)")
 	end
 
 	if delay < 0 then	-- 延时不得为负

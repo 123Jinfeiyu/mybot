@@ -393,8 +393,14 @@ end
 ------------------------------------------------------------------
 -- 毫秒级延时（usleep，零 fork）
 function milli_sleep(ms)
-	ms = tonumber(ms)
-	if ms == nil or ms <= 0 then return end
+	-- 审计 2026-09-20（中）：tonumber 放行 NaN/inf——`ms <= 0` 对两者恒假、
+	-- `ms > 4294967` 对 NaN 亦恒假，于是 NaN 会走到 ffi 的 unsigned int 形参
+	-- （NaN→0，实际不睡）而 inf 撞上 usleep 的 EINVAL。统一按「非法即不睡」
+	-- 处理：本函数无返回值、调用方无从感知错误，静默不睡优于睡错时长。
+	-- 判据走总线契约单点 bus.finite_of（本文件已 dofile 过 bus_contract）。
+	local f = bus and bus.finite_of(ms)
+	if f == nil or f <= 0 then return end
+	ms = f
 	-- 审计 #10：usleep 形参是 unsigned int（usec），ms 超过 4294967 时
 	-- ms*1000 回绕成短睡/长睡错乱——钳制到 uint32 上限内并显式提示
 	if ms > 4294967 then
@@ -1112,8 +1118,14 @@ end
 -- 设载波频率与占空比（duty 为百分比 0~100）
 -- 返回 (true, period_ns, duty_ns) 或 false
 function pwm_config(chip, channel, freq_hz, duty_pct)
-	local f = tonumber(freq_hz)
-	local d = tonumber(duty_pct)
+	-- 审计 2026-09-20（中）：本函数此前是全文件唯一漏掉非有限值防线的地方——
+	-- `f <= 0` 与 `d < 0 or d > 100` 对 NaN/inf 恒假（NaN 比较恒假；inf 满足
+	-- `> 0` 且不满足 `> 100` 时 duty 亦然），于是 freq=inf 会算出 period_ns=1
+	-- （1ns 周期）并**写进 sysfs 成功返回 true**，freq=nan 更会把字面量 "nan"
+	-- 写进 period/duty_cycle（内核 EINVAL，报错成因指向内核而非入参）。
+	-- 判据走总线契约单点 bus.finite_of（与 HAL 其余入参一致）。
+	local f = bus and bus.finite_of(freq_hz)
+	local d = bus and bus.finite_of(duty_pct)
 	if f == nil or f <= 0 then
 		print("HAL: invalid pwm frequency: " .. tostring(freq_hz))
 		return false

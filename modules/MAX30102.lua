@@ -120,9 +120,16 @@ local function cfg_choice(v, default, codes, label)
 end
 
 -- 连续区间取值：闭区间 [lo, hi]
+-- 审计 2026-09-20（中）：入参必须**有限**。`math.floor(tonumber(v) or (lo-1))` 挡不住
+-- NaN（NaN 是 truthy）也不挡 inf——NaN 与任何数比较为假，于是区间校验形同不存在，
+-- 非有限值会一路流进 FIFO 批量/等待参数并造成无界轮询（见 call 的 wait 段）。
 local function cfg_range(v, default, lo, hi, label)
 	if v == nil or v == "-" or v == "" then return default end
-	local n = math.floor(tonumber(v) or (lo - 1))
+	local raw = finite_of(v)
+	if raw == nil then
+		return nil, "Invalid Argument: " .. label .. " '" .. tostring(v) .. "' (not a finite number)"
+	end
+	local n = math.floor(raw)
 	if n < lo or n > hi then
 		return nil, "Invalid Argument: " .. label .. " '" .. tostring(v) .. "' (range " .. lo .. "~" .. hi .. ")"
 	end
@@ -288,11 +295,21 @@ function call(data)
 	if fd == nil then return ek end
 
 	-----------------------------------------------------
-	-- n/wait 取本次调用参数（缺省用 build 配置）——直连路径可按行动态批量读/等待
-	local n_req = math.floor(tonumber(data.n) or cfg_n or 1)
+	-- n/wait 取本次调用参数（缺省用 build 配置）——直连路径可按行动态批量读/等待。
+	-- 审计 2026-09-20（中）：两处都必须过 finite_of。此前 wait 只有下界钳制
+	-- （`if wait_req < 0`），"1e400"→inf 会让下方 `waited < wait_req` 的轮询
+	-- **永不终止**（实测 timeout 10s → exit 124），动作/守护线程直接挂死且
+	-- 无 ERR、pcall 也救不回；n 为 NaN 时 math.min(NaN, avail) 在 LuaJIT 下
+	-- 返回 avail，于是「按 n 个采样」退化成「把整个 FIFO 排空」。构建期
+	-- cfg_range 已钳 0~60000，故这里与之一致地钳到同一上界。
+	local n_raw = finite_of(data.n)
+	if n_raw == nil then n_raw = cfg_n or 1 end
+	local n_req = math.floor(n_raw)
 	if n_req < 1 then n_req = 1 elseif n_req > 8 then n_req = 8 end
-	local wait_req = math.floor(tonumber(data.wait) or cfg_wait or 0)
-	if wait_req < 0 then wait_req = 0 end
+	local wait_raw = finite_of(data.wait)
+	if wait_raw == nil then wait_raw = cfg_wait or 0 end
+	local wait_req = math.floor(wait_raw)
+	if wait_req < 0 then wait_req = 0 elseif wait_req > 60000 then wait_req = 60000 end
 
 	-- 可读样本数；FIFO 空时可等（直连路径用；守护路径 wait 保持 0）
 	local avail = fifo_avail(fd)

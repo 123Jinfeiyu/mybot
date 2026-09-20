@@ -349,9 +349,23 @@ end
 -- H-07：守护退出（stop 后、Lua_free 前）由 daemon_body 调用，先调驱动 destroy()（若有）
 -- 让器件退出活跃态（VL53L0X 停止 ranging、ADS1x15 置单次态断电等），再关总线 fd。
 -- setup 失败路径不会到达此定义（fail 已 return），此时 fd 已由 close_bus 关闭。
+--
+-- 审计 2026-09-20（中）：destroy 此前是**裸调**——驱动 destroy 抛异常时本函数
+-- 直接中断，close_bus() 与 vbus.restore() 都不再执行，总线 fd（build 时
+-- open/ioctl 拿到的真内核句柄）泄漏到进程退出；反复启停守护会耗尽 fd。
+-- 宿主侧只 pcall 了 cleanup 本身（daemonvar.cpp）并随即 lua_close，HAL 也没有
+-- ffi.gc 兜底，所以这里必须自己保证「无论 destroy 成败都要释放」。
+-- 语义取舍：destroy 失败**不改变** daemon_cleanup 的返回（调用方只 pcall，
+-- 无返回值契约），失败原因按 stderr 注记——退出路径上的资源释放优先于
+-- 传播一个无人接收的错误。
 function daemon_cleanup()
 	if type(destroy) == "function" then
-		destroy(params)
+		local ok, err = pcall(destroy, params)
+		if not ok then
+			io.stderr:write(string.format(
+				"[sensor_daemon] driver destroy() failed during cleanup (bus will still be closed): %s\n",
+				tostring(err)))
+		end
 	end
 	close_bus()
 	-- virt：还原全局 i2c_*/spi_*/uart_*（独立守护 lua_State 随之销毁，主要为状态对称）

@@ -56,3 +56,9 @@ UART 的易踩坑约束：
 - 另注：白名单前缀匹配不解析 symlink
 
 **dofile/loadfile 白名单（M3）**：`dofile`/`loadfile` 未被禁用而是**白名单化**——仅允许加载 `BOT4CJ_MODULE_PATH`（缺省 `./modules`，`:` 分段）内的路径，且路径不得含 `..`（目录穿越拒绝），越界加载明确报错（`sandbox: dofile/loadfile only allowed inside the module path ...`）。驱动/`@Daemon` chunk 按模块路径经 `mpath.resolve` 解析，正常使用不受影响；实现见 `src/luasandbox.cpp`（N-17 由原 `luaend.cpp` 拆出，Json↔Lua 桥接见 `src/luabridge.cpp`）。
+
+**`require` 收口（A3，2026-09-20 审计）**：`require` **不经过**上面被包装的全局函数——它走 `package.loaders`，其中的 Lua 文件搜索器在 C 层直接 `luaL_loadfile`（实测 `require("evil_mod")` 能从模块树外加载）。现已：
+- **保留** preload 搜索器——`require("ffi")` / `require("bit")` 是全仓驱动仅有的两个真实 `require`，都经它提供（LuaJIT 把 `ffi` 注册为 preload；`bit` 在 `package.loaded`），与文件系统无关；宿主另把 `mpath` 注册进 `package.preload`；
+- **替换** Lua 文件搜索器与 C 搜索器为「返回说明性错误串」的桩，`package.loadlib` 置 `nil`，`package.path`/`cpath` 清空——于是任何按模块名加载文件的尝试都会失败，并给出 `sandbox: require() may only load preloaded/built-in modules ...`。
+
+驱动要用文件就必须走 `mpath.resolve` + `dofile`（同一套白名单判据）。注意本条收口的是**声明与实现的一致性**，不改变下面「沙箱不是安全边界」的结论。

@@ -143,7 +143,7 @@ function build(data)
 		return err("Invalid Argument: opmode '" .. opmode_s .. "' (cont|oneshot)")
 	end
 
-	local wait = tonumber(data.wait)
+	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = T_CONV_MS[res] + 20 end
 
 	-- 配置字节：RDY=1（连续模式下启动转换流；单次模式下触发首次转换）
@@ -201,7 +201,8 @@ function call(data)
 	if fd == nil then return ek end
 
 	-----------------------------------------------------
-	local wait_ms = tonumber(data.wait) or cfg_wait or 0
+	local wait_ms = finite_of(data.wait)
+	if wait_ms == nil then wait_ms = cfg_wait or 0 end
 	if wait_ms < 0 then wait_ms = 0 end
 
 	-- 单次模式：每次 call 重写配置触发新转换；连续模式芯片自行持续转换

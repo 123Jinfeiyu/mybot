@@ -441,6 +441,30 @@ TH_TEST(sandbox_neutralizes_os_tmpname) {
 	TH_CHECK(s.run("assert(type(os.getenv) == 'function' and type(os.time) == 'function')").empty());
 }
 
+/* A3（2026-09-20 审计）：require 不得绕过 dofile/loadfile 白名单。
+ * 缺陷形态：dofile/loadfile 被包装后，`require` 仍走 package.loaders 里的
+ * Lua 文件搜索器（C 层直接 luaL_loadfile），可加载模块树外的任意 .lua
+ * （实测 require("evil_mod") 在 cwd 于树外时成功）。 */
+TH_TEST(sandbox_require_cannot_load_files_outside_module_path) {
+	SandboxState s;
+	/* 文件搜索器被换成返回错误串的桩：require 必然失败并给出 sandbox 说明 */
+	std::string err = s.run("require('definitely_not_a_preloaded_module')");
+	TH_CHECK(!err.empty());
+	TH_CHECK(err.find("sandbox") != std::string::npos);
+	/* 路径搜索面同时关闭：loadlib 置 nil、path/cpath 清空 */
+	TH_CHECK(s.run("assert(package.loadlib == nil, 'package.loadlib must be neutralized')").empty());
+	TH_CHECK(s.run("assert(package.path == '', 'package.path must be cleared')").empty());
+	TH_CHECK(s.run("assert(package.cpath == '', 'package.cpath must be cleared')").empty());
+}
+
+/* A3 的反向断言：驱动真实依赖的 require 必须仍然可用（ffi / bit 由 LuaJIT 的
+ * preload 搜索器提供，与该收口正交；mpath 由宿主注册进 package.preload）。 */
+TH_TEST(sandbox_require_still_serves_preloaded_modules) {
+	SandboxState s;
+	TH_CHECK(s.run("assert(type(require('ffi')) == 'table')").empty());
+	TH_CHECK(s.run("assert(type(require('bit')) == 'table')").empty());
+}
+
 /* 被拒后状态机仍可用（错误走 lua_error，不污染后续调用） */
 TH_TEST(sandbox_rejection_leaves_state_usable) {
 	SandboxState s;

@@ -148,7 +148,12 @@ function call(data)
 
 	-----------------------------------------------------
 	if is_output then
-		local v = tonumber(data.value)
+		-- 审计 2026-09-20（中）：`(v ~= 0) and 1 or 0` 对 NaN 判**真**——Lua 里
+		-- 只有 nil/false 为假，而 NaN ~= 0 恒为 true，于是 value="nan" 会把线
+		-- **驱动到高电平**并返回 result="OK"。HAL.gpio_set_value 的 NaN→0 安全
+		-- 缺省（fail-safe 低电平）在此被提前绕过，继电器/执行器类负载尤其危险。
+		-- 非有限值必须在归一之前拦下：用 finite_of（NaN/inf/非数值 → nil）。
+		local v = finite_of(data.value)
 		if v == nil then
 			return err("Invalid Argument: value (0 or 1)")
 		end

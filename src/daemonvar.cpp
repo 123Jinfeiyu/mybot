@@ -406,7 +406,15 @@ static bool daemonFieldModeChar(char c) {
 
 /* fields 语法：<名>[:<模式>]，分隔符 ',' 或 '|'，模式 ∈ 缺省（跟随全局 sign）/
  * f / float / s16。空项（重复或首尾分隔符）与未知模式都在此报错——旧实现把
- * 空项 print 后丢弃、把未知模式当浮点透传（语义被悄悄改写，且只落在守护日志里）。 */
+ * 空项 print 后丢弃、把未知模式当浮点透传（语义被悄悄改写，且只落在守护日志里）。
+ *
+ * 审计 2026-09-20（中）：字段数必须 ≤ SLOT_MAXVALS。共享槽只有 values[32]，
+ * Lua 侧 P.publish 超出即**静默钳制**（pthread.lua），C++ 侧 readSample 也按
+ * 32 截断——于是 33+ 字段的 @Daemon 能通过全部加载期校验、正常启动、count
+ * 照常自增，而多余字段**永远拿不到值**，事后只表现为下游「某字段缺失」
+ * （Monitor 只会说 no daemon value (v0 missing)）这类间接症状。既然槽宽是
+ * 编译期常量、字段数在加载期就已知，就在这里响亮拒绝，而不是让它跑起来再
+ * 静默丢数据。 */
 static void checkDaemonFields(const std::string& v, const std::string& name,
 		const std::string& tabName, int64_t row) {
 	auto bad = [&](const std::string& why, const std::string& tok) {
@@ -415,6 +423,7 @@ static void checkDaemonFields(const std::string& v, const std::string& name,
 			tabName + "', row " + std::to_string(row) + ").");
 	};
 	std::size_t pos = 0;
+	int fieldCount = 0;
 	while (pos <= v.size()) {
 		std::size_t sep = v.find_first_of(",|", pos);
 		std::string tok = v.substr(pos, (sep == std::string::npos ? v.size() : sep) - pos);
@@ -430,6 +439,15 @@ static void checkDaemonFields(const std::string& v, const std::string& name,
 		}
 		if (!(mode.empty() || mode == "f" || mode == "float" || mode == "s16")) {
 			bad("has an unknown field mode ':" + mode + "' (expected :f, :float or :s16)", tok);
+		}
+		if (++fieldCount > SLOT_MAXVALS) {
+			throw IllegalArgumentException(
+				"Daemon '" + name + "': column 'fields' declares " + std::to_string(fieldCount)
+				+ " fields, which exceeds the shared-slot capacity of "
+				+ std::to_string(SLOT_MAXVALS) + " (values[" + std::to_string(SLOT_MAXVALS)
+				+ "] in daemonvar.hpp / pthread.lua) (in table '" + tabName + "', row "
+				+ std::to_string(row) + "). Extra fields would never be published —"
+				" split the daemon or expose fewer fields.");
 		}
 		if (sep == std::string::npos) { break; }
 		pos = sep + 1;

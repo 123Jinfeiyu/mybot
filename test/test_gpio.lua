@@ -285,6 +285,19 @@ check("call: 下发归一值与句柄",
 r = call({ value = "0" })
 check("call: 设 0 成功", r.result == "OK" and r.value == 0)
 check("call: 缺 value 报错", call({}).result == "ERR")
+
+-- 审计 2026-09-20（中）：非有限值必须拒绝，绝不能把线驱动到高电平。
+-- 旧实现 `(v ~= 0) and 1 or 0` 里 NaN 为真 → 归一成 1 → 输出高电平且报 OK，
+-- 绕开了 HAL 的 NaN→0 fail-safe 缺省（继电器/执行器类负载尤其危险）。
+local before = last("set")
+check("call: value=nan 拒绝（不得驱动到高电平）",
+	call({ value = "nan" }).result == "ERR", tostring(call({ value = "nan" }).message))
+check("call: value=nan 未下发任何 set", last("set") == before)
+check("call: value=inf 拒绝",
+	call({ value = "1e400" }).result == "ERR")
+check("call: value=-inf 拒绝",
+	call({ value = "-1e400" }).result == "ERR")
+
 stub_set_ret = false
 check("call: 设值失败报错", call({ value = "1" }).result == "ERR")
 
