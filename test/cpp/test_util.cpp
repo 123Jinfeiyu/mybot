@@ -164,3 +164,32 @@ TH_TEST(retry_eintr_passes_through_zero_and_positive) {
 	TH_CHECK(bot::retryEintr([&]() -> long { ++calls; return 42; }) == 42);
 	TH_CHECK(calls == 2);
 }
+
+/* ---------------- C4：报错回显的转义 + 截断（echoSource 单点） ---------------- */
+
+TH_TEST(echo_source_keeps_a_short_printable_string_verbatim) {
+	TH_CHECK(bot::echoSource("abc") == "abc");
+	TH_CHECK(bot::echoSource("") == "");
+}
+
+TH_TEST(echo_source_truncates_at_the_cap_with_an_ellipsis) {
+	const std::string s(bot::kMaxEchoChars + 10, 'A');
+	const std::string out = bot::echoSource(s);
+	TH_CHECK(out.size() == bot::kMaxEchoChars + 3);
+	TH_CHECK(out.compare(0, bot::kMaxEchoChars, std::string(bot::kMaxEchoChars, 'A')) == 0);
+	TH_CHECK(out.compare(bot::kMaxEchoChars, 3, "...") == 0);
+	/* 恰好到上限时不加省略标记（与旧 substr 口径一致） */
+	TH_CHECK(bot::echoSource(std::string(bot::kMaxEchoChars, 'A')).size() == bot::kMaxEchoChars);
+}
+
+TH_TEST(echo_source_escapes_control_bytes_instead_of_writing_them) {
+	/* ANSI 转义序列不得原样进入 stderr（终端注入面） */
+	const std::string esc = "\x1b[31mred\x1b[0m";
+	const std::string out = bot::echoSource(esc);
+	TH_CHECK(out.find('\x1b') == std::string::npos);
+	TH_CHECK(out.find("\\x1b[31mred\\x1b[0m") != std::string::npos);
+
+	/* 其它控制字节与 DEL 同样转义；可打印内容逐字保留 */
+	const std::string mixed("a\0b\tc\x7f", 6);
+	TH_CHECK(bot::echoSource(mixed) == "a\\x00b\\x09c\\x7f");
+}

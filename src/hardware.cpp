@@ -19,13 +19,19 @@ double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int6
 	double v = std::strtod(start, &end);
 	if (end == start || *end != '\0') {
 		/* N-12：统一抛 IllegalArgumentException（此前是全库唯一的
-		 * std::invalid_argument 孤例，catch 侧无法按同一类型收口） */
-		throw IllegalArgumentException("cannot parse matrix cell '" + raw + "' as Float64");
+		 * std::invalid_argument 孤例，catch 侧无法按同一类型收口）。
+		 * C4（2026-09-20 审计）：原文经 util::echoSource 转义 + 截断——单元格
+		 * 长度只受 8 MiB 脚本上限约束，原样回显实测可灌 20 万字节进 stderr，
+		 * 且 ANSI 转义会直写操作者终端。表达式报错早有一条截断防线，
+		 * 这里此前漏了（同类缺陷只修一条路径）。 */
+		throw IllegalArgumentException("cannot parse matrix cell '" + echoSource(raw)
+			+ "' as Float64");
 	}
 	/* L2：strtod 接受 nan/inf 字面量，会以非有限值流入驱动（舵机角度 NaN
 	 * 比较恒假，脉冲宽度计算不可预测）——解析层显式拒绝。 */
 	if (!std::isfinite(v)) {
-		throw IllegalArgumentException("matrix cell '" + raw + "' is not a finite Float64");
+		throw IllegalArgumentException("matrix cell '" + echoSource(raw)
+			+ "' is not a finite Float64");
 	}
 	return v;
 }
@@ -39,8 +45,17 @@ Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 		 * 前就走 resolveActionDevice 了，不再到达这里。） */
 		static const char* const kKindName[] =
 			{"null", "bool", "int", "float", "string", "array", "object"};
+		/* B0：枚举下标取值加防线——kKindName 与 Json::T 的取值靠人工同步，
+		 * 新增枚举值漏改此处即越界读。编译期钉住当前数量，运行期再做一次
+		 * 边界检查（越界退化为 "unknown" 而不是 UB）。 */
+		static_assert(sizeof(kKindName) / sizeof(kKindName[0])
+			== static_cast<std::size_t>(Json::T::Obj) + 1,
+			"kKindName must have exactly one entry per Json::T value");
+		const auto kindIdx = static_cast<std::size_t>(static_cast<int>(res.type));
+		const char* kind = kindIdx < sizeof(kKindName) / sizeof(kKindName[0])
+			? kKindName[kindIdx] : "unknown";
 		throw std::runtime_error("Hardware call (" + ctx + ") returned a non-table result ("
-			+ kKindName[static_cast<int>(res.type)] + "). Every driver build/call/destroy must"
+			+ kind + "). Every driver build/call/destroy must"
 			+ " return a table with result=\"OK\" or result=\"ERR\".");
 	}
 	const Json& obj = res;
@@ -115,8 +130,16 @@ double MtVars_Vars::numericValue() const {
 		 * 结果不可达；requireNum 是共享 AST 的不变量钉（数值语义出口单点）。 */
 		return requireNum(expr_->eval(numericResolver(resolve_)));
 	}
+	/* 字面量分支：Factory 已用 isNumericLiteral 校验过，这里独立复核一遍——
+	 * 旧实现把 strtod 的 end 丢掉且不查 isfinite，一旦今后新增构造路径绕过
+	 * Factory，畸形字面量会被静默当成数值用（strtod 失败返 0，与真实数值不可分）。 */
 	char* end = nullptr;
-	return std::strtod(literal_.c_str(), &end);
+	const char* start = literal_.c_str();
+	const double v = std::strtod(start, &end);
+	if (end == start || *end != '\0' || !std::isfinite(v)) {
+		throw IllegalArgumentException("Vars literal '" + literal_ + "' is not a finite Float64");
+	}
+	return v;
 }
 
 Json MtVars_Vars::play(const Json&) {

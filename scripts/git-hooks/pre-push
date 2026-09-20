@@ -49,6 +49,16 @@ if [ ! -f test/run_all.sh ]; then
 	exit 0
 fi
 
+# 守门自检（计划 M0 的 C7 起步）：便宜且有判别力，放在整段守门之前——
+# 「用例没被收集 / 没被编译」这类静默消失在这里就拦下，不必等跑完两百多条。
+if [ -f test/run_all_selftest.sh ]; then
+	if ! bash test/run_all_selftest.sh; then
+		echo "pre-push: 守门自检未通过，推送已中止" >&2
+		echo "  - 补登记用例或改用 test_*.lua 命名；确认误判时用 git push --no-verify 跳过" >&2
+		exit 1
+	fi
+fi
+
 echo "pre-push: 运行离线测试（bash test/run_all.sh）……"
 if bash test/run_all.sh; then
 	echo "pre-push: 测试全部通过，允许推送"

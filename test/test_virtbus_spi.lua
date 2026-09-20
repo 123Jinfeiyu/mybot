@@ -227,5 +227,29 @@ else
 	tester.check("（lua5.4：跳过真实 SPI chunk 集成段，需 ffi）", true)
 end
 
+-- ==================== C7：采纳 fd 必须按总线归表（2026-09-20 审计） ====================
+-- 旧实现把「除 uart 外的一切」都当 I2C 登记：adopt_fd(fd, path, addr, "spi")
+-- 只写 open_paths/fd_addr，spi_paths[fd] 永远为空 —— 该 fd 上每次 spi_* 调用
+-- 都在 `spi_paths[fd] == nil` 处返回 -1（"device absent"），而 txlog 已记下
+-- 一条成功的 "adopt"，故障现象与成因完全脱节。
+vbus.reset()
+vbus.inject()
+do
+	local afd_spi, afd_i2c = 77, 78
+	tester.check("adopt_fd(..., 'spi') 返回 true",
+		vbus.adopt_fd(afd_spi, "/dev/spidev2.0", nil, "spi") == true)
+	local rc = spi_setup(afd_spi, 1, 8, 1000000)
+	tester.check("C7：采纳的 SPI fd 可用（setup 返回 0；修复前恒 -1）", rc == 0, tostring(rc))
+	tester.check("C7：采纳的 SPI fd 未被误登记成 I2C（set_addr 拒绝）",
+		vbus.v_i2c_set_addr(afd_spi, 0x48) == false)
+
+	tester.check("adopt_fd(..., nil) 仍按 I2C 登记（既有语义不变）",
+		vbus.adopt_fd(afd_i2c, "/dev/i2c-9", nil, nil) == true
+		and vbus.v_i2c_set_addr(afd_i2c, 0x48) == true)
+	tester.check("C7：I2C 采纳的 fd 不被 SPI 认（互不串表）",
+		spi_setup(afd_i2c, 1, 8, 1000000) == -1)
+end
+vbus.reset()
+
 tester.summary("test_virtbus_spi")
 return 0

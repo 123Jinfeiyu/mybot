@@ -45,12 +45,33 @@ void appendCapped(std::string& dst, const char* p, std::size_t n, bool& truncate
 	}
 }
 
-/* 环境清洗：剔除名称含敏感关键词的变量。模型可能被外部输入（画面/文件内容）
- * 诱导执行任意命令，不能让子进程继承 LLM API key。
- * 注意 BOT4CJ_LLM_KEY 含 "key"，天然被本规则覆盖。 */
+/* 敏感词：按**整词**匹配（词 = 名字里连续的非字母数字分隔出的片段）。
+ * 旧实现是子串匹配，"KEY" 会连带剔除 KEYSTONE / MONKEY / HOCKEY / TOKENIZER——
+ * 误伤与漏网同时存在（"APIKEY" / "PGPASSWORD" 这类无分隔符的复合名又恰好
+ * 逃过词表？不，旧实现会命中；改成整词后它们必须显式列举）。 */
+static bool isSensitiveWord(const std::string& word) {
+	static const char* kWORDS[] = {"key", "token", "secret", "password", "passwd",
+				       "credential"};
+	for (const char* w : kWORDS) {
+		if (word == w) { return true; }
+	}
+	/* 不含分隔符的已知复合密钥名：整词匹配抓不到，又不能退回子串匹配
+	 * （会误伤 keystone/monkey），故显式列举——宁可短表可控，也不做模糊匹配。 */
+	static const char* kCOMPOUNDS[] = {"apikey", "accesskey", "accesskeyid", "secretkey",
+					   "clientsecret", "privatekey", "authkey", "authtoken",
+					   "accesstoken", "refreshtoken", "pgpassword", "passphrase"};
+	for (const char* w : kCOMPOUNDS) {
+		if (word == w) { return true; }
+	}
+	return false;
+}
+
+/* 环境清洗：剔除名字**含敏感词（整词）**的变量。模型可能被外部输入（画面/文件
+ * 内容）诱导执行任意命令，不能让子进程继承 LLM API key。
+ * 判定按分隔符切词（BOT4CJ_LLM_KEY → {bot4cj, llm, key} → 命中 key），
+ * 因此不误伤 KEYSTONE/MONKEY；无分隔符的复合名由 isSensitiveWord 的复合表覆盖
+ * （APIKEY / PGPASSWORD 仍被剔除）。 */
 std::vector<char*> buildCleanEnvp() {
-	static const char* sensitive[] = {"key", "token", "secret", "password",
-					  "passwd", "credential"};
 	std::vector<char*> envp;
 	for (char** e = ::environ; e && *e; ++e) {
 		std::string_view entry(*e);
@@ -60,8 +81,13 @@ std::vector<char*> buildCleanEnvp() {
 		std::transform(name.begin(), name.end(), name.begin(),
 			[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 		bool drop = false;
-		for (const char* s : sensitive) {
-			if (name.find(s) != std::string::npos) { drop = true; break; }
+		std::size_t i = 0;
+		while (i < name.size() && !drop) {
+			if (!std::isalnum(static_cast<unsigned char>(name[i]))) { ++i; continue; }
+			std::size_t j = i;
+			while (j < name.size() && std::isalnum(static_cast<unsigned char>(name[j]))) { ++j; }
+			drop = isSensitiveWord(name.substr(i, j - i));
+			i = j;
 		}
 		if (!drop) { envp.push_back(*e); }
 	}

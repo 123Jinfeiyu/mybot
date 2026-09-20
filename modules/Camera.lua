@@ -294,23 +294,37 @@ local function device_close()
 		HAL.sys.close(state.fd)
 		state.fd = -1
 	end
+	-- 2026-09-20 审计 C6：path 的语义是「当前**处于打开状态**的设备」，
+	-- 必须随 fd 一起清。旧实现只在 destroy 里清、成功路径由调用方补写，
+	-- 于是「上一次成功打开 A、这一次打开 B 失败」会留下 fd≥0 且 path==A
+	-- 的组合，调用方的 `state.fd < 0 or state.path ~= path` 判定 B 已打开，
+	-- 直接拿半初始化的 fd 去抓帧。
+	state.path = nil
+end
+
+-- 打开失败的统一出口：**先释放本次已申请的全部资源**（fd + 已 mmap 的缓冲）
+-- 再返回错误。旧实现八条失败路径都直接 `return nil, ...`，fd 与 mmap 缓冲区
+-- 就此泄漏（`state.fd` 早在校验之前就已赋值），且状态被留在「半开」。
+local function open_fail(msg)
+	device_close()
+	return nil, msg
 end
 
 local function device_open(path, data)
 	local fd = HAL.sys.open(path, O_RDWR)
 	if fd < 0 then
-		return nil, string.format("无法打开摄像头 %s（errno=%d）：设备不存在、被占用或权限不足",
-			path, HAL.sys.errno())
+		return open_fail(string.format("无法打开摄像头 %s（errno=%d）：设备不存在、被占用或权限不足",
+			path, HAL.sys.errno()))
 	end
 	state.fd = fd
 
 	local cap = ffi.new("cam_capability")
 	if HAL.sys.ioctl_p(fd, VIDIOC_QUERYCAP, cap) ~= 0 then
-		return nil, string.format("%s 不是 V4L2 设备（VIDIOC_QUERYCAP 失败）", path)
+		return open_fail(string.format("%s 不是 V4L2 设备（VIDIOC_QUERYCAP 失败）", path))
 	end
 	local caps = cap.capabilities
 	if bit.band(caps, CAP_VIDEO_CAPTURE) == 0 then
-		return nil, string.format("%s 不支持视频采集（capabilities=0x%x）", path, caps)
+		return open_fail(string.format("%s 不支持视频采集（capabilities=0x%x）", path, caps))
 	end
 
 	local width = tonumber(data.width) or DEFAULT_WIDTH
@@ -322,13 +336,13 @@ local function device_open(path, data)
 	fmt.fmt.pix.pixelformat = PIX_FMT_MJPEG
 	fmt.fmt.pix.field = FIELD_ANY
 	if HAL.sys.ioctl_p(fd, VIDIOC_S_FMT, fmt) ~= 0 then
-		return nil, string.format("%s 设置格式失败（%dx%d MJPEG）", path, width, height)
+		return open_fail(string.format("%s 设置格式失败（%dx%d MJPEG）", path, width, height))
 	end
 	if fmt.fmt.pix.pixelformat ~= PIX_FMT_MJPEG then
-		return nil, string.format(
+		return open_fail(string.format(
 			"%s 不支持 MJPEG（实际 fourcc=0x%x）。本驱动只取硬件编码的 MJPEG："
 			.. "请换支持 MJPEG 的设备，或用 src 参数走模拟图片",
-			path, fmt.fmt.pix.pixelformat)
+			path, fmt.fmt.pix.pixelformat))
 	end
 	state.width = fmt.fmt.pix.width
 	state.height = fmt.fmt.pix.height
@@ -338,7 +352,7 @@ local function device_open(path, data)
 	req.type = BUF_TYPE_VIDEO_CAPTURE
 	req.memory = MEMORY_MMAP
 	if HAL.sys.ioctl_p(fd, VIDIOC_REQBUFS, req) ~= 0 or req.count < 2 then
-		return nil, string.format("%s 申请 mmap 缓冲失败（VIDIOC_REQBUFS）", path)
+		return open_fail(string.format("%s 申请 mmap 缓冲失败（VIDIOC_REQBUFS）", path))
 	end
 
 	for i = 0, req.count - 1 do
@@ -347,24 +361,25 @@ local function device_open(path, data)
 		buf.memory = MEMORY_MMAP
 		buf.index = i
 		if HAL.sys.ioctl_p(fd, VIDIOC_QUERYBUF, buf) ~= 0 then
-			return nil, string.format("%s 查询缓冲 %d 失败（VIDIOC_QUERYBUF）", path, i)
+			return open_fail(string.format("%s 查询缓冲 %d 失败（VIDIOC_QUERYBUF）", path, i))
 		end
 		local ptr = ffi.C.mmap(nil, buf.length, bit.bor(PROT_READ, PROT_WRITE), MAP_SHARED, fd, 0)
 		if ptr == ffi.cast("void *", -1) then
-			return nil, string.format("%s mmap 缓冲 %d 失败", path, i)
+			return open_fail(string.format("%s mmap 缓冲 %d 失败", path, i))
 		end
 		state.buffers[i + 1] = { ptr = ptr, len = buf.length }
 		if HAL.sys.ioctl_p(fd, VIDIOC_QBUF, buf) ~= 0 then
-			return nil, string.format("%s 缓冲 %d 入队失败（VIDIOC_QBUF）", path, i)
+			return open_fail(string.format("%s 缓冲 %d 入队失败（VIDIOC_QBUF）", path, i))
 		end
 	end
 
 	local t = ffi.new("unsigned int[1]", BUF_TYPE_VIDEO_CAPTURE)
 	if HAL.sys.ioctl_p(fd, VIDIOC_STREAMON, t) ~= 0 then
-		return nil, string.format("%s 起流失败（VIDIOC_STREAMOFF/ON）", path)
+		return open_fail(string.format("%s 起流失败（VIDIOC_STREAMOFF/ON）", path))
 	end
 	state.streaming = true
 	state.warmed = false
+	state.path = path	-- C6：path 只在**成功**时登记，且由 device_close 清除
 	return true
 end
 
@@ -395,7 +410,10 @@ end
 ------------------------------------------------------------------
 -- 驱动入口
 ------------------------------------------------------------------
--- 摄像头是**可选**外设：build 不打开设备、也绝不返回 ERR，否则整机上不了电。
+-- 摄像头是**可选**外设：build 不打开真实设备（推迟到首次 call 惰性打开），
+-- 因此没接摄像头也能上电。但 `--camera-src` **仿真来源**是显式给定的：
+-- 路径越界 / 文件缺失 / 读取失败时**刻意返回 ERR**（拒绝一次注定失败的仿真，
+-- 有 test_camera.lua 的负路径覆盖）；真实设备路径下 build 不会返回 ERR。
 -- 设备在第一次 call 时按调用参数惰性打开（参数来自宿主，build 阶段拿不到）。
 -- 入参类型校验不可省（全仓其余驱动统一经 drv_common.arg_table 首位校验；
 -- Camera 因不挂总线样板而自行内联同一条——非表入参按 ERR 契约拒绝，
@@ -461,7 +479,6 @@ function call(data)
 		device_close()
 		local ok, err = device_open(path, data)
 		if not ok then return { result = "ERR", message = err } end
-		state.path = path
 	end
 
 	-- 首帧丢弃（曝光/白平衡未稳定），与 robot_agent 的「丢第一帧」同做法

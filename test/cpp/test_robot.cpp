@@ -8,6 +8,7 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "fixtures.hpp"
 #include "harness.hpp"
@@ -88,13 +89,114 @@ TH_TEST(robot_struct_propagates_syntax_errors) {
 	TH_CHECK(missingType.find("Token )") != std::string::npos);
 
 	const std::string swapped = sqlError("CREATE RELAY TABLE T ( name String );\n");
-	TH_CHECK(swapped.find("Token name'RELAY'") != std::string::npos);
+	TH_CHECK(swapped.find("Token name 'RELAY'") != std::string::npos);
 
 	const std::string truncated = sqlError("CREATE TABLE Relay ( name String\n");
 	TH_CHECK(truncated.find("unexpected end of script") != std::string::npos);
 
 	const std::string stray = sqlError("; CREATE TABLE Relay ( name String );\n");
 	TH_CHECK(stray.find("Token ;") != std::string::npos);
+}
+
+/* ---------------- C3：INSERT 的落位必须按列名（2026-09-20 审计） ---------------- */
+
+namespace {
+
+/* 只做 SQL → 矩阵对象（不经硬件装配），用于断言 INSERT 落位 */
+std::vector<mt::MatrixObject> loadMatrices(const std::string& sql) {
+	std::vector<mt::MatrixObject> out;
+	bot::MemoryReader reader(sql);
+	bot::ScriptLoader::readSQL(reader, out);
+	return out;
+}
+
+const mt::MatrixObject* matrixNamed(const std::vector<mt::MatrixObject>& ms, const std::string& n) {
+	for (const auto& m : ms) {
+		if (m.getName() == n) { return &m; }
+	}
+	return nullptr;
+}
+
+/* 显式 size_t 下标：MatrixObject 同时有 size_t 与 int64_t 两个 operator()，
+ * 字面量实参会在两个整型转换间产生歧义 */
+std::string cell(const mt::MatrixObject& m, std::size_t r, std::size_t c) { return m(r, c); }
+
+} // namespace
+
+/* INSERT 的列名清单只决定「哪个值属于哪一列」；值必须落到建表声明序上。
+ * 旧实现把值逐位 appendRow（列名仅参与 Number 校验），于是列序不一致时
+ * 值被静默换列——声明 Number 的列拿到字符串，而 Number 校验看的是另一组配对。 */
+TH_TEST(insert_values_land_in_the_declared_column_order) {
+	auto ms = loadMatrices(
+		"CREATE TABLE Timer (\n"
+		"	name  String,\n"
+		"	delay Number\n"
+		");\n"
+		"INSERT INTO Timer (delay, name) VALUES (50, 'timer-0');\n");
+	const mt::MatrixObject* t = matrixNamed(ms, "Timer");
+	TH_CHECK(t != nullptr);
+	if (t == nullptr) { return; }
+	TH_CHECK(t->rows() == 2);
+	TH_CHECK(cell(*t, 1, 0) == "timer-0");	/* name 列：建表序第 0 列 */
+	TH_CHECK(cell(*t, 1, 1) == "50");		/* delay 列：建表序第 1 列 */
+}
+
+/* 顺序一致时行为逐字不变（绝大多数脚本走这条路径） */
+TH_TEST(insert_values_unchanged_when_column_order_matches) {
+	auto ms = loadMatrices(
+		"CREATE TABLE Timer (\n"
+		"	name  String,\n"
+		"	delay Number\n"
+		");\n"
+		"INSERT INTO Timer (name, delay) VALUES ('timer-0', 50);\n");
+	const mt::MatrixObject* t = matrixNamed(ms, "Timer");
+	TH_CHECK(t != nullptr);
+	if (t == nullptr) { return; }
+	TH_CHECK(cell(*t, 1, 0) == "timer-0");
+	TH_CHECK(cell(*t, 1, 1) == "50");
+}
+
+/* 多行 INSERT 逐行按列名落位，互不影响 */
+TH_TEST(insert_multiple_rows_each_land_by_column_name) {
+	auto ms = loadMatrices(
+		"CREATE TABLE T (\n"
+		"	name String,\n"
+		"	v    Number\n"
+		");\n"
+		"INSERT INTO T (v, name) VALUES (1, 'a');\n"
+		"INSERT INTO T (name, v) VALUES ('b', 2);\n");
+	const mt::MatrixObject* t = matrixNamed(ms, "T");
+	TH_CHECK(t != nullptr);
+	if (t == nullptr) { return; }
+	TH_CHECK(t->rows() == 3);
+	TH_CHECK(cell(*t, 1, 0) == "a" && cell(*t, 1, 1) == "1");
+	TH_CHECK(cell(*t, 2, 0) == "b" && cell(*t, 2, 1) == "2");
+}
+
+/* 未知列名此前被静默顺序落位（并挤掉后续列），现显式报错 */
+TH_TEST(insert_rejects_an_unknown_column_name) {
+	const std::string msg = sqlError(
+		"CREATE TABLE T ( name String );\n"
+		"INSERT INTO T (nome) VALUES ('x');\n");
+	TH_CHECK(msg.find("no such column") != std::string::npos);
+	TH_CHECK(msg.find("nome") != std::string::npos);
+}
+
+/* 漏列此前会产生比表头短的行（错位），现显式报错 */
+TH_TEST(insert_rejects_a_missing_column) {
+	const std::string msg = sqlError(
+		"CREATE TABLE T ( name String, v Number );\n"
+		"INSERT INTO T (name) VALUES ('x');\n");
+	TH_CHECK(msg.find("missing value for column") != std::string::npos);
+	TH_CHECK(msg.find("v") != std::string::npos);
+}
+
+/* 同列名写两次此前是「后者静默覆盖」的位置关系，现显式报错 */
+TH_TEST(insert_rejects_a_duplicated_column) {
+	const std::string msg = sqlError(
+		"CREATE TABLE T ( name String, v Number );\n"
+		"INSERT INTO T (name, name) VALUES ('x', 'y');\n");
+	TH_CHECK(msg.find("listed twice") != std::string::npos);
 }
 
 /* ---------------- run(): 动作矩阵与派发前置校验 ---------------- */
@@ -124,6 +226,29 @@ TH_TEST(run_rejects_action_column_without_device_dot_param) {
 TH_TEST(run_rejects_non_numeric_action_cell) {
 	const std::string msg = runTexts(kBasicSql, "@Action\nrelay0.deg;\n  abc;\n@\n");
 	TH_CHECK(msg.find("cannot parse matrix cell 'abc'") != std::string::npos);
+}
+
+/* C4（2026-09-20 审计）：单元格报错必须转义 + 截断用户可控原文。
+ * 修复前原样回显——20 万字节单元格实测灌 200KB 进 stderr，且 ANSI 转义
+ * 直写操作者终端（表达式报错早有同一条防线，这里漏了）。 */
+TH_TEST(run_truncates_a_huge_non_numeric_action_cell) {
+	const std::string msg =
+		runTexts(kBasicSql, "@Action\nrelay0.deg;\n  " + std::string(200000, 'A') + ";\n@\n");
+	TH_CHECK(!msg.empty());
+	/* 报错整体必须远小于被回显的原文（截断生效） */
+	TH_CHECK(msg.size() < 4096);
+	TH_CHECK(msg.find("cannot parse matrix cell") != std::string::npos);
+	TH_CHECK(msg.find("...") != std::string::npos);		/* 截断标记 */
+}
+
+/* ANSI/控制字节转成可见的 \xNN，不再直写终端 */
+TH_TEST(run_escapes_control_bytes_in_a_rejected_action_cell) {
+	const std::string msg =
+		runTexts(kBasicSql, "@Action\nrelay0.deg;\n  \x1b[31mX\x1b[0m;\n@\n");
+	TH_CHECK(msg.find("cannot parse matrix cell") != std::string::npos);
+	TH_CHECK(msg.find("\\x1b") != std::string::npos);
+	/* 原始 ESC 字节不得出现在报错里 */
+	TH_CHECK(msg.find('\x1b') == std::string::npos);
 }
 
 TH_TEST(run_reports_ragged_action_row_with_line_number) {

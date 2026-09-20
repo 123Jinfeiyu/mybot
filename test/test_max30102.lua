@@ -222,7 +222,7 @@ check("HR 连读 6B 跨两个 RED 样本", bh6[1] == enc(200000) and bh6[4] == e
 
 -- ---- rollover：覆盖最旧 + RD 自动跟进（32 深环形） ----
 mark = section()
-regw(0x08, 0x08)					-- rollover 开（SMP_AVE=0）
+regw(0x08, 0x10)					-- rollover 开（B4；SMP_AVE=0）
 regw(0x09, 0x03)
 for i = 1, 32 do dev:push_sample(9000 + i, 0) end
 check("满 32：WR=RD=0、occupied=32、ovf=0",
@@ -279,7 +279,7 @@ check("再写模式恢复采样", dev:is_active() and dev:remaining_ms() == 10)
 
 -- ---- 自动采样周期门 ----
 mark = section()
-regw(0x08, 0x08)
+regw(0x08, 0x10)					-- rollover 开（B4）、SMP_AVE=0
 regw(0x0A, 0x24)					-- rate=100/adc4096/pw69
 regw(0x09, 0x03)					-- rate=100/avg=1 -> 10ms/样本
 check("默认周期 10ms", dev:period_ms() == 10, tostring(dev:period_ms()))
@@ -321,17 +321,22 @@ local hrr, hri = dev:slot(0)
 check("HR 自动产出有 RED 无 IR", hrr == 50000 and hri == nil, tostring(hrr) .. "/" .. tostring(hri))
 -- avg/rate 组合周期
 mark = section()
-regw(0x08, 0x08 + 4 * 16)		-- avg=16(code4)+rollover
+-- C5（2026-09-20 审计）：SMP_AVE 在 B7..B5、ROLLOVER_EN 在 B4 —— avg=16 是
+-- code 4，写入值为 4<<5 | 0x10 = 0x90（旧值 0x48 是错位编码：芯片会读成
+-- SMP_AVE=2、rollover 关）。这里直接用新布局构造，模型与驱动同判据。
+regw(0x08, 4 * 32 + 0x10)		-- avg=16(code4)+rollover
 regw(0x0A, 5 * 4)				-- rate=1000(code5)
 regw(0x09, 0x03)
 check("avg=16/rate=1000 -> 16ms", dev:period_ms() == 16, tostring(dev:period_ms()))
-regw(0x08, 0x08)
+check("FIFO_CFG 解出 avg_code=4 且 rollover 开", dev:avg_code() == 4 and dev:rollover_en(),
+      tostring(dev:avg_code()) .. "/" .. tostring(dev:rollover_en()))
+regw(0x08, 0x10)
 regw(0x0A, 0x00)				-- rate=50
 check("rate=50 -> 20ms", dev:period_ms() == 20, tostring(dev:period_ms()))
 
 -- ---- virt_tick 确定性波形 ----
 mark = section()
-regw(0x08, 0x08)
+regw(0x08, 0x10)
 regw(0x09, 0x03)
 dev:virt_tick(0)
 check("tick0：RED=50000/IR=60000", select(1, dev:slot(0)) == 50000 and
@@ -399,7 +404,7 @@ check("build 1 笔 1B 指针（PART_ID）", n1b(mark) == 1 and ptr_writes(mark)[
 check("build 1 条读事务（PART_ID）", nrd(mark) == 1 and read_sizes(mark)[1] == 1)
 local seq = reg_writes(mark)
 local expected = {
-	{ 0x09, 0x40 }, { 0x08, 0x08 }, { 0x0A, 0x24 }, { 0x0C, 0x20 }, { 0x0D, 0x20 },
+	{ 0x09, 0x40 }, { 0x08, 0x18 }, { 0x0A, 0x24 }, { 0x0C, 0x20 }, { 0x0D, 0x20 },
 	{ 0x04, 0x00 }, { 0x05, 0x00 }, { 0x06, 0x00 }, { 0x09, 0x03 },
 }
 local seq_ok = #seq == #expected
@@ -411,8 +416,8 @@ check("build RESET 实睡 5ms（桩转 advance，复位期不产样）", sleep_t
       tostring(sleep_total))
 check("build 后模型：SpO2/active/rollover/周期10",
       dev:mode() == 3 and dev:is_active() and dev:rollover_en() and dev:period_ms() == 10)
-check("build 后配置寄存器 08=0x08/0A=0x24/LED=0x20",
-      dev:reg(0x08) == 0x08 and dev:reg(0x0A) == 0x24 and
+check("build 后配置寄存器 08=0x18(rollover+A_FULL)/0A=0x24/LED=0x20",
+      dev:reg(0x08) == 0x18 and dev:reg(0x0A) == 0x24 and
       dev:reg(0x0C) == 0x20 and dev:reg(0x0D) == 0x20)
 check("build 后三指针 0/FIFO 空/RESET 计数 1",
       dev:wr_ptr() == 0 and dev:rd_ptr() == 0 and dev:occupied() == 0 and dev:reset_count() == 1)
@@ -432,8 +437,13 @@ mark = section()
 build_ok({ rate = "1000", pw = "118", adc = "8192", avg = "16" })
 check("组合 SPO2=0x55（adc8192/rate1000/pw118）", dev:reg(0x0A) == 0x55,
       string.format("0x%02X", dev:reg(0x0A)))
-check("组合 FIFO_CFG=0x48（avg16+rollover）", dev:reg(0x08) == 0x48,
+-- C5 判别性断言（2026-09-20 审计）：驱动写入的 FIFO_CFG 必须让芯片解出
+-- SMP_AVE = code、ROLLOVER 开 —— 旧编码 0x48 会被芯片读成 SMP_AVE=2 +
+-- rollover 关（平均档位取半、满后丢样本），而模型同错使本用例曾为假绿。
+check("组合 FIFO_CFG=0x98（avg16[7:5]+rollover[4]+A_FULL=8）", dev:reg(0x08) == 0x98,
       string.format("0x%02X", dev:reg(0x08)))
+check("组合 FIFO_CFG 解出 avg_code=4", dev:avg_code() == 4, tostring(dev:avg_code()))
+check("组合 FIFO_CFG rollover 已使能", dev:rollover_en() == true, tostring(dev:rollover_en()))
 check("组合周期 16ms", dev:period_ms() == 16, tostring(dev:period_ms()))
 
 -- LED 继承/舍入/钳制

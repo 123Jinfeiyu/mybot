@@ -369,6 +369,8 @@ fi
 # 别名重复、$ 引用标量等应清晰报错绝不裸崩）。覆盖：
 #   sqlquote      引号值内 "--"/"/*"/";"/","/括号/空白按字面解析
 #   insert_typo   INSERT 目标表拼错 → 解析期报错
+#   insert_colorder  INSERT 列名清单与建表声明序不一致 → 值按列名落位（C3）
+#   insert_badcol    INSERT 写不存在的列名 → 解析期报错（C3，此前静默顺序落位）
 #   number_type   CREATE TABLE 支持 Number 列（解析期一次数值校验，值仍文本驻留）
 #   number_bad    Number 列写入非数值字面量 → 解析期清晰报错
 #   daemon/filter/ema_chain/monitor/mpu_daemon/multidaemon
@@ -443,6 +445,8 @@ fi
 parse_cases=(
 	'sqlquote.sql|sqlquote.mt|0|joined, total publishes='
 	'insert_typo.sql|insert_typo.mt|1|table is not defined'
+	'insert_colorder.sql|number_type.mt|0|note=hello-number'
+	'insert_badcol.sql|insert_badcol.mt|1|no such column'
 	'number_type.sql|number_type.mt|0|note=hello-number'
 	'number_bad.sql|number_bad.mt|1|declared Number'
 	'daemon.sql|daemon.mt|0|joined, total publishes='
@@ -631,6 +635,13 @@ fi
 #   ctrl2_basic 扇出广播：payload 构建一次（Forward dump 恰一次），每个
 #               controller 各收到同一份数据（各自 Controller result dump）
 # ======================================================================
+# C8（2026-09-20 审计）：本段此前**没有 $filter 守卫**（邻居段落如 mtmerge 都有），
+# 于是它在任何过滤器调用下都无条件跑 3 条用例 —— `run_all.sh zzz_typo` 会以
+# 「3 通过, 0 失败」退出 0，把末尾那条 `pass + fail == 0` 的空匹配防线整条废掉
+# （该防线正是为「过滤器拼错不得假绿」而设）。守卫后语义与其它段落一致。
+if [ -z "$filter" ] || [[ "trig_basic" == *"$filter"* ]] || [[ "trig2_basic" == *"$filter"* ]] \
+	|| [[ "ctrl2_basic" == *"$filter"* ]] || [[ "trigger" == *"$filter"* ]] \
+	|| [[ "controller" == *"$filter"* ]]; then
 if [ ! -x "$bin" ]; then
 	artifact_missing "controller/trigger 多列观察面" "3 条用例" "$bin" "$bot_explicit"
 else
@@ -694,6 +705,7 @@ else
 		record_fail "ctrl2_basic(controller 多列观察面)"
 	fi
 fi
+fi	# C8：$filter 守卫（与邻居段落同语义）
 
 # ======================================================================
 # mtmerge 合成器：@Action 相位归并 + @Alias/@Vars 按行叠加（同名报错）。
@@ -1057,6 +1069,7 @@ fi
 # ======================================================================
 # 审计加固回归（#1/#2/#4）：输入源信任边界与守护 setup 失败回滚。
 #   tcp_host_bad    --tcp-host 非点分 IPv4 → 清晰报错、退出码非 0
+#   help_exit_and_sections  --help 退出码 0 且含关键区块（帮助文本的黄金锚点，B1）
 #   action_toolarge 动作脚本超 8MiB 上限 → 拒绝而非把整份输入吃进内存
 #                   （防线前实测 100MB 输入 → RSS 4.2GB）
 #   daemon_build_raise @Daemon 的 driver 误配成无全局 build 的模块 →
@@ -1111,6 +1124,12 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# 审计中-3：裸 --tcp（漏写端口号）明确报错，不再静默回落端口 1 走到 bind 失败
 	run_one_hardening 'tcp_no_port' 1 '--tcp 需要端口号' \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp
+
+	# B1（2026-09-20 计划 M0）：--help 此前零守门（全仓 grep 无命中）。CLI 帮助
+	# 文本是用户可见契约：退出码 0 与关键区块在此钉住；选项集合与 docs/ 选项表
+	# 的双向一致性由 C++ 单测 cliargs_help_option_set_matches_docs 比对。
+	run_one_hardening 'help_exit_and_sections' 0 '安全约束：动作脚本只能引入新的参数键' \
+		timeout 20 "$bin" --help
 
 	mkdir -p .tmp
 	# 9MiB 合法动作脚本：超过 8MiB 上限，必须在读取阶段就被拒绝
@@ -1531,28 +1550,54 @@ fi
 # ======================================================================
 # fixture 孤儿检测（F3/N-32）：robots/test/*.sql 与 scripts/test/*.mt 里没被
 # 任何用例表/脚本引用的夹具会静默失效——新写了回归夹具却忘了接进用例表，
-# 守门全绿而该夹具从未跑过一次。判据：文件 stem（去扩展名）是否作为**子串**
-# 出现在用例表正文 / scripts/*.sh / CMakeLists.txt 中。
-# 用子串而非整词：同一器件的多个变体（ads1115.sql 实机版 / ads1115_virt.sql
-# 离线版）共享前缀，注册了其一即视为该名字空间已被守门认知；只有全新的、
-# 没人提过的名字才会被判为孤儿（这正是「漏登记」的形态）。
-# 实机夹具（需 /dev/i2c-*、/dev/spidev*、/dev/gpiochip*、/dev/pwmchip*，
-# 离线守门跑不了）在下方白名单显式登记，每个都对应文件头注释的「实机测试」；
-# 白名单外出现孤儿即判失败——或接进用例表，或在此声明为实机夹具。
+# 守门全绿而该夹具从未跑过一次。判据：文件 stem（去扩展名）与带扩展名基名
+# 是否作为**整字段**出现在用例表正文（e2e_cases 的用例名、parse_cases 的两列
+# 文件名）/ scripts/*.sh / CMakeLists.txt 中。
+# C11（2026-09-20 审计）：原判据是**子串**，并以此为设计（「注册了其一即视为
+# 该名字空间已被守门认知」）——实测该理由不成立：每个真机夹具 `bme280.mt`
+# 都是已登记仿真用例 `bme280_virt` 的子串，于是 26 对真机夹具（52 个文件）
+# 被整体误判为「已登记」而从不执行，检测器却报「无孤儿」——覆盖静默变薄。
+# 现改为整字段精确匹配：真机夹具必须在此白名单显式声明，漏登记的纯逻辑夹具
+# 会立刻判失败。注意用例表条目有**两种引号形态**（parse_cases 里 expect 含
+# 单引号的条目用双引号书写，如 vars_bad 的 "has no 'value' column"），提取
+# 标识符时两种都要认——只认单引号会让这类条目被误判成孤儿（本次修正中实测踩到）。
+# 实机夹具（需 /dev/i2c-*、/dev/spidev*、/dev/gpiochip*、/dev/pwmchip*、
+# /dev/serial*，离线守门跑不了）在下方白名单显式登记，每个都对应文件头注释的
+# 「实机测试」；白名单外出现孤儿即判失败——或接进用例表，或在此声明为实机夹具。
 # 与「用例表引用的文件必须存在」互补：这里管漏登记，那里管空引用。
 # 只在无过滤器的全量跑里执行（与常量自检同理由）。
 # ======================================================================
-orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501"
+# 前 9 个为既有登记；后半 25 个是审计 C11 修正判据后如实暴露的真机夹具
+# （文件头均注明「实机测试」）：ads1115 adxl345 amg8833 as3935 as7262 bh1745
+# bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944
+# max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd
+orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501 ads1115 adxl345 amg8833 as3935 as7262 bh1745 bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd"
 run_fixture_orphans() {
 	echo "----- fixture-orphans (夹具孤儿检测) -----"
-	local f stem n=0 orphans=""
+	# 登记标识符集合（**精确整字段**匹配，不做子串）：
+	#   e2e_cases   条目是 `用例名|<正则>|<最少条数>` —— 名字即 stem（无扩展名）；
+	#   parse_cases 条目是 `结构.sql|动作.mt|期望rc|...` —— 带扩展名。
+	#   C11（2026-09-20 审计）：旧实现拿**去扩展名的 stem** 在两张表里 grep -F
+	#   子串，而每个真机夹具 `bme280.mt` 都是已登记仿真用例 `bme280_virt` 的子串
+	#   —— 它们因此被误判为「已登记」，从不执行、也从不报孤儿（覆盖静默变薄而
+	#   检测器报绿）。改为整字段比较后，真机夹具必须显式进 orphan_whitelist。
+	local reg_tokens=" $(
+		{
+			sed -n '/^e2e_cases=(/,/^)/p' "$SELF" \
+				| sed -n "s/^[[:space:]]*[\"']\([^|]*\)|.*/\1/p"
+			sed -n '/^parse_cases=(/,/^)/p' "$SELF" \
+				| sed -n "s/^[[:space:]]*[\"']\([^|]*\)|\([^|]*\)|.*/\1 \2/p"
+		} | tr '\n' ' ' | tr ' ' '\n' | sed 's#.*/##' | tr '\n' ' '
+	) "
+	local f stem base n=0 orphans=""
 	for f in robots/test/*.sql scripts/test/*.mt; do
 		stem="$(basename "$f")"; stem="${stem%.*}"
+		base="$(basename "$f")"
 		case " $orphan_whitelist " in *" $stem "*) continue ;; esac
 		# 登记来源只看用例表正文（e2e_cases/parse_cases）+ 其它守门脚本 + CMake 目标。
 		# 刻意不 grep 本文件全文：注释里顺带提一句名字并不等于接进了表。
-		sed -n '/^e2e_cases=(/,/^)/p; /^parse_cases=(/,/^)/p' "$SELF" | grep -qF "$stem" && continue
-		grep -qF "$stem" scripts/*.sh CMakeLists.txt 2>/dev/null && continue
+		case "$reg_tokens" in *" $stem "*|*" $base "*) continue ;; esac
+		grep -qF "$base" scripts/*.sh CMakeLists.txt 2>/dev/null && continue
 		orphans="$orphans $f"
 		n=$((n + 1))
 	done
@@ -1634,9 +1679,18 @@ run_cpp_unit() {
 		return
 	fi
 	if echo "$out" | grep -qF "无匹配用例"; then
-		echo "[SKIP] 过滤器 '${filter}' 未命中任何 C++ 用例"
-		record_skip "cpp-unit(过滤器未命中)"
-		return 2
+		# C9（2026-09-20 审计）：只有**带过滤器**时「无匹配用例」才是合法跳过。
+		# 空过滤器下这句话意味着这个二进制一个用例都没注册（桩二进制、漏登记进
+		# CMakeLists、产物被换）——那必须判失败，否则整段 C++ 守门静默降级成 SKIP
+		# （旧实现排在这里、先于 rc 与 [PASS] 计数检查，故空过滤器也会走 SKIP）。
+		if [ -n "$filter" ]; then
+			echo "[SKIP] 过滤器 '${filter}' 未命中任何 C++ 用例"
+			record_skip "cpp-unit(过滤器未命中)"
+			return 2
+		fi
+		echo "[FAIL] 假绿嫌疑：C++ 单测二进制在无过滤器下报「无匹配用例」（未注册任何用例？）"
+		record_fail "cpp-unit(零用例)"
+		return
 	fi
 	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
 	if [ "$pass_n" -eq 0 ]; then

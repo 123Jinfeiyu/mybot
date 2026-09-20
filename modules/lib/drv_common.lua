@@ -206,12 +206,34 @@ end
 
 -- ---- 数值列解析（N-24）-----------------------------------------------------
 
--- 数值列 → 钳到 [lo, hi] 的整数；非法/占位符 '-' 归缺省 def
+-- 数值归一化单点仍在 lib/bus_contract.lua（finite_of）——**本库不自带第二份
+-- 判定**。同一状态机里 HAL/virtbus 已 dofile 过它，全局 __BOT4CJ_BUS_CONTRACT
+-- 即那张表；脱离宿主直跑（luajit 单测、scscl_scan）时按模块路径逐段探测一次
+-- （与 virt_prepare 同一手法；bus_contract 自带重入口守卫，身份不变）。
+local bus = __BOT4CJ_BUS_CONTRACT
+if bus == nil then
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local ok, v = pcall(dofile, p .. "/lib/bus_contract.lua")
+		if ok and type(v) == "table" then bus = v break end
+	end
+end
+-- 兜底：布局异常导致 bus_contract 不可达时，判定不得静默退化成「NaN 放行」
+-- ——那正是本防线要堵的洞。兜底分支与 finite_of 逐字同判据，仅此一处。
+local function finite_of(v)
+	if bus ~= nil then return bus.finite_of(v) end
+	local n = tonumber(v)
+	if n == nil or n ~= n or n == math.huge or n == -math.huge then return nil end
+	return n
+end
+
+-- 数值列 → 钳到 [lo, hi] 的整数；非法（非数字/非有限）/占位符 '-' 归缺省 def
 -- 全仓 4 份逐字相同的内联实现（VL53L0X / VL53L4CD / AS7262 / AS3935）收敛于此。
 -- 注意这是**钳制**语义（就近取边界），与「越界报 ERR」不同：后者由各驱动
 -- 显式校验（如 APDS9900 的 atime 范围、MS5611 的 OSR 档位）承担。
+-- NaN/inf 必须回落 def 而非参与钳制：NaN 与任何数比较都为 false，会原样穿
+-- 出去当数值用（2026-09-20 审计 C2）。
 function int_of(v, def, lo, hi)
-	local n = tonumber(v)
+	local n = finite_of(v)
 	if n == nil then return def end
 	n = math.floor(n)
 	if n < lo then n = lo end
@@ -219,11 +241,14 @@ function int_of(v, def, lo, hi)
 	return n
 end
 
--- 数值列 → tonumber 结果；缺省/非法回落 def（不钳制、不取整）
+-- 数值列 → tonumber 结果；缺省/非法（含非有限）回落 def（不钳制、不取整）
 -- 原 ADS1015 / ADS1115 / ADS1256 各自的 tonum 局部量（逐字相同）
+-- 注意 `tonumber(v) or def` 挡不住 NaN（NaN 是 truthy），故经 finite_of。
 function num_or(v, def)
 	if v == nil then return def end
-	return tonumber(v) or def
+	local n = finite_of(v)
+	if n == nil then return def end
+	return n
 end
 
 -- ---- 分块读寄存器块（N-24）------------------------------------------------

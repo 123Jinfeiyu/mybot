@@ -17,7 +17,6 @@
  */
 
 #include <algorithm>
-#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -67,7 +66,7 @@ int main(int argc, char** argv) {
 			bot::cli::OptionToken tok = bot::cli::parseKeyValue(k, argc, argv, false);
 			if (!tok.hasValue) {
 				std::cerr << "mtmerge: --phase 缺少值" << std::endl;
-				std::exit(2);
+				return 2;	/* 与同文件其余错误路径同形（return 而非 std::exit） */
 			}
 			std::string v = tok.value;
 			auto [st, num] = bot::parseLongStrict(v);
@@ -87,7 +86,7 @@ int main(int argc, char** argv) {
 			bot::cli::OptionToken tok = bot::cli::parseKeyValue(k, argc, argv, false);
 			if (!tok.hasValue) {
 				std::cerr << "mtmerge: --out 缺少值" << std::endl;
-				std::exit(2);
+				return 2;	/* 同上：不跳过局部对象析构 */
 			}
 			outPath = tok.value;
 		} else if (a.rfind("--", 0) == 0) {

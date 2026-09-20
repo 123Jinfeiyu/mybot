@@ -81,6 +81,7 @@ set(MYBOT_CORE_SOURCES
   src/action_runner.cpp
   src/robot.cpp
   src/actionsource.cpp
+  src/cliargs.cpp
   src/agent_subprocess.cpp
   src/agentproto.cpp
   src/agenttools.cpp
@@ -153,6 +154,7 @@ add_executable(mybot_tests
   test/cpp/test_expr.cpp
   test/cpp/test_sqlparse.cpp
   test/cpp/test_util.cpp
+  test/cpp/test_cliargs.cpp
   test/cpp/test_hardware.cpp
   test/cpp/test_robot.cpp
   test/cpp/test_luaend.cpp
@@ -172,6 +174,9 @@ add_executable(mybot_tests
 )
 
 target_include_directories(mybot_tests PRIVATE test/cpp)
+# 源码根路径：让单测能锚定 docs/ 与仓库夹具（--help 黄金测试据此比对
+# docs/reference.md 的选项表），不依赖运行期 CWD。
+target_compile_definitions(mybot_tests PRIVATE MYBOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(mybot_tests PRIVATE mybot_common)
 
 enable_testing()

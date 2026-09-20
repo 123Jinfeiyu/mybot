@@ -111,6 +111,16 @@ void RobotStruct::injectLuaDriver(const std::string& driverTable, const std::str
 			+ driverTable + "' / '" + varName + "'");
 	}
 
+	/* 顺序不变式（B0-5）：MetaProvider 持有的 matrix_ 是对 matrices_ **元素的
+	 * 引用**，而下面这条 push_back 会让 vector 重分配——重分配后旧引用全部悬垂。
+	 * 这条不变式此前只靠「注入必须在 active() 之前」的约定维系（MetaProvider 在
+	 * active()→createHardVars 里才建）。此处把它变成显式断言：一旦有人在
+	 * active() 之后注入，立刻响亮失败，而不是留一个悬垂引用到派发期才炸。 */
+	if (!metaProviders_.empty()) {
+		throw IllegalArgumentException("injectLuaDriver must be called before active():"
+			" metadata providers already hold references into the matrix list");
+	}
+
 	std::string sql = "CREATE TABLE " + driverTable + " (name String);\n"
 		+ "INSERT INTO " + driverTable + " (name) VALUES ('" + varName + "');\n";
 	MemoryReader reader(std::move(sql));

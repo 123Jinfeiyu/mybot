@@ -1,5 +1,6 @@
 #include "daemonvar.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -64,6 +65,9 @@ DaemonRunner::~DaemonRunner() {
  * 配置串 + 布局表：布局常量单一事实源 = daemonvar.hpp 的 struct + 静态断言
  * （2.7），pthread.lua 手抄常量降为无宿主注入环境兜底。 */
 static void injectDaemonGlobals(lua_State* L, DaemonSlot* slot, const std::string& config) {
+	/* LUA_GLOBALSINDEX 是 Lua 5.1/LuaJIT 的伪索引宏（Lua 5.2+ 已移除，改用
+	 * lua_pushglobaltable）。本工程锁 LuaJIT 5.1 ABI，故直接可用；若将来换宿主
+	 * Lua 版本，这里是必须同步改动的点（pthread.lua 侧的槽协议另需同步）。 */
 	lua_pushlightuserdata(L, slot);
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_ADDR");
 	lua_pushstring(L, config.c_str());

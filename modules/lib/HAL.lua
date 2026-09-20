@@ -641,7 +641,11 @@ function gpio_request_line(chip_path, offset, direction, default_value, active_l
 	req.lineoffsets[0] = offset
 	req.flags = flags
 	if direction == "out" then
-		local dv = tonumber(default_value) or 0
+		-- C2（2026-09-20 审计）：默认电平走 byte_of 归一化——旧的
+		-- `tonumber(default_value) or 0` 挡不住 NaN（NaN 是 truthy），
+		-- 而 `(NaN ~= 0)` 为真 → 配置写 "nan" 会把线**驱动到高电平**。
+		-- byte_of 对非有限值返回 nil，回落 0（非有效电平 = 安全侧）。
+		local dv = byte_of(default_value) or 0
 		req.default_values[0] = (dv ~= 0) and 1 or 0	-- 内核语义：非 0 即有效电平
 	end
 	req.consumer_label = "bot4cj"
@@ -881,7 +885,20 @@ end
 function uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
 	n = uint_of(n)
-	timeout_ms = tonumber(timeout_ms) or 0
+	-- C2（2026-09-20 审计）：非有限超时不得被静默当成"不等待"。旧写法
+	-- `tonumber(timeout_ms) or 0` 让 NaN 穿过上限判定，随后 math.floor(NaN)=NaN
+	-- 使 `for it = 1, NaN` 一次都不执行 —— 调用方看到的是"立即超时无数据"，
+	-- 与配置里写坏一个字面量的真实成因完全脱节。
+	if timeout_ms ~= nil then
+		timeout_ms = bus.finite_of(timeout_ms)
+		if timeout_ms == nil then
+			print("HAL: uart_read timeout is not a finite number: "
+				.. tostring(timeout_ms))
+			return nil
+		end
+	else
+		timeout_ms = 0
+	end
 	if fd == nil or n == nil or n < 1 then return nil end
 	if timeout_ms > HAL.UART_READ_MAX_MS then
 		print("HAL: uart_read timeout " .. tostring(timeout_ms) .. "ms exceeds max "

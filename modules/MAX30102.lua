@@ -70,7 +70,7 @@ local REG_FIFO_WR   = 0x04		-- FIFO 写指针（芯片自增）
 local REG_FIFO_OVF  = 0x05		-- 溢出计数（rollover 开启时不增）
 local REG_FIFO_RD   = 0x06		-- FIFO 读指针
 local REG_FIFO_DATA = 0x07		-- FIFO 数据口：读自动步进，HR 每样本 3 字节 / SpO2 6 字节
-local REG_FIFO_CFG  = 0x08		-- SMP_AVE[6:4] | ROLLOVER[3] | A_FULL[2:0]
+local REG_FIFO_CFG  = 0x08		-- SMP_AVE[7:5] | ROLLOVER_EN[4] | A_FULL[3:0]
 local REG_MODE      = 0x09		-- SHDN[7] RESET[6] | MODE[2:0]：2=HR 3=SpO2 7=多LED
 local REG_SPO2      = 0x0A		-- ADC_RGE[6:5] | SR[4:2] | PW[1:0]
 local REG_LED1      = 0x0C		-- 红光电流，0.2mA/LSB，最大 51mA
@@ -90,6 +90,16 @@ local RATE_CODE = { [50]=0,[100]=1,[200]=2,[400]=3,[800]=4,[1000]=5,[1600]=6,[32
 local PW_CODE   = { [69]=0,[118]=1,[215]=2,[411]=3 }
 local ADC_CODE  = { [2048]=0,[4096]=1,[8192]=2,[16384]=3 }
 local AVG_CODE  = { [1]=0,[2]=1,[4]=2,[8]=3,[16]=4,[32]=5,[64]=6,[128]=7 }
+-- 采样平均位域（2026-09-20 审计 C5）：数据手册 FIFO_CFG(0x08) 的字段是
+--   B7..B5 = SMP_AVE[2:0]、B4 = FIFO_ROLLOVER_EN、B3..B0 = FIFO_A_FULL。
+-- 旧实现按 SMP_AVE[6:4]|ROLLOVER[3] 写 `code*16 + 0x08`：芯片实际看到的是
+-- SMP_AVE = code>>1、ROLLOVER = 0、A_FULL = 8 —— 即平均档位取半、rollover
+-- **关着**（与头注/build 注释声称的"rollover 开"相反），而内嵌模型复刻了同一
+-- 处错位，单测因此全绿。这三个常量是位域的唯一事实源，驱动与模型共用。
+local SMP_AVE_MUL       = 32		-- SMP_AVE 在 B7..B5（= 2^5；LuaJIT 无内置 <<）
+local BIT_ROLLOVER_EN   = 0x10		-- B4：满 32 后覆盖最旧样本
+local FIFO_A_FULL_LEVEL = 0x08		-- B3..B0：近满阈值（驱动纯轮询不使能中断，
+					-- 该值只影响中断时序，保留既有取值不改）
 -- 采样周期须容纳两路 LED 脉冲 + 转换：脉宽越大允许的最高采样率越低（数据手册组合表）
 local PW_MAX_RATE = { [69]=3200,[118]=1600,[215]=800,[411]=400 }
 
@@ -233,7 +243,9 @@ function build(data)
 		end
 	end
 
-	wr(REG_FIFO_CFG, AVG_CODE[avg] * 16 + 0x08, "FIFO config")	-- 平均 + rollover（满后覆盖最旧）
+	-- C5：位域按数据手册 SMP_AVE[7:5] | ROLLOVER_EN[4] | A_FULL[3:0]
+	wr(REG_FIFO_CFG, AVG_CODE[avg] * SMP_AVE_MUL + BIT_ROLLOVER_EN
+		+ FIFO_A_FULL_LEVEL, "FIFO config")	-- 平均 + rollover（满后覆盖最旧）
 	wr(REG_SPO2, ADC_CODE[adc] * 32 + RATE_CODE[rate] * 4 + PW_CODE[pw], "SpO2 config")
 	wr(REG_LED1, led1, "LED1 amplitude")
 	wr(REG_LED2, led2, "LED2 amplitude")
@@ -385,10 +397,13 @@ end
 --      槽位读起。空 FIFO 读返回 0x00 且 RD 不动。
 --   3) 每通道 18 位样本 MSB 对齐在 3 字节帧里（低 6 位恒 0）：
 --      b0=[17:10] b1=[9:2] b2[7:6]=[1:0]，满码 0x3FFFF=262143 即 SAT。
---   4) FIFO_CFG 0x08 = SMP_AVE[6:4] | ROLLOVER_EN[3] | A_FULL[3:0]：rollover
+--   4) FIFO_CFG 0x08 = SMP_AVE[7:5] | ROLLOVER_EN[4] | A_FULL[3:0]：rollover
 --      关（POR）时满 32 后新样本丢弃、OVF_COUNTER++（饱和 31）、WR 停住；
---      rollover 开（驱动 build 固定置 bit3）时新样本覆盖最旧槽并把 RD 自动
+--      rollover 开（驱动 build 固定置 B4）时新样本覆盖最旧槽并把 RD 自动
 --      推进、OVF 不增。SPO2_CFG 0x0A：有效输出样本周期 = 1000×2^SMP_AVE/SR。
+--      位域位置与驱动共用常量（SMP_AVE_MUL/BIT_ROLLOVER_EN）——2026-09-20
+--      审计 C5 前此处与驱动同错（SMP_AVE 记成 [6:4]），模型与驱动同源共错
+--      使单测失去判别力。
 --   5) MODE 0x09 = SHDN[7] | RESET[6] | MODE[2:0]：RESET 位自清除不落盘，
 --      写后全部寄存器回 POR、FIFO/指针清空；SHDN=1 停采样；写有效模式即
 --      启动，advance(ms) 按周期向 FIFO 产样（测试 wait 轮询的 milli_sleep
@@ -467,8 +482,9 @@ end
 		local m = mode_bits()
 		return (m == MODE_HR or m == MODE_SPO2) and not shdn_on()
 	end
-	local function rollover_on() return math.floor(regs[REG_FCFG] / 8) % 2 == 1 end
-	local function avg_code() return math.floor(regs[REG_FCFG] / 16) % 8 end
+	-- C5：位域与驱动共用常量（SMP_AVE 在 B7..B5 → 乘 32、ROLLOVER_EN 在 B4）
+	local function rollover_on() return math.floor(regs[REG_FCFG] / BIT_ROLLOVER_EN) % 2 == 1 end
+	local function avg_code() return math.floor(regs[REG_FCFG] / SMP_AVE_MUL) % 8 end
 	local function rate_code() return math.floor(regs[REG_SPO2] / 4) % 8 end
 	-- 有效输出周期：SMP_AVE 个 SR 样本平均成 1 个 FIFO 输出
 	local function period_ms()
@@ -744,6 +760,7 @@ end
 		return s and s.r or nil, s and s.i
 	end
 	function d:rollover_en() return rollover_on() end
+	function d:avg_code() return avg_code() end	-- C5：位域位置的白盒观察面
 	function d:is_active() return active() end
 	function d:mode() return mode_bits() end
 	function d:shdn() return shdn_on() end

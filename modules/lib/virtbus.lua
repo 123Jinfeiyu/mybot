@@ -788,9 +788,13 @@ end
 -- （modules/I2C.lua、modules/UART.lua）在自己的状态里 open 拿到 fd，设备变量在自己的
 -- 状态里对同一个 fd 读写信道——不先登记的话 v_i2c_set_addr / v_uart_* 会因
 -- open_paths[fd] / uart_paths[fd] 为空而失败。
--- bus 缺省按 I2C/SPI 处理（open_paths + fd_addr）；bus="uart" 时登记 uart_paths
--- （UART 器件身份是 tty 路径，无地址）。器件模型由各状态机自己 attach
--- （模型是状态局内的内存，本就不跨状态共享）。
+-- bus 决定登记到哪张 fd 表：缺省/"i2c" → open_paths + fd_addr；"spi" → spi_paths；
+-- "uart" → uart_paths（UART 器件身份是 tty 路径，无地址）。器件模型由各状态机
+-- 自己 attach（模型是状态局内的内存，本就不跨状态共享）。
+-- C7（2026-09-20 审计）：旧实现把**除 uart 外的一切**都当 I2C 登记，于是
+-- adopt_fd(fd, path, addr, "spi") 只写 open_paths/fd_addr、spi_paths[fd] 永远为空
+-- ——该 fd 上的每一次 spi_* 调用都在 `spi_paths[fd] == nil` 处返回 -1
+-- （"device absent"），而 txlog 里已记下一条成功的 "adopt"，故障现象与成因完全脱节。
 function virtbus.adopt_fd(fd, path, addr, bus)
 	fd = tonumber(fd)
 	if fd == nil then return false end
@@ -798,6 +802,13 @@ function virtbus.adopt_fd(fd, path, addr, bus)
 	if bus == "uart" then
 		if uart_paths[fd] == nil then
 			uart_paths[fd] = tostring(path or "virt-adopted")
+		end
+		log_tx("adopt", nil, { raw = tostring(path) })
+		return true
+	end
+	if bus == "spi" then
+		if spi_paths[fd] == nil then
+			spi_paths[fd] = tostring(path or "virt-adopted")
 		end
 		log_tx("adopt", nil, { raw = tostring(path) })
 		return true

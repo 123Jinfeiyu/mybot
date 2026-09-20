@@ -217,4 +217,44 @@ do
 		and mjpeg.normalize("") == nil and mjpeg.normalize(nil) == nil)
 end
 
+-- ---- C6：V4L2 打开失败必须释放已申请的 fd（2026-09-20 审计）----
+-- 旧实现 state.fd 在**任何校验之前**就赋值，而 device_open 的十条失败路径
+-- 全部直接 `return nil, ...`，fd（以及已 mmap 的缓冲）就此泄漏；同时 fd 停在
+-- ≥0 使「半开」状态被后续调用误判为已打开（state.path 只在成功路径补写）。
+-- 这里通过 HAL.sys.* 注入桩：open 成功、QUERYCAP 失败 → 必须看见 close。
+do
+	local hal = dofile("modules/lib/HAL.lua")
+	local real = {
+		open = hal.sys.open, close = hal.sys.close,
+		ioctl_p = hal.sys.ioctl_p, errno = hal.sys.errno,
+	}
+	local opened, closed = {}, {}
+	local restore = function()
+		for k, v in pairs(real) do hal.sys[k] = v end
+	end
+	hal.sys.open = function(_, _) local fd = 900 + #opened; opened[#opened + 1] = fd; return fd end
+	hal.sys.close = function(fd) closed[#closed + 1] = fd; return 0 end
+	hal.sys.ioctl_p = function(_, _, _) return -1 end	-- QUERYCAP 失败
+	hal.sys.errno = function() return 19 end		-- ENODEV
+
+	local ok, res = pcall(call, { path = "/dev/video0" })
+	restore()
+
+	check("C6：QUERYCAP 失败 → ERR 契约", ok and type(res) == "table" and res.result == "ERR",
+		tostring(ok) .. "/" .. tostring(type(res) == "table" and res.result or res))
+	check("C6：打开了 1 个 fd", #opened == 1, tostring(#opened))
+	check("C6：失败路径释放了该 fd（修复前为 0 次 close = 泄漏）",
+		#closed == 1 and closed[1] == opened[1],
+		"opened=" .. #opened .. " closed=" .. #closed)
+
+	-- 失败后状态必须回到「未打开」：再次调用应重新尝试 open（而不是拿半开句柄抓帧）
+	hal.sys.open = function(_, _) local fd = 900 + #opened; opened[#opened + 1] = fd; return fd end
+	hal.sys.close = function(fd) closed[#closed + 1] = fd; return 0 end
+	hal.sys.ioctl_p = function(_, _, _) return -1 end
+	hal.sys.errno = function() return 19 end
+	call({ path = "/dev/video0" })
+	restore()
+	check("C6：失败后不残留半开状态（再次调用重新 open）", #opened == 2, tostring(#opened))
+end
+
 tester.summary("Camera.lua 单测")

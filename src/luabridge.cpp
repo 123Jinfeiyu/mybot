@@ -249,6 +249,21 @@ Json call_lua(lua_State* L, const Json& json) {
 		if (status == LUA_OK) {
 			int nret = lua_gettop(L) - top;
 			if (nret > 0 && lua_type(L, -nret) == LUA_TTABLE) {
+				/* C1 防线（2026-09-20 审计）：契约表是**首个**返回值，遍历也必须
+				 * 落在它上面。旧实现直接 lua_next(L, -2)：lua_pushnil 已把栈顶
+				 * 抬高，-2 于是指向**最后一个**返回值——末值是标量时 lua_next
+				 * 对非表调用直接 SIGSEGV（实测 Release exit 139），末值是表时
+				 * 静默返回最后一个表、首个表的字段全丢且退出码 0。
+				 * 这里先把首个返回值拷到栈顶，让 -1/-2 的语义与 nret 无关：
+				 * pushvalue 后 [.. ret1 .. retN copy] → pushnil → lua_next(-2)
+				 * 遍历的正是 copy（即 ret1）。多出来的 copy 由末尾 settop 复原。 */
+				if (nret > 1) {
+					logD([nret] {
+						return "Lua returned " + std::to_string(nret)
+							+ " values; only the first table is used (driver contract)";
+					});
+				}
+				lua_pushvalue(L, -nret);	/* copy = 首个返回值（已判型为表） */
 				lua_pushnil(L);
 				while (lua_next(L, -2) != 0) {
 					int keyType = lua_type(L, -2);
@@ -276,6 +291,7 @@ Json call_lua(lua_State* L, const Json& json) {
 					ret.put(key, val);
 					lua_pop(L, 1);
 				}
+				lua_pop(L, 1);		/* 弹出 copy（遍历用的那层） */
 			} else {
 				/* N3 防线：pcall 成功但首返回值不是表（少写 return → 0 个值，或返回
 				 * nil/数字/字符串）。旧实现折成空表 {}，而 ensureOk 见「无 result 键」

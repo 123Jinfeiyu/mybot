@@ -47,10 +47,42 @@ void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& ou
 				throw IllegalArgumentException(
 					"INSERT INTO '" + eve.insert.targetTabName + "': table is not defined");
 			}
+			/* C3 防线（2026-09-20 审计）：INSERT 的值必须按**列名**落位到建表
+			 * 声明序，不能按 INSERT 自带的列序顺序 append。
+			 * 旧实现只取 p.value 逐位 appendRow，columnName 仅参与 Number 列的
+			 * 解析期校验——于是
+			 *     CREATE TABLE Timer (name String, delay Number);
+			 *     INSERT INTO Timer (delay, name) VALUES (50, 'timer-0');
+			 * 校验看到的是「delay←50 ✓、name←'timer-0' ✓」（按 INSERT 列名配对），
+			 * 存储却把 50 写进 name、'timer-0' 写进 delay：声明为 Number 的列拿到
+			 * 字符串，而 number_bad.sql 那条守门承诺的「Number 列非数值必报错」
+			 * 被整条绕过，失败形态是「跑得通但值不对」。
+			 * 列名未知/重复/漏列一律显式报错——仓库内 138 个 .sql 的 INSERT 列序
+			 * 与建表声明序逐一相同（脚本核查），故对既有脚本零行为变化。 */
+			const std::int64_t ncols = static_cast<std::int64_t>(root->cols());
 			for (const auto& row : eve.insert.tableRows) {
-				std::vector<std::string> values;
-				values.reserve(row.size());
-				for (const auto& p : row) { values.push_back(p.value); }
+				std::vector<std::string> values(static_cast<std::size_t>(ncols));
+				std::vector<char> filled(static_cast<std::size_t>(ncols), 0);
+				for (const auto& p : row) {
+					const std::int64_t idx = root->indexOfCol(0, p.columnName);
+					if (idx < 0) {
+						throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
+							+ "': no such column '" + p.columnName + "'");
+					}
+					if (filled[static_cast<std::size_t>(idx)] != 0) {
+						throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
+							+ "': column '" + p.columnName + "' listed twice");
+					}
+					values[static_cast<std::size_t>(idx)] = p.value;
+					filled[static_cast<std::size_t>(idx)] = 1;
+				}
+				for (std::int64_t j = 0; j < ncols; ++j) {
+					if (filled[static_cast<std::size_t>(j)] == 0) {
+						throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
+							+ "': missing value for column '" + (*root)(0, j)
+							+ "' (every column must be given a value; use '-' to inherit)");
+					}
+				}
 				root->appendRow(std::move(values), 0);
 			}
 			break;

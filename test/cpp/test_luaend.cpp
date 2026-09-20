@@ -239,6 +239,65 @@ TH_TEST(nested_arrays_survive_the_conversion) {
 	TH_CHECK(w && w->at(1).isArr() && w->at(1).at(0).getInt() == 3);
 }
 
+/* ---------------- 2026-09-20 审计 C1：多值返回必须取「首个」 ---------------- */
+
+/* 驱动多返回值时，契约表是**第一个**返回值（Java/Cangjie 原版语义亦然：
+ * 只看首个返回表）。旧实现 lua_type(L, -nret) 判型看的是首个，随后
+ * lua_pushnil 把栈顶抬高，lua_next(L, -2) 却落在**最后一个**返回值上：
+ * 末值是标量 → lua_next 对非表调用 → 裸 SIGSEGV（实测 Release exit 139）；
+ * 末值是表 → 静默返回最后一个表，首个表的字段全部丢失且退出码 0。
+ * 这是「驱动违反返回契约」这条最该被折成清晰 ERR 的路径。 */
+TH_TEST(call_lua_uses_the_first_table_when_a_driver_returns_several) {
+	State s;
+	s.chunk("function call(data)\n"
+		"  return { result = \"OK\", a = 1 }, { result = \"OK\", b = 2 }\n"
+		"end\n");
+
+	int before = s.top();
+	Json res = bot::call_lua(s.get(), callParams());
+
+	TH_CHECK(!isErr(res));
+	TH_CHECK(res.get("a") && res.get("a")->getInt() == 1);	/* 修复前丢失 */
+	TH_CHECK(!res.get("b"));				/* 修复前误取第二个表 */
+	TH_CHECK(s.top() == before);
+}
+
+/* 末值非表：修复前 lua_next 非表入参 → 段错误（不是 ERR、也不是 0 退出码） */
+TH_TEST(call_lua_survives_a_scalar_after_the_result_table) {
+	State s;
+	s.chunk("function call(data)\n"
+		"  return { result = \"OK\", a = 7 }, 42\n"
+		"end\n");
+
+	int before = s.top();
+	Json res = bot::call_lua(s.get(), callParams());
+
+	TH_CHECK(!isErr(res));
+	TH_CHECK(res.get("a") && res.get("a")->getInt() == 7);
+	TH_CHECK(s.top() == before);
+}
+
+/* 状态机在「末值非表」这条路径之后仍可继续服务（崩溃路径谈不上复原） */
+TH_TEST(the_same_state_keeps_serving_after_a_multi_value_return) {
+	State s;
+	s.chunk("function call(data) return { result = \"OK\" }, \"extra\" end\n");
+	Json first = bot::call_lua(s.get(), callParams());
+	TH_CHECK(!isErr(first));
+
+	s.chunk("function call(data) return { result = \"OK\", v0 = 3 } end\n");
+	Json good = bot::call_lua(s.get(), callParams());
+	TH_CHECK(good.get("v0") && good.get("v0")->getInt() == 3);
+}
+
+/* 首个返回值不是表但后面跟着表：仍必须走 N3 ERR 契约，不得因「后面有表」而放行 */
+TH_TEST(call_lua_still_rejects_a_non_table_first_result_among_several) {
+	State s;
+	s.chunk("function call(data) return nil, { result = \"OK\", b = 2 } end\n");
+	Json res = bot::call_lua(s.get(), callParams());
+	TH_CHECK(isErr(res));
+	TH_CHECK(!res.get("b"));
+}
+
 /* ---------------- 残留审计 #1：NUL 截断绕过防线 ---------------- */
 
 /* .mt 词法不把 '\0' 当分隔符，参数键 "servo.fd\0x" 能通过上游 reserved-key

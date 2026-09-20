@@ -2,6 +2,7 @@
 
 #include <cctype>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -18,6 +19,10 @@ namespace agent {
 
 namespace {
 
+/* 读取脚本头部 cap 字节（提示词预算，**截断是刻意的**）。
+ * 但 I/O 错误不得与「正常截断」混为一谈：旧实现忽略 ferror，磁盘错误会把
+ * 半截脚本当成完整摘录喂给模型（阶段 4.1 已把「整文件读取」统一为超限响亮
+ * 拒绝；这里是同一族的静默面，因预算语义不同而保留截断，只把错误显式化）。 */
 std::string readHead(const std::string& path, std::size_t cap) {
 	std::ifstream f(path, std::ios::binary);
 	if (!f) { return ""; }
@@ -27,6 +32,10 @@ std::string readHead(const std::string& path, std::size_t cap) {
 	std::streamsize n = f.gcount();
 	if (n < 0) { n = 0; }
 	data.resize(static_cast<std::size_t>(n));
+	if (f.bad()) {
+		std::cerr << "警告：读取结构脚本头部时发生 I/O 错误，提示词中的脚本摘录可能不完整: "
+			<< path << std::endl;
+	}
 	return data;
 }
 

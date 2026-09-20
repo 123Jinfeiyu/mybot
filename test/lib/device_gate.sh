@@ -24,6 +24,17 @@ luacmd="$1"; shift
 # 只认设备名（字母/数字/下划线），免得把说明文字吃进来。
 req="$(sed -n 's/^-- requires: *\([A-Za-z0-9_]*\).*/\1/p' "$lua_file" | head -1)"
 
+# 显式指定设备路径时以它为准：测试体自己读 BOT4CJ_TEST_VIDEO（把回归指向别的
+# 设备/软链），但跳过门排在它之前——不在这里放行，文档承诺的逃生阀永远不可达
+# （2026-09-20 审计 M3：docs/testing.md 写了该变量，实现却在门就退出 125）。
+if [ "$req" = "video" ] && [ -n "${BOT4CJ_TEST_VIDEO:-}" ]; then
+	if [ -e "$BOT4CJ_TEST_VIDEO" ]; then
+		exec "$luacmd" "$@"
+	fi
+	echo "[SKIP] BOT4CJ_TEST_VIDEO=$BOT4CJ_TEST_VIDEO 不存在，跳过"
+	exit 125
+fi
+
 if [ -n "$req" ] && ! ls /dev/"$req"* >/dev/null 2>&1; then
 	echo "[SKIP] 需要 /dev/${req}* 真机设备（文件标记 -- requires: $req），本机无 ${req}，跳过"
 	exit 125

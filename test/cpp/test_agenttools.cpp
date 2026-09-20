@@ -299,6 +299,49 @@ TH_TEST(agenttools_run_command_cleans_env) {
 	::unsetenv("BOT4CJ_TEST_PLAIN");
 }
 
+/* N9 收口：清洗按**整词**判定——子串匹配既误伤 KEYSTONE/MONKEY，语义也不精确。
+ * 本用例双向钉住：复合密钥名（无分隔符的 APIKEY/PGPASSWORD）仍被剔除，
+ * 含敏感词子串但与密钥无关的名字（KEYSTONE/MONKEY）必须放行。 */
+TH_TEST(agenttools_run_command_env_filter_is_word_wise) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const char* kDropped[] = {"BOT4CJ_TEST_APIKEY", "PGPASSWORD", "AWS_SECRET_ACCESS_KEY"};
+	const char* kKept[] = {"KEYSTONE", "MONKEY", "HOCKEY", "TOKENIZER"};
+	for (const char* v : kDropped) { ::setenv(v, "x", 1); }
+	for (const char* v : kKept) { ::setenv(v, "x", 1); }
+
+	std::string out = execText(tools, "run_command", parseJson(
+		"{\"command\":\"for v in BOT4CJ_TEST_APIKEY PGPASSWORD AWS_SECRET_ACCESS_KEY "
+		"KEYSTONE MONKEY HOCKEY TOKENIZER; do if printenv \\\"$v\\\" >/dev/null; "
+		"then echo \\\"KEPT:$v\\\"; else echo \\\"DROPPED:$v\\\"; fi; done\"}"));
+
+	for (const char* v : kDropped) {
+		const std::string want = std::string("DROPPED:") + v;
+		TH_CHECK_MSG(out.find(want) != std::string::npos,
+			"应被剔除却进了子进程: " + std::string(v) + "（输出: " + out + "）");
+	}
+	for (const char* v : kKept) {
+		const std::string want = std::string("KEPT:") + v;
+		TH_CHECK_MSG(out.find(want) != std::string::npos,
+			"被误剔的非密钥变量: " + std::string(v) + "（输出: " + out + "）");
+	}
+
+	for (const char* v : kDropped) { ::unsetenv(v); }
+	for (const char* v : kKept) { ::unsetenv(v); }
+}
+
+/* B0-5：注入顺序不变式——MetaProvider 持有的 matrix_ 是对 matrices_ 元素的引用，
+ * active() 之后再 push_back 会让这些引用悬垂（重分配）。旧实现只靠「注入必须在
+ * active() 之前」的约定维系，本用例把守卫钉住：active() 之后注入必须响亮报错。 */
+TH_TEST(agenttools_inject_after_active_is_rejected) {
+	auto robot = makeRelayRobot();
+	TH_CHECK_THROWS_MSG(IllegalArgumentException, "must be called before active()",
+		robot->injectLuaDriver("Timer", "t9"));
+	robot->deactivate();
+}
+
 TH_TEST(agenttools_run_command_stdin_is_devnull) {
 	AgentToolContext ctx;
 	ctx.allowShell = true;

@@ -84,7 +84,12 @@ inline int runAll(const std::string& filter) {
 		return -1;
 	}
 	std::printf("[DONE]\n");
-	return failureCount();
+	/* C10（2026-09-20 审计）：退出码只能是 0/1，**不能**是失败用例数——进程
+	 * 退出状态被 OS 截断到 8 位，256 个失败会恰好回绕成 0（实测 256 用例全红
+	 * 时 `ctest -R cpp_unit` 报 "100% tests passed"）。run_all.sh 有 [FAIL]
+	 * grep 兜底不受影响，但文档推荐的逐用例入口 ctest 会假绿。
+	 * 约定：0 = 全通过；1 = 有失败（或过滤器无命中）。 */
+	return failureCount() == 0 ? 0 : 1;
 }
 
 } // namespace th
@@ -95,6 +100,15 @@ inline int runAll(const std::string& filter) {
 	static void name()
 
 #define TH_CHECK(expr) ::th::check(static_cast<bool>(expr), #expr, __FILE__, __LINE__)
+
+/* 断言 expr，失败时附自定义说明——用于「遍历集合并点名具体违例项」的断言，
+ * 否则失败信息只有表达式文本，看不出是哪一个元素越界/缺失。 */
+#define TH_CHECK_MSG(expr, msg)                                            \
+	do {                                                                \
+		if (!static_cast<bool>(expr)) {                                 \
+			::th::reportFailure(#expr, __FILE__, __LINE__, (msg));      \
+		}                                                               \
+	} while (false)
 
 /* 断言 expr 抛出 Exc 类型异常（负路径契约的主力） */
 #define TH_CHECK_THROWS(Exc, expr)                                        \

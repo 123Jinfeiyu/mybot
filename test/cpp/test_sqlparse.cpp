@@ -62,8 +62,8 @@ TH_TEST(token_name_strips_quotes) {
 	TH_CHECK(Token::parse("\"r0\"").name == "r0");
 	/* 只有首尾成对的引号才剥；中间引号属数据 */
 	TH_CHECK(Token::parse("a'b").name == "a'b");
-	/* serialize() 的 NAME 形态带 name'...' 前缀，便于日志定位 */
-	TH_CHECK(Token::parse("'r0'").serialize() == "name'r0'");
+	/* serialize() 的 NAME 形态带 `name '...'` 前缀，便于日志定位 */
+	TH_CHECK(Token::parse("'r0'").serialize() == "name 'r0'");
 	TH_CHECK(Token::parse(";").serialize() == ";");
 	TH_CHECK(Token::parse("CREATE").serialize() == "CREATE");
 }
@@ -74,14 +74,14 @@ TH_TEST(lexer_create_table_token_stream) {
 	std::vector<Token> ts = fx::tokens("CREATE TABLE Relay ( name String, note String );");
 	/* 尾随逗号延后一拍产出：先词元本身，再 COMMA（见 Lexer::next 的 comma_ 挂起） */
 	TH_CHECK(fx::fingerprint(ts)
-		== "CREATE TABLE name'Relay' ( name'name' STRING , name'note' STRING ) ;");
+		== "CREATE TABLE name 'Relay' ( name 'name' STRING , name 'note' STRING ) ;");
 }
 
 TH_TEST(lexer_insert_token_stream) {
 	std::vector<Token> ts = fx::tokens(
 		"INSERT INTO Relay ( name, note ) VALUES ( 'r0', 'hello' );");
 	TH_CHECK(fx::fingerprint(ts) ==
-		"INSERT INTO name'Relay' ( name'name' , name'note' ) VALUES ( name'r0' , name'hello' ) ;");
+		"INSERT INTO name 'Relay' ( name 'name' , name 'note' ) VALUES ( name 'r0' , name 'hello' ) ;");
 }
 
 TH_TEST(lexer_quoted_dashes_are_data_not_comment) {
@@ -301,7 +301,7 @@ TH_TEST(parser_reports_the_offending_token) {
 		events("SELECT * FROM T ;"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token )",
 		events("CREATE TABLE T ( name );"));
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name'x'",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'x'",
 		events("CREATE x TABLE T ( name String );"));
 }
 

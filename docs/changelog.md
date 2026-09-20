@@ -1,8 +1,40 @@
 # 更新日志
 
 > 从 [README](../README.md) 迁出，按主题分组记录版本演进要点，组内大致按时间倒序。每条只留「改了什么、对使用者意味着什么」——设计论证、实现落点与守门明细以 docs/ 各文档为准，完整叙述见 git 提交历史。
+> 条目里出现的守门/用例**数字是当时的快照**（随机器与用例数变化）：权威口径一律以
+> `bash test/run_all.sh` 与 `./build/mybot_tests` 的实时输出为准（`docs/development.md` 单一事实源约定）。
 
 ## v1.x（C++ 移植版）
+
+### 2026-09-20 审计修复批次（C1–C11）
+
+> 依据一次独立审计（`.tmp/audit-report-2026-09-20.md`：14 项缺陷，每项均本机复现或代码核对）。
+> 本批修复 C1–C11；`allow_shell` 缺省翻转（C12）与未复核的器件寄存器图（C13）不在本批。
+> 四条使用者可见的行为变更单独标注。守门快照：Lua/e2e **245 通过 / 0 失败 / 2 跳过**、
+> C++ 单测 **371 / 0**（基线 241 + 356）。
+
+- **⚠️ 崩溃修复：Lua 驱动一次返回多个值时宿主段错误**。契约表是**首个**返回值，但旧实现 `lua_pushnil` 之后 `lua_next(L, -2)` 落在**最后一个**返回值上——末值是标量时 `lua_next` 对非表调用直接 SIGSEGV（Release exit 139，ASan 回溯 `luabridge.cpp:253`），末值是表时静默返回最后一个表、首个表的字段全丢且退出码 0。现先把首个返回值拷到栈顶再遍历，多值只记一条 logD 提示。
+- **NaN 不再穿透数值校验**。`math.floor(NaN)` 是 NaN，而 `NaN < 0` / `NaN > 255` 均为 false —— 旧 `byte_of`/`uint_of` 把 NaN 当**合法值**返回，一路走到 `ffi.new("uint8_t", NaN)` 变成 0x00：`i2c_write_reg(fd, reg, NaN)` 返回成功但线上写的是 0，PCA9685 把 NaN 角度写成 ON=0/OFF=0（无脉冲）却报 `result="OK"`。收敛出 `bus_contract.finite_of` 单点（tonumber + 非有限拒绝），并修同族的 `drv_common.int_of/num_or`（非有限回落缺省，不再参与钳制）、`bitcompat` 位运算（LuaJIT `bit.band(NaN,0xFF)=0`，现对非有限入参报错；有限入参逐字透传，含既有 1.5→1 截断语义）、HAL 的 GPIO 默认电平与 `uart_read` 超时。
+- **⚠️ 行为变更：INSERT 按列名落位**。值此前按 INSERT 自带列序逐位追加，而类型校验按列名配对——两者顺序不一致时**静默错列**，且 `Number` 列的解析期校验形同虚设（`INSERT INTO Timer (delay, name) VALUES (50, 'timer-0')` 让声明 Number 的 `delay` 拿到字符串 `'timer-0'`）。现在值按列名落到建表声明序；列名未知 / 同列写两次 / 漏列一律解析期报错（仓库内 138 个 `.sql` 的列序与声明序逐一相同，既有脚本零变化）。
+- **矩阵单元格报错不再回显整条原文**。`cannot parse matrix cell '<原文>'` 此前无截断：20 万字节单元格实测灌 200KB 进 stderr，且 ANSI 转义直写操作者终端（`--tcp` 远端脚本可达）。现与表达式报错共用 `util::echoSource`（不可打印字节转 `\xNN` + 截断 80 字符 + 省略标记）——表达式路径早有这条防线，矩阵单元格漏了同一条。
+- **MAX30102 FIFO_CONFIG 位域修正**。数据手册是 `SMP_AVE[7:5] | ROLLOVER_EN[4] | A_FULL[3:0]`，旧实现按 `[6:4]/[3]` 写 `code*16+0x08`：芯片读到的平均档位是**一半**、rollover **实际关闭**（与驱动注释/build 声称的「rollover 开」相反）。内嵌模型复刻了同一处错位，单测因此一直假绿；现驱动与模型共用位域常量，测试按真实布局断言（build 写入值 0x18/0x98）。
+- **Camera 打开失败不再泄漏 fd/mmap**。`state.fd` 在任何校验之前就赋值，而十条失败路径全部直接返回、不释放——fd 与已 mmap 的缓冲区泄漏，且 fd 停在 ≥0 使「半开」状态被后续调用误判为已打开（`state.path` 只在成功路径补写）。现失败统一走 `open_fail`（先释放再返回），`state.path` 由 `device_close` 随 fd 一起清。
+- **virtbus 采纳 SPI fd 不再误登记成 I2C**。`adopt_fd` 此前把「除 uart 外的一切」都写进 `open_paths/fd_addr`，`spi_paths[fd]` 永远为空——该 fd 上每次 `spi_*` 调用返回 -1（"device absent"），而 txlog 已记下成功的 adopt。
+- **守门自纠（四条）**：错误过滤器不再假绿（`run_all.sh zzz_typo` 曾报「3 通过, 0 失败」退出 0 —— controller/trigger 观察面缺 `$filter` 守卫，把末尾的空匹配防线整条废掉）；零用例的 C++ 二进制在无过滤器下判**失败**而非静默 SKIP；`mybot_tests` 退出码改 0/1（旧为失败用例数，256 个失败回绕成 0，使 `ctest -R cpp_unit` 报 100% passed）；孤儿夹具检测由**子串**改**整字段精确匹配**——实测由此暴露 **26 对真机夹具（52 个文件）从未被执行却报「已登记」**，现如实进 `orphan_whitelist`，顺带消掉 `sed | grep -q` 的 196 行断管噪声。另修 `BOT4CJ_TEST_VIDEO` 逃生阀不可达（`device_gate.sh` 现在认这个变量，与测试体口径一致）。
+
+### 2026-09-20 重构批次（CLI 可测化 / 卫生与缺陷收口）
+
+> 依据 `.tmp/refactoring-plan-2026-09-20-r2.md` 的 M0 + M1；按「先补判别性用例、再改实现」推进。
+> 其中两条是**使用者可见的行为变更**（词法报错文案、`run_command` 环境清洗语义），单独在下方标明。
+
+- **CLI 层可测化：`parseArgs` / `validateOptions` / 帮助文本迁 `src/cliargs.*`**：三者原先定义在 `main.cpp`，而 `main.cpp` 不在 `MYBOT_CORE_SOURCES` 中——`mybot_tests` 链接不到，`test/` 对它们的引用为 0，6 个校验分支只有 2 个被黑盒覆盖，`--help` 更是**零守门**。现在 `mybot` 与 `mybot_tests` 共用同一份实现；`--help` 输出**逐字节不变**（与迁移前 4,314 字节实测比对一致）。新增 11 条 C++ 单测 + 1 条 hardening 用例：退出码 2 的五条拒绝路径、裸 `--tcp` 不回落端口、`--help` 优先级，以及**帮助正文与 `docs/` 选项表的双向一致性**（帮助里出现未记录的选项、或文档记录了帮助没有的选项，都会立刻红）。
+- **守门自检 `test/run_all_selftest.sh`（C7 起步）**：`bash -n` 守门脚本语法 + 核对每个 `test/cpp/*.cpp` 已登记进 `CMakeLists.txt` + 核对 `test/*.lua` 命名匹配 `test_*.lua`。「用例没被收集 / 没被编译」这类**静默消失**此前没有任何防线（改名或漏登记只会让覆盖悄悄变薄，守门照绿）。自检**不进入** `run_all.sh` 的记账（守门汇总口径不变），由 pre-push 在整段守门之前调用——钩子由此从两件事变三件。
+- **⚠️ 报错文案变更：词法层 NAME 词元加空格**——`Token name'x'` → `Token name 'x'`。旧文案把类型名与名字粘在一起，日志里难以辨读；影响面仅为以该子串做匹配的脚本（仓库内 5 处断言已同步）。
+- **⚠️ 行为变更：`run_command` 的环境清洗改「整词」判定**——旧实现按**子串**剔除名字含 `key`/`token`/`secret`/`password`/`passwd`/`credential` 的变量，既误伤 `KEYSTONE`/`MONKEY`/`HOCKEY`/`TOKENIZER`（与密钥无关的普通变量会被无声吞掉），语义也不精确。现在按非字母数字分隔切词匹配，并**显式列举**无分隔符的已知复合密钥名（`apikey`/`accesskey`/`secretkey`/`clientsecret`/`privatekey`/`authkey`/`authtoken`/`accesstoken`/`refreshtoken`/`pgpassword`/`passphrase`）——`BOT4CJ_LLM_KEY`、`APIKEY`、`PGPASSWORD` 等仍被剔除，防线不因去误伤而变薄。
+- **`injectLuaDriver` 顺序守卫**：`MetaProvider` 持有的 `matrix_` 是对矩阵表的**引用**，`active()` 之后再注入会因 `push_back` 重分配而悬垂——此前只靠「必须在上电前注入」的约定维系，现在显式报错。
+- **纵深防线与小缺陷**：`@Vars` 字面量解析补 `end`/`isfinite` 复核（旧实现丢掉 `strtod` 的 `end`，畸形字面量会被静默当成数值）；`ensureOk` 的 JSON 种类名下标加 `static_assert` + 边界检查（越界退化为 `unknown` 而非 UB）；prompt 组装读脚本头部时的 I/O 错误不再与「正常截断」混为一谈；`mtmerge` 两处 `std::exit(2)` 改 `return 2`（不跳过局部对象析构）；`daemonvar.cpp` 补 `<algorithm>`（原先靠 libstdc++ 传递包含才编过）。
+- **卫生**：`.zcode/` 入 `.gitignore`；`modules/lib/fft.lua` 两处死赋值清理（保留 `check_pow2` 的校验副作用）；`Camera.lua` 头注与实现对齐（仿真来源路径失败**刻意**返回 ERR，真实设备路径不返回）；changelog 引导行计数 63→64 处修正，并声明**条目内守门数字为当时快照**（权威口径以脚本输出为准）。
+- **流程**：`docs/development.md` 新增「委派与自动化」节——委派给子代理/脚本的工作必须声明只读、前后各跑一次 `git status --porcelain` 留档。背景是本次并行审计中一个子代理在「只在 `.tmp/` 写入」的前提下删除了 17 个已跟踪文件（已从 HEAD 恢复并核对数量）。
 
 ### 2026-09-20 重构批次（会话作用域 / 模块路径 / I/O 语义）
 
@@ -11,7 +43,7 @@
 > 只有一条**破坏性语义变更**（下面第一条），其余为缺陷修复与收敛。
 
 - **⚠️ 破坏性变更：动作脚本内联 `@Alias`/`@Vars` 的作用域收敛到「本次执行」**：此前它们是进程级的——与结构变量同名会**永久遮蔽**结构定义（直到进程退出），且 agent 长驻模式下跨脚本残留（脚本 A 定义的别名对脚本 B 可见）并持续占用内存；更棘手的是注册发生在派发之前，**一个连 `@Action` 都没有、以报错收场的脚本也已完成注册表改写**。现在会话覆盖层由 `HwRegistry::SessionScope` 在一次 `run()` 内持有，出口（含异常路径）整体回滚，结构定义与结构脚本的绑定一字不动。**受影响用法**：依赖「前一个动作脚本定义的别名给后一个脚本用」的工作流须把该别名写进结构脚本（`.sql` 的 `@Alias` 表）或用 `@Include` 主从覆盖表达；单次执行内的行为（`@Include` 归并别名、设备列别名解析、`$(...)` 引用）完全不变。附带修复：agent 长驻反复执行脚本不再无界增长（实测 200 轮后结构名字索引不增长）
-- **多路径模块加载对全部模块成立**：`BOT4CJ_MODULE_PATH` 支持 `:` 分隔多路径是文档既有承诺，但**驱动侧只取首段**（59 个 `modules/*.lua` 中 58 个带引导行、外加 5 个 `lib/` 文件，共 63 处逐字相同的 `:match("[^:]+")`），首段不含 `lib/` 时加载即失败——该承诺此前只对宿主侧成立。现在宿主在建沙箱时逐段探测 `lib/mpath.lua` 并注入 `__mpath`，模块侧统一写 `local mpath = __mpath or <单根回退>`；回退分支只在**脱离宿主**直跑（`luajit test/*.lua`、`scscl_scan.lua`）时走到，那些场景单根即正确。新增 grep lint 钉住这一形态，判别性用例跑真二进制（hardening 段 `multipath_module_path`）
+- **多路径模块加载对全部模块成立**：`BOT4CJ_MODULE_PATH` 支持 `:` 分隔多路径是文档既有承诺，但**驱动侧只取首段**（59 个 `modules/*.lua` 中 58 个带引导行、外加 5 个 `lib/` 文件，共 64 处逐字相同的 `:match("[^:]+")`，分布在 63 个文件——`LPS22HB.lua` 带两处），首段不含 `lib/` 时加载即失败——该承诺此前只对宿主侧成立。现在宿主在建沙箱时逐段探测 `lib/mpath.lua` 并注入 `__mpath`，模块侧统一写 `local mpath = __mpath or <单根回退>`；回退分支只在**脱离宿主**直跑（`luajit test/*.lua`、`scscl_scan.lua`）时走到，那些场景单根即正确。新增 grep lint 钉住这一形态，判别性用例跑真二进制（hardening 段 `multipath_module_path`）
 - **`@Daemon`/lib 定位收敛到 `util::findExistingModule`**：宿主侧逐段探测此前有两份实现，现与 Lua 侧 `mpath.resolve` 同规则
 - **`run_command` 把 EINTR 当正常重试而非终态**：信号处理器未装 `SA_RESTART`，EINTR 在本项目是常态；旧实现把它当 EOF——丢弃子进程剩余输出、提前关闭读端（给仍在跑的子进程送 SIGPIPE）；`waitpid` 的 EINTR 被当「已无子进程」留下僵尸；`fcntl` 失败路径还会把已 `fork` 的子进程丢成孤儿。三处收敛为 `util::retryEintr` + `reapWithGrace`
 - **TCP 未认证对端不再能终止进程**：口令校验把 `SO_RCVTIMEO` 到期的 `EAGAIN` 与「凭据不匹配」混为一谈，连满 5 次即抛错退出——任意对端连上 5 次、每次不发字节（每次挂满 `--tcp-idle`）就能终止进程，且诊断误报为「口令连续 5 次校验失败（可能为扫描/爆破）」。现在校验返回三态，只有「收到凭据但不匹配/超长」才计入爆破上限；「没给凭据」（超时/关闭/中断）关连接后继续等待
@@ -87,7 +119,7 @@
 
 ### 工程化与守门
 
-- **大文件拆分：`robot.cpp` / `agenttools.cpp`**（2026-09-20 外部评估「单文件过长」收口）：`robot.cpp` 原 846 行挤着五个类（注册表 / 元数据 / 装载+装配 / 动作派发 / 编排门面），按类拆为 `hw_registry` / `meta_provider` / `hw_factory` / `action_runner` 四个 TU，`robot.cpp` 只剩编排门面（114 行）；跨 TU 共用的 controller/trigger 列判定收进 `flowcolumn.hpp`（inline，不进聚合头）。对下游零改动——`robot.hpp` 仍为聚合头、`mybot_tests` 与 `mybot` 共用同一份 `MYBOT_CORE_SOURCES`，`test/cpp/` 一字未动。`runAction` 的纯计算前段（列头解析 / 撞设备查重 / 相位设备判定）抽为 `ActionPlan::build`——不碰硬件的白盒可测单点，`runAction` 由此收缩为「构建计划 → 行循环派发」两段。`agenttools.cpp` 的 `run_command` 子进程机器（超时 / 进程组终止 / 输出截断 / 环境清洗）独立为 `agent_subprocess.*`（643 → 440 行，五个 `make*Tool` 装配函数保持就地分节，不再一工具一文件）。纯搬移：报错文案、派发顺序、退出码逐字不变；Release 零告警 + 全量守门 238/0/1 跳 + C++ 单测 328/0，ASan/UBSan 双跑同绿
+- **大文件拆分：`robot.cpp` / `agenttools.cpp`**（2026-09-20 外部评估「单文件过长」收口）：`robot.cpp` 原 846 行挤着五个类（注册表 / 元数据 / 装载+装配 / 动作派发 / 编排门面），按类拆为 `hw_registry` / `meta_provider` / `hw_factory` / `action_runner` 四个 TU，`robot.cpp` 只剩编排门面（114 行）；跨 TU 共用的 controller/trigger 列判定收进 `flowcolumn.hpp`（inline，不进聚合头）。对下游零改动——`robot.hpp` 仍为聚合头、`mybot_tests` 与 `mybot` 共用同一份 `MYBOT_CORE_SOURCES`，`test/cpp/` 一字未动。`runAction` 的纯计算前段（列头解析 / 撞设备查重 / 相位设备判定）抽为 `ActionPlan::build`——不碰硬件的白盒可测单点，`runAction` 由此收缩为「构建计划 → 行循环派发」两段。`agenttools.cpp` 的 `run_command` 子进程机器（超时 / 进程组终止 / 输出截断 / 环境清洗）独立为 `agent_subprocess.*`（643 → 440 行，五个 `make*Tool` 装配函数保持就地分节，不再一工具一文件）。纯搬移：报错文案、派发顺序、退出码逐字不变；Release 零告警 + 全量守门与 C++ 单测全绿（当时的快照为 238/0/1 跳 + 328/0；该口径随机器与用例数变化，实时值以 `bash test/run_all.sh` 输出为准），ASan/UBSan 双跑同绿
 - **守门脚本与「声称的防线」修复**（2026-09-19 外部评估）：`run_all.sh` 的 `local` 用在函数外（每个 parse 用例向 stderr 报错一次）收进函数；`test_curl_consts.c` 落地——llm_http.lua 注释声称的 CURLOPT 漂移防线此前**不存在**，现在真有了（`_Static_assert` 编译期比对硬编码常量与 curl.h；libcurl 开发头文件非构建依赖，缺失产物按跳过计，CI 补装保证覆盖）
 - **死代码清理与测试补强**：删除八处死代码——兜底 catch 曾把 bad_alloc 等非预期异常降级成「I don't understand」含糊报错，现按 fail-fast 原样上抛；controller/trigger 单元夹具钉住三条此前仅 E2E 覆盖的契约
 - **巨函数拆分（十项）**：`sandbox_lua`/`openTcpActionSource`/`makeAgentTools`/`buildAgentConfig`/守护线程体与工厂/sqlparse/`main` 等——报错文案、打印顺序、退出码逐字保持

@@ -22,18 +22,33 @@ M._VERSION = "0.1.0"
 -- 参数归一化
 ------------------------------------------------------------------
 
--- 归一化为 0~255 的整数，非法返回 nil
-function M.byte_of(v)
+-- tonumber + **非有限值拒绝**（NaN / ±inf）单点。
+-- 为什么必须显式判 n ~= n：LuaJIT 下 math.floor(NaN) 是 NaN，而 NaN 与任何
+-- 数比较都为 false —— 只写 `n < 0 or n > 255` 这类区间判定时，NaN 会**穿过**
+-- 检查被当作合法值返回（2026-09-20 审计 C2 实测）。后续一路走到
+-- ffi.new("uint8_t", NaN) 就是静默的 0x00：寄存器写错值、舵机写 ON=0/OFF=0
+-- 却返回 result="OK"。字符串 "nan"/"inf"/"1e400" 经 tonumber 同样得到
+-- NaN/inf，故必须在 tonumber 之后、任何区间判定之前拦。
+-- 接受合法的 0：调用方常写 `or def`，0 不能被 falsy 语义吞掉（本函数返回
+-- number 或 nil，判空一律用 `== nil`）。
+function M.finite_of(v)
 	local n = tonumber(v)
+	if n == nil or n ~= n or n == math.huge or n == -math.huge then return nil end
+	return n
+end
+
+-- 归一化为 0~255 的整数，非法（非数字/非有限/越界）返回 nil
+function M.byte_of(v)
+	local n = M.finite_of(v)
 	if n == nil then return nil end
 	n = math.floor(n)
 	if n < 0 or n > 255 then return nil end
 	return n
 end
 
--- 归一化为非负整数，非法返回 nil
+-- 归一化为非负整数，非法（非数字/非有限/负数）返回 nil
 function M.uint_of(v)
-	local n = tonumber(v)
+	local n = M.finite_of(v)
 	if n == nil then return nil end
 	n = math.floor(n)
 	if n < 0 then return nil end

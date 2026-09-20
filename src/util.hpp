@@ -268,6 +268,37 @@ inline std::string formatNumber(double v) {
 	return std::string(buf);
 }
 
+/* ---- 报错回显：用户可控原文的转义 + 截断（单点）----
+ * 2026-09-20 审计 C4：把用户可控字节原样拼进 stderr 有两个问题——
+ *   ① 体积：一条报错可把「脚本 8 MiB 上限」量级的字节灌进日志（实测矩阵单元格
+ *      20 万字节 → stderr 200KB；`--tcp` 远端脚本可达）；
+ *   ② 控制字符直写操作者终端：ANSI 转义可改色、移光标、伪造输出。
+ * 表达式报错（expr.cpp）此前已按 80 字符截断，但矩阵单元格报错
+ * （hardware.cpp 的 parseMtDouble）漏了同一条防线 —— 同一类缺陷、同一份承诺、
+ * 两条路径只有一条落地。收敛到本单点后两条路径共用同一判据与文案形态。
+ * 不可打印字节（<0x20 或 0x7f）转成 \xNN 可见形式，再按**输入**长度截断并补
+ * 省略标记：截断口径与旧的 `substr(0,80) + "..."` 逐字一致，只多出转义。 */
+inline constexpr std::size_t kMaxEchoChars = 80;
+
+inline std::string echoSource(const std::string& s) {
+	const std::size_t n = s.size() < kMaxEchoChars ? s.size() : kMaxEchoChars;
+	std::string out;
+	out.reserve(n);
+	static const char kHex[] = "0123456789abcdef";
+	for (std::size_t i = 0; i < n; ++i) {
+		const unsigned char c = static_cast<unsigned char>(s[i]);
+		if (c < 0x20 || c == 0x7f) {
+			out += "\\x";
+			out += kHex[c >> 4];
+			out += kHex[c & 0x0f];
+		} else {
+			out += static_cast<char>(c);
+		}
+	}
+	if (s.size() > kMaxEchoChars) { out += "..."; }
+	return out;
+}
+
 /* ---- 整文件受限读取（2026-09-20 重构阶段 4.1）----
  * 收敛前「带上限地读一个文件」有 4 份实现，超限语义分叉：提示词包响亮拒绝，
  * 而配置与密钥文件**静默截断**后交给下游——用户看到的是「不是合法 JSON」

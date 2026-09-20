@@ -71,7 +71,7 @@ std::string Token::serialize() const {
 		case TokenType::RGHT: return ")";
 		case TokenType::UNEXPECTED_END: return "";
 		case TokenType::UNKNOWN: return "?";
-		case TokenType::NAME: return "name'" + name + "'";
+		case TokenType::NAME: return "name '" + name + "'";
 	}
 	return "?";
 }

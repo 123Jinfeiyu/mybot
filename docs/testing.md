@@ -68,7 +68,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 11. **守护 tick 故障注入**（总线持续 NACK → 驱动 ERR → 守护不发布、`count` 停滞，主流程仍正常 join）
 12. **进程级 fd 探针**（长动作 + 守护采样期间轮询 `/proc/<pid>/fd`，稳态 fd 数须有界平稳）
 13. **信号/退出路径**（F-08：播放中 SIGTERM → rc=0 + 停派发行 + 守护 `joined, total publishes=`；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错——覆盖 `main.cpp` 的 sigaction 与 `robot.cpp` 的停机分支）
-14. **fixture 孤儿检测**（F3/N-32，无过滤器全量跑时执行）：`robots/test/*.sql` 与 `scripts/test/*.mt` 中未被任何用例表引用的夹具判失败；实机夹具（需 `/dev/i2c-*`、`/dev/spidev*`、`/dev/gpiochip*`、`/dev/pwmchip*`）在脚本的 `orphan_whitelist` 显式声明
+14. **fixture 孤儿检测**（F3/N-32，无过滤器全量跑时执行）：`robots/test/*.sql` 与 `scripts/test/*.mt` 中未被任何用例表引用的夹具判失败；判据是**整字段精确匹配**（`e2e_cases` 的用例名、`parse_cases` 的两列文件名、`scripts/*.sh`、`CMakeLists.txt`），不是子串——2026-09-20 审计 C11 修正：子串判据下每个真机夹具 `bme280.mt` 都是已登记仿真用例 `bme280_virt` 的子串，26 对真机夹具（52 个文件）因此被误判成「已登记」而从不执行、检测器却报「无孤儿」。实机夹具（需 `/dev/i2c-*`、`/dev/spidev*`、`/dev/gpiochip*`、`/dev/pwmchip*`、`/dev/serial*`）在脚本的 `orphan_whitelist` 显式声明
 15. **系统常量自检**（F-24，无过滤器全量跑时执行）：`test_ioctl_nums` / `test_uart_consts` / `test_v4l2_consts` 三个 C 自检二进制把 HAL.lua 硬编码的 ioctl/termios 编号与系统头做编译期断言比对（`_Static_assert`），漂移在构建期即失败，执行期再跑一遍作双保险；第四个 `test_curl_consts` 把 `llm_http.lua` 硬编码的 CURLOPT/CURLINFO 编号与 curl.h 比对——libcurl 开发头文件**不是**构建依赖（agent 模式运行期才 dlopen libcurl.so），装了头文件才构建本目标，缺失产物按跳过计（与缺 python3 同口径），CI 安装 `libcurl4-openssl-dev` 保证覆盖
 16. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标，零第三方框架），覆盖：
     - 基础设施：JSON 值语义、JSON 文本解析、Lua↔Json 边界与转换深度上限、util 全局助手（安全标识符判据 `isSafeIdent`、深度护栏 `DepthLimitGuard`、CLI 切分 `cli::parseKeyValue`、越界文案模板 `rangeErrorText`）
@@ -84,9 +84,15 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 
 编译产物（`mybot` / `mybot_tests`）缺失时，对应分段**判失败**而不是静默跳过——否则「不构建」也能报出「0 失败」，而实际只有 Lua 段在跑。仅三类环境软依赖按跳过处理：
 
-- 真机用例（本机无 `/dev/i2c-*` / `/dev/video*` 等）：统一经 `test/lib/device_gate.sh` 读文件内 `-- requires: <dev>` 标记判定，`run_all.sh` 与 ctest 共用同一实现（可用 `BOT4CJ_TEST_VIDEO=<路径>` 指定摄像头设备）
+- 真机用例（本机无 `/dev/i2c-*` / `/dev/video*` 等）：统一经 `test/lib/device_gate.sh` 读文件内 `-- requires: <dev>` 标记判定，`run_all.sh` 与 ctest 共用同一实现；`video` 类用例可用 `BOT4CJ_TEST_VIDEO=<设备路径>` 指向别的设备（跳过门与测试体都认这个变量，路径不存在则按跳过计）
 - TCP / agent 端到端缺 `python3`
 - agent 端到端缺 `libcurl`（agent 模式的运行期依赖，Lua 驱动经 ffi 加载；驱动 build 会明确报「libcurl 不可用」，本入口据此判跳过而非假绿）
+
+三条反假绿约束（2026-09-20 审计 C8–C10 补齐，此前各有缺口）：
+
+- **过滤器拼错必须失败**：任何分段都受 `$filter` 守卫；全部未命中时末尾的空匹配防线以退出码 1 拒绝（C8：controller/trigger 观察面此前缺守卫，`run_all.sh zzz_typo` 会以「3 通过, 0 失败」退出 0）
+- **零用例的 C++ 二进制判失败**：无过滤器时若 `mybot_tests` 报「无匹配用例」（未注册任何用例/桩二进制/产物被换），cpp-unit 段判失败而非静默 SKIP；带过滤器时才是合法跳过（C9）
+- **`mybot_tests` 退出码为 0/1**，不是失败用例数——退出状态只有 8 位，256 个失败会回绕成 0，使 `ctest -R cpp_unit` 报 100% passed（C10）。`run_all.sh` 另有 `[FAIL]` grep 兜底，两条入口口径一致
 
 汇总行如实体报 `N 通过, N 失败, N 跳过` 并列出未执行清单。
 
