@@ -20,6 +20,8 @@
 #include "daemonvar.hpp"
 #include "fixtures.hpp"
 #include "harness.hpp"
+#include "robot.hpp"
+#include "util.hpp"
 
 using bot::DaemonRunner;
 using bot::MtVars_Daemon;
@@ -116,4 +118,57 @@ TH_TEST(daemon_backoff_sleep_interruptible_by_stop) {
 	TH_CHECK(!registry[0]->slotAlive());
 	/* 必须走 joined 路径：弃管计数不增长（旧行为此处 +1） */
 	TH_CHECK(bot::abandonedDaemonCount() == abandonedBefore);
+}
+
+/* ==================== 配置串字符校验（审计 P4）====================
+ * DAEMON_CONFIG 是 "k=v;k=v" 串：注入用 lua_pushstring（C 字符串语义），Lua 侧按
+ * gmatch("([^;=]+)=([^;]*)") 解析（modules/lib/sensor_daemon.lua）。于是列值里——
+ *   NUL  → 其后**所有列**（含 proto/sign）在 Lua 侧静默消失，而加载期的
+ *          checkDaemonProto/Fields/Sign 跑在逐列原始串上，全部通过；
+ *   ';'  → 该值被提前截断，且若其后片段形如 `key=` 就会注入/覆盖守护真正
+ *          理解的键（proto/path/addr/fields/sign…），schema 校验看不到这次注入。
+ * 放过之后运行期只剩 "no daemon value" 这类间接症状，看不出是配置串被截断。
+ * '=' 是**允许**的一侧（键不含 '='、值可含 '='，能原样往返），另有反向用例钉住。
+ *
+ * 走 SQL 路径而非 fx::oneMatrix 的 .mt 文本：';' 在矩阵格式里本身就是行分隔符、
+ * NUL 是空白，都表达不出来；SQL 的引号态则一律字面保留（src/sqlparse.cpp）。
+ * 校验点在 Factory（assembleDaemonConfig），早于 chunk 加载，故 chunk 路径
+ * 写成不存在的 'x.lua' 也能精确命中本判据。 */
+namespace {
+
+void expectConfigRejected(const std::string& fieldValue) {
+	std::string sql =
+		"CREATE TABLE Daemon (name String, chunk String, fields String, proto String);\n"
+		"INSERT INTO Daemon (name, chunk, fields, proto) VALUES ('d1', 'x.lua', '";
+	sql += fieldValue;
+	sql += "', 'i2c');\n";
+	bot::MemoryReader sr(sql);
+	bot::RobotStruct robot(sr);
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "DAEMON_CONFIG", robot.active());
+}
+
+} // namespace
+
+TH_TEST(daemon_config_rejects_nul_in_column_value) {
+	/* 校验域与 Lua 可见域不一致的那一条：C++ 侧 fields 合法、proto 合法，
+	 * 拼出的串却在 push 时被截断成 "name=d1;chunk=x.lua;fields=temp" */
+	expectConfigRejected(std::string("temp") + '\0' + "h,vin:s16");
+}
+
+TH_TEST(daemon_config_rejects_semicolon_in_column_value) {
+	expectConfigRejected("temp;proto=uart");
+}
+
+TH_TEST(daemon_config_allows_equals_in_column_value) {
+	/* '=' 不拒：Lua 侧 gmatch("([^;=]+)=([^;]*)") 的键不含 '='、值可含 '='，
+	 * "extra=a=b" 能原样往返。拒它会白伤合法驱动参数（如某些配置串写法），
+	 * 故这里钉住"允许"这一侧，防止将来把判据顺手放宽成三种字符全拒。 */
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	writeNoTickChunk();
+	mt::MatrixObject defs = fx::oneMatrix(
+		"@Daemon\nname chunk extra;\nd1 " + std::string(kNoTickRel) + " a=b;\n@\n");
+	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
+	TH_CHECK(var != nullptr);
+	TH_CHECK(registry.size() == 1);
 }

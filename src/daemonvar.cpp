@@ -470,6 +470,37 @@ static void checkDaemonFields(const std::string& v, const std::string& name,
 	}
 }
 
+/* ---- 配置串字符校验（审计 P4）----
+ * DAEMON_CONFIG 是 "k=v;k=v" 串：Lua 侧按 gmatch("([^;=]+)=([^;]*)") 解析
+ * （modules/lib/sensor_daemon.lua），注入用 lua_pushstring（C 字符串语义）。
+ * 两种字符会让「加载期校验看到的」与「Lua 实际拿到的」不一致，必须拒：
+ *   '\0'  pushstring 在此截断，其后**所有列**（含 proto/sign）静默消失，
+ *         而 checkDaemonProto/Fields/Sign 跑在逐列原始串上，全部通过。
+ *         NUL 能进到列值里：sqlparse 的引号态一律字面追加（'\0' 只在
+ *         token 之外被当空白，见 src/sqlparse.cpp 的 blank 判据）。
+ *   ';'   该值被提前截断；更糟的是若其后片段形如 `key=`，就会**注入/覆盖**
+ *         守护真正理解的键（proto/path/addr/fields/sign…），而 schema 校验
+ *         看的是原始列值，看不到这次注入。
+ * '=' 不拒：键的模式是 [^;=]+（不含 '='）、值的模式是 [^;]*（可含 '='），
+ * 故 "extra=a=b" 能原样往返，拒它会白伤合法驱动参数。
+ * .sql 属可信域（会话期只允许 @Alias/@Vars），故定性为**静默误配置**而非
+ * 远程边界失守；但必须早报——放过之后运行期的症状只有 "no daemon value"
+ * 这类间接报错，看不出是配置串被截断了。
+ * 注：robots/test/sqlquote.sql 是词法器契约夹具（引号值内的 ; 是字面数据），
+ * 它的 ';' 字面值放在普通硬件表里而非 @Daemon 列——词法路径与表名无关，
+ * 覆盖不减，而这里的语义约束得以保持严格。 */
+static void checkDaemonValueChars(const std::string& colName, const std::string& v,
+		const std::string& name, const std::string& tabName, int64_t row) {
+	for (char c : v) {
+		if (c != '\0' && c != ';') { continue; }
+		throw IllegalArgumentException(
+			"Daemon '" + name + "': column '" + colName + "' value contains '"
+			+ (c == '\0' ? std::string("\\0") : std::string(1, c))
+			+ "' which would corrupt the DAEMON_CONFIG (k=v;k=v) string"
+			+ " (in table '" + tabName + "', row " + std::to_string(row) + ").");
+	}
+}
+
 /* ---- Factory 拆分（阶段 3）：配置串组装 + 加载期 schema 校验 ----
  * 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms），
  * 并对框架列做加载期 schema 校验（E2：非法 proto/fields/sign 在此早报） */
@@ -486,6 +517,9 @@ static DaemonConfigParts assembleDaemonConfig(const mt::MatrixObject& defs, int6
 		const std::string& colName = defs(0, j);
 		if (colName == "name" || colName == "chunk") { continue; }
 		std::string v = defs.inherited(i, j);
+		/* 先校验字符再拼串：配置串一旦拼好，NUL 之后的内容在 Lua 侧就不存在了，
+		 * 那时再校验也看不出被截断（审计 P4）。 */
+		checkDaemonValueChars(colName, v, name, defs.getName(), i);
 		cfgAcc += colName + "=" + v + ";";
 		if (colName == "interval" && v != "-") {
 			ivAcc = parseInterval(v, name, defs.getName(), i);
