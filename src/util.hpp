@@ -370,22 +370,43 @@ inline std::string echoSource(const std::string& s) {
  * 「无法打开」「超过字节上限」两个既有断言锚点。 */
 inline bool readWholeFileLimited(const std::string& path, std::size_t cap,
 		std::string& out, std::string& err, const char* what = "文件") {
-	std::ifstream f(path, std::ios::binary);
-	if (!f) {
+	/* 2026-09-20 审计收口：此前用 std::ifstream，无 O_NOFOLLOW，会跟随符号链接
+	 * ——与动作脚本/提示词路径的 O_NOFOLLOW 防线不一致。这里用 open + O_NOFOLLOW
+	 * 一步到底（不做 lstat→open 的 check-then-use，那中间有 TOCTOU 窗口）。
+	 * 对正常文件行为与旧实现完全一致；符号链接统一按「无法打开」报错。
+	 * 注：O_NOFOLLOW 只看最后一段，中间目录软链仍可被穿过——这些是本机
+	 * CLI/配置来源（非远程动作源），威胁模型本就低于动作脚本路径。 */
+	int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd < 0) {
 		err = std::string("无法打开") + what + " " + path;
 		return false;
 	}
 	std::string data;
 	data.resize(cap);
-	f.read(&data[0], static_cast<std::streamsize>(cap));
-	std::streamsize n = f.gcount();
-	if (n < 0) { n = 0; }
-	data.resize(static_cast<std::size_t>(n));
-	/* read 已到 EOF 时 peek 返回 EOF；还有剩余字节即超限 */
-	if (f.peek() != std::char_traits<char>::eof()) {
-		err = std::string(what) + " " + path + " 超过字节上限 " + std::to_string(cap);
-		return false;
+	std::size_t readTotal = 0;
+	while (readTotal < cap) {
+		ssize_t n = ::read(fd, &data[readTotal], cap - readTotal);
+		if (n < 0) {
+			if (errno == EINTR) { continue; }
+			::close(fd);
+			err = std::string("无法打开") + what + " " + path;
+			return false;
+		}
+		if (n == 0) { break; }
+		readTotal += static_cast<std::size_t>(n);
 	}
+	data.resize(readTotal);
+	/* 已读满 cap 后再探测 1 字节即可判定超限（与旧语义一致：读满即拒） */
+	if (readTotal == cap) {
+		char probe = 0;
+		ssize_t n = ::read(fd, &probe, 1);
+		if (n > 0) {
+			::close(fd);
+			err = std::string(what) + " " + path + " 超过字节上限 " + std::to_string(cap);
+			return false;
+		}
+	}
+	::close(fd);
 	out = std::move(data);
 	return true;
 }

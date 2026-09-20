@@ -24,9 +24,15 @@ end
 -- 收敛散落各驱动（ADS1015/ADS1115/AS3935/BH1745/BMI270/BMM150/EMC2101/
 -- INA226/INA3221/LSM6DSV）的本地 clampi 拷贝：此前 floor+tonumber 与裸比
 -- 两派语法并存，同一语义两样写法，新增驱动照抄哪份都算拷贝。单点取防御派
--- ——非数字/nil 回落 0、非法值夹到端点；裸比派驱动的入参本已是数，等价。
+-- ——非法值夹到端点；裸比派驱动的入参本已是数，等价。
+-- NaN/inf 拦截（2026-09-20 审计收口）：LuaJIT 下 math.floor(NaN)=NaN，而
+-- NaN 与任何数比较均为假——若传入 number 型 NaN，旧实现会**直接返回 NaN**，
+-- 与「非法值夹到端点」契约相悖，并把 NaN 泄漏给下游（全仓 C2 口径一致）。
+-- 这里在 floor 之前统一拒绝非数字/nil/非有限，回落下界 lo。
 function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
+	v = tonumber(v)
+	if v == nil or v ~= v or v == math.huge or v == -math.huge then return lo end
+	v = math.floor(v)
 	if v < lo then return lo elseif v > hi then return hi else return v end
 end
 

@@ -70,6 +70,21 @@ function M.clamp_timeout(v, default)
 	return math.floor(n)
 end
 
+-- 响应字节上限钳制（2026-09-20 审计收口，与 clamp_timeout 同构）：
+-- 该上限保护写回调里的 `size + len > max_response` 判读——NaN（tonumber("nan")
+-- 得到 truthy 的 NaN，不触发 `or` 回落）会使该比较恒为假，让 8 MiB 上限**彻底
+-- 失效**、异常服务端可持续追加 chunks 直至内存耗尽。±inf 同理（比较永不真）。
+-- 故这里只接受「有限」的值：非数字/nil/NaN/±inf 一律回落缺省；正数按向下
+-- 取整进整数域（上限语义）；负值/零则夹到 1（非正上限会让首个 chunk 就误判
+-- 溢出，所有请求无条件失败）。
+local MIN_MAX_RESPONSE = 1
+function M.clamp_max_response(v, default)
+	local n = tonumber(v)
+	if n == nil or n ~= n or n == math.huge or n == -math.huge then return default end
+	if n < MIN_MAX_RESPONSE then return MIN_MAX_RESPONSE end
+	return math.floor(n)
+end
+
 -- 库名按常见发行版顺序探测：Debian/Ubuntu 为 libcurl.so.4（可能是 gnutls 变体），
 -- 开发包提供 libcurl.so
 local CANDIDATES = { "libcurl.so.4", "libcurl-gnutls.so.4", "libcurl.so" }
@@ -145,7 +160,7 @@ function Session:post(opts)
 		return { ok = false, err = "缺少 url" }
 	end
 
-	local max_response = tonumber(opts.max_response) or DEFAULT_MAX_RESPONSE
+	local max_response = M.clamp_max_response(opts.max_response, DEFAULT_MAX_RESPONSE)
 	local chunks, size, overflow = {}, 0, false
 	-- 回调里只做「追加」：本回调是在 curl_easy_perform 的 C 栈上被调用的，
 	-- 在其中 error 会穿透 C 栈（UB）。超限时 return 0 让 curl 主动中止。

@@ -255,6 +255,9 @@ function i2c_write_multi(fd, reg, ...)
 		if b == nil then return -1 end
 		data[#data + 1] = b
 	end
+	-- 数据字节上限（不含寄存器指针）：超长即拒绝，避免打包超大 buf 后
+	-- 发往内核被静默截断/报 EINVAL（I2C_IO_MAX_BYTES，见 bus_contract）。
+	if #data - 1 > bus.I2C_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i, b in ipairs(data) do buf[i - 1] = b end
 	local msgs = ffi.new("cj_i2c_msg[1]")
@@ -337,6 +340,8 @@ function i2c_write_reg16(fd, reg16, ...)
 		if b == nil then return -1 end
 		data[#data + 1] = b
 	end
+	-- 数据字节上限（不含 2 字节寄存器指针）：超长即拒绝（I2C_IO_MAX_BYTES）。
+	if #data > bus.I2C_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data + 2)
 	buf[0] = math.floor(reg16 / 256) % 256
 	buf[1] = reg16 % 256

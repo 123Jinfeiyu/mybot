@@ -127,6 +127,12 @@ M.UART_IO_MAX_BYTES = 512
 -- spi_write / spi_read 单笔上限（spidev 逐字节缓冲区，超过即拒绝）
 M.SPI_IO_MAX_BYTES = 64
 
+-- i2c_write_multi / i2c_write_reg16 单笔**数据**字节上限（不含寄存器指针，
+-- 2026-09-20 审计收口）：此前写函数对变参长度无约束，超长调用会被打包成
+-- 超大 buf 发往内核后静默得到 EINVAL / 数据截断（cj_i2c_msg.len 是 u16）。
+-- 与 SPI 侧写函数的既有约束同口径：越界即拒绝，而非静默截断。
+M.I2C_IO_MAX_BYTES = 64
+
 -- uart_read 超时上限（ms）：iters = timeout_ms + 1 按 1ms 空转，配置笔误
 -- （如少写一个单位）必须立即失败而非阻塞数小时
 M.UART_READ_MAX_MS = 60000

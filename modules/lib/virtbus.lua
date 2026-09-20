@@ -340,6 +340,8 @@ function virtbus.v_i2c_write_multi(fd, reg, ...)
 		if b == nil then return -1 end		-- 同 HAL：任一字节非法即整笔失败，不发事务
 		bytes[#bytes + 1] = b
 	end
+	-- 数据字节上限（不含寄存器指针），与 HAL i2c_write_multi 同判据，防镜像漂移
+	if #bytes - 1 > bus.I2C_IO_MAX_BYTES then return -1 end
 	return do_write(fd, bytes)
 end
 
@@ -353,6 +355,8 @@ function virtbus.v_i2c_write_reg16(fd, reg16, ...)
 		if b == nil then return -1 end
 		bytes[#bytes + 1] = b
 	end
+	-- 数据字节上限（不含 2 字节寄存器指针），与 HAL i2c_write_reg16 同判据
+	if #bytes - 2 > bus.I2C_IO_MAX_BYTES then return -1 end
 	return do_write(fd, bytes)
 end
 
