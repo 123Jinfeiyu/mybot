@@ -212,13 +212,49 @@ static void markAllFdsCloexec() {
  * soft=524288），而注释却写着「一次系统调用」。安全结论不受影响（退化路径是
  * 真 close，比只打标志更强，且父进程侧 markAllFdsCloexec 独立承重），
  * 但「注释声称的路径从未执行」正是最难发现的一类缺陷。 */
-static void revokeInheritedFds() {
+/* 子进程侧路径自报（2026-09-21 审计 AG-11）。
+ *
+ * 为什么需要它：`revokeInheritedFds` / `execShellChild` 在 gcov 报告里**恒为 0%**，
+ * 而且这不是「没测」而是「测了测不到」——gcov 计数在进程退出时落盘，而这两个函数
+ * 永远以 execve 结束：exec 用新映像的计数页覆盖当前进程，子侧的执行记录不可能被
+ * 写出。AG-3（CLOSE_RANGE_CLOEXEC 标志写成 1U、快速路径从未执行）在这个盲区里
+ * 藏了很久，因为该区块对所有读者都显示 0%，所有人都以为「那是有意不测的部分」。
+ *
+ * 解法是不再试图测量它，而是让它**自己报告**选了哪条路径：在 fork 之后、exec 之前
+ * 把一行文本写进父进程打开并传入的 fd。约束与 execShellChild 一致——不分配堆内存、
+ * 只用栈上缓冲与 write(2)；fd 无效时静默跳过（该探针绝不能影响真实执行路径）。
+ * 读取端只在测试里设置 BOT4CJ_TRACE_FDS（见 test_agenttools.cpp 的 AG-11 用例），
+ * 不设时 path 为空、全程零开销。 */
+/* fd 由调用方经参数传入而**不是**用静态量：宿主有守护线程会并发 fork/exec，
+ * 静态量会被并发 run_command 互相踩（一个线程改、另一个线程的子进程读）。 */
+static void traceChildPath(int traceFd, const char* path) {
+	if (traceFd < 0 || path == nullptr) { return; }
+	char buf[64];
+	int n = 0;
+	for (const char* p = path; *p != '\0' && n < static_cast<int>(sizeof buf) - 2; ++p) {
+		buf[n++] = *p;
+	}
+	buf[n++] = '\n';
+	ssize_t ignored = ::write(traceFd, buf, static_cast<std::size_t>(n));
+	(void)ignored;
+}
+
+static void revokeInheritedFds(int traceFd) {
 #ifdef SYS_close_range
 	/* 取值来自内核 UAPI（linux/close_range.h：1U << 2）。不引头文件而写字面量，
 	 * 是为了兼容没装新头文件的老发行版；该常量自 5.9 起未变，且下面有「失败即
 	 * 退化」兜底——取值错也不会破功能，只会在性能上退化，正是修复前的状态。 */
 	constexpr unsigned kCloseRangeCloexec = 1U << 2;
-	if (::syscall(SYS_close_range, 3U, ~0U, kCloseRangeCloexec) == 0) { return; }
+	/* 自报放在**调用之前**：无论成败都记录「尝试了快速路径」，退化路径再记一条。
+	 * 两条都记才能分辨「快速路径没走」与「快速路径走了但失败」——AG-3 正是前者。 */
+	traceChildPath(traceFd, "close_range-attempt");
+	if (::syscall(SYS_close_range, 3U, ~0U, kCloseRangeCloexec) == 0) {
+		traceChildPath(traceFd, "close_range-ok");
+		return;
+	}
+	traceChildPath(traceFd, "close_range-failed");
+#else
+	traceChildPath(traceFd, "close_range-unavailable");
 #endif
 	/* 退化路径（内核 < 5.9 或 close_range 不可用）：按真实上限逐个关。
 	 * （审计 P1 修复，2026-09-21）旧实现固定封顶 4096——soft limit 更高的
@@ -234,6 +270,7 @@ static void revokeInheritedFds() {
 		&& static_cast<long>(rl.rlim_cur) < max) {
 		max = static_cast<long>(rl.rlim_cur);
 	}
+	traceChildPath(traceFd, "fallback-close-loop");
 	for (long fd = 3; fd < max; ++fd) { ::close(static_cast<int>(fd)); }
 }
 
@@ -243,7 +280,7 @@ static void revokeInheritedFds() {
  * 最后才 revokeInheritedFds——它会把 ≥3 的全部句柄关掉，早跑会把 0/1/2
  * 之外刚 dup 好的东西也一起关掉。 */
 [[noreturn]] void execShellChild(const std::string& cmd, int outR, int outW, int errR, int errW,
-		std::vector<char*>& envp) {
+		std::vector<char*>& envp, int traceFd) {
 	setpgid(0, 0);	/* 独立进程组：超时/中断可整组终止（含孙进程） */
 	/* fix-plan 3-1：stdin 重定向到 /dev/null——子命令不再与主进程（agent REPL）
 	 * 抢终端输入；打开失败按 fail-closed 直接放弃执行（127）。 */
@@ -257,7 +294,7 @@ static void revokeInheritedFds() {
 	close(outW);
 	close(errR);
 	close(errW);
-	revokeInheritedFds();	/* 必须在 dup2 之后：0/1/2 已指向管道与 /dev/null */
+	revokeInheritedFds(traceFd);	/* 必须在 dup2 之后：0/1/2 已指向管道与 /dev/null */
 	execle("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr), envp.data());
 	_exit(127);
 }
@@ -333,6 +370,18 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		throw std::runtime_error("pipe 失败");
 	}
 	std::vector<char*> envp = buildCleanEnvp();	/* fork 前构建，子进程直接继承 */
+	/* 子进程路径自报的目标 fd（AG-11）：只在测试里经 BOT4CJ_TRACE_FDS 指定，
+	 * 生产路径下这个变量不存在，traceFd 保持 -1、探针全程零开销。
+	 * 注意顺序：先开 trace fd 再 markAllFdsCloexec——后者会给「已存在的 ≥3 句柄」
+	 * 打 FD_CLOEXEC，而 trace fd 必须活到 exec 之前才能被子进程写（子进程侧
+	 * revokeInheritedFds 会关掉它，所以报告发生在关闭之前）。 */
+	int traceFd = -1;
+	if (auto tracePath = getEnvVar("BOT4CJ_TRACE_FDS"); tracePath && !tracePath->empty()) {
+		/* O_CLOEXEC 只影响 exec 之后（探针本来就不需要它活过 exec），fork 出来的
+		 * 子进程仍然持有该 fd —— 正是探针要用的窗口。O_APPEND 让多次 run_command
+		 * 的记录按追加写入；单条报告是一次 write(2)，不会与其他写者交错。 */
+		traceFd = ::open(tracePath->c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+	}
 	markAllFdsCloexec();	/* fork 前父进程侧全量吊销（见函数注释） */
 	pid_t pid = fork();
 	if (pid < 0) {
@@ -340,9 +389,10 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		close(po[1]);
 		close(pe[0]);
 		close(pe[1]);
+		if (traceFd >= 0) { close(traceFd); }
 		throw std::runtime_error("fork 失败");
 	}
-	if (pid == 0) { execShellChild(cmd, po[0], po[1], pe[0], pe[1], envp); }
+	if (pid == 0) { execShellChild(cmd, po[0], po[1], pe[0], pe[1], envp, traceFd); }
 	setpgid(pid, pid);	/* 与子进程竞争设置，谁先成功效果一致 */
 	close(po[1]);
 	close(pe[1]);
@@ -360,6 +410,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		int reaped = 0;
 		(void)reapWithGrace(pid, reaped, 200);
 		errno = savedErrno;
+		if (traceFd >= 0) { close(traceFd); }
 		throw std::runtime_error(std::string("fcntl 失败: ") + std::strerror(errno));
 	}
 
@@ -404,6 +455,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 	}
 
 	finalizeShellRun(pid, po[0], pe[0], outEof, errEof, exited, status, r);
+	if (traceFd >= 0) { close(traceFd); }
 	return r;
 }
 

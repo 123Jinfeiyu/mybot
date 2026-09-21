@@ -848,3 +848,77 @@ TH_TEST(agenttools_reap_give_up_warning_is_informative) {
 	TH_CHECK_MSG(w.find("僵尸") != std::string::npos, "告警未说明后果（僵尸）：" + w);
 	TH_CHECK_MSG(w.find("未回收") != std::string::npos, "告警未说明发生了什么：" + w);
 }
+
+/* ---- AG-11：子进程路径自报（fork/exec 区块的行为断言）----
+ * 背景：agent_subprocess.cpp 的 execShellChild / revokeInheritedFds 在 gcov 报告
+ * 里**恒为 0%**，而且不是「没测」而是「测了测不到」——gcov 计数在进程退出时落盘，
+ * 而这两个函数永远以 execve 结束（exec 用新映像的计数页覆盖当前进程）。AG-3
+ * （CLOSE_RANGE_CLOEXEC 标志写成 1U、快速路径从未执行）正藏在这个盲区里藏了很久：
+ * 该区块对所有读者都显示 0%，所有人都当它是「有意不测的部分」。
+ *
+ * 本用例不再试图测量它，而是让它**自己报告**：子进程在 fork 后、exec 前把走了哪条
+ * 路径写进 BOT4CJ_TRACE_FDS 指定的文件，父进程读出来断言。这条断言**本来就能抓住
+ * AG-3**：标志写错时 "close_range-ok" 永远不会出现，只会留下
+ * "close_range-attempt" + "close_range-failed" + "fallback-close-loop"。 */
+TH_TEST(agenttools_child_side_fd_revocation_reports_its_path) {
+	const fx::TempDir dir("trace_fds");
+	const fs::path trace = dir.path() / "trace.txt";
+
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	TH_CHECK(::setenv("BOT4CJ_TRACE_FDS", trace.string().c_str(), 1) == 0);
+	const std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo traced\",\"timeout_seconds\":5}"));
+	::unsetenv("BOT4CJ_TRACE_FDS");	/* 别影响后续用例 */
+
+	TH_CHECK_MSG(out.find("traced") != std::string::npos, "命令应正常执行: " + out);
+
+	const std::string traceText = readText(trace.string());
+	TH_CHECK_MSG(!traceText.empty(),
+		"子进程没有写出路径自报（BOT4CJ_TRACE_FDS 未生效？）");
+
+	/* 必然出现「尝试过快速路径」这一条 */
+	TH_CHECK_MSG(traceText.find("close_range-attempt") != std::string::npos,
+		"未记录快速路径尝试，实际: " + traceText);
+
+	/* 核心断言：本机内核 ≥5.9（syscall 存在）→ 必须真的走通快速路径。
+	 * 修复 AG-3 之前这里是 "close_range-failed" + "fallback-close-loop"。 */
+	const bool haveCloseRange = traceText.find("close_range-unavailable") == std::string::npos;
+	if (haveCloseRange) {
+		TH_CHECK_MSG(traceText.find("close_range-ok") != std::string::npos,
+			"快速路径未成功（标志写错？）实际轨迹: " + traceText);
+		TH_CHECK_MSG(traceText.find("fallback-close-loop") == std::string::npos,
+			"不该同时走退化循环，实际轨迹: " + traceText);
+	}
+
+	/* 自报是「辅助证据」，真正的安全语义由既有防泄漏用例钉住——这里再确认一次 */
+	TH_CHECK(out.find("exit_code=0") != std::string::npos);
+}
+
+/* 退化路径也要可达且正确：把 close_range 的失败路径逼出来（用非法标志不可控），
+ * 改为断言「两条路径互斥」——轨迹里至多出现一条终态标记。 */
+TH_TEST(agenttools_child_side_trace_is_mutually_exclusive) {
+	const fx::TempDir dir("trace_excl");
+	const fs::path trace = dir.path() / "trace.txt";
+
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	TH_CHECK(::setenv("BOT4CJ_TRACE_FDS", trace.string().c_str(), 1) == 0);
+	/* 跑两次：确认追加写入、且每次都是完整的一次二选一 */
+	execText(tools, "run_command", parseJson("{\"command\":\"true\",\"timeout_seconds\":5}"));
+	execText(tools, "run_command", parseJson("{\"command\":\"true\",\"timeout_seconds\":5}"));
+	::unsetenv("BOT4CJ_TRACE_FDS");
+
+	const std::string t = readText(trace.string());
+	std::size_t ok = 0, loop = 0, pos = 0;
+	while ((pos = t.find("close_range-ok", pos)) != std::string::npos) { ++ok; pos += 1; }
+	pos = 0;
+	while ((pos = t.find("fallback-close-loop", pos)) != std::string::npos) { ++loop; pos += 1; }
+	TH_CHECK_MSG(ok + loop >= 2, "两次 run_command 应留下至少两条终态标记，实际: " + t);
+	TH_CHECK_MSG(!(ok > 0 && loop > 0),
+		"两条路径不该同时出现（同一内核上二选一），实际: " + t);
+}
