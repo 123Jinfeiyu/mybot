@@ -5,6 +5,17 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-21 收口批次（守护停机 / 子 shell fd / 驱动契约 / 守门防静默）
+
+> 守门快照：Lua/e2e 251 / 0 / 2 跳、C++ 单测 405 / 0。
+
+- **守护停机二段屏障**：`deactivate()` 在动硬件之前，先给「join 超时被弃管」的守护一次真正退场机会（宽限 = 共享预算，封顶 30s）——此前弃管线程仍可能在逆序 `destroy` 期间碰总线。宽限耗尽仍活着的守护会在 stderr 如实点名（「宁告警不挂死」，不是静默）。
+- **子 shell 继承 fd 全量吊销**：`run_command` 的退化路径不再以固定 4096 为上限，改用真实 `RLIMIT_NOFILE`（无限时封顶 1048576）；父进程 fork 前另按 `/proc/self/fd` 全量打 `FD_CLOEXEC` 兜底——器件 fd 不再可能被子命令继承。
+- **驱动 `destroy` 补入参守卫**：`H03ARR` / `LlmOpenAI` / `LlmDeepSeek` 的 `destroy(nil)` 由「静默返回 OK」改为返回 ERR 契约表；契约 sweep 扩到 `destroy(nil)` 必返 ERR。宿主从不以非表调用 `destroy`，故真机路径无行为变化。
+- **死绑定清理与引导样板归一**：删 7 处无引用绑定（`BMI270`/`SCSCL`/`ADS1256`/`MS5611`/`fft`）；63 处 mpath 引导行归一到同一字面形态。
+- **守门防静默**：`test/cpp/*.cpp` 未登记进 CMake 清单即 `FATAL_ERROR`（新用例忘登记立刻红）；luajit 缺失时显式 `WARNING` 并以 125=SKIP 守卫（此前静默注册 0 个 Lua 用例）。
+- **测试补齐**：沙箱中和清单（`os` 5 项 + `io` 5 项）与 `parseInterval` 边界（0 / 负 / 溢出 / >1h）改为表驱动断言。
+
 ### 2026-09-20 审计收口·第四阶段（agent 模式六条 A–F）
 
 > 守门快照：Lua/e2e 252 / 0 / 0 跳、C++ 单测 382 / 0。
@@ -48,7 +59,7 @@
 
 > 守门快照：248 / 0 / 1 跳、376 / 0。
 
-- **⚠️ 破坏性变更：`run_command` 缺省不再提供**——须 `--agent-shell`（或配置 `allow_shell: true`）显式开启，`--agent-no-shell` 随之移除。
+- **⚠️ 破坏性变更：`run_command` 缺省不再提供**——须 `--agent-shell`（或配置 `allow_shell: true`）显式开启，`--agent-no-shell` 随之移除。（**同日收紧**：配置文件这条路已由 `f06b712` 关闭——只能由命令行 `--agent-shell` 开启，配置文件里写 `allow_shell: true` 会被拒绝加载。）
 - **⚠️ 破坏性变更：移除 `--llm-key`**——命令行密钥经 `/proc/<pid>/cmdline` 暴露；密钥只走环境变量链或配置文件。
 - **⚠️ SQL 词法层把括号当分隔符**：`INSERT INTO T(a,b) VALUES(1,2)` 紧凑写法此前报词法错，现与留白写法产出逐字节相同的词元流。
 - **C2 同族收口**：`Ema`/`Kalman`/`BH1750`/`GPIO` 的 NaN 入参统一回落缺省，不再「发布 NaN 却报 OK」。
