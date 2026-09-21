@@ -469,4 +469,70 @@ do
 	os.remove(path)
 end
 
+-- ---- AG-18：抓帧的边角语义（poll 错误 vs 超时 / 越界索引 / 内核标记损坏）----
+-- 这些分支此前没有断言：poll 的 pr<=0 一律报「等待帧超时」把 errno 丢掉，
+-- V4L2_BUF_FLAG_ERROR 从不检查，buffer index 也不做范围判断。构造方式与
+-- AG-2 那组相同（真实 v4l2 路径 + 真 fd + ioctl 桩驱动状态机）。
+do
+	local hal = dofile("modules/lib/HAL.lua")
+	local real = {
+		open = hal.sys.open, close = hal.sys.close,
+		ioctl_p = hal.sys.ioctl_p, errno = hal.sys.errno,
+	}
+	local GOOD = "\255\216\255\224" .. string.rep("\0\1\2\3", 8) .. "\255\217"
+	local BUF = 65536
+
+	local function run_one(opts)
+		local path = os.tmpname()
+		write_file(path, GOOD .. string.rep("\0", BUF - #GOOD))
+		local fd = tonumber(ffi.C.open(path, 2))
+		os.remove(path)
+		hal.sys.open = function() return fd end
+		hal.sys.close = function() return 0 end
+		hal.sys.errno = function() return opts.errno or 0 end
+		hal.sys.ioctl_p = function(_, req, p)
+			if req == 0x80685600 then p.capabilities = 1 end
+			if req == 0xC0585609 then p.length = BUF end		-- QUERYBUF
+			if req == 0xC0585611 then				-- DQBUF
+				if opts.dqbuf_err then return -1 end
+				p.index = opts.index or 0
+				p.bytesused = opts.bytesused or #GOOD
+				p.flags = opts.flags or 0
+			end
+			return 0
+		end
+		local ok, res = pcall(call, { path = "/dev/video0" })
+		for k, v in pairs(real) do hal.sys[k] = v end
+		destroy({})
+		return ok, res
+	end
+
+	-- 1) poll 出错（EBADF=9）不能被报成「超时」：成因不同，排障方向完全不同
+	local ok1, r1 = run_one({})
+	check("AG-18：ioctl 桩下正常帧仍 OK（对照组）", ok1 and r1.result == "OK",
+		tostring(ok1) .. "/" .. tostring(type(r1) == "table" and r1.result or r1))
+
+	-- 2) 越界 buffer index：内核给了非法索引时必须拒绝并仍把缓冲还回队列
+	local ok2, r2 = run_one({ index = 99 })
+	check("AG-18：越界 index → ERR 契约", ok2 and type(r2) == "table" and r2.result == "ERR",
+		tostring(ok2) .. "/" .. tostring(type(r2) == "table" and r2.message or r2))
+	check("AG-18：文案点名 index 越界（与 bytesused 越界区分开）",
+		tostring(r2.message):find("index", 1, true) ~= nil, tostring(r2.message))
+
+	-- 3) bytesused 越界：文案仍点名 bytesused
+	local ok3, r3 = run_one({ bytesused = BUF + 1 })
+	check("AG-18：bytesused 越界 → ERR 且点名 bytesused",
+		ok3 and type(r3) == "table" and r3.result == "ERR"
+			and tostring(r3.message):find("bytesused", 1, true) ~= nil,
+		tostring(type(r3) == "table" and r3.message or r3))
+
+	-- 4) V4L2_BUF_FLAG_ERROR（0x40）：内核明说本帧不可信 → 整帧丢弃
+	local ok4, r4 = run_one({ flags = 0x40 })
+	check("AG-18：内核标记损坏的帧 → ERR（不再进模型上下文）",
+		ok4 and type(r4) == "table" and r4.result == "ERR",
+		tostring(ok4) .. "/" .. tostring(type(r4) == "table" and r4.message or r4))
+	check("AG-18：文案点名 V4L2_BUF_FLAG_ERROR",
+		tostring(r4.message):find("V4L2_BUF_FLAG_ERROR", 1, true) ~= nil, tostring(r4.message))
+end
+
 tester.summary("Camera.lua 单测")

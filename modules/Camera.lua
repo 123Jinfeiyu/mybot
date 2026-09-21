@@ -158,6 +158,10 @@ local DEFAULT_WIDTH, DEFAULT_HEIGHT = 640, 480
 local BUFFER_COUNT = 4
 local MAX_SIM_BYTES = 16 * 1024 * 1024
 local POLL_TIMEOUT_MS = 3000
+-- v4l2_buffer.flags 的错误位（linux/videodev2.h：V4L2_BUF_FLAG_ERROR = 0x00000040）。
+-- 内核在「本帧数据不可信」时置它（驱动内部丢帧、DMA 错误等）。此前从不检查，
+-- 完整性只靠 EOI 启发式——对不置该位、且截断处恰好带 EOI 的畸形帧会漏判。
+local BUF_FLAG_ERROR = 0x00000040
 
 ------------------------------------------------------------------
 -- base64（返回给宿主的是文本，避免二进制穿过 Json/Lua 边界）
@@ -391,8 +395,19 @@ local function grab_one()
 	local fds = ffi.new("cam_pollfd[1]")
 	fds[0].fd = state.fd
 	fds[0].events = POLLIN
+	-- poll 的三种返回必须分开说（2026-09-21 审计 AG-18）：
+	--   >0  就绪
+	--   ==0 超时（设备没在 POLL_TIMEOUT_MS 内交出帧）
+	--   <0  出错，errno 决定成因（EINTR 是「被信号打断」，不是超时；EBADF 是
+	--       句柄坏了）。旧实现把 pr<=0 一律报成「等待帧超时」，errno 被丢弃——
+	--       热拔插/句柄失效因此看起来像「摄像头卡住」，排障方向被带偏。
 	local pr = tonumber(ffi.C.poll(fds, 1, POLL_TIMEOUT_MS))
-	if pr <= 0 then return nil, "等待帧超时（poll）" end
+	if pr < 0 then
+		local e = HAL.sys.errno()
+		if e == HAL.EINTR then return nil, "等待帧被信号打断（poll EINTR）" end
+		return nil, string.format("等待帧失败（poll errno=%d）", e)
+	end
+	if pr == 0 then return nil, "等待帧超时（poll）" end
 
 	local buf = ffi.new("cam_buffer")
 	buf.type = BUF_TYPE_VIDEO_CAPTURE
@@ -400,14 +415,34 @@ local function grab_one()
 	if HAL.sys.ioctl_p(state.fd, VIDIOC_DQBUF, buf) ~= 0 then
 		return nil, "取帧失败（VIDIOC_DQBUF）"
 	end
-	local slot = state.buffers[buf.index + 1]
 	local n = tonumber(buf.bytesused)
+	local idx = tonumber(buf.index)
+	-- 队列索引必须先校验再索引（旧实现先查表、表里没有才判无效，语义上等价，
+	-- 但把「内核给了越界索引」与「bytesused 越界」混成同一条文案）
+	if idx == nil or idx < 0 or idx >= BUFFER_COUNT then
+		HAL.sys.ioctl_p(state.fd, VIDIOC_QBUF, buf)	-- 无论如何都要还回队列
+		return nil, string.format("帧数据无效（buffer index %s 越界）", tostring(idx))
+	end
+	local slot = state.buffers[idx + 1]
 	local payload = nil
+	local truncated = false
 	if slot ~= nil and n > 0 and n <= slot.len then
 		payload = ffi.string(slot.ptr, n)
 	end
+	-- V4L2_BUF_FLAG_ERROR：内核明说「本帧不可信」。整帧丢弃重取，与 EOI 启发式
+	-- 同一处理路径（它此前完全不看这个位——对不置位、截断处又恰好带 EOI 的
+	-- 畸形帧会漏判；反之置了位的帧不该进模型上下文）。
+	if bit.band(buf.flags, BUF_FLAG_ERROR) ~= 0 then
+		truncated = true
+		payload = nil
+	end
 	HAL.sys.ioctl_p(state.fd, VIDIOC_QBUF, buf)	-- 立刻还回队列，别占着缓冲
-	if payload == nil then return nil, "帧数据无效（bytesused 越界）" end
+	if payload == nil then
+		if truncated then
+			return nil, "帧被内核标记为损坏（V4L2_BUF_FLAG_ERROR），整帧丢弃"
+		end
+		return nil, string.format("帧数据无效（bytesused=%s 越界）", tostring(n))
+	end
 	return payload
 end
 
