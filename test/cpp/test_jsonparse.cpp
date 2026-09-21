@@ -1,5 +1,7 @@
 #include "harness.hpp"
 
+#include <cstdint>
+#include <cstdio>
 #include <string>
 
 #include "jsonparse.hpp"
@@ -106,3 +108,158 @@ TH_TEST(jsonparse_rejects_over_max_bytes) {
 		bot::parseJson(big));
 }
 
+
+/* ======================================================================
+ * 属性测试：JSON 往返稳定性（F3-6，2026-09-21）
+ *
+ * 固定种子的伪随机生成器造结构化 JSON 文本 → parseJson → toString → 再 parse，
+ * 断言①再解析得到的**值与原来结构相等**（逐类型逐字段比，不用文本代理），
+ * ②两次编码逐字相同（编码幂等）。价值不在覆盖某条分支，而在同时压住
+ * 解析器与序列化器：任一侧在某形态上漂移（转义、数字格式、对象键序、嵌套、
+ * 空容器、数组内 null），稳定性立刻被打破——这是单元用例各自为政时最容易漏的
+ * 那一类漂移。生成器自实现（零第三方依赖）、种子写死（失败可复现）、轮数固定
+ * （守门时长可控）。
+ * ====================================================================== */
+namespace {
+
+/* 线性同余（Knuth MMIX 常数），只用高位——足够造形态多样且可复现的输入 */
+struct PropRng {
+	std::uint64_t s;
+	explicit PropRng(std::uint64_t seed) : s(seed) {}
+	std::uint32_t next() {
+		s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+		return static_cast<std::uint32_t>(s >> 33);
+	}
+	std::uint32_t below(std::uint32_t n) { return next() % n; }
+	bool chance(std::uint32_t pct) { return below(100) < pct; }
+};
+
+/* 字符串片段：覆盖转义族与 UTF-8 原字节（toString 允许原样输出多字节） */
+void genString(PropRng& rng, std::string& out) {
+	static const char* const kFrag[] = {
+		"a", "Z9", " ", "\\\"", "\\\\", "\\n", "\\t", "\\r",
+		"\\u00e9", "é", "/", "\\/", "\\b", "\\f",
+	};
+	out += '"';
+	const std::uint32_t n = 1 + rng.below(6);
+	for (std::uint32_t i = 0; i < n; ++i) { out += kFrag[rng.below(sizeof(kFrag) / sizeof(kFrag[0]))]; }
+	out += '"';
+}
+
+void genValue(PropRng& rng, std::string& out, int depth) {
+	/* 到第 4 层后只出叶子：既压嵌套，又不让文本体积指数膨胀 */
+	const std::uint32_t pick = rng.below(depth >= 4 ? 7 : 10);
+	switch (pick) {
+	case 0: out += "null"; return;
+	case 1: out += rng.chance(50) ? "true" : "false"; return;
+	case 2: out += std::to_string(static_cast<long long>(rng.below(2000000)) - 1000000); return;
+	case 3: {
+		char buf[32];
+		std::snprintf(buf, sizeof(buf), "%u.%u", rng.below(1000), rng.below(1000));
+		out += buf; return;
+	}
+	case 4: {
+		char buf[32];
+		std::snprintf(buf, sizeof(buf), "%ue%d", 1 + static_cast<int>(rng.below(9)),
+			static_cast<int>(rng.below(12)) - 6);
+		out += buf; return;
+	}
+	case 5: {
+		/* 高精度小数（17 位有效数字）：专压「编码丢精度」这一类漂移——
+		 * 短小数即使编码精度被调低也照样自洽，只有长尾数字才暴露得出 */
+		char buf[64];
+		std::snprintf(buf, sizeof(buf), "%llu.%016llu",
+			static_cast<unsigned long long>(rng.below(1000)),
+			static_cast<unsigned long long>(rng.next()) * 1000000ULL
+				+ static_cast<unsigned long long>(rng.below(1000000)));
+		out += buf;
+		return;
+	}
+	case 6: genString(rng, out); return;
+	case 7: case 8: {				/* 数组（元素可为 null：toString 支持） */
+		out += '[';
+		const std::uint32_t n = rng.below(4);
+		for (std::uint32_t i = 0; i < n; ++i) { if (i) { out += ','; } genValue(rng, out, depth + 1); }
+		out += ']';
+		return;
+	}
+	default: {						/* 对象（键按序号唯一，避免重复键语义） */
+		out += '{';
+		const std::uint32_t n = rng.below(4);
+		for (std::uint32_t i = 0; i < n; ++i) {
+			if (i) { out += ','; }
+			out += "\"k" + std::to_string(i) + "\":";
+			genValue(rng, out, depth + 1);
+		}
+		out += '}';
+		return;
+	}
+	}
+}
+
+/* 结构化相等：逐类型逐字段比，不用 toString 代理——文本稳定不等于**值**没变
+ * （精度变粗的实现照样自洽，却会静默丢数据）。数值只在同类型间比：
+ * Int 与 Float 视为不同（`1` 与 `1.0` 的往返形态本就不同）。 */
+bool sameJson(const Json& a, const Json& b) {
+	if (a.isNull() || b.isNull()) { return a.isNull() && b.isNull(); }
+	if (a.isBool() || b.isBool()) { return a.isBool() && b.isBool() && a.getBool() == b.getBool(); }
+	if (a.isInt() || b.isInt()) { return a.isInt() && b.isInt() && a.getInt() == b.getInt(); }
+	if (a.isFloat() || b.isFloat()) {
+		return a.isFloat() && b.isFloat() && a.getFloat() == b.getFloat();
+	}
+	if (a.isStr() || b.isStr()) {
+		return a.isStr() && b.isStr() && a.getValue() == b.getValue();
+	}
+	if (a.isArr() || b.isArr()) {
+		if (!a.isArr() || !b.isArr() || a.size() != b.size()) { return false; }
+		for (std::size_t i = 0; i < a.size(); ++i) {
+			if (!sameJson(a.at(i), b.at(i))) { return false; }
+		}
+		return true;
+	}
+	if (a.objSize() != b.objSize()) { return false; }
+	for (std::size_t i = 0; i < a.items().size(); ++i) {
+		if (a.items()[i].first != b.items()[i].first
+			|| !sameJson(a.items()[i].second, b.items()[i].second)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+} // namespace
+
+TH_TEST(jsonparse_roundtrip_property_preserves_value) {
+	PropRng rng(20260921ULL);	/* 种子写死：失败可复现 */
+	const int kRounds = 300;
+	int checked = 0;
+	for (int i = 0; i < kRounds; ++i) {
+		std::string text;
+		genValue(rng, text, 0);
+		Json a = JsonNull();
+		try {
+			a = parseJson(text);
+		} catch (const std::exception& e) {
+			TH_CHECK_MSG(false, "生成的文本必须可解析: " + text + " -> " + e.what());
+			return;
+		}
+		const std::string once = a.toString();
+		Json b = JsonNull();
+		try {
+			b = parseJson(once);
+		} catch (const std::exception& e) {
+			TH_CHECK_MSG(false, "编码结果必须可再解析: " + once + " -> " + e.what());
+			return;
+		}
+		if (!sameJson(a, b)) {
+			TH_CHECK_MSG(false, "往返丢值: " + text + " -> " + once + " -> " + b.toString());
+			return;
+		}
+		if (once != b.toString()) {		/* 编码本身也应稳定（幂等） */
+			TH_CHECK_MSG(false, "编码不幂等: " + text + " -> " + once + " -> " + b.toString());
+			return;
+		}
+		++checked;
+	}
+	TH_CHECK_MSG(checked == kRounds, "完成轮数 " + std::to_string(checked));
+}
