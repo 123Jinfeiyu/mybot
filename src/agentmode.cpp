@@ -339,6 +339,8 @@ std::string shellKeyExposureWarning(const AgentModeConfig& cfg) {
 
 std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot) {
 	std::string p;
+	/* 分段实测（供超限报错点名来源）：结构脚本头 / 硬件变量 / 动作脚本清单 / 提示词包 */
+	std::size_t nSql = 0, nHw = 0, nScripts = 0;
 	p += "你是机器人控制智能体（agent），通过工具控制一台真实机器人。\n";
 	p += "机器人结构脚本：" + cfg.structurePath
 		+ "。硬件已加载并上电常驻（动作脚本执行完不会断电），"
@@ -348,15 +350,19 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 
 	p += "## 机器人结构（接线图）\n";
 	std::string sql = readHead(cfg.structurePath, 16u << 10);
+	nSql = sql.size();
 	p += sql.empty() ? std::string("(结构脚本不可读)\n")
 			: quoteUntrusted("结构脚本 " + cfg.structurePath + " 摘录：\n", sql);
 
 	p += "## 硬件变量\n";
-	p += quoteUntrusted("硬件变量清单：\n", describeHardware(robot));
+	std::string hw = describeHardware(robot);
+	nHw = hw.size();
+	p += quoteUntrusted("硬件变量清单：\n", hw);
 
 	p += "## 可用动作脚本（目录 " + cfg.scriptsDir + "）\n";
-	p += quoteUntrusted("动作脚本清单（相对路径 + 首行注释）：\n",
-		describeActionScripts(cfg.scriptsDir));
+	std::string scripts = describeActionScripts(cfg.scriptsDir);
+	nScripts = scripts.size();
+	p += quoteUntrusted("动作脚本清单（相对路径 + 首行注释）：\n", scripts);
 
 	p += "## 工作方式\n";
 	p += "- 需要机器人行动时用 run_action_script 执行动作脚本，脚本名必须来自上面的清单。\n";
@@ -372,6 +378,15 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 	 * 本体，「这个机器人是谁、该怎么行事」由包定义；buildAgentConfig 已把
 	 * 加载失败挡在上电之前，这里不可能拿到坏包。 */
 	if (!cfg.promptPack.empty()) { p += "\n\n" + cfg.promptPack; }
+
+	if (p.size() > kMaxSystemPromptBytes) {
+		throw std::runtime_error("系统提示词超过 " + std::to_string(kMaxSystemPromptBytes)
+			+ " 字节上限（实测 " + std::to_string(p.size()) + " 字节）：结构脚本头 "
+			+ std::to_string(nSql) + " / 硬件变量 " + std::to_string(nHw)
+			+ " / 动作脚本清单 " + std::to_string(nScripts) + " / 提示词包 "
+			+ std::to_string(cfg.promptPack.size())
+			+ "。请缩减 --prompt-file、--scripts-dir 下的脚本数量或结构脚本注释后重试");
+	}
 	return p;
 }
 

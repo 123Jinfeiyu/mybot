@@ -105,6 +105,15 @@ AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg);
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err);
 
 /* 系统提示词：机器人结构与硬件清单 + 可用动作脚本 + 工作方式与安全约束 */
+/* 系统提示词总量上限（F2-9，2026-09-21）。三段来源都各自有界、却都无法自证
+ * 整体规模：结构脚本头（16 KiB 截断）、动作脚本清单（条目数不限）、提示词包
+ * （单文件 1 MiB 上限、整包不限）。任一段被塞爆都会顶穿 provider 上下文，
+ * 或把真正重要的指令区挤出有效注意力；静默截断更糟——模型看到的系统指令与
+ * 作者以为的不一致。故 fail-closed：超限即拒绝启动 agent 会话，报错里给出
+ * 各段实测字节数。64 KiB ≈ 当前真实用量的 2.5 倍（示例包 6.4 KiB + 结构脚本
+ * 头 ≤16 KiB + 两份清单），正常使用不会碰到。 */
+inline constexpr std::size_t kMaxSystemPromptBytes = 64u << 10;
+
 std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot);
 
 /* 跑 agent 会话。返回进程退出码：0 正常结束；1 模型/执行失败。 */
