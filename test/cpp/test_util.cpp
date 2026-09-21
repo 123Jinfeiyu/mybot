@@ -278,3 +278,104 @@ TH_TEST(read_whole_file_limited_keeps_both_error_messages) {
 	TH_CHECK(!bot::readWholeFileLimited((dir.path() / "nope.bin").string(), 4, out, err));
 	TH_CHECK(err.find("无法打开") == 0);
 }
+
+/* ---- UTF-8 判据与消毒（2026-09-21 审计 AG-1）----
+ * 这组用例钉的是「什么算非法」这条边界：它比「转义控制字符」更容易写错，
+ * 且错了不会本地报错——只会在严格网关那里变成 400（实测就是如此）。 */
+namespace {
+
+/* 用显式字节构造串：源码里的 \xff 之类字面量在不同编译器/字面量类型下
+ * 语义不同，测试必须逐字节确定。 */
+std::string bytes(std::initializer_list<unsigned> bs) {
+	std::string s;
+	for (unsigned b : bs) { s.push_back(static_cast<char>(b)); }
+	return s;
+}
+
+} // namespace
+
+TH_TEST(utf8_accepts_ascii_and_boundary_sequences) {
+	TH_CHECK(bot::isValidUtf8(""));
+	TH_CHECK(bot::isValidUtf8("plain ascii"));
+	TH_CHECK(bot::isValidUtf8(bytes({0x00, 0x7f})));		/* 控制字符合法 */
+	TH_CHECK(bot::isValidUtf8(bytes({0xc2, 0x80})));	/* U+0080 最短二字节 */
+	TH_CHECK(bot::isValidUtf8(bytes({0xdf, 0xbf})));	/* U+07FF */
+	TH_CHECK(bot::isValidUtf8(bytes({0xe0, 0xa0, 0x80})));	/* U+0800 最短三字节 */
+	TH_CHECK(bot::isValidUtf8(bytes({0xef, 0xbf, 0xbd})));	/* U+FFFD */
+	TH_CHECK(bot::isValidUtf8(bytes({0xf0, 0x90, 0x80, 0x80})));	/* U+10000 */
+	TH_CHECK(bot::isValidUtf8(bytes({0xf4, 0x8f, 0xbf, 0xbf})));	/* U+10FFFF 上限 */
+	TH_CHECK(bot::isValidUtf8("舵机温度"));			/* 真多字节 */
+}
+
+TH_TEST(utf8_rejects_every_illegal_class) {
+	/* 原始坏字节（AG-1 的复现输入） */
+	TH_CHECK(!bot::isValidUtf8(bytes({0xff})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0x80})));
+	/* 孤立续字节 */
+	TH_CHECK(!bot::isValidUtf8(bytes({0x41, 0x80, 0x42})));
+	/* 过长编码：C0/C1 开头，以及三/四字节里编码了过小的码点 */
+	TH_CHECK(!bot::isValidUtf8(bytes({0xc0, 0xaf})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0xc1, 0xbf})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0xe0, 0x80, 0xaf})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0xf0, 0x80, 0x80, 0xaf})));
+	/* UTF-16 代理区（严格解码器一律拒绝） */
+	TH_CHECK(!bot::isValidUtf8(bytes({0xed, 0xa0, 0x80})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0xed, 0xbf, 0xbf})));
+	/* > U+10FFFF */
+	TH_CHECK(!bot::isValidUtf8(bytes({0xf4, 0x90, 0x80, 0x80})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0xf5, 0x80, 0x80, 0x80})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0xfe})));
+	/* 序列被截断（含「截断正好落在多字节中间」——cap 截断会真实产生这种输入） */
+	TH_CHECK(!bot::isValidUtf8(bytes({0xe4, 0xb8})));
+	TH_CHECK(!bot::isValidUtf8(bytes({0xf0, 0x9f, 0x98})));
+}
+
+TH_TEST(utf8_sanitize_replaces_illegal_bytes_and_preserves_valid_prefix) {
+	const std::string bad = bytes({0x41, 0xff, 0x42});	/* "A\xffB" = AG-1 的复现输入 */
+	const std::string fixed = bot::sanitizeUtf8(bad);
+	TH_CHECK(fixed == bytes({0x41, 0xef, 0xbf, 0xbd, 0x42}));
+	TH_CHECK(bot::isValidUtf8(fixed));
+
+	/* 合法内容逐字节不变（含真多字节与 NUL） */
+	const std::string good = std::string("舵机") + bytes({0x00, 0x7f});
+	TH_CHECK(bot::sanitizeUtf8(good) == good);
+}
+
+TH_TEST(utf8_sanitize_folds_consecutive_illegal_runs) {
+	/* 连续坏字节折叠成一个 U+FFFD + 计数说明，而不是 N 个替换符 */
+	std::string run;
+	for (int i = 0; i < 5; ++i) { run.push_back(static_cast<char>(0xff)); }
+	const std::string fixed = bot::sanitizeUtf8(bytes({0x41}) + run + bytes({0x42}));
+	TH_CHECK(bot::isValidUtf8(fixed));
+	TH_CHECK(fixed.find("[! 非法 UTF-8 字节已省略5 字节]") != std::string::npos);
+	/* 折叠后仍以 A/B 收尾，坏字节只占一个替换符 */
+	TH_CHECK(fixed.compare(0, 1, "A") == 0);
+	TH_CHECK(fixed.back() == 'B');
+
+	/* 单个坏字节不加计数说明（避免噪音） */
+	TH_CHECK(bot::sanitizeUtf8(bytes({0xff})) == bytes({0xef, 0xbf, 0xbd}));
+}
+
+TH_TEST(utf8_sanitize_output_is_always_valid_and_idempotent) {
+	/* 混合：合法多字节 + 各类非法序列 + ASCII */
+	std::string mixed = std::string("舵")
+		+ bytes({0xff, 0xff, 0x80})
+		+ std::string("机")
+		+ bytes({0xe0, 0x80, 0xaf})
+		+ std::string("温");
+	TH_CHECK(!bot::isValidUtf8(mixed));
+	const std::string once = bot::sanitizeUtf8(mixed);
+	TH_CHECK(bot::isValidUtf8(once));
+	TH_CHECK(bot::sanitizeUtf8(once) == once);	/* 幂等 */
+	/* 合法多字节内容原样保留（首尾各验一次；别拿 .back() 与多字节首字节比——
+	 * 那比的是同一个字符的最后一字节 vs 第一字节，必然不等） */
+	TH_CHECK(once.compare(0, 3, "舵") == 0);
+	TH_CHECK(once.size() >= 3 && once.compare(once.size() - 3, 3, "温") == 0);
+}
+
+TH_TEST(utf8_sanitize_handles_truncated_tail_from_output_cap) {
+	/* 64KB 上限正好切在多字节序列中间：消毒后必须合法（否则网关 400） */
+	std::string s = std::string(10, 'a') + bytes({0xe4, 0xb8});	/* 半个「中」 */
+	TH_CHECK(!bot::isValidUtf8(s));
+	TH_CHECK(bot::isValidUtf8(bot::sanitizeUtf8(s)));
+}

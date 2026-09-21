@@ -36,7 +36,11 @@ std::string readHead(const std::string& path, std::size_t cap) {
 		std::cerr << "警告：读取结构脚本头部时发生 I/O 错误，提示词中的脚本摘录可能不完整: "
 			<< path << std::endl;
 	}
-	return data;
+	/* UTF-8 消毒（2026-09-21 审计 AG-1）：结构脚本头进系统提示词，带一个非法
+	 * 字节就会让**第一次**模型请求被严格网关 400 拒掉（实测 offset 2218），
+	 * 会话根本起不来。截断（cap）落在多字节序列中间同样会留下半截序列，
+	 * 一并由消毒处理掉。 */
+	return sanitizeUtf8(data);
 }
 
 /* 解析 CLI 里的整数字符串选项；越界/非数字给出带选项名的人话报错 */
@@ -190,6 +194,22 @@ bool resolveApiKey(const LlmFileConfig& file,
 			"（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY），"
 			"或在配置文件的 api_key / api_key_file 字段提供"
 			"（命令行不提供密钥选项：argv 对同用户进程可读）";
+		return false;
+	}
+	/* 密钥含控制字符 → 拒绝（2026-09-21 审计 AG-14，已用真实二进制复现）。
+	 * 密钥会被驱动拼进 `Authorization: Bearer <key>` 交给 curl_slist_append，
+	 * 而 libcurl 对 slist 里的 CR/LF **不做拒绝**：实测一个多行密钥文件会把
+	 * 换行后的内容变成**额外的请求头**发给网关。三条来源都要过这一关——
+	 * api_key_file 只做首尾 trim（内嵌换行不在其覆盖范围），环境变量路径
+	 * 则完全不 trim，所以校验放在三条来源汇合之后的这里，而不是某一来源内部。
+	 * 这既是安全收口（请求头注入），也是可用性收口：「多行密钥文件」是极常见
+	 * 的误配置，在这里点名比在网关那里看一个含混的 401/400 好得多。 */
+	if (std::string keyErr; !validateApiKeyChars(out.resolvedApiKey, keyErr)) {
+		err = "API key 非法（来源: "
+			+ std::string(out.apiKeySource == ApiKeySource::Env ? "环境变量"
+				: out.apiKeySource == ApiKeySource::ConfigInline ? "配置文件 api_key 字段"
+										: "配置文件 api_key_file")
+			+ "）: " + keyErr;
 		return false;
 	}
 	/* 配置文件里内联密钥时也提醒权限（明文密钥常在随手 chmod 644 的文件里） */

@@ -183,10 +183,20 @@ static void markAllFdsCloexec() {
  * CLOSE_RANGE_CLOEXEC：只打标志不真关，0/1/2 已 dup2 到管道，其余留到 exec
  * 由内核关闭，语义与 O_CLOEXEC 一致。不可用时退化到逐个 close。
  * 两条路径都在 fork 之后、exec 之前，且**不分配堆内存**：本进程有守护线程会
- * 并发 fork，子进程里 malloc 可能撞上父进程持有且永不会释放的锁。 */
+ * 并发 fork，子进程里 malloc 可能撞上父进程持有且永不会释放的锁。
+ * 该 flags **必须是 CLOSE_RANGE_CLOEXEC = 1U<<2 = 4**（2026-09-21 审计 AG-3）：
+ * 它是位掩码，传未定义的位（旧实现写的 1U）内核直接 EINVAL，于是每次
+ * run_command 都白跑一遍退化循环——soft limit 高的机器上约 40ms（实测
+ * soft=524288），而注释却写着「一次系统调用」。安全结论不受影响（退化路径是
+ * 真 close，比只打标志更强，且父进程侧 markAllFdsCloexec 独立承重），
+ * 但「注释声称的路径从未执行」正是最难发现的一类缺陷。 */
 static void revokeInheritedFds() {
 #ifdef SYS_close_range
-	if (::syscall(SYS_close_range, 3U, ~0U, 1U /* CLOSE_RANGE_CLOEXEC */) == 0) { return; }
+	/* 取值来自内核 UAPI（linux/close_range.h：1U << 2）。不引头文件而写字面量，
+	 * 是为了兼容没装新头文件的老发行版；该常量自 5.9 起未变，且下面有「失败即
+	 * 退化」兜底——取值错也不会破功能，只会在性能上退化，正是修复前的状态。 */
+	constexpr unsigned kCloseRangeCloexec = 1U << 2;
+	if (::syscall(SYS_close_range, 3U, ~0U, kCloseRangeCloexec) == 0) { return; }
 #endif
 	/* 退化路径（内核 < 5.9 或 close_range 不可用）：按真实上限逐个关。
 	 * （审计 P1 修复，2026-09-21）旧实现固定封顶 4096——soft limit 更高的
@@ -276,6 +286,16 @@ void finalizeShellRun(pid_t pid, int outFd, int errFd, bool outEof, bool errEof,
 	if (!errEof) { close(errFd); }
 	if (!exited) { exited = reapWithGrace(pid, status); }
 	r.exitCode = (exited && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+
+	/* UTF-8 消毒（2026-09-21 审计 AG-1）**必须在收尾做，不能边读边做**：
+	 * 读循环是「可读即读」的增量排水，一次 read 可能把多字节序列从中间切断，
+	 * 逐块消毒会把一个合法字符拆成两个 U+FFFD。此处两个流都已终态，序列完整；
+	 * 截断发生在 kMaxCommandOutput 边界上时留下的半截序列也会被替换掉——
+	 * 那正是我们要的行为（宁替换一个字符，不让网关 400 掉整个会话）。
+	 * 消毒点放在这里而不是 formatRunResult：后者只管排版，且 RunResult 的
+	 * out/err 可能被别的调用方直接读走。 */
+	r.out = sanitizeUtf8(r.out);
+	r.err = sanitizeUtf8(r.err);
 }
 
 RunResult runShell(const std::string& cmd, int timeoutSec) {
@@ -351,9 +371,14 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 			 * ESRCH 表示进程组已不存在（已自行退出），等价于终止成功。 */
 			if (kill(-pid, SIGKILL) == 0 || errno == ESRCH) { killed = true; }
 		}
-		/* 命令自身忽略 SIGKILL 也不可能，但管道可能迟迟不 EOF：硬上限兜底，
-		 * 不让 agent 会话卡在一个 pid 上 */
-		if (now >= hardDeadline) { break; }
+		/* 命令自身忽略 SIGKILL 也不可能，但管道可能迟迟不 EOF（子进程卡在 D 态、
+		 * 或 kill 因权限失败）：硬上限兜底，不让 agent 会话卡在一个 pid 上。
+		 * 必须留下标记——旧实现直接 break，回执看起来像「正常结束但退出码 -1」，
+		 * 模型与操作者都看不出这里发生过放弃回收。 */
+		if (now >= hardDeadline) {
+			r.hardStopped = true;
+			break;
+		}
 	}
 
 	finalizeShellRun(pid, po[0], pe[0], outEof, errEof, exited, status, r);
@@ -364,6 +389,11 @@ std::string formatRunResult(const RunResult& r) {
 	std::string s = "exit_code=" + std::to_string(r.exitCode);
 	if (r.timedOut) { s += "（超时，已终止）"; }
 	if (r.interrupted) { s += "（被中断，已终止）"; }
+	/* 硬上限兜底：不能声称「已终止」（kill 可能没生效），如实说「无法确认」——
+	 * 模型据此就知道不该假定命令已经停了，操作者也会去看进程表。 */
+	if (r.hardStopped) {
+		s += "（超过硬上限仍未确认退出：已放弃回收，命令可能仍在运行，请检查进程表）";
+	}
 	s += "\nstdout:\n" + (r.out.empty() ? std::string("(空)") : r.out);
 	s += "\nstderr:\n" + (r.err.empty() ? std::string("(空)") : r.err);
 	/* 上限取自 kMaxCommandOutput，避免文案与实现漂移（原先硬编码 "64KB"） */

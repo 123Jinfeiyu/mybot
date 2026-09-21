@@ -101,14 +101,17 @@ std::string readFileLimited(const std::string& path, std::size_t cap) {
 	return data;
 }
 
-/* 动作脚本首行注释作为说明（"# 标准动作" → "标准动作"）。 */
+/* 动作脚本首行注释作为说明（"# 标准动作" → "标准动作"）。
+ * 返回值必然进系统提示词 → 必须消毒（2026-09-21 审计 AG-1）：磁盘上的 .mt
+ * 首注释带一个非法字节，第一次请求就会被网关 400 拒掉（实测 offset 3263），
+ * 会话根本起不来。 */
 std::string firstComment(const std::string& content) {
 	std::istringstream ss(content);
 	std::string line;
 	for (int i = 0; i < 20 && std::getline(ss, line); ++i) {
 		std::string t = trim(line);
 		if (t.empty()) { continue; }
-		if (t[0] == '#') { return trim(t.substr(1)); }
+		if (t[0] == '#') { return sanitizeUtf8(trim(t.substr(1))); }
 		break;	/* 首行非注释即认为无说明 */
 	}
 	return "";

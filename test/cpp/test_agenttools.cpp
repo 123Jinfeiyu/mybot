@@ -585,3 +585,59 @@ TH_TEST(agenttools_run_command_interrupts_on_stop_signal) {
 		parseJson("{\"command\":\"sleep 5\",\"timeout_seconds\":30}"));
 	TH_CHECK(out.find("被中断") != std::string::npos);
 }
+
+/* ---- UTF-8 消毒：工具输出进模型上下文前必须合法（2026-09-21 审计 AG-1）----
+ * 这是 AG-1 的**复现输入**：`printf 'A\377B'` 的 stdout 里带一个 0xFF。
+ * 修复前该字节原样进请求体 → 严格网关 400 → 而那条 tool 消息属于已完整结束的
+ * 轮次，回滚边界（complete）与 trimHistory 都碰不到它 → REPL 里之后每条任务
+ * 都以同一字节偏移失败。
+ * 断言分三层：整体合法、坏字节被替换、合法 ASCII 前后缀保真。 */
+TH_TEST(agenttools_run_command_output_is_sanitized_to_valid_utf8) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"printf 'A\\\\377B'\",\"timeout_seconds\":5}"));
+
+	TH_CHECK(isValidUtf8(out));
+	/* 坏字节已被替换成 U+FFFD，且两侧的 A / B 原样保留 */
+	TH_CHECK(out.find("A\xef\xbf\xbd" "B") != std::string::npos);
+	TH_CHECK(out.find("exit_code=0") != std::string::npos);
+	/* 单个坏字节不加计数说明（折叠说明留给连续坏字节） */
+	TH_CHECK(out.find(kInvalidUtf8Marker) == std::string::npos);
+}
+
+/* 连续坏字节：折叠成一个替换符 + 计数说明，且产物仍然合法、体积不膨胀 */
+TH_TEST(agenttools_run_command_collapses_invalid_byte_runs) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 200 个 0xFF：若逐个替换会膨胀成 600 字节的替换符串 */
+	const std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"head -c 200 /dev/zero | tr '\\\\0' '\\\\377'\","
+			  "\"timeout_seconds\":5}"));
+
+	TH_CHECK(isValidUtf8(out));
+	TH_CHECK(out.find(kInvalidUtf8Marker) != std::string::npos);
+	/* 折叠说明里点名了字节数 */
+	TH_CHECK(out.find("200 字节]") != std::string::npos);
+}
+
+/* 磁盘内容同样要消毒：动作脚本首行注释进系统提示词（AG-1 的 system 消息来源）。
+ * 不消毒时**第一次**请求就 400，会话根本起不来。 */
+TH_TEST(agenttools_script_first_comment_is_sanitized) {
+	fx::TempDir dir("utf8_scripts");
+	const fs::path root = dir.path() / "scripts";
+	fs::create_directories(root);
+	{
+		/* 首行注释里塞一个非法字节（用二进制写，避免源码字面量歧义） */
+		std::ofstream f(root / "poison.mt", std::ios::binary);
+		f << "# POISON-" << static_cast<char>(0xff) << "-MARKER 说明\n@Action dummy\n";
+	}
+	const std::string listing = describeActionScripts(root.string());
+	TH_CHECK(isValidUtf8(listing));
+	TH_CHECK(listing.find("POISON-") != std::string::npos);
+	TH_CHECK(listing.find("-MARKER") != std::string::npos);
+}
