@@ -570,71 +570,62 @@ fi
 # 于是它在任何过滤器调用下都无条件跑 3 条用例 —— `run_all.sh zzz_typo` 会以
 # 「3 通过, 0 失败」退出 0，把末尾那条 `pass + fail == 0` 的空匹配防线整条废掉
 # （该防线正是为「过滤器拼错不得假绿」而设）。守卫后语义与其它段落一致。
+# F3-5 余部①：三条观察面抽成同型 runner，条数由 count_calls 数调用点推导。
+run_one_trig_obs() {
+	local name="$1" label="$2"
+	echo "----- $name ($label 观察面) -----"
+	local out rc ok
+	out="$(cat "scripts/test/$name.mt" | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot="robots/test/$name.sql" 2>&1)"
+	rc=$?
+	echo "$out"
+	ok=true
+	[ "$rc" -ne 0 ] && ok=false
+	if [ "$name" = "trig_basic" ]; then
+		local src_line sink_line
+		src_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=src' | head -1 | cut -d: -f1)"
+		sink_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=sink' | head -1 | cut -d: -f1)"
+		if [ -z "$src_line" ] || [ -z "$sink_line" ]; then
+			ok=false
+		elif [ "$src_line" -ge "$sink_line" ]; then
+			ok=false
+		fi
+		echo "$out" | grep -qF '"relay-src":{"delay":300}' || ok=false
+		echo "$out" | grep -F 'Forward to controller:' | grep -qF '"relay-src"' && ok=false
+	elif [ "$name" = "trig2_basic" ]; then
+		local s1_line s2_line sk_line
+		s1_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=s1' | head -1 | cut -d: -f1)"
+		s2_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=s2' | head -1 | cut -d: -f1)"
+		sk_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=sink' | head -1 | cut -d: -f1)"
+		if [ -z "$s1_line" ] || [ -z "$s2_line" ] || [ -z "$sk_line" ]; then
+			ok=false
+		elif [ "$s1_line" -ge "$s2_line" ] || [ "$s2_line" -ge "$sk_line" ]; then
+			ok=false
+		fi
+		echo "$out" | grep -qF '"relay-src1":{"delay":300}' || ok=false
+		echo "$out" | grep -qF '"relay-src2":{"delay":301}' || ok=false
+	else
+		# ctrl2_basic：两个 controller 都被转发（各自的 Controller result dump 带名字）
+		echo "$out" | grep -qF 'Controller result (dummy-0)' || ok=false
+		echo "$out" | grep -qF 'Controller result (timer-b)' || ok=false
+		# 扇出广播：payload 只构建一次（同一份数据发给每个 controller）
+		[ "$(printf '%s\n' "$out" | grep -cF 'Forward to controller:')" = "1" ] || ok=false
+	fi
+	if $ok; then
+		record_pass
+	else
+		record_fail "$name($label 观察面)"
+	fi
+}
+
 if [ -z "$filter" ] || [[ "trig_basic" == *"$filter"* ]] || [[ "trig2_basic" == *"$filter"* ]] \
 	|| [[ "ctrl2_basic" == *"$filter"* ]] || [[ "trigger" == *"$filter"* ]] \
 	|| [[ "controller" == *"$filter"* ]]; then
 if [ ! -x "$bin" ]; then
-	artifact_missing "controller/trigger 多列观察面" "3 条用例" "$bin" "$bot_explicit"
+	artifact_missing "controller/trigger 多列观察面" "$(( $(count_calls run_one_trig_obs) )) 条用例" "$bin" "$bot_explicit"
 else
-	echo "----- trig_basic (trigger 前置调用观察面) -----"
-	tout="$(cat scripts/test/trig_basic.mt | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot=robots/test/trig_basic.sql 2>&1)"
-	trc=$?
-	echo "$tout"
-	t_ok=true
-	[ "$trc" -ne 0 ] && t_ok=false
-	src_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=300 note=src' | head -1 | cut -d: -f1)"
-	sink_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=300 note=sink' | head -1 | cut -d: -f1)"
-	if [ -z "$src_line" ] || [ -z "$sink_line" ]; then
-		t_ok=false
-	elif [ "$src_line" -ge "$sink_line" ]; then
-		t_ok=false
-	fi
-	echo "$tout" | grep -qF '"relay-src":{"delay":300}' || t_ok=false
-	echo "$tout" | grep -F 'Forward to controller:' | grep -qF '"relay-src"' && t_ok=false
-	if $t_ok; then
-		record_pass
-	else
-		record_fail "trig_basic(trigger 观察面)"
-	fi
-
-	echo "----- trig2_basic (trigger 多列观察面) -----"
-	tout="$(cat scripts/test/trig2_basic.mt | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot=robots/test/trig2_basic.sql 2>&1)"
-	trc=$?
-	echo "$tout"
-	t2_ok=true
-	[ "$trc" -ne 0 ] && t2_ok=false
-	s1_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=300 note=s1' | head -1 | cut -d: -f1)"
-	s2_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=301 note=s2' | head -1 | cut -d: -f1)"
-	sk_line="$(printf '%s\n' "$tout" | grep -nF 'Relay: test=301 note=sink' | head -1 | cut -d: -f1)"
-	if [ -z "$s1_line" ] || [ -z "$s2_line" ] || [ -z "$sk_line" ]; then
-		t2_ok=false
-	elif [ "$s1_line" -ge "$s2_line" ] || [ "$s2_line" -ge "$sk_line" ]; then
-		t2_ok=false
-	fi
-	echo "$tout" | grep -qF '"relay-src1":{"delay":300}' || t2_ok=false
-	echo "$tout" | grep -qF '"relay-src2":{"delay":301}' || t2_ok=false
-	if $t2_ok; then
-		record_pass
-	else
-		record_fail "trig2_basic(trigger 多列观察面)"
-	fi
-
-	echo "----- ctrl2_basic (controller 多列观察面) -----"
-	tout="$(cat scripts/test/ctrl2_basic.mt | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot=robots/test/ctrl2_basic.sql 2>&1)"
-	trc=$?
-	echo "$tout"
-	c2_ok=true
-	[ "$trc" -ne 0 ] && c2_ok=false
-	# 两个 controller 都被转发（各自的 Controller result dump 带名字）
-	echo "$tout" | grep -qF 'Controller result (dummy-0)' || c2_ok=false
-	echo "$tout" | grep -qF 'Controller result (timer-b)' || c2_ok=false
-	# 扇出广播：payload 只构建一次（同一份数据发给每个 controller）
-	[ "$(printf '%s\n' "$tout" | grep -cF 'Forward to controller:')" = "1" ] || c2_ok=false
-	if $c2_ok; then
-		record_pass
-	else
-		record_fail "ctrl2_basic(controller 多列观察面)"
-	fi
+	run_one_trig_obs 'trig_basic' 'trigger 前置调用'
+	run_one_trig_obs 'trig2_basic' 'trigger 多列'
+	run_one_trig_obs 'ctrl2_basic' 'controller 多列'
 fi
 fi	# C8：$filter 守卫（与邻居段落同语义）
 
@@ -789,8 +780,15 @@ fi
 #                  一条（include-once 生效的直接证据；第二路若未跳过会以
 #                  设备集相交报错退出）；三路动作全部在场。
 # ======================================================================
+# F3-5 余部①：条数由 count_calls 数调用点推导（runner 定义在分段文件，
+# 调用点仍留在本文件——count_calls 数的就是它）。
 if [ -z "$filter" ] || [[ "include" == *"$filter"* ]]; then
-	run_include_observation
+if [ ! -x "$bin" ]; then
+	artifact_missing "@Include 归并观察面" "$(( $(count_calls run_include_case) )) 条用例" "$bin" "$bot_explicit"
+else
+	run_include_case 'include_main' 'include-main' '@Include 归并'
+	run_include_case 'include_diamond' 'include-diamond' 'include-once'
+fi
 fi
 
 # ======================================================================

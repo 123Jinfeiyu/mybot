@@ -130,46 +130,39 @@ run_one_mtmerge() {
 	fi
 }
 
-run_include_observation() {
-	if [ ! -x "$bin" ]; then
-		artifact_missing "@Include 归并观察面" "2 条用例" "$bin" "$bot_explicit"
-		return 2
-	fi
-	# ---- include_main ----
-	echo "----- include-main (@Include 归并观察面) -----"
-	local out rc i_ok v
-	out="$(cat scripts/test/include_main.mt | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
+# F3-5 余部①：原 run_include_observation 拆成按用例调用的 runner——
+# 条数由 run_all.sh 侧 count_calls run_include_case 数调用点推导（调用点必须
+# 留在 run_all.sh：count_calls 数的就是它）。断言体零行为变化，只是按名分派。
+run_include_case() {
+	local name="$1" banner="$2" label="$3"
+	echo "----- $banner ($label 观察面) -----"
+	local out rc ok
+	out="$(cat "scripts/test/$name.mt" | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
 	rc=$?
 	echo "$out"
-	i_ok=true
-	[ "$rc" -ne 0 ] && i_ok=false
-	for v in 100 110 200 210 220; do
-		echo "$out" | grep -qF "test=$v" || i_ok=false
-	done
-	echo "$out" | grep -qF "test=0" && i_ok=false
-	echo "$out" | grep -qF '"slept":200' || i_ok=false
-	if $i_ok; then
-		record_pass
+	ok=true
+	[ "$rc" -ne 0 ] && ok=false
+	if [ "$name" = "include_main" ]; then
+		local v
+		for v in 100 110 200 210 220; do
+			echo "$out" | grep -qF "test=$v" || ok=false
+		done
+		echo "$out" | grep -qF "test=0" && ok=false
+		echo "$out" | grep -qF '"slept":200' || ok=false
 	else
-		record_fail "include-main(@Include 归并)"
+		# include_diamond：include-once 生效的直接证据——skip 注记恰好一条
+		local skip_n
+		skip_n="$(echo "$out" | grep -cF "already included")"
+		[ "$skip_n" -eq 1 ] || ok=false
+		local v
+		for v in 100 200 300; do
+			echo "$out" | grep -qF "test=$v" || ok=false
+		done
 	fi
-	# ---- diamond ----
-	echo "----- include-diamond (include-once 观察面) -----"
-	local dout d_ok skip_n
-	dout="$(cat scripts/test/include_diamond.mt | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
-	rc=$?
-	echo "$dout"
-	d_ok=true
-	[ "$rc" -ne 0 ] && d_ok=false
-	for v in 100 200 300; do
-		echo "$dout" | grep -qF "test=$v" || d_ok=false
-	done
-	skip_n="$(echo "$dout" | grep -cF "already included")"
-	[ "$skip_n" -eq 1 ] || d_ok=false
-	if $d_ok; then
+	if $ok; then
 		record_pass
 	else
-		record_fail "include-diamond(include-once)"
+		record_fail "$banner($label)"
 	fi
 }
 
