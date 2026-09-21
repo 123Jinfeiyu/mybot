@@ -57,6 +57,11 @@ record_skip() { skip=$((skip + 1)); skipped_list="$skipped_list $1"; }
 # F3-4（2026-09-21）：单/双引号调用点都认——旧实现只认单引号，改一处写法即静默少算。
 count_calls() { grep -cE "^[[:space:]]*$1 ['\"]" "$SELF"; }
 
+# F3-7（2026-09-21）：中断也留下显式痕迹。守门日志常被人工/CI 中途读取，
+# 「还没跑到汇总」与「判失败」在日志里长相不同却都不含汇总行——中断时打印
+# 一行明确的中途态标记（并把退出码固定为 130），读日志的人不必猜。
+trap 'echo "守门被中断：汇总未产生（中途态，非失败）" >&2; exit 130' INT TERM
+
 # ---- 编译产物（全局解析，供各分段共用）----
 # 缺省路径可被 BOT / BOT_TESTS 覆盖；是否「显式指定」决定下面的降级策略。
 bin="${BOT:-./build/mybot}"
@@ -1744,5 +1749,7 @@ if [ "$skip" -gt 0 ]; then
 fi
 if [ $fail -ne 0 ]; then
 	echo "失败用例:$failed"
+	echo "守门结果: rc=1"
 	exit 1
 fi
+echo "守门结果: rc=0"
