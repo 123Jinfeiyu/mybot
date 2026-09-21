@@ -255,7 +255,12 @@ TH_TEST(read_file_capped_symlink_policy_is_explicit) {
 	writeText(target, "abcdef");
 	std::error_code ec;
 	std::filesystem::create_symlink(target, link, ec);
-	if (ec) { return; }		/* 文件系统不支持软链则跳过（本机/CI 均支持） */
+	/* 软链创建失败 = 文件系统不支持（tmpfs 挂载参数、某些容器 overlay 等）。
+	 * 这里**必须**显式表态（AG-5）：此前是 `if (ec) { return; }`——一条断言都没跑
+	 * 就结束，harness 按「无失败」记 [PASS]，于是「软链策略是否真的生效」在守门
+	 * 里从来没有人验证过。现在 harness 把零断言判失败，环境不满足就走 TH_SKIP
+	 * 并给出原因（守门日志能回答「为什么这条没跑」）。 */
+	if (ec) { TH_SKIP("该文件系统不支持创建符号链接，无法验证 O_NOFOLLOW 策略"); }
 
 	std::string out;
 	/* 缺省（不跟随）：O_NOFOLLOW 拒绝软链——配置/密钥/提示词包路径的防线 */

@@ -1205,6 +1205,7 @@ if [ -z "$filter" ]; then
 	run_const_checks "$(dirname "$tests_bin")"
 fi
 run_cpp_unit
+run_harness_selftest
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then

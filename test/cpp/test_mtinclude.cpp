@@ -225,8 +225,10 @@ TH_TEST(mtinclude_rejects_symlink) {
 	writeFile(dir, "real.mt", "@Action\nb.p;\n100;\n@\n");
 	std::error_code ec;
 	std::filesystem::create_symlink("real.mt", dir.path() / "link.mt", ec);
-	/* 本项目只支持 Linux，软链创建失败视为环境异常直接判红——不用「跳过
-	 * 断言提前返回」的假绿形态（run_all.sh 对该形态本就判失败） */
+	/* 本项目只支持 Linux，软链创建失败视为环境异常直接判红（上面那条断言）。
+	 * 随后的 return 只是**短路**：用例已记失败，不再拿 ec 继续跑后面的断言去
+	 * 制造无关噪音；这不是「假绿式早退」——AG-5 的零断言判据看的是「有没有
+	 * 断言跑过」，这里已经跑过一条了。 */
 	TH_CHECK(!ec);
 	if (ec) { return; }
 	auto mats = parseMain(

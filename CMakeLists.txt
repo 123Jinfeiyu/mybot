@@ -193,6 +193,15 @@ target_include_directories(mybot_tests PRIVATE test/cpp)
 target_compile_definitions(mybot_tests PRIVATE MYBOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_link_libraries(mybot_tests PRIVATE mybot_common)
 
+# ======================================================================
+# 测试骨架自证（2026-09-21 审计 AG-5）：harness.hpp 的「零断言即失败 / TH_SKIP
+# 不算失败 / 断言后跳过算失败」三条判据，用一份独立的 th 状态自证。独立二进制
+# 的理由见文件头（元数据例句故意含失败形态，不能混进 mybot_tests 的计数）。
+# ======================================================================
+add_executable(harness_selftest test/cpp/harness_selftest.cpp)
+target_include_directories(harness_selftest PRIVATE test/cpp)
+add_test(NAME cpp_harness_selftest COMMAND harness_selftest)
+
 enable_testing()
 add_test(NAME cpp_unit COMMAND mybot_tests)
 # 用例以相对路径（./modules/...、robots/test/...）读 fixtures，必须以仓库根为工作目录

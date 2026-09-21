@@ -122,3 +122,42 @@ run_cpp_unit() {
 	fi
 }
 
+# ======================================================================
+# 测试骨架自证（2026-09-21 审计 AG-5）：harness.hpp 的三条判定（零断言即失败 /
+# TH_SKIP 不算失败 / 断言后跳过算失败）由 harness_selftest 用一份独立的 th 状态
+# 自证。段契约与其他段一致：退出码 0 + [DONE] + [PASS] 非零。
+# 为什么值得一个独立分段：这一条守的是「所有其它守门都依赖的那把尺子」——
+# 尺子失真时，全部用例照样全绿，没有任何其它机制会发现。
+# ======================================================================
+run_harness_selftest() {
+	echo "----- harness-selftest (测试骨架自证) -----"
+	local binp
+	binp="$(dirname "$tests_bin")/harness_selftest"
+	if [ ! -x "$binp" ]; then
+		artifact_missing "测试骨架自证" "harness_selftest" "$binp" "$tests_explicit"
+		return 2
+	fi
+	local out rc pass_n
+	if [ -n "$timeout_cmd" ]; then
+		out="$($timeout_cmd "$binp" 2>&1)"
+	else
+		out="$("$binp" 2>&1)"
+	fi
+	rc=$?
+	echo "$out"
+	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
+		echo "[FAIL] 测试骨架自证超时（>${TEST_TIMEOUT}s）"
+		record_fail "harness-selftest"
+		return
+	fi
+	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
+	if [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
+		echo "[FAIL] 测试骨架行为与预期不符：零断言/跳过/失败的判定被改动过？"
+		record_fail "harness-selftest"
+	elif [ "$pass_n" -eq 0 ]; then
+		echo "[FAIL] 假绿嫌疑：骨架自证一条断言都没跑（[PASS] 计数为 0）"
+		record_fail "harness-selftest"
+	else
+		record_pass
+	fi
+}
