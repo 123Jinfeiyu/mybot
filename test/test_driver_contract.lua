@@ -45,6 +45,7 @@ for _, path in ipairs(mods) do
 	-- 继承上一份定义，故每次加载前先清空，断言才真的对应本模块（否则
 	-- 「漏写 build」会被上一个驱动掩盖成通过）。
 	build, call, destroy = nil, nil, nil
+	read = nil		-- 同上：read 也是模块级全局，不清会让「本模块没定义 read」被上一份掩盖
 	local ok, err = pcall(dofile, path)
 	check(name .. " 可加载", ok, tostring(err))
 	if ok then
@@ -78,6 +79,23 @@ for _, path in ipairs(mods) do
 					dok and type(rd) == "table" and rd.result == "ERR",
 					dok and (type(rd) == "table" and tostring(rd.result) or type(rd))
 						or ("raised: " .. tostring(rd)))
+				-- D2-7/F1-9（2026-09-21）：可选 read(data) 入口此前既无契约条目
+				-- 也无任何覆盖（docs/drivers.md 现已登记）。宿主对 read 走
+				-- **不过 ensureOk** 的路径（src/luavar.cpp:189-201）——读是数据流
+				-- 而非动作，返回值可以是标量（Ema/Kalman/Monitor 返回 last）。
+				-- 故这里只钉两条现状：不抛错、不返回 nil；有 ERR 表时字段齐备。
+				-- 反过来说：把 read(nil) 改成抛错或返回 nil，本断言即红。
+				if type(read) == "function" then
+					local rok, rr = pcall(read, nil)
+					local shapeOk = rok and rr ~= nil
+					if shapeOk and type(rr) == "table" then
+						shapeOk = (rr.result == nil) or (rr.result == "ERR" and rr.message ~= nil)
+							or (rr.result == "OK")
+					end
+					check(name .. ".read(nil) 不抛错且非 nil（宿主 read 路径不过 ensureOk）",
+						shapeOk,
+						rok and ("返回 " .. type(rr) .. ": " .. tostring(rr)) or ("raised: " .. tostring(rr)))
+				end
 			end
 		end
 	end
