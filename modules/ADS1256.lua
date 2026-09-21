@@ -355,7 +355,6 @@ function ADS1256_VIRT.new(opts)
 
 	local RAW_MIN, RAW_MAX = -0x800000, 0x7FFFFF
 
-	opts = opts or {}
 	local self = {}
 
 	-- ---- 器件状态 ----
