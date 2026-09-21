@@ -112,7 +112,8 @@
 | `build(data)` | 装配期（`active()`，按声明序） | 打开/配置资源并做在位自检；**必须有** |
 | `call(data)` | 每拍派发（或 `$` 引用读取） | 一次完整动作/读数；**必须有** |
 | `destroy(data)` | 销毁期（倒序，`deactivate()`） | 尽力释放，见下 |
-| `read`（经 `call`） | 无副作用读 | `$` 引用快照走 `read()`，缺省即 `play({})` |
+| `read(data)` | `$` 引用快照读取（可选） | 定义即**替代** `call`；宿主**不做 `ensureOk`**（读是数据流不是动作），返回值可为标量；`Ema`/`Kalman`/`Monitor` 定义它并忽略入参 |
+| （驱动未定义 `read`） | 同上 | 回退 `call(data)`（`mode="call"`），即缺省 `play({})` |
 
 ### 返回值契约（halt-on-error）
 
