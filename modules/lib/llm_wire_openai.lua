@@ -32,11 +32,29 @@ local function snippet(s, n)
 	return s
 end
 
+-- 必填字段显式断言（2026-09-21 审计 AG-15）：json.lua 里那条「字段为 nil 即报错」
+-- 是死代码（Lua 表不可能有「键在值为 nil」的项），于是必填字段缺失时会被**静默
+-- 丢掉**——真机只回一个含混的 400，看不出是哪个字段、哪条消息。JSON 本身不是
+-- 自描述的，唯一能给出可读报错的位置就是组装这些字段的这里。
+-- 报错字符串会经宿主的 ERR 折成模型可见文本，故必须点名 what（字段）与 where（消息）。
+function M.require_wire_string(v, what, where)
+	if type(v) ~= "string" or v == "" then
+		error(string.format("请求字段 %s 缺失或非字符串（%s）", what, where))
+	end
+	return v
+end
+
 -- 规范化消息 → provider 消息
 local function to_wire_message(msg, inject_reasoning)
 	local role = msg.role
 	if role == "tool" then
-		return { role = "tool", tool_call_id = msg.tool_call_id, content = msg.content or "" }
+		-- tool_call_id 是与 assistant.tool_calls 配对的唯一凭据：丢了它真机 400，
+		-- 且报错不会告诉你是哪一条 tool 消息出了问题
+		return {
+			role = "tool",
+			tool_call_id = M.require_wire_string(msg.tool_call_id, "tool_call_id", "role=tool 的消息"),
+			content = msg.content or "",
+		}
 	end
 	if role == "assistant" then
 		local out = { role = "assistant" }
@@ -52,9 +70,14 @@ local function to_wire_message(msg, inject_reasoning)
 			local wire_tcs = {}
 			for i, tc in ipairs(tcs) do
 				wire_tcs[i] = {
-					id = tc.id,
+					id = M.require_wire_string(tc.id, "tool_calls[].id",
+						"assistant 消息的第 " .. i .. " 个工具调用"),
 					type = "function",
-					["function"] = { name = tc.name, arguments = tc.arguments },
+					["function"] = {
+						name = M.require_wire_string(tc.name, "tool_calls[].function.name",
+							"assistant 消息的第 " .. i .. " 个工具调用"),
+						arguments = tostring(tc.arguments or "{}"),
+					},
 				}
 			end
 			out.tool_calls = wire_tcs
@@ -191,6 +214,14 @@ function M.request(data, plan)
 	return { endpoint = endpoint, req = M.build_request(data, model, plan) }
 end
 
+-- 密钥字符集判据（2026-09-21 审计 AG-14）：控制字符（<0x20 与 0x7F）一律拒绝。
+-- 与宿主侧 src/llmconfig.cpp 的 validateApiKeyChars 同判据——两边必须一致，
+-- 否则「宿主放行的密钥被驱动拒掉」会表现成一个只在真机出现的怪错。
+-- 单独成函数是为了能被离线用例直接钉住（perform 需要 HTTP，测不到这一行）。
+function M.api_key_has_control_chars(key)
+	return type(key) == "string" and key:find("[%z\1-\31\127]") ~= nil
+end
+
 -- 编码 → 发出 → 状态检查 → 解码 → 规范化。任何一步失败都返回 ERR 契约表
 -- （由宿主折成可读报错回传给 agent 循环，不打断会话）。
 function M.perform(endpoint, data, req)
@@ -201,7 +232,19 @@ function M.perform(endpoint, data, req)
 
 	local headers = { "Content-Type: application/json" }
 	local key = M.api_key(data)
-	if key ~= nil then headers[#headers + 1] = "Authorization: Bearer " .. key end
+	if key ~= nil then
+		-- 密钥含控制字符即拒绝：libcurl 对 slist 里的 CR/LF **不做拒绝**，一个
+		-- 多行密钥文件会把换行后的内容变成额外的请求头发给网关（实测复现）。
+		-- 宿主侧已在三条来源汇合处校验，这里是「站在建头这一行」的第二道——
+		-- 报文一旦建好就没有别的地方能拦住它，且本层不能假设调用方一定校验过
+		-- （.mt 脚本可以直接调驱动）。
+		if M.api_key_has_control_chars(key) then
+			return { result = "ERR",
+				message = "API key 含控制字符（换行/回车等）：会被原样拼进 "
+					.. "Authorization 头并变成额外请求头，拒绝发送" }
+		end
+		headers[#headers + 1] = "Authorization: Bearer " .. key
+	end
 
 	local res = http.post({
 		url = endpoint,

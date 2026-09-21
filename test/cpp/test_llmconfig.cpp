@@ -749,3 +749,28 @@ TH_TEST(llmconfig_oversized_key_file_reports_the_limit) {
 	TH_CHECK(!readApiKeyFile(big.string(), out, err));
 	TH_CHECK(err.find("上限") != std::string::npos);
 }
+
+/* ---- API key 控制字符判据（2026-09-21 审计 AG-14）----
+ * 密钥最终会被拼进 `Authorization: Bearer <key>` 交给 curl_slist_append，而
+ * libcurl 不拒绝 slist 里的 CR/LF——实测多行密钥会把换行后的内容变成**额外的
+ * 请求头**发给网关。本判据与 modules/lib/llm_wire_openai.lua 的
+ * api_key_has_control_chars 同语义，两边用例都要过。 */
+TH_TEST(llmconfig_api_key_control_chars_rejected) {
+	std::string err;
+	/* 正常密钥：单行可打印 */
+	TH_CHECK(validateApiKeyChars("sk-abc123", err));
+	TH_CHECK(validateApiKeyChars("", err));			/* 空串本身无控制字符（缺失由上层拦） */
+	TH_CHECK(validateApiKeyChars("sk-a b~c!", err));
+	/* 头注入的两个主角 */
+	TH_CHECK(!validateApiKeyChars("sk-abc\r\nX-Injected: yes", err));
+	TH_CHECK(err.find("0x0d") != std::string::npos);	/* 点名是哪个字节 */
+	TH_CHECK(err.find("第 7 个字节") != std::string::npos);	/* 与位置 */
+	TH_CHECK(!validateApiKeyChars("sk-a\nb", err));
+	/* 其余控制字符一并拒绝（宽判据，抗 libcurl 行为变化） */
+	TH_CHECK(!validateApiKeyChars(std::string("sk-a\0b", 5), err));
+	TH_CHECK(!validateApiKeyChars("sk-a\tb", err));
+	TH_CHECK(!validateApiKeyChars("sk-a\x7f" "b", err));
+	TH_CHECK(!validateApiKeyChars("sk-a\x01" "b", err));
+	/* 高位字节不是控制字符：UTF-8 密钥不该被误伤 */
+	TH_CHECK(validateApiKeyChars("sk-\xe5\xaf\x86", err));
+}

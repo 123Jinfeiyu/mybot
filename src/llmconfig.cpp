@@ -279,4 +279,26 @@ std::string secretFilePermissionWarning(const std::string& path) {
 	return "提示: " + real + " 对同组/其他用户可读（建议 chmod 600），它保存着 API key";
 }
 
+/* 密钥字符集判据（2026-09-21 审计 AG-14）。见头文件；这里补两点实现理由：
+ *   * 判据是「全部控制字符」而不是只挑 CR/LF——libcurl 对 slist 条目整条交出，
+ *     任何控制字符都没有出现在合法 Bearer token 里的理由；宽判据也更抗未来
+ *     libcurl 行为变化（今天拒 CR/LF，明天可能连同其他字符一起拒）。
+ *   * err 里带**位置与字节值**：多行密钥文件的成因通常是「顺手 cat 了别的东西
+ *     进来」，操作者需要一眼看到是第几个字节坏了。 */
+bool validateApiKeyChars(const std::string& key, std::string& err) {
+	for (std::size_t i = 0; i < key.size(); ++i) {
+		const unsigned char c = static_cast<unsigned char>(key[i]);
+		if (c < 0x20 || c == 0x7f) {
+			char buf[8];
+			std::snprintf(buf, sizeof buf, "0x%02x", c);
+			err = "含控制字符 " + std::string(buf) + "（第 " + std::to_string(i + 1)
+				+ " 个字节）：密钥必须是**单行**文本，换行会被 libcurl 原样拼进 "
+				  "Authorization 头，等于把后面的内容变成额外请求头；"
+				  "请检查密钥文件是否混入了多行内容或 CRLF 行尾";
+			return false;
+		}
+	}
+	return true;
+}
+
 } // namespace bot

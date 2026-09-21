@@ -70,4 +70,11 @@ bool readApiKeyFile(const std::string& path, std::string& out, std::string& err)
  * 只告警不阻断——容器/只读挂载等场景下权限不由使用者控制。 */
 std::string secretFilePermissionWarning(const std::string& path);
 
+/* API key 字符集判据（2026-09-21 审计 AG-14 单点）：拒绝控制字符（<0x20 与
+ * 0x7F）。密钥会被拼进 `Authorization: Bearer <key>` 交给 curl_slist_append，
+ * 而 libcurl 不拒绝 slist 里的 CR/LF——实测一个多行密钥文件会把换行后的内容
+ * 变成**额外的请求头**发给网关（头注入）。
+ * 合法返回 true；非法返回 false 并把原因（含位置与字节值）写进 err。 */
+bool validateApiKeyChars(const std::string& key, std::string& err);
+
 } // namespace bot

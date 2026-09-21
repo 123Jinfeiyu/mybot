@@ -211,4 +211,130 @@ do
 	check("缺省值按参数生效", http.clamp_timeout(nil, 15) == 15)
 end
 
+
+-- ================= API key 控制字符判据（AG-14） =================
+-- libcurl 对 curl_slist 里的 CR/LF 不做拒绝：多行密钥会把换行之后的内容变成
+-- **额外的请求头**发给网关（用真实二进制复现过）。宿主侧 llmconfig.cpp 的
+-- validateApiKeyChars 与这里必须同判据，故两边各钉一遍。
+check("AG-14：普通密钥放行", not openai.api_key_has_control_chars("sk-abc123"))
+check("AG-14：空串放行（无控制字符）", not openai.api_key_has_control_chars(""))
+check("AG-14：CR 拒绝", openai.api_key_has_control_chars("sk-a\rb"))
+check("AG-14：LF 拒绝", openai.api_key_has_control_chars("sk-a\nb"))
+check("AG-14：CRLF 拒绝", openai.api_key_has_control_chars("sk-a\r\nX-Injected: yes"))
+check("AG-14：TAB 拒绝", openai.api_key_has_control_chars("sk-a\tb"))
+check("AG-14：NUL 拒绝", openai.api_key_has_control_chars("sk-a\0b"))
+check("AG-14：DEL(0x7F) 拒绝", openai.api_key_has_control_chars("sk-a\127b"))
+check("AG-14：空格与可打印字符放行", not openai.api_key_has_control_chars("sk-a b~c!"))
+check("AG-14：高位字节不属控制字符（UTF-8 密钥不误伤）",
+	not openai.api_key_has_control_chars("sk-\229\175\134"))
+check("AG-14：非字符串入参判假（不抛错）", not openai.api_key_has_control_chars(nil))
+
+-- ================= 句柄收尾不许留悬垂回调（AG-16） =================
+-- 旧实现只 cb:free() 不清句柄，WRITEFUNCTION 仍指在已释放的回调上；当前只因
+-- Session:post 每次都先 curl_easy_reset 才安全。Session.handle 是公开字段，
+-- 任何「同句柄 perform 两次 / 加重试」的重构都会把它变成内存安全问题
+-- （实测：post 后直接 perform 报 bad callback；槽位复用时 SIGSEGV）。
+-- 修法是在 free 之前先 reset，使句柄自身满足「空闲即无武装」的不变量。
+do
+	local http = dofile("modules/lib/llm_http.lua")
+	local s = http.session()
+	check("AG-16：能建会话", s ~= nil, tostring(s))
+	if s ~= nil then
+		-- 端口 1 必然连不上：这里只要走到「perform 返回」即可，不需要成功响应
+		local res = s:post({ url = "http://127.0.0.1:1/v1/x", body = "{}", timeout = 1 })
+		check("AG-16：post 返回（连不上也不崩）", type(res) == "table", tostring(res))
+		-- 关键断言：post 之后句柄必须是「未武装」的——直接对同一句柄 perform
+		-- 不得触碰已释放的回调。libcurl 对「无 URL」返回 CURLE_URL_MALFORMAT，
+		-- 不会调用任何回调，所以「返回」本身就是句柄已被 reset 的证据；
+		-- 旧实现下这里会调用已释放的 WRITEFUNCTION（bad callback / SIGSEGV）。
+		local ffi = require("ffi")
+		ffi.cdef[[
+int curl_easy_perform(void *h);
+const char *curl_easy_strerror(int code);
+]]
+		local curl = ffi.load("curl")
+		local ok, rc = pcall(function() return curl.curl_easy_perform(s.handle) end)
+		check("AG-16：post 后句柄无悬垂回调（直接 perform 安全返回）", ok,
+			tostring(rc))
+		if ok then
+			check("AG-16：返回的是「无 URL」类错误码（证明没走到回调）",
+				tonumber(rc) ~= 0, "rc=" .. tostring(tonumber(rc)))
+		end
+		s:close()
+	end
+end
+
+
+-- ================= 必填字段的显式断言（AG-15） =================
+-- json.lua 的「字段为 nil 即报错」是死代码（Lua 表不可能有「键在值为 nil」的项），
+-- 所以必填字段缺失时会被**静默丢掉**，真机只回一个含混的 400。现在由组装这些
+-- 字段的地方（llm_wire_openai 的 require_wire_string）显式断言，报错必须点名
+-- 是哪个字段——这正是「静默丢字段」与「可读报错」的分界。
+do
+	local function err_of(fn)
+		local ok, e = pcall(fn)
+		return ok, tostring(e)
+	end
+
+	-- tool 消息缺 tool_call_id
+	local d1 = sample()
+	d1.messages[4].tool_call_id = nil
+	local ok1, e1 = err_of(function() return openai.build_request(d1, "m0") end)
+	check("AG-15：tool 消息缺 tool_call_id 时抛错（不再静默丢字段）", not ok1, e1)
+	check("AG-15：报错点名字段与消息种类",
+		e1:find("tool_call_id", 1, true) ~= nil and e1:find("role=tool", 1, true) ~= nil, e1)
+
+	-- assistant.tool_calls[].id 缺失
+	local d2 = sample()
+	d2.messages[3].tool_calls[1].id = nil
+	local ok2, e2 = err_of(function() return openai.build_request(d2, "m0") end)
+	check("AG-15：tool_calls[].id 缺失时抛错", not ok2, e2)
+	check("AG-15：报错点名 tool_calls[].id", e2:find("tool_calls[]", 1, true) ~= nil, e2)
+
+	-- assistant.tool_calls[].name 缺失
+	local d3 = sample()
+	d3.messages[3].tool_calls[1].name = nil
+	local ok3, e3 = err_of(function() return openai.build_request(d3, "m0") end)
+	check("AG-15：tool_calls[].function.name 缺失时抛错", not ok3, e3)
+	check("AG-15：报错点名 function.name", e3:find("function.name", 1, true) ~= nil, e3)
+
+	-- 合法样例必须仍然组包成功（别把断言写成误杀）
+	local ok4, r4 = pcall(function() return openai.build_request(sample(), "m0") end)
+	check("AG-15：合法样例仍能组包", ok4 and type(r4) == "table", tostring(r4))
+	check("AG-15：合法样例的 tool_call_id 进报文",
+		ok4 and r4.messages[4].tool_call_id == "c1")
+
+	-- arguments 缺省时补 "{}"（模型可能给出 nil 参数体，不该让整轮失败）
+	local d5 = sample()
+	d5.messages[3].tool_calls[1].arguments = nil
+	local ok5, r5 = pcall(function() return openai.build_request(d5, "m0") end)
+	check("AG-15：arguments 缺失补 {} 而不是崩", ok5
+		and r5.messages[3].tool_calls[1]["function"].arguments == "{}", tostring(r5))
+end
+
+
+-- ========== 组包失败必须走 ERR 契约（AG-15 落地口径） ==========
+-- 驱动对宿主的契约是「返 ERR 表，不抛 Lua error」：跨语言边界上「抛」会被宿主
+-- 折成一条带 Lua 栈帧的报错，文案可读性远不如点名到字段的那句。wire.request
+-- 现在会为缺失的必填字段抛错，故 call() 必须把它折成 ERR。
+-- （driver 是驱动级文件，dofile 后会覆盖全局 build/call/destroy —— 本文件用它
+-- 之后就结束，不再依赖那两个全局。）
+do
+	local mpath = dofile("modules/lib/mpath.lua")
+	dofile(mpath.resolve("lib/drv_common.lua"))
+	dofile("modules/LlmOpenAI.lua")
+	local bad = {
+		endpoint = "http://127.0.0.1:1/v1/chat/completions", model = "m",
+		messages = { { role = "tool", content = "x" } },	-- 缺 tool_call_id
+		tools = {},
+	}
+	local ok, res = pcall(call, bad)
+	check("AG-15：组包失败时驱动返 ERR 契约（不抛 Lua error）",
+		ok and type(res) == "table" and res.result == "ERR",
+		tostring(ok) .. "/" .. (type(res) == "table" and tostring(res.result) or tostring(res)))
+	check("AG-15：ERR 文案保留字段级原因",
+		ok and type(res) == "table" and tostring(res.message):find("tool_call_id", 1, true) ~= nil,
+		type(res) == "table" and tostring(res.message) or "")
+end
+
 tester.summary("llm 协议驱动单测")
