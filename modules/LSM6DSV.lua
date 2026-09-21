@@ -172,7 +172,7 @@ function build(data)
 		return err("Failed to read LSM6DSV16X WHO_AM_I")
 	end
 	if id ~= CHIP_ID then
-		return err(string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO 系，V32X 等家族亦不同)", id))
+		return err(string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO family, V32X and other families also differ)", id))
 	end
 
 	-- 软复位：读改写置 bit0（保留 IF_INC），轮询自清（10ms 步进 10 次）

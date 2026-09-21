@@ -130,8 +130,10 @@ cmake -S . -B build -DMYBOT_WERROR=ON && cmake --build build
   （`agentloop`/`agentmode`/`agenttools` 等，读者是与机器人对话的人）用**中文**。
   两区都收口到同一异常体系（`IllegalArgumentException` 为根，运行期硬件失败用
   `std::runtime_error`），不要新增 `std::invalid_argument` 等散装类型。
-  **Lua 驱动层同此分区**：`err()` 的报错串用**英文**（读者是脚本作者，与 `drv_common`/
-  `HAL` 的库诊断一致），注释一律中文；存量中文报错按驱动逐个改英文，新驱动按本条执行。
+  **Lua 驱动层同此分区**：驱动 `err()` 的报错串用**英文**（读者是脚本作者），
+  注释一律中文；存量中文 `err()` 按驱动逐个改英文，新驱动按本条执行。
+  库层（`HAL`/`llm_*`/`nn` 等）的诊断与 `print` 输出**不在**本条约束内——
+  它们的读者是本机操作者，语言现状混杂，是否统一另议（见台账 N2 的余部）。
 
 ## 文档约定
 

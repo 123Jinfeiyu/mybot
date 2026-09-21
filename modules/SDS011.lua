@@ -127,7 +127,7 @@ function build(data)
 
 	local fd = tonumber(data.fd)
 	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return err("Invalid Argument: fd (UART 列是否引用了 @UART 变量?)")
+		return err("Invalid Argument: fd (does the UART column reference an @UART variable?)")
 	end
 
 	local timeout = tonumber(data.timeout)

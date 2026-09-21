@@ -477,7 +477,7 @@ function call(data)
 	-- P1-2 防线：只放行 /dev/videoN 设备节点。否则 path 等价于一个「打开任意
 	-- 路径」的原语（普通文件、其他设备节点都会被 HAL.sys.open 照单全收）。
 	if type(path) ~= "string" or path:match("^/dev/video%d+$") == nil then
-		return err("摄像头设备路径只允许 /dev/videoN：" .. tostring(path))
+		return err("camera device path must be /dev/videoN: " .. tostring(path))
 	end
 	if state.fd < 0 or state.path ~= path then
 		device_close()
@@ -509,7 +509,7 @@ function call(data)
 	if payload == nil then
 		device_close()	-- 失败即释放，下次调用重试打开（支持热插拔）
 		return err(gerr or
-			"连续 8 帧不完整（MJPEG 帧缺 EOI）：设备/链路异常，请检查摄像头连接")
+			"8 consecutive incomplete frames (MJPEG frame missing EOI): device/link fault, check the camera connection")
 	end
 	return {
 		result = "OK",

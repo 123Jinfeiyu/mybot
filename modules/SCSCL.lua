@@ -124,7 +124,7 @@ end
 local function resolve_common(data)
 	local fd = tonumber(data.fd)
 	if fd == nil or fd < 0 then
-		return nil, nil, err("Invalid Argument: fd (UART 列是否引用了 @UART 变量?)")
+		return nil, nil, err("Invalid Argument: fd (does the UART column reference an @UART variable?)")
 	end
 	local id = tonumber(data.id)
 	if id == nil or id < 1 or id > 253 or id ~= math.floor(id) then
@@ -275,7 +275,7 @@ function call(data)
 		-- 后，.mt 侧同名参数键也会被 rejectReservedKeys 拒绝，无法旁路。
 		if tonumber(data.allow_burn) ~= 1 then
 			return err("Invalid Argument: set_id requires allow_burn=1 in the structure script"
-				.. " (烧号为不可逆广播写，须结构期显式授权)")
+				.. " (burning the id is an irreversible broadcast write; the structure script must authorize it)")
 		end
 		-- 手册流程：先解锁 EPROM 写锁（0x30=0，否则写值掉电不保存），
 		-- 再用广播 ID 0xFE 写 0x05 新站号（对应手册《SCS通信协议》例 3）。
@@ -299,7 +299,7 @@ function call(data)
 	end
 
 	if not has_pos and torque == nil then
-		return err("Invalid Argument: position (missing; 或改为只发 torque / set_id)")
+		return err("Invalid Argument: position (missing; or send torque / set_id only)")
 	end
 
 	-- ==================== 先校验完，再下发任何一帧 ====================
@@ -319,7 +319,7 @@ function call(data)
 		spd, e = opt_finite(data.speed, 0, "speed")
 		if e ~= nil then return err("Invalid Argument: " .. e) end
 		if spd < 0 or spd > 1000 then
-			return err("Invalid Argument: speed (0~1000 步/s)")
+			return err("Invalid Argument: speed (0~1000 steps/s)")
 		end
 		tm, e = opt_finite(data.time, 0, "time")
 		if e ~= nil then return err("Invalid Argument: " .. e) end
@@ -334,7 +334,7 @@ function call(data)
 		if e ~= nil then return err("Invalid Argument: " .. e) end
 		torque = math.floor(torque)
 		if torque < 0 or torque > 2 then
-			return err("Invalid Argument: torque (0 自由|1 使能|2 阻尼)")
+			return err("Invalid Argument: torque (0 free | 1 enabled | 2 damping)")
 		end
 	end
 

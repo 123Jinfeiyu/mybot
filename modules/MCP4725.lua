@@ -112,7 +112,7 @@ function build(data)
 	-----------------------------------------------------
 	local r = i2c_read(fd, 5)
 	if r < 0 then
-		return err("Failed to read MCP4725 (器件在位检查)")
+		return err("Failed to read MCP4725 (device presence check)")
 	end
 	local rb = decode_readback(r)
 

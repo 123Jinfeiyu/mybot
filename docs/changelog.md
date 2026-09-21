@@ -15,6 +15,7 @@
 - **死绑定清理与引导样板归一**：删 7 处无引用绑定（`BMI270`/`SCSCL`/`ADS1256`/`MS5611`/`fft`）；63 处 mpath 引导行归一到同一字面形态。
 - **守门防静默**：`test/cpp/*.cpp` 未登记进 CMake 清单即 `FATAL_ERROR`（新用例忘登记立刻红）；luajit 缺失时显式 `WARNING` 并以 125=SKIP 守卫（此前静默注册 0 个 Lua 用例）。
 - **测试补齐**：沙箱中和清单（`os` 5 项 + `io` 5 项）与 `parseInterval` 边界（0 / 负 / 溢出 / >1h）改为表驱动断言。
+- **Lua 驱动层报错统一英文**（8 条消息，另含 `Camera` 2 条随内联 ERR 收敛后一并翻译）：`SCSCL`（fd 提示 / 烧号授权 / position / speed / torque）、`MHZ19`、`SDS011`、`MCP4725`、`LSM6DSV`、`Camera`。此前 `docs/development.md` 的分语言约定只覆盖 C++ 两区，Lua 层文案语言无规范可依；现约定为「`err()` 英文、注释中文」。**破坏性**：按报错整串匹配的调用方/脚本需同步（仓内两处测试断言已更新）。
 
 ### 2026-09-20 审计收口·第四阶段（agent 模式六条 A–F）
 
