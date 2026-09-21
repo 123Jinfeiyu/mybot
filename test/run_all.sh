@@ -174,6 +174,35 @@ else
 fi
 
 # ======================================================================
+# 器件常量机械对照 lint（fix-plan F5-5①）：test/test_bh1750.lua 内手抄了
+# 一份「与驱动一致」的命令常量表——两边同错不报警，真机回归会拿错误常量
+# 验证错误驱动。这里从两份源各抽 `local CMD_* = 0x..` 逐条比对，并断言
+# 条数（抽取判据失效时显式红，不静默放行）。全仓唯一一处常量测试副本，
+# 其余器件常量无重复（见 refactor-audit-lua §不得触碰：寄存器图属器件
+# 事实，不做收敛，本 lint 也不外推）。
+# ======================================================================
+echo "----- lint (BH1750 常量驱动↔测试对照) -----"
+drv="$(grep -oE '^local CMD_[A-Za-z0-9_]+[[:space:]]*= 0x[0-9A-Fa-f]+' modules/BH1750.lua | sed 's/^local[[:space:]]*//; s/[[:space:]]\+/ /g' | sort)"
+tst="$(grep -oE '^local CMD_[A-Za-z0-9_]+[[:space:]]*= 0x[0-9A-Fa-f]+' test/test_bh1750.lua | sed 's/^local[[:space:]]*//; s/[[:space:]]\+/ /g' | sort)"
+drv_n="$(printf '%s\n' "$drv" | grep -c .)"
+if [ -n "$filter" ]; then
+	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+elif [ -z "$drv" ] || [ -z "$tst" ]; then
+	echo "[FAIL] 常量抽取结果为空（驱动或测试的常量块改名/改格式？判据已失效）"
+	record_fail "lint-bh1750-const-parity"
+elif [ "$drv_n" -ne 10 ]; then
+	echo "[FAIL] 驱动侧抽到 $drv_n 条命令常量（应 10 条）——常量块形态变了，请同步本 lint 判据"
+	record_fail "lint-bh1750-const-parity"
+elif [ "$drv" != "$tst" ]; then
+	echo "[FAIL] BH1750 命令常量在驱动与测试间不一致（两边同错不报警的预言机失效）："
+	diff <(printf '%s\n' "$drv") <(printf '%s\n' "$tst") || true
+	record_fail "lint-bh1750-const-parity"
+else
+	echo "[PASS] BH1750 命令常量驱动↔测试逐条一致（$drv_n 条）"
+	record_pass
+fi
+
+# ======================================================================
 # mybot（C++ 移植）无硬件端到端：编译产物缺失即判失败（见 artifact_missing）。
 # 用例走真实 mybot 二进制：守护线程→共享槽→Ema→Monitor 全链路，
 # I2C/SPI 器件均为内存仿真模型（内嵌于各驱动尾部 <DRIVER>_VIRT 工厂，
