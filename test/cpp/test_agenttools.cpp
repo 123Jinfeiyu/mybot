@@ -454,6 +454,32 @@ TH_TEST(agenttools_run_command_does_not_inherit_parent_fds) {
 	TH_CHECK(out.find("LEAKED") == std::string::npos);
 }
 
+/* 审计 P1 修复（2026-09-21）：高编号 fd（≥4096）同样不得被子 shell 继承。
+ * 旧实现子进程侧退化路径封顶 4096，且父进程侧无全量 CLOEXEC 吊销——把句柄
+ * dup 到 4096 以上即可复现泄漏。判据与上一用例同款（/proc/self/fd 存在性）。
+ * 环境 soft limit 不允许 ≥4096 的 fd 时（裸机常见 1024）无从构造，按环境
+ * 能力跳过判据（仍跑 run_command 保证路径可达）。 */
+TH_TEST(agenttools_run_command_does_not_inherit_high_numbered_fds) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	int dev = ::open("/dev/null", O_RDONLY);
+	TH_CHECK(dev > 2);
+	int hi = ::fcntl(dev, F_DUPFD, 4200);	/* ≥4096：旧退化路径封顶之外 */
+	::close(dev);
+	if (hi < 0) { return; }	/* 环境 soft limit 太低，无法构造高编号 fd */
+	const std::string cmd = "test -e /proc/self/fd/" + std::to_string(hi)
+		+ " && echo LEAKED || echo CLEAN";
+	std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"" + cmd + "\",\"timeout_seconds\":5}"));
+	::close(hi);
+
+	TH_CHECK(out.find("exit_code=0") != std::string::npos);
+	TH_CHECK(out.find("CLEAN") != std::string::npos);
+	TH_CHECK(out.find("LEAKED") == std::string::npos);
+}
+
 TH_TEST(agenttools_run_command_timeout_and_truncate) {
 	AgentToolContext ctx;
 	ctx.allowShell = true;

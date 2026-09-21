@@ -15,7 +15,9 @@
 #include <cerrno>
 #include <chrono>
 #include <csignal>
+#include <cstdlib>
 #include <cstring>
+#include <dirent.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdexcept>
@@ -151,6 +153,26 @@ static bool reapWithGrace(pid_t pid, int& status, int graceMs = 2000) {
 	}
 }
 
+/* fork 前在**父进程**把 /proc/self/fd 里全部 ≥3 的句柄打上 FD_CLOEXEC。
+ * （审计 P1 修复，2026-09-21）这是 revokeInheritedFds 之外的第二层：父进程
+ * 允许分配堆内存（opendir 可用），按「实际打开的 fd」枚举，天然覆盖高编号
+ * 句柄，不受退化路径数值封顶的限制；子进程侧 revokeInheritedFds 继续兜住
+ * 「枚举之后、exec 之前」由并发守护线程新开的句柄。设置 CLOEXEC 不影响任何
+ * fd 在本进程内的继续使用（主进程自身从不 exec），HAL 句柄本就 O_CLOEXEC。
+ * 无 /proc 的环境（罕见）静默跳过，交由子进程侧退化路径兜底。 */
+static void markAllFdsCloexec() {
+	DIR* d = ::opendir("/proc/self/fd");
+	if (d == nullptr) { return; }
+	const int self = ::dirfd(d);
+	while (struct dirent* e = ::readdir(d) ) {
+		const int fd = ::atoi(e->d_name);
+		if (fd < 3 || fd == self) { continue; }
+		const int flags = ::fcntl(fd, F_GETFD);
+		if (flags >= 0) { ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC); }
+	}
+	::closedir(d);
+}
+
 /* 子进程 exec 前吊销继承来的 fd（≥3）。
  * HAL 侧已给每个器件句柄加 O_CLOEXEC，但宿主不知道来源的句柄同样会被
  * /bin/sh 继承：第三方 Lua 驱动自己 open 的 fd、dlopen 的 libcurl socket。
@@ -166,10 +188,15 @@ static void revokeInheritedFds() {
 #ifdef SYS_close_range
 	if (::syscall(SYS_close_range, 3U, ~0U, 1U /* CLOSE_RANGE_CLOEXEC */) == 0) { return; }
 #endif
-	/* 退化路径（内核 < 5.9 或 close_range 不可用）：按软上限逐个关。
-	 * 封顶 4096 —— 无上限的 rlim_cur（容器里常见 1048576）会让这段循环
-	 * 跑上百万次系统调用；超出的部分不覆盖，属退化路径的已知缺口。 */
-	long max = 4096;
+	/* 退化路径（内核 < 5.9 或 close_range 不可用）：按真实上限逐个关。
+	 * （审计 P1 修复，2026-09-21）旧实现固定封顶 4096——soft limit 更高的
+	 * 进程（容器常见 1048576）里编号 ≥4096 的继承 fd 不会被覆盖，模型驱动
+	 * 的 shell 可能拿到硬件/内部 socket 句柄。现在取 RLIMIT_NOFILE 软上限；
+	 * 仍保留绝对封顶 1048576：无上限 rlim（或极端配置）时这段循环最多百万
+	 * 次 close 系统调用（fork/exec 一次性路径，代价可接受），超过封顶的
+	 * 极端配置属残余已知缺口（且父进程侧 markAllFdsCloexec 已按实际打开
+	 * 的 fd 覆盖，本循环只兜「枚举之后新开」的窗口）。 */
+	long max = 1048576;
 	struct rlimit rl{};
 	if (::getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY
 		&& static_cast<long>(rl.rlim_cur) < max) {
@@ -191,6 +218,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		throw std::runtime_error("pipe 失败");
 	}
 	std::vector<char*> envp = buildCleanEnvp();	/* fork 前构建，子进程直接继承 */
+	markAllFdsCloexec();	/* fork 前父进程侧全量吊销（见函数注释） */
 	pid_t pid = fork();
 	if (pid < 0) {
 		close(po[0]);
