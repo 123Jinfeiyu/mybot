@@ -40,6 +40,10 @@ struct RunResult {
 	std::string err;
 };
 
+/* 放弃回收子进程时的告警文案（AG-10 单点）。单独暴露是为了让离线用例能钉住
+ * 「告警说了什么」——该路径的行为构造依赖 D 态进程，离线不可得。 */
+std::string reapGiveUpWarning(int pid, int graceMs);
+
 /* 经 /bin/sh -c 执行命令；stopRequested()（util）提前触发整组终止。
  * pipe / fork 失败抛 std::runtime_error。 */
 RunResult runShell(const std::string& cmd, int timeoutSec);

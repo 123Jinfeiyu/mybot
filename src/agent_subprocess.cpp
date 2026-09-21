@@ -137,10 +137,29 @@ void scrubEnvSecrets(const std::vector<char*>& pointers) {
 	}
 }
 
+/* 放弃回收时的告警文案（单点 + 纯函数，便于离线断言）。
+ * 为什么值得单独成函数：这条路径**极难在离线环境构造**——要让子进程在 2s 宽限
+ * 内收不回来，得让它处于 D 态（需要内核态挂起）或让 SIGKILL 无效（PID 1 /
+ * 受限进程；容器里本进程常是 PID 1，但测试二进制不是，`trap "" KILL` 无效）。
+ * 实测过该构造在容器内不成立，故不写易碎的行为用例，改为把「说了什么」钉住：
+ * 文案必须同时给出 pid、宽限时长与「会留僵尸」的后果——静默的问题是操作者
+ * 不知道发生过什么，这三点正是他需要的。 */
+std::string reapGiveUpWarning(int pid, int graceMs) {
+	return "警告: 子进程 " + std::to_string(pid) + " 在 " + std::to_string(graceMs)
+		+ "ms 宽限内未回收（可能处于 D 态或 kill 未生效）；"
+		  "本次放弃回收，该 pid 在宿主退出前会保持僵尸";
+}
+
 /* 有界回收：绝不无超时阻塞——kill 未生效（D 态 / 权限）时无超时 waitpid 会把
  * agent 会话永久挂死。WNOHANG 轮询到固定宽限，仍未回收即放弃（交由 init 收尸）。
  * EINTR 经 retryEintr 重试（阶段 4.2）：旧实现把 waitpid 的 -1/EINTR 当
- * 「已无可回收」直接 break，于是留下僵尸且 exitCode 停在 -1。 */
+ * 「已无可回收」直接 break，于是留下僵尸且 exitCode 停在 -1。
+ *
+ * 放弃回收时**响亮告警**（2026-09-21 审计 AG-10）：注释原来写「交由 init 收尸」，
+ * 但常驻 agent 进程自己还活着，init 不会接手，该 pid 会一直是僵尸；反复触发
+ * （D 态挂死的命令）就会在 agent 生命周期内累积。项目口径是「宁告警不静默」，
+ * 且这条路径的另一半（RunResult::hardStopped）已进模型可见的回执，这里再补一行
+ * stderr 让操作者也看得见 pid 与成因。 */
 static bool reapWithGrace(pid_t pid, int& status, int graceMs = 2000) {
 	const auto deadline = std::chrono::steady_clock::now()
 		+ std::chrono::milliseconds(graceMs);
@@ -148,7 +167,10 @@ static bool reapWithGrace(pid_t pid, int& status, int graceMs = 2000) {
 		pid_t w = bot::retryEintr([&] { return ::waitpid(pid, &status, WNOHANG); });
 		if (w == pid) { return true; }
 		if (w < 0) { return false; }	/* ECHILD 等：确已无可回收 */
-		if (std::chrono::steady_clock::now() >= deadline) { return false; }
+		if (std::chrono::steady_clock::now() >= deadline) {
+			std::cerr << reapGiveUpWarning(static_cast<int>(pid), graceMs) << std::endl;
+			return false;
+		}
 		::poll(nullptr, 0, 10);		/* 10ms 退避，避免忙等 */
 	}
 }

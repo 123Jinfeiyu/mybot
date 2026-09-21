@@ -3,7 +3,10 @@
 
 using fx::TempDir;
 
+#include <chrono>
+#include <csignal>
 #include <cstdlib>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
@@ -640,4 +643,131 @@ TH_TEST(agenttools_script_first_comment_is_sanitized) {
 	TH_CHECK(isValidUtf8(listing));
 	TH_CHECK(listing.find("POISON-") != std::string::npos);
 	TH_CHECK(listing.find("-MARKER") != std::string::npos);
+}
+
+/* ---- AG-6：run_command 的超时 / 整组终止必须有有效断言 ----
+ * 背景（2026-09-21 审计 AG-6）：唯一的超时用例只 grep「超时」文案，不看
+ * exit_code、不检查进程是否真死、**没有任何孙进程用例**——于是「整组 SIGKILL
+ * 失效」这种失效形态在守门里完全不可见（kill 用 -pid 是整组终止的实现前提，
+ * 但没人钉住它）。
+ * 下列用例把「整组终止」变成可观测断言：让**同组**孙进程持续输出，超时返回后
+ * 断言宿主没有被拖到硬上限（有后代吊着管道写端才会），并断言输出已停止增长。 */
+
+namespace {
+
+long long fileSize(const std::string& path) {
+	std::error_code ec;
+	const auto n = fs::file_size(path, ec);
+	return ec ? -1 : static_cast<long long>(n);
+}
+
+std::string readText(const std::string& path) {
+	std::ifstream f(path);
+	if (!f) { return ""; }
+	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+} // namespace
+
+/* 超时 → 整组终止：孙进程必须一起死，且返回码/标记/耗时都要对得上。
+ *
+ * 为什么需要这条（2026-09-21 审计 AG-6）：原用例只 grep「超时」文案，不看
+ * exit_code、不检查子进程是否真死、**没有任何孙进程用例**——而 kill(-pid) 的
+ * 「整组」正是超时语义的实现前提，此前没有任何断言钉住它。
+ *
+ * 构造：子 shell 用 `( ... ) &` 起一个后台孙进程；它登记自己的 pid 后持续追加
+ * 输出。`( ) &` 起的后代留在子 shell 的进程组里，**只会被整组终止覆盖**，
+ * 单个 pid 的 kill 管不到它。
+ *
+ * 判据：输出在超时返回后必须停止增长（间隔 1s 两次测文件大小）。不用
+ * kill(pid,0) 判活——僵尸对它仍返回 0，会得到假阳性（见文件末尾的说明）。 */
+TH_TEST(agenttools_run_command_timeout_kills_whole_process_group) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const fx::TempDir dir("timeout_pg");
+	const fs::path pidFile = dir.path() / "gc.pid";
+	const fs::path outFile = dir.path() / "gc.out";
+	const std::string q = dir.path().string();
+
+	/* 孙进程：先登记 pid，再把**自己的 stdout/stderr 重定向到 /dev/null**，
+	 * 然后持续往文件追加输出。
+	 * 重定向这一步是本用例确定性的关键：run_command 的子 shell 死后，孙进程若
+	 * 还持有继承来的管道写端，它的下一次写会撞 EPIPE → 默认 SIGPIPE 终止——
+	 * 于是「孙进程是否还活着」会被这个副作用掩盖（第一版就因此只观察到
+	 * hardStopped 一条判据）。重定向后它与管道无关，活着的唯一表现就是文件继续
+	 * 变大，判据因此是确定的。 */
+	const std::string cmd = "sh -c '(printf %s $$ > " + q + "/gc.pid; "
+		"exec >/dev/null 2>&1; "
+		"while :; do echo xxxxxxxxxxxxxxxx >> " + q + "/gc.out; sleep 0.02; done) &' ; sleep 30";
+
+	const auto t0 = std::chrono::steady_clock::now();
+	RunResult r = runShell(cmd, 1);
+	const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - t0).count();
+
+	TH_CHECK(r.timedOut);
+	TH_CHECK(r.exitCode == -1);		/* 被信号杀死 → -1，不是某个退出码 */
+
+	/* 孙进程确实登记过（否则本用例没测到东西） */
+	const std::string pidText = readText(pidFile.string());
+	TH_CHECK_MSG(!pidText.empty(), "孙进程未登记 pid，用例无效");
+	const pid_t gp = static_cast<pid_t>(std::strtol(pidText.c_str(), nullptr, 10));
+	TH_CHECK(gp > 1);
+
+	/* 核心断言：整组终止必须让两个流都 EOF，runShell 在 1s 超时后立即返回。
+	 * 走到硬上限（超时 + 3s）说明**有后代吊着管道写端**——正是「只 kill 直接
+	 * 子进程、漏掉同组孙进程」的指纹（反向验证过：把 kill(-pid) 改成 kill(pid)
+	 * 后这里立刻红，且失败信息指向「整组 kill 没能让管道 EOF」）。 */
+	TH_CHECK_MSG(!r.hardStopped,
+		"超时路径触发了硬上限兜底（说明整组 kill 没能让管道 EOF，"
+			"通常意味着有同组后代仍在运行）");
+
+	/* 第二判据（已重定向管道，故它是确定的）：整组终止后孙进程应已消失，
+	 * 文件不再变大；单 pid kill 时它会一直在写。 */
+	const long long size1 = fileSize(outFile);
+	TH_CHECK_MSG(size1 > 0, "孙进程未产出内容，用例无效");
+	::usleep(1000 * 1000);
+	const long long size2 = fileSize(outFile);
+	TH_CHECK_MSG(size1 == size2,
+		"孙进程 " + std::to_string(gp) + " 仍在输出（" + std::to_string(size1)
+			+ " → " + std::to_string(size2) + " 字节）：超时未终止整个进程组");
+	/* 远小于 sleep 30，说明确实提前中止 */
+	TH_CHECK_MSG(elapsedMs < 8000, "耗时 " + std::to_string(elapsedMs) + "ms");
+}
+
+/* 超时标记与文案一致：模型看到的回执必须说明「超时，已终止」，且带退出码 */
+TH_TEST(agenttools_run_command_timeout_receipt_is_actionable) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"sleep 30\",\"timeout_seconds\":1}"));
+	TH_CHECK(out.find("exit_code=-1") != std::string::npos);
+	TH_CHECK(out.find("超时") != std::string::npos);
+	/* 正常超时不该出现硬上限那句（两者是不同的失效语义） */
+	TH_CHECK(out.find("硬上限") == std::string::npos);
+}
+
+/* 已知边界（不在本文件里做断言）：若孙进程自行 setsid 脱离进程组，整组 kill
+ * 按定义覆盖不到它，它会活到被 SIGPIPE 或自身超时收走。曾尝试用 setsid 用例把
+ * 这条钉住，但判据不稳：它登记 pid 需要约几十毫秒，而短超时下 runShell 可能先
+ * 返回——未登记就会脏失败。真实的收口手段是「不给子进程留下会自行 setsid 的
+ * 脚本」+ 文档如实声明（docs/agent.md），而不是一条易碎的测试。 */
+
+/* AG-10：放弃回收必须响亮（告警文案单点）。
+ *
+ * 这条路径**极难在离线环境构造**（要让子进程在 2s 宽限内收不回来，得让它处于
+ * D 态，或让 SIGKILL 无效——后者要求 PID 1 / 受限进程；容器里本进程常是 PID 1
+ * 但测试二进制不是，`trap "" KILL` 无效，实测构造不成立）。故不写易碎的行为
+ * 用例，改为钉住「说了什么」：文案必须给出 pid、宽限时长与「会留僵尸」的后果。
+ * 静默的危害是操作者不知道发生过什么，这三点正是他需要的信息。 */
+TH_TEST(agenttools_reap_give_up_warning_is_informative) {
+	const std::string w = reapGiveUpWarning(4242, 2000);
+	TH_CHECK_MSG(w.find("4242") != std::string::npos, "告警未给出 pid：" + w);
+	TH_CHECK_MSG(w.find("2000") != std::string::npos, "告警未给出宽限时长：" + w);
+	TH_CHECK_MSG(w.find("僵尸") != std::string::npos, "告警未说明后果（僵尸）：" + w);
+	TH_CHECK_MSG(w.find("未回收") != std::string::npos, "告警未说明发生了什么：" + w);
 }
