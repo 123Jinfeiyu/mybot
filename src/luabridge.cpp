@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <map>
 #include <string>
 #include <vector>
@@ -32,9 +33,29 @@ std::string luaErrorString(lua_State* L) {
 }
 
 /* ---- 探测全局变量类型（getglobal + type + pop，栈深不变）---- */
-int luaGlobalType(lua_State* L, const char* name) {
+
+/* F5-2：luaGlobalType 的工作体。getglobal 可能执行 _G 的 __index 元方法
+ * （驱动可给 _G 装元表）——任意驱动代码可在其中报错，必须经 pcall。 */
+static int globalTypeClosure(lua_State* L) {
+	const char* name = static_cast<const char*>(lua_touserdata(L, 1));
 	lua_getglobal(L, name);
 	int tp = lua_type(L, -1);
+	lua_pop(L, 1);
+	lua_pushinteger(L, tp);
+	return 1;
+}
+
+int luaGlobalType(lua_State* L, const char* name) {
+	/* F5-2：受保护帧内探测。__index 元方法报错（或 OOM longjmp）折成
+	 * 「条目不存在」（LUA_TNIL）——调用方（luavar 的入口探测）走既有
+	 * 的「入口缺失」ERR 契约，而不是无捕获 longjmp 裸崩。 */
+	lua_pushcfunction(L, globalTypeClosure);
+	lua_pushlightuserdata(L, const_cast<char*>(name));
+	if (lua_pcall(L, 1, 1, 0) != LUA_OK) {
+		lua_pop(L, 1);		/* 弹出错误对象，栈深复原 */
+		return LUA_TNIL;
+	}
+	int tp = static_cast<int>(lua_tointeger(L, -1));
 	lua_pop(L, 1);
 	return tp;
 }
@@ -224,6 +245,43 @@ Json lua_value_to_json(lua_State* L, int idx, int depth) {
 	return JsonNull();
 }
 
+/* ---- F5-2：call_lua 的「取全局函数 + 造参数表 + 填参」整段搬进受保护帧 ----
+ * lua_getglobal 会执行 _G 的 __index 元方法（驱动可装元表让任意驱动代码在
+ * 宿主的 getglobal 期运行并报错）；lua_createtable/pushstring 会分配内存
+ * （巨大 narr 或 OOM 即 LUA_ERRMEM）。这些 C-API 原先都在 pcall 之外——
+ * 报错即无捕获越帧：longjmp 构建（默认源码构建）下 panic 后裸崩
+ * （实测 exit 134/139，跳过 deactivate 清理链）；C++ unwind 构建下被宿主
+ * 兜底 catch 折成含混的「non-standard exception」，真实报错文本全丢。
+ * 两种形态都违反 ERR 契约。修法：整段进一个经 lua_pcall 的 C 闭包，Lua
+ * 错误被 pcall 截住折成既有 ERR 契约；C++ 侧异常（LuaNestingTooDeep 等）
+ * 在闭包内接住转 lua_error——**绝不穿透 Lua 帧**（C++ 异常与 longjmp 混越
+ * 边界是 UB）。残余风险：pushcclosure 本身的微小分配仍在帧外，但它不受
+ * 驱动输入控制（fixed-size Closure），不入判据。 */
+static int prepareCallClosure(lua_State* L) {
+	const Json* obj = static_cast<const Json*>(lua_touserdata(L, lua_upvalueindex(1)));
+	const std::string* mode = static_cast<const std::string*>(lua_touserdata(L, lua_upvalueindex(2)));
+	try {
+		lua_getglobal(L, mode->c_str());
+		/* 创建 Lua 表，装入全部字段 */
+		lua_createtable(L, 0, 0);
+		for (const auto& kv : obj->items()) {
+			push_lua_value(L, kv.second);
+			lua_setfield(L, -2, kv.first.c_str());
+		}
+		return 2;	/* [func, params] */
+	} catch (const LuaNestingTooDeep& e) {
+		/* N-15 参数侧深度防线：保持既有文案形态（原 call_lua 就地转 ERR 的措辞） */
+		std::string msg = std::string("Lua function '") + mode->c_str()
+			+ "' received " + e.what();
+		lua_pushlstring(L, msg.c_str(), msg.size());
+	} catch (const std::exception& e) {
+		/* 其余 C++ 异常按 what() 折进 ERR；错误串构造自身 OOM 的极端残余
+		 * 不再设防（catch 块内再抛将穿透 Lua 帧，属理论边界） */
+		lua_pushlstring(L, e.what(), std::strlen(e.what()));
+	}
+	return lua_error(L);	/* longjmp 到外层 pcall——不穿透 Lua 帧 */
+}
+
 /* ---- 调用 Lua 脚本的全局 mode 函数（build/call/destroy/read）----
  * 每次调用后重置栈指针（恢复调用前栈深）。pcall 失败显式带 ERR 契约。 */
 Json call_lua(lua_State* L, const Json& json) {
@@ -240,27 +298,22 @@ Json call_lua(lua_State* L, const Json& json) {
 	}
 	std::string mode = modeField->getValue();
 	rejectEmbeddedNul(obj);		/* NUL 防线：含 mode 在内全量预校验，栈尚未触碰 */
-	lua_getglobal(L, mode.c_str());
 
-	/* 创建 Lua 表，装入全部字段 */
-	lua_createtable(L, 0, 0);
-	bool paramsPushed = true;
-	try {
-		for (const auto& kv : obj.items()) {
-			push_lua_value(L, kv.second);
-			lua_setfield(L, -2, kv.first.c_str());
-		}
-	} catch (const LuaNestingTooDeep& e) {
-		/* N-15 参数侧深度防线：与返回侧（C-9）对称就地转 ERR，绝不让它逃出去——
-		 * call_lua 的调用方（freeImpl）在 call_lua 之后才 lua_close，异常一逃就
-		 * 跳过状态机关闭（泄漏），末尾的 lua_settop 也会被跳过而脏掉栈。
-		 * 压栈是分步副作用：已压入的全局函数/表/标量由末尾 lua_settop(L, top)
-		 * 统一复原，故此处只需把结果折成 ERR 并跳过调用。 */
-		paramsPushed = false;
-		ret = makeErrResult("Lua function '" + mode + "' received " + e.what());
+	/* F5-2：准备段整段入受保护帧（upvalue：Json 指针 + mode 指针，均指向
+	 * 本函数栈上存活对象）。失败即 ERR 早退——原实现的「paramsPushed=false
+	 * 则跳过 pcall」分支由该早退取代，末尾 settop 复原语义保持。 */
+	lua_pushlightuserdata(L, const_cast<Json*>(&obj));
+	lua_pushlightuserdata(L, static_cast<void*>(&mode));
+	lua_pushcclosure(L, prepareCallClosure, 2);
+	if (lua_pcall(L, 0, 2, 0) != LUA_OK) {
+		std::string msg = luaErrorString(L);
+		logD([&] { return "Lua call preparation failed: " + msg; });
+		lua_settop(L, top);
+		return makeErrResult(msg);
 	}
 
-	if (paramsPushed) {
+	/* 栈：[func, params]，pcall 消费 func 与 params 各一层（准备段成功后必然执行） */
+	{
 		/* C3 防线：pcall 成功但返回 0 个值时，栈顶是调用前的旧栈顶——
 		 * 以进入本函数时的栈深 top 为基准算返回值个数，nret > 0 才检查
 		 * 返回值（否则会把无关栈上值当返回表遍历）。 */

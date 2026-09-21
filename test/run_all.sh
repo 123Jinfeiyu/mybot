@@ -1033,6 +1033,35 @@ SQLEOF
 		env BOT4CJ_MODULE_PATH="./modules" timeout 30 "$bin" \
 		--robot=.tmp/uart_two_vars.sql --input /dev/null
 
+	# F5-2：C-API 无保护帧回归——驱动给 _G 装上带报错 __index 的元表后，宿主
+	# 对「缺失全局」的 getglobal 会执行该元方法。旧实现 getglobal/createtable
+	# 在 pcall 之外：longjmp 构建（默认源码构建）下无捕获跳转即 panic 裸崩
+	# （134/139，跳过 deactivate 清理链）；C++ unwind 构建下虽被宿主兜底
+	# catch 折成 rc=1，但文案是含混的「non-standard exception」，真实报错
+	# 文本全丢。现「取全局 + 造参数表 + 填参」整段进受保护帧，两种构建下
+	# 都折成既有 ERR 契约（rc=1 + 带上下文的报错文本）。夹具只定义 build
+	# 不定义 call：结构期 build 正常，动作派发的 call 触发 __index。
+	cat > .tmp/fixmod/GmtDrv.lua <<'LUAEOF'
+-- F5-2 回归夹具：_G 元表 __index 报错。宿主对缺失全局的 getglobal 必须在
+-- 受保护帧内（否则裸崩且跳过清理链）。故意只定义 build 不定义 call。
+setmetatable(_G, { __index = function(_, k)
+	error("boom from __index: " .. tostring(k))
+end })
+
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+LUAEOF
+	cat > .tmp/fixmod_gmt.sql <<'SQLEOF'
+CREATE TABLE GmtDrv (
+	name String
+);
+INSERT INTO GmtDrv (name) VALUES ('h0');
+SQLEOF
+	printf '@Action\nh0.x;\n   1;\n@\n' > .tmp/fixmod_gmt.mt
+	run_one_hardening 'lua_getglobal_unprotected_frame' 1 'boom from __index' \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		--robot=.tmp/fixmod_gmt.sql --input=.tmp/fixmod_gmt.mt
+
 	# ---- agent CLI 负路径三连（F-20 同族，main.cpp 的组合校验此前无守门用例，
 	# docs/testing.md §9 却已声称覆盖——补齐让声称成真）----
 	# 1) agent 专属选项出现在非 agent 模式：意图与参数不一致，显式拒绝退出 2
