@@ -96,6 +96,32 @@ TH_TEST(daemon_slow_tick_abandons_slot_and_thread_releases_it) {
 	TH_CHECK(!registry[0]->slotAlive());
 }
 
+/* 审计 P1 修复（2026-09-21）：awaitExit——弃管后的第二等待窗口。
+ * 弃管（waitUntil 超时）只交出槽所有权、不改变任何既有观测量（槽保持已
+ * 交出、读按 ERR 契约返回），但 awaitExit 必须能在宽限内等到线程真正退场
+ * ——RobotStruct::deactivate 的二段屏障据此在硬件销毁前收窄
+ * 「daemon 活着 + 总线已销毁」的竞态窗口。幂等：future 已消费后再等直接
+ * 返回 true，不重复消费。 */
+TH_TEST(daemon_await_exit_waits_thread_exit_after_abandon) {
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	writeSlowTickChunk();
+	mt::MatrixObject defs = daemonDefs(kSlowTickRel);
+	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
+	var->build();
+	/* 先让线程进入慢拍（3s），再主动走弃管：500ms << 剩余慢拍 */
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	TH_CHECK(!registry[0]->waitUntil(
+		std::chrono::steady_clock::now() + std::chrono::milliseconds(500)));
+	TH_CHECK(!registry[0]->slotAlive());
+	bot::Json err = var->play(bot::JsonObject());
+	TH_CHECK(err.get("result")->getValue() == "ERR");
+	/* 二段等待：累计已等 ~0.7s，慢拍 ~3s 结束，宽限 5s 覆盖余量 */
+	TH_CHECK(registry[0]->awaitExit(5000));
+	/* 幂等：线程已退场（future 已消费），再等立即返回 true */
+	TH_CHECK(registry[0]->awaitExit(0));
+}
+
 /* C-L2 尾：错误退避最长 interval×256，退避睡眠若一次性睡满会吞掉 stop 请求
  * ——stop 落在一次超过 join 超时（保底 2000ms）的深睡中段时必然走弃管路径，
  * 停止语义被架空。睡眠分段查 stop 后，退避总时长不变而 stop 响应收敛到

@@ -132,6 +132,16 @@ public:
 	 * 幂等：槽已交出（含被断电屏障先等到/先弃管）即无事可做。 */
 	void waitForExit();
 
+	/* 弃管后的第二等待窗口（审计 P1 修复，2026-09-21）：
+	 * waitUntil 超时弃管只交出所有权、不会让线程停下——detached 线程可能
+	 * 仍在 tick/cleanup 中触碰总线。本方法**不改变弃管语义**（槽仍保持
+	 * 已交出，readSample 照旧按 ERR 契约返回），只是让调用方在动硬件之前
+	 * 再等一段宽限，给「慢拍/长阻塞但终会返回」的守护一次真正退场的机会，
+	 * 把「daemon 活着 + 总线已销毁」的竞态窗口收敛到确实卡死的线程。
+	 * 返回 true = 线程已确认退场（或从未 spawn / future 已消费）；false =
+	 * 宽限耗尽仍未退场。幂等：已 joined（future 已消费）直接返回 true。 */
+	bool awaitExit(int64_t graceMs);
+
 	/* 断电屏障用：算全体共享预算时要取各守护 joinTimeout 的最大值 */
 	int64_t joinTimeoutMs() const { return joinTimeoutMs_; }
 

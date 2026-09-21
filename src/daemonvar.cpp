@@ -286,6 +286,21 @@ void DaemonRunner::waitForExit() {
 	waitUntil(std::chrono::steady_clock::now() + std::chrono::milliseconds(joinTimeoutMs_));
 }
 
+/* ---- awaitExit：弃管后的第二等待窗口（审计 P1 修复，见头文件注释）----
+ * 只等 future、不触碰槽：弃管路径下槽已移交线程副本，这里不能再碰。
+ * future 已消费（此前 joined）或从未 spawn 即无事可做；宽限内退场则消费
+ * future（线程侧 set_value 的 try/catch 容忍「已消费」，两条路径都安全）。 */
+bool DaemonRunner::awaitExit(int64_t graceMs) {
+	if (!spawned_.load() || !fut_.valid()) { return true; }
+	std::future_status st = fut_.wait_until(
+		std::chrono::steady_clock::now() + std::chrono::milliseconds(graceMs));
+	if (st != std::future_status::ready) { return false; }
+	int64_t n = fut_.get();
+	std::cerr << "Daemon '" << name_ << "' exited within abandon grace, total publishes=" << n
+		<< std::endl;
+	return true;
+}
+
 /* ---- readSample：主线程加锁读采样值 → JSON（v0..vN 标量键 + values 数组）---- */
 Json DaemonRunner::readSample() {
 	/* 2.4：加载本地强引用副本——本次读取期间槽由副本保证存活。原「play/

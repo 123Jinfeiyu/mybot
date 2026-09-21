@@ -57,8 +57,34 @@ void RobotStruct::deactivate() {
 		}
 		const auto deadline = std::chrono::steady_clock::now()
 			+ std::chrono::milliseconds(budgetMs);
+		std::vector<DaemonRunner*> abandoned;
 		for (const auto& h : daemonHolders_) {
-			h->waitUntil(deadline);
+			if (!h->waitUntil(deadline)) { abandoned.push_back(h.get()); }
+		}
+		/* ---- 二段屏障（审计 P1 修复，2026-09-21）----
+		 * 弃管只是交出槽所有权，detached 线程并没有停——下面紧跟着的逆序
+		 * destroy 会关闭总线/去初始化器件，与仍在 tick/cleanup 的线程构成
+		 * 硬件竞态。这里在动硬件之前给弃管守护一次真正退场的机会（宽限 =
+		 * 共享预算，封顶 30s：无法在 join 超时内退场的守护多半卡死在不可
+		 * 中断的调用里，更长的等待只是把停机挂死换掉竞态）。宽限内退场的
+		 * 线程不再与 destroy 并发；耗尽仍活着的才真正带着竞态进入 destroy，
+		 * 由下方告警如实点名。 */
+		if (!abandoned.empty()) {
+			constexpr int64_t kMaxGraceMs = 30000;
+			const int64_t graceMs = std::min<int64_t>(budgetMs, kMaxGraceMs);
+			std::cerr << "Deactivate: " << abandoned.size()
+				<< " daemon(s) outlived the stop barrier, granting " << graceMs
+				<< "ms grace before hardware de-init" << std::endl;
+			std::size_t stillRunning = 0;
+			for (auto* d : abandoned) {
+				if (!d->awaitExit(graceMs)) { ++stillRunning; }
+			}
+			if (stillRunning > 0) {
+				std::cerr << "Deactivate: " << stillRunning
+					<< " daemon(s) STILL running after grace window —"
+					<< " hardware de-init will race with them (they may touch the"
+					<< " bus after de-init)" << std::endl;
+			}
 		}
 	}
 	std::string lastWarn;
