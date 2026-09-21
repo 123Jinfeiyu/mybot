@@ -191,6 +191,40 @@ std::string sniffImageFormat(const std::string& b64) {
 	return "";
 }
 
+/* ---- 图片体积上限的两道判据（2026-09-21 第三轮审计 AG-19）----
+ * `capture_image` 是宿主里唯一会搬运 MiB 级字符串的地方，而它此前把
+ * 2 MiB 判据放在**拿到 base64 之后**：驱动仿真上限 16 MiB（base64 约 21 MB）
+ * 意味着「一张注定被拒的图」要先走完 base64 编码、跨 Json/Lua 边界，
+ * 再被拒——实测 10 MiB 的图让进程峰值到 219 MiB（见 .tmp/memaudit/）。
+ * 现在按驱动已经给出的原始字节数**先判**，编码/跨界的代价直接省掉。
+ *
+ * 两道都要留：① 声明是不可信输入（驱动的 `bytes` 可能漏填或算错）；
+ * ② 声明对不上时，base64 长度这道兜底必须命中。判据调用点因此**不允许**
+ * 用 Json::getValue()——那个访问器按值返回整串，比一次长度就拷贝 2 MiB
+ * （原实现 `b64->getValue().size() > kMaxImageBase64Bytes` 正是如此，
+ * 同一段代码还另外拷了 5 次）。一律借用 Json 节点自己的 s。 */
+std::string checkImageSize(const Json& res, std::size_t b64Bytes) {
+	/* ① 原始字节数的声明（base64 = ceil(raw/3)*4 → raw 上限取 3/4 向下取整）*/
+	if (const Json* raw = res.find("bytes"); raw != nullptr && raw->isInt()) {
+		const long long declared = raw->getInt();
+		const long long maxRaw = static_cast<long long>(kMaxImageBase64Bytes / 4) * 3;
+		if (declared > maxRaw) {
+			return "图像过大：" + std::to_string(declared) + " 字节原始数据，超过上限 "
+				+ std::to_string(maxRaw) + " 字节（宿主按 base64 上限 "
+				+ std::to_string(kMaxImageBase64Bytes)
+				+ " 字节折算，未做 base64 编码即拒绝）；请降低分辨率或换小图"
+				  "（大图会击穿会话历史预算）";
+		}
+	}
+	/* ② base64 实际长度（声明缺失/偏低时的兜底；此时已编码，只能事后拒）*/
+	if (b64Bytes > kMaxImageBase64Bytes) {
+		return "图像过大：base64 " + std::to_string(b64Bytes) + " 字节，超过上限 "
+			+ std::to_string(kMaxImageBase64Bytes)
+			+ " 字节；请降低分辨率或换小图（大图会击穿会话历史预算）";
+	}
+	return "";
+}
+
 std::string dataUrlMimeFor(const Json& res, const std::string& b64) {
 	auto fmt = res.get("format");
 	if (!fmt || !fmt->isStr() || fmt->getValue().empty()) {
@@ -442,15 +476,17 @@ static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 				params.put("src_root", JsonString(parent.string()));
 			}
 			Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
-			auto b64 = res.get("b64");
-			if (!b64 || !b64->isStr() || b64->getValue().empty()) {
+			/* 借用而非拷贝（AG-19）：Json::getValue() 按值返回，一次拍照原本要
+			 * 为同一串 base64 拷 6 次（本函数 5 处 + 体积判据 1 处）。 */
+			const Json* b64Node = res.find("b64");
+			if (b64Node == nullptr || !b64Node->isStr() || b64Node->s.empty()) {
 				throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
 			}
-			if (b64->getValue().size() > kMaxImageBase64Bytes) {
-				throw std::runtime_error("图像过大：base64 "
-					+ std::to_string(b64->getValue().size()) + " 字节，超过上限 "
-					+ std::to_string(kMaxImageBase64Bytes)
-					+ " 字节；请降低分辨率或换小图（大图会击穿会话历史预算）");
+			const std::string& b64 = b64Node->s;
+			/* 体积判据（AG-19）：先用驱动声明的原始字节数判，再做 base64 编码；
+			 * 声明对不上时由 base64 长度兜底。拒绝文案由 checkImageSize 单点产出。 */
+			if (std::string sizeErr = checkImageSize(res, b64.size()); !sizeErr.empty()) {
+				throw std::runtime_error(sizeErr);
 			}
 			std::string desc = "已拍摄照片";
 			auto w = res.get("width");
@@ -471,9 +507,9 @@ static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 			 * image/jpeg：仿真来源可以是 PNG/GIF/WebP，硬编码会把「JPEG 标签 +
 			 * PNG 字节」发给网关，严格解析器直接 400。驱动侧已按魔数判定并对
 			 * 不认识的格式响亮拒绝，这里只需原样采用并做一次自洽交叉校验。 */
-			std::string mime = dataUrlMimeFor(res, b64->getValue());
+			std::string mime = dataUrlMimeFor(res, b64);
 			return {desc + "。画面已加入你的上下文。",
-				"data:" + mime + ";base64," + b64->getValue()};
+				"data:" + mime + ";base64," + b64};
 		}};
 }
 

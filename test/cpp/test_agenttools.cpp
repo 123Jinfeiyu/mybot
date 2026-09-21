@@ -56,6 +56,28 @@ std::string execText(const AgentToolRegistry& reg, const std::string& name, cons
 	return reg.execute(name, args).text;
 }
 
+/* 让驱动解析路径同时看到真模块树与测试夹具目录（modules 在前，与生产语义一致：
+ * 同名以 modules 为准）。退出时还原，避免影响其它用例。
+ * 与 test_agentdriver.cpp 的同名夹具同源——假驱动必须放在能解析到的模块根下。 */
+class ModulePathGuard {
+	std::string old_;
+	bool had_ = false;
+
+public:
+	explicit ModulePathGuard(const std::string& path) {
+		const char* v = std::getenv("BOT4CJ_MODULE_PATH");
+		had_ = v != nullptr;
+		if (had_) { old_ = v; }
+		::setenv("BOT4CJ_MODULE_PATH", path.c_str(), 1);
+	}
+	~ModulePathGuard() {
+		if (had_) { ::setenv("BOT4CJ_MODULE_PATH", old_.c_str(), 1); }
+		else { ::unsetenv("BOT4CJ_MODULE_PATH"); }
+	}
+	ModulePathGuard(const ModulePathGuard&) = delete;
+	ModulePathGuard& operator=(const ModulePathGuard&) = delete;
+};
+
 } // namespace
 
 TH_TEST(agenttools_script_catalog) {
@@ -341,6 +363,75 @@ TH_TEST(agenttools_capture_image_rejects_oversize_image) {
 	robot.deactivate();
 }
 
+/* ---- AG-19：体积判据必须在 base64 编码**之前**命中 ----
+ * 修复前宿主只按 base64 长度判，而驱动侧的仿真上限是 16 MiB（base64 约 21 MB）：
+ * 一张注定被拒的图要先被 base64 编码、跨 Json/Lua 边界搬运、再被拒。实测 10 MiB
+ * 的图让进程峰值到 219 MiB（.tmp/memaudit/）。现在先用驱动声明的原始字节数判。
+ * 「命中哪一道」由文案区分：早退那道会点名「未做 base64 编码即拒绝」，
+ * 兜底那道会点名实际的 base64 字节数——所以断言文案即可证明顺序。 */
+TH_TEST(agenttools_capture_image_rejects_oversize_raw_before_base64) {
+	TempDir tmp("bigraw");
+	/* 原始字节数刚好越过折算上限（3/4 × kMaxImageBase64Bytes），但仍远在驱动侧
+	 * 16 MiB 仿真上限之内——即「驱动会照常返回、只有宿主这道判据能拦」的区间 */
+	const std::size_t maxRaw = kMaxImageBase64Bytes / 4 * 3;
+	const std::size_t raw = maxRaw + 3;
+	fs::path pic = tmp.path() / "big.jpg";
+	writeFile(pic, std::string("\xff\xd8\xff", 3) + std::string(raw - 3, 'x'));
+
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.camera = robot.registry().find("cam0");
+	ctx.cameraSrc = pic.string();
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	const AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+
+	TH_CHECK_MSG(res.imageDataUrl.empty(), "超限图不该产出图片 URL");
+	TH_CHECK_MSG(res.text.find("图像过大") != std::string::npos, res.text);
+	TH_CHECK_MSG(res.text.find("未做 base64 编码即拒绝") != std::string::npos,
+		"应在拿到 base64 之前就拒绝（声明字节数那道判据），实际: " + res.text);
+	TH_CHECK_MSG(res.text.find(std::to_string(raw)) != std::string::npos,
+		"报错应点名驱动声明的原始字节数，实际: " + res.text);
+	robot.deactivate();
+}
+
+/* 声明缺失/偏低时的兜底：驱动不报 bytes，base64 长度这道仍要拦住 */
+TH_TEST(agenttools_capture_image_falls_back_to_base64_length_when_undeclared) {
+	ModulePathGuard guard("./modules:test/cpp");
+	/* 原始字节数刚好越过 2 MiB base64 上限折算出的 1572864 字节（+3 即多一组），
+	 * 由夹具合成的假图给出；base64 长度按 4/3 上取整精确可算 */
+	const std::size_t raw = kMaxImageBase64Bytes / 4 * 3 + 3;
+	const std::size_t b64Len = (raw + 2) / 3 * 4;
+	TempDir tmp("nobytes");
+	const fs::path sqlFile = tmp.path() / "cam.sql";
+	writeFile(sqlFile,
+		"CREATE TABLE AgentFakeCamera (name String, raw_bytes String, omit_bytes String);\n"
+		"INSERT INTO AgentFakeCamera (name, raw_bytes, omit_bytes) "
+		"VALUES ('cam0', '" + std::to_string(raw) + "', 'yes');\n");
+
+	MemoryReader reader(readAll(sqlFile.string()));
+	RobotStruct robot(reader);
+	robot.active();
+	TH_CHECK(robot.registry().find("cam0") != nullptr);
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.camera = robot.registry().find("cam0");
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	const AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+
+	TH_CHECK_MSG(res.imageDataUrl.empty(), "超限图不该产出图片 URL");
+	TH_CHECK_MSG(res.text.find("图像过大") != std::string::npos, res.text);
+	TH_CHECK_MSG(res.text.find(std::to_string(b64Len)) != std::string::npos,
+		"兜底判据应点名实际 base64 字节数 " + std::to_string(b64Len) + "，实际: " + res.text);
+	robot.deactivate();
+}
+
 TH_TEST(agenttools_capture_image_reports_device_failure) {
 	/* 设备打不开时要把驱动的 ERR 折成文本回给模型（不崩会话、也不给假图片） */
 	MemoryReader reader("CREATE TABLE Timer (name String);\n"
@@ -548,7 +639,10 @@ TH_TEST(agenttools_run_command_does_not_inherit_high_numbered_fds) {
 	TH_CHECK(dev > 2);
 	int hi = ::fcntl(dev, F_DUPFD, 4200);	/* ≥4096：旧退化路径封顶之外 */
 	::close(dev);
-	if (hi < 0) { return; }	/* 环境 soft limit 太低，无法构造高编号 fd */
+	/* AG-24（第三轮审计）：这里原来是裸 `return;` —— :639 的 TH_CHECK 已经计过数，
+	 * 于是 AG-5 的「零断言即失败」防线不会触发，本用例在 soft limit 偏低的机器上
+	 * 报 [PASS]，而它真正的判据（高编号 fd 不泄漏）一次都没跑。必须显式表态。 */
+	if (hi < 0) { TH_SKIP("RLIMIT_NOFILE 过低，无法构造 ≥4200 的 fd"); }
 	const std::string cmd = "test -e /proc/self/fd/" + std::to_string(hi)
 		+ " && echo LEAKED || echo CLEAN";
 	std::string out = execText(tools, "run_command",
