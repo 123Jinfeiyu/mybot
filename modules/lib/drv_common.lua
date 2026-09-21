@@ -91,13 +91,28 @@ function virt_prepare(data)
 	-- 「守护泵 A 实例、驱动写 B 实例」的静默错位，故整体跳过。
 	if vbus._injected then virt_state = "done"; return nil end
 
-	-- 模型按约定发现：本状态机只加载了一个驱动文件，其内嵌全局至多一个 *_VIRT
-	local model, driver
+	-- 模型按约定发现（D2-6/F1-8，2026-09-21）：本状态机只加载一个驱动文件，
+	-- 其内嵌全局至多一个 *_VIRT。pairs(_G) 的遍历顺序不确定，旧实现在出现两个
+	-- 模型时「静默取最后一个」——挂错模型读到的是另一颗器件的寄存器语义，
+	-- 比报错难查得多。故：恰好一个 → 用它；两个及以上 → 明确报错并点名双方。
+	local found = {}
 	for k in pairs(_G) do
-		if type(k) == "string" then
-			local n = k:match("^(.+)_VIRT$")
-			if n then model, driver = rawget(_G, k), n end
+		if type(k) == "string" and k:match("^(.+)_VIRT$") then
+			found[#found + 1] = k
 		end
+	end
+	if #found > 1 then
+		table.sort(found)		-- 报错文案与 pairs 顺序无关，测试可逐字断言
+		virt_state = "error:multiple <DRIVER>_VIRT models in one lua_State: "
+			.. table.concat(found, ", ")
+			.. " (host keeps one lua_State per hardware variable; do not load"
+			.. " two drivers into the same state)"
+		return virt_state:sub(7)
+	end
+	local model, driver
+	if #found == 1 then
+		model = rawget(_G, found[1])
+		driver = found[1]:match("^(.+)_VIRT$")
 	end
 
 	local addr = tonumber(data.address)
