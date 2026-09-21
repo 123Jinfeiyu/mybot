@@ -32,6 +32,10 @@ end
 function destroy(data)
 	local ok, e = arg_table(data)
 	if not ok then return e end
+	-- 释放池化 HTTP 会话（AG-20）：句柄由本驱动跨轮持有，不在这里关掉就等于
+	-- 把 libcurl 的连接/缓冲留给「进程退出」——ASan/LSan 实测每进程泄漏约 95 KB
+	-- （栈全在 libcurl 内部，suppressions 里的 CRYPTO_malloc 只盖住 OpenSSL 那部分）。
+	http.close_pooled()
 	return { result = "OK" }
 end
 

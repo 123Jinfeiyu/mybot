@@ -232,9 +232,19 @@ check("AG-14：非字符串入参判假（不抛错）", not openai.api_key_has_
 -- ================= 句柄收尾不许留悬垂回调（AG-16） =================
 -- 旧实现只 cb:free() 不清句柄，WRITEFUNCTION 仍指在已释放的回调上；当前只因
 -- Session:post 每次都先 curl_easy_reset 才安全。Session.handle 是公开字段，
--- 任何「同句柄 perform 两次 / 加重试」的重构都会把它变成内存安全问题
--- （实测：post 后直接 perform 报 bad callback；槽位复用时 SIGSEGV）。
+-- 任何「同句柄 perform 两次 / 加重试」的重构都会把它变成内存安全问题。
 -- 修法是在 free 之前先 reset，使句柄自身满足「空闲即无武装」的不变量。
+--
+-- 【2026-09-21 第三轮审计 AG-20 附带修正】原判据是「post 之后直接对同一句柄
+-- curl_easy_perform，只要返回即证明已 reset」。那个断言本身就在做 UB 的事：
+-- cb:free() 已经把回调槽还掉了，句柄倘若**没有**被 reset 干净，这一 perform
+-- 就是踩在已释放的回调对象上——旧实现「恰好没崩」只是 libcurl 早退（rc=3
+-- CURLE_URL_MALFORMAT，根本没走到回调），并不是安全性的证据。AG-20 把
+-- M.post 改成池化复用后，同样的调用序列变成了 curl_multi_cleanup 里的
+-- SIGSEGV（gdb 栈：#4 curl_easy_cleanup → #2 curl_multi_cleanup）。
+-- 现在换成**只看句柄状态、不再对已 free 回调的句柄发包**的判据：
+-- CURLINFO_EFFECTIVE_URL 在 reset 之后必须为空 —— 这正是「未武装」的定义，
+-- 且不依赖 libcurl 的早退行为。
 do
 	local http = dofile("modules/lib/llm_http.lua")
 	local s = http.session()
@@ -243,25 +253,117 @@ do
 		-- 端口 1 必然连不上：这里只要走到「perform 返回」即可，不需要成功响应
 		local res = s:post({ url = "http://127.0.0.1:1/v1/x", body = "{}", timeout = 1 })
 		check("AG-16：post 返回（连不上也不崩）", type(res) == "table", tostring(res))
-		-- 关键断言：post 之后句柄必须是「未武装」的——直接对同一句柄 perform
-		-- 不得触碰已释放的回调。libcurl 对「无 URL」返回 CURLE_URL_MALFORMAT，
-		-- 不会调用任何回调，所以「返回」本身就是句柄已被 reset 的证据；
-		-- 旧实现下这里会调用已释放的 WRITEFUNCTION（bad callback / SIGSEGV）。
+
 		local ffi = require("ffi")
 		ffi.cdef[[
-int curl_easy_perform(void *h);
-const char *curl_easy_strerror(int code);
+int curl_easy_getinfo(void *h, int info, void *out);
 ]]
 		local curl = ffi.load("curl")
-		local ok, rc = pcall(function() return curl.curl_easy_perform(s.handle) end)
-		check("AG-16：post 后句柄无悬垂回调（直接 perform 安全返回）", ok,
-			tostring(rc))
-		if ok then
-			check("AG-16：返回的是「无 URL」类错误码（证明没走到回调）",
-				tonumber(rc) ~= 0, "rc=" .. tostring(tonumber(rc)))
-		end
+		local p = ffi.new("const char *[1]")
+		-- CURLINFO_EFFECTIVE_URL == 1048577（curl.h 权威值，与 test_curl_consts.c
+		-- 同一族的常量自检口径；这里只需要它「reset 后为空」这一条语义）
+		local rc = curl.curl_easy_getinfo(s.handle, 1048577, p)
+		local url = p[0] ~= nil and ffi.string(p[0]) or nil
+		check("AG-16：getinfo 可取（句柄仍有效）", tonumber(rc) == 0, "rc=" .. tostring(tonumber(rc)))
+		check("AG-16：post 之后句柄已复位（EFFECTIVE_URL 为空 = 未武装）",
+			url == nil or url == "", tostring(url))
+
 		s:close()
 	end
+end
+
+
+-- ================= 池化会话：连接与 TLS 跨轮复用（AG-20） =================
+-- 症状：M.post 原实现**每次请求都新建 curl 句柄、返回前销毁**，于是 M.session
+-- 的存在理由（「保留连接与 TLS 会话，省掉每轮重新握手」）在任何生产路径上都没
+-- 生效——两个内置驱动都走 M.post。agent 每轮模型调用因此重做 DNS/TCP/TLS，
+-- 且历史里那张 base64 图每轮重新编码上传一遍。
+-- 判据分两段：
+--   ① 离线（端口 1 不可达）：池化 + 连接层失败的自愈 + 显式关闭；
+--   ② 会话**创建计数**：连续 N 次请求只允许建 1 份会话。
+--      **不用句柄地址当判据**——libcurl 每次 init 申请同样大的块，free 后 malloc
+--      常把同一地址还回来；反向验证时「每次新建」也过了地址判据（假绿），
+--      换成计数后当场转红（agent_e2e.sh 的 AG-20 判据同源，同样只用计数）。
+do
+	local http = dofile("modules/lib/llm_http.lua")
+	check("AG-20：暴露池化句柄探针", type(http.pooled_handle) == "function")
+	check("AG-20：暴露池化关闭入口", type(http.close_pooled) == "function")
+	check("AG-20：暴露会话计数（判据用）", type(http.session_count) == "function")
+
+	http.close_pooled()	-- 前面的用例也走过 M.post，先清干净再断言「池为空」
+	check("AG-20：暴露池活跃探针", type(http.pooled_active) == "function")
+	check("AG-20：关闭后池为空", http.pooled_active() == false)
+
+	-- 端口 1 必然连不上：要的是「请求真的走过 libcurl」，不是成功响应
+	local seq0 = http.session_count()
+	local r1 = http.post({ url = "http://127.0.0.1:1/v1/x", body = "{}", timeout = 1 })
+	check("AG-20：post 返回结果表（连不上也不崩）", type(r1) == "table", tostring(r1))
+	check("AG-20：端口 1 不可达 → ok=false", r1.ok == false, tostring(r1.ok))
+	check("AG-20：失败后池里仍有可用句柄（自愈而非弃用）",
+		http.pooled_handle() ~= nil)
+	check("AG-20：首次请求只建一份会话", http.session_count() == seq0 + 1,
+		"seq0=" .. seq0 .. " now=" .. http.session_count())
+
+	-- 连接层失败后**不得**新建会话（AG-20 的第二个缺陷，由 LSan 逼出来）：
+	-- 曾经每次失败都 curl_easy_init 一份新句柄做「自愈」，LSan 实测每次失败
+	-- 请求泄漏约 71 字节（easy handle 的 share/DNS/TLS-session 缓存收不干净），
+	-- 断网重试场景下线性增长；删掉那段后连跑 5 次失败请求**零泄漏**。
+	-- libcurl 自己会把失败连接标记为不可复用，句柄本身可以继续用，
+	-- 所以正确的行为是「什么都不做」。
+	local seq1 = http.session_count()
+	http.post({ url = "http://127.0.0.1:1/v1/x", body = "{}", timeout = 1 })
+	http.post({ url = "http://127.0.0.1:1/v1/x", body = "{}", timeout = 1 })
+	http.post({ url = "http://127.0.0.1:1/v1/x", body = "{}", timeout = 1 })
+	local seq2 = http.session_count()
+	check("AG-20：连续 3 次失败请求不新建会话（失败即重建会按次数泄漏）",
+		seq2 == seq1, "seq1=" .. seq1 .. " seq2=" .. seq2)
+
+	-- ---- ② 真服务：成功请求之间句柄必须复用 ----
+	local py = ([[
+import http.server, sys
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length", "0"))
+        self.rfile.read(n)
+        b = b'{"ok":true}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def log_message(self, *a): pass
+http.server.HTTPServer(("127.0.0.1", %d), H).serve_forever()
+]]):format(18792)
+	local f = io.popen("python3 -c " .. string.format("%q", py) .. " >/dev/null 2>&1 & echo $!")
+	local pid = f and f:read("*l")
+	if f then f:close() end
+	local okReq = false
+	if pid ~= nil and pid ~= "" then
+		os.execute("sleep 0.6")
+		local seqBefore = http.session_count()
+		local ok1, ra = pcall(http.post,
+			{ url = "http://127.0.0.1:18792/v1/x", body = "{}", timeout = 5 })
+		local ok2, rb = pcall(http.post,
+			{ url = "http://127.0.0.1:18792/v1/x", body = "{}", timeout = 5 })
+		local seqAfter = http.session_count()
+		os.execute("kill " .. pid .. " 2>/dev/null")
+		if ok1 and ok2 and type(ra) == "table" and ra.ok and type(rb) == "table" and rb.ok then
+			okReq = true
+			check("AG-20：真服务两次请求都成功", true)
+			-- 正面判据以**计数**为准（地址会被 malloc 复用，不可作判据）
+			check("AG-20：两次成功请求之间没有新建会话",
+				seqAfter == seqBefore, "before=" .. seqBefore .. " after=" .. seqAfter)
+		end
+	end
+	if not okReq then
+		print("[SKIP] AG-20 真服务正面判据：本机无法起临时 HTTP 服务（缺 python3？）")
+	end
+
+	-- 显式关闭后必须真的释放（驱动 destroy 路径）
+	http.close_pooled()
+	check("AG-20：close_pooled 后池清空", http.pooled_active() == false)
+	http.close_pooled()
+	check("AG-20：close_pooled 幂等", http.pooled_active() == false)
 end
 
 

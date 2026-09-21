@@ -265,6 +265,27 @@ check_json "$CAP5" "any(isinstance(m.get('content'), list) and any(p.get('type')
 	"线上报文确实带上了 image_url（多模态内容）"
 check_present "$CAP5" '"data:image/jpeg;base64,/9j/' "注入的是以 data URL 包装的真 JPEG"
 
+# ---- AG-20：多轮模型调用必须复用同一份 curl 会话（连接与 TLS 跨轮保留）----
+# 判据取自驱动侧的见证行（BOT4CJ_HTTP_PROBE=1，默认不开）：本场景有 2 轮模型
+# 调用（先要求拍照、再给最终回答）。修复前 M.post 每次新建并销毁会话，
+# sessions 计数会随轮数递增；现在必须自始至终是同一个值。
+# **不用句柄地址当判据**：libcurl 每次 init 申请同样大的块，free 后 malloc 常把
+# 同一地址还回来——反向验证时「每次新建」也过了地址判据（假绿），计数不会。
+start_server "$PORT" "$CAP5" camera || exit 1
+probe_out="$(BOT4CJ_LLM_KEY=e2e-fake-key BOT4CJ_HTTP_PROBE=1 timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent --llm-config none --camera-src "$PIC5" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--task "拍张照片看看周围有什么" 2>&1)"
+stop_server
+reqs="$(printf '%s\n' "$probe_out" | grep -c '\[http-probe\]' || true)"
+seqs="$(printf '%s\n' "$probe_out" | grep -o 'sessions=[0-9]*' | sort -u | wc -l)"
+if [ "${reqs:-0}" -ge 2 ] && [ "${seqs:-0}" -eq 1 ]; then
+	echo "  [OK] AG-20：$reqs 轮模型调用只建了 1 份会话（连接/TLS 跨轮保留）"
+else
+	echo "  [FAIL] AG-20：期望 ≥2 轮请求且会话计数唯一，实测 请求=$reqs 不同计数=$seqs"
+	fail=1
+fi
+
 # ============ 场景 6：--prompt-file 提示词包进入系统提示词 ============
 echo "----- 场景 6：--prompt-file 提示词包 -----"
 PORT=$((21900 + RANDOM % 300))

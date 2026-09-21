@@ -42,6 +42,14 @@ int curl_global_init(long flags);
 
 local M = {}
 
+-- 会话创建计数：每次 M.session() 成功即 +1。守门用它做**决定性**判据——
+-- **句柄地址不能当判据**：libcurl 每次 init 申请同样大小的块，free 之后 malloc
+-- 常把同一地址还回来，实测「每次新建」也能得到同一个地址（反向验证当场抓到
+-- 这条假绿）。计数没有歧义：复用 ⇒ 计数不变，每次新建 ⇒ 计数递加。
+-- 声明必须在 M.session 之前（Lua 的 local 只从声明点起生效，写在文件后半段
+-- 会让前半段的引用变成全局变量——实测报 "arithmetic on global 'session_seq'"）。
+local session_seq = 0
+
 -- CURLOPT/CURLINFO 常量（curl ABI 稳定；漂移由 test/test_curl_consts.c 编译期
 -- 与 curl.h 比对——F-24 常量自检同族。libcurl 开发头文件非构建依赖，构建机
 -- 没装时该自检不产出、run_all.sh 按跳过计；CI 已安装以保证门禁覆盖）
@@ -138,12 +146,13 @@ local Session = {}
 Session.__index = Session
 
 -- 创建一个可复用的会话（保留连接与 TLS 会话，省掉每轮重新握手）。
--- 调用方负责 close；不复用时直接用 M.post。
+-- 调用方负责 close；**池化复用**（agent 每轮模型调用）走下面的 M.post。
 function M.session()
 	local ok, err = M.load()
 	if not ok then return nil, err end
 	local h = curl.curl_easy_init()
 	if h == nil then return nil, "curl_easy_init 失败" end
+	session_seq = session_seq + 1
 	return setmetatable({ handle = h }, Session)
 end
 
@@ -152,6 +161,23 @@ function Session:close()
 		curl.curl_easy_cleanup(self.handle)
 		self.handle = nil
 	end
+end
+
+-- 把句柄整个换掉（**显式调用**，请求路径不再自动调它）。
+-- 用途：要丢掉全部连接缓存时的一次性重置（例如切换接入点）。
+-- 为什么请求路径不自动重建（AG-20 的反向验证逼出来的第二条）：连接层失败
+-- 并不需要换句柄——libcurl 自己会把那条连接标记为不可复用——而每次失败都
+-- curl_easy_init 一份新句柄会**按失败次数泄漏**（LSan 实测约 71 字节/次，
+-- share/DNS/TLS-session 缓存收不干净）。
+function Session:recreate()
+	if self.handle then
+		curl.curl_easy_cleanup(self.handle)
+		self.handle = nil
+	end
+	local h = curl.curl_easy_init()
+	if h == nil then return false end
+	self.handle = h
+	return true
 end
 
 -- opts = { url=, headers={str,...}, body=, timeout=秒, connect_timeout=秒,
@@ -215,6 +241,7 @@ function Session:post(opts)
 	local code = ffi.new("long[1]")
 	getinfo_long(h, INFO_RESPONSE_CODE, code)
 	if slist ~= nil then curl.curl_slist_free_all(slist) end
+
 	-- 句柄收尾顺序有讲究（2026-09-21 审计 AG-16）：**先 reset 再 free 回调**。
 	-- 每请求 cast 出的回调 cdata 用了就释放，否则 LuaJIT 的回调槽位要等 GC 才
 	-- 归还，长驻 agent 会话高频请求下会持续累积（这是 cb:free() 的动机）。
@@ -225,10 +252,19 @@ function Session:post(opts)
 	-- 后直接 perform 报 bad callback；连做 500 次 post 让槽位被复用后再直接
 	-- perform，SIGSEGV）。reset 是零成本的（不发网络请求），把这条隐含前提
 	-- 变成句柄自身的不变量。注意顺序：reset 必须在 free 之前，否则 reset 期间
-	-- 若 libcurl 触碰该指针就已经晚了。
+	-- 若 libcurl 触碰该指针就已经晚了；也必须在 getinfo **之后**（reset 会把
+	-- 响应码一起清掉，成功路径要留着它）。
 	curl.curl_easy_reset(h)
 	cb:free()
 
+	-- 连接层失败（rc≠0）**刻意不重建句柄**（AG-20 的反向验证逼出来的第二条）：
+	-- 曾在这里做「坏了就换新」，LSan 实测**每次失败请求泄漏约 71 字节**
+	-- （easy handle 的 share / DNS / TLS-session 缓存随 curl_easy_init 走，
+	-- cleanup 收不干净），断网重试场景下线性增长；实验证明与句柄复用无关
+	-- （每请求 cleanup+init 同样泄漏，成功请求不泄漏）。而它本来也不必要：
+	-- libcurl 在 perform 返回错误时会自己把那条连接标记为不可复用。
+	-- 真正需要换句柄的场景（如切换接入点后要丢掉全部连接缓存）由调用方显式
+	-- 调 Session:recreate。
 	if overflow then
 		return { ok = false, err = "响应超过 " .. max_response .. " 字节上限" }
 	end
@@ -239,13 +275,64 @@ function Session:post(opts)
 	return { ok = true, status = tonumber(code[0]), body = table.concat(chunks) }
 end
 
--- 一次性请求（内部建/销会话）
+-- ---- 池化会话：agent 每轮模型调用的默认通道（2026-09-21 第三轮审计 AG-20）----
+-- 症状：M.post 原实现**每次请求都新建 curl 句柄、返回前销毁**，于是
+-- `M.session` 存在的理由（「保留连接与 TLS 会话，省掉每轮重新握手」，
+-- 见上面的注释）在任何生产路径上都没生效——两个内置驱动都走 M.post。
+-- 后果有两层：① 每轮模型调用重做 DNS/TCP/TLS 握手；② 历史里那张 base64
+-- 图**每一轮都重新编码、重新上传**（内存放大之外还白花上行带宽）。
+-- 现在整颗驱动共用一份池化会话（驱动持 lua_State 到 destroy，生命周期天然对齐）。
+local pooled = nil
+
+local function pooled_session()
+	if pooled == nil or pooled.handle == nil then
+		local s, err = M.session()
+		if s == nil then return nil, err end
+		pooled = s
+	end
+	return pooled
+end
+
+-- 本 lua_State 已创建的会话总数（只读；判据见上面 session_seq 的注释）
+function M.session_count()
+	return session_seq
+end
+
+-- 池化会话的句柄（cdata 指针）。仅供离线单测断言「同一个句柄被复用」——
+-- 句柄是裸指针，测试若不比对它，就只能靠数 TCP 连接数这种笨办法。
+-- 注意：它会**惰性建池**（探针语义），因此不能用它判断「池是否为空」。
+function M.pooled_handle()
+	if pooled_session() == nil then return nil end
+	return pooled.handle
+end
+
+-- 池里当前是否有一个活着的会话。**不建池**，供「关闭后必须为空」这类断言使用。
+function M.pooled_active()
+	return pooled ~= nil and pooled.handle ~= nil
+end
+
+-- 关闭池化会话（驱动 destroy 期或测试收尾用）。幂等。
+function M.close_pooled()
+	if pooled ~= nil then
+		pooled:close()
+		pooled = nil
+	end
+end
+
+-- 发一次请求，**复用**池化会话（连接与 TLS 会话跨轮保留）。
+-- 名称与语义说明：它不再是「一次性请求」——每次新建句柄的旧语义正是 AG-20。
 function M.post(opts)
-	local session, err = M.session()
+	local session, err = pooled_session()
 	if session == nil then return { ok = false, err = err } end
-	local res = session:post(opts)
-	session:close()
-	return res
+	-- 见证行（BOT4CJ_HTTP_PROBE=1 才打）：agent E2E 据此断言「多轮请求复用同一份
+	-- 会话」——计数在真报文链路上做决定性判据（句柄地址会被 malloc 复用，
+	-- 见 session_seq 的注释）。默认不打，避免给正常运行加噪声。
+	if os.getenv("BOT4CJ_HTTP_PROBE") == "1" then
+		io.stderr:write(string.format("[http-probe] sessions=%d handle=%s\n",
+			session_seq, tostring(session.handle)))
+		io.stderr:flush()
+	end
+	return session:post(opts)
 end
 
 _G.__BOT4CJ_LLM_HTTP = M

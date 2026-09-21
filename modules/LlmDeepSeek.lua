@@ -24,6 +24,8 @@ end
 function destroy(data)
 	local ok, e = arg_table(data)
 	if not ok then return e end
+	-- 释放池化 HTTP 会话（AG-20）：与 LlmOpenAI 同源，理由见该文件同名函数
+	http.close_pooled()
 	return { result = "OK" }
 end
 
