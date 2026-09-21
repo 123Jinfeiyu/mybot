@@ -3,6 +3,11 @@
 # 用法: bash test/run_all.sh [测试名过滤]
 #   例: bash test/run_all.sh                # 跑全部
 #       bash test/run_all.sh pca9685       # 只跑文件名含 pca9685 的
+#       bash test/run_all.sh agent-all     # agent 全表面（见顶部 filter_* 映射）：
+#                                          #   Lua test_agent*.lua + agent E2E +
+#                                          #   C++ 作用域 agent: + 4 条 agent 负路径
+#   注意：裸 agent / agent: 各只覆盖一半表面（子串 vs 作用域 vs 分段门不同），
+#   要「agent 全跑」请用 agent-all（AG-23）。
 # 说明：
 #   - 统一用 luajit 运行（HAL 依赖 ffi）；可用环境变量 LUACMD 覆盖解释器
 #   - 单测超时 TEST_TIMEOUT 秒（默认取 test/lib/params.sh 单点，需 coreutils
@@ -44,6 +49,60 @@ if command -v timeout >/dev/null 2>&1; then
 fi
 
 filter="${1:-}"
+# ---- 分段过滤器（AG-23，2026-09-21 第三轮审计）----
+# 一个 raw 过滤器要在四类分段上用**不同形态**匹配，此前没做区分，于是
+# `agent` 与 `agent:` 各只覆盖一半表面：
+#   * `bash test/run_all.sh agent`  -> 0 个 Lua 用例（test_*.lua 文件名里没有
+#     agent）、C++ 走**子串**只命中 89 例（作用域里那 15 条 agentconfig_/
+#     agentmode_ 因名字不含 "agent" 被漏掉）、agent 的 CLI 负路径也跑不到；
+#   * `bash test/run_all.sh agent:` -> 反过来：加固段比的是 "agent" 与 "agent:"
+#     （不相等）=> **跳过 agent 端到端**；C++ 侧确实是作用域匹配，但两侧口径不统一。
+# 现在把「哪个分段该拿哪种过滤器」收敛成单点，并给出覆盖全表面的入口：
+#   agent-all -> Lua 段与端到端拿 "agent"，C++ 拿作用域 "agent:"，加固段拿 "agent_"
+# 裸 agent / agent: 的语义保持不变（不破坏既有用法），只是文档不再把它们当作
+# 「agent 全表面」的推荐入口。
+filter_lua="$filter"		# test/test_*.lua 的文件名子串
+filter_e2e="$filter"		# scripts/agent_e2e.sh 等端到端分段
+filter_hardening="$filter"	# 加固负路径（agent 子块单独设门，见文件后段）
+filter_cpp="$filter"		# mybot_tests 的过滤器（支持 scope: 语法）
+if [ "$filter" = "agent-all" ]; then
+	filter_lua="agent"	# test_agent*.lua：Lua 侧几颗 agent 协议驱动用例
+	filter_e2e="agent"
+	filter_hardening="agent_"
+	filter_cpp="agent:"
+fi
+
+# 某分段是否应在当前过滤器下执行（$1=分段名，$2=该分段使用的过滤器）
+filter_matches() {
+	[ -z "$2" ] || [[ "$1" == *"$2"* ]]
+}
+
+# 某**单条**用例（名字 $1）是否应在当前过滤器下执行。段门只决定「本段进不进」，
+# 段内若不做这层判断，`bash test/run_all.sh agent_missing_key` 会把同段 4 条全跑
+# 一遍——段门一旦放行，段内就没有第二道判据。agent-all / hardening 按整段进。
+case_matches() {
+	[ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-all" ] \
+		|| [[ "$1" == *"$filter"* ]]
+}
+
+# agent-all 的映射**自证**：上面那张表就是「覆盖全表面」这句承诺的实现，而它
+# 此前正是靠四个分散的 if 各写一遍判断、才漏掉了一半的分段。任何一格被改坏
+# （分段改名、变量清空、映射写错）都应当**在这里响亮失败**，而不是等使用者
+# 发现某个分段悄悄没跑。判据是「该分段的门必须认得 agent-all 这个输入」——
+# 不是拿 filter_matches 去问那张表（那才是自证）。
+if [ "$filter" = "agent-all" ]; then
+	_agentall_bad=""
+	[ -n "$filter_lua" ] || _agentall_bad="$_agentall_bad lua(空值=跑全部文件)"
+	filter_matches "agent" "$filter_e2e" || _agentall_bad="$_agentall_bad e2e"
+	filter_matches "agent:" "$filter_cpp" || _agentall_bad="$_agentall_bad cpp"
+	if [ -n "$_agentall_bad" ]; then
+		echo "错误：agent-all 的分段过滤器映射失效，以下分段不会执行：$_agentall_bad" >&2
+		echo "（见 test/run_all.sh 顶部的 filter_* 映射。本自证防的就是 AG-23 那种" >&2
+		echo "  「号称覆盖全表面、实际只跑一半」的静默退化）" >&2
+		exit 2
+	fi
+	unset _agentall_bad
+fi
 pass=0
 fail=0
 failed=""
@@ -94,7 +153,9 @@ unset _sec
 
 for t in test/test_*.lua; do
 	name="$(basename "$t")"
-	if [ -n "$filter" ] && [[ "$name" != *"$filter"* ]]; then
+	# AG-23：分段过滤器。旧入口在这条判断上用 raw filter，于是
+	# `bash test/run_all.sh agent` 匹配到 0 个 Lua 文件而汇总照绿。
+	if [ -n "$filter_lua" ] && [[ "$name" != *"$filter_lua"* ]]; then
 		continue
 	fi
 	echo "----- $name -----"
@@ -832,7 +893,7 @@ fi
 # Lua 驱动经 ffi 加载）。任一缺失按 SKIP 计入「未执行清单」，不是静默消失；
 # 缺编译产物仍判失败。
 # ======================================================================
-if [ -z "$filter" ] || [[ "agent" == *"$filter"* ]]; then
+if filter_matches "agent" "$filter_e2e"; then
 	run_one_agent_e2e
 fi
 
@@ -1069,23 +1130,42 @@ SQLEOF
 	run_one_hardening 'lua_getglobal_unprotected_frame' 1 'boom from __index' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_gmt.sql --input=.tmp/fixmod_gmt.mt
+fi
+
+# ======================================================================
+# agent CLI 负路径（F-20 同族，main.cpp 的组合校验此前无守门用例，
+# docs/testing.md §9 却已声称覆盖——补齐让声称成真）。
+#
+# AG-23（第三轮审计）：这 4 条原先与上面的通用加固共用**同一个 if**，于是
+# `bash test/run_all.sh agent` 与 `agent-all` 都跑不到它们——「agent 全表面」
+# 在这 4 条上不成立。现在独立设门：裸 `hardening` 仍进（向后兼容）、
+# `agent-all` 也进（那是覆盖全表面的入口）、单条名字前缀 `agent_` 也进。
+# ======================================================================
+if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-all" ] \
+	|| [[ "$filter" == agent_* ]]; then
 
 	# ---- agent CLI 负路径三连（F-20 同族，main.cpp 的组合校验此前无守门用例，
 	# docs/testing.md §9 却已声称覆盖——补齐让声称成真）----
 	# 1) agent 专属选项出现在非 agent 模式：意图与参数不一致，显式拒绝退出 2
+	if case_matches 'agent_opt_outside_agent'; then
 	run_one_hardening 'agent_opt_outside_agent' 2 '只在 --agent 模式下有效' \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
+	fi
 
 	# 2) --agent 与 --tcp/--input 互斥：两者都要求主导输入源，显式拒绝退出 2
+	if case_matches 'agent_tcp_mutex'; then
 	run_one_hardening 'agent_tcp_mutex' 2 '--agent 与 --tcp/--input 互斥' \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399
+	fi
 
 	# 3) agent 模式缺 API key：buildAgentConfig 失败退出 2。三个密钥环境变量
 	#    全清 + --llm-config none（防 CWD 的 mybot.llm.json / ~/.config 污染，
 	#    agent_e2e.sh 同款口径），保证「缺 key」与密钥来源无关地成立
+	if case_matches 'agent_missing_key'; then
 	run_one_hardening 'agent_missing_key' 2 '缺少 API key' \
 		env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --task 'x' --llm-config none
+	fi
 
 	# 4) 系统提示词总量上限（F2-9；AG-8 后前移）：三段来源（结构脚本头 16KiB
 	#    截断 / 动作脚本清单条目数不限 / 提示词包单文件 1MiB 但整包不限）都各自
@@ -1095,12 +1175,14 @@ SQLEOF
 	#    体积检查前移到了配置组装期——所以现在退出码是 2（配置错误，不碰真机）
 	#    而不是 1（上电后失败），报错文案也换成了点名「不依赖硬件的三段」的那句。
 	#    这是有意的行为变更：上电之前就能判定的配置错误，没有理由拖到上电之后。
+	if case_matches 'agent_prompt_over_cap'; then
 	awk 'BEGIN { for (i = 0; i < 3000; i++) print "padding line for the system prompt cap test" }' \
 		> .tmp/bigprompt.md
 	run_one_hardening 'agent_prompt_over_cap' 2 '不依赖硬件的三段' \
 		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
 		--robot=robots/relay-test.sql --agent --task 'x' --llm-config none \
 		--prompt-file .tmp/bigprompt.md
+	fi
 fi
 
 # ======================================================================

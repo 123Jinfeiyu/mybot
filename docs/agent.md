@@ -422,6 +422,15 @@ luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路
 ./build/mybot_tests agent:
 ```
 
+「**agent 全部守门**」请用下面这一条（Lua `test_agent*.lua` + agent E2E + C++ 的
+`agent:` 作用域 + 4 条 agent CLI 负路径）。裸 `agent` 与 `agent:` **各只覆盖一半
+表面**——四类分段要的过滤器形态不同（文件名子串 / `scope:` 语法 / 分段门），
+映射单点在 `test/run_all.sh` 顶部并带自证；详见 [testing.md](testing.md)。
+
+```bash
+bash test/run_all.sh agent-all
+```
+
 - `scripts/agent_e2e.sh` 用本地假模型服务跑六个场景：默认驱动完整工具循环（并抓报文断言
   OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
   `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）、
