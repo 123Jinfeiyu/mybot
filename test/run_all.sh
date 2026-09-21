@@ -445,6 +445,9 @@ parse_cases=(
 	'single_consumer.sql|daemon_schema.mt|1|two concurrent consumers'
 	'float_s16_daemon.sql|float_s16_daemon.mt|1|would be truncated to integer'
 	'multidaemon.sql|multidaemon.mt|0|joined, total publishes='
+	# 注意：第 5 字段是 forbid（禁止出现）不是追加锚点；合并快照锚点放 expect，
+	# forbid 留空。首个 VIRTUAL HARDWARE 横幅由 chunk 自身保证，无需断言。
+	'daemon_multi.sql|daemon_multi.mt|0|joined, total publishes='
 	'robots/relay-test.sql|scripts/relay-test.mt|0|note=hello-relay'
 	'ref_prefix.sql|ref_prefix.mt|0|Relay: test=200 note=timer-0'
 	'alias_inline.sql|alias_inline.mt|0|served 1 call(s)'
