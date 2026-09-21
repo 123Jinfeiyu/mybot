@@ -9,6 +9,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
@@ -144,6 +145,74 @@ Json toolSchema(const std::vector<std::pair<std::string, Json>>& props,
 	s.put("properties", properties);
 	s.put("required", req);
 	return s;
+}
+
+/* ---- 图片 data URL 的 MIME（AG-9 单点）----
+ * 规则：**以驱动声明的 format 为准**，再用 base64 前几字节做一次自洽交叉校验。
+ * 为什么两道：
+ *   ① 只信 format → 驱动写错（或第三方驱动硬编码）就会发错标签，正是本缺陷的成因；
+ *   ② 只信魔数 → 宿主就得自带一份格式表，与驱动的判据重复且必然漂移。
+ * 所以宿主采用驱动的声明，同时对「声明与内容不符」fail-closed——那说明驱动有
+ * bug，此时报错比把错标签发出去好（网关的 400 只会说「图片解析错误」）。
+ * 支持的四种与 modules/lib/mjpeg_frame.lua 的 SUPPORTED_FORMATS 同集合。 */
+std::string sniffImageFormat(const std::string& b64) {
+	/* 判据最多需要前 12 字节；**能解多少解多少**——把最小长度写成 16 会把
+	 * 合法的小图（9 字节 JPEG 编码后只有 12 个 base64 字符）误判成「不是图片」，
+	 * 实测就是这么红的。每条魔数判据自己会检查 head 够不够长。 */
+	if (b64.size() < 4) { return ""; }
+	static const char kB64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	auto val = [](char c) -> int {
+		const char* p = std::strchr(kB64, c);
+		return p == nullptr ? -1 : static_cast<int>(p - kB64);
+	};
+	std::string head;
+	const std::size_t limit = std::min<std::size_t>(16, b64.size());
+	for (std::size_t i = 0; i + 3 < limit; i += 4) {
+		const int a = val(b64[i]), b = val(b64[i + 1]), c = val(b64[i + 2]), d = val(b64[i + 3]);
+		if (a < 0 || b < 0 || c < 0 || d < 0) { return ""; }
+		( void )0;
+		head.push_back(static_cast<char>((a << 2) | (b >> 4)));
+		head.push_back(static_cast<char>(((b & 0x0f) << 4) | (c >> 2)));
+		head.push_back(static_cast<char>(((c & 0x03) << 6) | d));
+	}
+	const auto startsWith = [&head](const char* pfx, std::size_t n) {
+		return head.size() >= n && head.compare(0, n, pfx, n) == 0;
+	};
+	if (head.size() >= 3 && static_cast<unsigned char>(head[0]) == 0xff
+		&& static_cast<unsigned char>(head[1]) == 0xd8
+		&& static_cast<unsigned char>(head[2]) == 0xff) {
+		return "jpeg";
+	}
+	if (startsWith("\x89PNG\r\n\x1a\n", 8)) { return "png"; }
+	if (startsWith("GIF87a", 6) || startsWith("GIF89a", 6)) { return "gif"; }
+	if (startsWith("RIFF", 4) && head.size() >= 12 && head.compare(8, 4, "WEBP") == 0) {
+		return "webp";
+	}
+	return "";
+}
+
+std::string dataUrlMimeFor(const Json& res, const std::string& b64) {
+	auto fmt = res.get("format");
+	if (!fmt || !fmt->isStr() || fmt->getValue().empty()) {
+		throw std::runtime_error("摄像头驱动没有返回 format 字段（无法确定图片 MIME）");
+	}
+	const std::string declared = fmt->getValue();
+	if (declared != "jpeg" && declared != "png" && declared != "gif" && declared != "webp") {
+		throw std::runtime_error("摄像头驱动返回了不受支持的图片格式 '" + declared
+			+ "'（仅支持 jpeg/png/gif/webp）");
+	}
+	const std::string actual = sniffImageFormat(b64);
+	if (actual.empty()) {
+		throw std::runtime_error("图片内容不是受支持的格式（JPEG/PNG/GIF/WebP 魔数都不匹配）");
+	}
+	if (actual != declared) {
+		throw std::runtime_error("图片声明格式 '" + declared + "' 与内容实际格式 '"
+			+ actual + "' 不符（驱动 bug；拒绝发出错标签的 data URL）");
+	}
+	/* 驱动给的是**格式名**（jpeg/png/…），data URL 要的是 **MIME**（image/…）：
+	 * 两者在四个受支持格式上恰好一一对应（jpeg 的 MIME 是 image/jpeg，不是
+	 * image/jpg），所以直接前缀 image/ 即可，不需要再维护一张映射表。 */
+	return "image/" + declared;
 }
 
 /* 2.3：种类判定走虚 kindName（叶子类单点），此处只做展示文案映射 */
@@ -398,8 +467,13 @@ static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 			if (src && src->isStr() && src->getValue() == "file") {
 				desc += "，来源：模拟图片";
 			}
+			/* MIME 取自**驱动返回的格式**（2026-09-21 审计 AG-9），不再硬编码
+			 * image/jpeg：仿真来源可以是 PNG/GIF/WebP，硬编码会把「JPEG 标签 +
+			 * PNG 字节」发给网关，严格解析器直接 400。驱动侧已按魔数判定并对
+			 * 不认识的格式响亮拒绝，这里只需原样采用并做一次自洽交叉校验。 */
+			std::string mime = dataUrlMimeFor(res, b64->getValue());
 			return {desc + "。画面已加入你的上下文。",
-				"data:image/jpeg;base64," + b64->getValue()};
+				"data:" + mime + ";base64," + b64->getValue()};
 		}};
 }
 

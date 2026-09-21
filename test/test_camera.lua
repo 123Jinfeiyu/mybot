@@ -60,7 +60,30 @@ local function b64decode(s)
 	return table.concat(out)
 end
 
+-- 独立的 base64 编码器（测试自己的参考实现，故意不复用 Camera.lua 的算法：
+-- 用被测算法的输出去断言被测算法的输出等于自证）
+local function mjpeg_base64(s)
+	local chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	local out, i = {}, 1
+	while i <= #s do
+		local b1 = s:byte(i)
+		local b2 = s:byte(i + 1)
+		local b3 = s:byte(i + 2)
+		local n = (b2 and 1 or 0) + (b3 and 1 or 0)
+		local v = b1 * 65536 + (b2 or 0) * 256 + (b3 or 0)
+		out[#out + 1] = chars:sub(math.floor(v / 262144) % 64 + 1, math.floor(v / 262144) % 64 + 1)
+		out[#out + 1] = chars:sub(math.floor(v / 4096) % 64 + 1, math.floor(v / 4096) % 64 + 1)
+		out[#out + 1] = n >= 1 and chars:sub(math.floor(v / 64) % 64 + 1, math.floor(v / 64) % 64 + 1) or "="
+		out[#out + 1] = n >= 2 and chars:sub(v % 64 + 1, v % 64 + 1) or "="
+		i = i + 3
+	end
+	return table.concat(out)
+end
+
 -- ---- base64 已知向量（经仿真路径间接验证编码器）----
+-- 自 AG-9 起仿真来源必须是**真图片**（驱动按魔数定格式，认不出就 ERR），
+-- 所以向量统一加 JPEG 头（\255\216\255）；断言改为比对 base64 段，
+-- 这样 RFC 4648 的已知向量（含各种填充）仍然逐个被钉住。
 do
 	local vectors = {
 		{ "f", "Zg==" }, { "fo", "Zm8=" }, { "foo", "Zm9v" },
@@ -68,11 +91,14 @@ do
 	}
 	for i, v in ipairs(vectors) do
 		local path = os.tmpname()
-		write_file(path, v[1])
+		write_file(path, "\255\216\255" .. v[1])
 		build({ src = path, src_root = dirname(path) })
 		local res = call({})
-		check("base64 向量 #" .. i .. " (" .. v[1] .. ")", res.b64 == v[2],
-			tostring(res.b64) .. " 期望 " .. v[2])
+		-- 驱动给的是裸 base64（data URL 的拼装是宿主的事，见 AG-9）；
+		-- 断言「JPEG 头 + 向量」的完整编码，填充情形照样逐个钉住
+		local expect = mjpeg_base64("\255\216\255" .. v[1])
+		check("base64 向量 #" .. i .. " (" .. v[1] .. ")", res.b64 == expect,
+			tostring(res.b64) .. " 期望 " .. expect)
 		destroy({})
 		os.remove(path)
 	end
@@ -127,8 +153,10 @@ end
 do
 	local root, other = tmpdir("cam-root"), tmpdir("cam-other")
 	local inside, outside = root .. "/pic.jpg", other .. "/secret.bin"
-	write_file(inside, "IN")
-	write_file(outside, "SECRET")
+	-- 内容写成真图片：这些用例测的是**路径白名单**（路径判据在格式判据之前），
+	-- 内容若不可识别，第 4 条「环境变量放行」会因为格式而不是因为路径失败。
+	write_file(inside, "\255\216\255" .. "IN")
+	write_file(outside, "\255\216\255" .. "SECRET")
 
 	-- 1) 既无 src_root 也无环境变量：默认拒绝（不给「读任意路径」留口子）
 	local b0 = build({ src = inside })
@@ -380,6 +408,65 @@ do
 			ok and type(res) == "table" and res.result == "ERR",
 			tostring(ok) .. "/" .. tostring(type(res) == "table" and res.message or res))
 	end
+end
+
+-- ---- AG-9：图片格式按魔数判定（不看扩展名）----
+-- 驱动曾恒返回 format="jpeg"，宿主据此恒拼 data:image/jpeg——传 PNG 会得到
+-- 「JPEG 标签 + PNG 字节」，严格网关按图片解析 400。现在按内容判，且不支持
+-- 的格式响亮拒绝。
+do
+	local mjpeg = dofile("modules/lib/mjpeg_frame.lua")
+
+	local PNG  = "\137PNG\r\n\26\n" .. "payload"
+	local GIF  = "GIF89a" .. "payload"
+	local WEBP = "RIFF" .. string.rep("\0", 4) .. "WEBP" .. "payload"
+	local JPEG = "\255\216\255" .. "payload"
+	local BMP  = "BM" .. string.rep("x", 30)
+
+	check("AG-9：JPEG 魔数识别", mjpeg.image_format(JPEG) == "jpeg")
+	check("AG-9：PNG 魔数识别", mjpeg.image_format(PNG) == "png")
+	check("AG-9：GIF87a 识别", mjpeg.image_format("GIF87a" .. "x") == "gif")
+	check("AG-9：GIF89a 识别", mjpeg.image_format("GIF89a" .. "x") == "gif")
+	check("AG-9：WebP（RIFF+WEBP）识别", mjpeg.image_format(WEBP) == "webp")
+	check("AG-9：BMP 不认识（返回 nil）", mjpeg.image_format(BMP) == nil)
+	check("AG-9：过短输入返回 nil", mjpeg.image_format("ab") == nil
+		and mjpeg.image_format("") == nil and mjpeg.image_format(nil) == nil)
+	-- 只有 RIFF 头不算 WebP（WAV/AVI 也是 RIFF，必须看第 9-12 字节）
+	check("AG-9：RIFF 但不是 WEBP（如 WAV）不算图片",
+		mjpeg.image_format("RIFF" .. string.rep("\0", 4) .. "WAVE" .. "payload") == nil)
+	check("AG-9：白名单只含四种视觉格式",
+		mjpeg.SUPPORTED_FORMATS.jpeg and mjpeg.SUPPORTED_FORMATS.png
+			and mjpeg.SUPPORTED_FORMATS.gif and mjpeg.SUPPORTED_FORMATS.webp
+			and mjpeg.SUPPORTED_FORMATS.bmp == nil)
+end
+
+-- ---- AG-9：仿真路径返回真实 format，不支持的格式返 ERR ----
+do
+	local path = os.tmpname()
+	write_file(path, "\137PNG\r\n\26\n" .. string.rep("\0\1\2\3", 8))
+	build({ src = path, src_root = dirname(path) })
+	local res = call({})
+	check("AG-9：仿真 PNG 的 format 为 png（修复前恒为 jpeg）", res.format == "png",
+		tostring(res.format))
+	check("AG-9：仿真 PNG 仍返回 OK 与 b64", res.result == "OK" and type(res.b64) == "string")
+	destroy({})
+
+	-- 不支持的格式必须在 **build 阶段**就 ERR（那时还没上电），而不是猜一个
+	-- MIME 发出去、或拖到 call 时才炸
+	write_file(path, "BM" .. string.rep("x", 30))
+	local b2 = build({ src = path, src_root = dirname(path) })
+	check("AG-9：BMP 仿真 build → ERR 契约", b2.result == "ERR", tostring(b2.result))
+	check("AG-9：ERR 文案点名格式不受支持",
+		tostring(b2.message):find("unsupported sim image format", 1, true) ~= nil,
+		tostring(b2.message))
+	-- call 阶段同样拒绝（会话里直接调 call、没走 build 的路径）
+	local r2 = call({ src = path, src_root = dirname(path) })
+	check("AG-9：BMP 仿真 call → ERR 契约", r2.result == "ERR", tostring(r2.result))
+	check("AG-9：call 阶段文案同样点名格式",
+		tostring(r2.message):find("unsupported sim image format", 1, true) ~= nil,
+		tostring(r2.message))
+	destroy({})
+	os.remove(path)
 end
 
 tester.summary("Camera.lua 单测")

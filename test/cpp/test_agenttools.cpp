@@ -210,7 +210,10 @@ TH_TEST(agenttools_capture_image_via_real_camera_driver) {
 	 * 不需要任何摄像头硬件；返回的 base64 必须与源文件逐字节一致 */
 	TempDir tmp("cam");
 	fs::path pic = tmp.path() / "pic.jpg";
-	writeFile(pic, "foobar");	/* base64("foobar") == "Zm9vYmFy" */
+	/* 必须是真的 JPEG 头（FF D8 FF）：AG-9 之后宿主会拿魔数与驱动声明的 format
+	 * 交叉校验，随便一段字节不再能当图片用。base64("\xff\xd8\xff" "foobar") 固定。 */
+	const std::string jpeg = std::string("\xff\xd8\xff", 3) + "foobar";
+	writeFile(pic, jpeg);
 
 	MemoryReader reader("CREATE TABLE Timer (name String);\n"
 		"INSERT INTO Timer (name) VALUES ('t0');\n");
@@ -229,9 +232,81 @@ TH_TEST(agenttools_capture_image_via_real_camera_driver) {
 	AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
 	TH_CHECK(res.text.find("已拍摄照片") != std::string::npos);
 	TH_CHECK(res.text.find("模拟图片") != std::string::npos);
-	TH_CHECK(res.text.find("6 字节") != std::string::npos);
-	TH_CHECK(res.imageDataUrl == "data:image/jpeg;base64,Zm9vYmFy");
+	TH_CHECK(res.text.find("9 字节") != std::string::npos);
+	TH_CHECK(res.imageDataUrl.rfind("data:image/jpeg;base64,", 0) == 0);
 
+	robot.deactivate();
+}
+
+/* ---- AG-9：data URL 的 MIME 必须来自内容，而不是硬编码 ----
+ * 修复前宿主恒拼 `data:image/jpeg;base64,`：传一张 PNG 就得到「JPEG 标签 +
+ * PNG 字节」，严格网关按图片解析直接 400。现在 MIME 取自驱动按**魔数**判定的
+ * format，宿主只做自洽交叉校验。 */
+namespace {
+
+/* 各格式的最小可判样本（只需魔数，驱动与宿主都只读魔数） */
+std::string pngBytes() { return std::string("\x89PNG\r\n\x1a\n", 8) + "payload-png"; }
+std::string gifBytes() { return std::string("GIF89a", 6) + "payload-gif"; }
+std::string webpBytes() {
+	return std::string("RIFF", 4) + std::string(4, '\0') + "WEBPpayload-webp";
+}
+std::string bmpBytes() { return std::string("BM", 2) + std::string(30, 'x'); }
+
+} // namespace
+
+/* 三种非 JPEG 格式都必须产出正确的 MIME 标签（PNG/GIF/WebP 各有独立分支） */
+TH_TEST(agenttools_capture_image_mime_follows_content_format) {
+	const std::pair<const char*, std::string (*)()> cases[] = {
+		{"png", &pngBytes}, {"gif", &gifBytes}, {"webp", &webpBytes},
+	};
+	for (const auto& [name, make] : cases) {
+		TempDir tmp(std::string("mime_") + name);
+		const fs::path pic = tmp.path() / (std::string("pic.") + name);
+		writeFile(pic, make());
+
+		MemoryReader reader("CREATE TABLE Timer (name String);\n"
+			"INSERT INTO Timer (name) VALUES ('t0');\n");
+		RobotStruct robot(reader);
+		robot.injectLuaDriver("Camera", "cam0");
+		robot.active();
+
+		AgentToolContext ctx;
+		ctx.robot = &robot;
+		ctx.camera = robot.registry().find("cam0");
+		ctx.cameraSrc = pic.string();
+		AgentToolRegistry tools = makeAgentTools(ctx);
+		const AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+
+		const std::string expect = std::string("data:image/") + name + ";base64,";
+		TH_CHECK_MSG(res.imageDataUrl.rfind(expect, 0) == 0,
+			std::string("MIME 应为 ") + expect + "，实际 " + res.imageDataUrl.substr(0, 40));
+		TH_CHECK_MSG(res.text.find("已拍摄照片") != std::string::npos, res.text);
+		robot.deactivate();
+	}
+}
+
+/* 不受支持/无法识别的格式必须**响亮拒绝**，而不是猜一个 MIME 发出去 */
+TH_TEST(agenttools_capture_image_rejects_non_image_source) {
+	TempDir tmp("notimg");
+	const fs::path pic = tmp.path() / "note.jpg";	/* 扩展名像图片，内容是 BMP */
+	writeFile(pic, bmpBytes());
+
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.camera = robot.registry().find("cam0");
+	ctx.cameraSrc = pic.string();
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	const AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+
+	TH_CHECK_MSG(res.imageDataUrl.empty(), "不该为不可识别的来源产出图片 URL");
+	TH_CHECK_MSG(res.text.find("unsupported sim image format") != std::string::npos,
+		"应点名「格式不受支持」，实际: " + res.text);
 	robot.deactivate();
 }
 
@@ -243,7 +318,9 @@ TH_TEST(agenttools_capture_image_rejects_oversize_image) {
 	static_assert(kMaxImageBase64Bytes % 4 == 0);
 	const std::size_t raw = kMaxImageBase64Bytes / 4 * 3 + 3;
 	fs::path pic = tmp.path() / "big.jpg";
-	writeFile(pic, std::string(raw, 'x'));
+	/* 带真实 JPEG 头：让「超限」成为这条用例**唯一**的失败原因（否则它会因为
+	 * 魔数不符而红，测不到上限本身） */
+	writeFile(pic, std::string("\xff\xd8\xff", 3) + std::string(raw - 3, 'x'));
 
 	MemoryReader reader("CREATE TABLE Timer (name String);\n"
 		"INSERT INTO Timer (name) VALUES ('t0');\n");

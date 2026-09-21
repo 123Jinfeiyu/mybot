@@ -30,5 +30,34 @@ function M.normalize(payload)
 	return payload:sub(1, #payload - #tail + #prefix)
 end
 
+-- 图片格式判定（2026-09-21 审计 AG-9）：按**魔数**判，不看扩展名。
+--
+-- 为什么需要：仿真来源（--camera-src）可以是任意图片，而驱动曾经恒返回
+-- format="jpeg"、宿主据此恒拼 `data:image/jpeg;base64,`——传一张 PNG 就会得到
+-- 「JPEG 标签 + PNG 字节」，严格网关按图片解析直接 400。同一族的教训：
+-- 「声明的类型」必须由**内容**决定，而不是由调用方的期望或文件扩展名决定。
+--
+-- 只认视觉模型实际支持的四种（OpenAI 兼容端点普遍接受）：jpeg / png / gif / webp。
+-- 返回 nil 表示不认识的格式——调用方据此响亮拒绝，而不是猜一个 MIME 发出去。
+-- 注意 webp 是 RIFF 容器：必须连第 9-12 字节的 "WEBP" 一起看，否则 WAV/AVI
+-- 也会被认成图片。
+local function image_format(bytes)
+	if type(bytes) ~= "string" or #bytes < 4 then return nil end
+	-- 每条判据只看自己需要的字节数：把入口最小长度写成 12 会把合法的小图误判成
+	-- 「不认识」（9 字节的 JPEG 就够判魔数）——实测踩过，宿主侧同一处也踩了。
+	if bytes:byte(1) == 0xFF and bytes:byte(2) == 0xD8 and bytes:byte(3) == 0xFF then
+		return "jpeg"
+	end
+	if bytes:sub(1, 8) == "\137PNG\r\n\26\n" then return "png" end
+	if bytes:sub(1, 6) == "GIF87a" or bytes:sub(1, 6) == "GIF89a" then return "gif" end
+	if bytes:sub(1, 4) == "RIFF" and bytes:sub(9, 12) == "WEBP" then return "webp" end
+	return nil
+end
+
+M.image_format = image_format
+
+-- 视觉模型支持的格式白名单（供调用方判断「这个 format 能不能发给模型」）
+M.SUPPORTED_FORMATS = { jpeg = true, png = true, gif = true, webp = true }
+
 _G.__BOT4CJ_MJPEG_FRAME = M
 return M

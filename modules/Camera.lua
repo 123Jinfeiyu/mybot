@@ -436,6 +436,24 @@ local function err_missing()
 	return type(err) ~= "function"
 end
 
+-- 仿真来源：读文件 + 按魔数定格式 + 白名单校验（单点，build 与 call 共用）。
+-- 格式按**内容**判而不看扩展名（2026-09-21 审计 AG-9）：驱动曾恒报 "jpeg"，
+-- 宿主据此恒拼 data:image/jpeg，传一张 PNG 就得到「JPEG 标签 + PNG 字节」，
+-- 严格网关按图片解析直接 400。不认识的格式**响亮拒绝**而不是猜——猜错的代价
+-- 是模型侧一个含混的解析错误，而这里能直接说明「这文件不是受支持的图片」。
+-- build 阶段也校验一次：那时还没上电，格式不对应在上电前失败。
+local function load_sim(real)
+	local bytes, rerr = read_file(real)
+	if bytes == nil then return nil, rerr end
+	local fmt = mjpeg.image_format(bytes)
+	if fmt == nil or not mjpeg.SUPPORTED_FORMATS[fmt] then
+		return nil, string.format(
+			"unsupported sim image format: %s (expected JPEG/PNG/GIF/WebP by magic bytes)",
+			tostring(fmt))
+	end
+	return { path = real, bytes = bytes, format = fmt }
+end
+
 function build(data)
 	if err_missing() then return ERR_NO_CTOR end
 	if type(data) ~= "table" then
@@ -445,9 +463,9 @@ function build(data)
 	if src ~= nil and src ~= "" then
 		local real, perr = resolve_sim_path(data)
 		if real == nil then return err(perr) end
-		local bytes, rerr = read_file(real)
-		if bytes == nil then return err(rerr) end
-		state.sim = { path = real, bytes = bytes }
+		local sim, lerr = load_sim(real)
+		if sim == nil then return err(lerr) end
+		state.sim = sim
 	end
 	return { result = "OK" }
 end
@@ -472,14 +490,14 @@ function call(data)
 	end
 	if real ~= nil then
 		if state.sim == nil or state.sim.path ~= real then
-			local bytes, rerr = read_file(real)
-			if bytes == nil then return err(rerr) end
-			state.sim = { path = real, bytes = bytes }
+			local sim, lerr = load_sim(real)
+			if sim == nil then return err(lerr) end
+			state.sim = sim
 		end
 		return {
 			result = "OK",
 			source = "file",
-			format = "jpeg",
+			format = state.sim.format,
 			bytes = #state.sim.bytes,
 			b64 = base64(state.sim.bytes),
 			note = "模拟图片（src=" .. state.sim.path .. "）",
