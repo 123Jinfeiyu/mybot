@@ -97,8 +97,17 @@ else
 	done < "$tsan_file"
 fi
 
+# 7) 守门常量单点（F3-5 余部）：TEST_TIMEOUT/SAN_DIR 默认值唯一来源
+#    test/lib/params.sh（bash 直接 source、CMake 正则提取、CI 同源）。格式
+#    漂移（如 CMake 侧正则依赖的 `: "${KEY:=v}"` 形态被改）会让 ctest TIMEOUT
+#    在 configure 期 FATAL——这里再钉一层，让漂移在 selftest 就显形。
+for k in TEST_TIMEOUT SAN_DIR; do
+	grep -qE "^: \"\\\$\{${k}:=[0-9a-zA-Z._/-]+\}\"$" test/lib/params.sh \
+		|| note "params 单点缺 ${k} 条目或格式漂移（CMake 正则提取会失败）：test/lib/params.sh"
+done
+
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点）"

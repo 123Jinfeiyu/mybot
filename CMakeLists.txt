@@ -261,6 +261,20 @@ endif()
 # ======================================================================
 file(GLOB MYBOT_LUA_TESTS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/test_*.lua)
 find_program(LUAJIT_EXECUTABLE NAMES luajit)
+# F3-5 余部③：单测超时唯一来源 test/lib/params.sh（run_all.sh 的 timeout 前缀
+# 与 docs/testing.md 同源）。bash 侧直接 source；这里 file(STRINGS) + 正则提取
+# `: "${TEST_TIMEOUT:=N}"` 的默认值。单点被破坏（条目缺失/格式漂移）即 configure
+# 失败——比静默回落某个手抄值诚实。
+file(STRINGS "${CMAKE_SOURCE_DIR}/test/lib/params.sh" MYBOT_PARAMS_LINES)
+set(MYBOT_LUA_TEST_TIMEOUT "")
+foreach(_p IN LISTS MYBOT_PARAMS_LINES)
+	if(_p MATCHES "^: \"\\$\\{TEST_TIMEOUT:=([0-9]+)\\}\"")
+		set(MYBOT_LUA_TEST_TIMEOUT "${CMAKE_MATCH_1}")
+	endif()
+endforeach()
+if(MYBOT_LUA_TEST_TIMEOUT STREQUAL "")
+	message(FATAL_ERROR "test/lib/params.sh 缺 TEST_TIMEOUT 默认值（守门常量单点被破坏，F3-5）")
+endif()
 if(LUAJIT_EXECUTABLE)
 	foreach(lua_test IN LISTS MYBOT_LUA_TESTS)
 		get_filename_component(lua_name "${lua_test}" NAME)
@@ -269,7 +283,7 @@ if(LUAJIT_EXECUTABLE)
 				"${lua_test}" ${LUAJIT_EXECUTABLE} "${lua_test}")
 		set_tests_properties(lua_${lua_name} PROPERTIES
 			WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-			TIMEOUT 60
+			TIMEOUT ${MYBOT_LUA_TEST_TIMEOUT}
 			SKIP_RETURN_CODE 125
 			ENVIRONMENT "LUACMD=${LUAJIT_EXECUTABLE}")
 	endforeach()

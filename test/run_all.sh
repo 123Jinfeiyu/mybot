@@ -5,8 +5,8 @@
 #       bash test/run_all.sh pca9685       # 只跑文件名含 pca9685 的
 # 说明：
 #   - 统一用 luajit 运行（HAL 依赖 ffi）；可用环境变量 LUACMD 覆盖解释器
-#   - 单测超时 TEST_TIMEOUT 秒（默认 60，需 coreutils timeout；缺失则不限时）——
-#     防单个用例死循环挂死整个入口
+#   - 单测超时 TEST_TIMEOUT 秒（默认取 test/lib/params.sh 单点，需 coreutils
+#     timeout；缺失则不限时）——防单个用例死循环挂死整个入口
 #   - test_jit_warmup.lua 是真机 ABI 回归（需 /dev/i2c-*）、test_camera_v4l2.lua 是
 #     真机摄像头回归（需 /dev/video*）：文件首行标记 -- requires: i2c / video，无设备自动跳过
 #   - 守门完整性：编译产物（mybot / mybot_tests）缺失的分段**判失败**而非静默跳过——
@@ -30,7 +30,14 @@ if ! command -v "$LUACMD" >/dev/null 2>&1; then
 	exit 1
 fi
 
-TEST_TIMEOUT="${TEST_TIMEOUT:-60}"
+# 守门常量单点（F3-5 余部）：TEST_TIMEOUT 唯一来源 test/lib/params.sh——
+# ctest 的 TIMEOUT（CMakeLists 正则提取同一文件）与 docs/testing.md 同源；
+# 环境已设的 TEST_TIMEOUT 优先于 params 默认。
+. test/lib/params.sh || { echo "params 单点缺失：test/lib/params.sh" >&2; exit 1; }
+if ! [ "${TEST_TIMEOUT:-}" -gt 0 ] 2>/dev/null; then
+	echo "params 单点失效：TEST_TIMEOUT 非正整数（test/lib/params.sh）" >&2
+	exit 1
+fi
 timeout_cmd=""
 if command -v timeout >/dev/null 2>&1; then
 	timeout_cmd="timeout $TEST_TIMEOUT"

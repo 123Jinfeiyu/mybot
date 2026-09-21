@@ -38,7 +38,8 @@ bash test/run_all.sh tcp      # 只跑 TCP 动作源
 ### ctest 逐用例入口（可选）
 
 `run_all.sh` 是权威编排；CMake 同时把每个 `test/test_*.lua` 与 C++ 单测注册成了独立
-ctest 用例，便于定位单条失败、享受逐用例超时（Lua 用例 60s），不必整段重跑：
+ctest 用例，便于定位单条失败、享受逐用例超时（时长单点 `test/lib/params.sh` 的
+`TEST_TIMEOUT`，与 `run_all.sh` 同源），不必整段重跑：
 
 ```bash
 cd build && ctest --output-on-failure        # 全部注册用例

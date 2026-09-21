@@ -52,12 +52,13 @@ gate:sanitizer:
   needs: ["build:release"]
   before_script: *install-deps
   script:
-    # run_san.sh 第二跑要求 build-asan 产物（explicit=1 缺产物即判失败），
-    # 故本 job 必须自建 sanitizer 产物——只继承 build:release 的 Release 产物不够。
+    # run_san.sh 第二跑要求 sanitizer 产物（explicit=1 缺产物即判失败），
+    # 故本 job 必须自建——只继承 build:release 的 Release 产物不够。
     # --asan-only：跳过脚本内第一跑（Release 全量）——gate:release 已跑过，
     # 不加会把整段守门在同一条 pipeline 里跑两遍。
-    - cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=address,undefined
-    - cmake --build build-asan -j"$(nproc)"
+    # 构建目录 SAN_DIR 单点 test/lib/params.sh（F3-5 余部）：与 run_san.sh
+    # 第二跑的默认路径同源；GitLab 每行独立 shell，source 须与使用同行。
+    - . test/lib/params.sh && cmake -S . -B "$SAN_DIR" -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=address,undefined && cmake --build "$SAN_DIR" -j"$(nproc)"
     - bash test/run_san.sh --asan-only
 
 # TSan 常态化（审计覆盖缺口 #1，起步为软门禁）：只跑 mybot_tests 的守护
