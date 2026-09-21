@@ -286,11 +286,68 @@ void HwFactory::checkSingleConsumer(const std::vector<mt::MatrixObject>& matrice
 	}
 }
 
+/* ---- F5-4：同物理串口多独立 fd 消费者的加载期告警 ----
+ * 共享形态只有一种是危险的：两个消费者**各自 open** 同一 path（UART 总线
+ * 变量重复声明同一路径、或 UART 变量 + 真机守护各开一个 fd）。此时每个
+ * lua_State 独立快照/恢复 termios，后关闭者以自己 open 时的配置为准
+ * （modules/lib/HAL.lua:869 自述「不做跨变量引用计数」），混用波特率还会
+ * 互相改线速。而多个器件行引用**同一个** UART 总线变量（'$uart-0'）是
+ * 安全形态：fd 只有一个、termios 只设一次，器件行不持有句柄——不告警。
+ * virt 侧（总线 proto=virt、守护 proto=virt）走内存仿真不碰真串口，跳过
+ * （否则无硬件夹具全线误报）。路径按字符串精确比对：/dev/serial0 与
+ * /dev/ttyS0 这类符号链接别名无法在结构期归一，宁可漏告（与
+ * normalizeAddress「宁漏不误」同取向）。只告警不拒绝——同配置轮询下
+ * 实际可用，引用计数/共享 fd 属破坏性决策（fix-plan F6）。 */
+void HwFactory::warnSharedUartPaths(const std::vector<mt::MatrixObject>& matrices) {
+	std::map<std::string, std::vector<std::string>> users;	/* path -> 消费者定位串 */
+	for (const auto& m : matrices) {
+		const std::string t = m.getName();
+		if (t == "Alias" || t == "Vars" || t == "Action" || m.rows() == 0) { continue; }
+		const std::int64_t idxName = m.indexOfCol(0, "name");
+		if (idxName < 0) { continue; }
+		for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
+			std::string who;
+			std::string path;
+			if (t == "UART") {
+				/* proto=virt 的总线行是内存仿真（attach_uart），不碰真串口 */
+				const std::string proto = optCol(m, i, "proto");
+				if (proto == "virt") { continue; }
+				const std::int64_t idxPath = m.indexOfCol(0, "path");
+				if (idxPath < 0) { continue; }
+				path = m.inherited(i, idxPath);
+				if (path.empty() || path == "-") { continue; }
+				who = "UART bus variable '" + m.inherited(i, idxName) + "'";
+			} else if (t == "Daemon") {
+				const std::string proto = optCol(m, i, "proto");
+				if (proto.empty() || proto == "virt") { continue; }
+				path = optCol(m, i, "path");
+				if (path.empty()) { continue; }
+				who = "daemon '" + m.inherited(i, idxName) + "'";
+			} else {
+				continue;	/* 器件行经 '$uart-x' 共享总线的 fd，非独立消费者 */
+			}
+			users[path].push_back(who + " (table '" + t + "', row " + std::to_string(i) + ")");
+		}
+	}
+	for (const auto& [path, who] : users) {
+		if (who.size() < 2) { continue; }
+		std::string names;
+		for (const auto& w : who) { names += (names.empty() ? "" : ", ") + w; }
+		std::cerr << "Warning: UART path '" << path << "' is opened independently by "
+			<< who.size() << " consumers: " << names << ". Each keeps its own termios"
+			" snapshot and the last one to close wins (no cross-variable reference"
+			" counting); mixing baud rates or interleaved use may corrupt the serial"
+			" line config. Share one UART bus variable via '$' reference, or sample"
+			" via the daemon only." << std::endl;
+	}
+}
+
 /* ---- 全部硬变量创建：声明序，Alias/Lua/Daemon 分派 ---- */
 void HwFactory::createHardVars(const std::vector<mt::MatrixObject>& matrices) {
 	/* 装配前先做单消费者判据：此时还没申请任何资源（Lua 状态/共享槽/总线句柄），
 	 * 报错即干净退出，不会留下半装配的机器人。 */
 	checkSingleConsumer(matrices);
+	warnSharedUartPaths(matrices);	/* F5-4：同物理串口多独立 fd 告警（不改变行为） */
 	for (const auto& matrix : matrices) {
 		std::string mtName = matrix.getName();
 		if (mtName == "Alias") { registerAliasMatrix(matrix, nullptr); }

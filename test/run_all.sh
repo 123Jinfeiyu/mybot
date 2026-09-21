@@ -1013,6 +1013,26 @@ SQLEOF
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
 
+	# F5-4：同一物理串口被两个「各自 open 独立 fd」的 UART 总线变量声明
+	# （不同波特率，危险形态最小样本）。断言：结构装配期打印告警（先于上电、
+	# 点名双方）且装配不因此失败——进程继续走到上电，以 UART open 失败结束
+	# （path=/dev/null 在 HAL uart 路径白名单外，任何机器都确定性 rc=1，
+	# 不受本机是否接串口影响）。取向声明见 docs/faq.md。夹具按 hardening
+	# 段惯例运行期生成进 .tmp/（不进 robots/test/：孤儿检测要求静态夹具
+	# 必须接进用例表，而 hardening 是命令行调用形态）。
+	cat > .tmp/uart_two_vars.sql <<'SQLEOF'
+CREATE TABLE UART (
+	name String,
+	path String,
+	baud String
+);
+INSERT INTO UART (name, path, baud) VALUES ('uart-0', '/dev/null', '9600');
+INSERT INTO UART (name, path, baud) VALUES ('uart-1', '/dev/null', '115200');
+SQLEOF
+	run_one_hardening 'uart_shared_path_warning' 1 'Warning: UART path' \
+		env BOT4CJ_MODULE_PATH="./modules" timeout 30 "$bin" \
+		--robot=.tmp/uart_two_vars.sql --input /dev/null
+
 	# ---- agent CLI 负路径三连（F-20 同族，main.cpp 的组合校验此前无守门用例，
 	# docs/testing.md §9 却已声称覆盖——补齐让声称成真）----
 	# 1) agent 专属选项出现在非 agent 模式：意图与参数不一致，显式拒绝退出 2

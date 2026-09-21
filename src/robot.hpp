@@ -193,6 +193,12 @@ class HwFactory {
 	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
 	void checkSingleConsumer(const std::vector<mt::MatrixObject>& matrices);
 
+	/* F5-4：同一物理串口被 2+ 个「各自 open 独立 fd」的消费者（UART 总线变量 /
+	 * 真机守护）声明时的加载期告警——HAL 不做跨变量引用计数，后关闭者以自己
+	 * open 时的配置为准。只告警不拒绝（同配置轮询下实际可用；是否收紧属
+	 * 破坏性决策）。实现与理由见 hw_factory.cpp 的同名函数注释。 */
+	void warnSharedUartPaths(const std::vector<mt::MatrixObject>& matrices);
+
 	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名数值) */
 	enum class ScalarKind { Alias, Vars };
 
