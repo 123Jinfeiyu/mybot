@@ -9,11 +9,18 @@
 #include <algorithm>
 #include <iostream>
 
+#include "llmconfig.hpp"
 #include "util.hpp"
 
 namespace bot {
 
 namespace {
+
+/* 选项区间文本由 llm_limits 单点渲染（B2-4）：--help、配置解析与校验共用同一组
+ * 界，避免「帮助里写一个数、校验用另一个数」这类漂移。 */
+std::string rangeText(int lo, int hi) {
+	return "范围 " + std::to_string(lo) + "-" + std::to_string(hi);
+}
 
 /* 重构计划 2.6：带值选项表——「agentOnly 标记 + 缺值登记 + 写入字段」
  * 此前是 19 段逐字重复的 if 链，新增选项靠复制粘贴；现在增项 = 表中加
@@ -179,9 +186,12 @@ std::string helpText() {
 	s += "                       DEEPSEEK_API_KEY）或配置文件的 api_key / api_key_file 取；\n";
 	s += "                       不提供命令行传密钥的选项——argv 对同用户进程可读\n";
 	s += "                       （/proc/<pid>/cmdline）\n";
-	s += "  --llm-max-turns <N>   单次任务的最大模型轮数（缺省 8，范围 1-100）\n";
-	s += "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096）\n";
-	s += "  --llm-timeout <秒>    单次模型调用超时（缺省 180）\n";
+	s += "  --llm-max-turns <N>   单次任务的最大模型轮数（缺省 8，"
+		+ rangeText(llm_limits::kMaxTurnsMin, llm_limits::kMaxTurnsMax) + "）\n";
+	s += "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096，"
+		+ rangeText(llm_limits::kMaxTokensMin, llm_limits::kMaxTokensMax) + "）\n";
+	s += "  --llm-timeout <秒>    单次模型调用超时（缺省 180，"
+		+ rangeText(llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec) + "）\n";
 	s += "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt\n";
 	s += "  --prompt-file <路径>  提示词包：可重复传入（文件或目录），全部内容拼接后\n";
 	s += "                       追加到系统提示词，用于注入机器人身份与行为约束；\n";

@@ -205,9 +205,12 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 	std::optional<int> timeoutSec, maxTokens, maxTurns;
 	/* timeout 上限与驱动侧 llm_http.clamp_timeout 的钳制区间一致：宿主接受什么，
 	 * 驱动就照发什么，不做「先接受再悄悄改写」 */
-	if (!wantInt(path, root, "timeout", 1, 600, timeoutSec, err)) { return false; }
-	if (!wantInt(path, root, "max_tokens", 1, 200000, maxTokens, err)) { return false; }
-	if (!wantInt(path, root, "max_turns", 1, 100, maxTurns, err)) { return false; }
+	if (!wantInt(path, root, "timeout", llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec,
+			timeoutSec, err)) { return false; }
+	if (!wantInt(path, root, "max_tokens", llm_limits::kMaxTokensMin, llm_limits::kMaxTokensMax,
+			maxTokens, err)) { return false; }
+	if (!wantInt(path, root, "max_turns", llm_limits::kMaxTurnsMin, llm_limits::kMaxTurnsMax,
+			maxTurns, err)) { return false; }
 	if (timeoutSec) { out.timeoutSec = *timeoutSec; }
 	if (maxTokens) { out.maxTokens = *maxTokens; }
 	if (maxTurns) { out.maxTurns = *maxTurns; }

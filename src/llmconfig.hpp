@@ -16,6 +16,20 @@
 
 namespace bot {
 
+/* ---- LLM 选项/配置字段取值区间（B2-4 单点，2026-09-21）----
+ * 同一组上下界此前在 llmconfig.cpp（配置文件字段）、agentmode.cpp（命令行选项）
+ * 与 docs/reference.md 各写一遍：改一处忘一处就出现「配置文件接受、命令行拒绝」
+ * 这类判据漂移。timeout 上限与驱动侧 llm_http.clamp_timeout 的钳制区间一致
+ * ——宿主接受什么，驱动就照发什么，不做「先接受再悄悄改写」。 */
+namespace llm_limits {
+inline constexpr int kTimeoutMinSec = 1;
+inline constexpr int kTimeoutMaxSec = 600;
+inline constexpr int kMaxTokensMin = 1;
+inline constexpr int kMaxTokensMax = 200000;
+inline constexpr int kMaxTurnsMin = 1;
+inline constexpr int kMaxTurnsMax = 100;
+} // namespace llm_limits
+
 struct LlmFileConfig {
 	std::optional<std::string> driver;	/* 协议驱动表名 = modules/<名>.lua */
 	std::optional<std::string> var;		/* 承载驱动的变量名 */

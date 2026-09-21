@@ -211,17 +211,20 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	if (file.maxTurns) { out.maxTurns = *file.maxTurns; }
 
 	if (!opts.llmMaxTurns.empty()
-		&& !parseIntOption(opts.llmMaxTurns, "llm-max-turns", 1, 100, out.maxTurns, err)) {
+		&& !parseIntOption(opts.llmMaxTurns, "llm-max-turns",
+			llm_limits::kMaxTurnsMin, llm_limits::kMaxTurnsMax, out.maxTurns, err)) {
 		return false;
 	}
 	if (!opts.llmMaxTokens.empty()
-		&& !parseIntOption(opts.llmMaxTokens, "llm-max-tokens", 1, 200000, out.maxTokens, err)) {
+		&& !parseIntOption(opts.llmMaxTokens, "llm-max-tokens",
+			llm_limits::kMaxTokensMin, llm_limits::kMaxTokensMax, out.maxTokens, err)) {
 		return false;
 	}
 	if (!opts.llmTimeout.empty()) {
 		int timeoutSec = 0;
-		/* 上限 600 与 llm_http.clamp_timeout 的下限/上限一致（见该处注释） */
-		if (!parseIntOption(opts.llmTimeout, "llm-timeout", 1, 600, timeoutSec, err)) {
+		/* 上限与 llm_http.clamp_timeout 的钳制区间同源（llm_limits 单点） */
+		if (!parseIntOption(opts.llmTimeout, "llm-timeout",
+				llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec, timeoutSec, err)) {
 			return false;
 		}
 		out.timeoutSec = timeoutSec;
