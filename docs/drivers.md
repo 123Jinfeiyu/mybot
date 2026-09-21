@@ -156,6 +156,12 @@ if fd == nil then return ek2 end
 | `read_block_bytes(fd, reg, n, chunk)` | 从 `reg` 起读 `n` 字节，返 1 基大端字节表；`chunk` 缺省 6 | 任一读失败返 `nil` |
 | `guard_build(rollback, fn, data)` | build 全程 pcall + 失败时回滚句柄 | 抛错折成 ERR 表 |
 
+`guard_build` 的适用范围是**持有 OS 句柄的 4 个总线驱动**（`GPIO`/`I2C`/`SPI`/`UART`）——
+只有它们自己 `open`/申请句柄，所以只有它们需要「半途抛错时回滚」。器件驱动的句柄由
+总线变量持有（器件只拿 `fd` 用），**不需要**也不应套这一层：把它推广到器件驱动只会
+把 `build` 的入口形态搅乱、并让 param 校验与回滚责任错位。
+机械锚点：`grep -c 'guard_build(' modules/*.lua` 应恒为 **4**。
+
 越界语义是**三选一**，由驱动按器件语义显式选择，不要互相「统一」：
 
 - **报 ERR**：参数非法即拒绝（如 `APDS9900` 的 atime 范围、`MS5611` 的 OSR 档位）
