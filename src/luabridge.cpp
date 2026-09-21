@@ -115,11 +115,6 @@ static void push_lua_value(lua_State* L, const Json& val) {
  * （t.self = t，最常见的笔误形态）即无限递归直到裸 SIGSEGV，无环但极深的表同理。
  * 用 depth 计数在 kMaxLuaNesting 处抛 LuaNestingTooDeep，由 call_lua 就地转 ERR。
  * 检查放在进入表分支的最开头（本层还没压任何东西），抛出时栈不受本层污染。 */
-/* double → int64 的合法值域（与键路径 L3 防线同一判据）：LLONG_MAX 的
- * double 表示向上舍入为 2^63，用其比较会放行溢出值，故直接以 ±2^63 为界。 */
-constexpr double kMinIntAsDouble = -9223372036854775808.0;	/* -2^63 */
-constexpr double kMaxIntAsDouble = 9223372036854775808.0;	/* 2^63 */
-
 Json lua_value_to_json(lua_State* L, int idx, int depth) {
 	int t = lua_type(L, idx);
 	if (t == LUA_TNUMBER) {
@@ -128,7 +123,7 @@ Json lua_value_to_json(lua_State* L, int idx, int depth) {
 		 * int64 的 double 做 static_cast<long long> 是未定义行为（UBSan
 		 * float-cast-overflow 实证）。非有限或超界直接走浮点分支，与
 		 * json.cpp 的序列化契约一致（非有限输出 null）。 */
-		if (std::isfinite(d) && d >= kMinIntAsDouble && d < kMaxIntAsDouble) {
+		if (doubleFitsInt64(d)) {
 			long long i = static_cast<long long>(d);
 			return (static_cast<double>(i) == d) ? JsonInt(i) : JsonFloat(d);
 		}
@@ -160,8 +155,8 @@ Json lua_value_to_json(lua_State* L, int idx, int depth) {
 				double kd = lua_tonumber(L, -2);
 				/* L3 防线：NaN / 超出 int64 范围的键在 static_cast<long long> 时是
 				 * 未定义行为。先验后与 C7 非整键同路转字符串键保留数据。
-				 * 值域常量与值路径共用（见文件级 kMin/MaxIntAsDouble 注释）。 */
-				if (!std::isfinite(kd) || kd >= kMaxIntAsDouble || kd < kMinIntAsDouble) {
+				 * 值域判据与值路径共用同一点（util::doubleFitsInt64）。 */
+				if (!doubleFitsInt64(kd)) {
 					Json vj = lua_value_to_json(L, -1, depth + 1);
 					obj.put(std::to_string(kd), vj);
 				} else {

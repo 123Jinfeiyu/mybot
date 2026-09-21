@@ -32,11 +32,6 @@ namespace {
 
 /* ---- 参数取值 ---- */
 
-/* double → int 的合法值域：int 的两个端点都可被 double 精确表示，故直接取界。
- * 越界或非有限一律拒绝，绝不落到 static_cast（那才是 UB 所在）。 */
-constexpr double kMinIntAsDouble = static_cast<double>(std::numeric_limits<int>::min());
-constexpr double kMaxIntAsDouble = static_cast<double>(std::numeric_limits<int>::max());
-
 std::string requireString(const Json& args, const std::string& key) {
 	if (!args.isObj()) { throw IllegalArgumentException("工具参数必须是 JSON 对象"); }
 	auto v = args.get(key);
@@ -64,7 +59,7 @@ int optionalInt(const Json& args, const std::string& key, int fallback) {
 		/* P1-1 防线（2026-09-19 评估）：模型返回的 "timeout_seconds": 1e30 这类值
 		 * 直接 static_cast<int> 是 float-cast-overflow UB（非有限同理）。与
 		 * luabridge.cpp 的 int64 转换同一族判据，此处按 int 宽度取界。 */
-		if (!std::isfinite(d) || d < kMinIntAsDouble || d > kMaxIntAsDouble) {
+		if (!doubleFitsInt(d)) {
 			throw IllegalArgumentException("参数 " + key + " 数值超出范围或非有限");
 		}
 		return static_cast<int>(d);

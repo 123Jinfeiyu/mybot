@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 #include <iostream>
+#include <limits>
 #include <unistd.h>
 
 namespace bot {
@@ -320,6 +321,26 @@ inline bool isNumericLiteral(const std::string& s) {
 	std::string v = trim(s);
 	double d = 0.0;
 	return parseFiniteDouble(v, d) == ParseFiniteStatus::OK;
+}
+
+/* ---- double → 整数转换的值域判据（M2/B2-2 余部，2026-09-21）----
+ * 同一判据此前两份手写（luabridge 的键/值两条路径、agenttools 的工具参数），
+ * 浮点边界恰是最容易抄错的一类常量：
+ *   - int64：上界必须取 2^63 而**不是** LLONG_MAX——后者的 double 表示向上
+ *     舍入为 2^63，用 `<=` 比较会放行溢出值；故这里是半开区间 [−2^63, 2^63)。
+ *   - int：两个端点都能被 double 精确表示，直接取实际端点、闭区间。
+ * 判据本身（含有限性）收敛到两个谓词；越界后怎么办（走浮点分支还是报错）
+ * 仍由调用方决定，文案不动。 */
+inline bool doubleFitsInt64(double d) {
+	constexpr double kLo = -9223372036854775808.0;	/* -2^63 */
+	constexpr double kHi = 9223372036854775808.0;	/* 2^63（半开区间上界） */
+	return std::isfinite(d) && d >= kLo && d < kHi;
+}
+
+inline bool doubleFitsInt(double d) {
+	constexpr double kLo = static_cast<double>(std::numeric_limits<int>::min());
+	constexpr double kHi = static_cast<double>(std::numeric_limits<int>::max());
+	return std::isfinite(d) && d >= kLo && d <= kHi;
 }
 
 /* 数值 → 文本：%.15g（整数不带小数点、去掉多余零），供 @Vars 表达式结果
