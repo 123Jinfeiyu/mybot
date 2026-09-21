@@ -24,7 +24,7 @@ function build(data)
 	if not ok then return e end
 	local loaded, loadErr = http.load()
 	if not loaded then
-		return { result = "ERR", message = loadErr }
+		return err(loadErr)
 	end
 	return { result = "OK" }
 end

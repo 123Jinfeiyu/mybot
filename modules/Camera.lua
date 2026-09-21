@@ -16,7 +16,11 @@
 -- （F-24 同族做法：常量漂移在构建期即失败）。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local HAL = dofile(mpath.resolve("lib/HAL.lua"))	-- 复用底座：open/close/ioctl 已在其中声明
-local mjpeg = dofile(mpath.resolve("lib/mjpeg_frame.lua"))	-- 帧完整性校验（截断帧重取，见库头注释）
+local mjpeg = dofile(mpath.resolve("lib/mjpeg_frame.lua"))
+-- 统一 ERR 构造器（2026-09-21，D2-2）：内联 {result="ERR",message=…} 收敛到
+-- drv_common.err()。Camera 仍不挂 arg_table（可选外设白名单豁免，见 docs/drivers.md
+-- 的 destroy/入口节），这里只取 err() 一个原语。
+dofile(mpath.resolve("lib/drv_common.lua"))	-- 帧完整性校验（截断帧重取，见库头注释）
 local ffi = require("ffi")
 local bit = require("bit")
 
@@ -417,17 +421,17 @@ end
 -- 设备在第一次 call 时按调用参数惰性打开（参数来自宿主，build 阶段拿不到）。
 -- 入参类型校验不可省（全仓其余驱动统一经 drv_common.arg_table 首位校验；
 -- Camera 因不挂总线样板而自行内联同一条——非表入参按 ERR 契约拒绝，
--- 而不是让 data.src 的索引访问裸抛 Lua error）。
+-- 而不是让 data.src 的索引访问裸抛 Lua error）。ERR 表一律走 drv_common.err()。
 function build(data)
 	if type(data) ~= "table" then
-		return { result = "ERR", message = "Invalid Arguments Type: table" }
+		return err("Invalid Arguments Type: table")
 	end
 	local src = data.src
 	if src ~= nil and src ~= "" then
 		local real, perr = resolve_sim_path(data)
-		if real == nil then return { result = "ERR", message = perr } end
-		local bytes, err = read_file(real)
-		if bytes == nil then return { result = "ERR", message = err } end
+		if real == nil then return err(perr) end
+		local bytes, rerr = read_file(real)
+		if bytes == nil then return err(rerr) end
 		state.sim = { path = real, bytes = bytes }
 	end
 	return { result = "OK" }
@@ -435,7 +439,7 @@ end
 
 function call(data)
 	if type(data) ~= "table" then
-		return { result = "ERR", message = "Invalid Arguments Type: table" }
+		return err("Invalid Arguments Type: table")
 	end
 	-- 仿真优先：src 由宿主在调用时传入；没给但 build 阶段已按元数据加载过，
 	-- 就继续用那一份（src 是会话级配置，不该因为调用没重复传参而失效）。
@@ -446,14 +450,14 @@ function call(data)
 	if src ~= nil and src ~= "" then
 		local perr
 		real, perr = resolve_sim_path(data)
-		if real == nil then return { result = "ERR", message = perr } end
+		if real == nil then return err(perr) end
 	elseif state.sim ~= nil then
 		real = state.sim.path
 	end
 	if real ~= nil then
 		if state.sim == nil or state.sim.path ~= real then
-			local bytes, err = read_file(real)
-			if bytes == nil then return { result = "ERR", message = err } end
+			local bytes, rerr = read_file(real)
+			if bytes == nil then return err(rerr) end
 			state.sim = { path = real, bytes = bytes }
 		end
 		return {
@@ -473,12 +477,12 @@ function call(data)
 	-- P1-2 防线：只放行 /dev/videoN 设备节点。否则 path 等价于一个「打开任意
 	-- 路径」的原语（普通文件、其他设备节点都会被 HAL.sys.open 照单全收）。
 	if type(path) ~= "string" or path:match("^/dev/video%d+$") == nil then
-		return { result = "ERR", message = "摄像头设备路径只允许 /dev/videoN：" .. tostring(path) }
+		return err("摄像头设备路径只允许 /dev/videoN：" .. tostring(path))
 	end
 	if state.fd < 0 or state.path ~= path then
 		device_close()
-		local ok, err = device_open(path, data)
-		if not ok then return { result = "ERR", message = err } end
+		local ok, oerr = device_open(path, data)
+		if not ok then return err(oerr) end
 	end
 
 	-- 首帧丢弃（曝光/白平衡未稳定），与 robot_agent 的「丢第一帧」同做法
@@ -486,7 +490,7 @@ function call(data)
 		local _, werr = grab_one()
 		if werr ~= nil then
 			device_close()
-			return { result = "ERR", message = werr }
+			return err(werr)
 		end
 		state.warmed = true
 	end
@@ -495,7 +499,7 @@ function call(data)
 	-- lib/mjpeg_frame.lua 头注释）。截断帧宽松解码器看不出问题，送到模型网关
 	-- 就是 400「图片输入格式/解析错误」——必须整帧丢弃重取。上限 8 帧（30fps
 	-- 下约 0.3s）：实测该类设备约半数帧不完整，8 连缺已属设备/链路异常。
-	local payload, err
+	local payload, gerr
 	for _ = 1, 8 do
 		payload, err = grab_one()
 		if payload == nil then break end
@@ -504,8 +508,8 @@ function call(data)
 	end
 	if payload == nil then
 		device_close()	-- 失败即释放，下次调用重试打开（支持热插拔）
-		return { result = "ERR", message = err or
-			"连续 8 帧不完整（MJPEG 帧缺 EOI）：设备/链路异常，请检查摄像头连接" }
+		return err(gerr or
+			"连续 8 帧不完整（MJPEG 帧缺 EOI）：设备/链路异常，请检查摄像头连接")
 	end
 	return {
 		result = "OK",
