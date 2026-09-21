@@ -27,6 +27,11 @@ struct RunResult {
 	int exitCode = -1;
 	bool timedOut = false;
 	bool interrupted = false;
+	/* 硬上限兜底触发（超时后 kill 仍未能让管道 EOF，例如子进程卡在 D 态）：
+	 * 此时**不确定**子进程是否已死，也不能声称「已终止」——那句话会直接进模型
+	 * 上下文，说错了模型就基于错误前提继续决策。旧实现走这条路径时一个标记都
+	 * 不带，回执看起来像「正常结束但退出码 -1」，真实成因完全丢失。 */
+	bool hardStopped = false;
 	/* 截断按流独立记账：kMaxCommandOutput 是「每流」上限（总量可达 2 倍），
 	 * 原实现用单一 truncated 标志，stdout 触顶会连带把 stderr 也报成截断。 */
 	bool outTruncated = false;
