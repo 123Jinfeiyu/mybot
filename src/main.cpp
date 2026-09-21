@@ -133,6 +133,73 @@ int runActionPipeline(RobotStruct& robot, const CliOptions& options) {
 	return 0;
 }
 
+/* 未声明则注入 agent 模式的两颗驱动变量（LLM + 可选摄像头）。
+ * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的；
+ * 显式声明优先：脚本作者写了同名变量就照用，不重复注入。
+ * 失败已打印，返回 false。 */
+bool injectAgentDrivers(RobotStruct& robot, const agent::AgentModeConfig& agentCfg) {
+	if (!robot.declaresVariable(agentCfg.llmVar)) {
+		try {
+			robot.injectLuaDriver(agentCfg.driverTable, agentCfg.llmVar);
+		} catch (const std::exception& e) {
+			std::cerr << "错误: 无法注入 LLM 驱动变量: " << e.what() << std::endl;
+			return false;
+		}
+	}
+	/* 摄像头是可选外设：驱动 build 打不开设备也只记原因、不阻断上电，
+	 * 抓拍时才如实报错。 */
+	if (agentCfg.allowCamera && !robot.declaresVariable(agentCfg.cameraVar)) {
+		try {
+			robot.injectLuaDriver("Camera", agentCfg.cameraVar);
+		} catch (const std::exception& e) {
+			std::cerr << "错误: 无法注入摄像头驱动变量: " << e.what() << std::endl;
+			return false;
+		}
+	}
+	return true;
+}
+
+/* D4：安装 SIGINT/SIGTERM 处理器（仅置标志），Ctrl-C 走正常清理链 */
+void installStopSignalHandlers() {
+	struct sigaction sa{};
+	sa.sa_handler = onStopSignal;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;	/* 不用 SA_RESTART：让 accept 等阻塞点被 EINTR 打断以便检查标志 */
+	::sigaction(SIGINT, &sa, nullptr);
+	::sigaction(SIGTERM, &sa, nullptr);
+}
+
+/* 跑流水线 + 无论成败都清理 + 退出前让弃管守护可见。
+ * 异常两类都要接住：std::exception 与「非标准异常」——本机 LuaJIT 用 C++ 异常
+ * 实现 luaD_throw（导入 _Unwind_RaiseException 而无 setjmp/longjmp），从没有
+ * Lua CFRAME 的 C++ 帧抛出的 Lua 错误不是 std::exception——漏了它就直接
+ * std::terminate，下面的 deactivate 被跳过，执行器停在最后指令位置。 */
+int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
+		const agent::AgentModeConfig& agentCfg) {
+	int rc = 0;
+	try {
+		rc = options.agent ? runAgentPipeline(robot, agentCfg)
+				   : runActionPipeline(robot, options);
+	} catch (const std::exception& e) {
+		std::cerr << "Aborted: " << e.what() << std::endl;
+		rc = 1;
+	} catch (...) {
+		std::cerr << "Aborted: non-standard exception (Lua error or foreign throw)"
+			<< std::endl;
+		rc = 1;
+	}
+
+	/* 无论有没有成功激活，都进行清理（对应 Cangjie finally） */
+	robot.deactivate();
+	/* N-7：弃管守护的 lua_State 在 exit 路径不可回收——退出前让泄漏可见 */
+	if (int abandoned = abandonedDaemonCount(); abandoned > 0) {
+		std::cerr << "Warning: " << abandoned << " daemon thread(s) abandoned at shutdown"
+			<< " (join timeout); their Lua states are released by process exit only"
+			<< std::endl;
+	}
+	return rc;
+}
+
 } // namespace bot
 
 int main(int argc, char** argv) {
@@ -170,63 +237,10 @@ int main(int argc, char** argv) {
 			robot->setActionIncludeBaseDir(parent.empty() ? "." : parent);
 		}
 
-		/* agent 模式：结构脚本没声明驱动变量就按 --llm-driver 注入一颗。
-		 * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的。
-		 * 显式声明优先：脚本作者写了同名变量就照用，不重复注入。 */
-		if (options.agent && !robot->declaresVariable(agentCfg.llmVar)) {
-			try {
-				robot->injectLuaDriver(agentCfg.driverTable, agentCfg.llmVar);
-			} catch (const std::exception& e) {
-				std::cerr << "错误: 无法注入 LLM 驱动变量: " << e.what() << std::endl;
-				return 2;
-			}
-		}
-		/* 摄像头同理（未声明则注入 modules/Camera.lua）。摄像头是可选外设：
-		 * 驱动 build 打不开设备也只记原因、不阻断上电，抓拍时才如实报错。 */
-		if (options.agent && agentCfg.allowCamera
-			&& !robot->declaresVariable(agentCfg.cameraVar)) {
-			try {
-				robot->injectLuaDriver("Camera", agentCfg.cameraVar);
-			} catch (const std::exception& e) {
-				std::cerr << "错误: 无法注入摄像头驱动变量: " << e.what() << std::endl;
-				return 2;
-			}
-		}
+		if (options.agent && !injectAgentDrivers(*robot, agentCfg)) { return 2; }
 
-		/* D4：安装 SIGINT/SIGTERM 处理器（仅置标志），Ctrl-C 走正常清理链 */
-		struct sigaction sa{};
-		sa.sa_handler = onStopSignal;
-		sigemptyset(&sa.sa_mask);
-		sa.sa_flags = 0;	/* 不用 SA_RESTART：让 accept 等阻塞点被 EINTR 打断以便检查标志 */
-		::sigaction(SIGINT, &sa, nullptr);
-		::sigaction(SIGTERM, &sa, nullptr);
-
-		int rc = 0;
-		try {
-			rc = options.agent ? runAgentPipeline(*robot, agentCfg)
-					   : runActionPipeline(*robot, options);
-		} catch (const std::exception& e) {
-			std::cerr << "Aborted: " << e.what() << std::endl;
-			rc = 1;
-		} catch (...) {
-			/* 本机 LuaJIT 用 C++ 异常实现 luaD_throw（导入 _Unwind_RaiseException
-			 * 而无 setjmp/longjmp），从没有 Lua CFRAME 的 C++ 帧抛出的 Lua 错误
-			 * 不是 std::exception——漏了它就直接 std::terminate，下面的
-			 * deactivate 被跳过，执行器停在最后指令位置。 */
-			std::cerr << "Aborted: non-standard exception (Lua error or foreign throw)"
-				<< std::endl;
-			rc = 1;
-		}
-
-		/* 无论有没有成功激活，都进行清理（对应 Cangjie finally） */
-		robot->deactivate();
-		/* N-7：弃管守护的 lua_State 在 exit 路径不可回收——退出前让泄漏可见 */
-		if (int abandoned = abandonedDaemonCount(); abandoned > 0) {
-			std::cerr << "Warning: " << abandoned << " daemon thread(s) abandoned at shutdown"
-				<< " (join timeout); their Lua states are released by process exit only"
-				<< std::endl;
-		}
-		return rc;
+		installStopSignalHandlers();
+		return runRobotAndCleanup(*robot, options, agentCfg);
 	}
 
 	/* 没有输入机器人结构脚本，打印帮助文档 */
