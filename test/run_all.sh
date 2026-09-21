@@ -1087,13 +1087,17 @@ SQLEOF
 		env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --task 'x' --llm-config none
 
-	# 4) 系统提示词总量上限（F2-9）：三段来源（结构脚本头 16KiB 截断 / 动作脚本
-	#    清单条目数不限 / 提示词包单文件 1MiB 但整包不限）都各自有界、整体却无人管。
-	#    夹具：造约 138KB 的提示词包（在单文件上限内，只有总量检查能挡住），
-	#    在组装系统提示词这一步就应退出 1，且报错点名各段字节数（不静默截断）。
+	# 4) 系统提示词总量上限（F2-9；AG-8 后前移）：三段来源（结构脚本头 16KiB
+	#    截断 / 动作脚本清单条目数不限 / 提示词包单文件 1MiB 但整包不限）都各自
+	#    有界、整体却无人管。夹具：造约 138KB 的提示词包（在单文件上限内，只有
+	#    总量检查能挡住）。
+	#    AG-8 把其中**不依赖硬件**的三段（结构脚本头 / 脚本清单 / 提示词包）的
+	#    体积检查前移到了配置组装期——所以现在退出码是 2（配置错误，不碰真机）
+	#    而不是 1（上电后失败），报错文案也换成了点名「不依赖硬件的三段」的那句。
+	#    这是有意的行为变更：上电之前就能判定的配置错误，没有理由拖到上电之后。
 	awk 'BEGIN { for (i = 0; i < 3000; i++) print "padding line for the system prompt cap test" }' \
 		> .tmp/bigprompt.md
-	run_one_hardening 'agent_prompt_over_cap' 1 '系统提示词超过' \
+	run_one_hardening 'agent_prompt_over_cap' 2 '不依赖硬件的三段' \
 		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
 		--robot=robots/relay-test.sql --agent --task 'x' --llm-config none \
 		--prompt-file .tmp/bigprompt.md

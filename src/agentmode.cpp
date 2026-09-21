@@ -331,6 +331,33 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		&& !loadPromptPack(out.promptFiles, out.promptPack, err)) {
 		return false;
 	}
+
+	/* ---- 9) 提示词体积预检：**不依赖硬件**的三段（2026-09-21 审计 AG-8）----
+	 * 总量上限原本只在 buildAgentSystemPrompt 里查，而那时 robot.active() 已经
+	 * 跑过了——与「配置错误不碰真机」的口径不符。硬件变量清单那一段确实要到
+	 * 上电后才算得出来（变量是 active() 时装配的），但另外三段不用：结构脚本头、
+	 * 动作脚本清单、提示词包在配置组装期就都是已知量。
+	 * 在这里先查一遍有三个好处：
+	 *   ① 三段中任何一段自己就已顶穿上限时，**上电之前**就失败；
+	 *   ② 顺带在配置期读一遍结构脚本头与脚本清单——它们进系统提示词前要 UTF-8
+	 *      消毒（AG-1），早读早暴露，而不是等上电后拼提示词时才发现问题；
+	 *   ③ 报错口径与 buildAgentSystemPrompt 完全一致（同一常量、同一文案），
+	 *      不会出现「配置期放过、上电后拒绝」的分叉。
+	 * 注意：这不替代 buildAgentSystemPrompt 的总量检查——那一段（含硬件清单）
+	 * 仍是唯一的最终判据，这里只是把可前移的部分前移。 */
+	{
+		const std::size_t hardwareIndependent = readHead(out.structurePath, 16u << 10).size()
+			+ describeActionScripts(out.scriptsDir).size()
+			+ out.promptPack.size();
+		if (hardwareIndependent > kMaxSystemPromptBytes) {
+			err = "系统提示词（不依赖硬件的三段：结构脚本头 / 动作脚本清单 / 提示词包）"
+				"已超过 " + std::to_string(kMaxSystemPromptBytes) + " 字节上限（实测 "
+				+ std::to_string(hardwareIndependent)
+				+ " 字节）；无需上电即可判定，请先缩减 --prompt-file 或 --scripts-dir "
+				  "下的脚本数量";
+			return false;
+		}
+	}
 	return true;
 }
 
