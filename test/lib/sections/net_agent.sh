@@ -1,0 +1,80 @@
+# test/lib/sections/net_agent.sh —— 守门分段 runner（自 run_all.sh 抽出，F3-1）
+#
+# 抽取原则（零行为变化）：**只搬函数定义**。用例表、调用循环、记账与汇总
+# 全部留在 run_all.sh——`count_calls` 数的是 run_all.sh 里的调用点，
+# `$SELF` 孤儿检测也以它为准；这些函数只被 run_all.sh source，不单独执行。
+# 它们依赖 run_all.sh 的全局量（$SELF/$bin/$tests_bin/$filter/record_*/用例表），
+# 因此**只能在 source 之后调用**，且不要在本文件里读 $1 之类的入口参数。
+
+run_one_tcp() {
+	echo "----- tcp-action-source (mybot TCP E2E) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "TCP 动作源" "该用例" "$bin" "$bot_explicit"
+		return 2
+	fi
+	# python3 是 README 声明的可选软依赖（缺则本段自动跳过），仍计入 skip 供汇总可见
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
+		record_skip "tcp-action-source(缺python3)"
+		return 2
+	fi
+	local port tcp_rc tcp_out
+	port=$((19000 + (RANDOM % 1000)))
+	tcp_out="$(BOT="$bin" timeout 40 bash scripts/tcp_e2e.sh "$port" 20 2>&1)"
+	tcp_rc=$?
+	echo "$tcp_out"
+	if [ $tcp_rc -ne 0 ] || ! echo "$tcp_out" | grep -qF "TCP 端到端测试通过"; then
+		record_fail "tcp-action-source(TCP)"
+	else
+		record_pass
+	fi
+}
+
+run_one_tcp_adv() {
+	echo "----- tcp-adversarial (TCP 异常注入) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "TCP 异常注入" \
+			"$(grep -c '^run_scenario [a-z]' scripts/tcp_adversarial.sh) 个场景" \
+			"$bin" "$bot_explicit"
+		return 2
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
+		record_skip "tcp-adversarial(缺python3)"
+		return 2
+	fi
+	local out rc
+	out="$(BOT="$bin" timeout 120 bash scripts/tcp_adversarial.sh 2>&1)"
+	rc=$?
+	echo "$out"
+	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "TCP 异常注入测试通过"; then
+		record_fail "tcp-adversarial(异常注入)"
+	else
+		record_pass
+	fi
+}
+
+run_one_agent_e2e() {
+	echo "----- agent-e2e (agent 模式端到端) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "agent 模式端到端" "该段（scripts/agent_e2e.sh）" "$bin" "$bot_explicit"
+		return 2
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（假模型服务），跳过本段"
+		record_skip "agent-e2e(缺python3)"
+		return 2
+	fi
+	local out rc
+	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh 2>&1)"
+	rc=$?
+	echo "$out"
+	if [ $rc -eq 125 ] && echo "$out" | grep -qF '[SKIP]'; then
+		record_skip "agent-e2e(缺python3或libcurl)"
+	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "agent 模式端到端测试通过"; then
+		record_fail "agent-e2e(agent 模式)"
+	else
+		record_pass
+	fi
+}
+

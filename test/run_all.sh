@@ -48,14 +48,10 @@ skipped_list=""
 # 11 个 runner 原各写一遍「if ok; then pass++; else fail++; failed+=…」三行，
 # 加一段就再抄一遍、改口径（如新增「跳过」类别或改汇总措辞）要全文件找。
 # 收敛为三个函数：通过只计数；失败/跳过额外把可读标签写进汇总清单。
-record_pass() { pass=$((pass + 1)); }
-record_fail() { fail=$((fail + 1)); failed="$failed $1"; }
-record_skip() { skip=$((skip + 1)); skipped_list="$skipped_list $1"; }
 
 # 某 runner 的声明用例数：数本文件里的调用点，让「加用例忘改数字」的消息漂移
 # 无从发生（artifact_missing 的条数文案一律由此推导）。
 # F3-4（2026-09-21）：单/双引号调用点都认——旧实现只认单引号，改一处写法即静默少算。
-count_calls() { grep -cE "^[[:space:]]*$1 ['\"]" "$SELF"; }
 
 # F3-7（2026-09-21）：中断也留下显式痕迹。守门日志常被人工/CI 中途读取，
 # 「还没跑到汇总」与「判失败」在日志里长相不同却都不含汇总行——中断时打印
@@ -71,47 +67,23 @@ bot_explicit=0
 tests_explicit=0
 [ -n "${BOT_TESTS:-}" ] && tests_explicit=1
 
+# ---- 分段 runner 定义（F3-1 抽自本文件；只含函数定义，见各文件头注）----
+# 用 $SELF 推导目录：run_all.sh 启动时已 cd 到仓库根，但 $SELF 在 cd 之前取，
+# 对「从别处调用」也成立。
+for _sec in "$(dirname "$SELF")/lib/sections"/*.sh; do
+	# shellcheck source=/dev/null
+	. "$_sec" || { echo "无法加载分段定义: $_sec" >&2; exit 2; }
+done
+unset _sec
+
 # ---- 产物缺失的分段不得静默消失（N1 防线）----
 # 原语义是「无编译产物则逐条 [SKIP]」，于是整段 C++ 守门（E2E + 无硬件契约 +
 # TCP/信号/加固 + C++ 单测）可以在产物不存在时整体不跑，汇总仍是「N 通过, 0 失败」
 # 且退出码 0——只剩 Lua 段在跑。守门必须完整：缺产物即判失败。
 # 仅当 ALLOW_SKIP=1（明知故犯，如源码态只想跑 Lua）**且**该路径是缺省值时才降级
 # 为 SKIP；调用方显式给了 BOT=/BOT_TESTS= 却说文件不在，本就是要测它，绝不放行。
-artifact_missing() {
-	local phase="$1" count="$2" path="$3" explicit="$4"
-	if [ "$ALLOW_SKIP" = "1" ] && [ "$explicit" != "1" ]; then
-		echo "[SKIP] $phase —— $count未执行（缺编译产物 $path，ALLOW_SKIP=1 放行）"
-		record_skip "$phase"
-		return 0
-	fi
-	echo "[FAIL] 守门不完整：$phase —— $count未执行（缺可执行产物 $path）"
-	echo "       先构建：cmake -S . -B build && cmake --build build"
-	echo "       只想跑 Lua 段请显式声明：ALLOW_SKIP=1 bash test/run_all.sh"
-	record_fail "$phase(缺产物)"
-	return 1
-}
 
 # 当前过滤器下某分段的声明用例数（把「整段未执行」折算成准确条数）
-count_e2e_declared() {
-	local n=0 spec name
-	for spec in "${e2e_cases[@]}"; do
-		name="${spec%%|*}"
-		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then n=$((n + 1)); fi
-	done
-	echo "$n"
-}
-count_parse_declared() {
-	local n=0 spec sql rest mt
-	for spec in "${parse_cases[@]}"; do
-		sql="${spec%%|*}"
-		rest="${spec#*|}"
-		mt="${rest%%|*}"
-		if [ -z "$filter" ] || [[ "$sql" == *"$filter"* ]] || [[ "$mt" == *"$filter"* ]]; then
-			n=$((n + 1))
-		fi
-	done
-	echo "$n"
-}
 
 for t in test/test_*.lua; do
 	name="$(basename "$t")"
@@ -321,48 +293,6 @@ e2e_cases=(
 	# 证明未被 sign=16 取整）
 	'lps22hb_virt|"v0":10[01][0-9]\.[0-9]+|5'
 )
-
-run_one_e2e() {
-	local name="$1" float_ere="$2" count_min="$3"
-	echo "----- $name (mybot E2E) -----"
-	# 动作时长约 1s，给 30s 上限防挂死；mybot 退出码原样透传
-	if [ -n "$timeout_cmd" ]; then
-		out="$(cat "scripts/test/$name.mt" | timeout 30 "$bin" --robot="robots/test/$name.sql" 2>&1)"
-	else
-		out="$(cat "scripts/test/$name.mt" | "$bin" --robot="robots/test/$name.sql" 2>&1)"
-	fi
-	local rc=$?
-	echo "$out"
-	local e2e_ok=true
-	[ $rc -ne 0 ] && e2e_ok=false
-	echo "$out" | grep -qF "VIRTUAL HARDWARE" || e2e_ok=false
-	echo "$out" | grep -qE "chunk setup error|chunk load error|setup failed|tick error|cleanup error|解析失败" \
-		&& e2e_ok=false
-	echo "$out" | grep -qF "joined, total publishes=" || e2e_ok=false
-	# 守护持续发布：出现 ≥2 个不同 count 且最大值达标
-	local count_max count_uniq
-	count_max="$(echo "$out" | grep -oE '"count":[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)"
-	count_uniq="$(echo "$out" | grep -oE '"count":[0-9]+' | sort -u | wc -l)"
-	{ [ -z "$count_max" ] || [ "$count_max" -lt "$count_min" ] || [ "$count_uniq" -lt 2 ]; } && e2e_ok=false
-	# raw 快照里 :f 浮点字段保持小数（未被 sign=16 取整补码）
-	echo "$out" | grep -qE "$float_ere" || e2e_ok=false
-	# EMA 已推进：至少一行 monf 快照 out ≠ raw（首拍种子相同，后续 α 混合必不同）。
-	# JSON 键序不固定，逐行各自提取 out/raw 数值做比对。
-	local mixed_n=0 o r
-	while IFS= read -r line; do
-		o="$(printf '%s' "$line" | grep -oE '"out":-?[0-9]+(\.[0-9]+)?' | head -1 | cut -d: -f2)"
-		r="$(printf '%s' "$line" | grep -oE '"raw":-?[0-9]+(\.[0-9]+)?' | head -1 | cut -d: -f2)"
-		if [ -n "$o" ] && [ -n "$r" ] && [ "$o" != "$r" ]; then
-			mixed_n=$((mixed_n + 1))
-		fi
-	done < <(printf '%s' "$out" | grep -F '"raw"')
-	[ "$mixed_n" -ge 1 ] || e2e_ok=false
-	if $e2e_ok; then
-		record_pass
-	else
-		record_fail "$name(E2E)"
-	fi
-}
 
 if [ ! -x "$bin" ]; then
 	n_declared="$(count_e2e_declared)"
@@ -581,63 +511,9 @@ parse_cases=(
 	'dev_expr.sql|dev_expr_minus.mt|1|cannot be applied to a text result'
 	'dev_expr.sql|dev_expr_undefined.mt|1|not a defined hardware variable'
 )
-run_one_parse() {
-	local sql="$1" mt="$2" want_rc="$3" expect="$4" forbid="$5" via="${6:-}"
-	echo "----- $sql/$mt (no-hw contract) -----"
-	local sql_path="$sql" mt_path="$mt"
-	[[ "$sql" != */* ]] && sql_path="robots/test/$sql"
-	[[ "$mt" != */* ]] && mt_path="scripts/test/$mt"
-	if [ "$via" = "I" ]; then
-		# --input 文件通道：include 基准 = 脚本所在目录（片段夹具的正确基准）
-		if [ -n "$timeout_cmd" ]; then
-			out="$($timeout_cmd "$bin" --robot="$sql_path" --input="$mt_path" 2>&1)"
-		else
-			out="$("$bin" --robot="$sql_path" --input="$mt_path" 2>&1)"
-		fi
-	elif [ -n "$timeout_cmd" ]; then
-		out="$(cat "$mt_path" | timeout 30 "$bin" --robot="$sql_path" 2>&1)"
-	else
-		out="$(cat "$mt_path" | "$bin" --robot="$sql_path" 2>&1)"
-	fi
-	local rc=$?
-	echo "$out"
-	local p_ok=true
-	[ "$rc" -ne "$want_rc" ] && p_ok=false
-	echo "$out" | grep -qF "$expect" || p_ok=false
-	# 可选「禁止出现」断言（用例表第 5 字段）：用于「修复后不再出现的旧症状」
-	# （如 $ 引用已释放变量的 Deactive warning、build 期不该发生的 spawned）
-	if [ -n "$forbid" ]; then
-		echo "$out" | grep -qF "$forbid" && p_ok=false
-	fi
-	if $p_ok; then
-		record_pass
-	else
-		record_fail "$sql/$mt(no-hw)"
-	fi
-}
 # parse_cases 的切分与过滤循环（原先内联在顶层——bash 的 local 只能在函数内
 # 使用，循环体里的 `local f` 每次迭代都向 stderr 报错一次且变量泄漏为全局）。
 # 收进函数后切分变量按函数局部作用域，`filter` 仍读全局。
-run_parse_cases() {
-	local spec sql rest mt want_rc f expect forbid via
-	for spec in "${parse_cases[@]}"; do
-		sql="${spec%%|*}"
-		rest="${spec#*|}"
-		mt="${rest%%|*}"
-		rest="${rest#*|}"
-		want_rc="${rest%%|*}"
-		rest="${rest#*|}"
-		# 剩余字段：expect[|forbid[|via]]（via="I" = --input 文件通道，见用例表注释）
-		IFS='|' read -ra f <<< "$rest"
-		expect="${f[0]:-}"
-		forbid="${f[1]:-}"
-		via="${f[2]:-}"
-		if [ -n "$filter" ] && [[ "$sql" != *"$filter"* ]] && [[ "$mt" != *"$filter"* ]]; then
-			continue
-		fi
-		run_one_parse "$sql" "$mt" "$want_rc" "$expect" "$forbid" "$via"
-	done
-}
 if [ ! -x "$bin" ]; then
 	n_declared="$(count_parse_declared)"
 	[ "$n_declared" -gt 0 ] && artifact_missing "无硬件契约" "$n_declared 条用例" "$bin" "$bot_explicit"
@@ -738,31 +614,6 @@ mtmerge_reported=""
 # 本节用例数 = run_one_mtmerge 调用点 + 1 条「产物回喂 mybot」E2E（下方内联）。
 # 数调用点而非写死数字：加用例忘改文案的漂移在此消除（N-31）。
 mtmerge_cases_n=$(( $(count_calls run_one_mtmerge) + 1 ))
-run_one_mtmerge() {
-	local name="$1" want_rc="$2" expects="$3"; shift 3
-	echo "----- $name (mtmerge) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		if [ -z "$mtmerge_reported" ]; then
-			mtmerge_reported=1
-			artifact_missing "mtmerge 合成器" "$mtmerge_cases_n 条用例" "$mtmerge_bin" "$mtmerge_explicit"
-		fi
-		return 2
-	fi
-	local out rc ok=true e
-	out="$("$@" 2>&1)"
-	rc=$?
-	echo "$out"
-	[ "$rc" -ne "$want_rc" ] && ok=false
-	local IFS='|'
-	for e in $expects; do
-		echo "$out" | grep -qF -- "$e" || ok=false
-	done
-	if $ok; then
-		record_pass
-	else
-		record_fail "$name(mtmerge)"
-	fi
-}
 if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
 	mkdir -p .tmp/mtm
 	cat > .tmp/mtm/a.mt <<'MTEOF'
@@ -902,48 +753,6 @@ fi
 #                  一条（include-once 生效的直接证据；第二路若未跳过会以
 #                  设备集相交报错退出）；三路动作全部在场。
 # ======================================================================
-run_include_observation() {
-	if [ ! -x "$bin" ]; then
-		artifact_missing "@Include 归并观察面" "2 条用例" "$bin" "$bot_explicit"
-		return 2
-	fi
-	# ---- include_main ----
-	echo "----- include-main (@Include 归并观察面) -----"
-	local out rc i_ok v
-	out="$(cat scripts/test/include_main.mt | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
-	rc=$?
-	echo "$out"
-	i_ok=true
-	[ "$rc" -ne 0 ] && i_ok=false
-	for v in 100 110 200 210 220; do
-		echo "$out" | grep -qF "test=$v" || i_ok=false
-	done
-	echo "$out" | grep -qF "test=0" && i_ok=false
-	echo "$out" | grep -qF '"slept":200' || i_ok=false
-	if $i_ok; then
-		record_pass
-	else
-		record_fail "include-main(@Include 归并)"
-	fi
-	# ---- diamond ----
-	echo "----- include-diamond (include-once 观察面) -----"
-	local dout d_ok skip_n
-	dout="$(cat scripts/test/include_diamond.mt | timeout 30 "$bin" --robot=robots/test/include_demo.sql 2>&1)"
-	rc=$?
-	echo "$dout"
-	d_ok=true
-	[ "$rc" -ne 0 ] && d_ok=false
-	for v in 100 200 300; do
-		echo "$dout" | grep -qF "test=$v" || d_ok=false
-	done
-	skip_n="$(echo "$dout" | grep -cF "already included")"
-	[ "$skip_n" -eq 1 ] || d_ok=false
-	if $d_ok; then
-		record_pass
-	else
-		record_fail "include-diamond(include-once)"
-	fi
-}
 if [ -z "$filter" ] || [[ "include" == *"$filter"* ]]; then
 	run_include_observation
 fi
@@ -955,29 +764,6 @@ fi
 # 缺 python3 仍按 README 声明的软依赖跳过并计入汇总。
 # 随机高位端口（19000-19999）规避默认 19240 被占/串扰。
 # ======================================================================
-run_one_tcp() {
-	echo "----- tcp-action-source (mybot TCP E2E) -----"
-	if [ ! -x "$bin" ]; then
-		artifact_missing "TCP 动作源" "该用例" "$bin" "$bot_explicit"
-		return 2
-	fi
-	# python3 是 README 声明的可选软依赖（缺则本段自动跳过），仍计入 skip 供汇总可见
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
-		record_skip "tcp-action-source(缺python3)"
-		return 2
-	fi
-	local port tcp_rc tcp_out
-	port=$((19000 + (RANDOM % 1000)))
-	tcp_out="$(BOT="$bin" timeout 40 bash scripts/tcp_e2e.sh "$port" 20 2>&1)"
-	tcp_rc=$?
-	echo "$tcp_out"
-	if [ $tcp_rc -ne 0 ] || ! echo "$tcp_out" | grep -qF "TCP 端到端测试通过"; then
-		record_fail "tcp-action-source(TCP)"
-	else
-		record_pass
-	fi
-}
 if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 	run_one_tcp
 fi
@@ -989,29 +775,6 @@ fi
 # 本身是被断言的故障形态。缺 python3 按 SKIP 计（与 TCP 段同约定）。
 # 场景数从该脚本的 run_scenario 调用点数出来（本文件不做第二份计数）。
 # ======================================================================
-run_one_tcp_adv() {
-	echo "----- tcp-adversarial (TCP 异常注入) -----"
-	if [ ! -x "$bin" ]; then
-		artifact_missing "TCP 异常注入" \
-			"$(grep -c '^run_scenario [a-z]' scripts/tcp_adversarial.sh) 个场景" \
-			"$bin" "$bot_explicit"
-		return 2
-	fi
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
-		record_skip "tcp-adversarial(缺python3)"
-		return 2
-	fi
-	local out rc
-	out="$(BOT="$bin" timeout 120 bash scripts/tcp_adversarial.sh 2>&1)"
-	rc=$?
-	echo "$out"
-	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "TCP 异常注入测试通过"; then
-		record_fail "tcp-adversarial(异常注入)"
-	else
-		record_pass
-	fi
-}
 if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 	run_one_tcp_adv
 fi
@@ -1032,29 +795,6 @@ fi
 # Lua 驱动经 ffi 加载）。任一缺失按 SKIP 计入「未执行清单」，不是静默消失；
 # 缺编译产物仍判失败。
 # ======================================================================
-run_one_agent_e2e() {
-	echo "----- agent-e2e (agent 模式端到端) -----"
-	if [ ! -x "$bin" ]; then
-		artifact_missing "agent 模式端到端" "该段（scripts/agent_e2e.sh）" "$bin" "$bot_explicit"
-		return 2
-	fi
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（假模型服务），跳过本段"
-		record_skip "agent-e2e(缺python3)"
-		return 2
-	fi
-	local out rc
-	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh 2>&1)"
-	rc=$?
-	echo "$out"
-	if [ $rc -eq 125 ] && echo "$out" | grep -qF '[SKIP]'; then
-		record_skip "agent-e2e(缺python3或libcurl)"
-	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "agent 模式端到端测试通过"; then
-		record_fail "agent-e2e(agent 模式)"
-	else
-		record_pass
-	fi
-}
 if [ -z "$filter" ] || [[ "agent" == *"$filter"* ]]; then
 	run_one_agent_e2e
 fi
@@ -1065,22 +805,6 @@ fi
 # 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
 # 与上面的逐条 mtmerge 用例互补：这里只盯相位边界，缺产物判失败。
 # ======================================================================
-run_one_mtmerge_phase() {
-	echo "----- mtmerge-phase (相位语义) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		artifact_missing "mtmerge 相位回归" "该段（scripts/mtmerge_e2e.sh）" "$mtmerge_bin" "$mtmerge_explicit"
-		return 2
-	fi
-	local out rc
-	out="$(MTMERGE="$mtmerge_bin" BOT="$bin" timeout 60 bash scripts/mtmerge_e2e.sh 2>&1)"
-	rc=$?
-	echo "$out"
-	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mtmerge 端到端测试通过"; then
-		record_fail "mtmerge-phase(相位语义)"
-	else
-		record_pass
-	fi
-}
 if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
 	run_one_mtmerge_phase
 fi
@@ -1104,33 +828,6 @@ fi
 #                   超限时就地转 ERR——不清栈会让该 lua_State 之后无法复用）
 # 夹具写在 .tmp/（已 gitignore），经 BOT4CJ_MODULE_PATH 多路径注入。
 # ======================================================================
-run_one_hardening() {
-	local name="$1" want_rc="$2" expect="$3"; shift 3
-	echo "----- $name (hardening) -----"
-	if [ ! -x "$bin" ]; then
-		# 本段各用例同因（缺 mybot）：只折算一次失败、打印一遍指引
-		if [ -z "$hardening_reported" ]; then
-			hardening_reported=1
-			# 条数从本文件的调用点数出来，避免「加用例忘改数字」的消息漂移
-			artifact_missing "输入边界加固" \
-				"$(count_calls run_one_hardening) 条用例" \
-				"$bin" "$bot_explicit"
-		fi
-		return 2
-	fi
-	local out rc h_ok
-	out="$("$@" 2>&1)"
-	rc=$?
-	echo "$out" | tail -6
-	h_ok=true
-	[ "$rc" -ne "$want_rc" ] && h_ok=false
-	echo "$out" | grep -qF -- "$expect" || h_ok=false
-	if $h_ok; then
-		record_pass
-	else
-		record_fail "$name(hardening)"
-	fi
-}
 
 if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$filter"* ]]; then
 	run_one_hardening 'tcp_host_bad' 1 '--tcp-host 地址无效' \
@@ -1328,123 +1025,6 @@ fi
 # （setup 预武装 virt_tick(0) 后，拍 0~7 共 8 次发布）、count 有多个取值
 # （证明前 8 拍确实在发布，而非从头就没发布）、joined 行在位。
 # ======================================================================
-run_one_daemon_nack() {
-	echo "----- daemon_nack (守护 tick 故障注入) -----"
-	if [ ! -x "$bin" ]; then
-		artifact_missing "守护 tick 故障注入" "该用例" "$bin" "$bot_explicit"
-		return 2
-	fi
-	mkdir -p .tmp/fixmod
-	cat > .tmp/fixmod/NackDrv.lua <<'LUAEOF'
--- 守护 tick 故障注入夹具（run_all.sh 生成）：I2C 最小驱动 + 内嵌 virt 模型。
--- 模型按 virt_tick 拍号切换状态：拍号 < 8 正常应答，>= 8 写/读恒 NACK——
--- 用于 E2E 断言「tick 期总线持续 NACK → 驱动 ERR → 守护不 publish（count 停滞）」。
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
-dofile(mpath.resolve("lib/drv_common.lua"))
-
-local NACK_AFTER = 8
-
-function build(data)
-	local ok, ek = arg_table(data)
-	if not ok then return ek end
-	return { result = "OK" }
-end
-
-function call(data)
-	local ok, ek = arg_table(data)
-	if not ok then return ek end
-	local fd, addr, e2 = i2c_pair(data)
-	if fd == nil then return e2 end
-	local v = i2c_read_multi(fd, 0x00, 2)
-	if v < 0 then
-		return { result = "ERR", message = "NACK on measurement read" }
-	end
-	return { result = "OK", v0 = v }
-end
-
-function destroy(data)
-	local ok, ek = arg_table(data)
-	if not ok then return ek end
-	return { result = "OK" }
-end
-
-NackDrv_VIRT = {
-	new = function()
-		local n = -1
-		return {
-			-- 守护经 vdev:virt_tick(k) 冒号调用（带 self）；virtbus 的
-			-- dev.write/read 以单参直调（无 self）——签名不可混用
-			virt_tick = function(_, k) n = k end,
-			write = function(_)
-				if n >= NACK_AFTER then return false end
-				return true
-			end,
-			read = function(len)
-				if n >= NACK_AFTER then return nil end
-				local t = {}
-				for i = 1, len do t[i] = (n + 1) % 256 end
-				return t
-			end,
-		}
-	end,
-}
-LUAEOF
-	cat > .tmp/nack_robot.sql <<'SQLEOF'
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('t0');
-
-CREATE TABLE Daemon (
-	name     String,
-	chunk    String,
-	driver   String,
-	proto    String,
-	path     String,
-	addr     String,
-	interval String,
-	fields   String
-);
-INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
-  VALUES ('d0', 'lib/sensor_daemon.lua', 'NackDrv', 'virt',
-          '/dev/i2c-1', '0x68', '5', 'v0');
-
-/* Monitor 消费守护：mon0.go 每拍调用守护 play()（readSample）——
- * count 快照由此进入输出 JSON，停滞断言才有观测点 */
-CREATE TABLE Monitor (
-	name String,
-	src  String
-);
-INSERT INTO Monitor (name, src) VALUES ('mon0', '$d0');
-SQLEOF
-	# ~1.1s 动作（200ms 预热 + 5×200ms），interval=5ms → 足够多拍越过 NACK 门限
-	printf '@Action\nt0.delay  mon0.go;\n   200       -    ;\n' > .tmp/nack.mt
-	for _ in 1 2 3 4 5; do printf '   200       -    ;\n' >> .tmp/nack.mt; done
-	printf '@\n' >> .tmp/nack.mt
-	local out rc n_ok count_max count_uniq
-	out="$(env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
-		--robot=.tmp/nack_robot.sql --input=.tmp/nack.mt 2>&1)"
-	rc=$?
-	echo "$out"
-	n_ok=true
-	[ "$rc" -ne 0 ] && n_ok=false
-	echo "$out" | grep -qF "VIRTUAL HARDWARE" || n_ok=false
-	echo "$out" | grep -qF "tick error" || n_ok=false
-	echo "$out" | grep -qF "joined, total publishes=" || n_ok=false
-	count_max="$(echo "$out" | grep -oE '"count":[0-9]+' | grep -oE '[0-9]+' | sort -n | tail -1)"
-	# count 停滞：前 8 拍正常发布 → 最大恰为 8（容差 6~10 抗时序抖动）。
-	# 「发布过且随后停滞」的确定性证据是 join 行的 total publishes（恰等于
-	# 正常拍数）——Monitor 200ms 预热后才首次读快照，此时早已停滞，
-	# 故输出里只有 count:8 一个值，不能用 uniq 断言「多值」。
-	publishes="$(echo "$out" | grep -oE 'total publishes=[0-9]+' | grep -oE '[0-9]+' | tail -1)"
-	{ [ -z "$count_max" ] || [ "$count_max" -lt 6 ] || [ "$count_max" -gt 10 ]; } && n_ok=false
-	{ [ -z "$publishes" ] || [ "$publishes" -lt 6 ] || [ "$publishes" -gt 10 ]; } && n_ok=false
-	if $n_ok; then
-		record_pass
-	else
-		record_fail "daemon_nack(故障注入)"
-	fi
-}
 if [ -z "$filter" ] || [[ "nack" == *"$filter"* ]]; then
 	run_one_daemon_nack
 fi
@@ -1457,56 +1037,6 @@ fi
 # TCP listen/accept、stdin、LuaJIT 内部管道等；Lua 层的精细生命周期
 # 由 test_virtbus_fdleak.lua（virtbus.fd_count）补齐。
 # ======================================================================
-run_one_fd_probe() {
-	echo "----- fd-probe (进程级 fd 泄漏探针) -----"
-	if [ ! -x "$bin" ]; then
-		artifact_missing "fd 泄漏探针" "该用例" "$bin" "$bot_explicit"
-		return 2
-	fi
-	mkdir -p .tmp
-	# 复用 signal 段夹具形态：Timer 长动作 + 无硬件守护（daemon_probe 发布链路）
-	cat > .tmp/fdprobe_robot.sql <<'SQLEOF'
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('t0');
-
-CREATE TABLE Daemon (
-	name  String,
-	chunk String
-);
-INSERT INTO Daemon (name, chunk) VALUES ('d0', 'lib/daemon_probe.lua');
-SQLEOF
-	{ echo '@Action'; echo 't0.delay;'; for _ in $(seq 1 30); do echo '   200;'; done; echo '@'; } > .tmp/fdprobe.mt
-
-	local out pid samples n min max
-	samples=""
-	"$bin" --robot=.tmp/fdprobe_robot.sql --input=.tmp/fdprobe.mt >/dev/null 2>&1 &
-	pid=$!
-	# 采样 ~6s（动作时长）：每 250ms 数一次 /proc/<pid>/fd
-	for _ in $(seq 1 24); do
-		kill -0 "$pid" 2>/dev/null || break
-		if [ -d "/proc/$pid/fd" ]; then
-			n="$(ls "/proc/$pid/fd" 2>/dev/null | wc -l)"
-			samples="$samples $n"
-		fi
-		sleep 0.25
-	done
-	wait "$pid"
-	local rc=$?
-	echo "fd 采样序列:$samples (rc=$rc)"
-	min="" ; max=""
-	for n in $samples; do
-		if [ -z "$min" ] || [ "$n" -lt "$min" ]; then min=$n; fi
-		if [ -z "$max" ] || [ "$n" -gt "$max" ]; then max=$n; fi
-	done
-	if [ "$rc" -eq 0 ] && [ -n "$min" ] && [ -n "$max" ] && [ "$max" -le $((min + 2)) ] && [ "$max" -le 64 ]; then
-		record_pass
-	else
-		record_fail "fd-probe(fd泄漏)"
-		echo "[FAIL] fd 计数不平稳或有界性被破坏（min=$min max=$max rc=$rc）"
-	fi
-}
 if [ -z "$filter" ] || [[ "fd" == *"$filter"* ]]; then
 	run_one_fd_probe
 fi
@@ -1521,40 +1051,6 @@ fi
 #                 被 EINTR 打断并检查停止标志的路径）
 # 夹具写在 .tmp/（gitignore）：Timer 长动作 + 无硬件守护（lib/daemon_probe.lua）。
 # ======================================================================
-run_one_signal() {
-	local name="$1" want_rc="$2" p1="$3" p2="$4"; shift 4
-	echo "----- $name (signal) -----"
-	if [ ! -x "$bin" ]; then
-		artifact_missing "信号停机" "$(count_calls run_one_signal) 条用例" "$bin" "$bot_explicit"
-		return 2
-	fi
-	local out rc pid watchdog
-	out="$("$@" 2>&1 &
-		pid=$!
-		sleep 1
-		kill -TERM "$pid" 2>/dev/null
-		# 防挂死看门狗：wait 本身无超时，10s 后 SIGKILL（rc 随之失配 → 判失败），
-		# 避免「停机路径回归成死等」把整个守门挂死
-		( sleep 10; kill -KILL "$pid" 2>/dev/null ) &
-		watchdog=$!
-		wait "$pid" 2>/dev/null
-		rc=$?
-		kill "$watchdog" 2>/dev/null
-		echo "__RC__=$rc")"
-	rc="$(printf '%s\n' "$out" | sed -n 's/^__RC__=//p')"
-	printf '%s\n' "$out" | sed '/^__RC__=/d' | tail -8
-	local s_ok=true
-	[ "$rc" != "$want_rc" ] && s_ok=false
-	printf '%s\n' "$out" | grep -qF -- "$p1" || s_ok=false
-	if [ -n "$p2" ]; then
-		printf '%s\n' "$out" | grep -qF -- "$p2" || s_ok=false
-	fi
-	if $s_ok; then
-		record_pass
-	else
-		record_fail "$name(signal)"
-	fi
-}
 if [ -z "$filter" ] || [[ "signal" == *"$filter"* ]]; then
 	mkdir -p .tmp
 	cat > .tmp/signal_robot.sql <<'SQLEOF'
@@ -1575,7 +1071,6 @@ SQLEOF
 	run_one_signal 'signal_accept' 1 'TCP 等待客户端连接被停止信号中断' '' \
 		"$bin" --robot=robots/relay-test.sql --tcp $((18000 + RANDOM % 1000))
 fi
-
 
 # ======================================================================
 # fixture 孤儿检测（F3/N-32）：robots/test/*.sql 与 scripts/test/*.mt 里没被
@@ -1602,44 +1097,6 @@ fi
 # bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944
 # max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd
 orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501 ads1115 adxl345 amg8833 as3935 as7262 bh1745 bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd"
-run_fixture_orphans() {
-	echo "----- fixture-orphans (夹具孤儿检测) -----"
-	# 登记标识符集合（**精确整字段**匹配，不做子串）：
-	#   e2e_cases   条目是 `用例名|<正则>|<最少条数>` —— 名字即 stem（无扩展名）；
-	#   parse_cases 条目是 `结构.sql|动作.mt|期望rc|...` —— 带扩展名。
-	#   C11（2026-09-20 审计）：旧实现拿**去扩展名的 stem** 在两张表里 grep -F
-	#   子串，而每个真机夹具 `bme280.mt` 都是已登记仿真用例 `bme280_virt` 的子串
-	#   —— 它们因此被误判为「已登记」，从不执行、也从不报孤儿（覆盖静默变薄而
-	#   检测器报绿）。改为整字段比较后，真机夹具必须显式进 orphan_whitelist。
-	local reg_tokens=" $(
-		{
-			sed -n '/^e2e_cases=(/,/^)/p' "$SELF" \
-				| sed -n "s/^[[:space:]]*[\"']\([^|]*\)|.*/\1/p"
-			sed -n '/^parse_cases=(/,/^)/p' "$SELF" \
-				| sed -n "s/^[[:space:]]*[\"']\([^|]*\)|\([^|]*\)|.*/\1 \2/p"
-		} | tr '\n' ' ' | tr ' ' '\n' | sed 's#.*/##' | tr '\n' ' '
-	) "
-	local f stem base n=0 orphans=""
-	for f in robots/test/*.sql scripts/test/*.mt; do
-		stem="$(basename "$f")"; stem="${stem%.*}"
-		base="$(basename "$f")"
-		case " $orphan_whitelist " in *" $stem "*) continue ;; esac
-		# 登记来源只看用例表正文（e2e_cases/parse_cases）+ 其它守门脚本 + CMake 目标。
-		# 刻意不 grep 本文件全文：注释里顺带提一句名字并不等于接进了表。
-		case "$reg_tokens" in *" $stem "*|*" $base "*) continue ;; esac
-		grep -qF "$base" scripts/*.sh CMakeLists.txt 2>/dev/null && continue
-		orphans="$orphans $f"
-		n=$((n + 1))
-	done
-	if [ "$n" -eq 0 ]; then
-		echo "[PASS] 无孤儿夹具（实机白名单 $(echo $orphan_whitelist | wc -w) 个）"
-		record_pass
-	else
-		echo "[FAIL] $n 个夹具未被任何用例表引用（接进用例表，或加入 orphan_whitelist 声明为实机夹具）："
-		for f in $orphans; do echo "       $f"; done
-		record_fail "fixture-orphans"
-	fi
-}
 
 # ======================================================================
 # 系统常量自检（F-24）：HAL.lua 硬编码 ioctl/termios 编号与系统头的
@@ -1648,38 +1105,6 @@ run_fixture_orphans() {
 # 构建时同样适用）。只在无过滤器的全量跑里执行——过滤器只匹配用例名，
 # 常量自检不受过滤语义管辖，且不能让「拼错过滤器」的空匹配防线失效。
 # ======================================================================
-run_const_checks() {
-	echo "----- const-check (系统常量自检) -----"
-	local const_dir="$1" ok=true out
-	for prog in test_ioctl_nums test_uart_consts test_v4l2_consts test_curl_consts; do
-		local binp="$const_dir/$prog"
-		if [ ! -x "$binp" ]; then
-			# test_curl_consts 是唯一可选构建项：libcurl 开发头文件不参与
-			# mybot 构建（运行期只要 libcurl.so），头文件缺失时该自检不产出
-			# 二进制——按跳过计（与缺 python3 同一口径），不判失败；
-			# 其余三个无外部依赖，缺产物仍按「构建产物缺失」硬失败。
-			if [ "$prog" = "test_curl_consts" ]; then
-				echo "[SKIP] $prog 未构建（构建机缺 libcurl 开发头文件）——CURLOPT 常量漂移自检未执行"
-				record_skip "const-curl(缺libcurl头文件)"
-				continue
-			fi
-			artifact_missing "系统常量自检" "$prog" "$binp" "$tests_explicit"
-			return 2
-		fi
-		out="$("$binp" 2>&1)"
-		if [ $? -ne 0 ]; then
-			ok=false
-			echo "[FAIL] $prog 执行失败：$out"
-		else
-			echo "$out"
-		fi
-	done
-	if $ok; then
-		record_pass
-	else
-		record_fail "const-check"
-	fi
-}
 
 # ======================================================================
 # C++ 层单元测试（test/cpp/）：解析器与值语义工具的白盒覆盖，零第三方框架。
@@ -1689,49 +1114,6 @@ run_const_checks() {
 # 命令行过滤器同样传给 C++ 单测；未命中任何用例时按 SKIP 处理
 # （过滤器多为 Lua 用例名，不应因此判红；全仓库无匹配由末尾的空匹配防线兜底）。
 # ======================================================================
-run_cpp_unit() {
-	echo "----- cpp-unit (C++ 单测) -----"
-	if [ ! -x "$tests_bin" ]; then
-		artifact_missing "C++ 单测" "全部用例" "$tests_bin" "$tests_explicit"
-		return 2
-	fi
-	local out rc pass_n
-	if [ -n "$timeout_cmd" ]; then
-		out="$($timeout_cmd "$tests_bin" $filter 2>&1)"
-	else
-		out="$("$tests_bin" $filter 2>&1)"
-	fi
-	rc=$?
-	echo "$out"
-	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
-		echo "[FAIL] C++ 单测超时（>${TEST_TIMEOUT}s，疑似死循环）"
-		record_fail "cpp-unit(C++)"
-		return
-	fi
-	if echo "$out" | grep -qF "无匹配用例"; then
-		# C9（2026-09-20 审计）：只有**带过滤器**时「无匹配用例」才是合法跳过。
-		# 空过滤器下这句话意味着这个二进制一个用例都没注册（桩二进制、漏登记进
-		# CMakeLists、产物被换）——那必须判失败，否则整段 C++ 守门静默降级成 SKIP
-		# （旧实现排在这里、先于 rc 与 [PASS] 计数检查，故空过滤器也会走 SKIP）。
-		if [ -n "$filter" ]; then
-			echo "[SKIP] 过滤器 '${filter}' 未命中任何 C++ 用例"
-			record_skip "cpp-unit(过滤器未命中)"
-			return 2
-		fi
-		echo "[FAIL] 假绿嫌疑：C++ 单测二进制在无过滤器下报「无匹配用例」（未注册任何用例？）"
-		record_fail "cpp-unit(零用例)"
-		return
-	fi
-	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
-	if [ "$pass_n" -eq 0 ]; then
-		echo "[FAIL] 假绿嫌疑：[PASS] 计数为 0（早退/零断言）"
-		record_fail "cpp-unit(C++)"
-	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
-		record_fail "cpp-unit(C++)"
-	else
-		record_pass
-	fi
-}
 if [ -z "$filter" ]; then
 	run_fixture_orphans
 	run_const_checks "$(dirname "$tests_bin")"

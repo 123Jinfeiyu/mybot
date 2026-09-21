@@ -14,7 +14,8 @@ fail=0
 note() { echo "[FAIL] selftest: $*" >&2; fail=$((fail + 1)); }
 
 # 1) 守门相关脚本的语法（bash -n 不执行，纯解析）
-for f in test/run_all.sh test/run_san.sh test/lib/device_gate.sh scripts/git-hooks/pre-push; do
+for f in test/run_all.sh test/run_san.sh test/lib/device_gate.sh \
+		test/lib/sections/*.sh scripts/git-hooks/pre-push; do
 	if [ ! -f "$f" ]; then
 		note "缺文件：$f"
 		continue
@@ -46,8 +47,10 @@ done
 #    变 0，文案与真跑条数就一起漂移。这里用**独立实现**交叉核对（宽松计数不看引号）：
 #    两者不等即说明 count_calls 的判据漏了某种写法。F3-4（2026-09-21）。
 for r in $(grep -oE 'count_calls [a-zA-Z0-9_]+' test/run_all.sh | awk '{print $2}' | sort -u); do
-	grep -qE "^[[:space:]]*${r}\(\)" test/run_all.sh \
-		|| note "count_calls 的参数不是本文件里定义的 runner：$r"
+	# 定义可能在 run_all.sh，也可能在 F3-1 抽出的分段文件里；调用点则必须仍在
+	# run_all.sh（count_calls 数的就是它）。
+	grep -qE "^[[:space:]]*${r}\(\)" test/run_all.sh test/lib/sections/*.sh \
+		|| note "count_calls 的参数不是已定义的 runner（run_all.sh 与分段文件里都没有）：$r"
 	strict="$(grep -cE "^[[:space:]]*${r} ['\"]" test/run_all.sh)"
 	loose="$(grep -cE "^[[:space:]]*${r}[[:space:]]" test/run_all.sh)"
 	if [ "$strict" -eq 0 ]; then
