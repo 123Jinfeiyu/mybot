@@ -368,7 +368,7 @@ std::string resolveDaemonChunk(const std::string& chunk, const std::string& modu
 /* ---- interval 解析与校验（≤0 会空转占满 CPU，显式报错）----
  * C9：解析经 util 的 parseLongStrict（NOT_INT/OVERFLOW 分型），并钳制合理上限——
  * join 超时按 interval*5 计算，钳制后乘法不溢出。 */
-static int64_t parseInterval(const std::string& iv, const std::string& name,
+int64_t parseInterval(const std::string& iv, const std::string& name,
 		const std::string& tabName, int64_t row) {
 	auto parsed_ = parseLongStrict(iv);
 	if (parsed_.first == IntParse::NOT_INT) {

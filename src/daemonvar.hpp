@@ -56,6 +56,12 @@ static_assert(offsetof(DaemonSlot, status) == SLOT_STATUS_OFF, "status offset");
 void daemon_request_stop(DaemonSlot* slot);
 bool daemon_stop_requested(DaemonSlot* slot);
 
+/* D/C4：解析 Daemon 的 interval 列（毫秒）。非法值（非整数/溢出/负/0/超 1h）
+ * 抛 IllegalArgumentException 并点名表名与行号；成功返回毫秒数。
+ * 从 daemonvar.cpp 的 static 提为暴露，供独立表驱动单测（test_daemon.cpp）。 */
+int64_t parseInterval(const std::string& iv, const std::string& name,
+	const std::string& tabName, int64_t row);
+
 /* ---- chunk 路径寻址（issue #19 多路径）---- */
 std::string firstExistingModule(const std::string& paths, const std::string& rel);
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath);

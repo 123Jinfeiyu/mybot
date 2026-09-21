@@ -55,6 +55,58 @@ mt::MatrixObject daemonDefs(const std::string& chunk) {
 
 } // namespace
 
+/* ---------------- D/C4：parseInterval 边界表驱动（2026-09-21 补） ----------------
+ * 此前 parseInterval 无任何直接单测（仅 E2E 偶发碰到），interval=0/负/溢出/
+ * >1h/非整数 五类边界无回归。提为 bot::parseInterval 后可白盒表驱动覆盖。 */
+TH_TEST(parse_interval_accepts_valid_bounds) {
+	TH_CHECK(bot::parseInterval("1", "d", "Daemon", 1) == 1);
+	TH_CHECK(bot::parseInterval("3600000", "d", "Daemon", 1) == 3600000);	/* 1h 上限 */
+}
+
+TH_TEST(parse_interval_rejects_non_integer) {
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not a valid integer",
+		bot::parseInterval("abc", "d", "Daemon", 2));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not a valid integer",
+		bot::parseInterval("1.5", "d", "Daemon", 2));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not a valid integer",
+		bot::parseInterval("", "d", "Daemon", 2));
+	/* 带空白未 trim：parseLongStrict 全串消费，前导/尾随空白即拒绝 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not a valid integer",
+		bot::parseInterval("  50  ", "d", "Daemon", 2));
+}
+
+TH_TEST(parse_interval_rejects_non_positive) {
+	/* 0 走「must be > 0」专用分支（防 busy-loop 解释最清晰） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "must be > 0 ms",
+		bot::parseInterval("0", "d", "Daemon", 3));
+	/* 负数在 OVERFLOW/负值分支先命中 → 归 out of range */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "out of range",
+		bot::parseInterval("-5", "d", "Daemon", 3));
+}
+
+TH_TEST(parse_interval_rejects_overflow_and_over_an_hour) {
+	/* 溢出（超 int64）→ parseLongStrict OVERFLOW → out of range */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "out of range",
+		bot::parseInterval("99999999999999999999999999", "d", "Daemon", 4));
+	/* 超过 1h 上限（3600000ms）显式拒绝，保证 joinTimeout=interval*5 不溢出 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "exceeds the maximum",
+		bot::parseInterval("3600001", "d", "Daemon", 4));
+}
+
+TH_TEST(parse_interval_error_carries_table_and_row) {
+	/* 报错需点名表名与行号（N-27/E2：非法值在结构期定位到源头） */
+	try {
+		bot::parseInterval("-1", "my-daemon", "Daemon", 7);
+		TH_CHECK(false && "should have thrown");
+	} catch (const bot::IllegalArgumentException& e) {
+		const std::string what = e.what();
+		TH_CHECK(what.find("my-daemon") != std::string::npos);
+		TH_CHECK(what.find("Daemon") != std::string::npos);
+		TH_CHECK(what.find("row 7") != std::string::npos);
+	}
+}
+
+
 TH_TEST(daemon_never_spawned_releases_slot_directly) {
 	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
 	mt::MatrixObject defs = daemonDefs(kSlowTickRel);

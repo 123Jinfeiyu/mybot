@@ -472,3 +472,53 @@ TH_TEST(sandbox_rejection_leaves_state_usable) {
 	std::string err = s.run("assert(1 + 1 == 2)");
 	TH_CHECK(err.empty());
 }
+
+/* ---------------- C5：中和清单表驱动断言（2026-09-21 补全） ----------------
+ * 此前只有 os.tmpname 单条断言；os.execute/exit/remove/rename 与 io 五件套
+ * 无直接覆盖，「忘了中和」会绿。这里逐个断言：每个中和符号必须为 nil，
+ * 每个保留符号（驱动合法依赖）必须仍可调用。 */
+
+/* os 组中和的 5 项（luasandbox.cpp groups[0]，与实现同一份清单） */
+TH_TEST(sandbox_neutralizes_all_os_entry_points) {
+	SandboxState s;
+	for (const char* fn : {"execute", "exit", "remove", "rename", "tmpname"}) {
+		const std::string code = std::string("assert(os.") + fn
+			+ " == nil, 'os." + fn + " must be neutralized')";
+		const std::string err = s.run(code);
+		if (!err.empty()) {
+			std::printf("[FAIL] os.%s not neutralized: %s\n", fn, err.c_str());
+		}
+		TH_CHECK(err.empty());
+	}
+}
+
+/* io 组中和的 5 项（luasandbox.cpp groups[1]） */
+TH_TEST(sandbox_neutralizes_all_io_entry_points) {
+	SandboxState s;
+	for (const char* fn : {"popen", "open", "lines", "input", "output"}) {
+		const std::string code = std::string("assert(io.") + fn
+			+ " == nil, 'io." + fn + " must be neutralized')";
+		const std::string err = s.run(code);
+		if (!err.empty()) {
+			std::printf("[FAIL] io.%s not neutralized: %s\n", fn, err.c_str());
+		}
+		TH_CHECK(err.empty());
+	}
+}
+
+/* C5 反向断言：中和不得波及驱动合法依赖的保留符号。
+ * 若这里红，说明中和清单过宽，「宁缺毋滥」被破坏，驱动生态会断。 */
+TH_TEST(sandbox_preserves_driver_dependencies) {
+	SandboxState s;
+	/* 宿主注入 __mpath / package.preload["mpath"]，驱动引导样板依赖它 */
+	TH_CHECK(s.run("assert(type(__mpath) == 'table', '__mpath injected')").empty());
+	TH_CHECK(s.run("assert(type(package.preload['mpath']) == 'function')").empty());
+	/* require 保留（仅 preload 面：ffi/bit），见 sandbox_require_still_serves_preloaded_modules */
+	TH_CHECK(s.run("assert(type(require) == 'function')").empty());
+	/* os 表其余成员仍在：getenv/time/clock 是驱动合法依赖 */
+	TH_CHECK(s.run("assert(type(os.getenv) == 'function' and type(os.time) == 'function'"
+		" and type(os.clock) == 'function')").empty());
+	/* loadlib 必须中和（C 模块 dlopen 面），与 A3 一致 */
+	TH_CHECK(s.run("assert(package.loadlib == nil, 'package.loadlib neutralized')").empty());
+}
+
