@@ -161,7 +161,7 @@ function destroy(data)
 
     local fd = data.fd
     if fd == nil then
-        return err("Invalid Arguments: fd")
+        return err("Invalid Argument: fd")
     end
 
     if spi_w(tonumber(fd), CMD_SDATAC) ~= 0 then
