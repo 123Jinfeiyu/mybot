@@ -273,6 +273,48 @@ if(LUAJIT_EXECUTABLE)
 			SKIP_RETURN_CODE 125
 			ENVIRONMENT "LUACMD=${LUAJIT_EXECUTABLE}")
 	endforeach()
+else()
+	# C2（2026-09-20 审计 / 2026-09-21 落地）：luajit 缺失时**不得静默注册 0 个
+	# Lua 用例**——否则 docs/testing.md 声称的 Lua 离线回归在无 luajit 机器上
+	# 退化成「没跑却全绿」，与真机用例跳过同属静默变薄。显式 WARNING（构建
+	# 日志可见）+ 注册一个 125=SKIP 的守卫测试，让 `ctest -R lua_` 仍能反映出
+	# 「本环境无 luajit」而非「什么都没发生」。
+	message(WARNING
+		"luajit not found in PATH: test/test_*.lua Lua regression tests are NOT "
+		"registered (docs/testing.md 声称的 Lua 离线回归在本机静默降级为空跑). "
+		"Install luajit (apt install luajit) to enable them. "
+		"lua_registration_guard 以 SKIP 标记暴露此状态。")
+	add_test(NAME lua_registration_guard
+		COMMAND sh -c "exit 125")
+	set_tests_properties(lua_registration_guard PROPERTIES
+		WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+		SKIP_RETURN_CODE 125)
+endif()
+
+# ======================================================================
+# C3（2026-09-20 审计 / 2026-09-21 落地）：C++ 单测清单一致性自检。
+# 新 test/cpp/test_*.cpp 若不进上方 mybot_tests 的 add_executable 显式清单，
+# 它会**永不编译**（静默) 且守门照绿。这里 glob 出实际 test_*.cpp，
+# 与 mybot_tests 清单比对，不一致即 FATAL_ERROR（新增用例忘登记立刻红）。
+# 判据：test/cpp/test_*.cpp 必须恰好全部被引用（main.cpp 是测试入口，单列）。
+# ======================================================================
+file(GLOB MYBOT_CPP_TEST_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/cpp/test_*.cpp)
+set(MYBOT_CPP_TEST_REGISTERED
+  test_actionsource test_agentdriver test_agentloop test_agentproto test_agenttools
+  test_cliargs test_daemon_concurrency test_daemon test_expr test_hardware test_json
+  test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
+  test_mtmerge test_promptpack test_robot test_sqlparse test_util)
+set(_missing_registered)
+foreach(_t IN LISTS MYBOT_CPP_TEST_SRCS)
+  get_filename_component(_n "${_t}" NAME_WE)
+  if(NOT _n IN_LIST MYBOT_CPP_TEST_REGISTERED)
+    list(APPEND _missing_registered "${_n}")
+  endif()
+endforeach()
+if(_missing_registered)
+  message(FATAL_ERROR
+    "未登记的 C++ 测试（不会编译/守门将漏跑，须在 mybot_tests 的 add_executable 补上）："
+    "${_missing_registered}")
 endif()
 
 # 安装产物：mybot 直跑 ./build/mybot（bot4cj 原 _run.sh 的等价物，见 test/run_all.sh）
