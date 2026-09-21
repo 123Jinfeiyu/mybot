@@ -205,6 +205,79 @@ static void revokeInheritedFds() {
 	for (long fd = 3; fd < max; ++fd) { ::close(static_cast<int>(fd)); }
 }
 
+/* 子进程侧：独立进程组 + stdin 接 /dev/null + stdout/stderr 接管道 + 全量吊销
+ * 继承 fd。**本函数不返回**：成功即 execle 成 /bin/sh，任何失败 _exit(127)。
+ * fd 收尾顺序有讲究：先把 0/1/2 指向目标，再关掉继承来的四个管道端，
+ * 最后才 revokeInheritedFds——它会把 ≥3 的全部句柄关掉，早跑会把 0/1/2
+ * 之外刚 dup 好的东西也一起关掉。 */
+[[noreturn]] void execShellChild(const std::string& cmd, int outR, int outW, int errR, int errW,
+		std::vector<char*>& envp) {
+	setpgid(0, 0);	/* 独立进程组：超时/中断可整组终止（含孙进程） */
+	/* fix-plan 3-1：stdin 重定向到 /dev/null——子命令不再与主进程（agent REPL）
+	 * 抢终端输入；打开失败按 fail-closed 直接放弃执行（127）。 */
+	int devnull = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+	if (devnull < 0) { _exit(127); }
+	dup2(devnull, STDIN_FILENO);
+	if (devnull != STDIN_FILENO) { close(devnull); }
+	dup2(outW, STDOUT_FILENO);
+	dup2(errW, STDERR_FILENO);
+	close(outR);
+	close(outW);
+	close(errR);
+	close(errW);
+	revokeInheritedFds();	/* 必须在 dup2 之后：0/1/2 已指向管道与 /dev/null */
+	execle("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr), envp.data());
+	_exit(127);
+}
+
+/* 排空一个读端（fd 已置 O_NONBLOCK）：可读即循环读到 EAGAIN 为止，超限截断。
+ * 返回该流是否**终态**（正常 EOF / 非 EAGAIN 的读错误）；判 POLLERR/POLLNVAL
+ * 由调用方补。
+ * EINTR 必须重试而非当终态（阶段 4.2）：信号处理器未装 SA_RESTART，
+ * Ctrl-C/SIGTERM 期间 EINTR 会真实发生；旧实现把它判成 EOF——丢掉子进程剩余
+ * 输出，并提前关闭读端给仍在跑的子进程送 SIGPIPE。 */
+bool drainStream(int fd, std::string& sink, bool& truncated) {
+	std::array<char, 4096> buf;
+	ssize_t n = 0;
+	while ((n = bot::retryEintr([&] { return ::read(fd, buf.data(), buf.size()); })) > 0) {
+		appendCapped(sink, buf.data(), static_cast<std::size_t>(n), truncated);
+	}
+	return n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
+}
+
+/* 处理本轮 poll 就绪的读端：排空 + 终态判定与关闭。
+ * POLLERR/POLLNVAL 必须纳入就绪判据：这两个位只报错误、不置 POLLIN/POLLHUP，
+ * 原实现只认后两者 → 出错 fd 既不读也不关，每轮重新就绪，一直空转到硬上限
+ * 才退出（白耗 3s 且不报告真实成因）。 */
+void pumpReadyStreams(const struct pollfd (&fds)[2], int outFd, RunResult& r,
+		bool& outEof, bool& errEof) {
+	for (const auto& fd : fds) {
+		if (fd.fd < 0 || !(fd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) { continue; }
+		/* fds[] 只由两个读端构成，且 EOF 过的一端已被置 -1——非负即本端 */
+		const bool isOut = (fd.fd == outFd);
+		std::string& sink = isOut ? r.out : r.err;
+		bool& truncated = isOut ? r.outTruncated : r.errTruncated;
+		const bool drained = drainStream(fd.fd, sink, truncated);
+		/* 终态＝错误位 / 正常 EOF / 非 EAGAIN 的读错误：关闭并标记该流结束 */
+		if ((fd.revents & (POLLERR | POLLNVAL)) || drained) {
+			close(fd.fd);
+			if (isOut) { outEof = true; } else { errEof = true; }
+		}
+	}
+}
+
+/* 收尾：关掉未 EOF 的读端、回收子进程、折算退出码。
+ * 回收绝不无超时阻塞：kill 未生效（D 态 / 权限）时无超时的 waitpid 会把 agent
+ * 会话挂死。轮询到固定宽限仍未回收即放弃（交由 init 收尸），exitCode 保持 -1。
+ * EINTR 重试见 reapWithGrace。 */
+void finalizeShellRun(pid_t pid, int outFd, int errFd, bool outEof, bool errEof, bool exited,
+		int status, RunResult& r) {
+	if (!outEof) { close(outFd); }
+	if (!errEof) { close(errFd); }
+	if (!exited) { exited = reapWithGrace(pid, status); }
+	r.exitCode = (exited && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+}
+
 RunResult runShell(const std::string& cmd, int timeoutSec) {
 	int po[2] = {-1, -1};
 	int pe[2] = {-1, -1};
@@ -227,24 +300,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		close(pe[1]);
 		throw std::runtime_error("fork 失败");
 	}
-	if (pid == 0) {
-		setpgid(0, 0);	/* 独立进程组：超时/中断可整组终止（含孙进程） */
-		/* fix-plan 3-1：stdin 重定向到 /dev/null——子命令不再与主进程（agent REPL）
-		 * 抢终端输入；打开失败按 fail-closed 直接放弃执行（127）。 */
-		int devnull = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
-		if (devnull < 0) { _exit(127); }
-		dup2(devnull, STDIN_FILENO);
-		if (devnull != STDIN_FILENO) { close(devnull); }
-		dup2(po[1], STDOUT_FILENO);
-		dup2(pe[1], STDERR_FILENO);
-		close(po[0]);
-		close(po[1]);
-		close(pe[0]);
-		close(pe[1]);
-		revokeInheritedFds();	/* 必须在 dup2 之后：0/1/2 已指向管道与 /dev/null */
-		execle("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr), envp.data());
-		_exit(127);
-	}
+	if (pid == 0) { execShellChild(cmd, po[0], po[1], pe[0], pe[1], envp); }
 	setpgid(pid, pid);	/* 与子进程竞争设置，谁先成功效果一致 */
 	close(po[1]);
 	close(pe[1]);
@@ -268,7 +324,6 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 	RunResult r;
 	bool exited = false, outEof = false, errEof = false, killed = false;
 	int status = 0;
-	std::array<char, 4096> buf;
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
 	auto hardDeadline = deadline + std::chrono::seconds(3);
 
@@ -278,32 +333,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 			{errEof ? -1 : pe[0], POLLIN, 0},
 		};
 		if (poll(fds, 2, 100) > 0) {
-			for (const auto& fd : fds) {
-				/* POLLERR/POLLNVAL 必须纳入：这两个位只报错误、不置 POLLIN/POLLHUP，
-				 * 原实现只认后两者 → 出错 fd 既不读也不关，每轮重新就绪，一直空转
-				 * 到硬上限才退出（白耗 3s 且不报告真实成因）。 */
-				if (fd.fd < 0 || !(fd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) {
-					continue;
-				}
-				std::string& sink = (fd.fd == po[0]) ? r.out : r.err;
-				bool& truncated = (fd.fd == po[0]) ? r.outTruncated : r.errTruncated;
-				ssize_t n = 0;
-				/* 阶段 4.2：read 的 EINTR 必须重试而非当终态——信号处理器未装
-				 * SA_RESTART，Ctrl-C/SIGTERM 期间 EINTR 会真实发生；旧实现把它
-				 * 判成 EOF：丢掉子进程剩余输出，并提前关闭读端给仍在跑的子进程
-				 * 送 SIGPIPE。 */
-				while ((n = bot::retryEintr(
-						[&] { return ::read(fd.fd, buf.data(), buf.size()); })) > 0) {
-					appendCapped(sink, buf.data(), static_cast<std::size_t>(n), truncated);
-				}
-				/* 终态＝错误位 / 正常 EOF / 非 EAGAIN 的读错误：关闭并标记该流结束 */
-				const bool terminal = (fd.revents & (POLLERR | POLLNVAL))
-					|| n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK);
-				if (terminal) {
-					close(fd.fd);
-					if (fd.fd == po[0]) { outEof = true; } else { errEof = true; }
-				}
-			}
+			pumpReadyStreams(fds, po[0], r, outEof, errEof);
 		}
 		if (!exited) {
 			pid_t w = bot::retryEintr([&] { return ::waitpid(pid, &status, WNOHANG); });
@@ -326,13 +356,7 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		if (now >= hardDeadline) { break; }
 	}
 
-	if (!outEof) { close(po[0]); }
-	if (!errEof) { close(pe[0]); }
-	/* 收尾回收绝不无超时阻塞：kill 未生效（D 态 / 权限）时无超时的 waitpid 会把
-	 * agent 会话挂死。轮询到固定宽限仍未回收即放弃（交由 init 收尸），
-	 * exitCode 保持 -1。EINTR 重试见 reapWithGrace。 */
-	if (!exited) { exited = reapWithGrace(pid, status); }
-	r.exitCode = (exited && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+	finalizeShellRun(pid, po[0], pe[0], outEof, errEof, exited, status, r);
 	return r;
 }
 

@@ -115,88 +115,112 @@ static void push_lua_value(lua_State* L, const Json& val) {
  * （t.self = t，最常见的笔误形态）即无限递归直到裸 SIGSEGV，无环但极深的表同理。
  * 用 depth 计数在 kMaxLuaNesting 处抛 LuaNestingTooDeep，由 call_lua 就地转 ERR。
  * 检查放在进入表分支的最开头（本层还没压任何东西），抛出时栈不受本层污染。 */
-Json lua_value_to_json(lua_State* L, int idx, int depth) {
-	int t = lua_type(L, idx);
-	if (t == LUA_TNUMBER) {
+Json lua_value_to_json(lua_State* L, int idx, int depth);	/* 表分支递归用 */
+
+/* 标量 → Json（数字/布尔/nil/字符串）。返回 false = 不是标量，由表分支接手。
+ * 数字走 H-1 值域判据：NaN/inf/超出 int64 的 double 做 static_cast<long long>
+ * 是未定义行为（UBSan float-cast-overflow 实证），非有限或超界直接走浮点分支，
+ * 与 json.cpp 的序列化契约一致（非有限输出 null）。
+ * 字符串取真实长度：lua_tolstring(L, idx, nullptr) 会在 '\0' 截断，驱动返回的
+ * 含 NUL 字符串会被静默丢尾——反向 NUL 防线。 */
+bool lua_scalar_to_json(lua_State* L, int idx, Json& out) {
+	switch (lua_type(L, idx)) {
+	case LUA_TNUMBER: {
 		double d = lua_tonumber(L, idx);
-		/* 审计 H-1 防线（键路径有 L3 判据、值路径曾缺失）：NaN/inf/超出
-		 * int64 的 double 做 static_cast<long long> 是未定义行为（UBSan
-		 * float-cast-overflow 实证）。非有限或超界直接走浮点分支，与
-		 * json.cpp 的序列化契约一致（非有限输出 null）。 */
 		if (doubleFitsInt64(d)) {
 			long long i = static_cast<long long>(d);
-			return (static_cast<double>(i) == d) ? JsonInt(i) : JsonFloat(d);
+			out = (static_cast<double>(i) == d) ? JsonInt(i) : JsonFloat(d);
+		} else {
+			out = JsonFloat(d);
 		}
-		return JsonFloat(d);
+		return true;
 	}
-	if (t == LUA_TBOOLEAN) {
-		return JsonBool(lua_toboolean(L, idx) != 0);
-	}
-	if (t == LUA_TNIL) {
-		return JsonNull();
-	}
-	if (t == LUA_TSTRING) {
-		/* 反向 NUL 防线：lua_tolstring(L, idx, nullptr) 同样在 '\0' 截断，
-		 * 驱动返回的含 NUL 字符串会被静默丢尾——取真实长度保留全量数据。 */
+	case LUA_TBOOLEAN:
+		out = JsonBool(lua_toboolean(L, idx) != 0);
+		return true;
+	case LUA_TNIL:
+		out = JsonNull();
+		return true;
+	case LUA_TSTRING: {
 		size_t n = 0;
-		if (const char* s = lua_tolstring(L, idx, &n)) { return JsonString(std::string(s, n)); }
-		return JsonNull();
+		if (const char* s = lua_tolstring(L, idx, &n)) { out = JsonString(std::string(s, n)); }
+		else { out = JsonNull(); }
+		return true;
 	}
-	if (t == LUA_TTABLE) {
-		if (depth > kMaxLuaNesting) { throw LuaNestingTooDeep(kMaxLuaNesting); }
-		std::vector<long long> arrKeys;
-		std::map<long long, Json> arrVals;
-		Json obj = JsonObject();
-		lua_pushvalue(L, idx);			/* 表副本到栈顶 */
-		lua_pushnil(L);
-		while (lua_next(L, -2) != 0) {
-			int keyType = lua_type(L, -2);
-			if (keyType == LUA_TNUMBER) {
-				double kd = lua_tonumber(L, -2);
-				/* L3 防线：NaN / 超出 int64 范围的键在 static_cast<long long> 时是
-				 * 未定义行为。先验后与 C7 非整键同路转字符串键保留数据。
-				 * 值域判据与值路径共用同一点（util::doubleFitsInt64）。 */
-				if (!doubleFitsInt64(kd)) {
+	default:
+		return false;
+	}
+}
+
+/* 表 → JsonArray / JsonObject。键的两种判据都在这里：
+ *   L3 —— NaN / 超出 int64 的键做 static_cast<long long> 是 UB，与值路径共用
+ *         util::doubleFitsInt64；先验后与 C7 非整键同路转字符串键保留数据；
+ *   C7 —— 非整数数字键（如 3.5）截断会静默丢数据，同样转字符串键。
+ * 调用前后栈深不变（表副本与键值各弹各的）。 */
+Json lua_table_to_json(lua_State* L, int idx, int depth) {
+	if (depth > kMaxLuaNesting) { throw LuaNestingTooDeep(kMaxLuaNesting); }
+	std::vector<long long> arrKeys;
+	std::map<long long, Json> arrVals;
+	Json obj = JsonObject();
+	lua_pushvalue(L, idx);			/* 表副本到栈顶 */
+	lua_pushnil(L);
+	while (lua_next(L, -2) != 0) {
+		int keyType = lua_type(L, -2);
+		if (keyType == LUA_TNUMBER) {
+			double kd = lua_tonumber(L, -2);
+			if (!doubleFitsInt64(kd)) {
+				Json vj = lua_value_to_json(L, -1, depth + 1);
+				obj.put(std::to_string(kd), vj);
+			} else {
+				long long k = static_cast<long long>(kd);
+				if (static_cast<double>(k) != kd) {
 					Json vj = lua_value_to_json(L, -1, depth + 1);
 					obj.put(std::to_string(kd), vj);
 				} else {
-					/* C7 防线：非整数数字键（如 3.5）截断会静默丢数据——转字符串键保留 */
-					long long k = static_cast<long long>(kd);
-					if (static_cast<double>(k) != kd) {
-						Json vj = lua_value_to_json(L, -1, depth + 1);
-						obj.put(std::to_string(kd), vj);
-					} else {
-						Json vj = lua_value_to_json(L, -1, depth + 1);
-						arrVals[k] = vj;
-						arrKeys.push_back(k);
-					}
-				}
-			} else if (keyType == LUA_TSTRING) {
-				size_t kn = 0;
-				if (const char* ks = lua_tolstring(L, -2, &kn)) {
 					Json vj = lua_value_to_json(L, -1, depth + 1);
-					obj.put(std::string(ks, kn), vj);
+					arrVals[k] = vj;
+					arrKeys.push_back(k);
 				}
 			}
-			lua_pop(L, 1);			/* 弹出值，保留键供下一次 Lua_next */
-		}
-		lua_pop(L, 1);				/* 弹出表副本 */
-		if (!arrKeys.empty()) {
-			/* 必须排序拷贝后按其迭代（同原实现对拷贝排序） */
-			std::sort(arrKeys.begin(), arrKeys.end());
-			if (obj.objSize() > 0) {
-				/* 混合键表：整体转对象（数字键转字符串键），不丢字段 */
-				for (long long k : arrKeys) { obj.put(std::to_string(k), arrVals[k]); }
-				return obj;
+		} else if (keyType == LUA_TSTRING) {
+			size_t kn = 0;
+			if (const char* ks = lua_tolstring(L, -2, &kn)) {
+				Json vj = lua_value_to_json(L, -1, depth + 1);
+				obj.put(std::string(ks, kn), vj);
 			}
-			Json arr = JsonArray();
-			for (long long k : arrKeys) { arr.add(arrVals[k]); }
-			return arr;
 		}
-		if (obj.objSize() > 0) { return obj; }
-		return JsonArray();			/* 空表 → 空数组 */
+		lua_pop(L, 1);			/* 弹出值，保留键供下一次 Lua_next */
 	}
-	logD([t] { return "lua_value_to_json: unsupported Lua type " + std::to_string(t) + ", returned null"; });
+	lua_pop(L, 1);				/* 弹出表副本 */
+	if (!arrKeys.empty()) {
+		/* 必须排序拷贝后按其迭代（同原实现对拷贝排序） */
+		std::sort(arrKeys.begin(), arrKeys.end());
+		if (obj.objSize() > 0) {
+			/* 混合键表：整体转对象（数字键转字符串键），不丢字段 */
+			for (long long k : arrKeys) { obj.put(std::to_string(k), arrVals[k]); }
+			return obj;
+		}
+		Json arr = JsonArray();
+		for (long long k : arrKeys) { arr.add(arrVals[k]); }
+		return arr;
+	}
+	if (obj.objSize() > 0) { return obj; }
+	return JsonArray();			/* 空表 → 空数组 */
+}
+
+/* Lua 栈上 idx 处的值 → Json（递归）；调用前后栈深不变。
+ * 深度防线：每层嵌套表压一个 C++ 栈帧，只有碰到标量才终止——驱动返回自引用表
+ * （t.self = t，最常见的笔误形态）即无限递归直到裸 SIGSEGV。超限抛
+ * LuaNestingTooDeep，由 call_lua 就地转 ERR。检查放在进入表分支的最开头
+ * （本层还没压任何东西），抛出时栈不受本层污染。 */
+Json lua_value_to_json(lua_State* L, int idx, int depth) {
+	Json scalar = JsonNull();
+	if (lua_scalar_to_json(L, idx, scalar)) { return scalar; }
+	if (lua_type(L, idx) == LUA_TTABLE) { return lua_table_to_json(L, idx, depth); }
+	logD([&] {
+		return "lua_value_to_json: unsupported Lua type " + std::to_string(lua_type(L, idx))
+			+ ", returned null";
+	});
 	return JsonNull();
 }
 

@@ -127,17 +127,16 @@ bool wantStringArray(const std::string& path, const Json& root, const char* key,
 	return true;
 }
 
-} // namespace
-
-bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string& err) {
+/* ---- 读取 + 解析 + 顶层形态 + 未知字段（F2-8 拆分之一）----
+ * 未知字段拒绝：拼错一个键（如 "apikey"）而静默走缺省，会让人以为配置生效了。
+ * 与「未知 --key 退出 2」同一口径。 */
+bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 	std::string text;
 	if (!readWholeFileLimited(path, kMaxConfigBytes, text, err, "配置文件")) { return false; }
 	if (text.empty()) {
 		err = "配置文件为空: " + path;
 		return false;
 	}
-
-	Json root;
 	try {
 		root = parseJson(text);
 	} catch (const std::exception& e) {
@@ -148,9 +147,6 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 		err = "配置文件 " + path + " 的顶层必须是 JSON 对象";
 		return false;
 	}
-
-	/* 未知字段拒绝：拼错一个键（如 "apikey"）而静默走缺省，会让人以为配置生效了。
-	 * 与「未知 --key 退出 2」同一口径。 */
 	static const std::set<std::string> kKnown = {
 		"driver", "var", "endpoint", "model", "api_key", "api_key_file",
 		"timeout", "max_tokens", "temperature", "top_p",
@@ -163,7 +159,12 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 			return false;
 		}
 	}
+	return true;
+}
 
+/* 字符串族字段（含 thinking 的三态：字符串 enabled/disabled 或布尔） */
+bool parseConfigStrings(const std::string& path, const Json& root, LlmFileConfig& out,
+		std::string& err) {
 	if (!wantString(path, root, "driver", out.driver, err)) { return false; }
 	if (!wantString(path, root, "var", out.var, err)) { return false; }
 	if (!wantString(path, root, "endpoint", out.endpoint, err)) { return false; }
@@ -187,7 +188,14 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 			return false;
 		}
 	}
+	return true;
+}
 
+/* 数值族字段：temperature/top_p 为浮点（各自区间），timeout/max_tokens/max_turns
+ * 为整数（区间取自 llm_limits 单点——timeout 上限与驱动侧 llm_http.clamp_timeout
+ * 一致：宿主接受什么，驱动就照发什么，不做「先接受再悄悄改写」） */
+bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig& out,
+		std::string& err) {
 	std::optional<double> temperature, topP;
 	if (!wantNumber(path, root, "temperature", temperature, err)) { return false; }
 	if (!wantNumber(path, root, "top_p", topP, err)) { return false; }
@@ -203,8 +211,6 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 	out.topP = topP;
 
 	std::optional<int> timeoutSec, maxTokens, maxTurns;
-	/* timeout 上限与驱动侧 llm_http.clamp_timeout 的钳制区间一致：宿主接受什么，
-	 * 驱动就照发什么，不做「先接受再悄悄改写」 */
 	if (!wantInt(path, root, "timeout", llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec,
 			timeoutSec, err)) { return false; }
 	if (!wantInt(path, root, "max_tokens", llm_limits::kMaxTokensMin, llm_limits::kMaxTokensMax,
@@ -214,10 +220,28 @@ bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string&
 	if (timeoutSec) { out.timeoutSec = *timeoutSec; }
 	if (maxTokens) { out.maxTokens = *maxTokens; }
 	if (maxTurns) { out.maxTurns = *maxTurns; }
+	return true;
+}
 
+/* 布尔与数组族字段 */
+bool parseConfigBools(const std::string& path, const Json& root, LlmFileConfig& out,
+		std::string& err) {
 	if (!wantBool(path, root, "allow_shell", out.allowShell, err)) { return false; }
 	if (!wantStringArray(path, root, "prompt_files", out.promptFiles, err)) { return false; }
 	if (!wantBool(path, root, "allow_camera", out.allowCamera, err)) { return false; }
+	return true;
+}
+
+} // namespace
+
+bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string& err) {
+	Json root;
+	if (!loadConfigRoot(path, root, err)) { return false; }
+	/* 阶段顺序 = 报错优先级：字符串族 → 浮点 → 整数 → 布尔/数组。
+	 * 配置文件有多个字段非法时，报的是这条链上第一个命中的字段。 */
+	if (!parseConfigStrings(path, root, out, err)) { return false; }
+	if (!parseConfigNumbers(path, root, out, err)) { return false; }
+	if (!parseConfigBools(path, root, out, err)) { return false; }
 	return true;
 }
 
