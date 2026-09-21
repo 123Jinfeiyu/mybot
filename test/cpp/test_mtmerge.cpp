@@ -200,3 +200,94 @@ TH_TEST(mtmerge_require_action_accepts_trimmed_name) {
 	mt::MatrixObject act = mtmerge::requireAction(mats, "x.mt");
 	TH_CHECK(bot::trim(act.getName()) == "Action");
 }
+
+/* ---------------- F3-6①：归并代数律属性测试（seed 固定、探针可红） ----------------
+ * 交换性经推导**不成立**且是设计事实：列序恒「左 ∪ 右」；相位有方向性
+ * （next 恒滞后 phase 行）——用判别用例钉住该否定，防实现漂移成「排序列/
+ * 对称相位」而无人察觉。成立的是**相位复合恒等式**：
+ *   merge(merge(A,B,p1),C,p2) ≡ merge(A, merge(B,C,p2-p1), p1)  （p2 ≥ p1 ≥ 0）
+ * 推导：三侧行 r 的取值均为 A_r、B_{r-p1}、C_{r-p2}（越界补 "-"），列序均
+ * A,B,C，总行数 = max(rowsA, rowsB+p1, rowsC+p2)。约束 p2≥p1≥0 保证两处
+ * 内层相位均非负（负相位的丢弃告警/报错会污染产物语义，不在本性质范围）。
+ * 随机构造（seed 写死）批量验证 + p1=p2=0 退化真结合律。判别性：相位取错
+ * 侧 / 列序漂移 / 总行数算错，任一回归都会红。 */
+
+static mt::MatrixObject actionN(const std::string& dev, int rows, int cols, int seed) {
+	std::string t = "@Action\n";
+	for (int c = 0; c < cols; ++c) { t += (c ? " " : "") + std::string(dev + ".p" + std::to_string(c)); }
+	t += ";\n";
+	for (int r = 1; r <= rows; ++r) {
+		for (int c = 0; c < cols; ++c) {
+			/* 值避开 "-"：两位数即可（0x/引号/负号都不碰） */
+			t += (c ? " " : "") + std::to_string((seed * 31 + r * 7 + c * 3) % 90 + 10);
+		}
+		t += ";\n";
+	}
+	t += "@\n";
+	return fx::oneMatrix(t);
+}
+
+static bool sameMatrix(const mt::MatrixObject& x, const mt::MatrixObject& y) {
+	if (x.getName() != y.getName() || x.rows() != y.rows() || x.cols() != y.cols()) { return false; }
+	for (std::size_t r = 0; r < x.rows(); ++r) {
+		for (std::size_t j = 0; j < x.cols(); ++j) {
+			if (fx::cell(x, r, j) != fx::cell(y, r, j)) { return false; }
+		}
+	}
+	return true;
+}
+
+TH_TEST(mtmerge_phase_composition_identity_property) {
+	/* 相位复合恒等式：随机形状/相位（p2≥p1≥0，seed 由迭代号确定）批量验证 */
+	std::string bad;
+	for (int iter = 0; iter < 60 && bad.empty(); ++iter) {
+		mt::MatrixObject A = actionN("a", 1 + (iter * 3) % 5, 2, iter);
+		mt::MatrixObject B = actionN("b", 1 + (iter * 2) % 4, 1, iter + 100);
+		mt::MatrixObject C = actionN("c", 1 + iter % 3, 2, iter + 200);
+		std::int64_t p1 = iter % 4;
+		std::int64_t p2 = p1 + iter % 3;	/* p2 ≥ p1 ≥ 0：内层相位 p2-p1 非负 */
+		mt::MatrixObject left = mtmerge::mergeTwo(
+			mtmerge::mergeTwo(A, B, p1, "a.mt", "b.mt"), C, p2, "ab.mt", "c.mt");
+		mt::MatrixObject right = mtmerge::mergeTwo(
+			A, mtmerge::mergeTwo(B, C, p2 - p1, "b.mt", "c.mt"), p1, "a.mt", "bc.mt");
+		if (!sameMatrix(left, right)) {
+			bad = "iter=" + std::to_string(iter) + " p1=" + std::to_string(p1)
+				+ " p2=" + std::to_string(p2);
+		}
+	}
+	if (!bad.empty()) { std::cerr << "相位复合恒等式破坏：" << bad << "\n"; }
+	TH_CHECK(bad.empty());
+}
+
+TH_TEST(mtmerge_zero_phase_degenerates_to_associativity) {
+	/* p1=p2=0：复合恒等式退化为真结合律（产物完全相等，含列序 A,B,C） */
+	std::string bad;
+	for (int iter = 0; iter < 20 && bad.empty(); ++iter) {
+		mt::MatrixObject A = actionN("a", 1 + iter % 4, 2, iter);
+		mt::MatrixObject B = actionN("b", 1 + (iter + 1) % 3, 1, iter + 50);
+		mt::MatrixObject C = actionN("c", 1 + iter % 3, 2, iter + 90);
+		mt::MatrixObject left = mtmerge::mergeTwo(
+			mtmerge::mergeTwo(A, B, 0, "a.mt", "b.mt"), C, 0, "ab.mt", "c.mt");
+		mt::MatrixObject right = mtmerge::mergeTwo(
+			A, mtmerge::mergeTwo(B, C, 0, "b.mt", "c.mt"), 0, "a.mt", "bc.mt");
+		if (!sameMatrix(left, right)) { bad = "iter=" + std::to_string(iter); }
+	}
+	if (!bad.empty()) { std::cerr << "零相位结合律破坏：" << bad << "\n"; }
+	TH_CHECK(bad.empty());
+}
+
+TH_TEST(mtmerge_commutativity_intentionally_not_held) {
+	/* 判别性否定：相位 +1 时 next 侧滞后——merge(A,B,1) 里 B 的首个动作在第
+	 * 2 数据行，merge(B,A,1) 里 A 的首个动作在第 2 数据行，逐设备序列不同。
+	 * 若未来实现「对称化」相位或排序列，本用例即红——那是语义变更，须过
+	 * docs/dsl.md 与 @Include 语义重审，不得静默发生。 */
+	mt::MatrixObject l = mtmerge::mergeTwo(actionA(3), actionB(2), 1, "a.mt", "b.mt");
+	mt::MatrixObject r = mtmerge::mergeTwo(actionB(2), actionA(3), 1, "b.mt", "a.mt");
+	TH_CHECK(!sameMatrix(l, r));
+	/* 相位 0 时逐设备序列虽相同，列序仍是「左 ∪ 右」而非排序——表头即异 */
+	mt::MatrixObject l0 = mtmerge::mergeTwo(actionA(2), actionB(2), 0, "a.mt", "b.mt");
+	mt::MatrixObject r0 = mtmerge::mergeTwo(actionB(2), actionA(2), 0, "b.mt", "a.mt");
+	TH_CHECK(fx::cell(l0, 0, 0) == "a.x");
+	TH_CHECK(fx::cell(r0, 0, 0) == "b.p");
+	TH_CHECK(!sameMatrix(l0, r0));
+}
