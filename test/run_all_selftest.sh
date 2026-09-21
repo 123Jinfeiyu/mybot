@@ -41,8 +41,24 @@ for f in test/*.lua; do
 	esac
 done
 
+# 4) count_calls（「N 条用例」文案的唯一来源）必须真的数得到调用点。
+#    它按「行首缩进 + runner 名 + 引号」匹配：引号种类、缩进或改名一变，计数静默
+#    变 0，文案与真跑条数就一起漂移。这里用**独立实现**交叉核对（宽松计数不看引号）：
+#    两者不等即说明 count_calls 的判据漏了某种写法。F3-4（2026-09-21）。
+for r in $(grep -oE 'count_calls [a-zA-Z0-9_]+' test/run_all.sh | awk '{print $2}' | sort -u); do
+	grep -qE "^[[:space:]]*${r}\(\)" test/run_all.sh \
+		|| note "count_calls 的参数不是本文件里定义的 runner：$r"
+	strict="$(grep -cE "^[[:space:]]*${r} ['\"]" test/run_all.sh)"
+	loose="$(grep -cE "^[[:space:]]*${r}[[:space:]]" test/run_all.sh)"
+	if [ "$strict" -eq 0 ]; then
+		note "runner $r 的调用点计数为 0（写法变了？引号/缩进/改名）"
+	elif [ "$strict" -ne "$loose" ]; then
+		note "runner $r 计数不一致：count_calls 判据 $strict != 宽松计数 $loose（有写法没被认出来）"
+	fi
+done
+
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（脚本语法 / C++ 用例登记 / Lua 用例命名）"
+echo "run_all_selftest: 通过（脚本语法 / C++ 用例登记 / Lua 用例命名 / count_calls 计数）"

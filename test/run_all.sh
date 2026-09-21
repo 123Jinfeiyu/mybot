@@ -54,7 +54,8 @@ record_skip() { skip=$((skip + 1)); skipped_list="$skipped_list $1"; }
 
 # 某 runner 的声明用例数：数本文件里的调用点，让「加用例忘改数字」的消息漂移
 # 无从发生（artifact_missing 的条数文案一律由此推导）。
-count_calls() { grep -c "^[[:space:]]*$1 '" "$SELF"; }
+# F3-4（2026-09-21）：单/双引号调用点都认——旧实现只认单引号，改一处写法即静默少算。
+count_calls() { grep -cE "^[[:space:]]*$1 ['\"]" "$SELF"; }
 
 # ---- 编译产物（全局解析，供各分段共用）----
 # 缺省路径可被 BOT / BOT_TESTS 覆盖；是否「显式指定」决定下面的降级策略。
