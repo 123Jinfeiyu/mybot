@@ -10,8 +10,10 @@
  *      正常返回）与软链判据（followSymlinks 开关决定是否带 O_NOFOLLOW）
  */
 
+#include <algorithm>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #include "fixtures.hpp"
 #include "harness.hpp"
@@ -385,17 +387,89 @@ TH_TEST(utf8_sanitize_handles_truncated_tail_from_output_cap) {
 	TH_CHECK(bot::isValidUtf8(bot::sanitizeUtf8(s)));
 }
 
-/* ---- AG-11：`agent:` 作用域过滤器的完备性（必须放在**主套件**里）----
+/* ---- AG-11 / AG-22：`agent:` 作用域过滤器的完备性（必须放在**主套件**里）----
  * 起因：docs/agent.md 推荐的 `./build/mybot_tests agent` 是子串匹配，只命中用例名
  * 里含 "agent" 的那部分——promptpack / llmconfig / cliargs 这些同属 agent 配置面的
  * 用例全都不命中（实测 86/436，而注释写着「proto / driver / tools / loop / config」）。
- * 现在加了显式作用域表（harness.hpp 的 scopeTable），但显式表的代价是**新增测试
- * 文件时容易忘记补一行**——那会让新用例对 `agent:` 隐形，正是本项要消灭的「看不见」。
+ * 现在加了显式作用域表（harness.hpp 的 scopeTable）。
  *
+ * **第三轮审计 AG-22**：原守门只断言「表里每个成员都有命中」+「总数 ≥100」，
+ * 于是它结构上不可能发现**漏登记**——实测 `agentconfig_` / `agentmode_` 两族共 15 条
+ * 用例（test_llmconfig.cpp 的配置优先级、allow_shell 缺省、提示词拼装与注入包裹）
+ * 一条都不在 `agent:` 里，而守门照绿、docs 还宣称覆盖了 config 面。
+ * 现在改成**派生式比对**：把注册表里所有用例名前缀反向列出来，每一个要么在作用域表
+ * 里、要么在下面的「非 agent 面」roster 里带理由登记。新增一整族用例却没表态即红。
+ *
+ * 覆盖边界的如实说明（这条判据不是万能的）：roster 的键是**前缀**，所以
+ * 「给已登记族新增用例」自动随族走（会进作用域）；而「新增一个前缀却忘了表态」
+ * 才由本用例拦下。文件级归属无法从注册表推出（Case 只有名字），故不假装能测。
  * 本用例必须在 mybot_tests 里而不是 harness_selftest 里：骨架自证二进制只注册了
- * 它自己那几个例句用例，看不到主套件的 438 例，作用域完备性在那里无从判断。
- * 放在这里还有一层好处——它本身是一条普通用例，**不可能被静默跳过**：
- * 少登记一个成员、或成员前缀拼错，都会立刻红。 */
+ * 它自己那几个例句用例，看不到主套件，作用域完备性在那里无从判断。 */
+namespace {
+
+/* 非 agent 面的用例名前缀 roster：每个前缀都要带「它为什么不属于 agent 面」。
+ * 这是审计留痕，不是形式主义——下一个想加前缀的人必须在这里写一句理由，
+ * 而写理由的过程正是「我是不是漏登记了」的自检点。 */
+struct NonAgentPrefix {
+	const char* prefix;
+	const char* why;
+};
+
+constexpr NonAgentPrefix kNonAgentPrefixes[] = {
+	{"action", "动作输入源/动作重放（管道模式）"},
+	{"alias", "结构期 @Alias 语义"},
+	{"call", "驱动 call 契约（硬件层）"},
+	{"controller", "结构脚本 controller 引用"},
+	{"daemon", "守护线程"},
+	{"deactivate", "硬件生命周期（非 agent 专属）"},
+	{"destructor", "硬件析构语义"},
+	{"echo", "驱动回显夹具"},
+	{"empty", "空输入边界"},
+	{"ensureOk", "错误契约折成异常的判据"},
+	{"expr", "$(...) 表达式"},
+	{"failed", "失败路径（硬件层）"},
+	{"flat", "矩阵扁平化"},
+	{"hardware", "硬件变量注册表"},
+	{"harness", "测试骨架自身"},
+	{"hw", "硬件装配"},
+	{"insert", "SQL INSERT（矩阵层）"},
+	{"json", "宿主 Json 值层"},
+	{"jsonparse", "宿主 JSON 解析"},
+	{"lexer", "SQL 词法"},
+	{"limited", "受限读取"},
+	{"lua", "Lua 桥/沙箱"},
+	{"matrix", "矩阵解析"},
+	{"metaprovider", "元数据提供者"},
+	{"mtinclude", "@Include 内联"},
+	{"mtmerge", "mtmerge 归并"},
+	{"nested", "嵌套表边界"},
+	{"open", "输入源打开路径"},
+	{"oversized", "超限输入"},
+	{"parse", "解析器通用用例"},
+	{"parseMtDouble", "矩阵数值解析"},
+	{"parser", "SQL 解析器"},
+	{"play", "play/playQuiet 派发"},
+	{"read", "Reader 语义"},
+	{"registry", "注册表生命周期"},
+	{"retry", "EINTR 重试"},
+	{"robot", "RobotStruct 编排"},
+	{"run", "run() 语义"},
+	{"safe", "安全标识符判据"},
+	{"sandbox", "驱动沙箱"},
+	{"session", "会话作用域"},
+	{"single", "单消费者判据"},
+	{"tcp", "TCP 输入源"},
+	{"the", "例句/杂项"},
+	{"token", "SQL token"},
+	{"too", "超限/过长输入"},
+	{"trigger", "结构脚本 trigger 引用"},
+	{"utils", "util 通用助手"},
+	{"utf8", "UTF-8 判据与消毒"},
+	{"vars", "结构期 @Vars 语义"},
+};
+
+} // namespace
+
 TH_TEST(harness_scope_agent_lists_every_member_with_cases) {
 	std::size_t n = 0;
 	const th::ScopeEntry* table = th::scopeTable(n);
@@ -413,15 +487,53 @@ TH_TEST(harness_scope_agent_lists_every_member_with_cases) {
 			+ "' 没有命中任何用例（拼错了？还是测试文件被重命名了？）");
 	}
 
-	/* 作用域整体命中数必须 ≥ 各成员之和的下界（成员数），且明显多于旧的子串语义：
-	 * 子串 'agent' 只命中 80 余例，作用域应覆盖 100 例以上（含 llmconfig/promptpack/
-	 * cliargs）。这条断言防的是「表在、匹配没生效」这类静默失效。 */
+	/* ---- 派生式完备性：注册表里出现的每个前缀都必须表过态 ---- */
+	std::vector<std::string> prefixes;
+	for (const auto& c : th::cases()) {
+		const std::size_t us = c.name.find('_');
+		const std::string p = c.name.substr(0, us == std::string::npos ? c.name.size() : us);
+		if (std::find(prefixes.begin(), prefixes.end(), p) == prefixes.end()) {
+			prefixes.push_back(p);
+		}
+	}
+	std::sort(prefixes.begin(), prefixes.end());
+	TH_CHECK_MSG(prefixes.size() >= 40,
+		"前缀数 " + std::to_string(prefixes.size()) + " 偏少——注册表读取是否正常？");
+
+	for (const std::string& p : prefixes) {
+		std::size_t scopedHits = 0;
+		for (const auto& c : th::cases()) {
+			if (c.name.rfind(p + "_", 0) == 0 && th::caseInScope(c.name, "agent")) {
+				++scopedHits;
+			}
+		}
+		if (scopedHits > 0) { continue; }	/* 属于 agent 面（表的成员） */
+		bool rostered = false;
+		for (const NonAgentPrefix& r : kNonAgentPrefixes) {
+			if (p == r.prefix) { rostered = true; break; }
+		}
+		TH_CHECK_MSG(rostered, "用例名前缀 '" + p
+			+ "_' 既不在 agent 作用域表里，也不在 test_util.cpp 的非 agent roster 里。"
+			  "若它属于 agent 面 → 在 harness.hpp 的 scopeTable 补一行；"
+			  "若不属于 → 在 kNonAgentPrefixes 补一行并写明理由（AG-22 就是漏了这一表态）");
+	}
+
+	/* roster 的反向检查：登记了却不存在的理由条目是陈旧留痕，允许删 */
+	for (const NonAgentPrefix& r : kNonAgentPrefixes) {
+		bool exists = std::find(prefixes.begin(), prefixes.end(), r.prefix) != prefixes.end();
+		TH_CHECK_MSG(exists, std::string("非 agent roster 里的 '") + r.prefix
+			+ "_' 已无任何用例（陈旧条目，可删）");
+	}
+
+	/* 作用域整体命中数：明显多于旧的子串语义（子串 'agent' 只命中 80 余例）。
+	 * 这条防的是「表在、匹配没生效」这类静默失效。 */
 	std::size_t scoped = 0;
 	for (const auto& c : th::cases()) {
 		if (th::caseInScope(c.name, "agent")) { ++scoped; }
 	}
-	TH_CHECK_MSG(scoped >= members && scoped >= 100,
+	TH_CHECK_MSG(scoped >= members && scoped >= 120,
 		"agent: 作用域命中 " + std::to_string(scoped) + " 例（成员数 "
-			+ std::to_string(members) + "），明显偏少——过滤是否失效？");
+			+ std::to_string(members) + "），明显偏少——过滤是否失效？"
+			"（AG-22 修复后为 127：原 108 + agentconfig_/agentmode_ 15 + 本轮新用例 4）");
 }
 
