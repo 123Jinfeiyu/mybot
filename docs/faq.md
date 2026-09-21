@@ -94,7 +94,7 @@ luajit scripts/scscl_scan.lua --raw             # 附原始字节 dump，用来�
 
 A: 完整清单在 [agent.md](agent.md) 的「已知限制」与「安全说明」，这里只说两件最容易绊到的：
 
-- **`run_command`（任意 shell）缺省不注册**，要 `--agent-shell` 或配置 `allow_shell: true` 显式开启；`capture_image` 也只有当 `--camera-var` 在结构脚本里解析到一个 **Lua 驱动**时才提供（没接摄像头就不提供，不拖累上电）。
+- **`run_command`（任意 shell）缺省不注册**，只能由命令行 `--agent-shell` 显式开启——配置文件里写 `allow_shell: true` 会被**拒绝加载**（防「未经审查的落地文件同时改 endpoint 与开 shell」）；`capture_image` 也只有当 `--camera-var` 在结构脚本里解析到一个 **Lua 驱动**时才提供（没接摄像头就不提供，不拖累上电）。
 - **非流式**：一轮回答要等整轮生成完；单次任务受 `--llm-max-turns`（缺省 8）约束，到顶会报错而不是继续转圈。到顶时本轮历史**原样保留**——那些动作脚本已经真跑过、硬件不会倒回去，所以模型看得见自己做过什么；把任务拆小比调大上限更管用。
 
 接口超时用 `--llm-timeout`（1~600 秒），会话历史按字节预算裁剪（缺省 4 MiB，单张图另有 2 MiB 上限）。
