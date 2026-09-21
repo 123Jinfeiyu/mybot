@@ -59,6 +59,20 @@ private:
 	 * 界整块裁剪最老的块，system 提示词与最新一块无条件保留。runTurn 开头
 	 * 调用，push 新任务消息之前。 */
 	void trimHistory();
+
+	/* ---- runTurn 的三段拆分（B5/N5，2026-09-21）：取数 / 执行 / 收尾 ----
+	 * 回滚边界仍留在 runTurn 的同一个 try 里（它需要同时覆盖三段），
+	 * 这里只把两段自成的逻辑搬出去，行为逐字保持。 */
+
+	/* 收尾：无工具调用的那一轮——把这句 assistant 回答写进历史并返回文本。
+	 * provider 附加字段（DeepSeek 的 reasoning_content 等）必须随消息留在
+	 * 历史里，下一轮带 tools 的请求要完整回传，否则对方直接 400。 */
+	std::string appendFinalAnswer(const ChatResponse& resp);
+
+	/* 执行：一轮带工具调用的模型回合，按协议顺序写历史——
+	 * assistant(tool_calls) → 每个 tool 的回传（tool_call_id 一一对应）→ 图片消息
+	 * （必须最后，见实现注释）。工具参数解析失败折成 tool 回传文本，不中断本轮。 */
+	void executeToolRound(ChatResponse& resp, int turn);
 };
 
 } // namespace agent

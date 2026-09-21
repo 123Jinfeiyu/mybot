@@ -125,19 +125,11 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 				throw std::runtime_error("执行被中断");
 			}
 
+			/* 取数：一次模型调用 */
 			ChatResponse resp = transport_.complete(messages_, tools_.specs());
 
-			if (!resp.hasToolCalls()) {
-				ChatMessage asst;
-				asst.role = "assistant";
-				asst.content = resp.content;
-				/* provider 附加字段（如 DeepSeek 的 reasoning_content）必须跟着
-				 * 这条 assistant 消息留在历史里——下一轮带 tools 的请求要把它们
-				 * 完整回传，否则 DeepSeek 直接 400。 */
-				asst.extras = resp.extras;
-				messages_.push_back(std::move(asst));
-				return resp.content;
-			}
+			/* 收尾：模型不再要工具 → 记下最终回答并返回 */
+			if (!resp.hasToolCalls()) { return appendFinalAnswer(resp); }
 
 			/* 模型常先给一句过渡语再发 tool_calls；过渡语只进日志，
 			 * 最终回答只由「无工具调用」的那一轮决定 */
@@ -145,58 +137,9 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 				log("[模型] " + resp.content);
 			}
 
-			/* 个别流式/兼容实现会漏 tool_call id：这里合成占位 id，
-			 * 保证 assistant.tool_calls 与后续 tool.tool_call_id 一一对上 */
-			std::vector<ToolCall> calls = resp.toolCalls;
-			for (std::size_t i = 0; i < calls.size(); ++i) {
-				if (calls[i].id.empty()) {
-					calls[i].id = "call_" + std::to_string(turn) + "_" + std::to_string(i);
-				}
-			}
+			/* 执行：assistant(tool_calls) → 全部 tool 回传 → 图片 */
+			executeToolRound(resp, turn);
 
-			ChatMessage asst;
-			asst.role = "assistant";
-			asst.content = resp.content;
-			asst.toolCalls = calls;
-			asst.extras = resp.extras;	/* 同上：附加字段随历史逐轮回传 */
-			messages_.push_back(std::move(asst));
-
-			/* 本轮工具产出的图片：必须等**全部** tool 消息回传之后再注入。
-			 * OpenAI 协议要求 assistant 的 tool_calls 之后紧跟对应的 tool 消息，
-			 * 中间插 user 消息会被判 400；tool 消息本身又只允许文本。 */
-			std::vector<std::string> images;
-			for (const auto& c : calls) {
-				AgentToolResult result;
-				try {
-					Json args = parseToolArguments(c.arguments);
-					result = tools_.execute(c.name, args);
-				} catch (const std::exception& e) {
-					result = {std::string("工具参数错误: ") + e.what(), ""};
-				}
-				if (opts_.verbose) {
-					std::string shown = result.text;
-					if (!result.imageDataUrl.empty()) {
-						shown += "\n[返回图片 " + std::to_string(result.imageDataUrl.size())
-							+ " 字节，已注入下一轮对话]";
-					}
-					log("[工具] " + c.name + "\n" + indentLines(shown, 2));
-				}
-				ChatMessage tool;
-				tool.role = "tool";
-				tool.content = result.text;
-				tool.toolCallId = c.id;
-				messages_.push_back(std::move(tool));
-				if (!result.imageDataUrl.empty()) {
-					images.push_back(result.imageDataUrl);
-				}
-			}
-			if (!images.empty()) {
-				ChatMessage img;
-				img.role = "user";
-				img.content = "以上工具返回的图片如下，请结合画面内容继续。";
-				img.images = std::move(images);
-				messages_.push_back(std::move(img));
-			}
 			/* 到此为止 tool_calls 与 tool 回传一一对上，这段历史可以原样发送 */
 			complete = messages_.size();
 		}
@@ -209,6 +152,75 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 		 * 而回退，模型也不该被告知什么都没发生。 */
 		if (messages_.size() > complete) { messages_.resize(complete); }
 		throw;
+	}
+}
+
+/* 收尾：无工具调用的那一轮。provider 附加字段（如 DeepSeek 的 reasoning_content）
+ * 必须跟着这条 assistant 消息留在历史里——下一轮带 tools 的请求要把它们完整回传，
+ * 否则 DeepSeek 直接 400。 */
+std::string AgentSession::appendFinalAnswer(const ChatResponse& resp) {
+	ChatMessage asst;
+	asst.role = "assistant";
+	asst.content = resp.content;
+	asst.extras = resp.extras;
+	messages_.push_back(std::move(asst));
+	return resp.content;
+}
+
+/* 执行：一轮带工具调用的模型回合，按协议顺序写历史——
+ * assistant(tool_calls) → 每个 tool 的回传（tool_call_id 一一对应）→ 图片消息。
+ * 图片必须等**全部** tool 消息回传之后再注入：OpenAI 协议要求 assistant 的
+ * tool_calls 之后紧跟对应的 tool 消息，中间插 user 消息会被判 400；tool 消息
+ * 本身又只允许文本。工具参数解析失败折成 tool 回传文本，不中断本轮。 */
+void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
+	/* 个别流式/兼容实现会漏 tool_call id：这里合成占位 id，
+	 * 保证 assistant.tool_calls 与后续 tool.tool_call_id 一一对上 */
+	std::vector<ToolCall>& calls = resp.toolCalls;
+	for (std::size_t i = 0; i < calls.size(); ++i) {
+		if (calls[i].id.empty()) {
+			calls[i].id = "call_" + std::to_string(turn) + "_" + std::to_string(i);
+		}
+	}
+
+	ChatMessage asst;
+	asst.role = "assistant";
+	asst.content = resp.content;
+	asst.toolCalls = calls;
+	asst.extras = resp.extras;	/* 同上：附加字段随历史逐轮回传 */
+	messages_.push_back(std::move(asst));
+
+	std::vector<std::string> images;
+	for (const auto& c : calls) {
+		AgentToolResult result;
+		try {
+			Json args = parseToolArguments(c.arguments);
+			result = tools_.execute(c.name, args);
+		} catch (const std::exception& e) {
+			result = {std::string("工具参数错误: ") + e.what(), ""};
+		}
+		if (opts_.verbose) {
+			std::string shown = result.text;
+			if (!result.imageDataUrl.empty()) {
+				shown += "\n[返回图片 " + std::to_string(result.imageDataUrl.size())
+					+ " 字节，已注入下一轮对话]";
+			}
+			log("[工具] " + c.name + "\n" + indentLines(shown, 2));
+		}
+		ChatMessage tool;
+		tool.role = "tool";
+		tool.content = result.text;
+		tool.toolCallId = c.id;
+		messages_.push_back(std::move(tool));
+		if (!result.imageDataUrl.empty()) {
+			images.push_back(result.imageDataUrl);
+		}
+	}
+	if (!images.empty()) {
+		ChatMessage img;
+		img.role = "user";
+		img.content = "以上工具返回的图片如下，请结合画面内容继续。";
+		img.images = std::move(images);
+		messages_.push_back(std::move(img));
 	}
 }
 
