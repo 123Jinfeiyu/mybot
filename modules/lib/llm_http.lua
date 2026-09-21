@@ -20,6 +20,11 @@ if _G.__BOT4CJ_LLM_HTTP ~= nil then return _G.__BOT4CJ_LLM_HTTP end
 
 local ffi = require("ffi")
 
+-- 模块路径引导（与 llm_wire_openai.lua 同一写法）：本文件被驱动直接 dofile，
+-- 也需要 utf8.lua 的消毒兜底，故单独解析一次模块根。
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+local utf8 = dofile(mpath.resolve("lib/utf8.lua"))
+
 ffi.cdef[[
 typedef void CURL;
 struct curl_slist { char *data; struct curl_slist *next; };
@@ -183,6 +188,19 @@ function Session:post(opts)
 		slist = curl.curl_slist_append(slist, hdr)
 	end
 	local body = opts.body or ""
+	-- 发包前最后一道兜底（2026-09-21 审计 AG-1）：请求体的非法 UTF-8 会被严格
+	-- 网关 400 拒掉，而那条消息可能已经落在**不可回滚**的历史里——会话从此
+	-- 每次都以同一字节偏移失败。宿主已在「数据进入模型上下文」的边界消毒
+	-- （run_command 输出 / 脚本首注释 / 结构脚本头），此处兜的是宿主没覆盖到
+	-- 的路径（例如驱动 extras 里由 provider 文本原样带回的字段）。
+	-- 站在 HTTP 层看，请求已经就要发出去了，能做的只有「就地替换 + 让调用方
+	-- 看得见」：写 stderr 告警（不静默），再把坏字节替换成 U+FFFD 后照发——
+	-- 与宿主侧同一套替换文案，排查时两边对得上。
+	if not utf8.valid(body) then
+		io.stderr:write("警告: LLM 请求体含非法 UTF-8 字节，已就地替换为 U+FFFD"
+			.. "（严格网关会以 400 拒绝此类请求；请检查工具输出与提示词来源）\n")
+		body = utf8.sanitize(body)
+	end
 	setopt_ptr(h, OPT_URL, url)
 	setopt_ptr(h, OPT_POSTFIELDS, body)
 	setopt_long(h, OPT_POSTFIELDSIZE, #body)
@@ -197,10 +215,18 @@ function Session:post(opts)
 	local code = ffi.new("long[1]")
 	getinfo_long(h, INFO_RESPONSE_CODE, code)
 	if slist ~= nil then curl.curl_slist_free_all(slist) end
-	-- 每请求 cast 出的回调 cdata 用完即释放：LuaJIT 的回调要等 cdata 被 GC
-	-- 才归还槽位，长驻 agent 会话高频请求下会持续累积。此刻 perform 已返回、
-	-- getinfo 已取完，释放安全；下一轮 post 先 curl_easy_reset 再重设
-	-- WRITEFUNCTION，句柄上不会残留会被调用的悬垂指针（审计 2026-09-19）。
+	-- 句柄收尾顺序有讲究（2026-09-21 审计 AG-16）：**先 reset 再 free 回调**。
+	-- 每请求 cast 出的回调 cdata 用了就释放，否则 LuaJIT 的回调槽位要等 GC 才
+	-- 归还，长驻 agent 会话高频请求下会持续累积（这是 cb:free() 的动机）。
+	-- 但旧实现只 free 不清句柄：WRITEFUNCTION/URL/POSTFIELDS/HTTPHEADER 仍指在
+	-- 已释放的对象上。当前之所以没出事，只因 Session:post 每次都先
+	-- curl_easy_reset——而 Session.handle 是**公开字段**，任何「一个句柄 perform
+	-- 两次 / 加重试 / 多句柄」的重构都会把它变成内存安全问题（实测：post 一次
+	-- 后直接 perform 报 bad callback；连做 500 次 post 让槽位被复用后再直接
+	-- perform，SIGSEGV）。reset 是零成本的（不发网络请求），把这条隐含前提
+	-- 变成句柄自身的不变量。注意顺序：reset 必须在 free 之前，否则 reset 期间
+	-- 若 libcurl 触碰该指针就已经晚了。
+	curl.curl_easy_reset(h)
 	cb:free()
 
 	if overflow then

@@ -38,6 +38,14 @@ end
 function call(data)
 	local ok, e = arg_table(data)
 	if not ok then return e end
-	local r = wire.request(data)
+	-- 组包阶段的失败也要走 ERR 契约（2026-09-21 审计 AG-15）：wire.request 会为
+	-- 缺失/类型不符的必填字段抛错（如 tool 消息缺 tool_call_id），而本驱动的契约
+	-- 是「返 ERR 表，不抛 Lua error」——跨语言边界上「抛」会被宿主折成一条带 Lua
+	-- 栈帧的 ERR，文案可读性远不如这里点名到字段与消息的那句。perform 阶段自己
+	-- 已经返回 ERR 表，故只需包住 request。
+	local rok, r = pcall(wire.request, data)
+	if not rok then
+		return err("请求组包失败: " .. tostring(r))
+	end
 	return wire.perform(r.endpoint, data, r.req)
 end

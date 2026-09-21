@@ -119,9 +119,15 @@ local function encode_value(v, out, depth)
 				if type(k) ~= "string" then
 					error("json.encode: object key must be a string, got " .. type(k), 0)
 				end
-				if val == nil then
-					error("json.encode: field '" .. k .. "' is nil (use json.null for JSON null)", 0)
-				end
+				-- 这里曾有一条 `if val == nil then error(...)`，声称「字段为 nil 即报错」。
+				-- 它是**死代码**（2026-09-21 审计 AG-15，已执行验证）：Lua 表不可能存在
+				-- 「键存在、值为 nil」的项，pairs 永远不会产出 nil，所以那条分支不可达，
+				-- 而文档却据此承诺了一个不存在的保证——后果是必填字段为 nil 时被**静默
+				-- 丢掉**（实测 json.encode({role="tool", tool_call_id=nil, content="x"})
+				-- 产出 {"content":"x","role":"tool"}），真机只回一个含混的 400。
+				-- 正确的做法不是在这里假装检查（语法上做不到），而是由调用方对自己
+				-- 组装的必填字段显式断言：见 llm_wire_openai.lua 的 to_wire_message
+				-- 与 require_wire_string——那里的报错能点名是哪个字段、哪条消息。
 				if not first then out[#out + 1] = "," end
 				first = false
 				encode_string(k, out)
