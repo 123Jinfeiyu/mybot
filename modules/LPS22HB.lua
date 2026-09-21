@@ -201,7 +201,7 @@ end
 -- 【内嵌虚拟器件模型】LPS22HB_VIRT —— 2026-09-15 自 modules/lib/virtbus/lps22hb.lua
 -- 整体迁入（单文件驱动+模型第四十个，7 位地址空间 + 地址 bit7 自增 + 命令位
 -- 自清族，守护 E2E 走 sensor_daemon 回退路径）。约定同前三十九者：① 生产
--- 路径零执行（new() 仅虚拟总线测试调用；regmap 底座/mpath 延迟到段内加载——
+-- 路径零执行（new() 仅虚拟总线测试调用；regmap 底座延迟到 new() 内加载——
 -- 与驱动共享 regmap.lua 单一实现，lps22hb/regmap 命名空间本就一致，无需
 -- 改名避让；new() 内 `local lps22hb = LPS22HB_VIRT` 绑定使模型体零改动
 -- 移植）；② 工厂经全局表而非文件 return（生产侧 Lua.cj build_lua 以
@@ -234,9 +234,6 @@ end
 -- 公开 API 一律冒号定义；write/read 总线回调用点定义（无 self 参数，
 -- attach 动态委托 dev.write(bytes) 契约）。
 -- =====================================================================
-
-local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-local regmap = dofile(mpath.resolve("lib/virtbus/regmap.lua"))
 
 LPS22HB_VIRT = { _VERSION = "0.1.0" }
 
@@ -302,6 +299,9 @@ end
 
 function LPS22HB_VIRT.new(opts)
 	local lps22hb = LPS22HB_VIRT	-- 模型体沿用原模块表引用（零改动移植）
+	-- 懒加载：regmap 底座只在虚拟路径真正 new() 时读盘（与 ADXL345/BME280/
+	-- MPU6050/PCA9685/VL53L4CD 五个模型同形），生产路径零 I/O。
+	local regmap = dofile(mpath.resolve("lib/virtbus/regmap.lua"))
 
 	opts = opts or {}
 	local dev_id = opts.who or lps22hb.DEVID
