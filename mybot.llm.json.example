@@ -17,6 +17,7 @@
   "thinking": "",
 
   "max_turns": 8,
+  "max_task_seconds": 900,
   "scripts_dir": "scripts",
   "allow_shell": false,
 

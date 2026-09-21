@@ -406,6 +406,46 @@ TH_TEST(utils_escape_log_markers_only_touches_line_start_brackets) {
 	TH_CHECK(bot::escapeLogMarkers("没有标记") == "没有标记");
 }
 
+/* ---- 内嵌 NUL 击穿"全串消费"判据（2026-09-21 第七轮审计）----
+ * strtoll/strtod 走 c_str()，在第一个 NUL 处停下，而那个 NUL 恰好就是 `*end` ⇒
+ * `*end != '\0'` 判据被满足、尾随垃圾被**静默丢弃**：`90\0junk` 报 OK/90。
+ * NUL 进得来：.mt 词法不把 NUL 当分隔符，.sql 引号态字面追加。
+ * 同族判据：checkRelPath 的 RelPathCheck::NUL、luabridge 的 rejectEmbeddedNul、
+ * agent 工具参数入口的 requireString。 */
+TH_TEST(utils_numeric_parsers_reject_embedded_nul) {
+	/* 整数：修复前是 OK/90 */
+	{
+		const std::string s = std::string("90") + '\0' + "junk";
+		auto [st, v] = bot::parseLongStrict(s);
+		TH_CHECK_MSG(st == bot::IntParse::NOT_INT,
+			"内嵌 NUL 必须判非法，实际状态码 " + static_cast<int>(st));
+		TH_CHECK(v == 0);
+	}
+	/* 浮点：修复前是 OK/1.5 */
+	{
+		const std::string s = std::string("1.5") + '\0' + "e3";
+		double out = 0.0;
+		TH_CHECK_MSG(bot::parseFiniteDouble(s, out) == bot::ParseFiniteStatus::INVALID,
+			"内嵌 NUL 必须判 INVALID");
+	}
+	/* isNumericLiteral 走同一单点，故同样拒绝（结构脚本 Number 列 / @Vars 的 value） */
+	TH_CHECK(!bot::isNumericLiteral(std::string("12") + '\0' + "34"));
+
+	/* 正向对照：干净输入照常解析（判据没有变成"一律拒绝"） */
+	{
+		auto [st, v] = bot::parseLongStrict("90");
+		TH_CHECK(st == bot::IntParse::OK);
+		TH_CHECK(v == 90);
+	}
+	{
+		double out = 0.0;
+		TH_CHECK(bot::parseFiniteDouble("1.5", out) == bot::ParseFiniteStatus::OK);
+		TH_CHECK(out == 1.5);
+	}
+	/* 尾随垃圾（不含 NUL）仍按原语义拒绝——这条钉住"新增判据没有放宽旧判据" */
+	TH_CHECK(bot::parseLongStrict("90junk").first == bot::IntParse::NOT_INT);
+}
+
 /* ---- AG-11 / AG-22：`agent:` 作用域过滤器的完备性（必须放在**主套件**里）----
  * 起因：docs/agent.md 推荐的 `./build/mybot_tests agent` 是子串匹配，只命中用例名
  * 里含 "agent" 的那部分——promptpack / llmconfig / cliargs 这些同属 agent 配置面的

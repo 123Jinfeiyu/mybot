@@ -15,9 +15,17 @@
  *   * 判定在**执行之后**做：体积要拿到结果才知道，而工具已经产生副作用
  *     （比如动作脚本已经跑了），此时谎称「没执行」会误导模型——降级说明
  *     必须如实写明「已执行，但结果体积超限」（项目口径：不向模型谎报状态）。
- * 每轮任务开始时由调用方 resetTask() 清零；跨任务的体积由 HistoryManager 管。
+ *
+ * 除体积外还管**时间**（A4）：agent 模式全程 robot.active() 带电常驻，而
+ * maxTurns × 单次调用 timeout × 单轮调用数 三个因子相乘没有一处封顶。
+ * maxSeconds 给单个任务的墙钟封顶（0 = 不限，逃生口），exhausted() 供编排层
+ * 在「轮循环开头」与「逐条派发之前」两处判定——两处都要判，语义不同。
+ *
+ * 每轮任务开始时由调用方 resetTask() 清零（体积与墙钟起点一起）；跨任务的体积
+ * 由 HistoryManager 管。
  */
 
+#include <chrono>
 #include <cstddef>
 #include <string>
 
@@ -27,12 +35,24 @@ namespace agent {
 struct TaskBudget {
 	std::size_t maxToolResultBytes;	/* 0 = 不限 */
 	std::size_t maxImageBytes;	/* 0 = 不限 */
+	long maxSeconds = 0;		/* 单任务墙钟预算；0 = 不限 */
 	std::size_t toolResultBytes = 0;	/* 当前任务已注入的文本字节 */
 	std::size_t imageBytes = 0;		/* 当前任务已注入的图片字节 */
+	/* 当前任务的墙钟起点。用 steady_clock：系统时间被 NTP 拨动不该影响一个
+	 * 正在跑的动作任务。 */
+	std::chrono::steady_clock::time_point taskStart = std::chrono::steady_clock::now();
 
 	void resetTask() {
 		toolResultBytes = 0;
 		imageBytes = 0;
+		taskStart = std::chrono::steady_clock::now();
+	}
+
+	/* 单任务墙钟预算是否已耗尽（A4）。maxSeconds <= 0 时恒为 false。 */
+	bool exhausted() const {
+		if (maxSeconds <= 0) { return false; }
+		return std::chrono::steady_clock::now() - taskStart
+			>= std::chrono::seconds(maxSeconds);
 	}
 
 	/* 预算判定与记账（原地改写）。超限时把 *text 替换为降级说明、*image

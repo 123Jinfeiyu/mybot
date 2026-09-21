@@ -58,7 +58,9 @@ struct CliOptions {
 	bool agentOptionsUsed = false;	/* 出现过 agent 专属选项（非 agent 场景据此报错） */
 	std::string agentTask;		/* --task：非空 = 一次性任务，空 = 交互 REPL */
 	/* 安全缺省（2026-09-20 评估 C12 收口）：run_command 涉及任意 shell 执行，
-	 * 故**缺省不提供**，须显式 --agent-shell 或配置 allow_shell=true 才开启
+	 * 故**缺省不提供**，且只能由命令行 --agent-shell 开启；配置文件的
+	 * allow_shell **只能关不能开**（写 true 直接拒绝加载并指名原因，见
+	 * agentmode.cpp 的 buildAgentConfig 第 7 步）
 	 * （旧行为是缺省提供 + --agent-no-shell 关闭，安全侧默认值反了）。 */
 	bool agentShell = false;	/* --agent-shell：显式开启 run_command */
 	std::string llmEndpoint;
@@ -69,6 +71,10 @@ struct CliOptions {
 	std::string llmMaxTurns;
 	std::string llmMaxTokens;
 	std::string llmTimeout;
+	/* --llm-task-timeout：单个任务的墙钟预算（秒，A4）。与 llmTimeout 不同维度：
+	 * 那条管一次模型调用，这条管"一个任务能让硬件带电多久"。0 = 不限。
+	 * 同 llmTimeout 一样只存原始串，校验在 buildAgentConfig（配置错误不碰真机）。 */
+	std::string llmTaskTimeout;
 	std::string scriptsDir;
 	/* --prompt-file：提示词包输入，可重复（每项为文件或目录）。加载与拼接
 	 * 在 agent::buildAgentConfig 完成（配置错误不碰真机），本结构只收集。 */
@@ -77,6 +83,11 @@ struct CliOptions {
 	std::string cameraVar;		/* --camera-var：承载 modules/Camera.lua 的变量名 */
 	std::string cameraDevice;	/* --camera-device：重设设备路径 */
 	std::string cameraSrc;		/* --camera-src：模拟图片来源文件 */
+	/* --camera-src-dir：capture_image 模拟图片的**白名单根目录**（H1）。
+	 * 命令行独占：它决定"能读哪个目录"，等价于放宽读权限，故配置文件不能给
+	 * （写了直接拒绝加载，与 --agent-shell 同判据）。不给时：命令行的 --camera-src
+	 * 用其所在目录当根，配置文件来源的 camera_src 则不推导（驱动侧默认拒绝）。 */
+	std::string cameraSrcDir;
 	bool noCamera = false;		/* --no-camera：不提供拍照工具 */
 	/* --audit-log：审计轨迹落点（JSON Lines 追加；"-" = stderr）。
 	 * 缺省空 = 不记录（保持既有语义）。打开失败的报错与退出在

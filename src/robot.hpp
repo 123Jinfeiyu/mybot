@@ -207,6 +207,20 @@ class HwFactory {
 			ScalarKind kind);
 
 public:
+	/* 守护侧缺省值（2026-09-21 第七轮审计）。单消费者判据遇到 Daemon 行**缺列**时
+	 * 必须按守护侧的缺省补全，否则「省略 proto/path」这类被 docs/daemon.md 认可的
+	 * 最小写法（`INSERT INTO Daemon (name, chunk)`）会整体绕过判据——运行期真的
+	 * 开了总线 fd 却从不登记，漏标即双消费者静默数据错乱，且无运行期症状。
+	 * 这三个值**必须**与 modules/lib/sensor_daemon.lua 的
+	 *   local proto = cfg.proto or "i2c"
+	 *   local path  = cfg.path or (proto == "spi" and "/dev/spidev0.0" or "/dev/i2c-1")
+	 * 逐字一致；漂移由 test/cpp/test_robot.cpp 的 daemon_defaults_match_lua_source
+	 * 读 Lua 源按文本钉住（不是在两处各手抄一遍就算数）。放成 public 正是为了让
+	 * 那条用例能引用到 C++ 侧的值，做**两侧**比对。 */
+	static constexpr const char* kDaemonDefaultProto = "i2c";
+	static constexpr const char* kDaemonDefaultPathI2c = "/dev/i2c-1";
+	static constexpr const char* kDaemonDefaultPathSpi = "/dev/spidev0.0";
+
 	HwFactory(HwRegistry& registry,
 			std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders,
 			std::vector<std::shared_ptr<MetaProvider>>& metaProviders)

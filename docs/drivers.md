@@ -196,6 +196,19 @@ SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访�
 `@Daemon`）即**加载期报错**并点名双方，不申请任何资源。守护走 `proto=virt`
 是内存仿真，不计入。
 
+`@Daemon` 行的**缺列不等于"不参与判据"**（2026-09-21 第七轮审计）：守护侧对这两列
+都有缺省，判据按同一规则补全后再登记——
+
+| 列 | 缺列时按什么参与判据 |
+| --- | --- |
+| `proto` | `i2c`（`sensor_daemon.lua` 的 `cfg.proto or "i2c"`）；只有**显式** `virt` 才跳过 |
+| `path` | `spi` → `/dev/spidev0.0`，否则 `/dev/i2c-1`（同上那条 `or` 表达式） |
+| `driver`/`addr` | 多器件守护没有这两列，改从 `devices` 列逐个 spec 解析：`driver@addr@f1,f2[:模式][@k=v]`，spec 之间以 `\|` 分隔；报错会点名 `devices[N]` 与驱动名 |
+
+C++ 侧那三个缺省值以 `HwFactory::kDaemonDefault*` 为单点，与 `sensor_daemon.lua`
+的缺省表达式由 `test/cpp/test_robot.cpp` 的 `daemon_defaults_match_lua_source`
+**读 Lua 源两侧比对**（这类漂移没有运行期症状，只会让判据静默漏判）。
+
 当前声明者：`AS3935` / `AS7262` / `MS5611` / `VL53L0X` / `VL53L4CD`
 （各自的器件侧状态与失效形态见 [faq.md](faq.md) 的「一器件一消费者」条）。
 这份名单与模块源由 `test/test_driver_contract.lua` **双向钉住**：新增/删除声明而

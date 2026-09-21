@@ -565,9 +565,20 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 	 * run_command 的记录按追加写入，单条报告是一次 write(2)，不会与其他写者交错。
 	 * fd 归本函数持有（runChild 不关它），异常路径也由 guard 兜住。 */
 	int traceFd = -1;
+#ifdef MYBOT_TEST_TRACE_FDS
+	/* A6：探针只在**测试构建**里存在（CMakeLists 给 mybot_tests 单独定义
+	 * MYBOT_TEST_TRACE_FDS）。此前它无条件读环境变量并 open，于是生产二进制里
+	 * 也有「按 BOT4CJ_TRACE_FDS 追加写任意路径（0644）」这条路径——能设置 mybot
+	 * 启动环境的人即可让宿主以 mybot 权限写文件。威胁等级不高（这类攻击者本已
+	 * 等同 mybot 用户，见 docs/agent.md 安全说明第 2/3 条），但「测试钩子在生产
+	 * 里活着」没有理由，且与上面注释自陈的口径直接矛盾。
+	 * 只 ifdef 这一处而不 ifdef traceChildPath/revokeInheritedFds：那两个函数在
+	 * 关掉开关后会变成未使用函数，撞 -Wall -Werror；而 traceFd 恒为 -1 时
+	 * traceChildPath 首行即返回，生产路径上零行为、零系统调用。 */
 	if (auto tracePath = getEnvVar("BOT4CJ_TRACE_FDS"); tracePath && !tracePath->empty()) {
 		traceFd = ::open(tracePath->c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
 	}
+#endif
 	struct TraceFdGuard {
 		int fd;
 		~TraceFdGuard() {

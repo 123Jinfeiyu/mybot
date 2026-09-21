@@ -158,6 +158,22 @@ ChatResponse parseDriverResponse(const Json& res) {
 				if (args->isStr()) { tc.arguments = args->getValue(); }
 				else { tc.arguments = args->toString(); }
 			}
+			/* A7：远端字段长度上限（判据单点见 agentproto.hpp 的 proto_limits）。
+			 * id 超限**不能截断**——截断后它与 assistant.tool_calls 的配对就断了，
+			 * 服务端 400，而这块历史已被认作"可原样发送"（同 AG-4 的失效形态）。
+			 * 所以这里 fail-closed：整条响应拒绝，报错点名字段与实测字节数。 */
+			if (tc.id.size() > proto_limits::kMaxToolCallIdBytes) {
+				throw std::runtime_error("provider 返回的 tool_calls[].id 长 "
+					+ std::to_string(tc.id.size()) + " 字节，超过上限 "
+					+ std::to_string(proto_limits::kMaxToolCallIdBytes)
+					+ " 字节（id 会被逐轮原样回传，且截断会破坏与 tool_calls 的配对，"
+					  "故整条响应拒绝）");
+			}
+			if (tc.name.size() > proto_limits::kMaxToolNameBytes) {
+				throw std::runtime_error("provider 返回的 tool_calls[].name 长 "
+					+ std::to_string(tc.name.size()) + " 字节，超过上限 "
+					+ std::to_string(proto_limits::kMaxToolNameBytes) + " 字节");
+			}
 			/* 无名字的调用无法派发；丢掉后若整轮为空，下面的兜底会报出来 */
 			if (!tc.name.empty()) { out.toolCalls.push_back(std::move(tc)); }
 			else { ++droppedCalls; }

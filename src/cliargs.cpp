@@ -45,6 +45,7 @@ constexpr OptionSpec kValueOptions[] = {
 	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
 	{"audit-log", [](CliOptions& o, const std::string& v) { o.auditLog = v; }, true},
 	{"agent-policy", [](CliOptions& o, const std::string& v) { o.agentPolicy = v; }, true},
+	{"camera-src-dir", [](CliOptions& o, const std::string& v) { o.cameraSrcDir = v; }, true},
 	{"task", [](CliOptions& o, const std::string& v) { o.agentTask = v; }, true},
 	{"scripts-dir", [](CliOptions& o, const std::string& v) { o.scriptsDir = v; }, true},
 	{"prompt-file", [](CliOptions& o, const std::string& v) { o.promptFiles.push_back(v); }, true},
@@ -56,6 +57,7 @@ constexpr OptionSpec kValueOptions[] = {
 	{"llm-max-turns", [](CliOptions& o, const std::string& v) { o.llmMaxTurns = v; }, true},
 	{"llm-max-tokens", [](CliOptions& o, const std::string& v) { o.llmMaxTokens = v; }, true},
 	{"llm-timeout", [](CliOptions& o, const std::string& v) { o.llmTimeout = v; }, true},
+	{"llm-task-timeout", [](CliOptions& o, const std::string& v) { o.llmTaskTimeout = v; }, true},
 };
 
 } // namespace
@@ -226,6 +228,11 @@ std::string helpText() {
 		+ rangeText(llm_limits::kMaxTokensMin, llm_limits::kMaxTokensMax) + "）\n";
 	s += "  --llm-timeout <秒>    单次模型调用超时（缺省 180，"
 		+ rangeText(llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec) + "）\n";
+	s += "  --llm-task-timeout <秒> 单个任务的墙钟预算（缺省 900，"
+		+ rangeText(llm_limits::kTaskTimeoutMinSec, llm_limits::kTaskTimeoutMaxSec)
+		+ "；0 = 不限）。agent 模式全程硬件带电常驻，\n";
+	s += "                       这条给「一个任务最多带电多久」设闸；超限即如实失败，\n";
+	s += "                       已执行的动作不回退（也可用配置文件 max_task_seconds）\n";
 	s += "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt\n";
 	s += "  --prompt-file <路径>  提示词包：可重复传入（文件或目录），全部内容拼接后\n";
 	s += "                       追加到系统提示词，用于注入机器人身份与行为约束；\n";
@@ -241,7 +248,12 @@ std::string helpText() {
 	s += "                       缺省不启用。也可用配置文件 agent_policy 字段\n";
 	s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）；结构脚本已声明则直接用\n";
 	s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
-	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
+	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」。\n";
+	s += "                       命令行给的 src 以其**所在目录**为白名单根；配置文件里的\n";
+	s += "                       camera_src 不推导根（防止一份落地配置把任意文件读进上下文），\n";
+	s += "                       需配 --camera-src-dir 或 BOT4CJ_CAMERA_SRC_DIR，否则驱动默认拒绝\n";
+	s += "  --camera-src-dir <目录> capture_image 模拟图片的白名单根目录（**只能命令行给**：\n";
+	s += "                       它放宽读权限，配置文件写 camera_src_dir 会被拒绝加载）\n";
 	s += "  --no-camera           不向智能体提供 capture_image 工具\n";
 	s += "  --check-config        只校验配置并打印摘要后退出 0：不装载结构脚本、不上电、\n";
 	s += "                       不发起任何网络请求（配置文件拼错时无需真起会话，\n";

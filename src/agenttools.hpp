@@ -103,6 +103,21 @@ struct AgentToolContext {
 	MatrixVars_Hardware* camera = nullptr;
 	std::string cameraDevice;	/* 空 = 用驱动缺省（/dev/video0） */
 	std::string cameraSrc;		/* 非空 = 模拟图片来源文件（无摄像头也能跑通全链路） */
+	/* ---- H1：模拟图片白名单的两个独立输入 ----
+	 * 此前 src_root（"允许读哪个目录"）是由 cameraSrc 自己 `canonical` 后取
+	 * parent_path 推导的 —— 而 src 的所在目录当然包含 src，判据**恒真**，
+	 * 等于没有白名单：一份落在 CWD 的 ./mybot.llm.json 写 camera_src=/etc/shadow
+	 * 就能把它 base64 读进模型上下文，再由同一份配置可控的 endpoint 外发；
+	 * 而 allow_camera 缺省为真、cam0 自动注入，**不需要 --agent-shell**。
+	 * 现在两者解耦：
+	 *   cameraSrcRoot  = 显式根目录（--camera-src-dir，**只能命令行给**）；
+	 *   cameraSrcFromCli = cameraSrc 是否来自命令行。只有命令行来源才允许用
+	 *                     "src 的所在目录"当根（操作者自己指的文件，他本就能读，
+	 *                     这也保住了 --camera-src 的快速上手路径）；配置文件来源
+	 *                     一律不推导，交由驱动的 BOT4CJ_CAMERA_SRC_DIR 判定，
+	 *                     两者都没有即驱动侧"未放行"拒绝。不推导、不猜、不回落 "."。 */
+	bool cameraSrcFromCli = false;
+	std::string cameraSrcRoot;
 };
 
 /* 构造标准工具集：list_action_scripts / run_action_script / list_hardware，

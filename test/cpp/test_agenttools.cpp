@@ -166,6 +166,46 @@ TH_TEST(agenttools_list_scripts_quoted_as_data) {
 	TH_CHECK(list.find("动作脚本清单（相对路径 + 首行注释）") != std::string::npos);
 }
 
+/* A3：消毒后的名字只用于**展示**，寻址必须用原名。
+ * AG-26 把两者合成一个串，于是文件名含非法字节时：①首注释静默消失（拿消毒名
+ * 去 open 必然失败）②清单交给模型的是一个磁盘上不存在的名字，模型照抄去
+ * run_action_script 只会得到"无法打开文件"。 */
+TH_TEST(agenttools_script_catalog_sanitizes_name_but_addresses_by_raw) {
+	TempDir tmp("catalog_badname");
+	/* Linux 文件名可含任意字节（除 '/' 与 NUL）；0xff 不是合法 UTF-8 起始字节 */
+	const std::string rawName = std::string("bad\xffname.mt");
+	writeFile(tmp.path() / rawName, "# 坏名字动作\n@Action\na.A;\n1;\n@\n");
+	writeFile(tmp.path() / "good.mt", "# 正常动作\n@Action\n");
+
+	const std::string list = describeActionScripts(tmp.path().string());
+
+	/* ① 整份清单必须是合法 UTF-8：它要进系统提示词，一个非法字节就会让
+	 *    首个模型请求被严格网关 400 拒掉（AG-1 的同一失效形态） */
+	TH_CHECK_MSG(isValidUtf8(list), "清单含非法 UTF-8 字节，会顶穿首个模型请求");
+	TH_CHECK_MSG(list.find('\xff') == std::string::npos, "原始的 0xff 不得出现在清单里");
+
+	/* ② 展示名被就地替换为 U+FFFD，且**标注了这条不可直接执行** */
+	TH_CHECK_MSG(list.find("bad\xef\xbf\xbdname.mt") != std::string::npos,
+		"应出现替换后的展示名，实际清单: " + list);
+	TH_CHECK_MSG(list.find("文件名含非法字节") != std::string::npos,
+		"应标注该条不可用于 run_action_script，实际清单: " + list);
+
+	/* ③ 首注释仍在 —— 这条证明寻址用的是**原名**（用消毒名 open 必然失败，
+	 *    说明就会像 AG-26 那样静默消失） */
+	TH_CHECK_MSG(list.find("坏名字动作") != std::string::npos,
+		"坏名字脚本的首注释应仍在清单里（寻址须用原名），实际清单: " + list);
+
+	/* 正常文件不受影响：没有标注、说明照常 */
+	TH_CHECK(list.find("正常动作") != std::string::npos);
+	const std::size_t goodAt = list.find("good.mt");
+	TH_CHECK(goodAt != std::string::npos);
+	if (goodAt != std::string::npos) {
+		const std::string line = list.substr(goodAt, list.find('\n', goodAt) - goodAt);
+		TH_CHECK_MSG(line.find("文件名含非法字节") == std::string::npos,
+			"合法名字不该被标注: " + line);
+	}
+}
+
 TH_TEST(agenttools_script_path_guard) {
 	TH_CHECK(resolveActionScriptPath("scripts", "std.mt") == "scripts/std.mt");
 	TH_CHECK(resolveActionScriptPath("scripts/", "test/pwm.mt") == "scripts/test/pwm.mt");
@@ -331,6 +371,7 @@ TH_TEST(agenttools_capture_image_via_real_camera_driver) {
 	ctx.camera = robot.registry().find("cam0");
 	TH_CHECK(ctx.camera != nullptr);
 	ctx.cameraSrc = pic.string();
+	ctx.cameraSrcFromCli = true;	/* H1：用例扮演"操作者用 --camera-src 指定" */
 	AgentToolRegistry tools = makeAgentTools(ctx);
 	TH_CHECK(tools.contains("capture_image"));
 
@@ -379,6 +420,7 @@ TH_TEST(agenttools_capture_image_mime_follows_content_format) {
 		ctx.robot = &robot;
 		ctx.camera = robot.registry().find("cam0");
 		ctx.cameraSrc = pic.string();
+		ctx.cameraSrcFromCli = true;	/* H1：用例扮演"操作者用 --camera-src 指定" */
 		AgentToolRegistry tools = makeAgentTools(ctx);
 		const AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
 
@@ -406,6 +448,7 @@ TH_TEST(agenttools_capture_image_rejects_non_image_source) {
 	ctx.robot = &robot;
 	ctx.camera = robot.registry().find("cam0");
 	ctx.cameraSrc = pic.string();
+	ctx.cameraSrcFromCli = true;	/* H1：用例扮演"操作者用 --camera-src 指定" */
 	AgentToolRegistry tools = makeAgentTools(ctx);
 	const AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
 
@@ -437,6 +480,7 @@ TH_TEST(agenttools_capture_image_rejects_oversize_image) {
 	ctx.robot = &robot;
 	ctx.camera = robot.registry().find("cam0");
 	ctx.cameraSrc = pic.string();
+	ctx.cameraSrcFromCli = true;	/* H1：用例扮演"操作者用 --camera-src 指定" */
 	AgentToolRegistry tools = makeAgentTools(ctx);
 
 	AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
@@ -516,6 +560,7 @@ TH_TEST(agenttools_capture_image_rejects_oversize_raw_before_base64) {
 	ctx.robot = &robot;
 	ctx.camera = robot.registry().find("cam0");
 	ctx.cameraSrc = pic.string();
+	ctx.cameraSrcFromCli = true;	/* H1：用例扮演"操作者用 --camera-src 指定" */
 	AgentToolRegistry tools = makeAgentTools(ctx);
 	const AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
 
@@ -578,6 +623,69 @@ TH_TEST(agenttools_capture_image_reports_device_failure) {
 	TH_CHECK(res.imageDataUrl.empty());
 	TH_CHECK(res.text.find("工具执行失败") != std::string::npos);
 	TH_CHECK(res.text.find("/dev/video999") != std::string::npos);
+
+	robot.deactivate();
+}
+
+/* H1：白名单根**不得**由 src 自己推导。
+ * 旧实现无条件把 canonical(src).parent_path() 当 src_root —— 而 src 的所在目录
+ * 当然包含 src，判据**恒真**，白名单形同不存在：一份落在 CWD 的 ./mybot.llm.json
+ * 写 camera_src=/etc/shadow 就能把它 base64 读进模型上下文（allow_camera 缺省为真、
+ * cam0 自动注入，**不需要 --agent-shell**），再由同一份配置可控的 endpoint 外发。
+ * 现在的口径：显式根（--camera-src-dir）优先；否则只有**命令行来源**的 src 才推导
+ * 所在目录；配置文件来源不推导，交由驱动默认拒绝。 */
+TH_TEST(agenttools_capture_image_whitelist_root_is_not_derived_from_config_src) {
+	TempDir tmp("cam_h1");
+	fs::path pic = tmp.path() / "pic.jpg";
+	/* 真 JPEG 头（FF D8 FF）：AG-9 之后宿主会拿魔数与驱动声明的 format 交叉校验 */
+	writeFile(pic, std::string("\xff\xd8\xff", 3) + "foobar");
+	TempDir elsewhere("cam_h1_elsewhere");
+
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+
+	auto shoot = [&](bool fromCli, const std::string& root) {
+		AgentToolContext ctx;
+		ctx.robot = &robot;
+		ctx.camera = robot.registry().find("cam0");
+		ctx.cameraSrc = pic.string();
+		ctx.cameraSrcFromCli = fromCli;
+		ctx.cameraSrcRoot = root;
+		AgentToolRegistry tools = makeAgentTools(ctx);
+		return tools.execute("capture_image", parseJson("{}"));
+	};
+
+	/* ① 配置文件来源 + 无显式根 ⇒ 驱动默认拒绝，且**不得**产出图片
+	 *    （这一条就是 H1 的攻击面：修复前它恒真放行） */
+	{
+		const AgentToolResult res = shoot(/*fromCli=*/false, /*root=*/"");
+		TH_CHECK_MSG(res.imageDataUrl.empty(), "配置来源的 src 不该被放行（H1）");
+		TH_CHECK_MSG(res.text.find("未放行") != std::string::npos,
+			"应给出驱动侧的默认拒绝文案，实际: " + res.text);
+	}
+	/* ② 同一份 src，命令行来源 ⇒ 以其所在目录为根，照常工作（快速上手路径不破） */
+	{
+		const AgentToolResult res = shoot(/*fromCli=*/true, /*root=*/"");
+		TH_CHECK_MSG(res.text.find("已拍摄照片") != std::string::npos,
+			"命令行来源应照常拍照，实际: " + res.text);
+		TH_CHECK(res.imageDataUrl.rfind("data:image/jpeg;base64,", 0) == 0);
+	}
+	/* ③ 显式根指到别处 ⇒ 即使 src 来自命令行也拒绝（显式根优先于推导） */
+	{
+		const AgentToolResult res = shoot(/*fromCli=*/true, elsewhere.path().string());
+		TH_CHECK_MSG(res.imageDataUrl.empty(), "根指到别处时不该放行");
+		TH_CHECK_MSG(res.text.find("超出允许目录") != std::string::npos,
+			"应说明超出白名单，实际: " + res.text);
+	}
+	/* ④ 显式根 == src 所在目录 ⇒ 放行（配置文件来源也能用，因为根是命令行给的） */
+	{
+		const AgentToolResult res = shoot(/*fromCli=*/false, tmp.path().string());
+		TH_CHECK_MSG(res.text.find("已拍摄照片") != std::string::npos,
+			"显式根覆盖了来源限制，实际: " + res.text);
+	}
 
 	robot.deactivate();
 }
@@ -846,6 +954,24 @@ TH_TEST(agenttools_run_command_rejects_out_of_range_timeout) {
 	TH_CHECK(frac.find("exit_code=0") != std::string::npos);
 }
 
+/* NUL 防线（2026-09-21 第七轮审计）：JSON 的 \u0000 会被解析成真正的 NUL 字节，
+ * 而 run_command 下游一律走 c_str() ⇒ "echo X\u0000rm -rf /" 只会执行 "echo X"
+ * ——**静默截断**，模型与操作者都看不出命令被改过（回执里的 exit_code 还是前缀
+ * 那条的）。script 参数早有 checkRelPath 的 NUL 判据，两个工具入口不该一有一无，
+ * 故判据收在 requireString 这个单点。 */
+TH_TEST(agenttools_run_command_rejects_embedded_nul) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	const std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo SHOULD_NOT_RUN\\u0000echo ALSO_NOT_RUN\"}"));
+	TH_CHECK_MSG(out.find("NUL") != std::string::npos, "应点名 NUL，实际: " + out);
+	TH_CHECK_MSG(out.find("SHOULD_NOT_RUN") == std::string::npos,
+		"NUL 之前的前缀也不得被执行: " + out);
+	TH_CHECK_MSG(out.find("exit_code") == std::string::npos,
+		"不该产生任何子进程回执: " + out);
+}
+
 TH_TEST(agenttools_run_command_rejects_wrong_typed_timeout) {
 	AgentToolContext ctx;
 	ctx.allowShell = true;
@@ -891,7 +1017,7 @@ TH_TEST(agenttools_run_command_interrupts_on_stop_signal) {
 /* ---- UTF-8 消毒：工具输出进模型上下文前必须合法（2026-09-21 审计 AG-1）----
  * 这是 AG-1 的**复现输入**：`printf 'A\377B'` 的 stdout 里带一个 0xFF。
  * 修复前该字节原样进请求体 → 严格网关 400 → 而那条 tool 消息属于已完整结束的
- * 轮次，回滚边界（complete）与 trimHistory 都碰不到它 → REPL 里之后每条任务
+ * 轮次，回滚边界（complete）与 HistoryManager::trim 都碰不到它 → REPL 里之后每条任务
  * 都以同一字节偏移失败。
  * 断言分三层：整体合法、坏字节被替换、合法 ASCII 前后缀保真。 */
 TH_TEST(agenttools_run_command_output_is_sanitized_to_valid_utf8) {

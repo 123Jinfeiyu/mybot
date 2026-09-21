@@ -57,6 +57,9 @@ struct AgentModeConfig {
 	double temperature = 0.7;
 	double topP = 0.9;
 	long timeoutSec = 180;		/* 单次模型调用超时（秒） */
+	/* 单个任务的墙钟预算（秒，A4）。与 timeoutSec 不同维度：那条管一次模型
+	 * 调用，这条管「一个任务从头到尾能让硬件带电多久」。0 = 不限。 */
+	long maxTaskSeconds = 900;
 	/* 驱动特有字段：原样透传给协议驱动（如 DeepSeek 的 thinking / reasoning_effort） */
 	std::string reasoningEffort;
 	std::string thinking;
@@ -65,6 +68,15 @@ struct AgentModeConfig {
 	std::string cameraVar = "cam0";
 	std::string cameraDevice;	/* 空 = 驱动缺省 /dev/video0 */
 	std::string cameraSrc;		/* 非空 = 模拟图片来源文件（无摄像头也能跑通全链路） */
+	/* H1：cameraSrc 是否来自命令行（--camera-src）。只有命令行来源才允许用
+	 * "src 的所在目录"当白名单根；配置文件来源一律不推导（详见 agenttools.hpp
+	 * 的 AgentToolContext 注释——旧实现无条件推导，判据恒真，等于没有白名单）。 */
+	bool cameraSrcFromCli = false;
+	/* H1：capture_image 模拟图片的白名单根目录（--camera-src-dir）。
+	 * **只能命令行给**：它决定"能读哪个目录"，等价于放宽读权限，故与 allow_shell
+	 * 同判据——配置文件里写 camera_src_dir 一律拒绝加载并指名原因
+	 * （缺省查找会读 CWD 的 ./mybot.llm.json，「这个文件存在」不构成授权）。 */
+	std::string cameraSrcDir;
 	bool allowCamera = true;
 	std::string scriptsDir = "scripts";
 	std::string structurePath;

@@ -5,6 +5,228 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 第七轮审计修复批次·第二批（H1 + 三条 P1 + P2 批）
+
+> 守门快照（变基到 `fc5fd9b` 之后复测）：全量守门 **267 / 0 / 0**（`bash test/run_all.sh`，
+> rc=0）、C++ 单测 **543 / 0**（`agent:` 作用域 173）、`llm 协议` 单测 **215 / 0**、
+> agent E2E **十四场景**通过（本批新增 5b）、零告警构建（`-DMYBOT_WERROR=ON`）通过。
+> 注：全量守门的条数不随 C++ 用例增长——`cpp-unit` 整段折成 1 条（这正是门禁轨道
+> 报出的"分段 banner 折叠"问题，见 `.tmp/bot4cj-issues-r7-20260921.md` 12.3）。
+> 本批修的是上一批**范围之外**的存量缺陷：r6 清单里的 H1，以及本轮三路并行审计
+> （Lua 层 / 宿主核心 / 门禁）各自报出的 P1。每条都配了判别力用例并做了反向验证。
+>
+> **变基说明（变基到 `fc5fd9b`，含远端 SAN-1…SAN-11 与 PL 系列）**：本批写在 agent 重构
+> （阶段 A1/A2/B1–B4/C1–C7）之前，落点已随重构迁移——A4 墙钟预算并入 `TaskBudget`
+> （`maxSeconds` / `exhausted()`，`resetTask()` 同时重置墙钟起点）；A5 的 `catch(...)` 落在
+> 唯一派发漏斗 `DispatchGate::run` 与 `AgentToolRegistry::execute`；H1 的 `src_root` 解耦落在
+> 新抽出的 `buildCameraParams`；A6 的编译期开关落在 `runShell`（探针经 `ChildSpec::traceFd`
+> 传递）。三处与远端**撞车**的改动按「同一缺陷只留一份修法」处理：
+> ① **A1 让位给 SAN-1**——两边独立得出同一结论（截断说明另起一条 tool 消息并复用
+> `tool_call_id` ⇒ 同一 id 被回答两次 ⇒ 网关 400，且落在不可回滚的历史里），修法取
+> SAN-1 的那种（说明追加进本轮 **assistant 文本**）：它不给工具结果通道引入「可追加」
+> 语义、也不牵动 `TaskBudget` 的记账口径。本批保留的是 **A1b**（`llm_wire_openai.
+> check_tool_pairing` 出站自检），与宿主侧 `historyProtocolViolation()` 构成写历史 / 发报文
+> 两道判据，不重复实现——测试里本地那份 `pairingViolation` 已删除，改用产品侧单点。
+> ② **A5 的回执口径对齐 SAN-4**：`catch(...)` 不再一律填 `executed=false`，按 `argsOk`
+> 分两种——参数解析阶段抛出 = 未派发（副作用必然未发生），工具/确认程序阶段抛出 =
+> 可能已驱动硬件，回执如实写「副作用可能已发生，请先确认硬件状态」。
+> ③ 用例 `agentloop_caps_calls_per_round_and_tells_the_model` 取远端 SAN-1 版本，
+> `agentloop_round_cap_note_reaches_model` 改钉新落点（assistant 文本 + tool 消息保持纯净）。
+> 另修掉一处继承自 TD-3 的**假绿**——`test_sensor_daemon_multi.lua` 的字段预算写死
+> 「33 > 32」，而共享槽容量已 32 → 64，判据够不着（实测放行），改为按 `SLOT_MAXVALS`
+> 取值并补「正好装满必须放行」的边界对照。
+
+- **`capture_image` 的模拟图片白名单恒真（H1，高）**：驱动侧判据是「`realpath(src)`
+  必须落在 `src_root` 之内」，而 `src_root` 由宿主用 `canonical(camera_src).parent_path()`
+  推出来 —— **src 的所在目录当然包含 src**，判据恒真，白名单形同不存在。可达链
+  **不需要 `--agent-shell`**：`allow_camera` 缺省为真、`cam0` 自动注入，一份落在 CWD 的
+  `./mybot.llm.json`（缺省查找会读它）写 `"camera_src":"/etc/shadow"` 就能把该文件
+  base64 读进模型上下文，再由**同一份配置**可控的 `endpoint` 外发；而
+  `agenttools.cpp` 的注释此前明确声称「任意路径读（/etc/shadow 之类）被拒」——
+  注释描述的防线恰恰是不存在的那条。现在 `src_root` 与 `src` **解耦**，三条口径：
+  ① 新增 `--camera-src-dir`（显式根，**命令行独占**：它放宽读权限，配置文件写
+  `camera_src_dir` 一律拒绝加载并退出 2，与 `allow_shell` 同判据）；② 没有显式根时，
+  **只有命令行**的 `--camera-src` 才用其所在目录当根（保住"不接摄像头跑通全链路"的
+  快速上手）；③ 配置文件来源的 `camera_src` **一律不推导**，交由驱动的
+  `BOT4CJ_CAMERA_SRC_DIR` 判定，都没有即默认拒绝（驱动的「未放行」文案已改成点名
+  三条出路）。守门：C++ 侧四种组合各一条断言 + 配置面来源标记/拒绝各一条 +
+  agent E2E **场景 5b**（配置文件来源的 src 必须被拒、线上报文不含 `image_url`——
+  这条覆盖的是 `buildAgentConfig → runAgentMode → 工具上下文` 的**接线**，两端单测
+  各自绿也证明不了它在）。**反向验证已做**：把推导条件退回"无条件"，用例当场转红，
+  且回执里真的出现了那张图。
+- **`SINGLE_CONSUMER` 判据对守护行有三条静默旁路（P1）**：旧实现把「缺列」当成
+  「不参与判据」直接 `continue`，而守护侧对 `proto`/`path` 都有缺省
+  （`cfg.proto or "i2c"`、`proto=="spi" and "/dev/spidev0.0" or "/dev/i2c-1"`），
+  多器件守护的器件清单又在 `devices` 列里（`driver@addr@fields[@k=v]`，`|` 分隔），
+  宿主从不解析 ⇒ 三种被 `docs/daemon.md` 认可的写法（含最小写法
+  `INSERT INTO Daemon (name, chunk)`）全部绕过判据，运行期却真的在总线上开了 fd。
+  后果是五个声明者（`AS7262`/`MS5611`/`VL53L0X`/`VL53L4CD`/`AS3935`）可被
+  「直连 + 守护」双消费，器件侧地址相位互踩、**双方都报 OK**——漏标没有任何运行期
+  症状，只能靠装配期判据。现在缺列按守护侧同一规则补全后登记，`devices` 列逐个
+  spec 解析（报错点名 `devices[N]` 与驱动名）；`driver` 列与 `devices` 列互斥
+  （否则同一行会自己和自己冲突）。缺省值以 `HwFactory::kDaemonDefault*` 为单点，
+  与 `sensor_daemon.lua` 的缺省表达式由新用例 `daemon_defaults_match_lua_source`
+  **读 Lua 源两侧比对**（这类漂移没有运行期症状）。守门：省略 proto/path 的守护行
+  必须判重、显式 `proto=virt` 仍放行、`devices` 里声明者驱动必须登记、未声明者驱动
+  的双消费者照常放行。**反向验证已做**：分别退回"缺列即跳过"与"不解析 devices"，
+  两条用例各自转红，而五条既有用例仍绿。
+- **`@Include` 归并只数输入、不数产物（P1）**：输入侧已有三道限（`@Include` 行数
+  ≤32、字节 ≤8 MiB、`|phase|` ≤100000），**产物侧一条都没有**：产物行数
+  = `max(rowsAcc, rowsNext + phase)`、列数随包含数线性增长 ⇒ 几十字节的动作脚本
+  写一行 `@Include path=..., phase=100000` 就能把终态撑到 ~1e5 行 × 数十列
+  （数百 MB），树莓派上直接 OOM；而 OOM 是 SIGKILL 语义，`deactivate()` 整体被跳过
+  ——正是「断电是生命周期不变式」要防的后果。现在 `mtmerge::mergeTwo`（两两归并的
+  **单点**，mtmerge 工具与 `@Include` 展开共用）在**写任何一行之前**判产物预算：
+  行数 ≤ `kMaxMergedRows`(20000)、单元格 ≤ `kMaxMergedCells`(200000)，报错点名两侧
+  输入、实测行×列与可操作出路。取值给真实用量留了两个数量级以上余量（仓库内
+  195 个 `.mt` 实测极值：200 数据行 / 20 列 / 760 单元格）。守门：相位放大、列宽放大、
+  真实规模放行、恰好等于上限放行（钉住判据是 `>` 不是 `>=`）、以及 `@Include`
+  层面的接线各一条。**反向验证已做**：摘掉两处 throw，三条用例转红、两条对照仍绿。
+  顺带把既有的字节预算用例夹具从 `@Action` 换成 `@Alias`——6.8 万行的 `@Action`
+  现在会先撞上产物预算，那条用例就测不到它要测的"字节总量"了（实测踩过）。
+- **P2 批（六处，各自独立）**：
+  - **内嵌 NUL 击穿"全串消费"判据**：`parseLongStrict` / `parseFiniteDouble` 走
+    `c_str()`，`strtoll`/`strtod` 在第一个 NUL 处停下而 `*end` 恰为该 NUL ⇒
+    `90\0junk` 报 OK/90，**尾随垃圾静默丢弃**。两个单点各加一道前置判据；
+    agent 工具参数入口 `requireString` 同族补齐（`run_command` 收到
+    `"id\u0000rm -rf /"` 此前只会执行 `id`，回执看不出命令被改过——`script` 参数
+    早有 `checkRelPath` 的 NUL 判据，两个入口不该一有一无）。
+  - **`DAEMON_CONFIG` 把矩阵空占位符 `-` 原样下发**：`-` 在本仓语义里是"未提供"
+    （`docs/daemon.md` 与三处 `daemonConfigMissing` 判据同一口径），但拼进配置串后
+    Lua 侧拿到字面值 `"-"`（truthy）⇒ `cfg.sign or 缺省` 的 `or` 分支不生效：
+    `sign='-'` 让符号扩展静默失效、驱动 build 参数 `'-'` 经 `tonumber` 得 nil 后
+    静默改用驱动自身缺省。现在占位符在**拼串之前**跳过，"校验看到的"与"守护拿到的"
+    是同一份配置（空串不在此列：`interval` 为空串仍按"需要整数"报错，不静默取缺省）。
+  - **`loadfile` 的错误返回值被沙箱包装吞掉**：`lua_call(L, 1, 1)` 把结果截到 1 个，
+    而 `loadfile` 的契约是 `(chunk, errmsg)` ⇒ `sensor_daemon_multi.lua` 的
+    `local f, err = loadfile(...)` 里 `err` 恒为 nil，"驱动加载失败"的 `-8` 日志永远
+    只打 `(nil)`。改用 `LUA_MULTRET` 并回报实际结果个数。
+  - **槽容量二次硬编码**：`sensor_daemon_multi.lua` 的 `MAX_VALUES = 32` 改读
+    `P.SLOT_MAXVALS`（唯一事实源是 `daemonvar.hpp` 的 `SLOT_MAXVALS`，经
+    `DAEMON_SLOT_LAYOUT` 注入）。写死 32 的后果是两侧各自漂移：C++ 侧改窄 ⇒ 预算
+    检查放行、`pthread.lua` 再静默钳制 ⇒ 尾部字段**永不出值**且无报错。
+  - **build 期不响应停止标志**：`active()` 的逐件 build 循环不查 `stopRequested()`，
+    而信号处理器在它之前一行就装好了 ⇒ 多驱动上电期间第一次 Ctrl-C **毫无可见效果**，
+    运维必然再按一次，而第二次是 `SIG_DFL + raise` 强杀：已 build 的器件原地带电、
+    `deactivate` 一行不执行。现在第一次按键即中止装配并上抛，由 `runRobotAndCleanup`
+    的 catch 走 deactivate 逆序断电。
+  - **两处文档/注释与实现不符**：`mtinclude.cpp` 把自己列进"信任边界"硬限清单的
+    `kMaxIncludeDepth` **全仓不存在**（深度实际由全树 `@Include` 行数预算间接界定），
+    已按实况改写并补上新的产物预算；`shellKeyExposureWarning` 与 `actionsource.hpp`
+    仍写着「`--agent-shell` 或 `allow_shell=true`」，而自 `f06b712` 起配置文件已不能
+    开启 shell，两处文案改成与实现一致。
+- **守门自身：产物陈旧不再静默（本轮亲历）**：`test/run_all.sh` 此前只判「产物存在」、
+  不判新旧 ⇒ 改完源码直接跑守门，跑的是**上一轮的二进制**，汇总照样给出像样的
+  「N 通过, 0 失败」。本轮实测：445 通过 / 1 失败，而 445+1 恰好等于改动前的用例数
+  （那条失败还是"旧二进制 + 新 docs"的组合产物）。这类假绿比缺产物更危险——缺产物有
+  `artifact_missing` 兜住并计入失败，陈旧产物不留任何痕迹。现在守门开头比对
+  **编译期输入**（`src/`、`test/cpp/`、`CMakeLists.txt`；`docs/`/`modules/`/`robots/`
+  是运行期读取的，纳入只会误报）与产物 mtime，发现陈旧即退出 2 并给出重建命令；
+  逃生口 `BOT_ALLOW_STALE=1`。**实测**：`touch src/util.hpp` 后守门立刻拒绝（rc=2），
+  带逃生口则放行。
+- **本批未做（如实留痕）**：**弃管守护的"写能力掐断"（P1）仍未落地**。现状是
+  `runTickLoop` 只在两拍之间查停止标志，tick 卡在不可中断的总线事务里就会被弃管，
+  二段宽限封顶 30 s 后主线程继续逆序 destroy（关 fd、下发关断），而该线程醒来仍可能
+  再写器件一次 ⇒ 进程退出瞬间器件可能重新带电；`bot4cj-fix-plan-20260920.md:23`
+  把 1.1/1.2 一并记成 ✅ 属**过度申报**（1.2 的两层机制全仓零命中）。已定设计：
+  ① HAL 侧 fd 登记表加 `revoked` 位，在**总线访问的单点**（而非逐驱动）短路成 -1——
+  这是唯一的本质收口，因为驱动是直接在 tick 里写器件的；② 槽内 `dead` 标志让
+  `publish` 短路（只挡发布，挡不住写器件，故必须与 ① 配套）。未在本批动手的原因：
+  改动落在 `HAL.lua` 这个被全部 47 款驱动共用的单点上，且"停止请求后立刻让总线访问
+  失败"会改变**优雅退出**窗口的行为（正在收尾的那一拍会拿到 -1），需要单独一轮
+  配合真机夹具验证，不适合与上面这些改动混在一批里提交。
+
+### 2026-09-21 第七轮审计修复批次（AG-27 + A1–A8：协议形状、墙钟预算、假红门禁）
+
+> 守门快照（变基到 `fc5fd9b` 之后复测）：全量守门 **267 / 0 / 0**（`bash test/run_all.sh`，
+> rc=0）、C++ 单测 **543 / 0**（`agent:` 作用域 **173**，本轮 +10）、`llm 协议` 单测
+> **215 / 0**（本轮 +19）、骨架自证 8 / 0、零告警构建（`-DMYBOT_WERROR=ON`）通过。
+> 本轮起点是 AG-26（`44f6ee1`）：它要修的两条缺陷（单轮 `tool_calls` 数量无界、提示词入口不消毒）
+> **判据成立**，但两条修法各引入一个新缺陷，且是近期唯一一条「改语义 + 写新历史 + 零测试 +
+> 无 changelog 条目」的提交。下面 A1/A2/A3 是对它的修正，AG-27 是本轮在门禁上抓到的假红。
+
+- **AG-26 的截断说明写出一条协议不完整的 tool 消息（A1，高）**：超限调用被 `resize` 掉之后，
+  说明被写成**额外一条** `tool` 消息，并复用最后一条已派发调用的 `tool_call_id` ⇒
+  N 个 `tool_calls` 对上 N+1 条 tool 消息、且有一个 id 出现两次。原注释的前提
+  （「tool 消息需引用已存在的 tool_call_id 协议才成立」）是错的：协议要的是**一一对应**，
+  不是「引用一个存在的 id」。后果比原缺陷更疼——这块历史已被 `runTurn` 的 `complete`
+  边界认作「可原样发送」，`trimHistory` 又不裁最新块，于是下一轮起**每条任务都以同一个
+  请求体拿 400**（与 AG-4 描述的失效形态逐字同构）。现在把说明**并入最后一条 tool 消息
+  的正文**，形状恒为 N⇔N，「如实告知被截断」的原意完整保留；说明本身按 AG-21 口径计入
+  任务内预算。触发不需要攻击者：`maxCallsPerRound` 缺省 16，一句「把这 20 个脚本依次跑一遍」
+  就会命中。
+- **AG-26 的新语义零测试（A2，中高）**：`grep -rn maxCallsPerRound test/` 为空——而 A1 的形状
+  缺陷正好落在既有 `agentloop_injects_tool_image_after_all_tool_messages` 那一族断言的能力范围内。
+  本轮补 3 条（形状合规、说明到达模型且措辞不谎报、`0` = 不限），并新增一个与 Lua 侧
+  `check_tool_pairing` **同判据**的 C++ 助手 `pairingViolation`（数量 / 顺序 / id 重复 / 多一条）。
+  **反向验证已做**：把实现退回 AG-26 第一版（多写一条 tool 消息），两条用例当场转红。
+- **出站一致性自检（A1b）**：`llm_wire_openai.check_tool_pairing` 在**发包前**校验
+  `tool_calls` ⇔ `tool` 一一对应，不通过即 `error` → 驱动 `pcall` 折成 ERR 契约 →
+  宿主给出点名「第几条消息、期望几条、实际几条」的报错，而不是把不配对的报文发出去换一个
+  含混的 400。落点刻意排在消息转换**之后**：字段级缺失仍由 AG-15 的 `require_wire_string`
+  先报（成因更具体），自检只管形状。新增 14 条离线用例（少一条 / 多一条 / id 不匹配 /
+  id 重复 / 缺 id / 图片消息夹在回执之后 / 纯文本历史）。**反向验证已做**：摘掉
+  `build_request` 里的调用，2 条接线用例转红。顺带把 AG-17 两个夹具补成协议合规形状
+  （原先 assistant 带 `tool_calls` 却没有配对回执，被自检正确拒绝）。
+- **脚本清单把「消毒名」当「寻址名」（A3，中）**：AG-26 给清单里的相对路径补 `sanitizeUtf8`
+  是对的，但它消毒的是**同一个串**、随后又拿它去 `open` ⇒ 文件名含非法字节时
+  ①首注释静默消失（连告警都没有）②清单交给模型的是磁盘上**不存在**的名字，模型照抄去
+  `run_action_script` 必然「无法打开文件」，直接违反该工具「script 必须来自清单」的约定。
+  现在 `raw`（寻址）与 `shown`（展示）分开保存、按展示名排序，两者分叉时在清单里显式标注
+  「该条不可用于 `run_action_script`」。新增 1 条用例（造一个名字带 `0xff` 的 `.mt`，
+  断言清单整体是合法 UTF-8、含 U+FFFD 与标注、且**首注释仍在**）。
+- **单任务墙钟预算（A4，中）**：体积预算（AG-4/AG-21）与单轮条数上限（AG-26）管的都是
+  「往上下文里灌多少」，**没有一条管时间**，而 agent 模式全程 `robot.active()` 带电常驻：
+  `maxTurns(≤100) × 单次模型调用 timeout(≤600s) × 单轮工具数` 相乘无封顶 ⇒ 最坏一个任务
+  能让执行器带电十几小时，其间唯一出路是 Ctrl-C，而第二次 Ctrl-C 是强杀（恰好跳过
+  `deactivate`）。新增 `--llm-task-timeout` / 配置 `max_task_seconds`（缺省 **900s**，
+  `0` = 不限；区间 0–86400 收在 `llm_limits` 单点）。判定点两处、语义不同：
+  ① 轮循环开头不再发起新的模型调用，按「达到预算」如实失败；② 一轮**中间**耗尽时剩余调用
+  不派发、但每条各留一条「未派发（不是执行失败，也没有产生任何副作用）」回执——少一条就是
+  服务端 400，所以这里不能 `break`。实际超限量因此最多是「一次模型调用 + 一条工具」。
+  新增 5 条用例（两个判定点各一条 + `0` = 不限 + 配置三层优先级与越界 + CLI 解析与
+  agentOnly 拒绝）；`--help`、`docs/reference.md`、`docs/agent.md`（含「已知限制」里的
+  三条确切边界）、`mybot.llm.json.example` 同步。
+- **agent 会话路径只接 `std::exception`（A5，低）**：本仓自陈「本机 LuaJIT 用 C++ 异常实现
+  `luaD_throw`，从没有 Lua CFRAME 的 C++ 帧抛出的 Lua 错误**不是** `std::exception`」
+  （`main.cpp` 的 `runRobotAndCleanup` 正是为此才 `catch (...)`），但
+  `AgentToolRegistry::execute`、`AgentSession::dispatchOneCall`、`runAgentMode` 的
+  一次性任务与 REPL 四处都只接 `std::exception` ⇒ 这类抛出会把「单轮失败」升级成
+  「整个 REPL 结束」，且该轮已执行的硬件动作被回滚出历史（模型被告知「什么都没发生」，
+  与 AG-4 口径相反）。四处各补 `catch (...)`，工具层折成 tool 回执（那是唯一保持
+  N⇔N 形状的选择）。
+- **fd 自报探针在生产二进制里也活着（A6，低）**：AG-11 的探针此前只靠「运行期不设
+  `BOT4CJ_TRACE_FDS`」这一条巧合与生产隔离，于是 `mybot` 也带着「按环境变量向任意路径
+  追加写（0644）」的能力。现在加编译期开关 `MYBOT_TEST_TRACE_FDS`（CMakeLists 只给
+  `mybot_tests` 定义；`MYBOT_CORE_SOURCES` 被两个目标**各自编译一份**，所以真能做到生产
+  二进制里没有这条路径）。只 `ifdef` 环境变量读取那一处而不 `ifdef` 整个函数：后者会让
+  两个函数在关掉开关时变成未使用函数，撞 `-Wall -Werror`。
+- **provider 回传的 `id` / `name` 无长度上限（A7，低）**：两者都来自远端、却会进历史并
+  **逐轮原样回传**。新增 `proto_limits` 单点（id ≤ 128 B、name ≤ 64 B，均远大于真实用量：
+  最长内置工具名 `run_action_script` = 17 B），超限即整条响应拒绝并点名实测字节数——
+  id **不能截断**（截断会破坏与 `tool_calls` 的配对），所以只能 fail-closed。
+- **AG-16 门禁在树莓派上是假红（AG-27，中）**：`bash test/run_all.sh` 在本机长期
+  **261 通过 / 1 失败**，失败项是 `test_llm_drivers.lua` 的「post 之后句柄已复位」。
+  根因不在产品代码，而在**读句柄的库不是建句柄的库**：用例 `ffi.load("curl")`，
+  而 `llm_http` 按 `CANDIDATES` 先试 `libcurl.so.4`；本机（Raspberry Pi OS）
+  `libcurl.so → libcurl-gnutls.so` 与 `libcurl.so.4 → libcurl.so.4.8.0` 是**两个不同文件**，
+  于是进程里有两份 libcurl 实例（实测 `curl_easy_init` 地址 `0x7fff802a6d80` vs
+  `0x7fff7eb65c60`）。用 B 实例的 `getinfo` 读 A 实例的 easy handle，等于按另一套结构体
+  布局解引用不透明指针——实测读出错位垃圾（端口串 `"1"`）；同一句柄改用 A 实例读，
+  reset 前是完整 URL、reset 后为空，**产品代码一直是对的**。CI（bookworm：两个名字指向
+  同一文件）只有一份实例，所以那边绿。修法：`llm_http` 新增 `M.libname()` 暴露实际加载的
+  库名，用例一律经它拿**同一份**实例；并补一条**阳性对照**（同实例下武装后非空、reset 后
+  为空），否则常量写错时「post 之后为空」会空洞地通过。两份实例并存时向 stderr 注记一次
+  （环境事实，不判失败）。**反向验证已做**：删掉 `Session:post` 里的 `curl_easy_reset`，
+  该用例转红。这条也说明「红门禁长期没人修」的代价：它从此不再具备判别力。
+- **三处瑕疵（A8）**：① `agenttools.cpp` 的 `sniffImageFormat` 里遗留 `( void )0;` 死语句；
+  ② `shellKeyExposureWarning` 与 `actionsource.hpp` 的注释仍写着「`--agent-shell` 或
+  `allow_shell=true`」，而自 `f06b712` 起配置文件**已不能开启** shell——正是
+  `formatRunResult` 刚修过的「文案与实现漂移」同类，两处都改成与实现一致；
+  ③ `llm_wire_deepseek.build_request` 只声明两个形参、`M.request` 却按三个传，
+  那个 `plan` 是**死参**（签名与 openai 库对称、语义却不同），改成接受可选 `plan`
+  并优先使用（行为不变）。
+
 ### 2026-09-22 响应形变矩阵（SAN-11，纯测试 + 契约成文）
 
 > 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-11。

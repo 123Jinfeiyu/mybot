@@ -265,3 +265,50 @@ TH_TEST(agentproto_host_side_shape_matrix) {
 		TH_CHECK_THROWS_MSG(std::runtime_error, "驱动说不行", parseDriverResponse(res));
 	}
 }
+
+/* ================= A7：provider 回传字段的长度上限 =================
+ * id / name 都来自远端，却会进历史并逐轮原样回传；不设上限就等于让网关决定
+ * 回传文本的体积。id 超限**不能截断**（截断会破坏与 assistant.tool_calls 的
+ * 配对），所以判据是整条响应拒绝。 */
+TH_TEST(agentproto_parse_response_rejects_oversized_id_and_name) {
+	const std::string atLimit(proto_limits::kMaxToolCallIdBytes, 'a');
+	const std::string overLimit(proto_limits::kMaxToolCallIdBytes + 1, 'a');
+
+	/* 恰好等于上限放行：判据是 >，不是 >=（ off-by-one 会把合法 id 拒掉） */
+	ChatResponse ok = parseDriverResponse(parseJson(
+		"{\"result\":\"OK\",\"tool_calls\":[{\"id\":\"" + atLimit
+		+ "\",\"name\":\"echo\",\"arguments\":\"{}\"}]}"));
+	TH_CHECK(ok.toolCalls.size() == 1);
+	TH_CHECK(ok.toolCalls[0].id == atLimit);
+
+	TH_CHECK_THROWS_MSG(std::runtime_error, "tool_calls[].id",
+		parseDriverResponse(parseJson(
+			"{\"result\":\"OK\",\"tool_calls\":[{\"id\":\"" + overLimit
+			+ "\",\"name\":\"echo\",\"arguments\":\"{}\"}]}")));
+	/* 报错要点名实测字节数、上限与"为何不能截断"（排障时不用猜） */
+	try {
+		parseDriverResponse(parseJson(
+			"{\"result\":\"OK\",\"tool_calls\":[{\"id\":\"" + overLimit
+			+ "\",\"name\":\"echo\",\"arguments\":\"{}\"}]}"));
+		TH_CHECK(false);
+	} catch (const std::exception& e) {
+		const std::string w = e.what();
+		TH_CHECK_MSG(w.find(std::to_string(overLimit.size())) != std::string::npos,
+			"应给出实测字节数: " + w);
+		TH_CHECK_MSG(w.find(std::to_string(proto_limits::kMaxToolCallIdBytes)) != std::string::npos,
+			"应给出上限: " + w);
+		TH_CHECK_MSG(w.find("配对") != std::string::npos, "应说明为何不能截断: " + w);
+	}
+
+	const std::string longName(proto_limits::kMaxToolNameBytes + 1, 'n');
+	TH_CHECK_THROWS_MSG(std::runtime_error, "tool_calls[].name",
+		parseDriverResponse(parseJson(
+			"{\"result\":\"OK\",\"tool_calls\":[{\"id\":\"c1\",\"name\":\"" + longName
+			+ "\",\"arguments\":\"{}\"}]}")));
+	/* 上限之内的真实工具名不受影响（最长的内置名 run_action_script = 17 字节） */
+	ChatResponse real = parseDriverResponse(parseJson(
+		"{\"result\":\"OK\",\"tool_calls\":[{\"id\":\"call_1\",\"name\":\"run_action_script\","
+		"\"arguments\":\"{\\\"script\\\":\\\"std.mt\\\"}\"}]}"));
+	TH_CHECK(real.toolCalls.size() == 1);
+	TH_CHECK(real.toolCalls[0].name == "run_action_script");
+}

@@ -131,6 +131,26 @@ mt::MatrixObject mergeTwo(const mt::MatrixObject& acc, const mt::MatrixObject& n
 	}
 
 	const std::int64_t total = std::max(rowsAcc, rowsNext + phase);
+	/* 产物预算（判据与取值理由见 mtmerge_core.hpp 的 kMaxMerged*）：必须在**写任何
+	 * 一行之前**判，否则内存先被吃掉、报错反而可能来不及产生（OOM 是 SIGKILL 语义，
+	 * 会连 deactivate 一起跳过）。行数判据排在乘法之前：既让 int64 乘法不可能溢出
+	 * （total 已被夹住），也让报错指向真正的成因（相位过大 vs 列太宽）。 */
+	const std::int64_t outCols = static_cast<std::int64_t>(acc.cols() + next.cols());
+	if (total > kMaxMergedRows) {
+		throw bot::IllegalArgumentException("merged output of '" + pa + "' + '" + pb
+			+ "' would have " + std::to_string(total) + " row(s), exceeding the limit of "
+			+ std::to_string(kMaxMergedRows) + " (phase " + std::to_string(phase)
+			+ " alone contributes " + std::to_string(rowsNext + phase)
+			+ "); reduce the phase or split the action script");
+	}
+	const std::int64_t cells = total * outCols;
+	if (cells > kMaxMergedCells) {
+		throw bot::IllegalArgumentException("merged output of '" + pa + "' + '" + pb
+			+ "' would have " + std::to_string(cells) + " cell(s) ("
+			+ std::to_string(total) + " rows x " + std::to_string(outCols)
+			+ " cols), exceeding the limit of " + std::to_string(kMaxMergedCells)
+			+ "; split the action script or reduce the number of @Include fragments");
+	}
 	for (std::int64_t r = 1; r <= total; ++r) {
 		/* acc 侧：r 恒在 [1, rowsAcc] 内当 r<=rowsAcc，否则补 "-" */
 		if (r <= rowsAcc) {

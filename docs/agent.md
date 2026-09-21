@@ -62,13 +62,15 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--llm-max-turns <N>` | 单次任务的最大模型轮数（1-100） | 8 |
 | `--llm-max-tokens <N>` | 单次生成最大 token 数（1-200000） | 4096 |
 | `--llm-timeout <秒>` | 单次模型调用超时，范围 1-600 | 180 |
+| `--llm-task-timeout <秒>` | **单个任务**的墙钟预算，范围 0-86400（`0` = 不限）。agent 全程硬件带电常驻，这条给「一个任务最多带电多久」设闸 | 900 |
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--prompt-file <路径>` | **提示词包**，可重复传入（文件或目录），拼接后追加到系统提示词（见下节） | — |
 | `--agent-shell` | **显式开启** `run_command`（任意 shell 执行） | **不提供**（见「安全」节） |
 | `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序** | 不启用（见「策略钩子」节） |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
-| `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」（只读该文件所在目录内的文件） | — |
+| `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」。**命令行**给的 src 以其所在目录为白名单根；配置文件给的 `camera_src` **不**推导根（见安全说明第 9 条），需配 `--camera-src-dir` 或 `BOT4CJ_CAMERA_SRC_DIR` | — |
+| `--camera-src-dir <目录>` | `capture_image` 模拟图片的白名单根目录（优先级高于推导）。**只能命令行给**，配置文件写 `camera_src_dir` 会被拒绝加载 | — |
 | `--no-camera` | **不**注册 `capture_image`（去掉拍照能力） | 关（默认注册，前提是该变量解析到 Lua 驱动，见安全说明第 5 条） |
 | `--check-config` | **只校验配置并打印摘要后退出 0**：不装载结构脚本、不上电、不发起任何网络请求。配置文件拼错时不必真起一次会话（接了硬件也不必反复上下电）。失败退出 2（判据仍是 `buildAgentConfig` 那一套，不另立）；会**打开但不写入**审计日志文件（顺带验证其可写） | 关（照常进入会话） |
 | `--audit-log <路径>` | 审计轨迹落点（JSON Lines 追加写；`-` = stderr） | 不记录（见「审计轨迹」节） |
@@ -97,6 +99,7 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   "thinking": "",
 
   "max_turns": 8,
+  "max_task_seconds": 900,
   "scripts_dir": "scripts",
   "allow_shell": false,
   "prompt_files": ["prompts/spider_robot"]
@@ -113,8 +116,8 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
 - **显式关闭**：`--llm-config none`（或 `BOT4CJ_LLM_CONFIG=none`）= 本次不读任何配置文件。
   缺省查找依赖 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
-  `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`
-  `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
+  `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `max_task_seconds` `scripts_dir`
+  `allow_shell` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
   `agent_policy` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec`。
@@ -214,6 +217,21 @@ API key 不在这个表里——驱动自己读环境变量。
 里归一化（text 段按序拼接；非 text 段丢弃并在 `extras.content_parts_dropped` 计数，
 使「模型给了别的内容而宿主没看见」在审计里可见）。宿主侧仍只认字符串——
 这条不变式由驱动的单测钉住。
+
+> **出站一致性自检（A1b）**：`llm_wire_openai.check_tool_pairing` 在**发包前**校验
+> `messages` 的形状——每条带 `tool_calls` 的 assistant 之后必须紧跟**数量相等、
+> id 逐个对应且不重复**的 tool 消息，多一条同样算错；不通过就 `error`，由驱动的
+> `pcall` 折成 ERR 契约表，宿主再折成一条点名「第几条消息、期望几条、实际几条」的报错。
+> 为什么要自己查一遍：这条不变量宿主侧已有 `historyProtocolViolation()`（SAN-1）在写历史
+> 时守，可它守的是「历史自洽」，而报文还要经过驱动的整形（丢弃/合成/归一化）——出站前
+> 再查一次，才能让「宿主写对了、驱动整坏了」也当场失败，而不是拿一个含混的网关 400
+> 去猜。AG-26 第一版正是这条不变量被破坏的实例（多写一条 tool 消息并复用别人的
+> `tool_call_id`），而那块历史已被 `runTurn` 认作「可原样发送」、`HistoryManager::trim`
+> 又不裁最新块 ⇒ REPL 从此每条任务都以同一个请求体失败（与 AG-4 同一失效形态）。
+> 自检的落点刻意排在消息转换**之后**：字段级缺失（tool 消息没有 `tool_call_id`）由
+> `require_wire_string` 先报（成因更具体），自检只负责「数量 / 顺序 / 重复 / 多一条」
+> 这类形状问题。离线用例见 `test/test_llm_drivers.lua` 的 A1b 段（含少一条、多一条、
+> id 不匹配、id 重复、缺 id 五种形状）。
 
 > **写驱动时注意「空数组」**：宿主把 Json 转成 Lua 表、驱动再编码回 JSON，而 Lua 的
 > `{}` 无法区分空数组与空对象——`[]` 会变成 `{}`。JSON Schema 的 `required` 必须是
@@ -547,6 +565,19 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
    这是**定界与标注，不是过滤器**：能写 `scripts/` 与 `robots/` 的人本就能改这台机器人的一切行为，
    真正的边界仍是第 4 条那条工程常识。提示词包（`prompt_files`）是操作者自己写的，按原样追加、不做引用包裹。
 
+9. **`capture_image` 的模拟图片白名单根不由 `camera_src` 自己推导**（2026-09-21 第七轮审计 H1）：
+   驱动侧的判据是「`realpath(src)` 必须落在 `src_root` 之内」，而 `src_root` 此前是宿主用
+   `canonical(camera_src).parent_path()` 推出来的——**src 的所在目录当然包含 src**，于是判据恒真，
+   白名单形同不存在。可达链条不需要 `--agent-shell`：`allow_camera` 缺省为真、`cam0` 自动注入，
+   一份落在 CWD 的 `./mybot.llm.json`（缺省查找会读它）写 `"camera_src":"/etc/shadow"` 即可把该文件
+   base64 读进模型上下文，再由**同一份配置**可控的 `endpoint` 外发。现在的口径是三条：
+   ① `--camera-src-dir` 显式给的根**优先**；② 没有显式根时，**只有命令行**的 `--camera-src`
+   才用其所在目录当根（操作者自己指的文件，他本就能读，这也保住了「不接摄像头跑通全链路」的快速上手）；
+   ③ 配置文件来源的 `camera_src` **一律不推导**，交由驱动的 `BOT4CJ_CAMERA_SRC_DIR` 判定，
+   两者都没有即默认拒绝（`Camera.lua` 的「仿真图片未放行」文案）。
+   `camera_src_dir` 因此是**命令行独占**字段：它放宽读权限，与 `allow_shell` 同判据
+   （配置文件只能收紧不能放宽），写在配置文件里会被拒绝加载并退出 2。
+
 ## 运行期依赖：libcurl
 
 agent 模式**不需要构建期依赖**（`cmake` 探测不到任何东西也不会失败），但运行期需要
@@ -589,7 +620,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 ## 测试
 
 ```bash
-bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（六场景）
+bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（七场景）
 luajit test/test_json_lua.lua    # Lua JSON 编解码
 luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
 luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路径）
@@ -615,7 +646,7 @@ C++ 的 `agent:` 作用域 + agent CLI 负路径）。裸 `agent` 与 `agent:` *
 bash test/run_all.sh agent-all
 ```
 
-- `scripts/agent_e2e.sh` 用本地假模型服务跑六个场景：默认驱动完整工具循环（并抓报文断言
+- `scripts/agent_e2e.sh` 用本地假模型服务跑七个场景（含 5b：配置文件来源的 camera_src 必须被拒，覆盖 H1 的接线）：默认驱动完整工具循环（并抓报文断言
   OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
   `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）、
   `--llm-config` 配置文件（URL/KEY/MODEL 全部来自文件，且**环境里不放任何密钥**）、
@@ -673,6 +704,21 @@ bash test/run_all.sh agent-all
   正是模型要的事实）。降级说明里那句「工具本身已执行完毕（副作用已发生）」只对
   **真的执行过**的调用出现——包括执行到一半失败的脚本（那种情况机器人可能停在半途）。
   这四类结果的字节数**仍然计入额度**。
+- **单任务墙钟预算（A4，缺省 900 秒）的三条确切边界**：
+  ① 判定点只有两处——**发起模型调用之前**与**一轮内逐条派发工具之前**，所以实际
+  超限量最多是「一次模型调用 + 一条工具」，不会是一整轮；② 预算耗尽时**已执行的
+  动作不回退**（硬件不会倒回去），报错文案与留在历史里的记录都如实说明这一点；
+  ③ 若预算在一轮**中间**耗尽，剩余调用不派发、但每条各留一条「未派发（不是执行
+  失败，也没有产生副作用）」的 tool 回执——`tool_calls` 与 `tool` 消息必须一一对应，
+  少一条或多一条都会被严格网关 400。`--llm-task-timeout 0` = 不限（逃生口）。
+- **单轮工具调用数上限（AG-26 + SAN-1，缺省 16 条）**：模型一个响应里可以带任意多条
+  `tool_calls`，而 `maxTurns` 只管回合数——超出上限的调用**既不派发、也不进
+  `assistant.tool_calls`**（不给硬件一次性下发失控数量的动作）；「被截断了 N 条」
+  这件事**追加进本轮 assistant 的文本**，不新增任何 tool 消息：新增就意味着要么复用
+  别人的 `tool_call_id`（同一个 id 被回答两次）、要么编一个不存在的 id（孤儿），两者
+  都会被严格网关 400，而那块历史已被 `runTurn` 认作「可原样发送」、`HistoryManager::trim`
+  又不裁最新块 ⇒ REPL 从此每条任务都以同一个请求体失败（与 AG-4 同一失效形态）。
+  截断同时写 stderr 与审计（SAN-8①）——这是安全相关事实，不能只到达模型。`0` = 不限。
 - **单张图的峰值内存仍是图像体积的数十倍**（第三轮审计 AG-19 实测：786 KB JPEG →
   40 MiB、1.5 MB JPEG → 55 MiB、10 MB（超限被拒）→ 163 MiB）。同一条 payload 在
   「驱动缓冲 → Lua 字符串 → base64 → Json 节点 → data URL → 会话历史 → 请求体」

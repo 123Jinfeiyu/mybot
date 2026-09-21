@@ -16,7 +16,7 @@
 --   4. 每个驱动加载进独立 fenv（LuaJIT setfenv）：驱动把 build/call/destroy
 --      定义成全局函数，两个驱动同状态机会互相覆盖；fenv 经 __index 落到
 --      _G，共享 HAL/virtbus 注入的 i2c_* 全局
---   5. 全部样本合成一次 publish，故字段总数受共享槽 values[32] 限制
+--   5. 全部样本合成一次 publish，故字段总数受共享槽 values[SLOT_MAXVALS] 限制
 --
 -- DAEMON_CONFIG（"k=v;k=v"，来自 @Daemon 矩阵除 name/chunk 外的列）：
 --   devices  必填。器件 spec 列表，| 分隔。每个 spec：
@@ -60,8 +60,13 @@ P.assert_layout()	-- 跨语言槽布局漂移在守护启动期显式暴露（da
 
 local log = print	-- 保留真实 print（下文会静默驱动 print 刷屏）
 
--- 共享槽 values[32]（daemonvar.hpp static_assert 互锁）：一次 publish 的总字段数上限
-local MAX_VALUES = 32
+-- 一次 publish 的总字段数上限 = 共享槽 values[] 的容量。
+-- **不在此处硬编码**（2026-09-21 第七轮审计）：唯一事实源是 src/daemonvar.hpp 的
+-- SLOT_MAXVALS，经 DAEMON_SLOT_LAYOUT 注入为 P.SLOT_MAXVALS（缺省回落 pthread.lua
+-- 的 base_layout）。写死 32 的后果是两侧各自漂移：C++ 侧改窄 ⇒ 本文件的预算检查
+-- 放行、pthread.lua:167 再静默钳制 ⇒ 尾部字段**永不出值**且无任何报错；
+-- 改宽 ⇒ 本文件误拒合法配置。
+local MAX_VALUES = P.SLOT_MAXVALS
 
 -- 总线 fd 提前声明：fail 需在任何失败点关闭已打开的总线
 local fd = nil
@@ -171,7 +176,7 @@ end
 local devs = parse_devices(cfg.devices)
 if devs == nil then return end
 
--- 字段预算：全部样本合成一次 publish，values[32] 装不下就是配置错误（加载期
+-- 字段预算：全部样本合成一次 publish，values[MAX_VALUES] 装不下就是配置错误（加载期
 -- 响亮失败，而不是发布时静默截断）
 local total_vals = 0
 for _, dev in ipairs(devs) do

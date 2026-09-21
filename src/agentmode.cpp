@@ -314,6 +314,7 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	if (file.topP) { out.topP = *file.topP; }
 	if (file.timeoutSec) { out.timeoutSec = *file.timeoutSec; }
 	if (file.maxTurns) { out.maxTurns = *file.maxTurns; }
+	if (file.maxTaskSeconds) { out.maxTaskSeconds = *file.maxTaskSeconds; }
 
 	/* 运行期数值（B4）：只有配置文件这一层（不加 CLI 选项，理由见 llm_limits）。
 	 * 0 是合法值（max_retries / retry_backoff_ms），故用 has_value 语义判空。 */
@@ -358,6 +359,17 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 		}
 		out.timeoutSec = timeoutSec;
 	}
+	if (!opts.llmTaskTimeout.empty()) {
+		int taskSec = 0;
+		/* 与 --llm-timeout 同一口径：区间取自 llm_limits 单点，0 是合法的
+		 * "不限"（A4 的逃生口），故下界是 kTaskTimeoutMinSec 而不是 1。 */
+		if (!parseIntOption(opts.llmTaskTimeout, "llm-task-timeout",
+				llm_limits::kTaskTimeoutMinSec, llm_limits::kTaskTimeoutMaxSec,
+				taskSec, err)) {
+			return false;
+		}
+		out.maxTaskSeconds = taskSec;
+	}
 	return true;
 }
 
@@ -374,6 +386,12 @@ bool pickCamera(const CliOptions& opts, const LlmFileConfig& file,
 	}
 	out.cameraDevice = pickString(opts.cameraDevice, nullptr, file.cameraDevice);
 	out.cameraSrc = pickString(opts.cameraSrc, nullptr, file.cameraSrc);
+	/* H1：来源决定「能不能用 src 自己推导白名单根」（判据见 agenttools.hpp 的
+	 * AgentToolContext）。pickString 里命令行优先，故命令行非空即等于采用了它。 */
+	out.cameraSrcFromCli = !opts.cameraSrc.empty();
+	/* H1：白名单根目录**只从命令行**取；配置文件写 camera_src_dir 由
+	 * buildAgentConfig 拒绝加载（与 allow_shell 同判据，见那里）。 */
+	out.cameraSrcDir = opts.cameraSrcDir;
 	return true;
 }
 
@@ -403,6 +421,19 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 
 	/* ---- 6) 摄像头 ---- */
 	if (!pickCamera(opts, file, out, err)) { return false; }
+	/* H1：camera_src_dir 决定 capture_image 的模拟图片白名单根，等价于**放宽读
+	 * 权限**，故与 allow_shell 同判据——只能命令行给，配置文件写它一律拒绝加载。
+	 * 理由同下面第 7 步：缺省查找会读 CWD 的 ./mybot.llm.json，于是一个未经审查的
+	 * 落地文件就能同时改 endpoint（外发）+ camera_src（读哪个文件）+ 白名单根
+	 * （能不能读），把「任意文件 → base64 → 模型上下文 → 攻击者网关」串成一条链；
+	 * 而 allow_camera 缺省为真、cam0 自动注入，这条链**不需要 --agent-shell**。 */
+	if (file.cameraSrcDir) {
+		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
+			+ " 设置了 camera_src_dir：它决定 capture_image 能读哪个目录（放宽读权限），"
+			+ "只能由命令行 --camera-src-dir 提供，配置文件不能给"
+			+ "（请删除该字段；与 allow_shell 同理，配置文件只能收紧不能放宽）";
+		return false;
+	}
 
 	/* ---- 7) agent 行为 ---- */
 	/* 驱动特有字段：原样透传给驱动（如 DeepSeek 的 thinking / reasoning_effort） */
@@ -521,13 +552,13 @@ std::string shellKeyExposureWarning(const AgentModeConfig& cfg) {
 	case ApiKeySource::None:
 		return "";
 	}
-	return std::string("警告: run_command 已启用（--agent-shell 或 allow_shell=true），"
-		"而 API key 来自 ") + how
+	return std::string("警告: run_command 已启用（--agent-shell；自 f06b712 起配置文件"
+		"的 allow_shell 只能关不能开），而 API key 来自 ") + how
 		+ "。run_command 的子进程与宿主同属一个用户，可直接读出该密钥"
 		"（chmod 600 这类文件权限位对此无效）。"
 		"如需避免：改用环境变量 BOT4CJ_LLM_KEY 提供密钥"
 		"（该变量名含 key，会被 run_command 的环境清洗剔除），"
-		"或去掉 --agent-shell / 把 allow_shell 置回 false（缺省即关闭）。";
+		"或去掉 --agent-shell（缺省即关闭）。";
 }
 
 int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
@@ -544,6 +575,10 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 		tctx.camera = robot.registry().find(cfg.cameraVar);
 		tctx.cameraDevice = cfg.cameraDevice;
 		tctx.cameraSrc = cfg.cameraSrc;
+		/* H1：白名单的两个输入分别传递——来源标记决定"能不能用 src 推导根"，
+		 * cameraSrcRoot 是操作者显式给的根（只能来自命令行，见 buildAgentConfig）。 */
+		tctx.cameraSrcFromCli = cfg.cameraSrcFromCli;
+		tctx.cameraSrcRoot = cfg.cameraSrcDir;
 		if (tctx.camera == nullptr) {
 			if (cfg.verbose) {
 				log << "提示: 结构脚本里没有摄像头驱动变量 '" << cfg.cameraVar
@@ -571,6 +606,9 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	aopts.maxTaskToolResultBytes = cfg.maxTaskToolResultBytes;
 	aopts.maxTaskImageBytes = cfg.maxTaskImageBytes;
 	aopts.maxCallsPerRound = cfg.maxCallsPerRound;
+	/* A4：墙钟预算不是请求字段（不进 makeDriverConfig / 不发往 provider），
+	 * 它是宿主自己给「一个任务能带电跑多久」设的闸。 */
+	aopts.maxTaskSeconds = cfg.maxTaskSeconds;
 	aopts.systemPrompt = buildAgentSystemPrompt(cfg, robot);
 	aopts.audit = cfg.audit;
 	aopts.policy = cfg.policy;
@@ -598,6 +636,13 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 			/* SAN-9：失败也要留一条会话结束记录——"这次会话怎么结束的"是
 			 * 复盘的第一句话（此前失败会话在日志里可能连一条都没有）。 */
 			session.writeSessionEnd("error", e.what());
+			return 1;
+		} catch (...) {
+			/* A5：与 main.cpp:186 同判据——本机 LuaJIT 用 C++ 异常实现 luaD_throw，
+			 * 从没有 Lua CFRAME 的 C++ 帧抛出的 Lua 错误不是 std::exception。
+			 * 漏了它就穿透到 runRobotAndCleanup，退出码仍是 1，但报错文案会退化成
+			 * 那句不含任何成因的 "non-standard exception"。 */
+			log << "错误: 非标准异常（Lua 错误或外来抛出）\n";
 			return 1;
 		}
 	}
@@ -683,6 +728,10 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 		} catch (const std::exception& e) {
 			/* REPL：单轮失败不结束会话（历史已回滚，可继续下一条任务） */
 			log << "错误: " << e.what() << "\n";
+		} catch (...) {
+			/* A5：同上。runTurn 的 catch(...) 已把历史裁回最后一个完整边界，
+			 * 所以这一轮的 tool_calls/tool 消息不会留下半截序列，会话可以继续。 */
+			log << "错误: 非标准异常（Lua 错误或外来抛出）；本轮任务已放弃，可继续下一条\n";
 		}
 	}
 	out << "\n";

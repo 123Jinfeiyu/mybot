@@ -174,10 +174,10 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 	}
 	static const std::set<std::string> kKnown = {
 		"driver", "var", "endpoint", "model", "api_key", "api_key_file",
-		"timeout", "max_tokens", "temperature", "top_p",
+		"timeout", "max_tokens", "temperature", "top_p", "max_task_seconds",
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
-		"prompt_files", "camera_var", "camera_device", "camera_src", "allow_camera",
-		"audit_log", "agent_policy",
+		"prompt_files", "camera_var", "camera_device", "camera_src", "camera_src_dir",
+		"allow_camera", "audit_log", "agent_policy",
 		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
 		"max_calls_per_round", "max_retries", "retry_backoff_ms",
 		"run_command_timeout_sec", "run_command_max_timeout_sec",
@@ -208,6 +208,10 @@ bool parseConfigStrings(const std::string& path, const Json& root, LlmFileConfig
 	if (!wantString(path, root, "camera_src", out.cameraSrc, err)) { return false; }
 	if (!wantString(path, root, "audit_log", out.auditLog, err)) { return false; }
 	if (!wantString(path, root, "agent_policy", out.agentPolicy, err)) { return false; }
+	/* H1：解析 camera_src_dir 只是为了**指名拒绝**（见 agentmode.cpp 的
+	 * buildAgentConfig）——若不在这里解析，它会落到「未知字段」分支，
+	 * 报错会让人以为是拼写错误。 */
+	if (!wantString(path, root, "camera_src_dir", out.cameraSrcDir, err)) { return false; }
 
 	/* thinking 允许 "enabled"/"disabled" 字符串，也允许 true/false 布尔 */
 	if (auto v = root.get("thinking")) {
@@ -242,16 +246,22 @@ bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig
 	out.temperature = temperature;
 	out.topP = topP;
 
-	std::optional<int> timeoutSec, maxTokens, maxTurns;
+	std::optional<int> timeoutSec, maxTokens, maxTurns, maxTaskSeconds;
 	if (!wantInt(path, root, "timeout", llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec,
 			timeoutSec, err)) { return false; }
 	if (!wantInt(path, root, "max_tokens", llm_limits::kMaxTokensMin, llm_limits::kMaxTokensMax,
 			maxTokens, err)) { return false; }
 	if (!wantInt(path, root, "max_turns", llm_limits::kMaxTurnsMin, llm_limits::kMaxTurnsMax,
 			maxTurns, err)) { return false; }
+	/* A4：单任务墙钟预算。0 是合法值（= 不限），故下界取 kTaskTimeoutMinSec=0
+	 * 而不是 1——与 timeout 的"0 无意义"不同，这里的 0 是显式逃生口。 */
+	if (!wantInt(path, root, "max_task_seconds",
+			llm_limits::kTaskTimeoutMinSec, llm_limits::kTaskTimeoutMaxSec,
+			maxTaskSeconds, err)) { return false; }
 	if (timeoutSec) { out.timeoutSec = *timeoutSec; }
 	if (maxTokens) { out.maxTokens = *maxTokens; }
 	if (maxTurns) { out.maxTurns = *maxTurns; }
+	if (maxTaskSeconds) { out.maxTaskSeconds = *maxTaskSeconds; }
 
 	/* 上下文字节预算（B1）：0 = 不限，上限 llm_limits 单点 */
 	std::optional<long> maxHistory, maxTool, maxImage;

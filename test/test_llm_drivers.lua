@@ -442,6 +442,65 @@ check("AG-14：高位字节不属控制字符（UTF-8 密钥不误伤）",
 	not openai.api_key_has_control_chars("sk-\229\175\134"))
 check("AG-14：非字符串入参判假（不抛错）", not openai.api_key_has_control_chars(nil))
 
+-- ============ 出站一致性自检：tool_calls ⇔ tool 消息一一对应（A1b） ============
+-- 判据必须能抓住 AG-26 第一版那种形状（多写一条 tool 消息 + 复用别人的 id）：
+-- 那正是「宿主写历史出错 → 网关只回含混 400 → 会话从此每条任务都失败」的成因。
+-- 每条断言都因「删掉 check_tool_pairing」而变红（反向验证过）。
+do
+	local function asst(ids)
+		local tcs = {}
+		for i, id in ipairs(ids) do tcs[i] = { id = id, name = "echo", arguments = "{}" } end
+		return { role = "assistant", content = "", tool_calls = tcs }
+	end
+	local function tool(id) return { role = "tool", tool_call_id = id, content = "ok" } end
+	local user = { role = "user", content = "跑一下" }
+
+	check("A1b：合法序列（1 调用 ⇔ 1 回执）通过",
+		openai.check_tool_pairing({ user, asst({ "c1" }), tool("c1") }) == nil)
+	check("A1b：合法序列（3 调用 ⇔ 3 回执，顺序一致）通过",
+		openai.check_tool_pairing({ user, asst({ "c1", "c2", "c3" }),
+			tool("c1"), tool("c2"), tool("c3") }) == nil)
+	check("A1b：图片消息夹在 tool 回执之后不影响判定",
+		openai.check_tool_pairing({ user, asst({ "c1" }), tool("c1"),
+			{ role = "user", content = "看图" } }) == nil)
+	check("A1b：没有 tool_calls 的纯文本历史通过",
+		openai.check_tool_pairing({ user, { role = "assistant", content = "好了" } }) == nil)
+
+	local e1 = openai.check_tool_pairing({ user, asst({ "c1", "c2" }), tool("c1") })
+	check("A1b：少一条 tool 回执 → 报错", type(e1) == "string", tostring(e1))
+	check("A1b：少一条的报错点名期望数量",
+		type(e1) == "string" and e1:find("2 个 tool_calls", 1, true) ~= nil, tostring(e1))
+
+	-- AG-26 第一版的形状：N 个 tool_calls 后面跟了 N+1 条 tool 消息
+	local e2 = openai.check_tool_pairing({ user, asst({ "c1" }), tool("c1"), tool("c1") })
+	check("A1b：多一条 tool 回执 → 报错", type(e2) == "string", tostring(e2))
+	check("A1b：多一条的报错点明「多写一条同样会被服务端 400」",
+		type(e2) == "string" and e2:find("多出的一条", 1, true) ~= nil, tostring(e2))
+
+	local e3 = openai.check_tool_pairing({ user, asst({ "c1" }), tool("cX") })
+	check("A1b：id 不匹配 → 报错", type(e3) == "string" and e3:find("不匹配", 1, true) ~= nil,
+		tostring(e3))
+
+	local e4 = openai.check_tool_pairing({ user, asst({ "c1", "c1" }), tool("c1"), tool("c1") })
+	check("A1b：assistant 内 id 重复 → 报错",
+		type(e4) == "string" and e4:find("重复", 1, true) ~= nil, tostring(e4))
+
+	local e5 = openai.check_tool_pairing({ user, asst({ "" }), tool("") })
+	check("A1b：tool_calls 缺 id → 报错",
+		type(e5) == "string" and e5:find("缺 id", 1, true) ~= nil, tostring(e5))
+
+	-- build_request 必须真的调用它：不配对时报 error（驱动侧 pcall 折成 ERR 契约）
+	local ok, e = pcall(openai.build_request,
+		{ messages = { user, asst({ "c1" }), tool("c1"), tool("c1") } }, "m")
+	check("A1b：build_request 对不配对的历史抛错", ok == false, tostring(e))
+	check("A1b：抛错文案点名「出站报文自检失败」",
+		ok == false and tostring(e):find("出站报文自检失败", 1, true) ~= nil, tostring(e))
+	local ok2 = pcall(openai.build_request,
+		{ messages = { user, asst({ "c1" }), tool("c1") } }, "m")
+	check("A1b：配对正确的历史照常组包", ok2 == true, tostring(ok2))
+end
+
+
 -- ================= 句柄收尾不许留悬垂回调（AG-16） =================
 -- 旧实现只 cb:free() 不清句柄，WRITEFUNCTION 仍指在已释放的回调上；当前只因
 -- Session:post 每次都先 curl_easy_reset 才安全。Session.handle 是公开字段，
@@ -458,26 +517,80 @@ check("AG-14：非字符串入参判假（不抛错）", not openai.api_key_has_
 -- 现在换成**只看句柄状态、不再对已 free 回调的句柄发包**的判据：
 -- CURLINFO_EFFECTIVE_URL 在 reset 之后必须为空 —— 这正是「未武装」的定义，
 -- 且不依赖 libcurl 的早退行为。
+--
+-- 【2026-09-21 第七轮审计 AG-27 修正：这条门禁在树莓派上一直是**假红**】
+-- 判据本身没错，错在**读句柄的库不是建句柄的库**：原实现 `ffi.load("curl")`，
+-- 而 llm_http 按 CANDIDATES 先试 `libcurl.so.4`。本机（Raspberry Pi OS）
+-- `libcurl.so → libcurl-gnutls.so`、`libcurl.so.4 → libcurl.so.4.8.0` 是**两个
+-- 不同文件**，于是进程里有两份 libcurl 实例（实测 curl_easy_init 地址
+-- 0x7fff802a6d80 vs 0x7fff7eb65c60）。用 B 实例的 getinfo 去读 A 实例的 easy
+-- handle，等于按另一套结构体布局解引用不透明指针 —— 实测返回端口串 "1"
+-- 这样的错位垃圾；同一句柄改用 A 实例读，reset 前是完整 URL、reset 后为空，
+-- 产品代码一直是对的。CI（bookworm：libcurl.so 与 libcurl.so.4 同一文件）
+-- 只有一份实例，所以那边绿 —— 典型的「环境相关假红」，而红门禁被忽略的
+-- 代价是它从此不再具备判别力。
+-- 修法：一律经 http.libname() 拿**同一份**实例；并补一条阳性对照，证明该探针
+-- 真能分辨「武装/未武装」（常量写错时旧断言会空洞地通过）。
 do
 	local http = dofile("modules/lib/llm_http.lua")
 	local s = http.session()
 	check("AG-16：能建会话", s ~= nil, tostring(s))
 	if s ~= nil then
+		local libname = http.libname()
+		check("AG-27：llm_http 暴露实际加载的库名", type(libname) == "string" and libname ~= "",
+			tostring(libname))
+
+		local ffi = require("ffi")
+		-- 不再 ffi.cdef：curl_easy_getinfo/setopt 已由 llm_http.lua 声明过，
+		-- 重复声明是「同名不同签名」的冲突源；按本仓既有写法用定签名 cast 调用。
+		local curl = ffi.load(libname)
+		local getinfo_str = ffi.cast("int (*)(void *, int, const char **)", curl.curl_easy_getinfo)
+		local setopt_ptr = ffi.cast("int (*)(void *, int, const void *)", curl.curl_easy_setopt)
+		local setopt_long = ffi.cast("int (*)(void *, int, long)", curl.curl_easy_setopt)
+		local CURLINFO_EFFECTIVE_URL = 1048577	-- curl.h 权威值，与 test_curl_consts.c 同族
+		local OPT_URL, OPT_TIMEOUT, OPT_NOSIGNAL = 10002, 13, 99
+
+		local function effUrl(h)
+			local q = ffi.new("const char *[1]")
+			local rc = getinfo_str(h, CURLINFO_EFFECTIVE_URL, q)
+			return tonumber(rc), (q[0] ~= nil and ffi.string(q[0]) or nil)
+		end
+
+		-- 两份实例并存是本机的环境事实（不是缺陷），但值得让操作者看见：
+		-- 任何别的加载者若不用 libname()，就会重现上面那种错位读。
+		local okAlt, alt = pcall(ffi.load, "curl")
+		if okAlt and tostring(alt.curl_easy_init) ~= tostring(curl.curl_easy_init) then
+			io.stderr:write("[llm-drivers] 注记: 本机 ffi.load(\"curl\") 与 ffi.load(\""
+				.. tostring(libname) .. "\") 是**两份不同的 libcurl 实例**；"
+				.. "跨实例使用 easy handle 会读出错位字段（AG-27 的假红成因）\n")
+			io.stderr:flush()
+		end
+
+		-- 阳性对照：同一实例下，武装过的句柄 EFFECTIVE_URL 非空、reset 后为空。
+		-- 没有这一条，"post 之后为空"可能是常量写错导致的空洞通过。
+		local probe = curl.curl_easy_init()
+		check("AG-27：阳性对照能建句柄", probe ~= nil)
+		if probe ~= nil then
+			setopt_ptr(probe, OPT_URL, "http://127.0.0.1:1/v1/x")
+			setopt_long(probe, OPT_TIMEOUT, 1)
+			setopt_long(probe, OPT_NOSIGNAL, 1)
+			curl.curl_easy_perform(probe)	-- 端口 1 必然连不上，要的是「走过 libcurl」
+			local rcA, urlA = effUrl(probe)
+			check("AG-27：武装后 EFFECTIVE_URL 非空（探针有判别力）",
+				rcA == 0 and urlA ~= nil and urlA ~= "", tostring(urlA))
+			curl.curl_easy_reset(probe)
+			local rcB, urlB = effUrl(probe)
+			check("AG-27：reset 后 EFFECTIVE_URL 为空（同一实例、同一常量）",
+				rcB == 0 and (urlB == nil or urlB == ""), tostring(urlB))
+			curl.curl_easy_cleanup(probe)
+		end
+
 		-- 端口 1 必然连不上：这里只要走到「perform 返回」即可，不需要成功响应
 		local res = s:post({ url = "http://127.0.0.1:1/v1/x", body = "{}", timeout = 1 })
 		check("AG-16：post 返回（连不上也不崩）", type(res) == "table", tostring(res))
 
-		local ffi = require("ffi")
-		ffi.cdef[[
-int curl_easy_getinfo(void *h, int info, void *out);
-]]
-		local curl = ffi.load("curl")
-		local p = ffi.new("const char *[1]")
-		-- CURLINFO_EFFECTIVE_URL == 1048577（curl.h 权威值，与 test_curl_consts.c
-		-- 同一族的常量自检口径；这里只需要它「reset 后为空」这一条语义）
-		local rc = curl.curl_easy_getinfo(s.handle, 1048577, p)
-		local url = p[0] ~= nil and ffi.string(p[0]) or nil
-		check("AG-16：getinfo 可取（句柄仍有效）", tonumber(rc) == 0, "rc=" .. tostring(tonumber(rc)))
+		local rc, url = effUrl(s.handle)
+		check("AG-16：getinfo 可取（句柄仍有效）", rc == 0, "rc=" .. tostring(rc))
 		check("AG-16：post 之后句柄已复位（EFFECTIVE_URL 为空 = 未武装）",
 			url == nil or url == "", tostring(url))
 
@@ -676,15 +789,19 @@ do
 
 	-- 关闭思考模式必须连带关掉 reasoning_content 回传（有状态协议的另一半：
 	-- 非思考模式回传该字段会被真机拒）
+	-- 夹具必须是**协议合规**的历史形状：assistant 带 tool_calls 就得跟上配对的
+	-- tool 回执，否则 A1b 的出站自检会（正确地）拒绝它。断言只看 messages[1]。
 	local off = deepseek.build_request({ thinking = false,
 		messages = { { role = "assistant", content = "",
 			tool_calls = { { id = "c1", name = "t", arguments = "{}" } },
-			extras = { reasoning_content = "上一轮思考" } } } }, "m0")
+			extras = { reasoning_content = "上一轮思考" } },
+			{ role = "tool", tool_call_id = "c1", content = "ok" } } }, "m0")
 	check("AG-17：布尔 false 关闭时不再回传 reasoning_content",
 		off.messages[1].reasoning_content == nil, tostring(off.messages[1].reasoning_content))
 	local on = deepseek.build_request({ messages = { { role = "assistant", content = "",
 		tool_calls = { { id = "c1", name = "t", arguments = "{}" } },
-		extras = { reasoning_content = "上一轮思考" } } } }, "m0")
+		extras = { reasoning_content = "上一轮思考" } },
+		{ role = "tool", tool_call_id = "c1", content = "ok" } } }, "m0")
 	check("AG-17：开启时仍回传 reasoning_content（有状态要求）",
 		on.messages[1].reasoning_content == "上一轮思考")
 end

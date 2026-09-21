@@ -201,6 +201,10 @@ target_include_directories(mybot_tests PRIVATE test/cpp)
 # 源码根路径：让单测能锚定 docs/ 与仓库夹具（--help 黄金测试据此比对
 # docs/reference.md 的选项表），不依赖运行期 CWD。
 target_compile_definitions(mybot_tests PRIVATE MYBOT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+# A6：子进程路径自报探针（AG-11，读 BOT4CJ_TRACE_FDS 并 open 该路径）只在测试构建
+# 里存在。MYBOT_CORE_SOURCES 被 mybot 与 mybot_tests **各自编译一份**（见上方注释），
+# 所以 per-target 定义能真正做到「生产二进制里没有这条代码路径」。
+target_compile_definitions(mybot_tests PRIVATE MYBOT_TEST_TRACE_FDS)
 target_link_libraries(mybot_tests PRIVATE mybot_common)
 
 # ======================================================================

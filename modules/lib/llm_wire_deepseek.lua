@@ -55,8 +55,11 @@ function M.plan(data)
 	}
 end
 
-function M.build_request(data, model)
-	local plan = M.plan(data)
+-- plan 可由调用方传入（与 openai.build_request 的第三参对称）；不传则自己构造。
+-- 此前 M.request 把 plan 转发进来、而本函数只声明两个形参 ⇒ 那个 plan 是**死参**：
+-- 签名看着对称、语义却不同，下一个改 provider 字段的人会以为"传进来的 plan 生效了"。
+function M.build_request(data, model, plan)
+	plan = plan or M.plan(data)
 	local req = openai.build_request(data, model, plan)
 	-- 思考模式 top_p 下限 0.95：低于该值不会生效，按 0.95 发以免误导调用方
 	if plan.inject_reasoning_content and req.top_p ~= nil then

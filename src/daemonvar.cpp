@@ -438,9 +438,10 @@ int64_t parseInterval(const std::string& iv, const std::string& name,
  * 只校验框架列（proto/fields/sign，语义见 docs/daemon.md）；其余任意键是驱动
  * 的 build 参数（channel/pga/rshunt/osr…），框架不得拦截。
  * 语法以 modules/lib/sensor_daemon.lua 的解析为准，两处规则改动须同步。
- * 矩阵空占位符 "-" 与空串一律视作「未提供」（与 interval 校验的 `v != "-"` 同）。 */
-static bool daemonConfigMissing(const std::string& v) { return v.empty() || v == "-"; }
-
+ * 矩阵空占位符 "-" 在 assembleDaemonConfig 里**拼串之前**就被跳过（既不进
+ * DAEMON_CONFIG、也不进这里的校验）——否则 Lua 侧会拿到字面值 "-"（truthy），
+ * `or 缺省` 分支不生效，校验通过而语义走样。空串不在此列：它照旧进校验，
+ * interval 为空串仍按「需要整数」报错，不静默落回缺省。 */
 /* proto 白名单：i2c（缺省）/ spi / uart / virt（virt=无硬件仿真）。
  * 未知值旧实现静默落进 i2c 分支——拼错 "i2" 会真去开 I2C 总线。 */
 static void checkDaemonProto(const std::string& v, const std::string& name,
@@ -471,7 +472,7 @@ static bool daemonFieldModeChar(char c) {
  * f / float / s16。空项（重复或首尾分隔符）与未知模式都在此报错——旧实现把
  * 空项 print 后丢弃、把未知模式当浮点透传（语义被悄悄改写，且只落在守护日志里）。
  *
- * 审计 2026-09-20（中）：字段数必须 ≤ SLOT_MAXVALS。共享槽只有 values[32]，
+ * 审计 2026-09-20（中）：字段数必须 ≤ SLOT_MAXVALS。共享槽只有 values[SLOT_MAXVALS]，
  * Lua 侧 P.publish 超出即**静默钳制**（pthread.lua），C++ 侧 readSample 也按
  * 32 截断——于是 33+ 字段的 @Daemon 能通过全部加载期校验、正常启动、count
  * 照常自增，而多余字段**永远拿不到值**，事后只表现为下游「某字段缺失」
@@ -567,14 +568,22 @@ static DaemonConfigParts assembleDaemonConfig(const mt::MatrixObject& defs, int6
 		/* 先校验字符再拼串：配置串一旦拼好，NUL 之后的内容在 Lua 侧就不存在了，
 		 * 那时再校验也看不出被截断（审计 P4）。 */
 		checkDaemonValueChars(colName, v, name, defs.getName(), i);
+		/* 空占位符 '-' **不下发**（2026-09-21 第七轮审计）：'-' 在本仓语义里就是
+		 * "未提供"（docs/daemon.md 与下面几条 daemonConfigMissing 判据同一口径），
+		 * 而原样拼进配置串会让 Lua 侧拿到字面值 "-"——它是 truthy，于是
+		 * `cfg.sign or 缺省` 的 or 分支**不生效**：sign='-' 让符号扩展静默失效，
+		 * 驱动 build 参数（pga/range 之类）'-' 经 tonumber 得 nil 后静默改用驱动
+		 * 自身缺省。校验看到的与守护拿到的必须是同一份配置，否则"加载期校验通过"
+		 * 这句话对 '-' 那一列根本不成立。 */
+		if (v == "-") { continue; }
 		cfgAcc += colName + "=" + v + ";";
-		if (colName == "interval" && v != "-") {
+		if (colName == "interval") {
 			ivAcc = parseInterval(v, name, defs.getName(), i);
-		} else if (colName == "proto" && !daemonConfigMissing(v)) {
+		} else if (colName == "proto") {
 			checkDaemonProto(v, name, defs.getName(), i);
-		} else if (colName == "fields" && !daemonConfigMissing(v)) {
+		} else if (colName == "fields") {
 			checkDaemonFields(v, name, defs.getName(), i);
-		} else if (colName == "sign" && !daemonConfigMissing(v)) {
+		} else if (colName == "sign") {
 			checkDaemonSign(v, name, defs.getName(), i);
 		}
 	}

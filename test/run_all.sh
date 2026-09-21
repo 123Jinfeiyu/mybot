@@ -166,6 +166,32 @@ bot_explicit=0
 tests_explicit=0
 [ -n "${BOT_TESTS:-}" ] && tests_explicit=1
 
+# ---- 产物陈旧判据（2026-09-21 第七轮审计）----
+# 守门此前只判「产物存在」、不判新旧：改完源码直接 `bash test/run_all.sh`，跑的是
+# **上一轮的二进制**，汇总照样给出一个像样的「N 通过, 0 失败」（本轮亲历：445 通过
+# /1 失败，而 445+1 恰好等于改动前的用例数——那条失败还是"旧二进制 + 新 docs"的
+# 组合产物）。这类假绿比缺产物更危险：缺产物有 artifact_missing 兜住并计入失败，
+# 陈旧产物则不留任何痕迹。
+# 判据只看**编译期输入**（src/、test/cpp/、CMakeLists.txt）：docs/、modules/、
+# robots/ 是运行期读取的，改了它们不需要重编，纳入只会造成误报。
+# 逃生口 BOT_ALLOW_STALE=1：**明确知道**要跑旧产物（如复现历史结果）时显式声明。
+if [ -z "${BOT_ALLOW_STALE:-}" ]; then
+	for _b in "$bin" "$tests_bin"; do
+		[ -x "$_b" ] || continue	# 缺产物由 artifact_missing 判失败，这里不重复
+		_stale="$(find src test/cpp CMakeLists.txt -type f \
+			\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name 'CMakeLists.txt' \) \
+			-newer "$_b" -print -quit 2>/dev/null)"
+		if [ -n "$_stale" ]; then
+			echo "守门拒绝执行：产物 $_b 比编译期输入旧（例如 $_stale）。" >&2
+			echo "  继续跑等于用**上一轮的二进制**做整套 C++ 守门，汇总仍会显示通过。" >&2
+			echo "  请先重建： cmake --build $(dirname "$_b") -j\$(nproc)" >&2
+			echo "  确实要跑旧产物： BOT_ALLOW_STALE=1 bash test/run_all.sh" >&2
+			exit 2
+		fi
+	done
+	unset _b _stale
+fi
+
 # ---- 分段 runner 定义（F3-1 抽自本文件；只含函数定义，见各文件头注）----
 # 用 $SELF 推导目录：run_all.sh 启动时已 cd 到仓库根，但 $SELF 在 cd 之前取，
 # 对「从别处调用」也成立。
@@ -911,7 +937,7 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
-# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，六个场景。
+# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，七个场景（含 5b：配置文件来源的 camera_src 必须被拒）。
 #   1) 默认协议驱动（LlmOpenAI）：工具循环真的迭代、动作脚本在**常驻**机器人上
 #      被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；
 #   2) --llm-driver LlmDeepSeek：断言 thinking / 不发 temperature /

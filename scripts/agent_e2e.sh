@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 十三个场景：
+# 十四个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -15,6 +15,9 @@
 #      不放任何密钥。
 #   5) capture_image——拍照并把画面注入上下文，断言线上报文确实带 image_url
 #      多模态内容（以 data URL 包装的真 JPEG）。
+#   5b) H1 的反面：**配置文件**给的 camera_src 不得自动放行——三条白名单根来源
+#      （--camera-src-dir / 命令行 --camera-src 的推导 / BOT4CJ_CAMERA_SRC_DIR）
+#      全空时必须走「未放行」，且线上报文里不含 image_url。覆盖的是接线。
 #   6) --prompt-file 提示词包——目录 .md 按文件名自然排序、以 "## 文件名" 分节，
 #      整包追加在系统提示词内置段落之后（线上报文逐项断言）。
 #   7) --audit-log 审计轨迹——每次工具调用各留一条 JSON Lines（ts/session/tool/ok
@@ -27,6 +30,8 @@
 #      截断事件对操作者可见、**第二个任务照常完成**（会话没被永久打成 400）。
 #  11) 限流/5xx 的重试（SAN-3）——429 前两次、第三次成功：任务完成 + 重试日志
 #      点名 429 + 退避采用服务端 Retry-After；恒 503 则重试用尽后如实失败。
+#  12) 宿主的动作回显不得污染 stdout（SAN-5）——stdout 只有模型回答，回显走 stderr。
+#  13) 取消走的是「优雅退出」而不是被信号打死（SAN-7）——中断后 deactivate 链仍执行。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -308,6 +313,51 @@ else
 	echo "  [FAIL] AG-20：期望 ≥2 轮请求且会话计数唯一，实测 请求=$reqs 不同计数=$seqs"
 	fail=1
 fi
+
+# ============ 场景 5b：配置文件给的 camera_src 不得自动放行（H1） ============
+# 覆盖的是**接线**：C++ 单测两端各自成立（buildAgentConfig 记下「来源不是命令行」、
+# 工具层据此不传 src_root），但「配置里的 camera_src 一路走到工具层仍被拒」这条只有
+# 端到端能钉住——中间少传一个字段，两端用例都照样绿。
+# 修复前（src_root 由 src 自己的 dirname 推导，判据恒真）这里会真把文件读出来注入上下文。
+echo "----- 场景 5b：配置文件来源的 camera_src 被拒（H1） -----"
+CAP5B="$tmp/req-camera-cfg.json"
+CFG5B="$tmp/h1-camera.json"
+PIC5B="$tmp/h1-secret.jpg"
+cp "$PIC5" "$PIC5B"
+cat > "$CFG5B" <<JSON
+{
+  "driver": "LlmOpenAI",
+  "endpoint": "http://127.0.0.1:$PORT/v1/chat/completions",
+  "model": "h1-model",
+  "api_key": "h1-key",
+  "camera_src": "$PIC5B"
+}
+JSON
+chmod 600 "$CFG5B"
+start_server "$PORT" "$CAP5B" camera || exit 1	# 复用场景 5 的端口（其服务已停）
+# 命令行**不给** --camera-src / --camera-src-dir，并清掉驱动侧的环境白名单：
+# 三条根目录来源全空 ⇒ 必须走「未放行」这条默认拒绝路径。
+out5b="$(env -u BOT4CJ_CAMERA_SRC_DIR BOT4CJ_LLM_KEY=h1-key timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent --llm-config "$CFG5B" \
+	--task "拍张照片看看周围有什么" 2>&1)"
+rc5b=$?
+stop_server
+echo "$out5b"
+if [ "$rc5b" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc5b"
+	fail=1
+fi
+check "$out5b" "AGENT-E2E-完成" "拍照被拒之后仍能给出最终回答（会话没被打断）"
+check "$out5b" "未放行" "工具回执点名「未放行」（默认拒绝，并给出三条出路）"
+if echo "$out5b" | grep -qF "已拍摄照片"; then
+	echo "  [FAIL] 配置文件来源的 camera_src 竟然拍成功了（H1 未修 / 接线漏了）"
+	fail=1
+else
+	echo "  [OK] 没有产出照片说明（配置文件不能自己给自己开白名单）"
+fi
+check_json "$CAP5B" "not any(isinstance(m.get('content'), list) and any(p.get('type')=='image_url' for p in m['content']) for m in d['messages'])" \
+	"线上报文里不含 image_url（文件内容没有进模型上下文）"
+check_absent "$CAP5B" '"data:image/jpeg;base64,/9j/' "报文里没有那张图的 base64"
 
 # ============ 场景 6：--prompt-file 提示词包进入系统提示词 ============
 echo "----- 场景 6：--prompt-file 提示词包 -----"

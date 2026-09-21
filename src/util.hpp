@@ -133,8 +133,14 @@ inline std::optional<std::string> findExistingModule(const std::string& paths,
 /* 严格整数解析的失败形态：调用方按场景给出人话报错（本项目错误信息惯例） */
 enum class IntParse { OK, NOT_INT, OVERFLOW };
 
-/* strtoll + ERANGE + 全串消费；负号等细节语义由调用方按场景裁决 */
+/* strtoll + ERANGE + 全串消费；负号等细节语义由调用方按场景裁决。
+ * **内嵌 NUL 一律判非法**（2026-09-21 第七轮审计）：strtoll 走 c_str()，在第一个
+ * NUL 处停下，而那个 NUL 正是 `*end`——于是"全串消费"判据被满足，尾随垃圾被
+ * **静默丢弃**（`90\0junk` 报 OK/90）。NUL 进得来：.mt 词法不把 NUL 当分隔符，
+ * .sql 引号态字面追加（见 sqlparse.cpp 与 daemonvar.cpp 的自述）。同族判据见
+ * checkRelPath 的 RelPathCheck::NUL 与 luabridge.cpp 的 rejectEmbeddedNul。 */
 inline std::pair<IntParse, long long> parseLongStrict(const std::string& s) {
+	if (s.find('\0') != std::string::npos) { return {IntParse::NOT_INT, 0}; }
 	char* end = nullptr;
 	errno = 0;
 	long long v = std::strtoll(s.c_str(), &end, 10);
@@ -343,6 +349,9 @@ inline std::string trim(const std::string& s) {
  * **只回状态**——报错文案与消息取舍留在各调用方（grep 守门锚定原文）。 */
 enum class ParseFiniteStatus { OK, INVALID, NONFINITE };
 inline ParseFiniteStatus parseFiniteDouble(const std::string& s, double& out) {
+	/* 内嵌 NUL 一律判 INVALID：理由与 parseLongStrict 同款——strtod 在第一个 NUL
+	 * 处停下而 `*end` 恰为该 NUL，"全串消费"判据会被满足，尾随垃圾静默丢弃。 */
+	if (s.find('\0') != std::string::npos) { return ParseFiniteStatus::INVALID; }
 	char* end = nullptr;
 	out = std::strtod(s.c_str(), &end);
 	if (end == s.c_str() || *end != '\0') { return ParseFiniteStatus::INVALID; }

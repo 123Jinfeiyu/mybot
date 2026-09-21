@@ -37,6 +37,10 @@ inline constexpr int kMaxTurnsMax = 100;
 inline constexpr long kMaxHistoryBytesLimit = 64u << 20;
 inline constexpr long kMaxTaskToolResultBytesLimit = 64u << 20;
 inline constexpr long kMaxTaskImageBytesLimit = 64u << 20;
+/* 单任务墙钟预算（A4）。下界 0 = 不限（逃生口，保留旧行为）；上界取一天，
+ * 防"为了保险配大一点"把带电时长写成事实上的无界。 */
+inline constexpr int kTaskTimeoutMinSec = 0;
+inline constexpr int kTaskTimeoutMaxSec = 86400;
 
 /* ---- 运行期数值（B4，2026-09-22）----
  * 这五个量原先只写死在 AgentOptions / AgentDriverConfig / AgentToolContext 的
@@ -80,6 +84,8 @@ struct LlmFileConfig {
 	std::optional<std::string> apiKey;
 	std::optional<std::string> apiKeyFile;	/* 从文件读密钥（支持 ~ 展开、去空白） */
 	std::optional<long> timeoutSec;
+	/* 单任务墙钟预算（秒）。配置文件键名 max_task_seconds；0 = 不限。 */
+	std::optional<int> maxTaskSeconds;
 	std::optional<int> maxTokens;
 	std::optional<double> temperature;
 	std::optional<double> topP;
@@ -94,6 +100,11 @@ struct LlmFileConfig {
 	std::optional<std::string> cameraVar;
 	std::optional<std::string> cameraDevice;
 	std::optional<std::string> cameraSrc;
+	/* H1：这个字段被解析出来**只为了拒绝它**——capture_image 的白名单根目录
+	 * 只能由命令行 --camera-src-dir 提供（配置文件不能放宽读权限，与 allow_shell
+	 * 同判据）。之所以仍列进已知字段而不是靠"未知字段"报错，是为了给出指名道姓的
+	 * 原因，而不是让人以为是拼写错误。 */
+	std::optional<std::string> cameraSrcDir;
 	std::optional<bool> allowCamera;
 	/* 审计轨迹落点（JSON Lines；"-" = stderr）。空/未配置 = 不记录。
 	 * 与 --audit-log 同义；命令行优先。 */

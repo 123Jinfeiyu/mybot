@@ -68,6 +68,7 @@ TH_TEST(llmconfig_parses_all_fields) {
 	  "reasoning_effort": "low",
 	  "thinking": "disabled",
 	  "max_turns": 12,
+	  "max_task_seconds": 1234,
 	  "scripts_dir": "scripts/test",
 	  "allow_shell": false,
 	  "max_history_bytes": 8388608,
@@ -92,6 +93,7 @@ TH_TEST(llmconfig_parses_all_fields) {
 	TH_CHECK(c.reasoningEffort && *c.reasoningEffort == "low");
 	TH_CHECK(c.thinking && *c.thinking == "disabled");
 	TH_CHECK(c.maxTurns && *c.maxTurns == 12);
+	TH_CHECK(c.maxTaskSeconds && *c.maxTaskSeconds == 1234);
 	TH_CHECK(c.scriptsDir && *c.scriptsDir == "scripts/test");
 	TH_CHECK(c.allowShell && !*c.allowShell);
 	/* B1：上下文字节预算字段；0 = 不限合法 */
@@ -176,6 +178,137 @@ TH_TEST(llmconfig_runtime_fields_parse_and_reject) {
 	std::string e2;
 	TH_CHECK(!loadLlmConfigFile(typo.string(), o2, e2));
 	TH_CHECK(e2.find("未知字段") != std::string::npos);
+}
+
+/* ================= A4：单任务墙钟预算的配置面 =================
+ * 三个层次的优先级与 timeout 同款（命令行 > 配置文件 > 内建缺省），
+ * 区间取自 llm_limits 单点；0 是**合法值**（= 不限，逃生口），
+ * 所以它的下界与 timeout 的下界（1）不同。 */
+TH_TEST(agentconfig_task_budget_layers_and_range) {
+	NoKeyEnv nokey;
+	/* 密钥解析（buildAgentConfig 第 4 步）先于采样层（第 5 步）：没有密钥就
+	 * 走不到 max_task_seconds 的校验，报错会是「缺少 API key」而不是越界。 */
+	EnvVar key{"BOT4CJ_LLM_KEY", "test-key"};
+	TempDir tmp("tasksec");
+
+	/* 1) 什么都不给 → 内建缺省 900 */
+	{
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(baseOptions("none"), out, err));
+		TH_CHECK_MSG(out.maxTaskSeconds == 900,
+			"缺省应为 900 秒，实际 " + std::to_string(out.maxTaskSeconds));
+	}
+	/* 2) 配置文件生效；0 合法（= 不限） */
+	{
+		fs::path cfg = tmp.path() / "a.json";
+		writeFile(cfg, R"({"api_key":"k","max_task_seconds":60})", fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK_MSG(out.maxTaskSeconds == 60, "实际 " + std::to_string(out.maxTaskSeconds));
+
+		fs::path zero = tmp.path() / "z.json";
+		writeFile(zero, R"({"api_key":"k","max_task_seconds":0})", fs::perms::owner_all);
+		AgentModeConfig outZero;
+		TH_CHECK_MSG(buildAgentConfig(baseOptions(zero.string()), outZero, err), err);
+		TH_CHECK_MSG(outZero.maxTaskSeconds == 0, "0 应被接受（= 不限），实际 "
+			+ std::to_string(outZero.maxTaskSeconds));
+	}
+	/* 3) 命令行覆盖配置文件 */
+	{
+		fs::path cfg = tmp.path() / "b.json";
+		writeFile(cfg, R"({"api_key":"k","max_task_seconds":60})", fs::perms::owner_all);
+		CliOptions o = baseOptions(cfg.string());
+		o.llmTaskTimeout = "77";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(o, out, err));
+		TH_CHECK_MSG(out.maxTaskSeconds == 77, "命令行应覆盖配置文件，实际 "
+			+ std::to_string(out.maxTaskSeconds));
+	}
+	/* 4) 配置文件越界 → 人话报错（点名文件与字段） */
+	{
+		fs::path cfg = tmp.path() / "bad.json";
+		writeFile(cfg, R"({"api_key":"k","max_task_seconds":86401})", fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK_MSG(err.find("max_task_seconds") != std::string::npos,
+			"报错应点名越界字段: " + err);
+		TH_CHECK_MSG(err.find("86401") != std::string::npos, "报错应给出实测值: " + err);
+	}
+	/* 5) 命令行越界 / 非数字 → 报错点名选项名 */
+	{
+		CliOptions o = baseOptions("none");
+		o.llmTaskTimeout = "-5";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK_MSG(err.find("--llm-task-timeout") != std::string::npos,
+			"报错应点名选项: " + err);
+
+		CliOptions o2 = baseOptions("none");
+		o2.llmTaskTimeout = "abc";
+		AgentModeConfig out2;
+		std::string err2;
+		TH_CHECK(!buildAgentConfig(o2, out2, err2));
+		TH_CHECK_MSG(err2.find("需要一个整数") != std::string::npos, "实际: " + err2);
+	}
+}
+
+/* ================= H1：capture_image 白名单根的配置面 =================
+ * camera_src_dir 决定"能读哪个目录"，等价于放宽读权限，故与 allow_shell 同判据：
+ * **只能命令行给**，配置文件写它一律拒绝加载并指名原因。camera_src 本身仍可由
+ * 配置文件给，但它不再参与推导根（来源标记为 false），否则一份落在 CWD 的
+ * ./mybot.llm.json 就能把任意文件 base64 读进模型上下文。 */
+TH_TEST(agentconfig_camera_src_dir_is_cli_only) {
+	NoKeyEnv nokey;
+	EnvVar key{"BOT4CJ_LLM_KEY", "test-key"};
+	TempDir tmp("camdir");
+
+	/* 1) 配置文件写 camera_src_dir → 拒绝加载，报错点名命令行选项 */
+	{
+		fs::path cfg = tmp.path() / "cam.json";
+		writeFile(cfg, R"({"api_key":"k","camera_src_dir":"/etc"})", fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK_MSG(err.find("camera_src_dir") != std::string::npos,
+			"报错应点名字段: " + err);
+		TH_CHECK_MSG(err.find("--camera-src-dir") != std::string::npos,
+			"报错应给出正确入口: " + err);
+	}
+	/* 2) 命令行给 → 落到 cameraSrcDir */
+	{
+		CliOptions o = baseOptions("none");
+		o.cameraSrcDir = "/opt/pics";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+		TH_CHECK(out.cameraSrcDir == "/opt/pics");
+	}
+	/* 3) 来源标记：命令行给的 camera_src 才允许推导根 */
+	{
+		CliOptions o = baseOptions("none");
+		o.cameraSrc = "/opt/pics/a.jpg";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+		TH_CHECK(out.cameraSrc == "/opt/pics/a.jpg");
+		TH_CHECK_MSG(out.cameraSrcFromCli, "命令行来源应标记为 true");
+	}
+	{
+		fs::path cfg = tmp.path() / "src.json";
+		writeFile(cfg, R"({"api_key":"k","camera_src":"/etc/shadow"})", fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out, err), err);
+		TH_CHECK(out.cameraSrc == "/etc/shadow");
+		TH_CHECK_MSG(!out.cameraSrcFromCli,
+			"配置文件来源必须是 false（否则白名单根会被它自己推导出来 = H1）");
+		TH_CHECK_MSG(out.cameraSrcDir.empty(), "没有命令行就不该有显式根");
+	}
 }
 
 TH_TEST(llmconfig_partial_file_leaves_fields_unset) {

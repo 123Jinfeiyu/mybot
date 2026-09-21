@@ -95,6 +95,20 @@ TH_TEST(mtinclude_merges_action_with_phase) {
 	TH_CHECK(fx::cell(act, 3, 0) == "-");	/* a 耗尽补 "-" */
 }
 
+/* 产物预算的**接线**（2026-09-21 第七轮审计）：判据在 mtmerge::mergeTwo 单点，
+ * @Include 展开只是它的调用方——但"调用方把异常原样冒出来、而不是先把十万行产物
+ * 建出来"这件事只有这一层能钉住。修复前：一行 `b.mt 100000` 就能让终态到
+ * ~1e5 行（数百 MB），树莓派上 OOM，而 OOM 是 SIGKILL 语义 ⇒ deactivate 被整体跳过。 */
+TH_TEST(mtinclude_product_budget_surfaces_from_include_phase) {
+	fx::TempDir dir("inc_phase_budget");
+	writeFile(dir, "b.mt", "@Action\nb.p;\n100;\n200;\n@\n");
+	auto mats = parseMain(
+		"@Action\na.x;\n1;\n2;\n@\n"
+		"@Include\npath phase;\n  b.mt 100000;\n@\n");
+	TH_CHECK_THROWS_MSG(std::exception, "exceeding the limit of",
+		mtinclude::expandIncludes(mats, dir.path().string()));
+}
+
 TH_TEST(mtinclude_phase_dash_inherits_previous_row) {
 	fx::TempDir dir("inc_dash");
 	writeFile(dir, "b.mt", "@Action\nb.p;\n100;\n@\n");
@@ -257,18 +271,22 @@ TH_TEST(mtinclude_row_budget_rejects_before_reading) {
 
 TH_TEST(mtinclude_total_byte_budget_rejects) {
 	fx::TempDir dir("inc_budget");
-	/* 两个各 ~4.5MiB 的文件：单文件不超 8MiB，合计超总预算 */
+	/* 两个各 ~4.6MiB 的文件：单文件不超 8MiB，合计超总预算。
+	 * 夹具必须是 **@Alias**（标量行）而不是 @Action：@Action 的归并产物受
+	 * mtmerge::kMaxMergedRows 约束，6.8 万行会先撞上产物预算，这条用例就测不到
+	 * 它要测的"字节总量"了（实测踩过）。@Alias 走 mergeScalarRows，无产物预算，
+	 * 于是字节预算仍是唯一会先触发的那道限。名字加文件前缀避免同名行冲突。 */
 	std::string pad(64, 'x');
 	{
 		std::ofstream f(dir.path() / "big1.mt", std::ios::binary);
-		f << "@Action\nb.p;\n";
-		for (int i = 0; i < 68000; ++i) { f << "    " << pad << ";\n"; }	/* ~4.6MiB */
+		f << "@Alias\nname value;\n";
+		for (int i = 0; i < 68000; ++i) { f << "    b1n" << i << " " << pad << ";\n"; }
 		f << "@\n";
 	}
 	{
 		std::ofstream f(dir.path() / "big2.mt", std::ios::binary);
-		f << "@Action\nc.q;\n";
-		for (int i = 0; i < 68000; ++i) { f << "    " << pad << ";\n"; }
+		f << "@Alias\nname value;\n";
+		for (int i = 0; i < 68000; ++i) { f << "    b2n" << i << " " << pad << ";\n"; }
 		f << "@\n";
 	}
 	auto mats = parseMain(

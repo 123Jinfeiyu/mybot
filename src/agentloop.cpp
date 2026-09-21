@@ -37,7 +37,7 @@ AgentSession::AgentSession(ChatTransport& transport, const AgentToolRegistry& to
 		AgentOptions opts)
 	: transport_(transport), tools_(tools), opts_(std::move(opts)),
 	history_(opts_.systemPrompt),
-	budget_{opts_.maxTaskToolResultBytes, opts_.maxTaskImageBytes},
+	budget_{opts_.maxTaskToolResultBytes, opts_.maxTaskImageBytes, opts_.maxTaskSeconds},
 	gate_(tools_, opts_.policy, opts_.audit) {}
 
 void AgentSession::log(const std::string& text) const {
@@ -103,8 +103,9 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 		stats_.historyTrimmed = true;
 		stats_.trimmedMessages += beforeTrim - history_.messages().size();
 	}
-	/* 任务内聚合预算按任务清零（AG-4）：它约束的是「这一个任务往上下文里灌了
-	 * 多少字节」，跨任务的体积由 HistoryManager 的 maxHistoryBytes 管。 */
+	/* 任务内聚合预算按任务清零（AG-4 + A4）：它约束的是「这一个任务往上下文里灌了
+	 * 多少字节、带电跑了多久」，resetTask() 同时重置墙钟起点；跨任务的体积由
+	 * HistoryManager 的 maxHistoryBytes 管。 */
 	budget_.resetTask();
 	const std::size_t base = history_.messages().size();
 
@@ -125,6 +126,17 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 			 * 让主流程尽快走 deactivate 清理链 */
 			if (stopRequested()) {
 				throw std::runtime_error("执行被中断");
+			}
+
+			/* A4：墙钟预算耗尽后不再发起新的模型调用。
+			 * 文案必须如实：走到这里说明前面若干轮**真的执行过**动作脚本，
+			 * 而硬件不会倒回去（口径同下面 catch(...) 处的注释与 AG-4）。 */
+			if (budget_.exhausted()) {
+				throw std::runtime_error("达到单任务墙钟预算（"
+					+ std::to_string(opts_.maxTaskSeconds)
+					+ " 秒）仍未得到最终回答；此前已执行的动作不会回退。"
+					  "可调大 --llm-task-timeout（或配置文件的 max_task_seconds），"
+					  "或把任务拆小");
 			}
 
 			/* 取数：一次模型调用（SAN-9：计时并记一条模型轮次记录——
@@ -269,7 +281,6 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 		excess = calls.size() - static_cast<std::size_t>(opts_.maxCallsPerRound);
 		calls.resize(static_cast<std::size_t>(opts_.maxCallsPerRound));
 	}
-
 	ChatMessage asst;
 	asst.role = "assistant";
 	asst.content = resp.content;
@@ -296,6 +307,20 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 
 	std::vector<std::string> images;
 	for (const auto& c : calls) {
+		/* A4 判定点②：预算在一轮**中间**耗尽时，剩余调用不派发——但每条都
+		 * 必须各补一条 tool 回传，不能直接 break：tool_calls 与 tool 消息要
+		 * 一一对应（理由同下面 excess 分支），少一条就是服务端 400。
+		 * 这些说明不计入 budget_.toolResultBytes：本任务下一轮开头即被判定点①
+		 * 终止，条数上界是 maxCallsPerRound，不构成 AG-21 要防的无界灌文本。 */
+		if (budget_.exhausted()) {
+			ChatMessage tool;
+			tool.role = "tool";
+			tool.toolCallId = c.id;
+			tool.content = "未派发：单任务墙钟预算（" + std::to_string(opts_.maxTaskSeconds)
+				+ " 秒）已耗尽，本条调用没有下发（不是执行失败，也没有产生任何副作用）。";
+			history_.messages().push_back(std::move(tool));
+			continue;
+		}
 		std::string img = dispatchOneCall(c, turn);
 		if (!img.empty()) { images.push_back(std::move(img)); }
 	}

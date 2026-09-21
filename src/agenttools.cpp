@@ -41,7 +41,15 @@ std::string requireString(const Json& args, const std::string& key) {
 	if (!v || !v->isStr() || v->getValue().empty()) {
 		throw IllegalArgumentException("缺少字符串参数 " + key);
 	}
-	return v->getValue();
+	/* 内嵌 NUL 一律拒绝（2026-09-21 第七轮审计）：JSON 的 \u0000 会被解析成真正的
+	 * NUL 字节，而下游一律走 c_str() ⇒ run_command 收到 "id\u0000rm -rf /" 只会
+	 * 执行 "id"——**静默截断**，模型与操作者都看不出命令被改过（回执里的 exit_code
+	 * 还是那条前缀的）。script 参数另有 checkRelPath 的 NUL 判据，但同族判据不该
+	 * 在两个工具入口一有一无，故收在这里这个单点。 */
+	if (v->s.find('\0') != std::string::npos) {
+		throw IllegalArgumentException("参数 " + key + " 含非法字符（NUL）");
+	}
+	return v->s;
 }
 
 int optionalInt(const Json& args, const std::string& key, int fallback) {
@@ -120,6 +128,25 @@ std::string firstComment(const std::string& content) {
 	return "";
 }
 
+/* H1：把「模拟图片来源」解析成它所在的目录。**只有命令行来源的 src 才走这里**
+ * （理由见 makeCaptureImageTool 里的注释与 AgentToolContext）。
+ * canonical 展开软链与相对段，与驱动侧 realpath 判据一致；路径尚不存在时退一步
+ * weakly_canonical 解析到最深的已存在父目录，好让驱动报「打不开」而不是「未放行」。
+ * 两步都解析不出绝对路径时**不回落成 "."**——那等于放行整个当前工作目录，
+ * 比本意宽得多；这条判据是边界，宁可拒绝也不猜。 */
+std::string simSrcParentDir(const std::string& src) {
+	std::error_code ec;
+	fs::path real = fs::canonical(src, ec);
+	if (ec) { real = fs::weakly_canonical(src, ec); }
+	/* parent_path() 只在「有根路径却无根目录」的相对形态上抛 filesystem_error，
+	 * 绝对路径不会——所以先判绝对再取父目录。 */
+	fs::path parent = real.is_absolute() ? real.parent_path() : fs::path();
+	if (ec || !parent.is_absolute()) {
+		throw IllegalArgumentException("无法解析模拟图片来源所在目录: " + src);
+	}
+	return parent.string();
+}
+
 /* ---- JSON Schema 小工具 ---- */
 
 Json stringParam(const std::string& desc) {
@@ -172,7 +199,6 @@ std::string sniffImageFormat(const std::string& b64) {
 	for (std::size_t i = 0; i + 3 < limit; i += 4) {
 		const int a = val(b64[i]), b = val(b64[i + 1]), c = val(b64[i + 2]), d = val(b64[i + 3]);
 		if (a < 0 || b < 0 || c < 0 || d < 0) { return ""; }
-		( void )0;
 		head.push_back(static_cast<char>((a << 2) | (b >> 4)));
 		head.push_back(static_cast<char>(((b & 0x0f) << 4) | (c >> 2)));
 		head.push_back(static_cast<char>(((c & 0x03) << 6) | d));
@@ -290,6 +316,13 @@ AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& 
 		} catch (const std::exception& e) {
 			/* ok=false 只供审计（agentaudit）；回传给模型的文本口径不变 */
 			return {std::string("工具执行失败: ") + e.what(), "", false, e.what()};
+		} catch (...) {
+			/* A5：Lua 错误可以是**非** std::exception（LuaJIT 用 C++ 异常实现
+			 * luaD_throw，从没有 Lua CFRAME 的 C++ 帧抛出时就是这一类；同判据见
+			 * main.cpp:173-176）。只接 std::exception 会让它穿过工具层直达会话外壳，
+			 * 把「单轮失败」升级成「整个 REPL 结束」。 */
+			return {"工具执行失败: 非标准异常（Lua 错误或外来抛出）", "", false,
+				"non-std exception"};
 		}
 	}
 	std::string avail;
@@ -343,7 +376,16 @@ std::string describeActionScripts(const std::string& scriptsDir) {
 	if (!fs::is_directory(root, ec)) {
 		return "(动作脚本目录不存在: " + scriptsDir + ")";
 	}
-	std::vector<std::string> rels;
+	/* A3：raw 用于**寻址**，shown 用于**展示**，两者必须分开保存。
+	 * AG-26 只留了消毒后的串，随后又拿它去 open —— 文件名含非法字节时那条路径
+	 * 在磁盘上根本不存在，于是①首注释静默消失（连一句告警都没有）②清单交给
+	 * 模型的名字是**打不开的名字**，模型照抄去 run_action_script 必然失败，
+	 * 违反本工具描述里"script 必须是 list_action_scripts 返回的相对路径"的约定。 */
+	struct ScriptEntry {
+		std::string raw;
+		std::string shown;
+	};
+	std::vector<ScriptEntry> rels;
 	try {
 		for (const auto& e :
 		     fs::recursive_directory_iterator(root, fs::directory_options::skip_permission_denied)) {
@@ -357,24 +399,31 @@ std::string describeActionScripts(const std::string& scriptsDir) {
 			 * 软链），对软链目录项会算出带 `..` 的越界路径。 */
 			fs::path rel = e.path().lexically_relative(root);
 			if (rel.empty() || *rel.begin() == "..") { continue; }
-			/* 相对路径进系统提示词，与 AG-1 同款消毒：Linux 文件名可含任意字节，
-			 * 若带非法字节会拒掉首个模型请求（同第一注释消毒的理由）。 */
-			rels.push_back(sanitizeUtf8(rel.generic_string()));
+			/* 展示名与 AG-1 同款消毒：Linux 文件名可含任意字节，若带非法字节
+			 * 会拒掉首个模型请求（同第一注释消毒的理由）。 */
+			std::string raw = rel.generic_string();
+			rels.push_back(ScriptEntry{raw, sanitizeUtf8(raw)});
 		}
 	} catch (const fs::filesystem_error&) {
 		/* 个别子目录不可读：已收集的照常输出，不因一处权限问题整段失败 */
 	}
-	std::sort(rels.begin(), rels.end());
+	std::sort(rels.begin(), rels.end(),
+		[](const ScriptEntry& a, const ScriptEntry& b) { return a.shown < b.shown; });
 	if (rels.empty()) { return "(脚本目录下没有 .mt 动作脚本: " + scriptsDir + ")"; }
 	std::string out;
-	for (const auto& rel : rels) {
+	for (const auto& entry : rels) {
 		std::string desc;
 		try {
-			desc = firstComment(readFileLimited((root / rel).string(), 4096));
+			desc = firstComment(readFileLimited((root / entry.raw).string(), 4096));
 		} catch (const std::exception&) {
 			desc.clear();
 		}
-		out += "  " + rel;
+		out += "  " + entry.shown;
+		if (entry.shown != entry.raw) {
+			/* 如实告知：这条名字已被就地替换，**不能**直接拿去执行。
+			 * 不标注就等于让模型撞一次"无法打开文件"再自己猜原因。 */
+			out += "  [文件名含非法字节，此处已替换为 U+FFFD；该条不可用于 run_action_script]";
+		}
 		if (!desc.empty()) { out += "  — " + desc; }
 		out += "\n";
 	}
@@ -518,24 +567,23 @@ static Json buildCameraParams(const AgentToolContext& ctx) {
 	}
 	if (!ctx.cameraSrc.empty()) {
 		params.put("src", JsonString(ctx.cameraSrc));
-		/* src_root 把「允许读取的目录」一并交给驱动（P1-2 防线）：
-		 * 驱动据此只放行该目录内的文件，任意路径读（/etc/shadow 之类）
-		 * 被拒。目录取配置路径的真实所在目录（canonical 展开软链与
-		 * 相对段，与驱动侧 realpath 判据一致）；路径尚不存在时退一步
-		 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是「未放行」。
-		 * 两步都解析不出绝对路径时**不回落成 "."**——那等于放行整个当前
-		 * 工作目录，比本意宽得多；这条判据是边界，宁可拒绝也不猜。 */
-		std::error_code ec;
-		fs::path real = fs::canonical(ctx.cameraSrc, ec);
-		if (ec) { real = fs::weakly_canonical(ctx.cameraSrc, ec); }
-		/* parent_path() 只在「有根路径却无根目录」的相对形态上抛
-		 * filesystem_error，绝对路径不会——所以先判绝对再取父目录。 */
-		fs::path parent = real.is_absolute() ? real.parent_path() : fs::path();
-		if (ec || !parent.is_absolute()) {
-			throw IllegalArgumentException("无法解析模拟图片来源所在目录: "
-				+ ctx.cameraSrc);
+		/* H1：src_root（「允许读哪个目录」）与 src **解耦**。
+		 * 旧实现无条件用 canonical(src).parent_path() 当根 —— src 的所在
+		 * 目录当然包含 src，判据恒真，白名单形同不存在（一份落在 CWD 的
+		 * ./mybot.llm.json 写 camera_src=/etc/shadow 即可把它读进模型上下文，
+		 * 再经同一份配置可控的 endpoint 外发；allow_camera 缺省为真、
+		 * cam0 自动注入，不需要 --agent-shell）。
+		 * 现在：① 显式根（--camera-src-dir）优先；② 否则**只有命令行来源**
+		 * 的 src 才推导所在目录（操作者自己指的文件，他本就能读，这也保住
+		 * 了 --camera-src 的快速上手路径）；③ 配置文件来源不传 src_root，
+		 * 交由驱动按 BOT4CJ_CAMERA_SRC_DIR 判定，都没有即「未放行」拒绝。
+		 * 目录解析的判据（canonical/weakly_canonical、不回落成 "."）见
+		 * simSrcParentDir。 */
+		std::string root = ctx.cameraSrcRoot;
+		if (root.empty() && ctx.cameraSrcFromCli) {
+			root = simSrcParentDir(ctx.cameraSrc);
 		}
-		params.put("src_root", JsonString(parent.string()));
+		if (!root.empty()) { params.put("src_root", JsonString(root)); }
 	}
 	return params;
 }

@@ -59,6 +59,62 @@ function M.require_wire_string(v, what, where)
 	return v
 end
 
+-- 出站一致性自检（A1b，2026-09-21 第七轮审计）。
+-- 判据：每条带 tool_calls 的 assistant 消息之后，必须**紧跟**数量相等、id 逐个
+-- 对应且不重复的 tool 消息；多一条同样算错。这是 OpenAI 兼容协议的硬要求，也是
+-- 宿主 agentloop 反复守的不变量。
+-- 为什么要在**发包前**自己查一遍：宿主写历史的代码一旦出错（AG-26 的第一版就是
+-- 多写了一条 tool 消息并复用别人的 tool_call_id），严格网关只会回一个含混的 400；
+-- 而那块历史已被 runTurn 认作「可原样发送」、HistoryManager.trim 又不裁最新块 ⇒ REPL 从此
+-- 每条任务都以同一个请求体失败（与 AG-4 同一失效形态）。在这里自检，报错能直接
+-- 点名第几条消息、期望几条、实际几条，比网关那句有用得多。
+-- 入参是**规范化**消息（宿主的 messageToJson 产物），故字段名用 canonical 形态。
+function M.check_tool_pairing(messages)
+	local i, n = 1, #messages
+	while i <= n do
+		local m = messages[i]
+		local tcs = (type(m) == "table" and m.role == "assistant") and m.tool_calls or nil
+		if tcs ~= nil and #tcs > 0 then
+			local want = #tcs
+			local seen = {}
+			for k = 1, want do
+				local id = tcs[k] and tcs[k].id
+				if type(id) ~= "string" or id == "" then
+					return string.format("第 %d 条 assistant 消息的第 %d 个 tool_calls 缺 id", i, k)
+				end
+				if seen[id] then
+					return string.format("第 %d 条 assistant 消息的 tool_calls 里 id 重复: %s", i, id)
+				end
+				seen[id] = true
+				local t = messages[i + k]
+				if type(t) ~= "table" or t.role ~= "tool" then
+					return string.format(
+						"第 %d 条 assistant 消息带 %d 个 tool_calls，但其后第 %d 条不是 tool 消息（实际 %s）"
+							.. "——tool_calls 与 tool 消息必须一一对应，否则服务端 400",
+						i, want, i + k, (type(t) == "table" and tostring(t.role)) or "<缺失>")
+				end
+				if t.tool_call_id ~= id then
+					return string.format(
+						"第 %d 条 tool 消息的 tool_call_id=%s 与 assistant 第 %d 个调用的 id=%s 不匹配",
+						i + k, tostring(t.tool_call_id), k, id)
+				end
+			end
+			-- 多出来的那一条（AG-26 第一版的形态）：第 want+1 条仍是 tool 消息
+			local extra = messages[i + want + 1]
+			if type(extra) == "table" and extra.role == "tool" then
+				return string.format(
+					"第 %d 条 assistant 消息只有 %d 个 tool_calls，其后却跟了至少 %d 条 tool 消息"
+						.. "（多出的一条 tool_call_id=%s）——多写一条同样会被服务端 400",
+					i, want, want + 1, tostring(extra.tool_call_id))
+			end
+			i = i + want + 1
+		else
+			i = i + 1
+		end
+	end
+	return nil
+end
+
 -- 规范化消息 → provider 消息
 -- B3：宿主在 image_url.url 里放 {"__bot_img": N} 游标（图片字节不穿 Json/Lua
 -- 边界，否则参数合并与压栈会对同一 base64 各拷一份）。这里在组包期经宿主
@@ -168,6 +224,17 @@ function M.build_request(data, model, opts)
 	local msgs = {}
 	for i, m in ipairs(data.messages or {}) do
 		msgs[i] = to_wire_message(m, opts.inject_reasoning_content)
+	end
+	-- A1b：发包前的**形状**自检。刻意放在消息转换之后——字段级缺失（tool 消息
+	-- 没有 tool_call_id、tool_calls 没有 id）由 to_wire_message 的
+	-- require_wire_string 报，那条文案能点名到字段与第几条消息，成因更具体；
+	-- 本自检只负责「数量 / 顺序 / id 重复 / 多一条」这类**形状**问题。
+	-- error 会被驱动 call() 的 pcall 折成 ERR 契约表（见 LlmOpenAI.lua 的 AG-15
+	-- 注释），宿主再折成一条点名成因的报错——比把不配对的报文发出去、拿一个
+	-- 含混的 400 好得多。
+	local pairingErr = M.check_tool_pairing(data.messages or {})
+	if pairingErr ~= nil then
+		error("出站报文自检失败: " .. pairingErr)
 	end
 
 	local req = { model = model, messages = msgs, stream = false }

@@ -12,7 +12,8 @@
  *
  * 职责拆分（2026-09-22 重构 A1，行为逐字不变）：
  *   HistoryManager（agenthistory）—— 历史所有权、字节估算、任务块整块裁剪；
- *   TaskBudget     （agentbudget） —— 任务内文本/图片预算与降级说明（AG-4/21）；
+ *   TaskBudget     （agentbudget） —— 任务内文本/图片预算与降级说明（AG-4/21）、
+ *                                      单任务墙钟预算（A4）；
  *   DispatchGate   （agentdispatch）—— 策略确认 → 执行 → 审计的固定顺序单点；
  *   AgentSession   （本文件）     —— runTurn 编排、轮次上限、complete 边界回滚。
  */
@@ -45,12 +46,15 @@ struct AgentOptions {
 	 * 真实总量略高于该预算（≈ 预算 + system + schema），量级仍远低于常见
 	 * 网关限额。 */
 	std::size_t maxHistoryBytes = 4 * 1024 * 1024;
-	/* —— 单轮工具调用数上限（2026-09-21 审计第 4 轮）——
+	/* —— 单轮工具调用数上限（AG-26）——
 	 * maxTurns 只管「模型回合数」，而模型单个响应里可以带任意多条 tool_calls，
 	 * 旧实现对它们**无界顺序执行**——对物理机器人，一次返回几十条调用就全部
-	 * 动作，既烧轮次预算也烧历史体积。此上限在 executeToolRound 派发前把
-	 * 多出来的调用一律折叠成一条 tool 回传说明（模型据此知道被截断），
-	 * 不给硬件一次性下发失控数量的动作。0 = 不限（为旧行为兜底）。 */
+	 * 动作，既烧轮次预算也烧历史体积。此上限让多出来的调用**既不派发、也不进
+	 * assistant.tool_calls**（不给硬件一次性下发失控数量的动作），并把「被截断」
+	 * 这件事如实告知模型——告知方式是追加进**本轮 assistant 的文本**（SAN-1），
+	 * 不新增任何 tool 消息：新增会破坏 tool_calls ⇔ tool 消息的一一对应
+	 * （见 executeToolRound 与 historyProtocolViolation）。
+	 * 0 = 不限（为旧行为兜底）。 */
 	int maxCallsPerRound = 16;
 	/* ---- 任务内聚合预算（2026-09-21 审计 AG-4）----
 	 * maxHistoryBytes 只管「已完结的旧任务块」，且最新块无条件保留——于是
@@ -79,6 +83,22 @@ struct AgentOptions {
 	 * 拒绝/超时折成一句工具回执——模型知道「没执行、为什么」，循环继续。
 	 * 同样挂派发漏斗：确认发生与否取决于工具名+参数，工具层与轮次层都不合适。 */
 	std::shared_ptr<const AgentPolicy> policy;
+	/* ---- 单任务墙钟预算（2026-09-21 审计 A4）----
+	 * 上面那些管的是**体积**，没有一条管**时间**；而 agent 模式全程
+	 * robot.active() 带电常驻。三个因子相乘没有任何一处封顶：
+	 *   maxTurns（≤100）× 单次模型调用 timeout（≤600s）× 单轮工具调用数
+	 * ⇒ 最坏一个任务能让执行器带电十几个小时，其间操作者唯一的出路是 Ctrl-C，
+	 * 而第二次 Ctrl-C 是强杀（main.cpp:31-35）——恰好跳过 deactivate。
+	 * 缺省 900s：对 maxTurns=8 的正常任务留有数十倍余量，长任务显式调大
+	 * （--llm-task-timeout / 配置 max_task_seconds）。0 = 不限。
+	 *
+	 * 判定点有两处，语义不同（实现见 agentloop.cpp，判定本体在
+	 * TaskBudget::exhausted）：
+	 *   ① 轮循环开头：不再发起新的模型调用，按「达到预算」如实失败；
+	 *   ② 一轮内逐条派发之前：剩余调用**不派发**，但每条各补一条 tool 回传
+	 *      说明「未派发（不是执行失败）」，以维持 tool_calls ⇔ tool 一一对应。
+	 * 于是实际超限量最多是「一次模型调用 + 一条工具」，不会是一整轮。 */
+	long maxTaskSeconds = 900;
 };
 
 /* ---- SAN-10：会话运行期统计（REPL /status 的判据来源）----
@@ -149,8 +169,9 @@ private:
 	HistoryManager history_;
 	TaskBudget budget_;
 	DispatchGate gate_;
-	/* 当前任务已注入的工具结果/图片字节数在 budget_（AG-4）。每轮任务开始时
-	 * 清零——预算约束的是**单个任务**的上下文体积，跨任务由 maxHistoryBytes 管。 */
+	/* 当前任务的体积与墙钟预算都在 budget_（AG-4 / A4）。每轮任务开始时由
+	 * resetTask() 清零——预算约束的是**单个任务**，跨任务的体积由
+	 * HistoryManager 的 maxHistoryBytes 管。 */
 
 	void log(const std::string& text) const;
 

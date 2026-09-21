@@ -11,6 +11,7 @@
  * 原样逐轮带回，由驱动决定怎么用。
  */
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -68,6 +69,19 @@ struct ChatResponse {
 	int attempts = 0;
 	bool hasToolCalls() const { return !toolCalls.empty(); }
 };
+
+/* provider 回传字段的长度上限（A7 单点，2026-09-21）。
+ * 这两个串都来自远端，却会进历史并**逐轮原样回传**给 provider：
+ *   * id 不能截断——截断后与 assistant.tool_calls 的配对就断了（服务端 400），
+ *     所以超限只能整条响应拒绝；
+ *   * name 只用于查工具表（未知工具会折成文本回传），上限纯粹是不让远端
+ *     决定回传文本的体积。
+ * 取值远大于真实用量（内置工具名最长 run_action_script = 17 字节，
+ * 各 provider 的 call id 形如 "call_abc123..." 约 30 字节），留了一倍以上余量。 */
+namespace proto_limits {
+inline constexpr std::size_t kMaxToolCallIdBytes = 128;
+inline constexpr std::size_t kMaxToolNameBytes = 64;
+} // namespace proto_limits
 
 /* 传输抽象：complete() = 一轮模型调用。失败抛 std::exception。 */
 class ChatTransport {

@@ -4,6 +4,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "agentloop.hpp"
@@ -1000,4 +1001,200 @@ TH_TEST(agentloop_task_budget_still_counts_denied_call_bytes) {
 	 * 恰恰证明第一条**记了账**。 */
 	TH_CHECK_MSG(toolTexts[1].find("未知工具") != std::string::npos,
 		"第二条也应是未执行的原裁决文本，实际: " + toolTexts[1].substr(0, 120));
+}
+
+/* ================= A1：单轮上限不得破坏协议形状 =================
+ * AG-26 第一版把「被截断」写成**额外一条** tool 消息，并复用最后一条已派发
+ * 调用的 tool_call_id ⇒ N 个 tool_calls 对上 N+1 条 tool 消息、且有一个 id 出现
+ * 两次。严格网关 400；而那块历史已被 runTurn 的 complete 边界认作「可原样发送」、
+ * HistoryManager::trim 又不裁最新块 ⇒ REPL 从此每条任务都以同一个请求体失败（AG-4 同款）。
+ * 形状判据用产品侧的 historyProtocolViolation（SAN-1 单点），不在测试里另写一份；
+ * 出站报文侧另有 Lua 的 llm_wire_openai.check_tool_pairing（A1b）在发包前把门。 */
+namespace {
+
+/* 计次工具：记录被真实派发的次数（可选每次调用睡 ms 毫秒，A4 用） */
+AgentToolRegistry countingTools(std::shared_ptr<int> hits, int sleepMs = 0) {
+	AgentToolRegistry reg;
+	reg.add(AgentTool{"count", "计次", parseJson("{\"type\":\"object\"}"),
+		[hits, sleepMs](const Json&) -> AgentToolResult {
+			++(*hits);
+			if (sleepMs > 0) { std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs)); }
+			return {"ok", ""};
+		}});
+	return reg;
+}
+
+ChatResponse manyCalls(int n, const std::string& name = "count") {
+	ChatResponse r;
+	for (int i = 0; i < n; ++i) {
+		r.toolCalls.push_back(ToolCall{"c" + std::to_string(i), name, "{}"});
+	}
+	return r;
+}
+
+} // namespace
+
+TH_TEST(agentloop_round_cap_keeps_tool_call_pairing) {
+	FakeTransport tr;
+	tr.script = {manyCalls(5), answerResponse("结束")};
+	auto hits = std::make_shared<int>(0);
+	const AgentToolRegistry tools = countingTools(hits);
+
+	AgentOptions opts = optsFor(4);
+	opts.maxCallsPerRound = 2;
+	AgentSession s(tr, tools, opts);
+	TH_CHECK(s.runTurn("跑五个") == "结束");
+
+	/* 副作用次数受上限约束：派发 2 条，不是 5 条 */
+	TH_CHECK_MSG(*hits == 2, "只应派发 2 条，实际 " + std::to_string(*hits));
+
+	/* 核心断言：发出去的报文形状合规（AG-26 第一版在这里是「多一条 + id 重复」） */
+	TH_CHECK_MSG(tr.requests.size() == 2, "应有两次模型调用，实际 "
+		+ std::to_string(tr.requests.size()));
+	const std::string v = historyProtocolViolation(tr.requests.back());
+	TH_CHECK_MSG(v.empty(), "协议形状违例: " + v);
+
+	/* assistant 里只留被派发的那 2 条（未派发的不进 tool_calls） */
+	const ChatMessage* asst = nullptr;
+	for (const auto& m : tr.requests.back()) {
+		if (m.role == "assistant" && !m.toolCalls.empty()) { asst = &m; }
+	}
+	TH_CHECK(asst != nullptr);
+	if (asst != nullptr) {
+		TH_CHECK_MSG(asst->toolCalls.size() == 2, "assistant.tool_calls 应为 2 条，实际 "
+			+ std::to_string(asst->toolCalls.size()));
+	}
+}
+
+TH_TEST(agentloop_round_cap_note_reaches_model) {
+	FakeTransport tr;
+	tr.script = {manyCalls(5), answerResponse("结束")};
+	auto hits = std::make_shared<int>(0);
+	const AgentToolRegistry tools = countingTools(hits);
+
+	AgentOptions opts = optsFor(4);
+	opts.maxCallsPerRound = 2;
+	AgentSession s(tr, tools, opts);
+	TH_CHECK(s.runTurn("跑五个") == "结束");
+
+	/* 截断说明落在**该轮 assistant 的文本里**（SAN-1）：tool 消息只装工具结果，
+	 * 说明不借道任何 tool_call_id——借道就会让同一个 id 被回答两次（400）。
+	 * 条数与「未被派发」必须如实（AG-4/AG-21 口径：不向模型谎报状态）。 */
+	const ChatMessage* asst = nullptr;
+	std::vector<std::string> toolContents;
+	for (const auto& m : tr.requests.back()) {
+		if (m.role == "assistant" && !m.toolCalls.empty()) { asst = &m; }
+		if (m.role == "tool") { toolContents.push_back(m.content); }
+	}
+	TH_CHECK(asst != nullptr);
+	if (asst != nullptr) {
+		TH_CHECK_MSG(asst->content.find("5 条") != std::string::npos
+				&& asst->content.find("3 条") != std::string::npos,
+			"说明应给出总条数(5)与未派发条数(3): " + asst->content);
+		TH_CHECK_MSG(asst->content.find("只执行了前 2 条") != std::string::npos,
+			"说明应点名已执行条数: " + asst->content);
+		TH_CHECK_MSG(asst->content.find("未被派发") != std::string::npos,
+			"说明应写「未被派发」而不是「执行失败」: " + asst->content);
+	}
+	/* 工具结果通道保持纯净：两条都是工具原文，没有被追加说明 */
+	TH_CHECK_MSG(toolContents.size() == 2,
+		"tool 消息应为 2 条（与 tool_calls 一一对应），实际 "
+			+ std::to_string(toolContents.size()));
+	for (const auto& c : toolContents) {
+		TH_CHECK_MSG(c == "ok", "tool 消息应只有工具原文，实际: " + c);
+	}
+}
+
+TH_TEST(agentloop_round_cap_zero_means_unlimited) {
+	FakeTransport tr;
+	tr.script = {manyCalls(5), answerResponse("结束")};
+	auto hits = std::make_shared<int>(0);
+	const AgentToolRegistry tools = countingTools(hits);
+
+	AgentOptions opts = optsFor(4);
+	opts.maxCallsPerRound = 0;	/* 逃生口：不限 */
+	AgentSession s(tr, tools, opts);
+	TH_CHECK(s.runTurn("跑五个") == "结束");
+	TH_CHECK_MSG(*hits == 5, "0 = 不限，应派发全部 5 条，实际 " + std::to_string(*hits));
+	TH_CHECK(historyProtocolViolation(tr.requests.back()).empty());
+}
+
+/* ================= A4：单任务墙钟预算 =================
+ * 体积预算（AG-4/AG-21）管的是"往上下文里灌了多少字节"，没有一条管**时间**；
+ * 而 agent 模式全程硬件带电常驻。判定点有两个，语义不同，各一条用例。 */
+
+TH_TEST(agentloop_task_deadline_blocks_next_model_call) {
+	FakeTransport tr;
+	/* 三条脚本：若预算不生效会跑满三轮；生效后只应发出第一次模型调用 */
+	tr.script = {manyCalls(1), manyCalls(1), answerResponse("结束")};
+	auto hits = std::make_shared<int>(0);
+	/* 每条调用睡 1.1s，预算 1s ⇒ 第一轮工具跑完即超预算 */
+	const AgentToolRegistry tools = countingTools(hits, 1100);
+
+	AgentOptions opts = optsFor(6);
+	opts.maxTaskSeconds = 1;
+	AgentSession s(tr, tools, opts);
+
+	/* 判定点①：不再发起新的模型调用，按「达到预算」如实失败 */
+	TH_CHECK_THROWS_MSG(std::runtime_error, "墙钟预算", s.runTurn("慢慢跑"));
+	TH_CHECK_MSG(tr.requests.size() == 1, "预算耗尽后不应再发模型调用，实际发了 "
+		+ std::to_string(tr.requests.size()) + " 次");
+	TH_CHECK_MSG(*hits == 1, "应只执行过 1 条调用，实际 " + std::to_string(*hits));
+
+	/* 已执行的动作**不回退**：那一轮的 assistant+tool 仍在历史里（硬件不会倒回去，
+	 * 抹掉等于骗模型说什么都没发生——口径同 runTurn 的 catch(...) 注释） */
+	const std::string v = historyProtocolViolation(s.history());
+	TH_CHECK_MSG(v.empty(), "回滚后历史仍须合规: " + v);
+	bool sawTool = false;
+	for (const auto& m : s.history()) {
+		if (m.role == "tool" && m.content == "ok") { sawTool = true; }
+	}
+	TH_CHECK_MSG(sawTool, "已执行那一轮的 tool 回执应留在历史里");
+}
+
+TH_TEST(agentloop_task_deadline_skips_remaining_calls_with_receipts) {
+	FakeTransport tr;
+	tr.script = {manyCalls(3), answerResponse("结束")};
+	auto hits = std::make_shared<int>(0);
+	const AgentToolRegistry tools = countingTools(hits, 1100);
+
+	AgentOptions opts = optsFor(6);
+	opts.maxTaskSeconds = 1;
+	AgentSession s(tr, tools, opts);
+	TH_CHECK_THROWS_MSG(std::runtime_error, "墙钟预算", s.runTurn("跑三个"));
+
+	/* 判定点②：预算在一轮**中间**耗尽 ⇒ 剩余调用不派发（副作用只有 1 次），
+	 * 但每条各留一条「未派发」回执——少一条就是服务端 400。 */
+	TH_CHECK_MSG(*hits == 1, "只应真实执行 1 条，实际 " + std::to_string(*hits));
+	const std::string v = historyProtocolViolation(s.history());
+	TH_CHECK_MSG(v.empty(), "一轮内部分未派发时历史仍须一一对应: " + v);
+
+	std::vector<std::string> toolContents;
+	for (const auto& m : s.history()) {
+		if (m.role == "tool") { toolContents.push_back(m.content); }
+	}
+	TH_CHECK_MSG(toolContents.size() == 3, "3 个 tool_calls 应有 3 条回执，实际 "
+		+ std::to_string(toolContents.size()));
+	if (toolContents.size() == 3) {
+		TH_CHECK(toolContents[0] == "ok");
+		TH_CHECK_MSG(toolContents[1].find("未派发") != std::string::npos,
+			"第二条应为未派发回执: " + toolContents[1]);
+		TH_CHECK_MSG(toolContents[2].find("未派发") != std::string::npos,
+			"第三条应为未派发回执: " + toolContents[2]);
+		TH_CHECK_MSG(toolContents[1].find("没有产生任何副作用") != std::string::npos,
+			"未派发回执必须说明无副作用: " + toolContents[1]);
+	}
+}
+
+TH_TEST(agentloop_task_deadline_zero_means_unlimited) {
+	FakeTransport tr;
+	tr.script = {manyCalls(2), answerResponse("结束")};
+	auto hits = std::make_shared<int>(0);
+	const AgentToolRegistry tools = countingTools(hits);
+
+	AgentOptions opts = optsFor(4);
+	opts.maxTaskSeconds = 0;	/* 逃生口：不限（旧行为） */
+	AgentSession s(tr, tools, opts);
+	TH_CHECK(s.runTurn("跑两个") == "结束");
+	TH_CHECK_MSG(*hits == 2, "0 = 不限，应全部执行，实际 " + std::to_string(*hits));
 }

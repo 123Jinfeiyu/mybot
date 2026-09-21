@@ -53,8 +53,18 @@ static int restrictedLoader(lua_State* L) {
 
 	lua_pushvalue(L, lua_upvalueindex(2));		/* 原函数 */
 	lua_pushvalue(L, 1);						/* path */
-	lua_call(L, 1, 1);
-	return 1;
+	/* 多返回值必须原样透传（2026-09-21 第七轮审计）：旧实现是 lua_call(L, 1, 1)，
+	 * 把结果截到 1 个——而 `loadfile` 的契约是 `(chunk, errmsg)`。截断的后果是
+	 * modules/lib/sensor_daemon_multi.lua 里 `local f, err = loadfile(drvpath)` 的
+	 * err **恒为 nil**，于是 fail(-8, "cannot load driver: " .. tostring(err)) 永远
+	 * 只打出 "(nil)"，多器件守护的"驱动加载失败"查不到成因。
+	 * 用 LUA_MULTRET 并把实际结果个数回报给 Lua（dofile 现网 chunk 只回 1 值，
+	 * 语义不变；loadfile 的失败路径从此拿得到 errmsg）。
+	 * 注：额外实参（loadfile 的 mode/env）不转发——这是本包装的既有行为，
+	 * 缺省 mode 即 "bt"，故只对显式收窄 mode 的调用者有差别。 */
+	const int nargs = lua_gettop(L) - 2;		/* 调用前的入参个数（不含刚压的两个） */
+	lua_call(L, 1, LUA_MULTRET);
+	return lua_gettop(L) - nargs;
 }
 
 /* ---- 收紧 Lua 沙箱（issue #9 M1 可落地部分；M3 补 dofile/loadfile 收口）----

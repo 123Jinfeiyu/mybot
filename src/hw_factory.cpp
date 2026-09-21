@@ -208,6 +208,10 @@ std::string optCol(const mt::MatrixObject& m, std::int64_t row, const char* col)
 	return (v == "-") ? std::string() : v;
 }
 
+/* 守护侧的缺省值以 HwFactory::kDaemonDefault* 为**单点**（声明处有完整理由：
+ * 缺列不等于"不参与判据"，必须按 sensor_daemon.lua 的缺省补全；两侧漂移由
+ * test/cpp/test_robot.cpp 的 daemon_defaults_match_lua_source 读 Lua 源钉住）。 */
+
 } // namespace
 
 void HwFactory::checkSingleConsumer(const std::vector<mt::MatrixObject>& matrices) {
@@ -248,19 +252,58 @@ void HwFactory::checkSingleConsumer(const std::vector<mt::MatrixObject>& matrice
 		if (idxName < 0) { continue; }
 
 		if (t == "Daemon") {
-			/* 守护采样的是 driver 列指名的那颗器件；proto=virt 是内存仿真，
-			 * 不碰真器件，不参与判据（否则无硬件夹具会全线误报）。 */
+			/* 守护采样的是 driver 列指名的那颗器件；多器件守护
+			 * （chunk = lib/sensor_daemon_multi.lua）的清单在 devices 列。
+			 * proto=virt 是内存仿真，不碰真器件，不参与判据（否则无硬件夹具
+			 * 会全线误报）；**缺列不等于 virt**——守护侧缺省就是 i2c，
+			 * 见上面 kDaemonDefaultProto 的注释。 */
 			for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
-				const std::string proto = optCol(m, i, "proto");
-				if (proto.empty() || proto == "virt") { continue; }
-				const std::string drv = optCol(m, i, "driver");
-				if (drv.empty()) { continue; }
-				if (!declaresSingleConsumer(firstExistingModule(modulePath, drv + ".lua"))) { continue; }
-				const std::string path = optCol(m, i, "path");
-				if (path.empty()) { continue; }
-				const std::string who = "daemon '" + m.inherited(i, idxName)
+				const std::string protoRaw = optCol(m, i, "proto");
+				const std::string proto = protoRaw.empty() ? kDaemonDefaultProto : protoRaw;
+				if (proto == "virt") { continue; }
+				const std::string pathRaw = optCol(m, i, "path");
+				const std::string path = pathRaw.empty()
+					? std::string(proto == "spi" ? kDaemonDefaultPathSpi : kDaemonDefaultPathI2c)
+					: pathRaw;
+				const std::string whoBase = "daemon '" + m.inherited(i, idxName)
 					+ "' (in table '" + t + "', row " + std::to_string(i) + ")";
-				claim(path + " " + normalizeAddress(optCol(m, i, "addr")), who);
+
+				const std::string drv = optCol(m, i, "driver");
+				const std::string devices = optCol(m, i, "devices");
+				if (!drv.empty()) {
+					/* ① 单器件守护：driver + addr 列 */
+					if (declaresSingleConsumer(firstExistingModule(modulePath, drv + ".lua"))) {
+						claim(path + " " + normalizeAddress(optCol(m, i, "addr")), whoBase);
+					}
+				} else if (!devices.empty()) {
+					/* ② 多器件守护：`driver@addr@fields[@k=v...]`，以 '|' 分隔。
+					 * 宿主此前从不解析这一列 ⇒ 整类守护不在判据内（漏标）。
+					 * spec 语法错（缺 @、字段空）由守护侧 fail(-2) 在运行期报，
+					 * 这里只跳过解析不出来的片段，不重复造一套语法校验。
+					 * driver 列与 devices 列互斥（多器件守护不用 driver/addr/fields
+					 * 列，见 sensor_daemon_multi.lua 文件头），故用 else if —— 否则
+					 * 同一行会被 claim 两次，自己和自己冲突（误报）。 */
+					std::size_t pos = 0;
+					std::size_t specIdx = 0;
+					while (pos < devices.size()) {
+						const std::size_t bar = devices.find('|', pos);
+						const std::string spec = devices.substr(pos,
+							bar == std::string::npos ? std::string::npos : bar - pos);
+						pos = (bar == std::string::npos) ? devices.size() : bar + 1;
+						++specIdx;
+						const std::size_t at1 = spec.find('@');
+						if (spec.empty() || at1 == std::string::npos) { continue; }
+						const std::string specDrv = trim(spec.substr(0, at1));
+						const std::size_t at2 = spec.find('@', at1 + 1);
+						const std::string specAddr = trim(spec.substr(at1 + 1,
+							(at2 == std::string::npos ? spec.size() : at2) - at1 - 1));
+						if (specDrv.empty() || !declaresSingleConsumer(
+								firstExistingModule(modulePath, specDrv + ".lua"))) { continue; }
+						claim(path + " " + normalizeAddress(specAddr),
+							whoBase + " devices[" + std::to_string(specIdx) + "]='"
+								+ specDrv + "'");
+					}
+				}
 			}
 			continue;
 		}

@@ -29,6 +29,17 @@ void RobotStruct::active() {
 	 * 校验存在性（此时全部变量已注册，前向引用合法）。 */
 	for (const auto& p : metaProviders_) { p->validate(); }
 	for (MatrixVars_Hardware* item : registry_.sequence()) {
+		/* build 期同样要看停止标志（2026-09-21 第七轮审计）：多驱动上电时每个
+		 * build 内部都有真机延时，整段可能跑很久，而信号处理器在 active() 之前
+		 * 一行就装好了（main.cpp 的 installStopSignalHandlers）。旧实现在这里不查
+		 * 标志 ⇒ 第一次 Ctrl-C **无任何可观察效果**，运维必然再按一下，而第二次
+		 * 是 `signal(SIG_DFL) + raise` 强杀：已 build 成功的器件原地带电、
+		 * deactivate 一行不执行——恰好把"断电是生命周期不变式"打穿在它最需要的
+		 * 那条路径上。现在第一次按键即中止装配并上抛，由 runRobotAndCleanup 的
+		 * catch 走 deactivate，把已 build 的那部分逆序断电。 */
+		if (stopRequested()) {
+			throw std::runtime_error("上电被中断（收到停止信号）：已装配的器件正在断电");
+		}
 		item->build();
 	}
 }

@@ -720,6 +720,32 @@ std::string probeSql(const fs::path& marker) {
 
 } // namespace
 
+/* build 期的停止响应（2026-09-21 第七轮审计）：信号处理器只置标志
+ * （async-signal-safe），真正的响应点在各处循环里——而 active() 的逐件 build
+ * 循环此前**不查标志**。后果是：多驱动上电（每个 build 内含真机延时）期间
+ * 第一次 Ctrl-C 毫无可见效果，运维必然再按一次，而第二次是 `SIG_DFL + raise`
+ * 强杀 ⇒ 已 build 成功的器件原地带电、deactivate 一行不执行。 */
+TH_TEST(robot_active_aborts_when_stop_requested_before_build) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("stop-build");
+	const fs::path marker = tmp.path() / "destroyed";
+
+	/* 标志必须复位，否则污染后续所有用例（含 agent 侧那些查 stopRequested 的） */
+	struct StopGuard {
+		StopGuard() { bot::stopRequested().store(true); }
+		~StopGuard() { bot::stopRequested().store(false); }
+	} stopGuard;
+
+	bot::MemoryReader sr(probeSql(marker));
+	bot::RobotStruct robot(sr);
+	TH_CHECK_THROWS_MSG(std::runtime_error, "上电被中断", robot.active());
+
+	/* 中止后清理链照常可走：deactivate 不得抛出，且幂等（第二次直接返回）。
+	 * 未 build 的器件 destroy 只计入告警，这是本仓既有口径（见 active() 注释）。 */
+	robot.deactivate();
+	robot.deactivate();
+}
+
 TH_TEST(destructor_deactivates_when_caller_forgot) {
 	ModulePathGuard guard("modules:test/cpp");
 	TempDir tmp("lifetime-forgot");
@@ -950,4 +976,101 @@ TH_TEST(single_consumer_allows_dual_consumers_of_ordinary_drivers) {
 	 * （指针写 + 数据读合并），直连变量 adc0 与守护 adc-d0 同为
 	 * /dev/i2c-1 @ 0x48 也安全。这条钉住「判据只针对声明者」。 */
 	TH_CHECK(assembleFile("robots/test/ads1115.sql").empty());
+}
+
+/* ---- 守护行的三条静默旁路（2026-09-21 第七轮审计）----
+ * 旧实现把「缺列」当成「不参与判据」直接 continue，而守护侧对 proto/path 都有缺省、
+ * 多器件守护的器件清单在 devices 列里 ⇒ 三种被 docs/daemon.md 认可的写法都绕过了
+ * 判据，运行期却真的在总线上开了 fd。漏标 = 双消费者静默数据错乱，**无运行期症状**。 */
+
+TH_TEST(single_consumer_rejects_daemon_row_that_omits_proto_and_path) {
+	ModulePathGuard guard("modules:test/cpp");
+	/* Daemon 行省略 proto 与 path —— 正是 docs/daemon.md 的最小写法
+	 * （守护侧缺省 proto=i2c、path=/dev/i2c-1）。直连变量 spec0 在
+	 * $i2c-1(/dev/i2c-1) @ 0x49，两者必须被判为同一颗器件。 */
+	const std::string err = assembleSql(
+		"CREATE TABLE I2C (name String, path String);\n"
+		"INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');\n"
+		"CREATE TABLE AS7262 (name String, I2C String, address String);\n"
+		"INSERT INTO AS7262 (name, I2C, address) VALUES ('spec0', '$i2c-1', '0x49');\n"
+		"CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n"
+		"CREATE TABLE Daemon (name String, chunk String, driver String, addr String,\n"
+		"                     interval String, fields String);\n"
+		"INSERT INTO Daemon (name, chunk, driver, addr, interval, fields)\n"
+		"  VALUES ('spec-d0', 'lib/sensor_daemon.lua', 'AS7262', '0x49', '300', 'V|B');\n");
+	TH_CHECK_MSG(err.find("two concurrent consumers") != std::string::npos,
+		"省略 proto/path 的守护行仍须参与判重，实际: " + err);
+	TH_CHECK(err.find("spec0") != std::string::npos);
+	TH_CHECK(err.find("spec-d0") != std::string::npos);
+
+	/* 对照：显式 proto=virt 仍须放行（内存仿真不碰真器件；五个真机夹具正是这么写的） */
+	TH_CHECK_MSG(assembleSql(
+		"CREATE TABLE I2C (name String, path String);\n"
+		"INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');\n"
+		"CREATE TABLE AS7262 (name String, I2C String, address String);\n"
+		"INSERT INTO AS7262 (name, I2C, address) VALUES ('spec0', '$i2c-1', '0x49');\n"
+		"CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n"
+		"CREATE TABLE Daemon (name String, chunk String, driver String, proto String,\n"
+		"                     addr String, interval String, fields String);\n"
+		"INSERT INTO Daemon (name, chunk, driver, proto, addr, interval, fields)\n"
+		"  VALUES ('spec-d0', 'lib/sensor_daemon.lua', 'AS7262', 'virt', '0x49', '300', 'V|B');\n"
+		).empty(), "proto=virt 的守护不该参与判据（否则无硬件夹具全线误报）");
+}
+
+TH_TEST(single_consumer_parses_multi_device_daemon_devices_column) {
+	ModulePathGuard guard("modules:test/cpp");
+	/* 多器件守护（chunk = lib/sensor_daemon_multi.lua）没有 driver/addr 列，
+	 * 器件清单在 devices 列：`driver@addr@fields[@k=v...]`，以 '|' 分隔。 */
+	const std::string err = assembleSql(
+		"CREATE TABLE I2C (name String, path String);\n"
+		"INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');\n"
+		"CREATE TABLE AS7262 (name String, I2C String, address String);\n"
+		"INSERT INTO AS7262 (name, I2C, address) VALUES ('spec0', '$i2c-1', '0x49');\n"
+		"CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n"
+		"CREATE TABLE Daemon (name String, chunk String, proto String, path String,\n"
+		"                     interval String, devices String);\n"
+		"INSERT INTO Daemon (name, chunk, proto, path, interval, devices)\n"
+		"  VALUES ('multi-d0', 'lib/sensor_daemon_multi.lua', 'i2c', '/dev/i2c-1', '300',\n"
+		"          'BME280@0x76@t,h,p|AS7262@0x49@V,B');\n");
+	TH_CHECK_MSG(err.find("two concurrent consumers") != std::string::npos,
+		"devices 列里的声明者驱动（第 2 个 spec）必须被登记，实际: " + err);
+	/* 定位串要点名到是哪一个 spec，否则用户不知道清单里哪一颗撞了 */
+	TH_CHECK_MSG(err.find("devices[2]") != std::string::npos, "应点名 spec 下标，实际: " + err);
+	TH_CHECK(err.find("AS7262") != std::string::npos);
+	TH_CHECK(err.find("multi-d0") != std::string::npos);
+
+	/* 对照：devices 里全是未声明者驱动 ⇒ 直连 + 守护双消费者照常放行 */
+	TH_CHECK_MSG(assembleSql(
+		"CREATE TABLE I2C (name String, path String);\n"
+		"INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');\n"
+		"CREATE TABLE ADS1115 (name String, I2C String, address String);\n"
+		"INSERT INTO ADS1115 (name, I2C, address) VALUES ('adc0', '$i2c-1', '0x48');\n"
+		"CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n"
+		"CREATE TABLE Daemon (name String, chunk String, proto String, path String,\n"
+		"                     interval String, devices String);\n"
+		"INSERT INTO Daemon (name, chunk, proto, path, interval, devices)\n"
+		"  VALUES ('multi-d0', 'lib/sensor_daemon_multi.lua', 'i2c', '/dev/i2c-1', '300',\n"
+		"          'ADS1115@0x48@v');\n").empty(),
+		"未声明者驱动的双消费者不该被拦（判据只针对声明者）");
+}
+
+TH_TEST(daemon_defaults_match_lua_source) {
+	/* 两侧钉住：C++ 判据用的守护缺省值必须逐字出现在 sensor_daemon.lua 的缺省
+	 * 表达式里。任一侧漂移都会红——这类漂移**没有运行期症状**，只会让判据静默
+	 * 漏判，所以只能靠读源比对（不是在两处各手抄一遍就算数）。 */
+	const std::string lua = readFileAll("modules/lib/sensor_daemon.lua");
+	TH_CHECK_MSG(!lua.empty(), "读不到 modules/lib/sensor_daemon.lua");
+	const std::string protoExpr =
+		std::string("cfg.proto or \"") + bot::HwFactory::kDaemonDefaultProto + "\"";
+	TH_CHECK_MSG(lua.find(protoExpr) != std::string::npos,
+		"Lua 侧 proto 缺省应与 C++ 常量一致（找 '" + protoExpr + "'）");
+	const std::string pathExpr = std::string("proto == \"spi\" and \"")
+		+ bot::HwFactory::kDaemonDefaultPathSpi + "\" or \""
+		+ bot::HwFactory::kDaemonDefaultPathI2c + "\"";
+	TH_CHECK_MSG(lua.find(pathExpr) != std::string::npos,
+		"Lua 侧 path 缺省应与 C++ 常量一致（找 '" + pathExpr + "'）");
 }

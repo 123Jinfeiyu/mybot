@@ -255,8 +255,13 @@ local function resolve_sim_path(data)
 	if real == nil then return nil, "无法打开模拟图片 " .. src end
 	local roots = allowed_roots(data)
 	if #roots == 0 then
+		-- H1 之后 src_root 不再由 src 自己推导，故这里要把**三条出路**都讲清楚：
+		-- 否则操作者照旧在配置文件里写 camera_src 却一直收到"未放行"，看不出成因。
 		return nil, "仿真图片未放行：" .. src
-			.. "（请用 --camera-src 指定，或在 BOT4CJ_CAMERA_SRC_DIR 里列出允许目录）"
+			.. "（请用**命令行** --camera-src 指定，其所在目录即白名单根；"
+			.. "或用 --camera-src-dir / BOT4CJ_CAMERA_SRC_DIR 显式列出允许目录。"
+			.. "注意：配置文件里的 camera_src **不参与**推导根目录——"
+			.. "dirname(src) 恒包含 src，用它当根等于没有白名单）"
 	end
 	for _, root in ipairs(roots) do
 		if path_within(real, root) then return real end

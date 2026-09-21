@@ -291,3 +291,74 @@ TH_TEST(mtmerge_commutativity_intentionally_not_held) {
 	TH_CHECK(fx::cell(r0, 0, 0) == "b.p");
 	TH_CHECK(!sameMatrix(l0, r0));
 }
+
+/* ================= 产物预算（2026-09-21 第七轮审计） =================
+ * 输入侧的三道限（@Include 行数 ≤32、字节 ≤8 MiB、|phase| ≤100000）都在，
+ * 而产物侧此前一条都没有：几十字节的脚本写一行 `@Include path=..., phase=100000`
+ * 就能把终态撑到 ~1e5 行 × 数十列（数百 MB），树莓派上 OOM——而 OOM 是 SIGKILL
+ * 语义，deactivate() 整体被跳过。判据在 mergeTwo 这个单点，mtmerge 与 @Include 共用。 */
+
+/* 行列可控的 @Action 夹具：c 列 × r 数据行（值一律填 1，避免文本体积干扰） */
+static mt::MatrixObject actionGrid(int r, int c, const std::string& dev) {
+	std::string t = "@Action\n";
+	for (int j = 0; j < c; ++j) {
+		t += dev + ".c" + std::to_string(j);
+		t += (j + 1 == c) ? ";\n" : " ";
+	}
+	t.reserve(t.size() + static_cast<std::size_t>(r) * (2 * c + 2));
+	for (int i = 0; i < r; ++i) {
+		for (int j = 0; j < c; ++j) { t += (j + 1 == c) ? "1;\n" : "1 "; }
+	}
+	t += "@\n";
+	return fx::oneMatrix(t);
+}
+
+TH_TEST(mtmerge_product_budget_rejects_oversized_row_count) {
+	/* phase 本身合法（≤ kMaxPhase），越限的是**产物行数** */
+	TH_CHECK_THROWS_MSG(std::exception, "exceeding the limit of",
+		mtmerge::mergeTwo(actionA(3), actionB(2), mtmerge::kMaxPhase, "a.mt", "b.mt"));
+	/* 报错要点名 phase 与实测行数，否则用户只看到"太大"却不知道是哪一侧造成的 */
+	try {
+		mtmerge::mergeTwo(actionA(3), actionB(2), mtmerge::kMaxPhase, "a.mt", "b.mt");
+		TH_CHECK(false);
+	} catch (const std::exception& e) {
+		const std::string w = e.what();
+		TH_CHECK_MSG(w.find(std::to_string(mtmerge::kMaxMergedRows)) != std::string::npos,
+			"应给出上限: " + w);
+		TH_CHECK_MSG(w.find("phase") != std::string::npos, "应点名相位: " + w);
+		TH_CHECK_MSG(w.find("a.mt") != std::string::npos && w.find("b.mt") != std::string::npos,
+			"应点名两侧输入: " + w);
+	}
+}
+
+TH_TEST(mtmerge_product_budget_rejects_oversized_cell_count) {
+	/* 行数在上限之内（19999），但列宽把单元格数顶穿：走的是**第二条**判据 */
+	TH_CHECK_THROWS_MSG(std::exception, "cell(s)",
+		mtmerge::mergeTwo(actionGrid(19999, 2, "a"), actionGrid(3, 10, "b"), 0, "a.mt", "b.mt"));
+	try {
+		mtmerge::mergeTwo(actionGrid(19999, 2, "a"), actionGrid(3, 10, "b"), 0, "a.mt", "b.mt");
+		TH_CHECK(false);
+	} catch (const std::exception& e) {
+		const std::string w = e.what();
+		TH_CHECK_MSG(w.find(std::to_string(mtmerge::kMaxMergedCells)) != std::string::npos,
+			"应给出单元格上限: " + w);
+		TH_CHECK_MSG(w.find("rows x") != std::string::npos, "应给出实测行×列: " + w);
+	}
+}
+
+TH_TEST(mtmerge_product_budget_allows_real_world_sizes) {
+	/* 仓库内 195 个 .mt 的实测极值是 200 数据行 / 20 列 / 760 单元格；
+	 * 这里按"两个这样的片段归并"取 200×40，必须照常通过（余量两个数量级）。 */
+	mt::MatrixObject out = mtmerge::mergeTwo(actionGrid(200, 20, "a"), actionGrid(200, 20, "b"),
+		0, "a.mt", "b.mt");
+	TH_CHECK(out.rows() == 201);		/* 表头 + 200 数据行 */
+	TH_CHECK(out.cols() == 40);
+}
+
+TH_TEST(mtmerge_product_budget_boundary_is_inclusive) {
+	/* 恰好等于上限必须放行：判据是 >，不是 >=（写反会白禁一种合法规模） */
+	mt::MatrixObject out = mtmerge::mergeTwo(
+		actionGrid(static_cast<int>(mtmerge::kMaxMergedRows), 1, "a"), actionGrid(1, 1, "b"),
+		0, "a.mt", "b.mt");
+	TH_CHECK(static_cast<std::int64_t>(out.rows()) - 1 == mtmerge::kMaxMergedRows);
+}

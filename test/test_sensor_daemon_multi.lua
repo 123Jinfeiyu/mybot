@@ -4,7 +4,7 @@
 --   1. 双器件合并采样：一次 daemon_tick → 一次 publish，字段按 spec 序拼接
 --   2. 器件隔离：两份驱动同状态机不互相覆盖（fenv），各自拿到自己的 address
 --   3. spec 解析：残缺 spec / 非法字段 token / 非法 k=v → status=-2 且不发布样本
---   4. 字段预算：总字段数超 32 → status=-2
+--   4. 字段预算：总字段数超共享槽容量（取自 layout，不写死）→ status=-2
 --   5. 坏样本整拍不发布：一只器件 call 失败，count 停滞、无假值
 --   6. 全局参数透传 + 器件 spec 内同名键覆盖
 --   7. cleanup：逐器件 destroy（一只抛错不阻断其余），总线 fd 恰关一次
@@ -169,11 +169,22 @@ check("非法 extra 参数（缺 =）→ status=-2", st4 == -2, tostring(st4))
 local st5 = case_status("devices=;proto=i2c;path=/dev/fake-i2c")
 check("devices 为空 → status=-2", st5 == -2, tostring(st5))
 
--- ---- 5. 字段预算超 32 → status=-2 ----
+-- ---- 5. 字段预算：超共享槽容量 → status=-2 ----
+-- 容量取自注入的 layout（realP.SLOT_MAXVALS），**不写死**：TD-3 把 values 从 32
+-- 提到 64 时，这里写死的 "33 个字段" 就变成了「判据还在但够不着」（实测放行、
+-- 返回 0）。按 layout 读，C++ 的 SLOT_MAXVALS 与 pthread.lua 的 base_layout 再改
+-- 也不会假绿。
+local cap = realP.SLOT_MAXVALS
 local many = {}
-for i = 1, 33 do many[i] = "drvA@0x10@a" .. i end
+for i = 1, cap + 1 do many[i] = "drvA@0x10@a" .. i end
 local st6 = case_status("devices=" .. table.concat(many, "|") .. ";proto=i2c;path=/dev/fake-i2c")
-check("总字段数 > 32 → status=-2", st6 == -2, tostring(st6))
+check("总字段数 > 共享槽容量(" .. cap .. ") → status=-2", st6 == -2, tostring(st6))
+
+-- 边界对照：正好装满必须放行——否则「上限被悄悄改小」时上面那条会空洞地通过
+local exact = {}
+for i = 1, cap do exact[i] = "drvA@0x10@a" .. i end
+local st6b = case_status("devices=" .. table.concat(exact, "|") .. ";proto=i2c;path=/dev/fake-i2c")
+check("总字段数 = 共享槽容量(" .. cap .. ") → 放行", st6b == 0, tostring(st6b))
 
 -- ---- 6. 驱动加载失败 → status=-8 ----
 local st7 = case_status("devices=nosuchdrv@0x10@a1;proto=i2c;path=/dev/fake-i2c")

@@ -10,8 +10,15 @@
  * @Include 触达本地文件。防线按层：
  *   1) 词法：路径必须是相对名——拒绝绝对路径、'..' 分量、空段、NUL，
  *      只放行 .mt 后缀（规则集与 agent::resolveActionScriptPath 同族）；
- *   2) 硬限：全树 @Include 行数 ≤ kMaxIncludes、嵌套深度 ≤
- *      kMaxIncludeDepth、字节总量 ≤ 8 MiB、单文件 ≤ 8 MiB；
+ *   2) 硬限：全树 @Include 行数 ≤ kMaxIncludes（该预算**同时**界定了嵌套深度——
+ *      每层递归至少消耗一行 @Include，故深度 ≤ kMaxIncludes；仓库里并没有独立的
+ *      深度常量，旧注释写的 kMaxIncludeDepth 是不存在的防线，已按实况改掉）、
+ *      字节总量 ≤ 8 MiB、单文件 ≤ 8 MiB；
+ *   2b) 产物预算：归并产物的行数 ≤ mtmerge::kMaxMergedRows、单元格数 ≤
+ *      mtmerge::kMaxMergedCells（判据在 mergeTwo 单点，mtmerge 工具与本展开共用）。
+ *      没有它，一行 `@Include path=..., phase=100000` 就能把终态撑到 ~1e5 行 ×
+ *      数十列（数百 MB）⇒ 树莓派上 OOM，而 OOM 是 SIGKILL 语义，deactivate()
+ *      整体被跳过；
  *   3) O_NOFOLLOW：拒绝符号链接（残余同 agent::readFileLimited 的声明：
  *      路径中间的目录软链仍可穿越——能写 base 树的进程本就能直接改脚本，
  *      不构成增量能力）；

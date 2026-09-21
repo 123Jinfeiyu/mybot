@@ -121,6 +121,36 @@ TH_TEST(cliargs_agent_only_option_without_agent_is_rejected) {
 	TH_CHECK(bot::validateOptions(p) == 2);
 }
 
+/* A4：--llm-task-timeout 是 agentOnly 的带值选项——解析要落到 llmTaskTimeout，
+ * 且在非 agent 模式下必须被拒（本仓口径：agent 专属选项不静默忽略）。 */
+TH_TEST(cliargs_task_timeout_option_is_parsed_and_agent_only) {
+	{	/* 等号写法 */
+		Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--llm-task-timeout=77"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK_MSG(p.opts.llmTaskTimeout == "77", "实际: '" + p.opts.llmTaskTimeout + "'");
+		TH_CHECK(p.opts.agentOptionsUsed);
+		TH_CHECK(bot::validateOptions(p) == 0);
+	}
+	{	/* 空格写法（值在下一个 argv） */
+		Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--llm-task-timeout", "900"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK_MSG(p.opts.llmTaskTimeout == "900", "实际: '" + p.opts.llmTaskTimeout + "'");
+		TH_CHECK(p.missingValue.empty());
+	}
+	{	/* 0 是合法值（= 不限），不能在解析层被当成缺值 */
+		Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--llm-task-timeout", "0"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK_MSG(p.opts.llmTaskTimeout == "0", "实际: '" + p.opts.llmTaskTimeout + "'");
+	}
+	{	/* 非 agent 模式：拒绝，退出码 2 */
+		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout", "60"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(!p.opts.agent);
+		TH_CHECK(p.opts.agentOptionsUsed);
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+}
+
 TH_TEST(cliargs_agent_with_tcp_is_rejected) {
 	Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
@@ -250,17 +280,23 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	TH_CHECK(defs.count("--tcp") == 1);
 	TH_CHECK(defs.count("--prompt-file") == 1);
 	TH_CHECK(defs.count("--agent-shell") == 1);
+	/* A4：单任务墙钟预算的命令行入口（与 --llm-timeout 不同维度） */
+	TH_CHECK(defs.count("--llm-task-timeout") == 1);
+	/* H1：capture_image 白名单根目录（命令行独占，配置文件写它会被拒绝加载） */
+	TH_CHECK(defs.count("--camera-src-dir") == 1);
 	/* 已移除的选项不得在帮助里复活（2026-09-20 评估：--llm-key 明文 argv；
-	 * --agent-shell 顶掉 --agent-no-shell，故净减 1） */
+	 * --agent-shell 顶掉 --agent-no-shell，故净减 1；A4/H1 各加回 1 条） */
 	TH_CHECK(defs.count("--llm-key") == 0);
 	TH_CHECK(defs.count("--agent-no-shell") == 0);
 	/* 分段帮助（2026-09-22）把 --help <topic> 四行并入帮助正文（23），审计轨迹
 	 * （--audit-log，2026-09-22）再加一项（24），策略钩子（--agent-policy，
 	 * 2026-09-22）再加一项（25）。F-1/F-2/F-3（2026-09-22，原 TD-2 剩余部分）
 	 * 再加三项——--tcp-max-auth-attempts / --tcp-total-timeout /
-	 * --daemon-grace-ms（28）。PL-1（2026-09-22）加 --check-config（29）。
-	 * 计数断言是「帮助 ↔ docs 双向一致」守卫的一部分：随选项增删同步更新。 */
-	TH_CHECK(defs.size() == 29);
+	 * --daemon-grace-ms（28）。PL-1（2026-09-22）加 --check-config（29）。第七轮审计
+	 * （2026-09-22）再加两项——--llm-task-timeout（A4 单任务墙钟预算）与
+	 * --camera-src-dir（H1 白名单根，命令行独占）（31）。计数断言是「帮助 ↔ docs
+	 * 双向一致」守卫的一部分：随选项增删同步更新。 */
+	TH_CHECK(defs.size() == 31);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);

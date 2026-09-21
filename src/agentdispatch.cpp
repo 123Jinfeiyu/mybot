@@ -40,6 +40,28 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 		/* 参数解析失败 = 这一次调用**从未到达工具**，副作用必然未发生（SAN-4） */
 		result = AgentToolResult{std::string("工具参数错误: ") + e.what(), "", false, e.what(),
 			/* executed= */ false};
+	} catch (...) {
+		/* A5：本机 LuaJIT 用 C++ 异常实现 luaD_throw，从没有 Lua CFRAME 的 C++
+		 * 帧抛出的 Lua 错误**不是** std::exception（同判据见 main.cpp:173-176）。
+		 * 只接 std::exception 的话这类抛出会穿透到 runTurn 的 catch(...)，把
+		 * 整个会话结束掉——而「REPL 单轮失败不结束会话」是 runAgentMode 的承诺。
+		 * 这里折成 tool 回传而不是让它上抛：那是唯一保持「本轮 tool 消息与
+		 * assistant.tool_calls 一一对应」的选择（见 agentloop.cpp 的
+		 * executeToolRound），也让模型看到「这一步没拿到数据」而不是「什么都没
+		 * 发生」。审计照常记这条：ok=false，模型想做什么没做成同样是审计信息。
+		 *
+		 * executed 按 SAN-4 的口径分两种，不能一律填 false：argsOk 为假说明抛出
+		 * 发生在参数解析阶段（调用从未到达工具，副作用必然未发生）；为真则抛出
+		 * 来自确认程序或工具本体——Lua 动作脚本可能已经驱动了硬件才抛，此时
+		 * 声称「没执行」就是谎报（那正是 SAN-4 要修的形态）。 */
+		result = argsOk
+			? AgentToolResult{"工具执行抛出非标准异常（Lua 错误或外来抛出），"
+					"本轮结果不可用；副作用可能已发生。"
+					"请先确认硬件状态，再换一种做法或改用其他工具",
+					"", false, "non-std exception", /* executed= */ true}
+			: AgentToolResult{std::string("工具参数错误: 非标准异常（")
+					+ "参数未能解析，本次调用未派发）",
+					"", false, "non-std exception", /* executed= */ false};
 	}
 
 	const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(

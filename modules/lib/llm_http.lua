@@ -110,6 +110,7 @@ local CANDIDATES = { "libcurl.so.4", "libcurl-gnutls.so.4", "libcurl.so" }
 
 local curl, setopt_long, setopt_ptr, getinfo_long
 local load_err
+local loaded_name	-- 实际 dlopen 成功的那个名字（见 M.libname）
 
 -- 惰性加载：build() 阶段调用一次即可把「缺库」变成清晰报错，
 -- 而不是等到第一次调模型才失败
@@ -121,6 +122,7 @@ function M.load()
 		local ok, lib = pcall(ffi.load, name)
 		if ok then
 			curl = lib
+			loaded_name = name
 			break
 		end
 		tried[#tried + 1] = name
@@ -135,6 +137,22 @@ function M.load()
 	getinfo_long = ffi.cast("int (*)(void *, int, long *)", curl.curl_easy_getinfo)
 	curl.curl_global_init(CURL_GLOBAL_ALL)
 	return true
+end
+
+-- 本模块实际加载的 libcurl 名字（未加载时返回 nil）。
+--
+-- 【为什么必须暴露它】同一进程里**只能有一份 libcurl 实例**。`CANDIDATES` 里的
+-- 名字在有的发行版上指向**不同的文件**：本机（Raspberry Pi OS）
+-- `libcurl.so → libcurl-gnutls.so`，而 `libcurl.so.4 → libcurl.so.4.8.0`，
+-- 于是 `ffi.load("libcurl.so.4")` 与 `ffi.load("curl")` 得到两份独立实例
+-- （实测 `curl_easy_init` 地址 0x7fff802a6d80 vs 0x7fff7eb65c60）。
+-- 用 B 实例的函数去读 A 实例创建的 easy handle，等于按**另一套结构体布局**
+-- 解引用不透明指针：`CURLINFO_EFFECTIVE_URL` 会读出错位字段（实测返回端口串
+-- `"1"` 这样的垃圾，而同一句柄用 A 实例读是正确的 URL / reset 后为空）。
+-- 这正是 AG-16 门禁在本机假红的成因。任何别的加载者（测试、第三方驱动）
+-- 都必须用本函数返回的名字，才能与本模块共享同一份实例。
+function M.libname()
+	return loaded_name
 end
 
 function M.available()
