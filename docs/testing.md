@@ -16,8 +16,29 @@
 | `gate:tsan` | 软 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
 | `gate:clang` | 软 | clang 构建 + C++ 单测烟雾 |
 | `gate:clang-tidy` | 软 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
-| `gate:coverage` | 软 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`），报告随 artifacts 留档 |
+| `gate:coverage` | 软 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`；`COV_WITH_GATE=1` 时另跑一遍全套守门），报告随 artifacts 留档 |
 | `gate:musl` | 软 | alpine/musl 下构建并运行三个常量自检；能构建时再跑 `mybot_tests` |
+
+### 覆盖率数字的口径与已知盲区（2026-09-21 AG-11 实测）
+
+**先看口径再看数字**，否则极易误判：
+
+- **它只反映该脚本实际跑过的东西**。缺省模式只跑 `mybot_tests`（C++ 单测），`mybot` 二进制的
+  e2e/TCP/Lua 链路不计入；要计入请设 `COV_WITH_GATE=1`。实测差距为零不是因为 e2e 没价值，
+  而是因为以前 `mybot` **根本没被插桩**（脚本只构建 `mybot_tests`）。现在两个 target 都构建。
+- **fork/exec 子侧代码恒为 0%，且这不是「没测」而是「测了测不到」**：gcov 计数在进程退出时
+  落盘，而 `agent_subprocess.cpp` 的 `execShellChild` / `revokeInheritedFds` 永远以 `execve`
+  结束——exec 用新映像的计数页覆盖当前进程，子侧执行记录不可能被写出。实测这两个函数
+  `0% blocks executed`，而相关测试全部通过。
+  这个盲区不是无关紧要的一角：AG-3（`CLOSE_RANGE_CLOEXEC` 标志写成 `1U`、快速路径从未执行、
+  每次 `run_command` 白付数十毫秒）正是在这里藏了很久——该区块对所有读者显示 0%，所有人都
+  当它是「有意不测的部分」。
+  该区块的保证改由**行为断言**承担：子进程在 fork 后、exec 前把「走了哪条路径」写进
+  `BOT4CJ_TRACE_FDS` 指定的文件，父进程断言轨迹（见 `test_agenttools.cpp` 的
+  `agenttools_child_side_fd_revocation_reports_its_path`）。把标志改回错误值，该用例立刻红。
+  **不要试图用行覆盖去覆盖它**。
+- **因此不设 `COV_MIN_LINES` 硬阈值**：一个既漏掉 `mybot` 链路、又有结构性 0% 区块的指标，
+  设阈值只会把测试压力挤到「测得到」的区域——缺陷正好往盲区躲。
 
 > 五条软门禁的**转硬条件与最迟日期**写在各自 job 注释里（`tsan`/`clang`/`clang-tidy`
 > 为「连续 2 轮 pipeline 无新增告警/报告 + 最迟 2026-10-31」；`coverage` 另需先设定

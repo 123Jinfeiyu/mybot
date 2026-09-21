@@ -384,3 +384,44 @@ TH_TEST(utf8_sanitize_handles_truncated_tail_from_output_cap) {
 	TH_CHECK(!bot::isValidUtf8(s));
 	TH_CHECK(bot::isValidUtf8(bot::sanitizeUtf8(s)));
 }
+
+/* ---- AG-11：`agent:` 作用域过滤器的完备性（必须放在**主套件**里）----
+ * 起因：docs/agent.md 推荐的 `./build/mybot_tests agent` 是子串匹配，只命中用例名
+ * 里含 "agent" 的那部分——promptpack / llmconfig / cliargs 这些同属 agent 配置面的
+ * 用例全都不命中（实测 86/436，而注释写着「proto / driver / tools / loop / config」）。
+ * 现在加了显式作用域表（harness.hpp 的 scopeTable），但显式表的代价是**新增测试
+ * 文件时容易忘记补一行**——那会让新用例对 `agent:` 隐形，正是本项要消灭的「看不见」。
+ *
+ * 本用例必须在 mybot_tests 里而不是 harness_selftest 里：骨架自证二进制只注册了
+ * 它自己那几个例句用例，看不到主套件的 438 例，作用域完备性在那里无从判断。
+ * 放在这里还有一层好处——它本身是一条普通用例，**不可能被静默跳过**：
+ * 少登记一个成员、或成员前缀拼错，都会立刻红。 */
+TH_TEST(harness_scope_agent_lists_every_member_with_cases) {
+	std::size_t n = 0;
+	const th::ScopeEntry* table = th::scopeTable(n);
+	TH_CHECK_MSG(n > 0, "作用域表为空");
+
+	std::size_t members = 0;
+	for (std::size_t i = 0; i < n; ++i) {
+		const std::string prefix = table[i].name;
+		std::size_t hits = 0;
+		for (const auto& c : th::cases()) {
+			if (c.name.rfind(prefix, 0) == 0) { ++hits; }
+		}
+		++members;
+		TH_CHECK_MSG(hits > 0, std::string("作用域成员 '") + prefix
+			+ "' 没有命中任何用例（拼错了？还是测试文件被重命名了？）");
+	}
+
+	/* 作用域整体命中数必须 ≥ 各成员之和的下界（成员数），且明显多于旧的子串语义：
+	 * 子串 'agent' 只命中 80 余例，作用域应覆盖 100 例以上（含 llmconfig/promptpack/
+	 * cliargs）。这条断言防的是「表在、匹配没生效」这类静默失效。 */
+	std::size_t scoped = 0;
+	for (const auto& c : th::cases()) {
+		if (th::caseInScope(c.name, "agent")) { ++scoped; }
+	}
+	TH_CHECK_MSG(scoped >= members && scoped >= 100,
+		"agent: 作用域命中 " + std::to_string(scoped) + " 例（成员数 "
+			+ std::to_string(members) + "），明显偏少——过滤是否失效？");
+}
+

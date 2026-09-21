@@ -132,6 +132,48 @@ struct RunOutcome {
 	int skipped = 0;
 };
 
+/* 过滤器的作用域前缀（2026-09-21 审计 AG-11）。
+ *
+ * 起因：docs/agent.md 推荐的 `./build/mybot_tests agent` 依赖**子串**匹配，只命中
+ * 用例名里含 "agent" 的那部分——`promptpack_*` / `llmconfig_*` / `cliargs_*` 这些
+ * 同属 agent 配置面的用例全都不命中（实测 86/436，注释里却写着「proto / driver /
+ * tools / loop / config」）。用例名里含不含 "agent" 是历史偶然，不是判据。
+ *
+ * 这里给出显式的名字→作用域映射：要么它在表里，要么不属于该作用域。表是单点，
+ * 新增测试文件时补一行即可；scope 是显式清单而不是模糊匹配，所以不会像子串那样
+ * 悄悄漏掉或误纳。
+ * 用法：`./build/mybot_tests agent:xxx`（作用域内再按子串过滤）
+ *       `./build/mybot_tests agent:`（整个作用域）
+ */
+struct ScopeEntry {
+	const char* scope;
+	const char* name;
+};
+
+inline const ScopeEntry* scopeTable(std::size_t& n) {
+	static const ScopeEntry kTable[] = {
+		/* agent 模式全表面：协议、驱动、工具、循环、配置、提示词包、CLI 选项面 */
+		{"agent", "agentproto_"}, {"agent", "agentdriver_"}, {"agent", "agenttools_"},
+		{"agent", "agentloop_"}, {"agent", "llmconfig_"}, {"agent", "promptpack_"},
+		{"agent", "cliargs_"},
+	};
+	n = sizeof(kTable) / sizeof(kTable[0]);
+	return kTable;
+}
+
+/* 该用例是否属于 scope；scope 为空表示不过滤 */
+inline bool caseInScope(const std::string& caseName, const std::string& scope) {
+	if (scope.empty()) { return true; }
+	std::size_t n = 0;
+	const ScopeEntry* table = scopeTable(n);
+	for (std::size_t i = 0; i < n; ++i) {
+		if (scope == table[i].scope && caseName.rfind(table[i].name, 0) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
 /* 运行全部用例。quiet=true 时不打印任何东西（自证用例内部嵌套调用 runAll 时用：
  * 子用例的输出若混进父用例的 [PASS]/[FAIL] 流，守门日志会看不出哪条是父用例的
  * 结论）。
@@ -157,8 +199,16 @@ inline RunOutcome runAllOutcome(const std::string& filter, bool quiet = false) {
 	 * 恢复，且所有输出都走 out() 这一处（见上）。 */
 	const bool savedOut = outputEnabled();
 	outputEnabled() = !quiet;
+	/* 过滤器语法：`scope:子串` 或裸子串（后者保持历史语义，向后兼容）。
+	 * scope 走显式映射表（见 caseInScope），子串沿用 find。 */
+	std::string scope, needle = filter;
+	if (const std::size_t colon = filter.find(':'); colon != std::string::npos) {
+		scope = filter.substr(0, colon);
+		needle = filter.substr(colon + 1);
+	}
 	for (const Case& c : cases()) {
-		if (!filter.empty() && c.name.find(filter) == std::string::npos) { continue; }
+		if (!caseInScope(c.name, scope)) { continue; }
+		if (!needle.empty() && c.name.find(needle) == std::string::npos) { continue; }
 		currentFailed() = false;
 		currentChecks() = 0;
 		bool skippedCase = false;

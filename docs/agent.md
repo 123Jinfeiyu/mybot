@@ -412,7 +412,10 @@ bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工
 luajit test/test_json_lua.lua    # Lua JSON 编解码
 luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
 luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路径）
-./build/mybot_tests agent        # C++：proto / driver / tools / loop / config
+# C++：proto / driver / tools / loop / config（协议、驱动、工具、循环、配置、提示词包、CLI 选项面）
+# 用 **agent:** 而不是裸 agent——后者是子串匹配，只命中用例名里含 "agent" 的那部分，
+# 会漏掉 promptpack / llmconfig / cliargs（2026-09-21 AG-11 实测：86 例 vs 108 例）。
+./build/mybot_tests agent:
 ```
 
 - `scripts/agent_e2e.sh` 用本地假模型服务跑六个场景：默认驱动完整工具循环（并抓报文断言
