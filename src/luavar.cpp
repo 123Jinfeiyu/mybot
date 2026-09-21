@@ -144,8 +144,9 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 			+ "': Lua state not built or already released (variable destroyed before being called)");
 	}
 	bool top = (MtVars_Lua::topDepth == 0);
-	++MtVars_Lua::topDepth;
-	struct DepthGuard { ~DepthGuard() { --MtVars_Lua::topDepth; } } guard;
+	/* 计数与回退收敛到 util 的 RAII（B6）：本处只判「是否顶层」，不设上限
+	 * （上限由 luabridge 的 kMaxLuaNesting 双向守），故用不带 limit 的 RecursionGuard。 */
+	RecursionGuard depthGuard(MtVars_Lua::topDepth);
 
 	if (top && echo) { std::cout << "----------" << std::endl; }
 
