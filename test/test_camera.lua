@@ -15,6 +15,7 @@ ffi.cdef[[
 int symlink(const char *target, const char *linkpath);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
+int open(const char *path, int flags);
 ]]
 -- 用例确定性：环境变量会改变仿真白名单，先清掉
 ffi.C.unsetenv("BOT4CJ_CAMERA_SRC_DIR")
@@ -255,6 +256,130 @@ do
 	call({ path = "/dev/video0" })
 	restore()
 	check("C6：失败后不残留半开状态（再次调用重新 open）", #opened == 2, tostring(#opened))
+end
+
+-- ---- AG-2：真机抓帧重试循环必须用**局部**变量承接 grab_one 的失败原因 ----
+-- 2026-09-21 审计 AG-2（实测复现）：该循环曾写成 `payload, err = grab_one()`，
+-- 写的是 drv_common:19 定义的**全局** err 构造器。后果三连：
+--   ① 成功路径也把 err 赋成 nil → 整个 lua_State 里所有驱动的 err(...) 全废；
+--   ② 抓帧失败把 err 赋成字符串 → 后续 err(...) 报 "attempt to call a string value"；
+--   ③ 那句「8 consecutive incomplete frames」诊断自己先撞上 nil/字符串，
+--      **100% 不可达**（循环体每轮都先给 err 赋值）。
+-- 下列用例走真实 v4l2 路径（同步 stdout 管道当摄像头 fd：poll 恒就绪，
+-- 内容真进 mmap 缓冲；ioctl 桩驱动状态机），覆盖成功与失败两条分支。
+do
+	local hal = dofile("modules/lib/HAL.lua")
+	local real = {
+		open = hal.sys.open, close = hal.sys.close,
+		ioctl_p = hal.sys.ioctl_p, errno = hal.sys.errno,
+	}
+
+	-- 完整的 MJPEG 帧（尾窗内有 EOI，mjpeg.normalize 放行）
+	local GOOD = "\255\216\255\224" .. string.rep("\0\1\2\3", 8) .. "\255\217"
+	-- 熵编码中途截断的帧（尾部无 EOI，mjpeg.normalize 判 nil → 触发重取）
+	local BAD = "\255\216\255\224" .. string.rep("\0\1\2\3", 8)
+
+	-- 缓冲长度刻意取 > #payload：真实 V4L2 的 buf.length 是内核分配的槽位大小，
+	-- 通常大于单帧 bytesused；长度不足会让驱动侧 mmap 失败（本桩第一版就踩了）。
+	-- 多出来的尾部一律补 0，帧内容本身仍在 mmap 区开头逐字节可比。
+	local BUF_LEN = 65536
+	local function pad(s) return s .. string.rep("\0", BUF_LEN - #s) end
+
+	-- 真机 v4l2 路径的 ioctl 请求号（与 modules/Camera.lua:137-143 的单点定义一致；
+	-- 桩必须按真实号分派：QUERYBUF 与 DQBUF 都写 cam_buffer，但字段不同——
+	-- QUERYBUF 给 length，DQBUF 给 index/bytesused）
+	local IOCTL_QUERYCAP = 0x80685600
+	local IOCTL_QUERYBUF = 0xc0585609
+	local IOCTL_DQBUF = 0xc0585611
+
+	local function mkstub(payload, queue_fail_after)
+		-- 必须给一个**真实**的 fd：驱动会对它做 poll 与 mmap，假 fd（>RLIMIT）会
+		-- 让 mmap 直接失败。普通文件的 poll 恒返回可读，正好用作「画面始终就绪」
+		-- 的摄像头替身；文件内容无关紧要——驱动读的是 mmap 区，而桩在 DQBUF
+		-- 里用 bytesused 告诉它该取多少字节。
+		-- 打开标志必须是 O_RDWR（2）：驱动按 PROT_READ|PROT_WRITE + MAP_SHARED
+		-- 映射（它要 QBUF 回队列），只读 fd 上 mmap 直接 EACCES。
+		local path = os.tmpname()
+		write_file(path, payload)
+		local fd = tonumber(ffi.C.open(path, 2))	-- O_RDWR
+		os.remove(path)
+		assert(fd ~= nil and fd >= 0, "无法为摄像头桩打开临时文件")
+		return fd, {
+			open = function(_, _) return fd end,
+			close = function(_) return 0 end,
+			ioctl_p = function(_, req, p)
+				if req == IOCTL_QUERYCAP then p.capabilities = 1 end
+				if req == IOCTL_DQBUF then
+					if queue_fail_after ~= nil then
+						if queue_fail_after <= 0 then return -1 end
+						queue_fail_after = queue_fail_after - 1
+					end
+					p.index = 0
+					p.bytesused = #payload
+				end
+				if req == IOCTL_QUERYBUF then p.length = BUF_LEN end
+				return 0
+			end,
+			errno = function() return 5 end,
+		}
+	end
+
+	local function with_stub(payload, queue_fail_after, fn)
+		local _, stub = mkstub(payload, queue_fail_after)
+		for k, v in pairs(stub) do hal.sys[k] = v end
+		local ok, res = pcall(fn)
+		for k, v in pairs(real) do hal.sys[k] = v end
+		return ok, res
+	end
+
+	-- ① 成功路径：完整帧 → OK，且全局 err 必须仍是函数（修复前被赋成 nil）
+	do
+		local err_before = err
+		local ok, res = with_stub(GOOD, nil, function() return call({ path = "/dev/video0" }) end)
+		destroy({})
+		check("AG-2：完整帧抓拍返回 OK", ok and type(res) == "table" and res.result == "OK",
+			tostring(ok) .. "/" .. tostring(type(res) == "table" and res.result or res))
+		check("AG-2：全局 err 未被成功路径污染（修复前为 nil）", type(err) == "function",
+			"type(err)=" .. type(err))
+		check("AG-2：err 仍是原来那个函数对象", err == err_before)
+	end
+
+	-- ② 8 连截断：诊断必须可达，且必须是那条诊断（修复前抛 "attempt to call ... value"）
+	do
+		local ok, res = with_stub(BAD, nil, function() return call({ path = "/dev/video0" }) end)
+		destroy({})
+		check("AG-2：8 连截断帧 → ERR 契约（修复前抛 Lua error）",
+			ok and type(res) == "table" and res.result == "ERR",
+			tostring(ok) .. "/" .. tostring(type(res) == "table" and res.message or res))
+		check("AG-2：诊断文案可达（修复前 100% 不可达）",
+			type(res) == "table" and tostring(res.message):find("8 consecutive incomplete frames", 1, true) ~= nil,
+			tostring(type(res) == "table" and res.message or res))
+		check("AG-2：失败路径后全局 err 仍是函数", type(err) == "function", "type(err)=" .. type(err))
+	end
+
+	-- ③ 中途抓帧失败：必须带出 grab_one 的真实原因（修复前 gerr 是死变量，原因丢失）
+	do
+		local ok, res = with_stub(GOOD, 1, function() return call({ path = "/dev/video0" }) end)
+		destroy({})
+		check("AG-2：中途 DQBUF 失败 → ERR 契约", ok and type(res) == "table" and res.result == "ERR",
+			tostring(ok) .. "/" .. tostring(type(res) == "table" and res.message or res))
+		check("AG-2：失败原因来自 grab_one（修复前 gerr 恒 nil，原因丢失）",
+			type(res) == "table" and tostring(res.message):find("DQBUF", 1, true) ~= nil,
+			tostring(type(res) == "table" and res.message or res))
+		check("AG-2：中途失败后全局 err 仍是函数", type(err) == "function", "type(err)=" .. type(err))
+	end
+
+	-- ④ 兜底：err 被外部破坏时驱动仍返回 ERR 契约表而非抛 Lua error
+	do
+		local saved = err
+		err = nil
+		local ok, res = with_stub(BAD, nil, function() return call({ path = "/dev/video0" }) end)
+		destroy({})
+		err = saved
+		check("AG-2：err 被破坏时仍返回 ERR 契约（不抛 Lua error）",
+			ok and type(res) == "table" and res.result == "ERR",
+			tostring(ok) .. "/" .. tostring(type(res) == "table" and res.message or res))
+	end
 end
 
 tester.summary("Camera.lua 单测")

@@ -101,6 +101,31 @@ for _, path in ipairs(mods) do
 	end
 end
 
+-- ---- 全局 err 构造器健康检查（2026-09-21 审计 AG-2）----
+--
+-- 背景：err 是 drv_common 定义在 **lua_State 全局**上的 ERR 表构造器，全体驱动
+-- 共用。任何驱动只要在函数体里把 `err` 当普通变量赋值（`payload, err = grab_one()`），
+-- 就会把它覆盖成 nil 或字符串——此后**同一个 lua_State 里所有驱动**的
+-- `err(...)` 全部变成 "attempt to call a nil/string value"，驱动对宿主抛裸 Lua
+-- error 而不是返回 ERR 契约。
+--
+-- 实测案例：modules/Camera.lua 抓帧重试循环误写全局 err（AG-2），成功路径把它
+-- 赋成 nil、失败路径赋成字符串。既有 sweep 逐个加载模块却从不检查「加载完
+-- 全局被谁动过」，所以这条缺陷一直是隐形的。下面把「加载完全部驱动后 err 仍是
+-- 可用的构造函数」变成断言——单条断言覆盖全部模块，后续任何驱动再犯同样的错
+-- 都会在这里红。
+do
+	local err_now = _G.err
+	check("全局 err 构造器未被任何驱动覆盖（AG-2）", type(err_now) == "function",
+		"type(err)=" .. type(err_now) .. "（有驱动把它当普通变量赋值了）")
+	if type(err_now) == "function" then
+		local probe = err_now("sweep-probe")
+		check("全局 err 仍返回 ERR 契约表（AG-2）",
+			type(probe) == "table" and probe.result == "ERR" and probe.message == "sweep-probe",
+			tostring(type(probe) == "table" and probe.result or probe))
+	end
+end
+
 -- ---- 单笔 I2C 写字节数 sweep（2026-09-20 审计 P0 防回归）----
 --
 -- 背景：bus_contract 的 I2C_IO_MAX_BYTES 曾被照搬 SPI 侧的 64，直接拒掉

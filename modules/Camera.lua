@@ -422,7 +422,22 @@ end
 -- 入参类型校验不可省（全仓其余驱动统一经 drv_common.arg_table 首位校验；
 -- Camera 因不挂总线样板而自行内联同一条——非表入参按 ERR 契约拒绝，
 -- 而不是让 data.src 的索引访问裸抛 Lua error）。ERR 表一律走 drv_common.err()。
+--
+-- 例外（2026-09-21 审计 AG-2）：err 是本 lua_State 的**共享全局**，任何驱动或
+-- .mt 脚本都能覆盖它，而本文件历史上正是覆盖者（抓帧循环误写全局 err，见 call()
+-- 内注释）。构造器一旦没了，`return err(...)` 自己就抛裸 Lua error——跨语言边界上
+-- 「抛」与「返 ERR」对宿主的处理路径完全不同。故入口先做一次前置校验，缺失时
+-- 直接返回同构的 ERR 表（fail-closed，且理由是显式的）。
+local ERR_NO_CTOR = {
+	result = "ERR",
+	message = "driver error constructor 'err' is unavailable (clobbered global in this Lua state)",
+}
+local function err_missing()
+	return type(err) ~= "function"
+end
+
 function build(data)
+	if err_missing() then return ERR_NO_CTOR end
 	if type(data) ~= "table" then
 		return err("Invalid Arguments Type: table")
 	end
@@ -438,6 +453,7 @@ function build(data)
 end
 
 function call(data)
+	if err_missing() then return ERR_NO_CTOR end
 	if type(data) ~= "table" then
 		return err("Invalid Arguments Type: table")
 	end
@@ -499,15 +515,23 @@ function call(data)
 	-- lib/mjpeg_frame.lua 头注释）。截断帧宽松解码器看不出问题，送到模型网关
 	-- 就是 400「图片输入格式/解析错误」——必须整帧丢弃重取。上限 8 帧（30fps
 	-- 下约 0.3s）：实测该类设备约半数帧不完整，8 连缺已属设备/链路异常。
+	--
+	-- 局部 gerr 承接 grab_one 的失败原因。**不能写成全局 err**（2026-09-21 审计
+	-- AG-2，实测复现）：err 是 drv_common 定义的全局构造器，这样写会把整个
+	-- lua_State 的 err 覆盖掉——成功路径赋成 nil、抓帧失败赋成字符串，此后
+	-- 本进程内**任何**驱动的 err(...) 都变成「attempt to call a nil/string value」，
+	-- 且下一行那句诊断自己先撞上 nil/string，永远返回不了。
 	local payload, gerr
 	for _ = 1, 8 do
-		payload, err = grab_one()
+		payload, gerr = grab_one()
 		if payload == nil then break end
 		payload = mjpeg.normalize(payload)
 		if payload ~= nil then break end
 	end
 	if payload == nil then
 		device_close()	-- 失败即释放，下次调用重试打开（支持热插拔）
+		-- 这里可以放心调 err：入口的前置校验保证了它在本函数体内一直是函数
+		-- （本函数从入口到此处不再出现任何对 err 的赋值）。
 		return err(gerr or
 			"8 consecutive incomplete frames (MJPEG frame missing EOI): device/link fault, check the camera connection")
 	end
