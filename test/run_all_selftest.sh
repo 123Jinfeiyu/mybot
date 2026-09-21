@@ -60,8 +60,45 @@ for r in $(grep -oE 'count_calls [a-zA-Z0-9_]+' test/run_all.sh | awk '{print $2
 	fi
 done
 
+# 5) 两张用例表的结构与条数（F3-2）：条数是**显式检查点**——加/删用例必须同时
+#    改这里（以及文档），否则「守门到底跑多少条」只能靠人记；字段数错（少一个
+#    分隔符）会让消费循环把模式当成条数用，静默错判而不报错。
+e2e_rows="$(sed -n '/^e2e_cases=(/,/^)/p' test/run_all.sh | grep -E "^[[:space:]]*'")"
+parse_rows="$(sed -n '/^parse_cases=(/,/^)/p' test/run_all.sh | grep -E "^[[:space:]]*'")"
+e2e_n="$(printf '%s\n' "$e2e_rows" | grep -c .)"
+parse_n="$(printf '%s\n' "$parse_rows" | grep -c .)"
+e2e_bad="$(printf '%s\n' "$e2e_rows" | grep -vcE "^[[:space:]]*'[^'|]*\|[^|']*\|[^|']*'$")"
+# parse 行至少三段（sql|mt|期望退出码），其余字段可选，故不锚行尾
+parse_bad="$(printf '%s\n' "$parse_rows" | grep -vcE "^[[:space:]]*'[^'|]*\|[^'|]*\|[^'|]*")"
+e2e_unterm="$(printf '%s\n' "$e2e_rows" | grep -vcE "'$")"
+parse_unterm="$(printf '%s\n' "$parse_rows" | grep -vcE "'$")"
+[ "$e2e_n" -eq 37 ] || note "e2e_cases 条数变了（$e2e_n != 37）：加/删用例后请同步本检查点"
+[ "$parse_n" -eq 95 ] || note "parse_cases 条数变了（$parse_n != 95）：加/删用例后请同步本检查点"
+[ "$e2e_bad" -eq 0 ] || note "e2e_cases 有 $e2e_bad 条字段数不符（应为 name|浮点模式|最小条数）"
+[ "$parse_bad" -eq 0 ] || note "parse_cases 有 $parse_bad 条字段数不符（应为 sql|mt|期望退出码[|expect[|forbid[|via]]]）"
+[ "$e2e_unterm" -eq 0 ] || note "e2e_cases 有 $e2e_unterm 条未以引号收尾（漏了 ' 会吞掉后续行）"
+[ "$parse_unterm" -eq 0 ] || note "parse_cases 有 $parse_unterm 条未以引号收尾（漏了 ' 会吞掉后续行）"
+dup_e2e="$(printf '%s\n' "$e2e_rows" | sed "s/^[[:space:]]*'//; s/|.*//" | sort | uniq -d | tr '\n' ' ')"
+[ -z "$dup_e2e" ] || note "e2e_cases 名字重复：$dup_e2e"
+dup_parse="$(printf '%s\n' "$parse_rows" | sed "s/^[[:space:]]*'//; s/|/ /; s/|.*//" | sort | uniq -d | tr '\n' ' ')"
+[ -z "$dup_parse" ] || note "parse_cases 的 (sql, mt) 组合重复：$dup_parse"
+
+# 6) TSan 用例名单单点（F3-5）：名单唯一来源 test/lib/tsan_cases.txt，CI 逐条跑。
+#    这里机械核对每个名字在 test_daemon_concurrency.cpp 里至少命中一条 TH_TEST——
+#    改过用例名而没改名单（或反之）会静默少跑并发回归。
+tsan_file=test/lib/tsan_cases.txt
+if [ ! -s "$tsan_file" ]; then
+	note "缺 TSan 名单或为空：$tsan_file"
+else
+	while read -r c; do
+		case "$c" in ''|\#*) continue ;; esac
+		grep -qE "^TH_TEST\(${c}[A-Za-z0-9_]*\)" test/cpp/test_daemon_concurrency.cpp \
+			|| note "TSan 名单里的 '$c' 在 test_daemon_concurrency.cpp 里没有对应用例（改过名？）"
+	done < "$tsan_file"
+fi
+
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（脚本语法 / C++ 用例登记 / Lua 用例命名 / count_calls 计数）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单）"

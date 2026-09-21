@@ -78,9 +78,14 @@ gate:tsan:
   script:
     - cmake -S . -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=thread
     - cmake --build build-tsan -j"$(nproc)"
-    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=1" ./build-tsan/mybot_tests daemon_concurrent
-    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=1" ./build-tsan/mybot_tests daemon_multi_runner
-    - TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=1" ./build-tsan/mybot_tests daemon_stop_and_exit
+    # 名单单一来源 test/lib/tsan_cases.txt（F3-5）：此前三条用例名在本文件与
+    # test/cpp/test_daemon_concurrency.cpp 两处手抄。零匹配时测试入口返回 1，
+    # 故名单里写错名字不会假绿。
+    - |
+      while read -r c; do
+        case "$c" in ''|\#*) continue ;; esac
+        TSAN_OPTIONS="suppressions=$(pwd)/tsan.supp halt_on_error=1" ./build-tsan/mybot_tests "$c" || exit 1
+      done < test/lib/tsan_cases.txt
 
 # 编译器矩阵（N-35，起步为软门禁）：CI 此前只有 g++ 一条编译路径，同一份源码
 # 在 clang 前端下的接受度与告警差异（-Wall -Wextra -Wpedantic 各家取舍不同）
