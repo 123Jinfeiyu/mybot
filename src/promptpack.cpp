@@ -113,7 +113,12 @@ bool loadPromptPack(const std::vector<std::string>& inputs, std::string& out,
 		std::string content = readTextFile(p.string(), err);
 		if (!err.empty()) { return false; }
 		content = trim(content);
-		if (!content.empty()) { sections.emplace_back(p.filename().string(), content); }
+		if (!content.empty()) {
+			/* 提示词内容进系统提示词（指令优先级通道），与 AG-1 同款消毒：
+			 * 文件里带一个非法字节就会让首个模型请求被严格网关 400 拒掉。 */
+			sections.emplace_back(sanitizeUtf8(p.filename().string()),
+					      sanitizeUtf8(content));
+		}
 	}
 	if (sections.empty()) {
 		err = "提示词内容为空";

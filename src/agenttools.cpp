@@ -341,7 +341,9 @@ std::string describeActionScripts(const std::string& scriptsDir) {
 			 * 软链），对软链目录项会算出带 `..` 的越界路径。 */
 			fs::path rel = e.path().lexically_relative(root);
 			if (rel.empty() || *rel.begin() == "..") { continue; }
-			rels.push_back(rel.generic_string());
+			/* 相对路径进系统提示词，与 AG-1 同款消毒：Linux 文件名可含任意字节，
+			 * 若带非法字节会拒掉首个模型请求（同第一注释消毒的理由）。 */
+			rels.push_back(sanitizeUtf8(rel.generic_string()));
 		}
 	} catch (const fs::filesystem_error&) {
 		/* 个别子目录不可读：已收集的照常输出，不因一处权限问题整段失败 */

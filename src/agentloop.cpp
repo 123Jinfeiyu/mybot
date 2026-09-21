@@ -278,6 +278,17 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 		}
 	}
 
+	/* 单轮派发上限（审计第 4 轮）：assistant 消息里**只保留**前
+	 * maxCallsPerRound 条调用，多余的折叠成一条 tool 回传说明——不派发它们
+	 * 是安全底线（不给硬件一次性下发失控数量动作），但必须如实告知模型
+	 * 已经被截断，否则模型以为全部执行了。折叠进 assistant.toolCalls 的
+	 * 只保留将执行的部分，保证与后续 tool 消息一一对应。 */
+	std::size_t excess = 0;
+	if (opts_.maxCallsPerRound > 0 && calls.size() > static_cast<std::size_t>(opts_.maxCallsPerRound)) {
+		excess = calls.size() - static_cast<std::size_t>(opts_.maxCallsPerRound);
+		calls.resize(static_cast<std::size_t>(opts_.maxCallsPerRound));
+	}
+
 	ChatMessage asst;
 	asst.role = "assistant";
 	asst.content = resp.content;
@@ -289,6 +300,20 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 	for (const auto& c : calls) {
 		std::string img = dispatchOneCall(c, turn);
 		if (!img.empty()) { images.push_back(std::move(img)); }
+	}
+	if (excess > 0) {
+		/* 截断说明必须如实告知模型（与 AG-4 同口径「不谎报状态」）。挂在
+		 * 最后一条已派发调用的 id 上（tool 消息需引用已存在的 tool_call_id
+		 * 协议才成立）；模型主要读的是说明文本本身。 */
+		ChatMessage tool;
+		tool.role = "tool";
+		tool.content = "本轮模型返回了 " + std::to_string(calls.size() + excess)
+			+ " 条工具调用，因超过单轮上限（" + std::to_string(opts_.maxCallsPerRound)
+			+ " 条）只执行了前 " + std::to_string(calls.size())
+			+ " 条；其余 " + std::to_string(excess)
+			+ " 条未被派发，请基于已执行的结果决定下一步";
+		tool.toolCallId = calls.empty() ? std::string("call_capped") : calls.back().id;
+		messages_.push_back(std::move(tool));
 	}
 	if (!images.empty()) {
 		ChatMessage img;
