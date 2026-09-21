@@ -56,7 +56,7 @@ void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) co
 	for (const auto& kv : params.items()) {
 		const std::string& key = kv.first;
 		const char* why = nullptr;
-		if (metadata.get(key)) { why = "a structure-script metadata column"; }
+		if (metadata.find(key) != nullptr) { why = "a structure-script metadata column"; }
 		for (const char* fw : kFrameworkKeys) {
 			if (key == fw) { why = "a framework-reserved key"; }
 		}

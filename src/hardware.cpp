@@ -71,7 +71,7 @@ Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 			" build/call/destroy must return a table with result=\"OK\" or result=\"ERR\""
 			" (data fields may accompany).");
 	}
-	auto rs = obj.get("result");
+	const Json* rs = obj.find("result");	/* F5-3：热路径零拷贝，免整值 optional 拷出 */
 	if (rs) {
 		if (!rs->isStr()) {
 			throw std::runtime_error("Hardware call (" + ctx + ") returned a non-string"
@@ -80,7 +80,7 @@ Json MatrixVars_Hardware::ensureOk(const Json& res, const std::string& ctx) {
 		std::string v = trim(rs->getValue());
 		if (v == "ERR") {
 			std::string msg = "Hardware call failed (" + ctx + ")";
-			auto m = obj.get("message");
+			const Json* m = obj.find("message");
 			if (m && m->isStr()) { msg += ": " + m->getValue(); }
 			throw std::runtime_error(msg);
 		}

@@ -72,6 +72,23 @@ TH_TEST(json_get_requires_object_receiver) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "asObject", JsonInt(1).get("k"));
 }
 
+TH_TEST(json_find_is_zero_copy_and_total) {
+	/* F5-3：find 是零拷贝只读查找——命中返回对象内元素指针（身份可验），
+	 * 缺失/非对象一律 nullptr（不抛，区别于 get 的旧契约）。 */
+	Json o = JsonObject();
+	o.put("a", JsonInt(1));
+	o.put("b", JsonString("x"));
+	const Json* pa = o.find("a");
+	TH_CHECK(pa != nullptr && pa->getInt() == 1);
+	/* 零拷贝：指针指向 items() 内部元素，非 optional 拷出 */
+	TH_CHECK(pa == &o.items()[0].second);
+	TH_CHECK(o.find("nope") == nullptr);
+	/* 非对象：不抛、返回 nullptr（与 getPtr 口径一致） */
+	TH_CHECK(JsonInt(1).find("k") == nullptr);
+	TH_CHECK(JsonArray().find("k") == nullptr);
+	TH_CHECK(JsonNull().find("k") == nullptr);
+}
+
 TH_TEST(json_put_on_non_object_throws) {
 	/* F-19：put 对非对象显式报错——旧行为把整个值静默换成空对象，数据丢失 */
 	Json j = JsonInt(42);

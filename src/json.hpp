@@ -53,6 +53,10 @@ public:
 
 	/* ---- 对象操作 ---- */
 	std::optional<Json> get(const std::string& key) const;
+	/* F5-3：零拷贝只读查找——热路径（ensureOk、元数据合并）逐拍扫描大对象时
+	 * 免去 get 的整值拷贝；不存在返回 nullptr。非对象也返回 nullptr（与
+	 * getPtr 口径一致，不抛——调用点自判 res.isObj() 已在先）。 */
+	const Json* find(const std::string& key) const;
 	/* 就地取子对象指针（不存在返回 nullptr）：热路径逐拍更新子字段时
 	 * 免去 get 拷出 + put 写回的两次深拷贝。指针在下次 put 本对象字段
 	 * （可能引发 vector 重配）或本对象析构前有效（调用点仅对取到的

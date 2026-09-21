@@ -29,11 +29,18 @@ double Json::getFloat() const { return asFloat().d; }
 bool Json::getBool() const { return asBool().b; }
 
 std::optional<Json> Json::get(const std::string& key) const {
-	const Json& o = asObject();
-	for (const auto& kv : o.obj) {
-		if (kv.first == key) { return kv.second; }
-	}
+	const Json& o = asObject();	/* 旧契约保持：非对象接收者抛（见 json_get_requires_object_receiver） */
+	(void)o;
+	if (const Json* p = find(key)) { return *p; }
 	return std::nullopt;
+}
+
+const Json* Json::find(const std::string& key) const {
+	if (type != T::Obj) { return nullptr; }
+	for (const auto& kv : obj) {
+		if (kv.first == key) { return &kv.second; }
+	}
+	return nullptr;
 }
 
 Json* Json::getPtr(const std::string& key) {
