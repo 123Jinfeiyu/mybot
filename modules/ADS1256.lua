@@ -458,10 +458,6 @@ function ADS1256_VIRT.new(opts)
 
 	-- ===================== 全双工帧核心 =====================
 
-	local function log_cmd(name, tx, i, consumed)
-		cmds[#cmds + 1] = { name = name, bytes = { unpack(tx, i, i + consumed - 1) } }
-	end
-
 	-- 组装一帧样本：[MSB, mid, LSB, 丢弃字节]；驱动只读前 3 字节，第 4 给 0。
 	local function sample_frame(n)
 		local t = {

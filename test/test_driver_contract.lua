@@ -69,6 +69,15 @@ for _, path in ipairs(mods) do
 					cok and type(rc) == "table" and rc.result == "ERR",
 					cok and (type(rc) == "table" and tostring(rc.result) or type(rc))
 						or ("raised: " .. tostring(rc)))
+				-- D2-1（2026-09-20 审计 / 2026-09-21 落地）：destroy 同样必须收
+				-- arg_table 守卫——`destroy(nil)` 返回 "OK" 属「静默成功」绕过，
+				-- 会让 teardown 在资源缺失时被当成正常完成掩盖。与 build/call
+				-- 同一语义出口：非表入参返回 ERR 契约而非抛错/静默成功。
+				local dok, rd = pcall(destroy, nil)
+				check(name .. ".destroy 非表入参返 ERR 契约（不抛错）",
+					dok and type(rd) == "table" and rd.result == "ERR",
+					dok and (type(rd) == "table" and tostring(rd.result) or type(rd))
+						or ("raised: " .. tostring(rd)))
 			end
 		end
 	end

@@ -2,7 +2,7 @@
 -- 经 src 引用列，data.values 是守护 arr_src 的 values(JsonArray) 快照。
 -- 修复前：入参 JsonArray 被 call_lua 静默丢弃（data.values 为 nil）；
 --         出参 Lua 表（list）被 LUA_TTABLE 跳过。修复后应双向贯通。
-local mpath = __mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 function build(data)
@@ -12,6 +12,8 @@ function build(data)
 end
 
 function destroy(data)
+	local ok, ek = arg_table(data)
+	if not ok then return ek end
 	return { result = "OK" }
 end
 

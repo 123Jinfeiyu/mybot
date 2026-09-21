@@ -22,6 +22,8 @@ function build(data)
 end
 
 function destroy(data)
+	local ok, e = arg_table(data)
+	if not ok then return e end
 	return { result = "OK" }
 end
 

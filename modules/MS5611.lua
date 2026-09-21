@@ -76,7 +76,6 @@ local CMD_CONV_D2   = 0x50			-- +2*i：启动温度转换
 local OSR_TAB   = { 256, 512, 1024, 2048, 4096 }
 local WAIT_TAB  = { 1, 2, 3, 5, 10 }		-- ms
 
-local DEF_OSR = 4096
 local DEF_P0  = 1013.25
 
 local T_RESET_MS = 3				-- 复位 PROM 重载 <=2.8ms + 余量

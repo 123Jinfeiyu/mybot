@@ -64,14 +64,10 @@ local unpack = unpack or table.unpack		-- LuaJIT 5.1 / Lua 5.4 双兼容
 
 -- 调试开关：高频采样，默认关闭逐次打印
 local DEBUG = false
-local function dbg(msg)
-	if DEBUG then print(msg) end
-end
 
 -- ==================== 寄存器 ====================
 local REG_CHIP_ID    = 0x00
 local REG_ACC_DATA   = 0x0C		-- 加速度计 X_LSB 起 6 字节（小端）
-local REG_GYR_DATA   = 0x12		-- 陀螺仪 X_LSB 起 6 字节（小端）
 local REG_INT_STATUS = 0x21		-- 内部状态码：0x01 = BMI2_INIT_OK
 local REG_ACC_CONF   = 0x40		-- [3:0]=ODR [6:4]=滤波 [7]=性能模式
 local REG_ACC_RANGE  = 0x41		-- [1:0]：0=±2g 1=±4g 2=±8g 3=±16g

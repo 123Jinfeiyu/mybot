@@ -61,8 +61,6 @@ local INST_WRITE = 0x03
 local REG_SERVO_ID         = 0x05	-- 1B：站号（EPROM；改号须先解锁再广播写，掉电重启生效）
 local REG_TORQUE_ENABLE    = 0x28	-- 1B：0 自由 / 1 使能 / 2 阻尼
 local REG_GOAL_POSITION    = 0x2A	-- 2B 大端：目标位置 0~1023 步
-local REG_RUN_TIME         = 0x2C	-- 2B 大端：运行时间 ms（speed=0 时生效）
-local REG_RUN_SPEED        = 0x2E	-- 2B 大端：运行速度 步/s
 local REG_LOCK             = 0x30	-- 1B：EPROM 写锁（0 解锁（写值掉电保存）/ 1 上锁）
 local REG_PRESENT_POSITION = 0x38	-- 反馈块起点：位置2 速度2 负载2 电压1 温度1 异步1 状态1 移动1
 local FEEDBACK_LEN         = 11
