@@ -32,6 +32,18 @@ struct AgentOptions {
 	 * 常见网关限额之下；仅约束「已完结」的旧轮块，单块超预算不封顶
 	 * （正在进行的对话不能裁空，否则无法推进）。 */
 	std::size_t maxHistoryBytes = 4 * 1024 * 1024;
+	/* ---- 任务内聚合预算（2026-09-21 审计 AG-4）----
+	 * 上面那条只管「已完结的旧任务块」，且最新块无条件保留——于是**正在进行
+	 * 的任务**没有任何体积上限：模型只要多调几次工具，就能在一个任务里把
+	 * maxTurns × 每轮调用数 × 单次上限 的字节灌进请求体（capture_image 单张
+	 * 就 2 MiB base64）。一旦网关以 413/400 拒绝，那块历史既不在回滚范围内、
+	 * 也不能被裁掉（trimHistory 不裁最新块），REPL 从此每条任务都以同一个
+	 * 请求体失败——与 AG-1 同一失效形态。
+	 * 这两条是**任务内**的上限，超限时把该次工具结果换成一句说明（见
+	 * executeToolRound），模型据此知道「这一步没拿到数据、换小一点的步子」，
+	 * 而不是让整个会话进入不可恢复状态。0 = 不限制。 */
+	std::size_t maxTaskToolResultBytes = 2 * 1024 * 1024;
+	std::size_t maxTaskImageBytes = 4 * 1024 * 1024;
 };
 
 class AgentSession {
@@ -52,8 +64,16 @@ private:
 	const AgentToolRegistry& tools_;
 	AgentOptions opts_;
 	std::vector<ChatMessage> messages_;
+	/* 当前任务已注入的工具结果/图片字节数（AG-4）。每轮任务开始时清零——
+	 * 预算约束的是**单个任务**的上下文体积，跨任务由 maxHistoryBytes 管。 */
+	std::size_t taskToolResultBytes_ = 0;
+	std::size_t taskImageBytes_ = 0;
 
 	void log(const std::string& text) const;
+
+	/* 派发单个工具调用 → 一条 tool 消息（内含 AG-4 的任务内预算判定）。
+	 * 返回该结果携带的图片 data URL（无图片时为空串）。 */
+	std::string dispatchOneCall(const ToolCall& call, int turn);
 
 	/* 历史按 maxHistoryBytes 预算裁剪：以「任务消息」（user 且非图片载体）为
 	 * 界整块裁剪最老的块，system 提示词与最新一块无条件保留。runTurn 开头

@@ -44,6 +44,26 @@ ChatResponse answerResponse(const std::string& text) {
 	return r;
 }
 
+/* 固定体积结果的工具（AG-4 用）：单次结果固定 n 字节，便于精确推预算 */
+AgentToolRegistry bigTools(std::size_t n) {
+	AgentToolRegistry reg;
+	reg.add(AgentTool{"big", "返回固定体积文本", parseJson("{\"type\":\"object\"}"),
+		[n](const Json&) -> AgentToolResult {
+			return {std::string(n, 'x'), ""};
+		}});
+	return reg;
+}
+
+/* 带固定体积图片的工具（AG-4 图片预算用） */
+AgentToolRegistry imageTools(std::size_t imgBytes) {
+	AgentToolRegistry reg;
+	reg.add(AgentTool{"shoot", "返回一张图", parseJson("{\"type\":\"object\"}"),
+		[imgBytes](const Json&) -> AgentToolResult {
+			return {"已拍照", std::string("data:image/jpeg;base64,") + std::string(imgBytes, 'A')};
+		}});
+	return reg;
+}
+
 AgentToolRegistry stubTools() {
 	AgentToolRegistry reg;
 	reg.add(AgentTool{"echo", "回显参数", parseJson("{\"type\":\"object\"}"),
@@ -351,4 +371,137 @@ TH_TEST(agentloop_history_untrimmed_when_budget_zero) {
 	TH_CHECK(session.runTurn("TASK-3") == "ANSWER-3");
 	TH_CHECK(historyContains(session, "TASK-1"));
 	TH_CHECK(session.history().size() == 7);
+}
+
+/* ---- AG-4：任务内聚合体积预算 ----
+ * 背景：maxHistoryBytes 只裁「已完结的旧任务块」，且最新块无条件保留——于是
+ * **正在进行的任务**没有任何体积上限，模型只要多调几次工具就能把请求体顶穿
+ * 网关限额；一旦被 413/400 拒绝，那块历史既不在回滚范围内也裁不掉，REPL 从此
+ * 每条任务都以同一个请求体失败（与 AG-1 同一失效形态）。 */
+
+/* 超预算的那一次结果不进历史，换成说明；任务本身继续推进（不升级成任务失败） */
+TH_TEST(agentloop_task_budget_degrades_oversized_tool_result) {
+	FakeTransport tr;
+	tr.script = {callResponse("big", "{}"), callResponse("big", "{}"), answerResponse("结束")};
+	const AgentToolRegistry tools = bigTools(50);
+
+	AgentOptions opts;
+	opts.maxTurns = 4;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	/* 80：第一次 50 字节入账后剩 30，第二次 50 装不下（判据是 > 上限，
+	 * 恰好等于上限仍算装得下——所以这里别用 100 去踩边界） */
+	opts.maxTaskToolResultBytes = 80;
+	AgentSession s(tr, tools, opts);
+
+	TH_CHECK(s.runTurn("任务") == "结束");
+	TH_CHECK(tr.requests.size() == 3);	/* 预算超了也要让模型有机会收尾 */
+
+	/* 最后一次请求里：第一条 tool 内容是原文（50 字节 x），第二条是预算说明 */
+	const auto& msgs = tr.requests.back();
+	std::vector<std::string> toolContents;
+	for (const auto& m : msgs) {
+		if (m.role == "tool") { toolContents.push_back(m.content); }
+	}
+	TH_CHECK_MSG(toolContents.size() == 2, "应有两条 tool 消息，实际 "
+		+ std::to_string(toolContents.size()));
+	TH_CHECK_MSG(toolContents[0] == std::string(50, 'x'),
+		"第一条应原样入历史（预算内），实际前 40 字节: " + toolContents[0].substr(0, 40));
+	TH_CHECK_MSG(toolContents[1].find("未注入上下文") != std::string::npos,
+		"第二条应是预算说明，实际: " + toolContents[1].substr(0, 80));
+	/* 说明必须如实交代「工具已执行」（副作用已发生，谎称没执行会误导模型） */
+	TH_CHECK_MSG(toolContents[1].find("已执行") != std::string::npos,
+		"预算说明未交代工具已执行: " + toolContents[1].substr(0, 120));
+	/* 不许出现半截结果（截断比没有更危险：模型会以为看到的是完整内容） */
+	TH_CHECK_MSG(toolContents[1].find(std::string(20, 'x')) == std::string::npos,
+		"预算说明里混进了半截结果");
+}
+
+/* 预算按**任务**清零：上一个任务用尽不影响下一个任务 */
+TH_TEST(agentloop_task_budget_resets_per_task) {
+	FakeTransport tr;
+	tr.script = {
+		callResponse("big", "{}"), answerResponse("第一轮结束"),
+		callResponse("big", "{}"), answerResponse("第二轮结束"),
+	};
+	const AgentToolRegistry tools = bigTools(50);
+
+	AgentOptions opts;
+	opts.maxTurns = 3;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	opts.maxTaskToolResultBytes = 100;
+	AgentSession s(tr, tools, opts);
+
+	TH_CHECK(s.runTurn("任务一") == "第一轮结束");
+	TH_CHECK(s.runTurn("任务二") == "第二轮结束");
+
+	/* 第二个任务的第一条工具结果必须仍是原文（预算是任务内量，不是会话量） */
+	const auto& msgs = tr.requests.back();
+	std::size_t seen = 0;
+	bool secondTaskOriginal = false;
+	for (const auto& m : msgs) {
+		if (m.role != "tool") { continue; }
+		++seen;
+		if (seen == 2) { secondTaskOriginal = (m.content == std::string(50, 'x')); }
+	}
+	TH_CHECK_MSG(secondTaskOriginal,
+		"第二个任务的首条工具结果应原样入历史（预算未按任务清零？）");
+}
+
+/* 图片预算独立计账：文本没超但图片超了，也要降级（且说明区分是图片超限） */
+TH_TEST(agentloop_task_budget_covers_images) {
+	FakeTransport tr;
+	tr.script = {callResponse("shoot", "{}"), callResponse("shoot", "{}"), answerResponse("结束")};
+	const AgentToolRegistry tools = imageTools(64);
+
+	AgentOptions opts;
+	opts.maxTurns = 4;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	opts.maxTaskToolResultBytes = 1024 * 1024;	/* 文本预算刻意给大 */
+	opts.maxTaskImageBytes = 100;			/* 只装得下一张 */
+	AgentSession s(tr, tools, opts);
+
+	TH_CHECK(s.runTurn("拍照") == "结束");
+	const auto& msgs = tr.requests.back();
+
+	std::size_t imgMsgs = 0;
+	for (const auto& m : msgs) {
+		if (m.role == "user" && !m.images.empty()) { ++imgMsgs; }
+	}
+	TH_CHECK_MSG(imgMsgs == 1, "超预算的图片不该被注入（应有 1 条图片消息，实际 "
+		+ std::to_string(imgMsgs) + " 条）");
+
+	/* 降级说明应点名是**图片**超限，而不是含混的「超预算」 */
+	bool hasImgNote = false;
+	for (const auto& m : msgs) {
+		if (m.role == "tool" && m.content.find("图片累计体积") != std::string::npos) {
+			hasImgNote = true;
+		}
+	}
+	TH_CHECK_MSG(hasImgNote, "应有点名「图片累计体积」的降级说明");
+}
+
+/* 预算为 0 = 不限制（与 maxHistoryBytes 同口径，便于需要时整体放开） */
+TH_TEST(agentloop_task_budget_zero_means_unlimited) {
+	FakeTransport tr;
+	tr.script = {callResponse("big", "{}"), answerResponse("结束")};
+	const AgentToolRegistry tools = bigTools(4096);
+
+	AgentOptions opts;
+	opts.maxTurns = 3;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	opts.maxTaskToolResultBytes = 0;
+	opts.maxTaskImageBytes = 0;
+	AgentSession s(tr, tools, opts);
+
+	TH_CHECK(s.runTurn("任务") == "结束");
+	const auto& msgs = tr.requests.back();
+	bool original = false;
+	for (const auto& m : msgs) {
+		if (m.role == "tool" && m.content == std::string(4096, 'x')) { original = true; }
+	}
+	TH_CHECK_MSG(original, "预算为 0 时应原样入历史（不限制）");
 }

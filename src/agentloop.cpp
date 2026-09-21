@@ -104,6 +104,10 @@ void AgentSession::trimHistory() {
 
 std::string AgentSession::runTurn(const std::string& userTask) {
 	trimHistory();
+	/* 任务内聚合预算按任务清零（AG-4）：它约束的是「这一个任务往上下文里灌了
+	 * 多少字节」，跨任务的体积由 trimHistory 的 maxHistoryBytes 管。 */
+	taskToolResultBytes_ = 0;
+	taskImageBytes_ = 0;
 	const std::size_t base = messages_.size();
 
 	/* 本轮里最后一个「可直接发给服务端」的边界：起点（只有这条 user 消息）算完整，
@@ -167,6 +171,71 @@ std::string AgentSession::appendFinalAnswer(const ChatResponse& resp) {
 	return resp.content;
 }
 
+/* 派发单个工具调用：执行 → （必要时按任务内预算降级）→ 写 tool 消息。
+ * 返回该结果携带的图片 data URL（无图片时为空串）。
+ *
+ * 预算降级（2026-09-21 审计 AG-4）：单个任务的累计工具结果/图片字节数超过
+ * AgentOptions 的上限时，**不把这一条结果放进历史**，换成一句说明回给模型。
+ * 为什么是「换掉」而不是「截断」：截断工具输出会让模型看到半截内容却以为完整
+ * （比没有更危险）；为什么不是「报错终止」：那是把可用性问题升级成任务失败，
+ * 而模型完全有能力换一个小一点的步子重试。
+ * 判定在**执行之后**做：体积要拿到结果才知道，而工具已经产生副作用（比如
+ * 动作脚本已经跑了），此时谎称「没执行」会误导模型——所以文案必须如实说明
+ * 「已执行，但结果体积超限」。
+ * 本函数不写 assistant 消息、不动 complete 边界：调用方保证一轮里的 tool 消息
+ * 与 assistant.tool_calls 一一对应。 */
+std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
+	(void)turn;
+	AgentToolResult result;
+	try {
+		Json args = parseToolArguments(call.arguments);
+		result = tools_.execute(call.name, args);
+	} catch (const std::exception& e) {
+		result = {std::string("工具参数错误: ") + e.what(), ""};
+	}
+
+	/* ---- 任务内预算判定 ---- */
+	const bool textOver = opts_.maxTaskToolResultBytes > 0
+		&& taskToolResultBytes_ + result.text.size() > opts_.maxTaskToolResultBytes;
+	const bool imgOver = !result.imageDataUrl.empty() && opts_.maxTaskImageBytes > 0
+		&& taskImageBytes_ + result.imageDataUrl.size() > opts_.maxTaskImageBytes;
+	if (textOver || imgOver) {
+		const std::string what = imgOver ? "图片" : "工具输出";
+		const std::size_t used = imgOver ? taskImageBytes_ : taskToolResultBytes_;
+		const std::size_t cap = imgOver ? opts_.maxTaskImageBytes : opts_.maxTaskToolResultBytes;
+		std::string note = "本次工具结果未注入上下文：" + what + "累计体积已达任务上限（已用 "
+			+ std::to_string(used) + " + 本次 " 
+			+ std::to_string(imgOver ? result.imageDataUrl.size() : result.text.size())
+			+ " 字节，上限 " + std::to_string(cap) + " 字节）。";
+		if (imgOver) {
+			note += "描述：" + result.text + "。";
+		}
+		note += "工具本身已执行完毕（副作用已发生）。请改用更小的步子推进任务，"
+			"或直接基于已有信息给出结论。";
+		result.text = std::move(note);
+		result.imageDataUrl.clear();
+	} else {
+		taskToolResultBytes_ += result.text.size();
+		taskImageBytes_ += result.imageDataUrl.size();
+	}
+
+	if (opts_.verbose) {
+		std::string shown = result.text;
+		if (!result.imageDataUrl.empty()) {
+			shown += "\n[返回图片 " + std::to_string(result.imageDataUrl.size())
+				+ " 字节，已注入下一轮对话]";
+		}
+		log("[工具] " + call.name + "\n" + indentLines(shown, 2));
+	}
+
+	ChatMessage tool;
+	tool.role = "tool";
+	tool.content = result.text;
+	tool.toolCallId = call.id;
+	messages_.push_back(std::move(tool));
+	return result.imageDataUrl;
+}
+
 /* 执行：一轮带工具调用的模型回合，按协议顺序写历史——
  * assistant(tool_calls) → 每个 tool 的回传（tool_call_id 一一对应）→ 图片消息。
  * 图片必须等**全部** tool 消息回传之后再注入：OpenAI 协议要求 assistant 的
@@ -191,29 +260,8 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 
 	std::vector<std::string> images;
 	for (const auto& c : calls) {
-		AgentToolResult result;
-		try {
-			Json args = parseToolArguments(c.arguments);
-			result = tools_.execute(c.name, args);
-		} catch (const std::exception& e) {
-			result = {std::string("工具参数错误: ") + e.what(), ""};
-		}
-		if (opts_.verbose) {
-			std::string shown = result.text;
-			if (!result.imageDataUrl.empty()) {
-				shown += "\n[返回图片 " + std::to_string(result.imageDataUrl.size())
-					+ " 字节，已注入下一轮对话]";
-			}
-			log("[工具] " + c.name + "\n" + indentLines(shown, 2));
-		}
-		ChatMessage tool;
-		tool.role = "tool";
-		tool.content = result.text;
-		tool.toolCallId = c.id;
-		messages_.push_back(std::move(tool));
-		if (!result.imageDataUrl.empty()) {
-			images.push_back(result.imageDataUrl);
-		}
+		std::string img = dispatchOneCall(c, turn);
+		if (!img.empty()) { images.push_back(std::move(img)); }
 	}
 	if (!images.empty()) {
 		ChatMessage img;
