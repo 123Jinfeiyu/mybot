@@ -6,12 +6,25 @@
  *   2) DepthLimitGuard：超限抛且不计数、未超限计数对称、nullptr 只计数
  *   3) rangeErrorText：越界文案模板（CLI 与配置文件两路共用）
  *   4) cli::parseKeyValue：--k=v / --k v / 裸 --k 切分与 strictLookahead 两语义
+ *   5) readFileCapped：受限读取单点的策略语义（Reject 超限即失败 / Truncate 截断
+ *      正常返回）与软链判据（followSymlinks 开关决定是否带 O_NOFOLLOW）
  */
 
+#include <fstream>
 #include <string>
 
+#include "fixtures.hpp"
 #include "harness.hpp"
 #include "util.hpp"
+
+namespace {
+
+void writeText(const std::filesystem::path& p, const std::string& text) {
+	std::ofstream f(p, std::ios::binary);
+	f << text;
+}
+
+} // namespace
 
 /* ---- isSafeIdent：agentmode 预检与 RobotStruct::injectLuaDriver 共用 ---- */
 
@@ -192,4 +205,76 @@ TH_TEST(echo_source_escapes_control_bytes_instead_of_writing_them) {
 	/* 其它控制字节与 DEL 同样转义；可打印内容逐字保留 */
 	const std::string mixed("a\0b\tc\x7f", 6);
 	TH_CHECK(bot::echoSource(mixed) == "a\\x00b\\x09c\\x7f");
+}
+
+/* ---- readFileCapped：受限读取单点（B2-3 余部）----
+ * 四份实现收敛成一份后，超限语义由 CapPolicy 显式声明。这里钉住两种策略的
+ * 分界（Reject 探测 1 字节即失败 / Truncate 读满即停且正常返回）与软链判据
+ * （followSymlinks 决定是否带 O_NOFOLLOW）——它们正是原 readHead 与
+ * readWholeFileLimited 的行为差异所在。 */
+TH_TEST(read_file_capped_reject_fails_only_beyond_cap) {
+	fx::TempDir dir("capread");
+	const std::filesystem::path exact = dir.path() / "exact.bin";
+	const std::filesystem::path over = dir.path() / "over.bin";
+	writeText(exact, "1234");
+	writeText(over, "12345");
+
+	std::string out;
+	TH_CHECK(bot::readFileCapped(exact.string(), 4, bot::CapPolicy::Reject, out)
+		== bot::CapReadStatus::OK);
+	TH_CHECK(out == "1234");
+
+	/* 恰好 cap 成功、cap+1 失败：边界在「多出的那 1 字节」上 */
+	TH_CHECK(bot::readFileCapped(over.string(), 4, bot::CapPolicy::Reject, out)
+		== bot::CapReadStatus::TOO_LARGE);
+}
+
+TH_TEST(read_file_capped_truncate_stops_at_cap_without_error) {
+	fx::TempDir dir("capread_trunc");
+	const std::filesystem::path over = dir.path() / "over.bin";
+	writeText(over, "1234567890");
+
+	std::string out;
+	TH_CHECK(bot::readFileCapped(over.string(), 4, bot::CapPolicy::Truncate, out)
+		== bot::CapReadStatus::OK);
+	TH_CHECK(out == "1234");	/* 截断是刻意的：提示词预算语义 */
+}
+
+TH_TEST(read_file_capped_missing_file_is_open_failed) {
+	fx::TempDir dir("capread_missing");
+	std::string out;
+	TH_CHECK(bot::readFileCapped((dir.path() / "nope.bin").string(), 16,
+			bot::CapPolicy::Reject, out) == bot::CapReadStatus::OPEN_FAILED);
+	TH_CHECK(out.empty());
+}
+
+TH_TEST(read_file_capped_symlink_policy_is_explicit) {
+	fx::TempDir dir("capread_link");
+	const std::filesystem::path target = dir.path() / "target.bin";
+	const std::filesystem::path link = dir.path() / "link.bin";
+	writeText(target, "abcdef");
+	std::error_code ec;
+	std::filesystem::create_symlink(target, link, ec);
+	if (ec) { return; }		/* 文件系统不支持软链则跳过（本机/CI 均支持） */
+
+	std::string out;
+	/* 缺省（不跟随）：O_NOFOLLOW 拒绝软链——配置/密钥/提示词包路径的防线 */
+	TH_CHECK(bot::readFileCapped(link.string(), 16, bot::CapPolicy::Reject, out)
+		== bot::CapReadStatus::OPEN_FAILED);
+	/* 显式跟随：结构脚本头摘录沿用的旧语义（路径来自 CLI） */
+	TH_CHECK(bot::readFileCapped(link.string(), 16, bot::CapPolicy::Reject, out, true)
+		== bot::CapReadStatus::OK);
+	TH_CHECK(out == "abcdef");
+}
+
+/* 薄封装的报错锚点：Reject 的两句文案（grep 守门与测试都锚定它们） */
+TH_TEST(read_whole_file_limited_keeps_both_error_messages) {
+	fx::TempDir dir("capread_msg");
+	const std::filesystem::path over = dir.path() / "over.bin";
+	writeText(over, "12345");
+	std::string out, err;
+	TH_CHECK(!bot::readWholeFileLimited(over.string(), 4, out, err, "提示词文件"));
+	TH_CHECK(err.find("超过字节上限 4") != std::string::npos);
+	TH_CHECK(!bot::readWholeFileLimited((dir.path() / "nope.bin").string(), 4, out, err));
+	TH_CHECK(err.find("无法打开") == 0);
 }

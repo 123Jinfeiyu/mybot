@@ -382,54 +382,81 @@ inline std::string echoSource(const std::string& s) {
 	return out;
 }
 
-/* ---- 整文件受限读取（2026-09-20 重构阶段 4.1）----
+/* ---- 受限读取：策略 + 单点实现（B2-3 余部，2026-09-21）----
  * 收敛前「带上限地读一个文件」有 4 份实现，超限语义分叉：提示词包响亮拒绝，
  * 而配置与密钥文件**静默截断**后交给下游——用户看到的是「不是合法 JSON」
  * 「密钥错误」，真实成因（文件过大）完全丢失，是排障里最难查的一类。
- * 统一为「超过上限即拒绝」：读满 cap 后再探测 1 字节即可判定，无需读完整个文件。
- * what 只影响报错主体名（"文件" / "提示词文件" / "密钥文件"），两句报错都保留
- * 「无法打开」「超过字节上限」两个既有断言锚点。 */
-inline bool readWholeFileLimited(const std::string& path, std::size_t cap,
-		std::string& out, std::string& err, const char* what = "文件") {
-	/* 2026-09-20 审计收口：此前用 std::ifstream，无 O_NOFOLLOW，会跟随符号链接
-	 * ——与动作脚本/提示词路径的 O_NOFOLLOW 防线不一致。这里用 open + O_NOFOLLOW
-	 * 一步到底（不做 lstat→open 的 check-then-use，那中间有 TOCTOU 窗口）。
-	 * 对正常文件行为与旧实现完全一致；符号链接统一按「无法打开」报错。
-	 * 注：O_NOFOLLOW 只看最后一段，中间目录软链仍可被穿过——这些是本机
-	 * CLI/配置来源（非远程动作源），威胁模型本就低于动作脚本路径。 */
-	int fd = ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-	if (fd < 0) {
-		err = std::string("无法打开") + what + " " + path;
-		return false;
-	}
-	std::string data;
-	data.resize(cap);
-	std::size_t readTotal = 0;
-	while (readTotal < cap) {
-		ssize_t n = ::read(fd, &data[readTotal], cap - readTotal);
+ * 2026-09-20 先把整文件读取统一为 Reject；2026-09-21 把最后一处独立实现
+ * （agentmode 的 readHead：提示词预算，截断是刻意的）也并进来，超限语义改由
+ * CapPolicy 显式声明，实现只剩这一份。
+ *   Reject  —— 读满 cap 后再探测 1 字节，超限即失败（配置/密钥/提示词包）
+ *   Truncate—— 读满 cap 即停，正常返回（结构脚本头摘录等提示词预算）
+ * 错误文案留在各调用方（grep 守门锚定各处原文），本函数只回状态。
+ * followSymlinks=false（缺省）走 O_NOFOLLOW 防线（一步 open，不做
+ * lstat→open 的 check-then-use）；Truncate 的调用方传 true 以保持其既有语义
+ * （路径来自 CLI，非远程动作源）。注：O_NOFOLLOW 只看最后一段，中间目录软链
+ * 仍可被穿过——残余与旧声明相同。 */
+enum class CapPolicy { Reject, Truncate };
+
+enum class CapReadStatus {
+	OK,           /* 成功（Truncate 时可能已按 cap 截断） */
+	TOO_LARGE,    /* 仅 Reject：文件大于 cap */
+	OPEN_FAILED,  /* 打不开（含被 O_NOFOLLOW 拒绝的符号链接） */
+	READ_FAILED,  /* 读中途出错；已读到的部分保留在 out 里 */
+};
+
+inline CapReadStatus readFileCapped(const std::string& path, std::size_t cap, CapPolicy policy,
+		std::string& out, bool followSymlinks = false) {
+	out.clear();
+	int flags = O_RDONLY | O_CLOEXEC;
+	if (!followSymlinks) { flags |= O_NOFOLLOW; }
+	int fd = ::open(path.c_str(), flags);
+	if (fd < 0) { return CapReadStatus::OPEN_FAILED; }
+	std::array<char, 8192> buf;
+	for (;;) {
+		if (out.size() >= cap) {
+			if (policy == CapPolicy::Truncate) { break; }
+			/* 已读满 cap 后再探测 1 字节即可判定超限（无需读完整个文件） */
+			char probe = 0;
+			ssize_t n = ::read(fd, &probe, 1);
+			if (n > 0) {
+				::close(fd);
+				return CapReadStatus::TOO_LARGE;
+			}
+			break;
+		}
+		std::size_t want = buf.size();
+		if (want > cap - out.size()) { want = cap - out.size(); }
+		ssize_t n = ::read(fd, buf.data(), want);
 		if (n < 0) {
 			if (errno == EINTR) { continue; }
 			::close(fd);
-			err = std::string("无法打开") + what + " " + path;
-			return false;
+			return CapReadStatus::READ_FAILED;
 		}
 		if (n == 0) { break; }
-		readTotal += static_cast<std::size_t>(n);
-	}
-	data.resize(readTotal);
-	/* 已读满 cap 后再探测 1 字节即可判定超限（与旧语义一致：读满即拒） */
-	if (readTotal == cap) {
-		char probe = 0;
-		ssize_t n = ::read(fd, &probe, 1);
-		if (n > 0) {
-			::close(fd);
-			err = std::string(what) + " " + path + " 超过字节上限 " + std::to_string(cap);
-			return false;
-		}
+		out.append(buf.data(), static_cast<std::size_t>(n));
 	}
 	::close(fd);
-	out = std::move(data);
-	return true;
+	return CapReadStatus::OK;
+}
+
+/* 整文件受限读取（Reject 策略的薄封装）：保留原有两句报错锚点
+ * 「无法打开<what> …」与「<what> … 超过字节上限 N」；
+ * what 只影响报错主体名（"文件" / "提示词文件" / "密钥文件"）。 */
+inline bool readWholeFileLimited(const std::string& path, std::size_t cap,
+		std::string& out, std::string& err, const char* what = "文件") {
+	switch (readFileCapped(path, cap, CapPolicy::Reject, out)) {
+	case CapReadStatus::OK:
+		return true;
+	case CapReadStatus::TOO_LARGE:
+		err = std::string(what) + " " + path + " 超过字节上限 " + std::to_string(cap);
+		break;
+	default:
+		/* OPEN_FAILED 与 READ_FAILED 同文案：与收敛前实现逐字一致 */
+		err = std::string("无法打开") + what + " " + path;
+		break;
+	}
+	return false;
 }
 
 /* ---- 受限 FD 读取（M2/B2-3 单点，2026-09-20）----

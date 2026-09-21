@@ -1,7 +1,6 @@
 #include "agentmode.hpp"
 
 #include <cctype>
-#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -22,19 +21,18 @@ namespace agent {
 namespace {
 
 /* 读取脚本头部 cap 字节（提示词预算，**截断是刻意的**）。
- * 但 I/O 错误不得与「正常截断」混为一谈：旧实现忽略 ferror，磁盘错误会把
- * 半截脚本当成完整摘录喂给模型（阶段 4.1 已把「整文件读取」统一为超限响亮
- * 拒绝；这里是同一族的静默面，因预算语义不同而保留截断，只把错误显式化）。 */
+ * 实现已并入 util 的受限读取单点（B2-3 余部）：这里只做两件与提示词预算有关的
+ * 翻译——打不开按空串（脚本头摘录不是硬依赖），读中途出错打印告警而不是静默
+ * 把半截脚本当成完整摘录喂给模型（阶段 4.1 把「整文件读取」统一为超限响亮拒绝；
+ * 这里是同一族的静默面，因预算语义不同而保留截断，只把错误显式化）。
+ * followSymlinks=true：沿用本路径既有语义（结构脚本路径来自 CLI，非远程动作源），
+ * 与 O_NOFOLLOW 的配置/脚本读取路径区分开。 */
 std::string readHead(const std::string& path, std::size_t cap) {
-	std::ifstream f(path, std::ios::binary);
-	if (!f) { return ""; }
 	std::string data;
-	data.resize(cap);
-	f.read(&data[0], static_cast<std::streamsize>(cap));
-	std::streamsize n = f.gcount();
-	if (n < 0) { n = 0; }
-	data.resize(static_cast<std::size_t>(n));
-	if (f.bad()) {
+	CapReadStatus st = readFileCapped(path, cap, CapPolicy::Truncate, data,
+			/*followSymlinks=*/true);
+	if (st == CapReadStatus::OPEN_FAILED) { return ""; }
+	if (st == CapReadStatus::READ_FAILED) {
 		std::cerr << "警告：读取结构脚本头部时发生 I/O 错误，提示词中的脚本摘录可能不完整: "
 			<< path << std::endl;
 	}
