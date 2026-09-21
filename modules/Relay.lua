@@ -4,7 +4,7 @@
 -- 返回值由框架与元数据合并后转发给 controller 指定的硬件变量（如 Timer）
 -- 用法：在结构脚本中定义 @Relay 矩阵并带 controller 列，见 robots/relay-test.sql
 
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：print_table 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))

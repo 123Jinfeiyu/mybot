@@ -26,8 +26,7 @@
 --   （约百 uA）——输出高靠外部上拉，勿用它直接供电；INT 引脚本驱动未用（轮询）。
 -- 在位探测：I2C ACK 即存在性证据（器件无 ID 寄存器），build 读一次确认。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

@@ -22,10 +22,9 @@
 -- NOTE: ADS1256 要求 SPI Mode 1（CPOL=0, CPHA=1），请在 @SPI 块中配置
 
 -- ==================== 寄存器 ====================
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
--- 调试打印辅助 print_table（modules/lib/）
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))

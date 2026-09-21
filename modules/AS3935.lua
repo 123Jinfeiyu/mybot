@@ -62,8 +62,7 @@ SINGLE_CONSUMER = "事件锁存 + 读即清：消费性读取，第二个读者�
 -- 已知兼容性坑：个别模块（DFRobot SEN0290）中断锁存经 I2C 清除不干净
 --   （ESPHome #17581），若同一事件反复上报，在消费侧按 CODE 去重。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

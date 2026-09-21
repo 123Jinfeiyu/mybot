@@ -23,8 +23,7 @@
 -- 数据率事实来源：Linux 内核 ti-ads1015 IIO 驱动（DR 表 {128,250,490,920,
 -- 1600,2400,3300,3300}，数据提取 sign_extend32(raw>>4, 11)）。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

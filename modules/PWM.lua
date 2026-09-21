@@ -48,8 +48,7 @@
 --   - 取消导出后引脚回到未配置状态，停机后的电平要靠硬件上下拉兜底
 --   - 需要 root 或 pwm 组权限才能写 /sys/class/pwm（export/unexport 默认仅 root）
 
--- 加载纯 Lua 基层硬件抽象层（HAL）
--- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

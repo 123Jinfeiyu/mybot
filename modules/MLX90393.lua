@@ -55,8 +55,7 @@
 --   自动执行一次 HR，显式再做一次无害）-> 写 GAIN_SEL（读-改-写 + 回读校验）
 --   -> SM/RM 试测一帧并丢弃（甄别在位、打通 触发/轮询/读回 全链路）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

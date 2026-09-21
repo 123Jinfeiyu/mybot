@@ -41,8 +41,7 @@
 --   7. ATHD：CONFIG（0x0C）低 5 位，值 = 32 - 阈值%（00000=32%）
 --   8. QuickStart：MODE（0x06）写 0x4000（本驱动仅在 build 配置时发一次）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

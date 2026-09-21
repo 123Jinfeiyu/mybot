@@ -53,8 +53,7 @@ SINGLE_CONSUMER = "转换命令式：器件侧记着'在转换哪个量'，交�
 -- 部署提醒：芯片裸露受光会引入气压噪声，模块出厂遮光海绵/胶勿撕除；
 --   压高公式为国际标准大气近似，且海拔参考点 p0 随天气漂移（1hPa ≈ 8.5m）。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

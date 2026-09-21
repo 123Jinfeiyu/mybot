@@ -39,9 +39,8 @@
 -- CO2eq 由 H2 信号等效换算：对呼吸类 VOC 响应快，对燃烧类 CO2 迟钝，
 --   适合做通风指示，不适合精确浓度测量
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 同时持有 HAL 表：基线文件读写走 HAL.sys 间接层（可离线 mock）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table 经 mpath 加载（modules/lib/）；同时持有 HAL 表：
+-- 基线文件读写走 HAL.sys 间接层（可离线 mock）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local HAL = dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

@@ -44,8 +44,7 @@
 --      bit[2:1]=工作模式（normal=0）；重复次数 0x51(REP_XY)/0x52(REP_Z)
 --   6. 无中断/FIFO 路径（守护周期采样不需要）；正常模式典型电流 170µA
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

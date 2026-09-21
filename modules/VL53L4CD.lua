@@ -57,8 +57,7 @@ SINGLE_CONSUMER = "测距状态机：SYSTEM_START + 就绪标志在器件侧，�
 --   4. 从机地址固定 0x29，一条总线挂多只要 XSHUT 时序重分配地址，
 --      本驱动按单只支持
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

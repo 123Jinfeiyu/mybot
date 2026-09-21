@@ -52,8 +52,7 @@ SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访�
 -- 应用提示：六通道模式一次测量 ~2 x 积分时间，采样率受此限制；
 --   各通道可直接挂 Ema/Kalman 滤波链做平滑光谱。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

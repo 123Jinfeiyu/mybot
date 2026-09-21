@@ -3,8 +3,7 @@
 -- 在未来替代内建的Speaker（Speaker目前仅负责延时）
 
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))

@@ -8,7 +8,7 @@
 -- 输入参数：angle（支持浮点）
 -- 用法见 robots/spider1.sql 的 Servo 表与 scripts/*.mt 动作脚本
 
--- 调试打印辅助 print_table（modules/lib/）
+-- 标准前导：print_table 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))

@@ -24,10 +24,9 @@
 --   6. 过采样固定 x1/x1/x1（单次测量约 6~9ms），两次 call 建议间隔 > 1s
 
 -- ==================== 寄存器 ====================
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
--- 调试打印辅助 print_table（modules/lib/）
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))

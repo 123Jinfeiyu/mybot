@@ -39,8 +39,8 @@
 --   5. 逐寄存器读（0x003~0x006 各一帧）：锁存语义下快照跨 CSN 保持，CRC
 --      校验兜底一致性；不匹配自动重读一轮
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc；dofile 副作用
--- 定义 spi_* 全局，virtbus 注入后 spi_xfer_full 走内存总线）
+-- 标准前导：HAL 经 mpath 加载（modules/lib/）；dofile 副作用定义 spi_* 全局，
+-- virtbus 注入后 spi_xfer_full 走内存总线
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
