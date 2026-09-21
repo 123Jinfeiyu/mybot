@@ -8,6 +8,22 @@
 # 用法：bash test/run_coverage.sh
 #   COV_BUILD_DIR（缺省 build-cov）/ COV_REPORT_DIR（缺省 build-cov/coverage，
 #   随构建目录一并被 .gitignore 的 build-*/ 覆盖，不污染 git status）可覆盖。
+#   COV_WITH_GATE=1：采集时额外跑一遍全套守门（ALLOW_SKIP=1 bash test/run_all.sh），
+#   让 e2e/TCP/Lua 链路对 **mybot** 二进制的覆盖也计入。缺省只跑单测（快）。
+#
+# ---- 这个数字的口径与已知盲区（2026-09-21 AG-11 实测）----
+#   * 它只统计 src/ 的**行**覆盖，且**只反映本条脚本实际跑过的东西**：缺省模式
+#     下就是 C++ 单测；不加 COV_WITH_GATE=1 时 e2e 用的 mybot 不计入。
+#   * fork/exec 子侧代码（agent_subprocess.cpp 的 execShellChild /
+#     revokeInheritedFds）**恒为 0%**，且这不是「没测」而是「测了测不到」：
+#     gcov 计数在进程退出时落盘，而这两个函数永远以 execve 结束——exec 用新
+#     映像的计数页覆盖当前进程，子侧执行记录不可能被写出。AG-3（close_range
+#     标志写错、快速路径从未执行）正藏在这个区块里，藏了很久。
+#     该区块的保证由**行为断言**承担，见 test/cpp/test_agenttools.cpp 的
+#     「AG-11：子进程路径自报」用例（在子进程 exec 前把走了哪条路径写进标记
+#     文件，父进程断言）——不要试图用行覆盖去覆盖它。
+#   * 因此**不建议**在本数字上设 COV_MIN_LINES 硬阈值：一个既漏掉 mybot 链路、
+#     又有结构性 0% 区块的指标，设阈值只会把测试压力挤到测得到的区域。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -22,10 +38,33 @@ echo "===== 覆盖率构建（$build_dir，CMAKE_CXX_FLAGS=--coverage） ====="
 # 链接行，EXE_LINKER_FLAGS 再显式兜一层），确保 libgcov 被链进来。
 cmake -S . -B "$build_dir" -DCMAKE_BUILD_TYPE=Debug \
 	-DCMAKE_CXX_FLAGS=--coverage -DCMAKE_EXE_LINKER_FLAGS=--coverage >/dev/null || exit 1
-cmake --build "$build_dir" -j"$(nproc)" --target mybot_tests || exit 1
+# 同时构建 mybot：不构建它，COV_WITH_GATE=1 那一跑就没有被插桩的二进制，
+# 「叠加守门」会一点数字都不涨（实测过：79.69% → 79.69%，容易让人以为 e2e
+# 没有覆盖价值，实际是它压根没被计入）。
+cmake --build "$build_dir" -j"$(nproc)" --target mybot_tests mybot || exit 1
+
+# 清掉陈旧计数文件（2026-09-21 AG-11）：重建二进制后 .gcda 的 checksum 会变，
+# 不删就会看到 libgcov 报 "overwriting an existing profile data with a different
+# checksum" 并**混合两套构建的数据**——数字来源不明比数字低更糟。
+find "$build_dir" -name '*.gcda' -delete
 
 echo "===== 运行 mybot_tests 采集覆盖（CWD 必须是仓库根：用例读相对路径夹具） ====="
 ./"$mybot_tests" >/dev/null || exit 1
+
+if [ -n "${COV_WITH_GATE:-}" ]; then
+	echo "===== COV_WITH_GATE=1：再跑全套守门，把 e2e/TCP/Lua 对 mybot 的覆盖计入 ====="
+	# 两个必须显式给的环境变量（2026-09-21 AG-11 实测踩到）：
+	#   BOT      —— run_all.sh 缺省跑 ./build/mybot，那是**没插桩**的二进制，
+	#               于是「叠加守门」一点数字都不涨（实测 77.90% → 77.90%），
+	#               极易被读成「e2e 没有覆盖价值」。必须指向插桩产物。
+	#   BOT_TESTS——同理指向插桩的 mybot_tests（缺省路径其实已经是它，显式写出
+	#               以免脚本被搬家后静默错位）。
+	# ALLOW_SKIP=1：允许缺真机/缺可选依赖的分段跳过（覆盖率采集不是守门，
+	# 不该因为本机没有摄像头而失败）；守门本身仍由 run_all.sh 正常入口把关。
+	BOT="./$build_dir/mybot" BOT_TESTS="./$build_dir/mybot_tests" \
+		ALLOW_SKIP=1 bash test/run_all.sh >/dev/null 2>&1 || true
+	echo "（守门跑完；本轮只为累积覆盖计数，其通过与否不改变本脚本退出码）"
+fi
 
 mkdir -p "$report_dir"
 if command -v gcovr >/dev/null 2>&1; then
@@ -46,11 +85,24 @@ else
 	build_abs="$repo_root/$build_dir"
 	(
 		cd "$repo_root/$report_dir" || exit 1
-		# .gcno 与源码同名（<objdir>/<src>.gcno），gcov 直接吃数据文件名即可；
-		# .gcov 落到当前目录（report_dir）。
-		while IFS= read -r gcno; do
-			gcov -b -o "$(dirname "$gcno")" "$gcno" >/dev/null 2>&1 || true
-		done < <(find "$build_abs" -path '*/src/*' -name '*.gcno' -print)
+		# 每个 src/*.cpp 会同时出现在多个 target 的对象目录里（mybot 与
+		# mybot_tests），.gcno 与源码同名。早先脚本只构建 mybot_tests，所以
+		# 「按 .gcno 全扫一遍」恰好只扫到一份；两个 target 都插桩之后，同一源
+		# 文件有 2 份 .gcno——逐个调用时后一次会**覆盖**前一次的 .gcov，且可能
+		# 覆盖成「没有 .gcda」的那一份（实测：报告退化成 0.00%，Data:- 说明
+		# 根本没读到计数数据）。
+		#
+		# 两个必须知道的 gcov 行为：
+		#   ① 要喂**完整 .gcno 路径**。只给 -o 目录 + 源码路径时，gcov 会去找
+		#      去掉扩展名的 <base>.gcno，报 "cannot open notes file"。
+		#   ② 同一源文件、多个 .gcda（不同 target 各跑各的）时，gcov 会**累加**
+		#      计数并重写同名 .gcov——这正是我们要的合并。故按 .gcda 逐个调用，
+		#      每个源文件被处理多次、结果自然累积成并集。
+		shopt -s nullglob
+		for gcda in "$build_abs"/CMakeFiles/*.dir/src/*.gcda; do
+			gcov -b -o "$(dirname "$gcda")" "${gcda%.gcda}.gcno" >/dev/null 2>&1 || true
+		done
+		shopt -u nullglob
 	)
 	# 聚合 .gcov：只统计 Source 落在 src/ 的文件（一个 .gcno 会连带生成 libstdc++
 	# 等系统头的 .gcov，必须按 Source 行过滤）；字段 1 是执行计数（`-` = 非可执行行，
