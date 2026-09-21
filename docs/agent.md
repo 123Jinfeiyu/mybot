@@ -416,7 +416,7 @@ luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路
 # 用 **agent:** 而不是裸 agent——后者是子串匹配，只命中用例名里含 "agent" 的那部分，
 # 会漏掉 promptpack / llmconfig / cliargs / agentconfig / agentmode
 # （2026-09-21 AG-11 实测 86 vs 108；第三轮 AG-22 又发现 agentconfig_/agentmode_
-# 两族 15 例仍不在表里，补齐后为 127 例，并把守门改成**派生式**：注册表里每个
+# 两族 15 例仍不在表里，补齐后为 130 例，并把守门改成**派生式**：注册表里每个
 # 用例名前缀要么在作用域表、要么在 test_util.cpp 的「非 agent 面」roster 里带
 # 理由登记——漏登记一整族即红，而不是静默少跑）。
 ./build/mybot_tests agent:
@@ -447,6 +447,13 @@ luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路
   219 MiB → 修复后 163 MiB，且不再做无用的编码）。
 - 失败时只裁掉「半截的 tool_calls 尾部」：**达到轮次上限**这一种失败会原样保留本轮
   历史（那些动作脚本已真跑过、硬件不会倒回去，抹掉等于骗模型说什么都没发生）。
+- **任务内预算的三条确切边界**（第三轮审计 AG-21 实测后写明，别按「硬上限」理解）：
+  ① `maxTaskToolResultBytes` / `maxTaskImageBytes` 是**任务内累计**上限，但**裁剪
+  （maxHistoryBytes）只在每个任务开头做一次**——所以任务进行中历史可以从 2 MiB 长到
+  约 6 MiB（文本 2 + 图片 4）才在下一次任务开头被裁，4 MiB 是**稳态**上限而非瞬时上限；
+  ② 图片额度逐任务**单向累加**：一旦某张图装不下，本任务后续 `capture_image` 都不会
+  成功（降级说明会明说「额度已经用尽……再调用也不会成功」并给出改走文字结论的出路）；
+  ③ 降级说明**自己也计入预算**，所以「反复超限」不会往历史里无界灌说明文本。
 - **单张图的峰值内存仍是图像体积的数十倍**（第三轮审计 AG-19 实测：786 KB JPEG →
   40 MiB、1.5 MB JPEG → 55 MiB、10 MB（超限被拒）→ 163 MiB）。同一条 payload 在
   「驱动缓冲 → Lua 字符串 → base64 → Json 节点 → data URL → 会话历史 → 请求体」

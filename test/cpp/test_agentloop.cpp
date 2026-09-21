@@ -54,12 +54,17 @@ AgentToolRegistry bigTools(std::size_t n) {
 	return reg;
 }
 
-/* 带固定体积图片的工具（AG-4 图片预算用） */
+/* 带固定体积图片的工具（AG-4 图片预算用）。
+ * 文案刻意与真 capture_image 逐字一致（`src/agenttools.cpp` 的返回值
+ * "已拍摄照片。画面已加入你的上下文。"）——**这是 AG-4′ 能测到的前提**：降级
+ * 说明要剥掉的正是这一句成功断言，夹具若换别的文案，用例就退化成自证
+ * （实测：第一版夹具写「已拍照」，反向验证时该用例照样绿，抓不到 bug）。 */
 AgentToolRegistry imageTools(std::size_t imgBytes) {
 	AgentToolRegistry reg;
 	reg.add(AgentTool{"shoot", "返回一张图", parseJson("{\"type\":\"object\"}"),
 		[imgBytes](const Json&) -> AgentToolResult {
-			return {"已拍照", std::string("data:image/jpeg;base64,") + std::string(imgBytes, 'A')};
+			return {"已拍摄照片。画面已加入你的上下文。",
+				std::string("data:image/jpeg;base64,") + std::string(imgBytes, 'A')};
 		}});
 	return reg;
 }
@@ -560,4 +565,116 @@ TH_TEST(agentloop_task_budget_zero_means_unlimited) {
 		if (m.role == "tool" && m.content == std::string(4096, 'x')) { original = true; }
 	}
 	TH_CHECK_MSG(original, "预算为 0 时应原样入历史（不限制）");
+}
+
+/* ---- AG-4′（第三轮审计）：降级说明不许自相矛盾 ----
+ * 图片超限时原实现把 capture_image 的成功文案原样拼进说明，而那句末尾是
+ * 「画面已加入你的上下文」——与说明开头的「未注入上下文」直接冲突，而图片
+ * 确实没注入。模型读到互斥的两句，按哪一句行事都错。 */
+TH_TEST(agentloop_task_budget_image_note_has_no_false_context_claim) {
+	FakeTransport tr;
+	tr.script = {callResponse("shoot", "{}"), answerResponse("结束")};
+	const AgentToolRegistry tools = imageTools(64);
+
+	AgentOptions opts;
+	opts.maxTurns = 3;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	opts.maxTaskImageBytes = 10;	/* 一张都装不下 */
+	AgentSession s(tr, tools, opts);
+
+	TH_CHECK(s.runTurn("拍照") == "结束");
+	const auto& msgs = tr.requests.back();
+	std::string note;
+	for (const auto& m : msgs) {
+		if (m.role == "tool" && m.content.find("未注入上下文") != std::string::npos) {
+			note = m.content;
+		}
+	}
+	TH_CHECK_MSG(!note.empty(), "应有降级说明");
+	TH_CHECK_MSG(note.find("画面已加入你的上下文") == std::string::npos,
+		"降级说明不许再出现成功断言（与「未注入」矛盾）: " + note);
+	/* 描述仍要给（模型据此知道拍到了什么），但要显式说明画面没进上下文 */
+	TH_CHECK_MSG(note.find("画面本身没有进上下文") != std::string::npos, note);
+	TH_CHECK_MSG(note.find("已拍摄照片") != std::string::npos,
+		"工具的描述性文字要原样保留（模型据此知道拍到了什么）: " + note);
+}
+
+/* ---- AG-21：图片额度用尽后必须**明说**，否则模型会一直重试到轮次上限 ----
+ * 实测（.tmp/memaudit/out_mid.txt）：一次任务里连拒 3 次，最后以「达到工具轮次
+ * 上限」收场——那几轮全是白烧的。图片预算是逐任务单向累加的，说不说都不会恢复，
+ * 所以正确做法是把它讲成硬事实并给出唯一出路。 */
+TH_TEST(agentloop_task_budget_image_exhaustion_is_terminal_and_stated) {
+	FakeTransport tr;
+	/* 模型连续三次拍照都不放弃，最后才给结论 */
+	tr.script = {callResponse("shoot", "{}"), callResponse("shoot", "{}"),
+		callResponse("shoot", "{}"), answerResponse("改给文字结论")};
+	const AgentToolRegistry tools = imageTools(64);
+
+	AgentOptions opts;
+	opts.maxTurns = 4;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	opts.maxTaskImageBytes = 100;	/* 只装得下一张 */
+	AgentSession s(tr, tools, opts);
+
+	TH_CHECK(s.runTurn("拍照") == "改给文字结论");
+
+	const auto& msgs = tr.requests.back();
+	std::size_t imgMsgs = 0, terminal = 0;
+	for (const auto& m : msgs) {
+		if (m.role == "user" && !m.images.empty()) { ++imgMsgs; }
+		if (m.role == "tool" && m.content.find("额度已经用尽") != std::string::npos) {
+			++terminal;
+		}
+	}
+	TH_CHECK_MSG(imgMsgs == 1, "只该注入一张（额度 100 字节）");
+	TH_CHECK_MSG(terminal >= 2, "第二、三次拍照都必须收到「额度已用尽」的明示，实际 "
+		+ std::to_string(terminal) + " 条");
+	/* 说明里要给出唯一出路，否则模型仍会换着法子重试 */
+	bool actionable = false;
+	for (const auto& m : msgs) {
+		if (m.role == "tool" && m.content.find("再调用也不会成功") != std::string::npos) {
+			actionable = true;
+		}
+	}
+	TH_CHECK_MSG(actionable, "说明要写清「再调用也不会成功」");
+}
+
+/* ---- AG-21：降级说明自身也计入预算 ----
+ * 否则「反复超限」可以往历史里无界灌说明文本（每条约 300 字节 × 轮数 × 每轮
+ * 调用数）。判据用说明**自己报的账**（文案里有「已用 <n> + 本次 <m> 字节」）：
+ * 第二次降级的「已用」必须等于第一条说明的长度——若说明不计入，那里会是 0。
+ * 这样既不依赖魔数长度，也不会把「说明被计入」与「载荷被丢弃」两件事混在一起。 */
+TH_TEST(agentloop_task_budget_counts_the_degradation_note) {
+	FakeTransport tr;
+	tr.script = {callResponse("big", "{}"), callResponse("big", "{}"), answerResponse("结束")};
+	const AgentToolRegistry tools = bigTools(64);
+
+	AgentOptions opts;
+	opts.maxTurns = 3;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	opts.maxTaskToolResultBytes = 1;	/* 任何结果都装不下 -> 每次都走降级 */
+	AgentSession s(tr, tools, opts);
+
+	TH_CHECK(s.runTurn("任务") == "结束");
+	std::vector<std::string> notes;
+	for (const ChatMessage& m : tr.requests.back()) {
+		if (m.role == "tool") { notes.push_back(m.content); }
+	}
+	TH_CHECK_MSG(notes.size() == 2, "两次调用都应回传（不中断任务），实际 "
+		+ std::to_string(notes.size()));
+	for (const std::string& c : notes) {
+		TH_CHECK_MSG(c.find("未注入上下文") != std::string::npos,
+			"应为降级说明: " + c.substr(0, 60));
+		TH_CHECK_MSG(c.find(std::string(20, 'x')) == std::string::npos,
+			"说明里不许混进载荷");
+	}
+	/* 关键断言：第二条说明的「已用」== 第一条说明的长度（说明被计入了） */
+	const std::size_t firstLen = notes[0].size();
+	const std::string marker = "已用 " + std::to_string(firstLen) + " + 本次";
+	TH_CHECK_MSG(notes[1].find(marker) != std::string::npos,
+		"第二条说明应把第一条说明计入已用（找 '" + marker + "'），实际: "
+			+ notes[1].substr(0, 140));
 }

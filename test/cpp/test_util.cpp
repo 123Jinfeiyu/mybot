@@ -534,6 +534,6 @@ TH_TEST(harness_scope_agent_lists_every_member_with_cases) {
 	TH_CHECK_MSG(scoped >= members && scoped >= 120,
 		"agent: 作用域命中 " + std::to_string(scoped) + " 例（成员数 "
 			+ std::to_string(members) + "），明显偏少——过滤是否失效？"
-			"（AG-22 修复后为 127：原 108 + agentconfig_/agentmode_ 15 + 本轮新用例 4）");
+			"（AG-22 修复后为 130：原 108 + agentconfig_/agentmode_ 15 + 本轮新用例 7）");
 }
 
