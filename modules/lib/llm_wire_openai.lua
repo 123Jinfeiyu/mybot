@@ -193,8 +193,13 @@ end
 -- stderr 注记一次（io.stderr 未被沙箱中和，驱动注记惯例见 lib/daemon_tid.lua；
 -- 不打印密钥与报文内容，只提示「正在用哪个端点」），让「什么都没配」的会话
 -- 可见自己的数据流向；走显式配置（CLI/配置文件/环境链）不注记。
+--
+-- 放在 M 上而不是文件内局部（2026-09-21 审计 AG-13②）：DeepSeek 库有自己的
+-- DEFAULTS.endpoint，之前用的是**文件内局部**函数，于是只有 OpenAI 有这行注记，
+-- 而 DeepSeek 的缺省端点恰恰指向外部厂商 API——最该提示的那条链路反而静默。
+-- 提到模块上让两个库共用同一份「每次进程只注记一次」的状态与同一条文案。
 local noted_default_endpoint = false
-local function note_default_endpoint(url)
+function M.note_default_endpoint(url)
 	if noted_default_endpoint then return end
 	noted_default_endpoint = true
 	io.stderr:write("[llm-wire] 未配置 endpoint，使用驱动内置缺省 " .. url
@@ -207,7 +212,7 @@ function M.request(data, plan)
 	local endpoint = data.endpoint
 	if endpoint == nil or endpoint == "" then
 		endpoint = D.endpoint
-		note_default_endpoint(endpoint)
+		M.note_default_endpoint(endpoint)
 	end
 	local model = data.model
 	if model == nil or model == "" then model = D.model end

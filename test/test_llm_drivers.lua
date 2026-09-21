@@ -337,4 +337,56 @@ do
 		type(res) == "table" and tostring(res.message) or "")
 end
 
+
+-- ================= DeepSeek 思考模式开关（AG-17） =================
+-- 文档与本库注释都承诺「disabled/off/false 关闭」，但 data.thinking 是 JSON 值：
+-- 宿主走 wantString，只有 .mt 动作脚本与结构脚本参数能传布尔。JSON 的 false 是
+-- 最自然的一种「关掉」写法，此前被无视（实测 thinking=false 时请求体照样带
+-- {"type":"enabled"}），与注释承诺矛盾。
+do
+	local function wire_thinking(data)
+		local req = deepseek.build_request(data, "deepseek-chat")
+		return req.thinking and req.thinking.type or "<无>"
+	end
+
+	check("AG-17：缺省开启（DeepSeek 默认即开启）", wire_thinking({}) == "enabled")
+	check("AG-17：字符串 disabled 关闭", wire_thinking({ thinking = "disabled" }) == "disabled")
+	check("AG-17：字符串 off 关闭", wire_thinking({ thinking = "off" }) == "disabled")
+	check("AG-17：字符串 \"false\" 关闭", wire_thinking({ thinking = "false" }) == "disabled")
+	-- 本轮修复的那一支：
+	check("AG-17：布尔 false 关闭（修复前仍为 enabled）",
+		wire_thinking({ thinking = false }) == "disabled",
+		wire_thinking({ thinking = false }))
+	check("AG-17：布尔 true 保持开启", wire_thinking({ thinking = true }) == "enabled")
+
+	-- 关闭思考模式必须连带关掉 reasoning_content 回传（有状态协议的另一半：
+	-- 非思考模式回传该字段会被真机拒）
+	local off = deepseek.build_request({ thinking = false,
+		messages = { { role = "assistant", content = "",
+			tool_calls = { { id = "c1", name = "t", arguments = "{}" } },
+			extras = { reasoning_content = "上一轮思考" } } } }, "m0")
+	check("AG-17：布尔 false 关闭时不再回传 reasoning_content",
+		off.messages[1].reasoning_content == nil, tostring(off.messages[1].reasoning_content))
+	local on = deepseek.build_request({ messages = { { role = "assistant", content = "",
+		tool_calls = { { id = "c1", name = "t", arguments = "{}" } },
+		extras = { reasoning_content = "上一轮思考" } } } }, "m0")
+	check("AG-17：开启时仍回传 reasoning_content（有状态要求）",
+		on.messages[1].reasoning_content == "上一轮思考")
+end
+
+-- ========== 缺省端点注记两个库都有（AG-13②） ==========
+do
+	check("AG-13②：openai 暴露了注记函数（提到模块上供两库共用）",
+		type(openai.note_default_endpoint) == "function")
+	check("AG-13②：deepseek 的 request 在缺省端点上也会注记",
+		type(deepseek.request) == "function")
+	-- 注记只在进程内首次回退时打一次，且只写 stderr；这里断言行为而不抓输出：
+	-- 显式给端点时不得改变返回的 endpoint
+	local r = deepseek.request({ endpoint = "http://127.0.0.1:1/x", messages = {} })
+	check("AG-13②：显式端点优先，不被缺省覆盖", r.endpoint == "http://127.0.0.1:1/x", r.endpoint)
+	local d = deepseek.request({ messages = {} })
+	check("AG-13②：无端点时回落到 DeepSeek 内置缺省",
+		d.endpoint == deepseek.DEFAULTS.endpoint, d.endpoint)
+end
+
 tester.summary("llm 协议驱动单测")

@@ -20,9 +20,17 @@ M.DEFAULTS = {
 	model = "deepseek-chat",
 }
 
--- 思考模式缺省开启（DeepSeek 默认即开启）；data.thinking 传 disabled/off/false 关闭
+-- 思考模式缺省开启（DeepSeek 默认即开启）。
+-- 关闭方式（2026-09-21 审计 AG-17）：字符串 "disabled" / "off" / "false"，
+-- **以及布尔 false**。布尔这一支是补的：宿主走 wantString，所以配置文件路径
+-- 到不了这里，但 .mt 动作脚本与结构脚本参数可以直接传布尔——而 JSON 的 false
+-- 是最自然的一种「关掉」写法，此前它被无视、请求体照样带 {"type":"enabled"}，
+-- 与本行注释承诺的行为矛盾（实测：thinking=false 时 thinking 仍为 enabled）。
 function M.thinking_enabled(data)
-	return not (data.thinking == "disabled" or data.thinking == "off" or data.thinking == "false")
+	local t = data.thinking
+	if t == nil then return true end
+	if t == false then return false end
+	return not (t == "disabled" or t == "off" or t == "false")
 end
 
 -- 该协议特有的整形开关（供 openai.build_request 使用）
@@ -61,7 +69,14 @@ end
 function M.request(data, plan)
 	local D = M.DEFAULTS
 	local endpoint = data.endpoint
-	if endpoint == nil or endpoint == "" then endpoint = D.endpoint end
+	if endpoint == nil or endpoint == "" then
+		endpoint = D.endpoint
+		-- 缺省端点注记（2026-09-21 审计 AG-13②）：此前只有 OpenAI 库有这行
+		-- 提示，而 DeepSeek 的缺省端点同样指向外部厂商 API——最该让操作者看见
+		-- 「数据流向哪里」的链路反而静默回退。复用 openai 的同一份注记状态，
+		-- 保证一个进程内两个库合计只提示一次。
+		openai.note_default_endpoint(endpoint)
+	end
 	local model = data.model
 	if model == nil or model == "" then model = D.model end
 	return { endpoint = endpoint, req = M.build_request(data, model, plan) }
@@ -70,5 +85,9 @@ end
 M.parse_response = openai.parse_response
 M.perform = openai.perform
 M.api_key = openai.api_key
+-- 复用同一份控制字符判据（判据必须单点，见 llm_wire_openai 里的说明）
+M.api_key_has_control_chars = openai.api_key_has_control_chars
+-- 必填字段断言：DeepSeek 走的也是 openai 的消息整形，报错口径必须一致
+M.require_wire_string = openai.require_wire_string
 
 return M
