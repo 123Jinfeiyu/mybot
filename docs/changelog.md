@@ -5,6 +5,22 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-21 第二轮审计修复批次（AG-1/AG-2/AG-3/AG-14/AG-15/AG-16，agent 子系统）
+
+> 守门快照：C++ 单测 427 / 0、Lua 单测 259 / 0 / 2 跳（以实时输出为准）。
+> 本轮由一次独立复审驱动：对上一轮报告抽样复现 7 条（全部为真），同时**纠正 1 处机制归因**、**下调 1 处严重度**。
+
+- **非法 UTF-8 不再进请求体（AG-1，高）**：JSON 字符串只允许合法 UTF-8，而两端编码器对 `0x80-0xFF` 都是**字节透明**的（那是合法多字节透传所必需）。于是 `run_command` 的 stdout/stderr（`cat` 到二进制、Latin-1 文件名、非 UTF-8 日志）、动作脚本首行注释、结构脚本头里任意一个坏字节，都会让严格校验的网关直接 400——而那条消息已落在**不可回滚**的历史里（回滚边界与按块裁剪都碰不到它），REPL 会话从此每次以同一字节偏移失败。现分两层收口：
+  - **宿主侧消毒**：新增 `util::isValidUtf8` / `sanitizeUtf8`（RFC 3629 判据：拒过长编码、拒 UTF-16 代理区、拒 > U+10FFFF），在「数据进入模型上下文」的三个边界调用——子进程输出（`finalizeShellRun`，**收尾时整串消毒**，避免增量排水把多字节序列从中间切断）、动作脚本首注释（`firstComment`）、结构脚本头（`readHead`）。非法字节替换为 U+FFFD；连续坏字节折叠成一个替换符 + 计数说明，避免 64 个坏字节膨胀成 64 个替换符。
+  - **发包前兜底**：新增 `modules/lib/utf8.lua`（与 C++ 侧同判据、同文案），`llm_http.post` 在设置 `POSTFIELDS` 之前校验请求体，非法则写 stderr 告警并就地替换。它兜的是宿主没覆盖到的路径（例如驱动 `extras` 里由 provider 文本原样带回的字段）。
+  - **归因修正（重要）**：上一轮报告称坏字节由 `src/json.cpp` 的 `escapeString` 送出，实际报文由 `modules/lib/json.lua` 的 `encode_string` 编码（宿主把请求作为 Json→Lua **表**交给驱动）；`Json::toString()` 只用于日志与报错文案，**不在 HTTP 路径上**。修复落点据此确定。
+- **假网关补齐真机规则（AG-7 核心）**：`scripts/fake_llm_server.py` 此前用 `except ValueError` 兜 `json.loads`，而 `UnicodeDecodeError` 是 `ValueError` 的子类——非法 UTF-8 的请求被判成 `{}` 后照常 200，**假网关比真网关宽松**，AG-1 在离线守门里结构上不可见。现补三条真机规则：body 非 UTF-8 → 400（点名首个坏字节位置）、`reasoning_content` 有状态要求（请求中出现该字段时，每条带 `tool_calls` 的历史 assistant 都必须带上）、`tool_call_id` 与 `assistant.tool_calls` 严格一一配对（孤儿 / 重复 / 漏回传都 400）。
+- **`Camera.lua` 抓帧重试不再写全局 `err`（AG-2，高）**：`payload, err = grab_one()` 把 `drv_common` 的**全局** ERR 构造器覆盖掉——实测三条后果：成功路径赋成 nil、抓帧失败赋成字符串，此后**同一 lua_State 里所有驱动**的 `err(...)` 全部报 `attempt to call a nil/string value`；而那句「8 consecutive incomplete frames」诊断自己先撞上 nil，**100% 不可达**（循环体每轮都先给 `err` 赋值），`gerr` 是从未赋值的死变量，`grab_one` 的真实原因因此丢失。现改用局部变量，并在入口加「构造器缺失即返回同构 ERR 表」的前置校验（fail-closed，驱动对宿主永不抛裸 Lua error）。契约 sweep 增一条「加载完全部驱动后全局 `err` 仍是可用构造函数」的断言，单条覆盖全部模块。
+- **`close_range` 标志修正 + 硬上限如实上报（AG-3）**：`CLOSE_RANGE_CLOEXEC` 是 `1U<<2`，旧实现写 `1U` → 内核 EINVAL → `run_command` 的快速路径**从未执行**，每次都白跑一遍按 `RLIMIT_NOFILE` 的退化循环（实测 soft=524288 时约 40ms），而注释写着「一次系统调用」。安全结论不受影响（退化路径是真 close，且父进程侧 `markAllFdsCloexec` 独立承重），注释与实现不符已修正。另：`hardDeadline` 兜底 break 此前不带任何标记，回执看起来像「正常结束但退出码 -1」；现新增 `RunResult::hardStopped` 并在回执里如实写「超过硬上限仍未确认退出……命令可能仍在运行」。
+- **API key 拒绝控制字符（AG-14，中）**：密钥会被拼进 `Authorization: Bearer <key>` 交给 `curl_slist_append`，而 libcurl 对 slist 里的 CR/LF **不做拒绝**——实测一个多行密钥文件会把换行后的内容变成**额外的请求头**发给网关。现两条路一起收口：宿主侧 `validateApiKeyChars`（`llmconfig` 单点，在环境变量 / `api_key` / `api_key_file` 三源**汇合之后**校验，报错点名字节值与位置），驱动侧 `api_key_has_control_chars`（`llm_wire_openai`，站在建头那一行的第二道，不假设调用方已校验）。
+- **必填字段显式断言取代死代码（AG-15，中）**：`json.lua` 里「字段为 nil 即报错」的分支是**死代码**（Lua 表不可能有「键在、值为 nil」的项），于是必填字段缺失时被**静默丢掉**，真机只回一个含混 400。现删掉该分支并说明原因，改由 `llm_wire_openai.require_wire_string` 在组装处点名断言（字段名 + 第几条消息 / 第几个工具调用）；两个 LLM 驱动的 `call()` 也把 `wire.request` 的抛错折成 ERR 契约（原先会裸抛给宿主）。
+- **句柄收尾不留悬垂回调（AG-16）**：`llm_http` 此前在 `perform` 后只 `cb:free()` 而不清句柄，`WRITEFUNCTION` / `URL` / `POSTFIELDS` 仍指在已释放对象上；当前只因 `Session:post` 每次都先 `curl_easy_reset` 才安全，而 `Session.handle` 是公开字段——任何「同句柄 perform 两次 / 加重试」的重构都会把它变成内存安全问题（实测：post 后直接 perform 报 bad callback；连做 500 次 post 让槽位复用后再直接 perform，SIGSEGV）。现按「**先 reset 再 free**」收尾，把这条隐含前提变成句柄自身的不变量。
+
 ### 2026-09-21 F5 正确性批次（Json 零拷贝 / SQL 行列号 / UART 共享告警 / Lua 保护帧）
 
 > 守门快照：Lua/e2e 257 / 0 / 1 跳、C++ 单测 414 / 0（以实时输出为准）。
