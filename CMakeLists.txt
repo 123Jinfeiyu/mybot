@@ -317,5 +317,32 @@ if(_missing_registered)
     "${_missing_registered}")
 endif()
 
+# ======================================================================
+# B8（2026-09-21 落地）：src/*.cpp 与 target 源集合一致性自检。
+# 与上面的 test/cpp 自检同族：src/ 下新增一个 .cpp 却忘了写进任何 target，
+# 它就永不编译——若该文件只被 include 或被误当成"已经在编"，构建与守门照绿。
+# 判据：src/*.cpp 必须恰好被「MYBOT_CORE_SOURCES ∪ 各 target 的入口源」覆盖
+# （main.cpp 属 mybot、mtmerge.cpp 属离线合成器，两者都不在 core 清单里）。
+# ======================================================================
+file(GLOB MYBOT_ALL_SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.cpp)
+set(MYBOT_REGISTERED_SRC ${MYBOT_CORE_SOURCES} src/main.cpp src/mtmerge.cpp)
+set(_reg_names)
+foreach(_r IN LISTS MYBOT_REGISTERED_SRC)
+  get_filename_component(_rn "${_r}" NAME)
+  list(APPEND _reg_names "${_rn}")
+endforeach()
+set(_missing_src)
+foreach(_s IN LISTS MYBOT_ALL_SRC)
+  get_filename_component(_sn "${_s}" NAME)
+  if(NOT _sn IN_LIST _reg_names)
+    list(APPEND _missing_src "${_sn}")
+  endif()
+endforeach()
+if(_missing_src)
+  message(FATAL_ERROR
+    "未登记的 src 源文件（不进任何 target，构建与守门都会漏掉它；"
+    "请加入 MYBOT_CORE_SOURCES 或对应 target）：" "${_missing_src}")
+endif()
+
 # 安装产物：mybot 直跑 ./build/mybot（bot4cj 原 _run.sh 的等价物，见 test/run_all.sh）
 install(TARGETS mybot RUNTIME DESTINATION bin)
