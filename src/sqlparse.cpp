@@ -93,23 +93,54 @@ bool Lexer::consumeCommentChar(char c) {
 }
 
 /* ------------- Lexer ------------- */
+
+namespace {
+
+/* F5-1：给词元补落点（Token::parse 是无位置的静态分类器） */
+Token finishToken(const std::string& s, int line, int col) {
+	Token t = Token::parse(s);
+	t.line = line;
+	t.col = col;
+	return t;
+}
+
+Token positionedToken(TokenType type, int line, int col) {
+	Token t;
+	t.type = type;
+	t.line = line;
+	t.col = col;
+	return t;
+}
+
+} // namespace
+
 Token Lexer::next(bot::Reader& sr) {
-	if (flag_) { flag_ = false; return {TokenType::END, ""}; }
-	if (comma_) { comma_ = false; return {TokenType::COMMA, ""}; }
-	if (rght_) { rght_ = false; return {TokenType::RGHT, ""}; }
-	if (left_) { left_ = false; return {TokenType::LEFT, ""}; }
+	if (flag_) { flag_ = false; return positionedToken(TokenType::END, pendLine_, pendCol_); }
+	if (comma_) { comma_ = false; return positionedToken(TokenType::COMMA, pendLine_, pendCol_); }
+	if (rght_) { rght_ = false; return positionedToken(TokenType::RGHT, pendLine_, pendCol_); }
+	if (left_) { left_ = false; return positionedToken(TokenType::LEFT, pendLine_, pendCol_); }
 
 	std::string s;
+	int tokLine = 0, tokCol = 0;	/* 当前 token 首字符落点（1 起） */
 	bool inQuote = false;		/* F-02：引号态由本函数增量维护（O(n)），
 					 * 取代旧实现每字符重扫 token 的 O(n²) */
 	char quoteChar = 0;		/* 打开引号态的字符：' 或 " */
 	while (true) {
 		int ci = sr.read();
 		if (ci < 0) {
+			if (inQuote) {
+				/* F5-1：引号态跨越 EOF——旧实现把半截串剥引号后当名字
+				 * 静默放行（'abc 结尾 → 名字 abc），这里改为报错并给出
+				 * 开引号落点。注意只在真 EOF 抛：闭合引号已在下方处理。 */
+				throw bot::IllegalArgumentException("Unterminated string starting at line "
+					+ std::to_string(tokLine) + ", column " + std::to_string(tokCol));
+			}
 			if (s.empty()) { return {TokenType::UNEXPECTED_END, ""}; }
-			return Token::parse(s);
+			return finishToken(s, tokLine, tokCol);
 		}
 		char c = static_cast<char>(ci);
+		const int curLine = line_, curCol = col_;
+		if (c == '\n') { line_ += 1; col_ = 1; } else { col_ += 1; }
 		if (consumeCommentChar(c)) { continue; }
 
 		bool blank = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0');
@@ -124,11 +155,13 @@ Token Lexer::next(bot::Reader& sr) {
 		if (s.empty() && (c == '\'' || c == '"')) {
 			inQuote = true;
 			quoteChar = c;
+			tokLine = curLine;
+			tokCol = curCol;
 			s += c;
 			continue;
 		}
 		if (s.empty() && blank) { continue; }
-		else if (!s.empty() && blank) { return Token::parse(s); }
+		else if (!s.empty() && blank) { return finishToken(s, tokLine, tokCol); }
 		/* C2 防线：';'/','/'('/')' 在空 token 时直接产出对应词元（原实现借
 		 * return next(sr) 尾递归绕回顶部消费 pending 标志，连续 N 个分隔符
 		 * 即 N 层真实递归，--tcp 下可被远程输入打爆栈）。语义等价改直返。
@@ -137,34 +170,62 @@ Token Lexer::next(bot::Reader& sr) {
 		 * 一侧——`INSERT INTO T(a,b) VALUES(1,2)`（SQL 空白不敏感的常见
 		 * 写法）里 '(' 会被并进名字（`T(a` 之类），解析以 `Token ,` 报错
 		 * 收场，而仓内夹具一律写成 `T (a, b)` 故从未暴露。 */
-		else if (s.empty() && c == ';') { return {TokenType::END, ""}; }
-		else if (!s.empty() && c == ';') { flag_ = true; return Token::parse(s); }
-		else if (s.empty() && c == ',') { return {TokenType::COMMA, ""}; }
-		else if (!s.empty() && c == ',') { comma_ = true; return Token::parse(s); }
-		else if (s.empty() && c == '(') { return {TokenType::LEFT, ""}; }
-		else if (!s.empty() && c == '(') { left_ = true; return Token::parse(s); }
-		else if (s.empty() && c == ')') { return {TokenType::RGHT, ""}; }
-		else if (!s.empty() && c == ')') { rght_ = true; return Token::parse(s); }
+		else if (s.empty() && c == ';') { return positionedToken(TokenType::END, curLine, curCol); }
+		else if (!s.empty() && c == ';') {
+			flag_ = true; pendLine_ = curLine; pendCol_ = curCol;
+			return finishToken(s, tokLine, tokCol);
+		}
+		else if (s.empty() && c == ',') { return positionedToken(TokenType::COMMA, curLine, curCol); }
+		else if (!s.empty() && c == ',') {
+			comma_ = true; pendLine_ = curLine; pendCol_ = curCol;
+			return finishToken(s, tokLine, tokCol);
+		}
+		else if (s.empty() && c == '(') { return positionedToken(TokenType::LEFT, curLine, curCol); }
+		else if (!s.empty() && c == '(') {
+			left_ = true; pendLine_ = curLine; pendCol_ = curCol;
+			return finishToken(s, tokLine, tokCol);
+		}
+		else if (s.empty() && c == ')') { return positionedToken(TokenType::RGHT, curLine, curCol); }
+		else if (!s.empty() && c == ')') {
+			rght_ = true; pendLine_ = curLine; pendCol_ = curCol;
+			return finishToken(s, tokLine, tokCol);
+		}
 		else {
+			if (s.empty()) { tokLine = curLine; tokCol = curCol; }
 			s += c;
 			if (s.size() >= 2 && s.compare(s.size() - 2, 2, "--") == 0) {
 				s.resize(s.size() - 2);
 				singleLineComment_ = true;
 				/* C3-x：注释起始须先提交挂起 token，否则注释结束后文本拼回同一
 				 * token（"50--c\n60" → "5060"），静默产出错误数值。 */
-				if (!s.empty()) { return Token::parse(s); }
+				if (!s.empty()) { return finishToken(s, tokLine, tokCol); }
 			}
 			if (s.size() >= 2 && s.compare(s.size() - 2, 2, "/*") == 0) {
 				s.resize(s.size() - 2);
 				multiLineComment_ = true;
 				multiLineComment2_ = false;
-				if (!s.empty()) { return Token::parse(s); }
+				if (!s.empty()) { return finishToken(s, tokLine, tokCol); }
 			}
 		}
 	}
 }
 
 /* ------------- Parser ------------- */
+
+namespace {
+
+/* F5-1：报错形态 = 既有「Token <词元>」+ 落点段。落点缺失（手工构造词元）
+ * 时省略，保持旧形态——E2E 与单测的「Token …」子串锚点因此都不受影响。 */
+std::string tokenMsg(const Token& t) {
+	std::string m = "Token " + t.serialize();
+	if (t.line > 0) {
+		m += " (line " + std::to_string(t.line) + ", column " + std::to_string(t.col) + ")";
+	}
+	return m;
+}
+
+} // namespace
+
 Event Parser::next() {
 	if (idx_ >= tokenSerial_.size()) {
 		Event e;
@@ -176,7 +237,7 @@ Event Parser::next() {
 		case TokenType::CREATE: {
 			Token u = expect();
 			if (u.type != TokenType::TABLE) {
-				throw bot::IllegalArgumentException("Token " + u.serialize());
+				throw bot::IllegalArgumentException(tokenMsg(u));
 			}
 			CreateTableEvent eve;
 			nextCreateTable(eve);
@@ -194,7 +255,7 @@ Event Parser::next() {
 			return e;
 		}
 		default:
-			throw bot::IllegalArgumentException("Token " + t.serialize());
+			throw bot::IllegalArgumentException(tokenMsg(t));
 	}
 }
 
@@ -207,17 +268,17 @@ void Parser::nextCreateTable(CreateTableEvent& eve) {
 
 	t = expect();
 	if (t.type != TokenType::LEFT) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
+		throw bot::IllegalArgumentException(tokenMsg(t));
 	}
 	for (;;) {
 		t = expect();
 		if (t.type != TokenType::NAME) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
+			throw bot::IllegalArgumentException(tokenMsg(t));
 		}
 		std::string colName = t.name;
 		t = expect();
 		if (t.type != TokenType::STRING && t.type != TokenType::NUMBER) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
+			throw bot::IllegalArgumentException(tokenMsg(t));
 		}
 		VarType vt = (t.type == TokenType::NUMBER) ? VarType::Number : VarType::String_;
 		eve.tableColumns.push_back({colName, vt});
@@ -225,7 +286,7 @@ void Parser::nextCreateTable(CreateTableEvent& eve) {
 		t = expect();
 		if (t.type == TokenType::RGHT) { break; }
 		if (t.type != TokenType::COMMA) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
+			throw bot::IllegalArgumentException(tokenMsg(t));
 		}
 	}
 	nextEnd();
@@ -234,7 +295,7 @@ void Parser::nextCreateTable(CreateTableEvent& eve) {
 void Parser::nextEnd() {
 	Token t = expect();
 	if (t.type != TokenType::END) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
+		throw bot::IllegalArgumentException(tokenMsg(t));
 	}
 }
 
@@ -243,7 +304,7 @@ void Parser::nextEnd() {
 Token Parser::expectType(TokenType want) {
 	Token t = expect();
 	if (t.type != want) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
+		throw bot::IllegalArgumentException(tokenMsg(t));
 	}
 	return t;
 }
@@ -259,7 +320,7 @@ std::vector<std::string> Parser::expectParenNameList() {
 		t = expect();
 		if (t.type == TokenType::RGHT) { break; }
 		if (t.type != TokenType::COMMA) {
-			throw bot::IllegalArgumentException("Token " + t.serialize());
+			throw bot::IllegalArgumentException(tokenMsg(t));
 		}
 	}
 	return names;

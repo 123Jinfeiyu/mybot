@@ -3,7 +3,9 @@
  * 覆盖两条只在负路径上才显形的契约：
  *   C2  连续分隔符不得走 return next(sr) 尾递归（--tcp 下可被远程输入打爆栈）
  *   引号语义  值里的 "--"、块注释起始符、";"、"," 是数据而非注释或语句边界
- * 以及 Parser 的报错形态：一律「Token <词元>」指出出问题的位置。
+ * 以及 Parser 的报错形态：一律「Token <词元>」指出出问题的位置；
+ * F5-1 起词元带 1 起行列，报错追加「 (line N, column M)」（既有子串锚点不受影响），
+ * 引号态跨越 EOF 报「Unterminated string」并给开引号落点（旧实现静默放行半截串）。
  */
 
 #include <cstddef>
@@ -225,10 +227,11 @@ TH_TEST(lexer_repeated_delimiters_do_not_recurse) {
 	}
 	TH_CHECK(commas == 8);
 	TH_CHECK(ts.back().type == TokenType::END);
-	/* 未闭合的引号会一路吃到 EOF，最后一个词元仍按字面产出 */
-	std::vector<Token> open = fx::tokens("'unterminated");
-	TH_CHECK(open.size() == 1);
-	TH_CHECK(open[0].type == TokenType::NAME && open[0].name == "unterminated");
+	/* F5-1 语义变更：未闭合的引号不再一路吃到 EOF 后剥引号放行（值被无声
+	 * 截断），而是报「Unterminated string」并给开引号落点（此处第 1 行第 1 列） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unterminated string starting at line 1, column 1",
+		fx::tokens("'unterminated"));
 }
 
 TH_TEST(lexer_statement_end_flag_emits_one_semicolon) {
@@ -333,6 +336,41 @@ TH_TEST(parser_reports_the_offending_token) {
 		events("CREATE TABLE T ( name );"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'x'",
 		events("CREATE x TABLE T ( name String );"));
+}
+
+TH_TEST(parser_error_carries_token_position) {
+	/* F5-1：报错带词元 1 起行列——跨过行注释、块注释后仍须正确（列按字节计，
+	 * 测试用 ASCII 注释避免多字节偏移干扰断言）。
+	 * 第 3 行块注释收尾后的 CREATE x：x 落在第 3 行第 19 列（前两行被注释态消费）。
+	 * 完整形态断言（非子串）：定位段必须是「 (line N, column M)」。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Token name 'x' (line 3, column 19)",
+		events("-- line one comment\n/* block\ncomment */ CREATE x;\n"));
+	/* 空词元分隔符：位置即字符落点 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Token SELECT (line 1, column 1)",
+		events("SELECT * FROM T ;"));
+	/* 挂起分隔符（非空词元后的 ';' 挂到下一次 next() 产出）：落点须跟随
+	 * 分隔符字符本身，而不是被消费时的读取位置 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Token ; (line 1, column 8)",
+		events("INSERT ;"));
+	/* 多行脚本：第二行的错误词元行号正确、列从行首重计 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Token ; (line 2, column 1)",
+		events("CREATE TABLE T ( name String );\n;\n"));
+}
+
+TH_TEST(lexer_reports_unterminated_string_position) {
+	/* F5-1：引号态跨越 EOF 必须报错并给出开引号落点——旧实现把 'abc
+	 * 剥引号后当名字 abc 静默放行，值被无声截断。开引号在第 2 行第 33 列。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unterminated string starting at line 2, column 33",
+		events("CREATE TABLE T ( name String );\nINSERT INTO T ( name ) VALUES ( 'abc"));
+	/* 双引号同型（" 在第 1 行第 33 列） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unterminated string starting at line 1, column 33",
+		events("CREATE TABLE T ( name String ); \"oops"));
 }
 
 TH_TEST(parser_reports_unexpected_end_of_script) {

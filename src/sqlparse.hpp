@@ -22,6 +22,10 @@ enum class TokenType {
 struct Token {
 	TokenType type = TokenType::UNKNOWN;
 	std::string name;	/* NAME 载荷 */
+	/* F5-1：词元首字符的 1 起行号/列号（列按字节计，与词法器逐字符推进一致；
+	 * 0 = 位置未知——手工构造的词元，报错时省略定位段）。 */
+	int line = 0;
+	int col = 0;
 
 	static Token parse(const std::string& s);
 
@@ -72,6 +76,13 @@ class Lexer {
 	bool singleLineComment_ = false;
 	bool multiLineComment_ = false;
 	bool multiLineComment2_ = false;
+	/* F5-1：行列追踪。line_/col_ = 下一个将读字符的位置（1 起）；
+	 * pendLine_/pendCol_ = 挂起分隔符字符的落点（挂起标志在字符消费时设置，
+	 * 词元要到下一次 next() 才产出，落点必须先存）。 */
+	int line_ = 1;
+	int col_ = 1;
+	int pendLine_ = 0;
+	int pendCol_ = 0;
 
 public:
 	Token next(bot::Reader& sr);
