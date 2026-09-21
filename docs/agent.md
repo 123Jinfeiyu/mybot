@@ -414,7 +414,11 @@ luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
 luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路径）
 # C++：proto / driver / tools / loop / config（协议、驱动、工具、循环、配置、提示词包、CLI 选项面）
 # 用 **agent:** 而不是裸 agent——后者是子串匹配，只命中用例名里含 "agent" 的那部分，
-# 会漏掉 promptpack / llmconfig / cliargs（2026-09-21 AG-11 实测：86 例 vs 108 例）。
+# 会漏掉 promptpack / llmconfig / cliargs / agentconfig / agentmode
+# （2026-09-21 AG-11 实测 86 vs 108；第三轮 AG-22 又发现 agentconfig_/agentmode_
+# 两族 15 例仍不在表里，补齐后为 127 例，并把守门改成**派生式**：注册表里每个
+# 用例名前缀要么在作用域表、要么在 test_util.cpp 的「非 agent 面」roster 里带
+# 理由登记——漏登记一整族即红，而不是静默少跑）。
 ./build/mybot_tests agent:
 ```
 
@@ -435,10 +439,21 @@ luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路
 - REPL 历史按字节预算自动裁剪（缺省 4 MiB）：超过预算时按「任务块」整块裁掉最老的
   任务（含其中的 base64 图片），system 提示词与最新一个任务无条件保留——更早的任务
   上下文因此不再可见。单块超预算不封顶（正在进行的对话不能裁空），所以单张图另有
-  宿主侧硬上限：base64 超过 2 MiB 的图像 `capture_image` 直接拒绝（驱动侧仿真图可达
-  16 MiB，一次拍照就足以击穿整段预算）。
+  宿主侧硬上限：`capture_image` 拒绝 base64 超过 2 MiB 的图像。该判据有**两道**，
+  第二道（base64 长度）只是驱动漏报字节数时的兜底：正常路径先用驱动声明的原始
+  字节数判（上限 = 2 MiB × 3/4 = 1572864 字节），**在 base64 编码与跨 Lua 边界
+  之前**就拒绝——否则一张注定被拒的图（驱动侧仿真上限 16 MiB）要先被编码、
+  跨界搬运才丢掉（2026-09-21 第三轮审计 AG-19 实测：10 MiB 的图让进程峰值
+  219 MiB → 修复后 163 MiB，且不再做无用的编码）。
 - 失败时只裁掉「半截的 tool_calls 尾部」：**达到轮次上限**这一种失败会原样保留本轮
   历史（那些动作脚本已真跑过、硬件不会倒回去，抹掉等于骗模型说什么都没发生）。
+- **单张图的峰值内存仍是图像体积的数十倍**（第三轮审计 AG-19 实测：786 KB JPEG →
+  40 MiB、1.5 MB JPEG → 55 MiB、10 MB（超限被拒）→ 163 MiB）。同一条 payload 在
+  「驱动缓冲 → Lua 字符串 → base64 → Json 节点 → data URL → 会话历史 → 请求体」
+  上各有副本，其中「用的时候不拷贝」这一半（`Json::getValue()` 的 6 次整串拷贝、
+  超限图先编码等）已在 AG-19 收口；剩下的是传输层架构问题（要真正压下来得让图片
+  以引用/流式形态穿过这条链），本版未做。小内存现场（树莓派 Zero 级）请留意：
+  一次拍照的瞬时占用可达数十 MiB，而 OOM 会跳过 `deactivate()`。
 - 无记忆持久化（重启即忘）。
 - 只实现了两个 OpenAI 兼容协议驱动；接非 OpenAI 形态的厂商（如 Anthropic）需要新写一个驱动
   （协议整形全在 Lua 侧，宿主不用改）。

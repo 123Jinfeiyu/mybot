@@ -373,6 +373,62 @@ TH_TEST(agentloop_history_untrimmed_when_budget_zero) {
 	TH_CHECK(session.history().size() == 7);
 }
 
+/* ---- AG-25（第三轮审计）：回滚边界的两条**未被覆盖**的语义 ----
+ * docs/agent.md 声称「失败时只裁掉半截的 tool_calls 尾部 / 轮次上限保留本轮历史」，
+ * 但 loop 级单测原先只覆盖 complete == base 那一种（turn-0 传输错误，
+ * agentloop_transport_error_rolls_back_history）：那种情况下待回滚的只有刚 push 的
+ * user 消息，边界逻辑其实没被检验过。下面两条把「已完成轮次要留下、半截尾部要去掉」
+ * 分开钉住。 */
+
+/* 传输在第 2 轮失败：第 1 轮已完整回传的 tool_calls+tool 必须留在历史里
+ * （硬件已真动过，抹掉等于骗模型什么都没发生），只丢掉第 2 轮的半截记录。 */
+TH_TEST(agentloop_transport_error_after_completed_round_keeps_it) {
+	FakeTransport transport;
+	transport.script.push_back(callResponse("echo", "{\"x\":1}"));	/* 轮 1：完整 */
+	/* 轮 2 的请求会在 complete() 里抛（脚本用尽），此时第 1 轮的记录必须已入历史 */
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, optsFor(4));
+	TH_CHECK_THROWS_MSG(std::runtime_error, "脚本用尽", session.runTurn("任务"));
+
+	/* system + user + assistant(tool_calls) + tool —— 第 1 轮四件套全在 */
+	TH_CHECK(session.history().size() == 4);
+	TH_CHECK(session.history()[2].role == "assistant");
+	TH_CHECK(session.history()[2].toolCalls.size() == 1);
+	TH_CHECK(session.history()[3].role == "tool");
+	TH_CHECK(session.history()[3].toolCallId == session.history()[2].toolCalls[0].id);
+	/* 且**没有**半截的第二轮痕迹 */
+	TH_CHECK(!historyContains(session, "脚本用尽"));
+}
+
+/* 最终回答里的 provider 附加字段必须随消息留在历史（下一轮带 tools 的请求要完整
+ * 回传，否则 DeepSeek 400）。loop 级原先零覆盖——一次性 --task 永远不会再发第二轮，
+ * 只有 REPL 的第二条任务才看得到，所以这里用第二个任务当观察窗。 */
+TH_TEST(agentloop_final_answer_extras_are_kept_in_history) {
+	FakeTransport transport;
+	ChatResponse first = answerResponse("第一次");
+	first.extras = parseJson("{\"reasoning_content\":\"首轮思考\"}");
+	transport.script.push_back(first);
+	transport.script.push_back(answerResponse("第二次"));
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, optsFor(4));
+	TH_CHECK(session.runTurn("A") == "第一次");
+	TH_CHECK(session.runTurn("B") == "第二次");
+
+	/* 第二轮请求的历史里，第一条 assistant 必须带着 extras */
+	const auto& second = transport.requests[1];
+	bool found = false;
+	for (const ChatMessage& m : second) {
+		if (m.role != "assistant") { continue; }
+		if (m.content != "第一次") { continue; }
+		const Json* rc = m.extras.find("reasoning_content");
+		TH_CHECK_MSG(rc != nullptr && rc->isStr() && rc->getValue() == "首轮思考",
+			"最终回答的 extras 丢了：下一轮带 tools 的请求会因此被 provider 400");
+		found = true;
+	}
+	TH_CHECK_MSG(found, "没在第二轮请求里找到第一轮的 assistant 消息");
+}
+
 /* ---- AG-4：任务内聚合体积预算 ----
  * 背景：maxHistoryBytes 只裁「已完结的旧任务块」，且最新块无条件保留——于是
  * **正在进行的任务**没有任何体积上限，模型只要多调几次工具就能把请求体顶穿
