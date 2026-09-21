@@ -5,6 +5,18 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-21 第二轮审计修复批次·续（AG-6/AG-10/AG-13②/AG-17）
+
+> 守门快照：C++ 单测 430 / 0、Lua 单测 259 / 0 / 2 跳（以实时输出为准）。
+
+- **`run_command` 的超时/整组终止有了有效断言（AG-6）**：原用例只 grep「超时」文案，不看 `exit_code`、不检查子进程是否真死、**没有任何孙进程用例**——而 `kill(-pid)` 的「整组」正是超时语义的实现前提，此前无一条断言钉住它。新增两条：
+  - `agenttools_run_command_timeout_kills_whole_process_group`：子 shell 用 `( ... ) &` 起**同组**孙进程（它把自己的 stdout/stderr 重定向到 /dev/null 后持续写文件——重定向是关键，否则子 shell 死后孙进程会撞 EPIPE/SIGPIPE 而停止，判据被副作用掩盖），断言 ① 超时路径**不得**触发硬上限兜底（有后代吊着管道写端才会，即「只 kill 直接子进程」的指纹）、② 输出停止增长、③ `exit_code=-1`、④ 耗时远小于命令自身时长。
+  - `agenttools_run_command_timeout_receipt_is_actionable`：回执必须同时给出 `exit_code=-1` 与「超时」，且**不得**出现硬上限那句（两者是不同失效语义，混了就看不出成因）。
+  - 反向验证：把 `kill(-pid)` 改成 `kill(pid)`，两条判据同时转红。
+- **放弃回收不再静默（AG-10）**：`reapWithGrace` 在宽限内收不回子进程时直接 `return false`，注释写「交由 init 收尸」——但常驻 agent 自己还活着，init 不会接手，该 pid 会一直是僵尸，反复触发（D 态挂死的命令）就在宿主生命周期内累积。现补一行 stderr 告警，点名 pid、宽限时长与「会保持僵尸」的后果（与 `RunResult::hardStopped` 一起，操作者与模型两侧都能看见）。告警文案抽成 `reapGiveUpWarning` 单点：该路径的**行为**在离线环境构造不出来（需 D 态进程，或 SIGKILL 无效——后者要求 PID 1/受限进程，容器里测试二进制不是 PID 1，`trap "" KILL` 实测无效），故钉住「说了什么」而不是假装测了行为。
+- **DeepSeek 缺省端点也有注记（AG-13②）**：`note_default_endpoint` 原先是 `llm_wire_openai.lua` 的**文件内局部**函数，于是只有 OpenAI 有这行提示，而 DeepSeek 的缺省端点恰恰指向外部厂商 API——最该让操作者看见「数据流向哪里」的链路反而静默回退。现提到模块上供两库共用（同一份「每进程只注记一次」状态与同一条文案）。
+- **`thinking = false`（布尔）能关思考模式了（AG-17）**：`thinking_enabled` 此前只认字符串 `"disabled"/"off"/"false"`，传 JSON 布尔 `false` 时请求体照样带 `{"type":"enabled"}`——与该函数自己的注释矛盾。宿主走 `wantString` 故配置文件路径到不了这里，但 `.mt` 动作脚本与结构脚本参数可以直接传布尔，而 `false` 是最自然的一种「关掉」写法。修法与开关联动：关闭思考模式时不再回传 `reasoning_content`（有状态协议的另一半，非思考模式回传该字段会被真机拒）。
+
 ### 2026-09-21 第二轮审计修复批次（AG-1/AG-2/AG-3/AG-14/AG-15/AG-16，agent 子系统）
 
 > 守门快照：C++ 单测 427 / 0、Lua 单测 259 / 0 / 2 跳（以实时输出为准）。
