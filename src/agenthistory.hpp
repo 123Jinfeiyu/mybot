@@ -41,6 +41,11 @@ public:
 	void trim(std::size_t budget, bool verbose,
 		const std::function<void(const std::string&)>& log);
 
+	/* SAN-10：当前可裁任务块的估算字节（trim 的记账口径——**不含** system
+	 * 提示词与工具 schema，与 C4 的诚实口径一致）。供 /status 显示"历史现在多大"， 
+	 * 而不必等到裁剪发生才知道（此前只有裁剪那一刻打一行日志）。 */
+	std::size_t accountedBytes() const;
+
 private:
 	std::vector<ChatMessage> messages_;
 };

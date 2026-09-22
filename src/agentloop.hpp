@@ -81,6 +81,23 @@ struct AgentOptions {
 	std::shared_ptr<const AgentPolicy> policy;
 };
 
+/* ---- SAN-10：会话运行期统计（REPL /status 的判据来源）----
+ * 全部是"已经在内存里的状态"的读数——**不新增任何计数器语义**：
+ * modelTurns/toolCalls/failures 与审计的模型/工具记录同步累加，
+ * 历史与预算用量直接读既有对象。渲染是纯函数（summarizeSessionStatus），
+ * 与 summarizeAgentConfig 同款契约：只渲染、不判定、无副作用。 */
+struct SessionStats {
+	int modelTurns = 0;		/* 本会话已发起的模型调用轮数 */
+	int toolCalls = 0;		/* 本会话已派发的工具调用数 */
+	int failures = 0;		/* 其中的失败数（工具失败 + 参数错误 + 被拒） */
+	long long modelMs = 0;		/* 模型调用累计耗时 */
+	long long toolMs = 0;		/* 工具执行累计耗时 */
+	std::optional<long long> lastPromptTokens;	/* provider 最近一次给的用量 */
+	std::optional<long long> lastCompletionTokens;
+	bool historyTrimmed = false;	/* 本会话是否发生过历史裁剪 */
+	std::size_t trimmedMessages = 0;	/* 累计裁掉的消息数 */
+};
+
 class AgentSession {
 public:
 	AgentSession(ChatTransport& transport, const AgentToolRegistry& tools, AgentOptions opts);
@@ -106,6 +123,14 @@ public:
 
 	const std::vector<ChatMessage>& history() const { return history_.messages(); }
 
+	/* ---- SAN-10：给 REPL /status 的只读读数（零新增语义，见 SessionStats 注释）---- */
+	const SessionStats& stats() const { return stats_; }
+	/* 当前历史里可裁任务块的估算字节（与 HistoryManager::trim 的记账口径同源：
+	 * 不含 system 提示词与工具 schema）。 */
+	std::size_t historyBytes() const { return history_.accountedBytes(); }
+	std::size_t taskToolResultBytes() const { return budget_.toolResultBytes; }
+	std::size_t taskImageBytes() const { return budget_.imageBytes; }
+
 	/* SAN-9：会话结束记录（status = "end" / "error"）。由会话外壳在退出路径上
 	 * 显式调用——它比"析构时补一条"更可靠：析构可能发生在审计日志已关闭之后，
 	 * 而且"会话怎么结束的"需要调用方才知道的退出原因（正常 / 异常 + 原因）。 */
@@ -119,6 +144,7 @@ private:
 	AgentOptions opts_;
 	/* 会话开始记录只写一次（惰性：第一条记录之前补写） */
 	bool sessionStartWritten_ = false;
+	SessionStats stats_;
 
 	HistoryManager history_;
 	TaskBudget budget_;

@@ -207,3 +207,87 @@ TH_TEST(agentrepl_clear_prints_confirmation_and_history_resets) {
 		TH_CHECK(transport.requests[1][1].content == "任务B");
 	}
 }
+
+/* ============ SAN-10：/status 是只读会话一览，且绝不触发任务 ============
+ * 为什么这两条一起测：新命令最容易写错的地方是**没有在派发 runTurn 之前 continue**
+ * ——那样 "/status" 会被当成任务描述发给模型（用户想看一眼状态，结果启动了
+ * 一次模型调用，可能还带工具动作）。判据是 fake transport **一次都没被调用**。 */
+TH_TEST(agentrepl_status_is_read_only_and_never_dispatches) {
+	ScriptTransport tr;
+	tr.script.push_back(answer("不该被调用"));
+
+	AgentToolRegistry tools;	/* /status 不需要任何工具 */
+	AgentOptions opts;
+	opts.maxTurns = 2;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	AgentSession session(tr, tools, opts);
+
+	AgentModeConfig cfg;
+	cfg.structurePath = "robots/relay-test.sql";
+	cfg.scriptsDir = "scripts";
+	cfg.model = "m0";
+	cfg.endpoint = "https://gateway.example/v1/chat/completions";
+	cfg.auditLogPath = "audit.jsonl";	/* 只用于渲染，不需要真打开 */
+
+	MAKE_ROBOT();
+	robot.active();		/* 硬件变量在 active() 时才注册（同本文件其它用例） */
+
+	std::istringstream in("/status\n/exit\n");
+	std::ostringstream out;
+	std::ostringstream log;
+	TH_CHECK(runAgentRepl(session, cfg, robot, in, out, log) == 0);
+
+	/* ① 绝不触发模型调用（这是本用例的核心判据） */
+	TH_CHECK_MSG(tr.requests.empty(),
+		"/status 触发了模型调用（" + std::to_string(tr.requests.size()) + " 次）");
+	/* ② 渲染出关键字段 */
+	const std::string text = out.str();
+	TH_CHECK_MSG(text.find("会话状态") != std::string::npos, text);
+	TH_CHECK_MSG(text.find("m0") != std::string::npos, "未显示模型名");
+	TH_CHECK_MSG(text.find("gateway.example") != std::string::npos, "未显示接入点");
+	TH_CHECK_MSG(text.find("未触发裁剪") != std::string::npos, "未显示裁剪状态");
+	TH_CHECK_MSG(text.find("audit.jsonl") != std::string::npos, "未显示审计落点");
+	TH_CHECK_MSG(text.find("模型 0 轮") != std::string::npos, "空会话统计应显示 0 轮");
+	/* ③ /help 里也要有它（否则用户不知道这个命令存在） */
+	TH_CHECK_MSG(text.find("/status") != std::string::npos, "/help 未列出 /status");
+
+	robot.deactivate();
+}
+
+/* SAN-10 的边界：预算为 0（= 不限）时显示"不限"，不显示假的 "0 / 0"；
+ * 审计未开启时显示"(未开启)"，与摘要里的 "(未配置…)" 同口径。 */
+TH_TEST(agentrepl_status_shows_unlimited_and_disabled_audit_honestly) {
+	ScriptTransport tr;
+	AgentToolRegistry tools;
+	AgentOptions opts;
+	opts.maxTurns = 1;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	AgentSession session(tr, tools, opts);
+
+	AgentModeConfig cfg;
+	cfg.structurePath = "robots/relay-test.sql";
+	cfg.scriptsDir = "scripts";
+	cfg.maxHistoryBytes = 0;		/* 不限 */
+	cfg.maxTaskToolResultBytes = 0;		/* 不限 */
+	cfg.maxTaskImageBytes = 0;		/* 不限 */
+	/* auditLogPath 留空 = 未开启 */
+
+	MAKE_ROBOT();
+	robot.active();
+
+	std::istringstream in("/status\n/exit\n");
+	std::ostringstream out;
+	std::ostringstream log;
+	TH_CHECK(runAgentRepl(session, cfg, robot, in, out, log) == 0);
+
+	const std::string text = out.str();
+	TH_CHECK_MSG(text.find("不限") != std::string::npos, "预算 0 应显示「不限」: " + text);
+	TH_CHECK_MSG(text.find("(未开启)") != std::string::npos, "审计未开应显示 (未开启): " + text);
+	/* 不得出现 "0 / 0" 这种看起来像"额度已满"的假数字 */
+	TH_CHECK_MSG(text.find("0 字节 / 0 字节") == std::string::npos,
+		"预算不限时不应显示 0 / 0: " + text);
+
+	robot.deactivate();
+}

@@ -95,8 +95,14 @@ void AgentSession::writeModelRecord(int turn, const ChatResponse& resp, long lon
 }
 
 std::string AgentSession::runTurn(const std::string& userTask) {
+	const std::size_t beforeTrim = history_.messages().size();
 	history_.trim(opts_.maxHistoryBytes, opts_.verbose,
 		[this](const std::string& t) { log(t); });
+	/* SAN-10：裁剪次数与累计条数（/status 显示"本会话裁过多少"） */
+	if (history_.messages().size() < beforeTrim) {
+		stats_.historyTrimmed = true;
+		stats_.trimmedMessages += beforeTrim - history_.messages().size();
+	}
 	/* 任务内聚合预算按任务清零（AG-4）：它约束的是「这一个任务往上下文里灌了
 	 * 多少字节」，跨任务的体积由 HistoryManager 的 maxHistoryBytes 管。 */
 	budget_.resetTask();
@@ -135,10 +141,18 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 				writeModelRecord(turn, empty, ms, false, e.what());
 				throw;
 			}
-			writeModelRecord(turn, resp,
-				std::chrono::duration_cast<std::chrono::milliseconds>(
-					std::chrono::steady_clock::now() - tModel0).count(),
-				true, "");
+			const long long modelMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - tModel0).count();
+			writeModelRecord(turn, resp, modelMs, true, "");
+			/* SAN-10：会话统计（与上面那条审计记录同步累加，不另立语义） */
+			++stats_.modelTurns;
+			stats_.modelMs += modelMs;
+			if (resp.usage.isObj()) {
+				if (const Json* v = resp.usage.find("prompt_tokens");
+				    v != nullptr && v->isInt()) { stats_.lastPromptTokens = v->getInt(); }
+				if (const Json* v = resp.usage.find("completion_tokens");
+				    v != nullptr && v->isInt()) { stats_.lastCompletionTokens = v->getInt(); }
+			}
 
 			/* 收尾：模型不再要工具 → 记下最终回答并返回 */
 			if (!resp.hasToolCalls()) { return appendFinalAnswer(resp); }
@@ -187,7 +201,13 @@ std::string AgentSession::appendFinalAnswer(const ChatResponse& resp) {
  * 结果落进历史与日志。本函数不写 assistant 消息、不动 complete 边界：
  * 调用方保证一轮里的 tool 消息与 assistant.tool_calls 一一对应。 */
 std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
+	const auto tTool0 = std::chrono::steady_clock::now();
 	AgentToolResult result = gate_.run(call, turn);
+	/* SAN-10：工具调用与失败数的会话统计 */
+	++stats_.toolCalls;
+	if (!result.ok) { ++stats_.failures; }
+	stats_.toolMs += std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - tTool0).count();
 
 	/* ---- 任务内预算判定（AG-4 + AG-21，语义见 agentbudget.hpp）----
 	 * executed=false（策略拒绝/未知工具/参数错误）时 admit 不做降级：

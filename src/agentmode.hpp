@@ -159,6 +159,15 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
  * 这里再校验一遍只会制造两处漂移。 */
 std::string summarizeAgentConfig(const AgentModeConfig& cfg);
 
+/* SAN-10（2026-09-22，REPL /status）：把会话**当前已有的状态**渲染成人类可读一览。
+ * 纯函数、无副作用、可离线单测——与 summarizeAgentConfig 同款契约：
+ * **只渲染、不判定**。它回答的是现场最常见的三个问题：
+ * "为什么它忘了之前说的？"（历史多大/裁过没）"为什么拍照没进来？"（任务内图片额度用了多少）
+ * "这一轮花了多久/失败几次？"（模型轮数、工具调用、失败数、token 用量）。
+ * 这些数字**此前只在出问题时才可见**（裁剪那一刻打一行、预算超限时才说），没有查询入口。 */
+std::string summarizeSessionStatus(const AgentSession& session, const AgentModeConfig& cfg,
+		RobotStruct& robot);
+
 /* REPL 单行输入上限（2026-09-22 审计后添加）。防止恶意输入巨大任务字符串
  * 导致内存耗尽（std::getline 无内建长度限制，只在系统 RLIMIT_AS / 坏分配
  * 时才会 bad_alloc）。10 MiB 远超正常任务描述（几百字节），同时兼顾偶尔

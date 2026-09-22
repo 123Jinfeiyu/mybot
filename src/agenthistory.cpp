@@ -33,6 +33,13 @@ HistoryManager::HistoryManager(std::string systemPrompt) {
 	messages_.push_back(std::move(sys));
 }
 
+std::size_t HistoryManager::accountedBytes() const {
+	std::size_t n = 0;
+	/* 与 trim 的记账一致：跳过 messages_[0]（system 提示词，恒保留） */
+	for (std::size_t i = 1; i < messages_.size(); ++i) { n += messageWeight(messages_[i]); }
+	return n;
+}
+
 void HistoryManager::trim(std::size_t budget, bool verbose,
 		const std::function<void(const std::string&)>& log) {
 	if (budget == 0 || messages_.size() <= 1) { return; }
