@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <string>
+#include <sys/types.h>
 #include <vector>
 
 namespace bot {
@@ -48,6 +49,63 @@ struct RunResult {
 /* 放弃回收子进程时的告警文案（AG-10 单点）。单独暴露是为了让离线用例能钉住
  * 「告警说了什么」——该路径的行为构造依赖 D 态进程，离线不可得。 */
 std::string reapGiveUpWarning(int pid, int graceMs);
+
+/* 有界回收：WNOHANG 轮询到 graceMs，仍未回收即放弃（**绝不无超时阻塞**——
+ * kill 未生效（D 态 / 权限）时无超时的 waitpid 会把 agent 会话永久挂死），
+ * 放弃时按 reapGiveUpWarning 响亮告警。返回是否回收到终态；waitpid 报 ECHILD
+ * （确已无可回收）时立即返回 false，不占满宽限。
+ * 单独暴露是为了让离线用例直接钉住这两条路径（真挂死形态需 D 态进程，离线不可得）。 */
+bool reapWithGrace(pid_t pid, int& status, int graceMs = 2000);
+
+/* ---- 统一子进程运行器（run_command 与策略确认程序共用）----
+ * 为什么抽出（2026-09-22 审计 F1/F2）：两份「pipe → fork → setpgid → 超时整组
+ * SIGKILL → 回收」实现曾各自演化，防线性差异（有界回收、子进程 fd 吊销、
+ * 硬上限兜底）只落到了 runShell 一侧，确认路径因此留着**无超时 waitpid** 与
+ * 全量 fd 继承。现在骨架单点、差异一律经 ChildSpec 显式声明，不再由调用方
+ * 各自实现——「碰巧不同」不当作口径。 */
+struct ChildSpec {
+	std::string cmd;
+	/* 环境：true = buildCleanEnvp（模型可驱动的命令绝不能继承 LLM API key）；
+	 * false = 继承宿主 environ（策略确认程序是操作者可信程序，可能依赖自有
+	 * *_TOKEN，清洗会静默砸掉合法脚本——理由见 docs/agent.md）。 */
+	bool cleanEnv = true;
+	/* stdin：true = 建管道并把 stdinPayload 写进去；false = 重定向 /dev/null
+	 * （子命令不与 agent REPL 抢终端输入）。 */
+	bool pipeStdin = false;
+	std::string stdinPayload;
+	/* stdout/stderr：true = 接管道（每流截断 kMaxCommandOutput + UTF-8 消毒）；
+	 * false = 继承宿主（确认程序直接面对操作者终端）。 */
+	bool captureOutput = true;
+	/* 超时秒数 + 超时后回收宽限（毫秒）。回收有界是硬约束，宽限只影响等多久。 */
+	int timeoutSec = 0;
+	int graceMs = 2000;
+	/* fd 吊销：父侧 markAllFdsCloexec + 子侧 revokeInheritedFds（防子进程拿到
+	 * HAL/驱动的器件句柄，在 robot->deactivate() 之后照样 ioctl 拨硬件）。 */
+	bool revokeFds = true;
+	/* 轮询 stopRequested()（REPL 的 Ctrl-C → 整组终止）。确认程序不响应中断
+	 * （现状语义：确认程序自己决定何时退，宿主只等它到超时）。 */
+	bool watchStop = true;
+	/* AG-11 探针输出 fd（-1 = 关闭）。归调用方持有，runChild 不关它。 */
+	int traceFd = -1;
+};
+
+/* 一次子进程运行的中性结果；两个调用点各自折算成 RunResult / ConfirmRun。 */
+struct ChildOutcome {
+	bool reaped = false;		/* 回收到终态（正常退出或被信号终止） */
+	bool normalExit = false;	/* reaped 且 WIFEXITED */
+	int exitCode = -1;		/* normalExit 时有效 */
+	int termSig = 0;		/* 被信号终止时记录 */
+	bool timedOut = false;
+	bool interrupted = false;
+	bool hardStopped = false;
+	bool outTruncated = false;
+	bool errTruncated = false;
+	std::string out;
+	std::string err;
+};
+
+/* 跑一次子进程（骨架单点）。pipe / fork / fcntl 失败抛 std::runtime_error。 */
+ChildOutcome runChild(const ChildSpec& spec);
 
 /* 经 /bin/sh -c 执行命令；stopRequested()（util）提前触发整组终止。
  * pipe / fork 失败抛 std::runtime_error。 */

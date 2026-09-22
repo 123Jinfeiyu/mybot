@@ -12,6 +12,7 @@ using fx::TempDir;
 #include <fstream>
 #include <memory>
 #include <string>
+#include <sys/wait.h>
 #include <system_error>
 #include <vector>
 #include <unistd.h>
@@ -243,6 +244,27 @@ TH_TEST(agenttools_registry_dispatch) {
 	std::string unknown = execText(tools, "no_such_tool", parseJson("{}"));
 	TH_CHECK(unknown.find("未知工具") != std::string::npos);
 	TH_CHECK(unknown.find("list_action_scripts") != std::string::npos);
+}
+
+TH_TEST(agenttools_run_command_schema_reports_effective_timeouts) {
+	/* B4：run_command 的 schema 描述里那两个数字取自**生效值**（配置文件可调），
+	 * 不是写死的「默认 10，最大 60」——写死会在配置改过之后对模型说谎，
+	 * 而模型是照着描述去传 timeout_seconds 的。 */
+	AgentToolContext ctx;
+	ctx.robot = nullptr;
+	ctx.allowShell = true;
+	ctx.commandTimeoutSec = 25;
+	ctx.maxCommandTimeoutSec = 300;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	std::string desc;
+	for (const ToolSpec& s : tools.specs()) {
+		if (s.name == "run_command") { desc = s.parameters.toString(); }
+	}
+	TH_CHECK_MSG(!desc.empty(), "allowShell=true 时 run_command 应已注册");
+	TH_CHECK_MSG(desc.find("默认 25") != std::string::npos, desc);
+	TH_CHECK_MSG(desc.find("最大 300") != std::string::npos, desc);
+	TH_CHECK_MSG(desc.find("默认 10") == std::string::npos, desc);
+	TH_CHECK(desc.find("最大 60") == std::string::npos);
 }
 
 TH_TEST(agenttools_capture_image_via_real_camera_driver) {
@@ -961,8 +983,47 @@ TH_TEST(agenttools_reap_give_up_warning_is_informative) {
 	TH_CHECK_MSG(w.find("未回收") != std::string::npos, "告警未说明发生了什么：" + w);
 }
 
+/* F1（2026-09-22 审计）：有界回收的正常路径。确认程序路径原来用**无超时**
+ * waitpid 回收（kill 未生效时永久挂死 agent 会话），修复后两个调用点共用
+ * reapWithGrace；这里直接钉住它的成功路径与状态折算。 */
+TH_TEST(agenttools_reap_with_grace_collects_exited_child) {
+	pid_t pid = fork();
+	/* 子进程必须先于任何断言返回：harness 的计数/打印是进程内的，子进程若继续
+	 * 往下跑，会把「pid==0」当成断言失败打出来（实测踩过：日志里混进一条
+	 * 「fork 失败」，父进程其实一切正常）。 */
+	if (pid == 0) {
+		::usleep(50 * 1000);	/* 让父进程真正进到轮询分支 */
+		_exit(7);
+	}
+	TH_CHECK_MSG(pid > 0, "fork 失败");
+	int status = 0;
+	const bool ok = reapWithGrace(pid, status, 2000);
+	TH_CHECK_MSG(ok, "子进程在宽限内退出，应被回收");
+	TH_CHECK(WIFEXITED(status));
+	TH_CHECK_MSG(WEXITSTATUS(status) == 7, "回收到的退出码不对");
+}
+
+/* F1 的另一半：waitpid 报 ECHILD（子进程已被别的回收者收走，宿主里存在
+ * SIGCHLD 处理器的场景）时必须**立即**返回 false——若在这儿把宽限耗满，
+ * 「有界回收」就只是把无界等待换成了 2s 的无谓等待。 */
+TH_TEST(agenttools_reap_with_grace_returns_immediately_on_echild) {
+	pid_t pid = fork();
+	if (pid == 0) { _exit(0); }	/* 子进程不碰 harness（见上） */
+	TH_CHECK_MSG(pid > 0, "fork 失败");
+	int status = 0;
+	TH_CHECK_MSG(::waitpid(pid, &status, 0) == pid, "先收走子进程（模拟已被回收）");
+
+	const auto t0 = std::chrono::steady_clock::now();
+	const bool ok = reapWithGrace(pid, status, 2000);
+	const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - t0).count();
+	TH_CHECK_MSG(!ok, "确已无可回收时应返回 false");
+	TH_CHECK_MSG(ms < 500,
+		"ECHILD 应立即返回，实测 " + std::to_string(ms) + "ms（宽限 2000ms）");
+}
+
 /* ---- AG-11：子进程路径自报（fork/exec 区块的行为断言）----
- * 背景：agent_subprocess.cpp 的 execShellChild / revokeInheritedFds 在 gcov 报告
+ * 背景：agent_subprocess.cpp 的 execChild / revokeInheritedFds 在 gcov 报告
  * 里**恒为 0%**，而且不是「没测」而是「测了测不到」——gcov 计数在进程退出时落盘，
  * 而这两个函数永远以 execve 结束（exec 用新映像的计数页覆盖当前进程）。AG-3
  * （CLOSE_RANGE_CLOEXEC 标志写成 1U、快速路径从未执行）正藏在这个盲区里藏了很久：

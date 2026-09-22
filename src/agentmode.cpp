@@ -87,6 +87,8 @@ AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
 	d.timeoutSec = cfg.timeoutSec;
 	d.reasoningEffort = cfg.reasoningEffort;
 	d.thinking = cfg.thinking;
+	d.maxRetries = cfg.maxRetries;
+	d.retryBackoffMs = cfg.retryBackoffMs;
 	return d;
 }
 
@@ -180,6 +182,26 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	if (file.topP) { out.topP = *file.topP; }
 	if (file.timeoutSec) { out.timeoutSec = *file.timeoutSec; }
 	if (file.maxTurns) { out.maxTurns = *file.maxTurns; }
+
+	/* 运行期数值（B4）：只有配置文件这一层（不加 CLI 选项，理由见 llm_limits）。
+	 * 0 是合法值（max_retries / retry_backoff_ms），故用 has_value 语义判空。 */
+	if (file.maxCallsPerRound) { out.maxCallsPerRound = *file.maxCallsPerRound; }
+	if (file.maxRetries) { out.maxRetries = *file.maxRetries; }
+	if (file.retryBackoffMs) { out.retryBackoffMs = *file.retryBackoffMs; }
+	if (file.runCommandTimeoutSec) { out.commandTimeoutSec = *file.runCommandTimeoutSec; }
+	if (file.runCommandMaxTimeoutSec) {
+		out.maxCommandTimeoutSec = *file.runCommandMaxTimeoutSec;
+	}
+	/* 跨字段关系按**生效值**判（不是按文件里的字面值）：只配了上限而它低于缺省
+	 * 超时时同样要挡——否则模型不传 timeout_seconds 时按缺省请求 10s 会越过操作者
+	 * 声明的 5s 上限，「上限」名不副实。位于合流处 = 单一判定点。 */
+	if (out.maxCommandTimeoutSec < out.commandTimeoutSec) {
+		err = "run_command 超时上限低于缺省超时（run_command_max_timeout_sec="
+			+ std::to_string(out.maxCommandTimeoutSec) + "s < run_command_timeout_sec="
+			+ std::to_string(out.commandTimeoutSec) + "s）：请把上限调到不小于缺省，"
+			"或一并调小缺省超时";
+		return false;
+	}
 
 	if (!opts.llmMaxTurns.empty()
 		&& !parseIntOption(opts.llmMaxTurns, "llm-max-turns",
@@ -305,8 +327,13 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	 * 注意：这不替代 buildAgentSystemPrompt 的总量检查——那一段（含硬件清单）
 	 * 仍是唯一的最终判据，这里只是把可前移的部分前移。 */
 	{
-		const std::size_t hardwareIndependent = structureScriptHead(out.structurePath, 16u << 10).size()
-			+ describeActionScripts(out.scriptsDir).size()
+		/* 读一次存两份（C6）：预检要的就是这两段成品，buildAgentSystemPrompt
+		 * 直接复用，不再各读一遍（原先两处各读各的，文件在两次读之间变动会让
+		 * 「预检口径」与「提示词口径」分叉）。 */
+		out.structureHead = structureScriptHead(out.structurePath, 16u << 10);
+		out.scriptsList = describeActionScripts(out.scriptsDir);
+		const std::size_t hardwareIndependent = out.structureHead->size()
+			+ out.scriptsList->size()
 			+ out.promptPack.size();
 		if (hardwareIndependent > kMaxSystemPromptBytes) {
 			err = "系统提示词（不依赖硬件的三段：结构脚本头 / 动作脚本清单 / 提示词包）"
@@ -374,6 +401,8 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	tctx.scriptsDir = cfg.scriptsDir;
 	tctx.structurePath = cfg.structurePath;
 	tctx.allowShell = cfg.allowShell;
+	tctx.commandTimeoutSec = cfg.commandTimeoutSec;
+	tctx.maxCommandTimeoutSec = cfg.maxCommandTimeoutSec;
 	if (cfg.allowCamera) {
 		tctx.camera = robot.registry().find(cfg.cameraVar);
 		tctx.cameraDevice = cfg.cameraDevice;
@@ -404,6 +433,7 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	aopts.maxHistoryBytes = cfg.maxHistoryBytes;
 	aopts.maxTaskToolResultBytes = cfg.maxTaskToolResultBytes;
 	aopts.maxTaskImageBytes = cfg.maxTaskImageBytes;
+	aopts.maxCallsPerRound = cfg.maxCallsPerRound;
 	aopts.systemPrompt = buildAgentSystemPrompt(cfg, robot);
 	aopts.audit = cfg.audit;
 	aopts.policy = cfg.policy;

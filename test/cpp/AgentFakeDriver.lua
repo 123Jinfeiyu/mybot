@@ -3,6 +3,11 @@
 -- 不联网：把收到的规范化请求特征回显成 content，用来断言 C++ 侧的
 -- ChatTransport 适配器确实把请求递到了驱动、并把驱动的响应解析回来。
 -- model 传 "fail" 时走 ERR 契约，用于覆盖错误回传路径。
+-- model 传 "netfail-once" 时：**仅首次**返回可重试的网络类 ERR（消息含
+-- "curl error"，命中宿主的 isRetriableError），用来覆盖重试循环与日志 sink；
+-- "netfail-always" 则每次都失败，用来钉住「max_retries = 0 也要发一次」。
+
+local netfail_once_calls = 0
 
 function build(data)
 	return { result = "OK" }
@@ -15,6 +20,15 @@ end
 function call(data)
 	if data.model == "fail" then
 		return { result = "ERR", message = "假驱动故意失败" }
+	end
+	if data.model == "netfail-once" then
+		netfail_once_calls = netfail_once_calls + 1
+		if netfail_once_calls == 1 then
+			return { result = "ERR", message = "curl error 7: 网络不可达（假驱动，仅首次）" }
+		end
+	end
+	if data.model == "netfail-always" then
+		return { result = "ERR", message = "curl error 7: 网络不可达（假驱动，始终）" }
 	end
 
 	local nmsgs = 0

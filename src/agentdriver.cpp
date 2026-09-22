@@ -1,5 +1,6 @@
 #include "agentdriver.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <stdexcept>
@@ -9,6 +10,7 @@
 #include <vector>
 
 #include "hardware.hpp"
+#include "llmconfig.hpp"	/* llm_limits::kRetryBackoffCapMs（退避单次上限） */
 #include "luavar.hpp"	/* B3：dynamic_cast<MtVars_Lua*> 设置图片游标表 */
 #include "util.hpp"
 
@@ -20,6 +22,9 @@ namespace {
 class LuaDriverTransport : public ChatTransport {
 	MatrixVars_Hardware* driver_;
 	AgentDriverConfig cfg_;
+
+	/* 日志 sink：空 = stderr（正是改动前的行为）。 */
+	std::ostream& log() const { return cfg_.log != nullptr ? *cfg_.log : std::cerr; }
 
 	/* U-1：判定是否为可重试的网络错误 */
 	bool isRetriableError(const std::string& msg) const {
@@ -62,8 +67,12 @@ public:
 		} cursorScope{luaDriver};
 		if (luaDriver != nullptr) { luaDriver->setHostImages(&imgs); }
 
-		/* U-1：重试循环（指数退避） */
-		for (int attempt = 0; attempt < cfg_.maxRetries; ++attempt) {
+		/* U-1：重试循环（指数退避）。attempts 钳到 ≥1：maxRetries 是「含首次的
+		 * 尝试次数」，而配置文件的 max_retries 允许 0（= 不重试）——若直接拿 0
+		 * 当循环上界，就会一次都不发并落到末尾的 logic_error，「不重试」变成
+		 * 「什么都不做」。 */
+		const int attempts = std::max(1, cfg_.maxRetries);
+		for (int attempt = 0; attempt < attempts; ++attempt) {
 			try {
 				/* playQuiet：与 play 同一路径但不回显结果表——模型响应绝不能混进
 				 * stdout。驱动的 ERR 契约由内部 ensureOk 抛出（带驱动给的 message）。 */
@@ -79,14 +88,17 @@ public:
 				}
 
 				/* 最后一次也失败了 */
-				if (attempt == cfg_.maxRetries - 1) {
+				if (attempt == attempts - 1) {
 					throw;	/* 用尽重试次数 */
 				}
 
-				/* 指数退避 */
-				int delayMs = cfg_.retryBackoffMs * (1 << attempt);  // 1s, 2s, 4s
-				std::cerr << "[agent] 网络错误，" << delayMs << "ms 后重试（"
-					<< (attempt + 1) << "/" << cfg_.maxRetries << "）: "
+				/* 指数退避。单次上限：缺省区间（1s 基础 × 3 次尝试）够不到它，但
+				 * 配置文件放宽 max_retries/retry_backoff_ms 后 `backoff << attempt`
+				 * 会长到小时级——对「重启一下网关就好」的抖动，等待比失败更糟。 */
+				const int delayMs = std::min(cfg_.retryBackoffMs * (1 << attempt),
+					llm_limits::kRetryBackoffCapMs);
+				log() << "[agent] 网络错误，" << delayMs << "ms 后重试（"
+					<< (attempt + 1) << "/" << attempts << "）: "
 					<< msg << std::endl;
 
 				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));

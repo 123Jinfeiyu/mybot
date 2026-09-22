@@ -158,6 +158,10 @@ int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg)
 			+ "）；检查 --llm-var/--llm-driver，或用 --help 看内置驱动名");
 	}
 	agent::AgentDriverConfig dcfg = agent::makeDriverConfig(agentCfg);
+	/* 重试信息走 stderr——与下面 runAgentMode 的日志流是同一个，绝不进 stdout
+	 * （stdout 只放模型回答，混进去会污染 `--task` 的输出；C5 的 sink 缺省即
+	 * stderr，这里显式写出是为了让「走哪条流」在装配点可见）。 */
+	dcfg.log = &std::cerr;
 	std::unique_ptr<agent::ChatTransport> transport =
 		agent::makeDriverTransport(driver, dcfg);
 

@@ -11,6 +11,7 @@
 
 #include <iosfwd>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -79,6 +80,15 @@ struct AgentModeConfig {
 	std::size_t maxTaskToolResultBytes = 2 * 1024 * 1024;
 	std::size_t maxTaskImageBytes = 4 * 1024 * 1024;
 
+	/* ---- 运行期数值（B4，2026-09-22）----
+	 * 配置文件同名小写字段的落点（区间单点见 llm_limits）：缺省即原先写死在
+	 * 下游结构体里的值，未配置时不改变任何行为。去向见各注释。 */
+	int maxCallsPerRound = 16;	/* 单轮工具调用数上限 → AgentOptions */
+	int maxRetries = 3;		/* 网络重试尝试次数（含首次）→ AgentDriverConfig */
+	int retryBackoffMs = 1000;	/* 退避基础时长（指数增长，单次钳到 60s）→ 同上 */
+	int commandTimeoutSec = 10;	/* run_command 缺省超时 → AgentToolContext */
+	int maxCommandTimeoutSec = 60;	/* run_command 超时上限 → AgentToolContext */
+
 	/* ---- 提示词包（--prompt-file / 配置文件 prompt_files）----
 	 * promptFiles 是合并后的输入清单（命令行给过就整体覆盖配置文件列表）；
 	 * promptPack 是 buildAgentConfig 加载拼接好的成品文本（空 = 未使用），
@@ -86,6 +96,17 @@ struct AgentModeConfig {
 	 * 配置错误在结构装载与上电之前就失败（「配置错误不碰真机」）。 */
 	std::vector<std::string> promptFiles;
 	std::string promptPack;
+
+	/* ---- 提示词素材缓存（C6，2026-09-22）----
+	 * 下面第 9 步的体积预检本来就要读这两段，读出来的成品存这里供
+	 * buildAgentSystemPrompt 复用：每会话少一次全树遍历 + N 次文件读，且
+	 * 「预检口径」与「提示词口径」按构造一致（原先两处各读一次，两次读之间
+	 * 文件若变动会分叉——预检按旧内容放行、提示词按新内容生成）。
+	 * 用 optional 而非空串：空串是**合法的读取结果**（结构脚本不可读、脚本
+	 * 目录为空），拿它表示「没缓存」会把已读到的空结果误判成未命中再读一遍；
+	 * 离线单测手搓配置时没有值，走实时读取（与缓存引入前完全一致）。 */
+	std::optional<std::string> structureHead;	/* = structureScriptHead(…, 16 KiB) */
+	std::optional<std::string> scriptsList;		/* = describeActionScripts(…) */
 
 	/* ---- 由 buildAgentConfig 填出的旁路信息 ---- */
 	/* 最终解析出的 API key。**只**用于注入进程环境变量，绝不进驱动的参数表

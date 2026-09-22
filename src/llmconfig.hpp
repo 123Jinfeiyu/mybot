@@ -37,6 +37,34 @@ inline constexpr int kMaxTurnsMax = 100;
 inline constexpr long kMaxHistoryBytesLimit = 64u << 20;
 inline constexpr long kMaxTaskToolResultBytesLimit = 64u << 20;
 inline constexpr long kMaxTaskImageBytesLimit = 64u << 20;
+
+/* ---- 运行期数值（B4，2026-09-22）----
+ * 这五个量原先只写死在 AgentOptions / AgentDriverConfig / AgentToolContext 的
+ * 编译期缺省里，现场调不了（与 B1 的三个字节预算同款问题）。现经配置文件可覆盖，
+ * 仍**不加 CLI 选项**：选项面已 20+，而它们都是「一次定好、长期不变」的部署参数。
+ * 区间取「能接受的最大合理值」，逐条理由：
+ *   * max_calls_per_round 下限 1：0 在 AgentOptions 里是「不限」的旧语义，但对
+ *     物理机器人「一轮不限量下发动作」没有正当用法，故配置文件**拒绝 0**
+ *     （与 allow_shell 同源的「能力只能命令行开、配置只能收紧」口径）；1024
+ *     远超任何现实场景；
+ *   * max_retries 0 合法 = 只发一次不重试（离线/内网直连想立刻失败时用），
+ *     6 已远超任何网关抖动所需；
+ *   * retry_backoff_ms 上界 10000，此外驱动侧单次退避再钳到 kRetryBackoffCapMs
+ *     ——`backoff << attempt` 在放宽区间后会算出小时级等待，等待比失败更糟；
+ *   * run_command 两个超时沿用「缺省 ≤ 上限」的既有形态：缺省上限 600（10 分钟），
+ *     请求上限 3600（1 小时）已覆盖现场长任务，再长得先想想是不是该用
+ *     run_action_script（脚本执行有硬件侧语义，而不是宿主任意命令）。 */
+inline constexpr int kMaxCallsPerRoundMin = 1;
+inline constexpr int kMaxCallsPerRoundMax = 1024;
+inline constexpr int kMaxRetriesMin = 0;
+inline constexpr int kMaxRetriesMax = 6;
+inline constexpr int kRetryBackoffMsMin = 0;
+inline constexpr int kRetryBackoffMsMax = 10000;
+inline constexpr int kRetryBackoffCapMs = 60000;
+inline constexpr int kRunCommandTimeoutMinSec = 1;
+inline constexpr int kRunCommandTimeoutMaxSec = 600;
+inline constexpr int kRunCommandMaxTimeoutMinSec = 1;
+inline constexpr int kRunCommandMaxTimeoutMaxSec = 3600;
 } // namespace llm_limits
 struct LlmFileConfig {
 	std::optional<std::string> driver;	/* 协议驱动表名 = modules/<名>.lua */
@@ -71,6 +99,15 @@ struct LlmFileConfig {
 	std::optional<long> maxHistoryBytes;
 	std::optional<long> maxTaskToolResultBytes;
 	std::optional<long> maxTaskImageBytes;
+	/* 运行期数值（B4）：单轮工具调用数上限 / 网络重试（尝试次数与退避基础时长）/
+	 * run_command 的缺省与最大超时。未配置 = 用各结构体的编译期缺省；
+	 * 区间与决策理由见 llm_limits。跨字段关系（上限 ≥ 缺省）在 agentmode 按
+	 * **生效值**判定——只配一个字段时也要挡住「上限低于缺省」。 */
+	std::optional<int> maxCallsPerRound;
+	std::optional<int> maxRetries;
+	std::optional<int> retryBackoffMs;
+	std::optional<int> runCommandTimeoutSec;
+	std::optional<int> runCommandMaxTimeoutSec;
 };
 
 /* 解析配置文件。失败返回 false 并把「带字段名的人话报错」写进 err：

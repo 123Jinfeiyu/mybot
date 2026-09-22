@@ -207,6 +207,56 @@ TH_TEST(agentloop_synthesizes_missing_call_id) {
 	TH_CHECK(transport.requests[1][2].toolCalls[0].id == transport.requests[1][3].toolCallId);
 }
 
+/* C7（F6-2）：单轮派发上限的**可达路径**。原先 `calls.empty() ? "call_capped" : …`
+ * 是永不可达的兜底（excess > 0 只在 maxCallsPerRound > 0 分支产生，那时 calls 已被
+ * 截到 ≥1 条），删除它之后这条路径的语义必须逐条仍成立：截断、如实告知、id 配对。 */
+TH_TEST(agentloop_caps_calls_per_round_and_tells_the_model) {
+	FakeTransport transport;
+	ChatResponse many;
+	many.toolCalls.push_back(ToolCall{"c1", "echo", "{}"});
+	many.toolCalls.push_back(ToolCall{"c2", "echo", "{}"});
+	many.toolCalls.push_back(ToolCall{"c3", "echo", "{}"});
+	transport.script.push_back(many);
+	transport.script.push_back(answerResponse("ok"));
+
+	int executed = 0;
+	AgentToolRegistry tools;
+	tools.add(AgentTool{"echo", "回显参数", parseJson("{\"type\":\"object\"}"),
+		[&executed](const Json&) -> AgentToolResult {
+			++executed;
+			return {"echo", ""};
+		}});
+
+	AgentOptions o = optsFor(4);
+	o.maxCallsPerRound = 2;
+	AgentSession session(transport, tools, o);
+	TH_CHECK(session.runTurn("任务") == "ok");
+	TH_CHECK(executed == 2);	/* 第 3 条**未派发**：上限是安全底线 */
+
+	const auto& h = session.history();
+	/* system, user, assistant(截到 2 条), tool(c1), tool(c2), tool(截断说明), assistant */
+	TH_CHECK(h.size() == 7);
+	TH_CHECK(h[2].role == "assistant");
+	TH_CHECK(h[2].toolCalls.size() == 2);
+	TH_CHECK(h[2].toolCalls[0].id == "c1" && h[2].toolCalls[1].id == "c2");
+
+	TH_CHECK(h[5].role == "tool");
+	TH_CHECK_MSG(h[5].content.find("3 条") != std::string::npos, h[5].content);
+	TH_CHECK_MSG(h[5].content.find("只执行了前 2 条") != std::string::npos, h[5].content);
+	TH_CHECK_MSG(h[5].content.find("其余 1 条未被派发") != std::string::npos, h[5].content);
+	/* 说明挂在**最后一条已派发**调用的 id 上（tool 消息只能引用已存在的 id） */
+	TH_CHECK(h[5].toolCallId == "c2");
+
+	/* 发给服务端的历史里 assistant.tool_calls 与 tool 回传仍一一对上（否则 400） */
+	const std::vector<ChatMessage>& req = transport.requests[1];
+	TH_CHECK(req[2].toolCalls.size() == 2);
+	for (std::size_t k = 0; k < req[2].toolCalls.size(); ++k) {
+		TH_CHECK(req[3 + k].role == "tool");
+		TH_CHECK(req[3 + k].toolCallId == req[2].toolCalls[k].id);
+	}
+	TH_CHECK(req[5].toolCallId == "c2");	/* 截断说明复用已存在的 id */
+}
+
 TH_TEST(agentloop_max_turns_keeps_completed_history) {
 	FakeTransport transport;
 	for (int i = 0; i < 4; ++i) { transport.script.push_back(callResponse("echo", "{}")); }

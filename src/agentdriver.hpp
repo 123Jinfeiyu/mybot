@@ -5,6 +5,7 @@
  * 不认识任何 provider 报文字段，也不链接任何 HTTP 库。
  */
 
+#include <iosfwd>
 #include <memory>
 #include <string>
 
@@ -27,8 +28,15 @@ struct AgentDriverConfig {
 	std::string reasoningEffort;
 	std::string thinking;
 	/* U-1：LLM 网络错误自动重试（指数退避） */
-	int maxRetries = 3;	/* 最大重试次数（包含首次，故实际重试 maxRetries-1 次） */
-	int retryBackoffMs = 1000;	/* 退避基础时长（指数增长：1s, 2s, 4s） */
+	int maxRetries = 3;	/* 尝试次数**含首次**（故实际重试 maxRetries-1 次）。配置文件的
+				 * max_retries 允许 0（= 不重试），驱动侧钳到 ≥1——「不重试」
+				 * 仍是发一次，而不是一次都不发。 */
+	int retryBackoffMs = 1000;	/* 退避基础时长（指数增长：1s, 2s, 4s；单次钳到
+					 * llm_limits::kRetryBackoffCapMs） */
+	/* 重试信息的日志 sink。空 = std::cerr（现状，行为保持）——这条路径要能被
+	 * 调用方接走才算「注入」，硬编码 std::cerr 时离线用例抓不到它、宿主也没得选
+	 * （C5）。它**只**是日志流：绝不写 stdout（那是模型的回答）。 */
+	std::ostream* log = nullptr;
 };
 
 /* driver 必须是 Lua 驱动变量（modules/Llm*.lua 注册而成），否则抛

@@ -5,6 +5,152 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 agent 重构阶段 C6 + C7（提示词素材单次读取 / F6 三条小路径）
+
+> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 C6（F5）与 C7（F6）。行为保持型 + 死分支清理。
+
+**C6：预检读到的两段成品被系统提示词复用。** 原先「不依赖硬件的三段」体积预检读一次
+结构脚本头与动作脚本清单就丢弃，拼提示词时再读一次：每会话多一次全树遍历 + N 次文件读，
+且两次读之间文件若变动会让「预检口径」与「提示词口径」分叉（预检按旧内容放行、提示词
+按新内容生成）。
+
+- `AgentModeConfig` 新增 `structureHead` / `scriptsList` 两个 `std::optional<std::string>`：
+  预检处**读一次存两份**（字节数与原先逐字一致），`buildAgentSystemPrompt` 优先复用；
+  无值（离线单测手搓配置、不走 buildAgentConfig 的调用方）回退实时读取——读法与消毒是
+  同一个函数，差别只在「什么时候读」。
+- 用 `optional` 而非空串：空串是**合法的读取结果**（结构脚本不可读、脚本目录为空），
+  拿它表示「没缓存」会把已读到的空结果误判成未命中再读一遍。
+- 缓存只覆盖**会话开场的系统提示词**：REPL 的 `/scripts` 与工具的 `list_action_scripts`
+  仍实时遍历——它们是「现在有哪些脚本」的按需查询，本该看到最新状态。
+- 钉子用例 `agentconfig_prompt_reuses_precheck_reads`：预检之后把结构脚本与脚本目录改掉，
+  提示词仍按预检时的内容生成（复用真的发生）；手搓配置走实时读取（回退通道）。反向验证：
+  改回实时读 → 该用例转红（2 条断言），回滚后绿。
+
+**C7-1：`escapeLogMarkers` 挪到可测位置。** 原先在 `agentloop.cpp` 的匿名命名空间，只能经
+verbose 日志间接覆盖——下游解析器真正关心的是「行首标记」这条语义。现挪到 `util.hpp`
+（inline，与 `sanitizeUtf8` / `echoSource` 同一处的文本处理单点），新增直接用例
+`utils_escape_log_markers_only_touches_line_start_brackets`（行首转义含多行、非行首的
+`[` 原样保留、空串不变）。**顺带证实 AG-22 守门有效**：第一版用例名前缀写成 `util_`（未
+表态）被派生式比对当场拦下，改名 `utils_` 复用既有 roster 条目。
+
+**C7-2：`call_capped` 死分支删除。** `excess > 0` 只在 `maxCallsPerRound > 0` 分支产生，
+那里已把 `calls` 截到 ≥1 条，`calls.empty()` 永不可达。删掉兜底的同时补上这条**可达路径**
+的首个用例 `agentloop_caps_calls_per_round_and_tells_the_model`：第 3 条调用不派发（工具
+执行计数为 2）、说明文本如实点数、说明挂在**最后一条已派发**调用的 id 上、发给服务端的
+历史里 assistant.tool_calls 与 tool 回传仍一一对上。反向验证：去掉 `resize` + 把说明 id
+写死成 `call_capped` → 9 条断言转红，回滚后绿。
+
+**C7-3**（确认程序 EPIPE 路径用例）已在 A2 落地，见该条。
+
+- 验收：C++ 全量 488/0（`agentconfig_prompt_` 5、`agentloop_` 27、`utils_` 10）。
+  存量用例零修改。
+- 端到端（阶段 C 收口）：`bash scripts/agent_e2e.sh` 在 Release 与 ASan/UBSan 产物
+  （`cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug -DMYBOT_SANITIZE=address,undefined`）
+  下各跑一次全通过、sanitizer 无报告；`./build-asan/mybot_tests`（带
+  `LSAN_OPTIONS=suppressions=asan.supp`）488/0 同样无报告。
+  `bash test/run_all.sh agent-all` 在本机仍不可跑（无 luajit 解释器，脚本入口即 `exit 1`）
+  ——本轮改动不触 Lua 面，C++ 段与 agent E2E 是这台机器上能拿到的全部证据，不冒充全绿。
+- 文档：本文件；`docs/agent.md` / `docs/reference.md` 无字段或行为变化需改。
+
+### 2026-09-22 agent 重构阶段 C5（重试日志可注入）
+
+> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 C5（对应审计 F4）。行为保持型：缺省仍是 stderr。
+
+传输层（`agentdriver.cpp`）的重试日志原先硬编码 `std::cerr`——离线用例抓不到它，宿主也没得选。
+
+- `AgentDriverConfig` 新增 `std::ostream* log`（空 = `std::cerr`，即改动前的行为）；
+  `main` 的装配点显式写 `dcfg.log = &std::cerr`，与 `runAgentMode` 的日志流是同一条。
+- 重试信息（第几次尝试、退避时长、驱动给的成因）经该 sink 输出；**stdout 只放模型回答**。
+- **不改审计 JSONL 的 schema**（不加 `retries` 字段）：审计 append-only 且有外部消费方，
+  字段演进走新提案（方案「不做」节已声明）。
+- 钉子用例：`agentdriver_retry_goes_to_injected_log_sink`（夹具 `AgentFakeDriver` 增
+  `netfail-once` / `netfail-always` 两种 model）——首次网络类失败被重试、日志进注入 sink；
+  同时钉住 `max_retries = 0` 仍**发一次**（抛驱动给的成因、无重试日志），而不是旧循环的
+  「一次都不发落到 `logic_error`」。反向验证：去掉 `std::max(1, ...)` 钳制 + 日志改回硬编码
+  `std::cerr` 两处注入 → 该用例转红，回滚后 `agentdriver_` 7/0。
+- 验收：C++ 全量 485/0（`agentdriver_` 7）。
+- 文档：`docs/agent.md` 补一句「重试写日志流（stderr），stdout 只放模型回答」。
+
+### 2026-09-22 agent 重构阶段 B4（五个运行期数值配置文件化）
+
+> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 B4（对应审计 F3）。新能力，缺省行为不变。
+
+原先只写死在三个下游结构体里的五个数值，现可由**配置文件**覆盖（仅配置文件——
+不加 CLI 选项：选项面已 20+，且它们都是「一次定好、长期不变」的部署参数）：
+
+| 字段 | 区间 | 缺省 | 去向 |
+| --- | --- | --- | --- |
+| `max_calls_per_round` | 1-1024（**拒绝 0**） | 16 | `AgentOptions` |
+| `max_retries` | 0-6 | 3 | `AgentDriverConfig` |
+| `retry_backoff_ms` | 0-10000 | 1000 | `AgentDriverConfig` |
+| `run_command_timeout_sec` | 1-600 | 10 | `AgentToolContext` |
+| `run_command_max_timeout_sec` | 1-3600 且 ≥ 上一个 | 60 | `AgentToolContext` |
+
+- 链路：`llmconfig`（严格解析 + 区间单点进 `llm_limits`）→ `AgentModeConfig` →
+  `maxCallsPerRound` 进 `AgentOptions`、重试两参数经 `makeDriverConfig` 进
+  `AgentDriverConfig`、两个超时进 `AgentToolContext`。
+- **`max_calls_per_round` 拒绝 0**：0 在下游是「一轮不限量下发动作」的旧语义，对物理
+  机器人没有正当用法（与 `allow_shell` 同源的「能力只能命令行开、配置只能收紧」口径）。
+- **`max_retries: 0` 的语义修对了**：该字段是「含首次的尝试次数」，旧循环直接拿它当
+  上界——放宽到 0 会变成**一次都不发**并落到末尾的 `logic_error`（「不重试」反而
+  什么都不做）。现在驱动侧钳到 ≥1：0 = 只发一次不重试。
+- **退避单次封顶 60s**：缺省区间够不到，但放宽 `max_retries`/`retry_backoff_ms` 后
+  `backoff << attempt` 会长到小时级——对「重启一下网关就好」的抖动，等待比失败更糟。
+- **跨字段关系按生效值判**：只配 `run_command_max_timeout_sec` 而它低于缺省超时
+  （例如 5 < 10）会被拒绝加载——否则模型不传 `timeout_seconds` 时按缺省请求 10s 会
+  越过操作者声明的 5s 上限。`run_command` 的工具描述里那组「默认/最大」也改为读
+  生效值（原先写死「默认 10，最大 60」，配置一改就对模型说谎）。
+
+- 钉子用例：`llmconfig_runtime_fields_parse_and_reject`（合法值 + 10 组越界/类型不符 +
+  拼错仍按未知字段拒）、`agentconfig_runtime_fields_reach_config_and_driver`（合流与
+  驱动搬运点 + 未配置回缺省）、`agentconfig_run_command_timeout_cap_below_default_is_rejected`、
+  `agenttools_run_command_schema_reports_effective_timeouts`。反向验证：注入
+  `kMaxCallsPerRoundMin=0` / `maxRetries>0` 判定 / 关掉跨字段校验 / 描述写死四处破坏，
+  对应用例全部转红，已回滚。
+
+- 验收：C++ 484/0（`llmconfig_` 16、`agentconfig_` 17、`agenttools_` 40，其余作用域不变）。
+- 文档：`docs/agent.md`（字段表 + 已知限制）、`mybot.llm.json.example` 同步；
+  `docs/reference.md` 的配置文件一节只指向 agent.md 的字段表，无字段清单需改。
+
+### 2026-09-22 agent 重构阶段 A1 + A2（子进程骨架单点化 / 确认程序一致性补齐）
+
+> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 A1/A2（对应审计 F1/F2）。一处真缺陷修复 + 行为保持型重构。
+
+**F1（真缺陷，已修）**：`run_command`（`agent_subprocess.cpp`）与 `--agent-policy` 确认程序
+（`agentpolicy.cpp`）各写了一份「fork + exec + 超时 + 进程组终止」，且已漂移——有界回收、
+子进程 fd 吊销只落在 `run_command` 一侧。确认路径超时后打的是**无超时** `waitpid`
+（还被 `retryEintr` 包着，连 Ctrl-C 都打断不了），SIGKILL 未生效（D 态 / 权限）时
+**agent 会话永久挂死**。
+
+- **A1（骨架单点化）**：`agent_subprocess` 新增 `runChild(ChildSpec)`，差异全部经选项表达
+  （envp 清洗/继承、stdin payload 或 /dev/null、stdout 捕获截断或透传、超时/宽限、
+  fd 吊销、是否响应 REPL 中断）。`runShell` 与确认程序都改为薄封装；
+  `runShell` 侧行为逐字不变（存量用例零修改全绿），确认路径随之获得**有界回收**
+  （WNOHANG 轮询到 2s 宽限，超时放弃并响亮告警 pid/宽限/留僵尸后果）与 fd 吊销。
+- **A2（确认程序一致性的显式决策，不是顺手统一）**：确认程序的**环境保持继承缺省**
+  ——它是操作者自己写的可信程序，合法的审批/通知脚本可能依赖自有 `…_TOKEN` 类变量，
+  套用子进程密钥清洗会**静默砸掉**它们。钉子用例断言确认程序能看见 `BOT4CJ_LLM_KEY`；
+  决策理由同时写进 `agentpolicy.cpp` 注释与 [docs/agent.md](agent.md) 的策略钩子节。
+- **顺带修掉的真缺陷（EPIPE 待决信号）**：宿主往确认程序 stdin 写 payload 时对方已退出
+  不读（EPIPE），内核同时产生一条 SIGPIPE——`pthread_sigmask` 屏蔽只是让它**待决**，
+  解除掩码那一刻按默认处置**杀掉整个 agent 进程**（实测把整个测试进程以 rc=141 带走）。
+  修复：恢复掩码前用 `sigtimedwait` 零超时消费掉「自己制造的那条」，宿主原有的待决
+  SIGPIPE 不动。
+- 内部改名与文案：`execShellChild` → `execChild`（它已不是 shell 专用），`runShell` 罕见的
+  setup 失败文案带上 errno，`docs/testing.md` 的引用同步；不改审计 JSONL schema。
+
+- 钉子用例：`agenttools_reap_with_grace_collects_exited_child`（宽限内回收）、
+  `agenttools_reap_with_grace_returns_immediately_on_echild`（无子可收立即返回，不空等）、
+  `agentpolicy_confirm_timeout_returns_promptly`（超时后及时返回）、
+  `agentpolicy_confirm_env_is_inherited_for_trusted_program`、
+  `agentpolicy_confirm_does_not_inherit_parent_fds`、
+  `agentpolicy_confirm_survives_epipe_from_child_ignoring_stdin`。
+  反向验证：注入 `cleanEnv=true` / `revokeFds=false` / 忽略 ECHILD 三处破坏，对应用例
+  全部转红，已回滚。
+
+- 验收：C++ 480/0（`agenttools_` 39/0、`agentpolicy_` 11/0）。本轮改动不触 Lua 面；
+  `bash test/run_all.sh agent-all` 需要 LuaJIT，在无解释器的机器上只做 C++ 段验证。
+
 ### 2026-09-22 agent 重构阶段 B3（图片传输层降副本）
 
 > 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B3（对应 R4）。验收判据为 `VmHWM` 实测（`.tmp/memaudit/b3_measure.sh`，AG-19 方法；`.tmp` 不入库）。

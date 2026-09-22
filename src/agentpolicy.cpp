@@ -2,22 +2,9 @@
 
 #include "agentpolicy.hpp"
 
-#include <fcntl.h>
-#include <poll.h>
-#include <signal.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <time.h>
-#include <unistd.h>
-
-#include <cerrno>
-#include <chrono>
-#include <cstdio>
-#include <cstring>
-#include <fstream>
 #include <set>
-#include <utility>
 
+#include "agent_subprocess.hpp"
 #include "agentaudit.hpp"
 #include "jsonparse.hpp"
 #include "util.hpp"
@@ -47,91 +34,58 @@ struct ConfirmRun {
 	int termSig = 0;		/* 被信号终止时记录 */
 };
 
-/* 把 payload 写给 cmd 的 stdin（/bin/sh -c），在 timeoutSec 内等它退出。
- * 超时按进程组 SIGKILL（与 run_command 的 runShell 同一口径），并回收。 */
+/* 跑一次外部确认程序：payload 写它的 stdin（经 /bin/sh -c），在 timeoutSec 内
+ * 等它退出，超时整组 SIGKILL 并**有界**回收。
+ *
+ * 实现走 agent_subprocess 的统一骨架（runChild）：这条路径与 run_command 的
+ * runShell 曾各写一份 fork/exec/超时/终止，防线性差异（有界回收、子进程 fd
+ * 吊销）只落到了 runShell 一侧——旧实现在超时分支打的是无超时 waitpid（还被
+ * retryEintr 包着，连 Ctrl-C 都打断不了），kill 未生效时 agent 会话永久挂死
+ * （2026-09-22 审计 F1）。现在两处共用一个骨架，差异只经选项表达。
+ *
+ * 下面这些选项取值**是本路径的语义声明**，不要按「顺手统一」改写：
+ *   * cleanEnv=false：确认程序是操作者自己写的可信程序，合法的确认脚本完全
+ *     可能依赖自有 *_TOKEN 类环境变量，套用子进程环境清洗会**静默砸掉**它们。
+ *     这条决策有钉子用例（test_agentpolicy.cpp 断言它能看见 BOT4CJ_LLM_KEY）
+ *     与 docs/agent.md 的声明；要改先改那两处。
+ *   * captureOutput=false：确认程序直接面对操作者（终端交互/中文提示），
+ *     宿主不截它的输出。
+ *   * watchStop=false：确认程序何时退出由它自己决定，宿主只等它到超时——
+ *     Ctrl-C 不去打断确认（沿用原语义）。
+ *   * revokeFds=true：子进程不得继承宿主 ≥3 的句柄（HAL/驱动的器件句柄在
+ *     deactivate() 之后照样能 ioctl 拨硬件）。 */
 ConfirmRun runConfirmProgram(const std::string& cmd, const std::string& payload,
 		int timeoutSec) {
-	int inPipe[2] = {-1, -1};
-	if (pipe2(inPipe, O_CLOEXEC) != 0) {
-		return ConfirmRun{false, false, "创建 stdin 管道失败（errno=" + std::to_string(errno) + "）", -1, 0};
+	ChildSpec spec;
+	spec.cmd = cmd;
+	spec.cleanEnv = false;		/* 见上：操作者可信程序，保留其自有环境 */
+	spec.pipeStdin = true;
+	spec.stdinPayload = payload;
+	spec.captureOutput = false;	/* 输出直接进宿主终端 */
+	spec.timeoutSec = timeoutSec;
+	spec.graceMs = 2000;		/* 与 runShell 同款：回收有界 */
+	spec.revokeFds = true;		/* 与 runShell 同款：不留继承句柄 */
+	spec.watchStop = false;		/* 确认不响应 REPL 中断 */
+
+	ChildOutcome co;
+	try {
+		co = runChild(spec);
+	} catch (const std::exception& e) {
+		/* pipe/fork 失败：策略钩子的失败要变成「拒绝」而不是异常（派发点按
+		 * PolicyDecision 分流，对齐全仓 fail-closed 口径），成因原样带上。 */
+		ConfirmRun bad;
+		bad.failReason = e.what();
+		return bad;
 	}
-	pid_t pid = fork();
-	if (pid < 0) {
-		const int saved = errno;
-		::close(inPipe[0]);
-		::close(inPipe[1]);
-		return ConfirmRun{false, false, std::string("fork 失败: ") + std::strerror(saved), -1, 0};
-	}
-	if (pid == 0) {
-		/* 子进程：stdin 接管道读端（dup2 落到 fd 0，CLOEXEC 随之清除），
-		 * 独立进程组便于超时整组终止；exec 失败按约定退出码 127。 */
-		if (::dup2(inPipe[0], STDIN_FILENO) < 0) { _exit(127); }
-		::setpgid(0, 0);
-		::execl("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr));
-		_exit(127);
-	}
-	/* 与子进程竞争设置进程组，谁先成功效果一致（runShell 同款） */
-	::setpgid(pid, pid);
-	::close(inPipe[0]);
 
 	ConfirmRun out;
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
-
-	/* 写 payload：非阻塞 + poll 循环，防「确认程序不读 stdin + 参数巨大」把
-	 * 宿主管死。SIGPIPE 以 pthread_sigmask 局部屏蔽（不动进程级 disposition
-	 * ——宿主还有别的管道写者，改全局处置是越权）。 */
-	{
-		sigset_t oldMask{}, blockMask{};
-		sigemptyset(&blockMask);
-		sigaddset(&blockMask, SIGPIPE);
-		pthread_sigmask(SIG_BLOCK, &blockMask, &oldMask);
-		std::size_t written = 0;
-		fcntl(inPipe[1], F_SETFL, fcntl(inPipe[1], F_GETFL) | O_NONBLOCK);
-		while (written < payload.size()) {
-			ssize_t n = ::write(inPipe[1], payload.data() + written, payload.size() - written);
-			if (n > 0) { written += static_cast<std::size_t>(n); continue; }
-			if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-				if (std::chrono::steady_clock::now() >= deadline) { break; }
-				struct pollfd pfd = {inPipe[1], POLLOUT, 0};
-				(void)::poll(&pfd, 1, 50);
-				continue;
-			}
-			if (n < 0 && errno == EINTR) { continue; }
-			/* EPIPE 等：确认程序不等输入就退了，照常走等待分支拿退出码 */
-			break;
-		}
-		::close(inPipe[1]);
-		pthread_sigmask(SIG_SETMASK, &oldMask, nullptr);
-	}
-
-	/* 等退出：WNOHANG + 短睡轮询到 deadline */
-	int status = 0;
-	bool exited = false;
-	while (std::chrono::steady_clock::now() < deadline) {
-		pid_t w = retryEintr([&] { return ::waitpid(pid, &status, WNOHANG); });
-		if (w == pid) { exited = true; break; }
-		struct timespec ts = {0, 20 * 1000 * 1000};	/* 20ms */
-		nanosleep(&ts, nullptr);
-	}
-	if (!exited) {
-		/* 超时：整组 SIGKILL 并回收（进程组已 setpgid；万一没设置成功，
-		 * 再对裸 pid 补一枪，两发都允许失败） */
-		::kill(-pid, SIGKILL);
-		(void)::kill(pid, SIGKILL);
-		pid_t w = retryEintr([&] { return ::waitpid(pid, &status, 0); });
-		(void)w;
-		out.timedOut = true;
-		return out;
-	}
-	if (WIFEXITED(status)) {
-		out.ok = true;
-		out.exitCode = WEXITSTATUS(status);
-	} else if (WIFSIGNALED(status)) {
-		out.ok = true;
-		out.termSig = WTERMSIG(status);
-	} else {
-		out.failReason = "waitpid 返回未知的子进程状态";
-	}
+	if (co.timedOut) { out.timedOut = true; return out; }
+	if (co.normalExit) { out.ok = true; out.exitCode = co.exitCode; return out; }
+	if (co.termSig != 0) { out.ok = true; out.termSig = co.termSig; return out; }
+	/* 两条不可判定的成因共用一条如实报告：①宽限内没回收（kill 未生效，如 D 态
+	 * ——离线不可构造，故只钉告警文案）；②waitpid 给了非退出/非信号的状态
+	 * （实际不可达，但 dev 分支不宜静默吞掉）。 */
+	out.failReason = "确认程序退出状态无法判定（未回收或状态未知）";
 	return out;
 }
 

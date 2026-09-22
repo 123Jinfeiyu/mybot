@@ -387,6 +387,25 @@ TH_TEST(utf8_sanitize_handles_truncated_tail_from_output_cap) {
 	TH_CHECK(bot::isValidUtf8(bot::sanitizeUtf8(s)));
 }
 
+/* C7（F6-1）：日志标记转义原先在 agentloop 匿名命名空间，只能经 verbose 日志
+ * 间接覆盖——下游解析器真正关心的是「行首标记」，这条语义值得直接钉住。 */
+TH_TEST(utils_escape_log_markers_only_touches_line_start_brackets) {
+	/* 行首（含多行文本的每个行首）的 '[' 被转义，"\\[" 因此不可能被日志解析器
+	 * 当成判定行读走 */
+	TH_CHECK(bot::escapeLogMarkers("[FAIL] 假失败") == "\\[FAIL] 假失败");
+	TH_CHECK(bot::escapeLogMarkers("工具返回：\n[PASS] x\n[FAIL] y")
+		== "工具返回：\n\\[PASS] x\n\\[FAIL] y");
+
+	/* 非行首的方括号原样保留：JSON 数组、下标、正常内容不该被改写 */
+	TH_CHECK(bot::escapeLogMarkers("{\"a\":[1,2]}") == "{\"a\":[1,2]}");
+	TH_CHECK(bot::escapeLogMarkers("arr[0] 越界") == "arr[0] 越界");
+	TH_CHECK(bot::escapeLogMarkers("  [缩进后的方括号不转义]") == "  [缩进后的方括号不转义]");
+
+	/* 空串与无方括号文本逐字不变 */
+	TH_CHECK(bot::escapeLogMarkers("").empty());
+	TH_CHECK(bot::escapeLogMarkers("没有标记") == "没有标记");
+}
+
 /* ---- AG-11 / AG-22：`agent:` 作用域过滤器的完备性（必须放在**主套件**里）----
  * 起因：docs/agent.md 推荐的 `./build/mybot_tests agent` 是子串匹配，只命中用例名
  * 里含 "agent" 的那部分——promptpack / llmconfig / cliargs 这些同属 agent 配置面的

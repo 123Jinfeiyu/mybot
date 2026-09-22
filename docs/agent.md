@@ -110,7 +110,9 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`
   `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
-  `agent_policy` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`。
+  `agent_policy` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
+  `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
+  `run_command_max_timeout_sec`。
   全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
   （每项为文件或目录，语义同 `--prompt-file`），空数组按「未配置」。
   `allow_shell` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，写 `true`
@@ -122,6 +124,24 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   常量只能改源码缺省，B1（2026-09-22）起可由配置文件覆盖——现场调上下文预算不再需要重编。
   口径（C4）：预算记账**不含** system 提示词（另有 64 KiB 独立上限）与工具 schema，
   估重是线上字节的下界——请求体真实总量略高于预算，量级仍远低于常见网关限额。
+  另有五个**运行期数值**（B4，2026-09-22 起可由配置文件覆盖，同样只有配置文件这一层）：
+
+  | 字段 | 区间 | 含义与缺省 |
+  | --- | --- | --- |
+  | `max_calls_per_round` | 1-1024（**拒绝 0**） | 单轮向物理机器人下发动作数的上限，缺省 16。`0` 在下游是「不限」的旧语义，对机器人没有正当用法，配置文件不得放宽（与 `allow_shell` 同源口径） |
+  | `max_retries` | 0-6 | 模型调用失败（网络类）的**尝试次数（含首次）**，缺省 3。`0` = 只发一次不重试——离线/内网直连想立刻失败时用 |
+  | `retry_backoff_ms` | 0-10000 | 重试退避基础时长（指数增长），缺省 1000；单次退避另有 60s 上限，防止放宽区间后算出小时级等待 |
+  | `run_command_timeout_sec` | 1-600 | `run_command` 的缺省超时，缺省 10 |
+  | `run_command_max_timeout_sec` | 1-3600，且 **≥ 上一个** | 模型经 `timeout_seconds` 能请求的上限，缺省 60 |
+
+  后两者按**生效值**校验「上限 ≥ 缺省」：只配上限而它低于缺省（例如只写
+  `run_command_max_timeout_sec: 5`）会被拒绝加载——否则模型不传 `timeout_seconds`
+  时按缺省请求 10s 会越过操作者声明的 5s 上限。这两个数字也会同步进 `run_command`
+  的工具描述，模型看到的「默认/最大」始终是生效值。
+
+  重试动作本身写**日志流**（stderr，含第几次尝试、退避时长与驱动给的成因）：
+  `--verbose` 的工具日志、REPL 日志与它是同一条流；**stdout 只放模型回答**
+  （`--task` 的输出不能被日志污染）。
 - **严格解析**：不是合法 JSON、字段类型/范围不符、**出现未知字段**一律拒绝并退出 2。
   拼错一个键（如 `apikey`）而静默走缺省，会让人以为配置生效了——与「未知 `--key` 退出 2」同一口径。
 - **密钥可以放在别处**：`api_key_file` 指向一个只存密钥的文件（末尾换行会自动剥掉）。
@@ -398,6 +418,12 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 - **它不是安全边界**：确认程序与宿主同权限，能读宿主内存的攻击者同样能绕过它；
   真正的隔离仍是专用用户 / 容器 / 网络命名空间（见下节）。策略钩子提供的是
   「不用自己造轮子」的人在环入口，不是对抗边界。
+- **确认程序的运行环境**（显式决策，别按 `run_command` 的口径「顺手统一」）：
+  **环境不清洗**——确认程序是操作者自己写的可信程序，合法的审批/通知脚本可能依赖自有
+  `…_TOKEN` 类变量，套用子进程的密钥清洗会**静默砸掉**它们；这条有钉子用例
+  （`test_agentpolicy.cpp` 断言确认程序能看见 `BOT4CJ_LLM_KEY`）。
+  同时**继承句柄吊销**——宿主 ≥3 的 fd 不进确认程序（HAL/驱动的器件句柄不渗给外部程序）。
+  输出也不截断（直接进宿主终端，人在环的提示要看得见）。
 - 策略文件与配置文件同一解析口径：严格 JSON、未知字段拒绝、类型/区间不符退出 2；
   `require_confirm` 与 `confirm_command` 必须成对出现（只给一半视为配置错误，上电前报错）。
 - 配置错误（路径打不开、JSON 不合法、字段非法）在 `buildAgentConfig` 阶段失败——
@@ -529,6 +555,12 @@ bash test/run_all.sh agent-all
   任务内图片 `max_task_image_bytes`）现可由**配置文件**覆盖（B1，2026-09-22，见上文
   「配置文件」字段表；缺省分别是 4 / 2 / 4 MiB）。`capture_image` 的单图 base64 硬上限 2 MiB
   仍在 `src/agenttools.hpp`（编译期常量）。需要调优内存/上下文时先确认它们是不是你要找的那个数。
+- 五个**运行期数值**（单轮调用数 `max_calls_per_round`、重试 `max_retries` / `retry_backoff_ms`、
+  `run_command` 的 `run_command_timeout_sec` / `run_command_max_timeout_sec`）同样只在
+  **配置文件**里可调（B4，2026-09-22）：它们刻意为**没有命令行选项**（选项面已 20+，
+  且都是「一次定好、长期不变」的部署参数）；区间与缺省见上文「配置文件」字段表。
+  `run_command` 的**工具描述**里那组「默认/最大」读的是生效值，配置改过之后模型看到的
+  仍是准的（系统提示词那一段只讲用法，不带这些数字）。
 - REPL 历史按字节预算自动裁剪（缺省 4 MiB）：超过预算时按「任务块」整块裁掉最老的
   任务（含其中的 base64 图片），system 提示词与最新一个任务无条件保留——更早的任务
   上下文因此不再可见。单块超预算不封顶（正在进行的对话不能裁空），所以单张图另有

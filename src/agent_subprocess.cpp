@@ -160,7 +160,7 @@ std::string reapGiveUpWarning(int pid, int graceMs) {
  * （D 态挂死的命令）就会在 agent 生命周期内累积。项目口径是「宁告警不静默」，
  * 且这条路径的另一半（RunResult::hardStopped）已进模型可见的回执，这里再补一行
  * stderr 让操作者也看得见 pid 与成因。 */
-static bool reapWithGrace(pid_t pid, int& status, int graceMs = 2000) {
+bool reapWithGrace(pid_t pid, int& status, int graceMs) {
 	const auto deadline = std::chrono::steady_clock::now()
 		+ std::chrono::milliseconds(graceMs);
 	for (;;) {
@@ -274,28 +274,40 @@ static void revokeInheritedFds(int traceFd) {
 	for (long fd = 3; fd < max; ++fd) { ::close(static_cast<int>(fd)); }
 }
 
-/* 子进程侧：独立进程组 + stdin 接 /dev/null + stdout/stderr 接管道 + 全量吊销
- * 继承 fd。**本函数不返回**：成功即 execle 成 /bin/sh，任何失败 _exit(127)。
- * fd 收尾顺序有讲究：先把 0/1/2 指向目标，再关掉继承来的四个管道端，
- * 最后才 revokeInheritedFds——它会把 ≥3 的全部句柄关掉，早跑会把 0/1/2
- * 之外刚 dup 好的东西也一起关掉。 */
-[[noreturn]] void execShellChild(const std::string& cmd, int outR, int outW, int errR, int errW,
-		std::vector<char*>& envp, int traceFd) {
+/* 子进程侧：独立进程组 + 按 spec 摆好 0/1/2 + 按 spec 吊销继承 fd。
+ * **本函数不返回**：成功即 execle 成 /bin/sh，任何失败 _exit(127)。
+ * 约束与既有的两道防线一致——fork 之后 **不分配堆内存**（宿主有守护线程会并发
+ * fork，子进程里 malloc 可能撞上父进程持有且永不会释放的锁），只用已就绪的
+ * 参数与栈上缓冲。
+ * fd 收尾顺序有讲究：先把 0/1/2 指向目标，再关掉继承来的管道端，最后才
+ * revokeInheritedFds——它会把 ≥3 的全部句柄打上/直接关闭，早跑会把 0/1/2
+ * 之外刚 dup 好的东西也一起带走。 */
+[[noreturn]] void execChild(const ChildSpec& spec, int stdinR, int outR, int outW, int errR,
+		int errW, char* const* envp) {
 	setpgid(0, 0);	/* 独立进程组：超时/中断可整组终止（含孙进程） */
-	/* fix-plan 3-1：stdin 重定向到 /dev/null——子命令不再与主进程（agent REPL）
-	 * 抢终端输入；打开失败按 fail-closed 直接放弃执行（127）。 */
-	int devnull = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
-	if (devnull < 0) { _exit(127); }
-	dup2(devnull, STDIN_FILENO);
-	if (devnull != STDIN_FILENO) { close(devnull); }
-	dup2(outW, STDOUT_FILENO);
-	dup2(errW, STDERR_FILENO);
-	close(outR);
-	close(outW);
-	close(errR);
-	close(errW);
-	revokeInheritedFds(traceFd);	/* 必须在 dup2 之后：0/1/2 已指向管道与 /dev/null */
-	execle("/bin/sh", "sh", "-c", cmd.c_str(), static_cast<char*>(nullptr), envp.data());
+	if (spec.pipeStdin) {
+		if (::dup2(stdinR, STDIN_FILENO) < 0) { _exit(127); }
+		/* 原读端已 dup 到 fd 0；显式关掉，不等 exec 时的 O_CLOEXEC——关掉之后
+		 * 父进程侧写端能在子进程退出时更早看到 EPIPE。 */
+		if (stdinR != STDIN_FILENO) { ::close(stdinR); }
+	} else {
+		/* fix-plan 3-1：stdin 重定向到 /dev/null——子命令不再与主进程（agent REPL）
+		 * 抢终端输入；打开失败按 fail-closed 直接放弃执行（127）。 */
+		int devnull = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+		if (devnull < 0) { _exit(127); }
+		::dup2(devnull, STDIN_FILENO);
+		if (devnull != STDIN_FILENO) { ::close(devnull); }
+	}
+	if (spec.captureOutput) {
+		::dup2(outW, STDOUT_FILENO);
+		::dup2(errW, STDERR_FILENO);
+		::close(outR);
+		::close(outW);
+		::close(errR);
+		::close(errW);
+	}
+	if (spec.revokeFds) { revokeInheritedFds(spec.traceFd); }	/* 必须在 dup2 之后 */
+	::execle("/bin/sh", "sh", "-c", spec.cmd.c_str(), static_cast<char*>(nullptr), envp);
 	_exit(127);
 }
 
@@ -318,7 +330,7 @@ bool drainStream(int fd, std::string& sink, bool& truncated) {
  * POLLERR/POLLNVAL 必须纳入就绪判据：这两个位只报错误、不置 POLLIN/POLLHUP，
  * 原实现只认后两者 → 出错 fd 既不读也不关，每轮重新就绪，一直空转到硬上限
  * 才退出（白耗 3s 且不报告真实成因）。 */
-void pumpReadyStreams(const struct pollfd (&fds)[2], int outFd, RunResult& r,
+void pumpReadyStreams(const struct pollfd (&fds)[2], int outFd, ChildOutcome& r,
 		bool& outEof, bool& errEof) {
 	for (const auto& fd : fds) {
 		if (fd.fd < 0 || !(fd.revents & (POLLIN | POLLHUP | POLLERR | POLLNVAL))) { continue; }
@@ -335,115 +347,200 @@ void pumpReadyStreams(const struct pollfd (&fds)[2], int outFd, RunResult& r,
 	}
 }
 
-/* 收尾：关掉未 EOF 的读端、回收子进程、折算退出码。
+/* 超时之后再给 3s 硬上限（仅在捕获模式下可达：管道迟迟不 EOF 时兜底）。 */
+constexpr int kHardStopGraceSec = 3;
+
+/* 整组 SIGKILL + 裸 pid 补枪。返回值＝「本次终止是否已生效」：送达 0 即成功；
+ * ESRCH 表示进程组已不存在（子进程已自行退出），等价于成功；EPERM 等失败返回
+ * false，由调用方下一轮重试（旧实现只尝试一次且不查返回值，一旦 kill 未生效
+ * 就靠无超时 waitpid 无限等待挂死）。裸 pid 补枪覆盖「子进程还没 setpgid，
+ * kill(-pid) 报 ESRCH 但进程仍在」的窗口——确认程序路径原本就有，现为单点。 */
+bool killGroup(pid_t pid) {
+	const int rc = ::kill(-pid, SIGKILL);
+	const int savedErrno = errno;
+	(void)::kill(pid, SIGKILL);
+	return rc == 0 || savedErrno == ESRCH;
+}
+
+/* 把 payload 写给子进程 stdin：非阻塞 + poll 循环，防「子进程不读 stdin + 参数
+ * 巨大」把宿主管死。SIGPIPE 以 pthread_sigmask 局部屏蔽（不动进程级 disposition
+ * ——宿主还有别的管道写者，改全局处置是越权）。
+ * EPIPE 等错误直接放弃写入并关掉写端：子进程不等输入就先退了，收尾分支照常
+ * 拿退出码（这条路径原属确认程序，2026-09-22 审计 C7 补用例钉住）。
+ *
+ * 屏蔽**不等于**没有信号：写撞 EPIPE 时内核同时产生一条 SIGPIPE，屏蔽期间它
+ * 只是待决，解除屏蔽的那一刻就按默认处置**杀掉整个 agent 进程**。这是补 C7
+ * 用例时当场抓到的：确认程序不读 stdin + payload 超过管道容量 → 测试进程
+ * 收 SIGPIPE 退出（rc=141），而这条路径此前没有任何用例。故恢复掩码前先把
+ * **自己制造的**那条待决信号吃掉（sigtimedwait 零超时）；判据用「屏蔽前是否
+ * 已有待决 SIGPIPE」——别人的信号不动。 */
+void writeStdinPayload(int fd, const std::string& payload,
+		std::chrono::steady_clock::time_point deadline) {
+	sigset_t oldMask{}, blockMask{}, preexisting{};
+	sigemptyset(&blockMask);
+	sigaddset(&blockMask, SIGPIPE);
+	::sigpending(&preexisting);
+	const bool hadPending = (::sigismember(&preexisting, SIGPIPE) == 1);
+	pthread_sigmask(SIG_BLOCK, &blockMask, &oldMask);
+	fcntl(fd, F_SETFL, fcntl(fd, F_GETFL) | O_NONBLOCK);
+	std::size_t written = 0;
+	while (written < payload.size()) {
+		ssize_t n = ::write(fd, payload.data() + written, payload.size() - written);
+		if (n > 0) { written += static_cast<std::size_t>(n); continue; }
+		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+			if (std::chrono::steady_clock::now() >= deadline) { break; }
+			struct pollfd pfd = {fd, POLLOUT, 0};
+			(void)::poll(&pfd, 1, 50);
+			continue;
+		}
+		if (n < 0 && errno == EINTR) { continue; }
+		break;
+	}
+	::close(fd);
+	/* 吃掉自己制造的那条待决 SIGPIPE（见函数注释）：只在「屏蔽前本无待决」
+	 * 时才动，免得顺手吞掉宿主别的写者正在等的那条。 */
+	if (!hadPending) {
+		sigset_t pending{};
+		if (::sigpending(&pending) == 0 && ::sigismember(&pending, SIGPIPE) == 1) {
+			const struct timespec zero = {0, 0};
+			(void)::sigtimedwait(&blockMask, nullptr, &zero);
+		}
+	}
+	pthread_sigmask(SIG_SETMASK, &oldMask, nullptr);
+}
+
+/* 收尾：关掉未 EOF 的读端、有界回收子进程、折算退出状态、UTF-8 消毒。
  * 回收绝不无超时阻塞：kill 未生效（D 态 / 权限）时无超时的 waitpid 会把 agent
- * 会话挂死。轮询到固定宽限仍未回收即放弃（交由 init 收尸），exitCode 保持 -1。
+ * 会话挂死——确认程序路径曾留下这一条（2026-09-22 审计 F1）。轮询到宽限仍未
+ * 回收即放弃（交由 init 收尸）并按 reapGiveUpWarning 响亮告警，exitCode 保持 -1。
  * EINTR 重试见 reapWithGrace。 */
-void finalizeShellRun(pid_t pid, int outFd, int errFd, bool outEof, bool errEof, bool exited,
-		int status, RunResult& r) {
+void finalizeChild(pid_t pid, const ChildSpec& spec, int outFd, int errFd, bool outEof,
+		bool errEof, bool exited, int status, ChildOutcome& r) {
 	if (!outEof) { close(outFd); }
 	if (!errEof) { close(errFd); }
-	if (!exited) { exited = reapWithGrace(pid, status); }
-	r.exitCode = (exited && WIFEXITED(status)) ? WEXITSTATUS(status) : -1;
+	if (!exited) { exited = reapWithGrace(pid, status, spec.graceMs); }
+	r.reaped = exited;
+	if (exited && WIFEXITED(status)) {
+		r.normalExit = true;
+		r.exitCode = WEXITSTATUS(status);
+	} else if (exited && WIFSIGNALED(status)) {
+		r.termSig = WTERMSIG(status);
+	}
 
 	/* UTF-8 消毒（2026-09-21 审计 AG-1）**必须在收尾做，不能边读边做**：
 	 * 读循环是「可读即读」的增量排水，一次 read 可能把多字节序列从中间切断，
 	 * 逐块消毒会把一个合法字符拆成两个 U+FFFD。此处两个流都已终态，序列完整；
 	 * 截断发生在 kMaxCommandOutput 边界上时留下的半截序列也会被替换掉——
 	 * 那正是我们要的行为（宁替换一个字符，不让网关 400 掉整个会话）。
-	 * 消毒点放在这里而不是 formatRunResult：后者只管排版，且 RunResult 的
-	 * out/err 可能被别的调用方直接读走。 */
+	 * 消毒点放在这里而不是 formatRunResult：后者只管排版，且结果里的 out/err
+	 * 可能被别的调用方直接读走。非捕获模式下两串为空，是一次空转。 */
 	r.out = sanitizeUtf8(r.out);
 	r.err = sanitizeUtf8(r.err);
 }
 
-RunResult runShell(const std::string& cmd, int timeoutSec) {
-	int po[2] = {-1, -1};
-	int pe[2] = {-1, -1};
+/* 骨架单点：pipe → fork → setpgid →（写 stdin）→ 轮询 → 超时整组终止 →
+ * 有界回收。两个调用点（run_command / 策略确认程序）的差异全部经 ChildSpec
+ * 显式声明，这里不再有「只有一侧有」的防线。 */
+ChildOutcome runChild(const ChildSpec& spec) {
+	const bool capture = spec.captureOutput;
+	int po[2] = {-1, -1};	/* stdout 管道 */
+	int pe[2] = {-1, -1};	/* stderr 管道 */
+	int pi[2] = {-1, -1};	/* stdin 管道（仅 pipeStdin） */
+	/* 关一个 fd 并置 -1：所有失败路径都走它，重复调用安全（不会误关刚被复用的编号）。 */
+	auto closeFd = [](int& fd) {
+		if (fd >= 0) { ::close(fd); fd = -1; }
+	};
+	auto closeAll = [&] {
+		closeFd(po[0]); closeFd(po[1]);
+		closeFd(pe[0]); closeFd(pe[1]);
+		closeFd(pi[0]); closeFd(pi[1]);
+	};
+	auto pipeFailed = [] {
+		const int saved = errno;
+		return std::runtime_error("pipe 失败（errno=" + std::to_string(saved) + "）");
+	};
 	/* O_CLOEXEC 用 pipe2 原子设置（无 pipe→fork 之间的窗口）：本进程有守护线程
 	 * 会并发 fork/exec，未标 CLOEXEC 的读端会被无关子进程继承，写端迟迟不 EOF
 	 * ——只能靠硬上限兜底（且被继承的 fd 本身即泄漏）。 */
-	if (pipe2(po, O_CLOEXEC) != 0) { throw std::runtime_error("pipe 失败"); }
-	if (pipe2(pe, O_CLOEXEC) != 0) {
-		close(po[0]);
-		close(po[1]);
-		throw std::runtime_error("pipe 失败");
+	if (capture) {
+		if (pipe2(po, O_CLOEXEC) != 0) { throw pipeFailed(); }
+		if (pipe2(pe, O_CLOEXEC) != 0) { closeAll(); throw pipeFailed(); }
 	}
-	std::vector<char*> envp = buildCleanEnvp();	/* fork 前构建，子进程直接继承 */
-	/* 子进程路径自报的目标 fd（AG-11）：只在测试里经 BOT4CJ_TRACE_FDS 指定，
-	 * 生产路径下这个变量不存在，traceFd 保持 -1、探针全程零开销。
-	 * 注意顺序：先开 trace fd 再 markAllFdsCloexec——后者会给「已存在的 ≥3 句柄」
-	 * 打 FD_CLOEXEC，而 trace fd 必须活到 exec 之前才能被子进程写（子进程侧
-	 * revokeInheritedFds 会关掉它，所以报告发生在关闭之前）。 */
-	int traceFd = -1;
-	if (auto tracePath = getEnvVar("BOT4CJ_TRACE_FDS"); tracePath && !tracePath->empty()) {
-		/* O_CLOEXEC 只影响 exec 之后（探针本来就不需要它活过 exec），fork 出来的
-		 * 子进程仍然持有该 fd —— 正是探针要用的窗口。O_APPEND 让多次 run_command
-		 * 的记录按追加写入；单条报告是一次 write(2)，不会与其他写者交错。 */
-		traceFd = ::open(tracePath->c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+	if (spec.pipeStdin && pipe2(pi, O_CLOEXEC) != 0) { closeAll(); throw pipeFailed(); }
+	/* 环境在 fork 前备好（buildCleanEnvp 会分配堆内存，子进程里不能碰）：
+	 * cleanEnv 是模型可驱动命令的口径，inherit 原样传 environ（确认程序口径）。 */
+	std::vector<char*> envp;
+	char* const* envpPtr = ::environ;
+	if (spec.cleanEnv) {
+		envp = buildCleanEnvp();
+		envpPtr = envp.data();
 	}
-	markAllFdsCloexec();	/* fork 前父进程侧全量吊销（见函数注释） */
+	if (spec.revokeFds) { markAllFdsCloexec(); }	/* fork 前父进程侧全量吊销（见函数注释） */
 	pid_t pid = fork();
 	if (pid < 0) {
-		close(po[0]);
-		close(po[1]);
-		close(pe[0]);
-		close(pe[1]);
-		if (traceFd >= 0) { close(traceFd); }
-		throw std::runtime_error("fork 失败");
+		const int saved = errno;
+		closeAll();
+		throw std::runtime_error(std::string("fork 失败: ") + std::strerror(saved));
 	}
-	if (pid == 0) { execShellChild(cmd, po[0], po[1], pe[0], pe[1], envp, traceFd); }
+	if (pid == 0) { execChild(spec, pi[0], po[0], po[1], pe[0], pe[1], envpPtr); }
 	setpgid(pid, pid);	/* 与子进程竞争设置，谁先成功效果一致 */
-	close(po[1]);
-	close(pe[1]);
-	/* fix-plan 3-1：fcntl 失败即 fatal（对齐 SO_RCVTIMEO 在 actionsource 的
-	 * fail-closed 口径）——O_NONBLOCK 设置失败会让下方 read 循环在无数据时
-	 * 阻塞挂死整个 agent 会话，绝不能静默跳过。 */
-	if (fcntl(po[0], F_SETFL, O_NONBLOCK) != 0 || fcntl(pe[0], F_SETFL, O_NONBLOCK) != 0) {
-		const int savedErrno = errno;
-		close(po[0]);
-		close(pe[0]);
-		/* 子进程已 fork 且在跑：抛错前必须整组终止并回收，否则留下孤儿/僵尸，
-		 * 且它仍持着管道写端（阶段 4.2 补）。宽限取短：本条路径本身已是
-		 * 「参数/资源异常」，不该再让调用方多等。 */
-		::kill(-pid, SIGKILL);
-		int reaped = 0;
-		(void)reapWithGrace(pid, reaped, 200);
-		errno = savedErrno;
-		if (traceFd >= 0) { close(traceFd); }
-		throw std::runtime_error(std::string("fcntl 失败: ") + std::strerror(errno));
+	closeFd(po[1]);
+	closeFd(pe[1]);
+	closeFd(pi[0]);
+	if (capture) {
+		/* fix-plan 3-1：fcntl 失败即 fatal（对齐 SO_RCVTIMEO 在 actionsource 的
+		 * fail-closed 口径）——O_NONBLOCK 设置失败会让下方 read 循环在无数据时
+		 * 阻塞挂死整个 agent 会话，绝不能静默跳过。 */
+		if (fcntl(po[0], F_SETFL, O_NONBLOCK) != 0 || fcntl(pe[0], F_SETFL, O_NONBLOCK) != 0) {
+			const int savedErrno = errno;
+			closeAll();
+			/* 子进程已 fork 且在跑：抛错前必须整组终止并回收，否则留下孤儿/僵尸，
+			 * 且它仍持着管道写端（阶段 4.2 补）。宽限取短：本条路径本身已是
+			 * 「参数/资源异常」，不该再让调用方多等。 */
+			(void)killGroup(pid);
+			int reaped = 0;
+			(void)reapWithGrace(pid, reaped, 200);
+			throw std::runtime_error(std::string("fcntl 失败: ") + std::strerror(savedErrno));
+		}
 	}
 
-	RunResult r;
-	bool exited = false, outEof = false, errEof = false, killed = false;
+	ChildOutcome r;
 	int status = 0;
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(timeoutSec);
-	auto hardDeadline = deadline + std::chrono::seconds(3);
+	bool exited = false, killed = false;
+	bool outEof = !capture, errEof = !capture;	/* 非捕获模式没有流要等 */
+	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(spec.timeoutSec);
+	if (spec.pipeStdin) { writeStdinPayload(pi[1], spec.stdinPayload, deadline); }
+	auto hardDeadline = deadline + std::chrono::seconds(kHardStopGraceSec);
 
 	while (!(exited && outEof && errEof)) {
-		struct pollfd fds[2] = {
-			{outEof ? -1 : po[0], POLLIN, 0},
-			{errEof ? -1 : pe[0], POLLIN, 0},
-		};
-		if (poll(fds, 2, 100) > 0) {
-			pumpReadyStreams(fds, po[0], r, outEof, errEof);
+		if (capture) {
+			struct pollfd fds[2] = {
+				{outEof ? -1 : po[0], POLLIN, 0},
+				{errEof ? -1 : pe[0], POLLIN, 0},
+			};
+			if (poll(fds, 2, 100) > 0) {
+				pumpReadyStreams(fds, po[0], r, outEof, errEof);
+			}
+		} else {
+			/* 非捕获模式（确认程序）没有管道要排空：短睡等退出（沿用原 20ms 节拍） */
+			::poll(nullptr, 0, 20);
 		}
 		if (!exited) {
 			pid_t w = bot::retryEintr([&] { return ::waitpid(pid, &status, WNOHANG); });
 			if (w == pid) { exited = true; }
 		}
-		auto now = std::chrono::steady_clock::now();
-		bool stop = stopRequested();
+		const auto now = std::chrono::steady_clock::now();
+		const bool stop = spec.watchStop && stopRequested();
 		if (!killed && (now >= deadline || stop)) {
 			/* 成因只在首次越限时记录：此后 now 会越过 deadline，若每轮重算会把
 			 * 「先收到停止信号」误翻成 timedOut。 */
 			r.timedOut = now >= deadline;
 			r.interrupted = stop && now < deadline;
-			/* 整组 SIGKILL。失败（EPERM 等）不置 killed、下轮重试——原实现只尝试
-			 * 一次且不查返回值，一旦 kill 未生效就靠下方 waitpid 无限等待挂死。
-			 * ESRCH 表示进程组已不存在（已自行退出），等价于终止成功。 */
-			if (kill(-pid, SIGKILL) == 0 || errno == ESRCH) { killed = true; }
+			if (killGroup(pid)) { killed = true; }	/* 失败下轮重试 */
 		}
+		/* 非捕获模式没有管道可泵：超时即进收尾，交给 reapWithGrace 做有界回收
+		 * ——F1 的修复点（旧实现在这条分支打的是无超时 waitpid）。 */
+		if (!capture && now >= deadline) { break; }
 		/* 命令自身忽略 SIGKILL 也不可能，但管道可能迟迟不 EOF（子进程卡在 D 态、
 		 * 或 kill 因权限失败）：硬上限兜底，不让 agent 会话卡在一个 pid 上。
 		 * 必须留下标记——旧实现直接 break，回执看起来像「正常结束但退出码 -1」，
@@ -454,8 +551,53 @@ RunResult runShell(const std::string& cmd, int timeoutSec) {
 		}
 	}
 
-	finalizeShellRun(pid, po[0], pe[0], outEof, errEof, exited, status, r);
-	if (traceFd >= 0) { close(traceFd); }
+	finalizeChild(pid, spec, po[0], pe[0], outEof, errEof, exited, status, r);
+	return r;
+}
+
+RunResult runShell(const std::string& cmd, int timeoutSec) {
+	/* 子进程路径自报的目标 fd（AG-11）：只在测试里经 BOT4CJ_TRACE_FDS 指定，
+	 * 生产路径下这个变量不存在，traceFd 保持 -1、探针全程零开销。
+	 * 注意顺序：先开 trace fd 再进 runChild——后者 fork 前会调 markAllFdsCloexec
+	 * 给「已存在的 ≥3 句柄」打 FD_CLOEXEC，而 trace fd 必须活到 exec 之前才能被
+	 * 子进程写（子进程侧 revokeInheritedFds 会关掉它，所以报告发生在关闭之前）。
+	 * O_CLOEXEC 只影响 exec 之后（探针本就不需要活过 exec）；O_APPEND 让多次
+	 * run_command 的记录按追加写入，单条报告是一次 write(2)，不会与其他写者交错。
+	 * fd 归本函数持有（runChild 不关它），异常路径也由 guard 兜住。 */
+	int traceFd = -1;
+	if (auto tracePath = getEnvVar("BOT4CJ_TRACE_FDS"); tracePath && !tracePath->empty()) {
+		traceFd = ::open(tracePath->c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+	}
+	struct TraceFdGuard {
+		int fd;
+		~TraceFdGuard() {
+			if (fd >= 0) { ::close(fd); }
+		}
+	} traceGuard{traceFd};
+
+	/* 选项全部取 runShell 的现状值（run_command 侧行为不变）；与确认程序不同的
+	 * 那几项在这里一眼可见——这正是抽骨架要买到的东西。 */
+	ChildSpec spec;
+	spec.cmd = cmd;
+	spec.cleanEnv = true;		/* 模型可驱动的命令必须清洗环境 */
+	spec.pipeStdin = false;		/* stdin → /dev/null（fix-plan 3-1） */
+	spec.captureOutput = true;	/* 截断 + UTF-8 消毒 */
+	spec.timeoutSec = timeoutSec;
+	spec.graceMs = 2000;		/* 回收宽限（有界：绝不无超时阻塞） */
+	spec.revokeFds = true;		/* 父侧 + 子侧 fd 吊销 */
+	spec.watchStop = true;		/* REPL 中断 → 整组终止 */
+	spec.traceFd = traceFd;
+
+	const ChildOutcome co = runChild(spec);
+	RunResult r;
+	r.exitCode = co.exitCode;
+	r.timedOut = co.timedOut;
+	r.interrupted = co.interrupted;
+	r.hardStopped = co.hardStopped;
+	r.outTruncated = co.outTruncated;
+	r.errTruncated = co.errTruncated;
+	r.out = co.out;
+	r.err = co.err;
 	return r;
 }
 

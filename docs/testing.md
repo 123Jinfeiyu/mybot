@@ -27,7 +27,7 @@
   e2e/TCP/Lua 链路不计入；要计入请设 `COV_WITH_GATE=1`。实测差距为零不是因为 e2e 没价值，
   而是因为以前 `mybot` **根本没被插桩**（脚本只构建 `mybot_tests`）。现在两个 target 都构建。
 - **fork/exec 子侧代码恒为 0%，且这不是「没测」而是「测了测不到」**：gcov 计数在进程退出时
-  落盘，而 `agent_subprocess.cpp` 的 `execShellChild` / `revokeInheritedFds` 永远以 `execve`
+  落盘，而 `agent_subprocess.cpp` 的 `execChild` / `revokeInheritedFds` 永远以 `execve`
   结束——exec 用新映像的计数页覆盖当前进程，子侧执行记录不可能被写出。实测这两个函数
   `0% blocks executed`，而相关测试全部通过。
   这个盲区不是无关紧要的一角：AG-3（`CLOSE_RANGE_CLOEXEC` 标志写成 `1U`、快速路径从未执行、

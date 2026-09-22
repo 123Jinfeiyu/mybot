@@ -58,7 +58,11 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 		+ "`）提供；接入点、密钥与模型来自配置文件或命令行。\n\n";
 
 	p += "## 机器人结构（接线图）\n";
-	std::string sql = structureScriptHead(cfg.structurePath, 16u << 10);
+	/* 配置组装期的体积预检已经读过这两段（C6）：有成品就用它，没有（离线单测
+	 * 手搓配置、以及不走 buildAgentConfig 的调用方）才实时读——两条路径的读法
+	 * 与消毒完全相同（同一函数），差别只在「什么时候读」。 */
+	std::string sql = cfg.structureHead ? *cfg.structureHead
+			: structureScriptHead(cfg.structurePath, 16u << 10);
 	nSql = sql.size();
 	p += sql.empty() ? std::string("(结构脚本不可读)\n")
 			: quoteUntrusted("结构脚本 " + cfg.structurePath + " 摘录：\n", sql);
@@ -69,7 +73,8 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 	p += quoteUntrusted("硬件变量清单：\n", hw);
 
 	p += "## 可用动作脚本（目录 " + cfg.scriptsDir + "）\n";
-	std::string scripts = describeActionScripts(cfg.scriptsDir);
+	std::string scripts = cfg.scriptsList ? *cfg.scriptsList
+			: describeActionScripts(cfg.scriptsDir);
 	nScripts = scripts.size();
 	p += quoteUntrusted("动作脚本清单（相对路径 + 首行注释）：\n", scripts);
 

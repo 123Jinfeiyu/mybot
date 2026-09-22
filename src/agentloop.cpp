@@ -29,23 +29,6 @@ std::string indentLines(const std::string& s, std::size_t n) {
 	return out;
 }
 
-/* 转义日志标记（2026-09-22 安全改进）：防止工具输出含 [FAIL] 等关键字时
- * 干扰日志解析器。只转义行首的方括号标记，保留其他位置的方括号不变。 */
-std::string escapeLogMarkers(const std::string& s) {
-	std::string out;
-	bool atLineStart = true;
-	for (std::size_t i = 0; i < s.size(); ++i) {
-		char c = s[i];
-		if (atLineStart && c == '[') {
-			out += "\\[";  /* 转义行首方括号 */
-		} else {
-			out += c;
-		}
-		atLineStart = (c == '\n');
-	}
-	return out;
-}
-
 } // namespace
 
 AgentSession::AgentSession(ChatTransport& transport, const AgentToolRegistry& tools,
@@ -145,7 +128,7 @@ std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
 	budget_.admit(text, image);	/* 超限时 text 已被替换为降级说明、image 清空 */
 
 	if (opts_.verbose) {
-		/* 2026-09-22: 转义工具输出中的日志标记，防止干扰日志解析 */
+		/* 转义工具输出中的日志标记，防止干扰日志解析（util.hpp 单点，C7） */
 		std::string shown = escapeLogMarkers(text);
 		if (!image.empty()) {
 			shown += "\n[返回图片 " + std::to_string(image.size())
@@ -211,7 +194,10 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 			+ " 条）只执行了前 " + std::to_string(calls.size())
 			+ " 条；其余 " + std::to_string(excess)
 			+ " 条未被派发，请基于已执行的结果决定下一步";
-		tool.toolCallId = calls.empty() ? std::string("call_capped") : calls.back().id;
+		/* calls 必然非空：excess > 0 只在 maxCallsPerRound > 0 分支产生，
+		 * 那里已把 calls 截到 maxCallsPerRound ≥ 1 条（原先的 calls.empty()
+		 * 兜底是永不可达的死分支——「声称的路径从未执行」本身就是缺陷形态）。 */
+		tool.toolCallId = calls.back().id;
 		history_.messages().push_back(std::move(tool));
 	}
 	if (!images.empty()) {

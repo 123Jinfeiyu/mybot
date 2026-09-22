@@ -382,6 +382,26 @@ inline std::string echoSource(const std::string& s) {
 	return out;
 }
 
+/* ---- 日志标记转义（2026-09-22 安全改进；C7 自 agentloop 匿名命名空间挪出）----
+ * 工具的返回文本会整块进 verbose 日志，而它可能含 `[FAIL]` / `[PASS]` 这类
+ * 行首标记——下游按行解析日志的东西（测试汇总、CI 日志抓取）会把工具输出当成
+ * 真的判定行读走。这里只转义**行首**的 `[`，其余位置的方括号原样保留（JSON
+ * 数组、`a[0]` 之类的正常内容不该被改写）。 */
+inline std::string escapeLogMarkers(const std::string& s) {
+	std::string out;
+	bool atLineStart = true;
+	for (std::size_t i = 0; i < s.size(); ++i) {
+		char c = s[i];
+		if (atLineStart && c == '[') {
+			out += "\\[";	/* 转义行首方括号 */
+		} else {
+			out += c;
+		}
+		atLineStart = (c == '\n');
+	}
+	return out;
+}
+
 /* ---- UTF-8 合法性判据 + 消毒（2026-09-21 审计 AG-1 单点）----
  * 为什么必须做：JSON 的字符串**只允许合法 UTF-8**，而请求体里的 `0x80-0xFF`
  * 由两端的编码器原样透传（C++ 侧 Json::toString 与 Lua 侧 modules/lib/json.lua

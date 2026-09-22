@@ -551,8 +551,12 @@ static AgentTool makeRunCommandTool(const AgentToolContext& ctx) {
 		"适合查看系统状态、读取日志、检查设备节点；不要用它直接驱动硬件"
 		"（驱动硬件请用 run_action_script）。命令有超时限制，输出超过 64KB 会截断。",
 		toolSchema({{"command", stringParam("要执行的 shell 命令")},
-			    {"timeout_seconds", intParam("超时秒数，默认 10，最大 60")}},
-			{"command"}),
+				    /* 描述里的数字取自**生效值**（B4 起可由配置文件调）：写死
+				     * 「默认 10，最大 60」会在配置改过之后对模型说谎。 */
+				    {"timeout_seconds", intParam("超时秒数，默认 "
+					    + std::to_string(ctx.commandTimeoutSec) + "，最大 "
+					    + std::to_string(ctx.maxCommandTimeoutSec))}},
+				{"command"}),
 		[ctx](const Json& args) -> AgentToolResult {
 			std::string cmd = requireString(args, "command");
 			int timeoutSec = optionalInt(args, "timeout_seconds", ctx.commandTimeoutSec);

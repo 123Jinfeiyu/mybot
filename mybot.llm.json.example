@@ -31,5 +31,11 @@
 
   "max_history_bytes": 4194304,
   "max_task_tool_result_bytes": 2097152,
-  "max_task_image_bytes": 4194304
+  "max_task_image_bytes": 4194304,
+
+  "max_calls_per_round": 16,
+  "max_retries": 3,
+  "retry_backoff_ms": 1000,
+  "run_command_timeout_sec": 10,
+  "run_command_max_timeout_sec": 60
 }

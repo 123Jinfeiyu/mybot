@@ -179,6 +179,8 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"prompt_files", "camera_var", "camera_device", "camera_src", "allow_camera",
 		"audit_log", "agent_policy",
 		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
+		"max_calls_per_round", "max_retries", "retry_backoff_ms",
+		"run_command_timeout_sec", "run_command_max_timeout_sec",
 	};
 	for (const auto& kv : root.items()) {
 		if (kKnown.count(kv.first) == 0) {
@@ -261,6 +263,31 @@ bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig
 	out.maxHistoryBytes = maxHistory;
 	out.maxTaskToolResultBytes = maxTool;
 	out.maxTaskImageBytes = maxImage;
+
+	/* 运行期数值（B4）：单点区间见 llm_limits；跨字段关系（run_command 上限 ≥
+	 * 缺省）不在这里判——配置文件可能只给一个字段，那样要拿**生效值**（另一个
+	 * 是缺省）比，判定落在 agentmode 的合流处。 */
+	std::optional<int> maxCalls, maxRetries, backoffMs, rcTimeout, rcMaxTimeout;
+	if (!wantInt(path, root, "max_calls_per_round",
+			llm_limits::kMaxCallsPerRoundMin, llm_limits::kMaxCallsPerRoundMax,
+			maxCalls, err)) { return false; }
+	if (!wantInt(path, root, "max_retries",
+			llm_limits::kMaxRetriesMin, llm_limits::kMaxRetriesMax,
+			maxRetries, err)) { return false; }
+	if (!wantInt(path, root, "retry_backoff_ms",
+			llm_limits::kRetryBackoffMsMin, llm_limits::kRetryBackoffMsMax,
+			backoffMs, err)) { return false; }
+	if (!wantInt(path, root, "run_command_timeout_sec",
+			llm_limits::kRunCommandTimeoutMinSec, llm_limits::kRunCommandTimeoutMaxSec,
+			rcTimeout, err)) { return false; }
+	if (!wantInt(path, root, "run_command_max_timeout_sec",
+			llm_limits::kRunCommandMaxTimeoutMinSec, llm_limits::kRunCommandMaxTimeoutMaxSec,
+			rcMaxTimeout, err)) { return false; }
+	out.maxCallsPerRound = maxCalls;
+	out.maxRetries = maxRetries;
+	out.retryBackoffMs = backoffMs;
+	out.runCommandTimeoutSec = rcTimeout;
+	out.runCommandMaxTimeoutSec = rcMaxTimeout;
 	return true;
 }
 

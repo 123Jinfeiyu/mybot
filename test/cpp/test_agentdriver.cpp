@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -107,6 +108,45 @@ TH_TEST(agentdriver_driver_err_becomes_exception) {
 	/* 驱动的 ERR 必须带着它给的 message 冒到宿主，而不是静默变成空回答 */
 	TH_CHECK_THROWS_MSG(std::runtime_error, "假驱动故意失败",
 		transport->complete({msg("user", "x")}, {}));
+
+	robot->deactivate();
+}
+
+TH_TEST(agentdriver_retry_goes_to_injected_log_sink) {
+	ModulePathGuard guard("modules:test/cpp");
+	auto robot = makeRobot(kTimerRobotSql);
+	robot->injectLuaDriver("AgentFakeDriver", "llm0");
+	robot->active();
+
+	/* C5：重试信息原先硬编码 std::cerr（离线用例抓不到、宿主没得选），
+	 * 现在经 AgentDriverConfig::log 注入；缺省仍是 stderr（行为保持）。 */
+	std::ostringstream sink;
+	AgentDriverConfig cfg;
+	cfg.model = "netfail-once";
+	cfg.maxRetries = 3;
+	cfg.retryBackoffMs = 0;		/* 用例不该真等退避 */
+	cfg.log = &sink;
+	auto transport = makeDriverTransport(robot->registry().find("llm0"), cfg);
+
+	/* 首次网络类失败被重试，第二次成功（重试不改语义，只是多试一次） */
+	const ChatResponse resp = transport->complete({msg("user", "x")}, {});
+	TH_CHECK_MSG(resp.content.find("msgs=1") != std::string::npos, resp.content);
+	TH_CHECK_MSG(sink.str().find("网络错误") != std::string::npos, sink.str());
+	TH_CHECK_MSG(sink.str().find("1/3") != std::string::npos, sink.str());
+
+	/* maxRetries = 0（配置文件的「不重试」）必须仍然**发一次**：旧循环直接拿它
+	 * 当上界，会一次都不发并落到 logic_error("重试逻辑错误")——那是「什么都不做」，
+	 * 不是「不重试」。断言抛的是驱动给的成因，且没有重试日志。 */
+	std::ostringstream sink2;
+	AgentDriverConfig once;
+	once.model = "netfail-always";
+	once.maxRetries = 0;
+	once.retryBackoffMs = 0;
+	once.log = &sink2;
+	auto noRetry = makeDriverTransport(robot->registry().find("llm0"), once);
+	TH_CHECK_THROWS_MSG(std::runtime_error, "curl error",
+		noRetry->complete({msg("user", "x")}, {}));
+	TH_CHECK_MSG(sink2.str().empty(), sink2.str());
 
 	robot->deactivate();
 }
