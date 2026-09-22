@@ -297,6 +297,10 @@ function M.parse_response(decoded)
 	-- SAN-6：被丢弃的畸形工具调用元素计数（同上，丢弃但如实记账）
 	if bad_tool_calls > 0 then extras.dropped_bad_tool_calls = bad_tool_calls end
 	if next(extras) ~= nil then out.extras = extras end
+	-- SAN-9：provider 的 usage **原样透传**（宿主只挑 prompt_tokens /
+	-- completion_tokens 记账，不推算、不计费）。只在存在时挂键，
+	-- 保持既有响应形态不变。
+	if type(decoded.usage) == "table" then out.usage = decoded.usage end
 
 	return out
 end

@@ -54,6 +54,8 @@ def tool_call(name, arguments):
 
 
 def final_answer():
+    # SAN-9：带上 provider 的 usage——宿主的审计模型记录要挑 prompt_tokens /
+    # completion_tokens 记账（只记 provider 给的数，不推算）。真机也这么返回。
     return {
         "choices": [{
             "message": {
@@ -61,7 +63,8 @@ def final_answer():
                 "content": "AGENT-E2E-完成：已查看硬件，继电器动作已执行，命令已运行。",
                 "reasoning_content": "收尾。",
             }
-        }]
+        }],
+        "usage": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290},
     }
 
 

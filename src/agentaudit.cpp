@@ -93,35 +93,97 @@ bool AuditLog::open(const std::string& path, std::string& err) {
 	return true;
 }
 
+/* SAN-9：接入点进审计前去掉 query 与 userinfo。
+ * 有些网关把凭据放在 URL 里（`https://user:tok@host/v1/...?key=...`），
+ * 而审计是 append-only 的落盘文件——把整条 URL 抄进去等于把密钥写进日志。
+ * 只保留 scheme://host/path 这部分（口径与 maskSecretsInText 同源：
+ * "不该出门的东西不进日志"）。 */
+std::string sanitizeEndpoint(const std::string& url) {
+	std::string out = url;
+	/* 去掉 query / fragment */
+	if (std::size_t q = out.find_first_of("?#"); q != std::string::npos) { out.resize(q); }
+	/* 去掉 userinfo（scheme:// 与第一个 '/' 之间的 '@' 之前那段） */
+	const std::size_t scheme = out.find("://");
+	if (scheme != std::string::npos) {
+		const std::size_t hostStart = scheme + 3;
+		const std::size_t slash = out.find('/', hostStart);
+		const std::size_t end = (slash == std::string::npos) ? out.size() : slash;
+		if (std::size_t at = out.rfind('@', end); at != std::string::npos && at >= hostStart) {
+			out.erase(hostStart, at - hostStart + 1);
+		}
+	}
+	return out;
+}
+
 void AuditLog::write(const AuditEntry& e) {
 	if (!opened_) { return; }
 
 	Json line = JsonObject();
 	line.put("ts", JsonString(auditTimestamp()));
 	line.put("session", JsonString(sessionId_));
-	line.put("turn", JsonInt(e.turn));
-	line.put("tool", JsonString(e.tool));
-	if (e.args.isObj()) {
-		line.put("args", e.args);
-	} else if (!e.argsRaw.empty()) {
-		/* 参数解析失败/非对象：记原始文本（截断，显式标注） */
-		std::string raw = e.argsRaw;
-		if (raw.size() > kMaxAuditArgsRaw) {
-			raw = raw.substr(0, kMaxAuditArgsRaw)
-				+ "...(截断，原始 " + std::to_string(e.argsRaw.size()) + " 字节)";
+	/* kind 显式写在最前（紧跟 session）：老消费方不看它，新消费方按它分派。
+	 * 工具行也显式写 "tool"——不是"缺省即 tool"的隐式约定，省得后来者猜。 */
+	line.put("kind", JsonString(e.kind.empty() ? "tool" : e.kind));
+
+	if (e.kind == "session") {
+		/* ---- 会话边界记录（SAN-9）：只记"这次会话是用什么配置跑的"，
+		 * 供事后复盘时定位"这一轮到底连的是哪、用的哪个模型"。
+		 * **绝不写密钥**：只写 api_key_source 枚举名（与 --check-config 的
+		 * 摘要同口径：只报来源不报值）。 */
+		line.put("status", JsonString(e.status.empty() ? "start" : e.status));
+		if (!e.driver.empty()) { line.put("driver", JsonString(e.driver)); }
+		if (!e.model.empty()) { line.put("model", JsonString(e.model)); }
+		if (!e.endpoint.empty()) {
+			line.put("endpoint", JsonString(sanitizeEndpoint(e.endpoint)));
 		}
-		line.put("args_raw", JsonString(sanitizeUtf8(raw)));
+		if (!e.apiKeySource.empty()) {
+			line.put("api_key_source", JsonString(e.apiKeySource));
+		}
+		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
+		if (e.ms > 0) { line.put("ms", JsonInt(e.ms)); }
+	} else if (e.kind == "model") {
+		/* ---- 模型轮次记录（SAN-9）：为什么需要它——工具行只能回答
+		 * "调了什么工具"，回答不了"模型说了什么、花了多久、这一轮有没有发出
+		 * 请求"。一次在模型调用阶段失败的会话此前在日志里**一条都没有**。 */
+		if (e.turn >= 0) { line.put("turn", JsonInt(e.turn)); }
+		line.put("ok", JsonBool(e.ok));
+		if (!e.status.empty()) { line.put("status", JsonString(e.status)); }
+		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
+		line.put("ms", JsonInt(e.ms));
+		if (e.reqBytes > 0) { line.put("req_bytes", JsonInt(static_cast<std::int64_t>(e.reqBytes))); }
+		if (e.respBytes > 0) { line.put("resp_bytes", JsonInt(static_cast<std::int64_t>(e.respBytes))); }
+		if (e.attempts > 0) { line.put("attempts", JsonInt(e.attempts)); }
+		/* token 用量：**只记 provider 给的数**，不做任何推算/计费估算 */
+		if (e.promptTokens.has_value()) { line.put("prompt_tokens", JsonInt(*e.promptTokens)); }
+		if (e.completionTokens.has_value()) {
+			line.put("completion_tokens", JsonInt(*e.completionTokens));
+		}
+	} else {
+		/* ---- 既有工具行：字段与顺序**一个不动**（兼容性硬约束）---- */
+		line.put("turn", JsonInt(e.turn));
+		line.put("tool", JsonString(e.tool));
+		if (e.args.isObj()) {
+			line.put("args", e.args);
+		} else if (!e.argsRaw.empty()) {
+			/* 参数解析失败/非对象：记原始文本（截断，显式标注） */
+			std::string raw = e.argsRaw;
+			if (raw.size() > kMaxAuditArgsRaw) {
+				raw = raw.substr(0, kMaxAuditArgsRaw)
+					+ "...(截断，原始 " + std::to_string(e.argsRaw.size()) + " 字节)";
+			}
+			line.put("args_raw", JsonString(sanitizeUtf8(raw)));
+		}
+		line.put("ok", JsonBool(e.ok));
+		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
+		line.put("ms", JsonInt(e.ms));
+		line.put("bytes", JsonInt(static_cast<std::int64_t>(e.bytes)));
+		if (e.imageBytes > 0) {
+			/* 图片只记体积与指纹：base64 不落盘（体积 + 隐私，见头文件约束） */
+			line.put("image_bytes", JsonInt(static_cast<std::int64_t>(e.imageBytes)));
+			line.put("image_fp", JsonString(e.imageFp));
+		}
+		if (e.exitCode.has_value()) { line.put("exit_code", JsonInt(*e.exitCode)); }
 	}
-	line.put("ok", JsonBool(e.ok));
-	if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
-	line.put("ms", JsonInt(e.ms));
-	line.put("bytes", JsonInt(static_cast<std::int64_t>(e.bytes)));
-	if (e.imageBytes > 0) {
-		/* 图片只记体积与指纹：base64 不落盘（体积 + 隐私，见头文件约束） */
-		line.put("image_bytes", JsonInt(static_cast<std::int64_t>(e.imageBytes)));
-		line.put("image_fp", JsonString(e.imageFp));
-	}
-	if (e.exitCode.has_value()) { line.put("exit_code", JsonInt(*e.exitCode)); }
 
 	std::string text = line.toString();
 	text.push_back('\n');

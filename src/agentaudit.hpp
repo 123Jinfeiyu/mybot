@@ -28,17 +28,41 @@ namespace agent {
 
 /* 一条工具调用审计记录。字段与 JSON 行的映射见 AuditLog::write。 */
 struct AuditEntry {
+	/* SAN-9（2026-09-22）：记录类型。**加法演进**——既有工具行的字段名、
+	 * 顺序与语义一个不动，新增两类记录靠这个字段区分（老消费方按
+	 * `tool == "run_command"` 之类的过滤表达式解析，结果逐字节不变）。
+	 *   "tool"    —— 既有形态：一次工具调用；
+	 *   "model"   —— 一轮模型调用（耗时、请求/响应字节、provider 给的 token 数）；
+	 *   "session" —— 会话开始/结束（含驱动、模型、接入点、各项上限）。
+	 * 为什么需要：审计此前**只记工具调用**，于是"模型说了什么、花了多久、
+	 * 这一轮到底有没有发出请求"完全不可查；而一次在模型调用阶段中断的会话
+	 * 在日志里**一条记录都没有**——那恰恰是最需要复盘的时候。 */
+	std::string kind = "tool";
 	int turn = -1;			/* 任务内的模型轮次（未知为 -1） */
-	std::string tool;		/* 工具名 */
+	std::string tool;		/* 工具名（kind="tool"）/ 事件名（kind="session"） */
 	Json args;			/* 解析成功的参数对象（否则空） */
 	std::string argsRaw;		/* 原始参数文本（截断到 kMaxAuditArgsRaw） */
 	bool ok = true;			/* false = 参数错误/未知工具/工具异常/脚本执行失败 */
 	std::string error;		/* ok=false 时的人话原因 */
-	long long ms = 0;		/* 工具执行耗时 */
+	long long ms = 0;		/* 耗时（工具执行 / 模型调用） */
 	std::size_t bytes = 0;		/* 回传模型的文本字节数 */
 	std::size_t imageBytes = 0;	/* 图片 data URL 字节数（0 = 无图） */
 	std::string imageFp;		/* 图片指纹（FNV-1a 64 hex，非密码学摘要） */
 	std::optional<long long> exitCode;	/* run_command 专属（自回执文本解析） */
+
+	/* ---- SAN-9：kind="session" 专用（全部只在会话记录里出现）---- */
+	std::string driver;		/* 协议驱动表名 */
+	std::string model;		/* 模型名（可为空 = 用驱动缺省） */
+	std::string endpoint;		/* 接入点（**去掉 query 与 userinfo**，见 write） */
+	std::string status;		/* "start" / "end" / "error" */
+	std::string apiKeySource;	/* 只记来源枚举名，绝不记值 */
+
+	/* ---- SAN-9：kind="model" 专用 ---- */
+	std::size_t reqBytes = 0;	/* 本次请求体估算字节（可 0 = 未统计） */
+	std::size_t respBytes = 0;	/* 本次响应文本字节 */
+	int attempts = 0;		/* 实际尝试次数（>1 = 发生过重试） */
+	std::optional<long long> promptTokens;		/* provider 给的用量，缺则无 */
+	std::optional<long long> completionTokens;
 };
 
 /* 参数原文进审计前的截断上限：审计要能对账，但一条 2 MiB 的参数串会把日志

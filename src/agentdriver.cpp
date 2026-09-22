@@ -88,6 +88,9 @@ public:
 			req.put("reasoning_effort", JsonString(cfg_.reasoningEffort));
 		}
 		if (!cfg_.thinking.empty()) { req.put("thinking", JsonString(cfg_.thinking)); }
+		/* SAN-9：请求体估算字节（宿主侧的线上体积下界，与 agenthistory 的
+		 * messageWeight 同口径：不含 JSON 语法开销）。只进审计，不参与任何判定。 */
+		const std::size_t reqBytes = req.toString().size();
 
 		/* 游标表挂/摘（RAII）：只对 Lua 驱动有意义（入口已校验 kindName） */
 		auto* luaDriver = dynamic_cast<MtVars_Lua*>(driver_);
@@ -124,7 +127,12 @@ public:
 					err = std::move(e);
 					retriable = true;
 				} else {
-					return parseDriverResponse(res);
+					/* SAN-9：把本次调用的观测值带上（请求体估算字节 + 实际尝试
+					 * 次数），宿主据此写审计的模型轮次记录。 */
+					ChatResponse parsed = parseDriverResponse(res);
+					parsed.reqBytes = reqBytes;
+					parsed.attempts = attempt + 1;
+					return parsed;
 				}
 			} catch (const std::exception& ex) {
 				/* 已经判过类的可重试错误由上面的 retriable 分支处理；

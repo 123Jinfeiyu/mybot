@@ -1,6 +1,7 @@
 #include "agentloop.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
@@ -44,6 +45,55 @@ void AgentSession::log(const std::string& text) const {
 	os << text << "\n";
 }
 
+/* ---- SAN-9：会话边界记录 ----
+ * 为什么需要（实测场景）：审计此前**只记工具调用**，一次在模型调用阶段失败的
+ * 会话在日志里一条记录都没有——而那恰恰是最需要复盘的时候；而"这次会话连的是
+ * 哪个模型/接入点、用的什么上限"也无从查起。这里补上会话头尾，
+ * **绝不写密钥**（只写来源枚举名，与 --check-config 的摘要同口径）。 */
+void AgentSession::writeSessionRecord(const char* status, const std::string& error) {
+	if (!opts_.audit) { return; }
+	AuditEntry e;
+	e.kind = "session";
+	e.status = status;
+	e.driver = opts_.auditDriver;
+	e.model = opts_.auditModel;
+	e.endpoint = opts_.auditEndpoint;	/* AuditLog::write 会去掉 query/userinfo */
+	e.apiKeySource = opts_.auditKeySource;
+	e.error = error;
+	opts_.audit->write(e);
+	sessionStartWritten_ = true;
+}
+
+/* ---- SAN-9：模型轮次记录 ----
+ * 工具行回答不了"模型说了什么、花了多久、这一轮有没有真的发出请求"。
+ * 这里记耗时、请求/响应字节、实际尝试次数（>1 = 发生过重试），以及
+ * **provider 给的** token 用量（缺则无，不推算）。 */
+void AgentSession::writeModelRecord(int turn, const ChatResponse& resp, long long ms,
+		bool ok, const std::string& error) {
+	if (!opts_.audit) { return; }
+	if (!sessionStartWritten_) { writeSessionRecord("start"); }
+	AuditEntry e;
+	e.kind = "model";
+	e.turn = turn;
+	e.ok = ok;
+	e.status = ok ? "ok" : "error";
+	e.error = error;
+	e.ms = ms;
+	e.reqBytes = resp.reqBytes;
+	e.respBytes = resp.content.size();
+	e.attempts = resp.attempts;
+	if (resp.usage.isObj()) {
+		const auto pick = [&resp](const char* key) -> std::optional<long long> {
+			const Json* v = resp.usage.find(key);
+			if (v == nullptr || !v->isInt()) { return std::nullopt; }
+			return v->getInt();
+		};
+		e.promptTokens = pick("prompt_tokens");
+		e.completionTokens = pick("completion_tokens");
+	}
+	opts_.audit->write(e);
+}
+
 std::string AgentSession::runTurn(const std::string& userTask) {
 	history_.trim(opts_.maxHistoryBytes, opts_.verbose,
 		[this](const std::string& t) { log(t); });
@@ -71,8 +121,24 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 				throw std::runtime_error("执行被中断");
 			}
 
-			/* 取数：一次模型调用 */
-			ChatResponse resp = transport_.complete(history_.messages(), tools_.specs());
+			/* 取数：一次模型调用（SAN-9：计时并记一条模型轮次记录——
+			 * 成功与失败都记：失败那条是复盘"为什么这一轮没跑起来"的唯一线索） */
+			if (opts_.audit && !sessionStartWritten_) { writeSessionRecord("start"); }
+			const auto tModel0 = std::chrono::steady_clock::now();
+			ChatResponse resp;
+			try {
+				resp = transport_.complete(history_.messages(), tools_.specs());
+			} catch (const std::exception& e) {
+				const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - tModel0).count();
+				ChatResponse empty;
+				writeModelRecord(turn, empty, ms, false, e.what());
+				throw;
+			}
+			writeModelRecord(turn, resp,
+				std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - tModel0).count(),
+				true, "");
 
 			/* 收尾：模型不再要工具 → 记下最终回答并返回 */
 			if (!resp.hasToolCalls()) { return appendFinalAnswer(resp); }

@@ -67,6 +67,13 @@ struct AgentOptions {
 	 * 因为唯一漏斗是派发点（工具层不知道轮次，也兜不住参数解析失败那条路径）；
 	 * shared_ptr 便于配置与测试共享同一实例。 */
 	std::shared_ptr<AuditLog> audit;
+	/* SAN-9（2026-09-22）：审计的**会话边界**与**模型轮次**记录需要几个只读事实。
+	 * 它们是"这一次会话到底跑的是什么"的答案，专供 session 记录使用；
+	 * 空值表示未提供（离线夹具手搓 AgentOptions 时不必填）。 */
+	std::string auditDriver;	/* 协议驱动表名 */
+	std::string auditModel;		/* 模型名（空 = 用驱动缺省） */
+	std::string auditEndpoint;	/* 接入点（写入时由 AuditLog 去掉 query/userinfo） */
+	std::string auditKeySource;	/* API key 来源枚举名（只报来源，不报值） */
 	/* 策略钩子（--agent-policy，P3；默认空 = 现状，全部放行）。命中
 	 * require_confirm 的工具在派发前先过外部确认程序（退出 0 = 放行），
 	 * 拒绝/超时折成一句工具回执——模型知道「没执行、为什么」，循环继续。
@@ -99,10 +106,20 @@ public:
 
 	const std::vector<ChatMessage>& history() const { return history_.messages(); }
 
+	/* SAN-9：会话结束记录（status = "end" / "error"）。由会话外壳在退出路径上
+	 * 显式调用——它比"析构时补一条"更可靠：析构可能发生在审计日志已关闭之后，
+	 * 而且"会话怎么结束的"需要调用方才知道的退出原因（正常 / 异常 + 原因）。 */
+	void writeSessionEnd(const char* status, const std::string& error = "") {
+		writeSessionRecord(status, error);
+	}
+
 private:
 	ChatTransport& transport_;
 	const AgentToolRegistry& tools_;
 	AgentOptions opts_;
+	/* 会话开始记录只写一次（惰性：第一条记录之前补写） */
+	bool sessionStartWritten_ = false;
+
 	HistoryManager history_;
 	TaskBudget budget_;
 	DispatchGate gate_;
@@ -110,6 +127,16 @@ private:
 	 * 清零——预算约束的是**单个任务**的上下文体积，跨任务由 maxHistoryBytes 管。 */
 
 	void log(const std::string& text) const;
+
+	/* ---- SAN-9：审计的会话边界与模型轮次 ----
+	 * writeSessionRecord：一条 kind="session" 记录（start / end / error）。
+	 * 首次写任何记录之前自动补 start（惰性），所以调用方不必关心顺序——
+	 * 一次在模型调用阶段就失败的会话，日志里**也会有** start 与那条 model 记录
+	 * （此前那种会话一条记录都没有，而那恰恰是最需要复盘的时候）。
+	 * writeModelRecord：一条 kind="model" 记录（耗时/字节/尝试次数/token 用量）。 */
+	void writeSessionRecord(const char* status, const std::string& error = "");
+	void writeModelRecord(int turn, const ChatResponse& resp, long long ms, bool ok,
+		const std::string& error);
 
 	/* 派发单个工具调用 → 一条 tool 消息：DispatchGate（策略/执行/审计）
 	 * → TaskBudget（任务内预算判定）→ verbose 日志 → 写 tool 消息。

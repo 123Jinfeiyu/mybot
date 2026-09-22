@@ -57,6 +57,15 @@ struct ChatResponse {
 	std::string content;
 	std::vector<ToolCall> toolCalls;
 	Json extras;	/* 对象；空表示无 */
+	/* SAN-9（2026-09-22）：provider 给的 token 用量，**原样透传**。
+	 * 宿主不理解它（各家字段名可能不同），只在审计里挑 prompt_tokens /
+	 * completion_tokens 记账——**只记 provider 说的数，不做任何推算或计费估算**。
+	 * 缺省空 = provider 没给。 */
+	Json usage;
+	/* SAN-9：本次模型调用的请求体估算字节与**实际尝试次数**（>1 = 发生过重试）。
+	 * 传输层填，宿主只用于审计记录；离线夹具不填（0 表示未统计）。 */
+	std::size_t reqBytes = 0;
+	int attempts = 0;
 	bool hasToolCalls() const { return !toolCalls.empty(); }
 };
 

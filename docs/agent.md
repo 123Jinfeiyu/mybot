@@ -421,14 +421,33 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 ## 审计轨迹：--audit-log
 
 `--audit-log <路径>`（或配置文件 `audit_log` 字段；`-` 表示写 stderr）以 **JSON Lines**
-追加记录每次工具调用——部署形态为「机器人跑在现场」时，出事后「模型到底做了什么」
-靠它复盘：
+追加记录——部署形态为「机器人跑在现场」时，出事后「模型到底做了什么」靠它复盘。
+每行都有 `ts` / `session` / `kind`，`kind` 决定其余字段（**加法演进**：工具行的
+字段名与语义从未变过，新记录类型只是加了新的 `kind`）：
 
-```json
-{"ts":"2026-09-22T17:04:11.238+08:00","session":"1a2b3c4d","turn":2,"tool":"run_command",
- "args":{"command":"ls -l /dev/video0","timeout_seconds":10},"ok":true,"ms":43,
- "bytes":812,"exit_code":0}
+```jsonc
+// kind=tool：一次工具调用（既有形态，字段未变）
+{"ts":"2026-09-22T17:04:11.238+08:00","session":"1a2b3c4d","kind":"tool","turn":2,
+ "tool":"run_command","args":{"command":"ls -l /dev/video0","timeout_seconds":10},
+ "ok":true,"ms":43,"bytes":812,"exit_code":0}
+// kind=model：一轮模型调用（SAN-9）——回答"模型说了什么、花了多久、有没有重试"
+{"ts":"2026-09-22T17:04:12.001+08:00","session":"1a2b3c4d","kind":"model","turn":2,
+ "ok":true,"status":"ok","ms":812,"req_bytes":24616,"resp_bytes":82,"attempts":1,
+ "prompt_tokens":1234,"completion_tokens":56}
+// kind=session：会话头尾（SAN-9）——回答"这次会话是用什么配置跑的、怎么结束的"
+{"ts":"2026-09-22T17:04:10.500+08:00","session":"1a2b3c4d","kind":"session",
+ "status":"start","driver":"LlmOpenAI","model":"m0",
+ "endpoint":"https://gateway.example/v1/chat/completions","api_key_source":"env"}
 ```
+
+- **三类记录**：`tool`（每次工具调用）/ `model`（每轮模型调用，**失败也记**——
+  那是复盘"这一轮为什么没跑起来"的唯一线索）/ `session`（`start` / `end` / `error`）。
+  没有 `model` 与 `session` 时，一次在模型调用阶段失败的会话在日志里会**一条都没有**。
+- **token 只记 provider 给的数**：`usage` 由驱动原样透传，宿主只挑
+  `prompt_tokens` / `completion_tokens` 记账，**不推算、不计费**；provider 没给就没有这两个键。
+- **接入点脱敏**：`endpoint` 落盘前剥掉 **query 与 userinfo**（有些网关把凭据放在
+  URL 里，而审计是 append-only 的落盘文件）。`api_key_source` 只记来源枚举名
+  （`env` / `config_inline` / `config_file`），**值绝不出现**。
 
 - **位置在宿主派发漏斗**（`agentloop` 的 `dispatchOneCall`）：Lua 驱动与 `.mt` 脚本都绕不过；参数解析失败、未知工具、工具异常同样各记一条（「模型想做什么但没做成」也是审计信息）。
 - **图片不进日志**：`capture_image` 只记 `image_bytes` 与 16 位指纹（`image_fp`，FNV-1a 64，非密码学摘要）——否则每次拍照数百 KB 灌进磁盘，且画面可能含隐私。

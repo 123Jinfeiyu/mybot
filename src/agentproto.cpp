@@ -167,6 +167,10 @@ ChatResponse parseDriverResponse(const Json& res) {
 	auto extras = res.get("extras");
 	if (extras && extras->isObj()) { out.extras = *extras; }
 
+	/* SAN-9：provider 用量原样透传（宿主不理解字段，只供审计取两个数） */
+	auto usage = res.get("usage");
+	if (usage && usage->isObj()) { out.usage = *usage; }
+
 	if (out.content.empty() && out.toolCalls.empty()) {
 		/* 丢弃数与驱动侧自报的计数一起说（驱动给的 dropped_bad_tool_calls 见
 		 * modules/lib/llm_wire_openai.lua 的 SAN-6 段），让"模型说了但没派发"

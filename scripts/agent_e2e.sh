@@ -371,14 +371,60 @@ sys.exit(0 if ($1) else 1)
 		fail=1
 	fi
 }
-audit_check "all(isinstance(l, dict) and l.get('tool') and l.get('ts') and l.get('session') and isinstance(l.get('ok'), bool) for l in lines)" \
-	"审计日志每行都是合法 JSON 且带 ts/session/tool/ok"
-audit_check "{'list_hardware','run_action_script','run_command'} <= {l['tool'] for l in lines}" \
+audit_check "all(isinstance(l, dict) and l.get('ts') and l.get('session') and l.get('kind') for l in lines)" \
+	"审计日志每行都是合法 JSON 且带 ts/session/kind（所有 kind 共有）"
+# SAN-9 后日志里有三类记录（session/model/tool），所以"每行都有 tool/ok"不再成立
+# ——工具行的字段判据改成**只对 kind=tool 的行**要求（加法演进的意义正在于此：
+# 老表达式 `l['tool']` 仍只命中工具行，但"每行都有"这种写法必须收窄）。
+audit_check "all('ts' in l and 'session' in l and 'kind' in l for l in lines)" \
+	"每行都带 ts/session/kind（SAN-9 后的共同字段）"
+audit_check "all('tool' in l and 'ok' in l and 'bytes' in l and 'ms' in l for l in lines if l['kind']=='tool')" \
+	"工具行的字段齐备（kind=tool 过滤）"
+audit_check "{'list_hardware','run_action_script','run_command'} <= {l['tool'] for l in lines if l['kind']=='tool'}" \
 	"脚本化流程用到的三个工具各留下了审计记录"
-audit_check "any(l['tool']=='run_command' and 'exit_code' in l for l in lines)" \
+audit_check "any(l.get('tool')=='run_command' and 'exit_code' in l for l in lines)" \
 	"run_command 记录带 exit_code"
 # 环境变量里的密钥绝不能出现在审计日志（遮蔽判据的端到端见证）
 check_absent "$AUDIT7" "e2e-fake-key" "环境变量密钥不出现在审计日志"
+# SAN-9：会话边界与模型轮次记录（加法演进）——纯文本回答的任务也必须留下 model 行，
+# 会话头尾各一条 session 行，且既有工具行的字段一个不少。
+python3 - "$AUDIT7" <<'PYEOF'
+import json, sys
+lines = [json.loads(l) for l in open(sys.argv[1], encoding="utf-8") if l.strip()]
+kinds = [l.get("kind") for l in lines]
+ok = True
+def bad(msg):
+    global ok
+    ok = False
+    print("  [FAIL] " + msg)
+if kinds.count("session") != 2:
+    bad("应有两条 session 记录（start/end），实际 %d" % kinds.count("session"))
+else:
+    print("  [OK] 审计含会话头尾两条记录（SAN-9）")
+start = next((l for l in lines if l.get("kind") == "session" and l.get("status") == "start"), None)
+if start is None or not start.get("driver") or not start.get("endpoint"):
+    bad("start 记录应带 driver 与 endpoint")
+else:
+    print("  [OK] start 记录带驱动与接入点（可按会话复盘配置）")
+mdl = [l for l in lines if l.get("kind") == "model"]
+if len(mdl) < 2:
+    bad("应有至少两条 model 记录（工具循环至少两轮），实际 %d" % len(mdl))
+else:
+    print("  [OK] 审计含模型轮次记录 %d 条（SAN-9）" % len(mdl))
+# usage 只在最终回答那轮返回；至少要有一条带上 provider 给的 token 数
+withtok = [l for l in mdl if "prompt_tokens" in l]
+if not withtok:
+    bad("应至少有一条 model 记录带上 provider 给的 prompt_tokens")
+else:
+    print("  [OK] token 用量按 provider 给的数记账（%d 条）" % len(withtok))
+tools = [l for l in lines if l.get("kind") == "tool"]
+if not tools or any("bytes" not in l or "ok" not in l for l in tools):
+    bad("既有工具行字段不全（加法演进被破坏）")
+else:
+    print("  [OK] 既有工具行字段完整（%d 条，加法演进）" % len(tools))
+sys.exit(0 if ok else 1)
+PYEOF
+if [ $? -ne 0 ]; then fail=1; fi
 
 # ============ 场景 8：模型调用可取消（SIGINT → 取消哨兵 → libcurl 中止）============
 echo "----- 场景 8：模型调用可取消 -----"

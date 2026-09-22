@@ -502,6 +502,16 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	aopts.systemPrompt = buildAgentSystemPrompt(cfg, robot);
 	aopts.audit = cfg.audit;
 	aopts.policy = cfg.policy;
+	/* SAN-9：审计的会话/模型记录的上下文（只读事实，密钥只报来源不报值） */
+	aopts.auditDriver = cfg.driverTable;
+	aopts.auditModel = cfg.model;
+	aopts.auditEndpoint = cfg.endpoint;
+	switch (cfg.apiKeySource) {
+	case ApiKeySource::Env: aopts.auditKeySource = "env"; break;
+	case ApiKeySource::ConfigInline: aopts.auditKeySource = "config_inline"; break;
+	case ApiKeySource::ConfigFile: aopts.auditKeySource = "config_file"; break;
+	case ApiKeySource::None: break;
+	}
 
 	AgentSession session(transport, tools, std::move(aopts));
 
@@ -509,16 +519,22 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	if (!cfg.task.empty()) {
 		try {
 			out << session.runTurn(cfg.task) << "\n";
+			session.writeSessionEnd("end");
 			return 0;
 		} catch (const std::exception& e) {
 			log << "错误: " << e.what() << "\n";
+			/* SAN-9：失败也要留一条会话结束记录——"这次会话怎么结束的"是
+			 * 复盘的第一句话（此前失败会话在日志里可能连一条都没有）。 */
+			session.writeSessionEnd("error", e.what());
 			return 1;
 		}
 	}
 
 	/* ---- 交互 REPL：硬件全程常驻，可连续下达任务 ----
 	 * 循环本体在 runAgentRepl（C3 拆出，可离线单测）；这里只做装配。 */
-	return runAgentRepl(session, cfg, robot, in, out, log);
+	const int replRc = runAgentRepl(session, cfg, robot, in, out, log);
+	session.writeSessionEnd("end");
+	return replRc;
 }
 
 int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,

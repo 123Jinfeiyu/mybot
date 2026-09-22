@@ -5,6 +5,45 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 审计轨迹补上会话边界与模型轮次（SAN-9，加法演进）
+
+> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-9。
+> 这是**提案+实现**：`agent-refactor-plan-2.md` 曾声明"不改审计 JSONL schema"，
+> 故本项用**加法**兑现——既有工具行的字段名、顺序、语义**一个不动**，
+> 新记录靠新增的 `kind` 字段区分。
+
+- **问题（读码 + 实测）**：审计此前**只记工具调用**（唯一写入点是派发漏斗）。
+  两个后果：① "模型说了什么、花了多久、这一轮有没有真的发出请求"完全不可查；
+  ② 一次在**模型调用阶段**失败的会话（正是 SAN-1/SAN-3 讨论的那类失败）在日志里
+  **一条记录都没有**——而那恰恰是最需要复盘的时候。
+- **新记录类型（`kind` 显式写在每行，工具行也写 `"tool"`——不做"缺省即工具"的
+  隐式约定）**：
+  - `kind="session"`：会话头（`status:"start"`）与尾（`"end"` / `"error"`），
+    带 `driver` / `model` / `endpoint` / `api_key_source`。
+    **绝不写密钥**——只写来源枚举名（`env` / `config_inline` / `config_file`），
+    与 `--check-config` 摘要同口径。
+  - `kind="model"`：每轮模型调用一条，含 `ms` / `req_bytes` / `resp_bytes` /
+    `attempts`（>1 即发生过重试）/ `prompt_tokens` / `completion_tokens`
+    / `status`（`ok` / `error`）。**失败也记**——那是复盘"这一轮为什么没跑起来"
+    的唯一线索。
+  - `kind="tool"`：既有形态，字段与顺序逐字不变。
+- **接入点脱敏**（顺带堵住一个真实泄漏面）：`endpoint` 落盘前剥掉 **query 与
+  userinfo**——部分网关把凭据放在 URL 里（`https://user:tok@host/v1/…?key=…`），
+  而审计是 append-only 的落盘文件。实测：配置里写
+  `…/chat/completions?key=SECRET&u=admin`，日志里只剩 `…/chat/completions`。
+- **token 只记 provider 给的数**：`usage` 由驱动**原样透传**（宿主不理解字段名），
+  宿主只挑 `prompt_tokens` / `completion_tokens` 记账，**不做任何推算或计费估算**；
+  provider 没给就不出现这两个键。
+- **兼容性钉子**：新增两条用例——① 三类记录各自的字段集合（含"会话记录不带工具
+  字段"）；② **老消费方的过滤表达式语义不变**（`tool == "run_command"` 仍只命中
+  那一条工具行）。E2E 的场景 7 也据此收窄：原断言「每行都有 tool/ok」在 SAN-9 后
+  不再成立，改为「每行都有 ts/session/kind」+「工具行的字段齐备（按 kind 过滤）」。
+- **反向验证**：把 `kind` 从工具行里去掉 → 兼容性用例转红（老过滤器会把
+  session/model 行误判成工具行）。
+- **实测样例**（一次 `--task` 跑完）：
+  `session(start) → model → tool → model → tool → model → tool → model → session(end)`，
+  共 9 条；`?key=SECRET` 与 URL userinfo 均未落盘。
+
 ### 2026-09-22 参数错误不再说成"执行失败"，丢弃的调用如实报数（SAN-8）
 
 > 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-8。
