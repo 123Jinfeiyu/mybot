@@ -45,6 +45,13 @@ public:
 	 * ——模型响应绝不能混进「stdout 只输出最终回答」这条约定。 */
 	virtual Json playQuiet(const Json& input) { return play(input); }
 
+	/* SAN-3（2026-09-22）：与 playQuiet 同路径，但 **ERR 时返回表而不是抛**，
+	 * 让调用方能按表上的结构化字段判类（agent 的重试判据需要区分
+	 * "稍后再试"与"别再试了"，而折成异常后只剩一句人话，判不了）。
+	 * 缺省实现 = 调 playQuiet 并让异常照常上抛：**只有真正能给出结构化错误的
+	 * 种类才有意义**（目前是 Lua 协议驱动），其余种类行为逐字不变。 */
+	virtual Json playQuietRaw(const Json& input) { return playQuiet(input); }
+
 	/* 种类标识（重构计划 2.3）：语义判定走虚调用，消灭调用方各自的
 	 * dynamic_cast 开关——此前 robot/agenttools/agentdriver 五处按子类
 	 * 判语义，认识全部硬件子类；新增种类时漏改一处即静默误判。

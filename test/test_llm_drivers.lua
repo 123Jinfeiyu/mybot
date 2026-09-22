@@ -600,6 +600,82 @@ do
 		on.messages[1].reasoning_content == "上一轮思考")
 end
 
+-- ========== SAN-3：错误必须带**结构化判据**（可重试分类的依据） ==========
+-- 背景（2026-09-22 实测）：宿主原先靠匹配人话子串判「能不能重试」
+-- （CURLE_* / "curl error" / "网络"），而真实错误是
+-- `curl rc=7: Could not connect to server`、`HTTP 503: {...}`——一个都不匹配，
+-- 于是 max_retries 在所有真实 HTTP/curl 失败上都不生效（实测各只发 1 次请求）。
+-- 判据因此改为结构化字段优先：驱动必须把 http_status / curl_rc / retriable /
+-- retry_after_ms 透出来，宿主据此判类。
+--
+-- 离线手法：`http` 是 llm_http.lua 的**单例表**（dofile 返回同一份），
+-- 临时替换它的 post 即可精确构造「服务端返回了什么」，无需真起 HTTP 服务。
+-- 用完必须还原（后面的用例还要用它连真服务）。
+do
+	local http = dofile("modules/lib/llm_http.lua")
+	local real_post = http.post
+	local function restore() http.post = real_post end
+
+	-- ---- ① 429：可重试 + 带上服务端给的 Retry-After（毫秒） ----
+	http.post = function()
+		return { ok = true, status = 429, body = '{"error":{"message":"slow down"}}',
+			retry_after_ms = 2000 }
+	end
+	local r1 = openai.perform("http://x/y", { timeout = 5 }, { model = "m" })
+	restore()
+	check("SAN-3：429 标为可重试", r1.retriable == true, tostring(r1.retriable))
+	check("SAN-3：429 带 http_status", r1.http_status == 429, tostring(r1.http_status))
+	check("SAN-3：Retry-After 以毫秒透出（服务端说了算）",
+		r1.retry_after_ms == 2000, tostring(r1.retry_after_ms))
+	check("SAN-3：ERR 表仍带人话 message",
+		r1.result == "ERR" and type(r1.message) == "string", tostring(r1.message))
+
+	-- ---- ② 503：可重试（服务端故障，重试有意义） ----
+	http.post = function() return { ok = true, status = 503, body = "{}" } end
+	local r2 = openai.perform("http://x/y", { timeout = 5 }, { model = "m" })
+	restore()
+	check("SAN-3：503 标为可重试", r2.retriable == true, tostring(r2.retriable))
+
+	-- ---- ③ 401/400：**不可**重试（重试不会改变结果，只烧配额） ----
+	http.post = function() return { ok = true, status = 401, body = "{}" } end
+	local r3 = openai.perform("http://x/y", { timeout = 5 }, { model = "m" })
+	restore()
+	check("SAN-3：401 标为不可重试", r3.retriable == false, tostring(r3.retriable))
+	http.post = function() return { ok = true, status = 400, body = "{}" } end
+	local r3b = openai.perform("http://x/y", { timeout = 5 }, { model = "m" })
+	restore()
+	check("SAN-3：400 标为不可重试", r3b.retriable == false, tostring(r3b.retriable))
+
+	-- ---- ④ 传输层失败：把 curl 数值退出码透出（散文靠不住） ----
+	http.post = function()
+		return { ok = false, err = "curl rc=7: Could not connect to server", curl_rc = 7 }
+	end
+	local r4 = openai.perform("http://x/y", { timeout = 5 }, { model = "m" })
+	restore()
+	check("SAN-3：传输失败透出 curl_rc", r4.curl_rc == 7, tostring(r4.curl_rc))
+	check("SAN-3：传输失败保留人话文案",
+		tostring(r4.message):find("curl rc=7") ~= nil, tostring(r4.message))
+
+	-- ---- ⑤ 没有 Retry-After 头时不长出该键（保持既有响应形态） ----
+	http.post = function() return { ok = true, status = 429, body = "{}" } end
+	local r5 = openai.perform("http://x/y", { timeout = 5 }, { model = "m" })
+	restore()
+	check("SAN-3：服务端没给 Retry-After 时不出现 retry_after_ms 键",
+		r5.retry_after_ms == nil, tostring(r5.retry_after_ms))
+	check("SAN-3：此时仍可重试（退避回落到本地指数）", r5.retriable == true)
+
+	-- ---- ⑥ 成功路径不受影响（形态逐字不变） ----
+	http.post = function()
+		return { ok = true, status = 200,
+			body = '{"choices":[{"message":{"role":"assistant","content":"ok"}}]}' }
+	end
+	local r6 = openai.perform("http://x/y", { timeout = 5 }, { model = "m" })
+	restore()
+	check("SAN-3：成功响应不带任何新的错误字段",
+		r6.result == "OK" and r6.content == "ok"
+		and r6.retriable == nil and r6.http_status == nil and r6.curl_rc == nil)
+end
+
 -- ========== 缺省端点注记（AG-13②，B2 后仅 DeepSeek 走缺省回退） ==========
 do
 	check("AG-13②：openai 暴露了注记函数（提到模块上供两库共用）",

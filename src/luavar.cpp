@@ -190,9 +190,11 @@ Json MtVars_Lua::forwardToControllers(const Json& metadata, const Json& res) {
 }
 
 /* ---- call 事件实现：trigger 前置调用 → 元数据 ∪ @Action 实时参数 → Lua call() ----
- * echo=false（playQuiet）时抑制顶层结果回显：agent 模式把驱动当模型传输用，
- * stdout 必须只留最终回答。其余语义（ERR 契约、controller 转发、元数据合并）不变。 */
-Json MtVars_Lua::callImpl(const Json& json, bool echo) {
+ * echo（CallMode::Echo）时回显顶层结果：管道模式的动作进度输出。
+ * Quiet / Raw 都不回显；两者唯一的差别是 ERR 的出口形态：
+ *   Quiet —— 折成异常（ensureOk），与改动前逐字一致；
+ *   Raw   —— **返回表**，让 agent 的传输层能按结构化字段判定重试类别（SAN-3）。 */
+Json MtVars_Lua::callImpl(const Json& json, CallMode mode) {
 	/* 防御：状态机已释放（未 build 即派发，或异常路径先销毁后被引用）时清晰报错，
 	 * 而非拿空指针进 LuaJIT 裸崩。readImpl/freeImpl 早有同款守卫，call 此前独缺
 	 * ——destroy 之后的晚到派发会直接段错误（防御强度不对称）。 */
@@ -201,6 +203,7 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 			+ "': Lua state not built or already released (variable destroyed before being called)");
 	}
 	bool top = (MtVars_Lua::topDepth == 0);
+	const bool echo = callEcho(mode);
 	/* 计数与回退收敛到 util 的 RAII（B6）：本处只判「是否顶层」，不设上限
 	 * （上限由 luabridge 的 kMaxLuaNesting 双向守），故用不带 limit 的 RecursionGuard。 */
 	RecursionGuard depthGuard(MtVars_Lua::topDepth);
@@ -229,8 +232,20 @@ Json MtVars_Lua::callImpl(const Json& json, bool echo) {
 	Json res = call_lua(L_, obj);
 	logD([&res] { return "Lua script call result: " + res.toString(); });
 
-	/* 本驱动 call 返回契约（含显式 ERR 即中断） */
-	MatrixVars_Hardware::ensureOk(res, "call " + luapath_);
+	/* 本驱动 call 返回契约（含显式 ERR 即中断）。
+	 * Raw 模式**刻意跳过**这一步：调用方要的就是那张 ERR 表本身。
+	 * 注意 Raw 不是"忽略错误"——它把判定责任交给调用方，而 agent 的传输层
+	 * 在拿到表之后一定会判类（不可重试类照样抛出，只是文案里带上结构化信息）。 */
+	if (mode != CallMode::Raw) {
+		MatrixVars_Hardware::ensureOk(res, "call " + luapath_);
+	} else if (res.isObj()) {
+		/* Raw 模式下仍拦住"连 result 字段都没有"的畸形返回：那不是可判类的
+		 * ERR，而是契约破坏（与 ensureOk 的第三条判据同源），照旧抛。 */
+		const Json* rs = res.find("result");
+		if (rs == nullptr || !rs->isStr()) {
+			MatrixVars_Hardware::ensureOk(res, "call " + luapath_);
+		}
+	}
 
 	if (!ctrlNames_.empty()) {
 		Json ctrl_res = forwardToControllers(metadata, res);

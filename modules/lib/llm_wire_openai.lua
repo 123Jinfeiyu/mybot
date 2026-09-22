@@ -345,10 +345,23 @@ function M.perform(endpoint, data, req)
 		timeout = tonumber(data.timeout) or 180,
 	})
 	if not res.ok then
-		return { result = "ERR", message = res.err }
+		-- SAN-3（2026-09-22）：传输层失败带上**结构化判据**。宿主此前靠
+		-- 匹配人话子串（CURLE_* / "curl error" / "网络"）判"能不能重试"，
+		-- 而真实错误长这样：`curl rc=7: Could not connect to server`
+		-- （curl_easy_strerror 返回的是英文散文）——一个子串都不匹配，
+		-- 于是 max_retries 在生产路径上从未生效。这里把数值退出码透出去，
+		-- 由宿主的 classifyDriverError 判类；message 原样保留（人读）。
+		return { result = "ERR", message = res.err, curl_rc = res.curl_rc }
 	end
 	if res.status ~= 200 then
-		return { result = "ERR", message = "HTTP " .. tostring(res.status) .. ": " .. snippet(res.body, 500) }
+		-- 429/5xx 是"稍后再试"，4xx 其余是"别再试了"——两者必须能分开，
+		-- 否则要么限流不重试（现状），要么把 401 也重试（烧配额）。
+		-- retriable 由本层显式给出（它知道 HTTP 语义），retry_after_ms 来自
+		-- llm_http 的头回调（服务端说了等多久就等多久，钳制由宿主做）。
+		local st = tonumber(res.status)
+		local retriable = (st == 429) or (st >= 500 and st <= 599)
+		return { result = "ERR", message = "HTTP " .. tostring(res.status) .. ": " .. snippet(res.body, 500),
+			http_status = st, retriable = retriable, retry_after_ms = res.retry_after_ms }
 	end
 
 	local decoded_ok, decoded = pcall(json.decode, res.body)

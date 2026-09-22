@@ -195,3 +195,99 @@ TH_TEST(agentdriver_declared_variable_is_not_reinjected) {
 	TH_CHECK(robot->registry().find("llm0") != nullptr);
 	robot->deactivate();
 }
+
+/* ============ SAN-3：错误的可重试分类（纯函数，离线穷举） ============
+ * 这是"重试到底认不认得出真实错误"的判据单点。旧实现按人话子串判定，而生产
+ * 路径的错误形态（curl rc=N: <散文>、HTTP 503: {...}）一个子串都不匹配——
+ * 实测 503/429/真实超时/连接被拒各只发 1 次请求（见
+ * .tmp/AGENT_NEXT_PLAN_20260922.md 的 SAN-3）。 */
+namespace {
+
+Json errTable(const std::string& json) { return parseJson(json); }
+
+} // namespace
+
+TH_TEST(agentdriver_classify_http_status) {
+	/* 429 = 限流（退避要尊重服务端的 Retry-After） */
+	{
+		DriverError e = classifyDriverError(
+			errTable("{\"result\":\"ERR\",\"message\":\"HTTP 429\",\"http_status\":429,"
+				 "\"retriable\":true,\"retry_after_ms\":2000}"),
+			"fallback");
+		TH_CHECK(e.cls == RetryClass::Throttled);
+		TH_CHECK(e.retryAfterMs == 2000);
+		TH_CHECK(e.message == "HTTP 429");
+	}
+	/* 5xx = 瞬时（重试有意义） */
+	for (long long code : {500LL, 502LL, 503LL, 504LL}) {
+		DriverError e = classifyDriverError(
+			errTable("{\"result\":\"ERR\",\"message\":\"HTTP " + std::to_string(code)
+				+ "\",\"http_status\":" + std::to_string(code) + ",\"retriable\":true}"),
+			"fallback");
+		TH_CHECK_MSG(e.cls == RetryClass::Transient, std::to_string(code));
+	}
+	/* 4xx（429 除外）= 别再试了：重试不会改变结果，只烧配额 */
+	for (long long code : {400LL, 401LL, 403LL, 404LL, 422LL}) {
+		DriverError e = classifyDriverError(
+			errTable("{\"result\":\"ERR\",\"message\":\"HTTP " + std::to_string(code)
+				+ "\",\"http_status\":" + std::to_string(code) + ",\"retriable\":false}"),
+			"fallback");
+		TH_CHECK_MSG(e.cls == RetryClass::No, std::to_string(code));
+	}
+}
+
+TH_TEST(agentdriver_classify_curl_rc) {
+	/* 连接类退出码可重试（含真实形态 curl rc=7 / rc=28） */
+	for (long long rc : {6LL, 7LL, 28LL, 35LL, 52LL, 55LL, 56LL}) {
+		DriverError e = classifyDriverError(
+			errTable("{\"result\":\"ERR\",\"message\":\"curl rc=" + std::to_string(rc)
+				+ ": whatever\",\"curl_rc\":" + std::to_string(rc) + "}"),
+			"fallback");
+		TH_CHECK_MSG(e.cls == RetryClass::Transient, std::to_string(rc));
+	}
+	/* 配置/凭据类退出码**不**可重试 */
+	for (long long rc : {1LL, 3LL, 60LL, 67LL}) {
+		DriverError e = classifyDriverError(
+			errTable("{\"result\":\"ERR\",\"message\":\"curl rc=" + std::to_string(rc)
+				+ ": whatever\",\"curl_rc\":" + std::to_string(rc) + "}"),
+			"fallback");
+		TH_CHECK_MSG(e.cls == RetryClass::No, std::to_string(rc));
+	}
+}
+
+TH_TEST(agentdriver_classify_retry_after_clamping) {
+	const auto after = [](long long ms) {
+		return classifyDriverError(
+			errTable("{\"result\":\"ERR\",\"message\":\"HTTP 429\",\"http_status\":429,"
+				 "\"retry_after_ms\":" + std::to_string(ms) + "}"),
+			"f").retryAfterMs;
+	};
+	TH_CHECK(after(0) == 0);				/* 0 = 没给 */
+	TH_CHECK(after(-5) == 0);				/* 负数当没给 */
+	TH_CHECK(after(1) == kRetryAfterMinMs);			/* 太短对限流无意义 */
+	TH_CHECK(after(2000) == 2000);				/* 区间内原样 */
+	TH_CHECK(after(86400LL * 1000) == kRetryAfterMaxMs);	/* 坏网关不能挂死 agent */
+}
+
+TH_TEST(agentdriver_classify_falls_back_to_text_for_legacy_drivers) {
+	/* 字段缺失时回落字符串判据：第三方/旧驱动仍可用（并且现在认得真实形态
+	 * "curl rc=" ——旧表里没有它，正是重试失效的直接原因）。 */
+	{
+		Json t = errTable("{\"result\":\"ERR\",\"message\":\"curl rc=7: Could not connect\"}");
+		TH_CHECK(classifyDriverError(t, "x").cls == RetryClass::Transient);
+	}
+	{
+		Json t = errTable("{\"result\":\"ERR\",\"message\":\"curl error 7: 网络不可达\"}");
+		TH_CHECK(classifyDriverError(t, "x").cls == RetryClass::Transient);
+	}
+	{
+		Json t = errTable("{\"result\":\"ERR\",\"message\":\"API key 无效\"}");
+		TH_CHECK(classifyDriverError(t, "x").cls == RetryClass::No);
+	}
+	/* 空表：用调用方给的兜底文案判定 */
+	Json empty;
+	TH_CHECK(classifyDriverError(empty, "curl rc=28: Timeout was reached").cls
+		== RetryClass::Transient);
+	TH_CHECK(classifyDriverError(empty, "模型既没有返回文本也没有工具调用").cls
+		== RetryClass::No);
+}

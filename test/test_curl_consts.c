@@ -39,6 +39,8 @@ _Static_assert(LLM_CONST_OPT_NOPROGRESS == 43,
 	"llm_http.lua OPT_NOPROGRESS drifted (expected 43)");
 _Static_assert(LLM_CONST_OPT_XFERINFOFUNCTION == 20219,
 	"llm_http.lua OPT_XFERINFOFUNCTION drifted (expected 20219)");
+_Static_assert(LLM_CONST_OPT_HEADERFUNCTION == 20079,
+	"llm_http.lua OPT_HEADERFUNCTION drifted (expected 20079)");
 _Static_assert(LLM_CONST_INFO_RESPONSE_CODE == 2097154,
 	"llm_http.lua INFO_RESPONSE_CODE drifted (expected 2097154)");
 _Static_assert(LLM_CONST_CURL_GLOBAL_ALL == 3,

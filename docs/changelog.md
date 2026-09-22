@@ -5,6 +5,51 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 重试真的认识真实错误了（SAN-3，含 429/5xx 与 Retry-After）
+
+> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-3。
+> **行为变更**：`max_retries` / `retry_backoff_ms` 从「事实上不生效」变成真的生效——
+> 429/5xx 与真实 curl 连接错误现在会重试，且限流时按服务端给的 `Retry-After` 退避。
+
+- **问题（已实测）**：重试判据是**匹配人话子串**（`CURLE_COULDNT_CONNECT` /
+  `CURLE_OPERATION_TIMEDOUT` / `curl error` / `网络` 等六个），而生产路径产出的
+  错误是 `curl rc=7: Could not connect to server`（`curl_easy_strerror` 返回英文
+  散文）与 `HTTP 503: {...}`——**六个子串一个都不匹配**。全仓唯一产出匹配串的地方
+  是测试夹具 `test/cpp/AgentFakeDriver.lua`，于是**这个重试循环只在夹具上跑得动**。
+  实测：503 / 429 / 真实超时（rc=28）/ 连接被拒（rc=7）**各只发 1 次请求**；
+  配置里写着 `max_retries: 3` 也照旧一次就放弃，且没有任何用例会发现。
+- **顺带**：`Retry-After` 完全不可达——`llm_http.lua` 的 `ffi.cdef` 里没有任何头
+  回调声明，响应头在 libcurl 里就被丢掉了。限流时"服务端说了等多久"这个最关键
+  的信息丢失，本地指数退避（1s/2s/4s）与真实限流窗口毫无关系。
+- **修法（结构化判据优先，字符串只作回落）**：
+  - `llm_http.lua` 挂一个只认 `Retry-After` 一行的头回调（`OPT_HEADERFUNCTION`，
+    编号进 `test_curl_consts.c` 与 `gen_const_check.cmake` 的常量自检），
+    解析 delta-seconds 并**只在真解析出数字时**挂 `retry_after_ms`；
+    失败路径补 `curl_rc`（数值退出码）。
+  - `llm_wire_openai.lua` 的非 200 分支给出 `http_status` / `retriable` /
+    `retry_after_ms`：**429 与 5xx 可重试，其余 4xx 不可**——两者此前长得一模一样，
+    要么限流不重试，要么把 401 也重试（烧配额）。
+  - 宿主新增 `classifyDriverError()`（纯函数、可离线穷举）：429 → `Throttled`，
+    5xx 与连接类 curl 码（6/7/28/35/52/55/56）→ `Transient`，其余 → `No`；
+    字段缺失时回落到字符串判据（旧驱动仍可用，且现在认得真实形态 `curl rc=`）。
+  - 新增 `MatrixVars_Hardware::playQuietRaw`（缺省 = 调 `playQuiet` 并照常抛，
+    只有 Lua 驱动覆写）：**ERR 时返回表而不是抛**，让判据能读到结构化字段。
+    公共的 `ensureOk` / `playQuiet` 语义零变更。
+  - 退避时长：`Throttled` 时取「服务端 Retry-After」与「本地指数退避」的**较大值**，
+    日志如实点名来源（`退避来源: 服务端 Retry-After`）；Retry-After 钳到
+    `[1s, 5min]`——坏网关回一个天文数字不能把 agent 挂死一天。
+- **超时场景的口径调整**：E2E 场景 3（`--llm-timeout` 生效）原先靠"1 秒超时后
+  4 秒内失败"判定，修复后缺省 `max_retries=3` 会让超时与重试叠加（>4s）而转红。
+  该场景现在显式配 `max_retries: 1`：**它量的是单次超时是否被 curl 尊重，
+  重试由场景 11 专门守**——两条判据各测各的，互不掩盖。
+- **守门**：E2E 场景 11 两条——`429x2ok`（前两次 429 + `Retry-After: 1`，第三次
+  正常回答）断言任务最终成功、日志点名 429、退避来源是服务端；`http-503` 断言
+  重试用尽后**如实失败**（不谎报成功）。夹具新增 `429x2ok` / `http-503` 模式，
+  并新增 `_error_status`（能产出带状态码与响应头的错误，与"400 请求错了"区分）。
+  Lua 侧 +12 条、C++ 侧 +4 条（穷举判类与钳制）。
+- **反向验证**：把非 200 分支改回旧形态（只有一句 message）→ 429 场景实测
+  `rc=1`、重试 0 次、服务端只收到 1 个 POST（即修复前的行为）。
+
 ### 2026-09-22 单轮截断不再复用 `tool_call_id`（SAN-1，阻塞级缺陷修复）
 
 > 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-1。

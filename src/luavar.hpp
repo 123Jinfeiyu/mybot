@@ -74,7 +74,16 @@ class MtVars_Lua : public MatrixVars_Hardware {
 		  trigNames_(std::move(trigNames)), trigPtrs_(trigNames_.size(), nullptr),
 		  registry_(registry) {}
 
-	Json callImpl(const Json& json, bool echo);
+	/* ---- 一次 call 的三种出口形态（SAN-3，2026-09-22）----
+	 * 原为 bool echo，agent 的重试判据需要"拿到 ERR 表本身"（表上带 http_status /
+	 * curl_rc / retriable 等结构化字段），而 bool 表达不了第三种形态。 */
+	enum class CallMode {
+		Echo,	/* play()：顶层回显结果表（管道模式的动作进度输出） */
+		Quiet,	/* playQuiet()：不回显；ERR 折成异常（agent 的模型调用走这条） */
+		Raw,	/* playQuietRaw()：不回显；**ERR 时返回表**，由调用方自己判类 */
+	};
+	Json callImpl(const Json& json, CallMode mode);
+	bool callEcho(CallMode m) const { return m == CallMode::Echo; }
 	Json readImpl();
 	void riseImpl();
 	void freeImpl();
@@ -108,10 +117,15 @@ public:
 		if (L_) { lua_close(L_); }
 	}
 
-	Json play(const Json& json) override { return callImpl(json, true); }
+	Json play(const Json& json) override { return callImpl(json, CallMode::Echo); }
 	const char* kindName() const override { return "lua"; }
 	/* agent 模式：同一个 call 路径但不回显结果（stdout 只留最终回答） */
-	Json playQuiet(const Json& json) override { return callImpl(json, false); }
+	Json playQuiet(const Json& json) override { return callImpl(json, CallMode::Quiet); }
+	/* SAN-3：ERR 时**返回表**而不是抛——agent 的传输层据此判定"这个错误可不可以
+	 * 重试"（429/5xx 与 curl rc 都在这张表上）。表结构与 playQuiet 的成功返回一致
+	 * （含 result/message 与驱动附加的 http_status / curl_rc / retriable /
+	 * retry_after_ms），所以调用方拿到的永远是同一种形状。 */
+	Json playQuietRaw(const Json& json) override { return callImpl(json, CallMode::Raw); }
 	/* B3：设置/清除图片游标表（传输层在 playQuiet 前后 RAII 调用）。
 	 * 首次设置时向本驱动的 Lua 状态注册全局 __bot_img(N)（受保护帧内注册，
 	 * __newindex 元方法报错不裸崩）；传 nullptr 只清表不注销（幂等）。 */

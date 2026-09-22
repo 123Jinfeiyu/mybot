@@ -65,6 +65,7 @@ local OPT_CONNECTTIMEOUT = 78
 local OPT_NOSIGNAL = 99
 local OPT_NOPROGRESS = 43
 local OPT_XFERINFOFUNCTION = 20219
+local OPT_HEADERFUNCTION = 20079
 local INFO_RESPONSE_CODE = 2097154
 local CURL_GLOBAL_ALL = 3
 local RC_ABORTED_BY_CALLBACK = 42
@@ -259,6 +260,24 @@ function Session:post(opts)
 	setopt_ptr(h, OPT_POSTFIELDS, body)
 	setopt_long(h, OPT_POSTFIELDSIZE, #body)
 	setopt_ptr(h, OPT_WRITEFUNCTION, cb)
+	-- Retry-After 捕获（SAN-3，2026-09-22）：限流场景下**服务端说了等多久**，
+	-- 而本地指数退避（1s/2s/4s）与真实限流窗口毫无关系。libcurl 不会把响应头
+	-- 交给我们（此前全仓没有任何头回调声明），所以挂一个只认这一行的头回调。
+	-- 只解析 delta-seconds 形态（HTTP-date 形态少见且要时区处理，不值得引入
+	-- 依赖；那类响应退化为本地指数退避，不影响正确性）。
+	-- 上限 8 位数字：坏网关回一个天文数字不能让宿主把它当成毫秒数用。
+	local retry_after_raw = nil
+	local hcb = ffi.cast("size_t (*)(char *, size_t, size_t, void *)",
+		function(p, s, n, _)
+			local len = tonumber(s) * tonumber(n)
+			if retry_after_raw == nil and len > 0 and len <= 256 then
+				local line = ffi.string(p, len)
+				local v = line:match("^[Rr]etry%-[Aa]fter:%s*(%d%d?%d?%d?%d?%d?%d?%d?%d?)%s*$")
+				if v ~= nil then retry_after_raw = tonumber(v) end
+			end
+			return len	-- 必须返回收到的字节数，否则 libcurl 判回调失败
+		end)
+	setopt_ptr(h, OPT_HEADERFUNCTION, hcb)
 	if slist ~= nil then setopt_ptr(h, OPT_HTTPHEADER, slist) end
 	setopt_long(h, OPT_TIMEOUT, M.clamp_timeout(opts.timeout, DEFAULT_TIMEOUT))
 	setopt_long(h, OPT_CONNECTTIMEOUT,
@@ -289,6 +308,7 @@ function Session:post(opts)
 	curl.curl_easy_reset(h)
 	cb:free()
 	if xcb ~= nil then xcb:free() end	-- 与 cb 同序：先 reset 再 free（AG-16）
+	hcb:free()	-- 同上：头回调也必须在 reset 之后释放（AG-16 的同一族约束）
 
 	-- 连接层失败（rc≠0）**刻意不重建句柄**（AG-20 的反向验证逼出来的第二条）：
 	-- 曾在这里做「坏了就换新」，LSan 实测**每次失败请求泄漏约 71 字节**
@@ -307,10 +327,16 @@ function Session:post(opts)
 		return { ok = false, err = "请求已取消（宿主收到停止信号）", cancelled = true }
 	end
 	if rc ~= 0 then
+		-- curl_rc（SAN-3）：数值退出码是**结构化判据**，比让人去认
+		-- curl_easy_strerror 的英文散文可靠得多（实测那些散文一个都不匹配
+		-- 宿主原来的六个 CURLE_* 子串，重试因此在生产路径上从未生效）。
 		return { ok = false, err = "curl rc=" .. tonumber(rc) .. ": "
-			.. ffi.string(curl.curl_easy_strerror(rc)) }
+			.. ffi.string(curl.curl_easy_strerror(rc)), curl_rc = tonumber(rc) }
 	end
-	return { ok = true, status = tonumber(code[0]), body = table.concat(chunks) }
+	local out = { ok = true, status = tonumber(code[0]), body = table.concat(chunks) }
+	-- 只有真解析出数字才挂这个键：空/畸形头不该长出一个 nil 语义的字段
+	if retry_after_raw ~= nil then out.retry_after_ms = retry_after_raw * 1000 end
+	return out
 end
 
 -- ---- 池化会话：agent 每轮模型调用的默认通道（2026-09-21 第三轮审计 AG-20）----

@@ -183,10 +183,18 @@ check_json "$CAP2" "all(t.get('function',{}).get('name') for t in d.get('tools',
 # ============ 场景 3：超时真的生效（防变参 cast 退化） ============
 echo "----- 场景 3：--llm-timeout 生效 -----"
 PORT=$((20800 + RANDOM % 300))
+# max_retries=1：本场景量的是**单次超时是否被 curl 尊重**（防 setopt 退回裸变参
+# 调用导致整型选项被静默忽略）。SAN-3 修好重试判据之后，缺省 max_retries=3 会让
+# 「超时」与「重试」叠加（1s×3 次 + 退避 > 4s），把这条判据变成在量重试——
+# 重试本身由场景 11 专门守，这里显式关掉，让两个判据各测各的（互不掩盖）。
+CFG3="$tmp/cfg-timeout.json"
+cat > "$CFG3" <<'JSON'
+{"max_retries": 1}
+JSON
 start_server "$PORT" "" slow || exit 1
 t0=$(date +%s)
 out3="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 30 "$BOT" --robot=robots/relay-test.sql \
-	--agent --llm-config none --task "随便问一句" --llm-timeout 1 \
+	--agent --llm-config "$CFG3" --task "随便问一句" --llm-timeout 1 \
 	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" 2>&1)"
 rc3=$?
 t1=$(date +%s)
