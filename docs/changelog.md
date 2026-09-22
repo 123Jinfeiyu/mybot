@@ -5,6 +5,37 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 动作执行回显改走 stderr（SAN-5），并修好两处会假绿的断言辅助
+
+> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-5。
+
+- **问题（已实测复现）**：`ActionRunner::runAction` 调的是会回显的 `play()`，
+  回显落在 `MtVars_Lua::callImpl` 的 `std::cout`（`----------` 分隔线 + 驱动结果表
+  `{"result":"OK",...}`）。于是 `--task` 的 stdout 里混进这两样，而 `docs/agent.md`
+  与 `src/main.cpp` 都写着「stdout 只放模型回答」——后果是 `--task` 不能安全地
+  接管道/重定向（`mybot --task … | jq`、写文件、被脚本消费全部受影响）。
+  E2E 此前全程 `2>&1` 合并两流，**结构上看不到**这件事。
+- **修法**：`MtVars_Lua::callImpl` 的三处 `std::cout` 改 `std::cerr`——回显是
+  **诊断输出**，它该在 stderr。**回显没有消失**（终端上两股都是屏幕），
+  管道模式的观感不变；唯一差异是把 stdout 重定向到文件的人会发现那两行不在文件里。
+  没有全局关掉回显：管道模式下那两行是**有用的进度输出**（动作边界）。
+- **如实声明的残余**：Lua 驱动自己 `print()` 的进度行（`Relay.lua` 的
+  `Relay: test=… -> delay=…`、`drv_common` 的 `VIRTUAL HARDWARE` 横幅）**仍然走
+  stdout**——48 个在库驱动都是这个写法。因此 stdout 契约收窄为**"宿主不往里写东西"**，
+  而不是"里面只有模型回答"；`docs/agent.md` 已按这个口径改写（原话过强）。
+  要彻底干净得让驱动经统一的输出辅助打印，属独立一项（未做，见重开条件）。
+- **顺带修好两处会假绿的断言辅助**（本项实现时实测踩到）：`scripts/agent_e2e.sh` 的
+  `check_present` / `check_absent` 用 `grep -qF "$2"` 时**少了 `--`**——模式以 `-`
+  开头（`"----------"` 正是）会被 grep 当选项串解析并静默返回非 0：
+  `check_present` 于是把"找到了"报成"没找到"（本次实测：separator 明明在文件里、
+  `head` 看得见、`grep -c` 得 1，函数却报 FAIL），而 `check_absent` 会**永远通过**
+  （方向相反，同样是假绿）。两处都补上 `--`。
+- **守门**：E2E 新增场景 12（stdout 纯净性，**不合并两流**）：断言
+  `----------` 与 `"result":"OK"` **不在** stdout、`----------` **在** stderr、
+  模型回答仍在 stdout。
+- **反向验证**：把三处 `std::cerr` 改回 `std::cout` → 场景 12 的两条"不在 stdout"
+  断言转红。
+
 ### 2026-09-22 预算降级不再把「没执行」说成「副作用已发生」（SAN-4，安全口径）
 
 > 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-4。

@@ -159,8 +159,11 @@ int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg)
 	}
 	agent::AgentDriverConfig dcfg = agent::makeDriverConfig(agentCfg);
 	/* 重试信息走 stderr——与下面 runAgentMode 的日志流是同一个，绝不进 stdout
-	 * （stdout 只放模型回答，混进去会污染 `--task` 的输出；C5 的 sink 缺省即
-	 * stderr，这里显式写出是为了让「走哪条流」在装配点可见）。 */
+	 * （宿主的输出一律走 stderr，混进去会污染 `--task` 的输出；C5 的 sink 缺省即
+	 * stderr，这里显式写出是为了让「走哪条流」在装配点可见）。
+	 * SAN-5 更正：此前这里写的是「stdout 只放模型回答」——那句话过强。宿主自己不往
+	 * stdout 写东西（动作回显也已从 std::cout 改到 std::cerr），但 Lua 驱动自己的
+	 * print() 仍走 stdout（48 个在库驱动如此），见 docs/agent.md 的如实声明。 */
 	dcfg.log = &std::cerr;
 	std::unique_ptr<agent::ChatTransport> transport =
 		agent::makeDriverTransport(driver, dcfg);

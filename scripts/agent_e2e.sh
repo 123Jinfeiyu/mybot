@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 十一个场景：
+# 十二个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -63,7 +63,10 @@ check() { # $1=输出 $2=子串 $3=说明
 	fi
 }
 check_present() { # $1=文件 $2=子串 $3=说明
-	if grep -qF "$2" "$1" 2>/dev/null; then
+	# `--` 必须有：模式以 "-" 开头时（SAN-5 场景要抓的动作分隔线就是 "----------"）
+	# grep 会把它当成选项串解析并**静默返回非 0**，本函数于是把"找到了"报成"没找到"。
+	# 实测踩到：separator 明明在文件里（head 看得见、grep -c 得 1），check_present 报 FAIL。
+	if grep -qF -- "$2" "$1" 2>/dev/null; then
 		echo "  [OK] $3"
 	else
 		echo "  [FAIL] $3（未找到: $2）"
@@ -71,7 +74,9 @@ check_present() { # $1=文件 $2=子串 $3=说明
 	fi
 }
 check_absent() { # $1=文件 $2=子串 $3=说明
-	if grep -qF "$2" "$1" 2>/dev/null; then
+	# 同样加 `--`：少了它，以 "-" 开头的模式会把 check_absent 变成**永远通过**
+	# （grep 报错 → 非 0 → 判"没找到"），方向相反但同样是假绿。
+	if grep -qF -- "$2" "$1" 2>/dev/null; then
 		echo "  [FAIL] $3（不应出现: $2）"
 		fail=1
 	else
@@ -562,6 +567,34 @@ else
 	echo "  [FAIL] 503 没有被重试（只出现 $n11b 次）"
 	fail=1
 fi
+
+# ============ 场景 12：宿主的动作回显不得污染 stdout（SAN-5）============
+echo "----- 场景 12：--task 的 stdout 纯净性（SAN-5） -----"
+# 缺陷形态（已实测）：ActionRunner 调的是会回显的 play()，而回显落在
+# MtVars_Lua::callImpl 的 std::cout 上——于是 `--task` 的 stdout 里混进
+# "----------" 与驱动结果表 {"result":"OK",...}，而 docs/agent.md 与
+# src/main.cpp 都写着「stdout 只放模型回答」。E2E 此前全程 2>&1 合并两流，
+# 结构上看不到这件事；后果是 --task 不能安全地接管道/重定向。
+# 判据：宿主自己的两块回显必须**只在 stderr**；模型回答仍在 stdout。
+# 注：Lua 驱动自己 print() 的进度行（如 Relay.lua 的 "Relay: test=…"）仍走
+# stdout——那是 48 个驱动的既有行为，不在本项范围内，已在 docs 里如实声明。
+PORT=$((24000 + RANDOM % 300))
+start_server "$PORT" "" ok || exit 1
+BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--task "$TASK" --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--agent-shell --llm-config none --scripts-dir scripts > "$tmp/so12.txt" 2> "$tmp/se12.txt"
+rc12=$?
+stop_server
+echo "===== stdout ====="; cat "$tmp/so12.txt"
+echo "===== stderr（尾部）====="; tail -3 "$tmp/se12.txt"
+if [ "$rc12" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc12"
+	fail=1
+fi
+check_absent "$tmp/so12.txt" "----------" "宿主的动作分隔线不再进 stdout"
+check_absent "$tmp/so12.txt" '"result":"OK"' "驱动的结果表不再进 stdout"
+check_present "$tmp/se12.txt" "----------" "动作分隔线出现在 stderr（回显没丢，只是换了流）"
+check_present "$tmp/so12.txt" "AGENT-E2E-完成" "模型回答仍在 stdout"
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

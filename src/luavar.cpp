@@ -208,7 +208,7 @@ Json MtVars_Lua::callImpl(const Json& json, CallMode mode) {
 	 * （上限由 luabridge 的 kMaxLuaNesting 双向守），故用不带 limit 的 RecursionGuard。 */
 	RecursionGuard depthGuard(MtVars_Lua::topDepth);
 
-	if (top && echo) { std::cout << "----------" << std::endl; }
+	if (top && echo) { std::cerr << "----------" << std::endl; }
 
 	/* 获取元数据（静态列缓存重放 + 引用列实时快照） */
 	Json metadata = getMetadata_(false);
@@ -249,11 +249,11 @@ Json MtVars_Lua::callImpl(const Json& json, CallMode mode) {
 
 	if (!ctrlNames_.empty()) {
 		Json ctrl_res = forwardToControllers(metadata, res);
-		if (top && echo) { std::cout << ctrl_res.toString() << std::endl; }
+		if (top && echo) { std::cerr << ctrl_res.toString() << std::endl; }
 		return ctrl_res;
 	}
 
-	if (top && echo) { std::cout << res.toString() << std::endl; }
+	if (top && echo) { std::cerr << res.toString() << std::endl; }
 	return res;
 }
 
