@@ -1,7 +1,10 @@
 #include "agentdriver.hpp"
 
+#include <chrono>
+#include <iostream>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -16,6 +19,17 @@ namespace {
 class LuaDriverTransport : public ChatTransport {
 	MatrixVars_Hardware* driver_;
 	AgentDriverConfig cfg_;
+
+	/* U-1：判定是否为可重试的网络错误 */
+	bool isRetriableError(const std::string& msg) const {
+		/* 基于 llm_http.lua 的错误消息格式判定（libcurl 错误码） */
+		return msg.find("CURLE_COULDNT_CONNECT") != std::string::npos
+			|| msg.find("CURLE_OPERATION_TIMEDOUT") != std::string::npos
+			|| msg.find("CURLE_RECV_ERROR") != std::string::npos
+			|| msg.find("CURLE_SEND_ERROR") != std::string::npos
+			|| msg.find("curl error") != std::string::npos
+			|| msg.find("网络") != std::string::npos;
+	}
 
 public:
 	LuaDriverTransport(MatrixVars_Hardware* driver, AgentDriverConfig cfg)
@@ -35,10 +49,44 @@ public:
 		}
 		if (!cfg_.thinking.empty()) { req.put("thinking", JsonString(cfg_.thinking)); }
 
-		/* playQuiet：与 play 同一路径但不回显结果表——模型响应绝不能混进
-		 * stdout。驱动的 ERR 契约由内部 ensureOk 抛出（带驱动给的 message）。 */
-		Json res = driver_->playQuiet(req);
-		return parseDriverResponse(res);
+		/* U-1：重试循环（指数退避） */
+		for (int attempt = 0; attempt < cfg_.maxRetries; ++attempt) {
+			try {
+				/* playQuiet：与 play 同一路径但不回显结果表——模型响应绝不能混进
+				 * stdout。驱动的 ERR 契约由内部 ensureOk 抛出（带驱动给的 message）。 */
+				Json res = driver_->playQuiet(req);
+				return parseDriverResponse(res);
+
+			} catch (const std::exception& e) {
+				std::string msg = e.what();
+
+				/* 判定是否可重试 */
+				if (!isRetriableError(msg)) {
+					throw;	/* 非网络错误（如 API key 错误），直接抛出 */
+				}
+
+				/* 最后一次也失败了 */
+				if (attempt == cfg_.maxRetries - 1) {
+					throw;	/* 用尽重试次数 */
+				}
+
+				/* 指数退避 */
+				int delayMs = cfg_.retryBackoffMs * (1 << attempt);  // 1s, 2s, 4s
+				std::cerr << "[agent] 网络错误，" << delayMs << "ms 后重试（"
+					<< (attempt + 1) << "/" << cfg_.maxRetries << "）: "
+					<< msg << std::endl;
+
+				std::this_thread::sleep_for(std::chrono::milliseconds(delayMs));
+
+				/* 二次中断检查（退避期间可能 Ctrl-C） */
+				if (stopRequested()) {
+					throw std::runtime_error("请求被中断");
+				}
+			}
+		}
+
+		/* 理论上不可达（循环内必然 throw 或 return） */
+		throw std::logic_error("重试逻辑错误");
 	}
 };
 
