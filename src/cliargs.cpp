@@ -40,6 +40,8 @@ constexpr OptionSpec kValueOptions[] = {
 	{"camera-var", [](CliOptions& o, const std::string& v) { o.cameraVar = v; }, true},
 	{"camera-device", [](CliOptions& o, const std::string& v) { o.cameraDevice = v; }, true},
 	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
+	{"audit-log", [](CliOptions& o, const std::string& v) { o.auditLog = v; }, true},
+	{"agent-policy", [](CliOptions& o, const std::string& v) { o.agentPolicy = v; }, true},
 	{"task", [](CliOptions& o, const std::string& v) { o.agentTask = v; }, true},
 	{"scripts-dir", [](CliOptions& o, const std::string& v) { o.scriptsDir = v; }, true},
 	{"prompt-file", [](CliOptions& o, const std::string& v) { o.promptFiles.push_back(v); }, true},
@@ -205,10 +207,18 @@ std::string helpText() {
 	s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
 	s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌，\n";
 	s += "                       要用就显式开启；理由与缓解见 docs/agent.md 安全一节）\n";
+	s += "  --agent-policy <路径> 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过\n";
+	s += "                       外部确认程序（stdin 收工具名与遮蔽后的参数 JSON，\n";
+	s += "                       退出 0 = 放行）；超时按 on_timeout（缺省 deny）处理；\n";
+	s += "                       缺省不启用。也可用配置文件 agent_policy 字段\n";
 	s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）；结构脚本已声明则直接用\n";
 	s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
 	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
 	s += "  --no-camera           不向智能体提供 capture_image 工具\n";
+	s += "  --audit-log <路径>    审计轨迹（JSON Lines 追加写）：每次工具调用一条记录\n";
+	s += "                       （时间戳/轮次/工具/参数/成败/耗时）；图片只记体积与指纹，\n";
+	s += "                       命令原文里的 KEY=VALUE 敏感值先遮蔽；\"-\" 表示写 stderr；\n";
+	s += "                       缺省不记录。也可用配置文件 audit_log 字段\n";
 	s += "取值优先级：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。\n";
 	s += "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/help 帮助，/exit 退出。\n";
 	s += "\n";
@@ -258,7 +268,10 @@ std::string helpText(const std::string& topic) {
 		s += "                       目录收集其中全部 .md 按文件名自然排序（编号即装载顺序），\n";
 		s += "                       文件间以 \"## 文件名\" 分节；也可用配置文件 prompt_files 数组\n";
 		s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
-		s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌）\n\n";
+	s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌）\n";
+	s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
+	s += "                       确认程序（stdin 收工具名与参数 JSON，退出 0 = 放行；\n";
+	s += "                       超时按 on_timeout，缺省 deny）；缺省不启用\n\n";
 		s += "REPL 内置命令：/hardware, /scripts, /help, /exit\n\n";
 		s += "示例：\n";
 		s += "  ./build/mybot --robot=robots/relay-test.sql --agent --task \"让继电器动作一次\"\n";
@@ -289,7 +302,9 @@ std::string helpText(const std::string& topic) {
 		s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）\n";
 		s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
 		s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
-		s += "  --no-camera           不向智能体提供 capture_image 工具\n\n";
+		s += "  --no-camera           不向智能体提供 capture_image 工具\n";
+		s += "  --audit-log <路径>    审计轨迹（JSON Lines 追加写；\"-\"=stderr；缺省不记录）\n";
+		s += "                        也可用配置文件 audit_log 字段\n\n";
 		s += "示例：\n";
 		s += "  ./build/mybot --robot=robots/spider1.sql --agent --camera-device /dev/video1\n";
 		s += "  ./build/mybot --robot=robots/spider1.sql --agent --camera-src test.jpg\n";

@@ -31,10 +31,20 @@ constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
 
 /* 工具执行结果。图片走**独立通道**：OpenAI 协议的 tool 消息只允许文本，
  * 图片必须由工具循环另起一条 user 消息注入（见 agentloop），
- * 这也是 robot_agent 的既有做法。 */
+ * 这也是 robot_agent 的既有做法。
+ * ok/error 供审计轨迹用（agentaudit）：工具异常/未知工具/脚本执行失败置
+ * ok=false，文本回传给模型的内容不变——审计只是旁观记账，不改变回执。 */
 struct AgentToolResult {
 	std::string text;
 	std::string imageDataUrl;	/* 非空 = "data:image/jpeg;base64,..." */
+	bool ok = true;			/* false = 工具本身失败（参数错/未知工具/异常） */
+	std::string error;		/* ok=false 时的人话原因 */
+	/* 带构造函数（非聚合）：存量代码大量使用两字段初始化 {text, img}，聚合
+	 * 形态下它们会触发 -Wmissing-field-initializers（本仓库 -Wall -Wextra
+	 * 零告警基线）；构造函数让两字段形态显式表示「ok=true 缺省」。 */
+	AgentToolResult() = default;
+	AgentToolResult(std::string t, std::string img, bool ok_ = true, std::string err_ = "")
+		: text(std::move(t)), imageDataUrl(std::move(img)), ok(ok_), error(std::move(err_)) {}
 };
 
 /* 一个可被模型调用的工具。execute 返回给模型的内容；抛异常表示工具失败

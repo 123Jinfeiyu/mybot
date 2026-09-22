@@ -62,6 +62,13 @@ struct CliOptions {
 	std::string cameraDevice;	/* --camera-device：重设设备路径 */
 	std::string cameraSrc;		/* --camera-src：模拟图片来源文件 */
 	bool noCamera = false;		/* --no-camera：不提供拍照工具 */
+	/* --audit-log：审计轨迹落点（JSON Lines 追加；"-" = stderr）。
+	 * 缺省空 = 不记录（保持既有语义）。打开失败的报错与退出在
+	 * agent::buildAgentConfig（配置错误不碰真机）。 */
+	std::string auditLog;
+	/* --agent-policy：策略钩子文件（严格 JSON；空 = 不启用，全部放行）。
+	 * 加载与校验失败在 agent::buildAgentConfig 报错退出（配置错误不碰真机）。 */
+	std::string agentPolicy;
 };
 
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。

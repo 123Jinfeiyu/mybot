@@ -1,9 +1,11 @@
 #include "agentloop.hpp"
 
+#include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
 
+#include "agentpolicy.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -202,13 +204,57 @@ std::string AgentSession::appendFinalAnswer(const ChatResponse& resp) {
  * 本函数不写 assistant 消息、不动 complete 边界：调用方保证一轮里的 tool 消息
  * 与 assistant.tool_calls 一一对应。 */
 std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
-	(void)turn;
 	AgentToolResult result;
+	Json parsedArgs;
+	bool argsOk = false;
+	const auto t0 = std::chrono::steady_clock::now();
+	/* ---- 策略钩子（P3，--agent-policy）----
+	 * 执行**之前**确认：被拒的工具一个副作用都不能有（与 AG-4 的「执行后
+	 * 降级」相反——那边副作用已发生只能如实说明，这边还没发生所以拦得住）。
+	 * 拒绝/超时折成一句工具回执：模型知道「没执行、为什么、该怎么调整」，
+	 * 循环照常推进，而不是让整个任务崩掉。 */
+	bool denied = false;
 	try {
-		Json args = parseToolArguments(call.arguments);
-		result = tools_.execute(call.name, args);
+		parsedArgs = parseToolArguments(call.arguments);
+		argsOk = true;
+		if (opts_.policy && opts_.policy->requiresConfirm(call.name)) {
+			const PolicyDecision d = opts_.policy->confirm(call.name, parsedArgs);
+			if (!d.allowed) {
+				denied = true;
+				result = AgentToolResult{
+					std::string("本次工具调用未执行：被策略拦截（--agent-policy，")
+						+ d.reason + "）。请改用无需确认的工具，"
+						  "或告知操作者调整策略后重试。",
+					"", false, "policy_denied: " + d.reason};
+			}
+		}
+		if (!denied) { result = tools_.execute(call.name, parsedArgs); }
 	} catch (const std::exception& e) {
-		result = {std::string("工具参数错误: ") + e.what(), ""};
+		result = AgentToolResult{std::string("工具参数错误: ") + e.what(), "", false, e.what()};
+	}
+	const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - t0).count();
+
+	/* ---- 审计轨迹（P1）：参数错误也记——「模型想做什么但没做成」同样是审计
+	 * 信息（被策略拒绝的调用也走这条：ok=false + error=policy_denied）。
+	 * 图片只记字节数与指纹，不落 base64；命令原文遮蔽敏感值（maskToolArgs
+	 * 单点，与确认程序的输入同一份）。 ---- */
+	if (opts_.audit) {
+		AuditEntry e;
+		e.turn = turn;
+		e.tool = call.name;
+		if (argsOk && parsedArgs.isObj()) {
+			e.args = maskToolArgs(call.name, parsedArgs);
+		}
+		e.argsRaw = call.arguments;
+		e.ok = result.ok;
+		e.error = result.error;
+		e.ms = elapsedMs;
+		e.bytes = result.text.size();
+		e.imageBytes = result.imageDataUrl.size();
+		if (!result.imageDataUrl.empty()) { e.imageFp = fingerprint64(result.imageDataUrl); }
+		if (call.name == "run_command") { e.exitCode = extractExitCode(result.text); }
+		opts_.audit->write(e);
 	}
 
 	/* ---- 任务内预算判定（AG-4 + AG-21）---- */

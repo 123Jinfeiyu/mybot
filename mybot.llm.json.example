@@ -24,5 +24,8 @@
   "camera_var": "cam0",
   "camera_device": "",
   "camera_src": "",
-  "allow_camera": true
+  "allow_camera": true,
+
+  "audit_log": "",
+  "agent_policy": ""
 }

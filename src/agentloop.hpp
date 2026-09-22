@@ -12,14 +12,18 @@
  */
 
 #include <iosfwd>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include "agentaudit.hpp"
 #include "agentproto.hpp"
 #include "agenttools.hpp"
 
 namespace bot {
 namespace agent {
+
+class AgentPolicy;	/* agentpolicy.hpp（仅 shared_ptr 成员，避免拖入完整定义） */
 
 struct AgentOptions {
 	int maxTurns = 8;		/* 单次任务的最大模型调用轮数 */
@@ -51,6 +55,15 @@ struct AgentOptions {
 	 * 而不是让整个会话进入不可恢复状态。0 = 不限制。 */
 	std::size_t maxTaskToolResultBytes = 2 * 1024 * 1024;
 	std::size_t maxTaskImageBytes = 4 * 1024 * 1024;
+	/* 审计轨迹（--audit-log，默认空 = 关闭）。挂在 AgentOptions 上而非工具层，
+	 * 因为唯一漏斗是 dispatchOneCall（工具层不知道轮次，也兜不住参数解析
+	 * 失败那条路径）；shared_ptr 便于配置与测试共享同一实例。 */
+	std::shared_ptr<AuditLog> audit;
+	/* 策略钩子（--agent-policy，P3；默认空 = 现状，全部放行）。命中
+	 * require_confirm 的工具在派发前先过外部确认程序（退出 0 = 放行），
+	 * 拒绝/超时折成一句工具回执——模型知道「没执行、为什么」，循环继续。
+	 * 同样挂派发漏斗：确认发生与否取决于工具名+参数，工具层与轮次层都不合适。 */
+	std::shared_ptr<const AgentPolicy> policy;
 };
 
 class AgentSession {

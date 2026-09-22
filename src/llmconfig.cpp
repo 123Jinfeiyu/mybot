@@ -152,6 +152,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"timeout", "max_tokens", "temperature", "top_p",
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
 		"prompt_files", "camera_var", "camera_device", "camera_src", "allow_camera",
+		"audit_log", "agent_policy",
 	};
 	for (const auto& kv : root.items()) {
 		if (kKnown.count(kv.first) == 0) {
@@ -176,6 +177,8 @@ bool parseConfigStrings(const std::string& path, const Json& root, LlmFileConfig
 	if (!wantString(path, root, "camera_var", out.cameraVar, err)) { return false; }
 	if (!wantString(path, root, "camera_device", out.cameraDevice, err)) { return false; }
 	if (!wantString(path, root, "camera_src", out.cameraSrc, err)) { return false; }
+	if (!wantString(path, root, "audit_log", out.auditLog, err)) { return false; }
+	if (!wantString(path, root, "agent_policy", out.agentPolicy, err)) { return false; }
 
 	/* thinking 允许 "enabled"/"disabled" 字符串，也允许 true/false 布尔 */
 	if (auto v = root.get("thinking")) {

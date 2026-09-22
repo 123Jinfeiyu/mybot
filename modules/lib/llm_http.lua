@@ -38,6 +38,8 @@ const char *curl_easy_strerror(int code);
 struct curl_slist *curl_slist_append(struct curl_slist *l, const char *s);
 void curl_slist_free_all(struct curl_slist *l);
 int curl_global_init(long flags);
+void *fopen(const char *path, const char *mode);
+int fclose(void *fp);
 ]]
 
 local M = {}
@@ -61,8 +63,11 @@ local OPT_HTTPHEADER = 10023
 local OPT_TIMEOUT = 13
 local OPT_CONNECTTIMEOUT = 78
 local OPT_NOSIGNAL = 99
+local OPT_NOPROGRESS = 43
+local OPT_XFERINFOFUNCTION = 20219
 local INFO_RESPONSE_CODE = 2097154
 local CURL_GLOBAL_ALL = 3
+local RC_ABORTED_BY_CALLBACK = 42
 
 local DEFAULT_MAX_RESPONSE = 8 * 1024 * 1024
 local DEFAULT_TIMEOUT = 180
@@ -207,6 +212,29 @@ function Session:post(opts)
 			return len
 		end)
 
+	-- 取消哨兵（P2a，2026-09-22）：宿主收到 SIGINT 时在 BOT4CJ_LLM_CANCEL_FILE
+	-- 创建哨兵文件；libcurl 的进度回调（缺省约 1 秒一次）发现它存在即返回非 0
+	-- 中止请求——模型调用因此能被 Ctrl-C **及时**打断，而不是只能等满
+	-- CURLOPT_TIMEOUT（最长 600s）或按第二次 Ctrl-C 强杀（跳过 deactivate）。
+	-- 跨层走文件系统是刻意的：驱动沙箱拿不到宿主内存，文件是零新依赖的通道。
+	-- CURLOPT_NOPROGRESS 必须显式置 0：libcurl 缺省为 1（不调进度回调），
+	-- 不置位则哨兵永远不会被检查——这条与「整型选项必须 setopt_long」是同一族。
+	local cancel_path = os.getenv("BOT4CJ_LLM_CANCEL_FILE")
+	local xcb = nil
+	if cancel_path ~= nil and cancel_path ~= "" then
+		xcb = ffi.cast("int (*)(void *, double, double, double, double)",
+			function(_, _, _, _, _)
+				-- 不用 io.open：驱动沙箱已移除 io.open（防驱动直接读写文件），
+				-- 但 ffi 可用——直调 libc fopen/fclose 只做「存在性探测」，不开读写通道
+				local f = ffi.C.fopen(cancel_path, "r")
+				if f ~= nil then
+					ffi.C.fclose(f)
+					return 1	-- 非 0：libcurl 以 CURLE_ABORTED_BY_CALLBACK(42) 中止
+				end
+				return 0
+			end)
+	end
+
 	curl.curl_easy_reset(self.handle)
 	local h = self.handle
 	local slist = nil
@@ -236,6 +264,10 @@ function Session:post(opts)
 	setopt_long(h, OPT_CONNECTTIMEOUT,
 		M.clamp_timeout(opts.connect_timeout, DEFAULT_CONNECT_TIMEOUT))
 	setopt_long(h, OPT_NOSIGNAL, 1)
+	if xcb ~= nil then
+		setopt_long(h, OPT_NOPROGRESS, 0)	-- 缺省 1 = 不调进度回调，哨兵将永远不被检查
+		setopt_ptr(h, OPT_XFERINFOFUNCTION, xcb)
+	end
 
 	local rc = curl.curl_easy_perform(h)
 	local code = ffi.new("long[1]")
@@ -256,6 +288,7 @@ function Session:post(opts)
 	-- 响应码一起清掉，成功路径要留着它）。
 	curl.curl_easy_reset(h)
 	cb:free()
+	if xcb ~= nil then xcb:free() end	-- 与 cb 同序：先 reset 再 free（AG-16）
 
 	-- 连接层失败（rc≠0）**刻意不重建句柄**（AG-20 的反向验证逼出来的第二条）：
 	-- 曾在这里做「坏了就换新」，LSan 实测**每次失败请求泄漏约 71 字节**
@@ -267,6 +300,11 @@ function Session:post(opts)
 	-- 调 Session:recreate。
 	if overflow then
 		return { ok = false, err = "响应超过 " .. max_response .. " 字节上限" }
+	end
+	if rc == RC_ABORTED_BY_CALLBACK then
+		-- 取消哨兵命中：人话报错，宿主与操作者都看得出「这是被打断，不是故障」；
+		-- 消息刻意不含「网络」等重试关键词（agentdriver 的可重试判据据此跳过）
+		return { ok = false, err = "请求已取消（宿主收到停止信号）", cancelled = true }
 	end
 	if rc ~= 0 then
 		return { ok = false, err = "curl rc=" .. tonumber(rc) .. ": "

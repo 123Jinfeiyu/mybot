@@ -358,6 +358,30 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 			return false;
 		}
 	}
+
+	/* ---- 10) 审计轨迹（--audit-log / 配置文件 audit_log；"-" = stderr）----
+	 * 在这里就打开：路径打不开属于配置错误，必须在结构装载与上电之前失败
+	 * （「配置错误不碰真机」），而不是等到第一次工具调用才炸。 */
+	out.auditLogPath = pickString(opts.auditLog, nullptr, file.auditLog);
+	if (!out.auditLogPath.empty()) {
+		out.audit = std::make_shared<AuditLog>();
+		if (std::string auditErr; !out.audit->open(out.auditLogPath, auditErr)) {
+			err = auditErr;
+			return false;
+		}
+	}
+
+	/* ---- 11) 策略钩子（--agent-policy / 配置文件 agent_policy）----
+	 * 在这里就加载：策略文件写错属于配置错误，必须在上电之前失败（同一口径）。
+	 * 注意它**不是**安全边界：确认程序与宿主同权限，真正的隔离仍是专用
+	 * 用户 / 容器（docs/agent.md 安全一节的既有口径不变）。 */
+	out.policyPath = pickString(opts.agentPolicy, nullptr, file.agentPolicy);
+	if (!out.policyPath.empty()) {
+		if (std::string policyErr; !(out.policy = AgentPolicy::load(out.policyPath, policyErr))) {
+			err = policyErr;
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -472,6 +496,8 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	aopts.verbose = cfg.verbose;
 	aopts.log = &log;
 	aopts.systemPrompt = buildAgentSystemPrompt(cfg, robot);
+	aopts.audit = cfg.audit;
+	aopts.policy = cfg.policy;
 
 	AgentSession session(transport, tools, std::move(aopts));
 

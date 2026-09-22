@@ -35,10 +35,16 @@ _Static_assert(LLM_CONST_OPT_CONNECTTIMEOUT == 78,
 	"llm_http.lua OPT_CONNECTTIMEOUT drifted (expected 78)");
 _Static_assert(LLM_CONST_OPT_NOSIGNAL == 99,
 	"llm_http.lua OPT_NOSIGNAL drifted (expected 99)");
+_Static_assert(LLM_CONST_OPT_NOPROGRESS == 43,
+	"llm_http.lua OPT_NOPROGRESS drifted (expected 43)");
+_Static_assert(LLM_CONST_OPT_XFERINFOFUNCTION == 20219,
+	"llm_http.lua OPT_XFERINFOFUNCTION drifted (expected 20219)");
 _Static_assert(LLM_CONST_INFO_RESPONSE_CODE == 2097154,
 	"llm_http.lua INFO_RESPONSE_CODE drifted (expected 2097154)");
 _Static_assert(LLM_CONST_CURL_GLOBAL_ALL == 3,
 	"llm_http.lua CURL_GLOBAL_ALL drifted (expected 3)");
+_Static_assert(LLM_CONST_RC_ABORTED_BY_CALLBACK == 42,
+	"llm_http.lua RC_ABORTED_BY_CALLBACK drifted (expected 42)");
 
 /* ---- 第二段：curl.h 未漂移（原判据，保留）---- */
 
@@ -61,6 +67,12 @@ _Static_assert(CURLOPT_CONNECTTIMEOUT == 78,
 	"CURLOPT_CONNECTTIMEOUT != 78 (llm_http.lua OPT_CONNECTTIMEOUT)");
 _Static_assert(CURLOPT_NOSIGNAL == 99,
 	"CURLOPT_NOSIGNAL != 99 (llm_http.lua OPT_NOSIGNAL)");
+_Static_assert(CURLOPT_NOPROGRESS == 43,
+	"CURLOPT_NOPROGRESS != 43 (llm_http.lua OPT_NOPROGRESS)");
+_Static_assert(CURLOPT_XFERINFOFUNCTION == 20219,
+	"CURLOPT_XFERINFOFUNCTION != 20219 (llm_http.lua OPT_XFERINFOFUNCTION)");
+_Static_assert(CURLE_ABORTED_BY_CALLBACK == 42,
+	"CURLE_ABORTED_BY_CALLBACK != 42 (llm_http.lua RC_ABORTED_BY_CALLBACK)");
 
 _Static_assert(CURLINFO_RESPONSE_CODE == 2097154,
 	"CURLINFO_RESPONSE_CODE != 2097154 (llm_http.lua INFO_RESPONSE_CODE)");

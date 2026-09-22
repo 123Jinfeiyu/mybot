@@ -102,6 +102,8 @@ set(MYBOT_CORE_SOURCES
   src/agentloop.cpp
   src/agentmode.cpp
   src/agentdriver.cpp
+  src/agentaudit.cpp
+  src/agentpolicy.cpp
   src/promptpack.cpp
 )
 
@@ -182,6 +184,8 @@ add_executable(mybot_tests
   test/cpp/test_agentdriver.cpp
   test/cpp/test_agenttools.cpp
   test/cpp/test_agentloop.cpp
+  test/cpp/test_agentaudit.cpp
+  test/cpp/test_agentpolicy.cpp
   test/cpp/test_promptpack.cpp
   src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
@@ -323,7 +327,7 @@ endif()
 # ======================================================================
 file(GLOB MYBOT_CPP_TEST_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/cpp/test_*.cpp)
 set(MYBOT_CPP_TEST_REGISTERED
-  test_actionsource test_agentdriver test_agentloop test_agentproto test_agenttools
+  test_actionsource test_agentaudit test_agentdriver test_agentloop test_agentpolicy test_agentproto test_agenttools
   test_cliargs test_daemon_concurrency test_daemon test_expr test_hardware test_json
   test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
   test_mtmerge test_promptpack test_robot test_sqlparse test_util)

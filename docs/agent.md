@@ -57,10 +57,12 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--prompt-file <路径>` | **提示词包**，可重复传入（文件或目录），拼接后追加到系统提示词（见下节） | — |
 | `--agent-shell` | **显式开启** `run_command`（任意 shell 执行） | **不提供**（见「安全」节） |
+| `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序** | 不启用（见「策略钩子」节） |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」（只读该文件所在目录内的文件） | — |
 | `--no-camera` | **不**注册 `capture_image`（去掉拍照能力） | 关（默认注册，前提是该变量解析到 Lua 驱动，见安全说明第 5 条） |
+| `--audit-log <路径>` | 审计轨迹落点（JSON Lines 追加写；`-` = stderr） | 不记录（见「审计轨迹」节） |
 
 取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
 API key 没有命令行入口（只从环境变量或配置文件取）：argv 对同用户进程可读（`/proc/<pid>/cmdline`）。
@@ -103,7 +105,7 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   缺省查找依赖 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`
-  `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera`。
+  `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log` `agent_policy`。
   全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
   （每项为文件或目录，语义同 `--prompt-file`），空数组按「未配置」。
   `allow_shell` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，写 `true`
@@ -326,6 +328,58 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 - **示例包**：`prompts/spider_robot/` 定义蜘蛛机器人的身份、摄像头能力与动作脚本用法、
   动作脚本语义表、行为纪律（前方有障碍不得前进），展示「大模型大脑 + 脚本驱动
   硬件」的完整绑定链路。提示词包是纯 Markdown，照着这个目录结构写你自己的即可。
+
+## 审计轨迹：--audit-log
+
+`--audit-log <路径>`（或配置文件 `audit_log` 字段；`-` 表示写 stderr）以 **JSON Lines**
+追加记录每次工具调用——部署形态为「机器人跑在现场」时，出事后「模型到底做了什么」
+靠它复盘：
+
+```json
+{"ts":"2026-09-22T17:04:11.238+08:00","session":"1a2b3c4d","turn":2,"tool":"run_command",
+ "args":{"command":"ls -l /dev/video0","timeout_seconds":10},"ok":true,"ms":43,
+ "bytes":812,"exit_code":0}
+```
+
+- **位置在宿主派发漏斗**（`agentloop` 的 `dispatchOneCall`）：Lua 驱动与 `.mt` 脚本都绕不过；参数解析失败、未知工具、工具异常同样各记一条（「模型想做什么但没做成」也是审计信息）。
+- **图片不进日志**：`capture_image` 只记 `image_bytes` 与 16 位指纹（`image_fp`，FNV-1a 64，非密码学摘要）——否则每次拍照数百 KB 灌进磁盘，且画面可能含隐私。
+- **密钥遮蔽**：`run_command` 的命令原文记进 `args.command` 前先遮蔽敏感值——`KEY=VALUE`、`Authorization: Bearer <tok>`、裸 `Bearer <tok>` 三种形态的值替换为 `***`；判据与 `run_command` 的环境清洗同源（整词切词，`KEYSTONE`/`MONKEY` 不误伤）。
+- **失败响亮**：日志流写入失败（磁盘满等）向 stderr 告警一次，不打断机器人动作；路径打不开则**上电前**报错退出 2（「配置错误不碰真机」）。
+- 默认**关闭**（不传 = 不写任何东西）；开启即 append-only，不做轮转（交给外部工具收集）。会话开始时把实际落点打印到 stderr。
+- 审计是**记录**不是防线：它不审批、不拦截；配合 `--agent-shell` 使用时请把它当「事后追责」证据，而非「事前阻止」闸门。
+
+## 策略钩子：--agent-policy
+
+`--agent-policy <路径>`（或配置文件 `agent_policy` 字段）声明**哪些工具的每次调用要先过外部确认程序**。
+审批的形态（终端 y/n、手机推送、工单系统）随部署而变，本项目不猜——把判断权交给使用者声明的外部程序：
+
+```json
+{
+  "require_confirm": ["run_command"],
+  "confirm_command": "/usr/local/bin/notify-and-approve",
+  "confirm_timeout_sec": 30,
+  "on_timeout": "deny"
+}
+```
+
+- **确认协议**：命中 `require_confirm` 的工具在**执行之前**，宿主把
+  `{"tool": "<工具名>", "args": {…}}` 写给确认程序的 stdin，按其**退出码**裁决——`0` = 放行，
+  其他一律拒绝；参数先经密钥遮蔽（`run_command` 的 `command` 字段，与审计日志同一单点），
+  因为确认程序的输出、截图、转发不受本仓控制。
+- **超时**：确认程序 `confirm_timeout_sec`（1-86400，缺省 30）内不退出，按 `on_timeout` 处理
+  （`deny` 缺省，与全仓 fail-closed 一致；可显式配 `allow`）；超时的进程组会被 SIGKILL 并回收。
+- **拒绝的形态**：被拒的调用**没有副作用**，模型收到一句工具回执（含拒绝原因），
+  工具循环照常推进——模型知道「没执行、为什么」，可以改道或提醒操作者；审计日志同样
+  记一条 `ok:false, error:"policy_denied: …"`。
+- **默认不启用**（不传 = 现状语义，全部放行），零行为变更；启用者显式承担
+  「确认程序必须可靠」的责任——它挂了（退出非 0 / 被信号杀 / 超时）默认都是**拒**。
+- **它不是安全边界**：确认程序与宿主同权限，能读宿主内存的攻击者同样能绕过它；
+  真正的隔离仍是专用用户 / 容器 / 网络命名空间（见下节）。策略钩子提供的是
+  「不用自己造轮子」的人在环入口，不是对抗边界。
+- 策略文件与配置文件同一解析口径：严格 JSON、未知字段拒绝、类型/区间不符退出 2；
+  `require_confirm` 与 `confirm_command` 必须成对出现（只给一半视为配置错误，上电前报错）。
+- 配置错误（路径打不开、JSON 不合法、字段非法）在 `buildAgentConfig` 阶段失败——
+  「配置错误不碰真机」。
 
 ## 安全说明（请务必读）
 

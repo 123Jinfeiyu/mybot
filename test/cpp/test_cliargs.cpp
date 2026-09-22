@@ -195,7 +195,14 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	 * --agent-shell 顶掉 --agent-no-shell，故净减 1） */
 	TH_CHECK(defs.count("--llm-key") == 0);
 	TH_CHECK(defs.count("--agent-no-shell") == 0);
-	TH_CHECK(defs.size() == 22);
+	/* 分段帮助（2026-09-22）把 --help <topic> 四行并入帮助正文（23），审计轨迹
+	 * （--audit-log，2026-09-22）再加一项（24），策略钩子（--agent-policy，
+	 * 2026-09-22）再加一项（25）。计数断言是「帮助 ↔ docs 双向一致」守卫的
+	 * 一部分：随选项增删同步更新。 */
+	TH_CHECK(defs.size() == 25);
+	TH_CHECK(defs.count("--help") == 1);
+	TH_CHECK(defs.count("--audit-log") == 1);
+	TH_CHECK(defs.count("--agent-policy") == 1);
 
 	/* docs 侧：reference.md（CLI 参考）与 agent.md（agent 专属选项表）的选项表行 */
 	const std::set<std::string> ref =

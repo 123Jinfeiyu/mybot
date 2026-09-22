@@ -17,6 +17,11 @@ constexpr std::size_t kMaxCommandOutput = 64u * 1024;
  * setenv(overwrite=1) 会把数组槽位换成堆上的新串，exec 时那份原串就再也找不回。 */
 std::vector<char*> collectEnvSecrets();
 
+/* 敏感环境名判据（整词切词后查表）。环境清洗（本文件）与审计日志的
+ * 命令遮蔽（agentaudit）共用同一份，防两份名单各自漂移。
+ * 入参必须是**已转小写**的名字。 */
+bool isSensitiveEnvName(const std::string& lowerName);
+
 /* 就地把这些字符串抹零。动机：/proc/<pid>/environ 对同 UID 进程可读，
  * 只清洗子进程继承的那份环境挡不住它——常驻 agent 的密钥会一直躺在那儿。
  * 残余：同 UID 若有 ptrace 权限，仍可从宿主内存读出密钥；本函数是提高门槛

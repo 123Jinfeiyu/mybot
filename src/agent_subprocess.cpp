@@ -72,21 +72,6 @@ static bool isSensitiveWord(const std::string& word) {
 
 namespace {
 
-/* 敏感名判据：按分隔符切词后逐词查表（BOT4CJ_LLM_KEY → {bot4cj, llm, key} →
- * 命中 key）。buildCleanEnvp 与 collectEnvSecrets 共用同一份，否则「子进程清洗
- * 名单」与「宿主抹除名单」会各自漂移。 */
-bool isSensitiveEnvName(const std::string& lowerName) {
-	std::size_t i = 0;
-	while (i < lowerName.size()) {
-		if (!std::isalnum(static_cast<unsigned char>(lowerName[i]))) { ++i; continue; }
-		std::size_t j = i;
-		while (j < lowerName.size() && std::isalnum(static_cast<unsigned char>(lowerName[j]))) { ++j; }
-		if (isSensitiveWord(lowerName.substr(i, j - i))) { return true; }
-		i = j;
-	}
-	return false;
-}
-
 /* 环境变量名（'=' 之前）转小写；无 '=' 的畸形条目返回空串表示跳过 */
 std::string lowerEnvName(const char* entry) {
 	std::string_view s(entry);
@@ -99,6 +84,21 @@ std::string lowerEnvName(const char* entry) {
 }
 
 } // namespace
+
+/* 敏感名判据：按分隔符切词后逐词查表（BOT4CJ_LLM_KEY → {bot4cj, llm, key} →
+ * 命中 key）。buildCleanEnvp 与 collectEnvSecrets 共用同一份，否则「子进程清洗
+ * 名单」与「宿主抹除名单」会各自漂移；agentaudit 的命令遮蔽亦复用它。 */
+bool isSensitiveEnvName(const std::string& lowerName) {
+	std::size_t i = 0;
+	while (i < lowerName.size()) {
+		if (!std::isalnum(static_cast<unsigned char>(lowerName[i]))) { ++i; continue; }
+		std::size_t j = i;
+		while (j < lowerName.size() && std::isalnum(static_cast<unsigned char>(lowerName[j]))) { ++j; }
+		if (isSensitiveWord(lowerName.substr(i, j - i))) { return true; }
+		i = j;
+	}
+	return false;
+}
 
 /* 环境清洗：剔除名字**含敏感词（整词）**的变量。模型可能被外部输入（画面/文件
  * 内容）诱导执行任意命令，不能让子进程继承 LLM API key。

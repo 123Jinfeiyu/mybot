@@ -275,7 +275,8 @@ AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& 
 		try {
 			return t.execute(args);
 		} catch (const std::exception& e) {
-			return {std::string("工具执行失败: ") + e.what(), ""};
+			/* ok=false 只供审计（agentaudit）；回传给模型的文本口径不变 */
+			return {std::string("工具执行失败: ") + e.what(), "", false, e.what()};
 		}
 	}
 	std::string avail;
@@ -283,7 +284,8 @@ AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& 
 		if (!avail.empty()) { avail += ", "; }
 		avail += t.name;
 	}
-	return {"未知工具 " + name + "。可用工具: " + avail, ""};
+	std::string msg = "未知工具 " + name + "。可用工具: " + avail;
+	return {msg, "", false, msg};
 }
 
 std::vector<ToolSpec> AgentToolRegistry::specs() const {
@@ -420,7 +422,9 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 				ctx.robot->run(*reader);
 				return {"已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）", ""};
 			} catch (const std::exception& e) {
-				return {"动作脚本执行失败 [" + req + "]: " + e.what(), ""};
+				/* 脚本执行失败对模型是「结果」（换个做法继续），对审计是「没做成」：
+				 * ok=false 只进审计轨迹，回传文本口径不变 */
+				return {"动作脚本执行失败 [" + req + "]: " + e.what(), "", false, e.what()};
 			}
 		}};
 }

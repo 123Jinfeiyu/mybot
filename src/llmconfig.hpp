@@ -53,6 +53,11 @@ struct LlmFileConfig {
 	std::optional<std::string> cameraDevice;
 	std::optional<std::string> cameraSrc;
 	std::optional<bool> allowCamera;
+	/* 审计轨迹落点（JSON Lines；"-" = stderr）。空/未配置 = 不记录。
+	 * 与 --audit-log 同义；命令行优先。 */
+	std::optional<std::string> auditLog;
+	/* 策略钩子文件（--agent-policy 同义；命令行优先）。空/未配置 = 不启用。 */
+	std::optional<std::string> agentPolicy;
 };
 
 /* 解析配置文件。失败返回 false 并把「带字段名的人话报错」写进 err：

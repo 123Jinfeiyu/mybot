@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 六个场景：
+# 九个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -17,6 +17,12 @@
 #      多模态内容（以 data URL 包装的真 JPEG）。
 #   6) --prompt-file 提示词包——目录 .md 按文件名自然排序、以 "## 文件名" 分节，
 #      整包追加在系统提示词内置段落之后（线上报文逐项断言）。
+#   7) --audit-log 审计轨迹——每次工具调用各留一条 JSON Lines（ts/session/tool/ok
+#      齐备、run_command 带 exit_code），环境变量密钥不出现在日志里。
+#   8) 模型调用可取消——SIGINT 在 <5s 内经取消哨兵中止在飞的 libcurl 请求，
+#      报错点名「已取消」而非超时，且哨兵文件不残留。
+#   9) --agent-policy 策略钩子——确认程序拒绝时 run_command 零副作用（命令没跑、
+#      工具回执点名被拦截、循环照常收尾）；确认程序放行时命令照常执行。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -317,8 +323,133 @@ check_json "$CAP6" "'## 工作方式' in d['messages'][0]['content'] and d['mess
 check_json "$CAP6" "'## 1-身份.md' in d['messages'][0]['content'] and d['messages'][0]['content'].find('## 1-身份.md') < d['messages'][0]['content'].find('## 2-纪律.md') < d['messages'][0]['content'].find('## 10-尾声.md')" \
 	"目录按文件名自然排序分节（2- 在 10- 之前）"
 
+# ============ 场景 7：--audit-log 审计轨迹 ============
+echo "----- 场景 7：--audit-log 审计轨迹 -----"
+PORT=$((22200 + RANDOM % 300))
+CAP7="$tmp/req-audit.json"
+AUDIT7="$tmp/audit.jsonl"
+start_server "$PORT" "$CAP7" ok || exit 1
+out7="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--task "$TASK" --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--agent-shell --llm-config none --scripts-dir scripts --audit-log "$AUDIT7" 2>&1)"
+rc7=$?
+stop_server
+echo "$out7"
+if [ "$rc7" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc7"
+	fail=1
+fi
+check "$out7" "AGENT-E2E-完成" "带审计日志跑通完整工具循环"
+check "$out7" "审计日志: $AUDIT7" "会话开始如实告知审计日志落点"
+# 审计文件是 JSON Lines（每行一个 JSON），不走 check_json（那是整文件单文档的断言）
+audit_check() { # $1=python 真值表达式 $2=说明
+	if AUDIT_FILE="$AUDIT7" python3 -c "
+import json, os, sys
+lines = [json.loads(x) for x in open(os.environ['AUDIT_FILE']) if x.strip()]
+sys.exit(0 if ($1) else 1)
+" 2>/dev/null; then
+		echo "  [OK] $2"
+	else
+		echo "  [FAIL] $2"
+		fail=1
+	fi
+}
+audit_check "all(isinstance(l, dict) and l.get('tool') and l.get('ts') and l.get('session') and isinstance(l.get('ok'), bool) for l in lines)" \
+	"审计日志每行都是合法 JSON 且带 ts/session/tool/ok"
+audit_check "{'list_hardware','run_action_script','run_command'} <= {l['tool'] for l in lines}" \
+	"脚本化流程用到的三个工具各留下了审计记录"
+audit_check "any(l['tool']=='run_command' and 'exit_code' in l for l in lines)" \
+	"run_command 记录带 exit_code"
+# 环境变量里的密钥绝不能出现在审计日志（遮蔽判据的端到端见证）
+check_absent "$AUDIT7" "e2e-fake-key" "环境变量密钥不出现在审计日志"
+
+# ============ 场景 8：模型调用可取消（SIGINT → 取消哨兵 → libcurl 中止）============
+echo "----- 场景 8：模型调用可取消 -----"
+PORT=$((22500 + RANDOM % 300))
+start_server "$PORT" "" slow || exit 1	# slow：服务端睡 5s 才答复
+BOTOUT="$tmp/cancel-out.txt"
+t0=$(date +%s)
+BOT4CJ_LLM_KEY=e2e-fake-key "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --task "随便问一句" --llm-timeout 180 \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	> "$BOTOUT" 2>&1 &
+BOTPID=$!
+sleep 1.2
+kill -INT "$BOTPID" 2>/dev/null
+wait "$BOTPID"; rc8=$?
+t1=$(date +%s)
+stop_server
+elapsed=$((t1 - t0))
+out8="$(cat "$BOTOUT")"
+echo "$out8"
+# 修复前：首次 SIGINT 只置标志，在飞的模型调用跑满服务端的 5s 才以超时收场；
+# 现在哨兵让 libcurl 在约 1s 内中止，报错点名「已取消」而非「超时」。
+if [ "$rc8" -ne 0 ] && [ "$elapsed" -lt 5 ] && echo "$out8" | grep -q "请求已取消"; then
+	echo "  [OK] SIGINT 在 ${elapsed}s 内中止了模型调用（报错点名取消而非超时）"
+else
+	echo "  [FAIL] 取消未生效（rc=$rc8, 用时 ${elapsed}s）——哨兵或进度回调可能失效"
+	fail=1
+fi
+# 哨兵不残留：取消完成后宿主要清掉 /tmp 里的文件
+if [ -f "/tmp/mybot-cancel-$BOTPID" ]; then
+	echo "  [FAIL] 取消哨兵残留在 /tmp/mybot-cancel-$BOTPID"
+	fail=1
+else
+	echo "  [OK] 取消哨兵已清理"
+fi
+
+# ============ 场景 9：--agent-policy 策略钩子（外部确认程序）============
+echo "----- 场景 9：--agent-policy 策略钩子 -----"
+PORT=$((22800 + RANDOM % 300))
+CAP9="$tmp/req-policy.json"
+# 拒绝版：确认程序恒退出 1
+POLICY_DENY="$tmp/policy-deny.json"
+cat > "$POLICY_DENY" <<'JSON'
+{"require_confirm": ["run_command"], "confirm_command": "/bin/sh -c 'exit 1'"}
+JSON
+start_server "$PORT" "$CAP9" ok || exit 1
+out9="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--task "$TASK" --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--agent-shell --llm-config none --scripts-dir scripts \
+	--agent-policy "$POLICY_DENY" 2>&1)"
+rc9=$?
+stop_server
+echo "$out9"
+if [ "$rc9" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc9"
+	fail=1
+fi
+check "$out9" "策略钩子: $POLICY_DENY" "会话开始如实告知策略钩子文件"
+check "$out9" "AGENT-E2E-完成" "确认程序拒绝后工具循环仍照常收尾"
+check "$out9" "被策略拦截" "run_command 的回执点名被策略拦截"
+POLICYOUT="$tmp/policy-deny-out.txt"
+echo "$out9" > "$POLICYOUT"
+check_absent "$POLICYOUT" "agent-echo-ok" "被拒的 run_command 零副作用（命令没有真的跑）"
+check "$out9" "Relay: test=200" "未命中 require_confirm 的 run_action_script 不受影响"
+
+# 放行版：确认程序恒退出 0——同一循环、同一工具表，命令应照常执行
+PORT=$((22800 + RANDOM % 300))
+CAP9B="$tmp/req-policy-allow.json"
+POLICY_ALLOW="$tmp/policy-allow.json"
+cat > "$POLICY_ALLOW" <<'JSON'
+{"require_confirm": ["run_command"], "confirm_command": "/bin/true"}
+JSON
+start_server "$PORT" "$CAP9B" ok || exit 1
+out9b="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--task "$TASK" --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--agent-shell --llm-config none --scripts-dir scripts \
+	--agent-policy "$POLICY_ALLOW" 2>&1)"
+rc9b=$?
+stop_server
+if [ "$rc9b" -ne 0 ]; then
+	echo "  [FAIL] 放行版 mybot 退出码 $rc9b"
+	fail=1
+fi
+check "$out9b" "agent-echo-ok" "确认程序放行时 run_command 照常执行"
+
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"
 	exit 0
 fi
+echo "agent 模式端到端测试存在失败"
 exit 1

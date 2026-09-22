@@ -1,10 +1,15 @@
+#include <cstdio>
 #include <cstdlib>
 #include <csignal>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "actionsource.hpp"
 #include "agentdriver.hpp"
@@ -17,12 +22,43 @@
 
 namespace bot {
 
+/* ---- P2a 取消哨兵（2026-09-22）----
+ * 阻塞发生在 Lua 驱动的 libcurl 里，驱动沙箱拿不到宿主内存——stopRequested()
+ * 这个原子标志传不过去。跨层通道用文件：首次 SIGINT 时处理器在这里创建哨兵，
+ * llm_http.lua 的进度回调（约 1 秒一次）发现它存在即中止请求，模型调用因此
+ * 能被 Ctrl-C **及时**打断（不再只能等满 --llm-timeout 或二次强杀）。
+ * 路径经环境变量 BOT4CJ_LLM_CANCEL_FILE 交给驱动；处理器内只做 open/write/close
+ * （均 async-signal-safe），路径缓冲在装处理器**之前**填好，处理器只读。 */
+static char g_cancelSentinelPath[192] = {0};
+
+void setupCancelSentinel() {
+	std::string path = "/tmp/mybot-cancel-" + std::to_string(static_cast<long>(::getpid()));
+	std::snprintf(g_cancelSentinelPath, sizeof g_cancelSentinelPath, "%s", path.c_str());
+	::setenv("BOT4CJ_LLM_CANCEL_FILE", path.c_str(), 1);
+}
+
+void removeCancelSentinel() {
+	if (g_cancelSentinelPath[0] != '\0') { ::unlink(g_cancelSentinelPath); }
+}
+
 /* ---- D4：SIGINT/SIGTERM 处理器——首次仅置停止标志（async-signal-safe），
  * 让主流程走正常 deactivate（驱动 destroy / 守护停机）后再退出，
  * 避免 Ctrl-C 把舵机留在最后指令位置、I2C 从设备滞留中间态。
  * 第二次升级为强杀，见函数体注释。 */
 extern "C" void onStopSignal(int sig) {
 	bot::stopRequested().store(true);
+	/* P2a：创建取消哨兵，让在飞的模型调用立即被 libcurl 进度回调中止。
+	 * open/write/close 都是 async-signal-safe；路径缓冲已预先填好，此处只读。
+	 * 打不开（/tmp 只读等）静默跳过：哨兵是「及时取消」的增强，失败时旧行为
+	 * （等满超时或二次强杀）仍然成立。 */
+	if (g_cancelSentinelPath[0] != '\0') {
+		int fd = ::open(g_cancelSentinelPath, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+		if (fd >= 0) {
+			ssize_t ignored = ::write(fd, "cancel", 6);
+			(void)ignored;
+			::close(fd);
+		}
+	}
 	/* 第二次即升级为强杀：本处理器是永久安装的，若只置标志，运维连按 Ctrl-C
 	 * 也停不下来（agent 模式一次模型调用最长 600s 且不可中断），唯一出路只剩
 	 * 外部的 SIGKILL——而那会跳过 deactivate，把执行器留在带电状态。
@@ -59,6 +95,18 @@ bool prepareAgentConfig(const CliOptions& options, agent::AgentModeConfig& agent
 	agent::scrubEnvSecrets(envSecrets);
 	if (!agentCfg.configPath.empty()) {
 		std::cerr << "配置文件: " << agentCfg.configPath << std::endl;
+	}
+	/* 审计轨迹的落点如实告知（含 "-"=stderr）：审计是给事后复盘用的，
+	 * 操作者应当知道它此刻是否在记、记到哪里。 */
+	if (agentCfg.audit) {
+		std::cerr << "审计日志: " << agentCfg.auditLogPath
+			<< (agentCfg.auditLogPath == "-" ? "（stderr）" : "") << std::endl;
+	}
+	/* 策略钩子如实告知：命中 require_confirm 的工具每次调用都要过外部确认程序，
+	 * 操作者应当知道「机器人会停下来等人/等审批」这件事正在生效。 */
+	if (agentCfg.policy) {
+		std::cerr << "策略钩子: " << agentCfg.policyPath
+			<< "（命中 require_confirm 的工具调用需过外部确认程序）" << std::endl;
 	}
 	if (!agentCfg.configWarning.empty()) {
 		std::cerr << agentCfg.configWarning << std::endl;
@@ -239,8 +287,16 @@ int main(int argc, char** argv) {
 
 		if (options.agent && !injectAgentDrivers(*robot, agentCfg)) { return 2; }
 
+		/* P2a 取消哨兵：仅 agent 模式需要（模型调用是唯一的长阻塞点）。
+		 * 必须在装处理器**之前**填好路径缓冲——处理器只读它（async-signal-safe）。 */
+		if (options.agent) { setupCancelSentinel(); }
+
 		installStopSignalHandlers();
-		return runRobotAndCleanup(*robot, options, agentCfg);
+		int rc = runRobotAndCleanup(*robot, options, agentCfg);
+		/* 退出前清掉哨兵（正常路径它从未被创建；取消路径下消费方也已结束）：
+		 * /tmp 不留进程残骸。 */
+		removeCancelSentinel();
+		return rc;
 	}
 
 	/* 没有输入机器人结构脚本，打印帮助文档 */

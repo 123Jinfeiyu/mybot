@@ -10,11 +10,14 @@
  */
 
 #include <iosfwd>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "actionsource.hpp"
+#include "agentaudit.hpp"
 #include "agentdriver.hpp"
+#include "agentpolicy.hpp"
 #include "agentproto.hpp"
 
 namespace bot {
@@ -84,6 +87,19 @@ struct AgentModeConfig {
 	std::string configPath;
 	/* 配置文件相关的告警（如密钥文件权限过松），空表示无 */
 	std::string configWarning;
+
+	/* ---- 审计轨迹（--audit-log / 配置文件 audit_log；空 = 关闭）----
+	 * shared_ptr：buildAgentConfig 在这里打开（打不开即配置错误，上电前失败），
+	 * AgentOptions 与本配置共享同一实例。auditLogPath 只用于会话开始的如实告知。 */
+	std::shared_ptr<AuditLog> audit;
+	std::string auditLogPath;
+
+	/* ---- 策略钩子（--agent-policy / 配置文件 agent_policy；空 = 不启用）----
+	 * 在 buildAgentConfig 里加载成成品（策略文件写错属配置错误，上电前失败）；
+	 * policyPath 只用于会话开始的如实告知。与 run_command 的开关互补：
+	 * --agent-shell 管「工具给不给」，策略管「给了之后每次调用要不要过外部闸门」。 */
+	std::shared_ptr<const AgentPolicy> policy;
+	std::string policyPath;
 };
 
 /* run_command 启用（cfg.allowShell）且 API key 来自「agent 的 shell 也能读到」
