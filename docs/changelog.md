@@ -5,6 +5,22 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 agent 重构阶段 C4（历史预算口径诚实化）
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C4（对应 R8，按方案倾向选「改注释」而非改实现）。
+
+历史字节预算的记账**不含** system 提示词（messages_[0]，恒不被裁剪、另有 64 KiB
+独立上限）与工具 schema（注册期固定、逐请求重复发送）；单条估重（`messageWeight`）
+不计 role 字符串、JSON 语法开销与非 ASCII 的 `\uXXXX` 转义膨胀（CJK 约 2×），是
+线上字节的**下界**。原注释只说「不计 JSON 语法开销」，未披露这两类系统性偏差。
+
+- 注释修正（[agenthistory.cpp](../src/agenthistory.cpp) messageWeight、agenthistory.hpp
+  trim、agentloop.hpp maxHistoryBytes），实现零改动。
+- 钉子用例 `agentloop_history_budget_excludes_system_prompt`：system 50KB + 两块各
+  ~10KB + 预算 25KB——按真实口径不裁；若误把 system 计入（70KB > 25KB）会裁掉旧块，
+  用例在两种口径下结果不同，能抓住口径回退。
+- 验收：466/0（agent: 150/0）、`agent-all` 7 段 0 失败；docs/agent.md 预算字段段同步。
+
 ### 2026-09-22 agent 重构阶段 C1（REPL /clear）
 
 > 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C1（对应 R6）。

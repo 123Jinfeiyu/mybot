@@ -5,8 +5,15 @@ namespace agent {
 
 namespace {
 
-/* 估算一条消息的线上体积（下界：不计 JSON 语法开销，正文/调用参数/图片/extras
- * 占绝对大头）。extras 当前只装 reasoning_content 一类文本，整体串行化计入。 */
+/* 估算一条消息的线上体积（下界，C4 口径）。不计：role 字符串、JSON 语法开销
+ * （键名/引号/分隔符）、非 ASCII 的 \uXXXX 转义膨胀（CJK 约 2×、emoji 至 3×——
+ * 转义行为取决于传输层序列化器，宿主侧不下断言）；正文/调用参数/图片/extras
+ * 占绝对大头，作为裁剪判据方向正确、量级够用。extras 当前只装
+ * reasoning_content 一类文本，整体串行化计入。
+ * 另注意（C4）：trim 的预算记账**不含** messages_[0]（system 提示词）与工具
+ * schema——前者恒不被裁剪、另有 64KiB 独立上限（agentprompt
+ * kMaxSystemPromptBytes），后者注册期固定、逐请求重复发送，计入只会产生
+ * 「历史没满就裁历史」的假超限。线上请求体真实总量 ≈ 预算记账 + system + schema。 */
 std::size_t messageWeight(const ChatMessage& m) {
 	std::size_t n = m.content.size() + m.toolCallId.size();
 	for (const ToolCall& c : m.toolCalls) {

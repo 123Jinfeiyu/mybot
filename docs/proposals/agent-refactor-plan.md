@@ -82,7 +82,8 @@ HEAD 相比旧审计基线新增了 `dispatchOneCall` 内的策略确认与审�
   磁盘内容通道的定界待遇。
 - **C3. `runAgentMode` 单测（R7）**：把 REPL 循环依赖的 I/O 收成接口后补循环/命令/
   错误恢复用例（现由 agent_e2e.sh 六场景兜底，非阻塞）。
-- **C4. `messageWeight` 计入 system 与 schema（R8）**：或把注释口径改诚实（二选一，
+- **C4. `messageWeight` 计入 system 与 schema（R8）** —— ✅ 已落地（2026-09-22，
+  按方案倾向改注释口径诚实 + 口径钉子用例，466/0）：或把注释口径改诚实（二选一，
   倾向后者——system 本就有 64KiB 上限独立约束）。
 
 ### 不做（显式声明）

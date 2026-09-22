@@ -358,6 +358,29 @@ TH_TEST(agentloop_history_trimmed_to_byte_budget) {
 	}
 }
 
+TH_TEST(agentloop_history_budget_excludes_system_prompt) {
+	/* C4 口径钉子：maxHistoryBytes 的记账**不含** messages_[0]（system）——
+	 * system 另有 64KiB 独立上限（agentprompt），且恒不被裁剪，把它计入预算
+	 * 只会让「还没装满历史就先裁历史」的假超限。这里 system 50KB、两块各
+	 * ~10KB、预算 25KB：按真实口径 20KB ≤ 25KB 不裁；若误把 system 计入
+	 * （70KB > 25KB）则会把第 1 块裁掉——用例在两种口径下结果不同，能抓住
+	 * 口径回退。工具 schema 同样不在记账内（注册期固定、逐请求重复发送）。 */
+	FakeTransport transport;
+	transport.script.push_back(answerResponse("ANSWER-1"));
+	transport.script.push_back(answerResponse("ANSWER-2"));
+
+	AgentToolRegistry tools = stubTools();
+	AgentOptions opts = optsFor(4);
+	opts.maxHistoryBytes = 25000;
+	opts.systemPrompt = std::string(50000, 'S');
+	AgentSession session(transport, tools, opts);
+	TH_CHECK(session.runTurn("TASK-1" + std::string(10000, 'x')) == "ANSWER-1");
+	TH_CHECK(session.runTurn("TASK-2" + std::string(10000, 'x')) == "ANSWER-2");
+
+	TH_CHECK(session.history().size() == 5);	/* system + 2 块 × (user+asst) */
+	TH_CHECK(historyContains(session, "TASK-1"));	/* 旧块未被（假超限）裁掉 */
+}
+
 TH_TEST(agentloop_history_trim_drops_old_block_with_its_image) {
 	FakeTransport transport;
 	transport.script.push_back(callResponse("shot", "{}"));	/* 块1：拍照 → 图片消息 */

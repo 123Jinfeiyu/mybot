@@ -34,7 +34,10 @@ public:
 	 * 老块连同其中的 base64 图片一起释放：图片是历史体积主项（一张照片数百 KB），
 	 * 只按条数裁剪挡不住它们。
 	 * budget == 0 = 不裁剪；裁剪发生且 verbose 时经 log 打一条人话说明
-	 * （文案与拆分前逐字一致）。 */
+	 * （文案与拆分前逐字一致）。
+	 * 口径（C4，2026-09-22）：budget 记账只覆盖可裁的任务块消息，**不含**
+	 * system 提示词（messages_[0]，恒保留，另有 64KiB 独立上限）与工具 schema
+	 * （注册期固定）；单条体积估算（messageWeight）是线上字节的下界。 */
 	void trim(std::size_t budget, bool verbose,
 		const std::function<void(const std::string&)>& log);
 
