@@ -244,14 +244,16 @@ end
 -- 把「C++ 定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
 -- 基准 = 宿主注入的 DAEMON_SLOT_LAYOUT（来自 daemonvar.hpp 的 SLOT_* 常量，
 -- 2.7 起不再手抄：C++ struct 漂移会在守护启动时经注入值与 cdef 比对暴露）。
--- 无宿主注入时回退手写基准（SLOT_SIZE=336）：
+-- 无宿主注入时回退手写基准（TD-3 起 SLOT_SIZE=592、values[64]；本表须与
+-- src/daemonvar.hpp 的 SLOT_* 常量逐项一致）：
 --   offset  0   char    mutex[64]     (pthread_mutex_t, 预留 64)
 --   offset 64  int32   count
 --   offset 68  int32   nvals
---   offset 72  double  values[32]
---   offset 328 uint8   stop
---   offset 332 int32   status         (N-27：0=正常，负=setup 失败码)
--- status 落在 stop 之后的既有对齐填充里，故槽尺寸仍为 336B。
+--   offset 72  double  values[64]
+--   offset 584 uint8   stop
+--   offset 588 int32   status         (N-27：0=正常，负=setup 失败码)
+-- status 落在 stop 之后的既有对齐填充里（stop 后 3 字节 reserved_），
+-- 故槽尺寸仍为 592B。
 -- ffi.offsetof/sizeof 并非所有 arch 都可用——不可用时跳过断言（回退旧行为）。
 -- ffi 命名空间内未声明原生 pthread_mutex_t（HAL 只声明大小截断的别名），
 -- 故真实 mutex 尺寸无法直接 sizeof；仅在可解析时做 ≤64B 预留校验。

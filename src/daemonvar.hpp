@@ -50,7 +50,7 @@ struct DaemonSlot {
 	std::uint8_t reserved_[3];	/* stop 之后的既有填充，显式具名 */
 	std::int32_t status;
 };
-static_assert(sizeof(DaemonSlot) == SLOT_SIZE, "DaemonSlot size must be 336 bytes");
+static_assert(sizeof(DaemonSlot) == SLOT_SIZE, "DaemonSlot size must match SLOT_SIZE");
 static_assert(offsetof(DaemonSlot, count) == SLOT_COUNT_OFF, "count offset");
 static_assert(offsetof(DaemonSlot, nvals) == SLOT_NVALS_OFF, "nvals offset");
 static_assert(offsetof(DaemonSlot, values) == SLOT_VALUES_OFF, "values offset");

@@ -141,8 +141,12 @@ int validateOptions(ParsedArgs& args) {
 	 *   1) agent 专属选项出现在非 agent 模式下 → 用户意图与参数不一致；
 	 *   2) --agent 与 --tcp/--input 互斥 → 两者都要求主导输入源。 */
 	if (!options.agent && options.agentOptionsUsed) {
-		std::cerr << "参数错误：--task / --llm-* / --agent-shell / --scripts-dir "
-			"/ --prompt-file 只在 --agent 模式下有效；用 --help 查看 agent 模式说明"
+		/* PL-5（2026-09-22）：选项名单与 docs/agent.md 的 agent 专属选项表保持一致。
+		 * 此前漏列 camera 四项——用户敲了 --no-camera 却被报「这些选项只在 agent
+		 * 模式下有效」，而文案里没有他刚敲的那一个，看起来像撞上了另一个错误。 */
+		std::cerr << "参数错误：--task / --llm-* / --scripts-dir / --agent-shell "
+			"/ --prompt-file / --camera-var / --camera-device / --camera-src "
+			"/ --no-camera 只在 --agent 模式下有效；用 --help 查看 agent 模式说明"
 			<< std::endl;
 		return 2;
 	}

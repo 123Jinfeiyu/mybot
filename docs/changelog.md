@@ -5,6 +5,32 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 文档/注释残留四处修正 + 工具 schema 深度加锚点（PL-5）
+
+> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。
+> 纯文档/注释与一条新增钉子用例，无行为变更。
+
+- **`modules/LlmOpenAI.lua` 头注释自相矛盾**：一处把 `api_key` 列进「宿主传进 `call()`
+  的参数表」，另一处又说「宿主不把密钥写进参数表」。以事实为准（`src/agentmode.cpp`
+  的 `makeDriverConfig` 确无该字段），并顺手把**非空时才挂**的 `endpoint` /
+  `reasoning_effort` / `thinking` 三个可选字段写进注释。
+- **`modules/lib/pthread.lua` 回退基准停留在 TD-3 之前**：注释里的槽布局仍是
+  `values[32]` / `SLOT_SIZE=336`，与 `src/daemonvar.hpp`（TD-3 后 592B / `values[64]`）
+  差了一倍。回退基准是「宿主未注入布局时」的比对依据，数字错了就失去意义。
+  同时修正 `src/daemonvar.hpp` 里 `static_assert` 的消息文本（仍写 "336 bytes"）。
+- **非 agent 模式的拒绝文案漏列 camera 四项**：用户敲 `--no-camera` 却看到一份
+  不含该选项的选项名单，像是撞上了另一个错误。文案现与 `docs/agent.md` 的
+  agent 专属选项表逐项对齐。
+- **「工具 schema 最深处为 6 层」此前无锚点**：这句话是 `docs/agent.md` 已知限制里
+  人工统计的数字，给参数加一层嵌套不会有人发现，与 `kMaxLuaNesting`（8）的余量会被
+  静默吃光。新增钉子用例
+  `agenttools_request_nesting_depth_is_pinned_against_lua_limit`：从驱动请求根起数
+  容器层数并断言恰为 6、且显式断言余量为 2；文档同步写明口径与用例名。
+- 反向验证：临时给 `toolSchema` 注入一层多余嵌套，该用例转红（2 条断言失败），
+  恢复后绿。
+- 验收：C++ 单测 **494 通过 / 0 失败**（493 → 494）；`test_llm_drivers.lua` 139/0、
+  `test_pthread.lua` 14/0、`test_slot_addr.lua` 16/0 均不受影响。
+
 ### 2026-09-22 响应整形：tool_calls 形态非法时报点名原因（PL-6）
 
 > 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。

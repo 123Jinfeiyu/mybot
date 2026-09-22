@@ -3,6 +3,7 @@
 
 using fx::TempDir;
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -18,8 +19,10 @@ using fx::TempDir;
 #include <unistd.h>
 
 #include "agent_subprocess.hpp"
+#include "agentproto.hpp"
 #include "agenttools.hpp"
 #include "jsonparse.hpp"
+#include "luaend.hpp"
 #include "robot.hpp"
 #include "util.hpp"
 
@@ -79,7 +82,44 @@ public:
 	ModulePathGuard& operator=(const ModulePathGuard&) = delete;
 };
 
+/* PL-5（2026-09-22）：容器嵌套层数（对象/数组算一层，标量不计）。
+ * 这正是 Lua 桥逐层下推驱动请求时要走的路，也是 docs/agent.md 那句
+ * 「工具 schema 最深处为 N 层」要锚定的量。 */
+int jsonContainerDepth(const Json& v) {
+	int deepest = 0;
+	if (v.isObj()) {
+		for (const auto& kv : v.obj) { deepest = std::max(deepest, jsonContainerDepth(kv.second)); }
+		return 1 + deepest;
+	}
+	if (v.isArr()) {
+		for (const Json& child : v.arr) { deepest = std::max(deepest, jsonContainerDepth(child)); }
+		return 1 + deepest;
+	}
+	return 0;
+}
+
 } // namespace
+
+/* PL-5（2026-09-22）：把「工具 schema 最深处为 6 层」这句话钉住。
+ * 此前它只是 docs/agent.md 里的一句人工统计，没有任何代码/测试锚点——
+ * 给某个参数加一层嵌套不会有人发现，与 kMaxLuaNesting（8）之间的余量会被静默吃光。
+ * 口径 = 从驱动请求根起数容器层数：
+ *   请求对象(1) → tools 数组(2) → 工具对象(3) → parameters(4)
+ *   → properties(5) → 某个参数的 schema 对象(6)。
+ * 改深了这里就红——那时要么收敛嵌套，要么改 kMaxLuaNesting 并同步文档。 */
+TH_TEST(agenttools_request_nesting_depth_is_pinned_against_lua_limit) {
+	AgentToolContext ctx;
+	ctx.robot = nullptr;	/* 只读 schema，不触硬件 */
+	ctx.scriptsDir = "scripts";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	Json req = buildDriverRequest("m0", {}, tools.specs(), 1024, 0.7, 0.9, 180);
+	const int depth = jsonContainerDepth(req);
+	TH_CHECK(depth == 6);
+	/* 与上限的关系必须显式断言：余量只有 2 层 */
+	TH_CHECK(depth < kMaxLuaNesting);
+	TH_CHECK(kMaxLuaNesting - depth == 2);
+}
 
 TH_TEST(agenttools_script_catalog) {
 	TempDir tmp("catalog");

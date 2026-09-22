@@ -4,12 +4,13 @@
 -- agent 模式未显式声明该变量时，宿主会按 --llm-driver 自动注入同名表。
 --
 -- 规范化协议见 modules/lib/llm_wire_openai.lua 与 docs/agent.md：
--- 宿主把 {model, messages, tools, max_tokens, temperature, top_p, timeout,
--- endpoint, api_key} 作为参数传进 call()，本驱动返回
--- {result="OK", content, tool_calls?, extras?} 或 {result="ERR", message}。
+-- 宿主把 {model, messages, tools, max_tokens, temperature, top_p, timeout}
+-- 以及**非空时**才挂的 {endpoint, reasoning_effort, thinking} 作为参数传进
+-- call()（见 src/agentdriver.cpp 的 buildDriverRequest + 三个可选字段），
+-- 本驱动返回 {result="OK", content, tool_calls?, extras?} 或 {result="ERR", message}。
 --
--- API key 由本驱动自己从环境变量读取（宿主不把密钥写进参数表——否则
--- BOT4CJ_DEBUG 的参数转储会把密钥打进日志）。
+-- API key 由本驱动自己从环境变量读取——**宿主不把密钥写进参数表**（否则
+-- BOT4CJ_DEBUG 的参数转储会把密钥打进日志），参数表里没有 api_key 这一项。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local http = dofile(mpath.resolve("lib/llm_http.lua"))
 local wire = dofile(mpath.resolve("lib/llm_wire_openai.lua"))

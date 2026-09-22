@@ -592,4 +592,8 @@ bash test/run_all.sh agent-all
 - **摄像头只支持 MJPEG**：仅提供 YUYV 的设备会返回清晰 ERR（YUYV 要自带 JPEG 编码器或引入
   libjpeg，都比直接取 MJPEG 贵得多，而 USB 摄像头普遍支持 MJPEG）。树莓派 CSI 摄像头走
   libcamera、不经 V4L2 这条路径，也不在本驱动范围内。
-- 驱动参数表的嵌套深度受 `kMaxLuaNesting`（8 层）约束：工具 schema 目前最深处为 6 层，留有余量但不宜再加嵌套。
+- 驱动参数表的嵌套深度受 `kMaxLuaNesting`（8 层）约束：工具 schema 目前最深处为 6 层，
+  留有余量但不宜再加嵌套。**口径**：从驱动请求根起数容器层数（请求对象 → `tools` 数组 →
+  工具对象 → `parameters` → `properties` → 参数 schema 对象；标量不计层），由
+  `agenttools_request_nesting_depth_is_pinned_against_lua_limit` 钉住——多一层就红，
+  那时要么收敛嵌套，要么改 `kMaxLuaNesting` 并同步此处。
