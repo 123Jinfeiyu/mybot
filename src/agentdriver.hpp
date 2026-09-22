@@ -26,6 +26,9 @@ struct AgentDriverConfig {
 	/* 驱动特有字段：非空即原样放进请求（如 DeepSeek 的 thinking / reasoning_effort） */
 	std::string reasoningEffort;
 	std::string thinking;
+	/* U-1：LLM 网络错误自动重试（指数退避） */
+	int maxRetries = 3;	/* 最大重试次数（包含首次，故实际重试 maxRetries-1 次） */
+	int retryBackoffMs = 1000;	/* 退避基础时长（指数增长：1s, 2s, 4s） */
 };
 
 /* driver 必须是 Lua 驱动变量（modules/Llm*.lua 注册而成），否则抛
