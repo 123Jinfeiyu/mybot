@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 十二个场景：
+# 十三个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -595,6 +595,50 @@ check_absent "$tmp/so12.txt" "----------" "宿主的动作分隔线不再进 std
 check_absent "$tmp/so12.txt" '"result":"OK"' "驱动的结果表不再进 stdout"
 check_present "$tmp/se12.txt" "----------" "动作分隔线出现在 stderr（回显没丢，只是换了流）"
 check_present "$tmp/so12.txt" "AGENT-E2E-完成" "模型回答仍在 stdout"
+
+# ============ 场景 13：取消走的是"优雅退出"而不是被信号打死（SAN-7）============
+echo "----- 场景 13：取消的退出路径（SAN-7） -----"
+# 这条场景的**判据边界**要先说清楚（第一版设计在这里栽过，如实留痕）：
+# 我原想用 test/cpp/LifetimeProbe.lua 的 destroy 标记证明"deactivate() 真的执行了"，
+# 但反向验证当场推翻——把 main.cpp 里那行 robot.deactivate() 注释掉，marker **照样出现**：
+# 因为 ~RobotStruct 会在对象销毁时补一次断电（源码注释里就写着这是兜底）。
+# 所以 marker 只能证明"硬件最终被去初始化了"，**分不出**是显式 deactivate 还是析构兜底
+# ——拿它当"清理链跑过"的判据是**假绿**。
+#
+# 这条场景真正能证明的是**退出路径**：首次 SIGINT 之后进程必须走正常返回路径
+# （runRobotAndCleanup → deactivate → return 1），而不是被信号直接打死。
+# 判据是退出码**恰好 1**：
+#   * 被 SIGINT 按缺省处置打死 → 130；
+#   * 段错误/abort → 139/134；
+#   * 早退什么都没做 → 0。
+# 三者都不是 1，所以"恰好 1"是这条路径的可用判据。
+PORT=$((24300 + RANDOM % 300))
+start_server "$PORT" "" slow || exit 1
+BOT4CJ_LLM_KEY=e2e-fake-key "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --task "随便问一句" --llm-timeout 180 \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	> "$tmp/cancel-exit.txt" 2>&1 &
+BOTPID=$!
+sleep 1.5
+kill -INT "$BOTPID" 2>/dev/null
+wait "$BOTPID"; rc13=$?
+stop_server
+out13="$(cat "$tmp/cancel-exit.txt")"
+echo "$out13"
+check_present "$tmp/cancel-exit.txt" "请求已取消" "首次 SIGINT 中止了在飞的模型调用"
+if [ "$rc13" -eq 1 ]; then
+	echo "  [OK] 退出码恰好 1：走的是正常返回路径（130=被信号打死 / 139=段错误 / 0=早退都不是它）"
+else
+	echo "  [FAIL] 退出码应为 1，实际 $rc13（可能被信号直接打死或走了别的路径）"
+	fail=1
+fi
+# 取消哨兵不残留（与场景 8 互补：这边量的是"优雅退出路径上清理也执行了"）
+if [ -f "/tmp/mybot-cancel-$BOTPID" ]; then
+	echo "  [FAIL] 取消哨兵残留在 /tmp/mybot-cancel-$BOTPID（清理没跑完）"
+	fail=1
+else
+	echo "  [OK] 取消哨兵已清理（优雅退出路径上的清理确实执行了）"
+fi
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"
