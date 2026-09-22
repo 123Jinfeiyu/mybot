@@ -77,6 +77,66 @@ std::string pickConfigPath(const CliOptions& opts) {
 
 } // namespace
 
+/* PL-1（2026-09-22）：把**已经校验通过的**配置渲染成人类可读摘要。
+ * 为什么是纯渲染而不是「再校验一遍」：校验是 buildAgentConfig 的单点职责，
+ * 它失败时调用方已经 return 2。这里再造一套判据只会带来两处漂移——
+ * 正是本项目反复强调要避免的。因此本函数只读 cfg、无副作用、可离线单测。
+ * 密钥（resolvedApiKey）**绝不出现**在摘要里，只报来源与是否就绪。 */
+std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
+	auto orNone = [](const std::string& s, const char* fallback) {
+		return s.empty() ? std::string(fallback) : s;
+	};
+	/* 只报来源、不报值。映射与 validateApiKeyChars 的报错文案同口径。 */
+	auto keySourceName = [](ApiKeySource src) -> const char* {
+		switch (src) {
+		case ApiKeySource::Env: return "环境变量";
+		case ApiKeySource::ConfigInline: return "配置文件 api_key 字段";
+		case ApiKeySource::ConfigFile: return "配置文件 api_key_file";
+		case ApiKeySource::None: break;
+		}
+		return "未解析到";
+	};
+
+	std::string s;
+	s += "配置校验通过：\n";
+	if (!cfg.configPath.empty()) { s += "  配置文件    : " + cfg.configPath + "\n"; }
+	else { s += "  配置文件    : (未使用)\n"; }
+	s += "  协议驱动    : " + cfg.driverTable + "（变量 " + cfg.llmVar + "）\n";
+	s += "  模型        : " + orNone(cfg.model, "(未配置，用驱动缺省)") + "\n";
+	/* 接入点空 = 运行期必然失败（B2 起不再有内置缺省）。校验模式的价值一半在这里：
+	 * 不联网也能把这句话摆到操作者面前。 */
+	s += "  接入点      : " + orNone(cfg.endpoint, "(未配置，首次调用将失败)") + "\n";
+	s += "  采样        : max_tokens=" + std::to_string(cfg.maxTokens)
+		+ " temperature=" + std::to_string(cfg.temperature)
+		+ " top_p=" + std::to_string(cfg.topP)
+		+ " timeout=" + std::to_string(cfg.timeoutSec) + "s\n";
+	s += "  轮次上限    : max_turns=" + std::to_string(cfg.maxTurns)
+		+ " max_calls_per_round=" + std::to_string(cfg.maxCallsPerRound) + "\n";
+	s += "  API key     : " + std::string(keySourceName(cfg.apiKeySource))
+		+ "（值不显示）\n";
+	s += "  结构脚本    : " + cfg.structurePath + "\n";
+	s += "  动作脚本目录: " + cfg.scriptsDir + "\n";
+	s += "  提示词包    : " + std::to_string(cfg.promptFiles.size()) + " 项，"
+		+ std::to_string(cfg.promptPack.size()) + " 字节"
+		+ (cfg.structureHead ? "；结构脚本头 " + std::to_string(cfg.structureHead->size()) + " 字节" : "")
+		+ (cfg.scriptsList ? "；脚本清单 " + std::to_string(cfg.scriptsList->size()) + " 字节" : "")
+		+ "\n";
+	s += "  历史/任务预算: 历史 " + std::to_string(cfg.maxHistoryBytes)
+		+ " 字节，单任务文本 " + std::to_string(cfg.maxTaskToolResultBytes)
+		+ " 字节，单任务图片 " + std::to_string(cfg.maxTaskImageBytes) + " 字节\n";
+	s += "  摄像头      : " + std::string(cfg.allowCamera
+			? (cfg.cameraSrc.empty() ? "启用（变量 " + cfg.cameraVar + "，设备 "
+					+ orNone(cfg.cameraDevice, "/dev/video0（驱动缺省）") + "）"
+				: "启用（模拟来源 " + cfg.cameraSrc + "）")
+			: "不提供 capture_image 工具") + "\n";
+	s += "  run_command : " + std::string(cfg.allowShell ? "已开启（--agent-shell）" : "未提供（缺省关）") + "\n";
+	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
+	s += "  策略钩子    : " + orNone(cfg.policyPath, "(未启用)") + "\n";
+	if (!cfg.configWarning.empty()) { s += "  配置告警    : " + cfg.configWarning + "\n"; }
+	s += "  任务模式    : " + std::string(cfg.task.empty() ? "交互 REPL" : "一次性 --task") + "\n";
+	return s;
+}
+
 AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
 	AgentDriverConfig d;
 	d.model = cfg.model;

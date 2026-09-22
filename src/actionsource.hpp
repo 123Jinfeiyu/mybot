@@ -85,6 +85,12 @@ struct CliOptions {
 	/* --agent-policy：策略钩子文件（严格 JSON；空 = 不启用，全部放行）。
 	 * 加载与校验失败在 agent::buildAgentConfig 报错退出（配置错误不碰真机）。 */
 	std::string agentPolicy;
+	/* --check-config（PL-1，2026-09-22）：只校验配置并打印摘要，不装载结构脚本、
+	 * 不上电、不联网。配置校验本身仍由 buildAgentConfig 单点负责（这里不另起
+	 * 一套判据），故 main 里只是「打印摘要后 return 0」一个分支。属 agent 专属
+	 * 选项：置 agentOptionsUsed，非 agent 模式由既有逻辑拒绝；未配 --robot 同样
+	 * 被「agent 模式需要 --robot」那条拒绝（不会静默打印帮助退出 0）。 */
+	bool checkConfig = false;
 };
 
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。

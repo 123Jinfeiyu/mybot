@@ -1183,6 +1183,62 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 		--robot=robots/relay-test.sql --agent --task 'x' --llm-config none \
 		--prompt-file .tmp/bigprompt.md
 	fi
+
+	# 5) PL-1（2026-09-22）：--check-config 的端到端判据。
+	#    这条选项的**全部价值**在「不装载结构、不上电、不联网」，所以只断言
+	#    「打印了摘要」不够——把这三件事分别钉住：
+	#      ① 正向：接入点指向必然拒绝连接的地址（127.0.0.1:1）仍 rc=0，
+	#         且输出里**没有网络错误字样** → 证明它真的没发起请求；
+	#      ② 「只读不装载」：结构脚本**可读但不是合法 SQL** 时 --check-config 仍
+	#         rc=0，而对同一脚本真跑一次必然非 0 → 两者对照才证明它只读了脚本头、
+	#         没有走 SQL 解析与上电（若结构脚本连读都读不到，那是配置错误，
+	#         与真跑同样 rc=2，故不能拿「不存在的脚本」当这条的夹具）；
+	#      ③ 配置拼错字段 → rc=2（校验仍然生效，不是「什么都放行」）。
+	#    配置文件一律写真实临时文件并显式 --llm-config：不用 <(...) 进程替换
+	#    （被 open 时报 /dev/fd/63 打不开），也不能省略——CWD 里恰好存在的
+	#    ./mybot.llm.json 会被自动拾取，让用例随开发者本机配置飘。
+	if case_matches 'agent_check_config'; then
+	printf '{"endpoint":"http://127.0.0.1:1/v1/chat/completions","model":"m"}' \
+		> .tmp/checkcfg_ok.json
+	printf '{"api_kee":"x"}' > .tmp/checkcfg_bad.json
+	printf 'THIS IS NOT SQL AT ALL;\n' > .tmp/checkcfg_badstruct.sql
+
+	run_one_hardening 'agent_check_config_ok' 0 '配置校验通过' \
+		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
+		--robot=robots/relay-test.sql --agent --check-config \
+		--llm-config .tmp/checkcfg_ok.json
+
+	echo "----- agent_check_config_no_network (agent) -----"
+	out="$(env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
+		--robot=robots/relay-test.sql --agent --check-config \
+		--llm-config .tmp/checkcfg_ok.json 2>&1)"
+	if echo "$out" | grep -qiE 'curl|连接|connection|refused|网络错误'; then
+		record_fail "agent_check_config_no_network(输出含网络错误字样)"
+		echo "$out"
+	else
+		record_pass
+	fi
+
+	echo "----- agent_check_config_only_reads_structure_head (agent) -----"
+	cfg_rc=0
+	env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
+		--robot=.tmp/checkcfg_badstruct.sql --agent --check-config \
+		--llm-config .tmp/checkcfg_ok.json >/dev/null 2>&1 || cfg_rc=$?
+	run_rc=0
+	env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
+		--robot=.tmp/checkcfg_badstruct.sql --agent --task 'x' \
+		--llm-config .tmp/checkcfg_ok.json >/dev/null 2>&1 || run_rc=$?
+	if [ "$cfg_rc" -eq 0 ] && [ "$run_rc" -ne 0 ]; then
+		record_pass
+	else
+		record_fail "agent_check_config_only_reads_structure_head(校验 rc=$cfg_rc 应 0，真跑 rc=$run_rc 应非 0)"
+	fi
+
+	run_one_hardening 'agent_check_config_bad_field' 2 '未知字段' \
+		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
+		--robot=robots/relay-test.sql --agent --check-config \
+		--llm-config .tmp/checkcfg_bad.json
+	fi
 fi
 
 # ======================================================================

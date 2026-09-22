@@ -5,6 +5,35 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 `--check-config` 配置校验模式（PL-1，原 U-4）
+
+> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 B。
+> 排障体验改进：以前配置文件写错要**真起一次 agent 会话**才报错退出 2——接了硬件还得反复上下电。
+
+- **`--check-config`**（agent 专属）：`buildAgentConfig` 校验通过后打印一份配置摘要
+  并以 **0** 退出，**不装载结构脚本、不上电、不发起任何网络请求**。因此它连
+  `--robot` 指向的脚本都只读「脚本头 16 KiB」（三段体积预检本来就要读的那段），
+  不走 SQL 解析与 `active()`——E2E 用「结构脚本可读但不是合法 SQL」对照钉住了这一点：
+  同一脚本 `--check-config` 得 0、真跑必然非 0。
+- 摘要内容都是操作者排障真正要看的：配置文件路径 / 协议驱动与变量 / 模型 / **接入点**
+  （缺省时明写「未配置，首次调用将失败」——B2 起不再有内置缺省，这句话不联网也能摆出来）/
+  采样与超时 / 轮次上限 / API key **来源**（只报来源，值绝不出现）/ 结构脚本 / 脚本目录 /
+  提示词包与三段预检字节数 / 历史与图片预算 / 摄像头 / `run_command` 开关 / 审计与策略落点。
+- **不另立判据**：摘要只渲染、不校验——判据单点仍在 `buildAgentConfig`（失败时调用方
+  已 `return 2`），再造一套只会漂移。落点是 `agent::summarizeAgentConfig()` 纯函数，
+  放在可链接的 TU 里（`main.cpp` 不参与 `mybot_tests` 链接，写进 `main` 就没法单测）。
+- 失败路径一律 rc=2：非 agent 模式（agent 专属选项那条）、漏 `--robot`（否则会打印
+  帮助退出 0，CI 会读成「配置没问题」）、配置本身不合法。摘要会**打开但不写入**
+  审计日志文件，顺带验证其可写。
+- 钉子用例：`cliargs_check_config_is_rejected_outside_agent_mode`（三条 CLI 路径）、
+  `agentconfig_summary_reports_config_without_leaking_key`（含「摘要不得出现密钥值」断言）、
+  `agentconfig_summary_flags_missing_endpoint`；`test/run_all.sh` 新增 4 条 E2E
+  （正向摘要 / 不联网 / 只读脚本头 / 拼错字段 rc=2）。
+- 反向验证：摘掉 `main` 里的短路分支后，E2E 的正向两条转红（rc 由 0 变 1）。
+- 验收：C++ 单测 **498 通过 / 0 失败**（495 → 498）；`bash test/run_all.sh` 全绿。
+- 文档：`docs/reference.md` 与 `docs/agent.md` 选项表各加一行（帮助计数黄金测试
+  28 → 29，且「帮助 ↔ docs 双向一致」守卫会强制两处同步）。
+
 ### 2026-09-22 两处名不副实的测试钉子修正（PL-4）
 
 > 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。

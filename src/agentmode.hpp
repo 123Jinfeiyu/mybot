@@ -151,6 +151,12 @@ AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg);
 
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err);
 
+/* PL-1（2026-09-22，--check-config）：把**已经校验通过的**配置渲染成人类可读摘要。
+ * 纯函数、无副作用（密钥只报来源不报值），供 main 在校验模式下打印后退出 0。
+ * 注意它**不做校验**——判据单点在 buildAgentConfig（失败时调用方已 return 2），
+ * 这里再校验一遍只会制造两处漂移。 */
+std::string summarizeAgentConfig(const AgentModeConfig& cfg);
+
 /* REPL 单行输入上限（2026-09-22 审计后添加）。防止恶意输入巨大任务字符串
  * 导致内存耗尽（std::getline 无内建长度限制，只在系统 RLIMIT_AS / 坏分配
  * 时才会 bad_alloc）。10 MiB 远超正常任务描述（几百字节），同时兼顾偶尔

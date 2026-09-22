@@ -66,12 +66,13 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」（只读该文件所在目录内的文件） | — |
 | `--no-camera` | **不**注册 `capture_image`（去掉拍照能力） | 关（默认注册，前提是该变量解析到 Lua 驱动，见安全说明第 5 条） |
+| `--check-config` | **只校验配置并打印摘要后退出 0**：不装载结构脚本、不上电、不发起任何网络请求。配置文件拼错时不必真起一次会话（接了硬件也不必反复上下电）。失败退出 2（判据仍是 `buildAgentConfig` 那一套，不另立）；会**打开但不写入**审计日志文件（顺带验证其可写） | 关（照常进入会话） |
 | `--audit-log <路径>` | 审计轨迹落点（JSON Lines 追加写；`-` = stderr） | 不记录（见「审计轨迹」节） |
 
 取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
 API key 没有命令行入口（只从环境变量或配置文件取）：argv 对同用户进程可读（`/proc/<pid>/cmdline`）。
 
-`--task` / `--llm-*` / `--scripts-dir` / `--agent-shell` / `--prompt-file` / `--camera-var` / `--camera-device` / `--camera-src` / `--no-camera` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。
+`--task` / `--llm-*` / `--scripts-dir` / `--agent-shell` / `--prompt-file` / `--camera-var` / `--camera-device` / `--camera-src` / `--no-camera` / `--check-config` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。`--check-config` 少了 `--robot` 同样被拒（否则会打印帮助后退出 0，CI 会把「退出 0」读成「配置没问题」）。
 
 ## 配置文件（推荐）
 

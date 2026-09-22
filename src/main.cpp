@@ -302,6 +302,14 @@ int main(int argc, char** argv) {
 		agent::AgentModeConfig agentCfg;
 		if (options.agent && !prepareAgentConfig(options, agentCfg)) { return 2; }
 
+		/* PL-1：--check-config —— 配置此时已校验完毕（错误路径上面已 return 2）。
+		 * 这里只打印摘要后退出 0：**不装载结构脚本、不上电、不发起任何网络请求**。
+		 * 放在 loadStructure 之前是有意的——校验模式连结构都不装。 */
+		if (options.checkConfig) {
+			std::cout << agent::summarizeAgentConfig(agentCfg);
+			return 0;
+		}
+
 		std::unique_ptr<RobotStruct> robot = loadStructure(rpath);
 		if (!robot) { return 1; }
 

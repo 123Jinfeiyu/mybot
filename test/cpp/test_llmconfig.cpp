@@ -994,3 +994,50 @@ TH_TEST(llmconfig_api_key_control_chars_rejected) {
 	/* 高位字节不是控制字符：UTF-8 密钥不该被误伤 */
 	TH_CHECK(validateApiKeyChars("sk-\xe5\xaf\x86", err));
 }
+
+/* ---- PL-1（2026-09-22）：--check-config 的摘要渲染 ----
+ * summarizeAgentConfig **不做校验**（判据单点在 buildAgentConfig，失败时调用方
+ * 已 return 2），所以这里只钉两件它必须做到的事：
+ *   ① 合法配置下摘要点名操作者排障要看的字段；
+ *   ② 密钥值**绝不出现**在摘要里（只报来源），以及
+ *   ③ endpoint 为空时明写「未配置，首次调用将失败」——不联网也能把这句话摆出来，
+ *      正是这个模式一半的价值所在。 */
+TH_TEST(agentconfig_summary_reports_config_without_leaking_key) {
+	NoKeyEnv nokey;
+	TempDir tmp("check-config");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({
+	  "endpoint": "http://127.0.0.1:1/v1/chat/completions",
+	  "model": "m-check",
+	  "api_key": "sk-SECRET-DO-NOT-LEAK"
+	})", fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out, err), err);
+	const std::string s = summarizeAgentConfig(out);
+
+	TH_CHECK(s.find("配置校验通过") != std::string::npos);
+	TH_CHECK(s.find("http://127.0.0.1:1/v1/chat/completions") != std::string::npos);
+	TH_CHECK(s.find("m-check") != std::string::npos);
+	TH_CHECK(s.find("LlmOpenAI") != std::string::npos);
+	TH_CHECK(s.find("scripts") != std::string::npos);
+	/* 密钥只报来源、不报值——摘要会被打印进终端与 CI 日志 */
+	TH_CHECK_MSG(s.find("sk-SECRET-DO-NOT-LEAK") == std::string::npos,
+		"摘要泄露了 API key: " + s);
+	TH_CHECK(s.find("配置文件 api_key 字段") != std::string::npos);
+}
+
+TH_TEST(agentconfig_summary_flags_missing_endpoint) {
+	NoKeyEnv nokey;
+	TempDir tmp("check-config-nourl");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({ "api_key": "sk-x" })", fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out, err), err);
+	const std::string s = summarizeAgentConfig(out);
+	/* B2 起不再有内置缺省接入点：空 = 首次调用必然失败，摘要必须说出来 */
+	TH_CHECK_MSG(s.find("未配置，首次调用将失败") != std::string::npos, s);
+}

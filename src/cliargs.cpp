@@ -93,6 +93,10 @@ ParsedArgs parseArgs(int argc, char** argv) {
 			out.opts.noCamera = true;
 			out.opts.agentOptionsUsed = true;
 		}
+		else if (key == "check-config") {
+			out.opts.checkConfig = true;
+			out.opts.agentOptionsUsed = true;
+		}
 		else {
 			/* ---- 带值选项：表驱动 ---- */
 			const OptionSpec* spec = nullptr;
@@ -154,7 +158,8 @@ int validateOptions(ParsedArgs& args) {
 		 * 模式下有效」，而文案里没有他刚敲的那一个，看起来像撞上了另一个错误。 */
 		std::cerr << "参数错误：--task / --llm-* / --scripts-dir / --agent-shell "
 			"/ --prompt-file / --camera-var / --camera-device / --camera-src "
-			"/ --no-camera 只在 --agent 模式下有效；用 --help 查看 agent 模式说明"
+			"/ --no-camera / --check-config 只在 --agent 模式下有效；"
+			"用 --help 查看 agent 模式说明"
 			<< std::endl;
 		return 2;
 	}
@@ -238,6 +243,9 @@ std::string helpText() {
 	s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
 	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
 	s += "  --no-camera           不向智能体提供 capture_image 工具\n";
+	s += "  --check-config        只校验配置并打印摘要后退出 0：不装载结构脚本、不上电、\n";
+	s += "                       不发起任何网络请求（配置文件拼错时无需真起会话，\n";
+	s += "                       接了硬件也不必反复上下电）。会**打开但不写入**审计日志文件\n";
 	s += "  --audit-log <路径>    审计轨迹（JSON Lines 追加写）：每次工具调用一条记录\n";
 	s += "                       （时间戳/轮次/工具/参数/成败/耗时）；图片只记体积与指纹，\n";
 	s += "                       命令原文里的 KEY=VALUE 敏感值先遮蔽；\"-\" 表示写 stderr；\n";
@@ -331,6 +339,7 @@ std::string helpText(const std::string& topic) {
 		s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
 		s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
 		s += "  --no-camera           不向智能体提供 capture_image 工具\n";
+		s += "  --check-config        只校验配置并打印摘要后退出 0（不装结构、不上电、不联网）\n";
 		s += "  --audit-log <路径>    审计轨迹（JSON Lines 追加写；\"-\"=stderr；缺省不记录）\n";
 		s += "                        也可用配置文件 audit_log 字段\n\n";
 		s += "示例：\n";

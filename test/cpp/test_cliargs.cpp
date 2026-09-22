@@ -186,6 +186,28 @@ TH_TEST(cliargs_new_timeout_options_missing_value_is_rejected) {
 	TH_CHECK(bot::validateOptions(p) == 2);
 }
 
+/* ---- PL-1（2026-09-22）：--check-config 的 CLI 面 ----
+ * 三条断言对应三条真实路径：agent 模式下放行；非 agent 模式被 agent 专属选项
+ * 那条拒绝；**agent 模式但漏了 --robot 也必须拒绝**——后者是这条选项最容易漏的
+ * 坑：main 的既有行为是「没有 --robot → 打印帮助 + 退出 0」，若不在校验层拦住，
+ * 校验模式会以 0 退出却什么都没校验，CI 会把它读成「配置没问题」。 */
+TH_TEST(cliargs_check_config_is_rejected_outside_agent_mode) {
+	Argv a({"mybot", "--robot=robots/relay-test.sql", "--agent", "--check-config"});
+	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+	TH_CHECK(p.opts.checkConfig);
+	TH_CHECK(p.opts.agentOptionsUsed);
+	TH_CHECK(bot::preflightCli(p) == bot::Preflight::Proceed);
+
+	Argv b({"mybot", "--robot=robots/relay-test.sql", "--check-config"});
+	bot::ParsedArgs q = bot::parseArgs(b.argc(), b.argv());
+	TH_CHECK(q.opts.checkConfig);		/* 解析层照样置位 */
+	TH_CHECK(bot::preflightCli(q) == bot::Preflight::ConfigError);
+
+	Argv c({"mybot", "--agent", "--check-config"});		/* 漏 --robot */
+	bot::ParsedArgs s = bot::parseArgs(c.argc(), c.argv());
+	TH_CHECK(bot::preflightCli(s) == bot::Preflight::ConfigError);
+}
+
 /* ---- 4) --help 优先级：先 help 后校验（顺序判定在 preflightCli）---- */
 
 TH_TEST(cliargs_help_precedes_validation_in_main) {
@@ -236,15 +258,16 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	 * （--audit-log，2026-09-22）再加一项（24），策略钩子（--agent-policy，
 	 * 2026-09-22）再加一项（25）。F-1/F-2/F-3（2026-09-22，原 TD-2 剩余部分）
 	 * 再加三项——--tcp-max-auth-attempts / --tcp-total-timeout /
-	 * --daemon-grace-ms（28）。计数断言是「帮助 ↔ docs 双向一致」守卫的
-	 * 一部分：随选项增删同步更新。 */
-	TH_CHECK(defs.size() == 28);
+	 * --daemon-grace-ms（28）。PL-1（2026-09-22）加 --check-config（29）。
+	 * 计数断言是「帮助 ↔ docs 双向一致」守卫的一部分：随选项增删同步更新。 */
+	TH_CHECK(defs.size() == 29);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);
 	TH_CHECK(defs.count("--tcp-max-auth-attempts") == 1);
 	TH_CHECK(defs.count("--tcp-total-timeout") == 1);
 	TH_CHECK(defs.count("--daemon-grace-ms") == 1);
+	TH_CHECK(defs.count("--check-config") == 1);
 
 	/* docs 侧：reference.md（CLI 参考）与 agent.md（agent 专属选项表）的选项表行 */
 	const std::set<std::string> ref =
