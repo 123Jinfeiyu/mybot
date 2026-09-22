@@ -131,5 +131,21 @@ private:
 	void executeToolRound(ChatResponse& resp, int turn);
 };
 
+/* ---- 历史必须能被服务端接受（SAN-1，2026-09-22）----
+ * 「assistant.tool_calls 与 tool.tool_call_id 一一对应」此前只是注释里的约定，
+ * 于是单轮截断通知复用最后一条已派发调用的 id 时没有任何东西会报错——
+ * 而服务端会以 400 `tool_call_id 'x' answered more than once` 拒绝，
+ * 且那条消息落在**不可回滚**的历史里（该轮派发已完成、回滚边界已越过），
+ * 此后每个任务都重发同一段历史、拿同一个 400，只有 /clear 或重启能恢复。
+ *
+ * 本函数把那条约定变成**可执行判据**，供用例直接调用：
+ *   ① 每个 tool.toolCallId 必须出现在某条 assistant.toolCalls 里（无孤儿）；
+ *   ② 同一个 id 只能被回答**一次**（这条正是 SAN-1 的正判据）；
+ *   ③ 某条 assistant 声明的每个工具调用都必须被回答过（无漏答）。
+ * 与 scripts/fake_llm_server.py 的 protocol_error 是同一套判据的两份实现
+ * （C++ 侧供单测、Python 侧供 E2E）——改一处必须改另一处。
+ * 返回空串 = 合法；否则返回人话原因。 */
+std::string historyProtocolViolation(const std::vector<ChatMessage>& history);
+
 } // namespace agent
 } // namespace bot

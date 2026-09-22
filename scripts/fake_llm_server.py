@@ -14,6 +14,11 @@
 用法: python3 scripts/fake_llm_server.py <port> [capture_file] [mode] [headers_file]
       mode: ok（默认） | slow（睡 5 秒再答，用于验证 --llm-timeout 真的生效）
             | camera（先要求拍一张照片，再给最终回答——验证图片真的进了上下文）
+            | manycalls[:N]（首轮返回 N 条工具调用，缺省 3；配合
+              max_calls_per_round=2 触发宿主的单轮截断分支——SAN-1）
+            | 429x2ok（前两次 429 + Retry-After: 1，第三次正常回答——SAN-3：
+              不重试则只收到 1 个 POST 且任务失败，重试则 3 个 POST 且成功）
+            | http-503（恒 503 + Retry-After: 1——SAN-3：重试用尽后如实失败）
       headers_file: 非空则把收到的请求头逐行写入（用来断言 API key 的来源）
 """
 import json
@@ -25,6 +30,10 @@ PORT = int(sys.argv[1])
 CAPTURE = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
 MODE = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "ok"
 HEADERS = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+
+# 跨请求计数（429x2ok 用它决定第几次请求开始放行）。服务是单进程单线程
+# （HTTPServer 非 ThreadingHTTPServer），无并发，故不需要锁。
+ATTEMPTS = {"n": 0}
 
 
 def tool_call(name, arguments):
@@ -178,6 +187,25 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    def _error_status(self, code, message, retry_after=None, kind="server_error"):
+        """带**非 200 状态码**的错误响应（SAN-3 的限流/5xx 场景用）。
+
+        与 _error_400 分开的理由：400 是"请求错了，别再试"，而 429/503 是
+        "稍后再试"——宿主的重试判据必须能区分这两类，夹具因此也要能产出两类。
+        retry_after 非空时带上 Retry-After 响应头（SAN-3 要验证宿主读得到它）。"""
+        data = json.dumps({"error": {"message": message, "type": kind}},
+                          ensure_ascii=False).encode("utf-8")
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            if retry_after is not None:
+                self.send_header("Retry-After", str(retry_after))
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(n) if n > 0 else b"{}"
@@ -219,6 +247,42 @@ class Handler(BaseHTTPRequestHandler):
                 return
         tool_results = sum(1 for m in request.get("messages", [])
                            if m.get("role") == "tool")
+
+        # ---- SAN-1：单轮返回 N 条工具调用（触发宿主的单轮上限截断分支）----
+        # 缺省剧本每轮只返回 1 条调用，而 max_calls_per_round 缺省 16
+        # —— 截断分支在 E2E 里从未执行过，因此 SAN-1 那个"截断通知复用
+        # tool_call_id、会话被永久打成 400"的缺陷在守门里结构上不可见。
+        # 本模式让夹具能产出"一轮多调用"的形态，配合 max_calls_per_round=2 触发截断。
+        if MODE.startswith("manycalls"):
+            want = int(MODE.split(":", 1)[1]) if ":" in MODE else 3
+            if tool_results == 0:
+                self._reply({"choices": [{"message": {
+                    "role": "assistant", "content": "本轮要查几件事。",
+                    "tool_calls": [{
+                        "id": "c%d" % i, "type": "function",
+                        "function": {"name": "list_hardware", "arguments": "{}"},
+                    } for i in range(1, want + 1)]}}]})
+            else:
+                self._reply(final_answer())
+            return
+
+        # ---- SAN-3：限流 / 5xx（非 200 状态码，与 400 的语义刻意不同）----
+        # 429x2ok：前两次 429（带 Retry-After: 1），第三次给正常回答。
+        #   这是"重试是否真的发生"的决定性判据：不重试则服务端只收到 1 个 POST
+        #   且任务失败；重试则收到 3 个 POST 且任务成功。
+        # http-503：恒 503（带 Retry-After: 1），用来断言"重试用尽后如实失败"。
+        if MODE in ("429x2ok", "http-503"):
+            ATTEMPTS["n"] += 1
+            if MODE == "429x2ok" and ATTEMPTS["n"] > 2:
+                self._reply(final_answer())
+                return
+            self._error_status(
+                429 if MODE == "429x2ok" else 503,
+                "rate limited (fake gateway, %s)" % MODE,
+                retry_after=1,
+                kind="rate_limit_error" if MODE == "429x2ok" else "server_error")
+            return
+
         if MODE == "camera":
             if tool_results == 0:
                 self._reply(tool_call("capture_image", {}))

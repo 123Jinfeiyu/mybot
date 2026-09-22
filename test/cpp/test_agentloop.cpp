@@ -1,5 +1,6 @@
 #include "harness.hpp"
 
+#include <algorithm>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -234,18 +235,31 @@ TH_TEST(agentloop_caps_calls_per_round_and_tells_the_model) {
 	TH_CHECK(executed == 2);	/* 第 3 条**未派发**：上限是安全底线 */
 
 	const auto& h = session.history();
-	/* system, user, assistant(截到 2 条), tool(c1), tool(c2), tool(截断说明), assistant */
-	TH_CHECK(h.size() == 7);
+	/* system, user, assistant(截到 2 条 + 截断说明文本), tool(c1), tool(c2), assistant
+	 * —— 截断说明不再单独占一条 tool 消息（SAN-1） */
+	TH_CHECK(h.size() == 6);
 	TH_CHECK(h[2].role == "assistant");
 	TH_CHECK(h[2].toolCalls.size() == 2);
 	TH_CHECK(h[2].toolCalls[0].id == "c1" && h[2].toolCalls[1].id == "c2");
 
-	TH_CHECK(h[5].role == "tool");
-	TH_CHECK_MSG(h[5].content.find("3 条") != std::string::npos, h[5].content);
-	TH_CHECK_MSG(h[5].content.find("只执行了前 2 条") != std::string::npos, h[5].content);
-	TH_CHECK_MSG(h[5].content.find("其余 1 条未被派发") != std::string::npos, h[5].content);
-	/* 说明挂在**最后一条已派发**调用的 id 上（tool 消息只能引用已存在的 id） */
-	TH_CHECK(h[5].toolCallId == "c2");
+	TH_CHECK(h[3].role == "tool");
+	TH_CHECK(h[3].toolCallId == "c1");
+	TH_CHECK(h[4].role == "tool");
+	TH_CHECK(h[4].toolCallId == "c2");
+	TH_CHECK_MSG(h[2].content.find("3 条") != std::string::npos, h[2].content);
+	TH_CHECK_MSG(h[2].content.find("只执行了前 2 条") != std::string::npos, h[2].content);
+	TH_CHECK_MSG(h[2].content.find("其余 1 条未被派发") != std::string::npos, h[2].content);
+	/* SAN-1（2026-09-22）：截断说明从"新挂一条 tool 消息、复用 calls.back().id"
+	 * 改为"追加进 assistant 文本"。旧行为让历史里两条 tool 消息回答同一个
+	 * tool_call_id，服务端 400 `answered more than once`，而那条消息落在
+	 * **不可回滚**的历史里（该轮派发已完成、回滚边界已越过）——此后每个任务都
+	 * 以同一个 400 失败，只有 /clear 或重启能恢复。实测复现见
+	 * .tmp/AGENT_NEXT_PLAN_20260922.md 的 SAN-1 一节。 */
+
+	/* 本用例的核心判据：整段历史必须能被服务端接受。
+	 * historyProtocolViolation 的判据 ②（同一 id 只回答一次）正是本缺陷的正判据。 */
+	TH_CHECK_MSG(historyProtocolViolation(session.history()).empty(),
+		historyProtocolViolation(session.history()));
 
 	/* 发给服务端的历史里 assistant.tool_calls 与 tool 回传仍一一对上（否则 400） */
 	const std::vector<ChatMessage>& req = transport.requests[1];
@@ -254,7 +268,122 @@ TH_TEST(agentloop_caps_calls_per_round_and_tells_the_model) {
 		TH_CHECK(req[3 + k].role == "tool");
 		TH_CHECK(req[3 + k].toolCallId == req[2].toolCalls[k].id);
 	}
-	TH_CHECK(req[5].toolCallId == "c2");	/* 截断说明复用已存在的 id */
+	TH_CHECK_MSG(historyProtocolViolation(req).empty(), historyProtocolViolation(req));
+}
+
+/* SAN-1：历史协议自洽判据本身必须能抓住四种违规——否则上面那条用例的
+ * `violation().empty()` 只是个永远为真的摆设（本项目对"自证要挑能测出问题的
+ * 判据"有明确口径）。这里逐条构造违规历史，断言判据真的响。 */
+TH_TEST(agentloop_history_protocol_violation_detects_each_break) {
+	auto msg = [](const std::string& role) {
+		ChatMessage m;
+		m.role = role;
+		return m;
+	};
+	auto call = [](const std::string& id) {
+		ToolCall c;
+		c.id = id;
+		c.name = "echo";
+		c.arguments = "{}";
+		return c;
+	};
+
+	/* 合法基线：不报 */
+	{
+		std::vector<ChatMessage> h;
+		h.push_back(msg("system"));
+		ChatMessage a = msg("assistant");
+		a.toolCalls.push_back(call("c1"));
+		h.push_back(a);
+		ChatMessage t = msg("tool");
+		t.toolCallId = "c1";
+		h.push_back(t);
+		TH_CHECK_MSG(historyProtocolViolation(h).empty(), historyProtocolViolation(h));
+	}
+	/* ① 重复回答同一个 id —— 这正是 SAN-1 的缺陷形态 */
+	{
+		std::vector<ChatMessage> h;
+		ChatMessage a = msg("assistant");
+		a.toolCalls.push_back(call("c1"));
+		h.push_back(a);
+		for (int i = 0; i < 2; ++i) {
+			ChatMessage t = msg("tool");
+			t.toolCallId = "c1";
+			h.push_back(t);
+		}
+		TH_CHECK_MSG(historyProtocolViolation(h).find("不止一次") != std::string::npos,
+			historyProtocolViolation(h));
+	}
+	/* ② 孤儿 tool 消息（id 没有被任何 assistant 声明） */
+	{
+		std::vector<ChatMessage> h;
+		ChatMessage t = msg("tool");
+		t.toolCallId = "ghost";
+		h.push_back(t);
+		TH_CHECK_MSG(historyProtocolViolation(h).find("孤儿") != std::string::npos,
+			historyProtocolViolation(h));
+	}
+	/* ③ 漏答（assistant 声明了却没回传） */
+	{
+		std::vector<ChatMessage> h;
+		ChatMessage a = msg("assistant");
+		a.toolCalls.push_back(call("c1"));
+		a.toolCalls.push_back(call("c2"));
+		h.push_back(a);
+		ChatMessage t = msg("tool");
+		t.toolCallId = "c1";
+		h.push_back(t);
+		TH_CHECK_MSG(historyProtocolViolation(h).find("没有得到任何 tool 回传")
+			!= std::string::npos, historyProtocolViolation(h));
+	}
+	/* ④ assistant 声明了空 id（宿主合成逻辑失效时的形态） */
+	{
+		std::vector<ChatMessage> h;
+		ChatMessage a = msg("assistant");
+		a.toolCalls.push_back(call(""));
+		h.push_back(a);
+		TH_CHECK_MSG(historyProtocolViolation(h).find("id 为空") != std::string::npos,
+			historyProtocolViolation(h));
+	}
+	/* ⑤ tool 消息缺少 tool_call_id */
+	{
+		std::vector<ChatMessage> h;
+		ChatMessage a = msg("assistant");
+		a.toolCalls.push_back(call("c1"));
+		h.push_back(a);
+		h.push_back(msg("tool"));
+		TH_CHECK_MSG(historyProtocolViolation(h).find("缺少 tool_call_id") != std::string::npos,
+			historyProtocolViolation(h));
+	}
+}
+
+/* SAN-1：无 id 的模型响应经宿主合成后，多轮历史仍自洽，且两个轮次的合成 id
+ * **不同**（同一轮内不同调用也不同）——这是"跨轮唯一"的直接判据，
+ * 也是 SAN-6 把驱动的 call_<i> 合成去掉之后才真正生效的那条路径。 */
+TH_TEST(agentloop_synthesized_ids_stay_unique_across_turns) {
+	FakeTransport transport;
+	ChatResponse r1;
+	r1.toolCalls.push_back(ToolCall{"", "echo", "{}"});	/* provider 漏 id */
+	transport.script.push_back(r1);
+	ChatResponse r2;
+	r2.toolCalls.push_back(ToolCall{"", "echo", "{}"});
+	transport.script.push_back(r2);
+	transport.script.push_back(answerResponse("ok"));
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, optsFor(4));
+	TH_CHECK(session.runTurn("任务") == "ok");
+
+	const auto& h = session.history();
+	TH_CHECK_MSG(historyProtocolViolation(h).empty(), historyProtocolViolation(h));
+	/* 两轮的合成 id 必须不同（call_0_0 与 call_1_0） */
+	std::vector<std::string> seen;
+	for (const ChatMessage& m : h) {
+		if (m.role != "tool") { continue; }
+		TH_CHECK(std::find(seen.begin(), seen.end(), m.toolCallId) == seen.end());
+		seen.push_back(m.toolCallId);
+	}
+	TH_CHECK(seen.size() == 2);
 }
 
 TH_TEST(agentloop_max_turns_keeps_completed_history) {

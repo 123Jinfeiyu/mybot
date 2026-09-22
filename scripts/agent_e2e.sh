@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 九个场景：
+# 十一个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -23,6 +23,10 @@
 #      报错点名「已取消」而非超时，且哨兵文件不残留。
 #   9) --agent-policy 策略钩子——确认程序拒绝时 run_command 零副作用（命令没跑、
 #      工具回执点名被拦截、循环照常收尾）；确认程序放行时命令照常执行。
+#  10) 单轮调用上限截断（SAN-1）——一轮返回 3 条调用、上限 2：全程无 400、
+#      截断事件对操作者可见、**第二个任务照常完成**（会话没被永久打成 400）。
+#  11) 限流/5xx 的重试（SAN-3）——429 前两次、第三次成功：任务完成 + 重试日志
+#      点名 429 + 退避采用服务端 Retry-After；恒 503 则重试用尽后如实失败。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -446,6 +450,110 @@ if [ "$rc9b" -ne 0 ]; then
 	fail=1
 fi
 check "$out9b" "agent-echo-ok" "确认程序放行时 run_command 照常执行"
+
+# ============ 场景 10：单轮截断不重复 tool_call_id（SAN-1）============
+echo "----- 场景 10：单轮调用上限截断（SAN-1） -----"
+# 缺陷形态（已在真机上复现）：截断说明挂到 calls.back().id 上，历史里出现两条
+# 同 tool_call_id 的 tool 消息；服务端 400 `answered more than once`，而那条
+# 消息落在**不可回滚**的历史里（该轮派发已完成、回滚边界已越过）——此后每个
+# 新任务都重发同一段历史、拿同一个 400，只有 /clear 或重启能恢复。
+# 判据：① 全程无 400；② 截断事件对操作者可见（SAN-8①）；③ 第二个任务照常完成
+# （这是"会话没被永久污染"的直接判据）。
+PORT=$((23100 + RANDOM % 300))
+CAP10="$tmp/req-capped.json"
+CFG10="$tmp/cfg-capped.json"
+cat > "$CFG10" <<'JSON'
+{"max_calls_per_round": 2, "max_turns": 4}
+JSON
+start_server "$PORT" "$CAP10" "manycalls:3" || exit 1
+out10="$(printf 'task-one\ntask-two\n/exit\n' | BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--llm-config "$CFG10" 2>&1)"
+rc10=$?
+stop_server
+echo "$out10"
+printf '%s\n' "$out10" > "$tmp/capped.out"
+if [ "$rc10" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc10"
+	fail=1
+fi
+check_absent "$tmp/capped.out" "answered more than once" "服务端没有收到重复 tool_call_id"
+check_absent "$tmp/capped.out" "HTTP 400" "整个会话没有出现 400"
+check "$out10" "本轮 3 条工具调用超过单轮上限 2 条，已丢弃 1 条未派发" "截断事件对操作者可见（SAN-8①）"
+# 最终回答出现两次 = 两个任务都跑完了（会话没被永久污染）
+n10="$(printf '%s\n' "$out10" | grep -cF 'AGENT-E2E-完成')"
+if [ "$n10" -eq 2 ]; then
+	echo "  [OK] 截断之后第二个任务照常完成（会话未被永久污染）"
+else
+	echo "  [FAIL] 两个任务应各拿到一次最终回答，实际 $n10 次"
+	fail=1
+fi
+check_json "$CAP10" "'本轮要查几件事。' in json.dumps(d, ensure_ascii=False)" "夹具确实返回了一轮多条调用（场景有效）"
+
+# ============ 场景 11：限流/5xx 会被重试（SAN-3）============
+echo "----- 场景 11：限流 429 的重试与退避（SAN-3） -----"
+# 缺陷形态（已实测）：429/503/真实 curl 错误都不匹配 isRetriableError 的
+# 六个子串（那些子串在生产路径上没有生产者，只有测试夹具产出），于是
+# max_retries 形同虚设——服务端只收到 1 个 POST，任务当场失败。
+# 429x2ok：前两次 429 + Retry-After: 1，第三次正常回答。判据：
+#   ① 任务最终成功（重试真的发生了）；② 重试日志点名 429；
+#   ③ 退避采用了服务端给的 Retry-After（而非本地指数退避）。
+PORT=$((23400 + RANDOM % 300))
+CFG11="$tmp/cfg-retry.json"
+cat > "$CFG11" <<'JSON'
+{"max_retries": 3, "retry_backoff_ms": 50}
+JSON
+start_server "$PORT" "$tmp/req-retry.json" "429x2ok" || exit 1
+t0=$(date +%s)
+out11="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--task "$TASK" --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--agent-shell --llm-config "$CFG11" 2>&1)"
+rc11=$?
+t1=$(date +%s)
+stop_server
+echo "$out11"
+if [ "$rc11" -ne 0 ]; then
+	echo "  [FAIL] 重试之后任务应当成功，实际退出码 $rc11"
+	fail=1
+fi
+check "$out11" "AGENT-E2E-完成" "限流重试之后任务完成"
+check "$out11" "429" "重试日志点名了 429"
+check "$out11" "服务端 Retry-After" "退避采用了服务端给的 Retry-After（而非本地指数）"
+elapsed11=$((t1 - t0))
+if [ "$elapsed11" -ge 2 ]; then
+	echo "  [OK] 退避确实等待了（Retry-After: 1 × 2 次 ≈ 2s，实测 ${elapsed11}s）"
+else
+	echo "  [FAIL] 退避没有生效（实测 ${elapsed11}s < 2s）"
+	fail=1
+fi
+
+# http-503：恒 503。判据：重试**用尽**后如实失败（不谎报成功），且回执里
+# 出现多次 503（= 真的重试过，而不是一次就放弃）。
+PORT=$((23700 + RANDOM % 300))
+CFG11B="$tmp/cfg-503.json"
+cat > "$CFG11B" <<'JSON'
+{"max_retries": 3, "retry_backoff_ms": 50}
+JSON
+start_server "$PORT" "$tmp/req-503.json" "http-503" || exit 1
+out11b="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--task "随便问一句" --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--llm-config "$CFG11B" 2>&1)"
+rc11b=$?
+stop_server
+echo "$out11b"
+if [ "$rc11b" -eq 0 ]; then
+	echo "  [FAIL] 恒 503 时任务不该成功"
+	fail=1
+fi
+check "$out11b" "HTTP 503" "重试用尽后如实报出 503（不谎报成功）"
+n11b="$(printf '%s\n' "$out11b" | grep -cF 'HTTP 503')"
+if [ "$n11b" -ge 2 ]; then
+	echo "  [OK] 503 被重试了（回执里出现 $n11b 次，含每次重试的日志）"
+else
+	echo "  [FAIL] 503 没有被重试（只出现 $n11b 次）"
+	fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

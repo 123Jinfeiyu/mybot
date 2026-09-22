@@ -1,5 +1,6 @@
 #include "agentloop.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
@@ -152,7 +153,10 @@ std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
  * 本身又只允许文本。工具参数解析失败折成 tool 回传文本，不中断本轮。 */
 void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 	/* 个别流式/兼容实现会漏 tool_call id：这里合成占位 id，
-	 * 保证 assistant.tool_calls 与后续 tool.tool_call_id 一一对上 */
+	 * 保证 assistant.tool_calls 与后续 tool.tool_call_id 一一对上。
+	 * **轮次相关**（call_<turn>_<i>）而不是每轮从 1 重数：跨轮唯一是这个合成
+	 * 方案的成立前提——SAN-6 之前驱动会先合出 call_<i>（每轮重来）把它遮住，
+	 * 见 modules/lib/llm_wire_openai.lua 的 id 透传注释。 */
 	std::vector<ToolCall>& calls = resp.toolCalls;
 	for (std::size_t i = 0; i < calls.size(); ++i) {
 		if (calls[i].id.empty()) {
@@ -161,10 +165,17 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 	}
 
 	/* 单轮派发上限（审计第 4 轮）：assistant 消息里**只保留**前
-	 * maxCallsPerRound 条调用，多余的折叠成一条 tool 回传说明——不派发它们
-	 * 是安全底线（不给硬件一次性下发失控数量动作），但必须如实告知模型
-	 * 已经被截断，否则模型以为全部执行了。折叠进 assistant.toolCalls 的
-	 * 只保留将执行的部分，保证与后续 tool 消息一一对应。 */
+	 * maxCallsPerRound 条调用，多余的折叠成说明——不派发它们是安全底线
+	 * （不给硬件一次性下发失控数量动作），但必须如实告知模型已经被截断，
+	 * 否则模型以为全部执行了。
+	 *
+	 * SAN-1（2026-09-22）：折叠说明**挂在 assistant 的文本里**，不再新增一条
+	 * tool 消息。原实现把它挂到 calls.back().id 上——那是**最后一条已派发**
+	 * 调用，两行之前已经拿到过自己的 tool 回传，于是历史里出现两条同
+	 * tool_call_id 的 tool 消息（违反本文件上方与 agentloop.hpp 的不变量），
+	 * 服务端以 400 answered more than once 拒绝，而该轮派发已完成、回滚边界
+	 * 已越过——这条坏消息不可回滚，此后每个任务都以同一个 400 失败。
+	 * assistant.content 是唯一既不违反协议、又不与 id 一一对应绑定的位置。 */
 	std::size_t excess = 0;
 	if (opts_.maxCallsPerRound > 0 && calls.size() > static_cast<std::size_t>(opts_.maxCallsPerRound)) {
 		excess = calls.size() - static_cast<std::size_t>(opts_.maxCallsPerRound);
@@ -174,6 +185,23 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 	ChatMessage asst;
 	asst.role = "assistant";
 	asst.content = resp.content;
+	if (excess > 0) {
+		/* 截断说明必须如实告知模型（与 AG-4 同口径「不谎报状态」）。
+		 * 文案里的三个数字（总数/已执行/未派发）是模型判断"要不要重发"的依据。 */
+		if (!asst.content.empty()) { asst.content += "\n"; }
+		asst.content += "本轮模型返回了 " + std::to_string(calls.size() + excess)
+			+ " 条工具调用，因超过单轮上限（" + std::to_string(opts_.maxCallsPerRound)
+			+ " 条）只执行了前 " + std::to_string(calls.size())
+			+ " 条；其余 " + std::to_string(excess)
+			+ " 条未被派发，请基于已执行的结果决定下一步";
+		/* 截断是安全相关事实，操作者也必须看得见（SAN-8①）：此前它只到达模型，
+		 * stderr 与审计轨迹里一个字都没有。 */
+		if (opts_.verbose) {
+			log("[上限] 本轮 " + std::to_string(calls.size() + excess)
+				+ " 条工具调用超过单轮上限 " + std::to_string(opts_.maxCallsPerRound)
+				+ " 条，已丢弃 " + std::to_string(excess) + " 条未派发");
+		}
+	}
 	asst.toolCalls = calls;
 	asst.extras = resp.extras;	/* 同上：附加字段随历史逐轮回传 */
 	history_.messages().push_back(std::move(asst));
@@ -183,23 +211,6 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 		std::string img = dispatchOneCall(c, turn);
 		if (!img.empty()) { images.push_back(std::move(img)); }
 	}
-	if (excess > 0) {
-		/* 截断说明必须如实告知模型（与 AG-4 同口径「不谎报状态」）。挂在
-		 * 最后一条已派发调用的 id 上（tool 消息需引用已存在的 tool_call_id
-		 * 协议才成立）；模型主要读的是说明文本本身。 */
-		ChatMessage tool;
-		tool.role = "tool";
-		tool.content = "本轮模型返回了 " + std::to_string(calls.size() + excess)
-			+ " 条工具调用，因超过单轮上限（" + std::to_string(opts_.maxCallsPerRound)
-			+ " 条）只执行了前 " + std::to_string(calls.size())
-			+ " 条；其余 " + std::to_string(excess)
-			+ " 条未被派发，请基于已执行的结果决定下一步";
-		/* calls 必然非空：excess > 0 只在 maxCallsPerRound > 0 分支产生，
-		 * 那里已把 calls 截到 maxCallsPerRound ≥ 1 条（原先的 calls.empty()
-		 * 兜底是永不可达的死分支——「声称的路径从未执行」本身就是缺陷形态）。 */
-		tool.toolCallId = calls.back().id;
-		history_.messages().push_back(std::move(tool));
-	}
 	if (!images.empty()) {
 		ChatMessage img;
 		img.role = "user";
@@ -207,6 +218,49 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 		img.images = std::move(images);
 		history_.messages().push_back(std::move(img));
 	}
+}
+
+/* 历史协议自洽判据（SAN-1）。语义与理由见 agentloop.hpp 的声明处；
+ * 这里只做机械核对，不做任何修正——它的用途是让用例能断言"服务端会接受这段历史"。 */
+std::string historyProtocolViolation(const std::vector<ChatMessage>& history) {
+	/* 已声明的 id：按出现顺序收集，同时记下是被哪条 assistant 消息声明的 */
+	std::vector<std::string> declared;
+	for (std::size_t i = 0; i < history.size(); ++i) {
+		const ChatMessage& m = history[i];
+		if (m.role != "assistant") { continue; }
+		for (const ToolCall& c : m.toolCalls) {
+			if (c.id.empty()) {
+				return "messages[" + std::to_string(i)
+					+ "]: assistant 声明了一条 id 为空的工具调用（服务端 400）";
+			}
+			declared.push_back(c.id);
+		}
+	}
+
+	std::vector<std::string> answered;
+	for (std::size_t i = 0; i < history.size(); ++i) {
+		const ChatMessage& m = history[i];
+		if (m.role != "tool") { continue; }
+		if (m.toolCallId.empty()) {
+			return "messages[" + std::to_string(i) + "]: tool 消息缺少 tool_call_id（服务端 400）";
+		}
+		if (std::find(declared.begin(), declared.end(), m.toolCallId) == declared.end()) {
+			return "messages[" + std::to_string(i) + "]: tool_call_id '" + m.toolCallId
+				+ "' 不匹配任何 assistant 声明的工具调用（孤儿 tool 消息）";
+		}
+		if (std::find(answered.begin(), answered.end(), m.toolCallId) != answered.end()) {
+			return "messages[" + std::to_string(i) + "]: tool_call_id '" + m.toolCallId
+				+ "' 被回答了不止一次（服务端 400 answered more than once）";
+		}
+		answered.push_back(m.toolCallId);
+	}
+
+	for (const std::string& id : declared) {
+		if (std::find(answered.begin(), answered.end(), id) == answered.end()) {
+			return "assistant 声明的工具调用 '" + id + "' 没有得到任何 tool 回传（服务端 400）";
+		}
+	}
+	return "";
 }
 
 } // namespace agent
