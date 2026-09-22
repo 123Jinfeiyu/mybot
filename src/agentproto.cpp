@@ -138,10 +138,16 @@ ChatResponse parseDriverResponse(const Json& res) {
 	auto content = res.get("content");
 	if (content && content->isStr()) { out.content = content->getValue(); }
 
+	/* SAN-8③（2026-09-22）：被丢弃的调用要**如实报数**。
+	 * 原实现丢完就当没事，整轮为空时抛「模型既没有返回文本也没有工具调用」——
+	 * 而模型**确实**返回了工具调用（只是缺 function.name）。那句话是假的，
+	 * 且片段给的是**规范化后**的表，看不到 provider 的原始形状。 */
+	std::size_t droppedCalls = 0;
+
 	auto tcs = res.get("tool_calls");
 	if (tcs && tcs->isArr()) {
 		for (const Json& v : tcs->arr) {
-			if (!v.isObj()) { continue; }
+			if (!v.isObj()) { ++droppedCalls; continue; }
 			ToolCall tc;
 			auto id = v.get("id");
 			if (id && id->isStr()) { tc.id = id->getValue(); }
@@ -154,6 +160,7 @@ ChatResponse parseDriverResponse(const Json& res) {
 			}
 			/* 无名字的调用无法派发；丢掉后若整轮为空，下面的兜底会报出来 */
 			if (!tc.name.empty()) { out.toolCalls.push_back(std::move(tc)); }
+			else { ++droppedCalls; }
 		}
 	}
 
@@ -161,7 +168,26 @@ ChatResponse parseDriverResponse(const Json& res) {
 	if (extras && extras->isObj()) { out.extras = *extras; }
 
 	if (out.content.empty() && out.toolCalls.empty()) {
-		throw std::runtime_error("模型既没有返回文本也没有工具调用: " + snippet(res.toString()));
+		/* 丢弃数与驱动侧自报的计数一起说（驱动给的 dropped_bad_tool_calls 见
+		 * modules/lib/llm_wire_openai.lua 的 SAN-6 段），让"模型说了但没派发"
+		 * 这件事在报错里也看得见——不谎报状态。 */
+		std::string note;
+		std::size_t driverDropped = 0;
+		if (out.extras.isObj()) {
+			if (const Json* d = out.extras.find("dropped_bad_tool_calls");
+			    d != nullptr && d->isInt()) {
+				driverDropped = static_cast<std::size_t>(d->getInt());
+			}
+		}
+		const std::size_t total = droppedCalls + driverDropped;
+		if (total > 0) {
+			note = "模型返回的 " + std::to_string(total)
+				+ " 条工具调用全部无法派发（缺 function.name 或形态非法，已丢弃），"
+				  "且没有文本内容";
+		} else {
+			note = "模型既没有返回文本也没有工具调用";
+		}
+		throw std::runtime_error(note + ": " + snippet(res.toString()));
 	}
 	return out;
 }

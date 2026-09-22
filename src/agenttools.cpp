@@ -276,6 +276,17 @@ AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& 
 		if (t.name != name) { continue; }
 		try {
 			return t.execute(args);
+		} catch (const IllegalArgumentException& e) {
+			/* SAN-8②（2026-09-22）：**参数问题不是执行问题**。判据是**异常类型**
+			 * 而不是文案——工具内部的参数校验统一抛 IllegalArgumentException，
+			 * 它只在"调用还没到达硬件"时出现。这里照旧返回同样的文本（注册表
+			 * 直接调用方的既有观感不变），但把 paramError 标出来交给派发漏斗：
+			 * DispatchGate 据此改用「工具参数错误: …」口径并把 executed 置 false。
+			 * 此前它和别的异常一起被折成「动作脚本执行失败 []: 缺少字符串参数
+			 * script」，而 run_action_script 的描述写着"报错时机器人状态可能停在
+			 * 半途"——模型因此以为可能发生了物理后果，实际什么都没跑。 */
+			return {std::string("工具执行失败: ") + e.what(), "", false, e.what(),
+				/* executed= */ true, /* paramError= */ true};
 		} catch (const std::exception& e) {
 			/* ok=false 只供审计（agentaudit）；回传给模型的文本口径不变 */
 			return {std::string("工具执行失败: ") + e.what(), "", false, e.what()};
@@ -441,10 +452,18 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 		toolSchema({{"script", stringParam("动作脚本相对路径，如 std.mt 或 test/pwm.mt")}},
 			{"script"}),
 		[ctx](const Json& args) -> AgentToolResult {
-			std::string req;
+			/* SAN-8②（2026-09-22）：**参数错误与执行失败必须分开**。
+			 * 原实现把 requireString 放在执行用的 try 之内，于是模型漏传 script 时
+			 * 收到的是「动作脚本执行失败 []: 缺少字符串参数 script」——而这个工具的
+			 * 描述里写着「报错时机器人状态**可能停在半途**」（见上）。模型据此以为
+			 * 可能发生了物理后果，实际什么都没跑。参数提取移出 try，失败由
+			 * DispatchGate 折成既有的「工具参数错误: …」口径（executed=false，
+			 * 预算也不会把它改写成"副作用已发生"，见 SAN-4）。 */
+			if (ctx.robot == nullptr) {
+				throw std::runtime_error("没有常驻机器人实例");
+			}
+			const std::string req = requireString(args, "script");
 			try {
-				if (ctx.robot == nullptr) { throw std::runtime_error("没有常驻机器人实例"); }
-				req = requireString(args, "script");
 				std::string path = resolveActionScriptPath(ctx.scriptsDir, req);
 				/* @Include 基准目录 = scripts-dir 根：与本工具的相对路径语义
 				 * 一致（include 名同样不得越出该树），多轮执行重复设置幂等 */
@@ -461,8 +480,10 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 				ctx.robot->run(*reader);
 				return {"已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）", ""};
 			} catch (const std::exception& e) {
-				/* 脚本执行失败对模型是「结果」（换个做法继续），对审计是「没做成」：
-				 * ok=false 只进审计轨迹，回传文本口径不变 */
+				/* 走到这里的是**真正的执行失败**（脚本不存在/读不了/跑挂了）：
+				 * 对模型是「结果」（换个做法继续），对审计是「没做成」。
+				 * executed 保持缺省 true——脚本可能跑到一半，机器人可能停在半途，
+				 * 这个口径必须留给模型（与 SAN-4 的分界一致）。 */
 				return {"动作脚本执行失败 [" + req + "]: " + e.what(), "", false, e.what()};
 			}
 		}};

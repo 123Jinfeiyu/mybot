@@ -30,11 +30,18 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 			}
 		}
 		if (!denied) { result = tools_.execute(call.name, parsedArgs); }
+		/* SAN-8②：工具层按异常类型标出的参数问题——改口径并标明"没派发"。
+		 * 派发漏斗是**唯一**给模型的回执出口，口径在这里统一。 */
+		if (result.paramError) {
+			result.text = "工具参数错误: " + result.error;
+			result.executed = false;
+		}
 	} catch (const std::exception& e) {
 		/* 参数解析失败 = 这一次调用**从未到达工具**，副作用必然未发生（SAN-4） */
 		result = AgentToolResult{std::string("工具参数错误: ") + e.what(), "", false, e.what(),
 			/* executed= */ false};
 	}
+
 	const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::steady_clock::now() - t0).count();
 

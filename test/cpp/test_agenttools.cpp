@@ -20,6 +20,7 @@ using fx::TempDir;
 #include <unistd.h>
 
 #include "agent_subprocess.hpp"
+#include "agentdispatch.hpp"
 #include "agentproto.hpp"
 #include "agenttools.hpp"
 #include "jsonparse.hpp"
@@ -1300,4 +1301,84 @@ TH_TEST(agenttools_action_script_budget_window_is_scoped) {
 	const AgentToolResult second = tools.execute("run_action_script", parseJson("{\"script\":\"ok.mt\"}"));
 	TH_CHECK_MSG(second.text.find("已执行") != std::string::npos, second.text);
 	robot.deactivate();
+}
+
+/* ============ SAN-8②：参数错误与执行失败必须分开（口径修正） ============
+ * 缺陷形态（已实测）：requireString(args,"script") 原先在**执行用的 try 之内**，
+ * 于是模型漏传 script 时收到「动作脚本执行失败 []: 缺少字符串参数 script」——
+ * 而该工具的描述里写着「报错时机器人状态**可能停在半途**」（见工具定义）。
+ * 模型据此以为可能发生了物理后果，实际什么都没跑。
+ *
+ * 这条用例走**派发漏斗**（DispatchGate）而不是 AgentToolRegistry::execute：
+ * 真实路径上参数解析失败由 DispatchGate 折成「工具参数错误: …」，
+ * 用注册表直接调会得到另一句泛化文案，测不到模型实际看到的那句。 */
+TH_TEST(agenttools_run_action_script_missing_arg_is_not_reported_as_execution_failure) {
+	auto robot = makeRelayRobot();
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	DispatchGate gate(tools, nullptr, nullptr);
+
+	/* ① 缺参数：必须是"参数错误"，且**不得**出现"执行失败"/"停在半途"口径 */
+	AgentToolResult noArg = gate.run(ToolCall{"c1", "run_action_script", "{}"}, 0);
+	TH_CHECK_MSG(noArg.text.find("工具参数错误") != std::string::npos,
+		"缺参数应报工具参数错误，实际: " + noArg.text);
+	TH_CHECK_MSG(noArg.text.find("缺少字符串参数 script") != std::string::npos,
+		"应点名缺哪个参数，实际: " + noArg.text);
+	TH_CHECK_MSG(noArg.text.find("执行失败") == std::string::npos,
+		"参数错误不得说成执行失败，实际: " + noArg.text);
+	TH_CHECK(noArg.ok == false);
+	/* executed=false：没派发（SAN-4 据此不做"副作用已发生"的降级改写） */
+	TH_CHECK(noArg.executed == false);
+
+	/* ② 参数类型不符：同样走参数错误口径（requireString 抛
+	 * IllegalArgumentException，注册表按**异常类型**原样上抛，DispatchGate 折成
+	 * 工具参数错误） */
+	AgentToolResult badType = gate.run(
+		ToolCall{"c2", "run_action_script", "{\"script\":42}"}, 0);
+	TH_CHECK_MSG(badType.text.find("工具参数错误") != std::string::npos,
+		"类型不符应报工具参数错误，实际: " + badType.text);
+	TH_CHECK(badType.executed == false);
+
+	/* ③ 对照：**真的执行失败**（脚本不存在）仍须是"执行失败"口径，
+	 * 且 executed=true——脚本可能跑到一半，机器人可能停在半途，
+	 * 这个警告必须留给模型（方向相反的谎报同样不可接受）。 */
+	AgentToolResult missing = gate.run(
+		ToolCall{"c3", "run_action_script", "{\"script\":\"no-such.mt\"}"}, 0);
+	TH_CHECK_MSG(missing.text.find("动作脚本执行失败") != std::string::npos,
+		"脚本不存在应报执行失败，实际: " + missing.text);
+	TH_CHECK(missing.executed == true);
+
+	robot->deactivate();
+}
+
+/* SAN-8③：模型返回的工具调用**全部缺 function.name** 时，错误文案必须如实
+ * 报出"丢弃了几条"，而不是说"模型既没有返回文本也没有工具调用"（那是假话）。 */
+TH_TEST(agentproto_reports_dropped_unnamed_tool_calls) {
+	/* 一条缺 name 的调用：整轮为空 → 报错必须点名丢弃条数 */
+	Json res = parseJson(
+		"{\"result\":\"OK\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c9\",\"name\":\"\","
+		"\"arguments\":\"{}\"}]}");
+	TH_CHECK_THROWS_MSG(std::runtime_error, "无法派发",
+		parseDriverResponse(res));
+
+	/* 驱动侧丢弃计数（dropped_bad_tool_calls）也要计入总数 */
+	Json res2 = parseJson(
+		"{\"result\":\"OK\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c9\",\"name\":\"\","
+		"\"arguments\":\"{}\"}],\"extras\":{\"dropped_bad_tool_calls\":2}}");
+	try {
+		parseDriverResponse(res2);
+		TH_CHECK_MSG(false, "应当抛错");
+	} catch (const std::exception& e) {
+		/* 1（宿主丢弃）+ 2（驱动丢弃）= 3 */
+		TH_CHECK_MSG(std::string(e.what()).find("3 条") != std::string::npos,
+			"应把宿主与驱动的丢弃数合并报出，实际: " + std::string(e.what()));
+	}
+
+	/* 真的一条都没有时，保留既有文案（不误报"丢弃了 N 条"） */
+	Json res3 = parseJson("{\"result\":\"OK\",\"content\":\"\"}");
+	TH_CHECK_THROWS_MSG(std::runtime_error, "既没有返回文本也没有工具调用",
+		parseDriverResponse(res3));
 }

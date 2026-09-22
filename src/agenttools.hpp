@@ -47,14 +47,19 @@ struct AgentToolResult {
 	 * 为什么不用 ok 代替：`ok` 把"没执行"与"执行了但失败"混在一起，而这两件事
 	 * 对模型的意义完全相反。 */
 	bool executed = true;
+	/* SAN-8②（2026-09-22）：这一次失败是**参数问题**（缺参数/类型不符/越界），
+	 * 而不是执行问题。判据由工具层按**异常类型**给出（IllegalArgumentException），
+	 * 派发漏斗据此把回执改成「工具参数错误: …」并把 executed 置 false——
+	 * 模型看到的应当是"没执行、参数不对"，而不是"脚本执行失败、机器人可能停在半途"。 */
+	bool paramError = false;
 	/* 带构造函数（非聚合）：存量代码大量使用两字段初始化 {text, img}，聚合
 	 * 形态下它们会触发 -Wmissing-field-initializers（本仓库 -Wall -Wextra
 	 * 零告警基线）；构造函数让两字段形态显式表示「ok=true 缺省」。 */
 	AgentToolResult() = default;
 	AgentToolResult(std::string t, std::string img, bool ok_ = true, std::string err_ = "",
-			bool executed_ = true)
+			bool executed_ = true, bool paramError_ = false)
 		: text(std::move(t)), imageDataUrl(std::move(img)), ok(ok_), error(std::move(err_)),
-		  executed(executed_) {}
+		  executed(executed_), paramError(paramError_) {}
 };
 
 /* 一个可被模型调用的工具。execute 返回给模型的内容；抛异常表示工具失败
