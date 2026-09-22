@@ -173,6 +173,33 @@ TH_TEST(open_action_source_rejects_bad_tcp_idle) {
 	}
 }
 
+/* ---- F-1/F-3（2026-09-22，原 TD-2 剩余部分）：区间校验 ---- */
+
+TH_TEST(open_action_source_rejects_bad_tcp_max_auth_attempts) {
+	/* 下限 1、上限 1000（util::tcp_limits）：0/负/越界/非数字均拒绝，
+	 * 与既有 tcpIdle/tcpPort 校验同一 nullptr 契约。 */
+	bot::CliOptions opts;
+	opts.tcp = true;
+	opts.tcpPort = "19999";
+	opts.tcpHost = "127.0.0.1";
+	for (const char* bad : {"0", "-1", "1001", "five"}) {
+		opts.tcpMaxAuthAttempts = bad;
+		TH_CHECK(bot::openActionSource(opts) == nullptr);
+	}
+}
+
+TH_TEST(open_action_source_rejects_bad_tcp_total_timeout) {
+	/* 下限 1、上限 86400（util::tcp_limits），与 --tcp-idle 上限同数量级 */
+	bot::CliOptions opts;
+	opts.tcp = true;
+	opts.tcpPort = "19999";
+	opts.tcpHost = "127.0.0.1";
+	for (const char* bad : {"0", "-1", "86401", "long"}) {
+		opts.tcpTotalTimeout = bad;
+		TH_CHECK(bot::openActionSource(opts) == nullptr);
+	}
+}
+
 /* ---------------- fd 生命周期（0.5：FdGuard RAII） ---------------- */
 
 namespace {

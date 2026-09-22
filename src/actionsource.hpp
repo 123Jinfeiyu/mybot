@@ -31,7 +31,23 @@ struct CliOptions {
 	std::string tcpHost = "127.0.0.1";
 	std::string tcpToken;
 	std::string tcpIdle;
+	/* --tcp-max-auth-attempts：口令连续失败上限（原写死 kTcpAuthMaxFails=5，
+	 * 2026-09-22 F-1 参数化）。字符串保留原始输入，校验在 openActionSource 内
+	 * 完成（与 tcpPort/tcpIdle 同惯例）；空串 = 用缺省 5。 */
+	std::string tcpMaxAuthAttempts;
+	/* --tcp-total-timeout：连接总时长预算下限（原写死 tcpTotalBudgetSec 里的
+	 * 600，2026-09-22 F-3 参数化）。生效值仍取 max(该下限, idleSec*20)——
+	 * 「总预算」本就是「至少这么多，且随 idle 放大」的语义，不是可能比
+	 * idle*20 更小的硬上限。空串 = 用缺省 600。 */
+	std::string tcpTotalTimeout;
 	std::optional<std::string> input;
+
+	/* --daemon-grace-ms：RobotStruct::deactivate 二段屏障的宽限上限（原写死
+	 * kMaxGraceMs=30000，2026-09-22 F-2 参数化）。全局选项（不限 --agent/
+	 * --tcp/--input 任一模式——任何声明了 @Daemon 的结构脚本都可能触发弃管
+	 * 路径）。字符串保留原始输入，校验在 main.cpp 内完成（与 tcpPort 同惯例，
+	 * 报错文案单点）；空串 = 用缺省 30000。 */
+	std::string daemonGraceMs;
 
 	/* ---- agent 模式（--agent）----
 	 * agent 模式与动作输入源（--tcp / --input / stdin）互斥：前者让智能体

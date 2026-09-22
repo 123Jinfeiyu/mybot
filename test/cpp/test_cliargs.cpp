@@ -162,6 +162,30 @@ TH_TEST(cliargs_tcp_with_equals_and_separate_value_forms) {
 	TH_CHECK(p2.opts.tcp && p2.opts.tcpPort == "19302");
 }
 
+/* ---- F-1/F-2/F-3（2026-09-22，原 TD-2 剩余部分）：三个新选项解析进对应字段 ----
+ * 区间校验本身在 openActionSource（tcp 两项）/ main.cpp applyDaemonGraceMs
+ * （daemon-grace-ms）完成，这里只钉「解析层原样透传字符串」——与既有
+ * tcpPort/tcpIdle 的惯例一致，避免解析层与校验层的判据重复。 */
+
+TH_TEST(cliargs_parses_tcp_auth_and_total_timeout_and_daemon_grace) {
+	Argv a({"mybot", "--robot=robots/test.sql", "--tcp-max-auth-attempts", "10",
+		"--tcp-total-timeout", "900", "--daemon-grace-ms", "5000"});
+	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+	TH_CHECK(p.opts.tcpMaxAuthAttempts == "10");
+	TH_CHECK(p.opts.tcpTotalTimeout == "900");
+	TH_CHECK(p.opts.daemonGraceMs == "5000");
+	/* 三者都不是 agentOnly：非 agent 模式下合法使用 */
+	TH_CHECK(!p.opts.agentOptionsUsed);
+	TH_CHECK(bot::validateOptions(p) == 0);
+}
+
+TH_TEST(cliargs_new_timeout_options_missing_value_is_rejected) {
+	Argv a({"mybot", "--robot=robots/test.sql", "--daemon-grace-ms"});
+	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+	TH_CHECK(p.missingValue.size() == 1 && p.missingValue[0] == "daemon-grace-ms");
+	TH_CHECK(bot::validateOptions(p) == 2);
+}
+
 /* ---- 4) --help 优先级：main 在 validateOptions 之前返回 0 ---- */
 
 TH_TEST(cliargs_help_precedes_validation_in_main) {
@@ -197,12 +221,17 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	TH_CHECK(defs.count("--agent-no-shell") == 0);
 	/* 分段帮助（2026-09-22）把 --help <topic> 四行并入帮助正文（23），审计轨迹
 	 * （--audit-log，2026-09-22）再加一项（24），策略钩子（--agent-policy，
-	 * 2026-09-22）再加一项（25）。计数断言是「帮助 ↔ docs 双向一致」守卫的
+	 * 2026-09-22）再加一项（25）。F-1/F-2/F-3（2026-09-22，原 TD-2 剩余部分）
+	 * 再加三项——--tcp-max-auth-attempts / --tcp-total-timeout /
+	 * --daemon-grace-ms（28）。计数断言是「帮助 ↔ docs 双向一致」守卫的
 	 * 一部分：随选项增删同步更新。 */
-	TH_CHECK(defs.size() == 25);
+	TH_CHECK(defs.size() == 28);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);
+	TH_CHECK(defs.count("--tcp-max-auth-attempts") == 1);
+	TH_CHECK(defs.count("--tcp-total-timeout") == 1);
+	TH_CHECK(defs.count("--daemon-grace-ms") == 1);
 
 	/* docs 侧：reference.md（CLI 参考）与 agent.md（agent 专属选项表）的选项表行 */
 	const std::set<std::string> ref =

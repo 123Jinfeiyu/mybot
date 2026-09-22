@@ -151,6 +151,16 @@ elif scenario == "token_overlong":
         time.sleep(0.5)
         s.close()
 
+elif scenario == "auth_limit_custom":
+    # F-1（2026-09-22）：--tcp-max-auth-attempts 2 生效——2 次错口令即放弃，
+    # 不必等到缺省的 5 次（若选项未生效，第 2 次后服务端仍在等，看门狗会
+    # 在 25s 后判超时挂死，本场景借「更快失败」证明新阈值真的接管了判定）
+    for _ in range(2):
+        s = connect()
+        s.sendall(b"wrongtok\n")
+        time.sleep(0.2)
+        s.close()
+
 else:
     print(f"未知场景 {scenario}", file=sys.stderr)
     sys.exit(1)
@@ -215,6 +225,10 @@ run_scenario token_bruteforce nonzero "连续 5 次校验失败" - --tcp-token t
 
 # 7. 超长凭据行：fail-closed 拒绝（审计 #6 防线），同样按爆破上限退出
 run_scenario token_overlong nonzero "凭据行超长" - --tcp-token tok_real
+
+# 8. F-1（2026-09-22）：--tcp-max-auth-attempts 2 生效——2 次失败即放弃
+# （不是缺省的 5 次），日志点名新阈值本身
+run_scenario auth_limit_custom nonzero "连续 2 次校验失败" - --tcp-token tok_real --tcp-max-auth-attempts 2
 
 echo ""
 if [ -n "$fail_scenarios" ]; then

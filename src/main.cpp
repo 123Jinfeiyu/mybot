@@ -211,6 +211,26 @@ bool injectAgentDrivers(RobotStruct& robot, const agent::AgentModeConfig& agentC
 	return true;
 }
 
+/* --daemon-grace-ms 解析与校验（2026-09-22 F-2）：全局选项，不限于某个
+ * 输入源/模式，凡结构脚本含 @Daemon 都可能触发 deactivate() 的二段屏障。
+ * 空串 = 用缺省值（daemon_limits::kGraceMsDefault），不调用 setter。
+ * 失败已打印人话报错，返回 false（调用方按「配置错误不碰真机」退出 2）。 */
+bool applyDaemonGraceMs(const std::string& raw, RobotStruct& robot) {
+	if (raw.empty()) { return true; }
+	auto [state, value] = parseLongStrict(raw);
+	if (state != IntParse::OK) {
+		std::cerr << "选项 --daemon-grace-ms 需要一个整数，实际是 '" << raw << "'" << std::endl;
+		return false;
+	}
+	if (value < daemon_limits::kGraceMsMin || value > daemon_limits::kGraceMsMax) {
+		std::cerr << rangeErrorText("选项 --daemon-grace-ms",
+			daemon_limits::kGraceMsMin, daemon_limits::kGraceMsMax, raw) << std::endl;
+		return false;
+	}
+	robot.setDeactivateGraceMs(value);
+	return true;
+}
+
 /* D4：安装 SIGINT/SIGTERM 处理器（仅置标志），Ctrl-C 走正常清理链 */
 void installStopSignalHandlers() {
 	struct sigaction sa{};
@@ -279,6 +299,10 @@ int main(int argc, char** argv) {
 
 		std::unique_ptr<RobotStruct> robot = loadStructure(rpath);
 		if (!robot) { return 1; }
+
+		/* --daemon-grace-ms：配置错误不碰真机——在 active() 之前校验并设置，
+		 * 与 @Include 基准目录同一批「上电前收尾」步骤。 */
+		if (!applyDaemonGraceMs(options.daemonGraceMs, *robot)) { return 2; }
 
 		/* @Include 基准目录：--input 文件通道取脚本所在目录（相对路径直觉，
 		 * 且与「include 名不得越出基准树」的词法规则自洽）；stdin/TCP 无脚本

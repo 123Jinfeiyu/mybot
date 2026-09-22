@@ -36,6 +36,9 @@ constexpr OptionSpec kValueOptions[] = {
 	{"tcp-host", [](CliOptions& o, const std::string& v) { o.tcpHost = v; }, false},
 	{"tcp-token", [](CliOptions& o, const std::string& v) { o.tcpToken = v; }, false},
 	{"tcp-idle", [](CliOptions& o, const std::string& v) { o.tcpIdle = v; }, false},
+	{"tcp-max-auth-attempts", [](CliOptions& o, const std::string& v) { o.tcpMaxAuthAttempts = v; }, false},
+	{"tcp-total-timeout", [](CliOptions& o, const std::string& v) { o.tcpTotalTimeout = v; }, false},
+	{"daemon-grace-ms", [](CliOptions& o, const std::string& v) { o.daemonGraceMs = v; }, false},
 	{"input", [](CliOptions& o, const std::string& v) { o.input = v; }, false},
 	{"camera-var", [](CliOptions& o, const std::string& v) { o.cameraVar = v; }, true},
 	{"camera-device", [](CliOptions& o, const std::string& v) { o.cameraDevice = v; }, true},
@@ -172,8 +175,16 @@ std::string helpText() {
 	s += "                     校验失败关连接回等，连续 5 次才退出；也可用环境变量 BOT4CJ_TCP_TOKEN\n";
 	s += "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）；\n";
 	s += "                     另有连接总时长预算（600s，随该值 x20 放大）防慢滴挂住进程\n";
+	s += "  --tcp-max-auth-attempts <N>  口令连续失败上限（缺省 5，"
+		+ rangeText(tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax) + "）\n";
+	s += "  --tcp-total-timeout <sec>    连接总时长预算下限（缺省 600，"
+		+ rangeText(tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax)
+		+ "）；生效值取该下限与 idle x20 的较大者\n";
 	s += "  --input <path>     从文件读取动作脚本\n";
 	s += "  （缺省）           从 stdin 管道读取\n";
+	s += "  --daemon-grace-ms <ms>  守护线程弃管后的二段停机宽限上限（缺省 30000，"
+		+ rangeText(daemon_limits::kGraceMsMin, daemon_limits::kGraceMsMax)
+		+ "）；仅结构脚本含 @Daemon 时生效，与 --agent/--tcp/--input 任一模式无关\n";
 	s += "\n";
 	s += "agent 模式（与上面的动作输入源互斥）：机器人结构脚本加载后硬件常驻内存，\n";
 	s += "模型调用由 Lua 协议驱动承担（不链接任何 HTTP 库，运行期只需 libcurl）。\n";
@@ -254,7 +265,12 @@ std::string helpText(const std::string& topic) {
 		s += "  --tcp-token <tok>  TCP 口令：跨机监听必填；对端须先发一行 \"<tok>\\n\" 再发脚本；\n";
 		s += "                     校验失败关连接回等，连续 5 次才退出；也可用环境变量 BOT4CJ_TCP_TOKEN\n";
 		s += "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）；\n";
-		s += "                     另有连接总时长预算（600s，随该值 x20 放大）防慢滴挂住进程\n\n";
+		s += "                     另有连接总时长预算（600s，随该值 x20 放大）防慢滴挂住进程\n";
+		s += "  --tcp-max-auth-attempts <N>  口令连续失败上限（缺省 5，"
+			+ rangeText(tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax) + "）\n";
+		s += "  --tcp-total-timeout <sec>    连接总时长预算下限（缺省 600，"
+			+ rangeText(tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax)
+			+ "）；生效值取该下限与 idle x20 的较大者\n\n";
 		s += "示例：\n";
 		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080\n";
 		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080 --tcp-host 0.0.0.0 --tcp-token mysecret\n";

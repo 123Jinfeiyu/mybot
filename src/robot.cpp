@@ -70,8 +70,7 @@ void RobotStruct::deactivate() {
 		 * 线程不再与 destroy 并发；耗尽仍活着的才真正带着竞态进入 destroy，
 		 * 由下方告警如实点名。 */
 		if (!abandoned.empty()) {
-			constexpr int64_t kMaxGraceMs = 30000;
-			const int64_t graceMs = std::min<int64_t>(budgetMs, kMaxGraceMs);
+			const int64_t graceMs = std::min<int64_t>(budgetMs, deactivateGraceMs_);
 			std::cerr << "Deactivate: " << abandoned.size()
 				<< " daemon(s) outlived the stop barrier, granting " << graceMs
 				<< "ms grace before hardware de-init" << std::endl;

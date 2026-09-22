@@ -21,16 +21,20 @@ static constexpr int kTcpIdleSecDefault = 30;
 
 /* ---- TCP 口令连续失败上限（C-M1）：口令失败不再直接终止进程——任意对端
  * 先 connect 一次即可让一次运行崩溃退出（单次性 DoS + 硬件走一遍
- * deactivate）。改为关连接回 accept 等待，连败到上限才放弃（防无限爆破）。 */
-static constexpr int kTcpAuthMaxFails = 5;
+ * deactivate）。改为关连接回 accept 等待，连败到上限才放弃（防无限爆破）。
+ * 2026-09-22 F-1：缺省值挪到 util::tcp_limits::kAuthMaxFailsDefault 单点，
+ * 可经 --tcp-max-auth-attempts 覆盖；本处旧常量名保留作缺省值别名，
+ * acceptAuthenticatedClient 改吃调用方传入的生效值。 */
 
 /* ---- 连接总时长预算（C-M2，秒）：SO_RCVTIMEO 只约束单次 recv，慢滴对端
  * 每 <idle 秒发 1 字节即可击穿空闲超时、把进程挂到天级。从连接建立起算
- * wall-clock 上限：真实脚本 KB 级、秒级传完；600s 已覆盖极慢链路，随
- * --tcp-idle 放大（用户显式调长超时视为有意容忍慢链路），下限 600s。 */
-static int tcpTotalBudgetSec(int idleSec) {
+ * wall-clock 上限：真实脚本 KB 级、秒级传完；缺省 600s 已覆盖极慢链路，随
+ * --tcp-idle 放大（用户显式调长超时视为有意容忍慢链路），下限可经
+ * --tcp-total-timeout 调整（2026-09-22 F-3；生效值取该下限与 idle×20 的
+ * 较大者——「总预算」语义不变，只是下限从写死 600 变为可配）。 */
+static int tcpTotalBudgetSec(int idleSec, int totalTimeoutFloorSec) {
 	int budget = idleSec * 20;
-	if (budget < 600) { budget = 600; }
+	if (budget < totalTimeoutFloorSec) { budget = totalTimeoutFloorSec; }
 	return budget;
 }
 
@@ -208,8 +212,11 @@ static FdGuard setupListenSocket(long long port, const std::string& host,
 }
 
 /* accept 循环：EINTR/停止信号响应（D5/D4）+ 对端日志 + 空闲超时（审计 #9）
- * + 口令失败预算（C-M1：关连接回 accept，连续失败才放弃）。 */
-static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token, int idleSec) {
+ * + 口令失败预算（C-M1：关连接回 accept，连续失败才放弃）。
+ * authMaxFails：连续失败上限的生效值（2026-09-22 F-1，缺省
+ * tcp_limits::kAuthMaxFailsDefault，可经 --tcp-max-auth-attempts 覆盖）。 */
+static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token, int idleSec,
+		int authMaxFails) {
 	FdGuard clientFd;		/* 每轮重置；本轮失败时由 close() 关闭 */
 	int authFails = 0;
 	while (true) {
@@ -256,12 +263,12 @@ static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token,
 					continue;
 				}
 				++authFails;
-				if (authFails >= kTcpAuthMaxFails) {
+				if (authFails >= authMaxFails) {
 					throw std::runtime_error("TCP 口令连续 " + std::to_string(authFails)
 						+ " 次校验失败，停止等待（可能为扫描/爆破）");
 				}
 				std::cerr << "关闭该连接，继续等待下一个客户端（剩余尝试 "
-					<< (kTcpAuthMaxFails - authFails) << " 次）" << std::endl;
+					<< (authMaxFails - authFails) << " 次）" << std::endl;
 				continue;
 			}
 		}
@@ -270,21 +277,22 @@ static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token,
 	return clientFd;
 }
 
-/* ---- TCP 动作源：监听 → 接受一个客户端连接 → 可选口令 → 逐字节读脚本 ---- */
+/* ---- TCP 动作源：监听 → 接受一个客户端连接 → 可选口令 → 逐字节读脚本 ----
+ * authMaxFails/totalTimeoutFloorSec：F-1/F-3 生效值（缺省见 tcp_limits）。 */
 static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::string& host,
-		const std::string& token, int idleSec) {
+		const std::string& token, int idleSec, int authMaxFails, int totalTimeoutFloorSec) {
 	in_addr addr{};
 	if (!parseIpv4Host(host, addr)) { return nullptr; }
 
 	std::cerr << "TCP 动作源：监听 " << host << ":" << port << "，等待客户端连接..." << std::endl;
 
 	FdGuard listenFd = setupListenSocket(port, host, addr, token);
-	FdGuard clientFd = acceptAuthenticatedClient(listenFd.get(), token, idleSec);
+	FdGuard clientFd = acceptAuthenticatedClient(listenFd.get(), token, idleSec, authMaxFails);
 
 	/* C-M2：总时长预算从连接建立起算（含口令校验段；口令行长度有上限且
 	 * 每次 recv 受 idle 超时约束，主防线覆盖无界的脚本读取段） */
 	const auto deadline = std::chrono::steady_clock::now()
-		+ std::chrono::seconds(tcpTotalBudgetSec(idleSec));
+		+ std::chrono::seconds(tcpTotalBudgetSec(idleSec, totalTimeoutFloorSec));
 
 	/* 先以 get() 构造（此刻仍由守卫持有），构造成功后才交还所有权：
 	 * 若构造或分配抛异常，守卫负责关闭客户端 fd，不再泄漏（原实现此处
@@ -333,7 +341,40 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 			if (const char* envToken = std::getenv("BOT4CJ_TCP_TOKEN")) { token = envToken; }
 		}
 
-		raw = openTcpActionSource(portParsed.second, host, token, idleSec);
+		/* F-1：口令连续失败上限（缺省 tcp_limits::kAuthMaxFailsDefault=5） */
+		int authMaxFails = tcp_limits::kAuthMaxFailsDefault;
+		const std::string& authStr = options.tcpMaxAuthAttempts;
+		if (!authStr.empty()) {
+			auto authParsed = parseLongStrict(authStr);
+			if (authParsed.first != IntParse::OK
+					|| authParsed.second < tcp_limits::kAuthMaxFailsMin
+					|| authParsed.second > tcp_limits::kAuthMaxFailsMax) {
+				std::cerr << rangeErrorText("--tcp-max-auth-attempts",
+					tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax, authStr)
+					<< std::endl;
+				return nullptr;
+			}
+			authMaxFails = static_cast<int>(authParsed.second);
+		}
+
+		/* F-3：连接总时长预算下限（缺省 tcp_limits::kTotalTimeoutDefault=600） */
+		int totalTimeoutFloorSec = tcp_limits::kTotalTimeoutDefault;
+		const std::string& totalStr = options.tcpTotalTimeout;
+		if (!totalStr.empty()) {
+			auto totalParsed = parseLongStrict(totalStr);
+			if (totalParsed.first != IntParse::OK
+					|| totalParsed.second < tcp_limits::kTotalTimeoutMin
+					|| totalParsed.second > tcp_limits::kTotalTimeoutMax) {
+				std::cerr << rangeErrorText("--tcp-total-timeout",
+					tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax, totalStr)
+					<< std::endl;
+				return nullptr;
+			}
+			totalTimeoutFloorSec = static_cast<int>(totalParsed.second);
+		}
+
+		raw = openTcpActionSource(portParsed.second, host, token, idleSec,
+			authMaxFails, totalTimeoutFloorSec);
 	}
 	/* 2) 文件通道 */
 	else if (options.input) {

@@ -318,6 +318,11 @@ class RobotStruct {
 	 * 析构据此判断要不要补一次断电——断电是生命周期不变式，不是调用点义务
 	 * （见 ~RobotStruct 注释）。缺省 true：只解析结构、从未上电时无事可做。 */
 	bool deactivated_ = true;
+	/* --daemon-grace-ms（2026-09-22 F-2）：deactivate() 二段屏障宽限上限，
+	 * 缺省 daemon_limits::kGraceMsDefault（原写死 kMaxGraceMs=30000）。
+	 * setter 须在 active() 前调用才有意义（deactivate 才会读它），但即便
+	 * 晚调用也不构成 UB——只是当次 deactivate 用旧值。 */
+	int64_t deactivateGraceMs_ = daemon_limits::kGraceMsDefault;
 
 public:
 	explicit RobotStruct(bot::Reader& input)
@@ -340,6 +345,9 @@ public:
 
 	/* 设置 @Include 的相对路径基准目录（语义见成员注释） */
 	void setActionIncludeBaseDir(std::string dir) { actionIncludeBaseDir_ = std::move(dir); }
+
+	/* 设置 deactivate() 二段屏障的宽限上限（--daemon-grace-ms，语义见成员注释） */
+	void setDeactivateGraceMs(int64_t ms) { deactivateGraceMs_ = ms; }
 
 	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
 	const HwRegistry& registry() const { return registry_; }

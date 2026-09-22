@@ -5,6 +5,43 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 CLI 超时/上限参数化（F-1/F-2/F-3，原 TD-2 剩余部分）
+
+> 依据 [.tmp/NEXT_STEPS_20260922.md](../.tmp/NEXT_STEPS_20260922.md)（核实两轮 agent 重构
+> 全部落地后梳理出的真实剩余项）。三个此前硬编码的运行期数值改为可选 CLI 参数，
+> 行为保持型：不传 = 现状缺省值，零变更。
+
+- **`--tcp-max-auth-attempts <N>`**（F-1）：TCP 口令连续失败上限，原写死 5
+  （`kTcpAuthMaxFails`），现可调（区间 1-1000，`util::tcp_limits`）。达到上限后
+  服务端放弃等待并退出，语义不变，仅阈值可配。
+- **`--tcp-total-timeout <sec>`**（F-3）：TCP 连接总时长预算下限，原写死 600
+  （`tcpTotalBudgetSec` 内），现可调（区间 1-86400）。生效值仍是
+  `max(该下限, --tcp-idle × 20)`——「总预算」的放大语义不变，只是下限可配。
+- **`--daemon-grace-ms <ms>`**（F-2）：`RobotStruct::deactivate()` 二段屏障（守护
+  线程弃管后的额外等待窗口）宽限上限，原写死 30000（`kMaxGraceMs`），现可调
+  （区间 0-300000）。全局选项，不限于 `--agent`/`--tcp`/`--input` 任一模式——
+  任何结构脚本声明了 `@Daemon` 都可能触发该屏障；在 `robot.active()` 之前完成
+  解析与校验（配置错误不碰真机）。
+
+三者都不属于 agent 配置面（daemon/TCP 是全局能力），故不进 `mybot.llm.json`，
+走普通 CLI 选项；区间常量单点（`util.hpp` 的 `tcp_limits`/`daemon_limits`
+命名空间），与 `llm_limits` 同一惯例，`--help`/校验共用避免判据漂移。
+
+- 钉子用例：`cliargs_parses_tcp_auth_and_total_timeout_and_daemon_grace`（解析层）、
+  `cliargs_new_timeout_options_missing_value_is_rejected`（缺值拒绝）、
+  `open_action_source_rejects_bad_tcp_max_auth_attempts` /
+  `open_action_source_rejects_bad_tcp_total_timeout`（区间校验）、
+  `robot_daemon_grace_ms_setter_affects_deactivate_barrier`（行为验证：小宽限值
+  下二段屏障确实提前完成，stderr 点名新值而非旧缺省）。`scripts/tcp_adversarial.sh`
+  新增场景 8（`auth_limit_custom`）：`--tcp-max-auth-attempts 2` 下 2 次失败即放弃
+  （不是缺省的 5 次），端到端证明选项真的接管了判定，而不仅仅是解析层收了值。
+- 反向验证：三处分别临时改回硬编码值，对应新用例/E2E 场景转红，回滚后绿。
+- 验收：C++ 全量 493/0（新增 5 例）；`bash test/run_all.sh` 261/0/1 跳
+  （`test_jit_warmup.lua`，既有已知跳过，与本次改动无关）；ASan/UBSan 产物下
+  `mybot_tests` 493/0 无泄漏报告；`scripts/tcp_adversarial.sh` 8 场景全绿。
+- 文档：`--help`（含分段 `--help tcp`）、`docs/reference.md`（CLI 参数表 + TCP
+  安全设计段落）同步；帮助选项计数黄金测试 25→28。
+
 ### 2026-09-22 agent 重构阶段 C6 + C7（提示词素材单次读取 / F6 三条小路径）
 
 > 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 C6（F5）与 C7（F6）。行为保持型 + 死分支清理。

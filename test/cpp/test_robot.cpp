@@ -796,6 +796,64 @@ TH_TEST(deactivate_joins_daemons_before_hardware_deinit) {
 	TH_CHECK(!trace.empty() && trace.back() == 'D');
 }
 
+/* ==================== F-2（2026-09-22，原 TD-2 剩余部分）：daemon-grace-ms 参数化 ====================
+ * 借用 test_daemon.cpp 的慢拍夹具（3s/拍 > joinTimeout=2s → 必走弃管路径）。
+ * daemon 弃管后的二段宽限由 RobotStruct::deactivateGraceMs_ 控制（原写死
+ * kMaxGraceMs=30000），本用例钉住：(1) setter 语义正确传递到 deactivate()；
+ * (2) 用小宽限值（100ms）快速走完二段等待而不卡死测试；(3) stderr 可观测。 */
+
+TH_TEST(robot_daemon_grace_ms_setter_affects_deactivate_barrier) {
+	/* EnvVar 守卫：析构自动恢复——BOT4CJ_MODULE_PATH 会影响后续用例的沙箱
+	 * dofile 白名单（见 test_luaend.cpp），必须离开作用域即还原，不能像
+	 * test_daemon.cpp 那样裸 setenv（那是既有技术债，此处不重复）。 */
+	fx::EnvVar modPath("BOT4CJ_MODULE_PATH", ".tmp");
+	/* 从 test_daemon.cpp::writeSlowTickChunk 复制慢拍夹具
+	 * （3s/拍，interval=10ms，joinTimeout=max(10*5,2000)=2000ms） */
+	std::ofstream out(".tmp/test_daemon_grace_slow_tick.lua", std::ios::binary | std::ios::trunc);
+	out << "local ffi = require(\"ffi\")\n"
+	    << "ffi.cdef(\"int usleep(unsigned int usec);\")\n"
+	    << "function daemon_tick()\n"
+	    << "  ffi.C.usleep(3000000)\n"
+	    << "  return 1\n"
+	    << "end\n";
+	out.close();
+
+	const char* sql =
+		"CREATE TABLE Daemon (name String, chunk String, interval String);\n"
+		"INSERT INTO Daemon (name, chunk, interval) "
+		"VALUES ('d1', 'test_daemon_grace_slow_tick.lua', '10');\n";
+
+	bot::MemoryReader sr(sql);
+	bot::RobotStruct robot(sr);
+
+	/* F-2：在 active() 之前设置宽限——100ms 足够短，测试秒级完成；
+	 * 若未生效，deactivate() 仍用 30000ms 缺省值，整个用例会卡 30s */
+	robot.setDeactivateGraceMs(100);
+
+	robot.active();
+	/* 让守护进慢拍（200ms < 3s），保证 destroy 必走 abandoned 路径 */
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+
+	/* 捕获 stderr：二段日志应点名宽限 100ms（不是 30000），且很快完成 */
+	std::ostringstream buf;
+	std::streambuf* old = std::cerr.rdbuf(buf.rdbuf());
+	auto start = std::chrono::steady_clock::now();
+
+	robot.deactivate();
+
+	auto elapsed = std::chrono::steady_clock::now() - start;
+	std::cerr.rdbuf(old);
+
+	/* 断言 (1)：耗时远小于 30s，证明新值接管了（容差 5s，覆盖 CI 抖动） */
+	TH_CHECK(elapsed < std::chrono::seconds(5));
+	/* 断言 (2)：stderr 点名宽限 100（不是 30000），证明值传递到了 deactivate()。
+	 * 文案格式见 robot.cpp："granting " << graceMs << "ms grace"（数字与
+	 * "ms" 之间无空格）。 */
+	std::string log = buf.str();
+	TH_CHECK(log.find("granting 100ms grace") != std::string::npos);
+	TH_CHECK(log.find("30000") == std::string::npos);
+}
+
 /* ==================== 单消费者判据（审计 1.3）====================
  * 只跑到**装配期**（ScriptLoader::readSQL + HwFactory::createHardVars），不调
  * build()——判据本就在任何资源申请之前，故这三条用例与主机有没有 /dev/i2c-1
