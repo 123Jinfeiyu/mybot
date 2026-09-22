@@ -266,12 +266,19 @@ OpenAI 协议的 **tool 消息只允许文本**，所以图片不能塞进工具
 **再**追加一条带图片的 `user` 消息：
 
 ```jsonc
-// 规范化消息（宿主 → 驱动）：宿主**直接产出 content 数组**，没有 images 键
+// 规范化消息（宿主 → 驱动）：宿主**直接产出 content 数组**，没有 images 键。
+// B3（2026-09-22）：驱动收到时 url 是 {"__bot_img": N} **游标**——图片字节不穿过
+// Json/Lua 边界（否则参数合并与 Lua 压栈会对同一 base64 各拷一份），由驱动在
+// 请求体组装期调宿主注册的全局 __bot_img(N) 落值一次（宿主侧通道在
+// MtVars_Lua::setHostImages，只在模型请求组包窗口内可用，窗口外调用报错）。
+// 落值后的线上报文与下面注释的形态一致。
 { "role": "user", "content": [
     { "type": "text", "text": "以上工具返回的图片如下，请结合画面内容继续。" },
-    { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } } ] }
-// 驱动把 content 原样透传给 provider（OpenAI 兼容形态本就如此；换厂商时由驱动
-// 把它映射成自己协议的形态，例如 Anthropic 的 image/source 块）
+    { "type": "image_url", "image_url": { "url": {"__bot_img": 1} } } ] }
+// 落值后（即 provider 实际收到）：
+// { "role": "user", "content": [
+//     { "type": "text", "text": "..." },
+//     { "type": "image_url", "image_url": { "url": "data:image/jpeg;base64,..." } } ] }
 ```
 
 `content` 数组是**宿主**组装的（`src/agentproto.cpp` 的 `messageToJson`，图片部分

@@ -9,6 +9,63 @@ namespace bot {
 
 thread_local int MtVars_Lua::topDepth = 0;
 
+/* ---- B3：图片游标的宿主侧取值闭包 ----
+ * Lua 驱动在请求体组装期调 __bot_img(N)；这里把游标翻译成宿主持有的字符串。
+ * fail-closed：窗口外（hostImages_ 为空）、越界、非整数游标一律报错——
+ * 报错经调用点的 pcall 折成 ERR 契约，不裸崩。upvalue 是 lightuserdata
+ * 指向 MtVars_Lua 实例（生命周期由变量所有权保证，驱动活着实例就活着）。 */
+int MtVars_Lua::fetchHostImage(lua_State* L) {
+	auto* self = static_cast<MtVars_Lua*>(lua_touserdata(L, lua_upvalueindex(1)));
+	if (self == nullptr || self->hostImages_ == nullptr) {
+		lua_pushliteral(L,
+			"__bot_img: 当前没有宿主图片上下文（游标只在模型请求组包期可用）");
+		return lua_error(L);
+	}
+	if (lua_type(L, 1) != LUA_TNUMBER) {
+		lua_pushliteral(L, "__bot_img: 游标必须是数字");
+		return lua_error(L);
+	}
+	lua_Integer idx = lua_tointeger(L, 1);
+	if (idx < 1 || static_cast<std::size_t>(idx) > self->hostImages_->size()) {
+		lua_pushliteral(L, "__bot_img: 游标越界");
+		return lua_error(L);
+	}
+	const std::string& s = *(*self->hostImages_)[static_cast<std::size_t>(idx) - 1];
+	lua_pushlstring(L, s.data(), s.size());
+	return 1;
+}
+
+/* 注册体（F5-2 同族：pushcclosure/lua_setglobal 的分配与 __newindex 元方法
+ * 都可能报错，必须在 pcall 的受保护帧内做）。upvalue = 实例指针。 */
+int MtVars_Lua::registerHostImageFn(lua_State* L) {
+	auto* self = static_cast<MtVars_Lua*>(lua_touserdata(L, 1));
+	lua_pushlightuserdata(L, self);
+	lua_pushcclosure(L, fetchHostImage, 1);
+	lua_setglobal(L, "__bot_img");
+	return 0;
+}
+
+void MtVars_Lua::setHostImages(const std::vector<const std::string*>* imgs) {
+	hostImages_ = imgs;
+	ensureHostImageFn();
+}
+
+void MtVars_Lua::ensureHostImageFn() {
+	if (hostImageFnRegistered_ || L_ == nullptr) { return; }
+	/* 受保护帧内注册（F5-2 同族）：pushcclosure 的分配与 lua_setglobal 触发的
+	 * _G.__newindex 元方法都可能报错——驱动可给 _G 装元表，帧外报错即无捕获
+	 * longjmp 裸崩。失败：清表 + 响亮抛（上层折成 ERR，本轮模型调用失败）。 */
+	lua_pushcfunction(L_, registerHostImageFn);
+	lua_pushlightuserdata(L_, static_cast<void*>(this));
+	if (lua_pcall(L_, 1, 0, 0) != LUA_OK) {
+		std::string msg = luaErrorString(L_);
+		lua_settop(L_, 0);
+		hostImages_ = nullptr;
+		throw std::runtime_error("注册 __bot_img 失败（'" + luapath_ + "'）: " + msg);
+	}
+	hostImageFnRegistered_ = true;
+}
+
 /* ---- 工厂：创建 Lua 状态机并以私有构造构建硬件变量 ---- */
 std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, const std::string& name,
 		std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames,
@@ -206,6 +263,11 @@ void MtVars_Lua::riseImpl() {
 		throw std::runtime_error("Failed to build Lua state from script: '" + luapath_
 			+ "'. Please check if the file exists and is valid Lua code.");
 	}
+
+	/* B3：build 期急切注册 __bot_img——让「窗口外调用」的 fail-closed 语义
+	 * 走通道自己的报错文案（“没有宿主图片上下文”），而不是「attempt to call
+	 * global nil」。setHostImages 里的惰性注册保留（幂等，兜未 build 场景）。 */
+	ensureHostImageFn();
 
 	Json metadata = getMetadata_(false);
 	metadata.put("mode", JsonString("build"));

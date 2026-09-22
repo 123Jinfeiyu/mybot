@@ -48,6 +48,15 @@ local ESCAPE = {
 }
 
 local function encode_string(s, out)
+	-- B3（2026-09-22）：gsub 对「无需转义」的串也整串分配一份拷贝——base64
+	-- 图片（JSON 安全字符集）是大头，1.6MB 的 payload 无谓多一次全量拷贝。
+	-- 先用 find（O(n) 扫描、零分配）判「无可转义字符」走快路径。
+	if s:find('[%z\1-\31\\"]') == nil then
+		out[#out + 1] = '"'
+		out[#out + 1] = s
+		out[#out + 1] = '"'
+		return
+	end
 	out[#out + 1] = '"'
 	out[#out + 1] = (s:gsub('[%z\1-\31\\"]', function(c)
 		local e = ESCAPE[c]

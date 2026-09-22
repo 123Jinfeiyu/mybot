@@ -33,12 +33,13 @@ Json toolSpecJson(const ToolSpec& t) {
 Json buildDriverRequest(const std::string& model,
 		const std::vector<ChatMessage>& messages,
 		const std::vector<ToolSpec>& tools,
-		int maxTokens, double temperature, double topP, long timeoutSec) {
+		int maxTokens, double temperature, double topP, long timeoutSec,
+		std::vector<const std::string*>* imageRefs) {
 	Json req = JsonObject();
 	req.put("model", JsonString(model));
 
 	Json msgs = JsonArray();
-	for (const auto& m : messages) { msgs.add(messageToJson(m)); }
+	for (const auto& m : messages) { msgs.add(messageToJson(m, imageRefs)); }
 	req.put("messages", msgs);
 
 	if (!tools.empty()) {
@@ -55,12 +56,16 @@ Json buildDriverRequest(const std::string& model,
 	return req;
 }
 
-Json messageToJson(const ChatMessage& msg) {
+Json messageToJson(const ChatMessage& msg, std::vector<const std::string*>* imageRefs) {
 	Json m = JsonObject();
 	m.put("role", JsonString(msg.role));
 
 	/* 带图片：content 变成多模态数组（文本在前、图片在后）。
-	 * provider 侧的展开由 Lua 驱动完成——这里只给结构化描述。 */
+	 * provider 侧的展开由 Lua 驱动完成——这里只给结构化描述。
+	 * B3：imageRefs 非空时图片以 {"__bot_img": N} 游标占位——字节本体不进
+	 * 请求 Json（调用链上 jsonMergeInto 参数合并、push_lua_value 压栈都会
+	 * 整树再拷），由 Lua 驱动在请求体组装期经宿主 C 函数 __bot_img(N) 取值。
+	 * 游标编号与 imageRefs 的填充顺序一致（先遍历到的图片编号小）。 */
 	if (!msg.images.empty()) {
 		Json parts = JsonArray();
 		Json text = JsonObject();
@@ -71,7 +76,14 @@ Json messageToJson(const ChatMessage& msg) {
 			Json img = JsonObject();
 			img.put("type", JsonString("image_url"));
 			Json inner = JsonObject();
-			inner.put("url", JsonString(url));
+			if (imageRefs != nullptr) {
+				imageRefs->push_back(&url);
+				Json ph = JsonObject();
+				ph.put("__bot_img", JsonInt(static_cast<long long>(imageRefs->size())));
+				inner.put("url", ph);
+			} else {
+				inner.put("url", JsonString(url));
+			}
 			img.put("image_url", inner);
 			parts.add(img);
 		}

@@ -167,37 +167,46 @@ local BUF_FLAG_ERROR = 0x00000040
 -- base64（返回给宿主的是文本，避免二进制穿过 Json/Lua 边界）
 ------------------------------------------------------------------
 local B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+-- B3（2026-09-22）：旧实现把 ~2N 个单字符字符串塞进一张 Lua 表再 table.concat
+-- ——对 1.2MB 图就是 ~160 万个表项，LuaJIT TValue 数组本身吃 ~25MB 瞬态内存
+-- （VmHWM 实测 49MB，其中图相关 ~31MB，这是最大单项）。改为 ffi 预分配字节
+-- 缓冲、按字节直接写、ffi.string 一次性出串：瞬态 = 输出缓冲 + 结果串 = 2×，
+-- 且编码速度接近 C（data:byte 逐字节取值保持不变，便于对照旧实现的正确性）。
+local B64B = {}
+for i = 1, #B64 do B64B[i - 1] = B64:byte(i) end
+local PAD = string.byte("=")
 local function base64(data)
-	local out, n = {}, 0
 	local len = #data
-	local i = 1
+	if len == 0 then return "" end
+	local olen = math.ceil(len / 3) * 4
+	local buf = ffi.new("unsigned char[?]", olen)
+	local o, i = 0, 1
 	while i + 2 <= len do
 		local a, b, c = data:byte(i, i + 2)
 		local v = a * 65536 + b * 256 + c
-		out[n + 1] = B64:sub(math.floor(v / 262144) % 64 + 1, math.floor(v / 262144) % 64 + 1)
-		out[n + 2] = B64:sub(math.floor(v / 4096) % 64 + 1, math.floor(v / 4096) % 64 + 1)
-		out[n + 3] = B64:sub(math.floor(v / 64) % 64 + 1, math.floor(v / 64) % 64 + 1)
-		out[n + 4] = B64:sub(v % 64 + 1, v % 64 + 1)
-		n = n + 4
+		buf[o] = B64B[math.floor(v / 262144) % 64]
+		buf[o + 1] = B64B[math.floor(v / 4096) % 64]
+		buf[o + 2] = B64B[math.floor(v / 64) % 64]
+		buf[o + 3] = B64B[v % 64]
+		o = o + 4
 		i = i + 3
 	end
 	local rest = len - i + 1
 	if rest == 1 then
-		local a = data:byte(i)
-		local v = a * 65536
-		out[n + 1] = B64:sub(math.floor(v / 262144) % 64 + 1, math.floor(v / 262144) % 64 + 1)
-		out[n + 2] = B64:sub(math.floor(v / 4096) % 64 + 1, math.floor(v / 4096) % 64 + 1)
-		out[n + 3] = "="
-		out[n + 4] = "="
+		local v = data:byte(i) * 65536
+		buf[o] = B64B[math.floor(v / 262144) % 64]
+		buf[o + 1] = B64B[math.floor(v / 4096) % 64]
+		buf[o + 2] = PAD
+		buf[o + 3] = PAD
 	elseif rest == 2 then
 		local a, b = data:byte(i, i + 1)
 		local v = a * 65536 + b * 256
-		out[n + 1] = B64:sub(math.floor(v / 262144) % 64 + 1, math.floor(v / 262144) % 64 + 1)
-		out[n + 2] = B64:sub(math.floor(v / 4096) % 64 + 1, math.floor(v / 4096) % 64 + 1)
-		out[n + 3] = B64:sub(math.floor(v / 64) % 64 + 1, math.floor(v / 64) % 64 + 1)
-		out[n + 4] = "="
+		buf[o] = B64B[math.floor(v / 262144) % 64]
+		buf[o + 1] = B64B[math.floor(v / 4096) % 64]
+		buf[o + 2] = B64B[math.floor(v / 64) % 64]
+		buf[o + 3] = PAD
 	end
-	return table.concat(out)
+	return ffi.string(buf, olen)
 end
 
 ------------------------------------------------------------------

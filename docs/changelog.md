@@ -5,6 +5,47 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 agent 重构阶段 B3（图片传输层降副本）
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B3（对应 R4）。验收判据为 `VmHWM` 实测（`.tmp/memaudit/b3_measure.sh`，AG-19 方法；`.tmp` 不入库）。
+
+**实测**（拍照场景，同一脚本前后对照）：
+
+| 场景 | 改动前 | 改动后 |
+| --- | --- | --- |
+| 786KB 图 | ~40 MiB（方案口径） | **24 MB** |
+| 1.2MB 图 | 49 MB | **28.5 MB** |
+| 小图底噪 | — | 14.5 MB |
+
+**三处修复**：
+
+1. **游标过边界**（宿主侧）：`messageToJson(imageRefs)` 把消息里的图片换成
+   `{"__bot_img": N}` 游标——字节本体不再进请求 Json，`callImpl` 的
+   `jsonMergeInto` 参数合并与 `push_lua_value` 压栈这两份全量拷贝随之消失。
+   传输层（`agentdriver.cpp`）在 `playQuiet` 前后 RAII 挂/摘游标表；
+   `MtVars_Lua` 经受保护帧注册全局 `__bot_img(N)`（build 期急切 + setHostImages
+   惰性，幂等），窗口外/越界/非数字游标一律 fail-closed 报错。
+2. **wire 组包期落值**（驱动侧）：`llm_wire_openai.lua` 的 `to_wire_message` 遇
+   游标表即经 `__bot_img(N)` 取字节——这是 payload 从宿主进 Lua 的唯一一次
+   拷贝，随后 `json.encode` 拼进请求体（最后一次拷贝），POST 用指针零拷贝。
+   通道未注册/取值报错/非字符串结果都响亮失败，不发半截报文。
+3. **两个隐性的量级放大点**（Lua 侧）：
+   `Camera.lua` 的 base64 曾把 ~2N 个单字符字符串塞进一张 Lua 表——1.2MB 图
+   就是 ~160 万表项，LuaJIT TValue 数组瞬态 ~25MB（改动前后差值的主力）；
+   改为 ffi 预分配字节缓冲一次性出串（瞬态 2×）。`lib/json.lua` 的
+   `encode_string` 曾对无需转义的串也 `gsub` 整串拷贝；base64 是 JSON 安全
+   字符集，加 `find` 快路径（零分配扫描）跳过。
+
+同 payload 的全程副本从 ~7 份降到 3 份（存储落值 + 宿主→Lua 落值 + 请求体组装）。
+
+**钉子用例**：`agentproto_image_cursor_mode_places_placeholder`（游标占位/引用登记/
+字节不进请求）、`luavar_image_cursor_channel_window_bounds_and_failclosed`（窗口/
+边界/摘表，真实临时驱动夹具）、`test_llm_drivers.lua` B3 组（落值/通道缺失/
+取值报错/非字符串/字符串 url 透传）；agent_e2e 场景 5 原有断言（线上报文 data URL
+形态）继续兜住端到端正确性。
+
+- 验收：C++ 474/0、Lua 驱动单测 125/0、`agent-all` 7 段 0 失败。
+
 ### 2026-09-22 agent 重构阶段 C3（REPL 循环可离线单测）
 
 > 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C3（对应 R7）。

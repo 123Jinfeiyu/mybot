@@ -69,14 +69,20 @@ public:
 };
 
 /* 规范化请求（宿主 → 驱动）：驱动据此生成 provider 报文。
- * tools 为空时不发 tools 字段（部分兼容实现拒绝空数组）。 */
+ * tools 为空时不发 tools 字段（部分兼容实现拒绝空数组）。
+ * imageRefs（可空，B3）：非空时消息里的图片以 {"__bot_img": N} 游标占位穿过
+ * Json 与 Lua 边界（N 从 1 起，指向该向量里第 N 个字符串），图片字节只在
+ * 请求体组装期经宿主 C 函数落值一次——不再为同一 payload 在 req 树、
+ * 参数合并、Lua 压栈各拷一份。向量指针须在驱动 playQuiet 全程存活。 */
 Json buildDriverRequest(const std::string& model,
 		const std::vector<ChatMessage>& messages,
 		const std::vector<ToolSpec>& tools,
-		int maxTokens, double temperature, double topP, long timeoutSec);
+		int maxTokens, double temperature, double topP, long timeoutSec,
+		std::vector<const std::string*>* imageRefs = nullptr);
 
-/* 单条消息 → 规范化 JSON */
-Json messageToJson(const ChatMessage& msg);
+/* 单条消息 → 规范化 JSON（imageRefs 语义同 buildDriverRequest；空 = 图片
+ * 原样拷入，供离线单测/不经过 Lua 边界的调用面） */
+Json messageToJson(const ChatMessage& msg, std::vector<const std::string*>* imageRefs = nullptr);
 
 /* 解析驱动返回的规范化响应（{result="OK", content, tool_calls, extras}）。
  * result 非 "OK"、或既无文本也无工具调用一律抛 std::runtime_error。 */

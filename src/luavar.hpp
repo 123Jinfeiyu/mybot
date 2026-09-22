@@ -52,6 +52,19 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	std::vector<MatrixVars_Hardware*> trigPtrs_;
 	HwLookup* registry_;
 
+	/* ---- B3 图片游标的宿主侧通道 ----
+	 * agent 的模型请求里图片以 {"__bot_img": N} 游标占位穿过 Lua 边界
+	 * （字节本体不进参数表，否则 callImpl 的 jsonMergeInto 与 push_lua_value
+	 * 会对同一 base64 再各拷一份）。Lua 驱动在请求体组装期调全局
+	 * __bot_img(N) 取字节；宿主侧实现在 luavar.cpp（fetchHostImage）。
+	 * 表指针只在传输层 playQuiet 的窗口内非空（RAII 设/清），窗口外调用
+	 * 一律 fail-closed 报错——游标是组包期通道，不是驱动的常驻数据源。 */
+	const std::vector<const std::string*>* hostImages_ = nullptr;
+	bool hostImageFnRegistered_ = false;
+	void ensureHostImageFn();	/* 惰性注册（build 期也会急切调一次，幂等） */
+	static int fetchHostImage(lua_State* L);
+	static int registerHostImageFn(lua_State* L);
+
 	explicit MtVars_Lua(lua_State* L, std::string luapath, std::string name,
 			std::function<Json(bool)> getMetadata, std::vector<std::string> ctrlNames,
 			std::vector<std::string> trigNames, HwLookup* registry)
@@ -92,6 +105,10 @@ public:
 	const char* kindName() const override { return "lua"; }
 	/* agent 模式：同一个 call 路径但不回显结果（stdout 只留最终回答） */
 	Json playQuiet(const Json& json) override { return callImpl(json, false); }
+	/* B3：设置/清除图片游标表（传输层在 playQuiet 前后 RAII 调用）。
+	 * 首次设置时向本驱动的 Lua 状态注册全局 __bot_img(N)（受保护帧内注册，
+	 * __newindex 元方法报错不裸崩）；传 nullptr 只清表不注销（幂等）。 */
+	void setHostImages(const std::vector<const std::string*>* imgs);
 	Json read() override { return readImpl(); }
 	void build() override { riseImpl(); }
 	void destroy() override { freeImpl(); }

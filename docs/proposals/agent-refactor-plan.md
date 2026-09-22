@@ -66,13 +66,25 @@ HEAD 相比旧审计基线新增了 `dispatchOneCall` 内的策略确认与审�
   不为提前一轮失败把 endpoint 知识搬进宿主或参数表。
 - 这是行为变更（破坏「零配置直跑」），需在 changelog 与 docs/agent.md 显著标注。
 
-**B3. 图片传输层降副本（对应 R4，可选、大工程）**
+**B3. 图片传输层降副本（对应 R4，可选、大工程）** —— ✅ 已落地（2026-09-22，
+`VmHWM` 实测 1.2MB 图 49MB→28.5MB、786KB 图 40MB→24MB，小图底噪 14.5MB，474/0）
 
 - 前置：A1 完成后 `TaskBudget`/`HistoryManager` 已独立，才有安全改动面。
 - 方向：图片以「游标/引用 + 请求体组装期落值」形态穿过 Json 与 Lua 边界，目标把
   同一 payload 的副本从 7 份降到 2~3 份；验收用 AG-19 的 `VmHWM` 实测法（786KB 图
   峰值 40MiB 应降到 ~15MiB 量级）。
 - 若现场无小内存压力，可推迟。
+- 落地：`buildDriverRequest`/`messageToJson` 增 `imageRefs` 出参，图片 url 换成
+  `{"__bot_img": N}` 占位（字节不进请求 Json）；宿主经 `luavar.cpp` 的 `__bot_img(N)`
+  闭包在**请求体组装窗口**内落值一次，`agentdriver` 用 `CursorScope` RAII 挂/摘
+  （窗口外/越界/非数字一律 fail-closed，报错折成 ERR 契约）；驱动侧
+  `llm_wire_openai.lua` 的 `resolve_image_url` 负责落值。
+- 实测副产物（方案未预见）：`Camera.lua` base64 的 Lua 表项瞬态（1.2MB 图 ~160 万项
+  ≈25MB，是差值主力）改用 `ffi.new("unsigned char[?]")` 预分配；`json.lua`
+  `encode_string` 对无需转义的 base64 加 find 快路径（原 `gsub` 整串拷贝）。两处都
+  是量级放大点，仅靠游标改造不足以达标。
+- 未达初版目标口径（~15MiB）的原因：全程仍剩 3 份（存储落值 + 宿主→Lua 落值 +
+  请求体组装），再压需动 libcurl 写回调；当前收益已足够，不再下探。
 
 ### 阶段 C —— 能力补齐（小而确定，按需）
 

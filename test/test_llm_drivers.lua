@@ -81,6 +81,54 @@ do
 	check("OpenAI: 无工具时不发 tool_choice", r.req.tool_choice == nil)
 end
 
+-- ================= B3：图片游标的组包期落值 =================
+do
+	-- 宿主在 image_url.url 放 {"__bot_img": N} 游标；wire 经宿主注册的
+	-- 全局 __bot_img(N) 取字节（这是 payload 从宿主进 Lua 的唯一一次拷贝）。
+	local d = sample()
+	d.messages = {
+		{ role = "user", content = {
+			{ type = "text", text = "看这张图" },
+			{ type = "image_url", image_url = { url = { __bot_img = 2 } } },
+		} },
+	}
+	local fetched = {}
+	_G.__bot_img = function(n) fetched[#fetched + 1] = n
+		return "data:image/jpeg;base64,Q1VSU09S" .. n end
+	local ok, r = pcall(openai.request, d)
+	check("B3: 游标模式下组包成功", ok)
+	local part = ok and r.req.messages[1].content[2] or nil
+	check("B3: image_url 落值为宿主返回的字符串",
+		part ~= nil and part.image_url.url == "data:image/jpeg;base64,Q1VSU09S2")
+	check("B3: 取值用的正是游标编号", #fetched == 1 and fetched[1] == 2)
+	check("B3: 文本部件原样保留",
+		r.req.messages[1].content[1].text == "看这张图")
+	_G.__bot_img = nil
+
+	-- fail-closed：通道未注册（版本不匹配/窗口外）必须响亮报错，不发半截报文
+	local ok2, err2 = pcall(openai.request, d)
+	check("B3: 通道未注册时组包失败", not ok2)
+	check("B3: 报错点名 __bot_img 通道", ok2 or err2:find("__bot_img", 1, true) ~= nil)
+
+	-- 通道在但取值报错/返回非字符串：同样 fail-closed
+	_G.__bot_img = function() error("宿主图片上下文已关闭") end
+	local ok3, err3 = pcall(openai.request, d)
+	check("B3: 取值报错折进组包错误", not ok3 and err3:find("已关闭", 1, true) ~= nil)
+	_G.__bot_img = function() return 42 end
+	local ok4, err4 = pcall(openai.request, d)
+	check("B3: 非字符串结果视为失败", not ok4 and err4:find("解析失败", 1, true) ~= nil)
+	_G.__bot_img = nil
+
+	-- 非 image_url 部件与字符串 url 原样透传（不受游标逻辑影响）
+	local d2 = sample()
+	d2.messages = { { role = "user", content = {
+		{ type = "image_url", image_url = { url = "data:image/png;base64,RAWDATA" } },
+	} } }
+	local ok5, r5 = pcall(openai.request, d2)
+	check("B3: 字符串 url 不经游标处理", ok5
+		and r5.req.messages[1].content[1].image_url.url == "data:image/png;base64,RAWDATA")
+end
+
 -- ================= 工具 schema 的 required 必须是数组 =================
 do
 	-- 无参工具的 required 在 canonical 侧是空数组，经 Json→Lua 退化为空表，

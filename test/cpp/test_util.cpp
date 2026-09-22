@@ -438,6 +438,7 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"lexer", "SQL 词法"},
 	{"limited", "受限读取"},
 	{"lua", "Lua 桥/沙箱"},
+	{"luavar", "Lua 状态机变量（@Action 互斥 / B3 图片游标通道）"},
 	{"matrix", "矩阵解析"},
 	{"metaprovider", "元数据提供者"},
 	{"mtinclude", "@Include 内联"},

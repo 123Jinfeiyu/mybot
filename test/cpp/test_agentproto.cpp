@@ -110,6 +110,31 @@ TH_TEST(agentproto_image_message_is_multimodal) {
 	TH_CHECK(messageToJson(plain).get("content")->isStr());
 }
 
+/* B3：游标模式——图片不进请求 Json，以 {"__bot_img": N} 占位并登记引用 */
+TH_TEST(agentproto_image_cursor_mode_places_placeholder) {
+	ChatMessage m;
+	m.role = "user";
+	m.content = "看一下这张图";
+	m.images.push_back("data:image/jpeg;base64,Zm9vYmFy");
+	m.images.push_back("data:image/png;base64,aHVnZQ==");
+
+	std::vector<const std::string*> refs;
+	Json j = messageToJson(m, &refs);
+	auto content = j.get("content");
+	TH_CHECK(content->size() == 3);
+	auto url = content->at(1).get("image_url")->get("url");
+	TH_CHECK(url->isObj());
+	TH_CHECK(url->get("__bot_img")->getInt() == 1);	/* 游标从 1 起 */
+	auto url2 = content->at(2).get("image_url")->get("url");
+	TH_CHECK(url2->get("__bot_img")->getInt() == 2);
+	/* 引用按游标顺序登记，指向消息里的字符串本体（不拷贝字节） */
+	TH_CHECK(refs.size() == 2);
+	TH_CHECK(*refs[0] == "data:image/jpeg;base64,Zm9vYmFy");
+	TH_CHECK(*refs[1] == "data:image/png;base64,aHVnZQ==");
+	/* 游标模式下字节本体绝不出现在请求 Json 里 */
+	TH_CHECK(j.toString().find("Zm9vYmFy") == std::string::npos);
+}
+
 TH_TEST(agentproto_tool_result_message) {
 	ChatMessage m;
 	m.role = "tool";

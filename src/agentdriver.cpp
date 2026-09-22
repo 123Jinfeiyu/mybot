@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "hardware.hpp"
+#include "luavar.hpp"	/* B3：dynamic_cast<MtVars_Lua*> 设置图片游标表 */
 #include "util.hpp"
 
 namespace bot {
@@ -40,14 +41,26 @@ public:
 		/* D4：Ctrl-C 后不再发起新的模型轮，让主流程尽快走 deactivate */
 		if (stopRequested()) { throw std::runtime_error("请求被中断"); }
 
+		/* B3：图片以游标占位过 Json/Lua 边界，字节只在 Lua 组包期落值一次。
+		 * imgs 指向 messages 里的字符串（调用全程存活），须在 playQuiet 全程
+		 * 挂在驱动上、结束即摘（游标是组包期通道，不是常驻数据源）。 */
+		std::vector<const std::string*> imgs;
 		Json req = buildDriverRequest(cfg_.model, messages, tools,
-			cfg_.maxTokens, cfg_.temperature, cfg_.topP, cfg_.timeoutSec);
+			cfg_.maxTokens, cfg_.temperature, cfg_.topP, cfg_.timeoutSec, &imgs);
 		if (!cfg_.endpoint.empty()) { req.put("endpoint", JsonString(cfg_.endpoint)); }
 		/* 驱动特有字段：宿主不理解它们，只负责按配置透传 */
 		if (!cfg_.reasoningEffort.empty()) {
 			req.put("reasoning_effort", JsonString(cfg_.reasoningEffort));
 		}
 		if (!cfg_.thinking.empty()) { req.put("thinking", JsonString(cfg_.thinking)); }
+
+		/* 游标表挂/摘（RAII）：只对 Lua 驱动有意义（入口已校验 kindName） */
+		auto* luaDriver = dynamic_cast<MtVars_Lua*>(driver_);
+		struct CursorScope {
+			MtVars_Lua* d;
+			~CursorScope() { if (d != nullptr) { d->setHostImages(nullptr); } }
+		} cursorScope{luaDriver};
+		if (luaDriver != nullptr) { luaDriver->setHostImages(&imgs); }
 
 		/* U-1：重试循环（指数退避） */
 		for (int attempt = 0; attempt < cfg_.maxRetries; ++attempt) {

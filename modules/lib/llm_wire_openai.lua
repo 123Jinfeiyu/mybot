@@ -60,6 +60,27 @@ function M.require_wire_string(v, what, where)
 end
 
 -- 规范化消息 → provider 消息
+-- B3：宿主在 image_url.url 里放 {"__bot_img": N} 游标（图片字节不穿 Json/Lua
+-- 边界，否则参数合并与压栈会对同一 base64 各拷一份）。这里在组包期经宿主
+-- 注册的全局 __bot_img(N) 落值一次——这是字节从宿主进 Lua 的唯一一次拷贝，
+-- 之后 json.encode 把它拼进请求体（最后一次拷贝），POST 用指针零拷贝。
+-- fail-closed：宿主未注册通道（版本不匹配/窗口外）、取值报错、游标结果不是
+-- 字符串，都响亮报错——折成 ERR 契约回宿主，不发出半截报文。
+local function resolve_image_url(url, where)
+	if type(url) ~= "table" or url.__bot_img == nil then return url end
+	local fetch = rawget(_G, "__bot_img")
+	if fetch == nil then
+		error("图片游标无法解析（" .. where .. "）：宿主未注册 __bot_img 通道"
+			.. "（驱动与宿主版本不匹配，或不在模型请求组包窗口内）")
+	end
+	local ok, s = pcall(fetch, url.__bot_img)
+	if not ok or type(s) ~= "string" then
+		error("图片游标解析失败（" .. where .. "，游标 " .. tostring(url.__bot_img)
+			.. "）: " .. tostring(s))
+	end
+	return s
+end
+
 local function to_wire_message(msg, inject_reasoning)
 	local role = msg.role
 	if role == "tool" then
@@ -103,6 +124,23 @@ local function to_wire_message(msg, inject_reasoning)
 			out.reasoning_content = msg.extras.reasoning_content
 		end
 		return out
+	end
+	-- 多模态 content（B3）：宿主给的是部件数组，图片 url 可能是游标表——
+	-- 在这里落值。其余部件原样透传（宿主的结构即 provider 的结构）。
+	if type(msg.content) == "table" then
+		local parts = {}
+		for i, p in ipairs(msg.content) do
+			if type(p) == "table" and p.type == "image_url" and type(p.image_url) == "table" then
+				parts[i] = {
+					type = "image_url",
+					image_url = { url = resolve_image_url(p.image_url.url,
+						"第 " .. i .. " 个消息部件") },
+				}
+			else
+				parts[i] = p
+			end
+		end
+		return { role = role, content = parts }
 	end
 	return { role = role, content = msg.content or "" }
 end
