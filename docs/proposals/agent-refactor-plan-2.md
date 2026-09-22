@@ -14,7 +14,7 @@
   → `modules/lib/llm_*.lua`（协议组包）→ `llm_http.lua`（libcurl FFI）。宿主零 HTTP 依赖。
 - 四个单点：`HistoryManager`（历史裁剪）/ `TaskBudget`（任务内预算）/ `DispatchGate`
   （策略 → 执行 → 审计）/ `agentprompt`（系统提示词构建）。
-- 测试面：`mybot_tests` 的 `agent:` 作用域（8 个测试文件）+ `test_agent*.lua` + `agent_e2e.sh`
+- 测试面：`mybot_tests` 的 `agent:` 作用域（8 个测试文件）+ `test_llm_*.lua`（协议面）+ `agent_e2e.sh`（SAN-2 更正：原写 `test_agent*.lua`，该文件模式从未存在）
   六场景 + 加固段 `agent_`，入口 `bash test/run_all.sh agent-all`（`test/run_all.sh:68-73`）。
   基线实测（2026-09-22，本方案撰写时现跑）：C++ 全量 **474 通过 / 0 失败**，
   `agent:` 作用域 **157 通过 / 0 失败**。

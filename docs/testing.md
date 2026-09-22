@@ -75,7 +75,21 @@ bash test/run_all.sh agent-all # agent 全表面（过滤口径见下面的方�
 > C++ 段比 `scope:` 作用域语法、加固段按分段门、端到端按段名——所以裸 `agent`
 > 与 `agent:` **各只覆盖一半表面**（前者漏掉 15 条 `agentconfig_`/`agentmode_` 与
 > agent 负路径，后者跳过 agent E2E）。要「agent 全跑」用 `agent-all`；
-> 映射单点在 `test/run_all.sh` 顶部，并有一条自证防它悄悄退化（AG-23）。
+> 映射单点在 `test/run_all.sh` 顶部，并有一条自证防它悄悄退化。
+>
+> **自证的口径（SAN-2，2026-09-22）**：`agent-all` 的 Lua 那一格曾是
+> `filter_lua="agent"`（注释称 `test_agent*.lua`），而**该文件模式从未存在**——
+> 于是 Lua 段实跑 0 个文件，而循环对「命中 0」是合法状态、既不报错也不计入汇总
+> （实测汇总 11 条、Lua 段 0 条）。现在那一格是 `"llm"`（`test_llm_*.lua`：
+> 协议驱动报文整形与响应映射，即 PL-3/PL-6 落过缺陷的那一层），且自证改为
+> **按 `agent_lua_roster` 核对真实文件**：① roster 里的文件必须存在且会被跑到；
+> ② `test/test_llm_*.lua` 下每个文件都必须登记（漏登记即红）。
+> 旧自证检查的是**映射的形状**，新自证检查的是**被映射到的文件**。
+>
+> **不在 `agent-all` 内**：`test_camera.lua`（`capture_image` 依赖的摄像头协议面：
+> 仿真取帧、base64、错误路径）——纳入它会连带 `test_camera_v4l2.lua`（真机用例）。
+> **改动 `modules/Camera.lua` 或图像链路时请单独跑它**。摄像头链路的端到端覆盖在
+> `scripts/agent_e2e.sh` 场景 5（断言线上报文真的带 `image_url` 多模态内容）。
 
 ### ctest 逐用例入口（可选）
 

@@ -536,10 +536,13 @@ luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路
 ./build/mybot_tests agent:
 ```
 
-「**agent 全部守门**」请用下面这一条（Lua `test_agent*.lua` + agent E2E + C++ 的
-`agent:` 作用域 + 4 条 agent CLI 负路径）。裸 `agent` 与 `agent:` **各只覆盖一半
+「**agent 全部守门**」请用下面这一条（Lua `test_llm_*.lua` 的协议面用例 + agent E2E +
+C++ 的 `agent:` 作用域 + agent CLI 负路径）。裸 `agent` 与 `agent:` **各只覆盖一半
 表面**——四类分段要的过滤器形态不同（文件名子串 / `scope:` 语法 / 分段门），
-映射单点在 `test/run_all.sh` 顶部并带自证；详见 [testing.md](testing.md)。
+映射单点在 `test/run_all.sh` 顶部并带**自证**：`agent_lua_roster` 声明的文件必须
+存在且真的会被跑到，反向漏登记同样判失败（SAN-2，2026-09-22：此前该映射指向一个
+**从未存在**的 `test_agent*.lua`，于是"agent 全表面"入口的 Lua 段实跑 0 个文件，
+而循环对"命中 0"是合法状态、不报错）。详见 [testing.md](testing.md)。
 
 ```bash
 bash test/run_all.sh agent-all

@@ -4,10 +4,12 @@
 #   例: bash test/run_all.sh                # 跑全部
 #       bash test/run_all.sh pca9685       # 只跑文件名含 pca9685 的
 #       bash test/run_all.sh agent-all     # agent 全表面（见顶部 filter_* 映射）：
-#                                          #   Lua test_agent*.lua + agent E2E +
-#                                          #   C++ 作用域 agent: + 4 条 agent 负路径
+#                                          #   Lua test_llm_*.lua + agent E2E +
+#                                          #   C++ 作用域 agent: + agent 负路径
 #   注意：裸 agent / agent: 各只覆盖一半表面（子串 vs 作用域 vs 分段门不同），
-#   要「agent 全跑」请用 agent-all（AG-23）。
+#   要「agent 全跑」请用 agent-all（AG-23）。agent-all 的覆盖由 filter_* 映射与
+#   agent_lua_roster **自证**：roster 里的文件必须存在且真的会跑到，反向漏登记
+#   也判失败（SAN-2——此前映射指向一个从未存在的 test_agent*.lua，Lua 段实跑 0 个文件）。
 # 说明：
 #   - 统一用 luajit 运行（HAL 依赖 ffi）；可用环境变量 LUACMD 覆盖解释器
 #   - 单测超时 TEST_TIMEOUT 秒（默认取 test/lib/params.sh 单点，需 coreutils
@@ -66,7 +68,13 @@ filter_e2e="$filter"		# scripts/agent_e2e.sh 等端到端分段
 filter_hardening="$filter"	# 加固负路径（agent 子块单独设门，见文件后段）
 filter_cpp="$filter"		# mybot_tests 的过滤器（支持 scope: 语法）
 if [ "$filter" = "agent-all" ]; then
-	filter_lua="agent"	# test_agent*.lua：Lua 侧几颗 agent 协议驱动用例
+	# SAN-2（2026-09-22）：这里原写 filter_lua="agent"（注释称 test_agent*.lua），
+	# 但**该文件模式从未存在**（git log --all 零命中），于是"agent 全表面"入口的
+	# Lua 段静默跑了 0 个文件——而循环对"命中 0"是合法状态，不报错也不计入汇总。
+	# 真正覆盖 agent 协议面的是 test_llm_*.lua 的报文整形与响应映射用例
+	# （PL-3 数组形态 content、PL-6 tool_calls 形态非法都在这一层），
+	# 也就是 SAN-3 改动的那三个文件所在的那一层。
+	filter_lua="llm"	# test_llm_*.lua：agent 协议面的报文/响应用例
 	filter_e2e="agent"
 	filter_hardening="agent_"
 	filter_cpp="agent:"
@@ -86,22 +94,47 @@ case_matches() {
 }
 
 # agent-all 的映射**自证**：上面那张表就是「覆盖全表面」这句承诺的实现，而它
-# 此前正是靠四个分散的 if 各写一遍判断、才漏掉了一半的分段。任何一格被改坏
-# （分段改名、变量清空、映射写错）都应当**在这里响亮失败**，而不是等使用者
-# 发现某个分段悄悄没跑。判据是「该分段的门必须认得 agent-all 这个输入」——
-# 不是拿 filter_matches 去问那张表（那才是自证）。
+# 此前正是靠四个分散的 if 各写一遍判断、才漏掉了一半的分段。
+#
+# SAN-2（2026-09-22）：自证从「过滤器变量非空 + e2e/cpp 认得这个输入」升级为
+# **按 roster 核对真实文件**。旧判据只检查映射本身，检查不到"映射指向的文件
+# 存不存在"——`filter_lua="agent"` 命中 0 个文件时它照样通过，于是"覆盖全表面"
+# 这个结论在没有人跑过一条 Lua 用例的情况下成立了很久（实测汇总 11 条、Lua 段 0 条）。
+# 判据是「roster 里每个文件必须存在，且在本过滤器下真的会被跑到」——
+# 检查的是**被映射到的文件**，不是映射的形状。
+agent_lua_roster="test/test_llm_drivers.lua"
 if [ "$filter" = "agent-all" ]; then
 	_agentall_bad=""
 	[ -n "$filter_lua" ] || _agentall_bad="$_agentall_bad lua(空值=跑全部文件)"
 	filter_matches "agent" "$filter_e2e" || _agentall_bad="$_agentall_bad e2e"
 	filter_matches "agent:" "$filter_cpp" || _agentall_bad="$_agentall_bad cpp"
+	# ① roster 里的文件必须存在，且在 agent-all 下会被跑到
+	for _f in $agent_lua_roster; do
+		if [ ! -f "$_f" ]; then
+			_agentall_bad="$_agentall_bad $_f(roster 声明的文件不存在)"
+			continue
+		fi
+		case "$(basename "$_f")" in
+			*"$filter_lua"*) ;;
+			*) _agentall_bad="$_agentall_bad $_f(不在过滤器 '$filter_lua' 的命中范围内)" ;;
+		esac
+	done
+	# ② 反向：agent 协议面的用例文件必须全部登记（漏登记即红）——
+	#    与 C++ 侧 test_util.cpp 的「非 agent 面 roster 带理由登记」同一条纪律。
+	for _f in test/test_llm_*.lua; do
+		[ -f "$_f" ] || continue
+		case " $agent_lua_roster " in
+			*" $_f "*) ;;
+			*) _agentall_bad="$_agentall_bad $_f(未登记进 agent_lua_roster)" ;;
+		esac
+	done
 	if [ -n "$_agentall_bad" ]; then
-		echo "错误：agent-all 的分段过滤器映射失效，以下分段不会执行：$_agentall_bad" >&2
-		echo "（见 test/run_all.sh 顶部的 filter_* 映射。本自证防的就是 AG-23 那种" >&2
-		echo "  「号称覆盖全表面、实际只跑一半」的静默退化）" >&2
+		echo "错误：agent-all 的分段过滤器映射失效，以下分段/文件不会执行：$_agentall_bad" >&2
+		echo "（见 test/run_all.sh 顶部的 filter_* 映射与 agent_lua_roster。本自证防的就是" >&2
+		echo "  AG-23/SAN-2 那种「号称覆盖全表面、实际一个文件都没跑」的静默退化）" >&2
 		exit 2
 	fi
-	unset _agentall_bad
+	unset _agentall_bad _f
 fi
 pass=0
 fail=0

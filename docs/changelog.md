@@ -5,6 +5,40 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 `agent-all` 真的覆盖 agent 全表面了（SAN-2，守门假绿修复）
+
+> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-2。
+> **更正**：AG-23（2026-09-21）落地的那张分段-过滤器映射，其 Lua 那一格指向一个
+> **从未存在**的文件模式——本文档 584 行附近那条记录的「Lua `test_agent*.lua`」口径
+> 与实际不符，此处更正，历史条目保留不改。
+
+- **问题（已实测）**：`test/run_all.sh` 的 `agent-all` 映射写着 `filter_lua="agent"`
+  （注释称 `test_agent*.lua`），但该模式**从未存在**——`git log --all -- 'test/test_agent*.lua'`
+  零命中，`ls test/ | grep -i agent` 无输出，`for t in test/test_*.lua` 的 `*agent*`
+  匹配 0 个文件。于是「agent 全表面」入口的 **Lua 段静默跑了 0 个文件**，
+  而 Lua 循环对"过滤器命中 0 个文件"是**合法状态**（不报错、不计入汇总）。
+  实测汇总只有 **11 条**（9 个 E2E 场景 + 2 条加固负路径）+ 8 条 harness 自检。
+- **真正的协议面在哪**：`test/test_llm_drivers.lua`（169 条）——它测两个内置协议
+  驱动的报文整形与响应映射，正是 PL-3（数组形态 `content`）、PL-6（`tool_calls`
+  形态非法）落过缺陷的那一层，也是 SAN-3 改动的三个文件所在的那一层。
+  在旧入口下，改这三个文件跑 `agent-all` 会**全绿**：一条 Lua 用例都没执行。
+- **修法**：`filter_lua` 由 `"agent"` 改为 `"llm"`（实测只命中 `test_llm_*.lua`，
+  无副作用），并把自证从「过滤器变量非空 + e2e/cpp 认得这个输入」升级为
+  **按 roster 核对真实文件**：
+  - ① `agent_lua_roster` 里每个文件必须**存在**，且在本过滤器下**真的会被跑到**；
+  - ② 反向——`test/test_llm_*.lua` 下每个文件都必须登记进 roster（漏登记即红）。
+  这与 C++ 侧 `test_util.cpp` 的「非 agent 面 roster 带理由登记」是同一条纪律。
+  旧自证检查的是**映射的形状**，新自证检查的是**被映射到的文件**。
+- **口径说明**：`agent-all` 的汇总数从 11 → 12（**按文件计**，不是按断言计），
+  但真正被跑到的断言多了 **169 条**——「汇总涨了 1」这个数字本身容易误读，
+  故把两个口径都写在这里。
+- **反向验证（两条都真跑过）**：① 把 `filter_lua` 改回 `"agent"` → 自证响亮失败
+  （`rc=2`，点名"`test/test_llm_drivers.lua` 不在过滤器 'agent' 的命中范围内"）；
+  ② 往 roster 里塞一个不存在的文件 → 同样 `rc=2`。
+- **不在内**：`test_camera.lua`（`capture_image` 依赖的摄像头协议面）**未**纳入
+  `agent-all`——它会连带 `test_camera_v4l2.lua`（真机用例）。它在 `docs/testing.md`
+  里注明"改动摄像头驱动请单独跑"。
+
 ### 2026-09-22 重试真的认识真实错误了（SAN-3，含 429/5xx 与 Retry-After）
 
 > 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-3。
