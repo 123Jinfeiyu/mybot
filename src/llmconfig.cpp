@@ -94,6 +94,31 @@ bool wantInt(const std::string& path, const Json& root, const char* key,
 	return true;
 }
 
+/* 无符号长整数字段（B1：字节预算），0 合法 =「不限」，上限 llm_limits::…Limit。
+ * 与 wantInt 同一条有限/值域/取整防线。 */
+bool wantBudgetLong(const std::string& path, const Json& root, const char* key,
+		long hi, std::optional<long>& out, std::string& err) {
+	auto v = root.get(key);
+	if (!v) { return true; }
+	if (!v->isInt() && !v->isFloat()) {
+		err = typeError(path, key, "数字");
+		return false;
+	}
+	double d = v->isInt() ? static_cast<double>(v->getInt()) : v->getFloat();
+	if (!std::isfinite(d) || d < 0.0 || d > static_cast<double>(hi)) {
+		std::ostringstream os;
+		os << d;
+		err = rangeErrorText("配置文件 " + path + " 的字段 '" + key + "'", 0, hi, os.str());
+		return false;
+	}
+	if (std::floor(d) != d) {
+		err = typeError(path, key, "整数");
+		return false;
+	}
+	out = static_cast<long>(d);
+	return true;
+}
+
 bool wantBool(const std::string& path, const Json& root, const char* key,
 		std::optional<bool>& out, std::string& err) {
 	auto v = root.get(key);
@@ -153,6 +178,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
 		"prompt_files", "camera_var", "camera_device", "camera_src", "allow_camera",
 		"audit_log", "agent_policy",
+		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
 	};
 	for (const auto& kv : root.items()) {
 		if (kKnown.count(kv.first) == 0) {
@@ -223,6 +249,18 @@ bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig
 	if (timeoutSec) { out.timeoutSec = *timeoutSec; }
 	if (maxTokens) { out.maxTokens = *maxTokens; }
 	if (maxTurns) { out.maxTurns = *maxTurns; }
+
+	/* 上下文字节预算（B1）：0 = 不限，上限 llm_limits 单点 */
+	std::optional<long> maxHistory, maxTool, maxImage;
+	if (!wantBudgetLong(path, root, "max_history_bytes",
+			llm_limits::kMaxHistoryBytesLimit, maxHistory, err)) { return false; }
+	if (!wantBudgetLong(path, root, "max_task_tool_result_bytes",
+			llm_limits::kMaxTaskToolResultBytesLimit, maxTool, err)) { return false; }
+	if (!wantBudgetLong(path, root, "max_task_image_bytes",
+			llm_limits::kMaxTaskImageBytesLimit, maxImage, err)) { return false; }
+	out.maxHistoryBytes = maxHistory;
+	out.maxTaskToolResultBytes = maxTool;
+	out.maxTaskImageBytes = maxImage;
 	return true;
 }
 

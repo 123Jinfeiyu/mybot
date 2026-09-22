@@ -27,5 +27,9 @@
   "allow_camera": true,
 
   "audit_log": "",
-  "agent_policy": ""
+  "agent_policy": "",
+
+  "max_history_bytes": 4194304,
+  "max_task_tool_result_bytes": 2097152,
+  "max_task_image_bytes": 4194304
 }

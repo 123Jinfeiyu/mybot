@@ -69,7 +69,10 @@ TH_TEST(llmconfig_parses_all_fields) {
 	  "thinking": "disabled",
 	  "max_turns": 12,
 	  "scripts_dir": "scripts/test",
-	  "allow_shell": false
+	  "allow_shell": false,
+	  "max_history_bytes": 8388608,
+	  "max_task_tool_result_bytes": 0,
+	  "max_task_image_bytes": 6291456
 	})", fs::perms::owner_read | fs::perms::owner_write);
 
 	LlmFileConfig c;
@@ -91,6 +94,35 @@ TH_TEST(llmconfig_parses_all_fields) {
 	TH_CHECK(c.maxTurns && *c.maxTurns == 12);
 	TH_CHECK(c.scriptsDir && *c.scriptsDir == "scripts/test");
 	TH_CHECK(c.allowShell && !*c.allowShell);
+	/* B1：上下文字节预算字段；0 = 不限合法 */
+	TH_CHECK(c.maxHistoryBytes && *c.maxHistoryBytes == 8388608);
+	TH_CHECK(c.maxTaskToolResultBytes && *c.maxTaskToolResultBytes == 0);
+	TH_CHECK(c.maxTaskImageBytes && *c.maxTaskImageBytes == 6291456);
+}
+
+TH_TEST(llmconfig_budget_fields_value_and_range) {
+	/* 负值、超上限、非整数一律拒（严格解析，带字段名） */
+	for (const char* body : {
+		"{\"max_history_bytes\":-1}",
+		"{\"max_history_bytes\":99999999999}",
+		"{\"max_task_image_bytes\":1.5}",
+		"{\"max_task_tool_result_bytes\":true}",
+	}) {
+		TempDir d("budget-case");
+		fs::path p = d.path() / "llm.json";
+		writeFile(p, body, fs::perms::owner_all);
+		LlmFileConfig c;
+		std::string err;
+		TH_CHECK(!loadLlmConfigFile(p.string(), c, err));
+	}
+	/* 未配置（缺省文件）三个字段应为 unset，不会被误填 */
+	TempDir p2("budget-unset");
+	fs::path cp = p2.path() / "llm.json";
+	writeFile(cp, R"({"api_key":"k"})", fs::perms::owner_all);
+	LlmFileConfig c;
+	std::string err;
+	TH_CHECK(loadLlmConfigFile(cp.string(), c, err));
+	TH_CHECK(!c.maxHistoryBytes && !c.maxTaskToolResultBytes && !c.maxTaskImageBytes);
 }
 
 TH_TEST(llmconfig_partial_file_leaves_fields_unset) {
@@ -301,6 +333,27 @@ TH_TEST(agentconfig_reads_url_key_model_from_file) {
 	TH_CHECK(!out.allowShell);
 	TH_CHECK(out.reasoningEffort == "high");
 	TH_CHECK(out.thinking == "enabled");
+}
+
+TH_TEST(agentconfig_reads_budget_fields_from_file) {
+	NoKeyEnv nokey;
+	TempDir tmp("budget-merge");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({
+	  "api_key": "k",
+	  "max_history_bytes": 8388608,
+	  "max_task_tool_result_bytes": 0,
+	  "max_task_image_bytes": 6291456
+	})", fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+	TH_CHECK(err.empty());
+	/* 默认 4/2/4 MiB 被配置覆盖：历史 8 MiB、文本 0（不限）、图片 6 MiB */
+	TH_CHECK(out.maxHistoryBytes == 8388608);
+	TH_CHECK(out.maxTaskToolResultBytes == 0);
+	TH_CHECK(out.maxTaskImageBytes == 6291456);
 }
 
 TH_TEST(agentconfig_cli_overrides_file) {

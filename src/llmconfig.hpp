@@ -28,8 +28,16 @@ inline constexpr int kMaxTokensMin = 1;
 inline constexpr int kMaxTokensMax = 200000;
 inline constexpr int kMaxTurnsMin = 1;
 inline constexpr int kMaxTurnsMax = 100;
+/* 上下文字节预算（B1，2026-09-22）。原先这三个量只写死在 AgentOptions 编译期
+ * 缺省（docs/agent.md 已知限制时此地自认「只能改源码缺省」），现场调不了。
+ * 现在经配置文件可覆盖；0 = 不限（与 AgentOptions 的既有语义一致）。
+ * 上限取「能接受的最大合理值」：历史 4 MiB 缺省、图片单张 2 MiB base64，给
+ * 64 MiB 让重度视觉会话也有余量，同时仍挡掉明显打错的数量级（GB 级会把
+ * 请求体直接顶穿任何网关）。 */
+inline constexpr long kMaxHistoryBytesLimit = 64u << 20;
+inline constexpr long kMaxTaskToolResultBytesLimit = 64u << 20;
+inline constexpr long kMaxTaskImageBytesLimit = 64u << 20;
 } // namespace llm_limits
-
 struct LlmFileConfig {
 	std::optional<std::string> driver;	/* 协议驱动表名 = modules/<名>.lua */
 	std::optional<std::string> var;		/* 承载驱动的变量名 */
@@ -58,6 +66,11 @@ struct LlmFileConfig {
 	std::optional<std::string> auditLog;
 	/* 策略钩子文件（--agent-policy 同义；命令行优先）。空/未配置 = 不启用。 */
 	std::optional<std::string> agentPolicy;
+	/* 上下文字节预算（B1）：会话历史 / 任务内文本 / 任务内图片，单位字节。
+	 * 0 = 不限；未配置 = 用 AgentOptions 编译期缺省。见 agentloop.hpp。 */
+	std::optional<long> maxHistoryBytes;
+	std::optional<long> maxTaskToolResultBytes;
+	std::optional<long> maxTaskImageBytes;
 };
 
 /* 解析配置文件。失败返回 false 并把「带字段名的人话报错」写进 err：

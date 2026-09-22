@@ -55,11 +55,22 @@ do
 end
 
 do
+	-- B2（2026-09-22）：OpenAI 库不再内置缺省接入点——「什么都没配」的会话
+	-- 不能把上下文静默发往特定第三方网关。缺省模型仍可用（显式配了 endpoint
+	-- 而没配 model 的会话不该被连带失败）。
 	local d = sample()
 	d.endpoint, d.model = "", ""
-	local r = openai.request(d)
-	check("OpenAI: 缺省接入点用驱动自带值", r.endpoint == openai.DEFAULTS.endpoint)
-	check("OpenAI: 缺省模型用驱动自带值", r.req.model == openai.DEFAULTS.model)
+	local ok, err = pcall(openai.request, d)
+	check("OpenAI(B2): 无 endpoint 时组包失败（fail-closed）", not ok)
+	check("OpenAI(B2): 报错点名配置途径", ok or
+		(err:find("endpoint", 1, true) ~= nil and err:find("BOT4CJ_LLM_ENDPOINT", 1, true) ~= nil),
+		ok and "(未抛错)" or tostring(err))
+	local d2 = sample()
+	d2.model = ""
+	local r2 = openai.request(d2)
+	check("OpenAI(B2): endpoint 在而 model 空时用缺省模型",
+		r2.req.model == openai.DEFAULTS.model)
+	check("OpenAI(B2): DEFAULTS 不再含 endpoint", openai.DEFAULTS.endpoint == nil)
 end
 
 do
@@ -476,7 +487,7 @@ do
 		on.messages[1].reasoning_content == "上一轮思考")
 end
 
--- ========== 缺省端点注记两个库都有（AG-13②） ==========
+-- ========== 缺省端点注记（AG-13②，B2 后仅 DeepSeek 走缺省回退） ==========
 do
 	check("AG-13②：openai 暴露了注记函数（提到模块上供两库共用）",
 		type(openai.note_default_endpoint) == "function")
@@ -487,8 +498,12 @@ do
 	local r = deepseek.request({ endpoint = "http://127.0.0.1:1/x", messages = {} })
 	check("AG-13②：显式端点优先，不被缺省覆盖", r.endpoint == "http://127.0.0.1:1/x", r.endpoint)
 	local d = deepseek.request({ messages = {} })
-	check("AG-13②：无端点时回落到 DeepSeek 内置缺省",
+	check("AG-13②：无端点时回落到 DeepSeek 内置缺省（官方 API 域，带 stderr 注记）",
 		d.endpoint == deepseek.DEFAULTS.endpoint, d.endpoint)
+	-- B2：DeepSeek 的 require_endpoint 也从 openai 库继承——但 DeepSeek 自己的
+	-- request 先回落到内置缺省，所以不会触达必填判据；这里钉住判据本身存在。
+	check("B2：openai.require_endpoint 存在且可离线单测",
+		type(openai.require_endpoint) == "function")
 end
 
 tester.summary("llm 协议驱动单测")

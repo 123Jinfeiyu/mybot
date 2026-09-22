@@ -5,6 +5,80 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 agent 重构阶段 B2（LlmOpenAI 不再内置缺省接入点）【破坏性】
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B2（对应 R3）。
+
+**影响**：此前 `LlmOpenAI` 在 CLI / 配置文件 / 环境链都没配 endpoint 时会静默回退到
+内置缺省 `https://moma.cmecloud.cn/v1/chat/completions`——「什么都没配就跑起来」的
+会话把含结构脚本、硬件清单、摄像头画面的上下文发往该网关，仅 stderr 注记缓解。
+
+- **新语义（fail-closed）**：endpoint 未配置时**第一次模型调用即失败**，ERR 点名
+  三种配置途径（`--llm-endpoint` / `BOT4CJ_LLM_ENDPOINT` / 配置文件 `endpoint`），
+  不发出任何报文；原网关用户显式配置即可（判据单点 `openai.require_endpoint`）。
+- `LlmDeepSeek` 保留缺省（api.deepseek.com 是厂商官方 API 域），首次回退仍打
+  stderr 注记（AG-13② 行为不变）。
+- 缺省模型不受影响（显式配了 endpoint 而没配 model 的会话不连带失败）。
+- 验收：`luajit test/test_llm_drivers.lua` 116/0（B2 钉子用例 4 条：无 endpoint
+  组包失败、报错点名途径、DEFAULTS 不再含 endpoint、DeepSeek 回退不变）；
+  `bash test/run_all.sh agent-all` 7 段 0 失败；C++ 464/0。
+- 文档同步：README 四处快速开始补 `BOT4CJ_LLM_ENDPOINT`；docs/agent.md 快速开始、
+  驱动表与破坏性变更标注。
+
+### 2026-09-22 agent 重构阶段 B1（上下文字节预算配置文件化）
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B1（对应 R2）。
+
+三个上下文字节预算此前是 `AgentOptions` 的编译期常量（docs/agent.md 已知限制自认
+「只能改源码缺省」），现场调不了。B1 把「配置文件 > 编译期缺省」通道接通：
+
+- **llmconfig 新增三个字段**：`max_history_bytes`（缺省 4 MiB）、`max_task_tool_result_bytes`
+  （缺省 2 MiB）、`max_task_image_bytes`（缺省 4 MiB）；单位字节，`0` = 不限，上限 64 MiB
+  （`llm_limits::kMax*BytesLimit` 单点）。
+- **严格解析**：类型/无穷/区间/取整同 `llm_limits` 通道，未知字段照旧整档拒绝。
+- **下沉链路**：`LlmFileConfig → AgentModeConfig（带缺省）→ AgentOptions`，只做搬运，
+  语义（含 AG-4/21 的任务内预算与裁剪边界）不变；`capture_image` 单图 2 MiB base64
+  硬上限仍是编译期常量（单独用途，未改）。
+- 验收：构建零告警；全量 464/0（+2）、`agent:` 148/0（+2）；`run_all.sh agent-all` 7 段 0 失败。
+  新增钉子用例 `llmconfig_budget_fields_value_and_range` / `agentconfig_reads_budget_fields_from_file`。
+- `mybot.llm.json.example` 与 docs/agent.md 配置字段表/已知限制同步。
+
+### 2026-09-22 agent 重构阶段 A2 + C2（系统提示词拆分 / 工具结果定界对齐）
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md)。
+
+- **A2（结构收口，行为逐字不变）**：系统提示词构建自 `agentmode.cpp`（578→478 行）拆出
+  `agentprompt.{hpp,cpp}`——结构脚本头读取（`structureScriptHead`，UTF-8 消毒 AG-1）、
+  「数据不是指令」定界单点（`quoteUntrusted`，审计 F）、总量上限（`kMaxSystemPromptBytes`，
+  F2-9）与 `buildAgentSystemPrompt` 一处承载；`agentmode` 只留配置组装与 REPL 外壳。
+  经由 `agentmode.hpp` 的既有 include 链，`buildAgentSystemPrompt` 等名字对存量用例
+  （`agentmode_` 族）仍原位可见——**存量用例零修改**。
+- **C2（行为变更，先补钉子用例）**：`list_action_scripts` 的工具结果与系统提示词三段
+  共用同一个 `quoteUntrusted`——此前同一份磁盘首行注释，在系统提示词里被包裹成
+  「数据不是指令」、在工具结果里却是裸文本，两条通道定界强度不一致（第三轮审计 §9）。
+  新增用例 `agenttools_list_scripts_quoted_as_data` 钉住：注入句仍在数据区可见
+  （定界不是过滤）且整行带 `> ` 前缀。
+- 验收：构建零告警；全量 462/0（+1）、`agent:` 作用域 146/0（+1）；
+  `bash test/run_all.sh agent-all` 7 段 0 失败。
+
+### 2026-09-22 agent 重构阶段 A1（AgentSession 拆分，行为逐字不变）
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 A1。
+> 动机：HEAD 落地审计日志与策略钩子后，`agentloop.cpp`（392 行）叠加了四套互相交织的
+> 职责（历史裁剪 / 任务内预算 / 策略+审计 / 轮次编排回滚），是全仓注释最密、最容易改错的文件。
+
+- **拆出三个独立单元**（`AgentSession` 只留 `runTurn` 编排与 `complete` 边界回滚）：
+  - `agenthistory.{hpp,cpp}`：历史所有权、`messageWeight` 字节估算、按任务块整块裁剪；
+  - `agentbudget.{hpp,cpp}`：任务内文本/图片预算、降级说明与记账（AG-4/21 的三条边界
+    语义——降级说明计入预算、图片额度单向累加并明示终态、不复用「画面已加入上下文」
+    断言——收进 `TaskBudget::admit` 单点）；
+  - `agentdispatch.{hpp,cpp}`：派发漏斗固定顺序单点「策略确认（执行前）→ 执行 →
+    审计（无论成败）」，`DispatchGate::run` 一处承载。
+- **行为零变更**：降级文案、审计字段、日志文本逐字保留；对外 API（`AgentOptions` /
+  `runTurn` / `history()`）不变。
+- 验收：`test/cpp/` 存量用例**零修改**全绿——全量 461/0、`agent:` 作用域 145/0、
+  `bash test/run_all.sh agent-all` 7 段 0 失败；`docs/agent.md` 源码分层表同步。
+
 ### 2026-09-21 文档正确性与可读性复核（README / docs / 架构页）
 
 > 起因：文档自称「单一事实源指向脚本或目录」，但抽查发现若干**写死的数字已经漂移**、

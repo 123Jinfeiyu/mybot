@@ -99,6 +99,10 @@ set(MYBOT_CORE_SOURCES
   src/agent_subprocess.cpp
   src/agentproto.cpp
   src/agenttools.cpp
+  src/agenthistory.cpp
+  src/agentbudget.cpp
+  src/agentdispatch.cpp
+  src/agentprompt.cpp
   src/agentloop.cpp
   src/agentmode.cpp
   src/agentdriver.cpp

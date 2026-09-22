@@ -3,6 +3,7 @@
 /* run_command 的子进程实现已拆至 agent_subprocess（超时/进程组终止/
  * 输出截断/环境清洗），本 TU 只做工具装配。 */
 #include "agent_subprocess.hpp"
+#include "agentprompt.hpp"	/* quoteUntrusted（C2：工具结果与系统提示词同一定界单点） */
 
 #include <algorithm>
 #include <array>
@@ -391,7 +392,12 @@ static AgentTool makeListActionScriptsTool(const AgentToolContext& ctx) {
 		"需要让机器人做动作前先调用它，挑选与目标最匹配的脚本。",
 		toolSchema({}, {}),
 		[ctx](const Json&) -> AgentToolResult {
-			return {describeActionScripts(ctx.scriptsDir), ""};
+			/* 首行注释来自磁盘，与系统提示词三段共用同一「数据非指令」定界
+			 * （quoteUntrusted 单点，C2）：两条进模型上下文的通道必须有
+			 * 同一定界强度，否则脚本里的「忽略上述指令」在工具结果里
+			 * 就是一条裸指令。 */
+			return {quoteUntrusted("动作脚本清单（相对路径 + 首行注释）：\n",
+				describeActionScripts(ctx.scriptsDir)), ""};
 		}};
 }
 

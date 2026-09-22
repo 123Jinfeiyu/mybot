@@ -18,10 +18,12 @@
 
 ## 快速开始
 
-无硬件自检链路（推荐第一条命令）：
+无硬件自检链路（推荐第一条命令）。**endpoint 必须显式配置**（B2 起不再有内置缺省，
+见[下文](#内置两个协议驱动)）：
 
 ```bash
 export BOT4CJ_LLM_KEY=sk-xxx
+export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 ./build/mybot --robot=robots/relay-test.sql --agent --task "让继电器动作一次"
 ```
 
@@ -105,12 +107,17 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   缺省查找依赖 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `scripts_dir` `allow_shell`
-  `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log` `agent_policy`。
+  `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
+  `agent_policy` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`。
   全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
   （每项为文件或目录，语义同 `--prompt-file`），空数组按「未配置」。
   `allow_shell` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，写 `true`
   会被拒绝加载并退出 2——开启 `run_command` 只能用命令行 `--agent-shell`
   （理由见 [安全说明](#安全说明请务必读) 第 1 条）。
+  三个 `max_*_bytes` 字段是**上下文字节预算**（单位字节，`0` = 不限，上限 64 MiB）：
+  `max_history_bytes` 会话历史（缺省 4 MiB）、`max_task_tool_result_bytes` 单任务内
+  文本（缺省 2 MiB）、`max_task_image_bytes` 单任务内图片（缺省 4 MiB）。原为编译期
+  常量只能改源码缺省，B1（2026-09-22）起可由配置文件覆盖——现场调上下文预算不再需要重编。
 - **严格解析**：不是合法 JSON、字段类型/范围不符、**出现未知字段**一律拒绝并退出 2。
   拼错一个键（如 `apikey`）而静默走缺省，会让人以为配置生效了——与「未知 `--key` 退出 2」同一口径。
 - **密钥可以放在别处**：`api_key_file` 指向一个只存密钥的文件（末尾换行会自动剥掉）。
@@ -178,13 +185,17 @@ API key 不在这个表里——驱动自己读环境变量。
 
 | 驱动 | 接入点（缺省） | 模型（缺省） | 特点 |
 | --- | --- | --- | --- |
-| `LlmOpenAI` | `https://moma.cmecloud.cn/v1/chat/completions` | `zhipu/glm-5.3-flash` | OpenAI 兼容：「当前协议」 |
+| `LlmOpenAI` | **无缺省（必须显式配置，B2）** | `zhipu/glm-5.3-flash` | OpenAI 兼容：「当前协议」 |
 | `LlmDeepSeek` | `https://api.deepseek.com/chat/completions` | `deepseek-chat` | DeepSeek：思考模式 + `reasoning_content` |
 
-> **内置缺省端点是特定第三方网关**：CLI / 配置文件 / 环境链都没配 endpoint
-> 时，报文会发往上表缺省 URL。每次进程首次这样回退时驱动会向 stderr 注记
-> 一行（`[llm-wire] 未配置 endpoint，使用驱动内置缺省 …`），便于发现「什么
-> 都没配就跑起来」的会话；正式使用建议在配置文件里显式指定 endpoint。
+> **【破坏性变更，B2（2026-09-22）】`LlmOpenAI` 不再内置缺省接入点**：原缺省指向
+> 特定第三方网关（moma.cmecloud.cn），「什么都没配就跑起来」的会话会把含结构
+> 脚本、硬件清单、摄像头画面的上下文静默发往该网关——stderr 注记只是缓解不是
+> 防线。现在 endpoint 未配置时**第一次模型调用即失败**（ERR 点名三种配置途径：
+> `--llm-endpoint` / 环境变量 `BOT4CJ_LLM_ENDPOINT` / 配置文件 `endpoint` 字段），
+> 不发出任何报文；真要用原网关的人显式配置即可。`LlmDeepSeek` 保留缺省
+> （api.deepseek.com 是厂商官方 API 域），首次回退时仍向 stderr 注记一行
+> （`[llm-wire] 未配置 endpoint，使用驱动内置缺省 …`）。
 
 两者都是 OpenAI 报文骨架，但 DeepSeek 有三处**实质差异**，由 `lib/llm_wire_deepseek.lua` 承担：
 
@@ -446,8 +457,12 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
 | `src/agenttools.{hpp,cpp}` | 工具注册表与五个工具、脚本路径沙箱、硬件描述 | 无 |
 | `src/agent_subprocess.{hpp,cpp}` | `run_command` 的子进程实现（超时、进程组终止、输出截断、环境清洗）＋宿主环境块密钥抹除 | 无 |
-| `src/agentloop.{hpp,cpp}` | 工具循环（历史、轮次上限、裁掉半截 tool_calls 尾部、extras 透传） | 无 |
-| `src/agentmode.{hpp,cpp}` | CLI 配置组装、系统提示词、一次性/REPL 外壳 | 无 |
+| `src/agenthistory.{hpp,cpp}` | 会话历史所有权、单条消息线上体积估算、按任务块整块裁剪（重构 A1 自 agentloop 拆出） | 无 |
+| `src/agentbudget.{hpp,cpp}` | 任务内文本/图片预算、降级说明与记账（AG-4/21 语义单点，重构 A1 自 agentloop 拆出） | 无 |
+| `src/agentdispatch.{hpp,cpp}` | 派发漏斗：策略确认 → 执行 → 审计的固定顺序单点（重构 A1 自 agentloop 拆出） | 无 |
+| `src/agentloop.{hpp,cpp}` | 工具循环编排（轮次上限、单轮调用数上限、裁掉半截 tool_calls 尾部、extras 透传） | 无 |
+| `src/agentmode.{hpp,cpp}` | CLI 配置组装、一次性/REPL 外壳 | 无 |
+| `src/agentprompt.{hpp,cpp}` | 系统提示词构建（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界单点 `quoteUntrusted`、总量上限 fail-closed）（重构 A2 自 agentmode 拆出） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接） | 无 |
 | `src/agentdriver.{hpp,cpp}` | `ChatTransport` 适配：调驱动的 `playQuiet()` | 无 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
@@ -499,10 +514,10 @@ bash test/run_all.sh agent-all
 ## 已知限制
 
 - **非流式**：`stream=false`，长回答要等整轮生成完；接口超时用 `--llm-timeout` 调整。
-- 这几个上下文**字节预算目前没有 CLI / 配置项，只能改源码缺省**（`src/agentloop.hpp`）：
-  `maxHistoryBytes`（跨任务，缺省 4 MiB）、`maxTaskToolResultBytes`（任务内文本，缺省 2 MiB）、
-  `maxTaskImageBytes`（任务内图片，缺省 4 MiB）；`capture_image` 的单图 base64 硬上限 2 MiB
-  在 `src/agenttools.hpp`。需要调优内存/上下文时先确认它们是不是你要找的那个数。
+- 三个上下文字节预算（会话历史 `max_history_bytes`、任务内文本 `max_task_tool_result_bytes`、
+  任务内图片 `max_task_image_bytes`）现可由**配置文件**覆盖（B1，2026-09-22，见上文
+  「配置文件」字段表；缺省分别是 4 / 2 / 4 MiB）。`capture_image` 的单图 base64 硬上限 2 MiB
+  仍在 `src/agenttools.hpp`（编译期常量）。需要调优内存/上下文时先确认它们是不是你要找的那个数。
 - REPL 历史按字节预算自动裁剪（缺省 4 MiB）：超过预算时按「任务块」整块裁掉最老的
   任务（含其中的 base64 图片），system 提示词与最新一个任务无条件保留——更早的任务
   上下文因此不再可见。单块超预算不封顶（正在进行的对话不能裁空），所以单张图另有

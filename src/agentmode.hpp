@@ -19,6 +19,7 @@
 #include "agentdriver.hpp"
 #include "agentpolicy.hpp"
 #include "agentproto.hpp"
+#include "agentprompt.hpp"	/* buildAgentSystemPrompt / kMaxSystemPromptBytes（A2 拆出） */
 
 namespace bot {
 
@@ -68,6 +69,14 @@ struct AgentModeConfig {
 	std::string task;		/* 非空 = 一次性执行；空 = 交互 REPL */
 	bool allowShell = false;	/* true = 注册 run_command（缺省关，见 actionsource.hpp 注） */
 	bool verbose = true;
+
+	/* ---- 上下文字节预算（B1）----
+	 * 0 = 不限；三类全部可由配置文件覆盖（llmconfig 新字段），未配置时保持
+	 * 编译期缺省并透传给 AgentOptions。原为 AgentOptions 的三个编译期常量，
+	 * 现场调不了（docs/agent.md 已知限制），B1 把「配置 > 缺省」通道接通。 */
+	std::size_t maxHistoryBytes = 4 * 1024 * 1024;
+	std::size_t maxTaskToolResultBytes = 2 * 1024 * 1024;
+	std::size_t maxTaskImageBytes = 4 * 1024 * 1024;
 
 	/* ---- 提示词包（--prompt-file / 配置文件 prompt_files）----
 	 * promptFiles 是合并后的输入清单（命令行给过就整体覆盖配置文件列表）；
@@ -120,25 +129,13 @@ AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg);
 
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err);
 
-/* 系统提示词：机器人结构与硬件清单 + 可用动作脚本 + 工作方式与安全约束 */
-/* 系统提示词总量上限（F2-9，2026-09-21）。三段来源都各自有界、却都无法自证
- * 整体规模：结构脚本头（16 KiB 截断）、动作脚本清单（条目数不限）、提示词包
- * （单文件 1 MiB 上限、整包不限）。任一段被塞爆都会顶穿 provider 上下文，
- * 或把真正重要的指令区挤出有效注意力；静默截断更糟——模型看到的系统指令与
- * 作者以为的不一致。故 fail-closed：超限即拒绝启动 agent 会话，报错里给出
- * 各段实测字节数。64 KiB ≈ 当前真实用量的 2.5 倍（示例包 6.4 KiB + 结构脚本
- * 头 ≤16 KiB + 两份清单），正常使用不会碰到。 */
-inline constexpr std::size_t kMaxSystemPromptBytes = 64u << 10;
-
 /* REPL 单行输入上限（2026-09-22 审计后添加）。防止恶意输入巨大任务字符串
  * 导致内存耗尽（std::getline 无内建长度限制，只在系统 RLIMIT_AS / 坏分配
  * 时才会 bad_alloc）。10 MiB 远超正常任务描述（几百字节），同时兼顾偶尔
  * 粘贴长文本的合理场景。超限响亮拒绝并提示，不静默截断。 */
 inline constexpr std::size_t kMaxReplInputBytes = 10u << 20;
 
-std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot);
-
-/* 跑 agent 会话。返回进程退出码：0 正常结束；1 模型/执行失败。 */
+/* runAgentMode：跑 agent 会话。返回进程退出码：0 正常结束；1 模型/执行失败。 */
 int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
 		std::istream& in, std::ostream& out, std::ostream& log);
 

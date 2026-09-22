@@ -31,8 +31,9 @@ cmake -S . -B build && cmake --build build
 ### 3. 启动智能体（无需硬件）
 
 ```bash
-# 配置API密钥
+# 配置API密钥与接入点（endpoint 必须显式配置，无内置缺省）
 export BOT4CJ_LLM_KEY=sk-xxx
+export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 
 # 启动交互式REPL（使用虚拟机器人）
 ./build/mybot --robot=robots/relay-test.sql --agent
@@ -92,6 +93,7 @@ chmod 600 mybot.llm.json
 
 ```bash
 export BOT4CJ_LLM_KEY=sk-xxx
+export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 ./build/mybot --robot=robots/spider1.sql --agent --llm-model gpt-4
 ```
 
@@ -335,6 +337,7 @@ bash test/run_all.sh agent-all
 
 ```bash
 export BOT4CJ_LLM_KEY=sk-xxx
+export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 ./build/mybot --robot=robots/spider1.sql --agent
 ```
 
@@ -572,4 +575,4 @@ bash test/run_all.sh
 
 ---
 
-**立即开始** → `export BOT4CJ_LLM_KEY=sk-xxx && ./build/mybot --robot=robots/relay-test.sql --agent`
+**立即开始** → `export BOT4CJ_LLM_KEY=sk-xxx BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions && ./build/mybot --robot=robots/relay-test.sql --agent`

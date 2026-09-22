@@ -1,11 +1,9 @@
 #include "agentloop.hpp"
 
-#include <chrono>
 #include <iostream>
 #include <stdexcept>
 #include <utility>
 
-#include "agentpolicy.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -52,82 +50,23 @@ std::string escapeLogMarkers(const std::string& s) {
 
 AgentSession::AgentSession(ChatTransport& transport, const AgentToolRegistry& tools,
 		AgentOptions opts)
-	: transport_(transport), tools_(tools), opts_(std::move(opts)) {
-	ChatMessage sys;
-	sys.role = "system";
-	sys.content = opts_.systemPrompt;
-	messages_.push_back(std::move(sys));
-}
+	: transport_(transport), tools_(tools), opts_(std::move(opts)),
+	history_(opts_.systemPrompt),
+	budget_{opts_.maxTaskToolResultBytes, opts_.maxTaskImageBytes},
+	gate_(tools_, opts_.policy, opts_.audit) {}
 
 void AgentSession::log(const std::string& text) const {
 	std::ostream& os = opts_.log != nullptr ? *opts_.log : std::cerr;
 	os << text << "\n";
 }
 
-/* ---- trimHistory：历史按字节预算裁剪（REPL 长会话）----
- * 单位是「任务块」：一条任务消息（user 且不带图片——图片消息属于它前面
- * 的任务块）直到下一条任务消息之前的全部消息。整块裁剪保证 assistant 的
- * tool_calls 与其 tool 消息、以及夹在 tool 消息之后的图片 user 消息不被
- * 拆散——半截序列发给服务端会被 400 拒绝。
- * 老块连同其中的 base64 图片一起释放：图片是历史体积主项（一张照片数百 KB），
- * 只按条数裁剪挡不住它们。 */
-namespace {
-
-/* 估算一条消息的线上体积（下界：不计 JSON 语法开销，正文/调用参数/图片/extras
- * 占绝对大头）。extras 当前只装 reasoning_content 一类文本，整体串行化计入。 */
-std::size_t messageWeight(const ChatMessage& m) {
-	std::size_t n = m.content.size() + m.toolCallId.size();
-	for (const ToolCall& c : m.toolCalls) {
-		n += c.id.size() + c.name.size() + c.arguments.size();
-	}
-	for (const std::string& img : m.images) { n += img.size(); }
-	if (!m.extras.isNull()) { n += m.extras.toString().size(); }
-	return n;
-}
-
-} // namespace
-
-void AgentSession::trimHistory() {
-	if (opts_.maxHistoryBytes == 0 || messages_.size() <= 1) { return; }
-
-	/* 任务块起点（messages_[0] 恒为 system，跳过） */
-	std::vector<std::size_t> starts;
-	for (std::size_t i = 1; i < messages_.size(); ++i) {
-		const ChatMessage& m = messages_[i];
-		if (m.role == "user" && m.images.empty()) { starts.push_back(i); }
-	}
-	if (starts.empty()) { return; }	/* 防御：历史理应至少含一次任务 */
-
-	std::vector<std::size_t> blockWeight(starts.size(), 0);
-	for (std::size_t j = 0; j < starts.size(); ++j) {
-		std::size_t end = (j + 1 < starts.size()) ? starts[j + 1] : messages_.size();
-		for (std::size_t k = starts[j]; k < end; ++k) { blockWeight[j] += messageWeight(messages_[k]); }
-	}
-
-	/* 从最新块向旧累计；最新块无条件保留（不能把对话裁空），其余装得下就留 */
-	std::size_t keep = starts.size() - 1;
-	std::size_t acc = blockWeight[keep];
-	while (keep > 0 && acc + blockWeight[keep - 1] <= opts_.maxHistoryBytes) {
-		--keep;
-		acc += blockWeight[keep];
-	}
-	if (keep == 0) { return; }	/* 全部塞得下，无事可做 */
-
-	std::size_t dropped = starts[keep] - 1;	/* system 之后、最新保留块之前的条数 */
-	messages_.erase(messages_.begin() + 1, messages_.begin() + starts[keep]);
-	if (opts_.verbose) {
-		log("[历史] 超出字节预算，已裁掉最早的 " + std::to_string(dropped)
-			+ " 条消息（含其中的图片）；更早的任务上下文不再可见");
-	}
-}
-
 std::string AgentSession::runTurn(const std::string& userTask) {
-	trimHistory();
+	history_.trim(opts_.maxHistoryBytes, opts_.verbose,
+		[this](const std::string& t) { log(t); });
 	/* 任务内聚合预算按任务清零（AG-4）：它约束的是「这一个任务往上下文里灌了
-	 * 多少字节」，跨任务的体积由 trimHistory 的 maxHistoryBytes 管。 */
-	taskToolResultBytes_ = 0;
-	taskImageBytes_ = 0;
-	const std::size_t base = messages_.size();
+	 * 多少字节」，跨任务的体积由 HistoryManager 的 maxHistoryBytes 管。 */
+	budget_.resetTask();
+	const std::size_t base = history_.messages().size();
 
 	/* 本轮里最后一个「可直接发给服务端」的边界：起点（只有这条 user 消息）算完整，
 	 * 此后每当一条 assistant 的 tool_calls 拿到全部 tool 回传（连同其后的图片消息）
@@ -138,7 +77,7 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 	ChatMessage user;
 	user.role = "user";
 	user.content = userTask;
-	messages_.push_back(std::move(user));
+	history_.messages().push_back(std::move(user));
 
 	try {
 		for (int turn = 0; turn < opts_.maxTurns; ++turn) {
@@ -149,7 +88,7 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 			}
 
 			/* 取数：一次模型调用 */
-			ChatResponse resp = transport_.complete(messages_, tools_.specs());
+			ChatResponse resp = transport_.complete(history_.messages(), tools_.specs());
 
 			/* 收尾：模型不再要工具 → 记下最终回答并返回 */
 			if (!resp.hasToolCalls()) { return appendFinalAnswer(resp); }
@@ -164,7 +103,7 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 			executeToolRound(resp, turn);
 
 			/* 到此为止 tool_calls 与 tool 回传一一对上，这段历史可以原样发送 */
-			complete = messages_.size();
+			complete = history_.messages().size();
 		}
 
 		throw std::runtime_error("达到工具轮次上限（" + std::to_string(opts_.maxTurns)
@@ -173,7 +112,7 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 		/* 只裁掉半截的尾部：轮次上限这条路径走到这里时 complete 已等于当前长度，
 		 * 于是本轮真实执行过的动作留在历史里——硬件状态不会因为「没拿到最终回答」
 		 * 而回退，模型也不该被告知什么都没发生。 */
-		if (messages_.size() > complete) { messages_.resize(complete); }
+		if (history_.messages().size() > complete) { history_.messages().resize(complete); }
 		throw;
 	}
 }
@@ -186,134 +125,30 @@ std::string AgentSession::appendFinalAnswer(const ChatResponse& resp) {
 	asst.role = "assistant";
 	asst.content = resp.content;
 	asst.extras = resp.extras;
-	messages_.push_back(std::move(asst));
+	history_.messages().push_back(std::move(asst));
 	return resp.content;
 }
 
-/* 派发单个工具调用：执行 → （必要时按任务内预算降级）→ 写 tool 消息。
+/* 派发单个工具调用：DispatchGate（策略 → 执行 → 审计）→ TaskBudget
+ * （必要时按任务内预算降级）→ verbose 日志 → 写 tool 消息。
  * 返回该结果携带的图片 data URL（无图片时为空串）。
  *
- * 预算降级（2026-09-21 审计 AG-4）：单个任务的累计工具结果/图片字节数超过
- * AgentOptions 的上限时，**不把这一条结果放进历史**，换成一句说明回给模型。
- * 为什么是「换掉」而不是「截断」：截断工具输出会让模型看到半截内容却以为完整
- * （比没有更危险）；为什么不是「报错终止」：那是把可用性问题升级成任务失败，
- * 而模型完全有能力换一个小一点的步子重试。
- * 判定在**执行之后**做：体积要拿到结果才知道，而工具已经产生副作用（比如
- * 动作脚本已经跑了），此时谎称「没执行」会误导模型——所以文案必须如实说明
- * 「已执行，但结果体积超限」。
- * 本函数不写 assistant 消息、不动 complete 边界：调用方保证一轮里的 tool 消息
- * 与 assistant.tool_calls 一一对应。 */
+ * 预算降级的完整语义（AG-4/AG-21）见 agentbudget.hpp——这里只负责把判定
+ * 结果落进历史与日志。本函数不写 assistant 消息、不动 complete 边界：
+ * 调用方保证一轮里的 tool 消息与 assistant.tool_calls 一一对应。 */
 std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
-	AgentToolResult result;
-	Json parsedArgs;
-	bool argsOk = false;
-	const auto t0 = std::chrono::steady_clock::now();
-	/* ---- 策略钩子（P3，--agent-policy）----
-	 * 执行**之前**确认：被拒的工具一个副作用都不能有（与 AG-4 的「执行后
-	 * 降级」相反——那边副作用已发生只能如实说明，这边还没发生所以拦得住）。
-	 * 拒绝/超时折成一句工具回执：模型知道「没执行、为什么、该怎么调整」，
-	 * 循环照常推进，而不是让整个任务崩掉。 */
-	bool denied = false;
-	try {
-		parsedArgs = parseToolArguments(call.arguments);
-		argsOk = true;
-		if (opts_.policy && opts_.policy->requiresConfirm(call.name)) {
-			const PolicyDecision d = opts_.policy->confirm(call.name, parsedArgs);
-			if (!d.allowed) {
-				denied = true;
-				result = AgentToolResult{
-					std::string("本次工具调用未执行：被策略拦截（--agent-policy，")
-						+ d.reason + "）。请改用无需确认的工具，"
-						  "或告知操作者调整策略后重试。",
-					"", false, "policy_denied: " + d.reason};
-			}
-		}
-		if (!denied) { result = tools_.execute(call.name, parsedArgs); }
-	} catch (const std::exception& e) {
-		result = AgentToolResult{std::string("工具参数错误: ") + e.what(), "", false, e.what()};
-	}
-	const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::steady_clock::now() - t0).count();
+	AgentToolResult result = gate_.run(call, turn);
 
-	/* ---- 审计轨迹（P1）：参数错误也记——「模型想做什么但没做成」同样是审计
-	 * 信息（被策略拒绝的调用也走这条：ok=false + error=policy_denied）。
-	 * 图片只记字节数与指纹，不落 base64；命令原文遮蔽敏感值（maskToolArgs
-	 * 单点，与确认程序的输入同一份）。 ---- */
-	if (opts_.audit) {
-		AuditEntry e;
-		e.turn = turn;
-		e.tool = call.name;
-		if (argsOk && parsedArgs.isObj()) {
-			e.args = maskToolArgs(call.name, parsedArgs);
-		}
-		e.argsRaw = call.arguments;
-		e.ok = result.ok;
-		e.error = result.error;
-		e.ms = elapsedMs;
-		e.bytes = result.text.size();
-		e.imageBytes = result.imageDataUrl.size();
-		if (!result.imageDataUrl.empty()) { e.imageFp = fingerprint64(result.imageDataUrl); }
-		if (call.name == "run_command") { e.exitCode = extractExitCode(result.text); }
-		opts_.audit->write(e);
-	}
-
-	/* ---- 任务内预算判定（AG-4 + AG-21）---- */
-	const bool textOver = opts_.maxTaskToolResultBytes > 0
-		&& taskToolResultBytes_ + result.text.size() > opts_.maxTaskToolResultBytes;
-	const bool imgOver = !result.imageDataUrl.empty() && opts_.maxTaskImageBytes > 0
-		&& taskImageBytes_ + result.imageDataUrl.size() > opts_.maxTaskImageBytes;
-	if (textOver || imgOver) {
-		const std::string what = imgOver ? "图片" : "工具输出";
-		const std::size_t used = imgOver ? taskImageBytes_ : taskToolResultBytes_;
-		const std::size_t cap = imgOver ? opts_.maxTaskImageBytes : opts_.maxTaskToolResultBytes;
-		std::string note = "本次工具结果未注入上下文：" + what + "累计体积已达任务上限（已用 "
-			+ std::to_string(used) + " + 本次 " 
-			+ std::to_string(imgOver ? result.imageDataUrl.size() : result.text.size())
-			+ " 字节，上限 " + std::to_string(cap) + " 字节）。";
-		if (imgOver) {
-			/* AG-4′（第三轮审计）：这里曾原样拼进 capture_image 的成功文案，而那句
-			 * 末尾是「画面已加入你的上下文」——与本条开头的「未注入上下文」直接
-			 * 矛盾，而**图片确实没注入**。模型读到自相矛盾的两句，按哪句行事都错。
-			 * 本项目既有的口径是「不向模型谎报状态」（见上面 AG-4 的设计注释），
-			 * 所以把描述里那句成功断言剥掉，再显式说明「只把描述给你」。 */
-			std::string desc = result.text;
-			const std::string claim = "画面已加入你的上下文。";
-			if (const std::size_t at = desc.find(claim); at != std::string::npos) {
-				desc.erase(at, claim.size());
-			}
-			note += "已把工具的描述性文字给你（画面本身没有进上下文）：" + desc;
-			/* 图片预算是**逐任务单向累加**的：一旦某张图装不下，本任务就再也塞不进
-			 * 任何图片（额度只增不减）。不明说的话，模型会一直重试拍照直到轮次上限
-			 * （实测：一次任务里连拒 3 次后以「达到工具轮次上限」收场——那 3 轮全
-			 * 是白烧的）。这里把「本任务图片额度已尽」讲成硬事实并给出唯一出路。
-			 * 判据必须与上面触发降级的判据**逐字一致**（都是「已用 + 本次 > 上限」）：
-			 * 写成 used >= cap 是错的——本次 87 / 上限 100 / 已用 87 时 used < cap，
-			 * 但再拍一张必然还是 87+87 > 100，额度事实上已经用尽（实测踩过，
-			 * 用例 agentloop_task_budget_image_exhaustion_is_terminal_and_stated
-			 * 把它钉住了）。 */
-			if (used + result.imageDataUrl.size() > cap) {
-				note += "本任务的图片额度已经用尽，**再调用也不会成功**；"
-					"请立即改用文字结论或换一个新任务。";
-			}
-		}
-		note += "工具本身已执行完毕（副作用已发生）。请改用更小的步子推进任务，"
-			"或直接基于已有信息给出结论。";
-		/* AG-21：降级说明**自己也计入预算**——否则「反复超限」可以往历史里无界
-		 * 灌说明文本（每条约 300 字节 x 轮数 x 每轮调用数）。计入之后第一次降级
-		 * 就把额度顶满，后续调用走同一分支且文案不变（幂等，不会雪崩）。 */
-		taskToolResultBytes_ += note.size();
-		result.text = std::move(note);
-		result.imageDataUrl.clear();
-	} else {
-		taskToolResultBytes_ += result.text.size();
-		taskImageBytes_ += result.imageDataUrl.size();
-	}
+	/* ---- 任务内预算判定（AG-4 + AG-21，语义见 agentbudget.hpp）---- */
+	std::string text = std::move(result.text);
+	std::string image = std::move(result.imageDataUrl);
+	budget_.admit(text, image);	/* 超限时 text 已被替换为降级说明、image 清空 */
 
 	if (opts_.verbose) {
 		/* 2026-09-22: 转义工具输出中的日志标记，防止干扰日志解析 */
-		std::string shown = escapeLogMarkers(result.text);
-		if (!result.imageDataUrl.empty()) {
-			shown += "\n[返回图片 " + std::to_string(result.imageDataUrl.size())
+		std::string shown = escapeLogMarkers(text);
+		if (!image.empty()) {
+			shown += "\n[返回图片 " + std::to_string(image.size())
 				+ " 字节，已注入下一轮对话]";
 		}
 		log("[工具] " + call.name + "\n" + indentLines(shown, 2));
@@ -321,10 +156,10 @@ std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
 
 	ChatMessage tool;
 	tool.role = "tool";
-	tool.content = result.text;
+	tool.content = std::move(text);
 	tool.toolCallId = call.id;
-	messages_.push_back(std::move(tool));
-	return result.imageDataUrl;
+	history_.messages().push_back(std::move(tool));
+	return image;
 }
 
 /* 执行：一轮带工具调用的模型回合，按协议顺序写历史——
@@ -358,7 +193,7 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 	asst.content = resp.content;
 	asst.toolCalls = calls;
 	asst.extras = resp.extras;	/* 同上：附加字段随历史逐轮回传 */
-	messages_.push_back(std::move(asst));
+	history_.messages().push_back(std::move(asst));
 
 	std::vector<std::string> images;
 	for (const auto& c : calls) {
@@ -377,14 +212,14 @@ void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
 			+ " 条；其余 " + std::to_string(excess)
 			+ " 条未被派发，请基于已执行的结果决定下一步";
 		tool.toolCallId = calls.empty() ? std::string("call_capped") : calls.back().id;
-		messages_.push_back(std::move(tool));
+		history_.messages().push_back(std::move(tool));
 	}
 	if (!images.empty()) {
 		ChatMessage img;
 		img.role = "user";
 		img.content = "以上工具返回的图片如下，请结合画面内容继续。";
 		img.images = std::move(images);
-		messages_.push_back(std::move(img));
+		history_.messages().push_back(std::move(img));
 	}
 }
 

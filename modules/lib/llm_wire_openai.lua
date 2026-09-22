@@ -19,12 +19,27 @@ local http = dofile(mpath.resolve("lib/llm_http.lua"))
 
 local M = {}
 
--- 本协议的缺省接入点（「当前协议」：moma 网关 + zhipu/glm）。宿主可用
--- --llm-endpoint/--llm-model 覆盖；放在库里是为了让协议整形可离线单测。
+-- 本协议的缺省模型。宿主可用 --llm-endpoint/--llm-model 覆盖；放在库里是为了
+-- 让协议整形可离线单测。
+-- B2（2026-09-22）：**endpoint 不再有缺省**。原缺省指向特定第三方网关——「什么
+-- 都没配就跑起来」的会话会把含结构脚本、硬件清单、摄像头画面的上下文静默发往
+-- 该网关，stderr 注记只是缓解不是防线。改为 fail-closed：没配就在组包时拒绝
+-- （驱动把它折成 ERR 契约回给宿主，上电后的第一次模型调用即可见、可读）。
+-- 真要用原网关的人显式配置即可（见 require_endpoint 的报错文案）。
 M.DEFAULTS = {
-	endpoint = "https://moma.cmecloud.cn/v1/chat/completions",
 	model = "zhipu/glm-5.3-flash",
 }
+
+-- 接入点必填判据（B2）：显式给出（参数表）原样返回；缺失/空串即抛错——
+-- 驱动 call() 里的 pcall 把它折成「请求组包失败: …」的 ERR 契约表，点名
+-- 三种配置途径。放在 M 上是为了离线单测（perform 需要 HTTP，测不到）。
+function M.require_endpoint(data)
+	local e = data.endpoint
+	if e ~= nil and e ~= "" then return e end
+	error("未配置 endpoint：本驱动不内置缺省接入点（内置缺省会把上下文发往特定"
+		.. "第三方网关）。请用 --llm-endpoint、环境变量 BOT4CJ_LLM_ENDPOINT 或"
+		.. "配置文件 endpoint 字段显式指定接入点")
+end
 
 local function snippet(s, n)
 	s = s or ""
@@ -189,7 +204,8 @@ end
 
 -- 从规范化请求组装出「接入点 + provider 报文」。
 -- 驱动只调这一个入口；DeepSeek 库覆写 plan 以换缺省值与整形规则。
--- 内置缺省接入点意味着报文流向一个特定第三方网关：每次进程首次回退时向
+-- OpenAI 库已无缺省接入点（B2，fail-closed），本注记现只由 DeepSeek 库使用：
+-- 其缺省端点指向厂商官方 API（api.deepseek.com），每次进程首次回退时向
 -- stderr 注记一次（io.stderr 未被沙箱中和，驱动注记惯例见 lib/daemon_tid.lua；
 -- 不打印密钥与报文内容，只提示「正在用哪个端点」），让「什么都没配」的会话
 -- 可见自己的数据流向；走显式配置（CLI/配置文件/环境链）不注记。
@@ -208,14 +224,10 @@ function M.note_default_endpoint(url)
 end
 
 function M.request(data, plan)
-	local D = M.DEFAULTS
-	local endpoint = data.endpoint
-	if endpoint == nil or endpoint == "" then
-		endpoint = D.endpoint
-		M.note_default_endpoint(endpoint)
-	end
+	-- B2：接入点必填（fail-closed），缺省模型仍可用
+	local endpoint = M.require_endpoint(data)
 	local model = data.model
-	if model == nil or model == "" then model = D.model end
+	if model == nil or model == "" then model = M.DEFAULTS.model end
 	return { endpoint = endpoint, req = M.build_request(data, model, plan) }
 end
 
