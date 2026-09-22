@@ -46,6 +46,20 @@
 > `.gitlab-ci.yml` 注释为准），如实标注「尚未转硬」。它们**不进入**
 > `run_all.sh` 的记账——守门汇总口径不变。
 
+### `gate:coverage` 转硬条件的两条，逐条现状（2026-09-22 本地核实）
+
+该 job 的转硬条件在 AG-11 后已改写为两条（原文见 `.gitlab-ci.yml` 的 job 注释）：
+
+| 条件 | 现状 | 证据 |
+| --- | --- | --- |
+| ① 覆盖数据随 artifacts 连续入库可追溯（口径与脚本版本对应） | **待 CI 侧确认**——要看连续 pipeline 的 artifacts 留存，本地无法判定 | — |
+| ② 盲区（fork/exec 子侧）确由**行为断言**覆盖 | ✅ **已满足并已反向验证** | 用例 `agenttools_child_side_fd_revocation_reports_its_path`（`test/cpp/test_agenttools.cpp`）存在，且随 `run_all.sh` 的 `cpp-unit` 段在 `gate:release` 里执行；**把 `src/agent_subprocess.cpp` 的 `kCloseRangeCloexec` 改回出错的 `1U`，该用例转红（2 条断言失败）**，恢复 `1U << 2` 后绿 |
+
+**本地实测基线（2026-09-22，`COV_WITH_GATE=1 bash test/run_coverage.sh`）**：
+`src/` 行覆盖 **80.27%（4394/5474）**。留这个数只为**未来对比**，不作为阈值——
+理由见上一节（该指标既漏 `mybot` 链路又有结构性 0% 区块，设阈值会把测试压力挤到
+测得到的区域）。要看趋势就前后两次数对比，不要拿它当及格线。
+
 ## 用法
 
 ```bash

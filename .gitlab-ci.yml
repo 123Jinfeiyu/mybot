@@ -165,6 +165,9 @@ gate:clang-tidy:
 #      agenttools_child_side_fd_revocation_reports_its_path 存在且在 gate:release
 #      里跑（它已随 run_all.sh 的 cpp-unit 段执行），把 AG-3 那类标志错误改回去
 #      该用例必须转红。
+# 2026-09-22 本地核实：② **已满足并已反向验证**（把 kCloseRangeCloexec 改回
+# 1U → 该用例 2 条断言转红；改回 1U<<2 → 绿）；本地基线 80.27%（4394/5474，
+# COV_WITH_GATE=1）。只剩 ① 需要 CI 侧连续 pipeline 的 artifacts 留存佐证。
 # 仍设最迟日期 2026-10-31；在此之前保持 allow_failure: true（如实：尚无稳定基线）。
 gate:coverage:
   stage: gate
