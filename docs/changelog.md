@@ -5,6 +5,41 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 响应形变矩阵（SAN-11，纯测试 + 契约成文）
+
+> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-11。
+> **只补测试与文档，不改对外行为**（除下面那一条归一化）。
+
+- **缺口形态**：契约一直存在但**分散**——宿主只读 `result`/`content`/`tool_calls`/
+  `extras`/`usage`，驱动负责把 provider 报文映射成这个形状。问题是历史补法：
+  PL-3（数组形态 `content`）与 PL-6（`tool_calls` 非表）**都是线上撞到才补一个**，
+  补完各自加了用例，但**没有矩阵**——所以下一个形变还要等线上撞。
+- **新增 `test/test_llm_wire_contract.lua`**：表驱动形变矩阵，**261 条断言**，
+  两个内置驱动（`openai` / `deepseek`）各跑一遍（它们是同一份 `parse_response`，
+  这样"某天有人给 DeepSeek 换了自己的实现"会被立刻发现）。覆盖：
+  `choices` 缺失/空/非数组/元素非表、`message` 缺失/null/非表、`content`
+  null/数字/空数组/纯 text 数组/含 image_url 段/单 part 对象、`tool_calls`
+  字符串/数字/空数组/元素非表/元素 null/缺 `function`/`function` 非表/缺 `id`/
+  `id` 非字符串/`arguments` 为对象或数字/合法与畸形混合、`reasoning_content`
+  空串与非字符串、`usage` 缺失/非对象/对象，外加 `perform` 层六种 HTTP 形态
+  （200 非 JSON / 200 JSON 标量 / 200 + error 信封 / 空 body / 429 / 404）。
+  每行标结局：**点名报错** / **降级但记账** / **照常处理**。
+- **一处归一化（本次新增的行为）**：`content` 为数字/布尔等非字符串非数组值时
+  **归一成空串**——原样透传会让宿主只认字符串的判据读成"没有文本"，最终报
+  「既没有返回文本也没有工具调用」，报错完全不指向真因（与 PL-3 同一个坑）。
+- **宿主侧对应矩阵**：`test/cpp/test_agentproto.cpp` 加
+  `agentproto_host_side_shape_matrix`——缺 `name` 的调用丢弃后如实报数、
+  有文本时安静丢弃、非字符串 `id`/`arguments` 的容错、`tool_calls` 非数组落在
+  既有兜底错误上、`extras`/`usage` 透传与缺失、`result != "OK"` 带上驱动 message。
+- **契约成文**：`docs/agent.md` 的「自己写第三个驱动」一节补上完整的**响应契约表**
+  （必选/可选键、结构化错误判据四键、形态判据清单），并写明维护约定：
+  **遇到新的 provider 形变先往矩阵里加一行**。
+- **注册**：新 Lua 用例已登记进 `agent_lua_roster`（SAN-2 的反向判据会检查
+  `test/test_llm_*.lua` 是否全部登记，漏登记即红——这正是那条自证的价值）。
+- **判据**：本项**不改对外行为**；若某一格行为不可接受，另开一项而不是顺手改
+  （保持"补测试"与"改行为"两个提交分离，便于回滚）。
+
+
 ### 2026-09-22 REPL 新增 `/status`（SAN-10）
 
 > 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-10。

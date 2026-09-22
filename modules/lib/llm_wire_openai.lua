@@ -225,7 +225,15 @@ function M.parse_response(decoded)
 	-- 让「模型给了别的内容而我没看见」在审计里可见（不谎报状态）。
 	local parts_dropped = 0
 	local function flatten_content(c)
-		if type(c) ~= "table" then return c end
+		-- SAN-11：非表、非字符串的 content（数字/布尔）**归一成空串**。
+		-- 原样透传会让宿主只认字符串的判据把它读成"没有文本"，最终报
+		-- 「既没有返回文本也没有工具调用」——报错完全不指向真因（同一个坑
+		-- PL-3 已经踩过一次：数组形态 content）。归一后至少文本是空的、
+		-- tool_calls 照常解析。
+		if type(c) ~= "table" then
+			if type(c) == "string" or c == nil then return c end
+			return ""
+		end
 		-- 数组形态照常逐段取 text；**非数组但有键**的表（如网关直接回单个
 		-- part 对象 {type="text",text=...}，或某种畸形表）当作一段处理，
 		-- 否则 ipairs 一个都遍历不到，会静默变成空文本。

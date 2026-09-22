@@ -201,3 +201,67 @@ TH_TEST(agentproto_parse_tool_arguments) {
 		parseToolArguments("[1,2]"));
 	TH_CHECK_THROWS(IllegalArgumentException, parseToolArguments("{bad}"));
 }
+
+/* ============ SAN-11：宿主侧的响应形变矩阵 ============
+ * 与 Lua 侧 test/test_llm_wire_contract.lua 互补：那边测"驱动把 provider 报文
+ * 整形成什么"，这边测"宿主拿到规范化结果之后的容错"。两处边界必须一致地
+ * **点名报错或如实降级**，而不是抛裸的解析错误或静默丢东西。 */
+TH_TEST(agentproto_host_side_shape_matrix) {
+	/* ① 缺 name 的调用被丢弃，且整轮为空时如实报数（SAN-8③） */
+	{
+		Json res = parseJson("{\"result\":\"OK\",\"content\":\"\",\"tool_calls\":["
+			"{\"id\":\"c1\",\"name\":\"\",\"arguments\":\"{}\"},"
+			"{\"id\":\"c2\",\"name\":\"\",\"arguments\":\"{}\"}]}");
+		try {
+			parseDriverResponse(res);
+			TH_CHECK_MSG(false, "应抛错");
+		} catch (const std::exception& e) {
+			TH_CHECK_MSG(std::string(e.what()).find("2 条") != std::string::npos,
+				"应报出丢弃 2 条，实际: " + std::string(e.what()));
+		}
+	}
+	/* ② 有文本时缺 name 的调用被安静丢弃（模型仍给了回答，不该报错） */
+	{
+		Json res = parseJson("{\"result\":\"OK\",\"content\":\"我看看\",\"tool_calls\":["
+			"{\"id\":\"c1\",\"name\":\"\",\"arguments\":\"{}\"}]}");
+		ChatResponse r = parseDriverResponse(res);
+		TH_CHECK(r.content == "我看看");
+		TH_CHECK(r.toolCalls.empty());
+	}
+	/* ③ 非字符串 id/name/arguments 的宿主容错 */
+	{
+		Json res = parseJson("{\"result\":\"OK\",\"content\":\"\",\"tool_calls\":["
+			"{\"id\":42,\"name\":\"t\",\"arguments\":{\"a\":1}}]}");
+		ChatResponse r = parseDriverResponse(res);
+		TH_CHECK(r.toolCalls.size() == 1);
+		TH_CHECK(r.toolCalls[0].id.empty());		/* 数字 id 被丢弃，由宿主合成 */
+		TH_CHECK(r.toolCalls[0].name == "t");
+		TH_CHECK(r.toolCalls[0].arguments == "{\"a\":1}");	/* 对象→字符串，供参数解析报错 */
+	}
+	/* ④ tool_calls 非数组（字符串）：整轮无调用 → 落在既有兜底错误上 */
+	{
+		Json res = parseJson("{\"result\":\"OK\",\"content\":\"\",\"tool_calls\":\"oops\"}");
+		TH_CHECK_THROWS_MSG(std::runtime_error, "既没有返回文本也没有工具调用",
+			parseDriverResponse(res));
+	}
+	/* ⑤ extras / usage 透传；缺失时为空 */
+	{
+		Json res = parseJson("{\"result\":\"OK\",\"content\":\"x\","
+			"\"extras\":{\"reasoning_content\":\"想一想\"},"
+			"\"usage\":{\"prompt_tokens\":7,\"completion_tokens\":3}}");
+		ChatResponse r = parseDriverResponse(res);
+		TH_CHECK(r.extras.isObj());
+		TH_CHECK(r.usage.isObj());
+		TH_CHECK(r.usage.find("prompt_tokens") != nullptr);
+	}
+	{
+		Json res = parseJson("{\"result\":\"OK\",\"content\":\"x\"}");
+		ChatResponse r = parseDriverResponse(res);
+		TH_CHECK(r.usage.isNull());
+	}
+	/* ⑥ result 非 "OK" 一律抛，且带上驱动给的 message（不是裸解析错误） */
+	{
+		Json res = parseJson("{\"result\":\"ERR\",\"message\":\"驱动说不行\"}");
+		TH_CHECK_THROWS_MSG(std::runtime_error, "驱动说不行", parseDriverResponse(res));
+	}
+}

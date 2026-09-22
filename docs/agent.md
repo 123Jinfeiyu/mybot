@@ -295,12 +295,18 @@ INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
 | `retriable` | 显式可重试位（驱动知道 HTTP 语义时优先用它） |
 | `retry_after_ms` | 服务端要求的退避毫秒数（来自 `Retry-After` 头，宿主钳到 1s-5min） |
 
-几条**形态判据**（违反即返回点名 `ERR`，`test/test_llm_wire_contract.lua` 是完整的形变矩阵）：
+几条**形态判据**（违反即返回点名 `ERR`）。**完整的形变矩阵在
+`test/test_llm_wire_contract.lua`**（261 条断言，两个驱动各跑一遍；宿主侧的对应
+矩阵在 `test/cpp/test_agentproto.cpp` 的 `agentproto_host_side_shape_matrix`）——
+**遇到新的 provider 形变，先往矩阵里加一行**，而不是等线上撞（PL-3 的数组 content
+与 PL-6 的 tool_calls 非表都是"线上撞到才补"的）。判据如下：
 `choices` 非数组 / `choices[1]` 非对象 / `message` 非对象 → 点名报错；
 `tool_calls` 非数组 → 点名报错；`tool_calls` 的**元素**非表或 `function` 非表 →
 **跳过并计数**（`extras.dropped_bad_tool_calls`，丢弃但如实记账，不让整轮失败）；
 `id` 缺失或非字符串 → **透传空串，不要自己合成**（宿主有轮次相关的合成方案
-`call_<turn>_<i>`，驱动自己编的 `call_<i>` 每轮从 1 重来会撞车 → 真机 400）。
+`call_<turn>_<i>`，驱动自己编的 `call_<i>` 每轮从 1 重来会撞车 → 真机 400）；
+`content` 为 `null`/数字等非字符串非数组值 → **归一成空串**（原样透传会让宿主
+读成"没有文本"，最终报「既没有返回文本也没有工具调用」——报错不指向真因）。
 
 ## 给智能体的工具
 

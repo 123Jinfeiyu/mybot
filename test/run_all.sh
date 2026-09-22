@@ -102,7 +102,7 @@ case_matches() {
 # 这个结论在没有人跑过一条 Lua 用例的情况下成立了很久（实测汇总 11 条、Lua 段 0 条）。
 # 判据是「roster 里每个文件必须存在，且在本过滤器下真的会被跑到」——
 # 检查的是**被映射到的文件**，不是映射的形状。
-agent_lua_roster="test/test_llm_drivers.lua"
+agent_lua_roster="test/test_llm_drivers.lua test/test_llm_wire_contract.lua"
 if [ "$filter" = "agent-all" ]; then
 	_agentall_bad=""
 	[ -n "$filter_lua" ] || _agentall_bad="$_agentall_bad lua(空值=跑全部文件)"
