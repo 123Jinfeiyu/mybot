@@ -910,3 +910,94 @@ TH_TEST(agentloop_task_budget_counts_the_degradation_note) {
 		"第二条说明应把第一条说明计入已用（找 '" + marker + "'），实际: "
 			+ notes[1].substr(0, 140));
 }
+
+/* ============ SAN-4：没执行的调用不得被说成"副作用已发生" ============
+ * 缺陷形态（已实测复现）：策略拒绝 / 未知工具 / 参数错误这三类结果**根本没被派发**，
+ * 但预算降级对它们一视同仁，把文本换成"…工具本身已执行完毕（副作用已发生）…"
+ * ——而同一轮的审计日志写着 ok=false / policy_denied。两条通道给出相反的事实，
+ * 模型按"命令已经跑过"继续推进。对物理机器人，谎报状态是安全相关的错误。 */
+TH_TEST(agentloop_task_budget_does_not_claim_side_effects_for_denied_calls) {
+	/* 用长文案的"未知工具"触发降级：预算调到极小（1 字节）保证必然超限 */
+	const auto runWith = [](const std::string& toolName, const char* expectInText) {
+		FakeTransport tr;
+		tr.script = {callResponse(toolName, "{}"), answerResponse("结束")};
+		AgentToolRegistry tools;	/* 空注册表：任何名字都是"未知工具" */
+		AgentOptions opts;
+		opts.maxTurns = 3;
+		opts.verbose = false;
+		opts.systemPrompt = "sys";
+		opts.maxTaskToolResultBytes = 1;	/* 必然超限 */
+		AgentSession s(tr, tools, opts);
+		TH_CHECK(s.runTurn("任务") == "结束");
+		std::string toolText;
+		for (const auto& m : tr.requests.back()) {
+			if (m.role == "tool") { toolText = m.content; }
+		}
+		TH_CHECK_MSG(toolText.find("副作用已发生") == std::string::npos,
+			"未执行的调用不得声称副作用已发生，实际: " + toolText.substr(0, 160));
+		TH_CHECK_MSG(toolText.find(expectInText) != std::string::npos,
+			"原文应原样到达模型（这正是模型要的事实），实际: " + toolText.substr(0, 160));
+		/* 明确的"没执行"表述必须在（与降级说明的"已执行"相反的那一侧） */
+		TH_CHECK_MSG(toolText.find("未知工具") != std::string::npos,
+			"未知工具的裁决文本被改写了: " + toolText.substr(0, 160));
+	};
+
+	runWith("no_such_tool", "未知工具 no_such_tool");
+}
+
+/* 对照：**执行过但失败**的调用仍然保留"副作用可能已发生"的口径——
+ * 脚本跑到一半报错时机器人可能停在半途，抹掉这句话同样是谎报（方向相反）。 */
+TH_TEST(agentloop_task_budget_keeps_side_effect_warning_for_executed_failures) {
+	FakeTransport tr;
+	tr.script = {callResponse("boom", "{}"), answerResponse("结束")};
+	AgentToolRegistry tools;
+	tools.add(AgentTool{"boom", "总是抛异常的夹具", parseJson("{\"type\":\"object\"}"),
+		[](const Json&) -> AgentToolResult {
+			throw std::runtime_error("夹具故意失败（执行过了）");
+		}});
+	AgentOptions opts;
+	opts.maxTurns = 3;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	opts.maxTaskToolResultBytes = 1;	/* 必然超限 */
+	AgentSession s(tr, tools, opts);
+	TH_CHECK(s.runTurn("任务") == "结束");
+
+	std::string toolText;
+	for (const auto& m : tr.requests.back()) {
+		if (m.role == "tool") { toolText = m.content; }
+	}
+	TH_CHECK_MSG(toolText.find("未注入上下文") != std::string::npos,
+		"执行过的调用超限时仍应降级，实际: " + toolText.substr(0, 160));
+	TH_CHECK_MSG(toolText.find("已执行") != std::string::npos,
+		"执行过的调用必须保留「已执行」口径（副作用可能已发生），实际: "
+			+ toolText.substr(0, 160));
+}
+
+/* executed=false 的结果仍然**计入额度**：否则"反复被拒"就成了往历史里
+ * 无界灌文本的免费通道（与 AG-21 同一条口径）。 */
+TH_TEST(agentloop_task_budget_still_counts_denied_call_bytes) {
+	FakeTransport tr;
+	tr.script = {callResponse("no_such_tool", "{}"), callResponse("no_such_tool", "{}"),
+		answerResponse("结束")};
+	AgentToolRegistry tools;
+	AgentOptions opts;
+	opts.maxTurns = 4;
+	opts.verbose = false;
+	opts.systemPrompt = "sys";
+	/* 第一次"未知工具"文本约 60 字节，限额给 40 → 第二次必然超限。
+	 * 若未执行的调用不记账，第二次也会原样放行（额度永远为 0）。 */
+	opts.maxTaskToolResultBytes = 40;
+	AgentSession s(tr, tools, opts);
+	TH_CHECK(s.runTurn("任务") == "结束");
+
+	std::vector<std::string> toolTexts;
+	for (const auto& m : tr.requests.back()) {
+		if (m.role == "tool") { toolTexts.push_back(m.content); }
+	}
+	TH_CHECK_MSG(toolTexts.size() == 2, "应有两条 tool 消息");
+	/* 两条都必须是"未知工具"原文（没执行 → 不降级），但第二条能被判定超限
+	 * 恰恰证明第一条**记了账**。 */
+	TH_CHECK_MSG(toolTexts[1].find("未知工具") != std::string::npos,
+		"第二条也应是未执行的原裁决文本，实际: " + toolTexts[1].substr(0, 120));
+}

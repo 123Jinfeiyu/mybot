@@ -25,12 +25,15 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 					std::string("本次工具调用未执行：被策略拦截（--agent-policy，")
 						+ d.reason + "）。请改用无需确认的工具，"
 						  "或告知操作者调整策略后重试。",
-					"", false, "policy_denied: " + d.reason};
+					"", false, "policy_denied: " + d.reason,
+					/* executed= */ false};
 			}
 		}
 		if (!denied) { result = tools_.execute(call.name, parsedArgs); }
 	} catch (const std::exception& e) {
-		result = AgentToolResult{std::string("工具参数错误: ") + e.what(), "", false, e.what()};
+		/* 参数解析失败 = 这一次调用**从未到达工具**，副作用必然未发生（SAN-4） */
+		result = AgentToolResult{std::string("工具参数错误: ") + e.what(), "", false, e.what(),
+			/* executed= */ false};
 	}
 	const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
 		std::chrono::steady_clock::now() - t0).count();

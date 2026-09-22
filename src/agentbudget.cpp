@@ -3,7 +3,20 @@
 namespace bot {
 namespace agent {
 
-bool TaskBudget::admit(std::string& text, std::string& image) {
+bool TaskBudget::admit(std::string& text, std::string& image, bool executed) {
+	/* ---- SAN-4：没执行的调用不参与降级 ----
+	 * 策略拒绝 / 未知工具 / 参数错误的结果**根本不是"工具输出"**，而是框架对
+	 * 这一次调用的裁决。它们的文案本身就是要给模型的事实（"没执行、为什么"），
+	 * 一旦被换成降级说明，模型会读到"工具本身已执行完毕（副作用已发生）"——
+	 * 与同轮审计日志的 ok=false / policy_denied 直接相反（实测复现见
+	 * .tmp/AGENT_NEXT_PLAN_20260922.md 的 SAN-4）。
+	 * 记账仍然照做：额度是"往上下文里灌了多少字节"的账，与执不执行无关；
+	 * 跳过记账会让"反复拒绝"变成灌历史的免费通道。 */
+	if (!executed) {
+		toolResultBytes += text.size();
+		imageBytes += image.size();
+		return false;
+	}
 	/* ---- 任务内预算判定（AG-4 + AG-21）---- */
 	const bool textOver = maxToolResultBytes > 0
 		&& toolResultBytes + text.size() > maxToolResultBytes;

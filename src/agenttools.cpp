@@ -287,7 +287,8 @@ AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& 
 		avail += t.name;
 	}
 	std::string msg = "未知工具 " + name + "。可用工具: " + avail;
-	return {msg, "", false, msg};
+	/* executed=false（SAN-4）：未知工具从未被派发，副作用必然未发生 */
+	return {msg, "", false, msg, /* executed= */ false};
 }
 
 std::vector<ToolSpec> AgentToolRegistry::specs() const {

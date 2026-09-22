@@ -39,12 +39,22 @@ struct AgentToolResult {
 	std::string imageDataUrl;	/* 非空 = "data:image/jpeg;base64,..." */
 	bool ok = true;			/* false = 工具本身失败（参数错/未知工具/异常） */
 	std::string error;		/* ok=false 时的人话原因 */
+	/* SAN-4（2026-09-22）：这一次调用**是否真的被派发给了工具**。
+	 * false = 根本没执行（策略拒绝 / 未知工具 / 参数错误），因此**副作用必然未发生**；
+	 * true（缺省）= 执行过，可能产生副作用——哪怕 ok=false（工具内失败、脚本跑了一半）
+	 * 也一样，那种情况机器人可能停在半途，必须如实告知模型。
+	 * 用途单点：TaskBudget::admit 据它决定"要不要说那句副作用已发生"。
+	 * 为什么不用 ok 代替：`ok` 把"没执行"与"执行了但失败"混在一起，而这两件事
+	 * 对模型的意义完全相反。 */
+	bool executed = true;
 	/* 带构造函数（非聚合）：存量代码大量使用两字段初始化 {text, img}，聚合
 	 * 形态下它们会触发 -Wmissing-field-initializers（本仓库 -Wall -Wextra
 	 * 零告警基线）；构造函数让两字段形态显式表示「ok=true 缺省」。 */
 	AgentToolResult() = default;
-	AgentToolResult(std::string t, std::string img, bool ok_ = true, std::string err_ = "")
-		: text(std::move(t)), imageDataUrl(std::move(img)), ok(ok_), error(std::move(err_)) {}
+	AgentToolResult(std::string t, std::string img, bool ok_ = true, std::string err_ = "",
+			bool executed_ = true)
+		: text(std::move(t)), imageDataUrl(std::move(img)), ok(ok_), error(std::move(err_)),
+		  executed(executed_) {}
 };
 
 /* 一个可被模型调用的工具。execute 返回给模型的内容；抛异常表示工具失败

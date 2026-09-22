@@ -123,10 +123,12 @@ std::string AgentSession::appendFinalAnswer(const ChatResponse& resp) {
 std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
 	AgentToolResult result = gate_.run(call, turn);
 
-	/* ---- 任务内预算判定（AG-4 + AG-21，语义见 agentbudget.hpp）---- */
+	/* ---- 任务内预算判定（AG-4 + AG-21，语义见 agentbudget.hpp）----
+	 * executed=false（策略拒绝/未知工具/参数错误）时 admit 不做降级：
+	 * 那些调用根本没执行，"副作用已发生"是谎报（SAN-4）。 */
 	std::string text = std::move(result.text);
 	std::string image = std::move(result.imageDataUrl);
-	budget_.admit(text, image);	/* 超限时 text 已被替换为降级说明、image 清空 */
+	budget_.admit(text, image, result.executed);
 
 	if (opts_.verbose) {
 		/* 转义工具输出中的日志标记，防止干扰日志解析（util.hpp 单点，C7） */
