@@ -4,13 +4,20 @@
  *   offset 0   char   mutex[64]      pthread_mutex_t（aarch64=48B / x86_64=40B，预留 64）
  *   offset 64  int32  count          已 publish 次数
  *   offset 68  int32  nvals          本次值个数
- *   offset 72  double values[32]     采样值
- *   offset 328 uint8  stop           停止标志
- *   offset 332 int32  status         守护 setup 状态（N-27：0=正常；负=失败码）
+ *   offset 72  double values[64]     采样值（TD-3：32 → 64，支持高通道数传感器）
+ *   offset 584 uint8  stop           停止标志
+ *   offset 588 int32  status         守护 setup 状态（N-27：0=正常；负=失败码）
  *
  * status 与 stop 之间那 3 字节是 stop 之后的既有对齐填充——status 落在这里
- * **不改变槽尺寸**（仍 336B），也保持 count/nvals/values/stop 偏移不变；
+ * **不改变字段布局语义**，保持 count/nvals/values/stop 相对顺序；
  * 具名 reserved_ 只为显式占位，避免将来插字段时把 status 挤进隐式填充区。
+ *
+ * TD-3 变更记录（2026-09-22）：
+ * - values 从 32 增至 64 个 double（256B → 512B）
+ * - 槽总大小从 336B 增至 592B
+ * - stop 偏移从 328 → 584
+ * - status 偏移从 332 → 588
+ * - 向后兼容：旧代码使用 ≤32 值的槽仍然正常工作
  */
 #include <atomic>
 #include <chrono>
@@ -29,10 +36,10 @@ namespace bot {
 constexpr int32_t SLOT_COUNT_OFF = 64;
 constexpr int32_t SLOT_NVALS_OFF = 68;
 constexpr int32_t SLOT_VALUES_OFF = 72;
-constexpr int32_t SLOT_STOP_OFF = 328;
-constexpr int32_t SLOT_STATUS_OFF = 332;
-constexpr int32_t SLOT_SIZE = 336;
-constexpr int32_t SLOT_MAXVALS = 32;
+constexpr int32_t SLOT_STOP_OFF = 584;   /* TD-3: 328 → 584 (64 values × 8 bytes = 512B) */
+constexpr int32_t SLOT_STATUS_OFF = 588; /* TD-3: 332 → 588 */
+constexpr int32_t SLOT_SIZE = 592;       /* TD-3: 336 → 592 */
+constexpr int32_t SLOT_MAXVALS = 64;     /* TD-3: 32 → 64 */
 
 struct DaemonSlot {
 	char mutex[64];

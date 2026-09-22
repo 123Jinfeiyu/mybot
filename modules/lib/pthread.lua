@@ -10,9 +10,9 @@
 --   offset 0   char    mutex[64]    pthread_mutex_t（aarch64=48B/x86_64=40B，预留 64）
 --   offset 64  int32   count        已 publish 次数
 --   offset 68  int32   nvals        本次值个数
---   offset 72  double  values[32]   采样值（P：16 → 32，支撑单守护聚合多路传感器）
---   offset 328 uint8   stop         停止标志（1=请求停止；紧随 values[32] 之后：
---                                    mutex 64 + count 4 + nvals 4 + values 256 = 328）
+--   offset 72  double  values[64]   采样值（TD-3: 32 → 64，支持高通道数传感器）
+--   offset 584 uint8   stop         停止标志（TD-3: 328 → 584）
+--   offset 588 int32   status       守护 setup 状态（TD-3: 332 → 588）
 --
 -- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 HAL.lua 已定义的
 -- open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，重复 cdef 会报错）。
@@ -63,7 +63,7 @@ typedef struct {
 	char     mutex[64];
 	int32_t  count;
 	int32_t  nvals;
-	double   values[32];
+	double   values[64];
 	uint8_t  stop;
 	uint8_t  reserved[3];
 	int32_t  status;
@@ -72,8 +72,9 @@ typedef struct {
 
 -- 2.7：布局常量的单一事实源在宿主（daemonvar.hpp struct + 静态断言），
 -- 守护启动时经 DAEMON_SLOT_LAYOUT 注入；此处手写值仅为无宿主注入环境兜底。
+-- TD-3（2026-09-22）：values 从 32 增至 64，槽大小从 336B 增至 592B
 local base_layout = DAEMON_SLOT_LAYOUT or
-	{ count = 64, nvals = 68, values = 72, stop = 328, status = 332, size = 336, maxvals = 32 }
+	{ count = 64, nvals = 68, values = 72, stop = 584, status = 588, size = 592, maxvals = 64 }
 
 P.SLOT_MAXVALS = base_layout.maxvals
 
