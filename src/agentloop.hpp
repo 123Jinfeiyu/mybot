@@ -82,6 +82,18 @@ public:
 	 * 把这段历史也抹掉就等于告诉模型「什么都没发生」。 */
 	std::string runTurn(const std::string& userTask);
 
+	/* 清空会话历史（C1，REPL /clear）：只保留 messages_[0] 的 system 提示词，
+	 * 其余（任务、工具回传、图片、最终回答）全部丢弃。硬件**不**释放——与
+	 * 「无记忆持久化」的既有边界一致：上下文被一次错误结论污染后，此前唯一
+	 * 出路是重启进程，而重启会丢掉硬件常驻状态；/clear 让「忘掉对话」与
+	 * 「保住上电状态」解耦。任务内预算计数随下一轮 runTurn 开头的 resetTask
+	 * 归零，无需在此处理。 */
+	void clearHistory() {
+		if (history_.messages().size() > 1) {
+			history_.messages().resize(1);
+		}
+	}
+
 	const std::vector<ChatMessage>& history() const { return history_.messages(); }
 
 private:

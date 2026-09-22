@@ -76,7 +76,7 @@ HEAD 相比旧审计基线新增了 `dispatchOneCall` 内的策略确认与审�
 
 ### 阶段 C —— 能力补齐（小而确定，按需）
 
-- **C1. REPL `/clear`（R6）**：裁掉 system 之后的全部历史（复用 `HistoryManager` 的
+- **C1. REPL `/clear`（R6）** —— ✅ 已落地（2026-09-22，保留 system，465/0）：裁掉 system 之后的全部历史（复用 `HistoryManager` 的
   任务块语义），硬件不释放；与「无记忆持久化」的现有边界一致。
 - **C2. `list_action_scripts` 结果包 `quoteUntrusted`（R7）** —— ✅ 已落地（2026-09-22，含钉子用例）：一行级改动，对齐两条
   磁盘内容通道的定界待遇。

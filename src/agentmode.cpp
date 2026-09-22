@@ -434,7 +434,8 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	const std::size_t hwCount = robot.registry().byName().size();
 
 	out << "agent 模式：机器人已上电常驻（结构脚本 " << cfg.structurePath << "）。\n"
-		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/help 看帮助，/exit 退出。\n";
+		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/clear 清空对话记忆，"
+		"/help 看帮助，/exit 退出。\n";
 	std::string line;
 	while (!stopRequested()) {
 		/* 状态提示符格式：mybot[robot_name|llm_var|N_hw]>
@@ -456,12 +457,21 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 			out << "内置命令:\n"
 				<< "  /hardware  - 显示硬件清单（只读，不触发任何动作）\n"
 				<< "  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）\n"
+				<< "  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）\n"
 				<< "  /help      - 显示此帮助\n"
 				<< "  /exit      - 退出 agent 模式\n"
 				<< "  /quit      - 同 /exit\n"
 				<< "直接输入任务描述即可让智能体执行，例如：\n"
 				<< "  让机器人站立\n"
 				<< "  拍照并描述看到的内容\n";
+			continue;
+		}
+		if (task == "/clear") {
+			/* C1：上下文被一次错误结论污染后，此前唯一出路是重启进程——而重启
+			 * 会丢掉硬件常驻状态（执行器停在最后指令位置，现场代价不小）。
+			 * /clear 只裁会话历史，机器人保持上电。 */
+			session.clearHistory();
+			out << "已清空对话记忆（硬件保持上电，系统提示词不变）。\n";
 			continue;
 		}
 		if (task == "/hardware") {

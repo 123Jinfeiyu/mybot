@@ -256,6 +256,36 @@ TH_TEST(agentloop_history_accumulates_across_turns) {
 	TH_CHECK(transport.requests[1][3].content == "B");
 }
 
+TH_TEST(agentloop_clear_keeps_system_only) {
+	/* C1（REPL /clear）：清空后只剩 system；清空后再跑新任务，请求里不含旧历史。
+	 * 硬件常驻状态不在本层（RobotStruct 不经过 AgentSession），本用例钉住
+	 * 「历史归零 + system 保留 + 清空后的请求干净」三个可见面。 */
+	FakeTransport transport;
+	transport.script.push_back(answerResponse("第一次"));
+	transport.script.push_back(callResponse("echo", "{}"));
+	transport.script.push_back(answerResponse("清空后"));
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, optsFor(4));
+	TH_CHECK(session.runTurn("A") == "第一次");
+	TH_CHECK(session.history().size() == 3);	/* system,user,asst */
+
+	session.clearHistory();
+	TH_CHECK(session.history().size() == 1);
+	TH_CHECK(session.history()[0].role == "system");
+	TH_CHECK(session.history()[0].content == "测试系统提示词");
+
+	/* 清空后跑一轮带工具的任务：请求（第 2 次）只含 system + 新任务，
+	 * 旧任务的对话不再可见 */
+	TH_CHECK(session.runTurn("B") == "清空后");
+	TH_CHECK(transport.requests[1].size() == 2);
+	TH_CHECK(transport.requests[1][1].content == "B");
+
+	/* 对空历史重复清空是幂等的安全操作 */
+	session.clearHistory();
+	TH_CHECK(session.history().size() == 1);
+}
+
 TH_TEST(agentloop_stop_requested_aborts) {
 	stopRequested().store(true);
 	FakeTransport transport;

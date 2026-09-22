@@ -5,6 +5,22 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 agent 重构阶段 C1（REPL /clear）
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C1（对应 R6）。
+
+此前上下文被一次错误结论污染后，唯一出路是重启进程——重启会 `deactivate()` 释放硬件，
+执行器停在归零位，现场代价不小。新增 REPL `/clear`：只裁会话历史（保留 system 提示词），
+机器人保持上电。
+
+- `AgentSession::clearHistory()`：`messages_` 截断到 system 一条；任务内预算计数随下一轮
+  `runTurn` 开头的 `resetTask` 归零，无需在此处理。
+- REPL 新增 `/clear`（确认文案「已清空对话记忆（硬件保持上电，系统提示词不变）」），
+  `/help` 与欢迎行同步。
+- 验收：构建零告警；全量 465/0（+1，`agentloop_clear_keeps_system_only` 钉住
+  历史归零/system 保留/清空后请求干净/幂等）、`agent:` 149/0；`agent-all` 7 段 0 失败。
+- docs/agent.md REPL 命令段同步。
+
 ### 2026-09-22 agent 重构阶段 B2（LlmOpenAI 不再内置缺省接入点）【破坏性】
 
 > 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B2（对应 R3）。
