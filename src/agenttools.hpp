@@ -78,6 +78,11 @@ struct AgentToolContext {
 	int commandTimeoutSec = 10;		/* run_command 缺省超时 */
 	int maxCommandTimeoutSec = 60;		/* run_command 超时上限 */
 	bool allowShell = false;		/* true = 注册 run_command（安全阀门，缺省关） */
+	/* PL-2（2026-09-22）：动作脚本执行预算（秒）。run_action_script 是本工具集里
+	 * **唯一曾无任何上界**的执行路径，而它默认开启；脚本本身是线性矩阵、DSL 无
+	 * 循环，挂死只可能来自 Lua 驱动自己的 call()。>0 = 开启（窗口内关 JIT + 挂
+	 * 指令计数钩子，见 luaexec.hpp）；<=0 = 明确关闭，退化为此前的无预算行为。 */
+	int scriptTimeoutSec = 180;
 	/* 摄像头：Lua 驱动变量（modules/Camera.lua）。为空 = 不注册 capture_image。
 	 * 抓到的图片经 AgentToolResult.imageDataUrl 进入下一轮对话。 */
 	MatrixVars_Hardware* camera = nullptr;

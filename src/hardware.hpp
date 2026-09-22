@@ -11,6 +11,7 @@
 
 #include "expr.hpp"
 #include "json.hpp"
+#include "luaexec.hpp"
 #include "matrix.hpp"
 #include "util.hpp"
 
@@ -28,6 +29,13 @@ public:
 
 	/* 事件发生器：运行硬件或传感器，返回 Json 结果 */
 	virtual Json play(const Json& input) = 0;
+
+	/* PL-2（2026-09-22）：执行预算挂钩点。agent 的 run_action_script 窗口内，
+	 * RobotStruct 遍历全部已注册变量调用本方法；只有 Lua 驱动有可中断的
+	 * 解释器循环，故缺省无操作（别名/数值/守护各有自己的处置）。
+	 * 传 nullptr = 解除。**必须覆盖全部 Lua 变量**：一行 @Action 经 controller
+	 * 转发 / trigger 前置会走到别的 lua_State（见 luavar.cpp 的 callImpl）。 */
+	virtual void armExecBudget(const LuaExecBudget* budget) { (void)budget; }
 
 	/* 无副作用读（P4/M1）：缺省实现 = play({})（实时读，向后兼容） */
 	virtual Json read() { return play(JsonObject()); }

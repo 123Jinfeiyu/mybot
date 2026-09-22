@@ -20,6 +20,7 @@
 #include "harness.hpp"
 #include "fixtures.hpp"
 #include "json.hpp"
+#include "luaexec.hpp"
 #include "luavar.hpp"
 #include "util.hpp"
 
@@ -293,4 +294,44 @@ TH_TEST(controller_err_halts_fanout_before_later_controllers) {
 	TH_CHECK_THROWS_MSG(std::runtime_error, "bus NACK", dev->playQuiet(JsonObject()));
 	TH_CHECK(c1.received.size() == 1);
 	TH_CHECK(c2.received.size() == 0);	/* halt-on-error：后续 controller 不再被转发 */
+}
+
+/* ---- PL-2（2026-09-22）：执行预算窗口的 JIT 复原不变式 ----
+ * 本机制靠「窗口内关 JIT」才能让指令计数钩子触发（LuaJIT 的 count 钩子只在
+ * 解释器派发路径上跑）。代价可以接受，但**前提是窗口退出必须把 JIT 装回去**：
+ * test/test_jit_warmup.lua 锁的是 HAL 变参 ABI 在 JIT 编译后的行为，
+ * 它需要真机 /dev/i2c-*（本机跳过），所以那条路径在这里守不到——
+ * 于是直接钉住不变式本身：arm 后关、disarm 后必须开。 */
+static bool jitEngineOn(lua_State* L) {
+	/* 括号截断不可省：jit.status() 返回 4 个值（状态 + 目标指令集名），
+	 * 不截断时栈顶是最后一个字符串，lua_toboolean 恒为真——这个 bug 让用例
+	 * 一度「arm 后仍报 JIT 开着」。 */
+	if (luaL_dostring(L, "return (jit.status())") != LUA_OK) {
+		lua_pop(L, 1);	/* 错误对象 */
+		return false;
+	}
+	const bool on = lua_toboolean(L, -1) != 0;
+	lua_pop(L, 1);
+	return on;
+}
+
+TH_TEST(luaexec_arm_disarm_restores_jit_engine) {
+	lua_State* L = bot::openSandboxedState();
+	TH_CHECK(L != nullptr);
+	TH_CHECK_MSG(jitEngineOn(L), "沙箱态初始应开着 JIT");
+
+	bot::armLuaExecState(L);
+	TH_CHECK_MSG(!jitEngineOn(L), "arm 后 JIT 必须关闭，否则 count 钩子不会触发");
+
+	bot::disarmLuaExecState(L);
+	TH_CHECK_MSG(jitEngineOn(L), "disarm 后 JIT 必须复原（test_jit_warmup.lua 的前提）");
+
+	/* 幂等：重复 arm/disarm 不应把状态机留在半残 */
+	bot::disarmLuaExecState(L);
+	TH_CHECK(jitEngineOn(L));
+	bot::armLuaExecState(L);
+	bot::disarmLuaExecState(L);
+	TH_CHECK(jitEngineOn(L));
+
+	lua_close(L);
 }

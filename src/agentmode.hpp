@@ -88,6 +88,8 @@ struct AgentModeConfig {
 	int retryBackoffMs = 1000;	/* 退避基础时长（指数增长，单次钳到 60s）→ 同上 */
 	int commandTimeoutSec = 10;	/* run_command 缺省超时 → AgentToolContext */
 	int maxCommandTimeoutSec = 60;	/* run_command 超时上限 → AgentToolContext */
+	/* PL-2：动作脚本执行预算（秒）→ AgentToolContext。0 = 显式关闭预算。 */
+	int scriptTimeoutSec = 180;
 
 	/* ---- 提示词包（--prompt-file / 配置文件 prompt_files）----
 	 * promptFiles 是合并后的输入清单（命令行给过就整体覆盖配置文件列表）；

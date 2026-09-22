@@ -37,5 +37,11 @@
   "max_retries": 3,
   "retry_backoff_ms": 1000,
   "run_command_timeout_sec": 10,
-  "run_command_max_timeout_sec": 60
+  "run_command_max_timeout_sec": 60,
+
+  // 动作脚本执行预算（秒）。run_action_script 是唯一曾无上界的执行路径：
+  // 动作脚本本身是线性矩阵、DSL 无循环，挂死只可能来自 Lua 驱动自己的 call()
+  // （死循环或阻塞在系统调用里）。超期即以「预算耗尽」中止本轮脚本并回传给模型。
+  // 0 = 显式关闭预算（危险：会话可能永久卡住）。上限 3600，缺省 180。
+  "action_script_timeout_sec": 180
 }

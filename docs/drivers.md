@@ -117,6 +117,12 @@
 | `read(data)` | `$` 引用快照读取（可选） | 定义即**替代** `call`；宿主**不做 `ensureOk`**（读是数据流不是动作），返回值可为标量；`Ema`/`Kalman`/`Monitor` 定义它并忽略入参 |
 | （驱动未定义 `read`） | 同上 | 回退 `call(data)`（`mode="call"`），即缺省 `play({})` |
 
+> **`data.mode` 是宿主注入的保留字段**（取值 `build` / `call` / `read` / `destroy`），
+> **结构脚本里不要用 `mode` 当数据列名**：宿主在 build 期会
+> `metadata.put("mode", "build")` 把它覆盖掉（`src/luavar.cpp` 的 `riseImpl`），
+> 症状是驱动在 `build` 里读到的永远是 `"build"` 而不是你配的值。需要同类语义时
+> 换个列名（如 `looping`）。
+
 ### 返回值契约（halt-on-error）
 
 每次 `build`/`call`/`destroy` 都必须返回**表**：

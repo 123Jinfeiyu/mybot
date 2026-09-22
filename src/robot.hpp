@@ -349,6 +349,15 @@ public:
 	/* 设置 deactivate() 二段屏障的宽限上限（--daemon-grace-ms，语义见成员注释） */
 	void setDeactivateGraceMs(int64_t ms) { deactivateGraceMs_ = ms; }
 
+	/* PL-2（2026-09-22）：把执行预算挂到**全部** Lua 硬件变量（budget=nullptr 解除）。
+	 * 调用方用 RAII 成对调用——窗口只在 run_action_script 一次工具调用之内，
+	 * 窗口外 JIT 与钩子必须复原（test_jit_warmup.lua 锁的是 JIT 路径，
+	 * 不能被本机制静默废掉）。遍历 registry_.sequence()：一行 @Action 可能经
+	 * controller 转发/trigger 前置走到别的 lua_State，只挂被点名那一个会漏。 */
+	void armExecBudget(const LuaExecBudget* budget) {
+		for (MatrixVars_Hardware* hv : registry_.sequence()) { hv->armExecBudget(budget); }
+	}
+
 	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
 	const HwRegistry& registry() const { return registry_; }
 

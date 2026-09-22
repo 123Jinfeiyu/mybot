@@ -11,6 +11,7 @@ using fx::TempDir;
 #include <fcntl.h>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <memory>
 #include <string>
 #include <sys/wait.h>
@@ -23,6 +24,7 @@ using fx::TempDir;
 #include "agenttools.hpp"
 #include "jsonparse.hpp"
 #include "luaend.hpp"
+#include "luaexec.hpp"
 #include "robot.hpp"
 #include "util.hpp"
 
@@ -1179,4 +1181,123 @@ TH_TEST(agenttools_child_side_trace_is_mutually_exclusive) {
 	TH_CHECK_MSG(ok + loop >= 2, "两次 run_command 应留下至少两条终态标记，实际: " + t);
 	TH_CHECK_MSG(!(ok > 0 && loop > 0),
 		"两条路径不该同时出现（同一内核上二选一），实际: " + t);
+}
+
+/* ==================== PL-2（2026-09-22）：动作脚本执行预算 ====================
+ * run_action_script 曾是本工具集里**唯一没有任何上界**的执行路径（有超时的
+ * run_command 反而默认关闭）。脚本本身是线性矩阵、DSL 无循环，所以挂死只可能
+ * 来自 Lua 驱动自己的 call()。夹具 InfiniteLoopDriver 的 call() 永不返回。
+ *
+ * 用例必须自己带超时（fork + alarm）——**反向验证要求它真的会挂死**：
+ * 若哪天预算机制失灵，进程会卡在这里而不是报一个可以忽略的失败。
+ * 用 fork 而不是线程：挂死的是子进程，父测试进程照常给出判定。 */
+static bool runWithDeadline(std::function<void()> fn, int timeoutSec, int* outSignal) {
+	pid_t pid = ::fork();
+	if (pid < 0) { throw std::runtime_error("fork 失败"); }
+	if (pid == 0) {
+		::alarm(static_cast<unsigned>(timeoutSec));
+		try { fn(); } catch (...) { ::_exit(3); }
+		::_exit(0);
+	}
+	int status = 0;
+	if (::waitpid(pid, &status, 0) < 0) { throw std::runtime_error("waitpid 失败"); }
+	if (WIFSIGNALED(status)) {
+		if (outSignal != nullptr) { *outSignal = WTERMSIG(status); }
+		return false;	/* 被 alarm 杀掉 = 超时挂死 */
+	}
+	return WIFEXITED(status) && WEXITSTATUS(status) == 0;
+}
+
+/* 预算生效：死循环驱动在预算内以「点名预算」的失败文案返回，进程不崩、会话不脏。 */
+TH_TEST(agenttools_action_script_budget_aborts_runaway_driver) {
+	TempDir tmp("budget");
+	/* 结构脚本挂一个假驱动；动作脚本一行即可触发它的死循环 call() */
+	fs::path sqlFile = tmp.path() / "loop.sql";
+	writeFile(sqlFile,
+		"CREATE TABLE InfiniteLoopDriver (name String, looping String);\n"
+		"INSERT INTO InfiniteLoopDriver (name, looping) VALUES ('loop0', 'busy');\n");
+	fs::path mtFile = tmp.path() / "loop.mt";
+	writeFile(mtFile, "@Action\nloop0.x;\n   1;\n@\n");
+
+	ModulePathGuard guard("./modules:test/cpp");
+	int sig = 0;
+	const bool finished = runWithDeadline([&] {
+		MemoryReader reader(readAll(sqlFile.string()));
+		RobotStruct robot(reader);
+		robot.active();
+		AgentToolContext ctx;
+		ctx.robot = &robot;
+		ctx.scriptsDir = tmp.path().string();
+		ctx.scriptTimeoutSec = 1;	/* 1 秒预算，用例无需等待缺省的 180s */
+		AgentToolRegistry tools = makeAgentTools(ctx);
+		const AgentToolResult res = tools.execute("run_action_script", parseJson("{\"script\":\"loop.mt\"}"));
+		/* 预算耗尽 → 失败文案且点名，而不是「已执行」 */
+		const bool named = res.text.find(kLuaExecBudgetMarker) != std::string::npos;
+		robot.deactivate();
+		::_exit(named ? 0 : 4);
+	}, 30, &sig);
+
+	TH_CHECK_MSG(finished, "预算未生效：死循环驱动把进程挂死了（signal=" + std::to_string(sig) + "）");
+}
+
+/* 反向对照：budget<=0 = 明确关闭 → 同一脚本**确实**挂死（证明上一条不是在测别的东西）。
+ * 这条用例本身就说明「关闭预算是危险开关」，所以它必须有超时兜住。 */
+TH_TEST(agenttools_action_script_budget_off_really_hangs) {
+	TempDir tmp("nobudget");
+	fs::path sqlFile = tmp.path() / "loop.sql";
+	writeFile(sqlFile,
+		"CREATE TABLE InfiniteLoopDriver (name String, looping String);\n"
+		"INSERT INTO InfiniteLoopDriver (name, looping) VALUES ('loop0', 'busy');\n");
+	fs::path mtFile = tmp.path() / "loop.mt";
+	writeFile(mtFile, "@Action\nloop0.x;\n   1;\n@\n");
+
+	ModulePathGuard guard("./modules:test/cpp");
+	int sig = 0;
+	const bool finished = runWithDeadline([&] {
+		MemoryReader reader(readAll(sqlFile.string()));
+		RobotStruct robot(reader);
+		robot.active();
+		AgentToolContext ctx;
+		ctx.robot = &robot;
+		ctx.scriptsDir = tmp.path().string();
+		ctx.scriptTimeoutSec = 0;	/* PL-2：0 = 不武装，退化为此前行为 */
+		AgentToolRegistry tools = makeAgentTools(ctx);
+		tools.execute("run_action_script", parseJson("{\"script\":\"loop.mt\"}"));
+		robot.deactivate();
+		::_exit(0);
+	}, 3, &sig);
+
+	TH_CHECK_MSG(!finished && sig == SIGALRM,
+		"关闭预算后本用例应挂死到 alarm 触发（signal=" + std::to_string(sig) + "）");
+}
+
+/* 窗口收口：预算只在工具调用期间存在。工具返回后，同一进程内再跑一个正常脚本
+ * 必须照常成功（说明钩子已摘、JIT 已恢复、thread_local 指针已清）。 */
+TH_TEST(agenttools_action_script_budget_window_is_scoped) {
+	TempDir tmp("scoped");
+	fs::path sqlFile = tmp.path() / "ok.sql";
+	writeFile(sqlFile,
+		"CREATE TABLE InfiniteLoopDriver (name String, looping String);\n"
+		"INSERT INTO InfiniteLoopDriver (name, looping) VALUES ('loop0', 'ok');\n");
+	fs::path mtFile = tmp.path() / "ok.mt";
+	writeFile(mtFile, "@Action\nloop0.x;\n   1;\n@\n");
+
+	ModulePathGuard guard("./modules:test/cpp");
+	MemoryReader reader(readAll(sqlFile.string()));
+	RobotStruct robot(reader);
+	robot.active();
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.scriptsDir = tmp.path().string();
+	ctx.scriptTimeoutSec = 5;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const AgentToolResult first = tools.execute("run_action_script", parseJson("{\"script\":\"ok.mt\"}"));
+	TH_CHECK_MSG(first.text.find("已执行") != std::string::npos, first.text);
+	/* 窗口已退出：预算指针必须已清（否则窗口外的 Lua 执行会莫名其妙被计时/中断） */
+	TH_CHECK_MSG(bot::luaExecBudget() == nullptr, "工具返回后预算指针未清空");
+	/* 再来一次仍然可用（钩子摘干净、JIT 复原，没有把状态机留在半残状态） */
+	const AgentToolResult second = tools.execute("run_action_script", parseJson("{\"script\":\"ok.mt\"}"));
+	TH_CHECK_MSG(second.text.find("已执行") != std::string::npos, second.text);
+	robot.deactivate();
 }

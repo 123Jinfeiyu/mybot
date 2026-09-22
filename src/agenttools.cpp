@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cerrno>
 #include <cmath>
 #include <cstring>
@@ -401,10 +402,38 @@ static AgentTool makeListActionScriptsTool(const AgentToolContext& ctx) {
 		}};
 }
 
+/* PL-2（2026-09-22）：动作脚本执行预算的 RAII 窗口。
+ * - 构造：sec<=0 时**明确不武装**（退化为此前的无预算行为，供排障/兼容），
+ *   否则装一个 deadline 并把预算挂到全部 Lua 驱动状态上（含 controller 转发
+ *   与 trigger 前置会走到的那些 state）。
+ * - 析构：先解除（disarm 会恢复 JIT），再清 thread_local 指针——顺序不能反，
+ *   否则钩子可能在本线程预算已失效的窗口内被触发。
+ * 析构不抛：它在工具的执行路径上，而路径上已有 catch(std::exception)。 */
+class ScriptBudgetScope {
+	RobotStruct* robot_;
+	bool armed_ = false;
+	LuaExecBudget budget_{};
+public:
+	ScriptBudgetScope(RobotStruct* robot, int sec) : robot_(robot) {
+		if (robot_ == nullptr || sec <= 0) { return; }
+		budget_.deadline = std::chrono::steady_clock::now() + std::chrono::seconds(sec);
+		budget_.watchStop = true;
+		setLuaExecBudget(&budget_);
+		robot_->armExecBudget(&budget_);
+		armed_ = true;
+	}
+	~ScriptBudgetScope() {
+		if (!armed_) { return; }
+		robot_->armExecBudget(nullptr);
+		setLuaExecBudget(nullptr);
+	}
+	ScriptBudgetScope(const ScriptBudgetScope&) = delete;
+	ScriptBudgetScope& operator=(const ScriptBudgetScope&) = delete;
+};
+
 static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 	return AgentTool{
-		"run_action_script",
-		"在常驻的机器人上执行一个动作脚本（.mt），例如站立、前进、转向、举爪。"
+		"run_action_script",		"在常驻的机器人上执行一个动作脚本（.mt），例如站立、前进、转向、举爪。"
 		"脚本执行完毕后硬件保持上电常驻，可以接着执行下一个脚本。"
 		"script 必须是 list_action_scripts 返回的相对路径。返回执行成功或报错原因；"
 		"报错时机器人状态可能停在半途，请读清原因再决定下一步。",
@@ -425,6 +454,9 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 				auto reader = std::make_unique<LimitedReader>(
 					std::make_unique<MemoryReader>(std::move(content)),
 					kMaxScriptBytes, "action script");
+				/* PL-2：执行预算窗口。RAII——异常路径也复原 JIT 与钩子；
+				 * 窗口只覆盖这一次 run()，窗口外一切照旧（见 luaexec.hpp）。 */
+				ScriptBudgetScope budget(ctx.robot, ctx.scriptTimeoutSec);
 				ctx.robot->run(*reader);
 				return {"已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）", ""};
 			} catch (const std::exception& e) {

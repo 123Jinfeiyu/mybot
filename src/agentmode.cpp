@@ -252,6 +252,10 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	if (file.runCommandMaxTimeoutSec) {
 		out.maxCommandTimeoutSec = *file.runCommandMaxTimeoutSec;
 	}
+	/* PL-2：动作脚本执行预算。0 合法 = 显式关闭预算（同 max_retries 的 has_value 语义）。 */
+	if (file.actionScriptTimeoutSec) {
+		out.scriptTimeoutSec = *file.actionScriptTimeoutSec;
+	}
 	/* 跨字段关系按**生效值**判（不是按文件里的字面值）：只配了上限而它低于缺省
 	 * 超时时同样要挡——否则模型不传 timeout_seconds 时按缺省请求 10s 会越过操作者
 	 * 声明的 5s 上限，「上限」名不副实。位于合流处 = 单一判定点。 */
@@ -463,6 +467,7 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	tctx.allowShell = cfg.allowShell;
 	tctx.commandTimeoutSec = cfg.commandTimeoutSec;
 	tctx.maxCommandTimeoutSec = cfg.maxCommandTimeoutSec;
+	tctx.scriptTimeoutSec = cfg.scriptTimeoutSec;	/* PL-2：动作脚本执行预算 */
 	if (cfg.allowCamera) {
 		tctx.camera = robot.registry().find(cfg.cameraVar);
 		tctx.cameraDevice = cfg.cameraDevice;

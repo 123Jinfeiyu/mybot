@@ -1041,3 +1041,42 @@ TH_TEST(agentconfig_summary_flags_missing_endpoint) {
 	/* B2 起不再有内置缺省接入点：空 = 首次调用必然失败，摘要必须说出来 */
 	TH_CHECK_MSG(s.find("未配置，首次调用将失败") != std::string::npos, s);
 }
+
+/* ---- PL-2（2026-09-22）：动作脚本执行预算的配置面 ----
+ * 0 是合法值（= 显式关闭预算），所以必须走 optional 的 has_value 语义：
+ * 写成 `if (*opt)` 会让「配成 0」静默退回缺省 180——那正好把危险开关变成
+ * 一个看起来生效、实际没生效的配置。 */
+TH_TEST(agentconfig_action_script_timeout_round_trips) {
+	NoKeyEnv nokey;
+	TempDir tmp("scriptbudget");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({ "api_key": "k", "action_script_timeout_sec": 0 })", fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out, err), err);
+	TH_CHECK(out.scriptTimeoutSec == 0);	/* 显式关闭必须穿过「未配置」判定 */
+
+	/* 未配置 = 缺省 180（与单次模型调用缺省取齐） */
+	TempDir t2("scriptbudget-default");
+	fs::path cfg2 = t2.path() / "llm.json";
+	writeFile(cfg2, R"({ "api_key": "k" })", fs::perms::owner_all);
+	AgentModeConfig out2;
+	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg2.string()), out2, err), err);
+	TH_CHECK(out2.scriptTimeoutSec == 180);
+
+	/* 越界拒绝：上限 3600 */
+	TempDir t3("scriptbudget-bad");
+	fs::path cfg3 = t3.path() / "llm.json";
+	writeFile(cfg3, R"({ "api_key": "k", "action_script_timeout_sec": 99999 })",
+		fs::perms::owner_all);
+	AgentModeConfig out3;
+	std::string err3;
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg3.string()), out3, err3));
+	TH_CHECK_MSG(err3.find("action_script_timeout_sec") != std::string::npos, err3);
+
+	/* 负值同样拒绝 */
+	writeFile(cfg3, R"({ "api_key": "k", "action_script_timeout_sec": -1 })",
+		fs::perms::owner_all);
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg3.string()), out3, err3));
+}

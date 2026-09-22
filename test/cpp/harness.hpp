@@ -160,6 +160,10 @@ inline const ScopeEntry* scopeTable(std::size_t& n) {
 		{"agent", "agentloop_"}, {"agent", "agentrepl_"}, {"agent", "agentconfig_"},
 		{"agent", "agentmode_"}, {"agent", "agentaudit_"}, {"agent", "agentpolicy_"},
 		{"agent", "llmconfig_"}, {"agent", "promptpack_"}, {"agent", "cliargs_"},
+		/* PL-2（2026-09-22）：动作脚本执行预算（luaexec 的 arm/disarm 与 JIT 复原）。
+		 * 归 agent 面：这套机制只服务 run_action_script 一个调用点，
+		 * 改坏了 agent-all 必须能红。 */
+		{"agent", "luaexec_"},
 	};
 	n = sizeof(kTable) / sizeof(kTable[0]);
 	return kTable;

@@ -5,6 +5,58 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 动作脚本执行预算（PL-2，原 AG-12 子项）
+
+> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 C。
+> **行为变更**：动作脚本此前可以无限期执行；现在有缺省 180 秒的预算（可配置、可关闭）。
+
+- **问题**：`run_action_script` 是本工具集里**唯一没有任何上界**的执行路径，而它
+  **默认开启**（有超时的 `run_command` 反而默认关闭）。动作脚本本身是线性矩阵、
+  DSL 无循环（只有 `@Action`/`@Vars`/`@Include`/`@Alias`），所以挂死只可能来自
+  Lua 驱动自己的 `call()`：死循环，或阻塞在 ffi 系统调用里。一旦发生，会话永久卡住；
+  按行派发的 `stopRequested()` 检查只在**行与行之间**生效，一行内部的挂死不响应 Ctrl-C。
+- **机制**：窗口内给每个 Lua 驱动状态挂**指令计数钩子**并**关掉 JIT**，超期即以
+  Lua 错误中止本轮脚本。错误经既有管道（`call_lua` 的 `pcall` → ERR 契约 →
+  `ensureOk` 抛 → `run_action_script` 的 catch）变成给模型的失败文案——不需要新错误通道。
+  同时把 `stopRequested()` 纳入判据，**Ctrl-C 在窗口内也能中断失控驱动**（此前只能
+  连按两次升级为强杀，而强杀会跳过 `deactivate`、把执行器留在带电状态）。
+- **「必须先关 JIT」是实测结论，不是实现细节**：LuaJIT 的 count 钩子只在解释器派发
+  路径上触发；热点循环约 56 次迭代后就被编译成 trace，此后钩子永不触发。实测
+  `while true do end` 在 JIT 开、`N=100000` 下钩子触发 **0 次**（原方案的 N=100000
+  等于死配置）。**本仓库内的反向验证**：把 `jit.off` 那行去掉 →
+  `agenttools_action_script_budget_aborts_runaway_driver` 直接挂死到 30 秒 alarm
+  被杀（signal=14）；加回去则毫秒级中止。
+- **代价（实测，真实驱动 `modules/Relay.lua`）**：窗口内解释执行约 3.4× 慢，绝对值
+  0.11 → 0.44 µs/次驱动调用；最重的在库动作脚本约 550 次调用 → 窗口总代价 ~0.2 ms，
+  而脚本自身耗时以秒计（硬件延时主导）。且 10²–10³ 次调用量级下 JIT 根本没热身
+  （1000 次以下 `jit=on` 反而更慢），实际无可损失。窗口只覆盖一次 `run()`，
+  **窗口外一切照旧**——`test_jit_warmup.lua` 锁的是 JIT 编译后的 HAL 变参 ABI，
+  它不经过 agent 工具，不受影响。
+- **边界（已写进 `docs/agent.md` 已知限制）**：钩子由字节码派发驱动，只能打断
+  **解释器里跑的 Lua 代码**。驱动阻塞在 `read()`/`ioctl()`/`usleep()` 里时 VM 不派发
+  指令，钩子没有执行机会——**这一条无解**。本仓库唯一能兜住阻塞 C 调用的是子进程 +
+  deadline + SIGKILL（`agent_subprocess`），但动作脚本必须在宿主进程内操作已上电的
+  硬件状态，走不了那条路。
+- 配置：`action_script_timeout_sec`（**配置文件**，0-3600，缺省 180，0 = 显式关闭）。
+  不加 CLI 选项，沿用 B4 口径；缺省 180 与单次模型调用缺省取齐（同为「agent 面向的
+  单次阻塞操作」上界）。0 走 optional 的 has_value 语义——写成 `if (*opt)` 会让
+  「配成 0」静默退回缺省。
+- 钉子用例：`agenttools_action_script_budget_aborts_runaway_driver`（死循环驱动被
+  预算中止且点名，夹具 `test/cpp/InfiniteLoopDriver.lua`）、
+  `agenttools_action_script_budget_off_really_hangs`（**反向对照**：关闭预算后同一
+  脚本确实挂死到 alarm——证明上一条测的不是别的东西）、
+  `agenttools_action_script_budget_window_is_scoped`（工具返回后预算指针已清、
+  JIT 与钩子已复原、同一进程内可继续正常执行）、
+  `agentconfig_action_script_timeout_round_trips`（0 穿过「未配置」判定 / 缺省 180 /
+  越界与负值拒绝）、`luaexec_arm_disarm_restores_jit_engine`（**窗口退出必须把 JIT
+  装回去**——`test_jit_warmup.lua` 锁的是 JIT 编译后的 ABI，它需要真机 I2C、本机跳过，
+  所以那条前提在这里直接钉住；用例首版因为 `jit.status()` 返回 4 个值、只读栈顶而
+  恒为真，括号截断后才真正生效）。
+- 验收：C++ 单测 **503 通过 / 0 失败**（498 → 503）；agent 作用域 182/0。
+- 顺带修正文档：`docs/drivers.md` 的驱动契约表补一句「`data.mode` 是宿主注入的保留
+  字段，结构脚本不要用它当数据列名」——本次开发踩到过（宿主在 build 期
+  `metadata.put("mode", "build")` 会覆盖同名列，症状是驱动永远读到 `"build"`）。
+
 ### 2026-09-22 网关数组形态 content 归一化（PL-3）
 
 > 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 B。

@@ -134,6 +134,7 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   | `retry_backoff_ms` | 0-10000 | 重试退避基础时长（指数增长），缺省 1000；单次退避另有 60s 上限，防止放宽区间后算出小时级等待 |
   | `run_command_timeout_sec` | 1-600 | `run_command` 的缺省超时，缺省 10 |
   | `run_command_max_timeout_sec` | 1-3600，且 **≥ 上一个** | 模型经 `timeout_seconds` 能请求的上限，缺省 60 |
+  | `action_script_timeout_sec` | 0-3600 | 动作脚本执行预算（PL-2，2026-09-22），缺省 180（与单次模型调用缺省取齐）；**0 = 显式关闭预算**（危险：失控驱动会让会话永久卡住） |
 
   后两者按**生效值**校验「上限 ≥ 缺省」：只配上限而它低于缺省（例如只写
   `run_command_max_timeout_sec: 5`）会被拒绝加载——否则模型不传 `timeout_seconds`
@@ -558,6 +559,16 @@ bash test/run_all.sh agent-all
 ## 已知限制
 
 - **非流式**：`stream=false`，长回答要等整轮生成完；接口超时用 `--llm-timeout` 调整。
+- **动作脚本有执行预算，但拦不住「阻塞在系统调用里」的驱动**（PL-2，2026-09-22）：
+  `run_action_script` 是唯一曾无上界的执行路径（有超时的 `run_command` 反而默认关闭）。
+  现在它带一个可配置预算 `action_script_timeout_sec`（配置文件，缺省 180 秒，0 = 关闭）：
+  窗口内宿主给每个 Lua 驱动状态**关掉 JIT 并挂指令计数钩子**，超期即以「预算耗尽」
+  中止本轮脚本并把原因回传给模型（不再是永久卡死；Ctrl-C 同样能在窗口内生效）。
+  **边界**：钩子由字节码指令派发驱动，因此只能打断**解释器里跑的 Lua 代码**。
+  驱动若阻塞在 ffi 系统调用里（`read()` / `ioctl()` / `usleep()` 不返回），VM 不派发
+  指令、钩子没有执行机会——这一条无解。本仓库唯一能兜住「阻塞的 C 调用」的机制是
+  子进程 + deadline + SIGKILL（`agent_subprocess`），但动作脚本必须在宿主进程内操作
+  已上电的硬件状态，走不了那条路。详见 `src/luaexec.hpp` 与 changelog。
 - 三个上下文字节预算（会话历史 `max_history_bytes`、任务内文本 `max_task_tool_result_bytes`、
   任务内图片 `max_task_image_bytes`）现可由**配置文件**覆盖（B1，2026-09-22，见上文
   「配置文件」字段表；缺省分别是 4 / 2 / 4 MiB）。`capture_image` 的单图 base64 硬上限 2 MiB

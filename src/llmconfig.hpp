@@ -65,6 +65,12 @@ inline constexpr int kRunCommandTimeoutMinSec = 1;
 inline constexpr int kRunCommandTimeoutMaxSec = 600;
 inline constexpr int kRunCommandMaxTimeoutMinSec = 1;
 inline constexpr int kRunCommandMaxTimeoutMaxSec = 3600;
+/* PL-2（2026-09-22）：动作脚本执行预算。0 = 显式关闭（退化为此前无预算行为）；
+ * 上限 3600 与 run_command 的长任务量级对齐；缺省 180 与单次模型调用缺省
+ * （agentdriver.hpp 的 timeoutSec）取齐——两者都是「agent 面向的单次阻塞
+ * 操作」的上界，同一个数字便于操作者记忆。 */
+inline constexpr int kActionScriptTimeoutMinSec = 0;
+inline constexpr int kActionScriptTimeoutMaxSec = 3600;
 } // namespace llm_limits
 struct LlmFileConfig {
 	std::optional<std::string> driver;	/* 协议驱动表名 = modules/<名>.lua */
@@ -108,6 +114,8 @@ struct LlmFileConfig {
 	std::optional<int> retryBackoffMs;
 	std::optional<int> runCommandTimeoutSec;
 	std::optional<int> runCommandMaxTimeoutSec;
+	/* PL-2：动作脚本执行预算（秒）。0 = 显式关闭预算。 */
+	std::optional<int> actionScriptTimeoutSec;
 };
 
 /* 解析配置文件。失败返回 false 并把「带字段名的人话报错」写进 err：

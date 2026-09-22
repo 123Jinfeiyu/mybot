@@ -181,6 +181,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
 		"max_calls_per_round", "max_retries", "retry_backoff_ms",
 		"run_command_timeout_sec", "run_command_max_timeout_sec",
+		"action_script_timeout_sec",
 	};
 	for (const auto& kv : root.items()) {
 		if (kKnown.count(kv.first) == 0) {
@@ -268,6 +269,7 @@ bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig
 	 * 缺省）不在这里判——配置文件可能只给一个字段，那样要拿**生效值**（另一个
 	 * 是缺省）比，判定落在 agentmode 的合流处。 */
 	std::optional<int> maxCalls, maxRetries, backoffMs, rcTimeout, rcMaxTimeout;
+	std::optional<int> scriptTimeout;
 	if (!wantInt(path, root, "max_calls_per_round",
 			llm_limits::kMaxCallsPerRoundMin, llm_limits::kMaxCallsPerRoundMax,
 			maxCalls, err)) { return false; }
@@ -283,11 +285,17 @@ bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig
 	if (!wantInt(path, root, "run_command_max_timeout_sec",
 			llm_limits::kRunCommandMaxTimeoutMinSec, llm_limits::kRunCommandMaxTimeoutMaxSec,
 			rcMaxTimeout, err)) { return false; }
+	/* PL-2：动作脚本执行预算。0 合法 = 显式关闭（与 max_retries=0 同款语义：
+	 * 「未配置」与「配成 0」必须区分，故走 optional 而不是 `if (*opt)`）。 */
+	if (!wantInt(path, root, "action_script_timeout_sec",
+			llm_limits::kActionScriptTimeoutMinSec, llm_limits::kActionScriptTimeoutMaxSec,
+			scriptTimeout, err)) { return false; }
 	out.maxCallsPerRound = maxCalls;
 	out.maxRetries = maxRetries;
 	out.retryBackoffMs = backoffMs;
 	out.runCommandTimeoutSec = rcTimeout;
 	out.runCommandMaxTimeoutSec = rcMaxTimeout;
+	out.actionScriptTimeoutSec = scriptTimeout;
 	return true;
 }
 

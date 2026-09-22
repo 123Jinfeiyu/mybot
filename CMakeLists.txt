@@ -93,6 +93,7 @@ set(MYBOT_CORE_SOURCES
   src/meta_provider.cpp
   src/hw_factory.cpp
   src/action_runner.cpp
+  src/luaexec.cpp
   src/robot.cpp
   src/actionsource.cpp
   src/cliargs.cpp

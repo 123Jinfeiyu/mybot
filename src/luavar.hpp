@@ -79,6 +79,13 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	void riseImpl();
 	void freeImpl();
 
+	/* PL-2：给本驱动的 lua_State 挂/摘执行预算钩子（budget=nullptr 即解除）。
+	 * 由 RobotStruct 在 run_action_script 窗口内遍历注册表逐个调用——
+	 * 必须覆盖全部 Lua 变量，因为 controller 转发/trigger 前置会走到别的 state。 */
+	void armExecBudget(const LuaExecBudget* budget) override {
+		if (budget != nullptr) { armLuaExecState(L_); } else { disarmLuaExecState(L_); }
+	}
+
 	/* C-1 防线：@Action 参数键与结构元数据键必须互斥（见 callImpl 注释） */
 	void rejectReservedKeys(const Json& metadata, const Json& params) const;
 
