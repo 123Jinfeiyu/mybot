@@ -443,6 +443,66 @@ static AgentTool makeListHardwareTool(const AgentToolContext& ctx) {
 		}};
 }
 
+/* ---- capture_image 辅助函数（阶段 1 拆分）---- */
+
+static Json buildCameraParams(const AgentToolContext& ctx) {
+	Json params = JsonObject();
+	/* 只在显式配置时才传 path/src：结构脚本若把同名列声明成元数据列，
+	 * 再传同名参数会被 rejectReservedKeys 拒掉（结构脚本优先）。 */
+	if (!ctx.cameraDevice.empty()) {
+		params.put("path", JsonString(ctx.cameraDevice));
+	}
+	if (!ctx.cameraSrc.empty()) {
+		params.put("src", JsonString(ctx.cameraSrc));
+		/* src_root 把「允许读取的目录」一并交给驱动（P1-2 防线）：
+		 * 驱动据此只放行该目录内的文件，任意路径读（/etc/shadow 之类）
+		 * 被拒。目录取配置路径的真实所在目录（canonical 展开软链与
+		 * 相对段，与驱动侧 realpath 判据一致）；路径尚不存在时退一步
+		 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是「未放行」。
+		 * 两步都解析不出绝对路径时**不回落成 "."**——那等于放行整个当前
+		 * 工作目录，比本意宽得多；这条判据是边界，宁可拒绝也不猜。 */
+		std::error_code ec;
+		fs::path real = fs::canonical(ctx.cameraSrc, ec);
+		if (ec) { real = fs::weakly_canonical(ctx.cameraSrc, ec); }
+		/* parent_path() 只在「有根路径却无根目录」的相对形态上抛
+		 * filesystem_error，绝对路径不会——所以先判绝对再取父目录。 */
+		fs::path parent = real.is_absolute() ? real.parent_path() : fs::path();
+		if (ec || !parent.is_absolute()) {
+			throw IllegalArgumentException("无法解析模拟图片来源所在目录: "
+				+ ctx.cameraSrc);
+		}
+		params.put("src_root", JsonString(parent.string()));
+	}
+	return params;
+}
+
+static void validateImageSize(const Json& res, std::size_t b64Size) {
+	/* 体积判据（AG-19）：先用驱动声明的原始字节数判，再做 base64 编码；
+	 * 声明对不上时由 base64 长度兜底。拒绝文案由 checkImageSize 单点产出。 */
+	if (std::string sizeErr = checkImageSize(res, b64Size); !sizeErr.empty()) {
+		throw std::runtime_error(sizeErr);
+	}
+}
+
+static std::string buildImageDescription(const Json& res) {
+	std::string desc = "已拍摄照片";
+	auto w = res.get("width");
+	auto h = res.get("height");
+	if (w && h && w->isInt() && h->isInt()) {
+		desc += "（" + std::to_string(w->getInt()) + "x"
+			+ std::to_string(h->getInt()) + "）";
+	}
+	auto bytes = res.get("bytes");
+	if (bytes && bytes->isInt()) {
+		desc += "，" + std::to_string(bytes->getInt()) + " 字节";
+	}
+	auto src = res.get("source");
+	if (src && src->isStr() && src->getValue() == "file") {
+		desc += "，来源：模拟图片";
+	}
+	return desc + "。画面已加入你的上下文。";
+}
+
 static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 	return AgentTool{
 		"capture_image",
@@ -450,34 +510,9 @@ static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 		"任务涉及观察环境、寻找物体、判断前方是否有障碍时，先调用它再做结论。",
 		toolSchema({}, {}),
 		[ctx](const Json&) -> AgentToolResult {
-			Json params = JsonObject();
-			/* 只在显式配置时才传 path/src：结构脚本若把同名列声明成元数据列，
-			 * 再传同名参数会被 rejectReservedKeys 拒掉（结构脚本优先）。 */
-			if (!ctx.cameraDevice.empty()) {
-				params.put("path", JsonString(ctx.cameraDevice));
-			}
-			if (!ctx.cameraSrc.empty()) {
-				params.put("src", JsonString(ctx.cameraSrc));
-				/* src_root 把「允许读取的目录」一并交给驱动（P1-2 防线）：
-				 * 驱动据此只放行该目录内的文件，任意路径读（/etc/shadow 之类）
-				 * 被拒。目录取配置路径的真实所在目录（canonical 展开软链与
-				 * 相对段，与驱动侧 realpath 判据一致）；路径尚不存在时退一步
-				 * 解析到最深的已存在父目录，好让驱动报「打不开」而不是「未放行」。
-				 * 两步都解析不出绝对路径时**不回落成 "."**——那等于放行整个当前
-				 * 工作目录，比本意宽得多；这条判据是边界，宁可拒绝也不猜。 */
-				std::error_code ec;
-				fs::path real = fs::canonical(ctx.cameraSrc, ec);
-				if (ec) { real = fs::weakly_canonical(ctx.cameraSrc, ec); }
-				/* parent_path() 只在「有根路径却无根目录」的相对形态上抛
-				 * filesystem_error，绝对路径不会——所以先判绝对再取父目录。 */
-				fs::path parent = real.is_absolute() ? real.parent_path() : fs::path();
-				if (ec || !parent.is_absolute()) {
-					throw IllegalArgumentException("无法解析模拟图片来源所在目录: "
-						+ ctx.cameraSrc);
-				}
-				params.put("src_root", JsonString(parent.string()));
-			}
+			Json params = buildCameraParams(ctx);
 			Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
+			
 			/* 借用而非拷贝（AG-19）：Json::getValue() 按值返回，一次拍照原本要
 			 * 为同一串 base64 拷 6 次（本函数 5 处 + 体积判据 1 处）。 */
 			const Json* b64Node = res.find("b64");
@@ -485,33 +520,17 @@ static AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 				throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
 			}
 			const std::string& b64 = b64Node->s;
-			/* 体积判据（AG-19）：先用驱动声明的原始字节数判，再做 base64 编码；
-			 * 声明对不上时由 base64 长度兜底。拒绝文案由 checkImageSize 单点产出。 */
-			if (std::string sizeErr = checkImageSize(res, b64.size()); !sizeErr.empty()) {
-				throw std::runtime_error(sizeErr);
-			}
-			std::string desc = "已拍摄照片";
-			auto w = res.get("width");
-			auto h = res.get("height");
-			if (w && h && w->isInt() && h->isInt()) {
-				desc += "（" + std::to_string(w->getInt()) + "x"
-					+ std::to_string(h->getInt()) + "）";
-			}
-			auto bytes = res.get("bytes");
-			if (bytes && bytes->isInt()) {
-				desc += "，" + std::to_string(bytes->getInt()) + " 字节";
-			}
-			auto src = res.get("source");
-			if (src && src->isStr() && src->getValue() == "file") {
-				desc += "，来源：模拟图片";
-			}
+			
+			validateImageSize(res, b64.size());
+			
+			std::string desc = buildImageDescription(res);
+			
 			/* MIME 取自**驱动返回的格式**（2026-09-21 审计 AG-9），不再硬编码
 			 * image/jpeg：仿真来源可以是 PNG/GIF/WebP，硬编码会把「JPEG 标签 +
 			 * PNG 字节」发给网关，严格解析器直接 400。驱动侧已按魔数判定并对
 			 * 不认识的格式响亮拒绝，这里只需原样采用并做一次自洽交叉校验。 */
 			std::string mime = dataUrlMimeFor(res, b64);
-			return {desc + "。画面已加入你的上下文。",
-				"data:" + mime + ";base64," + b64};
+			return {desc, "data:" + mime + ";base64," + b64};
 		}};
 }
 
