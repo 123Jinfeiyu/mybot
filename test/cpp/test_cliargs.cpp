@@ -186,15 +186,28 @@ TH_TEST(cliargs_new_timeout_options_missing_value_is_rejected) {
 	TH_CHECK(bot::validateOptions(p) == 2);
 }
 
-/* ---- 4) --help 优先级：main 在 validateOptions 之前返回 0 ---- */
+/* ---- 4) --help 优先级：先 help 后校验（顺序判定在 preflightCli）---- */
 
 TH_TEST(cliargs_help_precedes_validation_in_main) {
-	/* 同时给 --help 与非法键：main 先看 help（返回 0），未知键不会被报出；
-	 * 本用例把这条顺序固化为契约——若哪天把 help 检查挪到校验之后，这里要改。 */
+	/* PL-4（2026-09-22）：这条用例此前**名不副实**：名字写着 in_main，函数体却只调
+	 * parseArgs，而 main 链接不进 mybot_tests——把 main 里的 help 检查挪到校验之后
+	 * 照样绿。现在顺序判定搬进了 preflightCli（可链接），这里才真的钉得住：
+	 * 若把它挪到 validateOptions 之后，第一条断言转红。 */
 	Argv a({"mybot", "--help", "--bogus=1"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+	TH_CHECK(bot::preflightCli(p) == bot::Preflight::Help);	/* help 短路，未知键不报错 */
 	TH_CHECK(p.opts.help);
-	TH_CHECK(!p.unknown.empty());		/* 解析层照样记录，只是 main 不会走到 */
+	TH_CHECK(!p.unknown.empty());		/* 解析层照样记录，只是这条路不消费它 */
+
+	/* 没有 --help 时才轮到校验：非法键在此被拒（错误由 validateOptions 打印） */
+	Argv b({"mybot", "--bogus=1"});
+	bot::ParsedArgs q = bot::parseArgs(b.argc(), b.argv());
+	TH_CHECK(bot::preflightCli(q) == bot::Preflight::ConfigError);
+
+	/* 正路：两个都没有 → 继续流水线 */
+	Argv c({"mybot", "--robot=robots/relay-test.sql"});
+	bot::ParsedArgs s = bot::parseArgs(c.argc(), c.argv());
+	TH_CHECK(bot::preflightCli(s) == bot::Preflight::Proceed);
 }
 
 /* ---- 5) 帮助正文：区块 + 与 docs/ 选项表双向一致（黄金测试）---- */

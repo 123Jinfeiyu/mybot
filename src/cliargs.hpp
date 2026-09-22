@@ -32,6 +32,18 @@ ParsedArgs parseArgs(int argc, char** argv);
 /* F-20/N-4/agent 选项组合校验：违规即打印并返回退出码 2，通过返回 0 */
 int validateOptions(ParsedArgs& args);
 
+/* PL-4（2026-09-22）：把「`--help` 优先于校验」这条**顺序**从 main 抽出来，变成
+ * 可链接、可单测的判定。抽出的动机与 cliargs 整体搬出 main 同源：`main` 不在
+ * MYBOT_CORE_SOURCES、链接不进 mybot_tests，于是这条顺序此前只有一条**名不副实**
+ * 的用例守着——它只调 parseArgs，把 main 里的 help 检查挪到校验之后照样绿。
+ * 判定与打印分离：帮助文本仍由调用方打印（避免单测里刷一屏），这里只回答走哪条路。 */
+enum class Preflight {
+	Proceed,		/* 继续流水线 */
+	Help,			/* 调用方打印帮助并退出 0 */
+	ConfigError,		/* 校验失败（错误已由 validateOptions 打印），退出 2 */
+};
+Preflight preflightCli(ParsedArgs& args);
+
 /* 帮助全文（单一字符串来源，便于单测锚定；--help 与错误提示共用） */
 std::string helpText();
 

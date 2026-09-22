@@ -443,6 +443,51 @@ TH_TEST(agenttools_capture_image_rejects_oversize_image) {
 	robot.deactivate();
 }
 
+/* PL-4（2026-09-22）：2 MiB 上限此前只在**用例内部**由被测常量推导——上面两条
+ * 用例的夹具尺寸都是 `kMaxImageBase64Bytes / 4 * 3 + 3`，常量被改错时夹具跟着走，
+ * 用例仍然绿：它测的是「越过自己」，不是「越过 2 MiB」。
+ * 这里改用**字面量**钉住，两道：
+ *   ① 编译期：常量必须字面等于 2 MiB——改了这里编译不过，逼改动者面对
+ *      docs/agent.md 的已知限制与 capture_image 的工具描述（两处都写着 2 MiB）；
+ *   ② 运行期：raw = 3/4 × 2 MiB（base64 恰好 2 MiB）放行，多 3 字节即拒
+ *      ——判据是 `>`，边界值属于放行侧。 */
+TH_TEST(agenttools_image_cap_boundary_is_pinned_by_literal) {
+	constexpr std::size_t kLiteralB64Cap = 2u << 20;		/* 2 MiB */
+	constexpr std::size_t kLiteralRawCap = kLiteralB64Cap / 4 * 3;	/* 1572864 */
+	static_assert(kMaxImageBase64Bytes == kLiteralB64Cap,
+		"图片 base64 上限变了：docs/agent.md 的已知限制与 capture_image 的工具描述"
+		"都写着 2 MiB，改这里就必须同步那两处");
+
+	ModulePathGuard guard("./modules:test/cpp");
+	TempDir tmp("litcap");
+
+	auto capture = [&](std::size_t raw) {
+		const fs::path sqlFile = tmp.path() / ("cam" + std::to_string(raw) + ".sql");
+		writeFile(sqlFile,
+			"CREATE TABLE AgentFakeCamera (name String, raw_bytes String, omit_bytes String);\n"
+			"INSERT INTO AgentFakeCamera (name, raw_bytes, omit_bytes) "
+			"VALUES ('cam0', '" + std::to_string(raw) + "', 'no');\n");
+		MemoryReader reader(readAll(sqlFile.string()));
+		RobotStruct robot(reader);
+		robot.active();
+		AgentToolContext ctx;
+		ctx.robot = &robot;
+		ctx.camera = robot.registry().find("cam0");
+		AgentToolRegistry tools = makeAgentTools(ctx);
+		AgentToolResult res = tools.execute("capture_image", parseJson("{}"));
+		robot.deactivate();
+		return res;
+	};
+
+	AgentToolResult atCap = capture(kLiteralRawCap);
+	TH_CHECK_MSG(!atCap.imageDataUrl.empty(),
+		"恰好 1.5 MiB 原始字节（base64 恰为 2 MiB）应放行，实际: " + atCap.text);
+
+	AgentToolResult overCap = capture(kLiteralRawCap + 3);
+	TH_CHECK_MSG(overCap.imageDataUrl.empty(), "越过 2 MiB 就该拒");
+	TH_CHECK_MSG(overCap.text.find("图像过大") != std::string::npos, overCap.text);
+}
+
 /* ---- AG-19：体积判据必须在 base64 编码**之前**命中 ----
  * 修复前宿主只按 base64 长度判，而驱动侧的仿真上限是 16 MiB（base64 约 21 MB）：
  * 一张注定被拒的图要先被 base64 编码、跨 Json/Lua 边界搬运、再被拒。实测 10 MiB

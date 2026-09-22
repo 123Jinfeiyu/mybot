@@ -5,6 +5,28 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 两处名不副实的测试钉子修正（PL-4）
+
+> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。
+> 无行为变更（等价重构 + 补钉子），改的是「用例看起来在守、其实没守」的两处。
+
+- **`--help` 优先于校验：以前没有真的守门。** 用例
+  `cliargs_help_precedes_validation_in_main` 名字写着 `in_main`，函数体却只调
+  `parseArgs`——而 `main.cpp` 不在 `MYBOT_CORE_SOURCES`、链接不进 `mybot_tests`，
+  于是把 `main` 里的 help 检查挪到校验之后，用例照样绿。现在把这条**顺序判定**
+  抽成可链接的 `cliargs::preflightCli(ParsedArgs&) -> Preflight{Proceed,Help,ConfigError}`
+  （判定与打印分离：帮助文本仍由 `main` 打印，单测里不刷屏），`main` 只按返回值分发；
+  用例改为断言三种输入下的判定结果。
+- **2 MiB 图片上限以前没有字面量钉子。** 两处超限用例的夹具尺寸都由**被测常量**
+  `kMaxImageBase64Bytes` 推导（`kMaxImageBase64Bytes / 4 * 3 + 3`），常量被改错时
+  夹具跟着走、用例仍然绿——它测的是「越过自己」，不是「越过 2 MiB」。新增
+  `agenttools_image_cap_boundary_is_pinned_by_literal`：编译期 `static_assert`
+  钉住常量字面等于 2 MiB（改了就编译不过，逼改动者面对 `docs/agent.md` 与工具描述），
+  运行期再用字面量算出的边界验证「恰好 1.5 MiB 原始字节放行 / 多 3 字节即拒」。
+- 反向验证：① 把 `preflightCli` 里的 help 判定挪到校验之后 → 对应用例转红；
+  ② 把 `kMaxImageBase64Bytes` 改成 1 MiB → `static_assert` 编译期失败并打印指引文案。
+- 验收：C++ 单测 **495 通过 / 0 失败**（494 → 495）。
+
 ### 2026-09-22 文档/注释残留四处修正 + 工具 schema 深度加锚点（PL-5）
 
 > 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。

@@ -112,6 +112,14 @@ ParsedArgs parseArgs(int argc, char** argv) {
 	return out;
 }
 
+/* PL-4（2026-09-22）：判定从 main 抽到这里，理由见 cliargs.hpp 的声明注释。
+ * 顺序是契约：**先 help 后校验**——同时给 `--help` 与非法键时，用户要的是帮助，
+ * 不该被一串错误清单挡住（未知键仍被 parseArgs 记录，只是这条路不消费它）。 */
+Preflight preflightCli(ParsedArgs& args) {
+	if (args.opts.help) { return Preflight::Help; }
+	return validateOptions(args) == 0 ? Preflight::Proceed : Preflight::ConfigError;
+}
+
 /* F-20/N-4/agent 选项组合校验：违规即打印并返回退出码 2，通过返回 0 */
 int validateOptions(ParsedArgs& args) {
 	const CliOptions& options = args.opts;

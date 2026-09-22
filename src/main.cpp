@@ -280,13 +280,18 @@ int main(int argc, char** argv) {
 	auto args = parseArgs(argc, argv);
 	const CliOptions& options = args.opts;
 
-	/* ---- 拉起帮助手册 ---- */
-	if (options.help) {
+	/* ---- 启动前哨：`--help` 优先于校验（顺序判定在 cliargs::preflightCli，
+	 * 单测钉住——此前这段顺序写在 main 里，而 main 链接不进 mybot_tests，
+	 * 用例只能测到 parseArgs，把顺序调换照样绿）---- */
+	switch (preflightCli(args)) {
+	case Preflight::Help:
 		printHelp(options.helpTopic);  /* 2026-09-22: 支持分段帮助 */
 		return 0;
+	case Preflight::ConfigError:
+		return 2;	/* 具体错误 validateOptions 已打印 */
+	case Preflight::Proceed:
+		break;
 	}
-
-	if (int vrc = validateOptions(args); vrc != 0) { return vrc; }
 
 	/* ---- 结构脚本 + 动作输入源分支 ---- */
 	if (options.robot) {
