@@ -237,6 +237,45 @@ void DaemonRunner::requestStop() {
 	daemon_request_stop(slot.get());
 }
 
+/* ---- waitUntil 辅助函数（阶段 1 拆分）---- */
+
+/* 处理未 spawn 的守护线程：直接释放槽 */
+static bool handleNotSpawned(const std::string& name,
+		std::shared_ptr<DaemonSlot>& slot) {
+	std::cerr << "Daemon '" << name << "' was never spawned, releasing slot directly" << std::endl;
+	slot.reset();
+	return true;	/* 线程从未存在，本地副本是唯一剩余所有者，出作用域即释放 */
+}
+
+/* 等待守护线程退出并回收 */
+static bool joinUntilDeadline(const std::string& name, std::future<int64_t>& fut,
+		const std::chrono::steady_clock::time_point& deadline,
+		std::shared_ptr<DaemonSlot>& slot) {
+	std::future_status st = fut.wait_until(deadline);
+	if (st == std::future_status::ready) {
+		int64_t n = fut.get();
+		std::cerr << "Daemon '" << name << "' joined, total publishes=" << n << std::endl;
+		slot.reset();
+		return true;	/* 线程已退场并交出副本，本地副本是最后所有者 */
+	}
+	return false;
+}
+
+/* 处理弃管：超时后交出槽引用 */
+static bool handleAbandon(const std::string& name,
+		const std::chrono::steady_clock::time_point& waitStart,
+		std::shared_ptr<DaemonSlot>& slot) {
+	g_abandonedDaemons.fetch_add(1);	/* N-7：进程退出前统一告警 */
+	slot.reset();
+	/* 等待时长按实际耗时打印：共享 deadline 下它不等于 joinTimeoutMs_ */
+	const int64_t waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - waitStart).count();
+	std::cerr << "Daemon '" << name << "' not exited within " << waitedMs
+		<< "ms, abandoning slot (thread will release it on exit;"
+		<< " it may still touch the bus after hardware de-init)" << std::endl;
+	return false;
+}
+
 /* ---- waitUntil：置停止 + 等到 deadline + 交出引用（停机等待核心）----
  * D1：未 spawn（build 中途失败）的守护 promise 永不 set——跳过等待直接释放槽。
  * 2.4：弃管 = 主线程原子交出自己的引用。守护线程的强引用副本保证槽存活到
@@ -254,30 +293,23 @@ bool DaemonRunner::waitUntil(const std::chrono::steady_clock::time_point& deadli
 	/* 已释放（重复销毁）或已弃管（重复等待）——无事可做 */
 	if (slot == nullptr) { return true; }
 	daemon_request_stop(slot.get());
+	
 	if (!spawned_.load()) {
-		std::cerr << "Daemon '" << name_ << "' was never spawned, releasing slot directly"
-			<< std::endl;
-		std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
-		return true;	/* 线程从未存在，本地副本是唯一剩余所有者，出作用域即释放 */
+		bool result = handleNotSpawned(name_, slot);
+		std::atomic_store(&slot_, slot);
+		return result;
 	}
+	
 	if (fut_.valid()) {
-		std::future_status st = fut_.wait_until(deadline);
-		if (st == std::future_status::ready) {
-			int64_t n = fut_.get();
-			std::cerr << "Daemon '" << name_ << "' joined, total publishes=" << n << std::endl;
-			std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
-			return true;	/* 线程已退场并交出副本，本地副本是最后所有者 */
+		if (joinUntilDeadline(name_, fut_, deadline, slot)) {
+			std::atomic_store(&slot_, slot);
+			return true;
 		}
-		g_abandonedDaemons.fetch_add(1);	/* N-7：进程退出前统一告警 */
-		std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
-		/* 等待时长按实际耗时打印：共享 deadline 下它不等于 joinTimeoutMs_ */
-		const int64_t waitedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-			std::chrono::steady_clock::now() - waitStart).count();
-		std::cerr << "Daemon '" << name_ << "' not exited within " << waitedMs
-			<< "ms, abandoning slot (thread will release it on exit;"
-			<< " it may still touch the bus after hardware de-init)" << std::endl;
-		return false;
+		bool result = handleAbandon(name_, waitStart, slot);
+		std::atomic_store(&slot_, slot);
+		return result;
 	}
+	
 	std::atomic_store(&slot_, std::shared_ptr<DaemonSlot>());
 	return true;
 }
