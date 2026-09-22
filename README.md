@@ -2,7 +2,9 @@
 
 > **一句话**：把机器人的「结构、驱动、动作」拆成三份脚本，给它一份动作剧本，它就能照着"演"出来——而且**不接任何硬件也能在开发机上跑通全流程**。
 
-本仓库是 bot4cj（仓颉语言版）的 **C++17 全量移植**：SQL 结构脚本（`.sql`）、Lua 驱动（`.lua`）、动作脚本（`.mt`）三份脚本的设计与用法完全不变，底层运行时由仓颉运行时换成原生 C++（`std::thread` + LuaJIT C API），构建从 `cjpm` 换成 `cmake`。
+本仓库是 bot4cj（仓颉语言版）的 **C++17 全量移植**：SQL 结构脚本（`.sql`）、Lua 驱动（`.lua`）、动作脚本（`.mt`）三份脚本的**设计与用法不变**——底层运行时由仓颉运行时换成原生 C++（`std::thread` + LuaJIT C API），构建从 `cjpm` 换成 `cmake`。
+
+> 「用法不变」不等于「逐字节兼容」：移植过程中审计修掉过几处**旧行为本身有问题**的地方（如动作脚本内联 `@Alias`/`@Vars` 的作用域从进程级收敛到单次执行、SQL 未闭合引号不再静默放行），也与原版有意保留两处差异（无并发 GC 缺陷，故不实现 `BOT4CJ_NO_GC`）。逐条见 [docs/faq.md](docs/faq.md) 的「已知限制」与 [docs/changelog.md](docs/changelog.md) 里标注**破坏性**的条目。
 
 | 脚本 | 像什么 | 负责什么 |
 | ---- | ------ | -------- |
@@ -16,7 +18,7 @@
 - **构建**：CMake ≥ 3.16；本地实测 g++ 14 / 15（CI 基线 debian:bookworm，其缺省 g++ 为 12）
 - **平台**：Linux（aarch64 / x86_64），树莓派实测可使用
 - **CI**：每次推送跑三条硬门禁——零告警构建（`-DMYBOT_WERROR=ON`）→ Release 全量守门 → ASan/UBSan 单跑；另有 TSan、clang、clang-tidy、覆盖率与 musl 五条软门禁（详见 [docs/testing.md](docs/testing.md)）
-- **驱动生态**：`modules/` 下 59 个模块——47 款器件/执行器驱动（舵机、IMU、气压、测距、ADC、电源……）加总线、滤波与模型协议等框架模块；分类清单见 [docs/drivers.md](docs/drivers.md)（计数以 `modules/` 目录为准）
+- **驱动生态**：`modules/` 下 59 个模块 = **47 款器件/执行器/系统接口驱动**（舵机、IMU、气压、测距、ADC、电源、GPIO/PWM……）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **9 个框架与模型驱动**（`Relay`/`dummy`/`Kalman`/`Ema`/`Monitor`/`bitcompat`/`Camera`/`LlmOpenAI`/`LlmDeepSeek`）；分类清单见 [docs/drivers.md](docs/drivers.md)，计数以 `ls modules/*.lua` 为准
 
 ## 🧭 三份脚本如何配合
 
@@ -53,7 +55,12 @@ sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev
 
 ```bash
 cmake -S . -B build && cmake --build build          # Release（产物 ./build/mybot）
-# 排查内存/未定义行为（可选，MYBOT_SANITIZE 为仓库内置开关）：
+```
+
+想排查内存/未定义行为时另建一个 **sanitizer 构建目录**（`MYBOT_SANITIZE` 是仓库内置开关；
+两条命令互不影响，可并存）：
+
+```bash
 cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
   -DMYBOT_SANITIZE=address,undefined && cmake --build build-asan   # 产物 ./build-asan/mybot
 ```
@@ -73,10 +80,14 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 ```bash
 bash test/run_all.sh          # 全部离线守门（分段明细见 docs/testing.md），开发机无硬件可跑
 bash test/run_san.sh          # 双跑：Release + ASan/UBSan 两套产物各跑全量
-bash test/run_all.sh pca9685  # 文件名过滤
+bash test/run_all.sh pca9685  # 文件名过滤（只跑名字含 pca9685 的用例）
+bash test/run_all.sh agent-all # agent 全表面：Lua test_agent*.lua + agent E2E
+                              # + C++ 的 agent: 作用域 + agent CLI 负路径
 ```
 
 守门分段明细、守门完整性规则与 sanitizer 跑法见 [docs/testing.md](docs/testing.md)。
+按名字过滤时注意**分段过滤器的形态不同**（Lua 段比文件名、C++ 段比 `scope:` 作用域、
+加固段按分段门），所以裸 `agent` 与 `agent:` 各只覆盖一半——要「agent 全跑」请用 `agent-all`。
 
 ### 接第一块 PCA9685
 

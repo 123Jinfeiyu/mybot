@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>bot4cpp（bot4cj.cpp）架构分析与扩展开发路线图（C++17 版）</title>
+<title>bot4cj 架构分析与扩展开发路线图（C++17 移植版）</title>
 <style>
   :root{
     --bg:#f8fafc;--card:#fff;--ink:#0f172a;--sub:#475569;--line:#e2e8f0;
@@ -95,21 +95,21 @@
 </head>
 <body>
 
-<!-- 版本标注（2026-09-20 更新）：本页正文与两张配套 SVG（architecture_layers.svg /
+<!-- 版本标注（2026-09-21 复核更新）：本页正文与两张配套 SVG（architecture_layers.svg /
      architecture_dataflow.svg）均已更新为现行 C++17 版（bot4cj.cpp）架构描述：
      核心层名与 src/*.cpp 逐字对应（RobotStruct/HwFactory/ActionRunner 等）；
      守护共享槽为 336B（values[32]@72 / stop@328 / status@332）。 -->
 <div style="background:#eff6ff;border:1px solid #93c5fd;color:#1e3a8a;padding:12px 20px;font-size:14px">
-  &#8505;&#65039; 本页正文与配套两张 SVG 图均为<strong>现行 C++17 版（bot4cj.cpp）</strong>架构描述（2026-09-20 重绘更新），
+  &#8505;&#65039; 本页正文与配套两张 SVG 图均为<strong>现行 C++17 版（本地目录 bot4cj.cpp）</strong>架构描述（2026-09-20 重绘、2026-09-21 逐条复核更新），
   图中核心层名与 <code>src/*.cpp</code> 逐字对应。
 </div>
 
 <header class="hero">
   <div class="in">
-    <h1>bot4cpp（bot4cj.cpp）架构分析与扩展开发路线图</h1>
+    <h1>bot4cj 架构分析与扩展开发路线图<span style="display:block;font-size:16px;font-weight:500;color:#cbd5e1;margin-top:8px">C++17 移植版（本地目录 bot4cj.cpp）</span></h1>
     <p>bot4cj（仓颉版）的 C++17 全量移植 · 三脚本分治（结构 .sql / 驱动 .lua / 动作 .mt）+ LuaJIT 驱动层 + Linux HAL。不接任何硬件即可跑通「解析 → 构建 → 播放 → 落盘」全链路。</p>
     <div class="meta">
-      <span>C++17（零第三方 C++ 依赖：LuaJIT + pthread + dl）</span><span>仓库 qingss0/bot4cj.cpp</span><span>59 个模块（47 款器件驱动）</span><span>守门 251/0/1 跳 · C++ 单测 378/0（当时快照）</span>
+      <span>C++17（零第三方 C++ 依赖：LuaJIT + pthread + dl）</span><span>仓库 qingss0/bot4cj（本地目录名 bot4cj.cpp）</span><span>59 模块（47 器件/执行器/系统接口 + 3 总线 + 9 框架模型）</span><span>守门 260/0/2 跳 · C++ 单测 446/0（当时快照）</span>
     </div>
   </div>
 </header>
@@ -132,7 +132,7 @@
 <!-- ============ S1 ============ -->
 <section id="s1">
   <h2 class="sec"><span class="no">01</span>这是个什么项目</h2>
-  <p><strong>bot4cpp（仓库名 bot4cj.cpp）是一个"用声明式脚本 + 脚本驱动"控制真实硬件的机器人控制框架</strong>——bot4cj（仓颉版）的 C++17 全量移植：三份脚本的设计与用法完全不变，底层运行时换成原生 C++（<code>std::thread</code> + LuaJIT C API）。</p>
+  <p><strong>bot4cj.cpp（仓颉版 bot4cj 的 C++17 移植；上游仓库 qingss0/bot4cj）是一个"用声明式脚本 + 脚本驱动"控制真实硬件的机器人控制框架</strong>——bot4cj（仓颉版）的 C++17 全量移植：三份脚本的设计与用法完全不变，底层运行时换成原生 C++（<code>std::thread</code> + LuaJIT C API）。</p>
   <p>它把"硬件拓扑、驱动逻辑、动作编排"三者彻底解耦，分别用三种脚本来承载：</p>
 
   <div class="grid grid-3">
@@ -152,10 +152,10 @@
 
   <div class="callout">
     <h4>核心价值主张</h4>
-    <p style="margin:0">"不接任何硬件也能跑通全流程" —— 传感器桩替身（virtbus / dummy）与 Relay 转发链路，让 <code>cat action.mt | main --robot relay-test.sql</code> 在裸机即可自校验。这是它区别于"必须挂硬件才能调试"的传统固件的根本优势。</p>
+    <p style="margin:0">"不接任何硬件也能跑通全流程" —— 传感器桩替身（virtbus / dummy）与 Relay 转发链路，让 <code>cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql</code> 在裸机即可自校验。这是它区别于"必须挂硬件才能调试"的传统固件的根本优势。</p>
   </div>
 
-  <p>入口 <code>src/main.cpp</code>（209 行）只做流水线编排与信号安装：装载结构脚本 → <code>RobotStruct::active()</code> → 动作流水线 <code>run(stdin/TCP/文件)</code> 或 agent 流水线 → <code>deactivate()</code> 清理（参数解析/校验/帮助文本已下沉 <code>cliargs.cpp</code>）。真正的复杂度集中在硬件装配与派发层——<code>robot.cpp</code> 是编排门面（132 行），其五类职责按类拆在同层四个编译单元：注册表 <code>hw_registry.cpp</code>、元数据 <code>meta_provider.cpp</code>、装载+装配 <code>hw_factory.cpp</code>、动作派发 <code>action_runner.cpp</code>（含纯计算单点 <code>ActionPlan::build</code>）；再往下是硬件变量层（<code>luavar.cpp</code> / <code>daemonvar.cpp</code> 等）。</p>
+  <p>入口 <code>src/main.cpp</code>（249 行）只做流水线编排与信号安装：装载结构脚本 → <code>RobotStruct::active()</code> → 动作流水线 <code>run(stdin/TCP/文件)</code> 或 agent 流水线 → <code>deactivate()</code> 清理（参数解析/校验/帮助文本已下沉 <code>cliargs.cpp</code>）。真正的复杂度集中在硬件装配与派发层——<code>robot.cpp</code> 是编排门面（197 行），其五类职责按类拆在同层四个编译单元：注册表 <code>hw_registry.cpp</code>、元数据 <code>meta_provider.cpp</code>、装载+装配 <code>hw_factory.cpp</code>、动作派发 <code>action_runner.cpp</code>（含纯计算单点 <code>ActionPlan::build</code>）；再往下是硬件变量层（<code>luavar.cpp</code> / <code>daemonvar.cpp</code> 等）。</p>
   <p>另有可选 <strong>agent 模式</strong>（<code>--agent</code>）：大模型工具循环成为主执行流程，机器人常驻内存。</p>
 </section>
 
@@ -183,9 +183,9 @@
   <table class="tbl">
     <tr><th>层</th><th>内容</th><th>职责 / 关键设计</th></tr>
     <tr><td><strong>L7</strong> 输入</td><td>.sql / .mt / 管道·TCP·文件三输入源 / 环境变量</td><td>纯声明式，解析期零资源；TCP 跨机监听强制口令；<code>BOT4CJ_MODULE_PATH</code> / <code>BOT4CJ_DEBUG</code> 驱动行为</td></tr>
-    <tr><td><strong>C++ 核心层</strong></td><td>main.cpp · robot.cpp · sqlparse/matrix/expr · luavar/daemonvar · hardware</td><td>两阶段构造；RobotStruct 的 C(矩阵)+M(变量表)+hwSeq；变量类承载不同硬件语义；agent 模式（agentloop/agenttools/agentproto）</td></tr>
+    <tr><td><strong>C++ 核心层</strong></td><td>main.cpp · robot.cpp · sqlparse/matrix/expr · luavar/daemonvar · hardware</td><td>两阶段构造；RobotStruct 的 C(矩阵)+M(变量表)+声明序（<code>HwRegistry::seq_</code>，R-2 前的 hwSeq_ 已并入注册表）；变量类承载不同硬件语义；agent 模式（agentloop/agenttools/agentproto）</td></tr>
     <tr><td><strong>L5</strong> LuaJIT</td><td>经 C API 持有的独立 lua_State（luabridge/luasandbox）</td><td>build/call/destroy/read 生命周期 + controller 转发；halt-on-error 契约；沙箱中和危险全局</td></tr>
-    <tr><td><strong>L4</strong> 驱动+库</td><td>59 模块（47 款器件/执行器驱动）+ lib/(HAL,drv_common,virtbus,sensor_daemon,pthread,ema/kalman/fft,nn,json,mpath,bitcompat)</td><td>驱动只做"读寄存器+换算"，公共逻辑下沉 lib；virtbus 让任意驱动无真机可测</td></tr>
+    <tr><td><strong>L4</strong> 驱动+库</td><td>59 模块 = 47 器件/执行器/系统接口（六类：舵机 11 + IMU 6 + 气压/环境 11 + 测距 3 + ADC/电源 11 + 气体/医疗 5）+ 3 总线 + 9 框架/模型驱动；另 <code>modules/lib/</code> 23 个共享库（<code>HAL</code>/<code>hal_backend_glibc</code>/<code>drv_common</code>/<code>bus_contract</code>/<code>virtbus</code>/<code>sensor_daemon</code>+<code>_multi</code>/<code>daemon_tid</code>/<code>daemon_probe</code>/<code>pthread</code>/<code>ema</code>/<code>kalman</code>/<code>fft</code>/<code>nn</code>/<code>json</code>/<code>utf8</code>/<code>mpath</code>/<code>print_table</code>/<code>mjpeg_frame</code>/<code>llm_http</code>/<code>llm_wire_openai</code>/<code>llm_wire_deepseek</code>/<code>bmi270_config</code>）</td><td>驱动只做"读寄存器+换算"，公共逻辑下沉 lib；virtbus 让任意驱动无真机可测</td></tr>
     <tr><td><strong>L1–L3</strong> 基座</td><td>glibc ffi.C · /dev 设备文件 · 内核 I2C/SPI/UART/PWM/GPIO</td><td>I2C_RDWR 原子事务；sysfs PWM；gpiod；路径白名单 + 数值校验</td></tr>
   </table>
 </section>
@@ -205,7 +205,7 @@
   <h3>主路径（串行）四阶段</h3>
   <table class="tbl">
     <tr><th>阶段</th><th>发生位置</th><th>做什么</th></tr>
-    <tr><td><strong>① 解析入栈</strong></td><td>main.cpp → sqlparse / matrix / actionsource</td><td>stdin/TCP/文件读 .mt；.sql 解析建矩阵；每行 .mt 建一个 @Action 变量；按 hwSeq 序 <code>active()</code> 逐个 <code>build()</code></td></tr>
+    <tr><td><strong>① 解析入栈</strong></td><td>main.cpp → sqlparse / matrix / actionsource</td><td>读入 .sql 与 .mt（stdin/TCP/文件）→ 解析成矩阵对象；按<strong>变量声明行</strong>（.sql 硬件表行、.mt 里的 <code>@Vars</code>/<code>@Alias</code> 行）各建一个硬件变量；<code>active()</code> 按声明序逐个 <code>build()</code></td></tr>
     <tr><td><strong>② 逐帧播放</strong></td><td>robot.cpp · run_action</td><td>按列序收集设备名（@Alias 解析穿透）→ 取参数 Json → <code>hv.play(params)</code> → <code>ensureOk</code>（ERR 即中断）→ <code>$</code> 列 / controller 转发</td></tr>
     <tr><td><strong>③ Lua 驱动</strong></td><td>luavar · luabridge</td><td>元数据+参数合并进 obj → 注入 mode → Lua_pcall → 驱动局部变量 → HAL 全局函数 → <code>HAL.sys.*</code> 间接层（可 mock）</td></tr>
     <tr><td><strong>④ 系统落盘</strong></td><td>glibc → /dev → 内核 → 硬件</td><td><code>ffi.C</code> open/ioctl（路径白名单+数值校验）→ 设备文件 → I2C_RDWR 原子事务 → 物理器件；返回 <code>{result,value}</code> 逆向校验</td></tr>
@@ -225,7 +225,7 @@
   <div class="grid grid-2">
     <div class="card">
       <h4><span class="tag t-blue">M1</span>两阶段构造</h4>
-      <p>解析期<strong>零资源</strong>（不 open fd、不分配 lua_State）；<code>active()</code> 才按 <code>hwSeq</code> 声明序 build；<code>deactivate()</code> 反序 destroy。I2C 总线 → PCA9685 的 fd 依赖靠此顺序保证（先建总线再建挂在它上面的器件）。</p>
+      <p>解析期<strong>零资源</strong>（不 open fd、不分配 lua_State）；<code>active()</code> 才按声明序（<code>HwRegistry::seq_</code>）build；<code>deactivate()</code> 反序 destroy。I2C 总线 → PCA9685 的 fd 依赖靠此顺序保证（先建总线再建挂在它上面的器件）。</p>
     </div>
     <div class="card">
       <h4><span class="tag t-green">M2</span>驱动契约（halt-on-error）</h4>
@@ -245,13 +245,13 @@
     </div>
     <div class="card">
       <h4><span class="tag t-red">M6</span>MetaProvider（元数据闭包）</h4>
-      <p>静态列在首次 collect 时<strong>冻结缓存</strong>；<code>$</code> 引用列每次 play 做实时 <code>read()</code> 快照。消除每调用 <strong>O(cols·rows)</strong> 的全表扫描，是播放性能的关键优化。</p>
+      <p>静态列在首次 collect 时<strong>冻结缓存</strong>；<code>$</code> 引用列每次 play 做实时 <code>read()</code> 快照。避免每次调用重算全部字面列（首采冻结、之后浅拷贝重放），是播放性能的关键优化。</p>
     </div>
   </div>
 
   <h3>可测试性资产（三层守门体系）</h3>
   <p>测试约定：<code>test/test_&lt;driver&gt;.lua</code> 先 <code>dofile("modules/X.lua")</code> 加载真实 HAL，<strong>再</strong>覆盖全局 <code>i2c_*</code>/<code>spi_*</code>/<code>milli_sleep</code>；位运算/CRC 走 <code>modules/bitcompat.lua</code>（别名 <code>bitc</code>）。C++ 层单测与被测程序共用同一套源文件（<code>test/cpp/</code>，零第三方框架）。</p>
-  <p>当前守门：<strong>Lua/e2e 回归 251 通过 / 0 失败 / 1 跳过（真机用例）+ C++ 单测 378 通过 / 0 失败</strong>；CI 另有 ASan/UBSan 硬门禁，TSan / clang / clang-tidy / 覆盖率 / musl 五条软门禁，以及 ioctl/termios/V4L2/CURL 常量编译期自检（F-24 同族）。本页数字是<strong>当时快照</strong>：权威口径一律以 <code>bash test/run_all.sh</code> 与 <code>./build/mybot_tests</code> 的实时输出为准。</p>
+  <p>当前守门：<strong>Lua/e2e 回归 260 通过 / 0 失败 / 2 跳过（真机用例：i2c 与 video）+ C++ 单测 446 通过 / 0 失败</strong>；CI 另有 ASan/UBSan 硬门禁，TSan / clang / clang-tidy / 覆盖率 / musl 五条软门禁，以及 ioctl/termios/V4L2/CURL 常量编译期自检（F-24 同族）。本页数字是<strong>当时快照</strong>：权威口径一律以 <code>bash test/run_all.sh</code> 与 <code>./build/mybot_tests</code> 的实时输出为准。</p>
 </section>
 
 <!-- ============ S5 ============ -->
@@ -327,7 +327,7 @@
     <div class="num" style="background:var(--blue)">4</div>
     <div style="flex:1">
       <h4>跨 OS 抽象（HAL 后端可插拔）<span class="pri t-blue">高成本 · 广覆盖</span></h4>
-      <p>HAL 已用 <code>ffi.C</code> 集中收敛系统调用，扩展动作：把 <code>HAL.sys.*</code> 间接层抽成<strong>后端接口</strong>（glibc / macOS libsystem / Windows winsock+cygwin / 仿真桩）。驱动层不变，只换 sys 后端 + 路径白名单规则即可移植到 RPi / 桌面 / 容器化仿真。仿真桩 = 现成的 <code>virtbus</code> 思路放大。</p>
+      <p><strong>后端接口化已落地</strong>：<code>HAL.lua</code> 只留总线函数单点与 <code>HAL.sys.*</code> 契约，按 <code>BOT4CJ_HAL_BACKEND</code> dofile 后端，加载期逐项断言契约函数齐全（缺函数 fail-fast）；ffi 直调 glibc 的实现落在 <code>modules/lib/hal_backend_glibc.lua</code>，<code>test_hal_backend_swap.lua</code> 锚定换后端语义。<strong>待补</strong>：macOS libsystem / Windows / 纯仿真后端，以及各后端自己的路径白名单规则——驱动层不用改。</p>
     </div>
   </div>
 
@@ -351,11 +351,11 @@
   <h2 class="sec"><span class="no">07</span>落地检查清单</h2>
   <table class="tbl">
     <tr><th>阶段</th><th>关键改动点（文件）</th><th>验证方式</th><th>回归基线</th></tr>
-    <tr><td><strong>1</strong> 驱动生态</td><td><code>modules/X.lua</code> + <code>robots/*.sql</code> 新表 + <code>test/test_X.lua</code></td><td><code>bash test/run_all.sh</code> 离线桩</td><td>251/0 → 增 N 例 0 fail</td></tr>
-    <tr><td><strong>2</strong> 并发聚合</td><td><code>src/daemonvar.cpp</code> values[32] 参数化 + <code>lib/sensor_daemon.lua</code></td><td>多守护聚合桩测试（test_daemon_concurrency）</td><td>C++ 单测 + TSan 用例保持绿</td></tr>
+    <tr><td><strong>1</strong> 驱动生态</td><td><code>modules/X.lua</code> + <code>robots/*.sql</code> 新表 + <code>test/test_X.lua</code></td><td><code>bash test/run_all.sh</code> 离线桩</td><td>260/0/2 跳 → 增 N 例 0 fail</td></tr>
+    <tr><td><strong>2</strong> 并发聚合</td><td><code>src/daemonvar.cpp</code> values[32] 参数化 + <code>modules/lib/sensor_daemon.lua</code></td><td>多守护聚合桩测试（test_daemon_concurrency）</td><td>C++ 单测 + TSan 用例保持绿</td></tr>
     <tr><td><strong>3</strong> 网络传输</td><td><strong>已落地</strong>（<code>actionsource.cpp</code> 三输入源）；增强方向：多连接 / WS</td><td>管道/TCP/文件三源等价 e2e（tcp_e2e.sh）</td><td>relay-test 无硬件自校验</td></tr>
-    <tr><td><strong>4</strong> 跨 OS</td><td><code>lib/HAL.lua</code> sys 后端接口化 + 路径白名单规则表</td><td>仿真桩（virtbus）跨后端一致性</td><td>ffi 布局断言全平台</td></tr>
-    <tr><td><strong>5</strong> NN 动作</td><td>C++ 核心层新增 NN 变量类 + 接活 <code>lib/nn.lua</code> 推理</td><td>模型输出 → controller 转发桩</td><td>与阶段 2/3 组合闭环</td></tr>
+    <tr><td><strong>4</strong> 跨 OS</td><td><code>modules/lib/HAL.lua</code> 已后端接口化；<strong>新增非 glibc 后端</strong> + 各后端路径白名单规则表</td><td>仿真桩（virtbus）跨后端一致性</td><td>ffi 布局断言全平台</td></tr>
+    <tr><td><strong>5</strong> NN 动作</td><td>C++ 核心层新增 NN 变量类 + 接活 <code>modules/lib/nn.lua</code> 推理</td><td>模型输出 → controller 转发桩</td><td>与阶段 2/3 组合闭环</td></tr>
   </table>
 
   <div class="callout">
@@ -367,7 +367,7 @@
 </div>
 
 <div class="footer">
-  bot4cpp（bot4cj.cpp）架构分析与扩展路线图 · 基于 C++17 版源码（src/ · modules/ · robots/ · test/）· 2026-09-20 更新（含配套图 1/图 2 按 C++17 分层重绘）
+  bot4cj.cpp 架构分析与扩展路线图 · 基于 C++17 版源码（src/ · modules/ · robots/ · test/）· 2026-09-21 复核更新（含配套图 1/图 2 按 C++17 分层重绘）
 </div>
 
 </body>

@@ -5,6 +5,37 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-21 文档正确性与可读性复核（README / docs / 架构页）
+
+> 起因：文档自称「单一事实源指向脚本或目录」，但抽查发现若干**写死的数字已经漂移**、
+> 且图页面落后于 `src/` 的实际分层。本轮逐条复核入口文档、参考文档与三张架构页。
+
+- **入口文档（README / docs/README.md）**：模块计数改为可复算的口径——「59 = 47 器件/执行器/
+  系统接口 + 3 总线 + 9 框架与模型驱动」（原写法把 `GPIO`/`PWM` 归在"器件"、把总线并入"框架模块"，
+  读者无法复算）；新增 `bash test/run_all.sh agent-all` 入口并说明**为什么**裸 `agent`/`agent:`
+  各只覆盖一半（AG-23）；「三份脚本设计与用法完全不变」补一句限定——移植过程修掉过几处
+  **旧行为本身有问题**的地方（内联 `@Alias`/`@Vars` 作用域、SQL 未闭合引号），并指向 FAQ 与
+  标「破坏性」的 changelog 条目；构建节把一个代码块里的两套构建拆开（避免读者把
+  sanitizer 构建当成 Release 的续行）。
+- **架构页（`architecture_analysis.html` + 两张 SVG）**：复核并纠正——`main.cpp` 行数 209→249、
+  `robot.cpp` 132→197（`wc -l` 实测）；L4 行的 lib 清单按 `ls modules/lib/*.lua`（23 个）重写
+  （原清单漏了 `hal_backend_glibc`/`bus_contract`/`llm_*`/`mjpeg_frame`/`utf8` 等，且把**不在 lib 里**的
+  `bitcompat` 列了进去）；守门快照 251/0/1→260/0/2 跳、C++ 单测 378/0→446/0；分层图里
+  「47 款器件/执行器驱动 + 框架库，共 59 模块」同样改为可复算口径，「agenttools 五工具」补上
+  「（2 个条件提供）」——`capture_image`/`run_command` 缺省不注册，写「五工具」会让读者以为它们
+  一定可用；日期口径改为「2026-09-20 重绘、2026-09-21 逐条复核更新」。
+- **参考文档**：`testing.md` 的用法节补 `agent-all` 与过滤器形态说明（原说明只出现在 C++ 单测
+  条目里、位置不显眼）。
+- **复核过、确认无误（留痕以免重复核对）**：CLI 选项表与帮助文本的**双向**一致（既有机械守门
+  `cliargs_help_option_set_matches_docs`/`cliargs_env_vars_documented_in_reference` 覆盖）；
+  `--tcp-idle` 缺省 30s/范围 1-86400、连接总预算 600s 且随 idle×20 放大、口令失败 5 次才退出；
+  `--help` 优先于未知选项（实测 rc=0）、无参数打印帮助 rc=0、未知选项 rc=2；
+  `SINGLE_CONSUMER` 名单五只驱动与 `grep -l '^SINGLE_CONSUMER' modules/*.lua` 逐字一致；
+  守护槽布局（336B / `values[32]@72` / `stop@328` / `status@332`）与 `daemonvar.hpp` 的
+  `static_assert` 一致；virtbus 替换全局函数的数量（i2c 12 + spi 9 + uart 5 = 26）与
+  `virtbus.lua` 的 `VFUNCS` 逐项一致；全部文档链接与 markdown 锚点可达（0 断链 / 0 失效锚点）；
+  两张 SVG 的 XML 与 HTML 的标签结构均合法。
+
 ### 2026-09-21 第三轮审计修复批次（AG-19/AG-20/AG-22：图像内存、连接复用、作用域守门）
 
 > 守门快照：C++ 单测 446 / 0（`agent:` 130）、骨架自证 8 / 0、`llm 协议` 单测 113 / 0 / 1 跳、agent E2E 通过、全量守门 260 / 0 / 2 跳。

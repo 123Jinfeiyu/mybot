@@ -445,6 +445,10 @@ bash test/run_all.sh agent-all
 ## 已知限制
 
 - **非流式**：`stream=false`，长回答要等整轮生成完；接口超时用 `--llm-timeout` 调整。
+- 这几个上下文**字节预算目前没有 CLI / 配置项，只能改源码缺省**（`src/agentloop.hpp`）：
+  `maxHistoryBytes`（跨任务，缺省 4 MiB）、`maxTaskToolResultBytes`（任务内文本，缺省 2 MiB）、
+  `maxTaskImageBytes`（任务内图片，缺省 4 MiB）；`capture_image` 的单图 base64 硬上限 2 MiB
+  在 `src/agenttools.hpp`。需要调优内存/上下文时先确认它们是不是你要找的那个数。
 - REPL 历史按字节预算自动裁剪（缺省 4 MiB）：超过预算时按「任务块」整块裁掉最老的
   任务（含其中的 base64 图片），system 提示词与最新一个任务无条件保留——更早的任务
   上下文因此不再可见。单块超预算不封顶（正在进行的对话不能裁空），所以单张图另有

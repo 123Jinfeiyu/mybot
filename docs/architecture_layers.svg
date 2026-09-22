@@ -95,7 +95,7 @@
       <rect x="1168" y="268" width="256" height="180" rx="8" fill="#fff" stroke="#3b82f6" stroke-width="1.5"/>
       <text x="1296" y="294" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">agent 模式（工具循环）</text>
       <text x="1296" y="320" text-anchor="middle" font-size="12.5" fill="#475569">agentloop 历史/轮次/回滚</text>
-      <text x="1296" y="342" text-anchor="middle" font-size="12.5" fill="#475569">agenttools 五工具 + 路径沙箱</text>
+      <text x="1296" y="342" text-anchor="middle" font-size="12.5" fill="#475569">agenttools 五工具（2 个条件提供）+ 路径沙箱</text>
       <text x="1296" y="364" text-anchor="middle" font-size="12.5" fill="#475569">agentproto/agentdriver 封装</text>
       <text x="1296" y="386" text-anchor="middle" font-size="12.5" fill="#475569">llmconfig/promptpack 配置</text>
       <text x="1296" y="412" text-anchor="middle" font-size="11.5" fill="#0ea5e9">模型调用 = Lua 协议驱动</text>
@@ -137,9 +137,9 @@
   <!-- ===== L4 驱动 + 库 ===== -->
   <g>
     <rect x="40" y="662" width="1420" height="130" rx="10" fill="#fff7ed" stroke="#fed7aa" stroke-width="1.5"/>
-    <text x="60" y="690" font-size="16" font-weight="700" fill="#9a3412">L4 · 驱动 + 库层（LuaJIT · modules/）—— 47 款器件/执行器驱动 + 框架库，共 59 模块</text>
-    <text x="60" y="716" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">驱动（按总线/能力）：</tspan>I2C 传感（MPU6050/BME280/VL53L0X/MAX30102…）· SPI（ADS1256/AS7262…）· UART（MHZ19/SGP30/SDS011…）· 执行器（PCA9685/Servo/PWM/AD9833）· 电源（INA219/INA3221/LTC2944/MAX17043）· Camera（V4L2 + MJPEG）· LLM 协议（LlmOpenAI/LlmDeepSeek）· 框架（I2C/SPI/UART/Relay/Monitor/dummy）</text>
-    <text x="60" y="742" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">公共库（modules/lib/）：</tspan>HAL.lua（ffi 直调 glibc）· drv_common.lua（arg_table/ERR 契约）· bus_contract.lua（总线契约单点）· virtbus.lua（虚拟总线桩替身）· sensor_daemon.lua（万能采样 chunk）· mpath.lua · ema/kalman/fft/nn.lua · llm_http + llm_wire_*.lua（ffi 直驱 libcurl）· bitcompat.lua</text>
+    <text x="60" y="690" font-size="16" font-weight="700" fill="#9a3412">L4 · 驱动 + 库层（LuaJIT · modules/）—— 59 模块 = 47 器件/执行器/系统接口 + 3 总线 + 9 框架模型，另 23 个 lib/ 共享库</text>
+    <text x="60" y="716" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">驱动（按总线/能力）：</tspan>I2C 传感（MPU6050/BME280/VL53L0X/AS7262/SGP30/MAX30102…）· SPI（ADS1256/MT6826S…）· UART（MHZ19/SDS011/SCSCL…）· 执行器（PCA9685/Servo/PWM/AD9833）· 电源（INA219/INA3221/LTC2944/MAX17043）· Camera（V4L2 + MJPEG）· LLM 协议（LlmOpenAI/LlmDeepSeek）· 框架（I2C/SPI/UART/Relay/Monitor/dummy）</text>
+    <text x="60" y="742" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">公共库（modules/lib/）：</tspan>HAL.lua（总线函数单点 · 按 BOT4CJ_HAL_BACKEND 选后端）· hal_backend_glibc.lua（ffi 直调 glibc 的后端实现）· drv_common.lua（arg_table/ERR 契约）· bus_contract.lua（总线契约单点）· virtbus.lua（虚拟总线桩替身）· sensor_daemon.lua（万能采样 chunk）· mpath.lua · ema/kalman/fft/nn.lua · llm_http + llm_wire_*.lua（ffi 直驱 libcurl，连接跨轮复用）· mjpeg_frame.lua · utf8.lua · daemon_tid/probe.lua（注：bitcompat.lua 在 modules/ 顶层，不在 lib/）</text>
     <text x="60" y="768" font-size="12" fill="#64748b">传感器桩替身与 Relay 转发链路使「不接硬件也能跑通全流程」；virtbus 可在无真机时验证任意驱动 build/call/destroy 链路（故障注入：NACK / fd 泄漏计数）</text>
   </g>
 

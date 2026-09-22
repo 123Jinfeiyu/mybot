@@ -52,9 +52,16 @@
 bash test/run_all.sh          # 全部离线守门（分段见下，顺序与条数以脚本为准）
 bash test/run_all.sh pca9685  # 文件名过滤
 bash test/run_all.sh tcp      # 只跑 TCP 动作源
+bash test/run_all.sh agent-all # agent 全表面（过滤口径见下面的方框说明）
 ```
 
 全部守门在无 `/dev/i2c` 的开发机上即可运行。
+
+> **按名字过滤时注意分段过滤器形态不同**：Lua 段比 `test_*.lua` 文件名子串、
+> C++ 段比 `scope:` 作用域语法、加固段按分段门、端到端按段名——所以裸 `agent`
+> 与 `agent:` **各只覆盖一半表面**（前者漏掉 15 条 `agentconfig_`/`agentmode_` 与
+> agent 负路径，后者跳过 agent E2E）。要「agent 全跑」用 `agent-all`；
+> 映射单点在 `test/run_all.sh` 顶部，并有一条自证防它悄悄退化（AG-23）。
 
 ### ctest 逐用例入口（可选）
 
@@ -130,7 +137,6 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
     - 会话变量作用域（2026-09-20 阶段 1）：动作脚本内联 `@Alias` 不跨 `run()` 残留、不遮蔽结构变量、报错脚本不改写注册表、200 轮重复执行后结构名字索引不增长
     - I/O 与错误语义（2026-09-20 阶段 4）：`retryEintr` 只在 EINTR 重试、整文件读取超限报「字节上限」而非「不是合法 JSON」、TCP 口令三态（空闲超时/对端关闭不算鉴权失败，只有凭据错才计数）、表达式语法错误截断回显
     - agent 模式：规范化协议编解码、配置文件解析与取值优先级、驱动注入与 `ChatTransport` 适配（用假 Lua 驱动，不联网）、工具派发与路径沙箱、工具循环轮次上限与回滚与 extras 透传、任务内预算（降级/终态/记账）
-    - **agent 全表面怎么跑**（AG-23）：一个 raw 过滤器在四类分段上的匹配形态不同（Lua 段按文件名子串、C++ 段按 `scope:` 作用域、加固段按分段门），所以裸 `agent` 与 `agent:` **各只覆盖一半**——前者漏掉 15 条 `agentconfig_`/`agentmode_`（名字不含 "agent"）与 agent 负路径，后者跳过 agent E2E。覆盖全表面请用 **`bash test/run_all.sh agent-all`**（映射单点在 `test/run_all.sh` 顶部，并有一条自证防它悄悄退化）。
     - UTF-8 边界（2026-09-21 AG-1）：`util` 的合法/非法判据与消毒（过长编码、代理区、> U+10FFFF、截断尾部、连续坏字节折叠）、`run_command` 输出与动作脚本首注释的消毒终点、API key 控制字符判据
 
     另有三条纯 Lua 用例：`test/test_json_lua.lua`（Lua 侧 JSON 编解码）、`test/test_llm_drivers.lua`（两个协议驱动的报文整形规则与必填字段断言，不碰网络）、`test/test_utf8.lua`（UTF-8 判据与消毒。它与 C++ 侧 `utf8_*` 用例**同表向量**——两边判据必须一致，改动任一侧都要两边过）
