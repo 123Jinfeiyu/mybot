@@ -3,8 +3,10 @@
 > 日期：2026-09-22 · 基线：`dev_agent` @ `6bffb3e`（P1 审计日志 / P2a 可取消 / P3 策略钩子已落地）
 > 范围：`src/agent*.{hpp,cpp}`、`src/promptpack*`、`src/llmconfig*`、`src/agent_subprocess.*`、
 > `modules/Llm*`、`modules/lib/llm_*`、`modules/Camera.lua`
-> 前置依据：`.tmp/agent_refactor_audit.md`（基线 e2fc2e2，已部分过期）、`.tmp/agent_audit_round3.md`
+> 前置依据：AG-1~26 各条修复的落地记录见 [docs/changelog.md](../changelog.md) 与 git 历史
 > （AG-19/20/21/4′/22/23/24/25 均已落地），本方案按 HEAD 现状重新核定。
+> 注：原引用的两份 `.tmp/` 审计报告已于 2026-09-22 核实清理时删除（问题均已闭环；
+> 残留未修项见 `.tmp/NEXT_STEPS_20260922.md`）。
 
 ## 一、现状判断（不需要推倒重来）
 
