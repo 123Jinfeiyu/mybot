@@ -25,6 +25,7 @@ namespace bot {
 struct CliOptions {
 	std::optional<std::string> robot;
 	bool help = false;
+	std::string helpTopic;  /* 2026-09-22: --help <topic> 分段帮助 */
 	bool tcp = false;
 	std::string tcpPort;
 	std::string tcpHost = "127.0.0.1";

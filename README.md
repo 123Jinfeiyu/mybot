@@ -1,182 +1,577 @@
-# MYBOT机器人控制器
+# MYBOT 机器人控制器
 
-> **一句话**：把机器人的「结构、驱动、动作」拆成三份脚本，给它一份动作剧本，它就能照着"演"出来——而且**不接任何硬件也能在开发机上跑通全流程**。
+**用大模型对话控制真实机器人** —— 说「让机器人站立」，它就站起来；说「拍照看看前面」，它就拍照并告诉你看到了什么。
 
-本仓库是 bot4cj（仓颉语言版）的 **C++17 全量移植**：SQL 结构脚本（`.sql`）、Lua 驱动（`.lua`）、动作脚本（`.mt`）三份脚本的**设计与用法不变**——底层运行时由仓颉运行时换成原生 C++（`std::thread` + LuaJIT C API），构建从 `cjpm` 换成 `cmake`。
+---
 
-> 「用法不变」不等于「逐字节兼容」：移植过程中审计修掉过几处**旧行为本身有问题**的地方（如动作脚本内联 `@Alias`/`@Vars` 的作用域从进程级收敛到单次执行、SQL 未闭合引号不再静默放行），也与原版有意保留两处差异（无并发 GC 缺陷，故不实现 `BOT4CJ_NO_GC`）。逐条见 [docs/faq.md](docs/faq.md) 的「已知限制」与 [docs/changelog.md](docs/changelog.md) 里标注**破坏性**的条目。
+## ✨ 核心特性
 
-| 脚本 | 像什么 | 负责什么 |
-| ---- | ------ | -------- |
-| 结构脚本 `.sql` | 舞台的**接线图** | 机器人身上有哪些零件、接在哪条总线/哪个地址、谁听谁的 |
-| 驱动脚本 `.lua` | 零件的**说明书** | 每个零件怎么点亮、怎么读数（I2C / SPI / UART 都藏在这一层，用 LuaJIT 编写） |
-| 动作脚本 `.mt` | 演员的**剧本** | 一行就是一个时间点的动作，逐行播放就是一段表演 |
+🤖 **智能体控制** - 大模型理解自然语言指令，自主选择并执行动作  
+🔧 **三层架构** - 结构脚本（`.sql`）+ Lua驱动（`.lua`）+ 动作脚本（`.mt`）完全解耦  
+🚀 **零硬件开发** - 虚拟总线 + 仿真驱动，笔记本上就能跑通全流程  
+🔒 **工业级安全** - 多重防护、配置隔离、响亮拒绝不静默  
+📦 **零C++依赖** - 仅需 LuaJIT + pthread + dl，模型调用是Lua驱动  
 
-## 项目信息
+---
 
-- **实现**：C++17（零第三方 C++ 依赖，仅 LuaJIT + pthread + dl）
-- **构建**：CMake ≥ 3.16；本地实测 g++ 14 / 15（CI 基线 debian:bookworm，其缺省 g++ 为 12）
-- **平台**：Linux（aarch64 / x86_64），树莓派实测可使用
-- **CI**：每次推送跑三条硬门禁——零告警构建（`-DMYBOT_WERROR=ON`）→ Release 全量守门 → ASan/UBSan 单跑；另有 TSan、clang、clang-tidy、覆盖率与 musl 五条软门禁（详见 [docs/testing.md](docs/testing.md)）
-- **驱动生态**：`modules/` 下 59 个模块 = **47 款器件/执行器/系统接口驱动**（舵机、IMU、气压、测距、ADC、电源、GPIO/PWM……）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **9 个框架与模型驱动**（`Relay`/`dummy`/`Kalman`/`Ema`/`Monitor`/`bitcompat`/`Camera`/`LlmOpenAI`/`LlmDeepSeek`）；分类清单见 [docs/drivers.md](docs/drivers.md)，计数以 `ls modules/*.lua` 为准
+## 🎯 快速开始（5分钟上手）
 
-## 🧭 三份脚本如何配合
-
-```text
-结构脚本 .sql → 定义零件清单（舵机、传感器…）
-                  │ 每个零件配一份说明书（自动加载）
-驱动脚本 .lua → 教计算机读写这个零件
-                  ↑ 按剧本逐行调用
-动作脚本 .mt  → 第 1 行做什么 → 第 2 行做什么 → …
-```
-
-**不接硬件也能跑**：仓库内置"假零件"（Relay 转发链路、内存仿真虚拟总线），第一条命令就能看到整条链路真实运转。
-
-## 🗂️ 仓库结构
-
-| 路径 | 内容 |
-| ---- | ---- |
-| `src/` | C++17 宿主：SQL/矩阵解析、表达式、硬件注册与派发、守护线程、agent 模式 |
-| `modules/` | Lua 驱动与库：`<矩阵名>.lua` 即一张表的驱动，`lib/` 放 HAL、virtbus、JSON、滤波与模型协议 |
-| `robots/` | 结构脚本 `.sql`（`robots/test/` 为回归夹具） |
-| `scripts/` | 动作脚本 `.mt` 与守门用的端到端 shell / 假模型服务 |
-| `test/` | 三层守门：`test_*.lua`（Lua 离线单测）、`cpp/`（C++ 单测）、`run_all.sh`（总编排） |
-| `docs/` | 深入文档（入口 [docs/README.md](docs/README.md)） |
-
-## 🚀 快速开始
-
-### 安装依赖
+### 1. 安装依赖
 
 ```bash
-sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev
+sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev libcurl4
 ```
 
-### 构建
+### 2. 构建项目
 
 ```bash
-cmake -S . -B build && cmake --build build          # Release（产物 ./build/mybot）
+cmake -S . -B build && cmake --build build
 ```
 
-想排查内存/未定义行为时另建一个 **sanitizer 构建目录**（`MYBOT_SANITIZE` 是仓库内置开关；
-两条命令互不影响，可并存）：
+### 3. 启动智能体（无需硬件）
 
 ```bash
-cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
-  -DMYBOT_SANITIZE=address,undefined && cmake --build build-asan   # 产物 ./build-asan/mybot
+# 配置API密钥
+export BOT4CJ_LLM_KEY=sk-xxx
+
+# 启动交互式REPL（使用虚拟机器人）
+./build/mybot --robot=robots/relay-test.sql --agent
 ```
 
-### 第一条命令：无硬件跑通 Relay → Timer
+**现在你可以直接对话**：
 
-`relay-test` 是一台"玩具电梯"，**不需要接任何硬件**：`Relay` 把 `test` 参数转成 `delay`，经 controller 机制转发给 `Timer` 延时 200ms，用来确认环境装好了、程序能跑了。**新手跑通这一条就算入门**：
+```
+mybot[relay-test|llm0|2hw]> 让继电器动作一次
+已执行动作脚本 relay-test.mt（42 字节）
+
+mybot[relay-test|llm0|2hw]> /help
+内置命令:
+  /hardware  - 显示硬件清单
+  /scripts   - 显示可用动作脚本清单
+  /help      - 显示此帮助
+  /exit      - 退出
+
+mybot[relay-test|llm0|2hw]> /exit
+```
+
+**看到这个提示符就算成功** → `mybot[机器人名|LLM驱动|硬件数]>`
+
+---
+
+## 🧠 Agent 模式（主要使用方式）
+
+Agent模式让大模型成为机器人的"大脑"，它可以：
+
+✅ **理解自然语言** - 「让机器人走到桌子旁边」自动分解成多个动作  
+✅ **自主决策** - 根据传感器数据或摄像头画面判断下一步  
+✅ **连续执行** - 硬件常驻内存，可连续执行多个任务  
+✅ **视觉感知** - 支持摄像头（`capture_image`工具）看环境  
+✅ **工具调用** - 5个内置工具安全执行动作脚本  
+
+### 配置文件方式（推荐）
 
 ```bash
-cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
+# 复制配置模板
+cp mybot.llm.json.example mybot.llm.json
+chmod 600 mybot.llm.json
+
+# 编辑配置文件，填入你的API信息
+{
+  "endpoint": "https://api.openai.com/v1",
+  "model": "gpt-4",
+  "api_key": "sk-xxx",
+  "scripts_dir": "scripts",
+  "prompt_files": ["prompts/spider_robot"]
+}
+
+# 启动（自动读取配置）
+./build/mybot --robot=robots/spider1.sql --agent
 ```
 
-看到 `Relay: test=200 note=hello-relay -> delay=200` 且正常退出 0，环境就没问题了。开调试开关 `BOT4CJ_DEBUG=1` 可以看每一步的参数与结果转储（环境变量详见 [docs/reference.md](docs/reference.md)）。
-
-### 一键回归测试
-
-```bash
-bash test/run_all.sh          # 全部离线守门（分段明细见 docs/testing.md），开发机无硬件可跑
-bash test/run_san.sh          # 双跑：Release + ASan/UBSan 两套产物各跑全量
-bash test/run_all.sh pca9685  # 文件名过滤（只跑名字含 pca9685 的用例）
-bash test/run_all.sh agent-all # agent 全表面：Lua test_agent*.lua + agent E2E
-                              # + C++ 的 agent: 作用域 + agent CLI 负路径
-```
-
-守门分段明细、守门完整性规则与 sanitizer 跑法见 [docs/testing.md](docs/testing.md)。
-按名字过滤时注意**分段过滤器的形态不同**（Lua 段比文件名、C++ 段比 `scope:` 作用域、
-加固段按分段门），所以裸 `agent` 与 `agent:` 各只覆盖一半——要「agent 全跑」请用 `agent-all`。
-
-### 接第一块 PCA9685
-
-- 接线：树莓派 `i2c-1`（SDA1/SCL1）→ PCA9685，地址 `0x40`
-- 参照 `robots/spider1.sql` 写自己的结构脚本：I2C 表 → PCA9685 表 → Servo 表（controller 列指向 `pca9685-0`）
-- 跑站立动作：
-
-```bash
-cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql
-```
-
-## 📱 运行示例
-
-`scripts/` 下的动作脚本适配 `robots/spider1.sql` 的 14 路舵机结构（通道分配见该文件注释）：
-
-```bash
-cat scripts/std.mt        | ./build/mybot --robot=robots/spider1.sql  # 站立
-cat scripts/left-turn.mt  | ./build/mybot --robot=robots/spider1.sql  # 左转
-cat scripts/tilt-r.mt     | ./build/mybot --robot=robots/spider1.sql  # 右倾
-cat scripts/one-shake.mt  | ./build/mybot --robot=robots/spider1.sql  # 单腿姿势
-```
-
-动作输入源三选一（TCP 单连接 / 文件 / stdin 管道），完整参数与环境变量见 [docs/reference.md](docs/reference.md)。
-
-## 🤖 agent 模式（可选）
-
-管道模式是「给它一份剧本，演一遍就下台」；**agent 模式**（`--agent`）让**大模型工具循环成为主执行流程**：
-机器人结构脚本加载后硬件**常驻内存**，智能体通过工具挑选并执行动作脚本，多轮决策后才退出。
+### 环境变量方式（快速测试）
 
 ```bash
 export BOT4CJ_LLM_KEY=sk-xxx
-./build/mybot --robot=robots/relay-test.sql --agent --task "让继电器动作一次"  # 一次性（无硬件自检）
-./build/mybot --robot=robots/spider1.sql --agent                             # 交互 REPL
+./build/mybot --robot=robots/spider1.sql --agent --llm-model gpt-4
 ```
 
-智能体可用五个工具：
-
-- `list_action_scripts`——枚举 `.mt` 动作脚本
-- `run_action_script`——在常驻机器人上执行指定脚本
-- `list_hardware`——打印器件清单（只读，不触发任何动作）
-- `capture_image`——**拍照并把画面送进上下文**，多模态模型据此「看」环境（仅当结构脚本里能解析到摄像头 Lua 驱动变量时提供）
-- `run_command`——执行 shell 命令（**缺省不提供**，需 `--agent-shell` 显式开启）
-
-摄像头同样是 Lua 驱动（V4L2 + MJPEG，无第三方库），也支持 `--camera-src <图片>` 在无摄像头时跑通全链路。
-完整选项、工作流程、安全说明与源码分层见 **[docs/agent.md](docs/agent.md)**。
-
-**模型调用是一颗 Lua 协议驱动**（和舵机、传感器平级），所以宿主不链接任何 HTTP 库——
-「零第三方 C++ 依赖」在这条路径上依然成立；换模型/换厂商 = 换一个 Lua 文件：
+### 一次性任务
 
 ```bash
-./build/mybot --robot=robots/spider1.sql --agent                        # 缺省 LlmOpenAI（当前协议）
-DEEPSEEK_API_KEY=sk-xxx ./build/mybot --robot=robots/spider1.sql \
-    --agent --llm-driver LlmDeepSeek                                    # 换 DeepSeek 协议
+./build/mybot --robot=robots/spider1.sql --agent --task "让机器人站立然后左转"
 ```
 
-内置 `LlmOpenAI` 与 `LlmDeepSeek`（思考模式 / `reasoning_content` 回传 / 采样参数限制都在驱动里）。
-运行期需要 `libcurl.so`（`apt install libcurl4`，Raspberry Pi OS 通常已装）；缺它时驱动会给出清晰报错且机器人不上电。
-
-**目标 URL、API key、模型等信息放配置文件里**（模板 `mybot.llm.json.example`）：
+### 分段帮助
 
 ```bash
-cp mybot.llm.json.example mybot.llm.json && chmod 600 mybot.llm.json   # 填 endpoint/model/api_key
-./build/mybot --robot=robots/spider1.sql --agent                        # 自动查找 ./mybot.llm.json
+./build/mybot --help agent    # Agent模式选项
+./build/mybot --help llm      # LLM配置选项
+./build/mybot --help camera   # 摄像头选项
 ```
 
-取值优先级：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。字段表、查找顺序与严格校验规则见 [docs/agent.md](docs/agent.md)。
+---
 
-## 📖 深入文档（docs/）
+## 📚 三层架构解析
 
-从 [docs/README.md](docs/README.md) 进入全部文档。常用入口：
+MYBOT采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全解耦：
 
-- [命令行与环境变量参考](docs/reference.md)——动作输入源、CLI 参数、安全约束、`BOT4CJ_*`
-- [DSL 参考：结构脚本与动作脚本](docs/dsl.md)——占位符、`@Alias`/`@Vars`、`$(...)` 表达式、`@Include` 内联归并、controller/trigger 与 `$` 引用完整语义
-- [硬件变量（驱动）清单](docs/drivers.md)——59 个模块（47 款器件/执行器驱动 + 总线/框架模块）按类别速查
-- [@Daemon 守护线程](docs/daemon.md)——后台采样、滤波器链路
-- [agent 模式](docs/agent.md)——大模型工具循环驱动常驻机器人：CLI 选项、五个工具、安全边界、运行期 libcurl
-- [HAL 硬件抽象层](docs/hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
-- [虚拟总线 virtbus](docs/virtbus.md)——无真机验证驱动链路的完整参考手册
-- [架构分析](docs/architecture_analysis.html)——C++17 版分层与路线图，附 [分层图](docs/architecture_layers.svg) / [数据流图](docs/architecture_dataflow.svg)（两图已按现行 C++17 版 `src/*.cpp` 分层重绘）；现行分层另见 [docs/agent.md](docs/agent.md#源码分层)
-- [回归测试手册](docs/testing.md) / [开发与贡献](docs/development.md) / [已知限制与 FAQ](docs/faq.md) / [更新日志](docs/changelog.md)
+| 层级 | 文件类型 | 比喻 | 职责 |
+|------|---------|------|------|
+| **结构脚本** | `.sql` | 舞台接线图 | 机器人有哪些零件、接在哪条总线/地址 |
+| **驱动脚本** | `.lua` | 零件说明书 | 每个零件怎么点亮、怎么读数（I2C/SPI/UART） |
+| **动作脚本** | `.mt` | 演员剧本 | 一行一个动作，逐行执行 |
 
-## ⚠️ 已知限制
+### 工作流程
 
-仅支持 Linux + LuaJIT；守护线程有一线程一 Lua 状态的开销；部分器件只支持单消费者。完整列表与排障问答见 [docs/faq.md](docs/faq.md)。
+```
+┌─────────────┐
+│  自然语言   │  "让机器人站立"
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│   大模型    │  理解意图 → 选择工具
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│ 动作脚本    │  scripts/std.mt（站立动作）
+│  .mt        │
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│ 驱动脚本    │  modules/Servo.lua（舵机驱动）
+│  .lua       │
+└──────┬──────┘
+       ↓
+┌─────────────┐
+│ 结构脚本    │  robots/spider1.sql（14路舵机定义）
+│  .sql       │
+└──────┬──────┘
+       ↓
+    真实硬件
+```
 
-## 🔧 开发与贡献
+---
 
-装 pre-push 守门钩子（`bash scripts/install-hooks.sh`）、跑 `bash test/run_all.sh` 全绿即可提交。新增驱动 / 回归 / C++ 单测的流程见 [docs/development.md](docs/development.md)。
+## 🛠️ Agent工具系统
+
+智能体可使用5个安全工具（自动提供）：
+
+| 工具 | 功能 | 安全级别 |
+|------|------|---------|
+| `list_action_scripts` | 列出可用动作脚本 | ✅ 只读 |
+| `list_hardware` | 显示硬件清单 | ✅ 只读 |
+| `run_action_script` | 执行动作脚本 | ⚠️ 写入 |
+| `capture_image` | 拍照并送入上下文 | ⚠️ 隐私 |
+| `run_command` | 执行shell命令 | 🔴 危险（缺省关闭）|
+
+**安全设计**：
+- ✅ 动作脚本只能在 `scripts/` 目录下
+- ✅ 不允许符号链接和路径遍历
+- ✅ `run_command` 缺省不提供，需 `--agent-shell` 显式开启
+- ✅ 所有操作有体积上限和超时限制
+
+---
+
+## 🎬 传统模式（脚本直接执行）
+
+如果你已经有写好的动作脚本，可以直接执行：
+
+```bash
+# 从文件读取
+./build/mybot --robot=robots/spider1.sql --input scripts/std.mt
+
+# 从管道读取
+cat scripts/std.mt | ./build/mybot --robot=robots/spider1.sql
+
+# TCP模式（远程控制）
+./build/mybot --robot=robots/spider1.sql --tcp 8080
+```
+
+动作脚本示例（`scripts/std.mt`）：
+```mt
+# 站立动作
+servo-lf-hip  angle=90
+servo-rf-hip  angle=90
+servo-lb-hip  angle=90
+servo-rb-hip  angle=90
+```
+
+---
+
+## 🔌 硬件支持
+
+### 支持的器件（47款）
+
+**舵机与电机**：PCA9685（16路PWM）、普通舵机  
+**传感器**：IMU（MPU6050/9250）、气压（BMP280）、测距（VL53L0X/L1X）  
+**总线**：I2C、SPI、UART  
+**摄像头**：V4L2 MJPEG（USB摄像头/树莓派摄像头）  
+**执行器**：继电器、GPIO、ADC  
+
+完整清单见 [docs/drivers.md](docs/drivers.md)
+
+### 接真实硬件
+
+以PCA9685舵机驱动板为例：
+
+```bash
+# 1. 接线
+树莓派 I2C-1 (SDA1/SCL1) → PCA9685 (地址 0x40)
+
+# 2. 编写结构脚本（或使用示例）
+robots/spider1.sql
+
+# 3. 运行
+./build/mybot --robot=robots/spider1.sql --agent
+```
+
+```bash
+# 1. 接线
+树莓派 I2C-1 (SDA1/SCL1) → PCA9685 (地址 0x40)
+
+# 2. 编写结构脚本（或使用示例）
+robots/spider1.sql
+
+# 3. 运行
+./build/mybot --robot=robots/spider1.sql --agent
+```
+
+### 虚拟总线（无硬件开发）
+
+**不接任何真实硬件也能跑通全流程**：
+
+```bash
+# 使用虚拟继电器测试
+./build/mybot --robot=robots/relay-test.sql --agent --task "让继电器动作一次"
+
+# 使用虚拟摄像头测试视觉功能
+./build/mybot --robot=robots/spider1.sql --agent --camera-src test.jpg
+```
+
+内置 `Relay` 转发链路和内存仿真虚拟总线，所有驱动逻辑真实运转。详见 [docs/virtbus.md](docs/virtbus.md)
+
+---
+
+## 📁 项目结构
+
+```
+bot4cj.cpp/
+├── src/           # C++17核心：SQL解析、硬件派发、agent模式
+├── modules/       # Lua驱动生态（59个模块）
+│   ├── Servo.lua        # 舵机驱动
+│   ├── PCA9685.lua      # 16路PWM驱动板
+│   ├── Camera.lua       # 摄像头（V4L2）
+│   ├── LlmOpenAI.lua    # OpenAI协议驱动
+│   └── lib/             # HAL、virtbus、JSON、滤波器
+├── robots/        # 结构脚本（机器人定义）
+│   ├── spider1.sql      # 14路舵机蜘蛛
+│   ├── relay-test.sql   # 虚拟继电器（无硬件）
+│   └── test/            # 测试夹具
+├── scripts/       # 动作脚本库
+│   ├── std.mt           # 站立
+│   ├── left-turn.mt     # 左转
+│   └── tilt-r.mt        # 右倾
+├── prompts/       # Agent提示词包
+├── test/          # 三层测试（Lua + C++ + E2E）
+└── docs/          # 深入文档
+```
+
+---
+
+## 🧪 测试与验证
+
+### 快速测试
+
+```bash
+# 完整回归测试（无需硬件）
+bash test/run_all.sh
+
+# 双跑：Release + ASan/UBSan
+bash test/run_san.sh
+
+# 只测agent相关
+bash test/run_all.sh agent-all
+```
+
+### CI门禁
+
+✅ **硬门禁**（每次推送必过）：
+- 零告警构建（`-Werror`）
+- Release全量测试
+- ASan/UBSan单跑
+
+⚡ **软门禁**（定期检查）：
+- TSan（线程竞争）
+- clang + clang-tidy
+- 覆盖率报告
+- musl libc兼容性
+
+详见 [docs/testing.md](docs/testing.md)
+
+---
+
+## 📖 深入文档
+
+### 快速入口
+
+| 文档 | 内容 |
+|------|------|
+| [Agent模式完整指南](docs/agent.md) | CLI选项、工具系统、安全边界、提示词包 |
+| [命令行参考](docs/reference.md) | 所有CLI参数、环境变量、安全约束 |
+| [DSL语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
+| [驱动清单](docs/drivers.md) | 59个模块分类速查 |
+| [HAL硬件抽象层](docs/hal.md) | FFI直调glibc、I2C原子事务、沙箱 |
+| [守护线程](docs/daemon.md) | 后台采样、滤波器链路 |
+| [虚拟总线](docs/virtbus.md) | 无硬件验证驱动链路 |
+| [测试手册](docs/testing.md) | 回归测试、sanitizer、覆盖率 |
+| [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
+| [FAQ](docs/faq.md) | 已知限制、排障问答 |
+
+从 [docs/README.md](docs/README.md) 查看完整文档索引。
+
+---
+
+## 🎓 使用示例
+
+### 示例1：自然语言控制
+
+```bash
+export BOT4CJ_LLM_KEY=sk-xxx
+./build/mybot --robot=robots/spider1.sql --agent
+```
+
+```
+mybot[spider1|llm0|14hw]> 让机器人做一个站立动作
+[工具] run_action_script
+  script_name: std.mt
+[结果] 已执行动作脚本 std.mt（126 字节）
+
+机器人已完成站立动作，14个舵机已就位。
+
+mybot[spider1|llm0|14hw]> 现在左转
+[工具] run_action_script
+  script_name: left-turn.mt
+[结果] 已执行动作脚本 left-turn.mt（204 字节）
+
+已执行左转动作。
+
+mybot[spider1|llm0|14hw]> /exit
+```
+
+### 示例2：带视觉的决策
+
+```bash
+./build/mybot --robot=robots/spider1.sql --agent --llm-model gpt-4o
+```
+
+```
+mybot[spider1|llm0|14hw]> 拍照看看前面有什么
+[工具] capture_image
+[结果] 已拍摄照片（1920x1080 JPEG）
+
+我看到前面是一个空旷的地面，没有障碍物。建议可以安全前进。
+
+mybot[spider1|llm0|14hw]> 那就前进吧
+[工具] run_action_script
+  script_name: forward.mt
+...
+```
+
+### 示例3：一次性任务
+
+```bash
+# 无交互，执行完自动退出
+./build/mybot --robot=robots/spider1.sql --agent \
+  --task "依次执行站立、左转、右转、然后回到初始姿势"
+```
+
+---
+
+## 🔒 安全特性
+
+MYBOT在设计时将安全放在首位：
+
+### 配置隔离
+
+✅ **配置错误不碰真机** - 所有配置校验通过才上电  
+✅ **API密钥保护** - 不通过argv传递，自动清洗环境变量  
+✅ **文件权限检查** - 配置文件权限过大时警告
+
+### 运行时防护
+
+✅ **路径遍历防护** - 拒绝符号链接、相对路径越界  
+✅ **输入长度限制** - 所有输入有体积上限，响亮拒绝  
+✅ **Shell命令缺省关闭** - `run_command` 只能命令行显式开启  
+✅ **超时保护** - LLM调用、子进程执行都有超时限制
+
+### 审计可追溯
+
+✅ **详细日志** - `--agent-verbose` 记录所有工具调用  
+✅ **审计编号** - 代码注释包含安全审计编号  
+✅ **人话报错** - 所有错误都给出清晰的上下文和解决方案
+
+详见 [docs/agent.md#安全边界](docs/agent.md)
+
+---
+
+## 🌟 项目亮点
+
+### 技术特性
+
+- **零C++依赖** - 仅需 LuaJIT + pthread + dl，连HTTP库都是Lua实现
+- **多模型支持** - 内置 OpenAI / DeepSeek 协议，换模型=换lua文件
+- **工业级测试** - 445个C++单测 + Lua离线测试 + 三道sanitizer门禁
+- **跨平台** - Linux aarch64/x86_64，树莓派实测可用
+
+### 架构优势
+
+- **驱动热插拔** - 新增器件不改C++，只写lua驱动
+- **动作可复用** - 动作脚本独立于机器人结构
+- **结构可迁移** - 同一结构脚本换驱动板零修改
+
+### 生态完整
+
+- **59个模块** - 47款器件驱动 + 3条总线 + 9个框架模块
+- **丰富文档** - 10+篇深入文档，从入门到源码分析
+- **回归测试** - test/ 下100+ 测试用例，覆盖全链路
+
+---
+
+## 🛠️ 高级用法
+
+### 换模型/换厂商
+
+```bash
+# 使用DeepSeek（思考模式）
+export DEEPSEEK_API_KEY=sk-xxx
+./build/mybot --robot=robots/spider1.sql --agent \
+  --llm-driver LlmDeepSeek --llm-model deepseek-chat
+
+# 使用本地Ollama
+./build/mybot --robot=robots/spider1.sql --agent \
+  --llm-endpoint http://localhost:11434/v1 \
+  --llm-model llama3.2 --llm-config none
+```
+
+### 自定义提示词
+
+```bash
+# 编写提示词包
+mkdir -p prompts/my_robot
+echo "你是一个谨慎的机器人..." > prompts/my_robot/01-identity.md
+
+# 加载提示词
+./build/mybot --robot=robots/spider1.sql --agent \
+  --prompt-file prompts/my_robot
+```
+
+### TCP远程控制
+
+```bash
+# 监听8080端口（需口令）
+./build/mybot --robot=robots/spider1.sql --tcp 8080 \
+  --tcp-host 0.0.0.0 --tcp-token secret123
+
+# 客户端发送
+(echo "secret123"; cat scripts/std.mt) | nc server_ip 8080
+```
+
+### Sanitizer调试
+
+```bash
+# 构建asan版本
+cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
+  -DMYBOT_SANITIZE=address,undefined
+cmake --build build-asan
+
+# 运行
+./build-asan/mybot --robot=robots/spider1.sql --agent
+```
+
+---
+
+## 🚧 已知限制
+
+- ⚠️ 仅支持 Linux + LuaJIT
+- ⚠️ 守护线程有一线程一Lua状态的开销
+- ⚠️ 部分器件只支持单消费者
+- ⚠️ Agent模式运行期需要 libcurl.so
+
+完整限制与解决方案见 [docs/faq.md](docs/faq.md)
+
+---
+
+## 📜 关于本项目
+
+### 版本历史
+
+本仓库是 **bot4cj（仓颉语言版）的 C++17 全量移植**：
+
+- ✅ 三层脚本设计与用法不变
+- ✅ 底层运行时：仓颉运行时 → 原生C++（`std::thread` + LuaJIT C API）
+- ✅ 构建系统：`cjpm` → `cmake`
+- ✅ 修复原版问题：作用域收敛、SQL校验加强
+
+> 「用法不变」≠「逐字节兼容」：移植时修复了若干旧版问题（详见 [docs/faq.md](docs/faq.md) 和 [docs/changelog.md](docs/changelog.md)）
+
+### 技术规格
+
+- **实现**: C++17（零第三方C++依赖）
+- **构建**: CMake ≥ 3.16
+- **编译器**: g++ 12+ / clang 14+
+- **平台**: Linux (aarch64 / x86_64)
+- **运行期**: LuaJIT + libcurl（仅agent模式）
+
+### CI状态
+
+GitHub Actions 多道门禁：
+- ✅ 零告警构建（`-Werror`）
+- ✅ Release 全量测试
+- ✅ ASan/UBSan/TSan
+- ✅ clang + clang-tidy
+- ✅ 覆盖率报告
+
+---
+
+## 🤝 开发与贡献
+
+欢迎贡献代码、驱动、文档！
+
+### 快速开始
+
+```bash
+# 安装pre-push钩子
+bash scripts/install-hooks.sh
+
+# 开发时运行测试
+bash test/run_all.sh
+
+# 全绿即可提交
+```
+
+### 贡献指南
+
+- 新增器件驱动：参考 [docs/development.md#新增驱动](docs/development.md)
+- 新增测试用例：`test/cpp/test_*.cpp` 或 `test/test_*.lua`
+- 文档改进：`docs/` 目录
+
+详见 [docs/development.md](docs/development.md)
+
+---
 
 ## 📄 开源协议
 
-本项目基于 MIT 协议开源（见 [LICENSE](LICENSE)）。
+本项目基于 **MIT 协议**开源（见 [LICENSE](LICENSE)）
+
+---
+
+## 🔗 相关资源
+
+- **文档中心**: [docs/README.md](docs/README.md)
+- **架构分析**: [docs/architecture_analysis.html](docs/architecture_analysis.html)
+- **更新日志**: [docs/changelog.md](docs/changelog.md)
+- **问题反馈**: GitHub Issues
+
+---
+
+**立即开始** → `export BOT4CJ_LLM_KEY=sk-xxx && ./build/mybot --robot=robots/relay-test.sql --agent`

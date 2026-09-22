@@ -210,7 +210,7 @@ int main(int argc, char** argv) {
 
 	/* ---- 拉起帮助手册 ---- */
 	if (options.help) {
-		printHelp();
+		printHelp(options.helpTopic);  /* 2026-09-22: 支持分段帮助 */
 		return 0;
 	}
 

@@ -35,7 +35,14 @@ int validateOptions(ParsedArgs& args);
 /* 帮助全文（单一字符串来源，便于单测锚定；--help 与错误提示共用） */
 std::string helpText();
 
+/* 分段帮助文本（2026-09-22 可用性改进）：支持 --help <topic> 快速查看特定主题。
+ * topic 为空或不识别时返回完整帮助；识别的主题返回该段落。 */
+std::string helpText(const std::string& topic);
+
 /* 输出帮助全文（stdout） */
 void printHelp();
+
+/* 输出分段帮助（stdout，2026-09-22） */
+void printHelp(const std::string& topic);
 
 } // namespace bot

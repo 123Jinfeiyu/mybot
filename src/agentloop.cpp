@@ -29,6 +29,23 @@ std::string indentLines(const std::string& s, std::size_t n) {
 	return out;
 }
 
+/* 转义日志标记（2026-09-22 安全改进）：防止工具输出含 [FAIL] 等关键字时
+ * 干扰日志解析器。只转义行首的方括号标记，保留其他位置的方括号不变。 */
+std::string escapeLogMarkers(const std::string& s) {
+	std::string out;
+	bool atLineStart = true;
+	for (std::size_t i = 0; i < s.size(); ++i) {
+		char c = s[i];
+		if (atLineStart && c == '[') {
+			out += "\\[";  /* 转义行首方括号 */
+		} else {
+			out += c;
+		}
+		atLineStart = (c == '\n');
+	}
+	return out;
+}
+
 } // namespace
 
 AgentSession::AgentSession(ChatTransport& transport, const AgentToolRegistry& tools,
@@ -247,7 +264,8 @@ std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
 	}
 
 	if (opts_.verbose) {
-		std::string shown = result.text;
+		/* 2026-09-22: 转义工具输出中的日志标记，防止干扰日志解析 */
+		std::string shown = escapeLogMarkers(result.text);
 		if (!result.imageDataUrl.empty()) {
 			shown += "\n[返回图片 " + std::to_string(result.imageDataUrl.size())
 				+ " 字节，已注入下一轮对话]";

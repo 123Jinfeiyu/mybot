@@ -487,15 +487,48 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	}
 
 	/* ---- 交互 REPL：硬件全程常驻，可连续下达任务 ---- */
+	/* 状态指示提示符组件（2026-09-22 可用性改进）：提取结构脚本名（去路径和扩展名）、
+	 * 硬件变量数量，让用户在提示符即可看到当前上下文，无需反复 /hardware 查询。 */
+	std::string robotName = cfg.structurePath;
+	if (std::size_t slash = robotName.rfind('/'); slash != std::string::npos) {
+		robotName = robotName.substr(slash + 1);
+	}
+	if (robotName.size() > 4 && robotName.substr(robotName.size() - 4) == ".sql") {
+		robotName = robotName.substr(0, robotName.size() - 4);
+	}
+	const std::size_t hwCount = robot.registry().byName().size();
+
 	out << "agent 模式：机器人已上电常驻（结构脚本 " << cfg.structurePath << "）。\n"
-		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/exit 退出。\n";
+		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/help 看帮助，/exit 退出。\n";
 	std::string line;
 	while (!stopRequested()) {
-		out << "mybot> " << std::flush;
+		/* 状态提示符格式：mybot[robot_name|llm_var|N_hw]>
+		 * 示例：mybot[spider1|llm0|14hw]> */
+		out << "mybot[" << robotName << "|" << cfg.llmVar << "|" << hwCount << "hw]> " << std::flush;
 		if (!std::getline(in, line)) { break; }
+		/* 输入长度限制（2026-09-22 审计后添加）：防止恶意输入巨大字符串
+		 * 导致内存耗尽。getline 本身无限制，只在坏分配时 bad_alloc。
+		 * 超限响亮拒绝并提示，不静默截断（与配置文件同款口径）。 */
+		if (line.size() > bot::agent::kMaxReplInputBytes) {
+			log << "错误: 输入过长（" << line.size() << " 字节，上限 "
+				<< bot::agent::kMaxReplInputBytes << " 字节）；请缩短输入或分多次提交\n";
+			continue;
+		}
 		std::string task = trim(line);
 		if (task.empty()) { continue; }
 		if (task == "/exit" || task == "/quit") { break; }
+		if (task == "/help") {
+			out << "内置命令:\n"
+				<< "  /hardware  - 显示硬件清单（只读，不触发任何动作）\n"
+				<< "  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）\n"
+				<< "  /help      - 显示此帮助\n"
+				<< "  /exit      - 退出 agent 模式\n"
+				<< "  /quit      - 同 /exit\n"
+				<< "直接输入任务描述即可让智能体执行，例如：\n"
+				<< "  让机器人站立\n"
+				<< "  拍照并描述看到的内容\n";
+			continue;
+		}
 		if (task == "/hardware") {
 			out << describeHardware(robot) << "\n";
 			continue;

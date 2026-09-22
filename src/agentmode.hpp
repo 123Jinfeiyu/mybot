@@ -114,6 +114,12 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
  * 头 ≤16 KiB + 两份清单），正常使用不会碰到。 */
 inline constexpr std::size_t kMaxSystemPromptBytes = 64u << 10;
 
+/* REPL 单行输入上限（2026-09-22 审计后添加）。防止恶意输入巨大任务字符串
+ * 导致内存耗尽（std::getline 无内建长度限制，只在系统 RLIMIT_AS / 坏分配
+ * 时才会 bad_alloc）。10 MiB 远超正常任务描述（几百字节），同时兼顾偶尔
+ * 粘贴长文本的合理场景。超限响亮拒绝并提示，不静默截断。 */
+inline constexpr std::size_t kMaxReplInputBytes = 10u << 20;
+
 std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot);
 
 /* 跑 agent 会话。返回进程退出码：0 正常结束；1 模型/执行失败。 */

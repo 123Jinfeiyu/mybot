@@ -69,7 +69,11 @@ ParsedArgs parseArgs(int argc, char** argv) {
 		const std::string& val = tok.value;
 		bool noValue = !tok.hasValue;
 		/* ---- 布尔 flag 与特殊形态：表外显式处理 ---- */
-		if (key == "help") { out.opts.help = true; }
+		if (key == "help") {
+			out.opts.help = true;
+			/* 2026-09-22: 支持 --help <topic> 分段帮助 */
+			if (!noValue) { out.opts.helpTopic = val; }
+		}
 		else if (key == "tcp") {
 			out.opts.tcp = true;
 			/* 裸 --tcp：tcp 置位但端口留空，由 openActionSource 报「缺端口号」 */
@@ -206,7 +210,7 @@ std::string helpText() {
 	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
 	s += "  --no-camera           不向智能体提供 capture_image 工具\n";
 	s += "取值优先级：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。\n";
-	s += "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/exit 退出。\n";
+	s += "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/help 帮助，/exit 退出。\n";
 	s += "\n";
 	s += "示例：\n";
 	s += "  ./build/mybot --robot=robots/relay-test.sql --agent --task \"让继电器动作一次\"\n";
@@ -215,11 +219,94 @@ std::string helpText() {
 	s += "安全约束：动作脚本只能引入新的参数键，不得覆盖结构脚本的元数据列\n";
 	s += "（fd / address / max / min / offset 等）与触发器引用名（trigger 列）；\n";
 	s += "结构脚本与动作脚本单次输入上限均为 8 MiB。\n";
+	s += "\n";
+	s += "分段帮助（2026-09-22 新增）：\n";
+	s += "  --help tcp     - 只显示 TCP 模式相关选项\n";
+	s += "  --help agent   - 只显示 agent 模式相关选项\n";
+	s += "  --help llm     - 只显示 LLM 配置相关选项\n";
+	s += "  --help camera  - 只显示摄像头相关选项\n";
+	return s;
+}
+
+/* 分段帮助文本（2026-09-22 可用性改进）：支持快速查看特定主题 */
+std::string helpText(const std::string& topic) {
+	if (topic.empty()) { return helpText(); }
+	std::string t = trim(topic);
+	for (char& c : t) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+
+	std::string s;
+	if (t == "tcp") {
+		s += "TCP 模式（动作输入源）：\n\n";
+		s += "  --tcp <port>       TCP 模式：监听端口接受一次成功连接，读取对端下发的 .mt\n";
+		s += "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）\n";
+		s += "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1；跨机监听（如 0.0.0.0）\n";
+		s += "                     必须同时提供 --tcp-token，否则拒绝启动\n";
+		s += "  --tcp-token <tok>  TCP 口令：跨机监听必填；对端须先发一行 \"<tok>\\n\" 再发脚本；\n";
+		s += "                     校验失败关连接回等，连续 5 次才退出；也可用环境变量 BOT4CJ_TCP_TOKEN\n";
+		s += "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）；\n";
+		s += "                     另有连接总时长预算（600s，随该值 x20 放大）防慢滴挂住进程\n\n";
+		s += "示例：\n";
+		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080\n";
+		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080 --tcp-host 0.0.0.0 --tcp-token mysecret\n";
+	} else if (t == "agent") {
+		s += "Agent 模式（智能体控制）：\n\n";
+		s += "  --agent            开启 agent 模式（缺省交互 REPL；硬件全程上电常驻）\n";
+		s += "  --task <文本>      一次性任务，跑完即退出；缺省则进入交互 REPL\n";
+		s += "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt\n";
+		s += "  --prompt-file <路径>  提示词包：可重复传入（文件或目录），全部内容拼接后\n";
+		s += "                       追加到系统提示词，用于注入机器人身份与行为约束；\n";
+		s += "                       目录收集其中全部 .md 按文件名自然排序（编号即装载顺序），\n";
+		s += "                       文件间以 \"## 文件名\" 分节；也可用配置文件 prompt_files 数组\n";
+		s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
+		s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌）\n\n";
+		s += "REPL 内置命令：/hardware, /scripts, /help, /exit\n\n";
+		s += "示例：\n";
+		s += "  ./build/mybot --robot=robots/relay-test.sql --agent --task \"让继电器动作一次\"\n";
+		s += "  ./build/mybot --robot=robots/spider1.sql --agent\n";
+	} else if (t == "llm") {
+		s += "LLM 配置选项：\n\n";
+		s += "  --llm-config <路径>  配置文件（JSON）：目标 URL、API key、模型、采样与 agent 参数\n";
+		s += "                       缺省按 ./mybot.llm.json -> ./mybot.llm.conf.json ->\n";
+		s += "                       $HOME/.config/mybot/llm.json 查找；传 none 表示本次不读配置文件\n";
+		s += "  --llm-driver <表名>  协议驱动表名 = modules/<表名>.lua\n";
+		s += "                       内置：LlmOpenAI（缺省，OpenAI 兼容）、LlmDeepSeek\n";
+		s += "  --llm-var <变量名>   承载驱动的变量名（缺省 llm0）\n";
+		s += "  --llm-endpoint <URL>  接入点（覆盖配置文件）\n";
+		s += "  --llm-model <名称>    模型名（覆盖配置文件）\n";
+		s += "  （API key）           只从环境变量 BOT4CJ_LLM_KEY 或配置文件的 api_key / api_key_file 取\n";
+		s += "  --llm-max-turns <N>   单次任务的最大模型轮数（缺省 8，"
+			+ rangeText(llm_limits::kMaxTurnsMin, llm_limits::kMaxTurnsMax) + "）\n";
+		s += "  --llm-max-tokens <N>  单次生成最大 token 数（缺省 4096，"
+			+ rangeText(llm_limits::kMaxTokensMin, llm_limits::kMaxTokensMax) + "）\n";
+		s += "  --llm-timeout <秒>    单次模型调用超时（缺省 180，"
+			+ rangeText(llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec) + "）\n\n";
+		s += "取值优先级：命令行 > 环境变量 > 配置文件 > 驱动内置缺省\n\n";
+		s += "示例：\n";
+		s += "  export BOT4CJ_LLM_KEY=sk-xxx\n";
+		s += "  ./build/mybot --robot=robots/spider1.sql --agent --llm-model gpt-4\n";
+	} else if (t == "camera") {
+		s += "摄像头配置选项：\n\n";
+		s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）\n";
+		s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
+		s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
+		s += "  --no-camera           不向智能体提供 capture_image 工具\n\n";
+		s += "示例：\n";
+		s += "  ./build/mybot --robot=robots/spider1.sql --agent --camera-device /dev/video1\n";
+		s += "  ./build/mybot --robot=robots/spider1.sql --agent --camera-src test.jpg\n";
+	} else {
+		s += "未知主题: " + topic + "\n\n";
+		s += "支持的主题：tcp, agent, llm, camera\n";
+		s += "使用 --help 查看完整帮助\n";
+	}
 	return s;
 }
 
 void printHelp() {
 	std::cout << helpText();
+}
+
+void printHelp(const std::string& topic) {
+	std::cout << helpText(topic);
 }
 
 } // namespace bot
