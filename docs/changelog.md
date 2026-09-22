@@ -5,6 +5,26 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 网关数组形态 content 归一化（PL-3）
+
+> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 B。
+> 只影响**数组形态 content** 的响应；字符串/null 形态一字不变。
+
+- 新版 OpenAI 协议允许 `content` 为 `[{type="text",text=…},{type="image_url",…}]`
+  数组形态，部分兼容网关也这么返回。宿主只认字符串（`src/agentproto.cpp` 的
+  `content->isStr()`），原样透传 → 文本为空、`tool_calls` 也为空 → 整轮以
+  「既没有返回文本也没有工具调用」告终，**报错完全不指向真因**。
+- 现由驱动在 `parse_response` 归一化：text 段按序拼接；**非 text 段丢弃但计数**
+  记进 `extras.content_parts_dropped`——「模型给了别的内容而宿主没看见」这件事
+  必须在审计里可见（项目口径：不谎报状态）。顺带处理两种网关变体：直接回单个
+  part 对象（非数组）、以及畸形表（后者归一化为空文本 + 计数可见，不静默吞掉）。
+- **单点收益**：DeepSeek 驱动复用同一份 `parse_response`，一处修复覆盖两个驱动。
+- 钉子用例：`test/test_llm_drivers.lua` 新增 18 条（两个驱动 × 拼接顺序 / 非 text
+  段计数 / 空数组 / 单个 part 对象 / 畸形表 / 字符串不变 / null），139 → 157 通过。
+- 反向验证：短路归一化（直接用 `msg.content`）后 12 条转红，恢复后全绿。
+- 验收：`luajit test/test_llm_drivers.lua` **157 通过 / 0 失败**。
+- 文档：`docs/agent.md` 驱动契约节补一句「`content` 对宿主永远是字符串」。
+
 ### 2026-09-22 `--check-config` 配置校验模式（PL-1，原 U-4）
 
 > 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 B。

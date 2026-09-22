@@ -197,6 +197,12 @@ agentloop（C++）        工具循环
 宿主不理解、不修改，只随 assistant 消息逐轮原样带回，由驱动决定怎么用。
 API key 不在这个表里——驱动自己读环境变量。
 
+`content` 对宿主永远是**字符串**：网关按新版协议返回
+`[{type="text",text=…},{type="image_url",…}]` 数组形态时，由驱动在 `parse_response`
+里归一化（text 段按序拼接；非 text 段丢弃并在 `extras.content_parts_dropped` 计数，
+使「模型给了别的内容而宿主没看见」在审计里可见）。宿主侧仍只认字符串——
+这条不变式由驱动的单测钉住。
+
 > **写驱动时注意「空数组」**：宿主把 Json 转成 Lua 表、驱动再编码回 JSON，而 Lua 的
 > `{}` 无法区分空数组与空对象——`[]` 会变成 `{}`。JSON Schema 的 `required` 必须是
 > 数组，DeepSeek 会严格校验并直接 400：

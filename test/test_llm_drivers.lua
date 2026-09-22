@@ -274,6 +274,45 @@ for _, lib in ipairs({ "openai", "deepseek" }) do
 		type(res) == "table" and #res.tool_calls == 1 and res.tool_calls[1].name == "t")
 end
 
+-- PL-3（2026-09-22）：content 归一化。新版 OpenAI 协议允许 content 为
+-- [{type="text",text=...},…] 数组形态，部分兼容网关也这么返回；宿主只认字符串
+-- （agentproto.cpp 的 content->isStr()），原样透传会让整轮以「既没有返回文本
+-- 也没有工具调用」告终，报错完全不指向真因。两个驱动共用 parse_response。
+for _, lib in ipairs({ "openai", "deepseek" }) do
+	local wire = lib == "openai" and openai or deepseek
+	local function parse(body) return wire.parse_response(json.decode(body)) end
+
+	local r = parse('{"choices":[{"message":{"content":'
+		.. '[{"type":"text","text":"你"},{"type":"text","text":"好"}]}}]}')
+	check(lib .. ": 数组 content 按序拼接", r.content == "你好")
+
+	local r2 = parse('{"choices":[{"message":{"content":'
+		.. '[{"type":"text","text":"看"},{"type":"image_url","image_url":{"url":"x"}}]}}]}')
+	check(lib .. ": 非 text 段不混进文本", r2.content == "看")
+	-- 丢了东西必须可见（项目口径：不谎报状态），但不能污染既有响应形态
+	check(lib .. ": 被丢弃的段计数进 extras",
+		r2.extras ~= nil and r2.extras.content_parts_dropped == 1)
+
+	local r3 = parse('{"choices":[{"message":{"content":[]}}]}')
+	check(lib .. ": 空数组 → 空文本", r3.content == "")
+	check(lib .. ": 没丢东西就不挂计数", r3.extras == nil)
+
+	-- 网关直接回单个 part 对象（非数组）：ipairs 一个都遍历不到，不特判会静默变空
+	local r4 = parse('{"choices":[{"message":{"content":{"type":"text","text":"单段"}}}]}')
+	check(lib .. ": 单个 part 对象也认", r4.content == "单段")
+
+	-- 畸形表：宁可空文本 + 计数可见，也不要静默吞掉
+	local r5 = parse('{"choices":[{"message":{"content":{"foo":1}}}]}')
+	check(lib .. ": 畸形 content 表 → 空文本但计数可见",
+		r5.content == "" and r5.extras ~= nil and r5.extras.content_parts_dropped == 1)
+
+	-- 反向对照：既有的字符串形态与 null 一字不变
+	local r6 = parse('{"choices":[{"message":{"content":"普通"}}]}')
+	check(lib .. ": 字符串 content 不变", r6.content == "普通" and r6.extras == nil)
+	local r7 = parse('{"choices":[{"message":{"content":null}}]}')
+	check(lib .. ": null content → 空文本", r7.content == "")
+end
+
 -- ================= API key 取值 =================
 
 check("API key: 传入优先", openai.api_key({ api_key = "k1" }) == "k1")

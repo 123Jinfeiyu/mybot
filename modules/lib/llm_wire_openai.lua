@@ -202,7 +202,32 @@ function M.parse_response(decoded)
 	local msg = choice and choice.message
 	if msg == nil then return nil, "响应缺少 choices[1].message" end
 
-	local out = { result = "OK", content = msg.content or "" }
+	-- PL-3（2026-09-22）：content 归一化。新版 OpenAI 协议允许 content 为
+	-- [{type="text",text=...},{type="image_url",...}] 的数组形态，部分兼容网关
+	-- 也这么返回。宿主只认字符串（src/agentproto.cpp 的 content->isStr()），
+	-- 原样透传会让整轮以「既没有返回文本也没有工具调用」告终——报错完全不指向
+	-- 真因。这里把 text 段按序拼接；**非 text 段丢弃但计数**并记进 extras，
+	-- 让「模型给了别的内容而我没看见」在审计里可见（不谎报状态）。
+	local parts_dropped = 0
+	local function flatten_content(c)
+		if type(c) ~= "table" then return c end
+		-- 数组形态照常逐段取 text；**非数组但有键**的表（如网关直接回单个
+		-- part 对象 {type="text",text=...}，或某种畸形表）当作一段处理，
+		-- 否则 ipairs 一个都遍历不到，会静默变成空文本。
+		local segs = c
+		if #c == 0 and next(c) ~= nil then segs = { c } end
+		local parts = {}
+		for _, seg in ipairs(segs) do
+			if type(seg) == "table" and seg.type == "text" and type(seg.text) == "string" then
+				parts[#parts + 1] = seg.text
+			else
+				parts_dropped = parts_dropped + 1
+			end
+		end
+		return table.concat(parts, "")
+	end
+
+	local out = { result = "OK", content = flatten_content(msg.content) or "" }
 
 	local tcs = msg.tool_calls
 	-- PL-6（2026-09-22）：形态非法时点名返回，而不是直接交给 ipairs——对非表值
@@ -232,6 +257,8 @@ function M.parse_response(decoded)
 	if msg.reasoning_content ~= nil and msg.reasoning_content ~= "" then
 		extras.reasoning_content = msg.reasoning_content
 	end
+	-- PL-3：被丢弃的非 text content 段计数（只有真丢了才挂，保持既有响应形态不变）
+	if parts_dropped > 0 then extras.content_parts_dropped = parts_dropped end
 	if next(extras) ~= nil then out.extras = extras end
 
 	return out
