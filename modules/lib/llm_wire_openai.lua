@@ -198,9 +198,24 @@ end
 
 -- provider 响应 → 规范化响应（只取本项目用得上的字段）
 function M.parse_response(decoded)
-	local choice = decoded.choices and decoded.choices[1]
-	local msg = choice and choice.message
+	-- PL-6：形态非法时点名返回，而不是直接交给 ipairs。
+	local function type_err(field, want, got)
+		return nil, "响应字段 " .. field .. " 形态非法（期望 " .. want
+			.. "，实际 " .. got .. "）"
+	end
+	if type(decoded.choices) ~= "table" then
+		return type_err("choices", "数组", type(decoded.choices))
+	end
+	local choice = decoded.choices[1]
+	if choice == nil then return nil, "响应缺少 choices[1].message" end
+	if type(choice) ~= "table" then
+		return type_err("choices[1]", "对象", type(choice))
+	end
+	local msg = choice.message
 	if msg == nil then return nil, "响应缺少 choices[1].message" end
+	if type(msg) ~= "table" then
+		return type_err("choices[1].message", "对象", type(msg))
+	end
 
 	-- PL-3（2026-09-22）：content 归一化。新版 OpenAI 协议允许 content 为
 	-- [{type="text",text=...},{type="image_url",...}] 的数组形态，部分兼容网关
@@ -238,17 +253,37 @@ function M.parse_response(decoded)
 	if tcs ~= nil and type(tcs) ~= "table" then
 		return nil, "响应字段 tool_calls 形态非法（期望数组，实际 " .. type(tcs) .. "）"
 	end
+	local bad_tool_calls = 0
 	if tcs ~= nil then
 		local calls = {}
 		for i, tc in ipairs(tcs) do
-			local fn = tc["function"] or {}
-			calls[i] = {
-				id = tc.id or ("call_" .. i),
-				name = fn.name or "",
-				arguments = fn.arguments or "{}",
-			}
+			-- SAN-6（2026-09-22）：**元素**也要设防。PL-6 只守了容器类型，
+			-- `[42]` 或 `[{"function":42}]` 仍会抛裸 Lua 错误
+			-- （attempt to index local 'tc'/'fn'），逃出驱动"返 ERR 表、绝不抛"
+			-- 的契约。元素不是表时**跳过并计数**（与 PL-3 丢弃非 text 段同口径：
+			-- 丢弃但如实记账，不静默），而不是让整轮失败。
+			if type(tc) ~= "table" then
+				bad_tool_calls = bad_tool_calls + 1
+			else
+				local fn = tc["function"]
+				if fn ~= nil and type(fn) ~= "table" then
+					bad_tool_calls = bad_tool_calls + 1
+				else
+					fn = fn or {}
+					-- SAN-6：**不再合成 call_<i>**。宿主已经有轮次相关的合成方案
+					-- （agentloop 的 call_<turn>_<i>，专为"漏 id 的网关"而设），
+					-- 而驱动的 call_<i> 每轮从 1 重来，会把宿主那条路径遮住并
+					-- 造成跨轮重复 id（真机 400 answered more than once）。
+					-- 这里只透传：id 为空时由宿主填。
+					calls[#calls + 1] = {
+						id = type(tc.id) == "string" and tc.id or "",
+						name = type(fn.name) == "string" and fn.name or "",
+						arguments = fn.arguments ~= nil and tostring(fn.arguments) or "{}",
+					}
+				end
+			end
 		end
-		-- 无条件表编码为对象，故只在非空时挂上；空数组等价于「没有工具调用」
+		-- 丢弃计数先存起来：extras 表在本函数末尾统一构造（SAN-6）
 		if #calls > 0 then out.tool_calls = calls end
 	end
 
@@ -259,6 +294,8 @@ function M.parse_response(decoded)
 	end
 	-- PL-3：被丢弃的非 text content 段计数（只有真丢了才挂，保持既有响应形态不变）
 	if parts_dropped > 0 then extras.content_parts_dropped = parts_dropped end
+	-- SAN-6：被丢弃的畸形工具调用元素计数（同上，丢弃但如实记账）
+	if bad_tool_calls > 0 then extras.dropped_bad_tool_calls = bad_tool_calls end
 	if next(extras) ~= nil then out.extras = extras end
 
 	return out

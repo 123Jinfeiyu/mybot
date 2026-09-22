@@ -267,6 +267,37 @@ INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
 `call` 里把规范化请求整形后交给 `llm_wire_openai.lua` 的通用实现，或完全自己实现。
 `result`/`message`/`mode` 三个键名由框架保留。
 
+**响应契约（SAN-6，2026-09-22 起明确成文）**：`call()` **必须返回表、绝不抛**——
+宿主侧调用 `parse_response` 时不在任何 pcall 里，抛出来的 Lua 错误会直接变成一句
+`Hardware call failed (…): attempt to index local 'tc'`，既不点名字段也不给报文片段。
+规范化响应表的键：
+
+| 键 | 必选 | 说明 |
+| --- | --- | --- |
+| `result` | ✅ | `"OK"` 或 `"ERR"`（框架保留键） |
+| `message` | `ERR` 时 ✅ | 人话原因；`ERR` 时还可带结构化判据（见下） |
+| `content` | OK 时 | 文本回答；**数组形态要自己拍平成字符串**（宿主只认字符串） |
+| `tool_calls` | OK 时 | 数组，每项 `{id, name, arguments}`；`arguments` 是**原始 JSON 字符串** |
+| `extras` | 可选 | provider 特有字段，宿主原样逐轮回传（如 DeepSeek 的 `reasoning_content`） |
+| `usage` | 可选 | provider 给的用量对象，宿主只读不推算 |
+
+结构化的错误判据（`ERR` 表上，全部可选但**强烈建议给**——宿主的重试分类靠它们，
+缺了就只能回落到匹配错误文案，实测那在生产路径上从来匹配不上）：
+
+| 键 | 含义 |
+| --- | --- |
+| `http_status` | HTTP 状态码；429 → 限流（退避用服务端的 `Retry-After`），5xx → 可重试，其余 4xx → 不可重试 |
+| `curl_rc` | libcurl 数值退出码；6/7/28/35/52/55/56 可重试，其余（协议/凭据类）不可 |
+| `retriable` | 显式可重试位（驱动知道 HTTP 语义时优先用它） |
+| `retry_after_ms` | 服务端要求的退避毫秒数（来自 `Retry-After` 头，宿主钳到 1s-5min） |
+
+几条**形态判据**（违反即返回点名 `ERR`，`test/test_llm_wire_contract.lua` 是完整的形变矩阵）：
+`choices` 非数组 / `choices[1]` 非对象 / `message` 非对象 → 点名报错；
+`tool_calls` 非数组 → 点名报错；`tool_calls` 的**元素**非表或 `function` 非表 →
+**跳过并计数**（`extras.dropped_bad_tool_calls`，丢弃但如实记账，不让整轮失败）；
+`id` 缺失或非字符串 → **透传空串，不要自己合成**（宿主有轮次相关的合成方案
+`call_<turn>_<i>`，驱动自己编的 `call_<i>` 每轮从 1 重来会撞车 → 真机 400）。
+
 ## 给智能体的工具
 
 | 工具 | 作用 | 关键约束 |

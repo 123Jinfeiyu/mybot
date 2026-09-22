@@ -5,6 +5,46 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 驱动不再合成 tool_call id，并补齐响应形态判据（SAN-6）
+
+> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-6。
+> **行为变更**：协议驱动不再自己编 `call_<i>`，id 缺失时透传空串由宿主填。
+
+- **问题①（id 合成遮蔽宿主方案）**：`parse_response` 里 `id = tc.id or ("call_" .. i)`
+  ——宿主**故意**把合成方案设计成轮次相关的（`agentloop` 的 `call_<turn>_<i>`，
+  注释明写"个别流式/兼容实现会漏 tool_call id"**就是为这种网关准备的**），
+  但驱动先生成的 `call_1` 把那条路径**永远遮住**，而驱动的 `call_<i>` **每轮从 1 重来**。
+  复现（同一份无 id 的响应体连跑两轮，再喂给仓内自带的协议校验器）：
+  历史里 `tool_call_id=call_1` 出现两次 → `answered more than once`。
+  **同一条消息内也会撞**：provider 给 `[{id:"call_2"}, {无 id}]` → 第二条合成出 `call_2`。
+- **修法①**：驱动只**透传**（`type(tc.id)=="string" and tc.id or ""`），空串由宿主填。
+  请求侧的必填判据不受影响——宿主在组包前一定已经填过 id
+  （`agentloop.cpp` 的合成在写历史之前）。
+- **问题②（PL-6 的未修兄弟）**：PL-6 只守了 `tool_calls` 的**容器**类型，
+  而 `choices` / `message` / **元素** 仍会抛裸 Lua 错误。实测（修复前）：
+  `{"choices":42}` → `attempt to index field 'choices'`；
+  `{"choices":[{"message":42}]}` → `attempt to index local 'msg'`；
+  `tool_calls:[42]` → `attempt to index local 'tc'`；
+  `[{"function":42}]` → `attempt to index local 'fn'`。
+  `M.perform` 调 `parse_response` **不在任何 pcall 里**，于是这些错误逃出驱动
+  "返 ERR 表、绝不抛"的契约，宿主最终只看到一句 `attempt to index local 'tc'`
+  ——不点名字段、不给报文片段，与 PL-6 修好之前**逐字同类**。
+- **修法②**：`choices` / `choices[1]` / `message` 非表 → **点名返回**
+  （`响应字段 X 形态非法（期望 对象，实际 number）`）；`tool_calls` 的**元素**非表、
+  或 `function` 非表 → **跳过并计数**（`extras.dropped_bad_tool_calls`），
+  与 PL-3 丢弃非 text 段同口径——丢弃但如实记账，不静默、也不让整轮失败。
+  计数只在真丢了时才挂（保持既有响应形态不变）。
+- **一处修，两个驱动受益**：DeepSeek 复用同一份 `parse_response`，故两组用例
+  都在两个驱动上跑（`for _, lib in ipairs({"openai","deepseek"})`）。
+- **守门**：Lua +28 条（形态点名 ×3 ×2 驱动、元素丢弃计数、合法/畸形混合、
+  全合法时字段不出现、id 透传三种形态、arguments 非字符串 tostring）；
+  C++ +1 条（漏 id 的网关下宿主合成的 id **跨轮唯一**，并用
+  `historyProtocolViolation` 钉住整段历史可被服务端接受）。
+- **覆盖边界（如实声明）**：那条 C++ 用例走的是 `AgentFakeDriver` 夹具（**不经**
+  Lua wire 层），所以它钉的是**宿主的合成方案**；"驱动不再合成 `call_<i>`"这一半
+  由 Lua 用例钉——反向验证：把驱动改回 `tc.id or ("call_" .. i)` →
+  两条 Lua 断言转红（实测输出 `{"name":"t","id":"call_1",...}`）。
+
 ### 2026-09-22 动作执行回显改走 stderr（SAN-5），并修好两处会假绿的断言辅助
 
 > 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-5。

@@ -8,6 +8,7 @@
 -- "netfail-always" 则每次都失败，用来钉住「max_retries = 0 也要发一次」。
 
 local netfail_once_calls = 0
+local noid_calls = 0
 
 function build(data)
 	return { result = "OK" }
@@ -29,6 +30,21 @@ function call(data)
 	end
 	if data.model == "netfail-always" then
 		return { result = "ERR", message = "curl error 7: 网络不可达（假驱动，始终）" }
+	end
+	-- SAN-6：模拟"漏 tool_call id 的网关"。宿主必须为每一轮合成**跨轮唯一**的 id
+	-- （call_<turn>_<i>）——驱动合成的 call_<i> 每轮从 1 重来，会让第二轮与第一轮
+	-- 撞车（真机 400 answered more than once）。第二轮回一句最终回答收尾
+	-- （否则工具循环跑到轮次上限）。
+	if data.model == "noid" then
+		noid_calls = noid_calls + 1
+		if noid_calls > 2 then
+			return { result = "OK", content = "收尾" }
+		end
+		return {
+			result = "OK",
+			content = "调用工具（无 id）",
+			tool_calls = { { id = "", name = "list_hardware", arguments = "{}" } },
+		}
 	end
 
 	local nmsgs = 0

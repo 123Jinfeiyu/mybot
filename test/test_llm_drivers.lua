@@ -274,6 +274,95 @@ for _, lib in ipairs({ "openai", "deepseek" }) do
 		type(res) == "table" and #res.tool_calls == 1 and res.tool_calls[1].name == "t")
 end
 
+-- SAN-6（2026-09-22）：PL-6 只守了**容器**类型，元素与 choices/message 仍会抛裸错误。
+-- 复现（修复前）：tool_calls=[42] → "attempt to index local 'tc' (a number value)"；
+-- [{"function":42}] → "attempt to index local 'fn'"；{"choices":42} /
+-- {"choices":[{"message":42}]} 同理。M.perform 调 parse_response **不在 pcall 里**，
+-- 所以这些错误会逃出驱动"返 ERR 表、绝不抛"的契约，宿主最终只看到一句
+-- "Hardware call failed (…): …attempt to index local 'tc'"——不点名字段、不给报文片段。
+for _, lib in ipairs({ "openai", "deepseek" }) do
+	local wire = lib == "openai" and openai or deepseek
+
+	local function no_raise(body)
+		local ok, res, err = pcall(wire.parse_response, json.decode(body))
+		return ok, res, err
+	end
+
+	-- ① choices 非表 / 元素非表
+	local bads = {
+		{ name = "choices 为数字", body = '{"choices":42}', field = "choices" },
+		{ name = "choices[1] 为数字", body = '{"choices":[42]}', field = "choices[1]" },
+		{ name = "message 为数字", body = '{"choices":[{"message":42}]}', field = "message" },
+	}
+	for _, b in ipairs(bads) do
+		local ok, res, err = no_raise(b.body)
+		check(lib .. ": " .. b.name .. "时不抛裸错误", ok, tostring(res))
+		check(lib .. ": " .. b.name .. "时返回点名原因",
+			ok and res == nil and tostring(err):find(b.field, 1, true) ~= nil, tostring(err))
+	end
+
+	-- ② tool_calls 的元素非表 / function 非表：**跳过并计数**（不整轮失败）
+	local ok1, r1 = no_raise('{"choices":[{"message":{"content":"x","tool_calls":[42]}}]}')
+	check(lib .. ": tool_calls 元素为数字时不抛裸错误", ok1, tostring(r1))
+	check(lib .. ": 元素为数字时被丢弃但计数进 extras",
+		type(r1) == "table" and r1.tool_calls == nil
+		and type(r1.extras) == "table" and r1.extras.dropped_bad_tool_calls == 1,
+		json.encode(r1))
+
+	local ok2, r2 = no_raise('{"choices":[{"message":{"content":"x","tool_calls":'
+		.. '[{"id":"c1","function":42}]}}]}')
+	check(lib .. ": function 为数字时不抛裸错误", ok2, tostring(r2))
+	check(lib .. ": function 为数字时被丢弃但计数",
+		type(r2) == "table" and r2.tool_calls == nil
+		and r2.extras.dropped_bad_tool_calls == 1, json.encode(r2))
+
+	-- ③ 混合：一条合法 + 一条畸形 → 合法的照常派发，畸形的计数
+	local ok3, r3 = no_raise('{"choices":[{"message":{"content":"x","tool_calls":['
+		.. '{"id":"c1","function":{"name":"t","arguments":"{}"}},42]}}]}')
+	check(lib .. ": 合法与畸形混合时保留合法的",
+		ok3 and type(r3.tool_calls) == "table" and #r3.tool_calls == 1
+		and r3.tool_calls[1].id == "c1" and r3.extras.dropped_bad_tool_calls == 1,
+		json.encode(r3))
+
+	-- ④ 全合法时**不出现** dropped_bad_tool_calls（保持既有响应形态不变）
+	local ok4, r4 = no_raise('{"choices":[{"message":{"content":"x","tool_calls":['
+		.. '{"id":"c1","function":{"name":"t","arguments":"{}"}}]}}]}')
+	check(lib .. ": 全合法时不出现丢弃计数字段",
+		ok4 and (r4.extras == nil or r4.extras.dropped_bad_tool_calls == nil),
+		json.encode(r4))
+end
+
+-- SAN-6：驱动**不再合成** tool_call id（此前是 `tc.id or ("call_" .. i)`）。
+-- 宿主有轮次相关的合成方案（agentloop 的 call_<turn>_<i>），而驱动的 call_<i>
+-- 每轮从 1 重来，会把宿主那条路径遮住并造成**跨轮重复 id**——真机
+-- 400 answered more than once，且那条坏消息落在不可回滚的历史里。
+-- 判据：id 缺失/非字符串时驱动给空串（由宿主填），而不是自己编一个可能撞车的。
+do
+	local function parse(body) return openai.parse_response(json.decode(body)) end
+
+	local r = parse('{"choices":[{"message":{"content":"x","tool_calls":['
+		.. '{"function":{"name":"t","arguments":"{}"}}]}}]}')
+	check("SAN-6：id 缺失时驱动透传空串（不合成 call_1）",
+		type(r) == "table" and r.tool_calls[1].id == "", json.encode(r.tool_calls[1]))
+
+	local r2 = parse('{"choices":[{"message":{"content":"x","tool_calls":['
+		.. '{"id":42,"function":{"name":"t","arguments":"{}"}}]}}]}')
+	check("SAN-6：id 非字符串时同样给空串（不把数字当 id 下发）",
+		type(r2) == "table" and r2.tool_calls[1].id == "", json.encode(r2.tool_calls[1]))
+
+	local r3 = parse('{"choices":[{"message":{"content":"x","tool_calls":['
+		.. '{"id":"c9","function":{"name":"t","arguments":"{}"}}]}}]}')
+	check("SAN-6：id 存在时原样透传", r3.tool_calls[1].id == "c9", json.encode(r3.tool_calls[1]))
+
+	-- arguments 非字符串时 tostring（宿主 parseToolArguments 会折成"工具参数错误"），
+	-- 而不是把对象/数字丢给宿主当字符串用
+	local r4 = parse('{"choices":[{"message":{"content":"x","tool_calls":['
+		.. '{"id":"c1","function":{"name":"t","arguments":42}}]}}]}')
+	check("SAN-6：arguments 为数字时转成字符串（宿主据此报参数错误）",
+		type(r4) == "table" and r4.tool_calls[1].arguments == "42",
+		json.encode(r4.tool_calls[1]))
+end
+
 -- PL-3（2026-09-22）：content 归一化。新版 OpenAI 协议允许 content 为
 -- [{type="text",text=...},…] 数组形态，部分兼容网关也这么返回；宿主只认字符串
 -- （agentproto.cpp 的 content->isStr()），原样透传会让整轮以「既没有返回文本
