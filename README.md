@@ -202,11 +202,11 @@ servo-rb-hip  angle=90
 
 ### 支持的器件（47款）
 
-**舵机与电机**：PCA9685（16路PWM）、普通舵机  
-**传感器**：IMU（MPU6050/9250）、气压（BMP280）、测距（VL53L0X/L1X）  
+**舵机与电机**：PCA9685（16路PWM）、SCSCL飞特舵机、普通舵机、H03ARR电机驱动  
+**传感器**：IMU（MPU6050/9250、BMI270、LSM6DSV）、气压（BMP280、MS5611）、测距（VL53L0X/L4CD）  
 **总线**：I2C、SPI、UART  
 **摄像头**：V4L2 MJPEG（USB摄像头/树莓派摄像头）  
-**执行器**：继电器、GPIO、ADC  
+**执行器**：继电器、GPIO、PWM、DAC、数字电位器  
 
 完整清单见 [docs/drivers.md](docs/drivers.md)
 
@@ -214,25 +214,23 @@ servo-rb-hip  angle=90
 
 以PCA9685舵机驱动板为例：
 
-```bash
-# 1. 接线
-树莓派 I2C-1 (SDA1/SCL1) → PCA9685 (地址 0x40)
+```sql
+-- robots/spider1.sql
+CREATE TABLE I2C (name String, path String);
+INSERT INTO I2C (name, path) VALUES ('i2c-1', '/dev/i2c-1');
 
-# 2. 编写结构脚本（或使用示例）
-robots/spider1.sql
+CREATE TABLE PCA9685 (name String, I2C String, address String);
+INSERT INTO PCA9685 (name, I2C, address) VALUES ('pca9685-0', '$i2c-1', '0x40');
 
-# 3. 运行
-./build/mybot --robot=robots/spider1.sql --agent
+CREATE TABLE Servo (name String, max String, min String, offset String,
+                    controller String, channel String);
+INSERT INTO Servo (name, max, min, offset, controller, channel)
+  VALUES ('s1', '90', '-', '-', 'pca9685-0', '0');
 ```
 
 ```bash
-# 1. 接线
-树莓派 I2C-1 (SDA1/SCL1) → PCA9685 (地址 0x40)
-
-# 2. 编写结构脚本（或使用示例）
-robots/spider1.sql
-
-# 3. 运行
+# 接线：树莓派 I2C-1 (SDA1/SCL1) → PCA9685 (地址 0x40)
+# 运行
 ./build/mybot --robot=robots/spider1.sql --agent
 ```
 
@@ -262,7 +260,7 @@ bot4cj.cpp/
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
 │   ├── LlmOpenAI.lua    # OpenAI协议驱动
-│   └── lib/             # HAL、virtbus、JSON、滤波器
+│   └── lib/             # HAL、virtbus、JSON、滤波器（23个库）
 ├── robots/        # 结构脚本（机器人定义）
 │   ├── spider1.sql      # 14路舵机蜘蛛
 │   ├── relay-test.sql   # 虚拟继电器（无硬件）
@@ -289,7 +287,7 @@ bash test/run_all.sh
 # 双跑：Release + ASan/UBSan
 bash test/run_san.sh
 
-# 只测agent相关
+# 只测Agent相关
 bash test/run_all.sh agent-all
 ```
 
@@ -300,7 +298,7 @@ bash test/run_all.sh agent-all
 - Release全量测试
 - ASan/UBSan单跑
 
-⚡ **软门禁**（定期检查）：
+⚡ **软门禁**（转硬中）：
 - TSan（线程竞争）
 - clang + clang-tidy
 - 覆盖率报告
@@ -418,9 +416,9 @@ MYBOT在设计时将安全放在首位：
 
 ### 技术特性
 
-- **零C++依赖** - 仅需 LuaJIT + pthread + dl，连HTTP库都是Lua实现
+- **零C++依赖** - 仅需 LuaJIT + pthread + dl + libm，连HTTP库都是Lua FFI实现
 - **多模型支持** - 内置 OpenAI / DeepSeek 协议，换模型=换lua文件
-- **工业级测试** - 445个C++单测 + Lua离线测试 + 三道sanitizer门禁
+- **工业级测试** - 445+ C++单测 + 84+ Lua测试 + 三道sanitizer门禁
 - **跨平台** - Linux aarch64/x86_64，树莓派实测可用
 
 ### 架构优势
@@ -431,9 +429,9 @@ MYBOT在设计时将安全放在首位：
 
 ### 生态完整
 
-- **59个模块** - 47款器件驱动 + 3条总线 + 9个框架模块
-- **丰富文档** - 10+篇深入文档，从入门到源码分析
-- **回归测试** - test/ 下100+ 测试用例，覆盖全链路
+- **59个模块** - 47款器件驱动 + 3条总线 + 9个框架模块（另有23个共享库）
+- **丰富文档** - 16篇深入文档，从入门到源码分析
+- **回归测试** - test/ 下100+测试用例，覆盖全链路
 
 ---
 
