@@ -157,8 +157,8 @@ inline const ScopeEntry* scopeTable(std::size_t& n) {
 		 * 反查表的完备性：漏登记一整族用例（第三轮审计 AG-22 实测漏了 15 条
 		 * agentconfig_/agentmode_）会立刻红，而不是静默少跑。 */
 		{"agent", "agentproto_"}, {"agent", "agentdriver_"}, {"agent", "agenttools_"},
-		{"agent", "agentloop_"}, {"agent", "agentconfig_"}, {"agent", "agentmode_"},
-		{"agent", "agentaudit_"}, {"agent", "agentpolicy_"},
+		{"agent", "agentloop_"}, {"agent", "agentrepl_"}, {"agent", "agentconfig_"},
+		{"agent", "agentmode_"}, {"agent", "agentaudit_"}, {"agent", "agentpolicy_"},
 		{"agent", "llmconfig_"}, {"agent", "promptpack_"}, {"agent", "cliargs_"},
 	};
 	n = sizeof(kTable) / sizeof(kTable[0]);

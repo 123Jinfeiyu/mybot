@@ -421,7 +421,13 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 		}
 	}
 
-	/* ---- 交互 REPL：硬件全程常驻，可连续下达任务 ---- */
+	/* ---- 交互 REPL：硬件全程常驻，可连续下达任务 ----
+	 * 循环本体在 runAgentRepl（C3 拆出，可离线单测）；这里只做装配。 */
+	return runAgentRepl(session, cfg, robot, in, out, log);
+}
+
+int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
+		RobotStruct& robot, std::istream& in, std::ostream& out, std::ostream& log) {
 	/* 状态指示提示符组件（2026-09-22 可用性改进）：提取结构脚本名（去路径和扩展名）、
 	 * 硬件变量数量，让用户在提示符即可看到当前上下文，无需反复 /hardware 查询。 */
 	std::string robotName = cfg.structurePath;

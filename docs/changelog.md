@@ -5,6 +5,21 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 agent 重构阶段 C3（REPL 循环可离线单测）
+
+> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C3（对应 R7）。
+
+REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/上电/一次性任务分支）
+耦合，循环行为只能靠 agent_e2e.sh 六场景兜底。拆出 `runAgentRepl`（session + 只读
+配置视图 + robot + 三条流），I/O 全经参数注入，循环/命令/错误恢复可离线驱动。
+
+- 行为零变化：`runAgentMode` 只保留装配，REPL 段原样搬入 `runAgentRepl`。
+- 新增 [test_agentrepl.cpp](../test/cpp/test_agentrepl.cpp) 六用例：`/exit` 不触发模型
+  且提示符格式正确、EOF 退出码 0、内置命令（/help //hardware //scripts）不触发模型、
+  单轮模型失败不结束会话、输入超限响亮拒绝且会话继续、`/clear` 后请求不含旧历史。
+- harness 作用域名册补 `agentrepl_`（AG-22 自检机制照常起效——漏登记立刻红）。
+- 验收：472/0（agent: 156/0）、`agent-all` 7 段 0 失败。
+
 ### 2026-09-22 agent 重构阶段 C4（历史预算口径诚实化）
 
 > 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C4（对应 R8，按方案倾向选「改注释」而非改实现）。

@@ -17,6 +17,7 @@
 #include "actionsource.hpp"
 #include "agentaudit.hpp"
 #include "agentdriver.hpp"
+#include "agentloop.hpp"	/* AgentSession（C3：runAgentRepl 签名需要） */
 #include "agentpolicy.hpp"
 #include "agentproto.hpp"
 #include "agentprompt.hpp"	/* buildAgentSystemPrompt / kMaxSystemPromptBytes（A2 拆出） */
@@ -138,6 +139,14 @@ inline constexpr std::size_t kMaxReplInputBytes = 10u << 20;
 /* runAgentMode：跑 agent 会话。返回进程退出码：0 正常结束；1 模型/执行失败。 */
 int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
 		std::istream& in, std::ostream& out, std::ostream& log);
+
+/* REPL 循环本体（C3，2026-09-22）。从 runAgentMode 拆出：装配逻辑（工具表/
+ * 审计/上电/一次性任务分支）留在 runAgentMode，循环只依赖已就绪的 session、
+ * 只读的配置视图与 robot（/hardware 只读清单用）。I/O 全经参数注入，可离线
+ * 单测：内置命令派发、输入超限拒绝、单轮失败不结束会话、/exit 与 EOF 退出码。
+ * 返回 0（/exit、/quit、EOF、stop 请求都算正常结束）。 */
+int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
+		RobotStruct& robot, std::istream& in, std::ostream& out, std::ostream& log);
 
 } // namespace agent
 } // namespace bot
