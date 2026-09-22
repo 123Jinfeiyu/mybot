@@ -248,6 +248,32 @@ do
 	check("缺 message 时返回 nil+原因", res == nil and tostring(err):find("message") ~= nil)
 end
 
+-- PL-6（2026-09-22）：tool_calls 形态非法（非表）时给**点名**原因，不抛裸 Lua 错误。
+-- 旧行为是直接 ipairs(tcs)：抛 "bad argument #1 to 'ipairs'"，经 pcall 浮上来
+-- 只剩 Lua 内部报错，既不点名字段也不给报文片段。两个驱动共用 parse_response，
+-- 故同一组用例同时覆盖 openai 与 deepseek。
+for _, lib in ipairs({ "openai", "deepseek" }) do
+	local wire = lib == "openai" and openai or deepseek
+	local bads = {
+		{ name = "字符串", body = '{"choices":[{"message":{"content":"x","tool_calls":"oops"}}]}' },
+		{ name = "数字", body = '{"choices":[{"message":{"content":"x","tool_calls":42}}]}' },
+		{ name = "布尔", body = '{"choices":[{"message":{"content":"x","tool_calls":true}}]}' },
+	}
+	for _, b in ipairs(bads) do
+		-- pcall 包住：旧行为在这里 ok=false（裸抛），修复后 ok=true 且返回 nil+原因
+		local ok, res, err = pcall(wire.parse_response, json.decode(b.body))
+		check(lib .. ": tool_calls 为" .. b.name .. "时不抛裸错误", ok, tostring(res))
+		check(lib .. ": tool_calls 为" .. b.name .. "时返回点名原因",
+			ok and res == nil and tostring(err):find("tool_calls", 1, true) ~= nil,
+			tostring(err))
+	end
+	-- 反向对照：合法数组照常解析（确认新判据没有把正常路径一起挡掉）
+	local res = wire.parse_response(json.decode(
+		'{"choices":[{"message":{"content":"x","tool_calls":[{"id":"c1","function":{"name":"t","arguments":"{}"}}]}}]}'))
+	check(lib .. ": 合法 tool_calls 仍照常解析",
+		type(res) == "table" and #res.tool_calls == 1 and res.tool_calls[1].name == "t")
+end
+
 -- ================= API key 取值 =================
 
 check("API key: 传入优先", openai.api_key({ api_key = "k1" }) == "k1")

@@ -205,6 +205,14 @@ function M.parse_response(decoded)
 	local out = { result = "OK", content = msg.content or "" }
 
 	local tcs = msg.tool_calls
+	-- PL-6（2026-09-22）：形态非法时点名返回，而不是直接交给 ipairs——对非表值
+	-- ipairs 抛的是 "bad argument #1 to 'ipairs'"，经 pcall 浮上来只剩一句 Lua
+	-- 内部报错，既不点名字段也不给报文片段，与上一行「响应缺少 choices[1].message」
+	-- 的诚实口径不一致。调用点（M.perform :338-341）已把 nil+原因 折成
+	-- ERR 并附报文片段，这里只需给出点名原因。
+	if tcs ~= nil and type(tcs) ~= "table" then
+		return nil, "响应字段 tool_calls 形态非法（期望数组，实际 " .. type(tcs) .. "）"
+	end
 	if tcs ~= nil then
 		local calls = {}
 		for i, tc in ipairs(tcs) do

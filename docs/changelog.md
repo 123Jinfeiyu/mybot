@@ -5,6 +5,26 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-22 响应整形：tool_calls 形态非法时报点名原因（PL-6）
+
+> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。
+> 只影响**畸形响应**的报错质量，正常报文一字不变。
+
+- 旧行为：`parse_response` 直接 `ipairs(msg.tool_calls)`。网关若把 `tool_calls`
+  返回成字符串/数字/布尔，抛的是 `bad argument #1 to 'ipairs'`——经 `lua_pcall`
+  折成 ERR 后只剩一句 Lua 内部报错，既不点名字段也不给报文片段，与同一函数
+  「响应缺少 choices[1].message」的诚实口径不一致，排障时看不出是哪个字段坏了。
+- 现行为：非表即 `return nil, "响应字段 tool_calls 形态非法（期望数组，实际 <type>）"`；
+  调用点 `M.perform` 既有的 `nil+原因 → ERR + 报文片段` 路径原样复用（未改）。
+- **单点收益**：DeepSeek 驱动（`modules/lib/llm_wire_deepseek.lua:85`）复用同一份
+  `parse_response`，一处修复同时覆盖两个协议驱动。
+- 钉子用例：`test/test_llm_drivers.lua` 新增 14 条——两个驱动 × 三种非法形态，
+  每条都断言「不抛裸错误」**且**「返回点名原因」，另加一条合法数组的对照用例
+  （确认新判据没有把正常路径一起挡掉）。
+- 反向验证：去掉判据后 12 条转红（失败详情正是旧的 `bad argument #1 to 'ipairs'`），
+  恢复后全绿。
+- 验收：`luajit test/test_llm_drivers.lua` **139 通过 / 0 失败**（原 125 条零修改）。
+
 ### 2026-09-22 CLI 超时/上限参数化（F-1/F-2/F-3，原 TD-2 剩余部分）
 
 > 依据 [.tmp/NEXT_STEPS_20260922.md](../.tmp/NEXT_STEPS_20260922.md)（核实两轮 agent 重构
