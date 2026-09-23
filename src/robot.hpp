@@ -248,8 +248,18 @@ public:
 		 * 表是全量拷贝）靠它划出「哪些行是本批次新增」——不能用「当前行数 >
 		 * 解析前行数」代替：一条 INSERT 与一条 DELETE 落在同一张表上时净行数
 		 * 可能不变，那个判据会把新增行整批漏掉（既装配不出来，也不进瞬态 Action）。
-		 * 表名在**本批次 CREATE 出来的表**上也会出现（其插入行数即全表数据行数）。 */
+		 * 表名在**本批次 CREATE 出来的表**上也会出现（其插入行数即全表数据行数）。
+		 * UPDATE 的分解实现（改写行 = 擦原行 + 尾部追加改后行）**同样计数**：
+		 * 改后行就是「本批次新增行」，靠本计数进入新增区间；被改写的原始行另计入
+		 * deletedRows（原始坐标）。 */
 		std::map<std::string, std::size_t> insertedRows;
+		/* 每表本批次**被 UPDATE 改写的行数**（按表名，2026-09-23 热更新）。两个
+		 * 用途：① applySql 据此判定「本批次含改写」→ 切换为先删后建执行序（见
+		 * 其注释：先建后拆下同名重建会在注册表撞名）；② 生效摘要与审计如实报出
+		 * 「已热更新 N 行（断电重建）」，而不是把同一次改写谎报成一次删除加一次
+		 * 新增。改写行同时计入 deletedRows/insertedRows（物理事实如此），本字段
+		 * 只是改写事实的独立记账。 */
+		std::map<std::string, std::size_t> updatedRows;
 		/* 本批次被 DROP 掉的**表名**（整表撤下，2026-09-23）。readSQL 已在影子容器
 		 * 上把该表的全部数据行清空（并计入 deletedRows/deletedNames，故行的断电与
 		 * 撤注册走与 DELETE 同一条 DelPlan 机器）；调用方据此**额外**把空表壳从活体
@@ -265,10 +275,12 @@ public:
 	 * 才能从「靠 inject 必须早于 active 的约定」升级为构造保证（见 robot.cpp）。
 	 *
 	 * allowDelete 缺省 **false**：同一个函数服务两条路径——结构脚本装配
-	 * （RobotStruct 构造期，机器人尚未上电，删不了任何东西）与热插热删除
-	 * （applySql）。缺省关使启动路径的接受语言逐字不变，且「结构脚本里写
-	 * DELETE」得到的是一句人话而不是运行期怪错；热插调用点显式传 true。
-	 * mutations 为空 = 不收集删除信息（同样只在热插路径需要）。 */
+	 * （RobotStruct 构造期，机器人尚未上电，删不了任何东西）与热插行级变更
+	 * （applySql：DELETE / DROP / UPDATE——UPDATE 分解为「DELETE 命中行 +
+	 * INSERT 改后行」，同样只在带电路径放行）。缺省关使启动路径的接受语言逐字
+	 * 不变，且「结构脚本里写 DELETE/UPDATE」得到的是一句人话而不是运行期怪错；
+	 * 热插调用点显式传 true。
+	 * mutations 为空 = 不收集变更信息（同样只在热插路径需要）。 */
 	static void readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out,
 			bool allowDelete = false, Mutations* mutations = nullptr);
 };
@@ -464,6 +476,29 @@ class RobotStruct {
 	 * 晚调用也不构成 UB——只是当次 deactivate 用旧值。 */
 	int64_t deactivateGraceMs_ = daemon_limits::kGraceMsDefault;
 
+	/* ---- 热删除的物理执行（原 applySql 阶段 4.6，2026-09-23 热更新抽出）----
+	 * 抽成函数供两个执行序共用：「先插入后删除」（既有批次——插入失败时删除
+	 * 未执行，整批可回滚）与「先删后建」（含 UPDATE 的批次——改写行同名重建，
+	 * 注册表重名即抛，必须先摘旧件再装新件）。计划必须由 applySql 在任何
+	 * 插入/上电**之前**构建（hw 指针计划期取好；先建后拆下按名 find 会命中
+	 * 新注册的同名变量、摘错对象）。语义与失败口径见 robot.cpp 实现处注释。 */
+	struct HotDelPlan {
+		std::size_t matIdx = 0;		/* matrices_ 下标 */
+		std::string table;
+		std::vector<std::size_t> rows;	/* 原始行号，升序 */
+		std::vector<std::string> names;	/* 与 rows 平行：硬件变量名 */
+		/* 与 names 平行：计划期从注册表取好的对象指针（pool_ 只增期间裸指针
+		 * 稳定——对象在堆上，vector 扩容搬动的是 unique_ptr 不是对象本体）。 */
+		std::vector<MatrixVars_Hardware*> hw;
+	};
+	struct HotDeleteOutcome {
+		std::size_t deletedVars = 0;
+		std::size_t deletedRows = 0;
+		std::vector<std::string> deletedNames;
+	};
+	HotDeleteOutcome executeHotDeletes(const std::vector<HotDelPlan>& plans,
+		const std::map<std::string, std::size_t>& daemonNameIndex);
+
 public:
 	explicit RobotStruct(bot::Reader& input)
 		: factory_(registry_, daemonHolders_, metaProviders_), runner_(registry_) {
@@ -483,15 +518,20 @@ public:
 	/* 执行 @Action 矩阵（含内联 @Alias 注册） */
 	void run(bot::Reader& input);
 
-	/* ---- 热插表：结构 SQL（CREATE/INSERT）在上电之后真正生效（2026-09-23）----
+	/* ---- 热插表：结构 SQL 在上电之后真正生效（2026-09-23）----
 	 * 契约：
-	 *  1) sql 是**一条或一批**结构 SQL（CREATE TABLE / INSERT INTO；可混排），
-	 *     INSERT 的目标可以是本批次新建的表，也可以是结构里既有表；
+	 *  1) sql 是**一条或一批**结构 SQL（CREATE TABLE / INSERT INTO / DELETE FROM /
+	 *     DROP TABLE / UPDATE … SET … [WHERE …]；可混排），INSERT 的目标可以是
+	 *     本批次新建的表，也可以是结构里既有表；
 	 *  2) 前置条件 active() 已成功（机器人上电常驻）——热插是「带电变更」，
 	 *     未上电时直接用结构脚本，不走这里；
-	 *  3) 事务性：**全成功或全回滚**。任何一步失败（校验/装配/build/动作执行）
-	 *     都逆序 destroy 本批次新建的硬件、撤销注册与矩阵行，抛异常说明成因；
-	 *     动作已下发的物理副作用不回退（与「已执行的动作不回退」同口径）；
+	 *  3) 事务性：插入段**全成功或全回滚**。任何一步失败（校验/装配/build/动作
+	 *     执行）都逆序 destroy 本批次新建的硬件、撤销注册与矩阵行，抛异常说明
+	 *     成因；动作已下发的物理副作用不回退（与「已执行的动作不回退」同口径）。
+	 *     DELETE/DROP 的物理断电**不可逆**（回滚 ≠ 复活器件）；UPDATE 的语义是
+	 *     **断电重建**（命中行按「断电摘除 + 重新装配上电」执行），含 UPDATE 的
+	 *     批次采用先删后建序——插入段失败时已摘除的旧行不复原，错误信息点名
+	 *     丢失的变量。UPDATE 与该表的其它行级语句不得同批（readSQL 守门）；
 	 *  4) Action 表**瞬态**（见 P6 注释）：其行不入结构矩阵、不注册变量，硬件
 	 *     表全部 build 完成后执行一次随即丢弃——故动作可以引用本批次新建变量；
 	 *  5) 返回一句人读的生效摘要（REPL /sql 与 agent apply_sql 共用）。 */

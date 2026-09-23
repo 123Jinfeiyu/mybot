@@ -662,36 +662,53 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK(runSqlCommand("INSERT INTO Nope (name) VALUES ('x');", *robot).find("错误: ") == 0);
 	TH_CHECK(runSqlCommand("", *robot).find("错误: ") == 0);
 
-	/* UPDATE（2026-09-23）：解析已进方言（批次分类按变更语句处理），带电生效
-	 * 尚未接入——REPL 分派把它交给带电生效路径，readSQL 给出**过渡期**的明确
-	 * 拒绝与等效写法指路（拆成 DELETE + INSERT 两批）。断电重建语义落地后
-	 * 本段改写为生效断言。 */
-	TH_CHECK(runSqlCommand("UPDATE Relay SET note = 'x';", *robot)
-		.find("not yet wired into the hot-SQL transaction") != std::string::npos);
+	/* UPDATE（2026-09-23 热更新）：REPL 分派把 UPDATE 交给带电生效路径，语义 =
+	 * 断电重建（命中行按「断电摘除 + 重新装配上电」执行）。此刻 Relay 有
+	 * relay0/relay9 两行，无 WHERE = 全表改写。同名重建后变量数不变、名字仍在。
+	 * 更完整的断电/回滚/引用语义由 test_robot.cpp 的 robot_hot_update_* 组守门。 */
+	const std::string updOk = runSqlCommand("UPDATE Relay SET note = 'hot3';", *robot);
+	TH_CHECK_MSG(updOk.find("已生效") == 0, "实际: " + updOk);
+	TH_CHECK_MSG(updOk.find("已热更新 2 行（断电重建）") != std::string::npos, "实际: " + updOk);
+	TH_CHECK(robot->registry().byName().size() == before + 1);
+	TH_CHECK(robot->declaresVariable("relay9"));
+
+	/* query_sql 是只读通道：UPDATE 在它上面只能拿到「不在只读通道」的指路 */
+	AgentToolResult qUpd = open.execute("query_sql",
+		parseJson("{\"sql\":\"UPDATE Relay SET note = 'x';\"}"));
+	TH_CHECK(!qUpd.ok);
+	TH_CHECK_MSG(qUpd.error.find("不在只读查询通道") != std::string::npos,
+		"实际: " + qUpd.error);
+	TH_CHECK_MSG(qUpd.error.find("UPDATE") != std::string::npos, "实际: " + qUpd.error);
+
 	const std::string delOk = runSqlCommand(
 		"DELETE FROM Relay WHERE name = 'relay9';", *robot);
 	TH_CHECK_MSG(delOk.find("Unsupported statement") == std::string::npos, "实际: " + delOk);
 	TH_CHECK_MSG(delOk.find("已生效") == 0, "实际: " + delOk);
-	/* 删除真的生效：刚插的 relay9 已摘除，注册表回到插入前的规模。
+	/* 删除真的生效：刚改写的 relay9 已摘除，注册表回到插入前的规模。
 	 * 热删除的断电/回滚/引用完整性语义由 test_robot.cpp 的 robot_hot_delete_*
 	 * 组守门，这里只钉「REPL 分派把 DELETE 交给了带电生效路径」。 */
 	TH_CHECK_MSG(delOk.find("已删除硬件变量 1 个") != std::string::npos, "实际: " + delOk);
 	TH_CHECK(!robot->declaresVariable("relay9"));
 	TH_CHECK(robot->registry().byName().size() == before);
 
-	/* 工具面同一条判据，且是**参数类失败**：这里只标 paramError（工具层按异常类型
-	 * 给出的判据），派发漏斗据此把回执改成「工具参数错误: …」并置 executed=false
-	 * ——什么都没执行，不谎称"机器人可能停在半途"（SAN-4/SAN-8）。 */
-	AgentToolResult toolUpd = open.execute("apply_sql", parseJson("{\"sql\":\"UPDATE Relay SET note = 'x';\"}"));
-	TH_CHECK(!toolUpd.ok);
-	TH_CHECK(toolUpd.paramError);
-	TH_CHECK(toolUpd.error.find("not yet wired into the hot-SQL transaction")
-		!= std::string::npos);
-	TH_CHECK(robot->registry().byName().size() == before);	/* 活体一字未动 */
+	/* 工具面同一条带电生效分派（此刻 Relay 只剩 relay0）：成功 + 自报 summary。 */
+	AgentToolResult toolUpd = open.execute("apply_sql", parseJson("{\"sql\":\"UPDATE Relay SET note = 'x2';\"}"));
+	TH_CHECK(toolUpd.ok);
+	TH_CHECK_MSG(toolUpd.summary.find("已热更新 1 行（断电重建）") != std::string::npos,
+		"实际 summary: " + toolUpd.summary);
+	TH_CHECK(robot->registry().byName().size() == before);	/* 同名重建，规模不变 */
+
+	/* 未知表是**参数类失败**（paramError + 无 summary）：派发漏斗据此把回执改成
+	 * 「工具参数错误: …」并置 executed=false——什么都没执行，不谎称"机器人可能
+	 * 停在半途"（SAN-4/SAN-8）。 */
+	AgentToolResult toolBad = open.execute("apply_sql", parseJson("{\"sql\":\"UPDATE Nope SET a = 1;\"}"));
+	TH_CHECK(!toolBad.ok);
+	TH_CHECK(toolBad.paramError);
+	TH_CHECK(toolBad.error.find("table is not defined") != std::string::npos);
 
 	/* G2（2026-09-23）：生效成功时工具结果自报**结构化摘要**，供审计对账。
 	 * 判据：summary 非空且与回传文本同源（applySql 的返回）；失败/参数错误不产生
-	 * 摘要（上面 toolUpd 那条 summary 应为空——没生效就没有可对账的生效信息）。 */
+	 * 摘要（没生效就没有可对账的生效信息）。 */
 	AgentToolResult toolIns = open.execute("apply_sql", parseJson(
 		"{\"sql\":\"INSERT INTO Relay (name, controller, note) VALUES "
 		"('relay10', 'timer-0', 'hot2');\"}"));
@@ -699,7 +716,7 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK_MSG(!toolIns.summary.empty(), "apply_sql 生效成功应自报 summary");
 	TH_CHECK_MSG(toolIns.summary.find("已生效：新增硬件变量 1 个") != std::string::npos,
 		"实际 summary: " + toolIns.summary);
-	TH_CHECK_MSG(toolUpd.summary.empty(), "未生效（参数错误）不应产生 summary");
+	TH_CHECK_MSG(toolBad.summary.empty(), "未生效（参数错误）不应产生 summary");
 
 	/* DROP（2026-09-23 整表撤下）也走同一条带电生效分派：撤表是破坏性的，
 	 * 故放在最后——它会带走 Relay 表连同 relay0/relay10 两个变量。 */

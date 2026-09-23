@@ -36,11 +36,18 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 	 * 再 INSERT/DELETE/CREATE 同名表一律拒绝（避免「表壳已被撤下却又被写回」）。 */
 	std::set<std::string> createdHere;
 	std::set<std::string> droppedHere;
-	/* 本批次被 INSERT/DELETE（改**行**）触碰过的表名。DROP（撤**表**）要求它是本批次
-	 * 针对该表的**唯一**语句：与 INSERT/DELETE 同批会打乱 applySql 靠 insertedRows
-	 * 划「新增行区间」的算法（被删掉的新增行不在尾部连续块里），且「加了又整表撤下」
-	 * 本就无意义——拆成两批即可。CREATE 不算触碰：本批次新建后又被 DROP 有专门路径。 */
+	/* 本批次被 INSERT/DELETE/UPDATE（改**行**）触碰过的表名。DROP（撤**表**）与
+	 * UPDATE（改写行 = 擦原行 + 尾部追加改后行）都要求自己是本批次针对该表的
+	 * **唯一**行级语句：与其它行级语句同批会打乱 applySql 靠 insertedRows 划
+	 * 「新增行区间（尾部连续块）」的算法（被删掉的新增行不在尾部连续块里），且
+	 * 「加了又整表撤下」本就无意义——拆成两批即可。CREATE 不算触碰：本批次新建后
+	 * 又被 DROP 有专门路径（新建后被 UPDATE 则直接拒绝，见 UPDATE 分支）。 */
 	std::set<std::string> touchedHere;
+	/* 本批次被 UPDATE 改写过的表名（双向独占的另一半）：touchedHere 管「UPDATE
+	 * 之前有没有别的行级语句」，本集合管「UPDATE 之后不再有」——改后行追加在尾部、
+	 * 原始行从中间消失，之后再对同表 INSERT/DELETE 都会让坐标与区间算式失真。
+	 * 拆成两批即可，守门消息都带这句指路。 */
+	std::set<std::string> updatedHere;
 
 	/* 把「这些数据行」从表上擦除，并维护「当前行号 → 原始行号」映射与 Mutations
 	 * 记录。DELETE 与 DROP 共用这一段——DROP 就是「对全表数据行跑同一套擦除，
@@ -85,6 +92,30 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 		}
 	};
 
+	/* 带记账的尾部追加（INSERT 的 VALUES 与 UPDATE 的改后行共用，单点）：追加数据行、
+	 * 维护「当前行号 → 原始行号」映射（新增行在原始坐标里也是新的一行：用当前行数
+	 * 当它的原始行号——此刻它还没被任何删除前移过；删掉它时这条映射会被剔除，而
+	 * 调用方拿到该原始行号后只在「本批次新增区间」里找它），并把本批次插入行数
+	 * 计入 Mutations.insertedRows（UPDATE 的改后行同样计数：它就是「本批次新增行」）。 */
+	auto appendRowTracked = [&](mt::MatrixObject* root, const std::string& target,
+			std::vector<std::string> values) {
+		root->appendRow(std::move(values), 0);
+		const std::size_t oi = static_cast<std::size_t>(root - &out[0]);
+		if (rowOrigin.size() < out.size()) { rowOrigin.resize(out.size()); }
+		/* 惰性恒等初始化：本容器首次改动这张表时，先把**既有**行号按恒等铺一遍，
+		 * 再追加新增行。不能只 push 新增行——映射会与行号脱节（既有行没有条目），
+		 * 后续 DELETE 按当前行号取原始行号即越界。启动期（mutations == nullptr）
+		 * 不需要映射内容，但同样必须铺：热插路径会复用同一个容器继续改。 */
+		if (rowOrigin[oi].empty()) {
+			rowOrigin[oi].reserve(root->rows());
+			for (std::size_t r = 0; r + 1 < root->rows(); ++r) {
+				rowOrigin[oi].push_back(r);	/* 既有行，不含刚追加的这行 */
+			}
+		}
+		rowOrigin[oi].push_back(root->rows() - 1);
+		if (mutations != nullptr) { ++mutations->insertedRows[target]; }
+	};
+
 	for (;;) {
 		sql4cj::Event eve = parser.next();
 		if (eve.type == sql4cj::EventType::END) { break; }
@@ -110,6 +141,14 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 			if (droppedHere.count(eve.insert.targetTabName)) {
 				throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
 					+ "': the table was dropped earlier in this batch");
+			}
+			/* 双向独占（updatedHere 注释）：改后行追加在尾部、被改写的原始行已从
+			 * 中间消失，之后再 INSERT 同表会让 applySql 的「新增行 = 尾部连续块」
+			 * 区间算式失真。拆成两批即可。 */
+			if (updatedHere.count(eve.insert.targetTabName)) {
+				throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
+					+ "': the table was rewritten by UPDATE earlier in this batch;"
+					" run INSERT in a separate statement batch");
 			}
 			/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
 			 * （对照 robots/test/insert_typo.sql 的负值契约；N-10：查找
@@ -155,25 +194,7 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 							+ "' (every column must be given a value; use '-' to inherit)");
 					}
 				}
-				root->appendRow(std::move(values), 0);
-				/* 新增行在「原始坐标」里也是新的一行：用当前行数当它的原始行号
-				 * （此刻它还没被任何删除前移过）。删掉它时这条映射会被剔除，
-				 * 而调用方拿到该原始行号后只在「本批次新增区间」里找它。 */
-				const std::size_t oi = static_cast<std::size_t>(root - &out[0]);
-				if (rowOrigin.size() < out.size()) { rowOrigin.resize(out.size()); }
-				/* 惰性恒等初始化：本容器首次改动这张表时，先把**既有**行号按恒等
-				 * 铺一遍，再追加新增行。不能只 push 新增行——映射会与行号脱节
-				 * （既有行没有条目），后续 DELETE 按当前行号取原始行号即越界。
-				 * 启动期（mutations == nullptr）不需要映射内容，但同样必须铺：
-				 * 热插路径会复用同一个容器继续改。 */
-				if (rowOrigin[oi].empty()) {
-					rowOrigin[oi].reserve(root->rows());
-					for (std::size_t r = 0; r + 1 < root->rows(); ++r) {
-						rowOrigin[oi].push_back(r);	/* 既有行，不含刚追加的这行 */
-					}
-				}
-				rowOrigin[oi].push_back(root->rows() - 1);
-				if (mutations != nullptr) { ++mutations->insertedRows[eve.insert.targetTabName]; }
+				appendRowTracked(root, eve.insert.targetTabName, std::move(values));
 			}
 			/* 既存表被 INSERT 碰过 → 本批次不得再对它 DROP（见 touchedHere 注释）。
 			 * 本批次新建的表不算——它整表撤下走 createdHere 路径，与行计数无关。 */
@@ -195,6 +216,12 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 			if (droppedHere.count(target)) {
 				throw IllegalArgumentException("DELETE FROM '" + target
 					+ "': the table was dropped earlier in this batch");
+			}
+			/* 双向独占（同 INSERT 分支的 updatedHere 守门，理由见其注释） */
+			if (updatedHere.count(target)) {
+				throw IllegalArgumentException("DELETE FROM '" + target
+					+ "': the table was rewritten by UPDATE earlier in this batch;"
+					" run DELETE in a separate statement batch");
 			}
 			mt::MatrixObject* root = mt::findByName(out, target);
 			if (root == nullptr) {
@@ -241,14 +268,14 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 				throw IllegalArgumentException("DROP TABLE '" + target
 					+ "': the table is dropped more than once in this batch");
 			}
-			/* 本批次已对这张**既存**表做过 INSERT/DELETE → 拒绝 DROP：
+			/* 本批次已对这张**既存**表做过 INSERT/DELETE/UPDATE → 拒绝 DROP：
 			 * applySql 靠 insertedRows 划「新增行区间（尾部连续块）」，而行级改动
 			 * 之后该区间算法不再成立（被删掉的新增行不在尾部连续块里）；且「先加行
 			 * 再整表撤下」本就没有意义。拆成两批（先改行、再 DROP）即可。 */
 			if (touchedHere.count(target)) {
 				throw IllegalArgumentException("DROP TABLE '" + target
-					+ "': the table was already modified by INSERT/DELETE in this batch;"
-					" run DROP in a separate statement batch");
+					+ "': the table was already modified by INSERT/DELETE/UPDATE in this"
+					" batch; run DROP in a separate statement batch");
 			}
 			if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
 
@@ -297,14 +324,111 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 			break;
 		}
 		case sql4cj::EventType::UPDATE_TABLE: {
-			/* 过渡形态（解析已进方言、带电生效尚未接入）：显式拒绝而不是落进
-			 * default 的静默跳过——后者会让 UPDATE 语句消失得无声无息，下游
-			 * applySql 只能看到一句错位的「本批次没有任何变更」。接入分解实现
-			 * （DELETE 命中行 + INSERT 改后行）后本分支整体移除。 */
-			throw IllegalArgumentException("UPDATE '" + eve.update.targetTabName
-				+ "': UPDATE is accepted by the parser but not yet wired into the"
-				" hot-SQL transaction; for now split it into DELETE (matched rows)"
-				" + INSERT (modified rows) in separate statement batches");
+			/* 热更新（2026-09-23）：UPDATE 在影子上分解为「DELETE 命中行 +
+			 * INSERT 改后行」两条既有路径——语义是**断电重建**，不是原地改值。
+			 * 调用方（applySql）据 Mutations.updatedRows 切换先删后建执行序。 */
+			/* 启动期（结构脚本）一律关闭：与 DELETE/DROP 同判据（机器人尚未上电） */
+			if (!allowDelete) {
+				throw IllegalArgumentException("UPDATE '" + eve.update.targetTabName
+					+ "': UPDATE is a live-structure statement and cannot appear in a"
+					" structure script (the robot is not powered on yet). Edit the"
+					" script, or run UPDATE on a live robot via /sql or apply_sql.");
+			}
+			if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
+			const std::string& target = eve.update.targetTabName;
+			if (droppedHere.count(target)) {
+				throw IllegalArgumentException("UPDATE '" + target
+					+ "': the table was dropped earlier in this batch");
+			}
+			/* 本批次新建的表：直接拒——它的行从未装配、从未上电，「改写」无从谈起，
+			 * 且分解出的「擦原行 + 尾部追加」会打乱 applySql 对新表影子的
+			 * popRows 对账（那条路径假设删除只落在尾部追加块上）。想要什么
+			 * 行，直接把 INSERT 写成想要的样子即可。 */
+			if (createdHere.count(target)) {
+				throw IllegalArgumentException("UPDATE '" + target
+					+ "': the table was created earlier in this batch; write the"
+					" INSERT you actually want, or run UPDATE in the next batch");
+			}
+			/* 批内独占（前置半边，见 touchedHere 注释）：本批次已对该表做过任何
+			 * 行级改动 → 拒绝。拆成两批即可。 */
+			if (touchedHere.count(target)) {
+				throw IllegalArgumentException("UPDATE '" + target
+					+ "': the table was already modified by INSERT/DELETE/UPDATE in"
+					" this batch; run UPDATE in a separate statement batch");
+			}
+			mt::MatrixObject* root = mt::findByName(out, target);
+			if (root == nullptr) {
+				throw IllegalArgumentException(
+					"UPDATE '" + target + "': table is not defined");
+			}
+			/* 赋值列解析到列下标（对照表结构）：未知列/重复列报错——判据与文案
+			 * 镜像 INSERT 的 C3 防线（列是结构事实，读的人要能一眼定位）。 */
+			std::vector<std::size_t> setIdx;
+			setIdx.reserve(eve.update.assignments.size());
+			for (const auto& a : eve.update.assignments) {
+				const std::int64_t idx = root->indexOfCol(0, a.columnName);
+				if (idx < 0) {
+					throw IllegalArgumentException("UPDATE '" + target
+						+ "': no such column '" + a.columnName + "'");
+				}
+				for (std::size_t k : setIdx) {
+					if (k == static_cast<std::size_t>(idx)) {
+						throw IllegalArgumentException("UPDATE '" + target
+							+ "': column '" + a.columnName + "' listed twice");
+					}
+				}
+				setIdx.push_back(static_cast<std::size_t>(idx));
+			}
+			/* 命中行（WHERE 等值 AND 过滤；无条件 = 全部数据行，与 DELETE 同口径） */
+			std::vector<std::size_t> hits;
+			if (eve.update.where) {
+				std::vector<std::pair<std::string, std::string>> conds;
+				conds.reserve(eve.update.where->conds.size());
+				for (const auto& c : eve.update.where->conds) {
+					conds.emplace_back(c.column, c.value);
+				}
+				hits = mt::matchAll(*root, conds);
+			} else {
+				hits.reserve(root->rows() > 1 ? root->rows() - 1 : 0);
+				for (std::size_t r = 1; r < root->rows(); ++r) { hits.push_back(r); }
+			}
+			/* 「一条都没命中」按错误处理（口径同 DELETE）：本路径上的 UPDATE 会
+			 * 断电重建命中行，拿到「已生效」却什么都没发生时，操作者无从判断是
+			 * 条件写错了还是器件本就不在。 */
+			if (hits.empty()) {
+				throw IllegalArgumentException("UPDATE '" + target
+					+ "': no row matches, nothing was updated"
+					+ (eve.update.where ? " (check the WHERE values)"
+							   : " (the table has no data row)"));
+			}
+			/* 先物化改后行，再擦原行（顺序是死的：擦行会让后续行号前移）。
+			 * 取值用 inherited()（'-' 继承解析后的显示值）而不是原格子——改后行
+			 * 追加在**尾部**，原样保留 '-' 会对着不同的前一行重新继承、静默变义。
+			 * SET 自己写 '-' 例外：那是显式的「继承」意图，按原样保留。 */
+			std::vector<std::vector<std::string>> modified;
+			modified.reserve(hits.size());
+			for (std::size_t r : hits) {
+				std::vector<std::string> row;
+				row.reserve(root->cols());
+				for (std::size_t c = 0; c < root->cols(); ++c) {
+					row.push_back(root->inherited(r, c));
+				}
+				for (std::size_t k = 0; k < setIdx.size(); ++k) {
+					row[setIdx[k]] = eve.update.assignments[k].value;
+				}
+				modified.push_back(std::move(row));
+			}
+			/* 分解执行：擦命中行（原始坐标进 Mutations.deletedRows，供 DelPlan 在
+			 * 活体上精确摘除）→ 改后行经 appendRowTracked 尾部追加（计入
+			 * insertedRows：它就是「本批次新增行」，进 applySql 的新增区间）。 */
+			removeRowsOf(root, target, hits);
+			for (auto& row : modified) { appendRowTracked(root, target, std::move(row)); }
+			/* touchedHere 挡住后续 INSERT/DELETE/DROP；updatedHere 挡住后续一切
+			 * 行级语句（双向独占，见其注释）。 */
+			touchedHere.insert(target);
+			updatedHere.insert(target);
+			if (mutations != nullptr) { mutations->updatedRows[target] += hits.size(); }
+			break;
 		}
 		default:
 			break;
