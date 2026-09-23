@@ -48,9 +48,8 @@
 --   - 取消导出后引脚回到未配置状态，停机后的电平要靠硬件上下拉兜底
 --   - 需要 root 或 pwm 组权限才能写 /sys/class/pwm（export/unexport 默认仅 root）
 
--- 加载纯 Lua 基层硬件抽象层（HAL）
--- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -85,14 +84,16 @@ function build(data)
 	end
 
 	-- frequency：可选，缺省 1000Hz
-	local freq = tonumber(data.frequency)
+	-- 审计 2026-09-20（中）：非有限值必须拒绝——`freq <= 0` 对 NaN/inf 恒假，
+	-- inf 会让 pwm_config 算出 period_ns=1（1ns 周期）并写进 sysfs 成功返回。
+	local freq = finite_of(data.frequency)
 	if freq == nil then freq = 1000 end
 	if freq <= 0 then
 		return err("Invalid Argument: frequency (must be > 0)")
 	end
 
 	-- duty：可选；未给则不上电输出（只配频率，等首帧 call）
-	local duty = tonumber(data.duty)
+	local duty = finite_of(data.duty)
 	if duty == nil then duty = 0 end
 	if duty < 0 or duty > 100 then
 		return err("Invalid Argument: duty (expect 0~100)")
@@ -204,14 +205,16 @@ function call(data)
 	-----------------------------------------------------
 	-- duty 优先，其次 value（别名，便于 .mt 里写 pwm0.value），
 	-- 都没有则沿用上一次配置（controller 转发场景可能不带 duty）
-	local duty = tonumber(data.duty)
-	if duty == nil then duty = tonumber(data.value) end
+	-- 审计 2026-09-20（中）：call 路径与 build 同款——非有限值必须拒绝，
+	-- 否则 pwm_config 的 `d < 0 or d > 100` 对 NaN 恒假、inf 亦放行。
+	local duty = finite_of(data.duty)
+	if duty == nil then duty = finite_of(data.value) end
 	if duty == nil then duty = cur_duty end
 	if duty < 0 or duty > 100 then
 		return err("Invalid Argument: duty (expect 0~100, got " .. tostring(duty) .. ")")
 	end
 
-	local freq = tonumber(data.frequency)
+	local freq = finite_of(data.frequency)
 	if freq == nil then freq = cur_freq end
 	if freq <= 0 then
 		return err("Invalid Argument: frequency (must be > 0)")

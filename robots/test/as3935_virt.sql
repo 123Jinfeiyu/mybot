@@ -39,7 +39,7 @@
  * Monitor。守护 interval=20ms（call 前真实睡 2ms 等锁存稳定，
  * 远快于 50ms 拍点，count 持续增长、8 拍事件脚本循环约两轮，
  * 四种 CODE 都会出现）。
- * 用法：cat scripts/test/as3935_virt.mt | bash _run.sh --robot=robots/test/as3935_virt.sql
+ * 用法：cat scripts/test/as3935_virt.mt | ./build/mybot --robot=robots/test/as3935_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -39,9 +39,9 @@
 --   5. 逐寄存器读（0x003~0x006 各一帧）：锁存语义下快照跨 CSN 保持，CRC
 --      校验兜底一致性；不匹配自动重读一轮
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc；dofile 副作用
--- 定义 spi_* 全局，virtbus 注入后 spi_xfer_full 走内存总线）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL 经 mpath 加载（modules/lib/）；dofile 副作用定义 spi_* 全局，
+-- virtbus 注入后 spi_xfer_full 走内存总线
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -119,10 +119,7 @@ function build(data)
 
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 	dev_delay = tonumber(data.delay) or 0
 
@@ -132,10 +129,7 @@ function build(data)
 	-- 在位自检：读固定值寄存器（0x005 高 5 位恒 0；0x004 bit0 恒 0）
 	local raw, st, ok = read_snapshot(fd)
 	if raw == nil then
-		return {
-			result = "ERR",
-			message = "MT6826S not responding (fixed-bit check failed, check SPI mode 3 and wiring)"
-		}
+		return err("MT6826S not responding (fixed-bit check failed, check SPI mode 3 and wiring)")
 	end
 
 	print(string.format("MT6826S init OK: fd=%d delay=%dus zero=%.1fdeg status=%d crc_ok=%s",
@@ -159,10 +153,7 @@ function call(data)
 
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	local raw, st, ok = read_snapshot(fd)
@@ -171,10 +162,7 @@ function call(data)
 		raw, st, ok = read_snapshot(fd)
 	end
 	if raw == nil then
-		return {
-			result = "ERR",
-			message = "MT6826S not responding (read failed)"
-		}
+		return err("MT6826S not responding (read failed)")
 	end
 
 	local deg = raw * 360.0 / ANGLE_MAX

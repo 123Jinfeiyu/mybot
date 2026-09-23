@@ -22,10 +22,9 @@
 -- NOTE: ADS1256 要求 SPI Mode 1（CPOL=0, CPHA=1），请在 @SPI 块中配置
 
 -- ==================== 寄存器 ====================
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
--- 调试打印辅助 print_table（modules/lib/）
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
@@ -72,10 +71,8 @@ local VREF = 2.5
 local DEBUG = false
 
 -- 辅助：把数据里的字段转成数字（字符串/数字均可），nil 返回默认值
-local function tonum(v, default)
-    if v == nil then return default end
-    return tonumber(v) or default
-end
+-- 数值列 -> tonumber 结果，非法回落缺省（实现收敛至 drv_common.num_or，N-24）
+local tonum = num_or
 
 -- 辅助：写寄存器（WREG：命令 + 计数字节 + 数据，一次传输）
 local function write_reg(fd, reg, val)
@@ -95,7 +92,7 @@ function build(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
+        return err("Invalid Argument: fd")
     end
     fd = tonumber(fd)
 
@@ -110,43 +107,43 @@ function build(data)
 
     -- 1. 复位并唤醒
     if spi_w(fd, CMD_RESET) ~= 0 then
-        return { result = "ERR", message = "Failed to reset ADS1256" }
+        return err("Failed to reset ADS1256")
     end
     milli_sleep(5)
     if spi_w(fd, CMD_WAKEUP) ~= 0 then
-        return { result = "ERR", message = "Failed to wake ADS1256" }
+        return err("Failed to wake ADS1256")
     end
     milli_sleep(5)
 
     -- 2. STATUS：BIT5 ORDER=0（MSB 优先），BIT4 ACAL=1（自动校准），其余 0
     if write_reg(fd, REG_STATUS, 0x14) ~= 0 then
-        return { result = "ERR", message = "Failed to write STATUS" }
+        return err("Failed to write STATUS")
     end
 
     -- 3. MUX：默认 AIN0 + AINCOM（单端）
     if write_reg(fd, REG_MUX, bitc.bor(bitc.lshift(channel, 4), 0x08)) ~= 0 then
-        return { result = "ERR", message = "Failed to write MUX" }
+        return err("Failed to write MUX")
     end
 
     -- 4. ADCON：PGA 增益
     if write_reg(fd, REG_ADCON, pga_idx) ~= 0 then
-        return { result = "ERR", message = "Failed to write ADCON" }
+        return err("Failed to write ADCON")
     end
 
     -- 5. DRATE：数据速率
     if write_reg(fd, REG_DRATE, drate_tab[drate_idx + 1][1]) ~= 0 then
-        return { result = "ERR", message = "Failed to write DRATE" }
+        return err("Failed to write DRATE")
     end
 
     -- 6. 自校准（约 2 个转换周期，保守等待）
     if spi_w(fd, CMD_SELFCAL) ~= 0 then
-        return { result = "ERR", message = "Failed to start self-calibration" }
+        return err("Failed to start self-calibration")
     end
     milli_sleep(50)
 
     -- 7. 进入连续读模式
     if spi_w(fd, CMD_RDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to enter continuous read mode" }
+        return err("Failed to enter continuous read mode")
     end
 
     print(string.format("ADS1256 init OK: drate=%d SPS, PGA=×%d, channel=AIN%d",
@@ -163,11 +160,11 @@ function destroy(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Arguments: fd" }
+        return err("Invalid Argument: fd")
     end
 
     if spi_w(tonumber(fd), CMD_SDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to stop continuous read mode" }
+        return err("Failed to stop continuous read mode")
     end
     return { result = "OK" }
 end
@@ -186,7 +183,7 @@ function call(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
+        return err("Invalid Argument: fd")
     end
     fd = tonumber(fd)
 
@@ -197,39 +194,39 @@ function call(data)
         -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
         local pos, neg = tonumber(data.pos), tonumber(data.neg)
         if pos == nil or neg == nil then
-            return { result = "ERR", message = "Invalid diff channel: pos/neg not a number" }
+            return err("Invalid diff channel: pos/neg not a number")
         end
         if pos < 0 or pos > 7 or neg < 0 or neg > 7 then
-            return { result = "ERR", message = "Invalid diff channel: 0~7" }
+            return err("Invalid diff channel: 0~7")
         end
         mux = bitc.bor(bitc.lshift(pos, 4), neg)
     else
         local channel = tonum(data.channel, 0)
         if channel < 0 or channel > 7 then
-            return { result = "ERR", message = "Invalid channel: 0~7" }
+            return err("Invalid channel: 0~7")
         end
         mux = bitc.bor(bitc.lshift(channel, 4), 0x08)    -- AINch vs AINCOM
     end
 
     -- 退出连续模式 → 改通道 → 同步重启转换 → 回到连续模式
     if spi_w(fd, CMD_SDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to stop continuous read mode" }
+        return err("Failed to stop continuous read mode")
     end
     if write_reg(fd, REG_MUX, mux) ~= 0 then
         spi_w(fd, CMD_RDATAC)
-        return { result = "ERR", message = "Failed to write MUX" }
+        return err("Failed to write MUX")
     end
     if spi_w(fd, CMD_SYNC) ~= 0 then
         spi_w(fd, CMD_RDATAC)
-        return { result = "ERR", message = "Failed to sync ADS1256" }
+        return err("Failed to sync ADS1256")
     end
     milli_sleep(1)
     if spi_w(fd, CMD_WAKEUP) ~= 0 then
         spi_w(fd, CMD_RDATAC)
-        return { result = "ERR", message = "Failed to wake ADS1256" }
+        return err("Failed to wake ADS1256")
     end
     if spi_w(fd, CMD_RDATAC) ~= 0 then
-        return { result = "ERR", message = "Failed to enter continuous read mode" }
+        return err("Failed to enter continuous read mode")
     end
 
     -- 等待一个完整转换周期（按 drate 估算，最少 1ms）
@@ -244,7 +241,7 @@ function call(data)
     -- 一次读 4 字节，前 3 字节是当前样本（第 4 字节是下一个样本的高字节，丢弃）
     local v = spi_rm(fd, 4)
     if v < 0 then
-        return { result = "ERR", message = "Failed to read data" }
+        return err("Failed to read data")
     end
 
     local raw24 = bitc.band(bitc.rshift(v, 8), 0xFFFFFF)   -- 取前 3 字节
@@ -357,7 +354,6 @@ function ADS1256_VIRT.new(opts)
 
 	local RAW_MIN, RAW_MAX = -0x800000, 0x7FFFFF
 
-	opts = opts or {}
 	local self = {}
 
 	-- ---- 器件状态 ----
@@ -459,10 +455,6 @@ function ADS1256_VIRT.new(opts)
 	function self:clear_fail() fail_pred, data_fail = nil, false; return self end
 
 	-- ===================== 全双工帧核心 =====================
-
-	local function log_cmd(name, tx, i, consumed)
-		cmds[#cmds + 1] = { name = name, bytes = { unpack(tx, i, i + consumed - 1) } }
-	end
 
 	-- 组装一帧样本：[MSB, mid, LSB, 丢弃字节]；驱动只读前 3 字节，第 4 给 0。
 	local function sample_frame(n)

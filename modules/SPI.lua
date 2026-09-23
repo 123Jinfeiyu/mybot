@@ -1,9 +1,8 @@
 -- SPI 硬件
 
 --
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -15,7 +14,15 @@ local fd = -1
 -- 全局传输延时（build 从元数据设置；call 随 fd 返回给引用本变量的设备驱动）
 local delay_us = 0
 
-function build(data)
+-- fd 回滚（C-M3'）：build 中途抛 Lua error 时由 guard_build 调用（幂等）
+local function rollback_fd()
+	if fd ~= nil and fd >= 0 then
+		spi_close(fd)
+		fd = -1
+	end
+end
+
+local function build_impl(data)
 
 	-- 检查该参数是否是一张表
 	local ok, ek = arg_table(data)
@@ -28,63 +35,45 @@ function build(data)
 
 	-- 检查文件句柄参数是否存在
 	if path == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: path"
-		}
+		return err("Invalid Arguments: path")
 	end
 
 	-- 模式（0~3：CPOL/CPHA 组合，与 Linux spidev 一致）
 	local spi_mode = tonumber(data.spi_mode)
 	if spi_mode == nil or spi_mode < 0 or spi_mode > 3 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: spi_mode (0~3)"
-		}
+		return err("Invalid Arguments: spi_mode (0~3)")
 	end
 
 	-- 比特（每字位数，7~16）
 	local bits = tonumber(data.bits)
 	if bits == nil or bits < 7 or bits > 16 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: bits (7~16)"
-		}
+		return err("Invalid Arguments: bits (7~16)")
 	end
 
 
 	-- 速率（Hz，必须为正）
 	local speed = tonumber(data.speed)
 	if speed == nil or speed <= 0 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: speed (>0)"
-		}
+		return err("Invalid Arguments: speed (>0)")
 	end
 
 	-- 延时（单次传输后 CS 拉高前等待，us，非负）
 	local delay = tonumber(data.delay)
 	if delay == nil or delay < 0 then
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: delay (>=0)"
-		}
+		return err("Invalid Arguments: delay (>=0)")
 	end
 
 	-- 重复 build 先关旧 fd 再开新（防御：不依赖调用方保证 build 恰一次；
-	-- 与 I2C/GPIO 的守卫一致——否则旧 fd 永久泄漏）
-	if fd ~= nil and fd > 0 then
+	-- 与 I2C/GPIO 的守卫一致——否则旧 fd 永久泄漏。fd 0 合法，故判 >= 0）
+	if fd ~= nil and fd >= 0 then
 		spi_close(fd)
 		fd = -1
 	end
 
-	-- 开始执行
+	-- 开始执行（spi_open 成功返回 fd >= 0、失败返回 -1）
 	fd = spi_open(path)
-	if fd <= 0 then
-		return {
-			result = "ERR",
-			message = "Failed to open SPI file"
-		}
+	if fd < 0 then
+		return err("Failed to open SPI file")
 	end
 
 	delay_us = delay or 0
@@ -94,10 +83,7 @@ function build(data)
 		-- 后续 call 会把它流给下游设备驱动
 		spi_close(fd)
 		fd = -1
-		return {
-			result = "ERR",
-			message = "Failed to setup SPI device"
-		}
+		return err("Failed to setup SPI device")
 	end
 
 	return {
@@ -105,6 +91,11 @@ function build(data)
 		fd = fd
 	}
 
+end
+
+-- build 全程守卫：异常折成 ERR 契约并回滚已打开的 fd（drv_common.guard_build）
+function build(data)
+	return guard_build(rollback_fd, build_impl, data)
 end
 
 
@@ -143,12 +134,9 @@ function call(data)
 
 	dbg_table("-------- SPI.Lua caller func get a table --------", data)
 
-	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐）
-	if fd == nil or fd <= 0 then
-		return {
-			result = "ERR",
-			message = "SPI not opened (build first)"
-		}
+	-- build 未成功不下发无效 fd（与 UART.lua 的校验对齐；fd 0 合法，故判 < 0）
+	if fd == nil or fd < 0 then
+		return err("SPI not opened (build first)")
 	end
 
 	return {

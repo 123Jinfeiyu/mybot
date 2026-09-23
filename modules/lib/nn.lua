@@ -28,6 +28,14 @@
 local Nn = {}
 Nn.__index = Nn
 
+-- 有限值校验（2026-09-20 审计收口）：权重由外部 .mt 文本加载、输入由外部
+-- 提供，二者都是不可信边界。NaN/inf 一旦进入，会沿 sigmoid/leaky_relu 静默
+-- 传播成整段 NaN 输出却返回 OK（与 kalman/ema 的 finite_of 拒法口径一致）。
+-- 返回 nil 表示「非有限」，由调用方决定给拒不参与运算。
+local function is_finite(x)
+	return type(x) == "number" and x == x and x ~= math.huge and x ~= -math.huge
+end
+
 -- 激活函数
 local function leaky_relu(x, slope)
 	slope = slope or 0.2
@@ -81,6 +89,13 @@ function Nn:forward(input)
 	local L = self.layers
 	if #input ~= L[1] then
 		error(string.format("nn.forward: input dim %d != expected %d", #input, L[1]))
+	end
+	-- 输入非有限即拒绝：一旦有 NaN 进入，sigmoid/leaky_relu 会把它静默传播
+	-- 成整段 NaN 输出，驱动无从察觉（C2 防线口径）。
+	for k = 1, #input do
+		if not is_finite(input[k]) then
+			error(string.format("nn.forward: input[%d] 不是有限数值", k))
+		end
 	end
 	local out = { input }          -- 0 层激活即输入
 	for i = 2, #L do
@@ -199,6 +214,14 @@ function Nn:loadMt(text)
 			for tok in lines[pos]:gmatch("%S+") do nums[#nums+1] = tonumber(tok) end
 			if #nums ~= in_ + 1 then
 				error(string.format("nn.loadMt: 第%d层第%d行元素数 %d != %d", id, o, #nums, in_+1))
+			end
+			-- 权重非有限即整层拒绝：loadMt 是从外部文本载入权重的边界，NaN/inf
+			-- 权重会把整条推理链路静默污染（C2 防线口径，与 kalman/ema 一致）。
+			for ei = 1, #nums do
+				if not is_finite(nums[ei]) then
+					error(string.format("nn.loadMt: 第%d层第%d行第%d个权重不是有限数值",
+						id, o, ei))
+				end
 			end
 			self.b[id][o] = nums[1]
 			for k = 1, in_ do self.W[id][o][k] = nums[k+1] end

@@ -77,12 +77,28 @@ assert(ffi.sizeof("cj_i2c_msg") == 16,
 
 local HAL = {}
 _G.__BOT4CJ_HAL = HAL
-HAL.backend = "ffi"
+
+-- 平台差异单点（阶段 A-2）：设备根路径常量集中一处——移植 / 仿真桩改这里，
+-- GPIO / PWM 各节只取表值，不再散落字面量（i2c/spi/uart 路径白名单在
+-- bus_contract.lua，同为单点）。
+HAL.platform = {
+	pwm_sysfs_root = "/sys/class/pwm",
+	gpio_prefix    = "/dev/gpiochip",
+}
+HAL.PWM_SYSFS_ROOT = HAL.platform.pwm_sysfs_root	-- 兼容既有引用（pwm_attr_path 等）
+HAL.backend = "ffi"			-- ABI 类标记（ffi=真实句柄后端；test_hal_ffi/test_jit_warmup 按此分流）
+HAL.backend_name = "glibc"	-- 后端模块名（BOT4CJ_HAL_BACKEND 指定，见下方加载段）
 
 ------------------------------------------------------------------
 -- 常量
 ------------------------------------------------------------------
 local O_RDWR = 2
+-- exec 时自动关闭。**每一个**器件 open 都必须带上它：agent 模式的 run_command
+-- 会 fork /bin/sh，未标 CLOEXEC 的句柄被子进程继承后，模型驱动的命令可以直接
+-- ioctl 它拨动硬件——而且在 robot->deactivate() 之后依然有效（宿主侧另有
+-- close_range 兜底，见 src/agent_subprocess.cpp 的 revokeInheritedFds）。
+-- Linux 各架构同为 0x80000；由 test/test_ioctl_nums.c 与 fcntl.h 双边钉住。
+HAL.O_CLOEXEC = 0x80000
 HAL.I2C_RDWR = 0x0707		-- i2c-dev 原子多消息事务
 HAL.I2C_M_RD = 0x0001		-- i2c_msg.flags：读（0 为写）
 HAL.i2c_addr = {}		-- fd -> 7位从地址（per-state；每条 i2c_msg 自带地址，无需 I2C_SLAVE ioctl）
@@ -96,56 +112,59 @@ HAL.SPI_IOC_MESSAGE_1        = 0x40206b00	-- _IOW('k', 0, spi_ioc_transfer[1])
 ------------------------------------------------------------------
 -- 系统调用间接层（离线单测在此注入 mock）
 ------------------------------------------------------------------
-HAL.sys = {
-	-- mode：可选的 open 第三参（O_CREAT 场景的权限位，如 0x1A4=0644），
-	-- 变参显式 cast 理由同下 ioctl_i
-	open    = function(path, flags, mode)
-		if mode ~= nil then
-			return ffi.C.open(path, flags, ffi.cast("unsigned int", mode))
-		end
-		return ffi.C.open(path, flags)
-	end,
-	close   = function(fd)          return ffi.C.close(fd) end,
-	-- 变参必须显式 cast：JIT 编译后 Lua number 会以 double 位模式传入变参
-	-- （ioctl 收到 0x4050... > 0x7f → EINVAL），解释执行却传 int——
-	-- cast 为 unsigned long cdata 后两种执行路径 ABI 一致（第 58 次调用起复现）
-	ioctl_i = function(fd, req, val)
-		return ffi.C.ioctl(fd, req, ffi.cast("unsigned long", val))
-	end,
-	ioctl_p = function(fd, req, ptr) return ffi.C.ioctl(fd, req, ptr) end,
-	read    = function(fd, buf, n)  return tonumber(ffi.C.read(fd, buf, n)) end,
-	write   = function(fd, buf, n)  return tonumber(ffi.C.write(fd, buf, n)) end,
-	usleep  = function(us)          return ffi.C.usleep(us) end,
-	errno   = function()            return ffi.errno() end,
-	-- UART termios（glibc 直接调用；termios 以 void* 传递避免分架构布局差异）
-	tcgetattr = function(fd, ptr)   return ffi.C.tcgetattr(fd, ptr) end,
-	tcsetattr = function(fd, act, ptr) return ffi.C.tcsetattr(fd, act, ptr) end,
-	cfmakeraw = function(ptr)       ffi.C.cfmakeraw(ptr) end,
-	cfsetispeed = function(ptr, baud) return ffi.C.cfsetispeed(ptr, baud) end,
-	cfsetospeed = function(ptr, baud) return ffi.C.cfsetospeed(ptr, baud) end,
-	tcflush   = function(fd, q)     return ffi.C.tcflush(fd, q) end,
-}
-
-------------------------------------------------------------------
--- 参数归一化
-------------------------------------------------------------------
--- 归一化为 0~255 的整数，非法返回 nil
-local function byte_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 or n > 255 then return nil end
-	return n
+-- 阶段 A-1 后端接口化：本表由 BOT4CJ_HAL_BACKEND 指定的后端提供
+--（缺省 glibc，modules/lib/hal_backend_<名>.lua）。接口契约见
+-- hal_backend_glibc.lua 头注（open/close/ioctl_i/ioctl_p/read/write/usleep/
+-- errno/version + UART termios 六件），加载后逐项断言、缺函数 fail-fast——
+-- 本文件是全部驱动的地基，契约不完整必须在加载期暴露而非首笔调用时炸。
+-- 定位方式与 bus_contract 相同：BOT4CJ_MODULE_PATH 各段逐段探测，再以
+-- 仓库缺省布局兜底。离线单测仍按函数粒度替换 HAL.sys.* 表项注入 mock，
+-- 用法与后端化之前完全一致。
+do
+	local wanted = os.getenv("BOT4CJ_HAL_BACKEND")
+	if wanted == nil or wanted == "" then wanted = "glibc" end
+	local loaded
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local okb, mod = pcall(dofile, p .. "/lib/hal_backend_" .. wanted .. ".lua")
+		if okb and type(mod) == "table" then loaded = mod break end
+	end
+	if not loaded then
+		local okb, mod = pcall(dofile, "./modules/lib/hal_backend_" .. wanted .. ".lua")
+		if okb and type(mod) == "table" then loaded = mod end
+	end
+	assert(type(loaded) == "table",
+		"HAL: backend not found: modules/lib/hal_backend_" .. wanted .. ".lua (BOT4CJ_HAL_BACKEND=" .. wanted .. ")")
+	for _, k in ipairs({ "open", "close", "ioctl_i", "ioctl_p", "read", "write",
+		"usleep", "errno", "version", "tcgetattr", "tcsetattr", "cfmakeraw",
+		"cfsetispeed", "cfsetospeed", "tcflush" }) do
+		assert(type(loaded[k]) == "function",
+			"HAL: backend '" .. wanted .. "' missing contract function: " .. k
+			.. " (see modules/lib/hal_backend_glibc.lua)")
+	end
+	HAL.sys = loaded
+	HAL.backend_name = wanted
 end
 
--- 归一化为非负整数，非法返回 nil
-local function uint_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 then return nil end
-	return n
+------------------------------------------------------------------
+-- 总线契约单点（N-25）
+------------------------------------------------------------------
+-- 路径白名单 / UART 波特率表 / 各长度上限 / byte_of·uint_of 归一化 与
+-- virtbus 共用同一份（modules/lib/bus_contract.lua），此前是两库逐字手工
+-- 镜像、漂移即「仿真绿真机红」且无报错。定位方式：BOT4CJ_MODULE_PATH 各段
+-- 逐段探测（fix-plan 3-3：此前只取首段，非缺省布局会让本文件地基直接失败），
+-- 再以仓库缺省布局兜底——本文件是全部驱动的地基，加载失败会全线停摆，故兜底一次。
+local bus
+do
+	local probed
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local ok, m = pcall(dofile, p .. "/lib/bus_contract.lua")
+		if ok and type(m) == "table" then probed = m break end
+	end
+	bus = probed or dofile("./modules/lib/bus_contract.lua")
 end
+
+-- 参数归一化（0~255 整数 / 非负整数 / 严格整数，非法 nil）
+local byte_of, uint_of, int_of = bus.byte_of, bus.uint_of, bus.int_of
 
 ------------------------------------------------------------------
 -- I2C（fd 为真实内核句柄，跨 Lua 状态机有效）
@@ -153,12 +172,11 @@ end
 
 -- 打开 I2C 总线，成功返回 fd（>=0），失败返回 -1
 function i2c_open(path)
-	if type(path) ~= "string" then return -1 end
-	if string.match(path, "^/dev/i2c%-%d+$") == nil then
+	if not bus.i2c_path_ok(path) then
 		print("HAL: invalid i2c path: " .. tostring(path))
 		return -1
 	end
-	local fd = tonumber(HAL.sys.open(path, O_RDWR))
+	local fd = tonumber(HAL.sys.open(path, O_RDWR + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then
 		print("HAL: failed to open i2c bus: " .. path)
 		return -1
@@ -179,7 +197,9 @@ end
 function i2c_set_addr(fd, addr)
 	fd = tonumber(fd)
 	addr = uint_of(addr)
-	if fd == nil or addr == nil or addr > 0x7F then
+	-- 审计 #10：fd<0（open 失败返回 -1）不得登记进地址表，否则后续误用
+	-- 该句柄时排查困难——在登记处就拒绝
+	if fd == nil or fd < 0 or addr == nil or addr > 0x7F then
 		print("HAL: i2c_set_addr invalid args: " .. tostring(fd) .. ", " .. tostring(addr))
 		return false
 	end
@@ -241,6 +261,9 @@ function i2c_write_multi(fd, reg, ...)
 		if b == nil then return -1 end
 		data[#data + 1] = b
 	end
+	-- 数据字节上限（不含寄存器指针）：超长即拒绝，避免打包超大 buf 后
+	-- 发往内核被静默截断/报 EINVAL（I2C_IO_MAX_BYTES，见 bus_contract）。
+	if #data - 1 > bus.I2C_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i, b in ipairs(data) do buf[i - 1] = b end
 	local msgs = ffi.new("cj_i2c_msg[1]")
@@ -260,7 +283,7 @@ function i2c_read_multi_bytes(fd, reg, n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or reg == nil or n == nil or addr == nil then return nil end
 	if n < 1 then n = 1 end
-	if n > 16 then n = 16 end
+	if n > bus.BYTES_READ_MAX then n = bus.BYTES_READ_MAX end
 	local wb = ffi.new("uint8_t[1]", reg)
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[2]")
@@ -278,7 +301,7 @@ end
 -- 长度错位放大成错误合并值；更长块读请用 i2c_read_multi_bytes。
 function i2c_read_multi(fd, reg, n)
 	n = uint_of(n)
-	if n == nil or n < 1 or n > 6 then return -1 end
+	if n == nil or n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local t = i2c_read_multi_bytes(fd, reg, n)
 	if t == nil then return -1 end
 	local v = 0
@@ -287,14 +310,15 @@ function i2c_read_multi(fd, reg, n)
 end
 
 -- 纯读 n 字节（单条读消息，不写指针，SGP30 这类命令式传感器用），大端合并；失败返回 -1
--- n 有效范围 1~8，越界（含非法值）显式返回 -1：静默钳到 1 字节会被调用方的
--- 拆字节数学放大成错误数据；更长纯读请用 i2c_read_bytes
+-- n 有效范围 1~6（2^53 精度上限，同 i2c_read_multi：7 字节起大端合并值可能
+-- 超 2^53 被静默截断），越界（含非法值）显式返回 -1：静默钳制会被调用方的
+-- 拆字节数学放大成错误数据；更长纯读请用 i2c_read_bytes（字节表不受精度限制）
 function i2c_read(fd, n)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 8 then return -1 end
+	if n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[1]")
 	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
@@ -322,6 +346,8 @@ function i2c_write_reg16(fd, reg16, ...)
 		if b == nil then return -1 end
 		data[#data + 1] = b
 	end
+	-- 数据字节上限（不含 2 字节寄存器指针）：超长即拒绝（I2C_IO_MAX_BYTES）。
+	if #data > bus.I2C_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data + 2)
 	buf[0] = math.floor(reg16 / 256) % 256
 	buf[1] = reg16 % 256
@@ -341,7 +367,7 @@ function i2c_read_reg16(fd, reg16, n)
 	n = uint_of(n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or reg16 == nil or reg16 > 0xFFFF or n == nil or addr == nil then return -1 end
-	if n < 1 or n > 6 then return -1 end
+	if n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local wb = ffi.new("uint8_t[2]", math.floor(reg16 / 256) % 256, reg16 % 256)
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[2]")
@@ -363,7 +389,7 @@ function i2c_read_bytes(fd, n)
 	local addr = HAL.i2c_addr[fd]
 	if fd == nil or n == nil or addr == nil then return nil end
 	if n < 1 then n = 1 end
-	if n > 16 then n = 16 end
+	if n > bus.BYTES_READ_MAX then n = bus.BYTES_READ_MAX end
 	local rb = ffi.new("uint8_t[?]", n)
 	local msgs = ffi.new("cj_i2c_msg[1]")
 	msgs[0].addr = addr; msgs[0].flags = HAL.I2C_M_RD; msgs[0].len = n; msgs[0].buf = rb
@@ -378,8 +404,20 @@ end
 ------------------------------------------------------------------
 -- 毫秒级延时（usleep，零 fork）
 function milli_sleep(ms)
-	ms = tonumber(ms)
-	if ms == nil or ms <= 0 then return end
+	-- 审计 2026-09-20（中）：tonumber 放行 NaN/inf——`ms <= 0` 对两者恒假、
+	-- `ms > 4294967` 对 NaN 亦恒假，于是 NaN 会走到 ffi 的 unsigned int 形参
+	-- （NaN→0，实际不睡）而 inf 撞上 usleep 的 EINVAL。统一按「非法即不睡」
+	-- 处理：本函数无返回值、调用方无从感知错误，静默不睡优于睡错时长。
+	-- 判据走总线契约单点 bus.finite_of（本文件已 dofile 过 bus_contract）。
+	local f = bus and bus.finite_of(ms)
+	if f == nil or f <= 0 then return end
+	ms = f
+	-- 审计 #10：usleep 形参是 unsigned int（usec），ms 超过 4294967 时
+	-- ms*1000 回绕成短睡/长睡错乱——钳制到 uint32 上限内并显式提示
+	if ms > 4294967 then
+		print("HAL: milli_sleep " .. tostring(ms) .. "ms exceeds uint32 usec range, clamped to 4294967ms")
+		ms = 4294967
+	end
 	HAL.sys.usleep(math.floor(ms * 1000))
 end
 
@@ -390,11 +428,11 @@ end
 -- 打开 SPI 设备，成功返回 fd（>=0），失败返回 -1
 function spi_open(path)
 	if type(path) ~= "string" then return -1 end
-	if string.match(path, "^/dev/spidev%d+%.%d+$") == nil then
+	if not bus.spi_path_ok(path) then
 		print("HAL: invalid spi path: " .. tostring(path))
 		return -1
 	end
-	local fd = tonumber(HAL.sys.open(path, O_RDWR))
+	local fd = tonumber(HAL.sys.open(path, O_RDWR + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then
 		print("HAL: failed to open spi device: " .. path)
 		return -1
@@ -413,12 +451,17 @@ end
 -- （spi_write/spi_read/spi_write3/spi_read_multi 均支持）。
 function spi_setup(fd, mode, bits, speed, delay)
 	fd = tonumber(fd)
-	mode, bits, speed = uint_of(mode), uint_of(bits), uint_of(speed)
-	if fd == nil or mode == nil or mode > 3
-	   or bits == nil or bits < 7 or bits > 16
-	   or speed == nil or speed <= 0 then
-		print("HAL: spi_setup invalid args: mode=" .. tostring(mode) ..
-		      " bits=" .. tostring(bits) .. " speed=" .. tostring(speed))
+	-- 诊断打印用归一化前的实参（否则越界值会显示成 nil，丢失定位信息）
+	local raw_mode, raw_bits, raw_speed = mode, bits, speed
+	-- mode/bits/speed 用 int_of（bus_contract 单点）：**拒绝非整数**，不再静默
+	-- 取整——与 virtbus 同判据（旧实现走 uint_of 的 math.floor，spi_setup(fd,
+	-- 1.9, 8, 1e6) 真机上会变成 mode=1 并成功，仿真侧却直接失败）。
+	mode = int_of(mode, 0, 3)
+	bits = int_of(bits, 7, 16)
+	speed = int_of(speed, 1)
+	if fd == nil or mode == nil or bits == nil or speed == nil then
+		print("HAL: spi_setup invalid args: mode=" .. tostring(raw_mode) ..
+		      " bits=" .. tostring(raw_bits) .. " speed=" .. tostring(raw_speed))
 		return -1
 	end
 	if tonumber(delay) ~= nil and tonumber(delay) > 0 then
@@ -460,7 +503,7 @@ end
 -- 写 1 字节，返回 0 = 成功，-1 = 失败；delay_us 可选（CS 拉高前等待）
 function spi_write(fd, val, delay_us)
 	fd = tonumber(fd)
-	val = byte_of(val)
+	val = int_of(val, 0, 255)	-- 严格整数（拒绝小数，不再静默 floor；同 virtbus）
 	if fd == nil or val == nil then return -1 end
 	local buf = ffi.new("uint8_t[1]", val)
 	if spi_xfer(fd, buf, nil, 1, delay_us) then return 0 end
@@ -479,7 +522,8 @@ end
 -- 一次写 3 字节（单次传输，CS 保持低），返回 0 = 成功，-1 = 失败；delay_us 可选
 function spi_write3(fd, b0, b1, b2, delay_us)
 	fd = tonumber(fd)
-	b0, b1, b2 = byte_of(b0), byte_of(b1), byte_of(b2)
+	-- 严格整数（拒绝小数，不再静默 floor；同 virtbus）
+	b0, b1, b2 = int_of(b0, 0, 255), int_of(b1, 0, 255), int_of(b2, 0, 255)
 	if fd == nil or b0 == nil or b1 == nil or b2 == nil then return -1 end
 	local buf = ffi.new("uint8_t[3]", b0, b1, b2)
 	if spi_xfer(fd, buf, nil, 3, delay_us) then return 0 end
@@ -492,7 +536,7 @@ end
 function spi_write_multi(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 64 then return -1 end
+	if #data > bus.SPI_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i = 1, #data do
 		local b = byte_of(data[i])
@@ -503,13 +547,15 @@ function spi_write_multi(fd, data, delay_us)
 	return -1
 end
 
--- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 有效范围 1~8，
--- 越界显式返回 -1，静默钳制危害同 i2c_read_multi）；delay_us 可选
+-- 一次读 n 字节（单次传输），返回大端合并值；失败返回 -1（n 有效范围 1~6，
+-- 2^53 精度上限同 i2c_read_multi——7 字节起合并值可能被静默截断；越界显式
+-- 返回 -1，静默钳制危害同 i2c_read_multi）；更长的全双工帧请用 spi_xfer_full
+-- （MOSI 命令与 MISO 数据同帧、返回字节表）；delay_us 可选
 function spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
 	n = uint_of(n)
 	if fd == nil or n == nil then return -1 end
-	if n < 1 or n > 8 then return -1 end
+	if n < 1 or n > bus.MERGED_READ_MAX then return -1 end
 	local buf = ffi.new("uint8_t[?]", n)
 	if not spi_xfer(fd, nil, buf, n, delay_us) then return -1 end
 	local v = 0
@@ -528,11 +574,11 @@ end
 function spi_xfer_full(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return nil end
-	if #data > 64 then return nil end
+	if #data > bus.SPI_IO_MAX_BYTES then return nil end
 	local n = #data
 	local txbuf = ffi.new("uint8_t[?]", n)
 	for i = 1, n do
-		local b = byte_of(data[i])
+		local b = int_of(data[i], 0, 255)	-- 严格整数（拒绝小数；同 virtbus）
 		if b == nil then return nil end
 		txbuf[i - 1] = b
 	end
@@ -585,14 +631,20 @@ assert(ffi.sizeof("cj_gpiohandle_data") == 64,
 -- active_low：true = 低电平有效（可选）
 function gpio_request_line(chip_path, offset, direction, default_value, active_low)
 	if type(chip_path) ~= "string" then return -1 end
-	if string.match(chip_path, "^/dev/gpiochip%d+$") == nil then
+	-- 前缀取平台差异单点（阶段 A-2）；前缀如引入正则元字符需先转义
+	if string.match(chip_path, "^" .. HAL.platform.gpio_prefix .. "%d+$") == nil then
 		print("HAL: invalid gpiochip path: " .. tostring(chip_path))
 		return -1
 	end
 	offset = tonumber(offset)
-	if offset == nil or offset < 0 or offset > 0xFFFFFFFF then return -1 end
+	-- 必须为非负整数：小数（如 17.9）写入 uint32 字段会被静默截断成另一个线号，
+	-- 配置错误显式拒绝而非将错就错
+	if offset == nil or offset < 0 or offset > 0xFFFFFFFF or offset ~= math.floor(offset) then
+		print("HAL: invalid gpio offset: " .. tostring(offset))
+		return -1
+	end
 
-	local chipfd = tonumber(HAL.sys.open(chip_path, O_RDWR))
+	local chipfd = tonumber(HAL.sys.open(chip_path, O_RDWR + HAL.O_CLOEXEC))
 	if chipfd == nil or chipfd < 0 then
 		print("HAL: failed to open gpiochip: " .. chip_path)
 		return -1
@@ -612,7 +664,11 @@ function gpio_request_line(chip_path, offset, direction, default_value, active_l
 	req.lineoffsets[0] = offset
 	req.flags = flags
 	if direction == "out" then
-		local dv = tonumber(default_value) or 0
+		-- C2（2026-09-20 审计）：默认电平走 byte_of 归一化——旧的
+		-- `tonumber(default_value) or 0` 挡不住 NaN（NaN 是 truthy），
+		-- 而 `(NaN ~= 0)` 为真 → 配置写 "nan" 会把线**驱动到高电平**。
+		-- byte_of 对非有限值返回 nil，回落 0（非有效电平 = 安全侧）。
+		local dv = byte_of(default_value) or 0
 		req.default_values[0] = (dv ~= 0) and 1 or 0	-- 内核语义：非 0 即有效电平
 	end
 	req.consumer_label = "bot4cj"
@@ -635,8 +691,12 @@ function gpio_set_value(hfd, v)
 	hfd = tonumber(hfd)
 	if hfd == nil or hfd < 0 then return false end
 	local data = ffi.new("cj_gpiohandle_data")
-	local n = tonumber(v) or 0
-	data.values[0] = (n ~= 0) and 1 or 0
+	-- C2 审计同族（2026-09-20 评估）：与上面的 default_values 同口径——旧的
+	-- `tonumber(v) or 0` 挡不住 NaN（NaN 是 truthy，`(NaN ~= 0)` 为真会把线
+	-- **驱动到高电平**）。非有限值回落 0（安全侧）；有限值保持「非 0 归一为 1」
+	-- 的既有语义（不用 byte_of：它把 300 这类越界值判非法，语义比这里更窄）。
+	local n = bus.finite_of(v)
+	data.values[0] = (n ~= nil and n ~= 0) and 1 or 0
 	return HAL.sys.ioctl_p(hfd, HAL.GPIOHANDLE_SET_LINE_VALUES, data) == 0
 end
 
@@ -657,12 +717,24 @@ end
 
 ------------------------------------------------------------------
 -- UART（termios raw 8N1：/dev/tty*、/dev/serial*；非阻塞轮询读）
+-- 生命周期：open 时快照原始 termios（HAL.uart_orig[fd]），close 时先
+-- tcsetattr 恢复再关闭——板载 UART 的 termios 跨 close 保留在 tty 上，
+-- 残留 raw 模式/波特率会影响后续使用者（getty、其他程序）。
 ------------------------------------------------------------------
 -- 常量经 test/test_uart_consts.c 与系统头文件实证（gpio 段同款方法）：
 -- sizeof(struct termios)=60、c_line 偏移 16、c_cc 偏移 17、VMIN=6/VTIME=5、
 -- O_RDWR=2 O_NOCTTY=256 O_NONBLOCK=2048、TCSANOW=0、TCIFLUSH=0、
--- CREAD=128 CLOCAL=2048 CS8=48；B* 是 termios speed_t 而非波特率数值
--- （B9600==13、B115200==4098），cfsetispeed 只认这些常量——见 UART_BAUD_SPT
+-- CREAD=128 CLOCAL=2048 CS8=48。
+-- 【波特率必须传当版 glibc 的 B* 常量编码，不能想当然】编码随 glibc 版本
+-- 分叉（glibc 2025-06 commit 5cf101a8，2.42 起生效）：
+--   < 2.42：B* 是旧 ABI 编号（B9600=13、B115200=0x1002）——cfsetispeed/
+--           cfsetospeed 对字面 Hz（9600/115200/…）返回 EINVAL 且不修改
+--           结构体，旧实现「传 Hz」看似成功实际波特率从未生效（真机
+--           /dev/serial0 实证：请求 115200 后 B 字段仍为原值）；
+--   ≥ 2.42：B* 即字面 Hz（B9600=9600）——反向地，旧编号 13 会被当成
+--           「13 波特」静默生效。
+-- 因此 UART_B_CONST 按运行时 glibc 版本（gnu_get_libc_version）二选一；
+-- test_uart_consts.c 以 #if 分支与两套表同步断言（审计 P0-3）。
 
 ffi.cdef[[
 int  tcgetattr(int fd, void *termios_p);
@@ -685,7 +757,7 @@ typedef struct {
 assert(ffi.sizeof("cj_termios") == 60,
 	"cj_termios size mismatch: expect 60, got " .. ffi.sizeof("cj_termios"))
 
-HAL.UART_O_FLAGS  = 2306		-- O_RDWR(2) | O_NOCTTY(256) | O_NONBLOCK(2048)
+HAL.UART_O_FLAGS  = 526594	-- O_RDWR(2)|O_NOCTTY(256)|O_NONBLOCK(2048)|O_CLOEXEC(524288)
 HAL.UART_TCSANOW  = 0
 HAL.UART_TCIFLUSH = 0
 HAL.UART_VMIN_IDX = 6			-- c_cc 下标（VMIN）
@@ -693,33 +765,61 @@ HAL.UART_VTIME_IDX = 5			-- c_cc 下标（VTIME）
 HAL.UART_CREAD_CLOCAL = 2176	-- CREAD(128) | CLOCAL(2048)
 HAL.EAGAIN = 11					-- Linux errno：非阻塞读暂无数据
 HAL.EINTR = 4					-- Linux errno：被信号打断
+HAL.UART_READ_MAX_MS = bus.UART_READ_MAX_MS	-- uart_read 轮询上限：iters=timeout_ms+1 按 1ms 空转，
+								-- 超长值（配置笔误）必须立即失败而非阻塞数小时
 
 HAL.uart_baud = {}				-- fd -> 波特率（调试/生命周期摘要）
+HAL.uart_orig = {}				-- fd -> open 前的原始 termios（close 恢复用）
 
--- 支持的波特率 → termios speed_t（B* 常量）。cfsetispeed/cfsetospeed 收的是
--- speed_t 而非 Hz：实测 cfsetispeed(&t, 9600) 返回 -1/EINVAL 且【不改动 c_ispeed】，
--- 只有 B9600(=13) 这类常量才生效。原实现直传 Hz 且不查返回值——波特率从未
--- 被设置过，串口停留在驱动当前速率上静默运行。数值取自 Linux UAPI（各架构
--- 同值），由 test_abi_consts.lua 逐档同 <termios.h> 实测值比对，不靠注释自证。
-local UART_BAUD_SPT = {
-	[1200] = 9,      [2400] = 11,     [4800] = 12,     [9600] = 13,
-	[19200] = 14,    [38400] = 15,    [57600] = 4097,  [115200] = 4098,
-	[230400] = 4099, [460800] = 4100, [921600] = 4103,
+-- UART 波特率白名单与长度上限均取自总线契约单点（bus_contract.lua，N-25）
+
+-- Hz → speed_t 常量：旧 ABI 编码表（glibc < 2.42，test_uart_consts.c 旧分支断言）。
+-- 白名单与映射表必须同步维护：白名单通过而映射缺失时 uart_open 明确失败，
+-- 不会退回「静默不生效」的旧行为。
+local UART_B_CONST_LEGACY = {
+	[1200] = 9, [2400] = 11, [4800] = 12, [9600] = 13, [19200] = 14, [38400] = 15,
+	[57600] = 0x1001, [115200] = 0x1002, [230400] = 0x1003, [460800] = 0x1004,
+	[500000] = 0x1005, [921600] = 0x1007, [1000000] = 0x1008,
 }
-HAL.UART_BAUD_SPT = UART_BAUD_SPT
+-- Hz → speed_t 常量：字面 Hz 编码表（glibc ≥ 2.42，test_uart_consts.c 新分支断言）
+local UART_B_CONST_HZ = {
+	[1200] = 1200, [2400] = 2400, [4800] = 4800, [9600] = 9600, [19200] = 19200,
+	[38400] = 38400, [57600] = 57600, [115200] = 115200, [230400] = 230400,
+	[460800] = 460800, [500000] = 500000, [921600] = 921600, [1000000] = 1000000,
+}
+-- 运行时探测：glibc ≥ 2.42 用 Hz 表，否则旧 ABI 编号表（见段首注释）。
+-- 探测失败（非常规 libc 等）按旧编码处理：旧编码在 <2.42 上正确，在 ≥2.42
+-- 上会静默设错——故本探测与 test_uart_baud.lua 回归、test_uart_consts.c
+-- 构建期断言三重把关，编码分叉时尽可能早地暴露。
+-- 阶段 A-1：版本探测经 HAL.sys.version()（后端接口；非 glibc 后端返 nil
+-- 时按旧编码处理，musl 等平台行为与 glibc<2.42 一致）。
+local function glibc_uses_hz_baud()
+	local ok, ver = pcall(function()
+		local v = HAL.sys.version()
+		local major, minor = string.match(v ~= nil and v or "", "(%d+)%.(%d+)")
+		if major == nil then return 0 end
+		return tonumber(major) * 1000 + tonumber(minor)
+	end)
+	return ok == true and ver >= 2042	-- 2042 == glibc 2.42
+end
+local UART_B_CONST = glibc_uses_hz_baud() and UART_B_CONST_HZ or UART_B_CONST_LEGACY
+HAL.UART_B_CONST = UART_B_CONST		-- 导出供 test_uart_baud.lua 回归核对
 
 -- 打开串口（raw 8N1 + 波特率 + 非阻塞），成功返回 fd，失败返回 -1
 function uart_open(path, baud)
 	if type(path) ~= "string" then return -1 end
 	baud = tonumber(baud)
-	local speed = UART_BAUD_SPT[baud]
-	if speed == nil then
+	if not bus.baud_ok(baud) then
 		print("HAL: invalid uart baud: " .. tostring(baud))
 		return -1
 	end
+	local bconst = UART_B_CONST[baud]
+	if bconst == nil then
+		print("HAL: uart baud has no termios constant: " .. tostring(baud))
+		return -1
+	end
 	-- 路径白名单：常规 tty 命名 + /dev/serialN（树莓派软链惯例）
-	if string.match(path, "^/dev/tty[A-Za-z0-9]+$") == nil
-		and string.match(path, "^/dev/serial%d+$") == nil then
+	if not bus.uart_path_ok(path) then
 		print("HAL: invalid uart path: " .. tostring(path))
 		return -1
 	end
@@ -734,6 +834,11 @@ function uart_open(path, baud)
 		HAL.sys.close(fd)
 		return -1
 	end
+	-- 快照 open 前的原始 termios（整 60 字节按值拷贝；t 随后被 cfmakeraw
+	-- 就地改写）。仅在内核侧配置成功后登记（见函数尾），失败路径不产生
+	-- 残留快照。
+	local orig = ffi.new("cj_termios[1]")
+	ffi.copy(orig, t, ffi.sizeof("cj_termios"))
 	HAL.sys.cfmakeraw(t)				-- raw 模式（无回显/无行缓冲/8N1 基础）
 	-- CREAD|CLOCAL 用真位或置位（cfmakeraw 不清这两位，加法会进位污染高位；
 	-- HAL 仅支持 LuaJIT，内建 bit 库可用）
@@ -741,8 +846,10 @@ function uart_open(path, baud)
 	t[0].c_cflag = bitlib.bor(tonumber(t[0].c_cflag) or 0, HAL.UART_CREAD_CLOCAL)
 	t[0].c_cc[HAL.UART_VMIN_IDX] = 0	-- 非阻塞读：VMIN=0
 	t[0].c_cc[HAL.UART_VTIME_IDX] = 1	-- 100ms 字间计时器（驱动层另有轮询超时）
-	if HAL.sys.cfsetispeed(t, speed) ~= 0 or HAL.sys.cfsetospeed(t, speed) ~= 0 then
-		print("HAL: cfset speed failed: " .. tostring(baud) .. " bps（glibc 拒绝该 speed_t）")
+	-- 传 glibc 常量而非 Hz（见段首注释）；返回码必查：EINVAL 时结构体未被
+	-- 修改，放行等于「以为设了波特率其实没设」
+	if HAL.sys.cfsetispeed(t, bconst) ~= 0 or HAL.sys.cfsetospeed(t, bconst) ~= 0 then
+		print("HAL: failed to set uart speed: " .. path .. " @" .. tostring(baud) .. " baud")
 		HAL.sys.close(fd)
 		return -1
 	end
@@ -751,15 +858,26 @@ function uart_open(path, baud)
 		HAL.sys.close(fd)
 		return -1
 	end
+	HAL.uart_orig[fd] = orig
 	HAL.uart_baud[fd] = baud
 	return fd
 end
 
--- 关闭串口
+-- 关闭串口：先恢复 open 前快照的 termios（销毁重置），再关闭 fd。
+-- 恢复失败（设备已拔出等）告警但不阻断关闭，返回值仍是 close 的结果。
+-- 注：多个变量共用同一物理串口时各自独立快照/恢复（每变量独立 lua_State），
+-- 后关闭者以自己 open 时看到的配置为准，不做跨变量引用计数。
 function uart_close(fd)
 	fd = tonumber(fd)
 	if fd == nil or fd < 0 then return -1 end
 	HAL.uart_baud[fd] = nil
+	local orig = HAL.uart_orig[fd]
+	if orig ~= nil then
+		HAL.uart_orig[fd] = nil
+		if HAL.sys.tcsetattr(fd, HAL.UART_TCSANOW, orig) ~= 0 then
+			print("HAL: failed to restore uart termios on close (fd " .. tostring(fd) .. ")")
+		end
+	end
 	return HAL.sys.close(fd)
 end
 
@@ -774,7 +892,7 @@ end
 function uart_write(fd, data)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 512 then return -1 end
+	if #data > bus.UART_IO_MAX_BYTES then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i = 1, #data do
 		local b = byte_of(data[i])
@@ -788,22 +906,53 @@ end
 
 -- 读最多 n 字节（非阻塞轮询，1ms 步进直至 timeout_ms），返回 1 基字节表
 -- （可能为空表 = 超时无数据）；fd 读取错误（EAGAIN/EINTR 之外的 errno）
--- 立即返回 nil——原实现把一切 read 失败当"无数据"空转到超时，错误被吞
+-- 立即返回 nil——原实现把一切 read 失败当"无数据"空转到超时，错误被吞。
+-- timeout_ms 超 UART_READ_MAX_MS 显式失败返回 nil（诊断打印）：iters 与参数
+-- 线性增长，超长值会按 1ms 空转阻塞调用线程数小时，配置笔误必须立即暴露
 function uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
 	n = uint_of(n)
-	timeout_ms = tonumber(timeout_ms) or 0
+	-- C2（2026-09-20 审计）：非有限超时不得被静默当成"不等待"。旧写法
+	-- `tonumber(timeout_ms) or 0` 让 NaN 穿过上限判定，随后 math.floor(NaN)=NaN
+	-- 使 `for it = 1, NaN` 一次都不执行 —— 调用方看到的是"立即超时无数据"，
+	-- 与配置里写坏一个字面量的真实成因完全脱节。
+	if timeout_ms ~= nil then
+		timeout_ms = bus.finite_of(timeout_ms)
+		if timeout_ms == nil then
+			print("HAL: uart_read timeout is not a finite number: "
+				.. tostring(timeout_ms))
+			return nil
+		end
+	else
+		timeout_ms = 0
+	end
 	if fd == nil or n == nil or n < 1 then return nil end
-	if n > 512 then n = 512 end
+	if timeout_ms > HAL.UART_READ_MAX_MS then
+		print("HAL: uart_read timeout " .. tostring(timeout_ms) .. "ms exceeds max "
+			.. tostring(HAL.UART_READ_MAX_MS) .. "ms")
+		return nil
+	end
+	if n > bus.UART_IO_MAX_BYTES then n = bus.UART_IO_MAX_BYTES end
 	local buf = ffi.new("uint8_t[?]", n)
 	local out = {}
 	local iters = math.max(0, math.floor(timeout_ms)) + 1
+	local eof_streak = 0
 	for it = 1, iters do
 		local want = n - #out
 		local r = tonumber(HAL.sys.read(fd, buf, want))
 		if r ~= nil and r > 0 then
+			eof_streak = 0
 			for i = 0, r - 1 do out[#out + 1] = tonumber(buf[i]) end
 			if #out >= n then break end
+		elseif r == 0 then
+			-- 审计 #10：read()==0 是 EOF（USB 串口拔出/对端关闭），不是
+			-- "暂无数据"——旧实现当作空转满超时，拔线后错误被吞。连续
+			-- 3 次 EOF 即判定设备已消失，立即失败。
+			eof_streak = eof_streak + 1
+			if eof_streak >= 3 then
+				print("HAL: uart_read hit EOF (device gone?) fd=" .. tostring(fd))
+				return nil
+			end
 		elseif r == nil or r < 0 then
 			-- EAGAIN=暂无数据、EINTR=被信号打断：继续轮询；其余错误显式失败
 			local e = HAL.sys.errno()
@@ -835,7 +984,10 @@ end
 -- chip、channel 必须是非负整数（防路径穿越），其余一律拒绝并打印诊断。
 -- 典型：CM0 / Pi Zero 2 W 的 PWM1 复用 GPIO19（ALT5）→ chip=0 channel=1。
 
-HAL.PWM_SYSFS_ROOT = "/sys/class/pwm"
+-- 平台差异单点见本文件顶部 HAL.platform（pwm_sysfs_root）：下面 pwm_chip_path /
+-- pwm_attr_path 直接取 HAL.platform.pwm_sysfs_root，此处**不再**重复赋值
+-- ——曾有一行 `HAL.PWM_SYSFS_ROOT = "/sys/class/pwm"` 把它重置回字面量，
+-- 使移植/仿真桩改 HAL.platform.pwm_sysfs_root 时静默失效。
 HAL.pwm_state = {}			-- "chip/channel" -> {freq, duty, period_ns, duty_ns, enabled}
 
 local O_WRONLY = 1
@@ -873,7 +1025,7 @@ local function pwm_chip_path(chip, attr)
 		print("HAL: invalid pwm chip: " .. tostring(chip))
 		return nil
 	end
-	return HAL.PWM_SYSFS_ROOT .. "/pwmchip" .. c .. "/" .. attr
+	return HAL.platform.pwm_sysfs_root .. "/pwmchip" .. c .. "/" .. attr
 end
 
 -- 通道级属性路径（period / duty_cycle / enable / polarity）
@@ -883,13 +1035,13 @@ local function pwm_attr_path(chip, channel, attr)
 		print("HAL: invalid pwm chip/channel: " .. tostring(chip) .. "/" .. tostring(channel))
 		return nil
 	end
-	return HAL.PWM_SYSFS_ROOT .. "/pwmchip" .. c .. "/pwm" .. h .. "/" .. attr
+	return HAL.platform.pwm_sysfs_root .. "/pwmchip" .. c .. "/pwm" .. h .. "/" .. attr
 end
 
 -- 向任意 sysfs 文件写入字符串；成功 true，失败打印路径并 false
 local function sysfs_write(path, val)
 	if type(path) ~= "string" then return false end
-	local fd = tonumber(HAL.sys.open(path, O_WRONLY))
+	local fd = tonumber(HAL.sys.open(path, O_WRONLY + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then
 		print("HAL: pwm open failed: " .. path .. " " .. errno_hint(HAL.sys.errno()))
 		return false
@@ -916,7 +1068,7 @@ end
 function pwm_npwm(chip)
 	local p = pwm_chip_path(chip, "npwm")
 	if p == nil then return nil end
-	local fd = tonumber(HAL.sys.open(p, O_RDONLY))
+	local fd = tonumber(HAL.sys.open(p, O_RDONLY + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then return nil end
 	local buf = ffi.new("char[16]")
 	local n = tonumber(HAL.sys.read(fd, buf, 16))
@@ -931,7 +1083,7 @@ end
 function pwm_exported(chip, channel)
 	local path = pwm_attr_path(chip, channel, "enable")
 	if path == nil then return false end
-	local fd = tonumber(HAL.sys.open(path, O_RDONLY))
+	local fd = tonumber(HAL.sys.open(path, O_RDONLY + HAL.O_CLOEXEC))
 	if fd == nil or fd < 0 then return false end
 	HAL.sys.close(fd)
 	return true
@@ -977,8 +1129,14 @@ end
 -- 设载波频率与占空比（duty 为百分比 0~100）
 -- 返回 (true, period_ns, duty_ns) 或 false
 function pwm_config(chip, channel, freq_hz, duty_pct)
-	local f = tonumber(freq_hz)
-	local d = tonumber(duty_pct)
+	-- 审计 2026-09-20（中）：本函数此前是全文件唯一漏掉非有限值防线的地方——
+	-- `f <= 0` 与 `d < 0 or d > 100` 对 NaN/inf 恒假（NaN 比较恒假；inf 满足
+	-- `> 0` 且不满足 `> 100` 时 duty 亦然），于是 freq=inf 会算出 period_ns=1
+	-- （1ns 周期）并**写进 sysfs 成功返回 true**，freq=nan 更会把字面量 "nan"
+	-- 写进 period/duty_cycle（内核 EINVAL，报错成因指向内核而非入参）。
+	-- 判据走总线契约单点 bus.finite_of（与 HAL 其余入参一致）。
+	local f = bus and bus.finite_of(freq_hz)
+	local d = bus and bus.finite_of(duty_pct)
 	if f == nil or f <= 0 then
 		print("HAL: invalid pwm frequency: " .. tostring(freq_hz))
 		return false

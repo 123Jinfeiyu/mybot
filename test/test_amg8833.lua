@@ -550,7 +550,7 @@ check("tick0 vs tick8 热点行变化", a.MAXR ~= b.MAXR, string.format("%s/%s",
 
 -- ---- call 负路径 ----
 mark = section()
-expect_err("call 非表", function() return call(42) end, "Invalid Arguments: table")
+expect_err("call 非表", function() return call(42) end, "Invalid Arguments Type: table")
 check("call 非表零事务", #entries(mark) == 0)
 
 mark = section()

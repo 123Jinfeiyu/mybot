@@ -1,5 +1,17 @@
 -- MS5611-01BA03 高分辨率气压计/高度计 驱动模块（TE/MEAS，I2C 0x76~0x77）
 -- bot4cj 仓颉语言机器人框架
+--
+-- 【单消费者声明】本器件是**转换命令式**：一次采样 = 写 CMD_CONV_D1（气压）或
+-- CMD_CONV_D2（温度）→ 等 8~10ms → 写 CMD_ADC_READ 读 3 字节原始值 → 用 PROM
+-- 系数做二阶补偿。器件侧状态是「当前在转换哪一个量」，跨 3 个事务。
+-- 两个消费者交错时：A 发 D1、B 发 D2，A 读回的 ADC 其实是 B 的温度原始值，
+-- 却被当成气压代入补偿公式——得到**数值上看似合理的错误高度**，比报错危险得多
+-- （既不报错也不越界，只是错）。HAL 的单事务原子性帮不上忙：原子单位是一个事务，
+-- 而本驱动的一次采样跨多个事务。装配期据此按 (总线路径, 地址) 判重，
+-- 见 src/hw_factory.cpp 的 checkSingleConsumer；正道是让 @Daemon 做唯一采样者、
+-- 主线程经 '$' 引用读快照（见 docs/drivers.md 的「单消费者声明」小节）。
+-- 标记必须写在**行首**（宿主是纯文本扫描、不执行 Lua）。
+SINGLE_CONSUMER = "转换命令式：器件侧记着'在转换哪个量'，交错会把温度原始值当气压算"
 -- 虚拟器件模型：内嵌本文件尾部 MS5611_VIRT（2026-09-15 自 modules/lib/virtbus/ms5611.lua
 -- 迁入，单文件驱动+模型实验第十六个；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
@@ -15,8 +27,9 @@
 --     VALUES ('baro0', 'i2c-1', '0x77', '-');
 --
 -- 列说明（均可选，'-' 归缺省）：
---   osr = 过采样率 256/512/1024/2048/4096（非法值向下降档，缺省 4096 最高
---         分辨率 0.012mbar；档位越高单次转换越慢，4096 时一次 call 约 20ms）
+--   osr = 过采样率 256/512/1024/2048/4096（缺省 4096 最高分辨率 0.012mbar；
+--         超档值向下降档到不大于它的最大档；<256 或非数字显式报错，不静默选档。
+--         档位越高单次转换越慢，4096 时一次 call 约 20ms）
 --   p0  = 参考海平面气压 hPa（缺省 1013.25，ALT_M 换算用；本地天气下按
 --         气象台实测值校准可显著提高海拔精度）
 --
@@ -40,9 +53,8 @@
 -- 部署提醒：芯片裸露受光会引入气压噪声，模块出厂遮光海绵/胶勿撕除；
 --   压高公式为国际标准大气近似，且海拔参考点 p0 随天气漂移（1hPa ≈ 8.5m）。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -63,7 +75,6 @@ local CMD_CONV_D2   = 0x50			-- +2*i：启动温度转换
 local OSR_TAB   = { 256, 512, 1024, 2048, 4096 }
 local WAIT_TAB  = { 1, 2, 3, 5, 10 }		-- ms
 
-local DEF_OSR = 4096
 local DEF_P0  = 1013.25
 
 local T_RESET_MS = 3				-- 复位 PROM 重载 <=2.8ms + 余量
@@ -75,14 +86,22 @@ local wait_ms						-- 当前档位转换等待
 local p0_hpa						-- ALT_M 参考海平面气压
 
 -- ==================== 底层辅助 ====================
--- 数值列 -> 向下降档到不大于 n 的最大 OSR 档；非法/'-' 归缺省
+-- 数值列 -> 向下降档到不大于 n 的最大 OSR 档；'-'/缺省归默认档（4096）。
+-- 非法值（非数字 / < 256 无档可降）返回 nil + 原因，由 build 显式报 ERR——
+-- 旧实现一律回落 #OSR_TAB（4096 = 最慢档），osr='100' 或拼成 '10O' 会静默
+-- 把采样率拉到最低（20ms/call）且无从察觉，与「向下降档」的注释相反。
 local function osr_idx_of(v)
+	if v == nil or v == "-" then return #OSR_TAB end
 	local n = tonumber(v)
-	if n == nil or n <= 0 then return #OSR_TAB end
+	if n == nil then
+		return nil, "osr is not a number: '" .. tostring(v)
+			.. "' (valid: 256/512/1024/2048/4096 or '-')"
+	end
 	for i = #OSR_TAB, 1, -1 do
 		if n >= OSR_TAB[i] then return i end
 	end
-	return #OSR_TAB
+	return nil, "osr=" .. tostring(v) .. " is below the lowest ratio 256;"
+		.. " there is no ratio to step down to (valid: 256/512/1024/2048/4096 or '-')"
 end
 
 -- floor(x / 2^k)：与算术移位同语义（负数向 -Inf 取整，内核驱动一致）
@@ -145,11 +164,9 @@ end
 -- 【配置脚本】复位 -> 读 PROM -> CRC 自检 -> 缓存系数
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -157,24 +174,22 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
+	-- fd/address 存在性收敛至 drv_common.i2c_check（报错口径不变）；set_addr
+	-- 刻意留到 OSR 校验之后——非法档位不碰总线（见下）
+	local fd, addr, ek = i2c_check(data)
+	if fd == nil then return ek end
+
+	-- OSR 档位校验先于一切总线动作：非法值不碰硬件
+	local oi, oerr = osr_idx_of(data.osr)
+	if oi == nil then
+		return err("Invalid Argument: " .. oerr)
 	end
 
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-- OSR 档位与等待时间
-	local oi = osr_idx_of(data.osr)
 	conv_cmd_d1 = CMD_CONV_D1 + 2 * (oi - 1)
 	conv_cmd_d2 = CMD_CONV_D2 + 2 * (oi - 1)
 	wait_ms = WAIT_TAB[oi]
@@ -187,10 +202,7 @@ function build(data)
 	-----------------------------------------------------
 	-- 复位
 	if not send_cmd(fd, CMD_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to reset MS5611"
-		}
+		return err("Failed to reset MS5611")
 	end
 	milli_sleep(T_RESET_MS)
 
@@ -199,20 +211,14 @@ function build(data)
 	for i = 0, 7 do
 		local w = i2c_read_multi(fd, CMD_PROM_BASE + 2 * i, 2)
 		if w < 0 then
-			return {
-				result = "ERR",
-				message = "Failed to read MS5611 PROM"
-			}
+			return err("Failed to read MS5611 PROM")
 		end
 		prom[i + 1] = w
 	end
 
 	-- CRC-4 自检（兼在位甄别：错挂器件/总线异常过不了这关）
 	if not crc4_ok(prom) then
-		return {
-			result = "ERR",
-			message = string.format("MS5611 PROM CRC mismatch (word0=0x%04X, not MS5611?)", prom[1])
-		}
+		return err(string.format("MS5611 PROM CRC mismatch (word0=0x%04X, not MS5611?)", prom[1]))
 	end
 
 	c1 = prom[2]; c2 = prom[3]; c3 = prom[4]
@@ -241,11 +247,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -253,53 +257,29 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- D1（气压）转换
 	if not send_cmd(fd, conv_cmd_d1) then
-		return {
-			result = "ERR",
-			message = "Failed to start MS5611 D1 conversion"
-		}
+		return err("Failed to start MS5611 D1 conversion")
 	end
 	milli_sleep(wait_ms)
 	local d1 = read_adc24(fd)
 	if d1 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MS5611 D1"
-		}
+		return err("Failed to read MS5611 D1")
 	end
 
 	-- D2（温度）转换
 	if not send_cmd(fd, conv_cmd_d2) then
-		return {
-			result = "ERR",
-			message = "Failed to start MS5611 D2 conversion"
-		}
+		return err("Failed to start MS5611 D2 conversion")
 	end
 	milli_sleep(wait_ms)
 	local d2 = read_adc24(fd)
 	if d2 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MS5611 D2"
-		}
+		return err("Failed to read MS5611 D2")
 	end
 
 	-----------------------------------------------------

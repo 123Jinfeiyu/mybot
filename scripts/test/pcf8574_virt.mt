@@ -6,7 +6,7 @@
 # 守护 interval=20ms；模型 virt_tick 每拍把外部拉低掩码置为 walking
 # 低电平位（8 拍周期：PINS 254/253/251/247/239/223/191/127），纯读
 # call 零真实睡眠；一拍对应一个 virt_tick。
-# 用法：cat scripts/test/pcf8574_virt.mt | bash _run.sh --robot=robots/test/pcf8574_virt.sql
+# 用法：cat scripts/test/pcf8574_virt.mt | ./build/mybot --robot=robots/test/pcf8574_virt.sql
 @Action
 t0.delay  eavg.out  mon0.go  monf.go;
    200       -        -         -    ;

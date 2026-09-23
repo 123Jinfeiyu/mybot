@@ -9,6 +9,9 @@
 -- 用法（项目根目录）: luajit test/test_jit_warmup.lua
 -- 需要本机存在任一 /dev/i2c-N 总线；无总线时跳过（不算失败）。
 
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本文件原先只有裸 print 的成败分支）
+local tester = dofile("test/lib/tester.lua")
+
 local HAL = dofile("modules/lib/HAL.lua")
 if HAL.backend ~= "ffi" then
 	print("[SKIP] 非 ffi 后端（需 LuaJIT），跳过")
@@ -39,12 +42,7 @@ for _ = 1, N do
 end
 i2c_close(fd)
 
-if bad > 0 then
-	print(string.format("[FAIL] i2c-%d 上 %d 次 read_reg 出现 %d 次异常返回（JIT 后 ffi ABI 回归）",
-		bus_used, N, bad))
-	os.exit(1)
-else
-	print(string.format("[PASS] i2c-%d 上 %d 次 i2c_read_reg(I2C_RDWR) 全部正常（含 JIT 编译后路径）",
-		bus_used, N))
-	print("[DONE] test_jit_warmup.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-end
+tester.check(string.format(
+	"i2c-%d 上 %d 次 i2c_read_reg(I2C_RDWR) 全部正常（含 JIT 编译后路径）", bus_used, N),
+	bad == 0, string.format("%d 次异常返回（JIT 后 ffi ABI 回归）", bad))
+tester.summary("test_jit_warmup.lua")

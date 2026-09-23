@@ -36,12 +36,12 @@
 --      魔术序列，本核实源未实现）v1 不接，守护轮询路径不需要
 --   5. HAL 字节表读上限 16 字节，128 字节像素区拆 8 块正好对齐行边界
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：热像高频采样，默认关闭逐次打印
 local DEBUG = false
@@ -67,20 +67,14 @@ local PIXEL_COUNT   = 64
 local fps_1hz = false
 
 -- 12 位二进制补码还原（像素/热敏电阻共用）
-local function s12(v)
-	v = v % 0x1000
-	if v >= 0x800 then v = v - 0x1000 end
-	return v
-end
+local s12 = function(v) return bitc.s12(v % 0x1000) end
 
 -- 【配置脚本】normal -> 初始复位 -> 关中断 -> 帧率 -> 等首拍
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -88,21 +82,17 @@ function build(data)
 	end
 
 	-----------------------------------------------------
+	-- 豁免 i2c_pair：本器件地址硬件固定（AD_SELECT 拉低 = 0x69），address 列可省，
+	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-- 地址列 '-'/缺省按器件缺省 0x69（AD_SELECT 拉低）
 	local addr = tonumber(data.address) or 0x69
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-- 帧率列：1 -> 1Hz，其余/'-' 缺省 10Hz
@@ -111,29 +101,17 @@ function build(data)
 	-----------------------------------------------------
 	-- 进入 normal 模式 -> 初始复位 -> 关中断 -> 帧率（Adafruit 参考顺序）
 	if not i2c_write_reg(fd, REG_PCTL, NORMAL_MODE) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 power control"
-		}
+		return err("Failed to write AMG8833 power control")
 	end
 	if not i2c_write_reg(fd, REG_RST, INITIAL_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 initial reset"
-		}
+		return err("Failed to write AMG8833 initial reset")
 	end
 	milli_sleep(5)
 	if not i2c_write_reg(fd, REG_INTC, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 interrupt control"
-		}
+		return err("Failed to write AMG8833 interrupt control")
 	end
 	if not i2c_write_reg(fd, REG_FPSC, fps_1hz and 0x01 or 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write AMG8833 frame rate"
-		}
+		return err("Failed to write AMG8833 frame rate")
 	end
 
 	-- 等一个完整帧周期，首拍数据就绪
@@ -163,11 +141,9 @@ end
 -- NOTE: 12 位补码小端拆字；输出聚合标量（MAXT/MINT/AVGT/MAXR/MAXC/THERM）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -178,29 +154,20 @@ function call(data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address) or 0x69	-- 与 build 同款缺省（AD_SELECT 拉低）
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-- 共享总线 fd 的从地址是 per-fd 状态：每次 call 显式 set_addr，
 	-- 否则两次 call 之间别的器件寻址会把本器件读数打到错误从地址
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-----------------------------------------------------
 	-- 基板热敏电阻（12 位补码，0.0625°C/LSB）
 	local tb = i2c_read_multi_bytes(fd, REG_THERM, 2)
 	if tb == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read AMG8833 thermistor"
-		}
+		return err("Failed to read AMG8833 thermistor")
 	end
 	local therm = s12((tb[2] % 0x10) * 256 + tb[1]) * 0.0625
 
@@ -211,10 +178,7 @@ function call(data)
 	for chunk = 0, 7 do
 		local b = i2c_read_multi_bytes(fd, REG_DATA + chunk * PIXEL_CHUNK, PIXEL_CHUNK)
 		if b == nil then
-			return {
-				result = "ERR",
-				message = "Failed to read AMG8833 pixels (chunk " .. chunk .. ")"
-			}
+			return err("Failed to read AMG8833 pixels (chunk " .. chunk .. ")")
 		end
 		for p = 0, 7 do
 			local raw = s12((b[p * 2 + 2] % 0x10) * 256 + b[p * 2 + 1])

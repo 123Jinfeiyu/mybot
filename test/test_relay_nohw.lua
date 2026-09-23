@@ -31,4 +31,19 @@ check("call 无 test 时 delay=0", type(r) == "table" and r.delay == 0,
 r = call("not a table")
 check("call 非表参数返回 ERR", type(r) == "table" and r.result == "ERR")
 
+-- 用例6：非有限 test（审计 P3）。Relay 此前是唯一把裸 tonumber 结果转发给
+-- controller 的执行器驱动：NaN 非 nil，`== nil` 兜不住，会把 NaN 当 delay
+-- 转给下游 Timer——报错点落在别的器件上，排障看不出源头是这里的入参。
+-- 现按「非法与缺失同等对待」回落 0（"-" 占位符单元格依赖同一条语义）。
+r = call({ test = "nan", note = "x" })
+check("call test=nan -> delay=0（不把 NaN 转发给 controller）",
+	type(r) == "table" and r.delay == 0,
+	(type(r) == "table") and tostring(r.delay) or nil)
+r = call({ test = "1e400" })
+check("call test=inf -> delay=0", type(r) == "table" and r.delay == 0,
+	(type(r) == "table") and tostring(r.delay) or nil)
+r = call({ test = "-" })
+check("call test='-'（占位符）-> delay=0", type(r) == "table" and r.delay == 0,
+	(type(r) == "table") and tostring(r.delay) or nil)
+
 tester.summary()

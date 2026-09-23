@@ -8,7 +8,7 @@
 # 守护 interval=20ms（连续测量器件，无转换门），一拍对应一次
 # virt_tick：32 拍确定性正弦（内温 35±5°C、外温 42±6°C、
 # RPM 3000±1200 恒四位数，高温高转反相；build 前预武装拍 0）。
-# 用法：cat scripts/test/emc2101_virt.mt | bash _run.sh --robot=robots/test/emc2101_virt.sql
+# 用法：cat scripts/test/emc2101_virt.mt | ./build/mybot --robot=robots/test/emc2101_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

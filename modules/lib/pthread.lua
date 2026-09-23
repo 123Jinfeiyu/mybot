@@ -10,21 +10,21 @@
 --   offset 0   char    mutex[64]    pthread_mutex_t（aarch64=48B/x86_64=40B，预留 64）
 --   offset 64  int32   count        已 publish 次数
 --   offset 68  int32   nvals        本次值个数
---   offset 72  double  values[32]   采样值（P：16 → 32，支撑单守护聚合多路传感器）
---   offset 328 uint8   stop         停止标志（1=请求停止；紧随 values[32] 之后：
---                                    mutex 64 + count 4 + nvals 4 + values 256 = 328）
+--   offset 72  double  values[64]   采样值（TD-3: 32 → 64，支持高通道数传感器）
+--   offset 584 uint8   stop         停止标志（TD-3: 328 → 584）
+--   offset 588 int32   status       守护 setup 状态（TD-3: 332 → 588）
 --
 -- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 HAL.lua 已定义的
 -- open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，重复 cdef 会报错）。
 --
--- 【地址注入契约】（Low：注入地址 ≥2^53 精度）
--- 宿主经 lua_pushinteger 以 64 位整数 tag 注入槽地址（Daemon.cj:81），LuaJIT 整数 tag
--- 使任意 64 位值（含 ≥2^53、bit63 置位）逐位保真；本库只管把它当不透明句柄
--- 原样 ffi.cast 直传。地址在 Lua 数字域仅当被算术（+ - * /）或 tonumber 强制 double
--- 时才开始在 >=2^53 丢位——故各守护 chunk 禁止对地址做任何算术。
--- slot_attach 在此补前置守卫：非负整值被 double 化（非整/负）直接 error，把「已损坏的
--- 地址」显式红在守护初始化期；>=2^53 仅告警（注入路径逐位保真，拦截会误伤精确路径），
--- 提示该地址处于算术危险区、必须当不透明句柄直传。
+-- 【地址注入契约】（2026-09-20 起：宿主经 lua_pushlightuserdata 注入）
+-- 宿主把槽地址以 lightuserdata 全局注入（daemonvar.cpp injectDaemonGlobals）。
+-- lightuserdata 在 Lua 域**无算术、无 tonumber**——「地址被 double 化在 >=2^53
+-- 静默丢位」这一风险类别在语言层面消除，无需任何「禁止算术」约定兜底。
+-- slot_attach 另保留两条兼容入口：ffi 指针（cdata，Lua 侧测试自造）与
+-- 非负整数（纯 Lua 场景兜底）——整数路径仍有 >=2^53 告警：地址在 Lua 数字域
+-- 被算术（+ - * /）或 tonumber 强制 double 时开始丢位，故各守护 chunk 仍禁止
+-- 对整数形态的地址做任何算术（生产路径注入的 lightuserdata 不受影响）。
 --
 -- 用法（守护侧，独立状态机）：
 --   local P = dofile(.../lib/pthread.lua)
@@ -63,17 +63,25 @@ typedef struct {
 	char     mutex[64];
 	int32_t  count;
 	int32_t  nvals;
-	double   values[32];
+	double   values[64];
 	uint8_t  stop;
+	uint8_t  reserved[3];
+	int32_t  status;
 } daemon_slot_t;
 ]]
 
-P.SLOT_MAXVALS = 32
+-- 2.7：布局常量的单一事实源在宿主（daemonvar.hpp struct + 静态断言），
+-- 守护启动时经 DAEMON_SLOT_LAYOUT 注入；此处手写值仅为无宿主注入环境兜底。
+-- TD-3（2026-09-22）：values 从 32 增至 64，槽大小从 336B 增至 592B
+local base_layout = DAEMON_SLOT_LAYOUT or
+	{ count = 64, nvals = 68, values = 72, stop = 584, status = 588, size = 592, maxvals = 64 }
+
+P.SLOT_MAXVALS = base_layout.maxvals
 
 ------------------------------------------------------------------
 -- 地址 ↔ 指针
 ------------------------------------------------------------------
--- 整数地址（宿主以 Lua number 注入）→ 类型化指针。
+-- 整数地址（兜底路径）→ 类型化指针。
 -- 两步 cast：number → uint64_t → 目标指针类型（直接 number→pointer 不被允许）。
 function P.ptr(addr, ctype)
 	local u = ffi.cast("uint64_t", addr)
@@ -88,14 +96,24 @@ end
 ------------------------------------------------------------------
 -- 共享槽
 ------------------------------------------------------------------
--- 附着到宿主分配的槽（addr 为整数地址）
+-- 附着到宿主分配的槽（addr 为 lightuserdata / ffi 指针 / 非负整数）
 function P.slot_attach(addr)
-	-- 前置守卫：地址必须仍为非负整数值（整数 tag）。
-	-- 注入路径（lua_pushinteger）对任意 64 位值逐位保真，故 ≥2^53 仅告警不拦截
-	-- （拦了会误伤合法精确路径）；真正危险的是 Lua 侧算术/tonumber 把整数 double
-	-- 化后在 ≥2^53 静默丢位——那是使用方违规，任何事后检查都不可见，见契约注释。
-	if type(addr) ~= "number" or addr < 0 or addr % 1 ~= 0 then
-		error("DAEMON_SLOT_ADDR must be a non-negative integer, got " .. tostring(addr))
+	-- 生产路径：宿主经 lua_pushlightuserdata 注入。lightuserdata 在 Lua 域
+	-- 无算术、无 tonumber，无需数值守卫（契约见文件头「地址注入契约」）。
+	local t = type(addr)
+	if t == "userdata" then
+		return ffi.cast("daemon_slot_t *", ffi.cast("void *", addr))
+	end
+	-- ffi 指针（cdata）：Lua 侧测试自造指针的入口，同为类型安全的句柄
+	if t == "cdata" then
+		return ffi.cast("daemon_slot_t *", ffi.cast("void *", addr))
+	end
+	-- 旧整数路径保留：纯 Lua 场景与既有测试兜底。
+	-- 前置守卫：地址必须仍为非负整数值。
+	-- 危险点在 Lua 侧算术/tonumber 把整数 double 化后在 >=2^53 静默丢位
+	-- ——那是使用方违规，任何事后检查都不可见，见契约注释。
+	if t ~= "number" or addr < 0 or addr % 1 ~= 0 then
+		error("DAEMON_SLOT_ADDR must be lightuserdata, ffi pointer, or a non-negative integer, got " .. tostring(addr))
 	end
 	if addr >= 2^53 then
 		print("[pthread] warning: DAEMON_SLOT_ADDR " .. tostring(addr) .. " >= 2^53; treat as opaque, do NOT do arithmetic on it")
@@ -159,7 +177,9 @@ function P.publish(slot, vals)
 	for i = 1, n do
 		slot[0].values[i - 1] = vals[i]
 	end
-	slot[0].count = slot[0].count + 1
+	-- 审计 #10：count 为槽内 int32，1ms interval 高频守护约 25 天即到
+	-- 2^31 上限——先回绕再写入，避免 ffi 截断 2^31 成负数（UB）
+	slot[0].count = (slot[0].count + 1) % 0x7FFFFFFF
 	mutex_call("unlock", m)
 end
 
@@ -179,25 +199,61 @@ function P.latest(slot)
 	return t, c
 end
 
--- 停止标志（守护循环轮询；宿主置位）
+-- 停止标志（守护循环轮询；宿主置位）。
+-- 与 C++ 侧 daemon_request_stop/daemon_stop_requested（daemonvar.cpp 槽内
+-- mutex 临界区）同一契约：两侧读写都必须持锁——宿主置 stop 与守护轮询
+-- 是跨线程并发，裸读写虽有 uint8 对齐单字节访存兜底，但名义上是数据竞争
+-- （TSan 视角），且 mutex 已在槽内、加锁成本可忽略。
 function P.should_stop(slot)
-	return slot[0].stop ~= 0
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
+	local stop = slot[0].stop ~= 0
+	mutex_call("unlock", m)
+	return stop
 end
 function P.signal_stop(slot)
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
 	slot[0].stop = 1
+	mutex_call("unlock", m)
+end
+
+-- 守护 setup 状态（N-27）：0 = 正常；负 = 失败码（sensor_daemon.fail 写入）。
+-- 与 stop 同一契约：读写都持槽内 mutex。宿主的读路径据此把「守护启动失败」
+-- 报成错误，而不是把失败码当成一个采样值（旧实现把 -2 发进 v0，下游会把它
+-- 当温度做闭环——只有 count 停滞这种间接迹象）。
+function P.get_status(slot)
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
+	local st = slot[0].status
+	mutex_call("unlock", m)
+	return st
+end
+
+function P.set_status(slot, code)
+	local m = slot_mutex(slot)
+	mutex_call("lock", m)
+	slot[0].status = code
+	mutex_call("unlock", m)
 end
 
 ------------------------------------------------------------------
 -- 跨语言槽布局核对（Low：槽布局人工维护）
--- 宿主侧 HV/Daemon.cj 手写 SLOT_*_OFF 与 @C struct DaemonSlot 一致；
+-- 宿主侧 src/daemonvar.hpp 手写 SLOT_*_OFF 与 struct DaemonSlot 一致；
 -- 本库用 ffi 的运行时 struct 布局（编译器填充后的事实）逐项断言，
--- 把「仓颉定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
--- 仓颉侧基准（Daemon.cj:23-28，SLOT_SIZE=336）：
+-- 把「C++ 定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
+-- 基准 = 宿主注入的 DAEMON_SLOT_LAYOUT（来自 daemonvar.hpp 的 SLOT_* 常量，
+-- 2.7 起不再手抄：C++ struct 漂移会在守护启动时经注入值与 cdef 比对暴露）。
+-- 无宿主注入时回退手写基准（TD-3 起 SLOT_SIZE=592、values[64]；本表须与
+-- src/daemonvar.hpp 的 SLOT_* 常量逐项一致）：
 --   offset  0   char    mutex[64]     (pthread_mutex_t, 预留 64)
 --   offset 64  int32   count
 --   offset 68  int32   nvals
---   offset 72  double  values[32]
---   offset 328 uint8   stop
+--   offset 72  double  values[64]
+--   offset 584 uint8   stop
+--   offset 588 int32   status         (N-27：0=正常，负=setup 失败码)
+-- status 落在 stop 之后的既有对齐填充里（stop 后 3 字节 reserved_），
+-- 故槽尺寸仍为 592B。
 -- ffi.offsetof/sizeof 并非所有 arch 都可用——不可用时跳过断言（回退旧行为）。
 -- ffi 命名空间内未声明原生 pthread_mutex_t（HAL 只声明大小截断的别名），
 -- 故真实 mutex 尺寸无法直接 sizeof；仅在可解析时做 ≤64B 预留校验。
@@ -214,11 +270,12 @@ local function assert_layout()
 			error("pthread_mutex_t size " .. tostring(msz) .. " > 64B slot mutex reserve")
 		end
 		local checks = {
-			{ "count",   64,  ffi.offsetof("daemon_slot_t", "count") },
-			{ "nvals",   68,  ffi.offsetof("daemon_slot_t", "nvals") },
-			{ "values",  72,  ffi.offsetof("daemon_slot_t", "values") },
-			{ "stop",   328,  ffi.offsetof("daemon_slot_t", "stop") },
-			{ "size",   336,  ffi.sizeof("daemon_slot_t") },
+			{ "count",   base_layout.count,  ffi.offsetof("daemon_slot_t", "count") },
+			{ "nvals",   base_layout.nvals,  ffi.offsetof("daemon_slot_t", "nvals") },
+			{ "values",  base_layout.values, ffi.offsetof("daemon_slot_t", "values") },
+			{ "stop",    base_layout.stop,   ffi.offsetof("daemon_slot_t", "stop") },
+			{ "status",  base_layout.status, ffi.offsetof("daemon_slot_t", "status") },
+			{ "size",    base_layout.size,   ffi.sizeof("daemon_slot_t") },
 		}
 		for _, c in ipairs(checks) do
 			if c[3] ~= c[2] then

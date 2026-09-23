@@ -1,6 +1,6 @@
 # ADXL345 三轴加速度计测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/adxl345.sql（I2C + acc0@0x53 + Timer + acc-d0 守护）
-# 运行：cat scripts/test/adxl345.mt | ./target/release/bin/main --robot=robots/test/adxl345.sql
+# 运行：cat scripts/test/adxl345.mt | ./build/mybot --robot=robots/test/adxl345.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x53 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/ADXL345 的 build 一旦返回 ERR

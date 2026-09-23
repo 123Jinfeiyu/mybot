@@ -141,7 +141,7 @@ res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = 16, speed = 500000, 
 tester.check("build mode=0 bits=16 speed=500000 返回 OK", tostring(res.result) == "OK")
 
 -- ==================== call 测试 ====================
--- call 需要先 build 成功（fd > 0）
+-- call 需要先 build 成功（fd >= 0；fd 0 是合法句柄）
 
 -- 14. build 后 call 正常
 reset()

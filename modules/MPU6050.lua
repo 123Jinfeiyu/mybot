@@ -4,9 +4,8 @@
 -- 迁入，单文件驱动+模型实验第三个；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table、驱动公共样板 drv_common（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -41,7 +40,6 @@ local TEMP_OFFSET_DEG	= 36.53	-- raw=0 对应 36.53°C（片上温度，非环�
 
 -- 【配置脚本】
 -- 该脚本负责初始化MPU6050
--- FIXME(20260602-qing): 异常处理
 --
 function build(data)
 
@@ -139,7 +137,7 @@ function call(data)
 	-- 16 位补码符号扩展：高/低字节合并成有符号数
 	local function s16(hi, lo)
 		local v = bitc.bor(bitc.lshift(hi, 8), lo)
-		if v >= 32768 then v = v - 65536 end	-- 负值还原
+		v = bitc.s16(v)	-- 负值还原
 		return v
 	end
 

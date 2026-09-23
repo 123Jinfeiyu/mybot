@@ -1,7 +1,7 @@
 /*
  * PCF8574 无硬件端到端（proto=virt，无寄存器图 · 单字节 P 口写 + 无指针
- * 纯读器件）：sensor_daemon 不打开真机 I2C，而是挂内存仿真模型
- * modules/lib/virtbus/pcf8574.lua。守护跑的是【真实】PCF8574.lua 完整
+ * 纯读器件）：sensor_daemon 不打开真机 I2C，而是挂驱动文件尾部内嵌的
+ * PCF8574_VIRT 内存仿真模型。守护跑的是【真实】PCF8574.lua 完整
  * build（地址族校验 → i2c_set_addr → 一次纯读 ACK 在位甄别 → 写 1 字节
  * 初始锁存 0xFF，无 milli_sleep）与 call（不传 out = 纯读引脚 1 字节，
  * 模块级 cfg_latch 保持 build 的 0xFF）。
@@ -21,7 +21,7 @@
  * 配合 pcf8574_virt.mt：首行 200ms 预热等守护 setup（build 无真实睡眠，
  * 余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（纯读 call 零睡眠）。
- * 用法：cat scripts/test/pcf8574_virt.mt | bash _run.sh --robot=robots/test/pcf8574_virt.sql
+ * 用法：cat scripts/test/pcf8574_virt.mt | ./build/mybot --robot=robots/test/pcf8574_virt.sql
  */
 CREATE TABLE Timer (
 	name String

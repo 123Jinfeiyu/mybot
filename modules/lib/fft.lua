@@ -225,7 +225,7 @@ end
 -- 复数 FFT：re 必选，im 可省（视为全 0）；长度须为 2 的幂
 function FFT.fft(re, im)
 	local n = #re
-	local M = check_pow2(n, "input length")
+	check_pow2(n, "input length")	-- 校验副作用保留（plan() 只在缓存未命中时校验）
 	local p = plan(n)
 	local a0 = to0(re, n, "re")
 	local a1 = im and to0(im, n, "im") or {}
@@ -237,7 +237,7 @@ end
 -- 复数 IFFT
 function FFT.ifft(re, im)
 	local n = #re
-	local M = check_pow2(n, "input length")
+	check_pow2(n, "input length")	-- 同上：只取校验副作用，不回绑 M
 	local p = plan(n)
 	local a0 = to0(re, n, "re")
 	local a1 = im and to0(im, n, "im") or {}

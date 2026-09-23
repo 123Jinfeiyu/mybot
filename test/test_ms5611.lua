@@ -412,6 +412,25 @@ expect_err("build 非 table", function() return build(nil) end, "Invalid Argumen
 expect_err("build 缺 fd", function() return build({ address = "0x77" }) end, "fd or address")
 expect_err("build 缺 address", function() return build({ fd = fd }) end, "fd or address")
 
+-- OSR 非法值显式报错（旧实现静默回落 #OSR_TAB = 4096 最慢档，与「向下降档」注释相反）
+mark = section()
+expect_err("build osr='100' 低于最小档显式报错", function()
+	return build({ fd = fd, address = "0x77", osr = "100" })
+end, "Invalid Argument: osr=100 is below the lowest ratio")
+check("非法 OSR 不触总线（无 set_addr、无写事务）",
+	#set_addrs(mark) == 0 and #writes(mark) == 0)
+
+mark = section()
+expect_err("build osr='10O' 非数字显式报错", function()
+	return build({ fd = fd, address = "0x77", osr = "10O" })
+end, "osr is not a number: '10O'")
+check("非数字 OSR 不触总线", #set_addrs(mark) == 0 and #writes(mark) == 0)
+
+section()
+expect_err("build osr='0' 显式报错（不再静默归缺省）", function()
+	return build({ fd = fd, address = "0x77", osr = "0" })
+end, "is below the lowest ratio")
+
 mark = section()
 expect_err("build fd=99 未打开 → set_addr failed",
 	function() return build({ fd = 99, address = "0x77" }) end, "set_addr failed")

@@ -30,9 +30,8 @@
 --   5. 复位字 0x0054 -> CMD（0xFE）可全片复位（内核 reset_val），本驱动不用
 --   6. 需真电池才有意义：空载/无电池时 VCELL 趋近 0、SOC 无意义
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -61,11 +60,9 @@ end
 -- 【配置脚本】读版本号与 POR 标志（纯只读，不写寄存器）
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -73,30 +70,15 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 版本号（家族内不固定，仅日志；读不到 = 器件不在/总线不通）
 	local ver = read_reg16(fd, REG_VER)
 	if ver == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MAX17043 version"
-		}
+		return err("Failed to read MAX17043 version")
 	end
 
 	if os.getenv("BOT4CJ_DEBUG") == "1" then
@@ -123,11 +105,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -135,36 +115,18 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	local v = read_reg16(fd, REG_VCELL)
 	if v == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MAX17043 VCELL"
-		}
+		return err("Failed to read MAX17043 VCELL")
 	end
 	local s = read_reg16(fd, REG_SOC)
 	if s == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MAX17043 SOC"
-		}
+		return err("Failed to read MAX17043 SOC")
 	end
 
 	-- 返回字典：SOC 保留 1/256% 小数精度（内核取整为 >>8）

@@ -2,15 +2,9 @@
 -- 并发正确性（守护线程 publish + 主线程 latest）由仓颉侧 @Daemon 压测覆盖，此处只验证原语。
 -- 用法（项目根目录）: luajit test/test_pthread.lua
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1; print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 逐字重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local P = dofile("modules/lib/pthread.lua")
 
@@ -72,6 +66,20 @@ do
 	check("signal_stop 后 should_stop=true", P.should_stop(slot) == true)
 end
 
+-- cdata ffi 指针附着（slot_attach 新路径，与宿主 lightuserdata 注入同族：
+-- 类型安全句柄，不经 Lua 数字域）。lightuserdata 本体只能由 C API 产生，
+-- 无法在纯 Lua 里自造——该路径由 run_all.sh 的守护 e2e（真注入）覆盖。
+do
+	local owner = P.slot_new()
+	local attached = P.slot_attach(owner)	-- cdata 指针直传
+	P.publish(attached, { 7.0, 8.0 })	-- 经附着句柄写
+	local vals, count = P.latest(owner)	-- 经原句柄读
+	check("cdata 指针附着与原句柄共享内存", vals[1] == 7.0 and vals[2] == 8.0 and count == 1,
+		string.format("v1=%s v2=%s c=%s", tostring(vals[1]), tostring(vals[2]), tostring(count)))
+	P.signal_stop(owner)
+	check("cdata 跨句柄停止标志可见", P.should_stop(attached) == true)
+end
+
 -- 地址注入 → 附着（模拟守护线程：宿主给地址，Lua 附着同一块内存）
 do
 	local owner = P.slot_new()
@@ -85,6 +93,4 @@ do
 	check("跨句柄停止标志可见", P.should_stop(attached) == true)
 end
 
-print(string.format("结果: %d 通过, %d 失败", passed, failed))
-print("[DONE] test_pthread.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if failed > 0 then os.exit(1) end
+tester.summary("test_pthread.lua")

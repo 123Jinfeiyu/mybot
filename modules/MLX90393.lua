@@ -55,9 +55,8 @@
 --   自动执行一次 HR，显式再做一次无害）-> 写 GAIN_SEL（读-改-写 + 回读校验）
 --   -> SM/RM 试测一帧并丢弃（甄别在位、打通 触发/轮询/读回 全链路）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -131,10 +130,7 @@ local sens_z			-- Z 轴 µT/LSB
 local poll_timeout_ms	-- 就绪轮询超时 ms
 
 -- 16 位有符号还原
-local function s16(v)
-	if v >= 0x8000 then v = v - 0x10000 end
-	return v
-end
+local s16 = bitc.s16
 
 -- 发送 1 字节命令，成功返回 true
 local function send_cmd(fd, cmd)
@@ -224,11 +220,9 @@ end
 -- 【配置脚本】复位 -> Memory Recall -> 写 GAIN_SEL -> 试测一帧自检
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -236,21 +230,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- gain 列 -> GAIN_SEL：取整后钳到 0~7（非法/'-' 归缺省 0）
 	local gain = tonumber(data.gain)
@@ -271,53 +253,36 @@ function build(data)
 	-----------------------------------------------------
 	-- RT 暖复位（datasheet：RT 后片内自动执行一次 HR，易失内存回 NVRAM）
 	if not send_cmd(fd, CMD_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to reset MLX90393"
-		}
+		return err("Failed to reset MLX90393")
 	end
 	milli_sleep(T_RESET_MS)
 
 	-- HR 显式再恢复一次出厂 TRIM（自动 HR 之外的冗余保险，无害）
 	if not send_cmd(fd, CMD_RECALL) then
-		return {
-			result = "ERR",
-			message = "Failed to recall MLX90393 TRIM"
-		}
+		return err("Failed to recall MLX90393 TRIM")
 	end
 	milli_sleep(T_RECALL_MS)
 
 	-- 写 GAIN_SEL（读-改-写：保留 GAIN 寄存器其余位，只改 [6:4]）
 	local g = read_reg16(fd, REG_GAIN)
 	if g == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read MLX90393 GAIN register"
-		}
+		return err("Failed to read MLX90393 GAIN register")
 	end
 	local newg = bitc.bor(bitc.band(g, 0xFF8F), bitc.lshift(gain, 4))
 	if not write_reg(fd, REG_GAIN, newg) then
-		return {
-			result = "ERR",
-			message = "Failed to write MLX90393 GAIN register"
-		}
+		return err("Failed to write MLX90393 GAIN register")
 	end
 	-- 回读校验
 	local g2 = read_reg16(fd, REG_GAIN)
 	if g2 ~= newg then
-		return {
-			result = "ERR",
-			message = string.format("MLX90393 GAIN verify failed: wrote 0x%04X, read back 0x%04X", newg, g2 or 0)
-		}
+		return err(string.format("MLX90393 GAIN verify failed: wrote 0x%04X, read back 0x%04X", newg, g2 or 0))
 	end
 
 	-- 试测一帧并丢弃：甄别在位 + 打通 触发/轮询/读回 全链路
-	local b, err = measure_once(fd)
+	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+	local b, emsg = measure_once(fd)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = err
-		}
+		return err(emsg)
 	end
 
 	print(string.format("MLX90393 init OK: addr=0x%02X, gain=%d, sens_xy=%.4f sens_z=%.4f µT/LSB, timeout=%dms",
@@ -343,11 +308,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -355,38 +318,20 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- build 前置守卫：poll_timeout_ms/sens_xy 仅 build 赋值，
 	-- 未 build 先 call 会对 nil 做比较/算术裸 error（与 INA219/LTC2944 对齐）
 	if poll_timeout_ms == nil or sens_xy == nil then
-		return {
-			result = "ERR",
-			message = "MLX90393 not built (build first)"
-		}
+		return err("MLX90393 not built (build first)")
 	end
 
 	-----------------------------------------------------
-	local b, err = measure_once(fd)
+	local b, emsg = measure_once(fd)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = err
-		}
+		return err(emsg)
 	end
 
 	return parse_response(b)

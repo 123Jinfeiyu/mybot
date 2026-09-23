@@ -96,4 +96,14 @@ check("α>1 报错", pcall(Ema.new, 1.5) == false)
 check("α 非数值报错", pcall(Ema.new, "x") == false)
 check("filter 非数值报错", pcall(function() Ema.new(0.5):filter("xyz") end) == false)
 
+-- 非有限值防线（2026-09-20 评估）：区间比较对 NaN 恒为假，旧实现全放行
+check("α=NaN 报错", pcall(Ema.new, 0/0) == false)
+check("α='nan' 报错", pcall(Ema.new, "nan") == false)
+check("α=inf 报错", pcall(Ema.new, math.huge) == false)
+check("filter NaN 报错", pcall(function() Ema.new(0.5):filter(0/0) end) == false)
+check("filter inf 报错", pcall(function() Ema.new(0.5):filter(math.huge) end) == false)
+check("init 非有限按未给初值（首样本直通）", Ema.new(0.5, 0/0):filter(7) == 7)
+check("reset 非有限按未给初值（首样本直通）",
+	(function() local f = Ema.new(0.5); f:filter(1); f:reset(0/0); return f:filter(7) end)() == 7)
+
 tester.summary()

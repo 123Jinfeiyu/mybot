@@ -109,7 +109,7 @@ end
 reset()
 local fd = i2c_open("/dev/i2c-1")
 check("i2c_open 返回 mock fd", fd == 7, fd)
-check("i2c_open 以 O_RDWR 打开", find("open", "flags", 2) ~= nil)
+check("i2c_open 以 O_RDWR|O_CLOEXEC 打开", find("open", "flags", 2 + HAL.O_CLOEXEC) ~= nil)
 check("i2c_open 非法路径拒绝", i2c_open("../../etc") == -1)
 check("i2c_open 注入路径拒绝", i2c_open("/dev/i2c-1; rm -rf /") == -1)
 
@@ -187,7 +187,11 @@ check("i2c_read 纯读大端合并", i2c_read(fd, 2) == 0x2a)
 c = find("ioctl_p", "req", HAL.I2C_RDWR)
 check("i2c_read 为单条读消息（无写指针）",
 	c ~= nil and c.nmsgs == 1 and c.msgs[1].flags == HAL.I2C_M_RD)
-check("i2c_read n>8 显式失败返回 -1", i2c_read(fd, 9) == -1)
+rx_preset = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 }
+check("i2c_read 6 字节边界通过（2^53 精度上限）",
+	i2c_read(fd, 6) == 0x010203040506)
+check("i2c_read n>6 显式失败返回 -1（7 字节起合并值可能被静默截断）",
+	i2c_read(fd, 7) == -1)
 check("i2c_read n<1 显式失败返回 -1", i2c_read(fd, 0) == -1)
 
 -- 字节表纯读版：n 钳制 1~16（对齐 i2c_read_multi_bytes；
@@ -270,7 +274,10 @@ mock_ioctl_ret = -1
 check("spi_read_multi ioctl 失败返回 -1", spi_read_multi(sfd, 4) == -1)
 mock_ioctl_ret = 0
 reset()
-check("spi_read_multi n>8 显式失败返回 -1", spi_read_multi(sfd, 9) == -1)
+rx_preset = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 }
+check("spi_read_multi 6 字节边界通过（2^53 精度上限）",
+	spi_read_multi(sfd, 6) == 0x010203040506)
+check("spi_read_multi n>6 显式失败返回 -1", spi_read_multi(sfd, 7) == -1)
 
 -- spi_xfer_full：全双工同帧收发（MT6826S 24 位读帧族），tx/rx 缓冲同帧并存
 reset()

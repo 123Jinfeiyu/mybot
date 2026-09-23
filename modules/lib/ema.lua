@@ -18,12 +18,17 @@ Ema.__index = Ema
 -- 创建滤波器
 --   alpha: 平滑系数 (0,1]
 --   init:  可选初始输出；缺省时用首个样本初始化（避免从 0 起跳）
+-- 非有限值（NaN/±inf）防线：区间比较对 NaN 恒为假——只写
+-- `alpha == nil or alpha <= 0 or alpha > 1` 时 NaN 三条全假、**穿过检查**
+-- （2026-09-20 评估：alpha 列写 "nan" 会让整条滤波序列变成 NaN 却返回 OK）。
+-- 故判据统一写成「必须同时满足上下界」的正向式，NaN 自然被拒。
 function Ema.new(alpha, init)
 	alpha = tonumber(alpha)
-	if alpha == nil or alpha <= 0 or alpha > 1 then
+	if not (alpha ~= nil and alpha > 0 and alpha <= 1) then
 		error("Ema.new: alpha must be in (0, 1], got " .. tostring(alpha))
 	end
 	local y0 = tonumber(init)
+	if y0 ~= nil and not (y0 > -math.huge and y0 < math.huge) then y0 = nil end	-- 非有限初值按未给处理
 	return setmetatable({
 		alpha  = alpha,
 		y      = y0,
@@ -34,8 +39,8 @@ end
 -- 输入一个样本，返回滤波后的值
 function Ema:filter(x)
 	x = tonumber(x)
-	if x == nil then
-		error("Ema:filter: x must be a number")
+	if not (x ~= nil and x > -math.huge and x < math.huge) then
+		error("Ema:filter: x must be a finite number")
 	end
 	if not self.inited then
 		self.y = x			-- 首个样本直接作为初值
@@ -53,8 +58,10 @@ end
 
 -- 复位；可给新初值，否则下一个样本重新初始化
 function Ema:reset(init)
-	self.y = tonumber(init)
-	self.inited = (self.y ~= nil)
+	local y0 = tonumber(init)
+	if y0 ~= nil and not (y0 > -math.huge and y0 < math.huge) then y0 = nil end	-- 同 new：非有限按未给
+	self.y = y0
+	self.inited = (y0 ~= nil)
 end
 
 return Ema

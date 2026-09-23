@@ -1,5 +1,15 @@
 -- AS3935 闪电传感器 驱动模块（ams Franklin Lightning Sensor，I2C 地址 0x01~0x03）
 -- bot4cj 仓颉语言机器人框架
+--
+-- 【单消费者声明】失效形态与 AS7262（地址相位被踩）**不同**：本器件是事件锁存型，
+-- 检测到噪声过高/干扰源/闪电后把原因锁存在 REG_INT 的 [3:0]，而**读这个寄存器
+-- 就会清锁存**（消费性读取）。两个消费者并存时，先读的一方把事件拿走并清掉，
+-- 另一方永远看不到那次闪电——**静默漏报**，既不报错也没有任何征兆。
+-- 另有 AFE 增益、MASK_DIST 的读-改-写与 RCO 校准等写侧状态。
+-- 故只能有一个读者：正道是让 @Daemon 做唯一读者、把事件码发布到共享槽，
+-- 其他消费者读快照（见 docs/drivers.md 的「单消费者声明」小节）。
+-- 装配期判据见 src/hw_factory.cpp 的 checkSingleConsumer；标记必须写在**行首**。
+SINGLE_CONSUMER = "事件锁存 + 读即清：消费性读取，第二个读者会静默漏报事件"
 -- 虚拟器件模型：内嵌本文件尾部 AS3935_VIRT（2026-09-15 自 modules/lib/virtbus/as3935.lua
 -- 迁入，单文件驱动+模型实验第三十二个，事件型锁存族；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
@@ -52,9 +62,8 @@
 -- 已知兼容性坑：个别模块（DFRobot SEN0290）中断锁存经 I2C 清除不干净
 --   （ESPHome #17581），若同一事件反复上报，在消费侧按 CODE 去重。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -103,14 +112,7 @@ local DEF_TUN_CAP = 0
 
 -- ==================== 解析辅助 ====================
 -- 数值列 -> 钳到 [lo, hi] 的整数；非法/'-' 归缺省
-local function int_of(v, def, lo, hi)
-	local n = tonumber(v)
-	if n == nil then return def end
-	n = math.floor(n)
-	if n < lo then n = lo end
-	if n > hi then n = hi end
-	return n
-end
+-- （实现收敛至 drv_common.int_of，N-24）
 
 -- min_lig 列 -> MIN_NUM_LIG 编码：1/5/9/16 四档，非法值向下取合法档
 local function min_lig_code(v)
@@ -135,11 +137,9 @@ end
 -- 【配置脚本】软复位 -> 在位甄别 -> 写环境配置 -> RCO 校准
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -147,110 +147,80 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 配置列解析
 	local indoor = (tonumber(data.indoor) or 1) ~= 0
-	local nf     = int_of(data.nf, DEF_NF, 0, 7)
-	local wdth   = int_of(data.wdth, DEF_WDTH, 0, 10)
-	local srej   = int_of(data.srej, DEF_SREJ, 0, 15)
+	local nf     = int_or(data.nf, DEF_NF, 0, 7)
+	local wdth   = int_or(data.wdth, DEF_WDTH, 0, 10)
+	local srej   = int_or(data.srej, DEF_SREJ, 0, 15)
 	local lig_c  = min_lig_code(data.min_lig)
 	local mask   = (tonumber(data.mask_dist) or 0) ~= 0
-	local cap_pF = int_of(data.tun_cap, DEF_TUN_CAP, 0, 120)
+	local cap_pF = int_or(data.tun_cap, DEF_TUN_CAP, 0, 120)
 
 	-----------------------------------------------------
 	-- 软复位（恢复默认配置）
 	if not i2c_write_reg(fd, REG_RESET, CMD_DATA) then
-		return {
-			result = "ERR",
-			message = "Failed to reset AS3935"
-		}
+		return err("Failed to reset AS3935")
 	end
 	milli_sleep(T_RESET_MS)
 
 	-- 在位甄别：复位默认 AFE_GB 应为室内增益 0x12（读-改-写前的身份校验）
 	local afe = i2c_read_reg(fd, REG_AFE_GAIN)
 	if afe == nil or afe < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read AS3935 AFE_GAIN"
-		}
+		return err("Failed to read AS3935 AFE_GAIN")
 	end
 	if bitc.band(bitc.rshift(afe, 1), 0x1F) ~= INDOOR_GB then
-		return {
-			result = "ERR",
-			message = string.format("AFE_GAIN after reset = 0x%02X (expect INDOOR default, not AS3935? wiring/address issue?)", afe)
-		}
+		return err(string.format("AFE_GAIN after reset = 0x%02X (expect INDOOR default, not AS3935? wiring/address issue?)", afe))
 	end
 
 	-- 写环境配置（逐字段读-改-写，不扰动其他位）
 	if not modify_reg(fd, REG_AFE_GAIN, 0xC1, indoor and INDOOR_GB or OUTDOOR_GB, 1) then
-		return {  result = "ERR", message = "Failed to write AS3935 AFE gain"  }
+		return err("Failed to write AS3935 AFE gain")
 	end
 	if not modify_reg(fd, REG_THRESHOLD, 0x8F, nf, 4) then
-		return {  result = "ERR", message = "Failed to write AS3935 noise floor"  }
+		return err("Failed to write AS3935 noise floor")
 	end
 	if not modify_reg(fd, REG_THRESHOLD, 0xF0, wdth, 0) then
-		return {  result = "ERR", message = "Failed to write AS3935 watchdog threshold"  }
+		return err("Failed to write AS3935 watchdog threshold")
 	end
 	if not modify_reg(fd, REG_LIGHTNING, 0xCF, lig_c, 4) then
-		return {  result = "ERR", message = "Failed to write AS3935 min lightning"  }
+		return err("Failed to write AS3935 min lightning")
 	end
 	if not modify_reg(fd, REG_LIGHTNING, 0xF0, srej, 0) then
-		return {  result = "ERR", message = "Failed to write AS3935 spike rejection"  }
+		return err("Failed to write AS3935 spike rejection")
 	end
 	if not modify_reg(fd, REG_INT, 0xDF, mask and 1 or 0, 5) then
-		return {  result = "ERR", message = "Failed to write AS3935 disturber mask"  }
+		return err("Failed to write AS3935 disturber mask")
 	end
 	if not modify_reg(fd, REG_FDISP, 0xF0, math.floor(cap_pF / 8), 0) then
-		return {  result = "ERR", message = "Failed to write AS3935 tuning capacitor"  }
+		return err("Failed to write AS3935 tuning capacitor")
 	end
 
 	-----------------------------------------------------
 	-- RCO 校准（内部 RC 振荡器，事件计时的时基）
 	if not i2c_write_reg(fd, REG_CALIB_RCO, CMD_DATA) then
-		return {
-			result = "ERR",
-			message = "Failed to send AS3935 RCO calibration command"
-		}
+		return err("Failed to send AS3935 RCO calibration command")
 	end
 	-- 置 SRCO/TRCO 显示位强制校准状态刷新，等一拍后清除
 	if not modify_reg(fd, REG_FDISP, 0x3F, 0x03, 6) then
-		return {  result = "ERR", message = "Failed to set AS3935 calib display bits"  }
+		return err("Failed to set AS3935 calib display bits")
 	end
 	milli_sleep(T_CALIB_MS)
 	if not modify_reg(fd, REG_FDISP, 0x3F, 0x00, 6) then
-		return {  result = "ERR", message = "Failed to clear AS3935 calib display bits"  }
+		return err("Failed to clear AS3935 calib display bits")
 	end
 
 	-- 校准状态：SRCO/TRCO 两个状态位都必须为 0（bit6=1 即校准未通过）
 	local srco = i2c_read_reg(fd, REG_CALIB_SRCO)
 	local trco = i2c_read_reg(fd, REG_CALIB_TRCO)
 	if srco == nil or srco < 0 or trco == nil or trco < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read AS3935 calibration status"
-		}
+		return err("Failed to read AS3935 calibration status")
 	end
 	if bitc.band(srco, CALIB_NOK) ~= 0 or bitc.band(trco, CALIB_NOK) ~= 0 then
-		return {
-			result = "ERR",
-			message = string.format("AS3935 RCO calibration failed (SRCO=0x%02X TRCO=0x%02X, NOK bit set)", srco, trco)
-		}
+		return err(string.format("AS3935 RCO calibration failed (SRCO=0x%02X TRCO=0x%02X, NOK bit set)", srco, trco))
 	end
 
 	print(string.format("AS3935 init OK: addr=0x%02X, %s, nf=%d, wdth=%d, srej=%d, min_lig_c=%d, mask_dist=%s, tun_cap=%dpF",
@@ -276,11 +246,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -288,31 +256,16 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 与参考实现一致：事件锁存稳定后再读（IRQ 触发后约 2ms 才可读）
 	milli_sleep(2)
 
 	local intv = i2c_read_reg(fd, REG_INT)
 	if intv == nil or intv < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read AS3935 interrupt register"
-		}
+		return err("Failed to read AS3935 interrupt register")
 	end
 	intv = intv % 16		-- INT 位域 [3:0]
 
@@ -329,10 +282,7 @@ function call(data)
 
 		local dist = i2c_read_reg(fd, REG_DISTANCE)
 		if dist == nil or dist < 0 then
-			return {
-				result = "ERR",
-				message = "Failed to read AS3935 distance"
-			}
+			return err("Failed to read AS3935 distance")
 		end
 		dist = dist % 64		-- S_DIST 位域 [5:0]
 		-- 1 = 雷暴在头顶/极近，2~62 = 公里数，0x3F = 超出量程，0 = 未知
@@ -344,10 +294,7 @@ function call(data)
 		local msb = i2c_read_reg(fd, REG_EGY_MSB)
 		local mmsb = i2c_read_reg(fd, REG_EGY_MMSB)
 		if lsb == nil or lsb < 0 or msb == nil or msb < 0 or mmsb == nil or mmsb < 0 then
-			return {
-				result = "ERR",
-				message = "Failed to read AS3935 energy"
-			}
+			return err("Failed to read AS3935 energy")
 		end
 		ret.ENERGY = bitc.band(mmsb, 0x1F) * 65536 + msb * 256 + lsb
 
@@ -437,11 +384,6 @@ local TICK_EVENTS = {
 	[0] = "none", "none", "lightning", "none",
 	"noise", "none", "lightning", "disturber",
 }
-
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
 
 	local d = {}
 

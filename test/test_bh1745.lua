@@ -711,7 +711,7 @@ check("缺 fd 零事务", #entries(mark) == 0)
 
 mark = #vbus.txlog
 expect_err("call 非 table", function() return call(123) end,
-      "Invalid Arguments: table")
+      "Invalid Arguments Type: table")
 
 -- =====================================================================
 -- 组 4：destroy（arg_table 校验，零总线事务）

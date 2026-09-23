@@ -36,9 +36,8 @@
 --      [0]=关断。本驱动配置为自动模式连续测量
 --   7. 无 ID 寄存器；STATUS（0x00）仅作存在性检查（读不到 = 器件不在）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -63,7 +62,9 @@ local REG_T_LSB   = 0x15
 local FS_VOLTAGE_V = 70.8			-- 电压满量程（V）
 local FS_SENSE_V   = 0.064			-- ΔSENSE 满量程（±64mV）
 local FS_TEMP_K    = 510.0			-- 温度满量程（K）
-local CHARGE_LSB_AH = 0.34e-6		-- 电荷 LSB（Ah @ M=4096, 50mΩ）
+local CHARGE_LSB_AH = 0.34e-6		-- 电荷 LSB = 0.34e-3 mAh（= 0.34e-6 Ah，M=4096, 50mΩ）
+					-- 单一事实源：mAh 形态 0.34e-3 由 :34 公式直接给出，
+					-- Ah 形态 0.34e-6 仅在乘 1000 换算处使用，勿混用单位
 
 -- ==================== 预分频 M -> 控制码（[5:3]） ====================
 local presc_tab  = { 1, 4, 16, 64, 256, 1024, 4096 }
@@ -105,11 +106,9 @@ end
 -- 【配置脚本】存在性检查 + 写控制（自动模式 + 预分频）
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -119,21 +118,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 模块级配置：跨 call 保持
 	rsense = rsense_of(data.rsense)
@@ -143,10 +130,7 @@ function build(data)
 	-- 存在性检查（无 ID 寄存器，读不到即失败）
 	local status = read_reg16(fd, REG_STATUS)
 	if status == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 status"
-		}
+		return err("Failed to read LTC2944 status")
 	end
 
 	-- 控制字：自动模式（[7:6]=11）| 预分频码（[5:3]）
@@ -157,10 +141,7 @@ function build(data)
 	end
 	local control = bitc.bor(0xC0, bitc.lshift(code, 3))
 	if not i2c_write_reg(fd, REG_CONTROL, control) then
-		return {
-			result = "ERR",
-			message = "Failed to write LTC2944 control"
-		}
+		return err("Failed to write LTC2944 control")
 	end
 
 	print(string.format("LTC2944 init OK: addr=0x%02X, rsense=%.4f Ω, prescaler M=%d, status=0x%04X",
@@ -186,11 +167,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -200,58 +179,31 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- build 前置守卫：rsense/presc_m 仅 build 赋值，未 build 先 call 会做 nil 算术
 	if rsense == nil or presc_m == nil then
-		return {
-			result = "ERR",
-			message = "LTC2944 not initialized (build first)"
-		}
+		return err("LTC2944 not initialized (build first)")
 	end
 
 	-----------------------------------------------------
 	local chg = read_reg16(fd, REG_CHG_MSB)
 	if chg == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 charge"
-		}
+		return err("Failed to read LTC2944 charge")
 	end
 	local vraw = read_reg16(fd, REG_V_MSB)
 	if vraw == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 voltage"
-		}
+		return err("Failed to read LTC2944 voltage")
 	end
 	local iraw = read_reg16(fd, REG_I_MSB)
 	if iraw == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 current"
-		}
+		return err("Failed to read LTC2944 current")
 	end
 	local traw = read_reg16(fd, REG_T_MSB)
 	if traw == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LTC2944 temperature"
-		}
+		return err("Failed to read LTC2944 temperature")
 	end
 
 	-----------------------------------------------------
@@ -331,7 +283,7 @@ function LTC2944_VIRT.new(opts)
 	local FS_SENSE_V   = 0.064
 	local FS_TEMP_K    = 510.0
 	local ZERO_K       = 273.15
-	local CHARGE_LSB_AH = 0.34e-6
+local CHARGE_LSB_AH = 0.34e-6		-- 与驱动侧同源（仅逆注入用，正算归驱动）
 
 	local function bytev(v)
 		v = tonumber(v)
@@ -470,7 +422,8 @@ function LTC2944_VIRT.new(opts)
 		if t then self:set_temp_raw(clamp_u16((t + ZERO_K) / FS_TEMP_K * 65535)) end
 		return self
 	end
-	-- mAh → code：code = mAh×rsense×4096 / (0.34e-3×1000×M×0.05)
+	-- mAh → code：code = mAh×rsense×4096 / (CHARGE_LSB_AH×1000×M×0.05)
+	--               = mAh×rsense×4096 / (0.34e-3×M×0.05)
 	function d:set_charge_mah(mah, m, rsense)
 		mah = tonumber(mah)
 		m = tonumber(m) or 4096

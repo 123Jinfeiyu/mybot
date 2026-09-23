@@ -18,7 +18,7 @@
  * 配合 bme280_virt.mt：200ms 预热等守护 setup，随后 16 拍 ×50ms pump
  * 三路滤波并消费两个 Monitor。守护 interval=20ms（call 含真实 5ms 等待）。
  * 注：三字段均带 :f 浮点透传后缀，sign=16 对它们不生效（SQL 矩阵解析不接受空串）。
- * 用法：cat scripts/test/bme280_virt.mt | bash _run.sh --robot=robots/test/bme280_virt.sql
+ * 用法：cat scripts/test/bme280_virt.mt | ./build/mybot --robot=robots/test/bme280_virt.sql
  */
 CREATE TABLE Timer (
 	name String

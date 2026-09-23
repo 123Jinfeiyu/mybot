@@ -315,8 +315,8 @@ do
 	expect_err("build 非表 ERR", function() return build(1) end,
 		"Invalid Arguments Type: table")
 	expect_err("build 缺 fd 报 UART 列提示", function() return build({}) end,
-		"Invalid Argument: fd (UART 列是否引用了 @UART 变量?)")
-	expect_err("build fd<=0 ERR", function() return build({ fd = -1 }) end,
+		"Invalid Argument: fd (does the UART column reference an @UART variable?)")
+	expect_err("build fd<0 ERR", function() return build({ fd = -1 }) end,
 		"Invalid Argument: fd")
 	check("fd 非法 build 零事务", #entries(mark) == 1)
 end
@@ -432,7 +432,7 @@ do
 
 	-- 入参负路径
 	expect_err("call 非表 ERR", function() return call("x") end,
-		"Invalid Arguments: table")
+		"Invalid Arguments Type: table")
 	expect_err("call 缺 fd ERR", function() return call({}) end,
 		"Invalid Argument: fd")
 	mark = section()

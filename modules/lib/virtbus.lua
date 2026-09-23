@@ -68,8 +68,8 @@
 --     再 dev.read(n)，复刻 HAL I2C_RDWR 的「写指针+读」原子事务——模型据此
 --     知道读的是哪个寄存器（regmap 类器件模型的前提）；指针写 NACK 则整笔读失败
 --   纯读族（i2c_read/read_bytes，无指针命令式器件用）→ 仅 dev.read(n)
---   长度约束同 HAL：read/read_multi/read_reg16 越界（合并值精度上限）显式失败；
---   read_bytes/read_multi_bytes 钳制 n 1~16（表长对调用方可见）
+--   长度约束同 HAL：read/read_multi/read_reg16 合并值 n 1~6 越界（2^53 精度上限）
+--   显式失败；read_bytes/read_multi_bytes 钳制 n 1~16（表长对调用方可见）
 --   返回值按 HAL 原语义组装（大端合并或字节表）；无器件地址命中按 NACK 处理
 --   （写 false/-1、读 -1/nil），与真机"设备不在总线"行为一致，可测负路径
 --
@@ -77,7 +77,7 @@
 --   空间；spi_setup 复刻参数校验（mode 0~3 / bits 7~16 / speed>0），配置留痕
 --   （真机 setup 是控制器 ioctl，无器件也成功——虚拟层同此语义，无挂载也返回 0）。
 --   spi_write/write3/write_multi 字节校验同 HAL（非字节 → -1，不发帧），
---   write_multi 帧长 1~64；spi_read_multi 合并值 n 1~8 越界显式 -1；
+--   write_multi 帧长 1~64；spi_read_multi 合并值 n 1~6 越界显式 -1；
 --   delay_us 同 HAL 钳到 65535 并随帧留痕；spi_read 的 MOSI 为全 0（真机
 --   tx_buf=NULL 内核发 0）。无挂载路径/未打开 fd/模型返回失败，传输族一律 -1。
 --   spi_xfer_full 是第 9 个 SPI 全局：1 基字节表入参/等长 1 基 MISO 表返回
@@ -85,7 +85,7 @@
 --   24 位读帧）；帧长/字节校验同 spi_write_multi，帧照常走 dev.xfer。
 --
 --   uart_open 路径/波特率白名单同 HAL（^/dev/tty[A-Za-z0-9]+$ 或
---   ^/dev/serial%d+$；baud ∈ HAL 的 UART_BAUDS 表），fd 与 I2C/SPI 共用编号
+--   ^/dev/serial%d+$；baud ∈ 总线契约的 UART_BAUDS 表），fd 与 I2C/SPI 共用编号
 --   空间；非法入参 -1（校验顺序同 HAL：先 baud 后 path）。
 --   uart_write 入参校验同 HAL（非表/空/超 512/逐字节 byte_of 非法 → -1 且不发
 --   事务），通过后 TX 面向控制器恒成功（无挂载也返回 #data，只是无人应答）；
@@ -107,6 +107,15 @@
 -- i2c_*/spi_*，本助手自动重注入（test_virtbus_bh1750 早期手动 restore+inject 的封装）。
 --
 -- 本文件为纯 Lua（不依赖 ffi），可用 lua5.4/luajit 离线跑。
+--
+-- 重入口守卫：下面的 devs/fd_addr/open_paths/txlog 全是文件级 local 表，二次
+-- dofile 会造出第二份互不可见的注册表，而 inject() 替换出去的全局函数只认第一次
+-- 那份——「attach 到 A 表、全局走 B 表」属静默失效。守护路径与非守护驱动路径会
+-- 先后加载本库，故同一状态机内一律复用同一实例（要干净状态请调 vbus.reset()）。
+if __BOT4CJ_VIRTBUS ~= nil then
+	return __BOT4CJ_VIRTBUS
+end
+
 local virtbus = {}
 virtbus._VERSION = "0.2.0"
 
@@ -127,8 +136,22 @@ virtbus.spi_devs = spi_devs
 virtbus.uart_devs = uart_devs
 virtbus.uart_fail_read = false  -- 总线级故障注入：true → uart_read 一律返 nil
 
--- HAL uart_open 的波特率白名单镜像（语义对齐 HAL.lua UART_BAUDS）
-local UART_BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 }
+-- ---- 总线契约单点（N-25）----
+-- 路径白名单 / 波特率表 / 各长度上限 / byte_of·uint_of 归一化 与 HAL 共用
+-- 同一份（modules/lib/bus_contract.lua）——此前是两库逐字手工镜像，漂移即
+-- 「仿真绿真机红」且无任何报错。定位方式：BOT4CJ_MODULE_PATH 各段逐段探测
+-- （fix-plan 3-3：此前只取首段），再以仓库缺省布局兜底
+-- （本库常被测试以 dofile("modules/lib/virtbus.lua") 加载）。
+local bus
+do
+	local probed
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local ok, m = pcall(dofile, p .. "/lib/bus_contract.lua")
+		if ok and type(m) == "table" then probed = m break end
+	end
+	bus = probed or dofile("./modules/lib/bus_contract.lua")
+end
+virtbus.bus_contract = bus
 
 -- 复位：清空器件/日志/线索并还原全局 i2c_*/spi_*/uart_*
 function virtbus.reset()
@@ -211,6 +234,51 @@ local function dev_of(fd)
 	return devs[addr]
 end
 
+-- ---- 模型挂载分派（N-26）--------------------------------------------------
+-- 「判定 BUS 类型 → attach_spi / attach_uart / attach」这套分派原本在
+-- sensor_daemon.lua（守护路径）与 lib/drv_common.lua（@Action 直驱路径）
+-- 各写一份，两处必须同约定，故收敛于此（挂载本就属虚拟总线的领域）。
+--
+-- 判定 BUS 类型：先看工厂表的 BUS 标记，再看实例的（两者可省其一）；缺省 i2c。
+-- 工厂表写在模块表上、实例写在构造结果上都有可能，故两个入参都接受。
+function virtbus.model_kind(factory, inst)
+	local function pick(t)
+		if type(t) ~= "table" then return nil end
+		local k = t.BUS
+		if k == "spi" or k == "uart" or k == "i2c" then return k end
+		return nil
+	end
+	return pick(factory) or pick(inst) or "i2c"
+end
+
+-- 把一个**实例**按 kind 挂到虚拟总线。name 仅日志用；addr/path 用调用方已
+-- 归一化的值（i2c 用 addr，spi/uart 用 path）。返回实际使用的 kind。
+-- 约定：必须挂实例而非工厂表——virtbus 的动态委托取 dev.write/dev.on_write，
+-- 工厂表身上没有这些方法，直接挂上会「写静默成功、读永远无应答」（PCA9685
+-- 直写 E2E 的旧缺口，SCSCL 的 PING 探测把该缺口暴露为构建失败）。
+-- new() 的调用与失败报错留在各调用方（守护/直驱两条路径的文案与后续处理
+-- 不同：守护要 fail(-8) 并中止，直驱要把原因折进 proto=virt setup failed）。
+function virtbus.attach_model(name, dev, addr, path, kind)
+	kind = kind or virtbus.model_kind(dev)
+	if kind == "spi" then
+		virtbus.attach_spi(name, path, dev)
+	elseif kind == "uart" then
+		virtbus.attach_uart(name, path, dev)
+	else
+		virtbus.attach(name, addr, dev)
+	end
+	return kind
+end
+
+-- ---- 参数归一化：取自总线契约单点（与 HAL 同一份实现，N-25）----
+-- 三条总线共用（I2C/SPI/UART 的入参校验语义必须与真机一致，否则 virt 会接受
+-- 真机直接失败的调用——驱动带越界实参时「仿真绿、真机红」）。
+-- int_of = 严格整数（拒绝非整数）：SPI 的 mode/bits/speed 与字节参数走此口径，
+-- 与 HAL.spi_setup/spi_write/spi_write3/spi_xfer_full 同判据；finite_of 供
+-- uart_read 超时校验复用。
+local byte_of, uint_of = bus.byte_of, bus.uint_of
+local int_of, finite_of = bus.int_of, bus.finite_of
+
 -- ---- 写族：组合字节表后交给器件，返回 0 = 成功，-1 = NACK ----
 -- 模型可显式 return false 模拟本笔写 NACK（返回 nil/无返回按成功）
 local function do_write(fd, bytes)
@@ -223,7 +291,7 @@ end
 
 function virtbus.v_i2c_open(path)
 	-- 与 HAL 相同的路径白名单校验；合法即分配虚拟 fd
-	if type(path) ~= "string" or string.match(path, "^/dev/i2c%-%d+$") == nil then
+	if not bus.i2c_path_ok(path) then
 		return -1
 	end
 	local fd = next_fd
@@ -243,7 +311,7 @@ end
 
 function virtbus.v_i2c_set_addr(fd, addr)
 	fd = tonumber(fd)
-	addr = tonumber(addr)
+	addr = uint_of(addr)		-- 同 HAL：非负整数（负数/非数字即失败，不静默取整成别的地址）
 	if fd == nil or open_paths[fd] == nil or addr == nil or addr > 0x7F then
 		return false
 	end
@@ -256,18 +324,39 @@ end
 -- `if not i2c_write_reg(...)` 判定；不能像 write_multi 那样返回 0/-1
 -- （Lua 中 -1 为真，NACK 会被驱动当成功——假绿）。
 function virtbus.v_i2c_write_reg(fd, reg, val)
+	fd = tonumber(fd)
+	reg, val = byte_of(reg), byte_of(val)
+	if fd == nil or reg == nil or val == nil then return false end
 	return do_write(fd, { reg, val }) == 0
 end
 
 function virtbus.v_i2c_write_multi(fd, reg, ...)
+	fd = tonumber(fd)
+	reg = byte_of(reg)
+	if fd == nil or reg == nil then return -1 end
 	local bytes = { reg }
-	for _, v in ipairs({ ... }) do bytes[#bytes + 1] = v end
+	for _, v in ipairs({ ... }) do
+		local b = byte_of(v)
+		if b == nil then return -1 end		-- 同 HAL：任一字节非法即整笔失败，不发事务
+		bytes[#bytes + 1] = b
+	end
+	-- 数据字节上限（不含寄存器指针），与 HAL i2c_write_multi 同判据，防镜像漂移
+	if #bytes - 1 > bus.I2C_IO_MAX_BYTES then return -1 end
 	return do_write(fd, bytes)
 end
 
 function virtbus.v_i2c_write_reg16(fd, reg16, ...)
+	fd = tonumber(fd)
+	reg16 = uint_of(reg16)
+	if fd == nil or reg16 == nil or reg16 > 0xFFFF then return -1 end
 	local bytes = { math.floor(reg16 / 256) % 256, reg16 % 256 }
-	for _, v in ipairs({ ... }) do bytes[#bytes + 1] = v end
+	for _, v in ipairs({ ... }) do
+		local b = byte_of(v)
+		if b == nil then return -1 end
+		bytes[#bytes + 1] = b
+	end
+	-- 数据字节上限（不含 2 字节寄存器指针），与 HAL i2c_write_reg16 同判据
+	if #bytes - 2 > bus.I2C_IO_MAX_BYTES then return -1 end
 	return do_write(fd, bytes)
 end
 
@@ -279,20 +368,23 @@ local function do_read(fd, n)
 	return dev.read(n)
 end
 
--- 正整数校验（合并值类接口用）：非法/越界返回 nil
-local function read_n(n, maxv)
-	n = tonumber(n)
-	if n == nil or n ~= math.floor(n) or n < 1 or n > maxv then return nil end
+-- 合并值类接口的 n：对齐 HAL i2c_read/i2c_read_multi/spi_read_multi ——
+-- uint_of 归一（接受小数/字符串数字并向下取整，与真机同）后限 1~6，
+-- 越界或非法显式失败（-1，不静默钳制；静默钳制会放大成错误合并值）
+local function merge_n(n)
+	n = uint_of(n)
+	if n == nil or n < 1 or n > bus.MERGED_READ_MAX then return nil end
 	return n
 end
 
--- 字节表类接口：钳到 1~16（对齐 HAL i2c_read_multi_bytes/read_bytes）
-local function clamp_n16(n)
-	n = tonumber(n)
-	if n == nil then n = 1 end
-	n = math.floor(n)
+-- 字节表类接口的 n：对齐 HAL i2c_read_bytes/i2c_read_multi_bytes ——
+-- uint_of 归一；非法（nil/负数/非数字）返回 nil = 失败（旧实现 nil→1 会
+-- 让真机必失败的调用在仿真里静默成功）；合法则钳 1~16（表长对调用方可见）
+local function bytes_n(n)
+	n = uint_of(n)
+	if n == nil then return nil end
 	if n < 1 then n = 1 end
-	if n > 16 then n = 16 end
+	if n > bus.BYTES_READ_MAX then n = bus.BYTES_READ_MAX end
 	return n
 end
 
@@ -313,16 +405,16 @@ local function be_merge(t)
 end
 
 function virtbus.v_i2c_read_reg(fd, reg)
-	reg = tonumber(reg)
+	reg = byte_of(reg)
 	if reg == nil then return -1 end
-	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, 1)
+	local t = do_read_ptr(fd, { reg }, 1)
 	if t == nil or #t < 1 then return -1 end
 	return t[1]
 end
 
--- 纯读大端合并：HAL 限定 n 1~8，越界显式 -1（不静默钳制）
+-- 纯读大端合并：HAL 限定 n 1~6（2^53 精度上限），越界显式 -1（不静默钳制）
 function virtbus.v_i2c_read(fd, n)
-	n = read_n(n, 8)
+	n = merge_n(n)
 	if n == nil then return -1 end
 	local t = do_read(fd, n)
 	if t == nil or #t < 1 then return -1 end
@@ -331,38 +423,38 @@ end
 
 -- 指针读大端合并：HAL 限定 n 1~6（2^53 精度上限）
 function virtbus.v_i2c_read_multi(fd, reg, n)
-	reg = tonumber(reg)
-	n = read_n(n, 6)
+	reg = byte_of(reg)
+	n = merge_n(n)
 	if reg == nil or n == nil then return -1 end
-	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, n)
+	local t = do_read_ptr(fd, { reg }, n)
 	if t == nil or #t < 1 then return -1 end
 	return be_merge(t)
 end
 
--- 指针读字节表：HAL 钳制 n 1~16
+-- 指针读字节表：HAL 钳制 n 1~16，非法 n 失败（nil）
 function virtbus.v_i2c_read_multi_bytes(fd, reg, n)
-	reg = tonumber(reg)
-	if reg == nil then return nil end
-	n = clamp_n16(n)
-	local t = do_read_ptr(fd, { math.floor(reg) % 256 }, n)
+	reg = byte_of(reg)
+	n = bytes_n(n)
+	if reg == nil or n == nil then return nil end
+	local t = do_read_ptr(fd, { reg }, n)
 	if t == nil then return nil end
 	return t
 end
 
 -- 16 位指针读大端合并：HAL 限定 n 1~6
 function virtbus.v_i2c_read_reg16(fd, reg16, n)
-	reg16 = tonumber(reg16)
-	n = read_n(n, 6)
-	if reg16 == nil or reg16 < 0 or reg16 > 0xFFFF or n == nil then return -1 end
-	local r = math.floor(reg16)
-	local t = do_read_ptr(fd, { math.floor(r / 256) % 256, r % 256 }, n)
+	reg16 = uint_of(reg16)
+	n = merge_n(n)
+	if reg16 == nil or reg16 > 0xFFFF or n == nil then return -1 end
+	local t = do_read_ptr(fd, { math.floor(reg16 / 256) % 256, reg16 % 256 }, n)
 	if t == nil or #t < 1 then return -1 end
 	return be_merge(t)
 end
 
--- 纯读字节表：HAL 钳制 n 1~16
+-- 纯读字节表：HAL 钳制 n 1~16，非法 n 失败（nil）
 function virtbus.v_i2c_read_bytes(fd, n)
-	n = clamp_n16(n)
+	n = bytes_n(n)
+	if n == nil then return nil end
 	local t = do_read(fd, n)
 	if t == nil then return nil end
 	return t
@@ -375,7 +467,7 @@ end
 function virtbus.v_spi_open(path)
 	-- 与 HAL 相同的路径白名单校验（^/dev/spidev<bus>.<cs>$）；合法即分配虚拟 fd。
 	-- fd 与 I2C 共用编号空间（真机上本就是同一个进程 fd 表）。
-	if type(path) ~= "string" or string.match(path, "^/dev/spidev%d+%.%d+$") == nil then
+	if not bus.spi_path_ok(path) then
 		return -1
 	end
 	local fd = next_fd
@@ -398,11 +490,10 @@ end
 -- 这与 I2C 的「无地址 NACK」不同（SPI 物理层无 ACK，设备不在不可发现）。
 function virtbus.v_spi_setup(fd, mode, bits, speed, _delay)
 	fd = tonumber(fd)
-	mode, bits, speed = tonumber(mode), tonumber(bits), tonumber(speed)
+	-- 严格整数判据取自 bus_contract.int_of 单点（拒绝非整数，与 HAL 同口径）
+	mode, bits, speed = int_of(mode, 0, 3), int_of(bits, 7, 16), int_of(speed, 1)
 	if fd == nil or spi_paths[fd] == nil
-	   or mode == nil or mode ~= math.floor(mode) or mode < 0 or mode > 3
-	   or bits == nil or bits ~= math.floor(bits) or bits < 7 or bits > 16
-	   or speed == nil or speed ~= math.floor(speed) or speed <= 0 then
+	   or mode == nil or bits == nil or speed == nil then
 		return -1
 	end
 	txlog[#txlog + 1] = {
@@ -441,8 +532,8 @@ end
 
 function virtbus.v_spi_write(fd, val, delay_us)
 	fd = tonumber(fd)
-	val = tonumber(val)
-	if fd == nil or val == nil or val ~= math.floor(val) or val < 0 or val > 255 then
+	val = int_of(val, 0, 255)	-- 严格整数（bus_contract 单点，与 HAL 同判据）
+	if fd == nil or val == nil then
 		return -1
 	end
 	local tx = { val }
@@ -468,11 +559,9 @@ end
 
 function virtbus.v_spi_write3(fd, b0, b1, b2, delay_us)
 	fd = tonumber(fd)
-	b0, b1, b2 = tonumber(b0), tonumber(b1), tonumber(b2)
-	if fd == nil
-	   or b0 == nil or b0 ~= math.floor(b0) or b0 < 0 or b0 > 255
-	   or b1 == nil or b1 ~= math.floor(b1) or b1 < 0 or b1 > 255
-	   or b2 == nil or b2 ~= math.floor(b2) or b2 < 0 or b2 > 255 then
+	-- 严格整数判据取自 bus_contract.int_of 单点（任一非整数即整帧拒绝，同 HAL）
+	b0, b1, b2 = int_of(b0, 0, 255), int_of(b1, 0, 255), int_of(b2, 0, 255)
+	if fd == nil or b0 == nil or b1 == nil or b2 == nil then
 		return -1
 	end
 	local entry_delay = spi_delay_of(delay_us)
@@ -486,11 +575,11 @@ end
 function virtbus.v_spi_write_multi(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 64 then return -1 end
+	if #data > bus.SPI_IO_MAX_BYTES then return -1 end
 	local tx = {}
 	for i = 1, #data do
-		local b = tonumber(data[i])
-		if b == nil or b ~= math.floor(b) or b < 0 or b > 255 then return -1 end
+		local b = byte_of(data[i])
+		if b == nil then return -1 end
 		tx[i] = b
 	end
 	local entry_delay = spi_delay_of(delay_us)
@@ -500,11 +589,12 @@ function virtbus.v_spi_write_multi(fd, data, delay_us)
 	return 0
 end
 
--- 读 n 字节大端合并，n 1~8 越界显式 -1（对齐 HAL，静默钳制会放大成错误合并值）
+-- 读 n 字节大端合并，n 1~6 越界显式 -1（对齐 HAL 的 2^53 精度上限，
+-- 静默钳制会放大成错误合并值；n 的归一语义同 HAL 的 uint_of）
 function virtbus.v_spi_read_multi(fd, n, delay_us)
 	fd = tonumber(fd)
-	n = tonumber(n)
-	if fd == nil or n == nil or n ~= math.floor(n) or n < 1 or n > 8 then
+	n = merge_n(n)
+	if fd == nil or n == nil then
 		return -1
 	end
 	local tx = {}
@@ -522,11 +612,11 @@ end
 function virtbus.v_spi_xfer_full(fd, data, delay_us)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return nil end
-	if #data > 64 then return nil end
+	if #data > bus.SPI_IO_MAX_BYTES then return nil end
 	local tx = {}
 	for i = 1, #data do
-		local b = tonumber(data[i])
-		if b == nil or b ~= math.floor(b) or b < 0 or b > 255 then return nil end
+		local b = int_of(data[i], 0, 255)	-- 严格整数（bus_contract 单点）
+		if b == nil then return nil end
 		tx[i] = b
 	end
 	local entry_delay = spi_delay_of(delay_us)
@@ -563,32 +653,13 @@ local function ring_push(path, bytes)
 	end
 end
 
--- byte_of / uint_of 校验语义镜像 HAL（floor 后判范围）
-local function uart_byte_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	n = math.floor(n)
-	if n < 0 or n > 255 then return nil end
-	return n
-end
-
-local function uart_uint_of(v)
-	local n = tonumber(v)
-	if n == nil then return nil end
-	return math.floor(n)
-end
+-- 入参校验用文件顶部的共用 byte_of / uint_of（与 HAL 逐字对齐）
 
 -- 校验顺序同 HAL：先 baud 白名单，再 path 白名单；fd 与 I2C/SPI 共用编号空间
 function virtbus.v_uart_open(path, baud)
 	baud = tonumber(baud)
-	local baud_ok = false
-	for _, b in ipairs(UART_BAUDS) do
-		if b == baud then baud_ok = true; break end
-	end
-	if not baud_ok then return -1 end
-	if type(path) ~= "string"
-	   or (string.match(path, "^/dev/tty[A-Za-z0-9]+$") == nil
-	       and string.match(path, "^/dev/serial%d+$") == nil) then
+	if not bus.baud_ok(baud) then return -1 end
+	if not bus.uart_path_ok(path) then
 		return -1
 	end
 	local fd = next_fd
@@ -620,11 +691,11 @@ end
 function virtbus.v_uart_write(fd, data)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
-	if #data > 512 then return -1 end
+	if #data > bus.UART_IO_MAX_BYTES then return -1 end
 	if uart_paths[fd] == nil then return -1 end
 	local tx = {}
 	for i = 1, #data do
-		local b = uart_byte_of(data[i])
+		local b = byte_of(data[i])
 		if b == nil then return -1 end
 		tx[i] = b
 	end
@@ -643,16 +714,30 @@ function virtbus.v_uart_write(fd, data)
 	return #tx
 end
 
--- 校验同 HAL（fd 无效 / n uint_of 非法或 <1 → nil；n>512 钳 512）。
+-- 校验同 HAL（fd 无效 / n uint_of 非法或 <1 → nil；timeout 超上限 → nil；
+-- n>512 钳 512）。
 -- 环 drain 至多 n 字节即时返回：环空 = 空表（对齐"超时无数据"），
 -- uart_fail_read = 链路硬错误 → nil（事务记 err=true）。
-function virtbus.v_uart_read(fd, n, _timeout_ms)
+-- 超时上限取自总线契约单点 bus.UART_READ_MAX_MS（N-25）
+function virtbus.v_uart_read(fd, n, timeout_ms)
 	fd = tonumber(fd)
-	n = uart_uint_of(n)
+	n = uint_of(n)
+	-- 非有限超时（NaN/±inf，含 "nan"/"1e400" 等字符串形态）必须显式失败返回 nil：
+	-- 旧写法 `tonumber(timeout_ms) or 0` 会让 NaN 穿过 `timeout > UART_READ_MAX_MS`
+	-- （NaN 与任何数比较均为 false）被当成"不等待"放行，而真机 HAL 显式返回 nil
+	-- ——「仿真绿真机红」。改走总线契约单点 finite_of（virtbus 惯例不打印，只返 nil）。
+	local timeout
+	if timeout_ms ~= nil then
+		timeout = finite_of(timeout_ms)
+		if timeout == nil then return nil end
+	else
+		timeout = 0
+	end
 	if fd == nil or n == nil or n < 1 then return nil end
+	if timeout > bus.UART_READ_MAX_MS then return nil end
 	local path = uart_paths[fd]
 	if path == nil then return nil end
-	if n > 512 then n = 512 end
+	if n > bus.UART_IO_MAX_BYTES then n = bus.UART_IO_MAX_BYTES end
 	if virtbus.uart_fail_read then
 		txlog[#txlog + 1] = { dir = "ur", path = path, n = n, bytes = {}, err = true }
 		return nil
@@ -713,6 +798,57 @@ function virtbus.inject()
 	virtbus._injected = true
 end
 
+-- 采纳「在别的 lua_State 里创建的虚拟 fd」：真实 fd 是进程级整数，跨状态机可用；
+-- 而本模块的 open_paths/fd_addr/uart_paths 是逐状态机的表。多状态机拓扑里总线变量
+-- （modules/I2C.lua、modules/UART.lua）在自己的状态里 open 拿到 fd，设备变量在自己的
+-- 状态里对同一个 fd 读写信道——不先登记的话 v_i2c_set_addr / v_uart_* 会因
+-- open_paths[fd] / uart_paths[fd] 为空而失败。
+-- bus 决定登记到哪张 fd 表：缺省/"i2c" → open_paths + fd_addr；"spi" → spi_paths；
+-- "uart" → uart_paths（UART 器件身份是 tty 路径，无地址）。器件模型由各状态机
+-- 自己 attach（模型是状态局内的内存，本就不跨状态共享）。
+-- C7（2026-09-20 审计）：旧实现把**除 uart 外的一切**都当 I2C 登记，于是
+-- adopt_fd(fd, path, addr, "spi") 只写 open_paths/fd_addr、spi_paths[fd] 永远为空
+-- ——该 fd 上的每一次 spi_* 调用都在 `spi_paths[fd] == nil` 处返回 -1
+-- （"device absent"），而 txlog 里已记下一条成功的 "adopt"，故障现象与成因完全脱节。
+function virtbus.adopt_fd(fd, path, addr, bus)
+	fd = tonumber(fd)
+	if fd == nil then return false end
+	next_fd = math.max(next_fd, fd + 1)		-- 别让后续分配撞上采纳来的编号
+	if bus == "uart" then
+		if uart_paths[fd] == nil then
+			uart_paths[fd] = tostring(path or "virt-adopted")
+		end
+		log_tx("adopt", nil, { raw = tostring(path) })
+		return true
+	end
+	if bus == "spi" then
+		if spi_paths[fd] == nil then
+			spi_paths[fd] = tostring(path or "virt-adopted")
+		end
+		log_tx("adopt", nil, { raw = tostring(path) })
+		return true
+	end
+	if open_paths[fd] == nil then
+		open_paths[fd] = tostring(path or "virt-adopted")
+	end
+	addr = tonumber(addr)
+	if addr ~= nil then fd_addr[fd] = addr end
+	log_tx("adopt", addr, { raw = tostring(path) })
+	return true
+end
+
+-- fd 泄漏检测（审计覆盖缺口 #4）：三类总线已登记虚拟 fd 的只读合计快照。
+-- 真实 HAL 与虚拟 HAL 共享同一套驱动 open/close 调用模式——驱动若在
+-- build/call 循环里 open 而不 close，此处计数即随轮次增长，可被
+-- test_virtbus_fdleak.lua 在 destroy 后断言归零/回落基线。
+function virtbus.fd_count()
+	local n = 0
+	for _ in pairs(open_paths) do n = n + 1 end
+	for _ in pairs(spi_paths) do n = n + 1 end
+	for _ in pairs(uart_paths) do n = n + 1 end
+	return n
+end
+
 function virtbus.restore()
 	if not virtbus._injected then return end
 	for _, name in ipairs(REPLACED) do
@@ -735,4 +871,5 @@ function virtbus.load_driver(path)
 	return virtbus
 end
 
+__BOT4CJ_VIRTBUS = virtbus		-- 供文件头的重入口守卫取用
 return virtbus

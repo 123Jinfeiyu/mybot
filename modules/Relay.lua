@@ -4,8 +4,8 @@
 -- 返回值由框架与元数据合并后转发给 controller 指定的硬件变量（如 Timer）
 -- 用法：在结构脚本中定义 @Relay 矩阵并带 controller 列，见 robots/relay-test.sql
 
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：print_table 经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
@@ -53,7 +53,11 @@ function call(data)
 	dbg_table("-------- Relay caller func get a table --------", data)
 
 	-----------------------------------------------------
-	local delay = tonumber(data.test)
+	-- 审计 P3：走 finite_of（drv_common 单点）。NaN 非 nil，`== nil` 兜不住，
+	-- 会把 NaN 当 delay 转发给 controller，报错点落在下游 Timer 上，
+	-- 排障看不出源头是本行的入参。保留「缺失/占位符按 0」这条既有语义
+	-- （动作脚本里的 "-" 单元格依赖它），只是把"非法"与"缺失"同等对待。
+	local delay = finite_of(data.test)
 	if delay == nil then
 		delay = 0
 	end

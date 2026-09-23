@@ -8,7 +8,7 @@
 # 守护 regular/interval=20ms；模型 virt_tick 每拍直接装入一拍地磁原始码
 # （X≈30±20、Y≈-12±15、Z≈-42±18µT，RHALL 恒 512），call 单笔 8B burst
 # 即有数据、零真实睡眠；一拍对应一个 virt_tick。
-# 用法：cat scripts/test/bmm150_virt.mt | bash _run.sh --robot=robots/test/bmm150_virt.sql
+# 用法：cat scripts/test/bmm150_virt.mt | ./build/mybot --robot=robots/test/bmm150_virt.sql
 @Action
 t0.delay  eavg.out  mon0.go  monf.go;
    200       -        -         -    ;

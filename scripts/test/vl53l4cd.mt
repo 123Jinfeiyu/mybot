@@ -1,6 +1,6 @@
 # VL53L4CD ToF 激光测距测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/vl53l4cd.sql（I2C + tof0@0x29 + Timer + tof-d0 守护）
-# 运行：cat scripts/test/vl53l4cd.mt | ./target/release/bin/main --robot=robots/test/vl53l4cd.sql
+# 运行：cat scripts/test/vl53l4cd.mt | ./build/mybot --robot=robots/test/vl53l4cd.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x29 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/VL53L4CD 的 build 一旦返回 ERR

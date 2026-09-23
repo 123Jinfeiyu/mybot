@@ -9,18 +9,9 @@
 --
 -- TCP 端到端用 scripts/tcp_e2e.sh（Python 客户端 → TCP → 服务端）真机验证。
 
-local pass = 0
-local fail = 0
-local function check(name, cond, detail)
-	-- 逐断言打印 [PASS]/[FAIL]（run_all.sh 假绿判定以 [PASS] 计数为据，P0-2）
-	if cond then
-		pass = pass + 1
-		print("[PASS] " .. name)
-	else
-		fail = fail + 1
-		print("[FAIL] " .. name .. (detail and " (" .. detail .. ")" or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 -- ---- 1. 工厂优先级模拟 ----
 local function mockOptions(tcp, input)
@@ -96,6 +87,4 @@ end
 print(string.rep("-", 44))
 print("ActionSource 工厂离线桩测试")
 print(string.rep("-", 44))
-print(string.format("通过: %d  失败: %d", pass, fail))
-print("[DONE] test_action_source.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if fail > 0 then os.exit(1) end
+tester.summary("test_action_source.lua")

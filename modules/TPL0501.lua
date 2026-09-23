@@ -34,9 +34,8 @@
 --   3. 量化：100k 型每步约 390Ω，10k 型每步约 39Ω
 --   4. fd/delay 经元数据引用机制从 @SPI 变量流入（同 ADS1256 的模式）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -58,11 +57,9 @@ end
 -- 【配置脚本】写-only 器件无寄存器可校验，仅记录换算配置
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -72,10 +69,7 @@ function build(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	local rt = tonumber(data.rtotal)
@@ -104,11 +98,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -118,10 +110,7 @@ function call(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -130,34 +119,22 @@ function call(data)
 	if data.level ~= nil then
 		level = tonumber(data.level)
 		if level == nil then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: level (not a number)"
-			}
+			return err("Invalid Argument: level (not a number)")
 		end
 	elseif data.percent ~= nil then
 		local pct = tonumber(data.percent)
 		if pct == nil then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: percent (not a number)"
-			}
+			return err("Invalid Argument: percent (not a number)")
 		end
 		level = math.floor(pct / 100.0 * WIPER_MAX + 0.5)
 	elseif data.ohms ~= nil then
 		local ohms = tonumber(data.ohms)
 		if ohms == nil then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: ohms (not a number)"
-			}
+			return err("Invalid Argument: ohms (not a number)")
 		end
 		level = math.floor(ohms / (rtotal or DEF_RTOTAL) * WIPER_MAX + 0.5)
 	else
-		return {
-			result = "ERR",
-			message = "Invalid Argument: need level / percent / ohms"
-		}
+		return err("Invalid Argument: need level / percent / ohms")
 	end
 
 	-- 限幅到 0~255
@@ -168,10 +145,7 @@ function call(data)
 	-----------------------------------------------------
 	-- 写抽头：一个 SPI 字节即完整操作；delay 经元数据从 @SPI 流入
 	if spi_write(fd, level, tonumber(data.delay)) ~= 0 then
-		return {
-			result = "ERR",
-			message = "Failed to write TPL0501 wiper"
-		}
+		return err("Failed to write TPL0501 wiper")
 	end
 
 	if DEBUG then

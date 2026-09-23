@@ -52,9 +52,8 @@
 -- 硬件注意：GY 兼容板 VIN 喂 5V（板载 LDO 有压差，喂 3.3V 会欠压）；INT 引脚本驱动未用，
 --   全靠轮询 FIFO 指针。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -70,7 +69,7 @@ local REG_FIFO_WR   = 0x04		-- FIFO 写指针（芯片自增）
 local REG_FIFO_OVF  = 0x05		-- 溢出计数（rollover 开启时不增）
 local REG_FIFO_RD   = 0x06		-- FIFO 读指针
 local REG_FIFO_DATA = 0x07		-- FIFO 数据口：读自动步进，HR 每样本 3 字节 / SpO2 6 字节
-local REG_FIFO_CFG  = 0x08		-- SMP_AVE[6:4] | ROLLOVER[3] | A_FULL[2:0]
+local REG_FIFO_CFG  = 0x08		-- SMP_AVE[7:5] | ROLLOVER_EN[4] | A_FULL[3:0]
 local REG_MODE      = 0x09		-- SHDN[7] RESET[6] | MODE[2:0]：2=HR 3=SpO2 7=多LED
 local REG_SPO2      = 0x0A		-- ADC_RGE[6:5] | SR[4:2] | PW[1:0]
 local REG_LED1      = 0x0C		-- 红光电流，0.2mA/LSB，最大 51mA
@@ -90,6 +89,16 @@ local RATE_CODE = { [50]=0,[100]=1,[200]=2,[400]=3,[800]=4,[1000]=5,[1600]=6,[32
 local PW_CODE   = { [69]=0,[118]=1,[215]=2,[411]=3 }
 local ADC_CODE  = { [2048]=0,[4096]=1,[8192]=2,[16384]=3 }
 local AVG_CODE  = { [1]=0,[2]=1,[4]=2,[8]=3,[16]=4,[32]=5,[64]=6,[128]=7 }
+-- 采样平均位域（2026-09-20 审计 C5）：数据手册 FIFO_CFG(0x08) 的字段是
+--   B7..B5 = SMP_AVE[2:0]、B4 = FIFO_ROLLOVER_EN、B3..B0 = FIFO_A_FULL。
+-- 旧实现按 SMP_AVE[6:4]|ROLLOVER[3] 写 `code*16 + 0x08`：芯片实际看到的是
+-- SMP_AVE = code>>1、ROLLOVER = 0、A_FULL = 8 —— 即平均档位取半、rollover
+-- **关着**（与头注/build 注释声称的"rollover 开"相反），而内嵌模型复刻了同一
+-- 处错位，单测因此全绿。这三个常量是位域的唯一事实源，驱动与模型共用。
+local SMP_AVE_MUL       = 32		-- SMP_AVE 在 B7..B5（= 2^5；LuaJIT 无内置 <<）
+local BIT_ROLLOVER_EN   = 0x10		-- B4：满 32 后覆盖最旧样本
+local FIFO_A_FULL_LEVEL = 0x08		-- B3..B0：近满阈值（驱动纯轮询不使能中断，
+					-- 该值只影响中断时序，保留既有取值不改）
 -- 采样周期须容纳两路 LED 脉冲 + 转换：脉宽越大允许的最高采样率越低（数据手册组合表）
 local PW_MAX_RATE = { [69]=3200,[118]=1600,[215]=800,[411]=400 }
 
@@ -110,9 +119,16 @@ local function cfg_choice(v, default, codes, label)
 end
 
 -- 连续区间取值：闭区间 [lo, hi]
+-- 审计 2026-09-20（中）：入参必须**有限**。`math.floor(tonumber(v) or (lo-1))` 挡不住
+-- NaN（NaN 是 truthy）也不挡 inf——NaN 与任何数比较为假，于是区间校验形同不存在，
+-- 非有限值会一路流进 FIFO 批量/等待参数并造成无界轮询（见 call 的 wait 段）。
 local function cfg_range(v, default, lo, hi, label)
 	if v == nil or v == "-" or v == "" then return default end
-	local n = math.floor(tonumber(v) or (lo - 1))
+	local raw = finite_of(v)
+	if raw == nil then
+		return nil, "Invalid Argument: " .. label .. " '" .. tostring(v) .. "' (not a finite number)"
+	end
+	local n = math.floor(raw)
 	if n < lo or n > hi then
 		return nil, "Invalid Argument: " .. label .. " '" .. tostring(v) .. "' (range " .. lo .. "~" .. hi .. ")"
 	end
@@ -162,11 +178,9 @@ end
 -- 读 Part ID 自检 -> RESET -> 配置 -> 清 FIFO 指针 -> 写模式启动采样
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -174,35 +188,17 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 在位探测 + 型号自检（Part ID 固定 0x15）
 	local pid = i2c_read_reg(fd, REG_PART_ID)
 	if pid < 0 then
-		return {
-			result = "ERR",
-			message = "MAX30102 not responding (read Part ID failed, check address 0x57 and wiring)"
-		}
+		return err("MAX30102 not responding (read Part ID failed, check address 0x57 and wiring)")
 	end
 	if pid ~= PART_ID then
-		return {
-			result = "ERR",
-			message = string.format("MAX30102 unexpected Part ID 0x%02X (expect 0x%02X)", pid, PART_ID)
-		}
+		return err(string.format("MAX30102 unexpected Part ID 0x%02X (expect 0x%02X)", pid, PART_ID))
 	end
 
 	-----------------------------------------------------
@@ -214,10 +210,7 @@ function build(data)
 	if opmode_s == "spo2" then is_spo2 = true
 	elseif opmode_s == "hr" then is_spo2 = false
 	else
-		return {
-			result = "ERR",
-			message = "Invalid Argument: opmode '" .. opmode_s .. "' (hr|spo2)"
-		}
+		return err("Invalid Argument: opmode '" .. opmode_s .. "' (hr|spo2)")
 	end
 
 	local rate, e1 = cfg_choice(data.rate, 100, RATE_CODE, "rate(sps)")
@@ -225,13 +218,10 @@ function build(data)
 	local adc,  e3 = cfg_choice(data.adc, 4096, ADC_CODE, "adc(nA)")
 	local avg,  e4 = cfg_choice(data.avg, 1, AVG_CODE, "avg")
 	if e1 or e2 or e3 or e4 then
-		return { result = "ERR", message = e1 or e2 or e3 or e4 }
+		return err(e1 or e2 or e3 or e4)
 	end
 	if rate > PW_MAX_RATE[pw] then
-		return {
-			result = "ERR",
-			message = string.format("Invalid Argument: rate %d sps exceeds limit %d sps for pw %dus", rate, PW_MAX_RATE[pw], pw)
-		}
+		return err(string.format("Invalid Argument: rate %d sps exceeds limit %d sps for pw %dus", rate, PW_MAX_RATE[pw], pw))
 	end
 
 	local led1, e5 = cfg_led_code(data.led1, "led1(mA)")
@@ -241,16 +231,13 @@ function build(data)
 	local n,     e7 = cfg_range(data.n, 1, 1, 8, "n(samples)")
 	local wait,  e8 = cfg_range(data.wait, 0, 0, 60000, "wait(ms)")
 	if e5 or e6 or e7 or e8 then
-		return { result = "ERR", message = e5 or e6 or e7 or e8 }
+		return err(e5 or e6 or e7 or e8)
 	end
 
 	-----------------------------------------------------
 	-- 复位（RESET 位自清零，全部寄存器回上电默认，约 1ms）
 	if not i2c_write_reg(fd, REG_MODE, BIT_RESET) then
-		return {
-			result = "ERR",
-			message = "MAX30102 not responding (reset write failed)"
-		}
+		return err("MAX30102 not responding (reset write failed)")
 	end
 	milli_sleep(5)
 
@@ -262,7 +249,9 @@ function build(data)
 		end
 	end
 
-	wr(REG_FIFO_CFG, AVG_CODE[avg] * 16 + 0x08, "FIFO config")	-- 平均 + rollover（满后覆盖最旧）
+	-- C5：位域按数据手册 SMP_AVE[7:5] | ROLLOVER_EN[4] | A_FULL[3:0]
+	wr(REG_FIFO_CFG, AVG_CODE[avg] * SMP_AVE_MUL + BIT_ROLLOVER_EN
+		+ FIFO_A_FULL_LEVEL, "FIFO config")	-- 平均 + rollover（满后覆盖最旧）
 	wr(REG_SPO2, ADC_CODE[adc] * 32 + RATE_CODE[rate] * 4 + PW_CODE[pw], "SpO2 config")
 	wr(REG_LED1, led1, "LED1 amplitude")
 	wr(REG_LED2, led2, "LED2 amplitude")
@@ -271,10 +260,7 @@ function build(data)
 	wr(REG_FIFO_RD, 0, "FIFO read pointer clear")
 	wr(REG_MODE, is_spo2 and MODE_SPO2 or MODE_HR, "mode")		-- 写模式即启动采样
 	if wfail ~= nil then
-		return {
-			result = "ERR",
-			message = wfail
-		}
+		return err(wfail)
 	end
 
 	cfg_is_spo2 = is_spo2
@@ -293,11 +279,9 @@ end
 -- 问题（饱和）只置 SAT 标志。返回样本键 RED0..RED{k-1}（+IR0..）与最新样本别名 RED/IR。
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -305,36 +289,31 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
-	-- n/wait 取本次调用参数（缺省用 build 配置）——直连路径可按行动态批量读/等待
-	local n_req = math.floor(tonumber(data.n) or cfg_n or 1)
+	-- n/wait 取本次调用参数（缺省用 build 配置）——直连路径可按行动态批量读/等待。
+	-- 审计 2026-09-20（中）：两处都必须过 finite_of。此前 wait 只有下界钳制
+	-- （`if wait_req < 0`），"1e400"→inf 会让下方 `waited < wait_req` 的轮询
+	-- **永不终止**（实测 timeout 10s → exit 124），动作/守护线程直接挂死且
+	-- 无 ERR、pcall 也救不回；n 为 NaN 时 math.min(NaN, avail) 在 LuaJIT 下
+	-- 返回 avail，于是「按 n 个采样」退化成「把整个 FIFO 排空」。构建期
+	-- cfg_range 已钳 0~60000，故这里与之一致地钳到同一上界。
+	local n_raw = finite_of(data.n)
+	if n_raw == nil then n_raw = cfg_n or 1 end
+	local n_req = math.floor(n_raw)
 	if n_req < 1 then n_req = 1 elseif n_req > 8 then n_req = 8 end
-	local wait_req = math.floor(tonumber(data.wait) or cfg_wait or 0)
-	if wait_req < 0 then wait_req = 0 end
+	local wait_raw = finite_of(data.wait)
+	if wait_raw == nil then wait_raw = cfg_wait or 0 end
+	local wait_req = math.floor(wait_raw)
+	if wait_req < 0 then wait_req = 0 elseif wait_req > 60000 then wait_req = 60000 end
 
 	-- 可读样本数；FIFO 空时可等（直连路径用；守护路径 wait 保持 0）
 	local avail = fifo_avail(fd)
 	if avail == -1 then
-		return {
-			result = "ERR",
-			message = "MAX30102 not responding (read FIFO pointers failed)"
-		}
+		return err("MAX30102 not responding (read FIFO pointers failed)")
 	end
 	if avail == 0 and wait_req > 0 then
 		local waited = 0
@@ -343,18 +322,12 @@ function call(data)
 			waited = waited + 10
 			avail = fifo_avail(fd)
 			if avail == -1 then
-				return {
-					result = "ERR",
-					message = "MAX30102 not responding (read FIFO pointers failed)"
-				}
+				return err("MAX30102 not responding (read FIFO pointers failed)")
 			end
 		end
 	end
 	if avail == 0 then
-		return {
-			result = "ERR",
-			message = "MAX30102 FIFO empty (no new sample yet)"
-		}
+		return err("MAX30102 FIFO empty (no new sample yet)")
 	end
 
 	-- 逐样本弹出（FIFO 序：旧 -> 新），至多 n 个
@@ -365,10 +338,7 @@ function call(data)
 		local red, ir = fifo_read_sample(fd)
 		if red == nil then
 			if k == 1 then
-				return {
-					result = "ERR",
-					message = "MAX30102 not responding (FIFO data read failed)"
-				}
+				return err("MAX30102 not responding (FIFO data read failed)")
 			end
 			break	-- 首样本之后传输失败：返回已得部分，不空手而归
 		end
@@ -443,10 +413,13 @@ end
 --      槽位读起。空 FIFO 读返回 0x00 且 RD 不动。
 --   3) 每通道 18 位样本 MSB 对齐在 3 字节帧里（低 6 位恒 0）：
 --      b0=[17:10] b1=[9:2] b2[7:6]=[1:0]，满码 0x3FFFF=262143 即 SAT。
---   4) FIFO_CFG 0x08 = SMP_AVE[6:4] | ROLLOVER_EN[3] | A_FULL[3:0]：rollover
+--   4) FIFO_CFG 0x08 = SMP_AVE[7:5] | ROLLOVER_EN[4] | A_FULL[3:0]：rollover
 --      关（POR）时满 32 后新样本丢弃、OVF_COUNTER++（饱和 31）、WR 停住；
---      rollover 开（驱动 build 固定置 bit3）时新样本覆盖最旧槽并把 RD 自动
+--      rollover 开（驱动 build 固定置 B4）时新样本覆盖最旧槽并把 RD 自动
 --      推进、OVF 不增。SPO2_CFG 0x0A：有效输出样本周期 = 1000×2^SMP_AVE/SR。
+--      位域位置与驱动共用常量（SMP_AVE_MUL/BIT_ROLLOVER_EN）——2026-09-20
+--      审计 C5 前此处与驱动同错（SMP_AVE 记成 [6:4]），模型与驱动同源共错
+--      使单测失去判别力。
 --   5) MODE 0x09 = SHDN[7] | RESET[6] | MODE[2:0]：RESET 位自清除不落盘，
 --      写后全部寄存器回 POR、FIFO/指针清空；SHDN=1 停采样；写有效模式即
 --      启动，advance(ms) 按周期向 FIFO 产样（测试 wait 轮询的 milli_sleep
@@ -525,8 +498,9 @@ end
 		local m = mode_bits()
 		return (m == MODE_HR or m == MODE_SPO2) and not shdn_on()
 	end
-	local function rollover_on() return math.floor(regs[REG_FCFG] / 8) % 2 == 1 end
-	local function avg_code() return math.floor(regs[REG_FCFG] / 16) % 8 end
+	-- C5：位域与驱动共用常量（SMP_AVE 在 B7..B5 → 乘 32、ROLLOVER_EN 在 B4）
+	local function rollover_on() return math.floor(regs[REG_FCFG] / BIT_ROLLOVER_EN) % 2 == 1 end
+	local function avg_code() return math.floor(regs[REG_FCFG] / SMP_AVE_MUL) % 8 end
 	local function rate_code() return math.floor(regs[REG_SPO2] / 4) % 8 end
 	-- 有效输出周期：SMP_AVE 个 SR 样本平均成 1 个 FIFO 输出
 	local function period_ms()
@@ -802,6 +776,7 @@ end
 		return s and s.r or nil, s and s.i
 	end
 	function d:rollover_en() return rollover_on() end
+	function d:avg_code() return avg_code() end	-- C5：位域位置的白盒观察面
 	function d:is_active() return active() end
 	function d:mode() return mode_bits() end
 	function d:shdn() return shdn_on() end

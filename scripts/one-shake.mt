@@ -1,4 +1,4 @@
-# 零号动作 表演
+# 蜘蛛抖动动作，用于测试、表演
 @Action
 s1.A  s2.A  s3.A  s4.A  s5.A  s6.A  s7.A  s8.A  spk.F  spk.delay;	# column name
    0     0     0     0     0     0     0     0     10        200;	# stand

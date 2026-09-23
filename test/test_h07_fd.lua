@@ -71,11 +71,13 @@ ffi.C.setenv("BOT4CJ_MODULE_PATH", d, 1)
 -- 以守护 chunk 语义加载并完成 setup（等价 daemon_body 首拍）；setup 失败会直接 throw
 dofile("modules/lib/sensor_daemon.lua")
 
-local pass, fail = 0, 0
-local function check(label, cond, detail)
-	if cond then pass = pass + 1; log("[PASS] " .. label)
-	else fail = fail + 1; log("[FAIL] " .. label .. " (" .. tostring(detail) .. ")") end
-end
+-- sensor_daemon 会把全局 print 覆盖为 noop（防高速采样刷屏）；tester.lua 的断言
+-- 输出走全局 print，故在此恢复真实 print（与本文件此前用 log 显式输出等价）
+print = log
+
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 -- 1) setup 成功 → 驱动 build 见到 fd=100，daemon_tick 采样可发布
 check("sensor_daemon setup 驱动收到 fd", fd_seen == 100, fd_seen)
@@ -95,6 +97,4 @@ check("daemon_cleanup 幂等（仅一次 close）", close_log[100] == 1, close_l
 -- 清理临时目录
 os.execute("rm -rf " .. d)
 
-log(("H-07 fd-close: %d 通过, %d 失败"):format(pass, fail))
-log("[DONE] test_h07_fd.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-os.exit(fail == 0 and 0 or 1)
+tester.summary("test_h07_fd.lua")

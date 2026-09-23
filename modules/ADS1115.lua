@@ -17,10 +17,9 @@
 -- 依赖 r.cj 注册的 i2c_write_multi / i2c_read_multi（burst 读写 16 位寄存器）
 
 -- ==================== 寄存器 ====================
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
--- 调试打印辅助 print_table（modules/lib/）
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
@@ -52,16 +51,11 @@ local dr_names = { "8", "16", "32", "64", "128", "250", "475", "860" }
 local DEBUG = false
 
 -- 辅助：把 16 位无符号值符号扩展为有符号数
-local function sign16(v)
-    if v >= 0x8000 then return v - 0x10000 end
-    return v
-end
+local sign16 = bitc.s16
 
 -- 辅助：把数据里的字段转成数字（字符串/数字均可），nil 返回默认值
-local function tonum(v, default)
-    if v == nil then return default end
-    return tonumber(v) or default
-end
+-- 数值列 -> tonumber 结果，非法回落缺省（实现收敛至 drv_common.num_or，N-24）
+local tonum = num_or
 
 -- 【配置脚本】初始化 ADS1115
 function build(data)
@@ -74,17 +68,9 @@ function build(data)
         dbg_table("-------- ADS1115 builder func get a table --------", data)
     end
 
-    local fd = data.fd
-    if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
-    end
-    fd = tonumber(fd)
-
-    local addr = data.address
-    if addr == nil then
-        return { result = "ERR", message = "Invalid Arguments: addr" }
-    end
-    addr = tonumber(addr)
+    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径统一）
+    local fd, addr, ek = i2c_pair(data)
+    if fd == nil then return ek end
 
     -- 可配置项（缺省：AIN0 单端 / ±2.048V / 128SPS / 单次 / 禁比较器）
     local pga_idx = tonum(data.pga, 2)
@@ -101,22 +87,23 @@ function build(data)
     config = bitc.bor(config, bitc.lshift(dr_idx, 5))     -- 数据速率
     config = bitc.bor(config, COMP_QUE_DISABLE)           -- 禁用比较器
 
-    if not i2c_set_addr(fd, addr) then
-        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
-    end
-
     -- 写 16 位配置寄存器（burst 写：reg + 高字节 + 低字节）
     local hi = math.floor(config / 256) % 256
     local lo = config % 256
     local wr = i2c_write_multi(fd, REG_CONFIG, hi, lo)
     if wr ~= 0 then
-        return { result = "ERR", message = "Failed to write ADS1115 config" }
+        return err("Failed to write ADS1115 config")
     end
 
-    -- 读回验证
+    -- 读回比对自检（无 ID 寄存器，兼在位探测与配置确认）。
+    -- 比对须掩掉 OS 位（bit15 = OS_START）：其读语义为转换状态（空闲恒读 1），
+    -- 而写入值该位为 0（转换由 call 触发），全 16 位比对在真实器件上永远 mismatch。
     local rd = i2c_read_multi(fd, REG_CONFIG, 2)
     if rd < 0 then
-        return { result = "ERR", message = "Failed to read back ADS1115 config" }
+        return err("Failed to read back ADS1115 config")
+    end
+    if bitc.band(rd, 0x7FFF) ~= bitc.band(config, 0x7FFF) then
+        return err(string.format("ADS1115 config echo mismatch: got 0x%04X (expect 0x%04X)", rd, config))
     end
 
     print(string.format("ADS1115 init OK: addr=0x%02X, channel=AIN%d, PGA=%s, DR=%s SPS",
@@ -137,15 +124,15 @@ function destroy(data)
 
     local fd = data.fd
     if fd == nil then
-        return { result = "ERR", message = "Invalid Arguments: fd" }
+        return err("Invalid Arguments: fd")
     end
     local addr = data.address
     if addr == nil then
-        return { result = "ERR", message = "Invalid Arguments: addr" }
+        return err("Invalid Arguments: addr")
     end
 
     if not i2c_set_addr(tonumber(fd), tonumber(addr)) then
-        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
+        return err("Invalid Argument: fd or address (set_addr failed)")
     end
     -- 读改写：须清掉读回的 OS 位（空闲恒读 1）——原样写回 OS=1 会误启动一次多余转换
     local config = i2c_read_multi(tonumber(fd), REG_CONFIG, 2)
@@ -170,21 +157,9 @@ function call(data)
         dbg_table("-------- ADS1115 caller func get a table --------", data)
     end
 
-    local fd = data.fd
-    if fd == nil then
-        return { result = "ERR", message = "Invalid Argument: fd" }
-    end
-    fd = tonumber(fd)
-
-    local addr = data.address
-    if addr == nil then
-        return { result = "ERR", message = "Invalid Argument: addr" }
-    end
-    addr = tonumber(addr)
-
-    if not i2c_set_addr(fd, addr) then
-        return { result = "ERR", message = "Invalid Argument: fd or address (set_addr failed)" }
-    end
+    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径统一）
+    local fd, addr, ek = i2c_pair(data)
+    if fd == nil then return ek end
 
     -- 差分 / 单端模式选择
     local mux
@@ -193,18 +168,18 @@ function call(data)
         -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
         local pos, neg = tonumber(data.pos), tonumber(data.neg)
         if pos == nil or neg == nil then
-            return { result = "ERR", message = "Invalid diff pair: pos/neg not a number" }
+            return err("Invalid diff pair: pos/neg not a number")
         end
         local diff_map = { ["0,1"] = MUX_DIFF_AIN0_AIN1, ["0,3"] = MUX_DIFF_AIN0_AIN3,
                            ["1,3"] = MUX_DIFF_AIN1_AIN3, ["2,3"] = MUX_DIFF_AIN2_AIN3 }
         mux = diff_map[pos .. "," .. neg]
         if mux == nil then
-            return { result = "ERR", message = "Unsupported diff pair, use 0-1/0-3/1-3/2-3" }
+            return err("Unsupported diff pair, use 0-1/0-3/1-3/2-3")
         end
     else
         local channel = tonum(data.channel, 0)
         if channel < 0 or channel > 3 then
-            return { result = "ERR", message = "Invalid channel: 0~3" }
+            return err("Invalid channel: 0~3")
         end
         mux = bitc.bor(MUX_SINGLE_AIN0, bitc.lshift(channel, 12))
     end
@@ -212,14 +187,14 @@ function call(data)
     -- 读回当前配置，保留 PGA/DR，只改 MUX 并启动单次转换
     local config = i2c_read_multi(fd, REG_CONFIG, 2)
     if config < 0 then
-        return { result = "ERR", message = "Failed to read config" }
+        return err("Failed to read config")
     end
     local new_config = bitc.bor(bitc.bor(bitc.band(config, 0x8FFF), mux), OS_START)   -- 清 MUX 位，设通道，启动转换
 
     local hi = math.floor(new_config / 256) % 256
     local lo = new_config % 256
     if i2c_write_multi(fd, REG_CONFIG, hi, lo) ~= 0 then
-        return { result = "ERR", message = "Failed to start conversion" }
+        return err("Failed to start conversion")
     end
 
     -- 轮询 OS 位：读到 0 表示正在转换，读到 1 表示转换完成/空闲
@@ -236,13 +211,13 @@ function call(data)
         milli_sleep(1)
     end
     if not ready then
-        return { result = "ERR", message = "Conversion timeout" }
+        return err("Conversion timeout")
     end
 
     -- 读转换结果（16 位有符号）
     local raw16 = i2c_read_multi(fd, REG_CONVERSION, 2)
     if raw16 < 0 then
-        return { result = "ERR", message = "Failed to read conversion" }
+        return err("Failed to read conversion")
     end
 
     -- pga 缺省时回读芯片配置的 PGA 字段（3 位，0~7）：6/7 与 5 同为 ±0.256V
@@ -338,12 +313,6 @@ function ADS1115_VIRT.new(opts)
 
 	local OS_BIT   = 0x8000
 	local MODE_BIT = 0x0100
-
-	local function clampi(v, lo, hi)
-		if v < lo then return lo end
-		if v > hi then return hi end
-		return v
-	end
 
 	local function encode16(raw)
 		return clampi(math.floor(raw + 0.5), -32768, 32767) % 65536

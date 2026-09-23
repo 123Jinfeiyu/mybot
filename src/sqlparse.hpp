@@ -1,0 +1,181 @@
+#pragma once
+/* sqlparse.hpp —— 结构脚本 SQL 解析器（移植 SQL4cj：Lexer / Parser / Event） */
+
+#include <cstddef>
+#include <map>
+#include <optional>
+#include <string>
+#include <vector>
+
+#include "util.hpp"
+
+namespace sql4cj {
+
+/* ------------- Token ------------- */
+enum class TokenType {
+	SELECT, FROM, CREATE, TABLE, STRING, NUMBER,
+	INSERT, INTO, VALUES, WHERE,
+	END, COMMA, LEFT, RGHT, EQ,
+	UNEXPECTED_END, UNKNOWN,
+	NAME
+};
+
+struct Token {
+	TokenType type = TokenType::UNKNOWN;
+	std::string name;	/* NAME 载荷 */
+	/* F5-1：词元首字符的 1 起行号/列号（列按字节计，与词法器逐字符推进一致；
+	 * 0 = 位置未知——手工构造的词元，报错时省略定位段）。 */
+	int line = 0;
+	int col = 0;
+
+	static Token parse(const std::string& s);
+
+	std::string serialize() const;
+	bool isTokenEnd() const { return type == TokenType::UNEXPECTED_END; }
+};
+
+/* ------------- 事件载荷 ------------- */
+/* 列类型：本方言的值一律以字符串驻留（MatrixObject 只存 String），Number 目前
+ * 仅在解析期对字面量做一次数值校验，运行期仍按文本传递。 */
+enum class VarType { String_ = 0, Number };
+
+struct TableColumn {
+	std::string name;
+	VarType type_;
+};
+
+
+struct CreateTableEvent {
+	std::string tableName;
+	std::vector<TableColumn> tableColumns;
+};
+
+struct VarRaw {
+	std::string columnName;
+	std::string value;
+};
+
+struct InsertTableEvent {
+	std::string targetTabName;
+	std::vector<std::vector<VarRaw>> tableRows;
+};
+
+/* WHERE 等值条件：`WHERE <列名> = <值>`。共享载荷——SELECT 今天用，
+ * 未来的 DELETE FROM t WHERE ... / UPDATE t SET ... WHERE ... 复用同一
+ * 结构与同一解析入口（Parser::nextWhere），不各造一份。
+ * 只承载结构（列名 + 值文本），求值（按行匹配）在消费方——与 SELECT 事件
+ * 「不执行查询」的职责划分一致。值的引号在词法层已剥（parseName），
+ * 运行期按文本精确比较（数值按文本比：'0x40' ≠ '64'，已知边界）。 */
+struct WhereEqual {
+	std::string column;
+	std::string value;
+};
+
+/* SELECT 事件：承载目标表名（`SELECT * FROM t`）与可选等值条件
+ * （`WHERE col = value`）。真正的查询执行（从运行时矩阵取数、按条件过滤、
+ * 渲染）在消费方（REPL /sql 命令）完成——解析器保持「只产出结构事件」
+ * 的最小职责，不引入 SELECT AST。 */
+struct SelectTableEvent {
+	std::string sourceTableName;	/* FROM 后的表名 */
+	std::optional<WhereEqual> where;	/* WHERE col = value（缺省无） */
+};
+
+enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, END };
+
+struct Event {
+	EventType type;
+	CreateTableEvent create;
+	InsertTableEvent insert;
+	SelectTableEvent select;
+};
+
+/* ------------- 词法分析器 ------------- */
+class Lexer {
+	bool flag_ = false;		/* 读到分号结尾 */
+	bool comma_ = false;		/* 逗号 */
+	bool rght_ = false;		/* 右括号 */
+	bool left_ = false;		/* 左括号（紧随一个已提交的 token 时挂起） */
+	bool eq_ = false;		/* 等号（同上：WHERE col=value 紧贴写法靠它切分） */
+	bool singleLineComment_ = false;
+	bool multiLineComment_ = false;
+	bool multiLineComment2_ = false;
+	/* F5-1：行列追踪。line_/col_ = 下一个将读字符的位置（1 起）；
+	 * pendLine_/pendCol_ = 挂起分隔符字符的落点（挂起标志在字符消费时设置，
+	 * 词元要到下一次 next() 才产出，落点必须先存）。 */
+	int line_ = 1;
+	int col_ = 1;
+	int pendLine_ = 0;
+	int pendCol_ = 0;
+
+public:
+	Token next(bot::Reader& sr);
+
+	/* 阶段 3 拆分：注释态字符消费（单行/块注释状态机，见实现处） */
+	bool consumeCommentChar(char c);
+
+	static std::vector<Token> parseAll(bot::Reader& sr) {
+		Lexer l;
+		std::vector<Token> arr;
+		while (true) {
+			Token t = l.next(sr);
+			if (t.isTokenEnd()) { break; }
+			arr.push_back(t);
+		}
+		return arr;
+	}
+};
+
+/* ------------- 语法分析器 ------------- */
+class Parser {
+	std::vector<Token> tokenSerial_;
+	std::size_t idx_ = 0;
+	/* 建表期登记的列类型：表名 -> (列名 -> 类型)。供 INSERT 对 Number 列做
+	 * 一次解析期数值校验；运行期不保留类型（值仍是字符串）。 */
+	std::map<std::string, std::map<std::string, VarType>> columnTypes_;
+
+	/* 消费下一个 token 或抛错 */
+	const Token& expect() {
+		if (idx_ >= tokenSerial_.size()) {
+			throw bot::IllegalArgumentException("Token <unexpected end of script>");
+		}
+		return tokenSerial_[idx_++];
+	}
+
+	/* M-1：CREATE/INSERT 的列段与参数段原为按元素互递归的下降链
+	 * （nextTableColumnName↔nextTableColumnsIsEnd 等），递归深度 = 列数/参数数，
+	 * 实测 3 万列结构脚本即栈溢出裸崩。改显式循环：token 消费顺序与错误
+	 * 消息（Token <serialize()>）与旧实现逐一相同，仅执行模型变化。 */
+	void nextCreateTable(CreateTableEvent& eve);
+	void nextEnd();
+
+	/* 阶段 3 拆分：类型期望断言 / 括号名字清单（契约见实现处） */
+	Token expectType(TokenType want);
+	std::vector<std::string> expectParenNameList();
+
+	void nextInsertInto(InsertTableEvent& eve);
+	/* SELECT：`SELECT * FROM t`——只解析星号与目标表名，产出 SelectTableEvent。
+	 * 表名后可跟一个等值条件：`WHERE col = value`（解析进 nextWhere）。 */
+	void nextSelect(SelectTableEvent& eve);
+	/* WHERE col = value：单条件等值（列名/值各一个 NAME 词元，值支持引号串）。
+	 * 只认一个条件；AND/OR 与比较运算符不在本方言（负例由词元级报错兜住）。
+	 * 独立于具体语句——SELECT 现在用，DELETE/UPDATE 落地时复用。 */
+	void nextWhere(WhereEqual& eve);
+
+public:
+	explicit Parser(const std::vector<Token>& tokenSerial) : tokenSerial_(tokenSerial) {}
+
+	Event next();
+
+	static std::vector<Event> parseAll(const std::vector<Token>& arr) {
+		Parser p(arr);
+		std::vector<Event> eves;
+		while (true) {
+			Event e = p.next();
+			if (e.type == EventType::END) { break; }
+			eves.push_back(std::move(e));
+		}
+		return eves;
+	}
+};
+
+} // namespace sql4cj

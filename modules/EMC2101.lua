@@ -48,9 +48,8 @@
 --   6. RPM = 5,400,000 / TACH 计数（数据手册 §6.14，常数已含每转脉冲数；
 --      计数 0 = 停转/未接，返回 RPM=0 而非除零）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -91,10 +90,7 @@ local EXT_SHORT       = 0x3FF		-- 外部温度特征码：短路
 local full_lsb = 63				-- 100% 对应的 FAN_SETTING 值（build 按 PWM_F 现算）
 
 -- 8 位二进制补码还原（内部温度）
-local function s8(v)
-	if v >= 0x80 then v = v - 0x100 end
-	return v
-end
+local s8 = bitc.s8
 
 -- 11 位二进制补码还原（外部温度）
 local function s11(v)
@@ -142,11 +138,9 @@ end
 -- 【配置脚本】甄别 -> 现算 full_lsb -> LUT 编程 或 手动占空比
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -154,47 +148,26 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 身份甄别：双 Part ID + SMSC 厂商 ID
 	local part = i2c_read_reg(fd, REG_PART_ID)
 	local mfg = i2c_read_reg(fd, REG_MFG_ID)
 	if part < 0 or mfg < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 ID registers"
-		}
+		return err("Failed to read EMC2101 ID registers")
 	end
 	if not PART_IDS[part] or mfg ~= MFG_ID_SMSC then
-		return {
-			result = "ERR",
-			message = string.format("Not EMC2101: PART_ID=0x%02X (expect 0x16/0x28), MFG_ID=0x%02X (expect 0x5D)",
-				part, mfg)
-		}
+		return err(string.format("Not EMC2101: PART_ID=0x%02X (expect 0x16/0x28), MFG_ID=0x%02X (expect 0x5D)",
+				part, mfg))
 	end
 
 	-- 100% 占空比对应值 = 2 x max(1, PWM_F)（PWM_F 保持芯片复位默认）
 	local pwm_f = i2c_read_reg(fd, REG_PWM_F)
 	if pwm_f < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 PWM_F"
-		}
+		return err("Failed to read EMC2101 PWM_F")
 	end
 	if pwm_f == 0 then pwm_f = 1 end
 	full_lsb = 2 * pwm_f
@@ -205,16 +178,10 @@ function build(data)
 		-- LUT 自主模式：解析 -> 禁 LUT -> 写 8 槽 -> 启用
 		local entries, why = parse_lut(data.lut)
 		if entries == nil then
-			return {
-				result = "ERR",
-				message = "Invalid lut column: " .. why
-			}
+			return err("Invalid lut column: " .. why)
 		end
 		if not lut_disable(fd) then
-			return {
-				result = "ERR",
-				message = "Failed to disable EMC2101 LUT"
-			}
+			return err("Failed to disable EMC2101 LUT")
 		end
 		local regs16 = {}
 		for i = 1, 8 do
@@ -228,16 +195,10 @@ function build(data)
 			end
 		end
 		if i2c_write_multi(fd, REG_LUT_BASE, unpack(regs16)) ~= 0 then
-			return {
-				result = "ERR",
-				message = "Failed to write EMC2101 LUT"
-			}
+			return err("Failed to write EMC2101 LUT")
 		end
 		if not lut_enable(fd) then
-			return {
-				result = "ERR",
-				message = "Failed to enable EMC2101 LUT"
-			}
+			return err("Failed to enable EMC2101 LUT")
 		end
 		mode = string.format("LUT(%d 项)", #entries)
 	else
@@ -246,17 +207,11 @@ function build(data)
 		if duty < 0 then duty = 0 end
 		if duty > 100 then duty = 100 end
 		if not lut_disable(fd) then
-			return {
-				result = "ERR",
-				message = "Failed to disable EMC2101 LUT"
-			}
+			return err("Failed to disable EMC2101 LUT")
 		end
 		local lsb = duty_to_lsb(duty)
 		if not i2c_write_reg(fd, REG_FAN_SET, lsb) then
-			return {
-				result = "ERR",
-				message = "Failed to write EMC2101 fan setting"
-			}
+			return err("Failed to write EMC2101 fan setting")
 		end
 		mode = string.format("手动 %g%% (lsb=%d/%d)", duty, lsb, full_lsb)
 	end
@@ -284,11 +239,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -296,21 +249,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 带 duty：切手动模式（禁 LUT）+ 设占空比
@@ -319,17 +260,11 @@ function call(data)
 		if duty < 0 then duty = 0 end
 		if duty > 100 then duty = 100 end
 		if not lut_disable(fd) then
-			return {
-				result = "ERR",
-				message = "Failed to disable EMC2101 LUT"
-			}
+			return err("Failed to disable EMC2101 LUT")
 		end
 		local lsb = duty_to_lsb(duty)
 		if not i2c_write_reg(fd, REG_FAN_SET, lsb) then
-			return {
-				result = "ERR",
-				message = "Failed to write EMC2101 fan setting"
-			}
+			return err("Failed to write EMC2101 fan setting")
 		end
 		dbg(string.format("EMC2101 manual duty: %g%% -> lsb=%d/%d", duty, lsb, full_lsb))
 		return {
@@ -344,33 +279,21 @@ function call(data)
 	--       + TACH（先 LSB 锁存 MSB，§6.1 两路方向相反）
 	local status = i2c_read_reg(fd, REG_STATUS)
 	if status < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 status"
-		}
+		return err("Failed to read EMC2101 status")
 	end
 
 	local tin = i2c_read_reg(fd, REG_INT_TEMP)
 	if tin < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 internal temperature"
-		}
+		return err("Failed to read EMC2101 internal temperature")
 	end
 
 	local msb = i2c_read_reg(fd, REG_EXT_MSB)		-- 先读 MSB 锁存 LSB
 	if msb < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 external temperature"
-		}
+		return err("Failed to read EMC2101 external temperature")
 	end
 	local lsb = i2c_read_reg(fd, REG_EXT_LSB)
 	if lsb < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 external temperature"
-		}
+		return err("Failed to read EMC2101 external temperature")
 	end
 	-- 16 位原始 = 11 位补码温度 <<5 | 低 5 位标志，先读 MSB 拼字再右移 5 位
 	local raw11 = bitc.band(bitc.rshift(bitc.bor(bitc.lshift(msb, 8), lsb), 5), 0x7FF)
@@ -383,17 +306,11 @@ function call(data)
 
 	local tlsb = i2c_read_reg(fd, REG_TACH_LSB)		-- §6.1：先读 LSB 锁存 MSB
 	if tlsb < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 TACH"
-		}
+		return err("Failed to read EMC2101 TACH")
 	end
 	local tmsb = i2c_read_reg(fd, REG_TACH_MSB)
 	if tmsb < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read EMC2101 TACH"
-		}
+		return err("Failed to read EMC2101 TACH")
 	end
 	local count = bitc.bor(bitc.lshift(tmsb, 8), tlsb)
 	local rpm = 0
@@ -481,11 +398,6 @@ local POR_LUT_HYST  = 0x04
 local POR_TACH      = 0xFF		-- TACH 两字节均 FF
 local POR_LUT_TEMP  = 0x7F		-- LUT 空槽兜底
 local POR_LUT_DUTY  = 0x3F
-
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
 
 -- 11 位二进制补码还原（外部温度）
 local function s11(v)

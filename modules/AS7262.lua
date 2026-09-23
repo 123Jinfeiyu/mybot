@@ -3,6 +3,16 @@
 -- 虚拟器件模型：内嵌本文件尾部 AS7262_VIRT（2026-09-15 自 modules/lib/virtbus/as7262.lua
 -- 迁入，单文件驱动+模型实验第三十五个，间接窗口 + 握手族；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
+-- 【单消费者声明】间接寄存器访问的**地址相位存在器件侧**：读一个虚拟寄存器要
+-- poll HW_STATUS → 写 HW_WRITE=vaddr → poll TX 就绪 → 读 HW_READ，跨 3~4 个
+-- 独立 I2C 事务。第二个消费者（如 @Daemon 同址采样）插进来就会改掉地址相位，
+-- 双方各自读到对方的寄存器，且都看不出被踩。HAL 的单事务原子性（I2C_RDWR 把
+-- 指针写与数据读合并）在这里帮不上忙——原子单位是「一个事务」，而本驱动的
+-- 一次访问跨多个事务。装配期据此按 (总线路径, 地址) 判重，
+-- 见 src/hw_factory.cpp 的 checkSingleConsumer。
+-- 标记必须写在**行首**（宿主是纯文本扫描、不执行 Lua）；值只是给人看的原因。
+SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访问跨多个 I2C 事务"
+--
 -- 用法（结构脚本 .sql）：
 --   CREATE TABLE AS7262 (
 --       name    String,
@@ -42,9 +52,8 @@
 -- 应用提示：六通道模式一次测量 ~2 x 积分时间，采样率受此限制；
 --   各通道可直接挂 Ema/Kalman 滤波链做平滑光谱。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -93,14 +102,7 @@ local poll_timeout
 
 -- ==================== 底层辅助 ====================
 -- 数值列 -> 钳到 [lo, hi] 的整数；非法/'-' 归缺省
-local function int_of(v, def, lo, hi)
-	local n = tonumber(v)
-	if n == nil then return def end
-	n = math.floor(n)
-	if n < lo then n = lo end
-	if n > hi then n = hi end
-	return n
-end
+-- （实现收敛至 drv_common.int_of，N-24）
 
 -- 增益列 -> 代码：按倍数就近吸附到 1/3.7/16/64；非法/'-' 归缺省
 local function gain_code_of(v)
@@ -173,11 +175,9 @@ end
 -- 【配置脚本】软复位 -> 器件甄别 -> 积分/增益/模式 2
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -185,26 +185,14 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 配置列
 	local gain = gain_code_of(data.gain)
-	local integ = int_of(data.integ, DEF_INTEG, 0, 255)
-	local to = tonumber(data.timeout)
+	local integ = int_or(data.integ, DEF_INTEG, 0, 255)
+	local to = finite_of(data.timeout)
 	if to == nil or to < 1 then
 		-- 自动超时：2 x 一轮积分(2 x integ x 2.8ms) + 500ms
 		to = math.floor(integ * 11.2) + 500
@@ -215,39 +203,36 @@ function build(data)
 	-- 软复位（RST 位，自清除；SparkFun 同款等 1s 不轮询启动）
 	local ctl = virtual_read(fd, V_CONTROL_SETUP)
 	if ctl == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 CONTROL_SETUP"  }
+		return err("Failed to read AS7262 CONTROL_SETUP")
 	end
 	if virtual_write(fd, V_CONTROL_SETUP, bitc.bor(ctl % 256, BIT_RST)) == nil then
-		return {  result = "ERR", message = "Failed to reset AS7262"  }
+		return err("Failed to reset AS7262")
 	end
 	milli_sleep(T_RESET_MS)
 
 	-- 器件甄别（虚拟寄存器 0x00 = 0x3E）
 	local dtype = virtual_read(fd, V_DEVICE_TYPE)
 	if dtype == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 device type"  }
+		return err("Failed to read AS7262 device type")
 	end
 	if dtype ~= DEV_TYPE_AS7262 then
-		return {
-			result = "ERR",
-			message = string.format("Device type = 0x%02X (expect 0x3E AS7262, not AS7262?)", dtype)
-		}
+		return err(string.format("Device type = 0x%02X (expect 0x3E AS7262, not AS7262?)", dtype))
 	end
 
 	-- 积分时间
 	if virtual_write(fd, V_INT_T, integ) == nil then
-		return {  result = "ERR", message = "Failed to write AS7262 integration time"  }
+		return err("Failed to write AS7262 integration time")
 	end
 
 	-- 增益（[5:4]）与模式 2 连续全通道（[3:2]），读-改-写合并一次
 	ctl = virtual_read(fd, V_CONTROL_SETUP)
 	if ctl == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 CONTROL_SETUP"  }
+		return err("Failed to read AS7262 CONTROL_SETUP")
 	end
 	local v = bitc.band(ctl % 256, bitc.band(MASK_GAIN, MASK_BANK))
 	v = bitc.bor(v, bitc.bor(bitc.lshift(gain, 4), bitc.lshift(BANK_ALL_CONT, 2)))
 	if virtual_write(fd, V_CONTROL_SETUP, v) == nil then
-		return {  result = "ERR", message = "Failed to write AS7262 gain/mode"  }
+		return err("Failed to write AS7262 gain/mode")
 	end
 
 	print(string.format("AS7262 init OK: addr=0x%02X, gain=%dx, integ=%d (每轮约%.0fms), timeout=%dms",
@@ -273,11 +258,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -285,21 +268,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 等 DATA_RDY（连续模式自动转换）
@@ -307,14 +278,11 @@ function call(data)
 	while true do
 		local ctl = virtual_read(fd, V_CONTROL_SETUP)
 		if ctl == nil then
-			return {  result = "ERR", message = "Failed to poll AS7262 data-ready"  }
+			return err("Failed to poll AS7262 data-ready")
 		end
 		if bitc.band(ctl % 256, BIT_DATA_RDY) ~= 0 then break end
 		if left <= 0 then
-			return {
-				result = "ERR",
-				message = string.format("AS7262 data-ready timeout (%dms)", poll_timeout or 1000)
-			}
+			return err(string.format("AS7262 data-ready timeout (%dms)", poll_timeout or 1000))
 		end
 		milli_sleep(POLL_MS)
 		left = left - POLL_MS
@@ -325,7 +293,7 @@ function call(data)
 	for _, ch in ipairs(CHANS) do
 		local v = read_channel(fd, ch[2])
 		if v == nil then
-			return {  result = "ERR", message = "Failed to read AS7262 channel " .. ch[1]  }
+			return err("Failed to read AS7262 channel " .. ch[1])
 		end
 		vals[ch[1]] = v
 	end
@@ -333,18 +301,17 @@ function call(data)
 	-- 片上温度（二进制补码）
 	local tb = virtual_read(fd, V_DEVICE_TEMP)
 	if tb == nil or tb < 0 then
-		return {  result = "ERR", message = "Failed to read AS7262 temperature"  }
+		return err("Failed to read AS7262 temperature")
 	end
-	local temp_c = tb
-	if temp_c >= 128 then temp_c = temp_c - 256 end
+	local temp_c = bitc.s8(tb)
 
 	-- 清 DATA_RDY（SparkFun 同款 RMW 清位；连续模式下芯片随即开始下一轮）
 	local ctl = virtual_read(fd, V_CONTROL_SETUP)
 	if ctl == nil then
-		return {  result = "ERR", message = "Failed to read AS7262 CONTROL_SETUP"  }
+		return err("Failed to read AS7262 CONTROL_SETUP")
 	end
 	if virtual_write(fd, V_CONTROL_SETUP, bitc.band(ctl % 256, bitc.bxor(BIT_DATA_RDY, 0xFF))) == nil then
-		return {  result = "ERR", message = "Failed to clear AS7262 data-ready"  }
+		return err("Failed to clear AS7262 data-ready")
 	end
 
 	local ret = {
