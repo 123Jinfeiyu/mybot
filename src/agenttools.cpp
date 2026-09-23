@@ -509,6 +509,21 @@ std::string describeHardware(RobotStruct& robot) {
 	return out;
 }
 
+/* SHOW TABLES 的只读渲染（executeReadOnly 与 runSqlStatement 共用，单点）：
+ * 枚举运行时结构矩阵（robot.matrices()，与 SELECT 同源取数），列出每张表的名字
+ * 与**数据行数**（rows()-1，第 0 行是列头）。表名 trim 后显示，与 mt::findByName
+ * 的比较口径一致。空结构显式说破「（无表）」，不被误读成渲染故障。 */
+static std::string renderShowTables(const RobotStruct& robot) {
+	const auto& mats = robot.matrices();
+	std::string s = "SHOW TABLES (" + std::to_string(mats.size()) + "):";
+	if (mats.empty()) { return s + "\n  （无表）"; }
+	for (const auto& m : mats) {
+		const std::size_t dataRows = m.rows() > 1 ? m.rows() - 1 : 0;
+		s += "\n  " + trim(m.getName()) + " (" + std::to_string(dataRows) + " 行)";
+	}
+	return s;
+}
+
 /* ---- SqlStatementBatch 实现（阶段 1 重构：消除重复解析）---- */
 
 SqlStatementBatch SqlStatementBatch::parse(const std::string& sql) {
@@ -526,6 +541,7 @@ SqlStatementBatch SqlStatementBatch::parse(const std::string& sql) {
 	for (const auto& ev : batch.events) {
 		switch (ev.type) {
 		case sql4cj::EventType::SELECT_TABLE:
+		case sql4cj::EventType::SHOW_TABLES:
 			batch.hasReadOnly = true;
 			break;
 		case sql4cj::EventType::CREATE_TABLE:
@@ -606,6 +622,9 @@ std::string SqlStatementBatch::executeReadOnly(const RobotStruct& robot) const {
 		if (ev.select.where && hits.empty()) { s += "\n  （0 行匹配）"; }
 		return s;
 	}
+	case sql4cj::EventType::SHOW_TABLES:
+		/* 只读：列出当前结构的全部表名与数据行数（与 SELECT 同源取数） */
+		return renderShowTables(robot);
 	case sql4cj::EventType::DELETE_TABLE:
 		return "错误: DELETE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
 			"它会真的断电摘除器件且不可逆";
@@ -716,6 +735,9 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		if (ev.select.where && hits.empty()) { s += "\n  （0 行匹配）"; }
 		return s;
 	}
+	case sql4cj::EventType::SHOW_TABLES:
+		/* 只读：列出当前结构的全部表名与数据行数（REPL /sql 与 query_sql 共用本单点） */
+		return renderShowTables(robot);
 	case sql4cj::EventType::DELETE_TABLE:
 		/* 本函数是**只读渲染**面（/sql 全 SELECT 批次、query_sql 工具），
 		 * 而 DELETE 会真的断电摘器件、且物理不可逆——绝不在这里执行。
@@ -975,6 +997,7 @@ static AgentTool makeQuerySqlTool(const AgentToolContext& ctx) {
 		"语法：SELECT * FROM 表名; ——返回该表的列与行（表名见系统提示词的结构脚本摘录）；"
 		"可加等值条件 WHERE 列 = 值 [AND 列2 = 值2 ...] 做精确过滤，"
 		"如 SELECT * FROM Servo WHERE controller = 'pca9685-0' AND channel = 1;。"
+		"SHOW TABLES; ——列出当前结构里的全部表名与数据行数（不确定有哪些表时先用它）。"
 		"CREATE TABLE / INSERT INTO 只做语法解析回显，不会真正创建或写入；"
 		"DELETE 不在本工具范围内（它会真的断电摘除器件，请用 apply_sql）——"
 		"DROP TABLE 同理（整表撤下，更重，也请用 apply_sql）——"

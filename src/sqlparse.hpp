@@ -14,7 +14,7 @@ namespace sql4cj {
 /* ------------- Token ------------- */
 enum class TokenType {
 	SELECT, FROM, CREATE, TABLE, STRING, NUMBER,
-	INSERT, INTO, VALUES, WHERE, DELETE, DROP, UPDATE, SET, AND,
+	INSERT, INTO, VALUES, WHERE, DELETE, DROP, UPDATE, SET, AND, SHOW, TABLES,
 	END, COMMA, LEFT, RGHT, EQ,
 	UNEXPECTED_END, UNKNOWN,
 	NAME
@@ -134,7 +134,11 @@ struct UpdateTableEvent {
 	std::optional<WhereClause> where;	/* WHERE 条件（缺省无 = 改写全部数据行） */
 };
 
-enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, DELETE_TABLE, DROP_TABLE, UPDATE_TABLE, END };
+/* SHOW TABLES（只读）：列出当前结构里的全部表。无载荷——目标恒为"所有表"，
+ * 不带 WHERE/LIKE（本方言取向"能一句话说清就够"，过滤交给 SELECT * FROM 表 WHERE）。
+ * 故不设 payload 结构体、Event 也不新增成员，仅靠 EventType::SHOW_TABLES 标识；
+ * 执行（枚举运行时矩阵、渲染表名 + 数据行数）在消费方，解析层只认 `SHOW TABLES;`。 */
+enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, SHOW_TABLES, DELETE_TABLE, DROP_TABLE, UPDATE_TABLE, END };
 
 struct Event {
 	EventType type;
@@ -225,6 +229,10 @@ class Parser {
 	/* SELECT：`SELECT * FROM t`——只解析星号与目标表名，产出 SelectTableEvent。
 	 * 表名后可跟一个等值条件列表：`WHERE col = value [AND ...]`（见 nextConditionList）。 */
 	void nextSelect(SelectTableEvent& eve);
+	/* SHOW TABLES：`SHOW TABLES;`——只消费 TABLES 关键字与分号，产出无载荷的
+	 * SHOW_TABLES 事件（表名清单在消费方枚举运行时矩阵得到）。不带 WHERE/LIKE；
+	 * 尾随多余词元（含误写的 LIKE）由 nextEnd 以带行列定位的 tokenMsg 兜住。 */
+	void nextShowTables();
 	/* DELETE：`DELETE FROM t [WHERE col = value [AND ...]]`——只解析目标表名与
 	 * 条件列表（与 SELECT 共用 nextConditionList），产出 DeleteTableEvent。
 	 * where 为空即无条件删除全表。执行（断电/撤注册/擦行）不在这里。 */

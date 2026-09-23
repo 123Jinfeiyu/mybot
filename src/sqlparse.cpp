@@ -51,6 +51,8 @@ Token Token::parse(const std::string& s) {
 	if (equalWithoutCase(s, "update")) { return {TokenType::UPDATE, s}; }
 	if (equalWithoutCase(s, "set")) { return {TokenType::SET, s}; }
 	if (equalWithoutCase(s, "and")) { return {TokenType::AND, s}; }
+	if (equalWithoutCase(s, "show")) { return {TokenType::SHOW, s}; }
+	if (equalWithoutCase(s, "tables")) { return {TokenType::TABLES, s}; }
 	if (s == ";") { return {TokenType::END, s}; }
 	if (s == ",") { return {TokenType::COMMA, s}; }
 	if (s == "(") { return {TokenType::LEFT, s}; }
@@ -78,6 +80,8 @@ std::string Token::serialize() const {
 		case TokenType::UPDATE: return "UPDATE";
 		case TokenType::SET: return "SET";
 		case TokenType::AND: return "AND";
+		case TokenType::SHOW: return "SHOW";
+		case TokenType::TABLES: return "TABLES";
 		case TokenType::END: return ";";
 		case TokenType::COMMA: return ",";
 		case TokenType::LEFT: return "(";
@@ -258,6 +262,7 @@ std::string tokenMsg(const Token& t) {
  * RobotStruct::applySql 的热插事务。 */
 constexpr const char* kDialectStatements =
 	"CREATE TABLE / INSERT INTO / SELECT ... FROM ... [WHERE col = value [AND ...]] /"
+	" SHOW TABLES /"
 	" DELETE FROM ... [WHERE col = value [AND ...]] / DROP TABLE ... /"
 	" UPDATE ... SET col = value [, ...] [WHERE col = value [AND ...]]";
 
@@ -297,6 +302,12 @@ Event Parser::next() {
 			Event e;
 			e.type = EventType::SELECT_TABLE;
 			e.select = std::move(eve);
+			return e;
+		}
+		case TokenType::SHOW: {
+			nextShowTables();
+			Event e;
+			e.type = EventType::SHOW_TABLES;
 			return e;
 		}
 		case TokenType::DELETE: {
@@ -465,6 +476,15 @@ void Parser::nextSelect(SelectTableEvent& eve) {
 		nextConditionList(w);
 		eve.where = std::move(w);
 	}
+	nextEnd();
+}
+
+/* SHOW TABLES：`SHOW TABLES;`——只消费 TABLES 关键字与分号，无载荷（表名清单在
+ * 消费方枚举运行时矩阵得到）。不带 WHERE/LIKE；`SHOW TABLE;`（漏 S）在此以
+ * expectType 的「Token TABLE」报错，尾随多余词元（含误写的 LIKE）由 nextEnd 兜住，
+ * 两者都自带行列定位。 */
+void Parser::nextShowTables() {
+	expectType(TokenType::TABLES);
 	nextEnd();
 }
 

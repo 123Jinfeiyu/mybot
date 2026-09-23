@@ -6,6 +6,23 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-23 只读查询：`SHOW TABLES`
+
+> 守门快照：C++ 单测 **669 / 0**（本批新增 5 例：sqlparse 4 / agenttools 1）；零告警构建。
+
+- **`SHOW TABLES;`（新增能力）**：方言第七条语句，**只读**——在 agent 的 `query_sql`
+  与 REPL `/sql` 里列出当前结构的**全部表名与数据行数**（数据行 = 除列头外的行数），
+  形如 `SHOW TABLES (2):` 后逐行 `  表名 (N 行)`。走只读通道，故**不受 `--agent-hot-sql`
+  门控**（与 `query_sql` 的 SELECT 同），回执经 `quoteUntrusted` 定界进模型上下文。
+- **看见自动注入的表**：agent 模式下宿主会注入 `LlmOpenAI`/`Camera` 等表，它们不在结构
+  脚本摘录里——`SHOW TABLES` 是「当前到底有哪些表」的唯一权威答案（此前无从查起）。
+- **不带 `WHERE`/`LIKE`**：本方言取向「能一句话说清就够」，要筛某张表的行请用
+  `SELECT * FROM 表 WHERE ...`；误写的尾随词元由 `nextEnd` 以带行列定位的词元级报错兜住。
+- **落点**：解析层新增 `SHOW`/`TABLES` 词元与无载荷的 `SHOW_TABLES` 事件（只认
+  `TABLES` + 分号）；渲染在 `agenttools` 的 `renderShowTables` 单点，`executeReadOnly`
+  与 `runSqlStatement` 共用；结构装载/热插路径 `readSQL` 落 `default: break` 忽略
+  （与 `SELECT_TABLE` 同处置，只读语句不改结构）。
+
 ### 2026-09-23 热更新：`UPDATE 表 SET 列 = 值 [, ...] [WHERE ...]`
 
 > 守门快照：C++ 单测 **662 / 0**（本批新增 robot 热更新组 9 例、sqlparse 解析组

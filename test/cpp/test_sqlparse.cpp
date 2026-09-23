@@ -833,3 +833,60 @@ TH_TEST(parser_update_rejects_malformed_statements) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'x'",
 		events("UPDATE T SET a = 1 x;"));
 }
+
+/* ---------------- SHOW TABLES（只读：列出全部表）----------------
+ * `SHOW TABLES;`——无载荷的只读语句，解析层只认「TABLES 关键字 + 分号」，不带
+ * WHERE/LIKE（过滤交给 SELECT * FROM 表 WHERE）。表名清单与数据行数在消费方
+ * （agenttools 的 renderShowTables）枚举运行时矩阵得到，本组只钉词法/语法/报错。 */
+
+TH_TEST(lexer_show_and_tables_are_keywords_case_insensitively) {
+	TH_CHECK(Token::parse("SHOW").type == TokenType::SHOW);
+	TH_CHECK(Token::parse("show").type == TokenType::SHOW);
+	TH_CHECK(Token::parse("ShOw").type == TokenType::SHOW);
+	TH_CHECK(Token::parse("SHOW").serialize() == "SHOW");
+	TH_CHECK(Token::parse("TABLES").type == TokenType::TABLES);
+	TH_CHECK(Token::parse("tables").type == TokenType::TABLES);
+	TH_CHECK(Token::parse("Tables").type == TokenType::TABLES);
+	TH_CHECK(Token::parse("TABLES").serialize() == "TABLES");
+	/* 长度不同即不是关键字：前缀匹配不得命中（同 Strings/Dropx 既有判据）。
+	 * 关键：TABLES(6) 不会误命中既有关键字 TABLE(5)，二者是不同词元。 */
+	TH_CHECK(Token::parse("Showx").type == TokenType::NAME);
+	TH_CHECK(Token::parse("SHOWS").type == TokenType::NAME);
+	TH_CHECK(Token::parse("Tablesx").type == TokenType::NAME);
+	TH_CHECK(Token::parse("TABLE").type == TokenType::TABLE);
+}
+
+TH_TEST(lexer_show_tables_token_stream) {
+	std::vector<Token> ts = fx::tokens("SHOW TABLES;");
+	TH_CHECK(fx::fingerprint(ts) == "SHOW TABLES ;");
+}
+
+TH_TEST(parser_show_tables_event) {
+	std::vector<Event> eves = events("SHOW TABLES;");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::SHOW_TABLES);
+	/* 关键字大小写不敏感（沿用词法既约行为） */
+	std::vector<Event> lower = events("show tables;");
+	TH_CHECK(lower.size() == 1 && lower[0].type == EventType::SHOW_TABLES);
+	/* 可跟在结构语句之后（与 SELECT 同一「只读语句可混排」取向） */
+	std::vector<Event> seq = events(
+		"CREATE TABLE Vars ( k String );\nINSERT INTO Vars ( k ) VALUES ( 'v0' );\n"
+		"SHOW TABLES;");
+	TH_CHECK(seq.size() == 3);
+	TH_CHECK(seq[2].type == EventType::SHOW_TABLES);
+}
+
+TH_TEST(parser_show_tables_rejects_malformed) {
+	/* 漏 S 的 `SHOW TABLE;`：TABLES 位收到 TABLE 关键字，expectType 词元级报错带定位 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token TABLE",
+		events("SHOW TABLE;"));
+	/* 缺 TABLES：`SHOW;` 收到 END 词元 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token ;",
+		events("SHOW;"));
+	/* 缺分号：EOF 处词法产出 UNEXPECTED_END，nextEnd 报脚本结束 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("SHOW TABLES"));
+	/* 不带 LIKE：尾随词元由 nextEnd 的词元级报错兜住（LIKE 不是关键字，落成 NAME） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'LIKE'",
+		events("SHOW TABLES LIKE 'x';"));
+}
