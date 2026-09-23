@@ -49,13 +49,29 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 	 * 拆成两批即可，守门消息都带这句指路。 */
 	std::set<std::string> updatedHere;
 
+	/* 表在容器中的下标（P0 修复，2026-09-23 审计）：out 是 std::deque，元素
+	 * **不保证连续**——`root - &out[0]` 只在两者同处一个分配块时才有定义
+	 * （libstdc++ 每块 512/sizeof(MatrixObject) 个元素，当前 88 字节 → 5 个），
+	 * 跨块指针差是 UB：第 6 张表起产出垃圾下标，rowOrigin[垃圾下标] 即越界
+	 * 读写。实测 spider1.sql（6 张表，Servo 在下标 5 吃 14 条 INSERT）启动解析
+	 * 100% 段错误；热插批次让影子容器越过 5 张表同样崩。侥幸不崩时垃圾下标还
+	 * 会静默污染「当前行号 → 原始行号」映射，热 DELETE 可能摘错行（不可逆）。
+	 * 改按地址逐元素定位：表数是十量级，O(n) 无感知。返回 size() = 未找到
+	 * （root 必来自 findByName(out,...)，理论不可达，仅供防御）。 */
+	auto tableIndex = [](const std::deque<mt::MatrixObject>& c, const mt::MatrixObject* p) {
+		for (std::size_t i = 0; i < c.size(); ++i) {
+			if (&c[i] == p) { return i; }
+		}
+		return c.size();
+	};
+
 	/* 把「这些数据行」从表上擦除，并维护「当前行号 → 原始行号」映射与 Mutations
 	 * 记录。DELETE 与 DROP 共用这一段——DROP 就是「对全表数据行跑同一套擦除，
 	 * 再额外把空表壳交给调用方摘除」（表壳摘除在 applySql，readSQL 只管数据行）。 */
 	auto removeRowsOf = [&](mt::MatrixObject* root, const std::string& target,
 			const std::vector<std::size_t>& hits) {
 		if (hits.empty()) { return; }
-		const std::size_t ti = static_cast<std::size_t>(root - &out[0]);
+		const std::size_t ti = tableIndex(out, root);
 		/* 恒等映射的惰性初始化：只在**本容器首次改这张表**时铺一次。
 		 * 注意不能假定「INSERT 路径已经铺过」——mutations 为空时 INSERT 的
 		 * 追踪整段被跳过（启动期不需要），此处必须自给自足。 */
@@ -100,7 +116,7 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 	auto appendRowTracked = [&](mt::MatrixObject* root, const std::string& target,
 			std::vector<std::string> values) {
 		root->appendRow(std::move(values), 0);
-		const std::size_t oi = static_cast<std::size_t>(root - &out[0]);
+		const std::size_t oi = tableIndex(out, root);
 		if (rowOrigin.size() < out.size()) { rowOrigin.resize(out.size()); }
 		/* 惰性恒等初始化：本容器首次改动这张表时，先把**既有**行号按恒等铺一遍，
 		 * 再追加新增行。不能只 push 新增行——映射会与行号脱节（既有行没有条目），
@@ -300,7 +316,7 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 				 * **整表擦除**影子容器里的它（连带本批次插入的行一起消失），并把表名
 				 * 传给调用方记账。表壳不复存在，故无需（也不该）走 applySql 的表壳
 				 * 摘除步骤。 */
-				const std::size_t k = static_cast<std::size_t>(root - &out[0]);
+				const std::size_t k = tableIndex(out, root);
 				out.erase(out.begin() + static_cast<std::ptrdiff_t>(k));
 				if (k < rowOrigin.size()) {
 					rowOrigin.erase(rowOrigin.begin() + static_cast<std::ptrdiff_t>(k));

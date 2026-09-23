@@ -168,6 +168,36 @@ TH_TEST(insert_values_unchanged_when_column_order_matches) {
 	TH_CHECK(cell(*t, 1, 1) == "50");
 }
 
+/* P0 回归守门（2026-09-23 审计）：readSQL 定位表下标不得用 `root - &out[0]`
+ * 指针差——容器是 std::deque，元素不保证连续（libstdc++ 每块 512/sizeof = 5 个
+ * MatrixObject），第 6 张表起跨块指针差是 UB，rowOrigin[垃圾下标] 越界读写。
+ * 实测 spider1.sql（6 张表）在启动解析期 100% 段错误；全部仓内夹具 ≤5 张表，
+ * 恰好从未越过块边界——这正是该缺陷躲过 662 个单测的原因。
+ * 本用例用 7 张表（跨两个块边界）逐表 INSERT，断言行数与内容逐一正确；
+ * 内容断言在「侥幸不崩但下标静默漂移」的堆布局下同样会红。 */
+TH_TEST(robot_readsql_locates_tables_across_deque_chunk_boundary) {
+	std::string sql;
+	for (int i = 0; i < 7; ++i) {
+		sql += "CREATE TABLE T" + std::to_string(i) + " (name String, v String);\n";
+	}
+	for (int i = 0; i < 7; ++i) {
+		/* INSERT 故意全部放在 CREATE 之后：目标表下标 5、6 落在第二块里，
+		 * appendRowTracked 取 rowOrigin 下标正是在这两条上踩雷 */
+		sql += "INSERT INTO T" + std::to_string(i) + " (name, v) VALUES ('n"
+			+ std::to_string(i) + "', 'x');\n";
+	}
+	const std::deque<mt::MatrixObject> ms = loadMatrices(sql);
+	TH_CHECK(ms.size() == 7);
+	for (int i = 0; i < 7; ++i) {
+		const mt::MatrixObject* m = matrixNamed(ms, "T" + std::to_string(i));
+		TH_CHECK(m != nullptr);
+		if (m == nullptr) { continue; }
+		TH_CHECK(m->rows() == 2);	/* 列头 + 恰好 1 条数据行 */
+		TH_CHECK(cell(*m, 1, 0) == "n" + std::to_string(i));
+		TH_CHECK(cell(*m, 1, 1) == "x");
+	}
+}
+
 /* 多行 INSERT 逐行按列名落位，互不影响 */
 TH_TEST(insert_multiple_rows_each_land_by_column_name) {
 	auto ms = loadMatrices(
@@ -1154,6 +1184,64 @@ TH_TEST(robot_hot_sql_create_table_assembles_a_new_hardware_variable) {
 
 	robot.deactivate();
 	TH_CHECK(markerOf(marker) == "D");
+}
+
+/* P0 回归守门（2026-09-23 审计，热插侧）：applySql 的影子容器 = 活体全量拷贝 +
+ * 本批次 CREATE，同样走 readSQL 的表下标定位。5 张活表 + 第 1 批 CREATE 出的
+ * 第 6 张表让 INSERT 目标落在 deque 第二块——旧指针差实现在此 UB/崩溃（实测
+ * relay-test + 连续热插到第 6 张表即段错误）。三批依次覆盖 appendRowTracked /
+ * removeRowsOf（DROP 既存表擦全部行）/ DROP 本批新建表（createdHere 整表擦除）
+ * 三个修复点；marker 落痕证明跨块边界下 INSERT 行真的装配上电、DROP 真的断电。 */
+TH_TEST(robot_hot_sql_stages_tables_across_deque_chunk_boundary) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-sql-cross");
+	const fs::path marker = tmp.path() / "destroyed";
+
+	/* 结构期 5 张表（deque 第一块的容量），全部纯软件驱动、无需硬件 */
+	bot::MemoryReader sr(
+		"CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('timer-0');\n"
+		"CREATE TABLE Relay (name String);\n"
+		"INSERT INTO Relay (name) VALUES ('relay0');\n"
+		"CREATE TABLE dummy (name String);\n"
+		"INSERT INTO dummy (name) VALUES ('dummy0');\n"
+		"CREATE TABLE Monitor (name String);\n"
+		"INSERT INTO Monitor (name) VALUES ('monitor0');\n"
+		"CREATE TABLE Ema (name String);\n"
+		"INSERT INTO Ema (name) VALUES ('ema0');\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+	TH_CHECK(robot.matrices().size() == 5);
+	TH_CHECK(robot.registry().contains("timer-0"));
+	TH_CHECK(robot.registry().contains("ema0"));
+
+	/* 批 1：第 6 张表 + 插行（INSERT 目标下标 5 = 第二块首元素） */
+	const std::string msg1 = robot.applySql(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + marker.string() + "');\n");
+	TH_CHECK(robot.matrices().size() == 6);
+	TH_CHECK(robot.registry().contains("p0"));
+	TH_CHECK(msg1.find("新增表 1 张") != std::string::npos);
+	TH_CHECK(markerOf(marker).empty());	/* 已 build、未 destroy */
+
+	/* 批 2：DROP 既存表——removeRowsOf 擦全部数据行（走表下标定位）+ 表壳摘除 */
+	const std::string msg2 = robot.applySql("DROP TABLE LifetimeProbe;\n");
+	TH_CHECK(robot.matrices().size() == 5);
+	TH_CHECK(!robot.registry().contains("p0"));
+	TH_CHECK(msg2.find("已撤下表 1 张") != std::string::npos);
+	TH_CHECK(markerOf(marker) == "D");	/* p0 真的被断电 */
+
+	/* 批 3：本批 CREATE 后再 DROP——createdHere 整表擦除路径（第三处下标定位）。
+	 * 该表从未入活体，摘要不报「已撤下表」（那是活体表壳摘除的计数），但擦除
+	 * 必须精确——旧垃圾下标会 erase 错表，这里 matrices().size() == 5 即守门。 */
+	const std::string msg3 = robot.applySql(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"DROP TABLE LifetimeProbe;\n");
+	TH_CHECK(robot.matrices().size() == 5);
+	TH_CHECK(!robot.declaresVariable("p1"));
+	TH_CHECK(msg3.find("新增硬件变量 0 个") != std::string::npos);
+
+	robot.deactivate();
 }
 
 /* 上电中途收到停止信号：整批回滚。此处新变量尚未 build，故回滚只撤销
