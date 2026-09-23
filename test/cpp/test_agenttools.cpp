@@ -662,13 +662,12 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK(runSqlCommand("INSERT INTO Nope (name) VALUES ('x');", *robot).find("错误: ") == 0);
 	TH_CHECK(runSqlCommand("", *robot).find("错误: ") == 0);
 
-	/* UPDATE（2026-09-23）：**改写结构定义**的语句在解析期就被明确拒绝
-	 * （语句级「Unsupported statement …」，不是词元级的 "Token name 'update'"）。
-	 * DELETE/DROP 曾在此列，先后落地后出列——它们的分派与断电语义由 test_robot.cpp
-	 * 的 robot_hot_delete_* / robot_hot_drop_* 组守门，这里只钉「REPL 分派把
-	 * 它们交给了带电生效路径」。 */
-	TH_CHECK(runSqlCommand("UPDATE Relay SET note = 'x';", *robot).find("Unsupported statement UPDATE")
-		!= std::string::npos);
+	/* UPDATE（2026-09-23）：解析已进方言（批次分类按变更语句处理），带电生效
+	 * 尚未接入——REPL 分派把它交给带电生效路径，readSQL 给出**过渡期**的明确
+	 * 拒绝与等效写法指路（拆成 DELETE + INSERT 两批）。断电重建语义落地后
+	 * 本段改写为生效断言。 */
+	TH_CHECK(runSqlCommand("UPDATE Relay SET note = 'x';", *robot)
+		.find("not yet wired into the hot-SQL transaction") != std::string::npos);
 	const std::string delOk = runSqlCommand(
 		"DELETE FROM Relay WHERE name = 'relay9';", *robot);
 	TH_CHECK_MSG(delOk.find("Unsupported statement") == std::string::npos, "实际: " + delOk);
@@ -686,7 +685,8 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	AgentToolResult toolUpd = open.execute("apply_sql", parseJson("{\"sql\":\"UPDATE Relay SET note = 'x';\"}"));
 	TH_CHECK(!toolUpd.ok);
 	TH_CHECK(toolUpd.paramError);
-	TH_CHECK(toolUpd.error.find("Unsupported statement UPDATE") != std::string::npos);
+	TH_CHECK(toolUpd.error.find("not yet wired into the hot-SQL transaction")
+		!= std::string::npos);
 	TH_CHECK(robot->registry().byName().size() == before);	/* 活体一字未动 */
 
 	/* G2（2026-09-23）：生效成功时工具结果自报**结构化摘要**，供审计对账。

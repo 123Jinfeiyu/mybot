@@ -14,7 +14,7 @@ namespace sql4cj {
 /* ------------- Token ------------- */
 enum class TokenType {
 	SELECT, FROM, CREATE, TABLE, STRING, NUMBER,
-	INSERT, INTO, VALUES, WHERE, DELETE, DROP, AND,
+	INSERT, INTO, VALUES, WHERE, DELETE, DROP, UPDATE, SET, AND,
 	END, COMMA, LEFT, RGHT, EQ,
 	UNEXPECTED_END, UNKNOWN,
 	NAME
@@ -60,9 +60,8 @@ struct InsertTableEvent {
 	std::vector<std::vector<VarRaw>> tableRows;
 };
 
-/* WHERE 等值条件：`WHERE <列名> = <值>`。共享载荷——SELECT 与 DELETE 共用，
- * 未来的 UPDATE t SET ... WHERE ... 复用同一结构与同一解析入口
- * （Parser::nextConditionList），不各造一份。
+/* WHERE 等值条件：`WHERE <列名> = <值>`。共享载荷——SELECT / DELETE / UPDATE
+ * 三者共用同一结构与同一解析入口（Parser::nextConditionList），不各造一份。
  * 只承载结构（列名 + 值文本），求值（按行匹配）在消费方——与 SELECT 事件
  * 「不执行查询」的职责划分一致。值的引号在词法层已剥（parseName），
  * 运行期按文本精确比较（数值按文本比：'0x40' ≠ '64'，已知边界）。 */
@@ -114,7 +113,28 @@ struct DropTableEvent {
 	std::string targetTabName;
 };
 
-enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, DELETE_TABLE, DROP_TABLE, END };
+/* UPDATE 事件（2026-09-23 改写行）：`UPDATE t SET col = value [, col2 = value2 ...]
+ * [WHERE col = value [AND ...]]`。assignments 复用 VarRaw（与 INSERT 的
+ * 「列名 = 值」同形）；WHERE 复用 WhereClause（与 SELECT/DELETE 同一入口解析）。
+ *
+ * **语义是断电重建、不是原地改值**：本事件同样只承载结构——解析层不查表、
+ * 不查列、不碰活体。执行由消费方把命中行分解为「DELETE（断电摘除）+
+ * INSERT（改后行重新装配上电）」两条既有路径完成（RobotStruct::applySql），
+ * 故改写被 controller/trigger/$ 引用着的变量会被引用完整性预检拒绝（先删/改
+ * 引用方，分批操作），且 UPDATE 与该表的其它行级语句不得同批（拆两批即可）。
+ * 重复的赋值列属于「调用方对着结构才能判的错」，与 INSERT 的同名判据同落点
+ * （readSQL），解析层不查。
+ *
+ * 无 WHERE = 改写全部数据行（标准 SQL 语义，与 DELETE「无条件删全表」同口径）。
+ * 改 name 列 = 换名重建：旧名随断电摘除、新名按新行装配（新名不得与存活变量
+ * 重名）。删除前请先用 SELECT ... WHERE 确认命中行（query_sql 已支持）。 */
+struct UpdateTableEvent {
+	std::string targetTabName;
+	std::vector<VarRaw> assignments;	/* SET 赋值列表（≥1 条，逗号分隔） */
+	std::optional<WhereClause> where;	/* WHERE 条件（缺省无 = 改写全部数据行） */
+};
+
+enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, DELETE_TABLE, DROP_TABLE, UPDATE_TABLE, END };
 
 struct Event {
 	EventType type;
@@ -123,6 +143,7 @@ struct Event {
 	SelectTableEvent select;
 	DeleteTableEvent del;
 	DropTableEvent drop;
+	UpdateTableEvent update;
 };
 
 /* ------------- 词法分析器 ------------- */
@@ -194,6 +215,11 @@ class Parser {
 	/* 阶段 3 拆分：类型期望断言 / 括号名字清单（契约见实现处） */
 	Token expectType(TokenType want);
 	std::vector<std::string> expectParenNameList();
+	/* Number 列的解析期数值校验（一次）：INSERT 的 VALUES 与 UPDATE 的 SET
+	 * 共用同一单点——两语句对「声明为 Number 的列必须给数值字面量或 $(表达式)」
+	 * 的口径与报错形态因此不会漂移。表未在本脚本中 CREATE（拼错/外置）则无从
+	 * 校验，留给消费方的「表未定义」处理。 */
+	void validateNumberValues(const std::string& tableName, const std::vector<VarRaw>& values);
 
 	void nextInsertInto(InsertTableEvent& eve);
 	/* SELECT：`SELECT * FROM t`——只解析星号与目标表名，产出 SelectTableEvent。
@@ -207,6 +233,10 @@ class Parser {
 	 * **无 WHERE**（DDL 作用于整张表，见 DropTableEvent 注释）；多余词元由
 	 * nextEnd 的词元级报错兜住。执行（拆表/断电/撤注册）不在这里。 */
 	void nextDrop(DropTableEvent& eve);
+	/* UPDATE：`UPDATE t SET col = value [, ...] [WHERE col = value [AND ...]]`——
+	 * 只解析表名、赋值列表与可选条件（与 SELECT/DELETE 共用 nextConditionList），
+	 * 产出 UpdateTableEvent。语义（断电重建）与边界见该事件注释——执行不在这里。 */
+	void nextUpdate(UpdateTableEvent& eve);
 	/* WHERE 条件列表：一个或多个 `列名 = 值`，以 AND 连接（大小写不敏感）。
 	 * 列名/值各一个 NAME 词元（值支持引号串，引号已在词法层剥）；比较运算符、
 	 * OR、IN 不在本方言（负例由本函数的用法级报错或调用方 nextEnd 兜住）。

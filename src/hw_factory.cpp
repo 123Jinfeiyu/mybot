@@ -296,6 +296,16 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 			if (mutations != nullptr) { mutations->droppedTables.insert(target); }
 			break;
 		}
+		case sql4cj::EventType::UPDATE_TABLE: {
+			/* 过渡形态（解析已进方言、带电生效尚未接入）：显式拒绝而不是落进
+			 * default 的静默跳过——后者会让 UPDATE 语句消失得无声无息，下游
+			 * applySql 只能看到一句错位的「本批次没有任何变更」。接入分解实现
+			 * （DELETE 命中行 + INSERT 改后行）后本分支整体移除。 */
+			throw IllegalArgumentException("UPDATE '" + eve.update.targetTabName
+				+ "': UPDATE is accepted by the parser but not yet wired into the"
+				" hot-SQL transaction; for now split it into DELETE (matched rows)"
+				" + INSERT (modified rows) in separate statement batches");
+		}
 		default:
 			break;
 		}

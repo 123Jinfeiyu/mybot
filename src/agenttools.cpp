@@ -532,6 +532,7 @@ SqlStatementBatch SqlStatementBatch::parse(const std::string& sql) {
 		case sql4cj::EventType::INSERT_TABLE:
 		case sql4cj::EventType::DELETE_TABLE:
 		case sql4cj::EventType::DROP_TABLE:
+		case sql4cj::EventType::UPDATE_TABLE:
 			batch.hasWriteOps = true;
 			break;
 		case sql4cj::EventType::END:
@@ -611,6 +612,12 @@ std::string SqlStatementBatch::executeReadOnly(const RobotStruct& robot) const {
 	case sql4cj::EventType::DROP_TABLE:
 		return "错误: DROP 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
 			"它会真的断电摘除整张表的器件且不可逆";
+	case sql4cj::EventType::UPDATE_TABLE:
+		/* 同 DELETE/DROP 的理由：本函数是只读渲染面，而 UPDATE 按断电重建改写
+		 * 命中行（物理断电摘除 + 重新装配上电）——default 的「不支持的 SQL 语句」
+		 * 对它同样是误导：UPDATE 是支持的，只是不在这条通道上。 */
+		return "错误: UPDATE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+			"它会按断电重建改写命中行（断电摘除 + 重新装配上电）";
 	default:
 		return "错误: 不支持的 SQL 语句";
 	}
@@ -725,6 +732,11 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		 * 本句同样误导——DROP 是支持的，只是不在这条通道上。 */
 		return "错误: DROP 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
 			"它会真的断电摘除整张表的器件且不可逆";
+	case sql4cj::EventType::UPDATE_TABLE:
+		/* 同 DELETE/DROP 的理由：本函数是只读渲染面，而 UPDATE 按断电重建改写
+		 * 命中行——绝不在这里执行。给一句准确的指路（同上两条）。 */
+		return "错误: UPDATE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+			"它会按断电重建改写命中行（断电摘除 + 重新装配上电）";
 	default:
 		return "错误: 不支持的 SQL 语句";
 	}
@@ -960,6 +972,7 @@ static AgentTool makeQuerySqlTool(const AgentToolContext& ctx) {
 		"CREATE TABLE / INSERT INTO 只做语法解析回显，不会真正创建或写入；"
 		"DELETE 不在本工具范围内（它会真的断电摘除器件，请用 apply_sql）——"
 		"DROP TABLE 同理（整表撤下，更重，也请用 apply_sql）——"
+		"UPDATE 同理（按断电重建改写命中行，也请用 apply_sql）——"
 		"但可以先用本工具确认 WHERE 会命中哪些行。"
 		"语句必须以分号结尾；仅支持星号全列与等值条件（AND 连接，无 OR）。",
 		toolSchema({{"sql", stringParam("一条结构 SQL 语句，如 SELECT * FROM dummy;")}},

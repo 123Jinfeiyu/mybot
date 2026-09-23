@@ -1385,13 +1385,11 @@ TH_TEST(robot_hot_sql_keeps_element_references_stable_across_appends) {
 	robot.deactivate();
 }
 
-/* UPDATE（2026-09-23）：改写结构的语句一律明确拒绝，且**整批在解析期就失败**
- * ——混在合法 INSERT 后面的 UPDATE 不能让前半句先生效。
- * 报错文本是语句级的「Unsupported statement …」（旧形态是词元级 "Token name
- * 'update'"，读的人无从判断是语法错还是方言不支持）。
- * DROP/DELETE 曾在此列，2026-09-23 热删除与整表撤下先后落地后均已出列
- * （见下方 robot_hot_delete_* / robot_hot_drop_* 组）。 */
-TH_TEST(robot_hot_sql_rejects_rewriting_statements) {
+/* UPDATE（2026-09-23）：解析已进方言（不再报「Unsupported statement」），带电
+ * 生效尚未接入——readSQL 给出过渡期的明确拒绝与等效写法指路，且**整批失败**
+ * （混在合法 INSERT 后面的 UPDATE 不能让前半句先生效）。
+ * 断电重建语义落地后，本用例由 robot_hot_update_* 组接管。 */
+TH_TEST(robot_hot_sql_update_not_yet_wired) {
 	ModulePathGuard guard("modules:test/cpp");
 	TempDir tmp("hot-sql-update");
 	const fs::path marker = tmp.path() / "destroyed";
@@ -1404,13 +1402,13 @@ TH_TEST(robot_hot_sql_rejects_rewriting_statements) {
 	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "LifetimeProbe")->rows();
 
 	TH_CHECK(hotSqlError(robot, "UPDATE LifetimeProbe SET path = 'x';\n")
-		.find("Unsupported statement UPDATE") != std::string::npos);
+		.find("not yet wired into the hot-SQL transaction") != std::string::npos);
 
 	/* 混合批次：合法的前半句也不得生效（解析先于任何装配/上电） */
 	const std::string mixed = hotSqlError(robot,
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p9', 'x');\n"
 		"UPDATE LifetimeProbe SET path = 'y';\n");
-	TH_CHECK(mixed.find("Unsupported statement UPDATE") != std::string::npos);
+	TH_CHECK(mixed.find("not yet wired into the hot-SQL transaction") != std::string::npos);
 	TH_CHECK(!robot.declaresVariable("p9"));
 
 	/* 活体一字未动：表数/注册表/行数都还是批次前的值 */

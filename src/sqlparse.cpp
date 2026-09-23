@@ -48,6 +48,8 @@ Token Token::parse(const std::string& s) {
 	if (equalWithoutCase(s, "where")) { return {TokenType::WHERE, s}; }
 	if (equalWithoutCase(s, "delete")) { return {TokenType::DELETE, s}; }
 	if (equalWithoutCase(s, "drop")) { return {TokenType::DROP, s}; }
+	if (equalWithoutCase(s, "update")) { return {TokenType::UPDATE, s}; }
+	if (equalWithoutCase(s, "set")) { return {TokenType::SET, s}; }
 	if (equalWithoutCase(s, "and")) { return {TokenType::AND, s}; }
 	if (s == ";") { return {TokenType::END, s}; }
 	if (s == ",") { return {TokenType::COMMA, s}; }
@@ -73,6 +75,8 @@ std::string Token::serialize() const {
 		case TokenType::WHERE: return "WHERE";
 		case TokenType::DELETE: return "DELETE";
 		case TokenType::DROP: return "DROP";
+		case TokenType::UPDATE: return "UPDATE";
+		case TokenType::SET: return "SET";
 		case TokenType::AND: return "AND";
 		case TokenType::END: return ";";
 		case TokenType::COMMA: return ",";
@@ -248,42 +252,14 @@ std::string tokenMsg(const Token& t) {
  * 取，避免「支持了什么」在四五条消息里各写一份而随语句增减漂移（本文件此前
  * 已有 `SELECT supports only ...` 与 `WHERE supports only ...` 两处各说一遍）。
  * 措辞刻意用「方言支持」而非「已实现」：读的人（含模型）要的是「能写什么」，
- * 不是变更史。 */
+ * 不是变更史。
+ * UPDATE（2026-09-23）入列：语义是**断电重建**（命中行按「断电摘除 + 重新装配
+ * 上电」执行，见 UpdateTableEvent 注释），执行落点与 DELETE/DROP 同在
+ * RobotStruct::applySql 的热插事务。 */
 constexpr const char* kDialectStatements =
 	"CREATE TABLE / INSERT INTO / SELECT ... FROM ... [WHERE col = value [AND ...]] /"
-	" DELETE FROM ... [WHERE col = value [AND ...]] / DROP TABLE ...";
-
-/* 明确拒绝的「看似合法」语句关键字（大小写不敏感）。本方言只认上面那五条，
- * 而 UPDATE 是**改写结构定义**的语句：在带电机器人上它会让结构矩阵与硬件注册表
- * 失去一致性（见 RobotStruct::applySql 的契约），不属于「解析了就能安全执行」的
- * 范畴，暂不支持（等价于「删旧行 + 建新行」，将来可复用 DELETE + INSERT 的设施）。
- *
- * DELETE（2026-09-23）与 DROP（2026-09-23）都已出列：DELETE 删的是**行**，DROP
- * 删的是**表**（行 = 表的全部数据行 + 表壳）。两者共用同一条「断电 → 撤注册 → 擦行」
- * 的逆序路径，落点在 applySql；DROP 额外要把表壳连同该表的元数据提供者/守护登记
- * 一起撤下，并处理「表撤销后同名重建」的语义面。
- *
- * 为什么要专门认出来：它不是关键字（词法层落成 NAME），过去的失败形态是
- * "Token name 'update'"——层级是词元的，读的人（含模型）无法判断这是「语法写错」
- * 还是「方言不支持」，只会改写措辞反复重试。这里给一句含正确用法的拒绝。
- * 判据是**语句首词元**：出现在后续位置的同名标识符（列名/表名/值）不受影响。
- * 将来支持时的落点：EventType 加对应事件 → 此清单逐个摘除（DELETE/DROP 即按此路径
- * 摘除）→ runSqlCommand 的只读/变更分类扩展；WHERE 设施（WhereClause +
- * nextConditionList）已按共享写成，UPDATE 可直接复用。事务语义警示：UPDATE 改
- * 结构定义，必须走 applySql 式「校验全过才动手」。 */
-bool isUnsupportedStatement(const std::string& name) {
-	return equalWithoutCase(name, "update");
-}
-
-/* 回显统一大写（ASCII）：既是 SQL 的惯例写法，也让报错文本成为**稳定锚点**——
- * 否则同一条语句因输入大小写不同而形态各异，单测/E2E 与日志检索都得写两套。 */
-std::string upperAscii(const std::string& s) {
-	std::string o = s;
-	for (char& c : o) {
-		if (c >= 'a' && c <= 'z') { c = static_cast<char>(c - 32); }
-	}
-	return o;
-}
+	" DELETE FROM ... [WHERE col = value [AND ...]] / DROP TABLE ... /"
+	" UPDATE ... SET col = value [, ...] [WHERE col = value [AND ...]]";
 
 } // namespace
 
@@ -339,12 +315,15 @@ Event Parser::next() {
 			e.drop = std::move(eve);
 			return e;
 		}
+		case TokenType::UPDATE: {
+			UpdateTableEvent eve;
+			nextUpdate(eve);
+			Event e;
+			e.type = EventType::UPDATE_TABLE;
+			e.update = std::move(eve);
+			return e;
+		}
 		default:
-			/* 语句首词元是改写/删表类语句 → 明确的「不支持」，而不是词元级报错 */
-			if (t.type == TokenType::NAME && isUnsupportedStatement(t.name)) {
-				throw bot::IllegalArgumentException("Unsupported statement " + upperAscii(t.name)
-					+ ": this dialect understands " + kDialectStatements);
-			}
 			throw bot::IllegalArgumentException(tokenMsg(t));
 	}
 }
@@ -435,29 +414,34 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 	for (std::size_t i = 0; i < paramNames.size(); ++i) {
 		arr.push_back({paramNames[i], paramValues[i]});
 	}
-	/* Number 列的解析期校验（一次）：值必须是数值字面量，否则结构脚本在装配前
-	 * 就以清晰报错结束，而不是把 'abc' 当字符串静默传给驱动。表未在本脚本中
-	 * CREATE（拼错/外置）则无从校验，留给消费方的「表未定义」处理。 */
-	auto schemaIt = columnTypes_.find(eve.targetTabName);
-	if (schemaIt != columnTypes_.end()) {
-		for (const VarRaw& p : arr) {
-			auto typeIt = schemaIt->second.find(p.columnName);
-			if (typeIt == schemaIt->second.end() || typeIt->second != VarType::Number) { continue; }
-			/* Number 列允许数值字面量或 $(<表达式>)（表达式语法在此早校验，
-			 * 标识符的可达性由 @Vars/元数据层在装配后判定）。 */
-			if (auto body = bot::exprBody(p.value)) {
-				bot::Expression::parse(*body);
-				continue;
-			}
-			if (!bot::isNumericLiteral(p.value)) {
-				throw bot::IllegalArgumentException("Column '" + p.columnName + "' of table '"
-					+ eve.targetTabName + "' is declared Number, but value '" + p.value
-					+ "' is not numeric.");
-			}
-		}
-	}
+	validateNumberValues(eve.targetTabName, arr);
 	eve.tableRows.push_back(std::move(arr));
 	nextEnd();
+}
+
+/* Number 列的解析期校验（单点，INSERT 的 VALUES 与 UPDATE 的 SET 共用）：
+ * 值必须是数值字面量，否则结构脚本在装配前就以清晰报错结束，而不是把 'abc'
+ * 当字符串静默传给驱动。表未在本脚本中 CREATE（拼错/外置）则无从校验，
+ * 留给消费方的「表未定义」处理。 */
+void Parser::validateNumberValues(const std::string& tableName,
+		const std::vector<VarRaw>& values) {
+	auto schemaIt = columnTypes_.find(tableName);
+	if (schemaIt == columnTypes_.end()) { return; }
+	for (const VarRaw& p : values) {
+		auto typeIt = schemaIt->second.find(p.columnName);
+		if (typeIt == schemaIt->second.end() || typeIt->second != VarType::Number) { continue; }
+		/* Number 列允许数值字面量或 $(<表达式>)（表达式语法在此早校验，
+		 * 标识符的可达性由 @Vars/元数据层在装配后判定）。 */
+		if (auto body = bot::exprBody(p.value)) {
+			bot::Expression::parse(*body);
+			continue;
+		}
+		if (!bot::isNumericLiteral(p.value)) {
+			throw bot::IllegalArgumentException("Column '" + p.columnName + "' of table '"
+				+ tableName + "' is declared Number, but value '" + p.value
+				+ "' is not numeric.");
+		}
+	}
 }
 
 /* SELECT：`SELECT * FROM t [WHERE col = value [AND ...]]`。只支持星号选择列
@@ -507,6 +491,42 @@ void Parser::nextDrop(DropTableEvent& eve) {
 	expectType(TokenType::TABLE);
 	Token name = expectType(TokenType::NAME);
 	eve.targetTabName = name.name;
+	nextEnd();
+}
+
+/* UPDATE：`UPDATE t SET col = value [, col2 = value2 ...] [WHERE ...]`。
+ * 赋值列表与 WHERE 条件列表同构（NAME EQ NAME），差别只在连接词（逗号 vs AND）
+ * 与终止判据——因此终止同样用 peek 而非 expect：只有 COMMA 才继续下一轮，
+ * 其余（';' / EOF / 多写的 OR 之类）一律留给调用方的 nextEnd 报词元级错。
+ * 赋值列的重复/未知属「对着结构才能判的错」，与 INSERT 同落点（readSQL），
+ * 这里只做纯语法与 Number 列校验。语义（断电重建）见 UpdateTableEvent 注释。 */
+void Parser::nextUpdate(UpdateTableEvent& eve) {
+	Token name = expectType(TokenType::NAME);
+	eve.targetTabName = name.name;
+	expectType(TokenType::SET);
+	auto setErr = [](const Token& t) {
+		return bot::IllegalArgumentException("SET supports only '<column> = <value>'"
+			" assignments joined by ',' (got " + tokenMsg(t) + ")");
+	};
+	for (;;) {
+		Token col = expect();
+		if (col.type != TokenType::NAME) { throw setErr(col); }
+		Token eq = expect();
+		if (eq.type != TokenType::EQ) { throw setErr(eq); }
+		Token val = expect();
+		if (val.type != TokenType::NAME) { throw setErr(val); }
+		eve.assignments.push_back({col.name, val.name});
+		if (!peekIs(TokenType::COMMA)) { break; }
+		++idx_;
+	}
+	validateNumberValues(eve.targetTabName, eve.assignments);
+	/* 可选 WHERE：与 SELECT/DELETE 逐字同构（peek 不消费，命中才进条件列表） */
+	if (peekIs(TokenType::WHERE)) {
+		++idx_;
+		WhereClause w;
+		nextConditionList(w);
+		eve.where = std::move(w);
+	}
 	nextEnd();
 }
 

@@ -329,27 +329,22 @@ TH_TEST(parser_rejects_multi_row_values_tuple) {
 		events("INSERT INTO Relay ( name, note ) VALUES ( 'a', 'b' ), ( 'c', 'd' );"));
 }
 
-TH_TEST(parser_rejects_rewriting_statements) {
-	/* UPDATE：改写结构定义的语句，本方言不支持。它不是关键字（词法层落成 NAME），
-	 * 旧失败形态是词元级的 "Token name 'update'"——读的人（含模型）无从判断是
-	 * 语法错还是方言不支持，只会反复改写再试。这里必须在**解析期**给出语句级拒绝，
-	 * 且拒绝发生在任何装配之前。
-	 * （DELETE 2026-09-23、DROP 2026-09-23 先后落地后均已出列，见对应用例组。） */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
-		"Unsupported statement UPDATE", events("UPDATE Relay SET note = 'x';"));
-	/* 大小写不敏感，且回显统一大写——报错文本是稳定锚点，不随输入写法漂移 */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
-		"Unsupported statement UPDATE", events("Update Relay SET a = 1;"));
-	/* 只判**语句首词元**：同名标识符出现在列名/表名/值里是合法数据，不得误伤。
-	 * DROP 现已是关键字，故作为标识符须带引号（引号在词法层剥，仍是合法 NAME）；
-	 * update 不是关键字，裸写即可。 */
-	const std::vector<Event> made = events("CREATE TABLE Update ( 'drop' String, update String );");
+TH_TEST(parser_keywords_do_not_misfire_on_quoted_identifiers) {
+	/* UPDATE / DROP / SET 现均为关键字，作为标识符（表名/列名/值）须带引号
+	 * （引号在词法层剥，仍是合法 NAME）——裸写的同名标识符按关键字处理，
+	 * 这是关键字语言的既有口径（同 from/where/values）。 */
+	const std::vector<Event> made = events(
+		"CREATE TABLE 'Update' ( 'drop' String, 'set' String );");
 	TH_CHECK(made[0].create.tableName == "Update");
 	TH_CHECK(made[0].create.tableColumns[0].name == "drop");
-	TH_CHECK(made[0].create.tableColumns[1].name == "update");
-	const std::vector<Event> ins = events("INSERT INTO Update ( 'drop' ) VALUES ( 'DROP' );");
+	TH_CHECK(made[0].create.tableColumns[1].name == "set");
+	const std::vector<Event> ins = events(
+		"INSERT INTO 'Update' ( 'drop' ) VALUES ( 'DROP' );");
 	TH_CHECK(ins[0].insert.targetTabName == "Update");
 	TH_CHECK(ins[0].insert.tableRows[0][0].value == "DROP");
+	/* 值位的裸 SET 是关键字冲突：报错点名词元而不是被当成名字吞掉 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token SET",
+		events("INSERT INTO T ( a ) VALUES ( SET );"));
 }
 
 TH_TEST(parser_reports_the_offending_token) {
@@ -669,9 +664,6 @@ TH_TEST(parser_delete_rejects_malformed_statements) {
 		events("DELETE FROM"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
 		events("DELETE FROM T WHERE;"));
-	/* UPDATE 仍在不支持之列（报错须仍点名它） */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Unsupported statement UPDATE",
-		events("UPDATE T SET a = 1;"));
 }
 
 /* ---------------- DROP TABLE（2026-09-23 整表撤下）----------------
@@ -737,4 +729,107 @@ TH_TEST(parser_drop_rejects_a_where_clause) {
 	/* 其它尾随词元同族：DROP 之后只能有分号 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'x'",
 		events("DROP TABLE T x;"));
+}
+
+/* ---------------- UPDATE（2026-09-23 改写行：断电重建）----------------
+ * `UPDATE t SET col = value [, ...] [WHERE col = value [AND ...]]`。
+ * 解析层只产出事件：语义（命中行按「断电摘除 + 重新装配上电」改写）与边界
+ * （被引用拒改、批内独占）都在消费方（readSQL / applySql），本组钉住词法、
+ * 事件载荷、WHERE 复用与报错形态。 */
+
+TH_TEST(lexer_update_and_set_are_keywords_case_insensitively) {
+	TH_CHECK(Token::parse("UPDATE").type == TokenType::UPDATE);
+	TH_CHECK(Token::parse("update").type == TokenType::UPDATE);
+	TH_CHECK(Token::parse("UpDaTe").type == TokenType::UPDATE);
+	TH_CHECK(Token::parse("UPDATE").serialize() == "UPDATE");
+	TH_CHECK(Token::parse("SET").type == TokenType::SET);
+	TH_CHECK(Token::parse("set").type == TokenType::SET);
+	TH_CHECK(Token::parse("Set").serialize() == "SET");
+	/* 长度不同即不是关键字：前缀匹配不得命中（同 DROP 既有判据） */
+	TH_CHECK(Token::parse("Updates").type == TokenType::NAME);
+	TH_CHECK(Token::parse("sets").type == TokenType::NAME);
+}
+
+TH_TEST(parser_update_parses_single_assignment) {
+	std::vector<Event> eves = events("UPDATE Timer SET delay = 50;");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::UPDATE_TABLE);
+	TH_CHECK(eves[0].update.targetTabName == "Timer");
+	TH_CHECK(eves[0].update.assignments.size() == 1);
+	TH_CHECK(eves[0].update.assignments[0].columnName == "delay");
+	TH_CHECK(eves[0].update.assignments[0].value == "50");
+	/* 无 WHERE = 改写全部数据行（事件层以「where 无值」表达，与 DELETE 同口径） */
+	TH_CHECK(!eves[0].update.where.has_value());
+}
+
+TH_TEST(parser_update_accepts_multiple_assignments_and_where) {
+	std::vector<Event> eves = events(
+		"UPDATE Servo SET angle = 90, offset = '-4' WHERE name = 's1' AND channel = '0';");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::UPDATE_TABLE);
+	TH_CHECK(eves[0].update.assignments.size() == 2);
+	TH_CHECK(eves[0].update.assignments[1].columnName == "offset");
+	TH_CHECK(eves[0].update.assignments[1].value == "-4");
+	TH_CHECK(eves[0].update.where.has_value());
+	TH_CHECK(eves[0].update.where->conds.size() == 2);
+	TH_CHECK(eves[0].update.where->conds[0].column == "name");
+	TH_CHECK(eves[0].update.where->conds[1].value == "0");
+	/* 小写 / 关键字大小写不敏感 */
+	std::vector<Event> lower = events("update t set a = 1 where b = 2;");
+	TH_CHECK(lower[0].type == EventType::UPDATE_TABLE);
+	TH_CHECK(lower[0].update.targetTabName == "t");
+	TH_CHECK(lower[0].update.where->conds.size() == 1);
+	/* 紧贴写法（= 不留白，靠词法器的挂起等号切分）与留白写法词元流一致 */
+	std::vector<Token> compact = fx::tokens("UPDATE T SET a=1;");
+	std::vector<Token> spaced = fx::tokens("UPDATE T SET a = 1 ;");
+	TH_CHECK(fx::fingerprint(compact) == fx::fingerprint(spaced));
+	TH_CHECK(fx::fingerprint(compact) == "UPDATE name 'T' SET name 'a' = name '1' ;");
+}
+
+TH_TEST(parser_update_validates_number_columns) {
+	/* 与 INSERT 同一判据单点（validateNumberValues）：同脚本 CREATE 过的表，
+	 * Number 列的 SET 值必须是数值字面量或 $(表达式)；String 列不受限 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "is declared Number, but value 'abc'",
+		events("CREATE TABLE T ( name String, delay Number );"
+		       "UPDATE T SET delay = 'abc' WHERE name = 'x';"));
+	std::vector<Event> ok = events(
+		"CREATE TABLE T ( name String, delay Number );"
+		"UPDATE T SET delay = 50, name = 'x';");
+	TH_CHECK(ok[1].update.assignments[0].value == "50");
+	/* $(表达式) 合法（语法在此早校验）；表达式值须带引号——词法器把 '(' 当
+	 * 分隔符，不带引号会在 '$' 后切开（与 INSERT 的 VALUES 同一既有口径） */
+	std::vector<Event> expr = events(
+		"CREATE TABLE T ( name String, delay Number );"
+		"UPDATE T SET delay = '$(1 + 2)';");
+	TH_CHECK(expr[1].update.assignments[0].value == "$(1 + 2)");
+	/* 表未在本脚本 CREATE 则无从校验（消费方负责） */
+	std::vector<Event> other = events("UPDATE Other SET v = abc;");
+	TH_CHECK(other[0].update.assignments[0].value == "abc");
+}
+
+TH_TEST(parser_update_rejects_malformed_statements) {
+	/* 缺 SET / 缺表名 / 赋值缺等号 / 悬空逗号 / 尾随词元一律解析期报错；
+	 * SET 用法级报错与 WHERE 同风格（从「Token ,」反推语法对模型太绕） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token WHERE",
+		events("UPDATE T WHERE a = 1;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("UPDATE T SET"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "SET supports only",
+		events("UPDATE T SET a 1;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "SET supports only",
+		events("UPDATE T SET a = ;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("UPDATE T SET a = 1,"));
+	/* 用 AND 连接赋值是错的写法：终止判据只认逗号，AND 留给 nextEnd 词元级报错
+	 * （取向同 WHERE 的 OR——「还能写什么」交给既有的定位报错，不在本函数里猜） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token AND",
+		events("UPDATE T SET a = 1 AND b = 2;"));
+	/* WHERE 的用法级报错与 SELECT/DELETE 同一入口（三语句不会漂移的既有判据） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
+		events("UPDATE T SET a = 1 WHERE b;"));
+	/* 尾随词元（含误写的 OR——它不是关键字，落成 NAME）由 nextEnd 兜住 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'OR'",
+		events("UPDATE T SET a = 1 WHERE b = 2 OR c = 3;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'x'",
+		events("UPDATE T SET a = 1 x;"));
 }
