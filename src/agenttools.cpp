@@ -511,7 +511,8 @@ std::string describeHardware(RobotStruct& robot) {
 
 /* 解析一条结构 SQL 并渲染成文本（REPL /sql 与 agent 工具 query_sql 共用，
  * 契约见 agenttools.hpp）。SELECT 的取数源是 robot.matrices()——原始结构
- * 矩阵（声明序），与 registry()（装配后的硬件变量视图）互补。 */
+ * 矩阵（声明序），与 registry()（装配后的硬件变量视图）互补；可选 WHERE
+ * 等值条件按 inherited 显示值过滤（mt::matchRows 单点，值精确文本比较）。 */
 std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 	/* 词法：字符串 → token 流（跨语句/引号/注释，见 sqlparse.cpp）。 */
 	bot::MemoryReader sr(sql);
@@ -566,6 +567,20 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		if (m == nullptr) {
 			return "错误: 表 '" + tbl + "' 未定义（当前结构脚本里没有这个表）";
 		}
+		/* WHERE 等值过滤（2026-09-23）：命中行号来自 mt::matchRows 单点，与
+		 * 渲染同源（inherited 显示值精确比较）。列不存在折成「错误: 」前缀，
+		 * 与本函数顶部词法/语法错误同一漏斗——模型收到的是一次普通失败。 */
+		std::vector<std::size_t> hits;
+		if (ev.select.where) {
+			try {
+				hits = mt::matchRows(*m, ev.select.where->column, ev.select.where->value);
+			} catch (const std::exception& e) {
+				return std::string("错误: ") + e.what();
+			}
+		} else {
+			hits.reserve(m->rows() > 1 ? m->rows() - 1 : 0);
+			for (std::size_t r = 1; r < m->rows(); ++r) { hits.push_back(r); }
+		}
 		/* 渲染：首行列头（values_[0] 即列头行），其后各行用 inherited
 		 * （"-" 占位继承已前向填充，见 matrix.hpp）。 */
 		std::string s = "SELECT * FROM " + m->getName() + ":";
@@ -574,11 +589,13 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		for (std::size_t c = 0; c < ncol; ++c) {
 			s += (c > 0 ? " | " : "\n  ") + (*m)(0, c);
 		}
-		for (std::size_t r = 1; r < m->rows(); ++r) {
+		for (std::size_t r : hits) {
 			for (std::size_t c = 0; c < ncol; ++c) {
 				s += (c > 0 ? " | " : "\n  ") + m->inherited(r, c);
 			}
 		}
+		/* 空结果显式说破：列头 + 0 行，模型不会把「没有行」误读成渲染故障 */
+		if (ev.select.where && hits.empty()) { s += "\n  （0 行匹配）"; }
 		return s;
 	}
 	default:
@@ -794,9 +811,10 @@ static AgentTool makeQuerySqlTool(const AgentToolContext& ctx) {
 	return AgentTool{
 		"query_sql",
 		"用结构 SQL 查询机器人的结构定义（只读，不改变任何状态）。"
-		"语法：SELECT * FROM 表名; ——返回该表的列与行（表名见系统提示词的结构脚本摘录）。"
+		"语法：SELECT * FROM 表名; ——返回该表的列与行（表名见系统提示词的结构脚本摘录）；"
+		"可加等值条件 WHERE 列 = 值 做精确过滤，如 SELECT * FROM Servo WHERE name = 's1';。"
 		"CREATE TABLE / INSERT INTO 只做语法解析回显，不会真正创建或写入。"
-		"语句必须以分号结尾；仅支持星号全列查询。",
+		"语句必须以分号结尾；仅支持星号全列与单条件等值匹配。",
 		toolSchema({{"sql", stringParam("一条结构 SQL 语句，如 SELECT * FROM dummy;")}},
 			{"sql"}),
 		[ctx](const Json& args) -> AgentToolResult {

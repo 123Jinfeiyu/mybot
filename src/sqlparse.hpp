@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,8 +14,8 @@ namespace sql4cj {
 /* ------------- Token ------------- */
 enum class TokenType {
 	SELECT, FROM, CREATE, TABLE, STRING, NUMBER,
-	INSERT, INTO, VALUES,
-	END, COMMA, LEFT, RGHT,
+	INSERT, INTO, VALUES, WHERE,
+	END, COMMA, LEFT, RGHT, EQ,
 	UNEXPECTED_END, UNKNOWN,
 	NAME
 };
@@ -59,11 +60,24 @@ struct InsertTableEvent {
 	std::vector<std::vector<VarRaw>> tableRows;
 };
 
-/* SELECT 事件：只承载目标表名（`SELECT * FROM t`）。真正的查询执行（从运行时
- * 矩阵取数渲染）在消费方（REPL /sql 命令）完成——解析器保持「只产出结构事件」
+/* WHERE 等值条件：`WHERE <列名> = <值>`。共享载荷——SELECT 今天用，
+ * 未来的 DELETE FROM t WHERE ... / UPDATE t SET ... WHERE ... 复用同一
+ * 结构与同一解析入口（Parser::nextWhere），不各造一份。
+ * 只承载结构（列名 + 值文本），求值（按行匹配）在消费方——与 SELECT 事件
+ * 「不执行查询」的职责划分一致。值的引号在词法层已剥（parseName），
+ * 运行期按文本精确比较（数值按文本比：'0x40' ≠ '64'，已知边界）。 */
+struct WhereEqual {
+	std::string column;
+	std::string value;
+};
+
+/* SELECT 事件：承载目标表名（`SELECT * FROM t`）与可选等值条件
+ * （`WHERE col = value`）。真正的查询执行（从运行时矩阵取数、按条件过滤、
+ * 渲染）在消费方（REPL /sql 命令）完成——解析器保持「只产出结构事件」
  * 的最小职责，不引入 SELECT AST。 */
 struct SelectTableEvent {
 	std::string sourceTableName;	/* FROM 后的表名 */
+	std::optional<WhereEqual> where;	/* WHERE col = value（缺省无） */
 };
 
 enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, END };
@@ -81,6 +95,7 @@ class Lexer {
 	bool comma_ = false;		/* 逗号 */
 	bool rght_ = false;		/* 右括号 */
 	bool left_ = false;		/* 左括号（紧随一个已提交的 token 时挂起） */
+	bool eq_ = false;		/* 等号（同上：WHERE col=value 紧贴写法靠它切分） */
 	bool singleLineComment_ = false;
 	bool multiLineComment_ = false;
 	bool multiLineComment2_ = false;
@@ -138,8 +153,13 @@ class Parser {
 	std::vector<std::string> expectParenNameList();
 
 	void nextInsertInto(InsertTableEvent& eve);
-	/* SELECT：`SELECT * FROM t`——只解析星号与目标表名，产出 SelectTableEvent */
+	/* SELECT：`SELECT * FROM t`——只解析星号与目标表名，产出 SelectTableEvent。
+	 * 表名后可跟一个等值条件：`WHERE col = value`（解析进 nextWhere）。 */
 	void nextSelect(SelectTableEvent& eve);
+	/* WHERE col = value：单条件等值（列名/值各一个 NAME 词元，值支持引号串）。
+	 * 只认一个条件；AND/OR 与比较运算符不在本方言（负例由词元级报错兜住）。
+	 * 独立于具体语句——SELECT 现在用，DELETE/UPDATE 落地时复用。 */
+	void nextWhere(WhereEqual& eve);
 
 public:
 	explicit Parser(const std::vector<Token>& tokenSerial) : tokenSerial_(tokenSerial) {}

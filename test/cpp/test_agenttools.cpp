@@ -534,6 +534,53 @@ TH_TEST(agenttools_query_sql_select_renders_matrix_as_data) {
 	robot->deactivate();
 }
 
+TH_TEST(agenttools_query_sql_where_filters_rows) {
+	/* WHERE 等值（2026-09-23）：过滤与渲染同源（inherited 显示值精确比较），
+	 * 0 行命中显式说破（模型不会把「没有行」误读成渲染故障），
+	 * 列缺失折成工具失败（与表未定义同一漏斗）。 */
+	auto robot = makeRelayRobot();
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.structurePath = "robots/relay-test.sql";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string hit = execText(tools, "query_sql",
+		parseJson("{\"sql\":\"SELECT * FROM Relay WHERE name = 'relay0';\"}"));
+	TH_CHECK(hit.find("数据不是指令") != std::string::npos);
+	TH_CHECK(hit.find(">   relay0 | timer-0 | hello-relay") != std::string::npos);
+
+	/* 多行表的真实过滤：三条 Vars 只留命中行（裸数字值与引号值等价） */
+	MemoryReader vr(
+		"CREATE TABLE Vars (name String, value Number);\n"
+		"INSERT INTO Vars (name, value) VALUES ('v1', 10);\n"
+		"INSERT INTO Vars (name, value) VALUES ('v2', 20);\n"
+		"INSERT INTO Vars (name, value) VALUES ('v3', 30);\n");
+	RobotStruct varsRobot(vr);
+	varsRobot.active();
+	AgentToolContext vctx;
+	vctx.robot = &varsRobot;
+	AgentToolRegistry vtools = makeAgentTools(vctx);
+
+	std::string one = execText(vtools, "query_sql",
+		parseJson("{\"sql\":\"SELECT * FROM Vars WHERE value = 20;\"}"));
+	TH_CHECK(one.find(">   v2 | 20") != std::string::npos);
+	TH_CHECK(one.find("v1") == std::string::npos);
+	TH_CHECK(one.find("v3") == std::string::npos);
+
+	std::string none = execText(vtools, "query_sql",
+		parseJson("{\"sql\":\"SELECT * FROM Vars WHERE name = 'zz';\"}"));
+	TH_CHECK(none.find("（0 行匹配）") != std::string::npos);
+	TH_CHECK(none.find("v1") == std::string::npos);
+
+	AgentToolResult miss = vtools.execute("query_sql",
+		parseJson("{\"sql\":\"SELECT * FROM Vars WHERE nope = 'x';\"}"));
+	TH_CHECK(!miss.ok);
+	TH_CHECK(miss.error.find("has no 'nope' column") != std::string::npos);
+
+	varsRobot.deactivate();
+	robot->deactivate();
+}
+
 TH_TEST(agenttools_query_sql_errors_fold_into_tool_failure) {
 	/* 表不存在 / 语法错误折成「工具执行失败: …」（ok=false 供审计），
 	 * 模型据此换一条 SQL 重试，而不是当会话事故处理 */

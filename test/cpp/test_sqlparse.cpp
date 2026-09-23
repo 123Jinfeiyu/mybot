@@ -509,3 +509,78 @@ TH_TEST(parser_select_rejects_non_star_and_missing_parts) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
 		events("SELECT *"));
 }
+
+/* ---------------- WHERE 等值条件（2026-09-23）---------------- */
+
+TH_TEST(lexer_where_and_eq_token_stream) {
+	/* '=' 是第五个分隔词元（同 ; , ( ) 的「空直返/非空挂起」模式）；
+	 * WHERE 是大小写不敏感的关键字。 */
+	std::vector<Token> ts = fx::tokens("SELECT * FROM Vars WHERE name = 'v1';");
+	TH_CHECK(fx::fingerprint(ts)
+		== "SELECT name '*' FROM name 'Vars' WHERE name 'name' = name 'v1' ;");
+}
+
+TH_TEST(lexer_eq_compact_form_matches_spaced_form) {
+	/* col=value 紧贴写法靠 eq_ 挂起标志切分，与留白写法词元流逐字节相同
+	 * （取向同 lexer_parens_token_stream_matches_spaced_form）。 */
+	std::vector<Token> compact = fx::tokens("SELECT * FROM T WHERE k='v';");
+	std::vector<Token> spaced = fx::tokens("SELECT * FROM T WHERE k = 'v' ;");
+	TH_CHECK(fx::fingerprint(compact) == fx::fingerprint(spaced));
+	TH_CHECK(fx::fingerprint(compact)
+		== "SELECT name '*' FROM name 'T' WHERE name 'k' = name 'v' ;");
+}
+
+TH_TEST(lexer_quoted_eq_is_data) {
+	/* 引号内的 '=' 是数据（既有规则）：值 'a=b' 仍是一个 NAME 词元 */
+	std::vector<Token> ts = fx::tokens("INSERT INTO T ( v ) VALUES ( 'a=b' );");
+	bool found = false;
+	for (const Token& t : ts) {
+		if (t.type == TokenType::NAME && t.name == "a=b") { found = true; }
+	}
+	TH_CHECK(found);
+}
+
+TH_TEST(parser_select_where_event_payload) {
+	std::vector<Event> eves = events("SELECT * FROM Servo WHERE name = 's1';");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::SELECT_TABLE);
+	TH_CHECK(eves[0].select.sourceTableName == "Servo");
+	TH_CHECK(eves[0].select.where.has_value());
+	TH_CHECK(eves[0].select.where->column == "name");
+	TH_CHECK(eves[0].select.where->value == "s1");
+	/* 裸值（数字/标识符）与引号值等价：值一律按文本驻留 */
+	std::vector<Event> bare = events("SELECT * FROM Servo WHERE channel = 0;");
+	TH_CHECK(bare[0].select.where.has_value());
+	TH_CHECK(bare[0].select.where->column == "channel");
+	TH_CHECK(bare[0].select.where->value == "0");
+}
+
+TH_TEST(parser_select_without_where_has_no_condition) {
+	std::vector<Event> eves = events("SELECT * FROM Vars;");
+	TH_CHECK(!eves[0].select.where.has_value());
+}
+
+TH_TEST(parser_select_where_accepts_mixed_case) {
+	std::vector<Event> a = events("select * from T where K = 'v';");
+	TH_CHECK(a[0].select.where.has_value());
+	TH_CHECK(a[0].select.where->column == "K");
+	TH_CHECK(a[0].select.where->value == "v");
+}
+
+TH_TEST(parser_select_where_rejects_malformed_conditions) {
+	/* 三个位置（列名/等号/值）共用一句用法级报错，报错锚点稳定 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
+		events("SELECT * FROM T WHERE = 'x';"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
+		events("SELECT * FROM T WHERE a 'x';"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
+		events("SELECT * FROM T WHERE a = ;"));
+	/* `WHERE;` 收到的是 END 词元（用法级报错点名它）；EOF 才是 unexpected end */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
+		events("SELECT * FROM T WHERE;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("SELECT * FROM T WHERE"));
+	/* AND/多条件不在本方言：多写词元由 nextEnd 的词元级报错兜住 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'AND'",
+		events("SELECT * FROM T WHERE a = 'x' AND b = 'y';"));
+}

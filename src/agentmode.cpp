@@ -769,8 +769,8 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 			out << "内置命令:\n"
 				<< "  /hardware  - 显示硬件清单（只读，不触发任何动作）\n"
 				<< "  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）\n"
-				<< "  /sql <语句> - 执行结构 SQL：SELECT * FROM t 只读查询运行时矩阵；"
-				   "CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）\n"
+				<< "  /sql <语句> - 执行结构 SQL：SELECT * FROM t [WHERE 列 = 值] 只读查询"
+				   "运行时矩阵；CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）\n"
 				<< "  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）\n"
 				<< "  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）\n"
 				<< "  /help      - 显示此帮助\n"
@@ -810,7 +810,8 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 				&& (task.size() == 4 || task[4] == ' ' || task[4] == '\t')) {
 			const std::string sql = trim(task.substr(4));
 			if (sql.empty()) {
-				out << "用法: /sql <语句>（以 ; 结尾），例如 /sql SELECT * FROM Vars;\n";
+				out << "用法: /sql <语句>（以 ; 结尾），例如 /sql SELECT * FROM Vars;\n"
+					"      可加等值条件，例如 /sql SELECT * FROM Servo WHERE name = 's1';\n";
 			} else {
 				out << runSqlCommand(sql, robot) << "\n";
 			}

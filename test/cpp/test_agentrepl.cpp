@@ -183,6 +183,29 @@ TH_TEST(agentrepl_sql_select_renders_and_writes_go_live) {
 	robot.deactivate();
 }
 
+/* WHERE 等值过滤（2026-09-23）：/sql 与 query_sql 共用 runSqlStatement 单点，
+ * 过滤语义与渲染同源；0 行命中显式说破。 */
+TH_TEST(agentrepl_sql_where_filters_rows) {
+	ScriptTransport transport;
+	std::istringstream in(
+		"/sql SELECT * FROM Relay WHERE name = 'relay0';\n"
+		"/sql SELECT * FROM Relay WHERE name = 'zz';\n"
+		"/exit\n");
+	std::ostringstream out, log;
+
+	MAKE_ROBOT();
+	robot.active();
+	AgentToolRegistry tools;
+	AgentSession session(transport, tools, sessionOpts());
+	TH_CHECK(runAgentRepl(session, replCfg("scripts"), robot, in, out, log) == 0);
+	TH_CHECK(transport.requests.empty());
+
+	const std::string& o = out.str();
+	TH_CHECK(o.find("relay0 | timer-0 | hello-relay") != std::string::npos);
+	TH_CHECK(o.find("（0 行匹配）") != std::string::npos);
+	robot.deactivate();
+}
+
 TH_TEST(agentrepl_model_error_does_not_end_session) {
 	FailOnceTransport transport;
 	std::istringstream in("任务A\n任务B\n/exit\n");

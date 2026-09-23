@@ -260,6 +260,15 @@ inline MatrixObject* findByName(Container& ll, const std::string& name) {
 	return nullptr;
 }
 
+/* WHERE 等值匹配单点（2026-09-23）：列头定位 + inherited 精确文本比较，返回
+ * 命中数据行号（不含行 0 列头）。与 SELECT 渲染同源——比对 inherited（"-"
+ * 占位继承解析后的显示值），查询结果与全列渲染看到的是同一份值。参数用基本
+ * 类型而非 WhereEqual，避免 mt 层反向依赖 sqlparse 层；SELECT 渲染今天用，
+ * 未来的 DELETE/UPDATE 选行复用（同一事实源，取向同 findByName）。
+ * 列不存在：requireCol 既有文案上抛；无命中返回空容器，空与缺失由调用方分腔。 */
+std::vector<std::size_t> matchRows(const MatrixObject& m, const std::string& col,
+		const std::string& val);
+
 /* @Action 列头解析：<device>.<param>（恰好一个点）。ActionRunner 派发与
  * mtmerge 相位归并共用同一切分规则与报错文案。 */
 inline std::pair<std::string, std::string> splitActionColumn(const std::string& name_HV) {

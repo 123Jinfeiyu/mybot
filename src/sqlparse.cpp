@@ -45,10 +45,12 @@ Token Token::parse(const std::string& s) {
 	if (equalWithoutCase(s, "insert")) { return {TokenType::INSERT, s}; }
 	if (equalWithoutCase(s, "into")) { return {TokenType::INTO, s}; }
 	if (equalWithoutCase(s, "values")) { return {TokenType::VALUES, s}; }
+	if (equalWithoutCase(s, "where")) { return {TokenType::WHERE, s}; }
 	if (s == ";") { return {TokenType::END, s}; }
 	if (s == ",") { return {TokenType::COMMA, s}; }
 	if (s == "(") { return {TokenType::LEFT, s}; }
 	if (s == ")") { return {TokenType::RGHT, s}; }
+	if (s == "=") { return {TokenType::EQ, s}; }
 	Token t = {TokenType::NAME, s};
 	t.name = parseName(s);
 	return t;
@@ -65,10 +67,12 @@ std::string Token::serialize() const {
 		case TokenType::INSERT: return "INSERT";
 		case TokenType::INTO: return "INTO";
 		case TokenType::VALUES: return "VALUES";
+		case TokenType::WHERE: return "WHERE";
 		case TokenType::END: return ";";
 		case TokenType::COMMA: return ",";
 		case TokenType::LEFT: return "(";
 		case TokenType::RGHT: return ")";
+		case TokenType::EQ: return "=";
 		case TokenType::UNEXPECTED_END: return "";
 		case TokenType::UNKNOWN: return "?";
 		case TokenType::NAME: return "name '" + name + "'";
@@ -119,6 +123,7 @@ Token Lexer::next(bot::Reader& sr) {
 	if (comma_) { comma_ = false; return positionedToken(TokenType::COMMA, pendLine_, pendCol_); }
 	if (rght_) { rght_ = false; return positionedToken(TokenType::RGHT, pendLine_, pendCol_); }
 	if (left_) { left_ = false; return positionedToken(TokenType::LEFT, pendLine_, pendCol_); }
+	if (eq_) { eq_ = false; return positionedToken(TokenType::EQ, pendLine_, pendCol_); }
 
 	std::string s;
 	int tokLine = 0, tokCol = 0;	/* 当前 token 首字符落点（1 起） */
@@ -162,14 +167,18 @@ Token Lexer::next(bot::Reader& sr) {
 		}
 		if (s.empty() && blank) { continue; }
 		else if (!s.empty() && blank) { return finishToken(s, tokLine, tokCol); }
-		/* C2 防线：';'/','/'('/')' 在空 token 时直接产出对应词元（原实现借
+		/* C2 防线：';'/','/'('/')'/'=' 在空 token 时直接产出对应词元（原实现借
 		 * return next(sr) 尾递归绕回顶部消费 pending 标志，连续 N 个分隔符
 		 * 即 N 层真实递归，--tcp 下可被远程输入打爆栈）。语义等价改直返。
 		 * 评估 2026-09-20：四个分隔符一律「空 token 直返 / 非空 token 挂
 		 * pending 标志」，此前 '(' 只处理空 token 一侧、')' 只处理非空
 		 * 一侧——`INSERT INTO T(a,b) VALUES(1,2)`（SQL 空白不敏感的常见
 		 * 写法）里 '(' 会被并进名字（`T(a` 之类），解析以 `Token ,` 报错
-		 * 收场，而仓内夹具一律写成 `T (a, b)` 故从未暴露。 */
+		 * 收场，而仓内夹具一律写成 `T (a, b)` 故从未暴露。
+		 * '=' 加入（2026-09-23 WHERE）：同模式第五个分隔符——`WHERE col=value`
+		 * 紧贴写法靠 pending 切分。仓内 robots/ 全部 .sql 的 '=' 都在引号
+		 * 值或注释里（144 个文件逐一扫描），引号态在分隔符判定之前消费，
+		 * 零行为变化。 */
 		else if (s.empty() && c == ';') { return positionedToken(TokenType::END, curLine, curCol); }
 		else if (!s.empty() && c == ';') {
 			flag_ = true; pendLine_ = curLine; pendCol_ = curCol;
@@ -185,11 +194,16 @@ Token Lexer::next(bot::Reader& sr) {
 			left_ = true; pendLine_ = curLine; pendCol_ = curCol;
 			return finishToken(s, tokLine, tokCol);
 		}
-		else if (s.empty() && c == ')') { return positionedToken(TokenType::RGHT, curLine, curCol); }
-		else if (!s.empty() && c == ')') {
-			rght_ = true; pendLine_ = curLine; pendCol_ = curCol;
-			return finishToken(s, tokLine, tokCol);
-		}
+			else if (s.empty() && c == ')') { return positionedToken(TokenType::RGHT, curLine, curCol); }
+			else if (!s.empty() && c == ')') {
+				rght_ = true; pendLine_ = curLine; pendCol_ = curCol;
+				return finishToken(s, tokLine, tokCol);
+			}
+			else if (s.empty() && c == '=') { return positionedToken(TokenType::EQ, curLine, curCol); }
+			else if (!s.empty() && c == '=') {
+				eq_ = true; pendLine_ = curLine; pendCol_ = curCol;
+				return finishToken(s, tokLine, tokCol);
+			}
 		else {
 			if (s.empty()) { tokLine = curLine; tokCol = curCol; }
 			s += c;
@@ -225,13 +239,19 @@ std::string tokenMsg(const Token& t) {
 }
 
 /* 明确拒绝的「看似合法」语句关键字（大小写不敏感）。本方言只认
- * CREATE TABLE / INSERT INTO / SELECT，而这三个都是**删除或改写结构**的语句：
- * 在带电机器人上它们会让结构矩阵与硬件注册表失去一致性（见 RobotStruct::applySql
- * 的契约），两点都不打算支持。
+ * CREATE TABLE / INSERT INTO / SELECT（含 WHERE 等值条件），而 DROP/DELETE/
+ * UPDATE 这三条都是**删除或改写结构**的语句：在带电机器人上它们会让结构矩阵
+ * 与硬件注册表失去一致性（见 RobotStruct::applySql 的契约），不属于「解析了
+ * 就能安全执行」的范畴，暂不支持。
  * 为什么要专门认出来：它们不是关键字（词法层落成 NAME），过去的失败形态是
  * "Token name 'drop'"——层级是词元的，读的人（含模型）无法判断这是「语法写错」
  * 还是「方言不支持」，只会改写措辞反复重试。这里给一句含正确用法的拒绝。
- * 判据是**语句首词元**：出现在后续位置的同名标识符（列名/表名/值）不受影响。 */
+ * 判据是**语句首词元**：出现在后续位置的同名标识符（列名/表名/值）不受影响。
+ * 将来支持时的落点（2026-09-23 设计注记）：EventType 加对应事件 → 此清单
+ * 逐语句摘除 → runSqlCommand 的只读/变更分类扩展；WHERE 设施（WhereEqual +
+ * nextWhere）已按三语句共享写成，DELETE/UPDATE 直接复用。事务语义警示：
+ * 三语句都改结构，必须走 applySql 式「全成功或全回滚」；其中 DELETE 的
+ * destroy 是物理断电，回滚 ≠ 复活器件，需单独的两段式设计。 */
 bool isUnsupportedStatement(const std::string& name) {
 	return equalWithoutCase(name, "drop") || equalWithoutCase(name, "delete")
 		|| equalWithoutCase(name, "update");
@@ -289,7 +309,8 @@ Event Parser::next() {
 			/* 语句首词元是删除/改写类语句 → 明确的「不支持」，而不是词元级报错 */
 			if (t.type == TokenType::NAME && isUnsupportedStatement(t.name)) {
 				throw bot::IllegalArgumentException("Unsupported statement " + upperAscii(t.name)
-					+ ": this dialect only understands CREATE TABLE / INSERT INTO / SELECT ... FROM");
+					+ ": this dialect only understands CREATE TABLE / INSERT INTO /"
+					" SELECT ... FROM ... [WHERE col = value]");
 			}
 			throw bot::IllegalArgumentException(tokenMsg(t));
 	}
@@ -406,9 +427,9 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 	nextEnd();
 }
 
-/* SELECT：`SELECT * FROM t`。只支持星号选择列（* 经 Token::parse 落入 NAME，
- * 载荷为 '*'）；`SELECT <name>` 与非星号/缺 FROM/缺表名一律报错，报错形态
- * 对齐链路里既有的 tokenMsg（带行列定位）。 */
+/* SELECT：`SELECT * FROM t [WHERE col = value]`。只支持星号选择列（* 经
+ * Token::parse 落入 NAME，载荷为 '*'）；`SELECT <name>` 与非星号/缺 FROM/缺表名
+ * 一律报错，报错形态对齐链路里既有的 tokenMsg（带行列定位）。 */
 void Parser::nextSelect(SelectTableEvent& eve) {
 	Token star = expect();
 	if (star.type != TokenType::NAME || star.name != "*") {
@@ -420,7 +441,33 @@ void Parser::nextSelect(SelectTableEvent& eve) {
 	(void)from;
 	Token name = expectType(TokenType::NAME);
 	eve.sourceTableName = name.name;
+	/* 可选 WHERE：peek 不消费，命中才进 nextWhere；分号仍由 nextEnd 消费 */
+	if (idx_ < tokenSerial_.size() && tokenSerial_[idx_].type == TokenType::WHERE) {
+		++idx_;
+		WhereEqual w;
+		nextWhere(w);
+		eve.where = std::move(w);
+	}
 	nextEnd();
+}
+
+/* WHERE col = value：单条件等值，列名/值各一个 NAME 词元（值支持引号串，
+ * 引号已在词法层剥掉）。AND/OR 与比较运算符不在本方言——多写的词元落到
+ * nextEnd 的「Token ...」报错。三个位置共用一句用法级报错：从「Token ,」
+ * 反推 WHERE 语法对人对模型都太绕（取向同 isUnsupportedStatement）。 */
+void Parser::nextWhere(WhereEqual& eve) {
+	auto whereErr = [](const Token& t) {
+		return bot::IllegalArgumentException("WHERE supports only '<column> = <value>' (got "
+			+ tokenMsg(t) + ")");
+	};
+	Token col = expect();
+	if (col.type != TokenType::NAME) { throw whereErr(col); }
+	Token eq = expect();
+	if (eq.type != TokenType::EQ) { throw whereErr(eq); }
+	Token val = expect();
+	if (val.type != TokenType::NAME) { throw whereErr(val); }
+	eve.column = col.name;
+	eve.value = val.name;
 }
 
 } // namespace sql4cj

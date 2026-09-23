@@ -124,4 +124,16 @@ void readMatrix(bot::Reader& file, std::vector<MatrixObject>& out) {
 	}
 }
 
+/* WHERE 等值匹配（契约见 matrix.hpp 声明处）：先 requireCol 定位（缺失即抛，
+ * 调用方不必预检），再对每个数据行的 inherited 值做精确比较。 */
+std::vector<std::size_t> matchRows(const MatrixObject& m, const std::string& col,
+		const std::string& val) {
+	const std::int64_t idx = m.requireCol(0, col, "Table");
+	std::vector<std::size_t> hits;
+	for (std::size_t r = 1; r < m.rows(); ++r) {
+		if (m.inherited(r, static_cast<std::size_t>(idx)) == val) { hits.push_back(r); }
+	}
+	return hits;
+}
+
 } // namespace mt

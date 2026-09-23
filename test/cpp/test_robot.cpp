@@ -1286,8 +1286,11 @@ TH_TEST(robot_hot_sql_rejects_unsafe_table_and_column_names) {
 	TH_CHECK(badTable.find("表名") != std::string::npos);
 	TH_CHECK(badTable.find("不是安全标识符") != std::string::npos);
 
+	/* 列名带 '=' 的注入向量：裸写 a=b 在词法层就被 '=' 分隔符打散（Token =，
+	 * 2026-09-23 WHERE 改造）；引号包裹的 'a=b' 仍是一个 NAME 词元，能走到
+	 * isSafeIdent 检查——防线必须在这里接住它（'=' 能在守护配置串里造字段）。 */
 	const std::string badCol =
-		hotSqlError(robot, "CREATE TABLE Fresh (name String, a=b String);\n");
+		hotSqlError(robot, "CREATE TABLE Fresh (name String, 'a=b' String);\n");
 	TH_CHECK(badCol.find("列名") != std::string::npos);
 	TH_CHECK(badCol.find("不是安全标识符") != std::string::npos);
 

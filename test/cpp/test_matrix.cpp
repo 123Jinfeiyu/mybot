@@ -68,6 +68,21 @@ TH_TEST(matrix_comment_start_flushes_pending_cell) {
 	TH_CHECK(n.rows() == 2);
 }
 
+TH_TEST(matrix_match_rows_equality_on_inherited_values) {
+	/* WHERE 等值匹配单点（2026-09-23）：SELECT 渲染与未来的 DELETE/UPDATE
+	 * 选行共用。比对 inherited 显示值（"-" 继承前向填充后），与全列渲染
+	 * 看到的是同一份值；无命中返回空容器（空与缺失分腔：缺失走抛错）。 */
+	mt::MatrixObject m = fx::oneMatrix("@T\nname tag;\np0 keep;\np1 -;\np2 drop;\n@\n");
+	/* p1 的 '-' 继承自 p0 → inherited 显示 'keep'，与 p0 一并命中 */
+	TH_CHECK(mt::matchRows(m, "tag", "keep") == std::vector<std::size_t>({1, 2}));
+	TH_CHECK(mt::matchRows(m, "tag", "drop") == std::vector<std::size_t>({3}));
+	TH_CHECK(mt::matchRows(m, "name", "p0") == std::vector<std::size_t>({1}));
+	TH_CHECK(mt::matchRows(m, "tag", "nope").empty());
+	/* 列不存在：requireCol 既有文案（带表名与列名），调用方不必预检 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "has no 'nope' column",
+		mt::matchRows(m, "nope", "x"));
+}
+
 TH_TEST(matrix_ragged_row_reports_cell_counts) {
 	/* 报错必须自带「这行几格 / 上一行几格」，否则用户只能逐列数空格 */
 	TH_CHECK_THROWS_MSG(mt::DoesNotSync, "this row has 1 cell(s), but the row above has 2",
