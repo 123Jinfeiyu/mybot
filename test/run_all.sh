@@ -31,7 +31,7 @@ cd "$(dirname "$0")/.." || exit 1
 
 LUACMD="${LUACMD:-luajit}"
 if ! command -v "$LUACMD" >/dev/null 2>&1; then
-	echo "未找到解释器：$LUACMD"
+	echo "未找到解释器：$LUACMD"	
 	echo "HAL 依赖 ffi，请安装 LuaJIT：sudo apt install luajit"
 	echo "（或 LUACMD=lua5.4 只跑纯 Lua 用例，HAL 相关用例会失败）"
 	exit 1
@@ -1248,6 +1248,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	#    而不是 1（上电后失败），报错文案也换成了点名「不依赖硬件的三段」的那句。
 	#    这是有意的行为变更：上电之前就能判定的配置错误，没有理由拖到上电之后。
 	if case_matches 'agent_prompt_over_cap'; then
+	mkdir -p .tmp
 	awk 'BEGIN { for (i = 0; i < 3000; i++) print "padding line for the system prompt cap test" }' \
 		> .tmp/bigprompt.md
 	run_one_hardening 'agent_prompt_over_cap' 2 '不依赖硬件的三段' \
