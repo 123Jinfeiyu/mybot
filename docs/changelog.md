@@ -2,6 +2,7 @@
 
 > 从 [README](../README.md) 迁出，按主题分组记录版本演进要点，组内大致按时间倒序。每条只留「改了什么、对使用者意味着什么」——设计论证、实现落点与守门明细以 docs/ 各文档与 git 提交历史为准。
 > 条目里的守门/用例**数字是当时的快照**：权威口径一律以 `bash test/run_all.sh` 与 `./build/mybot_tests` 的实时输出为准（`docs/development.md` 单一事实源约定）。
+> 2026-09-23：`docs/proposals/` 下的开发方案文档已全部移至本地 `.tmp/`（不入库）；下文对其的引用是历史记录，历史版本见 git（截至 `46f90d8`）。
 
 ## v1.x（C++ 移植版）
 
@@ -945,7 +946,7 @@
 
 ### 2026-09-22 agent 重构阶段 C6 + C7（提示词素材单次读取 / F6 三条小路径）
 
-> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 C6（F5）与 C7（F6）。行为保持型 + 死分支清理。
+> 依据 `docs/proposals/agent-refactor-plan-2.md` 阶段 C6（F5）与 C7（F6）。行为保持型 + 死分支清理。
 
 **C6：预检读到的两段成品被系统提示词复用。** 原先「不依赖硬件的三段」体积预检读一次
 结构脚本头与动作脚本清单就丢弃，拼提示词时再读一次：每会话多一次全树遍历 + N 次文件读，
@@ -992,7 +993,7 @@ verbose 日志间接覆盖——下游解析器真正关心的是「行首标记
 
 ### 2026-09-22 agent 重构阶段 C5（重试日志可注入）
 
-> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 C5（对应审计 F4）。行为保持型：缺省仍是 stderr。
+> 依据 `docs/proposals/agent-refactor-plan-2.md` 阶段 C5（对应审计 F4）。行为保持型：缺省仍是 stderr。
 
 传输层（`agentdriver.cpp`）的重试日志原先硬编码 `std::cerr`——离线用例抓不到它，宿主也没得选。
 
@@ -1011,7 +1012,7 @@ verbose 日志间接覆盖——下游解析器真正关心的是「行首标记
 
 ### 2026-09-22 agent 重构阶段 B4（五个运行期数值配置文件化）
 
-> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 B4（对应审计 F3）。新能力，缺省行为不变。
+> 依据 `docs/proposals/agent-refactor-plan-2.md` 阶段 B4（对应审计 F3）。新能力，缺省行为不变。
 
 原先只写死在三个下游结构体里的五个数值，现可由**配置文件**覆盖（仅配置文件——
 不加 CLI 选项：选项面已 20+，且它们都是「一次定好、长期不变」的部署参数）：
@@ -1052,7 +1053,7 @@ verbose 日志间接覆盖——下游解析器真正关心的是「行首标记
 
 ### 2026-09-22 agent 重构阶段 A1 + A2（子进程骨架单点化 / 确认程序一致性补齐）
 
-> 依据 [docs/proposals/agent-refactor-plan-2.md](proposals/agent-refactor-plan-2.md) 阶段 A1/A2（对应审计 F1/F2）。一处真缺陷修复 + 行为保持型重构。
+> 依据 `docs/proposals/agent-refactor-plan-2.md` 阶段 A1/A2（对应审计 F1/F2）。一处真缺陷修复 + 行为保持型重构。
 
 **F1（真缺陷，已修）**：`run_command`（`agent_subprocess.cpp`）与 `--agent-policy` 确认程序
 （`agentpolicy.cpp`）各写了一份「fork + exec + 超时 + 进程组终止」，且已漂移——有界回收、
@@ -1091,7 +1092,7 @@ verbose 日志间接覆盖——下游解析器真正关心的是「行首标记
 
 ### 2026-09-22 agent 重构阶段 B3（图片传输层降副本）
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B3（对应 R4）。验收判据为 `VmHWM` 实测（`.tmp/memaudit/b3_measure.sh`，AG-19 方法；`.tmp` 不入库）。
+> 依据 `docs/proposals/agent-refactor-plan.md` 阶段 B3（对应 R4）。验收判据为 `VmHWM` 实测（`.tmp/memaudit/b3_measure.sh`，AG-19 方法；`.tmp` 不入库）。
 
 **实测**（拍照场景，同一脚本前后对照）：
 
@@ -1132,7 +1133,7 @@ verbose 日志间接覆盖——下游解析器真正关心的是「行首标记
 
 ### 2026-09-22 agent 重构阶段 C3（REPL 循环可离线单测）
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C3（对应 R7）。
+> 依据 `docs/proposals/agent-refactor-plan.md` 阶段 C3（对应 R7）。
 
 REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/上电/一次性任务分支）
 耦合，循环行为只能靠 agent_e2e.sh 六场景兜底。拆出 `runAgentRepl`（session + 只读
@@ -1147,7 +1148,7 @@ REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/�
 
 ### 2026-09-22 agent 重构阶段 C4（历史预算口径诚实化）
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C4（对应 R8，按方案倾向选「改注释」而非改实现）。
+> 依据 `docs/proposals/agent-refactor-plan.md` 阶段 C4（对应 R8，按方案倾向选「改注释」而非改实现）。
 
 历史字节预算的记账**不含** system 提示词（messages_[0]，恒不被裁剪、另有 64 KiB
 独立上限）与工具 schema（注册期固定、逐请求重复发送）；单条估重（`messageWeight`）
@@ -1163,7 +1164,7 @@ REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/�
 
 ### 2026-09-22 agent 重构阶段 C1（REPL /clear）
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 C1（对应 R6）。
+> 依据 `docs/proposals/agent-refactor-plan.md` 阶段 C1（对应 R6）。
 
 此前上下文被一次错误结论污染后，唯一出路是重启进程——重启会 `deactivate()` 释放硬件，
 执行器停在归零位，现场代价不小。新增 REPL `/clear`：只裁会话历史（保留 system 提示词），
@@ -1179,7 +1180,7 @@ REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/�
 
 ### 2026-09-22 agent 重构阶段 B2（LlmOpenAI 不再内置缺省接入点）【破坏性】
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B2（对应 R3）。
+> 依据 `docs/proposals/agent-refactor-plan.md` 阶段 B2（对应 R3）。
 
 **影响**：此前 `LlmOpenAI` 在 CLI / 配置文件 / 环境链都没配 endpoint 时会静默回退到
 内置缺省 `https://moma.cmecloud.cn/v1/chat/completions`——「什么都没配就跑起来」的
@@ -1199,7 +1200,7 @@ REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/�
 
 ### 2026-09-22 agent 重构阶段 B1（上下文字节预算配置文件化）
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 B1（对应 R2）。
+> 依据 `docs/proposals/agent-refactor-plan.md` 阶段 B1（对应 R2）。
 
 三个上下文字节预算此前是 `AgentOptions` 的编译期常量（docs/agent.md 已知限制自认
 「只能改源码缺省」），现场调不了。B1 把「配置文件 > 编译期缺省」通道接通：
@@ -1217,7 +1218,7 @@ REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/�
 
 ### 2026-09-22 agent 重构阶段 A2 + C2（系统提示词拆分 / 工具结果定界对齐）
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md)。
+> 依据 `docs/proposals/agent-refactor-plan.md`。
 
 - **A2（结构收口，行为逐字不变）**：系统提示词构建自 `agentmode.cpp`（578→478 行）拆出
   `agentprompt.{hpp,cpp}`——结构脚本头读取（`structureScriptHead`，UTF-8 消毒 AG-1）、
@@ -1235,7 +1236,7 @@ REPL 循环此前内联在 `runAgentMode`，与装配逻辑（工具表/审计/�
 
 ### 2026-09-22 agent 重构阶段 A1（AgentSession 拆分，行为逐字不变）
 
-> 依据 [docs/proposals/agent-refactor-plan.md](proposals/agent-refactor-plan.md) 阶段 A1。
+> 依据 `docs/proposals/agent-refactor-plan.md` 阶段 A1。
 > 动机：HEAD 落地审计日志与策略钩子后，`agentloop.cpp`（392 行）叠加了四套互相交织的
 > 职责（历史裁剪 / 任务内预算 / 策略+审计 / 轮次编排回滚），是全仓注释最密、最容易改错的文件。
 

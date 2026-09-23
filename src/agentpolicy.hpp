@@ -1,7 +1,8 @@
 #pragma once
 /* agentpolicy.hpp —— agent 工具调用的策略钩子（--agent-policy，P3）
  *
- * 动机（docs/proposals/audit-approval-cancel.md P3）：审批是**部署策略**，
+ * 动机（原 docs/proposals/audit-approval-cancel.md P3，2026-09-23 移至 .tmp/）：
+ * 审批是**部署策略**，
  * 不该做成内置交互式逐次确认（会毁掉 agent「多轮自主推进」的价值，还容易被
  * `--yes` 架空）。本模块把判断权交给使用者声明的外部确认程序：
  *
