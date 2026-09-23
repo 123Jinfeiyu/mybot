@@ -612,6 +612,12 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		 * 而放弃。 */
 		return "错误: DELETE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
 			"它会真的断电摘除器件且不可逆";
+	case sql4cj::EventType::DROP_TABLE:
+		/* 同 DELETE 的理由：本函数是只读渲染面，而 DROP 会真的断电摘除**整表**
+		 * 器件（比 DELETE 更重），绝不在这里执行。default 的那句「不支持」对
+		 * 本句同样误导——DROP 是支持的，只是不在这条通道上。 */
+		return "错误: DROP 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+			"它会真的断电摘除整张表的器件且不可逆";
 	default:
 		return "错误: 不支持的 SQL 语句";
 	}
@@ -784,6 +790,9 @@ static AgentTool makeApplySqlTool(const AgentToolContext& ctx) {
 		"没有回滚可言，回执里的读数与状态都要当作已失效。被别的器件以 "
 		"controller/trigger 或 $ 引用着的变量会被拒绝删除（报错点名引用方），"
 		"先删引用方或把相关行一起删。删除前请先用 query_sql 确认 WHERE 命中的行。"
+		"DROP TABLE 表 会**当场断电并摘除整张表**（表壳、该表全部变量与守护一起撤下），"
+		"同样是**破坏性且不可逆**的操作；它**不带 WHERE**（作用于整张表）——要确认删对"
+		"了表或按条件删一部分行，请先用 query_sql 查看，按条件删行用 DELETE。"
 		"名为 Action 的表是**瞬态**的：插入的行的动作会立即执行一次然后丢弃，不进结构。"
 		"语句以分号结尾，可一次给多条。只想查询（不改任何状态）请用 query_sql。",
 		toolSchema({{"sql", stringParam("结构 SQL，如 CREATE TABLE Timer (name String); "
@@ -837,6 +846,7 @@ static AgentTool makeQuerySqlTool(const AgentToolContext& ctx) {
 		"如 SELECT * FROM Servo WHERE controller = 'pca9685-0' AND channel = 1;。"
 		"CREATE TABLE / INSERT INTO 只做语法解析回显，不会真正创建或写入；"
 		"DELETE 不在本工具范围内（它会真的断电摘除器件，请用 apply_sql）——"
+		"DROP TABLE 同理（整表撤下，更重，也请用 apply_sql）——"
 		"但可以先用本工具确认 WHERE 会命中哪些行。"
 		"语句必须以分号结尾；仅支持星号全列与等值条件（AND 连接，无 OR）。",
 		toolSchema({{"sql", stringParam("一条结构 SQL 语句，如 SELECT * FROM dummy;")}},

@@ -533,8 +533,11 @@ std::string RobotStruct::applySql(const std::string& sql) {
 		}
 	}
 
-	if (appends.empty() && newTables.empty() && actionMats.empty() && dels.empty()) {
-		throw IllegalArgumentException("热插表：本批次没有任何 CREATE/INSERT/DELETE 变更"
+	/* 空表 DROP（表壳动了、行没动）也算变更：判据必须包含 droppedTables，
+	 * 否则「DROP 一张本来就没有数据行的表」会被误判成「本批次什么都没做」。 */
+	if (appends.empty() && newTables.empty() && actionMats.empty() && dels.empty()
+			&& muts.droppedTables.empty()) {
+		throw IllegalArgumentException("热插表：本批次没有任何 CREATE/INSERT/DELETE/DROP 变更"
 			"（SELECT 是只读查询，请用 query_sql / REPL 的 /sql）");
 	}
 
@@ -820,6 +823,55 @@ std::string RobotStruct::applySql(const std::string& sql) {
 		}
 	}
 
+	/* ==================== 阶段 4.7：整表撤下（DROP TABLE，不可逆）====================
+	 * 位置在 4.6 之后：DROP 的**全部数据行**已由 4.6 走完与 DELETE 完全相同的
+	 * 「逆序断电 → 擦登记表 → 擦结构行 → 撤注册」路径（DROP 就是把整表行全删
+	 * 再加一步摘表壳），故这里只剩**空表壳**要摘。
+	 *
+	 * 为什么表壳必须最后摘：4.6.4 用「矩阵地址 + 行号」定位被删行的 MetaProvider，
+	 * 而矩阵地址是 `&matrices_[mi]`——一旦先 erase 表壳，其后所有表的下标与地址
+	 * 都会变，4.6 的判据就全错位。故顺序是死的：先按行删（4.6），再摘壳（本节）。
+	 *
+	 * deque 中间 erase 的引用失效：MetaProvider::matrix_ 存的是指向 matrices_
+	 * 元素的指针；erase 会让其后元素引用失效。**必须先把存活提供者的表名抓下来
+	 * 再 erase**（表名唯一且是稳定身份），erase 后按名把每个提供者重锚定回新地址
+	 * ——否则后续 readSample/collect 会踩悬垂指针。这也正是 matrix.hpp 把矩阵
+	 * 容器从 vector 换成 deque 之外、又为整表撤下专门保留 rebase 的原因。 */
+	std::size_t droppedTables = 0;
+	std::vector<std::string> droppedNames;
+	if (!muts.droppedTables.empty()) {
+		/* ① 抓名字（erase 之前，此时 matrix_ 仍有效） */
+		std::vector<std::pair<MetaProvider*, std::string>> provNames;
+		provNames.reserve(metaProviders_.size());
+		for (const auto& p : metaProviders_) {
+			provNames.emplace_back(p.get(), p->matrix().getName());
+		}
+		/* ② 定位要摘的表壳（本批次 DROP 的表名 ∩ 活体 matrices_）。DROP 本批次
+		 *     新建的表不在活体里（readSQL 已把它从影子容器整表擦除），此处自然
+		 *     找不到——那不是错误，跳过即可。 */
+		std::vector<std::size_t> shellIdx;
+		for (std::size_t k = 0; k < matrices_.size(); ++k) {
+			if (muts.droppedTables.count(trim(matrices_[k].getName())) != 0) {
+				shellIdx.push_back(k);
+				droppedNames.push_back(trim(matrices_[k].getName()));
+			}
+		}
+		/* ③ 降序 erase（先删大下标，前面的下标不失效） */
+		for (auto it = shellIdx.rbegin(); it != shellIdx.rend(); ++it) {
+			matrices_.erase(matrices_.begin() + static_cast<std::ptrdiff_t>(*it));
+			++droppedTables;
+		}
+		/* ④ 重锚定存活提供者：按名字找同名的矩阵地址。只在**确实摘过表壳**时做
+		 *    ——「本批次 CREATE 后又 DROP」的新表不在活体里（shellIdx 为空），
+		 *    此时没有元素被搬移，重锚定是空转。 */
+		if (!shellIdx.empty()) {
+			for (auto& [prov, nm] : provNames) {
+				const mt::MatrixObject* m = mt::findByName(matrices_, nm);
+				if (m != nullptr) { prov->rebase(*m); }
+			}
+		}
+	}
+
 	/* ---- 生效摘要（REPL /sql 与 agent apply_sql 共用同一句话）---- */
 	const std::size_t addedVars = varsAfterInsert - mark.seq;
 	std::size_t addedRows = 0;
@@ -842,6 +894,14 @@ std::string RobotStruct::applySql(const std::string& sql) {
 		std::size_t n = 0;
 		for (const auto& m : actionMats) { n += m.rows() > 0 ? m.rows() - 1 : 0; }
 		msg += "，瞬态动作已执行 " + std::to_string(n) + " 行（未注册，已丢弃）";
+	}
+	if (droppedTables > 0) {
+		msg += "，已撤下表 " + std::to_string(droppedTables) + " 张（";
+		for (std::size_t i = 0; i < droppedNames.size(); ++i) {
+			if (i > 0) { msg += ", "; }
+			msg += droppedNames[i];
+		}
+		msg += "）";
 	}
 	return msg;
 }

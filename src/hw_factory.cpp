@@ -31,6 +31,60 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 	 * DELETE 仍以原始坐标记录（而 matchAll 用当前坐标匹配）。初值 = 恒等映射
 	 * （此刻每个当前行号都还是它自己的原始行号）。 */
 	std::vector<std::vector<std::size_t>> rowOrigin;
+	/* 本批次（一次 readSQL 调用）内 CREATE 出来 / DROP 掉的表名，用于整表撤下的
+	 * 交互判据：DROP 本批次新建的表 = 从影子容器整表擦除（从未装配）；DROP 后
+	 * 再 INSERT/DELETE/CREATE 同名表一律拒绝（避免「表壳已被撤下却又被写回」）。 */
+	std::set<std::string> createdHere;
+	std::set<std::string> droppedHere;
+	/* 本批次被 INSERT/DELETE（改**行**）触碰过的表名。DROP（撤**表**）要求它是本批次
+	 * 针对该表的**唯一**语句：与 INSERT/DELETE 同批会打乱 applySql 靠 insertedRows
+	 * 划「新增行区间」的算法（被删掉的新增行不在尾部连续块里），且「加了又整表撤下」
+	 * 本就无意义——拆成两批即可。CREATE 不算触碰：本批次新建后又被 DROP 有专门路径。 */
+	std::set<std::string> touchedHere;
+
+	/* 把「这些数据行」从表上擦除，并维护「当前行号 → 原始行号」映射与 Mutations
+	 * 记录。DELETE 与 DROP 共用这一段——DROP 就是「对全表数据行跑同一套擦除，
+	 * 再额外把空表壳交给调用方摘除」（表壳摘除在 applySql，readSQL 只管数据行）。 */
+	auto removeRowsOf = [&](mt::MatrixObject* root, const std::string& target,
+			const std::vector<std::size_t>& hits) {
+		if (hits.empty()) { return; }
+		const std::size_t ti = static_cast<std::size_t>(root - &out[0]);
+		/* 恒等映射的惰性初始化：只在**本容器首次改这张表**时铺一次。
+		 * 注意不能假定「INSERT 路径已经铺过」——mutations 为空时 INSERT 的
+		 * 追踪整段被跳过（启动期不需要），此处必须自给自足。 */
+		if (rowOrigin.size() < out.size()) { rowOrigin.resize(out.size()); }
+		if (rowOrigin[ti].empty()) {
+			rowOrigin[ti].reserve(root->rows());
+			for (std::size_t r = 0; r < root->rows(); ++r) { rowOrigin[ti].push_back(r); }
+		}
+		/* 先取走原始行号与变量名（都要在擦行之前读），再擦行。
+		 * name 列缺失时不猜变量名——变量名的权威来源是装配期的 name 列，
+		 * 缺失就是结构本身不合法，留给 hot-SQL 路径的既有判据报错。 */
+		const std::int64_t idxName = root->indexOfCol(0, "name");
+		std::vector<std::size_t> origins;
+		origins.reserve(hits.size());
+		for (std::size_t r : hits) {
+			origins.push_back(rowOrigin[ti][r]);
+			if (mutations != nullptr && idxName >= 0) {
+				mutations->deletedNames.push_back((*root)(r, static_cast<std::size_t>(idxName)));
+			}
+		}
+		root->removeRows(hits);
+		/* 本表映射：被删的当前行号剔除（存活行号随之前移，索引自然对上） */
+		std::vector<std::size_t> keptOrigins;
+		keptOrigins.reserve(rowOrigin[ti].size() - hits.size());
+		std::size_t hi = 0;
+		for (std::size_t r = 0; r < rowOrigin[ti].size(); ++r) {
+			if (hi < hits.size() && hits[hi] == r) { ++hi; continue; }
+			keptOrigins.push_back(rowOrigin[ti][r]);
+		}
+		rowOrigin[ti] = std::move(keptOrigins);
+		if (mutations != nullptr) {
+			std::vector<std::size_t>& dst = mutations->deletedRows[target];
+			for (std::size_t o : origins) { dst.push_back(o); }
+		}
+	};
+
 	for (;;) {
 		sql4cj::Event eve = parser.next();
 		if (eve.type == sql4cj::EventType::END) { break; }
@@ -38,15 +92,25 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 		case sql4cj::EventType::CREATE_TABLE: {
 			/* R-4：SQL 事件里的 token 本就完整，直接灌入构建器，
 			 * 不再逐字符 addRune 重放（仓颉流 API 的残留）。 */
+			if (droppedHere.count(eve.create.tableName)) {
+				throw IllegalArgumentException("CREATE TABLE '" + eve.create.tableName
+					+ "': the table was dropped earlier in this batch; recreate it in a"
+					" separate statement batch (DROP is physically irreversible)");
+			}
 			mt::MatrixBuilder b;
 			b.name(eve.create.tableName);
 			for (const auto& col : eve.create.tableColumns) { b.item(col.name); }
 			b.line(0);
 			out.push_back(b.take());
+			createdHere.insert(eve.create.tableName);
 			break;
 		}
 		case sql4cj::EventType::INSERT_TABLE: {
 			if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
+			if (droppedHere.count(eve.insert.targetTabName)) {
+				throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
+					+ "': the table was dropped earlier in this batch");
+			}
 			/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
 			 * （对照 robots/test/insert_typo.sql 的负值契约；N-10：查找
 			 * 收敛到 mt::findByName 单点） */
@@ -111,6 +175,11 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 				rowOrigin[oi].push_back(root->rows() - 1);
 				if (mutations != nullptr) { ++mutations->insertedRows[eve.insert.targetTabName]; }
 			}
+			/* 既存表被 INSERT 碰过 → 本批次不得再对它 DROP（见 touchedHere 注释）。
+			 * 本批次新建的表不算——它整表撤下走 createdHere 路径，与行计数无关。 */
+			if (!createdHere.count(eve.insert.targetTabName)) {
+				touchedHere.insert(eve.insert.targetTabName);
+			}
 			break;
 		}
 		case sql4cj::EventType::DELETE_TABLE: {
@@ -123,19 +192,14 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 			}
 			if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
 			const std::string& target = eve.del.targetTabName;
+			if (droppedHere.count(target)) {
+				throw IllegalArgumentException("DELETE FROM '" + target
+					+ "': the table was dropped earlier in this batch");
+			}
 			mt::MatrixObject* root = mt::findByName(out, target);
 			if (root == nullptr) {
 				throw IllegalArgumentException(
 					"DELETE FROM '" + target + "': table is not defined");
-			}
-			const std::size_t ti = static_cast<std::size_t>(root - &out[0]);
-			if (rowOrigin.size() < out.size()) { rowOrigin.resize(out.size()); }
-			/* 恒等映射的惰性初始化：只在**本容器首次删这张表**时铺一次。
-			 * 注意不能假定「INSERT 路径已经铺过」——mutations 为空时 INSERT 的
-			 * 追踪整段被跳过（启动期不需要），此处必须自给自足。 */
-			if (rowOrigin[ti].empty()) {
-				rowOrigin[ti].reserve(root->rows());
-				for (std::size_t r = 0; r < root->rows(); ++r) { rowOrigin[ti].push_back(r); }
 			}
 			/* 无条件 = 全部数据行（与 SQL 语义一致：DELETE FROM t 删空该表） */
 			std::vector<std::size_t> hits;
@@ -160,32 +224,76 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 					+ "': no row matches, nothing was deleted"
 					+ (eve.del.where ? " (check the WHERE values)" : " (the table has no data row)"));
 			}
-			/* 先取走原始行号与变量名（都要在擦行之前读），再擦行。
-			 * name 列缺失时不猜变量名——变量名的权威来源是装配期的 name 列，
-			 * 缺失就是结构本身不合法，留给 hot-SQL 路径的既有判据报错。 */
-			const std::int64_t idxName = root->indexOfCol(0, "name");
-			std::vector<std::size_t> origins;
-			origins.reserve(hits.size());
-			for (std::size_t r : hits) {
-				origins.push_back(rowOrigin[ti][r]);
-				if (mutations != nullptr && idxName >= 0) {
-					mutations->deletedNames.push_back((*root)(r, static_cast<std::size_t>(idxName)));
+			removeRowsOf(root, target, hits);
+			if (!createdHere.count(target)) { touchedHere.insert(target); }
+			break;
+		}
+		case sql4cj::EventType::DROP_TABLE: {
+			/* 与 DELETE 同为带电变更：结构脚本里出现同样拒绝（机器人尚未上电）。 */
+			if (!allowDelete) {
+				throw IllegalArgumentException("DROP TABLE '" + eve.drop.targetTabName
+					+ "': DROP is a live-structure statement and cannot appear in a"
+					" structure script (the robot is not powered on yet). Edit the"
+					" script, or run DROP on a live robot via /sql or apply_sql.");
+			}
+			const std::string& target = eve.drop.targetTabName;
+			if (droppedHere.count(target)) {
+				throw IllegalArgumentException("DROP TABLE '" + target
+					+ "': the table is dropped more than once in this batch");
+			}
+			/* 本批次已对这张**既存**表做过 INSERT/DELETE → 拒绝 DROP：
+			 * applySql 靠 insertedRows 划「新增行区间（尾部连续块）」，而行级改动
+			 * 之后该区间算法不再成立（被删掉的新增行不在尾部连续块里）；且「先加行
+			 * 再整表撤下」本就没有意义。拆成两批（先改行、再 DROP）即可。 */
+			if (touchedHere.count(target)) {
+				throw IllegalArgumentException("DROP TABLE '" + target
+					+ "': the table was already modified by INSERT/DELETE in this batch;"
+					" run DROP in a separate statement batch");
+			}
+			if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
+
+			/* Action 表是**瞬态**的（结构期由 MR 动作脚本提供、热插期执行完即丢），
+			 * 其行从不装配成常驻硬件变量，故「整表撤下」在它身上没有意义
+			 * （行→变量 的模型不成立）。给一句人话而不是让它落到下游的
+			 * 「没有 name 列」/「注册表里不存在」这类错位报错。 */
+			if (trim(target) == "Action") {
+				throw IllegalArgumentException("DROP TABLE Action: the Action table is"
+					" transient (its rows are replayed, never registered as hardware"
+					" variables) and cannot be dropped");
+			}
+
+			/* 无条件整表撤下（无 WHERE，见 DropTableEvent 注释）。 */
+			mt::MatrixObject* root = mt::findByName(out, target);
+			if (root == nullptr) {
+				throw IllegalArgumentException("DROP TABLE '" + target + "': table is not defined");
+			}
+
+			if (createdHere.count(target)) {
+				/* 本批次 CREATE 出来的表：从未装配、从未上电，撤销范围为空。
+				 * **整表擦除**影子容器里的它（连带本批次插入的行一起消失），并把表名
+				 * 传给调用方记账。表壳不复存在，故无需（也不该）走 applySql 的表壳
+				 * 摘除步骤。 */
+				const std::size_t k = static_cast<std::size_t>(root - &out[0]);
+				out.erase(out.begin() + static_cast<std::ptrdiff_t>(k));
+				if (k < rowOrigin.size()) {
+					rowOrigin.erase(rowOrigin.begin() + static_cast<std::ptrdiff_t>(k));
 				}
+				createdHere.erase(target);
+				droppedHere.insert(target);
+				if (mutations != nullptr) { mutations->droppedTables.insert(target); }
+				break;
 			}
-			root->removeRows(hits);
-			/* 本表映射：被删的当前行号剔除（存活行号随之前移，索引自然对上） */
-			std::vector<std::size_t> keptOrigins;
-			keptOrigins.reserve(rowOrigin[ti].size() - hits.size());
-			std::size_t hi = 0;
-			for (std::size_t r = 0; r < rowOrigin[ti].size(); ++r) {
-				if (hi < hits.size() && hits[hi] == r) { ++hi; continue; }
-				keptOrigins.push_back(rowOrigin[ti][r]);
-			}
-			rowOrigin[ti] = std::move(keptOrigins);
-			if (mutations != nullptr) {
-				std::vector<std::size_t>& dst = mutations->deletedRows[target];
-				for (std::size_t o : origins) { dst.push_back(o); }
-			}
+
+			/* 既存表：清空全部数据行（与 DELETE 同一条擦除机器，断电/撤注册据此
+			 * 走 DelPlan），表壳保留到 applySql 的表级摘除步骤——这样影子容器与
+			 * 活体矩阵**逐位对齐**，applySql 的下标不变式不被破坏。
+			 * 空表（只有列头）也无条件撤下：撤一张本来就没有数据行的表是合法操作。 */
+			std::vector<std::size_t> all;
+			all.reserve(root->rows() > 1 ? root->rows() - 1 : 0);
+			for (std::size_t r = 1; r < root->rows(); ++r) { all.push_back(r); }
+			removeRowsOf(root, target, all);
+			droppedHere.insert(target);
+			if (mutations != nullptr) { mutations->droppedTables.insert(target); }
 			break;
 		}
 		default:

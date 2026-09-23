@@ -172,7 +172,12 @@ struct MetaRef {
 /* P8/M2：元数据静态列缓存（字面列冻结 + 引用列实时 read() 快照）。
  * name 列与结构引用列（controller/trigger）不进元数据——按保留列名跳过。 */
 class MetaProvider {
-	const mt::MatrixObject& matrix_;
+	/* 锚定的矩阵：**指针而非引用**（2026-09-23 整表撤下）。矩阵元素住在
+	 * matrices_（std::deque）里，整表 DROP 会 erase 掉某个元素，而 deque 的
+	 * 中间 erase 会让其后所有元素引用失效（标准如此，不依赖某个实现是否原地
+	 * 搬值）；引用成员绑死一次、无法重锚，故改为指针并配 rebase()。行数变化
+	 * （行删除）不影响本指针——那只会前移行号；本指针只在整表移除后需要更新。 */
+	const mt::MatrixObject* matrix_;
 	std::int64_t row_;
 	const HwRegistry* registry_;
 	std::optional<std::vector<std::string>> cols_;
@@ -194,7 +199,7 @@ class MetaProvider {
 public:
 	MetaProvider(const mt::MatrixObject& matrix, std::int64_t row,
 			const HwRegistry* registry)
-		: matrix_(matrix), row_(row), registry_(registry) {}
+		: matrix_(&matrix), row_(row), registry_(registry) {}
 
 	Json collect();
 	/* F-04′：字面列 + 引用列的「尽力而为」快照——destroy 阶段用。
@@ -207,8 +212,16 @@ public:
 	 * 被删行的提供者——判据必须是这一对（而不是提供者自身的某个 id），因为
 	 * 行列就是它在结构里的唯一身份。矩阵是 std::deque 的元素、地址稳定，
 	 * 故该判据精确且不受行数变化影响。 */
-	const mt::MatrixObject& matrix() const { return matrix_; }
+	const mt::MatrixObject& matrix() const { return *matrix_; }
 	std::int64_t row() const { return row_; }
+
+	/* 整表撤下（2026-09-23）：矩阵地址（供 RobotStruct 在 erase 前后建
+	 * 旧地址→新地址映射，据此重锚定存活提供者）。 */
+	const mt::MatrixObject* matrixPtr() const { return matrix_; }
+	/* 重锚定到矩阵的新地址（整表 DROP 后 deque 元素搬移/引用失效时调用）。
+	 * **不清缓存**：存活表的内容逐字未变（只是位置变了），seed 结果（cols_/
+	 * vals_/refs_）语义仍然成立；行号 row_ 也不因整表移除而变。 */
+	void rebase(const mt::MatrixObject& m) { matrix_ = &m; }
 };
 
 /* ---- 脚本装载：SQL/矩阵 文本 → MatrixObject（R-1 拆自 RobotStruct）----
@@ -237,6 +250,13 @@ public:
 		 * 可能不变，那个判据会把新增行整批漏掉（既装配不出来，也不进瞬态 Action）。
 		 * 表名在**本批次 CREATE 出来的表**上也会出现（其插入行数即全表数据行数）。 */
 		std::map<std::string, std::size_t> insertedRows;
+		/* 本批次被 DROP 掉的**表名**（整表撤下，2026-09-23）。readSQL 已在影子容器
+		 * 上把该表的全部数据行清空（并计入 deletedRows/deletedNames，故行的断电与
+		 * 撤注册走与 DELETE 同一条 DelPlan 机器）；调用方据此**额外**把空表壳从活体
+		 * matrices_ 上摘除，并重锚定其后 MetaProvider 的矩阵引用（deque 整表移除会
+		 * 让后续元素引用失效）。表名在「本批次 CREATE 后又被 DROP」的表上也会出现
+		 * ——那类表从未装配，摘除面只有影子容器。 */
+		std::set<std::string> droppedTables;
 	};
 
 	/* SQL4cj → MatrixObject 结构表解析。

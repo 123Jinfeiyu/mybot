@@ -14,7 +14,7 @@ namespace sql4cj {
 /* ------------- Token ------------- */
 enum class TokenType {
 	SELECT, FROM, CREATE, TABLE, STRING, NUMBER,
-	INSERT, INTO, VALUES, WHERE, DELETE, AND,
+	INSERT, INTO, VALUES, WHERE, DELETE, DROP, AND,
 	END, COMMA, LEFT, RGHT, EQ,
 	UNEXPECTED_END, UNKNOWN,
 	NAME
@@ -99,7 +99,22 @@ struct DeleteTableEvent {
 	std::optional<WhereClause> where;
 };
 
-enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, DELETE_TABLE, END };
+/* DROP 事件（2026-09-23 整表撤下）：`DROP TABLE t`。
+ * 与 DELETE 的分界是一次性的：DELETE 删**行**（表保留），DROP 删**表**（连同
+ * 表壳、该表全部硬件变量、元数据提供者与守护登记一起撤下）。
+ *
+ * **不带 WHERE**（标准 SQL 语义）：DROP 是 DDL，作用于整张表；WHERE 是 DML 的
+ * 行级筛选，加在 DROP 上会「长得像在筛行、实际却整表删」。要确认删对了表，先用
+ * `SELECT * FROM t [WHERE ...]` 看一眼（query_sql 已支持），再 DROP。
+ *
+ * 本事件同样只承载结构：解析层不查表、不做引用校验、不碰活体——全部交给
+ * RobotStruct::applySql（与 DELETE 共用同一条「预检 → 物理断电 → 撤注册」事务）。
+ * 表不存在一律报错（拼错表名的守门与 DELETE 同口径）。 */
+struct DropTableEvent {
+	std::string targetTabName;
+};
+
+enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, DELETE_TABLE, DROP_TABLE, END };
 
 struct Event {
 	EventType type;
@@ -107,6 +122,7 @@ struct Event {
 	InsertTableEvent insert;
 	SelectTableEvent select;
 	DeleteTableEvent del;
+	DropTableEvent drop;
 };
 
 /* ------------- 词法分析器 ------------- */
@@ -187,6 +203,10 @@ class Parser {
 	 * 条件列表（与 SELECT 共用 nextConditionList），产出 DeleteTableEvent。
 	 * where 为空即无条件删除全表。执行（断电/撤注册/擦行）不在这里。 */
 	void nextDelete(DeleteTableEvent& eve);
+	/* DROP：`DROP TABLE t`——只解析目标表名，产出 DropTableEvent。
+	 * **无 WHERE**（DDL 作用于整张表，见 DropTableEvent 注释）；多余词元由
+	 * nextEnd 的词元级报错兜住。执行（拆表/断电/撤注册）不在这里。 */
+	void nextDrop(DropTableEvent& eve);
 	/* WHERE 条件列表：一个或多个 `列名 = 值`，以 AND 连接（大小写不敏感）。
 	 * 列名/值各一个 NAME 词元（值支持引号串，引号已在词法层剥）；比较运算符、
 	 * OR、IN 不在本方言（负例由本函数的用法级报错或调用方 nextEnd 兜住）。

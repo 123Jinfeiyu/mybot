@@ -21,10 +21,10 @@ void MetaProvider::seed() {
 	if (cols_) { return; }
 	std::vector<std::string> cArr, vArr;
 	std::vector<MetaRef> rArr;
-	std::int64_t idxName = matrix_.indexOfCol(0, "name");
-	for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix_.cols()); ++j) {
-		const std::string& colName = matrix_(0, j);
-		std::string value = matrix_.inherited(row_, j);
+	std::int64_t idxName = matrix_->indexOfCol(0, "name");
+	for (std::int64_t j = 0; j < static_cast<std::int64_t>(matrix_->cols()); ++j) {
+		const std::string& colName = (*matrix_)(0, j);
+		std::string value = matrix_->inherited(row_, j);
 		if (value == "-") { continue; }
 		if (j == idxName || isFlowColumn(colName)) { continue; }
 		if (value.rfind("$", 0) == 0) {
@@ -38,7 +38,7 @@ void MetaProvider::seed() {
 				for (const std::string& nm : names) {
 					if (!registry_->contains(nm)) {
 						throw IllegalArgumentException("'" + value + "' (column '" + colName
-							+ "') in table '" + matrix_.getName() + "' row " + std::to_string(row_)
+							+ "') in table '" + matrix_->getName() + "' row " + std::to_string(row_)
 							+ ": expression references '" + nm + "', but it is not defined. "
 							+ "(identifiers in a $(...) expression are checked after all tables"
 							+ " are registered and before any driver build.)");
@@ -58,7 +58,7 @@ void MetaProvider::seed() {
 					rArr.push_back(std::move(ref));
 				} else {
 					throw IllegalArgumentException("'" + value + "' (column '" + colName
-						+ "') in table '" + matrix_.getName() + "' row " + std::to_string(row_)
+						+ "') in table '" + matrix_->getName() + "' row " + std::to_string(row_)
 						+ ": references hardware variable '" + refName + "', but it is not defined. ('$' may forward-reference a variable declared later in the script, but the name must exist; checked after all tables are registered and before any driver build.)");
 				}
 			}
@@ -136,7 +136,7 @@ Json MetaProvider::collectRefs(bool forDestroy) {
 	DepthLimitGuard depthGuard(t_refDepth, forDestroy ? nullptr : &kMaxRefDepth,
 		[&] {
 			return "circular '$' reference detected: reference chain exceeds "
-				+ std::to_string(kMaxRefDepth) + " levels while resolving table '" + matrix_.getName()
+				+ std::to_string(kMaxRefDepth) + " levels while resolving table '" + matrix_->getName()
 				+ "' row " + std::to_string(row_)
 				+ ". Check that '$' reference columns do not form a cycle (a variable referencing itself, directly or indirectly).";
 		});
@@ -151,7 +151,7 @@ Json MetaProvider::collectRefs(bool forDestroy) {
 /* ---- destroy 收集的「尽力而为」跳过日志——4 段同模板 logD 收敛单点 ---- */
 void MetaProvider::logDestroySkip(const std::string& what, const std::string& why) {
 	logD([&] {
-		return "destroy metadata: '" + matrix_.getName() + "' row " + std::to_string(row_)
+		return "destroy metadata: '" + matrix_->getName() + "' row " + std::to_string(row_)
 			+ " skipped " + what + " (" + why + ")";
 	});
 }

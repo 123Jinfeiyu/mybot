@@ -330,27 +330,25 @@ TH_TEST(parser_rejects_multi_row_values_tuple) {
 }
 
 TH_TEST(parser_rejects_rewriting_statements) {
-	/* DROP/UPDATE：改写结构定义的语句，本方言不支持。它们不是关键字（词法层
-	 * 落成 NAME），旧失败形态是词元级的 "Token name 'drop'"——读的人（含模型）
-	 * 无从判断是语法错还是方言不支持，只会反复改写再试。这里必须在**解析期**
-	 * 给出语句级拒绝，且拒绝发生在任何装配之前。
-	 * （DELETE 曾在此列，2026-09-23 落地为热删除后出列，见 parser_delete_* 组。） */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
-		"Unsupported statement DROP", events("DROP TABLE Relay;"));
+	/* UPDATE：改写结构定义的语句，本方言不支持。它不是关键字（词法层落成 NAME），
+	 * 旧失败形态是词元级的 "Token name 'update'"——读的人（含模型）无从判断是
+	 * 语法错还是方言不支持，只会反复改写再试。这里必须在**解析期**给出语句级拒绝，
+	 * 且拒绝发生在任何装配之前。
+	 * （DELETE 2026-09-23、DROP 2026-09-23 先后落地后均已出列，见对应用例组。） */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
 		"Unsupported statement UPDATE", events("UPDATE Relay SET note = 'x';"));
 	/* 大小写不敏感，且回显统一大写——报错文本是稳定锚点，不随输入写法漂移 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
-		"Unsupported statement DROP", events("drop table Relay;"));
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
 		"Unsupported statement UPDATE", events("Update Relay SET a = 1;"));
-	/* 只判**语句首词元**：同名标识符出现在列名/表名/值里是合法数据，不得误伤 */
-	const std::vector<Event> made = events("CREATE TABLE Drop ( drop String, update String );");
-	TH_CHECK(made[0].create.tableName == "Drop");
+	/* 只判**语句首词元**：同名标识符出现在列名/表名/值里是合法数据，不得误伤。
+	 * DROP 现已是关键字，故作为标识符须带引号（引号在词法层剥，仍是合法 NAME）；
+	 * update 不是关键字，裸写即可。 */
+	const std::vector<Event> made = events("CREATE TABLE Update ( 'drop' String, update String );");
+	TH_CHECK(made[0].create.tableName == "Update");
 	TH_CHECK(made[0].create.tableColumns[0].name == "drop");
 	TH_CHECK(made[0].create.tableColumns[1].name == "update");
-	const std::vector<Event> ins = events("INSERT INTO Drop ( drop ) VALUES ( 'DROP' );");
-	TH_CHECK(ins[0].insert.targetTabName == "Drop");
+	const std::vector<Event> ins = events("INSERT INTO Update ( 'drop' ) VALUES ( 'DROP' );");
+	TH_CHECK(ins[0].insert.targetTabName == "Update");
 	TH_CHECK(ins[0].insert.tableRows[0][0].value == "DROP");
 }
 
@@ -671,17 +669,72 @@ TH_TEST(parser_delete_rejects_malformed_statements) {
 		events("DELETE FROM"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
 		events("DELETE FROM T WHERE;"));
-	/* UPDATE 仍在不支持之列（DROP/UPDATE 未落地，报错须仍点名它们） */
+	/* UPDATE 仍在不支持之列（报错须仍点名它） */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Unsupported statement UPDATE",
 		events("UPDATE T SET a = 1;"));
 }
 
-TH_TEST(parser_delete_rejects_drop_but_delete_is_now_supported) {
-	/* DROP 删的是表（要连带拆 MetaProvider/守护登记），仍在拒绝之列；
-	 * DELETE 删的是行，已落地——本用例把两者的分界钉死，防止将来
-	 * 因为「都是删除」而把 DROP 一起放行。 */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Unsupported statement DROP",
-		events("DROP TABLE Timer;"));
-	std::vector<Event> ok = events("DELETE FROM Timer WHERE name = 't0';");
-	TH_CHECK(ok[0].type == EventType::DELETE_TABLE);
+/* ---------------- DROP TABLE（2026-09-23 整表撤下）----------------
+ * DROP 是 DDL，作用于**整张表**：`DROP TABLE 表名`，**不带 WHERE**（WHERE 是 DML
+ * 的行级筛选，加在这里会「长得像在筛行、实际却整表删」）。误写 WHERE 由 nextEnd
+ * 的词元级报错兜住。解析层只产出事件，不查表、不碰活体——表存在性与断电/撤注册
+ * 在消费方（readSQL / applySql）。本组钉住：词法、事件载荷、报错形态与定位。 */
+
+TH_TEST(lexer_drop_is_a_keyword_case_insensitively) {
+	TH_CHECK(Token::parse("DROP").type == TokenType::DROP);
+	TH_CHECK(Token::parse("drop").type == TokenType::DROP);
+	TH_CHECK(Token::parse("dRoP").type == TokenType::DROP);
+	TH_CHECK(Token::parse("DROP").serialize() == "DROP");
+	/* 长度不同即不是关键字：前缀匹配不得命中（同 Strings/Numbers 既有判据） */
+	TH_CHECK(Token::parse("Dropx").type == TokenType::NAME);
+	TH_CHECK(Token::parse("DROPS").type == TokenType::NAME);
+}
+
+TH_TEST(lexer_drop_token_stream) {
+	std::vector<Token> ts = fx::tokens("DROP TABLE Timer;");
+	TH_CHECK(fx::fingerprint(ts) == "DROP TABLE name 'Timer' ;");
+	/* 无 FROM、无 WHERE：两个词元（DROP/TABLE）之后直接是表名 */
+	std::vector<Token> compact = fx::tokens("DROP TABLE T;");
+	TH_CHECK(fx::fingerprint(compact) == "DROP TABLE name 'T' ;");
+}
+
+TH_TEST(parser_drop_targets_the_whole_table) {
+	std::vector<Event> eves = events("DROP TABLE Timer;");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::DROP_TABLE);
+	TH_CHECK(eves[0].drop.targetTabName == "Timer");
+}
+
+TH_TEST(parser_drop_accepts_mixed_case) {
+	std::vector<Event> a = events("drop table T;");
+	TH_CHECK(a.size() == 1);
+	TH_CHECK(a[0].type == EventType::DROP_TABLE);
+	TH_CHECK(a[0].drop.targetTabName == "T");
+}
+
+TH_TEST(parser_drop_rejects_malformed_statements) {
+	/* 缺 TABLE / 缺表名一律解析期报错，且报错带词元定位 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'T'",
+		events("DROP T;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("DROP TABLE"));
+	/* 表名位的 DROP 是关键字冲突（不再是合法 NAME）：报错点名该词元，
+	 * 与「写错语法」可区分 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token DROP",
+		events("DROP TABLE DROP;"));
+}
+
+TH_TEST(parser_drop_rejects_a_where_clause) {
+	/* DROP 不带 WHERE（DDL 作用于整张表）：误写的 WHERE 由 nextEnd 词元级报错
+	 * 兜住，自带行列定位——而不是被静默当作「守卫条件」接受。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token WHERE",
+		events("DROP TABLE T WHERE a = 1;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token WHERE",
+		events("DROP TABLE T where name = 'x';"));
+	/* 悬空 WHERE 同型（词元级，不是用法级） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token WHERE",
+		events("DROP TABLE T WHERE;"));
+	/* 其它尾随词元同族：DROP 之后只能有分号 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'x'",
+		events("DROP TABLE T x;"));
 }

@@ -47,6 +47,7 @@ Token Token::parse(const std::string& s) {
 	if (equalWithoutCase(s, "values")) { return {TokenType::VALUES, s}; }
 	if (equalWithoutCase(s, "where")) { return {TokenType::WHERE, s}; }
 	if (equalWithoutCase(s, "delete")) { return {TokenType::DELETE, s}; }
+	if (equalWithoutCase(s, "drop")) { return {TokenType::DROP, s}; }
 	if (equalWithoutCase(s, "and")) { return {TokenType::AND, s}; }
 	if (s == ";") { return {TokenType::END, s}; }
 	if (s == ",") { return {TokenType::COMMA, s}; }
@@ -71,6 +72,7 @@ std::string Token::serialize() const {
 		case TokenType::VALUES: return "VALUES";
 		case TokenType::WHERE: return "WHERE";
 		case TokenType::DELETE: return "DELETE";
+		case TokenType::DROP: return "DROP";
 		case TokenType::AND: return "AND";
 		case TokenType::END: return ";";
 		case TokenType::COMMA: return ",";
@@ -249,29 +251,28 @@ std::string tokenMsg(const Token& t) {
  * 不是变更史。 */
 constexpr const char* kDialectStatements =
 	"CREATE TABLE / INSERT INTO / SELECT ... FROM ... [WHERE col = value [AND ...]] /"
-	" DELETE FROM ... [WHERE col = value [AND ...]]";
+	" DELETE FROM ... [WHERE col = value [AND ...]] / DROP TABLE ...";
 
-/* 明确拒绝的「看似合法」语句关键字（大小写不敏感）。本方言只认上面那四条，
- * 而 DROP/UPDATE 这两条都是**改写结构定义**的语句：在带电机器人上它们会让结构
- * 矩阵与硬件注册表失去一致性（见 RobotStruct::applySql 的契约），不属于
- * 「解析了就能安全执行」的范畴，暂不支持。
+/* 明确拒绝的「看似合法」语句关键字（大小写不敏感）。本方言只认上面那五条，
+ * 而 UPDATE 是**改写结构定义**的语句：在带电机器人上它会让结构矩阵与硬件注册表
+ * 失去一致性（见 RobotStruct::applySql 的契约），不属于「解析了就能安全执行」的
+ * 范畴，暂不支持（等价于「删旧行 + 建新行」，将来可复用 DELETE + INSERT 的设施）。
  *
- * DELETE 已出列（2026-09-23）：它删的是**行**，而行的撤销恰好与热插表共用
- * 同一条「断电 → 撤注册 → 擦行」的逆序路径，落点在 applySql；DROP 删的是
- * **表**，要连带拆掉 MetaProvider/守护登记并面对「表撤销后同名重建」的新
- * 语义面，故仍在册。UPDATE 等价于「删旧行 + 建新行」，同样单独评估。
+ * DELETE（2026-09-23）与 DROP（2026-09-23）都已出列：DELETE 删的是**行**，DROP
+ * 删的是**表**（行 = 表的全部数据行 + 表壳）。两者共用同一条「断电 → 撤注册 → 擦行」
+ * 的逆序路径，落点在 applySql；DROP 额外要把表壳连同该表的元数据提供者/守护登记
+ * 一起撤下，并处理「表撤销后同名重建」的语义面。
  *
- * 为什么要专门认出来：它们不是关键字（词法层落成 NAME），过去的失败形态是
- * "Token name 'drop'"——层级是词元的，读的人（含模型）无法判断这是「语法写错」
+ * 为什么要专门认出来：它不是关键字（词法层落成 NAME），过去的失败形态是
+ * "Token name 'update'"——层级是词元的，读的人（含模型）无法判断这是「语法写错」
  * 还是「方言不支持」，只会改写措辞反复重试。这里给一句含正确用法的拒绝。
  * 判据是**语句首词元**：出现在后续位置的同名标识符（列名/表名/值）不受影响。
- * 将来支持时的落点：EventType 加对应事件 → 此清单逐个摘除（DELETE 即按此路径
+ * 将来支持时的落点：EventType 加对应事件 → 此清单逐个摘除（DELETE/DROP 即按此路径
  * 摘除）→ runSqlCommand 的只读/变更分类扩展；WHERE 设施（WhereClause +
- * nextConditionList）已按共享写成，UPDATE 可直接复用。事务语义警示：两条都改
- * 结构定义，必须走 applySql 式「校验全过才动手」；且 DROP 的 destroy 是物理
- * 断电，回滚 ≠ 复活器件，需与 DELETE 同款的「不可逆但逻辑原子」两段式设计。 */
+ * nextConditionList）已按共享写成，UPDATE 可直接复用。事务语义警示：UPDATE 改
+ * 结构定义，必须走 applySql 式「校验全过才动手」。 */
 bool isUnsupportedStatement(const std::string& name) {
-	return equalWithoutCase(name, "drop") || equalWithoutCase(name, "update");
+	return equalWithoutCase(name, "update");
 }
 
 /* 回显统一大写（ASCII）：既是 SQL 的惯例写法，也让报错文本成为**稳定锚点**——
@@ -328,6 +329,14 @@ Event Parser::next() {
 			Event e;
 			e.type = EventType::DELETE_TABLE;
 			e.del = std::move(eve);
+			return e;
+		}
+		case TokenType::DROP: {
+			DropTableEvent eve;
+			nextDrop(eve);
+			Event e;
+			e.type = EventType::DROP_TABLE;
+			e.drop = std::move(eve);
 			return e;
 		}
 		default:
@@ -488,6 +497,16 @@ void Parser::nextDelete(DeleteTableEvent& eve) {
 		nextConditionList(w);
 		eve.where = std::move(w);
 	}
+	nextEnd();
+}
+
+/* DROP：`DROP TABLE t`。语法比 DELETE 更简（无 FROM、**无 WHERE**）：DROP 是 DDL，
+ * 作用于整张表；WHERE 是 DML 的行级筛选，加在这里会「长得像在筛行、实际却整表删」。
+ * 尾随的额外词元（含误写的 WHERE）由 nextEnd 以词元级报错兜住，自带行列定位。 */
+void Parser::nextDrop(DropTableEvent& eve) {
+	expectType(TokenType::TABLE);
+	Token name = expectType(TokenType::NAME);
+	eve.targetTabName = name.name;
 	nextEnd();
 }
 

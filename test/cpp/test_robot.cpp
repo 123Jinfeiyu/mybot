@@ -1354,7 +1354,7 @@ TH_TEST(robot_hot_sql_rejects_an_empty_batch_and_an_inactive_robot) {
 
 	robot.active();
 	const std::string readOnly = hotSqlError(robot, "SELECT * FROM LifetimeProbe;\n");
-	TH_CHECK(readOnly.find("没有任何 CREATE/INSERT/DELETE 变更") != std::string::npos);
+	TH_CHECK(readOnly.find("没有任何 CREATE/INSERT/DELETE/DROP 变更") != std::string::npos);
 	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 2);
 	robot.deactivate();
 }
@@ -1385,14 +1385,15 @@ TH_TEST(robot_hot_sql_keeps_element_references_stable_across_appends) {
 	robot.deactivate();
 }
 
-/* DROP/DELETE/UPDATE（2026-09-23）：删除或改写结构的语句一律明确拒绝，且
- * **整批在解析期就失败**——混在合法 INSERT 后面的 DROP 不能让前半句先生效。
+/* UPDATE（2026-09-23）：改写结构的语句一律明确拒绝，且**整批在解析期就失败**
+ * ——混在合法 INSERT 后面的 UPDATE 不能让前半句先生效。
  * 报错文本是语句级的「Unsupported statement …」（旧形态是词元级 "Token name
- * 'drop'"，读的人无从判断是语法错还是方言不支持）。
- * DELETE 曾在此列，2026-09-23 热删除落地后出列（见下方 robot_hot_delete_* 组）。 */
+ * 'update'"，读的人无从判断是语法错还是方言不支持）。
+ * DROP/DELETE 曾在此列，2026-09-23 热删除与整表撤下先后落地后均已出列
+ * （见下方 robot_hot_delete_* / robot_hot_drop_* 组）。 */
 TH_TEST(robot_hot_sql_rejects_rewriting_statements) {
 	ModulePathGuard guard("modules:test/cpp");
-	TempDir tmp("hot-sql-drop");
+	TempDir tmp("hot-sql-update");
 	const fs::path marker = tmp.path() / "destroyed";
 
 	bot::MemoryReader sr(probeSql(marker));
@@ -1402,16 +1403,14 @@ TH_TEST(robot_hot_sql_rejects_rewriting_statements) {
 	const std::size_t namesBefore = robot.registry().byName().size();
 	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "LifetimeProbe")->rows();
 
-	TH_CHECK(hotSqlError(robot, "DROP TABLE LifetimeProbe;\n")
-		.find("Unsupported statement DROP") != std::string::npos);
 	TH_CHECK(hotSqlError(robot, "UPDATE LifetimeProbe SET path = 'x';\n")
 		.find("Unsupported statement UPDATE") != std::string::npos);
 
 	/* 混合批次：合法的前半句也不得生效（解析先于任何装配/上电） */
 	const std::string mixed = hotSqlError(robot,
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p9', 'x');\n"
-		"DROP TABLE LifetimeProbe;\n");
-	TH_CHECK(mixed.find("Unsupported statement DROP") != std::string::npos);
+		"UPDATE LifetimeProbe SET path = 'y';\n");
+	TH_CHECK(mixed.find("Unsupported statement UPDATE") != std::string::npos);
 	TH_CHECK(!robot.declaresVariable("p9"));
 
 	/* 活体一字未动：表数/注册表/行数都还是批次前的值 */
@@ -1803,3 +1802,261 @@ TH_TEST(robot_hot_delete_mixes_with_insert_in_one_batch) {
 	robot.deactivate();
 	TH_CHECK(markerOf(newM) == "D");	/* 退出时新增的才断电 */
 }
+
+/* ==================== 整表撤下：DROP TABLE t（2026-09-23）====================
+ * DROP = DELETE 的「全表行」+「摘表壳」两步。因而本组的三条判据与热删除组同构
+ * （真断电 / 四视图自洽 / 拒绝时活体一字未动），另加一条**只有整表撤下才会碰到**
+ * 的不变式：表壳从 matrices_（deque）上 erase 会让其后元素引用失效，存活表的
+ * MetaProvider 必须被重锚定——否则后续 read/destroy 踩悬垂指针。 */
+
+/* 撤整表：该表全部变量当场断电、注册表/销毁序清空、表壳从结构里消失；
+ * 其它表一字不动。已摘除的变量不在销毁序里，deactivate 不得重复断电。 */
+TH_TEST(robot_hot_drop_removes_the_whole_table_and_powers_off_all_rows) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-table");
+	const fs::path m1 = tmp.path() / "d1";
+	const fs::path m2 = tmp.path() / "d2";
+
+	bot::MemoryReader sr(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + m1.string() + "');\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p1', '" + m2.string() + "');\n"
+		"CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+	const std::size_t tablesBefore = robot.matrices().size();
+
+	const std::string msg = robot.applySql("DROP TABLE LifetimeProbe;\n");
+
+	/* 当场断电：两行都落下 'D'，而不是等到 deactivate */
+	TH_CHECK_MSG(markerOf(m1) == "D" && markerOf(m2) == "D",
+		"实际 m1=" + markerOf(m1) + " m2=" + markerOf(m2));
+	/* 表壳消失、变量与名字索引清空；无关的表与变量一字不动 */
+	TH_CHECK(robot.matrices().size() == tablesBefore - 1);
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") == nullptr);
+	TH_CHECK(!robot.registry().contains("p0") && !robot.registry().contains("p1"));
+	TH_CHECK(!robot.declaresVariable("p0"));
+	TH_CHECK(robot.registry().contains("t0"));
+	TH_CHECK(mt::findByName(robot.matrices(), "Timer") != nullptr);
+	/* 摘要如实报出撤下的表名 */
+	TH_CHECK_MSG(msg.find("已撤下表 1 张") != std::string::npos, "实际: " + msg);
+	TH_CHECK_MSG(msg.find("LifetimeProbe") != std::string::npos, "实际: " + msg);
+
+	/* 已摘除的变量不在销毁序里：deactivate 不得重复断电（落痕仍恰好 1 个 'D'） */
+	robot.deactivate();
+	TH_CHECK(markerOf(m1) == "D" && markerOf(m2) == "D");
+}
+
+/* DROP 不带 WHERE（DDL 作用于整张表）：无条件撤下全部行。空表（只有列头）
+ * 撤下也是合法操作——不是「一条都没删到」，故不报错。 */
+TH_TEST(robot_hot_drop_is_unconditional_and_allows_an_empty_table) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-uncond");
+	const fs::path m1 = tmp.path() / "d1";
+	const fs::path m2 = tmp.path() / "d2";
+
+	bot::MemoryReader sr(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + m1.string() + "');\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p1', '" + m2.string() + "');\n"
+		/* Timer 只有列头，没有任何数据行——撤它必须照样成功 */
+		"CREATE TABLE Timer (name String);\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+
+	/* 空表：无条件撤下成功（不是 "no row matches" 之列） */
+	const std::string emptyMsg = robot.applySql("DROP TABLE Timer;\n");
+	TH_CHECK_MSG(emptyMsg.find("已撤下表 1 张") != std::string::npos, "实际: " + emptyMsg);
+	TH_CHECK(mt::findByName(robot.matrices(), "Timer") == nullptr);
+
+	/* 有数据的表：整表两行都当场断电 */
+	const std::string msg = robot.applySql("DROP TABLE LifetimeProbe;\n");
+	TH_CHECK_MSG(msg.find("已撤下表 1 张") != std::string::npos, "实际: " + msg);
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") == nullptr);
+	TH_CHECK(robot.registry().byName().empty());
+	TH_CHECK(markerOf(m1) == "D" && markerOf(m2) == "D");
+
+	robot.deactivate();
+}
+
+/* WHERE 不是 DROP 的语法：误写 WHERE 在解析期就被词元级报错拒绝，
+ * 活体一字未动（这是「DDL 不筛行」的守门）。 */
+TH_TEST(robot_hot_drop_rejects_a_where_clause) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-where");
+	const fs::path marker = tmp.path() / "probe";
+
+	bot::MemoryReader sr(probeSql(marker));
+	bot::RobotStruct robot(sr);
+	robot.active();
+
+	const std::string err = hotSqlError(robot, "DROP TABLE LifetimeProbe WHERE name = 'p0';\n");
+	TH_CHECK_MSG(err.find("Token WHERE") != std::string::npos, "实际: " + err);
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") != nullptr);
+	TH_CHECK(robot.registry().contains("p0"));
+	TH_CHECK(markerOf(marker).empty());
+
+	robot.deactivate();
+}
+
+/* 引用完整性：撤表会带走该表全部变量，故别的表若仍引用它们必须拒绝
+ * （与 DELETE 同一条防线，报错点名「哪张表哪一行的哪一列引用了它」）。 */
+TH_TEST(robot_hot_drop_rejects_a_variable_still_referenced_by_another_table) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-ref");
+	const fs::path mp = tmp.path() / "probe";
+
+	bot::MemoryReader sr(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + mp.string() + "');\n"
+		"CREATE TABLE dummy (name String, controller String);\n"
+		"INSERT INTO dummy (name, controller) VALUES ('dm', 'p0');\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+
+	const std::string err = hotSqlError(robot, "DROP TABLE LifetimeProbe;\n");
+	TH_CHECK_MSG(err.find("热删除被拒绝") != std::string::npos, "实际: " + err);
+	/* 活体一字未动：表在、变量在、器件未断电 */
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") != nullptr);
+	TH_CHECK(robot.registry().contains("p0"));
+	TH_CHECK(markerOf(mp).empty());
+
+	robot.deactivate();
+}
+
+/* **整表撤下独有的不变式**：erase 表壳会让其后元素引用失效，存活表的
+ * MetaProvider 必须被重锚定——否则读取存活变量的元数据会踩悬垂指针。
+ * 夹具刻意把被撤的表放在 survive 表**之前**（它后面的元素才受 erase 影响），
+ * 然后读存活变量的元数据：重锚定正确则返回 result=OK，悬垂则读到错位内容或崩。
+ * （悬垂的最强证据在 sanitizer 构建：gate:sanitizer / gate:tsan。） */
+TH_TEST(robot_hot_drop_rebases_meta_providers_of_surviving_tables) {
+	ModulePathGuard guard("modules:test/cpp:modules");
+	TempDir tmp("hot-drop-rebase");
+	const fs::path marker = tmp.path() / "probe";
+
+	/* dummy 在前（将被撤）、LifetimeProbe 在后（存活，其 provider 必须重锚定） */
+	bot::MemoryReader sr(
+		"CREATE TABLE dummy (name String);\n"
+		"INSERT INTO dummy (name) VALUES ('dm');\n"
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + marker.string() + "');\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+
+	robot.applySql("DROP TABLE dummy;\n");
+	TH_CHECK(mt::findByName(robot.matrices(), "dummy") == nullptr);
+	TH_CHECK(robot.registry().contains("p0"));
+
+	/* 读存活变量的元数据：走存活表（已被 rebase）的 MetaProvider */
+	bot::MatrixVars_Hardware* p0 = robot.registry().find("p0");
+	TH_CHECK(p0 != nullptr);
+	bot::Json md = p0->read();
+	TH_CHECK_MSG(md.isObj(), "存活变量读回应是结果表");
+	if (md.isObj()) {
+		const auto r = md.get("result");
+		TH_CHECK_MSG(r.has_value() && r->getValue() == "OK",
+			"存活变量读回 result 应为 OK");
+	}
+
+	robot.deactivate();
+	TH_CHECK(markerOf(marker) == "D");	/* 存活表的器件照常断电 */
+}
+
+/* 同一批次内先 CREATE 再 DROP：整表从未装配、从未上电，最终什么都不长出来。 */
+TH_TEST(robot_hot_drop_of_a_table_created_in_the_same_batch_leaves_nothing) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-same-batch");
+	const fs::path marker = tmp.path() / "probe";
+
+	bot::MemoryReader sr("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+
+	const std::string msg = robot.applySql(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p9', '" + marker.string() + "');\n"
+		"DROP TABLE LifetimeProbe;\n");
+
+	/* 表建了又被撤：一个变量都没长出来，表壳也不在结构里。摘除发生在装配之前，
+	 * 故不是「新增后再删」而是「净效果为空」——摘要里连「新增表」都不出现。 */
+	TH_CHECK_MSG(msg.find("新增硬件变量 0 个") != std::string::npos, "实际: " + msg);
+	TH_CHECK_MSG(msg.find("新增表") == std::string::npos, "实际: " + msg);
+	TH_CHECK(!robot.registry().contains("p9"));
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") == nullptr);
+	/* 从未装配 → 从未 build → 不留断电落痕 */
+	TH_CHECK_MSG(markerOf(marker).empty(), "未装配的表不该有断电落痕: " + markerOf(marker));
+	TH_CHECK(robot.registry().contains("t0"));
+
+	robot.deactivate();
+}
+
+/* 目标表不存在 / 结构脚本里写 DROP：两条都要给人话，且都不碰活体。 */
+TH_TEST(robot_hot_drop_rejects_script_time_and_unknown_table) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-badsql");
+	const fs::path marker = tmp.path() / "probe";
+
+	bot::MemoryReader sr(probeSql(marker));
+	bot::RobotStruct robot(sr);
+	robot.active();
+
+	const std::string unknown = hotSqlError(robot, "DROP TABLE Nope;\n");
+	TH_CHECK_MSG(unknown.find("table is not defined") != std::string::npos, "实际: " + unknown);
+	TH_CHECK(robot.registry().contains("p0"));
+	robot.deactivate();
+
+	/* 启动期（结构脚本）里的 DROP：机器人还没上电，没有可变的结构 */
+	bot::MemoryReader sr2(
+		"CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n"
+		"DROP TABLE Timer;\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "cannot appear in a structure script",
+		bot::RobotStruct(sr2));
+}
+
+/* 未上电即拒：与热插/热删除同一条前置，且必须在任何 destroy 之前失败。 */
+TH_TEST(robot_hot_drop_requires_an_active_robot) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-inactive");
+	const fs::path marker = tmp.path() / "probe";
+
+	bot::MemoryReader sr(probeSql(marker));
+	bot::RobotStruct robot(sr);
+	const std::string err = hotSqlError(robot, "DROP TABLE LifetimeProbe;\n");
+	TH_CHECK_MSG(err.find("需要机器人已上电常驻") != std::string::npos, "实际: " + err);
+	TH_CHECK(markerOf(marker).empty());
+}
+
+/* 撤表后同名重建（DROP 打开的新语义面，见 sqlparse.cpp 的说明）：撤下之后
+ * CREATE 同名表应被允许（表名不再冲突），且装配出的是全新变量。 */
+TH_TEST(robot_hot_drop_allows_recreating_a_table_with_the_same_name) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-drop-recreate");
+	const fs::path m1 = tmp.path() / "d1";
+	const fs::path m2 = tmp.path() / "d2";
+
+	bot::MemoryReader sr(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + m1.string() + "');\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+
+	robot.applySql("DROP TABLE LifetimeProbe;\n");
+	TH_CHECK(!robot.registry().contains("p0"));
+	TH_CHECK(markerOf(m1) == "D");
+
+	/* 同名重建：表名不再冲突，新变量照常装配 */
+	const std::string msg = robot.applySql(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p1', '" + m2.string() + "');\n");
+	TH_CHECK_MSG(msg.find("新增表 1 张") != std::string::npos, "实际: " + msg);
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") != nullptr);
+	TH_CHECK(robot.registry().contains("p1"));
+	TH_CHECK(markerOf(m2).empty());	/* 新器件带电常驻 */
+
+	robot.deactivate();
+	TH_CHECK(markerOf(m2) == "D");
+}
+

@@ -662,13 +662,11 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK(runSqlCommand("INSERT INTO Nope (name) VALUES ('x');", *robot).find("错误: ") == 0);
 	TH_CHECK(runSqlCommand("", *robot).find("错误: ") == 0);
 
-	/* DROP/UPDATE（2026-09-23）：**改写结构定义**的语句在解析期就被明确拒绝
-	 * （语句级「Unsupported statement …」，不是词元级的 "Token name 'drop'"）。
-	 * DELETE 曾在此列，热删除落地后出列——它的分派与断电语义由 test_robot.cpp
-	 * 的 robot_hot_delete_* 组守门，这里只钉「不再被解析层拒绝」。 */
-	const std::string drop = runSqlCommand("DROP TABLE Relay;", *robot);
-	TH_CHECK_MSG(drop.find("错误: ") == 0, "实际: " + drop);
-	TH_CHECK_MSG(drop.find("Unsupported statement DROP") != std::string::npos, "实际: " + drop);
+	/* UPDATE（2026-09-23）：**改写结构定义**的语句在解析期就被明确拒绝
+	 * （语句级「Unsupported statement …」，不是词元级的 "Token name 'update'"）。
+	 * DELETE/DROP 曾在此列，先后落地后出列——它们的分派与断电语义由 test_robot.cpp
+	 * 的 robot_hot_delete_* / robot_hot_drop_* 组守门，这里只钉「REPL 分派把
+	 * 它们交给了带电生效路径」。 */
 	TH_CHECK(runSqlCommand("UPDATE Relay SET note = 'x';", *robot).find("Unsupported statement UPDATE")
 		!= std::string::npos);
 	const std::string delOk = runSqlCommand(
@@ -685,15 +683,15 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	/* 工具面同一条判据，且是**参数类失败**：这里只标 paramError（工具层按异常类型
 	 * 给出的判据），派发漏斗据此把回执改成「工具参数错误: …」并置 executed=false
 	 * ——什么都没执行，不谎称"机器人可能停在半途"（SAN-4/SAN-8）。 */
-	AgentToolResult toolDrop = open.execute("apply_sql", parseJson("{\"sql\":\"DROP TABLE Relay;\"}"));
-	TH_CHECK(!toolDrop.ok);
-	TH_CHECK(toolDrop.paramError);
-	TH_CHECK(toolDrop.error.find("Unsupported statement DROP") != std::string::npos);
+	AgentToolResult toolUpd = open.execute("apply_sql", parseJson("{\"sql\":\"UPDATE Relay SET note = 'x';\"}"));
+	TH_CHECK(!toolUpd.ok);
+	TH_CHECK(toolUpd.paramError);
+	TH_CHECK(toolUpd.error.find("Unsupported statement UPDATE") != std::string::npos);
 	TH_CHECK(robot->registry().byName().size() == before);	/* 活体一字未动 */
 
 	/* G2（2026-09-23）：生效成功时工具结果自报**结构化摘要**，供审计对账。
 	 * 判据：summary 非空且与回传文本同源（applySql 的返回）；失败/参数错误不产生
-	 * 摘要（上面 toolDrop 那条 summary 应为空——没生效就没有可对账的生效信息）。 */
+	 * 摘要（上面 toolUpd 那条 summary 应为空——没生效就没有可对账的生效信息）。 */
 	AgentToolResult toolIns = open.execute("apply_sql", parseJson(
 		"{\"sql\":\"INSERT INTO Relay (name, controller, note) VALUES "
 		"('relay10', 'timer-0', 'hot2');\"}"));
@@ -701,7 +699,14 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK_MSG(!toolIns.summary.empty(), "apply_sql 生效成功应自报 summary");
 	TH_CHECK_MSG(toolIns.summary.find("已生效：新增硬件变量 1 个") != std::string::npos,
 		"实际 summary: " + toolIns.summary);
-	TH_CHECK_MSG(toolDrop.summary.empty(), "未生效（参数错误）不应产生 summary");
+	TH_CHECK_MSG(toolUpd.summary.empty(), "未生效（参数错误）不应产生 summary");
+
+	/* DROP（2026-09-23 整表撤下）也走同一条带电生效分派：撤表是破坏性的，
+	 * 故放在最后——它会带走 Relay 表连同 relay0/relay10 两个变量。 */
+	const std::string dropMsg = runSqlCommand("DROP TABLE Relay;", *robot);
+	TH_CHECK_MSG(dropMsg.find("已撤下表 1 张") != std::string::npos, "实际: " + dropMsg);
+	TH_CHECK(!robot->declaresVariable("relay10"));
+	TH_CHECK(mt::findByName(robot->matrices(), "Relay") == nullptr);
 
 	robot->deactivate();
 }
