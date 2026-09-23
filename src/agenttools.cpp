@@ -3,6 +3,7 @@
 /* run_command 的子进程实现已拆至 agent_subprocess（超时/进程组终止/
  * 输出截断/环境清洗），本 TU 只做工具装配。 */
 #include "agent_subprocess.hpp"
+#include "agentaudit.hpp"	/* maskSecretsInText（G1：run_command 回执进模型上下文前遮蔽） */
 #include "agentprompt.hpp"	/* quoteUntrusted（C2：工具结果与系统提示词同一定界单点） */
 
 #include <algorithm>
@@ -668,8 +669,13 @@ static AgentTool makeApplySqlTool(const AgentToolContext& ctx) {
 				throw std::runtime_error("没有常驻机器人实例");
 			}
 			const std::string sql = requireString(args, "sql");
-			/* 回执 = 生效摘要（新增几个变量/几张表/几行，瞬态动作几行） */
-			return {ctx.robot->applySql(sql), "", true};
+			/* 回执 = 生效摘要（新增几个变量/几张表/几行，瞬态动作几行）。
+			 * G2（2026-09-23）：同一份摘要也进 summary 字段落审计——热插是与
+			 * run_command 同级的高危操作，复盘时必须能对账"这次到底改了什么"，
+			 * 而不是只看到一坨 SQL 原文要重跑才知道结果。 */
+			std::string applied = ctx.robot->applySql(sql);
+			return {applied, "", true, "", /* executed= */ true, /* paramError= */ false,
+				/* summary= */ applied};
 		}};
 }
 
@@ -827,7 +833,26 @@ static AgentTool makeRunCommandTool(const AgentToolContext& ctx) {
 			if (timeoutSec < 1) { timeoutSec = 1; }
 			if (timeoutSec > ctx.maxCommandTimeoutSec) { timeoutSec = ctx.maxCommandTimeoutSec; }
 			try {
-				return {formatRunResult(runShell(cmd, timeoutSec)), ""};
+				/* G1（2026-09-23）：回执进模型上下文**之前**过一次 maskSecretsInText。
+				 * 泄漏面：子进程环境已按敏感名清洗（buildCleanEnvp），但**命令自己的
+				 * stdout/stderr 原样透传**——模型让命令执行 env / cat 配置文件 / 打印
+				 * KEY=val 时，密钥可经回执带回上下文，再经同一配置可控的 endpoint
+				 * 外发。命令原文在审计侧已遮蔽（maskToolArgs），唯独这条结果通道漏了。
+				 *
+				 * 为什么遮蔽放这里而不是 formatRunResult 里：formatRunResult 产出的是
+				 *「命令到底输出了什么」的完整回执，审计与排障仍要原始形态；遮蔽是
+				 *「回传模型」这一步的净化，两者源不同、职责不同。
+				 *
+				 * 净化是**有损**的：检测到替换时追加一句提示，让模型意识到结果被
+				 * 净化过、不要据此假定原值（与 AG-4「不谎报状态」同口径——模型
+				 * 以为 stdout 就是这个值，其实是被改过的）。 */
+				std::string r = formatRunResult(runShell(cmd, timeoutSec));
+				std::string masked = maskSecretsInText(r);
+				if (masked != r) {
+					masked += "\n（检测到疑似敏感内容，已替换为 ***；上面的输出已被净化，"
+						"请勿假定其中出现的值就是命令的真实输出）";
+				}
+				return {masked, ""};
 			} catch (const std::exception& e) {
 				return {std::string("命令执行失败: ") + e.what(), ""};
 			}

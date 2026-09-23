@@ -430,6 +430,18 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK(toolDrop.error.find("Unsupported statement DROP") != std::string::npos);
 	TH_CHECK(robot->registry().byName().size() == before + 1);	/* 活体一字未动 */
 
+	/* G2（2026-09-23）：生效成功时工具结果自报**结构化摘要**，供审计对账。
+	 * 判据：summary 非空且与回传文本同源（applySql 的返回）；失败/参数错误不产生
+	 * 摘要（上面 toolDrop 那条 summary 应为空——没生效就没有可对账的生效信息）。 */
+	AgentToolResult toolIns = open.execute("apply_sql", parseJson(
+		"{\"sql\":\"INSERT INTO Relay (name, controller, note) VALUES "
+		"('relay10', 'timer-0', 'hot2');\"}"));
+	TH_CHECK(toolIns.ok);
+	TH_CHECK_MSG(!toolIns.summary.empty(), "apply_sql 生效成功应自报 summary");
+	TH_CHECK_MSG(toolIns.summary.find("已生效：新增硬件变量 1 个") != std::string::npos,
+		"实际 summary: " + toolIns.summary);
+	TH_CHECK_MSG(toolDrop.summary.empty(), "未生效（参数错误）不应产生 summary");
+
 	robot->deactivate();
 }
 
@@ -840,6 +852,30 @@ TH_TEST(agenttools_run_command_basic) {
 
 	std::string noCmd = execText(tools, "run_command", parseJson("{}"));
 	TH_CHECK(noCmd.find("失败") != std::string::npos);
+}
+
+/* G1（2026-09-23）：run_command 的**回执**（stdout/stderr）在进模型上下文前
+ * 必须过一次 maskSecretsInText——子进程环境已清洗，但命令自己打印的 KEY=val
+ * 仍会原样透传；密钥经回执带回上下文再外发是本次审计记录的唯一泄漏面。
+ * 语义：①敏感值不可见（被 *** 替换）；②有替换时追加净化提示；③无敏感值时
+ * 输出逐字节不变（不产生噪音，命令真实输出不被误伤）。 */
+TH_TEST(agenttools_run_command_receipt_masks_secrets) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 命令把 KEY=val 形态写进 stdout——模型执行 env / cat 配置文件的等价形态 */
+	std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo 'BOT4CJ_LLM_KEY=sk-leakthis'\",\"timeout_seconds\":10}"));
+	TH_CHECK(out.find("sk-leakthis") == std::string::npos);
+	TH_CHECK(out.find("=***") != std::string::npos);
+	TH_CHECK(out.find("疑似敏感内容") != std::string::npos);
+
+	/* 无敏感值时输出不被改写（普通命令不产生噪音） */
+	std::string clean = execText(tools, "run_command",
+		parseJson("{\"command\":\"echo harmless-output\",\"timeout_seconds\":10}"));
+	TH_CHECK(clean.find("harmless-output") != std::string::npos);
+	TH_CHECK(clean.find("已替换") == std::string::npos);
 }
 
 TH_TEST(agenttools_run_command_cleans_env) {

@@ -349,3 +349,42 @@ TH_TEST(agentaudit_legacy_tool_filter_still_selects_only_tool_rows) {
 	TH_CHECK(parsed == 3);
 	TH_CHECK_MSG(matched == 1, "老过滤表达式只应命中那一条工具行，实际 " + std::to_string(matched));
 }
+
+/* G2（2026-09-23）：工具自报的生效摘要落进工具行的 summary 字段（apply_sql 等
+ * 热插/高危操作靠它对账"这次到底改了什么"）。只做加法：不给 summary 的老工具
+ * 行不出现该键，既有消费方逐字节不变。 */
+TH_TEST(agentaudit_tool_summary_is_additive_opt_in) {
+	using namespace bot;
+	using namespace bot::agent;
+	fx::TempDir tmp("audit-summary");
+	const std::string path = (tmp.path() / "audit.jsonl").string();
+	AuditLog log;
+	std::string err;
+	TH_CHECK(log.open(path, err));
+
+	AuditEntry withSummary;
+	withSummary.tool = "apply_sql";
+	withSummary.summary = "已生效：新增硬件变量 1 个，既有表追加 1 行";
+	log.write(withSummary);
+
+	AuditEntry without;
+	without.tool = "list_hardware";
+	log.write(without);
+
+	std::istringstream ss(slurp(path));
+	std::string line;
+	int idx = 0;
+	while (std::getline(ss, line)) {
+		if (line.empty()) { continue; }
+		Json d = parseJson(line);
+		if (idx == 0) {
+			const Json* s = d.find("summary");
+			TH_CHECK_MSG(s != nullptr && s->isStr(), "apply_sql 行应带 summary");
+			TH_CHECK(s->getValue().find("已生效") != std::string::npos);
+		} else {
+			TH_CHECK_MSG(d.find("summary") == nullptr, "无摘要的工具行不应出现 summary 键");
+		}
+		++idx;
+	}
+	TH_CHECK(idx == 2);
+}

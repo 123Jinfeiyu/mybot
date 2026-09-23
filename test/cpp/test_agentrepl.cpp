@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "agentmode.hpp"
+#include "jsonparse.hpp"	/* parseJson（G3：核对审计落盘的 session 记录） */
 #include "robot.hpp"	/* RobotStruct 完整类型（MemoryReader 就地装配） */
 
 namespace fs = std::filesystem;
@@ -318,4 +319,55 @@ TH_TEST(agentrepl_status_shows_unlimited_and_disabled_audit_honestly) {
 		"预算不限时不应显示 0 / 0: " + text);
 
 	robot.deactivate();
+}
+
+/* G3（2026-09-23）：一次性任务的**非标准异常**退出也要留一条会话结束记录。
+ * 失效形态：catch(...) 分支原先直接 return 1，于是「任务因 Lua 错误结束」的
+ * 会话在审计里连一条 session 记录都没有——正是 SAN-9 要消除的形态，只因上面
+ * 那条 std::exception 分支修过、这条遗漏。
+ * 这里用一个抛 int（非 std::exception）的传输复现该路径：runTurn 已先写 start、
+ * 再抛；外壳的 catch(...) 必须补写一条 status=error 的 end。 */
+TH_TEST(agentrepl_oneshot_nonstd_exception_still_writes_session_end) {
+	class NonStdThrowTransport : public ChatTransport {
+	public:
+		ChatResponse complete(const std::vector<ChatMessage>&, const std::vector<ToolSpec>&) override {
+			throw 42;	/* 非 std::exception：走 runAgentMode 的 catch(...) */
+		}
+	};
+	NonStdThrowTransport transport;
+
+	fx::TempDir tmp("repl-audit");
+	const fs::path auditPath = tmp.path() / "audit.jsonl";
+
+	AgentModeConfig cfg;
+	cfg.structurePath = "robots/relay-test.sql";
+	cfg.scriptsDir = "scripts";
+	cfg.task = "让机器人做点什么";	/* 非空 = 一次性任务路径 */
+	cfg.verbose = false;
+	cfg.audit = std::make_shared<bot::agent::AuditLog>();
+	std::string err;
+	TH_CHECK_MSG(cfg.audit->open(auditPath.string(), err), err);
+
+	MAKE_ROBOT();
+	std::istringstream in;
+	std::ostringstream out, log;
+	TH_CHECK(runAgentMode(cfg, robot, transport, in, out, log) == 1);
+
+	std::ifstream f(auditPath);
+	std::ostringstream ss;
+	ss << f.rdbuf();
+	bool sawSession = false, sawErrorEnd = false;
+	std::istringstream lines(ss.str());
+	std::string line;
+	while (std::getline(lines, line)) {
+		if (line.empty()) { continue; }
+		const Json d = parseJson(line);
+		const Json* kind = d.find("kind");
+		if (kind == nullptr || kind->getValue() != "session") { continue; }
+		sawSession = true;
+		const Json* st = d.find("status");
+		if (st != nullptr && st->getValue() == "error") { sawErrorEnd = true; }
+	}
+	TH_CHECK_MSG(sawSession, "应有 session 记录: " + ss.str());
+	TH_CHECK_MSG(sawErrorEnd, "非标准异常退出应落 status=error 的会话结束记录: " + ss.str());
 }

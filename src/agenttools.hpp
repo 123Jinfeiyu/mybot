@@ -52,14 +52,21 @@ struct AgentToolResult {
 	 * 派发漏斗据此把回执改成「工具参数错误: …」并把 executed 置 false——
 	 * 模型看到的应当是"没执行、参数不对"，而不是"脚本执行失败、机器人可能停在半途"。 */
 	bool paramError = false;
+	/* G2（2026-09-23）：供审计对账的结构化**生效摘要**（与回传模型的 text 相对）：
+	 * text 是给模型的自然语言回执，审计此前只能看到其中的 args（apply_sql 的
+	 * SQL 原文）与 ok/error，复盘"这次热插到底改了什么"要重跑才能知道。
+	 * summary 承载工具自己构造的机器可读生效信息，**原样进审计**（如 apply_sql
+	 * 新增几张表/几个变量/几行、瞬态动作几行）。只做**加法**：老工具留空，
+	 * 既有审计 schema 逐字节不变。 */
+	std::string summary;
 	/* 带构造函数（非聚合）：存量代码大量使用两字段初始化 {text, img}，聚合
 	 * 形态下它们会触发 -Wmissing-field-initializers（本仓库 -Wall -Wextra
 	 * 零告警基线）；构造函数让两字段形态显式表示「ok=true 缺省」。 */
 	AgentToolResult() = default;
 	AgentToolResult(std::string t, std::string img, bool ok_ = true, std::string err_ = "",
-			bool executed_ = true, bool paramError_ = false)
+			bool executed_ = true, bool paramError_ = false, std::string summary_ = "")
 		: text(std::move(t)), imageDataUrl(std::move(img)), ok(ok_), error(std::move(err_)),
-		  executed(executed_), paramError(paramError_) {}
+		  executed(executed_), paramError(paramError_), summary(std::move(summary_)) {}
 };
 
 /* 一个可被模型调用的工具。execute 返回给模型的内容；抛异常表示工具失败

@@ -86,6 +86,8 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 		e.imageBytes = result.imageDataUrl.size();
 		if (!result.imageDataUrl.empty()) { e.imageFp = fingerprint64(result.imageDataUrl); }
 		if (call.name == "run_command") { e.exitCode = extractExitCode(result.text); }
+		/* G2：工具自报的生效摘要（apply_sql 等）原样进审计，供复盘对账 */
+		e.summary = result.summary;
 		audit_->write(e);
 	}
 	return result;

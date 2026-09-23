@@ -183,6 +183,8 @@ void AuditLog::write(const AuditEntry& e) {
 			line.put("image_fp", JsonString(e.imageFp));
 		}
 		if (e.exitCode.has_value()) { line.put("exit_code", JsonInt(*e.exitCode)); }
+		/* G2：工具自报的生效摘要（apply_sql 等）。加法字段，老行没有。 */
+		if (!e.summary.empty()) { line.put("summary", JsonString(e.summary)); }
 	}
 
 	std::string text = line.toString();

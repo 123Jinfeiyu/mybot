@@ -656,6 +656,12 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 			 * 漏了它就穿透到 runRobotAndCleanup，退出码仍是 1，但报错文案会退化成
 			 * 那句不含任何成因的 "non-standard exception"。 */
 			log << "错误: 非标准异常（Lua 错误或外来抛出）\n";
+			/* G3（2026-09-23）：非标准异常同样要留一条会话结束记录。此前这里
+			 * 直接 return 1，于是「一次性任务因 Lua 错误结束」的会话在审计里
+			 * **一条 session 记录都没有**——正是 SAN-9 要消除的失效形态，只是
+			 * 上面那条 std::exception 分支修了、这条 P1 遗漏（同一函数内两条
+			 * 失败路径的处置必须一致，否则复盘时会以为问题只出在某类异常上）。 */
+			session.writeSessionEnd("error", "非标准异常（Lua 错误或外来抛出）");
 			return 1;
 		}
 	}
