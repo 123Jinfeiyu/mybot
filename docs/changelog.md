@@ -38,6 +38,13 @@
   NAME）；`isUnsupportedStatement` 只剩 `UPDATE`。文档同步 dsl.md（「方言只认四条」→ 五条、
   新增整表撤下安全边界一节）、`apply_sql`/`query_sql` 两个工具描述。
 
+### 2026-09-23 守门检查点同步：`parse_cases` 95 → 96
+
+- `test/run_all_selftest.sh` 的 `parse_cases` 条数检查点在 2026-09-23 那批新增
+  解析用例时**漏改**（检查点停在 95，实际 96），使 pre-push 的守门自检恒为红。
+  本批按 F3-2 契约把检查点同步到实际条数（字段数/去重/收尾引号三项本已通过，
+  只是条数这一项滞后）。纯守门簿记，无行为变化。
+
 ### 2026-09-23 第三个协议驱动 LlmAnthropic（批次 3）
 
 > 守门快照：`luajit test/test_llm_drivers.lua` **215 / 0**（本批新增 30 条

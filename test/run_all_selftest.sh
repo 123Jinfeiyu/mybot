@@ -73,7 +73,7 @@ parse_bad="$(printf '%s\n' "$parse_rows" | grep -vcE "^[[:space:]]*'[^'|]*\|[^'|
 e2e_unterm="$(printf '%s\n' "$e2e_rows" | grep -vcE "'$")"
 parse_unterm="$(printf '%s\n' "$parse_rows" | grep -vcE "'$")"
 [ "$e2e_n" -eq 37 ] || note "e2e_cases 条数变了（$e2e_n != 37）：加/删用例后请同步本检查点"
-[ "$parse_n" -eq 95 ] || note "parse_cases 条数变了（$parse_n != 95）：加/删用例后请同步本检查点"
+[ "$parse_n" -eq 96 ] || note "parse_cases 条数变了（$parse_n != 96）：加/删用例后请同步本检查点"
 [ "$e2e_bad" -eq 0 ] || note "e2e_cases 有 $e2e_bad 条字段数不符（应为 name|浮点模式|最小条数）"
 [ "$parse_bad" -eq 0 ] || note "parse_cases 有 $parse_bad 条字段数不符（应为 sql|mt|期望退出码[|expect[|forbid[|via]]]）"
 [ "$e2e_unterm" -eq 0 ] || note "e2e_cases 有 $e2e_unterm 条未以引号收尾（漏了 ' 会吞掉后续行）"
