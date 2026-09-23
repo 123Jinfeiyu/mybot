@@ -63,6 +63,11 @@ struct CliOptions {
 	 * agentmode.cpp 的 buildAgentConfig 第 7 步）
 	 * （旧行为是缺省提供 + --agent-no-shell 关闭，安全侧默认值反了）。 */
 	bool agentShell = false;	/* --agent-shell：显式开启 run_command */
+	/* 热插表（2026-09-23）：apply_sql 工具让模型用结构 SQL 长出新硬件并**立即
+	 * 上电**（开 fd、进 deactivate 清理链），与 run_command 同级的一张牌——
+	 * 同样缺省不提供、同样只能由命令行 --agent-hot-sql 开启，配置文件的
+	 * allow_hot_sql **只能关不能开**。只读的 query_sql 不受此门控。 */
+	bool agentHotSql = false;	/* --agent-hot-sql：显式开启 apply_sql */
 	std::string llmEndpoint;
 	std::string llmModel;
 	std::string llmConfig;		/* --llm-config：配置文件路径（缺省自动查找） */

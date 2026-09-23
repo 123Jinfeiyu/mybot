@@ -94,6 +94,11 @@ struct LlmFileConfig {
 	std::optional<int> maxTurns;
 	std::optional<std::string> scriptsDir;
 	std::optional<bool> allowShell;
+	/* 热插表（2026-09-23）：apply_sql 会立刻给新硬件上电，与 allow_shell 同判据
+	 * ——解析出来**只为了拒绝它**（只能由命令行 --agent-hot-sql 开启）。之所以
+	 * 仍列进已知字段，是为了给出指名道姓的原因，而不是让人以为是拼写错误
+	 * （与下面的 camera_src_dir 同一处理）。 */
+	std::optional<bool> allowHotSql;
 	/* 提示词包输入清单（每项为文件或目录，语义同 --prompt-file）。空数组按
 	 * 未配置；类型不符（非数组/元素非字符串）报错——拼错形态不能静默失效。 */
 	std::optional<std::vector<std::string>> promptFiles;

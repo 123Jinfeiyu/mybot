@@ -93,6 +93,11 @@ struct AgentToolContext {
 	int commandTimeoutSec = 10;		/* run_command 缺省超时 */
 	int maxCommandTimeoutSec = 60;		/* run_command 超时上限 */
 	bool allowShell = false;		/* true = 注册 run_command（安全阀门，缺省关） */
+	/* 热插表（2026-09-23）：true = 注册 apply_sql（结构 SQL 带电生效）。
+	 * 与 allowShell 同一条门控链（--agent-hot-sql，配置文件不能开）——
+	 * 它同样让「模型的一次回复」直接改变带电的硬件结构。只读的 query_sql
+	 * 无条件注册，不受这里影响。 */
+	bool allowHotSql = false;
 	/* PL-2（2026-09-22）：动作脚本执行预算（秒）。run_action_script 是本工具集里
 	 * **唯一曾无任何上界**的执行路径，而它默认开启；脚本本身是线性矩阵、DSL 无
 	 * 循环，挂死只可能来自 Lua 驱动自己的 call()。>0 = 开启（窗口内关 JIT + 挂
@@ -120,8 +125,9 @@ struct AgentToolContext {
 	std::string cameraSrcRoot;
 };
 
-/* 构造标准工具集：list_action_scripts / run_action_script / list_hardware，
- * （camera 非空时）capture_image，以及（allowShell 时）run_command。 */
+/* 构造标准工具集：list_action_scripts / run_action_script / list_hardware / query_sql，
+ * （camera 非空时）capture_image，（allowHotSql 时）apply_sql，
+ * 以及（allowShell 时）run_command。 */
 AgentToolRegistry makeAgentTools(const AgentToolContext& ctx);
 
 /* ---- 供工具与系统提示词共用的描述函数 ---- */
@@ -140,6 +146,13 @@ std::string describeHardware(RobotStruct& robot);
  *   * CREATE/INSERT —— 只解析回显（语法验证），不落任何状态。
  * 失败返回"错误: …"前缀的人话报错（解析器带行列定位）。 */
 std::string runSqlStatement(const std::string& sql, const RobotStruct& robot);
+
+/* REPL `/sql` 的完整语义（2026-09-23 热插表）：整批都是 SELECT 时走上面的
+ * 只读渲染；只要含 CREATE/INSERT，就交给 RobotStruct::applySql **真正带电生效**
+ * （装配 + 上电，失败全回滚），返回其生效摘要。
+ * 与 query_sql 的分工是刻意的：模型那条路只读（工具一旦能改结构，就绕过了
+ * 确认与审计面），这条路是操作者本人坐在终端上敲的。失败同样返回"错误: …"。 */
+std::string runSqlCommand(const std::string& sql, RobotStruct& robot);
 
 /* 动作脚本路径解析：请求必须是 scriptsDir 之下的相对路径。
  * 拒绝绝对路径、空段、"."/".."、以及含 NUL 的名字（NUL 会让

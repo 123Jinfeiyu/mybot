@@ -22,7 +22,7 @@ namespace bot {
 /* ==================== ScriptLoader：SQL/矩阵 文本 → MatrixObject ==================== */
 
 /* ---- SQL4cj → MatrixObject 结构表解析 ---- */
-void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out) {
+void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out) {
 	std::vector<sql4cj::Token> tokens = sql4cj::Lexer::parseAll(input);
 	sql4cj::Parser parser(tokens);
 	for (;;) {
@@ -101,12 +101,12 @@ void ScriptLoader::readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& ou
  * 两者共用一条注册路径：结构期重名即抛；动作脚本内重名报错、@Alias 同名覆盖结构定义，
  * @Vars 则拒绝覆盖（见 session 分支内的防线注释）。 */
 void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session,
-		ScalarKind kind) {
+		ScalarKind kind, std::int64_t fromRow) {
 	const char* label = (kind == ScalarKind::Alias) ? "Alias" : "Vars";
 	/* 重复报错沿用「Duplicate alias name」既有措辞（有负值回归守门），Vars 用自身名 */
 	const char* dupLabel = (kind == ScalarKind::Alias) ? "alias" : "Vars";
 	std::int64_t idxName = matrix.requireCol(0, "name", std::string(label) + " matrix");
-	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
+	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		std::unique_ptr<MatrixVars_Hardware> var;
 		if (kind == ScalarKind::Alias) {
@@ -214,7 +214,7 @@ std::string optCol(const mt::MatrixObject& m, std::int64_t row, const char* col)
 
 } // namespace
 
-void HwFactory::checkSingleConsumer(const std::vector<mt::MatrixObject>& matrices) {
+void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices) {
 	/* ---- 1) 总线名 → 设备路径（I2C/SPI/UART 表的 name/path 列）---- */
 	std::map<std::string, std::string> busPath;
 	for (const auto& m : matrices) {
@@ -341,7 +341,7 @@ void HwFactory::checkSingleConsumer(const std::vector<mt::MatrixObject>& matrice
  * /dev/ttyS0 这类符号链接别名无法在结构期归一，宁可漏告（与
  * normalizeAddress「宁漏不误」同取向）。只告警不拒绝——同配置轮询下
  * 实际可用，引用计数/共享 fd 属破坏性决策（fix-plan F6）。 */
-void HwFactory::warnSharedUartPaths(const std::vector<mt::MatrixObject>& matrices) {
+void HwFactory::warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices) {
 	std::map<std::string, std::vector<std::string>> users;	/* path -> 消费者定位串 */
 	for (const auto& m : matrices) {
 		const std::string t = m.getName();
@@ -386,24 +386,35 @@ void HwFactory::warnSharedUartPaths(const std::vector<mt::MatrixObject>& matrice
 }
 
 /* ---- 全部硬变量创建：声明序，Alias/Lua/Daemon 分派 ---- */
-void HwFactory::createHardVars(const std::vector<mt::MatrixObject>& matrices) {
+void HwFactory::createHardVars(const std::deque<mt::MatrixObject>& matrices) {
 	/* 装配前先做单消费者判据：此时还没申请任何资源（Lua 状态/共享槽/总线句柄），
 	 * 报错即干净退出，不会留下半装配的机器人。 */
 	checkSingleConsumer(matrices);
 	warnSharedUartPaths(matrices);	/* F5-4：同物理串口多独立 fd 告警（不改变行为） */
-	for (const auto& matrix : matrices) {
-		std::string mtName = matrix.getName();
-		if (mtName == "Alias") { registerAliasMatrix(matrix, nullptr); }
-		else if (mtName == "Vars") { registerVarsMatrix(matrix, nullptr); }
-		else if (mtName == "Action") { /* 结构期 Action 由 MR 动作脚本提供 */ }
-		else if (mtName == "Daemon") { createDaemonVars(matrix, mtName); }
-		else if (matrix.rows() > 0) { createLuaVars(matrix, mtName); }
-	}
+	for (const auto& matrix : matrices) { createHardVarsFrom(matrix, 1); }
 }
 
-void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName) {
+/* 全结构判据入口：与 createHardVars 内部调用的两个判据同一实现（单一事实源）。
+ * 热插表事务在提交前对「提交之后的结构视图」调用它——见头文件契约。 */
+void HwFactory::precheckStructure(const std::deque<mt::MatrixObject>& matrices) {
+	checkSingleConsumer(matrices);
+	warnSharedUartPaths(matrices);
+}
+
+/* 单矩阵增量装配：全量装配的唯一下沉点（见头文件契约）。 */
+void HwFactory::createHardVarsFrom(const mt::MatrixObject& matrix, std::int64_t fromRow) {
+	std::string mtName = matrix.getName();
+	if (mtName == "Alias") { registerScalarMatrix(matrix, nullptr, ScalarKind::Alias, fromRow); }
+	else if (mtName == "Vars") { registerScalarMatrix(matrix, nullptr, ScalarKind::Vars, fromRow); }
+	else if (mtName == "Action") { /* 结构期 Action 由 MR 动作脚本提供 */ }
+	else if (mtName == "Daemon") { createDaemonVars(matrix, mtName, fromRow); }
+	else if (matrix.rows() > 0) { createLuaVars(matrix, mtName, fromRow); }
+}
+
+void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName,
+		std::int64_t fromRow) {
 	std::int64_t idxName = matrix.requireCol(0, "name", "Table");
-	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
+	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
 		registry_.add(name, MtVars_Daemon::Factory(matrix, i, daemonHolders_),
@@ -489,11 +500,12 @@ FlowRowRefs parseFlowRow(const mt::MatrixObject& matrix, std::int64_t i, const s
 	return out;
 }
 
-void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName) {
+void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName,
+		std::int64_t fromRow) {
 	std::int64_t idxName = matrix.requireCol(0, "name", "Table");
 	std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
 	std::string scriptPath = firstExistingModule(modulePath, mtName + ".lua");
-	for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
+	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		std::string name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
 		FlowRowRefs flow = parseFlowRow(matrix, i, name, mtName, registry_);

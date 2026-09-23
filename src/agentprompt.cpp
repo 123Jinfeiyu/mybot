@@ -88,6 +88,11 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 	if (cfg.allowShell) {
 		p += "- run_command 适合查看系统状态、日志与设备节点；驱动硬件请用 run_action_script。\n";
 	}
+	if (cfg.allowHotSql) {
+		p += "- 需要给机器人**增加**硬件时用 apply_sql：CREATE TABLE 建表 + INSERT INTO 插行，"
+			"新器件立即上电；驱动脚本必须已存在于 modules/ 下（表名即模块名），"
+			"错则整批回滚、不留半成品。对照/查询请用 query_sql。\n";
+	}
 	p += "- 用中文回答，结论简洁并说明依据。\n";
 
 	/* 提示词包追加在内置段落之后（robot_agent 同款语义）：内置部分只讲机器人

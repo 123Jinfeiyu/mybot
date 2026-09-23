@@ -937,7 +937,7 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
-# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，七个场景（含 5b：配置文件来源的 camera_src 必须被拒）。
+# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，十六个场景（含 5b：配置文件来源的 camera_src 必须被拒；14/14b：--agent-hot-sql 的带电生效与「缺开关即无此工具」对照）。
 #   1) 默认协议驱动（LlmOpenAI）：工具循环真的迭代、动作脚本在**常驻**机器人上
 #      被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；
 #   2) --llm-driver LlmDeepSeek：断言 thinking / 不发 temperature /

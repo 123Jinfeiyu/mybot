@@ -14,6 +14,8 @@
 用法: python3 scripts/fake_llm_server.py <port> [capture_file] [mode] [headers_file]
       mode: ok（默认） | slow（睡 5 秒再答，用于验证 --llm-timeout 真的生效）
             | camera（先要求拍一张照片，再给最终回答——验证图片真的进了上下文）
+            | hotsql（先要求 apply_sql 往既有表 INSERT 一行，再列硬件——验证结构
+              SQL 真的带电生效；缺 --agent-hot-sql 时同一条剧本只剩「未知工具」）
             | manycalls[:N]（首轮返回 N 条工具调用，缺省 3；配合
               max_calls_per_round=2 触发宿主的单轮截断分支——SAN-1）
             | 429x2ok（前两次 429 + Retry-After: 1，第三次正常回答——SAN-3：
@@ -289,6 +291,22 @@ class Handler(BaseHTTPRequestHandler):
         if MODE == "camera":
             if tool_results == 0:
                 self._reply(tool_call("capture_image", {}))
+            else:
+                self._reply(final_answer())
+            return
+
+        # ---- 热插表（2026-09-23）：结构 SQL 带电生效 ----
+        # 第一轮要求 apply_sql 往既有表 INSERT 一行（新硬件变量会立即装配并上电），
+        # 第二轮列硬件——新变量必须在回执里出现，这才叫"真的长了硬件"。
+        # 同一条剧本在没有 --agent-hot-sql 时是反向判据：工具没注册，模型那次调用
+        # 只会拿到「未知工具」，硬件清单不变。
+        if MODE == "hotsql":
+            if tool_results == 0:
+                self._reply(tool_call("apply_sql", {"sql":
+                    "INSERT INTO Relay (name, controller, note) "
+                    "VALUES ('relay-hot', 'timer-0', 'hot');"}))
+            elif tool_results == 1:
+                self._reply(tool_call("list_hardware", {}))
             else:
                 self._reply(final_answer())
             return

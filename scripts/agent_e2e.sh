@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 十四个场景：
+# 十六个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -32,6 +32,9 @@
 #      点名 429 + 退避采用服务端 Retry-After；恒 503 则重试用尽后如实失败。
 #  12) 宿主的动作回显不得污染 stdout（SAN-5）——stdout 只有模型回答，回显走 stderr。
 #  13) 取消走的是「优雅退出」而不是被信号打死（SAN-7）——中断后 deactivate 链仍执行。
+#  14) --agent-hot-sql（2026-09-23 热插表）——模型经 apply_sql 给**带电常驻**的机器人
+#      追加硬件行：INSERT 后立即装配并上电，下一轮 list_hardware 的回执里必须出现
+#      新变量。14b 是对照：缺该开关时工具不在表内（回执点名「未知工具」、零变更）。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -735,6 +738,59 @@ if [ -f "/tmp/mybot-cancel-$BOTPID" ]; then
 else
 	echo "  [OK] 取消哨兵已清理（优雅退出路径上的清理确实执行了）"
 fi
+
+# ============ 场景 14：--agent-hot-sql（结构 SQL 带电生效） ============
+# 覆盖的是**接线**：applySql 的事务语义（生效/回滚/拒绝）已由 C++ 单测逐条钉住，
+# 这里钉的是端到端那条链——「模型 → 工具派发 → 真机长出新硬件 → 回执列出它」，
+# 中间少传一个门控字段或回执吞掉结果，两端单测都照样绿。
+echo "----- 场景 14：--agent-hot-sql 结构 SQL 带电生效 -----"
+PORT=$((24700 + RANDOM % 300))
+CAP14="$tmp/req-hotsql.json"
+start_server "$PORT" "$CAP14" hotsql || exit 1
+out14="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--agent-hot-sql --llm-config none --scripts-dir scripts \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--task "给机器人加一路继电器" 2>&1)"
+rc14=$?
+stop_server
+echo "$out14"
+if [ "$rc14" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc14"
+	fail=1
+fi
+check "$out14" "AGENT-E2E-完成" "热插之后工具循环仍能收尾"
+check "$out14" "已生效：新增硬件变量 1 个" "apply_sql 回执给出了生效摘要"
+check "$out14" "relay-hot" "新硬件变量真的注册，并出现在后续 list_hardware 回执里"
+check_json "$CAP14" "'apply_sql' in {t['function']['name'] for t in d.get('tools',[])}" \
+	"--agent-hot-sql 时 apply_sql 出现在工具定义里"
+
+# ============ 场景 14b：缺 --agent-hot-sql 时 apply_sql 不可用 ============
+# 同一条剧本（模型照样要求 apply_sql）的反向判据：工具没注册 ⇒ 回执是「未知工具」，
+# 且硬件清单与结构都不变。这是「只能命令行开」这条门控在模型面上的表现——
+# 配置文件的 allow_hot_sql 连加载都过不去，由 C++ 单测与 hardening 段各自钉住。
+echo "----- 场景 14b：缺 --agent-hot-sql 时 apply_sql 不可用 -----"
+CAP14B="$tmp/req-hotsql-off.json"
+start_server "$PORT" "$CAP14B" hotsql || exit 1	# 复用场景 14 的端口（其服务已停）
+out14b="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--task "给机器人加一路继电器" 2>&1)"
+rc14b=$?
+stop_server
+echo "$out14b"
+if [ "$rc14b" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc14b"
+	fail=1
+fi
+check "$out14b" "未知工具" "缺开关时 apply_sql 不在工具表内（回执点名未知工具）"
+if echo "$out14b" | grep -qF "已生效："; then
+	echo "  [FAIL] 缺开关时不该有任何硬件变更生效"
+	fail=1
+else
+	echo "  [OK] 缺开关时零硬件变更（没有生效摘要）"
+fi
+check "$out14b" "AGENT-E2E-完成" "未知工具之后循环照常收尾（不是会话事故）"
+check_json "$CAP14B" "'apply_sql' not in {t['function']['name'] for t in d.get('tools',[])}" \
+	"缺开关时线上工具定义里没有 apply_sql"
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

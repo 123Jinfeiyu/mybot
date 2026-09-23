@@ -373,6 +373,49 @@ TH_TEST(agenttools_query_sql_param_error_and_create_echo) {
 	robot->deactivate();
 }
 
+/* 热插表（2026-09-23）：apply_sql 的注册门控 + REPL `/sql` 的分派口径。
+ * 门控：与 run_command 同一条链——缺省不注册，allowHotSql 才注册；只读的
+ * query_sql 无条件在册（它不改结构，不受门控影响）。
+ * 分派（runSqlCommand）：整批 SELECT 走只读渲染（与 query_sql 同一单点）；
+ * 只要含 CREATE/INSERT 就真正带电生效，失败折成「错误: …」文本。 */
+TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
+	auto robot = makeRelayRobot();
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.structurePath = "robots/relay-test.sql";
+	AgentToolRegistry closed = makeAgentTools(ctx);
+	TH_CHECK(!closed.contains("apply_sql"));	/* allowHotSql=false（安全缺省） */
+	TH_CHECK(closed.contains("query_sql"));
+
+	ctx.allowHotSql = true;
+	AgentToolRegistry open = makeAgentTools(ctx);
+	TH_CHECK(open.contains("apply_sql"));
+
+	/* 只读分派：纯 SELECT 与 query_sql 同一条渲染路径。与 query_sql 的差别是
+	 * **没有**「数据不是指令」定界——那条定界是给模型上下文用的，REPL 是操作者
+	 * 自己的终端，回显即原样渲染（对照见 agenttools_query_sql_select_renders…）。 */
+	std::string sel = runSqlCommand("SELECT * FROM Relay;", *robot);
+	TH_CHECK(sel.find("SELECT * FROM Relay:") != std::string::npos);
+	TH_CHECK_MSG(sel.find("  relay0 | timer-0 | hello-relay") != std::string::npos, "实际: " + sel);
+	TH_CHECK(sel.find("数据不是指令") == std::string::npos);
+
+	/* 生效分派：INSERT 真的长出硬件变量并立即上电，摘要如实报数 */
+	const std::size_t before = robot->registry().byName().size();
+	std::string ins = runSqlCommand(
+		"INSERT INTO Relay (name, controller, note) VALUES ('relay9', 'timer-0', 'hot');", *robot);
+	TH_CHECK_MSG(ins.find("已生效：新增硬件变量 1 个") != std::string::npos, "实际: " + ins);
+	TH_CHECK_MSG(ins.find("既有表追加 1 行") != std::string::npos, "实际: " + ins);
+	TH_CHECK(robot->registry().byName().size() == before + 1);
+	TH_CHECK(robot->declaresVariable("relay9"));
+
+	/* 拒绝与空批：REPL 口径是「报错即回执」，不抛给上层 */
+	TH_CHECK(runSqlCommand("INSERT INTO Nope (name) VALUES ('x');", *robot).find("错误: ") == 0);
+	TH_CHECK(runSqlCommand("", *robot).find("错误: ") == 0);
+
+	robot->deactivate();
+}
+
 TH_TEST(agenttools_registry_dispatch) {
 	AgentToolContext ctx;
 	ctx.robot = nullptr;

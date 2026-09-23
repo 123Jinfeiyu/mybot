@@ -522,6 +522,32 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 	}
 }
 
+std::string runSqlCommand(const std::string& sql, RobotStruct& robot) {
+	/* 先只判「整批有没有变更语句」：解析器保持只产出结构事件的最小职责，
+	 * 这里也就只读事件类型，不落任何状态。
+	 * 判据是「全部 SELECT 才走只读渲染」——混排批次里的 CREATE/INSERT 必须
+	 * 被看见，否则 /sql SELECT...; INSERT... 会静默丢掉后半句。 */
+	bool any = false;
+	bool allSelect = true;
+	try {
+		bot::MemoryReader sr(sql);
+		for (const sql4cj::Event& ev : sql4cj::Parser::parseAll(sql4cj::Lexer::parseAll(sr))) {
+			any = true;
+			if (ev.type != sql4cj::EventType::SELECT_TABLE) { allSelect = false; }
+		}
+	} catch (const std::exception& e) {
+		return std::string("错误: ") + e.what();
+	}
+	if (!any) { return "错误: 空 SQL 语句"; }
+	if (allSelect) { return runSqlStatement(sql, robot); }
+
+	try {
+		return robot.applySql(sql);
+	} catch (const std::exception& e) {
+		return std::string("错误: ") + e.what();
+	}
+}
+
 /* ---- 各工具的装配函数（阶段 3 拆分）：makeAgentTools 只做组装 ---- */
 
 static AgentTool makeListActionScriptsTool(const AgentToolContext& ctx) {
@@ -612,6 +638,38 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 				 * 这个口径必须留给模型（与 SAN-4 的分界一致）。 */
 				return {"动作脚本执行失败 [" + req + "]: " + e.what(), "", false, e.what()};
 			}
+		}};
+}
+
+/* apply_sql：结构 SQL 的**带电变更**（2026-09-23 热插表）。
+ * 与 query_sql 分家是刻意的：只读查询无条件可用（模型天天要用），而改结构
+ * 会长出真正的硬件（开 fd、上电、进 deactivate 清理链），且一旦本批次含
+ * Action 表，动作还会**当场派发一次**——是与 run_command 同级的一张牌，
+ * 故同门控（--agent-hot-sql，配置文件不能开）。
+ * 失败不在这里折文本：RobotStruct::applySql 的事务性（全成功或全回滚）由
+ * 异常类型如实表达——IllegalArgumentException = 校验拒绝、活体一字未动，
+ * 其他 = 提交中途失败已回滚（动作已下发的物理副作用不回退）；派发漏斗
+ * 据此区分「工具参数错误」与「执行失败」口径，这里再造一套只会漂移。 */
+static AgentTool makeApplySqlTool(const AgentToolContext& ctx) {
+	return AgentTool{
+		"apply_sql",
+		"用结构 SQL 改变机器人的硬件结构：CREATE TABLE 建新表 + INSERT INTO 插行，"
+		"立即装配并上电（器件马上可用），任何一步失败则整批回滚（本批次新建的硬件断电）。"
+		"INSERT 的目标可以是本批次新建的表，也可以是系统提示词结构脚本摘录里的既有表。"
+		"表名同时是驱动模块名（modules/<表名>.lua 必须已存在，模型无法凭空造驱动）；"
+		"变量名（name 列）不得与现有变量重复。"
+		"名为 Action 的表是**瞬态**的：插入的行的动作会立即执行一次然后丢弃，不进结构。"
+		"语句以分号结尾，可一次给多条。只想查询（不改任何状态）请用 query_sql。",
+		toolSchema({{"sql", stringParam("结构 SQL，如 CREATE TABLE Timer (name String); "
+			"INSERT INTO Timer (name) VALUES ('timer-9');")}},
+			{"sql"}),
+		[ctx](const Json& args) -> AgentToolResult {
+			if (ctx.robot == nullptr) {
+				throw std::runtime_error("没有常驻机器人实例");
+			}
+			const std::string sql = requireString(args, "sql");
+			/* 回执 = 生效摘要（新增几个变量/几张表/几行，瞬态动作几行） */
+			return {ctx.robot->applySql(sql), "", true};
 		}};
 }
 
@@ -782,6 +840,7 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 	reg.add(makeRunActionScriptTool(ctx));
 	reg.add(makeListHardwareTool(ctx));
 	reg.add(makeQuerySqlTool(ctx));	/* 只读查询/语法校验，无条件注册 */
+	if (ctx.allowHotSql) { reg.add(makeApplySqlTool(ctx)); }
 	if (ctx.camera != nullptr) { reg.add(makeCaptureImageTool(ctx)); }
 	if (ctx.allowShell) { reg.add(makeRunCommandTool(ctx)); }
 	return reg;

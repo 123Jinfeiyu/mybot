@@ -176,6 +176,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"driver", "var", "endpoint", "model", "api_key", "api_key_file",
 		"timeout", "max_tokens", "temperature", "top_p", "max_task_seconds",
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
+		"allow_hot_sql",
 		"prompt_files", "camera_var", "camera_device", "camera_src", "camera_src_dir",
 		"allow_camera", "audit_log", "agent_policy",
 		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
@@ -313,6 +314,7 @@ bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig
 bool parseConfigBools(const std::string& path, const Json& root, LlmFileConfig& out,
 		std::string& err) {
 	if (!wantBool(path, root, "allow_shell", out.allowShell, err)) { return false; }
+	if (!wantBool(path, root, "allow_hot_sql", out.allowHotSql, err)) { return false; }
 	if (!wantStringArray(path, root, "prompt_files", out.promptFiles, err)) { return false; }
 	if (!wantBool(path, root, "allow_camera", out.allowCamera, err)) { return false; }
 	return true;

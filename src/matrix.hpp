@@ -161,6 +161,19 @@ public:
 		values_.push_back(std::move(row));
 		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
 	}
+
+	/* 丢弃尾部 count 行（2026-09-23 热插表）：**只给回滚路径用**。
+	 * 结构表在装配期是只增的（顺序不变式见 RobotStruct::applySql），
+	 * 唯一的删除需求是「热插批次失败 ⇒ 撤销刚追加的 INSERT 行」。
+	 * count 超出行数即调用方算错（回滚记录与提交记录不匹配），响亮报错。 */
+	void popRows(std::size_t count) {
+		if (count > values_.size()) {
+			throw bot::IllegalArgumentException("MatrixObject::popRows(" + std::to_string(count)
+				+ ") exceeds " + std::to_string(values_.size()) + " row(s)");
+		}
+		values_.resize(values_.size() - count);
+		inheritedReady_ = false;
+	}
 };
 
 /* ------------- 解析期增量构建器（R-4）-------------
@@ -225,16 +238,22 @@ public:
  * 在 ActionRunner/mtmerge 各有一份，规则靠注释人工同步——mtmerge 产物一旦
  * 与运行端解释漂移，合成的脚本会被以不同方式解读。 */
 
-/* 按矩阵名查找（trim 后比较）；不存在返回 nullptr */
-inline const MatrixObject* findByName(const std::vector<MatrixObject>& ll,
-		const std::string& name) {
+/* 按矩阵名查找（trim 后比较）；不存在返回 nullptr。
+ * 容器类型模板化（2026-09-23 热插表）：结构期矩阵表由 RobotStruct 以
+ * std::deque 持有（两端插入不失效元素引用，MetaProvider 的 matrix_ 引用于是
+ * 在热插入下仍有效），而 mtmerge/mtinclude/动作脚本路径仍用 std::vector——
+ * 查找规则只此一处，不因容器而分叉。实参为 const 左值时由偏序规则选中
+ * const 重载（`const C&` 比 `C&` 更特化），返回值随之带 const。 */
+template <class Container>
+inline const MatrixObject* findByName(const Container& ll, const std::string& name) {
 	for (const auto& m : ll) {
 		if (bot::trim(m.getName()) == name) { return &m; }
 	}
 	return nullptr;
 }
 
-inline MatrixObject* findByName(std::vector<MatrixObject>& ll, const std::string& name) {
+template <class Container>
+inline MatrixObject* findByName(Container& ll, const std::string& name) {
 	for (auto& m : ll) {
 		if (bot::trim(m.getName()) == name) { return &m; }
 	}

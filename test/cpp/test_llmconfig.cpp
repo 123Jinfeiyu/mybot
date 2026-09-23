@@ -778,6 +778,63 @@ TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 	TH_CHECK(out4.allowShell);
 }
 
+/* 热插表（2026-09-23）：apply_sql 与 run_command 同一条门控链——缺省不注册，
+ * 开启是**命令行独占**的显式选择（--agent-hot-sql），配置文件的 allow_hot_sql
+ * 只能关不能开。判据同上一条：apply_sql 会按模型给的 SQL 立即装配新硬件并给它
+ * 上电（开真机 fd、进断电清理链），而缺省查找会读 CWD 的 ./mybot.llm.json，
+ * 「文件存在」不构成授权。 */
+TH_TEST(agentconfig_hot_sql_is_off_by_default_and_on_by_explicit_flag) {
+	NoKeyEnv nokey;
+	TempDir tmp("hotsql");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({"api_key":"k"})", fs::perms::owner_all);
+
+	/* 1) 缺省：不注册 apply_sql */
+	{
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
+		TH_CHECK(!out.allowHotSql);
+	}
+	/* 2) --agent-hot-sql：注册 */
+	{
+		CliOptions o = baseOptions(cfg.string());
+		o.agentHotSql = true;
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(o, out, err));
+		TH_CHECK(out.allowHotSql);
+	}
+	/* 3) 配置文件写 true → 拒绝加载，报错必须点名字段与正确入口 */
+	{
+		fs::path bad = tmp.path() / "hot.json";
+		writeFile(bad, R"({"api_key":"k","allow_hot_sql":true})", fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(baseOptions(bad.string()), out, err));
+		TH_CHECK_MSG(err.find("allow_hot_sql") != std::string::npos, "报错应点名字段: " + err);
+		TH_CHECK_MSG(err.find("--agent-hot-sql") != std::string::npos, "报错应给出正确入口: " + err);
+	}
+	/* 4) 命令行已授权时，配置里同向写 true 不该报错（授权来自命令行）；
+	 *    写 false 是「只能收紧」，缺省即 false，同样放行 */
+	{
+		fs::path bad = tmp.path() / "hot.json";
+		CliOptions o = baseOptions(bad.string());
+		o.agentHotSql = true;
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(buildAgentConfig(o, out, err));
+		TH_CHECK(out.allowHotSql);
+
+		fs::path off = tmp.path() / "off.json";
+		writeFile(off, R"({"api_key":"k","allow_hot_sql":false})", fs::perms::owner_all);
+		AgentModeConfig out2;
+		std::string err2;
+		TH_CHECK_MSG(buildAgentConfig(baseOptions(off.string()), out2, err2), err2);
+		TH_CHECK(!out2.allowHotSql);
+	}
+}
+
 TH_TEST(agentconfig_requires_key_from_somewhere) {
 	NoKeyEnv nokey;
 	TempDir tmp("nokey");

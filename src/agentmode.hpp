@@ -82,6 +82,10 @@ struct AgentModeConfig {
 	std::string structurePath;
 	std::string task;		/* 非空 = 一次性执行；空 = 交互 REPL */
 	bool allowShell = false;	/* true = 注册 run_command（缺省关，见 actionsource.hpp 注） */
+	/* 热插表（2026-09-23）：true = 注册 apply_sql（结构 SQL 带电生效）。
+	 * 与 allowShell 同一条门控链：只能命令行 --agent-hot-sql 开启，配置文件
+	 * 的 allow_hot_sql 只能关不能开（见 actionsource.hpp 注）。 */
+	bool allowHotSql = false;
 	bool verbose = true;
 
 	/* ---- 上下文字节预算（B1）----

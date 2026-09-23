@@ -130,6 +130,7 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 				: "启用（模拟来源 " + cfg.cameraSrc + "）")
 			: "不提供 capture_image 工具") + "\n";
 	s += "  run_command : " + std::string(cfg.allowShell ? "已开启（--agent-shell）" : "未提供（缺省关）") + "\n";
+	s += "  apply_sql   : " + std::string(cfg.allowHotSql ? "已开启（--agent-hot-sql）" : "未提供（缺省关）") + "\n";
 	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
 	s += "  策略钩子    : " + orNone(cfg.policyPath, "(未启用)") + "\n";
 	if (!cfg.configWarning.empty()) { s += "  配置告警    : " + cfg.configWarning + "\n"; }
@@ -457,6 +458,17 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 			+ "（请把 allow_shell 置回 false 或删除该字段）";
 		return false;
 	}
+	/* 同一判据（2026-09-23 热插表）：apply_sql 会长出新硬件并**立即上电**，
+	 * 是「模型回复直接改变带电的硬件结构」——与 run_command 同级别的一张牌。
+	 * 「这个配置文件存在」不构成授权，故同样只能命令行开、配置文件只能关。 */
+	out.allowHotSql = opts.agentHotSql;
+	if (!opts.agentHotSql && file.allowHotSql.value_or(false)) {
+		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
+			+ " 设置了 allow_hot_sql=true：apply_sql 会按模型给的 SQL 立即装配并给"
+			+ "新硬件上电（开 fd、进断电清理链），只能由命令行 --agent-hot-sql 显式"
+			+ "开启，配置文件不能开（请把 allow_hot_sql 置回 false 或删除该字段）";
+		return false;
+	}
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
 
@@ -568,6 +580,7 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	tctx.scriptsDir = cfg.scriptsDir;
 	tctx.structurePath = cfg.structurePath;
 	tctx.allowShell = cfg.allowShell;
+	tctx.allowHotSql = cfg.allowHotSql;
 	tctx.commandTimeoutSec = cfg.commandTimeoutSec;
 	tctx.maxCommandTimeoutSec = cfg.maxCommandTimeoutSec;
 	tctx.scriptTimeoutSec = cfg.scriptTimeoutSec;	/* PL-2：动作脚本执行预算 */
@@ -654,13 +667,15 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	return replRc;
 }
 
-/* /sql 命令的实现在 agenttools.cpp 的 runSqlStatement（与 agent 工具 query_sql
- * 共用的单一事实源，契约见 agenttools.hpp）。 */
+/* /sql 命令的实现见 agenttools.cpp：SELECT 走只读渲染（runSqlStatement），
+ * CREATE/INSERT 走热插事务（runSqlCommand → RobotStruct::applySql，真正带电生效）。 */
 
 int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 		RobotStruct& robot, std::istream& in, std::ostream& out, std::ostream& log) {
 	/* 状态指示提示符组件（2026-09-22 可用性改进）：提取结构脚本名（去路径和扩展名）、
-	 * 硬件变量数量，让用户在提示符即可看到当前上下文，无需反复 /hardware 查询。 */
+	 * 硬件变量数量，让用户在提示符即可看到当前上下文，无需反复 /hardware 查询。
+	 * 变量数**每轮重取**（2026-09-23 热插表）：/sql 的 CREATE/INSERT 会真的长出
+	 * 硬件，缓存首轮值会让提示符在热插之后一直少报。 */
 	std::string robotName = cfg.structurePath;
 	if (std::size_t slash = robotName.rfind('/'); slash != std::string::npos) {
 		robotName = robotName.substr(slash + 1);
@@ -668,16 +683,16 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 	if (robotName.size() > 4 && robotName.substr(robotName.size() - 4) == ".sql") {
 		robotName = robotName.substr(0, robotName.size() - 4);
 	}
-	const std::size_t hwCount = robot.registry().byName().size();
 
 	out << "agent 模式：机器人已上电常驻（结构脚本 " << cfg.structurePath << "）。\n"
-		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/sql 解析 SQL，/status 看会话状态，/clear 清空对话记忆，"
+		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/sql 执行结构 SQL，/status 看会话状态，/clear 清空对话记忆，"
 		"/help 看帮助，/exit 退出。\n";
 	std::string line;
 	while (!stopRequested()) {
 		/* 状态提示符格式：mybot[robot_name|llm_var|N_hw]>
 		 * 示例：mybot[spider1|llm0|14hw]> */
-		out << "mybot[" << robotName << "|" << cfg.llmVar << "|" << hwCount << "hw]> " << std::flush;
+		out << "mybot[" << robotName << "|" << cfg.llmVar << "|"
+			<< robot.registry().byName().size() << "hw]> " << std::flush;
 		if (!std::getline(in, line)) { break; }
 		/* 输入长度限制（2026-09-22 审计后添加）：防止恶意输入巨大字符串
 		 * 导致内存耗尽。getline 本身无限制，只在坏分配时 bad_alloc。
@@ -694,7 +709,8 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 			out << "内置命令:\n"
 				<< "  /hardware  - 显示硬件清单（只读，不触发任何动作）\n"
 				<< "  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）\n"
-				<< "  /sql <语句> - 解析并回显一条结构 SQL；SELECT * FROM t 查询运行时矩阵\n"
+				<< "  /sql <语句> - 执行结构 SQL：SELECT * FROM t 只读查询运行时矩阵；"
+				   "CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）\n"
 				<< "  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）\n"
 				<< "  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）\n"
 				<< "  /help      - 显示此帮助\n"
@@ -727,15 +743,16 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 			out << describeActionScripts(cfg.scriptsDir) << "\n";
 			continue;
 		}
-		/* /sql <语句>：用 sql4cj 解析器解析一条结构 SQL 并回显（SELECT * 从运行时
-		 * 矩阵取数）。必须在本派发点 continue —— 否则会被当任务描述发给模型。 */
+		/* /sql <语句>：整批 SELECT 走只读渲染；含 CREATE/INSERT 则热插生效
+		 * （runSqlCommand 是单一分派点，见 agenttools.cpp）。必须在本派发点
+		 * continue —— 否则会被当任务描述发给模型。 */
 		if (task.size() >= 2 && task.rfind("/sql", 0) == 0
 				&& (task.size() == 4 || task[4] == ' ' || task[4] == '\t')) {
 			const std::string sql = trim(task.substr(4));
 			if (sql.empty()) {
 				out << "用法: /sql <语句>（以 ; 结尾），例如 /sql SELECT * FROM Vars;\n";
 			} else {
-				out << runSqlStatement(sql, robot) << "\n";
+				out << runSqlCommand(sql, robot) << "\n";
 			}
 			continue;
 		}

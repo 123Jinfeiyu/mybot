@@ -91,6 +91,10 @@ ParsedArgs parseArgs(int argc, char** argv) {
 			out.opts.agentShell = true;
 			out.opts.agentOptionsUsed = true;
 		}
+		else if (key == "agent-hot-sql") {
+			out.opts.agentHotSql = true;
+			out.opts.agentOptionsUsed = true;
+		}
 		else if (key == "no-camera") {
 			out.opts.noCamera = true;
 			out.opts.agentOptionsUsed = true;
@@ -159,7 +163,7 @@ int validateOptions(ParsedArgs& args) {
 		 * 此前漏列 camera 四项——用户敲了 --no-camera 却被报「这些选项只在 agent
 		 * 模式下有效」，而文案里没有他刚敲的那一个，看起来像撞上了另一个错误。 */
 		std::cerr << "参数错误：--task / --llm-* / --scripts-dir / --agent-shell "
-			"/ --prompt-file / --camera-var / --camera-device / --camera-src "
+			"/ --agent-hot-sql / --prompt-file / --camera-var / --camera-device / --camera-src "
 			"/ --no-camera / --check-config 只在 --agent 模式下有效；"
 			"用 --help 查看 agent 模式说明"
 			<< std::endl;
@@ -242,6 +246,10 @@ std::string helpText() {
 	s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
 	s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌，\n";
 	s += "                       要用就显式开启；理由与缓解见 docs/agent.md 安全一节）\n";
+	s += "  --agent-hot-sql       允许智能体用结构 SQL 改硬件（注册 apply_sql 工具）：\n";
+	s += "                       CREATE TABLE / INSERT INTO 会**立即装配并上电**（开 fd、\n";
+	s += "                       进断电清理链），失败整批回滚；**缺省不提供**，配置文件\n";
+	s += "                       的 allow_hot_sql 只能关不能开（只读的 query_sql 不受影响）\n";
 	s += "  --agent-policy <路径> 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过\n";
 	s += "                       外部确认程序（stdin 收工具名与遮蔽后的参数 JSON，\n";
 	s += "                       退出 0 = 放行）；超时按 on_timeout（缺省 deny）处理；\n";
@@ -317,6 +325,9 @@ std::string helpText(const std::string& topic) {
 		s += "                       文件间以 \"## 文件名\" 分节；也可用配置文件 prompt_files 数组\n";
 		s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
 	s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌）\n";
+	s += "  --agent-hot-sql       允许智能体用结构 SQL 改硬件（注册 apply_sql 工具）：\n";
+	s += "                       CREATE TABLE / INSERT INTO 立即装配并上电，失败整批回滚；\n";
+	s += "                       **缺省不提供**，配置文件不能开（只读 query_sql 不受影响）\n";
 	s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
 	s += "                       确认程序（stdin 收工具名与参数 JSON，退出 0 = 放行；\n";
 	s += "                       超时按 on_timeout，缺省 deny）；缺省不启用\n\n";

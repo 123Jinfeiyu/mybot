@@ -38,6 +38,29 @@ void HwRegistry::add(const std::string& name, std::unique_ptr<MatrixVars_Hardwar
 	seq_.push_back(p);		/* reserve 之后无分配，不抛 */
 }
 
+/* ---- HwRegistry：热插事务回滚（受控放宽见头文件 Mark 注释）---- */
+void HwRegistry::rollbackTo(const Mark& m) {
+	/* 不变量：pool_ 与 seq_ 锁步等长（add 里同序 push、失败路径成对回滚） */
+	if (m.seq > seq_.size() || seq_.size() != pool_.size()) {
+		throw IllegalArgumentException("HwRegistry::rollbackTo: mark is stale (seq="
+			+ std::to_string(m.seq) + ", registry seq=" + std::to_string(seq_.size())
+			+ ", pool=" + std::to_string(pool_.size()) + ")");
+	}
+	/* 1) 摘名字索引：按尾部指针集合过滤（byName_ 是名字 → 指针的只读视图，
+	 *    没有反向索引，故这里只能扫一遍；条目数是结构规模，热插批次无感）。 */
+	std::set<const MatrixVars_Hardware*> doomed(seq_.begin() + static_cast<std::ptrdiff_t>(m.seq),
+		seq_.end());
+	for (auto it = byName_.begin(); it != byName_.end();) {
+		if (doomed.count(it->second) != 0) { it = byName_.erase(it); } else { ++it; }
+	}
+	/* 2) 弹出销毁序与所有权（元素析构；调用方已先行 destroy() 断电） */
+	seq_.resize(m.seq);
+	pool_.resize(m.seq);
+	/* 3) 流引用精确还原：批次内 addFlowRef 过的新名字不得留下——否则该名字
+	 *    永久拒绝会话别名覆盖（N-6），而它已随本批次一起撤销。 */
+	flowRefs_ = m.flowRefs;
+}
+
 /* ---- HwRegistry：会话期别名覆盖（阶段 1：写进会话覆盖层）----
  * 不变量：会话层非空 ⟺ 正在一次 RobotStruct::run() 之内（由 SessionScope 维护）。
  * 与结构期彻底分离的收益：

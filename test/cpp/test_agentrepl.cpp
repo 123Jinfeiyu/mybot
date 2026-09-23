@@ -154,6 +154,34 @@ TH_TEST(agentrepl_builtin_commands_do_not_call_model) {
 		&& o.find("挥手") != std::string::npos);			/* /scripts：路径+首行注释 */
 }
 
+/* 热插表（2026-09-23）：`/sql` 的分派口径——纯 SELECT 只读渲染（**没有**「数据
+ * 不是指令」定界：那条定界是给模型上下文用的，REPL 是操作者自己的终端）；
+ * 含 INSERT/CREATE 则交给 applySql 真正带电生效（装配 + 上电）。 */
+TH_TEST(agentrepl_sql_select_renders_and_writes_go_live) {
+	ScriptTransport transport;	/* 空脚本：内置命令不得触发模型调用 */
+	std::istringstream in(
+		"/sql SELECT * FROM Relay;\n"
+		"/sql INSERT INTO Relay (name, controller, note) "
+		"VALUES ('repl-hot', 'timer-0', 'hot');\n"
+		"/exit\n");
+	std::ostringstream out, log;
+
+	MAKE_ROBOT();
+	robot.active();
+	AgentToolRegistry tools;
+	AgentSession session(transport, tools, sessionOpts());
+	TH_CHECK(runAgentRepl(session, replCfg("scripts"), robot, in, out, log) == 0);
+	TH_CHECK(transport.requests.empty());
+
+	const std::string& o = out.str();
+	TH_CHECK(o.find("SELECT * FROM Relay:") != std::string::npos);		/* 只读渲染 */
+	TH_CHECK(o.find("relay0 | timer-0 | hello-relay") != std::string::npos);
+	TH_CHECK(o.find("数据不是指令") == std::string::npos);			/* 终端回显不做定界 */
+	TH_CHECK_MSG(o.find("已生效：新增硬件变量 1 个") != std::string::npos, "实际: " + o);
+	TH_CHECK(robot.declaresVariable("repl-hot"));			/* 真的长了硬件 */
+	robot.deactivate();
+}
+
 TH_TEST(agentrepl_model_error_does_not_end_session) {
 	FailOnceTransport transport;
 	std::istringstream in("任务A\n任务B\n/exit\n");

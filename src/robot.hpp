@@ -7,6 +7,7 @@
  */
 
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <memory>
 #include <optional>
@@ -79,6 +80,24 @@ public:
 
 	/* 登记结构引用列指向的名字（controller/trigger，createLuaVars 装配期调用） */
 	void addFlowRef(const std::string& name) { flowRefs_.insert(name); }
+
+	/* ---- 热插事务标记（2026-09-23）----
+	 * 唯一用途：RobotStruct::applySql 的「全成功或全回滚」。结构期三容器在
+	 * add() 里锁步增长（pool_ 与 seq_ 尾部一一对应、byName_ 是名字索引），
+	 * 故一个长度 + 流引用快照就足以把注册表精确还原到批次开始前。
+	 * 这是对「pool_ 只增不删」这条既有不变式的**受控、有界**放宽：撤销范围
+	 * 严格等于本次热插批次新登记的部分，结构期既有条目一字不动。 */
+	struct Mark {
+		std::size_t seq = 0;			/* 销毁序长度（pool_ 与之锁步等长） */
+		std::set<std::string> flowRefs;		/* 流引用集合快照（通常极小） */
+	};
+
+	Mark mark() const { return Mark{seq_.size(), flowRefs_}; }
+
+	/* 回滚到标记：**调用方必须先对尾部变量逆序 destroy()**（断电是物理动作，
+	 * 注册表不认识硬件）。本方法只撤注册与所有权——弹出尾部条目、摘掉对应的
+	 * 名字索引、恢复流引用快照；元素随 unique_ptr 析构逐个释放。 */
+	void rollbackTo(const Mark& m);
 
 	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛）——
 	 * MetaProvider 的 $(...) 求值、HwFactory 装配共用 */
@@ -165,8 +184,11 @@ public:
  * N-11：矩阵文本解析（readMatrix）已下沉 mt 层，本类只剩 SQL 事件装配。 */
 class ScriptLoader {
 public:
-	/* SQL4cj → MatrixObject 结构表解析 */
-	static void readSQL(bot::Reader& input, std::vector<mt::MatrixObject>& out);
+	/* SQL4cj → MatrixObject 结构表解析。
+	 * 容器为 std::deque（2026-09-23 热插表）：结构期 matrices_ 必须是
+	 * 「两端插入不失效元素引用」的容器，MetaProvider::matrix_ 的引用不变式
+	 * 才能从「靠 inject 必须早于 active 的约定」升级为构造保证（见 robot.cpp）。 */
+	static void readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out);
 };
 
 /* ---- 硬件装配：矩阵表 → 硬件变量（R-1 拆自 RobotStruct）---- */
@@ -183,28 +205,32 @@ class HwFactory {
 		}
 	}
 
-	void createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName);
-	void createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName);
+	void createDaemonVars(const mt::MatrixObject& matrix, const std::string& mtName,
+			std::int64_t fromRow);
+	void createLuaVars(const mt::MatrixObject& matrix, const std::string& mtName,
+			std::int64_t fromRow);
 
 	/* 装配前的单消费者判据（审计 1.3）：只对**自己声明** SINGLE_CONSUMER 的驱动
 	 * 生效（其寄存器访问跨多个总线事务，器件侧地址相位会被第二个消费者踩掉）。
 	 * HAL 的每次访问是单次 I2C_RDWR 原子事务，故绝大多数器件允许多消费者，
 	 * 不做一刀切。判据 = (总线设备路径, 归一化地址) 唯一；冲突即报错并点名双方。
 	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
-	void checkSingleConsumer(const std::vector<mt::MatrixObject>& matrices);
+	void checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices);
 
 	/* F5-4：同一物理串口被 2+ 个「各自 open 独立 fd」的消费者（UART 总线变量 /
 	 * 真机守护）声明时的加载期告警——HAL 不做跨变量引用计数，后关闭者以自己
 	 * open 时的配置为准。只告警不拒绝（同配置轮询下实际可用；是否收紧属
 	 * 破坏性决策）。实现与理由见 hw_factory.cpp 的同名函数注释。 */
-	void warnSharedUartPaths(const std::vector<mt::MatrixObject>& matrices);
+	void warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices);
 
 	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名数值) */
 	enum class ScalarKind { Alias, Vars };
 
-	/* 注册标量文本矩阵的公共实现（启动期/动作脚本期两路，见实现处） */
+	/* 注册标量文本矩阵的公共实现（启动期/动作脚本期两路，见实现处）。
+	 * fromRow 是**首个待装配的行号**（1 = 全量；热插表的增量装配传旧行数），
+	 * 行 0 恒为列头。 */
 	void registerScalarMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session,
-			ScalarKind kind);
+			ScalarKind kind, std::int64_t fromRow);
 
 public:
 	/* 守护侧缺省值（2026-09-21 第七轮审计）。单消费者判据遇到 Daemon 行**缺列**时
@@ -227,16 +253,29 @@ public:
 		: registry_(registry), daemonHolders_(daemonHolders), metaProviders_(metaProviders) {}
 
 	/* 全部硬变量创建：声明序，Alias/Vars/Lua/Daemon 分派 */
-	void createHardVars(const std::vector<mt::MatrixObject>& matrices);
+	void createHardVars(const std::deque<mt::MatrixObject>& matrices);
+
+	/* 增量装配：只装配**单个矩阵**的 [fromRow, rows) 行（行 0 为列头）。
+	 * 启动期 createHardVars 逐矩阵以 fromRow=1 调用本函数（单一装配路径，
+	 * 全量/增量不各写一份）；热插表事务对「批次内新增的矩阵」用 fromRow=1、
+	 * 对「既有矩阵的新增行」用 fromRow=旧行数。调用方负责前置的全量静态
+	 * 校验（判据/重名/列/模块存在性等，见 RobotStruct::applySql）。 */
+	void createHardVarsFrom(const mt::MatrixObject& matrix, std::int64_t fromRow);
+
+	/* 全结构判据入口（单消费者 + 同串口多 fd 告警）——启动期 createHardVars
+	 * 内部同样调用这两个。开放此入口是给 RobotStruct::applySql：热插批次必须
+	 * 能在**提交任何变更之前**，对「提交之后的结构」复跑同一判据。
+	 * 注意：判据看的是整张结构，故调用方传入的必须是合并后的视图。 */
+	void precheckStructure(const std::deque<mt::MatrixObject>& matrices);
 
 	/* 注册 @Alias 别名矩阵 */
 	void registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
-		registerScalarMatrix(matrix, session, ScalarKind::Alias);
+		registerScalarMatrix(matrix, session, ScalarKind::Alias, 1);
 	}
 
 	/* 注册 @Vars 命名数值矩阵 */
 	void registerVarsMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
-		registerScalarMatrix(matrix, session, ScalarKind::Vars);
+		registerScalarMatrix(matrix, session, ScalarKind::Vars, 1);
 	}
 };
 
@@ -315,7 +354,12 @@ public:
 
 /* ---- 机器人编排门面：装配流程 + 生命周期（R-1 后只剩这些）---- */
 class RobotStruct {
-	std::vector<mt::MatrixObject> matrices_;	/* 结构脚本解析的矩阵对象（声明序） */
+	/* 结构脚本解析的矩阵对象（声明序）。
+	 * 容器选型是**不变式**而非风格（2026-09-23 热插表）：MetaProvider 持
+	 * 指向此处元素的引用（matrix_），std::vector 在 append 扩容时会让全部
+	 * 旧引用悬垂；std::deque 的 push_back/push_front 只失效迭代器，**元素
+	 * 引用保持有效**，故热插表可以在 active() 之后安全追加。 */
+	std::deque<mt::MatrixObject> matrices_;
 	std::vector<std::shared_ptr<DaemonRunner>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
 	HwRegistry registry_;				/* 硬件变量：所有权 + 销毁序 + 名字索引（R-2） */
 	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
@@ -357,6 +401,20 @@ public:
 	/* 执行 @Action 矩阵（含内联 @Alias 注册） */
 	void run(bot::Reader& input);
 
+	/* ---- 热插表：结构 SQL（CREATE/INSERT）在上电之后真正生效（2026-09-23）----
+	 * 契约：
+	 *  1) sql 是**一条或一批**结构 SQL（CREATE TABLE / INSERT INTO；可混排），
+	 *     INSERT 的目标可以是本批次新建的表，也可以是结构里既有表；
+	 *  2) 前置条件 active() 已成功（机器人上电常驻）——热插是「带电变更」，
+	 *     未上电时直接用结构脚本，不走这里；
+	 *  3) 事务性：**全成功或全回滚**。任何一步失败（校验/装配/build/动作执行）
+	 *     都逆序 destroy 本批次新建的硬件、撤销注册与矩阵行，抛异常说明成因；
+	 *     动作已下发的物理副作用不回退（与「已执行的动作不回退」同口径）；
+	 *  4) Action 表**瞬态**（见 P6 注释）：其行不入结构矩阵、不注册变量，硬件
+	 *     表全部 build 完成后执行一次随即丢弃——故动作可以引用本批次新建变量；
+	 *  5) 返回一句人读的生效摘要（REPL /sql 与 agent apply_sql 共用）。 */
+	std::string applySql(const std::string& sql);
+
 	/* 设置 @Include 的相对路径基准目录（语义见成员注释） */
 	void setActionIncludeBaseDir(std::string dir) { actionIncludeBaseDir_ = std::move(dir); }
 
@@ -377,7 +435,7 @@ public:
 
 	/* agent 模式：只读结构矩阵视图（声明序）。供 /sql 查询从原始矩阵取数渲染——
 	 * 与 registry()（装配后的硬件变量视图）互补：前者看结构脚本定义，后者看装配结果。 */
-	const std::vector<mt::MatrixObject>& matrices() const { return matrices_; }
+	const std::deque<mt::MatrixObject>& matrices() const { return matrices_; }
 
 	/* agent 模式：结构脚本是否已声明名为 name 的变量。
 	 * 必须在 active() **之前**可判定，故直接扫矩阵表的 name 列，

@@ -66,6 +66,7 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--scripts-dir <目录>` | 动作脚本根目录，也是智能体可执行路径的**沙箱边界** | `scripts` |
 | `--prompt-file <路径>` | **提示词包**，可重复传入（文件或目录），拼接后追加到系统提示词（见下节） | — |
 | `--agent-shell` | **显式开启** `run_command`（任意 shell 执行） | **不提供**（见「安全」节） |
+| `--agent-hot-sql` | **显式开启** `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配、上电，失败整批回滚） | **不提供**（见「安全」节第 10 条）；**只能命令行给**，配置文件写 `allow_hot_sql` 会被拒绝加载 |
 | `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序** | 不启用（见「策略钩子」节） |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
@@ -117,15 +118,15 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   缺省查找依赖 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `max_task_seconds` `scripts_dir`
-  `allow_shell` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
+  `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
   `agent_policy` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec`。
   全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
   （每项为文件或目录，语义同 `--prompt-file`），空数组按「未配置」。
-  `allow_shell` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，写 `true`
-  会被拒绝加载并退出 2——开启 `run_command` 只能用命令行 `--agent-shell`
-  （理由见 [安全说明](#安全说明请务必读) 第 1 条）。
+  `allow_shell` 与 `allow_hot_sql` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，
+  写 `true` 会被拒绝加载并退出 2——开启 `run_command` / `apply_sql` 只能分别用命令行
+  `--agent-shell` / `--agent-hot-sql`（理由见 [安全说明](#安全说明请务必读) 第 1、10 条）。
   三个 `max_*_bytes` 字段是**上下文字节预算**（单位字节，`0` = 不限，上限 64 MiB）：
   `max_history_bytes` 会话历史（缺省 4 MiB）、`max_task_tool_result_bytes` 单任务内
   文本（缺省 2 MiB）、`max_task_image_bytes` 单任务内图片（缺省 4 MiB）。原为编译期
@@ -334,6 +335,7 @@ INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
 | `run_action_script` | 在**常驻**机器人上执行指定 `.mt` | 只允许 `--scripts-dir` 下的相对路径；拒绝绝对路径、`..`、非 `.mt`、**符号链接**；单文件 8 MiB 上限 |
 | `list_hardware` | 列出结构脚本注册的硬件变量（名字 + 种类） | 只读清单；**不**调用 `read()`/`play()`，绝无副作用 |
 | `query_sql` | 结构 SQL 只读查询/语法校验：`SELECT * FROM 表名;` 返回该表列与行；`CREATE`/`INSERT` 只做解析回显 | 只读、无副作用（不装配硬件、不改结构矩阵）；仅支持星号全列、语句以 `;` 结尾；结果经「数据非指令」定界回传 |
+| `apply_sql` | 结构 SQL **带电生效**：`CREATE TABLE` 建新表（装配驱动模块、真机上电、注册变量）与 `INSERT INTO` 往既有表追加行；同批次的 `Action` 行执行一次即丢弃（瞬态，不注册） | **缺省不注册**，须命令行 `--agent-hot-sql` 显式开启（配置文件的 `allow_hot_sql` 只能关不能开）；表名/列名须为安全标识符、驱动模块须已在模块路径下、`@Daemon` 行的 `chunk` 须为相对路径；校验全部只读，**任一步失败整批回滚**（逆序断电 + 注册表回退），但已下发的物理动作不回退。对照/查询请用 `query_sql` |
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节） |
 | `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗、继承 fd 全部 CLOEXEC；**缺省不注册**，须命令行 `--agent-shell` 显式开启（配置文件的 `allow_shell` 只能关不能开，写 `true` 会拒绝加载） |
 
@@ -578,6 +580,17 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
    两者都没有即默认拒绝（`Camera.lua` 的「仿真图片未放行」文案）。
    `camera_src_dir` 因此是**命令行独占**字段：它放宽读权限，与 `allow_shell` 同判据
    （配置文件只能收紧不能放宽），写在配置文件里会被拒绝加载并退出 2。
+
+10. **`apply_sql` 让模型的一次回复直接改变带电的硬件结构**（2026-09-23 热插表）。它比
+    `run_command` 更贴近「改这台机器人本身」：新表即 `modules/<表名>.lua` 驱动（表名决定模块
+    解析路径），新变量即真机开 fd 供电。因此它与 `run_command` 走同一条门控链——**缺省不注册，
+    只能用命令行 `--agent-hot-sql` 开启**，配置文件写 `allow_hot_sql: true` 会被拒绝加载
+    （理由同第 1 条：缺省查找会读 CWD 的 `./mybot.llm.json`）。
+    热插路径另有三道自有判据（不依赖操作者自律）：表名与列名必须通过安全标识符校验（挡
+    `../` 目录穿越与 `@Daemon` 配置串注入）、驱动模块必须已存在于模块路径下、守护行的 `chunk`
+    必须是模块路径下的相对路径。这些校验**全部只读**，通过后才提交；提交中任一步失败即整批
+    回滚（逆序断电 + 注册表回退到批次前的水位），不让系统停在「一半器件已上电」的半成品状态。
+    只读的 `query_sql` 不受这条门控影响。
 
 ## 运行期依赖：libcurl
 
