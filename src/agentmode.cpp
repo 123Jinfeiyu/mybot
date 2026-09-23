@@ -1,6 +1,7 @@
 #include "agentmode.hpp"
 
 #include <cctype>
+#include <filesystem>
 #include <iostream>
 #include <stdexcept>
 #include <string_view>
@@ -14,6 +15,8 @@
 #include "hardware.hpp"
 #include "robot.hpp"
 #include "util.hpp"
+
+namespace fs = std::filesystem;
 
 namespace bot {
 namespace agent {
@@ -487,6 +490,17 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		/* 不写 value_or({})：花括号实参要求模板参数 _Up 可推导，libstdc++ 15
 		 * 给 _Up 加了默认值才兜得住，g++12/14 推导失败直接报错（CI 基线
 		 * debian:bookworm 即 g++12）。 */
+	/* H2（2026-09-23）：**配置文件来源**的提示词路径必须落在允许的根之内
+	 * （当前工作目录 ∪ BOT4CJ_PROMPT_DIR 列的目录）。命令行 --prompt-file 是
+	 * 操作者本人的授意，不受这条约束——与 H1 的 camera_src 同一判据：
+	 * 配置文件不能成为一个「读任意文件」的原语（判据与理由单点在
+	 * promptpack.hpp 的 promptPathsWithinRoots 注释）。 */
+	if (opts.promptFiles.empty() && !out.promptFiles.empty()) {
+		std::vector<std::string> roots = promptRootsFromEnv();
+		std::error_code ec;
+		if (const fs::path cwd = fs::current_path(ec); !ec) { roots.push_back(cwd.string()); }
+		if (!promptPathsWithinRoots(out.promptFiles, roots, err)) { return false; }
+	}
 	if (!out.promptFiles.empty()
 		&& !loadPromptPack(out.promptFiles, out.promptPack, err)) {
 		return false;

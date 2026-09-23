@@ -98,6 +98,29 @@ bool expandPromptPaths(const std::vector<std::string>& inputs,
 	return true;
 }
 
+/* real 是否落在 root 之内。两者都应是 canonical 后的绝对路径。
+ * 逐段比较而不是字符串前缀：`/srv/prompts-evil` 的字符串前缀正是 `/srv/prompts`，
+ * 前缀判定会把它当成子路径放行——逐段比较不会。 */
+bool pathUnder(const fs::path& real, const fs::path& root) {
+	auto p = real.begin();
+	for (auto r = root.begin(); r != root.end(); ++r, ++p) {
+		if (p == real.end() || *p != *r) { return false; }
+	}
+	return true;
+}
+
+/* 解析一个「根」：存在则 canonical（展开软链），否则退一步 weakly_canonical
+ * （解析到最深的已存在父目录）。两步都拿不到绝对路径即视为不可用——
+ * 与 agenttools 的 simSrcParentDir 同一口径，不回落成 "."。 */
+bool resolveRoot(const std::string& root, fs::path& out) {
+	std::error_code ec;
+	fs::path real = fs::canonical(root, ec);
+	if (ec) { real = fs::weakly_canonical(root, ec); }
+	if (ec || !real.is_absolute()) { return false; }
+	out = std::move(real);
+	return true;
+}
+
 } // namespace
 
 bool loadPromptPack(const std::vector<std::string>& inputs, std::string& out,
@@ -134,6 +157,66 @@ bool loadPromptPack(const std::vector<std::string>& inputs, std::string& out,
 		pack += "## " + sections[i].first + "\n\n" + sections[i].second;
 	}
 	out = std::move(pack);
+	return true;
+}
+
+std::vector<std::string> promptRootsFromEnv() {
+	std::vector<std::string> out;
+	auto v = getEnvVar("BOT4CJ_PROMPT_DIR");
+	if (!v) { return out; }
+	/* 冒号分隔，空项忽略（与 BOT4CJ_CAMERA_SRC_DIR 同款解析口径） */
+	std::size_t pos = 0;
+	while (pos <= v->size()) {
+		const std::size_t colon = v->find(':', pos);
+		std::string item = (colon == std::string::npos)
+			? v->substr(pos) : v->substr(pos, colon - pos);
+		item = trim(item);
+		if (!item.empty()) { out.push_back(std::move(item)); }
+		if (colon == std::string::npos) { break; }
+		pos = colon + 1;
+	}
+	return out;
+}
+
+bool promptPathsWithinRoots(const std::vector<std::string>& inputs,
+		const std::vector<std::string>& roots, std::string& err) {
+	if (inputs.empty()) { return true; }
+	std::vector<fs::path> realRoots;
+	for (const auto& r : roots) {
+		fs::path p;
+		if (resolveRoot(r, p)) { realRoots.push_back(std::move(p)); }
+	}
+	if (realRoots.empty()) {
+		/* 一个根都解析不出来即拒绝（fail-closed）：正常路径下 CWD 总是可解析，
+		 * 故这条只在「CWD 被删/无权限」这类异常态命中——那时放行等于没有判据。 */
+		err = "无法确定提示词白名单根目录（当前工作目录与 BOT4CJ_PROMPT_DIR 都解析失败）："
+			"配置文件来源的 prompt_files 需要至少一个可用的根";
+		return false;
+	}
+	for (const auto& in : inputs) {
+		std::error_code ec;
+		if (!fs::exists(in, ec)) { continue; }	/* 由加载期报「不存在」 */
+		fs::path real = fs::canonical(in, ec);
+		if (ec) { continue; }			/* 打不开等同样交加载期 */
+		bool ok = false;
+		for (const auto& root : realRoots) {
+			if (pathUnder(real, root)) { ok = true; break; }
+		}
+		if (ok) { continue; }
+		std::string allowed;
+		for (const auto& root : realRoots) {
+			if (!allowed.empty()) { allowed += ", "; }
+			allowed += root.string();
+		}
+		err = "配置文件来源的提示词路径 '" + in + "' 落在允许的根之外（允许: " + allowed
+			+ "）：提示词内容会进系统提示词、随首个请求发往**同一份配置可控的**"
+			  " endpoint，若允许任意路径，一份落在工作目录的配置文件就成了一条"
+			  "「读任意文件并外发」的链路（/proc/self/environ 这类伪文件读得到，"
+			  "里面就有密钥）。配置文件来源的路径只能指向工作目录之内；"
+			  "确实要读该路径请改用命令行 --prompt-file（操作者本人授意），"
+			  "或把它加进环境变量 BOT4CJ_PROMPT_DIR（冒号分隔）";
+		return false;
+	}
 	return true;
 }
 

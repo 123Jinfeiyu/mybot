@@ -42,7 +42,7 @@
 | `--llm-timeout <秒>` | 单次模型调用超时，范围 1-600（缺省 180） |
 | `--llm-task-timeout <秒>` | 单个任务的墙钟预算，范围 0-86400（缺省 900；`0` = 不限）。与 `--llm-timeout` 是不同维度：agent 模式全程硬件带电常驻，这条给「一个任务最多带电多久」设闸。超限即如实失败（报错点名预算秒数），**已执行的动作不回退**；若预算在一轮中间耗尽，剩余工具调用不派发、但每条各留一条「未派发」回执以维持 `tool_calls` ⇔ `tool` 一一对应。配置文件等价键：`max_task_seconds` |
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
-| `--prompt-file <路径>` | 提示词包：可重复传入（文件或目录），内容按文件名自然排序拼接后追加进系统提示词（详见 [agent.md](agent.md)） |
+| `--prompt-file <路径>` | 提示词包：可重复传入（文件或目录），内容按文件名自然排序拼接后追加进系统提示词（详见 [agent.md](agent.md)）。命令行给的路径**不受根目录约束**（操作者本人授意）；**配置文件**里的 `prompt_files` 则只能指向当前工作目录或 `BOT4CJ_PROMPT_DIR` 列的目录之内——提示词内容会随请求发往同一份配置可控的 endpoint，不设限就成了一条「读任意文件并外发」的链路（H2，见 [agent.md](agent.md) 安全说明第 11 条） |
 | `--agent-shell` | **显式开启**智能体的 `run_command`（任意 shell 执行）；**缺省不提供**该工具。API key 非来自环境变量时启动会打印告警。命令**回执**（stdout/stderr）在回传模型前遮蔽 `KEY=VALUE` 等敏感值（G1，与审计同一单点） |
 | `--agent-hot-sql` | **显式开启**智能体的 `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配并上电，失败整批回滚）；**缺省不提供**该工具。**只能命令行给**：它让模型的一次回复直接改变带电结构，配置文件写 `allow_hot_sql` 会被拒绝加载并退出 2（与 `allow_shell` 同判据）。只读的 `query_sql` 不受影响 |
 | `--agent-policy <路径>` | 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过**外部确认程序**（stdin 收工具名与遮蔽后的参数 JSON，退出 0 = 放行；超时按 `on_timeout`，缺省 `deny`）；缺省**不启用**。也可用配置文件 `agent_policy` 字段（详见 [agent.md](agent.md)） |
@@ -149,6 +149,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |
 | `BOT4CJ_HAL_BACKEND` | HAL 后端模块名：`modules/lib/hal_backend_<名>.lua`（缺省 `glibc`）。加载期逐项断言契约函数齐全，缺函数 fail-fast——移植到别的 libc/平台时替换整个后端 |
 | `BOT4CJ_CAMERA_SRC_DIR` | 摄像头仿真来源的**放行目录**（冒号分隔）：`--camera-src` 之外的路径必须落在这里面，否则驱动拒绝读该文件（缺省禁用任何目录外读取） |
+| `BOT4CJ_PROMPT_DIR` | 提示词包的**放行目录**（冒号分隔，H2）：**配置文件** `prompt_files` 里的路径必须落在当前工作目录或这里列出的目录之内（命令行 `--prompt-file` 不受限）。配置文件写不了本变量，故它只能由启动者设——现场把提示词包放在工作目录之外时用它显式放行 |
 | `BOT4CJ_TEST_VIDEO` | 仅守门用：真机摄像头用例（`test_camera_v4l2.lua`）的设备路径，指定且存在时该用例不再按跳过计（见 [testing.md](testing.md)） |
 | `BOT4CJ_HTTP_PROBE` | 仅守门/排障用：设为 `1` 时 `lib/llm_http.lua` 每次模型请求向 stderr 打一行 `[http-probe] sessions=<已建会话数> handle=<句柄>`。agent E2E 用它断言「多轮调用复用同一份会话」（AG-20）。缺省不打——正常运行不该多这行噪声 |
 | `BOT4CJ_LLM_CANCEL_FILE` | 仅宿主内部用：模型调用可取消（AG-27）的哨兵文件路径，由宿主在收到 SIGINT/SIGTERM 时创建、`lib/llm_http.lua` 的 libcurl 进度回调轮询到即中止请求（报「请求已取消」）。正常使用**不需要也不应该**手工设置它；变量名含 `key` 之外无敏感内容，仍会被 `run_command` 环境清洗剔除 |

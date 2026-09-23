@@ -11,6 +11,9 @@ namespace fs = std::filesystem;
 
 using bot::agent::kMaxPromptFileBytes;
 using bot::agent::loadPromptPack;
+using bot::agent::promptPathsWithinRoots;
+using bot::agent::promptRootsFromEnv;
+using fx::EnvVar;
 using fx::TempDir;
 
 namespace {
@@ -149,4 +152,81 @@ TH_TEST(promptpack_oversized_file_rejected) {
 	std::string out, err;
 	TH_CHECK(!loadPromptPack({f.string()}, out, err));
 	TH_CHECK(err.find("超过字节上限") != std::string::npos);
+}
+
+/* ---- H2（2026-09-23）：配置文件来源的提示词路径读权限判据 ----
+ * 动机见 promptpack.hpp：prompt_files 的内容会进系统提示词并随首个请求发往
+ * 同一份配置可控的 endpoint，故「配置文件来源」不能读任意路径。 */
+
+/* 根之内放行；根之外拒绝，且报错必须点名条目、允许的根与两个出路 */
+TH_TEST(promptpack_paths_within_roots_accepts_inside_rejects_outside) {
+	TempDir tmpA("pp11a");
+	TempDir tmpB("pp11b");
+	fs::path inside = tmpA.path() / "pack";
+	writeFile(inside / "a.md", "内容");
+	fs::path outside = tmpB.path() / "pack";
+	writeFile(outside / "b.md", "内容");
+
+	std::string err;
+	TH_CHECK(promptPathsWithinRoots({inside.string()}, {tmpA.path().string()}, err));
+	TH_CHECK(err.empty());
+
+	err.clear();
+	TH_CHECK(!promptPathsWithinRoots({outside.string()}, {tmpA.path().string()}, err));
+	TH_CHECK(err.find(outside.string()) != std::string::npos);
+	TH_CHECK(err.find("根之外") != std::string::npos);
+	TH_CHECK(err.find("--prompt-file") != std::string::npos);
+	TH_CHECK(err.find("BOT4CJ_PROMPT_DIR") != std::string::npos);
+}
+
+/* `..` 逃逸与软链逃逸都必须被 realpath 判据拦住——词法前缀判据会放过它们 */
+TH_TEST(promptpack_paths_within_roots_blocks_dotdot_and_symlink) {
+	TempDir tmpA("pp12a");
+	TempDir tmpB("pp12b");
+	fs::path secret = tmpB.path() / "secret.md";
+	writeFile(secret, "机密");
+
+	std::string err;
+	/* ① `..` 逃逸：文本上的越界段逃不出 realpath */
+	fs::path dotdot = tmpA.path() / ".." / tmpB.path().filename() / "secret.md";
+	TH_CHECK(!promptPathsWithinRoots({dotdot.string()}, {tmpA.path().string()}, err));
+	TH_CHECK(err.find("根之外") != std::string::npos);
+
+	/* ② 软链逃逸：链接本身在根内，realpath 指到根外 */
+	std::error_code ec;
+	fs::create_directory_symlink(tmpB.path(), tmpA.path() / "link", ec);
+	TH_CHECK_MSG(!ec, "前置条件失败：无法创建目录软链");
+	err.clear();
+	TH_CHECK(!promptPathsWithinRoots({(tmpA.path() / "link" / "secret.md").string()},
+		{tmpA.path().string()}, err));
+	TH_CHECK(err.find("根之外") != std::string::npos);
+}
+
+/* 不存在的条目不在这一层拦：加载期报「不存在」比报「越界」更贴近成因 */
+TH_TEST(promptpack_paths_within_roots_defers_nonexistent) {
+	TempDir tmp("pp13");
+	std::string err;
+	TH_CHECK(promptPathsWithinRoots({"/nonexistent/prompts"}, {tmp.path().string()}, err));
+	TH_CHECK(err.empty());
+	TH_CHECK(promptPathsWithinRoots({}, {tmp.path().string()}, err));	/* 空输入 */
+}
+
+/* 一个可用的根都解析不出来 → fail-closed（不放行） */
+TH_TEST(promptpack_paths_within_roots_requires_at_least_one_usable_root) {
+	TempDir tmp("pp14");
+	fs::path f = tmp.path() / "a.md";
+	writeFile(f, "内容");
+	std::string err;
+	TH_CHECK(!promptPathsWithinRoots({f.string()}, {"/nonexistent/root/xyz"}, err));
+	TH_CHECK(err.find("根") != std::string::npos);
+}
+
+/* BOT4CJ_PROMPT_DIR：冒号分隔、空项与空白忽略、未设置为空 */
+TH_TEST(promptpack_roots_from_env_parses_colon_separated) {
+	EnvVar unset{"BOT4CJ_PROMPT_DIR", nullptr};
+	TH_CHECK(promptRootsFromEnv().empty());
+
+	EnvVar two{"BOT4CJ_PROMPT_DIR", "/a/b::/c/d: "};
+	std::vector<std::string> r = promptRootsFromEnv();
+	TH_CHECK(r.size() == 2u && r[0] == "/a/b" && r[1] == "/c/d");
 }
