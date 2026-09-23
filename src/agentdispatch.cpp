@@ -78,7 +78,11 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 		if (argsOk && parsedArgs.isObj()) {
 			e.args = maskToolArgs(call.name, parsedArgs);
 		}
-		e.argsRaw = call.arguments;
+		/* M1（2026-09-23 安全审计）：argsRaw 也需遮蔽密钥。解析失败时 args 为空，
+		 * 只有 argsRaw 进审计文件；若模型发送含密钥的坏 JSON，密钥会以原文落盘。
+		 * 修复：无论解析成功与否，argsRaw 都过 maskSecretsInText（与 args 的
+		 * maskToolArgs 同一防护强度，纵深防御）。 */
+		e.argsRaw = maskSecretsInText(call.arguments);
 		e.ok = result.ok;
 		e.error = result.error;
 		e.ms = elapsedMs;
