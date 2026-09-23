@@ -918,6 +918,12 @@ static AgentTool makeApplySqlTool(const AgentToolContext& ctx) {
 		"DROP TABLE 表 会**当场断电并摘除整张表**（表壳、该表全部变量与守护一起撤下），"
 		"同样是**破坏性且不可逆**的操作；它**不带 WHERE**（作用于整张表）——要确认删对"
 		"了表或按条件删一部分行，请先用 query_sql 查看，按条件删行用 DELETE。"
+		"UPDATE 表 SET 列 = 值 [, ...] [WHERE 列 = 值 [AND ...]] 按**断电重建**改写命中行"
+		"（无条件写法改写全表数据行）：命中的行先断电摘除，再用改后的值重新装配上电——"
+		"改写瞬间器件会断电重置，请当作「删旧件 + 装新件」而非原地改值。"
+		"被 controller/trigger 或 $ 引用着的变量同样拒改；改写行的新值若引用本批次"
+		"将删的变量也会被预检拒绝。UPDATE 与该表的其它行级语句（INSERT/DELETE/UPDATE）"
+		"不得同批，拆两次调用即可。改写前请先用 query_sql 确认 WHERE 命中的行。"
 		"名为 Action 的表是**瞬态**的：插入的行的动作会立即执行一次然后丢弃，不进结构。"
 		"语句以分号结尾，可一次给多条。只想查询（不改任何状态）请用 query_sql。",
 		toolSchema({{"sql", stringParam("结构 SQL，如 CREATE TABLE Timer (name String); "

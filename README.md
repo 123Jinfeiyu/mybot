@@ -166,7 +166,7 @@ MYBOT采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全解
 | `run_action_script` | 执行动作脚本（**回执带驱动返回的读数**） | ⚠️ 写入 |
 | `capture_image` | 拍照并送入上下文 | ⚠️ 隐私 |
 | `read_variables` | 主动读硬件变量当前值 | ✅ 只读，**需 `--read-var` 声明可读变量** |
-| `apply_sql` | 结构 SQL **带电生效**（建表/插行；`DELETE FROM` 当场断电摘行、`DROP TABLE` 撤整张表，**不可逆**） | 🔴 危险，**需 `--agent-hot-sql`** |
+| `apply_sql` | 结构 SQL **带电生效**（建表/插行；`DELETE FROM` 当场断电摘行、`DROP TABLE` 撤整张表，**不可逆**；`UPDATE ... SET ...` 按断电重建改写命中行） | 🔴 危险，**需 `--agent-hot-sql`** |
 | `run_command` | 执行 shell 命令 | 🔴 危险，**需 `--agent-shell`** |
 
 **安全设计**：

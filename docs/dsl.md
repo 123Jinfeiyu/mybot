@@ -26,23 +26,19 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 - 注释整行 INSERT 即可下线一个硬件实例；报错会指明是哪张表、哪一行、哪一列
 - **INSERT 的列名清单决定「哪个值属于哪一列」，值按列名落到建表声明序**（2026-09-20 审计 C3）。`INSERT INTO Timer (delay, name) VALUES (50, 'timer-0')` 与 `(name, delay)` 写法等价，列序写反不会错列。三条硬约束（违规在解析期报错，不再静默错位）：列名必须在建表声明里存在（`no such column`）、同一列不得写两次（`listed twice`）、每列都必须给值（`missing value for column`，要继承上一行就显式写 `-`）
 - 列类型支持 `String` / `Number`：值一律以文本驻留（`MatrixObject` 只存 String），`Number` 目前仅在**解析期**对字面量做一次数值校验（整数/小数/带符号/科学计数法合法，空值与 `nan`/`inf` 拒绝），不做运行期类型转换；校验按 INSERT 的列名匹配声明列，报错形如 `Column 'delay' of table 'Timer' is declared Number, but value 'abc' is not numeric.`
-- **方言只认五条语句**：`CREATE TABLE` / `INSERT INTO` / `SELECT * FROM 表;` / `DELETE FROM 表;` / `DROP TABLE 表;`
+- **方言只认六条语句**：`CREATE TABLE` / `INSERT INTO` / `SELECT * FROM 表;` / `DELETE FROM 表;` / `DROP TABLE 表;` / `UPDATE 表 SET 列 = 值 [, ...];`
   - **SELECT** 仅在 agent 的 `query_sql` 与 REPL `/sql` 里可用（只读，见 [agent.md](agent.md)）。
-  - **DELETE**（删**行**）与 **DROP**（删**表**）都是**带电变更**：只在 REPL `/sql` 与 agent 的
-    `apply_sql` 里可用（需 `--agent-hot-sql`），在结构脚本 `.sql` 文件里出现会在解析期报错
-    （机器人尚未上电，没有可变的结构）。
-  - **SELECT 与 DELETE 可带等值条件**（2026-09-23）：`WHERE 列 = 值`，多条件以 `AND` 连接
+  - **DELETE**（删**行**）、**DROP**（删**表**）与 **UPDATE**（改写**行**）都是**带电变更**：
+    只在 REPL `/sql` 与 agent 的 `apply_sql` 里可用（需 `--agent-hot-sql`），在结构脚本 `.sql`
+    文件里出现会在解析期报错（机器人尚未上电，没有可变的结构）。
+  - **SELECT / DELETE / UPDATE 可带等值条件**（2026-09-23）：`WHERE 列 = 值`，多条件以 `AND` 连接
     （`WHERE 列1 = 值1 AND 列2 = 值2`）。按 `inherited` 显示值（`-` 继承解析后）做**精确文本比较**，
     数值按文本比（`'0x40'` ≠ `'64'`，已知边界）；比较运算符、`OR`、`IN` 不在方言内。
     列不存在报 `has no '...' column`；SELECT 0 行命中输出列头 + `（0 行匹配）`，
-    DELETE 0 行命中**报错**（`no row matches, nothing was deleted`）——删除是不可逆的物理操作，
-    "已生效但什么都没发生"会让操作者以为器件已摘除。**`DROP` 不带 `WHERE`**：它是 DDL、作用于整张表
+    DELETE / UPDATE 0 行命中**报错**（`no row matches, nothing was ...`）——删除与改写都是
+    不可逆的物理操作，"已生效但什么都没发生"会让操作者以为器件已摘除/已改写。
+    **`DROP` 不带 `WHERE`**：它是 DDL、作用于整张表
     （见下节）；要确认删对了表或按条件删一部分行，先用 `SELECT * FROM 表 [WHERE ...]` 查看。
-  - `UPDATE` 是**改写结构定义**的语句，在解析期就被明确拒绝
-    （`Unsupported statement UPDATE: this dialect understands …`），整批不生效、不留半成品。
-    刻意不支持而非暂未实现：它等价于「删旧行 + 建新行」，而这两步已各有出口
-    （`DELETE` / `INSERT`）。结构改动请改写 `.sql` 后重新上电，或走带电变更的
-    `CREATE TABLE` / `INSERT INTO` / `DELETE FROM` / `DROP TABLE`（见 [reference.md](reference.md) 的 `--agent-hot-sql`）。
 - **热删除（`DELETE FROM`）的安全边界**（2026-09-23）：删除 = **当场逆序断电并摘除**器件，
   物理不可逆（没有回滚，已掉电的器件不会因后续报错而复电）。写入前先跑完所有校验，
   故拒绝一律发生在动第一个器件之前、活体一字未动：
@@ -72,6 +68,25 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
   - **`Action` 表不可 DROP**（瞬态表，行只被重放、从不注册成硬件变量），报错点名这一点。
   - 边界实现注记：表壳从结构容器（`std::deque`）上 `erase` 会让其后元素引用失效，故撤表后存活表的
     元数据提供者会被按表名**重锚定**——这是整表撤下才有的一条不变式。
+- **热更新（`UPDATE 表 SET 列 = 值 [, ...] [WHERE ...]`）的安全边界**（2026-09-23）：语义是
+  **断电重建**，不是原地改值——命中行按「DELETE（当场逆序断电摘除）+ INSERT（改后行重新装配
+  上电）」两条既有路径执行，改写瞬间器件会断电重置。`name` 列可以改（= 换名重建：旧名消失、
+  新名装配，新名不得与存活变量重名）；其余列照常改值。无 `WHERE` = 改写全部数据行。
+  - **被引用即拒改**：命中行被别的行以 `controller` / `trigger` / `$name` / `$(...)` 引用着时，
+    整批拒绝并点名引用方（与热删除同一条引用完整性防线——改写 = 摘除旧件，悬垂指针判据一致）。
+    改写行自己的新值若引用**本批次将删/将改写**的变量，同样在预检拒绝（含改回自己的旧名）。
+  - **批内独占**：`UPDATE` 与该表的其它行级语句（`INSERT` / `DELETE` / 再次 `UPDATE`）不得同批，
+    两个方向都被拒绝；对本批次 `CREATE` 出来的表也不可用（行从未装配，把 INSERT 写成想要的
+    样子即可）。拆成两批/两次调用就行。
+  - **执行序是先删后建**：与 DELETE+INSERT 的「先建后删」不同，UPDATE 批次先物理摘除旧件、
+    再装配新件——新旧器件不会短暂并存抢同一物理器件。代价是**失败窗口**：预检全过之后若新件
+    装配/上电失败（如 `$` 引用不存在、驱动 build 失败），新件整批回滚断电，**已摘旧件不复原**
+    （destroy 是物理断电），错误会点名「哪些变量已断电摘除且未能重建」——按需要的值重新
+    INSERT 即可恢复。
+  - 生效摘要如实报三段：「已热更新 N 行（断电重建）」+ 删除/新增计数（同一物理事实的两个
+    维度，审计 `apply_sql` 的 summary 同源）。
+  - `Number` 列的 SET 值与 INSERT 同一判据：数值字面量或 `'$(表达式)'`（带引号——词法器把
+    `(` 当分隔符），解析期即校验。
 
 **引号字面量**：`'` / `"` 包裹的值整体按字面解析——引号内的 `--`、`/* */`、`;`、`,`、`(`、`)`、`=` 与空白都是**数据**而非注释/分隔符（注释只在引号外生效）。这是 1.x 起修复的词法器行为，有负值回归守门（`robots/test/sqlquote.sql`）。
 

@@ -6,6 +6,31 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-23 热更新：`UPDATE 表 SET 列 = 值 [, ...] [WHERE ...]`
+
+> 守门快照：C++ 单测 **662 / 0**（本批新增 robot 热更新组 9 例、sqlparse 解析组
+> 6 例重写/新增，agenttools 既有用例改断言）；零告警构建。
+
+- **`UPDATE`（新增能力）**：方言第六条语句，在 REPL `/sql` 与 agent 的 `apply_sql`
+  （沿用 `--agent-hot-sql` 门控）里按**断电重建**改写命中行——`UPDATE` 不再被
+  `Unsupported statement` 拒绝，`isUnsupportedStatement` 随之整体移除（清单清空）。
+  执行语义 = 「DELETE 命中行（物理断电摘除）+ INSERT 改后行（重新装配上电）」，
+  readSQL 在影子上分解，改后行取 `inherited()` 解析值物化（`-` 继承格原样重插会对着
+  不同的前一行重新继承、静默变义）。`name` 列可改（= 换名重建）；无 WHERE = 改全表。
+- **先删后建执行序**：含 UPDATE 的批次把物理删除提前到插入之前（原 4.6 抽出为
+  `executeHotDeletes` 成员函数，两个执行序共用）——注册表重名即抛，同名重建必须先摘
+  旧件；备删计划前移到阶段 1.5（doomedNames 供重名预检豁免、hw 指针计划期取好防
+  按名 find 摘错对象）。失败窗口如实：新件装配失败 ⇒ 已摘旧件不复原，错误点名丢失
+  的变量并包装成 runtime_error（成因若是 IllegalArgumentException，paramError 口径
+  会谎报「活体一字未动」）。
+- **引用完整性预检扩面**：从「matrices_ 存活行」扩为「提交后合并视图」（含本批
+  新增/改写行）——流引用是懒解析，预检不拦就是运行期的雷；对普通 INSERT 批次同样
+  是净收益。被引用（controller/trigger/$/表达式）的变量拒改，与热删除同一条防线。
+- **批内独占**：UPDATE 与该表的其它行级语句（INSERT/DELETE/再次 UPDATE）双向不得
+  同批，本批次新建的表上也不可用——守门全部在 readSQL，报错指路「拆成两批」。
+- 摘要/审计（G2）：生效摘要报「已热更新 N 行（断电重建）」，删除/新增计数照报
+  （同一物理事实的两个维度）。
+
 ### 2026-09-23 整表撤下：`DROP TABLE ...`
 
 > 守门快照：C++ 单测 **649 / 0**（本批新增 14 例：sqlparse 5 / robot 9，

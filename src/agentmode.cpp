@@ -886,7 +886,9 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 				   " 只读查询运行时矩阵；\n"
 				   "               CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）；\n"
 				   "               DELETE FROM t [WHERE 列 = 值 [AND ...]] 当场断电摘除匹配行"
-				   "（不可逆）\n"
+				   "（不可逆）；\n"
+				   "               UPDATE t SET 列 = 值 [, ...] [WHERE ...] 按断电重建改写"
+				   "命中行（删旧件 + 装新件）\n"
 				<< "  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）\n"
 				<< "  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）\n"
 				<< "  /help      - 显示此帮助\n"
@@ -930,8 +932,10 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 					"      可加等值条件（AND 连接），例如 "
 					"/sql SELECT * FROM Servo WHERE name = 's1';\n"
 					"      DELETE 会当场断电摘除匹配行且不可逆，例如 "
-					"/sql DELETE FROM Servo WHERE name = 's1';\n";
-			} else {
+					"/sql DELETE FROM Servo WHERE name = 's1';\n"
+					"      UPDATE 按断电重建改写命中行（先断电摘除再重装），例如 "
+					"/sql UPDATE Servo SET angle = 90 WHERE name = 's1';\n";
+				} else {
 				out << runSqlCommand(sql, robot) << "\n";
 			}
 			continue;
