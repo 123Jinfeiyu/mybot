@@ -95,6 +95,14 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 			"新器件立即上电；驱动脚本必须已存在于 modules/ 下（表名即模块名），"
 			"错则整批回滚、不留半成品。对照/查询请用 query_sql。\n";
 	}
+	/* 发现 2 的 A 步（2026-09-23）：可读清单由 --read-var 声明（已解析，只列**真正
+	 * 可读**的那些）。清单为空就一个字都不写——提示词里承诺一个不存在的工具，
+	 * 模型会反复尝试并浪费轮次。 */
+	const std::string readable = describeReadableVars(cfg.readVars, robot);
+	if (!readable.empty()) {
+		p += "- 需要读数（传感器当前值、器件状态）时用 read_variables：可读变量为 "
+			+ readable + "。它只读、不改变任何状态；清单之外的变量读不到，不要尝试。\n";
+	}
 	p += "- 用中文回答，结论简洁并说明依据。\n";
 
 	/* 提示词包追加在内置段落之后（robot_agent 同款语义）：内置部分只讲机器人

@@ -1069,6 +1069,32 @@ TH_TEST(agentconfig_prompt_files_from_config_must_be_within_allowed_roots) {
 	TH_CHECK(err3.find("不存在") != std::string::npos);
 }
 
+/* 回读清单只能命令行给（发现 2 的 A 步）：配置文件写 read_vars 一律拒绝加载，
+ * 并**指名**正确的入口——与 allow_shell / camera_src_dir 同判据。 */
+TH_TEST(agentconfig_read_vars_from_config_is_rejected) {
+	NoKeyEnv nokey;
+	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
+	TempDir tmp("readvars");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({"read_vars":["relay0","timer-0"]})", fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
+	TH_CHECK(err.find("read_vars") != std::string::npos);
+	TH_CHECK(err.find("--read-var") != std::string::npos);
+	/* 附带判据：即使命令行也给了 --read-var，配置里的 read_vars 仍被拒——
+	 * 这条字段的口径是「配置文件只能收紧不能放宽」（与 camera_src_dir 一致，
+	 * 不采用 --agent-shell 那种「命令行已授权就放行」的合并语义）。 */
+	writeFile(cfg, R"({"read_vars":["relay0"]})", fs::perms::owner_all);
+	CliOptions o = baseOptions(cfg.string());
+	o.readVars.push_back("timer-0");
+	AgentModeConfig out2;
+	std::string err2;
+	TH_CHECK(!buildAgentConfig(o, out2, err2));
+	TH_CHECK(err2.find("read_vars") != std::string::npos);
+}
+
 /* 系统提示词：包追加在内置段落（结构/硬件/脚本清单/工作方式）之后 */
 TH_TEST(agentconfig_prompt_pack_appended_after_builtin_sections) {
 	AgentModeConfig cfg;

@@ -86,6 +86,10 @@ struct AgentModeConfig {
 	 * 与 allowShell 同一条门控链：只能命令行 --agent-hot-sql 开启，配置文件
 	 * 的 allow_hot_sql 只能关不能开（见 actionsource.hpp 注）。 */
 	bool allowHotSql = false;
+	/* 回读（2026-09-23，发现 2 的 A 步）：允许模型**主动读**的硬件变量名清单
+	 * （--read-var，可重复）。**命令行独占**：配置文件写 read_vars 会被拒绝加载
+	 * （与 allow_shell / camera_src_dir 同判据）。空 = 不注册 read_variables。 */
+	std::vector<std::string> readVars;
 	bool verbose = true;
 
 	/* ---- 上下文字节预算（B1）----

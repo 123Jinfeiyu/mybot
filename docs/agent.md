@@ -68,6 +68,7 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--agent-shell` | **显式开启** `run_command`（任意 shell 执行） | **不提供**（见「安全」节） |
 | `--agent-hot-sql` | **显式开启** `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配、上电，失败整批回滚） | **不提供**（见「安全」节第 10 条）；**只能命令行给**，配置文件写 `allow_hot_sql` 会被拒绝加载 |
 | `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序** | 不启用（见「策略钩子」节） |
+| `--read-var <变量名>` | 声明一个**可读**硬件变量，**可重复**；注册 `read_variables` 工具（缺省**不提供**该工具）。只有已注册且种类为 `lua`（驱动）或 `daemon`（守护快照）的名字生效——执行器与传感器同属 `kind=lua`，靠种类分不出，故必须由人列名（见「工具」表与安全说明第 12 条） | 不提供（即无回读能力；声明了名字但一个都不可读时也不提供） |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」。**命令行**给的 src 以其所在目录为白名单根；配置文件给的 `camera_src` **不**推导根（见安全说明第 9 条），需配 `--camera-src-dir` 或 `BOT4CJ_CAMERA_SRC_DIR` | — |
@@ -79,7 +80,7 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
 API key 没有命令行入口（只从环境变量或配置文件取）：argv 对同用户进程可读（`/proc/<pid>/cmdline`）。
 
-`--task` / `--llm-*` / `--scripts-dir` / `--agent-shell` / `--prompt-file` / `--camera-var` / `--camera-device` / `--camera-src` / `--no-camera` / `--check-config` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。`--check-config` 少了 `--robot` 同样被拒（否则会打印帮助后退出 0，CI 会把「退出 0」读成「配置没问题」）。
+`--task` / `--llm-*` / `--scripts-dir` / `--agent-shell` / `--agent-hot-sql` / `--read-var` / `--prompt-file` / `--camera-var` / `--camera-device` / `--camera-src` / `--no-camera` / `--check-config` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。`--check-config` 少了 `--robot` 同样被拒（否则会打印帮助后退出 0，CI 会把「退出 0」读成「配置没问题」）。
 
 ## 配置文件（推荐）
 
@@ -127,6 +128,9 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   `allow_shell` 与 `allow_hot_sql` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，
   写 `true` 会被拒绝加载并退出 2——开启 `run_command` / `apply_sql` 只能分别用命令行
   `--agent-shell` / `--agent-hot-sql`（理由见 [安全说明](#安全说明请务必读) 第 1、10 条）。
+  `camera_src_dir` 与 `read_vars` 则**一律拒绝**（写了就退出 2，无论命令行给不给）：
+  它们分别决定"能读哪个目录"与"能读哪些硬件变量"，属**放宽读权限**的字段，
+  只能由命令行 `--camera-src-dir` / `--read-var` 提供（理由见第 9、12 条）。
   三个 `max_*_bytes` 字段是**上下文字节预算**（单位字节，`0` = 不限，上限 64 MiB）：
   `max_history_bytes` 会话历史（缺省 4 MiB）、`max_task_tool_result_bytes` 单任务内
   文本（缺省 2 MiB）、`max_task_image_bytes` 单任务内图片（缺省 4 MiB）。原为编译期
@@ -345,6 +349,7 @@ SAN-12 起宿主还保证合成 id **在整段会话内唯一**——与历史�
 | `list_action_scripts` | 列出 `--scripts-dir` 下全部 `.mt`（相对路径 + 首行说明）；符号链接条目不列 | 只读 |
 | `run_action_script` | 在**常驻**机器人上执行指定 `.mt`；回执除「已执行」外还带**驱动返回表**（器件读数，如 `{"result":"OK","slept":200}`）——执行窗口内的框架回显被回收进回执，模型因此看得见读数（D，2026-09-23）；上限 8 KiB，超限截断并显式标注 | 只允许 `--scripts-dir` 下的相对路径；拒绝绝对路径、`..`、非 `.mt`、**符号链接**；单文件 8 MiB 上限 |
 | `list_hardware` | 列出结构脚本注册的硬件变量（名字 + 种类） | 只读清单；**不**调用 `read()`/`play()`，绝无副作用 |
+| `read_variables` | **主动读**硬件变量的当前值（无参数，一次读全部可读变量）：传感器读数、守护最近一次采样 | **缺省不注册**：可读集合由 `--read-var` 声明（命令行独占），只读 `playQuiet`，且只放行 `lua`/`daemon` 两种种类——执行器与传感器同属 `kind=lua`，靠种类分不出，故由操作者列名（安全说明第 12 条）。单个变量读失败写在该行、不中断整次读取；回执 8 KiB 上限、超限截断并标注、按「数据不是指令」定界 |
 | `query_sql` | 结构 SQL 只读查询/语法校验：`SELECT * FROM 表名;` 返回该表列与行；`CREATE`/`INSERT` 只做解析回显 | 只读、无副作用（不装配硬件、不改结构矩阵）；仅支持星号全列、语句以 `;` 结尾；结果经「数据非指令」定界回传 |
 | `apply_sql` | 结构 SQL **带电生效**：`CREATE TABLE` 建新表（装配驱动模块、真机上电、注册变量）与 `INSERT INTO` 往既有表追加行；同批次的 `Action` 行执行一次即丢弃（瞬态，不注册） | **缺省不注册**，须命令行 `--agent-hot-sql` 显式开启（配置文件的 `allow_hot_sql` 只能关不能开）；表名/列名须为安全标识符、驱动模块须已在模块路径下、`@Daemon` 行的 `chunk` 须为相对路径；校验全部只读，**任一步失败整批回滚**（逆序断电 + 注册表回退），但已下发的物理动作不回退。对照/查询请用 `query_sql` |
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节） |
@@ -637,6 +642,22 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
     残余如实声明：这条判据管的是**路径来源**，不是内容——CWD 之内的文件（包括攻击者自己
     放进去的）仍会被原样追加进系统提示词，这属第 8 条已声明的「提示词包按操作者写的原样
     追加」；真正的边界仍是「不要在不信任的目录里启动 mybot」。
+
+12. **`read_variables` 的可读集合只能由操作者显式列名**（2026-09-23 回读通道）。工具本身
+    是只读的（走 `playQuiet`，对 `daemon` 只是读已发布的采样快照，无 I2C 流量），但
+    **「能读哪些变量」无法靠种类自动判定**：`Servo.lua` / `Relay.lua` 与传感器同属
+    `kind=lua`，对它们调 `play()` 会**真驱动硬件**（`Relay` 的 `call({})` 会把 delay 转发给
+    controller）。因此口径是：
+    ① 可读集合由命令行 `--read-var <名>`（可重复）声明，**缺省不提供该工具**；
+    ② 配置文件写 `read_vars` 会被**拒绝加载并退出 2**（配置只能收紧不能放宽，与
+    `allow_shell` / `camera_src_dir` 同判据，理由同第 1 条：缺省查找会读 CWD 的
+    `./mybot.llm.json`）；
+    ③ 声明里已注册且种类为 `lua`/`daemon` 的名字才生效，其余**跳过并点名**（启动时打一行
+    `提示: …被跳过…`）——不因一个拼错的名字让整条能力静默失效，也绝不放行"种类不对"的
+    变量（`playQuiet` 对别的种类退化成 `play()`，与第 5 条 `capture_image` 的种类防线同一
+    理由）；一个都不可读时该工具不注册。
+    边界如实声明：**读传感器也可能有副作用**——部分器件的 `call` 会先写触发寄存器再读，
+    所以这是一次**派发**（照走任务预算与审计），不是"绝对不改状态"的承诺。
 
 ## 运行期依赖：libcurl
 

@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 十六个场景：
+# 十八个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -35,6 +35,9 @@
 #  14) --agent-hot-sql（2026-09-23 热插表）——模型经 apply_sql 给**带电常驻**的机器人
 #      追加硬件行：INSERT 后立即装配并上电，下一轮 list_hardware 的回执里必须出现
 #      新变量。14b 是对照：缺该开关时工具不在表内（回执点名「未知工具」、零变更）。
+#  15) --read-var（2026-09-23 回读通道 A）——模型经 read_variables 主动读硬件变量，
+#      回执里必须出现驱动返回表的键（relay0 经 controller 转发到 timer-0 的 slept）。
+#      15b 是对照：缺该开关时工具不在表内，**且线上工具定义里也没有它**。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -791,6 +794,51 @@ fi
 check "$out14b" "AGENT-E2E-完成" "未知工具之后循环照常收尾（不是会话事故）"
 check_json "$CAP14B" "'apply_sql' not in {t['function']['name'] for t in d.get('tools',[])}" \
 	"缺开关时线上工具定义里没有 apply_sql"
+
+# ============ 场景 15：--read-var（主动回读硬件变量） ============
+# 覆盖的是**接线**：可读集合的解析与截断/消毒已由 C++ 单测逐条钉住，这里钉端到端
+# 那条链——「模型 → 工具派发 → 真读到驱动返回表 → 回执带值」，以及工具真的出现在
+# 线上工具定义里（少传一个字段、回执吞掉返回值，两端单测都会漏）。
+echo "----- 场景 15：--read-var 主动回读硬件变量 -----"
+PORT=$((25000 + RANDOM % 300))
+CAP15="$tmp/req-readvars.json"
+start_server "$PORT" "$CAP15" readvars || exit 1
+out15="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--read-var relay0 --llm-config none --scripts-dir scripts \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--task "现在传感器读数是多少" 2>&1)"
+rc15=$?
+stop_server
+echo "$out15"
+if [ "$rc15" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc15"
+	fail=1
+fi
+check "$out15" "AGENT-E2E-完成" "回读之后工具循环仍能收尾"
+check "$out15" "slept" "read_variables 回执带回了驱动返回表里的读数"
+check_json "$CAP15" "'read_variables' in {t['function']['name'] for t in d.get('tools',[])}" \
+	"--read-var 时 read_variables 出现在工具定义里"
+
+# ============ 场景 15b：缺 --read-var 时 read_variables 不可用 ============
+# 同一条剧本的反向判据：缺省不注册该工具 ⇒ 模型那次调用只剩「未知工具」，
+# 且线上工具定义里没有它（"缺省即无此能力"这条口径在模型面上的表现）。
+echo "----- 场景 15b：缺 --read-var 时 read_variables 不可用 -----"
+CAP15B="$tmp/req-readvars-off.json"
+start_server "$PORT" "$CAP15B" readvars || exit 1	# 复用场景 15 的端口（其服务已停）
+out15b="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--task "现在传感器读数是多少" 2>&1)"
+rc15b=$?
+stop_server
+echo "$out15b"
+if [ "$rc15b" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc15b"
+	fail=1
+fi
+check "$out15b" "未知工具" "缺 --read-var 时 read_variables 不在工具表内（回执点名未知工具）"
+check "$out15b" "AGENT-E2E-完成" "未知工具之后循环照常收尾"
+check_json "$CAP15B" "'read_variables' not in {t['function']['name'] for t in d.get('tools',[])}" \
+	"缺 --read-var 时线上工具定义里没有 read_variables"
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

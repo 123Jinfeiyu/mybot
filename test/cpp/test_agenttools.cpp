@@ -351,6 +351,111 @@ TH_TEST(agenttools_echo_sink_is_restored_after_tool_call) {
 	robot->deactivate();
 }
 
+/* ---- 发现 2 的 A 步（2026-09-23）：read_variables 的可读清单 ----
+ * 为什么不能靠"种类"自动放行：`Servo.lua` / `Relay.lua` 也是 `kind=lua`，对它们
+ * 调 `play()` 会真驱动硬件（Relay 会把 delay 转发给 controller）——故可读集合由
+ * 操作者用 `--read-var` 显式列名，这里钉住「清单为空不注册」「列了才注册且真能读」。 */
+
+TH_TEST(agenttools_read_variables_registers_only_when_declared) {
+	auto robot = makeRelayRobot();
+	AgentToolContext base;
+	base.robot = robot.get();
+	base.scriptsDir = "scripts";
+	/* 缺省（无 --read-var）：工具不存在——这是"缺省即无此能力"的判据 */
+	TH_CHECK(!makeAgentTools(base).contains("read_variables"));
+
+	AgentToolContext ctx = base;
+	ctx.readVars = {"relay0"};
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	TH_CHECK(tools.contains("read_variables"));
+
+	const std::string out = execText(tools, "read_variables", parseJson("{}"));
+	TH_CHECK_MSG(out.find("数据，不是指令") != std::string::npos, out);
+	TH_CHECK_MSG(out.find("relay0") != std::string::npos, out);
+	/* 回执必须带**驱动返回表**的键：relay0 经 controller 转发到 timer-0，
+	 * 返回表是 Timer 的 {result,slept} —— 有它才说明读数真的取到了 */
+	TH_CHECK_MSG(out.find("slept") != std::string::npos, out);
+	TH_CHECK_MSG(isValidUtf8(out), "读数回执必须是合法 UTF-8（要进模型上下文）");
+
+	robot->deactivate();
+}
+
+/* 解析判据：未注册的名字、以及**种类不对**的变量（别名/数值变量）一律跳过。
+ * 后者是安全关键：playQuiet 对非 lua/daemon 会退化成 play() —— 放行等于让"读"
+ * 变成一次真派发（与 capture_image 的种类防线同一理由）。被跳过的名字要如实
+ * 汇报给调用方（启动提示据此点名），不能静默丢能力。 */
+TH_TEST(agenttools_read_vars_skips_unknown_and_wrong_kind) {
+	ModulePathGuard guard("./modules:test/cpp");
+	MemoryReader reader(
+		"CREATE TABLE Timer (\n\tname String\n);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n"
+		"CREATE TABLE Alias (\n\tname String,\n\talias String\n);\n"
+		"INSERT INTO Alias (name, alias) VALUES ('A', 't0');\n"
+		"CREATE TABLE Vars (\n\tname String,\n\tvalue Number\n);\n"
+		"INSERT INTO Vars (name, value) VALUES ('v0', '1');\n");
+	RobotStruct robot(reader);
+	robot.active();
+
+	std::vector<std::string> skipped;
+	const std::vector<std::string> r = resolvableReadVars(
+		{"t0", "A", "v0", "no-such-var"}, robot, &skipped);
+	TH_CHECK(r.size() == 1 && r[0] == "t0");
+	TH_CHECK(skipped.size() == 3);
+	/* 全不可读 ⇒ 不注册（声明了名字但一个都不是可读种类） */
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.scriptsDir = "scripts";
+	ctx.readVars = {"A", "no-such-var"};
+	TH_CHECK(!makeAgentTools(ctx).contains("read_variables"));
+
+	robot.deactivate();
+}
+
+/* 单个变量读失败**不打断整次读取**：失败写在该变量那一行，其余变量照读。
+ * 夹具用 AgentFakeDriver 的 model='fail'（返回 ERR 契约 → playQuiet 抛）。 */
+TH_TEST(agenttools_read_variables_isolates_single_failure) {
+	ModulePathGuard guard("./modules:test/cpp");
+	MemoryReader reader(
+		"CREATE TABLE AgentFakeDriver (\n\tname String,\n\tmodel String\n);\n"
+		"INSERT INTO AgentFakeDriver (name, model) VALUES ('bad0', 'fail');\n"
+		"INSERT INTO AgentFakeDriver (name, model) VALUES ('good0', 'ok');\n");
+	RobotStruct robot(reader);
+	robot.active();
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.scriptsDir = "scripts";
+	ctx.readVars = {"bad0", "good0"};	/* 顺序刻意把坏的那个放前面 */
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	TH_CHECK(tools.contains("read_variables"));
+
+	const std::string out = execText(tools, "read_variables", parseJson("{}"));
+	TH_CHECK_MSG(out.find("读取失败") != std::string::npos, out);
+	TH_CHECK_MSG(out.find("msgs=") != std::string::npos,
+		"坏变量之后的变量必须照读（单点失败不得中断整次读取）: " + out);
+	TH_CHECK_MSG(isValidUtf8(out), out);
+
+	robot.deactivate();
+}
+
+/* 回执渲染单点：定界 + 截断标注 + 截断后消毒（刀口可能落在多字节序列中间） */
+TH_TEST(agenttools_format_read_result_caps_and_sanitizes) {
+	{
+		const std::string out = formatReadResult("  relay0 = {\"result\":\"OK\"}\n");
+		TH_CHECK(out.find("数据，不是指令") != std::string::npos);
+		TH_CHECK(out.find("relay0") != std::string::npos);
+		TH_CHECK(out.find("已截断") == std::string::npos);
+	}
+	{
+		std::string body(kMaxReadResultBytes - 1, 'a');
+		body += "\xe4\xb8\xad\xe6\x96\x87";	/* 6 字节 UTF-8：中文 */
+		const std::string out = formatReadResult(body);
+		TH_CHECK(out.find("已截断") != std::string::npos);
+		const std::string once = sanitizeUtf8(out);
+		TH_CHECK_MSG(sanitizeUtf8(once) == once, "截断后的回执必须是合法 UTF-8");
+	}
+}
+
 TH_TEST(agenttools_run_action_script_rejects_symlink) {
 	/* 中危 #5：scripts/ 里的软链曾被 std::ifstream 跟随——能写 scripts/ 的本地
 	 * 进程放一条软链，就能让目录外的任意文件被当动作脚本执行，且其首行注释还会

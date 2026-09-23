@@ -140,6 +140,28 @@ TH_TEST(cliargs_hot_sql_flag_is_agent_only) {
 	}
 }
 
+/* 回读（2026-09-23，发现 2 的 A 步）：--read-var 是 agentOnly 的**可重复**带值
+ * 选项——`=` 与空格两种写法都收，且非 agent 模式下必须被拒。 */
+TH_TEST(cliargs_read_var_is_agent_only_and_repeatable) {
+	{
+		Argv a({"mybot", "--agent", "--robot=robots/test.sql",
+			"--read-var=relay0", "--read-var", "timer-0"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 0);
+		TH_CHECK(p.opts.readVars.size() == 2);
+		TH_CHECK(p.opts.readVars.size() == 2 && p.opts.readVars[0] == "relay0"
+			&& p.opts.readVars[1] == "timer-0");
+		TH_CHECK(p.opts.agentOptionsUsed);
+	}
+	{	/* 非 agent 模式：拒绝，退出码 2 */
+		Argv a({"mybot", "--robot=robots/test.sql", "--read-var=relay0"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(p.opts.readVars.size() == 1);	/* 解析层照样收 */
+		TH_CHECK(!p.opts.agent);
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+}
+
 /* A4：--llm-task-timeout 是 agentOnly 的带值选项——解析要落到 llmTaskTimeout，
  * 且在非 agent 模式下必须被拒（本仓口径：agent 专属选项不静默忽略）。 */
 TH_TEST(cliargs_task_timeout_option_is_parsed_and_agent_only) {
@@ -314,9 +336,11 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	 * --daemon-grace-ms（28）。PL-1（2026-09-22）加 --check-config（29）。第七轮审计
 	 * （2026-09-22）再加两项——--llm-task-timeout（A4 单任务墙钟预算）与
 	 * --camera-src-dir（H1 白名单根，命令行独占）（31）。热插表（2026-09-23）再加
-	 * 一项——--agent-hot-sql（apply_sql 显式开关，配置文件不能开）（32）。计数断言
+	 * 一项——--agent-hot-sql（apply_sql 显式开关，配置文件不能开）（32）。回读
+	 * （2026-09-23，发现 2 的 A 步）再加一项——--read-var（read_variables 的可读
+	 * 清单，可重复，配置文件不能开）（33）。计数断言
 	 * 是「帮助 ↔ docs 双向一致」守卫的一部分：随选项增删同步更新。 */
-	TH_CHECK(defs.size() == 32);
+	TH_CHECK(defs.size() == 33);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);

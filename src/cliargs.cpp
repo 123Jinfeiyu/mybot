@@ -47,6 +47,8 @@ constexpr OptionSpec kValueOptions[] = {
 	{"agent-policy", [](CliOptions& o, const std::string& v) { o.agentPolicy = v; }, true},
 	{"camera-src-dir", [](CliOptions& o, const std::string& v) { o.cameraSrcDir = v; }, true},
 	{"task", [](CliOptions& o, const std::string& v) { o.agentTask = v; }, true},
+	/* 可重复：每项一个可读变量名（发现 2 的 A 步，命令行独占） */
+	{"read-var", [](CliOptions& o, const std::string& v) { o.readVars.push_back(v); }, true},
 	{"scripts-dir", [](CliOptions& o, const std::string& v) { o.scriptsDir = v; }, true},
 	{"prompt-file", [](CliOptions& o, const std::string& v) { o.promptFiles.push_back(v); }, true},
 	{"llm-endpoint", [](CliOptions& o, const std::string& v) { o.llmEndpoint = v; }, true},
@@ -163,7 +165,7 @@ int validateOptions(ParsedArgs& args) {
 		 * 此前漏列 camera 四项——用户敲了 --no-camera 却被报「这些选项只在 agent
 		 * 模式下有效」，而文案里没有他刚敲的那一个，看起来像撞上了另一个错误。 */
 		std::cerr << "参数错误：--task / --llm-* / --scripts-dir / --agent-shell "
-			"/ --agent-hot-sql / --prompt-file / --camera-var / --camera-device / --camera-src "
+			"/ --agent-hot-sql / --read-var / --prompt-file / --camera-var / --camera-device / --camera-src "
 			"/ --no-camera / --check-config 只在 --agent 模式下有效；"
 			"用 --help 查看 agent 模式说明"
 			<< std::endl;
@@ -250,6 +252,11 @@ std::string helpText() {
 	s += "                       CREATE TABLE / INSERT INTO 会**立即装配并上电**（开 fd、\n";
 	s += "                       进断电清理链），失败整批回滚；**缺省不提供**，配置文件\n";
 	s += "                       的 allow_hot_sql 只能关不能开（只读的 query_sql 不受影响）\n";
+	s += "  --read-var <变量名>    声明一个**可读**硬件变量（可重复；注册 read_variables\n";
+	s += "                       工具，让智能体主动读器件当前值）。**缺省不提供**该工具：\n";
+	s += "                       只有列进来的变量可读——执行器（Servo/Relay 等）也是 Lua\n";
+	s += "                       驱动，靠种类分不出传感器与执行器，故由操作者显式声明；\n";
+	s += "                       配置文件写 read_vars 会被拒绝加载（与 --agent-shell 同判据）\n";
 	s += "  --agent-policy <路径> 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过\n";
 	s += "                       外部确认程序（stdin 收工具名与遮蔽后的参数 JSON，\n";
 	s += "                       退出 0 = 放行）；超时按 on_timeout（缺省 deny）处理；\n";
@@ -328,6 +335,9 @@ std::string helpText(const std::string& topic) {
 	s += "  --agent-hot-sql       允许智能体用结构 SQL 改硬件（注册 apply_sql 工具）：\n";
 	s += "                       CREATE TABLE / INSERT INTO 立即装配并上电，失败整批回滚；\n";
 	s += "                       **缺省不提供**，配置文件不能开（只读 query_sql 不受影响）\n";
+	s += "  --read-var <变量名>    声明一个可读硬件变量（可重复；注册 read_variables 工具）。\n";
+	s += "                       **缺省不提供**：执行器也是 Lua 驱动，靠种类分不出传感器\n";
+	s += "                       与执行器，故只有显式列进来的变量可读；配置文件不能开\n";
 	s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
 	s += "                       确认程序（stdin 收工具名与参数 JSON，退出 0 = 放行；\n";
 	s += "                       超时按 on_timeout，缺省 deny）；缺省不启用\n\n";

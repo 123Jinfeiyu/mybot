@@ -68,6 +68,12 @@ struct CliOptions {
 	 * 同样缺省不提供、同样只能由命令行 --agent-hot-sql 开启，配置文件的
 	 * allow_hot_sql **只能关不能开**。只读的 query_sql 不受此门控。 */
 	bool agentHotSql = false;	/* --agent-hot-sql：显式开启 apply_sql */
+	/* 回读（2026-09-23，发现 2 的 A 步）：`--read-var <名>`，可重复。
+	 * 只有列进来的变量才允许 `read_variables` 读——**命令行独占**，理由同
+	 * --agent-shell/--agent-hot-sql：它给模型一条"主动读硬件"的通道，配置文件
+	 * 写 read_vars 会被拒绝加载（缺省查找会读 CWD 的 ./mybot.llm.json，
+	 * 「这个文件存在」不构成授权）。清单为空 = 不注册该工具（缺省即无此能力）。 */
+	std::vector<std::string> readVars;
 	std::string llmEndpoint;
 	std::string llmModel;
 	std::string llmConfig;		/* --llm-config：配置文件路径（缺省自动查找） */

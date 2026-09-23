@@ -134,6 +134,11 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 			: "不提供 capture_image 工具") + "\n";
 	s += "  run_command : " + std::string(cfg.allowShell ? "已开启（--agent-shell）" : "未提供（缺省关）") + "\n";
 	s += "  apply_sql   : " + std::string(cfg.allowHotSql ? "已开启（--agent-hot-sql）" : "未提供（缺省关）") + "\n";
+	/* 回读：只报**声明了什么**（能不能解析要到上电后才知道，判据不在摘要这一层；
+	 * 会话开始时的提示会点名被跳过的名字）。 */
+	s += "  read_variables: " + (cfg.readVars.empty()
+			? std::string("未提供（缺省关；用 --read-var <变量名> 指定可读变量）")
+			: "已声明 " + std::to_string(cfg.readVars.size()) + " 项") + "\n";
 	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
 	s += "  策略钩子    : " + orNone(cfg.policyPath, "(未启用)") + "\n";
 	if (!cfg.configWarning.empty()) { s += "  配置告警    : " + cfg.configWarning + "\n"; }
@@ -475,6 +480,22 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
 
+	/* ---- 7b) 回读清单（发现 2 的 A 步，2026-09-23）----
+	 * `read_variables` 让模型**主动读硬件**。虽然读本身走 playQuiet（不改状态、
+	 * 对 daemon 只是读快照），但"能读哪些变量"仍是一条由操作者授予的能力：执行器
+	 * 与传感器**靠种类分不开**（Servo/Relay 也是 lua 驱动），所以清单必须由人列。
+	 * 同 --agent-shell / --agent-hot-sql / camera_src_dir 的判据：**只能命令行给**，
+	 * 配置文件里的 read_vars 一律拒绝加载并指名原因——缺省查找会读 CWD 的
+	 * ./mybot.llm.json，「这个文件存在」不构成授权。 */
+	out.readVars = opts.readVars;
+	if (file.readVars) {
+		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
+			+ " 设置了 read_vars：它决定模型能主动读哪些硬件变量（等同于给模型一条"
+			+ "读通道），只能由命令行 --read-var 逐个提供，配置文件不能给"
+			+ "（请删除该字段；与 allow_shell / camera_src_dir 同理，配置文件只能收紧不能放宽）";
+		return false;
+	}
+
 	/* ---- 8a) 上下文字节预算（B1）：配置文件覆盖编译期缺省；0 = 不限。
 	 * 严格解析（类型/区间/未知字段）已在 llmconfig 完成，这里只做搬运。 ---- */
 	if (file.maxHistoryBytes) { out.maxHistoryBytes = *file.maxHistoryBytes; }
@@ -598,6 +619,25 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	tctx.commandTimeoutSec = cfg.commandTimeoutSec;
 	tctx.maxCommandTimeoutSec = cfg.maxCommandTimeoutSec;
 	tctx.scriptTimeoutSec = cfg.scriptTimeoutSec;	/* PL-2：动作脚本执行预算 */
+	tctx.readVars = cfg.readVars;			/* 发现 2 的 A 步：声明原文（注册时解析） */
+	/* 声明的可读变量里被跳过的那些（未注册 / 种类不是 lua·daemon）如实告知：
+	 * 静默丢能力正是本项目反复要避免的形态——`--read-var` 敲错一个字，
+	 * 操作者必须能从启动输出里看出来，而不是等到模型说"我读不到"。 */
+	if (!cfg.readVars.empty()) {
+		std::vector<std::string> skipped;
+		const std::vector<std::string> resolved = resolvableReadVars(cfg.readVars, robot, &skipped);
+		if (resolved.empty()) {
+			log << "提示: --read-var 声明的变量一个都不可读（未注册，或种类不是 lua/daemon），"
+				"本次不提供 read_variables 工具\n";
+		}
+		if (!skipped.empty()) {
+			log << "提示: 以下 --read-var 声明被跳过（未注册，或种类不是 lua/daemon）: ";
+			for (std::size_t i = 0; i < skipped.size(); ++i) {
+				log << (i > 0 ? ", " : "") << skipped[i];
+			}
+			log << "\n";
+		}
+	}
 	if (cfg.allowCamera) {
 		tctx.camera = robot.registry().find(cfg.cameraVar);
 		tctx.cameraDevice = cfg.cameraDevice;

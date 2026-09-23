@@ -16,6 +16,8 @@
             | camera（先要求拍一张照片，再给最终回答——验证图片真的进了上下文）
             | hotsql（先要求 apply_sql 往既有表 INSERT 一行，再列硬件——验证结构
               SQL 真的带电生效；缺 --agent-hot-sql 时同一条剧本只剩「未知工具」）
+            | readvars（先要求 read_variables 读回可读变量——验证回读通道真的
+              把驱动返回表带进回执；缺 --read-var 时同一条剧本只剩「未知工具」）
             | manycalls[:N]（首轮返回 N 条工具调用，缺省 3；配合
               max_calls_per_round=2 触发宿主的单轮截断分支——SAN-1）
             | 429x2ok（前两次 429 + Retry-After: 1，第三次正常回答——SAN-3：
@@ -307,6 +309,17 @@ class Handler(BaseHTTPRequestHandler):
                     "VALUES ('relay-hot', 'timer-0', 'hot');"}))
             elif tool_results == 1:
                 self._reply(tool_call("list_hardware", {}))
+            else:
+                self._reply(final_answer())
+            return
+        # ---- 回读（2026-09-23，发现 2 的 A 步）：主动读硬件变量 ----
+        # 第一轮要求 read_variables（无参数，一次读全部可读变量），第二轮收尾——
+        # 回执里必须带驱动返回表的键（relay0 经 controller 转发到 timer-0，
+        # 返回表是 {result,slept}），这才叫"模型真的读到了值"。
+        # 同一条剧本在没有 --read-var 时是反向判据：工具没注册 ⇒ 只剩「未知工具」。
+        if MODE == "readvars":
+            if tool_results == 0:
+                self._reply(tool_call("read_variables", {}))
             else:
                 self._reply(final_answer())
             return

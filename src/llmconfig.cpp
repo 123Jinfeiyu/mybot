@@ -178,7 +178,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
 		"allow_hot_sql",
 		"prompt_files", "camera_var", "camera_device", "camera_src", "camera_src_dir",
-		"allow_camera", "audit_log", "agent_policy",
+		"allow_camera", "audit_log", "agent_policy", "read_vars",
 		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
 		"max_calls_per_round", "max_retries", "retry_backoff_ms",
 		"run_command_timeout_sec", "run_command_max_timeout_sec",
@@ -317,6 +317,9 @@ bool parseConfigBools(const std::string& path, const Json& root, LlmFileConfig& 
 	if (!wantBool(path, root, "allow_hot_sql", out.allowHotSql, err)) { return false; }
 	if (!wantStringArray(path, root, "prompt_files", out.promptFiles, err)) { return false; }
 	if (!wantBool(path, root, "allow_camera", out.allowCamera, err)) { return false; }
+	/* 回读清单：解析出来**只为了拒绝**（见 llmconfig.hpp 的 readVars 注释）——
+	 * 不在这里解析就会落到「未知字段」分支，报错会让人以为是拼写错误。 */
+	if (!wantStringArray(path, root, "read_vars", out.readVars, err)) { return false; }
 	return true;
 }
 

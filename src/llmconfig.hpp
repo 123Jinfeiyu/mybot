@@ -110,6 +110,11 @@ struct LlmFileConfig {
 	 * 同判据）。之所以仍列进已知字段而不是靠"未知字段"报错，是为了给出指名道姓的
 	 * 原因，而不是让人以为是拼写错误。 */
 	std::optional<std::string> cameraSrcDir;
+	/* 回读（2026-09-23，发现 2 的 A 步）：这个字段被解析出来**只为了拒绝它**——
+	 * `read_variables` 的可读清单只能由命令行 `--read-var` 提供（配置文件不能给
+	 * 模型开放"主动读硬件"的能力，与 allow_shell / camera_src_dir 同判据）。
+	 * 仍列进已知字段而不是靠"未知字段"报错，是为了给出指名道姓的原因。 */
+	std::optional<std::vector<std::string>> readVars;
 	std::optional<bool> allowCamera;
 	/* 审计轨迹落点（JSON Lines；"-" = stderr）。空/未配置 = 不记录。
 	 * 与 --audit-log 同义；命令行优先。 */
