@@ -154,8 +154,9 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   的工具描述，模型看到的「默认/最大」始终是生效值。
 
   重试动作本身写**日志流**（stderr，含第几次尝试、退避时长与驱动给的成因）：
-  `--verbose` 的工具日志、REPL 日志与它是同一条流；**stdout 只放模型回答**
-  （`--task` 的输出不能被日志污染）。
+  工具日志（`[工具] …`）、REPL 日志与它是同一条流——**恒开，没有开关**
+  （`--verbose` 从来不是本项目的选项，见 [reference.md](reference.md) 的选项表）；
+  **stdout 只放模型回答**（`--task` 的输出不能被日志污染）。
   **SAN-5（2026-09-22）**：动作脚本执行的框架回显（`----------` 分隔线与驱动结果表）
   原先走 `std::cout`，污染了这条约定——现已改走 stderr（回显没丢，只是换了流）。
   **D（2026-09-23）**：agent 模式下 `run_action_script` 的执行窗口内，这段回显改为
@@ -679,7 +680,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/jsonparse.{hpp,cpp}` | 严格 JSON 文本解析（宿主侧） | 无 |
 | `src/llmconfig.{hpp,cpp}` | 配置文件读取（JSON、严格校验、缺省查找、密钥文件与权限体检） | 无 |
 | `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
-| `src/agenttools.{hpp,cpp}` | 工具注册表与五个工具、脚本路径沙箱、硬件描述 | 无 |
+| `src/agenttools.{hpp,cpp}` | 工具注册表与各工具（含只读查询/回读、脚本路径沙箱、硬件描述）、回显回收与回执渲染 | 无 |
 | `src/agent_subprocess.{hpp,cpp}` | `run_command` 的子进程实现（超时、进程组终止、输出截断、环境清洗）＋宿主环境块密钥抹除 | 无 |
 | `src/agenthistory.{hpp,cpp}` | 会话历史所有权、单条消息线上体积估算、按任务块整块裁剪（重构 A1 自 agentloop 拆出） | 无 |
 | `src/agentbudget.{hpp,cpp}` | 任务内文本/图片预算、降级说明与记账（AG-4/21 语义单点，重构 A1 自 agentloop 拆出） | 无 |
@@ -701,7 +702,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 ## 测试
 
 ```bash
-bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（七场景）
+bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（十八场景）
 luajit test/test_json_lua.lua    # Lua JSON 编解码
 luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
 luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路径）
@@ -727,7 +728,7 @@ C++ 的 `agent:` 作用域 + agent CLI 负路径）。裸 `agent` 与 `agent:` *
 bash test/run_all.sh agent-all
 ```
 
-- `scripts/agent_e2e.sh` 用本地假模型服务跑七个场景（含 5b：配置文件来源的 camera_src 必须被拒，覆盖 H1 的接线）：默认驱动完整工具循环（并抓报文断言
+- `scripts/agent_e2e.sh` 用本地假模型服务跑十八个场景（含 5b：配置文件来源的 camera_src 必须被拒，覆盖 H1 的接线；14/14b：`--agent-hot-sql` 的带电生效与「缺开关即无此工具」对照；15/15b：`--read-var` 的回读与「缺声明即无此工具」对照）：默认驱动完整工具循环（并抓报文断言
   OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
   `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）、
   `--llm-config` 配置文件（URL/KEY/MODEL 全部来自文件，且**环境里不放任何密钥**）、

@@ -24,7 +24,7 @@
 
 ## 机制深入
 
-- [agent 模式](agent.md)——`--agent`：大模型工具循环驱动**常驻**机器人、Lua 协议驱动（`LlmOpenAI`/`LlmDeepSeek`）、五个工具与安全边界、运行期 libcurl
+- [agent 模式](agent.md)——`--agent`：大模型工具循环驱动**常驻**机器人、Lua 协议驱动（`LlmOpenAI`/`LlmDeepSeek`）、内置工具与安全边界、运行期 libcurl
 - [@Daemon 守护线程](daemon.md)——并发模型、万能采样 chunk、滤波器链路、采样→滤波→消费闭环
 - [HAL 硬件抽象层](hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
 - [虚拟总线 virtbus](virtbus.md)——无真机验证驱动链路的完整参考手册（含器件模型库与回归清单）

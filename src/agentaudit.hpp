@@ -2,7 +2,8 @@
 /* agentaudit.hpp —— agent 工具调用的审计轨迹（JSON Lines 追加写）
  *
  * 动机（docs/proposals/audit-approval-cancel.md P1）：agent 会话此前唯一的痕迹是
- * --verbose 的 stderr——无时间戳、无持久化、无结构化。现场机器人（部署形态 B）
+ * 日志流（stderr）上的工具回显——无时间戳、无持久化、无结构化（该日志**恒开**，
+ * 见 docs/agent.md；`--verbose` 不是本项目的选项）。现场机器人（部署形态 B）
  * 出事后「模型到底做了什么」无从复盘。本模块在**宿主工具派发的唯一漏斗**
  * （agentloop 的 dispatchOneCall）落一条 JSON Lines 记录。
  *
