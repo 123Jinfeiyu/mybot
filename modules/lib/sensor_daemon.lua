@@ -35,9 +35,16 @@ dofile(mpath.resolve("lib/HAL.lua"))	-- i2c/spi/uart 采样
 -- 的 checkDaemonProto/checkDaemonFields/checkDaemonSign，报错带守护名/列/表/行号）；
 -- 下面的解析对非法值仍保持宽容（打日志/透传），仅作为绕过框架直接注入
 -- DAEMON_CONFIG（如 test/test_h07_fd.lua）时的兜底，两处规则改动须同步。
+-- M6 修复（2026-09-23）：旧 gmatch "([^;=]+)=([^;]*)" 对含 = 的值静默截断
+-- （value 内第二个 = 被当新键分隔符，后段被当新键）。改按第一个 = 分割。
 local cfg = {}
-for k, v in string.gmatch(DAEMON_CONFIG or "", "([^;=]+)=([^;]*)") do
-	cfg[k] = v
+for pair in string.gmatch(DAEMON_CONFIG or "", "([^;]+)") do
+	local eq = string.find(pair, "=")
+	if eq then
+		local k = string.sub(pair, 1, eq - 1)
+		local v = string.sub(pair, eq + 1)
+		cfg[k] = v
+	end
 end
 
 local driver = cfg.driver
@@ -190,8 +197,24 @@ if not ok_load then
 	fail(-8, "cannot load driver: " .. drvpath .. " (" .. tostring(load_err) .. ")"); return
 end
 
--- 高速采样中静默驱动的 print 刷屏（本状态机独立）
-print = function() end
+-- M6 修复（2026-09-23）：setup 成功后无条件 print=function()end 吞掉驱动 tick 期全部
+-- 诊断输出（驱动内仿真模型打的波形合成日志、异常条件等）。改为限频透传：
+-- 每秒最多打印 5 次，超出时静默（避免高速采样刷屏，同时保留关键诊断输出）。
+local print_count = 0
+local print_reset_time = os.time()
+local PRINT_LIMIT_PER_SEC = 5
+local original_print = print
+print = function(...)
+	local now = os.time()
+	if now ~= print_reset_time then
+		print_reset_time = now
+		print_count = 0
+	end
+	if print_count < PRINT_LIMIT_PER_SEC then
+		print_count = print_count + 1
+		original_print(...)
+	end
+end
 
 -- proto=virt 显著横幅：仿真数据绝不能被误当成真机采样（防生产环境误用）
 if proto == "virt" then

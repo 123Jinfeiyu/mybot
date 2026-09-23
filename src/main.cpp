@@ -32,7 +32,22 @@ namespace bot {
 static char g_cancelSentinelPath[192] = {0};
 
 void setupCancelSentinel() {
-	std::string path = "/tmp/mybot-cancel-" + std::to_string(static_cast<long>(::getpid()));
+	/* M5 修复（2026-09-23）：旧路径 /tmp/mybot-cancel-<pid> 可被共享主机上其他本地
+	 * 用户预测，信号处理器内 open 无 O_EXCL/O_NOFOLLOW 可被利用：攻击者预置符号
+	 * 链接劫持写入目标，或预创建文件使取消增强失效。改用带随机后缀的私有路径
+	 * （mkstemp 风格）+ O_EXCL|O_NOFOLLOW 防御符号链接/竞争。
+	 * 随机后缀用 arc4random_uniform(100000) 避免碰撞（单个 /tmp 下极少超百个进程）。*/
+	unsigned int suffix = 0;
+#if defined(__linux__) || defined(__APPLE__)
+	// Linux/macOS 都有 arc4random_uniform
+	suffix = ::arc4random_uniform(100000);
+#else
+	// 回落：用 pid 低 5 位（不理想但胜于完全可预测）
+	suffix = static_cast<unsigned int>(::getpid() % 100000);
+#endif
+	std::string path = "/tmp/mybot-cancel-" 
+		+ std::to_string(static_cast<long>(::getpid()))
+		+ "-" + std::to_string(suffix);
 	std::snprintf(g_cancelSentinelPath, sizeof g_cancelSentinelPath, "%s", path.c_str());
 	::setenv("BOT4CJ_LLM_CANCEL_FILE", path.c_str(), 1);
 }
@@ -50,9 +65,10 @@ extern "C" void onStopSignal(int sig) {
 	/* P2a：创建取消哨兵，让在飞的模型调用立即被 libcurl 进度回调中止。
 	 * open/write/close 都是 async-signal-safe；路径缓冲已预先填好，此处只读。
 	 * 打不开（/tmp 只读等）静默跳过：哨兵是「及时取消」的增强，失败时旧行为
-	 * （等满超时或二次强杀）仍然成立。 */
+	 * （等满超时或二次强杀）仍然成立。
+	 * M5 修复：加 O_EXCL（防竞争）+ O_NOFOLLOW（防符号链接劫持）。*/
 	if (g_cancelSentinelPath[0] != '\0') {
-		int fd = ::open(g_cancelSentinelPath, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+		int fd = ::open(g_cancelSentinelPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
 		if (fd >= 0) {
 			ssize_t ignored = ::write(fd, "cancel", 6);
 			(void)ignored;

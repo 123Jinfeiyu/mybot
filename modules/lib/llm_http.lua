@@ -57,6 +57,7 @@ local session_seq = 0
 -- 没装时该自检不产出、run_all.sh 按跳过计；CI 已安装以保证门禁覆盖）
 local OPT_URL = 10002
 local OPT_POSTFIELDS = 10015
+local OPT_COPYPOSTFIELDS = 10165
 local OPT_POSTFIELDSIZE = 60
 local OPT_WRITEFUNCTION = 20011
 local OPT_HTTPHEADER = 10023
@@ -274,8 +275,14 @@ function Session:post(opts)
 			.. "（严格网关会以 400 拒绝此类请求；请检查工具输出与提示词来源）\n")
 		body = utf8.sanitize(body)
 	end
+	-- M4 修复（2026-09-23）：CURLOPT_POSTFIELDS **不拷贝**传入的指针，而 Lua 字符串
+	-- 由 GC 管理，curl_easy_perform 期间若触发 GC 就可能移动或释放该字符串——当前
+	-- 仅因 body 是本函数的 live local 才不出事（变量栈上有引用、GC 不会回收）。
+	-- 用 CURLOPT_COPYPOSTFIELDS 让 libcurl 在 setopt 时立即拷贝一份副本到句柄内部，
+	-- 后续与 Lua 字符串生命周期脱钩；reset 时 libcurl 自动释放该副本。
+	-- URL 同理：CURLOPT_URL 也不拷贝，但 url 同样是本函数 live local，当前安全。
 	setopt_ptr(h, OPT_URL, url)
-	setopt_ptr(h, OPT_POSTFIELDS, body)
+	setopt_ptr(h, OPT_COPYPOSTFIELDS, body)
 	setopt_long(h, OPT_POSTFIELDSIZE, #body)
 	setopt_ptr(h, OPT_WRITEFUNCTION, cb)
 	-- Retry-After 捕获（SAN-3，2026-09-22）：限流场景下**服务端说了等多久**，
