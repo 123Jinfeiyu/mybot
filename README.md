@@ -424,7 +424,7 @@ MYBOT在设计时将安全放在首位：
 ### 技术特性
 
 - **零C++依赖** - 仅需 LuaJIT + pthread + dl + libm，连HTTP库都是Lua FFI实现
-- **多模型支持** - 内置 OpenAI / DeepSeek 协议，换模型=换lua文件
+- **多模型支持** - 内置 OpenAI / DeepSeek / Anthropic 三套协议，换模型=换lua文件（宿主零改，Anthropic 驱动即这条承诺的验证实例）
 - **工业级测试** - 580+ C++单测 + 80+ Lua测试文件 + 三道sanitizer门禁
 - **跨平台** - Linux aarch64/x86_64，树莓派实测可用
 
@@ -480,6 +480,19 @@ echo "你是一个谨慎的机器人..." > prompts/my_robot/01-identity.md
 # 客户端发送
 (echo "secret123"; cat scripts/std.mt) | nc server_ip 8080
 ```
+
+### 远程对话（agent over TCP）
+
+```bash
+# 机器人侧：远程 REPL，对端每行一条任务
+./build/mybot --robot=robots/spider1.sql --agent --tcp 9000
+
+# 客户端：先发口令（跨机时），再逐行下发任务
+(echo "$TOKEN"; echo "让机器人站立"; sleep 5; echo "/exit") | nc robot-ip 9000
+```
+
+缺省只监听回环；跨机必须 `--tcp-token`。对端断开连接即**远程取消**（在飞的模型
+调用被立即中止），空闲超时缺省 600 秒——设计取舍见 [docs/agent.md](docs/agent.md)。
 
 ### Sanitizer调试
 

@@ -21,7 +21,7 @@
 ## 快速开始
 
 无硬件自检链路（推荐第一条命令）。**endpoint 必须显式配置**（B2 起不再有内置缺省，
-见[下文](#内置两个协议驱动)）：
+见[下文](#内置三个协议驱动)）：
 
 ```bash
 export BOT4CJ_LLM_KEY=sk-xxx
@@ -262,12 +262,13 @@ API key 不在这个表里——驱动自己读环境变量。
 > 假模型服务 `scripts/fake_llm_server.py` 会像 DeepSeek 一样校验工具 schema，
 > 这类问题在离线守门即可暴露。
 
-### 内置两个协议驱动
+### 内置三个协议驱动
 
 | 驱动 | 接入点（缺省） | 模型（缺省） | 特点 |
 | --- | --- | --- | --- |
 | `LlmOpenAI` | **无缺省（必须显式配置，B2）** | `zhipu/glm-5.3-flash` | OpenAI 兼容：「当前协议」 |
 | `LlmDeepSeek` | `https://api.deepseek.com/chat/completions` | `deepseek-chat` | DeepSeek：思考模式 + `reasoning_content` |
+| `LlmAnthropic` | **无缺省（必须显式配置）** | `claude-sonnet-4-5` | Anthropic Messages：`system` 顶层字段、`tool_use`/`tool_result` 块、`x-api-key` 鉴权（批次 3） |
 
 > **【破坏性变更，B2（2026-09-22）】`LlmOpenAI` 不再内置缺省接入点**：原缺省指向
 > 特定第三方网关（moma.cmecloud.cn），「什么都没配就跑起来」的会话会把含结构
@@ -288,6 +289,30 @@ API key 不在这个表里——驱动自己读环境变量。
 3. **采样参数限制**：思考模式不支持 `temperature`（传了也被静默忽略），`top_p` 生效但
    下限被抬到 0.95；非思考模式 `top_p` 恒为 1.0。驱动按模式决定发什么，
    避免「发了一个看起来生效、其实被忽略」的参数。
+
+第三驱动 `LlmAnthropic`（2026-09-23，批次 3）承载的**不是又一份字段表，而是
+「换模型 = 换 lua 文件」这条承诺的验证实例**：它的报文形状与 OpenAI 系差别最大，
+而接入方式是同一行 `--llm-driver LlmAnthropic`，**宿主一行未改**
+（该批的验收线即 `git diff --stat src/` 为空）。与 OpenAI 系的四处形状差异
+全部收敛在 `lib/llm_wire_anthropic.lua`：
+
+1. **`system` 是顶层字段**，不是 messages 里的一条——驱动从规范化历史里把它抽出来；
+2. **工具调用是 assistant 的 `tool_use` 内容块**，`input` 是**对象**（规范化侧给的是
+   `arguments` JSON 字符串，驱动负责解码；非法 JSON 响亮拒绝，不发出去拿含混 400）；
+3. **工具结果是 user 消息里的 `tool_result` 块**，且连续的多个 tool 消息必须并进
+   **同一条** user 消息——Anthropic 要求 messages 严格 user/assistant 交替，
+   多做一条消息就是 400（驱动构建后另有一道交替自检，报错点名第几条）；
+4. **鉴权是 `x-api-key`**（不是 `Authorization: Bearer`）且必须带
+   `anthropic-version` 头。
+
+另有两处 provider 约束与 OpenAI 系不同，驱动按「响亮拒绝不静默」处置：
+`temperature` 只接受 `[0, 1]`（宿主允许到 2，越界即 ERR 并点名，不静默钳制）；
+`max_tokens` 是**必填**。响应侧的差异同样抹平：`content` 块数组里 text 段拼接、
+`tool_use` 转规范化 `tool_calls`、非文本非工具块（如扩展思考的 thinking）丢弃但
+**计数并如实上报**（进 `extras.dropped_content_blocks`，与 PL-3 的诚实口径一致），
+`usage` 的 `input_tokens`/`output_tokens` 映射到审计认得的
+`prompt_tokens`/`completion_tokens`，`stop_reason` 也进 `extras`（排障时
+「是不是被 max_tokens 截断了」全靠它）。
 
 ### 结构脚本声明 vs 自动注入
 
@@ -914,9 +939,12 @@ bash test/run_all.sh agent-all
   超限图先编码等）已在 AG-19 收口；剩下的是传输层架构问题（要真正压下来得让图片
   以引用/流式形态穿过这条链），本版未做。小内存现场（树莓派 Zero 级）请留意：
   一次拍照的瞬时占用可达数十 MiB，而 OOM 会跳过 `deactivate()`。
-- 无记忆持久化（重启即忘）。
-- 只实现了两个 OpenAI 兼容协议驱动；接非 OpenAI 形态的厂商（如 Anthropic）需要新写一个驱动
-  （协议整形全在 Lua 侧，宿主不用改）。
+- ~~无记忆持久化（重启即忘）~~ → **已解决**（`--session-file` / `--resume`，批次 1）。
+  边界：图片不随会话恢复（以占位文本在列）；system 提示词/工具集/结构脚本变了会
+  拒绝恢复（指纹核对）。
+- ~~只实现了两个 OpenAI 兼容协议驱动~~ → **已解决**（`LlmAnthropic`，批次 3）。
+  它是「宿主零改」的验证实例：协议整形全在 Lua 侧，接入非 OpenAI 形态的厂商仍
+  只需新写一个驱动（照抄 `lib/llm_wire_anthropic.lua` 的形状分派即可）。
 - **摄像头只支持 MJPEG**：仅提供 YUYV 的设备会返回清晰 ERR（YUYV 要自带 JPEG 编码器或引入
   libjpeg，都比直接取 MJPEG 贵得多，而 USB 摄像头普遍支持 MJPEG）。树莓派 CSI 摄像头走
   libcamera、不经 V4L2 这条路径，也不在本驱动范围内。

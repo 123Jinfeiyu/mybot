@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 二十个场景：
+# 二十一个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -42,7 +42,10 @@
 #      「token → 任务 → 工具调用 → 回显」全链路；对照三条：错 token 被拒、
 #      空闲超时按输入结束收尾（不是挂死）、**发出任务后断开连接 = 远程取消**
 #      （在飞的模型调用被立刻中止，而不是等满 --llm-timeout）。
-#  17) --session-file / --resume（2026-09-23 批次 1）——**两个进程接力**：第一个进程
+#  21) LlmAnthropic（2026-09-23 批次 3）——第三个协议驱动：同一二进制换驱动即
+#      换协议（system 顶层 / tool_use 与 tool_result 块 / input_schema /
+#      x-api-key 头），工具循环与动作执行照常；宿主零改是前提。
+#  16) --session-file / --resume（2026-09-23 批次 1）——**两个进程接力**：第一个进程
 #      落盘会话文件；第二个进程带 --resume 启动，其**首个请求**里必须带第一个进程的
 #      对话（这是"重启不忘记"的唯一判据）。同场对照：指纹不符（换结构脚本）必须拒绝
 #      恢复并退出 2；缺 --session-file 的 --resume 必须退出 2（恢复只认命令行路径）。
@@ -1101,6 +1104,51 @@ if ls /tmp/mybot-cancel-* >/dev/null 2>&1; then
 else
 	echo "  [OK] 取消哨兵无残留"
 fi
+
+# ============ 场景 21：LlmAnthropic（第三个协议驱动，批次 3）============
+# 「换模型 = 换 lua 文件」的验证实例：同一份 mybot 二进制、同一条工具循环，
+# 只换 --llm-driver，报文就换成 Anthropic Messages 形态。断言分两层：
+#   ① 形状差异真的被驱动抹平（system 顶层 / tool_use 块 / tool_result 并进
+#      user 消息 / input_schema / required 为数组 / 带 anthropic-version 与
+#      x-api-key 而不是 Authorization）；
+#   ② 工具循环照常跑通（动作脚本在常驻机器人上真被执行 + 最终回答回写 stdout）。
+# 宿主零改是本场景的前提（同一二进制在场景 1 里跑的是 OpenAI 形态）。
+echo "----- 场景 21：LlmAnthropic（第三个协议驱动） -----"
+PORT=$((21800 + RANDOM % 200))
+CAP21="$tmp/req-anthropic.json"
+HDR21="$tmp/hdr-anthropic.txt"
+start_server "$PORT" "$CAP21" anthropic "$HDR21" || exit 1
+out21="$(BOT4CJ_LLM_KEY=e2e-anthropic-key timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent --llm-driver LlmAnthropic \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/messages" \
+	--task "先看硬件，再让继电器动作一次" 2>&1)"
+rc21=$?
+stop_server
+echo "$out21"
+if [ "$rc21" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc21"
+	fail=1
+fi
+check "$out21" "已执行动作脚本 relay-test.mt" "工具循环跑通（动作脚本真的被执行）"
+check "$out21" "AGENT-E2E-完成" "最终回答经既有 stdout 通道返回"
+check_json "$CAP21" "'system' in d and all(m['role'] != 'system' for m in d['messages'])" \
+	"system 提示词抽到顶层字段（Anthropic 形态），不进 messages"
+# 过渡语在前是合法形态（模型可以先说一句再调用），所以判据是「存在 tool_use 块
+# 且 input 是对象」，而不是「第一个块必须是 tool_use」——写死索引的判据会把
+# 正确的报文判红（本场景首跑就是这么红的）。
+check_json "$CAP21" "any(b.get('type') == 'tool_use' and isinstance(b.get('input'), dict) for b in d['messages'][1]['content'])" \
+	"工具调用表达为 tool_use 块且 input 是对象（规范化侧是字符串）"
+check_json "$CAP21" "d['messages'][2]['role'] == 'user' and d['messages'][2]['content'][0]['type'] == 'tool_result'" \
+	"工具结果是 user 消息里的 tool_result 块（不是独立的 tool 角色）"
+check_json "$CAP21" "all('input_schema' in t and 'function' not in t for t in d['tools'])" \
+	"工具声明用 input_schema（无 function 外壳）"
+check_json "$CAP21" "all(isinstance(t['input_schema'].get('required'), list) for t in d['tools'])" \
+	"input_schema.required 是数组（空对象形态会被真机 400）"
+check_json "$CAP21" "all(d['messages'][i]['role'] != d['messages'][i-1]['role'] for i in range(1, len(d['messages'])))" \
+	"messages 严格 user/assistant 交替（本协议的硬要求）"
+check_present "$HDR21" "x-api-key: e2e-anthropic-key" "鉴权走 x-api-key 头"
+check_absent "$HDR21" "Authorization: Bearer" "不用 OpenAI 系的 Authorization: Bearer"
+check_present "$HDR21" "anthropic-version: 2023-06-01" "带 anthropic-version 头"
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

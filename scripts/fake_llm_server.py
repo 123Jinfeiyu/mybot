@@ -57,6 +57,35 @@ def tool_call(name, arguments):
     }
 
 
+def anthropic_tool_call(name, arguments):
+    """Anthropic Messages 形态的一轮工具调用应答（批次 3）。
+
+    与 OpenAI 系的差别正是驱动要抹平的那些：content 是**块数组**、
+    工具调用是 tool_use 块（input 是对象）、没有 choices 外壳。
+    """
+    return {
+        "content": [
+            {"type": "text", "text": "调用工具 %s。" % name},
+            {"type": "tool_use", "id": "toolu_%s" % name, "name": name,
+             "input": arguments},
+        ],
+        "stop_reason": "tool_use",
+        "usage": {"input_tokens": 111, "output_tokens": 22},
+    }
+
+
+def anthropic_final_answer():
+    """Anthropic 形态的最终回答（含 usage：字段名与 OpenAI 系不同）"""
+    return {
+        "content": [
+            {"type": "text",
+             "text": "AGENT-E2E-完成：已查看硬件，继电器动作已执行，命令已运行。"},
+        ],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1234, "output_tokens": 56},
+    }
+
+
 def final_answer():
     # SAN-9：带上 provider 的 usage——宿主的审计模型记录要挑 prompt_tokens /
     # completion_tokens 记账（只记 provider 给的数，不推算）。真机也这么返回。
@@ -152,6 +181,26 @@ def schema_error(request):
     把真机的校验前移到离线守门里。
     """
     for t in request.get("tools", []):
+        # 形状分派（批次 3）：OpenAI 系把声明包在 function 里（parameters），
+        # Anthropic 是扁平的 name/input_schema。夹具按请求自身的形状选判据——
+        # 判据本身仍与真机一样严，只是不再用一种协议的尺子量另一种协议的报文。
+        if t.get("function") is None and "input_schema" in t:
+            name = t.get("name")
+            schema = t.get("input_schema")
+            if not isinstance(schema, dict):
+                return ("Invalid schema for tool '%s': input_schema must be an object"
+                        % name)
+            if schema.get("type") != "object":
+                return ('Invalid schema for tool \'%s\': type must be "object"' % name)
+            req = schema.get("required")
+            if req is not None and not isinstance(req, list):
+                return ('Invalid schema for tool \'%s\': %s is not of type "array"'
+                        % (name, json.dumps(req)))
+            props = schema.get("properties")
+            if props is not None and not isinstance(props, dict):
+                return ('Invalid schema for tool \'%s\': properties is not of type "object"'
+                        % name)
+            continue
         fn = t.get("function") or {}
         name = fn.get("name")
         params = fn.get("parameters")
@@ -252,8 +301,21 @@ class Handler(BaseHTTPRequestHandler):
             if bad is not None:
                 self._error_400(bad)
                 return
-        tool_results = sum(1 for m in request.get("messages", [])
-                           if m.get("role") == "tool")
+        # 工具结果的**计数**同样按形状分派（批次 3）：OpenAI 系是独立的
+        # role="tool" 消息；Anthropic 把结果并进 user 消息的 tool_result 块里
+        # （role="user"）。只认前者会让 Anthropic 形态的剧本永远停在第一轮
+        # ——实测就是「达到工具轮次上限 8 轮」，表现与「驱动没把结果带回去」
+        # 一模一样，很容易误判成驱动的错。
+        def _has_tool_result(m):
+            if m.get("role") == "tool":
+                return True
+            content = m.get("content")
+            if isinstance(content, list):
+                return any(isinstance(b, dict) and b.get("type") == "tool_result"
+                           for b in content)
+            return False
+
+        tool_results = sum(1 for m in request.get("messages", []) if _has_tool_result(m))
 
         # ---- SAN-1：单轮返回 N 条工具调用（触发宿主的单轮上限截断分支）----
         # 缺省剧本每轮只返回 1 条调用，而 max_calls_per_round 缺省 16
@@ -288,6 +350,20 @@ class Handler(BaseHTTPRequestHandler):
                 "rate limited (fake gateway, %s)" % MODE,
                 retry_after=1,
                 kind="rate_limit_error" if MODE == "429x2ok" else "server_error")
+            return
+
+        # ---- Anthropic 形态（2026-09-23 批次 3）：第三协议驱动 ----
+        # 剧本与默认模式同构（列硬件 → 跑动作脚本 → 收尾），只是**报文形态**
+        # 全部换成 Anthropic 的块数组。驱动侧要把它们归一成规范化的
+        # {result="OK", content, tool_calls, extras, usage}，宿主一行不改。
+        if MODE == "anthropic":
+            if tool_results == 0:
+                self._reply(anthropic_tool_call("list_hardware", {}))
+            elif tool_results == 1:
+                self._reply(anthropic_tool_call("run_action_script",
+                                                {"script": "relay-test.mt"}))
+            else:
+                self._reply(anthropic_final_answer())
             return
 
         if MODE == "camera":

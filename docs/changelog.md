@@ -6,6 +6,42 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-23 第三个协议驱动 LlmAnthropic（批次 3）
+
+> 守门快照：`luajit test/test_llm_drivers.lua` **215 / 0**（本批新增 30 条
+> Anthropic 断言）、agent E2E **21 场景**（新增场景 21：换驱动即换协议，
+> 11 条线上报文/鉴权头断言）、全量 `run_all.sh` **267 / 0 / 3** rc=0、
+> 零告警构建。
+> **验收线即「宿主零改」**：`git diff --stat src/` 为空——本批一行 C++ 都没动。
+> 反向验证与夹具加固：假模型服务新增 Anthropic 应答形态后，它的两处
+> OpenAI 形状假设（工具 schema 校验、工具结果计数）先后**误判正确的报文**，
+> 已按形状分派修正；其中一处（无参工具 `required` 被转成 `{}` 空对象）
+> 正是新驱动**真实的缺陷**——夹具与真机一样严格，把它在上线前抓了出来。
+
+- **`LlmAnthropic`**（`--llm-driver LlmAnthropic`）：Anthropic Messages 协议驱动。
+  选它的理由不是「多支持一家厂商」，而是**验证规范化协议抽象是否真的成立**：
+  它与 OpenAI 系的形状差异最大，若驱动层能独立承担，则「换模型 = 换 lua 文件」
+  这条承诺对所有协议都成立；它反过来也检验了宿主抽象有没有漏（本批零改通过，
+  说明没有）。
+- **四处形状差异全部收敛在 `lib/llm_wire_anthropic.lua`**：① `system` 抽到顶层字段
+  且不进 messages；② 工具调用表达为 assistant 的 `tool_use` 块、`input` 是**对象**
+  （规范化侧是 `arguments` JSON 字符串，驱动解码，非法 JSON 响亮拒绝）；③ 工具结果
+  并进**一条** user 消息的 `tool_result` 块（Anthropic 要求严格 user/assistant 交替，
+  构建后另有一道交替自检）；④ 鉴权用 `x-api-key` + `anthropic-version` 头。
+- **两处 provider 约束按「响亮拒绝不静默」处置**：`temperature` 只接受 `[0, 1]`
+  （宿主允许到 2，越界即 ERR 点名，不静默钳制）；`max_tokens` 必填。
+- **响应侧同样抹平**：`content` 块数组的 text 段拼接、`tool_use` 转规范化
+  `tool_calls`、非文本非工具块（扩展思考的 thinking）丢弃但**计数入审计**
+  （`extras.dropped_content_blocks`）、`usage` 的 `input_tokens`/`output_tokens`
+  映射到审计认得的 `prompt_tokens`/`completion_tokens`、`stop_reason` 进 `extras`
+  （排障要知道是不是被 `max_tokens` 截断）。
+- **接入点无缺省（fail-closed，B2 同口径）**；API key 读取链在 OpenAI 系基础上
+  追加 `ANTHROPIC_API_KEY`。
+- 文档：`docs/agent.md` 的「内置三个协议驱动」表与形状差异说明、
+  `docs/testing.md` 的用例描述、`README.md` 的多模型支持与「远程对话」节；
+  「已知限制」里「无记忆持久化」与「只有两个协议驱动」两条**标记为已解决**
+  （分别由批次 1、批次 3 消掉）。
+
 ### 2026-09-23 agent over TCP（`--agent --tcp`，批次 2）
 
 > 守门快照：C++ 单测 **614 / 0**、agent E2E **20 场景**（新增场景 20 四段：

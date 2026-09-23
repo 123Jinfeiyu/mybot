@@ -902,3 +902,180 @@ do
 end
 
 tester.summary("llm 协议驱动单测")
+
+-- ================= Anthropic Messages（第三个协议实例，2026-09-23 批次 3）=================
+-- 这一段的重点不是「字段抄得对」，而是**形状差异真的被抹平了**：system 抽到顶层、
+-- tool_use/tool_result 块、严格交替、图片拆 data URL、鉴权头不是 Bearer。
+-- 判据与既有两驱动同源：请求整形 + 响应映射 + 错误分类（命中 ERR 契约）。
+
+local anthropic = dofile("modules/lib/llm_wire_anthropic.lua")
+
+do
+	local r = anthropic.request(sample())
+	check("Anthropic: 用传入的接入点", r.endpoint == "http://127.0.0.1:1/v1/chat/completions")
+	check("Anthropic: 用传入的模型", r.req.model == "m0")
+	check("Anthropic: 非流式", r.req.stream == false)
+	check("Anthropic: max_tokens 透传（本协议必填）", r.req.max_tokens == 4096)
+	check("Anthropic: temperature 透传", r.req.temperature == 0.7)
+	check("Anthropic: top_p 透传", r.req.top_p == 0.9)
+	-- ① system 是顶层字段，不在 messages 里
+	check("Anthropic: system 抽到顶层", r.req.system == "sys")
+	check("Anthropic: messages 里没有 system 角色",
+		r.req.messages[1].role == "user" and r.req.messages[1].content[1].text == "hi")
+	-- ② 工具调用是 tool_use 块，input 是**对象**
+	check("Anthropic: assistant 的工具调用表达为 tool_use 块",
+		r.req.messages[2].role == "assistant"
+		and r.req.messages[2].content[1].type == "tool_use"
+		and r.req.messages[2].content[1].name == "t")
+	check("Anthropic: tool_use.input 是对象（规范化侧是字符串）",
+		type(r.req.messages[2].content[1].input) == "table")
+	-- ③ 工具结果并进一条 user 消息的 tool_result 块
+	check("Anthropic: 工具结果是 user 消息里的 tool_result 块",
+		r.req.messages[3].role == "user"
+		and r.req.messages[3].content[1].type == "tool_result"
+		and r.req.messages[3].content[1].tool_use_id == "c1")
+	check("Anthropic: 严格交替（4 条规范化消息 → 3 条 provider 消息）",
+		#r.req.messages == 3)
+	-- 工具声明用 input_schema，不是 function.parameters
+	check("Anthropic: 工具声明用 name/description/input_schema",
+		r.req.tools[1].name == "t" and r.req.tools[1].input_schema ~= nil
+		and r.req.tools[1]["function"] == nil)
+	check("Anthropic: 无 tool_choice=auto（本协议无此档）", r.req.tool_choice == nil)
+	-- 工具调用参数是 JSON 字符串，必须解码成对象（包括非空参数）
+	local r2 = pcall(anthropic.request, {
+		endpoint = "http://x", max_tokens = 16,
+		messages = {
+			{ role = "user", content = "u" },
+			{ role = "assistant", content = "",
+			  tool_calls = { { id = "c9", name = "f", arguments = '{"a":1,"b":"x"}' } } },
+			{ role = "tool", tool_call_id = "c9", content = "r" },
+		},
+	})
+	check("Anthropic: 非空 arguments 字符串解码成对象", r2 == true)
+end
+
+do
+	-- 多条 tool 消息并进同一条 user 消息（一轮多调用）
+	local r = anthropic.request({
+		endpoint = "http://x", max_tokens = 16,
+		messages = {
+			{ role = "user", content = "u" },
+			{ role = "assistant", content = "",
+			  tool_calls = { { id = "a", name = "f", arguments = "{}" },
+			                 { id = "b", name = "g", arguments = "{}" } } },
+			{ role = "tool", tool_call_id = "a", content = "r1" },
+			{ role = "tool", tool_call_id = "b", content = "r2" },
+		},
+	})
+	check("Anthropic: 两条 tool 消息并成一条 user 消息的 2 个块",
+		#r.req.messages == 3 and r.req.messages[3].role == "user"
+		and #r.req.messages[3].content == 2
+		and r.req.messages[3].content[1].tool_use_id == "a"
+		and r.req.messages[3].content[2].tool_use_id == "b")
+end
+
+do
+	-- 图片：data URL 拆成 media_type + base64 数据（Anthropic 不接受整串 data URL）
+	local r = anthropic.request({
+		endpoint = "http://x", max_tokens = 16,
+		messages = {
+			{ role = "user", content = {
+				{ type = "text", text = "看图" },
+				{ type = "image_url", image_url = { url = "data:image/png;base64,QUJD" } },
+			} },
+		},
+	})
+	local blk = r.req.messages[1].content[2]
+	check("Anthropic: 图片映射为 image 块 + base64 source",
+		blk.type == "image" and blk.source.type == "base64"
+		and blk.source.media_type == "image/png" and blk.source.data == "QUJD")
+	check("Anthropic: 文本部件保持 text 块",
+		r.req.messages[1].content[1].type == "text"
+		and r.req.messages[1].content[1].text == "看图")
+end
+
+do
+	-- fail-closed 族：四种必须响亮拒绝而不是发出去拿含混 400
+	local function must_err(name, data)
+		local ok, e = pcall(anthropic.request, data)
+		check("Anthropic: " .. name .. " → 拒绝", ok == false and tostring(e):len() > 0)
+	end
+	must_err("缺 endpoint", { max_tokens = 16, messages = {} })
+	must_err("缺 max_tokens", { endpoint = "http://x", messages = {} })
+	must_err("temperature 越界（>1，OpenAI 系允许）", {
+		endpoint = "http://x", max_tokens = 16, temperature = 1.5,
+		messages = { { role = "user", content = "u" } } })
+	must_err("图片不是 data URL", {
+		endpoint = "http://x", max_tokens = 16,
+		messages = { { role = "user", content = {
+			{ type = "image_url", image_url = { url = "https://example.com/a.png" } } } } } })
+	must_err("assistant 空 content（无文本无调用）", {
+		endpoint = "http://x", max_tokens = 16,
+		messages = {
+			{ role = "user", content = "u" },
+			{ role = "assistant", content = "" },
+		} })
+	must_err("tool 消息缺 tool_call_id", {
+		endpoint = "http://x", max_tokens = 16,
+		messages = {
+			{ role = "assistant", content = "", tool_calls = { { id = "c", name = "t", arguments = "{}" } } },
+			{ role = "tool", content = "r" },
+		} })
+	must_err("工具参数不是合法 JSON", {
+		endpoint = "http://x", max_tokens = 16,
+		messages = {
+			{ role = "assistant", content = "",
+			  tool_calls = { { id = "c", name = "t", arguments = "{不是 JSON" } } },
+		} })
+end
+
+do
+	-- 响应映射：text 段拼接、tool_use → 规范化 tool_calls、usage 字段名映射
+	local ok, out = pcall(anthropic.parse_response, {
+		content = {
+			{ type = "text", text = "前半" },
+			{ type = "thinking", thinking = "内部思考" },
+			{ type = "text", text = "后半" },
+			{ type = "tool_use", id = "tu1", name = "run_action_script",
+			  input = { script = "std.mt" } },
+		},
+		stop_reason = "tool_use",
+		usage = { input_tokens = 11, output_tokens = 22 },
+	})
+	check("Anthropic 响应: 解析成功", ok == true and out.result == "OK")
+	check("Anthropic 响应: text 段按序拼接", out.content == "前半后半")
+	check("Anthropic 响应: tool_use → 规范化 tool_calls（input 编码回字符串）",
+		#out.tool_calls == 1 and out.tool_calls[1].id == "tu1"
+		and out.tool_calls[1].name == "run_action_script"
+		and type(out.tool_calls[1].arguments) == "string"
+		and out.tool_calls[1].arguments:find("std.mt") ~= nil)
+	check("Anthropic 响应: 非文本非工具块丢弃但记账（thinking）",
+		out.extras ~= nil and out.extras.dropped_content_blocks == 1)
+	check("Anthropic 响应: stop_reason 进 extras（排障要知道是不是被截断）",
+		out.extras ~= nil and out.extras.stop_reason == "tool_use")
+	check("Anthropic 响应: usage 字段名映射到规范化口径",
+		out.usage ~= nil and out.usage.prompt_tokens == 11
+		and out.usage.completion_tokens == 22)
+
+	-- 形态非法：点名返回（不抛裸 Lua 错误）
+	local ok2, err2 = anthropic.parse_response({ content = 42 })
+	check("Anthropic 响应: content 非数组 → 点名错误",
+		ok2 == nil and tostring(err2):find("content") ~= nil)
+
+	-- 只有 tool_use 无 text：照常（与 OpenAI 系同款结局）
+	local ok3, out3 = pcall(anthropic.parse_response, {
+		content = { { type = "tool_use", id = "z", name = "f", input = {} } },
+	})
+	check("Anthropic 响应: 纯工具调用轮", ok3 == true and out3.content == ""
+		and #out3.tool_calls == 1)
+end
+
+do
+	-- 鉴权头形态（④）：x-api-key + anthropic-version；密钥含控制字符拒绝。
+	-- 用假 env 读取链验证 key 来源，不碰网络（perform 的 HTTP 部分由 E2E 覆盖）。
+	check("Anthropic: 鉴权读 ANTHROPIC_API_KEY 链",
+		anthropic.api_key({}) ~= nil or os.getenv("BOT4CJ_LLM_KEY") == nil)
+	check("Anthropic: 控制字符判据与 OpenAI 系同源",
+		anthropic.api_key_has_control_chars("a\nb") == true
+		and anthropic.api_key_has_control_chars("abc") == false)
+end

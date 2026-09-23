@@ -171,7 +171,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
     - agent 模式：规范化协议编解码、配置文件解析与取值优先级、驱动注入与 `ChatTransport` 适配（用假 Lua 驱动，不联网）、工具派发与路径沙箱、工具循环轮次上限与回滚与 extras 透传、任务内预算（降级/终态/记账）
     - UTF-8 边界（2026-09-21 AG-1）：`util` 的合法/非法判据与消毒（过长编码、代理区、> U+10FFFF、截断尾部、连续坏字节折叠）、`run_command` 输出与动作脚本首注释的消毒终点、API key 控制字符判据
 
-    另有三条纯 Lua 用例：`test/test_json_lua.lua`（Lua 侧 JSON 编解码）、`test/test_llm_drivers.lua`（两个协议驱动的报文整形规则与必填字段断言，不碰网络）、`test/test_utf8.lua`（UTF-8 判据与消毒。它与 C++ 侧 `utf8_*` 用例**同表向量**——两边判据必须一致，改动任一侧都要两边过）
+    另有三条纯 Lua 用例：`test/test_json_lua.lua`（Lua 侧 JSON 编解码）、`test/test_llm_drivers.lua`（三个协议驱动的报文整形规则与必填字段断言，含 Anthropic 的形状差异与 fail-closed 族，不碰网络）、`test/test_utf8.lua`（UTF-8 判据与消毒。它与 C++ 侧 `utf8_*` 用例**同表向量**——两边判据必须一致，改动任一侧都要两边过）
 
 17. **测试骨架自证**（`test/cpp/harness_selftest.cpp`，`harness_selftest` 目标，独立于 `mybot_tests`）：用一份**独立的 th 状态**把已知形态喂给骨架，断言它给出的判定符合预期——零断言必判失败、`TH_SKIP` 记跳过不算失败、断言后跳过判失败、正常通过/失败仍被认出、过滤器零命中返回 -1。独立二进制的理由：这些「例句」用例故意含失败形态，混进 `mybot_tests` 会让主守门出现永久失败项。它守的是**所有其它守门都依赖的那把尺子**——尺子失真时全部用例照样全绿，没有别的机制会发现。由 `run_all.sh` 的 `harness-selftest` 段执行
 
