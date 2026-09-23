@@ -61,6 +61,55 @@ void HwRegistry::rollbackTo(const Mark& m) {
 	flowRefs_ = m.flowRefs;
 }
 
+/* ---- HwRegistry：热删除撤销注册（契约见头文件声明处）---- */
+void HwRegistry::removeBatch(const std::set<MatrixVars_Hardware*>& doomed) {
+	if (doomed.empty()) { return; }
+
+	/* 1) 先全量验存在性：pool_ 与 seq_ 锁步等长（add 的同序 push），故查一边
+	 *    即可；byName_ 与 flowRefs_ 是派生视图，缺失不算错（例如被删的变量
+	 *    恰好没被任何 controller/trigger 列引用，flowRefs_ 里本就没有它）。
+	 *    不变量在修改之前就立住——不存在「erase 到一半发现指针不认识」的
+	 *    中间态，故「指针集合与注册表早已脱节」是 fail-fast 而非静默半成功。 */
+	for (MatrixVars_Hardware* p : doomed) {
+		if (std::find(seq_.begin(), seq_.end(), p) == seq_.end()) {
+			throw IllegalArgumentException("HwRegistry::removeBatch: a pointer is not"
+				" registered (registry has " + std::to_string(seq_.size())
+				+ " variable(s)); the deletion plan is stale");
+		}
+	}
+
+	/* 2) 名字索引是 map<名字, 指针>、没有反向索引：先按指针集合把 doomed 的
+	 *    名字收出来（顺带摘掉索引），再一趟重排 seq_/pool_。 */
+	std::set<std::string> doomedNames;
+	for (auto it = byName_.begin(); it != byName_.end();) {
+		if (doomed.count(it->second) != 0) {
+			doomedNames.insert(it->first);
+			it = byName_.erase(it);
+		} else {
+			++it;
+		}
+	}
+
+	auto isDoomed = [&doomed](MatrixVars_Hardware* p) { return doomed.count(p) != 0; };
+	/* reserve 先做一次，让下面的 erase-remove 重排不再分配：本方法在「器件已
+	 * 断电」之后调用，此刻 bad_alloc 会把调用方留在半撤销状态。 */
+	seq_.reserve(seq_.size());
+	pool_.reserve(pool_.size());
+	/* 两个容器的存活谓词必须都按**对象指针**判定，不能按 unique_ptr 的地址
+	 * ——后者会随重排漂移（pool_[i] 是对 unique_ptr 的引用，元素前移后其地址
+	 * 就变了）。元素在 pool_ 的 erase 处随 unique_ptr 析构逐个释放。 */
+	seq_.erase(std::remove_if(seq_.begin(), seq_.end(), isDoomed), seq_.end());
+	pool_.erase(std::remove_if(pool_.begin(), pool_.end(),
+		[&](const std::unique_ptr<MatrixVars_Hardware>& h) { return isDoomed(h.get()); }),
+		pool_.end());
+
+	/* 3) 流引用：被删名字一并摘掉。留下会**过度拒绝**——该名字此后已不是任何
+	 *    变量的引用目标，而 flowRefs_ 的语义是「被 controller/trigger 引用」；
+	 *    留着它会让「删掉再热插同名变量」之后该名字永久拒绝会话别名覆盖
+	 *    （N-6 防线），挡的却是一个不存在的引用。 */
+	for (const std::string& n : doomedNames) { flowRefs_.erase(n); }
+}
+
 /* ---- HwRegistry：会话期别名覆盖（阶段 1：写进会话覆盖层）----
  * 不变量：会话层非空 ⟺ 正在一次 RobotStruct::run() 之内（由 SessionScope 维护）。
  * 与结构期彻底分离的收益：

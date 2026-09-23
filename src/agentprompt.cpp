@@ -85,7 +85,7 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 	p += "- 不清楚有哪些脚本或硬件时，先用 list_action_scripts / list_hardware 查询。\n";
 	p += "- 需要核对某个结构表的定义或数据时，用 query_sql（SELECT * FROM 表名;），"
 		"它只读查询、不会改变任何状态；只看个别行时可加等值条件"
-		"（SELECT * FROM 表名 WHERE 列 = 值;，精确文本匹配）。\n";
+		"（SELECT * FROM 表名 WHERE 列 = 值 [AND 列2 = 值2];，精确文本匹配）。\n";
 	p += "- 一次只执行一个动作脚本，看清返回结果后再决定下一步。\n";
 	p += "- 脚本报错时先读清原因（脚本名错、硬件未接、参数越界），不要盲目重复同一条。\n";
 	if (cfg.allowShell) {
@@ -95,6 +95,11 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 		p += "- 需要给机器人**增加**硬件时用 apply_sql：CREATE TABLE 建表 + INSERT INTO 插行，"
 			"新器件立即上电；驱动脚本必须已存在于 modules/ 下（表名即模块名），"
 			"错则整批回滚、不留半成品。对照/查询请用 query_sql。\n";
+		p += "- 需要**摘掉**某个器件时用 apply_sql 的 DELETE FROM 表 WHERE 列 = 值"
+			"（多条件用 AND；不写 WHERE 会删掉整张表）：器件会**当场断电**，这是"
+			"**不可逆**的操作，回执里此前的读数与状态都要当作已失效。被别的器件引用着的"
+			"变量会被拒绝并点名引用方。删除前先用 query_sql 确认 WHERE 会命中哪些行，"
+			"并**只删你确实要移除的那个**（宁可多查一次，也不要删错）。\n";
 	}
 	/* 发现 2 的 A 步（2026-09-23）：可读清单由 --read-var 声明（已解析，只列**真正
 	 * 可读**的那些）。清单为空就一个字都不写——提示词里承诺一个不存在的工具，

@@ -567,13 +567,17 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		if (m == nullptr) {
 			return "错误: 表 '" + tbl + "' 未定义（当前结构脚本里没有这个表）";
 		}
-		/* WHERE 等值过滤（2026-09-23）：命中行号来自 mt::matchRows 单点，与
-		 * 渲染同源（inherited 显示值精确比较）。列不存在折成「错误: 」前缀，
-		 * 与本函数顶部词法/语法错误同一漏斗——模型收到的是一次普通失败。 */
+		/* WHERE 等值过滤（2026-09-23）：命中行号来自 mt::matchAll 单点，与
+		 * 渲染同源（inherited 显示值精确比较，多条件 AND）。列不存在折成
+		 * 「错误: 」前缀，与本函数顶部词法/语法错误同一漏斗——模型收到的
+		 * 是一次普通失败。无条件时枚举全部数据行。 */
 		std::vector<std::size_t> hits;
 		if (ev.select.where) {
+			std::vector<std::pair<std::string, std::string>> conds;
+			conds.reserve(ev.select.where->conds.size());
+			for (const auto& c : ev.select.where->conds) { conds.emplace_back(c.column, c.value); }
 			try {
-				hits = mt::matchRows(*m, ev.select.where->column, ev.select.where->value);
+				hits = mt::matchAll(*m, conds);
 			} catch (const std::exception& e) {
 				return std::string("错误: ") + e.what();
 			}
@@ -598,6 +602,16 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		if (ev.select.where && hits.empty()) { s += "\n  （0 行匹配）"; }
 		return s;
 	}
+	case sql4cj::EventType::DELETE_TABLE:
+		/* 本函数是**只读渲染**面（/sql 全 SELECT 批次、query_sql 工具），
+		 * 而 DELETE 会真的断电摘器件、且物理不可逆——绝不在这里执行。
+		 * 正常路径到不了这里（runSqlCommand 只把全 SELECT 批次放进本函数，
+		 * query_sql 直接拒含变更语句的输入），但 default 分支配的那句
+		 * 「不支持的 SQL 语句」对本句是**误导**：DELETE 是支持的，只是不在这条
+		 * 通道上。给一句准确的指路，免得读的人（含模型）以为方言里没有 DELETE
+		 * 而放弃。 */
+		return "错误: DELETE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+			"它会真的断电摘除器件且不可逆";
 	default:
 		return "错误: 不支持的 SQL 语句";
 	}
@@ -606,21 +620,22 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 std::string runSqlCommand(const std::string& sql, RobotStruct& robot) {
 	/* 先只判「整批有没有变更语句」：解析器保持只产出结构事件的最小职责，
 	 * 这里也就只读事件类型，不落任何状态。
-	 * 判据是「全部 SELECT 才走只读渲染」——混排批次里的 CREATE/INSERT 必须
-	 * 被看见，否则 /sql SELECT...; INSERT... 会静默丢掉后半句。 */
+	 * 判据是「全部 SELECT 才走只读渲染」——混排批次里的 CREATE/INSERT/DELETE
+	 * 必须被看见，否则 /sql SELECT...; DELETE... 会静默丢掉后半句（这是本条
+	 * 判据从「CREATE/INSERT」扩到「任意非 SELECT」的原因）。 */
 	bool any = false;
-	bool allSelect = true;
+	bool readOnly = true;
 	try {
 		bot::MemoryReader sr(sql);
 		for (const sql4cj::Event& ev : sql4cj::Parser::parseAll(sql4cj::Lexer::parseAll(sr))) {
 			any = true;
-			if (ev.type != sql4cj::EventType::SELECT_TABLE) { allSelect = false; }
+			if (ev.type != sql4cj::EventType::SELECT_TABLE) { readOnly = false; }
 		}
 	} catch (const std::exception& e) {
 		return std::string("错误: ") + e.what();
 	}
 	if (!any) { return "错误: 空 SQL 语句"; }
-	if (allSelect) { return runSqlStatement(sql, robot); }
+	if (readOnly) { return runSqlStatement(sql, robot); }
 
 	try {
 		return robot.applySql(sql);
@@ -764,10 +779,16 @@ static AgentTool makeApplySqlTool(const AgentToolContext& ctx) {
 		"INSERT 的目标可以是本批次新建的表，也可以是系统提示词结构脚本摘录里的既有表。"
 		"表名同时是驱动模块名（modules/<表名>.lua 必须已存在，模型无法凭空造驱动）；"
 		"变量名（name 列）不得与现有变量重复。"
+		"DELETE FROM 表 WHERE 列 = 值 [AND ...] 会**当场断电并摘除**匹配的行"
+		"（无条件写法删除全表）：这是**破坏性且不可逆**的操作，器件真的掉电、"
+		"没有回滚可言，回执里的读数与状态都要当作已失效。被别的器件以 "
+		"controller/trigger 或 $ 引用着的变量会被拒绝删除（报错点名引用方），"
+		"先删引用方或把相关行一起删。删除前请先用 query_sql 确认 WHERE 命中的行。"
 		"名为 Action 的表是**瞬态**的：插入的行的动作会立即执行一次然后丢弃，不进结构。"
 		"语句以分号结尾，可一次给多条。只想查询（不改任何状态）请用 query_sql。",
 		toolSchema({{"sql", stringParam("结构 SQL，如 CREATE TABLE Timer (name String); "
-			"INSERT INTO Timer (name) VALUES ('timer-9');")}},
+			"INSERT INTO Timer (name) VALUES ('timer-9'); "
+			"或 DELETE FROM Timer WHERE name = 'timer-9';")}},
 			{"sql"}),
 		[ctx](const Json& args) -> AgentToolResult {
 			if (ctx.robot == nullptr) {
@@ -812,9 +833,12 @@ static AgentTool makeQuerySqlTool(const AgentToolContext& ctx) {
 		"query_sql",
 		"用结构 SQL 查询机器人的结构定义（只读，不改变任何状态）。"
 		"语法：SELECT * FROM 表名; ——返回该表的列与行（表名见系统提示词的结构脚本摘录）；"
-		"可加等值条件 WHERE 列 = 值 做精确过滤，如 SELECT * FROM Servo WHERE name = 's1';。"
-		"CREATE TABLE / INSERT INTO 只做语法解析回显，不会真正创建或写入。"
-		"语句必须以分号结尾；仅支持星号全列与单条件等值匹配。",
+		"可加等值条件 WHERE 列 = 值 [AND 列2 = 值2 ...] 做精确过滤，"
+		"如 SELECT * FROM Servo WHERE controller = 'pca9685-0' AND channel = 1;。"
+		"CREATE TABLE / INSERT INTO 只做语法解析回显，不会真正创建或写入；"
+		"DELETE 不在本工具范围内（它会真的断电摘除器件，请用 apply_sql）——"
+		"但可以先用本工具确认 WHERE 会命中哪些行。"
+		"语句必须以分号结尾；仅支持星号全列与等值条件（AND 连接，无 OR）。",
 		toolSchema({{"sql", stringParam("一条结构 SQL 语句，如 SELECT * FROM dummy;")}},
 			{"sql"}),
 		[ctx](const Json& args) -> AgentToolResult {

@@ -329,22 +329,21 @@ TH_TEST(parser_rejects_multi_row_values_tuple) {
 		events("INSERT INTO Relay ( name, note ) VALUES ( 'a', 'b' ), ( 'c', 'd' );"));
 }
 
-TH_TEST(parser_rejects_deleting_and_rewriting_statements) {
-	/* DROP/DELETE/UPDATE（2026-09-23）：删除或改写结构的语句，本方言不支持。
-	 * 它们不是关键字（词法层落成 NAME），旧失败形态是词元级的 "Token name
-	 * 'drop'"——读的人（含模型）无从判断是语法错还是方言不支持，只会反复改写
-	 * 再试。这里必须在**解析期**给出语句级拒绝，且拒绝发生在任何装配之前。 */
+TH_TEST(parser_rejects_rewriting_statements) {
+	/* DROP/UPDATE：改写结构定义的语句，本方言不支持。它们不是关键字（词法层
+	 * 落成 NAME），旧失败形态是词元级的 "Token name 'drop'"——读的人（含模型）
+	 * 无从判断是语法错还是方言不支持，只会反复改写再试。这里必须在**解析期**
+	 * 给出语句级拒绝，且拒绝发生在任何装配之前。
+	 * （DELETE 曾在此列，2026-09-23 落地为热删除后出列，见 parser_delete_* 组。） */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
 		"Unsupported statement DROP", events("DROP TABLE Relay;"));
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
-		"Unsupported statement DELETE", events("DELETE FROM Relay WHERE name = 'relay0';"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
 		"Unsupported statement UPDATE", events("UPDATE Relay SET note = 'x';"));
 	/* 大小写不敏感，且回显统一大写——报错文本是稳定锚点，不随输入写法漂移 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
 		"Unsupported statement DROP", events("drop table Relay;"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
-		"Unsupported statement DELETE", events("Delete FROM Relay;"));
+		"Unsupported statement UPDATE", events("Update Relay SET a = 1;"));
 	/* 只判**语句首词元**：同名标识符出现在列名/表名/值里是合法数据，不得误伤 */
 	const std::vector<Event> made = events("CREATE TABLE Drop ( drop String, update String );");
 	TH_CHECK(made[0].create.tableName == "Drop");
@@ -546,13 +545,14 @@ TH_TEST(parser_select_where_event_payload) {
 	TH_CHECK(eves[0].type == EventType::SELECT_TABLE);
 	TH_CHECK(eves[0].select.sourceTableName == "Servo");
 	TH_CHECK(eves[0].select.where.has_value());
-	TH_CHECK(eves[0].select.where->column == "name");
-	TH_CHECK(eves[0].select.where->value == "s1");
+	TH_CHECK(eves[0].select.where->conds.size() == 1);
+	TH_CHECK(eves[0].select.where->conds[0].column == "name");
+	TH_CHECK(eves[0].select.where->conds[0].value == "s1");
 	/* 裸值（数字/标识符）与引号值等价：值一律按文本驻留 */
 	std::vector<Event> bare = events("SELECT * FROM Servo WHERE channel = 0;");
 	TH_CHECK(bare[0].select.where.has_value());
-	TH_CHECK(bare[0].select.where->column == "channel");
-	TH_CHECK(bare[0].select.where->value == "0");
+	TH_CHECK(bare[0].select.where->conds[0].column == "channel");
+	TH_CHECK(bare[0].select.where->conds[0].value == "0");
 }
 
 TH_TEST(parser_select_without_where_has_no_condition) {
@@ -563,8 +563,8 @@ TH_TEST(parser_select_without_where_has_no_condition) {
 TH_TEST(parser_select_where_accepts_mixed_case) {
 	std::vector<Event> a = events("select * from T where K = 'v';");
 	TH_CHECK(a[0].select.where.has_value());
-	TH_CHECK(a[0].select.where->column == "K");
-	TH_CHECK(a[0].select.where->value == "v");
+	TH_CHECK(a[0].select.where->conds[0].column == "K");
+	TH_CHECK(a[0].select.where->conds[0].value == "v");
 }
 
 TH_TEST(parser_select_where_rejects_malformed_conditions) {
@@ -580,7 +580,108 @@ TH_TEST(parser_select_where_rejects_malformed_conditions) {
 		events("SELECT * FROM T WHERE;"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
 		events("SELECT * FROM T WHERE"));
-	/* AND/多条件不在本方言：多写词元由 nextEnd 的词元级报错兜住 */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'AND'",
-		events("SELECT * FROM T WHERE a = 'x' AND b = 'y';"));
+	/* OR 不在方言：多写词元由 nextEnd 的词元级报错兜住 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'OR'",
+		events("SELECT * FROM T WHERE a = 'x' OR b = 'y';"));
+	/* AND 后面必须还有一个完整条件——悬空 AND 落到 expect 的脚本结束报错 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("SELECT * FROM T WHERE a = 'x' AND"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
+		events("SELECT * FROM T WHERE a = 'x' AND = 'y';"));
+}
+
+/* ---------------- AND 多条件（2026-09-23 热删除同步扩展）---------------- */
+
+TH_TEST(lexer_and_is_a_keyword_case_insensitively) {
+	TH_CHECK(Token::parse("AND").type == TokenType::AND);
+	TH_CHECK(Token::parse("and").type == TokenType::AND);
+	TH_CHECK(Token::parse("aNd").type == TokenType::AND);
+	TH_CHECK(Token::parse("AND").serialize() == "AND");
+	/* 长度不同即不是关键字：前缀匹配不得命中（同 Strings/Numbers 既有判据） */
+	TH_CHECK(Token::parse("Andy").type == TokenType::NAME);
+	TH_CHECK(Token::parse("AND1").type == TokenType::NAME);
+	/* 关键回归：'and' 作为**引用值**时是数据。仓内 144 个 .sql 里唯一的
+	 * 两处 `and` 都在引号值内（robots/test/sqlquote.sql），词法引号态在
+	 * 分隔符/关键字判定之前消费字符，故把它们变成关键字是安全的——
+	 * 本断言就是这条安全性的守门。 */
+	std::vector<Token> ts = fx::tokens(
+		"INSERT INTO T ( v ) VALUES ( 'tag,with (parens) and space' );");
+	bool found = false;
+	for (const Token& t : ts) {
+		if (t.type == TokenType::NAME && t.name == "tag,with (parens) and space") { found = true; }
+	}
+	TH_CHECK(found);
+}
+
+TH_TEST(parser_delete_where_accepts_multiple_and_conditions) {
+	std::vector<Event> eves = events(
+		"DELETE FROM Servo WHERE controller = 'dummy-0' AND channel = '6';");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::DELETE_TABLE);
+	TH_CHECK(eves[0].del.targetTabName == "Servo");
+	TH_CHECK(eves[0].del.where.has_value());
+	TH_CHECK(eves[0].del.where->conds.size() == 2);
+	TH_CHECK(eves[0].del.where->conds[0].column == "controller");
+	TH_CHECK(eves[0].del.where->conds[0].value == "dummy-0");
+	TH_CHECK(eves[0].del.where->conds[1].column == "channel");
+	TH_CHECK(eves[0].del.where->conds[1].value == "6");
+	/* 三个条件（AND 是循环而非二元特例） */
+	std::vector<Event> three = events("DELETE FROM T WHERE a = 1 AND b = 2 AND c = 3;");
+	TH_CHECK(three[0].del.where->conds.size() == 3);
+	TH_CHECK(three[0].del.where->conds[2].column == "c");
+	/* 小写 and / 关键字大小写不敏感 */
+	std::vector<Event> lower = events("delete from T where a = 1 and b = 2;");
+	TH_CHECK(lower[0].type == EventType::DELETE_TABLE);
+	TH_CHECK(lower[0].del.targetTabName == "T");
+	TH_CHECK(lower[0].del.where->conds.size() == 2);
+}
+
+TH_TEST(lexer_and_compact_form_matches_spaced_form) {
+	/* AND 两侧不需要留白（既是关键字也是天然分隔符）：两种写法词元流逐字节
+	 * 相同，取向同 parens/eq 的紧凑写法用例。 */
+	std::vector<Token> compact = fx::tokens("DELETE FROM T WHERE a=1 AND b='x';");
+	std::vector<Token> spaced = fx::tokens("DELETE FROM T WHERE a = 1 AND b = 'x' ;");
+	TH_CHECK(fx::fingerprint(compact) == fx::fingerprint(spaced));
+	TH_CHECK(fx::fingerprint(compact)
+		== "DELETE FROM name 'T' WHERE name 'a' = name '1' AND name 'b' = name 'x' ;");
+}
+
+TH_TEST(parser_select_accepts_multiple_and_conditions) {
+	/* SELECT 与 DELETE 共用条件列表解析：同一条多条件语法在两条语句上都成立 */
+	std::vector<Event> eves = events("SELECT * FROM Servo WHERE controller = 'c0' AND channel = 1;");
+	TH_CHECK(eves[0].type == EventType::SELECT_TABLE);
+	TH_CHECK(eves[0].select.where->conds.size() == 2);
+	TH_CHECK(eves[0].select.where->conds[1].column == "channel");
+}
+
+TH_TEST(parser_delete_without_where_deletes_all_rows) {
+	/* 无条件 = 删全表（SQL 语义）：事件层以「where 无值」表达，不另设标志位 */
+	std::vector<Event> eves = events("DELETE FROM Timer;");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::DELETE_TABLE);
+	TH_CHECK(eves[0].del.targetTabName == "Timer");
+	TH_CHECK(!eves[0].del.where.has_value());
+}
+
+TH_TEST(parser_delete_rejects_malformed_statements) {
+	/* 缺 FROM / 缺表名 / 悬空条件一律解析期报错，且报错带词元定位 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'T'",
+		events("DELETE T WHERE a = 1;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("DELETE FROM"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "WHERE supports only",
+		events("DELETE FROM T WHERE;"));
+	/* UPDATE 仍在不支持之列（DROP/UPDATE 未落地，报错须仍点名它们） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Unsupported statement UPDATE",
+		events("UPDATE T SET a = 1;"));
+}
+
+TH_TEST(parser_delete_rejects_drop_but_delete_is_now_supported) {
+	/* DROP 删的是表（要连带拆 MetaProvider/守护登记），仍在拒绝之列；
+	 * DELETE 删的是行，已落地——本用例把两者的分界钉死，防止将来
+	 * 因为「都是删除」而把 DROP 一起放行。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Unsupported statement DROP",
+		events("DROP TABLE Timer;"));
+	std::vector<Event> ok = events("DELETE FROM Timer WHERE name = 't0';");
+	TH_CHECK(ok[0].type == EventType::DELETE_TABLE);
 }

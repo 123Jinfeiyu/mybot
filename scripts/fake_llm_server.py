@@ -16,6 +16,8 @@
             | camera（先要求拍一张照片，再给最终回答——验证图片真的进了上下文）
             | hotsql（先要求 apply_sql 往既有表 INSERT 一行，再列硬件——验证结构
               SQL 真的带电生效；缺 --agent-hot-sql 时同一条剧本只剩「未知工具」）
+            | hotdelete（先插一行临时的、再 DELETE 掉它、然后列硬件——验证热删除
+              真的把变量摘掉了；与 hotsql 同门控）
             | readvars（先要求 read_variables 读回可读变量——验证回读通道真的
               把驱动返回表带进回执；缺 --read-var 时同一条剧本只剩「未知工具」）
             | manycalls[:N]（首轮返回 N 条工具调用，缺省 3；配合
@@ -308,6 +310,23 @@ class Handler(BaseHTTPRequestHandler):
                     "INSERT INTO Relay (name, controller, note) "
                     "VALUES ('relay-hot', 'timer-0', 'hot');"}))
             elif tool_results == 1:
+                self._reply(tool_call("list_hardware", {}))
+            else:
+                self._reply(final_answer())
+            return
+        # ---- 热删除（2026-09-23）：DELETE 真的断电摘器件 ----
+        # 四轮：插一行临时的 → 删掉它 → 列硬件（它必须消失）→ 收尾。
+        # 与 hotsql 一样，覆盖的是**接线**（模型 → 工具派发 → applySql → 回执），
+        # 删除的事务语义（引用完整性/逆序断电/中途失败报数）由 C++ 单测守门。
+        if MODE == "hotdelete":
+            if tool_results == 0:
+                self._reply(tool_call("apply_sql", {"sql":
+                    "INSERT INTO Relay (name, controller, note) "
+                    "VALUES ('relay-tmp', 'timer-0', 'tmp');"}))
+            elif tool_results == 1:
+                self._reply(tool_call("apply_sql", {"sql":
+                    "DELETE FROM Relay WHERE name = 'relay-tmp';"}))
+            elif tool_results == 2:
                 self._reply(tool_call("list_hardware", {}))
             else:
                 self._reply(final_answer())

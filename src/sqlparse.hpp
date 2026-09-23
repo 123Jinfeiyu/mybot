@@ -14,7 +14,7 @@ namespace sql4cj {
 /* ------------- Token ------------- */
 enum class TokenType {
 	SELECT, FROM, CREATE, TABLE, STRING, NUMBER,
-	INSERT, INTO, VALUES, WHERE,
+	INSERT, INTO, VALUES, WHERE, DELETE, AND,
 	END, COMMA, LEFT, RGHT, EQ,
 	UNEXPECTED_END, UNKNOWN,
 	NAME
@@ -60,9 +60,9 @@ struct InsertTableEvent {
 	std::vector<std::vector<VarRaw>> tableRows;
 };
 
-/* WHERE 等值条件：`WHERE <列名> = <值>`。共享载荷——SELECT 今天用，
- * 未来的 DELETE FROM t WHERE ... / UPDATE t SET ... WHERE ... 复用同一
- * 结构与同一解析入口（Parser::nextWhere），不各造一份。
+/* WHERE 等值条件：`WHERE <列名> = <值>`。共享载荷——SELECT 与 DELETE 共用，
+ * 未来的 UPDATE t SET ... WHERE ... 复用同一结构与同一解析入口
+ * （Parser::nextConditionList），不各造一份。
  * 只承载结构（列名 + 值文本），求值（按行匹配）在消费方——与 SELECT 事件
  * 「不执行查询」的职责划分一致。值的引号在词法层已剥（parseName），
  * 运行期按文本精确比较（数值按文本比：'0x40' ≠ '64'，已知边界）。 */
@@ -71,22 +71,42 @@ struct WhereEqual {
 	std::string value;
 };
 
-/* SELECT 事件：承载目标表名（`SELECT * FROM t`）与可选等值条件
- * （`WHERE col = value`）。真正的查询执行（从运行时矩阵取数、按条件过滤、
- * 渲染）在消费方（REPL /sql 命令）完成——解析器保持「只产出结构事件」
- * 的最小职责，不引入 SELECT AST。 */
-struct SelectTableEvent {
-	std::string sourceTableName;	/* FROM 后的表名 */
-	std::optional<WhereEqual> where;	/* WHERE col = value（缺省无） */
+/* 条件列表（2026-09-23 热删除）：一个或多个等值条件，**AND 语义**。
+ * 空 conds = 无条件（`DELETE FROM t;` 删全表；SELECT 的 WHERE 缺省即不构造
+ * WhereClause，二者的「无」都由 optional 表达，不另设标志位）。
+ * 为什么不设 OR：本方言的取向是「能用一句话说清就够」——OR 会让「删哪几行」
+ * 变成需要脑内求值的集合运算，而删除是物理不可逆操作，操作者/模型必须能一眼
+ * 读出命中范围。需要 OR 时拆成两条语句即可（每条各自独立校验与报数）。 */
+struct WhereClause {
+	std::vector<WhereEqual> conds;
 };
 
-enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, END };
+/* SELECT 事件：承载目标表名（`SELECT * FROM t`）与可选等值条件
+ * （`WHERE col = value [AND col2 = value2 ...]`）。真正的查询执行（从运行时
+ * 矩阵取数、按条件过滤、渲染）在消费方（REPL /sql 命令）完成——解析器保持
+ * 「只产出结构事件」的最小职责，不引入 SELECT AST。 */
+struct SelectTableEvent {
+	std::string sourceTableName;	/* FROM 后的表名 */
+	std::optional<WhereClause> where;	/* WHERE 条件（缺省无） */
+};
+
+/* DELETE 事件（2026-09-23 热删除）：承载目标表名与可选条件。
+ * where 为空 = 无条件，即删除该表全部行（SQL 语义，也是「整件撤下」的写法）。
+ * 本事件同样只承载结构，**不决定删除顺序、不做引用校验**——那是 RobotStruct::
+ * applySql 热删除事务的职责（预检 → 物理断电 → 撤注册），解析层无权碰活体。 */
+struct DeleteTableEvent {
+	std::string targetTabName;
+	std::optional<WhereClause> where;
+};
+
+enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, DELETE_TABLE, END };
 
 struct Event {
 	EventType type;
 	CreateTableEvent create;
 	InsertTableEvent insert;
 	SelectTableEvent select;
+	DeleteTableEvent del;
 };
 
 /* ------------- 词法分析器 ------------- */
@@ -141,6 +161,13 @@ class Parser {
 		return tokenSerial_[idx_++];
 	}
 
+	/* 不消费的前瞻判据（nextSelect/nextDelete 判断有没有 WHERE、
+	 * nextConditionList 判断 AND 之后还有没有条件）。越界一律 false——
+	 * 脚本意外结束交由 expect() 报「unexpected end of script」，本函数不抢那句话。 */
+	bool peekIs(TokenType want) const {
+		return idx_ < tokenSerial_.size() && tokenSerial_[idx_].type == want;
+	}
+
 	/* M-1：CREATE/INSERT 的列段与参数段原为按元素互递归的下降链
 	 * （nextTableColumnName↔nextTableColumnsIsEnd 等），递归深度 = 列数/参数数，
 	 * 实测 3 万列结构脚本即栈溢出裸崩。改显式循环：token 消费顺序与错误
@@ -154,12 +181,17 @@ class Parser {
 
 	void nextInsertInto(InsertTableEvent& eve);
 	/* SELECT：`SELECT * FROM t`——只解析星号与目标表名，产出 SelectTableEvent。
-	 * 表名后可跟一个等值条件：`WHERE col = value`（解析进 nextWhere）。 */
+	 * 表名后可跟一个等值条件列表：`WHERE col = value [AND ...]`（见 nextConditionList）。 */
 	void nextSelect(SelectTableEvent& eve);
-	/* WHERE col = value：单条件等值（列名/值各一个 NAME 词元，值支持引号串）。
-	 * 只认一个条件；AND/OR 与比较运算符不在本方言（负例由词元级报错兜住）。
-	 * 独立于具体语句——SELECT 现在用，DELETE/UPDATE 落地时复用。 */
-	void nextWhere(WhereEqual& eve);
+	/* DELETE：`DELETE FROM t [WHERE col = value [AND ...]]`——只解析目标表名与
+	 * 条件列表（与 SELECT 共用 nextConditionList），产出 DeleteTableEvent。
+	 * where 为空即无条件删除全表。执行（断电/撤注册/擦行）不在这里。 */
+	void nextDelete(DeleteTableEvent& eve);
+	/* WHERE 条件列表：一个或多个 `列名 = 值`，以 AND 连接（大小写不敏感）。
+	 * 列名/值各一个 NAME 词元（值支持引号串，引号已在词法层剥）；比较运算符、
+	 * OR、IN 不在本方言（负例由本函数的用法级报错或调用方 nextEnd 兜住）。
+	 * SELECT 与 DELETE 共用——两条语句的 WHERE 语法与报错锚点因此不会漂移。 */
+	void nextConditionList(WhereClause& eve);
 
 public:
 	explicit Parser(const std::vector<Token>& tokenSerial) : tokenSerial_(tokenSerial) {}

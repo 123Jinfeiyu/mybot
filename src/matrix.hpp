@@ -174,6 +174,45 @@ public:
 		values_.resize(values_.size() - count);
 		inheritedReady_ = false;
 	}
+
+	/* 按行号删除任意行（2026-09-23 热删除）：**存活行相对顺序逐字不变**。
+	 * 这不是实现细节而是不变式——行序就是声明序，而销毁序 = 声明序倒序
+	 * （总线必须晚于挂在它上面的器件关闭 fd，见 RobotStruct::deactivate
+	 * 的注释）。交换式删除（把尾行填进空位）会让存活器件的相对次序漂移，
+	 * 于是「删一个中间器件」就能把整条拓扑序打乱，且症状是销毁期才显形的
+	 * 资源错序——故这里一律 erase，认下 O(n) 搬移（结构表是百行级）。
+	 *
+	 * 行 0 是列头，不得删除（删掉列头会让所有列名定位失效）；重复行号与
+	 * 越界同样报错——两者都是调用方算错，静默容忍只会让「删了几行」与
+	 * 生效摘要对不上。删除在单趟内完成（按行号集合过滤一次重排），故传入
+	 * 的行号无需有序、也无需倒序，调用方不必替本方法做排序。 */
+	void removeRows(const std::vector<std::size_t>& rows) {
+		if (rows.empty()) { return; }
+		std::vector<char> doomed(values_.size(), 0);
+		for (std::size_t r : rows) {
+			if (r == 0) {
+				throw bot::IllegalArgumentException(
+					"MatrixObject::removeRows: row 0 is the column header and cannot be removed");
+			}
+			if (r >= values_.size()) {
+				throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
+					+ std::to_string(r) + " is out of range (" + std::to_string(values_.size())
+					+ " row(s))");
+			}
+			if (doomed[r] != 0) {
+				throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
+					+ std::to_string(r) + " listed twice");
+			}
+			doomed[r] = 1;
+		}
+		std::vector<std::vector<std::string>> kept;
+		kept.reserve(values_.size() - rows.size());
+		for (std::size_t r = 0; r < values_.size(); ++r) {
+			if (doomed[r] == 0) { kept.push_back(std::move(values_[r])); }
+		}
+		values_ = std::move(kept);
+		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
+	}
 };
 
 /* ------------- 解析期增量构建器（R-4）-------------
@@ -263,11 +302,18 @@ inline MatrixObject* findByName(Container& ll, const std::string& name) {
 /* WHERE 等值匹配单点（2026-09-23）：列头定位 + inherited 精确文本比较，返回
  * 命中数据行号（不含行 0 列头）。与 SELECT 渲染同源——比对 inherited（"-"
  * 占位继承解析后的显示值），查询结果与全列渲染看到的是同一份值。参数用基本
- * 类型而非 WhereEqual，避免 mt 层反向依赖 sqlparse 层；SELECT 渲染今天用，
- * 未来的 DELETE/UPDATE 选行复用（同一事实源，取向同 findByName）。
- * 列不存在：requireCol 既有文案上抛；无命中返回空容器，空与缺失由调用方分腔。 */
+ * 类型而非 WhereEqual/WhereClause，避免 mt 层反向依赖 sqlparse 层。
+ * matchRows = 单条件；matchAll = 多条件 AND（热删除用），后者按前者语义逐个
+ * 收窄——两个入口一份判据，不各写一遍比较。 */
 std::vector<std::size_t> matchRows(const MatrixObject& m, const std::string& col,
 		const std::string& val);
+
+/* 多条件 AND 匹配（2026-09-23 热删除）：返回**同时**满足全部 (列,值) 的数据
+ * 行号（不含行 0）。空条件表返回全部数据行（= 无条件，`DELETE FROM t;`）。
+ * 任一列不存在即按 requireCol 既有文案上抛（与单条件同口径，报错点名列名）。
+ * 命中行号按行号升序（调用方若按行号倒序删除，天然无需再做排序）。 */
+std::vector<std::size_t> matchAll(const MatrixObject& m,
+		const std::vector<std::pair<std::string, std::string>>& conds);
 
 /* @Action 列头解析：<device>.<param>（恰好一个点）。ActionRunner 派发与
  * mtmerge 相位归并共用同一切分规则与报错文案。 */

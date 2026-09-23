@@ -769,8 +769,11 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 			out << "内置命令:\n"
 				<< "  /hardware  - 显示硬件清单（只读，不触发任何动作）\n"
 				<< "  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）\n"
-				<< "  /sql <语句> - 执行结构 SQL：SELECT * FROM t [WHERE 列 = 值] 只读查询"
-				   "运行时矩阵；CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）\n"
+				<< "  /sql <语句> - 执行结构 SQL：SELECT * FROM t [WHERE 列 = 值 [AND ...]]"
+				   " 只读查询运行时矩阵；\n"
+				   "               CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）；\n"
+				   "               DELETE FROM t [WHERE 列 = 值 [AND ...]] 当场断电摘除匹配行"
+				   "（不可逆）\n"
 				<< "  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）\n"
 				<< "  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）\n"
 				<< "  /help      - 显示此帮助\n"
@@ -803,15 +806,18 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 			out << describeActionScripts(cfg.scriptsDir) << "\n";
 			continue;
 		}
-		/* /sql <语句>：整批 SELECT 走只读渲染；含 CREATE/INSERT 则热插生效
-		 * （runSqlCommand 是单一分派点，见 agenttools.cpp）。必须在本派发点
+		/* /sql <语句>：整批 SELECT 走只读渲染；含 CREATE/INSERT/DELETE 则走带电
+		 * 生效（runSqlCommand 是单一分派点，见 agenttools.cpp）。必须在本派发点
 		 * continue —— 否则会被当任务描述发给模型。 */
 		if (task.size() >= 2 && task.rfind("/sql", 0) == 0
 				&& (task.size() == 4 || task[4] == ' ' || task[4] == '\t')) {
 			const std::string sql = trim(task.substr(4));
 			if (sql.empty()) {
 				out << "用法: /sql <语句>（以 ; 结尾），例如 /sql SELECT * FROM Vars;\n"
-					"      可加等值条件，例如 /sql SELECT * FROM Servo WHERE name = 's1';\n";
+					"      可加等值条件（AND 连接），例如 "
+					"/sql SELECT * FROM Servo WHERE name = 's1';\n"
+					"      DELETE 会当场断电摘除匹配行且不可逆，例如 "
+					"/sql DELETE FROM Servo WHERE name = 's1';\n";
 			} else {
 				out << runSqlCommand(sql, robot) << "\n";
 			}

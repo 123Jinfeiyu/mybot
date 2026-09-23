@@ -26,7 +26,35 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 - 注释整行 INSERT 即可下线一个硬件实例；报错会指明是哪张表、哪一行、哪一列
 - **INSERT 的列名清单决定「哪个值属于哪一列」，值按列名落到建表声明序**（2026-09-20 审计 C3）。`INSERT INTO Timer (delay, name) VALUES (50, 'timer-0')` 与 `(name, delay)` 写法等价，列序写反不会错列。三条硬约束（违规在解析期报错，不再静默错位）：列名必须在建表声明里存在（`no such column`）、同一列不得写两次（`listed twice`）、每列都必须给值（`missing value for column`，要继承上一行就显式写 `-`）
 - 列类型支持 `String` / `Number`：值一律以文本驻留（`MatrixObject` 只存 String），`Number` 目前仅在**解析期**对字面量做一次数值校验（整数/小数/带符号/科学计数法合法，空值与 `nan`/`inf` 拒绝），不做运行期类型转换；校验按 INSERT 的列名匹配声明列，报错形如 `Column 'delay' of table 'Timer' is declared Number, but value 'abc' is not numeric.`
-- **方言只认三条语句**：`CREATE TABLE` / `INSERT INTO` / `SELECT * FROM 表;`（SELECT 仅在 agent 的 `query_sql` 与 REPL `/sql` 里可用，见 [agent.md](agent.md)）。SELECT 可带一个**等值条件**：`SELECT * FROM 表 WHERE 列 = 值;`（2026-09-23）——按 `inherited` 显示值（`-` 继承解析后）做**精确文本比较**，数值按文本比（`'0x40'` ≠ `'64'`，已知边界）；AND/OR 与比较运算符不在方言内，列不存在报 `has no '...' column`、0 行命中输出列头 + `（0 行匹配）`。`DROP` / `DELETE` / `UPDATE` 是删除或改写结构的语句，在**解析期**就被明确拒绝（`Unsupported statement DROP: this dialect only understands …`），整批不生效、不留半成品。刻意不支持而非暂未实现：带电机器人的结构矩阵与硬件注册表必须逐项对应，删表/删行会让已开好的 fd 与总线句柄失去归属。结构改动请改写 `.sql` 后重新上电，或走热插表的 `CREATE TABLE` / `INSERT INTO`（见 [reference.md](reference.md) 的 `--agent-hot-sql`）。
+- **方言只认四条语句**：`CREATE TABLE` / `INSERT INTO` / `SELECT * FROM 表;` / `DELETE FROM 表;`
+  - **SELECT** 仅在 agent 的 `query_sql` 与 REPL `/sql` 里可用（只读，见 [agent.md](agent.md)）。
+  - **DELETE** 是**带电变更**：只在 REPL `/sql` 与 agent 的 `apply_sql` 里可用（需 `--agent-hot-sql`），
+    在结构脚本 `.sql` 文件里出现会在解析期报错（机器人尚未上电，没有可变的结构）。
+  - 两条语句都可带**等值条件**（2026-09-23）：`WHERE 列 = 值`，多条件以 `AND` 连接
+    （`WHERE 列1 = 值1 AND 列2 = 值2`）。按 `inherited` 显示值（`-` 继承解析后）做**精确文本比较**，
+    数值按文本比（`'0x40'` ≠ `'64'`，已知边界）；比较运算符、`OR`、`IN` 不在方言内。
+    列不存在报 `has no '...' column`；SELECT 0 行命中输出列头 + `（0 行匹配）`，
+    DELETE 0 行命中**报错**（`no row matches, nothing was deleted`）——删除是不可逆的物理操作，
+    "已生效但什么都没发生"会让操作者以为器件已摘除。
+  - `DROP` / `UPDATE` 是**改写结构定义**的语句，在解析期就被明确拒绝
+    （`Unsupported statement DROP: this dialect understands …`），整批不生效、不留半成品。
+    刻意不支持而非暂未实现：带电机器人的结构矩阵与硬件注册表必须逐项对应，整表撤销要连带拆掉
+    元数据提供者与守护登记，并面对「表撤销后同名重建」的新语义面；`UPDATE` 等价于「删旧行 + 建新行」。
+    结构改动请改写 `.sql` 后重新上电，或走热插表的 `CREATE TABLE` / `INSERT INTO` / `DELETE FROM`
+    （见 [reference.md](reference.md) 的 `--agent-hot-sql`）。
+- **热删除（`DELETE FROM`）的安全边界**（2026-09-23）：删除 = **当场逆序断电并摘除**器件，
+  物理不可逆（没有回滚，已掉电的器件不会因后续报错而复电）。写入前先跑完所有校验，
+  故拒绝一律发生在动第一个器件之前、活体一字未动：
+  - 被别的行以 `controller` / `trigger`（含 `controller2` 这类编号列）、`$name` 引用或
+    `$(...)` 表达式引用着的变量**拒绝删除**，报错点名「哪张表哪一行的哪一列引用了它」。
+    这些引用在框架内部是终身缓存的裸指针，删掉被引用者即悬垂指针。要让一个器件下线，
+    先删引用它的行（或把相关行写在同一条语句/同一批里一起删——判据看的是**删除之后**的视图）。
+  - 删除同样跑一遍全结构判据（单消费者等），故「删掉总线而守护仍在用同一 `path`」这类
+    物理耦合会被拦下。
+  - 条件写错、命不中任何行时报错而不是静默成功。
+  - 极少数情况下物理 `destroy` 本身失败（I2C 写失败、器件不响应）：此时**立即中止**后续删除，
+    并如实报出「已删除 N 个（名单）、M 个未删除」——结构与注册表只反映已成功摘除的部分，
+    未删的行保持原状。修好成因后对剩余项重发 DELETE 即可。
 
 **引号字面量**：`'` / `"` 包裹的值整体按字面解析——引号内的 `--`、`/* */`、`;`、`,`、`(`、`)`、`=` 与空白都是**数据**而非注释/分隔符（注释只在引号外生效）。这是 1.x 起修复的词法器行为，有负值回归守门（`robots/test/sqlquote.sql`）。
 

@@ -99,6 +99,30 @@ public:
 	 * 名字索引、恢复流引用快照；元素随 unique_ptr 析构逐个释放。 */
 	void rollbackTo(const Mark& m);
 
+	/* ---- 热删除：按指针集合撤销注册（2026-09-23）----
+	 * 与 rollbackTo 的分工：rollbackTo 撤的是「本批次**新加**的尾部条目」（热插
+	 * 回滚），本方法撤的是「**任意位置**的既有条目」（热删除）——都持有同一份
+	 * 契约：**调用方必须先 destroy() 断电**，本方法只撤所有权与索引。
+	 *
+	 * 与 rollbackTo 的差别正是本方法存在的理由：pool_/seq_/byName_ 三容器在
+	 * add() 里锁步增长，但**全体下标在下标 0 处对齐**这条便利只在「撤尾部」时
+	 * 成立。撤中间条目会把后续元素前移，于是任何「先记下标、再逐个 erase」的
+	 * 实现都会在第一次 erase 之后就错位。这里改为一趟 erase-remove：先把
+	 * doomed 在**全部三个容器**里的存在性验完，再统一重排——校验与修改分离，
+	 * 不存在「改了一半发现指针不认识」的中间态。
+	 *
+	 * 为什么用指针集合而不是名字集合：调用方的判据来自结构行（哪些行被删），
+	 * 而「行 → 变量」的映射要经 name 列查表；指针集合让调用方直接用它在装配期
+	 * 就已识别的对象，且天然去重（同一变量不可能注册两次）。
+	 *
+	 * 悬垂指针防线（本方法的存在前提，不是副作用）：被删变量的引用方在框架里
+	 * 是**终身缓存的裸指针**——MtVars_Lua::ctrlPtrs_/trigPtrs_（首用缓存，
+	 * 注释写着「指针终身有效」）与 MetaRef::target（seed 期锁定，注释写着
+	 * 「pool_ 只增不减，生命周期安全」）。本方法只保证**注册表自身**不再交出
+	 * 这些指针；「不留下指向已删变量的缓存」由调用方在预检阶段以「被引用即
+	 * 拒绝删除」保证（见 RobotStruct::applySql 的删除预检）。 */
+	void removeBatch(const std::set<MatrixVars_Hardware*>& doomed);
+
 	/* N-15：表达式标识符求值器（只认 @Vars 数值；未定义/非 @Vars 即抛）——
 	 * MetaProvider 的 $(...) 求值、HwFactory 装配共用 */
 	std::function<double(const std::string&)> makeVarsResolver() const override;
@@ -178,17 +202,55 @@ public:
 	Json collectForDestroy();
 	/* F-05：装配完成后、build 前做引用存在性校验（seed 未通过即抛出） */
 	void validate() { seed(); }
+
+	/* 热删除（2026-09-23）：本提供者锚定的「矩阵 + 行」。RobotStruct 用它摘除
+	 * 被删行的提供者——判据必须是这一对（而不是提供者自身的某个 id），因为
+	 * 行列就是它在结构里的唯一身份。矩阵是 std::deque 的元素、地址稳定，
+	 * 故该判据精确且不受行数变化影响。 */
+	const mt::MatrixObject& matrix() const { return matrix_; }
+	std::int64_t row() const { return row_; }
 };
 
 /* ---- 脚本装载：SQL/矩阵 文本 → MatrixObject（R-1 拆自 RobotStruct）----
  * N-11：矩阵文本解析（readMatrix）已下沉 mt 层，本类只剩 SQL 事件装配。 */
 class ScriptLoader {
 public:
+	/* 热删除改动记录（2026-09-23）：readSQL 执行 DELETE 时把「删了哪些原始行、
+	 * 哪些硬件变量名」如实回报给调用方（RobotStruct::applySql）。
+	 *
+	 * 为什么必须回报而不是让调用方自查：DELETE 会**改变容器内行号**，而调用方
+	 * 需要的是**原始坐标**下的行号——它要拿这些行号回活体矩阵 `matrices_` 上
+	 * 精确摘行。readSQL 内部逐条维护「当前行号 → 原始行号」映射，是全链路里
+	 * 唯一知道这个映射的地方；让 applySql 事后靠「比较行内容」反推既脆弱
+	 * （内容相同的两行无法区分）又重复一遍这里的匹配逻辑。
+	 *
+	 * deletedRows 按容器下标对齐（与 applySql 的影子容器同序），值是该表**原始
+	 * 行号**（一次 DELETE 命中多行即多条）；deletedNames 是该批次所有被删变量名
+	 * （name 列取值），供生效摘要与审计对账。两者都只增不改——调用方据新增部分
+	 * 判断本批次的影响面。 */
+	struct Mutations {
+		std::map<std::string, std::vector<std::size_t>> deletedRows;
+		std::vector<std::string> deletedNames;
+		/* 每表本批次**插入的行数**（按表名）。调用方（applySql 的影子容器对既有
+		 * 表是全量拷贝）靠它划出「哪些行是本批次新增」——不能用「当前行数 >
+		 * 解析前行数」代替：一条 INSERT 与一条 DELETE 落在同一张表上时净行数
+		 * 可能不变，那个判据会把新增行整批漏掉（既装配不出来，也不进瞬态 Action）。
+		 * 表名在**本批次 CREATE 出来的表**上也会出现（其插入行数即全表数据行数）。 */
+		std::map<std::string, std::size_t> insertedRows;
+	};
+
 	/* SQL4cj → MatrixObject 结构表解析。
 	 * 容器为 std::deque（2026-09-23 热插表）：结构期 matrices_ 必须是
 	 * 「两端插入不失效元素引用」的容器，MetaProvider::matrix_ 的引用不变式
-	 * 才能从「靠 inject 必须早于 active 的约定」升级为构造保证（见 robot.cpp）。 */
-	static void readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out);
+	 * 才能从「靠 inject 必须早于 active 的约定」升级为构造保证（见 robot.cpp）。
+	 *
+	 * allowDelete 缺省 **false**：同一个函数服务两条路径——结构脚本装配
+	 * （RobotStruct 构造期，机器人尚未上电，删不了任何东西）与热插热删除
+	 * （applySql）。缺省关使启动路径的接受语言逐字不变，且「结构脚本里写
+	 * DELETE」得到的是一句人话而不是运行期怪错；热插调用点显式传 true。
+	 * mutations 为空 = 不收集删除信息（同样只在热插路径需要）。 */
+	static void readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out,
+			bool allowDelete = false, Mutations* mutations = nullptr);
 };
 
 /* ---- 硬件装配：矩阵表 → 硬件变量（R-1 拆自 RobotStruct）---- */
