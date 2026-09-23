@@ -149,7 +149,8 @@ std::unique_ptr<RobotStruct> loadStructure(const std::string& rpath) {
 
 /* agent 流水线：上电 → 驱动查找/传输适配 → 工具循环。异常上抛由 main
  * 的 catch 统一折成退出码 1。 */
-int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg) {
+int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
+		std::istream& in, std::ostream& out, std::ostream& log) {
 	/* agent 模式：上电后硬件常驻，控制权交给智能体工具循环；
 	 * 只有会话结束（--task 跑完 / REPL 退出）才 deactivate。
 	 * 传输要在 active() 之后才能绑定——驱动变量是那时才装配的。 */
@@ -172,7 +173,7 @@ int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg)
 	std::unique_ptr<agent::ChatTransport> transport =
 		agent::makeDriverTransport(driver, dcfg);
 
-	return agent::runAgentMode(agentCfg, robot, *transport, std::cin, std::cout, std::cerr);
+	return agent::runAgentMode(agentCfg, robot, *transport, in, out, log);
 }
 
 /* 动作流水线：先取动作脚本、后上电。返回退出码，异常上抛。 */
@@ -257,8 +258,21 @@ int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
 		const agent::AgentModeConfig& agentCfg) {
 	int rc = 0;
 	try {
-		rc = options.agent ? runAgentPipeline(robot, agentCfg)
-				   : runActionPipeline(robot, options);
+		if (options.agent && options.tcp) {
+			/* agent over TCP（批次 2）：先监听并接受一个**已认证**连接，
+			 * 再把硬件交出去——没有对端时不该让执行器带电空转（设计与
+			 * 超时口径见 actionsource.hpp 的 TcpAgentSession 注释块）。
+			 * 会话对象在此作用域内活着：析构（含 watcher 停止与 fd 关闭）
+			 * 发生在 runAgentPipeline 返回之后、deactivate 之后。 */
+			std::unique_ptr<TcpAgentSession> session = openAgentTcpSession(options);
+			if (!session) { return 2; }
+			rc = runAgentPipeline(robot, agentCfg, session->in(), session->out(),
+				std::cerr);
+		} else {
+			rc = options.agent ? runAgentPipeline(robot, agentCfg, std::cin, std::cout,
+					   std::cerr)
+					   : runActionPipeline(robot, options);
+		}
 	} catch (const std::exception& e) {
 		std::cerr << "Aborted: " << e.what() << std::endl;
 		rc = 1;

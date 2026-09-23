@@ -192,11 +192,30 @@ TH_TEST(cliargs_task_timeout_option_is_parsed_and_agent_only) {
 	}
 }
 
-TH_TEST(cliargs_agent_with_tcp_is_rejected) {
+TH_TEST(cliargs_agent_with_tcp_is_accepted_but_task_tcp_is_not) {
+	/* 批次 2（2026-09-23）：--agent --tcp 从「互斥」改为「远程 REPL」——
+	 * 对本端来说它就是 agent 模式 + 连接式输入源。 */
 	Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 	TH_CHECK(p.opts.agent && p.opts.tcp);
-	TH_CHECK(bot::validateOptions(p) == 2);
+	TH_CHECK(bot::validateOptions(p) == 0);
+
+	/* 仍被拒：--task 与 --tcp（一次性任务没有长驻对话的意义） */
+	Argv b({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301",
+		"--task=x"});
+	bot::ParsedArgs q = bot::parseArgs(b.argc(), b.argv());
+	TH_CHECK(bot::validateOptions(q) == 2);
+
+	/* 仍被拒：两个输入源都要主导（--agent --tcp --input） */
+	Argv c({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301",
+		"--input=a.mt"});
+	bot::ParsedArgs r = bot::parseArgs(c.argc(), c.argv());
+	TH_CHECK(bot::validateOptions(r) == 2);
+
+	/* 非 agent 模式的裸 --tcp 不受影响（动作源 TCP 照旧） */
+	Argv d({"mybot", "--robot=robots/test.sql", "--tcp=19301"});
+	bot::ParsedArgs t = bot::parseArgs(d.argc(), d.argv());
+	TH_CHECK(bot::validateOptions(t) == 0);
 }
 
 TH_TEST(cliargs_agent_without_robot_is_rejected) {

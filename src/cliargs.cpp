@@ -176,10 +176,22 @@ int validateOptions(ParsedArgs& args) {
 			<< std::endl;
 		return 2;
 	}
-	if (options.agent && (options.tcp || options.input)) {
-		std::cerr << "参数错误：--agent 与 --tcp/--input 互斥"
+	/* 2026-09-23（批次 2）：--agent --tcp 不再是互斥，而是**远程 REPL**
+	 * （对端每行一条任务；安全口径与动作源 TCP 同款：回环缺省、跨机必须
+	 * --tcp-token）。仍被拒的两种组合：
+	 *   ① --agent --tcp --input：两个输入源都要主导，用户意图不一致；
+	 *   ② --agent --tcp --task：一次性任务没有长驻对话的意义，套一层连接
+	 *      只会让「跑完即退出」的语义变成「连上就跑完断开」，误导使用者。 */
+	if (options.agent && options.input) {
+		std::cerr << "参数错误：--agent 与 --input 互斥"
 			"（agent 模式以智能体工具循环为主流程，不接受一次性动作输入源）"
 			<< std::endl;
+		return 2;
+	}
+	if (options.agent && options.tcp && !options.agentTask.empty()) {
+		std::cerr << "参数错误：--task 与 --tcp 互斥"
+			"（--task 是一次性任务，跑完即退出；远程对话请去掉 --task，"
+			"由对端逐行下发任务）" << std::endl;
 		return 2;
 	}
 	/* agent 模式没有结构脚本就无从常驻，必须显式拒绝而不是打印帮助后退出 0 */
@@ -198,7 +210,10 @@ std::string helpText() {
 	s += "\n";
 	s += "动作输入源（优先级从高到低）：\n";
 	s += "  --tcp <port>       TCP 模式：监听端口接受一次成功连接，读取对端下发的 .mt\n";
-	s += "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）\n";
+	s += "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）。\n";
+	s += "                     与 --agent 同给时为**远程 REPL**：对端每行一条任务，模型输出\n";
+	s += "                     与工具回显回写该连接；无连接总时长预算（长会话），--tcp-idle\n";
+	s += "                     缺省 600s，对端断开即远程取消（立即中止在飞的模型调用）\n";
 	s += "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1；跨机监听（如 0.0.0.0）\n";
 	s += "                     必须同时提供 --tcp-token，否则拒绝启动\n";
 	s += "  --tcp-token <tok>  TCP 口令：跨机监听必填；对端须先发一行 \"<tok>\\n\" 再发脚本；\n";
@@ -220,6 +235,8 @@ std::string helpText() {
 	s += "模型调用由 Lua 协议驱动承担（不链接任何 HTTP 库，运行期只需 libcurl）。\n";
 	s += "  --agent            开启 agent 模式（缺省交互 REPL；硬件全程上电常驻）\n";
 	s += "  --task <文本>      一次性任务，跑完即退出；缺省则进入交互 REPL\n";
+	s += "  --tcp <port>       远程 REPL：对端每行一条任务（与 --task 互斥）。缺省只监听\n";
+	s += "                     127.0.0.1；跨机必须 --tcp-token。对端断开=远程取消\n";
 	s += "  --llm-config <路径>  配置文件（JSON）：目标 URL、API key、模型、采样与 agent 参数\n";
 	s += "                       缺省按 ./mybot.llm.json -> ./mybot.llm.conf.json ->\n";
 	s += "                       $HOME/.config/mybot/llm.json 查找；传 none 表示本次不读配置文件；\n";

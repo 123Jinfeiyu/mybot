@@ -1,14 +1,19 @@
 #include "actionsource.hpp"
 
 #include <arpa/inet.h>
+#include <poll.h>
 #include <cerrno>
 #include <cstddef>
 #include <cstdlib>
 #include <cstring>
+#include <atomic>
+#include <fcntl.h>
 #include <iostream>
 #include <netinet/in.h>
+#include <streambuf>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <thread>
 #include <unistd.h>
 
 namespace bot {
@@ -398,6 +403,247 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 
 	if (!raw) { return nullptr; }
 	return std::make_unique<LimitedReader>(std::move(raw), kMaxScriptBytes);
+}
+
+
+/* ======================================================================
+ * agent over TCP（批次 2，2026-09-23）：把已认证连接当成 REPL 的 stdin/stdout
+ * ======================================================================
+ * 设计要点见头文件 TcpAgentSession 的注释块（无连接总预算 / 对端断开=远程取消 /
+ * 接受在硬件上电之前）。本段只实现机制：
+ *   * SocketLineBuf  —— 可读 side：SO_RCVTIMEO 到期或 EOF 一律报 EOF，让
+ *     runAgentRepl 的 getline 走既有「输入结束」分支（不区分超时与对端关闭：
+ *     两者对 REPL 的语义都是「没有下一条任务了」）。
+ *   * SocketSinkBuf  —— 可写 side：MSG_NOSIGNAL 发送（对端已关时返回 EPIPE 而
+ *     不是给进程发 SIGPIPE——守门与生产都不该被一次断连杀死）；写失败后置位
+ *     broken，后续写静默丢弃（REPL 的输出不该反过来打断会话收尾）。
+ *   * PeerCloseWatcher —— 观察 POLLHUP/POLLRDHUP/POLLERR（**不消费任何字节**：
+ *     数据留给主线程的 getline），命中即执行与本地 SIGINT 相同的两件事。
+ */
+
+namespace {
+
+/* 可读 side：一次 recv 填充内部缓冲，逐字节出队 */
+class SocketLineBuf : public std::streambuf {
+public:
+	explicit SocketLineBuf(int fd) : fd_(fd) {}
+
+protected:
+	int underflow() override {
+		const int n = static_cast<int>(::recv(fd_, buf_, sizeof buf_, 0));
+		/* 超时（EAGAIN）与对端关闭（0）一律报 EOF：两者对 REPL 的语义都是
+		 * 「没有下一条任务了」，由 getline 的失败分支走既有收尾路径。
+		 * 单行长度上限由上层（kMaxReplInputBytes）判——本层只保证不无限缓冲。 */
+		if (n <= 0) { return traits_type::eof(); }
+		setg(buf_, buf_, buf_ + n);
+		return traits_type::to_int_type(*gptr());
+	}
+
+private:
+	int fd_;
+	char buf_[4096];
+};
+
+/* 可写 side：整块写，MSG_NOSIGNAL 抑制 SIGPIPE */
+class SocketSinkBuf : public std::streambuf {
+public:
+	explicit SocketSinkBuf(int fd) : fd_(fd) {}
+
+	/* 对端已关闭时为真：调用方据此停止输出（会话本身照常收尾） */
+	bool broken() const { return broken_; }
+
+protected:
+	std::streamsize xsputn(const char* s, std::streamsize n) override {
+		std::streamsize sent = 0;
+		while (sent < n && !broken_) {
+			const ssize_t w = ::send(fd_, s + sent, static_cast<std::size_t>(n - sent),
+				MSG_NOSIGNAL);
+			if (w <= 0) {
+				if (errno == EINTR) { continue; }
+				broken_ = true;
+				break;
+			}
+			sent += w;
+		}
+		return sent;
+	}
+	int overflow(int ch) override {
+		if (ch == traits_type::eof()) { return traits_type::not_eof(ch); }
+		const char c = static_cast<char>(ch);
+		return xsputn(&c, 1) == 1 ? ch : traits_type::eof();
+	}
+	int sync() override { return 0; }
+
+private:
+	int fd_;
+	bool broken_ = false;
+};
+
+/* 与本地 SIGINT 同效（批次 2）：置停止标志 + 创建取消哨兵。
+ * 哨兵路径由 main 的 setupCancelSentinel 经环境变量预先设好；这里**只读**
+ * 环境（不 setenv）——不做进程级环境改写，也就没有并发读环境的隐患。
+ * 打不开哨兵（/tmp 只读等）时静默跳过：与信号处理器同口径，哨兵是「及时取消」
+ * 的增强，失败时旧的「等满超时」行为仍然成立。 */
+void triggerLocalCancel() {
+	bot::stopRequested().store(true);
+	const char* path = std::getenv("BOT4CJ_LLM_CANCEL_FILE");
+	if (path == nullptr || path[0] == '\0') { return; }
+	const int fd = ::open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+	if (fd >= 0) {
+		const ssize_t ignored = ::write(fd, "cancel", 6);
+		(void)ignored;
+		::close(fd);
+	}
+}
+
+} // namespace
+
+/* 对端断开的观察者：不消费字节，只等 HUP/RDHUP/ERR。
+ * 只用一个后台线程，且析构时先停后 join 再关 fd（顺序不可颠倒）。 */
+class PeerCloseWatcher {
+public:
+	explicit PeerCloseWatcher(int fd) : fd_(fd) {
+		thread_ = std::thread([this] { run(); });
+	}
+	~PeerCloseWatcher() {
+		stop_.store(true);
+		if (thread_.joinable()) { thread_.join(); }
+	}
+	PeerCloseWatcher(const PeerCloseWatcher&) = delete;
+	PeerCloseWatcher& operator=(const PeerCloseWatcher&) = delete;
+
+	bool fired() const { return fired_.load(); }
+
+private:
+	void run() {
+		while (!stop_.load()) {
+			struct pollfd p{};
+			p.fd = fd_;
+			p.events = POLLIN | POLLRDHUP;
+			const int r = ::poll(&p, 1, 200);
+			if (r <= 0) { continue; }
+			if ((p.revents & (POLLHUP | POLLRDHUP | POLLERR | POLLNVAL)) != 0) {
+				fired_.store(true);
+				triggerLocalCancel();
+				return;
+			}
+		}
+	}
+
+	int fd_;
+	std::atomic<bool> stop_{false};
+	std::atomic<bool> fired_{false};
+	std::thread thread_;
+};
+
+namespace {
+
+class TcpAgentSessionImpl : public TcpAgentSession {
+public:
+	TcpAgentSessionImpl(FdGuard client, int idleSec, std::ostream& log)
+		: client_(std::move(client)),
+		  lineBuf_(client_.get()),
+		  sinkBuf_(client_.get()),
+		  in_(&lineBuf_),
+		  out_(&sinkBuf_),
+		  watcher_(client_.get()) {}
+
+	std::istream& in() override { return in_; }
+	std::ostream& out() override { return out_; }
+	void cancelAsLocalSigint() override { triggerLocalCancel(); }
+	/* 测试/诊断：watcher 是否已因对端断开触发过取消 */
+	bool peerClosed() const { return watcher_.fired(); }
+
+private:
+	FdGuard client_;
+	SocketLineBuf lineBuf_;
+	SocketSinkBuf sinkBuf_;
+	std::istream in_;
+	std::ostream out_;
+	PeerCloseWatcher watcher_;
+};
+
+} // namespace
+
+std::unique_ptr<TcpAgentSession> openAgentTcpSession(const CliOptions& options) {
+	if (options.tcpPort.empty()) {
+		std::cerr << "--agent --tcp 需要端口号，例如 --tcp 9000（合法范围 1-65535）" << std::endl;
+		return nullptr;
+	}
+	auto portParsed = parseLongStrict(options.tcpPort);
+	if (portParsed.first != IntParse::OK || portParsed.second < 1 || portParsed.second > 65535) {
+		std::cerr << "--tcp 端口号无效：" << options.tcpPort << "（合法范围 1-65535）" << std::endl;
+		return nullptr;
+	}
+	std::string host = options.tcpHost;
+	if (host.empty()) { host = "127.0.0.1"; }
+
+	/* 空闲超时：agent 形态缺省 600s（kAgentIdleSecDefault），可经 --tcp-idle 覆盖 */
+	int idleSec = tcp_limits::kAgentIdleSecDefault;
+	if (!options.tcpIdle.empty()) {
+		auto idleParsed = parseLongStrict(options.tcpIdle);
+		if (idleParsed.first != IntParse::OK || idleParsed.second < 1 || idleParsed.second > 86400) {
+			std::cerr << "--tcp-idle 无效：" << options.tcpIdle
+				<< "（合法范围 1-86400 秒）" << std::endl;
+			return nullptr;
+		}
+		idleSec = static_cast<int>(idleParsed.second);
+	}
+
+	std::string token = options.tcpToken;
+	if (token.empty()) {
+		if (const char* envToken = std::getenv("BOT4CJ_TCP_TOKEN")) { token = envToken; }
+	}
+	int authMaxFails = tcp_limits::kAuthMaxFailsDefault;
+	if (!options.tcpMaxAuthAttempts.empty()) {
+		auto authParsed = parseLongStrict(options.tcpMaxAuthAttempts);
+		if (authParsed.first != IntParse::OK
+				|| authParsed.second < tcp_limits::kAuthMaxFailsMin
+				|| authParsed.second > tcp_limits::kAuthMaxFailsMax) {
+			std::cerr << rangeErrorText("--tcp-max-auth-attempts",
+				tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax,
+				options.tcpMaxAuthAttempts) << std::endl;
+			return nullptr;
+		}
+		authMaxFails = static_cast<int>(authParsed.second);
+	}
+
+	in_addr addr{};
+	if (!parseIpv4Host(host, addr)) { return nullptr; }
+
+	std::cerr << "agent over TCP：监听 " << host << ":" << portParsed.second
+		<< "，等待客户端连接（空闲超时 " << idleSec << " 秒；无连接总时长预算——"
+		"远程对话是长会话，见 docs/agent.md）..." << std::endl;
+
+	FdGuard listenFd;
+	try {
+		listenFd = setupListenSocket(portParsed.second, host, addr, token);
+	} catch (const std::exception& e) {
+		std::cerr << e.what() << std::endl;
+		return nullptr;
+	}
+	FdGuard clientFd;
+	try {
+		clientFd = acceptAuthenticatedClient(listenFd.get(), token, idleSec, authMaxFails);
+	} catch (const std::exception& e) {
+		std::cerr << e.what() << std::endl;
+		return nullptr;
+	}
+	/* 非阻塞标志：poll 的 watcher 与主线程共用该 fd，socket 本身是阻塞的
+	 * （recv 靠 SO_RCVTIMEO 超时）——poll 不读数据，无需非阻塞。 */
+	{
+		timeval tv{};
+		tv.tv_sec = idleSec;
+		if (::setsockopt(clientFd.get(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
+			std::cerr << "设置 TCP 接收空闲超时失败：" << std::strerror(errno) << std::endl;
+			return nullptr;
+		}
+	}
+	/* 所有权随 FdGuard 移动进会话对象（其析构顺序：先停 watcher、再关 fd，
+	 * 见 TcpAgentSessionImpl 的成员声明顺序）。构造前的异常路径由守卫兜住：
+	 * 监听 fd 与客户端 fd 都不泄漏。 */
+	return std::make_unique<TcpAgentSessionImpl>(std::move(clientFd), idleSec,
+		std::cerr);
 }
 
 } // namespace bot

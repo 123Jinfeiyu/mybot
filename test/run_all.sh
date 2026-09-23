@@ -1211,10 +1211,23 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 		timeout 20 "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
 	fi
 
-	# 2) --agent 与 --tcp/--input 互斥：两者都要求主导输入源，显式拒绝退出 2
-	if case_matches 'agent_tcp_mutex'; then
-	run_one_hardening 'agent_tcp_mutex' 2 '--agent 与 --tcp/--input 互斥' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399
+	# 2) 输入源组合（批次 2，2026-09-23 起 --agent --tcp 是**远程 REPL**，不再互斥）：
+	#    与 --input 同给仍拒绝（两个输入源都要主导）；与 --task 同给仍拒绝
+	#    （一次性任务没有长驻对话的意义）。缺 --tcp-token 的跨机监听也必须拒绝
+	#    ——这条是 H-2 防线在 agent 形态的复用处，挡的是「把远程工具调用裸暴露
+	#    到网络上」。三条都在配置阶段退出 2，**不上电**。
+	if case_matches 'agent_tcp_input_mutex'; then
+	run_one_hardening 'agent_tcp_input_mutex' 2 '--agent 与 --input 互斥' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --input=/dev/null
+	fi
+	if case_matches 'agent_tcp_task_mutex'; then
+	run_one_hardening 'agent_tcp_task_mutex' 2 '--task 与 --tcp 互斥' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --task=x
+	fi
+	if case_matches 'agent_tcp_crossmachine_needs_token'; then
+	run_one_hardening 'agent_tcp_crossmachine_needs_token' 2 '非回环且未设 --tcp-token' \
+		env BOT4CJ_LLM_KEY=hardening-fake timeout 20 "$bin" --robot=robots/relay-test.sql \
+		--agent --tcp 19399 --tcp-host 0.0.0.0 --llm-config none
 	fi
 
 	# 3) agent 模式缺 API key：buildAgentConfig 失败退出 2。三个密钥环境变量

@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 十九个场景：
+# 二十个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -38,7 +38,11 @@
 #  15) --read-var（2026-09-23 回读通道 A）——模型经 read_variables 主动读硬件变量，
 #      回执里必须出现驱动返回表的键（relay0 经 controller 转发到 timer-0 的 slept）。
 #      15b 是对照：缺该开关时工具不在表内，**且线上工具定义里也没有它**。
-#  16) --session-file / --resume（2026-09-23 批次 1）——**两个进程接力**：第一个进程
+#  16) --agent --tcp（2026-09-23 批次 2）——远程 REPL：python 客户端跑通
+#      「token → 任务 → 工具调用 → 回显」全链路；对照三条：错 token 被拒、
+#      空闲超时按输入结束收尾（不是挂死）、**发出任务后断开连接 = 远程取消**
+#      （在飞的模型调用被立刻中止，而不是等满 --llm-timeout）。
+#  17) --session-file / --resume（2026-09-23 批次 1）——**两个进程接力**：第一个进程
 #      落盘会话文件；第二个进程带 --resume 启动，其**首个请求**里必须带第一个进程的
 #      对话（这是"重启不忘记"的唯一判据）。同场对照：指纹不符（换结构脚本）必须拒绝
 #      恢复并退出 2；缺 --session-file 的 --resume 必须退出 2（恢复只认命令行路径）。
@@ -941,6 +945,161 @@ if [ "$rc19d" -eq 2 ]; then
 else
 	echo "  [FAIL] --resume 缺 --session-file 时应退出 2，实际 $rc19d"
 	fail=1
+fi
+
+# ============ 场景 20：agent over TCP（--agent --tcp，远程 REPL）============
+# 远程对话 = 远程工具调用，安全口径与动作源 TCP 同款；本场景验证四件事：
+#   ① 全链路：token → 任务 → 工具循环 → 回答逐行回写连接；
+#   ② 错 token 被拒（且不进入会话）；
+#   ③ 空闲超时按「输入结束」收尾（半开连接不会挂死进程）；
+#   ④ 发任务后断开连接 = 远程取消：在飞的模型调用被立即中止
+#      （判据是**耗时**——等满 --llm-timeout 会慢一个数量级）。
+echo "----- 场景 20：agent over TCP（远程 REPL） -----"
+PY20="$tmp/tcp_client.py"
+cat > "$PY20" <<'PYEOF'
+import socket, sys, time
+
+port, mode = int(sys.argv[1]), sys.argv[2]
+
+def read_some(s, seconds=3.0):
+    s.settimeout(seconds)
+    data = b""
+    try:
+        while True:
+            chunk = s.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+    except Exception:
+        pass
+    return data.decode(errors="replace")
+
+if mode == "roundtrip":
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.sendall((sys.argv[3] + "\n").encode())
+    time.sleep(0.5)
+    s.sendall("让继电器动作一次\n".encode())
+    time.sleep(3.5)
+    s.sendall("/exit\n".encode())
+    sys.stdout.write(read_some(s, 3.0))
+    s.close()
+elif mode == "wrongtoken":
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s.sendall(b"wrong-token\n")
+    sys.stdout.write(read_some(s, 3.0))
+    s.close()
+elif mode == "idle":
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    t0 = time.time()
+    data = read_some(s, 12.0)
+    sys.stdout.write("idle_wait=%.1fs\n" % (time.time() - t0))
+    sys.stdout.write(data)
+    s.close()
+elif mode == "disconnect":
+    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    time.sleep(0.4)
+    s.sendall("跑个慢任务\n".encode())
+    time.sleep(1.0)
+    s.close()
+PYEOF
+
+# ---- 20a：全链路（回环缺省 + 显式 token）----
+PORT=$((21400 + RANDOM % 200))
+CAP20="$tmp/req-agenttcp.json"
+start_server "$PORT" "$CAP20" ok || exit 1
+TCPPORT=$((21600 + RANDOM % 200))
+BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent --tcp "$TCPPORT" --tcp-token e2e-tok \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	> "$tmp/tcp-server-a.log" 2>&1 &
+SRVAPP=$!
+sleep 1.5
+out20a="$(timeout 30 python3 "$PY20" "$TCPPORT" roundtrip e2e-tok 2>&1)"
+echo "$out20a"
+check "$out20a" "mybot[relay-test" "远程 REPL 的提示符回写到连接"
+check "$out20a" "AGENT-E2E-完成" "模型回答经连接回写（工具循环跑通）"
+check_json "$CAP20" "any(m.get('role')=='user' and '让继电器动作一次' in str(m.get('content','')) for m in d.get('messages',[]))" \
+	"经 TCP 下发的任务真的进了模型请求"
+wait "$SRVAPP" 2>/dev/null
+stop_server
+
+# ---- 20b：错 token 被拒 ----
+PORT=$((21400 + RANDOM % 200))
+start_server "$PORT" "" ok || exit 1
+TCPPORT=$((21600 + RANDOM % 200))
+BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent --tcp "$TCPPORT" --tcp-token e2e-tok \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	> "$tmp/tcp-server-b.log" 2>&1 &
+SRVAPP=$!
+sleep 1.5
+out20b="$(timeout 30 python3 "$PY20" "$TCPPORT" wrongtoken 2>&1)"
+sleep 0.5
+kill "$SRVAPP" 2>/dev/null; wait "$SRVAPP" 2>/dev/null
+stop_server
+echo "$out20b"
+check_present "$tmp/tcp-server-b.log" "口令校验失败" "错 token 被显式拒绝（服务端点名）"
+
+# ---- 20c：空闲超时按输入结束收尾（半开连接不挂死）----
+PORT=$((21400 + RANDOM % 200))
+start_server "$PORT" "" ok || exit 1
+TCPPORT=$((21600 + RANDOM % 200))
+BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent --tcp "$TCPPORT" --tcp-idle 2 \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	> "$tmp/tcp-server-c.log" 2>&1 &
+SRVAPP=$!
+sleep 1.5
+out20c="$(timeout 30 python3 "$PY20" "$TCPPORT" idle 2>&1)"
+wait "$SRVAPP"; rc20c=$?
+stop_server
+echo "$out20c"
+check "$out20c" "idle_wait" "客户端观察到了会话结束（连接被服务端收尾）"
+if [ "$rc20c" -eq 0 ]; then
+	echo "  [OK] 空闲超时后进程按正常结束退出（rc=0，非挂死/强杀）"
+else
+	echo "  [FAIL] 空闲超时后退出码 $rc20c（应为 0）"
+	fail=1
+fi
+
+# ---- 20d：断开连接 = 远程取消（在飞模型调用被立即中止）----
+PORT=$((21400 + RANDOM % 200))
+start_server "$PORT" "" slow || exit 1	# slow：服务端睡 5s 才答复
+TCPPORT=$((21600 + RANDOM % 200))
+BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" \
+	--robot=robots/relay-test.sql --agent --tcp "$TCPPORT" \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--llm-timeout 60 \
+	> "$tmp/tcp-server-d.log" 2>&1 &
+SRVAPP=$!
+sleep 1.5
+t_start=$(date +%s)
+timeout 30 python3 "$PY20" "$TCPPORT" disconnect 2>&1
+wait "$SRVAPP"; rc20d=$?
+t_end=$(date +%s)
+elapsed=$((t_end - t_start))
+stop_server
+echo "  远程取消耗时 ${elapsed}s（等满 --llm-timeout 会是 60s 级）"
+# 阈值 4s：慢速假服务自己睡 5s，所以"没被取消"的路径至少 5s 才可能结束——
+# 阈值必须**低于**它才有判别力（15s 这种阈值等于永远通过）。
+if [ "$elapsed" -le 4 ]; then
+	echo "  [OK] 断开连接后立即中止在飞调用（${elapsed}s ≪ 60s）"
+else
+	echo "  [FAIL] 断开连接后仍等了 ${elapsed}s——取消通道没生效"
+	fail=1
+fi
+check_present "$tmp/tcp-server-d.log" "请求已取消" "取消走的是「已取消」语义（不是超时/强杀）"
+if [ "$rc20d" -eq 0 ]; then
+	echo "  [OK] 取消后按优雅退出收尾（rc=0）"
+else
+	echo "  [FAIL] 取消后退出码 $rc20d（应为 0）"
+	fail=1
+fi
+if ls /tmp/mybot-cancel-* >/dev/null 2>&1; then
+	echo "  [FAIL] 取消哨兵文件残留（应随进程退出清理）"
+	fail=1
+else
+	echo "  [OK] 取消哨兵无残留"
 fi
 
 if [ "$fail" -eq 0 ]; then
