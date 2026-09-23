@@ -84,29 +84,23 @@ end
 
 -- 【销毁PCA9685的脚本】重置PCA9685
 -- NOTE(20260612-qing): 其实可以不需要，因为我们只是清空设置
---
+-- M3（2026-09-23 安全审计）：destroy 的职责是「尽力释放」，不是「校验入参」。
+-- 旧版在 arg_table/i2c_pair 失败时提前 return ERR，在 write 失败时也 return ERR，
+-- 违背 drv_common.lua:52-64 约定「资源不可用即静默成功」（docs/drivers.md 声明的
+-- 例外只有 ADS1115）。修复后：destroy 尽力执行重启，失败也静默返回 OK。
 function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
 
 	dbg_table("-------- Lua ender func get a table --------", data)
 
 	-----------------------------------------------------
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
+	local fd, addr = tonumber(data.fd), tonumber(data.address)
+	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+		-----------------------------------------------------
+		-- 尽力触发重启（非复位配置，仅重新开始计数），失败不报错
+		i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)
 	end
 
-	-----------------------------------------------------
-
-	if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then	-- 触发重启（非复位配置，仅重新开始计数）
-		return err("PCA9685 write failed: MODE1 (restart)")
-	end
-
-	return {  result = "OK"  }	-- 返回成功信号
+	return {  result = "OK"  }	-- 无条件静默成功
 
 end
 
