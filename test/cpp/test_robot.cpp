@@ -1381,3 +1381,44 @@ TH_TEST(robot_hot_sql_keeps_element_references_stable_across_appends) {
 	TH_CHECK(*header == "name");
 	robot.deactivate();
 }
+
+/* DROP/DELETE/UPDATE（2026-09-23）：删除或改写结构的语句一律明确拒绝，且
+ * **整批在解析期就失败**——混在合法 INSERT 后面的 DROP 不能让前半句先生效。
+ * 报错文本是语句级的「Unsupported statement …」（旧形态是词元级 "Token name
+ * 'drop'"，读的人无从判断是语法错还是方言不支持）。 */
+TH_TEST(robot_hot_sql_rejects_deleting_and_rewriting_statements) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-sql-drop");
+	const fs::path marker = tmp.path() / "destroyed";
+
+	bot::MemoryReader sr(probeSql(marker));
+	bot::RobotStruct robot(sr);
+	robot.active();
+	const std::size_t tablesBefore = robot.matrices().size();
+	const std::size_t namesBefore = robot.registry().byName().size();
+	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "LifetimeProbe")->rows();
+
+	TH_CHECK(hotSqlError(robot, "DROP TABLE LifetimeProbe;\n")
+		.find("Unsupported statement DROP") != std::string::npos);
+	TH_CHECK(hotSqlError(robot, "DELETE FROM LifetimeProbe WHERE name = 'p0';\n")
+		.find("Unsupported statement DELETE") != std::string::npos);
+	TH_CHECK(hotSqlError(robot, "UPDATE LifetimeProbe SET path = 'x';\n")
+		.find("Unsupported statement UPDATE") != std::string::npos);
+
+	/* 混合批次：合法的前半句也不得生效（解析先于任何装配/上电） */
+	const std::string mixed = hotSqlError(robot,
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p9', 'x');\n"
+		"DROP TABLE LifetimeProbe;\n");
+	TH_CHECK(mixed.find("Unsupported statement DROP") != std::string::npos);
+	TH_CHECK(!robot.declaresVariable("p9"));
+
+	/* 活体一字未动：表数/注册表/行数都还是批次前的值 */
+	TH_CHECK(robot.matrices().size() == tablesBefore);
+	TH_CHECK(robot.registry().byName().size() == namesBefore);
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == rowsBefore);
+
+	/* 未被 build 的批次不留痕；已在上电中的 p0 随 deactivate 正常断电 */
+	TH_CHECK(markerOf(marker).empty());
+	robot.deactivate();
+	TH_CHECK(markerOf(marker) == "D");
+}

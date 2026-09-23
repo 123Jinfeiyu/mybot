@@ -224,6 +224,29 @@ std::string tokenMsg(const Token& t) {
 	return m;
 }
 
+/* 明确拒绝的「看似合法」语句关键字（大小写不敏感）。本方言只认
+ * CREATE TABLE / INSERT INTO / SELECT，而这三个都是**删除或改写结构**的语句：
+ * 在带电机器人上它们会让结构矩阵与硬件注册表失去一致性（见 RobotStruct::applySql
+ * 的契约），两点都不打算支持。
+ * 为什么要专门认出来：它们不是关键字（词法层落成 NAME），过去的失败形态是
+ * "Token name 'drop'"——层级是词元的，读的人（含模型）无法判断这是「语法写错」
+ * 还是「方言不支持」，只会改写措辞反复重试。这里给一句含正确用法的拒绝。
+ * 判据是**语句首词元**：出现在后续位置的同名标识符（列名/表名/值）不受影响。 */
+bool isUnsupportedStatement(const std::string& name) {
+	return equalWithoutCase(name, "drop") || equalWithoutCase(name, "delete")
+		|| equalWithoutCase(name, "update");
+}
+
+/* 回显统一大写（ASCII）：既是 SQL 的惯例写法，也让报错文本成为**稳定锚点**——
+ * 否则同一条语句因输入大小写不同而形态各异，单测/E2E 与日志检索都得写两套。 */
+std::string upperAscii(const std::string& s) {
+	std::string o = s;
+	for (char& c : o) {
+		if (c >= 'a' && c <= 'z') { c = static_cast<char>(c - 32); }
+	}
+	return o;
+}
+
 } // namespace
 
 Event Parser::next() {
@@ -263,6 +286,11 @@ Event Parser::next() {
 			return e;
 		}
 		default:
+			/* 语句首词元是删除/改写类语句 → 明确的「不支持」，而不是词元级报错 */
+			if (t.type == TokenType::NAME && isUnsupportedStatement(t.name)) {
+				throw bot::IllegalArgumentException("Unsupported statement " + upperAscii(t.name)
+					+ ": this dialect only understands CREATE TABLE / INSERT INTO / SELECT ... FROM");
+			}
 			throw bot::IllegalArgumentException(tokenMsg(t));
 	}
 }

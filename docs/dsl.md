@@ -26,6 +26,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 - 注释整行 INSERT 即可下线一个硬件实例；报错会指明是哪张表、哪一行、哪一列
 - **INSERT 的列名清单决定「哪个值属于哪一列」，值按列名落到建表声明序**（2026-09-20 审计 C3）。`INSERT INTO Timer (delay, name) VALUES (50, 'timer-0')` 与 `(name, delay)` 写法等价，列序写反不会错列。三条硬约束（违规在解析期报错，不再静默错位）：列名必须在建表声明里存在（`no such column`）、同一列不得写两次（`listed twice`）、每列都必须给值（`missing value for column`，要继承上一行就显式写 `-`）
 - 列类型支持 `String` / `Number`：值一律以文本驻留（`MatrixObject` 只存 String），`Number` 目前仅在**解析期**对字面量做一次数值校验（整数/小数/带符号/科学计数法合法，空值与 `nan`/`inf` 拒绝），不做运行期类型转换；校验按 INSERT 的列名匹配声明列，报错形如 `Column 'delay' of table 'Timer' is declared Number, but value 'abc' is not numeric.`
+- **方言只认三条语句**：`CREATE TABLE` / `INSERT INTO` / `SELECT * FROM 表;`（SELECT 仅在 agent 的 `query_sql` 与 REPL `/sql` 里可用，见 [agent.md](agent.md)）。`DROP` / `DELETE` / `UPDATE` 是删除或改写结构的语句，在**解析期**就被明确拒绝（`Unsupported statement DROP: this dialect only understands …`），整批不生效、不留半成品。刻意不支持而非暂未实现：带电机器人的结构矩阵与硬件注册表必须逐项对应，删表/删行会让已开好的 fd 与总线句柄失去归属。结构改动请改写 `.sql` 后重新上电，或走热插表的 `CREATE TABLE` / `INSERT INTO`（见 [reference.md](reference.md) 的 `--agent-hot-sql`）。
 
 **引号字面量**：`'` / `"` 包裹的值整体按字面解析——引号内的 `--`、`/* */`、`;`、`,`、`(`、`)` 与空白都是**数据**而非注释/分隔符（注释只在引号外生效）。这是 1.x 起修复的词法器行为，有负值回归守门（`robots/test/sqlquote.sql`）。
 

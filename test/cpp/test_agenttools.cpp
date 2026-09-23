@@ -413,6 +413,23 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK(runSqlCommand("INSERT INTO Nope (name) VALUES ('x');", *robot).find("错误: ") == 0);
 	TH_CHECK(runSqlCommand("", *robot).find("错误: ") == 0);
 
+	/* DROP/DELETE/UPDATE（2026-09-23）：删除或改写结构的语句在解析期就被明确拒绝
+	 * （语句级「Unsupported statement …」，不是词元级的 "Token name 'drop'"）。 */
+	const std::string drop = runSqlCommand("DROP TABLE Relay;", *robot);
+	TH_CHECK_MSG(drop.find("错误: ") == 0, "实际: " + drop);
+	TH_CHECK_MSG(drop.find("Unsupported statement DROP") != std::string::npos, "实际: " + drop);
+	TH_CHECK(runSqlCommand("DELETE FROM Relay;", *robot).find("Unsupported statement DELETE")
+		!= std::string::npos);
+
+	/* 工具面同一条判据，且是**参数类失败**：这里只标 paramError（工具层按异常类型
+	 * 给出的判据），派发漏斗据此把回执改成「工具参数错误: …」并置 executed=false
+	 * ——什么都没执行，不谎称"机器人可能停在半途"（SAN-4/SAN-8）。 */
+	AgentToolResult toolDrop = open.execute("apply_sql", parseJson("{\"sql\":\"DROP TABLE Relay;\"}"));
+	TH_CHECK(!toolDrop.ok);
+	TH_CHECK(toolDrop.paramError);
+	TH_CHECK(toolDrop.error.find("Unsupported statement DROP") != std::string::npos);
+	TH_CHECK(robot->registry().byName().size() == before + 1);	/* 活体一字未动 */
+
 	robot->deactivate();
 }
 

@@ -6,6 +6,8 @@
  * 以及 Parser 的报错形态：一律「Token <词元>」指出出问题的位置；
  * F5-1 起词元带 1 起行列，报错追加「 (line N, column M)」（既有子串锚点不受影响），
  * 引号态跨越 EOF 报「Unterminated string」并给开引号落点（旧实现静默放行半截串）。
+ * 唯一的例外是语句首词元为删除/改写类语句（DROP/DELETE/UPDATE）时报
+ * 「Unsupported statement …」——词元级消息在那三句上答不了「是不支持还是写错了」。
  */
 
 #include <cstddef>
@@ -325,6 +327,32 @@ TH_TEST(parser_rejects_multi_row_values_tuple) {
 	 * 绝不能静默只取第一组（那会让结构脚本少装硬件而无声）。 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token ,",
 		events("INSERT INTO Relay ( name, note ) VALUES ( 'a', 'b' ), ( 'c', 'd' );"));
+}
+
+TH_TEST(parser_rejects_deleting_and_rewriting_statements) {
+	/* DROP/DELETE/UPDATE（2026-09-23）：删除或改写结构的语句，本方言不支持。
+	 * 它们不是关键字（词法层落成 NAME），旧失败形态是词元级的 "Token name
+	 * 'drop'"——读的人（含模型）无从判断是语法错还是方言不支持，只会反复改写
+	 * 再试。这里必须在**解析期**给出语句级拒绝，且拒绝发生在任何装配之前。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unsupported statement DROP", events("DROP TABLE Relay;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unsupported statement DELETE", events("DELETE FROM Relay WHERE name = 'relay0';"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unsupported statement UPDATE", events("UPDATE Relay SET note = 'x';"));
+	/* 大小写不敏感，且回显统一大写——报错文本是稳定锚点，不随输入写法漂移 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unsupported statement DROP", events("drop table Relay;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
+		"Unsupported statement DELETE", events("Delete FROM Relay;"));
+	/* 只判**语句首词元**：同名标识符出现在列名/表名/值里是合法数据，不得误伤 */
+	const std::vector<Event> made = events("CREATE TABLE Drop ( drop String, update String );");
+	TH_CHECK(made[0].create.tableName == "Drop");
+	TH_CHECK(made[0].create.tableColumns[0].name == "drop");
+	TH_CHECK(made[0].create.tableColumns[1].name == "update");
+	const std::vector<Event> ins = events("INSERT INTO Drop ( drop ) VALUES ( 'DROP' );");
+	TH_CHECK(ins[0].insert.targetTabName == "Drop");
+	TH_CHECK(ins[0].insert.tableRows[0][0].value == "DROP");
 }
 
 TH_TEST(parser_reports_the_offending_token) {
