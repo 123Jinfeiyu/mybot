@@ -134,6 +134,13 @@ std::string describeActionScripts(const std::string& scriptsDir);
  * （对舵机等执行器，play({}) 会真的下发指令）。 */
 std::string describeHardware(RobotStruct& robot);
 
+/* 解析一条结构 SQL 并渲染成文本（REPL /sql 与 agent 工具 query_sql 共用的
+ * 单一事实源）。只读、无副作用：不装配硬件、不改结构矩阵。
+ *   * SELECT * FROM t —— 从运行时结构矩阵（robot.matrices()）取数渲染；
+ *   * CREATE/INSERT —— 只解析回显（语法验证），不落任何状态。
+ * 失败返回"错误: …"前缀的人话报错（解析器带行列定位）。 */
+std::string runSqlStatement(const std::string& sql, const RobotStruct& robot);
+
 /* 动作脚本路径解析：请求必须是 scriptsDir 之下的相对路径。
  * 拒绝绝对路径、空段、"."/".."、以及含 NUL 的名字（NUL 会让
  * fopen 截断路径，是「校验的路径 ≠ 打开的路径」经典绕过）。 */

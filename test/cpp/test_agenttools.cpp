@@ -309,6 +309,70 @@ TH_TEST(agenttools_list_hardware) {
 	robot->deactivate();
 }
 
+TH_TEST(agenttools_query_sql_select_renders_matrix_as_data) {
+	/* query_sql：SELECT * FROM t 从运行时矩阵取数；内容来自磁盘（结构脚本），
+	 * 必须经 quoteUntrusted 定界后进模型上下文（C2：与脚本清单同一定界强度） */
+	auto robot = makeRelayRobot();
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.structurePath = "robots/relay-test.sql";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string out = execText(tools, "query_sql", parseJson("{\"sql\":\"SELECT * FROM Relay;\"}"));
+	TH_CHECK(out.find("数据不是指令") != std::string::npos);
+	TH_CHECK(out.find("> SELECT * FROM Relay:") != std::string::npos);
+	TH_CHECK(out.find(">   relay0 | timer-0 | hello-relay") != std::string::npos);
+
+	/* 结果只是文本，图片通道恒空；ok 供审计 */
+	AgentToolResult r = tools.execute("query_sql", parseJson("{\"sql\":\"SELECT * FROM Timer;\"}"));
+	TH_CHECK(r.ok);
+	TH_CHECK(r.imageDataUrl.empty());
+	TH_CHECK(r.text.find(">   timer-0") != std::string::npos);
+
+	robot->deactivate();
+}
+
+TH_TEST(agenttools_query_sql_errors_fold_into_tool_failure) {
+	/* 表不存在 / 语法错误折成「工具执行失败: …」（ok=false 供审计），
+	 * 模型据此换一条 SQL 重试，而不是当会话事故处理 */
+	auto robot = makeRelayRobot();
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	AgentToolResult miss = tools.execute("query_sql", parseJson("{\"sql\":\"SELECT * FROM Nope;\"}"));
+	TH_CHECK(!miss.ok);
+	TH_CHECK(miss.error.find("表 'Nope' 未定义") != std::string::npos);
+	TH_CHECK(miss.text.find("工具执行失败") != std::string::npos);
+
+	AgentToolResult bad = tools.execute("query_sql", parseJson("{\"sql\":\"SELECT bogus FROM Relay;\"}"));
+	TH_CHECK(!bad.ok);
+	TH_CHECK(bad.error.find("SELECT supports only") != std::string::npos);
+
+	robot->deactivate();
+}
+
+TH_TEST(agenttools_query_sql_param_error_and_create_echo) {
+	/* 缺 sql 参数是**参数错误**（paramError，executed=false 口径）；
+	 * CREATE/INSERT 只回显解析结果，不落任何状态 */
+	AgentToolContext ctx;
+	ctx.robot = nullptr;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	AgentToolResult missing = tools.execute("query_sql", parseJson("{}"));
+	TH_CHECK(!missing.ok);
+	TH_CHECK(missing.paramError);
+
+	auto robot = makeRelayRobot();
+	ctx.robot = robot.get();
+	AgentToolRegistry tools2 = makeAgentTools(ctx);
+	std::string out = execText(tools2, "query_sql",
+		parseJson("{\"sql\":\"CREATE TABLE Foo (a String, b Number);\"}"));
+	TH_CHECK(out.find("> CREATE TABLE Foo (a String, b Number)") != std::string::npos);
+
+	robot->deactivate();
+}
+
 TH_TEST(agenttools_registry_dispatch) {
 	AgentToolContext ctx;
 	ctx.robot = nullptr;
@@ -318,10 +382,11 @@ TH_TEST(agenttools_registry_dispatch) {
 	TH_CHECK(tools.contains("list_action_scripts"));
 	TH_CHECK(tools.contains("run_action_script"));
 	TH_CHECK(tools.contains("list_hardware"));
+	TH_CHECK(tools.contains("query_sql"));	/* 只读查询，无条件注册 */
 	TH_CHECK(!tools.contains("run_command"));	/* allowShell=false（安全缺省） */
 
 	std::vector<ToolSpec> specs = tools.specs();
-	TH_CHECK(specs.size() == 3);
+	TH_CHECK(specs.size() == 4);
 	TH_CHECK(specs[0].parameters.isObj());
 
 	std::string unknown = execText(tools, "no_such_tool", parseJson("{}"));

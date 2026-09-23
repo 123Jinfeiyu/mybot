@@ -375,6 +375,10 @@ public:
 	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
 	const HwRegistry& registry() const { return registry_; }
 
+	/* agent 模式：只读结构矩阵视图（声明序）。供 /sql 查询从原始矩阵取数渲染——
+	 * 与 registry()（装配后的硬件变量视图）互补：前者看结构脚本定义，后者看装配结果。 */
+	const std::vector<mt::MatrixObject>& matrices() const { return matrices_; }
+
 	/* agent 模式：结构脚本是否已声明名为 name 的变量。
 	 * 必须在 active() **之前**可判定，故直接扫矩阵表的 name 列，
 	 * 而不是查注册表（注册表要 active() 里 createHardVars 才装配）。 */

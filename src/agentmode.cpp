@@ -654,6 +654,9 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	return replRc;
 }
 
+/* /sql 命令的实现在 agenttools.cpp 的 runSqlStatement（与 agent 工具 query_sql
+ * 共用的单一事实源，契约见 agenttools.hpp）。 */
+
 int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 		RobotStruct& robot, std::istream& in, std::ostream& out, std::ostream& log) {
 	/* 状态指示提示符组件（2026-09-22 可用性改进）：提取结构脚本名（去路径和扩展名）、
@@ -668,7 +671,7 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 	const std::size_t hwCount = robot.registry().byName().size();
 
 	out << "agent 模式：机器人已上电常驻（结构脚本 " << cfg.structurePath << "）。\n"
-		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/status 看会话状态，/clear 清空对话记忆，"
+		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/sql 解析 SQL，/status 看会话状态，/clear 清空对话记忆，"
 		"/help 看帮助，/exit 退出。\n";
 	std::string line;
 	while (!stopRequested()) {
@@ -691,6 +694,7 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 			out << "内置命令:\n"
 				<< "  /hardware  - 显示硬件清单（只读，不触发任何动作）\n"
 				<< "  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）\n"
+				<< "  /sql <语句> - 解析并回显一条结构 SQL；SELECT * FROM t 查询运行时矩阵\n"
 				<< "  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）\n"
 				<< "  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）\n"
 				<< "  /help      - 显示此帮助\n"
@@ -721,6 +725,18 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 		}
 		if (task == "/scripts") {
 			out << describeActionScripts(cfg.scriptsDir) << "\n";
+			continue;
+		}
+		/* /sql <语句>：用 sql4cj 解析器解析一条结构 SQL 并回显（SELECT * 从运行时
+		 * 矩阵取数）。必须在本派发点 continue —— 否则会被当任务描述发给模型。 */
+		if (task.size() >= 2 && task.rfind("/sql", 0) == 0
+				&& (task.size() == 4 || task[4] == ' ' || task[4] == '\t')) {
+			const std::string sql = trim(task.substr(4));
+			if (sql.empty()) {
+				out << "用法: /sql <语句>（以 ; 结尾），例如 /sql SELECT * FROM Vars;\n";
+			} else {
+				out << runSqlStatement(sql, robot) << "\n";
+			}
 			continue;
 		}
 		try {

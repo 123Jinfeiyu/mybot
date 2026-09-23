@@ -59,12 +59,20 @@ struct InsertTableEvent {
 	std::vector<std::vector<VarRaw>> tableRows;
 };
 
-enum class EventType { CREATE_TABLE, INSERT_TABLE, END };
+/* SELECT 事件：只承载目标表名（`SELECT * FROM t`）。真正的查询执行（从运行时
+ * 矩阵取数渲染）在消费方（REPL /sql 命令）完成——解析器保持「只产出结构事件」
+ * 的最小职责，不引入 SELECT AST。 */
+struct SelectTableEvent {
+	std::string sourceTableName;	/* FROM 后的表名 */
+};
+
+enum class EventType { CREATE_TABLE, INSERT_TABLE, SELECT_TABLE, END };
 
 struct Event {
 	EventType type;
 	CreateTableEvent create;
 	InsertTableEvent insert;
+	SelectTableEvent select;
 };
 
 /* ------------- 词法分析器 ------------- */
@@ -130,6 +138,8 @@ class Parser {
 	std::vector<std::string> expectParenNameList();
 
 	void nextInsertInto(InsertTableEvent& eve);
+	/* SELECT：`SELECT * FROM t`——只解析星号与目标表名，产出 SelectTableEvent */
+	void nextSelect(SelectTableEvent& eve);
 
 public:
 	explicit Parser(const std::vector<Token>& tokenSerial) : tokenSerial_(tokenSerial) {}

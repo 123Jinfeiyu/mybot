@@ -330,8 +330,6 @@ TH_TEST(parser_rejects_multi_row_values_tuple) {
 TH_TEST(parser_reports_the_offending_token) {
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token ;",
 		events(";"));
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token SELECT",
-		events("SELECT * FROM T ;"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token )",
 		events("CREATE TABLE T ( name );"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Token name 'x'",
@@ -348,8 +346,8 @@ TH_TEST(parser_error_carries_token_position) {
 		events("-- line one comment\n/* block\ncomment */ CREATE x;\n"));
 	/* 空词元分隔符：位置即字符落点 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
-		"Token SELECT (line 1, column 1)",
-		events("SELECT * FROM T ;"));
+		"Token SELECT (line 1, column 8)",
+		events("CREATE SELECT ;"));
 	/* 挂起分隔符（非空词元后的 ';' 挂到下一次 next() 产出）：落点须跟随
 	 * 分隔符字符本身，而不是被消费时的读取位置 */
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException,
@@ -441,4 +439,45 @@ TH_TEST(parser_deep_param_list_is_iterative) {
 	TH_CHECK(static_cast<int>(eves[1].insert.tableRows[0].size()) == n);
 	TH_CHECK(eves[1].insert.tableRows[0][n - 1].columnName == "p" + std::to_string(n - 1));
 	TH_CHECK(eves[1].insert.tableRows[0][n - 1].value == "v" + std::to_string(n - 1));
+}
+
+/* ---------------- SELECT（/sql 查询命令）---------------- */
+
+TH_TEST(parser_select_star_from_table_event) {
+	std::vector<Event> eves = events("SELECT * FROM Vars;");
+	TH_CHECK(eves.size() == 1);
+	TH_CHECK(eves[0].type == EventType::SELECT_TABLE);
+	TH_CHECK(eves[0].select.sourceTableName == "Vars");
+}
+
+TH_TEST(parser_select_accepts_mixed_case) {
+	/* 关键字大小写不敏感（沿用词法既约行为）；* 与 FROM 需空白分隔，
+	 * 否则「*」会并进 FROM 前的标识符（* 不是词法分隔符）。
+	 * 语句须以 ; 收尾：EOF 处词法产出 UNEXPECTED_END（对 CREATE 同样如此）。 */
+	std::vector<Event> a = events("select * from Relay;");
+	std::vector<Event> b = events("SeLeCt * FrOm Relay;");
+	TH_CHECK(a.size() == 1 && a[0].type == EventType::SELECT_TABLE
+		&& a[0].select.sourceTableName == "Relay");
+	TH_CHECK(a[0].select.sourceTableName == b[0].select.sourceTableName);
+}
+
+TH_TEST(parser_select_can_follow_structure_statements) {
+	std::vector<Event> eves = events(
+		"CREATE TABLE Vars ( k String );\nINSERT INTO Vars ( k ) VALUES ( 'v0' );\n"
+		"SELECT * FROM Vars;");
+	TH_CHECK(eves.size() == 3);
+	TH_CHECK(eves[2].type == EventType::SELECT_TABLE);
+	TH_CHECK(eves[2].select.sourceTableName == "Vars");
+}
+
+TH_TEST(parser_select_rejects_non_star_and_missing_parts) {
+	/* 只支持 `SELECT * FROM t`：非星号列 / 缺 FROM / 缺表名一律解析期报错 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "SELECT supports only",
+		events("SELECT a FROM T;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "name 'T'",
+		events("SELECT * T;"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("SELECT * FROM"));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unexpected end of script",
+		events("SELECT *"));
 }

@@ -254,6 +254,14 @@ Event Parser::next() {
 			e.insert = std::move(eve);
 			return e;
 		}
+		case TokenType::SELECT: {
+			SelectTableEvent eve;
+			nextSelect(eve);
+			Event e;
+			e.type = EventType::SELECT_TABLE;
+			e.select = std::move(eve);
+			return e;
+		}
 		default:
 			throw bot::IllegalArgumentException(tokenMsg(t));
 	}
@@ -367,6 +375,23 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 		}
 	}
 	eve.tableRows.push_back(std::move(arr));
+	nextEnd();
+}
+
+/* SELECT：`SELECT * FROM t`。只支持星号选择列（* 经 Token::parse 落入 NAME，
+ * 载荷为 '*'）；`SELECT <name>` 与非星号/缺 FROM/缺表名一律报错，报错形态
+ * 对齐链路里既有的 tokenMsg（带行列定位）。 */
+void Parser::nextSelect(SelectTableEvent& eve) {
+	Token star = expect();
+	if (star.type != TokenType::NAME || star.name != "*") {
+		throw bot::IllegalArgumentException(
+			"SELECT supports only 'SELECT * FROM <table>' (got "
+			+ tokenMsg(star) + ")");
+	}
+	Token from = expectType(TokenType::FROM);
+	(void)from;
+	Token name = expectType(TokenType::NAME);
+	eve.sourceTableName = name.name;
 	nextEnd();
 }
 

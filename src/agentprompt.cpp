@@ -81,6 +81,8 @@ std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robo
 	p += "## 工作方式\n";
 	p += "- 需要机器人行动时用 run_action_script 执行动作脚本，脚本名必须来自上面的清单。\n";
 	p += "- 不清楚有哪些脚本或硬件时，先用 list_action_scripts / list_hardware 查询。\n";
+	p += "- 需要核对某个结构表的定义或数据时，用 query_sql（SELECT * FROM 表名;），"
+		"它只读查询、不会改变任何状态。\n";
 	p += "- 一次只执行一个动作脚本，看清返回结果后再决定下一步。\n";
 	p += "- 脚本报错时先读清原因（脚本名错、硬件未接、参数越界），不要盲目重复同一条。\n";
 	if (cfg.allowShell) {
