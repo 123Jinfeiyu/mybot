@@ -509,6 +509,113 @@ std::string describeHardware(RobotStruct& robot) {
 	return out;
 }
 
+/* ---- SqlStatementBatch 实现（阶段 1 重构：消除重复解析）---- */
+
+SqlStatementBatch SqlStatementBatch::parse(const std::string& sql) {
+	SqlStatementBatch batch;
+	bot::MemoryReader sr(sql);
+	std::vector<sql4cj::Token> tokens = sql4cj::Lexer::parseAll(sr);
+	if (tokens.empty()) {
+		throw IllegalArgumentException("空 SQL 语句");
+	}
+	batch.events = sql4cj::Parser::parseAll(tokens);
+	if (batch.events.empty()) {
+		throw IllegalArgumentException("空 SQL 语句");
+	}
+	/* 分类：遍历一次，记录批次特征 */
+	for (const auto& ev : batch.events) {
+		switch (ev.type) {
+		case sql4cj::EventType::SELECT_TABLE:
+			batch.hasReadOnly = true;
+			break;
+		case sql4cj::EventType::CREATE_TABLE:
+		case sql4cj::EventType::INSERT_TABLE:
+		case sql4cj::EventType::DELETE_TABLE:
+		case sql4cj::EventType::DROP_TABLE:
+			batch.hasWriteOps = true;
+			break;
+		case sql4cj::EventType::END:
+			break;
+		}
+	}
+	return batch;
+}
+
+std::string SqlStatementBatch::executeReadOnly(const RobotStruct& robot) const {
+	/* 只渲染第一条语句（与原 runSqlStatement 行为一致）*/
+	if (events.empty()) { return "错误: 空 SQL 语句"; }
+	const sql4cj::Event& ev = events[0];
+	
+	switch (ev.type) {
+	case sql4cj::EventType::CREATE_TABLE: {
+		std::string s = "CREATE TABLE " + ev.create.tableName + " (";
+		for (std::size_t i = 0; i < ev.create.tableColumns.size(); ++i) {
+			if (i > 0) { s += ", "; }
+			const auto& c = ev.create.tableColumns[i];
+			s += c.name + " " + (c.type_ == sql4cj::VarType::Number ? "Number" : "String");
+		}
+		s += ")";
+		return s;
+	}
+	case sql4cj::EventType::INSERT_TABLE: {
+		std::string s;
+		for (const auto& row : ev.insert.tableRows) {
+			s += "INSERT INTO " + ev.insert.targetTabName + " (";
+			for (std::size_t i = 0; i < row.size(); ++i) {
+				if (i > 0) { s += ", "; }
+				s += row[i].columnName + " = '" + row[i].value + "'";
+			}
+			s += ")";
+		}
+		return s;
+	}
+	case sql4cj::EventType::SELECT_TABLE: {
+		const std::string& tbl = ev.select.sourceTableName;
+		const mt::MatrixObject* m = mt::findByName(robot.matrices(), tbl);
+		if (m == nullptr) {
+			return "错误: 表 '" + tbl + "' 未定义（当前结构脚本里没有这个表）";
+		}
+		/* WHERE 等值过滤 */
+		std::vector<std::size_t> hits;
+		if (ev.select.where) {
+			std::vector<std::pair<std::string, std::string>> conds;
+			conds.reserve(ev.select.where->conds.size());
+			for (const auto& c : ev.select.where->conds) { conds.emplace_back(c.column, c.value); }
+			try {
+				hits = mt::matchAll(*m, conds);
+			} catch (const std::exception& e) {
+				return std::string("错误: ") + e.what();
+			}
+		} else {
+			hits.reserve(m->rows() > 1 ? m->rows() - 1 : 0);
+			for (std::size_t r = 1; r < m->rows(); ++r) { hits.push_back(r); }
+		}
+		/* 渲染 */
+		std::string s = "SELECT * FROM " + m->getName() + ":";
+		const std::size_t ncol = m->cols();
+		if (m->rows() == 0) { s += " (空)"; return s; }
+		for (std::size_t c = 0; c < ncol; ++c) {
+			s += (c > 0 ? " | " : "\n  ") + (*m)(0, c);
+		}
+		for (std::size_t r : hits) {
+			for (std::size_t c = 0; c < ncol; ++c) {
+				s += (c > 0 ? " | " : "\n  ") + m->inherited(r, c);
+			}
+		}
+		if (ev.select.where && hits.empty()) { s += "\n  （0 行匹配）"; }
+		return s;
+	}
+	case sql4cj::EventType::DELETE_TABLE:
+		return "错误: DELETE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+			"它会真的断电摘除器件且不可逆";
+	case sql4cj::EventType::DROP_TABLE:
+		return "错误: DROP 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+			"它会真的断电摘除整张表的器件且不可逆";
+	default:
+		return "错误: 不支持的 SQL 语句";
+	}
+}
+
 /* 解析一条结构 SQL 并渲染成文本（REPL /sql 与 agent 工具 query_sql 共用，
  * 契约见 agenttools.hpp）。SELECT 的取数源是 robot.matrices()——原始结构
  * 矩阵（声明序），与 registry()（装配后的硬件变量视图）互补；可选 WHERE
@@ -624,25 +731,25 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 }
 
 std::string runSqlCommand(const std::string& sql, RobotStruct& robot) {
-	/* 先只判「整批有没有变更语句」：解析器保持只产出结构事件的最小职责，
-	 * 这里也就只读事件类型，不落任何状态。
+	/* 阶段 1 重构：使用 SqlStatementBatch 消除重复解析。
+	 * 原实现最多解析 3 次（判断类型、只读渲染、带电生效各一次），
+	 * 现在解析一次、分类一次、按需执行。
 	 * 判据是「全部 SELECT 才走只读渲染」——混排批次里的 CREATE/INSERT/DELETE
-	 * 必须被看见，否则 /sql SELECT...; DELETE... 会静默丢掉后半句（这是本条
-	 * 判据从「CREATE/INSERT」扩到「任意非 SELECT」的原因）。 */
-	bool any = false;
-	bool readOnly = true;
+	 * 必须被看见，否则 /sql SELECT...; DELETE... 会静默丢掉后半句。 */
+	SqlStatementBatch batch;
 	try {
-		bot::MemoryReader sr(sql);
-		for (const sql4cj::Event& ev : sql4cj::Parser::parseAll(sql4cj::Lexer::parseAll(sr))) {
-			any = true;
-			if (ev.type != sql4cj::EventType::SELECT_TABLE) { readOnly = false; }
-		}
+		batch = SqlStatementBatch::parse(sql);
 	} catch (const std::exception& e) {
 		return std::string("错误: ") + e.what();
 	}
-	if (!any) { return "错误: 空 SQL 语句"; }
-	if (readOnly) { return runSqlStatement(sql, robot); }
 
+	/* 全是 SELECT → 只读渲染 */
+	if (batch.hasReadOnly && !batch.hasWriteOps) {
+		return runSqlStatement(sql, robot);
+	}
+
+	/* 有变更语句 → 带电生效（调用 applySql，它会重新解析但这是必要的，
+	 * 因为 applySql 需要完整的事务语义和回滚能力）*/
 	try {
 		return robot.applySql(sql);
 	} catch (const std::exception& e) {
