@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 二十一个场景：
+# 二十二个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -35,20 +35,21 @@
 #  14) --agent-hot-sql（2026-09-23 热插表）——模型经 apply_sql 给**带电常驻**的机器人
 #      追加硬件行：INSERT 后立即装配并上电，下一轮 list_hardware 的回执里必须出现
 #      新变量。14b 是对照：缺该开关时工具不在表内（回执点名「未知工具」、零变更）。
+#      14c（2026-09-23 热删除）：同一门控下的 DELETE 真的把变量摘掉，且回执点名删了谁。
 #  15) --read-var（2026-09-23 回读通道 A）——模型经 read_variables 主动读硬件变量，
 #      回执里必须出现驱动返回表的键（relay0 经 controller 转发到 timer-0 的 slept）。
 #      15b 是对照：缺该开关时工具不在表内，**且线上工具定义里也没有它**。
-#  16) --agent --tcp（2026-09-23 批次 2）——远程 REPL：python 客户端跑通
+#  19) --session-file / --resume（2026-09-23 批次 1）——**两个进程接力**：第一个进程
+#      落盘会话文件；第二个进程带 --resume 启动，其**首个请求**里必须带第一个进程的
+#      对话（这是"重启不忘记"的唯一判据）。同场对照：指纹不符（换结构脚本）必须拒绝
+#      恢复并退出 2；缺 --session-file 的 --resume 必须退出 2（恢复只认命令行路径）。
+#  20) --agent --tcp（2026-09-23 批次 2）——远程 REPL：python 客户端跑通
 #      「token → 任务 → 工具调用 → 回显」全链路；对照三条：错 token 被拒、
 #      空闲超时按输入结束收尾（不是挂死）、**发出任务后断开连接 = 远程取消**
 #      （在飞的模型调用被立刻中止，而不是等满 --llm-timeout）。
 #  21) LlmAnthropic（2026-09-23 批次 3）——第三个协议驱动：同一二进制换驱动即
 #      换协议（system 顶层 / tool_use 与 tool_result 块 / input_schema /
 #      x-api-key 头），工具循环与动作执行照常；宿主零改是前提。
-#  16) --session-file / --resume（2026-09-23 批次 1）——**两个进程接力**：第一个进程
-#      落盘会话文件；第二个进程带 --resume 启动，其**首个请求**里必须带第一个进程的
-#      对话（这是"重启不忘记"的唯一判据）。同场对照：指纹不符（换结构脚本）必须拒绝
-#      恢复并退出 2；缺 --session-file 的 --resume 必须退出 2（恢复只认命令行路径）。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -805,6 +806,41 @@ fi
 check "$out14b" "AGENT-E2E-完成" "未知工具之后循环照常收尾（不是会话事故）"
 check_json "$CAP14B" "'apply_sql' not in {t['function']['name'] for t in d.get('tools',[])}" \
 	"缺开关时线上工具定义里没有 apply_sql"
+
+# ============ 场景 14c：热删除（DELETE 真的断电摘器件） ============
+# 与场景 14 同门控、同一条链，但方向相反：插一行临时的 → DELETE 掉 → 列硬件。
+# 判据是「变量真的从清单里消失」+「回执报出了删了谁」——少了任何一环，
+# 模型都会以为删成功了而器件其实还在（或反之），而两端单测各自都绿。
+echo "----- 场景 14c：--agent-hot-sql 的热删除（DELETE FROM ... WHERE） -----"
+PORT=$((24700 + RANDOM % 300))
+CAP14C="$tmp/req-hotdelete.json"
+start_server "$PORT" "$CAP14C" hotdelete || exit 1
+out14c="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--agent-hot-sql --llm-config none --scripts-dir scripts \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--task "先加一路临时继电器，然后把它拆掉" 2>&1)"
+rc14c=$?
+stop_server
+echo "$out14c"
+if [ "$rc14c" -ne 0 ]; then
+	echo "  [FAIL] mybot 退出码 $rc14c"
+	fail=1
+fi
+check "$out14c" "已生效：新增硬件变量 1 个" "先插的行真的生效了"
+check "$out14c" "已删除硬件变量 1 个（relay-tmp）" "DELETE 回执报出了删掉的是谁"
+check "$out14c" "AGENT-E2E-完成" "热删除之后工具循环仍能收尾"
+# 删除必须**真的**摘掉变量：第三轮 list_hardware 的回执里不得再有 relay-tmp
+if echo "$out14c" | grep -qF "relay-tmp"; then
+	# 只允许出现在「插入」与「删除」两条回执里；list_hardware 的清单段不得含它。
+	if echo "$out14c" | awk '/已注册硬件变量/{f=1} f&&/relay-tmp/{print; exit}' | grep -q .; then
+		echo "  [FAIL] 删除之后硬件清单里仍有 relay-tmp（DELETE 没真的摘掉变量）"
+		fail=1
+	else
+		echo "  [OK] 删除后硬件清单里不再有 relay-tmp"
+	fi
+fi
+check_json "$CAP14C" "'apply_sql' in {t['function']['name'] for t in d.get('tools',[])}" \
+	"热删除与热插同门控（apply_sql 在工具定义里）"
 
 # ============ 场景 15：--read-var（主动回读硬件变量） ============
 # 覆盖的是**接线**：可读集合的解析与截断/消毒已由 C++ 单测逐条钉住，这里钉端到端

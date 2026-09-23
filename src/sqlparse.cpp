@@ -46,6 +46,8 @@ Token Token::parse(const std::string& s) {
 	if (equalWithoutCase(s, "into")) { return {TokenType::INTO, s}; }
 	if (equalWithoutCase(s, "values")) { return {TokenType::VALUES, s}; }
 	if (equalWithoutCase(s, "where")) { return {TokenType::WHERE, s}; }
+	if (equalWithoutCase(s, "delete")) { return {TokenType::DELETE, s}; }
+	if (equalWithoutCase(s, "and")) { return {TokenType::AND, s}; }
 	if (s == ";") { return {TokenType::END, s}; }
 	if (s == ",") { return {TokenType::COMMA, s}; }
 	if (s == "(") { return {TokenType::LEFT, s}; }
@@ -68,6 +70,8 @@ std::string Token::serialize() const {
 		case TokenType::INTO: return "INTO";
 		case TokenType::VALUES: return "VALUES";
 		case TokenType::WHERE: return "WHERE";
+		case TokenType::DELETE: return "DELETE";
+		case TokenType::AND: return "AND";
 		case TokenType::END: return ";";
 		case TokenType::COMMA: return ",";
 		case TokenType::LEFT: return "(";
@@ -238,23 +242,36 @@ std::string tokenMsg(const Token& t) {
 	return m;
 }
 
-/* 明确拒绝的「看似合法」语句关键字（大小写不敏感）。本方言只认
- * CREATE TABLE / INSERT INTO / SELECT（含 WHERE 等值条件），而 DROP/DELETE/
- * UPDATE 这三条都是**删除或改写结构**的语句：在带电机器人上它们会让结构矩阵
- * 与硬件注册表失去一致性（见 RobotStruct::applySql 的契约），不属于「解析了
- * 就能安全执行」的范畴，暂不支持。
+/* 方言支持语句的**单一事实源**：拒绝文案、SELECT/DELETE 的用法级报错都从这里
+ * 取，避免「支持了什么」在四五条消息里各写一份而随语句增减漂移（本文件此前
+ * 已有 `SELECT supports only ...` 与 `WHERE supports only ...` 两处各说一遍）。
+ * 措辞刻意用「方言支持」而非「已实现」：读的人（含模型）要的是「能写什么」，
+ * 不是变更史。 */
+constexpr const char* kDialectStatements =
+	"CREATE TABLE / INSERT INTO / SELECT ... FROM ... [WHERE col = value [AND ...]] /"
+	" DELETE FROM ... [WHERE col = value [AND ...]]";
+
+/* 明确拒绝的「看似合法」语句关键字（大小写不敏感）。本方言只认上面那四条，
+ * 而 DROP/UPDATE 这两条都是**改写结构定义**的语句：在带电机器人上它们会让结构
+ * 矩阵与硬件注册表失去一致性（见 RobotStruct::applySql 的契约），不属于
+ * 「解析了就能安全执行」的范畴，暂不支持。
+ *
+ * DELETE 已出列（2026-09-23）：它删的是**行**，而行的撤销恰好与热插表共用
+ * 同一条「断电 → 撤注册 → 擦行」的逆序路径，落点在 applySql；DROP 删的是
+ * **表**，要连带拆掉 MetaProvider/守护登记并面对「表撤销后同名重建」的新
+ * 语义面，故仍在册。UPDATE 等价于「删旧行 + 建新行」，同样单独评估。
+ *
  * 为什么要专门认出来：它们不是关键字（词法层落成 NAME），过去的失败形态是
  * "Token name 'drop'"——层级是词元的，读的人（含模型）无法判断这是「语法写错」
  * 还是「方言不支持」，只会改写措辞反复重试。这里给一句含正确用法的拒绝。
  * 判据是**语句首词元**：出现在后续位置的同名标识符（列名/表名/值）不受影响。
- * 将来支持时的落点（2026-09-23 设计注记）：EventType 加对应事件 → 此清单
- * 逐语句摘除 → runSqlCommand 的只读/变更分类扩展；WHERE 设施（WhereEqual +
- * nextWhere）已按三语句共享写成，DELETE/UPDATE 直接复用。事务语义警示：
- * 三语句都改结构，必须走 applySql 式「全成功或全回滚」；其中 DELETE 的
- * destroy 是物理断电，回滚 ≠ 复活器件，需单独的两段式设计。 */
+ * 将来支持时的落点：EventType 加对应事件 → 此清单逐个摘除（DELETE 即按此路径
+ * 摘除）→ runSqlCommand 的只读/变更分类扩展；WHERE 设施（WhereClause +
+ * nextConditionList）已按共享写成，UPDATE 可直接复用。事务语义警示：两条都改
+ * 结构定义，必须走 applySql 式「校验全过才动手」；且 DROP 的 destroy 是物理
+ * 断电，回滚 ≠ 复活器件，需与 DELETE 同款的「不可逆但逻辑原子」两段式设计。 */
 bool isUnsupportedStatement(const std::string& name) {
-	return equalWithoutCase(name, "drop") || equalWithoutCase(name, "delete")
-		|| equalWithoutCase(name, "update");
+	return equalWithoutCase(name, "drop") || equalWithoutCase(name, "update");
 }
 
 /* 回显统一大写（ASCII）：既是 SQL 的惯例写法，也让报错文本成为**稳定锚点**——
@@ -305,12 +322,19 @@ Event Parser::next() {
 			e.select = std::move(eve);
 			return e;
 		}
+		case TokenType::DELETE: {
+			DeleteTableEvent eve;
+			nextDelete(eve);
+			Event e;
+			e.type = EventType::DELETE_TABLE;
+			e.del = std::move(eve);
+			return e;
+		}
 		default:
-			/* 语句首词元是删除/改写类语句 → 明确的「不支持」，而不是词元级报错 */
+			/* 语句首词元是改写/删表类语句 → 明确的「不支持」，而不是词元级报错 */
 			if (t.type == TokenType::NAME && isUnsupportedStatement(t.name)) {
 				throw bot::IllegalArgumentException("Unsupported statement " + upperAscii(t.name)
-					+ ": this dialect only understands CREATE TABLE / INSERT INTO /"
-					" SELECT ... FROM ... [WHERE col = value]");
+					+ ": this dialect understands " + kDialectStatements);
 			}
 			throw bot::IllegalArgumentException(tokenMsg(t));
 	}
@@ -427,9 +451,9 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 	nextEnd();
 }
 
-/* SELECT：`SELECT * FROM t [WHERE col = value]`。只支持星号选择列（* 经
- * Token::parse 落入 NAME，载荷为 '*'）；`SELECT <name>` 与非星号/缺 FROM/缺表名
- * 一律报错，报错形态对齐链路里既有的 tokenMsg（带行列定位）。 */
+/* SELECT：`SELECT * FROM t [WHERE col = value [AND ...]]`。只支持星号选择列
+ * （* 经 Token::parse 落入 NAME，载荷为 '*'）；`SELECT <name>` 与非星号/缺 FROM/
+ * 缺表名一律报错，报错形态对齐链路里既有的 tokenMsg（带行列定位）。 */
 void Parser::nextSelect(SelectTableEvent& eve) {
 	Token star = expect();
 	if (star.type != TokenType::NAME || star.name != "*") {
@@ -441,33 +465,56 @@ void Parser::nextSelect(SelectTableEvent& eve) {
 	(void)from;
 	Token name = expectType(TokenType::NAME);
 	eve.sourceTableName = name.name;
-	/* 可选 WHERE：peek 不消费，命中才进 nextWhere；分号仍由 nextEnd 消费 */
-	if (idx_ < tokenSerial_.size() && tokenSerial_[idx_].type == TokenType::WHERE) {
+	/* 可选 WHERE：peek 不消费，命中才进条件列表；分号仍由 nextEnd 消费 */
+	if (peekIs(TokenType::WHERE)) {
 		++idx_;
-		WhereEqual w;
-		nextWhere(w);
+		WhereClause w;
+		nextConditionList(w);
 		eve.where = std::move(w);
 	}
 	nextEnd();
 }
 
-/* WHERE col = value：单条件等值，列名/值各一个 NAME 词元（值支持引号串，
- * 引号已在词法层剥掉）。AND/OR 与比较运算符不在本方言——多写的词元落到
- * nextEnd 的「Token ...」报错。三个位置共用一句用法级报错：从「Token ,」
- * 反推 WHERE 语法对人对模型都太绕（取向同 isUnsupportedStatement）。 */
-void Parser::nextWhere(WhereEqual& eve) {
+/* DELETE：`DELETE FROM t [WHERE col = value [AND ...]]`。与 SELECT 同构，
+ * 差别只在于「无条件」是合法且有意义的（删全表），故 where 缺省即空。 */
+void Parser::nextDelete(DeleteTableEvent& eve) {
+	Token from = expectType(TokenType::FROM);
+	(void)from;
+	Token name = expectType(TokenType::NAME);
+	eve.targetTabName = name.name;
+	if (peekIs(TokenType::WHERE)) {
+		++idx_;
+		WhereClause w;
+		nextConditionList(w);
+		eve.where = std::move(w);
+	}
+	nextEnd();
+}
+
+/* WHERE 条件列表：`col = value [AND col2 = value2 ...]`（AND 大小写不敏感）。
+ * 单条件与多条件共用本函数——SELECT/DELETE 的 WHERE 语法、报错锚点、词元消费
+ * 顺序都只此一处，两语句不会漂移。
+ * 报错形态：三个位置（列名/等号/值）共用一句**用法级**报错，从「Token ,」
+ * 反推 WHERE 语法对人对模型都太绕（取向同 isUnsupportedStatement）。
+ * 终止判据是 peek 而非 expect：只有 AND 才继续下一轮，其余（';' / EOF /
+ * 多写的 OR 之类）一律把词元留给调用方的 nextEnd——那里既有「Token ...」
+ * 报错自带行列，比在本函数里猜「用户还想写什么」更准确。 */
+void Parser::nextConditionList(WhereClause& eve) {
 	auto whereErr = [](const Token& t) {
-		return bot::IllegalArgumentException("WHERE supports only '<column> = <value>' (got "
-			+ tokenMsg(t) + ")");
+		return bot::IllegalArgumentException("WHERE supports only '<column> = <value>'"
+			" conditions joined by AND (got " + tokenMsg(t) + ")");
 	};
-	Token col = expect();
-	if (col.type != TokenType::NAME) { throw whereErr(col); }
-	Token eq = expect();
-	if (eq.type != TokenType::EQ) { throw whereErr(eq); }
-	Token val = expect();
-	if (val.type != TokenType::NAME) { throw whereErr(val); }
-	eve.column = col.name;
-	eve.value = val.name;
+	for (;;) {
+		Token col = expect();
+		if (col.type != TokenType::NAME) { throw whereErr(col); }
+		Token eq = expect();
+		if (eq.type != TokenType::EQ) { throw whereErr(eq); }
+		Token val = expect();
+		if (val.type != TokenType::NAME) { throw whereErr(val); }
+		eve.conds.push_back({col.name, val.name});
+		if (!peekIs(TokenType::AND)) { break; }
+		++idx_;
+	}
 }
 
 } // namespace sql4cj

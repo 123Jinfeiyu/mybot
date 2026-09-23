@@ -44,7 +44,7 @@
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
 | `--prompt-file <路径>` | 提示词包：可重复传入（文件或目录），内容按文件名自然排序拼接后追加进系统提示词（详见 [agent.md](agent.md)）。命令行给的路径**不受根目录约束**（操作者本人授意）；**配置文件**里的 `prompt_files` 则只能指向当前工作目录或 `BOT4CJ_PROMPT_DIR` 列的目录之内——提示词内容会随请求发往同一份配置可控的 endpoint，不设限就成了一条「读任意文件并外发」的链路（H2，见 [agent.md](agent.md) 安全说明第 11 条） |
 | `--agent-shell` | **显式开启**智能体的 `run_command`（任意 shell 执行）；**缺省不提供**该工具。API key 非来自环境变量时启动会打印告警。命令**回执**（stdout/stderr）在回传模型前遮蔽 `KEY=VALUE` 等敏感值（G1，与审计同一单点） |
-| `--agent-hot-sql` | **显式开启**智能体的 `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配并上电，失败整批回滚）；**缺省不提供**该工具。**只能命令行给**：它让模型的一次回复直接改变带电结构，配置文件写 `allow_hot_sql` 会被拒绝加载并退出 2（与 `allow_shell` 同判据）。只读的 `query_sql` 不受影响 |
+| `--agent-hot-sql` | **显式开启**智能体的 `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配并上电，失败整批回滚；**`DELETE FROM` 当场断电摘除匹配行——物理不可逆**，故被引用着的变量会被拒绝，详见 [dsl.md](dsl.md)）；**缺省不提供**该工具。**只能命令行给**：它让模型的一次回复直接改变带电结构，配置文件写 `allow_hot_sql` 会被拒绝加载并退出 2（与 `allow_shell` 同判据）。只读的 `query_sql` 不受影响 |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量（可重复；注册 `read_variables` 工具，让智能体主动读器件当前值）。**缺省不提供**该工具：执行器（`Servo`/`Relay` 等）与传感器同属 `kind=lua`，靠种类分不出，故由操作者显式列名；只有已注册且种类为 `lua`/`daemon` 的名字生效（`daemon` 读的是已发布的采样快照，无 I2C 流量）。**只能命令行给**：配置文件写 `read_vars` 会被拒绝加载并退出 2（与 `allow_shell` 同判据） |
 | `--agent-policy <路径>` | 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过**外部确认程序**（stdin 收工具名与遮蔽后的参数 JSON，退出 0 = 放行；超时按 `on_timeout`，缺省 `deny`）；缺省**不启用**。也可用配置文件 `agent_policy` 字段（详见 [agent.md](agent.md)） |
 | `--camera-var <变量名>` | 承载摄像头驱动（`modules/Camera.lua`）的变量名（缺省 `cam0`）；结构脚本已声明则直接用 |

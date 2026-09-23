@@ -136,4 +136,28 @@ std::vector<std::size_t> matchRows(const MatrixObject& m, const std::string& col
 	return hits;
 }
 
+/* 多条件 AND（契约见 matrix.hpp 声明处）：先一次性解析各条件的列号
+ * （requireCol 的报错因此在行循环之外抛出——坏列名不随行数重复构造），
+ * 再逐行短路判定：AND 语义下任一条件不成立即可跳过该行。空条件表 = 无条件，
+ * 循环体不执行、每行都命中（这正是 `DELETE FROM t;` 的语义）。 */
+std::vector<std::size_t> matchAll(const MatrixObject& m,
+		const std::vector<std::pair<std::string, std::string>>& conds) {
+	std::vector<std::int64_t> idxs;
+	idxs.reserve(conds.size());
+	for (const auto& c : conds) { idxs.push_back(m.requireCol(0, c.first, "Table")); }
+
+	std::vector<std::size_t> hits;
+	for (std::size_t r = 1; r < m.rows(); ++r) {
+		bool all = true;
+		for (std::size_t k = 0; k < conds.size(); ++k) {
+			if (m.inherited(r, static_cast<std::size_t>(idxs[k])) != conds[k].second) {
+				all = false;
+				break;
+			}
+		}
+		if (all) { hits.push_back(r); }
+	}
+	return hits;
+}
+
 } // namespace mt

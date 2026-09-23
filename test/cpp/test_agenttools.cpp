@@ -662,13 +662,25 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK(runSqlCommand("INSERT INTO Nope (name) VALUES ('x');", *robot).find("错误: ") == 0);
 	TH_CHECK(runSqlCommand("", *robot).find("错误: ") == 0);
 
-	/* DROP/DELETE/UPDATE（2026-09-23）：删除或改写结构的语句在解析期就被明确拒绝
-	 * （语句级「Unsupported statement …」，不是词元级的 "Token name 'drop'"）。 */
+	/* DROP/UPDATE（2026-09-23）：**改写结构定义**的语句在解析期就被明确拒绝
+	 * （语句级「Unsupported statement …」，不是词元级的 "Token name 'drop'"）。
+	 * DELETE 曾在此列，热删除落地后出列——它的分派与断电语义由 test_robot.cpp
+	 * 的 robot_hot_delete_* 组守门，这里只钉「不再被解析层拒绝」。 */
 	const std::string drop = runSqlCommand("DROP TABLE Relay;", *robot);
 	TH_CHECK_MSG(drop.find("错误: ") == 0, "实际: " + drop);
 	TH_CHECK_MSG(drop.find("Unsupported statement DROP") != std::string::npos, "实际: " + drop);
-	TH_CHECK(runSqlCommand("DELETE FROM Relay;", *robot).find("Unsupported statement DELETE")
+	TH_CHECK(runSqlCommand("UPDATE Relay SET note = 'x';", *robot).find("Unsupported statement UPDATE")
 		!= std::string::npos);
+	const std::string delOk = runSqlCommand(
+		"DELETE FROM Relay WHERE name = 'relay9';", *robot);
+	TH_CHECK_MSG(delOk.find("Unsupported statement") == std::string::npos, "实际: " + delOk);
+	TH_CHECK_MSG(delOk.find("已生效") == 0, "实际: " + delOk);
+	/* 删除真的生效：刚插的 relay9 已摘除，注册表回到插入前的规模。
+	 * 热删除的断电/回滚/引用完整性语义由 test_robot.cpp 的 robot_hot_delete_*
+	 * 组守门，这里只钉「REPL 分派把 DELETE 交给了带电生效路径」。 */
+	TH_CHECK_MSG(delOk.find("已删除硬件变量 1 个") != std::string::npos, "实际: " + delOk);
+	TH_CHECK(!robot->declaresVariable("relay9"));
+	TH_CHECK(robot->registry().byName().size() == before);
 
 	/* 工具面同一条判据，且是**参数类失败**：这里只标 paramError（工具层按异常类型
 	 * 给出的判据），派发漏斗据此把回执改成「工具参数错误: …」并置 executed=false
@@ -677,7 +689,7 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK(!toolDrop.ok);
 	TH_CHECK(toolDrop.paramError);
 	TH_CHECK(toolDrop.error.find("Unsupported statement DROP") != std::string::npos);
-	TH_CHECK(robot->registry().byName().size() == before + 1);	/* 活体一字未动 */
+	TH_CHECK(robot->registry().byName().size() == before);	/* 活体一字未动 */
 
 	/* G2（2026-09-23）：生效成功时工具结果自报**结构化摘要**，供审计对账。
 	 * 判据：summary 非空且与回传文本同源（applySql 的返回）；失败/参数错误不产生
@@ -690,6 +702,65 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	TH_CHECK_MSG(toolIns.summary.find("已生效：新增硬件变量 1 个") != std::string::npos,
 		"实际 summary: " + toolIns.summary);
 	TH_CHECK_MSG(toolDrop.summary.empty(), "未生效（参数错误）不应产生 summary");
+
+	robot->deactivate();
+}
+
+TH_TEST(agenttools_hot_delete_dispatch_and_summary) {
+	/* 热删除的 agent 面（2026-09-23）：apply_sql 是 DELETE 的唯一模型可达通道，
+	 * 与 REPL /sql 共用 applySql 单点。本用例钉三件事：
+	 *   ① 工具描述必须点明「不可逆、器件掉电」（那是模型侧唯一的约束面）；
+	 *   ② 回执与 summary 同源，删除的可对账信息（删了谁）进得了审计；
+	 *   ③ 被引用者拒删时是**工具执行失败**而不是参数错误——成因在结构里，
+	 *      不是调用格式错，重试同样格式无用，模型该做的是先删引用方。 */
+	auto robot = makeRelayRobot();
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.structurePath = "robots/relay-test.sql";
+	ctx.allowHotSql = true;
+	AgentToolRegistry open = makeAgentTools(ctx);
+
+	ToolSpec applySpec;
+	for (const ToolSpec& s : open.specs()) {
+		if (s.name == "apply_sql") { applySpec = s; }
+	}
+	TH_CHECK_MSG(applySpec.description.find("不可逆") != std::string::npos,
+		"apply_sql 描述必须点明不可逆: " + applySpec.description);
+	TH_CHECK_MSG(applySpec.description.find("DELETE") != std::string::npos,
+		"apply_sql 描述必须提到 DELETE: " + applySpec.description);
+	/* DELETE 会断电摘器件，描述必须警告未删的行保持原状/器件已失效 */
+	TH_CHECK_MSG(applySpec.description.find("断电") != std::string::npos,
+		"apply_sql 描述必须点明断电: " + applySpec.description);
+
+	/* 先插一行再删它：回执与 summary 都应带出「删了谁」 */
+	TH_CHECK(open.execute("apply_sql", parseJson(
+		"{\"sql\":\"INSERT INTO Relay (name, controller, note) VALUES "
+		"('relay9', 'timer-0', 'x');\"}")).ok);
+	TH_CHECK(robot->registry().contains("relay9"));
+
+	AgentToolResult del = open.execute("apply_sql", parseJson(
+		"{\"sql\":\"DELETE FROM Relay WHERE name = 'relay9';\"}"));
+	TH_CHECK_MSG(del.ok, "删除应成功，实际: " + del.error);
+	TH_CHECK_MSG(del.text.find("已删除硬件变量 1 个（relay9）") != std::string::npos,
+		"实际回执: " + del.text);
+	TH_CHECK_MSG(del.summary == del.text, "summary 须与回执同源（G2 对账口径）");
+	TH_CHECK(!robot->registry().contains("relay9"));
+	TH_CHECK(!robot->declaresVariable("relay9"));
+
+	/* 引用完整性：relay0 的 controller 指着 timer-0，删 timer-0 必须被拒。
+	 * 分类是**参数类失败**（executed=false 口径）：applySql 的预检用
+	 * IllegalArgumentException 表达「校验拒绝、活体一字未动」，派发漏斗据此
+	 * 报「工具参数错误」而不是「执行失败」——后者会让模型以为器件可能已经
+	 * 掉电（本用例下真的一动没动）。重试同样格式无用，模型该做的是先删引用方。 */
+	AgentToolResult refDel = open.execute("apply_sql", parseJson(
+		"{\"sql\":\"DELETE FROM Timer WHERE name = 'timer-0';\"}"));
+	TH_CHECK_MSG(!refDel.ok, "被引用的变量不得被删除");
+	TH_CHECK_MSG(refDel.paramError, "预检拒绝=活体未动，须走「什么都没执行」口径");
+	TH_CHECK_MSG(refDel.error.find("timer-0") != std::string::npos,
+		"报错须点名被引用变量: " + refDel.error);
+	TH_CHECK_MSG(refDel.summary.empty(), "未生效不得产生生效摘要");
+	TH_CHECK(robot->registry().contains("timer-0"));	/* 活体一字未动 */
 
 	robot->deactivate();
 }

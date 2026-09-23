@@ -83,6 +83,87 @@ TH_TEST(matrix_match_rows_equality_on_inherited_values) {
 		mt::matchRows(m, "nope", "x"));
 }
 
+TH_TEST(matrix_match_all_requires_every_condition) {
+	/* 多条件 AND（2026-09-23 热删除）：与 matchRows 一份判据、按 AND 收窄。
+	 * 用 controller/channel 这种真实形态做断言，兼作「同名列不同值」的甄别。 */
+	mt::MatrixObject m = fx::oneMatrix(
+		"@Servo\nname controller channel;\n"
+		"s1 c0 1;\n"
+		"s2 c0 2;\n"
+		"s3 c1 1;\n"
+		"@\n");
+	using C = std::vector<std::pair<std::string, std::string>>;
+	/* 全条件命中：只有 s1 同时满足 c0 与 1 */
+	TH_CHECK(mt::matchAll(m, C{{"controller", "c0"}, {"channel", "1"}})
+		== std::vector<std::size_t>({1}));
+	/* 单条件退化为 matchRows 的语义（同一事实源，不应有任何差异） */
+	TH_CHECK(mt::matchAll(m, C{{"controller", "c0"}})
+		== mt::matchRows(m, "controller", "c0"));
+	/* 条件互相排斥 → 0 命中（不是「任一命中」——这正是 AND 与 OR 的分界） */
+	TH_CHECK(mt::matchAll(m, C{{"controller", "c1"}, {"channel", "2"}}).empty());
+	/* 空条件表 = 无条件：返回全部数据行（`DELETE FROM t;` 的语义来源） */
+	TH_CHECK(mt::matchAll(m, C{}) == std::vector<std::size_t>({1, 2, 3}));
+	/* 任一列不存在即抛，报错点名列名（含在第二个条件上的情形） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "has no 'nope' column",
+		mt::matchAll(m, C{{"controller", "c0"}, {"nope", "x"}}));
+}
+
+TH_TEST(matrix_remove_rows_preserves_surviving_order) {
+	/* removeRows（2026-09-23 热删除）的核心不变式：**存活行相对顺序逐字不变**。
+	 * 行序即声明序，而销毁序 = 声明序倒序（总线必须晚于挂在它上面的器件关闭
+	 * fd），故交换式删除（尾行填空位）会让「删一个中间器件」打乱整条拓扑序，
+	 * 且症状要到销毁期才显形。本用例删中间行、断言存活行的相对次序。 */
+	mt::MatrixObject m = fx::oneMatrix(
+		"@T\nname v;\nr0 a;\nr1 b;\nr2 c;\nr3 d;\n@\n");
+	m.removeRows({2});			/* 删 'b'（数据行号 = 矩阵行号，行 0 是列头） */
+	TH_CHECK(m.rows() == 4);		/* 列头 + 3 个存活行 */
+	TH_CHECK(fx::cell(m, 0, 0) == "name" && fx::cell(m, 0, 1) == "v");
+	TH_CHECK(fx::cell(m, 1, 0) == "r0");
+	TH_CHECK(fx::cell(m, 2, 0) == "r2");	/* 存活行依次前移，但相对序未变 */
+	TH_CHECK(fx::cell(m, 3, 0) == "r3");
+	/* 多行一次删（事务按行号集合一次重排，调用方无需排序/倒序）：
+	 * 删 r0 与 r2 → 存活 r1、r3，次序不变 */
+	mt::MatrixObject n = fx::oneMatrix(
+		"@T\nname v;\nr0 a;\nr1 b;\nr2 c;\nr3 d;\n@\n");
+	n.removeRows({1, 3});
+	TH_CHECK(n.rows() == 3);
+	TH_CHECK(fx::cell(n, 1, 0) == "r1");
+	TH_CHECK(fx::cell(n, 2, 0) == "r3");
+	/* 删空非头行：只剩列头 */
+	mt::MatrixObject e = fx::oneMatrix("@T\nname v;\nr0 a;\nr1 b;\n@\n");
+	e.removeRows({1, 2});
+	TH_CHECK(e.rows() == 1);
+	TH_CHECK(e.cols() == 2);
+	/* 空集合是 no-op（无条件删除的边界不该走异常路径） */
+	e.removeRows({});
+	TH_CHECK(e.rows() == 1);
+}
+
+TH_TEST(matrix_remove_rows_rejects_misuse) {
+	/* 行 0 是列头：删掉会让所有列名定位失效，必须响亮拒绝 */
+	mt::MatrixObject m = fx::oneMatrix("@T\nname v;\nr0 a;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "row 0 is the column header",
+		m.removeRows({0}));
+	/* 越界与重复都是调用方算错：静默容忍会让「删了几行」与生效摘要对不上 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "out of range", m.removeRows({5}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "listed twice", m.removeRows({1, 1}));
+	/* 报错路径不得改动矩阵（先全量校验再重排） */
+	TH_CHECK(m.rows() == 2);
+	TH_CHECK(fx::cell(m, 1, 0) == "r0");
+}
+
+TH_TEST(matrix_remove_rows_invalidates_inheritance_cache) {
+	/* inherited 是惰性前向填充的缓存：删行后必须作废，否则查询/派发会读到
+	 * 按旧行数算的错位值（缓存不变式的静默破坏）。删掉继承的源头后，
+	 * 幸存行的 '-' 不再继承任何值，应原样显示 '-'。 */
+	mt::MatrixObject m = fx::oneMatrix("@T\nname tag;\np0 keep;\np1 -;\n@\n");
+	TH_CHECK(fx::inh(m, 2, 1) == "keep");	/* 先预热缓存 */
+	m.removeRows({1});			/* 删掉继承源头 p0 */
+	TH_CHECK(m.rows() == 2);
+	TH_CHECK(fx::inh(m, 1, 1) == "-");	/* 行 1 的 '-' 不再有可继承的行 */
+	TH_CHECK(mt::matchRows(m, "tag", "keep").empty());
+}
+
 TH_TEST(matrix_ragged_row_reports_cell_counts) {
 	/* 报错必须自带「这行几格 / 上一行几格」，否则用户只能逐列数空格 */
 	TH_CHECK_THROWS_MSG(mt::DoesNotSync, "this row has 1 cell(s), but the row above has 2",

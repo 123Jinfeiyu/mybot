@@ -22,9 +22,15 @@ namespace bot {
 /* ==================== ScriptLoader：SQL/矩阵 文本 → MatrixObject ==================== */
 
 /* ---- SQL4cj → MatrixObject 结构表解析 ---- */
-void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out) {
+void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out,
+		bool allowDelete, Mutations* mutations) {
 	std::vector<sql4cj::Token> tokens = sql4cj::Lexer::parseAll(input);
 	sql4cj::Parser parser(tokens);
+	/* 热删除的坐标还原（见 Mutations 注释）：每表的「当前行号 → 原始行号」映射，
+	 * 按容器下标对齐存放。一条 DELETE 命中后即更新本表映射，故同一表的**后续**
+	 * DELETE 仍以原始坐标记录（而 matchAll 用当前坐标匹配）。初值 = 恒等映射
+	 * （此刻每个当前行号都还是它自己的原始行号）。 */
+	std::vector<std::vector<std::size_t>> rowOrigin;
 	for (;;) {
 		sql4cj::Event eve = parser.next();
 		if (eve.type == sql4cj::EventType::END) { break; }
@@ -86,6 +92,99 @@ void ScriptLoader::readSQL(bot::Reader& input, std::deque<mt::MatrixObject>& out
 					}
 				}
 				root->appendRow(std::move(values), 0);
+				/* 新增行在「原始坐标」里也是新的一行：用当前行数当它的原始行号
+				 * （此刻它还没被任何删除前移过）。删掉它时这条映射会被剔除，
+				 * 而调用方拿到该原始行号后只在「本批次新增区间」里找它。 */
+				const std::size_t oi = static_cast<std::size_t>(root - &out[0]);
+				if (rowOrigin.size() < out.size()) { rowOrigin.resize(out.size()); }
+				/* 惰性恒等初始化：本容器首次改动这张表时，先把**既有**行号按恒等
+				 * 铺一遍，再追加新增行。不能只 push 新增行——映射会与行号脱节
+				 * （既有行没有条目），后续 DELETE 按当前行号取原始行号即越界。
+				 * 启动期（mutations == nullptr）不需要映射内容，但同样必须铺：
+				 * 热插路径会复用同一个容器继续改。 */
+				if (rowOrigin[oi].empty()) {
+					rowOrigin[oi].reserve(root->rows());
+					for (std::size_t r = 0; r + 1 < root->rows(); ++r) {
+						rowOrigin[oi].push_back(r);	/* 既有行，不含刚追加的这行 */
+					}
+				}
+				rowOrigin[oi].push_back(root->rows() - 1);
+				if (mutations != nullptr) { ++mutations->insertedRows[eve.insert.targetTabName]; }
+			}
+			break;
+		}
+		case sql4cj::EventType::DELETE_TABLE: {
+			/* 启动期（结构脚本）一律关闭：机器人尚未上电，没有可变的结构。 */
+			if (!allowDelete) {
+				throw IllegalArgumentException("DELETE FROM '" + eve.del.targetTabName
+					+ "': DELETE is a live-structure statement and cannot appear in a"
+					" structure script (the robot is not powered on yet). Edit the"
+					" script, or run DELETE on a live robot via /sql or apply_sql.");
+			}
+			if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
+			const std::string& target = eve.del.targetTabName;
+			mt::MatrixObject* root = mt::findByName(out, target);
+			if (root == nullptr) {
+				throw IllegalArgumentException(
+					"DELETE FROM '" + target + "': table is not defined");
+			}
+			const std::size_t ti = static_cast<std::size_t>(root - &out[0]);
+			if (rowOrigin.size() < out.size()) { rowOrigin.resize(out.size()); }
+			/* 恒等映射的惰性初始化：只在**本容器首次删这张表**时铺一次。
+			 * 注意不能假定「INSERT 路径已经铺过」——mutations 为空时 INSERT 的
+			 * 追踪整段被跳过（启动期不需要），此处必须自给自足。 */
+			if (rowOrigin[ti].empty()) {
+				rowOrigin[ti].reserve(root->rows());
+				for (std::size_t r = 0; r < root->rows(); ++r) { rowOrigin[ti].push_back(r); }
+			}
+			/* 无条件 = 全部数据行（与 SQL 语义一致：DELETE FROM t 删空该表） */
+			std::vector<std::size_t> hits;
+			if (eve.del.where) {
+				std::vector<std::pair<std::string, std::string>> conds;
+				conds.reserve(eve.del.where->conds.size());
+				for (const auto& c : eve.del.where->conds) { conds.emplace_back(c.column, c.value); }
+				/* 列不存在/漏写的报错沿用 requireCol 与谓词解析的既有文案 */
+				hits = mt::matchAll(*root, conds);
+			} else {
+				for (std::size_t r = 1; r < root->rows(); ++r) { hits.push_back(r); }
+			}
+			/* 「一条都没删到」按错误处理，而不是成功返回一句「删除 0 行」：
+			 * 本路径上的 DELETE 是不可逆的物理断电操作，调用方（人/模型）拿到
+			 * 「已生效」却什么都没发生时，无从判断是条件写错了还是器件本就不在
+			 * ——拼错 name 的 DELETE 若静默成功，操作者会以为器件已摘除。
+			 * 附带好处：本批次里只有「没删到」的 DELETE 时，不会被下游那条
+			 * 「本批次没有任何变更」判据混淆成因（但即便如此，下面的变更计数
+			 * 仍以防万一保留）。 */
+			if (hits.empty()) {
+				throw IllegalArgumentException("DELETE FROM '" + target
+					+ "': no row matches, nothing was deleted"
+					+ (eve.del.where ? " (check the WHERE values)" : " (the table has no data row)"));
+			}
+			/* 先取走原始行号与变量名（都要在擦行之前读），再擦行。
+			 * name 列缺失时不猜变量名——变量名的权威来源是装配期的 name 列，
+			 * 缺失就是结构本身不合法，留给 hot-SQL 路径的既有判据报错。 */
+			const std::int64_t idxName = root->indexOfCol(0, "name");
+			std::vector<std::size_t> origins;
+			origins.reserve(hits.size());
+			for (std::size_t r : hits) {
+				origins.push_back(rowOrigin[ti][r]);
+				if (mutations != nullptr && idxName >= 0) {
+					mutations->deletedNames.push_back((*root)(r, static_cast<std::size_t>(idxName)));
+				}
+			}
+			root->removeRows(hits);
+			/* 本表映射：被删的当前行号剔除（存活行号随之前移，索引自然对上） */
+			std::vector<std::size_t> keptOrigins;
+			keptOrigins.reserve(rowOrigin[ti].size() - hits.size());
+			std::size_t hi = 0;
+			for (std::size_t r = 0; r < rowOrigin[ti].size(); ++r) {
+				if (hi < hits.size() && hits[hi] == r) { ++hi; continue; }
+				keptOrigins.push_back(rowOrigin[ti][r]);
+			}
+			rowOrigin[ti] = std::move(keptOrigins);
+			if (mutations != nullptr) {
+				std::vector<std::size_t>& dst = mutations->deletedRows[target];
+				for (std::size_t o : origins) { dst.push_back(o); }
 			}
 			break;
 		}
