@@ -540,7 +540,9 @@ namespace {
 
 class TcpAgentSessionImpl : public TcpAgentSession {
 public:
-	TcpAgentSessionImpl(FdGuard client, int idleSec, std::ostream& log)
+	/* idleSec / log 暂未接入本实现（agent TCP 的空闲超时与日志落点待接线）；
+	 * 保留形参、注释掉名字以过 -Werror=unused-parameter，接线时恢复参数名即可。 */
+	TcpAgentSessionImpl(FdGuard client, int /*idleSec*/, std::ostream& /*log*/)
 		: client_(std::move(client)),
 		  lineBuf_(client_.get()),
 		  sinkBuf_(client_.get()),
