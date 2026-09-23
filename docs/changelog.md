@@ -2,7 +2,7 @@
 
 > 从 [README](../README.md) 迁出，按主题分组记录版本演进要点，组内大致按时间倒序。每条只留「改了什么、对使用者意味着什么」——设计论证、实现落点与守门明细以 docs/ 各文档与 git 提交历史为准。
 > 条目里的守门/用例**数字是当时的快照**：权威口径一律以 `bash test/run_all.sh` 与 `./build/mybot_tests` 的实时输出为准（`docs/development.md` 单一事实源约定）。
-> 2026-09-23：`docs/proposals/` 下的开发方案文档已全部移至本地 `.tmp/`（不入库）；下文对其的引用是历史记录，历史版本见 git（截至 `46f90d8`）。
+> 2026-09-23：`docs/proposals/` 下的开发方案文档已全部移至本地 `.tmp/`（不入库），另有更早的三份 `.tmp/*_20260922.md` 计划文件已核实清理；下文对这两类文件的引用均为历史记录，历史版本见 git（截至 `46f90d8`）。
 
 ## v1.x（C++ 移植版）
 
@@ -359,7 +359,7 @@
 
 ### 2026-09-22 响应形变矩阵（SAN-11，纯测试 + 契约成文）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-11。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-11。
 > **只补测试与文档，不改对外行为**（除下面那一条归一化）。
 
 - **缺口形态**：契约一直存在但**分散**——宿主只读 `result`/`content`/`tool_calls`/
@@ -394,7 +394,7 @@
 
 ### 2026-09-22 REPL 新增 `/status`（SAN-10）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-10。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-10。
 
 - **问题**：现场最常见的三个问题——"为什么它忘了之前说的？""为什么拍照没进来？"
   "刚才失败了几次、花了多久？"——**都要翻 stderr 全文或重开会话**才能回答。
@@ -423,7 +423,7 @@
 
 ### 2026-09-22 审计轨迹补上会话边界与模型轮次（SAN-9，加法演进）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-9。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-9。
 > 这是**提案+实现**：`agent-refactor-plan-2.md` 曾声明"不改审计 JSONL schema"，
 > 故本项用**加法**兑现——既有工具行的字段名、顺序、语义**一个不动**，
 > 新记录靠新增的 `kind` 字段区分。
@@ -462,7 +462,7 @@
 
 ### 2026-09-22 参数错误不再说成"执行失败"，丢弃的调用如实报数（SAN-8）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-8。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-8。
 > （该条目的第①项「截断写日志」已随 SAN-1 一并落地。）
 
 - **问题①（参数错误被说成执行失败）**：`run_action_script` 把
@@ -494,7 +494,7 @@
 
 ### 2026-09-22 中断语义与代码对齐（SAN-7，含一次自我推翻）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-7。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-7。
 
 - **问题（文案与代码相反）**：三处旧文案写着「模型调用期间（最长 600s）**不可中断**，
   此时再按一次 Ctrl-C 即立即强杀」——`docs/agent.md`、`docs/reference.md` 与
@@ -524,7 +524,7 @@
 
 ### 2026-09-22 驱动不再合成 tool_call id，并补齐响应形态判据（SAN-6）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-6。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-6。
 > **行为变更**：协议驱动不再自己编 `call_<i>`，id 缺失时透传空串由宿主填。
 
 - **问题①（id 合成遮蔽宿主方案）**：`parse_response` 里 `id = tc.id or ("call_" .. i)`
@@ -564,7 +564,7 @@
 
 ### 2026-09-22 动作执行回显改走 stderr（SAN-5），并修好两处会假绿的断言辅助
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-5。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-5。
 
 - **问题（已实测复现）**：`ActionRunner::runAction` 调的是会回显的 `play()`，
   回显落在 `MtVars_Lua::callImpl` 的 `std::cout`（`----------` 分隔线 + 驱动结果表
@@ -595,7 +595,7 @@
 
 ### 2026-09-22 预算降级不再把「没执行」说成「副作用已发生」（SAN-4，安全口径）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-4。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-4。
 > **行为变更**：任务内文本预算的降级说明，不再覆盖三类「根本没执行」的工具结果。
 
 - **问题（已实测复现）**：`TaskBudget::admit` 对**所有**工具结果一视同仁，超限时
@@ -624,7 +624,7 @@
 
 ### 2026-09-22 `agent-all` 真的覆盖 agent 全表面了（SAN-2，守门假绿修复）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-2。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-2。
 > **更正**：AG-23（2026-09-21）落地的那张分段-过滤器映射，其 Lua 那一格指向一个
 > **从未存在**的文件模式——本文档 584 行附近那条记录的「Lua `test_agent*.lua`」口径
 > 与实际不符，此处更正，历史条目保留不改。
@@ -658,7 +658,7 @@
 
 ### 2026-09-22 重试真的认识真实错误了（SAN-3，含 429/5xx 与 Retry-After）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-3。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-3。
 > **行为变更**：`max_retries` / `retry_backoff_ms` 从「事实上不生效」变成真的生效——
 > 429/5xx 与真实 curl 连接错误现在会重试，且限流时按服务端给的 `Retry-After` 退避。
 
@@ -703,7 +703,7 @@
 
 ### 2026-09-22 单轮截断不再复用 `tool_call_id`（SAN-1，阻塞级缺陷修复）
 
-> 依据 [.tmp/AGENT_NEXT_PLAN_20260922.md](../.tmp/AGENT_NEXT_PLAN_20260922.md) 的 SAN-1。
+> 依据 `.tmp/AGENT_NEXT_PLAN_20260922.md` 的 SAN-1。
 > **行为变更**：单轮工具调用超上限时的截断说明，从「新增一条 tool 消息」改为
 > 「追加进该轮 assistant 的文本」。这是一条**已文档化的钉子用例被改写**的变更，
 > 理由见下（旧断言的期望本身是错的）。
@@ -740,7 +740,7 @@
 
 ### 2026-09-22 动作脚本执行预算（PL-2，原 AG-12 子项）
 
-> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 C。
+> 依据 `.tmp/IMPLEMENTATION_PLAN_20260922.md` 批 C。
 > **行为变更**：动作脚本此前可以无限期执行；现在有缺省 180 秒的预算（可配置、可关闭）。
 
 - **问题**：`run_action_script` 是本工具集里**唯一没有任何上界**的执行路径，而它
@@ -792,7 +792,7 @@
 
 ### 2026-09-22 网关数组形态 content 归一化（PL-3）
 
-> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 B。
+> 依据 `.tmp/IMPLEMENTATION_PLAN_20260922.md` 批 B。
 > 只影响**数组形态 content** 的响应；字符串/null 形态一字不变。
 
 - 新版 OpenAI 协议允许 `content` 为 `[{type="text",text=…},{type="image_url",…}]`
@@ -812,7 +812,7 @@
 
 ### 2026-09-22 `--check-config` 配置校验模式（PL-1，原 U-4）
 
-> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 B。
+> 依据 `.tmp/IMPLEMENTATION_PLAN_20260922.md` 批 B。
 > 排障体验改进：以前配置文件写错要**真起一次 agent 会话**才报错退出 2——接了硬件还得反复上下电。
 
 - **`--check-config`**（agent 专属）：`buildAgentConfig` 校验通过后打印一份配置摘要
@@ -841,7 +841,7 @@
 
 ### 2026-09-22 两处名不副实的测试钉子修正（PL-4）
 
-> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。
+> 依据 `.tmp/IMPLEMENTATION_PLAN_20260922.md` 批 A。
 > 无行为变更（等价重构 + 补钉子），改的是「用例看起来在守、其实没守」的两处。
 
 - **`--help` 优先于校验：以前没有真的守门。** 用例
@@ -863,7 +863,7 @@
 
 ### 2026-09-22 文档/注释残留四处修正 + 工具 schema 深度加锚点（PL-5）
 
-> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。
+> 依据 `.tmp/IMPLEMENTATION_PLAN_20260922.md` 批 A。
 > 纯文档/注释与一条新增钉子用例，无行为变更。
 
 - **`modules/LlmOpenAI.lua` 头注释自相矛盾**：一处把 `api_key` 列进「宿主传进 `call()`
@@ -889,7 +889,7 @@
 
 ### 2026-09-22 响应整形：tool_calls 形态非法时报点名原因（PL-6）
 
-> 依据 [.tmp/IMPLEMENTATION_PLAN_20260922.md](../.tmp/IMPLEMENTATION_PLAN_20260922.md) 批 A。
+> 依据 `.tmp/IMPLEMENTATION_PLAN_20260922.md` 批 A。
 > 只影响**畸形响应**的报错质量，正常报文一字不变。
 
 - 旧行为：`parse_response` 直接 `ipairs(msg.tool_calls)`。网关若把 `tool_calls`
@@ -909,7 +909,7 @@
 
 ### 2026-09-22 CLI 超时/上限参数化（F-1/F-2/F-3，原 TD-2 剩余部分）
 
-> 依据 [.tmp/NEXT_STEPS_20260922.md](../.tmp/NEXT_STEPS_20260922.md)（核实两轮 agent 重构
+> 依据 `.tmp/NEXT_STEPS_20260922.md`（核实两轮 agent 重构
 > 全部落地后梳理出的真实剩余项）。三个此前硬编码的运行期数值改为可选 CLI 参数，
 > 行为保持型：不传 = 现状缺省值，零变更。
 

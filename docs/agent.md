@@ -122,7 +122,7 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
   `agent_policy` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
-  `run_command_max_timeout_sec`。
+  `run_command_max_timeout_sec` `action_script_timeout_sec`。
   全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
   （每项为文件或目录，语义同 `--prompt-file`），空数组按「未配置」。
   `allow_shell` 与 `allow_hot_sql` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，
@@ -137,7 +137,7 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   常量只能改源码缺省，B1（2026-09-22）起可由配置文件覆盖——现场调上下文预算不再需要重编。
   口径（C4）：预算记账**不含** system 提示词（另有 64 KiB 独立上限）与工具 schema，
   估重是线上字节的下界——请求体真实总量略高于预算，量级仍远低于常见网关限额。
-  另有五个**运行期数值**（B4，2026-09-22 起可由配置文件覆盖，同样只有配置文件这一层）：
+  另有六个**运行期数值**（B4 的五个 + PL-2 的动作脚本预算，入口同样只有配置文件这一层）：
 
   | 字段 | 区间 | 含义与缺省 |
   | --- | --- | --- |

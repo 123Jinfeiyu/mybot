@@ -172,7 +172,7 @@ MYBOT采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全解
 **安全设计**：
 - ✅ 动作脚本只能在 `scripts/` 目录下
 - ✅ 不允许符号链接和路径遍历
-- ✅ 三个危险/放宽权限的开关（`run_command` / `apply_sql` / 可读变量清单）**缺省全关，且只能命令行给**——配置文件写 `allow_shell` / `allow_hot_sql` / `read_vars` 会被**拒绝加载**
+- ✅ 三个危险/放宽权限的开关（`run_command` / `apply_sql` / 可读变量清单）**缺省全关，且只能命令行给**——配置文件写 `allow_shell: true` / `allow_hot_sql: true`（放宽）或出现 `read_vars` 字段会被**拒绝加载**（写 `false` 合法，模板 `mybot.llm.json.example` 即如此）
 - ✅ `read_variables` 只放行已注册且种类为 `lua`/`daemon` 的变量，且只有 `--read-var` 列过的名字可读（执行器与传感器同属 `lua`，靠种类分不出，故由人列名）
 - ✅ 所有操作有体积上限和超时限制
 
@@ -208,11 +208,11 @@ servo-rb-hip  angle=90
 
 ### 支持的器件（47款）
 
-**舵机与电机**：PCA9685（16路PWM）、SCSCL飞特舵机、普通舵机、H03ARR电机驱动  
-**传感器**：IMU（MPU6050/9250、BMI270、LSM6DSV）、气压（BMP280、MS5611）、测距（VL53L0X/L4CD）  
+**舵机与电机**：PCA9685（16路PWM舵机控制）、SCSCL飞特总线舵机、普通舵机、H03ARR电机驱动  
+**传感器**：IMU与磁力计（MPU6050、BMI270、LSM6DSV、ADXL345、MLX90393、BMM150）、气压与环境（MS5611、LPS22HB、BME280、BME688）、测距（VL53L0X/L4CD）、闪电检测（AS3935）  
 **总线**：I2C、SPI、UART  
-**摄像头**：V4L2 MJPEG（USB摄像头/树莓派摄像头）  
-**执行器**：继电器、GPIO、PWM、DAC、数字电位器  
+**摄像头**：V4L2 MJPEG（USB摄像头；树莓派CSI摄像头走libcamera、不经此路径）  
+**执行器与系统接口**：GPIO、PWM、DAC（MCP4725）、数字电位器（TPL0501）、IO扩展（PCF8574）  
 
 完整清单见 [docs/drivers.md](docs/drivers.md)
 
@@ -297,7 +297,7 @@ bash test/run_san.sh
 bash test/run_all.sh agent-all
 ```
 
-### CI门禁
+### CI门禁（GitLab CI，`.gitlab-ci.yml`）
 
 ✅ **硬门禁**（每次推送必过）：
 - 零告警构建（`-Werror`）
@@ -425,7 +425,7 @@ MYBOT在设计时将安全放在首位：
 
 - **零C++依赖** - 仅需 LuaJIT + pthread + dl + libm，连HTTP库都是Lua FFI实现
 - **多模型支持** - 内置 OpenAI / DeepSeek 协议，换模型=换lua文件
-- **工业级测试** - 445+ C++单测 + 84+ Lua测试 + 三道sanitizer门禁
+- **工业级测试** - 580+ C++单测 + 80+ Lua测试文件 + 三道sanitizer门禁
 - **跨平台** - Linux aarch64/x86_64，树莓派实测可用
 
 ### 架构优势
@@ -437,8 +437,8 @@ MYBOT在设计时将安全放在首位：
 ### 生态完整
 
 - **59个模块** - 47款器件驱动 + 3条总线 + 9个框架模块（另有23个共享库）
-- **丰富文档** - 16篇深入文档，从入门到源码分析
-- **回归测试** - test/ 下100+测试用例，覆盖全链路
+- **丰富文档** - 12篇文档 + 架构分析报告与两张全景图，从入门到源码分析
+- **回归测试** - 86个Lua用例文件 + 25个C++单测文件 + 18个agent E2E场景，覆盖全链路
 
 ---
 
@@ -529,12 +529,9 @@ cmake --build build-asan
 
 ### CI状态
 
-GitHub Actions 多道门禁：
-- ✅ 零告警构建（`-Werror`）
-- ✅ Release 全量测试
-- ✅ ASan/UBSan/TSan
-- ✅ clang + clang-tidy
-- ✅ 覆盖率报告
+GitLab CI（`.gitlab-ci.yml`，GitCode 托管）多道门禁：
+- ✅ 硬门禁：零告警构建（`-Werror`）、Release 全量守门、ASan/UBSan 单跑
+- ⭕ 软门禁（`allow_failure`，转硬中）：TSan、clang + clang-tidy、覆盖率、musl 兼容
 
 ---
 
