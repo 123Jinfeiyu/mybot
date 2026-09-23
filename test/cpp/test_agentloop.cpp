@@ -387,6 +387,71 @@ TH_TEST(agentloop_synthesized_ids_stay_unique_across_turns) {
 	TH_CHECK(seen.size() == 2);
 }
 
+/* SAN-12（2026-09-23）：provider 在同一次响应里返回**重复的 tool_call id** 时，
+ * 宿主必须把第二条改写唯一后再写历史——原样写入就是"同一个 id 被回答两次"，
+ * 服务端 400 `answered more than once`，而那段历史已越过回滚边界、trim 又不裁
+ * 最新块 ⇒ 此后每个任务都以同一个 400 失败（与 SAN-1 同一失效形态）。 */
+TH_TEST(agentloop_duplicate_tool_call_ids_are_repaired_and_reported) {
+	std::ostringstream log;
+	FakeTransport transport;
+	ChatResponse r;
+	r.toolCalls.push_back(ToolCall{"dup", "echo", "{\"a\":1}"});
+	r.toolCalls.push_back(ToolCall{"dup", "echo", "{\"a\":2}"});	/* 重复 id */
+	transport.script.push_back(r);
+	transport.script.push_back(answerResponse("好了"));
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, optsFor(4, &log));
+	TH_CHECK(session.runTurn("任务") == "好了");
+
+	const auto& h = session.history();
+	TH_CHECK_MSG(historyProtocolViolation(h).empty(), historyProtocolViolation(h));
+
+	/* 两条调用都**照常派发**：被改写的只是不透明的 id，模型的意图分毫未动
+	 * （若实现选择"丢弃重复的那条"，这里会少一条 tool 回传 → 判据失败） */
+	std::vector<std::string> ids;
+	for (const ChatMessage& m : h) {
+		if (m.role == "tool") { ids.push_back(m.toolCallId); }
+	}
+	TH_CHECK(ids.size() == 2);
+	TH_CHECK(ids.size() == 2 && ids[0] != ids[1]);
+	/* 第一条无需改写，保留 provider 原值（只从冲突的第二条开始改写） */
+	TH_CHECK(ids[0] == "dup");
+	/* 「provider 违反了协议」级别的事实必须让操作者看得见，且**不被 verbose 闸住**
+	 * （verbose 缺省即 true，但这条判据不该依赖那个缺省） */
+	TH_CHECK_MSG(log.str().find("重复") != std::string::npos, log.str());
+}
+
+/* SAN-12：合成 id 的**会话内**唯一性。turn 每轮从 0 重数，故 REPL 的第 2 个任务
+ * 在第 0 轮又会合成出 call_0_0——与第 1 个任务的同名，历史里于是有两条回答同一
+ * id 的 tool 消息（historyProtocolViolation 判据②命中）。这条**跨任务**路径此前
+ * 没有任何判据看着（既有的跨轮用例只在**同一个任务**里跑两轮）。 */
+TH_TEST(agentloop_synthesized_ids_stay_unique_across_tasks) {
+	FakeTransport transport;
+	for (int task = 0; task < 2; ++task) {
+		ChatResponse r;
+		r.toolCalls.push_back(ToolCall{"", "echo", "{}"});	/* 漏 id → 宿主合成 */
+		transport.script.push_back(r);
+		transport.script.push_back(answerResponse("ok"));
+	}
+
+	AgentToolRegistry tools = stubTools();
+	AgentSession session(transport, tools, optsFor(4));
+	TH_CHECK(session.runTurn("任务一") == "ok");
+	TH_CHECK(session.runTurn("任务二") == "ok");
+
+	const auto& h = session.history();
+	TH_CHECK_MSG(historyProtocolViolation(h).empty(), historyProtocolViolation(h));
+	std::vector<std::string> ids;
+	for (const ChatMessage& m : h) {
+		if (m.role == "tool") { ids.push_back(m.toolCallId); }
+	}
+	TH_CHECK(ids.size() == 2);
+	/* 第二个任务的合成 id 必须避开第一个任务已用过的那个（追加后缀） */
+	TH_CHECK(ids.size() == 2 && ids[0] != ids[1]);
+	TH_CHECK_MSG(ids[0] == "call_0_0", "首个合成 id 应保持基线形态，实际 " + ids[0]);
+}
+
 TH_TEST(agentloop_max_turns_keeps_completed_history) {
 	FakeTransport transport;
 	for (int i = 0; i < 4; ++i) { transport.script.push_back(callResponse("echo", "{}")); }

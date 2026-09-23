@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iostream>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -252,16 +253,50 @@ std::string AgentSession::dispatchOneCall(const ToolCall& call, int turn) {
  * tool_calls 之后紧跟对应的 tool 消息，中间插 user 消息会被判 400；tool 消息
  * 本身又只允许文本。工具参数解析失败折成 tool 回传文本，不中断本轮。 */
 void AgentSession::executeToolRound(ChatResponse& resp, int turn) {
-	/* 个别流式/兼容实现会漏 tool_call id：这里合成占位 id，
-	 * 保证 assistant.tool_calls 与后续 tool.tool_call_id 一一对上。
-	 * **轮次相关**（call_<turn>_<i>）而不是每轮从 1 重数：跨轮唯一是这个合成
-	 * 方案的成立前提——SAN-6 之前驱动会先合出 call_<i>（每轮重来）把它遮住，
-	 * 见 modules/lib/llm_wire_openai.lua 的 id 透传注释。 */
-	std::vector<ToolCall>& calls = resp.toolCalls;
-	for (std::size_t i = 0; i < calls.size(); ++i) {
-		if (calls[i].id.empty()) {
-			calls[i].id = "call_" + std::to_string(turn) + "_" + std::to_string(i);
+	/* ---- id 的唯一性是本函数所有写入的前提（SAN-12，2026-09-23）----
+	 * 每条 assistant.tool_calls 都必须与紧跟其后的 tool 消息**一一对应、id 互不
+	 * 重复**：否则服务端 400 `answered more than once`，而那段历史已越过回滚
+	 * 边界（`complete` 已推进）、trim 又不裁最新块 ⇒ REPL 从此每个任务都以同一个
+	 * 400 失败，只有 /clear 或重启能恢复（与 SAN-1 / AG-4 同一失效形态）。
+	 * 三条来源都要挡住，缺一条就有 400 的口子：
+	 *   ① provider 漏 id —— 合成 call_<turn>_<i>（既有语义；SAN-6 之前驱动先合
+	 *      call_<i>（每轮重来）会把它遮住，见 llm_wire_openai.lua 的 id 透传注释）；
+	 *   ② provider 在同一次响应里返回**重复 id** —— 第二条起改用合成 id（新修）：
+	 *      原样写入就是"同一个 id 被回答两次"；
+	 *   ③ 合成 id 与**历史里已有**的 id 撞车 —— 冲突时追加后缀直到全局唯一
+	 *      （新修）。turn 每轮从 0 重数，故 REPL 第 2 个任务在第 0 轮会再合出
+	 *      call_0_0、与第 1 个任务的同名：判据②同样命中，而这条**跨任务**路径
+	 *      此前没有判据看着。
+	 * 改写的是不透明的 id，不是模型的意图——**没有任何调用被丢弃或跳过**。
+	 * 冲突成因（②③）只对操作者如实报告：它的信息量是"provider 违反了协议"，
+	 * 与 SAN-8① 的截断告警同性质，而截断告警会被 verbose 闸住，这里刻意不闸
+	 * ——这类事实一旦发生就该在 stderr 里看得见。 */
+	std::set<std::string> usedIds;
+	for (const ChatMessage& m : history_.messages()) {
+		for (const ToolCall& c : m.toolCalls) {
+			if (!c.id.empty()) { usedIds.insert(c.id); }
 		}
+	}
+	std::vector<ToolCall>& calls = resp.toolCalls;
+	std::size_t dupIds = 0;
+	for (std::size_t i = 0; i < calls.size(); ++i) {
+		const std::string base = "call_" + std::to_string(turn) + "_" + std::to_string(i);
+		const bool wasEmpty = calls[i].id.empty();
+		const bool collides = !wasEmpty && usedIds.count(calls[i].id) != 0;
+		if (wasEmpty || collides) {
+			std::string id = base;
+			for (int n = 2; usedIds.count(id) != 0; ++n) {
+				id = base + "_" + std::to_string(n);
+			}
+			calls[i].id = std::move(id);
+			if (collides) { ++dupIds; }
+		}
+		usedIds.insert(calls[i].id);
+	}
+	if (dupIds > 0) {
+		log("[协议] provider 返回了 " + std::to_string(dupIds)
+			+ " 条重复的 tool_call id，已改用唯一合成 id（原样写入会让同一个 id 被"
+			  "回答两次，服务端 400，且该段历史不可回滚）");
 	}
 
 	/* 单轮派发上限（审计第 4 轮）：assistant 消息里**只保留**前
