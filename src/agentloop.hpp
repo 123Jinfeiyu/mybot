@@ -83,6 +83,20 @@ struct AgentOptions {
 	 * 拒绝/超时折成一句工具回执——模型知道「没执行、为什么」，循环继续。
 	 * 同样挂派发漏斗：确认发生与否取决于工具名+参数，工具层与轮次层都不合适。 */
 	std::shared_ptr<const AgentPolicy> policy;
+	/* ---- 会话持久化（批次 1，2026-09-23）----
+	 * 非空时：runTurn 成功走完（最终回答已入历史）后，把自上次落盘以来新增的
+	 * 消息逐行追加进会话文件。
+	 * 落盘内容的两条判据（都在用例里钉着）：
+	 *   ① **半截 tool_calls 序列永不落盘**——缺 tool 回应的那些已被回滚边界
+	 *      `complete` 裁掉，所以文件里每个前缀都是服务端可接受的历史；
+	 *   ② 失败任务里**已完成**的工具回合会随后续成功任务一起落盘——与内存里的
+	 *      历史一致（口径同 runTurn 的 catch 注释：硬件不会倒回去，把这段抹掉
+	 *      就等于告诉模型"什么都没发生"；失败任务的完整记录另在审计轨迹里）。
+	 * 图片写入期排除（占位文本落盘）；system 提示词不落盘（恢复时经指纹核对）。
+	 * 写失败响亮告知一次后停用，不静默丢历史。 */
+	std::shared_ptr<SessionFileWriter> sessionWriter;
+	/* 审计会话开始记录附带 resumed:true（恢复的会话，批次 1）。 */
+	bool auditResumed = false;
 	/* ---- 单任务墙钟预算（2026-09-21 审计 A4）----
 	 * 上面那些管的是**体积**，没有一条管**时间**；而 agent 模式全程
 	 * robot.active() 带电常驻。三个因子相乘没有任何一处封顶：
@@ -134,14 +148,31 @@ public:
 	 * 「无记忆持久化」的既有边界一致：上下文被一次错误结论污染后，此前唯一
 	 * 出路是重启进程，而重启会丢掉硬件常驻状态；/clear 让「忘掉对话」与
 	 * 「保住上电状态」解耦。任务内预算计数随下一轮 runTurn 开头的 resetTask
-	 * 归零，无需在此处理。 */
+	 * 归零，无需在此处理。
+	 * 落盘联动（批次 1）：水位线归位 1，并向会话文件写 session_clear 分界
+	 * （载入时该行丢弃此前全部消息）——否则恢复会把已被 /clear 遗忘的上下文
+	 * 复活进模型上下文。写失败响亮告知并停用，不静默留下「恢复出旧记忆」的口子。 */
 	void clearHistory() {
 		if (history_.messages().size() > 1) {
 			history_.messages().resize(1);
 		}
+		persisted_ = 1;
+		if (opts_.sessionWriter && !opts_.sessionWriter->writeClearMarker()) {
+			log("[会话] 会话文件写入失败（/clear 分界未落盘，恢复会看到清空前的"
+				"上下文），本次会话不再落盘");
+			opts_.sessionWriter.reset();
+		}
 	}
 
 	const std::vector<ChatMessage>& history() const { return history_.messages(); }
+
+	/* ---- 恢复会话历史（批次 1，2026-09-23）----
+	 * 只在 runAgentMode 的恢复路径调用：载入的消息已过单行形态与
+	 * historyProtocolViolation 两道判据。这里负责：以载入内容替换 system
+	 * 之后的历史、按字节预算裁剪（磁盘内容是 append-only 的可变输入，
+	 * 内存里照既有预算收敛；会话文件本身不回写）、落盘水位线对齐
+	 * （文件里已有的内容不再重写）。 */
+	void restoreHistory(const std::vector<ChatMessage>& loaded);
 
 	/* ---- SAN-10：给 REPL /status 的只读读数（零新增语义，见 SessionStats 注释）---- */
 	const SessionStats& stats() const { return stats_; }
@@ -169,11 +200,19 @@ private:
 	HistoryManager history_;
 	TaskBudget budget_;
 	DispatchGate gate_;
+	/* 落盘水位线（批次 1）：messages_[0..persisted_) 已在会话文件里。
+	 * 初值 1（system 不落盘但恒在内存首位）；trim 掉旧块时按裁掉条数回退，
+	 * /clear 归位 1，恢复载入后对齐到载入长度。 */
+	std::size_t persisted_ = 1;
 	/* 当前任务的体积与墙钟预算都在 budget_（AG-4 / A4）。每轮任务开始时由
 	 * resetTask() 清零——预算约束的是**单个任务**，跨任务的体积由
 	 * HistoryManager 的 maxHistoryBytes 管。 */
 
 	void log(const std::string& text) const;
+
+	/* complete 边界落盘（批次 1）：把 [persisted_, end) 逐行追加进会话文件，
+	 * 推进水位线。仅在 runTurn 成功路径（最终回答已入历史）调用。 */
+	void persistNewMessages();
 
 	/* ---- SAN-9：审计的会话边界与模型轮次 ----
 	 * writeSessionRecord：一条 kind="session" 记录（start / end / error）。

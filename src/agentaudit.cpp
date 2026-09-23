@@ -93,6 +93,13 @@ bool AuditLog::open(const std::string& path, std::string& err) {
 	return true;
 }
 
+/* 批次 1（会话恢复）：见头文件注释。只生效一次。 */
+void AuditLog::adoptSessionId(const std::string& id) {
+	if (!opened_ || id.empty() || sessionIdAdopted_) { return; }
+	sessionId_ = id;
+	sessionIdAdopted_ = true;
+}
+
 /* SAN-9：接入点进审计前去掉 query 与 userinfo。
  * 有些网关把凭据放在 URL 里（`https://user:tok@host/v1/...?key=...`），
  * 而审计是 append-only 的落盘文件——把整条 URL 抄进去等于把密钥写进日志。
@@ -139,6 +146,8 @@ void AuditLog::write(const AuditEntry& e) {
 		if (!e.apiKeySource.empty()) {
 			line.put("api_key_source", JsonString(e.apiKeySource));
 		}
+		/* 批次 1：恢复的会话（加法字段，既有字段与顺序不动） */
+		if (e.resumed) { line.put("resumed", JsonBool(true)); }
 		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
 		if (e.ms > 0) { line.put("ms", JsonInt(e.ms)); }
 	} else if (e.kind == "model") {

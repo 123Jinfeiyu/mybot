@@ -61,6 +61,9 @@ void AgentSession::writeSessionRecord(const char* status, const std::string& err
 	e.endpoint = opts_.auditEndpoint;	/* AuditLog::write 会去掉 query/userinfo */
 	e.apiKeySource = opts_.auditKeySource;
 	e.error = error;
+	/* 批次 1：恢复的会话在开始记录上如实标注（加法字段，schema 演进已在
+	 * changelog 与 docs/agent.md 声明——老消费方按既有字段过滤，行为不变） */
+	e.resumed = opts_.auditResumed;
 	opts_.audit->write(e);
 	sessionStartWritten_ = true;
 }
@@ -101,8 +104,13 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 		[this](const std::string& t) { log(t); });
 	/* SAN-10：裁剪次数与累计条数（/status 显示"本会话裁过多少"） */
 	if (history_.messages().size() < beforeTrim) {
+		const std::size_t removed = beforeTrim - history_.messages().size();
 		stats_.historyTrimmed = true;
-		stats_.trimmedMessages += beforeTrim - history_.messages().size();
+		stats_.trimmedMessages += removed;
+		/* 批次 1：被裁的都是早已落盘的旧块——水位线跟着前移（下限 1 =
+		 * system）。若出现异常形态（水位线落在被裁区间内），保守回退到
+		 * system 之后，宁可重写一行也不留缺口。 */
+		persisted_ = (persisted_ > removed + 1) ? persisted_ - removed : 1;
 	}
 	/* 任务内聚合预算按任务清零（AG-4 + A4）：它约束的是「这一个任务往上下文里灌了
 	 * 多少字节、带电跑了多久」，resetTask() 同时重置墙钟起点；跨任务的体积由
@@ -167,8 +175,14 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 				    v != nullptr && v->isInt()) { stats_.lastCompletionTokens = v->getInt(); }
 			}
 
-			/* 收尾：模型不再要工具 → 记下最终回答并返回 */
-			if (!resp.hasToolCalls()) { return appendFinalAnswer(resp); }
+			/* 收尾：模型不再要工具 → 记下最终回答并返回。落盘在 appendFinalAnswer
+			 * 之后（批次 1）：此刻本任务块协议完整（complete 边界天然覆盖），
+			 * 文件里的每个前缀都可独立恢复。 */
+			if (!resp.hasToolCalls()) {
+				std::string answer = appendFinalAnswer(resp);
+				persistNewMessages();
+				return answer;
+			}
 
 			/* 模型常先给一句过渡语再发 tool_calls；过渡语只进日志，
 			 * 最终回答只由「无工具调用」的那一轮决定 */
@@ -192,6 +206,38 @@ std::string AgentSession::runTurn(const std::string& userTask) {
 		if (history_.messages().size() > complete) { history_.messages().resize(complete); }
 		throw;
 	}
+}
+
+/* complete 边界落盘（批次 1）。[persisted_, end) 里不会有半截序列：调用点
+ * 在 appendFinalAnswer 之后，此前每一轮的 complete 推进已保证 tool_calls 与
+ * tool 消息一一对上；失败/中断路径根本走不到这里——文件里的每个前缀都是
+ * 可独立恢复的完整任务块序列。 */
+void AgentSession::persistNewMessages() {
+	if (!opts_.sessionWriter) { return; }
+	std::vector<ChatMessage>& msgs = history_.messages();
+	for (std::size_t i = persisted_; i < msgs.size(); ++i) {
+		if (!opts_.sessionWriter->appendMessage(msgs[i])) {
+			/* 磁盘故障：响亮告知一次并停用（静默丢历史正是要避免的形态；
+			 * 已写入的内容保持不动，会话本身不受影响）。 */
+			log("[会话] 会话文件写入失败，本次会话不再落盘（已写入内容保持不变）");
+			opts_.sessionWriter.reset();
+			return;
+		}
+	}
+	persisted_ = msgs.size();
+}
+
+/* 恢复载入（批次 1）：单行形态与协议自洽已在 runAgentMode 的载入路径判过，
+ * 这里只做所有权接管与内存侧收敛。 */
+void AgentSession::restoreHistory(const std::vector<ChatMessage>& loaded) {
+	std::vector<ChatMessage>& msgs = history_.messages();
+	msgs.resize(1);	/* 只留 system（恢复时已按指纹核对过与当前一致） */
+	for (const ChatMessage& m : loaded) { msgs.push_back(m); }
+	/* 磁盘上的历史按不可信输入对待：过一遍既有字节预算（trim 只动内存，
+	 * 会话文件是 append-only 的，不回写不重排）。 */
+	history_.trim(opts_.maxHistoryBytes, opts_.verbose,
+		[this](const std::string& t) { log(t); });
+	persisted_ = msgs.size();	/* 文件里已有的内容不再重写 */
 }
 
 /* 收尾：无工具调用的那一轮。provider 附加字段（如 DeepSeek 的 reasoning_content）

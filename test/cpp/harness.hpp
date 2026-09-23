@@ -164,6 +164,9 @@ inline const ScopeEntry* scopeTable(std::size_t& n) {
 		 * 归 agent 面：这套机制只服务 run_action_script 一个调用点，
 		 * 改坏了 agent-all 必须能红。 */
 		{"agent", "luaexec_"},
+		/* 批次 1（2026-09-23）：会话持久化（会话文件读写、complete 边界落盘、
+		 * 恢复链路与指纹核对）。归 agent 面：它是 agent 会话的记忆机制。 */
+		{"agent", "sessionfile_"},
 	};
 	n = sizeof(kTable) / sizeof(kTable[0]);
 	return kTable;

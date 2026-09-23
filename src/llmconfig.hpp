@@ -121,6 +121,9 @@ struct LlmFileConfig {
 	std::optional<std::string> auditLog;
 	/* 策略钩子文件（--agent-policy 同义；命令行优先）。空/未配置 = 不启用。 */
 	std::optional<std::string> agentPolicy;
+	/* 会话文件（批次 1，--session-file 同义）。**只用于写入**：恢复是输入
+	 * 通道，--resume 只认命令行给的路径（判据见 AgentModeConfig 注释）。 */
+	std::optional<std::string> sessionFile;
 	/* 上下文字节预算（B1）：会话历史 / 任务内文本 / 任务内图片，单位字节。
 	 * 0 = 不限；未配置 = 用 AgentOptions 编译期缺省。见 agentloop.hpp。 */
 	std::optional<long> maxHistoryBytes;

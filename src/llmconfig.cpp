@@ -179,6 +179,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"allow_hot_sql",
 		"prompt_files", "camera_var", "camera_device", "camera_src", "camera_src_dir",
 		"allow_camera", "audit_log", "agent_policy", "read_vars",
+		"session_file",
 		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
 		"max_calls_per_round", "max_retries", "retry_backoff_ms",
 		"run_command_timeout_sec", "run_command_max_timeout_sec",
@@ -209,6 +210,8 @@ bool parseConfigStrings(const std::string& path, const Json& root, LlmFileConfig
 	if (!wantString(path, root, "camera_src", out.cameraSrc, err)) { return false; }
 	if (!wantString(path, root, "audit_log", out.auditLog, err)) { return false; }
 	if (!wantString(path, root, "agent_policy", out.agentPolicy, err)) { return false; }
+	/* 批次 1：会话文件。只用于写入；--resume 的恢复路径不认配置文件来源。 */
+	if (!wantString(path, root, "session_file", out.sessionFile, err)) { return false; }
 	/* H1：解析 camera_src_dir 只是为了**指名拒绝**（见 agentmode.cpp 的
 	 * buildAgentConfig）——若不在这里解析，它会落到「未知字段」分支，
 	 * 报错会让人以为是拼写错误。 */

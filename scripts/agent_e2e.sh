@@ -1,7 +1,7 @@
 #!/bin/bash
 # agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
 #
-# 十八个场景：
+# 十九个场景：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -38,6 +38,10 @@
 #  15) --read-var（2026-09-23 回读通道 A）——模型经 read_variables 主动读硬件变量，
 #      回执里必须出现驱动返回表的键（relay0 经 controller 转发到 timer-0 的 slept）。
 #      15b 是对照：缺该开关时工具不在表内，**且线上工具定义里也没有它**。
+#  16) --session-file / --resume（2026-09-23 批次 1）——**两个进程接力**：第一个进程
+#      落盘会话文件；第二个进程带 --resume 启动，其**首个请求**里必须带第一个进程的
+#      对话（这是"重启不忘记"的唯一判据）。同场对照：指纹不符（换结构脚本）必须拒绝
+#      恢复并退出 2；缺 --session-file 的 --resume 必须退出 2（恢复只认命令行路径）。
 #
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
@@ -839,6 +843,105 @@ check "$out15b" "未知工具" "缺 --read-var 时 read_variables 不在工具�
 check "$out15b" "AGENT-E2E-完成" "未知工具之后循环照常收尾"
 check_json "$CAP15B" "'read_variables' not in {t['function']['name'] for t in d.get('tools',[])}" \
 	"缺 --read-var 时线上工具定义里没有 read_variables"
+
+# ============ 场景 19：会话持久化与恢复（--session-file / --resume）============
+# 两个进程接力：第一个进程跑一个任务并落盘会话文件；第二个进程带 --resume 启动，
+# 断言它**首个请求**里带着第一个进程的对话——"重启不忘记"的唯一判据。
+# 附两条对照：指纹不符（换结构脚本）拒绝恢复；--resume 缺 --session-file 拒绝启动。
+echo "----- 场景 19：--session-file / --resume（会话持久化） -----"
+PORT=$((21200 + RANDOM % 300))
+SESS="$tmp/session.jsonl"
+CAP19A="$tmp/req-session-a.json"
+start_server "$PORT" "$CAP19A" ok || exit 1
+out19a="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--session-file "$SESS" --task "先让继电器动作一次" 2>&1)"
+rc19a=$?
+echo "$out19a"
+if [ "$rc19a" -ne 0 ]; then
+	echo "  [FAIL] 第一个进程退出码 $rc19a"
+	fail=1
+fi
+check_present "$SESS" "session_head" "会话文件首行是会话头"
+check_present "$SESS" "先让继电器动作一次" "任务文本已落盘"
+check_absent "$SESS" "data:image" "会话文件里没有图片 data URL（写入期排除）"
+# 落盘单位是任务块：跑完后文件里不该有半截（每个 tool_call_id 都有对应 tool 行）。
+# 判据用 python 直接行使与 C++ 侧 historyProtocolViolation 同源的检查。
+if python3 - "$SESS" <<'PY'
+import json, sys
+declared, answered = [], []
+for line in open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line:
+        continue
+    d = json.loads(line)
+    for c in d.get("tool_calls", []):
+        declared.append(c["id"])
+    if d.get("role") == "tool":
+        answered.append(d.get("tool_call_id"))
+ok = all(i in answered for i in declared) and len(set(answered)) == len(answered)
+sys.exit(0 if ok else 1)
+PY
+then
+	echo "  [OK] 会话文件里的工具调用序列协议自洽（无孤儿/无重复/无漏答）"
+else
+	echo "  [FAIL] 会话文件里的工具调用序列不协议自洽"
+	fail=1
+fi
+
+# 第二个进程：--resume 恢复，首个请求必须带上前一个进程的对话
+CAP19B="$tmp/req-session-b.json"
+stop_server
+start_server "$PORT" "$CAP19B" ok || exit 1
+out19b="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--session-file "$SESS" --resume --task "刚才做了什么" 2>&1)"
+rc19b=$?
+stop_server
+echo "$out19b"
+if [ "$rc19b" -ne 0 ]; then
+	echo "  [FAIL] 恢复进程退出码 $rc19b"
+	fail=1
+fi
+check "$out19b" "已恢复会话" "启动时如实报告已恢复"
+check_json "$CAP19B" "any(m.get('role')=='user' and '先让继电器动作一次' in str(m.get('content','')) for m in d.get('messages',[]))" \
+	"恢复后的首个请求里带着上一个进程的任务（重启不忘记）"
+check_json "$CAP19B" "any(m.get('role')=='assistant' and str(m.get('content','')) for m in d.get('messages',[]))" \
+	"恢复后的请求里带着上一个进程的回答"
+
+# 对照一：指纹不符 → 拒绝恢复并退出 2。
+# 用 --prompt-file 变更**系统提示词指纹**（而不是换结构脚本）：换结构脚本会连带
+# 换硬件清单，而无硬件的守门环境里 spider1 这类脚本在上电阶段就先失败了——
+# 指纹核对在系统提示词定稿之后（需要硬件清单），所以这里改提示词这一轴，
+# 让被测的判据单独暴露（三轴同判，robot/tools/system 任一不符都拒绝）。
+printf '# 额外约束\n只做被要求的事。\n' > "$tmp/extra-prompt.md"
+out19c="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--prompt-file "$tmp/extra-prompt.md" \
+	--session-file "$SESS" --resume --task "不该跑起来" 2>&1)"
+rc19c=$?
+echo "$out19c"
+if [ "$rc19c" -eq 2 ]; then
+	echo "  [OK] 指纹不符时拒绝恢复并以退出码 2 结束"
+else
+	echo "  [FAIL] 指纹不符时应退出 2，实际 $rc19c"
+	fail=1
+fi
+check "$out19c" "拒绝恢复" "拒绝恢复的文案点名了原因"
+check "$out19c" "系统提示词不同" "拒绝的理由点名是哪一轴不一致"
+
+# 对照二：--resume 缺 --session-file → 退出 2（恢复只认命令行路径）
+out19d="$(BOT4CJ_LLM_KEY=e2e-fake-key timeout 60 "$BOT" --robot=robots/relay-test.sql --agent \
+	--llm-config none --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+	--resume --task "不该跑起来" 2>&1)"
+rc19d=$?
+echo "$out19d"
+if [ "$rc19d" -eq 2 ]; then
+	echo "  [OK] --resume 缺 --session-file 时退出 2"
+else
+	echo "  [FAIL] --resume 缺 --session-file 时应退出 2，实际 $rc19d"
+	fail=1
+fi
 
 if [ "$fail" -eq 0 ]; then
 	echo "agent 模式端到端测试通过"

@@ -45,6 +45,7 @@ constexpr OptionSpec kValueOptions[] = {
 	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
 	{"audit-log", [](CliOptions& o, const std::string& v) { o.auditLog = v; }, true},
 	{"agent-policy", [](CliOptions& o, const std::string& v) { o.agentPolicy = v; }, true},
+	{"session-file", [](CliOptions& o, const std::string& v) { o.sessionFile = v; }, true},
 	{"camera-src-dir", [](CliOptions& o, const std::string& v) { o.cameraSrcDir = v; }, true},
 	{"task", [](CliOptions& o, const std::string& v) { o.agentTask = v; }, true},
 	/* 可重复：每项一个可读变量名（发现 2 的 A 步，命令行独占） */
@@ -99,6 +100,10 @@ ParsedArgs parseArgs(int argc, char** argv) {
 		}
 		else if (key == "no-camera") {
 			out.opts.noCamera = true;
+			out.opts.agentOptionsUsed = true;
+		}
+		else if (key == "resume") {
+			out.opts.resume = true;
 			out.opts.agentOptionsUsed = true;
 		}
 		else if (key == "check-config") {
@@ -166,7 +171,7 @@ int validateOptions(ParsedArgs& args) {
 		 * 模式下有效」，而文案里没有他刚敲的那一个，看起来像撞上了另一个错误。 */
 		std::cerr << "参数错误：--task / --llm-* / --scripts-dir / --agent-shell "
 			"/ --agent-hot-sql / --read-var / --prompt-file / --camera-var / --camera-device / --camera-src "
-			"/ --no-camera / --check-config 只在 --agent 模式下有效；"
+			"/ --no-camera / --session-file / --resume / --check-config 只在 --agent 模式下有效；"
 			"用 --help 查看 agent 模式说明"
 			<< std::endl;
 		return 2;
@@ -277,6 +282,13 @@ std::string helpText() {
 	s += "                       （时间戳/轮次/工具/参数/成败/耗时）；图片只记体积与指纹，\n";
 	s += "                       命令原文里的 KEY=VALUE 敏感值先遮蔽；\"-\" 表示写 stderr；\n";
 	s += "                       缺省不记录。也可用配置文件 audit_log 字段\n";
+	s += "  --session-file <路径> 会话持久化（JSON Lines 追加写）：每个任务块完结时落盘\n";
+	s += "                       完整对话历史；图片以占位文本落盘（字节不落盘），system\n";
+	s += "                       提示词不落盘。配置文件的 session_file 字段只用于写入；\n";
+	s += "                       文件含完整对话内容，建议 chmod 600\n";
+	s += "  --resume              恢复 --session-file 指定的既有会话后继续；路径必须来自\n";
+	s += "                       命令行，且结构脚本/工具集/系统提示词与原会话一致\n";
+	s += "                       （指纹核对），否则拒绝恢复并说明\n";
 	s += "取值优先级：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。\n";
 	s += "REPL 内置命令：/hardware 硬件清单，/scripts 动作脚本清单，/help 帮助，/exit 退出。\n";
 	s += "\n";
@@ -340,7 +352,14 @@ std::string helpText(const std::string& topic) {
 	s += "                       与执行器，故只有显式列进来的变量可读；配置文件不能开\n";
 	s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
 	s += "                       确认程序（stdin 收工具名与参数 JSON，退出 0 = 放行；\n";
-	s += "                       超时按 on_timeout，缺省 deny）；缺省不启用\n\n";
+	s += "                       超时按 on_timeout，缺省 deny）；缺省不启用\n";
+	s += "  --session-file <路径> 会话持久化（JSON Lines 追加写）：每个任务块完结时\n";
+	s += "                       落一行流水的完整历史；图片以占位文本落盘（字节不落盘），\n";
+	s += "                       system 提示词不落盘。也可用配置文件 session_file 字段\n";
+	s += "                       （只用于写入）。注意：文件含完整对话内容，建议 chmod 600\n";
+	s += "  --resume              恢复 --session-file 指定的既有会话后继续；路径必须\n";
+	s += "                       来自命令行，且结构脚本/工具集/系统提示词与原会话\n";
+	s += "                       一致（指纹核对），否则拒绝恢复并说明\n\n";
 		s += "REPL 内置命令：/hardware, /scripts, /help, /exit\n\n";
 		s += "示例：\n";
 		s += "  ./build/mybot --robot=robots/relay-test.sql --agent --task \"让继电器动作一次\"\n";

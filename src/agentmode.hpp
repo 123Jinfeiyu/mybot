@@ -153,6 +153,16 @@ struct AgentModeConfig {
 	 * --agent-shell 管「工具给不给」，策略管「给了之后每次调用要不要过外部闸门」。 */
 	std::shared_ptr<const AgentPolicy> policy;
 	std::string policyPath;
+
+	/* ---- 会话持久化（批次 1，2026-09-23）----
+	 * sessionFile：会话文件路径（--session-file / 配置文件 session_file）。
+	 * 写入是**纯输出**（判据同 audit_log：可进配置文件）；恢复是**输入通道**
+	 * （磁盘内容读进模型上下文），故 --resume 只认命令行给出的路径——配置文件
+	 * 来源的路径不能授权一次读取（与 H2 给提示词路径加根约束同判据），
+	 * 配置文件里的 session_file 只用于写入。 */
+	std::string sessionFile;
+	bool sessionFileFromCli = false;	/* H1 同款：路径是否来自命令行 */
+	bool resumeSession = false;		/* --resume：必须与命令行 --session-file 联用 */
 };
 
 /* run_command 启用（cfg.allowShell）且 API key 来自「agent 的 shell 也能读到」

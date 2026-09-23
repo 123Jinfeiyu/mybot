@@ -7,8 +7,13 @@
  * 独立后可以离线单测裁剪语义（任务块边界、最新块无条件保留等）。
  *
  * 只依赖 agentproto 的 ChatMessage，不认识传输与工具层。
+ *
+ * 会话持久化（批次 1，2026-09-23）：本文件同时承载会话文件的读写原语
+ * （SessionHead / SessionFileWriter / loadSessionFile）——落盘单位与 trim
+ * 的裁剪单位同为「任务块」，两套语义共享一处，不会分叉。
  */
 
+#include <cstdio>
 #include <functional>
 #include <string>
 #include <vector>
@@ -36,13 +41,13 @@ public:
 	 * budget == 0 = 不裁剪；裁剪发生且 verbose 时经 log 打一条人话说明
 	 * （文案与拆分前逐字一致）。
 	 * 口径（C4，2026-09-22）：budget 记账只覆盖可裁的任务块消息，**不含**
-	 * system 提示词（messages_[0]，恒保留，另有 64KiB 独立上限）与工具 schema
+	 * system 提示词（messages_[0]，恒保留，另有 64KiB 上限独立约束）与工具 schema
 	 * （注册期固定）；单条体积估算（messageWeight）是线上字节的下界。 */
 	void trim(std::size_t budget, bool verbose,
 		const std::function<void(const std::string&)>& log);
 
 	/* SAN-10：当前可裁任务块的估算字节（trim 的记账口径——**不含** system
-	 * 提示词与工具 schema，与 C4 的诚实口径一致）。供 /status 显示"历史现在多大"， 
+	 * 提示词与工具 schema，与 C4 的诚实口径一致）。供 /status 显示"历史现在多大"，
 	 * 而不必等到裁剪发生才知道（此前只有裁剪那一刻打一行日志）。 */
 	std::size_t accountedBytes() const;
 
@@ -50,5 +55,83 @@ private:
 	std::vector<ChatMessage> messages_;
 };
 
+/* ---- 会话持久化（批次 1，2026-09-23）----
+ * 会话文件 = JSON Lines 追加写（与 --audit-log 同款惯例），首行会话头，
+ * 其后每条消息一行。写入发生在 AgentSession 的 complete 边界（最终回答
+ * 已入历史、本轮工具序列协议完整），因此**文件里的每个前缀都是可独立
+ * 恢复的完整任务块序列**——半截的 tool_calls 序列永不落盘。
+ *
+ * 图片**写入期排除**：图片字节（data URL）不落盘，落盘的是占位文本
+ * 「[图片 N 字节，未随会话恢复]」——「体积与隐私都倾向不落盘」只有在这一
+ * 侧执行才成立（恢复期占位意味着磁盘上仍躺着 base64 画面，等于没排除）。
+ *
+ * system 提示词不落盘：恢复时由当前进程重建，经指纹（SessionHead）核对
+ * 一致才放行——提示词包或脚本清单变了，旧上下文对不上号，拒绝恢复并说明。 */
+
+struct SessionHead {
+	int version = 1;
+	std::string sessionId;	/* 审计会话 id（可空 = 审计未开；恢复时据此沿用） */
+	std::string robot;		/* 结构脚本展示名（去目录去 .sql） */
+	std::string toolsFp;	/* 工具集指纹（fingerprint64，注册表按序名字串） */
+	std::string systemFp;	/* 系统提示词指纹（fingerprint64） */
+};
+
+/* 图片占位文本（写入期排除后的落盘形态；恢复后模型可见，据此知道图片不在） */
+std::string sessionImagePlaceholder(std::size_t totalImageBytes);
+
+/* 工具集指纹：按注册序拼接工具名后取 fingerprint64（agentaudit 单点）。
+ * 指纹一致 ≈ 同一工具集；名字串撞车概率与既有 image_fp 同量级，可接受。 */
+std::string sessionToolsFingerprint(const std::vector<ToolSpec>& specs);
+
+/* 单条消息 → 会话文件的一行 JSON（不含换行）。system 消息不该走到这里
+ * （调用方保证），走到也会被拒（返回空串）。 */
+std::string encodeSessionMessage(const ChatMessage& m);
+
+/* 追加式会话文件写入器。open(append=false) = 开新会话（截断旧文件并写会话头，
+ * 调用方先经 sessionPermsWarning 提醒）；open(append=true) = 恢复（不写头，
+ * 在既有内容后追加）。每行即刷（fflush）：崩溃后恢复最多丢最后一行。 */
+class SessionFileWriter {
+public:
+	SessionFileWriter() = default;
+	SessionFileWriter(const SessionFileWriter&) = delete;
+	SessionFileWriter& operator=(const SessionFileWriter&) = delete;
+	~SessionFileWriter();
+
+	bool open(const std::string& path, bool append, std::string& err);
+	void writeHeader(const SessionHead& head);
+	/* 返回 false = 磁盘写失败（调用方应停用写入并响亮告知，不静默丢历史） */
+	bool appendMessage(const ChatMessage& m);
+	/* /clear 分界（批次 1）：落一行 type="session_clear" 标记。载入时该行
+	 * **丢弃此前累积的全部消息**——否则恢复会把已被 /clear 遗忘的上下文
+	 * 复活进模型上下文，与操作者在 REPL 里的意图相反。 */
+	bool writeClearMarker();
+
+private:
+	std::FILE* file_ = nullptr;
+	bool broken_ = false;
+};
+
+struct LoadedSession {
+	SessionHead head;
+	std::vector<ChatMessage> messages;
+};
+
+/* 读入会话文件。首行必须是合法会话头（没有头的文件拒绝整体恢复——
+ * 指纹无从核对）；其后的行逐行解析，**损坏行跳过并点名**（含行号与人话
+ * 原因，进 warnings），不整份作废——崩溃留下的最后一行残缺不该抹掉此前
+ * 的完整历史。消息间协议自洽（孤儿/重复 tool_call_id）由调用方以
+ * historyProtocolViolation 复核，本函数只管单行形态。 */
+bool loadSessionFile(const std::string& path, LoadedSession& out,
+		std::vector<std::string>& warnings, std::string& err);
+
+/* 恢复前的指纹核对。返回空串 = 一致；否则返回点名差异的人话原因
+ * （sessionId 不参与比对——恢复本来就是要沿用它的）。 */
+std::string sessionHeadMismatch(const SessionHead& expected, const SessionHead& found);
+
+/* 文件存在且权限宽于 0600 时返回告警文本（对齐 mybot.llm.json 既有判据：
+ * 会话文件含完整对话内容，同等敏感）。不存在/取不到权限 = 空串。 */
+std::string sessionPermsWarning(const std::string& path);
+
 } // namespace agent
 } // namespace bot
+

@@ -61,6 +61,11 @@ struct AuditEntry {
 	std::string endpoint;		/* 接入点（**去掉 query 与 userinfo**，见 write） */
 	std::string status;		/* "start" / "end" / "error" */
 	std::string apiKeySource;	/* 只记来源枚举名，绝不记值 */
+	/* 批次 1（2026-09-23）：该会话由 --resume 恢复而来。加法字段——只在
+	 * kind="session" 的 start 记录上出现（"resumed": true），既有字段与
+	 * 顺序不动，老消费方按既有字段过滤的行为逐字节不变（schema 演进已在
+	 * changelog 声明）。 */
+	bool resumed = false;
 
 	/* ---- SAN-9：kind="model" 专用 ---- */
 	std::size_t reqBytes = 0;	/* 本次请求体估算字节（可 0 = 未统计） */
@@ -92,9 +97,15 @@ public:
 	const std::string& sessionId() const { return sessionId_; }
 	const std::string& path() const { return path_; }
 
+	/* 批次 1（会话恢复）：沿用被恢复会话的原 id，让审计里恢复前后的行能
+	 * 对上同一段对话。只生效一次（重复调用忽略），须在 open 之后、首次
+	 * write 之前调用——首条记录一旦带上了旧 id，再改反而制造断层。 */
+	void adoptSessionId(const std::string& id);
+
 private:
 	std::string path_;
 	std::string sessionId_;
+	bool sessionIdAdopted_ = false;	/* adoptSessionId 只生效一次 */
 	bool opened_ = false;
 	bool toStderr_ = false;
 	bool warnBroken_ = false;	/* 损坏告警只打一次 */

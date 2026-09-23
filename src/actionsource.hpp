@@ -107,6 +107,13 @@ struct CliOptions {
 	/* --agent-policy：策略钩子文件（严格 JSON；空 = 不启用，全部放行）。
 	 * 加载与校验失败在 agent::buildAgentConfig 报错退出（配置错误不碰真机）。 */
 	std::string agentPolicy;
+	/* --session-file：会话持久化文件（JSON Lines 追加写，批次 1）。写入是
+	 * 纯输出（配置文件的 session_file 字段亦可给）；**恢复是输入通道**，
+	 * --resume 只认命令行给出的路径（判据与理由见 AgentModeConfig 注释）。 */
+	std::string sessionFile;
+	/* --resume：与 --session-file 联用，恢复既有会话后继续。布尔 flag，
+	 * 与 --agent 同在表外显式解析（cliargs）。 */
+	bool resume = false;
 	/* --check-config（PL-1，2026-09-22）：只校验配置并打印摘要，不装载结构脚本、
 	 * 不上电、不联网。配置校验本身仍由 buildAgentConfig 单点负责（这里不另起
 	 * 一套判据），故 main 里只是「打印摘要后 return 0」一个分支。属 agent 专属

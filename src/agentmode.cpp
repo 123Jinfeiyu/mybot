@@ -235,6 +235,19 @@ AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
 
 namespace {
 
+/* 结构脚本展示名（去目录、去 .sql 后缀）：REPL 提示符与会话文件的
+ * robot 指纹字段共用同一份（批次 1）——两处各写一遍迟早分叉。 */
+std::string structureDisplayName(const std::string& path) {
+	std::string name = path;
+	if (std::size_t slash = name.rfind('/'); slash != std::string::npos) {
+		name = name.substr(slash + 1);
+	}
+	if (name.size() > 4 && name.substr(name.size() - 4) == ".sql") {
+		name = name.substr(0, name.size() - 4);
+	}
+	return name;
+}
+
 /* 分层选取（命令行 > 环境变量 > 配置文件 > 空）：envName=null 跳过环境层 */
 std::string pickString(const std::string& cli, const char* envName,
 		const std::optional<std::string>& fromFile) {
@@ -407,6 +420,28 @@ bool pickCamera(const CliOptions& opts, const LlmFileConfig& file,
 } // namespace
 
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
+	/* ---- 0) 会话恢复的命令行组合校验（批次 1，2026-09-23）----
+	 * 只依赖 opts 本身，放在最前（配置文件查找之前）：不通过就立刻失败——
+	 * 配置错误不碰真机，也不碰文件系统里任何别的东西。
+	 * 恢复是**输入通道**（磁盘内容读进模型上下文），故路径必须来自命令行：
+	 * 配置文件来源的 session_file 只用于写入（判据与 H2 给提示词路径加根
+	 * 约束同源——「这个配置文件存在」不构成授权一次读取）。 */
+	out.sessionFileFromCli = !opts.sessionFile.empty();
+	if (opts.resume && !out.sessionFileFromCli) {
+		err = "--resume 需要与 --session-file <路径> 联用，且路径必须来自命令行："
+			"恢复会把会话文件的内容读进模型上下文（输入通道），配置文件里的 "
+			"session_file 只用于写入，不能授权一次读取";
+		return false;
+	}
+	if (opts.resume) {
+		std::error_code ec;
+		if (ec || !fs::exists(opts.sessionFile, ec) || ec) {
+			err = "--session-file '" + opts.sessionFile + "' 不存在，无会话可恢复"
+				"（恢复只作用于已存在的会话文件；开新会话请去掉 --resume）";
+			return false;
+		}
+	}
+
 	/* ---- 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） ---- */
 	LlmFileConfig file;
 	std::string cfgPath = pickConfigPath(opts);
@@ -582,6 +617,14 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 			return false;
 		}
 	}
+
+	/* ---- 12) 会话文件（--session-file / 配置文件 session_file；批次 1）----
+	 * 写入是纯输出，判据同 audit_log：可进配置文件。恢复的组合校验已在
+	 * 第 0 步完成（--resume 只认命令行路径 + 文件必须存在）。打开与指纹
+	 * 核对在 runAgentMode 里：指纹要到系统提示词定稿（上电后）才算得出。 */
+	out.sessionFile = out.sessionFileFromCli ? opts.sessionFile
+		: (file.sessionFile ? *file.sessionFile : "");
+	out.resumeSession = opts.resume;
 	return true;
 }
 
@@ -676,7 +719,8 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	/* A4：墙钟预算不是请求字段（不进 makeDriverConfig / 不发往 provider），
 	 * 它是宿主自己给「一个任务能带电跑多久」设的闸。 */
 	aopts.maxTaskSeconds = cfg.maxTaskSeconds;
-	aopts.systemPrompt = buildAgentSystemPrompt(cfg, robot);
+	const std::string systemPrompt = buildAgentSystemPrompt(cfg, robot);
+	aopts.systemPrompt = systemPrompt;
 	aopts.audit = cfg.audit;
 	aopts.policy = cfg.policy;
 	/* SAN-9：审计的会话/模型记录的上下文（只读事实，密钥只报来源不报值） */
@@ -690,7 +734,80 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 	case ApiKeySource::None: break;
 	}
 
+	/* ---- 会话持久化（批次 1，2026-09-23）----
+	 * 打开与校验都放在会话构造之前：文件打不开、指纹不符、协议自检不过
+	 * 都按「输入错误」处理（退出码 2），不进入会话。指纹（结构脚本名 +
+	 * 工具集 + 系统提示词）要到提示词定稿（上电后）才算得出，故这一步
+	 * 必然在 active() 之后——但拒绝路径不写任何会话/审计记录，main 随后
+	 * 走常规 deactivate 清理链，硬件状态无损。 */
+	std::vector<ChatMessage> restored;
+	bool resumedOk = false;
+	if (!cfg.sessionFile.empty()) {
+		SessionHead head;
+		head.version = 1;
+		head.robot = structureDisplayName(cfg.structurePath);
+		head.toolsFp = sessionToolsFingerprint(tools.specs());
+		head.systemFp = fingerprint64(systemPrompt);
+		auto writer = std::make_shared<SessionFileWriter>();
+		if (cfg.resumeSession) {
+			LoadedSession loaded;
+			std::vector<std::string> warns;
+			std::string serr;
+			if (!loadSessionFile(cfg.sessionFile, loaded, warns, serr)) {
+				log << "错误: " << serr << "\n";
+				return 2;
+			}
+			/* 指纹核对：结构变了/工具集变了/提示词包变了，旧上下文对不上号，
+			 * 拒绝恢复并点名差异（sessionId 不比对——恢复就是要沿用它） */
+			if (std::string mm = sessionHeadMismatch(head, loaded.head); !mm.empty()) {
+				log << "错误: 拒绝恢复 '" << cfg.sessionFile << "'：" << mm << "\n";
+				return 2;
+			}
+			/* 行间协议自洽（孤儿/重复 tool_call_id）：恢复的历史按不可信输入
+			 * 对待，服务端会 400 的序列宁可当场拒绝也不要让每个任务都失败 */
+			if (std::string viol = historyProtocolViolation(loaded.messages); !viol.empty()) {
+				log << "错误: '" << cfg.sessionFile << "' 未通过协议自检（" << viol
+					<< "）；拒绝恢复——文件可能被截断或改写\n";
+				return 2;
+			}
+			for (const std::string& w : warns) { log << "警告: " << w << "\n"; }
+			if (std::string pw = sessionPermsWarning(cfg.sessionFile); !pw.empty()) {
+				log << "警告: " << pw << "\n";
+			}
+			/* 审计沿用原会话 id（批次 1）：恢复前后的审计行对上同一段对话 */
+			if (cfg.audit) { cfg.audit->adoptSessionId(loaded.head.sessionId); }
+			aopts.auditResumed = true;
+			if (std::string werr; !writer->open(cfg.sessionFile, /*append=*/true, werr)) {
+				log << "错误: " << werr << "\n";
+				return 2;
+			}
+			restored = std::move(loaded.messages);
+			resumedOk = true;
+		} else {
+			if (std::string pw = sessionPermsWarning(cfg.sessionFile); !pw.empty()) {
+				log << "警告: " << pw << "\n";
+			}
+			if (std::string werr; !writer->open(cfg.sessionFile, /*append=*/false, werr)) {
+				log << "错误: " << werr << "\n";
+				return 2;
+			}
+			/* 开新会话：截断旧文件、写会话头。旧的对话历史若还想留着，
+			 * 应在启动前自行备份——session 文件始终镜像「本次会话」。 */
+			head.sessionId = cfg.audit ? cfg.audit->sessionId() : "";
+			writer->writeHeader(head);
+			if (cfg.verbose) {
+				log << "会话文件 '" << cfg.sessionFile << "' 已就绪（新会话）\n";
+			}
+		}
+		aopts.sessionWriter = std::move(writer);
+	}
+
 	AgentSession session(transport, tools, std::move(aopts));
+	if (resumedOk) {
+		session.restoreHistory(restored);
+		log << "已恢复会话（" << restored.size() << " 条消息；图片内容不随会话恢复，"
+			"以占位文本在列）\n";
+	}
 
 	/* ---- 一次性任务：--task "..." ---- */
 	if (!cfg.task.empty()) {
@@ -735,14 +852,10 @@ int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 	/* 状态指示提示符组件（2026-09-22 可用性改进）：提取结构脚本名（去路径和扩展名）、
 	 * 硬件变量数量，让用户在提示符即可看到当前上下文，无需反复 /hardware 查询。
 	 * 变量数**每轮重取**（2026-09-23 热插表）：/sql 的 CREATE/INSERT 会真的长出
-	 * 硬件，缓存首轮值会让提示符在热插之后一直少报。 */
-	std::string robotName = cfg.structurePath;
-	if (std::size_t slash = robotName.rfind('/'); slash != std::string::npos) {
-		robotName = robotName.substr(slash + 1);
-	}
-	if (robotName.size() > 4 && robotName.substr(robotName.size() - 4) == ".sql") {
-		robotName = robotName.substr(0, robotName.size() - 4);
-	}
+	 * 硬件，缓存首轮值会让提示符在热插之后一直少报。
+	 * 展示名单点在 structureDisplayName（批次 1 起：会话文件的 robot 指纹字段
+	 * 与这里共用同一份）。 */
+	const std::string robotName = structureDisplayName(cfg.structurePath);
 
 	out << "agent 模式：机器人已上电常驻（结构脚本 " << cfg.structurePath << "）。\n"
 		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/sql 执行结构 SQL，/status 看会话状态，/clear 清空对话记忆，"

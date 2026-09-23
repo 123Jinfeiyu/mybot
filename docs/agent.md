@@ -76,11 +76,13 @@ Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始
 | `--no-camera` | **不**注册 `capture_image`（去掉拍照能力） | 关（默认注册，前提是该变量解析到 Lua 驱动，见安全说明第 5 条） |
 | `--check-config` | **只校验配置并打印摘要后退出 0**：不装载结构脚本、不上电、不发起任何网络请求。配置文件拼错时不必真起一次会话（接了硬件也不必反复上下电）。失败退出 2（判据仍是 `buildAgentConfig` 那一套，不另立）；会**打开但不写入**审计日志文件（顺带验证其可写） | 关（照常进入会话） |
 | `--audit-log <路径>` | 审计轨迹落点（JSON Lines 追加写；`-` = stderr） | 不记录（见「审计轨迹」节） |
+| `--session-file <路径>` | 会话持久化落点（JSON Lines 追加写；每个任务块完结时落盘；图片以占位文本落盘，system 提示词不落盘） | 不落盘（见「会话持久化」节） |
+| `--resume` | 与 `--session-file` 联用，恢复既有会话后继续（路径只认命令行；结构脚本/工具集/系统提示词须与原会话一致） | 不恢复（开新会话） |
 
 取值优先级一律是：**命令行 > 环境变量 > 配置文件 > 驱动内置缺省**。
 API key 没有命令行入口（只从环境变量或配置文件取）：argv 对同用户进程可读（`/proc/<pid>/cmdline`）。
 
-`--task` / `--llm-*` / `--scripts-dir` / `--agent-shell` / `--agent-hot-sql` / `--read-var` / `--prompt-file` / `--camera-var` / `--camera-device` / `--camera-src` / `--no-camera` / `--check-config` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。`--check-config` 少了 `--robot` 同样被拒（否则会打印帮助后退出 0，CI 会把「退出 0」读成「配置没问题」）。
+`--task` / `--llm-*` / `--scripts-dir` / `--agent-shell` / `--agent-hot-sql` / `--read-var` / `--prompt-file` / `--camera-var` / `--camera-device` / `--camera-src` / `--no-camera` / `--session-file` / `--resume` / `--check-config` 出现在**非** agent 模式下会被拒绝（退出码 2），不会静默忽略。`--check-config` 少了 `--robot` 同样被拒（否则会打印帮助后退出 0，CI 会把「退出 0」读成「配置没问题」）。
 
 ## 配置文件（推荐）
 
@@ -120,7 +122,7 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `max_task_seconds` `scripts_dir`
   `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
-  `agent_policy` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
+  `agent_policy` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec` `action_script_timeout_sec`。
   全部可选；空串按「未配置」处理（方便留空占位）；`prompt_files` 为字符串数组
@@ -128,6 +130,9 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
   `allow_shell` 与 `allow_hot_sql` 是**只能关不能开**的字段：写 `false`（或省略）无副作用，
   写 `true` 会被拒绝加载并退出 2——开启 `run_command` / `apply_sql` 只能分别用命令行
   `--agent-shell` / `--agent-hot-sql`（理由见 [安全说明](#安全说明请务必读) 第 1、10 条）。
+  `session_file` 是**只用于写入**的字段：`--resume`（恢复）是输入通道，
+  只认命令行给出的路径——配置文件不能授权一次「把文件内容读进模型上下文」，
+  与下面 `camera_src_dir` / `read_vars` 同判据（写它本身不报错，仅不参与恢复）。
   `camera_src_dir` 与 `read_vars` 则**一律拒绝**（写了就退出 2，无论命令行给不给）：
   它们分别决定"能读哪个目录"与"能读哪些硬件变量"，属**放宽读权限**的字段，
   只能由命令行 `--camera-src-dir` / `--read-var` 提供（理由见第 9、12 条）。
@@ -509,6 +514,59 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 - **失败响亮**：日志流写入失败（磁盘满等）向 stderr 告警一次，不打断机器人动作；路径打不开则**上电前**报错退出 2（「配置错误不碰真机」）。
 - 默认**关闭**（不传 = 不写任何东西）；开启即 append-only，不做轮转（交给外部工具收集）。会话开始时把实际落点打印到 stderr。
 - 审计是**记录**不是防线：它不审批、不拦截；配合 `--agent-shell` 使用时请把它当「事后追责」证据，而非「事前阻止」闸门。
+
+## 会话持久化：--session-file / --resume
+
+**问题**：agent 的对话记忆此前只在进程内存里——重启即忘。而现场机器人重启的代价
+不小（硬件要重新上电、动作位置丢失），一次巡检或陪伴类用法被一次重启清空上下文，
+等于从头再来。本机制让「忘掉对话」不再只能靠重启。
+
+**落盘（`--session-file <路径>`，或配置文件 `session_file` 字段）**
+
+- 格式与审计同款：**JSON Lines 追加写**（第一行是会话头，其后一消息一行）。
+- **写入时机 = 任务块完结**：最终回答入历史之后才落盘，因此**文件里每个前缀
+  都是服务端可接受的历史**——失败/中断留下的半截 `tool_calls` 序列永不落盘
+  （那种序列服务端会 400）。两条边界语义（都有用例钉住，别当成 bug 改）：
+  **失败任务里已完成的那轮工具**会随后续成功任务一起落盘（与内存历史一致，
+  口径同「硬件不会倒回去，抹掉等于说没发生」；失败任务的完整记录看审计轨迹）；
+- **图片写入期排除**：图片字节（data URL）不落盘，落盘的是
+  `[图片 N 字节，未随会话恢复]` 占位文本。体积与隐私两个方向都指向「不落盘」，
+  只有写入期排除才真的做到（恢复期占位意味着磁盘上仍躺着 base64 画面）。
+- **system 提示词不落盘**：恢复时由当前进程重建，再用会话头里的**系统提示词指纹**
+  核对——提示词变了就该拒绝恢复，而不是把两份不同的提示词混在一起。
+- 每行即刷（`fflush`）：崩溃最多丢最后一行。写失败向 stderr 告警一次并停用落盘，
+  **不静默丢历史**。
+- 权限：文件含完整对话内容，与 `mybot.llm.json` 同等敏感。启动时若发现权限宽于
+  `600` 会告警（不阻止——重放历史时也读它）。
+
+**恢复（`--resume`，与 `--session-file` 联用）**
+
+- **路径必须来自命令行**：恢复是把磁盘内容读进模型上下文（输入通道），
+  配置文件里的 `session_file` 只用于写入，不能授权一次读取——与 `camera_src_dir` /
+  `read_vars` 同判据（配置文件只能收紧不能放宽）。文件必须已存在，否则退出 2。
+- **三道判据，全过才恢复**（任一不过即拒绝并说明差异，退出 2）：
+  1. **逐行解析**：损坏行**跳过并点名行号**（崩溃留下的残行不该抹掉此前的完整历史），
+     首行不是合法会话头（或版本不认）则整份拒绝——没有头就无从核对指纹。
+  2. **指纹核对**：结构脚本名 / 工具集指纹 / 系统提示词指纹三者一致。
+     提示词包或脚本清单变了，旧上下文对不上号。
+  3. **协议自洽**：`historyProtocolViolation`（`tool_call_id` 无孤儿、无重复、无漏答）
+     ——恢复的历史是磁盘上的可变内容，按**不可信输入**对待，服务端会 400 的序列
+     宁可当场拒绝，也不要让此后每个任务都以同一个 400 失败。
+- 恢复后仍受 `max_history_bytes` 预算约束（内存侧裁剪；文件是 append-only，
+  不回写、不重排）；`/clear` 会向文件写 `session_clear` 分界标记，
+  恢复时该标记丢弃此前的全部消息——否则「忘掉对话」会在下次恢复时复活。
+- 审计联动：沿用被恢复会话的原 `session id`（恢复前后的行能对上同一段对话），
+  并在 `kind="session"` 的 `start` 记录上标 `"resumed": true`（**加法字段**：
+  老消费方按既有字段过滤的行为逐字节不变）。
+
+```bash
+# 第一次会话：落盘
+./build/mybot --robot=robots/spider1.sql --agent --session-file /var/lib/mybot/s.jsonl
+
+# 重启后：接着上次的上下文继续（路径必须命令行给）
+./build/mybot --robot=robots/spider1.sql --agent \
+  --session-file /var/lib/mybot/s.jsonl --resume
+```
 
 ## 策略钩子：--agent-policy
 
