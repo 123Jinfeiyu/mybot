@@ -27,6 +27,16 @@ class MtVars_Lua : public MatrixVars_Hardware {
 	 * 而守护线程等并发路径各自独立，杜绝共享静态态的跨线程竞态。 */
 	static thread_local int topDepth;
 
+	/* ---- D（2026-09-23）：驱动返回表的**回收通道** ----
+	 * play()（CallMode::Echo）的顶层回显此前只写 stderr：器件读到的值操作者看得见、
+	 * **模型看不见**（run_action_script 的回执里一个字节的读数都没有）。这里加一条
+	 * 同线程回收通道：非空时回显追加进它、**不再**写 stderr（工具回执随即把它带回
+	 * 模型上下文，而那条回执本身也会被 verbose 日志打到同一条 stderr 流上，故不重复
+	 * 打印同一份文本）。thread_local 与 topDepth 同款：只影响挂载它的线程——守护线程
+	 * 等并发路径各自独立（其回显照旧走 stderr），不存在跨线程写入竞态。 */
+	static thread_local std::string* callEchoSink;
+	static void echoLine(const std::string& text);
+
 	lua_State* L_;
 	std::string luapath_;
 	std::string name_;
@@ -130,6 +140,14 @@ public:
 	 * 首次设置时向本驱动的 Lua 状态注册全局 __bot_img(N)（受保护帧内注册，
 	 * __newindex 元方法报错不裸崩）；传 nullptr 只清表不注销（幂等）。 */
 	void setHostImages(const std::vector<const std::string*>* imgs);
+	/* D（2026-09-23）：挂/摘回显回收通道（见 callEchoSink 注释）。**返回上一个值**，
+	 * 调用方据此用 RAII 精确复原（异常路径也要复原，否则悬垂的 sink 指针会被后续
+	 * 任何一次顶层 play() 写入）。传 nullptr 即恢复"写 stderr"的既有行为。 */
+	static std::string* setCallEchoSink(std::string* sink) {
+		std::string* prev = callEchoSink;
+		callEchoSink = sink;
+		return prev;
+	}
 	Json read() override { return readImpl(); }
 	void build() override { riseImpl(); }
 	void destroy() override { freeImpl(); }

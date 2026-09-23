@@ -8,6 +8,18 @@
 namespace bot {
 
 thread_local int MtVars_Lua::topDepth = 0;
+/* D（2026-09-23）：回显回收通道（nullptr = 写 stderr，即改动前的行为） */
+thread_local std::string* MtVars_Lua::callEchoSink = nullptr;
+
+/* 顶层回显的唯一出口：挂回收通道时追加进它，否则按既有行为写 stderr。 */
+void MtVars_Lua::echoLine(const std::string& text) {
+	if (callEchoSink != nullptr) {
+		callEchoSink->append(text);
+		callEchoSink->push_back('\n');
+		return;
+	}
+	std::cerr << text << std::endl;
+}
 
 /* ---- B3：图片游标的宿主侧取值闭包 ----
  * Lua 驱动在请求体组装期调 __bot_img(N)；这里把游标翻译成宿主持有的字符串。
@@ -208,7 +220,7 @@ Json MtVars_Lua::callImpl(const Json& json, CallMode mode) {
 	 * （上限由 luabridge 的 kMaxLuaNesting 双向守），故用不带 limit 的 RecursionGuard。 */
 	RecursionGuard depthGuard(MtVars_Lua::topDepth);
 
-	if (top && echo) { std::cerr << "----------" << std::endl; }
+	if (top && echo) { echoLine("----------"); }
 
 	/* 获取元数据（静态列缓存重放 + 引用列实时快照） */
 	Json metadata = getMetadata_(false);
@@ -249,11 +261,11 @@ Json MtVars_Lua::callImpl(const Json& json, CallMode mode) {
 
 	if (!ctrlNames_.empty()) {
 		Json ctrl_res = forwardToControllers(metadata, res);
-		if (top && echo) { std::cerr << ctrl_res.toString() << std::endl; }
+		if (top && echo) { echoLine(ctrl_res.toString()); }
 		return ctrl_res;
 	}
 
-	if (top && echo) { std::cerr << res.toString() << std::endl; }
+	if (top && echo) { echoLine(res.toString()); }
 	return res;
 }
 

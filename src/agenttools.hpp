@@ -166,5 +166,18 @@ std::string runSqlCommand(const std::string& sql, RobotStruct& robot);
  * fopen 截断路径，是「校验的路径 ≠ 打开的路径」经典绕过）。 */
 std::string resolveActionScriptPath(const std::string& scriptsDir, const std::string& requested);
 
+/* ---- D（2026-09-23）：动作脚本执行期间的驱动返回表回收 ----
+ * `run_action_script` 此前只回一句「已执行动作脚本 X（N 字节）」——**模型看不到
+ * 任何读数**，而器件读到的值事实上早已产生：`play()` 的顶层回显（luavar 的
+ * res / ctrl_res 表，如 BH1750 的 `{result="OK", LUX=…}`）此前只写 stderr，
+ * 操作者看得见、模型看不见。现在执行窗口内挂一条回收通道，把回显经本函数追加
+ * 进工具回执（见 `kMaxActionEchoBytes`）。 */
+inline constexpr std::size_t kMaxActionEchoBytes = 8u << 10;
+
+/* 把回收到的回显追加进回执文本。单点职责：截断 + UTF-8 消毒 + 「数据非指令」
+ * 定界（`quoteUntrusted`），便于离线断言。@p echo 为空时**逐字节不改** out——
+ * 无回显的脚本（旧式无参设备、`playQuiet` 路径）回执形态与改动前完全一致。 */
+void appendActionEcho(std::string& out, const std::string& echo);
+
 } // namespace agent
 } // namespace bot

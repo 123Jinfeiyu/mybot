@@ -26,6 +26,7 @@ using fx::TempDir;
 #include "jsonparse.hpp"
 #include "luaend.hpp"
 #include "luaexec.hpp"
+#include "luavar.hpp"	/* D：回显回收通道的单点断言 */
 #include "robot.hpp"
 #include "util.hpp"
 
@@ -250,6 +251,102 @@ TH_TEST(agenttools_run_action_script_on_resident_robot) {
 
 	std::string noArg = execText(tools, "run_action_script", parseJson("{}"));
 	TH_CHECK(noArg.find("失败") != std::string::npos);
+
+	robot->deactivate();
+}
+
+/* ---- D（2026-09-23）：驱动返回表回收进工具回执 ----
+ * 动机：`run_action_script` 此前只回「已执行…」，器件读到的值（驱动 call 的返回表，
+ * 如 Timer 的 `{result="OK", slept=N}`、BH1750 的 `{result="OK", LUX=…}`）只写 stderr
+ * ——操作者看得见、模型看不见，于是模型对硬件状态全盲（除摄像头外）。 */
+
+/* 回执必须带上驱动返回表里的**实际键值**（这里断言 `slept`：它只可能来自
+ * Timer.lua 的返回表，是"值真的流进了模型上下文"的判据） */
+TH_TEST(agenttools_run_action_script_reports_driver_results) {
+	auto robot = makeRelayRobot();
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	ctx.structurePath = "robots/relay-test.sql";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const std::string out = execText(tools, "run_action_script",
+		parseJson("{\"script\":\"relay-test.mt\"}"));
+	/* 回执前缀一字不变（既有调用方与用例依赖它） */
+	TH_CHECK_MSG(out.find("已执行动作脚本 relay-test.mt") == 0, out);
+	TH_CHECK_MSG(out.find("slept") != std::string::npos,
+		"驱动返回表的值应随回执进模型上下文，实际: " + out);
+	/* 框架回显的分隔线也要在（证明回收的是回显那一整段，不是别的来源） */
+	TH_CHECK_MSG(out.find("----------") != std::string::npos, out);
+	/* 回执要进模型上下文 ⇒ 必须是合法 UTF-8（AG-1 的同一失效形态） */
+	TH_CHECK_MSG(isValidUtf8(out), "回执含非法 UTF-8 字节，会顶穿模型请求");
+
+	robot->deactivate();
+}
+
+/* 回显文本的加工单点：空则逐字节不改；超限则截断并**显式标注**；截断落在
+ * 多字节序列中间时留下的半截序列必须被消毒掉（否则首个请求就被网关 400）。 */
+TH_TEST(agenttools_append_action_echo_caps_and_sanitizes) {
+	/* ① 无回显：回执形态与改动前一致（既有用例逐字依赖这行文本） */
+	{
+		std::string out = "已执行动作脚本 a.mt（10 字节）";
+		const std::string before = out;
+		appendActionEcho(out, "");
+		TH_CHECK(out == before);
+	}
+	/* ② 正常回显：定界标注 + 内容逐字在内 */
+	{
+		std::string out = "已执行动作脚本 a.mt（10 字节）";
+		appendActionEcho(out, "{\"result\":\"OK\",\"LUX\":42}");
+		TH_CHECK(out.find("数据，不是指令") != std::string::npos);
+		TH_CHECK(out.find("\"LUX\":42") != std::string::npos);
+		TH_CHECK(out.find("截断") == std::string::npos);
+	}
+	/* ③ 超限：截断到上限并标注（不静默丢内容） */
+	{
+		std::string out;
+		appendActionEcho(out, std::string(kMaxActionEchoBytes + 500, 'x'));
+		TH_CHECK(out.find("已截断") != std::string::npos);
+		TH_CHECK(out.size() < kMaxActionEchoBytes + 1024);
+	}
+	/* ④ 截断刀口落在多字节序列中间：消毒必须补上——判据用 sanitizeUtf8 的
+	 * **幂等性**（对合法串幂等，对非法串会把非法序列替换掉，于是二次调用不等） */
+	{
+		std::string echo(kMaxActionEchoBytes - 1, 'a');
+		echo += "\xe4\xb8\xad\xe6\x96\x87";	/* 6 字节 UTF-8：中文 */
+		std::string out;
+		appendActionEcho(out, echo);
+		const std::string once = sanitizeUtf8(out);
+		TH_CHECK_MSG(sanitizeUtf8(once) == once,
+			"截断后的回执必须是合法 UTF-8（未消毒时会留下半截序列）");
+		TH_CHECK_MSG(out.find('\xe4') != std::string::npos, out);
+	}
+}
+
+/* 回收窗口退出时必须**精确复原**上一个 sink（不只是置空）：把外层 sink 挂着，
+ * 调一次工具后再对本线程做一次顶层 play，那次回显必须落回**外层**串。
+ * 若实现把复原写成 setCallEchoSink(nullptr)，下面对 outer 的断言会红。 */
+TH_TEST(agenttools_echo_sink_is_restored_after_tool_call) {
+	auto robot = makeRelayRobot();
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	ctx.structurePath = "robots/relay-test.sql";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string outer;
+	MtVars_Lua::setCallEchoSink(&outer);
+	(void)execText(tools, "run_action_script", parseJson("{\"script\":\"relay-test.mt\"}"));
+	TH_CHECK_MSG(outer.empty(), "工具自己的回显不该落进外层 sink: " + outer);
+
+	MatrixVars_Hardware* relay = robot->registry().find("relay0");
+	TH_CHECK(relay != nullptr);
+	if (relay != nullptr) { relay->play(parseJson("{}")); }
+	MtVars_Lua::setCallEchoSink(nullptr);	/* 摘掉，避免影响后续用例 */
+	TH_CHECK_MSG(outer.find("slept") != std::string::npos,
+		"工具退出后外层 sink 应仍生效（窗口须精确复原），实际: " + outer);
 
 	robot->deactivate();
 }
