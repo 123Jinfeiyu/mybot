@@ -92,6 +92,128 @@ cd build && ctest --output-on-failure -R cpp_unit
 - 建议随驱动在文件尾部内嵌 `<矩阵名>_VIRT` 仿真模型，接入 virtbus 回归（见 [virtbus.md](virtbus.md)）
 - 完成后跑一次 `luajit test/test_driver_contract.lua`（驱动入口契约 sweep：可加载 + 三入口齐全 + 非表入参 ERR 契约，同时覆盖上面两条 lint 的语义面）
 
+## 10 分钟写一个新硬件驱动（新手完整引导）
+
+> 上文「新增驱动」给的是契约要点速查；下面是完整引导，与 `modules/Relay.lua`
+> 及仓库真实驱动（EMC2101 / PCA9685 / Max17048 等）逐条核对过，新手照抄即通。
+> 契约的权威定义仍以 [drivers.md](drivers.md) 为准。
+
+
+### 一、驱动是什么
+
+一个 Lua 文件 = 一类硬件。结构脚本里 `CREATE TABLE Buzzer ...`，框架按表名在 `modules/` 下找 `Buzzer.lua`（目录由 `BOT4CJ_MODULE_PATH` 指定，默认 `./modules`，冒号分隔多段逐段探测）；矩阵每一行的 `name` 列成为一个硬件变量实例（如 `relay0`、`timer-0`），结构脚本里其他列的值按列名进入驱动的 data 表。
+
+驱动最多定义**三个全局函数**：`build` / `call` / `destroy`。三者签名一致：收一张表、返回一张表。
+
+### 二、三段式契约
+
+| 函数 | 触发时机 | 典型工作 |
+| --- | --- | --- |
+| `build(data)` | `active()` 时，按声明序 | 开总线、配置器件（I2C 驱动在这里 `i2c_pair` + 读 ID 甄别） |
+| `call(data)` | @Action 每行、按列序 | 干活：转角度/读采样/延时（PCA9685/Servo/Timer/EMC2101） |
+| `destroy(data)` | `deactivate()` 时，倒序 | 释放（纯软件模块返回 OK；总线驱动在这里关闭） |
+
+**data 表怎么来**：矩阵行的各列（跳过 `name` / `controller` 列）∪ 模式标记（`mode = "build"/"call"/"destroy"`）∪ call 时再合并 @Action 该行的参数。细节三条：
+
+1. `-` 占位符继承上一行同列；继承到首个数据行仍是 `-` 时按 `"0"` 处理（配合 `finite_of` 归一为 0）；
+2. **引用机制**：某列的值如果是**别的硬件变量名**，框架先调它并把返回表字段合并进来——@Monitor 读守护的 `data.v0`、I2C 驱动拿总线的 `data.i2c` 都来自这里；驱动自己写的 `return { delay = ... }` 同样经框架合并后转发（Relay 返回 delay → controller 指定的 Timer）；
+3. **返回值协议**：返回表与框架元数据合并后继续向下游转发；失败返回 `err(...)` 表，框架停止该行并报错退出。
+
+### 三、最小模板：modules/Relay.lua 逐段
+
+```lua
+-- 标准前导（纯软件模块不需要 HAL，只需要 mpath/print_table/drv_common）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+dofile(mpath.resolve("lib/print_table.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))
+
+function build(data)
+	local ok, ek = arg_table(data)      -- 参数校验 + 虚拟硬件前置（见下）
+	if not ok then return ek end
+	return { result = "OK" }
+end
+
+function destroy(data)                  -- 无资源需释放时同 build
+	local ok, ek = arg_table(data)
+	if not ok then return ek end
+	return { result = "OK" }
+end
+
+function call(data)
+	local ok, ek = arg_table(data)
+	if not ok then return ek end
+	local delay = finite_of(data.test)  -- 数值守卫：NaN/缺失/非法 → nil
+	if delay == nil then delay = 0 end  -- 保留「缺失/占位符按 0」语义
+	return { delay = delay }            -- 返回值合并后转发给 controller
+end
+```
+
+**drv_common 关键工具**（modules/lib/drv_common.lua）：
+- `arg_table(data)`：非表直接拒；`proto=virt` 时先 `virt_prepare`（虚拟硬件前置），真机路径一次比较即关闭；
+- `finite_of(v)`：NaN 防护（审计 P3）——NaN 非 nil，`== nil` 兜不住，会把 NaN 当真实值转发到下游；请一律经它归一；
+- `err(msg)`：失败契约，返回错误表；`clampi(v, lo, hi)`、`int_or(v, def, lo, hi)`、`num_or(v, def)` 数值归一；
+- `guard_build(rollback, fn, data)`：build 失败回滚骨架。
+
+### 四、有硬件的驱动：I2C 为例（EMC2101 同款写法）
+
+```lua
+dofile(mpath.resolve("lib/HAL.lua"))    -- + HAL：i2c/GPIO/SPI/UART
+local bitc = dofile(mpath.resolve("bitcompat.lua"))  -- 符号扩展单点
+
+function build(data)
+	local ok, ek = arg_table(data)
+	if not ok then return ek end
+	local fd, addr, ek = i2c_pair(data) -- fd/address 存在性 + set_addr 校验（drv_common 单点）
+	if fd == nil then return ek end
+	local part = i2c_read_reg(fd, REG_PART_ID)   -- 身份甄别
+	if part < 0 then return err("Failed to read ID") end
+	return { result = "OK" }
+end
+```
+
+要点：
+- HAL 总线 API（modules/lib/HAL.lua）：`i2c_open(path)` / `i2c_close(fd)` / `i2c_write_reg(fd, reg, val)` / `i2c_read_multi_bytes(fd, reg, n)` / `i2c_read_bytes(fd, n)` / `i2c_write_reg16(fd, reg16, ...)`；
+- 需要 set_addr 前额外校验的驱动用 `i2c_check(data)`（MS5611 OSR 档位、PCF8574 地址族），否则 `i2c_pair(data)`；
+- 符号扩展一律走 `bitcompat.lua` 单点（`M.u16le/M.s16le/M.s16/M.s12/M.s8`，LuaJIT 内建 bit / 纯 Lua 双兼容）；不要手写补码拷贝（审计 #30 已清掉 3 处同文件遮蔽）；
+- **虚拟硬件**：`arg_table` 在 `proto=virt` 时自动 `virt_prepare`，测试不碰真总线。
+
+### 五、结构脚本 + 动作脚本
+
+结构脚本（robots/relay-test.sql）：
+```sql
+CREATE TABLE Timer ( name String );
+INSERT INTO Timer (name) VALUES ('timer-0');
+CREATE TABLE Relay ( name String, controller String, note String );
+INSERT INTO Relay (name, controller, note) VALUES ('relay0', 'timer-0', 'hello-relay');
+```
+
+动作脚本（scripts/dummy.mt，@Action 区，分号分隔、空格分隔值、@ 结束）：
+```
+@Action
+d1.test;
+      -;
+@
+```
+`-` 无上一行可继承时按未设置派发；`0 1 100 ...` 逐列给值。
+
+### 六、测试与验证（10 分钟里的最后一步）
+
+- `test/test_xxx.lua`：真实驱动 + virtbus 注入层 + 内嵌模型（驱动文件尾部 `XXX_VIRT`），断言含黄金向量；
+- 运行：`luajit test/test_xxx.lua`（驱动依赖 HAL ffi，必须 LuaJIT）；纯逻辑可用 `lua5.4` 调试；
+- 结构脚本回归：全仓 `robots/**/*.sql` 必须可解析（`./build/mybot --robot=robots/xxx.sql`）；
+- 冒烟：`cat scripts/xxx.mt | ./build/mybot --robot=robots/xxx.sql`，看到 call 计数、退出码 0 即链路通。
+
+### 七、新驱动 checklist（照抄即通）
+
+1. `modules/X.lua`：标准前导 + build/call/destroy 三段 + arg_table 开头 + err 失败契约；
+2. 数值/布尔入参过 `finite_of` / `int_or` / `clampi`；符号扩展走 bitc；
+3. `robots/xxx.sql` 结构脚本（含 controller 列则配引用机制）；
+4. `scripts/xxx.mt` 动作脚本（@Action）；
+5. `luajit test/test_xxx.lua`（virtbus 模型 + 黄金向量）全绿；
+6. 全仓 .sql 回归 + mybot 冒烟通过。
+
+对照最小模板（Relay）→ I2C 驱动（EMC2101）→ 虚拟硬件测试（test_max17048 等），10 分钟内可交付一个带测试的新驱动。
+
 ## 新增回归
 
 `robots/test/<用例>.sql` + `scripts/test/<用例>.mt`，按守门契约接入 `test/run_all.sh` 的 e2e 列表或无硬件契约列表（含负值契约）。完整守门说明见 [testing.md](testing.md)。
