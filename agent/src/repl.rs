@@ -151,6 +151,19 @@ impl Session {
 
         // 借用只活在块内：`result` 是拥有所有权的值，块一结束 `self.backend` 的
         // 不可变借用就结束，后面才能改 `self.history`。
+        
+        // 启动进度提示任务
+        let progress_task = tokio::spawn(async {
+            let mut dots = 0;
+            loop {
+                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                dots = (dots + 1) % 4;
+                eprint!("\r思考中{} ", ".".repeat(dots));
+                use std::io::Write;
+                let _ = std::io::stderr().flush();
+            }
+        });
+        
         let result = {
             let fut = self
                 .backend
@@ -161,6 +174,12 @@ impl Session {
                 .run();
             fut.await.map_err(format_prompt_error)
         };
+        
+        // 停止进度提示
+        progress_task.abort();
+        eprint!("\r           \r"); // 清除"思考中..."
+        use std::io::Write;
+        let _ = std::io::stderr().flush();
 
         // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次
         let calls = self.state.drain_calls();
