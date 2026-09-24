@@ -22,6 +22,7 @@
 #include "agentpolicy.hpp"
 #include "agentproto.hpp"
 #include "agentprompt.hpp"	/* buildAgentSystemPrompt / kMaxSystemPromptBytes（A2 拆出） */
+#include "agenttools.hpp"	/* AgentToolContext（makeToolContext 的返回类型） */
 
 namespace bot {
 
@@ -203,6 +204,14 @@ std::string summarizeSessionStatus(const AgentSession& session, const AgentModeC
  * 时才会 bad_alloc）。10 MiB 远超正常任务描述（几百字节），同时兼顾偶尔
  * 粘贴长文本的合理场景。超限响亮拒绝并提示，不静默截断。 */
 inline constexpr std::size_t kMaxReplInputBytes = 10u << 20;
+
+/* 组装工具上下文（AgentToolContext）的**单一落点**：agent REPL（runAgentMode）
+ * 与 MCP 后端（--mcp-backend）共用，于是「对外提供哪些工具、能读哪些变量、
+ * 摄像头怎么解析」的判据只此一处，两条路径暴露的工具集逐字节一致、不会漂移。
+ * 只读 cfg + robot（调用方须先 active()）；不上电、不发起模型调用。
+ * 跳过项（--read-var 名字打错等）如实写进 log，不静默降级。 */
+AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
+		std::ostream& log);
 
 /* runAgentMode：跑 agent 会话。返回进程退出码：0 正常结束；1 模型/执行失败。 */
 int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,

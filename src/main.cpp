@@ -14,6 +14,7 @@
 #include "actionsource.hpp"
 #include "agentdriver.hpp"
 #include "agentmode.hpp"
+#include "mcpbackend.hpp"
 #include "agent_subprocess.hpp"
 #include "cliargs.hpp"
 #include "robot.hpp"
@@ -209,12 +210,38 @@ int runActionPipeline(RobotStruct& robot, const CliOptions& options) {
 	return 0;
 }
 
+/* MCP 后端流水线（--mcp-backend，方案 F / 拓扑 F3）：上电 → 在主线程同步服务
+ * 工具调用（阻塞直到停止信号 stopRequested）。**不注入 LLM 驱动、不发起任何
+ * 模型调用**——工具集与能力门控由 runMcpBackend 内部的 makeToolContext +
+ * makeAgentTools 决定（与 agent 模式同源，逐字节一致）。返回退出码，异常上抛
+ * 由 runRobotAndCleanup 统一折成 1（并照常 deactivate）。 */
+int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
+		const CliOptions& options) {
+	robot.active();
+	agent::McpBackendOptions bopts;
+	bopts.socketPath = options.mcpSocket;
+	/* 每连接预算（评估 §3.2「预算再强制」）：cliargs 已校验为 [0,上限] 的整数，
+	 * 空 = 不限（保持 0）。这里只做转换。注意这与**单次**物理调用的
+	 * scriptTimeoutSec / commandTimeoutSec 是不同维度——后者始终在工具层生效。 */
+	if (!options.mcpCallBudget.empty()) {
+		bopts.callBudget = static_cast<long>(parseLongStrict(options.mcpCallBudget).second);
+	}
+	if (!options.mcpWallClock.empty()) {
+		bopts.wallClockBudgetSec =
+			static_cast<long>(parseLongStrict(options.mcpWallClock).second);
+	}
+	return agent::runMcpBackend(robot, agentCfg, bopts, std::cerr);
+}
+
 /* 未声明则注入 agent 模式的两颗驱动变量（LLM + 可选摄像头）。
  * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的；
  * 显式声明优先：脚本作者写了同名变量就照用，不重复注入。
+ * injectLlm=false 用于 MCP 后端（--mcp-backend）：后端不发起模型调用，故只注入
+ * 摄像头（capture_image 工具需要），不注入 LLM 驱动变量。
  * 失败已打印，返回 false。 */
-bool injectAgentDrivers(RobotStruct& robot, const agent::AgentModeConfig& agentCfg) {
-	if (!robot.declaresVariable(agentCfg.llmVar)) {
+bool injectAgentDrivers(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
+		bool injectLlm) {
+	if (injectLlm && !robot.declaresVariable(agentCfg.llmVar)) {
 		try {
 			robot.injectLuaDriver(agentCfg.driverTable, agentCfg.llmVar);
 		} catch (const std::exception& e) {
@@ -274,7 +301,11 @@ int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
 		const agent::AgentModeConfig& agentCfg) {
 	int rc = 0;
 	try {
-		if (options.agent && options.tcp) {
+		if (options.mcpBackend) {
+			/* MCP 后端（方案 F / 拓扑 F3）：独立模式，不争 stdin、不跑 agent loop。
+			 * 同步服务阻塞主线程正是正确行为（评估 §2.3）；deactivate 照常在其后。 */
+			rc = runMcpBackendPipeline(robot, agentCfg, options);
+		} else if (options.agent && options.tcp) {
 			/* agent over TCP（批次 2）：先监听并接受一个**已认证**连接，
 			 * 再把硬件交出去——没有对端时不该让执行器带电空转（设计与
 			 * 超时口径见 actionsource.hpp 的 TcpAgentSession 注释块）。
@@ -337,7 +368,8 @@ int main(int argc, char** argv) {
 		/* agent 配置先组装并校验（含配置文件读取与优先级合并）：
 		 * 结构装载与上电都在其后，配置错误不碰真机 */
 		agent::AgentModeConfig agentCfg;
-		if (options.agent && !prepareAgentConfig(options, agentCfg)) { return 2; }
+		if ((options.agent || options.mcpBackend)
+			&& !prepareAgentConfig(options, agentCfg)) { return 2; }
 
 		/* PL-1：--check-config —— 配置此时已校验完毕（错误路径上面已 return 2）。
 		 * 这里只打印摘要后退出 0：**不装载结构脚本、不上电、不发起任何网络请求**。
@@ -363,7 +395,8 @@ int main(int argc, char** argv) {
 			robot->setActionIncludeBaseDir(parent.empty() ? "." : parent);
 		}
 
-		if (options.agent && !injectAgentDrivers(*robot, agentCfg)) { return 2; }
+		if ((options.agent || options.mcpBackend)
+			&& !injectAgentDrivers(*robot, agentCfg, /*injectLlm=*/options.agent)) { return 2; }
 
 		/* P2a 取消哨兵：仅 agent 模式需要（模型调用是唯一的长阻塞点）。
 		 * 必须在装处理器**之前**填好路径缓冲——处理器只读它（async-signal-safe）。 */

@@ -680,6 +680,70 @@ ssh 上去，而 ssh 会带来另一套权限面。
 - 配置错误（路径打不开、JSON 不合法、字段非法）在 `buildAgentConfig` 阶段失败——
   「配置错误不碰真机」。
 
+## MCP 后端：--mcp-backend（方案 F / 拓扑 F3）
+
+把 agent 的**工具层**经一条本地 AF_UNIX socket 暴露给一个 Rust MCP sidecar（`mybot-mcp`），
+于是**任意 MCP 客户端**（Claude、Cursor、rig-agent…）都能驱动机器人。这是一个**独立模式**：
+后端**不跑 agent 工具循环、不发起任何模型调用**——模型在外部客户端那侧，每次工具调用由
+客户端经 MCP 下发，后端只把调用穿过既有的唯一漏斗 `DispatchGate::run`（策略确认 → 执行 → 审计）。
+
+```
+外部 MCP 客户端 ──MCP/stdio──> [mybot-mcp sidecar] ──帧/AF_UNIX──> [mybot --mcp-backend] ──> 硬件
+```
+
+后端只认一条 pymsg 兼容的帧协议（`[4 字节 BE 长度][UTF-8 JSON]`，上限 8 MiB），路由
+`tool.list` / `tool.call` / `ping`；sidecar 负责把它翻译成 MCP。二者是两个进程、零链接，
+唯一耦合就是这条 JSON 帧契约（与 `agentproto.hpp` 的「规范化 JSON 边界」同一哲学）。
+
+### 快速开始
+
+```bash
+# 后端（虚拟继电器，无硬件）：整服务端一 session 审计
+./build/mybot --robot=robots/relay-test.sql --mcp-backend \
+    --mcp-socket /run/user/1000/bot4cj/mcp.sock --scripts-dir scripts --audit-log -
+
+# sidecar（先 bash scripts/build_sidecar.sh 构建）
+BOT4CJ_MCP_SOCKET=/run/user/1000/bot4cj/mcp.sock ./mcp-sidecar/target/release/mybot-mcp
+```
+
+MCP 客户端（stdio）配置：`{"command":"…/mybot-mcp","args":["/run/user/1000/bot4cj/mcp.sock"]}`。
+
+### 安全模型
+
+- **传输与认证**：socket 父目录 0700、文件 0600；accept 后用内核 **`SO_PEERCRED`** 校验对端
+  uid/gid == 本进程，不匹配即断连（不可伪造）。MCP 侧走 stdio，信任来自父子进程关系。
+- **线程归属**：后端在**主线程同步**服务、**单连接串行**（lock-step）——于是工具执行依赖的
+  `thread_local`（`callEchoSink`/`topDepth`/`luaExecBudget`）天然正确，硬件调用自动串行。
+- **审计/策略连续性**：所有 MCP 调用**必穿** `DispatchGate::run`，故审计与能力门控与 agent
+  模式**逐字节一致**；`tool.list` 只宣告已放行的工具（未开 `--agent-shell` 则 `run_command`
+  根本不出现）。整个后端进程记**一个** session（start/end），每次工具调用各记一条。
+- **强制外部确认（折中）**：后端开 `--agent-shell`（run_command）或 `--agent-hot-sql`（apply_sql）时，
+  **强制**要 `--agent-policy`，且其 `require_confirm` 必须分别包含 `run_command` / `apply_sql`，
+  否则 `buildAgentConfig` 拒绝启动（配置错误不碰真机）。纯只读 / 查询 / 动作脚本后端不受此约束。
+- **每连接预算再强制**：后端不假设调用方是 agent loop，故自行再强制一层跑飞护栏——
+  `--mcp-call-budget <N>` / `--mcp-wall-clock <秒>`（0/空 = 不限）。超限的调用**在派发前**被拒
+  （无副作用）。注意**单次**物理调用的 `scriptTimeoutSec`/`commandTimeoutSec` 始终在工具层生效，
+  与这层「整连接总量」护栏是不同维度。
+
+### 急停与取消（请务必理解其边界）
+
+- **优雅停机 = 急停**：`SIGTERM`/`SIGINT` 置停止标志，后端跳出 accept/帧循环、回到 main 的
+  清理链**总是 `deactivate()`**（fail-safe 断电），与 agent 模式同一兜底。
+- **但进行中的硬件动作停不了**：`run_action_script` 的预算钩子是 LuaJIT 指令计数钩子，
+  **打不断阻塞的 FFI 系统调用**（已下发到 I2C/SPI/UART 的动作收不回）。sidecar 的 `on_cancelled`
+  因此只「停止后续派发」并**如实回报**「取消已收到，但进行中的动作无法中止」——绝不假装硬件停了。
+  长动作应由客户端用 MCP 的 tasks API 轮询，而不是同步 `call_tool`。
+
+### ⚠ 残留风险（诚实告知）
+
+`SO_PEERCRED` 只挡**别的用户**，挡不住**同 uid** 的进程——而后端的 `run_command`（模型驱动的
+shell）恰恰同 uid。理论上它若发现 socket 路径，就能直连后端、**绕过 agent loop 的物理安全上限**
+（那些上限在 loop 里强制，直打 socket 就跳过了 loop）。已就位的缓解：listening fd 是 CLOEXEC
+（`run_command` 子进程不继承）、0700 目录 + 不可预测路径、每连接预算、危险能力强制 policy 确认。
+**诚实建议**：后端模式下**尽量不要开 `--agent-shell`**；若必须开，把后端跑在**专用用户 / 容器**里
+（真正的隔离），或将来加回首帧共享密钥 `BOT4CJ_MCP_TOKEN`（该名含 token，会被自动从 `run_command`
+子进程环境剔除并抹零，模型驱动的 shell 拿不到）。详见 `src/mcpbackend.hpp` 顶部注释。
+
 ## 安全说明（请务必读）
 
 1. **`run_command` 是无白名单、无审批的任意 shell 执行**。模型可能被外部输入（文件内容、设备读数、网络数据）诱导执行任意命令。

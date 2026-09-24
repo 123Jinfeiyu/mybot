@@ -450,18 +450,22 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		out.configPath = cfgPath;
 	}
 
-	/* ---- 2) endpoint/model：命令行 > 环境变量 > 配置文件 > 驱动内置 DEFAULTS ---- */
-	out.endpoint = pickString(opts.llmEndpoint, "BOT4CJ_LLM_ENDPOINT", file.endpoint);
-	out.model = pickString(opts.llmModel, "BOT4CJ_LLM_MODEL", file.model);
-
-	/* ---- 3) 协议驱动与变量名 ---- */
-	if (!pickDriverAndVar(opts, file, out, err)) { return false; }
-
-	/* ---- 4) API key ---- */
-	if (!resolveApiKey(file, cfgPath, out, err)) { return false; }
-
-	/* ---- 5) 采样/超时/轮次 ---- */
-	if (!mergeSamplingLayer(opts, file, out, err)) { return false; }
+	/* ---- 2-5) LLM 层（endpoint/model、协议驱动、API key、采样/超时/轮次）----
+	 * MCP 后端（--mcp-backend）**不发起任何模型调用**：它只把工具层经 socket
+	 * 暴露给外部 MCP 客户端，模型在客户端那侧。故这几步整体跳过——尤其第 4 步
+	 * 「缺少 API key 即失败」不该拦住一个根本不调模型的后端。跳过不影响下面的
+	 * 能力门控（第 6/7/7b 步）与审计/策略（第 10/11 步）——那些才是后端要的。 */
+	if (!opts.mcpBackend) {
+		/* 2) endpoint/model：命令行 > 环境变量 > 配置文件 > 驱动内置 DEFAULTS */
+		out.endpoint = pickString(opts.llmEndpoint, "BOT4CJ_LLM_ENDPOINT", file.endpoint);
+		out.model = pickString(opts.llmModel, "BOT4CJ_LLM_MODEL", file.model);
+		/* 3) 协议驱动与变量名 */
+		if (!pickDriverAndVar(opts, file, out, err)) { return false; }
+		/* 4) API key */
+		if (!resolveApiKey(file, cfgPath, out, err)) { return false; }
+		/* 5) 采样/超时/轮次 */
+		if (!mergeSamplingLayer(opts, file, out, err)) { return false; }
+	}
 
 	/* ---- 6) 摄像头 ---- */
 	if (!pickCamera(opts, file, out, err)) { return false; }
@@ -541,8 +545,12 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	 * 「命令行 > 配置文件」同口径）。在这里就加载成成品文本——提示词路径
 	 * 写错属于配置错误，必须在结构装载与上电之前失败，而不是等系统提示词
 	 * 拼装时才炸（main 的约定「配置错误不碰真机」）。 */
-	out.promptFiles = !opts.promptFiles.empty() ? opts.promptFiles
-						: file.promptFiles.value_or(std::vector<std::string>{});
+	/* MCP 后端不构建系统提示词，跳过提示词包装载（下面的 H2 根约束与
+	 * loadPromptPack 因 out.promptFiles 保持空而自然 no-op）。 */
+	if (!opts.mcpBackend) {
+		out.promptFiles = !opts.promptFiles.empty() ? opts.promptFiles
+							: file.promptFiles.value_or(std::vector<std::string>{});
+	}
 		/* 不写 value_or({})：花括号实参要求模板参数 _Up 可推导，libstdc++ 15
 		 * 给 _Up 加了默认值才兜得住，g++12/14 推导失败直接报错（CI 基线
 		 * debian:bookworm 即 g++12）。 */
@@ -574,8 +582,9 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	 *   ③ 报错口径与 buildAgentSystemPrompt 完全一致（同一常量、同一文案），
 	 *      不会出现「配置期放过、上电后拒绝」的分叉。
 	 * 注意：这不替代 buildAgentSystemPrompt 的总量检查——那一段（含硬件清单）
-	 * 仍是唯一的最终判据，这里只是把可前移的部分前移。 */
-	{
+	 * 仍是唯一的最终判据，这里只是把可前移的部分前移。
+	 * MCP 后端不拼系统提示词，整段跳过（structureHead/scriptsList 缓存也不用）。 */
+	if (!opts.mcpBackend) {
 		/* 读一次存两份（C6）：预检要的就是这两段成品，buildAgentSystemPrompt
 		 * 直接复用，不再各读一遍（原先两处各读各的，文件在两次读之间变动会让
 		 * 「预检口径」与「提示词口径」分叉）。 */
@@ -618,6 +627,32 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		}
 	}
 
+	/* ---- 11b) MCP 后端 + 危险能力 ⇒ 强制外部确认（评估 §3.2，用户定「折中」）----
+	 * --mcp-backend 把工具暴露给**任意外部 MCP 客户端**、且硬件全程带电常驻，信任面
+	 * 比坐在终端前的 agent REPL 大得多。故当后端开了危险能力时，**强制**要有策略钩子、
+	 * 且该钩子确实对相应工具要求外部确认（require_confirm，超时 fail-closed）：
+	 *   --agent-shell   （run_command）→ 策略必须 require_confirm "run_command"
+	 *   --agent-hot-sql （apply_sql）  → 策略必须 require_confirm "apply_sql"
+	 * 折中：纯只读 / 查询 / 动作脚本后端（未开上述危险能力）不受此约束。
+	 * 注意 agentpolicy 仍**不是**隔离边界（同 uid 进程可绕过，见 docs/agent.md 与
+	 * mcpbackend.hpp 的残留风险说明）——它是「每次调用先过人/审批」的确认闸门。 */
+	if (opts.mcpBackend) {
+		if (out.allowShell
+			&& (out.policy == nullptr || !out.policy->requiresConfirm("run_command"))) {
+			err = "--mcp-backend 开了 --agent-shell（run_command）：后端对外暴露且硬件带电，"
+				"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"run_command\""
+				"（无人值守暴露任意 shell 必须有外部确认闸门）";
+			return false;
+		}
+		if (out.allowHotSql
+			&& (out.policy == nullptr || !out.policy->requiresConfirm("apply_sql"))) {
+			err = "--mcp-backend 开了 --agent-hot-sql（apply_sql）：后端对外暴露且硬件带电，"
+				"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"apply_sql\""
+				"（热插表会立即给新硬件上电，必须有外部确认闸门）";
+			return false;
+		}
+	}
+
 	/* ---- 12) 会话文件（--session-file / 配置文件 session_file；批次 1）----
 	 * 写入是纯输出，判据同 audit_log：可进配置文件。恢复的组合校验已在
 	 * 第 0 步完成（--resume 只认命令行路径 + 文件必须存在）。打开与指纹
@@ -651,8 +686,12 @@ std::string shellKeyExposureWarning(const AgentModeConfig& cfg) {
 		"或去掉 --agent-shell（缺省即关闭）。";
 }
 
-int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
-		std::istream& in, std::ostream& out, std::ostream& log) {
+/* 组装工具上下文（AgentToolContext）：agent REPL 与 MCP 后端（--mcp-backend）
+ * 共用这一个函数——「对外提供哪些工具、能读哪些变量、摄像头怎么解析」的判据
+ * 只在这里发生一次，两条路径不会漂移（后端暴露的工具集与 agent 模式逐字节一致）。
+ * 只读配置 + robot，不发起模型调用、不上电（调用方负责 active() 在先）。 */
+AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
+		std::ostream& log) {
 	AgentToolContext tctx;
 	tctx.robot = &robot;
 	tctx.scriptsDir = cfg.scriptsDir;
@@ -705,6 +744,12 @@ int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& 
 			tctx.camera = nullptr;
 		}
 	}
+	return tctx;
+}
+
+int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
+		std::istream& in, std::ostream& out, std::ostream& log) {
+	AgentToolContext tctx = makeToolContext(cfg, robot, log);
 
 	AgentToolRegistry tools = makeAgentTools(tctx);
 

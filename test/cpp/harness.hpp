@@ -167,6 +167,9 @@ inline const ScopeEntry* scopeTable(std::size_t& n) {
 		/* 批次 1（2026-09-23）：会话持久化（会话文件读写、complete 边界落盘、
 		 * 恢复链路与指纹核对）。归 agent 面：它是 agent 会话的记忆机制。 */
 		{"agent", "sessionfile_"},
+		/* MCP 后端（--mcp-backend，方案 F / 拓扑 F3）：把工具层经 AF_UNIX 帧链路
+		 * 暴露给 sidecar。归 agent 面：它复用 agent 的工具注册表与派发漏斗。 */
+		{"agent", "mcpbackend_"},
 	};
 	n = sizeof(kTable) / sizeof(kTable[0]);
 	return kTable;

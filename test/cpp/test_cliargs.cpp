@@ -225,6 +225,68 @@ TH_TEST(cliargs_agent_without_robot_is_rejected) {
 	TH_CHECK(bot::validateOptions(p) == 2);
 }
 
+TH_TEST(cliargs_mcp_backend_mode_validation) {
+	/* 缺 --mcp-socket → 2 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-backend"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+	/* --mcp-socket 无 --mcp-backend → 2 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-socket", "/tmp/s"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+	/* 合法后端 → 0 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 0);
+	}
+	/* 后端 + --agent 互斥 → 2 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s", "--agent"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+	/* 后端 + --task（loop 专属）→ 2 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s", "--task", "hi"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+	/* 后端 + 合法预算 → 0，且值落到 opts */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s",
+			"--mcp-call-budget", "100", "--mcp-wall-clock", "600"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 0);
+		TH_CHECK(p.opts.mcpCallBudget == "100");
+		TH_CHECK(p.opts.mcpWallClock == "600");
+	}
+	/* 预算非整数 → 2 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s",
+			"--mcp-call-budget", "abc"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+	/* 墙钟超上限（>86400）→ 2 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s",
+			"--mcp-wall-clock", "99999"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+	/* 预算 flag 无 --mcp-backend → 2 */
+	{
+		Argv a({"mybot", "--robot=r.sql", "--mcp-call-budget", "10"});
+		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+		TH_CHECK(bot::validateOptions(p) == 2);
+	}
+}
+
 TH_TEST(cliargs_valid_action_mode_args_pass) {
 	Argv a({"mybot", "--robot=robots/test.sql"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());

@@ -835,6 +835,66 @@ TH_TEST(agentconfig_hot_sql_is_off_by_default_and_on_by_explicit_flag) {
 	}
 }
 
+TH_TEST(agentconfig_mcp_backend_requires_policy_for_dangerous_caps) {
+	/* M5（评估 §3.2，用户定「折中」）：--mcp-backend 开了危险能力就必须有策略钩子、
+	 * 且 require_confirm 命中相应工具；纯只读/动作脚本后端不受约束。
+	 * 后端跳过密钥解析（不调模型），故无需 API key。 */
+	TempDir tmp("mcppolicy");
+	fs::path gateBoth = tmp.path() / "both.json";
+	writeFile(gateBoth,
+		R"({"require_confirm":["run_command","apply_sql"],"confirm_command":"/bin/true"})",
+		fs::perms::owner_all);
+	fs::path gateShellOnly = tmp.path() / "shellonly.json";
+	writeFile(gateShellOnly,
+		R"({"require_confirm":["run_command"],"confirm_command":"/bin/true"})",
+		fs::perms::owner_all);
+
+	auto backendOpts = []() {
+		CliOptions o;
+		o.mcpBackend = true;	/* 注意：不是 agent 模式 */
+		o.robot = std::string("./robots/relay-test.sql");
+		o.llmConfig = "none";	/* 不查 CWD 配置 */
+		o.mcpSocket = "/tmp/mcp-backend-test.sock";
+		return o;
+	};
+
+	/* ① 后端 + --agent-shell，无策略 → 拒，且报错点名 run_command */
+	{
+		CliOptions o = backendOpts();
+		o.agentShell = true;
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK(err.find("run_command") != std::string::npos);
+	}
+	/* ② 后端 + --agent-shell + 策略命中 run_command → 放行 */
+	{
+		CliOptions o = backendOpts();
+		o.agentShell = true;
+		o.agentPolicy = gateBoth.string();
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+	}
+	/* ③ 折中：后端未开危险能力（纯只读/动作脚本），无策略 → 放行 */
+	{
+		CliOptions o = backendOpts();
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+	}
+	/* ④ 后端 + --agent-hot-sql，策略只命中 run_command（漏 apply_sql）→ 拒，点名 apply_sql */
+	{
+		CliOptions o = backendOpts();
+		o.agentHotSql = true;
+		o.agentPolicy = gateShellOnly.string();
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK(err.find("apply_sql") != std::string::npos);
+	}
+}
+
 TH_TEST(agentconfig_requires_key_from_somewhere) {
 	NoKeyEnv nokey;
 	TempDir tmp("nokey");

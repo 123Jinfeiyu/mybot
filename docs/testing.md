@@ -6,7 +6,7 @@
 > 构建步带 `-DMYBOT_WERROR=ON`（README 声称的「零告警」由此成为门禁而非约定）；
 > 与本地 pre-push 钩子同一条守门。
 >
-> 硬门禁 3 条 + `allow_failure` 软门禁 5 条，逐条与 `.gitlab-ci.yml` 一一对应：
+> 硬门禁 3 条 + `allow_failure` 软门禁 6 条，逐条与 `.gitlab-ci.yml` 一一对应：
 
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
@@ -18,6 +18,7 @@
 | `gate:clang-tidy` | 软 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
 | `gate:coverage` | 软 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`；`COV_WITH_GATE=1` 时另跑一遍全套守门），报告随 artifacts 留档 |
 | `gate:musl` | 软 | alpine/musl 下构建并运行三个常量自检；能构建时再跑 `mybot_tests` |
+| `gate:sidecar` | 软 | Rust MCP sidecar（`mcp-sidecar/`，方案 F）：`cargo build --release`/`test`/`clippy -D warnings`/`fmt --check`（均 `--locked`，`rust:1-slim`）。**整份 CI 里唯一的 Rust job**（不给 7 个 C++ job 加 Rust）。⚠ ASan/UBSan/TSan 只插桩 C++，**对 sidecar 是盲的**——sidecar 安全靠 Rust 所有权 + clippy/test，不是 sanitizer |
 
 ### 覆盖率数字的口径与已知盲区（2026-09-21 AG-11 实测）
 
@@ -44,9 +45,10 @@
 - **因此不设 `COV_MIN_LINES` 硬阈值**：一个既漏掉 `mybot` 链路、又有结构性 0% 区块的指标，
   设阈值只会把测试压力挤到「测得到」的区域——缺陷正好往盲区躲。
 
-> 五条软门禁的**转硬条件与最迟日期**写在各自 job 注释里（`tsan`/`clang`/`clang-tidy`
+> 六条软门禁的**转硬条件与最迟日期**写在各自 job 注释里（`tsan`/`clang`/`clang-tidy`
 > 为「连续 2 轮 pipeline 无新增告警/报告 + 最迟 2026-10-31」；`coverage` 另需先设定
-> C++ 侧行覆盖基线，`musl` 另需补 Lua 层 HAL 的运行时实证——两者条件不同，逐条以
+> C++ 侧行覆盖基线，`musl` 另需补 Lua 层 HAL 的运行时实证，`sidecar` 为「CI 基线镜像
+> （`rust:1-slim` + crate 拉取）连续 2 轮全绿 + 最迟 2026-10-31」——各条条件不同，逐条以
 > `.gitlab-ci.yml` 注释为准），如实标注「尚未转硬」。它们**不进入**
 > `run_all.sh` 的记账——守门汇总口径不变。
 

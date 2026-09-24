@@ -957,6 +957,16 @@ if filter_matches "agent" "$filter_e2e"; then
 fi
 
 # ======================================================================
+# MCP 后端 + sidecar 端到端（scripts/mcp_e2e.sh，方案 F / 拓扑 F3）：Python MCP
+# 客户端 → mybot-mcp sidecar（stdio）→ mybot --mcp-backend（AF_UNIX 帧）→ relay 虚拟
+# 机器人。另含跨语言帧对打（纯 Python 直连后端）与 fd 卫生（run_command 子进程不继承
+# socket fd）。Rust sidecar 是**可选**产物：缺它按 SKIP 计（不给 C++ 回归路径强加 Rust）。
+# ======================================================================
+if filter_matches "mcp" "$filter_e2e"; then
+	run_one_mcp_e2e
+fi
+
+# ======================================================================
 # mtmerge 相位语义回归（scripts/mtmerge_e2e.sh）：相位 0/±1 逐格比对、
 # 设备集相交报错、三输入链式、负相位丢行告警、合并产物回喂 mybot 时
 # 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。

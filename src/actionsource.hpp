@@ -120,6 +120,31 @@ struct CliOptions {
 	 * 选项：置 agentOptionsUsed，非 agent 模式由既有逻辑拒绝；未配 --robot 同样
 	 * 被「agent 模式需要 --robot」那条拒绝（不会静默打印帮助退出 0）。 */
 	bool checkConfig = false;
+
+	/* ---- MCP 后端模式（--mcp-backend，方案 F / 拓扑 F3）----
+	 * 一个**独立模式**：把 agent 工具层经本地 AF_UNIX socket 暴露给 Rust MCP
+	 * sidecar（sidecar 对上说 MCP over stdio，对下说 pymsg 兼容帧）。它不跑
+	 * agent loop、不发起任何模型调用——每次工具调用都由外部 MCP 客户端驱动，
+	 * 后端只负责「策略确认 → 执行 → 审计」这条既有漏斗（DispatchGate::run）。
+	 *
+	 * 与 --agent / --tcp / --input 互斥（它自己就是主流程，不争 stdin、不争
+	 * 主线程——同步服务阻塞主线程正是正确行为，见 .tmp 评估 §2.3）。它**复用**
+	 * agent 的工具上下文选项（--agent-shell / --agent-hot-sql / --read-var /
+	 * --camera-* / --scripts-dir / --agent-policy / --audit-log），因为这些正是
+	 * 「对外宣告哪些能力」的门控；但不需要任何 --llm-* / --task（无模型调用）。
+	 *
+	 * mcpSocket 沿用「路径存原始串、校验单点」惯例（同 tcpPort）：必填、长度
+	 * 受 sockaddr_un.sun_path 限制、父目录 0700、socket 文件 0600，对端经
+	 * SO_PEERCRED 校验 uid/gid（内核级，不可伪造）。 */
+	bool mcpBackend = false;
+	std::string mcpSocket;
+	/* 每连接预算（评估 §3.2「预算再强制」）：后端**不得假设调用方是 agent loop**，
+	 * 故自己再强制一层跑飞护栏——超过则拒绝派发（被拒调用无副作用）。
+	 * 沿 tcpPort 惯例存原始串、校验单点（cliargs）；0/空 = 不限。
+	 * 注意：**单次**物理调用的 scriptTimeoutSec / commandTimeoutSec 始终在工具层
+	 * 生效，与这两个「整连接总量」护栏是不同维度。 */
+	std::string mcpCallBudget;	/* --mcp-call-budget：每连接工具调用上限 */
+	std::string mcpWallClock;	/* --mcp-wall-clock：每连接墙钟预算（秒） */
 };
 
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。
