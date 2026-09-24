@@ -1,5 +1,5 @@
 @Action
-spk0.freq  spk0.delay;
-     880        150;      # sine 880Hz，150ms
-     440        400;      # sine 440Hz，400ms
+spk0.note  spk0.delay;
+      81        150;      # A5（880Hz）——MIDI 号直写，.mt 数据格原生支持
+      69        400;      # A4（440Hz）
 @

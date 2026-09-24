@@ -33,7 +33,13 @@
 --            与结构列 preset 的分工：preset 是这台实例的常驻缺省（元数据列，
 --            框架不允许 .mt 同名覆盖——param_override 防线），wave 是这一拍
 --            想要什么波形，给了就优先）
---   freq     音调 Hz（silence 可省；其余波形必填，20~20000）
+--   freq     音调 Hz（与 note 二选一；silence 可省，其余必填，20~20000）
+--   note     音调的声乐写法（与 freq 二选一，同给即歧义报错）：
+--            数字 = MIDI 音符号 21~108（A0~C8；A4=69、中央C=60），.mt 数据格
+--            直写数字即可，无需 $(别名)
+--            文本 = 音名，如 'a4'、'c#4'/'db4'（#升半音、b降半音，各至多一个；
+--            科学音调记号 C4=中央C），要经 $(别名) 间接
+--            十二平均律换算 A4=440Hz；钢琴域外（20Hz 以下/4186Hz 以上）用 freq
 --   delay    时长 ms（必填，>0 且 ≤ max_ms）
 --   volume   音量 0~100（结构列同名，.mt 不能用——param_override 防线会拒；
 --            保留给 Lua 直调/controller 转发路径逐次覆盖，缺省用结构列值）
@@ -42,6 +48,14 @@
 --   spk0.freq  spk0.delay;
 --        880        150;      -- 用结构脚本缺省波形播 150ms
 --        440        400;
+--   @
+--
+--   音调也可以按声乐记法给 MIDI 号（.mt 数据格直写数字）：
+--   @Action
+--   spk0.note  spk0.delay;
+--        69         150;      -- A4（440Hz）
+--        72         150;      -- C5
+--        76         400;      -- E5（A 大三和弦琶音）
 --   @
 --
 -- 时序语义与 Timer 同构（阻塞式 call）：该行播多久声音就多久，同行后续列
@@ -71,6 +85,23 @@ local WAVES = {
 	noise    = nil,			-- LCG 分支特判（见 gen_chunk），不占相位
 	silence  = function(p) return 0 end,
 }
+
+-- 十二平均律：MIDI 音符号 → 频率（A4=69=440Hz）。note 的声乐域钳在钢琴
+-- A0~C8——域外的仪器外音（次声边/超声边）由 freq 物理域（20~20000Hz）承担，
+-- 两个域各自从严校验、互不给对方兜底。
+local A4_MIDI, A4_HZ = 69, 440
+local NOTE_MIN, NOTE_MAX = 21, 108
+
+-- 音名 → MIDI 号：小写归一后匹配 [字母][#b]?[八度]（科学音调记号，C4=中央
+-- C=60，C-1=0）。# 升半音、b 降半音，各至多一个；不匹配返回 nil（'h4'/'c##4'
+-- 这类由调用方响亮报错，不做就近猜测）。
+local SEMITONE = { c = 0, d = 2, e = 4, f = 5, g = 7, a = 9, b = 11 }
+local function name_to_midi(s)
+	local letter, acc, oct = string.lower(s):match("^([a-g])([#b]?)(-?%d+)$")
+	if letter == nil then return nil end
+	return (tonumber(oct) + 1) * 12 + SEMITONE[letter]
+		+ (acc == "#" and 1 or (acc == "b" and -1 or 0))
+end
 
 -- 校验后的播放参数 → 模块级状态（build 写入，call 读缺省；destroy 后废弃）
 local pcm = nil			-- ALSA 句柄（真实模式）；nil = 未开/仿真
@@ -239,12 +270,47 @@ function call(data)
 	end
 	local is_noise, is_silence = (wname == "noise"), (wname == "silence")
 
-	-- freq：silence 可省；其余必填，20~20000（越界报错：错的音调不如不响）。
-	-- 0 仅 silence 合法——square 相位不推进会恒 +1（直流全幅爆音）
-	local freq = finite_of(data.freq)
+	-----------------------------------------------------
+	-- 音调来源二选一：note（声乐域：MIDI 号/音名）或 freq（物理域 Hz）。
+	-- 同给即歧义，响亮拒绝——静默取其一会让「改了参数没生效」难排查。
+	-- '-' 占位符等同缺省（与结构列/Relay 的占位语义一致）。
+	local note_in = data.note
+	if note_in == "-" then note_in = nil end
+	local note_echo						-- 归一化回显：音名原拼写大写 / MIDI 号
+	local freq
+	if note_in ~= nil and data.freq ~= nil then
+		return err("Invalid Argument: note and freq are mutually exclusive (give one)")
+	end
+	if note_in ~= nil then
+		local midi
+		local named = (type(note_in) == "string" and name_to_midi(note_in) ~= nil)
+		if named then
+			midi = name_to_midi(note_in)
+		else
+			-- 数字（.mt 数据格）或数字文本（@Alias 文本间接）都按 MIDI 号认
+			midi = finite_of(note_in)
+			if midi ~= nil and midi ~= math.floor(midi) then midi = nil end
+		end
+		if midi == nil then
+			return err("Invalid Argument: note '" .. tostring(note_in)
+				.. "' (expect MIDI number or 'a4'/'c#4'/'db4' style name)")
+		end
+		if midi < NOTE_MIN or midi > NOTE_MAX then
+			return err(string.format(
+				"Invalid Argument: note %d (expect %d~%d = piano A0~C8; beyond, use freq)",
+				midi, NOTE_MIN, NOTE_MAX))
+		end
+		freq = A4_HZ * 2 ^ ((midi - A4_MIDI) / 12)
+		note_echo = named and string.upper(note_in) or midi
+	else
+		freq = finite_of(data.freq)
+	end
+	-- freq 公共校验（note 路径换算出的值恒在域内，等同复查）：silence 可省
+	-- （缺省 0）；其余必填，20~20000（越界报错：错的音调不如不响）。0 仅
+	-- silence 合法——square 相位不推进会恒 +1（直流全幅爆音）
 	if freq == nil and is_silence then freq = 0 end
 	if freq == nil then
-		return err("Invalid Argument: freq (required, Hz)")
+		return err("Invalid Argument: freq (required, Hz; or give note)")
 	end
 	if freq == 0 and not is_silence then
 		return err("Invalid Argument: freq 0 is only valid with preset=silence")
@@ -277,9 +343,10 @@ function call(data)
 	-----------------------------------------------------
 	-- 仿真模式：全量校验已过，打锚点即返回（不睡，E2E 快跑）
 	if sim then
-		print(string.format("Speaker: wave=%s freq=%gHz %gms vol=%g (simulate)",
-			wname, freq, ms, vol))
-		return { result = "OK", wave = wname, freq = freq,
+		print(string.format("Speaker: wave=%s %sfreq=%.2fHz %gms vol=%g (simulate)",
+			wname, note_echo ~= nil and ("note=" .. tostring(note_echo) .. " ") or "",
+			freq, ms, vol))
+		return { result = "OK", wave = wname, freq = freq, note = note_echo,
 			played_ms = ms, volume = vol, simulated = true }
 	end
 
@@ -348,10 +415,11 @@ function call(data)
 	end
 
 	if os.getenv("BOT4CJ_DEBUG") == "1" then
-		print(string.format("Speaker: wave=%s freq=%gHz %gms vol=%g",
-			wname, freq, ms, vol))
+		print(string.format("Speaker: wave=%s %sfreq=%.2fHz %gms vol=%g",
+			wname, note_echo ~= nil and ("note=" .. tostring(note_echo) .. " ") or "",
+			freq, ms, vol))
 	end
 
-	return { result = "OK", wave = wname, freq = freq,
+	return { result = "OK", wave = wname, freq = freq, note = note_echo,
 		played_ms = ms, volume = vol }
 end
