@@ -186,9 +186,10 @@ TH_TEST(lexer_quote_state_matches_legacy_semantics) {
 	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'a b c' );", "a b c"));
 	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'a\"b' );", "a\"b"));
 	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'a'b );", "a'b"));
-	/* 已知边界（不是期望语义）：'' 双写转义不实现，原样保留在值里。
-	 * 若日后实现 SQL 标准转义，本断言必须同步改。 */
-	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'it''s' );", "it''s"));
+	/* SQL 标准 '' 双写转义（#33，2026-09-24）：连续两个同种引号 = 一个字面
+	 * 引号。修复前此处为「双写转义不实现、原样保留」（值 it''s）；现按标准
+	 * 转义为 it's——本断言已随行为变更同步更新。 */
+	TH_CHECK(nameOf("INSERT INTO T ( v ) VALUES ( 'it''s' );", "it's"));
 }
 
 TH_TEST(lexer_comments_outside_quotes_are_skipped) {
@@ -268,6 +269,36 @@ TH_TEST(parser_insert_event_pairs_names_with_values) {
 	TH_CHECK(eves[1].insert.tableRows[0][0].columnName == "name");
 	TH_CHECK(eves[1].insert.tableRows[0][0].value == "r0");
 	TH_CHECK(eves[2].insert.tableRows[0][0].value == "r1");
+}
+
+TH_TEST(lexer_doubled_quote_escape_is_literal_quote) {
+	/* #33：SQL 标准 '' 双写转义——'it''s' 应产出单个值 "it's"，
+	 * 而不是被拆成 'it' 与 's' 两个 token（旧行为：每个同种引号都翻转引号态）。 */
+	std::vector<Token> ts = fx::tokens("INSERT INTO T ( v ) VALUES ( 'it''s' );");
+	TH_CHECK(fx::fingerprint(ts) ==
+		"INSERT INTO name 'T' ( name 'v' ) VALUES ( name 'it's' ) ;");
+	/* 双写后的引号是数据：不产生额外 token，整句仍只有一个 END */
+	std::size_t ends = 0;
+	for (const Token& t : ts) { if (t.type == TokenType::END) { ++ends; } }
+	TH_CHECK(ends == 1);
+}
+
+TH_TEST(lexer_doubled_quote_empty_and_lone_quote) {
+	/* '' = 空串（开即闭，与旧行为一致）；'''' = 一个字面引号（双写转义） */
+	std::vector<Token> ts = fx::tokens("INSERT INTO T ( v ) VALUES ( '', '''' );");
+	TH_CHECK(fx::fingerprint(ts) ==
+		"INSERT INTO name 'T' ( name 'v' ) VALUES ( name '' , name ''' ) ;");
+}
+
+TH_TEST(parser_doubled_quote_escape_value) {
+	/* #33：Parser 级验证转义值落到事件载荷 */
+	std::vector<Event> eves = events(
+		"CREATE TABLE Relay ( name String, note String );\n"
+		"INSERT INTO Relay ( name, note ) VALUES ( 'r0', 'it''s' );\n");
+	TH_CHECK(eves.size() == 2);
+	TH_CHECK(eves[1].type == EventType::INSERT_TABLE);
+	TH_CHECK(eves[1].insert.tableRows[0][0].value == "r0");
+	TH_CHECK(eves[1].insert.tableRows[0][1].value == "it's");
 }
 
 TH_TEST(parser_create_table_records_number_column_type) {

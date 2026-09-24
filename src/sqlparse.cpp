@@ -25,13 +25,16 @@ static bool equalWithoutCase(const std::string& s1, const std::string& s2) {
  * 注意：SQL 标准的 '' 双写转义仍不实现——每个同种引号字符都翻转引号态，
  * 与旧 insideQuotes 语义逐字相同（值内含奇数引号的状态错乱属已知边界）。 ---- */
 
-/* ---- 去掉首尾空白与引号（对应 parseName）---- */
+/* ---- 去掉首尾空白与引号（对应 parseName）----
+ * 只剥**首尾各一个**引号字符（且仅当该处是引号）：#33 双写转义后值内可含
+ * 字面引号（如 '''' = 一个字面引号，s = '''），旧实现贪婪剥掉全部前导/尾随
+ * 引号会把字面引号也剥掉（'''' 被剥成空串）。 */
 static std::string parseName(const std::string& s) {
 	std::size_t b = 0, e = s.size();
 	while (b < e && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
 	while (e > b && (s[e-1] == ' ' || s[e-1] == '\t' || s[e-1] == '\r' || s[e-1] == '\n')) --e;
-	while (b < e && (s[b] == '\'' || s[b] == '"')) ++b;
-	while (e > b && (s[e-1] == '\'' || s[e-1] == '"')) --e;
+	if (b < e && (s[b] == '\'' || s[b] == '"')) { ++b; }
+	if (e > b && (s[e-1] == '\'' || s[e-1] == '"')) { --e; }
 	return s.substr(b, e - b);
 }
 
@@ -145,7 +148,9 @@ Token Lexer::next(bot::Reader& sr) {
 					 * 取代旧实现每字符重扫 token 的 O(n²) */
 	char quoteChar = 0;		/* 打开引号态的字符：' 或 " */
 	while (true) {
-		int ci = sr.read();
+		int ci;
+		if (pendingChar_ >= 0) { ci = pendingChar_; pendingChar_ = -1; }
+		else { ci = sr.read(); }
 		if (ci < 0) {
 			if (inQuote) {
 				/* F5-1：引号态跨越 EOF——旧实现把半截串剥引号后当名字
@@ -165,8 +170,20 @@ Token Lexer::next(bot::Reader& sr) {
 		bool blank = (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\0');
 
 		/* F-02：引号态内一律按字面追加；同种引号再现即闭合。进入引号态
-		 * 只可能发生在 token 首字符处（与旧 insideQuotes 的 s[0] 判据等价）。 */
+		 * 只可能发生在 token 首字符处（与旧 insideQuotes 的 s[0] 判据等价）。
+		 * #33：SQL 标准 '' 双写转义——同种引号再现时预读下一字符：仍是同种
+		 * 引号 → 追加一个字面引号并**保持引号态**；否则本引号闭合，预读字符
+		 * 缓存到 pendingChar_ 交由主循环按常规处理（注释/分隔符/新 token）。 */
 		if (inQuote) {
+			if (c == quoteChar) {
+				int ci2 = sr.read();
+				if (ci2 >= 0) {
+					char c2 = static_cast<char>(ci2);
+					if (c2 == '\n') { line_ += 1; col_ = 1; } else { col_ += 1; }
+					if (c2 == quoteChar) { s += quoteChar; continue; }
+					pendingChar_ = ci2;
+				}
+			}
 			s += c;
 			if (c == quoteChar) { inQuote = false; }
 			continue;
