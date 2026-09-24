@@ -11,7 +11,7 @@
 🚀 **零硬件开发** - 虚拟总线 + 仿真驱动，笔记本上就能跑通全流程  
 🔒 **工业级安全** - 多重防护、配置隔离、响亮拒绝不静默  
 📦 **零C++依赖** - 仅需 LuaJIT + pthread + dl，模型调用是Lua驱动  
-✨ **友好体验** - 进度提示动画，响应过程可见不焦虑（2026-09-24）  
+✨ **友好体验** - 进度提示动画，响应过程可见不焦虑  
 
 ---
 
@@ -69,7 +69,7 @@ Agent模式让大模型成为机器人的"大脑"，它可以：
 ✅ **连续执行** - 硬件常驻内存，可连续执行多个任务  
 ✅ **视觉感知** - 支持摄像头（`capture_image`工具）看环境  
 ✅ **工具调用** - 内置工具安全执行动作脚本（查询/拍照/回读；危险开关缺省关闭）  
-✨ **进度提示** - 模型响应时显示"思考中..."动画，用户体验友好（2026-09-24）
+✨ **进度提示** - 模型响应时显示"思考中..."动画，用户体验友好
 
 ### 配置文件方式（推荐）
 
@@ -261,25 +261,25 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 ## 📁 项目结构
 
 ```
-bot4cj.cpp/
+mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、agent模式
-├── modules/       # Lua驱动生态（59个模块）
+├── modules/       # Lua驱动生态（60个模块 + 24个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
 │   ├── LlmOpenAI.lua    # OpenAI协议驱动
-│   └── lib/             # HAL、virtbus、JSON、滤波器（23个库）
+│   └── lib/             # HAL、virtbus、JSON、滤波器等共享库
 ├── robots/        # 结构脚本（机器人定义）
 │   ├── spider1.sql      # 14路舵机蜘蛛
 │   ├── relay-test.sql   # 虚拟继电器（无硬件）
-│   └── test/            # 测试夹具
-├── scripts/       # 动作脚本库
+│   └── test.sql         # 测试夹具
+├── scripts/       # 动作脚本库（33个动作脚本）
 │   ├── std.mt           # 站立
 │   ├── left-turn.mt     # 左转
-│   └── tilt-r.mt        # 右倾
+│   └── jump.mt          # 跳跃
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（Lua + C++ + E2E）
-└── docs/          # 深入文档
+├── test/          # 三层测试（86 Lua + 27 C++ + E2E）
+└── docs/          # 深入文档（15个文档）
 ```
 
 ---
@@ -325,13 +325,14 @@ bash test/run_all.sh agent-all
 | [Agent模式完整指南](docs/agent.md) | CLI选项、工具系统、安全边界、提示词包 |
 | [命令行参考](docs/reference.md) | 所有CLI参数、环境变量、安全约束 |
 | [DSL语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
-| [驱动清单](docs/drivers.md) | 59个模块分类速查 |
+| [驱动清单](docs/drivers.md) | 60个模块分类速查 |
 | [HAL硬件抽象层](docs/hal.md) | FFI直调glibc、I2C原子事务、沙箱 |
 | [守护线程](docs/daemon.md) | 后台采样、滤波器链路 |
 | [虚拟总线](docs/virtbus.md) | 无硬件验证驱动链路 |
 | [测试手册](docs/testing.md) | 回归测试、sanitizer、覆盖率 |
 | [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
 | [FAQ](docs/faq.md) | 已知限制、排障问答 |
+| [更新日志](docs/changelog.md) | 版本演进与变更记录 |
 
 从 [docs/README.md](docs/README.md) 查看完整文档索引。
 
@@ -426,8 +427,8 @@ MYBOT在设计时将安全放在首位：
 ### 技术特性
 
 - **零C++依赖** - 仅需 LuaJIT + pthread + dl + libm，连HTTP库都是Lua FFI实现
-- **多模型支持** - 内置 OpenAI / DeepSeek / Anthropic 三套协议，换模型=换lua文件（宿主零改，Anthropic 驱动即这条承诺的验证实例）
-- **工业级测试** - 580+ C++单测 + 80+ Lua测试文件 + 三道sanitizer门禁
+- **多模型支持** - 内置 OpenAI / DeepSeek / Anthropic 三套协议，换模型=换lua文件
+- **工业级测试** - 580+ C++单测 + 86 Lua测试文件 + 完整E2E场景 + 三道sanitizer门禁
 - **跨平台** - Linux aarch64/x86_64，树莓派实测可用
 
 ### 架构优势
@@ -438,9 +439,9 @@ MYBOT在设计时将安全放在首位：
 
 ### 生态完整
 
-- **59个模块** - 47款器件驱动 + 3条总线 + 9个框架模块（另有23个共享库）
-- **丰富文档** - 12篇文档 + 架构分析报告与两张全景图，从入门到源码分析
-- **回归测试** - 86个Lua用例文件 + 25个C++单测文件 + 18个agent E2E场景，覆盖全链路
+- **60个驱动模块** - 47款器件驱动 + 3条总线 + 10个框架模块（另有24个共享库）
+- **丰富文档** - 15篇文档 + 架构分析报告与两张全景图，从入门到源码分析
+- **回归测试** - 86个Lua用例文件 + 27个C++单测文件 + 完整E2E场景，覆盖全链路
 
 ---
 
