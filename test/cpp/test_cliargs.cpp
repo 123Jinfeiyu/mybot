@@ -441,8 +441,13 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	 * 35（2026-09-23）→ 25（2026-09-24：-14 = --agent/--task/--llm-*×9/
 	 * --prompt-file/--session-file/--resume 迁 mybot-agent；+4 = --mcp-*）
 	 * → 26（2026-09-25：+1 = --mcp-idle-timeout，A-2 空闲连接收口）
-	 * → 27（2026-09-25：+1 = --on-disconnect，断连安全动作）。 */
-	TH_CHECK(defs.size() == 27);
+	 * → 27（2026-09-25：+1 = --on-disconnect，断连安全动作）。
+	 * → 30（2026-10-03：+3 = --webshell-port/--webshell-host/--webshell-token，
+	 * Web SSH MVP（#24）复活合入）。 */
+	TH_CHECK(defs.size() == 30);
+	TH_CHECK(defs.count("--webshell-port") == 1);
+	TH_CHECK(defs.count("--webshell-host") == 1);
+	TH_CHECK(defs.count("--webshell-token") == 1);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);

@@ -40,6 +40,9 @@ constexpr OptionSpec kValueOptions[] = {
 	{"tcp-idle", [](CliOptions& o, const std::string& v) { o.tcpIdle = v; }, false},
 	{"tcp-max-auth-attempts", [](CliOptions& o, const std::string& v) { o.tcpMaxAuthAttempts = v; }, false},
 	{"tcp-total-timeout", [](CliOptions& o, const std::string& v) { o.tcpTotalTimeout = v; }, false},
+	{"webshell-port", [](CliOptions& o, const std::string& v) { o.webshell = true; o.webshellPort = v; }, false},
+	{"webshell-host", [](CliOptions& o, const std::string& v) { o.webshellHost = v; }, false},
+	{"webshell-token", [](CliOptions& o, const std::string& v) { o.webshellToken = v; }, false},
 	{"daemon-grace-ms", [](CliOptions& o, const std::string& v) { o.daemonGraceMs = v; }, false},
 	{"input", [](CliOptions& o, const std::string& v) { o.input = v; }, false},
 	/* --mcp-socket：MCP 后端的 AF_UNIX 路径。非 agentOnly（它属 --mcp-backend
@@ -49,6 +52,9 @@ constexpr OptionSpec kValueOptions[] = {
 	{"mcp-wall-clock", [](CliOptions& o, const std::string& v) { o.mcpWallClock = v; }, false},
 	{"mcp-idle-timeout", [](CliOptions& o, const std::string& v) { o.mcpIdleTimeout = v; }, false},
 	{"on-disconnect", [](CliOptions& o, const std::string& v) { o.onDisconnect = v; }, false},
+	{"webshell-port", [](CliOptions& o, const std::string& v) { o.webshell = true; o.webshellPort = v; }, false},
+	{"webshell-host", [](CliOptions& o, const std::string& v) { o.webshellHost = v; }, false},
+	{"webshell-token", [](CliOptions& o, const std::string& v) { o.webshellToken = v; }, false},
 	{"camera-var", [](CliOptions& o, const std::string& v) { o.cameraVar = v; }, true},
 	{"camera-device", [](CliOptions& o, const std::string& v) { o.cameraDevice = v; }, true},
 	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
@@ -182,6 +188,31 @@ int rejectMcpOptionsOutsideBackend(const CliOptions& options) {
 /* --mcp-backend 模式内的组合校验（方案 F / 拓扑 F3）：互斥项、必备项与
  * 每连接预算数值。空 = 不限；配置错误不碰真机，故在此单点拒；
  * 数值上限只是防呆（跑飞护栏本就不该设成天文数字）。 */
+/* ---- Web SSH（--webshell-port，#24）：端口数字 + 跨机监听必须带 token ----
+ * 校验前置（配置错误不碰真机/不监听）：端口非数字或越界即拒；监听地址非
+ * 回环（127.0.0.1/localhost）且没给 --webshell-token 时拒绝启动——空口令
+ * 暴露交互 shell 的风险比 --tcp 更大（那是单向动作流，这是终端）。 */
+int rejectWebshellOptions(const CliOptions& options) {
+	if (!options.webshell) { return 0; }
+	bool portOk = false;
+	try {
+		long p = std::stol(options.webshellPort);
+		portOk = p >= 1 && p <= 65535;
+	} catch (...) { portOk = false; }
+	if (!portOk) {
+		std::cerr << "参数错误：--webshell-port 需要一个 1~65535 的整数，"
+			"实际是 '" << options.webshellPort << "'" << std::endl;
+		return 2;
+	}
+	bool loopback = options.webshellHost == "127.0.0.1" || options.webshellHost == "localhost";
+	if (!loopback && options.webshellToken.empty()) {
+		std::cerr << "参数错误：--webshell-host 为非回环地址（" << options.webshellHost
+			<< "）时必须提供 --webshell-token，否则拒绝启动（交互 shell 暴露公网）" << std::endl;
+		return 2;
+	}
+	return 0;
+}
+
 int validateMcpBackendCombos(const CliOptions& options) {
 	if (!options.mcpBackend) { return 0; }
 	if (options.tcp) {
@@ -316,6 +347,7 @@ int validateOptions(ParsedArgs& args) {
 	if (int rc = rejectLoopOnlyOptions(args.opts)) { return rc; }
 	if (int rc = rejectAgentOptionsOutsideBackend(args.opts)) { return rc; }
 	if (int rc = rejectMcpOptionsOutsideBackend(args.opts)) { return rc; }
+	if (int rc = rejectWebshellOptions(args.opts)) { return rc; }
 	return validateMcpBackendCombos(args.opts);
 }
 
@@ -350,6 +382,13 @@ std::string helpText() {
 	s += tcpOptionsHelp();
 	s += "  --input <path>     从文件读取动作脚本\n";
 	s += "  （缺省）           从 stdin 管道读取\n";
+	s += "  --webshell-port <port>   Web SSH 终端服务（#24）：浏览器 xterm.js →\n";
+	s += "                     WebSocket(/ws/term) → forkpty 交互 shell。独立于上述输入源，\n";
+	s += "                     给端口即启用；GET / 提供单页前端。缺省监听 127.0.0.1\n";
+	s += "  --webshell-host <addr>  Web SSH 监听地址（缺省 127.0.0.1）；跨机监听必须\n";
+	s += "                     同时提供 --webshell-token，否则拒绝启动\n";
+	s += "  --webshell-token <tok>  Web SSH 口令：客户端以 ?token=<tok> 附在连接 URL 上；\n";
+	s += "                     非回环监听必填\n";
 	s += "  --daemon-grace-ms <ms>  守护线程弃管后的二段停机宽限上限（缺省 30000，"
 		+ rangeText(daemon_limits::kGraceMsMin, daemon_limits::kGraceMsMax)
 		+ "）；仅结构脚本含 @Daemon 时生效，与 --tcp/--input 等输入模式无关\n";
