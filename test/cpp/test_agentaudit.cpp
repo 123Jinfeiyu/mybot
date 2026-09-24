@@ -62,6 +62,39 @@ TH_TEST(agentaudit_mask_spares_unrelated_names_and_plain_text) {
 	TH_CHECK(bot::agent::maskSecretsInText("curl -H x") == "curl -H x");
 }
 
+TH_TEST(agentaudit_mask_covers_quoted_values) {
+	/* 2026-09-24 审计 H1：值以引号开头（shell 常见形态）时旧实现的 isSep 在
+	 * 首字符即刻命中，掩蔽区为空——密钥留在明文里。整个引号值（含定界引号）
+	 * 必须一并遮蔽；旧用例只断言了 `token=***` 与尾部子串，泄漏恰好夹在中间。 */
+	const std::string out = bot::agent::maskSecretsInText(
+		"export BOT4CJ_LLM_KEY=\"sk-abc123\" curl http://x");
+	TH_CHECK(out.find("sk-abc123") == std::string::npos);
+	TH_CHECK(out.find("BOT4CJ_LLM_KEY=***") != std::string::npos);
+	/* 单引号同理 */
+	TH_CHECK(bot::agent::maskSecretsInText("api-key='verysecret' run")
+		.find("verysecret") == std::string::npos);
+	/* 未闭合引号：遮到串尾（宁可多遮不可漏遮） */
+	TH_CHECK(bot::agent::maskSecretsInText("token=\"abc").find("abc")
+		== std::string::npos);
+	/* 引号拼接段（shell 连接语义 "a"b'c' 整体是一个值）全部吃掉 */
+	const std::string out2 = bot::agent::maskSecretsInText("api-key=\"a\"b'c' tail");
+	TH_CHECK(out2.find("\"a\"") == std::string::npos);
+	TH_CHECK(out2.find("b'c'") == std::string::npos);
+	TH_CHECK(out2.find(" tail") != std::string::npos);
+	/* Bearer 令牌带引号（形态二/三的两级遮蔽都要吃掉引号值） */
+	const std::string out3 = bot::agent::maskSecretsInText("Bearer \"sk-tok\" x");
+	TH_CHECK(out3.find("sk-tok") == std::string::npos);
+	const std::string out4 = bot::agent::maskSecretsInText(
+		"Authorization: \"Basic dXNlcjpwYXNz\" tail");
+	TH_CHECK(out4.find("dXNlcjpwYXNz") == std::string::npos);
+	const std::string out5 = bot::agent::maskSecretsInText(
+		"Authorization: Bearer 'sk-tok'");
+	TH_CHECK(out5.find("sk-tok") == std::string::npos);
+	/* 值后（闭合引号之后）的正常文本不受牵连 */
+	const std::string out6 = bot::agent::maskSecretsInText("token=\"abc\" tail");
+	TH_CHECK(out6 == "token=*** tail");
+}
+
 /* ---- extractExitCode ---- */
 
 TH_TEST(agentaudit_extract_exit_code_parses_run_receipt_prefix) {

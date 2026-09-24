@@ -55,9 +55,10 @@
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
 # 用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
-#   --rust：只跑 R1-R9（mybot-agent；R1-R5 批次 B 骨架、R6-R9 批次 C 循环层），
-#           拓扑是「后端 + mybot-agent」两个进程；缺 agent/target/release/mybot-agent
-#           时直接报错退出（守门那边按 SKIP 计，见 test/lib/sections/net_agent.sh）。
+#   --rust：只跑 R1-R10（mybot-agent；R1-R5 批次 B 骨架、R6-R9 批次 C 循环层、
+#           R10 审计 H2 修复），拓扑是「后端 + mybot-agent」两个进程；缺
+#           agent/target/release/mybot-agent 时直接报错退出（守门那边按 SKIP 计，
+#           见 test/lib/sections/net_agent.sh）。
 # 退出码: 0 通过 / 1 失败 / 2 参数用法错 / 125 缺 python3（守门按 SKIP 计）
 set -u
 
@@ -656,6 +657,38 @@ PICEOF
 	# 图片的「结果字节」不重复：同一张图在线上只出现一次（注入只作用于请求，不进 transcript）
 	check_json "$CAPR9" "json.dumps(d, ensure_ascii=False).count('data:image/jpeg;base64,/9j/') == 1" \
 		"同一张图在本次请求里只出现一次（不重复注入）"
+
+	# ---- R10：stdout 写失败不 panic（2026-09-24 审计 H2）----
+	# 重定向到 /dev/full：每次 write 必得 ENOSPC，无竞态地复现「stdout 坏了」
+	# （| head 断管道依赖调度时序，这里要的是确定性）。旧实现的 `println!` 对写
+	# 失败直接 panic——退出码 101、**审计 session end 行丢失**；检查式写出
+	# （agent/src/out.rs）必须让进程照常走完收尾：退出码 0、stderr 告警一次、
+	# 审计里 start/end 齐全。
+	echo "----- R10：stdout 写失败（>/dev/full）不 panic、审计收尾不丢 -----"
+	PORT=$((28500 + RANDOM % 300))
+	R10="$tmp/rust10"
+	AAUD10="$R10/agent-audit.jsonl"
+	start_server "$PORT" "$tmp/req-rust10.json" ok || exit 1
+	start_backend "$R10" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R10/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none --audit-log "$AAUD10" --task "$TASK" >/dev/full 2>"$R10/err.txt"
+	rcr10=$?
+	stop_backend
+	stop_server
+	echo "===== stderr ====="; cat "$R10/err.txt"
+	if [ "$rcr10" -eq 0 ]; then
+		echo "  [OK] stdout 全程写失败仍优雅退出（rc=0；101 = println panic）"
+	else
+		echo "  [FAIL] stdout 写失败时退出码 $rcr10（期望 0；101 = println panic）"
+		fail=1
+	fi
+	check_present "$R10/err.txt" "stdout 写入失败" "写失败对操作者可见（stderr 告警一次）"
+	check_absent "$R10/err.txt" "panicked" "没有 panic 轨迹"
+	audit_expr "$AAUD10" "[l.get('status') for l in lines if l['kind']=='session'] == ['start','end']" \
+		"审计 start/end 齐全（写失败不吞审计收尾——这是 H2 的判据）"
+	audit_expr "$AAUD10" "any(l['kind']=='model' and l.get('ok') is True for l in lines)" \
+		"模型轮次照常记账（工具循环完整跑完，输出丢失不影响执行）"
 
 	if [ "$fail" -eq 0 ]; then
 		echo "mybot-agent 端到端测试通过"

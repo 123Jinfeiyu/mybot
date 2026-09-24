@@ -32,6 +32,7 @@ use tokio::sync::Mutex;
 
 use crate::frame::BackendClient;
 use crate::hook::HookState;
+use crate::out::errln;
 
 /// 一条工具描述（后端 `tool.list` 的一条）。
 #[derive(Debug, Clone)]
@@ -229,7 +230,7 @@ pub fn dynamic_tool(spec: ToolSpec, bridge: &Arc<Bridge>) -> DynamicTool {
                         } else {
                             // 失败回执：文本照样给模型（rig 把 message 同时作为
                             // 模型可见输出），与 C++ 派发漏斗同口径。
-                            eprintln!("[mybot-agent] 工具 {name} 失败{}", outcome.diagnostic());
+                            errln!("[mybot-agent] 工具 {name} 失败{}", outcome.diagnostic());
                             Err(ToolExecutionError::other(outcome.model_text()))
                         }
                     }

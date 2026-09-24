@@ -27,6 +27,7 @@ use rig_agent::completion::message::UserContent;
 use rig_agent::completion::Message;
 
 use crate::budget::TaskBudget;
+use crate::out::errln;
 
 /// 图片后注的说明文字（逐字同 C++ `executeToolRound` 里那条 user 消息）。
 pub const IMAGE_CAPTION: &str = "以上工具返回的图片如下，请结合画面内容继续。";
@@ -204,7 +205,7 @@ pub fn materialize(mut msgs: Vec<Message>, injections: &[Injection]) -> Vec<Mess
                     content: inj.content.clone(),
                 },
             ),
-            None => eprintln!(
+            None => errln!(
                 "[mybot-agent] 警告: 图片批次（第 {} 条工具结果之后）找不到落点，未并入会话历史；\
                  该批次在本次任务里已按请求内注注入给模型",
                 inj.ordinal
@@ -310,7 +311,7 @@ impl AgentHook for SessionHook {
         // 「未派发」语义一致。
         if self.state.max_calls_per_round > 0 && nth > self.state.max_calls_per_round as usize {
             if !self.state.round_capped.swap(true, Ordering::Relaxed) {
-                eprintln!(
+                errln!(
                     "[上限] 本轮工具调用超过单轮上限 {} 条，超出部分未派发\
                      （模型收到「未派发」回执，不是执行失败）",
                     self.state.max_calls_per_round

@@ -52,6 +52,28 @@ std::string toLowerAscii(const std::string& s) {
 	return out;
 }
 
+/* 敏感值的结束下标（不含）。裸值到空白或引号为止；值以引号开头时是引号值：
+ * 连同定界引号整体遮蔽，扫到**同种**配对引号，未闭合按到串尾处理（宁可多遮
+ * 不可漏遮）。引号段与裸段可拼接（shell 连接语义 `"a"b'c'` 是一个值），全部吃掉。
+ * 2026-09-24 审计 H1：旧实现把引号一律当终止符，值首字符即引号时掩蔽区为空，
+ * `KEY="sk-x"` 的密钥留在明文。 */
+std::size_t maskedValueEnd(const std::string& text, std::size_t k) {
+	const std::size_t n = text.size();
+	while (k < n) {
+		const char c = text[k];
+		if (c == '"' || c == '\'') {
+			const char quote = c;
+			++k;
+			while (k < n && text[k] != quote) { ++k; }
+			if (k < n) { ++k; }	/* 跳过收尾引号 */
+			continue;
+		}
+		if (std::isspace(static_cast<unsigned char>(c))) { break; }
+		++k;
+	}
+	return k;
+}
+
 } // namespace
 
 AuditLog::~AuditLog() {
@@ -220,9 +242,6 @@ std::string maskSecretsInText(const std::string& text) {
 	out.reserve(text.size());
 	std::size_t i = 0;
 	const std::size_t n = text.size();
-	auto isSep = [&](char c) {
-		return std::isspace(static_cast<unsigned char>(c)) || c == '"' || c == '\'';
-	};
 	while (i < n) {
 		const char c = text[i];
 		if (!(std::isalpha(static_cast<unsigned char>(c)) || c == '_')) {
@@ -235,16 +254,14 @@ std::string maskSecretsInText(const std::string& text) {
 			|| text[j] == '_' || text[j] == '-')) { ++j; }
 		const std::string name = toLowerAscii(text.substr(i, j - i));
 
-		/* 形态一：敏感名=值（值到空白/引号为止，整体替换为 ***） */
+		/* 形态一：敏感名=值（裸值或引号值，整体替换为 ***） */
 		if (j < n && text[j] == '=' && isMaskedName(name)) {
-			std::size_t k = j + 1;
-			while (k < n && !isSep(text[k])) { ++k; }
 			out += text.substr(i, j - i);
 			out += "=***";
-			i = k;
+			i = maskedValueEnd(text, j + 1);
 			continue;
 		}
-		/* 形态二：Bearer 令牌（`Bearer <tok>`；tok 到空白/引号为止）。
+		/* 形态二：Bearer 令牌（`Bearer <tok>`；裸令牌或引号令牌）。
 		 * 只认这个词本身：Authorization 后面跟 Basic/Token 等其他 scheme 时
 		 * 由形态三兜住，这里不重复。 */
 		if (name == "bearer") {
@@ -254,10 +271,8 @@ std::string maskSecretsInText(const std::string& text) {
 				out += text[m];
 				++m;
 			}
-			std::size_t p = m;
-			while (p < n && !isSep(text[p])) { ++p; }
 			out += "***";
-			i = p;
+			i = maskedValueEnd(text, m);
 			continue;
 		}
 		/* 形态三：敏感头 `Name: value`（如 Authorization: Basic ...）——
@@ -270,8 +285,7 @@ std::string maskSecretsInText(const std::string& text) {
 				out += text[m];
 				++m;
 			}
-			std::size_t p = m;
-			while (p < n && !isSep(text[p])) { ++p; }
+			std::size_t p = maskedValueEnd(text, m);
 			const std::string scheme = toLowerAscii(text.substr(m, p - m));
 			out += "***";
 			if (scheme == "bearer") {
@@ -280,10 +294,8 @@ std::string maskSecretsInText(const std::string& text) {
 					out += text[q];
 					++q;
 				}
-				std::size_t r = q;
-				while (r < n && !isSep(text[r])) { ++r; }
 				out += "***";
-				i = r;
+				i = maskedValueEnd(text, q);
 				continue;
 			}
 			i = p;

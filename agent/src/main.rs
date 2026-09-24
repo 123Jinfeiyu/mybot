@@ -20,6 +20,7 @@ mod frame;
 mod history;
 mod hook;
 mod model;
+mod out;
 mod prompt;
 mod provider;
 mod repl;
@@ -34,6 +35,7 @@ use crate::budget::TaskBudget;
 use crate::config::Config;
 use crate::frame::BackendClient;
 use crate::hook::HookState;
+use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::repl::Session;
 
@@ -52,11 +54,11 @@ async fn run() -> i32 {
         Err(e) => return config_error(&e),
     };
     if cli.help {
-        print!("{}", config::usage());
+        out!("{}", config::usage());
         return 0;
     }
     if cli.version {
-        println!("mybot-agent {}", env!("CARGO_PKG_VERSION"));
+        outln!("mybot-agent {}", env!("CARGO_PKG_VERSION"));
         return 0;
     }
     let mut cfg = match config::build(&cli) {
@@ -67,16 +69,16 @@ async fn run() -> i32 {
         return config_error(&e);
     }
     if cli.check_config {
-        print!("{}", config::summarize(&cfg));
+        out!("{}", config::summarize(&cfg));
         return 0;
     }
     if !cfg.config_warning.is_empty() {
-        eprintln!("[mybot-agent] {}", cfg.config_warning);
+        errln!("[mybot-agent] {}", cfg.config_warning);
     }
     if !cfg.thinking.is_empty() {
         // 如实告知：不静默丢（C++ 的驱动会把它翻译成各自的思维链开关；rig 没有
         // 对等的 provider 中立开关，本进程不猜形状）。
-        eprintln!(
+        errln!(
             "[mybot-agent] 提示: 配置里的 thinking={} 在本进程不生效（rig 无对等开关）；\
              需要思维链请用网关/模型侧的缺省设置",
             cfg.thinking
@@ -103,7 +105,7 @@ async fn run() -> i32 {
         {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("错误: 无法连接后端 socket: {e}");
+                errln!("错误: 无法连接后端 socket: {e}");
                 return 1;
             }
         };
@@ -111,7 +113,7 @@ async fn run() -> i32 {
     let specs = match bridge.list_tools().await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("错误: 取后端工具表失败: {e}");
+            errln!("错误: 取后端工具表失败: {e}");
             return 1;
         }
     };
@@ -119,14 +121,14 @@ async fn run() -> i32 {
     let data = match bridge.context_get().await {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("错误: 取后端上下文失败: {e}");
+            errln!("错误: 取后端上下文失败: {e}");
             return 1;
         }
     };
     let material = match PromptMaterial::from_context(&data) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("错误: {e}");
+            errln!("错误: {e}");
             return 1;
         }
     };
@@ -134,7 +136,7 @@ async fn run() -> i32 {
         match prompt::build_system_prompt(&cfg.driver, &cfg.llm_var, &cfg.prompt_pack, &material) {
             Ok(p) => p,
             Err(e) => {
-                eprintln!("错误: {e}");
+                errln!("错误: {e}");
                 return 2;
             }
         };
@@ -147,7 +149,7 @@ async fn run() -> i32 {
         match AuditLog::open(&cfg.audit_log) {
             Ok(a) => Some(a),
             Err(e) => {
-                eprintln!("错误: {e}");
+                errln!("错误: {e}");
                 return 2;
             }
         }
@@ -156,12 +158,12 @@ async fn run() -> i32 {
     let backend = match provider::build(&cfg, specs, &bridge, Arc::clone(&state), &preamble) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!("错误: {e:#}");
+            errln!("错误: {e:#}");
             return 2;
         }
     };
     // 就绪信息走 stderr：stdout 留给模型输出与交互界面。
-    eprintln!(
+    errln!(
         "[mybot-agent] 驱动 {} / 模型 {} / 接入点 {} / 工具 {} 个 / 后端 {}",
         backend.driver.as_str(),
         cfg.model,
@@ -179,12 +181,12 @@ async fn run() -> i32 {
     } else {
         match repl::run_task_once(&mut session, &task).await {
             Ok(text) => {
-                println!("{text}");
+                outln!("{text}");
                 session.write_session_end("end", "");
                 0
             }
             Err(e) => {
-                eprintln!("错误: {e}");
+                errln!("错误: {e}");
                 // 失败也要留一条会话结束记录——「这次会话怎么结束的」是复盘的第一句话
                 session.write_session_end("error", &e);
                 1
@@ -195,7 +197,7 @@ async fn run() -> i32 {
 
 /// 参数/配置错误的统一出口：stderr 报告 + 退出码 2（与 C++ agent 模式同口径）。
 fn config_error(msg: &str) -> i32 {
-    eprintln!("错误: {msg}");
+    errln!("错误: {msg}");
     2
 }
 
@@ -219,7 +221,7 @@ fn install_signal_handlers(state: Arc<HookState>) {
                 r = recv(&mut sigterm) => if !r { break },
             }
             if state.stop.swap(true, Ordering::SeqCst) {
-                eprintln!("[mybot-agent] 再次收到停止信号，立即退出（跳过清理）");
+                errln!("[mybot-agent] 再次收到停止信号，立即退出（跳过清理）");
                 // SAFETY: signal/raise 都是 async-signal-safe 且此处不在信号处理器内；
                 // 还原缺省处置后重新触发，让进程按信号语义终止（与 C++ 同款）。
                 unsafe {
@@ -228,7 +230,7 @@ fn install_signal_handlers(state: Arc<HookState>) {
                 }
                 std::process::exit(130);
             }
-            eprintln!(
+            errln!(
                 "[mybot-agent] 收到停止信号：不再发起新的模型调用与工具下发，本轮以「执行被中断」收场\
                  （再按一次立即退出）"
             );
@@ -249,7 +251,7 @@ fn signal_stream(sig: libc::c_int) -> SignalStream {
         Ok(s) => Some(s),
         Err(e) => {
             // 装不上不是致命的：取消仍可由二次信号（默认处置）或 stdin EOF 收场
-            eprintln!("[mybot-agent] 警告: 无法安装信号处理器（{e}）；Ctrl-C 将沿用缺省处置");
+            errln!("[mybot-agent] 警告: 无法安装信号处理器（{e}）；Ctrl-C 将沿用缺省处置");
             None
         }
     }

@@ -6,6 +6,36 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-24 审计高危修复两连：掩蔽引号绕过（H1）/ Rust stdout 写失败 panic（H2）
+
+> 守门快照：C++ 单测 **690 / 0**（+1 例引号值遮蔽），全量 **269 / 0 / 3 跳**（环境性
+> 跳过不变）；`agent/` 四检全绿（cargo build --release / test **50** / clippy
+> `-D warnings` / fmt --check，均 `--locked`）；`agent_e2e.sh --rust` 扩到 **68 项**绿
+> （新增 R10）。两处新判据均已反向验证：引号值用例在旧实现上 9 处断言红（密钥明文
+> 留存）；R10 在临时还原 `println!` 后 4 处断言红——退出码 101、panic 轨迹、**审计
+> session end 行丢失**三症齐现，恢复后绿。
+
+- **H1（掩蔽绕过）**：`maskSecretsInText` 把引号一律当值终止符，值**以引号开头**时
+  掩蔽区为空——`export KEY="sk-x"` 输出 `KEY=***"sk-x"`，引号后的密钥留在明文。泄漏
+  双通道：审计 `args_raw` 落盘（append-only 不可撤回）与 `run_command` 回执进模型上下文
+  前的净化是同一函数（G1/M1 的修复由此被绕过）。修复：新增 `maskedValueEnd` 共用于
+  三个形态（名=值 / `Bearer` 令牌 / 敏感头）——裸值到空白或引号为止；引号值连同定界
+  引号**整体**遮蔽，扫到同种配对引号、未闭合遮到串尾（宁可多遮不可漏遮）；引号段与
+  裸段可拼接（shell 连接语义 `"a"b'c'` 是一个值，全部吃掉）。既有用例
+  `token="abc def"` 一直绿是因为断言只查 `token=***` 与尾部两个子串、泄漏恰好夹在
+  中间——新用例 `agentaudit_mask_covers_quoted_values` 改为逐字断言并覆盖三种引号
+  形态、未闭合、拼接段与 Bearer 双级遮蔽。
+- **H2（stdout panic）**：Rust 运行时把 SIGPIPE 置 ignore，`println!`/`eprintln!` 对
+  写失败（断管道 EPIPE、`>/dev/full` ENOSPC）直接 panic（退出码 101）——`--task`
+  输出后的审计 session end 行随之丢失；C++ 的 printf 失败只设 errno 不崩溃，这是
+  迁移引入的回归面。新增 `agent/src/out.rs` 把全仓 **46 处** stdout/stderr 写点收敛为
+  检查式宏：`outln!`/`out!`（stdout，写+flush，失败经 `libc::write` 直写 stderr 告警
+  **一次**——不走 `eprintln!` 以免引入第二个 panic 面）与 `errln!`/`stderr_text`
+  （stderr，失败静默：stdout 是模型输出与交互界面的保留通道，不能混告警）。REPL
+  提示符的显式 flush 并入 `out!`。E2E R10 用 `>/dev/full` 确定性复现「stdout 全程
+  写失败」（`| head` 断管道依赖调度时序，不做判据）：退出码 0、stderr 告警可见、
+  审计 start/end 齐全、模型轮次照常记账。
+
 ### 2026-09-24 Rust agent 循环层语义对齐 C++（rig 迁移·批次 C）
 
 > 守门快照：`agent/` 四检全绿（cargo build --release / test **48** / clippy `-D warnings` /

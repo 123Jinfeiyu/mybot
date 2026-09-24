@@ -11,6 +11,7 @@
 
 use std::time::Duration;
 
+use crate::out::errln;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -61,7 +62,7 @@ impl BackendClient {
                             timeout.as_secs()
                         ));
                     }
-                    eprintln!(
+                    errln!(
                         "[mybot-agent] 后端未就绪（{e}），{}ms 后重试: {path}",
                         delay.as_millis()
                     );

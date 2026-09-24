@@ -23,6 +23,8 @@ use std::io::Write;
 
 use serde_json::{json, Map, Value};
 
+use crate::out::errln;
+
 /// 会话开始记录之前惰性补写：与 C++ 同口径，`sessionStartWritten` 由调用方
 /// （`AuditLog`）自己管——`write_model` 前若还没写过 start 就先补一条。
 pub struct AuditLog {
@@ -187,14 +189,14 @@ impl AuditLog {
         let mut text = Value::Object(line).to_string();
         text.push('\n');
         if self.to_stderr {
-            eprint!("{text}");
-            let _ = std::io::stderr().flush();
+            // 检查式写出（out.rs）：stderr 坏了也不 panic（2026-09-24 审计 H2 同族）
+            crate::out::stderr_text(&text);
             return;
         }
         let Some(f) = self.file.as_mut() else { return };
         if (f.write_all(text.as_bytes()).is_err() || f.flush().is_err()) && !self.warn_broken {
             self.warn_broken = true;
-            eprintln!(
+            errln!(
                 "警告: 审计日志写入失败（磁盘满/权限？），本次会话的后续记录可能丢失；\
                  工具执行不受影响"
             );

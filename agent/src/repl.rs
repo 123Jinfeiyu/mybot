@@ -23,7 +23,6 @@
 //!     `apply_sql` / `query_sql`）——所以「后端没给这个工具」时会明确报出缺哪个开关，
 //!     不假装执行过。
 
-use std::io::Write;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
@@ -34,6 +33,7 @@ use crate::audit::{AuditLog, ModelEntry, SessionEntry};
 use crate::bridge::{Bridge, ToolOutcome};
 use crate::config::Config;
 use crate::hook::{self, CallRecord, HookState};
+use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::provider::Backend;
 
@@ -143,7 +143,7 @@ impl Session {
         crate::history::trim(
             &mut self.history,
             self.cfg.max_history_bytes as usize,
-            &mut |t| eprintln!("{t}"),
+            &mut |t| errln!("{t}"),
         );
         // 任务内预算清零（含墙钟起点）与上一轮的观测值/图片清理
         self.state.begin_task();
@@ -351,11 +351,11 @@ pub async fn run_repl(session: &mut Session) -> i32 {
     } else {
         session.material.robot_name.clone()
     };
-    println!(
+    outln!(
         "agent 模式：机器人已上电常驻（结构脚本 {}）。",
         session.material.structure_path
     );
-    println!(
+    outln!(
         "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/sql 执行结构 SQL，\
          /status 看会话状态，/clear 清空对话记忆，/help 看帮助，/exit 退出。"
     );
@@ -369,24 +369,23 @@ pub async fn run_repl(session: &mut Session) -> i32 {
         }
         // 提示符 mybot[robotName|llmVar|Nhw]>（硬件数每轮重取：热插后不能少报）
         let hw = session.hardware_count().await;
-        print!(
+        out!(
             "mybot[{}|{}|{}hw]> ",
             robot_name,
             session.cfg.llm_var,
             hw.map(|n| n.to_string()).unwrap_or_else(|| "?".to_string())
         );
-        let _ = std::io::stdout().flush();
 
         let line = match lines.next_line().await {
             Ok(Some(l)) => l,
             Ok(None) => break, // EOF（Ctrl-D）
             Err(e) => {
-                eprintln!("错误: 读取输入失败: {e}");
+                errln!("错误: 读取输入失败: {e}");
                 break;
             }
         };
         if line.len() > K_MAX_REPL_INPUT_BYTES {
-            eprintln!(
+            errln!(
                 "错误: 输入过长（{} 字节，上限 {K_MAX_REPL_INPUT_BYTES} 字节）；\
                  请缩短输入或分多次提交",
                 line.len()
@@ -401,24 +400,24 @@ pub async fn run_repl(session: &mut Session) -> i32 {
             break;
         }
         if task == "/help" {
-            println!("{HELP_TEXT}");
+            outln!("{HELP_TEXT}");
             continue;
         }
         if task == "/clear" {
             session.clear_history();
-            println!("已清空对话记忆（硬件保持上电，系统提示词不变）。");
+            outln!("已清空对话记忆（硬件保持上电，系统提示词不变）。");
             continue;
         }
         if task == "/status" {
-            println!("{}", session.status_text(hw));
+            outln!("{}", session.status_text(hw));
             continue;
         }
         if task == "/hardware" {
             if !session.has_tool("list_hardware") {
-                println!("错误: 后端没有提供 list_hardware 工具（检查 mybot --mcp-backend 那一侧的开关）");
+                outln!("错误: 后端没有提供 list_hardware 工具（检查 mybot --mcp-backend 那一侧的开关）");
                 continue;
             }
-            println!(
+            outln!(
                 "{}",
                 session
                     .call_tool("list_hardware", serde_json::json!({}))
@@ -428,12 +427,12 @@ pub async fn run_repl(session: &mut Session) -> i32 {
         }
         if task == "/scripts" {
             if !session.has_tool("list_action_scripts") {
-                println!(
+                outln!(
                     "错误: 后端没有提供 list_action_scripts 工具（检查 mybot --mcp-backend 那一侧的开关）"
                 );
                 continue;
             }
-            println!(
+            outln!(
                 "{}",
                 session
                     .call_tool("list_action_scripts", serde_json::json!({}))
@@ -451,7 +450,7 @@ pub async fn run_repl(session: &mut Session) -> i32 {
         {
             let sql = task[4..].trim();
             if sql.is_empty() {
-                println!("{SQL_USAGE}");
+                outln!("{SQL_USAGE}");
                 continue;
             }
             let (tool, flag) = if batch_has_write_ops(sql) {
@@ -460,13 +459,13 @@ pub async fn run_repl(session: &mut Session) -> i32 {
                 ("query_sql", "--agent-hot-sql")
             };
             if !session.has_tool(tool) {
-                println!(
+                outln!(
                     "错误: 后端没有提供 {tool} 工具——结构 SQL 需要 mybot --mcp-backend 侧开 {flag}\
                      （配置文件不能放宽，只能收紧）"
                 );
                 continue;
             }
-            println!(
+            outln!(
                 "{}",
                 session
                     .call_tool(tool, serde_json::json!({ "sql": sql }))
@@ -476,14 +475,14 @@ pub async fn run_repl(session: &mut Session) -> i32 {
         }
 
         match session.run_turn(task).await {
-            Ok(text) => println!("{text}"),
+            Ok(text) => outln!("{text}"),
             Err(e) => {
                 // REPL：单轮失败不结束会话（历史已回滚，可继续下一条任务）
-                eprintln!("错误: {e}");
+                errln!("错误: {e}");
             }
         }
     }
-    println!();
+    outln!("");
     0
 }
 

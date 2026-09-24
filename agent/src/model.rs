@@ -36,6 +36,7 @@ use rig_agent::completion::{
 use rig_core::streaming::StreamingCompletionResponse;
 
 use crate::hook::{has_tool_result, CallRecord, HookState, Injection, IMAGE_CAPTION};
+use crate::out::errln;
 
 /// 单次退避上限（毫秒）——与 C++ `llm_limits::kRetryBackoffCapMs` 逐值对齐。
 pub const RETRY_BACKOFF_CAP_MS: u64 = 60_000;
@@ -166,7 +167,7 @@ impl<M: CompletionModel> BudgetModel<M> {
                 .count();
             if ordinal == 0 {
                 // 不静默：图片确实没进上下文，操作者必须看得见
-                eprintln!(
+                errln!(
                     "[mybot-agent] 警告: 工具返回了 {} 张图片（共 {} 字节 data URL），\
                      但本次请求里没有可挂载的工具结果消息，本批图片**未**注入对话。",
                     fresh.len(),
@@ -228,7 +229,7 @@ impl<M: CompletionModel> BudgetModel<M> {
         } else {
             "网络错误"
         };
-        eprintln!(
+        errln!(
             "[agent] {what}，{delay_ms}ms 后重试（{attempt}/{attempts}，退避来源: {source}）: {message}",
             attempts = self.max_attempts,
             message = c.message
