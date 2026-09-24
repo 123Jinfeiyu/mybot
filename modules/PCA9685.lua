@@ -84,13 +84,19 @@ end
 
 -- 【销毁PCA9685的脚本】重置PCA9685
 -- NOTE(20260612-qing): 其实可以不需要，因为我们只是清空设置
--- M3（2026-09-23 安全审计）：destroy 的职责是「尽力释放」，不是「校验入参」。
--- 旧版在 arg_table/i2c_pair 失败时提前 return ERR，在 write 失败时也 return ERR，
--- 违背 drv_common.lua:52-64 约定「资源不可用即静默成功」（docs/drivers.md 声明的
--- 例外只有 ADS1115）。修复后：destroy 尽力执行重启，失败也静默返回 OK。
+-- M3（2026-09-23 安全审计）+ D2-1 调和（2026-09-24）：destroy 保留 arg_table 守卫
+-- （非表入参返 ERR 契约，lint-driver-entry 与契约 sweep 都要求样板在位；M3 一度
+-- 整体摘掉，结果 destroy(nil) 裸抛「attempt to index a nil value」），但**表内**
+-- 资源缺失/写失败按 M3 语义「尽力释放、静默成功」（drv_common.lua:52-64 约定，
+-- 例外只有 ADS1115）——重启写不动不算 destroy 失败。
 function destroy(data)
 
 	dbg_table("-------- Lua ender func get a table --------", data)
+
+	local ok, e = arg_table(data)
+	if not ok then
+		return e	-- 非表：ERR 契约（无资源可释放，拒绝静默成功）
+	end
 
 	-----------------------------------------------------
 	local fd, addr = tonumber(data.fd), tonumber(data.address)
@@ -100,7 +106,7 @@ function destroy(data)
 		i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)
 	end
 
-	return {  result = "OK"  }	-- 无条件静默成功
+	return {  result = "OK"  }	-- 资源缺失/写失败：静默成功（M3）
 
 end
 

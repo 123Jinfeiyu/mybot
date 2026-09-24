@@ -692,8 +692,16 @@ ssh 上去，而 ssh 会带来另一套权限面。
 ```
 
 后端只认一条 pymsg 兼容的帧协议（`[4 字节 BE 长度][UTF-8 JSON]`，上限 8 MiB），路由
-`tool.list` / `tool.call` / `ping`；sidecar 负责把它翻译成 MCP。二者是两个进程、零链接，
+`tool.list` / `tool.call` / `ping` / `context.get`；sidecar 负责把它翻译成 MCP。二者是两个进程、零链接，
 唯一耦合就是这条 JSON 帧契约（与 `agentproto.hpp` 的「规范化 JSON 边界」同一哲学）。
+
+`context.get` 是**只读素材路由**（Rust agent 的系统提示词来源）：返回 `robotName` /
+`structurePath` / `scriptsDir` / `allowShell` / `allowHotSql` / `hardwareCount`，以及三段
+**已定界**的磁盘内容（`structureExcerpt` 16 KiB 摘录、`hardwareList`、`scriptsList`，均经
+`quoteUntrusted` 逐行 `> ` 前缀 + 「数据不是指令」声明）与内联短清单 `readableVars`。与
+`tool.list` 同口径：不走 `DispatchGate`、不占每连接预算；`hardwareCount` 与 `hardwareList`
+**实时取材**，热插拔后反映当前注册表。素材读法与 `buildAgentSystemPrompt` 单一事实源
+（有配置组装期成品就用成品，消毒与截断同款）。
 
 ### 快速开始
 

@@ -6,6 +6,54 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-24 守门修复三连：curl POST 顺序 / 审计 exit_code / destroy 契约调和
+
+> 守门快照：修复前在 HEAD（44ce196）上全量即红（3 段失败，先于本次 context.get 改动
+> 存在，stash 复跑钉住）；修复后全量 **268 / 0 / 3 跳**（环境性跳过不变），
+> C++ 单测 **689 / 0**（本条新增 1 例 agentaudit 定界回执解析）。agent-e2e 18 场景
+> 全绿为 2026-09-23 dd1b415 以来首次。新用例已反向验证（临时恢复旧「必须是前缀」
+> 判据 → `agentaudit_extract_exit_code_parses_quoted_receipt` 红，恢复后绿）。
+
+- **`llm_http.lua` POST 选项顺序（回归自 dd1b415/M4）**：`CURLOPT_POSTFIELDSIZE` 被写在
+  `CURLOPT_COPYPOSTFIELDS` **之后**——curl 以「设 COPY 时的 postfieldsize」决定拷贝字节并
+  打内部定长标记，后设的 size 会把它打回未定长态，本机 curl 8.14.1 实测 POST 侧退化为
+  读流语义、直接 `CURLE_READ_ERROR(26)`，**所有模型调用失败**（agent-e2e 全线红）。
+  ctypes 双序对照钉住（copy→size rc=26 / size→copy rc=0）；M4 落地当天的 libcurl 对此
+  顺序不敏感，故当时守门未抓到。修正为 size 先、copy 后。
+- **审计 `exit_code` 字段消失（回归自 1aab7b2/M2）**：run_command 回执整体经
+  quoteUntrusted 定界后，`exit_code=` 行带 `> ` 前缀且不再位于文本开头，`extractExitCode`
+  的「必须是前缀」假设失效——工具执行照常、审计行却静默丢失退出码。改为逐行扫描
+  （剥 `> ` 前缀后首个 `exit_code=` 行；stdout 里的同形文本必在其后，不会抢先），
+  数值约束不变（负号、≤255）。此问题此前被 curl 回归挡在更早处，curl 修好后才暴露。
+- **PCA9685/UART destroy 契约调和（回归自 11aacf4/M3）**：M3 为修 fd 泄漏整体摘掉了
+  destroy 的 arg_table，结果 ①`PCA9685.destroy(nil)` 裸抛「attempt to index a nil
+  value」；②UART.destroy(nil) 静默 OK——两者都违背 D2-1 契约 sweep「非表入参返 ERR
+  （不抛错、不静默成功）」。调和：**arg_table 守卫放回 destroy**（lint-driver-entry
+  样板要求在位），UART 的 fd 释放**先行**（M3 的无泄漏要求保住——fd 是 upvalue，任何
+  早退不得跳过 uart_close）；表内资源缺失/写失败仍按 M3 语义静默 OK
+  （test_pca9685_writefail 的 destroy 期望随 M3 由 ERR 改为 OK，另补非表 → ERR 用例）。
+
+### 2026-09-24 帧后端新增只读路由 `context.get`（rig agent 迁移·批次 A）
+
+> 守门快照：C++ 单测 **689 / 0**（本批新增 3 例 mcpbackend_context_*；另 1 例见上条）；
+> mcp_e2e **50 项**全绿（帧对打段新增 context.get 3 项断言）；零告警构建。新用例已反向
+> 验证（临时去掉 structureExcerpt 的 quoteUntrusted 定界 → `context_get_returns_quoted_material`
+> 红 2 处，恢复后绿）。
+
+- **`context.get`（新增路由）**：`--mcp-backend` 帧协议的第四条路由，**只读**——为
+  Rust/rig agent（取代 C++ agent loop 的新主路径，后续批次落地）提供系统提示词素材：
+  `robotName`/`structurePath`/`scriptsDir`/`allowShell`/`allowHotSql`/`hardwareCount` 与三段
+  **已定界**磁盘内容（结构脚本 16 KiB 摘录、硬件清单、脚本清单）+ 内联 `readableVars`。
+- **单一事实源**：素材读法与 `buildAgentSystemPrompt` 完全同款（有配置组装期成品就用成品；
+  消毒、截断、`quoteUntrusted` 定界都在 C++ 单点）——Rust agent 只拼装不定界，「同一份磁盘
+  内容，两条进上下文的通道必须有同一定界强度」。`structureDisplayName` 随之从 agentmode.cpp
+  的匿名命名空间提升为共享声明（第三处使用）。
+- **实时取材**：`hardwareCount`/`hardwareList` 每次调用现取注册表，热插拔后不漂移。
+- **口径**：与 `tool.list` 同判据——不走 `DispatchGate`、不占每连接预算（单测钉住「预算耗尽
+  后 context.get 照常成功」）；未绑定 cfg/robot 的手搓后端（单测形态）响亮回错误。
+- **落点**：`McpBackend` 构造器加可空 `cfg/robot` 指针对（缺省 nullptr，既有调用零改）；
+  `mcp_e2e.sh` 帧对打段与 docs/agent.md 同步。
+
 ### 2026-09-23 只读查询：`SHOW TABLES`
 
 > 守门快照：C++ 单测 **669 / 0**（本批新增 5 例：sqlparse 4 / agenttools 1）；零告警构建。

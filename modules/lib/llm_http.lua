@@ -281,9 +281,15 @@ function Session:post(opts)
 	-- 用 CURLOPT_COPYPOSTFIELDS 让 libcurl 在 setopt 时立即拷贝一份副本到句柄内部，
 	-- 后续与 Lua 字符串生命周期脱钩；reset 时 libcurl 自动释放该副本。
 	-- URL 同理：CURLOPT_URL 也不拷贝，但 url 同样是本函数 live local，当前安全。
+	-- 顺序修正（2026-09-24）：POSTFIELDSIZE 必须设在 COPYPOSTFIELDS **之前**——
+	-- curl 以「当时的 postfieldsize」决定拷贝多少字节，先 copy 后 size 时后者会把
+	-- 内部的「已拷贝定长」标记打回未定长态，本机 curl 8.14.1 实测 POST 侧退化为
+	-- 读流语义、直接 CURLE_READ_ERROR(26)，agent-e2e 全线红（ctypes 双序对照钉住：
+	-- copy→size rc=26 / size→copy rc=0）。M4 落地当天没抓到，是因为当时的 libcurl
+	-- 对这个顺序不敏感。
 	setopt_ptr(h, OPT_URL, url)
-	setopt_ptr(h, OPT_COPYPOSTFIELDS, body)
 	setopt_long(h, OPT_POSTFIELDSIZE, #body)
+	setopt_ptr(h, OPT_COPYPOSTFIELDS, body)
 	setopt_ptr(h, OPT_WRITEFUNCTION, cb)
 	-- Retry-After 捕获（SAN-3，2026-09-22）：限流场景下**服务端说了等多久**，
 	-- 而本地指数退避（1s/2s/4s）与真实限流窗口毫无关系。libcurl 不会把响应头

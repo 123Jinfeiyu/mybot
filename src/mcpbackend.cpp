@@ -34,8 +34,10 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include "agentmode.hpp"	/* AgentModeConfig / makeToolContext */
+#include "agentmode.hpp"	/* AgentModeConfig / makeToolContext / structureDisplayName */
+#include "agentprompt.hpp"	/* structureScriptHead / quoteUntrusted（context.get 素材） */
 #include "jsonparse.hpp"	/* parseJson */
+#include "robot.hpp"		/* RobotStruct 完整定义（context.get 的 registry()） */
 #include "util.hpp"		/* stopRequested */
 
 namespace fs = std::filesystem;
@@ -280,11 +282,14 @@ bool mcpCheckPeerCred(int fd, std::ostream& log) {
 McpBackend::McpBackend(AgentToolRegistry tools,
 		std::shared_ptr<const AgentPolicy> policy,
 		std::shared_ptr<AuditLog> audit,
-		long callBudget, long wallClockBudgetSec)
+		long callBudget, long wallClockBudgetSec,
+		const AgentModeConfig* cfg, RobotStruct* robot)
 	: tools_(std::move(tools)),
 	  policy_(std::move(policy)),
 	  audit_(std::move(audit)),
 	  gate_(tools_, policy_, audit_),
+	  cfg_(cfg),
+	  robot_(robot),
 	  callBudget_(callBudget),
 	  wallClockBudgetSec_(wallClockBudgetSec),
 	  connStart_(Clock::now()) {}
@@ -379,6 +384,42 @@ Json McpBackend::routeToolCall(const Json& req) {
 	return okReply(std::move(data));
 }
 
+Json McpBackend::routeContextGet() {
+	if (cfg_ == nullptr || robot_ == nullptr) {
+		return errReply("context.get 不可用：后端未绑定配置与机器人上下文");
+	}
+	/* 磁盘内容三段与 buildAgentSystemPrompt 同读法、同消毒、同定界（单一事实源）：
+	 * 有配置组装期的成品（structureHead / scriptsList）就用它，没有才实时读。
+	 * 区别只在呈现：这里返回**已定界的块**，由 Rust agent 拼进它自己的系统
+	 * 提示词——「同一份磁盘内容，两条进上下文的通道必须有同一定界强度」。 */
+	const std::string sql = cfg_->structureHead ? *cfg_->structureHead
+			: structureScriptHead(cfg_->structurePath, 16u << 10);
+	const std::string scripts = cfg_->scriptsList ? *cfg_->scriptsList
+			: describeActionScripts(cfg_->scriptsDir);
+
+	Json data = JsonObject();
+	data.put("robotName", JsonString(structureDisplayName(cfg_->structurePath)));
+	data.put("structurePath", JsonString(cfg_->structurePath));
+	data.put("scriptsDir", JsonString(cfg_->scriptsDir));
+	/* 工作方式段的条件开关：Rust agent 按这两个旗标拼条件句（与
+	 * buildAgentSystemPrompt 的 allowShell/allowHotSql 分支同判据）。 */
+	data.put("allowShell", JsonBool(cfg_->allowShell));
+	data.put("allowHotSql", JsonBool(cfg_->allowHotSql));
+	/* REPL 横幅与 /status 的硬件计数（实时取：热插拔后不漂移）。 */
+	data.put("hardwareCount",
+		JsonInt(static_cast<std::int64_t>(robot_->registry().byName().size())));
+	data.put("structureExcerpt", JsonString(sql.empty()
+			? std::string("(结构脚本不可读)\n")
+			: quoteUntrusted("结构脚本 " + cfg_->structurePath + " 摘录：\n", sql)));
+	data.put("hardwareList",
+		JsonString(quoteUntrusted("硬件变量清单：\n", describeHardware(*robot_))));
+	data.put("scriptsList", JsonString(quoteUntrusted(
+			"动作脚本清单（相对路径 + 首行注释）：\n", scripts)));
+	/* 可读变量是内联短清单（进工作方式条目，非引用块），空 = 一个字段都不给。 */
+	data.put("readableVars", JsonString(describeReadableVars(cfg_->readVars, *robot_)));
+	return okReply(std::move(data));
+}
+
 Json McpBackend::handleRequest(const Json& req) {
 	try {
 		if (!req.isObj()) {
@@ -397,6 +438,7 @@ Json McpBackend::handleRequest(const Json& req) {
 		}
 		if (r == "tool.list") { return routeToolList(); }
 		if (r == "tool.call") { return routeToolCall(req); }
+		if (r == "context.get") { return routeContextGet(); }
 		return errReply("unknown route: " + r);
 	} catch (const std::exception& e) {
 		return errReply(sanitizeError(e.what()));
@@ -447,7 +489,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 	AgentToolContext tctx = makeToolContext(cfg, robot, log);
 	AgentToolRegistry tools = makeAgentTools(tctx);
 	McpBackend backend(std::move(tools), cfg.policy, cfg.audit,
-		opts.callBudget, opts.wallClockBudgetSec);
+		opts.callBudget, opts.wallClockBudgetSec, &cfg, &robot);
 
 	/* 父目录：缺失则以 0700 建（单级）；已存在但权限过松则告警（不静默）。 */
 	const fs::path sp(opts.socketPath);

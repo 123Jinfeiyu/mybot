@@ -84,10 +84,11 @@ end
 -- 【销毁UART】关闭串口句柄
 -- uart_close 先恢复 build 时快照的原始 termios 再 close：板载 UART 的
 -- raw 模式/波特率跨 close 保留在 tty 上，恢复后不残留给后续使用者
--- M3（2026-09-23 安全审计）：destroy 的职责是「尽力释放」，不是「校验入参」。
--- 旧版在 arg_table(data) 失败时提前 return，跳过 uart_close(fd)，泄漏 fd。
--- fd 是文件级 upvalue，无第二次释放机会（HAL 无 ffi.gc 终结器）。修复后：
--- destroy 直接关闭 fd（若有效），无条件返回 OK，符合 drv_common.lua:52-64 约定。
+-- M3（2026-09-23 安全审计）+ D2-1 调和（2026-09-24）：fd 是文件级 upvalue、与
+-- 入参无关且无第二次释放机会（HAL 无 ffi.gc 终结器），**释放先行**——任何早退
+-- （含 arg_table 拒绝）都不得跳过 uart_close，否则泄漏 fd（M3 修的就是这个）。
+-- arg_table 守卫保留在释放之后：非表入参返 ERR 契约（D2-1 契约 sweep 与
+-- lint-driver-entry 都要求样板在位；M3 一度整体摘掉，属矫枉过正）。
 function destroy(data)
 
 	dbg_table("-------- UART.lua ender func get a table --------", data)
@@ -95,6 +96,11 @@ function destroy(data)
 	if fd ~= nil and fd >= 0 then
 		uart_close(fd)
 		fd = -1
+	end
+
+	local ok, e = arg_table(data)
+	if not ok then
+		return e	-- 非表：ERR（fd 已尽力释放，泄漏无从谈起）
 	end
 
 	return {  result = "OK"  }

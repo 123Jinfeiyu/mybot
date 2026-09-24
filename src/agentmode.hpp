@@ -177,6 +177,10 @@ std::string shellKeyExposureWarning(const AgentModeConfig& cfg);
  * 驱动自己也按同一条链读环境变量。 */
 std::string resolveLlmKeyFromEnv();
 
+/* 结构脚本展示名（去目录、去 .sql 后缀）：REPL 提示符、会话文件的 robot 指纹
+ * 字段与 MCP 后端 context.get 的 robotName 共用——各写一遍迟早分叉。 */
+std::string structureDisplayName(const std::string& path);
+
 /* 由 CLI 选项组装配置。失败返回 false 并把「人话报错」写进 err。 */
 /* AgentModeConfig → AgentDriverConfig 的单一搬运点（重构计划 2.6）：
  * 请求相关字段的清单变更只改两份结构体与本函数，不再散落 main 的手工赋值 */

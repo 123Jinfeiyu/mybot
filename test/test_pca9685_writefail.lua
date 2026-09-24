@@ -47,7 +47,24 @@ expect_err("build 首笔写失败 -> ERR", function() return build(base) end, "M
 expect_err("call PWM 写失败 -> ERR",
 	function() return call({ fd = 3, address = "0x40", channel = 6, angle = 45 }) end,
 	"PWM registers")
-expect_err("destroy 写失败 -> ERR", function() return destroy(base) end, "restart")
+-- destroy 写失败（M3，2026-09-23 起）：尽力释放、静默 OK——重启写不动不算失败，
+-- 「资源不可用即静默成功」（drv_common.lua 约定；本期望随 M3 从 ERR 改为 OK，
+-- 2026-09-24 对齐）。仍断言至多一笔写（失败即止，不重复轰总线）。
+do
+	writes = {}
+	local ok, res = pcall(function() return destroy(base) end)
+	tester.check(string.format("%-26s message=%s", "destroy 写失败 -> OK(M3)",
+			type(res) == "table" and tostring(res.message) or tostring(res)),
+		result_of(ok, res) == "OK" and #writes <= 1,
+		string.format("result=%s writes=%d", result_of(ok, res), #writes))
+end
+-- destroy 非表入参（D2-1 调和，2026-09-24）：返 ERR 不抛错、也不静默成功
+do
+	local ok, res = pcall(function() return destroy(nil) end)
+	tester.check("destroy 非表入参 -> ERR(D2-1)",
+		result_of(ok, res) == "ERR",
+		string.format("ok=%s result=%s", tostring(ok), result_of(ok, res)))
+end
 fail_write = false
 
 tester.summary("pca9685_writefail")

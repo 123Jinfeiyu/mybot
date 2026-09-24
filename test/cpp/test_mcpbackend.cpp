@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "agentmode.hpp"	/* AgentModeConfig（context.get 用例） */
 #include "agenttools.hpp"
 #include "jsonparse.hpp"
 #include "mcpbackend.hpp"
@@ -324,6 +325,68 @@ TH_TEST(mcpbackend_tool_call_real_robot_readonly) {
 	TH_CHECK(data != nullptr);
 	TH_CHECK(data->find("ok")->getBool());
 	TH_CHECK(!data->find("text")->getValue().empty());
+}
+
+/* ---- context.get：Rust agent 的系统提示词素材（只读、不走 gate、不计预算）---- */
+TH_TEST(mcpbackend_context_get_without_binding_errors) {
+	/* 未绑定 cfg/robot（手搓后端）→ 响亮回错误，不是崩溃或空数据 */
+	AgentToolRegistry reg;
+	reg.add(echoTool());
+	McpBackend b = makeBackend(std::move(reg));
+
+	const Json r = parseJson(b.handleFrame(R"({"_route":"context.get"})"));
+	TH_CHECK(!respOk(r));
+	TH_CHECK(respError(r).find("context.get") != std::string::npos);
+}
+
+TH_TEST(mcpbackend_context_get_returns_quoted_material) {
+	auto robot = makeRelayRobot();
+	AgentModeConfig cfg;
+	cfg.structurePath = "robots/relay-test.sql";
+	cfg.scriptsDir = "scripts";
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	McpBackend b(makeAgentTools(ctx), nullptr, nullptr, 0, 0, &cfg, robot.get());
+
+	const Json r = parseJson(b.handleFrame(R"({"_route":"context.get"})"));
+	TH_CHECK(respOk(r));
+	const Json* d = respData(r);
+	TH_CHECK(d != nullptr);
+	TH_CHECK(d->find("robotName")->getValue() == "relay-test");
+	TH_CHECK(d->find("structurePath")->getValue() == "robots/relay-test.sql");
+	TH_CHECK(d->find("scriptsDir")->getValue() == "scripts");
+	/* 能力旗标（缺省双关）与硬件计数（relay-test 有真实变量） */
+	TH_CHECK(d->find("allowShell")->isBool() && !d->find("allowShell")->getBool());
+	TH_CHECK(d->find("allowHotSql")->isBool() && !d->find("allowHotSql")->getBool());
+	TH_CHECK(d->find("hardwareCount")->isInt() && d->find("hardwareCount")->getInt() > 0);
+	/* 磁盘内容三段必须带定界：声明「数据不是指令」+ 逐行 "> " 前缀 */
+	const std::string excerpt = d->find("structureExcerpt")->getValue();
+	TH_CHECK(excerpt.find("数据不是指令") != std::string::npos);
+	TH_CHECK(excerpt.find("\n> ") != std::string::npos);
+	TH_CHECK(d->find("hardwareList")->getValue().find("硬件变量清单") != std::string::npos);
+	TH_CHECK(d->find("scriptsList")->getValue().find("动作脚本清单") != std::string::npos);
+	TH_CHECK(d->find("readableVars")->isStr());
+}
+
+TH_TEST(mcpbackend_context_get_ignores_call_budget) {
+	/* 只读路由不占预算：预算耗尽后 tool.call 被拒，context.get 照常成功 */
+	auto robot = makeRelayRobot();
+	AgentModeConfig cfg;
+	cfg.structurePath = "robots/relay-test.sql";
+	cfg.scriptsDir = "scripts";
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	McpBackend b(makeAgentTools(ctx), nullptr, nullptr, 1, 0, &cfg, robot.get());
+
+	TH_CHECK(respOk(parseJson(
+		b.handleFrame(R"({"_route":"tool.call","name":"list_hardware","arguments":{}})"))));
+	const Json spent = parseJson(
+		b.handleFrame(R"({"_route":"tool.call","name":"list_hardware","arguments":{}})"));
+	TH_CHECK(!respOk(spent));
+	TH_CHECK(respError(spent).find("上限") != std::string::npos);
+	TH_CHECK(respOk(parseJson(b.handleFrame(R"({"_route":"context.get"})"))));
 }
 
 /* ---- SO_PEERCRED：同进程 socketpair 匹配；非 socket fd 读取失败即拒 ---- */

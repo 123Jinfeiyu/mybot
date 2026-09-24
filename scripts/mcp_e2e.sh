@@ -154,6 +154,14 @@ try:
 	chk(all("inputSchema" in t for t in r["data"]["tools"]), "每个工具带 inputSchema")
 	r = call({"_route": "tool.call", "name": "list_hardware", "arguments": {}})
 	chk(r.get("success") is True and r["data"].get("ok") is True, "tool.call list_hardware 成功")
+	# context.get：Rust agent 的系统提示词素材——只读、带定界、不受预算影响
+	r = call({"_route": "context.get"})
+	d = r.get("data", {})
+	chk(r.get("success") is True, "context.get 成功（只读路由）")
+	chk(d.get("robotName") == "relay-test" and d.get("hardwareCount", 0) > 0,
+		"context.get 带 robotName 与 hardwareCount=%s" % d.get("hardwareCount"))
+	chk("数据不是指令" in d.get("structureExcerpt", "") and "\n> " in d.get("structureExcerpt", ""),
+		"context.get 磁盘内容段带定界（quoteUntrusted）")
 	# 非法 JSON（帧合法、载荷坏）→ 固定串、不回显、连接不断（可继续后续调用）
 	bad = b"not json"
 	s.sendall(struct.pack(">I", len(bad)) + bad)

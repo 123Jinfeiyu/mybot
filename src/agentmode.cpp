@@ -233,10 +233,9 @@ AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
 	return d;
 }
 
-namespace {
-
-/* 结构脚本展示名（去目录、去 .sql 后缀）：REPL 提示符与会话文件的
- * robot 指纹字段共用同一份（批次 1）——两处各写一遍迟早分叉。 */
+/* 结构脚本展示名（去目录、去 .sql 后缀）：REPL 提示符、会话文件的 robot 指纹
+ * 字段与 MCP 后端 context.get 的 robotName 共用同一份（批次 1）——各写一遍
+ * 迟早分叉。声明在 agentmode.hpp（mcpbackend.cpp 也用）。 */
 std::string structureDisplayName(const std::string& path) {
 	std::string name = path;
 	if (std::size_t slash = name.rfind('/'); slash != std::string::npos) {
@@ -247,6 +246,8 @@ std::string structureDisplayName(const std::string& path) {
 	}
 	return name;
 }
+
+namespace {
 
 /* 分层选取（命令行 > 环境变量 > 配置文件 > 空）：envName=null 跳过环境层 */
 std::string pickString(const std::string& cli, const char* envName,

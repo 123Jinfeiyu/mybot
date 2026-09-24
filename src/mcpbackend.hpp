@@ -92,10 +92,15 @@ bool mcpCheckPeerCred(int fd, std::ostream& log);
  * 便于单测；socket 收发在 runMcpBackend 里。 */
 class McpBackend {
 public:
+	/* cfg/robot 为**可空对**（要么都给、要么都空）：给了则 context.get 路由可用
+	 * （Rust agent 以它为系统提示词素材的唯一来源，实时取材——热插拔后 hardware
+	 * 反映当前注册表）；都空时 context.get 回错误（单测的手搓后端即此形态）。
+	 * 生命周期：cfg 与 robot 都由 runMcpBackend 的调用链持有，跨越整个服务期。 */
 	McpBackend(AgentToolRegistry tools,
 			std::shared_ptr<const AgentPolicy> policy,
 			std::shared_ptr<AuditLog> audit,
-			long callBudget, long wallClockBudgetSec);
+			long callBudget, long wallClockBudgetSec,
+			const AgentModeConfig* cfg = nullptr, RobotStruct* robot = nullptr);
 
 	/* gate_ 持有对本对象**自己的** tools_ 成员的引用，故 McpBackend 绝不可拷贝/
 	 * 移动（移动会让 gate_ 的引用悬垂到被移走的旧对象）。就地构造；从工厂函数
@@ -127,6 +132,9 @@ public:
 private:
 	Json routeToolList();
 	Json routeToolCall(const Json& req);
+	/* 只读素材路由（rig agent 的系统提示词来源）：与 tool.list 同口径——不走
+	 * DispatchGate、不计每连接预算（不发硬件指令、无副作用、无密钥）。 */
+	Json routeContextGet();
 	Json okReply(Json data) const;		/* {"success":true,"data":...} */
 	Json errReply(const std::string& msg) const;	/* {"success":false,"error":...} */
 	bool budgetExceeded(std::string& reason) const;
@@ -136,6 +144,8 @@ private:
 	std::shared_ptr<const AgentPolicy> policy_;
 	std::shared_ptr<AuditLog> audit_;
 	DispatchGate gate_;
+	const AgentModeConfig* cfg_ = nullptr;	/* context.get 素材（可空，见构造器注） */
+	RobotStruct* robot_ = nullptr;		/* 同上；非 const：describeHardware 取可变引用 */
 	long callBudget_;
 	long wallClockBudgetSec_;
 	long calls_ = 0;		/* 本连接已派发的 tool.call 数 */
