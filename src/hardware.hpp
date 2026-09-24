@@ -138,6 +138,8 @@ class MtVars_Alias : public MtVars_Text {
 public:
 	const char* kindName() const override { return "alias"; }
 	static std::unique_ptr<MtVars_Alias> Factory(const mt::MatrixObject& defs, std::int64_t i);
+	/* 单值构造（#34 @Trigger 触发时绑定临时别名；构造私有故走工厂） */
+	static std::unique_ptr<MtVars_Alias> Make(std::string alias);
 };
 
 /* ---- 命名数值变量 @Vars（列 name / value）----

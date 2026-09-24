@@ -8,6 +8,7 @@
 #include <iostream>
 #include <map>
 #include <set>
+#include <sstream>
 #include <utility>
 
 namespace bot {
@@ -96,14 +97,9 @@ ActionPlan ActionPlan::build(const HwLookup& registry, const mt::MatrixObject& a
 	return plan;
 }
 
-/* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
-void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
-	const mt::MatrixObject* actionDefsPtr = mt::findByName(actionMatrices, "Action");
-	if (actionDefsPtr == nullptr) {
-		throw IllegalArgumentException("No @Action matrix found in the script. Please define @Action in your .mt file.");
-	}
-	const mt::MatrixObject& actionDefs = *actionDefsPtr;
-
+/* ---- 单矩阵动作派发核心（@Action 与 #34 @Reflex 共用；runAction 找
+ * "Action" 表、runReflex 按触发取反射定义表，派发逻辑完全同一份）---- */
+void ActionRunner::dispatchMatrix(const mt::MatrixObject& actionDefs) {
 	/* 列头解析 / 撞设备查重 / 相位设备判定（纯计算，单点在 ActionPlan::build） */
 	ActionPlan plan = ActionPlan::build(registry_, actionDefs);
 
@@ -140,6 +136,18 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 			MatrixVars_Hardware::ensureOk(res, "play " + name_dev + " (row " + std::to_string(i) + ")");
 		}
 	}
+}
+
+/* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
+void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
+	const mt::MatrixObject* actionDefsPtr = mt::findByName(actionMatrices, "Action");
+	if (actionDefsPtr == nullptr) {
+		/* #34：脚本动作源可以是 @Reflex/@Trigger（无 @Action 时反射独立成立）；
+		 * 两者都没有时才维持既有报错。 */
+		if (mt::findByName(actionMatrices, "Trigger") != nullptr) { return; }
+		throw IllegalArgumentException("No @Action matrix found in the script. Please define @Action in your .mt file.");
+	}
+	dispatchMatrix(*actionDefsPtr);
 }
 
 /* ---- @Action 单元格解析（数值/文本求值 + 分组）----
@@ -184,6 +192,133 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 		set_params = set.getPtr(resolvedDev);
 	}
 	set_params->put(name_param, paramVal);
+}
+
+
+/* ---- #34 条件反射：@Trigger 逐行触发 @Reflex 动作序列 ----
+ * 矩阵格式（贴 @Alias 惯例，名字只能吃到行首空白）：
+ *   @Reflex                   @Trigger
+ *   name  relay0.deg;         trigger;
+ *   blink $(bright);          blink(bright=1);
+ *   blink 0;                  blink(angle=90);
+ * Reflex：列 0 = 反射名（name），列 1.. = 动作列（<设备>.<参数>）；
+ * 同 name 多行 = 同一反射的多拍（按行序执行）。
+ * Trigger：每行一个触发行 `reflexName(k=v, k=v)`（k = 临时变量名，
+ * v = 实参文本；无括号 = 无参数触发）。
+ * 执行：每次触发把该反射的行组装成动作矩阵（列头 = 动作列），实参以
+ * MtVars_Alias 注册进会话覆盖层（子作用域）——动作行里的 $(k) 经
+ * makeActionExprResolver 命中临时别名；dispatchMatrix 派发；无论成败
+ * 撤销绑定（不污染后续触发）。无 @Trigger 时反射惰性（不执行不校验）。 */
+void ActionRunner::runReflex(std::vector<mt::MatrixObject>& actionMatrices) {
+	const mt::MatrixObject* trig = mt::findByName(actionMatrices, "Trigger");
+	if (trig == nullptr) { return; }	/* 无触发：反射惰性 */
+
+	const mt::MatrixObject* reflexDefs = mt::findByName(actionMatrices, "Reflex");
+	if (reflexDefs == nullptr) {
+		throw IllegalArgumentException("@Trigger 矩阵存在但没有任何 @Reflex 定义"
+			"（动作序列），请先用 @Reflex 表定义再触发");
+	}
+	const std::int64_t idxName = reflexDefs->requireCol(0, "name", "Reflex matrix");
+
+	/* 反射分组（保序）：同 name 行 = 多拍 */
+	std::map<std::string, std::vector<std::int64_t>> groups;
+	std::vector<std::string> order;
+	for (std::int64_t i = 1; i < static_cast<std::int64_t>(reflexDefs->rows()); ++i) {
+		const std::string nm = bot::trim(reflexDefs->operator()(i, idxName));
+		if (nm.empty()) { continue; }
+		if (groups.find(nm) == groups.end()) { order.push_back(nm); }
+		groups[nm].push_back(i);
+	}
+	if (groups.empty()) {
+		throw IllegalArgumentException("@Reflex 表没有任何定义行（列 0 = 反射名）");
+	}
+
+	const std::int64_t idxTrig = trig->requireCol(0, "trigger", "Trigger matrix");
+	for (std::int64_t i = 1; i < static_cast<std::int64_t>(trig->rows()); ++i) {
+		const std::string line = bot::trim(trig->inherited(i, idxTrig));
+		if (line.empty()) { continue; }	/* 空行跳过（宽松） */
+
+		/* 解析 reflexName(k=v, ...) */
+		std::string name;
+		std::vector<std::pair<std::string, std::string>> args;
+		const std::size_t lp = line.find('(');
+		if (lp == std::string::npos) {
+			name = bot::trim(line);
+		} else {
+			const std::size_t rp = line.rfind(')');
+			if (rp == std::string::npos || rp != line.size() - 1) {
+				throw IllegalArgumentException("Trigger 行（row " + std::to_string(i)
+					+ "）必须以闭合 ')' 结尾：'" + line + "'");
+			}
+			name = bot::trim(line.substr(0, lp));
+			std::string rest = bot::trim(line.substr(lp + 1, rp - lp - 1));
+			if (!rest.empty()) {
+				std::stringstream ss(rest);
+				std::string seg;
+				while (std::getline(ss, seg, ',')) {
+					const std::string a = bot::trim(seg);
+					if (a.empty()) { continue; }
+					const std::size_t eq = a.find('=');
+					if (eq == std::string::npos || eq == 0 || eq + 1 >= a.size()) {
+						throw IllegalArgumentException("Trigger 参数（row " + std::to_string(i)
+							+ "）须为 k=v 形式：'" + a + "'");
+					}
+					const std::string k = bot::trim(a.substr(0, eq));
+					const std::string v = bot::trim(a.substr(eq + 1));
+					if (!bot::isSafeIdent(k)) {
+						throw IllegalArgumentException("Trigger 参数名（row " + std::to_string(i)
+							+ "）不是安全标识符：'" + k + "'");
+					}
+					args.emplace_back(k, v);
+				}
+			}
+		}
+		if (name.empty()) {
+			throw IllegalArgumentException("Trigger 行（row " + std::to_string(i) + "）缺少反射名");
+		}
+		for (std::size_t a = 0; a < args.size(); ++a) {
+			for (std::size_t b = a + 1; b < args.size(); ++b) {
+				if (args[a].first == args[b].first) {
+					throw IllegalArgumentException("Trigger（row " + std::to_string(i)
+						+ "）重复绑定参数 '" + args[a].first + "'");
+				}
+			}
+		}
+		const auto git = groups.find(name);
+		if (git == groups.end()) {
+			std::string all;
+			for (const auto& n : order) { all += (all.empty() ? "" : ", ") + n; }
+			throw IllegalArgumentException("Trigger 引用了未定义的反射 '" + name
+				+ "'（row " + std::to_string(i) + "），@Reflex 定义："
+				+ (all.empty() ? "（无）" : all));
+		}
+
+		/* 组装该反射的动作矩阵（列 1.. 为动作列；组内行序 = 拍序） */
+		mt::MatrixBuilder b;
+		b.name("Action");
+		const std::int64_t ncols = reflexDefs->cols();
+		for (std::int64_t j = 1; j < ncols; ++j) { b.item(reflexDefs->operator()(0, j)); }
+		b.line(1);
+		for (const std::int64_t row : git->second) {
+			for (std::int64_t j = 1; j < ncols; ++j) { b.item(reflexDefs->operator()(row, j)); }
+			b.line(row);
+		}
+		mt::MatrixObject actionDefs = b.take();
+
+		/* 子作用域：绑定临时别名 → 执行 → 撤销（异常路径同样撤销） */
+		std::vector<std::string> bound;
+		try {
+			for (const auto& kv : args) {
+				registry_.override(kv.first, MtVars_Alias::Make(kv.second));
+				bound.push_back(kv.first);
+			}
+			dispatchMatrix(actionDefs);
+		} catch (...) {
+			for (const auto& k : bound) { registry_.removeSessionOverride(k); }
+			throw;
+		}
+		for (const auto& k : bound) { registry_.removeSessionOverride(k); }
+	}
 }
 
 } // namespace bot

@@ -132,6 +132,12 @@ void HwRegistry::override(const std::string& name, std::unique_ptr<MatrixVars_Ha
 	session_[name] = std::move(hw);
 }
 
+void HwRegistry::removeSessionOverride(const std::string& name) {
+	/* #34 @Trigger 子作用域收尾：只撤会话层单条，结构期一字不动。
+	 * 名字本就不在会话层时静默（防御性：异常路径可能已部分回滚）。 */
+	session_.erase(name);
+}
+
 /* N-15：表达式标识符求值器单点——三个调用面（元数据 $(...)、@Vars 装配、
  * 动作表达式列）此前各自内联同一形态的 lambda。 */
 namespace {
