@@ -194,6 +194,9 @@ impl AuditLog {
             return;
         }
         let Some(f) = self.file.as_mut() else { return };
+        // 每行 write+flush 是刻意的崩溃一致性（进程被 -9 时崩溃前的行已在盘上；
+        // BufWriter 的批量落盘会让「审计记录了却在崩溃中整段丢失」）。写发生在
+        // 异步上下文里但只是一次小页写出，不值得 spawn_blocking 的间接成本。
         if (f.write_all(text.as_bytes()).is_err() || f.flush().is_err()) && !self.warn_broken {
             self.warn_broken = true;
             errln!(

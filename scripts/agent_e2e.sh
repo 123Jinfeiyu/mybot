@@ -594,7 +594,11 @@ t0=$(date +%s)
 	>"$tmp/rust8b/out.txt" 2>"$tmp/rust8b/err.txt" &
 REPLPID=$!
 sleep 2
-kill -INT "$REPLPID" 2>/dev/null
+# SIGINT 必须打给 mybot-agent 本体：$! 是管道末端的 timeout 包装进程，而 GNU
+# timeout 收到外部 SIGINT 既不退出也不转发（实测：包装时信号被吞、第二件事
+# 照跑；直连进程的取消语义完好——置标志、不再受理、优雅退出 0）。
+AGENTPID="$(pgrep -P "$REPLPID" -f mybot-agent 2>/dev/null | head -1 || true)"
+kill -INT "${AGENTPID:-$REPLPID}" 2>/dev/null
 wait "$REPLPID" 2>/dev/null
 rcr8b=$?
 t1=$(date +%s)

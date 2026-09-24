@@ -299,8 +299,13 @@ where
         mut request: CompletionRequest,
     ) -> Result<CompletionResponse, CompletionError> {
         self.inject_images(&mut request);
-        // SAN-9：请求体估算字节（线上体积下界口径同 C++；含 preamble/工具 schema）
-        let req_bytes = serde_json::to_vec(&request).map_or(0, |v| v.len() as u64);
+        // SAN-9：请求体估算字节——**按段求和**，不整份序列化再丢弃。旧实现
+        // `serde_json::to_vec(&request)` 把含 base64 图片的完整请求体序列化
+        // 一遍只为拿长度：每轮一次 O(历史) 的 CPU/内存峰值，与「图片峰值内存
+        // 数十倍」的已知痛点同向放大。口径与 C++ 的 messageWeight 同源
+        // （history::message_weight 的下界：只计正文/调用参数/图片/思维链，
+        // 不计 JSON 语法开销与转义膨胀），另计每次随行的 preamble 与工具 schema。
+        let req_bytes = request_bytes_lower_bound(&request);
         let turn = self.state.current_turn.load(Ordering::Relaxed);
         let started = Instant::now();
         let mut attempt = 0u64;
@@ -349,6 +354,23 @@ where
     fn capabilities(&self) -> ProviderCapabilities {
         self.inner.capabilities()
     }
+}
+
+/// 响应里**模型可见文本**的字节数（C++ 记的是 `resp.content.size()`——
+/// 只算文本，不算工具调用参数；工具调用轮次的响应文本常为空，此时该字段缺省不写）。
+/// SAN-9 的求和估算（口径见调用点注释）。preamble/工具 schema 每次请求
+/// 随行，与历史消息一起计入下界。
+fn request_bytes_lower_bound(req: &CompletionRequest) -> u64 {
+    let mut n = req.preamble.as_ref().map_or(0, |s| s.len());
+    for m in &req.chat_history {
+        n += crate::history::message_weight(m);
+    }
+    for t in &req.tools {
+        n += t.name.len()
+            + t.description.len()
+            + serde_json::to_string(&t.parameters).map_or(0, |s| s.len());
+    }
+    n as u64
 }
 
 /// 响应里**模型可见文本**的字节数（C++ 记的是 `resp.content.size()`——

@@ -52,6 +52,55 @@ fn format_prompt_error(e: PromptError) -> String {
 /// 提示，不静默截断（getline/read_line 本身无限制）。
 pub const K_MAX_REPL_INPUT_BYTES: usize = 10 << 20;
 
+/// 「思考中…」进度动画（交互 REPL 专用）。
+///
+/// 两处防线（2026-09-24 复查，取代仓促版本）：
+///   * **写出**经 `libc::write` 直写 fd 2——与 out.rs 的检查式口径同源：
+///     `eprint!` 对 EPIPE/ENOSPC 直接 panic（退出码 101、审计收尾丢失），
+///     这正是审计 H2 修掉的 panic 面，动画不许把它带回来。写失败即丢一帧。
+///   * **停止**经 oneshot 唤醒 + await JoinHandle 后再清行——裸 `abort()` 后
+///     立即清行有竞态：多线程 runtime 下动画任务可能已被唤醒、正要落笔，
+///     清行先执行就会留下一格残影。置停 → join（最后一帧写完）→ 清行是全序。
+struct Progress {
+    stop: tokio::sync::oneshot::Sender<()>,
+    handle: tokio::task::JoinHandle<()>,
+}
+
+impl Progress {
+    /// 清行序列：与最长一帧（"思考中... "）同宽，回到行首。
+    const CLEAR: &str = "\r                \r";
+
+    fn start() -> Self {
+        let (stop, mut stopped) = tokio::sync::oneshot::channel::<()>();
+        let handle = tokio::spawn(async move {
+            let mut dots = 0usize;
+            loop {
+                let frame = format!("\r思考中{} ", ".".repeat(dots));
+                // SAFETY: 对 fd 2 的单次 write 是 async-signal-safe 级原语；失败即丢帧。
+                unsafe {
+                    libc::write(2, frame.as_ptr().cast(), frame.len());
+                }
+                dots = (dots + 1) % 4;
+                tokio::select! {
+                    _ = &mut stopped => break,
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(500)) => {}
+                }
+            }
+        });
+        Self { stop, handle }
+    }
+
+    /// 停止并清行（顺序保证见类型注释）。
+    async fn finish(self) {
+        let _ = self.stop.send(());
+        let _ = self.handle.await;
+        // SAFETY: 同上。
+        unsafe {
+            libc::write(2, Self::CLEAR.as_ptr().cast(), Self::CLEAR.len());
+        }
+    }
+}
+
 /// 会话统计（`/status` 用）：只记真实发生过的数字，不推算。
 #[derive(Debug, Default, Clone)]
 pub struct SessionStats {
@@ -78,6 +127,9 @@ pub struct Session {
     history: Vec<Message>,
     stats: SessionStats,
     started: Instant,
+    /// 「思考中…」动画只在交互 REPL 开（`run_repl` 入口置位）；`--task` 一次性
+    /// 模式的输出常被管道消费，逐格动画只会污染 stderr。
+    show_progress: bool,
 }
 
 impl Session {
@@ -113,6 +165,7 @@ impl Session {
             history: Vec::new(),
             stats: SessionStats::default(),
             started: Instant::now(),
+            show_progress: false,
         }
     }
 
@@ -151,19 +204,7 @@ impl Session {
 
         // 借用只活在块内：`result` 是拥有所有权的值，块一结束 `self.backend` 的
         // 不可变借用就结束，后面才能改 `self.history`。
-        
-        // 启动进度提示任务
-        let progress_task = tokio::spawn(async {
-            let mut dots = 0;
-            loop {
-                tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                dots = (dots + 1) % 4;
-                eprint!("\r思考中{} ", ".".repeat(dots));
-                use std::io::Write;
-                let _ = std::io::stderr().flush();
-            }
-        });
-        
+        let progress = self.show_progress.then(Progress::start);
         let result = {
             let fut = self
                 .backend
@@ -174,12 +215,9 @@ impl Session {
                 .run();
             fut.await.map_err(format_prompt_error)
         };
-        
-        // 停止进度提示
-        progress_task.abort();
-        eprint!("\r           \r"); // 清除"思考中..."
-        use std::io::Write;
-        let _ = std::io::stderr().flush();
+        if let Some(p) = progress {
+            p.finish().await;
+        }
 
         // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次
         let calls = self.state.drain_calls();
@@ -363,6 +401,8 @@ const HELP_TEXT: &str = "内置命令:\n\
 /// 交互 REPL（C++ `runAgentRepl` 镜像）。返回进程退出码（恒 0：退出是操作者的
 /// 意思，不是失败）。日志/告警走 stderr，界面走 stdout。
 pub async fn run_repl(session: &mut Session) -> i32 {
+    // 交互 REPL 才开「思考中…」动画（--task 的输出常被管道消费）
+    session.show_progress = true;
     use tokio::io::AsyncBufReadExt;
 
     let robot_name = if session.material.robot_name.is_empty() {

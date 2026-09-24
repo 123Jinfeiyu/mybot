@@ -128,8 +128,10 @@ async fn run() -> i32 {
     let material = match PromptMaterial::from_context(&data) {
         Ok(m) => m,
         Err(e) => {
+            // 退出码 2：与下方 build_system_prompt 的超限同属「提示词素材不
+            // 合格」一类（口径：配置/素材错误 = 2；连接与传输失败 = 1）
             errln!("错误: {e}");
-            return 1;
+            return 2;
         }
     };
     let preamble =

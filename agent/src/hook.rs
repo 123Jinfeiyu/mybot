@@ -266,6 +266,13 @@ impl AgentHook for SessionHook {
         // prompt）→ 失败要连它一起丢掉，与 C++ 的 `complete = base` 同口径；
         // turn ≥ 2 时 history + prompt 是一次完整轮（assistant.tool_calls + 全部
         // tool 回执）——硬件动作已经发生，回滚不该假装什么都没做。
+        //
+        // 为什么逐轮 `to_vec()` 整份克隆而**不**只记边界下标：完整轮的消息只
+        // 存在于 runner 的内部历史里（Session::history 在任务期间不更新），失败
+        // 回滚要把它们「带回来」而不是截掉，下标取不到内容。代价是每次模型
+        // 调用一次 O(历史) 的拷贝——与请求管线每轮对同一份历史的序列化同量级，
+        // 不是额外的主要开销；带图片的长会话想省掉它，得让 rig 暴露「任务结束
+        // 时的完整 transcript」出口（上游 API 变更），暂不为省一份拷贝引耦合。
         let boundary = if event.turn <= 1 {
             event.history.to_vec()
         } else {
