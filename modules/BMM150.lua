@@ -431,11 +431,8 @@ local function encode_r(r)
 	return (r % 64) * 4, math.floor(r / 64) % 256
 end
 
-local function s8(v)
-	v = v % 256
-	if v >= 0x80 then v = v - 256 end
-	return v
-end
+-- （s8 统一走模块级 bitc 包装（第 106 行）。#30：此前此处另有一份独立
+-- 实现遮蔽 106 行 bitc 包装——实际运行时用的是这份独立拷贝，属重复造轮子）
 
 -- trim 表 → 16 字节 NVM 布局（拼装顺序严格同驱动 read_trim）
 local function trim_bytes(t)

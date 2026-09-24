@@ -272,12 +272,8 @@ local function clamp12(v)
 	if v < -2048 then return -2048 elseif v > 2047 then return 2047 else return v end
 end
 
--- 12 位补码解码（驱动同式：(hi%0x10)*256+lo 再判负）
-local function s12(u)
-	u = u % 0x1000
-	if u >= 0x800 then u = u - 0x1000 end
-	return u
-end
+-- 12 位补码解码：统一走模块级 bitc.s12 包装（#30，此前此处独立实现遮蔽
+-- 第 70 行的 bitc 包装——真正的运行时实现是这份独立拷贝，属重复造轮子）
 
 -- 确定性热图：返回 64 个温度码（0.25°C/LSB）+ 热敏电阻温度码（0.0625°C/LSB）
 local function wave(n)

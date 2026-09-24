@@ -604,12 +604,8 @@ function MAX17048_VIRT.new(opts)
 	end
 
 	-- ---------------- 观察口 ----------------
-
-	local function s16(word)
-		word = word % 65536
-		if word >= 32768 then word = word - 65536 end
-		return word
-	end
+	-- （s16 统一走模块级 bitc 包装（第 74 行）。#30：此前此处另有一份独立
+	-- 实现遮蔽 74 行 bitc 包装——实际运行时用的是这份独立拷贝，属重复造轮子）
 
 	function d:version() return regs[max17048.REG.VER] or 0 end
 	function d:config()  return regs[max17048.REG.CONFIG] or 0 end
