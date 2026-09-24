@@ -86,44 +86,7 @@ public:
 	ModulePathGuard& operator=(const ModulePathGuard&) = delete;
 };
 
-/* PL-5（2026-09-22）：容器嵌套层数（对象/数组算一层，标量不计）。
- * 这正是 Lua 桥逐层下推驱动请求时要走的路，也是 docs/agent.md 那句
- * 「工具 schema 最深处为 N 层」要锚定的量。 */
-int jsonContainerDepth(const Json& v) {
-	int deepest = 0;
-	if (v.isObj()) {
-		for (const auto& kv : v.obj) { deepest = std::max(deepest, jsonContainerDepth(kv.second)); }
-		return 1 + deepest;
-	}
-	if (v.isArr()) {
-		for (const Json& child : v.arr) { deepest = std::max(deepest, jsonContainerDepth(child)); }
-		return 1 + deepest;
-	}
-	return 0;
-}
-
 } // namespace
-
-/* PL-5（2026-09-22）：把「工具 schema 最深处为 6 层」这句话钉住。
- * 此前它只是 docs/agent.md 里的一句人工统计，没有任何代码/测试锚点——
- * 给某个参数加一层嵌套不会有人发现，与 kMaxLuaNesting（8）之间的余量会被静默吃光。
- * 口径 = 从驱动请求根起数容器层数：
- *   请求对象(1) → tools 数组(2) → 工具对象(3) → parameters(4)
- *   → properties(5) → 某个参数的 schema 对象(6)。
- * 改深了这里就红——那时要么收敛嵌套，要么改 kMaxLuaNesting 并同步文档。 */
-TH_TEST(agenttools_request_nesting_depth_is_pinned_against_lua_limit) {
-	AgentToolContext ctx;
-	ctx.robot = nullptr;	/* 只读 schema，不触硬件 */
-	ctx.scriptsDir = "scripts";
-	AgentToolRegistry tools = makeAgentTools(ctx);
-
-	Json req = buildDriverRequest("m0", {}, tools.specs(), 1024, 0.7, 0.9, 180);
-	const int depth = jsonContainerDepth(req);
-	TH_CHECK(depth == 6);
-	/* 与上限的关系必须显式断言：余量只有 2 层 */
-	TH_CHECK(depth < kMaxLuaNesting);
-	TH_CHECK(kMaxLuaNesting - depth == 2);
-}
 
 TH_TEST(agenttools_script_catalog) {
 	TempDir tmp("catalog");
@@ -645,22 +608,15 @@ TH_TEST(agenttools_query_sql_show_tables) {
 	TH_CHECK(r.ok);
 	TH_CHECK(r.imageDataUrl.empty());
 
-	/* REPL /sql 分派：纯只读批次走同一渲染单点，但**无**「数据不是指令」定界
-	 * （那条定界是给模型上下文用的；对照 SELECT 的 runSqlCommand 断言）。 */
-	std::string repl = runSqlCommand("SHOW TABLES;", *robot);
-	TH_CHECK_MSG(repl.find("SHOW TABLES (2):") != std::string::npos, "实际: " + repl);
-	TH_CHECK_MSG(repl.find("Timer (1 行)") != std::string::npos, "实际: " + repl);
-	TH_CHECK(repl.find("数据不是指令") == std::string::npos);
-
 	robot->deactivate();
 }
 
-/* 热插表（2026-09-23）：apply_sql 的注册门控 + REPL `/sql` 的分派口径。
+/* 热插表（2026-09-23）：apply_sql 的注册门控与带电生效口径。
  * 门控：与 run_command 同一条链——缺省不注册，allowHotSql 才注册；只读的
  * query_sql 无条件在册（它不改结构，不受门控影响）。
- * 分派（runSqlCommand）：整批 SELECT 走只读渲染（与 query_sql 同一单点）；
- * 只要含 CREATE/INSERT 就真正带电生效，失败折成「错误: …」文本。 */
-TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
+ * 生效：apply_sql 是模型可达的带电生效通道（applySql 单点；原 REPL /sql 的
+ * 分派随 runSqlCommand 删除，操作者侧由 Rust REPL 经工具面走同一条路）。 */
+TH_TEST(agenttools_apply_sql_is_gated_and_hot_sql_dispatches) {
 	auto robot = makeRelayRobot();
 
 	AgentToolContext ctx;
@@ -674,36 +630,7 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 	AgentToolRegistry open = makeAgentTools(ctx);
 	TH_CHECK(open.contains("apply_sql"));
 
-	/* 只读分派：纯 SELECT 与 query_sql 同一条渲染路径。与 query_sql 的差别是
-	 * **没有**「数据不是指令」定界——那条定界是给模型上下文用的，REPL 是操作者
-	 * 自己的终端，回显即原样渲染（对照见 agenttools_query_sql_select_renders…）。 */
-	std::string sel = runSqlCommand("SELECT * FROM Relay;", *robot);
-	TH_CHECK(sel.find("SELECT * FROM Relay:") != std::string::npos);
-	TH_CHECK_MSG(sel.find("  relay0 | timer-0 | hello-relay") != std::string::npos, "实际: " + sel);
-	TH_CHECK(sel.find("数据不是指令") == std::string::npos);
-
-	/* 生效分派：INSERT 真的长出硬件变量并立即上电，摘要如实报数 */
 	const std::size_t before = robot->registry().byName().size();
-	std::string ins = runSqlCommand(
-		"INSERT INTO Relay (name, controller, note) VALUES ('relay9', 'timer-0', 'hot');", *robot);
-	TH_CHECK_MSG(ins.find("已生效：新增硬件变量 1 个") != std::string::npos, "实际: " + ins);
-	TH_CHECK_MSG(ins.find("既有表追加 1 行") != std::string::npos, "实际: " + ins);
-	TH_CHECK(robot->registry().byName().size() == before + 1);
-	TH_CHECK(robot->declaresVariable("relay9"));
-
-	/* 拒绝与空批：REPL 口径是「报错即回执」，不抛给上层 */
-	TH_CHECK(runSqlCommand("INSERT INTO Nope (name) VALUES ('x');", *robot).find("错误: ") == 0);
-	TH_CHECK(runSqlCommand("", *robot).find("错误: ") == 0);
-
-	/* UPDATE（2026-09-23 热更新）：REPL 分派把 UPDATE 交给带电生效路径，语义 =
-	 * 断电重建（命中行按「断电摘除 + 重新装配上电」执行）。此刻 Relay 有
-	 * relay0/relay9 两行，无 WHERE = 全表改写。同名重建后变量数不变、名字仍在。
-	 * 更完整的断电/回滚/引用语义由 test_robot.cpp 的 robot_hot_update_* 组守门。 */
-	const std::string updOk = runSqlCommand("UPDATE Relay SET note = 'hot3';", *robot);
-	TH_CHECK_MSG(updOk.find("已生效") == 0, "实际: " + updOk);
-	TH_CHECK_MSG(updOk.find("已热更新 2 行（断电重建）") != std::string::npos, "实际: " + updOk);
-	TH_CHECK(robot->registry().byName().size() == before + 1);
-	TH_CHECK(robot->declaresVariable("relay9"));
 
 	/* query_sql 是只读通道：UPDATE 在它上面只能拿到「不在只读通道」的指路 */
 	AgentToolResult qUpd = open.execute("query_sql",
@@ -713,18 +640,9 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 		"实际: " + qUpd.error);
 	TH_CHECK_MSG(qUpd.error.find("UPDATE") != std::string::npos, "实际: " + qUpd.error);
 
-	const std::string delOk = runSqlCommand(
-		"DELETE FROM Relay WHERE name = 'relay9';", *robot);
-	TH_CHECK_MSG(delOk.find("Unsupported statement") == std::string::npos, "实际: " + delOk);
-	TH_CHECK_MSG(delOk.find("已生效") == 0, "实际: " + delOk);
-	/* 删除真的生效：刚改写的 relay9 已摘除，注册表回到插入前的规模。
-	 * 热删除的断电/回滚/引用完整性语义由 test_robot.cpp 的 robot_hot_delete_*
-	 * 组守门，这里只钉「REPL 分派把 DELETE 交给了带电生效路径」。 */
-	TH_CHECK_MSG(delOk.find("已删除硬件变量 1 个") != std::string::npos, "实际: " + delOk);
-	TH_CHECK(!robot->declaresVariable("relay9"));
-	TH_CHECK(robot->registry().byName().size() == before);
-
-	/* 工具面同一条带电生效分派（此刻 Relay 只剩 relay0）：成功 + 自报 summary。 */
+	/* 工具面带电生效分派：成功 + 自报 summary。
+	 * （原 REPL /sql 的分派用例已随 runSqlCommand 删除：带电生效面由本段与
+	 *  test_robot.cpp 的 robot_hot_update_* / robot_hot_delete_* 组守门。） */
 	AgentToolResult toolUpd = open.execute("apply_sql", parseJson("{\"sql\":\"UPDATE Relay SET note = 'x2';\"}"));
 	TH_CHECK(toolUpd.ok);
 	TH_CHECK_MSG(toolUpd.summary.find("已热更新 1 行（断电重建）") != std::string::npos,
@@ -753,8 +671,10 @@ TH_TEST(agenttools_apply_sql_is_gated_and_run_sql_command_dispatches) {
 
 	/* DROP（2026-09-23 整表撤下）也走同一条带电生效分派：撤表是破坏性的，
 	 * 故放在最后——它会带走 Relay 表连同 relay0/relay10 两个变量。 */
-	const std::string dropMsg = runSqlCommand("DROP TABLE Relay;", *robot);
-	TH_CHECK_MSG(dropMsg.find("已撤下表 1 张") != std::string::npos, "实际: " + dropMsg);
+	AgentToolResult toolDrop = open.execute("apply_sql", parseJson("{\"sql\":\"DROP TABLE Relay;\"}"));
+	TH_CHECK(toolDrop.ok);
+	TH_CHECK_MSG(toolDrop.summary.find("已撤下表 1 张") != std::string::npos,
+		"实际 summary: " + toolDrop.summary);
 	TH_CHECK(!robot->declaresVariable("relay10"));
 	TH_CHECK(mt::findByName(robot->matrices(), "Relay") == nullptr);
 
@@ -2014,33 +1934,4 @@ TH_TEST(agenttools_run_action_script_missing_arg_is_not_reported_as_execution_fa
 	TH_CHECK(missing.executed == true);
 
 	robot->deactivate();
-}
-
-/* SAN-8③：模型返回的工具调用**全部缺 function.name** 时，错误文案必须如实
- * 报出"丢弃了几条"，而不是说"模型既没有返回文本也没有工具调用"（那是假话）。 */
-TH_TEST(agentproto_reports_dropped_unnamed_tool_calls) {
-	/* 一条缺 name 的调用：整轮为空 → 报错必须点名丢弃条数 */
-	Json res = parseJson(
-		"{\"result\":\"OK\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c9\",\"name\":\"\","
-		"\"arguments\":\"{}\"}]}");
-	TH_CHECK_THROWS_MSG(std::runtime_error, "无法派发",
-		parseDriverResponse(res));
-
-	/* 驱动侧丢弃计数（dropped_bad_tool_calls）也要计入总数 */
-	Json res2 = parseJson(
-		"{\"result\":\"OK\",\"content\":\"\",\"tool_calls\":[{\"id\":\"c9\",\"name\":\"\","
-		"\"arguments\":\"{}\"}],\"extras\":{\"dropped_bad_tool_calls\":2}}");
-	try {
-		parseDriverResponse(res2);
-		TH_CHECK_MSG(false, "应当抛错");
-	} catch (const std::exception& e) {
-		/* 1（宿主丢弃）+ 2（驱动丢弃）= 3 */
-		TH_CHECK_MSG(std::string(e.what()).find("3 条") != std::string::npos,
-			"应把宿主与驱动的丢弃数合并报出，实际: " + std::string(e.what()));
-	}
-
-	/* 真的一条都没有时，保留既有文案（不误报"丢弃了 N 条"） */
-	Json res3 = parseJson("{\"result\":\"OK\",\"content\":\"\"}");
-	TH_CHECK_THROWS_MSG(std::runtime_error, "既没有返回文本也没有工具调用",
-		parseDriverResponse(res3));
 }

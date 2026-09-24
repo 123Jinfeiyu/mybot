@@ -146,21 +146,6 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 }
 
 
-AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
-	AgentDriverConfig d;
-	d.model = cfg.model;
-	d.endpoint = cfg.endpoint;
-	d.maxTokens = cfg.maxTokens;
-	d.temperature = cfg.temperature;
-	d.topP = cfg.topP;
-	d.timeoutSec = cfg.timeoutSec;
-	d.reasoningEffort = cfg.reasoningEffort;
-	d.thinking = cfg.thinking;
-	d.maxRetries = cfg.maxRetries;
-	d.retryBackoffMs = cfg.retryBackoffMs;
-	return d;
-}
-
 /* 结构脚本展示名（去目录、去 .sql 后缀）：REPL 提示符、会话文件的 robot 指纹
  * 字段与 MCP 后端 context.get 的 robotName 共用同一份（批次 1）——各写一遍
  * 迟早分叉。声明在 agentmode.hpp（mcpbackend.cpp 也用）。 */

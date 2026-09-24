@@ -16,10 +16,6 @@
 #include "agentproto.hpp"
 #include "json.hpp"
 
-namespace sql4cj {
-struct Event;
-}
-
 namespace bot {
 
 class RobotStruct;
@@ -157,44 +153,16 @@ std::string describeActionScripts(const std::string& scriptsDir);
  * （对舵机等执行器，play({}) 会真的下发指令）。 */
 std::string describeHardware(RobotStruct& robot);
 
-/* ---- SQL 批次执行（阶段 1 重构：消除重复解析）----
- * SqlStatementBatch 封装了"解析一次、按需执行"的逻辑，消除 runSqlCommand 里
- * 的重复解析（原实现最多解析 3 次：判断类型、只读渲染、带电生效各一次）。
- * 设计取向：解析与执行分离，职责单一，便于测试。 */
-struct SqlStatementBatch {
-	std::vector<sql4cj::Event> events;
-	bool hasReadOnly = false;	/* 是否包含 SELECT */
-	bool hasWriteOps = false;	/* 是否包含 CREATE/INSERT/DELETE/DROP */
-
-	/* 解析 SQL 字符串为事件批次。失败抛 IllegalArgumentException。 */
-	static SqlStatementBatch parse(const std::string& sql);
-
-	/* 只读执行：渲染 SELECT 结果、CREATE/INSERT 语法回显。
-	 * 前提：批次中不应有 DELETE/DROP（这两者会真的改变硬件状态，应走 executeWrite）。
-	 * 失败返回 "错误: ..." 前缀的人话报错。 */
-	std::string executeReadOnly(const RobotStruct& robot) const;
-
-	/* 带电执行：调用 RobotStruct::applySql 真正装配/上电/断电/摘除。
-	 * 适用于包含 CREATE/INSERT/DELETE/DROP 的批次。
-	 * 失败返回 "错误: ..." 前缀的人话报错。 */
-	std::string executeWrite(RobotStruct& robot) const;
-};
-
-/* 解析一条结构 SQL 并渲染成文本（REPL /sql 与 agent 工具 query_sql 共用的
- * 单一事实源）。只读、无副作用：不装配硬件、不改结构矩阵。
+/* ---- SQL 只读渲染（query_sql 工具的单一事实源）----
+ * 解析一条结构 SQL 并渲染成文本。只读、无副作用：不装配硬件、不改结构矩阵。
  *   * SELECT * FROM t —— 从运行时结构矩阵（robot.matrices()）取数渲染；
  *   * CREATE/INSERT —— 只解析回显（语法验证），不落任何状态。
  * 失败返回"错误: …"前缀的人话报错（解析器带行列定位）。
- * 注：本函数保持向后兼容，内部将逐步迁移到 SqlStatementBatch。 */
+ * 沿革：REPL /sql（runSqlCommand，全 SELECT 走本函数、含写语句转 applySql
+ * 带电生效）与它身边的 SqlStatementBatch 已随 C++ REPL 迁 Rust 删除——
+ * 操作者侧的 SQL 通道由 Rust REPL 的 /sql 经 tool.call 直接复用本函数所在
+ * 的 query_sql 工具（只读）；带电生效仍是 apply_sql 工具 + applySql 的事。 */
 std::string runSqlStatement(const std::string& sql, const RobotStruct& robot);
-
-/* REPL `/sql` 的完整语义（2026-09-23 热插表）：整批都是 SELECT 时走上面的
- * 只读渲染；只要含 CREATE/INSERT/DELETE/DROP，就交给 RobotStruct::applySql 
- * **真正带电生效**（装配 + 上电，失败全回滚），返回其生效摘要。
- * 与 query_sql 的分工是刻意的：模型那条路只读（工具一旦能改结构，就绕过了
- * 确认与审计面），这条路是操作者本人坐在终端上敲的。失败同样返回"错误: …"。
- * 注：本函数已重构为使用 SqlStatementBatch，消除重复解析。 */
-std::string runSqlCommand(const std::string& sql, RobotStruct& robot);
 
 /* 动作脚本路径解析：请求必须是 scriptsDir 之下的相对路径。
  * 拒绝绝对路径、空段、"."/".."、以及含 NUL 的名字（NUL 会让

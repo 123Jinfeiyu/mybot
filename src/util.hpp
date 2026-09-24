@@ -192,14 +192,6 @@ inline constexpr int kAuthMaxFailsDefault = 5;
 inline constexpr int kTotalTimeoutMin = 1;
 inline constexpr int kTotalTimeoutMax = 86400;
 inline constexpr int kTotalTimeoutDefault = 600;
-/* --tcp-idle 在 **agent over TCP**（远程 REPL）形态下的缺省值（批次 2，
- * 2026-09-23）。与动作源的 30s 刻意不同：动作源投递的是一份脚本，30 秒不发
- * 字节基本可以断定对端出了问题；而远程对话里「人看着屏幕想问题」动辄几分钟，
- * 沿用 30s 会把正常会话掐断。600s（10 分钟）覆盖任何合理的思考间隔，同时仍然
- * 兜住「对端机器崩溃留下的半开连接」（没人发字节时不会永久挂住进程）。
- * 该值只在等**新任务行**时生效；模型调用与工具执行各有自己的超时维度
- * （--llm-timeout / --llm-task-timeout），不受它限制。 */
-inline constexpr int kAgentIdleSecDefault = 600;
 } // namespace tcp_limits
 
 namespace cli {

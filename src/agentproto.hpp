@@ -1,17 +1,16 @@
 #pragma once
-/* agentproto.hpp —— agent 模式的**规范化**协议层（宿主侧）
+/* agentproto.hpp —— agent 工具后端与 Rust agent 之间的规范化数据结构（C++ 侧）
  *
- * 分层（替换掉原先内嵌 libus_http 的 agenthttp 后）：
- *   宿主（本文件）  ：规范化消息/工具 → Json；驱动返回的 Json → 规范化响应
- *   Lua 协议驱动    ：规范化请求 → provider 报文；provider 响应 → 规范化响应
- *   Lua 传输库      ：llm_http.lua 用 ffi 直驱 libcurl
- *
- * 于是「换模型/换厂商」= 换一个 modules/Llm*.lua，宿主不需要重编、也不链接任何
- * HTTP 库；provider 特有字段（如 DeepSeek 的 reasoning_content）经 extras
- * 原样逐轮带回，由驱动决定怎么用。
+ * 沿革：这里曾有宿主 ⇄ Lua 协议驱动的整条规范化协议（ChatTransport /
+ * buildDriverRequest / parseDriverResponse）——模型调用由 modules/Llm*.lua 承担。
+ * agent 循环迁 Rust 后（agent/src，模型调用直连 provider），传输层随
+ * agentdriver 一起删除；本文件保留的是仍然存活的两侧共享结构：
+ *   * ToolCall / parseToolArguments —— MCP 后端帧协议的工具调用面
+ *     （mcpbackend 组装 → DispatchGate 派发 → agenttools 执行）；
+ *   * ChatMessage / ToolSpec —— 会话文件读写原语（agenthistory，批次 D 的
+ *     语义参考）与工具声明（AgentToolRegistry::specs）。
  */
 
-#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -28,93 +27,34 @@ struct ToolCall {
 	std::string arguments;
 };
 
-/* 规范化对话消息：
+/* 规范化对话消息（会话文件 agenthistory 的落盘单位；字段语义见
+ * encodeSessionMessage）：
  *   role=system/user  → content
  *   role=assistant    → content（可为空）+ toolCalls + extras
  *   role=tool         → toolCallId + content
- * extras 是 provider 特有的附加字段（如 DeepSeek 的 reasoning_content），
- * 宿主不理解也不修改，只负责逐轮原样带回给驱动。 */
+ * extras 是 provider 特有的附加字段，宿主不理解也不修改。 */
 struct ChatMessage {
 	std::string role;
 	std::string content;
 	std::vector<ToolCall> toolCalls;
 	std::string toolCallId;
 	Json extras;	/* 对象；空表示无 */
-	/* 多模态图片（data URL）。非空时该消息的 content 在线上会变成
-	 * [{type:"text"},{type:"image_url"}] 数组——OpenAI 协议里 tool 消息只允许
-	 * 文本，所以图片必须由工具循环另起一条 user 消息注入（C++ 侧原先在
-	 * agentloop，随 REPL 移除后由 Rust agent 承担：agent/src/model.rs 的 inject_images）。 */
+	/* 多模态图片（data URL）。会话文件落盘时以占位文本替代（字节不落盘）。 */
 	std::vector<std::string> images;
 };
 
-/* 暴露给模型的工具声明（parameters 为 JSON Schema object） */
+/* 暴露给模型的工具声明（parameters 为 JSON Schema object）。
+ * AgentToolRegistry::specs 产出，MCP 后端的 tool.list 与会话文件的
+ * 工具集指纹（sessionToolsFingerprint）共用。 */
 struct ToolSpec {
 	std::string name;
 	std::string description;
 	Json parameters;
 };
 
-/* 一轮模型响应：最终文本，或一组工具调用（模型常先给一句过渡语再发调用）。 */
-struct ChatResponse {
-	std::string content;
-	std::vector<ToolCall> toolCalls;
-	Json extras;	/* 对象；空表示无 */
-	/* SAN-9（2026-09-22）：provider 给的 token 用量，**原样透传**。
-	 * 宿主不理解它（各家字段名可能不同），只在审计里挑 prompt_tokens /
-	 * completion_tokens 记账——**只记 provider 说的数，不做任何推算或计费估算**。
-	 * 缺省空 = provider 没给。 */
-	Json usage;
-	/* SAN-9：本次模型调用的请求体估算字节与**实际尝试次数**（>1 = 发生过重试）。
-	 * 传输层填，宿主只用于审计记录；离线夹具不填（0 表示未统计）。 */
-	std::size_t reqBytes = 0;
-	int attempts = 0;
-	bool hasToolCalls() const { return !toolCalls.empty(); }
-};
-
-/* provider 回传字段的长度上限（A7 单点，2026-09-21）。
- * 这两个串都来自远端，却会进历史并**逐轮原样回传**给 provider：
- *   * id 不能截断——截断后与 assistant.tool_calls 的配对就断了（服务端 400），
- *     所以超限只能整条响应拒绝；
- *   * name 只用于查工具表（未知工具会折成文本回传），上限纯粹是不让远端
- *     决定回传文本的体积。
- * 取值远大于真实用量（内置工具名最长 run_action_script = 17 字节，
- * 各 provider 的 call id 形如 "call_abc123..." 约 30 字节），留了一倍以上余量。 */
-namespace proto_limits {
-inline constexpr std::size_t kMaxToolCallIdBytes = 128;
-inline constexpr std::size_t kMaxToolNameBytes = 64;
-} // namespace proto_limits
-
-/* 传输抽象：complete() = 一轮模型调用。失败抛 std::exception。 */
-class ChatTransport {
-public:
-	virtual ~ChatTransport() = default;
-	virtual ChatResponse complete(const std::vector<ChatMessage>& messages,
-			const std::vector<ToolSpec>& tools) = 0;
-};
-
-/* 规范化请求（宿主 → 驱动）：驱动据此生成 provider 报文。
- * tools 为空时不发 tools 字段（部分兼容实现拒绝空数组）。
- * imageRefs（可空，B3）：非空时消息里的图片以 {"__bot_img": N} 游标占位穿过
- * Json 与 Lua 边界（N 从 1 起，指向该向量里第 N 个字符串），图片字节只在
- * 请求体组装期经宿主 C 函数落值一次——不再为同一 payload 在 req 树、
- * 参数合并、Lua 压栈各拷一份。向量指针须在驱动 playQuiet 全程存活。 */
-Json buildDriverRequest(const std::string& model,
-		const std::vector<ChatMessage>& messages,
-		const std::vector<ToolSpec>& tools,
-		int maxTokens, double temperature, double topP, long timeoutSec,
-		std::vector<const std::string*>* imageRefs = nullptr);
-
-/* 单条消息 → 规范化 JSON（imageRefs 语义同 buildDriverRequest；空 = 图片
- * 原样拷入，供离线单测/不经过 Lua 边界的调用面） */
-Json messageToJson(const ChatMessage& msg, std::vector<const std::string*>* imageRefs = nullptr);
-
-/* 解析驱动返回的规范化响应（{result="OK", content, tool_calls, extras}）。
- * result 非 "OK"、或既无文本也无工具调用一律抛 std::runtime_error。 */
-ChatResponse parseDriverResponse(const Json& res);
-
 /* 解析 tool_call.arguments（模型给的 JSON 字符串）。
  * 空串 → 空对象；非对象或非法 JSON → 抛 IllegalArgumentException
- * （由工具循环折成参数错误回传模型，不打断会话）。 */
+ * （由派发漏斗折成参数错误回传模型，不打断会话）。 */
 Json parseToolArguments(const std::string& arguments);
 
 } // namespace agent

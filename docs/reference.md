@@ -21,7 +21,7 @@
 | --- | --- |
 | `--robot <path>` | **必选**，机器人结构脚本 `.sql` 路径；打不开或解析失败会给出人话提示并退出 1 |
 | `--help` | 打印帮助手册 |
-| `--tcp <port>` | TCP 模式：监听端口接受**一次成功连接**并读取对端下发的 `.mt`（EOF 或空闲超时按输入结束；单连接一次性批量下发，非流式长驻）。与 `--agent` 同给时为**远程 REPL**：对端每行一条任务，模型输出与工具回显回写同一条连接（无连接总时长预算、`--tcp-idle` 缺省 600s、对端断开即远程取消——详见 [agent.md](agent.md#远程对话-agent---tcp)） |
+| `--tcp <port>` | TCP 模式：监听端口接受**一次成功连接**并读取对端下发的 `.mt`（EOF 或空闲超时按输入结束；单连接一次性批量下发，非流式长驻） |
 | `--tcp-host <addr>` | TCP 监听地址，缺省 `127.0.0.1`；跨机监听（如 `0.0.0.0`）**必须**同时提供 `--tcp-token`，否则拒绝启动 |
 | `--tcp-token <tok>` | TCP 口令：跨机监听必填；对端须先发一行 `"<tok>\n"` 再发脚本。也可用环境变量 `BOT4CJ_TCP_TOKEN` 传递（多用户机器上推荐，理由见下） |
 | `--tcp-idle <sec>` | TCP 空闲超时，缺省 30s，合法范围 1-86400（超时按输入结束处理） |
@@ -29,20 +29,15 @@
 | `--tcp-total-timeout <sec>` | TCP 连接总时长预算下限，缺省 600，合法范围 1-86400；生效值取该下限与 `--tcp-idle` ×20 的较大者 |
 | `--input <path>` | 从文件读取动作脚本 |
 | （缺省） | 从 stdin 管道读取 |
-| `--daemon-grace-ms <ms>` | 守护线程弃管后的二段停机宽限上限，缺省 30000，合法范围 0-300000；仅结构脚本含 `@Daemon` 时生效，与 `--agent`/`--tcp`/`--input` 任一模式无关 |
-| `--agent` | **agent 模式**：机器人结构脚本加载后硬件常驻内存，由大模型工具循环决定执行哪些动作脚本（与上面的动作输入源互斥，详细见 [agent.md](agent.md)） |
-| `--task <文本>` | agent 模式一次性任务，跑完即退出；缺省则进交互 REPL |
-| `--llm-config <路径>` | agent 配置文件（JSON）：接入点、API key、模型、采样与 agent 参数。缺省自动查找 `./mybot.llm.json` 等；显式传 `none` 表示本次不读配置文件（CI/复现问题用，详见 [agent.md](agent.md)） |
-| `--llm-driver <表名>` | agent 的**协议驱动**表名 = `modules/<表名>.lua`（内置 `LlmOpenAI`、`LlmDeepSeek`；缺省 `LlmOpenAI`） |
-| `--llm-var <变量名>` | 承载驱动变量的名字（缺省 `llm0`）；结构脚本已声明同名变量则直接用，否则自动注入 |
-| `--llm-endpoint <URL>` | agent 模型接入点（覆盖配置文件；不给则用配置或驱动缺省） |
-| `--llm-model <名称>` | agent 模型名（覆盖配置文件；不给则用配置或驱动缺省） |
-| `--llm-max-turns <N>` | 单次任务最大模型轮数，范围 1-100（缺省 8） |
-| `--llm-max-tokens <N>` | 单次生成最大 token 数，范围 1-200000（缺省 4096） |
-| `--llm-timeout <秒>` | 单次模型调用超时，范围 1-600（缺省 180） |
-| `--llm-task-timeout <秒>` | 单个任务的墙钟预算，范围 0-86400（缺省 900；`0` = 不限）。与 `--llm-timeout` 是不同维度：agent 模式全程硬件带电常驻，这条给「一个任务最多带电多久」设闸。超限即如实失败（报错点名预算秒数），**已执行的动作不回退**；若预算在一轮中间耗尽，剩余工具调用不派发、但每条各留一条「未派发」回执以维持 `tool_calls` ⇔ `tool` 一一对应。配置文件等价键：`max_task_seconds` |
+| `--daemon-grace-ms <ms>` | 守护线程弃管后的二段停机宽限上限，缺省 30000，合法范围 0-300000；仅结构脚本含 `@Daemon` 时生效，与 `--tcp`/`--input`/`--mcp-backend` 任一模式无关 |
+| `--mcp-backend` | **agent 工具后端**：把 agent 工具层经本地 AF_UNIX socket 暴露给 Rust agent（`mybot-agent`，经 `--socket` 连接；模型循环已迁 Rust，见 [agent.md](agent.md)）。独立模式：不跑模型循环、不发起模型调用，硬件常驻内存；与 `--tcp`/`--input` 互斥，需要 `--robot` 与 `--mcp-socket` |
+| `--mcp-socket <路径>` | AF_UNIX socket 路径（`mybot-agent` 的 `--socket` 连这里）。父目录建议 0700、socket 文件 0600；对端经内核 SO_PEERCRED 校验 uid/gid（不可伪造） |
+| `--mcp-call-budget <N>` | 每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限；上限 1000000）。后端不假设调用方是谁，故自行再强制一层预算 |
+| `--mcp-wall-clock <秒>` | 每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。单次物理调用的 script/command 超时始终在工具层生效 |
+
+> **已移除（2026-09-24）**：`--agent` 与模型循环类选项（`--task`、`--llm-*`、`--prompt-file`、`--session-file`、`--resume`）。agent 循环已迁 Rust（`agent/` 目录，`mybot-agent`）：C++ 宿主侧以 `--mcp-backend` 提供工具后端，模型侧参数由 `mybot-agent` 自己的选项面承载（`./agent/target/release/mybot-agent --help`，构建：`bash scripts/build_agent.sh`）。本程序对上述残留用法显式拒绝（退出 2）并给出替代指引。
+
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
-| `--prompt-file <路径>` | 提示词包：可重复传入（文件或目录），内容按文件名自然排序拼接后追加进系统提示词（详见 [agent.md](agent.md)）。命令行给的路径**不受根目录约束**（操作者本人授意）；**配置文件**里的 `prompt_files` 则只能指向当前工作目录或 `BOT4CJ_PROMPT_DIR` 列的目录之内——提示词内容会随请求发往同一份配置可控的 endpoint，不设限就成了一条「读任意文件并外发」的链路（H2，见 [agent.md](agent.md) 安全说明第 11 条） |
 | `--agent-shell` | **显式开启**智能体的 `run_command`（任意 shell 执行）；**缺省不提供**该工具。API key 非来自环境变量时启动会打印告警。命令**回执**（stdout/stderr）在回传模型前遮蔽 `KEY=VALUE` 等敏感值（G1，与审计同一单点） |
 | `--agent-hot-sql` | **显式开启**智能体的 `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配并上电，失败整批回滚；**`DELETE FROM` 当场断电摘除匹配行——物理不可逆**，故被引用着的变量会被拒绝，详见 [dsl.md](dsl.md)）；**缺省不提供**该工具。**只能命令行给**：它让模型的一次回复直接改变带电结构，配置文件写 `allow_hot_sql` 会被拒绝加载并退出 2（与 `allow_shell` 同判据）。只读的 `query_sql` 不受影响 |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量（可重复；注册 `read_variables` 工具，让智能体主动读器件当前值）。**缺省不提供**该工具：执行器（`Servo`/`Relay` 等）与传感器同属 `kind=lua`，靠种类分不出，故由操作者显式列名；只有已注册且种类为 `lua`/`daemon` 的名字生效（`daemon` 读的是已发布的采样快照，无 I2C 流量）。**只能命令行给**：配置文件写 `read_vars` 会被拒绝加载并退出 2（与 `allow_shell` 同判据） |
@@ -52,10 +47,8 @@
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」。**命令行**给的 src 以其所在目录为白名单根；**配置文件**给的 `camera_src` 不推导根（H1：`dirname(src)` 当然包含 `src`，用它当根等于判据恒真、白名单形同不存在），需配 `--camera-src-dir` 或 `BOT4CJ_CAMERA_SRC_DIR`，否则驱动默认拒绝 |
 | `--camera-src-dir <目录>` | `capture_image` 模拟图片的**白名单根目录**，优先级高于上面的推导。**只能命令行给**：它放宽读权限，配置文件写 `camera_src_dir` 会被拒绝加载并退出 2（与 `allow_shell` 同判据） |
 | `--no-camera` | 不向智能体提供 `capture_image` |
-| `--check-config` | 只校验配置并打印摘要，随后以 **0** 退出：**不装载结构脚本、不上电、不发起任何网络请求**。用于「配置文件写错了但不想真起一次会话」（接了硬件也不必反复上下电）。配置本身仍由 `buildAgentConfig` 单点校验，失败退出 **2**；会**打开但不写入**审计日志文件（顺带验证其可写） |
+| `--check-config` | （与 `--mcp-backend` 联用）只校验配置并打印摘要，随后以 **0** 退出：**不装载结构脚本、不上电、不发起任何网络请求**。用于「配置文件写错了但不想真起后端」（接了硬件也不必反复上下电）。配置本身仍由 `buildAgentConfig` 单点校验，失败退出 **2**；会**打开但不写入**审计日志文件（顺带验证其可写）。agent 侧的配置校验用 `mybot-agent --check-config` |
 | `--audit-log <路径>` | 审计轨迹（JSON Lines 追加写）：每次工具调用一条记录（时间戳/轮次/工具/参数/成败/耗时/退出码）；图片只记体积与指纹，命令原文里的 `KEY=VALUE` 敏感值先遮蔽，`apply_sql` 等工具另记结构化生效摘要（`summary`）；`-` 表示写 stderr；缺省**不记录**。也可用配置文件 `audit_log` 字段（详见 [agent.md](agent.md)） |
-| `--session-file <路径>` | 会话持久化（JSON Lines 追加写）：每个任务块**完结**时落盘该块的全部消息（含工具调用与回执），第 1 行是会话头（结构脚本名 / 工具集指纹 / 系统提示词指纹）。**图片字节不落盘**（以 `[图片 N 字节，未随会话恢复]` 占位），system 提示词不落盘（恢复时由当前进程重建并按指纹核对）。失败/中断的半截工具序列永不落盘，故文件里每个前缀都可独立恢复。也可用配置文件 `session_file` 字段（**只用于写入**——恢复是输入通道，见 `--resume`）。文件含完整对话内容，建议 `chmod 600`（权限过松时启动告警） |
-| `--resume` | 恢复 `--session-file` 指定的既有会话后继续：路径**必须来自命令行**（配置文件里的 `session_file` 不能授权一次读取），文件必须已存在。载入时逐行解析（损坏行跳过并点名行号，不整份作废），再核对会话头指纹（结构脚本 / 工具集 / 系统提示词三者一致）与工具调用协议自洽（`tool_call_id` 无孤儿、无重复、无漏答），任一不符即**拒绝恢复并说明差异**（退出码 2）。恢复的历史按不可信输入对待，仍受 `max_history_bytes` 预算裁剪；审计沿用原会话 id 并在 start 记录里标 `"resumed": true`（详见 [agent.md](agent.md)） |
 
 agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--input` 同时给出，一律报错并以退出码 **2** 结束。
 
@@ -155,6 +148,6 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_PROMPT_DIR` | 提示词包的**放行目录**（冒号分隔，H2）：**配置文件** `prompt_files` 里的路径必须落在当前工作目录或这里列出的目录之内（命令行 `--prompt-file` 不受限）。配置文件写不了本变量，故它只能由启动者设——现场把提示词包放在工作目录之外时用它显式放行 |
 | `BOT4CJ_TEST_VIDEO` | 仅守门用：真机摄像头用例（`test_camera_v4l2.lua`）的设备路径，指定且存在时该用例不再按跳过计（见 [testing.md](testing.md)） |
 | `BOT4CJ_HTTP_PROBE` | 仅守门/排障用：设为 `1` 时 `lib/llm_http.lua` 每次模型请求向 stderr 打一行 `[http-probe] sessions=<已建会话数> handle=<句柄>`。agent E2E 用它断言「多轮调用复用同一份会话」（AG-20）。缺省不打——正常运行不该多这行噪声 |
-| `BOT4CJ_LLM_CANCEL_FILE` | 仅宿主内部用：模型调用可取消（AG-27）的哨兵文件路径，由宿主在收到 SIGINT/SIGTERM 时创建、`lib/llm_http.lua` 的 libcurl 进度回调轮询到即中止请求（报「请求已取消」）。正常使用**不需要也不应该**手工设置它；变量名含 `key` 之外无敏感内容，仍会被 `run_command` 环境清洗剔除 |
+| `BOT4CJ_LLM_CANCEL_FILE` | **已废弃（2026-09-24）**：模型调用取消哨兵随 C++ agent 模式移除（取消现在由 Rust agent 的信号处理承担）。`lib/llm_http.lua` 仍兼容读取它，但宿主不再创建 |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

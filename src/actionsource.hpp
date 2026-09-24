@@ -276,38 +276,4 @@ TcpAuthStatus checkTcpToken(int client, const std::string& token);
  * 返回的读取器一律带字节上限；TCP 通道另含绑定地址、空闲超时与可选口令。 */
 std::unique_ptr<Reader> openActionSource(const CliOptions& options);
 
-/* ---- agent over TCP（批次 2，2026-09-23）----
- * `--agent --tcp <port>`：把**已认证的连接**当成 REPL 的 stdin/stdout，让远程
- * 对端直接与常驻机器人对话。照搬动作源 TCP 的安全口径（回环缺省；跨机必须
- * --tcp-token；口令可经 BOT4CJ_TCP_TOKEN；连续失败上限与爆破计数同款）。
- *
- * 与动作源 TCP 的**三处刻意不同**（都是设计决定，不是遗漏）：
- *   ① **无连接总时长预算**：动作源的总预算是给「一次性脚本投递」设的，而
- *      远程对话天然是长会话（一次任务可能跑几分钟，两次任务间隔可能更久）。
- *      套用 600s 总预算会把长会话在任务中途掐断。这里只保留**空闲超时**
- *      （等新任务行时生效，缺省 tcp_limits::kAgentIdleSecDefault=600s），
- *      外加既有的 --llm-timeout / --llm-task-timeout 两个维度。
- *   ② **对端断开 = 远程取消**：客户端一侧按 Ctrl-C（或关终端）就是断开连接；
- *      watcher 线程观察到 POLLHUP/POLLRDHUP/POLLERR 后做**与本地 SIGINT 完全
- *      相同**的两件事——置停止标志、创建取消哨兵文件（路径取
- *      BOT4CJ_LLM_CANCEL_FILE，由 main 的 setupCancelSentinel 预先设好），
- *      于是**在飞的模型调用也会被立刻中止**（libcurl 进度回调检查哨兵），
- *      而不是等满 --llm-timeout。会话按既有中断语义收尾（写 end 记录、
- *      走 deactivate 清理链），硬件不留在最后指令位置。
- *   ③ **接受连接在硬件上电之前**：没有对端时不该让执行器带电空转；对端断开后
- *      会话结束、deactivate 照常执行。
- *
- * 返回对象持有连接与 watcher；析构时先停 watcher 再关 fd（顺序不可颠倒：
- * poll 在已关闭/被复用的 fd 上会认错对端）。nullptr = 失败（原因已打印）。 */
-class TcpAgentSession {
-public:
-	virtual ~TcpAgentSession() = default;
-	virtual std::istream& in() = 0;
-	virtual std::ostream& out() = 0;
-	/* 与本地 Ctrl-C 同效：置停止标志 + 创建取消哨兵（供测试与内部 watcher 用） */
-	virtual void cancelAsLocalSigint() = 0;
-};
-
-std::unique_ptr<TcpAgentSession> openAgentTcpSession(const CliOptions& options);
-
 } // namespace bot

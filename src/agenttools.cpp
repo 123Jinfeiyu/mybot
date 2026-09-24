@@ -509,7 +509,7 @@ std::string describeHardware(RobotStruct& robot) {
 	return out;
 }
 
-/* SHOW TABLES 的只读渲染（executeReadOnly 与 runSqlStatement 共用，单点）：
+/* SHOW TABLES 的只读渲染（runSqlStatement 的 SELECT/SHOW 分支共用，单点）：
  * 枚举运行时结构矩阵（robot.matrices()，与 SELECT 同源取数），列出每张表的名字
  * 与**数据行数**（rows()-1，第 0 行是列头）。表名 trim 后显示，与 mt::findByName
  * 的比较口径一致。空结构显式说破「（无表）」，不被误读成渲染故障。 */
@@ -524,125 +524,7 @@ static std::string renderShowTables(const RobotStruct& robot) {
 	return s;
 }
 
-/* ---- SqlStatementBatch 实现（阶段 1 重构：消除重复解析）---- */
-
-SqlStatementBatch SqlStatementBatch::parse(const std::string& sql) {
-	SqlStatementBatch batch;
-	bot::MemoryReader sr(sql);
-	std::vector<sql4cj::Token> tokens = sql4cj::Lexer::parseAll(sr);
-	if (tokens.empty()) {
-		throw IllegalArgumentException("空 SQL 语句");
-	}
-	batch.events = sql4cj::Parser::parseAll(tokens);
-	if (batch.events.empty()) {
-		throw IllegalArgumentException("空 SQL 语句");
-	}
-	/* 分类：遍历一次，记录批次特征 */
-	for (const auto& ev : batch.events) {
-		switch (ev.type) {
-		case sql4cj::EventType::SELECT_TABLE:
-		case sql4cj::EventType::SHOW_TABLES:
-			batch.hasReadOnly = true;
-			break;
-		case sql4cj::EventType::CREATE_TABLE:
-		case sql4cj::EventType::INSERT_TABLE:
-		case sql4cj::EventType::DELETE_TABLE:
-		case sql4cj::EventType::DROP_TABLE:
-		case sql4cj::EventType::UPDATE_TABLE:
-			batch.hasWriteOps = true;
-			break;
-		case sql4cj::EventType::END:
-			break;
-		}
-	}
-	return batch;
-}
-
-std::string SqlStatementBatch::executeReadOnly(const RobotStruct& robot) const {
-	/* 只渲染第一条语句（与原 runSqlStatement 行为一致）*/
-	if (events.empty()) { return "错误: 空 SQL 语句"; }
-	const sql4cj::Event& ev = events[0];
-	
-	switch (ev.type) {
-	case sql4cj::EventType::CREATE_TABLE: {
-		std::string s = "CREATE TABLE " + ev.create.tableName + " (";
-		for (std::size_t i = 0; i < ev.create.tableColumns.size(); ++i) {
-			if (i > 0) { s += ", "; }
-			const auto& c = ev.create.tableColumns[i];
-			s += c.name + " " + (c.type_ == sql4cj::VarType::Number ? "Number" : "String");
-		}
-		s += ")";
-		return s;
-	}
-	case sql4cj::EventType::INSERT_TABLE: {
-		std::string s;
-		for (const auto& row : ev.insert.tableRows) {
-			s += "INSERT INTO " + ev.insert.targetTabName + " (";
-			for (std::size_t i = 0; i < row.size(); ++i) {
-				if (i > 0) { s += ", "; }
-				s += row[i].columnName + " = '" + row[i].value + "'";
-			}
-			s += ")";
-		}
-		return s;
-	}
-	case sql4cj::EventType::SELECT_TABLE: {
-		const std::string& tbl = ev.select.sourceTableName;
-		const mt::MatrixObject* m = mt::findByName(robot.matrices(), tbl);
-		if (m == nullptr) {
-			return "错误: 表 '" + tbl + "' 未定义（当前结构脚本里没有这个表）";
-		}
-		/* WHERE 等值过滤 */
-		std::vector<std::size_t> hits;
-		if (ev.select.where) {
-			std::vector<std::pair<std::string, std::string>> conds;
-			conds.reserve(ev.select.where->conds.size());
-			for (const auto& c : ev.select.where->conds) { conds.emplace_back(c.column, c.value); }
-			try {
-				hits = mt::matchAll(*m, conds);
-			} catch (const std::exception& e) {
-				return std::string("错误: ") + e.what();
-			}
-		} else {
-			hits.reserve(m->rows() > 1 ? m->rows() - 1 : 0);
-			for (std::size_t r = 1; r < m->rows(); ++r) { hits.push_back(r); }
-		}
-		/* 渲染 */
-		std::string s = "SELECT * FROM " + m->getName() + ":";
-		const std::size_t ncol = m->cols();
-		if (m->rows() == 0) { s += " (空)"; return s; }
-		for (std::size_t c = 0; c < ncol; ++c) {
-			s += (c > 0 ? " | " : "\n  ") + (*m)(0, c);
-		}
-		for (std::size_t r : hits) {
-			for (std::size_t c = 0; c < ncol; ++c) {
-				s += (c > 0 ? " | " : "\n  ") + m->inherited(r, c);
-			}
-		}
-		if (ev.select.where && hits.empty()) { s += "\n  （0 行匹配）"; }
-		return s;
-	}
-	case sql4cj::EventType::SHOW_TABLES:
-		/* 只读：列出当前结构的全部表名与数据行数（与 SELECT 同源取数） */
-		return renderShowTables(robot);
-	case sql4cj::EventType::DELETE_TABLE:
-		return "错误: DELETE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
-			"它会真的断电摘除器件且不可逆";
-	case sql4cj::EventType::DROP_TABLE:
-		return "错误: DROP 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
-			"它会真的断电摘除整张表的器件且不可逆";
-	case sql4cj::EventType::UPDATE_TABLE:
-		/* 同 DELETE/DROP 的理由：本函数是只读渲染面，而 UPDATE 按断电重建改写
-		 * 命中行（物理断电摘除 + 重新装配上电）——default 的「不支持的 SQL 语句」
-		 * 对它同样是误导：UPDATE 是支持的，只是不在这条通道上。 */
-		return "错误: UPDATE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
-			"它会按断电重建改写命中行（断电摘除 + 重新装配上电）";
-	default:
-		return "错误: 不支持的 SQL 语句";
-	}
-}
-
-/* 解析一条结构 SQL 并渲染成文本（REPL /sql 与 agent 工具 query_sql 共用，
+/* 解析一条结构 SQL 并渲染成文本（agent 工具 query_sql 的实现，
  * 契约见 agenttools.hpp）。SELECT 的取数源是 robot.matrices()——原始结构
  * 矩阵（声明序），与 registry()（装配后的硬件变量视图）互补；可选 WHERE
  * 等值条件按 inherited 显示值过滤（mt::matchRows 单点，值精确文本比较）。 */
@@ -736,58 +618,29 @@ std::string runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 		return s;
 	}
 	case sql4cj::EventType::SHOW_TABLES:
-		/* 只读：列出当前结构的全部表名与数据行数（REPL /sql 与 query_sql 共用本单点） */
+		/* 只读：列出当前结构的全部表名与数据行数（query_sql 单点） */
 		return renderShowTables(robot);
 	case sql4cj::EventType::DELETE_TABLE:
-		/* 本函数是**只读渲染**面（/sql 全 SELECT 批次、query_sql 工具），
-		 * 而 DELETE 会真的断电摘器件、且物理不可逆——绝不在这里执行。
-		 * 正常路径到不了这里（runSqlCommand 只把全 SELECT 批次放进本函数，
-		 * query_sql 直接拒含变更语句的输入），但 default 分支配的那句
-		 * 「不支持的 SQL 语句」对本句是**误导**：DELETE 是支持的，只是不在这条
-		 * 通道上。给一句准确的指路，免得读的人（含模型）以为方言里没有 DELETE
-		 * 而放弃。 */
-		return "错误: DELETE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+		/* 本函数是**只读渲染**面（query_sql 工具），而 DELETE 会真的断电摘
+		 * 器件、且物理不可逆——绝不在这里执行。query_sql 直接拒含变更语句的
+		 * 输入，正常路径到不了这里，但 default 分支配的那句「不支持的 SQL 语句」
+		 * 对本句是**误导**：DELETE 是支持的，只是不在这条通道上。给一句准确的
+		 * 指路，免得读的人（含模型）以为方言里没有 DELETE 而放弃。 */
+		return "错误: DELETE 是变更语句，不在只读查询通道上；请用 apply_sql 执行，"
 			"它会真的断电摘除器件且不可逆";
 	case sql4cj::EventType::DROP_TABLE:
 		/* 同 DELETE 的理由：本函数是只读渲染面，而 DROP 会真的断电摘除**整表**
 		 * 器件（比 DELETE 更重），绝不在这里执行。default 的那句「不支持」对
 		 * 本句同样误导——DROP 是支持的，只是不在这条通道上。 */
-		return "错误: DROP 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+		return "错误: DROP 是变更语句，不在只读查询通道上；请用 apply_sql 执行，"
 			"它会真的断电摘除整张表的器件且不可逆";
 	case sql4cj::EventType::UPDATE_TABLE:
 		/* 同 DELETE/DROP 的理由：本函数是只读渲染面，而 UPDATE 按断电重建改写
 		 * 命中行——绝不在这里执行。给一句准确的指路（同上两条）。 */
-		return "错误: UPDATE 是变更语句，不在只读查询通道上；请在 /sql（或 apply_sql）里执行，"
+		return "错误: UPDATE 是变更语句，不在只读查询通道上；请用 apply_sql 执行，"
 			"它会按断电重建改写命中行（断电摘除 + 重新装配上电）";
 	default:
 		return "错误: 不支持的 SQL 语句";
-	}
-}
-
-std::string runSqlCommand(const std::string& sql, RobotStruct& robot) {
-	/* 阶段 1 重构：使用 SqlStatementBatch 消除重复解析。
-	 * 原实现最多解析 3 次（判断类型、只读渲染、带电生效各一次），
-	 * 现在解析一次、分类一次、按需执行。
-	 * 判据是「全部 SELECT 才走只读渲染」——混排批次里的 CREATE/INSERT/DELETE
-	 * 必须被看见，否则 /sql SELECT...; DELETE... 会静默丢掉后半句。 */
-	SqlStatementBatch batch;
-	try {
-		batch = SqlStatementBatch::parse(sql);
-	} catch (const std::exception& e) {
-		return std::string("错误: ") + e.what();
-	}
-
-	/* 全是 SELECT → 只读渲染 */
-	if (batch.hasReadOnly && !batch.hasWriteOps) {
-		return runSqlStatement(sql, robot);
-	}
-
-	/* 有变更语句 → 带电生效（调用 applySql，它会重新解析但这是必要的，
-	 * 因为 applySql 需要完整的事务语义和回滚能力）*/
-	try {
-		return robot.applySql(sql);
-	} catch (const std::exception& e) {
-		return std::string("错误: ") + e.what();
 	}
 }
 
@@ -985,7 +838,7 @@ static AgentTool makeListHardwareTool(const AgentToolContext& ctx) {
 		}};
 }
 
-/* query_sql：结构 SQL 的只读查询/校验（与 REPL /sql 同一实现单点）。
+/* query_sql：结构 SQL 的只读查询/校验（runSqlStatement 单点）。
  * SELECT * FROM t 回显运行时矩阵内容——内容来自磁盘上的结构脚本，
  * 属「数据非指令」，与脚本清单同走 quoteUntrusted 定界（C2）。
  * 解析失败/表不存在折成异常回传（注册表口径「工具执行失败: …」），

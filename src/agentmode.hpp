@@ -1,12 +1,14 @@
 #pragma once
-/* agentmode.hpp —— agent 模式的配置组装与会话外壳
+/* agentmode.hpp —— agent 工具后端的配置组装（--mcp-backend）
  *
- * 「主要执行流程」的落点：main 在 --agent 下先 active() 机器人，再把控制权
- * 交给本模块的会话循环（一次性任务或交互 REPL），全程硬件常驻；只有会话结束
- * 才 deactivate()。这与管道模式（读一段 .mt → 跑完 → 断电退出）是两条路径。
+ * C++ 侧在 agent 体系里的职责是「工具后端」：main 在 --mcp-backend 下先
+ * active() 机器人，再由 mcpbackend 在 AF_UNIX socket 上同步服务工具调用，
+ * 全程硬件常驻；会话结束才 deactivate。agent 循环本体（REPL/模型调用/预算/
+ * 历史裁剪）在 Rust 侧 agent/src（mybot-agent），经帧协议调用这里的工具层。
  *
- * 模型调用不在这里，也不在宿主的任何 C++ 代码里：它是一颗 Lua 协议驱动
- * （table 名 = 驱动名，见 --llm-driver），由 agentdriver 适配成 ChatTransport。
+ * 本模块只做配置组装与工具上下文：buildAgentConfig（命令行/环境/配置文件/
+ * 内置缺省四层合并 + 能力门控 + 审计/策略装载）与 makeToolContext（工具表
+ * 的单一落点）。模型调用不在这里——LLM 请求由 Rust agent 直连 provider。
  */
 
 #include <iosfwd>
@@ -17,10 +19,9 @@
 
 #include "actionsource.hpp"
 #include "agentaudit.hpp"
-#include "agentdriver.hpp"
 #include "agentpolicy.hpp"
 #include "agentproto.hpp"
-#include "agentprompt.hpp"	/* buildAgentSystemPrompt / kMaxSystemPromptBytes（A2 拆出） */
+#include "agentprompt.hpp"	/* kMaxSystemPromptBytes（A2 拆出；体积预检用） */
 #include "agenttools.hpp"	/* AgentToolContext（makeToolContext 的返回类型） */
 
 namespace bot {
@@ -114,14 +115,16 @@ struct AgentModeConfig {
 	/* ---- 提示词包（--prompt-file / 配置文件 prompt_files）----
 	 * promptFiles 是合并后的输入清单（命令行给过就整体覆盖配置文件列表）；
 	 * promptPack 是 buildAgentConfig 加载拼接好的成品文本（空 = 未使用），
-	 * buildAgentSystemPrompt 直接追加——加载放配置组装期，路径写错这类
+	 * 由 Rust 侧 build_system_prompt 追加（经 context.get 送达）——加载放配置
+	 * 组装期，路径写错这类
 	 * 配置错误在结构装载与上电之前就失败（「配置错误不碰真机」）。 */
 	std::vector<std::string> promptFiles;
 	std::string promptPack;
 
 	/* ---- 提示词素材缓存（C6，2026-09-22）----
-	 * 下面第 9 步的体积预检本来就要读这两段，读出来的成品存这里供
-	 * buildAgentSystemPrompt 复用：每会话少一次全树遍历 + N 次文件读，且
+	 * 第 9 步的体积预检要读这两段，读出来的成品存这里供 MCP 后端的
+	 * context.get 复用（单一读法，单一事实源）：每会话少一次全树遍历 + N 次
+	 * 文件读，且
 	 * 「预检口径」与「提示词口径」按构造一致（原先两处各读一次，两次读之间
 	 * 文件若变动会分叉——预检按旧内容放行、提示词按新内容生成）。
 	 * 用 optional 而非空串：空串是**合法的读取结果**（结构脚本不可读、脚本
@@ -181,10 +184,6 @@ std::string resolveLlmKeyFromEnv();
 std::string structureDisplayName(const std::string& path);
 
 /* 由 CLI 选项组装配置。失败返回 false 并把「人话报错」写进 err。 */
-/* AgentModeConfig → AgentDriverConfig 的单一搬运点（重构计划 2.6）：
- * 请求相关字段的清单变更只改两份结构体与本函数，不再散落 main 的手工赋值 */
-AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg);
-
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err);
 
 /* PL-1（2026-09-22，--check-config）：把**已经校验通过的**配置渲染成人类可读摘要。

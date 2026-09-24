@@ -1,14 +1,9 @@
-#include <cstdio>
-#include <cstdlib>
 #include <csignal>
-#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
-#include <vector>
 
-#include <fcntl.h>
 #include <unistd.h>
 
 #include "actionsource.hpp"
@@ -22,66 +17,18 @@
 
 namespace bot {
 
-/* ---- P2a 取消哨兵（2026-09-22）----
- * 阻塞发生在 Lua 驱动的 libcurl 里，驱动沙箱拿不到宿主内存——stopRequested()
- * 这个原子标志传不过去。跨层通道用文件：首次 SIGINT 时处理器在这里创建哨兵，
- * llm_http.lua 的进度回调（约 1 秒一次）发现它存在即中止请求，模型调用因此
- * 能被 Ctrl-C **及时**打断（不再只能等满 --llm-timeout 或二次强杀）。
- * 路径经环境变量 BOT4CJ_LLM_CANCEL_FILE 交给驱动；处理器内只做 open/write/close
- * （均 async-signal-safe），路径缓冲在装处理器**之前**填好，处理器只读。 */
-static char g_cancelSentinelPath[192] = {0};
-
-void setupCancelSentinel() {
-	/* M5 修复（2026-09-23）：旧路径 /tmp/mybot-cancel-<pid> 可被共享主机上其他本地
-	 * 用户预测，信号处理器内 open 无 O_EXCL/O_NOFOLLOW 可被利用：攻击者预置符号
-	 * 链接劫持写入目标，或预创建文件使取消增强失效。改用带随机后缀的私有路径
-	 * （mkstemp 风格）+ O_EXCL|O_NOFOLLOW 防御符号链接/竞争。
-	 * 随机后缀用 arc4random_uniform(100000) 避免碰撞（单个 /tmp 下极少超百个进程）。*/
-	unsigned int suffix = 0;
-#if defined(__linux__) || defined(__APPLE__)
-	// Linux/macOS 都有 arc4random_uniform
-	suffix = ::arc4random_uniform(100000);
-#else
-	// 回落：用 pid 低 5 位（不理想但胜于完全可预测）
-	suffix = static_cast<unsigned int>(::getpid() % 100000);
-#endif
-	std::string path = "/tmp/mybot-cancel-" 
-		+ std::to_string(static_cast<long>(::getpid()))
-		+ "-" + std::to_string(suffix);
-	std::snprintf(g_cancelSentinelPath, sizeof g_cancelSentinelPath, "%s", path.c_str());
-	::setenv("BOT4CJ_LLM_CANCEL_FILE", path.c_str(), 1);
-}
-
-void removeCancelSentinel() {
-	if (g_cancelSentinelPath[0] != '\0') { ::unlink(g_cancelSentinelPath); }
-}
-
 /* ---- D4：SIGINT/SIGTERM 处理器——首次仅置停止标志（async-signal-safe），
  * 让主流程走正常 deactivate（驱动 destroy / 守护停机）后再退出，
  * 避免 Ctrl-C 把舵机留在最后指令位置、I2C 从设备滞留中间态。
  * 第二次升级为强杀，见函数体注释。 */
 extern "C" void onStopSignal(int sig) {
 	bot::stopRequested().store(true);
-	/* P2a：创建取消哨兵，让在飞的模型调用立即被 libcurl 进度回调中止。
-	 * open/write/close 都是 async-signal-safe；路径缓冲已预先填好，此处只读。
-	 * 打不开（/tmp 只读等）静默跳过：哨兵是「及时取消」的增强，失败时旧行为
-	 * （等满超时或二次强杀）仍然成立。
-	 * M5 修复：加 O_EXCL（防竞争）+ O_NOFOLLOW（防符号链接劫持）。*/
-	if (g_cancelSentinelPath[0] != '\0') {
-		int fd = ::open(g_cancelSentinelPath, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
-		if (fd >= 0) {
-			ssize_t ignored = ::write(fd, "cancel", 6);
-			(void)ignored;
-			::close(fd);
-		}
-	}
 	/* 第二次即升级为强杀：本处理器是永久安装的，而**首次按下已经能优雅停下来**
-	 * （置标志 + 取消哨兵 → 在飞的模型调用约 1s 内中止；动作脚本预算窗口内的
+	 * （置标志 → 阻塞点经 EINTR 打断后走正常清理链；动作脚本预算窗口内的
 	 * 指令计数钩子同样看这个标志，见 src/luaexec.hpp），所以第二级的存在理由是
-	 * 「**总能停下来**」这个兜底，而不是「常规停不下来」——优雅路径本身若被卡住
-	 * （/tmp 不可写导致哨兵失效、驱动阻塞在不可中断的系统调用里、守护拒绝退场），
-	 * 仍需要一条出路。但它会跳过 deactivate，把执行器留在带电状态：
-	 * **是逃生口，不是推荐操作**。
+	 * 「**总能停下来**」这个兜底，而不是「常规停不下来」——优雅路径本身若被
+	 * 卡住（驱动阻塞在不可中断的系统调用里、守护拒绝退场），仍需要一条出路。
+	 * 但它会跳过 deactivate，把执行器留在带电状态：**是逃生口，不是推荐操作**。
 	 * 还原缺省处置再重新触发本信号：signal/raise 均为 async-signal-safe。
 	 * 计数用 sig_atomic_t；同类信号在处理器执行期间默认被屏蔽，无自竞争。 */
 	static volatile sig_atomic_t hits = 0;
@@ -163,18 +110,6 @@ std::unique_ptr<RobotStruct> loadStructure(const std::string& rpath) {
 	}
 }
 
-/* C++ Agent REPL已移除 - 请使用Rust Agent
- * 保留此函数签名以避免大范围修改，但实际功能已废弃 */
-int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
-		std::istream& in, std::ostream& out, std::ostream& log) {
-	(void)robot; (void)agentCfg; (void)in; (void)out; (void)log;
-	std::cerr << "错误: C++ Agent 已移除\n";
-	std::cerr << "请使用 Rust Agent:\n";
-	std::cerr << "  ./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n";
-	std::cerr << "详见: docs/agent.md\n";
-	return 2;
-}
-
 /* 动作流水线：先取动作脚本、后上电。返回退出码，异常上抛。 */
 int runActionPipeline(RobotStruct& robot, const CliOptions& options) {
 	/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/
@@ -215,22 +150,12 @@ int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agen
 	return agent::runMcpBackend(robot, agentCfg, bopts, std::cerr);
 }
 
-/* 未声明则注入 agent 模式的两颗驱动变量（LLM + 可选摄像头）。
+/* 未声明则注入摄像头驱动变量（capture_image 工具需要；LLM 驱动已随 C++ REPL
+ * 迁 Rust 删除——模型调用在 Rust 进程直连 provider，宿主不再注入 LLM 驱动）。
  * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的；
  * 显式声明优先：脚本作者写了同名变量就照用，不重复注入。
- * injectLlm=false 用于 MCP 后端（--mcp-backend）：后端不发起模型调用，故只注入
- * 摄像头（capture_image 工具需要），不注入 LLM 驱动变量。
  * 失败已打印，返回 false。 */
-bool injectAgentDrivers(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
-		bool injectLlm) {
-	if (injectLlm && !robot.declaresVariable(agentCfg.llmVar)) {
-		try {
-			robot.injectLuaDriver(agentCfg.driverTable, agentCfg.llmVar);
-		} catch (const std::exception& e) {
-			std::cerr << "错误: 无法注入 LLM 驱动变量: " << e.what() << std::endl;
-			return false;
-		}
-	}
+bool injectCameraDriver(RobotStruct& robot, const agent::AgentModeConfig& agentCfg) {
 	/* 摄像头是可选外设：驱动 build 打不开设备也只记原因、不阻断上电，
 	 * 抓拍时才如实报错。 */
 	if (agentCfg.allowCamera && !robot.declaresVariable(agentCfg.cameraVar)) {
@@ -287,20 +212,11 @@ int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
 			/* MCP 后端（方案 F / 拓扑 F3）：独立模式，不争 stdin、不跑 agent loop。
 			 * 同步服务阻塞主线程正是正确行为（评估 §2.3）；deactivate 照常在其后。 */
 			rc = runMcpBackendPipeline(robot, agentCfg, options);
-		} else if (options.agent && options.tcp) {
-			/* agent over TCP（批次 2）：先监听并接受一个**已认证**连接，
-			 * 再把硬件交出去——没有对端时不该让执行器带电空转（设计与
-			 * 超时口径见 actionsource.hpp 的 TcpAgentSession 注释块）。
-			 * 会话对象在此作用域内活着：析构（含 watcher 停止与 fd 关闭）
-			 * 发生在 runAgentPipeline 返回之后、deactivate 之后。 */
-			std::unique_ptr<TcpAgentSession> session = openAgentTcpSession(options);
-			if (!session) { return 2; }
-			rc = runAgentPipeline(robot, agentCfg, session->in(), session->out(),
-				std::cerr);
 		} else {
-			rc = options.agent ? runAgentPipeline(robot, agentCfg, std::cin, std::cout,
-					   std::cerr)
-					   : runActionPipeline(robot, options);
+			/* 动作管线（--tcp/--input/stdin）。--agent 已在 cliargs 校验阶段拒绝
+			 * （agent 循环迁 Rust：mybot-agent --socket …，见 docs/agent.md），
+			 * 这里不会再见到它。 */
+			rc = runActionPipeline(robot, options);
 		}
 	} catch (const std::exception& e) {
 		std::cerr << "Aborted: " << e.what() << std::endl;
@@ -350,8 +266,7 @@ int main(int argc, char** argv) {
 		/* agent 配置先组装并校验（含配置文件读取与优先级合并）：
 		 * 结构装载与上电都在其后，配置错误不碰真机 */
 		agent::AgentModeConfig agentCfg;
-		if ((options.agent || options.mcpBackend)
-			&& !prepareAgentConfig(options, agentCfg)) { return 2; }
+		if (options.mcpBackend && !prepareAgentConfig(options, agentCfg)) { return 2; }
 
 		/* PL-1：--check-config —— 配置此时已校验完毕（错误路径上面已 return 2）。
 		 * 这里只打印摘要后退出 0：**不装载结构脚本、不上电、不发起任何网络请求**。
@@ -377,19 +292,10 @@ int main(int argc, char** argv) {
 			robot->setActionIncludeBaseDir(parent.empty() ? "." : parent);
 		}
 
-		if ((options.agent || options.mcpBackend)
-			&& !injectAgentDrivers(*robot, agentCfg, /*injectLlm=*/options.agent)) { return 2; }
-
-		/* P2a 取消哨兵：仅 agent 模式需要（模型调用是唯一的长阻塞点）。
-		 * 必须在装处理器**之前**填好路径缓冲——处理器只读它（async-signal-safe）。 */
-		if (options.agent) { setupCancelSentinel(); }
+		if (options.mcpBackend && !injectCameraDriver(*robot, agentCfg)) { return 2; }
 
 		installStopSignalHandlers();
-		int rc = runRobotAndCleanup(*robot, options, agentCfg);
-		/* 退出前清掉哨兵（正常路径它从未被创建；取消路径下消费方也已结束）：
-		 * /tmp 不留进程残骸。 */
-		removeCancelSentinel();
-		return rc;
+		return runRobotAndCleanup(*robot, options, agentCfg);
 	}
 
 	/* 没有输入机器人结构脚本，打印帮助文档 */

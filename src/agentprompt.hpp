@@ -22,11 +22,7 @@
 
 namespace bot {
 
-class RobotStruct;
-
 namespace agent {
-
-class AgentModeConfig;	/* agentmode.hpp（仅引用，避免循环包含） */
 
 /* 系统提示词总量上限（F2-9，2026-09-21）。三段来源都各自有界、却都无法自证
  * 整体规模：结构脚本头（16 KiB 截断）、动作脚本清单（条目数不限）、提示词包
@@ -53,10 +49,10 @@ std::string structureScriptHead(const std::string& path, std::size_t cap);
  * 共用同一个单点——同一份磁盘内容，两条进上下文的通道必须有同一定界强度。 */
 std::string quoteUntrusted(const std::string& heading, const std::string& body);
 
-/* 系统提示词：机器人结构与硬件清单 + 可用动作脚本 + 工作方式与安全约束。
- * 超过 kMaxSystemPromptBytes 时抛 std::runtime_error（fail-closed，报错点名
- * 各段实测字节数）。 */
-std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot);
+/* 沿革：buildAgentSystemPrompt（在本文件拼装完整系统提示词）已随 C++ REPL
+ * 迁 Rust 删除——现由 MCP 后端的 context.get 提供素材（structureScriptHead +
+ * describeActionScripts + quoteUntrusted 定界），Rust 侧 agent/src/prompt.rs
+ * 的 build_system_prompt 负责最终拼装与总量上限（语义逐字对齐原实现）。 */
 
 } // namespace agent
 } // namespace bot

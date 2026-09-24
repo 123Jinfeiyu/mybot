@@ -2,9 +2,10 @@
  *
  * 线格式与 pymsg/gomsg/libmsg 字节兼容（4 字节 BE 长度 + UTF-8 JSON），但**不链接
  * libmsg**：它的 MsgServer 硬编码 AF_INET 且无 SO_PEERCRED，加 UDS 要改共享头。
- * 这里自研约 150 行帧服务，socket 建立照搬 actionsource.cpp 的 TcpAgentSession
+ * 这里自研约 150 行帧服务，socket 建立沿用 actionsource.cpp 动作源 TCP 的
  * 先例（FdGuard + poll + 停止信号响应），只是把 AF_INET 换成 AF_UNIX 并加
- * SO_PEERCRED。审计加固清单（评估 §7.6）逐条落地：分配前查上限、帧头与载荷共享
+ * SO_PEERCRED（更早的先例 TcpAgentSession 已随 agent-over-TCP 路径删除，
+ * 见 git 历史）。审计加固清单（评估 §7.6）逐条落地：分配前查上限、帧头与载荷共享
  * 同一 deadline（防 Slowloris）、发送超时（防慢读端）、接收侧校验 UTF-8、错误串
  * 脱敏绝对路径、解析错误不回显输入、handler 异常 ⇒ 错误回复绝不崩溃。
  */
@@ -388,7 +389,8 @@ Json McpBackend::routeContextGet() {
 	if (cfg_ == nullptr || robot_ == nullptr) {
 		return errReply("context.get 不可用：后端未绑定配置与机器人上下文");
 	}
-	/* 磁盘内容三段与 buildAgentSystemPrompt 同读法、同消毒、同定界（单一事实源）：
+	/* 磁盘内容三段的读法/消毒/定界与原 buildAgentSystemPrompt 完全一致（单一
+	 * 事实源；提示词最终拼装在 Rust 侧 agent/src/prompt.rs，语义与之逐字对齐）：
 	 * 有配置组装期的成品（structureHead / scriptsList）就用它，没有才实时读。
 	 * 区别只在呈现：这里返回**已定界的块**，由 Rust agent 拼进它自己的系统
 	 * 提示词——「同一份磁盘内容，两条进上下文的通道必须有同一定界强度」。 */
@@ -402,7 +404,7 @@ Json McpBackend::routeContextGet() {
 	data.put("structurePath", JsonString(cfg_->structurePath));
 	data.put("scriptsDir", JsonString(cfg_->scriptsDir));
 	/* 工作方式段的条件开关：Rust agent 按这两个旗标拼条件句（与
-	 * buildAgentSystemPrompt 的 allowShell/allowHotSql 分支同判据）。 */
+	 * 原 buildAgentSystemPrompt 的 allowShell/allowHotSql 分支同判据）。 */
 	data.put("allowShell", JsonBool(cfg_->allowShell));
 	data.put("allowHotSql", JsonBool(cfg_->allowHotSql));
 	/* REPL 横幅与 /status 的硬件计数（实时取：热插拔后不漂移）。 */

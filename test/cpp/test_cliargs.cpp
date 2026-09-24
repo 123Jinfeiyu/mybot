@@ -112,7 +112,7 @@ TH_TEST(cliargs_missing_value_is_rejected_with_exit_2) {
 
 /* ---- 2) agent 选项组合三条拒绝路径 + 合法动作模式放行 ---- */
 
-TH_TEST(cliargs_agent_only_option_without_agent_is_rejected) {
+TH_TEST(cliargs_loop_only_option_is_rejected_with_guidance) {
 	Argv a({"mybot", "--robot=robots/test.sql", "--task", "hi"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 	TH_CHECK(!p.opts.agent);
@@ -121,17 +121,19 @@ TH_TEST(cliargs_agent_only_option_without_agent_is_rejected) {
 	TH_CHECK(bot::validateOptions(p) == 2);
 }
 
-/* 热插表（2026-09-23）：--agent-hot-sql 与 --agent-shell 同属 agent 专属开关——
- * 解析层置位，非 agent 模式下必须被拒（本仓口径：agent 专属选项不静默忽略）。 */
-TH_TEST(cliargs_hot_sql_flag_is_agent_only) {
-	{	/* agent 模式：放行 */
-		Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--agent-hot-sql"});
+/* 热插表（2026-09-23）：--agent-hot-sql 与 --agent-shell 同属工具门控开关——
+ * 解析层置位，仅在 --mcp-backend 模式下放行（agent 循环已迁 Rust，
+ * --agent 一律拒绝）。 */
+TH_TEST(cliargs_hot_sql_flag_is_mcp_backend_only) {
+	{	/* --mcp-backend：放行（危险能力在 buildAgentConfig 里另需策略确认） */
+		Argv a({"mybot", "--robot=robots/test.sql", "--mcp-backend",
+			"--mcp-socket=/tmp/s.sock", "--agent-hot-sql"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK(p.opts.agentHotSql);
 		TH_CHECK(p.opts.agentOptionsUsed);
 		TH_CHECK(bot::validateOptions(p) == 0);
 	}
-	{	/* 非 agent 模式：拒绝，退出码 2 */
+	{	/* 裸用：拒绝，退出码 2 */
 		Argv a({"mybot", "--robot=robots/test.sql", "--agent-hot-sql"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK(p.opts.agentHotSql);		/* 解析层照样置位 */
@@ -140,12 +142,12 @@ TH_TEST(cliargs_hot_sql_flag_is_agent_only) {
 	}
 }
 
-/* 回读（2026-09-23，发现 2 的 A 步）：--read-var 是 agentOnly 的**可重复**带值
- * 选项——`=` 与空格两种写法都收，且非 agent 模式下必须被拒。 */
-TH_TEST(cliargs_read_var_is_agent_only_and_repeatable) {
+/* 回读（2026-09-23，发现 2 的 A 步）：--read-var 是门控类的**可重复**带值
+ * 选项——`=` 与空格两种写法都收，仅在 --mcp-backend 下放行，裸用被拒。 */
+TH_TEST(cliargs_read_var_is_mcp_backend_only_and_repeatable) {
 	{
-		Argv a({"mybot", "--agent", "--robot=robots/test.sql",
-			"--read-var=relay0", "--read-var", "timer-0"});
+		Argv a({"mybot", "--robot=robots/test.sql", "--mcp-backend",
+			"--mcp-socket=/tmp/s.sock", "--read-var=relay0", "--read-var", "timer-0"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK(bot::validateOptions(p) == 0);
 		TH_CHECK(p.opts.readVars.size() == 2);
@@ -153,7 +155,7 @@ TH_TEST(cliargs_read_var_is_agent_only_and_repeatable) {
 			&& p.opts.readVars[1] == "timer-0");
 		TH_CHECK(p.opts.agentOptionsUsed);
 	}
-	{	/* 非 agent 模式：拒绝，退出码 2 */
+	{	/* 裸用：拒绝，退出码 2 */
 		Argv a({"mybot", "--robot=robots/test.sql", "--read-var=relay0"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK(p.opts.readVars.size() == 1);	/* 解析层照样收 */
@@ -162,55 +164,41 @@ TH_TEST(cliargs_read_var_is_agent_only_and_repeatable) {
 	}
 }
 
-/* A4：--llm-task-timeout 是 agentOnly 的带值选项——解析要落到 llmTaskTimeout，
- * 且在非 agent 模式下必须被拒（本仓口径：agent 专属选项不静默忽略）。 */
-TH_TEST(cliargs_task_timeout_option_is_parsed_and_agent_only) {
+/* A4：--llm-task-timeout 是模型循环类的带值选项（归 mybot-agent）——解析仍
+ * 落到 llmTaskTimeout（保留表条目是为了给出指路报错，而不是「未知参数」），
+ * 但本程序一律拒绝（退出 2）。 */
+TH_TEST(cliargs_task_timeout_option_is_parsed_and_loop_only) {
 	{	/* 等号写法 */
-		Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--llm-task-timeout=77"});
+		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout=77"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK_MSG(p.opts.llmTaskTimeout == "77", "实际: '" + p.opts.llmTaskTimeout + "'");
 		TH_CHECK(p.opts.agentOptionsUsed);
-		TH_CHECK(bot::validateOptions(p) == 0);
+		TH_CHECK(bot::validateOptions(p) == 2);
 	}
 	{	/* 空格写法（值在下一个 argv） */
-		Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--llm-task-timeout", "900"});
+		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout", "900"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK_MSG(p.opts.llmTaskTimeout == "900", "实际: '" + p.opts.llmTaskTimeout + "'");
 		TH_CHECK(p.missingValue.empty());
 	}
 	{	/* 0 是合法值（= 不限），不能在解析层被当成缺值 */
-		Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--llm-task-timeout", "0"});
+		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout", "0"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK_MSG(p.opts.llmTaskTimeout == "0", "实际: '" + p.opts.llmTaskTimeout + "'");
 	}
-	{	/* 非 agent 模式：拒绝，退出码 2 */
-		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout", "60"});
-		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-		TH_CHECK(!p.opts.agent);
-		TH_CHECK(p.opts.agentOptionsUsed);
-		TH_CHECK(bot::validateOptions(p) == 2);
-	}
 }
 
-TH_TEST(cliargs_agent_with_tcp_is_accepted_but_task_tcp_is_not) {
-	/* 批次 2（2026-09-23）：--agent --tcp 从「互斥」改为「远程 REPL」——
-	 * 对本端来说它就是 agent 模式 + 连接式输入源。 */
+TH_TEST(cliargs_agent_is_removed_and_rejected_with_guidance) {
+	/* 2026-09-24：--agent 已移除（agent 循环迁 Rust mybot-agent）——校验层快速
+	 * 失败退出 2，不再有「agent-over-TCP 远程 REPL」组合。 */
 	Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 	TH_CHECK(p.opts.agent && p.opts.tcp);
-	TH_CHECK(bot::validateOptions(p) == 0);
+	TH_CHECK(bot::validateOptions(p) == 2);
 
-	/* 仍被拒：--task 与 --tcp（一次性任务没有长驻对话的意义） */
-	Argv b({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301",
-		"--task=x"});
+	Argv b({"mybot", "--agent", "--robot=robots/test.sql"});
 	bot::ParsedArgs q = bot::parseArgs(b.argc(), b.argv());
 	TH_CHECK(bot::validateOptions(q) == 2);
-
-	/* 仍被拒：两个输入源都要主导（--agent --tcp --input） */
-	Argv c({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301",
-		"--input=a.mt"});
-	bot::ParsedArgs r = bot::parseArgs(c.argc(), c.argv());
-	TH_CHECK(bot::validateOptions(r) == 2);
 
 	/* 非 agent 模式的裸 --tcp 不受影响（动作源 TCP 照旧） */
 	Argv d({"mybot", "--robot=robots/test.sql", "--tcp=19301"});
@@ -219,6 +207,7 @@ TH_TEST(cliargs_agent_with_tcp_is_accepted_but_task_tcp_is_not) {
 }
 
 TH_TEST(cliargs_agent_without_robot_is_rejected) {
+	/* --agent 已移除：无论是否给 --robot 都拒绝（退出 2） */
 	Argv a({"mybot", "--agent", "--llm-var", "llm0"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 	TH_CHECK(p.opts.agentOptionsUsed && !p.opts.robot.has_value());
@@ -343,8 +332,10 @@ TH_TEST(cliargs_new_timeout_options_missing_value_is_rejected) {
  * 那条拒绝；**agent 模式但漏了 --robot 也必须拒绝**——后者是这条选项最容易漏的
  * 坑：main 的既有行为是「没有 --robot → 打印帮助 + 退出 0」，若不在校验层拦住，
  * 校验模式会以 0 退出却什么都没校验，CI 会把它读成「配置没问题」。 */
-TH_TEST(cliargs_check_config_is_rejected_outside_agent_mode) {
-	Argv a({"mybot", "--robot=robots/relay-test.sql", "--agent", "--check-config"});
+TH_TEST(cliargs_check_config_is_rejected_outside_mcp_backend_mode) {
+	/* PL-1：--check-config 保留（配置面与 --mcp-backend 同源），但只与
+	 * --mcp-backend 联用；--agent 已移除，一律拒绝。 */
+	Argv a({"mybot", "--robot=robots/relay-test.sql", "--mcp-backend", "--check-config"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 	TH_CHECK(p.opts.checkConfig);
 	TH_CHECK(p.opts.agentOptionsUsed);
@@ -355,7 +346,7 @@ TH_TEST(cliargs_check_config_is_rejected_outside_agent_mode) {
 	TH_CHECK(q.opts.checkConfig);		/* 解析层照样置位 */
 	TH_CHECK(bot::preflightCli(q) == bot::Preflight::ConfigError);
 
-	Argv c({"mybot", "--agent", "--check-config"});		/* 漏 --robot */
+	Argv c({"mybot", "--agent", "--check-config"});		/* --agent 已移除 */
 	bot::ParsedArgs s = bot::parseArgs(c.argc(), c.argv());
 	TH_CHECK(bot::preflightCli(s) == bot::Preflight::ConfigError);
 }
@@ -389,8 +380,9 @@ TH_TEST(cliargs_help_precedes_validation_in_main) {
 TH_TEST(cliargs_help_text_covers_key_sections) {
 	const std::string h = bot::helpText();
 	TH_CHECK(h.find("动作输入源（优先级从高到低）：") != std::string::npos);
-	TH_CHECK(h.find("agent 模式（与上面的动作输入源互斥）") != std::string::npos);
-	TH_CHECK(h.find("取值优先级：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。") != std::string::npos);
+	TH_CHECK(h.find("agent 体系（模型循环已迁 Rust：agent/target/release/mybot-agent）：") != std::string::npos);
+	TH_CHECK(h.find("--mcp-backend") != std::string::npos);
+	TH_CHECK(h.find("mybot-agent --help") != std::string::npos);
 	TH_CHECK(h.find("示例：") != std::string::npos);
 	TH_CHECK(h.find("安全约束：动作脚本只能引入新的参数键") != std::string::npos);
 	TH_CHECK(h.find("结构脚本与动作脚本单次输入上限均为 8 MiB。") != std::string::npos);
@@ -400,32 +392,32 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	/* 帮助里的选项定义行（两空格 + "--"） */
 	const std::set<std::string> defs = optionsWithLinePrefix(bot::helpText(), "  --");
 	TH_CHECK(defs.count("--tcp") == 1);
-	TH_CHECK(defs.count("--prompt-file") == 1);
 	TH_CHECK(defs.count("--agent-shell") == 1);
-	/* A4：单任务墙钟预算的命令行入口（与 --llm-timeout 不同维度） */
-	TH_CHECK(defs.count("--llm-task-timeout") == 1);
+	/* MCP 后端四项（2026-09-24 agent 循环迁 Rust 后，这是 C++ 宿主侧唯一的
+	 * agent 形态；此前主帮助完全没有这一段） */
+	TH_CHECK(defs.count("--mcp-backend") == 1);
+	TH_CHECK(defs.count("--mcp-socket") == 1);
+	TH_CHECK(defs.count("--mcp-call-budget") == 1);
+	TH_CHECK(defs.count("--mcp-wall-clock") == 1);
 	/* H1：capture_image 白名单根目录（命令行独占，配置文件写它会被拒绝加载） */
 	TH_CHECK(defs.count("--camera-src-dir") == 1);
 	/* 已移除的选项不得在帮助里复活（2026-09-20 评估：--llm-key 明文 argv；
-	 * --agent-shell 顶掉 --agent-no-shell，故净减 1；A4/H1 各加回 1 条） */
+	 * --agent-shell 顶掉 --agent-no-shell；2026-09-24：--agent 与模型循环类
+	 * 选项（--task、九个 --llm- 前缀、--prompt-file、--session-file、--resume）
+	 * 迁 mybot-agent，帮助只留指路文案——定义行不再出现） */
 	TH_CHECK(defs.count("--llm-key") == 0);
 	TH_CHECK(defs.count("--agent-no-shell") == 0);
-	/* 分段帮助（2026-09-22）把 --help <topic> 四行并入帮助正文（23），审计轨迹
-	 * （--audit-log，2026-09-22）再加一项（24），策略钩子（--agent-policy，
-	 * 2026-09-22）再加一项（25）。F-1/F-2/F-3（2026-09-22，原 TD-2 剩余部分）
-	 * 再加三项——--tcp-max-auth-attempts / --tcp-total-timeout /
-	 * --daemon-grace-ms（28）。PL-1（2026-09-22）加 --check-config（29）。第七轮审计
-	 * （2026-09-22）再加两项——--llm-task-timeout（A4 单任务墙钟预算）与
-	 * --camera-src-dir（H1 白名单根，命令行独占）（31）。热插表（2026-09-23）再加
-	 * 一项——--agent-hot-sql（apply_sql 显式开关，配置文件不能开）（32）。回读
-	 * （2026-09-23，发现 2 的 A 步）再加一项——--read-var（read_variables 的可读
-	 * 清单，可重复，配置文件不能开）（33）。会话持久化（2026-09-23，批次 1）
-	 * 再加两项——--session-file（会话文件，写入可进配置文件）与 --resume（恢复，
-	 * 路径只认命令行）（35）。计数断言
-	 * 是「帮助 ↔ docs 双向一致」守卫的一部分：随选项增删同步更新。 */
-	TH_CHECK(defs.size() == 35);
-	TH_CHECK(defs.count("--session-file") == 1);
-	TH_CHECK(defs.count("--resume") == 1);
+	TH_CHECK(defs.count("--agent") == 0);
+	TH_CHECK(defs.count("--task") == 0);
+	TH_CHECK(defs.count("--llm-timeout") == 0);
+	TH_CHECK(defs.count("--llm-task-timeout") == 0);
+	TH_CHECK(defs.count("--prompt-file") == 0);
+	TH_CHECK(defs.count("--session-file") == 0);
+	TH_CHECK(defs.count("--resume") == 0);
+	/* 计数断言是「帮助 ↔ docs 双向一致」守卫的一部分：随选项增删同步更新。
+	 * 35（2026-09-23）→ 25（2026-09-24：-14 = --agent/--task/--llm-*×9/
+	 * --prompt-file/--session-file/--resume 迁 mybot-agent；+4 = --mcp-*）。 */
+	TH_CHECK(defs.size() == 25);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);

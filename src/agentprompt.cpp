@@ -1,12 +1,8 @@
 #include "agentprompt.hpp"
 
 #include <iostream>
-#include <stdexcept>
 #include <string>
 
-#include "agentmode.hpp"
-#include "agenttools.hpp"
-#include "robot.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -44,87 +40,6 @@ std::string quoteUntrusted(const std::string& heading, const std::string& body) 
 		pos = nl + 1;
 	}
 	return out;
-}
-
-std::string buildAgentSystemPrompt(const AgentModeConfig& cfg, RobotStruct& robot) {
-	std::string p;
-	/* 分段实测（供超限报错点名来源）：结构脚本头 / 硬件变量 / 动作脚本清单 / 提示词包 */
-	std::size_t nSql = 0, nHw = 0, nScripts = 0;
-	p += "你是机器人控制智能体（agent），通过工具控制一台真实机器人。\n";
-	p += "机器人结构脚本：" + cfg.structurePath
-		+ "。硬件已加载并上电常驻（动作脚本执行完不会断电），"
-		"因此你可以在一次任务里连续执行多个动作脚本。\n";
-	p += "模型接入由 Lua 协议驱动 `" + cfg.driverTable + "`（变量 `" + cfg.llmVar
-		+ "`）提供；接入点、密钥与模型来自配置文件或命令行。\n\n";
-
-	p += "## 机器人结构（接线图）\n";
-	/* 配置组装期的体积预检已经读过这两段（C6）：有成品就用它，没有（离线单测
-	 * 手搓配置、以及不走 buildAgentConfig 的调用方）才实时读——两条路径的读法
-	 * 与消毒完全相同（同一函数），差别只在「什么时候读」。 */
-	std::string sql = cfg.structureHead ? *cfg.structureHead
-			: structureScriptHead(cfg.structurePath, 16u << 10);
-	nSql = sql.size();
-	p += sql.empty() ? std::string("(结构脚本不可读)\n")
-			: quoteUntrusted("结构脚本 " + cfg.structurePath + " 摘录：\n", sql);
-
-	p += "## 硬件变量\n";
-	std::string hw = describeHardware(robot);
-	nHw = hw.size();
-	p += quoteUntrusted("硬件变量清单：\n", hw);
-
-	p += "## 可用动作脚本（目录 " + cfg.scriptsDir + "）\n";
-	std::string scripts = cfg.scriptsList ? *cfg.scriptsList
-			: describeActionScripts(cfg.scriptsDir);
-	nScripts = scripts.size();
-	p += quoteUntrusted("动作脚本清单（相对路径 + 首行注释）：\n", scripts);
-
-	p += "## 工作方式\n";
-	p += "- 需要机器人行动时用 run_action_script 执行动作脚本，脚本名必须来自上面的清单。\n";
-	p += "- 动作脚本的回执里会附带**驱动返回表**（器件读数，如传感器数值），"
-		"据此判断硬件当前状态，不要凭空假设读数。\n";
-	p += "- 不清楚有哪些脚本或硬件时，先用 list_action_scripts / list_hardware 查询。\n";
-	p += "- 需要核对某个结构表的定义或数据时，用 query_sql（SELECT * FROM 表名;），"
-		"它只读查询、不会改变任何状态；只看个别行时可加等值条件"
-		"（SELECT * FROM 表名 WHERE 列 = 值 [AND 列2 = 值2];，精确文本匹配）。\n";
-	p += "- 一次只执行一个动作脚本，看清返回结果后再决定下一步。\n";
-	p += "- 脚本报错时先读清原因（脚本名错、硬件未接、参数越界），不要盲目重复同一条。\n";
-	if (cfg.allowShell) {
-		p += "- run_command 适合查看系统状态、日志与设备节点；驱动硬件请用 run_action_script。\n";
-	}
-	if (cfg.allowHotSql) {
-		p += "- 需要给机器人**增加**硬件时用 apply_sql：CREATE TABLE 建表 + INSERT INTO 插行，"
-			"新器件立即上电；驱动脚本必须已存在于 modules/ 下（表名即模块名），"
-			"错则整批回滚、不留半成品。对照/查询请用 query_sql。\n";
-		p += "- 需要**摘掉**某个器件时用 apply_sql 的 DELETE FROM 表 WHERE 列 = 值"
-			"（多条件用 AND；不写 WHERE 会删掉整张表）：器件会**当场断电**，这是"
-			"**不可逆**的操作，回执里此前的读数与状态都要当作已失效。被别的器件引用着的"
-			"变量会被拒绝并点名引用方。删除前先用 query_sql 确认 WHERE 会命中哪些行，"
-			"并**只删你确实要移除的那个**（宁可多查一次，也不要删错）。\n";
-	}
-	/* 发现 2 的 A 步（2026-09-23）：可读清单由 --read-var 声明（已解析，只列**真正
-	 * 可读**的那些）。清单为空就一个字都不写——提示词里承诺一个不存在的工具，
-	 * 模型会反复尝试并浪费轮次。 */
-	const std::string readable = describeReadableVars(cfg.readVars, robot);
-	if (!readable.empty()) {
-		p += "- 需要读数（传感器当前值、器件状态）时用 read_variables：可读变量为 "
-			+ readable + "。它只读、不改变任何状态；清单之外的变量读不到，不要尝试。\n";
-	}
-	p += "- 用中文回答，结论简洁并说明依据。\n";
-
-	/* 提示词包追加在内置段落之后（robot_agent 同款语义）：内置部分只讲机器人
-	 * 本体，「这个机器人是谁、该怎么行事」由包定义；buildAgentConfig 已把
-	 * 加载失败挡在上电之前，这里不可能拿到坏包。 */
-	if (!cfg.promptPack.empty()) { p += "\n\n" + cfg.promptPack; }
-
-	if (p.size() > kMaxSystemPromptBytes) {
-		throw std::runtime_error("系统提示词超过 " + std::to_string(kMaxSystemPromptBytes)
-			+ " 字节上限（实测 " + std::to_string(p.size()) + " 字节）：结构脚本头 "
-			+ std::to_string(nSql) + " / 硬件变量 " + std::to_string(nHw)
-			+ " / 动作脚本清单 " + std::to_string(nScripts) + " / 提示词包 "
-			+ std::to_string(cfg.promptPack.size())
-			+ "。请缩减 --prompt-file、--scripts-dir 下的脚本数量或结构脚本注释后重试");
-	}
-	return p;
 }
 
 } // namespace agent
