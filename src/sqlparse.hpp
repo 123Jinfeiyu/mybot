@@ -157,6 +157,10 @@ class Lexer {
 	bool rght_ = false;		/* 右括号 */
 	bool left_ = false;		/* 左括号（紧随一个已提交的 token 时挂起） */
 	bool eq_ = false;		/* 等号（同上：WHERE col=value 紧贴写法靠它切分） */
+	/* 双写转义（#33）预读缓存：引号态内遇同种引号时预读下一字符，若非双写
+	 * 转义则本引号闭合、预读字符缓存于此，由 next() 主循环按常规处理。
+	 * -1 = 无缓存。 */
+	int pendingChar_ = -1;
 	bool singleLineComment_ = false;
 	bool multiLineComment_ = false;
 	bool multiLineComment2_ = false;
