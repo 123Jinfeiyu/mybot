@@ -8,7 +8,6 @@
 #include <utility>
 #include <vector>
 
-#include "agentloop.hpp"
 #include "llmconfig.hpp"
 #include "promptpack.hpp"
 #include "agenttools.hpp"
@@ -748,259 +747,24 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 	return tctx;
 }
 
+
+/* C++ Agent REPL 实现已移除（依赖已删除的 AgentSession 类）
+ * 请使用 Rust Agent: ./agent/target/release/mybot-agent
+ * 保留函数签名以避免修改头文件和其他引用 */
+
 int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
 		std::istream& in, std::ostream& out, std::ostream& log) {
-	AgentToolContext tctx = makeToolContext(cfg, robot, log);
-
-	AgentToolRegistry tools = makeAgentTools(tctx);
-
-	AgentOptions aopts;
-	aopts.maxTurns = cfg.maxTurns;
-	aopts.verbose = cfg.verbose;
-	aopts.log = &log;
-	aopts.maxHistoryBytes = cfg.maxHistoryBytes;
-	aopts.maxTaskToolResultBytes = cfg.maxTaskToolResultBytes;
-	aopts.maxTaskImageBytes = cfg.maxTaskImageBytes;
-	aopts.maxCallsPerRound = cfg.maxCallsPerRound;
-	/* A4：墙钟预算不是请求字段（不进 makeDriverConfig / 不发往 provider），
-	 * 它是宿主自己给「一个任务能带电跑多久」设的闸。 */
-	aopts.maxTaskSeconds = cfg.maxTaskSeconds;
-	const std::string systemPrompt = buildAgentSystemPrompt(cfg, robot);
-	aopts.systemPrompt = systemPrompt;
-	aopts.audit = cfg.audit;
-	aopts.policy = cfg.policy;
-	/* SAN-9：审计的会话/模型记录的上下文（只读事实，密钥只报来源不报值） */
-	aopts.auditDriver = cfg.driverTable;
-	aopts.auditModel = cfg.model;
-	aopts.auditEndpoint = cfg.endpoint;
-	switch (cfg.apiKeySource) {
-	case ApiKeySource::Env: aopts.auditKeySource = "env"; break;
-	case ApiKeySource::ConfigInline: aopts.auditKeySource = "config_inline"; break;
-	case ApiKeySource::ConfigFile: aopts.auditKeySource = "config_file"; break;
-	case ApiKeySource::None: break;
-	}
-
-	/* ---- 会话持久化（批次 1，2026-09-23）----
-	 * 打开与校验都放在会话构造之前：文件打不开、指纹不符、协议自检不过
-	 * 都按「输入错误」处理（退出码 2），不进入会话。指纹（结构脚本名 +
-	 * 工具集 + 系统提示词）要到提示词定稿（上电后）才算得出，故这一步
-	 * 必然在 active() 之后——但拒绝路径不写任何会话/审计记录，main 随后
-	 * 走常规 deactivate 清理链，硬件状态无损。 */
-	std::vector<ChatMessage> restored;
-	bool resumedOk = false;
-	if (!cfg.sessionFile.empty()) {
-		SessionHead head;
-		head.version = 1;
-		head.robot = structureDisplayName(cfg.structurePath);
-		head.toolsFp = sessionToolsFingerprint(tools.specs());
-		head.systemFp = fingerprint64(systemPrompt);
-		auto writer = std::make_shared<SessionFileWriter>();
-		if (cfg.resumeSession) {
-			LoadedSession loaded;
-			std::vector<std::string> warns;
-			std::string serr;
-			if (!loadSessionFile(cfg.sessionFile, loaded, warns, serr)) {
-				log << "错误: " << serr << "\n";
-				return 2;
-			}
-			/* 指纹核对：结构变了/工具集变了/提示词包变了，旧上下文对不上号，
-			 * 拒绝恢复并点名差异（sessionId 不比对——恢复就是要沿用它） */
-			if (std::string mm = sessionHeadMismatch(head, loaded.head); !mm.empty()) {
-				log << "错误: 拒绝恢复 '" << cfg.sessionFile << "'：" << mm << "\n";
-				return 2;
-			}
-			/* 行间协议自洽（孤儿/重复 tool_call_id）：恢复的历史按不可信输入
-			 * 对待，服务端会 400 的序列宁可当场拒绝也不要让每个任务都失败 */
-			if (std::string viol = historyProtocolViolation(loaded.messages); !viol.empty()) {
-				log << "错误: '" << cfg.sessionFile << "' 未通过协议自检（" << viol
-					<< "）；拒绝恢复——文件可能被截断或改写\n";
-				return 2;
-			}
-			for (const std::string& w : warns) { log << "警告: " << w << "\n"; }
-			if (std::string pw = sessionPermsWarning(cfg.sessionFile); !pw.empty()) {
-				log << "警告: " << pw << "\n";
-			}
-			/* 审计沿用原会话 id（批次 1）：恢复前后的审计行对上同一段对话 */
-			if (cfg.audit) { cfg.audit->adoptSessionId(loaded.head.sessionId); }
-			aopts.auditResumed = true;
-			if (std::string werr; !writer->open(cfg.sessionFile, /*append=*/true, werr)) {
-				log << "错误: " << werr << "\n";
-				return 2;
-			}
-			restored = std::move(loaded.messages);
-			resumedOk = true;
-		} else {
-			if (std::string pw = sessionPermsWarning(cfg.sessionFile); !pw.empty()) {
-				log << "警告: " << pw << "\n";
-			}
-			if (std::string werr; !writer->open(cfg.sessionFile, /*append=*/false, werr)) {
-				log << "错误: " << werr << "\n";
-				return 2;
-			}
-			/* 开新会话：截断旧文件、写会话头。旧的对话历史若还想留着，
-			 * 应在启动前自行备份——session 文件始终镜像「本次会话」。 */
-			head.sessionId = cfg.audit ? cfg.audit->sessionId() : "";
-			writer->writeHeader(head);
-			if (cfg.verbose) {
-				log << "会话文件 '" << cfg.sessionFile << "' 已就绪（新会话）\n";
-			}
-		}
-		aopts.sessionWriter = std::move(writer);
-	}
-
-	AgentSession session(transport, tools, std::move(aopts));
-	if (resumedOk) {
-		session.restoreHistory(restored);
-		log << "已恢复会话（" << restored.size() << " 条消息；图片内容不随会话恢复，"
-			"以占位文本在列）\n";
-	}
-
-	/* ---- 一次性任务：--task "..." ---- */
-	if (!cfg.task.empty()) {
-		try {
-			out << session.runTurn(cfg.task) << "\n";
-			session.writeSessionEnd("end");
-			return 0;
-		} catch (const std::exception& e) {
-			log << "错误: " << e.what() << "\n";
-			/* SAN-9：失败也要留一条会话结束记录——"这次会话怎么结束的"是
-			 * 复盘的第一句话（此前失败会话在日志里可能连一条都没有）。 */
-			session.writeSessionEnd("error", e.what());
-			return 1;
-		} catch (...) {
-			/* A5：与 main.cpp:186 同判据——本机 LuaJIT 用 C++ 异常实现 luaD_throw，
-			 * 从没有 Lua CFRAME 的 C++ 帧抛出的 Lua 错误不是 std::exception。
-			 * 漏了它就穿透到 runRobotAndCleanup，退出码仍是 1，但报错文案会退化成
-			 * 那句不含任何成因的 "non-standard exception"。 */
-			log << "错误: 非标准异常（Lua 错误或外来抛出）\n";
-			/* G3（2026-09-23）：非标准异常同样要留一条会话结束记录。此前这里
-			 * 直接 return 1，于是「一次性任务因 Lua 错误结束」的会话在审计里
-			 * **一条 session 记录都没有**——正是 SAN-9 要消除的失效形态，只是
-			 * 上面那条 std::exception 分支修了、这条 P1 遗漏（同一函数内两条
-			 * 失败路径的处置必须一致，否则复盘时会以为问题只出在某类异常上）。 */
-			session.writeSessionEnd("error", "非标准异常（Lua 错误或外来抛出）");
-			return 1;
-		}
-	}
-
-	/* ---- 交互 REPL：硬件全程常驻，可连续下达任务 ----
-	 * 循环本体在 runAgentRepl（C3 拆出，可离线单测）；这里只做装配。 */
-	const int replRc = runAgentRepl(session, cfg, robot, in, out, log);
-	session.writeSessionEnd("end");
-	return replRc;
+	(void)cfg; (void)robot; (void)transport; (void)in; (void)out;
+	log << "错误: C++ Agent 已移除，请使用 Rust Agent\n";
+	log << "详见: docs/agent.md\n";
+	return 2;
 }
-
-/* /sql 命令的实现见 agenttools.cpp：SELECT 走只读渲染（runSqlStatement），
- * CREATE/INSERT 走热插事务（runSqlCommand → RobotStruct::applySql，真正带电生效）。 */
 
 int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
 		RobotStruct& robot, std::istream& in, std::ostream& out, std::ostream& log) {
-	/* 状态指示提示符组件（2026-09-22 可用性改进）：提取结构脚本名（去路径和扩展名）、
-	 * 硬件变量数量，让用户在提示符即可看到当前上下文，无需反复 /hardware 查询。
-	 * 变量数**每轮重取**（2026-09-23 热插表）：/sql 的 CREATE/INSERT 会真的长出
-	 * 硬件，缓存首轮值会让提示符在热插之后一直少报。
-	 * 展示名单点在 structureDisplayName（批次 1 起：会话文件的 robot 指纹字段
-	 * 与这里共用同一份）。 */
-	const std::string robotName = structureDisplayName(cfg.structurePath);
-
-	out << "agent 模式：机器人已上电常驻（结构脚本 " << cfg.structurePath << "）。\n"
-		<< "直接输入任务；/hardware 看硬件清单，/scripts 看动作脚本，/sql 执行结构 SQL，/status 看会话状态，/clear 清空对话记忆，"
-		"/help 看帮助，/exit 退出。\n";
-	std::string line;
-	while (!stopRequested()) {
-		/* 状态提示符格式：mybot[robot_name|llm_var|N_hw]>
-		 * 示例：mybot[spider1|llm0|14hw]> */
-		out << "mybot[" << robotName << "|" << cfg.llmVar << "|"
-			<< robot.registry().byName().size() << "hw]> " << std::flush;
-		if (!std::getline(in, line)) { break; }
-		/* 输入长度限制（2026-09-22 审计后添加）：防止恶意输入巨大字符串
-		 * 导致内存耗尽。getline 本身无限制，只在坏分配时 bad_alloc。
-		 * 超限响亮拒绝并提示，不静默截断（与配置文件同款口径）。 */
-		if (line.size() > bot::agent::kMaxReplInputBytes) {
-			log << "错误: 输入过长（" << line.size() << " 字节，上限 "
-				<< bot::agent::kMaxReplInputBytes << " 字节）；请缩短输入或分多次提交\n";
-			continue;
-		}
-		std::string task = trim(line);
-		if (task.empty()) { continue; }
-		if (task == "/exit" || task == "/quit") { break; }
-		if (task == "/help") {
-			out << "内置命令:\n"
-				<< "  /hardware  - 显示硬件清单（只读，不触发任何动作）\n"
-				<< "  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）\n"
-				<< "  /sql <语句> - 执行结构 SQL：SELECT * FROM t [WHERE 列 = 值 [AND ...]]"
-				   " / SHOW TABLES 只读查询运行时矩阵（SHOW TABLES 列出全部表名与数据行数）；\n"
-				   "               CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）；\n"
-				   "               DELETE FROM t [WHERE 列 = 值 [AND ...]] 当场断电摘除匹配行"
-				   "（不可逆）；\n"
-				   "               UPDATE t SET 列 = 值 [, ...] [WHERE ...] 按断电重建改写"
-				   "命中行（删旧件 + 装新件）\n"
-				<< "  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）\n"
-				<< "  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）\n"
-				<< "  /help      - 显示此帮助\n"
-				<< "  /exit      - 退出 agent 模式\n"
-				<< "  /quit      - 同 /exit\n"
-				<< "直接输入任务描述即可让智能体执行，例如：\n"
-				<< "  让机器人站立\n"
-				<< "  拍照并描述看到的内容\n";
-			continue;
-		}
-		if (task == "/clear") {
-			/* C1：上下文被一次错误结论污染后，此前唯一出路是重启进程——而重启
-			 * 会丢掉硬件常驻状态（执行器停在最后指令位置，现场代价不小）。
-			 * /clear 只裁会话历史，机器人保持上电。 */
-			session.clearHistory();
-			out << "已清空对话记忆（硬件保持上电，系统提示词不变）。\n";
-			continue;
-		}
-		if (task == "/status") {
-			/* SAN-10：会话状态一览（只读；**不触发任何任务**——新命令必须在
-			 * 派发 runTurn 之前 continue，否则它会被当成任务描述发给模型）。 */
-			out << summarizeSessionStatus(session, cfg, robot) << "\n";
-			continue;
-		}
-		if (task == "/hardware") {
-			out << describeHardware(robot) << "\n";
-			continue;
-		}
-		if (task == "/scripts") {
-			out << describeActionScripts(cfg.scriptsDir) << "\n";
-			continue;
-		}
-		/* /sql <语句>：整批 SELECT 走只读渲染；含 CREATE/INSERT/DELETE 则走带电
-		 * 生效（runSqlCommand 是单一分派点，见 agenttools.cpp）。必须在本派发点
-		 * continue —— 否则会被当任务描述发给模型。 */
-		if (task.size() >= 2 && task.rfind("/sql", 0) == 0
-				&& (task.size() == 4 || task[4] == ' ' || task[4] == '\t')) {
-			const std::string sql = trim(task.substr(4));
-			if (sql.empty()) {
-				out << "用法: /sql <语句>（以 ; 结尾），例如 /sql SELECT * FROM Vars;\n"
-					"      可加等值条件（AND 连接），例如 "
-					"/sql SELECT * FROM Servo WHERE name = 's1';\n"
-					"      SHOW TABLES 列出当前结构的全部表名与数据行数，例如 "
-					"/sql SHOW TABLES;\n"
-					"      DELETE 会当场断电摘除匹配行且不可逆，例如 "
-					"/sql DELETE FROM Servo WHERE name = 's1';\n"
-					"      UPDATE 按断电重建改写命中行（先断电摘除再重装），例如 "
-					"/sql UPDATE Servo SET angle = 90 WHERE name = 's1';\n";
-				} else {
-				out << runSqlCommand(sql, robot) << "\n";
-			}
-			continue;
-		}
-		try {
-			out << session.runTurn(task) << "\n";
-		} catch (const std::exception& e) {
-			/* REPL：单轮失败不结束会话（历史已回滚，可继续下一条任务） */
-			log << "错误: " << e.what() << "\n";
-		} catch (...) {
-			/* A5：同上。runTurn 的 catch(...) 已把历史裁回最后一个完整边界，
-			 * 所以这一轮的 tool_calls/tool 消息不会留下半截序列，会话可以继续。 */
-			log << "错误: 非标准异常（Lua 错误或外来抛出）；本轮任务已放弃，可继续下一条\n";
-		}
-	}
-	out << "\n";
-	return 0;
+	(void)session; (void)cfg; (void)robot; (void)in; (void)out;
+	log << "错误: C++ Agent REPL 已移除\n";
+	return 2;
 }
 
 } // namespace agent

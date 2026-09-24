@@ -18,7 +18,8 @@
 #include "actionsource.hpp"
 #include "agentaudit.hpp"
 #include "agentdriver.hpp"
-#include "agentloop.hpp"	/* AgentSession（C3：runAgentRepl 签名需要） */
+// agentloop.hpp 已删除 - AgentSession 前向声明  
+namespace bot { namespace agent { class AgentSession; } }
 #include "agentpolicy.hpp"
 #include "agentproto.hpp"
 #include "agentprompt.hpp"	/* buildAgentSystemPrompt / kMaxSystemPromptBytes（A2 拆出） */
@@ -217,7 +218,9 @@ inline constexpr std::size_t kMaxReplInputBytes = 10u << 20;
 AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 		std::ostream& log);
 
-/* runAgentMode：跑 agent 会话。返回进程退出码：0 正常结束；1 模型/执行失败。 */
+/* runAgentMode：C++ Agent 会话已移除（依赖已删除的 ChatTransport）
+ * 保留桩函数供MCP Backend调用检查 */
+class ChatTransport; // 前向声明
 int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
 		std::istream& in, std::ostream& out, std::ostream& log);
 

@@ -104,7 +104,6 @@ set(MYBOT_CORE_SOURCES
   src/agentbudget.cpp
   src/agentdispatch.cpp
   src/agentprompt.cpp
-  src/agentloop.cpp
   src/agentmode.cpp
   src/agentdriver.cpp
   src/agentaudit.cpp
@@ -189,8 +188,7 @@ add_executable(mybot_tests
   test/cpp/test_agentproto.cpp
   test/cpp/test_agentdriver.cpp
   test/cpp/test_agenttools.cpp
-  test/cpp/test_agentloop.cpp
-  test/cpp/test_agentrepl.cpp
+  # test/cpp/test_agentrepl.cpp  # 已移除 - 依赖已删除的 agentloop
   test/cpp/test_agentaudit.cpp
   test/cpp/test_agentpolicy.cpp
   test/cpp/test_promptpack.cpp
@@ -340,7 +338,7 @@ endif()
 # ======================================================================
 file(GLOB MYBOT_CPP_TEST_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/cpp/test_*.cpp)
 set(MYBOT_CPP_TEST_REGISTERED
-  test_actionsource test_agentaudit test_agentdriver test_agentloop test_agentpolicy test_agentproto test_agentrepl test_agenttools test_sessionfile test_mcpbackend
+  test_actionsource test_agentaudit test_agentdriver test_agentpolicy test_agentproto test_agenttools test_sessionfile test_mcpbackend
   test_cliargs test_daemon_concurrency test_daemon test_expr test_hardware test_json
   test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
   test_mtmerge test_promptpack test_robot test_sqlparse test_util)

@@ -12,7 +12,6 @@
 #include <unistd.h>
 
 #include "actionsource.hpp"
-#include "agentdriver.hpp"
 #include "agentmode.hpp"
 #include "mcpbackend.hpp"
 #include "agent_subprocess.hpp"
@@ -164,33 +163,16 @@ std::unique_ptr<RobotStruct> loadStructure(const std::string& rpath) {
 	}
 }
 
-/* agent 流水线：上电 → 驱动查找/传输适配 → 工具循环。异常上抛由 main
- * 的 catch 统一折成退出码 1。 */
+/* C++ Agent REPL已移除 - 请使用Rust Agent
+ * 保留此函数签名以避免大范围修改，但实际功能已废弃 */
 int runAgentPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
 		std::istream& in, std::ostream& out, std::ostream& log) {
-	/* agent 模式：上电后硬件常驻，控制权交给智能体工具循环；
-	 * 只有会话结束（--task 跑完 / REPL 退出）才 deactivate。
-	 * 传输要在 active() 之后才能绑定——驱动变量是那时才装配的。 */
-	robot.active();
-
-	MatrixVars_Hardware* driver = robot.registry().find(agentCfg.llmVar);
-	if (driver == nullptr) {
-		throw std::runtime_error("结构脚本里没有 LLM 驱动变量 '"
-			+ agentCfg.llmVar + "'（驱动表 " + agentCfg.driverTable
-			+ "）；检查 --llm-var/--llm-driver，或用 --help 看内置驱动名");
-	}
-	agent::AgentDriverConfig dcfg = agent::makeDriverConfig(agentCfg);
-	/* 重试信息走 stderr——与下面 runAgentMode 的日志流是同一个，绝不进 stdout
-	 * （宿主的输出一律走 stderr，混进去会污染 `--task` 的输出；C5 的 sink 缺省即
-	 * stderr，这里显式写出是为了让「走哪条流」在装配点可见）。
-	 * SAN-5 更正：此前这里写的是「stdout 只放模型回答」——那句话过强。宿主自己不往
-	 * stdout 写东西（动作回显也已从 std::cout 改到 std::cerr），但 Lua 驱动自己的
-	 * print() 仍走 stdout（48 个在库驱动如此），见 docs/agent.md 的如实声明。 */
-	dcfg.log = &std::cerr;
-	std::unique_ptr<agent::ChatTransport> transport =
-		agent::makeDriverTransport(driver, dcfg);
-
-	return agent::runAgentMode(agentCfg, robot, *transport, in, out, log);
+	(void)robot; (void)agentCfg; (void)in; (void)out; (void)log;
+	std::cerr << "错误: C++ Agent 已移除\n";
+	std::cerr << "请使用 Rust Agent:\n";
+	std::cerr << "  ./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n";
+	std::cerr << "详见: docs/agent.md\n";
+	return 2;
 }
 
 /* 动作流水线：先取动作脚本、后上电。返回退出码，异常上抛。 */
