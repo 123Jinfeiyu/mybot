@@ -14,19 +14,26 @@
 
 mod audit;
 mod bridge;
+mod budget;
 mod config;
 mod frame;
+mod history;
+mod hook;
+mod model;
 mod prompt;
 mod provider;
 mod repl;
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::audit::AuditLog;
 use crate::bridge::Bridge;
+use crate::budget::TaskBudget;
 use crate::config::Config;
 use crate::frame::BackendClient;
+use crate::hook::HookState;
 use crate::prompt::PromptMaterial;
 use crate::repl::Session;
 
@@ -76,6 +83,19 @@ async fn run() -> i32 {
         );
     }
 
+    // ---- 循环层共享状态 + 取消信号 ----
+    // 先装信号处理器（连接后端可能要等上电，Ctrl-C 在这一段也该有效）
+    let state = Arc::new(HookState::new(
+        cfg.max_task_seconds,
+        cfg.max_calls_per_round,
+        TaskBudget::new(
+            cfg.max_task_tool_result_bytes as usize,
+            cfg.max_task_image_bytes as usize,
+            cfg.max_task_seconds,
+        ),
+    ));
+    install_signal_handlers(Arc::clone(&state));
+
     // ---- 后端：连接 → 工具表 → 提示词素材 ----
     let client =
         match BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
@@ -87,7 +107,7 @@ async fn run() -> i32 {
                 return 1;
             }
         };
-    let bridge = Arc::new(Bridge::new(client));
+    let bridge = Arc::new(Bridge::new(client, Arc::clone(&state)));
     let specs = match bridge.list_tools().await {
         Ok(s) => s,
         Err(e) => {
@@ -133,7 +153,7 @@ async fn run() -> i32 {
         }
     };
 
-    let backend = match provider::build(&cfg, specs, &bridge, &preamble) {
+    let backend = match provider::build(&cfg, specs, &bridge, Arc::clone(&state), &preamble) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("错误: {e:#}");
@@ -151,7 +171,7 @@ async fn run() -> i32 {
     );
 
     let task = cli.task.clone();
-    let mut session = Session::new(cfg, backend, bridge, tool_names, material, audit);
+    let mut session = Session::new(cfg, backend, bridge, state, tool_names, material, audit);
     if task.is_empty() {
         let rc = repl::run_repl(&mut session).await;
         session.write_session_end("end", "");
@@ -177,6 +197,73 @@ async fn run() -> i32 {
 fn config_error(msg: &str) -> i32 {
     eprintln!("错误: {msg}");
     2
+}
+
+/// D4：SIGINT/SIGTERM 处理器——首次只置停止标志（钩子在轮循环开头与逐条派发之前
+/// 都会看它），让在飞的模型调用与后续派发停下来、会话走正常收尾；
+/// **第二次升级为强杀**（还原缺省处置并重新触发信号——与 C++ `onStopSignal` 同款，
+/// 连退出码都交给信号本身），因为优雅路径本身也可能被卡住（驱动阻塞在不可中断的
+/// 系统调用里等）。
+///
+/// 与 C++ 的差异（如实记录）：C++ 还用取消哨兵文件把「在飞的 libcurl 请求」在约
+/// 1 秒内掐断；rig 侧的在飞请求由 `--llm-timeout`（默认 180s）封顶，取消在两处
+/// 判定点与退避循环里生效——Ctrl-C 之后不再发起新调用，但当前这一次要等它自己
+/// 返回或超时。
+fn install_signal_handlers(state: Arc<HookState>) {
+    tokio::spawn(async move {
+        let mut sigint = signal_stream(libc::SIGINT);
+        let mut sigterm = signal_stream(libc::SIGTERM);
+        loop {
+            tokio::select! {
+                r = recv(&mut sigint) => if !r { break },
+                r = recv(&mut sigterm) => if !r { break },
+            }
+            if state.stop.swap(true, Ordering::SeqCst) {
+                eprintln!("[mybot-agent] 再次收到停止信号，立即退出（跳过清理）");
+                // SAFETY: signal/raise 都是 async-signal-safe 且此处不在信号处理器内；
+                // 还原缺省处置后重新触发，让进程按信号语义终止（与 C++ 同款）。
+                unsafe {
+                    libc::signal(libc::SIGINT, libc::SIG_DFL);
+                    libc::signal(libc::SIGTERM, libc::SIG_DFL);
+                }
+                std::process::exit(130);
+            }
+            eprintln!(
+                "[mybot-agent] 收到停止信号：不再发起新的模型调用与工具下发，本轮以「执行被中断」收场\
+                 （再按一次立即退出）"
+            );
+        }
+    });
+}
+
+type SignalStream = Option<tokio::signal::unix::Signal>;
+
+fn signal_stream(sig: libc::c_int) -> SignalStream {
+    use tokio::signal::unix::{signal, SignalKind};
+    let kind = if sig == libc::SIGINT {
+        SignalKind::interrupt()
+    } else {
+        SignalKind::terminate()
+    };
+    match signal(kind) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            // 装不上不是致命的：取消仍可由二次信号（默认处置）或 stdin EOF 收场
+            eprintln!("[mybot-agent] 警告: 无法安装信号处理器（{e}）；Ctrl-C 将沿用缺省处置");
+            None
+        }
+    }
+}
+
+async fn recv(s: &mut SignalStream) -> bool {
+    match s {
+        Some(s) => s.recv().await.is_some(),
+        // 装不上处理器时这一路永不就绪（另一路仍然有效）
+        None => {
+            std::future::pending::<()>().await;
+            false
+        }
+    }
 }
 
 /// 提示词包：加载 + H2 根约束。

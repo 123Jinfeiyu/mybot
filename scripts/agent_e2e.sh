@@ -55,9 +55,9 @@
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
 # 用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
-#   --rust：只跑 R1-R5（mybot-agent，rig 迁移批次 B），拓扑是「后端 + mybot-agent」
-#           两个进程；缺 agent/target/release/mybot-agent 时直接报错退出（守门那边
-#           按 SKIP 计，见 test/lib/sections/net_agent.sh）。
+#   --rust：只跑 R1-R9（mybot-agent；R1-R5 批次 B 骨架、R6-R9 批次 C 循环层），
+#           拓扑是「后端 + mybot-agent」两个进程；缺 agent/target/release/mybot-agent
+#           时直接报错退出（守门那边按 SKIP 计，见 test/lib/sections/net_agent.sh）。
 # 退出码: 0 通过 / 1 失败 / 2 参数用法错 / 125 缺 python3（守门按 SKIP 计）
 set -u
 
@@ -177,11 +177,21 @@ TASK="先看硬件，再让继电器动作一次，最后跑一条命令"
 #   [mybot-agent（rig）] --帧/AF_UNIX--> [mybot --mcp-backend] --Lua 驱动--> relay 虚拟机器人
 # 假模型服务与 C++ 场景共用（scripts/fake_llm_server.py 的 ok 剧本）。断言面刻意与
 # C++ 场景**同判据**（工具定义齐备、回执真的从后端回来、审计字段齐备、stdout 纯净），
-# 但有几处必须按 Rust 侧**批次 B 已成立的语义**写，照抄 C++ 就是假绿：
-#   * 审计每次任务一条 model 行（C++ 是每次模型调用一条）——per-call 行是批次 C；
+# 但有几处必须按 Rust 侧**已成立的语义**写，照抄 C++ 就是假绿：
 #   * 工具审计行**不在** agent 的审计文件里，由后端自己的 --audit-log 落（同一次运行）；
-#   * 图片注入、会话持久化（--session-file/--resume）、TCP 远程 REPL、SIGINT 取消
-#     都还没搬（批次 C/D），Rust 段因此不含这些场景。
+#   * 会话持久化（--session-file/--resume）、TCP 远程 REPL 还没搬（批次 D），
+#     Rust 段因此不含这两个场景（SIGINT 取消在 R8b 覆盖）。
+#
+# 批次 C（2026-09-24，循环层语义）在 Rust 段新增四个场景，判据与 C++ 侧**同源**：
+#   * R6 单轮调用上限（C++ 场景 10）：超限调用不派发、模型收到「未派发」回执、
+#     会话不被污染（第二个任务照常完成）。呈现位置与 C++ 不同（C++ 挂在 assistant
+#     文本里，rig 侧挂在工具回执上）——已记档为如实偏差。
+#   * R7 限流重试（C++ 场景 11）：429 前两次 + Retry-After: 1，第三次成功；
+#     判据含**审计 attempts=3**（重试真的发生过，不是一次就放弃）与恒 503 如实失败。
+#   * R8 单次调用超时（C++ 场景 3）：--llm-timeout 1 对睡 5 秒的服务端，必须在 4 秒内
+#     失败；R8b 取消：SIGINT 之后不再发起新调用，本轮以「执行被中断」收场、退出码 0。
+#   * R9 图片后注（C++ 场景 5）：工具回执进的是 tool 消息，图片只能走**紧随其后的
+#     user 消息**（OpenAI 不允许工具结果带图片）——线上报文的次序与 C++ 同序。
 if [ "$RUST_MODE" -eq 1 ]; then
 	# 起后端（`mybot --mcp-backend`）：$1=目录，其余为该后端要开的能力开关。
 	# socket 目录先按 0700 建好（后端自己会建，但脚本先建可免掉那条权限告警——
@@ -326,6 +336,12 @@ sys.exit(0 if ($2) else 1)
 		"start 行带驱动/接入点/密钥来源（可按会话复盘配置，且不记密钥值）"
 	audit_expr "$AAUD" "any(l['kind']=='model' and l.get('ok') is True and l.get('prompt_tokens')==1234 and l.get('completion_tokens')==56 and l.get('ms', 0) >= 0 for l in lines)" \
 		"model 行按 provider 给的 usage 记账（prompt 1234 / completion 56）"
+	# 批次 C：model 行改为**逐次模型调用**一条（C++ 同口径），turn 从 0 起连续编号；
+	# ok 剧本要跑 4 次模型调用（3 轮工具 + 收尾），故判据是 4 条、turn=0..3。
+	audit_expr "$AAUD" "[l.get('turn') for l in lines if l['kind']=='model'] == [0,1,2,3]" \
+		"model 行逐次模型调用各一条（turn 0..3，与 C++ 同口径）"
+	audit_expr "$AAUD" "all(l.get('req_bytes',0)>0 and l.get('resp_bytes',0)>=0 and l.get('attempts')==1 for l in lines if l['kind']=='model')" \
+		"每条 model 行都带请求体字节与尝试次数（attempts=1 = 没重试）"
 	audit_expr "$AAUD" "not any(l['kind']=='tool' for l in lines)" \
 		"工具行**不在** agent 审计文件里（由后端那一侧落，见下条）"
 	check_absent "$AAUD" "e2e-rust-key" "环境变量密钥不出现在 agent 审计日志"
@@ -404,6 +420,242 @@ JSON
 		echo "  [FAIL] 缺 endpoint 时应退出 2，实际 $rcr5b"
 		fail=1
 	fi
+
+	# ---- R6：单轮调用上限（SAN-1 / AG-26；C++ 场景 10 的 Rust 版）----
+	echo "----- R6：单轮调用上限截断 -----"
+	PORT=$((26700 + RANDOM % 300))
+	CAPR6="$tmp/req-rust6.json"
+	R6="$tmp/rust6"
+	CFGR6="$R6/cfg.json"
+	mkdir -p "$R6"
+	# 上限 2 / 轮次 4：夹具一轮返回 3 条调用 → 第 3 条不派发
+	cat > "$CFGR6" <<'JSON'
+{"max_calls_per_round": 2, "max_turns": 4}
+JSON
+	chmod 600 "$CFGR6"
+	start_server "$PORT" "$CAPR6" "manycalls:3" || exit 1
+	start_backend "$R6" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+	printf 'task-one\ntask-two\n/exit\n' | \
+		BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R6/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config "$CFGR6" >"$R6/out.txt" 2>"$R6/err.txt"
+	rcr6=$?
+	stop_backend
+	stop_server
+	echo "===== stdout ====="; cat "$R6/out.txt"
+	echo "===== stderr ====="; cat "$R6/err.txt"
+	if [ "$rcr6" -ne 0 ]; then
+		echo "  [FAIL] mybot-agent 退出码 $rcr6"
+		fail=1
+	fi
+	# SAN-8①：截断是安全相关事实，操作者必须看得见（C++ 侧同样打这条）
+	check_present "$R6/err.txt" "[上限] 本轮工具调用超过单轮上限 2 条" "截断事件对操作者可见（stderr）"
+	# 「不派发」必须如实到达模型：C++ 挂在 assistant 文本，rig 侧挂在工具回执上
+	check_json "$CAPR6" "any(m.get('role')=='tool' and '未派发：本轮工具调用数超过单轮上限（2 条）' in str(m.get('content','')) for m in d['messages'])" \
+		"超限的那条调用以「未派发」回执交给模型（不是执行失败）"
+	check_json "$CAPR6" "any(m.get('role')=='tool' and '没有产生任何副作用' in str(m.get('content','')) for m in d['messages'])" \
+		"未派发回执写明没有副作用（不谎报状态）"
+	check_json "$CAPR6" "'本轮要查几件事。' in json.dumps(d, ensure_ascii=False)" "夹具确实返回了一轮多条调用（场景有效）"
+	check_absent "$R6/out.txt" "answered more than once" "服务端没有收到重复 tool_call_id"
+	check_absent "$R6/out.txt" "Invalid status code 400" "整个会话没有出现 400"
+	check_absent "$R6/out.txt" "未派发" "未派发回执只给模型，不污染 stdout"
+	nr6="$(grep -cF 'AGENT-E2E-完成' "$R6/out.txt" || true)"
+	if [ "${nr6:-0}" -eq 2 ]; then
+		echo "  [OK] 截断之后第二个任务照常完成（会话未被永久污染）"
+	else
+		echo "  [FAIL] 两个任务应各拿到一次最终回答，实际 ${nr6:-0} 次"
+		fail=1
+	fi
+
+	# ---- R7：限流重试（SAN-3；C++ 场景 11 的 Rust 版）----
+	echo "----- R7：限流 429 的重试与退避 -----"
+	PORT=$((27000 + RANDOM % 300))
+	CFGR7="$tmp/rust7/cfg.json"
+	AAUDR7="$tmp/rust7/agent-audit.jsonl"
+	mkdir -p "$tmp/rust7"
+	# retry_backoff_ms=50（本地退避很短）而服务端 Retry-After: 1 —— 退避必须取大值，
+	# 故「等够 2 秒」本身就是「服务端说了算」的判据。
+	cat > "$CFGR7" <<'JSON'
+{"max_retries": 3, "retry_backoff_ms": 50}
+JSON
+	chmod 600 "$CFGR7"
+	start_server "$PORT" "$tmp/req-rust7.json" "429x2ok" || exit 1
+	start_backend "$tmp/rust7" || exit 1
+	t0=$(date +%s)
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$tmp/rust7/mcp.sock" \
+		--llm-config "$CFGR7" --audit-log "$AAUDR7" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--task "$TASK" >"$tmp/rust7/out.txt" 2>"$tmp/rust7/err.txt"
+	rcr7=$?
+	t1=$(date +%s)
+	stop_backend
+	stop_server
+	echo "===== stdout ====="; cat "$tmp/rust7/out.txt"
+	echo "===== stderr ====="; cat "$tmp/rust7/err.txt"
+	if [ "$rcr7" -ne 0 ]; then
+		echo "  [FAIL] 重试之后任务应当成功，实际退出码 $rcr7"
+		fail=1
+	fi
+	check_present "$tmp/rust7/out.txt" "AGENT-E2E-完成" "限流重试之后任务完成"
+	check_present "$tmp/rust7/err.txt" "限流" "重试日志点名限流类错误"
+	check_present "$tmp/rust7/err.txt" "429" "重试日志带上 429（结构化判据看的是 HTTP 状态码）"
+	check_present "$tmp/rust7/err.txt" "服务端 Retry-After" "退避采用了服务端给的 Retry-After（而非本地指数退避）"
+	check_absent "$tmp/rust7/out.txt" "重试" "重试日志只走 stderr，不进 stdout"
+	# 重试真的发生过：审计的 attempts 字段（批次 C 起由模型装饰器记账）
+	audit_expr "$AAUDR7" "any(l['kind']=='model' and l.get('attempts')==3 and l.get('ok') is True for l in lines)" \
+		"审计如实记下实际尝试次数（attempts=3）"
+	audit_expr "$AAUDR7" "any(l['kind']=='model' and l.get('req_bytes',0)>0 for l in lines)" \
+		"审计记下请求体估算字节（req_bytes）"
+	elapsed7=$((t1 - t0))
+	if [ "$elapsed7" -ge 2 ]; then
+		echo "  [OK] 退避确实等待了（Retry-After: 1 × 2 次 ≈ 2s，实测 ${elapsed7}s）"
+	else
+		echo "  [FAIL] 退避没有生效（实测 ${elapsed7}s < 2s）"
+		fail=1
+	fi
+
+	# R7b：恒 503 —— 重试用尽后如实失败（不谎报成功）
+	echo "----- R7b：恒 503 时重试用尽后如实失败 -----"
+	PORT=$((27300 + RANDOM % 300))
+	start_server "$PORT" "$tmp/req-rust7b.json" "http-503" || exit 1
+	start_backend "$tmp/rust7b" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$tmp/rust7b/mcp.sock" \
+		--llm-config "$CFGR7" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--task "随便问一句" >"$tmp/rust7b-out.txt" 2>"$tmp/rust7b-err.txt"
+	rcr7b=$?
+	stop_backend
+	stop_server
+	echo "===== stderr ====="; cat "$tmp/rust7b-err.txt"
+	if [ "$rcr7b" -eq 0 ]; then
+		echo "  [FAIL] 恒 503 时任务不该成功"
+		fail=1
+	fi
+	check_present "$tmp/rust7b-err.txt" "503" "重试用尽后如实报出 503（不谎报成功）"
+	nr7b="$(grep -cF '退避来源' "$tmp/rust7b-err.txt" || true)"
+	if [ "${nr7b:-0}" -ge 2 ]; then
+		echo "  [OK] 503 被重试了（attempts=3 ⇒ 2 条退避日志）"
+	else
+		echo "  [FAIL] 503 只重试了 ${nr7b:-0} 次（期望 ≥2）"
+		fail=1
+	fi
+
+	# ---- R8：单次调用超时（C++ 场景 3 的 Rust 版）----
+	echo "----- R8：--llm-timeout 生效（单次调用超时） -----"
+	PORT=$((27600 + RANDOM % 300))
+	mkdir -p "$tmp/rust8"
+	CFGR8="$tmp/rust8/cfg.json"
+	# max_retries=1：本场景量的是**单次超时是否被尊重**，重试由 R7 专门守
+	cat > "$CFGR8" <<'JSON'
+{"max_retries": 1}
+JSON
+	chmod 600 "$CFGR8"
+	start_server "$PORT" "$tmp/req-rust8.json" slow || exit 1
+	start_backend "$tmp/rust8" || exit 1
+	t0=$(date +%s)
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 30 "$AGENT_BIN" --socket "$tmp/rust8/mcp.sock" \
+		--llm-config "$CFGR8" --llm-timeout 1 \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--task "随便问一句" >"$tmp/rust8/out.txt" 2>"$tmp/rust8/err.txt"
+	rcr8=$?
+	t1=$(date +%s)
+	stop_backend
+	stop_server
+	cat "$tmp/rust8/err.txt"
+	elapsed8=$((t1 - t0))
+	if [ "$rcr8" -ne 0 ] && [ "$elapsed8" -lt 4 ] && grep -qiF "超时" "$tmp/rust8/err.txt"; then
+		echo "  [OK] 1 秒超时在 ${elapsed8}s 内生效（单次调用超时真的被尊重）"
+	else
+		echo "  [FAIL] 超时未生效（rc=$rcr8, 用时 ${elapsed8}s）"
+		fail=1
+	fi
+
+	# R8b：SIGINT 取消（D4）——置标志后**不再接新任务**，且进程优雅退出（不是被信号打死）
+	echo "----- R8b：SIGINT 取消 -----"
+	PORT=$((27900 + RANDOM % 300))
+	mkdir -p "$tmp/rust8b"
+	# slow 剧本：每次模型调用睡 5 秒后给一句纯文本回答（无工具调用）。
+	# 取消落在**第一次调用在飞时**（sleep 2 后发信号）：这一次调用照常返回（rig 侧
+	# 没有取消哨兵，在飞请求由 --llm-timeout 封顶——如实偏差已记档），随后 REPL 在
+	# 循环开头看到停止标志即退出——于是**管道里的第二条任务不会被受理**。
+	start_server "$PORT" "$tmp/req-rust8b.json" slow || exit 1
+	start_backend "$tmp/rust8b" || exit 1
+	t0=$(date +%s)
+	{ printf '第一件事\n第二件事\n/exit\n'; sleep 8; } | \
+		BOT4CJ_LLM_KEY=e2e-rust-key timeout 30 "$AGENT_BIN" --socket "$tmp/rust8b/mcp.sock" \
+		--llm-config none \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		>"$tmp/rust8b/out.txt" 2>"$tmp/rust8b/err.txt" &
+	REPLPID=$!
+	sleep 2
+	kill -INT "$REPLPID" 2>/dev/null
+	wait "$REPLPID" 2>/dev/null
+	rcr8b=$?
+	t1=$(date +%s)
+	stop_backend
+	stop_server
+	echo "===== stdout ====="; cat "$tmp/rust8b/out.txt"
+	echo "===== stderr ====="; cat "$tmp/rust8b/err.txt"
+	if [ "$rcr8b" -eq 0 ]; then
+		echo "  [OK] 取消后 REPL 正常退出（退出码 0，不是被信号打死）"
+	else
+		echo "  [FAIL] 取消后应当优雅退出（0），实际 $rcr8b"
+		fail=1
+	fi
+	check_present "$tmp/rust8b/err.txt" "收到停止信号" "取消事件对操作者可见（stderr）"
+	# 第二件事没被受理：slow 剧本每受理一条任务就产出一次「慢响应」——按条数判
+	# （比按耗时判稳：不依赖机器快慢）
+	n8b="$(grep -cF '慢响应' "$tmp/rust8b/out.txt" || true)"
+	elapsed8b=$((t1 - t0))
+	if [ "${n8b:-0}" -eq 1 ]; then
+		echo "  [OK] 取消之后不再受理新任务（只受理了第一件事，实测 ${elapsed8b}s）"
+	else
+		echo "  [FAIL] 取消后受理了 ${n8b:-0} 条任务（期望 1 条）"
+		fail=1
+	fi
+
+	# ---- R9：图片后注（C++ 场景 5 的 Rust 版）----
+	echo "----- R9：capture_image 图片以 user 消息后注 -----"
+	PORT=$((28200 + RANDOM % 300))
+	CAPR9="$tmp/req-rust9.json"
+	R9="$tmp/rust9"
+	PICR9="$tmp/pic-rust.jpg"
+	mkdir -p "$R9"
+	python3 - "$PICR9" <<'PICEOF'
+import base64, sys
+# 1x1 真 JPEG（160 字节，FFD8 开头 / FFD9 结尾）——驱动只搬运字节，用真图便于断言
+open(sys.argv[1], "wb").write(base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0a"
+    "HBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAA"
+    "AAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q=="))
+PICEOF
+	start_server "$PORT" "$CAPR9" camera || exit 1
+	start_backend "$R9" --camera-src "$PICR9" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R9/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none --task "拍张照片看看周围有什么" >"$R9/out.txt" 2>"$R9/err.txt"
+	rcr9=$?
+	stop_backend
+	stop_server
+	echo "===== stdout ====="; cat "$R9/out.txt"
+	if [ "$rcr9" -ne 0 ]; then
+		echo "  [FAIL] mybot-agent 退出码 $rcr9"
+		fail=1
+	fi
+	check_present "$R9/out.txt" "AGENT-E2E-完成" "拍照之后仍能给出最终回答"
+	# 图片只能走 user 消息（OpenAI 拒绝工具结果里的图片）：报文的次序必须是
+	# [assistant(tool_calls), tool(回执), user(说明+image_url)]，中间不夹 assistant。
+	check_json "$CAPR9" "(lambda ms: (lambda ti, ii: bool(ti) and bool(ii) and min(ii) > min(ti) and not any(ms[k].get('role')=='assistant' for k in range(min(ti)+1, min(ii))))([i for i,m in enumerate(ms) if m.get('role')=='tool' and '已拍摄照片' in str(m.get('content',''))], [i for i,m in enumerate(ms) if m.get('role')=='user' and isinstance(m.get('content'), list) and any(isinstance(p,dict) and p.get('type')=='image_url' for p in m['content'])]))(d['messages'])" \
+		"图片在工具回执**之后**的 user 消息里（与 C++「图片后注」同序）"
+	check_json "$CAPR9" "any(m.get('role')=='user' and isinstance(m.get('content'), list) and any(isinstance(p,dict) and p.get('text')=='以上工具返回的图片如下，请结合画面内容继续。' for p in m['content']) and any(isinstance(p,dict) and p.get('type')=='image_url' for p in m['content']) for m in d['messages'])" \
+		"图片消息带说明文字（逐字同 C++ 的图片后注）"
+	check_json "$CAPR9" "any(isinstance(m.get('content'), str) and m.get('role')=='tool' for m in d['messages'])" \
+		"工具消息本身只有文本（图片不塞进工具结果）"
+	check_present "$CAPR9" '"data:image/jpeg;base64,/9j/' "注入的是以 data URL 包装的真 JPEG"
+	check_present "$CAPR9" "已拍摄照片" "工具回执（含照片说明）经后端帧回来（进的是 tool 消息）"
+	# 图片的「结果字节」不重复：同一张图在线上只出现一次（注入只作用于请求，不进 transcript）
+	check_json "$CAPR9" "json.dumps(d, ensure_ascii=False).count('data:image/jpeg;base64,/9j/') == 1" \
+		"同一张图在本次请求里只出现一次（不重复注入）"
 
 	if [ "$fail" -eq 0 ]; then
 		echo "mybot-agent 端到端测试通过"

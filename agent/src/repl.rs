@@ -1,34 +1,52 @@
 //! repl.rs —— 会话与交互循环（`src/agentmode.cpp` 的 `AgentSession` + `runAgentRepl` 镜像）
 //!
 //! 三件事：
-//!   1. **一轮任务**（`run_turn`）：`runner(task).history(历史).max_turns(预算).run()`。
-//!      成功把本轮新消息并进历史；失败**保留旧快照**（回滚）——不留半截 tool_calls
-//!      序列，会话可以继续下一条（与 C++ `runTurn` 的 catch 同口径）。
-//!   2. **审计**：model 行由本层写（turn/ok/status/error/ms/token）；session 行在
-//!      `Session::new`/`write_session_end`。**tool 行不在这里**——工具全经后端帧，
-//!      后端 `mybot --mcp-backend` 自己落（见 audit.rs 模块头）。
-//!   3. **交互循环**（`run_repl`）：提示符、内置命令、单轮失败不结束会话。
+//!   1. **一轮任务**（`run_turn`）：任务开始前整块裁剪旧历史 → `begin_task()` 清
+//!      任务内预算 → `runner(task).history(历史).max_turns(预算).run()`。成功把本轮
+//!      新消息（含按位物化的图片后注）并进历史；失败**回滚到钩子记下的边界**（已完整
+//!      跑完的轮留在历史里）——不留半截 tool_calls 序列，会话可以继续下一条。
+//!   2. **审计**：model 行由本层写（turn/ok/status/error/ms/req+resp 字节/attempts/token，
+//!      数据来自模型装饰器记的逐次调用记录）；session 行在 `Session::new`/
+//!      `write_session_end`。**tool 行不在这里**——工具全经后端帧，后端
+//!      `mybot --mcp-backend` 自己落（见 audit.rs 模块头）。
+//!   3. **交互循环**（`run_repl`）：提示符、内置命令、单轮失败不结束会话；取消
+//!      （SIGINT/SIGTERM）与 C++ 同口径——循环退出、会话照常收尾。
 //!
 //! 如实差异（记录在案）：
 //!   * `PromptResponse.messages` 只含**本轮**新消息（rig 的 `new_messages`，不含传入
-//!     的 chat_history）→ 这里 `extend`，正好等于「旧历史 + 本轮」。
-//!   * C++ 的 `/history` 裁剪、任务内字节预算、图片注入属循环层，批次 C/D 落。
+//!     的 chat_history）→ 这里拼成「旧历史 + 本轮」。
+//!   * 图片注入只作用于**发出去的请求**（模型装饰器按请求重建的时机注入），rig 的
+//!     transcript 里没有它 → 任务结束（或失败）后由 `hook::materialize` 按记录的
+//!     位置插回会话历史，与 C++ 的「tool 消息之后另起一条 user 图片消息」同序。
 //!   * `/hardware` / `/scripts` / `/sql` 在 C++ 是**本地**直读机器人与 `runSqlCommand`；
 //!     本进程不持有硬件，一律经工具（`list_hardware` / `list_action_scripts` /
 //!     `apply_sql` / `query_sql`）——所以「后端没给这个工具」时会明确报出缺哪个开关，
 //!     不假装执行过。
 
 use std::io::Write;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use rig_agent::completion::Message;
+use rig_agent::completion::{Message, PromptError};
 
 use crate::audit::{AuditLog, ModelEntry, SessionEntry};
 use crate::bridge::{Bridge, ToolOutcome};
 use crate::config::Config;
+use crate::hook::{self, CallRecord, HookState};
 use crate::prompt::PromptMaterial;
 use crate::provider::Backend;
+
+/// `PromptError` → 操作者可见文本：剥掉 rig 的枚举前缀（`PromptCancelled: `）——
+/// 钩子给的 reason 正是要让操作者看到的那句话（「执行被中断」「达到单任务墙钟预算
+/// （N 秒）…」），C++ 侧的异常文本同样没有前缀。
+fn format_prompt_error(e: PromptError) -> String {
+    let s = e.to_string();
+    match s.strip_prefix("PromptCancelled: ") {
+        Some(rest) => rest.to_string(),
+        None => s,
+    }
+}
 
 /// REPL 单行输入上限（与 C++ `kMaxReplInputBytes` 逐值对齐）：超限**响亮拒绝**并
 /// 提示，不静默截断（getline/read_line 本身无限制）。
@@ -47,6 +65,8 @@ pub struct Session {
     cfg: Config,
     backend: Backend,
     bridge: Arc<Bridge>,
+    /// 循环层共享状态（预算/图片/回滚边界/取消标志）
+    state: Arc<HookState>,
     audit: Option<AuditLog>,
     /// 首轮 `context.get` 素材（结构脚本路径、动作脚本目录……；**硬件数每轮重取**，
     /// 因为后端的 /sql 热插会长出新硬件，缓存首轮值会让提示符一直少报）。
@@ -67,6 +87,7 @@ impl Session {
         cfg: Config,
         backend: Backend,
         bridge: Arc<Bridge>,
+        state: Arc<HookState>,
         tool_names: Vec<String>,
         material: PromptMaterial,
         mut audit: Option<AuditLog>,
@@ -85,6 +106,7 @@ impl Session {
             cfg,
             backend,
             bridge,
+            state,
             audit,
             material,
             tool_names,
@@ -114,12 +136,17 @@ impl Session {
         }
     }
 
-    /// 跑一轮任务。`Err` = 本轮失败（历史已回滚，会话可继续）。
+    /// 跑一轮任务。`Err` = 本轮失败（历史已回滚到完整边界，会话可继续）。
     pub async fn run_turn(&mut self, task: &str) -> Result<String, String> {
-        let turn = self.stats.model_turns as i64;
-        let started = Instant::now();
-        let budget = self.cfg.max_task_seconds;
-        // 快照：失败回滚用（绝不把半截 tool_calls 序列留在历史里）
+        // 任务开始前：按字节预算**整块**裁掉最早的旧任务块（最新块无条件保留；
+        // 0 = 不裁剪）。裁剪日志走 stderr：更早的任务上下文不再可见是必须告知的事实。
+        crate::history::trim(
+            &mut self.history,
+            self.cfg.max_history_bytes as usize,
+            &mut |t| eprintln!("{t}"),
+        );
+        // 任务内预算清零（含墙钟起点）与上一轮的观测值/图片清理
+        self.state.begin_task();
         let snapshot = self.history.clone();
 
         // 借用只活在块内：`result` 是拥有所有权的值，块一结束 `self.backend` 的
@@ -129,21 +156,15 @@ impl Session {
                 .backend
                 .agent
                 .runner(task.to_string())
-                .history(snapshot)
+                .history(snapshot.clone())
                 .max_turns(self.cfg.max_turns as usize)
                 .run();
-            if budget > 0 {
-                match tokio::time::timeout(Duration::from_secs(budget as u64), fut).await {
-                    Ok(r) => r.map_err(|e| e.to_string()),
-                    Err(_) => Err(format!(
-                        "单任务墙钟预算 {budget} 秒已耗尽（--llm-task-timeout；0 = 不限）"
-                    )),
-                }
-            } else {
-                fut.await.map_err(|e| e.to_string())
-            }
+            fut.await.map_err(format_prompt_error)
         };
-        let ms = started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+
+        // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次
+        let calls = self.state.drain_calls();
+        let injections = self.state.take_injections();
 
         match result {
             Ok(resp) => {
@@ -154,44 +175,51 @@ impl Session {
                     new.push(Message::user(task.to_string()));
                     new.push(Message::assistant(resp.output.clone()));
                 }
-                self.history.extend(new);
-                self.stats.model_turns += 1;
-                self.stats.model_ms += ms as u128;
-                let pt = (resp.usage.input_tokens > 0).then_some(resp.usage.input_tokens as i64);
-                let ct = (resp.usage.output_tokens > 0).then_some(resp.usage.output_tokens as i64);
-                self.stats.last_prompt_tokens = pt;
-                self.stats.last_completion_tokens = ct;
-                self.write_model_row(ModelEntry {
-                    turn,
-                    ok: true,
-                    status: "ok".to_string(),
-                    ms,
-                    prompt_tokens: pt,
-                    completion_tokens: ct,
-                    ..Default::default()
-                });
+                // 图片后注物化：注入只作用于发出去的请求，这里按记录的位置把
+                // 「tool 消息之后的图片消息」插回会话历史（与 C++ 同序）。
+                let mut full = snapshot;
+                full.extend(new);
+                self.history = hook::materialize(full, &injections);
+                self.record_calls(&calls);
                 Ok(resp.output)
             }
             Err(e) => {
-                // 回滚：`self.history` 原封不动（snapshot 是它的克隆）
-                self.stats.model_turns += 1;
-                self.stats.model_ms += ms as u128;
-                self.write_model_row(ModelEntry {
-                    turn,
-                    ok: false,
-                    status: "error".to_string(),
-                    error: e.clone(),
-                    ms,
-                    ..Default::default()
-                });
+                // 回滚：钩子记下的边界 = 已完整跑完的轮（含工具回执与其中的图片），
+                // 半截的 tool_calls 序列不留在历史里。边界缺失（本轮连一次模型调用
+                // 都没发生）时回滚到任务开始的历史。
+                let base = self.state.rollback_boundary().unwrap_or(snapshot);
+                self.history = hook::materialize(base, &injections);
+                self.record_calls(&calls);
                 Err(e)
             }
         }
     }
 
-    /// 审计 model 行。**req_bytes/resp_bytes/attempts 本批次不写**：rig 把请求体
-    /// 尺寸/尝试次数放在 completion hook 里（批次 C 用 `on_completion_response`
-    /// 补），这里宁可缺字段也不填一个猜出来的数字。
+    /// 把逐次模型调用的观测值落成审计 model 行（turn 减一：rig 从 1 数起，
+    /// C++ 的 turn 从 0 数起——两侧审计口径必须一致）+ 会话统计。
+    fn record_calls(&mut self, calls: &[CallRecord]) {
+        for rec in calls {
+            self.stats.model_turns += 1;
+            self.stats.model_ms += rec.ms.max(0) as u128;
+            if rec.prompt_tokens.is_some() || rec.completion_tokens.is_some() {
+                self.stats.last_prompt_tokens = rec.prompt_tokens;
+                self.stats.last_completion_tokens = rec.completion_tokens;
+            }
+            self.write_model_row(ModelEntry {
+                turn: rec.turn.saturating_sub(1) as i64,
+                ok: rec.ok,
+                status: if rec.ok { "ok" } else { "error" }.to_string(),
+                error: rec.error.clone(),
+                ms: rec.ms,
+                req_bytes: rec.req_bytes,
+                resp_bytes: rec.resp_bytes,
+                attempts: rec.attempts,
+                prompt_tokens: rec.prompt_tokens,
+                completion_tokens: rec.completion_tokens,
+            });
+        }
+    }
+
     fn write_model_row(&mut self, entry: ModelEntry) {
         if let Some(a) = self.audit.as_mut() {
             a.write_model(&entry);
@@ -334,6 +362,11 @@ pub async fn run_repl(session: &mut Session) -> i32 {
 
     let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
     loop {
+        // D4：Ctrl-C / SIGTERM 之后不再接新任务（与 C++ `while (!stopRequested())`
+        // 同口径：取消是操作者的意思，循环退出、会话照常收尾）
+        if session.state.stop.load(Ordering::Relaxed) {
+            break;
+        }
         // 提示符 mybot[robotName|llmVar|Nhw]>（硬件数每轮重取：热插后不能少报）
         let hw = session.hardware_count().await;
         print!(

@@ -25,6 +25,8 @@ use serde_json::json;
 
 use crate::bridge::{self, Bridge, ToolSpec};
 use crate::config::Config;
+use crate::hook::{HookState, SessionHook};
+use crate::model::BudgetModel;
 
 /// rig 内置的三族协议（对应 C++ `modules/` 里的三张表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,10 +90,14 @@ pub struct Backend {
 }
 
 /// 按配置装配 agent（工具表来自后端 `tool.list`，系统提示词来自 `prompt`）。
+///
+/// `state` 是循环层共享状态：既进模型装饰器（图片注入/超时/重试）与钩子
+/// （墙钟/单轮上限/回滚边界），也进桥（任务内预算降级）。
 pub fn build(
     cfg: &Config,
     specs: Vec<ToolSpec>,
     bridge: &Arc<Bridge>,
+    state: Arc<HookState>,
     preamble: &str,
 ) -> Result<Backend> {
     let driver = Driver::from_table(&cfg.driver).map_err(anyhow::Error::msg)?;
@@ -109,7 +115,13 @@ pub fn build(
                 .base_url(&base)
                 .build()
                 .context("装配 OpenAI 兼容客户端（LlmOpenAI）")?;
-            assemble(client.completion_model(&cfg.model), cfg, tools, preamble)
+            assemble(
+                client.completion_model(&cfg.model),
+                cfg,
+                state,
+                tools,
+                preamble,
+            )
         }
         Driver::DeepSeek => {
             let client = deepseek::Client::builder()
@@ -117,7 +129,13 @@ pub fn build(
                 .base_url(&base)
                 .build()
                 .context("装配 DeepSeek 客户端（LlmDeepSeek）")?;
-            assemble(client.completion_model(&cfg.model), cfg, tools, preamble)
+            assemble(
+                client.completion_model(&cfg.model),
+                cfg,
+                state,
+                tools,
+                preamble,
+            )
         }
         Driver::Anthropic => {
             let client = anthropic::Client::builder()
@@ -125,7 +143,13 @@ pub fn build(
                 .base_url(&base)
                 .build()
                 .context("装配 Anthropic 客户端（LlmAnthropic）")?;
-            assemble(client.completion_model(&cfg.model), cfg, tools, preamble)
+            assemble(
+                client.completion_model(&cfg.model),
+                cfg,
+                state,
+                tools,
+                preamble,
+            )
         }
     };
 
@@ -136,15 +160,17 @@ pub fn build(
     })
 }
 
-/// 单点装配：系统提示词 + 采样 + 轮次预算 + 动态工具。
+/// 单点装配：模型装饰器（图片注入/超时/重试）+ 系统提示词 + 采样 + 轮次预算 +
+/// 循环层钩子（墙钟两判定点/单轮上限/回滚边界）+ 动态工具。
 fn assemble<M>(
     model: M,
     cfg: &Config,
+    state: Arc<HookState>,
     tools: Vec<rig_agent::tool::DynamicTool>,
     preamble: &str,
 ) -> Agent
 where
-    M: rig_core::completion::CompletionModel + 'static,
+    M: rig_core::completion::CompletionModel + Send + Sync + 'static,
 {
     // 附加参数（rig 会把它们平铺进请求体，与 C++ 驱动发的位置一致）：
     //   * top_p 恒发；
@@ -155,14 +181,25 @@ where
     if !cfg.reasoning_effort.is_empty() {
         extra.insert("reasoning_effort".to_string(), json!(cfg.reasoning_effort));
     }
+    // 模型装饰器：图片后注 + 单次调用超时 + 网络重试（U-1）。重试在装饰器内部完成，
+    // 不占 rig 的模型调用预算（default_max_turns 仍按模型调用计）。
+    let model = BudgetModel::new(
+        model,
+        Arc::clone(&state),
+        cfg.timeout_sec,
+        cfg.max_retries,
+        cfg.retry_backoff_ms,
+    );
     AgentBuilder::new(model)
         .preamble(preamble)
         .temperature(cfg.temperature)
         .max_tokens(cfg.max_tokens as u64)
         // 如实偏差：C++ 的 max_turns 是「工具轮次」，rig 的 max_turns 是**模型调用
-        // 预算**（含重试）。同一份配置在两侧含义更接近「上限」的一侧收紧，已记档。
+        // 预算**。同一份配置在两侧含义更接近「上限」的一侧收紧，已记档。
         .default_max_turns(cfg.max_turns as usize)
         .additional_params(serde_json::Value::Object(extra))
+        // 循环层钩子：墙钟两判定点、单轮调用上限、失败回滚边界（见 hook.rs）
+        .add_hook(SessionHook::new(state))
         .dynamic_tools(tools)
         .build()
 }

@@ -14,11 +14,15 @@
 //! 交回模型——rig 的 `ToolExecutionError::other` 把它同时作为模型可见输出，
 //! 于是模型看到的正是后端那句话说清楚了什么错（与 C++ 派发漏斗同口径）。
 //!
-//! 图片（如实）：后端 `imageDataUrl` 在本批次只**收集**（`ToolOutcome`）不注入——
-//! C++ 侧是把图片作为 tool 消息之后的独立 user 消息注入的，那属于循环层（批次 C）；
-//! 本批次回执只给模型文本，若真收到图片就在 stderr 如实告知一次（不静默丢）。
+//! 图片（批次 C）：后端 `imageDataUrl` 在预算内时交给 `HookState` 的待注入队列——
+//! C++ 侧把图片作为 tool 消息**之后**的独立 user 消息注入，rig 侧的等价落点是
+//! 模型装饰器（model.rs：追加到含工具结果的那条 user 消息末尾，转换到线上与 C++
+//! 同序）。回执（tool 消息）本身只给文本：OpenAI 协议不允许工具结果里带图片。
+//!
+//! 任务内预算（AG-4/AG-21）在这一层判：工具回执到手即 `admit`（执行过才降级，
+//! 判定在**执行之后**——体积要拿到结果才知道，而副作用已经发生，降级说明必须
+//! 如实写明「已执行」）。语义单点在 budget.rs。
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use rig_agent::tool::DynamicTool;
@@ -27,6 +31,7 @@ use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 
 use crate::frame::BackendClient;
+use crate::hook::HookState;
 
 /// 一条工具描述（后端 `tool.list` 的一条）。
 #[derive(Debug, Clone)]
@@ -52,7 +57,7 @@ pub struct ToolOutcome {
 
 impl ToolOutcome {
     /// 模型可见输出：工具消息只允许文本（OpenAI 协议），故这里只给文本块；
-    /// 图片是待注入物（见模块头的如实说明）。
+    /// 图片是待注入物（走 model.rs 的图片后注，见模块头）。
     pub fn into_tool_output(self) -> ToolOutput {
         ToolOutput::text(self.model_text())
     }
@@ -90,15 +95,15 @@ impl ToolOutcome {
 /// 正是物理安全要的语义）。
 pub struct Bridge {
     client: Arc<Mutex<BackendClient>>,
-    /// 图片回执的「如实告知」只打一次（不刷屏、不静默丢）
-    image_notice: AtomicBool,
+    /// 循环层共享状态：任务内预算（admit）与待注入图片队列
+    state: Arc<HookState>,
 }
 
 impl Bridge {
-    pub fn new(client: BackendClient) -> Self {
+    pub fn new(client: BackendClient, state: Arc<HookState>) -> Self {
         Self {
             client: Arc::new(Mutex::new(client)),
-            image_notice: AtomicBool::new(false),
+            state,
         }
     }
 
@@ -184,17 +189,22 @@ impl Bridge {
         })
     }
 
-    /// 图片回执的如实告知（只打一次）。
-    fn note_image_pending(&self, outcome: &ToolOutcome) {
-        if outcome.image_data_url.is_empty() {
-            return;
+    /// 任务内预算判定与图片收集（语义见 budget.rs / 模块头）。
+    ///
+    /// 降级时 `budget.admit` 已把图片清空，故这里只会把**真正进了上下文**的那张
+    /// 排进待注入队列。失败的回执同样收图片：C++ 侧的派发漏斗不因 ok=false 丢弃
+    /// 图片，模型看到的是一句失败说明加一张画面。
+    fn admit_and_collect(&self, outcome: &mut ToolOutcome) {
+        let mut text = outcome.text.clone();
+        let mut image = outcome.image_data_url.clone();
+        {
+            let mut budget = self.state.budget.lock().unwrap_or_else(|e| e.into_inner());
+            budget.admit(&mut text, &mut image, outcome.executed);
         }
-        if !self.image_notice.swap(true, Ordering::Relaxed) {
-            eprintln!(
-                "[mybot-agent] 警告: 工具返回了图片（{} 字节 data URL），本版本回执只把文本交给模型，\
-                 图片**未**注入对话；模型看不到这张图。",
-                outcome.image_data_url.len()
-            );
+        outcome.text = text;
+        outcome.image_data_url = image;
+        if !outcome.image_data_url.is_empty() {
+            self.state.push_image(outcome.image_data_url.clone());
         }
     }
 }
@@ -212,8 +222,8 @@ pub fn dynamic_tool(spec: ToolSpec, bridge: &Arc<Bridge>) -> DynamicTool {
             let name = name.clone();
             Box::pin(async move {
                 match bridge.call(&name, args).await {
-                    Ok(outcome) => {
-                        bridge.note_image_pending(&outcome);
+                    Ok(mut outcome) => {
+                        bridge.admit_and_collect(&mut outcome);
                         if outcome.ok {
                             Ok(outcome.into_tool_output())
                         } else {

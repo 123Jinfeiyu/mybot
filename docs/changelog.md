@@ -6,6 +6,60 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-24 Rust agent 循环层语义对齐 C++（rig 迁移·批次 C）
+
+> 守门快照：`agent/` 四检全绿（cargo build --release / test **48** / clippy `-D warnings` /
+> fmt --check，均 `--locked`；为单测构造 429/5xx 加了 `http` 的 dev-dependency）；C++ 全量
+> **269 / 0 / 3 跳**（环境性跳过不变），C++ 单测 **689 / 0**；
+> `bash test/run_all.sh agent-all` **16 / 0 / 0**；`agent_e2e.sh --rust` 扩到 **63 项**绿
+> （新增 R6 单轮上限 / R7 限流重试与恒 503 / R8 单次超时 + SIGINT 取消 / R9 图片后注）。
+> 新判据已反向验证（临时让单轮上限失效 + 去掉图片后注的说明文字 → R6 三条、R9 一条红，
+> 恢复后绿）。
+
+- **新增四个模块**（`agent/src/`）：`budget.rs`（任务内文本/图片预算，逐字镜像
+  `src/agentbudget.cpp`：SAN-4 未执行不降级只记账、AG-21 降级说明自身计入、图片额度用尽
+  的终态文案）、`history.rs`（会话历史按**整块**裁剪，最新块无条件保留；记账口径同 C++
+  的 `messageWeight`，rig 侧把思维链与 `additional_params` 一并计入）、`hook.rs`
+  （循环层钩子：墙钟两判定点、单轮调用上限、失败回滚边界、取消标志；含图片批次的
+  **物化**）、`model.rs`（模型装饰器：图片后注 + 单次调用超时 + 网络重试）。
+- **循环语义对齐**：任务开始前裁剪旧历史（`max_history_bytes`）并清零任务内预算（含墙钟
+  起点）→ 轮循环开头判定「取消 / 墙钟耗尽」（文案逐字同 C++）→ 逐条派发前再判墙钟
+  （未派发的回执逐字同 C++）→ 单轮超过 `max_calls_per_round` 的调用**不派发**（模型看到
+  「未派发」回执，操作者看到 `[上限]` 行）→ 成功才把新消息并入历史，失败回滚到**钩子
+  记下的边界**（已完整跑完的轮留在历史里，半截 tool_calls 序列不落盘）。
+- **图片后注**：后端 `imageDataUrl` 在预算内时进入待注入队列，模型装饰器把「说明 +
+  图片」追加到**含工具结果的那条 user 消息末尾**——provider 转换后线上次序正是
+  `[tool…, user(说明+图片)]`，与 C++ 的独立 user 消息同序（OpenAI 协议不允许工具结果
+  带图片，rig 侧同理）。注入只作用于**发出去的请求**，任务结束后按记录的位置物化回会话
+  历史。
+- **网络重试（U-1）**：尝试次数含首次（`max_retries`，0 合法）、本地指数退避
+  base×2^(n-1) 单次钳到 60s、退避取「本地 vs 服务端 Retry-After」的较大值，日志文案
+  逐字同 `agentdriver.cpp`；`--llm-timeout` 变成**可重试类**的单次调用超时。
+- **取消（D4）**：SIGINT/SIGTERM 首次只置停止标志（不再发起新模型调用与工具下发，REPL
+  循环退出、`--task` 以失败收场），第二次沿用 C++ 的强杀路径（还原缺省处置后重触发）。
+- **配置面**：`max_history_bytes`（4 MiB）/`max_task_tool_result_bytes`（2 MiB）/
+  `max_task_image_bytes`（4 MiB）/`max_calls_per_round`（16）/`max_retries`（3）/
+  `retry_backoff_ms`（1000）落地解析与区间校验（区间逐值同 `llm_limits`；0 仍是
+  「不限」或「不重试」的显式语义），`--check-config` 摘要同步。
+- **审计**：model 行改为**逐次模型调用**一条（与 C++ 同口径），补上 `req_bytes`（请求体
+  估算下界）、`resp_bytes`（模型可见文本字节）与 `attempts`（实际尝试次数，>1 = 发生过
+  重试）。
+- **守门夹具修正**：`fake_llm_server.py` 的 `manycalls` 剧本补 `reasoning_content`。
+  该剧本此前只在收尾那轮带思维链，于是同一会话里出现「带 tool_calls 但无思维链」+
+  「有思维链」的**混排**——真接入点上不可能出现（思考模式是接入点级开关，每轮都有思维链），
+  却让夹具比真机更严：rig 会把思维链原样回传（C++ 的 OpenAI 驱动不回传该字段，故此前未暴露），
+  第二个任务因此撞 400。补上后剧本自洽，C++ 场景 10 逐字复跑仍绿。
+- **语义如实偏差（记录在案）**：① 单轮上限的呈现位置——C++ 从 `assistant.tool_calls` 剔除
+  超限调用并把截断说明追加进 assistant 文本，rig 侧挂在**工具回执**上（「不派发」语义一致）；
+  ② `req_bytes` 口径——C++ 量的是驱动组好的请求串，rig 量的是 `CompletionRequest` 的
+  JSON 序列化（同为下界，量级可比但非逐字节相同）；③ 重试分类——C++ 用 curl 退出码表，
+  rig 用 HTTP 状态码 + reqwest 连接类错误；④ 取消的时效——C++ 有取消哨兵能在约 1s 内掐断
+  在飞的 libcurl 请求，rig 侧的在飞请求由 `--llm-timeout` 封顶（取消在两次判定点与退避
+  循环里生效）。
+- **尚未搬（批次 D/E）**：`--session-file`/`--resume` 会话持久化、TCP 远程 REPL、
+  `docs/agent.md` 里的 sidecar 用法改写。`docs/testing.md` 的 CI 行（`gate:agent` 四检）
+  不变，段计数不变。
+
 ### 2026-09-24 agent 本体迁移到 Rust（rig）：`mybot-agent` 骨架落地（rig 迁移·批次 B）
 
 > 守门快照：`agent/` 四检全绿（cargo build --release / test **31** / clippy `-D warnings` /

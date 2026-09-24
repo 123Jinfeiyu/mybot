@@ -35,6 +35,19 @@ pub mod limits {
     pub const MAX_TURNS_MAX: i64 = 100;
     pub const TASK_TIMEOUT_MIN_SEC: i64 = 0;
     pub const TASK_TIMEOUT_MAX_SEC: i64 = 86_400;
+    /// 上下文字节预算的三条上限（与 C++ `kMaxHistoryBytesLimit` /
+    /// `kMaxTaskToolResultBytesLimit` / `kMaxTaskImageBytesLimit` 逐值对齐）；
+    /// 三者下界都是 0 = 不限。
+    pub const BUDGET_BYTES_MAX: i64 = 64 << 20;
+    /// 单轮工具调用数上限（0 不在此列：配置只允许 1..=1024，与 C++
+    /// `kMaxCallsPerRoundMin/Max` 同区间；「不限」只能由代码缺省表达）
+    pub const MAX_CALLS_PER_ROUND_MIN: i64 = 1;
+    pub const MAX_CALLS_PER_ROUND_MAX: i64 = 1024;
+    /// 网络重试尝试次数（含首次）：0 = 只发一次不重试（与 C++ 同口径）
+    pub const MAX_RETRIES_MIN: i64 = 0;
+    pub const MAX_RETRIES_MAX: i64 = 6;
+    pub const RETRY_BACKOFF_MS_MIN: i64 = 0;
+    pub const RETRY_BACKOFF_MS_MAX: i64 = 10_000;
 }
 
 /// 内置缺省（与 C++ `AgentModeConfig` 的成员初值逐值对齐）。
@@ -46,6 +59,16 @@ pub const DEFAULT_TEMPERATURE: f64 = 0.7;
 pub const DEFAULT_TOP_P: f64 = 0.9;
 pub const DEFAULT_TIMEOUT_SEC: i64 = 180;
 pub const DEFAULT_MAX_TASK_SECONDS: i64 = 900;
+/// 会话历史的字节预算（估重，见 history.rs）；0 = 不裁剪
+pub const DEFAULT_MAX_HISTORY_BYTES: i64 = 4 << 20;
+/// 任务内文本/图片预算（见 budget.rs）；0 = 不限
+pub const DEFAULT_MAX_TASK_TOOL_RESULT_BYTES: i64 = 2 << 20;
+pub const DEFAULT_MAX_TASK_IMAGE_BYTES: i64 = 4 << 20;
+/// 单轮工具调用数上限（超出不派发、如实告知模型）
+pub const DEFAULT_MAX_CALLS_PER_ROUND: i64 = 16;
+/// 网络重试：尝试次数含首次（= 实际最多重试 n-1 次）与退避基础时长
+pub const DEFAULT_MAX_RETRIES: i64 = 3;
+pub const DEFAULT_RETRY_BACKOFF_MS: i64 = 1000;
 
 /// 配置文件里被承认的全部字段名（C++ `loadConfigRoot` 的 kKnown 同集合）。
 /// 未知字段一律拒绝——与「未知 --key 退出 2」同一口径，防拼错后静默失效。
@@ -132,6 +155,16 @@ pub struct Config {
     pub top_p: f64,
     pub max_turns: i64,
     pub max_task_seconds: i64,
+    /// 会话历史字节预算（0 = 不裁剪；整块裁掉最早的旧任务块）
+    pub max_history_bytes: i64,
+    /// 任务内文本/图片预算（0 = 不限；超限时把该次工具结果换成降级说明）
+    pub max_task_tool_result_bytes: i64,
+    pub max_task_image_bytes: i64,
+    /// 单轮工具调用数上限（超出不派发）
+    pub max_calls_per_round: i64,
+    /// 网络重试尝试次数（含首次）与退避基础时长
+    pub max_retries: i64,
+    pub retry_backoff_ms: i64,
     pub reasoning_effort: String,
     pub thinking: String,
     pub prompt_files: Vec<String>,
@@ -153,6 +186,12 @@ struct FileConfig {
     max_tokens: Option<i64>,
     max_turns: Option<i64>,
     max_task_seconds: Option<i64>,
+    max_history_bytes: Option<i64>,
+    max_task_tool_result_bytes: Option<i64>,
+    max_task_image_bytes: Option<i64>,
+    max_calls_per_round: Option<i64>,
+    max_retries: Option<i64>,
+    retry_backoff_ms: Option<i64>,
     temperature: Option<f64>,
     top_p: Option<f64>,
     reasoning_effort: Option<String>,
@@ -451,6 +490,49 @@ fn load_config_file(path: &str) -> Result<FileConfig, String> {
             limits::TASK_TIMEOUT_MIN_SEC,
             limits::TASK_TIMEOUT_MAX_SEC,
         )?,
+        // 上下文字节预算（0 = 不限；上限 llm_limits 单点）
+        max_history_bytes: want_int(
+            &root,
+            path,
+            "max_history_bytes",
+            0,
+            limits::BUDGET_BYTES_MAX,
+        )?,
+        max_task_tool_result_bytes: want_int(
+            &root,
+            path,
+            "max_task_tool_result_bytes",
+            0,
+            limits::BUDGET_BYTES_MAX,
+        )?,
+        max_task_image_bytes: want_int(
+            &root,
+            path,
+            "max_task_image_bytes",
+            0,
+            limits::BUDGET_BYTES_MAX,
+        )?,
+        max_calls_per_round: want_int(
+            &root,
+            path,
+            "max_calls_per_round",
+            limits::MAX_CALLS_PER_ROUND_MIN,
+            limits::MAX_CALLS_PER_ROUND_MAX,
+        )?,
+        max_retries: want_int(
+            &root,
+            path,
+            "max_retries",
+            limits::MAX_RETRIES_MIN,
+            limits::MAX_RETRIES_MAX,
+        )?,
+        retry_backoff_ms: want_int(
+            &root,
+            path,
+            "retry_backoff_ms",
+            limits::RETRY_BACKOFF_MS_MIN,
+            limits::RETRY_BACKOFF_MS_MAX,
+        )?,
         temperature: want_number(&root, path, "temperature")?,
         top_p: want_number(&root, path, "top_p")?,
         reasoning_effort: want_string(&root, path, "reasoning_effort")?,
@@ -664,6 +746,18 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         top_p: file.top_p.unwrap_or(DEFAULT_TOP_P),
         max_turns: file.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
         max_task_seconds: file.max_task_seconds.unwrap_or(DEFAULT_MAX_TASK_SECONDS),
+        max_history_bytes: file.max_history_bytes.unwrap_or(DEFAULT_MAX_HISTORY_BYTES),
+        max_task_tool_result_bytes: file
+            .max_task_tool_result_bytes
+            .unwrap_or(DEFAULT_MAX_TASK_TOOL_RESULT_BYTES),
+        max_task_image_bytes: file
+            .max_task_image_bytes
+            .unwrap_or(DEFAULT_MAX_TASK_IMAGE_BYTES),
+        max_calls_per_round: file
+            .max_calls_per_round
+            .unwrap_or(DEFAULT_MAX_CALLS_PER_ROUND),
+        max_retries: file.max_retries.unwrap_or(DEFAULT_MAX_RETRIES),
+        retry_backoff_ms: file.retry_backoff_ms.unwrap_or(DEFAULT_RETRY_BACKOFF_MS),
         reasoning_effort: file.reasoning_effort.clone().unwrap_or_default(),
         thinking: file.thinking.clone().unwrap_or_default(),
         prompt_files: Vec::new(),
@@ -776,6 +870,29 @@ pub fn summarize(cfg: &Config) -> String {
             format!("{} 秒", cfg.max_task_seconds)
         }
     );
+    // 字节预算与重试（批次 C 起生效；只渲染、不判定）
+    let bytes = |n: i64| {
+        if n == 0 {
+            "不限".to_string()
+        } else {
+            format!("{n} 字节")
+        }
+    };
+    s += &format!(
+        "  历史/任务预算: 历史 {} / 任务文本 {} / 任务图片 {}（单轮调用上限 {} 条）\n",
+        bytes(cfg.max_history_bytes),
+        bytes(cfg.max_task_tool_result_bytes),
+        bytes(cfg.max_task_image_bytes),
+        if cfg.max_calls_per_round == 0 {
+            "不限".to_string()
+        } else {
+            cfg.max_calls_per_round.to_string()
+        }
+    );
+    s += &format!(
+        "  网络重试    : 尝试 {} 次（含首次），退避基础 {}ms（指数增长，单次钳到 60s）\n",
+        cfg.max_retries, cfg.retry_backoff_ms
+    );
     s += &format!("  审计轨迹    : {}\n", or_none(&cfg.audit_log, "(未开启)"));
     if !cfg.config_warning.is_empty() {
         s += &format!("  配置告警    : {}\n", cfg.config_warning);
@@ -882,6 +999,47 @@ mod tests {
         assert!(validate_api_key_chars("sk-\u{7f}").is_err());
         // 非 ASCII 合法（有些网关的密钥带 UTF-8）
         assert!(validate_api_key_chars("密钥").is_ok());
+    }
+
+    /// 批次 C 起生效的六项：解析、0 = 显式不限、区间与未知字段判据。
+    #[test]
+    fn budget_and_retry_fields_are_parsed_and_range_checked() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_bc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cfg.json");
+        let p = path.to_string_lossy().to_string();
+
+        std::fs::write(
+            &path,
+            r#"{"max_history_bytes":0,"max_task_tool_result_bytes":1048576,
+                "max_task_image_bytes":2048,"max_calls_per_round":1,
+                "max_retries":0,"retry_backoff_ms":10000}"#,
+        )
+        .unwrap();
+        let f = load_config_file(&p).unwrap();
+        // 0 必须与「未配置」区分：显式 0 = 不限，None = 用缺省
+        assert_eq!(f.max_history_bytes, Some(0));
+        assert_eq!(f.max_task_tool_result_bytes, Some(1 << 20));
+        assert_eq!(f.max_task_image_bytes, Some(2048));
+        assert_eq!(f.max_calls_per_round, Some(1), "下界 1（0 不是合法上限）");
+        assert_eq!(f.max_retries, Some(0), "0 = 只发一次不重试");
+        assert_eq!(f.retry_backoff_ms, Some(10_000));
+
+        // 越界 / 类型错 / 非法值一律拒绝（配置只能收紧，不能放宽）
+        for (body, key) in [
+            (r#"{"max_history_bytes":67108865}"#, "max_history_bytes"),
+            (r#"{"max_history_bytes":-1}"#, "max_history_bytes"),
+            (r#"{"max_calls_per_round":0}"#, "max_calls_per_round"),
+            (r#"{"max_calls_per_round":1025}"#, "max_calls_per_round"),
+            (r#"{"max_retries":7}"#, "max_retries"),
+            (r#"{"retry_backoff_ms":10001}"#, "retry_backoff_ms"),
+            (r#"{"max_task_image_bytes":"1M"}"#, "max_task_image_bytes"),
+        ] {
+            std::fs::write(&path, body).unwrap();
+            let e = load_config_file(&p).unwrap_err();
+            assert!(e.contains(key), "配置 {body} 应报 {key}：实际 {e}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -24,7 +24,13 @@ serde_json = "1"
 anyhow = "1"
 # libc：审计时间戳要**本地时间 + UTC 偏移**（localtime_r 与 C++ auditTimestamp 逐字段
 # 同构）；纯 std 拿不到本机时区偏移，自己解析 /etc/localtime 是重造轮子。
+# 另外：信号处置的强杀路径（SIG_DFL + raise）与 C++ onStopSignal 同款。
 libc = "0.2"
+
+[dev-dependencies]
+# 单测要构造 429/5xx 的 provider 响应错误（rig 的 provider_response_status() 给的是
+# http::StatusCode，而 rig-core 只转发 HeaderMap 等，不转发 StatusCode）。
+http = "1"
 
 [profile.release]
 opt-level = 2

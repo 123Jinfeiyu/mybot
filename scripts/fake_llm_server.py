@@ -340,8 +340,16 @@ class Handler(BaseHTTPRequestHandler):
         if MODE.startswith("manycalls"):
             want = int(MODE.split(":", 1)[1]) if ":" in MODE else 3
             if tool_results == 0:
+                # reasoning_content 必须带上（2026-09-24 补）：protocol_error 的有状态
+                # 判据是「请求里一旦出现该字段，每条带 tool_calls 的 assistant 都必须
+                # 有它」（真机在思考模式下确实如此）。本剧本此前只在收尾那轮带思维链，
+                # 于是同一个会话里出现「带 tool_calls 但无思维链」+「有思维链」的**混排**
+                # ——那在真接入点上不可能发生（思考模式是接入点级开关，每轮都有思维链），
+                # 却让夹具比真机更严：rig 侧会在第二个任务上撞 400，而 C++ 的 OpenAI
+                # 驱动根本不回传该字段（故此前没暴露）。补上后本剧本自洽。
                 self._reply(openai_shell({"choices": [{"message": {
                     "role": "assistant", "content": "本轮要查几件事。",
+                    "reasoning_content": "一次把要查的都列出来。",
                     "tool_calls": [{
                         "id": "c%d" % i, "type": "function",
                         "function": {"name": "list_hardware", "arguments": "{}"},
