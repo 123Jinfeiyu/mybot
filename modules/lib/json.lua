@@ -4,6 +4,18 @@
 -- 通过 HTTP 与模型服务交换 **JSON 文本**，必须在 Lua 侧有对应能力。两者语义对齐
 -- （严格语法、深度上限、转义与代理对完整），由 test/test_json_lua.lua 钉住。
 --
+-- 【替代方案评估（决策记录，#29）】
+-- cjson（LuaJIT 生态标配）是主要替代：
+--   1) 严格模式：cjson 需开启 lua_cjson.safe 并配置 invalid_number 拒绝，
+--      深度限制（cjson 2.1+）可达，但 null/空数组/稀疏表的语义与本实现
+--      （编码 null → null、null 数组空洞有损点显式声明）逐项核对成本高；
+--   2) 语义对齐锚点：本实现与 C++ 端由 test_json_lua.lua 钉住「严格语法 +
+--      深度上限 + 转义与代理对完整」，换 cjson 需重建该对齐面；
+--   3) 零依赖取向：cjson 是独立的 C 扩展（非 LuaJIT 内建），引入即新增
+--      运行期依赖，与项目「运行期只需 LuaJIT + libcurl + glibc」冲突。
+-- 结论：保持自研（安全契约 + 双端语义对齐 + 零依赖三方权衡）。若项目方
+-- 决策接受 cjson，需先完成 test_json_lua.lua 全量语义核对再替换。
+--
 -- 用法：
 --   local json = dofile(mpath.resolve("lib/json.lua"))
 --   json.encode({ a = 1 })                    --> '{"a":1}'
