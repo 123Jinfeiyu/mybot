@@ -38,7 +38,8 @@
 --            数字 = MIDI 音符号 21~108（A0~C8；A4=69、中央C=60），.mt 数据格
 --            直写数字即可，无需 $(别名)
 --            文本 = 音名，如 'a4'、'c#4'/'db4'（#升半音、b降半音，各至多一个；
---            科学音调记号 C4=中央C），要经 $(别名) 间接
+--            科学音调记号 C4=中央C），要经 $(别名) 间接；八度可省，缺省
+--            4（中央C八度）：'c' 即 c4=中央C、'a' 即 440Hz、'f#' 即 f#4
 --            十二平均律换算 A4=440Hz；钢琴域外（20Hz 以下/4186Hz 以上）用 freq
 --   delay    时长 ms（必填，>0 且 ≤ max_ms）
 --   volume   音量 0~100（结构列同名，.mt 不能用——param_override 防线会拒；
@@ -93,12 +94,14 @@ local A4_MIDI, A4_HZ = 69, 440
 local NOTE_MIN, NOTE_MAX = 21, 108
 
 -- 音名 → MIDI 号：小写归一后匹配 [字母][#b]?[八度]（科学音调记号，C4=中央
--- C=60，C-1=0）。# 升半音、b 降半音，各至多一个；不匹配返回 nil（'h4'/'c##4'
--- 这类由调用方响亮报错，不做就近猜测）。
+-- C=60，C-1=0）。# 升半音、b 降半音，各至多一个；八度可省，缺省 4（中央C
+-- 八度，'a' 即 440Hz）。不匹配返回 nil（'h4'/'c##4' 这类由调用方响亮报错，
+-- 不做就近猜测）。
 local SEMITONE = { c = 0, d = 2, e = 4, f = 5, g = 7, a = 9, b = 11 }
 local function name_to_midi(s)
-	local letter, acc, oct = string.lower(s):match("^([a-g])([#b]?)(-?%d+)$")
+	local letter, acc, oct = string.lower(s):match("^([a-g])([#b]?)(-?%d*)$")
 	if letter == nil then return nil end
+	oct = oct ~= "" and oct or "4"
 	return (tonumber(oct) + 1) * 12 + SEMITONE[letter]
 		+ (acc == "#" and 1 or (acc == "b" and -1 or 0))
 end
@@ -293,7 +296,8 @@ function call(data)
 		end
 		if midi == nil then
 			return err("Invalid Argument: note '" .. tostring(note_in)
-				.. "' (expect MIDI number or 'a4'/'c#4'/'db4' style name)")
+				.. "' (expect MIDI number or note name 'a4'/'c#4'/'c';"
+				.. " bare letter = octave 4)")
 		end
 		if midi < NOTE_MIN or midi > NOTE_MAX then
 			return err(string.format(

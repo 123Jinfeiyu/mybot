@@ -93,6 +93,23 @@ for _, t in ipairs(NAME_HZ) do
 		(type(r) == "table") and tostring(r.freq) or tostring(r))
 end
 
+-- 裸音名（省八度，缺省八度 4 = 中央C八度）：'a' 即 440Hz，'c' 即中央C
+local BARE_HZ = {
+	{ "c", 261.6256 }, { "C", 261.6256 },
+	{ "a", 440 }, { "b", 493.8833 }, { "f", 349.2317 },
+	{ "c#", 277.1826 }, { "db", 277.1826 }, { "g#", 415.3047 },
+}
+for _, t in ipairs(BARE_HZ) do
+	r = call({ note = t[1], delay = 50 })
+	check(string.format("note='%s'(省八度->4) -> %.4fHz", t[1], t[2]),
+		r.result == "OK" and near(r.freq, t[2]),
+		(type(r) == "table") and tostring(r.freq) or tostring(r))
+end
+r = call({ note = "c", delay = 50 })
+check("裸音名回显大写原拼写（note='C'）", r.note == "C", tostring(r.note))
+r = call({ note = "g#", delay = 50 })
+check("裸升降音名回显大写原拼写（note='G#'）", r.note == "G#", tostring(r.note))
+
 r = call({ note = "c#4", delay = 50 })
 check("音名回显大写原拼写（note='C#4'）", r.note == "C#4", tostring(r.note))
 r = call({ note = "69", delay = 50 })
