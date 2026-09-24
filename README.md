@@ -36,9 +36,16 @@ cmake -S . -B build && cmake --build build
 export BOT4CJ_LLM_KEY=sk-xxx
 export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 
-# 启动交互式REPL（使用虚拟机器人）
-./build/mybot --robot=robots/relay-test.sql --agent
+# 终端 1：工具后端（虚拟机器人，硬件上电常驻；C++ 侧唯一形态）
+./build/mybot --robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot.sock
+
+# 终端 2：agent（Rust，模型循环/交互 REPL；先 bash scripts/build_agent.sh 构建）
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock
 ```
+
+> 2026-09-24 起 agent 循环迁 Rust：`mybot --agent` 已移除（会显式拒绝并指引），
+> C++ 宿主侧以 `--mcp-backend` 提供工具后端，模型侧参数（`--task`/`--llm-*` 等）
+> 由 `mybot-agent` 承载（`mybot-agent --help`，详见 [docs/agent.md](docs/agent.md)）。
 
 **现在你可以直接对话**：
 
@@ -87,8 +94,9 @@ chmod 600 mybot.llm.json
   "prompt_files": ["prompts/spider_robot"]
 }
 
-# 启动（自动读取配置）
-./build/mybot --robot=robots/spider1.sql --agent
+# 启动（后端与 agent 读同一份配置；两个终端）
+./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/mybot.sock
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock
 ```
 
 ### 环境变量方式（快速测试）
@@ -96,13 +104,13 @@ chmod 600 mybot.llm.json
 ```bash
 export BOT4CJ_LLM_KEY=sk-xxx
 export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
-./build/mybot --robot=robots/spider1.sql --agent --llm-model gpt-4
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --llm-model gpt-4
 ```
 
 ### 一次性任务
 
 ```bash
-./build/mybot --robot=robots/spider1.sql --agent --task "让机器人站立然后左转"
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "让机器人站立然后左转"
 ```
 
 ### 分段帮助
@@ -239,7 +247,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 ```bash
 # 接线：树莓派 I2C-1 (SDA1/SCL1) → PCA9685 (地址 0x40)
 # 运行
-./build/mybot --robot=robots/spider1.sql --agent
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock   # 后端已另起（见上文）
 ```
 
 ### 虚拟总线（无硬件开发）
@@ -248,10 +256,10 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 
 ```bash
 # 使用虚拟继电器测试
-./build/mybot --robot=robots/relay-test.sql --agent --task "让继电器动作一次"
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "让继电器动作一次"
 
 # 使用虚拟摄像头测试视觉功能
-./build/mybot --robot=robots/spider1.sql --agent --camera-src test.jpg
+./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/s.sock --camera-src test.jpg
 ```
 
 内置 `Relay` 转发链路和内存仿真虚拟总线，所有驱动逻辑真实运转。详见 [docs/virtbus.md](docs/virtbus.md)
@@ -345,7 +353,7 @@ bash test/run_all.sh agent-all
 ```bash
 export BOT4CJ_LLM_KEY=sk-xxx
 export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
-./build/mybot --robot=robots/spider1.sql --agent
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock   # 后端已另起（见上文）
 ```
 
 ```
@@ -369,7 +377,7 @@ mybot[spider1|llm0|14hw]> /exit
 ### 示例2：带视觉的决策
 
 ```bash
-./build/mybot --robot=robots/spider1.sql --agent --llm-model gpt-4o
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --llm-model gpt-4o
 ```
 
 ```
@@ -389,7 +397,7 @@ mybot[spider1|llm0|14hw]> 那就前进吧
 
 ```bash
 # 无交互，执行完自动退出
-./build/mybot --robot=robots/spider1.sql --agent \
+./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/s.sock \
   --task "依次执行站立、左转、右转、然后回到初始姿势"
 ```
 
@@ -450,13 +458,13 @@ MYBOT在设计时将安全放在首位：
 ### 换模型/换厂商
 
 ```bash
-# 使用DeepSeek（思考模式）
+# 使用DeepSeek（思考模式）；模型侧参数都在 mybot-agent（后端另起，见快速开始）
 export DEEPSEEK_API_KEY=sk-xxx
-./build/mybot --robot=robots/spider1.sql --agent \
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
   --llm-driver LlmDeepSeek --llm-model deepseek-chat
 
 # 使用本地Ollama
-./build/mybot --robot=robots/spider1.sql --agent \
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
   --llm-endpoint http://localhost:11434/v1 \
   --llm-model llama3.2 --llm-config none
 ```
@@ -468,8 +476,8 @@ export DEEPSEEK_API_KEY=sk-xxx
 mkdir -p prompts/my_robot
 echo "你是一个谨慎的机器人..." > prompts/my_robot/01-identity.md
 
-# 加载提示词
-./build/mybot --robot=robots/spider1.sql --agent \
+# 加载提示词（--prompt-file 是 mybot-agent 的选项）
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
   --prompt-file prompts/my_robot
 ```
 
@@ -488,7 +496,7 @@ echo "你是一个谨慎的机器人..." > prompts/my_robot/01-identity.md
 
 ```bash
 # 机器人侧：远程 REPL，对端每行一条任务
-./build/mybot --robot=robots/spider1.sql --agent --tcp 9000
+# （--agent --tcp 已移除；远程形态规划为 mybot-agent 监听 TCP，见 docs/agent.md 批次 E）
 
 # 客户端：先发口令（跨机时），再逐行下发任务
 (echo "$TOKEN"; echo "让机器人站立"; sleep 5; echo "/exit") | nc robot-ip 9000
@@ -506,7 +514,7 @@ cmake -S . -B build-asan -DCMAKE_BUILD_TYPE=Debug \
 cmake --build build-asan
 
 # 运行
-./build-asan/mybot --robot=robots/spider1.sql --agent
+./build-asan/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/s.sock
 ```
 
 ---
@@ -592,4 +600,4 @@ bash test/run_all.sh
 
 ---
 
-**立即开始** → `export BOT4CJ_LLM_KEY=sk-xxx BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions && ./build/mybot --robot=robots/relay-test.sql --agent`
+**立即开始** → `bash scripts/build_agent.sh` 后两个终端：`./build/mybot --robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot.sock` 与 `./agent/target/release/mybot-agent --socket /tmp/mybot.sock`

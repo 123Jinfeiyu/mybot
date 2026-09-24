@@ -2,7 +2,7 @@
 //!
 //! C++ 的循环语义散在 `AgentSession::runTurn` / `executeToolRound` 里：轮循环开头的
 //! 中断与墙钟判定、逐条派发前的墙钟判定、单轮调用上限、失败回滚边界；rig 侧这些都
-//! 走 `AgentHook`（见 `.tmp/rig-migration-matrix.md` 的「批次 C 落点设计」）。
+//! 走 `AgentHook`（批次 C 落点设计见迁移提交说明，git log -- agent/src/hook.rs）。
 //!
 //! 本文件只放**判定与记账**；桥（bridge.rs）在工具回执到手时做任务内预算降级，
 //! 模型装饰器（model.rs）负责图片注入与重试，REPL（repl.rs）负责裁剪、物化与回滚。

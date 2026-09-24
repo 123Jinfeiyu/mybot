@@ -6,6 +6,46 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-24 重构四连：C++ 侧死代码清退 + 活代码收敛 + Rust 修复 + 文档对齐
+
+> 守门快照（收尾提交时）：C++ 单测 **607 / 0**（阶段 1 净删约 40 个钉住已删实现的
+> 用例后）；`ctest` **93 / 0**；`mcp_e2e.sh` **242 项全过**；`agent_e2e.sh` **R1-R10
+> 全过**（含修复后的 R8b）；cargo fmt/clippy(-D warnings)/test(50) 全绿。
+
+- **C++ 死代码清退（分档）**：REPL 迁 Rust 后「仅测试可达」的孪生实现按「Rust 是否
+  已有对等实现」分档删除——`agentbudget.*`（TaskBudget，零调用零测试）、
+  `agentdriver.*`（LuaDriverTransport）、`agentproto` 的 ChatTransport 一族
+  （ChatResponse/buildDriverRequest/messageToJson/parseDriverResponse）、
+  `buildAgentSystemPrompt`、`runSqlCommand` + `SqlStatementBatch`、`makeDriverConfig`、
+  main.cpp 的「已移除」桩与 P2a 取消哨兵三件套、actionsource 的 TcpAgentSession
+  （agent-over-TCP）——净 **-2331 行**。**暂留**：session-file 读写原语与
+  `test_sessionfile.cpp`（Rust 批次 D 的语义参考，文件头标注「落地后随删」）。
+- **`--agent` 入口快速失败**：cliargs 校验层直接拒绝（退出 2 + 两进程替代用法指引），
+  不再先做 LLM 驱动注入/哨兵装配/TCP accept 才打到桩。模型循环类选项
+  （`--task`/`--llm-*`/`--prompt-file`/`--session-file`/`--resume`）一律拒绝并指路
+  `mybot-agent`；门控类选项归属 `--mcp-backend`；`--check-config` 保留（不再强制
+  `--mcp-socket`）。主帮助补齐此前完全缺失的 `--mcp-backend` 段（黄金计数 35→25，
+  docs 选项表同步）。
+- **C++ 活代码收敛**：SQL 渲染错误通道类型化（`SqlOutcome{ok,text}`，废除「错误: 」
+  字符串前缀当错误码、调用方 rfind 翻译的往返）；UTF-8 校验/FdGuard/ASCII 小写化/
+  整词切词四组重复实现收敛到 util.hpp 单点；结构脚本头 16KiB 上限单常量化；
+  `buildAgentConfig` 由 242 行 12 步内联拆为具名步骤函数（判据/文案不变）。
+- **Rust agent 修复**：交互 REPL 的「思考中…」动画重写——写出改 `libc::write` 直写
+  fd 2（原裸 `eprint!` 对 EPIPE/ENOSPC 直接 panic，恰是审计 H2 修掉的 panic 面；
+  顺带清掉尾随空格，fmt 门禁回绿），停止改 oneshot 唤醒 + join 后清行（原裸
+  `abort()` 后立即清行有竞态），且 `--task` 模式不再显示动画；SAN-9 请求体估算
+  字节由整份序列化改为按段求和（`message_weight` 同源下界 + preamble + 工具
+  schema），消除每轮一次 O(历史) 的序列化峰值；`PromptMaterial` 失败退出码 1→2
+  对齐「配置错误=2」。
+- **R8b 场景修复（测试 bug）**：SIGINT 原打给管道末端的 `timeout` 包装进程，GNU
+  timeout 不转发 SIGINT——信号被吞、该场景自引入以来一直 FAIL（本次基线即红）。
+  改打 `pgrep -P` 找到的 mybot-agent 本体；直连进程的取消语义本就完好。
+- **文档对齐**：docs/agent.md 顶部改为新拓扑横幅（两进程 + 快速开始），「Lua 协议
+  驱动模型调用」「远程对话 --agent --tcp」「MCP sidecar」三节标注沿革/批次状态，
+  源码分层表更新（agentloop/agentbudget/agentdriver 行删，补 agent/ Rust 行）；
+  README 全部 agent 示例改两进程形态；`Cargo.toml`/`hook.rs`/`agent_e2e.sh` 的
+  `.tmp/*` 失效引用改指 git 历史；8MiB 帧上限双侧常量注释互相点名（改一必须改二）。
+
 ### 2026-09-24 收尾 `d384a9b9`：HEAD 恢复可编译 + agent 守门按归属分流
 
 > 守门快照：全量 `bash test/run_all.sh` **270 / 0 / 0 跳**（`rc=0`）；C++ 单测

@@ -67,7 +67,7 @@
 #   跑——不经模型，判据更硬；属循环层的（工具循环、超时、重试、取消、图片后注、
 #   stdout 纯净/写失败不 panic）由下面 R 段守，R 段与 C++ 场景**同判据**。
 #   仍未覆盖的（如实记下）：--session-file/--resume 两进程接力与 agent over TCP
-#   ——Rust 侧尚无实现（批次 D），见 .tmp/bot4cj-eval-20260924.md 中风险第 5 条。
+#   ——Rust 侧尚无实现（批次 D；C++ 原语与 test_sessionfile.cpp 保留为语义参考）。
 # 退出码: 0 通过 / 1 失败 / 2 参数用法错 / 125 缺 python3（守门按 SKIP 计）
 set -u
 

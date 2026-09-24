@@ -1,43 +1,61 @@
-# agent 模式（--agent）
+# agent 体系（mybot-agent + --mcp-backend）
 
-> **一句话**：管道模式是「给它一份剧本，它照着演一遍就下台」；agent 模式是
+> **一句话**：管道模式是「给它一份剧本，它照着演一遍就下台」；agent 体系是
 > 「**让它一直站在台上**，由大模型看着可用剧本，一步一步决定下一段演什么」。
-> 而**模型调用本身是一颗 Lua 驱动**——和舵机、传感器平级，不引入任何链接期依赖。
+
+> **拓扑变更（2026-09-24，agent 循环迁 Rust）**：agent 体系现为**两个进程**——
+> C++ 宿主 `mybot --mcp-backend` 提供**工具后端**（硬件上电常驻，工具调用经
+> AF_UNIX socket 同步服务），Rust `mybot-agent`（`agent/` 目录，rig 驱动）
+> 承担**模型循环**（REPL / `--task` / 预算 / 历史裁剪 / 审计 model 行），直连
+> provider，经 `--socket` 调用后端。原 C++ 单进程 `--agent` 模式（模型调用是
+> 一颗 Lua 驱动）已移除：`mybot --agent` 会被显式拒绝（退出 2）并给出指引；
+> 模型侧参数（`--task` / `--llm-*` / `--prompt-file` / `--session-file` /
+> `--resume`）是 `mybot-agent` 自己的选项（见 `mybot-agent --help`）。
+> 本文其余章节描述的语义（预算口径、审计三类行、图片后注、提示词定界……）
+> **仍然有效**——Rust 侧实现与之逐字对齐，判据以此为准。
 
 ## 与管道模式的差别
 
-| | 管道模式（默认） | agent 模式（`--agent`） |
+| | 管道模式（默认） | agent 体系（后端 + mybot-agent） |
 | --- | --- | --- |
 | 主流程 | 读一段 `.mt` → 逐行重放 → 退出 | 大模型工具循环，多轮决策后才退出 |
-| 硬件生命周期 | `active()` → `run()` → `deactivate()`，一次性 | `active()` → **常驻** → 会话结束才 `deactivate()` |
+| 硬件生命周期 | `active()` → `run()` → `deactivate()`，一次性 | 后端 `active()` → **常驻** → 会话结束才 `deactivate()` |
 | 动作脚本数量 | 一次一段（可用 mtmerge 合成） | 任意多段，逐个由智能体挑选执行 |
-| 输入源 | `--tcp` / `--input` / stdin | `--task` 一次性，或 stdin 交互 REPL，或 `--tcp` 远程 REPL |
+| 输入源 | `--tcp` / `--input` / stdin | mybot-agent 的 stdin 交互 REPL 或 `--task` 一次性 |
 | 决策者 | 写脚本的人 | 大模型（受提示词与工具边界约束） |
 
-两种模式**互斥**：`--agent` 与 `--input` 同时给会被显式拒绝（退出码 2）。
-`--agent --tcp <port>` 是**远程 REPL**（见下节），照常是 agent 模式；
-`--task` 与 `--tcp` 同时给仍被拒绝（一次性任务没有长驻对话的意义）。
+两种形态**互斥**：`--mcp-backend` 与 `--tcp` / `--input` 同时给会被显式拒绝
+（退出码 2）；`--agent` 则已移除（见顶部横幅）。
 
 ## 快速开始
 
-无硬件自检链路（推荐第一条命令）。**endpoint 必须显式配置**（B2 起不再有内置缺省，
-见[下文](#内置三个协议驱动)）：
+无硬件自检链路（推荐第一条命令）。**endpoint 必须显式配置**（B2 起不再有内置缺省）：
 
 ```bash
+bash scripts/build_agent.sh      # 一次：构建 Rust agent（产物 agent/target/release/mybot-agent）
+
+# 终端 1：工具后端（虚拟继电器，无硬件；硬件上电常驻）
+./build/mybot --robot=robots/relay-test.sql --mcp-backend \
+    --mcp-socket /tmp/mybot.sock --scripts-dir scripts
+
+# 终端 2：agent（交互 REPL；密钥与接入点经环境变量/配置文件给 mybot-agent）
 export BOT4CJ_LLM_KEY=sk-xxx
 export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
-./build/mybot --robot=robots/relay-test.sql --agent --task "让继电器动作一次"
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock
+mybot[relay-test|llm0|3hw]> 让继电器动作一次
 ```
 
-换 DeepSeek 协议（同样的机器人与动作脚本，只换协议驱动）：
+一次性任务（同一后端，agent 侧加 `--task`）：
 
 ```bash
 export DEEPSEEK_API_KEY=sk-xxx
-./build/mybot --robot=robots/spider1.sql --agent --llm-driver LlmDeepSeek
-mybot> 站起来
-mybot> 先前走两步，然后向左转
-mybot> /exit
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
+    --llm-endpoint https://api.deepseek.com/chat/completions --llm-model deepseek-chat \
+    --task "让机器人站起来"
 ```
+
+配置链（命令行 > 环境变量 > `mybot.llm.json` > 内置缺省）与配置文件格式见
+[mybot.llm.json.example](../mybot.llm.json.example)——`mybot-agent` 与后端读同一份。
 
 ## 交互式 REPL
 
@@ -54,10 +72,12 @@ REPL 内置命令：`/hardware` 打印硬件清单，`/scripts` 打印动作脚�
 session id、硬件变量数；只读，**不触发任何模型调用**——SAN-10，2026-09-22），
 `/clear` 清空对话记忆（**硬件保持上电**、系统提示词不变——上下文被错误结论
 污染后不必重启进程丢掉常驻状态，C1，2026-09-22），`/exit`（或 `/quit`、Ctrl-D）退出。
-Ctrl-C 走正常清理链：当前轮中断、机器人 `deactivate()` 去初始化后进程才退出。
-**首次 Ctrl-C 即可**——在飞的模型调用会在约 1 秒内被取消哨兵中止（不再是"只能等满
-`--llm-timeout` 或连按两次强杀"）；第二次是逃生口，跳过清理。完整机制、实测证据与
-残余边界见 [reference.md](reference.md) 的中断语义一节（SAN-7，2026-09-22 改写）。
+Ctrl-C 走正常清理链：mybot-agent 首次 SIGINT 置停止标志（不再发起新的模型轮与
+工具下发，本轮以「执行被中断」收场）、会话照常写 end 行后退出 0；第二次是逃生口，
+立即强杀（跳过清理）。后端进程同口径：SIGINT/SIGTERM 置标志后跳出服务循环、
+`deactivate()` 断电退出。原 C++ 侧的「取消哨兵文件」（libcurl 进度回调轮询，
+P2a/AG-27）已随 Lua 驱动模型调用一起移除——在飞请求由 mybot-agent 的
+`--llm-timeout` 封顶（如实偏差：rig 侧无请求级取消，e2e R8b 钉住该语义）。
 
 ## 命令行参数
 
@@ -182,18 +202,29 @@ API key 没有命令行入口（只从环境变量或配置文件取）：argv �
 为什么是 JSON 而不是 Lua：配置文件是**数据**，不是代码。Lua 配置要由宿主内嵌状态机去执行，
 等于让一份常被复制/分发的文件获得任意代码执行能力；而仓库已有严格 JSON 解析器，复用它零成本。
 
-## 模型调用：一颗 Lua 协议驱动
+## 模型调用（沿革：Lua 协议驱动 → Rust 直连）
+
+> **现状（2026-09-24，批次 B）**：agent 的模型调用由 Rust `mybot-agent` 直连
+> provider（`agent/src/provider.rs`，rig 0.42 内置 OpenAI/DeepSeek/Anthropic 三族，
+> reqwest + rustls），**不再经 Lua 驱动**。下列驱动与协议文档**保留为驱动生态的
+> 参考**：`modules/Llm*.lua` 与 `modules/lib/llm_*.lua` 仍在（`test_llm_drivers.lua`
+> 照常守门），结构脚本仍可把它们声明成普通硬件变量（供 `.mt` 脚本或 `@Daemon`
+> 直接调用）；但 agent 会话本身已不经过这条链路。
 
 ```
-agentloop（C++）        工具循环
-  └─ agentproto（C++）  规范化消息/工具 ⇄ Json
-       └─ agentdriver（C++）  ChatTransport：把请求交给驱动变量、取回响应
-            └─ llm0 = modules/LlmOpenAI.lua      ← 普通硬件变量
-                 └─ lib/llm_wire_openai.lua      ← 协议整形（provider 报文）
-                      └─ lib/llm_http.lua        ← ffi 直驱 libcurl（HTTPS/TLS）
+mybot-agent（Rust）     模型循环（provider.rs 直连 provider：reqwest + rustls）
+  └─ frame.rs/bridge.rs  帧协议 ⇄ mybot --mcp-backend（工具调用）
+
+【沿革存档：C++ --agent 时代的调用链】
+  agentloop（C++）      工具循环（已删）
+  └─ agentproto         规范化消息/工具 ⇄ Json（传输层部分已删）
+       └─ agentdriver   ChatTransport：把请求交给驱动变量（已删）
+            └─ llm0 = modules/LlmOpenAI.lua      ← 普通硬件变量（仍在）
+                 └─ lib/llm_wire_openai.lua      ← 协议整形（仍在）
+                      └─ lib/llm_http.lua        ← ffi 直驱 libcurl（仍在）
 ```
 
-**为什么不把 HTTP 写进宿主**：
+**当初为什么不把 HTTP 写进 C++ 宿主（决策记录）**：
 
 - 换模型/换厂商 = **换一个 Lua 文件**，宿主不重编、不链接任何 HTTP 库；
 - 项目「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」的承诺在这条路径上依然成立；
@@ -529,7 +560,7 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   URL 里，而审计是 append-only 的落盘文件）。`api_key_source` 只记来源枚举名
   （`env` / `config_inline` / `config_file`），**值绝不出现**。
 
-- **位置在宿主派发漏斗**（`agentloop` 的 `dispatchOneCall`）：Lua 驱动与 `.mt` 脚本都绕不过；参数解析失败、未知工具、工具异常同样各记一条（「模型想做什么但没做成」也是审计信息）。
+- **位置在宿主派发漏斗**（`src/agentdispatch.cpp` 的 `DispatchGate::run`）：后端帧协议与 `.mt` 脚本都绕不过；参数解析失败、未知工具、工具异常同样各记一条（「模型想做什么但没做成」也是审计信息）。
 - **图片不进日志**：`capture_image` 只记 `image_bytes` 与 16 位指纹（`image_fp`，FNV-1a 64，非密码学摘要）——否则每次拍照数百 KB 灌进磁盘，且画面可能含隐私。
 - **密钥遮蔽**：`run_command` 的命令原文记进 `args.command` 前先遮蔽敏感值——`KEY=VALUE`、`Authorization: Bearer <tok>`、裸 `Bearer <tok>` 三种形态的值替换为 `***`；判据与 `run_command` 的环境清洗同源（整词切词，`KEYSTONE`/`MONKEY` 不误伤）。**同一个 `maskSecretsInText` 单点也用于回执**（G1）：命令自己打印到 stdout/stderr 的敏感值，在回传模型前同样被遮蔽。
 - **生效摘要（G2）**：`apply_sql` 等工具行的 `summary` 字段记工具自报的结构化生效信息（新增几张表/几个变量/几行……），供复盘对账「这次热插到底改了什么」；只做加法，不带 `summary` 的老工具行不出现该键。
@@ -538,6 +569,11 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 - 审计是**记录**不是防线：它不审批、不拦截；配合 `--agent-shell` 使用时请把它当「事后追责」证据，而非「事前阻止」闸门。
 
 ## 会话持久化：--session-file / --resume
+
+> **状态（2026-09-24）**：Rust agent（批次 D）**尚未实现** `--session-file` / `--resume`。
+> C++ 侧的读写原语（`src/agenthistory.cpp` 的 SessionFileWriter / loadSessionFile）与
+> `test_sessionfile.cpp` 的 9 个钉子用例**保留为语义参考**，文件头已标注「批次 D
+> 落地后随删」；落地时以下列语义为准对齐。
 
 **问题**：agent 的对话记忆此前只在进程内存里——重启即忘。而现场机器人重启的代价
 不小（硬件要重新上电、动作位置丢失），一次巡检或陪伴类用法被一次重启清空上下文，
@@ -590,9 +626,14 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   --session-file /var/lib/mybot/s.jsonl --resume
 ```
 
-## 远程对话：--agent --tcp
+## 远程对话（已移除，规划中为批次 E）
 
-`--agent --tcp <port>` 让**远程对端**直接与常驻机器人对话：对端每行一条任务，
+> **状态（2026-09-24）**：`--agent --tcp` 随 C++ agent 模式移除——`--agent` 一律
+> 拒绝。远程形态规划由 Rust agent 承担（批次 E）：mybot-agent 监听 TCP、对端逐行
+> 下发任务；安全口径沿用下述设计（回环缺省、跨机必须口令、对端断开=远程取消）。
+> 以下为设计存档。
+
+`--agent --tcp <port>` 曾让**远程对端**直接与常驻机器人对话：对端每行一条任务，
 模型输出与工具回显按既有 REPL 格式逐行回写同一条连接。适用于「机器人接在现场
 WiFi 上，人在另一台机器上问它」——此前 agent 只能用 stdin，远程唯一的办法是
 ssh 上去，而 ssh 会带来另一套权限面。
@@ -675,20 +716,26 @@ ssh 上去，而 ssh 会带来另一套权限面。
 - 配置错误（路径打不开、JSON 不合法、字段非法）在 `buildAgentConfig` 阶段失败——
   「配置错误不碰真机」。
 
-## MCP 后端：--mcp-backend（方案 F / 拓扑 F3）
+## 工具后端：--mcp-backend（agent 体系的 C++ 半边）
 
-把 agent 的**工具层**经一条本地 AF_UNIX socket 暴露给一个 Rust MCP sidecar（`mybot-mcp`），
-于是**任意 MCP 客户端**（Claude、Cursor、rig-agent…）都能驱动机器人。这是一个**独立模式**：
-后端**不跑 agent 工具循环、不发起任何模型调用**——模型在外部客户端那侧，每次工具调用由
-客户端经 MCP 下发，后端只把调用穿过既有的唯一漏斗 `DispatchGate::run`（策略确认 → 执行 → 审计）。
+`--mcp-backend` 把 agent 的**工具层**经一条本地 AF_UNIX socket 暴露出来，是 agent
+体系的 C++ 半边：**不跑模型循环、不发起任何模型调用**——模型在对端（Rust
+`mybot-agent`，或任何说同一条帧协议的客户端）那侧，每次工具调用由对端经 socket
+下发，后端只把调用穿过既有的唯一漏斗 `DispatchGate::run`（策略确认 → 执行 → 审计）。
+原「Rust MCP sidecar（mybot-mcp）」方案已随批次 B 移除——对上直接面向用户的
+agent 就是 `mybot-agent`。
 
 ```
-外部 MCP 客户端 ──MCP/stdio──> [mybot-mcp sidecar] ──帧/AF_UNIX──> [mybot --mcp-backend] ──> 硬件
+[mybot-agent]（Rust，模型循环） ──帧/AF_UNIX──> [mybot --mcp-backend] ──> 硬件
+   │  直连 provider（reqwest）
+   └─ 审计：kind=model / kind=session 行（agent 侧落）
+      后端落 kind=tool 行（可共用同一个 --audit-log）
 ```
 
-后端只认一条 pymsg 兼容的帧协议（`[4 字节 BE 长度][UTF-8 JSON]`，上限 8 MiB），路由
-`tool.list` / `tool.call` / `ping` / `context.get`；sidecar 负责把它翻译成 MCP。二者是两个进程、零链接，
-唯一耦合就是这条 JSON 帧契约（与 `agentproto.hpp` 的「规范化 JSON 边界」同一哲学）。
+后端只认一条 pymsg 兼容的帧协议（`[4 字节 BE 长度][UTF-8 JSON]`，上限 8 MiB——
+`mcpbackend.hpp` 的 `kMcpMaxFrameBytes` 与 Rust 侧 `frame.rs` 的 `MAX_FRAME_BYTES`
+是同一契约的两份常量，改动必须双侧同步），路由 `tool.list` / `tool.call` /
+`ping` / `context.get`。二者是两个进程、零链接，唯一耦合就是这条 JSON 帧契约。
 
 `context.get` 是**只读素材路由**（Rust agent 的系统提示词来源）：返回 `robotName` /
 `structurePath` / `scriptsDir` / `allowShell` / `allowHotSql` / `hardwareCount`，以及三段
@@ -701,20 +748,21 @@ ssh 上去，而 ssh 会带来另一套权限面。
 ### 快速开始
 
 ```bash
-# 后端（虚拟继电器，无硬件）：整服务端一 session 审计
+# 终端 1：后端（虚拟继电器，无硬件）；后端与 agent 可共用同一个审计文件
 ./build/mybot --robot=robots/relay-test.sql --mcp-backend \
     --mcp-socket /run/user/1000/bot4cj/mcp.sock --scripts-dir scripts --audit-log -
 
-# sidecar（先 bash scripts/build_sidecar.sh 构建）
-BOT4CJ_MCP_SOCKET=/run/user/1000/bot4cj/mcp.sock ./mcp-sidecar/target/release/mybot-mcp
+# 终端 2：agent（先 bash scripts/build_agent.sh 构建）
+./agent/target/release/mybot-agent --socket /run/user/1000/bot4cj/mcp.sock
 ```
 
-MCP 客户端（stdio）配置：`{"command":"…/mybot-mcp","args":["/run/user/1000/bot4cj/mcp.sock"]}`。
+模型侧参数（`--task` / `--llm-*` / `--prompt-file` / `--audit-log` / `--check-config`）
+见 `mybot-agent --help`；端到端场景与判据见 `scripts/agent_e2e.sh`（R1-R10）。
 
 ### 安全模型
 
 - **传输与认证**：socket 父目录 0700、文件 0600；accept 后用内核 **`SO_PEERCRED`** 校验对端
-  uid/gid == 本进程，不匹配即断连（不可伪造）。MCP 侧走 stdio，信任来自父子进程关系。
+  uid/gid == 本进程，不匹配即断连（不可伪造）。mybot-agent 与后端同 uid，由操作者启动。
 - **线程归属**：后端在**主线程同步**服务、**单连接串行**（lock-step）——于是工具执行依赖的
   `thread_local`（`callEchoSink`/`topDepth`/`luaExecBudget`）天然正确，硬件调用自动串行。
 - **审计/策略连续性**：所有 MCP 调用**必穿** `DispatchGate::run`，故审计与能力门控与 agent
@@ -733,15 +781,15 @@ MCP 客户端（stdio）配置：`{"command":"…/mybot-mcp","args":["/run/user/
 - **优雅停机 = 急停**：`SIGTERM`/`SIGINT` 置停止标志，后端跳出 accept/帧循环、回到 main 的
   清理链**总是 `deactivate()`**（fail-safe 断电），与 agent 模式同一兜底。
 - **但进行中的硬件动作停不了**：`run_action_script` 的预算钩子是 LuaJIT 指令计数钩子，
-  **打不断阻塞的 FFI 系统调用**（已下发到 I2C/SPI/UART 的动作收不回）。sidecar 的 `on_cancelled`
-  因此只「停止后续派发」并**如实回报**「取消已收到，但进行中的动作无法中止」——绝不假装硬件停了。
-  长动作应由客户端用 MCP 的 tasks API 轮询，而不是同步 `call_tool`。
+  **打不断阻塞的 FFI 系统调用**（已下发到 I2C/SPI/UART 的动作收不回）。对端（mybot-agent）
+  的取消因此只「停止后续派发与模型轮」并**如实回报**「执行被中断」——绝不假装硬件停了。
 
 ### ⚠ 残留风险（诚实告知）
 
 `SO_PEERCRED` 只挡**别的用户**，挡不住**同 uid** 的进程——而后端的 `run_command`（模型驱动的
-shell）恰恰同 uid。理论上它若发现 socket 路径，就能直连后端、**绕过 agent loop 的物理安全上限**
-（那些上限在 loop 里强制，直打 socket 就跳过了 loop）。已就位的缓解：listening fd 是 CLOEXEC
+shell）恰恰同 uid。理论上它若发现 socket 路径，就能直连后端、**绕过 mybot-agent 循环层的
+物理安全上限**（单轮调用数、任务预算等在循环里强制，直打 socket 就跳过了）。已就位的缓解：
+listening fd 是 CLOEXEC
 （`run_command` 子进程不继承）、0700 目录 + 不可预测路径、每连接预算、危险能力强制 policy 确认。
 **诚实建议**：后端模式下**尽量不要开 `--agent-shell`**；若必须开，把后端跑在**专用用户 / 容器**里
 （真正的隔离），或将来加回首帧共享密钥 `BOT4CJ_MCP_TOKEN`（该名含 token，会被自动从 `run_command`
@@ -898,14 +946,13 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
 | `src/agenttools.{hpp,cpp}` | 工具注册表与各工具（含只读查询/回读、脚本路径沙箱、硬件描述）、回显回收与回执渲染 | 无 |
 | `src/agent_subprocess.{hpp,cpp}` | `run_command` 的子进程实现（超时、进程组终止、输出截断、环境清洗）＋宿主环境块密钥抹除 | 无 |
-| `src/agenthistory.{hpp,cpp}` | 会话历史所有权、单条消息线上体积估算、按任务块整块裁剪（重构 A1 自 agentloop 拆出） | 无 |
-| `src/agentbudget.{hpp,cpp}` | 任务内文本/图片预算、降级说明与记账（AG-4/21 语义单点，重构 A1 自 agentloop 拆出） | 无 |
-| `src/agentdispatch.{hpp,cpp}` | 派发漏斗：策略确认 → 执行 → 审计的固定顺序单点（重构 A1 自 agentloop 拆出） | 无 |
-| `src/agentloop.{hpp,cpp}` | 工具循环编排（轮次上限、单轮调用数上限、裁掉半截 tool_calls 尾部、extras 透传） | 无 |
-| `src/agentmode.{hpp,cpp}` | CLI 配置组装、一次性/REPL 外壳 | 无 |
-| `src/agentprompt.{hpp,cpp}` | 系统提示词构建（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界单点 `quoteUntrusted`、总量上限 fail-closed）（重构 A2 自 agentmode 拆出） | 无 |
-| `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接） | 无 |
-| `src/agentdriver.{hpp,cpp}` | `ChatTransport` 适配：调驱动的 `playQuiet()` | 无 |
+| `src/agenthistory.{hpp,cpp}` | 会话文件读写原语（SessionHead/SessionFileWriter/loadSessionFile；**批次 D 语义参考**，历史裁剪已迁 Rust） | 无 |
+| `src/agentdispatch.{hpp,cpp}` | 派发漏斗：策略确认 → 执行 → 审计的固定顺序单点（重构 A1 拆出；MCP 后端与工具层的唯一入口） | 无 |
+| `src/agentmode.{hpp,cpp}` | CLI 配置组装（四层合并、能力门控、审计/策略装载）与工具上下文落点 | 无 |
+| `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
+| `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
+| `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
+| `agent/src/repl.rs` 等 13 个 `.rs` | Rust agent：模型循环（REPL/--task）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端（`agent/`，Cargo 独立构建） | rig 0.42 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/lib/llm_http.lua` | ffi 直驱 libcurl 的 HTTP 传输 | 运行期 libcurl |
 | `modules/lib/llm_wire_openai.lua` | OpenAI 兼容报文整形与响应映射 | 无 |

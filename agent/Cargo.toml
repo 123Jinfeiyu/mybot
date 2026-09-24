@@ -7,7 +7,8 @@ license = "MIT"
 
 # rig agent（2026-09-24 迁移，批次 B）：取代 C++ agent loop 与 MCP sidecar。
 # 对上直接面对用户（REPL / --task），对下说后端的 pymsg 兼容帧（AF_UNIX）。
-# 语义→落点矩阵见 .tmp/rig-migration-matrix.md（rig 0.42 源码核对产出）。
+# 语义→落点矩阵见批次 B/C 的迁移提交（git log -- agent/；核对基准 rig 0.42 源码）。
+# C++ 侧判据以 docs/agent.md 为准，Rust 侧逐字对齐。
 
 [[bin]]
 name = "mybot-agent"
