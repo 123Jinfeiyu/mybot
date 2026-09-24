@@ -6,6 +6,38 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-24 agent 本体迁移到 Rust（rig）：`mybot-agent` 骨架落地（rig 迁移·批次 B）
+
+> 守门快照：`agent/` 四检全绿（cargo build --release / test **31** / clippy `-D warnings` /
+> fmt --check，均 `--locked`）；C++ 全量 **269 / 0 / 3 跳**（环境性跳过不变），C++ 单测 **689 / 0**；
+> `bash test/run_all.sh agent-all` **16 / 0 / 0**（含新段）；新 E2E `agent_e2e.sh --rust`
+> **32 项**绿（R1-R5）、`mcp_e2e.sh` **57 项**绿。新断言已反向验证（临时把就绪行改走 stdout +
+> model 行 usage 置空 → 「stdout 纯净 / stderr 就绪行 / usage 记账」3 条红，恢复后绿）。
+
+- **目录与产物**：`mcp-sidecar/` → `agent/`，包名/二进制 **`mybot-agent`**；`handler.rs`（MCP
+  stdio 协议层）删除——MCP 协议层不再由独立进程提供，agent 直连 `mybot --mcp-backend` 的
+  AF_UNIX 帧（4B BE，同 `agent/src/frame.rs`）。`scripts/build_sidecar.sh` → `build_agent.sh`。
+- **模块**：`main`（CLI/编排/退出码）、`config`（配置链：命令行 > 环境变量 > 配置文件 > 缺省，
+  未知字段仍拒绝）、`provider`（rig 驱动按协议构造 + 接入点归一）、`bridge`（工具表→rig 工具、
+  帧调用→工具回执）、`prompt`（内置段落 + `--prompt-file` 包自然排序分节）、`repl`（会话/一轮
+  任务/内置命令）、`audit`（session/model 行；**工具行仍归后端**，agent 不重复记）。
+- **语义如实差异（记录在案，批次 C/D/E 落）**：审计每次任务一条 model 行（C++ 是每次模型调用
+  一条）；图片注入、历史裁剪/字节预算、`--session-file`/`--resume`、TCP 远程 REPL、SIGINT 取消
+  尚未搬。`/hardware`、`/scripts`、`/sql` 一律经工具层（本进程不持有硬件），后端没给工具时
+  **明确点名缺的开关**（如 `--agent-hot-sql`），不假装执行过。**`docs/agent.md` 里的 sidecar
+  用法示例（`./mcp-sidecar/target/release/mybot-mcp`）已失效**，随批次 D 的文档更新一并改写；
+  本批次只做最小事实修正（`docs/testing.md` 的 CI 行改名）。
+- **E2E 与守门接线**：`scripts/agent_e2e.sh` 加 `--rust`（R1 工具循环含后端侧 Lua 驱动见证、
+  R2 提示词包、R3 审计分工、R4 REPL + 能力门控、R5 `--check-config` 正负路径）；`run_all.sh`
+  新增 **agent-rust-e2e** 段（`agent-all` 覆盖；缺 `agent/target/release/mybot-agent` 按 SKIP——
+  沿用「只给 Rust 单独加 CI job」的口径）；`mcp_e2e.sh` **删 MCP stdio 段**，原判据（socket
+  0700/0600、能力门控两趟对照、未知工具回执、fd 卫生 SOCKFDS=0、审计 session+tool、SIGTERM
+  优雅停机、M5 无 policy 拒启）改由直连帧的独立 Python 客户端接住——两份实现各自跑绿不证明
+  字节兼容，第三方尺子才证明；CI `gate:sidecar` → **`gate:agent`**（`cd agent`，四检不变），
+  `docs/testing.md` 同步。
+- **夹具适配**：`scripts/fake_llm_server.py` 的 OpenAI 形态应答补 `id`/`model` 外壳——rig 0.42
+  把这两项定为必填（真网关也都带），C++ 驱动只取 `choices` 故不受影响，同一份夹具对两份实现成立。
+
 ### 2026-09-24 守门修复三连：curl POST 顺序 / 审计 exit_code / destroy 契约调和
 
 > 守门快照：修复前在 HEAD（44ce196）上全量即红（3 段失败，先于本次 context.get 改动

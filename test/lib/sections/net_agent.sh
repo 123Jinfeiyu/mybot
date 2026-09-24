@@ -78,25 +78,20 @@ run_one_agent_e2e() {
 	fi
 }
 
-# MCP 后端 + sidecar 端到端（scripts/mcp_e2e.sh，方案 F / 拓扑 F3）。
-# 与 agent-e2e 的关键差别：Rust sidecar 是**可选**产物——C++ 回归路径不强制构建它
-# （评估 §5.3：只给 sidecar 单独加 CI job，不给全部 job 加 Rust）。故缺 sidecar 按
-# SKIP 计（不是假绿、也不是失败）；缺 build/mybot 仍判失败（那是核心产物）。
+# MCP 后端端到端（scripts/mcp_e2e.sh，方案 F / 拓扑 F3）。
+# 2026-09-24（rig 迁移批次 B）：原先这段依赖 Rust sidecar 产物（可选，故按 SKIP 计）；
+# MCP 协议层随架构迁移取消后，**本段只剩 C++ 后端 + Python 帧客户端**，不再需要任何
+# Rust 产物——缺 build/mybot 才判失败（那是核心产物）。Rust 侧由下面的
+# run_one_agent_rust_e2e 接力（那段才按缺产物 SKIP）。
 run_one_mcp_e2e() {
-	echo "----- mcp-e2e (MCP 后端 + sidecar 端到端) -----"
+	echo "----- mcp-e2e (MCP 后端 + 帧客户端端到端) -----"
 	if [ ! -x "$bin" ]; then
 		artifact_missing "MCP 端到端" "该段（scripts/mcp_e2e.sh）" "$bin" "$bot_explicit"
 		return 2
 	fi
 	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（MCP 客户端），跳过本段"
+		echo "[SKIP] 无 python3（帧客户端），跳过本段"
 		record_skip "mcp-e2e(缺python3)"
-		return 2
-	fi
-	local sidecar="mcp-sidecar/target/release/mybot-mcp"
-	if [ ! -x "$sidecar" ]; then
-		echo "[SKIP] 无 sidecar 产物 $sidecar（先 bash scripts/build_sidecar.sh；Rust 段是可选 CI job），跳过本段"
-		record_skip "mcp-e2e(缺sidecar产物)"
 		return 2
 	fi
 	local out rc
@@ -105,6 +100,41 @@ run_one_mcp_e2e() {
 	echo "$out"
 	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "MCP 端到端测试通过"; then
 		record_fail "mcp-e2e(MCP 后端)"
+	else
+		record_pass
+	fi
+}
+
+# Rust agent（agent/，包名 mybot-agent）端到端：与上面的 agent-e2e 共用
+# scripts/agent_e2e.sh，用 --rust 切到「mybot --mcp-backend + mybot-agent」两进程拓扑。
+# mybot-agent 是**可选**产物：C++ 回归路径不强制构建它（评估 §5.3 同一口径——只给
+# Rust 单独加 CI job，不给全部 job 加 Rust），故缺它按 SKIP 计（不是假绿、也不是失败）；
+# 缺 build/mybot 仍判失败（本段的后端就是它，且那是核心产物）。
+run_one_agent_rust_e2e() {
+	echo "----- agent-rust-e2e (mybot-agent 端到端) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "Rust agent 端到端" "该段（scripts/agent_e2e.sh --rust）" "$bin" "$bot_explicit"
+		return 2
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（假模型服务），跳过本段"
+		record_skip "agent-rust-e2e(缺python3)"
+		return 2
+	fi
+	local agent_bin="agent/target/release/mybot-agent"
+	if [ ! -x "$agent_bin" ]; then
+		echo "[SKIP] 无 mybot-agent 产物 $agent_bin（先 bash scripts/build_agent.sh --release；Rust 段是可选 CI job），跳过本段"
+		record_skip "agent-rust-e2e(缺mybot-agent产物)"
+		return 2
+	fi
+	local out rc
+	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh --rust 2>&1)"
+	rc=$?
+	echo "$out"
+	if [ $rc -eq 125 ] && echo "$out" | grep -qF '[SKIP]'; then
+		record_skip "agent-rust-e2e(缺python3或libcurl)"
+	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mybot-agent 端到端测试通过"; then
+		record_fail "agent-rust-e2e(mybot-agent)"
 	else
 		record_pass
 	fi

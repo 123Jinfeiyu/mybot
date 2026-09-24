@@ -42,8 +42,21 @@ HEADERS = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
 ATTEMPTS = {"n": 0}
 
 
+def openai_shell(payload):
+    """补上 OpenAI 形态应答的外壳字段 id/model。
+
+    2026-09-24（rig 迁移）：rig 0.42 的 CompletionResponse 把 id 与 model 定为
+    **必填**（缺任一即 ProviderResponseError），而真网关的应答也都带这两项——
+    夹具此前省略它们，只有 C++ 驱动（只取 choices）不介意。补上后同一份夹具对
+    两份实现都成立；C++ 侧忽略多余字段，故不影响既有场景。
+    """
+    payload.setdefault("id", "chatcmpl-fake")
+    payload.setdefault("model", "fake-model")
+    return payload
+
+
 def tool_call(name, arguments):
-    return {
+    return openai_shell({
         "choices": [{
             "message": {
                 "role": "assistant",
@@ -56,7 +69,7 @@ def tool_call(name, arguments):
                 }],
             }
         }]
-    }
+    })
 
 
 def anthropic_tool_call(name, arguments):
@@ -91,7 +104,7 @@ def anthropic_final_answer():
 def final_answer():
     # SAN-9：带上 provider 的 usage——宿主的审计模型记录要挑 prompt_tokens /
     # completion_tokens 记账（只记 provider 给的数，不推算）。真机也这么返回。
-    return {
+    return openai_shell({
         "choices": [{
             "message": {
                 "role": "assistant",
@@ -100,7 +113,7 @@ def final_answer():
             }
         }],
         "usage": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290},
-    }
+    })
 
 
 def protocol_error(request):
@@ -282,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         if MODE == "slow":
             time.sleep(5)
-            self._reply({"choices": [{"message": {"role": "assistant", "content": "慢响应"}}]})
+            self._reply(openai_shell({"choices": [{"message": {"role": "assistant", "content": "慢响应"}}]}))
             return
         # 先做**严格 UTF-8 解码**（2026-09-21 审计 AG-1）。此前的 `except ValueError`
         # 把 UnicodeDecodeError（ValueError 的子类）一并吞掉，非法字节的请求被当成
@@ -327,12 +340,12 @@ class Handler(BaseHTTPRequestHandler):
         if MODE.startswith("manycalls"):
             want = int(MODE.split(":", 1)[1]) if ":" in MODE else 3
             if tool_results == 0:
-                self._reply({"choices": [{"message": {
+                self._reply(openai_shell({"choices": [{"message": {
                     "role": "assistant", "content": "本轮要查几件事。",
                     "tool_calls": [{
                         "id": "c%d" % i, "type": "function",
                         "function": {"name": "list_hardware", "arguments": "{}"},
-                    } for i in range(1, want + 1)]}}]})
+                    } for i in range(1, want + 1)]}}]}))
             else:
                 self._reply(final_answer())
             return

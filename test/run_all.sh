@@ -957,10 +957,27 @@ if filter_matches "agent" "$filter_e2e"; then
 fi
 
 # ======================================================================
-# MCP 后端 + sidecar 端到端（scripts/mcp_e2e.sh，方案 F / 拓扑 F3）：Python MCP
-# 客户端 → mybot-mcp sidecar（stdio）→ mybot --mcp-backend（AF_UNIX 帧）→ relay 虚拟
-# 机器人。另含跨语言帧对打（纯 Python 直连后端）与 fd 卫生（run_command 子进程不继承
-# socket fd）。Rust sidecar 是**可选**产物：缺它按 SKIP 计（不给 C++ 回归路径强加 Rust）。
+# Rust agent 端到端（scripts/agent_e2e.sh --rust，rig 迁移批次 B）：拓扑是
+# mybot-agent（agent/，rig 驱动）↔ mybot --mcp-backend（AF_UNIX 帧）两个进程，
+# 假模型服务与上面的 C++ 段共用。R1 工具循环（三条回执真的从后端回来 + 后端侧 Lua
+# 驱动见证）、R2 提示词包进系统提示词、R3 审计轨迹（agent 落 session/model 行、
+# 工具行归后端）、R4 REPL + 能力门控（缺 --agent-shell 时 run_command 不在工具表）、
+# R5 --check-config 正负路径。与 C++ 段的语义差异（每次任务一条 model 行；图片注入、
+# 会话持久化、TCP 远程 REPL 尚未搬）记在脚本头注里——照抄 C++ 判据就是假绿。
+# mybot-agent 是**可选**产物（Rust 由单独 CI job 构建）：缺它按 SKIP 计；
+# 缺 build/mybot 判失败（本段的后端就是它，且那是核心产物）。
+# ======================================================================
+if filter_matches "agent" "$filter_e2e"; then
+	run_one_agent_rust_e2e
+fi
+
+# ======================================================================
+# MCP 后端端到端（scripts/mcp_e2e.sh）：Python 帧客户端（纯标准库，独立第三实现）
+# 直连 mybot --mcp-backend（AF_UNIX 4B BE 帧）→ relay 虚拟机器人。含两趟能力门控对照
+# （run_command 随 --agent-shell 进出工具表）、socket 0700/0600、审计 session+tool 记录、
+# fd 卫生（run_command 子进程不继承 socket fd）、SIGTERM 优雅停机、M5 反面（开危险能力
+# 无 policy 拒启，退出 2）。2026-09-24（批次 B）：MCP stdio 段随 sidecar→agent 迁移删除，
+# 本段因此不再依赖任何 Rust 产物——Rust 侧链路断言由上面的 agent-rust-e2e 接力。
 # ======================================================================
 if filter_matches "mcp" "$filter_e2e"; then
 	run_one_mcp_e2e

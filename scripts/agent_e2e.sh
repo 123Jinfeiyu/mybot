@@ -54,13 +54,36 @@
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
-# 用法: BOT=./build/mybot bash scripts/agent_e2e.sh
-# 退出码: 0 通过 / 1 失败 / 125 缺 python3（守门按 SKIP 计）
+# 用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
+#   --rust：只跑 R1-R5（mybot-agent，rig 迁移批次 B），拓扑是「后端 + mybot-agent」
+#           两个进程；缺 agent/target/release/mybot-agent 时直接报错退出（守门那边
+#           按 SKIP 计，见 test/lib/sections/net_agent.sh）。
+# 退出码: 0 通过 / 1 失败 / 2 参数用法错 / 125 缺 python3（守门按 SKIP 计）
 set -u
 
 BOT="${BOT:-./build/mybot}"
+AGENT_BIN="${AGENT_BIN:-./agent/target/release/mybot-agent}"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root" || exit 1
+
+# Rust 段与 C++ 段共用同一套辅助函数与假模型服务，靠 --rust 分派（批次 B 只钉
+# 「两个进程接力」这条链；C++ 的 22 个场景里大半是 C++ 侧特性，Rust 侧要到
+# 批次 C/D 才逐步补齐）。
+RUST_MODE=0
+for _arg in "$@"; do
+	case "$_arg" in
+		--rust) RUST_MODE=1 ;;
+		*)
+			echo "未知参数: $_arg（用法: bash scripts/agent_e2e.sh [--rust]）"
+			exit 2
+			;;
+	esac
+done
+unset _arg
+if [ "$RUST_MODE" -eq 1 ] && [ ! -x "$AGENT_BIN" ]; then
+	echo "缺 $AGENT_BIN（先 bash scripts/build_agent.sh --release）"
+	exit 1
+fi
 
 if ! command -v python3 >/dev/null 2>&1; then
 	echo "缺少 python3（假模型服务），无法运行 agent 端到端"
@@ -69,9 +92,12 @@ fi
 
 tmp="$(mktemp -d)"
 SRV=""
+BACKPID=""
 cleanup() {
 	[ -n "$SRV" ] && kill "$SRV" 2>/dev/null
 	[ -n "$SRV" ] && wait "$SRV" 2>/dev/null
+	[ -n "$BACKPID" ] && kill -TERM "$BACKPID" 2>/dev/null
+	[ -n "$BACKPID" ] && wait "$BACKPID" 2>/dev/null
 	rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -145,6 +171,247 @@ stop_server() {
 }
 
 TASK="先看硬件，再让继电器动作一次，最后跑一条命令"
+
+# ==================== Rust agent（--rust，2026-09-24 rig 迁移批次 B）====================
+# 拓扑与 C++ 场景不同：这里跑的是**两个进程**——
+#   [mybot-agent（rig）] --帧/AF_UNIX--> [mybot --mcp-backend] --Lua 驱动--> relay 虚拟机器人
+# 假模型服务与 C++ 场景共用（scripts/fake_llm_server.py 的 ok 剧本）。断言面刻意与
+# C++ 场景**同判据**（工具定义齐备、回执真的从后端回来、审计字段齐备、stdout 纯净），
+# 但有几处必须按 Rust 侧**批次 B 已成立的语义**写，照抄 C++ 就是假绿：
+#   * 审计每次任务一条 model 行（C++ 是每次模型调用一条）——per-call 行是批次 C；
+#   * 工具审计行**不在** agent 的审计文件里，由后端自己的 --audit-log 落（同一次运行）；
+#   * 图片注入、会话持久化（--session-file/--resume）、TCP 远程 REPL、SIGINT 取消
+#     都还没搬（批次 C/D），Rust 段因此不含这些场景。
+if [ "$RUST_MODE" -eq 1 ]; then
+	# 起后端（`mybot --mcp-backend`）：$1=目录，其余为该后端要开的能力开关。
+	# socket 目录先按 0700 建好（后端自己会建，但脚本先建可免掉那条权限告警——
+	# 0700 的**创建语义**由 mcp_e2e.sh 专门守，这里不重复测）。
+	start_backend() {
+		local sd="$1"; shift
+		mkdir -p "$sd"; chmod 700 "$sd"
+		"$BOT" --robot=robots/relay-test.sql --mcp-backend --mcp-socket "$sd/mcp.sock" \
+			--scripts-dir scripts "$@" >"$sd/backend.log" 2>&1 &
+		BACKPID=$!
+		local _
+		for _ in $(seq 1 80); do
+			[ -S "$sd/mcp.sock" ] && return 0
+			sleep 0.1
+		done
+		echo "  后端未就绪（$sd/backend.log 尾部）:"
+		tail -5 "$sd/backend.log" | sed 's/^/    /'
+		return 1
+	}
+	stop_backend() {
+		[ -n "$BACKPID" ] && kill -TERM "$BACKPID" 2>/dev/null
+		[ -n "$BACKPID" ] && wait "$BACKPID" 2>/dev/null
+		BACKPID=""
+	}
+	# 危险能力（--agent-shell）在后端侧**强制**要 policy（M5），恒放行以便测工具链本身。
+	RUST_POLICY="$tmp/rust-policy.json"
+	printf '%s' '{"require_confirm":["run_command","apply_sql"],"confirm_command":"/bin/true","on_timeout":"deny"}' > "$RUST_POLICY"
+	chmod 600 "$RUST_POLICY"
+	# 审计断言（JSON Lines 逐行解析；与 C++ 场景 7 的 audit_check 同形，但文件作参数）
+	audit_expr() { # $1=文件 $2=python 真值表达式 $3=说明
+		if AUDIT_FILE="$1" python3 -c "
+import json, os, sys
+lines = [json.loads(x) for x in open(os.environ['AUDIT_FILE']) if x.strip()]
+sys.exit(0 if ($2) else 1)
+" 2>/dev/null; then
+			echo "  [OK] $3"
+		else
+			echo "  [FAIL] $3"
+			fail=1
+		fi
+	}
+
+	# ---- R1：工具循环（报文 + 回执 + 后端侧执行见证）----
+	echo "----- R1：mybot-agent 工具循环（后端 + agent 两个进程） -----"
+	PORT=$((25500 + RANDOM % 300))
+	CAPR1="$tmp/req-rust1.json"
+	R1="$tmp/rust1"
+	start_server "$PORT" "$CAPR1" ok || exit 1
+	start_backend "$R1" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R1/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none --task "$TASK" >"$R1/out.txt" 2>"$R1/err.txt"
+	rcr1=$?
+	stop_backend
+	stop_server
+	echo "===== stdout ====="; cat "$R1/out.txt"
+	echo "===== stderr ====="; cat "$R1/err.txt"
+	if [ "$rcr1" -ne 0 ]; then
+		echo "  [FAIL] mybot-agent 退出码 $rcr1"
+		fail=1
+	fi
+	check_present "$R1/out.txt" "AGENT-E2E-完成" "最终回答到达 stdout"
+	# stdout 纯净性（与 C++ SAN-5 同口径，只是换成了 agent 自己的就绪行/诊断）：
+	# 界面与模型输出走 stdout，日志与工具失败诊断走 stderr。
+	check_absent "$R1/out.txt" "[mybot-agent]" "agent 自己的日志不进 stdout（只走 stderr）"
+	check_present "$R1/err.txt" "[mybot-agent] 驱动 LlmOpenAI" "就绪行如实报出驱动/接入点（stderr）"
+	# 三条回执必须**真的从后端回来**：各钉一句只有后端能产出的文本，且要求它在一条
+	# role=tool 的消息里（系统提示词里也有硬件清单，不看角色就会把提示词当成回执）。
+	check_json "$CAPR1" "any(m.get('role')=='tool' and '已注册硬件变量' in str(m.get('content','')) for m in d['messages'])" \
+		"list_hardware 的回执进了对话（含硬件变量数）"
+	check_json "$CAPR1" "any(m.get('role')=='tool' and '已执行动作脚本 relay-test.mt' in str(m.get('content','')) for m in d['messages'])" \
+		"run_action_script 的回执进了对话"
+	check_json "$CAPR1" "any(m.get('role')=='tool' and 'agent-echo-ok' in str(m.get('content','')) for m in d['messages'])" \
+		"run_command 的回执带着命令的 stdout（shell 真的跑了）"
+	check_present "$R1/backend.log" "Relay: test=200" "后端侧动作脚本真的驱动了继电器（Lua 驱动回显）"
+	check_present "$CAPR1" '"temperature"' "默认驱动发的是 OpenAI 形态报文（带 temperature）"
+	check_absent "$CAPR1" '"thinking"' "不引入 DeepSeek 的 thinking 字段"
+	# 模型必须真的收到工具定义（与 C++ 场景 1 同判据，按结构断言不看顺序）
+	check_json "$CAPR1" "all(t.get('type')=='function' and t.get('function',{}).get('name') and t['function'].get('parameters') for t in d.get('tools',[])) and {'list_action_scripts','run_action_script','list_hardware','run_command'} <= {t['function']['name'] for t in d['tools']}" \
+		"模型收到全部工具定义（名字与 parameters 齐备）"
+
+	# ---- R2：--prompt-file 提示词包进入系统提示词 ----
+	echo "----- R2：--prompt-file 提示词包 -----"
+	PORT=$((25800 + RANDOM % 300))
+	CAPR2="$tmp/req-rust2.json"
+	R2="$tmp/rust2"
+	PACKR="$tmp/rust-pack"
+	mkdir -p "$PACKR"
+	# 故意乱序创建：线上断言依赖「文件名自然排序」而非创建顺序
+	printf '你是蜘蛛机器人。\n' > "$PACKR/10-尾声.md"
+	printf '前方有障碍不要前进。\n' > "$PACKR/2-纪律.md"
+	printf '蜘蛛机器人身份。\n' > "$PACKR/1-身份.md"
+	start_server "$PORT" "$CAPR2" ok || exit 1
+	start_backend "$R2" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R2/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none --prompt-file "$PACKR" --task "$TASK" >"$R2/out.txt" 2>&1
+	rcr2=$?
+	stop_backend
+	stop_server
+	cat "$R2/out.txt"
+	if [ "$rcr2" -ne 0 ]; then
+		echo "  [FAIL] mybot-agent 退出码 $rcr2"
+		fail=1
+	fi
+	check_present "$R2/out.txt" "AGENT-E2E-完成" "带提示词包仍跑通完整工具循环"
+	# rig 把 system 消息序列化成块数组（[{"type":"text","text":...}]），故整条消息
+	# 转成 JSON 文本再找子串——判据仍是「内容与先后顺序」，不依赖块的形状。
+	check_json "$CAPR2" "'蜘蛛机器人身份。' in json.dumps(d['messages'][0], ensure_ascii=False) and d['messages'][0]['role']=='system'" \
+		"提示词包内容在 system 消息里"
+	check_json "$CAPR2" "(lambda s: '## 工作方式' in s and s.find('## 工作方式') < s.find('蜘蛛机器人身份。'))(json.dumps(d['messages'][0], ensure_ascii=False))" \
+		"提示词包追加在内置段落之后"
+	check_json "$CAPR2" "(lambda s: s.find('## 1-身份.md') < s.find('## 2-纪律.md') < s.find('## 10-尾声.md'))(json.dumps(d['messages'][0], ensure_ascii=False))" \
+		"目录按文件名自然排序分节（2- 在 10- 之前）"
+
+	# ---- R3：--audit-log 审计轨迹（agent 侧 model/session，后端侧 tool）----
+	echo "----- R3：--audit-log 审计轨迹 -----"
+	PORT=$((26100 + RANDOM % 300))
+	CAPR3="$tmp/req-rust3.json"
+	R3="$tmp/rust3"
+	AAUD="$R3/agent-audit.jsonl"
+	BAUD="$R3/backend-audit.jsonl"
+	start_server "$PORT" "$CAPR3" ok || exit 1
+	start_backend "$R3" --agent-shell --agent-policy "$RUST_POLICY" --audit-log "$BAUD" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R3/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none --audit-log "$AAUD" --task "$TASK" >"$R3/out.txt" 2>&1
+	rcr3=$?
+	stop_backend
+	stop_server
+	tail -3 "$R3/out.txt"
+	if [ "$rcr3" -ne 0 ]; then
+		echo "  [FAIL] mybot-agent 退出码 $rcr3"
+		fail=1
+	fi
+	check_present "$R3/out.txt" "AGENT-E2E-完成" "带审计日志跑通完整工具循环"
+	audit_expr "$AAUD" "all(isinstance(l, dict) and l.get('ts') and l.get('session') and l.get('kind') for l in lines)" \
+		"审计每行都是合法 JSON 且带 ts/session/kind（所有 kind 共有）"
+	audit_expr "$AAUD" "[l.get('status') for l in lines if l['kind']=='session'] == ['start','end']" \
+		"会话头尾各一条 session 行（start/end）"
+	audit_expr "$AAUD" "any(l['kind']=='session' and l.get('status')=='start' and l.get('driver') and l.get('endpoint') and l.get('api_key_source')=='env' for l in lines)" \
+		"start 行带驱动/接入点/密钥来源（可按会话复盘配置，且不记密钥值）"
+	audit_expr "$AAUD" "any(l['kind']=='model' and l.get('ok') is True and l.get('prompt_tokens')==1234 and l.get('completion_tokens')==56 and l.get('ms', 0) >= 0 for l in lines)" \
+		"model 行按 provider 给的 usage 记账（prompt 1234 / completion 56）"
+	audit_expr "$AAUD" "not any(l['kind']=='tool' for l in lines)" \
+		"工具行**不在** agent 审计文件里（由后端那一侧落，见下条）"
+	check_absent "$AAUD" "e2e-rust-key" "环境变量密钥不出现在 agent 审计日志"
+	audit_expr "$BAUD" "{'list_hardware','run_action_script','run_command'} <= {l.get('tool') for l in lines if l['kind']=='tool'} and all('ok' in l and 'bytes' in l and 'ms' in l for l in lines if l['kind']=='tool')" \
+		"后端审计里三个工具各留一条记录且字段齐备（工具行归属后端）"
+
+	# ---- R4：交互 REPL 与能力门控（后端不开 --agent-shell）----
+	echo "----- R4：REPL 交互 + 能力门控（无 --agent-shell） -----"
+	PORT=$((26400 + RANDOM % 300))
+	CAPR4="$tmp/req-rust4.json"
+	R4="$tmp/rust4"
+	# manycalls:1：一轮只要求一次 list_hardware，然后收尾——缺省剧本第三轮要
+	# run_command，而本场景的后端刻意不开 shell（那是**被测的门控**，不是缺陷）。
+	start_server "$PORT" "$CAPR4" "manycalls:1" || exit 1
+	start_backend "$R4" || exit 1
+	printf '%s\n/status\n/hardware\n/sql INSERT INTO Relay (name, controller, note) VALUES (%s);\n/exit\n' \
+		"$TASK" "'relay-x','timer-0','x'" | \
+		BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R4/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none >"$R4/out.txt" 2>"$R4/err.txt"
+	rcr4=$?
+	stop_backend
+	stop_server
+	echo "===== stdout ====="; cat "$R4/out.txt"
+	if [ "$rcr4" -ne 0 ]; then
+		echo "  [FAIL] mybot-agent 退出码 $rcr4"
+		fail=1
+	fi
+	check_present "$R4/out.txt" "mybot[relay-test|llm0|" "REPL 提示符（机器人名|驱动变量|硬件数）"
+	check_present "$R4/out.txt" "AGENT-E2E-完成" "交互输入的任务照常跑完工具循环"
+	check_present "$R4/out.txt" "会话状态:" "/status 给出会话状态一览"
+	check_present "$R4/out.txt" "已注册硬件变量（3 个）" "/hardware 经工具层拿到硬件清单（只读）"
+	check_present "$R4/out.txt" "侧开 --agent-hot-sql" "/sql 的写语句预检点名后端缺的开关（配置文件不能放宽）"
+	check_json "$CAPR4" "'run_command' not in {t['function']['name'] for t in d['tools']}" \
+		"缺省不提供 run_command（无 --agent-shell 时线上工具定义里没有它）"
+
+	# ---- R5：--check-config（离线校验配置链，不碰后端）----
+	echo "----- R5：--check-config（离线） -----"
+	R5="$tmp/rust5"
+	mkdir -p "$R5"
+	CFGR5="$R5/check.json"
+	cat > "$CFGR5" <<JSON
+{
+  "driver": "LlmOpenAI",
+  "endpoint": "http://127.0.0.1:$PORT/v1/chat/completions",
+  "model": "cfg-model-from-file",
+  "api_key": "cfg-key-from-file",
+  "timeout": 30,
+  "max_tokens": 1234,
+  "temperature": 0.25,
+  "max_turns": 6
+}
+JSON
+	chmod 600 "$CFGR5"
+	outr5="$(env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY \
+		timeout 20 "$AGENT_BIN" --check-config --socket /tmp/mybot-agent-e2e.sock \
+		--llm-config "$CFGR5" 2>&1)"
+	rcr5=$?
+	echo "$outr5"
+	if [ "$rcr5" -ne 0 ]; then
+		echo "  [FAIL] --check-config 退出码 $rcr5（配置本身是合法的）"
+		fail=1
+	fi
+	check "$outr5" "配置校验通过" "--check-config 给出可读摘要"
+	check "$outr5" "cfg-model-from-file" "模型名来自配置文件"
+	check "$outr5" "配置文件 api_key 字段" "密钥只报来源、不报值"
+	# 负路径：缺 endpoint 必须退出 2（fail-closed，没有内置缺省——猜一个只会把
+	# 上下文发到错的地方）。这条不需要后端也不联网。
+	outr5b="$(BOT4CJ_LLM_KEY=e2e-rust-key timeout 20 "$AGENT_BIN" --check-config \
+		--socket /tmp/mybot-agent-e2e.sock --llm-model m1 --llm-config none 2>&1)"
+	rcr5b=$?
+	echo "$outr5b"
+	if [ "$rcr5b" -eq 2 ]; then
+		echo "  [OK] 缺 endpoint 时退出 2（fail-closed，不猜网关）"
+	else
+		echo "  [FAIL] 缺 endpoint 时应退出 2，实际 $rcr5b"
+		fail=1
+	fi
+
+	if [ "$fail" -eq 0 ]; then
+		echo "mybot-agent 端到端测试通过"
+		exit 0
+	fi
+	echo "mybot-agent 端到端测试存在失败"
+	exit 1
+fi
 
 # ============ 场景 1：当前协议（OpenAI 兼容） ============
 echo "----- 场景 1：LlmOpenAI（当前协议） -----"

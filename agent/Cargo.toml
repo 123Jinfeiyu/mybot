@@ -1,0 +1,31 @@
+[package]
+name = "mybot-agent"
+version = "0.1.0"
+edition = "2021"
+description = "bot4cj Rust agent: rig 驱动的完整 agent，经 AF_UNIX 帧通道调用 mybot --mcp-backend 工具层"
+license = "MIT"
+
+# rig agent（2026-09-24 迁移，批次 B）：取代 C++ agent loop 与 MCP sidecar。
+# 对上直接面对用户（REPL / --task），对下说后端的 pymsg 兼容帧（AF_UNIX）。
+# 语义→落点矩阵见 .tmp/rig-migration-matrix.md（rig 0.42 源码核对产出）。
+
+[[bin]]
+name = "mybot-agent"
+path = "src/main.rs"
+
+[dependencies]
+# 钉精确版本：API 面按 0.42.0 源码核对（/tmp/rigsrc/{rig-core,rig-agent}-0.42.0，
+# 沿用 rmcp 2.2.0 的源码核对惯例）。rig-agent 缺省 feature 仅 derive（不拉 rmcp）；
+# rig-core 缺省 reqwest + derive + rustls（providers 无 feature 门，全编）。
+rig-core = { version = "=0.42.0" }
+rig-agent = { version = "=0.42.0" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync", "signal"] }
+serde_json = "1"
+anyhow = "1"
+# libc：审计时间戳要**本地时间 + UTC 偏移**（localtime_r 与 C++ auditTimestamp 逐字段
+# 同构）；纯 std 拿不到本机时区偏移，自己解析 /etc/localtime 是重造轮子。
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
+lto = "thin"

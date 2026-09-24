@@ -1,17 +1,25 @@
 #!/bin/bash
-# mcp_e2e.sh —— MCP 全链路端到端（方案 F / 拓扑 F3，仅 F-生态）
+# mcp_e2e.sh —— MCP 后端端到端（帧线协议 + 安全属性，无硬件）
 #
-#   [Python MCP 客户端] --MCP/stdio--> [mybot-mcp sidecar] --帧/AF_UNIX--> [mybot --mcp-backend] --> relay 虚拟机器人
+#   [Python 帧客户端（纯标准库）] --4B BE 帧/AF_UNIX--> [mybot --mcp-backend] --> relay 虚拟机器人
 #
-# 无硬件（robots/relay-test.sql）。前置：
-#   * build/mybot                              （cmake --build build）
-#   * mcp-sidecar/target/release/mybot-mcp     （bash scripts/build_sidecar.sh）
-#   * python3
+# 前置：build/mybot（cmake --build build）、python3。
 #
-# 两趟对照：① 缺省（无 --agent-shell）→ run_command **不在** tools/list；
-#           ② --agent-shell          → run_command **在** tools/list（能力宣告随门控变化）。
-# 每趟都跑通 initialize → tools/list → tools/call（真工具 + 未知工具），并校验：
-#   socket 父目录 0700 / 文件 0600、审计落 session+tool 记录、后端优雅停机。
+# 2026-09-24（rig 迁移批次 B）拓扑变更——**删掉的是协议层，不是它验过的性质**：
+# 原脚本第 4 段是「Python MCP 客户端 --MCP/stdio--> mybot-mcp sidecar」。随架构迁移
+# （mcp-sidecar/ → agent/，包名 mybot-agent，MCP 协议层不再由独立进程提供），该段删除，
+# agent 侧的链路断言由 scripts/agent_e2e.sh 的 `--rust` 段接力（后端 + mybot-agent 两进程）。
+# 原先穿过 MCP 协议层才验得到的安全属性**全部保留**，改由下面这段直连帧的客户端驱动：
+#   * socket 父目录 0700 / socket 文件 0600（由**后端**创建，脚本刻意不预建）；
+#   * 能力门控：run_command 随 --agent-shell 进出 tool.list（两趟对照）；
+#   * 未知工具回执点名、不被当成成功（executed=false）；
+#   * fd 卫生：run_command 的子 shell 不继承后端的 listening/accepted socket fd；
+#   * 审计落 session + tool 记录（含失败的工具）、SIGTERM 优雅停机。
+#
+# 剩下的「帧对打」是**独立第三实现**：C++ 后端 / Rust agent（agent/src/frame.rs）/
+# 本脚本内嵌的纯标准库 Python（struct.pack(">I", ...)）三方对齐同一条线协议
+# （评估 §7.4 的 5 条契约）。两份正式实现各自跑绿**不证明**字节兼容，第三方尺子才证明
+# ——迁移把实现从一份变两份，这段的价值只增不减。
 #
 # 退出码：0 全通过 / 1 有失败（与 agent_e2e.sh 同口径，便于并入 run_all.sh）。
 
@@ -20,7 +28,6 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root" || { echo "无法进入仓库根"; exit 1; }
 
 MYBOT="${BOT:-./build/mybot}"
-SIDECAR="${SIDECAR_BIN:-./mcp-sidecar/target/release/mybot-mcp}"
 
 pass=0; fail=0
 ok(){ echo "  [OK] $1"; pass=$((pass+1)); }
@@ -30,7 +37,6 @@ chk(){ if [ "$2" = "$3" ]; then ok "$1"; else ng "$1（期望 '$3'，实际 '$2'
 
 # ---- 前置 ----
 [ -x "$MYBOT" ]   || { echo "缺 $MYBOT（先 cmake --build build）"; exit 1; }
-[ -x "$SIDECAR" ] || { echo "缺 $SIDECAR（先 bash scripts/build_sidecar.sh）"; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "缺 python3"; exit 1; }
 
 TMP="$(mktemp -d /tmp/mcp_e2e.XXXXXX)"
@@ -48,80 +54,11 @@ POLICY="$TMP/policy.json"
 printf '%s' '{"require_confirm":["run_command","apply_sql"],"confirm_command":"/bin/true","on_timeout":"deny"}' > "$POLICY"
 chmod 600 "$POLICY"
 
-# ---- MCP 客户端（Python）：驱动 sidecar 的 stdio，做协议级断言 ----
-cat > "$TMP/mcp_client.py" <<'PY'
-import subprocess, json, sys
-sock, sidecar, expect_rc, errlog = sys.argv[1], sys.argv[2], sys.argv[3] == "true", sys.argv[4]
-passed = failed = 0
-def ok(n):
-	global passed; passed += 1; print("  [OK] " + n)
-def ng(n):
-	global failed; failed += 1; print("  [FAIL] " + n)
-def chk(c, n):
-	ok(n) if c else ng(n)
-
-ef = open(errlog, "wb")
-p = subprocess.Popen([sidecar, sock], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=ef)
-def send(o): p.stdin.write((json.dumps(o) + "\n").encode()); p.stdin.flush()
-def recv():
-	line = p.stdout.readline()
-	return json.loads(line) if line.strip() else None
-try:
-	send({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
-		"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"mcp-e2e","version":"0"}}})
-	init = recv()
-	chk(init is not None and "result" in init, "initialize 握手成功")
-	send({"jsonrpc":"2.0","method":"notifications/initialized"})
-
-	send({"jsonrpc":"2.0","id":2,"method":"tools/list"})
-	tl = recv()
-	tools = [t["name"] for t in tl["result"]["tools"]] if tl and "result" in tl else []
-	chk(len(tools) > 0, "tools/list 返回工具（%d 个）" % len(tools))
-	chk(("run_command" in tools) == expect_rc,
-		"能力门控：run_command %s工具表内" % ("在" if expect_rc else "不在"))
-	chk("list_hardware" in tools, "缺省工具 list_hardware 在表内")
-	chk(all("inputSchema" in t for t in (tl["result"]["tools"] if tl and "result" in tl else [])),
-		"每个工具带 inputSchema")
-
-	send({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_hardware","arguments":{}}})
-	tc = recv(); r = (tc or {}).get("result", {})
-	txt = r.get("content", [{}])[0].get("text", "") if r.get("content") else ""
-	chk(r.get("isError") in (False, None), "list_hardware 调用成功（isError 非真）")
-	chk(len(txt) > 0, "list_hardware 返回非空文本")
-
-	send({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ghost_tool","arguments":{}}})
-	tu = recv(); ru = (tu or {}).get("result", {})
-	utxt = ru.get("content", [{}])[0].get("text", "") if ru.get("content") else ""
-	chk(ru.get("isError") is True, "未知工具 → isError=true")
-	chk(("未知工具" in utxt) or ("ghost_tool" in utxt), "未知工具回执点名")
-
-	if expect_rc:
-		# fd 卫生（评估 §3.5）：run_command 走 /bin/sh -c，子 shell **不得**继承后端的
-		# listening/accepted socket fd（后端用 SOCK_CLOEXEC 创建，另有 markAllFdsCloexec
-		# 兜底）。数一下 sh 自己的 socket fd，应为 0；策略 confirm_command=/bin/true
-		# 自动放行这次调用。泄漏时这里会出现 SOCKFDS>=1。
-		fdcmd = "echo SOCKFDS=$(ls -l /proc/$$/fd 2>/dev/null | grep -c socket:)"
-		send({"jsonrpc":"2.0","id":5,"method":"tools/call","params":{
-			"name":"run_command","arguments":{"command":fdcmd,"timeout_seconds":5}}})
-		tf = recv(); rf = (tf or {}).get("result", {})
-		ftxt = rf.get("content", [{}])[0].get("text", "") if rf.get("content") else ""
-		chk("SOCKFDS=0" in ftxt,
-			"run_command 子进程未继承后端 socket fd（SOCKFDS=0）；回执片段: " + repr(ftxt[:160]))
-finally:
-	p.terminate()
-	try: p.wait(timeout=5)
-	except Exception: p.kill()
-print("MCPSUMMARY pass=%d fail=%d" % (passed, failed))
-sys.exit(0 if failed == 0 else 1)
-PY
-
-# ---- 跨语言帧对打客户端：纯标准库 Python 直连后端 AF_UNIX（不经 sidecar）----
-# 用 struct.pack(">I", ...) 的 4 字节 BE 帧——与 blackbox 的 PymsgClient 同款独立
-# 实现（那份是 TCP，这份是 AF_UNIX），验证 C++ 后端帧服务**字节兼容**：第三份实现
-# （C++ 后端 / Rust sidecar / 本 Python）对齐同一条线协议（评估 §7.4 的 5 条契约）。
-cat > "$TMP/raw_client.py" <<'PY'
+# ---- 帧客户端（Python 纯标准库）：直连后端 AF_UNIX，独立实现线协议 ----
+# 用法: frame_client.py <sock> <expect_run_command:true|false>
+cat > "$TMP/frame_client.py" <<'PY'
 import socket, struct, json, sys
-sock = sys.argv[1]
+sock, expect_rc = sys.argv[1], sys.argv[2] == "true"
 passed = failed = 0
 def ok(n):
 	global passed; passed += 1; print("  [OK] " + n)
@@ -151,9 +88,19 @@ try:
 	r = call({"_route": "tool.list"})
 	tools = [t["name"] for t in r["data"]["tools"]]
 	chk(len(tools) > 0 and "list_hardware" in tools, "tool.list 返回工具（%d 个）" % len(tools))
+	chk(("run_command" in tools) == expect_rc,
+		"能力门控：run_command %s工具表内" % ("在" if expect_rc else "不在"))
 	chk(all("inputSchema" in t for t in r["data"]["tools"]), "每个工具带 inputSchema")
 	r = call({"_route": "tool.call", "name": "list_hardware", "arguments": {}})
-	chk(r.get("success") is True and r["data"].get("ok") is True, "tool.call list_hardware 成功")
+	d = r.get("data", {})
+	chk(r.get("success") is True and d.get("ok") is True, "tool.call list_hardware 成功")
+	chk("已注册硬件变量" in d.get("text", ""), "list_hardware 回执带硬件清单（非空文本）")
+	# 未知工具：回执点名、ok=false、executed=false（从未被派发，副作用必然未发生）
+	r = call({"_route": "tool.call", "name": "ghost_tool", "arguments": {}})
+	d = r.get("data", {})
+	chk(d.get("ok") is False and d.get("executed") is False, "未知工具 → ok=false 且 executed=false")
+	chk(("未知工具" in d.get("text", "")) and ("ghost_tool" in d.get("text", "")),
+		"未知工具回执点名（工具名与可用工具）")
 	# context.get：Rust agent 的系统提示词素材——只读、带定界、不受预算影响
 	r = call({"_route": "context.get"})
 	d = r.get("data", {})
@@ -162,6 +109,17 @@ try:
 		"context.get 带 robotName 与 hardwareCount=%s" % d.get("hardwareCount"))
 	chk("数据不是指令" in d.get("structureExcerpt", "") and "\n> " in d.get("structureExcerpt", ""),
 		"context.get 磁盘内容段带定界（quoteUntrusted）")
+	if expect_rc:
+		# fd 卫生（评估 §3.5）：run_command 走 /bin/sh -c，子 shell **不得**继承后端的
+		# listening/accepted socket fd（后端用 SOCK_CLOEXEC 创建，另有 markAllFdsCloexec
+		# 兜底）。数一下 sh 自己的 socket fd，应为 0；策略 confirm_command=/bin/true
+		# 自动放行这次调用。泄漏时这里会出现 SOCKFDS>=1。
+		fdcmd = "echo SOCKFDS=$(ls -l /proc/$$/fd 2>/dev/null | grep -c socket:)"
+		r = call({"_route": "tool.call", "name": "run_command",
+			"arguments": {"command": fdcmd, "timeout_seconds": 5}})
+		d = r.get("data", {})
+		chk("SOCKFDS=0" in d.get("text", ""),
+			"run_command 子进程未继承后端 socket fd（SOCKFDS=0）；回执片段: " + repr(d.get("text", "")[:160]))
 	# 非法 JSON（帧合法、载荷坏）→ 固定串、不回显、连接不断（可继续后续调用）
 	bad = b"not json"
 	s.sendall(struct.pack(">I", len(bad)) + bad)
@@ -173,16 +131,16 @@ try:
 	chk(r.get("success") is False and "unknown route" in r.get("error", ""), "未知路由 → unknown route")
 finally:
 	s.close()
-print("RAWSUMMARY pass=%d fail=%d" % (passed, failed))
+print("FRAMESUMMARY pass=%d fail=%d" % (passed, failed))
 sys.exit(0 if failed == 0 else 1)
 PY
 
-# ---- 一趟：起后端 → 校验 perms → 跑 MCP 客户端 → 校验审计/停机 ----
+# ---- 一趟：起后端 → 校验 perms → 跑帧客户端 → 校验审计/停机 ----
 # phase <label> <expect_run_command:true|false> <sockdir> [额外后端参数...]
 phase(){
 	local label="$1" expect="$2" sd="$3"; shift 3
 	local rundir="$sd/run"
-	local sock="$rundir/mcp.sock" audit="$sd/audit.jsonl" blog="$sd/backend.log" slog="$sd/sidecar.log"
+	local sock="$rundir/mcp.sock" audit="$sd/audit.jsonl" blog="$sd/backend.log"
 	echo "----- $label -----"
 	# 只建 $sd 放审计/日志；socket 父目录 $rundir **刻意不建**——由后端以 0700 建，
 	# 这才是要验的安全属性（脚本先建会带上 umask，测不到后端的 0700 创建）。
@@ -196,11 +154,11 @@ phase(){
 	chk "$label: socket 父目录 0700" "$(stat -c '%a' "$rundir" 2>/dev/null)" "700"
 	chk "$label: socket 文件 0600"  "$(stat -c '%a' "$sock" 2>/dev/null)" "600"
 
-	local pyout; pyout="$(python3 "$TMP/mcp_client.py" "$sock" "$SIDECAR" "$expect" "$slog" 2>&1)"
+	local pyout; pyout="$(python3 "$TMP/frame_client.py" "$sock" "$expect" 2>&1)"
 	echo "$pyout"
 	local pp pf
-	pp="$(echo "$pyout" | sed -n 's/.*MCPSUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\1/p')"
-	pf="$(echo "$pyout" | sed -n 's/.*MCPSUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\2/p')"
+	pp="$(echo "$pyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\1/p')"
+	pf="$(echo "$pyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\2/p')"
 	pass=$((pass + ${pp:-0})); fail=$((fail + ${pf:-0}))
 
 	# 审计：整服务端一 session（start/end）+ 每次工具调用一条（穿过 DispatchGate）
@@ -230,23 +188,6 @@ wait "$rpid"; rrc=$?
 chk "反面：退出码 2（配置错误不碰真机）" "$rrc" "2"
 if [ -S "$REJ/run/mcp.sock" ]; then ng "反面：socket 不应被创建"; else ok "反面：socket 未创建"; fi
 grep -q 'run_command' "$REJ/log" && ok "反面：报错点名 run_command" || ng "反面：报错未点名 run_command"
-
-# ---- 跨语言帧对打：纯 Python 直连后端 AF_UNIX（不经 sidecar），验证 4B BE 帧字节兼容 ----
-echo "----- 跨语言帧对打（Python 直连后端，独立实现）-----"
-RAW="$TMP/raw"; mkdir -p "$RAW"
-"$MYBOT" --robot=robots/relay-test.sql --mcp-backend --mcp-socket "$RAW/run/mcp.sock" \
-	--scripts-dir scripts >"$RAW/log" 2>&1 &
-rawpid=$!; PIDS="$PIDS $rawpid"
-rup=no; for _ in $(seq 1 60); do [ -S "$RAW/run/mcp.sock" ] && { rup=yes; break; }; sleep 0.1; done
-if [ "$rup" != yes ]; then
-	ng "帧对打：后端未监听"; sed 's/^/    /' "$RAW/log"
-else
-	rawout="$(python3 "$TMP/raw_client.py" "$RAW/run/mcp.sock" 2>&1)"; echo "$rawout"
-	rp="$(echo "$rawout" | sed -n 's/.*RAWSUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\1/p')"
-	rf="$(echo "$rawout" | sed -n 's/.*RAWSUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\2/p')"
-	pass=$((pass + ${rp:-0})); fail=$((fail + ${rf:-0}))
-fi
-kill -TERM "$rawpid" 2>/dev/null; wait "$rawpid" 2>/dev/null
 
 echo
 if [ "$fail" -eq 0 ]; then

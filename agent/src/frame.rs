@@ -62,7 +62,7 @@ impl BackendClient {
                         ));
                     }
                     eprintln!(
-                        "[mybot-mcp] 后端未就绪（{e}），{}ms 后重试: {path}",
+                        "[mybot-agent] 后端未就绪（{e}），{}ms 后重试: {path}",
                         delay.as_millis()
                     );
                     sleep(delay).await;
@@ -72,11 +72,6 @@ impl BackendClient {
                 }
             }
         }
-    }
-
-    /// 便捷构造（缺省 120s 连接预算：后端上电 + 装结构可能耗时）。
-    pub async fn connect(path: &str) -> Result<Self> {
-        Self::connect_timeout(path, Duration::from_secs(120)).await
     }
 
     /// 从已建立的流构造（**测试缝**：单测用 `UnixStream::pair()` 注入假后端）。

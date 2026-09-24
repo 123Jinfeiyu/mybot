@@ -220,27 +220,28 @@ gate:musl:
       fi
 
 # ======================================================================
-# MCP sidecar（Rust，方案 F / 拓扑 F3）：独立产物。**只给这一个 job 加 Rust**，
-# 不给上面 7 个 C++ job 加（评估 §5.3）——Rust 工具链在整份 CI 里只出现在这一处。
+# Rust agent（agent/，包名 mybot-agent；原 MCP sidecar，rig 迁移批次 B 更名）：
+# 独立产物。**只给这一个 job 加 Rust**，不给上面 7 个 C++ job 加（评估 §5.3）——
+# Rust 工具链在整份 CI 里只出现在这一处。
 # 四检：cargo build --release / test / clippy(-D warnings) / fmt --check（均 --locked）。
 #
 # ⚠ 响亮声明（评估 §5.3，别误读门禁覆盖面）：gate:sanitizer（ASan/UBSan）与
-#   gate:tsan 只插桩 **C++**（mybot / mybot_tests）——它们对 Rust sidecar **是盲的**。
-#   sidecar 的内存/线程安全靠 Rust 所有权模型 + 本 job 的 clippy/test，**不是**
-#   sanitizer。「gate:sanitizer 绿」绝不等于「整条 MCP 链路过了 sanitizer」。
+#   gate:tsan 只插桩 **C++**（mybot / mybot_tests）——它们对 Rust agent **是盲的**。
+#   agent 的内存/线程安全靠 Rust 所有权模型 + 本 job 的 clippy/test，**不是**
+#   sanitizer。「gate:sanitizer 绿」绝不等于「整条后端+agent 链路过了 sanitizer」。
 #
-# 全链路 E2E（scripts/mcp_e2e.sh，需 C++ 后端 + sidecar 同场）**不在本 job**：本 job
-#   是 Rust-only（rust 镜像里没有 build/mybot）。gate:release 的 run_all.sh 会因缺
-#   sidecar 产物对 mcp-e2e 段记 **SKIP**（Rust 段可选，设计如此，见
-#   test/lib/sections/net_agent.sh 的 run_one_mcp_e2e）。要「C++ + Rust 同场」的
-#   全链路守门，需另起一个装齐两套工具链的 job（后续）。
+# 全链路 E2E（scripts/agent_e2e.sh --rust，需 C++ 后端 + mybot-agent 同场）**不在
+#   本 job**：本 job 是 Rust-only（rust 镜像里没有 build/mybot）。gate:release 的
+#   run_all.sh 会因缺 mybot-agent 产物对 agent-rust-e2e 段记 **SKIP**（Rust 段可选，
+#   设计如此，见 test/lib/sections/net_agent.sh 的 run_one_agent_rust_e2e）。要
+#   「C++ + Rust 同场」的全链路守门，需另起一个装齐两套工具链的 job（后续）。
 #
 # 起步为软门禁（allow_failure）：与本文件其余「CI 镜像未经本地预跑」的 job 同口径
 #   （开发机无 docker，无法预跑 rust:1-slim + crate 拉取）。四条命令已在本地全绿
 #   （cargo build/test/clippy/fmt，--locked，rustc 1.96）。
 # 转硬（移除 allow_failure）条件：本 job 在 CI 基线镜像上连续 2 轮 pipeline 全绿
 #   （crate 拉取稳定、四检无新增告警）——最迟 2026-10-31。在此之前保持 allow_failure。
-gate:sidecar:
+gate:agent:
   stage: gate
   image: rust:1-slim
   needs: []          # 独立 Rust 产物，不依赖 C++ build:release
@@ -253,7 +254,7 @@ gate:sidecar:
     - printf '[source.crates-io]\nreplace-with = "ustc"\n\n[source.ustc]\nregistry = "sparse+https://mirrors.ustc.edu.cn/crates.io-index/"\n' > "$CARGO_HOME/config.toml"
     - rustup component add clippy rustfmt
   script:
-    - cd mcp-sidecar
+    - cd agent
     - cargo build --release --locked
     - cargo test --locked
     - cargo clippy --all-targets --locked -- -D warnings
