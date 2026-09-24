@@ -313,6 +313,30 @@ check_json "$CAPR2" "(lambda s: '## 工作方式' in s and s.find('## 工作方�
 check_json "$CAPR2" "(lambda s: s.find('## 1-身份.md') < s.find('## 2-纪律.md') < s.find('## 10-尾声.md'))(json.dumps(d['messages'][0], ensure_ascii=False))" \
 	"目录按文件名自然排序分节（2- 在 10- 之前）"
 
+# ---- R2b：提示词包超 64KiB 总量上限，启动即拒（F2-9；原 C++ 配置期预检的
+# e2e 随 --agent 移除，判据随总量检查落在 Rust prompt.rs 的 build_system_prompt）----
+echo "----- R2b：提示词包超总量上限，启动即拒 -----"
+R2B="$tmp/rust2b"
+BIGPACK="$tmp/big-pack"
+mkdir -p "$R2B" "$BIGPACK"
+# 单文件在 1MiB 上限之内、只有 64KiB 的**总量**判据能挡住（与原 C++ 预检同夹具）
+awk 'BEGIN { for (i = 0; i < 3000; i++) print "padding line for the system prompt cap test" }' \
+	> "$BIGPACK/big.md"
+start_backend "$R2B" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R2B/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:1/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --prompt-file "$BIGPACK" --task "$TASK" >"$R2B/out.txt" 2>"$R2B/err.txt"
+rcr2b=$?
+stop_backend
+echo "===== stderr ====="; cat "$R2B/err.txt"
+if [ "$rcr2b" -ne 0 ]; then
+	echo "  [OK] 超限提示词包在启动期被拒（rc=$rcr2b，不上电不调模型）"
+else
+	echo "  [FAIL] 超限提示词包不该成功（rc=0）"
+	fail=1
+fi
+check_present "$R2B/err.txt" "系统提示词超过" "报错点名总量上限（fail-closed，不静默截断）"
+
 # ---- R3：--audit-log 审计轨迹（agent 侧 model/session，后端侧 tool）----
 echo "----- R3：--audit-log 审计轨迹 -----"
 PORT=$((26100 + RANDOM % 300))

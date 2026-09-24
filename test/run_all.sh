@@ -1212,82 +1212,76 @@ SQLEOF
 fi
 
 # ======================================================================
-# agent CLI 负路径（F-20 同族，main.cpp 的组合校验此前无守门用例，
-# docs/testing.md §9 却已声称覆盖——补齐让声称成真）。
+# agent CLI 负路径（F-20 同族；2026-09-24 随「agent 循环迁 Rust」整体改写：
+# --agent 已移除（cliargs 快速失败 + 指引），模型循环类选项指路 mybot-agent，
+# 门控类选项归属 --mcp-backend，--check-config 与 --mcp-backend 联用）。
 #
-# AG-23（第三轮审计）：这 4 条原先与上面的通用加固共用**同一个 if**，于是
-# `bash test/run_all.sh agent` 与 `agent-all` 都跑不到它们——「agent 全表面」
-# 在这 4 条上不成立。现在独立设门：裸 `hardening` 仍进（向后兼容）、
+# AG-23（第三轮审计）：这些用例独立设门——裸 `hardening` 仍进（向后兼容）、
 # `agent-all` 也进（那是覆盖全表面的入口）、单条名字前缀 `agent_` 也进。
 # ======================================================================
 if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-all" ] \
 	|| [[ "$filter" == agent_* ]]; then
 
-	# ---- agent CLI 负路径三连（F-20 同族，main.cpp 的组合校验此前无守门用例，
-	# docs/testing.md §9 却已声称覆盖——补齐让声称成真）----
-	# 1) agent 专属选项出现在非 agent 模式：意图与参数不一致，显式拒绝退出 2
+	# 1) 模型循环类选项属于 mybot-agent：显式拒绝退出 2 并指路（不静默忽略、
+	#    也不报「未知参数」——那是 mybot-agent 的选项面，本程序只是不跑模型循环）
 	if case_matches 'agent_opt_outside_agent'; then
-	run_one_hardening 'agent_opt_outside_agent' 2 '只在 --agent 模式下有效' \
+	run_one_hardening 'agent_opt_outside_agent' 2 '属于 Rust agent' \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
 	fi
 
-	# 2) 输入源组合（批次 2，2026-09-23 起 --agent --tcp 是**远程 REPL**，不再互斥）：
-	#    与 --input 同给仍拒绝（两个输入源都要主导）；与 --task 同给仍拒绝
-	#    （一次性任务没有长驻对话的意义）。缺 --tcp-token 的跨机监听也必须拒绝
-	#    ——这条是 H-2 防线在 agent 形态的复用处，挡的是「把远程工具调用裸暴露
-	#    到网络上」。三条都在配置阶段退出 2，**不上电**。
+	# 2) --agent 已移除（agent 循环迁 Rust）：校验层快速失败退出 2 + 两进程替代
+	#    用法指引——不再有「注入 LLM 驱动 → 装配哨兵 → TCP accept → 桩报错」的
+	#    死工作序列（原三条 --agent --tcp 组合互斥用例随之改写为等价负路径）
 	if case_matches 'agent_tcp_input_mutex'; then
-	run_one_hardening 'agent_tcp_input_mutex' 2 '--agent 与 --input 互斥' \
+	run_one_hardening 'agent_tcp_input_mutex' 2 '--agent 已移除' \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --input=/dev/null
 	fi
 	if case_matches 'agent_tcp_task_mutex'; then
-	run_one_hardening 'agent_tcp_task_mutex' 2 '--task 与 --tcp 互斥' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --task=x
+	run_one_hardening 'agent_tcp_task_mutex' 2 '--mcp-backend 与 --tcp 互斥' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql \
+		--mcp-backend --mcp-socket /tmp/hard-mcp.sock --tcp 19399
 	fi
 	if case_matches 'agent_tcp_crossmachine_needs_token'; then
-	run_one_hardening 'agent_tcp_crossmachine_needs_token' 2 '非回环且未设 --tcp-token' \
-		env BOT4CJ_LLM_KEY=hardening-fake timeout 20 "$bin" --robot=robots/relay-test.sql \
-		--agent --tcp 19399 --tcp-host 0.0.0.0 --llm-config none
+	run_one_hardening 'agent_tcp_crossmachine_needs_token' 2 '需要 --mcp-socket' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql --mcp-backend
 	fi
 
-	# 3) agent 模式缺 API key：buildAgentConfig 失败退出 2。三个密钥环境变量
-	#    全清 + --llm-config none（防 CWD 的 mybot.llm.json / ~/.config 污染，
-	#    agent_e2e.sh 同款口径），保证「缺 key」与密钥来源无关地成立
+	# 3) 后端 + 危险能力 ⇒ 强制外部确认（评估 §3.2）：开 --agent-shell 必须配
+	#    --agent-policy 且 require_confirm 含 run_command，否则 buildAgentConfig
+	#    拒绝启动（退出 2，配置错误不碰真机）。原「agent 缺 API key」用例随
+	#    --agent 移除改写——C++ 宿主侧已无模型调用，「缺 key」判据归
+	#    mybot-agent（agent_e2e.sh R5 的 --check-config 场景）
 	if case_matches 'agent_missing_key'; then
-	run_one_hardening 'agent_missing_key' 2 '缺少 API key' \
-		env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --task 'x' --llm-config none
+	run_one_hardening 'agent_missing_key' 2 '必须用 --agent-policy' \
+		timeout 20 "$bin" --robot=robots/relay-test.sql \
+		--mcp-backend --mcp-socket /tmp/hard-mcp.sock --agent-shell
 	fi
 
-	# 4) 系统提示词总量上限（F2-9；AG-8 后前移）：三段来源（结构脚本头 16KiB
-	#    截断 / 动作脚本清单条目数不限 / 提示词包单文件 1MiB 但整包不限）都各自
-	#    有界、整体却无人管。夹具：造约 138KB 的提示词包（在单文件上限内，只有
-	#    总量检查能挡住）。
-	#    AG-8 把其中**不依赖硬件**的三段（结构脚本头 / 脚本清单 / 提示词包）的
-	#    体积检查前移到了配置组装期——所以现在退出码是 2（配置错误，不碰真机）
-	#    而不是 1（上电后失败），报错文案也换成了点名「不依赖硬件的三段」的那句。
-	#    这是有意的行为变更：上电之前就能判定的配置错误，没有理由拖到上电之后。
+	# 4) 提示词包选项归属：--prompt-file 属 mybot-agent（总量上限 F2-9 的判据
+	#    也随之在 Rust prompt.rs，agent_e2e.sh 的 R2b 场景钉「超 64KiB 启动即拒」；
+	#    C++ 侧的配置期预检已随 --agent 移除不可达）。本程序对它显式拒绝并指路。
 	if case_matches 'agent_prompt_over_cap'; then
 	mkdir -p .tmp
 	awk 'BEGIN { for (i = 0; i < 3000; i++) print "padding line for the system prompt cap test" }' \
 		> .tmp/bigprompt.md
-	run_one_hardening 'agent_prompt_over_cap' 2 '不依赖硬件的三段' \
+	run_one_hardening 'agent_prompt_over_cap' 2 '属于 Rust agent' \
 		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
-		--robot=robots/relay-test.sql --agent --task 'x' --llm-config none \
-		--prompt-file .tmp/bigprompt.md
+		--robot=robots/relay-test.sql --prompt-file .tmp/bigprompt.md
 	fi
 
-	# 5) PL-1（2026-09-22）：--check-config 的端到端判据。
+	# 5) PL-1（2026-09-22）：--check-config 的端到端判据（2026-09-24 起与
+	#    --mcp-backend 联用；配置文件经 BOT4CJ_LLM_CONFIG 指定——--llm-config
+	#    选项本身已属 mybot-agent，但配置文件查找链两侧共用）。
 	#    这条选项的**全部价值**在「不装载结构、不上电、不联网」，所以只断言
 	#    「打印了摘要」不够——把这三件事分别钉住：
-	#      ① 正向：接入点指向必然拒绝连接的地址（127.0.0.1:1）仍 rc=0，
+	#      ① 正向：配置指向必然拒绝连接的接入点（127.0.0.1:1）仍 rc=0，
 	#         且输出里**没有网络错误字样** → 证明它真的没发起请求；
 	#      ② 「只读不装载」：结构脚本**可读但不是合法 SQL** 时 --check-config 仍
 	#         rc=0，而对同一脚本真跑一次必然非 0 → 两者对照才证明它只读了脚本头、
 	#         没有走 SQL 解析与上电（若结构脚本连读都读不到，那是配置错误，
-	#         与真跑同样 rc=2，故不能拿「不存在的脚本」当这条的夹具）；
+	#         与真跑同样非 0，故不能拿「不存在的脚本」当这条的夹具）；
 	#      ③ 配置拼错字段 → rc=2（校验仍然生效，不是「什么都放行」）。
-	#    配置文件一律写真实临时文件并显式 --llm-config：不用 <(...) 进程替换
+	#    配置文件一律写真实临时文件并经环境变量显式指定：不用 <(...) 进程替换
 	#    （被 open 时报 /dev/fd/63 打不开），也不能省略——CWD 里恰好存在的
 	#    ./mybot.llm.json 会被自动拾取，让用例随开发者本机配置飘。
 	if case_matches 'agent_check_config'; then
@@ -1297,14 +1291,12 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	printf 'THIS IS NOT SQL AT ALL;\n' > .tmp/checkcfg_badstruct.sql
 
 	run_one_hardening 'agent_check_config_ok' 0 '配置校验通过' \
-		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
-		--robot=robots/relay-test.sql --agent --check-config \
-		--llm-config .tmp/checkcfg_ok.json
+		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+		--robot=robots/relay-test.sql --mcp-backend --check-config
 
 	echo "----- agent_check_config_no_network (agent) -----"
-	out="$(env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
-		--robot=robots/relay-test.sql --agent --check-config \
-		--llm-config .tmp/checkcfg_ok.json 2>&1)"
+	out="$(env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+		--robot=robots/relay-test.sql --mcp-backend --check-config 2>&1)"
 	if echo "$out" | grep -qiE 'curl|连接|connection|refused|网络错误'; then
 		record_fail "agent_check_config_no_network(输出含网络错误字样)"
 		echo "$out"
@@ -1314,13 +1306,13 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 
 	echo "----- agent_check_config_only_reads_structure_head (agent) -----"
 	cfg_rc=0
-	env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
-		--robot=.tmp/checkcfg_badstruct.sql --agent --check-config \
-		--llm-config .tmp/checkcfg_ok.json >/dev/null 2>&1 || cfg_rc=$?
+	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+		--robot=.tmp/checkcfg_badstruct.sql --mcp-backend --check-config \
+		>/dev/null 2>&1 || cfg_rc=$?
 	run_rc=0
-	env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
-		--robot=.tmp/checkcfg_badstruct.sql --agent --task 'x' \
-		--llm-config .tmp/checkcfg_ok.json >/dev/null 2>&1 || run_rc=$?
+	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+		--robot=.tmp/checkcfg_badstruct.sql \
+		--mcp-backend --mcp-socket /tmp/hard-mcp.sock >/dev/null 2>&1 || run_rc=$?
 	if [ "$cfg_rc" -eq 0 ] && [ "$run_rc" -ne 0 ]; then
 		record_pass
 	else
@@ -1328,9 +1320,8 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	fi
 
 	run_one_hardening 'agent_check_config_bad_field' 2 '未知字段' \
-		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
-		--robot=robots/relay-test.sql --agent --check-config \
-		--llm-config .tmp/checkcfg_bad.json
+		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_bad.json timeout 30 "$bin" \
+		--robot=robots/relay-test.sql --mcp-backend --check-config
 	fi
 fi
 
