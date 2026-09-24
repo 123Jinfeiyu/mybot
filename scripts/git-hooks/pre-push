@@ -18,6 +18,9 @@ cd "$repo_root" || exit 1
 # ---------------------------------------------------------------
 push_ref="$(git rev-parse --abbrev-ref --symbolic-full-name '@{push}' 2>/dev/null || true)"
 if [ -n "$push_ref" ]; then
+	# 类型前缀；可用 + 联合多个（如 feat(mcp)+fix(gate): ...——一次提交同时落在
+	# 两个域时的既有写法，2026-09-24 修：旧正则只认单前缀，把 a6eb33d 误拦下）。
+	type_group='(feat|fix|docs|test|refactor|gate)(\([^)]*\))?'
 	violations=""
 	for c in $(git rev-list --no-merges "$push_ref..HEAD"); do
 		subj="$(git log -1 --format=%s "$c")"
@@ -29,9 +32,9 @@ if [ -n "$push_ref" ]; then
 				if [ "${#subj}" -lt 10 ]; then
 					violations="$violations
   $c: subject 过短（< 10 字符）：$subj"
-				elif ! printf '%s' "$subj" | grep -Eq '^(feat|fix|docs|test|refactor|gate)(\([^)]*\))?: '; then
+				elif ! printf '%s' "$subj" | grep -Eq "^${type_group}(\+${type_group})*: "; then
 					violations="$violations
-  $c: 缺类型前缀（feat|fix|docs|test|refactor|gate(<scope>)?: ...）：$subj"
+  $c: 缺类型前缀（feat|fix|docs|test|refactor|gate(<scope>)? 可 + 联合: ...）：$subj"
 				fi ;;
 		esac
 	done

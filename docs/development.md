@@ -39,7 +39,8 @@ cd build && ctest --output-on-failure -R cpp_unit
 第 3 轮问题清单 R1）。
 据此约定**最小信息底线**（历史不回改，防新增）：
 
-- 格式：`<type>(<scope>): <一句 why>`；scope 可省略（如 `docs: ...`）
+- 格式：`<type>(<scope>): <一句 why>`；scope 可省略（如 `docs: ...`）；一次提交落在
+  多个域时可用 `+` 联合前缀（如 `feat(mcp)+fix(gate): ...`）
 - `type` ∈ `feat` / `fix` / `docs` / `test` / `refactor` / `gate`
 - subject 至少 10 字符，说清「改了什么、为什么」；正文可选，鼓励记录设计取舍与守门数据
 - pre-push 钩子在守门**之前**按本规范校验待推送提交的 subject，不合规即中止
