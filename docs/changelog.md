@@ -6,6 +6,55 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-24 收尾 `d384a9b9`：HEAD 恢复可编译 + agent 守门按归属分流
+
+> 守门快照：全量 `bash test/run_all.sh` **270 / 0 / 0 跳**（`rc=0`）；C++ 单测
+> **634 / 0**（`d384a9b9` 删 `test_agentloop` 40 + `test_agentrepl` 11，本次再删 5 个
+> 依赖已删 `AgentSession` 的用例，`690 → 634` 逐笔可对）；`mcp_e2e.sh` **210 → 242 项**
+> （迁入 6 趟工具层断言）；`agent_e2e.sh` Rust 段 **68 项**（现为该文件唯一模式）。
+> 基线对照：`aed97ca4`（那次删除的上一提交）是 270 / 0 / **1 跳**——少掉的那条 SKIP 是
+> `agent-rust-e2e`，本次因构建出 `mybot-agent` 而真的执行了。
+
+- **修一个不能编译的 HEAD**：`d384a9b9` 删了 `src/agentloop.{hpp,cpp}`，却留下
+  `src/agentmode.cpp` 的 `summarizeSessionStatus`（对不完整类型 `AgentSession` 取成员、
+  并引用全仓已不存在的 `SessionStats`）与 `runAgentMode`/`runAgentRepl` 两个桩、
+  `kMaxReplInputBytes`、`AgentSession` 前向声明——该 TU 同时进 `mybot` 与 `mybot_tests`，
+  8 个编译错误、两个目标全断，且已推到公开 `origin/dev_agent`。本次按「生产零调用者」判据
+  删除（`main.cpp` 走自己的 `runAgentPipeline`；`--mcp-backend` 只经 `makeToolContext`）；
+  `summarizeAgentConfig` 与 `makeToolContext` 是活码，保留。另有
+  `test/cpp/test_agentdriver.cpp`、`test_sessionfile.cpp` 仍 `#include "agentloop.hpp"`
+  且都挂在 `CMakeLists.txt` 上，一并摘除 include 并删掉其中依赖已删类的 5 个用例。
+- **补回一处被连带删掉的判据**（比编译错误更值得注意）：`historyProtocolViolation`
+  ——「assistant.tool_calls 与 tool.tool_call_id 一一对应」的可执行判据（SAN-1）——
+  唯一实现原在 `agentloop.cpp`，随那次删除一起消失；而 `agenthistory.hpp` 里
+  `loadSessionFile` 的契约注释仍以它为判据、`test_sessionfile.cpp` 有一个活用例在调它、
+  `scripts/fake_llm_server.py` 的孪生实现也还在，**Rust 侧没有对等实现**。已把该函数
+  逐字归位到 `agenthistory.{hpp,cpp}`（行为零改动）。教训：删一个「表面」时，
+  判据与注释里的依赖者不会跟着报错。
+- **agent 守门按归属分流**（不是删掉了事）：`scripts/agent_e2e.sh` 原 22 个 C++ 场景
+  在桩上跑出 **119 条断言红**（每条都以「错误: C++ Agent 已移除」+ 退出码 2 开头）。拆开：
+  * 属**后端工具面**的 6 条迁入 `scripts/mcp_e2e.sh`，由纯标准库 Python 帧客户端直连
+    AF_UNIX 后端跑——不经模型、无假模型剧本参与，判据更硬：`apply_sql` 带电生效
+    （INSERT 之后新变量真的出现在 `list_hardware` 里）、热删除（DELETE 真的摘掉变量且
+    报出删了谁）、两者的门控对照（缺开关时工具不在 `tool.list`、调用得「未知工具」、
+    清单零变更）、`read_variables` 带回驱动返回表的键、策略拒绝时 `run_command` 零副作用
+    （marker 文件不落盘）；
+  * 属**循环层**的（工具循环、超时、限流重试、取消、图片后注、stdout 纯净/写失败不 panic）
+    归 `agent_e2e.sh` 的 R 段——该文件现在是 Rust 单一模式（1746 → 704 行），
+    `--rust` 保留为兼容空参；
+  * **仍未覆盖，如实记下**：`--session-file`/`--resume` 的两进程接力、`--agent` over TCP
+    远程 REPL（Rust 侧尚无实现），以及 DeepSeek/Anthropic 协议差异在整条循环上的表现
+    （驱动层报文仍由 `test_llm_drivers.lua` / `test_llm_wire_contract.lua` 守）。
+  原场景 5b（配置文件的 `camera_src` 不得自动放行）经实测**不是**工具边界性质：
+  `capture_image` 的 `src` 只能由宿主配置填（`buildCameraParams` 不读调用方参数），
+  且 `--mcp-backend` 直接拒绝 `--llm-config`，在这条面上不可达——判据由 C++ 单测
+  `agentconfig_camera_src_dir_is_cli_only` 守。
+- **注释与数字归位**：十余处指向已删 `agentloop` 的注释改为指名真实归属
+  （`DispatchGate::run` / `HistoryManager::trim` / `AgentModeConfig` / Rust
+  `model.rs`、`budget.rs`）；`harness.hpp` 的 roster 去掉两个零用例前缀；
+  `CMakeLists.txt` 去掉失效的注释条目；README 的「27 个 C++ 单测文件」按实测改为 25。
+  过去时的沿革叙述（`agenthistory.hpp` 头部、`util.hpp` 的 C7 来源）保留不动。
+
 ### 2026-09-24 审计高危修复两连：掩蔽引号绕过（H1）/ Rust stdout 写失败 panic（H2）
 
 > 守门快照：C++ 单测 **690 / 0**（+1 例引号值遮蔽），全量 **269 / 0 / 3 跳**（环境性

@@ -49,8 +49,9 @@ bool TaskBudget::admit(std::string& text, std::string& image, bool executed) {
 			 * 判据必须与上面触发降级的判据**逐字一致**（都是「已用 + 本次 > 上限」）：
 			 * 写成 used >= cap 是错的——本次 87 / 上限 100 / 已用 87 时 used < cap，
 			 * 但再拍一张必然还是 87+87 > 100，额度事实上已经用尽（实测踩过，
-			 * 用例 agentloop_task_budget_image_exhaustion_is_terminal_and_stated
-			 * 把它钉住了）。 */
+			 * 用例钉在 Rust 侧孪生实现 agent/src/budget.rs 的
+			 * image_exhaustion_is_terminal_and_stated——C++ 侧原用例随
+			 * agentloop 一起移除，判据本身不变）。 */
 			if (used + image.size() > cap) {
 				note += "本任务的图片额度已经用尽，**再调用也不会成功**；"
 					"请立即改用文字结论或换一个新任务。";

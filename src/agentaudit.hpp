@@ -6,7 +6,9 @@
  * 日志流（stderr）上的工具回显——无时间戳、无持久化、无结构化（该日志**恒开**，
  * 见 docs/agent.md；`--verbose` 不是本项目的选项）。现场机器人（部署形态 B）
  * 出事后「模型到底做了什么」无从复盘。本模块在**宿主工具派发的唯一漏斗**
- * （agentloop 的 dispatchOneCall）落一条 JSON Lines 记录。
+ * （DispatchGate::run，见 agentdispatch）落一条 JSON Lines 记录。MCP 后端
+ * （--mcp-backend）不发起模型调用，但工具条目仍经同一漏斗记账，会话头尾由
+ * mcpbackend 自己记。
  *
  * 设计约束：
  *   * 默认关闭（--audit-log 不给 = 不写任何东西），开启即 append-only，

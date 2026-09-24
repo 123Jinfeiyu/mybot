@@ -2,6 +2,7 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <cerrno>
 #include <fstream>
 #include <iterator>
@@ -374,6 +375,47 @@ std::string sessionPermsWarning(const std::string& path) {
 	if ((st.st_mode & (S_IRWXG | S_IRWXO)) == 0) { return ""; }
 	return "会话文件 '" + path + "' 权限宽于 600（含完整对话内容，同等敏感），"
 		"建议 chmod 600 " + path;
+}
+
+std::string historyProtocolViolation(const std::vector<ChatMessage>& history) {
+	/* 已声明的 id：按出现顺序收集，同时记下是被哪条 assistant 消息声明的 */
+	std::vector<std::string> declared;
+	for (std::size_t i = 0; i < history.size(); ++i) {
+		const ChatMessage& m = history[i];
+		if (m.role != "assistant") { continue; }
+		for (const ToolCall& c : m.toolCalls) {
+			if (c.id.empty()) {
+				return "messages[" + std::to_string(i)
+					+ "]: assistant 声明了一条 id 为空的工具调用（服务端 400）";
+			}
+			declared.push_back(c.id);
+		}
+	}
+
+	std::vector<std::string> answered;
+	for (std::size_t i = 0; i < history.size(); ++i) {
+		const ChatMessage& m = history[i];
+		if (m.role != "tool") { continue; }
+		if (m.toolCallId.empty()) {
+			return "messages[" + std::to_string(i) + "]: tool 消息缺少 tool_call_id（服务端 400）";
+		}
+		if (std::find(declared.begin(), declared.end(), m.toolCallId) == declared.end()) {
+			return "messages[" + std::to_string(i) + "]: tool_call_id '" + m.toolCallId
+				+ "' 不匹配任何 assistant 声明的工具调用（孤儿 tool 消息）";
+		}
+		if (std::find(answered.begin(), answered.end(), m.toolCallId) != answered.end()) {
+			return "messages[" + std::to_string(i) + "]: tool_call_id '" + m.toolCallId
+				+ "' 被回答了不止一次（服务端 400 answered more than once）";
+		}
+		answered.push_back(m.toolCallId);
+	}
+
+	for (const std::string& id : declared) {
+		if (std::find(answered.begin(), answered.end(), id) == answered.end()) {
+			return "assistant 声明的工具调用 '" + id + "' 没有得到任何 tool 回传（服务端 400）";
+		}
+	}
+	return "";
 }
 
 } // namespace agent

@@ -4,12 +4,12 @@
  *   - 会话文件读写原语：编解码往返（含 tool_calls/extras）、图片写入期排除、
  *     损坏行跳过并点名、会话头必要性/版本判据、指纹差异点名、权限告警、
  *     /clear 分界标记的载入语义；
- *   - AgentSession 的 complete 边界落盘：成功任务块落盘、失败回滚不落盘、
- *     trim 后水位线同步、/clear 分界；
- *   - runAgentMode 的全链路恢复：新鲜会话落盘 → 新对象恢复 → 模型请求里
- *     看得见先前对话（与 E2E 场景 19 同判据的两份实现之一）；
  *   - buildAgentConfig 的恢复组合校验（只认命令行路径、文件必须存在）。
- * 全部离线：传输用脚本化假件，机器人用 relay-test（内存装配），不联网。
+ * 全部离线：机器人用 relay-test（内存装配），不联网。
+ *
+ * 不在这里的：何时落盘、trim 后水位怎么同步、恢复后模型看得见什么——这些
+ * 编排语义原先由 C++ AgentSession / runAgentMode 承担（连同 E2E 场景 19），
+ * 随 d384a9b9 移除 REPL 一起消失，现由 Rust agent 侧承担（agent/src/history.rs）。
  */
 
 #include "harness.hpp"
@@ -24,7 +24,6 @@
 #include <vector>
 
 #include "agenthistory.hpp"
-#include "agentloop.hpp"
 #include "agentmode.hpp"
 #include "agenttools.hpp"
 #include "cliargs.hpp"
@@ -39,35 +38,6 @@ using namespace bot::agent;
 
 namespace {
 
-/* 脚本化传输：按预设序列返回响应，并记录每次请求的消息快照
- * （与 test_agentloop/test_agentrepl 同构；独立一份，不跨文件共享夹具） */
-class ScriptTransport : public ChatTransport {
-public:
-	std::vector<ChatResponse> script;
-	std::vector<std::vector<ChatMessage>> requests;
-
-	ChatResponse complete(const std::vector<ChatMessage>& msgs,
-			const std::vector<ToolSpec>&) override {
-		requests.push_back(msgs);
-		if (script.empty()) { throw std::runtime_error("脚本用尽"); }
-		ChatResponse r = script.front();
-		script.erase(script.begin());
-		return r;
-	}
-};
-
-ChatResponse answer(const std::string& text) {
-	ChatResponse r;
-	r.content = text;
-	return r;
-}
-
-ChatResponse toolCallResp(const std::string& id, const std::string& name) {
-	ChatResponse r;
-	r.toolCalls.push_back(ToolCall{id, name, "{}"});
-	return r;
-}
-
 std::string readSmallFile(const std::string& path) {
 	std::ifstream f(path, std::ios::binary);
 	if (!f) { throw std::runtime_error("测试夹具读不到: " + path); }
@@ -78,14 +48,6 @@ std::string readSmallFile(const std::string& path) {
 
 std::string slurp(const std::string& path) {
 	return readSmallFile(path);
-}
-
-std::size_t lineCount(const std::string& path) {
-	std::ifstream f(path, std::ios::binary);
-	std::size_t n = 0;
-	std::string line;
-	while (std::getline(f, line)) { if (!line.empty()) { ++n; } }
-	return n;
 }
 
 /* 简易对话序列：任务 → assistant(tool_calls) → tool → 图片消息 → 最终回答 */
@@ -362,187 +324,6 @@ TH_TEST(sessionfile_clear_marker_drops_prior_history) {
 	TH_CHECK(loaded.messages[0].content == "清空后的新任务");
 }
 
-/* ---- complete 边界落盘：成功块落、失败块不落 ---- */
-TH_TEST(sessionfile_persists_at_complete_boundary_only) {
-	fx::TempDir tmp("boundary");
-	const std::string path = (tmp.path() / "s.jsonl").string();
-
-	auto writer = freshWriter(path);
-
-	ScriptTransport transport;
-	transport.script.push_back(toolCallResp("call_0_0", "nosuchtool"));
-	transport.script.push_back(answer("第一件完成"));
-	transport.script.push_back(answer("第二件完成"));
-
-	AgentOptions o;
-	o.maxTurns = 4;
-	o.verbose = false;
-	o.systemPrompt = "测试系统提示词";
-	o.sessionWriter = writer;
-	AgentToolRegistry tools;
-	AgentSession session(transport, tools, o);
-
-	/* 任务一：一轮工具（未知工具也照常写 tool 消息）+ 最终回答 */
-	TH_CHECK(session.runTurn("任务一") == "第一件完成");
-	/* 落盘：头 + user + assistant(tool_calls) + tool + assistant = 5 行 */
-	TH_CHECK(lineCount(path) == 5);
-
-	/* 任务二成功 */
-	TH_CHECK(session.runTurn("任务二") == "第二件完成");
-	TH_CHECK(lineCount(path) == 7);
-
-	/* 任务三失败，且失败发生在**完成一整轮工具之后**（先派发一条工具、再让
-	 * 下一次模型调用炸掉）：这条路径下回滚边界 `complete` 已经越过那轮工具，
-	 * 半截尾部就是空的——落盘与否只由「成功路径才落盘」这一条规则决定。
-	 * 这正是反向验证要钉住的判据：把 persistNewMessages() 挪进 catch 分支，
-	 * 文件会多出失败任务的 user 行，本用例必须转红。 */
-	transport.script.push_back(toolCallResp("call_9_0", "nosuchtool"));
-	bool threw = false;
-	try { session.runTurn("任务三"); } catch (const std::exception&) { threw = true; }
-	TH_CHECK(threw);
-	TH_CHECK(lineCount(path) == 7);
-	TH_CHECK(slurp(path).find("任务三") == std::string::npos);
-	/* 失败任务**已完成**的那轮工具会随后续成功任务一起落盘——与内存里的历史
-	 * 一致（项目口径：硬件不会倒回去，把这段抹掉就等于告诉模型什么都没发生）。
-	 * 永不落盘的是**半截 tool_calls 序列**（缺 tool 回应的那些），它们已被
-	 * 回滚边界裁掉。故任务四之后：7 + 任务三(3 条) + 任务四(2 条) = 12 行。 */
-	transport.script.push_back(answer("第三件完成"));
-	TH_CHECK(session.runTurn("任务四") == "第三件完成");
-	TH_CHECK(lineCount(path) == 12);
-	TH_CHECK(slurp(path).find("任务三") != std::string::npos);
-	TH_CHECK(slurp(path).find("任务四") != std::string::npos);
-	/* 落盘内容必须仍是服务端可接受的历史（本条与 E2E 的 python 判据同源） */
-	{
-		LoadedSession loaded;
-		std::vector<std::string> warns;
-		std::string lerr;
-		TH_CHECK(loadSessionFile(path, loaded, warns, lerr));
-		TH_CHECK(warns.empty());
-		TH_CHECK(historyProtocolViolation(loaded.messages).empty());
-	}
-}
-
-/* ---- trim 与落盘水位：老块被裁后，新块只追加一次、不重写不重复 ---- */
-TH_TEST(sessionfile_trim_keeps_file_in_sync) {
-	fx::TempDir tmp("trim");
-	const std::string path = (tmp.path() / "s.jsonl").string();
-
-	auto w = freshWriter(path);
-	std::string err;
-
-	const std::string big(600, 'x');
-	ScriptTransport transport;
-	transport.script.push_back(answer(big));
-	transport.script.push_back(answer(big));
-	transport.script.push_back(answer(big));
-
-	AgentOptions o;
-	o.maxTurns = 4;
-	o.verbose = false;
-	o.systemPrompt = "S";
-	o.maxHistoryBytes = 200;	/* 一个大块就超：任务二开始前必裁任务一 */
-	o.sessionWriter = w;
-	AgentToolRegistry tools;
-	AgentSession session(transport, tools, o);
-
-	TH_CHECK(session.runTurn("任务一") == big);
-	TH_CHECK(session.runTurn("任务二") == big);
-	/* trim 无条件保留最新块：任务三开始时 [任务一, 任务二] 两块都在列，
-	 * 预算 200 装不下任务一 → 裁掉它（内存侧），文件仍是 append-only 全量 */
-	TH_CHECK(session.runTurn("任务三") == big);
-	TH_CHECK(lineCount(path) == 7);
-	TH_CHECK(slurp(path).find("任务一") != std::string::npos);
-	TH_CHECK(slurp(path).find("任务三") != std::string::npos);
-	TH_CHECK(session.stats().historyTrimmed);
-}
-
-/* ---- /clear 与落盘：分界标记落盘，恢复不再看见清空前的任务 ---- */
-TH_TEST(sessionfile_clear_writes_marker) {
-	fx::TempDir tmp("clearsess");
-	const std::string path = (tmp.path() / "s.jsonl").string();
-
-	auto w = freshWriter(path);
-	std::string err;
-
-	ScriptTransport transport;
-	transport.script.push_back(answer("一"));
-	transport.script.push_back(answer("二"));
-
-	AgentOptions o;
-	o.maxTurns = 4;
-	o.verbose = false;
-	o.systemPrompt = "S";
-	o.sessionWriter = w;
-	AgentToolRegistry tools;
-	AgentSession session(transport, tools, o);
-
-	TH_CHECK(session.runTurn("任务一") == "一");
-	session.clearHistory();
-	TH_CHECK(session.runTurn("任务二") == "二");
-
-	LoadedSession loaded;
-	std::vector<std::string> warns;
-	TH_CHECK(loadSessionFile(path, loaded, warns, err));
-	/* 恢复看见的是 clear 之后的记忆，不是清空前的 */
-	TH_CHECK(loaded.messages.size() == 2);
-	TH_CHECK(loaded.messages[0].content == "任务二");
-	TH_CHECK(loaded.messages[1].content == "二");
-}
-
-/* ---- runAgentMode 全链路：新鲜会话落盘 → 新会话对象恢复 → 模型请求里
- *      看得见先前对话（与 E2E 场景 19 同判据；离线、注入传输） ---- */
-TH_TEST(sessionfile_runagentmode_resume_feeds_prior_context) {
-	fx::TempDir tmp("resume");
-	const std::string sessPath = (tmp.path() / "s.jsonl").string();
-
-	MemoryReader robotReader(readSmallFile("robots/relay-test.sql"));
-	RobotStruct robot(robotReader);
-	robot.active();
-
-	AgentToolContext tctx;
-	tctx.robot = &robot;
-	tctx.scriptsDir = "scripts";
-	tctx.structurePath = "robots/relay-test.sql";
-
-	AgentModeConfig cfg;
-	cfg.structurePath = "robots/relay-test.sql";
-	cfg.scriptsDir = "scripts";
-	cfg.llmVar = "llm0";
-	cfg.verbose = false;
-	cfg.sessionFile = sessPath;
-	cfg.task = "第一次任务";
-
-	{
-		AgentToolRegistry tools = makeAgentTools(tctx);
-		ScriptTransport transport;
-		transport.script.push_back(answer("第一次回答"));
-		std::istringstream in;
-		std::ostringstream out, log;
-		TH_CHECK(runAgentMode(cfg, robot, transport, in, out, log) == 0);
-		TH_CHECK(fs::exists(sessPath));
-		const std::string raw = slurp(sessPath);
-		TH_CHECK(raw.find("session_head") != std::string::npos);
-		TH_CHECK(raw.find("第一次任务") != std::string::npos);
-		TH_CHECK(raw.find("第一次回答") != std::string::npos);
-	}
-
-	/* 恢复：全新对象（新传输/新工具表/新会话），--resume 语义 */
-	cfg.task = "继续";
-	cfg.resumeSession = true;
-	AgentToolRegistry tools2 = makeAgentTools(tctx);
-	ScriptTransport transport2;
-	transport2.script.push_back(answer("第二次回答"));
-	std::istringstream in2;
-	std::ostringstream out2, log2;
-	TH_CHECK(runAgentMode(cfg, robot, transport2, in2, out2, log2) == 0);
-	TH_CHECK(transport2.requests.size() == 1);
-	const std::vector<ChatMessage>& req = transport2.requests[0];
-	TH_CHECK(req.size() == 4);	/* system + 任务 + 回答 + 继续任务 */
-	TH_CHECK(req[0].role == "system");
-	TH_CHECK(req[1].role == "user" && req[1].content == "第一次任务");
-	TH_CHECK(req[2].role == "assistant" && req[2].content == "第一次回答");
-	TH_CHECK(req[3].role == "user" && req[3].content == "继续");
-}
 
 /* ---- 恢复的组合校验（buildAgentConfig 第 0 步）----
  * 反向验证口径：去掉任一判据，对应用例必须转红（见 changelog 反向验证记录）。 */

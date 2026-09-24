@@ -958,12 +958,14 @@ C++ 的 `agent:` 作用域 + agent CLI 负路径）。裸 `agent` 与 `agent:` *
 bash test/run_all.sh agent-all
 ```
 
-- `scripts/agent_e2e.sh` 用本地假模型服务跑二十二个场景（含 5b：配置文件来源的 camera_src 必须被拒，覆盖 H1 的接线；14/14b/14c：`--agent-hot-sql` 的带电生效、缺开关对照与热删除；15/15b：`--read-var` 的回读与「缺声明即无此工具」对照）：默认驱动完整工具循环（并抓报文断言
-  OpenAI 形态）、`--llm-driver LlmDeepSeek`（断言 thinking / 不发 temperature /
-  `reasoning_content` 回传）、`--llm-timeout` 生效（防 curl 变参 cast 退化）、
-  `--llm-config` 配置文件（URL/KEY/MODEL 全部来自文件，且**环境里不放任何密钥**）、
-  `capture_image` 拍照（断言线上报文里真的出现 `image_url` 多模态内容，且是 data URL 包的真 JPEG）、
-  `--prompt-file` 提示词包（断言包内容进入 system 消息、追加在内置段落之后、按文件名自然排序分节）。
+- agent 端到端分两段（本地假模型服务，无需硬件与真实 key），明细见 [testing.md 第 8 段](testing.md)：
+  * `scripts/agent_e2e.sh`——唯一模式是两个进程：`mybot-agent`（Rust，rig）↔ `mybot --mcp-backend`
+    （AF_UNIX 帧）。R1–R10 覆盖工具循环、提示词包、审计轨迹、REPL 与能力门控、`--check-config`、
+    单轮调用上限、限流重试、单次超时与 SIGINT 取消、图片后注、stdout 写失败不 panic；
+  * `scripts/mcp_e2e.sh`——C++ 后端 + 纯标准库 Python 帧客户端直连 socket，守工具面与安全属性：
+    `run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`（正反两趟）、`apply_sql`
+    带电生效与热删除、策略拒绝时零副作用、fd 卫生、socket 权限、审计与优雅停机。
+    （原 C++ 场景 14/14b/14c/15/15b/9 的性质就迁到这里，不经模型、判据更硬。）
 - `test/test_camera_v4l2.lua` 是真机抓帧回归，需 `/dev/video*`（文件标记 `-- requires: video`，
   无设备时守门自动跳过）；`test/test_v4l2_consts.c` 在构建期把 V4L2 常量与内核头对齐。
 - 全量守门 `bash test/run_all.sh` 已包含上述全部；缺 python3 或 libcurl 时按 **SKIP**

@@ -188,7 +188,6 @@ add_executable(mybot_tests
   test/cpp/test_agentproto.cpp
   test/cpp/test_agentdriver.cpp
   test/cpp/test_agenttools.cpp
-  # test/cpp/test_agentrepl.cpp  # 已移除 - 依赖已删除的 agentloop
   test/cpp/test_agentaudit.cpp
   test/cpp/test_agentpolicy.cpp
   test/cpp/test_promptpack.cpp

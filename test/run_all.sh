@@ -937,35 +937,28 @@ if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
 fi
 
 # ======================================================================
-# agent 模式端到端（scripts/agent_e2e.sh）：本地假模型服务 + 真实 mybot，二十二个场景（含 5b：配置文件来源的 camera_src 必须被拒；14/14b：--agent-hot-sql 的带电生效与「缺开关即无此工具」对照；14c：同一门控下的热删除真的摘掉变量；15/15b：--read-var 的回读与「缺声明即无此工具」对照）。
-#   1) 默认协议驱动（LlmOpenAI）：工具循环真的迭代、动作脚本在**常驻**机器人上
-#      被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态；
-#   2) --llm-driver LlmDeepSeek：断言 thinking / 不发 temperature /
-#      历史 reasoning_content 被回传（官方文档里的 400 级有状态要求）；
-#   3) --llm-timeout 在 4s 内生效：专防 curl_easy_setopt 退回裸变参调用
-#      （那时整型选项被静默忽略，实测会跑满 5s 且可能 rc=0）；
-#   4) --llm-config 配置文件：URL/KEY/MODEL 全部来自文件，且环境里不放任何密钥。
-#   5) capture_image 拍照：断言线上报文带 image_url 多模态内容（data URL 包真 JPEG）。
-#   6) prompt-file：--prompt-file 从文件读首条用户消息（fix-plan 3-6 同批补记）。
-#
-# 环境软依赖：python3（假模型服务）与 libcurl（agent 模式的运行期依赖，
-# Lua 驱动经 ffi 加载）。任一缺失按 SKIP 计入「未执行清单」，不是静默消失；
-# 缺编译产物仍判失败。
-# ======================================================================
-if filter_matches "agent" "$filter_e2e"; then
-	run_one_agent_e2e
-fi
-
-# ======================================================================
-# Rust agent 端到端（scripts/agent_e2e.sh --rust，rig 迁移批次 B）：拓扑是
-# mybot-agent（agent/，rig 驱动）↔ mybot --mcp-backend（AF_UNIX 帧）两个进程，
-# 假模型服务与上面的 C++ 段共用。R1 工具循环（三条回执真的从后端回来 + 后端侧 Lua
+# Rust agent 端到端（scripts/agent_e2e.sh，rig 迁移批次 B/C）：拓扑是
+# mybot-agent（agent/，rig 驱动）↔ mybot --mcp-backend（AF_UNIX 帧）两个进程。
+# R1 工具循环（三条回执真的从后端回来 + 后端侧 Lua
 # 驱动见证）、R2 提示词包进系统提示词、R3 审计轨迹（agent 落 session/model 行、
 # 工具行归后端）、R4 REPL + 能力门控（缺 --agent-shell 时 run_command 不在工具表）、
-# R5 --check-config 正负路径。与 C++ 段的语义差异（每次任务一条 model 行；图片注入、
-# 会话持久化、TCP 远程 REPL 尚未搬）记在脚本头注里——照抄 C++ 判据就是假绿。
+# R5 --check-config 正负路径、R6 单轮调用上限、R7/R7b 限流重试与恒失败、
+# R8/R8b 单次超时与 SIGINT 取消、R9 图片后注、R10 stdout 写失败不 panic。
 # mybot-agent 是**可选**产物（Rust 由单独 CI job 构建）：缺它按 SKIP 计；
 # 缺 build/mybot 判失败（本段的后端就是它，且那是核心产物）。
+#
+# 原先此文件上面还有一段「agent 模式端到端」（C++ 的 22 个场景）。d384a9b9 把
+# C++ Agent REPL 换成桩之后那 22 段全部打在「错误: C++ Agent 已移除」上（实测
+# 119 条断言红），而该表面是**有意移除**的，留着一段恒红的守门没有意义，故整段
+# 删除；它验过的性质按归属分流，不是凭空消失：
+#   * 后端工具面的 6 条（apply_sql 带电生效与热删除、两者的门控对照、
+#     read_variables 回读与对照、策略拒绝零副作用）→ 迁进 scripts/mcp_e2e.sh
+#     的独立趟（纯 Python 帧客户端直连后端，不经模型，判据更硬）；
+#   * 循环层的（工具循环、超时、重试、取消、图片后注、stdout 纯净/写失败）→ R 段；
+#   * 仍未覆盖：--session-file/--resume 两进程接力、agent over TCP 远程 REPL
+#     （Rust 侧尚无实现，批次 D），以及 DeepSeek/Anthropic 的**协议差异**在
+#     整条循环上的表现（驱动层单测 test_llm_drivers.lua / test_llm_wire_contract.lua
+#     仍在守报文形态）。
 # ======================================================================
 if filter_matches "agent" "$filter_e2e"; then
 	run_one_agent_rust_e2e

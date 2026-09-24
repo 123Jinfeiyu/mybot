@@ -8,7 +8,6 @@
 #include <vector>
 
 #include "agentdriver.hpp"
-#include "agentloop.hpp"
 #include "agentproto.hpp"
 #include "jsonparse.hpp"
 #include "robot.hpp"
@@ -293,56 +292,3 @@ TH_TEST(agentdriver_classify_falls_back_to_text_for_legacy_drivers) {
 		== RetryClass::No);
 }
 
-/* ============ SAN-6：漏 id 的网关下，跨轮 id 必须唯一 ============
- * 缺陷形态（已复现）：驱动曾自己合成 `tc.id or ("call_" .. i)`，而宿主**故意**
- * 把合成方案设计成轮次相关的（agentloop 的 call_<turn>_<i>，注释里写明就是为
- * "个别流式/兼容实现会漏 tool_call id"准备的）。驱动先合成 call_1 把宿主那条
- * 路径遮住，于是**每轮都从 call_1 重来**——第二轮的历史里出现两个同 id，真机
- * 400 answered more than once，且那条坏消息落在不可回滚的历史里。
- * 驱动改为透传（空串）后，宿主接手合成，跨轮唯一。
- *
- * 覆盖边界（如实声明）：本用例走的是 AgentFakeDriver 夹具（不经 Lua wire 层），
- * 所以它钉的是**宿主的合成方案**；"驱动不再合成 call_<i>"这一半由
- * test/test_llm_drivers.lua 的 SAN-6 用例钉（那边实测过反向验证：把驱动改回
- * tc.id or ("call_" .. i) → 两条 Lua 断言转红）。两半合起来才是完整判据。 */
-TH_TEST(agentdriver_missing_ids_are_synthesized_by_host_per_turn) {
-	ModulePathGuard mpath("./modules:./test/cpp");
-	auto robot = makeRobot(kTimerRobotSql);
-	robot->injectLuaDriver("AgentFakeDriver", "llm0");
-	robot->active();
-
-	MatrixVars_Hardware* drv = robot->registry().find("llm0");
-	TH_CHECK(drv != nullptr);
-	AgentDriverConfig cfg;
-	cfg.model = "noid";
-	auto transport = makeDriverTransport(drv, cfg);
-
-	AgentToolRegistry tools;
-	tools.add(AgentTool{"list_hardware", "只读清单", parseJson("{\"type\":\"object\"}"),
-		[](const Json&) -> AgentToolResult { return {"(清单)", ""}; }});
-
-	AgentOptions opts;
-	opts.maxTurns = 5;
-	opts.verbose = false;
-	opts.systemPrompt = "sys";
-	AgentSession session(*transport, tools, opts);
-	/* 夹具前两轮各回一条**无 id** 的工具调用，第三轮收尾 → 两轮 tool 回传 */
-	TH_CHECK(session.runTurn("任务") == "收尾");
-
-	/* 两轮各一条 tool 消息：id 必须**不同**（call_0_0 与 call_1_0），
-	 * 且整段历史必须能被服务端接受（historyProtocolViolation 判据②）。 */
-	const auto& h = session.history();
-	std::vector<std::string> toolIds;
-	for (const ChatMessage& m : h) {
-		if (m.role == "tool") { toolIds.push_back(m.toolCallId); }
-	}
-	TH_CHECK_MSG(toolIds.size() == 2,
-		"应有两轮各自的一条 tool 回传，实际 " + std::to_string(toolIds.size()));
-	TH_CHECK_MSG(toolIds[0] != toolIds[1],
-		"跨轮 id 必须不同，实际都是 '" + toolIds[0] + "'");
-	TH_CHECK_MSG(toolIds[0] == "call_0_0" && toolIds[1] == "call_1_0",
-		"宿主合成方案应为 call_<turn>_<i>，实际: " + toolIds[0] + " / " + toolIds[1]);
-	TH_CHECK_MSG(historyProtocolViolation(h).empty(), historyProtocolViolation(h));
-
-	robot->deactivate();
-}

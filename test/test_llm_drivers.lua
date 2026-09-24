@@ -333,10 +333,12 @@ for _, lib in ipairs({ "openai", "deepseek" }) do
 end
 
 -- SAN-6：驱动**不再合成** tool_call id（此前是 `tc.id or ("call_" .. i)`）。
--- 宿主有轮次相关的合成方案（agentloop 的 call_<turn>_<i>），而驱动的 call_<i>
--- 每轮从 1 重来，会把宿主那条路径遮住并造成**跨轮重复 id**——真机
+-- 起因：宿主的合成方案是轮次相关的（原 agentloop 的 call_<turn>_<i>），而驱动的
+-- call_<i> 每轮从 1 重来，会把宿主那条路径遮住并造成**跨轮重复 id**——真机
 -- 400 answered more than once，且那条坏消息落在不可回滚的历史里。
--- 判据：id 缺失/非字符串时驱动给空串（由宿主填），而不是自己编一个可能撞车的。
+-- 宿主本体已随 C++ Agent REPL 移除（d384a9b9），现在填 id 的是 Rust 侧
+-- （rig 的 ToolCallId::new_or_mint）；驱动侧判据不变：
+-- id 缺失/非字符串时给空串（由宿主填），而不是自己编一个可能撞车的。
 do
 	local function parse(body) return openai.parse_response(json.decode(body)) end
 

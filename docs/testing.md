@@ -146,13 +146,10 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 5. **mtmerge 合成器**（`@Action` 相位归并 + `@Alias`/`@Vars` 按行叠加同名报错；末尾把产物回喂 `mybot` 证明内联别名仍生效）
 6. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 7. **TCP 异常注入**（复用 `scripts/tcp_adversarial.sh` 场景矩阵：半包/断连/空闲挂死/垃圾帧/口令负路径，每场景独立服务端 + 看门狗）
-8. **agent 模式端到端**（复用 `scripts/agent_e2e.sh` + 本地假模型服务 `scripts/fake_llm_server.py`，二十二个场景（含 5b：H1 的白名单根接线；14/14b/14c：`--agent-hot-sql` 正反对照与热删除；15/15b：`--read-var` 正反对照）；缺 python3 或 libcurl 时按跳过计）：
-   - ① 默认协议驱动（LlmOpenAI，命令带 `--agent-shell`）跑完 `list_hardware → run_action_script → run_command → 最终回答`：断言工具循环真的迭代、动作脚本在**常驻**机器人上被执行、最终回答只走 stdout，并抓取线上报文断言是 OpenAI 形态
-   - ② `--llm-driver LlmDeepSeek`（同样带 `--agent-shell`）断言协议差异：带 `thinking`、不发 `temperature`、历史 `reasoning_content` 被回传（官方文档里的 400 级有状态要求）
-   - ③ `--llm-timeout` 必须在 4s 内生效：专防 `curl_easy_setopt` 退回裸变参调用（那时整型选项被静默忽略）
-   - ④ `--llm-config` 配置文件：断言 URL/KEY/MODEL 全部来自文件、且环境里不放任何密钥；同时断言**未给 `--agent-shell` 时工具表里没有 `run_command`**（安全缺省的判别性守门）
-   - ⑤ `capture_image` 拍照：断言线上报文确实带 `image_url` 多模态内容（data URL 包的真 JPEG）
-   - ⑥ `--prompt-file` 提示词包：目录 .md 按文件名自然排序、以「## 文件名」分节追加在系统提示词内置段落之后
+8. **agent 端到端两段**（本地假模型服务 `scripts/fake_llm_server.py`，均无需硬件与真实 key）：
+   - `scripts/agent_e2e.sh`——拓扑是**两个进程**：`mybot-agent`（Rust，rig 驱动）↔ `mybot --mcp-backend`（AF_UNIX 帧）。R1 工具循环（三条回执真的从后端回来、动作脚本在**常驻**机器人上被执行、后端侧 Lua 驱动见证）、R2 提示词包进系统提示词、R3 审计轨迹（agent 落 session/model 行、工具行归后端）、R4 REPL + 能力门控（缺 `--agent-shell` 时 `run_command` 不在工具表）、R5 `--check-config` 正负路径、R6 单轮调用上限截断（SAN-1）、R7/R7b 限流 429 重试与恒 503 如实失败（SAN-3）、R8/R8b 单次超时与 SIGINT 取消、R9 图片后注（工具回执进 tool 消息、图片走紧随的 user 消息）、R10 stdout 写失败不 panic 且审计收尾不丢（H2）。缺 `mybot-agent` 产物按 **SKIP** 计（Rust 是可选产物），缺 `build/mybot` 判失败。
+   - `scripts/mcp_e2e.sh`——C++ 后端 + **纯标准库 Python 帧客户端**直连 socket，独立第三实现对齐线协议字节；socket 父目录 0700 / 文件 0600、能力门控（`run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`，正反两趟）、未知工具回执点名且 `executed=false`、`apply_sql` 带电生效与热删除真的摘掉变量、`read_variables` 带回驱动返回表的键、策略拒绝时 `run_command` 零副作用、fd 卫生（子 shell 不继承后端 socket fd）、审计含失败工具、SIGTERM 优雅停机。
+   - 仍未覆盖（如实记下）：`--session-file` / `--resume` 的两进程接力、`--agent` over TCP 的远程 REPL（两者 Rust 侧尚无实现），以及 DeepSeek/Anthropic **协议差异**在整条循环上的表现（驱动层报文由 `test/test_llm_drivers.lua` / `test/test_llm_wire_contract.lua` 守）。
 9. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 10. **输入边界加固**，覆盖：
    - `--tcp-host` 非法地址退出码 1、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限

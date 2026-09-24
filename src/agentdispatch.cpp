@@ -42,12 +42,14 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 			/* executed= */ false};
 	} catch (...) {
 		/* A5：本机 LuaJIT 用 C++ 异常实现 luaD_throw，从没有 Lua CFRAME 的 C++
-		 * 帧抛出的 Lua 错误**不是** std::exception（同判据见 main.cpp:173-176）。
-		 * 只接 std::exception 的话这类抛出会穿透到 runTurn 的 catch(...)，把
-		 * 整个会话结束掉——而「REPL 单轮失败不结束会话」是 runAgentMode 的承诺。
+		 * 帧抛出的 Lua 错误**不是** std::exception（同判据见 main.cpp 里讲
+		 * luaD_throw/_Unwind_RaiseException 的那段）。
+		 * 只接 std::exception 的话这类抛出会穿透到上层的 catch(...)，把
+		 * 整个会话结束掉——而「REPL 单轮失败不结束会话」是循环层的承诺
+		 * （原先由 C++ runAgentMode 守，现由 Rust agent 的轮循环守）。
 		 * 这里折成 tool 回传而不是让它上抛：那是唯一保持「本轮 tool 消息与
-		 * assistant.tool_calls 一一对应」的选择（见 agentloop.cpp 的
-		 * executeToolRound），也让模型看到「这一步没拿到数据」而不是「什么都没
+		 * assistant.tool_calls 一一对应」的选择（复核判据即
+		 * historyProtocolViolation），也让模型看到「这一步没拿到数据」而不是「什么都没
 		 * 发生」。审计照常记这条：ok=false，模型想做什么没做成同样是审计信息。
 		 *
 		 * executed 按 SAN-4 的口径分两种，不能一律填 false：argsOk 为假说明抛出

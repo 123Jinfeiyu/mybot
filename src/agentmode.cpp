@@ -145,77 +145,6 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 	return s;
 }
 
-/* SAN-10（2026-09-22，REPL /status）：把会话当前状态渲染成一览。
- * 契约与 summarizeAgentConfig 相同：**只渲染、不判定、无副作用**——
- * 校验/判定一律由各自单点负责，这里再造一套只会漂移。
- * 三处边界按"如实"处理，不显示假数字：
- *   * 预算为 0（= 不限）时显示"不限"，而不是 "0 / 0"；
- *   * 历史未裁剪时不显示"裁过 0 条"，直接说"未触发裁剪"；
- *   * 审计未开启时显示"(未开启)"，与摘要里 endpoint 的"(未配置…)"同口径。 */
-std::string summarizeSessionStatus(const AgentSession& session, const AgentModeConfig& cfg,
-		RobotStruct& robot) {
-	const SessionStats& st = session.stats();
-	const auto bytes = [](std::size_t n) {
-		char buf[32];
-		if (n >= (1u << 20)) {
-			std::snprintf(buf, sizeof buf, "%.1f MiB",
-				static_cast<double>(n) / static_cast<double>(1u << 20));
-		} else if (n >= 1024) {
-			std::snprintf(buf, sizeof buf, "%.1f KiB", static_cast<double>(n) / 1024.0);
-		} else {
-			std::snprintf(buf, sizeof buf, "%zu 字节", n);
-		}
-		return std::string(buf);
-	};
-	const auto budget = [&bytes](std::size_t used, std::size_t cap) {
-		return cap == 0 ? std::string("不限（已用 " + bytes(used) + "）")
-				: bytes(used) + " / " + bytes(cap);
-	};
-
-	std::string s;
-	s += "会话状态:\n";
-	s += "  模型/接入点 : " + (cfg.model.empty() ? std::string("(驱动缺省)") : cfg.model)
-		+ " @ " + (cfg.endpoint.empty() ? std::string("(未配置，首次调用将失败)") : cfg.endpoint)
-		+ "（超时 " + std::to_string(cfg.timeoutSec) + "s，最大 "
-		+ std::to_string(cfg.maxTurns) + " 轮，单轮最多 "
-		+ std::to_string(cfg.maxCallsPerRound) + " 条调用）\n";
-	s += "  本会话统计  : 模型 " + std::to_string(st.modelTurns) + " 轮/"
-		+ std::to_string(st.modelMs) + "ms，工具 " + std::to_string(st.toolCalls)
-		+ " 次（失败 " + std::to_string(st.failures) + "，耗时 "
-		+ std::to_string(st.toolMs) + "ms）";
-	if (st.lastPromptTokens.has_value() || st.lastCompletionTokens.has_value()) {
-		s += "，最近一次 token ";
-		s += st.lastPromptTokens.has_value() ? std::to_string(*st.lastPromptTokens) : std::string("?");
-		s += "→";
-		s += st.lastCompletionTokens.has_value() ? std::to_string(*st.lastCompletionTokens)
-							 : std::string("?");
-	}
-	s += "\n";
-	/* 任务块数：与 HistoryManager::trim 的判据同源（user 且不带图片 = 块起点） */
-	std::size_t blocks = 0;
-	for (const ChatMessage& m : session.history()) {
-		if (m.role == "user" && m.images.empty()) { ++blocks; }
-	}
-	s += "  对话历史    : " + std::to_string(blocks) + " 个任务块，" + bytes(session.historyBytes())
-		+ " / " + (cfg.maxHistoryBytes == 0 ? std::string("不限")
-						    : bytes(cfg.maxHistoryBytes));
-	if (st.historyTrimmed) {
-		s += "（本会话已裁掉 " + std::to_string(st.trimmedMessages) + " 条旧消息）";
-	} else {
-		s += "（未触发裁剪）";
-	}
-	s += "\n";
-	s += "  任务内预算  : 文本 " + budget(session.taskToolResultBytes(), cfg.maxTaskToolResultBytes)
-		+ "，图片 " + budget(session.taskImageBytes(), cfg.maxTaskImageBytes) + "\n";
-	s += "  审计落点    : " + (cfg.auditLogPath.empty()
-			? std::string("(未开启)")
-			: cfg.auditLogPath
-				+ (cfg.audit ? "（session " + cfg.audit->sessionId() + "）" : "")) + "\n";
-	s += "  硬件        : " + cfg.structurePath + "，"
-		+ std::to_string(robot.registry().byName().size()) + " 个变量（/hardware 看清单）\n";
-	s += "  动作脚本目录: " + cfg.scriptsDir + "\n";
-	return s;
-}
 
 AgentDriverConfig makeDriverConfig(const AgentModeConfig& cfg) {
 	AgentDriverConfig d;
@@ -745,26 +674,6 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 		}
 	}
 	return tctx;
-}
-
-
-/* C++ Agent REPL 实现已移除（依赖已删除的 AgentSession 类）
- * 请使用 Rust Agent: ./agent/target/release/mybot-agent
- * 保留函数签名以避免修改头文件和其他引用 */
-
-int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
-		std::istream& in, std::ostream& out, std::ostream& log) {
-	(void)cfg; (void)robot; (void)transport; (void)in; (void)out;
-	log << "错误: C++ Agent 已移除，请使用 Rust Agent\n";
-	log << "详见: docs/agent.md\n";
-	return 2;
-}
-
-int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
-		RobotStruct& robot, std::istream& in, std::ostream& out, std::ostream& log) {
-	(void)session; (void)cfg; (void)robot; (void)in; (void)out;
-	log << "错误: C++ Agent REPL 已移除\n";
-	return 2;
 }
 
 } // namespace agent

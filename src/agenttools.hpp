@@ -28,13 +28,15 @@ class MatrixVars_Hardware;
 namespace agent {
 
 /* 单张图的 base64 上限（宿主侧封顶，与驱动侧 MAX_SIM_BYTES 各管一段）。
- * 会话历史的字节预算刻意「不封顶单块」（见 agentloop.hpp），而一张照片正是单块的
- * 主项：驱动仿真图允许 16MiB 原始字节（base64 后约 21MB），一次拍照就能击穿
- * 4MiB 历史预算、把请求体顶到常见网关限额之外。故在工具入口先拒一次。 */
+ * 会话历史的字节预算刻意「不封顶单块」，只按任务块整块裁（HistoryManager::trim，
+ * 见 agenthistory.hpp），而一张照片正是单块的主项：驱动仿真图允许 16MiB 原始字节
+ * （base64 后约 21MB），一次拍照就能击穿 4MiB 历史预算、把请求体顶到常见网关限额
+ * 之外。故在工具入口先拒一次。 */
 constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
 
 /* 工具执行结果。图片走**独立通道**：OpenAI 协议的 tool 消息只允许文本，
- * 图片必须由工具循环另起一条 user 消息注入（见 agentloop），
+ * 图片必须由工具循环另起一条 user 消息注入（C++ 侧原先在 agentloop，随 REPL
+ * 移除后由 Rust agent 承担：agent/src/model.rs 的 inject_images），
  * 这也是 robot_agent 的既有做法。
  * ok/error 供审计轨迹用（agentaudit）：工具异常/未知工具/脚本执行失败置
  * ok=false，文本回传给模型的内容不变——审计只是旁观记账，不改变回执。 */

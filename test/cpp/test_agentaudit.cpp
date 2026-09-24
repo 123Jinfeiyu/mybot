@@ -206,7 +206,7 @@ TH_TEST(agentaudit_logs_failures_and_masks_run_command_args) {
 	TH_CHECK_MSG(log.open(path, err), err);
 
 	bot::Json args = bot::JsonObject();
-	/* 命令原文的遮蔽发生在派发点（agentloop::dispatchOneCall），记账层只负责
+	/* 命令原文的遮蔽发生在派发点（DispatchGate::run，见 agentdispatch），记账层只负责
 	 * 如实落盘——这里按派发点产出的形态给参（遮蔽本身由上面的用例钉住）。 */
 	args.put("command", bot::JsonString(
 		bot::agent::maskSecretsInText("BOT4CJ_LLM_KEY=sk-real curl http://x")));

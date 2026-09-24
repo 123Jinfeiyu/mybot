@@ -18,8 +18,6 @@
 #include "actionsource.hpp"
 #include "agentaudit.hpp"
 #include "agentdriver.hpp"
-// agentloop.hpp 已删除 - AgentSession 前向声明  
-namespace bot { namespace agent { class AgentSession; } }
 #include "agentpolicy.hpp"
 #include "agentproto.hpp"
 #include "agentprompt.hpp"	/* buildAgentSystemPrompt / kMaxSystemPromptBytes（A2 拆出） */
@@ -195,42 +193,12 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
  * 这里再校验一遍只会制造两处漂移。 */
 std::string summarizeAgentConfig(const AgentModeConfig& cfg);
 
-/* SAN-10（2026-09-22，REPL /status）：把会话**当前已有的状态**渲染成人类可读一览。
- * 纯函数、无副作用、可离线单测——与 summarizeAgentConfig 同款契约：
- * **只渲染、不判定**。它回答的是现场最常见的三个问题：
- * "为什么它忘了之前说的？"（历史多大/裁过没）"为什么拍照没进来？"（任务内图片额度用了多少）
- * "这一轮花了多久/失败几次？"（模型轮数、工具调用、失败数、token 用量）。
- * 这些数字**此前只在出问题时才可见**（裁剪那一刻打一行、预算超限时才说），没有查询入口。 */
-std::string summarizeSessionStatus(const AgentSession& session, const AgentModeConfig& cfg,
-		RobotStruct& robot);
-
-/* REPL 单行输入上限（2026-09-22 审计后添加）。防止恶意输入巨大任务字符串
- * 导致内存耗尽（std::getline 无内建长度限制，只在系统 RLIMIT_AS / 坏分配
- * 时才会 bad_alloc）。10 MiB 远超正常任务描述（几百字节），同时兼顾偶尔
- * 粘贴长文本的合理场景。超限响亮拒绝并提示，不静默截断。 */
-inline constexpr std::size_t kMaxReplInputBytes = 10u << 20;
-
-/* 组装工具上下文（AgentToolContext）的**单一落点**：agent REPL（runAgentMode）
- * 与 MCP 后端（--mcp-backend）共用，于是「对外提供哪些工具、能读哪些变量、
- * 摄像头怎么解析」的判据只此一处，两条路径暴露的工具集逐字节一致、不会漂移。
+/* 组装工具上下文（AgentToolContext）的**单一落点**：MCP 后端（--mcp-backend）经此
+ * 得到工具表，于是「对外提供哪些工具、能读哪些变量、摄像头怎么解析」的判据只此一处。
  * 只读 cfg + robot（调用方须先 active()）；不上电、不发起模型调用。
  * 跳过项（--read-var 名字打错等）如实写进 log，不静默降级。 */
 AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 		std::ostream& log);
-
-/* runAgentMode：C++ Agent 会话已移除（依赖已删除的 ChatTransport）
- * 保留桩函数供MCP Backend调用检查 */
-class ChatTransport; // 前向声明
-int runAgentMode(const AgentModeConfig& cfg, RobotStruct& robot, ChatTransport& transport,
-		std::istream& in, std::ostream& out, std::ostream& log);
-
-/* REPL 循环本体（C3，2026-09-22）。从 runAgentMode 拆出：装配逻辑（工具表/
- * 审计/上电/一次性任务分支）留在 runAgentMode，循环只依赖已就绪的 session、
- * 只读的配置视图与 robot（/hardware 只读清单用）。I/O 全经参数注入，可离线
- * 单测：内置命令派发、输入超限拒绝、单轮失败不结束会话、/exit 与 EOF 退出码。
- * 返回 0（/exit、/quit、EOF、stop 请求都算正常结束）。 */
-int runAgentRepl(AgentSession& session, const AgentModeConfig& cfg,
-		RobotStruct& robot, std::istream& in, std::ostream& out, std::ostream& log);
 
 } // namespace agent
 } // namespace bot

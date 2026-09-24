@@ -54,29 +54,9 @@ run_one_tcp_adv() {
 	fi
 }
 
-run_one_agent_e2e() {
-	echo "----- agent-e2e (agent 模式端到端) -----"
-	if [ ! -x "$bin" ]; then
-		artifact_missing "agent 模式端到端" "该段（scripts/agent_e2e.sh）" "$bin" "$bot_explicit"
-		return 2
-	fi
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（假模型服务），跳过本段"
-		record_skip "agent-e2e(缺python3)"
-		return 2
-	fi
-	local out rc
-	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh 2>&1)"
-	rc=$?
-	echo "$out"
-	if [ $rc -eq 125 ] && echo "$out" | grep -qF '[SKIP]'; then
-		record_skip "agent-e2e(缺python3或libcurl)"
-	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "agent 模式端到端测试通过"; then
-		record_fail "agent-e2e(agent 模式)"
-	else
-		record_pass
-	fi
-}
+# agent_e2e.sh 的 C++ 模式 runner（run_one_agent_e2e）已随该模式一起删除：
+# d384a9b9 把 C++ Agent REPL 换成桩之后 22 个场景全打在桩上，而该表面是有意移除的。
+# 它验过的性质分流见 run_all.sh 的 Rust 段注释（工具层 6 条 → mcp_e2e.sh，循环层 → R 段）。
 
 # MCP 后端端到端（scripts/mcp_e2e.sh，方案 F / 拓扑 F3）。
 # 2026-09-24（rig 迁移批次 B）：原先这段依赖 Rust sidecar 产物（可选，故按 SKIP 计）；
@@ -105,8 +85,9 @@ run_one_mcp_e2e() {
 	fi
 }
 
-# Rust agent（agent/，包名 mybot-agent）端到端：与上面的 agent-e2e 共用
-# scripts/agent_e2e.sh，用 --rust 切到「mybot --mcp-backend + mybot-agent」两进程拓扑。
+# Rust agent（agent/，包名 mybot-agent）端到端：scripts/agent_e2e.sh 现在**只有
+# 这一种模式**——C++ Agent REPL 移除后，该脚本的 C++ 段已整体删除（见上面的分流说明），
+# `--rust` 保留为兼容空参。拓扑是「mybot --mcp-backend + mybot-agent」两个进程。
 # mybot-agent 是**可选**产物：C++ 回归路径不强制构建它（评估 §5.3 同一口径——只给
 # Rust 单独加 CI job，不给全部 job 加 Rust），故缺它按 SKIP 计（不是假绿、也不是失败）；
 # 缺 build/mybot 仍判失败（本段的后端就是它，且那是核心产物）。

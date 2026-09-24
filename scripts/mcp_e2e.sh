@@ -16,6 +16,21 @@
 #   * fd 卫生：run_command 的子 shell 不继承后端的 listening/accepted socket fd；
 #   * 审计落 session + tool 记录（含失败的工具）、SIGTERM 优雅停机。
 #
+# 2026-09-24（收尾 d384a9b9）第二批迁入——同样「删掉的是表面，不是它验过的性质」：
+# C++ Agent REPL 移除后，agent_e2e.sh 的 22 个场景里有 6 个的性质本就属于**后端工具面**，
+# 不经模型就能定死判据，迁到这里按归属逐趟守（各一趟一个独立后端进程，硬件状态不互串）：
+#   * apply_sql 带电生效：INSERT 当场装配上电 → 下一趟 list_hardware 必须看见新变量；
+#   * apply_sql 热删除：DELETE 真的摘掉变量，且回执报出删了谁；
+#   * 两者的门控对照：缺 --agent-hot-sql 时工具不在 tool.list、调用得「未知工具」、零变更；
+#   * read_variables：--read-var 时回执带驱动返回表的键（slept）；缺省时同上对照；
+#   * 策略拒绝版：确认程序退 1 ⇒ run_command 回执点名拦截、executed=false、marker 不落盘，
+#     而未命中 require_confirm 的 run_action_script 不受影响。
+# 未迁入的一条（如实记下）：capture_image 的 src 是**宿主配置专属**
+# （agenttools.cpp 的 buildCameraParams 只从 ctx.cameraSrc 填，调用方传不进来），
+# 故「配置文件 camera_src 不得自动放行」（原场景 5b / H1）不是工具边界性质，
+# 且 --mcp-backend 直接拒绝 --llm-config，这条面上不可达——由 C++ 单测
+# agentconfig_camera_src_dir_is_cli_only（含 /etc/shadow 那条）守。
+#
 # 剩下的「帧对打」是**独立第三实现**：C++ 后端 / Rust agent（agent/src/frame.rs）/
 # 本脚本内嵌的纯标准库 Python（struct.pack(">I", ...)）三方对齐同一条线协议
 # （评估 §7.4 的 5 条契约）。两份正式实现各自跑绿**不证明**字节兼容，第三方尺子才证明
@@ -54,11 +69,22 @@ POLICY="$TMP/policy.json"
 printf '%s' '{"require_confirm":["run_command","apply_sql"],"confirm_command":"/bin/true","on_timeout":"deny"}' > "$POLICY"
 chmod 600 "$POLICY"
 
+# 迁自 agent_e2e.sh 场景 9（策略拒绝版）：确认程序恒退出 1 ⇒ run_command 一个副作用都不能有。
+POLICY_DENY="$TMP/policy-deny.json"
+printf '%s' '{"require_confirm":["run_command"],"confirm_command":"/bin/sh -c '"'"'exit 1'"'"'"}' > "$POLICY_DENY"
+chmod 600 "$POLICY_DENY"
+
 # ---- 帧客户端（Python 纯标准库）：直连后端 AF_UNIX，独立实现线协议 ----
-# 用法: frame_client.py <sock> <expect_run_command:true|false>
+# 用法: frame_client.py <sock> <expect_run_command:true|false> [<scenario> [<marker>]]
+#   scenario 缺省 base（只跑公共断言）；其余取值是从 scripts/agent_e2e.sh 迁来的
+#   C++ 工具层场景（hotsql / hotsqloff / hotdelete / readvar / readvaroff /
+#   policydeny）——这些性质属于后端工具面，不经模型就能定死判据，
+#   比走一趟假模型更可复现。marker 只给 policydeny 用（被拒命令本该写的那个文件）。
 cat > "$TMP/frame_client.py" <<'PY'
 import socket, struct, json, sys
 sock, expect_rc = sys.argv[1], sys.argv[2] == "true"
+scenario = sys.argv[3] if len(sys.argv) > 3 else "base"
+marker = sys.argv[4] if len(sys.argv) > 4 else "/tmp/mcp_e2e_marker.txt"
 passed = failed = 0
 def ok(n):
 	global passed; passed += 1; print("  [OK] " + n)
@@ -109,17 +135,84 @@ try:
 		"context.get 带 robotName 与 hardwareCount=%s" % d.get("hardwareCount"))
 	chk("数据不是指令" in d.get("structureExcerpt", "") and "\n> " in d.get("structureExcerpt", ""),
 		"context.get 磁盘内容段带定界（quoteUntrusted）")
-	if expect_rc:
+	if expect_rc and scenario != "policydeny":
 		# fd 卫生（评估 §3.5）：run_command 走 /bin/sh -c，子 shell **不得**继承后端的
 		# listening/accepted socket fd（后端用 SOCK_CLOEXEC 创建，另有 markAllFdsCloexec
 		# 兜底）。数一下 sh 自己的 socket fd，应为 0；策略 confirm_command=/bin/true
 		# 自动放行这次调用。泄漏时这里会出现 SOCKFDS>=1。
+		# policydeny 趟跳过：那趟确认程序恒退 1，调用被拦在执行之前、子进程从未起来，
+		# 「到子 shell 里数 fd」无从成立（拦截本身由该趟自己的断言守）。
 		fdcmd = "echo SOCKFDS=$(ls -l /proc/$$/fd 2>/dev/null | grep -c socket:)"
 		r = call({"_route": "tool.call", "name": "run_command",
 			"arguments": {"command": fdcmd, "timeout_seconds": 5}})
 		d = r.get("data", {})
 		chk("SOCKFDS=0" in d.get("text", ""),
 			"run_command 子进程未继承后端 socket fd（SOCKFDS=0）；回执片段: " + repr(d.get("text", "")[:160]))
+	# ---- 迁自 agent_e2e.sh 的 C++ 工具层场景（后端工具面，不经模型） ----
+	def tool_text(name, args):
+		r = call({"_route": "tool.call", "name": name, "arguments": args})
+		return r.get("data", {})
+
+	INS_HOT = ("INSERT INTO Relay (name, controller, note) "
+			   "VALUES ('relay-hot', 'timer-0', 'hot');")
+	INS_TMP = ("INSERT INTO Relay (name, controller, note) "
+			   "VALUES ('relay-tmp', 'timer-0', 'tmp');")
+	DEL_TMP = "DELETE FROM Relay WHERE name = 'relay-tmp';"
+
+	if scenario == "hotsql":
+		# 场景 14：--agent-hot-sql 下 apply_sql 进工具表，INSERT 当场装配并上电，
+		# 下一趟 list_hardware 必须看见新变量（少了后半句，模型就以为长了硬件而实际没有）。
+		chk("apply_sql" in tools, "--agent-hot-sql 时 apply_sql 在工具表内")
+		d = tool_text("apply_sql", {"sql": INS_HOT})
+		chk(d.get("ok") is True and "已生效：新增硬件变量 1 个" in d.get("text", ""),
+			"apply_sql INSERT 回执带生效摘要；片段: " + repr(d.get("text", "")[:160]))
+		chk("relay-hot" in tool_text("list_hardware", {}).get("text", ""),
+			"新硬件变量真的注册（出现在随后的 list_hardware 清单里）")
+	elif scenario == "hotsqloff":
+		# 场景 14b 对照：缺开关 ⇒ 工具不在表内、调用得「未知工具」、清单零变更。
+		chk("apply_sql" not in tools, "缺 --agent-hot-sql 时 apply_sql 不在工具表内")
+		d = tool_text("apply_sql", {"sql": INS_HOT})
+		chk(d.get("ok") is False and "未知工具" in d.get("text", ""),
+			"缺开关时调用 apply_sql → 未知工具（回执点名）")
+		chk("relay-hot" not in tool_text("list_hardware", {}).get("text", ""),
+			"缺开关时零硬件变更（清单里没有 relay-hot）")
+	elif scenario == "hotdelete":
+		# 场景 14c：同门控、反方向。删除必须**真的**摘掉变量并报出删了谁——
+		# 少任一环，模型都会以为删成功而器件还在。事务语义由 C++ 单测守门。
+		chk("apply_sql" in tools, "热删除与热插同门控（apply_sql 在工具表内）")
+		d = tool_text("apply_sql", {"sql": INS_TMP})
+		chk(d.get("ok") is True and "已生效：新增硬件变量 1 个" in d.get("text", ""),
+			"先插的行真的生效了")
+		d = tool_text("apply_sql", {"sql": DEL_TMP})
+		chk(d.get("ok") is True and "已删除硬件变量 1 个（relay-tmp）" in d.get("text", ""),
+			"DELETE 回执报出了删掉的是谁；片段: " + repr(d.get("text", "")[:160]))
+		chk("relay-tmp" not in tool_text("list_hardware", {}).get("text", ""),
+			"删除后硬件清单里不再有 relay-tmp（DELETE 真的摘掉了变量）")
+	elif scenario == "readvar":
+		# 场景 15：--read-var 打通「工具派发 → 真读到驱动返回表 → 回执带值」。
+		# relay0 经 controller 转发到 timer-0，返回表是 {result,slept}。
+		chk("read_variables" in tools, "--read-var 时 read_variables 在工具表内")
+		d = tool_text("read_variables", {})
+		chk(d.get("ok") is True and "slept" in d.get("text", ""),
+			"read_variables 回执带回了驱动返回表里的读数；片段: " + repr(d.get("text", "")[:160]))
+	elif scenario == "readvaroff":
+		# 场景 15b 对照：缺省不注册该工具 ⇒「缺省即无此能力」。
+		chk("read_variables" not in tools, "缺 --read-var 时 read_variables 不在工具表内")
+		d = tool_text("read_variables", {})
+		chk(d.get("ok") is False and "未知工具" in d.get("text", ""),
+			"缺 --read-var 时调用 read_variables → 未知工具")
+	elif scenario == "policydeny":
+		# 场景 9（拒绝版）：确认程序恒退 1 ⇒ 策略拦截发生在执行**之前**，
+		# 被拒的调用一个副作用都不能有。marker 路径由 argv[4] 传入，跑完必须不存在。
+		import os
+		d = tool_text("run_command", {"command": "touch " + marker, "timeout_seconds": 5})
+		chk(d.get("ok") is False and "被策略拦截" in d.get("text", ""),
+			"run_command 回执点名被策略拦截；片段: " + repr(d.get("text", "")[:160]))
+		chk(d.get("executed") is False, "被策略拦截的调用 executed=false（副作用未发生）")
+		chk(not os.path.exists(marker), "被拒的 run_command 零副作用（marker 文件不存在）")
+		# 未命中 require_confirm 的工具不受该策略影响（同一后端进程、同一趟）。
+		d = tool_text("run_action_script", {"script": "relay-test.mt"})
+		chk(d.get("ok") is True, "未命中 require_confirm 的 run_action_script 照常执行")
 	# 非法 JSON（帧合法、载荷坏）→ 固定串、不回显、连接不断（可继续后续调用）
 	bad = b"not json"
 	s.sendall(struct.pack(">I", len(bad)) + bad)
@@ -136,9 +229,9 @@ sys.exit(0 if failed == 0 else 1)
 PY
 
 # ---- 一趟：起后端 → 校验 perms → 跑帧客户端 → 校验审计/停机 ----
-# phase <label> <expect_run_command:true|false> <sockdir> [额外后端参数...]
+# phase <label> <expect_run_command:true|false> <sockdir> <scenario> [额外后端参数...]
 phase(){
-	local label="$1" expect="$2" sd="$3"; shift 3
+	local label="$1" expect="$2" sd="$3" scenario="$4"; shift 4
 	local rundir="$sd/run"
 	local sock="$rundir/mcp.sock" audit="$sd/audit.jsonl" blog="$sd/backend.log"
 	echo "----- $label -----"
@@ -154,7 +247,7 @@ phase(){
 	chk "$label: socket 父目录 0700" "$(stat -c '%a' "$rundir" 2>/dev/null)" "700"
 	chk "$label: socket 文件 0600"  "$(stat -c '%a' "$sock" 2>/dev/null)" "600"
 
-	local pyout; pyout="$(python3 "$TMP/frame_client.py" "$sock" "$expect" 2>&1)"
+	local pyout; pyout="$(python3 "$TMP/frame_client.py" "$sock" "$expect" "$scenario" "$sd/marker-should-not-exist" 2>&1)"
 	echo "$pyout"
 	local pp pf
 	pp="$(echo "$pyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\1/p')"
@@ -174,8 +267,23 @@ phase(){
 	grep -q '已停机' "$blog" && ok "$label: 后端收到 SIGTERM 优雅停机" || ng "$label: 后端未见优雅停机日志"
 }
 
-phase "缺省（无 --agent-shell）" false "$TMP/p1"
-phase "开 --agent-shell（带强制 policy）" true "$TMP/p2" --agent-shell --agent-policy "$POLICY"
+phase "缺省（无 --agent-shell）" false "$TMP/p1" base
+phase "开 --agent-shell（带强制 policy）" true "$TMP/p2" base --agent-shell --agent-policy "$POLICY"
+
+# ---- 工具层场景（迁自 agent_e2e.sh 场景 14/14b/14c/15/15b，2026-09-24）----
+# 每趟一个独立后端进程：apply_sql 的带电改装配到本进程自己的硬件表，不跨趟污染。
+# --agent-hot-sql 与 --agent-shell 同受 M5 强制策略约束，故这几趟都带 $POLICY。
+phase "--agent-hot-sql 带电生效（INSERT → 清单可见）" false "$TMP/p3" hotsql \
+	--agent-hot-sql --agent-policy "$POLICY"
+phase "缺 --agent-hot-sql（工具不在表内、零变更）" false "$TMP/p4" hotsqloff
+phase "--agent-hot-sql 热删除（INSERT → DELETE → 清单消失）" false "$TMP/p5" hotdelete \
+	--agent-hot-sql --agent-policy "$POLICY"
+phase "--read-var relay0（回读带驱动返回表的键）" false "$TMP/p6" readvar --read-var relay0
+phase "缺 --read-var（工具不在表内）" false "$TMP/p7" readvaroff
+
+# 策略拒绝版（迁自 agent_e2e.sh 场景 9）：确认程序退 1 ⇒ run_command 零副作用。
+phase "--agent-policy 拒绝 ⇒ run_command 零副作用" true "$TMP/p8" policydeny \
+	--agent-shell --agent-policy "$POLICY_DENY"
 
 # ---- 反面（M5 强制 policy）：--agent-shell 无 --agent-policy 必须拒启（退出 2）----
 echo "----- 反面：--agent-shell 无 policy 必须拒启 -----"

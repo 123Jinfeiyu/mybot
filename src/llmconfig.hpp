@@ -125,7 +125,7 @@ struct LlmFileConfig {
 	 * 通道，--resume 只认命令行给的路径（判据见 AgentModeConfig 注释）。 */
 	std::optional<std::string> sessionFile;
 	/* 上下文字节预算（B1）：会话历史 / 任务内文本 / 任务内图片，单位字节。
-	 * 0 = 不限；未配置 = 用 AgentOptions 编译期缺省。见 agentloop.hpp。 */
+	 * 0 = 不限；未配置 = 用 AgentModeConfig 的编译期缺省（见 agentmode.hpp）。 */
 	std::optional<long> maxHistoryBytes;
 	std::optional<long> maxTaskToolResultBytes;
 	std::optional<long> maxTaskImageBytes;
