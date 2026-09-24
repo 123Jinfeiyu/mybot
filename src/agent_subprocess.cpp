@@ -77,10 +77,7 @@ std::string lowerEnvName(const char* entry) {
 	std::string_view s(entry);
 	std::size_t eq = s.find('=');
 	if (eq == std::string_view::npos) { return {}; }
-	std::string name(s.substr(0, eq));
-	std::transform(name.begin(), name.end(), name.begin(),
-		[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-	return name;
+	return toLowerAscii(std::string(s.substr(0, eq)));
 }
 
 } // namespace
@@ -89,15 +86,7 @@ std::string lowerEnvName(const char* entry) {
  * 命中 key）。buildCleanEnvp 与 collectEnvSecrets 共用同一份，否则「子进程清洗
  * 名单」与「宿主抹除名单」会各自漂移；agentaudit 的命令遮蔽亦复用它。 */
 bool isSensitiveEnvName(const std::string& lowerName) {
-	std::size_t i = 0;
-	while (i < lowerName.size()) {
-		if (!std::isalnum(static_cast<unsigned char>(lowerName[i]))) { ++i; continue; }
-		std::size_t j = i;
-		while (j < lowerName.size() && std::isalnum(static_cast<unsigned char>(lowerName[j]))) { ++j; }
-		if (isSensitiveWord(lowerName.substr(i, j - i))) { return true; }
-		i = j;
-	}
-	return false;
+	return anyWordOf(lowerName, isSensitiveWord);
 }
 
 /* 环境清洗：剔除名字**含敏感词（整词）**的变量。模型可能被外部输入（画面/文件

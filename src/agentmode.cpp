@@ -59,9 +59,7 @@ namespace {
  * 变了行为」——CI/守门尤其需要确定性（否则开发者个人配置会悄悄改变测试结果，
  * 实测踩过）。命令行与环境变量都支持该值。 */
 bool isConfigDisabled(const std::string& s) {
-	std::string t = trim(s);
-	for (char& c : t) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
-	return t == "none";
+	return toLowerAscii(trim(s)) == "none";
 }
 
 /* 选配置文件：命令行 > 环境变量 BOT4CJ_LLM_CONFIG > 缺省查找。找不到即返回空串
@@ -331,15 +329,16 @@ bool pickCamera(const CliOptions& opts, const LlmFileConfig& file,
 	return true;
 }
 
-} // namespace
+/* ---- 各编号步骤的具名实现（拆分自 buildAgentConfig：原函数 242 行把 12 个
+ * 编号步骤全部内联，读哪个判据都要先定位到步骤号再往下翻；拆出后每个函数
+ * 一个职责，签名/判据/文案不变——编排顺序仍是下面的 buildAgentConfig）。 */
 
-bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
-	/* ---- 0) 会话恢复的命令行组合校验（批次 1，2026-09-23）----
-	 * 只依赖 opts 本身，放在最前（配置文件查找之前）：不通过就立刻失败——
-	 * 配置错误不碰真机，也不碰文件系统里任何别的东西。
-	 * 恢复是**输入通道**（磁盘内容读进模型上下文），故路径必须来自命令行：
-	 * 配置文件来源的 session_file 只用于写入（判据与 H2 给提示词路径加根
-	 * 约束同源——「这个配置文件存在」不构成授权一次读取）。 */
+/* 0) 会话恢复的命令行组合校验（批次 1，2026-09-23）：只依赖 opts 本身，放在
+ * 最前（配置文件查找之前）：不通过就立刻失败——配置错误不碰真机，也不碰
+ * 文件系统里任何别的东西。恢复是**输入通道**（磁盘内容读进模型上下文），
+ * 故路径必须来自命令行：配置文件来源的 session_file 只用于写入（判据与
+ * H2 给提示词路径加根约束同源——「这个配置文件存在」不构成授权一次读取）。 */
+bool checkResumeCombo(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
 	out.sessionFileFromCli = !opts.sessionFile.empty();
 	if (opts.resume && !out.sessionFileFromCli) {
 		err = "--resume 需要与 --session-file <路径> 联用，且路径必须来自命令行："
@@ -349,116 +348,120 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	}
 	if (opts.resume) {
 		std::error_code ec;
-		if (ec || !fs::exists(opts.sessionFile, ec) || ec) {
+		if (!fs::exists(opts.sessionFile, ec) || ec) {
 			err = "--session-file '" + opts.sessionFile + "' 不存在，无会话可恢复"
 				"（恢复只作用于已存在的会话文件；开新会话请去掉 --resume）";
 			return false;
 		}
 	}
+	return true;
+}
 
-	/* ---- 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） ---- */
-	LlmFileConfig file;
-	std::string cfgPath = pickConfigPath(opts);
-	if (!cfgPath.empty()) {
-		if (!loadLlmConfigFile(cfgPath, file, err)) { return false; }
-		out.configPath = cfgPath;
-	}
+/* 2-5) LLM 层（endpoint/model、协议驱动、API key、采样/超时/轮次）。
+ * MCP 后端（--mcp-backend）**不发起任何模型调用**：它只把工具层经 socket
+ * 暴露给外部 MCP 客户端，模型在客户端那侧。故这几步整体跳过——尤其第 4 步
+ * 「缺少 API key 即失败」不该拦住一个根本不调模型的后端。 */
+bool mergeLlmLayer(const CliOptions& opts, const LlmFileConfig& file,
+		const std::string& cfgPath, AgentModeConfig& out, std::string& err) {
+	(void)cfgPath;
+	if (opts.mcpBackend) { return true; }
+	/* 2) endpoint/model：命令行 > 环境变量 > 配置文件 > 驱动内置 DEFAULTS */
+	out.endpoint = pickString(opts.llmEndpoint, "BOT4CJ_LLM_ENDPOINT", file.endpoint);
+	out.model = pickString(opts.llmModel, "BOT4CJ_LLM_MODEL", file.model);
+	/* 3) 协议驱动与变量名 */
+	if (!pickDriverAndVar(opts, file, out, err)) { return false; }
+	/* 4) API key */
+	if (!resolveApiKey(file, cfgPath, out, err)) { return false; }
+	/* 5) 采样/超时/轮次 */
+	if (!mergeSamplingLayer(opts, file, out, err)) { return false; }
+	return true;
+}
 
-	/* ---- 2-5) LLM 层（endpoint/model、协议驱动、API key、采样/超时/轮次）----
-	 * MCP 后端（--mcp-backend）**不发起任何模型调用**：它只把工具层经 socket
-	 * 暴露给外部 MCP 客户端，模型在客户端那侧。故这几步整体跳过——尤其第 4 步
-	 * 「缺少 API key 即失败」不该拦住一个根本不调模型的后端。跳过不影响下面的
-	 * 能力门控（第 6/7/7b 步）与审计/策略（第 10/11 步）——那些才是后端要的。 */
-	if (!opts.mcpBackend) {
-		/* 2) endpoint/model：命令行 > 环境变量 > 配置文件 > 驱动内置 DEFAULTS */
-		out.endpoint = pickString(opts.llmEndpoint, "BOT4CJ_LLM_ENDPOINT", file.endpoint);
-		out.model = pickString(opts.llmModel, "BOT4CJ_LLM_MODEL", file.model);
-		/* 3) 协议驱动与变量名 */
-		if (!pickDriverAndVar(opts, file, out, err)) { return false; }
-		/* 4) API key */
-		if (!resolveApiKey(file, cfgPath, out, err)) { return false; }
-		/* 5) 采样/超时/轮次 */
-		if (!mergeSamplingLayer(opts, file, out, err)) { return false; }
-	}
+/* 「配置文件只能收紧、不能放宽」的统一报错口径：放宽能力的一侧（哪个字段、
+ * 为什么危险、该敲哪个命令行开关）一次说全，四个字段共用同一形态。 */
+std::string relaxingFieldError(const std::string& cfgPath, const std::string& field,
+		const std::string& why, const std::string& cliSwitch) {
+	return "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
+		+ " 设置了 " + field + "：" + why
+		+ "，只能由命令行 " + cliSwitch + " 提供，配置文件不能给"
+		+ "（请删除该字段或置回缺省；缺省查找会读 CWD 的 ./mybot.llm.json，"
+		  "「这个文件存在」不构成授权）";
+}
 
-	/* ---- 6) 摄像头 ---- */
+/* 6/7/7b) 摄像头与能力门控。H1：camera_src_dir 决定 capture_image 的模拟图片
+ * 白名单根，等价于**放宽读权限**，故与 allow_shell 同判据——只能命令行给。
+ * 缺省查找会读 CWD 的 ./mybot.llm.json，于是一个未经审查的落地文件就能同时
+ * 改 endpoint（外发）+ camera_src（读哪个文件）+ 白名单根（能不能读）+
+ * 注册 run_command（模型回复直接变成主机 shell），把「任意文件 → base64 →
+ * 模型上下文 → 攻击者网关」串成一条链；而 allow_camera 缺省为真、cam0 自动
+ * 注入，这条链**不需要 --agent-shell**——所以四个字段一律「配置文件只能关」。 */
+bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
+		const std::string& cfgPath, AgentModeConfig& out, std::string& err) {
+	/* 6) 摄像头（变量名/设备/来源的常规三层合并已在 pickCamera 内完成） */
 	if (!pickCamera(opts, file, out, err)) { return false; }
-	/* H1：camera_src_dir 决定 capture_image 的模拟图片白名单根，等价于**放宽读
-	 * 权限**，故与 allow_shell 同判据——只能命令行给，配置文件写它一律拒绝加载。
-	 * 理由同下面第 7 步：缺省查找会读 CWD 的 ./mybot.llm.json，于是一个未经审查的
-	 * 落地文件就能同时改 endpoint（外发）+ camera_src（读哪个文件）+ 白名单根
-	 * （能不能读），把「任意文件 → base64 → 模型上下文 → 攻击者网关」串成一条链；
-	 * 而 allow_camera 缺省为真、cam0 自动注入，这条链**不需要 --agent-shell**。 */
 	if (file.cameraSrcDir) {
-		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
-			+ " 设置了 camera_src_dir：它决定 capture_image 能读哪个目录（放宽读权限），"
-			+ "只能由命令行 --camera-src-dir 提供，配置文件不能给"
-			+ "（请删除该字段；与 allow_shell 同理，配置文件只能收紧不能放宽）";
+		err = relaxingFieldError(cfgPath, "camera_src_dir",
+			"它决定 capture_image 能读哪个目录（放宽读权限）", "--camera-src-dir");
 		return false;
 	}
 
-	/* ---- 7) agent 行为 ---- */
-	/* 驱动特有字段：原样透传给驱动（如 DeepSeek 的 thinking / reasoning_effort） */
+	/* 7) agent 行为：驱动特有字段原样透传（如 DeepSeek 的 thinking /
+	 * reasoning_effort）；scripts-dir 命令行优先；两个危险开关缺省**不提供**
+	 * 且只能命令行开（安全缺省：评估 C12 翻转 + 审计 4.1 收紧；
+	 * 热插表 2026-09-23 与 run_command 同判据——apply_sql 会长出新硬件并
+	 * **立即上电**，「模型回复直接改变带电的硬件结构」）。 */
 	out.reasoningEffort = file.reasoningEffort.value_or("");
 	out.thinking = file.thinking.value_or("");
 
 	out.scriptsDir = opts.scriptsDir.empty() ? "scripts" : opts.scriptsDir;
 	if (opts.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
-	/* 安全缺省（评估 C12 翻转 + 审计 4.1 收紧）：run_command 缺省**不提供**，
-	 * 且**只能由命令行 --agent-shell 开启**。配置文件里的 allow_shell=true 一律
-	 * 拒绝加载并指名原因——缺省查找会读 CWD 的 ./mybot.llm.json
-	 * （findDefaultLlmConfig），于是一个未经审查的落地文件就能同时改 endpoint
-	 * （把含结构脚本、硬件清单、摄像头画面的上下文外发）并注册 run_command
-	 * （模型回复直接变成主机 shell）。「这个文件存在」不构成授权，
-	 * 故配置文件只能**关**不能开。 */
 	out.allowShell = opts.agentShell;
 	if (!opts.agentShell && file.allowShell.value_or(false)) {
-		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
-			+ " 设置了 allow_shell=true：run_command 等于把主机 shell 交给模型，"
-			+ "只能由命令行 --agent-shell 显式开启，配置文件不能开"
-			+ "（请把 allow_shell 置回 false 或删除该字段）";
+		err = relaxingFieldError(cfgPath, "allow_shell",
+			"run_command 等于把主机 shell 交给模型", "--agent-shell");
 		return false;
 	}
-	/* 同一判据（2026-09-23 热插表）：apply_sql 会长出新硬件并**立即上电**，
-	 * 是「模型回复直接改变带电的硬件结构」——与 run_command 同级别的一张牌。
-	 * 「这个配置文件存在」不构成授权，故同样只能命令行开、配置文件只能关。 */
 	out.allowHotSql = opts.agentHotSql;
 	if (!opts.agentHotSql && file.allowHotSql.value_or(false)) {
-		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
-			+ " 设置了 allow_hot_sql=true：apply_sql 会按模型给的 SQL 立即装配并给"
-			+ "新硬件上电（开 fd、进断电清理链），只能由命令行 --agent-hot-sql 显式"
-			+ "开启，配置文件不能开（请把 allow_hot_sql 置回 false 或删除该字段）";
+		err = relaxingFieldError(cfgPath, "allow_hot_sql",
+			"apply_sql 会按模型给的 SQL 立即装配并给新硬件上电（开 fd、进断电清理链）",
+			"--agent-hot-sql");
 		return false;
 	}
 	out.structurePath = opts.robot ? *opts.robot : "";
 	out.task = opts.agentTask;
 
-	/* ---- 7b) 回读清单（发现 2 的 A 步，2026-09-23）----
-	 * `read_variables` 让模型**主动读硬件**。虽然读本身走 playQuiet（不改状态、
-	 * 对 daemon 只是读快照），但"能读哪些变量"仍是一条由操作者授予的能力：执行器
-	 * 与传感器**靠种类分不开**（Servo/Relay 也是 lua 驱动），所以清单必须由人列。
-	 * 同 --agent-shell / --agent-hot-sql / camera_src_dir 的判据：**只能命令行给**，
-	 * 配置文件里的 read_vars 一律拒绝加载并指名原因——缺省查找会读 CWD 的
-	 * ./mybot.llm.json，「这个文件存在」不构成授权。 */
+	/* 7b) 回读清单（发现 2 的 A 步，2026-09-23）：「能读哪些变量」是由操作者
+	 * 授予的能力（执行器与传感器靠种类分不开，Servo/Relay 也是 lua 驱动，
+	 * 清单必须由人列），同上四个字段：只能命令行给。 */
 	out.readVars = opts.readVars;
 	if (file.readVars) {
-		err = "配置文件 " + (cfgPath.empty() ? std::string("(缺省查找)") : cfgPath)
-			+ " 设置了 read_vars：它决定模型能主动读哪些硬件变量（等同于给模型一条"
-			+ "读通道），只能由命令行 --read-var 逐个提供，配置文件不能给"
-			+ "（请删除该字段；与 allow_shell / camera_src_dir 同理，配置文件只能收紧不能放宽）";
+		err = relaxingFieldError(cfgPath, "read_vars",
+			"它决定模型能主动读哪些硬件变量（等同于给模型一条读通道）", "--read-var");
 		return false;
 	}
+	return true;
+}
 
-	/* ---- 8a) 上下文字节预算（B1）：配置文件覆盖编译期缺省；0 = 不限。
-	 * 严格解析（类型/区间/未知字段）已在 llmconfig 完成，这里只做搬运。 ---- */
+/* 8a) 上下文字节预算（B1）：配置文件覆盖编译期缺省；0 = 不限。
+ * 严格解析（类型/区间/未知字段）已在 llmconfig 完成，这里只做搬运。 */
+void applyContextBudgets(const LlmFileConfig& file, AgentModeConfig& out) {
 	if (file.maxHistoryBytes) { out.maxHistoryBytes = *file.maxHistoryBytes; }
 	if (file.maxTaskToolResultBytes) { out.maxTaskToolResultBytes = *file.maxTaskToolResultBytes; }
 	if (file.maxTaskImageBytes) { out.maxTaskImageBytes = *file.maxTaskImageBytes; }
+}
 
-	/* ---- 8) 提示词包：命令行给过就整体覆盖配置文件列表（与 pickString 的
-	 * 「命令行 > 配置文件」同口径）。在这里就加载成成品文本——提示词路径
-	 * 写错属于配置错误，必须在结构装载与上电之前失败，而不是等系统提示词
-	 * 拼装时才炸（main 的约定「配置错误不碰真机」）。 */
+/* 8) 提示词包：命令行给过就整体覆盖配置文件列表（与 pickString 的
+ * 「命令行 > 配置文件」同口径）。在这里就加载成成品文本——提示词路径
+ * 写错属于配置错误，必须在结构装载与上电之前失败，而不是等系统提示词
+ * 拼装时才炸（main 的约定「配置错误不碰真机」）。
+ * H2（2026-09-23）：**配置文件来源**的提示词路径必须落在允许的根之内
+ * （当前工作目录 ∪ BOT4CJ_PROMPT_DIR 列的目录）。命令行 --prompt-file 是
+ * 操作者本人的授意，不受这条约束——与 H1 的 camera_src 同一判据：
+ * 配置文件不能成为一个「读任意文件」的原语（判据与理由单点在
+ * promptpack.hpp 的 promptPathsWithinRoots 注释）。 */
+bool loadPromptLayer(const CliOptions& opts, const LlmFileConfig& file,
+		AgentModeConfig& out, std::string& err) {
 	/* MCP 后端不构建系统提示词，跳过提示词包装载（下面的 H2 根约束与
 	 * loadPromptPack 因 out.promptFiles 保持空而自然 no-op）。 */
 	if (!opts.mcpBackend) {
@@ -468,11 +471,6 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		/* 不写 value_or({})：花括号实参要求模板参数 _Up 可推导，libstdc++ 15
 		 * 给 _Up 加了默认值才兜得住，g++12/14 推导失败直接报错（CI 基线
 		 * debian:bookworm 即 g++12）。 */
-	/* H2（2026-09-23）：**配置文件来源**的提示词路径必须落在允许的根之内
-	 * （当前工作目录 ∪ BOT4CJ_PROMPT_DIR 列的目录）。命令行 --prompt-file 是
-	 * 操作者本人的授意，不受这条约束——与 H1 的 camera_src 同一判据：
-	 * 配置文件不能成为一个「读任意文件」的原语（判据与理由单点在
-	 * promptpack.hpp 的 promptPathsWithinRoots 注释）。 */
 	if (opts.promptFiles.empty() && !out.promptFiles.empty()) {
 		std::vector<std::string> roots = promptRootsFromEnv();
 		std::error_code ec;
@@ -483,43 +481,41 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 		&& !loadPromptPack(out.promptFiles, out.promptPack, err)) {
 		return false;
 	}
+	return true;
+}
 
-	/* ---- 9) 提示词体积预检：**不依赖硬件**的三段（2026-09-21 审计 AG-8）----
-	 * 总量上限原本只在 buildAgentSystemPrompt 里查，而那时 robot.active() 已经
-	 * 跑过了——与「配置错误不碰真机」的口径不符。硬件变量清单那一段确实要到
-	 * 上电后才算得出来（变量是 active() 时装配的），但另外三段不用：结构脚本头、
-	 * 动作脚本清单、提示词包在配置组装期就都是已知量。
-	 * 在这里先查一遍有三个好处：
-	 *   ① 三段中任何一段自己就已顶穿上限时，**上电之前**就失败；
-	 *   ② 顺带在配置期读一遍结构脚本头与脚本清单——它们进系统提示词前要 UTF-8
-	 *      消毒（AG-1），早读早暴露，而不是等上电后拼提示词时才发现问题；
-	 *   ③ 报错口径与 buildAgentSystemPrompt 完全一致（同一常量、同一文案），
-	 *      不会出现「配置期放过、上电后拒绝」的分叉。
-	 * 注意：这不替代 buildAgentSystemPrompt 的总量检查——那一段（含硬件清单）
-	 * 仍是唯一的最终判据，这里只是把可前移的部分前移。
-	 * MCP 后端不拼系统提示词，整段跳过（structureHead/scriptsList 缓存也不用）。 */
-	if (!opts.mcpBackend) {
-		/* 读一次存两份（C6）：预检要的就是这两段成品，buildAgentSystemPrompt
-		 * 直接复用，不再各读一遍（原先两处各读各的，文件在两次读之间变动会让
-		 * 「预检口径」与「提示词口径」分叉）。 */
-		out.structureHead = structureScriptHead(out.structurePath, 16u << 10);
-		out.scriptsList = describeActionScripts(out.scriptsDir);
-		const std::size_t hardwareIndependent = out.structureHead->size()
-			+ out.scriptsList->size()
-			+ out.promptPack.size();
-		if (hardwareIndependent > kMaxSystemPromptBytes) {
-			err = "系统提示词（不依赖硬件的三段：结构脚本头 / 动作脚本清单 / 提示词包）"
-				"已超过 " + std::to_string(kMaxSystemPromptBytes) + " 字节上限（实测 "
-				+ std::to_string(hardwareIndependent)
-				+ " 字节）；无需上电即可判定，请先缩减 --prompt-file 或 --scripts-dir "
-				  "下的脚本数量";
-			return false;
-		}
+/* 9) 提示词体积预检：**不依赖硬件**的三段（2026-09-21 审计 AG-8）。
+ * 硬件变量清单那一段要到上电后才算得出来（变量是 active() 时装配的），
+ * 但另外三段（结构脚本头、动作脚本清单、提示词包）在配置组装期就都是已知量：
+ *   ① 三段中任何一段自己就已顶穿上限时，**上电之前**就失败；
+ *   ② 顺带在配置期读一遍结构脚本头与脚本清单——它们进上下文前要 UTF-8
+ *      消毒（AG-1），早读早暴露；
+ *   ③ 报错口径与 Rust 侧 build_system_prompt 的总量检查一致（同一常量、
+ *      同一文案），不会出现「配置期放过、上电后拒绝」的分叉。
+ * 读一次存两份（C6）：这两段成品供 MCP 后端的 context.get 复用（单一读法）。
+ * MCP 后端不拼系统提示词，整段跳过（structureHead/scriptsList 缓存也不用）。 */
+bool precheckPromptSize(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
+	if (opts.mcpBackend) { return true; }
+	out.structureHead = structureScriptHead(out.structurePath, kStructureHeadBytes);
+	out.scriptsList = describeActionScripts(out.scriptsDir);
+	const std::size_t hardwareIndependent = out.structureHead->size()
+		+ out.scriptsList->size()
+		+ out.promptPack.size();
+	if (hardwareIndependent > kMaxSystemPromptBytes) {
+		err = "系统提示词（不依赖硬件的三段：结构脚本头 / 动作脚本清单 / 提示词包）"
+			"已超过 " + std::to_string(kMaxSystemPromptBytes) + " 字节上限（实测 "
+			+ std::to_string(hardwareIndependent)
+			+ " 字节）；无需上电即可判定，请先缩减 --prompt-file 或 --scripts-dir "
+			  "下的脚本数量";
+		return false;
 	}
+	return true;
+}
 
-	/* ---- 10) 审计轨迹（--audit-log / 配置文件 audit_log；"-" = stderr）----
-	 * 在这里就打开：路径打不开属于配置错误，必须在结构装载与上电之前失败
-	 * （「配置错误不碰真机」），而不是等到第一次工具调用才炸。 */
+/* 10) 审计轨迹：在这里就打开——路径打不开属于配置错误，必须在结构装载与
+ * 上电之前失败（「配置错误不碰真机」），而不是等到第一次工具调用才炸。 */
+bool openAuditLog(const CliOptions& opts, const LlmFileConfig& file,
+		AgentModeConfig& out, std::string& err) {
 	out.auditLogPath = pickString(opts.auditLog, nullptr, file.auditLog);
 	if (!out.auditLogPath.empty()) {
 		out.audit = std::make_shared<AuditLog>();
@@ -528,11 +524,14 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 			return false;
 		}
 	}
+	return true;
+}
 
-	/* ---- 11) 策略钩子（--agent-policy / 配置文件 agent_policy）----
-	 * 在这里就加载：策略文件写错属于配置错误，必须在上电之前失败（同一口径）。
-	 * 注意它**不是**安全边界：确认程序与宿主同权限，真正的隔离仍是专用
-	 * 用户 / 容器（docs/agent.md 安全一节的既有口径不变）。 */
+/* 11) 策略钩子：在这里就加载——策略文件写错属于配置错误，必须在上电之前
+ * 失败（同一口径）。注意它**不是**安全边界：确认程序与宿主同权限，真正的
+ * 隔离仍是专用用户 / 容器（docs/agent.md 安全一节的既有口径不变）。 */
+bool loadPolicyHook(const CliOptions& opts, const LlmFileConfig& file,
+		AgentModeConfig& out, std::string& err) {
 	out.policyPath = pickString(opts.agentPolicy, nullptr, file.agentPolicy);
 	if (!out.policyPath.empty()) {
 		if (std::string policyErr; !(out.policy = AgentPolicy::load(out.policyPath, policyErr))) {
@@ -540,37 +539,67 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 			return false;
 		}
 	}
+	return true;
+}
 
-	/* ---- 11b) MCP 后端 + 危险能力 ⇒ 强制外部确认（评估 §3.2，用户定「折中」）----
-	 * --mcp-backend 把工具暴露给**任意外部 MCP 客户端**、且硬件全程带电常驻，信任面
-	 * 比坐在终端前的 agent REPL 大得多。故当后端开了危险能力时，**强制**要有策略钩子、
-	 * 且该钩子确实对相应工具要求外部确认（require_confirm，超时 fail-closed）：
-	 *   --agent-shell   （run_command）→ 策略必须 require_confirm "run_command"
-	 *   --agent-hot-sql （apply_sql）  → 策略必须 require_confirm "apply_sql"
-	 * 折中：纯只读 / 查询 / 动作脚本后端（未开上述危险能力）不受此约束。
-	 * 注意 agentpolicy 仍**不是**隔离边界（同 uid 进程可绕过，见 docs/agent.md 与
-	 * mcpbackend.hpp 的残留风险说明）——它是「每次调用先过人/审批」的确认闸门。 */
-	if (opts.mcpBackend) {
-		if (out.allowShell
-			&& (out.policy == nullptr || !out.policy->requiresConfirm("run_command"))) {
-			err = "--mcp-backend 开了 --agent-shell（run_command）：后端对外暴露且硬件带电，"
-				"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"run_command\""
-				"（无人值守暴露任意 shell 必须有外部确认闸门）";
-			return false;
-		}
-		if (out.allowHotSql
-			&& (out.policy == nullptr || !out.policy->requiresConfirm("apply_sql"))) {
-			err = "--mcp-backend 开了 --agent-hot-sql（apply_sql）：后端对外暴露且硬件带电，"
-				"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"apply_sql\""
-				"（热插表会立即给新硬件上电，必须有外部确认闸门）";
-			return false;
-		}
+/* 11b) MCP 后端 + 危险能力 ⇒ 强制外部确认（评估 §3.2，用户定「折中」）。
+ * --mcp-backend 把工具暴露给**任意外部 MCP 客户端**、且硬件全程带电常驻，
+ * 信任面比坐在终端前的 agent REPL 大得多。故当后端开了危险能力时，**强制**
+ * 要有策略钩子、且该钩子确实对相应工具要求外部确认（require_confirm，超时
+ * fail-closed）：
+ *   --agent-shell   （run_command）→ 策略必须 require_confirm "run_command"
+ *   --agent-hot-sql （apply_sql）  → 策略必须 require_confirm "apply_sql"
+ * 折中：纯只读 / 查询 / 动作脚本后端（未开上述危险能力）不受此约束。
+ * 注意 agentpolicy 仍**不是**隔离边界（同 uid 进程可绕过，见 docs/agent.md
+ * 与 mcpbackend.hpp 的残留风险说明）——它是「每次调用先过人/审批」的确认闸门。 */
+bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& out,
+		std::string& err) {
+	if (!opts.mcpBackend) { return true; }
+	if (out.allowShell
+		&& (out.policy == nullptr || !out.policy->requiresConfirm("run_command"))) {
+		err = "--mcp-backend 开了 --agent-shell（run_command）：后端对外暴露且硬件带电，"
+			"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"run_command\""
+			"（无人值守暴露任意 shell 必须有外部确认闸门）";
+		return false;
+	}
+	if (out.allowHotSql
+		&& (out.policy == nullptr || !out.policy->requiresConfirm("apply_sql"))) {
+		err = "--mcp-backend 开了 --agent-hot-sql（apply_sql）：后端对外暴露且硬件带电，"
+			"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"apply_sql\""
+			"（热插表会立即给新硬件上电，必须有外部确认闸门）";
+		return false;
+	}
+	return true;
+}
+
+} // namespace
+
+bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
+	/* 编排：12 个编号步骤按序落位，每步的判据/文案在上方对应的具名函数里。
+	 * 任何一步失败都发生在结构装载与上电之前（「配置错误不碰真机」）。 */
+	if (!checkResumeCombo(opts, out, err)) { return false; }		/* 0) 会话恢复组合 */
+
+	/* 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） */
+	LlmFileConfig file;
+	std::string cfgPath = pickConfigPath(opts);
+	if (!cfgPath.empty()) {
+		if (!loadLlmConfigFile(cfgPath, file, err)) { return false; }
+		out.configPath = cfgPath;
 	}
 
-	/* ---- 12) 会话文件（--session-file / 配置文件 session_file；批次 1）----
+	if (!mergeLlmLayer(opts, file, cfgPath, out, err)) { return false; }	/* 2-5) LLM 层 */
+	if (!applyGatingLayer(opts, file, cfgPath, out, err)) { return false; }	/* 6/7/7b) 门控 */
+	applyContextBudgets(file, out);						/* 8a) 上下文预算 */
+	if (!loadPromptLayer(opts, file, out, err)) { return false; }		/* 8) 提示词包 */
+	if (!precheckPromptSize(opts, out, err)) { return false; }		/* 9) 体积预检 */
+	if (!openAuditLog(opts, file, out, err)) { return false; }		/* 10) 审计 */
+	if (!loadPolicyHook(opts, file, out, err)) { return false; }		/* 11) 策略钩子 */
+	if (!enforceBackendConfirmPolicy(opts, out, err)) { return false; }	/* 11b) 后端强制确认 */
+
+	/* 12) 会话文件（--session-file / 配置文件 session_file；批次 1）：
 	 * 写入是纯输出，判据同 audit_log：可进配置文件。恢复的组合校验已在
 	 * 第 0 步完成（--resume 只认命令行路径 + 文件必须存在）。打开与指纹
-	 * 核对在 runAgentMode 里：指纹要到系统提示词定稿（上电后）才算得出。 */
+	 * 核对在会话启动处：指纹要到系统提示词定稿（上电后）才算得出。 */
 	out.sessionFile = out.sessionFileFromCli ? opts.sessionFile
 		: (file.sessionFile ? *file.sessionFile : "");
 	out.resumeSession = opts.resume;

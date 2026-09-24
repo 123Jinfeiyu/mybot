@@ -41,42 +41,6 @@ static int tcpTotalBudgetSec(int idleSec, int totalTimeoutFloorSec) {
 	return budget;
 }
 
-/* ---- fd RAII 守卫（F-25 同族：持 fd 者禁止拷贝）----
- * openTcpActionSource 原有近十条手工 ::close，任一条遗漏即 fd 泄漏；客户端 fd
- * 更在 make_unique 抛出时无人关闭。守卫让每个出口（throw/return/分配失败）自动收口。 */
-namespace {
-
-class FdGuard {
-	int fd_;
-
-public:
-	explicit FdGuard(int fd = -1) : fd_(fd) {}
-	~FdGuard() { close(); }
-	FdGuard(const FdGuard&) = delete;
-	FdGuard& operator=(const FdGuard&) = delete;
-	/* 移动：交出所有权（源置空，析构不再关闭）——RAII 守卫得以从辅助
-	 * 函数按值返回（阶段 3 拆分 openTcpActionSource 的前提） */
-	FdGuard(FdGuard&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
-	FdGuard& operator=(FdGuard&& other) noexcept {
-		if (this != &other) { close(); fd_ = other.fd_; other.fd_ = -1; }
-		return *this;
-	}
-
-	int get() const { return fd_; }
-
-	/* 关闭当前持有的 fd（空则无操作） */
-	void close() {
-		if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
-	}
-
-	/* 接管新 fd：先关闭旧的（accept 重试轮之间用） */
-	void reset(int fd) { close(); fd_ = fd; }
-
-	/* 交还所有权：仅在接管方已确定持有该 fd 后调用，此后守卫不再负责关闭 */
-	int release() { int f = fd_; fd_ = -1; return f; }
-};
-
-} // namespace
 
 /* ---- TcpStreamReader::read：区分 EOF / 超时 / 信号 / 链路错误 ----
  * 内部 64KiB 缓冲（审计 M2）：缓冲区空时一次 recv 尽量填满，之后逐字节

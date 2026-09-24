@@ -32,24 +32,11 @@ bool maskedWord(const std::string& w) {
 	return isSensitiveEnvName(w) || isMaskOnlyWord(w);
 }
 
-/* 与 isSensitiveEnvName 同一整词切词法：名字按非字母数字分段，任一段命中即遮蔽
- * （api-key → {api, key} 命中；keystone → {keystone} 不命中） */
+/* 与 isSensitiveEnvName 同一整词切词法（util::anyWordOf 单点）：名字按非字母
+ * 数字分段，任一段命中即遮蔽（api-key → {api, key} 命中；keystone →
+ * {keystone} 不命中） */
 bool isMaskedName(const std::string& lowerName) {
-	std::size_t i = 0;
-	while (i < lowerName.size()) {
-		if (!std::isalnum(static_cast<unsigned char>(lowerName[i]))) { ++i; continue; }
-		std::size_t j = i;
-		while (j < lowerName.size() && std::isalnum(static_cast<unsigned char>(lowerName[j]))) { ++j; }
-		if (maskedWord(lowerName.substr(i, j - i))) { return true; }
-		i = j;
-	}
-	return false;
-}
-
-std::string toLowerAscii(const std::string& s) {
-	std::string out(s);
-	for (char& c : out) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
-	return out;
+	return anyWordOf(lowerName, maskedWord);
 }
 
 /* 敏感值的结束下标（不含）。裸值到空白或引号为止；值以引号开头时是引号值：

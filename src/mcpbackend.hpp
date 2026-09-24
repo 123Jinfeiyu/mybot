@@ -77,9 +77,6 @@ struct McpBackendOptions {
 /* 把载荷封成一帧：4 字节 BE 长度前缀 + 载荷字节。 */
 std::string mcpEncodeFrame(const std::string& payload);
 
-/* 严格 UTF-8 校验：拒 overlong、代理区 D800–DFFF、>U+10FFFF（与 libmsg 的
- * isValidUtf8 同判据；接收侧校验，评估 §7.1）。合法返回 true。 */
-bool mcpValidUtf8(const std::string& s);
 
 /* accept 后校验对端身份：内核 SO_PEERCRED 给出的 uid/gid 必须与本进程一致
  * （不可伪造，评估 §3.1）。匹配返回 true；不匹配或 getsockopt 失败返回 false

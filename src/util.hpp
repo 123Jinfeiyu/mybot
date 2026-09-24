@@ -270,6 +270,69 @@ inline bool isSafeIdent(const std::string& s) {
 	return true;
 }
 
+/* ---- ASCII 小写化（单点：agentaudit/agent_subprocess/agentmode/cliargs
+ * 此前各写一份循环；只动 A-Z，非 ASCII 字节原样保留——与各处的
+ * 「名字先小写再查表」判据配套，绝不能引入 locale 相关的宽小写）。 */
+inline std::string toLowerAscii(const std::string& s) {
+	std::string out(s);
+	for (char& c : out) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+	return out;
+}
+
+/* ---- 整词切词判定（单点）----
+ * 名字按非字母数字分段（api-key → {api, key}；keystone → {keystone}），
+ * 任一段命中 pred 即真。此前 agentaudit 的 isMaskedName 与
+ * agent_subprocess 的 isSensitiveEnvName 各写一份同构循环——两者是
+ * 「命令回执遮蔽」与「环境清洗/宿主抹除」两条防线的判据，切词法漂移
+ * 就是一个遮了另一个没遮。 */
+template <typename Pred>
+bool anyWordOf(const std::string& name, Pred pred) {
+	std::size_t i = 0;
+	while (i < name.size()) {
+		if (!std::isalnum(static_cast<unsigned char>(name[i]))) { ++i; continue; }
+		std::size_t j = i;
+		while (j < name.size() && std::isalnum(static_cast<unsigned char>(name[j]))) { ++j; }
+		if (pred(name.substr(i, j - i))) { return true; }
+		i = j;
+	}
+	return false;
+}
+
+/* ---- fd RAII 守卫（F-25 同族：持 fd 者禁止拷贝）----
+ * 此前 actionsource.cpp 与 mcpbackend.cpp 各持一份文件私有同名类
+ * （mcpbackend 的注释自认「独立一份，避免抽公共头」）——两份守卫语义
+ * 已经分叉出一处方法差异，继续复制只会更散。持 fd 的任何出口
+ * （throw/return/分配失败）都靠它自动收口。 */
+class FdGuard {
+	int fd_;
+
+public:
+	explicit FdGuard(int fd = -1) : fd_(fd) {}
+	~FdGuard() { close(); }
+	FdGuard(const FdGuard&) = delete;
+	FdGuard& operator=(const FdGuard&) = delete;
+	/* 移动：交出所有权（源置空，析构不再关闭）——RAII 守卫得以从辅助
+	 * 函数按值返回（拆分 openTcpActionSource 的前提） */
+	FdGuard(FdGuard&& other) noexcept : fd_(other.fd_) { other.fd_ = -1; }
+	FdGuard& operator=(FdGuard&& other) noexcept {
+		if (this != &other) { close(); fd_ = other.fd_; other.fd_ = -1; }
+		return *this;
+	}
+
+	int get() const { return fd_; }
+
+	/* 关闭当前持有的 fd（空则无操作） */
+	void close() {
+		if (fd_ >= 0) { ::close(fd_); fd_ = -1; }
+	}
+
+	/* 接管新 fd：先关闭旧的（accept 重试轮之间用） */
+	void reset(int fd) { close(); fd_ = fd; }
+
+	/* 交还所有权：仅在接管方已确定持有该 fd 后调用，此后守卫不再负责关闭 */
+	int release() { int f = fd_; fd_ = -1; return f; }
+};
+
 /* ---- 相对路径段判据（M2/B2-1 单点，2026-09-20）----
  * 「对相对路径逐 '/' 段判定」此前散落三处：agenttools::resolveActionScriptPath、
  * mtinclude::validateIncludePath、luasandbox 的 hasDotDotComponent——前两者整段

@@ -125,16 +125,16 @@ TH_TEST(mcpbackend_frame_encode_is_4byte_be_plus_payload) {
 
 /* ---- 严格 UTF-8 校验：拒 overlong / 代理区 / 截断 / 超范围 ---- */
 TH_TEST(mcpbackend_valid_utf8_accepts_and_rejects) {
-	TH_CHECK(mcpValidUtf8("hello"));			/* ASCII */
-	TH_CHECK(mcpValidUtf8("\xe4\xb8\xad"));		/* 中（3 字节）*/
-	TH_CHECK(mcpValidUtf8("\xf0\x9f\x98\x80"));	/* 😀（4 字节）*/
-	TH_CHECK(mcpValidUtf8(""));			/* 空串合法 */
+	TH_CHECK(isValidUtf8("hello"));			/* ASCII */
+	TH_CHECK(isValidUtf8("\xe4\xb8\xad"));		/* 中（3 字节）*/
+	TH_CHECK(isValidUtf8("\xf0\x9f\x98\x80"));	/* 😀（4 字节）*/
+	TH_CHECK(isValidUtf8(""));			/* 空串合法 */
 
-	TH_CHECK(!mcpValidUtf8("\xc0\x80"));		/* overlong 编码的 NUL */
-	TH_CHECK(!mcpValidUtf8("\xed\xa0\x80"));	/* 代理区 D800 */
-	TH_CHECK(!mcpValidUtf8("\xe4\xb8"));		/* 3 字节序列被截断 */
-	TH_CHECK(!mcpValidUtf8("\x80"));		/* 续字节打头 */
-	TH_CHECK(!mcpValidUtf8("\xf5\x80\x80\x80"));	/* > U+10FFFF */
+	TH_CHECK(!isValidUtf8("\xc0\x80"));		/* overlong 编码的 NUL */
+	TH_CHECK(!isValidUtf8("\xed\xa0\x80"));	/* 代理区 D800 */
+	TH_CHECK(!isValidUtf8("\xe4\xb8"));		/* 3 字节序列被截断 */
+	TH_CHECK(!isValidUtf8("\x80"));		/* 续字节打头 */
+	TH_CHECK(!isValidUtf8("\xf5\x80\x80\x80"));	/* > U+10FFFF */
 }
 
 /* ---- ping 路由 ---- */

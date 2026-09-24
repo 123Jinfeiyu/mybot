@@ -33,6 +33,11 @@ namespace agent {
  * 头 ≤16 KiB + 两份清单），正常使用不会碰到。 */
 inline constexpr std::size_t kMaxSystemPromptBytes = 64u << 10;
 
+/* 结构脚本头摘录的字节上限（截断是刻意的：只取「接线图」开头部足够提示模型）。
+ * 消费方：buildAgentConfig 的体积预检缓存与 MCP 后端 context.get 的实时读取
+ * ——同一判据两处使用，此前各写一遍 16u << 10。 */
+inline constexpr std::size_t kStructureHeadBytes = 16u << 10;
+
 /* 读取结构脚本头部 cap 字节（提示词预算，**截断是刻意的**）。
  * 实现已并入 util 的受限读取单点（B2-3 余部）：这里只做两件与提示词预算有关的
  * 翻译——打不开按空串（脚本头摘录不是硬依赖），读中途出错打印告警而不是静默

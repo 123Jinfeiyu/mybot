@@ -39,7 +39,7 @@
 #include "agentprompt.hpp"	/* structureScriptHead / quoteUntrusted（context.get 素材） */
 #include "jsonparse.hpp"	/* parseJson */
 #include "robot.hpp"		/* RobotStruct 完整定义（context.get 的 registry()） */
-#include "util.hpp"		/* stopRequested */
+#include "util.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
 
 namespace fs = std::filesystem;
 
@@ -48,26 +48,13 @@ namespace agent {
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
+/* 主线程轮询粒度：accept 与逐帧接收共用（200ms = 对停止信号的响应上限，
+ * 不是超时——空闲时不断连，靠 deadline 收口）。 */
+constexpr int kPollIntervalMs = 200;
+/* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）。 */
+constexpr int kSendTimeoutSec = 5;
 
-/* 最小 RAII fd 守卫（与 actionsource.cpp 的同名局部类同款；那个是文件私有的，
- * 这里独立一份，避免为一个 guard 抽出公共头）。 */
-class FdGuard {
-	int fd_;
-public:
-	explicit FdGuard(int fd = -1) : fd_(fd) {}
-	~FdGuard() { close(); }
-	FdGuard(const FdGuard&) = delete;
-	FdGuard& operator=(const FdGuard&) = delete;
-	FdGuard(FdGuard&& o) noexcept : fd_(o.fd_) { o.fd_ = -1; }
-	FdGuard& operator=(FdGuard&& o) noexcept {
-		if (this != &o) { close(); fd_ = o.fd_; o.fd_ = -1; }
-		return *this;
-	}
-	int get() const { return fd_; }
-	void reset(int fd) { close(); fd_ = fd; }
-	void close() { if (fd_ >= 0) { ::close(fd_); fd_ = -1; } }
-};
+using Clock = std::chrono::steady_clock;
 
 void writeBe32(char* out, std::uint32_t v) {
 	out[0] = static_cast<char>((v >> 24) & 0xFFu);
@@ -148,7 +135,7 @@ FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec, std::ost
 		struct pollfd p{};
 		p.fd = fd;
 		p.events = POLLIN;
-		const int r = ::poll(&p, 1, 200);
+		const int r = ::poll(&p, 1, kPollIntervalMs);
 		if (r < 0) {
 			if (errno == EINTR) { continue; }
 			return FrameResult::Violation;
@@ -176,7 +163,7 @@ FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec, std::ost
 		&& !recvAllDeadline(fd, &payload[0], static_cast<std::size_t>(len), deadline, eof)) {
 		return eof ? FrameResult::PeerClosed : FrameResult::Violation;
 	}
-	if (!mcpValidUtf8(payload)) {
+	if (!isValidUtf8(payload)) {
 		log << "MCP 后端：帧载荷不是合法 UTF-8，断开连接\n";
 		return FrameResult::Violation;
 	}
@@ -228,36 +215,6 @@ std::string mcpEncodeFrame(const std::string& payload) {
 		std::memcpy(&frame[kMcpHeaderSize], payload.data(), payload.size());
 	}
 	return frame;
-}
-
-bool mcpValidUtf8(const std::string& s) {
-	const auto* p = reinterpret_cast<const unsigned char*>(s.data());
-	const std::size_t n = s.size();
-	std::size_t i = 0;
-	while (i < n) {
-		const unsigned char c = p[i];
-		std::size_t extra;
-		unsigned int cp;
-		if (c < 0x80u) { ++i; continue; }
-		else if ((c & 0xE0u) == 0xC0u) { extra = 1; cp = c & 0x1Fu; }
-		else if ((c & 0xF0u) == 0xE0u) { extra = 2; cp = c & 0x0Fu; }
-		else if ((c & 0xF8u) == 0xF0u) { extra = 3; cp = c & 0x07u; }
-		else { return false; }	/* 0x80–0xBF 续字节打头，或 0xF8+ 非法首字节 */
-		if (i + extra >= n) { return false; }	/* 截断 */
-		for (std::size_t k = 1; k <= extra; ++k) {
-			const unsigned char cc = p[i + k];
-			if ((cc & 0xC0u) != 0x80u) { return false; }
-			cp = (cp << 6) | (cc & 0x3Fu);
-		}
-		/* overlong / 代理区 / 超范围 */
-		if (extra == 1 && cp < 0x80u) { return false; }
-		if (extra == 2 && cp < 0x800u) { return false; }
-		if (extra == 3 && cp < 0x10000u) { return false; }
-		if (cp >= 0xD800u && cp <= 0xDFFFu) { return false; }
-		if (cp > 0x10FFFFu) { return false; }
-		i += extra + 1;
-	}
-	return true;
 }
 
 bool mcpCheckPeerCred(int fd, std::ostream& log) {
@@ -395,7 +352,7 @@ Json McpBackend::routeContextGet() {
 	 * 区别只在呈现：这里返回**已定界的块**，由 Rust agent 拼进它自己的系统
 	 * 提示词——「同一份磁盘内容，两条进上下文的通道必须有同一定界强度」。 */
 	const std::string sql = cfg_->structureHead ? *cfg_->structureHead
-			: structureScriptHead(cfg_->structurePath, 16u << 10);
+			: structureScriptHead(cfg_->structurePath, kStructureHeadBytes);
 	const std::string scripts = cfg_->scriptsList ? *cfg_->scriptsList
 			: describeActionScripts(cfg_->scriptsDir);
 
@@ -542,7 +499,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		struct pollfd p{};
 		p.fd = listenFd.get();
 		p.events = POLLIN;
-		const int r = ::poll(&p, 1, 200);
+		const int r = ::poll(&p, 1, kPollIntervalMs);
 		if (r < 0) {
 			if (errno == EINTR) { continue; }
 			log << "MCP 后端：poll 失败: " << std::strerror(errno) << "\n";
@@ -563,7 +520,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		}
 		/* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）。 */
 		timeval snd{};
-		snd.tv_sec = 5;
+		snd.tv_sec = kSendTimeoutSec;
 		::setsockopt(clientFd.get(), SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
 
 		backend.beginConnection();

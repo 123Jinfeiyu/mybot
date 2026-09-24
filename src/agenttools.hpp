@@ -157,12 +157,19 @@ std::string describeHardware(RobotStruct& robot);
  * 解析一条结构 SQL 并渲染成文本。只读、无副作用：不装配硬件、不改结构矩阵。
  *   * SELECT * FROM t —— 从运行时结构矩阵（robot.matrices()）取数渲染；
  *   * CREATE/INSERT —— 只解析回显（语法验证），不落任何状态。
- * 失败返回"错误: …"前缀的人话报错（解析器带行列定位）。
+ * 失败经 SqlOutcome::ok=false 显式传递（此前以「错误: 」字符串前缀当错误码、
+ * 调用方再 rfind 前缀翻回异常——文案改动即断链）；text 为**不带前缀**的人话
+ * 原因（解析器带行列定位），前缀由调用方按自己的口径渲染。
  * 沿革：REPL /sql（runSqlCommand，全 SELECT 走本函数、含写语句转 applySql
  * 带电生效）与它身边的 SqlStatementBatch 已随 C++ REPL 迁 Rust 删除——
  * 操作者侧的 SQL 通道由 Rust REPL 的 /sql 经 tool.call 直接复用本函数所在
  * 的 query_sql 工具（只读）；带电生效仍是 apply_sql 工具 + applySql 的事。 */
-std::string runSqlStatement(const std::string& sql, const RobotStruct& robot);
+struct SqlOutcome {
+	bool ok = true;
+	std::string text;
+};
+
+SqlOutcome runSqlStatement(const std::string& sql, const RobotStruct& robot);
 
 /* 动作脚本路径解析：请求必须是 scriptsDir 之下的相对路径。
  * 拒绝绝对路径、空段、"."/".."、以及含 NUL 的名字（NUL 会让

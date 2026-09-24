@@ -388,8 +388,7 @@ std::string helpText() {
 /* 分段帮助文本（2026-09-22 可用性改进）：支持快速查看特定主题 */
 std::string helpText(const std::string& topic) {
 	if (topic.empty()) { return helpText(); }
-	std::string t = trim(topic);
-	for (char& c : t) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+	std::string t = toLowerAscii(trim(topic));
 
 	std::string s;
 	if (t == "tcp") {
