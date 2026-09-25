@@ -405,8 +405,9 @@ Json McpBackend::handleRequest(const Json& req) {
 	} catch (const std::exception& e) {
 		return errReply(sanitizeError(e.what()));
 	} catch (...) {
-		/* LuaJIT 用 C++ 异常实现 luaD_throw，非 std::exception 也要接住
-		 * （与 DispatchGate::run 的 catch(...) 同理），绝不让异常穿出 handler。 */
+		/* LuaJIT 用 C++ 异常实现 luaD_throw，非 std::exception 也要接住，绝不
+		 * 让异常穿出 handler（判据锚点与边界清单：util.hpp 的
+		 * kNonStdExceptionNote 注释块；本站点文案经 sanitize 刻意定容）。 */
 		return errReply("internal error");
 	}
 }

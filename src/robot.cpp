@@ -774,7 +774,7 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotDelPlanSet& delP
 				throw std::runtime_error(std::string(e.what()) + tail);
 			} catch (...) {
 				throw std::runtime_error(
-					"非标准异常（Lua 错误或外来抛出）" + tail);
+					std::string(kNonStdExceptionNote) + tail);
 			}
 		}
 		throw;

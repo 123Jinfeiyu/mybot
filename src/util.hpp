@@ -35,6 +35,24 @@ public:
 	explicit IllegalArgumentException(const std::string& m) : std::runtime_error(m) {}
 };
 
+/* ---- 非标准异常的判据锚点（A5，2026-09-25 收敛四处手抄注释）----
+ * 本机 LuaJIT 用 C++ 异常实现 luaD_throw（导入 _Unwind_RaiseException 而非
+ * setjmp/longjmp），从没有 Lua CFRAME 的 C++ 帧抛出的 Lua 错误**不是**
+ * std::exception——只接 std::exception 的层会让它一路穿透到 std::terminate，
+ * 或把「单轮失败」升级成「整个会话结束」。因此凡「异常不得穿出」的边界都
+ * 必须补一层 catch(...)，按各自口径折成回执/日志。现役四个边界：
+ *   main 的 runRobotAndCleanup（顶层；rc=1，deactivate 必达）
+ *   DispatchGate::run（executed 按 argsOk 分口径，见其站点注释）
+ *   AgentToolRegistry::execute（折成工具回执，ok=false）
+ *   McpBackend::handleRequest（对外经 sanitize 定容，刻意不回显成因）
+ * 另 robot.cpp 的 commitHotBatch catch（先删后建失败口径）把下述词根拼进
+ * 回执——那是第五个接住点，语义同源。
+ * 文案词根单点 kNonStdExceptionNote：用户可见文本以它为词根（main 顶层是
+ * 英文日志风格、mcpbackend 刻意定容，两处是例外；词形不同但判据同源）。
+ * 改措辞/加边界先来这里，别再在各站点抄注释——跨站点行号引用（如
+ * "main.cpp:173-176"）就是这么腐烂的。 */
+inline constexpr const char* kNonStdExceptionNote = "非标准异常（Lua 错误或外来抛出）";
+
 /* 递归深度 RAII 计数（N-15，收敛此前 hardware/robot 各自的局部 Guard 结构体）：
  * 构造 ++depth，析构 --depth（异常安全）。上限检查与报错文案由调用方决定，
  * 本类只保证「计数与回退不脱节」。求值环（@Vars 互引、$ 引用列回环）在

@@ -203,7 +203,8 @@ void installStopSignalHandlers() {
  * 异常两类都要接住：std::exception 与「非标准异常」——本机 LuaJIT 用 C++ 异常
  * 实现 luaD_throw（导入 _Unwind_RaiseException 而无 setjmp/longjmp），从没有
  * Lua CFRAME 的 C++ 帧抛出的 Lua 错误不是 std::exception——漏了它就直接
- * std::terminate，下面的 deactivate 被跳过，执行器停在最后指令位置。 */
+ * std::terminate，下面的 deactivate 被跳过，执行器停在最后指令位置。
+ * 判据锚点与四处边界清单：util.hpp 的 kNonStdExceptionNote 注释块。 */
 int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
 		const agent::AgentModeConfig& agentCfg) {
 	int rc = 0;

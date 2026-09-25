@@ -1,5 +1,7 @@
 #include "agentdispatch.hpp"
 
+#include "util.hpp"	/* kNonStdExceptionNote（A5 判据锚点） */
+
 #include <chrono>
 #include <utility>
 
@@ -42,8 +44,9 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 			/* executed= */ false};
 	} catch (...) {
 		/* A5：本机 LuaJIT 用 C++ 异常实现 luaD_throw，从没有 Lua CFRAME 的 C++
-		 * 帧抛出的 Lua 错误**不是** std::exception（同判据见 main.cpp 里讲
-		 * luaD_throw/_Unwind_RaiseException 的那段）。
+		 * 帧抛出的 Lua 错误**不是** std::exception（判据锚点与四处边界清单：
+		 * util.hpp 的 kNonStdExceptionNote 注释块——跨站点行号引用会腐烂，
+		 * 按名指锚）。
 		 * 只接 std::exception 的话这类抛出会穿透到上层的 catch(...)，把
 		 * 整个会话结束掉——而「REPL 单轮失败不结束会话」是循环层的承诺
 		 * （原先由 C++ runAgentMode 守，现由 Rust agent 的轮循环守）。
@@ -57,12 +60,12 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 		 * 来自确认程序或工具本体——Lua 动作脚本可能已经驱动了硬件才抛，此时
 		 * 声称「没执行」就是谎报（那正是 SAN-4 要修的形态）。 */
 		result = argsOk
-			? AgentToolResult{"工具执行抛出非标准异常（Lua 错误或外来抛出），"
-					"本轮结果不可用；副作用可能已发生。"
+			? AgentToolResult{std::string("工具执行抛出") + kNonStdExceptionNote
+					+ "，本轮结果不可用；副作用可能已发生。"
 					"请先确认硬件状态，再换一种做法或改用其他工具",
 					"", false, "non-std exception", /* executed= */ true}
-			: AgentToolResult{std::string("工具参数错误: 非标准异常（")
-					+ "参数未能解析，本次调用未派发）",
+			: AgentToolResult{std::string("工具参数错误: 非标准异常")
+					+ "（参数未能解析，本次调用未派发）",
 					"", false, "non-std exception", /* executed= */ false};
 	}
 

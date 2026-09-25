@@ -143,11 +143,10 @@ AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& 
 			/* ok=false 只供审计（agentaudit）；回传给模型的文本口径不变 */
 			return {std::string("工具执行失败: ") + e.what(), "", false, e.what()};
 		} catch (...) {
-			/* A5：Lua 错误可以是**非** std::exception（LuaJIT 用 C++ 异常实现
-			 * luaD_throw，从没有 Lua CFRAME 的 C++ 帧抛出时就是这一类；同判据见
-			 * main.cpp:173-176）。只接 std::exception 会让它穿过工具层直达会话外壳，
-			 * 把「单轮失败」升级成「整个 REPL 结束」。 */
-			return {"工具执行失败: 非标准异常（Lua 错误或外来抛出）", "", false,
+			/* A5：Lua 错误可以是**非** std::exception（判据锚点与四处边界清单：
+			 * util.hpp 的 kNonStdExceptionNote 注释块）。只接 std::exception 会让
+			 * 它穿过工具层直达会话外壳，把「单轮失败」升级成「整个 REPL 结束」。 */
+			return {std::string("工具执行失败: ") + kNonStdExceptionNote, "", false,
 				"non-std exception"};
 		}
 	}
