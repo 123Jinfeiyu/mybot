@@ -9,8 +9,7 @@
 //! 固定路径。故：
 //!   * OpenAI 兼容族（LlmOpenAI / LlmDeepSeek）：剥掉尾部 `/chat/completions`
 //!     （rig 的 `completion_path` 恒为 `/chat/completions`）；
-//!   * Anthropic：**不剥**——rig 的 `normalize_anthropic_base_url` 自己会剥
-//!     `/v1/messages`、`/messages`、`/v1`，重复剥反而会把路径吃掉。
+//!   * Anthropic：实际请求与摘要共用 rig 的 URL 规范化；客户端仍接收原始 endpoint。
 //!
 //! 密钥：只经 `.api_key()` 进请求头（Bearer / x-api-key），**从不进 argv、不进日志**
 //! （与 C++ 同口径；配置文件与 `--check-config` 只报来源）。
@@ -19,7 +18,8 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use rig_agent::{Agent, AgentBuilder};
-use rig_core::client::CompletionClient;
+use rig_core::client::{CompletionClient, DebugExt, Provider};
+use rig_core::providers::openai::completion::OpenAICompatibleProvider;
 use rig_core::providers::{anthropic, deepseek, openai};
 use serde_json::json;
 
@@ -27,6 +27,32 @@ use crate::bridge::{self, Bridge, ToolSpec};
 use crate::config::Config;
 use crate::hook::{HookState, SessionHook};
 use crate::model::BudgetModel;
+
+#[derive(Debug, Clone, Copy)]
+struct DeepSeekChat;
+
+impl Provider for DeepSeekChat {
+    type Builder = deepseek::DeepSeekExtBuilder;
+    const VERIFY_PATH: &'static str = deepseek::DeepSeekExt::VERIFY_PATH;
+}
+
+impl DebugExt for DeepSeekChat {}
+
+impl OpenAICompatibleProvider for DeepSeekChat {
+    const PROVIDER_NAME: &'static str = "deepseek";
+    const EMITS_COMPLETE_SINGLE_CHUNK_TOOL_CALLS: bool = true;
+    const SUPPORTS_RESPONSE_FORMAT: bool = false;
+    type StreamingUsage = deepseek::Usage;
+    // rig 0.42 的 DeepSeek 响应误要求 tool.index 和非 null content；共用标准解析器。
+    type Response = openai::completion::CompletionResponse;
+
+    fn finalize_request_body(
+        &self,
+        body: &mut serde_json::Value,
+    ) -> Result<(), rig_core::completion::CompletionError> {
+        deepseek::DeepSeekExt.finalize_request_body(body)
+    }
+}
 
 /// rig 内置的三族协议（对应 C++ `modules/` 里的三张表）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,7 +98,7 @@ impl Driver {
 pub fn base_url_from_endpoint(endpoint: &str, driver: Driver) -> String {
     let trimmed = endpoint.trim_end_matches('/');
     if driver == Driver::Anthropic {
-        return trimmed.to_string();
+        return anthropic::client::normalize_anthropic_base_url(trimmed);
     }
     trimmed
         .strip_suffix("/chat/completions")
@@ -130,7 +156,10 @@ pub fn build(
                 .build()
                 .context("装配 DeepSeek 客户端（LlmDeepSeek）")?;
             assemble(
-                client.completion_model(&cfg.model),
+                openai::completion::GenericCompletionModel::new(
+                    client.with_ext(DeepSeekChat),
+                    &cfg.model,
+                ),
                 cfg,
                 state,
                 tools,
@@ -140,7 +169,7 @@ pub fn build(
         Driver::Anthropic => {
             let client = anthropic::Client::builder()
                 .api_key(cfg.api_key.clone())
-                .base_url(&base)
+                .base_url(&cfg.endpoint)
                 .build()
                 .context("装配 Anthropic 客户端（LlmAnthropic）")?;
             assemble(
@@ -209,6 +238,45 @@ mod tests {
     use super::*;
 
     #[test]
+    fn deepseek_accepts_standard_tool_responses_and_retains_reasoning() {
+        use rig_core::completion::{AssistantContent, NormalizeCompletionResponse};
+        for content in [serde_json::Value::Null, json!("调用工具。")] {
+            let wire = json!({
+                "id": "test", "model": "deepseek-reasoner",
+                "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                    "role": "assistant", "content": content, "reasoning_content": "先读取状态。",
+                    "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                        "name": "read_variables", "arguments": "{}"
+                    }}]
+                }}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 3, "total_tokens": 14}
+            });
+            let response: <DeepSeekChat as OpenAICompatibleProvider>::Response =
+                serde_json::from_value(wire).unwrap();
+            let normalized = response.normalize(DeepSeekChat::PROVIDER_NAME).unwrap();
+            assert!(normalized
+                .choice
+                .iter()
+                .any(|c| matches!(c, AssistantContent::Reasoning(_))));
+            assert!(normalized.choice.iter().any(|c| matches!(c, AssistantContent::ToolCall(t) if t.function.name == "read_variables")));
+            assert_eq!(normalized.usage.input_tokens, 11);
+            assert_eq!(normalized.usage.output_tokens, 3);
+        }
+    }
+
+    #[test]
+    fn deepseek_keeps_native_request_shaping() {
+        let mut body = json!({"messages": [
+            {"role": "system", "content": [{"type": "text", "text": "规则"}]},
+            {"role": "assistant", "reasoning_content": "推理", "tool_calls": []}
+        ]});
+        DeepSeekChat.finalize_request_body(&mut body).unwrap();
+        assert_eq!(body["messages"][0]["content"], "规则");
+        assert_eq!(body["messages"][1]["content"], "");
+        assert_eq!(body["messages"][1]["reasoning_content"], "推理");
+    }
+
+    #[test]
     fn driver_from_table_maps_builtin_tables() {
         assert_eq!(Driver::from_table("LlmOpenAI").unwrap(), Driver::OpenAi);
         assert_eq!(Driver::from_table("LlmDeepSeek").unwrap(), Driver::DeepSeek);
@@ -245,15 +313,16 @@ mod tests {
     }
 
     #[test]
-    fn anthropic_endpoint_is_left_for_rig_to_normalize() {
-        // rig 自己剥 /v1/messages；这里剥了反而少一层
+    fn anthropic_endpoint_uses_rig_normalization() {
+        for suffix in ["", "/", "/v1", "/messages", "/v1/messages", "/v1/messages/"] {
+            assert_eq!(
+                base_url_from_endpoint(&format!("http://h{suffix}"), Driver::Anthropic),
+                "http://h"
+            );
+        }
         assert_eq!(
-            base_url_from_endpoint("http://h/v1/messages", Driver::Anthropic),
-            "http://h/v1/messages"
-        );
-        assert_eq!(
-            base_url_from_endpoint("https://api.anthropic.com/v1/messages/", Driver::Anthropic),
-            "https://api.anthropic.com/v1/messages"
+            base_url_from_endpoint("http://h/proxy/v1/messages", Driver::Anthropic),
+            "http://h/proxy"
         );
     }
 
@@ -274,16 +343,8 @@ mod tests {
         // Anthropic：rig 规范化后的 base + /v1/messages 等价于原接入点
         let base =
             base_url_from_endpoint("https://api.anthropic.com/v1/messages", Driver::Anthropic);
-        let normalized = match base
-            .strip_suffix("/v1/messages")
-            .or_else(|| base.strip_suffix("/messages"))
-            .or_else(|| base.strip_suffix("/v1"))
-        {
-            Some(s) => s.to_string(),
-            None => base,
-        };
         assert_eq!(
-            format!("{normalized}{}", Driver::Anthropic.request_path()),
+            format!("{base}{}", Driver::Anthropic.request_path()),
             "https://api.anthropic.com/v1/messages"
         );
     }

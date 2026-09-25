@@ -10,7 +10,7 @@
 | CMake ≥ 3.16、C++17 编译器 | g++ / clang++ | ✅ 必需 |
 | LuaJIT 2.1（`libluajit-5.1-dev`） | 驱动与 HAL 全部在 LuaJIT 上 | ✅ 必需 |
 | Python 3 | `scripts/tcp_e2e.sh` 的 TCP 客户端与假模型服务需要（缺则守门自动跳过） | ⭕ 可选 |
-| libcurl（`libcurl.so`） | **仅 agent 模式**：`modules/lib/llm_http.lua` 经 ffi 加载它发 HTTPS 请求；无需开发包头文件 | ⭕ 可选（缺则 agent 驱动 build 报错，机器人不上电） |
+| libcurl（`libcurl.so`） | 仅普通 Lua 模型驱动 `modules/Llm*.lua` 经 `llm_http.lua` 使用；现役 Rust `mybot-agent` 直连模型（reqwest + rustls），不依赖它 | 可选（显式装载 Lua 模型驱动时，缺库会使驱动 build 失败） |
 | `/dev/i2c-*` | 真机总线 | ⭕ 可选（无总线时全流程可用内存仿真跑） |
 
 ## 命令行参数
@@ -37,9 +37,13 @@
 
 > **已移除（2026-09-24）**：`--agent` 与模型循环类选项（`--task`、`--llm-*`、`--prompt-file`、`--session-file`、`--resume`）。agent 循环已迁 Rust（`agent/` 目录，`mybot-agent`）：C++ 宿主侧以 `--mcp-backend` 提供工具后端，模型侧参数由 `mybot-agent` 自己的选项面承载（`./agent/target/release/mybot-agent --help`，构建：`bash scripts/build_agent.sh`）。本程序对上述残留用法显式拒绝（退出 2）并给出替代指引。
 
+以下为 C++ `--mcp-backend` 的工具与配置选项：
+
+| 参数 | 说明 |
+| --- | --- |
 | `--scripts-dir <目录>` | agent 动作脚本根目录，也是 `run_action_script` 的路径沙箱边界（缺省 `scripts`） |
-| `--agent-shell` | **显式开启**智能体的 `run_command`（任意 shell 执行）；**缺省不提供**该工具。API key 非来自环境变量时启动会打印告警。命令**回执**（stdout/stderr）在回传模型前遮蔽 `KEY=VALUE` 等敏感值（G1，与审计同一单点） |
-| `--agent-hot-sql` | **显式开启**智能体的 `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配并上电，失败整批回滚；**`DELETE FROM` 当场断电摘除匹配行——物理不可逆**，故被引用着的变量会被拒绝，详见 [dsl.md](dsl.md)）；**缺省不提供**该工具。**只能命令行给**：它让模型的一次回复直接改变带电结构，配置文件写 `allow_hot_sql` 会被拒绝加载并退出 2（与 `allow_shell` 同判据）。只读的 `query_sql` 不受影响 |
+| `--agent-shell` | **显式开启**智能体的 `run_command`（任意 shell 执行）；**缺省不提供**，开启须有覆盖该工具的 policy。命令**回执**（stdout/stderr）在回传模型前遮蔽 `KEY=VALUE` 等敏感值（G1，与审计同一单点）；遮蔽不构成同 uid 进程间的密钥隔离 |
+| `--agent-hot-sql` | **显式开启**智能体的 `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配并上电，失败整批回滚；**`DELETE FROM` 当场断电摘除匹配行——物理不可逆**，故被引用着的变量会被拒绝，详见 [dsl.md](dsl.md)）；**缺省不提供**该工具。只能由后端命令行授权，且须有覆盖 `apply_sql` 的 policy；配置文件不能自行开启。只读的 `query_sql` 不受影响 |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量（可重复；注册 `read_variables` 工具，让智能体主动读器件当前值）。**缺省不提供**该工具：执行器（`Servo`/`Relay` 等）与传感器同属 `kind=lua`，靠种类分不出，故由操作者显式列名；只有已注册且种类为 `lua`/`daemon` 的名字生效（`daemon` 读的是已发布的采样快照，无 I2C 流量）。**只能命令行给**：配置文件写 `read_vars` 会被拒绝加载并退出 2（与 `allow_shell` 同判据） |
 | `--agent-policy <路径>` | 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过**外部确认程序**（stdin 收工具名与遮蔽后的参数 JSON，退出 0 = 放行；超时按 `on_timeout`，缺省 `deny`）；缺省**不启用**。也可用配置文件 `agent_policy` 字段（详见 [agent.md](agent.md)） |
 | `--camera-var <变量名>` | 承载摄像头驱动（`modules/Camera.lua`）的变量名（缺省 `cam0`）；结构脚本已声明则直接用 |
@@ -50,7 +54,14 @@
 | `--check-config` | （与 `--mcp-backend` 联用）只校验配置并打印摘要，随后以 **0** 退出：**不装载结构脚本、不上电、不发起任何网络请求**。用于「配置文件写错了但不想真起后端」（接了硬件也不必反复上下电）。配置本身仍由 `buildAgentConfig` 单点校验，失败退出 **2**；会**打开但不写入**审计日志文件（顺带验证其可写）。agent 侧的配置校验用 `mybot-agent --check-config` |
 | `--audit-log <路径>` | 审计轨迹（JSON Lines 追加写）：每次工具调用一条记录（时间戳/轮次/工具/参数/成败/耗时/退出码）；图片只记体积与指纹，命令原文里的 `KEY=VALUE` 敏感值先遮蔽，`apply_sql` 等工具另记结构化生效摘要（`summary`）；`-` 表示写 stderr；缺省**不记录**。也可用配置文件 `audit_log` 字段（详见 [agent.md](agent.md)） |
 
-agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--input` 同时给出，一律报错并以退出码 **2** 结束。
+**选项归属与拒绝规则**：脚本目录、摄像头、`--read-var`、危险开关和 `--agent-policy`
+属于 C++ 后端；上述后端选项不带 `--mcp-backend` 会退出 **2**，后端与 `--tcp` / `--input` 互斥。
+`--agent` 已移除；`--task` / `--prompt-file` / `--llm-*`（包括 `--llm-config`）/
+`--session-file` / `--resume` 只属于 Rust，C++ 中即使带 `--mcp-backend` 也拒绝并退出 **2**。
+Rust 不接受后端能力开关；两端同名的 `--audit-log` / `--check-config` 各自作用于本进程，
+不能替代另一端的配置或校验。C++ 显式配置文件入口仅 `BOT4CJ_LLM_CONFIG`。
+后端开 `--agent-shell` / `--agent-hot-sql` 时强制有 policy，且 `require_confirm`
+分别包含 `run_command` / `apply_sql`，否则上电前拒绝启动。
 
 **TCP 模式的安全设计**（上面几条参数背后的原因）：
 
@@ -60,39 +71,34 @@ agent 专属选项出现在非 agent 模式下、或 `--agent` 与 `--tcp`/`--in
 - 连接另有**总时长预算**（缺省下限 600s，可用 `--tcp-total-timeout` 调整；生效值取该下限与 `--tcp-idle` ×20 的较大者）从连接建立起算：慢滴发送（每 <idle 秒发 1 字节）不能无限期挂住进程
 - **本通道明文无加密**（口令与脚本正文都走明文 socket，TLS 未实现）：仅限**可信内网/本机**使用；跨信任域请自行加隧道，或改用文件/标准输入源
 
-**agent 取值优先级**：命令行 > 环境变量 > 配置文件 > 驱动内置缺省。接入点、密钥、模型等都可写进
-配置文件（模板 `mybot.llm.json.example`），字段表与查找顺序见 [agent.md](agent.md)。
+**agent 取值优先级**：对支持相应入口的字段，命令行 > 环境变量 > 配置文件 > 内置缺省。
+Rust 的 endpoint、model 与 API key 必须提供。两端可使用同一份 JSON，但各自消费所属字段；
+Rust 对后端能力字段只登记、不解析或授权，不能替代后端校验。
+模板为 `mybot.llm.json.example`，字段表与双端查找顺序见 [agent.md](agent.md)。
 
-**中断语义（SAN-7，2026-09-22 据实测改写——此前本节与代码相反）**
+**中断语义（两进程）**
 
-Ctrl-C（SIGINT/SIGTERM）**首次**即完成一次优雅中断，全程走正常清理链；**第二次**
-才是逃生口（按缺省处置强杀）。首次按下之后依次发生：
+Ctrl-C / SIGINT / SIGTERM 只作用于收到信号的进程，首次置停止标志，**不是立即停止一切**：
 
-1. **置停止标志**（`stopRequested()`，async-signal-safe）——按行派发的动作脚本在
-   **行与行之间**看到它即停派发；
-2. **创建取消哨兵**文件（`/tmp/mybot-cancel-<pid>`）——在飞的**模型调用**因此可被
-   及时打断：`llm_http.lua` 的 libcurl 进度回调（约 1 秒一次）发现哨兵即中止请求，
-   报错点名「请求已取消（宿主收到停止信号）」，而**不是**等满 `--llm-timeout`
-   （最长 600s）或按第二次强杀。"卡在网络上"（网关无响应、断网）由此被覆盖。
-   *（哨兵是跨层通道：驱动沙箱拿不到宿主内存，文件是零新依赖的通道；`/tmp` 不可写
-   时静默跳过、退化为旧行为——这是有意的降级，不是缺陷。）*
-3. **动作脚本执行预算窗口内**（`action_script_timeout_sec`）：窗口内的指令计数钩子
-   同时检查停止标志，跑飞的 Lua 驱动循环也能被首次 Ctrl-C 打断（PL-2）。
-4. **退出前走清理链**：`runRobotAndCleanup` 无论成败都调 `deactivate()`
-   （守护 join → 驱动 destroy → 硬件去初始化），随后进程按退出码 1 退出。
+1. **Rust `mybot-agent`**（`agent/src/main.rs` / `model.rs` / `hook.rs`）：在检查点停止
+   后续模型调用、重试和工具派发。在飞模型请求没有信号级取消，须等返回或
+   `--llm-timeout` 超时（缺省 180s，范围 1–600s）；退避中的停止检查也要等本次退避结束。
+   REPL 正常收尾写 session end、退出 0；一次性 `--task` 若返回中断错误，则写 session error、退出 1。
+2. **C++ 工具后端**（`src/main.cpp` / `mcpbackend.cpp`）：`stopRequested()` 使服务循环退出，
+   然后经 `runRobotAndCleanup` 调 `deactivate()`（守护 join → 驱动 destroy → 硬件去初始化）。
+   动作脚本在行间停派发；`action_script_timeout_sec` 预算窗口内的 Lua 指令计数钩子
+   也检查停止标志，但**打不断阻塞的 FFI 系统调用，已下发的物理动作不能收回**。
+3. **停止 agent 不等于后端断电**：Rust 退出/断连后，后端仍可等待下一条连接；
+   需要停机断电时须向后端发停止信号，并等待其清理完成。
 
-**实测证据**（`scripts/agent_e2e.sh` 场景 8 与 13）：服务端睡 5s，1.2s 时发首次
-SIGINT → 约 1s 内中止、报错点名「请求已取消」、哨兵文件已清理；另外用
-`test/cpp/LifetimeProbe.lua` 探针实测：**`deactivate()` 确实执行且只执行一次**
-（marker 文件恰好 1 字节 `D`）。所以"中断之后硬件是安全的"这句话有可断言的判据，
-不是靠读代码相信。
+**沿革（SAN-7 / P2a）**：旧 C++ `--agent` 曾创建 `/tmp/mybot-cancel-<pid>`，
+由 Lua/libcurl 进度回调取消请求；原场景的约 1s 取消与哨兵清理断言只描述旧链路。
+该宿主机制已移除，不能用来推断 Rust 在飞请求的取消时延。现役两进程回归见
+`scripts/agent_e2e.sh` 与 `scripts/mcp_e2e.sh`，编号以 [testing.md](testing.md) 为准。
 
-**第二次（连按）仍然是逃生口，但请把它当逃生口而非常规操作**：优雅路径本身若被
-卡住（`/tmp` 不可写导致哨兵失效、驱动阻塞在不可中断的系统调用里、守护拒绝退场），
-第二次按下按缺省处置强杀，**跳过清理**，执行器可能停在最后指令位置。
-它存在的理由是"总能停下来"，不是"推荐这么停"。另有一层兜底：`~RobotStruct` 会在
-对象销毁时补一次断电，所以「漏掉 `deactivate()` 的退出路径」不会把硬件留在带电状态
-（强杀除外，那不走析构）。
+**第二次信号是逃生口，不是常规操作**：Rust 立即退出 130；C++ 恢复缺省信号处置并重新触发。
+两者都跳过正常清理，不能保证硬件安全停下。驱动阻塞或守护拒绝退场时尤其要注意。
+`~RobotStruct` 仅在正常对象销毁时补断电；强制退出不走析构，不能依赖它兜底。
 
 ## 动作输入源
 
@@ -139,9 +145,9 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 59 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
 | `BOT4CJ_TCP_TOKEN` | TCP 口令（等价 `--tcp-token`，优先级低于命令行）。argv 会出现在 `/proc/<pid>/cmdline`，多用户机器上推荐用本变量传口令 |
-| `BOT4CJ_LLM_KEY` | agent 模式的 API key。回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`。由 **Lua 驱动自己读取**（不进宿主的参数表，也不进 `BOT4CJ_DEBUG` 转储）；该变量名含 `key`，会被 `run_command` 的环境清洗剔除，不会泄漏给子进程 |
-| `BOT4CJ_LLM_CONFIG` | agent 配置文件路径（优先级低于 `--llm-config`、高于缺省查找）；设为 `none` 表示不读配置文件 |
-| `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | agent 接入点 / 模型名（覆盖配置文件，低于命令行） |
+| `BOT4CJ_LLM_KEY` | 由 **Rust `mybot-agent`** 读取并用于 provider 请求头；回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY` → 配置文件 `api_key` / `api_key_file`。不经后端工具参数或 `BOT4CJ_DEBUG` 转储；后端若继承了该变量，`run_command` 的环境清洗会剔除它，但这不是同 uid 进程间的密钥隔离 |
+| `BOT4CJ_LLM_CONFIG` | 两端各自读取的配置文件路径。Rust 优先级为 `--llm-config` > 本变量 > 缺省查找；C++ 后端显式指定路径只能用本变量，不接受 `--llm-config`。`none` 禁用对应进程的配置文件读取；须分别传给两进程 |
+| `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | Rust agent 接入点 / 模型名（覆盖配置文件，低于命令行；两项均无内置缺省） |
 | `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |
 | `BOT4CJ_HAL_BACKEND` | HAL 后端模块名：`modules/lib/hal_backend_<名>.lua`（缺省 `glibc`）。加载期逐项断言契约函数齐全，缺函数 fail-fast——移植到别的 libc/平台时替换整个后端 |
 | `BOT4CJ_CAMERA_SRC_DIR` | 摄像头仿真来源的**放行目录**（冒号分隔）：`--camera-src` 之外的路径必须落在这里面，否则驱动拒绝读该文件（缺省禁用任何目录外读取） |

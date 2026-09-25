@@ -56,18 +56,23 @@ def openai_shell(payload):
     """
     payload.setdefault("id", "chatcmpl-fake")
     payload.setdefault("model", "fake-model")
+    payload.setdefault("usage", {"prompt_tokens": 111, "completion_tokens": 22,
+                                 "total_tokens": 133})
+    for i, choice in enumerate(payload.get("choices", [])):
+        choice.setdefault("index", i)
+        choice.setdefault("finish_reason", "tool_calls" if choice["message"].get("tool_calls") else "stop")
     return payload
 
 
-def tool_call(name, arguments):
+def tool_call(name, arguments, call_id=None):
     return openai_shell({
         "choices": [{
             "message": {
                 "role": "assistant",
-                "content": "调用工具 %s。" % name,
+                "content": None if MODE.startswith("deepseek") else "调用工具 %s。" % name,
                 "reasoning_content": "先想清楚再决定调用 %s。" % name,
                 "tool_calls": [{
-                    "id": "call_%s" % name,
+                    "id": call_id or "call_%s" % name,
                     "type": "function",
                     "function": {"name": name, "arguments": json.dumps(arguments)},
                 }],
@@ -83,6 +88,7 @@ def anthropic_tool_call(name, arguments):
     工具调用是 tool_use 块（input 是对象）、没有 choices 外壳。
     """
     return {
+        "id": "msg_fake_tool", "type": "message", "role": "assistant", "model": "fake-model",
         "content": [
             {"type": "text", "text": "调用工具 %s。" % name},
             {"type": "tool_use", "id": "toolu_%s" % name, "name": name,
@@ -93,12 +99,11 @@ def anthropic_tool_call(name, arguments):
     }
 
 
-def anthropic_final_answer():
-    """Anthropic 形态的最终回答（含 usage：字段名与 OpenAI 系不同）"""
+def anthropic_final_answer(text="AGENT-E2E-完成：已查看硬件、执行动作并拍照。"):
     return {
+        "id": "msg_fake_final", "type": "message", "role": "assistant", "model": "fake-model",
         "content": [
-            {"type": "text",
-             "text": "AGENT-E2E-完成：已查看硬件，继电器动作已执行，命令已运行。"},
+            {"type": "text", "text": text},
         ],
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 1234, "output_tokens": 56},
@@ -147,8 +152,14 @@ def protocol_error(request):
         if not isinstance(m, dict):
             return "messages[%d] must be an object" % i
 
-    # ② reasoning_content 有状态要求
-    uses_reasoning = any(isinstance(m.get("reasoning_content"), str) for m in messages)
+    if MODE.startswith("anthropic"):
+        return anthropic_protocol_error(request)
+    if MODE.startswith("deepseek") and any(not isinstance(m.get("content"), str) for m in messages):
+        return "DeepSeek requires string content, including tool-call-only assistant messages"
+
+    # 模式显式要求回传，避免所有 reasoning_content 都丢失时校验被绕过。
+    uses_reasoning = MODE.startswith("deepseek") or any(
+        isinstance(m.get("reasoning_content"), str) for m in messages)
     if uses_reasoning:
         for i, m in enumerate(messages):
             if m.get("role") != "assistant":
@@ -238,6 +249,87 @@ def schema_error(request):
     return None
 
 
+def anthropic_protocol_error(request):
+    if not request.get("system") or not isinstance(request.get("max_tokens"), int):
+        return "Anthropic requires top-level system and max_tokens"
+    for tool in request.get("tools", []):
+        if not tool.get("name") or "input_schema" not in tool or "function" in tool:
+            return "Anthropic tools require name/input_schema, not function"
+    pending, declared = set(), set()
+    for message in request["messages"]:
+        role = message.get("role")
+        if role not in ("user", "assistant") or "tool_calls" in message:
+            return "Anthropic messages require user/assistant content blocks"
+        content = message.get("content", [])
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        if not isinstance(content, list) or any(not isinstance(b, dict) for b in content):
+            return "Anthropic content must be text or an array of blocks"
+        if pending:
+            ids = [b.get("tool_use_id") for b in content if b.get("type") == "tool_result"]
+            if role != "user" or set(ids) != pending or len(ids) != len(pending):
+                return "Anthropic tool_use must be followed by matching tool_result blocks"
+        for block in content:
+            kind = block.get("type")
+            if kind == "tool_use":
+                tid = block.get("id")
+                if role != "assistant" or not isinstance(tid, str) or not tid or tid in declared:
+                    return "Anthropic tool_use id must be unique and on assistant"
+                if not block.get("name") or not isinstance(block.get("input"), dict):
+                    return "Anthropic tool_use requires name and object input"
+                declared.add(tid)
+                pending.add(tid)
+            elif kind == "tool_result":
+                tid = block.get("tool_use_id")
+                if role != "user" or tid not in pending:
+                    return "Anthropic orphan or duplicate tool_result"
+                pending.remove(tid)
+            elif kind == "image":
+                source = block.get("source", {})
+                if role != "user" or source.get("type") != "base64" or source.get("media_type") != "image/jpeg":
+                    return "Anthropic fixture requires a base64 JPEG image source"
+                if not isinstance(source.get("data"), str) or not source["data"].startswith("/9j/"):
+                    return "Anthropic image data must contain the JPEG bytes, not a data URL"
+            elif kind != "text":
+                return "unexpected Anthropic content block: %s" % kind
+    if pending:
+        return "Anthropic missing tool_result"
+    return None
+
+
+def closed_loop_reply(request):
+    results = [m for m in request["messages"] if m.get("role") == "tool"]
+    expected_ids = ["call_read_before", "call_set_dac", "call_read_after"]
+    if [m.get("tool_call_id") for m in results] != expected_ids[:len(results)]:
+        raise ValueError("closed-loop: unexpected tool result order")
+    if not results:
+        return tool_call("read_variables", {}, expected_ids[0])
+
+    def level(message):
+        body = message["content"]
+        marker = "  dac0 = "
+        if not isinstance(body, str) or marker not in body:
+            raise ValueError("closed-loop: missing dac0 readback")
+        value, _ = json.JSONDecoder().raw_decode(body.split(marker, 1)[1])
+        if value.get("result") != "OK" or value.get("rdy") != 1:
+            raise ValueError("closed-loop: DAC readback failed or not ready")
+        return value.get("level")
+
+    if level(results[0]) != 0:
+        raise ValueError("closed-loop: expected initial DAC level 0")
+    if len(results) == 1:
+        return tool_call("run_action_script", {"script": "test/mcp4725_virt.mt"}, expected_ids[1])
+    if "已执行动作脚本 test/mcp4725_virt.mt" not in results[1].get("content", ""):
+        raise ValueError("closed-loop: action did not succeed")
+    if len(results) == 2:
+        return tool_call("read_variables", {}, expected_ids[2])
+    if level(results[2]) != 2048:
+        raise ValueError("closed-loop: expected final DAC level 2048")
+    return openai_shell({"choices": [{"message": {
+        "role": "assistant", "content": "AGENT-E2E-CLOSED-LOOP-完成：已核验 DAC 0 → 2048。",
+    }}]})
+
+
 class Handler(BaseHTTPRequestHandler):
     def _reply(self, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -316,10 +408,24 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as e:
             self._error_400("invalid JSON in request body: %s" % e)
             return
+        if MODE.startswith("anthropic"):
+            if self.path != "/v1/messages" or self.headers.get("x-api-key") != "e2e-rust-key" or not self.headers.get("anthropic-version"):
+                self._error_400("Anthropic requires /v1/messages, x-api-key and anthropic-version")
+                return
+        elif MODE.startswith("deepseek"):
+            if self.path != "/v1/chat/completions" or self.headers.get("Authorization") != "Bearer e2e-rust-key":
+                self._error_400("DeepSeek requires /v1/chat/completions and Bearer authorization")
+                return
         for bad in (schema_error(request), protocol_error(request)):
             if bad is not None:
                 self._error_400(bad)
                 return
+        if MODE == "closed-loop":
+            try:
+                self._reply(closed_loop_reply(request))
+            except (ValueError, KeyError, TypeError) as e:
+                self._error_400(str(e))
+            return
         # 工具结果的**计数**同样按形状分派（批次 3）：OpenAI 系是独立的
         # role="tool" 消息；Anthropic 把结果并进 user 消息的 tool_result 块里
         # （role="user"）。只认前者会让 Anthropic 形态的剧本永远停在第一轮
@@ -393,8 +499,17 @@ class Handler(BaseHTTPRequestHandler):
             elif tool_results == 1:
                 self._reply(anthropic_tool_call("run_action_script",
                                                 {"script": "relay-test.mt"}))
+            elif tool_results == 2:
+                self._reply(anthropic_tool_call("capture_image", {}))
             else:
                 self._reply(anthropic_final_answer())
+            return
+        if MODE == "anthropic-relay":
+            if not any(m.get("role") == "assistant" and "AGENT-E2E-完成" in str(m.get("content"))
+                       for m in request["messages"]):
+                self._error_400("Anthropic resume is missing previous conversation")
+            else:
+                self._reply(anthropic_final_answer("AGENT-E2E-RELAY-完成：已恢复 Anthropic 历史。"))
             return
 
         if MODE == "camera":
@@ -450,7 +565,7 @@ class Handler(BaseHTTPRequestHandler):
         # ---- 会话恢复接力（批次 D，R11）：历史里带着上一个进程的收尾文案，
         # 就是「--resume 真的把对话带回来了」的信号——不必重放整条工具循环，
         # 一句专属回答就够证明请求里携带了跨进程的历史。 ----
-        if MODE == "relay":
+        if MODE in ("relay", "deepseek-relay"):
             def _msg_text(m):
                 c = m.get("content")
                 if isinstance(c, str):
@@ -466,6 +581,9 @@ class Handler(BaseHTTPRequestHandler):
                     "role": "assistant",
                     "content": "AGENT-E2E-RELAY-完成：已看到此前会话的完整历史。",
                 }}]}))
+                return
+            if MODE == "deepseek-relay":
+                self._error_400("DeepSeek resume is missing previous conversation")
                 return
             # 未带历史（新会话）：与默认剧本同构，走完整工具循环
             if tool_results == 0:

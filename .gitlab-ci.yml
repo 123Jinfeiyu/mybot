@@ -1,5 +1,5 @@
-# bot4cj CI（F-22）：最小门禁——构建 + 全量守门 + sanitizer 单跑（--asan-only），
-# 另有一组软门禁（TSan / clang / clang-tidy / coverage / musl，均 allow_failure）。
+# bot4cj CI：构建、全量守门、sanitizer 与双进程 agent E2E 四条硬门禁。
+# 另有六条软门禁（TSan / clang / clang-tidy / coverage / musl / agent）。
 # GitCode（GitLab 系托管）经 .gitlab-ci.yml 驱动；若托管方不识别本文件
 # 则静默不生效（无副作用），迁移其它平台时按同结构翻译即可。
 #
@@ -227,8 +227,8 @@ gate:musl:
 
 # ======================================================================
 # Rust agent（agent/，包名 mybot-agent；原 MCP sidecar，rig 迁移批次 B 更名）：
-# 独立产物。**只给这一个 job 加 Rust**，不给上面 7 个 C++ job 加（评估 §5.3）——
-# Rust 工具链在整份 CI 里只出现在这一处。
+# 独立产物；Rust 工具链仅用于 gate:agent 与 gate:agent-e2e，
+# 既有 C++ jobs 不增加 Rust 依赖。
 # 四检：cargo build --release / test / clippy(-D warnings) / fmt --check（均 --locked）。
 #
 # ⚠ 响亮声明（评估 §5.3，别误读门禁覆盖面）：gate:sanitizer（ASan/UBSan）与
@@ -236,11 +236,8 @@ gate:musl:
 #   agent 的内存/线程安全靠 Rust 所有权模型 + 本 job 的 clippy/test，**不是**
 #   sanitizer。「gate:sanitizer 绿」绝不等于「整条后端+agent 链路过了 sanitizer」。
 #
-# 全链路 E2E（scripts/agent_e2e.sh --rust，需 C++ 后端 + mybot-agent 同场）**不在
-#   本 job**：本 job 是 Rust-only（rust 镜像里没有 build/mybot）。gate:release 的
-#   run_all.sh 会因缺 mybot-agent 产物对 agent-rust-e2e 段记 **SKIP**（Rust 段可选，
-#   设计如此，见 test/lib/sections/net_agent.sh 的 run_one_agent_rust_e2e）。要
-#   「C++ + Rust 同场」的全链路守门，需另起一个装齐两套工具链的 job（后续）。
+# 全链路 E2E 由独立 gate:agent-e2e 硬门禁承担；gate:release 仍可跳过 Rust 段，
+# 不给既有 C++ jobs 增加 Rust 工具链依赖。
 #
 # 起步为软门禁（allow_failure）：与本文件其余「CI 镜像未经本地预跑」的 job 同口径
 #   （开发机无 docker，无法预跑 rust:1-slim + crate 拉取）。四条命令已在本地全绿
@@ -265,3 +262,28 @@ gate:agent:
     - cargo test --locked
     - cargo clippy --all-targets --locked -- -D warnings
     - cargo fmt --check
+
+# 与 build:release 同为 bookworm，避免跨 glibc 版本复用后端产物。
+gate:agent-e2e:
+  stage: gate
+  image: rust:1-slim-bookworm
+  needs: ["build:release"]
+  before_script:
+    - *install-deps
+    - apt-get install -y -qq procps
+  script:
+    - cargo build --release --locked --manifest-path agent/Cargo.toml
+    - test -x build/mybot && test -x agent/target/release/mybot-agent
+    - |
+      if BOT4CJ_LLM_CONFIG=none timeout 180 bash scripts/agent_e2e.sh > agent-e2e.log 2>&1; then
+        rc=0
+      else
+        rc=$?
+      fi
+      cat agent-e2e.log
+      test "$rc" -eq 0
+  artifacts:
+    when: always
+    expire_in: 4 weeks
+    paths:
+      - agent-e2e.log

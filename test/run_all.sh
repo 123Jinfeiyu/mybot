@@ -957,8 +957,7 @@ fi
 #     的独立趟（纯 Python 帧客户端直连后端，不经模型，判据更硬）；
 #   * 循环层的（工具循环、超时、重试、取消、图片后注、stdout 纯净/写失败、
 #     会话持久化两进程接力）→ R 段（R11 = --session-file/--resume，批次 D）；
-#   * 仍未覆盖：DeepSeek/Anthropic 的**协议差异**在整条循环上的表现（驱动层单测
-#     test_llm_drivers.lua / test_llm_wire_contract.lua 仍在守报文形态）。
+#   * DeepSeek/Anthropic 协议差异与恢复 → R12/R13；虚拟 DAC 读写闭环 → R14。
 #     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
 # ======================================================================
 if filter_matches "agent" "$filter_e2e"; then

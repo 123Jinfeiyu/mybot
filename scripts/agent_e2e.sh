@@ -1,7 +1,7 @@
 #!/bin/bash
-# agent 模式端到端：本地假模型服务 + 真实 mybot 工具循环（无硬件 relay-test）。
+# Rust agent 端到端：本地假模型 + C++ 后端，无硬件运行 R1–R14。
 #
-# 二十二个场景：
+# 以下是已移除 C++ agent 的历史场景索引，现役覆盖见下方 R 段：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
 #      机器人上真被执行 + 最终回答只走 stdout；并抓取线上报文断言这是 OpenAI 形态
 #      （有 temperature、无 thinking）。
@@ -55,8 +55,9 @@
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
 #   用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
-#   本文件**只有 Rust 一种模式**：跑 R1-R11（mybot-agent；R1-R5 批次 B 骨架、
-#   R6-R9 批次 C 循环层、R10 审计 H2 修复、R11 批次 D 会话持久化；R5m 为配置
+#   本文件**只有 Rust 一种模式**：跑 R1-R14（mybot-agent；R1-R5 批次 B 骨架、
+#   R6-R9 批次 C 循环层、R10 审计 H2 修复、R11 会话持久化、R12/R13 多协议与恢复、
+#   R14 MCP4725 虚拟读写闭环及错误读数反例；R5m 为配置
 #   镜像黄金测试——同一 mybot.llm.json 喂双端 --check-config 互钉共享字段），
 #   拓扑是「后端 + mybot-agent」两个进程；
 #   缺 agent/target/release/mybot-agent 时直接报错退出（守门那边按 SKIP 计，
@@ -93,6 +94,14 @@ if [ ! -x "$AGENT_BIN" ]; then
 	echo "缺 $AGENT_BIN（先 bash scripts/build_agent.sh --release）"
 	exit 1
 fi
+if [ ! -x "$BOT" ]; then
+	echo "缺后端 $BOT（先 cmake --build build）"
+	exit 1
+fi
+
+export BOT4CJ_LLM_CONFIG=none
+unset BOT4CJ_LLM_KEY ROBOT_AGENT_API_KEY DEEPSEEK_API_KEY BOT4CJ_LLM_ENDPOINT BOT4CJ_LLM_MODEL
+unset BOT4CJ_CAMERA_SRC_DIR BOT4CJ_MODULE_PATH BOT4CJ_HAL_BACKEND
 
 if ! command -v python3 >/dev/null 2>&1; then
 	echo "缺少 python3（假模型服务），无法运行 agent 端到端"
@@ -188,8 +197,8 @@ TASK="先看硬件，再让继电器动作一次，最后跑一条命令"
 # C++ 场景**同判据**（工具定义齐备、回执真的从后端回来、审计字段齐备、stdout 纯净），
 # 但有几处必须按 Rust 侧**已成立的语义**写，照抄 C++ 就是假绿：
 #   * 工具审计行**不在** agent 的审计文件里，由后端自己的 --audit-log 落（同一次运行）；
-#   * 会话持久化（--session-file/--resume）还没搬（批次 D），Rust 段因此不含该场景
-#     （SIGINT 取消在 R8b 覆盖）；TCP 远程 REPL 已评估不做（2026-09-25）。
+#   * 会话持久化由 R11/R12/R13 覆盖，SIGINT 取消由 R8b 覆盖；
+#     TCP 远程 REPL 已评估不做（2026-09-25）。
 #
 # 批次 C（2026-09-24，循环层语义）在 Rust 段新增四个场景，判据与 C++ 侧**同源**：
 #   * R6 单轮调用上限（C++ 场景 10）：超限调用不派发、模型收到「未派发」回执、
@@ -1029,6 +1038,141 @@ check_json "$CAP11TR" "[m['content'] for m in d['messages'] if m.get('role')=='u
 	"恢复后的首个请求带着上个进程的最新任务"
 audit_expr "$SESS11T" "[l['content'] for l in lines if l.get('role')=='user'] == ['trim-task-1','trim-task-2','trim-task-3','trim-task-4']" \
 	"恢复时再次裁剪仍不漏写、不重写"
+
+echo "----- R12：DeepSeek reasoning 历史回传与跨进程恢复 -----"
+R12="$tmp/rust12"
+start_backend "$R12" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+for phase in fresh resume; do
+	PORT=$((30000 + RANDOM % 300))
+	mode=deepseek
+	resume_args=()
+	if [ "$phase" = resume ]; then mode=deepseek-relay; resume_args=(--resume); fi
+	start_server "$PORT" "$R12/$phase.json" "$mode" "$R12/$phase.headers" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R12/mcp.sock" \
+		--llm-driver LlmDeepSeek --llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" \
+		--llm-model deepseek-reasoner --llm-config none --session-file "$R12/session.jsonl" \
+		"${resume_args[@]}" --task "$TASK" >"$R12/$phase.out" 2>"$R12/$phase.err"
+	rc=$?
+	stop_server
+	cat "$R12/$phase.out" "$R12/$phase.err"
+	if [ "$rc" -ne 0 ]; then echo "  [FAIL] DeepSeek $phase 退出码 $rc"; fail=1; fi
+	check_json "$R12/$phase.json" "(lambda ms: len(ms)==3 and all(m.get('reasoning_content') == '先想清楚再决定调用 %s。' % m['tool_calls'][0]['function']['name'] for m in ms))([m for m in d['messages'] if m.get('tool_calls')])" \
+		"DeepSeek $phase 三轮工具的 reasoning_content 原样回传"
+	check_json "$R12/$phase.json" "len([m for m in d['messages'] if m.get('role')=='tool']) == 3" \
+		"DeepSeek $phase 带回全部工具结果"
+	check_present "$R12/$phase.headers" "Bearer e2e-rust-key" "DeepSeek 使用 Bearer 鉴权"
+done
+stop_backend
+check_present "$R12/fresh.out" "AGENT-E2E-完成" "DeepSeek 完整工具循环成功"
+check_present "$R12/backend.log" "Relay: test=200" "DeepSeek 动作确实在后端执行"
+check_present "$R12/resume.out" "AGENT-E2E-RELAY-完成" "DeepSeek 恢复首个请求接上历史"
+check_present "$R12/resume.err" "已恢复会话" "DeepSeek 确实走恢复路径"
+
+echo "----- R13：Anthropic Messages 工具、图片与跨进程恢复 -----"
+R13="$tmp/rust13"
+start_backend "$R13" --camera-src "$PICR9" || exit 1
+for phase in fresh resume; do
+	PORT=$((30300 + RANDOM % 300))
+	mode=anthropic
+	resume_args=()
+	if [ "$phase" = resume ]; then mode=anthropic-relay; resume_args=(--resume); fi
+	start_server "$PORT" "$R13/$phase.json" "$mode" "$R13/$phase.headers" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R13/mcp.sock" \
+		--llm-driver LlmAnthropic --llm-endpoint "http://127.0.0.1:$PORT/v1/messages" \
+		--llm-model e2e-anthropic --llm-config none --session-file "$R13/session.jsonl" \
+		--audit-log "$R13/$phase.audit" "${resume_args[@]}" \
+		--task "查看硬件、执行继电器动作并拍照核验" >"$R13/$phase.out" 2>"$R13/$phase.err"
+	rc=$?
+	stop_server
+	cat "$R13/$phase.out" "$R13/$phase.err"
+	if [ "$rc" -ne 0 ]; then echo "  [FAIL] Anthropic $phase 退出码 $rc"; fail=1; fi
+	check_json "$R13/$phase.json" "bool(d.get('system')) and d['max_tokens']>0 and all(m['role'] in ('user','assistant') for m in d['messages'])" \
+		"Anthropic $phase system 顶层、消息角色正确"
+	check_json "$R13/$phase.json" "bool(d.get('tools')) and all(t.get('name') and t.get('input_schema',{}).get('type')=='object' and 'function' not in t for t in d['tools'])" \
+		"Anthropic $phase 工具使用 name/input_schema"
+	check_json "$R13/$phase.json" "(lambda bs: len([b for b in bs if b.get('type')=='tool_use'])==3 and len([b for b in bs if b.get('type')=='tool_result'])==3 and all(any(s in str(b.get('content')) for b in bs if b.get('type')=='tool_result') for s in ['已注册硬件变量','已执行动作脚本 relay-test.mt','已拍摄照片']))([b for m in d['messages'] if isinstance(m.get('content'),list) for b in m['content']])" \
+		"Anthropic $phase 三条 tool_use/tool_result 带回真实工具结果"
+	check_present "$R13/$phase.headers" "x-api-key: e2e-rust-key" "Anthropic 使用 x-api-key 鉴权"
+	check_absent "$R13/$phase.headers" "Bearer" "Anthropic 不混入 OpenAI 鉴权头"
+done
+stop_backend
+check_present "$R13/fresh.out" "AGENT-E2E-完成" "Anthropic 完整工具与图片循环成功"
+check_present "$R13/backend.log" "Relay: test=200" "Anthropic 动作确实在后端执行"
+check_absent "$R13/fresh.err" "/v1/messages/v1/messages" "Anthropic 接入点摘要不重复拼路径"
+check_json "$R13/fresh.json" "(lambda bs: len(bs)==1 and bs[0]['source']['type']=='base64' and bs[0]['source']['media_type']=='image/jpeg' and __import__('base64').b64decode(bs[0]['source']['data'],validate=True)==open('$PICR9','rb').read())([b for m in d['messages'] if m.get('role')=='user' and isinstance(m.get('content'),list) for b in m['content'] if b.get('type')=='image'])" \
+	"Anthropic 图片为 base64 source，字节与原始 JPEG 完全相同且只注入一次"
+audit_expr "$R13/fresh.audit" "any(l.get('kind')=='model' and l.get('prompt_tokens')==1234 and l.get('completion_tokens')==56 for l in lines)" \
+	"Anthropic usage 正确进入模型审计"
+check_present "$R13/resume.out" "AGENT-E2E-RELAY-完成" "Anthropic 恢复首个请求接上历史"
+check_present "$R13/resume.json" "未随会话恢复" "Anthropic 恢复后图片留下明确占位"
+check_absent "$R13/session.jsonl" "/9j/" "会话文件不落 JPEG 数据"
+check_json "$R13/resume.json" "not any(b.get('type')=='image' for m in d['messages'] if isinstance(m.get('content'),list) for b in m['content'])" \
+	"Anthropic 恢复不重放旧图片"
+
+if python3 - "$R12/fresh.json" "$R13/fresh.json" <<'PY'
+import copy, json, runpy, sys
+with open(sys.argv[1]) as f:
+    deepseek = json.load(f)
+with open(sys.argv[2]) as f:
+    anthropic = json.load(f)
+sys.argv = ['fake_llm_server.py', '0', '', 'deepseek']
+validate = runpy.run_path('scripts/fake_llm_server.py')['protocol_error']
+assert validate(deepseek) is None
+bad = copy.deepcopy(deepseek)
+for message in bad['messages']:
+    message.pop('reasoning_content', None)
+assert 'reasoning_content' in validate(bad)
+validate.__globals__['MODE'] = 'anthropic'
+assert validate(anthropic) is None
+for mutation in ('orphan', 'missing', 'duplicate'):
+    bad = copy.deepcopy(anthropic)
+    content = next(m['content'] for m in bad['messages']
+                   if isinstance(m.get('content'), list)
+                   and any(b.get('type') == 'tool_result' for b in m['content']))
+    block = next(b for b in content if b.get('type') == 'tool_result')
+    if mutation == 'orphan':
+        block['tool_use_id'] = 'unknown'
+    elif mutation == 'missing':
+        content.remove(block)
+    else:
+        content.append(copy.deepcopy(block))
+    assert validate(bad) is not None, mutation
+print('  [OK] 假网关拒绝全量推理丢失与孤儿/缺失/重复 tool_result')
+PY
+then :; else echo "  [FAIL] 假网关协议判据自检失败"; fail=1; fi
+
+echo "----- R14：虚拟 DAC 读数 → 动作 → 回读闭环及反例 -----"
+R14="$tmp/rust14"
+mkdir -p "$R14/wrong-scripts/test"
+printf '%s\n' '@Action' 'dac0.percent;' '25;' '@' > "$R14/wrong-scripts/test/mcp4725_virt.mt"
+for variant in correct wrong; do
+	PORT=$((30600 + RANDOM % 300))
+	scripts_args=()
+	if [ "$variant" = wrong ]; then scripts_args=(--scripts-dir "$R14/wrong-scripts"); fi
+	start_server "$PORT" "$R14/$variant.json" closed-loop || exit 1
+	start_backend "$R14/$variant" --robot robots/test/mcp4725_virt.sql --read-var dac0 \
+		--audit-log "$R14/$variant/backend.audit" "${scripts_args[@]}" || exit 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R14/$variant/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none --task "先读取 DAC，执行 test/mcp4725_virt.mt，再回读核验为 2048" \
+		>"$R14/$variant/out.txt" 2>"$R14/$variant/err.txt"
+	rc=$?
+	stop_backend
+	stop_server
+	cat "$R14/$variant/out.txt" "$R14/$variant/err.txt"
+	if [ "$variant" = correct ]; then
+		if [ "$rc" -ne 0 ]; then echo "  [FAIL] 正确闭环退出码 $rc"; fail=1; fi
+		check_present "$R14/$variant/out.txt" "AGENT-E2E-CLOSED-LOOP-完成" "实际回读达到目标才完成"
+	else
+		if [ "$rc" -eq 1 ]; then echo "  [OK] 错误输出被闭环核验拒绝"; else echo "  [FAIL] 错误输出退出码 $rc（期望 1）"; fail=1; fi
+		check_present "$R14/$variant/err.txt" "expected final DAC level 2048" "失败原因是回读值不符，不是动作执行失败"
+		check_absent "$R14/$variant/out.txt" "AGENT-E2E-CLOSED-LOOP-完成" "动作成功但回读不符时不谎报完成"
+	fi
+	audit_expr "$R14/$variant/backend.audit" "[l.get('tool') for l in lines if l.get('kind')=='tool']==['read_variables','run_action_script','read_variables'] and all(l.get('ok') is True for l in lines if l.get('kind')=='tool')" \
+		"$variant 三次工具执行顺序由后端审计见证，动作本身成功"
+	check_json "$R14/$variant.json" "'read_variables' in {t['function']['name'] for t in d['tools']} and 'run_command' not in {t['function']['name'] for t in d['tools']}" \
+		"闭环只开放回读与预置动作，不依赖 shell"
+done
 
 if [ "$fail" -eq 0 ]; then
 	echo "mybot-agent 端到端测试通过"

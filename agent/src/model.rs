@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rig_agent::completion::message::UserContent;
+use rig_agent::completion::message::{ImageMediaType, MimeType, UserContent};
 use rig_agent::completion::{
     AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
     Message, ProviderCapabilities,
@@ -157,7 +157,7 @@ impl<M: CompletionModel> BudgetModel<M> {
     }
 
     /// 把桥收集到的图片注入本次请求（见模块头第 1 条）。
-    fn inject_images(&self, request: &mut CompletionRequest) {
+    fn inject_images(&self, request: &mut CompletionRequest) -> Result<(), CompletionError> {
         let fresh = self.state.take_pending_images();
         if !fresh.is_empty() {
             let ordinal = request
@@ -176,15 +176,15 @@ impl<M: CompletionModel> BudgetModel<M> {
             } else {
                 let mut content = Vec::with_capacity(fresh.len() + 1);
                 content.push(UserContent::text(IMAGE_CAPTION));
-                // 后端给的是 data URL（`data:image/png;base64,...`）：原样交给 provider
-                // （OpenAI 与 Anthropic 都接受 data URL 作为图片源），字节不做二次编码。
+                // data URL 必须拆成内联图片，否则 Anthropic 会把它当成待下载的 URL。
                 for url in fresh {
-                    content.push(UserContent::image_url(url, None, None));
+                    content.push(image_from_data_url(&url)?);
                 }
                 self.state.push_injection(Injection { ordinal, content });
             }
         }
         apply_injections(&mut request.chat_history, &self.state.injections());
+        Ok(())
     }
 
     /// 一次尝试：单次调用超时是可重试类失败。
@@ -270,6 +270,16 @@ impl<M: CompletionModel> BudgetModel<M> {
     }
 }
 
+fn image_from_data_url(url: &str) -> Result<UserContent, CompletionError> {
+    let (mime, data) = url
+        .strip_prefix("data:")
+        .and_then(|s| s.split_once(";base64,"))
+        .ok_or_else(|| CompletionError::RequestError("后端图片不是 base64 data URL".into()))?;
+    let media_type = ImageMediaType::from_mime_type(mime)
+        .ok_or_else(|| CompletionError::RequestError("后端图片 MIME 类型无效".into()))?;
+    Ok(UserContent::image_base64(data, Some(media_type), None))
+}
+
 /// 把已注入的批次各自追加到对应序号的工具结果消息末尾。
 /// 序号在「本轮请求的历史」上从头数（外层 seed + 本轮消息），与前缀稳定对应。
 fn apply_injections(history: &mut [Message], injections: &[Injection]) {
@@ -298,7 +308,7 @@ where
         &self,
         mut request: CompletionRequest,
     ) -> Result<CompletionResponse, CompletionError> {
-        self.inject_images(&mut request);
+        self.inject_images(&mut request)?;
         // SAN-9：请求体估算字节——**按段求和**，不整份序列化再丢弃。旧实现
         // `serde_json::to_vec(&request)` 把含 base64 图片的完整请求体序列化
         // 一遍只为拿长度：每轮一次 O(历史) 的 CPU/内存峰值，与「图片峰值内存
@@ -347,7 +357,7 @@ where
         &self,
         mut request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse, CompletionError> {
-        self.inject_images(&mut request);
+        self.inject_images(&mut request)?;
         self.inner.stream(request).await
     }
 
@@ -420,7 +430,7 @@ mod tests {
         let fresh = st.take_pending_images();
         let mut content = vec![UserContent::text(IMAGE_CAPTION)];
         for url in fresh {
-            content.push(UserContent::image_url(url, None, None));
+            content.push(image_from_data_url(&url).unwrap());
         }
         st.push_injection(Injection {
             ordinal: 1,
@@ -437,6 +447,30 @@ mod tests {
         assert!(matches!(&content[2], UserContent::Image(_)));
         // 本轮 prompt（任务二）不受影响：图片挂在工具结果那条上，不会插到 prompt 之前
         assert_eq!(history[2], Message::user("任务二"));
+    }
+
+    #[test]
+    fn data_urls_become_inline_images_without_reencoding() {
+        use rig_agent::completion::message::{DocumentSourceKind, ImageMediaType};
+        for (mime, expected) in [
+            ("image/jpeg", ImageMediaType::JPEG),
+            ("image/png", ImageMediaType::PNG),
+        ] {
+            let UserContent::Image(image) =
+                image_from_data_url(&format!("data:{mime};base64,AAAA")).unwrap()
+            else {
+                panic!("expected image");
+            };
+            assert_eq!(image.data, DocumentSourceKind::Base64("AAAA".into()));
+            assert_eq!(image.media_type, Some(expected));
+        }
+        for invalid in [
+            "https://example.com/image.jpg",
+            "data:image/jpeg,AAAA",
+            "data:text/plain;base64,AAAA",
+        ] {
+            assert!(image_from_data_url(invalid).is_err());
+        }
     }
 
     #[test]

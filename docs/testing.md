@@ -6,19 +6,20 @@
 > 构建步带 `-DMYBOT_WERROR=ON`（README 声称的「零告警」由此成为门禁而非约定）；
 > 与本地 pre-push 钩子同一条守门。
 >
-> 硬门禁 3 条 + `allow_failure` 软门禁 6 条，逐条与 `.gitlab-ci.yml` 一一对应：
+> 硬门禁 4 条 + `allow_failure` 软门禁 6 条，逐条与 `.gitlab-ci.yml` 一一对应：
 
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
 | `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
 | `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检：用例是否真被收集/编译）→ `bash test/run_all.sh`（Release 全量守门） |
 | `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
+| `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh`，缺产物/依赖或超时即失败，`agent-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响 |
 | `gate:tsan` | 软 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
 | `gate:clang` | 软 | clang 构建 + C++ 单测烟雾 |
 | `gate:clang-tidy` | 软 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
 | `gate:coverage` | 软 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`；`COV_WITH_GATE=1` 时另跑一遍全套守门），报告随 artifacts 留档 |
 | `gate:musl` | 软 | alpine/musl 下构建并运行三个常量自检；能构建时再跑 `mybot_tests` |
-| `gate:agent` | 软 | Rust agent（`agent/`，包名 `mybot-agent`；原 MCP sidecar，rig 迁移批次 B 更名）：`cargo build --release`/`test`/`clippy -D warnings`/`fmt --check`（均 `--locked`，`rust:1-slim`）。**整份 CI 里唯一的 Rust job**（不给 7 个 C++ job 加 Rust）。⚠ ASan/UBSan/TSan 只插桩 C++，**对 agent 是盲的**——agent 安全靠 Rust 所有权 + clippy/test，不是 sanitizer |
+| `gate:agent` | 软 | Rust agent（`agent/`，包名 `mybot-agent`；原 MCP sidecar，rig 迁移批次 B 更名）：`cargo build --release`/`test`/`clippy -D warnings`/`fmt --check`（均 `--locked`，`rust:1-slim`）。与 `gate:agent-e2e` 独立，不给既有 C++ jobs 加 Rust。⚠ ASan/UBSan/TSan 只插桩 C++，**对 agent 是盲的**——agent 安全靠 Rust 所有权 + clippy/test，不是 sanitizer |
 
 ### 覆盖率数字的口径与已知盲区（2026-09-21 AG-11 实测）
 
@@ -95,7 +96,7 @@ bash test/run_all.sh agent-all # agent 全表面（过滤口径见下面的方�
 > **不在 `agent-all` 内**：`test_camera.lua`（`capture_image` 依赖的摄像头协议面：
 > 仿真取帧、base64、错误路径）——纳入它会连带 `test_camera_v4l2.lua`（真机用例）。
 > **改动 `modules/Camera.lua` 或图像链路时请单独跑它**。摄像头链路的端到端覆盖在
-> `scripts/agent_e2e.sh` 场景 5（断言线上报文真的带 `image_url` 多模态内容）。
+> `scripts/agent_e2e.sh` 的 R9（OpenAI `image_url`）与 R13（Anthropic base64 图片块及恢复占位）。
 
 ### ctest 逐用例入口（可选）
 
@@ -147,27 +148,30 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 6. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 7. **TCP 异常注入**（复用 `scripts/tcp_adversarial.sh` 场景矩阵：半包/断连/空闲挂死/垃圾帧/口令负路径，每场景独立服务端 + 看门狗）
 8. **agent 端到端两段**（本地假模型服务 `scripts/fake_llm_server.py`，均无需硬件与真实 key）：
-   - `scripts/agent_e2e.sh`——拓扑是**两个进程**：`mybot-agent`（Rust，rig 驱动）↔ `mybot --mcp-backend`（AF_UNIX 帧）。R1 工具循环（三条回执真的从后端回来、动作脚本在**常驻**机器人上被执行、后端侧 Lua 驱动见证）、R2 提示词包进系统提示词、R3 审计轨迹（agent 落 session/model 行、工具行归后端）、R4 REPL + 能力门控（缺 `--agent-shell` 时 `run_command` 不在工具表）、R5 `--check-config` 正负路径、R5m 配置镜像（同一份 `mybot.llm.json` 经两侧现役同名 env `BOT4CJ_LLM_CONFIG` 喂双端 `--check-config` 互钉共享面：配置通道、审计落点、上下文预算、`--audit-log` 的 CLI>file 层序、未知字段/类型错的双端拒绝；C++ 后端模式不消费模型侧字段是 `mergeLlmLayer` 的有意早退，故模型字段不在比对面）、R6 单轮调用上限截断（SAN-1）、R7/R7b 限流 429 重试与恒 503 如实失败（SAN-3）、R8/R8b 单次超时与 SIGINT 取消、R9 图片后注（工具回执进 tool 消息、图片走紧随的 user 消息）、R10 stdout 写失败不 panic 且审计收尾不丢（H2）、**R11 `--session-file`/`--resume` 两进程接力**（批次 D，2026-09-25 落地：进程一落盘 + 完整跑完工具循环，重启假模型服务后进程二 `--resume` 启动，首个请求带着进程一的完整历史，审计 `start` 行 `resumed:true` 且沿用同一 session id；两条免服务负路径——换 `--robot` 令指纹不符退出 2、缺命令行 `--session-file` 的 `--resume` 退出 2）。缺 `mybot-agent` 产物按 **SKIP** 计（Rust 是可选产物），缺 `build/mybot` 判失败。
+   - `scripts/agent_e2e.sh`——拓扑是**两个进程**：`mybot-agent`（Rust，rig 驱动）↔ `mybot --mcp-backend`（AF_UNIX 帧）。R1 工具循环（三条回执真的从后端回来、动作脚本在**常驻**机器人上被执行、后端侧 Lua 驱动见证）、R2 提示词包进系统提示词、R3 审计轨迹（agent 落 session/model 行、工具行归后端）、R4 REPL + 能力门控（缺 `--agent-shell` 时 `run_command` 不在工具表）、R5 `--check-config` 正负路径、R5m 配置镜像（同一份 `mybot.llm.json` 经两侧现役同名 env `BOT4CJ_LLM_CONFIG` 喂双端 `--check-config` 互钉共享面：配置通道、审计落点、上下文预算、`--audit-log` 的 CLI>file 层序、未知字段/类型错的双端拒绝；C++ 后端模式不消费模型侧字段是 `mergeLlmLayer` 的有意早退，故模型字段不在比对面）、R6 单轮调用上限截断（SAN-1）、R7/R7b 限流 429 重试与恒 503 如实失败（SAN-3）、R8/R8b 单次超时与 SIGINT 取消、R9 图片后注（工具回执进 tool 消息、图片走紧随的 user 消息）、R10 stdout 写失败不 panic 且审计收尾不丢（H2）、**R11 `--session-file`/`--resume` 两进程接力**（批次 D，2026-09-25 落地：进程一落盘 + 完整跑完工具循环，重启假模型服务后进程二 `--resume` 启动，首个请求带着进程一的完整历史，审计 `start` 行 `resumed:true` 且沿用同一 session id；两条免服务负路径——换 `--robot` 令指纹不符退出 2、缺命令行 `--session-file` 的 `--resume` 退出 2）。在 `test/run_all.sh` 中缺 `mybot-agent` 产物按 **SKIP** 计（Rust 是可选产物）；直接运行本脚本或 `gate:agent-e2e` 时，两侧产物缺任何一个均判失败。
    - `scripts/mcp_e2e.sh`——C++ 后端 + **纯标准库 Python 帧客户端**直连 socket，独立第三实现对齐线协议字节；socket 父目录 0700 / 文件 0600、能力门控（`run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`，正反两趟）、未知工具回执点名且 `executed=false`、`apply_sql` 带电生效与热删除真的摘掉变量、`read_variables` 带回驱动返回表的键、策略拒绝时 `run_command` 零副作用、fd 卫生（子 shell 不继承后端 socket fd）、审计含失败工具、SIGTERM 优雅停机。
-   - 仍未覆盖（如实记下）：DeepSeek/Anthropic **协议差异**在整条循环上的表现（驱动层报文由 `test/test_llm_drivers.lua` / `test/test_llm_wire_contract.lua` 守）。agent over TCP 远程 REPL 已评估**不做**（2026-09-25，决策记录见 `docs/changelog.md`）。
+   - **R12 DeepSeek**：标准非流式工具响应、Bearer 鉴权、逐轮 `reasoning_content` 原样回传，重启 agent 后首个请求保留完整工具与推理历史。按现役 Rust 语义验证，不承诺配置 `thinking` 生效。
+   - **R13 Anthropic**：`/v1/messages` 与 `x-api-key`/`anthropic-version`、顶层 system、`input_schema`、成对的 `tool_use`/`tool_result`、图片按原始 JPEG 字节发送 base64 source、usage 进入审计；恢复后保留工具历史但图片只留占位，不重发旧画面。假服务会拒绝串错协议或不配对的工具块。
+   - **R14 无硬件闭环**：复用 `robots/test/mcp4725_virt.sql` 与 `scripts/test/mcp4725_virt.mt`，实际执行 `read_variables → run_action_script → read_variables`；假模型解析 DAC 回读，确认 `0 → 2048` 才给完成回答。反例改为写 25%（1024）：三次工具都执行成功，但回读不符必须让任务失败，不能凭调用次数谎报闭环完成。无需 shell 或真实 I2C。
+   - 以上只验证本地协议与虚拟器件，不代表真实云端模型或真实硬件验收；Lua 驱动的协议测试仍由 `test/test_llm_drivers.lua` / `test/test_llm_wire_contract.lua` 独立守。agent over TCP 远程 REPL 已评估**不做**（2026-09-25，见 `docs/changelog.md`）。
 9. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 10. **输入边界加固**，覆盖：
    - `--tcp-host` 非法地址退出码 1、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限
    - `@Daemon` 驱动误配无 `build` 时的回滚路径
    - `mode` 键不得改写 controller 派发目标；驱动 `call()` 漏写 `return` 不得被当成成功；驱动返回自引用表须清晰报错而非宿主栈溢出
-   - agent 专属选项出现在非 agent 模式、`--agent` 与 `--tcp/--input` 互斥、缺 API key、系统提示词超 64 KiB，均须退出码 2
+   - C++ 无条件拒绝已移除的 `--agent`/模型侧选项；后端专属选项误用于其它模式同样退出 2。Rust 的配置错误、缺 API key、提示词超 64 KiB 由 Rust 单测及 E2E 预检覆盖
 11. **守护 tick 故障注入**（总线持续 NACK → 驱动 ERR → 守护不发布、`count` 停滞，主流程仍正常 join）
 12. **进程级 fd 探针**（长动作 + 守护采样期间轮询 `/proc/<pid>/fd`，稳态 fd 数须有界平稳）
 13. **信号/退出路径**（F-08：播放中 SIGTERM → rc=0 + 停派发行 + 守护 `joined, total publishes=`；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错——覆盖 `main.cpp` 的 sigaction 与 `robot.cpp` 的停机分支）
 14. **fixture 孤儿检测**（F3/N-32，无过滤器全量跑时执行）：`robots/test/*.sql` 与 `scripts/test/*.mt` 中未被任何用例表引用的夹具判失败；判据是**整字段精确匹配**（`e2e_cases` 的用例名、`parse_cases` 的两列文件名、`scripts/*.sh`、`CMakeLists.txt`），不是子串——2026-09-20 审计 C11 修正：子串判据下每个真机夹具 `bme280.mt` 都是已登记仿真用例 `bme280_virt` 的子串，26 对真机夹具（52 个文件）因此被误判成「已登记」而从不执行、检测器却报「无孤儿」。实机夹具（需 `/dev/i2c-*`、`/dev/spidev*`、`/dev/gpiochip*`、`/dev/pwmchip*`、`/dev/serial*`）在脚本的 `orphan_whitelist` 显式声明
-15. **系统常量自检**（F-24 + A2，无过滤器全量跑时执行）：四个 C 自检二进制把 **Lua 源里**硬编码的编号与系统头做编译期断言比对，漂移在构建期即失败，执行期再跑一遍作双保险。事实源是 Lua，**不是 C 里的手抄副本**：配置期 `test/gen_const_check.cmake` 从 `modules/lib/HAL.lua`、`modules/Camera.lua`、`modules/lib/llm_http.lua` **纯文本抽取**常量生成 `const_lua.h`，每项做**双边断言**——`Lua 抽取值 == 手抄预期值`（抽取生效 + Lua 未漂移）且 `预期值 == 系统头`（内核/架构未漂移）。抽不到任何必需常量即 `FATAL_ERROR`（静默生成空头会让断言退化成自证）。`test_ioctl_nums`（SPI/GPIO/I2C ioctl + 结构尺寸）、`test_uart_consts`（termios 布局 + 两套波特率表 + 打开标志）、`test_v4l2_consts`（V4L2 ioctl + Camera.lua 的 ABI 尺寸表）三者无外部依赖；第四个 `test_curl_consts` 另需 libcurl 开发头文件（**不是**构建依赖——agent 模式运行期才 dlopen libcurl.so），装了才构建本目标，缺失产物按跳过计（与缺 python3 同口径），CI 安装 `libcurl4-openssl-dev` 保证覆盖
+15. **系统常量自检**（F-24 + A2，无过滤器全量跑时执行）：四个 C 自检二进制把 **Lua 源里**硬编码的编号与系统头做编译期断言比对，漂移在构建期即失败，执行期再跑一遍作双保险。事实源是 Lua，**不是 C 里的手抄副本**：配置期 `test/gen_const_check.cmake` 从 `modules/lib/HAL.lua`、`modules/Camera.lua`、`modules/lib/llm_http.lua` **纯文本抽取**常量生成 `const_lua.h`，每项做**双边断言**——`Lua 抽取值 == 手抄预期值`（抽取生效 + Lua 未漂移）且 `预期值 == 系统头`（内核/架构未漂移）。抽不到任何必需常量即 `FATAL_ERROR`（静默生成空头会让断言退化成自证）。`test_ioctl_nums`（SPI/GPIO/I2C ioctl + 结构尺寸）、`test_uart_consts`（termios 布局 + 两套波特率表 + 打开标志）、`test_v4l2_consts`（V4L2 ioctl + Camera.lua 的 ABI 尺寸表）三者无外部依赖；第四个 `test_curl_consts` 另需 libcurl 开发头文件（**不是**核心构建依赖——保留的 Lua LLM 驱动经 ffi 使用 libcurl，现役 Rust agent 不依赖它），装了才构建本目标，缺失产物按跳过计（与缺 python3 同口径），CI 安装 `libcurl4-openssl-dev` 保证覆盖
 16. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标，零第三方框架），覆盖：
     - 基础设施：JSON 值语义、JSON 文本解析、Lua↔Json 边界与转换深度上限、util 全局助手（安全标识符判据 `isSafeIdent`、深度护栏 `DepthLimitGuard`、CLI 切分 `cli::parseKeyValue`、越界文案模板 `rangeErrorText`）
     - 解析管线：`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、mtmerge 归并核心白盒
     - 守护：never-spawn/abandon 分支
     - 会话变量作用域（2026-09-20 阶段 1）：动作脚本内联 `@Alias` 不跨 `run()` 残留、不遮蔽结构变量、报错脚本不改写注册表、200 轮重复执行后结构名字索引不增长
     - I/O 与错误语义（2026-09-20 阶段 4）：`retryEintr` 只在 EINTR 重试、整文件读取超限报「字节上限」而非「不是合法 JSON」、TCP 口令三态（空闲超时/对端关闭不算鉴权失败，只有凭据错才计数）、表达式语法错误截断回显
-    - agent 模式：规范化协议编解码、配置文件解析与取值优先级、驱动注入与 `ChatTransport` 适配（用假 Lua 驱动，不联网）、工具派发与路径沙箱、工具循环轮次上限与回滚与 extras 透传、任务内预算（降级/终态/记账）
+    - agent 后端：配置文件解析与后端字段合并、能力门控、工具派发与路径沙箱、任务预算与回执；模型装配、工具循环上限与回滚、历史裁剪、会话编解码与推理内容保留由 `agent/src/` 的 Rust 单测负责
     - UTF-8 边界（2026-09-21 AG-1）：`util` 的合法/非法判据与消毒（过长编码、代理区、> U+10FFFF、截断尾部、连续坏字节折叠）、`run_command` 输出与动作脚本首注释的消毒终点、API key 控制字符判据
 
     另有三条纯 Lua 用例：`test/test_json_lua.lua`（Lua 侧 JSON 编解码）、`test/test_llm_drivers.lua`（三个协议驱动的报文整形规则与必填字段断言，含 Anthropic 的形状差异与 fail-closed 族，不碰网络）、`test/test_utf8.lua`（UTF-8 判据与消毒。它与 C++ 侧 `utf8_*` 用例**同表向量**——两边判据必须一致，改动任一侧都要两边过）
@@ -180,7 +184,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 
 - 真机用例（本机无 `/dev/i2c-*` / `/dev/video*` 等）：统一经 `test/lib/device_gate.sh` 读文件内 `-- requires: <dev>` 标记判定，`run_all.sh` 与 ctest 共用同一实现；`video` 类用例可用 `BOT4CJ_TEST_VIDEO=<设备路径>` 指向别的设备（跳过门与测试体都认这个变量，路径不存在则按跳过计）
 - TCP / agent 端到端缺 `python3`
-- agent 端到端缺 `libcurl`（agent 模式的运行期依赖，Lua 驱动经 ffi 加载；驱动 build 会明确报「libcurl 不可用」，本入口据此判跳过而非假绿）
+- `run_all.sh` 的 Rust agent 段缺 `agent/target/release/mybot-agent`（独立可选产物）；专门的 `gate:agent-e2e` 不允许此跳过。现役 Rust agent 不因缺 `libcurl` 跳过
 
 四条反假绿约束（2026-09-20 审计 C8–C10 补齐三条，2026-09-21 AG-5 补第四条）：
 
