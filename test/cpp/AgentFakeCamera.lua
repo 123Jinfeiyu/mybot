@@ -15,10 +15,13 @@
 --   raw_bytes : 目标原始字节数（缺省 0 = 返回空 b64）
 --   omit_bytes: "yes" 时**不返回** bytes 字段（模拟漏填声明的驱动）
 --   format    : 声明的图片格式（缺省 jpeg）
+--   fixed_size: "WxH" 时 call 恒返回该 width/height（模拟「设备把请求就近调档」，
+--               与真驱动返回**协商值**的语义一致；缺省不返回尺寸字段）
 
 local cfg_raw_bytes = 0
 local cfg_omit_bytes = false
 local cfg_format = "jpeg"
+local cfg_fixed_size = nil
 
 local JPEG_HEADER = string.char(0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10)
 	.. "JFIF" .. string.char(0x00)
@@ -52,6 +55,7 @@ function build(data)
 	if data ~= nil then
 		if data.raw_bytes ~= nil then cfg_raw_bytes = tonumber(data.raw_bytes) or 0 end
 		if data.format ~= nil then cfg_format = tostring(data.format) end
+		if data.fixed_size ~= nil then cfg_fixed_size = tostring(data.fixed_size) end
 		cfg_omit_bytes = (data.omit_bytes == "yes")
 	end
 	cfg_raw_bytes = math.floor(cfg_raw_bytes)
@@ -65,10 +69,17 @@ end
 function call(data)
 	local out = {
 		result = "OK",
-		source = "file",
+		source = "v4l2",	-- 扮演**真机**：source=file 会被宿主按仿真路径解读（不缩放、
+				-- 调档说明也不生效），与 fixed_size 的「设备调档」语义冲突
 		format = cfg_format,
 		b64 = base64(JPEG_HEADER .. string.rep("A", math.max(0, cfg_raw_bytes - #JPEG_HEADER))),
 	}
 	if not cfg_omit_bytes then out.bytes = cfg_raw_bytes end
+	if cfg_fixed_size ~= nil then
+		local w, h = cfg_fixed_size:match("^(%d+)x(%d+)$")
+		-- 转成**数字**：真驱动返回的是数值；Lua 字串跨到宿主是 JSON 字符串，
+		-- 宿主的 isInt 判据不认，尺寸会被当成「没报告」而漏掉
+		out.width, out.height = tonumber(w), tonumber(h)
+	end
 	return out
 end

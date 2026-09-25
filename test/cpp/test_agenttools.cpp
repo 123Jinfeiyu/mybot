@@ -1229,6 +1229,137 @@ TH_TEST(agenttools_capture_image_reports_device_failure) {
 	robot.deactivate();
 }
 
+/* ---- #6（2026-09-25）：capture_image 可请求 width/height ----
+ * schema 必须声明这两个可选整数参数（模型是照着描述传参的）；「同给同缺」、
+ * 范围校验在触碰硬件之前（paramError 口径），回执按**实际协商尺寸**如实报告。 */
+TH_TEST(agenttools_capture_image_schema_declares_size_params) {
+	AgentToolContext ctx;
+	ctx.robot = nullptr;
+	ctx.camera = nullptr;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	TH_CHECK(!tools.contains("capture_image"));	/* 无摄像头不注册（既有口径） */
+
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+	AgentToolContext ctx2;
+	ctx2.robot = &robot;
+	ctx2.camera = robot.registry().find("cam0");
+	AgentToolRegistry tools2 = makeAgentTools(ctx2);
+
+	std::string desc, params;
+	for (const ToolSpec& s : tools2.specs()) {
+		if (s.name == "capture_image") { desc = s.description; params = s.parameters.toString(); }
+	}
+	TH_CHECK_MSG(!params.empty(), "capture_image 应已注册");
+	TH_CHECK_MSG(params.find("\"width\"") != std::string::npos, params);
+	TH_CHECK_MSG(params.find("\"height\"") != std::string::npos, params);
+	TH_CHECK_MSG(params.find("\"required\":[]") != std::string::npos,
+		"width/height 是可选的，required 必须为空: " + params);
+	TH_CHECK_MSG(desc.find("640x480") != std::string::npos, desc);
+
+	robot.deactivate();
+}
+
+namespace {
+
+/* 用 AgentFakeCamera 当摄像头的夹具（fixed_size 配成「设备调档后的尺寸」）。
+ * 按声明序析构：registry（值，随函数退出）→ ctx → robot（值）→ reader（值）
+ * → guard → tmp，任意时刻工具上下文持有的都是活对象。 */
+struct FakeCamRig {
+	TempDir tmp;
+	ModulePathGuard guard;
+	std::string sqlText;
+	MemoryReader reader;
+	RobotStruct robot;
+	AgentToolContext ctx;
+	AgentToolRegistry tools;
+
+	FakeCamRig(const std::string& tag, const std::string& fixedSize)
+		: tmp("cam6_" + tag), guard("./modules:test/cpp"),
+		  sqlText("CREATE TABLE AgentFakeCamera (name String, raw_bytes String, omit_bytes String,"
+			" fixed_size String);\n"
+			"INSERT INTO AgentFakeCamera (name, raw_bytes, omit_bytes, fixed_size) "
+			"VALUES ('cam0', '32', 'no', '" + fixedSize + "');\n"),
+		  reader(sqlText), robot(reader), ctx(), tools() {
+		/* 与 litcap 夹具同法：结构脚本声明 AgentFakeCamera 表即可解析到假驱动，
+		 * 不能再 injectLuaDriver（会与表内同名变量撞「Duplicate hardware variable」） */
+		robot.active();
+		ctx.robot = &robot;
+		ctx.camera = robot.registry().find("cam0");
+		tools = makeAgentTools(ctx);
+	}
+};
+
+} // namespace
+
+TH_TEST(agenttools_capture_image_size_param_errors) {
+	FakeCamRig rig("param", "");
+	auto bad = [&](const std::string& args, const std::string& needle) {
+		const AgentToolResult r = rig.tools.execute("capture_image", parseJson(args));
+		TH_CHECK_MSG(!r.ok && r.paramError, args + " → " + r.text);
+		TH_CHECK_MSG(r.imageDataUrl.empty(), "参数错误不该产出图片");
+		TH_CHECK_MSG(r.error.find(needle) != std::string::npos, args + " → " + r.error);
+	};
+	bad("{\"width\":320}", "同时给出");
+	bad("{\"height\":240}", "同时给出");
+	bad("{\"width\":0,\"height\":240}", "width/height 须在");
+	bad("{\"width\":15,\"height\":240}", "width/height 须在");
+	bad("{\"width\":320,\"height\":9000}", "width/height 须在");
+	bad("{\"width\":\"abc\",\"height\":240}", "整数");
+}
+
+TH_TEST(agenttools_capture_image_reports_negotiated_size) {
+	/* 请求 300x200，假设备「就近调档」成 320x240：回执必须报告**实际**值并说明调档 */
+	FakeCamRig rig("nego", "320x240");
+
+	const AgentToolResult res = rig.tools.execute("capture_image",
+		parseJson("{\"width\":300,\"height\":200}"));
+	TH_CHECK_MSG(res.ok, res.text);
+	TH_CHECK_MSG(res.text.find("（320x240）") != std::string::npos, res.text);
+	TH_CHECK_MSG(res.text.find("请求 300x200 被设备就近调档为 320x240") != std::string::npos,
+		res.text);
+	TH_CHECK(res.imageDataUrl.rfind("data:image/jpeg;base64,", 0) == 0);
+
+	/* 请求与协商一致时不出现调档说明 */
+	const AgentToolResult exact = rig.tools.execute("capture_image",
+		parseJson("{\"width\":320,\"height\":240}"));
+	TH_CHECK_MSG(exact.ok, exact.text);
+	TH_CHECK_MSG(exact.text.find("（320x240）") != std::string::npos, exact.text);
+	TH_CHECK_MSG(exact.text.find("调档") == std::string::npos, exact.text);
+}
+
+/* 仿真来源不缩放图片：请求的尺寸必须被如实标注为「无效」，而不是假装生效 */
+TH_TEST(agenttools_capture_image_sim_source_ignores_requested_size) {
+	TempDir tmp("cam6sim");
+	fs::path pic = tmp.path() / "pic.jpg";
+	writeFile(pic, std::string("\xff\xd8\xff", 3) + "foobar");
+
+	MemoryReader reader("CREATE TABLE Timer (name String);\n"
+		"INSERT INTO Timer (name) VALUES ('t0');\n");
+	RobotStruct robot(reader);
+	robot.injectLuaDriver("Camera", "cam0");
+	robot.active();
+
+	AgentToolContext ctx;
+	ctx.robot = &robot;
+	ctx.camera = robot.registry().find("cam0");
+	ctx.cameraSrc = pic.string();
+	ctx.cameraSrcFromCli = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const AgentToolResult res = tools.execute("capture_image",
+		parseJson("{\"width\":128,\"height\":96}"));
+	TH_CHECK_MSG(res.ok, res.text);
+	TH_CHECK_MSG(res.text.find("128x96") != std::string::npos, res.text);
+	TH_CHECK_MSG(res.text.find("对模拟图片无效") != std::string::npos, res.text);
+	TH_CHECK(res.imageDataUrl.rfind("data:image/jpeg;base64,", 0) == 0);
+
+	robot.deactivate();
+}
+
 /* H1：白名单根**不得**由 src 自己推导。
  * 旧实现无条件把 canonical(src).parent_path() 当 src_root —— 而 src 的所在目录
  * 当然包含 src，判据**恒真**，白名单形同不存在：一份落在 CWD 的 ./mybot.llm.json

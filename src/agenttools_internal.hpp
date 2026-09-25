@@ -15,6 +15,11 @@ namespace agent {
 /* JSON Schema 组装（各 make*Tool 共用；agentimage.cpp 的 capture_image 也用） */
 Json toolSchema(const std::vector<std::pair<std::string, Json>>& props,
 	const std::vector<std::string>& required);
+Json intParam(const std::string& desc);
+
+/* 可选整数参数：缺失/null 取 fallback；类型不符、越界、非有限一律抛
+ * IllegalArgumentException（不静默回落——模型会把「被忽略」误读成「已生效」） */
+int optionalInt(const Json& args, const std::string& key, int fallback);
 
 /* 动作脚本读取（M2/B2-3 单点）：底层 FD 骨架是 util::readFdNoFollowLimited，
  * 中文报错文案被 grep 守门锚定；agentview.cpp（describeActionScripts 取首注释）

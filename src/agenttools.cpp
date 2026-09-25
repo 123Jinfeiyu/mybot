@@ -60,6 +60,10 @@ std::string requireString(const Json& args, const std::string& key) {
 	return v->s;
 }
 
+} // namespace
+
+/* optionalInt / intParam 为模块内接缝（agenttools_internal.hpp）：agentimage.cpp 的
+ * capture_image 自 2026-09-25（#6）起也接收可选整数参数，判据必须与本 TU 同一份。 */
 int optionalInt(const Json& args, const std::string& key, int fallback) {
 	auto v = args.get(key);
 	/* 键缺失或显式 null 都算「未提供」：模型常给可选字段填 null，
@@ -89,17 +93,19 @@ int optionalInt(const Json& args, const std::string& key, int fallback) {
 	throw IllegalArgumentException("参数 " + key + " 类型不符：需要整数");
 }
 
-/* ---- JSON Schema 小工具 ---- */
-Json stringParam(const std::string& desc) {
+Json intParam(const std::string& desc) {
 	Json p = JsonObject();
-	p.put("type", JsonString("string"));
+	p.put("type", JsonString("integer"));
 	p.put("description", JsonString(desc));
 	return p;
 }
 
-Json intParam(const std::string& desc) {
+namespace {
+
+/* ---- JSON Schema 小工具 ---- */
+Json stringParam(const std::string& desc) {
 	Json p = JsonObject();
-	p.put("type", JsonString("integer"));
+	p.put("type", JsonString("string"));
 	p.put("description", JsonString(desc));
 	return p;
 }

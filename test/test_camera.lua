@@ -535,4 +535,101 @@ do
 		tostring(r4.message):find("V4L2_BUF_FLAG_ERROR", 1, true) ~= nil, tostring(r4.message))
 end
 
+-- ---- #6（2026-09-25）：width/height 逐次可指定，尺寸变了要重协商 ----
+-- capture_image 从此把模型请求的尺寸透传给驱动。V4L2 起流后 S_FMT 不可改，
+-- 所以「尺寸与上次请求不同」必须走 close → reopen；而「同一请求」不能重开
+-- （否则每次拍照都多一次起流 + 首帧丢弃）。判据对比的是**请求值**而非协商值：
+-- 设备就近调档（请求 300x200 → 得 320x240）时按协商值比对会每次都重开。
+do
+	local hal = dofile("modules/lib/HAL.lua")
+	local real = {
+		open = hal.sys.open, close = hal.sys.close,
+		ioctl_p = hal.sys.ioctl_p, errno = hal.sys.errno,
+	}
+	local GOOD = "\255\216\255\224" .. string.rep("\0\1\2\3", 8) .. "\255\217"
+	local BUF = 65536
+	local IOCTL_S_FMT = 0xc0d05605
+
+	local opens, sfmt_seen = 0, {}
+	local negotiate = nil		-- function(w, h) -> w', h'：模拟设备就近调档
+	local path = os.tmpname()
+	write_file(path, GOOD .. string.rep("\0", BUF - #GOOD))
+	local fd = tonumber(ffi.C.open(path, 2))
+	os.remove(path)
+	hal.sys.open = function() opens = opens + 1; return fd end
+	hal.sys.close = function() return 0 end
+	hal.sys.errno = function() return 0 end
+	hal.sys.ioctl_p = function(_, req, p)
+		if req == 0x80685600 then p.capabilities = 1 end
+		if req == IOCTL_S_FMT then
+			local w, h = tonumber(p.fmt.pix.width), tonumber(p.fmt.pix.height)
+			sfmt_seen[#sfmt_seen + 1] = { w, h }
+			if negotiate ~= nil then
+				local nw, nh = negotiate(w, h)
+				p.fmt.pix.width, p.fmt.pix.height = nw, nh
+			end
+		end
+		if req == 0xC0585609 then p.length = BUF end
+		if req == 0xC0585611 then p.index = 0; p.bytesused = #GOOD; p.flags = 0 end
+		return 0
+	end
+	local function restore()
+		for k, v in pairs(real) do hal.sys[k] = v end
+	end
+
+	local ok = pcall(function()
+		-- ① 不给尺寸 → 缺省 640x480
+		local r = call({ path = "/dev/video0" })
+		check("#6：缺省尺寸仍为 640x480", r.result == "OK" and sfmt_seen[1][1] == 640
+			and sfmt_seen[1][2] == 480, tostring(r.message))
+		check("#6：首次调用打开一次", opens == 1, tostring(opens))
+
+		-- ② 同尺寸再拍：不重开
+		r = call({ path = "/dev/video0", width = 640, height = 480 })
+		check("#6：显式给出与当前相同的尺寸不重开", r.result == "OK" and opens == 1,
+			"opens=" .. opens)
+		r = call({ path = "/dev/video0" })
+		check("#6：缺省与 640x480 视为同一请求，不重开", r.result == "OK" and opens == 1,
+			"opens=" .. opens)
+
+		-- ③ 换尺寸：重开且 S_FMT 收到新值，结果如实报协商值
+		r = call({ path = "/dev/video0", width = 320, height = 240 })
+		check("#6：尺寸变更触发重开", opens == 2, "opens=" .. opens)
+		check("#6：S_FMT 收到请求的 320x240",
+			#sfmt_seen == 2 and sfmt_seen[2][1] == 320 and sfmt_seen[2][2] == 240,
+			#sfmt_seen > 1 and (sfmt_seen[#sfmt_seen][1] .. "x" .. sfmt_seen[#sfmt_seen][2]) or "n/a")
+		check("#6：返回表报告 320x240", r.result == "OK" and r.width == 320 and r.height == 240,
+			tostring(r.width) .. "x" .. tostring(r.height))
+
+		-- ④ 设备就近调档：请求 300x200 → 设备给 320x240；返回实际值，且重复同一请求不重开
+		negotiate = function() return 320, 240 end
+		r = call({ path = "/dev/video0", width = 300, height = 200 })
+		check("#6：调档后返回的是协商值 320x240（不是请求值）",
+			r.result == "OK" and r.width == 320 and r.height == 240,
+			tostring(r.width) .. "x" .. tostring(r.height))
+		local before = opens
+		r = call({ path = "/dev/video0", width = 300, height = 200 })
+		check("#6：同一请求（虽与协商值不等）不重开", r.result == "OK" and opens == before,
+			"opens=" .. opens .. " before=" .. before)
+		negotiate = nil
+
+		-- ⑤ 入参校验：只给一个 / 非正整数 → ERR 契约，且不触碰设备
+		before = opens
+		local bad1 = call({ path = "/dev/video0", width = 320 })
+		check("#6：只给 width → ERR", bad1.result == "ERR"
+			and tostring(bad1.message):find("together", 1, true) ~= nil, tostring(bad1.message))
+		local bad2 = call({ path = "/dev/video0", width = 0, height = 240 })
+		check("#6：width=0 → ERR", bad2.result == "ERR"
+			and tostring(bad2.message):find("positive integer", 1, true) ~= nil, tostring(bad2.message))
+		local bad3 = call({ path = "/dev/video0", width = 320.5, height = 240 })
+		check("#6：非整数 → ERR", bad3.result == "ERR", tostring(bad3.message))
+		local bad4 = call({ path = "/dev/video0", width = "abc", height = 240 })
+		check("#6：非数值 → ERR", bad4.result == "ERR", tostring(bad4.message))
+		check("#6：参数错误不触碰设备（未重开）", opens == before, "opens=" .. opens)
+	end)
+	destroy({})
+	restore()
+	check("#6：用例体无 Lua error", ok)
+end
+
 tester.summary("Camera.lua 单测")

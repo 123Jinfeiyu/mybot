@@ -94,7 +94,7 @@
 | `Monitor` | 消费 `$` 引用快照的观察/决策变量 |
 | `bitcompat` | Lua 5.1/5.3 位运算兼容库（非驱动） |
 | `LlmOpenAI` | **模型协议驱动**：OpenAI 兼容（当前协议：moma 网关 + zhipu/glm）；经 `lib/llm_http.lua` ffi 直驱 libcurl。供 `.mt` 脚本/`@Daemon` 直接调用（agent 会话走 Rust agent，不经此链路） |
-| `Camera` | **摄像头驱动**：V4L2 mmap 取帧、只取硬件编码的 MJPEG（ffi，无第三方库）；`src=<图片>` 为仿真模式。agent 模式的 `capture_image` 工具用它 |
+| `Camera` | **摄像头驱动**：V4L2 mmap 取帧、只取硬件编码的 MJPEG（ffi，无第三方库）；`src=<图片>` 为仿真模式。agent 模式的 `capture_image` 工具用它。调用参数可带 `width`/`height`（正整数，须同给同缺）：与上次请求不同即重开设备重协商 `VIDIOC_S_FMT`，返回表报**实际协商尺寸**（设备可能就近调档） |
 | `LlmDeepSeek` | **模型协议驱动**：DeepSeek（思考模式、`reasoning_content` 回传、采样参数限制）；与 `LlmOpenAI` 共用 `lib/llm_wire_openai.lua` 骨架 |
 | `LlmAnthropic` | **模型协议驱动**：Anthropic Messages 协议（system 为顶层字段、tool 结果并入 user 消息、非 Bearer 鉴权）；协议整形在本文件与 `lib/llm_wire_anthropic.lua`，宿主一行未改 |
 

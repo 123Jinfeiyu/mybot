@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <string>
+#include <limits>
 
 #include "robot.hpp"
 
@@ -159,12 +160,25 @@ std::string dataUrlMimeFor(const Json& res, const std::string& b64) {
 
 /* ---- capture_image 辅助函数（阶段 1 拆分）---- */
 
-static Json buildCameraParams(const AgentToolContext& ctx) {
+/* #6（2026-09-25）：模型可请求的采集尺寸界。宿主是界值的**单点**（Lua 驱动只查
+ * 「正整数」——界值若在两处各写一份必然漂移）。16 起：更小的请求没有实际意义且
+ * 部分 UVC 设备在极小尺寸上行为怪；8192 封顶：MJPEG 设备的常见上限（UVC 规范
+ * 最高 4K 一档附近），也让「请求 2^31 把 S_FMT 打穿」在进 V4L2 之前就被拒。 */
+constexpr int kCaptureMinDim = 16;
+constexpr int kCaptureMaxDim = 8192;
+
+static Json buildCameraParams(const AgentToolContext& ctx, int reqW, int reqH) {
 	Json params = JsonObject();
 	/* 只在显式配置时才传 path/src：结构脚本若把同名列声明成元数据列，
 	 * 再传同名参数会被 rejectReservedKeys 拒掉（结构脚本优先）。 */
 	if (!ctx.cameraDevice.empty()) {
 		params.put("path", JsonString(ctx.cameraDevice));
+	}
+	/* width/height 同样只在模型显式请求时传：缺省不传 → 驱动维持既有尺寸，
+	 * 「没传」与「请求 640x480」在驱动侧是同一请求，不会白重开一次。 */
+	if (reqW > 0) {
+		params.put("width", JsonInt(reqW));
+		params.put("height", JsonInt(reqH));
 	}
 	if (!ctx.cameraSrc.empty()) {
 		params.put("src", JsonString(ctx.cameraSrc));
@@ -197,13 +211,31 @@ static void validateImageSize(const Json& res, std::size_t b64Size) {
 	}
 }
 
-static std::string buildImageDescription(const Json& res) {
+/* 驱动返回的尺寸是 int64（Json）；描述只拼文本。越界值（驱动 bug）钳到 int 界，
+ * 显式窄化顺带消掉 clang-tidy 的 bugprone-narrowing-conversions。 */
+static int clampDimToInt(std::int64_t v) {
+	return v > std::numeric_limits<int>::max() ? std::numeric_limits<int>::max()
+		: (v < std::numeric_limits<int>::min() ? std::numeric_limits<int>::min()
+			: static_cast<int>(v));
+}
+
+static std::string buildImageDescription(const Json& res, int reqW, int reqH) {
 	std::string desc = "已拍摄照片";
-	auto w = res.get("width");
-	auto h = res.get("height");
-	if (w && h && w->isInt() && h->isInt()) {
-		desc += "（" + std::to_string(w->getInt()) + "x"
-			+ std::to_string(h->getInt()) + "）";
+	const Json* w = res.find("width");
+	const Json* h = res.find("height");
+	const bool haveActual = w && h && w->isInt() && h->isInt();
+	const int actualW = haveActual ? clampDimToInt(w->getInt()) : 0;
+	const int actualH = haveActual ? clampDimToInt(h->getInt()) : 0;
+	/* 回执如实区分三种（2026-09-25 #6）：报告**实际**尺寸；请求与实际不符时
+	 * 说明「设备就近调档」，模型据此知道想缩小画面要多试几档；仿真来源不缩放
+	 * 图片，请求的尺寸无效必须明说，否则模型会以为已拿到小图。 */
+	if (haveActual) {
+		desc += "（" + std::to_string(actualW) + "x" + std::to_string(actualH) + "）";
+		if (reqW > 0 && (reqW != actualW || reqH != actualH)) {
+			desc += "，请求 " + std::to_string(reqW) + "x" + std::to_string(reqH)
+				+ " 被设备就近调档为 " + std::to_string(actualW) + "x"
+				+ std::to_string(actualH);
+		}
 	}
 	auto bytes = res.get("bytes");
 	if (bytes && bytes->isInt()) {
@@ -211,7 +243,11 @@ static std::string buildImageDescription(const Json& res) {
 	}
 	auto src = res.get("source");
 	if (src && src->isStr() && src->getValue() == "file") {
-		desc += "，来源：模拟图片";
+		desc += "，来源：模拟图片（按文件原始尺寸，不缩放）";
+		if (reqW > 0) {
+			desc += "；请求的 " + std::to_string(reqW) + "x" + std::to_string(reqH)
+				+ " 尺寸对模拟图片无效";
+		}
 	}
 	return desc + "。画面已加入你的上下文。";
 }
@@ -220,12 +256,40 @@ AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 	return AgentTool{
 		"capture_image",
 		"拍摄一张机器人当前环境的照片。图片会直接进入你的上下文，你能看到画面内容；"
-		"任务涉及观察环境、寻找物体、判断前方是否有障碍时，先调用它再做结论。",
-		toolSchema({}, {}),
-		[ctx](const Json&) -> AgentToolResult {
-			Json params = buildCameraParams(ctx);
+		"任务涉及观察环境、寻找物体、判断前方是否有障碍时，先调用它再做结论。"
+		"可选的 width/height（像素，须同时给出，" + std::to_string(kCaptureMinDim)
+			+ ".." + std::to_string(kCaptureMaxDim)
+			+ "）指定采集尺寸，缺省 640x480；换尺寸会重开设备，代价高于同尺寸连拍，"
+			"故只在确实需要时给。模拟图片来源不缩放。",
+		toolSchema({{"width", intParam("采集宽度（像素，"
+				    + std::to_string(kCaptureMinDim) + ".."
+				    + std::to_string(kCaptureMaxDim) + "，与 height 同时给出）")},
+				{"height", intParam("采集高度（像素，"
+				    + std::to_string(kCaptureMinDim) + ".."
+				    + std::to_string(kCaptureMaxDim) + "，与 width 同时给出）")}},
+			{}),
+		[ctx](const Json& args) -> AgentToolResult {
+			/* ---- 尺寸参数：全部校验在触碰硬件之前（错即 paramError）----
+			 * fallback 取 -1 当「未给」哨兵：0 是**合法输入**（要被范围校验拒掉），
+			 * 不能用 0 兼任哨兵，否则 width=0 会被误报成「必须同时给出」。
+			 * 负数同理只可能是哨兵（optionalInt 已按 int 界收口）——给一半、
+			 * 给 0、给越界分别走下面三条，互不掩盖。 */
+			int reqW = optionalInt(args, "width", -1);
+			int reqH = optionalInt(args, "height", -1);
+			if ((reqW < 0) != (reqH < 0)) {
+				throw IllegalArgumentException("参数 width 与 height 必须同时给出");
+			}
+			if (reqW >= 0 && (reqW < kCaptureMinDim || reqW > kCaptureMaxDim
+					|| reqH < kCaptureMinDim || reqH > kCaptureMaxDim)) {
+				throw IllegalArgumentException("参数 width/height 须在 "
+					+ std::to_string(kCaptureMinDim) + ".."
+					+ std::to_string(kCaptureMaxDim) + " 之间，实际 "
+					+ std::to_string(reqW) + "x" + std::to_string(reqH));
+			}
+
+			Json params = buildCameraParams(ctx, reqW, reqH);
 			Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
-			
+
 			/* 借用而非拷贝（AG-19）：Json::getValue() 按值返回，一次拍照原本要
 			 * 为同一串 base64 拷 6 次（本函数 5 处 + 体积判据 1 处）。 */
 			const Json* b64Node = res.find("b64");
@@ -233,11 +297,11 @@ AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 				throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
 			}
 			const std::string& b64 = b64Node->s;
-			
+
 			validateImageSize(res, b64.size());
-			
-			std::string desc = buildImageDescription(res);
-			
+
+			std::string desc = buildImageDescription(res, reqW, reqH);
+
 			/* MIME 取自**驱动返回的格式**（2026-09-21 审计 AG-9），不再硬编码
 			 * image/jpeg：仿真来源可以是 PNG/GIF/WebP，硬编码会把「JPEG 标签 +
 			 * PNG 字节」发给网关，严格解析器直接 400。驱动侧已按魔数判定并对

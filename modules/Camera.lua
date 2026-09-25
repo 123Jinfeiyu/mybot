@@ -322,6 +322,30 @@ local function device_close()
 	-- 的组合，调用方的 `state.fd < 0 or state.path ~= path` 判定 B 已打开，
 	-- 直接拿半初始化的 fd 去抓帧。
 	state.path = nil
+	state.req_width, state.req_height = nil, nil
+end
+
+-- 调用参数里的请求尺寸（缺省 640x480）。已由 validate_size 校验过，这里只取值。
+local function requested_size(data)
+	return tonumber(data.width) or DEFAULT_WIDTH, tonumber(data.height) or DEFAULT_HEIGHT
+end
+
+-- width/height 须同为缺省或同为正整数（2026-09-25 #6：尺寸从此可由 capture_image
+-- 调用方逐次指定，不再只有结构脚本元数据一条路）。只给一个会让「另一个取缺省」
+-- 悄悄成立——请求 1280 宽却拿到 1280x480，宁可拒绝。
+local function validate_size(data)
+	local w, h = data.width, data.height
+	if w == nil and h == nil then return true end
+	if w == nil or h == nil then
+		return nil, "width and height must be given together"
+	end
+	for _, pair in ipairs({ { "width", w }, { "height", h } }) do
+		local n = tonumber(pair[2])
+		if n == nil or n < 1 or n ~= math.floor(n) then
+			return nil, string.format("%s must be a positive integer, got %s", pair[1], tostring(pair[2]))
+		end
+	end
+	return true
 end
 
 -- 打开失败的统一出口：**先释放本次已申请的全部资源**（fd + 已 mmap 的缓冲）
@@ -349,8 +373,7 @@ local function device_open(path, data)
 		return open_fail(string.format("%s 不支持视频采集（capabilities=0x%x）", path, caps))
 	end
 
-	local width = tonumber(data.width) or DEFAULT_WIDTH
-	local height = tonumber(data.height) or DEFAULT_HEIGHT
+	local width, height = requested_size(data)
 	local fmt = ffi.new("cam_format")
 	fmt.type = BUF_TYPE_VIDEO_CAPTURE
 	fmt.fmt.pix.width = width
@@ -368,6 +391,10 @@ local function device_open(path, data)
 	end
 	state.width = fmt.fmt.pix.width
 	state.height = fmt.fmt.pix.height
+	-- 记「请求的」而非「协商到的」尺寸（2026-09-25 #6）：设备常把请求就近调到
+	-- 支持档位（请求 300x200 → 得 320x240），若按协商值判「是否要重开」，同一请求
+	-- 每次调用都会与协商值不等而重开一遍。
+	state.req_width, state.req_height = width, height
 
 	local req = ffi.new("cam_requestbuffers")
 	req.count = BUFFER_COUNT
@@ -562,7 +589,13 @@ function call(data)
 	if type(path) ~= "string" or path:match("^/dev/video%d+$") == nil then
 		return err("camera device path must be /dev/videoN: " .. tostring(path))
 	end
-	if state.fd < 0 or state.path ~= path then
+	local size_ok, size_err = validate_size(data)
+	if not size_ok then return err(size_err) end
+	-- 尺寸以本次调用为准（与 path 同一原则）：与上次打开时**请求**的不同就重开
+	-- 重协商——V4L2 的 S_FMT 在起流后不可改，只能 STREAMOFF/munmap/close 后重来。
+	local want_w, want_h = requested_size(data)
+	if state.fd < 0 or state.path ~= path
+		or state.req_width ~= want_w or state.req_height ~= want_h then
 		device_close()
 		local ok, oerr = device_open(path, data)
 		if not ok then return err(oerr) end
