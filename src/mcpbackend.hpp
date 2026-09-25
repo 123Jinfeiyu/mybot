@@ -56,7 +56,8 @@ struct AgentModeConfig;	/* 定义在 agentmode.hpp；此处只按引用/常量�
  * kJsonMaxBytes）。libmsg 的上限是 64 MiB，但一个 64 MiB 的合法帧会被我们的
  * 解析器以一个离真实成因很远的错误拒掉（评估 §2.3 缺点 4），故在帧层就先收紧。
  * 跨进程契约：Rust 侧 agent/src/frame.rs 的 MAX_FRAME_BYTES 是同一常量的孪生，
- * 改动必须双侧同步（agent_e2e 的越界用例与两侧单测各自锚住己侧）。 */
+ * 改动必须双侧同步（agent_e2e 的越界用例与两侧单测各自锚住己侧；
+ * test_mcpbackend 的 mcpbackend_frame_limit_matches_rust_twin 读源比对钉住）。 */
 inline constexpr std::size_t kMcpMaxFrameBytes = 8u << 20;
 
 /* 帧头长度：4 字节 big-endian uint32 载荷字节长（与 pymsg/gomsg/libmsg 字节兼容，

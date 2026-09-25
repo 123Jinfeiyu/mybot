@@ -45,6 +45,10 @@ pub struct ToolSpec {
 }
 
 /// 一条工具回执的七个字段（后端 `data`）。
+/// 与后端 `AgentToolResult`（src/agenttools.hpp，JSON 键序列化在
+/// src/mcpbackend.cpp 的 routeToolCall）逐字段对应 camel↔snake：加/删/改字段
+/// 必须双侧同步——C++ 侧 test_mcpbackend 的
+/// mcpbackend_toolresult_schema_matches_rust_outcome 读本文件比对钉住。
 #[derive(Debug, Clone, Default)]
 pub struct ToolOutcome {
     pub text: String,

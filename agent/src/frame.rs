@@ -23,6 +23,8 @@ pub const HEADER_LEN: usize = 4;
 
 /// 帧载荷上限：8 MiB——与后端 `src/mcpbackend.hpp` 的 `kMcpMaxFrameBytes` 是同一
 /// 契约的两份常量（对齐 jsonparse 的 kJsonMaxBytes），改动必须双侧同步。
+/// 跨语言一致由 C++ 侧 test_mcpbackend 的 mcpbackend_frame_limit_matches_rust_twin
+/// 读本文件比对钉住（改本常量会红那条用例）。
 pub const MAX_FRAME_BYTES: u32 = 8 * 1024 * 1024;
 
 /// 把载荷封成一帧：4 字节 BE 长度前缀 + 载荷。纯函数，便于单测。

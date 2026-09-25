@@ -56,7 +56,9 @@
 #
 # 用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
 #   本文件**只有 Rust 一种模式**：跑 R1-R10（mybot-agent；R1-R5 批次 B 骨架、
-#   R6-R9 批次 C 循环层、R10 审计 H2 修复），拓扑是「后端 + mybot-agent」两个进程；
+#   R6-R9 批次 C 循环层、R10 审计 H2 修复；R5m 为配置镜像黄金测试——同一
+#   mybot.llm.json 喂双端 --check-config 互钉共享字段），拓扑是「后端 +
+#   mybot-agent」两个进程；
 #   缺 agent/target/release/mybot-agent 时直接报错退出（守门那边按 SKIP 计，
 #   见 test/lib/sections/net_agent.sh）。`--rust` 保留为兼容空参（既有调用与
 #   scripts/build_agent.sh 都还带着它）。
@@ -448,6 +450,134 @@ if [ "$rcr5b" -eq 2 ]; then
 	echo "  [OK] 缺 endpoint 时退出 2（fail-closed，不猜网关）"
 else
 	echo "  [FAIL] 缺 endpoint 时应退出 2，实际 $rcr5b"
+	fail=1
+fi
+
+# ---- R5m：配置镜像黄金测试（2026-09-25）----
+# config.rs 逐条镜像 llmconfig.cpp+agentmode.cpp 的解析与拒绝语义；但迁 Rust 后
+# C++ 宿主的现役形态是 --mcp-backend，mergeLlmLayer 在后端模式**整层跳过模型侧
+# 字段**（endpoint/model/key/采样是 agent 的事，agentmode.cpp 的 mcpBackend 早退）。
+# 故两侧真正共享、可互钉的语义面是：
+#   ① 配置文件解析与拒绝——两侧都全量 parse（未知字段/类型错都退出 2）；
+#   ② 后端侧字段的生效——预算、审计落点（C++ 门控/审计与 Rust 循环各用一半，
+#     但两侧都从同一份文件读同一批字段）；
+#   ③ 配置文件通道本身——BOT4CJ_LLM_CONFIG（两侧现役同名 env，CLI 的
+#     --llm-config 已是 Rust 专属，C++ 侧显式拒绝）。
+# 分层用 audit_log 钉 file/CLI 两层（--audit-log 两侧都收）；摘要行集两侧本来就
+# 不同（后端与 agent 关注项各异），能对齐的是值不是行。
+echo "----- R5m：配置镜像（同一 fixture 双端互钉） -----"
+R5M="$tmp/rust5m"
+mkdir -p "$R5M"
+CFGR5M="$R5M/mirror.json"
+cat > "$CFGR5M" <<JSON
+{
+  "driver": "LlmOpenAI",
+  "endpoint": "http://127.0.0.1:9/v1/chat/completions",
+  "model": "cfg-model-from-file",
+  "api_key": "cfg-key-from-file",
+  "timeout": 30,
+  "max_tokens": 1234,
+  "temperature": 0.25,
+  "max_turns": 6,
+  "max_history_bytes": 4096,
+  "max_task_tool_result_bytes": 8192,
+  "max_task_image_bytes": 16384,
+  "audit_log": "$R5M/audit-file.jsonl"
+}
+JSON
+chmod 600 "$CFGR5M"
+
+# 环境清场：密钥/接入点 env 名单与两侧实现同源（agentmode.cpp / config.rs），
+# 变体运行再按需注入——否则开发者 shell 里已有的配置会让「文件生效」变成假绿。
+r5m_envclean=(env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY -u BOT4CJ_LLM_ENDPOINT)
+r5m_line_of() { printf '%s\n' "$1" | grep -F "$2" | head -1; }
+r5m_num_of() { printf '%s\n' "$1" | grep -oE "$2" | head -1; }
+r5m_num_eq() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 == b + 0) }'; }
+r5m_cmp_line() { # $1=cpp $2=rs $3=行标签 $4=说明
+	local a b
+	a="$(r5m_line_of "$1" "$3")"; b="$(r5m_line_of "$2" "$3")"
+	if [ -n "$a" ] && [ "$a" = "$b" ]; then
+		echo "  [OK] $4"
+	else
+		echo "  [FAIL] $4"
+		echo "    C++ : ${a:-<缺行>}"
+		echo "    Rust: ${b:-<缺行>}"
+		fail=1
+	fi
+}
+r5m_cmp_num() { # $1=cpp $2=rs $3=cpp正则 $4=rs正则 $5=说明
+	local a b
+	a="$(r5m_num_of "$1" "$3")"; b="$(r5m_num_of "$2" "$4")"
+	if [ -n "$a" ] && [ -n "$b" ] \
+			&& r5m_num_eq "$(printf '%s' "$a" | tr -cd '0-9.')" "$(printf '%s' "$b" | tr -cd '0-9.')"; then
+		echo "  [OK] $5（$a ↔ $b）"
+	else
+		echo "  [FAIL] $5（C++ '${a:-<缺>}' vs Rust '${b:-<缺>}'）"
+		fail=1
+	fi
+}
+
+# 基准层：配置文件经 BOT4CJ_LLM_CONFIG 进两侧（C++ 的 --llm-config 已被显式拒绝，
+# 这正是两侧现役的同名 env 通道）；模型侧字段两侧都全量 parse，但只有 Rust 消费。
+out5m_cpp="$("${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$CFGR5M" timeout 20 "$BOT" \
+	--robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot-agent-e2e.sock \
+	--check-config 2>&1)"; rc5m_cpp=$?
+out5m_rs="$("${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$CFGR5M" timeout 20 "$AGENT_BIN" \
+	--check-config --socket /tmp/mybot-agent-e2e.sock 2>&1)"; rc5m_rs=$?
+if [ "$rc5m_cpp" -eq 0 ] && [ "$rc5m_rs" -eq 0 ]; then
+	echo "  [OK] 同一 fixture 双端 --check-config 都退出 0"
+else
+	echo "  [FAIL] --check-config 退出码 C++=$rc5m_cpp Rust=$rc5m_rs（配置本身合法）"
+	echo "$out5m_cpp" | sed 's/^/    [cpp] /'
+	echo "$out5m_rs" | sed 's/^/    [rs ] /'
+	fail=1
+fi
+r5m_cmp_line "$out5m_cpp" "$out5m_rs" "配置文件    : " "配置文件通道（同名 env）双端一致"
+r5m_cmp_line "$out5m_cpp" "$out5m_rs" "审计轨迹    : " "审计落点（文件 audit_log）双端一致"
+r5m_cmp_num "$out5m_cpp" "$out5m_rs" "历史 [0-9]+" "历史 [0-9]+" "历史预算双端一致"
+r5m_cmp_num "$out5m_cpp" "$out5m_rs" "单任务文本 [0-9]+" "任务文本 [0-9]+" "任务文本预算双端一致"
+r5m_cmp_num "$out5m_cpp" "$out5m_rs" "单任务图片 [0-9]+" "任务图片 [0-9]+" "任务图片预算双端一致"
+
+# CLI 层：--audit-log 两侧都收，必须同侧压过文件的 audit_log（分层顺序 CLI > file）
+out5m_cpp_cli="$("${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$CFGR5M" timeout 20 "$BOT" \
+	--robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot-agent-e2e.sock \
+	--check-config --audit-log "$R5M/audit-cli.jsonl" 2>&1)"
+out5m_rs_cli="$("${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$CFGR5M" timeout 20 "$AGENT_BIN" \
+	--check-config --socket /tmp/mybot-agent-e2e.sock --audit-log "$R5M/audit-cli.jsonl" 2>&1)"
+r5m_cmp_line "$out5m_cpp_cli" "$out5m_rs_cli" "审计轨迹    : " "CLI --audit-log 压过文件（双端一致）"
+
+# 负路径镜像：未知字段（拼错的 "apikey"）与类型错（temperature 给字符串）——
+# 静默走缺省正是这层校验存在的理由（llmconfig.cpp F2-8 / config.rs 同口径），
+# 两侧都必须退出 2。模型侧字段仍在 fixture 里：C++ 后端虽不消费，parse 照做。
+BAD5M="$R5M/bad.json"
+printf '{ "endpoint": "http://127.0.0.1:9/v1/chat/completions", "apikey": "typo" }\n' > "$BAD5M"
+BADT5M="$R5M/badtype.json"
+printf '{ "endpoint": "http://127.0.0.1:9/v1/chat/completions", "api_key": "k", "temperature": "hot" }\n' > "$BADT5M"
+"${r5m_envclean[@]}" timeout 20 "$BOT" --robot=robots/relay-test.sql --mcp-backend \
+	--mcp-socket /tmp/mybot-agent-e2e.sock --check-config --llm-config "$BAD5M" \
+	>/dev/null 2>&1; rc5m_bad_cpp=$?
+"${r5m_envclean[@]}" timeout 20 "$AGENT_BIN" --check-config \
+	--socket /tmp/mybot-agent-e2e.sock --llm-config "$BAD5M" >/dev/null 2>&1
+rc5m_bad_rs=$?
+"${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$BADT5M" timeout 20 "$BOT" --robot=robots/relay-test.sql \
+	--mcp-backend --mcp-socket /tmp/mybot-agent-e2e.sock --check-config >/dev/null 2>&1
+rc5m_badt_cpp=$?
+"${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$BADT5M" timeout 20 "$AGENT_BIN" --check-config \
+	--socket /tmp/mybot-agent-e2e.sock >/dev/null 2>&1
+rc5m_badt_rs=$?
+"${r5m_envclean[@]}" timeout 20 "$AGENT_BIN" --check-config \
+	--socket /tmp/mybot-agent-e2e.sock --llm-config "$BADT5M" >/dev/null 2>&1
+rc5m_badt_rs_cli=$?
+if [ "$rc5m_bad_cpp" -eq 2 ] && [ "$rc5m_bad_rs" -eq 2 ]; then
+	echo "  [OK] 未知字段拒绝双端镜像（都退出 2）"
+else
+	echo "  [FAIL] 未知字段应双端退出 2，实际 C++=$rc5m_bad_cpp Rust=$rc5m_bad_rs"
+	fail=1
+fi
+if [ "$rc5m_badt_cpp" -eq 2 ] && [ "$rc5m_badt_rs" -eq 2 ] && [ "$rc5m_badt_rs_cli" -eq 2 ]; then
+	echo "  [OK] 字段类型错拒绝双端镜像（都退出 2）"
+else
+	echo "  [FAIL] 类型错应双端退出 2，实际 C++=$rc5m_badt_cpp Rust(env)=$rc5m_badt_rs Rust(cli)=$rc5m_badt_rs_cli"
 	fail=1
 fi
 

@@ -35,7 +35,10 @@ constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
  * 移除后由 Rust agent 承担：agent/src/model.rs 的 inject_images），
  * 这也是 robot_agent 的既有做法。
  * ok/error 供审计轨迹用（agentaudit）：工具异常/未知工具/脚本执行失败置
- * ok=false，文本回传给模型的内容不变——审计只是旁观记账，不改变回执。 */
+ * ok=false，文本回传给模型的内容不变——审计只是旁观记账，不改变回执。
+ * 七字段是跨语言契约（mcpbackend.cpp 序列化 ↔ agent/src/bridge.rs 的
+ * ToolOutcome）：加/删/改字段必须双侧同步，test_mcpbackend 的
+ * mcpbackend_toolresult_schema_matches_rust_outcome 读源比对钉住。 */
 struct AgentToolResult {
 	std::string text;
 	std::string imageDataUrl;	/* 非空 = "data:image/jpeg;base64,..." */

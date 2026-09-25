@@ -329,6 +329,9 @@ Json McpBackend::routeToolCall(const Json& req) {
 	++calls_;
 	/* 唯一漏斗：策略确认 → 执行 → 审计。未知工具/参数错/异常都由 gate 折成
 	 * 文本回执并记审计（评估 §3.4「所有 MCP 调用必穿 DispatchGate::run」）。 */
+	/* 七字段回执的 JSON 序列化点：字段清单钉在 AgentToolResult（agenttools.hpp），
+	 * Rust 侧对应 ToolOutcome（agent/src/bridge.rs）——三处一致性由 test_mcpbackend
+	 * 的 mcpbackend_toolresult_schema_matches_rust_outcome 读源比对钉住。 */
 	const AgentToolResult res = gate_.run(call, turn_++);
 
 	Json data = JsonObject();

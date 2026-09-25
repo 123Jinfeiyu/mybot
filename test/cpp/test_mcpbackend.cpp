@@ -12,10 +12,12 @@
 #include "fixtures.hpp"
 #include "harness.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -407,4 +409,232 @@ TH_TEST(mcpbackend_peercred_matches_self_and_rejects_non_socket) {
 	TH_CHECK(fd >= 0);
 	TH_CHECK(!mcpCheckPeerCred(fd, log));
 	::close(fd);
+}
+
+/* ==================== 跨语言契约钉子（2026-09-25）====================
+ * 帧上限/帧头与 ToolResult 七字段是 C++ 后端与 Rust agent 各持一份的「同一契约
+ * 的孪生」（两侧注释各自声明"改动必须双侧同步"），但同步此前只靠人记——漂移
+ * 没有本侧运行期症状（Rust 发一个自认合法的 9 MiB 帧会被后端拒收；新增字段在
+ * Rust 侧静默丢失），只能像 daemon_defaults_match_lua_source（test_robot.cpp）
+ * 那样读源比对钉死。七字段的真相链：结构体成员（agenttools.hpp）→ JSON 键
+ * （mcpbackend.cpp 的序列化点）→ Rust 字段（bridge.rs），camel↔snake 逐字段
+ * 对应——下面手写的清单就是**规约本体**，任何一侧漂移都以它为基准红。 */
+
+namespace {
+
+#ifndef MYBOT_SOURCE_DIR
+#define MYBOT_SOURCE_DIR "."
+#endif
+
+/* 读仓库内源文件（编译期锚定源码根，不依赖运行期 CWD） */
+std::string readRepoSource(const std::string& rel) {
+	const std::string path = std::string(MYBOT_SOURCE_DIR) + "/" + rel;
+	std::ifstream f(path, std::ios::binary);
+	if (!f) { throw std::runtime_error("契约钉子读不到源文件: " + path); }
+	return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+}
+
+/* 求常量表达式的值：只支持非负整数字面量、'*'、'+' 与空白——覆盖
+ * "8 * 1024 * 1024" 这类惯用形态足够。解析失败返回 false，用例红并带回原文，
+ * 让改常量的人顺手适配本函数，而不是静默放过。 */
+bool evalConstExpr(const std::string& expr, long long& out) {
+	std::size_t i = 0;
+	const auto skipWs = [&] {
+		while (i < expr.size() && (expr[i] == ' ' || expr[i] == '\t'
+				|| expr[i] == '\n' || expr[i] == '\r')) { ++i; }
+	};
+	const auto digits = [&](long long& v) {
+		v = 0;
+		const std::size_t begin = i;
+		while (i < expr.size() && expr[i] >= '0' && expr[i] <= '9') {
+			v = v * 10 + (expr[i] - '0');
+			++i;
+		}
+		return i > begin;
+	};
+	long long sum = 0;
+	skipWs();
+	if (!digits(sum)) { return false; }		/* 首项 */
+	for (;;) {
+		skipWs();
+		if (i < expr.size() && expr[i] == '*') {
+			++i;
+			long long factor = 0;
+			skipWs();
+			if (!digits(factor)) { return false; }
+			sum *= factor;
+			continue;
+		}
+		if (i < expr.size() && expr[i] == '+') {
+			++i;
+			long long term = 0;
+			skipWs();
+			if (!digits(term)) { return false; }
+			sum += term;
+			continue;
+		}
+		break;
+	}
+	skipWs();
+	if (i != expr.size()) { return false; }
+	out = sum;
+	return true;
+}
+
+/* 取声明 "pub const NAME: T = RHS;" 的右侧原文（取声明点到下一个 ';'） */
+std::string rustConstRhs(const std::string& src, const std::string& decl) {
+	const std::size_t at = src.find(decl);
+	if (at == std::string::npos) { return {}; }
+	const std::size_t eq = src.find('=', at);
+	const std::size_t semi = src.find(';', eq);
+	if (eq == std::string::npos || semi == std::string::npos) { return {}; }
+	return src.substr(eq + 1, semi - eq - 1);
+}
+
+/* 块内逐行抽取「行首 \tstd::string / \tbool 开头的成员名」——agenttools.hpp 的
+ * AgentToolResult 数据成员形态（构造函数行与初始化列表行不匹配该形态） */
+std::vector<std::string> cppMemberNames(const std::string& src,
+		std::size_t begin, std::size_t end) {
+	std::vector<std::string> names;
+	std::size_t pos = begin;
+	while (pos < end) {
+		const std::size_t eol = src.find('\n', pos);
+		const std::size_t lineEnd = (eol == std::string::npos || eol > end) ? end : eol;
+		const std::string line = src.substr(pos, lineEnd - pos);
+		for (const char* type : {"std::string ", "bool "}) {
+			const std::string prefix = std::string("\t") + type;
+			if (line.compare(0, prefix.size(), prefix) == 0) {
+				std::size_t n = prefix.size();
+				while (n < line.size() && (isalnum(static_cast<unsigned char>(line[n]))
+						|| line[n] == '_')) { ++n; }
+				names.push_back(line.substr(prefix.size(), n - prefix.size()));
+			}
+		}
+		if (eol == std::string::npos) { break; }
+		pos = eol + 1;
+	}
+	return names;
+}
+
+/* 块内逐行抽取 data.put("KEY" 的键名——mcpbackend.cpp 序列化点的形态 */
+std::vector<std::string> jsonPutKeys(const std::string& src,
+		std::size_t begin, std::size_t end) {
+	std::vector<std::string> keys;
+	const std::string pat = "data.put(\"";
+	std::size_t at = begin;
+	while ((at = src.find(pat, at)) != std::string::npos && at < end) {
+		const std::size_t close = src.find('"', at + pat.size());
+		if (close == std::string::npos || close > end) { break; }
+		keys.push_back(src.substr(at + pat.size(), close - at - pat.size()));
+		at = close;
+	}
+	return keys;
+}
+
+/* 块内逐行抽取 "pub <name>:" 的字段名——bridge.rs 的 Rust struct 形态
+ * （字段行带缩进，先跳行首空白再匹配） */
+std::vector<std::string> rustFieldNames(const std::string& src,
+		std::size_t begin, std::size_t end) {
+	std::vector<std::string> names;
+	std::size_t pos = begin;
+	while (pos < end) {
+		const std::size_t eol = src.find('\n', pos);
+		const std::size_t lineEnd = (eol == std::string::npos || eol > end) ? end : eol;
+		const std::string line = src.substr(pos, lineEnd - pos);
+		const std::string prefix = "pub ";
+		const std::size_t first = line.find_first_not_of(" \t");
+		if (first != std::string::npos
+				&& line.compare(first, prefix.size(), prefix) == 0) {
+			const std::size_t colon = line.find(':', first + prefix.size());
+			if (colon != std::string::npos) {
+				names.push_back(line.substr(first + prefix.size(),
+					colon - first - prefix.size()));
+			}
+		}
+		if (eol == std::string::npos) { break; }
+		pos = eol + 1;
+	}
+	return names;
+}
+
+/* 集合相等（名单顺序不是线格式的一部分；数量与名字是） */
+bool sameNameSet(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+	if (a.size() != b.size()) { return false; }
+	std::multiset<std::string> sa(a.begin(), a.end()), sb(b.begin(), b.end());
+	return sa == sb;
+}
+
+std::string joinNames(const std::vector<std::string>& v) {
+	std::string out;
+	for (const auto& n : v) { out += (out.empty() ? "" : ", ") + n; }
+	return out;
+}
+
+} // namespace
+
+/* ---- 帧上限/帧头三常量：kMcpMaxFrameBytes ↔ kJsonMaxBytes ↔ frame.rs 孪生 ---- */
+TH_TEST(mcpbackend_frame_limit_matches_rust_twin) {
+	/* 后端帧上限与 JSON 解析器上限同源（mcpbackend.hpp 注释承诺的「对齐」） */
+	TH_CHECK_MSG(kMcpMaxFrameBytes == kJsonMaxBytes,
+		"kMcpMaxFrameBytes 应与 jsonparse 的 kJsonMaxBytes 相等（8 MiB 对齐承诺）");
+
+	const std::string frameRs = readRepoSource("agent/src/frame.rs");
+	const std::string maxRhs = rustConstRhs(frameRs, "pub const MAX_FRAME_BYTES");
+	TH_CHECK_MSG(!maxRhs.empty(), "frame.rs 找不到 pub const MAX_FRAME_BYTES 声明");
+	long long rustMax = 0;
+	TH_CHECK_MSG(evalConstExpr(maxRhs, rustMax) && rustMax == static_cast<long long>(kMcpMaxFrameBytes),
+		"frame.rs 的 MAX_FRAME_BYTES（'" + maxRhs + "' → " + std::to_string(rustMax)
+		+ "）应与 kMcpMaxFrameBytes（" + std::to_string(kMcpMaxFrameBytes) + "）相等"
+		+ "——帧上限是跨进程契约，改一侧必须同步另一侧");
+
+	const std::string hdrRhs = rustConstRhs(frameRs, "pub const HEADER_LEN");
+	TH_CHECK_MSG(!hdrRhs.empty(), "frame.rs 找不到 pub const HEADER_LEN 声明");
+	long long rustHeader = 0;
+	TH_CHECK_MSG(evalConstExpr(hdrRhs, rustHeader) && rustHeader == static_cast<long long>(kMcpHeaderSize),
+		"frame.rs 的 HEADER_LEN（'" + hdrRhs + "' → " + std::to_string(rustHeader)
+		+ "）应与 kMcpHeaderSize（" + std::to_string(kMcpHeaderSize) + "）相等");
+}
+
+/* ---- ToolResult 七字段：agenttools.hpp ↔ mcpbackend.cpp ↔ bridge.rs 三处同源 ---- */
+TH_TEST(mcpbackend_toolresult_schema_matches_rust_outcome) {
+	/* 规约本体：camelCase（C++ 成员/JSON 键）↔ snake_case（Rust 字段） */
+	const std::vector<std::string> camel = {
+		"text", "imageDataUrl", "ok", "error", "executed", "paramError", "summary",
+	};
+	const std::vector<std::string> snake = {
+		"text", "image_data_url", "ok", "error", "executed", "param_error", "summary",
+	};
+
+	/* ① 结构体成员（数据成员形态；漂移 = 加了字段没序列化 / 删了字段没清理） */
+	const std::string hpp = readRepoSource("src/agenttools.hpp");
+	const std::size_t stBegin = hpp.find("struct AgentToolResult {");
+	TH_CHECK_MSG(stBegin != std::string::npos, "agenttools.hpp 找不到 struct AgentToolResult");
+	const std::size_t stEnd = hpp.find("\n};", stBegin);
+	TH_CHECK_MSG(stEnd != std::string::npos, "agenttools.hpp 找不到 AgentToolResult 的结束 };");
+	const std::vector<std::string> members = cppMemberNames(hpp, stBegin, stEnd);
+	TH_CHECK_MSG(sameNameSet(members, camel),
+		"AgentToolResult 成员（" + joinNames(members) + "）应与七字段契约（"
+		+ joinNames(camel) + "）一致——加字段必须同步 mcpbackend.cpp 序列化与 bridge.rs");
+
+	/* ② JSON 序列化键（锚点：gate_.run 的回执组装段到 okReply） */
+	const std::string cpp = readRepoSource("src/mcpbackend.cpp");
+	const std::size_t gateAt = cpp.find("const AgentToolResult res = gate_.run(call, turn_++)");
+	TH_CHECK_MSG(gateAt != std::string::npos, "mcpbackend.cpp 找不到序列化段锚点（gate_.run）");
+	const std::size_t replyAt = cpp.find("return okReply", gateAt);
+	TH_CHECK_MSG(replyAt != std::string::npos, "mcpbackend.cpp 找不到序列化段锚点（okReply）");
+	const std::vector<std::string> keys = jsonPutKeys(cpp, gateAt, replyAt);
+	TH_CHECK_MSG(sameNameSet(keys, camel),
+		"routeToolCall 序列化键（" + joinNames(keys) + "）应与七字段契约（"
+		+ joinNames(camel) + "）一致");
+
+	/* ③ Rust 侧 ToolOutcome 字段 */
+	const std::string rs = readRepoSource("agent/src/bridge.rs");
+	const std::size_t rsBegin = rs.find("pub struct ToolOutcome {");
+	TH_CHECK_MSG(rsBegin != std::string::npos, "bridge.rs 找不到 pub struct ToolOutcome");
+	const std::size_t rsEnd = rs.find("\n}", rsBegin);
+	TH_CHECK_MSG(rsEnd != std::string::npos, "bridge.rs 找不到 ToolOutcome 的结束 }");
+	const std::vector<std::string> fields = rustFieldNames(rs, rsBegin, rsEnd);
+	TH_CHECK_MSG(sameNameSet(fields, snake),
+		"ToolOutcome 字段（" + joinNames(fields) + "）应与七字段契约（"
+		+ joinNames(snake) + "）一致——Rust 侧漏字段会在回执处理时静默丢失");
 }
