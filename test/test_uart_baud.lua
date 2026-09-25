@@ -10,14 +10,21 @@ local tester = dofile("test/lib/tester.lua")
 local ffi = require("ffi")
 local HAL = dofile("modules/lib/HAL.lua")
 
--- 独立重推 glibc 版本（不引用 HAL 内部函数，避免同义反复式假绿）
-ffi.cdef[[ const char* gnu_get_libc_version(void); ]]
-local p = ffi.C.gnu_get_libc_version()
-local ver = p ~= nil and ffi.string(p) or ""
+-- 独立重推 glibc 版本（不引用 HAL 内部函数，避免同义反复式假绿）。
+-- 非 glibc（musl）无此符号：pcall 取符号，期望 HAL 选旧编号表（musl 的 B* 即
+-- Linux ABI 旧编号，test_uart_consts 在 alpine 下已实证）。
+pcall(ffi.cdef, [[ const char* gnu_get_libc_version(void); ]])
+local has_sym, p = pcall(function() return ffi.C.gnu_get_libc_version() end)
+local ver = (has_sym and p ~= nil) and ffi.string(p) or ""
 local major, minor = string.match(ver, "(%d+)%.(%d+)")
 local useHz = major ~= nil and (tonumber(major) * 1000 + tonumber(minor)) >= 2042
 
-tester.check("gnu_get_libc_version 可解析: " .. ver, major ~= nil, ver)
+if has_sym then
+	tester.check("gnu_get_libc_version 可解析: " .. ver, major ~= nil, ver)
+else
+	tester.check("非 glibc（无 gnu_get_libc_version）→ HAL.sys.version() 须返 nil 而非抛错",
+		HAL.sys.version() == nil)
+end
 tester.check("HAL.UART_B_CONST 已导出", type(HAL.UART_B_CONST) == "table")
 
 -- UART_BAUDS 白名单（与 HAL.lua 同步维护）

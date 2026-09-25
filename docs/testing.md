@@ -6,7 +6,7 @@
 > 构建步带 `-DMYBOT_WERROR=ON`（README 声称的「零告警」由此成为门禁而非约定）；
 > 与本地 pre-push 钩子同一条守门。
 >
-> 硬门禁 4 条 + `allow_failure` 软门禁 6 条，逐条与 `.gitlab-ci.yml` 一一对应：
+> 十条 job 全部为硬门禁（2026-09-25 起；此前 6 条为 `allow_failure` 软门禁），逐条与 `.gitlab-ci.yml` 一一对应：
 
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
@@ -14,12 +14,12 @@
 | `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检：用例是否真被收集/编译）→ `bash test/run_all.sh`（Release 全量守门） |
 | `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
 | `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh`，缺产物/依赖或超时即失败，`agent-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响 |
-| `gate:tsan` | 软 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
-| `gate:clang` | 软 | clang 构建 + C++ 单测烟雾 |
-| `gate:clang-tidy` | 软 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
-| `gate:coverage` | 软 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`；`COV_WITH_GATE=1` 时另跑一遍全套守门），报告随 artifacts 留档 |
-| `gate:musl` | 软 | alpine/musl 下构建并运行三个常量自检；能构建时再跑 `mybot_tests` |
-| `gate:agent` | 软 | Rust agent（`agent/`，包名 `mybot-agent`；原 MCP sidecar，rig 迁移批次 B 更名）：`cargo build --release`/`test`/`clippy -D warnings`/`fmt --check`（均 `--locked`，`rust:1-slim`）。与 `gate:agent-e2e` 独立，不给既有 C++ jobs 加 Rust。⚠ ASan/UBSan/TSan 只插桩 C++，**对 agent 是盲的**——agent 安全靠 Rust 所有权 + clippy/test，不是 sanitizer |
+| `gate:tsan` | 硬 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
+| `gate:clang` | 硬 | clang 构建 + C++ 单测烟雾 |
+| `gate:clang-tidy` | 硬 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
+| `gate:coverage` | 硬 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`；`COV_WITH_GATE=1` 时另跑一遍全套守门），报告随 artifacts 留档。「硬」判的是采集链路本身，**不设行覆盖阈值**（理由见下节） |
+| `gate:musl` | 硬 | alpine 3.20/musl 下：三个常量自检 → `mybot_tests` → 整段 `test/run_all.sh`（`BOT`/`BOT_TESTS`/`MTMERGE` 指到 `build-musl/`；Rust agent 段因镜像无 Rust 产物按 SKIP 计，汇总可见） |
+| `gate:agent` | 硬 | Rust agent（`agent/`，包名 `mybot-agent`；原 MCP sidecar，rig 迁移批次 B 更名）：`cargo build --release`/`test`/`clippy -D warnings`/`fmt --check`（均 `--locked`，`rust:1-slim`）。与 `gate:agent-e2e` 独立，不给既有 C++ jobs 加 Rust。⚠ ASan/UBSan/TSan 只插桩 C++，**对 agent 是盲的**——agent 安全靠 Rust 所有权 + clippy/test，不是 sanitizer |
 
 ### 覆盖率数字的口径与已知盲区（2026-09-21 AG-11 实测）
 
@@ -46,24 +46,29 @@
 - **因此不设 `COV_MIN_LINES` 硬阈值**：一个既漏掉 `mybot` 链路、又有结构性 0% 区块的指标，
   设阈值只会把测试压力挤到「测得到」的区域——缺陷正好往盲区躲。
 
-> 六条软门禁的**转硬条件与最迟日期**写在各自 job 注释里（`tsan`/`clang`/`clang-tidy`
-> 为「连续 2 轮 pipeline 无新增告警/报告 + 最迟 2026-10-31」；`coverage` 另需先设定
-> C++ 侧行覆盖基线，`musl` 另需补 Lua 层 HAL 的运行时实证，`agent` 为「CI 基线镜像
-> （`rust:1-slim` + crate 拉取）连续 2 轮全绿 + 最迟 2026-10-31」——各条条件不同，逐条以
-> `.gitlab-ci.yml` 注释为准），如实标注「尚未转硬」。它们**不进入**
-> `run_all.sh` 的记账——守门汇总口径不变。
+> **转硬依据（2026-09-25，如实）**：六条软门禁原写的转硬条件是「CI 基线镜像上连续 2 轮
+> pipeline 全绿」，但开发机无 docker、也看不到托管方的 pipeline 记录——这条证据从仓库
+> 内部不可观测，等下去只会让它们永久留在软态。改以**同版本工具链的本地预跑**为判据：
+> clang / clang-tidy 用 LLVM 14.0.6（bookworm 同版本）、musl 用 proot + alpine 3.20
+> minirootfs（镜像同源同版本）、TSan 名单三用例连跑 5 轮、Rust 四检 rustc 1.98.1、
+> 覆盖率 `COV_WITH_GATE=1` 全程 rc=0。预跑揪出并修掉的真问题：clang-tidy 新增 3 条
+> （`getenv`/`strerror` 未走 `util.hpp` 单点、一处 string 链式拼接）、Rust 2 条 clippy
+> `manual_async_fn` + rustfmt 差异、**musl 下 `hal_backend_glibc.lua` 的 `version()`
+> 取 `gnu_get_libc_version` 符号时抛错**（契约是非 glibc 返 nil；拖垮三个 UART/HAL
+> 用例）。各 job 注释写明了「环境性变红」的辨认特征（TSan 的 VMA range、proot 下
+> `PR_SET_DUMPABLE` 失败）。这些 job **不进入** `run_all.sh` 的记账——守门汇总口径不变。
 
-### `gate:coverage` 转硬条件的两条，逐条现状（2026-09-22 本地核实）
+### `gate:coverage` 原转硬条件两条的处置（2026-09-22 核实，2026-09-25 转硬）
 
-该 job 的转硬条件在 AG-11 后已改写为两条（原文见 `.gitlab-ci.yml` 的 job 注释）：
+该 job 的转硬条件在 AG-11 后曾改写为两条；2026-09-25 转硬时①因不可观测而放弃（改为「采集链路任一步失败即红、不设阈值」），②已满足：
 
 | 条件 | 现状 | 证据 |
 | --- | --- | --- |
-| ① 覆盖数据随 artifacts 连续入库可追溯（口径与脚本版本对应） | **待 CI 侧确认**——要看连续 pipeline 的 artifacts 留存，本地无法判定 | — |
+| ① 覆盖数据随 artifacts 连续入库可追溯（口径与脚本版本对应） | **放弃作为转硬条件**——要看托管方连续 pipeline 的 artifacts 留存，从仓库内部不可观测；artifacts 仍留档 4 周供对比 | — |
 | ② 盲区（fork/exec 子侧）确由**行为断言**覆盖 | ✅ **已满足并已反向验证** | 用例 `agenttools_child_side_fd_revocation_reports_its_path`（`test/cpp/test_agenttools.cpp`）存在，且随 `run_all.sh` 的 `cpp-unit` 段在 `gate:release` 里执行；**把 `src/agent_subprocess.cpp` 的 `kCloseRangeCloexec` 改回出错的 `1U`，该用例转红（2 条断言失败）**，恢复 `1U << 2` 后绿 |
 
-**本地实测基线（2026-09-22，`COV_WITH_GATE=1 bash test/run_coverage.sh`）**：
-`src/` 行覆盖 **80.27%（4394/5474）**。留这个数只为**未来对比**，不作为阈值——
+**本地实测基线（`COV_WITH_GATE=1 bash test/run_coverage.sh`）**：2026-09-22 为 **80.27%（4394/5474）**，
+2026-09-25 为 **78.10%（5842/7480）**（分母涨 2006 行：MCP 后端、wait_variable、断连动作等）。留这个数只为**未来对比**，不作为阈值——
 理由见上一节（该指标既漏 `mybot` 链路又有结构性 0% 区块，设阈值会把测试压力挤到
 测得到的区域）。要看趋势就前后两次数对比，不要拿它当及格线。
 
@@ -233,7 +238,9 @@ bash test/run_san.sh --asan-only  # 只跑 sanitizer 跑（CI 的 gate:sanitizer
 （守护槽指针、信号标志、生命周期分支）。本机实测（树莓派 5 / 内核 6.18 aarch64）：
 TSan 运行时以 `FATAL: ThreadSanitizer: unsupported VMA range (Found 47 - Supported
 39, 42 and 48)` 退出——进程 VMA 布局不在 TSan 支持范围，属**环境限制**（`setarch -R`
-无效；需 root 调低 `vm.mmap_rnd_bits` 后重试），换内核/宿主再跑。
+无效；需 root 调低 `vm.mmap_rnd_bits` 后重试），换内核/宿主再跑。x86_64 开发机
+（g++ 15.3，2026-09-25）无此限制：`test/lib/tsan_cases.txt` 三用例连跑 5 轮零报告，
+`gate:tsan` 据此转硬；CI 上若恰以该 FATAL 变红，是 runner 内核问题而非竞态。
 
 单独跑 sanitizer 段（例如只看 virt E2E）：
 

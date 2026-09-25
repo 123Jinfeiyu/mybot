@@ -385,9 +385,7 @@ bash test/run_all.sh agent-all
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 
-**硬门禁**（每次推送必过）：零告警构建（`-Werror`）、Release 全量守门、ASan/UBSan 单跑
-
-**软门禁**（`allow_failure`，转硬中）：TSan（线程竞争）、clang + clang-tidy、覆盖率、musl libc 兼容性
+**全部为硬门禁**（每次推送必过，2026-09-25 起）：零告警构建（`-Werror`）、Release 全量守门、ASan/UBSan、TSan（守护并发用例）、clang 构建 + clang-tidy 静态分析（存量归零）、覆盖率采集（不设阈值，判采集链路）、musl libc 兼容性（alpine 下跑整段守门）、Rust agent 四检（build/test/clippy/fmt）与两进程 agent E2E
 
 详见 [docs/testing.md](docs/testing.md)
 

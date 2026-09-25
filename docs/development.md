@@ -240,12 +240,12 @@ cmake -S . -B build -DMYBOT_WERROR=ON && cmake --build build
   clang-tidy -p build-tidy src/*.cpp
   ```
 
-  CI 以 `gate:clang-tidy` 软门禁（allow_failure）起步，与 gate:tsan 同路径：全量输出
-  落 `clang-tidy.log`，其非零退出码经「重定向落文件 → 记 rc → 末尾 `[ $rc -eq 0 ]`」
-  直接决定 job 结果（不再被管道末尾的 `tail` 吞掉；不用 `pipefail` 以求在 dash 下也成立），
-  该日志同时声明为 artifacts（`when: always`）作为转硬前的基线；转硬条件与最迟日期见
-  `.gitlab-ci.yml` 的 job 注释（如实：尚未转硬）。新增代码不应引入新告警，存量告警处置
-  或入豁免清单。
+  CI 的 `gate:clang-tidy` 为硬门禁（2026-09-25 起，此前 allow_failure 软门禁），与 gate:tsan
+  同路径：全量输出落 `clang-tidy.log`，其非零退出码经「重定向落文件 → 记 rc → 末尾
+  `[ $rc -eq 0 ]`」直接决定 job 结果（不再被管道末尾的 `tail` 吞掉；不用 `pipefail` 以求
+  在 dash 下也成立），该日志同时声明为 artifacts（`when: always`）留档。存量告警已归零
+  （clang-tidy 14.0.6），新增告警即 job 红：处置方式是走 `util.hpp` 单点（`getEnvVar` /
+  `errnoText` / `concatMsg`）、定点 `NOLINT` 注明理由，或按先例写入 `.clang-tidy` 豁免。
 
 - **报错文案分语言**（有意分区，非漂移）：结构脚本装配/解析期的报错（`robot`/`sqlparse`/
   `hardware`/`daemonvar` 等，读者是 `.sql`/`.mt` 脚本作者）用**英文**——这类报错常被

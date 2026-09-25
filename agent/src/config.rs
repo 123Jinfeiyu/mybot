@@ -1003,7 +1003,10 @@ pub fn summarize(cfg: &Config) -> String {
         if cfg.max_history_bytes == 0 {
             "不适用（历史不裁剪）".to_string()
         } else if cfg.history_summary {
-            format!("开（被裁任务块压成摘要，正文上限 {} 字节）", cfg.max_summary_bytes)
+            format!(
+                "开（被裁任务块压成摘要，正文上限 {} 字节）",
+                cfg.max_summary_bytes
+            )
         } else {
             "关（history_summary=false：被裁任务块直接丢弃）".to_string()
         }
@@ -1310,9 +1313,19 @@ mod tests {
             ..Cli::default()
         };
         assert!(build(&cli(&on, false)).unwrap().stream, "缺省流式");
-        assert!(!build(&cli(&on, true)).unwrap().stream, "--llm-no-stream 关");
-        assert!(!build(&cli(&off, false)).unwrap().stream, "配置 stream=false 关");
-        assert!(parse_args(&["--llm-no-stream".to_string()]).unwrap().llm_no_stream);
+        assert!(
+            !build(&cli(&on, true)).unwrap().stream,
+            "--llm-no-stream 关"
+        );
+        assert!(
+            !build(&cli(&off, false)).unwrap().stream,
+            "配置 stream=false 关"
+        );
+        assert!(
+            parse_args(&["--llm-no-stream".to_string()])
+                .unwrap()
+                .llm_no_stream
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

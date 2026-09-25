@@ -9,6 +9,28 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 CI 六条软门禁全部转硬（TSan / clang / clang-tidy / coverage / musl / agent）
+
+- **对使用者意味着什么**：推送到任何分支，十条 job 全部必须绿；此前 `allow_failure`
+  的六条不再能「红着合并」。转硬依据如实写在 `.gitlab-ci.yml` 文件头：原条件「CI 上
+  连续 2 轮全绿」从仓库内部不可观测，改以同版本工具链的本地预跑为判据（LLVM 14.0.6、
+  alpine 3.20、rustc 1.98.1、TSan 5 轮）。
+- **预跑揪出并修掉的真问题**：
+  - musl：`hal_backend_glibc.lua` 的 `version()` 契约是「非 glibc 返 nil」，实际在取
+    `gnu_get_libc_version` 符号那步抛 `Symbol not found`（pcall 只包了 cdef），拖垮
+    `test_uart` / `test_uart_baud` / `test_hal_backend_swap`；两个 UART 用例的独立推导
+    同样直取符号，改为 pcall 并按非 glibc 期望旧编号表。`docs/faq.md`「非 glibc 未验证」
+    改为「musl（alpine 3.20 x86_64）已实证」。
+  - clang-tidy：新功能引入 3 条（`main.cpp` 的 `getenv`/`strerror` 未走 `util.hpp`
+    单点、`agenttools.cpp` 一处 string 链式拼接），改走 `getEnvVar`/`errnoText`/`concatMsg`。
+  - Rust：2 条 clippy `manual_async_fn`（`model.rs` 的 `RawStream` 两个 impl 改 `async fn`）
+    + 5 个文件的 rustfmt 差异。
+- **`gate:musl` 扩容**：从「三常量自检 + 能编则跑 mybot_tests」扩为「常量自检 →
+  mybot_tests → 整段 `test/run_all.sh`」（alpine 加装 bash/coreutils/python3；Rust 段
+  因镜像无产物按 SKIP 计）。`gate:clang-tidy` 的计数行同时数 `error:`（此前
+  `--warnings-as-errors` 下永远报「告警总数 0」）。`gate:coverage` 的「硬」不设阈值，
+  判采集链路完整（AG-11 结论不变）；本地基线 78.10%（5842/7480）。
+
 ### 2026-09-25 Rust agent 会话历史压缩：被裁任务块压成摘要挂进系统提示词
 
 - **长会话不再「忘光」**：`max_history_bytes` 裁掉最早的任务块时，被裁块交给同一个模型

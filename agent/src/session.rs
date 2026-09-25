@@ -1051,7 +1051,10 @@ mod tests {
 
         let (loaded, warns) = load(&path);
         assert!(warns.is_empty(), "{warns:?}");
-        assert_eq!(loaded.summary.as_deref(), Some("任务一：拍照并站立，已站立"));
+        assert_eq!(
+            loaded.summary.as_deref(),
+            Some("任务一：拍照并站立，已站立")
+        );
         let mut expected = second;
         expected.extend(third);
         expected.push(Message::user("任务四"));
@@ -1085,7 +1088,11 @@ mod tests {
             &path,
             format!(
                 "{}\n{{\"type\":\"session_summary\"}}\n{{\"role\":\"user\",\"content\":\"x\"}}\n",
-                std::fs::read_to_string(&path).unwrap().lines().next().unwrap()
+                std::fs::read_to_string(&path)
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap()
             ),
         )
         .unwrap();
@@ -1104,7 +1111,9 @@ mod tests {
             "以上工具返回的图片如下。{}",
             image_placeholder(4096)
         )));
-        assert!(!is_image_placeholder_notice("任务：[图片 3 字节，未随会话恢复] 之后还有话"));
+        assert!(!is_image_placeholder_notice(
+            "任务：[图片 3 字节，未随会话恢复] 之后还有话"
+        ));
         assert!(!is_image_placeholder_notice("普通任务"));
     }
 

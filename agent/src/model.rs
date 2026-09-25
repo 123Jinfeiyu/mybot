@@ -59,8 +59,7 @@ use rig_core::providers::openai::completion::OpenAICompatibleProvider;
 use rig_core::providers::{anthropic, openai};
 // 流式响应类型在 rig-core 的 streaming 模块（completion 只重导出消息与 request 面）
 use rig_core::streaming::{
-    normalize_stream, RawStreamingChoice, StreamFinal, StreamingCompletionResponse,
-    StreamingResult,
+    normalize_stream, RawStreamingChoice, StreamFinal, StreamingCompletionResponse, StreamingResult,
 };
 
 use crate::hook::{has_tool_result, CallRecord, HookState, Injection, IMAGE_CAPTION};
@@ -87,16 +86,14 @@ where
     H: Sync,
 {
     const PROVIDER: &'static str = Ext::PROVIDER_NAME;
-    fn raw_stream_normalized(
+    async fn raw_stream_normalized(
         &self,
         request: CompletionRequest,
-    ) -> impl Future<Output = Result<StreamingResult, CompletionError>> + Send {
-        async move {
-            let raw = self.raw_stream(request).await?;
-            Ok(normalize_stream(raw, |r| {
-                Ok(StreamFinal::from((Ext::PROVIDER_NAME, r)))
-            }))
-        }
+    ) -> Result<StreamingResult, CompletionError> {
+        let raw = self.raw_stream(request).await?;
+        Ok(normalize_stream(raw, |r| {
+            Ok(StreamFinal::from((Ext::PROVIDER_NAME, r)))
+        }))
     }
 }
 
@@ -106,16 +103,14 @@ where
     Ext: AnthropicCompatibleProvider + Clone + Send + Sync + 'static,
 {
     const PROVIDER: &'static str = Ext::PROVIDER_NAME;
-    fn raw_stream_normalized(
+    async fn raw_stream_normalized(
         &self,
         request: CompletionRequest,
-    ) -> impl Future<Output = Result<StreamingResult, CompletionError>> + Send {
-        async move {
-            let raw = self.raw_stream(request).await?;
-            Ok(normalize_stream(raw, |r| {
-                Ok(StreamFinal::from((Ext::PROVIDER_NAME, r)))
-            }))
-        }
+    ) -> Result<StreamingResult, CompletionError> {
+        let raw = self.raw_stream(request).await?;
+        Ok(normalize_stream(raw, |r| {
+            Ok(StreamFinal::from((Ext::PROVIDER_NAME, r)))
+        }))
     }
 }
 
@@ -299,7 +294,8 @@ impl<M: CompletionModel> BudgetModel<M> {
             }
         };
         if self.timeout_sec > 0 {
-            match tokio::time::timeout(Duration::from_secs(self.timeout_sec as u64), guarded).await {
+            match tokio::time::timeout(Duration::from_secs(self.timeout_sec as u64), guarded).await
+            {
                 Ok(r) => r,
                 Err(_) => Err(CompletionError::RequestError(Box::new(ModelTimeout {
                     seconds: self.timeout_sec,
@@ -361,7 +357,14 @@ impl<M: CompletionModel> BudgetModel<M> {
         res: Result<&CompletionResponse, &CompletionError>,
     ) {
         let rec = match res {
-            Ok(resp) => call_record(turn, req_bytes, resp_bytes, attempts, started, Ok(resp.usage)),
+            Ok(resp) => call_record(
+                turn,
+                req_bytes,
+                resp_bytes,
+                attempts,
+                started,
+                Ok(resp.usage),
+            ),
             Err(e) => call_record(turn, req_bytes, 0, attempts, started, Err(e.to_string())),
         };
         self.state.record_call(rec);
@@ -660,7 +663,10 @@ impl<M: CompletionModel + RawStream> BudgetModel<M> {
     /// 打开原生流并预取首帧（整体受 [`Self::guard`] 约束：单次调用超时 + Ctrl-C）：
     /// 首帧 Ok 才算「连上了」，返回「首帧 + 余流」；首帧 Err / 首帧前结束 / 超时 /
     /// 中断都作为可分类的错误返回。
-    async fn open_primed(&self, request: CompletionRequest) -> Result<StreamingResult, CompletionError> {
+    async fn open_primed(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<StreamingResult, CompletionError> {
         self.guard(async {
             let mut s = self.inner.raw_stream_normalized(request).await?;
             match s.next().await {

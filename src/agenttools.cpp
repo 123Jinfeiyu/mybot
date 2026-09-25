@@ -679,8 +679,8 @@ static AgentTool makeWaitVariableTool(const AgentToolContext& ctx) {
 					/* 键**首次出现**的那次采样：类型永久不匹配即刻报参数错；
 					 * changed 的基线也取这里（键缺失的采样不能当基线） */
 					if (isOrderingCond(cond) && !numericView(*cur)) {
-						throw IllegalArgumentException("键 " + key + " 的当前值不是数值（"
-							+ cur->toString() + "），条件 " + condText + " 无法比较");
+						throw IllegalArgumentException(concatMsg("键 ", key, " 的当前值不是数值（",
+							cur->toString(), "），条件 ", condText, " 无法比较"));
 					}
 					baseline = cur->toString();
 					haveBaseline = true;

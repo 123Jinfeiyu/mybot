@@ -251,7 +251,9 @@ impl Session {
             .map_or(0, summary::summary_section_weight);
         let evicted = self
             .history
-            .evict(budget.saturating_sub(reserve).max(1), &mut |t| errln!("{t}"));
+            .evict(budget.saturating_sub(reserve).max(1), &mut |t| {
+                errln!("{t}")
+            });
         if evicted.is_empty() || !self.cfg.history_summary {
             return;
         }
@@ -810,10 +812,11 @@ mod tests {
         };
         assert_eq!(format_prompt_error(blocking), "任务被取消");
         // 非取消类保留 rig 原文（不吞信息）
-        let other = StreamingError::Completion(CompletionError::ProviderError(
-            "boom".to_string(),
-        ));
-        assert_eq!(format_stream_error(other), "CompletionError: ProviderError: boom");
+        let other = StreamingError::Completion(CompletionError::ProviderError("boom".to_string()));
+        assert_eq!(
+            format_stream_error(other),
+            "CompletionError: ProviderError: boom"
+        );
     }
 
     #[test]

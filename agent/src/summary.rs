@@ -116,11 +116,7 @@ fn render_items(m: &Message) -> Vec<String> {
                     AssistantContent::ToolCall(c) => {
                         let args = serde_json::to_string(&c.function.arguments)
                             .unwrap_or_else(|_| "{}".to_string());
-                        items.push(format!(
-                            "[助手→工具] {} {}",
-                            c.function.name,
-                            capped(&args)
-                        ));
+                        items.push(format!("[助手→工具] {} {}", c.function.name, capped(&args)));
                     }
                     AssistantContent::Reasoning(r) => {
                         // 思维链不转录；只留一行存在标记，摘要器知道这里有过推理
@@ -289,7 +285,10 @@ mod tests {
                 id: None,
                 content: vec![AssistantContent::ToolCall(ToolCall::new(
                     ToolCallId::new_or_mint("c1"),
-                    ToolFunction::new("run_action_script".to_string(), serde_json::json!({"script":"relay.mt"})),
+                    ToolFunction::new(
+                        "run_action_script".to_string(),
+                        serde_json::json!({"script":"relay.mt"}),
+                    ),
                 ))],
             },
             Message::User {
@@ -321,7 +320,10 @@ mod tests {
     fn transcript_is_role_tagged_quoted_and_omits_thinking_and_images() {
         let t = render_transcript(&block());
         assert!(t.starts_with(TRANSCRIPT_HEADING));
-        assert!(t.contains("> [用户] 去把继电器打开\n> 第二行\n"), "多行正文逐行定界: {t}");
+        assert!(
+            t.contains("> [用户] 去把继电器打开\n> 第二行\n"),
+            "多行正文逐行定界: {t}"
+        );
         assert!(t.contains("> [助手→工具] run_action_script {\"script\":\"relay.mt\"}\n"));
         assert!(t.contains("> [工具 run_action_script 回执] OK\n"));
         assert!(t.contains("> [图片 300 字节，已略去]\n"));

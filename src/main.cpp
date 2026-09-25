@@ -1,7 +1,6 @@
 #include <cerrno>
 #include <csignal>
 #include <cstdlib>
-#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
@@ -72,13 +71,13 @@ void hardenAgainstInspection() {
 #ifdef MYBOT_SANITIZE_BUILD
 	return;
 #else
-	if (const char* allow = std::getenv("BOT4CJ_ALLOW_PTRACE"); allow != nullptr && std::strcmp(allow, "1") == 0) {
+	if (auto allow = getEnvVar("BOT4CJ_ALLOW_PTRACE"); allow && *allow == "1") {
 		std::cerr << "注意: BOT4CJ_ALLOW_PTRACE=1，本进程保持可被同 UID ptrace / core dump"
 			"（仅调试用；密钥与口令可自内存读出）" << std::endl;
 		return;
 	}
 	if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) {
-		std::cerr << "警告: prctl(PR_SET_DUMPABLE, 0) 失败（" << std::strerror(errno)
+		std::cerr << "警告: prctl(PR_SET_DUMPABLE, 0) 失败（" << errnoText(errno)
 			<< "）；同 UID 进程可 ptrace 本进程 / 崩溃会落 core" << std::endl;
 	}
 #endif

@@ -213,11 +213,7 @@ fn params_len(p: &Option<AdditionalParams>) -> usize {
 /// 一律走 stderr——裁剪意味着更早的任务上下文不再可见，这种事实不该静默）。
 /// 切口只落在块起点：一对 tool_call/tool_result、一问一答永远不会只剩一半——被裁
 /// 部分整块交给摘要器，留下部分整块送给模型。
-pub fn evict(
-    history: &mut Vec<Message>,
-    budget: usize,
-    log: &mut dyn FnMut(&str),
-) -> Vec<Message> {
+pub fn evict(history: &mut Vec<Message>, budget: usize, log: &mut dyn FnMut(&str)) -> Vec<Message> {
     if budget == 0 || history.is_empty() {
         return Vec::new();
     }
@@ -473,15 +469,13 @@ mod tests {
     fn task_block_with_id(task: &str, call_id: &str, image_bytes: usize) -> Vec<Message> {
         let mut msgs = task_block(task, "回执", image_bytes);
         if let Message::Assistant { content, .. } = &mut msgs[1] {
-            content[0] = AssistantContent::ToolCall(
-                rig_agent::completion::message::ToolCall::new(
-                    rig_agent::completion::message::ToolCallId::new_or_mint(call_id),
-                    rig_agent::completion::message::ToolFunction::new(
-                        "capture_image".to_string(),
-                        serde_json::json!({}),
-                    ),
+            content[0] = AssistantContent::ToolCall(rig_agent::completion::message::ToolCall::new(
+                rig_agent::completion::message::ToolCallId::new_or_mint(call_id),
+                rig_agent::completion::message::ToolFunction::new(
+                    "capture_image".to_string(),
+                    serde_json::json!({}),
                 ),
-            );
+            ));
         }
         if let Message::User { content } = &mut msgs[2] {
             content[0] = UserContent::tool_result(
@@ -528,7 +522,10 @@ mod tests {
                 "切口必须落在块起点（预算 {budget}，切在 {}）",
                 evicted.len()
             );
-            assert!(is_block_start(&work[0]), "留下部分从块起点开始（预算 {budget}）");
+            assert!(
+                is_block_start(&work[0]),
+                "留下部分从块起点开始（预算 {budget}）"
+            );
             let (decl_e, ans_e) = call_ids(&evicted);
             let (decl_r, ans_r) = call_ids(&work);
             let mut de = decl_e.clone();

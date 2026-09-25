@@ -33,16 +33,17 @@ if not has_ffi then
 end
 
 -- glibc 版本探测：gnu_get_libc_version 是 glibc 专有符号（musl 没有），
--- 故 cdef 声明 pcall 包住——非 glibc 平台 version() 返 nil，上层波特率
--- 编码探测按旧 ABI 编码处理（HAL.lua UART 段与 test_uart_consts.c 三重把关）。
-local ok_ver, ver_fn = pcall(function()
-	ffi.cdef[[ const char* gnu_get_libc_version(void); ]]
-	return function()
-		local p = ffi.C.gnu_get_libc_version()
-		if p == nil then return nil end
-		return ffi.string(p)
-	end
-end)
+-- 非 glibc 平台 version() 返 nil，上层波特率编码探测按旧 ABI 编码处理
+-- （HAL.lua UART 段与 test_uart_consts.c 三重把关）。
+-- 2026-09-25 musl 实证修正：cdef 只是声明、永远成功，符号缺失是在 **ffi.C 取值时**
+-- 抛「Symbol not found」——此前 pcall 只包住 cdef，musl 下 version() 直接崩，
+-- 与本文件顶部契约「不可知返回 nil」相悖。故解析符号的那一步也放进 pcall。
+pcall(ffi.cdef, [[ const char* gnu_get_libc_version(void); ]])
+local function libc_version()
+	local ok, p = pcall(function() return ffi.C.gnu_get_libc_version() end)
+	if not ok or p == nil then return nil end
+	return ffi.string(p)
+end
 
 local M = {
 	open    = function(path, flags, mode)
@@ -70,6 +71,6 @@ local M = {
 	cfsetispeed = function(ptr, baud) return ffi.C.cfsetispeed(ptr, baud) end,
 	cfsetospeed = function(ptr, baud) return ffi.C.cfsetospeed(ptr, baud) end,
 	tcflush   = function(fd, q)     return ffi.C.tcflush(fd, q) end,
-	version   = ok_ver and ver_fn or function() return nil end,
+	version   = libc_version,
 }
 return M
