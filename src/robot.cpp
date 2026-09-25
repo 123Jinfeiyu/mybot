@@ -72,6 +72,21 @@ void daemonStopBarrier(const std::vector<std::shared_ptr<DaemonRunner>>& holders
 	}
 }
 
+/* 把列头行 + [rowBegin, rowEnd) 的数据行复制成一张独立矩阵——影子构建
+ * （既有表全量复制）与瞬态 Action 提取（仅本批次新增段）共用同一份逐格
+ * 拷贝；line(0) 之后逐行 b.line(原始行号)，两种场景的行号语义一致。 */
+mt::MatrixObject copyRows(const mt::MatrixObject& src, std::size_t rowBegin, std::size_t rowEnd) {
+	mt::MatrixBuilder b;
+	b.name(src.getName());
+	for (std::size_t c = 0; c < src.cols(); ++c) { b.item(src(0, c)); }
+	b.line(0);
+	for (std::size_t r = rowBegin; r < rowEnd; ++r) {
+		for (std::size_t c = 0; c < src.cols(); ++c) { b.item(src(r, c)); }
+		b.line(static_cast<std::int64_t>(r));
+	}
+	return b.take();
+}
+
 } // namespace
 
 /* ==================== RobotStruct：编排门面 ==================== */
@@ -206,7 +221,17 @@ void RobotStruct::run(bot::Reader& input) {
  *     只认硬件变量，断电是物理动作，顺序反了会让器件带电却已无人认识。
  */
 std::string RobotStruct::applySql(const std::string& sql) {
-	/* ---- 阶段 0：前置条件 ---- */
+	/* ---- 阶段地图（2026-09-25 拆分：每段的判据与理由在对应阶段函数实现处）----
+	 *  0   前置条件（须已上电常驻）；
+	 *  1   解析到影子容器（活体一字未动；readSQL 直接在影子上落删除）；
+	 *  1.5 备删计划（planHotDeletes——先删后建的两条硬前提都要求它在插入之前）；
+	 *  2   建计划 + 只读全量校验（planHotInsertions）；
+	 *  2.4 批次新建表的删除对账（reconcileNewTableDels）；
+	 *  3   合并视图判据：全结构消费判据 + 引用完整性（checkMergedView）；
+	 *  4   提交 + 增量装配 + 上电（commitHotBatch——插入段任何一步失败 ⇒ 全回滚）；
+	 *  4.6 热删除物理执行（executeHotDeletes，两个执行序按 deleteFirst 分派）；
+	 *  4.7 整表撤下（dropTableShells）；
+	 *  尾  生效摘要（REPL /sql 与 agent apply_sql 共用同一句话）。 */
 	if (deactivated_) {
 		throw IllegalArgumentException("热插表需要机器人已上电常驻（active() 之后）；"
 			"未上电时请把语句写进结构脚本");
@@ -220,17 +245,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 	 * 看到既有行，代价是 DELETE 无法在此路径上表达。
 	 * 代价：影子是既有结构的**全量拷贝**（百行级，且只在一次热插批次期间存在）。 */
 	std::deque<mt::MatrixObject> staged;
-	for (const auto& m : matrices_) {
-		mt::MatrixBuilder b;
-		b.name(m.getName());
-		for (std::size_t c = 0; c < m.cols(); ++c) { b.item(m(0, c)); }
-		b.line(0);
-		for (std::size_t r = 1; r < m.rows(); ++r) {
-			for (std::size_t c = 0; c < m.cols(); ++c) { b.item(m(r, c)); }
-			b.line(static_cast<std::int64_t>(r));
-		}
-		staged.push_back(b.take());
-	}
+	for (const auto& m : matrices_) { staged.push_back(copyRows(m, 1, m.rows())); }
 	const std::size_t liveCount = matrices_.size();
 
 	ScriptLoader::Mutations muts;
@@ -239,40 +254,117 @@ std::string RobotStruct::applySql(const std::string& sql) {
 		ScriptLoader::readSQL(reader, staged, /* allowDelete= */ true, &muts);
 	}
 
-	auto rowOf = [](const mt::MatrixObject& m, std::size_t r) {
-		std::vector<std::string> row;
-		row.reserve(m.cols());
-		for (std::size_t c = 0; c < m.cols(); ++c) { row.push_back(m(r, c)); }
-		return row;
-	};
+	/* 注意：既有表的影子**已经**反映了删除（readSQL 直接在它上面擦行），
+	 * 不要在这里再擦一遍——那会是第二次应用同一批删除，而行号已经前移过。 */
+
+	const HotDelPlanSet delPlan = planHotDeletes(muts);
+	HotInsPlan insPlan = planHotInsertions(staged, liveCount, muts, delPlan);
+	reconcileNewTableDels(staged, delPlan, insPlan);
+
+	/* 空表 DROP（表壳动了、行没动）也算变更：判据必须包含 droppedTables，
+	 * 否则「DROP 一张本来就没有数据行的表」会被误判成「本批次什么都没做」。 */
+	if (insPlan.appends.empty() && insPlan.newTables.empty() && insPlan.actionMats.empty()
+			&& delPlan.dels.empty() && muts.droppedTables.empty()) {
+		throw IllegalArgumentException("热插表：本批次没有任何 CREATE/INSERT/DELETE/DROP/UPDATE 变更"
+			"（SELECT 是只读查询，请用 query_sql / REPL 的 /sql）");
+	}
+
+	/* ---- 阶段 3：合并视图判据（全结构消费判据 + 引用完整性）---- */
+	checkMergedView(delPlan, insPlan);
+
+	/* ---- 阶段 4 + 4.6：提交，删除按执行序分派 ----
+	 * 执行序（2026-09-23 热更新起有两种，按批次是否含 UPDATE 分派）：
+	 *  * 先插入后删除（既有次序；非 UPDATE 批次行为逐字保持）：插入段全程
+	 *    可回滚，物理删除排**最后**（本函数 4.6 段）——「DELETE + INSERT 同批
+	 *    且插入失败」时删除从未发生，整批回到原点；
+	 *  * 先删后建（deleteFirst，批次含 UPDATE——改写行同名重建，注册表重名
+	 *    即抛，必须先摘旧件再装新件）：删除的不可逆点提前到插入之前（此处），
+	 *    插入段失败时新件全数回滚断电、已摘旧件**不复原**（destroy 是物理断电，
+	 *    回滚 ≠ 复活器件），commitHotBatch 的 catch 块如实点名丢失的变量。收益
+	 *    有二：新旧器件不再短暂并存抢同一物理器件；新行 MetaProvider 的行号在
+	 *    创建时就已是终值，不会被随后的删行前移打乱。 */
+	HotDeleteOutcome delOutcome;
+	if (delPlan.deleteFirst) {
+		delOutcome = executeHotDeletes(delPlan.dels, delPlan.daemonNameIndex);
+	}
+	const CommitOutcome committed = commitHotBatch(delPlan, insPlan, delOutcome);
+
+	/* 4.6（非 UPDATE 批次的删除）：排在这里 = 全部可回滚工作之后——插入段失败
+	 * 时删除从未发生，整批回到原点（「一旦开始删，前面新增的部分都已成功」，
+	 * 不存在「新器件要回滚、旧器件已删掉」的混合状态）；UPDATE 批次已在提交前
+	 * 执行过，此处跳过。 */
+	if (!delPlan.deleteFirst) {
+		delOutcome = executeHotDeletes(delPlan.dels, delPlan.daemonNameIndex);
+	}
+
+	/* ---- 阶段 4.7：整表撤下（DROP TABLE 空壳，不可逆）——位置约束与重锚定
+	 * 的理由在实现处 ---- */
+	const DropOutcome dropped = dropTableShells(muts);
+
+	/* ---- 生效摘要（REPL /sql 与 agent apply_sql 共用同一句话）----
+	 * 热更新行数（G2 对账）：改写行的物理事实同时体现在「新增」与「删除」两个
+	 * 计数里（断电重建），本行是改写事实的独立记账——复盘时三个数能相互对上。 */
+	std::string msg = "已生效：新增硬件变量 " + std::to_string(committed.addedVars) + " 个";
+	if (committed.addedTables > 0) { msg += "，新增表 " + std::to_string(committed.addedTables) + " 张"; }
+	if (committed.addedRows > 0) { msg += "，既有表追加 " + std::to_string(committed.addedRows) + " 行"; }
+	std::size_t updatedTotal = 0;
+	for (const auto& [t, n] : muts.updatedRows) { (void)t; updatedTotal += n; }
+	if (updatedTotal > 0) {
+		msg += "，已热更新 " + std::to_string(updatedTotal) + " 行（断电重建）";
+	}
+	if (delOutcome.deletedVars > 0) {
+		msg += "，已删除硬件变量 " + std::to_string(delOutcome.deletedVars) + " 个（";
+		for (std::size_t i = 0; i < delOutcome.deletedNames.size(); ++i) {
+			if (i > 0) { msg += ", "; }
+			msg += delOutcome.deletedNames[i];
+		}
+		msg += "）";
+		if (delOutcome.deletedRows > delOutcome.deletedVars) {
+			msg += "、结构表删除 " + std::to_string(delOutcome.deletedRows) + " 行";
+		}
+	}
+	if (!insPlan.actionMats.empty()) {
+		std::size_t n = 0;
+		for (const auto& m : insPlan.actionMats) { n += m.rows() > 0 ? m.rows() - 1 : 0; }
+		msg += "，瞬态动作已执行 " + std::to_string(n) + " 行（未注册，已丢弃）";
+	}
+	if (dropped.count > 0) {
+		msg += "，已撤下表 " + std::to_string(dropped.count) + " 张（";
+		for (std::size_t i = 0; i < dropped.names.size(); ++i) {
+			if (i > 0) { msg += ", "; }
+			msg += dropped.names[i];
+		}
+		msg += "）";
+	}
+	return msg;
+}
 
 	/* 注意：既有表的影子**已经**反映了删除（readSQL 直接在它上面擦行），
 	 * 不要在这里再擦一遍——那会是第二次应用同一批删除，而行号已经前移过。 */
 
-	/* ---- 阶段 1.5：备删计划（纯只读；原阶段 2.5 前移，2026-09-23 热更新）----
-	 * 前移的原因都在「先删后建」：
-	 *  ① doomedNames 要供阶段 2 的新行重名预检做豁免——UPDATE 同名重建时，
-	 *     旧名此刻仍挂在注册表上（物理摘除发生在后面），不豁免会把「改写」
-	 *     误判成「重名」而拒绝；
-	 *  ② hw 指针必须在任何插入之前取好：先建后拆下按名 find 会命中新注册的
-	 *     同名变量、摘错对象。
-	 * 批次新建表的删除对账（popRows）依赖 newTables——那是阶段 2 的产物，
-	 * 只能延后（newTableDels 收集，阶段 2.4 处理）。 */
-	const bool deleteFirst = !muts.updatedRows.empty();
-	std::set<std::string> doomedNames;
-	std::vector<HotDelPlan> dels;
+/* ---- 阶段 1.5：备删计划（纯只读；原阶段 2.5 前移，2026-09-23 热更新）----
+ * 前移的原因都在「先删后建」：
+ *  ① doomedNames 要供阶段 2 的新行重名预检做豁免——UPDATE 同名重建时，
+ *     旧名此刻仍挂在注册表上（物理摘除发生在后面），不豁免会把「改写」
+ *     误判成「重名」而拒绝；
+ *  ② hw 指针必须在任何插入之前取好：先建后拆下按名 find 会命中新注册的
+ *     同名变量、摘错对象。
+ * 批次新建表的删除对账（popRows）依赖 newTables——那是阶段 2 的产物，
+ * 只能延后（newTableDels 收集，阶段 2.4 处理）。 */
+RobotStruct::HotDelPlanSet RobotStruct::planHotDeletes(const ScriptLoader::Mutations& muts) {
+	HotDelPlanSet out;
+	out.deleteFirst = !muts.updatedRows.empty();
+	const std::size_t liveCount = matrices_.size();
 	/* 守护名 → daemonHolders_ 下标：见 executeHotDeletes 的守护退场屏障。 */
-	std::map<std::string, std::size_t> daemonNameIndex;
 	for (std::size_t k = 0; k < matrices_.size(); ++k) {
 		if (trim(matrices_[k].getName()) != "Daemon") { continue; }
 		const std::int64_t idxN = matrices_[k].indexOfCol(0, "name");
 		if (idxN < 0) { continue; }
 		for (std::size_t r = 1; r < matrices_[k].rows(); ++r) {
 			const std::string dn = trim(matrices_[k](r, static_cast<std::size_t>(idxN)));
-			if (!dn.empty()) { daemonNameIndex[dn] = daemonNameIndex.size(); }
+			if (!dn.empty()) { out.daemonNameIndex[dn] = out.daemonNameIndex.size(); }
 		}
 	}
-	std::vector<std::pair<std::string, std::vector<std::size_t>>> newTableDels;
 	for (const auto& [tname, rows] : muts.deletedRows) {
 		std::size_t si = liveCount;
 		for (std::size_t k = 0; k < liveCount; ++k) {
@@ -289,7 +381,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 			 * 删除只会命中尾部的新增行、新增行只可能追加在尾部，故「影子比
 			 * 原始多出的行数」就是必须从尾部丢掉的行数——用 popRows 精确表达，
 			 * 不依赖任何行号。newTables 是阶段 2 的产物，对账延后到阶段 2.4。 */
-			newTableDels.emplace_back(tname, rows);
+			out.newTableDels.emplace_back(tname, rows);
 			continue;
 		}
 		HotDelPlan p;
@@ -308,7 +400,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 			}
 			const std::string v = trim(matrices_[si](r, static_cast<std::size_t>(idxName)));
 			p.names.push_back(v);
-			doomedNames.insert(v);
+			out.doomedNames.insert(v);
 			/* 计划期取好对象指针（前移的理由②）：执行期（先删后建模式下已在
 			 * 插入之后）按名 find 会命中新注册的同名变量。指针判空的报错口径
 			 * 与旧实现逐字一致。 */
@@ -322,14 +414,23 @@ std::string RobotStruct::applySql(const std::string& sql) {
 			}
 			p.hw.push_back(hw);
 		}
-		dels.push_back(std::move(p));
+		out.dels.push_back(std::move(p));
 	}
+	return out;
+}
 
-	/* ---- 阶段 2：建计划 + 只读全量校验（不触碰活体、不申请任何资源）---- */
-	/* 影子下标 [0, liveCount) 与 matrices_ 一一对应（影子就是按它顺序填的）。 */
-	std::vector<std::pair<std::size_t, std::vector<std::vector<std::string>>>> appends;
-	std::vector<mt::MatrixObject> newTables;	/* 本批次新建的硬件表 */
-	std::vector<mt::MatrixObject> actionMats;	/* 瞬态 Action（新表或既有表的新行） */
+/* ---- 阶段 2：建计划 + 只读全量校验（不触碰活体、不申请任何资源）----
+ * 影子下标 [0, liveCount) 与 matrices_ 一一对应（影子就是按它顺序填的）。 */
+RobotStruct::HotInsPlan RobotStruct::planHotInsertions(
+		const std::deque<mt::MatrixObject>& staged, std::size_t liveCount,
+		const ScriptLoader::Mutations& muts, const HotDelPlanSet& delPlan) {
+	HotInsPlan out;
+	auto rowOf = [](const mt::MatrixObject& m, std::size_t r) {
+		std::vector<std::string> row;
+		row.reserve(m.cols());
+		for (std::size_t c = 0; c < m.cols(); ++c) { row.push_back(m(r, c)); }
+		return row;
+	};
 	std::set<std::string> batchNames;		/* 批内变量名集合（批内重名早报） */
 
 	for (std::size_t si = 0; si < staged.size(); ++si) {
@@ -409,7 +510,8 @@ std::string RobotStruct::applySql(const std::string& sql) {
 					 * deleteFirst 下给：普通批次（先插入后删除）里「删 A 再插 A」
 					 * 仍然拒绝，保持既有行为与报错位置逐字不变。改名（SET name）
 					 * 到仍存活的名字不豁免，照常拒绝。 */
-					if ((registry_.contains(v) && !(deleteFirst && doomedNames.count(v) != 0))
+					if ((registry_.contains(v)
+								&& !(delPlan.deleteFirst && delPlan.doomedNames.count(v) != 0))
 							|| !batchNames.insert(v).second) {
 						throw IllegalArgumentException("热插表：硬件变量名 '" + v + "' 重复"
 							"（结构里已有同名变量，或本批次内重复）");
@@ -438,47 +540,41 @@ std::string RobotStruct::applySql(const std::string& sql) {
 
 		if (isAction) {
 			/* Action 瞬态：保留「列头 + 本批次新增行」成一张独立矩阵（不入活体）。 */
-			if (newTo > newFrom) {
-				mt::MatrixBuilder ab;
-				ab.name(st.getName());
-				for (std::size_t c = 0; c < st.cols(); ++c) { ab.item(st(0, c)); }
-				ab.line(0);
-				for (std::size_t r = newFrom; r < newTo; ++r) {
-					for (std::size_t c = 0; c < st.cols(); ++c) { ab.item(st(r, c)); }
-					ab.line(static_cast<std::int64_t>(r));
-				}
-				actionMats.push_back(ab.take());
-			}
+			if (newTo > newFrom) { out.actionMats.push_back(copyRows(st, newFrom, newTo)); }
 		} else if (isShadow) {
 			if (newTo > newFrom) {
 				std::vector<std::vector<std::string>> rows;
 				for (std::size_t r = newFrom; r < newTo; ++r) { rows.push_back(rowOf(st, r)); }
-				appends.emplace_back(si, std::move(rows));
+				out.appends.emplace_back(si, std::move(rows));
 			}
 		} else {
 			/* 本批次新建的表：直接取影子即可——影子已经带着本批次的插入与删除
 			 * （readSQL 就在这个容器上改），故「先 CREATE 再 INSERT 再 DELETE」
 			 * 的新表到这里已经是删干净的样子，不会凭空长出一个已删掉的器件。
 			 * 切勿在这里再应用一次删除：行号已随擦除前移，二次应用会越界或删错行。 */
-			newTables.push_back(st);
+			out.newTables.push_back(st);
 		}
 	}
+	return out;
+}
 
-	/* ---- 阶段 2.4：批次新建表的删除对账（原阶段 2.5 的 newTable 分支，2026-09-23
-	 * 热更新随计划前移拆出）----
-	 * 计划本体（dels / doomedNames / hw 指针 / daemonNameIndex）已前移到阶段 1.5
-	 * （见其注释）；本段只处理「表不在活体里 ⇒ 本批次 CREATE 出来的」的删除——
-	 * 撤销范围为空且必须为空（这些行从未装配、从未注册、从未上电，没有硬件可
-	 * 摘、没有断电可做），但影子上的删除效果必须落到待提交的新表上，否则新表
-	 * 会带着「已被删掉的行」一起装配，凭空长出一个器件。
-	 *
-	 * 这里**不能**按原行号再删一遍：影子（= newTables 里的那张表）已经由
-	 * readSQL 擦过行，行号已前移，二次应用会越界或删错行。删除只会命中尾部的
-	 * 新增行、新增行只可能追加在尾部，故「影子比原始多出的行数」就是必须从
-	 * 尾部丢掉的行数——用 popRows 精确表达，不依赖任何行号。对账要读 newTables
-	 * （阶段 2 的产物），故留在原位。 */
-	for (const auto& [tname, rows] : newTableDels) {
-		mt::MatrixObject* nt = mt::findByName(newTables, tname);
+/* ---- 阶段 2.4：批次新建表的删除对账（原阶段 2.5 的 newTable 分支，2026-09-23
+ * 热更新随计划前移拆出）----
+ * 计划本体（dels / doomedNames / hw 指针 / daemonNameIndex）已前移到阶段 1.5
+ * （见其注释）；本段只处理「表不在活体里 ⇒ 本批次 CREATE 出来的」的删除——
+ * 撤销范围为空且必须为空（这些行从未装配、从未注册、从未上电，没有硬件可
+ * 摘、没有断电可做），但影子上的删除效果必须落到待提交的新表上，否则新表
+ * 会带着「已被删掉的行」一起装配，凭空长出一个器件。
+ *
+ * 这里**不能**按原行号再删一遍：影子（= newTables 里的那张表）已经由
+ * readSQL 擦过行，行号已前移，二次应用会越界或删错行。删除只会命中尾部的
+ * 新增行、新增行只可能追加在尾部，故「影子比原始多出的行数」就是必须从
+ * 尾部丢掉的行数——用 popRows 精确表达，不依赖任何行号。对账要读 newTables
+ * （阶段 2 的产物），故只能排在其后。 */
+void RobotStruct::reconcileNewTableDels(const std::deque<mt::MatrixObject>& staged,
+		const HotDelPlanSet& delPlan, HotInsPlan& insPlan) {
+	for (const auto& [tname, rows] : delPlan.newTableDels) {
+		mt::MatrixObject* nt = mt::findByName(insPlan.newTables, tname);
 		if (nt == nullptr) { continue; }	/* 该新表随后又被 DROP：影子已整表擦除 */
 		for (const auto& st : staged) {
 			if (trim(st.getName()) != tname) { continue; }
@@ -488,121 +584,105 @@ std::string RobotStruct::applySql(const std::string& sql) {
 			break;
 		}
 	}
+}
 
-	/* 空表 DROP（表壳动了、行没动）也算变更：判据必须包含 droppedTables，
-	 * 否则「DROP 一张本来就没有数据行的表」会被误判成「本批次什么都没做」。 */
-	if (appends.empty() && newTables.empty() && actionMats.empty() && dels.empty()
-			&& muts.droppedTables.empty()) {
-		throw IllegalArgumentException("热插表：本批次没有任何 CREATE/INSERT/DELETE/DROP/UPDATE 变更"
-			"（SELECT 是只读查询，请用 query_sql / REPL 的 /sql）");
+/* ---- 阶段 3：全结构判据 + 引用完整性（对「提交之后的视图」，2026-09-23
+ *    热更新起两道判据同在合并视图上跑；原阶段 2.6 的引用扫描并入此处）----
+ * 消费判据看的是整张结构（新行可能与任意既有行抢同一器件），故必须合并
+ * 视图后判定；合并视图只为这两条判据而生，随即丢弃。
+ * 热删除/热更新同样要走这条：删掉一个 I2C 总线变量后，某个守护可能仍在用
+ * 同一个 path 采样（守护的 path 是**字面路径**，不经 $ 引用，故下面的引用
+ * 完整性检查看不见它）——checkSingleConsumer 恰好把两侧都归一成
+ * (路径, 地址) 键，对变更后的视图复跑即能拦下这种物理耦合。
+ *
+ * 引用完整性（物理不可逆的唯一预检防线；destroy() 是物理断电，删了就没有
+ * 回滚可言——回滚 ≠ 复活器件）：合并视图里若有任何行引用 doomed 变量，
+ * 删除/改写会留下悬垂裸指针。这些引用在框架里是终身缓存——MtVars_Lua::
+ * ctrlPtrs_/trigPtrs_（首用缓存）与 MetaRef::target（seed 期锁定），且都
+ * 注释写着「指针终身有效」正是因为 pool_ 只增不减。热删除第一次打破那条
+ * 不变式，故必须在这里把「不留悬垂」重新建立为构造保证。
+ *   判据分三类，覆盖结构脚本里**全部**能指向另一个变量的写法：
+ *     a) 流列 controller/trigger 及其编号列 —— 走 isFlowColumn 单点，
+ *        故 controller2/trigger10 也算，漏了就是悬垂指针；
+ *     b) 元数据列的字面 $name 引用 —— seed 期锁定 MetaRef::target 的
+ *        那一类（跨表，如 Monitor 的 src='$sim0'）；
+ *     c) 元数据列的 $(...) 表达式 —— 标识符经注册表按名求值，
+ *        目标消失即运行期报错（不是悬垂，但同样是结构已坏）。
+ * 扫描面 = 合并视图（= 提交之后的结构）：dying 行已擦除——引用方自己也被
+ * 删掉时，引用随行一起消失，不构成悬垂；本批次新增/改写行**在列**（2026-09-23
+ * 热更新扩面）：流引用是首用缓存的懒解析，不在装配期爆出来，INSERT/UPDATE
+ * 的新行引用同批被删变量若不在预检里拦下，就是一颗运行期才炸（或更糟：
+ * 静默指向错对象）的雷——对先删后建的 UPDATE 批次，那还会落在「旧件已摘、
+ * 新件装配失败」的不可复原窗口里。 */
+void RobotStruct::checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan& insPlan) {
+	std::deque<mt::MatrixObject> merged = matrices_;
+	/* 先落实删除（擦行），再追加新行——顺序与提交阶段保持一致，
+	 * 否则「批内先 INSERT 到既有表、再 DELETE 掉它」的净效果会被算错。 */
+	for (const HotDelPlan& p : delPlan.dels) { merged[p.matIdx].removeRows(p.rows); }
+	for (const auto& [idx, rows] : insPlan.appends) {
+		for (const auto& row : rows) { merged[idx].appendRow(row, 0); }
 	}
+	for (const auto& t : insPlan.newTables) { merged.push_back(t); }
 
-	/* ---- 阶段 3：全结构判据 + 引用完整性（对「提交之后的视图」，2026-09-23
-	 *    热更新起两道判据同在合并视图上跑；原阶段 2.6 的引用扫描并入此处）----
-	 * 消费判据看的是整张结构（新行可能与任意既有行抢同一器件），故必须合并
-	 * 视图后判定；合并视图只为这两条判据而生，随即丢弃。
-	 * 热删除/热更新同样要走这条：删掉一个 I2C 总线变量后，某个守护可能仍在用
-	 * 同一个 path 采样（守护的 path 是**字面路径**，不经 $ 引用，故下面的引用
-	 * 完整性检查看不见它）——checkSingleConsumer 恰好把两侧都归一成
-	 * (路径, 地址) 键，对变更后的视图复跑即能拦下这种物理耦合。
-	 *
-	 * 引用完整性（物理不可逆的唯一预检防线；destroy() 是物理断电，删了就没有
-	 * 回滚可言——回滚 ≠ 复活器件）：合并视图里若有任何行引用 doomed 变量，
-	 * 删除/改写会留下悬垂裸指针。这些引用在框架里是终身缓存——MtVars_Lua::
-	 * ctrlPtrs_/trigPtrs_（首用缓存）与 MetaRef::target（seed 期锁定），且都
-	 * 注释写着「指针终身有效」正是因为 pool_ 只增不减。热删除第一次打破那条
-	 * 不变式，故必须在这里把「不留悬垂」重新建立为构造保证。
-	 *   判据分三类，覆盖结构脚本里**全部**能指向另一个变量的写法：
-	 *     a) 流列 controller/trigger 及其编号列 —— 走 isFlowColumn 单点，
-	 *        故 controller2/trigger10 也算，漏了就是悬垂指针；
-	 *     b) 元数据列的字面 $name 引用 —— seed 期锁定 MetaRef::target 的
-	 *        那一类（跨表，如 Monitor 的 src='$sim0'）；
-	 *     c) 元数据列的 $(...) 表达式 —— 标识符经注册表按名求值，
-	 *        目标消失即运行期报错（不是悬垂，但同样是结构已坏）。
-	 * 扫描面 = 合并视图（= 提交之后的结构）：dying 行已擦除——引用方自己也被
-	 * 删掉时，引用随行一起消失，不构成悬垂；本批次新增/改写行**在列**（2026-09-23
-	 * 热更新扩面）：流引用是首用缓存的懒解析，不在装配期爆出来，INSERT/UPDATE
-	 * 的新行引用同批被删变量若不在预检里拦下，就是一颗运行期才炸（或更糟：
-	 * 静默指向错对象）的雷——对先删后建的 UPDATE 批次，那还会落在「旧件已摘、
-	 * 新件装配失败」的不可复原窗口里。 */
-	{
-		std::deque<mt::MatrixObject> merged = matrices_;
-		/* 先落实删除（擦行），再追加新行——顺序与提交阶段保持一致，
-		 * 否则「批内先 INSERT 到既有表、再 DELETE 掉它」的净效果会被算错。 */
-		for (const HotDelPlan& p : dels) { merged[p.matIdx].removeRows(p.rows); }
-		for (const auto& [idx, rows] : appends) {
-			for (const auto& row : rows) { merged[idx].appendRow(row, 0); }
-		}
-		for (const auto& t : newTables) { merged.push_back(t); }
-
-		if (!dels.empty()) {
-			std::vector<std::string> refErrors;
-			for (const mt::MatrixObject& m : merged) {
-				if (m.rows() == 0) { continue; }
-				const std::string tname = trim(m.getName());
-				for (std::size_t r = 1; r < m.rows(); ++r) {
-					for (std::size_t c = 0; c < m.cols(); ++c) {
-						const std::string& colName = m(0, c);
-						const std::string val = m.inherited(r, c);
-						if (val.empty() || val == "-") { continue; }
-						const std::string where = "表 '" + tname + "' 第 "
-							+ std::to_string(r) + " 行的列 '" + colName + "'";
-						bool isFlow = isFlowColumn(colName);
-						if (isFlow && doomedNames.count(val) != 0) {
-							refErrors.push_back(where + " 把 '" + val
-								+ "' 引用为 controller/trigger");
-							continue;
-						}
-						if (!isFlow && val[0] == '$') {
-							if (auto body = exprBody(val)) {
-								std::set<std::string> vars;
-								try {
-									Expression::parse(*body).collectVars(vars);
-								} catch (const std::exception&) {
-									continue;	/* 语法坏掉的表达式由装配期既有判据报错 */
-								}
-								for (const std::string& nm : vars) {
-									if (doomedNames.count(nm) != 0) {
-										refErrors.push_back(where + " 的表达式 '" + val
-											+ "' 引用了 '" + nm + "'");
-									}
-								}
-							} else if (doomedNames.count(val.substr(1)) != 0) {
-								refErrors.push_back(where + " 以 '" + val + "' 引用了 '"
-									+ val.substr(1) + "'");
+	if (!delPlan.dels.empty()) {
+		std::vector<std::string> refErrors;
+		for (const mt::MatrixObject& m : merged) {
+			if (m.rows() == 0) { continue; }
+			const std::string tname = trim(m.getName());
+			for (std::size_t r = 1; r < m.rows(); ++r) {
+				for (std::size_t c = 0; c < m.cols(); ++c) {
+					const std::string& colName = m(0, c);
+					const std::string val = m.inherited(r, c);
+					if (val.empty() || val == "-") { continue; }
+					const std::string where = "表 '" + tname + "' 第 "
+						+ std::to_string(r) + " 行的列 '" + colName + "'";
+					bool isFlow = isFlowColumn(colName);
+					if (isFlow && delPlan.doomedNames.count(val) != 0) {
+						refErrors.push_back(where + " 把 '" + val
+							+ "' 引用为 controller/trigger");
+						continue;
+					}
+					if (!isFlow && val[0] == '$') {
+						if (auto body = exprBody(val)) {
+							std::set<std::string> vars;
+							try {
+								Expression::parse(*body).collectVars(vars);
+							} catch (const std::exception&) {
+								continue;	/* 语法坏掉的表达式由装配期既有判据报错 */
 							}
+							for (const std::string& nm : vars) {
+								if (delPlan.doomedNames.count(nm) != 0) {
+									refErrors.push_back(where + " 的表达式 '" + val
+										+ "' 引用了 '" + nm + "'");
+								}
+							}
+						} else if (delPlan.doomedNames.count(val.substr(1)) != 0) {
+							refErrors.push_back(where + " 以 '" + val + "' 引用了 '"
+								+ val.substr(1) + "'");
 						}
 					}
 				}
 			}
-			if (!refErrors.empty()) {
-				std::string msg = "热删除被拒绝：以下存活结构仍引用待删变量，删除会留下指向"
-					"已释放器件的引用（先删引用方，或把这些行一起删）：";
-				for (const std::string& e : refErrors) { msg += "\n  - " + e; }
-				throw IllegalArgumentException(msg);
-			}
 		}
-
-		factory_.precheckStructure(merged);
+		if (!refErrors.empty()) {
+			std::string msg = "热删除被拒绝：以下存活结构仍引用待删变量，删除会留下指向"
+				"已释放器件的引用（先删引用方，或把这些行一起删）：";
+			for (const std::string& e : refErrors) { msg += "\n  - " + e; }
+			throw IllegalArgumentException(msg);
+		}
 	}
 
-	/* ---- 阶段 4：提交 + 增量装配 + 上电（插入段任何一步失败 ⇒ 全回滚）----
-	 * 执行序（2026-09-23 热更新起有两种，按批次是否含 UPDATE 分派）：
-	 *  * 先插入后删除（既有次序；非 UPDATE 批次行为逐字保持）：插入段全程
-	 *    可回滚，物理删除排最后——「DELETE + INSERT 同批且插入失败」时删除
-	 *    从未发生，整批回到原点；
-	 *  * 先删后建（deleteFirst，批次含 UPDATE——改写行同名重建，注册表重名
-	 *    即抛，必须先摘旧件再装新件）：删除的不可逆点提前到插入之前，插入段
-	 *    失败时新件全数回滚断电、已摘旧件**不复原**（destroy 是物理断电，
-	 *    回滚 ≠ 复活器件），catch 块如实点名丢失的变量。收益有二：新旧器件
-	 *    不再短暂并存抢同一物理器件；新行 MetaProvider 的行号在创建时就已是
-	 *    终值，不会被随后的删行前移打乱。 */
-	HotDeleteOutcome delOutcome;
-	if (deleteFirst) {
-		delOutcome = executeHotDeletes(dels, daemonNameIndex);
-	}
-	/* mark 取在（可能已发生的）删除之后：先删后建下 mark.seq 即删后规模，
-	 * 回滚只回滚插入段——已执行的物理删除不在任何回滚范围内（见上）。 */
+	factory_.precheckStructure(merged);
+}
+
+/* ---- 阶段 4：提交 + 增量装配 + 上电（插入段任何一步失败 ⇒ 全回滚）----
+ * deleteFirst 批次的物理删除已在 applySql（本函数之前）执行，其结果经
+ * alreadyDeleted 传入——catch 的失败口径要据它点名已丢失的变量。
+ * mark 取在（可能已发生的）删除之后：先删后建下 mark.seq 即删后规模，
+ * 回滚只回滚插入段——已执行的物理删除不在任何回滚范围内。 */
+RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotDelPlanSet& delPlan,
+		HotInsPlan& insPlan, const HotDeleteOutcome& alreadyDeleted) {
+	CommitOutcome out;
 	const HwRegistry::Mark mark = registry_.mark();
 	const std::size_t metaMark = metaProviders_.size();
 	const std::size_t daemonMark = daemonHolders_.size();
@@ -630,7 +710,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 
 	try {
 		/* 4.1 既有表：先落行（矩阵是装配的输入），再按旧行数增量装配 */
-		for (const auto& [idx, rows] : appends) {
+		for (const auto& [idx, rows] : insPlan.appends) {
 			mt::MatrixObject& live = matrices_[idx];
 			const std::int64_t from = static_cast<std::int64_t>(live.rows());
 			for (const auto& row : rows) {
@@ -640,7 +720,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 			factory_.createHardVarsFrom(live, from);
 		}
 		/* 4.2 新表：整表入列后按 fromRow=1 装配 */
-		for (auto& t : newTables) {
+		for (auto& t : insPlan.newTables) {
 			matrices_.push_back(std::move(t));
 			++addedTables;
 			factory_.createHardVarsFrom(matrices_.back(), 1);
@@ -662,7 +742,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 		/* 4.5 瞬态 Action：排在硬件之后执行（动作可引用本批次新建变量），
 		 *     执行完即丢弃——不入 matrices_、不注册。执行失败同样回滚本批次硬件
 		 *     （结构回到批次前状态），但动作已下发的物理副作用不回退。 */
-		if (!actionMats.empty()) { runner_.runAction(actionMats); }
+		if (!insPlan.actionMats.empty()) { runner_.runAction(insPlan.actionMats); }
 	} catch (...) {
 		try {
 			rollback();
@@ -679,9 +759,9 @@ std::string RobotStruct::applySql(const std::string& sql) {
 		 *    IllegalArgumentException（如装配期重名），apply_sql 的派发漏斗
 		 *    会按异常类型把它归类成「校验拒绝、活体一字未动」（paramError /
 		 *    executed=false），对本口径是谎报：删旧件是真实发生过的副作用。 */
-		if (deleteFirst && delOutcome.deletedVars > 0) {
+		if (delPlan.deleteFirst && alreadyDeleted.deletedVars > 0) {
 			std::string names;
-			for (const std::string& n : delOutcome.deletedNames) {
+			for (const std::string& n : alreadyDeleted.deletedNames) {
 				if (!names.empty()) { names += ", "; }
 				names += n;
 			}
@@ -700,112 +780,66 @@ std::string RobotStruct::applySql(const std::string& sql) {
 		throw;
 	}
 
-	/* ==================== 阶段 4.6：热删除的物理执行（不可逆）====================
-	 * 实现已抽出为 executeHotDeletes（2026-09-23 热更新：先删后建与先插入后
-	 * 删除两个执行序共用同一套物理机器，语义/顺序/失败口径的完整注释随实现走）。
-	 * 这里只留分派与既有次序的定位：非 UPDATE 批次把删除排在**全部可回滚工作
-	 * 之后**——插入段失败时删除从未发生，整批回到原点（「一旦开始删，前面新增
-	 * 的部分都已成功」，不存在「新器件要回滚、旧器件已删掉」的混合状态）；
-	 * UPDATE 批次（deleteFirst）已在阶段 4 开头执行过，此处跳过。 */
 	/* 「新增了几个变量」必须在**动手删之前**定下来：删除会从同一份注册表里摘
 	 * 条目，用「事后总数 - 批次前总数」会把两边相互抵掉（同批删一插一时净增量
 	 * 为 0，摘要就会谎报「新增 0 个」）。新增是「装配阶段登记了多少」这个
-	 * 绝对值，删除是另一个维度，两者各自如实报数。deleteFirst 批次的删除已在
-	 * 插入前执行，此刻的注册表规模即「删后 + 插后」，与删后 mark 相减同样得
-	 * 出纯新增数。 */
+	 * 绝对值（此刻的注册表规模 = deleteFirst 批次的「删后 + 插后」，与删后
+	 * mark.seq 相减同样得出纯新增数），删除是另一个维度，两者各自如实报数。 */
 	const std::size_t varsAfterInsert = registry_.sequence().size();
-	if (!deleteFirst) {
-		delOutcome = executeHotDeletes(dels, daemonNameIndex);
-	}
+	out.addedVars = varsAfterInsert - mark.seq;
+	for (const auto& [idx, n] : appended) { (void)idx; out.addedRows += n; }
+	out.addedTables = addedTables;
+	return out;
+}
 
-	/* ==================== 阶段 4.7：整表撤下（DROP TABLE，不可逆）====================
-	 * 位置在 4.6 之后：DROP 的**全部数据行**已由 4.6 走完与 DELETE 完全相同的
-	 * 「逆序断电 → 擦登记表 → 擦结构行 → 撤注册」路径（DROP 就是把整表行全删
-	 * 再加一步摘表壳），故这里只剩**空表壳**要摘。
-	 *
-	 * 为什么表壳必须最后摘：4.6.4 用「矩阵地址 + 行号」定位被删行的 MetaProvider，
-	 * 而矩阵地址是 `&matrices_[mi]`——一旦先 erase 表壳，其后所有表的下标与地址
-	 * 都会变，4.6 的判据就全错位。故顺序是死的：先按行删（4.6），再摘壳（本节）。
-	 *
-	 * deque 中间 erase 的引用失效：MetaProvider::matrix_ 存的是指向 matrices_
-	 * 元素的指针；erase 会让其后元素引用失效。**必须先把存活提供者的表名抓下来
-	 * 再 erase**（表名唯一且是稳定身份），erase 后按名把每个提供者重锚定回新地址
-	 * ——否则后续 readSample/collect 会踩悬垂指针。这也正是 matrix.hpp 把矩阵
-	 * 容器从 vector 换成 deque 之外、又为整表撤下专门保留 rebase 的原因。 */
-	std::size_t droppedTables = 0;
-	std::vector<std::string> droppedNames;
-	if (!muts.droppedTables.empty()) {
-		/* ① 抓名字（erase 之前，此时 matrix_ 仍有效） */
-		std::vector<std::pair<MetaProvider*, std::string>> provNames;
-		provNames.reserve(metaProviders_.size());
-		for (const auto& p : metaProviders_) {
-			provNames.emplace_back(p.get(), p->matrix().getName());
-		}
-		/* ② 定位要摘的表壳（本批次 DROP 的表名 ∩ 活体 matrices_）。DROP 本批次
-		 *     新建的表不在活体里（readSQL 已把它从影子容器整表擦除），此处自然
-		 *     找不到——那不是错误，跳过即可。 */
-		std::vector<std::size_t> shellIdx;
-		for (std::size_t k = 0; k < matrices_.size(); ++k) {
-			if (muts.droppedTables.count(trim(matrices_[k].getName())) != 0) {
-				shellIdx.push_back(k);
-				droppedNames.push_back(trim(matrices_[k].getName()));
-			}
-		}
-		/* ③ 降序 erase（先删大下标，前面的下标不失效） */
-		for (auto it = shellIdx.rbegin(); it != shellIdx.rend(); ++it) {
-			matrices_.erase(matrices_.begin() + static_cast<std::ptrdiff_t>(*it));
-			++droppedTables;
-		}
-		/* ④ 重锚定存活提供者：按名字找同名的矩阵地址。只在**确实摘过表壳**时做
-		 *    ——「本批次 CREATE 后又 DROP」的新表不在活体里（shellIdx 为空），
-		 *    此时没有元素被搬移，重锚定是空转。 */
-		if (!shellIdx.empty()) {
-			for (auto& [prov, nm] : provNames) {
-				const mt::MatrixObject* m = mt::findByName(matrices_, nm);
-				if (m != nullptr) { prov->rebase(*m); }
-			}
+/* ==================== 阶段 4.7：整表撤下（DROP TABLE，不可逆）====================
+ * 位置在 4.6 之后：DROP 的**全部数据行**已由 4.6 走完与 DELETE 完全相同的
+ * 「逆序断电 → 擦登记表 → 擦结构行 → 撤注册」路径（DROP 就是把整表行全删
+ * 再加一步摘表壳），故这里只剩**空表壳**要摘。
+ *
+ * 为什么表壳必须最后摘：4.6.4 用「矩阵地址 + 行号」定位被删行的 MetaProvider，
+ * 而矩阵地址是 `&matrices_[mi]`——一旦先 erase 表壳，其后所有表的下标与地址
+ * 都会变，4.6 的判据就全错位。故顺序是死的：先按行删（4.6），再摘壳（本节）。
+ *
+ * deque 中间 erase 的引用失效：MetaProvider::matrix_ 存的是指向 matrices_
+ * 元素的指针；erase 会让其后元素引用失效。**必须先把存活提供者的表名抓下来
+ * 再 erase**（表名唯一且是稳定身份），erase 后按名把每个提供者重锚定回新地址
+ * ——否则后续 readSample/collect 会踩悬垂指针。这也正是 matrix.hpp 把矩阵
+ * 容器从 vector 换成 deque 之外、又为整表撤下专门保留 rebase 的原因。 */
+RobotStruct::DropOutcome RobotStruct::dropTableShells(const ScriptLoader::Mutations& muts) {
+	DropOutcome out;
+	if (muts.droppedTables.empty()) { return out; }
+	/* ① 抓名字（erase 之前，此时 matrix_ 仍有效） */
+	std::vector<std::pair<MetaProvider*, std::string>> provNames;
+	provNames.reserve(metaProviders_.size());
+	for (const auto& p : metaProviders_) {
+		provNames.emplace_back(p.get(), p->matrix().getName());
+	}
+	/* ② 定位要摘的表壳（本批次 DROP 的表名 ∩ 活体 matrices_）。DROP 本批次
+	 *     新建的表不在活体里（readSQL 已把它从影子容器整表擦除），此处自然
+	 *     找不到——那不是错误，跳过即可。 */
+	std::vector<std::size_t> shellIdx;
+	for (std::size_t k = 0; k < matrices_.size(); ++k) {
+		if (muts.droppedTables.count(trim(matrices_[k].getName())) != 0) {
+			shellIdx.push_back(k);
+			out.names.push_back(trim(matrices_[k].getName()));
 		}
 	}
-
-	/* ---- 生效摘要（REPL /sql 与 agent apply_sql 共用同一句话）---- */
-	const std::size_t addedVars = varsAfterInsert - mark.seq;
-	std::size_t addedRows = 0;
-	for (const auto& [idx, n] : appended) { (void)idx; addedRows += n; }
-	/* 热更新行数（G2 对账）：改写行的物理事实同时体现在「新增」与「删除」两个
-	 * 计数里（断电重建），本行是改写事实的独立记账——复盘时三个数能相互对上。 */
-	std::size_t updatedTotal = 0;
-	for (const auto& [t, n] : muts.updatedRows) { (void)t; updatedTotal += n; }
-	std::string msg = "已生效：新增硬件变量 " + std::to_string(addedVars) + " 个";
-	if (addedTables > 0) { msg += "，新增表 " + std::to_string(addedTables) + " 张"; }
-	if (addedRows > 0) { msg += "，既有表追加 " + std::to_string(addedRows) + " 行"; }
-	if (updatedTotal > 0) {
-		msg += "，已热更新 " + std::to_string(updatedTotal) + " 行（断电重建）";
+	/* ③ 降序 erase（先删大下标，前面的下标不失效） */
+	for (auto it = shellIdx.rbegin(); it != shellIdx.rend(); ++it) {
+		matrices_.erase(matrices_.begin() + static_cast<std::ptrdiff_t>(*it));
+		++out.count;
 	}
-	if (delOutcome.deletedVars > 0) {
-		msg += "，已删除硬件变量 " + std::to_string(delOutcome.deletedVars) + " 个（";
-		for (std::size_t i = 0; i < delOutcome.deletedNames.size(); ++i) {
-			if (i > 0) { msg += ", "; }
-			msg += delOutcome.deletedNames[i];
-		}
-		msg += "）";
-		if (delOutcome.deletedRows > delOutcome.deletedVars) {
-			msg += "、结构表删除 " + std::to_string(delOutcome.deletedRows) + " 行";
+	/* ④ 重锚定存活提供者：按名字找同名的矩阵地址。只在**确实摘过表壳**时做
+	 *    ——「本批次 CREATE 后又 DROP」的新表不在活体里（shellIdx 为空），
+	 *    此时没有元素被搬移，重锚定是空转。 */
+	if (!shellIdx.empty()) {
+		for (auto& [prov, nm] : provNames) {
+			const mt::MatrixObject* m = mt::findByName(matrices_, nm);
+			if (m != nullptr) { prov->rebase(*m); }
 		}
 	}
-	if (!actionMats.empty()) {
-		std::size_t n = 0;
-		for (const auto& m : actionMats) { n += m.rows() > 0 ? m.rows() - 1 : 0; }
-		msg += "，瞬态动作已执行 " + std::to_string(n) + " 行（未注册，已丢弃）";
-	}
-	if (droppedTables > 0) {
-		msg += "，已撤下表 " + std::to_string(droppedTables) + " 张（";
-		for (std::size_t i = 0; i < droppedNames.size(); ++i) {
-			if (i > 0) { msg += ", "; }
-			msg += droppedNames[i];
-		}
-		msg += "）";
-	}
-	return msg;
+	return out;
 }
 
 /* ==================== 热删除的物理执行（原 applySql 阶段 4.6，不可逆）====================

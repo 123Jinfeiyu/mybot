@@ -499,6 +499,59 @@ class RobotStruct {
 	HotDeleteOutcome executeHotDeletes(const std::vector<HotDelPlan>& plans,
 		const std::map<std::string, std::size_t>& daemonNameIndex);
 
+	/* ---- applySql 的阶段机（2026-09-25 拆分）----
+	 * applySql 原本约 600 行单函数，阶段编号（0/1/1.5/2/2.4/3/4/4.6/4.7）早已
+	 * 写在注释里；拆分就是把每段注释与代码一起搬进具名函数，applySql 留阶段
+	 * 地图与生效摘要。产物包结构（PlanSet/Outcome）让阶段间只传数据不传旗标。
+	 * 判据与理由的完整注释都在 robot.cpp 实现处。 */
+
+	/* 阶段 1.5 产物包：备删计划。前移到任何插入之前的理由（先删后建的两个
+	 * 硬前提）在 planHotDeletes 实现处。 */
+	struct HotDelPlanSet {
+		bool deleteFirst = false;		/* 批次含 UPDATE ⇒ 先删后建执行序 */
+		std::set<std::string> doomedNames;	/* 将被摘除的变量名（阶段 2 重名预检豁免用） */
+		std::vector<HotDelPlan> dels;
+		std::map<std::string, std::size_t> daemonNameIndex;	/* 守护名 → daemonHolders_ 下标 */
+		/* 表不在活体里 ⇒ 本批次 CREATE 出来的删除：撤销范围为空且必须为空，
+		 * 但影子上的删除效果要落到待提交的新表上——对账读 newTables（阶段 2
+		 * 的产物），只能延后到阶段 2.4（reconcileNewTableDels）。 */
+		std::vector<std::pair<std::string, std::vector<std::size_t>>> newTableDels;
+	};
+
+	/* 阶段 2 产物包：建计划（新增行落位 + 新表 + 瞬态 Action），全部只读校验
+	 * 通过后才存在；提交阶段按它增量装配。 */
+	struct HotInsPlan {
+		/* (影子下标 [0, liveCount)，本批次新增行)——影子下标与 matrices_ 一一对应 */
+		std::vector<std::pair<std::size_t, std::vector<std::vector<std::string>>>> appends;
+		std::vector<mt::MatrixObject> newTables;	/* 本批次新建的硬件表 */
+		std::vector<mt::MatrixObject> actionMats;	/* 瞬态 Action（执行后即弃） */
+	};
+
+	/* 阶段 4 产物包：提交段的回执计数。mark.seq 不出函数——addedVars 在提交段
+	 * 内部定值（「新增」必须在动手删之前记数，理由在实现处）。 */
+	struct CommitOutcome {
+		std::size_t addedVars = 0;
+		std::size_t addedTables = 0;
+		std::size_t addedRows = 0;
+	};
+
+	/* 阶段 4.7 产物包：整表撤下（DROP TABLE 空壳）的回执计数。 */
+	struct DropOutcome {
+		std::size_t count = 0;
+		std::vector<std::string> names;
+	};
+
+	HotDelPlanSet planHotDeletes(const ScriptLoader::Mutations& muts);
+	HotInsPlan planHotInsertions(const std::deque<mt::MatrixObject>& staged,
+		std::size_t liveCount, const ScriptLoader::Mutations& muts,
+		const HotDelPlanSet& delPlan);
+	void reconcileNewTableDels(const std::deque<mt::MatrixObject>& staged,
+		const HotDelPlanSet& delPlan, HotInsPlan& insPlan);
+	void checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan& insPlan);
+	CommitOutcome commitHotBatch(const HotDelPlanSet& delPlan, HotInsPlan& insPlan,
+		const HotDeleteOutcome& alreadyDeleted);
+	DropOutcome dropTableShells(const ScriptLoader::Mutations& muts);
+
 public:
 	explicit RobotStruct(bot::Reader& input)
 		: factory_(registry_, daemonHolders_, metaProviders_), runner_(registry_) {
