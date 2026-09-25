@@ -35,6 +35,10 @@ futures = "0.3"
 # 同构）；纯 std 拿不到本机时区偏移，自己解析 /etc/localtime 是重造轮子。
 # 另外：信号处置的强杀路径（SIG_DFL + raise）与 C++ onStopSignal 同款。
 libc = "0.2"
+# rustyline：交互 REPL 的行编辑 / ↑↓ 历史 / `/命令` Tab 补全（2026-09-25）。只在
+# stdin+stdout 都是终端时启用（linein.rs），管道面仍是裸逐行读。关掉缺省 feature：
+# 不要 custom-bindings（radix_trie）与 with-dirs（home）——历史路径本仓自己按 XDG 解析。
+rustyline = { version = "18", default-features = false, features = ["with-file-history"] }
 
 [dev-dependencies]
 # 单测要构造 429/5xx 的 provider 响应错误（rig 的 provider_response_status() 给的是

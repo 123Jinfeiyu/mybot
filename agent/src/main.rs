@@ -19,6 +19,7 @@ mod config;
 mod frame;
 mod history;
 mod hook;
+mod linein;
 mod model;
 mod out;
 mod prompt;

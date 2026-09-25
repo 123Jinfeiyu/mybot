@@ -109,6 +109,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 
 tmp="$(mktemp -d)"
+touch "$tmp/.t0"	# 时间基点：R16 用它反证管道面场景没写缺省历史文件
 SRV=""
 BACKPID=""
 cleanup() {
@@ -1276,6 +1277,78 @@ BOT4CJ_LLM_KEY=e2e-rust-key "$AGENT_BIN" --socket /nonexistent --llm-config none
 	--llm-endpoint http://127.0.0.1:1/v1/chat/completions --llm-model m --check-config \
 	>"$R15/cc2.out" 2>&1
 check_present "$R15/cc2.out" "输出模式    : 流式" "缺省输出模式是流式（--check-config 摘要）"
+
+# R16：终端面行编辑（2026-09-25，linein.rs / rustyline）——上面所有场景都是管道面
+# （裸逐行读，历史文件不碰），这里用 pty 把 stdin/stdout 都变成终端，断言：
+#   * `/命令` Tab 补全；提示符处 Ctrl-C 清行**不退出**；↑ 召回上一条；
+#   * 历史落盘到 BOT4CJ_AGENT_HISTORY 指定路径，文件 0600 / 目录 0700；
+#   * 模型轮进行中 Ctrl-C 仍走 SIGINT 取消路径（raw 模式已还原），优雅退出 0。
+# 不接真模型：内置命令不发请求；模型轮取消用 slow 剧本（与 R8b 同）。
+echo "----- R16：终端面行编辑 / 历史 / 补全（pty） -----"
+R16="$tmp/rust16"; mkdir -p "$R16"
+PORT=$((28300 + RANDOM % 300))
+start_server "$PORT" "$R16/req.json" slow || exit 1
+start_backend "$R16" || exit 1
+cat > "$R16/drive.py" <<'PY'
+import os, pty, sys, time, select, re
+agent, sock, port, hist = sys.argv[1:5]
+env = dict(os.environ, BOT4CJ_LLM_KEY="e2e-rust-key", BOT4CJ_AGENT_HISTORY=hist, TERM="xterm")
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvpe(agent, ["mybot-agent", "--socket", sock, "--llm-config", "none",
+                       "--llm-endpoint", f"http://127.0.0.1:{port}/v1/chat/completions",
+                       "--llm-model", "e2e-model"], env)
+buf = b""
+def read_until(pat, timeout=8):
+    global buf
+    end = time.time() + timeout
+    while time.time() < end:
+        r, _, _ = select.select([fd], [], [], 0.2)
+        if r:
+            try: buf += os.read(fd, 65536)
+            except OSError: break
+        if re.search(pat, buf.decode("utf-8", "replace")): return True
+    return False
+fails = 0
+def ok(name, cond):
+    global fails
+    print(("  [OK] " if cond else "  [FAIL] ") + name)
+    if not cond: fails += 1
+def send(s): os.write(fd, s.encode()); time.sleep(0.3)
+ok("R16：终端提示符出现", read_until(r"mybot\[relay-test\|llm0\|\d+hw\]> "))
+send("/he\t"); ok("R16：Tab 把 /he 补成 /help", read_until(r"/help "))
+send("\r"); ok("R16：/help 执行", read_until(r"/status\s+- 会话状态"))
+read_until(r"hw\]> $", 3)
+send("/sta"); send("\x03"); ok("R16：提示符处 Ctrl-C 清行不退出", read_until(r"已丢弃当前行"))
+ok("R16：Ctrl-C 之后提示符回来", read_until(r"hw\]> "))
+send("/status\r"); ok("R16：/status 执行", read_until(r"会话状态", 5))
+read_until(r"hw\]> $", 3)
+send("\x1b[A"); ok("R16：↑ 召回上一条 /status", read_until(r"hw\]> /status"))
+send("\x15")
+send("第一件事\r"); time.sleep(1.5)
+t0 = time.time(); os.write(fd, b"\x03")
+ok("R16：模型轮内 Ctrl-C 走 SIGINT 取消（收到停止信号）", read_until(r"收到停止信号", 4))
+ok("R16：在飞请求被中断", read_until(r"请求被中断", 4))
+_, st = os.waitpid(pid, 0)
+ok("R16：取消后优雅退出 0（不被信号打死）", os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0 and time.time() - t0 < 5)
+sys.exit(1 if fails else 0)
+PY
+if python3 "$R16/drive.py" "$AGENT_BIN" "$R16/mcp.sock" "$PORT" "$R16/hist/history"; then :; else fail=1; fi
+stop_backend
+stop_server
+if [ "$(stat -c '%a' "$R16/hist/history" 2>/dev/null)" = "600" ] && [ "$(stat -c '%a' "$R16/hist" 2>/dev/null)" = "700" ]; then
+	echo "  [OK] R16：历史文件 0600 / 目录 0700"
+else
+	echo "  [FAIL] R16：历史文件权限（文件 $(stat -c '%a' "$R16/hist/history" 2>/dev/null) 目录 $(stat -c '%a' "$R16/hist" 2>/dev/null)）"; fail=1
+fi
+check_present "$R16/hist/history" "/status" "R16：历史里有本会话输入的命令"
+# 管道面反证：此前所有场景都是管道面，缺省路径的历史文件不得在本次运行期间被写
+DEF_HIST="${XDG_STATE_HOME:-$HOME/.local/state}/mybot-agent/history"
+if [ -e "$DEF_HIST" ] && [ "$DEF_HIST" -nt "$tmp/.t0" ]; then
+	echo "  [FAIL] R16：管道面场景写了缺省历史文件"; fail=1
+else
+	echo "  [OK] R16：管道面场景未触碰缺省历史文件"
+fi
 
 if [ "$fail" -eq 0 ]; then
 	echo "mybot-agent 端到端测试通过"

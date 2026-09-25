@@ -103,6 +103,17 @@ REPL 内置命令：`/hardware` 打印硬件清单，`/scripts` 打印动作脚�
 session id、硬件变量数；只读，**不触发任何模型调用**——SAN-10，2026-09-22），
 `/clear` 清空对话记忆（**硬件保持上电**、系统提示词不变——上下文被错误结论
 污染后不必重启进程丢掉常驻状态，C1，2026-09-22），`/exit`（或 `/quit`、Ctrl-D）退出。
+
+**行编辑与历史**（2026-09-25，`agent/src/linein.rs`，rustyline）：stdin 与 stdout **都是终端**
+时提示符带行编辑——方向键移动、Ctrl-A/E/W/U、↑↓ 翻历史、Ctrl-R 搜索、`/命令` Tab 补全
+（只补内置命令，任务文本是自然语言没有候选集）；提示符处 **Ctrl-C 清掉当前行**继续
+（raw 模式下终端不发 SIGINT，退出仍是 `/exit` 或 Ctrl-D），模型轮进行中终端已还原、
+Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOME/mybot-agent/history`
+（未设则 `~/.local/state/mybot-agent/history`），目录 0700 / 文件 0600 建立，上限 1000 条，
+`BOT4CJ_AGENT_HISTORY=<路径|none>` 改位置或关闭；任务文本可能含现场信息，已存在的文件
+若对同组/其他用户可读会提醒（不擅自改权限）。**任一端不是终端**（管道、重定向、E2E）
+则走裸逐行读，提示符原样写 stdout、一行一任务、EOF 退出——与此前行为逐字节一致，
+不读不写历史文件。
 首次 SIGINT/SIGTERM 使 mybot-agent 置停止标志，在检查点停止后续模型轮、重试与
 工具派发；REPL 正常收尾写 end 行、退出 0，`--task` 若返回中断错误则写 error 行、退出 1。
 **在飞的模型请求随即被丢弃**（2026-09-25 起：阻塞面与流式首帧在 `select!` 里对停止
@@ -1045,7 +1056,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl.rs` 等 14 个 `.rs` | Rust agent：模型循环（REPL/--task）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
+| `agent/src/repl.rs` 等 15 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/lib/llm_http.lua` | ffi 直驱 libcurl 的 HTTP 传输 | 运行期 libcurl |
 | `modules/lib/llm_wire_openai.lua` | OpenAI 兼容报文整形与响应映射 | 无 |

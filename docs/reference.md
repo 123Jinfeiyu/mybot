@@ -150,6 +150,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_LLM_KEY` | 由 **Rust `mybot-agent`** 读取并用于 provider 请求头；回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY` → 配置文件 `api_key` / `api_key_file`。不经后端工具参数或 `BOT4CJ_DEBUG` 转储；后端若继承了该变量，`run_command` 的环境清洗会剔除它。两进程启动第一件事都是 `prctl(PR_SET_DUMPABLE, 0)`（见 `BOT4CJ_ALLOW_PTRACE`），同 uid 进程读不到 `/proc/<pid>/environ`、`mem`，也不能 `ptrace` 附着——但 root / `CAP_SYS_PTRACE` 不受此限 |
 | `BOT4CJ_ALLOW_PTRACE` | 设为 `1` 时 **`mybot` 与 `mybot-agent` 都不再**在启动时 `prctl(PR_SET_DUMPABLE, 0)`，进程保持可被同 UID `ptrace`（gdb/strace attach）、崩溃落 core、`/proc/<pid>/environ` 与 `mem` 对同 UID 可读；两进程各自向 stderr 打一行「注意」。**仅调试用**——密钥、TCP 口令都可自内存读出。缺省（不设）为不可 dump；`prctl` 失败只告警不拒启。sanitizer 构建（`-DMYBOT_SANITIZE=...`）**编译期跳过**这一步（LeakSanitizer 需要 ptrace 自身），不看本变量 |
 | `BOT4CJ_LLM_CONFIG` | 两端各自读取的配置文件路径。Rust 优先级为 `--llm-config` > 本变量 > 缺省查找；C++ 后端显式指定路径只能用本变量，不接受 `--llm-config`。`none` 禁用对应进程的配置文件读取；须分别传给两进程 |
+| `BOT4CJ_AGENT_HISTORY` | **Rust `mybot-agent`** 交互 REPL 的历史文件路径（仅 stdin+stdout 都是终端时启用）；`none` 关闭落盘（历史只留本会话）。未设则 `$XDG_STATE_HOME/mybot-agent/history`，再退到 `~/.local/state/mybot-agent/history`。目录 0700 / 文件 0600 建立；已存在文件对同组/其他用户可读会提醒。管道面不读不写该文件 |
 | `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | Rust agent 接入点 / 模型名（覆盖配置文件，低于命令行；两项均无内置缺省） |
 | `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |
 | `BOT4CJ_HAL_BACKEND` | HAL 后端模块名：`modules/lib/hal_backend_<名>.lua`（缺省 `glibc`）。加载期逐项断言契约函数齐全，缺函数 fail-fast——移植到别的 libc/平台时替换整个后端 |

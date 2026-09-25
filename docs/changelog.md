@@ -9,6 +9,18 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 Rust agent 交互 REPL 行编辑 / 历史 / 命令补全（rustyline）
+
+- **终端上的 REPL 有了行编辑**：方向键、Ctrl-A/E/W/U、↑↓ 翻历史、Ctrl-R 搜索、`/命令`
+  Tab 补全；提示符处 Ctrl-C 清当前行不退出（退出仍是 `/exit` / Ctrl-D），模型轮内
+  Ctrl-C 的取消语义不变。此前是裸 `BufReader::lines()`，方向键只会打出转义序列。
+- **历史跨会话保留**：`$XDG_STATE_HOME/mybot-agent/history`（退到
+  `~/.local/state/…`），目录 0700 / 文件 0600，上限 1000 条；`BOT4CJ_AGENT_HISTORY=<路径|none>`
+  改位置或关闭。已存在文件权限过宽会提醒，不擅自改。
+- **管道面不变**：stdin 或 stdout 任一不是终端就走原来的裸逐行读——提示符写 stdout、
+  一行一任务、EOF 退出，E2E 与脚本化调用的契约逐字节保留，也不碰历史文件。
+- 新增直接依赖 `rustyline 18`（关缺省 feature，只开 `with-file-history`）。
+
 ### 2026-09-25 两进程启动即 `PR_SET_DUMPABLE=0`，同 UID 不能 ptrace / 读内存
 
 - **`mybot` 与 `mybot-agent` 进入 `main` 第一步**（先于解析 argv）调

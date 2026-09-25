@@ -43,6 +43,7 @@ use crate::bridge::{Bridge, ToolOutcome};
 use crate::config::Config;
 use crate::history::ConversationHistory;
 use crate::hook::{self, CallRecord, HookState};
+use crate::linein::{LineInput, LineRead};
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::provider::Backend;
@@ -556,7 +557,6 @@ const HELP_TEXT: &str = "内置命令:\n\
 pub async fn run_repl(session: &mut Session) -> i32 {
     // 交互 REPL 才开「思考中…」动画（--task 的输出常被管道消费）
     session.show_progress = true;
-    use tokio::io::AsyncBufReadExt;
 
     let robot_name = if session.material.robot_name.is_empty() {
         "(未命名)".to_string()
@@ -572,7 +572,8 @@ pub async fn run_repl(session: &mut Session) -> i32 {
          /status 看会话状态，/clear 清空对话记忆，/help 看帮助，/exit 退出。"
     );
 
-    let mut lines = tokio::io::BufReader::new(tokio::io::stdin()).lines();
+    // 终端上：行编辑 / ↑↓ 历史 / Tab 补全（linein.rs）；管道上：裸逐行，行为不变
+    let mut input = LineInput::new();
     loop {
         // D4：Ctrl-C / SIGTERM 之后不再接新任务（与 C++ `while (!stopRequested())`
         // 同口径：取消是操作者的意思，循环退出、会话照常收尾）
@@ -581,17 +582,21 @@ pub async fn run_repl(session: &mut Session) -> i32 {
         }
         // 提示符 mybot[robotName|llmVar|Nhw]>（硬件数每轮重取：热插后不能少报）
         let hw = session.hardware_count().await;
-        out!(
+        let prompt = format!(
             "mybot[{}|{}|{}hw]> ",
             robot_name,
             session.cfg.llm_var,
             hw.map(|n| n.to_string()).unwrap_or_else(|| "?".to_string())
         );
 
-        let line = match lines.next_line().await {
-            Ok(Some(l)) => l,
-            Ok(None) => break, // EOF（Ctrl-D）
-            Err(e) => {
+        let line = match input.read_line(prompt).await {
+            LineRead::Line(l) => l,
+            LineRead::Interrupted => {
+                outln!("（已丢弃当前行；退出请用 /exit 或 Ctrl-D）");
+                continue;
+            }
+            LineRead::Eof => break, // Ctrl-D
+            LineRead::Error(e) => {
                 errln!("错误: 读取输入失败: {e}");
                 break;
             }
@@ -611,6 +616,7 @@ pub async fn run_repl(session: &mut Session) -> i32 {
         if task == "/exit" || task == "/quit" {
             break;
         }
+        input.remember(task);
         if task == "/help" {
             outln!("{HELP_TEXT}");
             continue;
@@ -694,6 +700,7 @@ pub async fn run_repl(session: &mut Session) -> i32 {
             }
         }
     }
+    input.save_history();
     outln!("");
     0
 }
