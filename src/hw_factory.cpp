@@ -602,6 +602,20 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 	};
 
 	const std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
+	/* SINGLE_CONSUMER 判读的批内缓存：判定要重读整个驱动模块文件（上限 1 MiB），
+	 * Daemon 表逐行/逐 devices-spec 调用会让同一模块被反复读盘（spider1 这类
+	 * 「PCA9685 + 14 路 Servo + 守护」结构是 O(行数) 次同名文件）。键用调用点的
+	 * 模块名形态（含 .lua）：firstExistingModule 只依赖 modulePath，本函数内
+	 * 不变形，批内同名判据必然一致。跨批不缓存——热插表逐批调用，保守起见
+	 * 允许模块文件在两批之间被替换后的新判定生效。 */
+	std::map<std::string, bool> scCache;
+	auto singleConsumer = [&](const std::string& moduleName) -> bool {
+		const auto it = scCache.find(moduleName);
+		if (it != scCache.end()) { return it->second; }
+		const bool v = declaresSingleConsumer(firstExistingModule(modulePath, moduleName));
+		scCache.emplace(moduleName, v);
+		return v;
+	};
 	for (const auto& m : matrices) {
 		const std::string t = m.getName();
 		if (t == "Alias" || t == "Vars" || t == "Action" || m.rows() == 0) { continue; }
@@ -629,7 +643,7 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 				const std::string devices = optCol(m, i, "devices");
 				if (!drv.empty()) {
 					/* ① 单器件守护：driver + addr 列 */
-					if (declaresSingleConsumer(firstExistingModule(modulePath, drv + ".lua"))) {
+					if (singleConsumer(drv + ".lua")) {
 						claim(path + " " + normalizeAddress(optCol(m, i, "addr")), whoBase);
 					}
 				} else if (!devices.empty()) {
@@ -654,8 +668,7 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 						const std::size_t at2 = spec.find('@', at1 + 1);
 						const std::string specAddr = trim(spec.substr(at1 + 1,
 							(at2 == std::string::npos ? spec.size() : at2) - at1 - 1));
-						if (specDrv.empty() || !declaresSingleConsumer(
-								firstExistingModule(modulePath, specDrv + ".lua"))) { continue; }
+						if (specDrv.empty() || !singleConsumer(specDrv + ".lua")) { continue; }
 						claim(path + " " + normalizeAddress(specAddr),
 							whoBase + " devices[" + std::to_string(specIdx) + "]='"
 								+ specDrv + "'");
@@ -665,7 +678,7 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 			continue;
 		}
 
-		if (!declaresSingleConsumer(firstExistingModule(modulePath, t + ".lua"))) { continue; }
+		if (!singleConsumer(t + ".lua")) { continue; }
 		for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
 			/* 只登记**直接持总线句柄**的行：有 I2C/SPI/UART 引用列才算消费者。
 			 * 经 controller 转发的行（如挂在 PCA9685 上的 14 路 Servo）不自己开总线，
