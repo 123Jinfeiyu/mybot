@@ -570,10 +570,14 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 
 ## 会话持久化：--session-file / --resume
 
-> **状态（2026-09-24）**：Rust agent（批次 D）**尚未实现** `--session-file` / `--resume`。
-> C++ 侧的读写原语（`src/agenthistory.cpp` 的 SessionFileWriter / loadSessionFile）与
-> `test_sessionfile.cpp` 的 9 个钉子用例**保留为语义参考**，文件头已标注「批次 D
-> 落地后随删」；落地时以下列语义为准对齐。
+> **状态（2026-09-25，批次 D 已落地）**：`--session-file` / `--resume` 由 Rust
+> `mybot-agent` 实现（`agent/src/session.rs`）。C++ 侧的读写原语参考实现
+> （`src/agenthistory.{hpp,cpp}` / `test_sessionfile.cpp`）已随落地一并清退——
+> 不再有 C++ 孪生，`agent/src/session.rs` 是唯一实现。行格式与 C++ 参考逐字节
+> 兼容（JSON Lines，首行会话头），故 C++ 时代落下的会话文件仍可被 `--resume`
+> 读回。C++ 宿主侧（`--mcp-backend`）对 `--session-file` / `--resume` 的既有
+> 拒绝（这两个选项只在 agent 模式下有效，`--mcp-backend` 侧出现即退出 2）与
+> 帮助文案不变——本机制完全在 `mybot-agent` 一侧。
 
 **问题**：agent 的对话记忆此前只在进程内存里——重启即忘。而现场机器人重启的代价
 不小（硬件要重新上电、动作位置丢失），一次巡检或陪伴类用法被一次重启清空上下文，
@@ -607,9 +611,10 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
      首行不是合法会话头（或版本不认）则整份拒绝——没有头就无从核对指纹。
   2. **指纹核对**：结构脚本名 / 工具集指纹 / 系统提示词指纹三者一致。
      提示词包或脚本清单变了，旧上下文对不上号。
-  3. **协议自洽**：`historyProtocolViolation`（`tool_call_id` 无孤儿、无重复、无漏答）
-     ——恢复的历史是磁盘上的可变内容，按**不可信输入**对待，服务端会 400 的序列
-     宁可当场拒绝，也不要让此后每个任务都以同一个 400 失败。
+  3. **协议自洽**：`tool_call_id` 无孤儿、无重复、无漏答（Rust 侧
+     `session::protocol_violation`，与 C++ 参考的 `historyProtocolViolation`
+     同判据同文案）——恢复的历史是磁盘上的可变内容，按**不可信输入**对待，
+     服务端会 400 的序列宁可当场拒绝，也不要让此后每个任务都以同一个 400 失败。
 - 恢复后仍受 `max_history_bytes` 预算约束（内存侧裁剪；文件是 append-only，
   不回写、不重排）；`/clear` 会向文件写 `session_clear` 分界标记，
   恢复时该标记丢弃此前的全部消息——否则「忘掉对话」会在下次恢复时复活。
@@ -618,11 +623,16 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   老消费方按既有字段过滤的行为逐字节不变）。
 
 ```bash
-# 第一次会话：落盘
-./build/mybot --robot=robots/spider1.sql --agent --session-file /var/lib/mybot/s.jsonl
+# 终端 1：工具后端（硬件上电常驻，与是否恢复会话无关）
+./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/mybot.sock
 
-# 重启后：接着上次的上下文继续（路径必须命令行给）
-./build/mybot --robot=robots/spider1.sql --agent \
+# 终端 2·第一次会话：落盘
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
+  --session-file /var/lib/mybot/s.jsonl
+
+# 重启后（终端 1 也需重启：硬件上电状态与会话记忆是两回事）：
+# 接着上次的上下文继续（路径必须命令行给）
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
   --session-file /var/lib/mybot/s.jsonl --resume
 ```
 
@@ -903,13 +913,12 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/agentproto.{hpp,cpp}` | 规范化消息/工具 ⇄ Json | 无 |
 | `src/agenttools.{hpp,cpp}` | 工具注册表与各工具（含只读查询/回读、脚本路径沙箱、硬件描述）、回显回收与回执渲染 | 无 |
 | `src/agent_subprocess.{hpp,cpp}` | `run_command` 的子进程实现（超时、进程组终止、输出截断、环境清洗）＋宿主环境块密钥抹除 | 无 |
-| `src/agenthistory.{hpp,cpp}` | 会话文件读写原语（SessionHead/SessionFileWriter/loadSessionFile；**批次 D 语义参考**，历史裁剪已迁 Rust） | 无 |
 | `src/agentdispatch.{hpp,cpp}` | 派发漏斗：策略确认 → 执行 → 审计的固定顺序单点（重构 A1 拆出；MCP 后端与工具层的唯一入口） | 无 |
 | `src/agentmode.{hpp,cpp}` | CLI 配置组装（四层合并、能力门控、审计/策略装载）与工具上下文落点 | 无 |
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl.rs` 等 13 个 `.rs` | Rust agent：模型循环（REPL/--task）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端（`agent/`，Cargo 独立构建） | rig 0.42 |
+| `agent/src/repl.rs` 等 14 个 `.rs` | Rust agent：模型循环（REPL/--task）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/lib/llm_http.lua` | ffi 直驱 libcurl 的 HTTP 传输 | 运行期 libcurl |
 | `modules/lib/llm_wire_openai.lua` | OpenAI 兼容报文整形与响应映射 | 无 |
@@ -922,7 +931,7 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 ## 测试
 
 ```bash
-bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（十八场景）
+bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + 真实工具循环（R1-R11）
 luajit test/test_json_lua.lua    # Lua JSON 编解码
 luajit test/test_llm_drivers.lua # 两个协议的整形规则（不碰网络）
 luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路径）
@@ -950,8 +959,9 @@ bash test/run_all.sh agent-all
 
 - agent 端到端分两段（本地假模型服务，无需硬件与真实 key），明细见 [testing.md 第 8 段](testing.md)：
   * `scripts/agent_e2e.sh`——唯一模式是两个进程：`mybot-agent`（Rust，rig）↔ `mybot --mcp-backend`
-    （AF_UNIX 帧）。R1–R10 覆盖工具循环、提示词包、审计轨迹、REPL 与能力门控、`--check-config`、
-    单轮调用上限、限流重试、单次超时与 SIGINT 取消、图片后注、stdout 写失败不 panic；
+    （AF_UNIX 帧）。R1–R11 覆盖工具循环、提示词包、审计轨迹、REPL 与能力门控、`--check-config`、
+    单轮调用上限、限流重试、单次超时与 SIGINT 取消、图片后注、stdout 写失败不 panic、
+    `--session-file`/`--resume` 两进程接力（批次 D）；
   * `scripts/mcp_e2e.sh`——C++ 后端 + 纯标准库 Python 帧客户端直连 socket，守工具面与安全属性：
     `run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`（正反两趟）、`apply_sql`
     带电生效与热删除、策略拒绝时零副作用、fd 卫生、socket 权限、审计与优雅停机。
@@ -1030,7 +1040,8 @@ bash test/run_all.sh agent-all
   超限图先编码等）已在 AG-19 收口；剩下的是传输层架构问题（要真正压下来得让图片
   以引用/流式形态穿过这条链），本版未做。小内存现场（树莓派 Zero 级）请留意：
   一次拍照的瞬时占用可达数十 MiB，而 OOM 会跳过 `deactivate()`。
-- ~~无记忆持久化（重启即忘）~~ → **已解决**（`--session-file` / `--resume`，批次 1）。
+- ~~无记忆持久化（重启即忘）~~ → **已解决**（`--session-file` / `--resume`，
+  批次 D，Rust `mybot-agent` 实现，见「会话持久化」节）。
   边界：图片不随会话恢复（以占位文本在列）；system 提示词/工具集/结构脚本变了会
   拒绝恢复（指纹核对）。
 - ~~只实现了两个 OpenAI 兼容协议驱动~~ → **已解决**（`LlmAnthropic`，批次 3）。

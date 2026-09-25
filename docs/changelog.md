@@ -6,6 +6,55 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 批次 D 落地：Rust agent 会话持久化（`--session-file` / `--resume`），C++ 参考清退
+
+> 守门快照（落地提交时）：C++ 单测 **611 / 0**（净删 9 例 `test_sessionfile_*`，
+> 无新增——语义已整体过户给 Rust）；`ctest` **270 / 0**（1 跳过，`test_jit_warmup.lua`
+> 预期）；`agent_e2e.sh` **R1-R11 全过**（新增 R11 两进程接力 + 2 条负路径）；
+> `mcp_e2e.sh` 242 项全过；cargo fmt/clippy(-D warnings)/test(63) 全绿。
+
+- **落地范围**：新模块 `agent/src/session.rs`——会话文件读写原语（编解码、三道
+  恢复判据、权限告警）与 `--session-file <路径>` / `--resume` 的 CLI/配置接线，
+  语义逐字对齐 `docs/agent.md`「会话持久化」规格节与 C++ 参考实现（`src/agenthistory.cpp`
+  的 `SessionFileWriter`/`loadSessionFile` 与 `test_sessionfile.cpp` 的 9 个钉子用例）。
+- **行格式与 C++ 参考逐字节兼容**（JSON Lines：首行会话头、其后一消息一行），
+  故 C++ 时代落下的会话文件仍可被 `--resume` 读回，反之亦然——格式是跨版本的
+  外部契约，不随实现语言迁移而漂移。
+- **有意偏离 C++ 参考的一处**（已记档，非 bug）：带图片的 user 消息（如
+  `capture_image` 的图片后注）落盘时，C++ 参考把整条 `content` 换成占位文本；
+  Rust 实现**保留原有的文本说明**（caption）+ 追加占位行——恢复后模型仍能看到
+  那句「以上工具返回的图片如下……」，图片字节本身仍然不落盘（判据不变）。
+- **恢复三道判据**（任一不过即拒绝并说明差异，退出 2）：① 逐行解析（损坏行跳过
+  并点名行号，首行必须是合法会话头）；② 指纹核对（结构脚本名 / 工具集指纹 /
+  系统提示词指纹三者一致，`session::head_mismatch`）；③ 协议自洽（`tool_call_id`
+  无孤儿/无重复/无漏答，`session::protocol_violation`，与 C++ 参考的
+  `historyProtocolViolation` 同判据同文案）。tool 行的工具名不落盘（OpenAI 线协议
+  本不需要），恢复时按 `tool_call_id` 从前序 assistant 的 `tool_calls` 回查——
+  rig 的 `ToolResult` 要求非空 `name`，这是 C++ 侧没有的一道额外映射。
+- **落盘点** = `repl.rs` 一轮任务成功 materialize 之后，按「上次已落盘长度」追加
+  新消息：失败任务里已完整跑完的轮次留在内存历史里、随下一次成功任务一起落盘
+  （与内存历史口径一致，口径同「硬件不会倒回去，抹掉等于说没发生」）；`/clear`
+  向文件写 `session_clear` 分界标记。审计联动：`--resume` 采纳被恢复会话的原
+  `session id`（`AuditLog::adopt_session_id`，必须在首行 `start` 写出前调用），
+  并在 `start` 行标 `resumed: true`（加法字段，老消费方不受影响）。
+- **C++ 侧清退**：`src/agenthistory.{hpp,cpp}` + `test/cpp/test_sessionfile.cpp`
+  + CMakeLists 三处登记（`MYBOT_CORE_SOURCES`、`mybot_tests` 清单、
+  `MYBOT_CPP_TEST_REGISTERED`）+ `harness.hpp` 的 `sessionfile_` 作用域条目
+  一并删除；`agentproto.hpp` 的 `ChatMessage` 结构体随之失去唯一调用方，一并
+  删除（`ToolCall`/`ToolSpec`/`parseToolArguments` 仍在 MCP 帧协议与工具注册表
+  活跃使用，保留）。**不动**：C++ 宿主侧（`--mcp-backend`）对 `--session-file`/
+  `--resume` 的既有拒绝（这两个选项只在 agent 模式下有效，出现在 `--mcp-backend`
+  侧即退出 2）与帮助文案——本机制完全在 `mybot-agent` 一侧，C++ 宿主从不读写
+  会话文件。
+- **测试**：`agent_e2e.sh` 新增 **R11**——两进程接力（进程一落盘并完整跑完工具
+  循环；重启假模型服务，`fake_llm_server.py` 新增 `relay` 剧本：请求历史里一旦
+  出现进程一的收尾文案即给专属回答，验证「首个请求就带着完整历史」而不必重放
+  循环）+ 2 条免服务负路径（换 `--robot` 令指纹不符 / `--resume` 缺命令行
+  `--session-file`，两条都在连接模型端点之前就退出 2）。
+- **批次字母口径**：批次 D 至此完整落地，Rust `mybot-agent` 与 C++
+  `mybot --mcp-backend` 的功能面正式收敛为「C++ 只管硬件与工具执行，Rust 只管
+  模型循环与会话记忆」。
+
 ### 2026-09-25 决策：agent over TCP（原批次 E）不做，设计存档下架
 
 - **决策**：远程 REPL 形态（mybot-agent 监听 TCP、对端逐行下发任务）**不再规划**。
