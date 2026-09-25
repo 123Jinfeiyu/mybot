@@ -82,6 +82,7 @@ set(MYBOT_CORE_SOURCES
   src/matrix.cpp
   src/expr.cpp
   src/sqlparse.cpp
+  src/structure.cpp
   src/mtmerge_core.cpp
   src/mtinclude.cpp
   src/luabridge.cpp
