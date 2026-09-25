@@ -492,19 +492,6 @@ echo "你是一个谨慎的机器人..." > prompts/my_robot/01-identity.md
 (echo "secret123"; cat scripts/std.mt) | nc server_ip 8080
 ```
 
-### 远程对话（agent over TCP）
-
-```bash
-# 机器人侧：远程 REPL，对端每行一条任务
-# （--agent --tcp 已移除；远程形态规划为 mybot-agent 监听 TCP，见 docs/agent.md 批次 E）
-
-# 客户端：先发口令（跨机时），再逐行下发任务
-(echo "$TOKEN"; echo "让机器人站立"; sleep 5; echo "/exit") | nc robot-ip 9000
-```
-
-缺省只监听回环；跨机必须 `--tcp-token`。对端断开连接即**远程取消**（在飞的模型
-调用被立即中止），空闲超时缺省 600 秒——设计取舍见 [docs/agent.md](docs/agent.md)。
-
 ### Sanitizer调试
 
 ```bash

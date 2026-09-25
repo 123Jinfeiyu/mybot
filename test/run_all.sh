@@ -955,10 +955,10 @@ fi
 #     read_variables 回读与对照、策略拒绝零副作用）→ 迁进 scripts/mcp_e2e.sh
 #     的独立趟（纯 Python 帧客户端直连后端，不经模型，判据更硬）；
 #   * 循环层的（工具循环、超时、重试、取消、图片后注、stdout 纯净/写失败）→ R 段；
-#   * 仍未覆盖：--session-file/--resume 两进程接力、agent over TCP 远程 REPL
-#     （Rust 侧尚无实现，批次 D），以及 DeepSeek/Anthropic 的**协议差异**在
-#     整条循环上的表现（驱动层单测 test_llm_drivers.lua / test_llm_wire_contract.lua
-#     仍在守报文形态）。
+#   * 仍未覆盖：--session-file/--resume 两进程接力（Rust 侧尚无实现，批次 D），
+#     以及 DeepSeek/Anthropic 的**协议差异**在整条循环上的表现（驱动层单测
+#     test_llm_drivers.lua / test_llm_wire_contract.lua 仍在守报文形态）。
+#     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
 # ======================================================================
 if filter_matches "agent" "$filter_e2e"; then
 	run_one_agent_rust_e2e

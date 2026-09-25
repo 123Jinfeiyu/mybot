@@ -68,8 +68,9 @@
 #   及其对照、策略拒绝零副作用）迁到 scripts/mcp_e2e.sh，由纯 Python 帧客户端直连后端
 #   跑——不经模型，判据更硬；属循环层的（工具循环、超时、重试、取消、图片后注、
 #   stdout 纯净/写失败不 panic）由下面 R 段守，R 段与 C++ 场景**同判据**。
-#   仍未覆盖的（如实记下）：--session-file/--resume 两进程接力与 agent over TCP
-#   ——Rust 侧尚无实现（批次 D；C++ 原语与 test_sessionfile.cpp 保留为语义参考）。
+#   仍未覆盖的（如实记下）：--session-file/--resume 两进程接力——Rust 侧尚无实现
+#   （批次 D；C++ 原语与 test_sessionfile.cpp 保留为语义参考）。agent over TCP
+#   远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
 # 退出码: 0 通过 / 1 失败 / 2 参数用法错 / 125 缺 python3（守门按 SKIP 计）
 set -u
 
@@ -188,8 +189,8 @@ TASK="先看硬件，再让继电器动作一次，最后跑一条命令"
 # C++ 场景**同判据**（工具定义齐备、回执真的从后端回来、审计字段齐备、stdout 纯净），
 # 但有几处必须按 Rust 侧**已成立的语义**写，照抄 C++ 就是假绿：
 #   * 工具审计行**不在** agent 的审计文件里，由后端自己的 --audit-log 落（同一次运行）；
-#   * 会话持久化（--session-file/--resume）、TCP 远程 REPL 还没搬（批次 D），
-#     Rust 段因此不含这两个场景（SIGINT 取消在 R8b 覆盖）。
+#   * 会话持久化（--session-file/--resume）还没搬（批次 D），Rust 段因此不含该场景
+#     （SIGINT 取消在 R8b 覆盖）；TCP 远程 REPL 已评估不做（2026-09-25）。
 #
 # 批次 C（2026-09-24，循环层语义）在 Rust 段新增四个场景，判据与 C++ 侧**同源**：
 #   * R6 单轮调用上限（C++ 场景 10）：超限调用不派发、模型收到「未派发」回执、
