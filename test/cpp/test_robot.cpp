@@ -2399,3 +2399,89 @@ TH_TEST(robot_hot_update_delete_first_failure_names_lost_variables) {
 	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 1);
 	robot.deactivate();
 }
+
+/* ---- #34 条件反射（@Reflex 动作序列 + @Trigger 触发 + 临时变量绑定）----
+ * 反射动作行里的 $(临时变量) 经 makeActionExprResolver 命中触发绑定的会话
+ * @Alias；不绑定即报「expression references '<名>'」——成功/失败路径用
+ * 同一断言锚定绑定是否生效。kBasicSql 的 relay0 是纯数据行（非硬件变量），
+ * 派发期报 not defined，恰好作为「绑定已生效、走到派发」的观察点。 */
+TH_TEST(robot_reflex_without_trigger_is_lazy) {
+	/* @Reflex 引用未绑定变量，无 @Trigger → 反射定义惰性存在，不执行不校验 */
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n@\n"
+		"@Reflex\nname relay0.deg;\nblink $(undef);\n@\n");
+	TH_CHECK(msg.empty());
+}
+
+TH_TEST(robot_reflex_trigger_binds_temporary_and_dispatches) {
+	/* 绑定 bright=1 后 $(bright) 可解析 → 走到派发（relay0 非硬件变量报错） */
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n@\n"
+		"@Reflex\nname relay0.deg;\nblink $(bright);\n@\n"
+		"@Trigger\ntrigger;\nblink(bright=1);\n@\n");
+	TH_CHECK(msg.find("relay0") != std::string::npos);
+	TH_CHECK(msg.find("not defined") != std::string::npos);
+}
+
+TH_TEST(robot_reflex_unbound_temporary_reports) {
+	/* 触发没绑定 bright → $(bright) 解析失败，报表达式未定义（不落到派发） */
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n@\n"
+		"@Reflex\nname relay0.deg;\nblink $(bright);\n@\n"
+		"@Trigger\ntrigger;\nblink(angle=1);\n@\n");
+	TH_CHECK(msg.find("bright") != std::string::npos);
+}
+
+TH_TEST(robot_reflex_undefined_reflex_reports) {
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n@\n"
+		"@Reflex\nname relay0.deg;\nblink 1;\n@\n"
+		"@Trigger\ntrigger;\nzzz(bright=1);\n@\n");
+	TH_CHECK(msg.find("未定义的反射 'zzz'") != std::string::npos);
+}
+
+TH_TEST(robot_reflex_bad_arg_syntax_reports) {
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n@\n"
+		"@Reflex\nname relay0.deg;\nblink 1;\n@\n"
+		"@Trigger\ntrigger;\nblink(bright);\n@\n");
+	TH_CHECK(msg.find("k=v") != std::string::npos);
+}
+
+TH_TEST(robot_reflex_duplicate_arg_reports) {
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n@\n"
+		"@Reflex\nname relay0.deg;\nblink 1;\n@\n"
+		"@Trigger\ntrigger;\nblink(bright=1,bright=2);\n@\n");
+	TH_CHECK(msg.find("重复绑定参数 'bright'") != std::string::npos);
+}
+
+TH_TEST(robot_reflex_trigger_without_reflex_reports) {
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n@\n"
+		"@Trigger\ntrigger;\nblink(bright=1);\n@\n");
+	TH_CHECK(msg.find("@Reflex") != std::string::npos);
+}
+
+TH_TEST(robot_reflex_scope_does_not_leak) {
+	/* 两次触发同一 run：第一次绑 bright（动作引用它，成功走完派发）；第二次
+	 * 只绑 angle → $(bright) 未绑定报错 —— 证明第一次的绑定在触发后已撤销
+	 * （子作用域不泄漏），也证明触发是逐行独立的。探针驱动 p0 可真实 play。 */
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("reflex-scope");
+	const fs::path marker = tmp.path() / "destroyed";
+	bot::MemoryReader sr(probeSql(marker));
+	bot::RobotStruct robot(sr);
+	robot.active();	/* p0 探针上电注册：派发 play 需要真硬件变量在注册表 */
+	bot::MemoryReader mr(
+		"@Action\np0.probe;\n@\n"
+		"@Reflex\nname p0.probe;\nblink $(bright);\n@\n"
+		"@Trigger\ntrigger;\nblink(bright=1);\nblink(angle=1);\n@\n");
+	try {
+		robot.run(mr);
+		TH_CHECK(false && "第二次触发应报未绑定 bright");
+	} catch (const std::exception& e) {
+		TH_CHECK(std::string(e.what()).find("bright") != std::string::npos);
+	}
+	robot.deactivate();
+}

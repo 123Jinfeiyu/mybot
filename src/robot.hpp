@@ -63,6 +63,11 @@ public:
 	 * 作用域 = 外层 SessionScope 的生命周期（RobotStruct::run 一次）。 */
 	void override(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw);
 
+	/* 会话期单条撤销（#34 @Trigger）：每次触发绑定的临时别名在触发执行完
+	 * 后逐个移除，不依赖整个 SessionScope（run() 级）提前结束——反射触发
+	 * 是 run() 内部的多次子作用域。名字不在会话层时静默（防御性）。 */
+	void removeSessionOverride(const std::string& name);
+
 	/* 会话作用域（阶段 1）：run() 入口构造、出口析构，异常路径同样回滚。
 	 * 构造即清空（防御性：正常路径下构造时必为空），析构把会话变量连同
 	 * 其所有权一起释放——结构定义与结构期所有权一字不动。 */
@@ -442,8 +447,16 @@ public:
 	 * （参数名不是名字绑定）。派发期内别名/变量不变，每列解析一次。 */
 	static std::string resolveActionParam(const HwLookup& registry, const std::string& param);
 
+	/* 单矩阵动作派发核心：@Action 与 #34 @Reflex 共用同一派发逻辑 */
+	void dispatchMatrix(const mt::MatrixObject& actionDefs);
+
 	/* @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error） */
 	void runAction(std::vector<mt::MatrixObject>& actionMatrices);
+
+	/* #34 条件反射：@Trigger 逐行触发 @Reflex 动作序列，触发参数以临时
+	 * 会话 @Alias 绑定（子作用域，执行完逐个撤销）；无 @Trigger 时反射
+	 * 定义惰性存在（不执行、不校验引用）。 */
+	void runReflex(std::vector<mt::MatrixObject>& actionMatrices);
 };
 
 /* ---- 机器人编排门面：装配流程 + 生命周期（R-1 后只剩这些）---- */
