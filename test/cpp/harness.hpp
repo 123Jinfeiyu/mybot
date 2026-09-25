@@ -165,9 +165,9 @@ inline const ScopeEntry* scopeTable(std::size_t& n) {
 		 * 归 agent 面：这套机制只服务 run_action_script 一个调用点，
 		 * 改坏了 agent-all 必须能红。 */
 		{"agent", "luaexec_"},
-		/* 批次 1（2026-09-23）：会话持久化（会话文件读写、complete 边界落盘、
-		 * 恢复链路与指纹核对）。归 agent 面：它是 agent 会话的记忆机制。 */
-		{"agent", "sessionfile_"},
+		/* 批次 D（2026-09-25）后：会话持久化（sessionfile_ 系列）随 C++ 语义参考
+		 * 一并清退——Rust 侧 agent/src/session.rs 是唯一实现，不再有 C++ 孪生
+		 * 用例占这个作用域的名额（历史沿革见 git log -- src/agenthistory.*）。 */
 		/* MCP 后端（--mcp-backend，方案 F / 拓扑 F3）：把工具层经 AF_UNIX 帧链路
 		 * 暴露给 sidecar。归 agent 面：它复用 agent 的工具注册表与派发漏斗。 */
 		{"agent", "mcpbackend_"},

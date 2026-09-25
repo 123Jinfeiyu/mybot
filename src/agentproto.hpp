@@ -7,9 +7,10 @@
  * agentdriver 一起删除；本文件保留的是仍然存活的两侧共享结构：
  *   * ToolCall / parseToolArguments —— MCP 后端帧协议的工具调用面
  *     （mcpbackend 组装 → DispatchGate 派发 → agenttools 执行）；
- *   * ChatMessage / ToolSpec —— 会话文件读写原语（agenthistory，批次 D 的
- *     语义参考）与工具声明（AgentToolRegistry::specs）。
- */
+ *   * ToolSpec —— 工具声明（AgentToolRegistry::specs），MCP 后端 tool.list 用。
+ * 批次 D（2026-09-25）后：会话文件读写原语（原 ChatMessage / agenthistory.cpp
+ * 的 SessionFileWriter / loadSessionFile）随 C++ 侧语义参考一并清退——Rust 侧
+ * agent/src/session.rs 是唯一实现，不再有 C++ 孪生。 */
 
 #include <string>
 #include <vector>
@@ -27,25 +28,8 @@ struct ToolCall {
 	std::string arguments;
 };
 
-/* 规范化对话消息（会话文件 agenthistory 的落盘单位；字段语义见
- * encodeSessionMessage）：
- *   role=system/user  → content
- *   role=assistant    → content（可为空）+ toolCalls + extras
- *   role=tool         → toolCallId + content
- * extras 是 provider 特有的附加字段，宿主不理解也不修改。 */
-struct ChatMessage {
-	std::string role;
-	std::string content;
-	std::vector<ToolCall> toolCalls;
-	std::string toolCallId;
-	Json extras;	/* 对象；空表示无 */
-	/* 多模态图片（data URL）。会话文件落盘时以占位文本替代（字节不落盘）。 */
-	std::vector<std::string> images;
-};
-
 /* 暴露给模型的工具声明（parameters 为 JSON Schema object）。
- * AgentToolRegistry::specs 产出，MCP 后端的 tool.list 与会话文件的
- * 工具集指纹（sessionToolsFingerprint）共用。 */
+ * AgentToolRegistry::specs 产出，MCP 后端的 tool.list 用。 */
 struct ToolSpec {
 	std::string name;
 	std::string description;

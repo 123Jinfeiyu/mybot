@@ -24,8 +24,9 @@ class MatrixVars_Hardware;
 namespace agent {
 
 /* 单张图的 base64 上限（宿主侧封顶，与驱动侧 MAX_SIM_BYTES 各管一段）。
- * 会话历史的字节预算刻意「不封顶单块」，只按任务块整块裁（HistoryManager::trim，
- * 见 agenthistory.hpp），而一张照片正是单块的主项：驱动仿真图允许 16MiB 原始字节
+ * 会话历史的字节预算刻意「不封顶单块」，只按任务块整块裁（Rust 侧
+ * agent/src/history.rs 的 trim，C++ 的 HistoryManager 孪生已随 REPL 迁 Rust
+ * 删除），而一张照片正是单块的主项：驱动仿真图允许 16MiB 原始字节
  * （base64 后约 21MB），一次拍照就能击穿 4MiB 历史预算、把请求体顶到常见网关限额
  * 之外。故在工具入口先拒一次。 */
 constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
