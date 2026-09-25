@@ -193,6 +193,7 @@ void RobotStruct::run(bot::Reader& input) {
 		else if (mtName == "Vars") { factory_.registerVarsMatrix(matrix, &session); }
 	}
 	runner_.runAction(actionMatrices);
+	runner_.runReflex(actionMatrices);
 }
 
 /* ==================== 热插表：结构 SQL 带电生效（2026-09-23）====================

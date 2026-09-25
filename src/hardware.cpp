@@ -106,6 +106,10 @@ std::unique_ptr<MtVars_Alias> MtVars_Alias::Factory(const mt::MatrixObject& defs
 	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(std::move(alias)));
 }
 
+std::unique_ptr<MtVars_Alias> MtVars_Alias::Make(std::string alias) {
+	return std::unique_ptr<MtVars_Alias>(new MtVars_Alias(std::move(alias)));
+}
+
 /* ---- 命名数值变量 @Vars ---- */
 
 /* 表达式求值的递归深度上限：Vars 表达式可互相引用（$(v1+v2)），成环
