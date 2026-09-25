@@ -1,7 +1,7 @@
-/* robot.cpp —— RobotStruct 编排门面（重构 2026-09-20：按类拆分 TU）
+/* robot.cpp —— RobotStruct 编排门面 + HotSqlPlanner 只读热 SQL 计划层
  * 原单文件五类（HwRegistry/MetaProvider/ScriptLoader+HwFactory/ActionRunner/
  * RobotStruct）已拆分：hw_registry.cpp / meta_provider.cpp / hw_factory.cpp /
- * action_runner.cpp；本 TU 只剩装配流程 + 生命周期编排。 */
+ * action_runner.cpp；本 TU 保留装配流程、生命周期编排与独立的热 SQL 计划。 */
 
 #include "robot.hpp"
 
@@ -238,40 +238,11 @@ std::string RobotStruct::applySql(const std::string& sql) {
 			"未上电时请把语句写进结构脚本");
 	}
 
-	/* ---- 阶段 1：解析到影子容器（活体一字未动）----
-	 * 影子必须**逐字复制既有表的全部行**，不能只填列头（2026-09-23 热删除）：
-	 * DELETE 要在影子上做行匹配（WHERE 可以引用任何既有列的任何值），只看得到
-	 * 列头就一条也匹配不上；INSERT 的「按列名落位 / 漏列报错」也需要同一条
-	 * 影子路径（C3 防线）。原实现只填列头是因为当时只有 INSERT——追加行无需
-	 * 看到既有行，代价是 DELETE 无法在此路径上表达。
-	 * 代价：影子是既有结构的**全量拷贝**（百行级，且只在一次热插批次期间存在）。 */
-	std::deque<mt::MatrixObject> staged;
-	for (const auto& m : matrices_) { staged.push_back(copyRows(m, 1, m.rows())); }
-	const std::size_t liveCount = matrices_.size();
-
-	ScriptLoader::Mutations muts;
-	{
-		MemoryReader reader(sql);
-		ScriptLoader::readSQL(reader, staged, /* allowDelete= */ true, &muts);
-	}
-
-	/* 注意：既有表的影子**已经**反映了删除（readSQL 直接在它上面擦行），
-	 * 不要在这里再擦一遍——那会是第二次应用同一批删除，而行号已经前移过。 */
-
-	const HotDelPlanSet delPlan = planHotDeletes(muts);
-	HotInsPlan insPlan = planHotInsertions(staged, liveCount, muts, delPlan);
-	reconcileNewTableDels(staged, delPlan, insPlan);
-
-	/* 空表 DROP（表壳动了、行没动）也算变更：判据必须包含 droppedTables，
-	 * 否则「DROP 一张本来就没有数据行的表」会被误判成「本批次什么都没做」。 */
-	if (insPlan.appends.empty() && insPlan.newTables.empty() && insPlan.actionMats.empty()
-			&& delPlan.dels.empty() && muts.droppedTables.empty()) {
-		throw IllegalArgumentException("热插表：本批次没有任何 CREATE/INSERT/DELETE/DROP/UPDATE 变更"
-			"（SELECT 是只读查询，请用 query_sql / REPL 的 /sql）");
-	}
-
-	/* ---- 阶段 3：合并视图判据（全结构消费判据 + 引用完整性）---- */
-	checkMergedView(delPlan, insPlan);
+	/* 阶段 1—3 只读：完整预检通过后才返回计划，以下才允许动活体。 */
+	HotSqlPlan plan = HotSqlPlanner(matrices_, registry_).build(sql);
+	const auto& muts = plan.mutations;
+	const auto& delPlan = plan.deletions;
+	auto& insPlan = plan.insertions;
 
 	/* ---- 阶段 4 + 4.6：提交，删除按执行序分派 ----
 	 * 执行序（2026-09-23 热更新起有两种，按批次是否含 UPDATE 分派）：
@@ -340,6 +311,48 @@ std::string RobotStruct::applySql(const std::string& sql) {
 	return msg;
 }
 
+/* ==================== HotSqlPlanner：只读计划层 ==================== */
+HotSqlPlan HotSqlPlanner::build(const std::string& sql) const {
+	/* ---- 阶段 1：解析到影子容器（活体一字未动）----
+	 * 影子必须**逐字复制既有表的全部行**，不能只填列头（2026-09-23 热删除）：
+	 * DELETE 要在影子上做行匹配（WHERE 可以引用任何既有列的任何值），只看得到
+	 * 列头就一条也匹配不上；INSERT 的「按列名落位 / 漏列报错」也需要同一条
+	 * 影子路径（C3 防线）。原实现只填列头是因为当时只有 INSERT——追加行无需
+	 * 看到既有行，代价是 DELETE 无法在此路径上表达。
+	 * 代价：影子是既有结构的**全量拷贝**（百行级，且只在一次热插批次期间存在）。 */
+	std::deque<mt::MatrixObject> staged;
+	for (const auto& m : matrices_) { staged.push_back(copyRows(m, 1, m.rows())); }
+	const std::size_t liveCount = matrices_.size();
+
+	HotSqlPlan plan;
+	auto& muts = plan.mutations;
+	{
+		MemoryReader reader(sql);
+		ScriptLoader::readSQL(reader, staged, /* allowDelete= */ true, &muts);
+	}
+
+	/* 注意：既有表的影子**已经**反映了删除（readSQL 直接在它上面擦行），
+	 * 不要在这里再擦一遍——那会是第二次应用同一批删除，而行号已经前移过。 */
+
+	plan.deletions = planHotDeletes(muts);
+	const auto& delPlan = plan.deletions;
+	plan.insertions = planHotInsertions(staged, liveCount, muts, delPlan);
+	auto& insPlan = plan.insertions;
+	reconcileNewTableDels(staged, delPlan, insPlan);
+
+	/* 空表 DROP（表壳动了、行没动）也算变更：判据必须包含 droppedTables，
+	 * 否则「DROP 一张本来就没有数据行的表」会被误判成「本批次什么都没做」。 */
+	if (insPlan.appends.empty() && insPlan.newTables.empty() && insPlan.actionMats.empty()
+			&& delPlan.dels.empty() && muts.droppedTables.empty()) {
+		throw IllegalArgumentException("热插表：本批次没有任何 CREATE/INSERT/DELETE/DROP/UPDATE 变更"
+			"（SELECT 是只读查询，请用 query_sql / REPL 的 /sql）");
+	}
+
+	/* ---- 阶段 3：合并视图判据（全结构消费判据 + 引用完整性）---- */
+	checkMergedView(delPlan, insPlan);
+	return plan;
+}
+
 	/* 注意：既有表的影子**已经**反映了删除（readSQL 直接在它上面擦行），
 	 * 不要在这里再擦一遍——那会是第二次应用同一批删除，而行号已经前移过。 */
 
@@ -352,11 +365,11 @@ std::string RobotStruct::applySql(const std::string& sql) {
  *     同名变量、摘错对象。
  * 批次新建表的删除对账（popRows）依赖 newTables——那是阶段 2 的产物，
  * 只能延后（newTableDels 收集，阶段 2.4 处理）。 */
-RobotStruct::HotDelPlanSet RobotStruct::planHotDeletes(const ScriptLoader::Mutations& muts) {
-	HotDelPlanSet out;
+HotSqlPlan::Deletes HotSqlPlanner::planHotDeletes(const ScriptLoader::Mutations& muts) const {
+	HotSqlPlan::Deletes out;
 	out.deleteFirst = !muts.updatedRows.empty();
 	const std::size_t liveCount = matrices_.size();
-	/* 守护名 → daemonHolders_ 下标：见 executeHotDeletes 的守护退场屏障。 */
+	/* 守护名 → 声明序下标：见 executeHotDeletes 的守护退场屏障。 */
 	for (std::size_t k = 0; k < matrices_.size(); ++k) {
 		if (trim(matrices_[k].getName()) != "Daemon") { continue; }
 		const std::int64_t idxN = matrices_[k].indexOfCol(0, "name");
@@ -385,7 +398,7 @@ RobotStruct::HotDelPlanSet RobotStruct::planHotDeletes(const ScriptLoader::Mutat
 			out.newTableDels.emplace_back(tname, rows);
 			continue;
 		}
-		HotDelPlan p;
+		HotSqlPlan::Deletion p;
 		p.matIdx = si;
 		p.table = tname;
 		p.rows = rows;
@@ -422,10 +435,10 @@ RobotStruct::HotDelPlanSet RobotStruct::planHotDeletes(const ScriptLoader::Mutat
 
 /* ---- 阶段 2：建计划 + 只读全量校验（不触碰活体、不申请任何资源）----
  * 影子下标 [0, liveCount) 与 matrices_ 一一对应（影子就是按它顺序填的）。 */
-RobotStruct::HotInsPlan RobotStruct::planHotInsertions(
+HotSqlPlan::Insertions HotSqlPlanner::planHotInsertions(
 		const std::deque<mt::MatrixObject>& staged, std::size_t liveCount,
-		const ScriptLoader::Mutations& muts, const HotDelPlanSet& delPlan) {
-	HotInsPlan out;
+		const ScriptLoader::Mutations& muts, const HotSqlPlan::Deletes& delPlan) const {
+	HotSqlPlan::Insertions out;
 	auto rowOf = [](const mt::MatrixObject& m, std::size_t r) {
 		std::vector<std::string> row;
 		row.reserve(m.cols());
@@ -572,8 +585,8 @@ RobotStruct::HotInsPlan RobotStruct::planHotInsertions(
  * 新增行、新增行只可能追加在尾部，故「影子比原始多出的行数」就是必须从
  * 尾部丢掉的行数——用 popRows 精确表达，不依赖任何行号。对账要读 newTables
  * （阶段 2 的产物），故只能排在其后。 */
-void RobotStruct::reconcileNewTableDels(const std::deque<mt::MatrixObject>& staged,
-		const HotDelPlanSet& delPlan, HotInsPlan& insPlan) {
+void HotSqlPlanner::reconcileNewTableDels(const std::deque<mt::MatrixObject>& staged,
+		const HotSqlPlan::Deletes& delPlan, HotSqlPlan::Insertions& insPlan) {
 	for (const auto& [tname, rows] : delPlan.newTableDels) {
 		mt::MatrixObject* nt = mt::findByName(insPlan.newTables, tname);
 		if (nt == nullptr) { continue; }	/* 该新表随后又被 DROP：影子已整表擦除 */
@@ -615,11 +628,12 @@ void RobotStruct::reconcileNewTableDels(const std::deque<mt::MatrixObject>& stag
  * 的新行引用同批被删变量若不在预检里拦下，就是一颗运行期才炸（或更糟：
  * 静默指向错对象）的雷——对先删后建的 UPDATE 批次，那还会落在「旧件已摘、
  * 新件装配失败」的不可复原窗口里。 */
-void RobotStruct::checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan& insPlan) {
+void HotSqlPlanner::checkMergedView(const HotSqlPlan::Deletes& delPlan,
+		const HotSqlPlan::Insertions& insPlan) const {
 	std::deque<mt::MatrixObject> merged = matrices_;
 	/* 先落实删除（擦行），再追加新行——顺序与提交阶段保持一致，
 	 * 否则「批内先 INSERT 到既有表、再 DELETE 掉它」的净效果会被算错。 */
-	for (const HotDelPlan& p : delPlan.dels) { merged[p.matIdx].removeRows(p.rows); }
+	for (const HotSqlPlan::Deletion& p : delPlan.dels) { merged[p.matIdx].removeRows(p.rows); }
 	for (const auto& [idx, rows] : insPlan.appends) {
 		for (const auto& row : rows) { merged[idx].appendRow(row, 0); }
 	}
@@ -673,7 +687,7 @@ void RobotStruct::checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan
 		}
 	}
 
-	factory_.precheckStructure(merged);
+	HwFactory::precheckStructure(merged);
 }
 
 /* ---- 阶段 4：提交 + 增量装配 + 上电（插入段任何一步失败 ⇒ 全回滚）----
@@ -681,8 +695,8 @@ void RobotStruct::checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan
  * alreadyDeleted 传入——catch 的失败口径要据它点名已丢失的变量。
  * mark 取在（可能已发生的）删除之后：先删后建下 mark.seq 即删后规模，
  * 回滚只回滚插入段——已执行的物理删除不在任何回滚范围内。 */
-RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotDelPlanSet& delPlan,
-		HotInsPlan& insPlan, const HotDeleteOutcome& alreadyDeleted) {
+RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes& delPlan,
+		HotSqlPlan::Insertions& insPlan, const HotDeleteOutcome& alreadyDeleted) {
 	CommitOutcome out;
 	const HwRegistry::Mark mark = registry_.mark();
 	const std::size_t metaMark = metaProviders_.size();
@@ -874,7 +888,7 @@ RobotStruct::DropOutcome RobotStruct::dropTableShells(const ScriptLoader::Mutati
  * 按名 find 会命中新注册的同名变量、摘错对象——计划期取好指针是正确性前提
  * （见 applySql 阶段 1.5 的注释）。 */
 RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
-		const std::vector<HotDelPlan>& plans,
+		const std::vector<HotSqlPlan::Deletion>& plans,
 		const std::map<std::string, std::size_t>& daemonNameIndex) {
 	HotDeleteOutcome out;
 	if (plans.empty()) { return out; }
@@ -886,7 +900,7 @@ RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
 		MatrixVars_Hardware* hw = nullptr;
 	};
 	std::vector<Doomed> order;
-	for (const HotDelPlan& p : plans) {
+	for (const HotSqlPlan::Deletion& p : plans) {
 		for (std::size_t k = 0; k < p.rows.size(); ++k) {
 			order.push_back({p.matIdx, p.rows[k], p.names[k], p.hw[k]});
 		}
@@ -899,7 +913,7 @@ RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
 	/* 4.6.1 待删守护：从原始行号定位登记槽（必须在矩阵被改写之前取出来
 	 * ——槽是「哪一行是守护」的唯一索引，行没了就找不回来了）。 */
 	std::vector<std::shared_ptr<DaemonRunner>> dyingHolders;
-	for (const HotDelPlan& p : plans) {
+	for (const HotSqlPlan::Deletion& p : plans) {
 		if (p.table != "Daemon") { continue; }
 		for (std::size_t k = 0; k < p.names.size(); ++k) {
 			auto slot = daemonNameIndex.find(p.names[k]);

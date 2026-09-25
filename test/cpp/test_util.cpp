@@ -490,6 +490,7 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"flat", "矩阵扁平化"},
 	{"hardware", "硬件变量注册表"},
 	{"harness", "测试骨架自身"},
+	{"hot", "热 SQL 只读计划（硬件结构层，非 agent 专属）"},
 	{"hw", "硬件装配"},
 	{"insert", "SQL INSERT（矩阵层）"},
 	{"json", "宿主 Json 值层"},

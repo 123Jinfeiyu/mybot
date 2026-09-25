@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <unistd.h>
@@ -577,6 +578,69 @@ TH_TEST(agentconfig_runtime_fields_reach_config_and_driver) {
 	TH_CHECK(out2.retryBackoffMs == 1000);
 	TH_CHECK(out2.commandTimeoutSec == 10);
 	TH_CHECK(out2.maxCommandTimeoutSec == 60);
+}
+
+TH_TEST(agentconfig_backend_tool_budgets_reach_execution_context) {
+	NoKeyEnv nokey;
+	TempDir tmp("backend-budgets");
+	const fs::path cfg = tmp.path() / "config.json";
+	EnvVar configEnv("BOT4CJ_LLM_CONFIG", cfg.c_str());
+	CliOptions opts;
+	opts.mcpBackend = true;
+	opts.noCamera = true;
+	MemoryReader input("");
+	RobotStruct robot(input);
+	for (const int scriptSeconds : {7, 0}) {
+		writeFile(cfg, "{\"run_command_timeout_sec\":3,\"run_command_max_timeout_sec\":5,"
+			"\"action_script_timeout_sec\":" + std::to_string(scriptSeconds) + "}",
+			fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(opts, out, err), err);
+		std::ostringstream log;
+		const auto ctx = makeToolContext(out, robot, log);
+		TH_CHECK(ctx.commandTimeoutSec == 3);
+		TH_CHECK(ctx.maxCommandTimeoutSec == 5);
+		TH_CHECK(ctx.scriptTimeoutSec == scriptSeconds);
+		TH_CHECK(out.resolvedApiKey.empty());
+	}
+}
+
+TH_TEST(agentconfig_backend_tool_budgets_validate_effective_values) {
+	NoKeyEnv nokey;
+	TempDir tmp("backend-budget-invalid");
+	const fs::path cfg = tmp.path() / "config.json";
+	EnvVar configEnv("BOT4CJ_LLM_CONFIG", cfg.c_str());
+	CliOptions opts;
+	opts.mcpBackend = true;
+	for (const char* body : {
+		R"({"run_command_max_timeout_sec":5})",
+		R"({"run_command_timeout_sec":20,"run_command_max_timeout_sec":10})",
+	}) {
+		writeFile(cfg, body, fs::perms::owner_all);
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(opts, out, err));
+		TH_CHECK_MSG(err.find("run_command_max_timeout_sec") != std::string::npos, err);
+	}
+}
+
+TH_TEST(agentconfig_backend_tool_budgets_keep_defaults) {
+	NoKeyEnv nokey;
+	EnvVar configEnv("BOT4CJ_LLM_CONFIG", "none");
+	CliOptions opts;
+	opts.mcpBackend = true;
+	opts.noCamera = true;
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK_MSG(buildAgentConfig(opts, out, err), err);
+	MemoryReader input("");
+	RobotStruct robot(input);
+	std::ostringstream log;
+	const auto ctx = makeToolContext(out, robot, log);
+	TH_CHECK(ctx.commandTimeoutSec == 10);
+	TH_CHECK(ctx.maxCommandTimeoutSec == 60);
+	TH_CHECK(ctx.scriptTimeoutSec == 180);
 }
 
 TH_TEST(agentconfig_run_command_timeout_cap_below_default_is_rejected) {

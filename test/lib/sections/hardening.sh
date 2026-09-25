@@ -174,21 +174,25 @@ INSERT INTO Daemon (name, chunk) VALUES ('d0', 'lib/daemon_probe.lua');
 SQLEOF
 	{ echo '@Action'; echo 't0.delay;'; for _ in $(seq 1 30); do echo '   200;'; done; echo '@'; } > .tmp/fdprobe.mt
 
-	local out pid samples n min max
-	samples=""
-	"$bin" --robot=.tmp/fdprobe_robot.sql --input=.tmp/fdprobe.mt >/dev/null 2>&1 &
-	pid=$!
-	# 采样 ~6s（动作时长）：每 250ms 数一次 /proc/<pid>/fd
-	for _ in $(seq 1 24); do
-		kill -0 "$pid" 2>/dev/null || break
-		if [ -d "/proc/$pid/fd" ]; then
-			n="$(ls "/proc/$pid/fd" 2>/dev/null | wc -l)"
-			samples="$samples $n"
-		fi
-		sleep 0.25
-	done
-	wait "$pid"
-	local rc=$?
+	local fd pid samples n min max rc
+	samples="$(
+		# 在采样子进程内先清继承 FD，避免启动环境计入泄漏且不影响外层守门。
+		for fd in /proc/"$BASHPID"/fd/*; do
+			fd="${fd##*/}"
+			if [ "$fd" -gt 2 ]; then exec {fd}>&-; fi
+		done
+		"$bin" --robot=.tmp/fdprobe_robot.sql --input=.tmp/fdprobe.mt >/dev/null 2>&1 &
+		pid=$!
+		for _ in $(seq 1 24); do
+			kill -0 "$pid" 2>/dev/null || break
+			if [ -d "/proc/$pid/fd" ]; then
+				printf ' %s' "$(ls "/proc/$pid/fd" 2>/dev/null | wc -l)"
+			fi
+			sleep 0.25
+		done
+		wait "$pid"
+	)"
+	rc=$?
 	echo "fd 采样序列:$samples (rc=$rc)"
 	min="" ; max=""
 	for n in $samples; do

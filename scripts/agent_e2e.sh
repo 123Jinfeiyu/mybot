@@ -490,6 +490,9 @@ cat > "$CFGR5M" <<JSON
   "max_history_bytes": 4096,
   "max_task_tool_result_bytes": 8192,
   "max_task_image_bytes": 16384,
+  "run_command_timeout_sec": 3,
+  "run_command_max_timeout_sec": 5,
+  "action_script_timeout_sec": 0,
   "audit_log": "$R5M/audit-file.jsonl"
 }
 JSON
@@ -540,6 +543,7 @@ else
 	echo "$out5m_rs" | sed 's/^/    [rs ] /'
 	fail=1
 fi
+check "$out5m_cpp" "run_command=3s，上限=5s，action_script=0s" "后端独立合并工具超时并保留显式 0"
 r5m_cmp_line "$out5m_cpp" "$out5m_rs" "配置文件    : " "配置文件通道（同名 env）双端一致"
 r5m_cmp_line "$out5m_cpp" "$out5m_rs" "审计轨迹    : " "审计落点（文件 audit_log）双端一致"
 r5m_cmp_num "$out5m_cpp" "$out5m_rs" "历史 [0-9]+" "历史 [0-9]+" "历史预算双端一致"
@@ -561,11 +565,11 @@ BAD5M="$R5M/bad.json"
 printf '{ "endpoint": "http://127.0.0.1:9/v1/chat/completions", "apikey": "typo" }\n' > "$BAD5M"
 BADT5M="$R5M/badtype.json"
 printf '{ "endpoint": "http://127.0.0.1:9/v1/chat/completions", "api_key": "k", "temperature": "hot" }\n' > "$BADT5M"
-"${r5m_envclean[@]}" timeout 20 "$BOT" --robot=robots/relay-test.sql --mcp-backend \
-	--mcp-socket /tmp/mybot-agent-e2e.sock --check-config --llm-config "$BAD5M" \
-	>/dev/null 2>&1; rc5m_bad_cpp=$?
+"${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$BAD5M" timeout 20 "$BOT" \
+	--robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot-agent-e2e.sock \
+	--check-config >"$R5M/bad-cpp.txt" 2>&1; rc5m_bad_cpp=$?
 "${r5m_envclean[@]}" timeout 20 "$AGENT_BIN" --check-config \
-	--socket /tmp/mybot-agent-e2e.sock --llm-config "$BAD5M" >/dev/null 2>&1
+	--socket /tmp/mybot-agent-e2e.sock --llm-config "$BAD5M" >"$R5M/bad-rust.txt" 2>&1
 rc5m_bad_rs=$?
 "${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$BADT5M" timeout 20 "$BOT" --robot=robots/relay-test.sql \
 	--mcp-backend --mcp-socket /tmp/mybot-agent-e2e.sock --check-config >/dev/null 2>&1
@@ -582,6 +586,10 @@ else
 	echo "  [FAIL] 未知字段应双端退出 2，实际 C++=$rc5m_bad_cpp Rust=$rc5m_bad_rs"
 	fail=1
 fi
+check_present "$R5M/bad-cpp.txt" "未知字段" "C++ 因未知字段拒绝，而非旧 CLI 选项"
+check_present "$R5M/bad-cpp.txt" "apikey" "C++ 点名拼错的字段"
+check_present "$R5M/bad-rust.txt" "未知字段" "Rust 因未知字段拒绝"
+check_present "$R5M/bad-rust.txt" "apikey" "Rust 点名拼错的字段"
 if [ "$rc5m_badt_cpp" -eq 2 ] && [ "$rc5m_badt_rs" -eq 2 ] && [ "$rc5m_badt_rs_cli" -eq 2 ]; then
 	echo "  [OK] 字段类型错拒绝双端镜像（都退出 2）"
 else
@@ -970,6 +978,57 @@ else
 	fail=1
 fi
 check_present "$R11/p4-err.txt" "命令行" "报错点名恢复路径必须来自命令行"
+
+echo "----- R11b：历史裁剪后新增消息落盘与恢复 -----"
+R11T="$tmp/rust11-trim"
+mkdir -p "$R11T"
+SESS11T="$R11T/sess.jsonl"
+CFG11T="$R11T/config.json"
+printf '%s\n' '{"max_history_bytes":1}' > "$CFG11T"
+PORT=$((29400 + RANDOM % 300))
+CAP11T="$R11T/request.json"
+start_server "$PORT" "$CAP11T" text || exit 1
+start_backend "$R11T/p1" || exit 1
+printf '%s\n' "trim-task-1" "trim-task-2" "trim-task-3" /exit | \
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R11T/p1/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config "$CFG11T" --session-file "$SESS11T" \
+	>"$R11T/p1-out.txt" 2>"$R11T/p1-err.txt"
+rc11t=$?
+stop_backend
+stop_server
+if [ "$rc11t" -ne 0 ]; then
+	echo "  [FAIL] 多轮裁剪会话退出码 $rc11t"
+	fail=1
+fi
+check_present "$R11T/p1-err.txt" "已裁掉最早的 2 条消息" "第三个任务前确实裁掉第一个任务"
+check_json "$CAP11T" "[m['content'] for m in d['messages'] if m.get('role')=='user'] == ['trim-task-2','trim-task-3']" \
+	"模型只收到保留的任务与当前任务"
+audit_expr "$SESS11T" "[l['content'] for l in lines if l.get('role')=='user'] == ['trim-task-1','trim-task-2','trim-task-3']" \
+	"磁盘历史不漏新任务，也不重复写保留的任务"
+audit_expr "$SESS11T" "sum(l.get('role')=='assistant' for l in lines) == 3" \
+	"三次成功回答全部落盘"
+
+PORT=$((29700 + RANDOM % 300))
+CAP11TR="$R11T/resumed-request.json"
+start_server "$PORT" "$CAP11TR" text || exit 1
+start_backend "$R11T/p2" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R11T/p2/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config "$CFG11T" --session-file "$SESS11T" --resume --task trim-task-4 \
+	>"$R11T/p2-out.txt" 2>"$R11T/p2-err.txt"
+rc11tr=$?
+stop_backend
+stop_server
+if [ "$rc11tr" -ne 0 ]; then
+	echo "  [FAIL] 裁剪后重启恢复退出码 $rc11tr"
+	fail=1
+fi
+check_present "$R11T/p2-err.txt" "已恢复会话" "重启载入裁剪后的追加记录"
+check_json "$CAP11TR" "[m['content'] for m in d['messages'] if m.get('role')=='user'] == ['trim-task-3','trim-task-4']" \
+	"恢复后的首个请求带着上个进程的最新任务"
+audit_expr "$SESS11T" "[l['content'] for l in lines if l.get('role')=='user'] == ['trim-task-1','trim-task-2','trim-task-3','trim-task-4']" \
+	"恢复时再次裁剪仍不漏写、不重写"
 
 if [ "$fail" -eq 0 ]; then
 	echo "mybot-agent 端到端测试通过"

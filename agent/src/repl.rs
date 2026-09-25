@@ -32,6 +32,7 @@ use rig_agent::completion::{Message, PromptError};
 use crate::audit::{AuditLog, ModelEntry, SessionEntry};
 use crate::bridge::{Bridge, ToolOutcome};
 use crate::config::Config;
+use crate::history::ConversationHistory;
 use crate::hook::{self, CallRecord, HookState};
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
@@ -124,15 +125,9 @@ pub struct Session {
     /// 后端 `tool.list` 给的工具名（`/sql` 能力预检用：缺工具时点名后端开关，
     /// 而不是把一句含糊的「未知工具」丢给操作者）。
     tool_names: Vec<String>,
-    /// rig transcript（旧历史 + 本轮新消息）；失败时保留旧快照。`--resume` 时
-    /// 初值是磁盘载入并已过三道判据的历史，否则为空。
-    history: Vec<Message>,
+    history: ConversationHistory,
     /// 会话持久化写入器（批次 D；`None` = 未开启 `--session-file`）。
     writer: Option<SessionFileWriter>,
-    /// `history` 里已经落盘的前缀长度：成功任务把 `[session_written_len..]`
-    /// 追加写入后前移；失败任务不前移——已完整跑完的轮次留在 `history` 里，
-    /// 随下一次成功任务一起落盘（与内存历史口径一致，见 docs/agent.md）。
-    session_written_len: usize,
     stats: SessionStats,
     started: Instant,
     /// 「思考中…」动画只在交互 REPL 开（`run_repl` 入口置位）；`--task` 一次性
@@ -171,7 +166,6 @@ impl Session {
                 ..Default::default()
             });
         }
-        let session_written_len = initial_history.len();
         Self {
             cfg,
             backend,
@@ -180,9 +174,8 @@ impl Session {
             audit,
             material,
             tool_names,
-            history: initial_history,
+            history: ConversationHistory::resumed(initial_history),
             writer,
-            session_written_len,
             stats: SessionStats::default(),
             started: Instant::now(),
             show_progress: false,
@@ -197,7 +190,6 @@ impl Session {
         if let Some(w) = self.writer.as_mut() {
             w.write_clear_marker();
         }
-        self.session_written_len = 0;
     }
 
     /// 会话结束行（`end` / `error`）。C++ 的 `writeSessionEnd` 同契约：失败会话也
@@ -218,14 +210,11 @@ impl Session {
     pub async fn run_turn(&mut self, task: &str) -> Result<String, String> {
         // 任务开始前：按字节预算**整块**裁掉最早的旧任务块（最新块无条件保留；
         // 0 = 不裁剪）。裁剪日志走 stderr：更早的任务上下文不再可见是必须告知的事实。
-        crate::history::trim(
-            &mut self.history,
-            self.cfg.max_history_bytes as usize,
-            &mut |t| errln!("{t}"),
-        );
+        self.history
+            .trim(self.cfg.max_history_bytes as usize, &mut |t| errln!("{t}"));
         // 任务内预算清零（含墙钟起点）与上一轮的观测值/图片清理
         self.state.begin_task();
-        let snapshot = self.history.clone();
+        let snapshot = self.history.snapshot();
 
         // 借用只活在块内：`result` 是拥有所有权的值，块一结束 `self.backend` 的
         // 不可变借用就结束，后面才能改 `self.history`。
@@ -261,17 +250,10 @@ impl Session {
                 // 「tool 消息之后的图片消息」插回会话历史（与 C++ 同序）。
                 let mut full = snapshot;
                 full.extend(new);
-                self.history = hook::materialize(full, &injections);
-                // 落盘点 = 本轮 materialize 之后：只写「上次成功落盘点」以来的新消息
-                // （含失败任务里已完整跑完、暂留在 history 里未落盘的那些轮次——
-                // 与内存历史口径一致，见 docs/agent.md「会话持久化」）。
+                self.history.replace(hook::materialize(full, &injections));
                 if let Some(w) = self.writer.as_mut() {
-                    let start = self.session_written_len.min(self.history.len());
-                    for m in &self.history[start..] {
-                        w.append_message(m);
-                    }
+                    self.history.persist(|m| w.append_message(m));
                 }
-                self.session_written_len = self.history.len();
                 self.record_calls(&calls);
                 Ok(resp.output)
             }
@@ -280,7 +262,7 @@ impl Session {
                 // 半截的 tool_calls 序列不留在历史里。边界缺失（本轮连一次模型调用
                 // 都没发生）时回滚到任务开始的历史。
                 let base = self.state.rollback_boundary().unwrap_or(snapshot);
-                self.history = hook::materialize(base, &injections);
+                self.history.replace(hook::materialize(base, &injections));
                 self.record_calls(&calls);
                 Err(e)
             }
@@ -366,7 +348,8 @@ impl Session {
             match self.writer.as_ref() {
                 Some(_) => format!(
                     "{}（已落盘 {} 条）",
-                    self.cfg.session_file, self.session_written_len
+                    self.cfg.session_file,
+                    self.history.written_prefix()
                 ),
                 None => "(未开启)".to_string(),
             }

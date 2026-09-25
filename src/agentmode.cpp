@@ -116,6 +116,9 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 		+ "（值不显示）\n";
 	s += "  结构脚本    : " + cfg.structurePath + "\n";
 	s += "  动作脚本目录: " + cfg.scriptsDir + "\n";
+	s += "  工具超时    : run_command=" + std::to_string(cfg.commandTimeoutSec)
+		+ "s，上限=" + std::to_string(cfg.maxCommandTimeoutSec)
+		+ "s，action_script=" + std::to_string(cfg.scriptTimeoutSec) + "s\n";
 	s += "  提示词包    : " + std::to_string(cfg.promptFiles.size()) + " 项，"
 		+ std::to_string(cfg.promptPack.size()) + " 字节"
 		+ (cfg.structureHead ? "；结构脚本头 " + std::to_string(cfg.structureHead->size()) + " 字节" : "")
@@ -255,24 +258,6 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	if (file.maxCallsPerRound) { out.maxCallsPerRound = *file.maxCallsPerRound; }
 	if (file.maxRetries) { out.maxRetries = *file.maxRetries; }
 	if (file.retryBackoffMs) { out.retryBackoffMs = *file.retryBackoffMs; }
-	if (file.runCommandTimeoutSec) { out.commandTimeoutSec = *file.runCommandTimeoutSec; }
-	if (file.runCommandMaxTimeoutSec) {
-		out.maxCommandTimeoutSec = *file.runCommandMaxTimeoutSec;
-	}
-	/* PL-2：动作脚本执行预算。0 合法 = 显式关闭预算（同 max_retries 的 has_value 语义）。 */
-	if (file.actionScriptTimeoutSec) {
-		out.scriptTimeoutSec = *file.actionScriptTimeoutSec;
-	}
-	/* 跨字段关系按**生效值**判（不是按文件里的字面值）：只配了上限而它低于缺省
-	 * 超时时同样要挡——否则模型不传 timeout_seconds 时按缺省请求 10s 会越过操作者
-	 * 声明的 5s 上限，「上限」名不副实。位于合流处 = 单一判定点。 */
-	if (out.maxCommandTimeoutSec < out.commandTimeoutSec) {
-		err = "run_command 超时上限低于缺省超时（run_command_max_timeout_sec="
-			+ std::to_string(out.maxCommandTimeoutSec) + "s < run_command_timeout_sec="
-			+ std::to_string(out.commandTimeoutSec) + "s）：请把上限调到不小于缺省，"
-			"或一并调小缺省超时";
-		return false;
-	}
 
 	if (!opts.llmMaxTurns.empty()
 		&& !parseIntOption(opts.llmMaxTurns, "llm-max-turns",
@@ -303,6 +288,23 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 			return false;
 		}
 		out.maxTaskSeconds = taskSec;
+	}
+	return true;
+}
+
+bool mergeToolBudgets(const LlmFileConfig& file, AgentModeConfig& out, std::string& err) {
+	if (file.runCommandTimeoutSec) { out.commandTimeoutSec = *file.runCommandTimeoutSec; }
+	if (file.runCommandMaxTimeoutSec) {
+		out.maxCommandTimeoutSec = *file.runCommandMaxTimeoutSec;
+	}
+	if (file.actionScriptTimeoutSec) { out.scriptTimeoutSec = *file.actionScriptTimeoutSec; }
+	// 只配置上限时，也必须与合并后的缺省超时比较。
+	if (out.maxCommandTimeoutSec < out.commandTimeoutSec) {
+		err = "run_command 超时上限低于缺省超时（run_command_max_timeout_sec="
+			+ std::to_string(out.maxCommandTimeoutSec) + "s < run_command_timeout_sec="
+			+ std::to_string(out.commandTimeoutSec) + "s）：请把上限调到不小于缺省，"
+			"或一并调小缺省超时";
+		return false;
 	}
 	return true;
 }
@@ -588,6 +590,7 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	}
 
 	if (!mergeLlmLayer(opts, file, cfgPath, out, err)) { return false; }	/* 2-5) LLM 层 */
+	if (!mergeToolBudgets(file, out, err)) { return false; }
 	if (!applyGatingLayer(opts, file, cfgPath, out, err)) { return false; }	/* 6/7/7b) 门控 */
 	applyContextBudgets(file, out);						/* 8a) 上下文预算 */
 	if (!loadPromptLayer(opts, file, out, err)) { return false; }		/* 8) 提示词包 */

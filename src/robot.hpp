@@ -314,13 +314,13 @@ class HwFactory {
 	 * HAL 的每次访问是单次 I2C_RDWR 原子事务，故绝大多数器件允许多消费者，
 	 * 不做一刀切。判据 = (总线设备路径, 归一化地址) 唯一；冲突即报错并点名双方。
 	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
-	void checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices);
+	static void checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices);
 
 	/* F5-4：同一物理串口被 2+ 个「各自 open 独立 fd」的消费者（UART 总线变量 /
 	 * 真机守护）声明时的加载期告警——HAL 不做跨变量引用计数，后关闭者以自己
 	 * open 时的配置为准。只告警不拒绝（同配置轮询下实际可用；是否收紧属
 	 * 破坏性决策）。实现与理由见 hw_factory.cpp 的同名函数注释。 */
-	void warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices);
+	static void warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices);
 
 	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名数值) */
 	enum class ScalarKind { Alias, Vars };
@@ -362,10 +362,10 @@ public:
 	void createHardVarsFrom(const mt::MatrixObject& matrix, std::int64_t fromRow);
 
 	/* 全结构判据入口（单消费者 + 同串口多 fd 告警）——启动期 createHardVars
-	 * 内部同样调用这两个。开放此入口是给 RobotStruct::applySql：热插批次必须
-	 * 能在**提交任何变更之前**，对「提交之后的结构」复跑同一判据。
+	 * 内部同样调用这两个。HotSqlPlanner 在提交之前对合并视图复跑同一判据，
+	 * 无需 factory 实例；只读矩阵与模块文件，保留既有告警。
 	 * 注意：判据看的是整张结构，故调用方传入的必须是合并后的视图。 */
-	void precheckStructure(const std::deque<mt::MatrixObject>& matrices);
+	static void precheckStructure(const std::deque<mt::MatrixObject>& matrices);
 
 	/* 注册 @Alias 别名矩阵 */
 	void registerAliasMatrix(const mt::MatrixObject& matrix, std::set<std::string>* session) {
@@ -459,6 +459,73 @@ public:
 	void runReflex(std::vector<mt::MatrixObject>& actionMatrices);
 };
 
+/* ---- 热 SQL 计划数据：不持有硬件资源，提交段与只读计划层共用 ----
+ * 行号/表下标与硬件指针均锚定建计划时的输入；调用方须在同一结构与注册表上
+ * 立即执行一次，不得跨结构变更复用。指针只作为执行段的对象身份，不在计划期
+ * 调用硬件方法；所有权始终属于注册表。 */
+struct HotSqlPlan {
+	struct Deletion {
+		std::size_t matIdx = 0;		/* 输入矩阵下标 */
+		std::string table;
+		std::vector<std::size_t> rows;	/* 原始行号，升序 */
+		std::vector<std::string> names;	/* 与 rows 平行：硬件变量名 */
+		/* 与 names 平行：计划期从注册表取好的对象指针（pool_ 只增期间裸指针
+		 * 稳定——对象在堆上，vector 扩容搬动的是 unique_ptr 不是对象本体）。 */
+		std::vector<MatrixVars_Hardware*> hw;
+	};
+
+	/* 阶段 1.5 产物包：备删计划。前移到任何插入之前的理由（先删后建的两个
+	 * 硬前提）在 planHotDeletes 实现处。 */
+	struct Deletes {
+		bool deleteFirst = false;		/* 批次含 UPDATE ⇒ 先删后建执行序 */
+		std::set<std::string> doomedNames;	/* 将被摘除的变量名（阶段 2 重名预检豁免用） */
+		std::vector<Deletion> dels;
+		std::map<std::string, std::size_t> daemonNameIndex;	/* 守护名 → 声明序下标 */
+		/* 表不在活体里 ⇒ 本批次 CREATE 出来的删除：撤销范围为空且必须为空，
+		 * 但影子上的删除效果要落到待提交的新表上——对账读 newTables（阶段 2
+		 * 的产物），只能延后到阶段 2.4（reconcileNewTableDels）。 */
+		std::vector<std::pair<std::string, std::vector<std::size_t>>> newTableDels;
+	};
+
+	/* 阶段 2 产物包：建计划（新增行落位 + 新表 + 瞬态 Action），全部只读校验
+	 * 通过后才存在；提交阶段按它增量装配。 */
+	struct Insertions {
+		/* (影子下标 [0, liveCount)，本批次新增行)——影子下标与输入矩阵一一对应 */
+		std::vector<std::pair<std::size_t, std::vector<std::vector<std::string>>>> appends;
+		std::vector<mt::MatrixObject> newTables;	/* 本批次新建的硬件表 */
+		std::vector<mt::MatrixObject> actionMats;	/* 瞬态 Action（执行后即弃） */
+	};
+
+	ScriptLoader::Mutations mutations;
+	Deletes deletions;
+	Insertions insertions;
+};
+
+/* 解析 → 备删/插入计划 → 对账 → 合并预检。只依赖 const 结构视图和名字查询，
+ * 不引用 RobotStruct、不持有 HwFactory；只读指硬件/结构只读，模块路径检测与
+ * 既有告警仍会执行。装配期校验（如未知 $ 引用）仍由提交段负责，不提前改变
+ * UPDATE 的失败口径。 */
+class HotSqlPlanner {
+	const std::deque<mt::MatrixObject>& matrices_;
+	const HwLookup& registry_;
+
+	HotSqlPlan::Deletes planHotDeletes(const ScriptLoader::Mutations& muts) const;
+	HotSqlPlan::Insertions planHotInsertions(const std::deque<mt::MatrixObject>& staged,
+		std::size_t liveCount, const ScriptLoader::Mutations& muts,
+		const HotSqlPlan::Deletes& delPlan) const;
+	static void reconcileNewTableDels(const std::deque<mt::MatrixObject>& staged,
+		const HotSqlPlan::Deletes& delPlan, HotSqlPlan::Insertions& insPlan);
+	void checkMergedView(const HotSqlPlan::Deletes& delPlan,
+		const HotSqlPlan::Insertions& insPlan) const;
+
+public:
+	HotSqlPlanner(const std::deque<mt::MatrixObject>& matrices, const HwLookup& registry)
+		: matrices_(matrices), registry_(registry) {}
+
+	/* 成功返回即已通过原热 SQL 只读预检；无需 active() 或硬件装配。 */
+	HotSqlPlan build(const std::string& sql) const;
+};
+
 /* ---- 机器人编排门面：装配流程 + 生命周期（R-1 后只剩这些）---- */
 class RobotStruct {
 	/* 结构脚本解析的矩阵对象（声明序）。
@@ -495,21 +562,12 @@ class RobotStruct {
 	 * 注册表重名即抛，必须先摘旧件再装新件）。计划必须由 applySql 在任何
 	 * 插入/上电**之前**构建（hw 指针计划期取好；先建后拆下按名 find 会命中
 	 * 新注册的同名变量、摘错对象）。语义与失败口径见 robot.cpp 实现处注释。 */
-	struct HotDelPlan {
-		std::size_t matIdx = 0;		/* matrices_ 下标 */
-		std::string table;
-		std::vector<std::size_t> rows;	/* 原始行号，升序 */
-		std::vector<std::string> names;	/* 与 rows 平行：硬件变量名 */
-		/* 与 names 平行：计划期从注册表取好的对象指针（pool_ 只增期间裸指针
-		 * 稳定——对象在堆上，vector 扩容搬动的是 unique_ptr 不是对象本体）。 */
-		std::vector<MatrixVars_Hardware*> hw;
-	};
 	struct HotDeleteOutcome {
 		std::size_t deletedVars = 0;
 		std::size_t deletedRows = 0;
 		std::vector<std::string> deletedNames;
 	};
-	HotDeleteOutcome executeHotDeletes(const std::vector<HotDelPlan>& plans,
+	HotDeleteOutcome executeHotDeletes(const std::vector<HotSqlPlan::Deletion>& plans,
 		const std::map<std::string, std::size_t>& daemonNameIndex);
 
 	/* ---- applySql 的阶段机（2026-09-25 拆分）----
@@ -517,28 +575,6 @@ class RobotStruct {
 	 * 写在注释里；拆分就是把每段注释与代码一起搬进具名函数，applySql 留阶段
 	 * 地图与生效摘要。产物包结构（PlanSet/Outcome）让阶段间只传数据不传旗标。
 	 * 判据与理由的完整注释都在 robot.cpp 实现处。 */
-
-	/* 阶段 1.5 产物包：备删计划。前移到任何插入之前的理由（先删后建的两个
-	 * 硬前提）在 planHotDeletes 实现处。 */
-	struct HotDelPlanSet {
-		bool deleteFirst = false;		/* 批次含 UPDATE ⇒ 先删后建执行序 */
-		std::set<std::string> doomedNames;	/* 将被摘除的变量名（阶段 2 重名预检豁免用） */
-		std::vector<HotDelPlan> dels;
-		std::map<std::string, std::size_t> daemonNameIndex;	/* 守护名 → daemonHolders_ 下标 */
-		/* 表不在活体里 ⇒ 本批次 CREATE 出来的删除：撤销范围为空且必须为空，
-		 * 但影子上的删除效果要落到待提交的新表上——对账读 newTables（阶段 2
-		 * 的产物），只能延后到阶段 2.4（reconcileNewTableDels）。 */
-		std::vector<std::pair<std::string, std::vector<std::size_t>>> newTableDels;
-	};
-
-	/* 阶段 2 产物包：建计划（新增行落位 + 新表 + 瞬态 Action），全部只读校验
-	 * 通过后才存在；提交阶段按它增量装配。 */
-	struct HotInsPlan {
-		/* (影子下标 [0, liveCount)，本批次新增行)——影子下标与 matrices_ 一一对应 */
-		std::vector<std::pair<std::size_t, std::vector<std::vector<std::string>>>> appends;
-		std::vector<mt::MatrixObject> newTables;	/* 本批次新建的硬件表 */
-		std::vector<mt::MatrixObject> actionMats;	/* 瞬态 Action（执行后即弃） */
-	};
 
 	/* 阶段 4 产物包：提交段的回执计数。mark.seq 不出函数——addedVars 在提交段
 	 * 内部定值（「新增」必须在动手删之前记数，理由在实现处）。 */
@@ -554,15 +590,8 @@ class RobotStruct {
 		std::vector<std::string> names;
 	};
 
-	HotDelPlanSet planHotDeletes(const ScriptLoader::Mutations& muts);
-	HotInsPlan planHotInsertions(const std::deque<mt::MatrixObject>& staged,
-		std::size_t liveCount, const ScriptLoader::Mutations& muts,
-		const HotDelPlanSet& delPlan);
-	void reconcileNewTableDels(const std::deque<mt::MatrixObject>& staged,
-		const HotDelPlanSet& delPlan, HotInsPlan& insPlan);
-	void checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan& insPlan);
-	CommitOutcome commitHotBatch(const HotDelPlanSet& delPlan, HotInsPlan& insPlan,
-		const HotDeleteOutcome& alreadyDeleted);
+	CommitOutcome commitHotBatch(const HotSqlPlan::Deletes& delPlan,
+		HotSqlPlan::Insertions& insPlan, const HotDeleteOutcome& alreadyDeleted);
 	DropOutcome dropTableShells(const ScriptLoader::Mutations& muts);
 
 public:

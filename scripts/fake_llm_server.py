@@ -379,6 +379,10 @@ class Handler(BaseHTTPRequestHandler):
                 kind="rate_limit_error" if MODE == "429x2ok" else "server_error")
             return
 
+        if MODE == "text":
+            self._reply(final_answer())
+            return
+
         # ---- Anthropic 形态（2026-09-23 批次 3）：第三协议驱动 ----
         # 剧本与默认模式同构（列硬件 → 跑动作脚本 → 收尾），只是**报文形态**
         # 全部换成 Anthropic 的块数组。驱动侧要把它们归一成规范化的

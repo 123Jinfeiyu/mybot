@@ -19,6 +19,57 @@ use rig_agent::completion::message::{
 };
 use rig_agent::completion::{AssistantContent, Message};
 
+#[derive(Default)]
+pub struct ConversationHistory {
+    messages: Vec<Message>,
+    written_prefix: usize,
+}
+
+impl ConversationHistory {
+    pub fn resumed(messages: Vec<Message>) -> Self {
+        Self {
+            written_prefix: messages.len(),
+            messages,
+        }
+    }
+
+    pub fn snapshot(&self) -> Vec<Message> {
+        self.messages.clone()
+    }
+
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+
+    pub fn written_prefix(&self) -> usize {
+        self.written_prefix
+    }
+
+    pub fn trim(&mut self, budget: usize, log: &mut dyn FnMut(&str)) -> usize {
+        let dropped = trim(&mut self.messages, budget, log);
+        self.written_prefix = self.written_prefix.saturating_sub(dropped);
+        dropped
+    }
+
+    pub fn replace(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+    }
+
+    pub fn persist(&mut self, mut append: impl FnMut(&Message) -> bool) {
+        for message in &self.messages[self.written_prefix..] {
+            if !append(message) {
+                break;
+            }
+            self.written_prefix += 1;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.messages.clear();
+        self.written_prefix = 0;
+    }
+}
+
 /// 估算一条消息的线上体积（下界）。
 pub fn message_weight(m: &Message) -> usize {
     match m {
@@ -190,6 +241,110 @@ mod tests {
             });
         }
         msgs
+    }
+
+    #[test]
+    fn trimming_written_history_does_not_skip_new_messages() {
+        let old = task_block("旧任务", "旧结果", 1024);
+        let retained = task_block("保留任务", "保留结果", 0);
+        let mut initial = old.clone();
+        initial.extend(retained.clone());
+        let mut history = ConversationHistory::resumed(initial);
+        assert_eq!(history.trim(1, &mut |_| {}), old.len());
+        assert_eq!(history.written_prefix(), retained.len());
+
+        let new = vec![Message::user("新任务"), Message::assistant("新回答")];
+        let mut completed = history.snapshot();
+        completed.extend(new.clone());
+        history.replace(completed);
+        let mut written = Vec::new();
+        history.persist(|m| {
+            written.push(m.clone());
+            true
+        });
+        assert_eq!(written, new);
+        assert_eq!(history.written_prefix(), history.len());
+        history.persist(|_| panic!("已落盘消息不得重复追加"));
+    }
+
+    #[test]
+    fn trimming_unwritten_history_saturates_the_written_prefix() {
+        let mut history = ConversationHistory::resumed(task_block("已落盘", "结果", 0));
+        let retained = task_block("最新未落盘", "完整回执", 0);
+        let mut pending = history.snapshot();
+        pending.extend(task_block("较早未落盘", "完整回执", 1024));
+        let expected_dropped = pending.len();
+        pending.extend(retained.clone());
+        history.replace(pending);
+        assert_eq!(history.trim(1, &mut |_| {}), expected_dropped);
+        assert_eq!(history.written_prefix(), 0);
+        let mut written = Vec::new();
+        history.persist(|m| {
+            written.push(m.clone());
+            true
+        });
+        assert_eq!(written, retained);
+    }
+
+    #[test]
+    fn completed_rounds_from_failed_task_are_written_with_next_success() {
+        let old = task_block("已落盘", "结果", 0);
+        let mut history = ConversationHistory::resumed(old.clone());
+        let completed_round = task_block("失败任务", "失败前的完整回执", 64);
+        let mut boundary = history.snapshot();
+        boundary.extend(completed_round.clone());
+        history.replace(boundary);
+        assert_eq!(history.written_prefix(), old.len());
+        assert_eq!(history.trim(0, &mut |_| panic!("不应裁剪")), 0);
+
+        let next = vec![Message::user("下一任务"), Message::assistant("完成")];
+        let mut completed = history.snapshot();
+        completed.extend(next.clone());
+        history.replace(completed);
+        let mut written = Vec::new();
+        history.persist(|m| {
+            written.push(m.clone());
+            true
+        });
+        let mut expected = completed_round;
+        expected.extend(next);
+        assert_eq!(written, expected);
+    }
+
+    #[test]
+    fn failed_append_stops_without_advancing_past_the_failure() {
+        let mut history = ConversationHistory::default();
+        history.replace(vec![
+            Message::user("任务"),
+            Message::assistant("回答"),
+            Message::user("下一任务"),
+        ]);
+        let mut attempts = 0;
+        history.persist(|_| {
+            attempts += 1;
+            attempts == 1
+        });
+        assert_eq!(attempts, 2);
+        assert_eq!(history.written_prefix(), 1);
+        history.persist(|_| false);
+        assert_eq!(history.written_prefix(), 1);
+    }
+
+    #[test]
+    fn clearing_resumed_history_resets_persistence() {
+        let mut history = ConversationHistory::resumed(task_block("旧任务", "结果", 0));
+        history.persist(|_| panic!("恢复的历史不得重写"));
+        history.clear();
+        assert_eq!(history.len(), 0);
+        assert_eq!(history.written_prefix(), 0);
+        let new = vec![Message::user("新任务"), Message::assistant("新回答")];
+        history.replace(new.clone());
+        let mut written = Vec::new();
+        history.persist(|m| {
+            written.push(m.clone());
+            true
+        });
+        assert_eq!(written, new);
     }
 
     #[test]
