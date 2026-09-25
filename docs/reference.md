@@ -10,7 +10,6 @@
 | CMake ≥ 3.16、C++17 编译器 | g++ / clang++ | ✅ 必需 |
 | LuaJIT 2.1（`libluajit-5.1-dev`） | 驱动与 HAL 全部在 LuaJIT 上 | ✅ 必需 |
 | Python 3 | `scripts/tcp_e2e.sh` 的 TCP 客户端与假模型服务需要（缺则守门自动跳过） | ⭕ 可选 |
-| libcurl（`libcurl.so`） | 仅普通 Lua 模型驱动 `modules/Llm*.lua` 经 `llm_http.lua` 使用；现役 Rust `mybot-agent` 直连模型（reqwest + rustls），不依赖它 | 可选（显式装载 Lua 模型驱动时，缺库会使驱动 build 失败） |
 | `/dev/i2c-*` | 真机总线 | ⭕ 可选（无总线时全流程可用内存仿真跑） |
 
 ## 命令行参数
@@ -144,7 +143,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 
 | 变量 | 说明 |
 | --- | --- |
-| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 61 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
+| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 58 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
 | `BOT4CJ_TCP_TOKEN` | TCP 口令（等价 `--tcp-token`，优先级低于命令行）。argv 会出现在 `/proc/<pid>/cmdline`，多用户机器上推荐用本变量传口令 |
 | `BOT4CJ_LLM_KEY` | 由 **Rust `mybot-agent`** 读取并用于 provider 请求头；回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY` → 配置文件 `api_key` / `api_key_file`。不经后端工具参数或 `BOT4CJ_DEBUG` 转储；后端若继承了该变量，`run_command` 的环境清洗会剔除它。两进程启动第一件事都是 `prctl(PR_SET_DUMPABLE, 0)`（见 `BOT4CJ_ALLOW_PTRACE`），同 uid 进程读不到 `/proc/<pid>/environ`、`mem`，也不能 `ptrace` 附着——但 root / `CAP_SYS_PTRACE` 不受此限 |
@@ -152,12 +151,9 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_LLM_CONFIG` | 两端各自读取的配置文件路径。Rust 优先级为 `--llm-config` > 本变量 > 缺省查找；C++ 后端显式指定路径只能用本变量，不接受 `--llm-config`。`none` 禁用对应进程的配置文件读取；须分别传给两进程 |
 | `BOT4CJ_AGENT_HISTORY` | **Rust `mybot-agent`** 交互 REPL 的历史文件路径（仅 stdin+stdout 都是终端时启用）；`none` 关闭落盘（历史只留本会话）。未设则 `$XDG_STATE_HOME/mybot-agent/history`，再退到 `~/.local/state/mybot-agent/history`。目录 0700 / 文件 0600 建立；已存在文件对同组/其他用户可读会提醒。管道面不读不写该文件 |
 | `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | Rust agent 接入点 / 模型名（覆盖配置文件，低于命令行；两项均无内置缺省） |
-| `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |
 | `BOT4CJ_HAL_BACKEND` | HAL 后端模块名：`modules/lib/hal_backend_<名>.lua`（缺省 `glibc`）。加载期逐项断言契约函数齐全，缺函数 fail-fast——移植到别的 libc/平台时替换整个后端 |
 | `BOT4CJ_CAMERA_SRC_DIR` | 摄像头仿真来源的**放行目录**（冒号分隔）：`--camera-src` 之外的路径必须落在这里面，否则驱动拒绝读该文件（缺省禁用任何目录外读取） |
 | `BOT4CJ_PROMPT_DIR` | 提示词包的**放行目录**（冒号分隔，H2）：**配置文件** `prompt_files` 里的路径必须落在当前工作目录或这里列出的目录之内（命令行 `--prompt-file` 不受限）。配置文件写不了本变量，故它只能由启动者设——现场把提示词包放在工作目录之外时用它显式放行 |
 | `BOT4CJ_TEST_VIDEO` | 仅守门用：真机摄像头用例（`test_camera_v4l2.lua`）的设备路径，指定且存在时该用例不再按跳过计（见 [testing.md](testing.md)） |
-| `BOT4CJ_HTTP_PROBE` | 仅守门/排障用：设为 `1` 时 `lib/llm_http.lua` 每次模型请求向 stderr 打一行 `[http-probe] sessions=<已建会话数> handle=<句柄>`。agent E2E 用它断言「多轮调用复用同一份会话」（AG-20）。缺省不打——正常运行不该多这行噪声 |
-| `BOT4CJ_LLM_CANCEL_FILE` | **已废弃（2026-09-24）**：模型调用取消哨兵随 C++ agent 模式移除（取消现在由 Rust agent 的信号处理承担）。`lib/llm_http.lua` 仍兼容读取它，但宿主不再创建 |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

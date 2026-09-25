@@ -222,13 +222,15 @@ bool resolveApiKey(const LlmFileConfig& file,
 		return false;
 	}
 	/* 密钥含控制字符 → 拒绝（2026-09-21 审计 AG-14，已用真实二进制复现）。
-	 * 密钥会被驱动拼进 `Authorization: Bearer <key>` 交给 curl_slist_append，
-	 * 而 libcurl 对 slist 里的 CR/LF **不做拒绝**：实测一个多行密钥文件会把
-	 * 换行后的内容变成**额外的请求头**发给网关。三条来源都要过这一关——
-	 * api_key_file 只做首尾 trim（内嵌换行不在其覆盖范围），环境变量路径
-	 * 则完全不 trim，所以校验放在三条来源汇合之后的这里，而不是某一来源内部。
-	 * 这既是安全收口（请求头注入），也是可用性收口：「多行密钥文件」是极常见
-	 * 的误配置，在这里点名比在网关那里看一个含混的 401/400 好得多。 */
+	 * 旧 Lua 驱动链路里密钥会被拼进 `Authorization: Bearer <key>` 交给
+	 * curl_slist_append，libcurl 对 slist 里的 CR/LF **不做拒绝**：实测一个
+	 * 多行密钥文件会把换行后的内容变成**额外的请求头**发给网关。现役 Rust
+	 * agent（reqwest）同样把密钥放进 Authorization 头，控制字符一律非法——
+	 * 这里提前拒绝是把误配置挡在本地（点名到第几个字节），而不是让网关看
+	 * 一个含混的 401/400。三条来源都要过这一关——api_key_file 只做首尾 trim
+	 * （内嵌换行不在其覆盖范围），环境变量路径则完全不 trim，所以校验放在
+	 * 三条来源汇合之后的这里，而不是某一来源内部。这既是安全收口（请求头
+	 * 注入），也是可用性收口：「多行密钥文件」是极常见的误配置。 */
 	if (std::string keyErr; !validateApiKeyChars(out.resolvedApiKey, keyErr)) {
 		err = "API key 非法（来源: "
 			+ std::string(out.apiKeySource == ApiKeySource::Env ? "环境变量"
@@ -272,7 +274,8 @@ bool mergeSamplingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	}
 	if (!opts.llmTimeout.empty()) {
 		int timeoutSec = 0;
-		/* 上限与 llm_http.clamp_timeout 的钳制区间同源（llm_limits 单点） */
+		/* 区间取自 llm_limits 单点——Rust 侧 config.rs 镜像同一组上下界
+		 * （R5m 双端 --check-config 互钉），宿主接受什么，agent 就照发什么 */
 		if (!parseIntOption(opts.llmTimeout, "llm-timeout",
 				llm_limits::kTimeoutMinSec, llm_limits::kTimeoutMaxSec, timeoutSec, err)) {
 			return false;

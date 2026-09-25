@@ -1601,7 +1601,7 @@ TH_TEST(agenttools_run_command_does_not_inherit_parent_fds) {
 	AgentToolRegistry tools = makeAgentTools(ctx);
 
 	/* 模拟 HAL 打开的器件句柄：故意**不带** O_CLOEXEC（HAL 侧的 O_CLOEXEC 是
-	 * 另一半防线，覆盖不到第三方 Lua 驱动与 dlopen 的 libcurl socket）。
+	 * 另一半防线，覆盖不到第三方 Lua 驱动自己 open 的 fd）。
 	 * 子 shell 若能看见它，模型驱动的命令就能直接 ioctl 这个 fd 拨动硬件——
 	 * 而且是在 deactivate 之后依然有效，"关掉机器人就安全"这条预期会落空。
 	 * 判据取 /proc/self/fd/<n> 的存在性：不依赖具体设备节点，开发机可跑。 */

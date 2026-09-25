@@ -19,8 +19,8 @@ namespace bot {
 /* ---- LLM 选项/配置字段取值区间（B2-4 单点，2026-09-21）----
  * 同一组上下界此前在 llmconfig.cpp（配置文件字段）、agentmode.cpp（命令行选项）
  * 与 docs/reference.md 各写一遍：改一处忘一处就出现「配置文件接受、命令行拒绝」
- * 这类判据漂移。timeout 上限与驱动侧 llm_http.clamp_timeout 的钳制区间一致
- * ——宿主接受什么，驱动就照发什么，不做「先接受再悄悄改写」。 */
+ * 这类判据漂移。Rust 侧 config.rs 镜像同一组上下界（R5m 双端 --check-config
+ * 互钉）——宿主接受什么，agent 就照发什么，不做「先接受再悄悄改写」。 */
 namespace llm_limits {
 inline constexpr int kTimeoutMinSec = 1;
 inline constexpr int kTimeoutMaxSec = 600;
@@ -158,9 +158,10 @@ bool readApiKeyFile(const std::string& path, std::string& out, std::string& err)
 std::string secretFilePermissionWarning(const std::string& path);
 
 /* API key 字符集判据（2026-09-21 审计 AG-14 单点）：拒绝控制字符（<0x20 与
- * 0x7F）。密钥会被拼进 `Authorization: Bearer <key>` 交给 curl_slist_append，
- * 而 libcurl 不拒绝 slist 里的 CR/LF——实测一个多行密钥文件会把换行后的内容
- * 变成**额外的请求头**发给网关（头注入）。
+ * 0x7F）。旧 libcurl 链路实测：密钥被拼进 `Authorization: Bearer <key>` 交给
+ * curl_slist_append，而 libcurl 不拒绝 slist 里的 CR/LF——一个多行密钥文件会把
+ * 换行后的内容变成**额外的请求头**发给网关（头注入）。现役 Rust agent 同样把
+ * 密钥放进 Authorization 头，判据保持不变，提前拒绝只为把误配置挡在本地。
  * 合法返回 true；非法返回 false 并把原因（含位置与字节值）写进 err。 */
 bool validateApiKeyChars(const std::string& key, std::string& err);
 

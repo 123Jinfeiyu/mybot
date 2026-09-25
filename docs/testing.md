@@ -92,10 +92,13 @@ bash test/run_all.sh agent-all # agent 全表面（过滤口径见下面的方�
 > **自证的口径（SAN-2，2026-09-22）**：`agent-all` 的 Lua 那一格曾是
 > `filter_lua="agent"`（注释称 `test_agent*.lua`），而**该文件模式从未存在**——
 > 于是 Lua 段实跑 0 个文件，而循环对「命中 0」是合法状态、既不报错也不计入汇总
-> （实测汇总 11 条、Lua 段 0 条）。现在那一格是 `"llm"`（`test_llm_*.lua`：
-> 协议驱动报文整形与响应映射，即 PL-3/PL-6 落过缺陷的那一层），且自证改为
+> （实测汇总 11 条、Lua 段 0 条）。后来那一格是 `"llm"`（`test_llm_*.lua`：
+> 协议驱动报文整形与响应映射，即 PL-3/PL-6 落过缺陷的那一层），自证改为
 > **按 `agent_lua_roster` 核对真实文件**：① roster 里的文件必须存在且会被跑到；
 > ② `test/test_llm_*.lua` 下每个文件都必须登记（漏登记即红）。
+> 2026-09-25 #8 删除 Lua 协议驱动轨道后，该过滤器**有意命中 0 个文件**——机制
+> 保留（roster 现为空表、反向核对仍生效），将来若再出现 `test_llm_*.lua` 会被
+> 自动纳入自证，而不是悄悄跑 0 个文件还报绿。
 > 旧自证检查的是**映射的形状**，新自证检查的是**被映射到的文件**。
 >
 > **不在 `agent-all` 内**：`test_camera.lua`（`capture_image` 依赖的摄像头协议面：
@@ -120,8 +123,8 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 `/dev/<dev>*` 时以 125 退出，由 `SKIP_RETURN_CODE 125` 记为跳过（2026-09-20 阶段 5.2
 之前 ctest 侧按**文件名**特判 `test_jit_warmup.lua`，同样带 `video` 标记的
 `test_camera_v4l2.lua` 被裸注册，无摄像头机器上报 Failed 而非 Skipped；现在两条入口
-共用同一个标记解析）。外加 `cpp_unit` / `const_ioctl` / `const_uart` / `const_v4l2` /
-`const_curl`（最后一个可选：构建机装了 libcurl 开发头文件才有）。只跑 ctest
+共用同一个标记解析）。外加 `cpp_unit` / `const_ioctl` / `const_uart` / `const_v4l2`。
+只跑 ctest
 **不覆盖** `run_all.sh` 的端到端、TCP、agent 与守门完整性分段——提交前仍以
 `bash test/run_all.sh` 为准。
 
@@ -160,7 +163,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
    - **R15 流式输出**（2026-09-25）：假服务按 `FAKE_LLM_FRAME_DELAY_MS=150` 逐帧发 SSE，stdout 经计时读端（记录首末字节间隔与 `read` 次数）证明缺省面逐 delta 到达（间隔 ≥ 0.5s、≥ 3 次 read）、思维链不进 stdout、请求体带 `stream:true`；`--llm-no-stream` 整段一次到齐（间隔 < 0.1s）且请求体不带 `stream:true`；两面 stdout 正文 `cmp` 逐字节一致；配置文件 `stream:false` 与缺省流式都在 `--check-config` 摘要「输出模式」行如实呈现。
    - **R14 无硬件闭环**：复用 `robots/test/mcp4725_virt.sql` 与 `scripts/test/mcp4725_virt.mt`，实际执行 `read_variables → run_action_script → read_variables`；假模型解析 DAC 回读，确认 `0 → 2048` 才给完成回答。反例改为写 25%（1024）：三次工具都执行成功，但回读不符必须让任务失败，不能凭调用次数谎报闭环完成。无需 shell 或真实 I2C。
    - **R16 终端面行编辑**（2026-09-25，rustyline）：其余场景都是管道面，本场景用 Python `pty` 把 stdin/stdout 都变成终端——`/he` Tab 补成 `/help`、提示符处 Ctrl-C 清行不退出、↑ 召回上一条、历史落到 `BOT4CJ_AGENT_HISTORY` 指定路径且文件 0600 / 目录 0700；模型轮进行中 Ctrl-C 仍走 SIGINT 取消路径（slow 剧本，优雅退出 0）；反证本次运行的管道面场景没有写缺省历史文件。
-   - 以上只验证本地协议与虚拟器件，不代表真实云端模型或真实硬件验收；Lua 驱动的协议测试仍由 `test/test_llm_drivers.lua` / `test/test_llm_wire_contract.lua` 独立守。agent over TCP 远程 REPL 已评估**不做**（2026-09-25，见 `docs/changelog.md`）。
+   - 以上只验证本地协议与虚拟器件，不代表真实云端模型或真实硬件验收；协议族差异（OpenAI 兼容 / DeepSeek / Anthropic）由 R12/R13 在 Rust 侧收口。agent over TCP 远程 REPL 已评估**不做**（2026-09-25，见 `docs/changelog.md`）。
 9. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 10. **输入边界加固**，覆盖：
    - `--tcp-host` 非法地址退出码 1、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限
@@ -171,7 +174,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 12. **进程级 fd 探针**（长动作 + 守护采样期间轮询 `/proc/<pid>/fd`，稳态 fd 数须有界平稳）
 13. **信号/退出路径**（F-08：播放中 SIGTERM → rc=0 + 停派发行 + 守护 `joined, total publishes=`；`--tcp` 等待连接中 SIGTERM → rc=1 + 明确中断报错——覆盖 `main.cpp` 的 sigaction 与 `robot.cpp` 的停机分支）
 14. **fixture 孤儿检测**（F3/N-32，无过滤器全量跑时执行）：`robots/test/*.sql` 与 `scripts/test/*.mt` 中未被任何用例表引用的夹具判失败；判据是**整字段精确匹配**（`e2e_cases` 的用例名、`parse_cases` 的两列文件名、`scripts/*.sh`、`CMakeLists.txt`），不是子串——2026-09-20 审计 C11 修正：子串判据下每个真机夹具 `bme280.mt` 都是已登记仿真用例 `bme280_virt` 的子串，26 对真机夹具（52 个文件）因此被误判成「已登记」而从不执行、检测器却报「无孤儿」。实机夹具（需 `/dev/i2c-*`、`/dev/spidev*`、`/dev/gpiochip*`、`/dev/pwmchip*`、`/dev/serial*`）在脚本的 `orphan_whitelist` 显式声明
-15. **系统常量自检**（F-24 + A2，无过滤器全量跑时执行）：四个 C 自检二进制把 **Lua 源里**硬编码的编号与系统头做编译期断言比对，漂移在构建期即失败，执行期再跑一遍作双保险。事实源是 Lua，**不是 C 里的手抄副本**：配置期 `test/gen_const_check.cmake` 从 `modules/lib/HAL.lua`、`modules/Camera.lua`、`modules/lib/llm_http.lua` **纯文本抽取**常量生成 `const_lua.h`，每项做**双边断言**——`Lua 抽取值 == 手抄预期值`（抽取生效 + Lua 未漂移）且 `预期值 == 系统头`（内核/架构未漂移）。抽不到任何必需常量即 `FATAL_ERROR`（静默生成空头会让断言退化成自证）。`test_ioctl_nums`（SPI/GPIO/I2C ioctl + 结构尺寸）、`test_uart_consts`（termios 布局 + 两套波特率表 + 打开标志）、`test_v4l2_consts`（V4L2 ioctl + Camera.lua 的 ABI 尺寸表）三者无外部依赖；第四个 `test_curl_consts` 另需 libcurl 开发头文件（**不是**核心构建依赖——保留的 Lua LLM 驱动经 ffi 使用 libcurl，现役 Rust agent 不依赖它），装了才构建本目标，缺失产物按跳过计（与缺 python3 同口径），CI 安装 `libcurl4-openssl-dev` 保证覆盖
+15. **系统常量自检**（F-24 + A2，无过滤器全量跑时执行）：三个 C 自检二进制把 **Lua 源里**硬编码的编号与系统头做编译期断言比对，漂移在构建期即失败，执行期再跑一遍作双保险。事实源是 Lua，**不是 C 里的手抄副本**：配置期 `test/gen_const_check.cmake` 从 `modules/lib/HAL.lua`、`modules/Camera.lua` **纯文本抽取**常量生成 `const_lua.h`，每项做**双边断言**——`Lua 抽取值 == 手抄预期值`（抽取生效 + Lua 未漂移）且 `预期值 == 系统头`（内核/架构未漂移）。抽不到任何必需常量即 `FATAL_ERROR`（静默生成空头会让断言退化成自证）。`test_ioctl_nums`（SPI/GPIO/I2C ioctl + 结构尺寸）、`test_uart_consts`（termios 布局 + 两套波特率表 + 打开标志）、`test_v4l2_consts`（V4L2 ioctl + Camera.lua 的 ABI 尺寸表）三者均无外部依赖（原第四个 `test_curl_consts` 随 Lua 协议驱动轨道删除，2026-09-25 #8）
 16. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标，零第三方框架），覆盖：
     - 基础设施：JSON 值语义、JSON 文本解析、Lua↔Json 边界与转换深度上限、util 全局助手（安全标识符判据 `isSafeIdent`、深度护栏 `DepthLimitGuard`、CLI 切分 `cli::parseKeyValue`、越界文案模板 `rangeErrorText`）
     - 解析管线：`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、mtmerge 归并核心白盒
@@ -181,7 +184,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
     - agent 后端：配置文件解析与后端字段合并、能力门控、工具派发与路径沙箱、任务预算与回执；模型装配、工具循环上限与回滚、历史裁剪、会话编解码与推理内容保留由 `agent/src/` 的 Rust 单测负责
     - UTF-8 边界（2026-09-21 AG-1）：`util` 的合法/非法判据与消毒（过长编码、代理区、> U+10FFFF、截断尾部、连续坏字节折叠）、`run_command` 输出与动作脚本首注释的消毒终点、API key 控制字符判据
 
-    另有三条纯 Lua 用例：`test/test_json_lua.lua`（Lua 侧 JSON 编解码）、`test/test_llm_drivers.lua`（三个协议驱动的报文整形规则与必填字段断言，含 Anthropic 的形状差异与 fail-closed 族，不碰网络）、`test/test_utf8.lua`（UTF-8 判据与消毒。它与 C++ 侧 `utf8_*` 用例**同表向量**——两边判据必须一致，改动任一侧都要两边过）
+    另有两条纯 Lua 用例：`test/test_json_lua.lua`（Lua 侧 JSON 编解码）、`test/test_utf8.lua`（UTF-8 判据与消毒。它与 C++ 侧 `utf8_*` 用例**同表向量**——两边判据必须一致，改动任一侧都要两边过）
 
 17. **测试骨架自证**（`test/cpp/harness_selftest.cpp`，`harness_selftest` 目标，独立于 `mybot_tests`）：用一份**独立的 th 状态**把已知形态喂给骨架，断言它给出的判定符合预期——零断言必判失败、`TH_SKIP` 记跳过不算失败、断言后跳过判失败、正常通过/失败仍被认出、过滤器零命中返回 -1。独立二进制的理由：这些「例句」用例故意含失败形态，混进 `mybot_tests` 会让主守门出现永久失败项。它守的是**所有其它守门都依赖的那把尺子**——尺子失真时全部用例照样全绿，没有别的机制会发现。由 `run_all.sh` 的 `harness-selftest` 段执行
 
@@ -191,7 +194,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 
 - 真机用例（本机无 `/dev/i2c-*` / `/dev/video*` 等）：统一经 `test/lib/device_gate.sh` 读文件内 `-- requires: <dev>` 标记判定，`run_all.sh` 与 ctest 共用同一实现；`video` 类用例可用 `BOT4CJ_TEST_VIDEO=<设备路径>` 指向别的设备（跳过门与测试体都认这个变量，路径不存在则按跳过计）
 - TCP / agent 端到端缺 `python3`
-- `run_all.sh` 的 Rust agent 段缺 `agent/target/release/mybot-agent`（独立可选产物）；专门的 `gate:agent-e2e` 不允许此跳过。现役 Rust agent 不因缺 `libcurl` 跳过
+- `run_all.sh` 的 Rust agent 段缺 `agent/target/release/mybot-agent`（独立可选产物）；专门的 `gate:agent-e2e` 不允许此跳过。Rust agent 全程 reqwest + rustls（静态链接），本机 libcurl 有无都不影响该段——2026-09-25 #8 起仓库已无 libcurl 依赖
 
 四条反假绿约束（2026-09-20 审计 C8–C10 补齐三条，2026-09-21 AG-5 补第四条）：
 
@@ -224,14 +227,10 @@ bash test/run_san.sh --asan-only  # 只跑 sanitizer 跑（CI 的 gate:sanitizer
                                   # Release 全量交给 gate:release，不重复跑一遍）
 ```
 
-`run_san.sh` 为第二跑导出 `LSAN_OPTIONS=suppressions=<仓库根>/asan.supp`（用 `:` 追加，
-保留调用方已有选项）：agent 模式
-加载 Lua 协议驱动时会经 ffi 拉起 libcurl → libcrypto，后者留下一批进程级初始化残留
-（即使只请求明文 `http://` 也会发生；栈全在 `CRYPTO_malloc` 内，`curl_global_cleanup`
-与 `OPENSSL_cleanup` 之后依然存在）。它与 `tsan.supp` 同性质——外部库的残留噪声，
-且**不加载驱动**的 C++ 单测不受影响，故不会掩盖本项目自身的泄漏。理由详见 `asan.supp`。
-注意：抑制必须走 `LSAN_OPTIONS` 而非 `ASAN_OPTIONS`——ASan 的抑制解析器不认识 `leak:`
-类型，放进 `ASAN_OPTIONS` 会让每个用例都因 `failed to parse suppressions` 失败。
+（2026-09-25 #8 前 `run_san.sh` 会导出 `LSAN_OPTIONS=suppressions=<仓库根>/asan.supp`：
+agent 模式加载 Lua 协议驱动时经 ffi 拉起 libcurl → libcrypto，后者留下一批进程级
+`CRYPTO_malloc` 初始化残留。该驱动轨道与 `asan.supp` 已一并删除——现役 Rust agent
+用 rustls、不碰 OpenSSL，Lua 侧仅 `asound.lua`（ALSA）一条 ffi 依赖，无 libcrypto 路径。）
 
 线程竞争用同一开关换 TSan：`-DMYBOT_SANITIZE=thread -B build-tsan`。注意 LuaJIT 是
 未插桩外部库，FFI 侧的槽访问不在 TSan 视野内——TSan 覆盖的是 C++ 侧并发路径

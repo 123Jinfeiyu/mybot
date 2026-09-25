@@ -37,7 +37,10 @@ local function listModules()
 end
 
 local mods = listModules()
-check("sweep 枚举到全部 modules/*.lua", #mods >= 59, "枚举到 " .. tostring(#mods))
+-- 2026-09-25 #8：Lua 协议驱动轨道（LlmOpenAI/DeepSeek/Anthropic）删除后
+-- modules/*.lua = 58；此下限防「枚举悄悄失效」（popen 失败/glob 改动），
+-- 删除模块驱动文件须同步下调并在此留痕。
+check("sweep 枚举到全部 modules/*.lua", #mods >= 58, "枚举到 " .. tostring(#mods))
 
 for _, path in ipairs(mods) do
 	local name = path:match("([^/]+)%.lua$") or path

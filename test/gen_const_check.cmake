@@ -8,6 +8,8 @@
 # 本脚本把链路接上：**Lua 源是唯一事实源**，构建期抽取为宏，再由 C 断言同时钉住
 # 「Lua 值 == 手抄的预期值」（人写错/抽取失效会红）与「预期值 == 系统头」
 # （内核/架构漂移会红）。两侧都钉死，任一侧漂移构建即失败。
+# 2026-09-25 #8：llm_http.lua 随 Lua 协议驱动轨道删除，CURLOPT 抽取段与
+# test_curl_consts.c 一并移除——现只剩 ioctl/uart/v4l2 三族。
 #
 # 用法：cmake -DOUT=<生成的头文件> -DSRC=<仓库根> -P test/gen_const_check.cmake
 #
@@ -65,11 +67,10 @@ endfunction()
 set(SRC_MODULES "${SRC}/modules")
 
 read_const("${SRC_MODULES}/lib/HAL.lua" "HAL\\." HAL_ALL)
-read_const("${SRC_MODULES}/lib/llm_http.lua" "local[ \t]+" LLM_ALL)
-# Camera.lua 的 V4L2 ioctl 编号也是 `local NAME = <值>`（同名声明），与 llm_http 同法抽取。
+# Camera.lua 的 V4L2 ioctl 编号也是 `local NAME = <值>`（同名声明），同法抽取。
 read_const("${SRC_MODULES}/Camera.lua" "local[ \t]+" CAM_ALL)
 
-# 必须存在的常量（少一个就失败）——覆盖四个自检文件当前使用的全部编号/布局常量。
+# 必须存在的常量（少一个就失败）——覆盖三个自检文件当前使用的全部编号/布局常量。
 foreach(n IN ITEMS
     O_CLOEXEC
     I2C_RDWR I2C_M_RD
@@ -77,13 +78,6 @@ foreach(n IN ITEMS
     GPIO_GET_LINEHANDLE GPIOHANDLE_GET_LINE_VALUES GPIOHANDLE_SET_LINE_VALUES
     UART_O_FLAGS UART_TCSANOW UART_TCIFLUSH UART_VMIN_IDX UART_VTIME_IDX UART_CREAD_CLOCAL)
   require_const("${HAL_ALL}" "${n}")
-endforeach()
-foreach(n IN ITEMS
-    OPT_URL OPT_POSTFIELDS OPT_POSTFIELDSIZE OPT_WRITEFUNCTION OPT_HTTPHEADER
-    OPT_TIMEOUT OPT_CONNECTTIMEOUT OPT_NOSIGNAL OPT_NOPROGRESS OPT_XFERINFOFUNCTION
-    OPT_HEADERFUNCTION
-    INFO_RESPONSE_CODE CURL_GLOBAL_ALL RC_ABORTED_BY_CALLBACK)
-  require_const("${LLM_ALL}" "${n}")
 endforeach()
 foreach(n IN ITEMS
     VIDIOC_QUERYCAP VIDIOC_S_FMT VIDIOC_REQBUFS VIDIOC_QUERYBUF
@@ -142,8 +136,8 @@ read_baud_table("${SRC_MODULES}/lib/HAL.lua" "HZ" BAUD_HZ)
 
 # ---- 生成头文件 ----
 set(hdr "/* 本文件由 test/gen_const_check.cmake 在 cmake 配置期生成，请勿手工编辑。\n")
-string(APPEND hdr " * 事实源：modules/lib/HAL.lua 与 modules/lib/llm_http.lua（纯文本抽取）。\n")
-string(APPEND hdr " * 常量自检（test_ioctl_nums.c / test_uart_consts.c / test_curl_consts.c）\n")
+string(APPEND hdr " * 事实源：modules/lib/HAL.lua 与 modules/Camera.lua（纯文本抽取）。\n")
+string(APPEND hdr " * 常量自检（test_ioctl_nums.c / test_uart_consts.c / test_v4l2_consts.c）\n")
 string(APPEND hdr " * 用它把 Lua 值钉进 C 断言——A2：此前 C 里手抄数字，Lua 漂移无人发现。 */\n")
 string(APPEND hdr "#pragma once\n\n")
 
@@ -159,8 +153,6 @@ function(emit_defs hdr_var prefix lst)
 endfunction()
 
 emit_defs(hdr "HAL_CONST_" "${HAL_ALL}")
-string(APPEND hdr "\n")
-emit_defs(hdr "LLM_CONST_" "${LLM_ALL}")
 string(APPEND hdr "\n")
 emit_defs(hdr "V4L2_CONST_" "${CAM_ALL}")
 string(APPEND hdr "\n")

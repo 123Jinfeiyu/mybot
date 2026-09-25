@@ -3,11 +3,12 @@
 -- 这一层只做「打开 PCM 设备、按 S16_LE 单声道写样本、收尾」，不认识任何
 -- 波形语义；波形形状/音调/时长在驱动（modules/Speaker.lua）里。
 --
--- 【为什么用 ffi 而不是 shell-out】（与 lib/llm_http.lua 同一论证）
+-- 【为什么用 ffi 而不是 shell-out】（与 HAL.lua 的 ffi 直驱同一论证）
 --   * 驱动沙箱已中和 os.execute/io.popen（luasandbox.cpp），aplay 管道路线不可用；
 --   * ffi 直调 libasound 无需头文件、无编译期依赖，只要求运行期有 libasound.so；
 --   * ALSA C API（snd_pcm_open/set_params/writei/drain/close）签名稳定、全为
---     定参函数——不存在 llm_http 头注那种变参陷阱（curl_easy_setopt）。
+--     定参函数——不存在 libcurl 的 curl_easy_setopt 那种变参陷阱（参数类型
+--     由宏展开决定，签名正确性只能靠调用方自觉）。
 --
 -- 运行期依赖：libasound.so.2（Debian/Ubuntu: libasound2；ALSA 1.x 全系 ABI 稳定）。
 -- 缺库不是构建错误——只有配置了 Speaker 的结构脚本才需要它；build 期经
@@ -18,7 +19,7 @@
 -- gen_const_check.cmake 从本文件抽取）；开发头文件非构建依赖，构建机没装
 -- 时该自检不产出、run_all.sh 按跳过计。
 --
--- 重复加载保护（与 HAL.lua / llm_http.lua 同一做法）：驱动与测试都会 dofile
+-- 重复加载保护（与 HAL.lua 同一做法）：驱动与测试都会 dofile
 -- 本文件，ffi.cdef 重复声明同一符号会直接报错，故用全局缓存保证只初始化一次。
 -- 测试以**字段替换**注入 mock（HAL.sys 同款）：本表被 dofile 方以 local 引用
 -- 持有，替换字段对既有引用立即可见。

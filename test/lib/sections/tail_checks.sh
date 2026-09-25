@@ -48,18 +48,11 @@ run_fixture_orphans() {
 run_const_checks() {
 	echo "----- const-check (系统常量自检) -----"
 	local const_dir="$1" ok=true out
-	for prog in test_ioctl_nums test_uart_consts test_v4l2_consts test_curl_consts; do
+	# 三个自检二进制（ioctl/uart/v4l2）均无外部依赖，缺产物按「构建产物缺失」硬失败。
+	# 原第四个 test_curl_consts 随 Lua 协议驱动轨道删除（2026-09-25 #8）。
+	for prog in test_ioctl_nums test_uart_consts test_v4l2_consts; do
 		local binp="$const_dir/$prog"
 		if [ ! -x "$binp" ]; then
-			# test_curl_consts 是唯一可选构建项：libcurl 开发头文件不参与
-			# mybot 构建（运行期只要 libcurl.so），头文件缺失时该自检不产出
-			# 二进制——按跳过计（与缺 python3 同一口径），不判失败；
-			# 其余三个无外部依赖，缺产物仍按「构建产物缺失」硬失败。
-			if [ "$prog" = "test_curl_consts" ]; then
-				echo "[SKIP] $prog 未构建（构建机缺 libcurl 开发头文件）——CURLOPT 常量漂移自检未执行"
-				record_skip "const-curl(缺libcurl头文件)"
-				continue
-			fi
 			artifact_missing "系统常量自检" "$prog" "$binp" "$tests_explicit"
 			return 2
 		fi

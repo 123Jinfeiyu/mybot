@@ -69,14 +69,13 @@ if(MYBOT_SANITIZE)
 endif()
 
 # ======================================================================
-# agent 模式：--agent 让大模型工具循环成为主执行流程，机器人结构脚本加载后
-# 硬件常驻内存。
+# agent 模式：--mcp-backend 让大模型工具循环成为主执行流程（工具后端半边），
+# 机器人结构脚本加载后硬件常驻内存。
 #
-# 模型调用**不引入任何链接期依赖**：它是一颗 Lua 协议驱动
-# （modules/LlmOpenAI.lua、modules/LlmDeepSeek.lua），经 LuaJIT ffi 在运行期
-# 加载 libcurl。因此本工程的「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」
-# 在这条路径上依然成立；缺 libcurl 时是运行期在驱动 build() 阶段给出人话报错，
-# 而不是构建失败。
+# 模型调用**不引入任何链接期依赖**：它由独立的 Rust 二进制 mybot-agent 直连
+# provider（reqwest + rustls；2026-09-25 #8 起 Lua 协议驱动轨道整条删除，此前
+# 经 LuaJIT ffi 运行期加载 libcurl 的那条路径已不复存在）。因此本工程的
+# 「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」承诺依旧成立。
 # ======================================================================
 
 # 被测主体（不含入口 main.cpp）：mybot 与 mybot_tests 共用同一份，
@@ -226,18 +225,20 @@ add_test(NAME cpp_unit COMMAND mybot_tests)
 set_tests_properties(cpp_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # ======================================================================
-# 常量一致性自检（F-24）：把 Lua 源里硬编码的 ioctl/termios/V4L2/CURLOPT 编号
-# 与系统头文件编译期比对——换内核/换架构导致常量漂移时构建即失败；四个二进制
+# 常量一致性自检（F-24）：把 Lua 源里硬编码的 ioctl/termios/V4L2 编号
+# 与系统头文件编译期比对——换内核/换架构导致常量漂移时构建即失败；三个二进制
 # 再由 run_all.sh 在执行期跑一遍（构建期断言之外的双保险）。
 #
-# A2（2026-09-20 审计）：此前四个自检把 Lua 里的数字**在 C 里又手抄一遍**，
+# A2（2026-09-20 审计）：此前自检把 Lua 里的数字**在 C 里又手抄一遍**，
 # 从不读 Lua 源，于是「Lua 侧漂移」这一半完全不被发现（实测改
-# HAL.SPI_IOC_WR_MODE 后四个目标全绿）。现在配置期先用
-# test/gen_const_check.cmake 从 modules/lib/HAL.lua、modules/Camera.lua、
-# modules/lib/llm_http.lua 抽取真实值生成 const_lua.h，断言对**两侧**各钉一次：
+# HAL.SPI_IOC_WR_MODE 后全部目标仍绿）。现在配置期先用
+# test/gen_const_check.cmake 从 modules/lib/HAL.lua、modules/Camera.lua
+# 抽取真实值生成 const_lua.h，断言对**两侧**各钉一次：
 # Lua 抽取值 == 手抄预期值（抽取生效 + Lua 未漂移）+ 预期值 == 系统头。
 # 抽取是纯文本匹配、不执行 Lua，故不引入构建期 luajit 依赖；抽不到即
 # FATAL_ERROR（静默生成空头会让断言退化成自证，正是 A2 的原始缺陷形态）。
+# 2026-09-25 #8：llm_http.lua 的 CURLOPT 抽取与 test_curl_consts 随 Lua 协议
+# 驱动轨道整条删除——libcurl 已无任何代码使用，该自检无对象。
 # ======================================================================
 set(MYBOT_CONST_LUA_H "${CMAKE_BINARY_DIR}/const_lua.h")
 execute_process(
@@ -260,21 +261,6 @@ endforeach()
 add_test(NAME const_ioctl COMMAND test_ioctl_nums)
 add_test(NAME const_uart COMMAND test_uart_consts)
 add_test(NAME const_v4l2 COMMAND test_v4l2_consts)
-
-# ======================================================================
-# libcurl 常量自检（F-24 同族）：llm_http.lua 硬编码的 CURLOPT/CURLINFO 编号
-# 与 curl.h 编译期比对。libcurl 开发头文件**不是**构建依赖（mybot 运行期才
-# dlopen libcurl.so），故找到头文件才构建本目标；run_all.sh 对缺失产物按
-# 跳过计（与缺 python3 同口径），CI 安装 libcurl4-openssl-dev 保证门禁覆盖。
-# ======================================================================
-find_path(CURL_INCLUDE_DIR curl/curl.h)
-if(CURL_INCLUDE_DIR)
-  add_executable(test_curl_consts test/test_curl_consts.c)
-  target_include_directories(test_curl_consts PRIVATE ${CURL_INCLUDE_DIR} ${CMAKE_BINARY_DIR})
-  add_test(NAME const_curl COMMAND test_curl_consts)
-else()
-  message(STATUS "libcurl headers not found - test_curl_consts not built (CURLOPT const check skipped)")
-endif()
 
 # ======================================================================
 # Lua 离线回归逐用例注册（run_all.sh 保持主编排入口不变）：

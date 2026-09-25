@@ -113,7 +113,7 @@ run_one_agent_rust_e2e() {
 	rc=$?
 	echo "$out"
 	if [ $rc -eq 125 ] && echo "$out" | grep -qF '[SKIP]'; then
-		record_skip "agent-rust-e2e(缺python3或libcurl)"
+		record_skip "agent-rust-e2e(缺python3)"
 	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mybot-agent 端到端测试通过"; then
 		record_fail "agent-rust-e2e(mybot-agent)"
 	else

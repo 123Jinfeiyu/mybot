@@ -30,12 +30,11 @@ if [ "$only_asan" = 0 ]; then
 	echo ""
 fi
 echo "===== 第二跑：sanitizer（${SAN_BOT:-./${SAN_DIR}/mybot}） ====="
-# LSan 抑制：agent 模式加载 Lua 协议驱动时会经 ffi 拉起 libcurl → libcrypto，
-# 后者留下一批进程级初始化残留（栈全在 CRYPTO_malloc 内，与 mybot 自身分配无关）。
-# 必须走 LSAN_OPTIONS：ASan 的抑制解析器不认识 `leak:` 类型，放在 ASAN_OPTIONS 里
-# 会直接报 "failed to parse suppressions" 并让每个用例都失败。
-# 用 ':' 追加而非覆盖，保留调用方可能已设置的其他选项。理由见仓库根 asan.supp。
-export LSAN_OPTIONS="suppressions=$(pwd)/asan.supp${LSAN_OPTIONS:+:$LSAN_OPTIONS}"
+# 2026-09-25 #8：此处原导出 LSAN_OPTIONS=suppressions=asan.supp——那批抑制的
+# 触发路径是「agent 模式 Lua 协议驱动经 ffi 拉起 libcurl → libcrypto」的
+# 进程级初始化残留；Lua 协议驱动轨道整条删除后该路径不复存在（现役 Rust
+# agent 用 rustls、不碰 OpenSSL），抑制文件一并移除。若将来 sanitizer 跑出
+# CRYPTO_malloc 泄漏，说明又有新的 ffi 路径拉起了 libcrypto，按当时事实重建。
 BOT="${SAN_BOT:-./${SAN_DIR}/mybot}" BOT_TESTS="${SAN_BOT_TESTS:-./${SAN_DIR}/mybot_tests}" \
 	bash test/run_all.sh "$@" || exit 1
 

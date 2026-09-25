@@ -1298,10 +1298,10 @@ TH_TEST(llmconfig_oversized_key_file_reports_the_limit) {
 }
 
 /* ---- API key 控制字符判据（2026-09-21 审计 AG-14）----
- * 密钥最终会被拼进 `Authorization: Bearer <key>` 交给 curl_slist_append，而
- * libcurl 不拒绝 slist 里的 CR/LF——实测多行密钥会把换行后的内容变成**额外的
- * 请求头**发给网关。本判据与 modules/lib/llm_wire_openai.lua 的
- * api_key_has_control_chars 同语义，两边用例都要过。 */
+ * 旧 libcurl 链路实测：密钥被拼进 `Authorization: Bearer <key>` 交给
+ * curl_slist_append，而 libcurl 不拒绝 slist 里的 CR/LF——多行密钥会把换行后的
+ * 内容变成**额外的请求头**发给网关。现役 Rust agent 同样把密钥放进
+ * Authorization 头，判据保持不变。 */
 TH_TEST(llmconfig_api_key_control_chars_rejected) {
 	std::string err;
 	/* 正常密钥：单行可打印 */
@@ -1313,7 +1313,7 @@ TH_TEST(llmconfig_api_key_control_chars_rejected) {
 	TH_CHECK(err.find("0x0d") != std::string::npos);	/* 点名是哪个字节 */
 	TH_CHECK(err.find("第 7 个字节") != std::string::npos);	/* 与位置 */
 	TH_CHECK(!validateApiKeyChars("sk-a\nb", err));
-	/* 其余控制字符一并拒绝（宽判据，抗 libcurl 行为变化） */
+	/* 其余控制字符一并拒绝（宽判据，抗 HTTP 栈行为变化） */
 	TH_CHECK(!validateApiKeyChars(std::string("sk-a\0b", 5), err));
 	TH_CHECK(!validateApiKeyChars("sk-a\tb", err));
 	TH_CHECK(!validateApiKeyChars("sk-a\x7f" "b", err));

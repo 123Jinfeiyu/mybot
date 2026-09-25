@@ -12,7 +12,7 @@
 --   2) 语义对齐锚点：本实现与 C++ 端由 test_json_lua.lua 钉住「严格语法 +
 --      深度上限 + 转义与代理对完整」，换 cjson 需重建该对齐面；
 --   3) 零依赖取向：cjson 是独立的 C 扩展（非 LuaJIT 内建），引入即新增
---      运行期依赖，与项目「运行期只需 LuaJIT + libcurl + glibc」冲突。
+--      运行期依赖，与项目「运行期只需 LuaJIT + glibc」冲突。
 -- 结论：保持自研（安全契约 + 双端语义对齐 + 零依赖三方权衡）。若项目方
 -- 决策接受 cjson，需先完成 test_json_lua.lua 全量语义核对再替换。
 --
@@ -27,12 +27,11 @@
 --     在本项目的用途（取 content/tool_calls）下等价；
 --   * null 出现在**数组**里会留下空洞（`[1,null,3]` 解码为 {1,nil,3} 稀疏表），
 --     重编码会报错——encoder 对不连续键按对象走、而稀疏表键是数字，触发
---     「object key must be a string」。项目内无「解码→重编码数组」路径（LLM
---     协议只取对象字段），属可接受的有损点；
+--     「object key must be a string」。项目内无「解码→重编码数组」路径，属可接受的有损点；
 --   * 编码 nil → 报错：对象里静默丢字段会造出「看起来对、实际缺参」的坏请求，
 --     要显式 JSON null 请用 json.null；
 --   * 空表编码为 {}（对象）；只有当键恰好是 1..n 连续正整数时才编码为数组。
--- 重复加载保护（与 HAL.lua 同一做法）：驱动与 llm_wire_openai.lua 都会 dofile 本文件
+-- 重复加载保护（与 HAL.lua 同一做法）：驱动与测试都会 dofile 本文件
 if _G.__BOT4CJ_JSON ~= nil then return _G.__BOT4CJ_JSON end
 
 local json = {}
@@ -147,8 +146,8 @@ local function encode_value(v, out, depth)
 				-- 丢掉**（实测 json.encode({role="tool", tool_call_id=nil, content="x"})
 				-- 产出 {"content":"x","role":"tool"}），真机只回一个含混的 400。
 				-- 正确的做法不是在这里假装检查（语法上做不到），而是由调用方对自己
-				-- 组装的必填字段显式断言：见 llm_wire_openai.lua 的 to_wire_message
-				-- 与 require_wire_string——那里的报错能点名是哪个字段、哪条消息。
+				-- 组装的必填字段显式断言：由调用方对自己拼的报文负责
+				--（缺失会在这里被静默丢字段，出站前必须点名到字段与消息）。
 				if not first then out[#out + 1] = "," end
 				first = false
 				encode_string(k, out)

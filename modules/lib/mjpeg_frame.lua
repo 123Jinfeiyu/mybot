@@ -1,6 +1,6 @@
 -- mjpeg_frame.lua —— MJPEG 帧完整性校验与收尾规范化
 --
--- 独立成库的原因与 llm_wire_* 相同：规则要能离线单测（test/test_camera.lua）。
+-- 独立成库的原因与 HAL.lua 相同：规则要能离线单测（test/test_camera.lua）。
 --
 -- 【为什么需要】UVC 摄像头的 MJPEG 帧可能**在熵编码中途截断**（2026-09-19 实测某
 -- 设备约半数帧如此：内核不置 V4L2_BUF_FLAG_ERROR，V4L2 层无从感知；宽松解码器

@@ -188,7 +188,7 @@ static void markAllFdsCloexec() {
 
 /* 子进程 exec 前吊销继承来的 fd（≥3）。
  * HAL 侧已给每个器件句柄加 O_CLOEXEC，但宿主不知道来源的句柄同样会被
- * /bin/sh 继承：第三方 Lua 驱动自己 open 的 fd、dlopen 的 libcurl socket。
+ * /bin/sh 继承：第三方 Lua 驱动自己 open 的 fd。
  * 子 shell 一旦拿到绑定 /dev/i2c-1 的 fd，模型驱动的命令就能直接 ioctl 拨动
  * 硬件——而且是在 robot->deactivate() 之后依然有效，「关掉机器人就安全」这条
  * 预期会落空。故在子进程侧再兜一层，不依赖调用方是否守规矩。

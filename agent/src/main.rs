@@ -356,7 +356,7 @@ fn config_error(msg: &str) -> i32 {
 ///
 /// 在飞请求的处置：`model.rs` 的 `guard`（阻塞面与流式首帧）和 `Observed`（流式余流）
 /// 都对停止标志定时轮询，Ctrl-C 之后在途请求**立即被丢弃**、本轮以「请求被中断」
-/// 收场——与 C++ 用取消哨兵掐断 libcurl 请求的效果同款（延迟 ≤ 一个轮询周期）。
+/// 收场——与旧 C++ agent 用取消哨兵掐断 libcurl 请求的效果同款（延迟 ≤ 一个轮询周期）。
 fn install_signal_handlers(state: Arc<HookState>) {
     tokio::spawn(async move {
         let mut sigint = signal_stream(libc::SIGINT);

@@ -46,11 +46,14 @@ enum class ApiKeySource {
 };
 
 struct AgentModeConfig {
-	/* 协议驱动：表名即 modules/<表名>.lua；llmVar 是承载它的变量名。
-	 * 结构脚本声明了就优先用；没声明则宿主按这两个名字自动注入。 */
+	/* 协议驱动：driverTable 是 Rust agent 内建的协议族名
+	 * （LlmOpenAI / LlmDeepSeek / LlmAnthropic——2026-09-25 #8 起不再是
+	 * modules/<表名>.lua 的驱动表名，宿主不加载任何 LLM 驱动，只把名字
+	 * 透传给 agent）；llmVar 仅是变量名标签，供提示词/诊断引用。 */
 	std::string driverTable = "LlmOpenAI";
 	std::string llmVar = "llm0";
-	/* 空 = 用驱动自带的缺省接入点/模型（见 modules/lib/llm_wire_*.lua 的 DEFAULTS） */
+	/* 空 = 未配置：Rust 侧 fail-closed（endpoint 与 model 都**无内置缺省**，
+	 * 首次调用即失败并点名三种配置途径——B2 口径，2026-09-22 起） */
 	std::string endpoint;
 	std::string model;
 	int maxTurns = 8;

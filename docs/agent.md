@@ -22,7 +22,7 @@
 - [流式与阻塞的如实偏差](#流式与阻塞的如实偏差)
 - [命令行参数](#命令行参数)
 - [配置文件（推荐）](#配置文件推荐)
-- [模型调用（沿革：Lua 协议驱动 → Rust 直连）](#模型调用沿革lua-协议驱动--rust-直连)
+- [模型调用（Rust 直连；Lua 协议驱动轨道已删）](#模型调用rust-直连lua-协议驱动轨道已删)
 - [给智能体的工具](#给智能体的工具)
 - [摄像头：capture_image](#摄像头capture_image)
 - [提示词包：绑定机器人身份](#提示词包绑定机器人身份)
@@ -32,7 +32,6 @@
 - [策略钩子：--agent-policy](#策略钩子--agent-policy)
 - [工具后端：--mcp-backend（agent 体系的 C++ 半边）](#工具后端--mcp-backendagent-体系的-c++-半边)
 - [安全说明（请务必读）](#安全说明请务必读)
-- [Lua 模型驱动的可选运行期依赖：libcurl](#lua-模型驱动的可选运行期依赖libcurl)
 - [源码分层](#源码分层)
 - [测试](#测试)
 - [已知限制](#已知限制)
@@ -297,211 +296,79 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   若该文件或内联了 `api_key` 的配置文件对同组/其他用户可读，启动时会打印 `chmod 600` 提醒（只提醒，不阻断）。
 - **别提交密钥**：仓库 `.gitignore` 已忽略 `mybot.llm.json` / `*.llm.json`；
   模板见仓库根的 `mybot.llm.json.example`。
-- **驱动特有字段**（如 DeepSeek 的 `thinking` / `reasoning_effort`）由宿主原样透传给驱动，
-  宿主不理解其语义——协议差异仍然只属于协议驱动。
+- **厂商特有字段**（如 DeepSeek 的 `thinking` / `reasoning_effort`）与 `driver`/`endpoint`/`model`
+  一样，都是 Rust agent 配置里的**已承认字段**（`agent/src/config.rs` 的 `KNOWN_FIELDS`
+  与 C++ `kKnown` 同集合，双端同判据拒绝未知字段）；C++ 后端不消费模型侧字段
+  （`mergeLlmLayer` 的有意早退）。协议差异全部属于 Rust 侧的 provider 实现。
 
 为什么是 JSON 而不是 Lua：配置文件是**数据**，不是代码。Lua 配置要由宿主内嵌状态机去执行，
 等于让一份常被复制/分发的文件获得任意代码执行能力；而仓库已有严格 JSON 解析器，复用它零成本。
 
-## 模型调用（沿革：Lua 协议驱动 → Rust 直连）
+## 模型调用（Rust 直连；Lua 协议驱动轨道已删）
 
-> **现状（2026-09-24，批次 B）**：agent 的模型调用由 Rust `mybot-agent` 直连
-> provider（`agent/src/provider.rs`，rig 0.42 内置 OpenAI/DeepSeek/Anthropic 三族，
-> reqwest + rustls），**不再经 Lua 驱动**。下列驱动与协议文档**保留为驱动生态的
-> 参考**：`modules/Llm*.lua` 与 `modules/lib/llm_*.lua` 仍在（`test_llm_drivers.lua`
-> 照常守门），结构脚本仍可把它们声明成普通硬件变量（供 `.mt` 脚本或 `@Daemon`
-> 直接调用）；但 agent 会话本身已不经过这条链路。
+`mybot-agent`（Rust，rig 0.42）直连 provider，不经任何 Lua 驱动：
+`agent/src/provider.rs` 内置三族（OpenAI 兼容 / DeepSeek / Anthropic），
+`--llm-driver` 选的是**协议族名**（`LlmOpenAI` / `LlmDeepSeek` / `LlmAnthropic`）。
+
+> **2026-09-25 #8 起这三个名字不再是 `modules/<表名>.lua` 的驱动表名**：
+> Lua 协议驱动轨道（`modules/Llm*.lua` + `modules/lib/llm_*.lua` + 两个离线用例 +
+> `test_curl_consts`）整条删除——agent 会话自 2026-09-24 批次 B 起就走 Rust 直连，
+> 那条轨道的唯一潜在用途是「结构脚本声明成普通硬件变量供 `.mt`/`@Daemon` 直调」，
+> 而仓库内外零处这么用（完整评估见 changelog 当日条目）。现役含义：C++ 宿主
+> **不加载任何 LLM 驱动**，只把协议族名透传给 agent（配置文件的 `driver` 字段
+> 在双端 `--check-config` 镜像里仍可见）；`--llm-driver`/`--llm-var` 属于
+> Rust agent，C++ 后端照旧拒绝（退出 2）。
 
 ```
 mybot-agent（Rust）     模型循环（provider.rs 直连 provider：reqwest + rustls）
   └─ frame.rs/bridge.rs  帧协议 ⇄ mybot --mcp-backend（工具调用）
-
-【沿革存档：C++ --agent 时代的调用链】
-  agentloop（C++）      工具循环（已删）
-  └─ agentproto         规范化消息/工具 ⇄ Json（传输层部分已删）
-       └─ agentdriver   ChatTransport：把请求交给驱动变量（已删）
-            └─ llm0 = modules/LlmOpenAI.lua      ← 普通硬件变量（仍在）
-                 └─ lib/llm_wire_openai.lua      ← 协议整形（仍在）
-                      └─ lib/llm_http.lua        ← ffi 直驱 libcurl（仍在）
 ```
 
-**当初为什么不把 HTTP 写进 C++ 宿主（决策记录）**：
+### 三个协议族
 
-- 换模型/换厂商 = **换一个 Lua 文件**，宿主不重编、不链接任何 HTTP 库；
-- 项目「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」的承诺在这条路径上依然成立；
-- 驱动生态的一切照旧适用：`build/call/destroy` 契约、`guard_build` 回滚、`docs/drivers.md`、
-  `test/test_*.lua` 离线用例；模型驱动也能被 `.mt` 动作脚本或 `@Daemon` 调用；
-- 协议差异（如 DeepSeek 的思考模式）**只能**由驱动承担——它有状态，宿主一无所知。
-
-### 规范化协议（宿主 ⇄ 驱动）
-
-宿主传进 `call()` 的参数：
-
-```lua
-{ model=, endpoint=, timeout=, max_tokens=, temperature=, top_p=,
-  messages = { {role="system"|"user", content=},
-               {role="assistant", content=, tool_calls={{id=,name=,arguments=}}, extras={}},
-               {role="tool", tool_call_id=, content=} },
-  tools = { {name=, description=, parameters={...}} } }
-```
-
-驱动返回：
-
-```lua
-{ result="OK", content=, tool_calls={{id=,name=,arguments=}}, extras={} }
-{ result="ERR", message="人话报错" }
-```
-
-`extras` 是 provider 特有字段的透明通道（如 DeepSeek 的 `reasoning_content`）：
-宿主不理解、不修改，只随 assistant 消息逐轮原样带回，由驱动决定怎么用。
-API key 不在这个表里——驱动自己读环境变量。
-
-`content` 对宿主永远是**字符串**：网关按新版协议返回
-`[{type="text",text=…},{type="image_url",…}]` 数组形态时，由驱动在 `parse_response`
-里归一化（text 段按序拼接；非 text 段丢弃并在 `extras.content_parts_dropped` 计数，
-使「模型给了别的内容而宿主没看见」在审计里可见）。宿主侧仍只认字符串——
-这条不变式由驱动的单测钉住。
-
-> **出站一致性自检（A1b）**：`llm_wire_openai.check_tool_pairing` 在**发包前**校验
-> `messages` 的形状——每条带 `tool_calls` 的 assistant 之后必须紧跟**数量相等、
-> id 逐个对应且不重复**的 tool 消息，多一条同样算错；不通过就 `error`，由驱动的
-> `pcall` 折成 ERR 契约表，宿主再折成一条点名「第几条消息、期望几条、实际几条」的报错。
-> 为什么要自己查一遍：这条不变量宿主侧**在写历史时就保证**（不是"查一遍"）——
-> `historyProtocolViolation()`（SAN-1）是它的**可执行判据**（用例直接调用），
-> 而写入侧由 SAN-12（2026-09-23）兜住 id 唯一性的三条来源（provider 漏 id 时合成
-> `call_<turn>_<i>`、provider 返回重复 id 时改写、合成 id 与历史冲突时追加后缀），
-> 于是宿主写下的每段历史都满足判据。可报文还要经过驱动的整形（丢弃/合成/归一化）
-> ——出站前再查一次，才能让「宿主写对了、驱动整坏了」也当场失败，而不是拿一个含混的网关 400
-> 去猜。AG-26 第一版正是这条不变量被破坏的实例（多写一条 tool 消息并复用别人的
-> `tool_call_id`），而那块历史已被 `runTurn` 认作「可原样发送」、`HistoryManager::trim`
-> 又不裁最新块 ⇒ REPL 从此每条任务都以同一个请求体失败（与 AG-4 同一失效形态）。
-> 自检的落点刻意排在消息转换**之后**：字段级缺失（tool 消息没有 `tool_call_id`）由
-> `require_wire_string` 先报（成因更具体），自检只负责「数量 / 顺序 / 重复 / 多一条」
-> 这类形状问题。离线用例见 `test/test_llm_drivers.lua` 的 A1b 段（含少一条、多一条、
-> id 不匹配、id 重复、缺 id 五种形状）。
-
-> **写驱动时注意「空数组」**：宿主把 Json 转成 Lua 表、驱动再编码回 JSON，而 Lua 的
-> `{}` 无法区分空数组与空对象——`[]` 会变成 `{}`。JSON Schema 的 `required` 必须是
-> 数组，DeepSeek 会严格校验并直接 400：
-> `Invalid schema for function 'x': {} is not of type "array"`（实测踩过）。
-> `modules/lib/json.lua` 因此提供显式哨兵 `json.empty_array`，两个内置驱动在 schema
-> 语义已知处把 `required` 规范化成它。自写驱动若产出结构里含空数组，记得用哨兵。
-> 假模型服务 `scripts/fake_llm_server.py` 会像 DeepSeek 一样校验工具 schema，
-> 这类问题在离线守门即可暴露。
-
-### 内置三个协议驱动
-
-| 驱动 | 接入点（缺省） | 模型（缺省） | 特点 |
+| 族名 | 接入点（缺省） | 模型（缺省） | 特点 |
 | --- | --- | --- | --- |
-| `LlmOpenAI` | **无缺省（必须显式配置，B2）** | `zhipu/glm-5.3-flash` | OpenAI 兼容：「当前协议」 |
-| `LlmDeepSeek` | `https://api.deepseek.com/chat/completions` | `deepseek-chat` | DeepSeek：思考模式 + `reasoning_content` |
-| `LlmAnthropic` | **无缺省（必须显式配置）** | `claude-sonnet-4-5` | Anthropic Messages：`system` 顶层字段、`tool_use`/`tool_result` 块、`x-api-key` 鉴权（批次 3） |
+| `LlmOpenAI` | **无缺省（必须显式配置，B2）** | **无缺省（rig 需要显式模型串）** | OpenAI 兼容 |
+| `LlmDeepSeek` | **无缺省（必须显式配置）** | **无缺省** | DeepSeek：思考模式 + `reasoning_content` 回传 |
+| `LlmAnthropic` | **无缺省（必须显式配置）** | **无缺省** | Anthropic Messages：`system` 顶层字段、`tool_use`/`tool_result` 块、`x-api-key` 鉴权 |
 
 > **【破坏性变更，B2（2026-09-22）】`LlmOpenAI` 不再内置缺省接入点**：原缺省指向
 > 特定第三方网关（moma.cmecloud.cn），「什么都没配就跑起来」的会话会把含结构
 > 脚本、硬件清单、摄像头画面的上下文静默发往该网关——stderr 注记只是缓解不是
-> 防线。现在 endpoint 未配置时**第一次模型调用即失败**（ERR 点名三种配置途径：
-> `--llm-endpoint` / 环境变量 `BOT4CJ_LLM_ENDPOINT` / 配置文件 `endpoint` 字段），
-> 不发出任何报文；真要用原网关的人显式配置即可。`LlmDeepSeek` 保留缺省
-> （api.deepseek.com 是厂商官方 API 域），首次回退时仍向 stderr 注记一行
-> （`[llm-wire] 未配置 endpoint，使用驱动内置缺省 …`）。
+> 防线。Rust 侧 fail-closed（`config.rs` 构建期拒绝）：endpoint 与 model 都**没有
+> 内置缺省**，缺任一即报错点名配置途径（`--llm-endpoint` / 环境变量
+> `BOT4CJ_LLM_ENDPOINT` / 配置文件 `endpoint` 字段），不发出任何报文；
+> 真要用原网关的人显式配置即可。
 
-两者都是 OpenAI 报文骨架，但 DeepSeek 有三处**实质差异**，由 `lib/llm_wire_deepseek.lua` 承担：
+三族的协议差异全部收敛在 Rust 侧 rig 的 provider 实现里（DeepSeek 的
+`reasoning_content` 逐轮回传、Anthropic 的 `tool_use`/`tool_result` 成对与
+`x-api-key` 头），回归由 `scripts/agent_e2e.sh` 的假模型服务守（R12/R13，
+见 [testing.md](testing.md)）。C++ 宿主对 provider 报文字段**一无所知**。
 
-1. **思考模式开关**：请求体带 `{"thinking":{"type":"enabled"}}`，强度用 `reasoning_effort`
-   （可经参数或环境变量 `BOT4CJ_LLM_REASONING_EFFORT` 给；传 `thinking="disabled"` 关闭）。
-2. **`reasoning_content` 回传**：与 `content` 同级返回。**请求带 `tools` 时，历史轮次的
-   `reasoning_content` 必须完整回传，否则 API 返回 400**——这是有状态要求，
-   宿主靠 `extras` 逐轮带回、驱动负责回填，`scripts/agent_e2e.sh` 有专门断言。
-3. **采样参数限制**：思考模式不支持 `temperature`（传了也被静默忽略），`top_p` 生效但
-   下限被抬到 0.95；非思考模式 `top_p` 恒为 1.0。驱动按模式决定发什么，
-   避免「发了一个看起来生效、其实被忽略」的参数。
+### 沿革存档：为什么当初不把 HTTP 写进 C++ 宿主
 
-第三驱动 `LlmAnthropic`（2026-09-23，批次 3）承载的**不是又一份字段表，而是
-「换模型 = 换 lua 文件」这条承诺的验证实例**：它的报文形状与 OpenAI 系差别最大，
-而接入方式是同一行 `--llm-driver LlmAnthropic`，**宿主一行未改**
-（该批的验收线即 `git diff --stat src/` 为空）。与 OpenAI 系的四处形状差异
-全部收敛在 `lib/llm_wire_anthropic.lua`：
+当初（C++ agent 时代）的决策记录，解释这条链为什么曾经存在：
 
-1. **`system` 是顶层字段**，不是 messages 里的一条——驱动从规范化历史里把它抽出来；
-2. **工具调用是 assistant 的 `tool_use` 内容块**，`input` 是**对象**（规范化侧给的是
-   `arguments` JSON 字符串，驱动负责解码；非法 JSON 响亮拒绝，不发出去拿含混 400）；
-3. **工具结果是 user 消息里的 `tool_result` 块**，且连续的多个 tool 消息必须并进
-   **同一条** user 消息——Anthropic 要求 messages 严格 user/assistant 交替，
-   多做一条消息就是 400（驱动构建后另有一道交替自检，报错点名第几条）；
-4. **鉴权是 `x-api-key`**（不是 `Authorization: Bearer`）且必须带
-   `anthropic-version` 头。
+- 换模型/换厂商 = **换一个 Lua 文件**，宿主不重编、不链接任何 HTTP 库；
+- 项目「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」的承诺在这条路径上依然成立；
+- 驱动生态的一切照旧适用：`build/call/destroy` 契约、`guard_build` 回滚、
+  `test/test_*.lua` 离线用例；模型驱动也能被 `.mt` 动作脚本或 `@Daemon` 调用；
+- 协议差异（如 DeepSeek 的思考模式）**只能**由驱动承担——它有状态，宿主一无所知。
 
-另有两处 provider 约束与 OpenAI 系不同，驱动按「响亮拒绝不静默」处置：
-`temperature` 只接受 `[0, 1]`（宿主允许到 2，越界即 ERR 并点名，不静默钳制）；
-`max_tokens` 是**必填**。响应侧的差异同样抹平：`content` 块数组里 text 段拼接、
-`tool_use` 转规范化 `tool_calls`、非文本非工具块（如扩展思考的 thinking）丢弃但
-**计数并如实上报**（进 `extras.dropped_content_blocks`，与 PL-3 的诚实口径一致），
-`usage` 的 `input_tokens`/`output_tokens` 映射到审计认得的
-`prompt_tokens`/`completion_tokens`，`stop_reason` 也进 `extras`（排障时
-「是不是被 max_tokens 截断了」全靠它）。
-
-### 结构脚本声明
-
-Lua 模型驱动由**结构脚本声明**挂载（结构脚本是唯一事实源）：
-
-```sql
-CREATE TABLE LlmDeepSeek (name String);
-INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
+```
+【沿革存档：C++ --agent 时代的调用链（已全删；2026-09-25 #8 删最后一段）】
+  agentloop（C++）      工具循环（已删）
+  └─ agentproto         规范化消息/工具 ⇄ Json（传输层部分已删）
+       └─ agentdriver   ChatTransport：把请求交给驱动变量（已删）
+            └─ llm0 = modules/LlmOpenAI.lua      ← 普通硬件变量（#8 已删）
+                 └─ lib/llm_wire_openai.lua      ← 协议整形（#8 已删）
+                      └─ lib/llm_http.lua        ← ffi 直驱 libcurl（#8 已删）
 ```
 
-声明后 `llm0` 就是一颗普通硬件变量，`.mt` 动作脚本或 `@Daemon` 可径直调用它
-（规范化请求/响应契约见上文）。**agent 会话不需要它**：`mybot-agent` 的模型调用
-由 Rust 侧 provider 直连，模型参数（`--llm-model` 等）给 `mybot-agent`、不给后端；
-C++ 宿主已拒绝 `--llm-driver`/`--llm-var`（退出 2），旧 `--agent` 时代
-「未声明即自动注入一颗 llm 变量」的机制随之移除。
-
-### 自己写第三个驱动
-
-照 `modules/LlmDeepSeek.lua` 抄一份：`build` 里调 `llm_http.load()` 做环境自检、
-`call` 里把规范化请求整形后交给 `llm_wire_openai.lua` 的通用实现，或完全自己实现。
-`result`/`message`/`mode` 三个键名由框架保留。
-
-**响应契约（SAN-6，2026-09-22 起明确成文）**：`call()` **必须返回表、绝不抛**——
-宿主侧调用 `parse_response` 时不在任何 pcall 里，抛出来的 Lua 错误会直接变成一句
-`Hardware call failed (…): attempt to index local 'tc'`，既不点名字段也不给报文片段。
-规范化响应表的键：
-
-| 键 | 必选 | 说明 |
-| --- | --- | --- |
-| `result` | ✅ | `"OK"` 或 `"ERR"`（框架保留键） |
-| `message` | `ERR` 时 ✅ | 人话原因；`ERR` 时还可带结构化判据（见下） |
-| `content` | OK 时 | 文本回答；**数组形态要自己拍平成字符串**（宿主只认字符串） |
-| `tool_calls` | OK 时 | 数组，每项 `{id, name, arguments}`；`arguments` 是**原始 JSON 字符串** |
-| `extras` | 可选 | provider 特有字段，宿主原样逐轮回传（如 DeepSeek 的 `reasoning_content`） |
-| `usage` | 可选 | provider 给的用量对象，宿主只读不推算 |
-
-结构化的错误判据（`ERR` 表上，全部可选但**强烈建议给**——宿主的重试分类靠它们，
-缺了就只能回落到匹配错误文案，实测那在生产路径上从来匹配不上）：
-
-| 键 | 含义 |
-| --- | --- |
-| `http_status` | HTTP 状态码；429 → 限流（退避用服务端的 `Retry-After`），5xx → 可重试，其余 4xx → 不可重试 |
-| `curl_rc` | libcurl 数值退出码；6/7/28/35/52/55/56 可重试，其余（协议/凭据类）不可 |
-| `retriable` | 显式可重试位（驱动知道 HTTP 语义时优先用它） |
-| `retry_after_ms` | 服务端要求的退避毫秒数（来自 `Retry-After` 头，宿主钳到 1s-5min） |
-
-几条**形态判据**（违反即返回点名 `ERR`）。**完整的形变矩阵在
-`test/test_llm_wire_contract.lua`**（261 条断言，两个驱动各跑一遍；宿主侧的对应
-矩阵在 `test/cpp/test_agentproto.cpp` 的 `agentproto_host_side_shape_matrix`）——
-**遇到新的 provider 形变，先往矩阵里加一行**，而不是等线上撞（PL-3 的数组 content
-与 PL-6 的 tool_calls 非表都是"线上撞到才补"的）。判据如下：
-`choices` 非数组 / `choices[1]` 非对象 / `message` 非对象 → 点名报错；
-`tool_calls` 非数组 → 点名报错；`tool_calls` 的**元素**非表或 `function` 非表 →
-**跳过并计数**（`extras.dropped_bad_tool_calls`，丢弃但如实记账，不让整轮失败）；
-`id` 缺失或非字符串 → **透传空串，不要自己合成**（宿主有轮次相关的合成方案
-`call_<turn>_<i>`，驱动自己编的 `call_<i>` 每轮从 1 重来会撞车 → 真机 400；
-SAN-12 起宿主还保证合成 id **在整段会话内唯一**——与历史里已出现的 id 冲突时
-追加后缀——并且 provider 在同一次响应里返回的**重复 id** 也会被宿主改写唯一
-（第二条起改用合成 id，改写事实打一行 stderr）；两条都是"provider 违反协议"的
-口子，原样写入会让同一个 id 被回答两次）；
-`content` 为 `null`/数字等非字符串非数组值 → **归一成空串**（原样透传会让宿主
-读成"没有文本"，最终报「既没有返回文本也没有工具调用」——报错不指向真因）。
+规范化请求/响应契约、A1b 出站一致性自检、响应形变矩阵（SAN-6/PL-3/PL-6）等
+协议文档随轨道删除。它们的现役对应物在 Rust 侧：出站形状由写入不变量保证
+（`agent/src/history.rs` + SAN-12 的 id 唯一性三条来源），响应形变由 rig 的
+provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
 
 ## 给智能体的工具
 
@@ -512,7 +379,7 @@ SAN-12 起宿主还保证合成 id **在整段会话内唯一**——与历史�
 | `list_hardware` | 列出结构脚本注册的硬件变量（名字 + 种类） | 只读清单；**不**调用 `read()`/`play()`，绝无副作用 |
 | `read_variables` | **主动读**硬件变量的当前值（无参数，一次读全部可读变量）：传感器读数、守护最近一次采样 | **缺省不注册**：可读集合由 `--read-var` 声明（命令行独占），只读 `playQuiet`，且只放行 `lua`/`daemon` 两种种类——执行器与传感器同属 `kind=lua`，靠种类分不出，故由操作者列名（安全说明第 12 条）。单个变量读失败写在该行、不中断整次读取；回执 8 KiB 上限、超限截断并标注、按「数据不是指令」定界 |
 | `wait_variable` | **等一个读数满足条件**（`name`/`key`/`condition`=`gt`/`ge`/`lt`/`le`/`eq`/`ne`/`changed`/`value`/`timeout_sec`/`poll_ms`）：后端按 `poll_ms` 轮询该变量，直到条件成立或超时，一次调用给一个结论——模型不必用多轮 `read_variables` 手工轮询 | 与 `read_variables` **同一门控与副作用面**（`--read-var` 清单、`playQuiet`）。**超时是结果不是失败**（`ok=true`，回执写明超时与最后读数）；`timeout_sec` 缺省 30、上限 = `action_script_timeout_sec`（等待期间后端主线程被占，与 `run_action_script` 同）；每 ≤100 ms 看一次停止标志，Ctrl-C 不会坐满超时；键首采样缺失不判错（daemon 出首帧前没有 `v0`），超时回执列出样本现有键；键在而非数值撞上 `gt/ge/lt/le` 首采样即报参数错。结论在「数据不是指令」定界之外、读数在定界之内；`summary` 给审计 `satisfied=… elapsed_ms=… samples=…` |
-| `query_sql` | 结构 SQL 只读查询/语法校验：`SELECT * FROM 表名;` 返回该表列与行，可带等值条件 `WHERE 列 = 值 [AND 列2 = 值2 ...]`（精确文本匹配，与渲染同源）；`SHOW TABLES;` 列出当前结构全部表名与数据行数（含宿主**自动注入**的 `LlmOpenAI`/`Camera` 等表——结构脚本摘录里看不到它们）；`CREATE`/`INSERT` 只做解析回显 | 只读、无副作用（不装配硬件、不改结构矩阵）；仅支持星号全列与等值条件（AND 连接，无 OR）、语句以 `;` 结尾；结果经「数据非指令」定界回传。**不含 `DELETE`/`DROP`**——那是带电变更、会真的断电摘器件（`DROP` 更是撤整表），请走 `apply_sql`（可先用本工具确认 WHERE 会命中哪些行） |
+| `query_sql` | 结构 SQL 只读查询/语法校验：`SELECT * FROM 表名;` 返回该表列与行，可带等值条件 `WHERE 列 = 值 [AND 列2 = 值2 ...]`（精确文本匹配，与渲染同源）；`SHOW TABLES;` 列出当前结构全部表名与数据行数（含宿主**自动注入**的 `Camera` 表——结构脚本摘录里看不到它）；`CREATE`/`INSERT` 只做解析回显 | 只读、无副作用（不装配硬件、不改结构矩阵）；仅支持星号全列与等值条件（AND 连接，无 OR）、语句以 `;` 结尾；结果经「数据非指令」定界回传。**不含 `DELETE`/`DROP`**——那是带电变更、会真的断电摘器件（`DROP` 更是撤整表），请走 `apply_sql`（可先用本工具确认 WHERE 会命中哪些行） |
 | `apply_sql` | 结构 SQL **带电生效**：`CREATE TABLE` 建新表（装配驱动模块、真机上电、注册变量）、`INSERT INTO` 往既有表追加行、**`DELETE FROM ... [WHERE ...]` 当场逆序断电并摘除匹配行**（无条件写法删全表）、**`DROP TABLE ...` 当场撤下整张表**（行 + 表壳；**不带 `WHERE`**——它是 DDL、作用于整张表）、**`UPDATE ... SET ... [WHERE ...]` 按断电重建改写命中行**（先摘旧件再装新件；无条件写法改全表数据行；与该表其它行级语句不得同批，拆两次调用即可）；同批次的 `Action` 行执行一次即丢弃（瞬态，不注册） | **缺省不注册**，须命令行 `--agent-hot-sql` 显式开启（配置文件的 `allow_hot_sql` 只能关不能开）；表名/列名须为安全标识符、驱动模块须已在模块路径下、`@Daemon` 行的 `chunk` 须为相对路径；校验全部只读，**任一步失败整批回滚**（逆序断电 + 注册表回退），但已下发的物理动作不回退。**`DELETE`/`DROP` 是不可逆的物理断电，没有回滚**：全部校验（含引用完整性）在动第一个器件之前跑完，中途物理失败则如实报「已删 N 个（名单）、M 个未删」；被 `controller`/`trigger`/`$`/`$(...)` 引用着的变量拒绝删除/改写并点名引用方。**`UPDATE` 批次是先删后建**：新件装配失败时已摘旧件不复原，错误点名丢失的变量（按需要的值重新 INSERT 即可恢复）。对照/查询请用 `query_sql` |
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节）。可请求采集尺寸：`width`/`height`（像素 16..8192，须同时给出，缺省 640x480）——换尺寸重开设备、代价高于同尺寸连拍；设备就近调档时回执报**实际**尺寸；仿真来源不缩放、请求尺寸无效并明说 |
 | `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗、继承 fd 全部 CLOEXEC、**回执进模型上下文前遮蔽敏感值**（G1）；**缺省不注册**，须命令行 `--agent-shell` 显式开启（配置文件的 `allow_shell` 只能关不能开，写 `true` 会拒绝加载） |
@@ -955,9 +822,11 @@ listening fd 是 CLOEXEC
 5. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。
    `capture_image` 同样有种类防线：`camera_var` 必须解析到一个 **Lua 驱动**，否则该工具直接不注册并打印提示——
    `playQuiet` 对别的种类就退化成 `play()`，那样模型调一次「拍照」就会往别名/数值变量/舵机上真下发 `{path,src}`。
-6. **驱动获得网络能力**：`modules/Llm*.lua` 会把请求发到配置的接入点。按本项目的威胁模型，
-   `modules/**/*.lua` 本就是「任意原生代码执行入口，信任级等同 mybot 用户」（见 [reference.md](reference.md) 的沙箱威胁模型），
-   故这不是新增信任假设，但接外部接入点时请自行确认其可信度。
+6. **模型调用由 Rust agent 进程出网，不经 Lua 驱动**：`mybot-agent`（reqwest + rustls）直连
+   配置的接入点；C++ 宿主与 Lua 驱动沙箱都不参与网络（2026-09-25 #8 起 Lua 协议驱动轨道已删，
+   `modules/Llm*.lua` 不再存在）。威胁模型口径不变：`modules/**/*.lua` 本就是「任意原生代码
+   执行入口，信任级等同 mybot 用户」（见 [reference.md](reference.md) 的沙箱威胁模型），
+   接外部接入点时请自行确认其可信度。
 7. **上电时机分属两进程**：后端配置与 policy 在自身 `active()` 前校验；Rust 的基础配置格式、
    参数范围、缺 key 与提示词包装载错误在连接后端前报错（rc=2）。系统提示词总量须取得
    `context.get` 素材后检查，协议驱动支持性与 provider 装配也在连接后检查，此时后端已上电。
@@ -1047,20 +916,6 @@ listening fd 是 CLOEXEC
     边界如实声明：**读传感器也可能有副作用**——部分器件的 `call` 会先写触发寄存器再读，
     所以这是一次**派发**（照走任务预算与审计），不是"绝对不改状态"的承诺。
 
-## Lua 模型驱动的可选运行期依赖：libcurl
-
-现役 `mybot-agent` 用 Rust/rig（reqwest + rustls）直连模型，**不依赖 libcurl**。
-只有在结构脚本中显式装载普通 Lua 模型驱动时，才沿用下述依赖（不是 agent 的必经路径）：
-`modules/lib/llm_http.lua` 用 LuaJIT ffi 在 `build()` 阶段按
-`libcurl.so.4` → `libcurl-gnutls.so.4` → `libcurl.so` 顺序加载；无需开发包头文件，
-缺库时该驱动 build 返回清晰 ERR（提示 `apt install libcurl4`）。
-
-```bash
-sudo apt install libcurl4     # Debian/Ubuntu/Raspberry Pi OS 通常已随 curl 装好
-```
-
-HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也不需要开发包头文件。
-
 ## 源码分层
 
 | 文件 | 职责 | 依赖 |
@@ -1077,11 +932,6 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
 | `agent/src/repl.rs` 等 15 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
-| `modules/lib/llm_http.lua` | ffi 直驱 libcurl 的 HTTP 传输 | 运行期 libcurl |
-| `modules/lib/llm_wire_openai.lua` | OpenAI 兼容报文整形与响应映射 | 无 |
-| `modules/lib/llm_wire_deepseek.lua` | DeepSeek 差异（thinking / reasoning_content / 采样参数） | 无 |
-| `modules/lib/llm_wire_anthropic.lua` | Anthropic Messages 差异（system 顶层字段、tool 结果并入 user 消息、x-api-key 鉴权） | 无 |
-| `modules/LlmOpenAI.lua`、`modules/LlmDeepSeek.lua`、`modules/LlmAnthropic.lua` | 协议驱动（表名 = 文件名） | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 
 宿主侧**没有任何一处**知道 provider 报文字段。
@@ -1092,7 +942,6 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 bash scripts/agent_e2e.sh        # 离线端到端：假模型服务 + Rust agent + C++ 工具后端
 cargo test --manifest-path agent/Cargo.toml --offline # Rust 单测：model / prompt / config / hook 等
 luajit test/test_json_lua.lua    # Lua JSON 编解码
-luajit test/test_llm_drivers.lua # 保留的 Lua 协议驱动整形规则（不碰网络）
 luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路径）
 # C++：工具协议、派发/策略、配置、提示词素材与 CLI；模型消息、提示词组装和循环见 Rust 单测
 # 用 **agent:** 而不是裸 agent——后者是子串匹配，只命中用例名里含 "agent" 的那部分，
@@ -1104,10 +953,11 @@ luajit test/test_camera.lua      # 摄像头驱动（仿真 + base64 + 错误路
 ./build/mybot_tests agent:
 ```
 
-「**agent 全部守门**」请用下面这一条（Lua `test_llm_*.lua` 的协议面用例 + agent E2E +
-C++ 的 `agent:` 作用域 + agent CLI 负路径）。裸 `agent` 与 `agent:` **各只覆盖一半
-表面**——四类分段要的过滤器形态不同（文件名子串 / `scope:` 语法 / 分段门），
-映射单点在 `test/run_all.sh` 顶部并带**自证**：`agent_lua_roster` 声明的文件必须
+「**agent 全部守门**」请用下面这一条（agent E2E + C++ 的 `agent:` 作用域 + agent CLI
+负路径；Lua 段自 2026-09-25 #8 删除 Lua 协议驱动轨道后有意跑 0 个文件——过滤器与
+SAN-2 花名册机制保留，将来若再出现 `test_llm_*.lua` 会被自动纳入）。裸 `agent` 与
+`agent:` **各只覆盖一半表面**——各分段要的过滤器形态不同（文件名子串 / `scope:` 语法 /
+分段门），映射单点在 `test/run_all.sh` 顶部并带**自证**：`agent_lua_roster` 声明的文件必须
 存在且真的会被跑到，反向漏登记同样判失败（SAN-2，2026-09-22：此前该映射指向一个
 **从未存在**的 `test_agent*.lua`，于是"agent 全表面"入口的 Lua 段实跑 0 个文件，
 而循环对"命中 0"是合法状态、不报错）。详见 [testing.md](testing.md)。
@@ -1128,7 +978,7 @@ bash test/run_all.sh agent-all
     （原 C++ 场景 14/14b/14c/15/15b/9 的性质就迁到这里，不经模型、判据更硬。）
 - `test/test_camera_v4l2.lua` 是真机抓帧回归，需 `/dev/video*`（文件标记 `-- requires: video`，
   无设备时守门自动跳过）；`test/test_v4l2_consts.c` 在构建期把 V4L2 常量与内核头对齐。
-- 全量守门 `bash test/run_all.sh` 已包含上述全部；缺 python3 或 libcurl 时按 **SKIP**
+- 全量守门 `bash test/run_all.sh` 已包含上述全部；缺 python3 时按 **SKIP**
   计入「未执行清单」（可见，不假绿）。
 
 ## 已知限制
@@ -1217,9 +1067,10 @@ bash test/run_all.sh agent-all
   批次 D，Rust `mybot-agent` 实现，见「会话持久化」节）。
   边界：图片不随会话恢复（以占位文本在列）；system 提示词/工具集/结构脚本变了会
   拒绝恢复（指纹核对）。
-- ~~只实现了两个 OpenAI 兼容协议驱动~~ → **已解决**（`LlmAnthropic`，批次 3）。
-  它是「宿主零改」的验证实例：协议整形全在 Lua 侧，接入非 OpenAI 形态的厂商仍
-  只需新写一个驱动（照抄 `lib/llm_wire_anthropic.lua` 的形状分派即可）。
+- ~~只实现了两个 OpenAI 兼容协议驱动~~ → **已解决**（`LlmAnthropic` 协议族，批次 3，
+  现与 OpenAI 兼容 / DeepSeek 三族一起内建于 Rust 侧 `agent/src/provider.rs`）。
+  协议差异全部收敛在 rig 的 provider 实现里，接入非 OpenAI 形态的厂商在 Rust 侧
+  增加 provider（回归由 R12/R13 守）——Lua 协议驱动轨道已于 2026-09-25 #8 删除。
 - **摄像头只支持 MJPEG**：仅提供 YUYV 的设备会返回清晰 ERR（YUYV 要自带 JPEG 编码器或引入
   libjpeg，都比直接取 MJPEG 贵得多，而 USB 摄像头普遍支持 MJPEG）。树莓派 CSI 摄像头走
   libcamera、不经 V4L2 这条路径，也不在本驱动范围内。

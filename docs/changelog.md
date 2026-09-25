@@ -9,6 +9,24 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 删除 Lua 协议驱动轨道（#8）
+
+- **对使用者意味着什么**：`modules/LlmOpenAI.lua` / `LlmDeepSeek.lua` / `LlmAnthropic.lua`
+  及配套 `lib/llm_http.lua`、`lib/llm_wire_*.lua` 整条 Lua 模型调用轨道删除（11 个文件：
+  3 驱动 + 4 库 + 2 离线用例 + 1 常量自检 + 1 泄漏抑制文件）。模型调用唯一路径是 Rust
+  `mybot-agent`（rig 直连，reqwest + rustls）；`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic`
+  三个名字现在只是 `--llm-driver` 的**协议族名**（`agent/src/provider.rs` 内建），不再是
+  可装载的驱动表名。仓库不再有 libcurl 依赖：apt 行、CI 安装包、`test_curl_consts` 目标
+  与 `asan.supp`（libcurl → libcrypto 的 LSan 残留抑制）一并移除。`test/run_all.sh` 的
+  agent-all Lua 段此后**有意跑 0 个文件**（过滤器与 SAN-2 花名册机制保留，将来若再出现
+  `test_llm_*.lua` 会被自动纳入自证）。
+- **动机**：C++ agent 轨道清退后，Lua 协议驱动只剩「供 `.mt` 脚本/`@Daemon` 直接调用」
+  一个下游；四份协议实现（三族 wire 整形 + libcurl ffi）的回归只能离线守整形规则，
+  而模型侧行为已由 Rust 侧 R12/R13 全量覆盖——重叠维护不再值当。
+- **保留**：`mybot.llm.json` 双端解析与 R5m 互钉（模型侧字段归 Rust，共享面 C++ 仍校验）、
+  `utf8.lua`（与 C++ 侧同表向量互钉的通用库）、`agent_e2e.sh` 的历史场景索引与审计里的
+  驱动名字段（R12/R13 仍按三族名验证现役 Rust 语义）。
+
 ### 2026-09-25 capture_image 可请求采集尺寸（width/height）
 
 - **对使用者意味着什么**：智能体拍照片可以按需请求分辨率——需要看清细节时加大，

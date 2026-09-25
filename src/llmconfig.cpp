@@ -238,8 +238,9 @@ bool parseConfigStrings(const std::string& path, const Json& root, LlmFileConfig
 }
 
 /* 数值族字段：temperature/top_p 为浮点（各自区间），timeout/max_tokens/max_turns
- * 为整数（区间取自 llm_limits 单点——timeout 上限与驱动侧 llm_http.clamp_timeout
- * 一致：宿主接受什么，驱动就照发什么，不做「先接受再悄悄改写」） */
+ * 为整数（区间取自 llm_limits 单点——Rust 侧 config.rs 镜像同一组上下界，
+ * R5m 双端 --check-config 互钉：宿主接受什么，agent 就照发什么，
+ * 不做「先接受再悄悄改写」） */
 bool parseConfigNumbers(const std::string& path, const Json& root, LlmFileConfig& out,
 		std::string& err) {
 	std::optional<double> temperature, topP;
@@ -380,9 +381,9 @@ std::string secretFilePermissionWarning(const std::string& path) {
 }
 
 /* 密钥字符集判据（2026-09-21 审计 AG-14）。见头文件；这里补两点实现理由：
- *   * 判据是「全部控制字符」而不是只挑 CR/LF——libcurl 对 slist 条目整条交出，
- *     任何控制字符都没有出现在合法 Bearer token 里的理由；宽判据也更抗未来
- *     libcurl 行为变化（今天拒 CR/LF，明天可能连同其他字符一起拒）。
+ *   * 判据是「全部控制字符」而不是只挑 CR/LF——旧 libcurl 链路实测它对 slist
+ *     条目整条交出，任何控制字符都没有出现在合法 Bearer token 里的理由；
+ *     宽判据也更抗未来 HTTP 栈行为变化。
  *   * err 里带**位置与字节值**：多行密钥文件的成因通常是「顺手 cat 了别的东西
  *     进来」，操作者需要一眼看到是第几个字节坏了。 */
 bool validateApiKeyChars(const std::string& key, std::string& err) {
@@ -392,8 +393,8 @@ bool validateApiKeyChars(const std::string& key, std::string& err) {
 			char buf[8];
 			std::snprintf(buf, sizeof buf, "0x%02x", c);
 			err = "含控制字符 " + std::string(buf) + "（第 " + std::to_string(i + 1)
-				+ " 个字节）：密钥必须是**单行**文本，换行会被 libcurl 原样拼进 "
-				  "Authorization 头，等于把后面的内容变成额外请求头；"
+				+ " 个字节）：密钥必须是**单行**文本，换行会随 Authorization 头"
+				  "原样发出，等于把后面的内容变成额外请求头；"
 				  "请检查密钥文件是否混入了多行内容或 CRLF 行尾";
 			return false;
 		}

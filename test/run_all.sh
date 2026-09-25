@@ -18,10 +18,10 @@
 #     真机摄像头回归（需 /dev/video*）：文件首行标记 -- requires: i2c / video，无设备自动跳过
 #   - 守门完整性：编译产物（mybot / mybot_tests）缺失的分段**判失败**而非静默跳过——
 #     否则整段 C++ 守门可以在不构建的情况下消失而汇总仍报「0 失败」。
-#     仅三类例外按跳过计（汇总里以「N 跳过 + 未执行清单」显式可见）：
+#     仅两类例外按跳过计（汇总里以「N 跳过 + 未执行清单」显式可见）：
 #     真机 i2c 用例（本机无 /dev/i2c-*）、TCP/agent 段缺 python3（README 声明的
-#     软依赖）、agent 端到端缺 libcurl（agent 模式的运行期依赖，Lua 驱动经 ffi
-#     加载；缺它时驱动 build 报「libcurl 不可用」，本入口据此判 SKIP 而非假绿）。
+#     软依赖）。agent 端到端不依赖 libcurl：Lua 协议驱动轨道已删（2026-09-25 #8），
+#     模型调用由 Rust mybot-agent 直连（reqwest + rustls）。
 #     只想跑 Lua 段的逃生口：ALLOW_SKIP=1 bash test/run_all.sh
 #     （显式给了 BOT=/BOT_TESTS= 却指向不存在的文件，一律判失败，ALLOW_SKIP 也不放行）
 #   - test_ioctl_nums.c 为 C 编译期常量自检，不在本入口范围
@@ -74,7 +74,12 @@ if [ "$filter" = "agent-all" ]; then
 	# 真正覆盖 agent 协议面的是 test_llm_*.lua 的报文整形与响应映射用例
 	# （PL-3 数组形态 content、PL-6 tool_calls 形态非法都在这一层），
 	# 也就是 SAN-3 改动的那三个文件所在的那一层。
-	filter_lua="llm"	# test_llm_*.lua：agent 协议面的报文/响应用例
+	# 2026-09-25 #8：Lua 协议驱动轨道整条删除（模块 + 库 + 两个 test_llm_*.lua），
+	# agent 的协议面现由 Rust mybot-agent 直连承担，报文的假模型回归在 e2e 段
+	# （R12/R13 多协议），Lua 段对 agent-all 的贡献由此**有意为空**（不是 SAN-2
+	# 那种"指向不存在文件"的退化）。自证机制保留：将来若新增 test_llm_*.lua
+	# 而漏登记 roster，反向检查（下方第 ② 步）仍会红。
+	filter_lua="llm"	# test_llm_*.lua：已删尽；保留过滤器以备将来回归
 	filter_e2e="agent"
 	filter_hardening="agent_"
 	filter_cpp="agent:"
@@ -102,7 +107,10 @@ case_matches() {
 # 这个结论在没有人跑过一条 Lua 用例的情况下成立了很久（实测汇总 11 条、Lua 段 0 条）。
 # 判据是「roster 里每个文件必须存在，且在本过滤器下真的会被跑到」——
 # 检查的是**被映射到的文件**，不是映射的形状。
-agent_lua_roster="test/test_llm_drivers.lua test/test_llm_wire_contract.lua"
+# 2026-09-25 #8：Lua 协议驱动轨道整条删除，agent 协议面不再有 test_llm_*.lua，
+# roster 因此为空——第 ② 步反向检查（test_llm_*.lua 必须全部登记）对空 glob
+# 自然通过，将来若新增协议面 Lua 用例而漏登记，这一步仍会红（机制保留不拆）。
+agent_lua_roster=""
 if [ "$filter" = "agent-all" ]; then
 	_agentall_bad=""
 	[ -n "$filter_lua" ] || _agentall_bad="$_agentall_bad lua(空值=跑全部文件)"
@@ -121,6 +129,7 @@ if [ "$filter" = "agent-all" ]; then
 	done
 	# ② 反向：agent 协议面的用例文件必须全部登记（漏登记即红）——
 	#    与 C++ 侧 test_util.cpp 的「非 agent 面 roster 带理由登记」同一条纪律。
+	#    2026-09-25 #8 起该 glob 无文件（协议面用例随 Lua 轨道删除），空转通过。
 	for _f in test/test_llm_*.lua; do
 		[ -f "$_f" ] || continue
 		case " $agent_lua_roster " in

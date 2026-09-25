@@ -38,7 +38,7 @@ C++17 宿主（`mybot`，MCP 工具后端，硬件常驻）+ Rust agent（`mybot
 ### 1. 安装依赖
 
 ```bash
-sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev libcurl4
+sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev
 ```
 
 构建 Rust agent 还需要 Rust 工具链（cargo）：
@@ -342,12 +342,11 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（61个模块 + 25个共享库）
+├── modules/       # Lua驱动生态（58个模块 + 21个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
 │   ├── Speaker.lua      # 音频输出（ALSA）
-│   ├── LlmOpenAI.lua    # OpenAI协议驱动
 │   └── lib/             # HAL、virtbus、JSON、滤波器、asound 等共享库
 ├── robots/        # 结构脚本（8个机器人定义）
 │   ├── spider1.sql      # 14路舵机蜘蛛
@@ -358,7 +357,7 @@ mybot/
 │   ├── left-turn.mt     # 左转
 │   └── jump.mt          # 跳跃
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（87 Lua + 23 C++ + E2E）
+├── test/          # 三层测试（85 Lua + 25 C++ + E2E）
 └── docs/          # 深入文档（12篇Markdown + 架构分析网页与两张全景图）
 ```
 
@@ -380,7 +379,7 @@ bash test/run_all.sh agent-all
 测试规模（2026-09 快照，权威口径以 `bash test/run_all.sh` 与 `./build/mybot_tests` 实时输出为准）：
 
 - 600+ 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 87 个 Lua 测试文件 + 23 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 85 个 Lua 测试文件 + 25 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
 - 260+ 道 Lua/e2e 守门
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
@@ -396,7 +395,7 @@ bash test/run_all.sh agent-all
 | [Agent 模式完整指南](docs/agent.md) | CLI 选项、工具系统、安全边界、提示词包、会话持久化 |
 | [命令行与环境变量参考](docs/reference.md) | 所有 CLI 参数、`BOT4CJ_*` 环境变量、安全约束 |
 | [DSL 语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
-| [驱动清单](docs/drivers.md) | 61 个模块分类速查、驱动契约 |
+| [驱动清单](docs/drivers.md) | 58 个模块分类速查、驱动契约 |
 | [HAL 硬件抽象层](docs/hal.md) | FFI 直调 glibc、I2C 原子事务、沙箱 |
 | [@Daemon 守护线程](docs/daemon.md) | 后台采样、滤波器链路 |
 | [虚拟总线](docs/virtbus.md) | 无硬件验证驱动链路、器件模型库 |
@@ -518,7 +517,6 @@ cmake --build build-asan
 - 仅支持 Linux + LuaJIT
 - 守护线程有一线程一 Lua 状态的开销
 - 部分器件只支持单消费者
-- Lua LLM 协议驱动（供 `.mt` 脚本/`@Daemon` 直接调用的链路）运行期经 ffi 加载 libcurl.so；agent 会话本身走 Rust，无此依赖
 
 完整限制与解决方案见 [docs/faq.md](docs/faq.md)
 
@@ -541,14 +539,14 @@ cmake --build build-asan
 - **构建**：CMake ≥ 3.16（宿主）；cargo（agent）
 - **编译器**：g++ 12+ / clang 14+
 - **平台**：Linux (aarch64 / x86_64)，树莓派实测可用
-- **运行期**：LuaJIT + libcurl（仅 Lua LLM 协议驱动链路经 ffi 加载）
+- **运行期**：LuaJIT（`asound.lua` 经 ffi 需要 libasound.so.2，仅配置 Speaker 时）
 
 ### 项目亮点
 
 - **驱动热插拔** —— 新增器件不改 C++，只写 Lua 驱动
 - **动作可复用** —— 动作脚本独立于机器人结构
 - **结构可迁移** —— 同一结构脚本换驱动板零修改
-- **多模型支持** —— 内置 OpenAI / DeepSeek / Anthropic 三族协议（Rust agent 直连；Lua 协议驱动仍在库，可被结构脚本声明供 `.mt` 脚本或 `@Daemon` 调用）
+- **多模型支持** —— 内置 OpenAI / DeepSeek / Anthropic 三族协议（Rust agent 直连，不经 Lua 驱动）
 
 ## 贡献
 
