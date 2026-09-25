@@ -34,6 +34,7 @@
 | `--mcp-socket <路径>` | AF_UNIX socket 路径（`mybot-agent` 的 `--socket` 连这里）。父目录建议 0700、socket 文件 0600；对端经内核 SO_PEERCRED 校验 uid/gid（不可伪造） |
 | `--mcp-call-budget <N>` | 每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限；上限 1000000）。后端不假设调用方是谁，故自行再强制一层预算 |
 | `--mcp-wall-clock <秒>` | 每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。单次物理调用的 script/command 超时始终在工具层生效 |
+| `--mcp-idle-timeout <秒>` | 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽；墙钟预算同样在空闲期收口（到点断连，对端可重连） |
 
 > **已移除（2026-09-24）**：`--agent` 与模型循环类选项（`--task`、`--llm-*`、`--prompt-file`、`--session-file`、`--resume`）。agent 循环已迁 Rust（`agent/` 目录，`mybot-agent`）：C++ 宿主侧以 `--mcp-backend` 提供工具后端，模型侧参数由 `mybot-agent` 自己的选项面承载（`./agent/target/release/mybot-agent --help`，构建：`bash scripts/build_agent.sh`）。本程序对上述残留用法显式拒绝（退出 2）并给出替代指引。
 

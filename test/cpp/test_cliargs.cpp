@@ -399,6 +399,7 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	TH_CHECK(defs.count("--mcp-socket") == 1);
 	TH_CHECK(defs.count("--mcp-call-budget") == 1);
 	TH_CHECK(defs.count("--mcp-wall-clock") == 1);
+	TH_CHECK(defs.count("--mcp-idle-timeout") == 1);
 	/* H1：capture_image 白名单根目录（命令行独占，配置文件写它会被拒绝加载） */
 	TH_CHECK(defs.count("--camera-src-dir") == 1);
 	/* 已移除的选项不得在帮助里复活（2026-09-20 评估：--llm-key 明文 argv；
@@ -416,8 +417,9 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	TH_CHECK(defs.count("--resume") == 0);
 	/* 计数断言是「帮助 ↔ docs 双向一致」守卫的一部分：随选项增删同步更新。
 	 * 35（2026-09-23）→ 25（2026-09-24：-14 = --agent/--task/--llm-*×9/
-	 * --prompt-file/--session-file/--resume 迁 mybot-agent；+4 = --mcp-*）。 */
-	TH_CHECK(defs.size() == 25);
+	 * --prompt-file/--session-file/--resume 迁 mybot-agent；+4 = --mcp-*）
+	 * → 26（2026-09-25：+1 = --mcp-idle-timeout，A-2 空闲连接收口）。 */
+	TH_CHECK(defs.size() == 26);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);

@@ -45,6 +45,7 @@ constexpr OptionSpec kValueOptions[] = {
 	{"mcp-socket", [](CliOptions& o, const std::string& v) { o.mcpSocket = v; }, false},
 	{"mcp-call-budget", [](CliOptions& o, const std::string& v) { o.mcpCallBudget = v; }, false},
 	{"mcp-wall-clock", [](CliOptions& o, const std::string& v) { o.mcpWallClock = v; }, false},
+	{"mcp-idle-timeout", [](CliOptions& o, const std::string& v) { o.mcpIdleTimeout = v; }, false},
 	{"camera-var", [](CliOptions& o, const std::string& v) { o.cameraVar = v; }, true},
 	{"camera-device", [](CliOptions& o, const std::string& v) { o.cameraDevice = v; }, true},
 	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
@@ -235,9 +236,10 @@ int validateOptions(ParsedArgs& args) {
 		return 2;
 	}
 	if (!options.mcpBackend
-		&& (!options.mcpCallBudget.empty() || !options.mcpWallClock.empty())) {
-		std::cerr << "参数错误：--mcp-call-budget / --mcp-wall-clock 只在 --mcp-backend 模式下有效"
-			<< std::endl;
+		&& (!options.mcpCallBudget.empty() || !options.mcpWallClock.empty()
+			|| !options.mcpIdleTimeout.empty())) {
+		std::cerr << "参数错误：--mcp-call-budget / --mcp-wall-clock / --mcp-idle-timeout"
+			" 只在 --mcp-backend 模式下有效" << std::endl;
 		return 2;
 	}
 	if (options.mcpBackend) {
@@ -275,6 +277,16 @@ int validateOptions(ParsedArgs& args) {
 			if (st != IntParse::OK || v < 0 || v > 86400) {
 				std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
 					options.mcpWallClock) << std::endl;
+				return 2;
+			}
+		}
+		/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
+		 * 0 = 不限（缺省），与既有预算选项同口径。 */
+		if (!options.mcpIdleTimeout.empty()) {
+			auto [st, v] = parseLongStrict(options.mcpIdleTimeout);
+			if (st != IntParse::OK || v < 0 || v > 86400) {
+				std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
+					options.mcpIdleTimeout) << std::endl;
 				return 2;
 			}
 		}
@@ -335,6 +347,8 @@ std::string helpText() {
 	s += "                      后端不假设调用方是谁，故自行再强制一层预算\n";
 	s += "  --mcp-wall-clock <秒>   每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。\n";
 	s += "                      注：单次物理调用的 script/command 超时始终在工具层生效\n";
+	s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
+	s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽\n";
 	s += "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt\n";
 	s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
 	s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌，\n";
@@ -465,7 +479,10 @@ std::string helpText(const std::string& topic) {
 		s += "  --mcp-call-budget <N>   每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限）。\n";
 		s += "                      后端不假设调用方是 agent 循环，故自行再强制一层预算。\n";
 		s += "  --mcp-wall-clock <秒>   每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。\n";
-		s += "                      注：单次物理调用的 script/command 超时始终在工具层生效。\n\n";
+		s += "                      注：单次物理调用的 script/command 超时始终在工具层生效。\n";
+		s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
+		s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽；\n";
+		s += "                      墙钟预算同样在空闲期收口（到点断连，对端可重连）。\n\n";
 		s += "安全：后端开 --agent-shell / --agent-hot-sql 时**强制**要 --agent-policy，且其\n";
 		s += "      require_confirm 必须分别包含 run_command / apply_sql（无人值守暴露危险能力\n";
 		s += "      必须有外部确认闸门）；纯只读/查询/动作脚本后端不受此约束。\n\n";

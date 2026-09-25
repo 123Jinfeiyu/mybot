@@ -71,6 +71,13 @@ struct McpBackendOptions {
 	 * 并如实回报（被拒的调用无副作用）。 */
 	long callBudget = 0;
 	long wallClockBudgetSec = 0;	/* 每连接墙钟预算（秒）；<=0 = 不限 */
+	/* 每连接**空闲**（无帧）超时（秒，A-2，2026-09-25 审计）；<=0 = 不限。
+	 * 缺省不限是刻意的：这是长生命周期控制通道，REPL 两次工具调用之间
+	 * （人在思考、模型长推理）可能空闲很久。它针对的是「连上后一声不吭的
+	 * 对端」——单连接串行模型下这种连接会一直占住唯一的 accept 槽，阻塞
+	 * 正常客户端重连；显式给值即可让哑连接按时让位（断连不算错误，对端
+	 * 可重连）。墙钟预算同样在空闲期收口（见 McpBackend::idleDeadline）。 */
+	int idleTimeoutSec = 0;
 	bool requirePeerCred = true;	/* accept 后 SO_PEERCRED 校验 uid/gid（单测可关） */
 	int recvTimeoutSec = 10;	/* deadline recv 空闲超时（防 Slowloris，评估 §7.1） */
 };
@@ -86,6 +93,21 @@ std::string mcpEncodeFrame(const std::string& payload);
  * 并把原因写进 log。暴露为公开函数便于白盒单测（socketpair 造对端），与
  * actionsource.hpp 的 TcpAuthStatus 同惯例。 */
 bool mcpCheckPeerCred(int fd, std::ostream& log);
+
+/* ---- 启动前的 socket 路径占用探测（A-1，2026-09-25 审计）----
+ * 原实现无条件 ::unlink 已存在的路径：两个 mybot 误配同一条 --mcp-socket 时，
+ * 后启动者会静默偷走 socket 文件、先启动者继续监听但永远不可达（双实例静默
+ * 劫持）。探测三态：
+ *   PathFree    —— 路径不存在，或存在且是**无人监听**的陈旧 socket（可安全
+ *                  unlink 后绑定；上一次实例没来得及清理的残留正是这一类）；
+ *   PathBusy    —— 路径上已有活着的监听者（connect 即成功，或对端积压满/
+ *                  探测超时——fail-closed 一律按「有人在用」拒绝启动）；
+ *   PathUnusable —— 路径存在但不是 socket 文件（不能替操作者删掉一个陌生
+ *                  文件），或探测自身出错（权限/异常 errno）。
+ * why 非空时给人话成因（启动失败的报错文案用）。暴露为公开函数便于白盒单测
+ * （临时目录里造 listening/stale/非 socket 三态），与 mcpCheckPeerCred 同惯例。 */
+enum class McpSocketProbe { PathFree, PathBusy, PathUnusable };
+McpSocketProbe mcpProbeSocketPath(const std::string& path, std::string& why);
 
 /* 后端会话状态 + 路由。持有工具注册表、派发漏斗（DispatchGate）与每连接预算。
  * handleRequest / handleFrame 是纯逻辑（Json/文本 → Json/文本），不碰 socket，
@@ -112,6 +134,14 @@ public:
 
 	/* 每接受一条新连接调用一次：重置每连接的调用计数与墙钟起点。 */
 	void beginConnection();
+
+	/* 空闲等待的截止时刻（A-2，2026-09-25 审计）：取「墙钟预算的连接终点」
+	 * （connStart_ + wallClockBudgetSec_，设了才算）与「此刻 + idleTimeoutSec」
+	 * （>0 才算）两者中更早者；都不设则返回 steady_clock 最大值——空闲不限，
+	 * 既有长生命周期语义。帧循环的空闲段据此收口：哑对端到点断连（可重连），
+	 * 墙钟预算也因此真正覆盖空闲期（此前只在 routeToolCall 检查，空闲连接
+	 * 永远撞不上）。单调时钟：不受系统时间被 NTP 拨动影响。 */
+	std::chrono::steady_clock::time_point idleDeadline(int idleTimeoutSec) const;
 
 	/* 路由一个**已解析**的请求对象 → 响应对象（{"success":...}）。不抛：任何
 	 * 异常都折成 {"success":false,"error":...}（评估 §7.6「handler 异常 ⇒ 错误

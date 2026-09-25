@@ -25,6 +25,7 @@
 
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #include "agentmode.hpp"	/* AgentModeConfig（context.get 用例） */
@@ -409,6 +410,101 @@ TH_TEST(mcpbackend_peercred_matches_self_and_rejects_non_socket) {
 	TH_CHECK(fd >= 0);
 	TH_CHECK(!mcpCheckPeerCred(fd, log));
 	::close(fd);
+}
+
+/* ---- A-1（2026-09-25 审计）：socket 路径占用探测四态 ----
+ * 原实现无条件 unlink：误配同一路径的后启动者会静默偷走 socket 文件、先启动者
+ * 永远不可达。探测必须分清「无人监听（可覆盖）」与「活实例（拒绝启动）」。 */
+TH_TEST(mcpbackend_probe_socket_path_free_stale_busy_unusable) {
+	fx::TempDir tmp("mcp-probe");
+	std::string why;
+	const std::string base = (tmp.path() / "probe").string();
+
+	/* ① 路径不存在 → 空闲可绑定 */
+	TH_CHECK(mcpProbeSocketPath(base, why) == McpSocketProbe::PathFree);
+	TH_CHECK(why.empty());
+
+	/* ② 陈旧 socket（bind 后关闭、无人监听）→ 可安全覆盖 */
+	{
+		const std::string stale = base + "-stale";
+		const int s = ::socket(AF_UNIX, SOCK_STREAM, 0);
+		TH_CHECK(s >= 0);
+		sockaddr_un addr{};
+		addr.sun_family = AF_UNIX;
+		std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", stale.c_str());
+		TH_CHECK(::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+		::close(s);	/* 文件留盘、无监听者 → stale */
+		TH_CHECK(mcpProbeSocketPath(stale, why) == McpSocketProbe::PathFree);
+		TH_CHECK(why.empty());
+	}
+
+	/* ③ 活监听（bind + listen）→ 拒绝启动且点名成因 */
+	{
+		const std::string busy = base + "-busy";
+		const int s = ::socket(AF_UNIX, SOCK_STREAM, 0);
+		TH_CHECK(s >= 0);
+		sockaddr_un addr{};
+		addr.sun_family = AF_UNIX;
+		std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", busy.c_str());
+		TH_CHECK(::bind(s, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
+		TH_CHECK(::listen(s, 1) == 0);
+		const McpSocketProbe r = mcpProbeSocketPath(busy, why);
+		TH_CHECK(r == McpSocketProbe::PathBusy);
+		TH_CHECK_MSG(why.find("监听") != std::string::npos, "成因点名: " + why);
+		::close(s);
+	}
+
+	/* ④ 非 socket 文件（普通文件）→ 不替操作者删除 */
+	{
+		const std::string plain = base + "-plain";
+		std::ofstream f(plain, std::ios::binary);
+		f << "keep me";
+		f.close();
+		const McpSocketProbe r = mcpProbeSocketPath(plain, why);
+		TH_CHECK(r == McpSocketProbe::PathUnusable);
+		TH_CHECK_MSG(why.find("socket") != std::string::npos, "成因点名: " + why);
+	}
+}
+
+/* ---- A-2（2026-09-25 审计）：空闲 deadline 合成 ----
+ * 取「墙钟终点」与「此刻 + 空闲预算」的较早者；都不设 = 不限（max）。 */
+TH_TEST(mcpbackend_idle_deadline_composes_wall_clock_and_idle_budget) {
+	using Clock = std::chrono::steady_clock;
+
+	/* 都不设：恒 max（空闲不限，长生命周期语义不变） */
+	{
+		McpBackend b = makeBackend(AgentToolRegistry{});
+		TH_CHECK(b.idleDeadline(0) == Clock::time_point::max());
+		TH_CHECK(b.idleDeadline(-1) == Clock::time_point::max());
+	}
+	/* 只设空闲：≈ now + idle（在窗口内） */
+	{
+		McpBackend b = makeBackend(AgentToolRegistry{});
+		const Clock::time_point before = Clock::now();
+		const Clock::time_point d = b.idleDeadline(10);
+		TH_CHECK(d > before);
+		TH_CHECK(d <= Clock::now() + std::chrono::seconds(12));
+	}
+	/* 只设墙钟（1 小时）：≈ connStart + 1h，远小于 max */
+	{
+		McpBackend b = makeBackend(AgentToolRegistry{}, /*callBudget=*/0, /*wallClock=*/3600);
+		const Clock::time_point d = b.idleDeadline(0);
+		TH_CHECK(d != Clock::time_point::max());
+		TH_CHECK(d > Clock::now() + std::chrono::seconds(3500));
+	}
+	/* 都设、空闲更早 → 取空闲那条 */
+	{
+		McpBackend b = makeBackend(AgentToolRegistry{}, /*callBudget=*/0, /*wallClock=*/3600);
+		const Clock::time_point d = b.idleDeadline(5);
+		TH_CHECK(d <= Clock::now() + std::chrono::seconds(7));
+	}
+	/* 都设、墙钟更早（1 秒预算）→ 取墙钟那条（不是 100 秒空闲） */
+	{
+		McpBackend b = makeBackend(AgentToolRegistry{}, /*callBudget=*/0, /*wallClock=*/1);
+		const Clock::time_point d = b.idleDeadline(100);
+		TH_CHECK(d < Clock::now() + std::chrono::seconds(2));
+		TH_CHECK(d > Clock::now() - std::chrono::seconds(2));
+	}
 }
 
 /* ==================== 跨语言契约钉子（2026-09-25）====================

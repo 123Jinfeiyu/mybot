@@ -145,6 +145,10 @@ struct CliOptions {
 	 * 生效，与这两个「整连接总量」护栏是不同维度。 */
 	std::string mcpCallBudget;	/* --mcp-call-budget：每连接工具调用上限 */
 	std::string mcpWallClock;	/* --mcp-wall-clock：每连接墙钟预算（秒） */
+	/* --mcp-idle-timeout（A-2，2026-09-25 审计）：每连接**空闲**（无帧）超时。
+	 * 缺省不限（长生命周期控制通道）；显式给值让「连上后一声不吭」的哑对端
+	 * 按时让出单连接串行模型下唯一的 accept 槽。墙钟预算同样在空闲期收口。 */
+	std::string mcpIdleTimeout;
 };
 
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。

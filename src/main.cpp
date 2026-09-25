@@ -148,6 +148,11 @@ int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agen
 		bopts.wallClockBudgetSec =
 			static_cast<long>(parseLongStrict(options.mcpWallClock).second);
 	}
+	/* 空闲超时（A-2，2026-09-25 审计）：同一单点口径——cliargs 校验区间，
+	 * 这里只做转换；空 = 不限（保持 0）。 */
+	if (!options.mcpIdleTimeout.empty()) {
+		bopts.idleTimeoutSec = static_cast<int>(parseLongStrict(options.mcpIdleTimeout).second);
+	}
 	return agent::runMcpBackend(robot, agentCfg, bopts, std::cerr);
 }
 

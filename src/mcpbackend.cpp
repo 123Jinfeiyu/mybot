@@ -29,6 +29,7 @@
 #include <vector>
 
 #include <poll.h>
+#include <fcntl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -53,6 +54,9 @@ namespace {
 constexpr int kPollIntervalMs = 200;
 /* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）。 */
 constexpr int kSendTimeoutSec = 5;
+/* 启动探测的 connect 等待上限（A-1）：AF_UNIX 正常路径用不满它，只挡
+ * 「既不接也不拒」的异常对端把启动挂死。 */
+constexpr int kProbeWaitMs = 500;
 
 using Clock = std::chrono::steady_clock;
 
@@ -122,16 +126,21 @@ bool recvAllDeadline(int fd, char* buf, std::size_t n, Clock::time_point deadlin
 	return true;
 }
 
-enum class FrameResult { Ok, PeerClosed, Violation };
+enum class FrameResult { Ok, PeerClosed, Violation, IdleTimeout };
 
 /* 读一帧。两段式：
- *   ① 空闲等首字节**不设** deadline（这是长生命周期控制通道，两次工具调用之间
- *      可能长时间空闲）——只周期性 poll 以便响应停止信号；
+ *   ① 空闲等首字节：长生命周期控制通道，两次工具调用之间可能长时间空闲，
+ *      缺省不设 deadline——但 idleDeadline（--mcp-idle-timeout 与每连接墙钟
+ *      预算的较早者，见 McpBackend::idleDeadline）给了值就到点断连（A-2，
+ *      2026-09-25 审计：哑对端不能永远占住单连接串行模型下唯一的 accept 槽）；
+ *      周期性 poll 以便响应停止信号；
  *   ② 一旦帧开始（首字节到达），帧头与载荷共享 recvTimeoutSec 的绝对 deadline，
  *      这正是 Slowloris 的修复点（评估 §7.1）。 */
-FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec, std::ostream& log) {
+FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec,
+		Clock::time_point idleDeadline, std::ostream& log) {
 	for (;;) {
 		if (stopRequested()) { return FrameResult::PeerClosed; }
+		if (Clock::now() >= idleDeadline) { return FrameResult::IdleTimeout; }
 		struct pollfd p{};
 		p.fd = fd;
 		p.events = POLLIN;
@@ -140,7 +149,7 @@ FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec, std::ost
 			if (errno == EINTR) { continue; }
 			return FrameResult::Violation;
 		}
-		if (r == 0) { continue; }	/* 空闲，继续等（不断连） */
+		if (r == 0) { continue; }	/* 空闲，继续等（deadline 在循环顶收口） */
 		if ((p.revents & (POLLERR | POLLNVAL)) != 0) { return FrameResult::Violation; }
 		break;	/* 可读（或 HUP/RDHUP → 下面 recv 得 0 → PeerClosed） */
 	}
@@ -185,13 +194,20 @@ bool sendFrame(int fd, const std::string& payload) {
 	return true;
 }
 
-/* 服务单条连接：帧循环直到对端关闭 / 协议违规 / 停止信号。 */
+/* 服务单条连接：帧循环直到对端关闭 / 协议违规 / 空闲超时 / 停止信号。
+ * 空闲 deadline 逐帧重取（--mcp-idle-timeout 是「从现在起再等这么久」，
+ * 墙钟预算是从连接起的绝对终点——两者由 idleDeadline 合成）。 */
 void serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
 		std::ostream& log) {
 	while (!stopRequested()) {
 		std::string payload;
-		const FrameResult fr = readFrame(fd, payload, opts.recvTimeoutSec, log);
+		const FrameResult fr = readFrame(fd, payload, opts.recvTimeoutSec,
+			backend.idleDeadline(opts.idleTimeoutSec), log);
 		if (fr == FrameResult::PeerClosed) { return; }
+		if (fr == FrameResult::IdleTimeout) {
+			log << "MCP 后端：空闲超时/每连接墙钟预算耗尽，断开连接（对端可重连）\n";
+			return;
+		}
 		if (fr == FrameResult::Violation) {
 			log << "MCP 后端：协议违规，断开连接\n";
 			return;
@@ -235,6 +251,77 @@ bool mcpCheckPeerCred(int fd, std::ostream& log) {
 	return true;
 }
 
+McpSocketProbe mcpProbeSocketPath(const std::string& path, std::string& why) {
+	struct stat st{};
+	if (::lstat(path.c_str(), &st) != 0) {
+		if (errno == ENOENT) { return McpSocketProbe::PathFree; }	/* 路径还没人用 */
+		why = std::string("lstat 失败: ") + errnoText(errno);
+		return McpSocketProbe::PathUnusable;
+	}
+	if (!S_ISSOCK(st.st_mode)) {
+		why = "路径已存在但不是 socket 文件（可能是普通文件/目录——不替操作者删除）";
+		return McpSocketProbe::PathUnusable;
+	}
+
+	/* 存在 socket 文件：connect 一次区分「活监听」与「陈旧残留」。
+	 * 非阻塞 + 短 poll：AF_UNIX 的 connect 通常立刻完成，但活实例的积压满
+	 * （listen(1) 且槽位被哑连接占着）时阻塞 connect 会无限等——探测自己
+	 * 不能被它挂死。 */
+	FdGuard probe(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0));
+	if (probe.get() < 0) {
+		why = std::string("探测 socket 创建失败: ") + errnoText(errno);
+		return McpSocketProbe::PathUnusable;
+	}
+	sockaddr_un addr{};
+	addr.sun_family = AF_UNIX;
+	std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", path.c_str());
+	const int c = ::connect(probe.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+	if (c == 0) {
+		why = "已有另一个实例在监听（connect 直接成功）";
+		return McpSocketProbe::PathBusy;
+	}
+	if (errno == ECONNREFUSED) {
+		return McpSocketProbe::PathFree;	/* 陈旧残留：上次实例没清理，可安全覆盖 */
+	}
+	if (errno == ENOENT) {
+		/* lstat 与 connect 之间被人清掉：与不存在同等对待 */
+		return McpSocketProbe::PathFree;
+	}
+	if (errno == EINPROGRESS || errno == EAGAIN) {
+		/* EAGAIN（Linux 对积压满的 uds 非阻塞 connect）= 活实例但暂时接不进；
+		 * EINPROGRESS 走 poll 短等确认。两者都**按忙处理**：宁可拒绝启动，
+		 * 不抢一个可能在用的路径（fail-closed）。 */
+		if (errno == EAGAIN) {
+			why = "已有实例在监听（对端积压满，connect 返回 EAGAIN）";
+			return McpSocketProbe::PathBusy;
+		}
+		struct pollfd p{};
+		p.fd = probe.get();
+		p.events = POLLOUT;
+		int r = ::poll(&p, 1, kProbeWaitMs);
+		if (r < 0 && errno == EINTR) { r = 0; }
+		if (r == 0) {
+			why = "探测超时（路径上有 socket 但既不接也不拒——按活实例处理）";
+			return McpSocketProbe::PathBusy;
+		}
+		int soErr = 0;
+		socklen_t sl = sizeof(soErr);
+		if (r > 0 && ::getsockopt(probe.get(), SOL_SOCKET, SO_ERROR, &soErr, &sl) == 0) {
+			if (soErr == 0) {
+				why = "已有另一个实例在监听（connect 完成）";
+				return McpSocketProbe::PathBusy;
+			}
+			if (soErr == ECONNREFUSED) { return McpSocketProbe::PathFree; }
+			why = std::string("connect 异步失败: ") + errnoText(soErr);
+			return McpSocketProbe::PathUnusable;
+		}
+		why = std::string("connect 结果无法判定: ") + errnoText(errno);
+		return McpSocketProbe::PathUnusable;
+	}
+	why = std::string("connect 失败: ") + errnoText(errno);
+	return McpSocketProbe::PathUnusable;
+}
+
 /* ---- McpBackend ---- */
 
 McpBackend::McpBackend(AgentToolRegistry tools,
@@ -256,6 +343,20 @@ void McpBackend::beginConnection() {
 	calls_ = 0;
 	turn_ = 0;
 	connStart_ = Clock::now();
+}
+
+Clock::time_point McpBackend::idleDeadline(int idleTimeoutSec) const {
+	Clock::time_point deadline = Clock::time_point::max();
+	if (wallClockBudgetSec_ > 0) {
+		const Clock::time_point wall = connStart_
+			+ std::chrono::seconds(wallClockBudgetSec_);
+		if (wall < deadline) { deadline = wall; }
+	}
+	if (idleTimeoutSec > 0) {
+		const Clock::time_point idle = Clock::now() + std::chrono::seconds(idleTimeoutSec);
+		if (idle < deadline) { deadline = idle; }
+	}
+	return deadline;
 }
 
 Json McpBackend::okReply(Json data) const {
@@ -473,7 +574,26 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		}
 	}
 
-	::unlink(opts.socketPath.c_str());	/* 清掉陈旧 socket（ENOENT 忽略） */
+	/* 启动前探测（A-1，2026-09-25 审计）：不再无条件 unlink——误配同一路径的
+	 * 第二个后端会静默偷走 socket 文件、让先启动者永远不可达。三态处置：
+	 * 活实例/无法判定 → 响亮拒绝（fail-closed，换路径或先停占用者）；
+	 * 陈旧残留（上次实例没清理）→ 安全 unlink 后绑定；非 socket 文件 →
+	 * 不替操作者删陌生文件。 */
+	std::string probeWhy;
+	switch (mcpProbeSocketPath(opts.socketPath, probeWhy)) {
+	case McpSocketProbe::PathBusy:
+		log << "错误: socket 路径 '" << opts.socketPath << "' 已被占用（" << probeWhy
+			<< "）。两个后端共用一条路径会让后启动者静默偷走 socket、先启动者"
+			"继续监听却永远不可达。请给本实例换 --mcp-socket，或先停掉占用者。\n";
+		return 2;
+	case McpSocketProbe::PathUnusable:
+		log << "错误: socket 路径 '" << opts.socketPath << "' 不可用（" << probeWhy
+			<< "）；不会自动删除它，请手工处理后重试。\n";
+		return 2;
+	case McpSocketProbe::PathFree:
+		break;
+	}
+	::unlink(opts.socketPath.c_str());	/* 陈旧 socket（探测确认无人监听）：清掉再绑定 */
 
 	FdGuard listenFd(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
 	if (listenFd.get() < 0) {
@@ -487,7 +607,12 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		log << "错误: 绑定 '" << opts.socketPath << "' 失败: " << errnoText(errno) << "\n";
 		return 1;
 	}
-	::chmod(opts.socketPath.c_str(), 0600);	/* socket 文件 0600 */
+	/* 0600 收紧失败要告警（不阻断）：目录 0700 已挡住其他用户，但静默缺位
+	 * 会让「以为收紧了」与「实际靠 umask」漂移。 */
+	if (::chmod(opts.socketPath.c_str(), 0600) != 0) {
+		log << "警告: socket 文件 chmod 0600 失败（" << errnoText(errno)
+			<< "）；文件权限取决于当前 umask，建议检查 " << opts.socketPath << "\n";
+	}
 	if (::listen(listenFd.get(), 1) < 0) {
 		log << "错误: 监听失败: " << errnoText(errno) << "\n";
 		::unlink(opts.socketPath.c_str());
@@ -522,10 +647,15 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		if (opts.requirePeerCred && !mcpCheckPeerCred(clientFd.get(), log)) {
 			continue;	/* 关掉这条，回去等下一个（可能是扫描/误连） */
 		}
-		/* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）。 */
+		/* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）。
+		 * 设置失败要告警：防慢读端的那条防线静默缺位时，症状只会是将来某次
+		 * send 永久挂住——届时可用的第一条线索就是这行告警。 */
 		timeval snd{};
 		snd.tv_sec = kSendTimeoutSec;
-		::setsockopt(clientFd.get(), SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd));
+		if (::setsockopt(clientFd.get(), SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd)) != 0) {
+			log << "警告: SO_SNDTIMEO 设置失败（" << errnoText(errno)
+				<< "）；慢读端可能挂住回帧发送\n";
+		}
 
 		backend.beginConnection();
 		log << "MCP 后端：sidecar 已连接，开始服务\n";
