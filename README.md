@@ -10,7 +10,7 @@
 🔧 **三层架构** - 结构脚本（`.sql`）+ Lua驱动（`.lua`）+ 动作脚本（`.mt`）完全解耦  
 🚀 **零硬件开发** - 虚拟总线 + 仿真驱动，笔记本上就能跑通全流程  
 🔒 **工业级安全** - 多重防护、配置隔离、响亮拒绝不静默  
-📦 **零C++依赖** - 仅需 LuaJIT + pthread + dl，模型调用是Lua驱动  
+📦 **零C++依赖** - C++ 宿主仅需 LuaJIT + pthread + dl；agent 模型调用由 Rust 直连 provider  
 ✨ **友好体验** - 进度提示动画，响应过程可见不焦虑  
 
 ---
@@ -21,6 +21,12 @@
 
 ```bash
 sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev libcurl4
+```
+
+构建 Rust agent（`bash scripts/build_agent.sh`）还需要 Rust 工具链（cargo）：
+
+```bash
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 ```
 
 ### 2. 构建项目
@@ -113,12 +119,35 @@ export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 ./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "让机器人站立然后左转"
 ```
 
+### 会话持久化（--session-file / --resume）
+
+对话记忆默认只在进程内存里，重启即忘。`--session-file` 把每轮**完结的任务块**以
+JSON Lines 追加落盘（图片字节不落盘，只留占位说明；system 提示词不落盘，恢复时
+重建并核对指纹）。重启后加 `--resume` 接着上次的上下文继续——注意后端也要重启
+（硬件上电状态与会话记忆是两回事）：
+
+```bash
+# 第一次会话：落盘
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
+  --session-file mybot-session.jsonl
+
+# 重启后：接着上次的上下文继续（路径必须命令行给出；配置文件的 session_file 只用于写入）
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock \
+  --session-file mybot-session.jsonl --resume
+```
+
+恢复前过三道判据（逐行解析、结构脚本/工具集/系统提示词指纹核对、工具调用协议
+自洽），任一不过即拒绝并退出 2；文件含完整对话内容，建议放私有目录并 `chmod 600`。
+详见 [docs/agent.md](docs/agent.md) 的「会话持久化」节。
+
 ### 分段帮助
 
 ```bash
-./build/mybot --help agent    # Agent模式选项
-./build/mybot --help llm      # LLM配置选项
+./build/mybot --help agent    # agent 体系相关选项（--mcp-backend + mybot-agent）
+./build/mybot --help mcp      # MCP 后端模式（--mcp-backend）相关选项
+./build/mybot --help llm      # LLM/模型配置已迁 mybot-agent（指路）
 ./build/mybot --help camera   # 摄像头选项
+./build/mybot --help tcp      # TCP 模式选项
 ```
 
 ---
@@ -270,7 +299,8 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 
 ```
 mybot/
-├── src/           # C++17核心：SQL解析、硬件派发、agent模式
+├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
+├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
 ├── modules/       # Lua驱动生态（60个模块 + 24个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
@@ -396,8 +426,11 @@ mybot[spider1|llm0|14hw]> 那就前进吧
 ### 示例3：一次性任务
 
 ```bash
-# 无交互，执行完自动退出
-./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/s.sock \
+# 终端 1：工具后端
+./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/s.sock
+
+# 终端 2：agent 一次性任务（--task 是 mybot-agent 的选项；后端不跑模型循环）
+./agent/target/release/mybot-agent --socket /tmp/s.sock \
   --task "依次执行站立、左转、右转、然后回到初始姿势"
 ```
 
@@ -434,8 +467,8 @@ MYBOT在设计时将安全放在首位：
 
 ### 技术特性
 
-- **零C++依赖** - 仅需 LuaJIT + pthread + dl + libm，连HTTP库都是Lua FFI实现
-- **多模型支持** - 内置 OpenAI / DeepSeek / Anthropic 三套协议，换模型=换lua文件
+- **零C++依赖** - C++ 宿主仅需 LuaJIT + pthread + dl + libm；agent 的 HTTP 由 Rust（reqwest + rustls）承担
+- **多模型支持** - 内置 OpenAI / DeepSeek / Anthropic 三族协议（Rust agent 直连；Lua 协议驱动仍在库，可被结构脚本声明供 `.mt` 脚本或 `@Daemon` 调用）
 - **工业级测试** - 580+ C++单测 + 86 Lua测试文件 + 完整E2E场景 + 三道sanitizer门禁
 - **跨平台** - Linux aarch64/x86_64，树莓派实测可用
 
@@ -511,7 +544,7 @@ cmake --build build-asan
 - ⚠️ 仅支持 Linux + LuaJIT
 - ⚠️ 守护线程有一线程一Lua状态的开销
 - ⚠️ 部分器件只支持单消费者
-- ⚠️ Agent模式运行期需要 libcurl.so
+- ⚠️ Agent体系运行期需要 libcurl.so（后端装载 LLM 协议驱动时经 ffi 加载）
 
 完整限制与解决方案见 [docs/faq.md](docs/faq.md)
 
@@ -532,11 +565,11 @@ cmake --build build-asan
 
 ### 技术规格
 
-- **实现**: C++17（零第三方C++依赖）
-- **构建**: CMake ≥ 3.16
+- **实现**: C++17 宿主（零第三方C++依赖）+ Rust agent（`agent/`，rig 0.42，cargo 独立构建）
+- **构建**: CMake ≥ 3.16（宿主）；cargo（agent）
 - **编译器**: g++ 12+ / clang 14+
 - **平台**: Linux (aarch64 / x86_64)
-- **运行期**: LuaJIT + libcurl（仅agent模式）
+- **运行期**: LuaJIT + libcurl（LLM 协议驱动经 ffi 加载 libcurl）
 
 ### CI状态
 
