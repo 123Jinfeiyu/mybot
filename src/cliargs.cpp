@@ -282,13 +282,11 @@ int validateOptions(ParsedArgs& args) {
 	return 0;
 }
 
-std::string helpText() {
+/* TCP 选项块（全文帮助与 --help tcp 共用单点，2026-09-25 D3）：两处此前逐行
+ * 手抄同一份，区间常量（rangeText）改一处漏一处只会让 --help 与
+ * docs/reference.md 的黄金比对红一条而不知因——组装成函数后文本只有一份。 */
+std::string tcpOptionsHelp() {
 	std::string s;
-	s += "这是一个机器人动作脚本解析器。\n";
-	s += "使用--robot选项指定结构脚本，然后使用管道输入动作脚本，示例：\n";
-	s += "  cat scripts/std.mt | ./build/mybot --robot=./robots/spider1.sql\n";
-	s += "\n";
-	s += "动作输入源（优先级从高到低）：\n";
 	s += "  --tcp <port>       TCP 模式：监听端口接受一次成功连接，读取对端下发的 .mt\n";
 	s += "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）\n";
 	s += "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1；跨机监听（如 0.0.0.0）\n";
@@ -302,6 +300,17 @@ std::string helpText() {
 	s += "  --tcp-total-timeout <sec>    连接总时长预算下限（缺省 600，"
 		+ rangeText(tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax)
 		+ "）；生效值取该下限与 idle x20 的较大者\n";
+	return s;
+}
+
+std::string helpText() {
+	std::string s;
+	s += "这是一个机器人动作脚本解析器。\n";
+	s += "使用--robot选项指定结构脚本，然后使用管道输入动作脚本，示例：\n";
+	s += "  cat scripts/std.mt | ./build/mybot --robot=./robots/spider1.sql\n";
+	s += "\n";
+	s += "动作输入源（优先级从高到低）：\n";
+	s += tcpOptionsHelp();
 	s += "  --input <path>     从文件读取动作脚本\n";
 	s += "  （缺省）           从 stdin 管道读取\n";
 	s += "  --daemon-grace-ms <ms>  守护线程弃管后的二段停机宽限上限（缺省 30000，"
@@ -393,20 +402,8 @@ std::string helpText(const std::string& topic) {
 	std::string s;
 	if (t == "tcp") {
 		s += "TCP 模式（动作输入源）：\n\n";
-		s += "  --tcp <port>       TCP 模式：监听端口接受一次成功连接，读取对端下发的 .mt\n";
-		s += "                     （EOF 或 --tcp-idle 超时按输入结束处理，非流式长驻）\n";
-		s += "  --tcp-host <addr>  TCP 监听地址，缺省 127.0.0.1；跨机监听（如 0.0.0.0）\n";
-		s += "                     必须同时提供 --tcp-token，否则拒绝启动\n";
-		s += "  --tcp-token <tok>  TCP 口令：跨机监听必填；对端须先发一行 \"<tok>\\n\" 再发脚本；\n";
-		s += "                     校验失败关连接回等，连续 5 次才退出；也可用环境变量 BOT4CJ_TCP_TOKEN\n";
-		s += "  --tcp-idle <sec>   TCP 空闲超时，缺省 30s（超时按输入结束处理）；\n";
-		s += "                     另有连接总时长预算（600s，随该值 x20 放大）防慢滴挂住进程\n";
-		s += "  --tcp-max-auth-attempts <N>  口令连续失败上限（缺省 5，"
-			+ rangeText(tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax) + "）\n";
-		s += "  --tcp-total-timeout <sec>    连接总时长预算下限（缺省 600，"
-			+ rangeText(tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax)
-			+ "）；生效值取该下限与 idle x20 的较大者\n\n";
-		s += "示例：\n";
+		s += tcpOptionsHelp();
+		s += "\n示例：\n";
 		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080\n";
 		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080 --tcp-host 0.0.0.0 --tcp-token mysecret\n";
 	} else if (t == "agent") {
