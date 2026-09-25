@@ -24,6 +24,7 @@ mod out;
 mod prompt;
 mod provider;
 mod repl;
+mod session;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -38,6 +39,7 @@ use crate::hook::HookState;
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::repl::Session;
+use crate::session::{SessionFileWriter, SessionHead};
 
 /// 连接后端的预算：后端上电 + 装结构脚本可能耗时（与 MCP sidecar 时代同值）。
 const CONNECT_TIMEOUT_SEC: u64 = 120;
@@ -143,9 +145,67 @@ async fn run() -> i32 {
             }
         };
 
+    // ---- 会话持久化（批次 D）：--resume 的三道判据，放在系统提示词定稿之后、
+    //      任何审计写之前（早一步还没有 preamble 可比，晚一步就核不出「提示词
+    //      变没变」）----
+    //   ① 逐行解析（load_session_file 内部完成，坏行跳过并点名）；
+    //   ② 指纹核对（结构脚本名 / 工具集指纹 / 系统提示词指纹三者一致）；
+    //   ③ 协议自洽（tool_call_id 无孤儿/无重复/无漏答——服务端会 400 的序列
+    //      宁可当场拒绝）。
+    // 任一不过即拒绝并退出 2；不是 `--resume` 时这一段整体跳过（零行为变更）。
+    let mut resume_history: Vec<rig_agent::completion::Message> = Vec::new();
+    let mut resume_session_id = String::new();
+    if cfg.resume {
+        let mut loaded = session::LoadedSession::default();
+        let mut warnings = Vec::new();
+        match session::load_session_file(&cfg.session_file, &mut loaded, &mut warnings) {
+            Ok(()) => {
+                for w in &warnings {
+                    errln!("[mybot-agent] {w}");
+                }
+                let expected = SessionHead {
+                    version: session::SESSION_FILE_VERSION,
+                    session_id: String::new(),
+                    robot: material.robot_name.clone(),
+                    tools_fp: session::tools_fingerprint(&tool_names),
+                    system_fp: crate::audit::fingerprint64(&preamble),
+                };
+                if let Some(reason) = session::head_mismatch(&expected, &loaded.head) {
+                    errln!("错误: 会话恢复失败: {reason}");
+                    return 2;
+                }
+                if let Some(reason) = session::protocol_violation(&loaded.messages) {
+                    errln!(
+                        "错误: 会话文件 '{}' 的历史不满足工具调用协议自洽（{reason}），\
+                         拒绝恢复（这份历史送去模型服务端会被 400）",
+                        cfg.session_file
+                    );
+                    return 2;
+                }
+                errln!(
+                    "[mybot-agent] 已恢复会话：{} 条历史消息（来自 {}）",
+                    loaded.messages.len(),
+                    cfg.session_file
+                );
+                resume_session_id = loaded.head.session_id;
+                resume_history = loaded.messages;
+            }
+            Err(e) => {
+                errln!("错误: {e}");
+                return 2;
+            }
+        }
+    }
+    if !cfg.session_file.is_empty() {
+        let w = session::perms_warning(&cfg.session_file);
+        if !w.is_empty() {
+            errln!("[mybot-agent] {w}");
+        }
+    }
+
     // ---- 审计：在任何模型/工具调用**之前**打开（坏路径要在这里就失败：
     //      「看起来在记、其实没记」比没有审计更糟）----
-    let audit = if cfg.audit_log.is_empty() {
+    let mut audit = if cfg.audit_log.is_empty() {
         None
     } else {
         match AuditLog::open(&cfg.audit_log) {
@@ -155,6 +215,36 @@ async fn run() -> i32 {
                 return 2;
             }
         }
+    };
+    // 采纳被恢复会话的原 session id（恢复前后的行能对上同一段对话），必须在
+    // 首行 start 写出前生效——此刻 `audit` 还没写过任何东西。
+    if let Some(a) = audit.as_mut() {
+        a.adopt_session_id(&resume_session_id);
+    }
+
+    // ---- 会话文件写入器（批次 D）：开新会话截断并写头；恢复则续写不重写头 ----
+    let session_writer: Option<SessionFileWriter> = if cfg.session_file.is_empty() {
+        None
+    } else {
+        let mut w = SessionFileWriter::new();
+        if let Err(e) = w.open(&cfg.session_file, cfg.resume) {
+            errln!("错误: {e}");
+            return 2;
+        }
+        if !cfg.resume {
+            let sid = audit
+                .as_ref()
+                .map(|a| a.session_id().to_string())
+                .unwrap_or_default();
+            w.write_header(&SessionHead {
+                version: session::SESSION_FILE_VERSION,
+                session_id: sid,
+                robot: material.robot_name.clone(),
+                tools_fp: session::tools_fingerprint(&tool_names),
+                system_fp: crate::audit::fingerprint64(&preamble),
+            });
+        }
+        Some(w)
     };
 
     let backend = match provider::build(&cfg, specs, &bridge, Arc::clone(&state), &preamble) {
@@ -175,7 +265,19 @@ async fn run() -> i32 {
     );
 
     let task = cli.task.clone();
-    let mut session = Session::new(cfg, backend, bridge, state, tool_names, material, audit);
+    let resumed = cfg.resume;
+    let mut session = Session::new(
+        cfg,
+        backend,
+        bridge,
+        state,
+        tool_names,
+        material,
+        audit,
+        resume_history,
+        resumed,
+        session_writer,
+    );
     if task.is_empty() {
         let rc = repl::run_repl(&mut session).await;
         session.write_session_end("end", "");

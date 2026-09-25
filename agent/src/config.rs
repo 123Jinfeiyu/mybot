@@ -126,6 +126,10 @@ pub struct Cli {
     pub llm_task_timeout: String,
     pub prompt_files: Vec<String>,
     pub audit_log: String,
+    /// 会话持久化落盘路径（批次 D）：只有**命令行给出**的路径才能用于 `--resume`
+    /// 读取；配置文件的 `session_file` 只能用于写入（见 [`build`] 的判据）。
+    pub session_file: String,
+    pub resume: bool,
     pub task: String,
     pub check_config: bool,
     pub help: bool,
@@ -171,6 +175,12 @@ pub struct Config {
     /// 提示词包成品文本（空 = 未使用）。
     pub prompt_pack: String,
     pub audit_log: String,
+    /// 会话持久化落盘路径（空 = 不开启）。
+    pub session_file: String,
+    /// `session_file` 是否来自命令行（`--resume` 的判据：配置文件来源不能授权
+    /// 恢复读取，只能收紧不能放宽，同 `camera_src_dir` / `read_vars` 口径）。
+    pub session_file_from_cli: bool,
+    pub resume: bool,
 }
 
 /// 配置文件里本进程真正消费的字段（其余已知字段只登记不解析，见模块头注）。
@@ -198,6 +208,8 @@ struct FileConfig {
     thinking: Option<String>,
     prompt_files: Option<Vec<String>>,
     audit_log: Option<String>,
+    /// 只用于写入（见 [`Config::session_file_from_cli`] 的判据）。
+    session_file: Option<String>,
 }
 
 /// 解析 argv（不含程序名）。未知选项 → Err（调用方按退出码 2 处理）。
@@ -230,6 +242,8 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
                 cli.prompt_files.push(v);
             }
             "--audit-log" => cli.audit_log = take("--audit-log")?,
+            "--session-file" => cli.session_file = take("--session-file")?,
+            "--resume" => cli.resume = true,
             "--task" => cli.task = take("--task")?,
             "--check-config" => cli.check_config = true,
             "--help" | "-h" => cli.help = true,
@@ -270,6 +284,10 @@ pub fn usage() -> String {
     s += "其它:\n";
     s += "  --prompt-file <路径>   提示词包（文件或目录；可重复；命令行给出即整体覆盖配置文件列表）\n";
     s += "  --audit-log <路径|->   审计轨迹（JSON Lines；\"-\" = stderr；缺省关闭）\n";
+    s += "  --session-file <路径>  会话持久化落盘（JSON Lines；缺省关闭；也可用配置文件\n";
+    s += "                         的 session_file 字段，但该来源只能写入，不能 --resume）\n";
+    s += "  --resume               续写 --session-file 指向的既有会话（该路径必须来自命令行，\n";
+    s += "                         且文件必须已存在；三道判据全过才恢复，见 docs/agent.md）\n";
     s += "  --task \"<任务>\"        一次性执行后退出（不给则进交互 REPL）\n";
     s += "  --check-config         只校验并打印配置摘要后退出（0 = 通过）\n";
     s += "  --help / --version\n";
@@ -538,6 +556,7 @@ fn load_config_file(path: &str) -> Result<FileConfig, String> {
         reasoning_effort: want_string(&root, path, "reasoning_effort")?,
         prompt_files: want_string_array(&root, path, "prompt_files")?,
         audit_log: want_string(&root, path, "audit_log")?,
+        session_file: want_string(&root, path, "session_file")?,
         thinking: None,
     };
     if let Some(t) = f.temperature {
@@ -763,6 +782,9 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         prompt_files: Vec::new(),
         prompt_pack: String::new(),
         audit_log: String::new(),
+        session_file: String::new(),
+        session_file_from_cli: false,
+        resume: false,
     };
     if !cli.llm_max_turns.is_empty() {
         cfg.max_turns = parse_int_option(&cli.llm_max_turns, "llm-max-turns", 1, 100)?;
@@ -805,6 +827,38 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
     } else {
         file.audit_log.clone().unwrap_or_default()
     };
+
+    // ---- 8) 会话持久化（批次 D）：命令行 > 配置文件；读取只认命令行来源 ----
+    //
+    // 恢复是把磁盘内容读进模型上下文（输入通道），配置文件里的 session_file 只用于
+    // 写入，**不能**授权一次读取——与 camera_src_dir / read_vars 同判据
+    // （配置文件只能收紧不能放宽）。故 --resume 而路径来自配置文件时直接报错。
+    cfg.session_file_from_cli = !cli.session_file.trim().is_empty();
+    cfg.session_file = if cfg.session_file_from_cli {
+        expand_home(cli.session_file.trim())
+    } else {
+        file.session_file
+            .as_deref()
+            .map(expand_home)
+            .unwrap_or_default()
+    };
+    cfg.resume = cli.resume;
+    if cfg.resume {
+        if !cfg.session_file_from_cli {
+            return Err(
+                "选项 --resume 需要命令行显式给出 --session-file <路径>：恢复是把磁盘内容\
+                 读进模型上下文（输入通道），配置文件里的 session_file 字段只用于写入，\
+                 不能授权一次读取（配置文件只能收紧不能放宽）"
+                    .to_string(),
+            );
+        }
+        if !Path::new(&cfg.session_file).is_file() {
+            return Err(format!(
+                "会话文件不存在: {}（--resume 需要一个已存在的会话文件；路径来自命令行）",
+                cfg.session_file
+            ));
+        }
+    }
     Ok(cfg)
 }
 
@@ -894,6 +948,16 @@ pub fn summarize(cfg: &Config) -> String {
         cfg.max_retries, cfg.retry_backoff_ms
     );
     s += &format!("  审计轨迹    : {}\n", or_none(&cfg.audit_log, "(未开启)"));
+    s += &format!(
+        "  会话持久化  : {}\n",
+        if cfg.session_file.is_empty() {
+            "(未开启)".to_string()
+        } else if cfg.resume {
+            format!("{}（--resume）", cfg.session_file)
+        } else {
+            cfg.session_file.clone()
+        }
+    );
     if !cfg.config_warning.is_empty() {
         s += &format!("  配置告警    : {}\n", cfg.config_warning);
     }
@@ -1056,5 +1120,102 @@ mod tests {
             parse_int_option("0", "llm-task-timeout", 0, 86_400).unwrap(),
             0
         );
+    }
+
+    /// ---- 会话持久化（批次 D）的组合校验：镜像 C++
+    /// `sessionfile_resume_requires_cli_sourced_path` ----
+    #[test]
+    fn resume_requires_cli_sourced_session_file_path() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_resume_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sess_path = dir.join("s.jsonl");
+        std::fs::write(&sess_path, "x\n").unwrap();
+        let sess_path_str = sess_path.to_string_lossy().to_string();
+        // API key 经配置文件注入（**不**用环境变量：单测并行跑，env 会与其他用例
+        // 的 set/remove 竞争——这正是不依赖全局态的好处）。
+        let auth = dir.join("auth.json");
+        std::fs::write(&auth, r#"{"api_key":"k"}"#).unwrap();
+        let auth_str = auth.to_string_lossy().to_string();
+        let base = || Cli {
+            socket: "/tmp/x.sock".into(),
+            llm_config: auth_str.clone(),
+            llm_endpoint: "http://127.0.0.1:1/v1/chat/completions".into(),
+            llm_model: "m".into(),
+            ..Cli::default()
+        };
+
+        // --resume 不带 --session-file → 命令行来源判据未过
+        {
+            let cli = Cli {
+                resume: true,
+                ..base()
+            };
+            let err = build(&cli).unwrap_err();
+            assert!(err.contains("命令行"), "实际: {err}");
+        }
+        // --resume + 不存在的路径
+        {
+            let cli = Cli {
+                resume: true,
+                session_file: dir.join("nope.jsonl").to_string_lossy().to_string(),
+                ..base()
+            };
+            let err = build(&cli).unwrap_err();
+            assert!(err.contains("不存在"), "实际: {err}");
+        }
+        // 合法组合：放行，且标记来源为命令行
+        {
+            let cli = Cli {
+                resume: true,
+                session_file: sess_path_str.clone(),
+                ..base()
+            };
+            let cfg = build(&cli).unwrap();
+            assert_eq!(cfg.session_file, sess_path_str);
+            assert!(cfg.resume);
+            assert!(cfg.session_file_from_cli);
+        }
+        // 不带 --resume 时，配置文件来源的 session_file 只用于写入（放行、不校验存在性）
+        {
+            let cfg_path = dir.join("cfg.json");
+            std::fs::write(
+                &cfg_path,
+                format!(
+                    r#"{{"api_key":"k","session_file":"{}"}}"#,
+                    dir.join("unwritten.jsonl").to_string_lossy()
+                ),
+            )
+            .unwrap();
+            let cli = Cli {
+                llm_config: cfg_path.to_string_lossy().to_string(),
+                socket: "/tmp/x.sock".into(),
+                llm_endpoint: "http://127.0.0.1:1/v1/chat/completions".into(),
+                llm_model: "m".into(),
+                ..Cli::default()
+            };
+            let cfg = build(&cli).unwrap();
+            assert!(!cfg.session_file.is_empty());
+            assert!(!cfg.session_file_from_cli);
+            assert!(!cfg.resume);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ---- 配置文件 session_file 字段：已知字段（镜像 C++ `sessionfile_llmconfig_field`）----
+    #[test]
+    fn session_file_field_is_known_and_parsed() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_sf_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ok.json");
+        std::fs::write(&path, r#"{"session_file":"/tmp/x.jsonl"}"#).unwrap();
+        let f = load_config_file(&path.to_string_lossy()).unwrap();
+        assert_eq!(f.session_file.as_deref(), Some("/tmp/x.jsonl"));
+
+        // 拼写错误的字段名仍被拒绝（未知字段判据不因新增字段而失效）
+        let typo = dir.join("typo.json");
+        std::fs::write(&typo, r#"{"session_fil":"x"}"#).unwrap();
+        let e = load_config_file(&typo.to_string_lossy()).unwrap_err();
+        assert!(e.contains("未知字段"), "实际: {e}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

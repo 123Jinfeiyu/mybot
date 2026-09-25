@@ -36,6 +36,7 @@ use crate::hook::{self, CallRecord, HookState};
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::provider::Backend;
+use crate::session::SessionFileWriter;
 
 /// `PromptError` → 操作者可见文本：剥掉 rig 的枚举前缀（`PromptCancelled: `）——
 /// 钩子给的 reason 正是要让操作者看到的那句话（「执行被中断」「达到单任务墙钟预算
@@ -123,8 +124,15 @@ pub struct Session {
     /// 后端 `tool.list` 给的工具名（`/sql` 能力预检用：缺工具时点名后端开关，
     /// 而不是把一句含糊的「未知工具」丢给操作者）。
     tool_names: Vec<String>,
-    /// rig transcript（旧历史 + 本轮新消息）；失败时保留旧快照
+    /// rig transcript（旧历史 + 本轮新消息）；失败时保留旧快照。`--resume` 时
+    /// 初值是磁盘载入并已过三道判据的历史，否则为空。
     history: Vec<Message>,
+    /// 会话持久化写入器（批次 D；`None` = 未开启 `--session-file`）。
+    writer: Option<SessionFileWriter>,
+    /// `history` 里已经落盘的前缀长度：成功任务把 `[session_written_len..]`
+    /// 追加写入后前移；失败任务不前移——已完整跑完的轮次留在 `history` 里，
+    /// 随下一次成功任务一起落盘（与内存历史口径一致，见 docs/agent.md）。
+    session_written_len: usize,
     stats: SessionStats,
     started: Instant,
     /// 「思考中…」动画只在交互 REPL 开（`run_repl` 入口置位）；`--task` 一次性
@@ -135,6 +143,11 @@ pub struct Session {
 impl Session {
     /// 建会话并**立刻**写审计的 session start 行（driver/model/接入点/密钥来源；
     /// 接入点在 audit 侧去凭据）。写不出 start 是审计自己的告警，不阻断会话。
+    ///
+    /// `initial_history` / `resumed`：批次 D 的 `--resume` 载入结果——已过三道判据
+    /// （逐行解析/指纹核对/协议自洽）的历史直接作为会话起点；非恢复路径传空
+    /// 历史与 `false`。`writer`：`--session-file` 开启时的落盘器（`None` = 未开启）。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cfg: Config,
         backend: Backend,
@@ -143,6 +156,9 @@ impl Session {
         tool_names: Vec<String>,
         material: PromptMaterial,
         mut audit: Option<AuditLog>,
+        initial_history: Vec<Message>,
+        resumed: bool,
+        writer: Option<SessionFileWriter>,
     ) -> Self {
         if let Some(a) = audit.as_mut() {
             a.write_session(&SessionEntry {
@@ -151,9 +167,11 @@ impl Session {
                 model: cfg.model.clone(),
                 endpoint: cfg.endpoint.clone(),
                 api_key_source: cfg.api_key_source.to_string(),
+                resumed,
                 ..Default::default()
             });
         }
+        let session_written_len = initial_history.len();
         Self {
             cfg,
             backend,
@@ -162,7 +180,9 @@ impl Session {
             audit,
             material,
             tool_names,
-            history: Vec::new(),
+            history: initial_history,
+            writer,
+            session_written_len,
             stats: SessionStats::default(),
             started: Instant::now(),
             show_progress: false,
@@ -170,9 +190,14 @@ impl Session {
     }
 
     /// `/clear`：只裁会话历史（硬件保持上电，系统提示词不变——rig 的 preamble 在
-    /// agent 上，不在历史里）。
+    /// agent 上，不在历史里）。落一行 `session_clear` 分界标记：恢复时该标记
+    /// 丢弃此前的全部消息，否则「忘掉对话」会在下次恢复时复活。
     pub fn clear_history(&mut self) {
         self.history.clear();
+        if let Some(w) = self.writer.as_mut() {
+            w.write_clear_marker();
+        }
+        self.session_written_len = 0;
     }
 
     /// 会话结束行（`end` / `error`）。C++ 的 `writeSessionEnd` 同契约：失败会话也
@@ -237,6 +262,16 @@ impl Session {
                 let mut full = snapshot;
                 full.extend(new);
                 self.history = hook::materialize(full, &injections);
+                // 落盘点 = 本轮 materialize 之后：只写「上次成功落盘点」以来的新消息
+                // （含失败任务里已完整跑完、暂留在 history 里未落盘的那些轮次——
+                // 与内存历史口径一致，见 docs/agent.md「会话持久化」）。
+                if let Some(w) = self.writer.as_mut() {
+                    let start = self.session_written_len.min(self.history.len());
+                    for m in &self.history[start..] {
+                        w.append_message(m);
+                    }
+                }
+                self.session_written_len = self.history.len();
                 self.record_calls(&calls);
                 Ok(resp.output)
             }
@@ -326,6 +361,16 @@ impl Session {
         );
         s += "  工具审计    : 工具行由后端 mybot --mcp-backend 落（含 exit_code/image_fp/summary），\
               本进程只记 session/model 行\n";
+        s += &format!(
+            "  会话持久化  : {}\n",
+            match self.writer.as_ref() {
+                Some(_) => format!(
+                    "{}（已落盘 {} 条）",
+                    self.cfg.session_file, self.session_written_len
+                ),
+                None => "(未开启)".to_string(),
+            }
+        );
         s += &format!(
             "  硬件        : {}，{} 个变量（/hardware 看清单）\n",
             self.material.structure_path,

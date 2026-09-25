@@ -103,6 +103,16 @@ impl AuditLog {
         &self.session_id
     }
 
+    /// 采纳一个既有 session id（批次 D：`--resume` 沿用被恢复会话的原 id，
+    /// 使恢复前后的行能对上同一段对话）。**必须**在首行 `start` 写出前调用
+    /// （`start_written` 尚为 false 时调用方保证这一点）；空 id 不采纳
+    /// （沿用 `open()` 生成的那个，恢复的会话文件里没有记 session id 的老会话）。
+    pub fn adopt_session_id(&mut self, id: &str) {
+        if !id.is_empty() {
+            self.session_id = id.to_string();
+        }
+    }
+
     pub fn path(&self) -> &str {
         &self.path
     }
@@ -438,5 +448,39 @@ mod tests {
         };
         assert!(e.contains("无法打开审计日志文件"), "实际: {e}");
         assert!(AuditLog::open("").is_err());
+    }
+
+    /// 批次 D：`--resume` 采纳被恢复会话的原 session id——恢复前后的行能对上
+    /// 同一段对话；空 id（老会话文件没记）不覆盖新生成的那个。
+    #[test]
+    fn adopt_session_id_overrides_generated_one_unless_empty() {
+        let dir = std::env::temp_dir().join(format!("mybot_audit_adopt_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.jsonl");
+        let p = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        let mut log = AuditLog::open(&p).unwrap();
+        log.adopt_session_id("resumed-session-9");
+        assert_eq!(log.session_id(), "resumed-session-9");
+        log.write_session(&SessionEntry {
+            status: "start".to_string(),
+            resumed: true,
+            ..Default::default()
+        });
+        drop(log);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let v: Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+        assert_eq!(v["session"], "resumed-session-9");
+        assert_eq!(v["resumed"], true);
+
+        // 空 id 不覆盖
+        let mut log2 = AuditLog::open(&p).unwrap();
+        let before = log2.session_id().to_string();
+        log2.adopt_session_id("");
+        assert_eq!(log2.session_id(), before);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
     }
 }
