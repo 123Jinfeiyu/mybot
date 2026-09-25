@@ -86,21 +86,10 @@ local last_save_s		-- 上次存盘时刻（os.time 秒）
 local last_ah_ticks		-- 上次下发的绝对湿度 ticks（nil = 尚未下发）
 
 -- ==================== CRC8（多项式 0x31，初值 0xFF） ====================
+-- CRC 判据单点在 bitcompat.crc8（D1 收敛，2026-09-25）：Sensirion 词 CRC
+-- = poly 0x31、init 0xFF、16 位词按 hi/lo 两字节展开——器件约定留在调用方。
 local function crc8(word)
-	local crc = 0xFF
-	local hi = math.floor(word / 256) % 256
-	local lo = word % 256
-	for _, b in ipairs({hi, lo}) do
-		crc = bitc.bxor(crc, b)
-		for _ = 1, 8 do
-			if bitc.band(crc, 0x80) ~= 0 then
-				crc = bitc.band(bitc.bxor(bitc.lshift(crc, 1), 0x31), 0xFF)
-			else
-				crc = bitc.band(bitc.lshift(crc, 1), 0xFF)
-			end
-		end
-	end
-	return crc
+	return bitc.crc8(0xFF, 0x31, { math.floor(word / 256) % 256, word % 256 })
 end
 
 -- 发送命令（可带数据字节，数据按 Sensirion 约定逐字附 CRC）

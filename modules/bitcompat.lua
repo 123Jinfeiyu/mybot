@@ -46,6 +46,33 @@ function M.s8(v)
 	return v
 end
 
+------------------------------------------------------------------
+-- CRC-8（D1 收敛，2026-09-25）：三处驱动手抄同一逐位算法、两套器件参数——
+--   SHT3X/SGP30（Sensirion 约定）：poly 0x31、init 0xFF、16 位词按 hi/lo 展开；
+--   MT6826S（磁编码器）：poly 0x07、init 0x00、字节表直入。
+-- 算法单点在此（M.crc8(init, poly, bytes)），器件参数留在调用方——那是器件
+-- 手册事实，不是可收敛的样板。各驱动的 *_VIRT 模型 crc8 **刻意保持独立实现**
+-- （模型/驱动/测试三方交叉验证，改这里不必也不应动它们）。
+-- 逐位等价说明：旧实现两派写法——「bxor(lshift(crc,1), poly) 再掩 0xFF」
+-- （SHT3X/SGP30）与「bxor(band(lshift(crc,1),0xFF), poly)」（MT6826S）——在
+-- poly ≤ 0xFF 时都与本实现（先掩后异）逐位一致：bit8 只被掩码移除，异 poly
+-- 不产生进位。每拍至多几个词，逐位 8×len 次足够，不设查表。
+-- 定义在早退分支之前：M.bxor/band/lshift 调用时才解析，两条路径（bit 库 /
+-- 算术回退）都已就绪，且本函数不参与 LuaJIT 早退 return。
+------------------------------------------------------------------
+function M.crc8(init, poly, bytes)
+	local crc = init
+	for _, b in ipairs(bytes) do
+		crc = M.bxor(crc, b)
+		for _ = 1, 8 do
+			local msb = M.band(crc, 0x80)
+			crc = M.band(M.lshift(crc, 1), 0xFF)
+			if msb ~= 0 then crc = M.bxor(crc, poly) end
+		end
+	end
+	return crc
+end
+
 -- 非有限值防线（2026-09-20 审计 C2）：LuaJIT 的 bit 库对 NaN/±inf **不报错**，
 -- 而是静默返回 0（实测 bit.band(NaN,0xFF)=0，lshift/rshift 同为 0）。驱动里
 -- 一旦有 NaN 流进位运算（结构脚本字符串列写 "nan"、"1e400" 这类），得到的

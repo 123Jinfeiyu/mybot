@@ -56,21 +56,10 @@ local ST_CMD_STATUS = 0x0002		-- bit1：1=上一命令未处理或非法
 local ST_RESET_SEEN = 0x0010		-- bit4：1=发生过复位（软复位/硬复位/上电）
 
 -- CRC8校验字（多项式0x31，初值0xFF，与 SGP30.lua 一致）
+-- CRC 判据单点在 bitcompat.crc8（D1 收敛，2026-09-25）：Sensirion 词 CRC
+-- = poly 0x31、init 0xFF、16 位词按 hi/lo 两字节展开——器件约定留在调用方。
 local function crc8(word)
-	local crc = 0xFF
-	local hi = math.floor(word / 256) % 256
-	local lo = word % 256
-	for _, b in ipairs({hi, lo}) do
-		crc = bitc.bxor(crc, b)
-		for _ = 1, 8 do
-			if bitc.band(crc, 0x80) ~= 0 then
-				crc = bitc.band(bitc.bxor(bitc.lshift(crc, 1), 0x31), 0xFF)
-			else
-				crc = bitc.band(bitc.lshift(crc, 1), 0xFF)
-			end
-		end
-	end
-	return crc
+	return bitc.crc8(0xFF, 0x31, { math.floor(word / 256) % 256, word % 256 })
 end
 
 -- 纯读 n 字节 → n 字节表（0 基下标）。失败（-1）返回 nil；

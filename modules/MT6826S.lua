@@ -69,19 +69,10 @@ local function read_reg(fd, reg, delay_us)
 end
 
 -- CRC-8：多项式 0x07，初值 0x00，MSB 先行（覆盖 0x003~0x005 三字节）
+-- CRC 判据单点在 bitcompat.crc8（D1 收敛，2026-09-25）：poly 0x07、init 0x00、
+-- 字节表直入——器件约定留在调用方。
 local function crc8(bytes)
-	local crc = 0x00
-	for _, b in ipairs(bytes) do
-		crc = bitc.bxor(crc, b)
-		for _ = 1, 8 do
-			if bitc.band(crc, 0x80) ~= 0 then
-				crc = bitc.bxor(bitc.band(bitc.lshift(crc, 1), 0xFF), 0x07)
-			else
-				crc = bitc.band(bitc.lshift(crc, 1), 0xFF)
-			end
-		end
-	end
-	return crc
+	return bitc.crc8(0x00, 0x07, bytes)
 end
 
 -- ==================== 模块级配置 ====================

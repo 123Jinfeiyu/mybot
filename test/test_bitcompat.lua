@@ -48,5 +48,19 @@ tester.check("s8(0x80) == -128", bitc.s8(0x80) == -128)
 tester.check("u16le({0x34,0x12}, 1) == 0x1234", bitc.u16le({0x34, 0x12}, 1) == 0x1234)
 tester.check("s16le({0x00,0x80}, 1) == -32768", bitc.s16le({0x00, 0x80}, 1) == -32768)
 
+-- ---- CRC-8（D1 收敛自 SHT3X/SGP30/MT6826S 三处手抄）------------------------
+-- 钉两套器件参数的已知值：Sensirion 例取 SHT3x 数据手册（0xBE 0xEF → 0x92）；
+-- poly 0x07/init 0x00 取 CRC-8 标准校验串 "123456789" → 0xF4。两条解释器路径
+-- （LuaJIT bit 库 / 算术回退）都必须命中同一批值。
+tester.check("crc8(Sensirion 0xBEEF) == 0x92（数据手册例）",
+	bitc.crc8(0xFF, 0x31, { 0xBE, 0xEF }) == 0x92)
+local check = "123456789"
+local bytes = {}
+for i = 1, #check do bytes[i] = string.byte(check, i) end
+tester.check("crc8(poly 0x07/init 0) 标准校验串 == 0xF4",
+	bitc.crc8(0x00, 0x07, bytes) == 0xF4)
+-- 空字节序列返回 init（旧实现的空表形态一致）
+tester.check("crc8 空表返回初值", bitc.crc8(0xFF, 0x31, {}) == 0xFF)
+
 tester.summary("test_bitcompat")
 return 0
