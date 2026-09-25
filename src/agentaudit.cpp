@@ -159,6 +159,9 @@ void AuditLog::write(const AuditEntry& e) {
 		if (e.resumed) { line.put("resumed", JsonBool(true)); }
 		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
 		if (e.ms > 0) { line.put("ms", JsonInt(e.ms)); }
+		/* 2026-09-25：断连安全动作（status=disconnect_action）自报"跑了哪个脚本"。
+		 * 加法字段，既有 start/end 记录不给、不出现。 */
+		if (!e.summary.empty()) { line.put("summary", JsonString(e.summary)); }
 	} else if (e.kind == "model") {
 		/* ---- 模型轮次记录（SAN-9）：为什么需要它——工具行只能回答
 		 * "调了什么工具"，回答不了"模型说了什么、花了多久、这一轮有没有发出

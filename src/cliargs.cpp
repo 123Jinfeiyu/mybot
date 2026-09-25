@@ -46,6 +46,7 @@ constexpr OptionSpec kValueOptions[] = {
 	{"mcp-call-budget", [](CliOptions& o, const std::string& v) { o.mcpCallBudget = v; }, false},
 	{"mcp-wall-clock", [](CliOptions& o, const std::string& v) { o.mcpWallClock = v; }, false},
 	{"mcp-idle-timeout", [](CliOptions& o, const std::string& v) { o.mcpIdleTimeout = v; }, false},
+	{"on-disconnect", [](CliOptions& o, const std::string& v) { o.onDisconnect = v; }, false},
 	{"camera-var", [](CliOptions& o, const std::string& v) { o.cameraVar = v; }, true},
 	{"camera-device", [](CliOptions& o, const std::string& v) { o.cameraDevice = v; }, true},
 	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
@@ -242,6 +243,11 @@ int validateOptions(ParsedArgs& args) {
 			" 只在 --mcp-backend 模式下有效" << std::endl;
 		return 2;
 	}
+	if (!options.mcpBackend && !options.onDisconnect.empty()) {
+		std::cerr << "参数错误：--on-disconnect 只在 --mcp-backend 模式下有效"
+			"（它是后端连接结束后的安全动作）" << std::endl;
+		return 2;
+	}
 	if (options.mcpBackend) {
 		if (options.tcp) {
 			std::cerr << "参数错误：--mcp-backend 与 --tcp 互斥"
@@ -349,6 +355,13 @@ std::string helpText() {
 	s += "                      注：单次物理调用的 script/command 超时始终在工具层生效\n";
 	s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
 	s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽\n";
+	s += "  --on-disconnect <脚本>  连接结束（对端关闭/崩溃/超时/协议违规，任何原因）后，\n";
+	s += "                      后端自行执行的安全动作脚本（scripts-dir 之下的相对路径，\n";
+	s += "                      如 zero.mt）。缺省不执行——此时硬件停在最后一个姿态带电\n";
+	s += "                      常驻。脚本在上电前校验（越界/不存在/为空即退出 2）；\n";
+	s += "                      不经策略确认（操作者配置的安全动作不该等外部闸门）；\n";
+	s += "                      执行失败只记日志/审计，后端继续服务。SIGINT/SIGTERM 停机\n";
+	s += "                      不触发（由断电清理链处理）\n";
 	s += "  --scripts-dir <目录>  动作脚本根目录（缺省 scripts）；智能体只能执行其下的 .mt\n";
 	s += "  --agent-shell         允许智能体执行 shell 命令（注册 run_command 工具）；\n";
 	s += "                       **缺省不提供**该工具（任意 shell 执行是最大的一张牌，\n";
@@ -482,7 +495,12 @@ std::string helpText(const std::string& topic) {
 		s += "                      注：单次物理调用的 script/command 超时始终在工具层生效。\n";
 		s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
 		s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽；\n";
-		s += "                      墙钟预算同样在空闲期收口（到点断连，对端可重连）。\n\n";
+		s += "                      墙钟预算同样在空闲期收口（到点断连，对端可重连）。\n";
+		s += "  --on-disconnect <脚本>  连接结束（任何原因）后由后端自行执行的安全动作脚本\n";
+		s += "                      （scripts-dir 之下的相对路径，如 zero.mt）。缺省不执行，\n";
+		s += "                      硬件停在最后一个姿态。上电前校验；不经策略确认；失败\n";
+		s += "                      只记日志/审计（kind=session, status=disconnect_action）。\n";
+		s += "                      SIGINT/SIGTERM 停机不触发（走断电清理链）。\n\n";
 		s += "安全：后端开 --agent-shell / --agent-hot-sql 时**强制**要 --agent-policy，且其\n";
 		s += "      require_confirm 必须分别包含 run_command / apply_sql（无人值守暴露危险能力\n";
 		s += "      必须有外部确认闸门）；纯只读/查询/动作脚本后端不受此约束。\n\n";

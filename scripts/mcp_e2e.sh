@@ -53,6 +53,10 @@ chk(){ if [ "$2" = "$3" ]; then ok "$1"; else ng "$1（期望 '$3'，实际 '$2'
 # ---- 前置 ----
 [ -x "$MYBOT" ]   || { echo "缺 $MYBOT（先 cmake --build build）"; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "缺 python3"; exit 1; }
+# sanitizer 构建编译期跳过 PR_SET_DUMPABLE=0（LeakSanitizer 需 ptrace 自身），对应断言随之跳过。
+# 判据用二进制里是否链入 asan/ubsan 运行时符号，而不猜 $BOT 路径。
+SAN_BUILD=no
+if grep -qaE '__asan_init|__ubsan_handle|__tsan_init' "$MYBOT" 2>/dev/null; then SAN_BUILD=yes; fi
 
 TMP="$(mktemp -d /tmp/mcp_e2e.XXXXXX)"
 PIDS=""
@@ -246,6 +250,13 @@ phase(){
 	ok "$label: 后端监听 + socket 就绪"
 	chk "$label: socket 父目录 0700" "$(stat -c '%a' "$rundir" 2>/dev/null)" "700"
 	chk "$label: socket 文件 0600"  "$(stat -c '%a' "$sock" 2>/dev/null)" "600"
+	# PR_SET_DUMPABLE=0 的可观测结果：/proc/<pid>/environ 属主变 root、同 UID 读不到。
+	if [ "$SAN_BUILD" = yes ]; then
+		echo "  [SKIP] $label: 后端不可 dump（sanitizer 构建编译期跳过）"
+	else
+		chk "$label: 后端不可 dump（/proc/<pid>/environ 属主 root）" "$(stat -c '%U' "/proc/$bpid/environ" 2>/dev/null)" "root"
+		if cat "/proc/$bpid/environ" >/dev/null 2>&1; then ng "$label: 同 UID 竟可读后端 environ"; else ok "$label: 同 UID 读后端 environ 被拒"; fi
+	fi
 
 	local pyout; pyout="$(python3 "$TMP/frame_client.py" "$sock" "$expect" "$scenario" "$sd/marker-should-not-exist" 2>&1)"
 	echo "$pyout"
@@ -253,6 +264,13 @@ phase(){
 	pp="$(echo "$pyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\1/p')"
 	pf="$(echo "$pyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\2/p')"
 	pass=$((pass + ${pp:-0})); fail=$((fail + ${pf:-0}))
+
+	# 可选：等后端日志出现某一行再往下（断连安全动作在客户端关连接**之后**才跑，
+	# 不等就去 kill，脚本会被停机信号打断，测的就不是"断连后动作跑完"了）
+	if [ -n "${WAIT_LOG:-}" ]; then
+		local seen=no; for _ in $(seq 1 100); do grep -q "$WAIT_LOG" "$blog" && { seen=yes; break; }; sleep 0.1; done
+		[ "$seen" = yes ] && ok "$label: 后端日志出现「$WAIT_LOG」" || ng "$label: 后端日志 10s 内未见「$WAIT_LOG」"
+	fi
 
 	# 审计：整服务端一 session（start/end）+ 每次工具调用一条（穿过 DispatchGate）
 	if [ -f "$audit" ]; then
@@ -285,6 +303,41 @@ phase "缺 --read-var（工具不在表内）" false "$TMP/p7" readvaroff
 phase "--agent-policy 拒绝 ⇒ run_command 零副作用" true "$TMP/p8" policydeny \
 	--agent-shell --agent-policy "$POLICY_DENY"
 
+# ---- 断连安全动作（2026-09-25，--on-disconnect）：客户端关连接 ⇒ 后端自行跑脚本 ----
+# 客户端正常 close 即"连接结束（任一原因）"的一种；relay-test.mt 带 Timer 读数，
+# 完成行带字节数。审计落 kind=session/status=disconnect_action，summary 点名脚本。
+WAIT_LOG="断连安全动作完成" phase "--on-disconnect relay-test.mt（断连后自行执行）" false "$TMP/p9" base \
+	--on-disconnect relay-test.mt
+if grep -q '"status":"disconnect_action"' "$TMP/p9/audit.jsonl" 2>/dev/null; then
+	ok "断连动作：审计有 disconnect_action 记录"
+	grep -q '"status":"disconnect_action".*"summary":"relay-test.mt"' "$TMP/p9/audit.jsonl" \
+		&& ok "断连动作：审计 summary 点名脚本" || ng "断连动作：审计 summary 未点名脚本"
+	grep '"status":"disconnect_action"' "$TMP/p9/audit.jsonl" | grep -q '"error"' \
+		&& ng "断连动作：审计记录带 error（脚本应成功）" || ok "断连动作：审计记录无 error"
+else
+	ng "断连动作：审计缺 disconnect_action 记录"
+fi
+grep -q '执行断连安全动作 relay-test.mt' "$TMP/p9/backend.log" && ok "断连动作：日志点名脚本" || ng "断连动作：日志未点名脚本"
+# 反面：未配 --on-disconnect 的前几趟不得出现该记录（缺省不执行 = 旧行为）
+if grep -q '"status":"disconnect_action"' "$TMP/p1/audit.jsonl" 2>/dev/null; then
+	ng "断连动作：未配置时不应有 disconnect_action 记录"
+else
+	ok "断连动作：未配置时无 disconnect_action 记录"
+fi
+
+# ---- 反面（--on-disconnect 预检）：脚本不存在必须拒启（退出 2，上电前）----
+echo "----- 反面：--on-disconnect 脚本不存在必须拒启 -----"
+REJD="$TMP/reject-disc"; mkdir -p "$REJD"
+"$MYBOT" --robot=robots/relay-test.sql --mcp-backend --mcp-socket "$REJD/run/mcp.sock" \
+	--scripts-dir scripts --on-disconnect no-such-safe.mt >"$REJD/log" 2>&1 &
+rdpid=$!; PIDS="$PIDS $rdpid"
+for _ in $(seq 1 40); do kill -0 "$rdpid" 2>/dev/null || break; sleep 0.1; done
+wait "$rdpid"; rdrc=$?
+chk "反面（断连脚本）：退出码 2" "$rdrc" "2"
+if [ -S "$REJD/run/mcp.sock" ]; then ng "反面（断连脚本）：socket 不应被创建"; else ok "反面（断连脚本）：socket 未创建"; fi
+grep -q 'on-disconnect' "$REJD/log" && grep -q 'no-such-safe.mt' "$REJD/log" \
+	&& ok "反面（断连脚本）：报错点名选项与脚本" || ng "反面（断连脚本）：报错未点名选项与脚本"
+
 # ---- 反面（M5 强制 policy）：--agent-shell 无 --agent-policy 必须拒启（退出 2）----
 echo "----- 反面：--agent-shell 无 policy 必须拒启 -----"
 REJ="$TMP/reject"; mkdir -p "$REJ"
@@ -296,6 +349,25 @@ wait "$rpid"; rrc=$?
 chk "反面：退出码 2（配置错误不碰真机）" "$rrc" "2"
 if [ -S "$REJ/run/mcp.sock" ]; then ng "反面：socket 不应被创建"; else ok "反面：socket 未创建"; fi
 grep -q 'run_command' "$REJ/log" && ok "反面：报错点名 run_command" || ng "反面：报错未点名 run_command"
+
+# ---- 调试逃生口：BOT4CJ_ALLOW_PTRACE=1 ⇒ 保持可 dump，且 stderr 有「注意」----
+if [ "$SAN_BUILD" = yes ]; then
+	echo "  [SKIP] 逃生口 BOT4CJ_ALLOW_PTRACE（sanitizer 构建不看该变量）"
+else
+	echo "----- 逃生口：BOT4CJ_ALLOW_PTRACE=1 保持可 dump -----"
+	HATCH="$TMP/hatch"; mkdir -p "$HATCH"
+	BOT4CJ_ALLOW_PTRACE=1 "$MYBOT" --robot=robots/relay-test.sql --mcp-backend \
+		--mcp-socket "$HATCH/run/mcp.sock" --scripts-dir scripts >"$HATCH/log" 2>&1 &
+	hpid=$!; PIDS="$PIDS $hpid"
+	hup=no; for _ in $(seq 1 60); do [ -S "$HATCH/run/mcp.sock" ] && { hup=yes; break; }; sleep 0.1; done
+	if [ "$hup" = yes ]; then
+		chk "逃生口：/proc/<pid>/environ 属主为当前用户" "$(stat -c '%U' "/proc/$hpid/environ" 2>/dev/null)" "$(id -un)"
+		grep -q 'BOT4CJ_ALLOW_PTRACE=1' "$HATCH/log" && ok "逃生口：stderr 有「注意」行" || ng "逃生口：stderr 缺「注意」行"
+	else
+		ng "逃生口：后端未监听"; sed 's/^/    /' "$HATCH/log"
+	fi
+	kill -TERM "$hpid" 2>/dev/null; wait "$hpid" 2>/dev/null
+fi
 
 echo
 if [ "$fail" -eq 0 ]; then

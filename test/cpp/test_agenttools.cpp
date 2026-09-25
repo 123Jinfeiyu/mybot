@@ -212,8 +212,36 @@ TH_TEST(agenttools_run_action_script_on_resident_robot) {
 		parseJson("{\"script\":\"no-such.mt\"}"));
 	TH_CHECK(missing.find("失败") != std::string::npos);
 
-	std::string noArg = execText(tools, "run_action_script", parseJson("{}"));
-	TH_CHECK(noArg.find("失败") != std::string::npos);
+	robot->deactivate();
+}
+
+/* ---- 2026-09-25：动作脚本执行核心抽成公开函数（--on-disconnect 复用）----
+ * 工具与后端断连安全动作共用 runActionScriptFile，故这里直接锚定它：沙箱、
+ * 缺文件、空文件都以异常传递（调用方决定折成回执还是日志），成功返回字节数
+ * 并把驱动回显收进 echo。loadActionScriptFile 是它的前半段，供上电前预检。 */
+TH_TEST(agenttools_run_action_script_file_shared_core) {
+	auto robot = makeRelayRobot();
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	ctx.structurePath = "robots/relay-test.sql";
+
+	std::string echo;
+	const std::size_t bytes = runActionScriptFile(ctx, "relay-test.mt", echo);
+	TH_CHECK(bytes > 0);
+	TH_CHECK_MSG(echo.find("slept") != std::string::npos, "驱动回显应收进 echo，实际: " + echo);
+
+	TH_CHECK_THROWS(IllegalArgumentException, runActionScriptFile(ctx, "../robots/relay-test.sql", echo));
+	TH_CHECK_THROWS(IllegalArgumentException, runActionScriptFile(ctx, "no-such.mt", echo));
+
+	/* 预检半段：与执行同判据；不碰 robot */
+	TH_CHECK(!loadActionScriptFile("scripts", "relay-test.mt").empty());
+	TH_CHECK_THROWS(IllegalArgumentException, loadActionScriptFile("scripts", "/etc/passwd"));
+	TH_CHECK_THROWS(IllegalArgumentException, loadActionScriptFile("scripts", "no-such.mt"));
+	TempDir tmp("empty-script");
+	writeFile(tmp.path() / "empty.mt", "  \n\n");
+	TH_CHECK_THROWS(IllegalArgumentException, loadActionScriptFile(tmp.path().string(), "empty.mt"));
 
 	robot->deactivate();
 }

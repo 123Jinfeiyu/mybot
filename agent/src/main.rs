@@ -46,7 +46,41 @@ const CONNECT_TIMEOUT_SEC: u64 = 120;
 
 #[tokio::main]
 async fn main() {
+    harden_against_inspection();
     std::process::exit(run().await);
+}
+
+/// 进程自护（2026-09-25）：`prctl(PR_SET_DUMPABLE, 0)`。
+///
+/// 本进程内存里有模型 API key（`config.rs` 自环境变量或配置文件读入，`provider.rs`
+/// 放进请求头）。docs/agent.md 安全一节此前如实写着「同 UID 不构成隔离：进程若能
+/// ptrace Rust agent，就能从内存里把密钥捞出来」——non-dumpable 让内核把这条路收窄：
+/// 同 UID 非特权进程的 `PTRACE_ATTACH` 与读 `/proc/<pid>/mem`、`environ` 被拒，崩溃
+/// 不落 core。边界如实：root / 持 `CAP_SYS_PTRACE` 者不受影响，`/proc/<pid>/cmdline`
+/// 依旧全局可读（所以两端都没有命令行传密钥的入口）。
+///
+/// 放在 tokio 运行时**之前**、`run()` 之前：密钥在 `config::build` 里读入，之后再设
+/// 已经晚了。`BOT4CJ_ALLOW_PTRACE=1` 是给 gdb attach / strace -p 的显式逃生口，
+/// stderr 明写「已放开」；prctl 失败只告警不退出（操作者必须知道防线缺位，但不该
+/// 让 agent 因此起不来）。与 C++ 宿主 `src/main.cpp` 的 `hardenAgainstInspection`
+/// 同口径。
+fn harden_against_inspection() {
+    if std::env::var("BOT4CJ_ALLOW_PTRACE").is_ok_and(|v| v == "1") {
+        errln!(
+            "[mybot-agent] 注意: BOT4CJ_ALLOW_PTRACE=1，本进程保持可被同 UID ptrace / core dump\
+             （仅调试用；模型密钥可自内存读出）"
+        );
+        return;
+    }
+    // SAFETY: prctl(PR_SET_DUMPABLE, 0) 只改本进程的一个内核标志，不碰任何内存；
+    // 多余的三个参数按手册要求传 0。
+    let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+    if rc != 0 {
+        errln!(
+            "[mybot-agent] 警告: prctl(PR_SET_DUMPABLE, 0) 失败（{}）；同 UID 进程可 ptrace 本进程 / 崩溃会落 core",
+            std::io::Error::last_os_error()
+        );
+    }
 }
 
 async fn run() -> i32 {

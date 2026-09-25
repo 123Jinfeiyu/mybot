@@ -535,6 +535,43 @@ void McpBackend::writeSessionRecord(const char* status) const {
 
 /* ---- socket 服务 ---- */
 
+/* ---- 断连安全动作（2026-09-25，--on-disconnect）----
+ * 连接结束（任何原因：对端关闭/崩溃/空闲或墙钟超时/协议违规/发送失败）后，
+ * 后端自己把硬件带到操作者预设的安全姿态。此前 agent 进程一死，硬件就停在
+ * **最后一个姿态**带电常驻（docs/agent.md 已知限制）。
+ *   * 不走 DispatchGate：这不是模型的请求，是操作者的配置；策略确认钩子
+ *     （require_confirm）是给"模型想做什么"设的闸门，安全动作等它反而危险；
+ *   * 执行判据与 run_action_script 同源（runActionScriptFile：沙箱/体积/预算）；
+ *   * 失败**不能**让后端退出——退出即摘电清理，反倒是另一种"安全"，但会把
+ *     操作者的重连机会一起带走；故只记日志 + 审计（kind=session，
+ *     status=disconnect_action，error 字段即失败原因），继续 accept；
+ *   * 停机（stopRequested）不触发：SIGINT/SIGTERM 路径由 deactivate() 的
+ *     断电清理链负责，再跑一个动作脚本只会拖慢停机。 */
+static void runDisconnectAction(const AgentToolContext& tctx, const std::string& script,
+		const std::shared_ptr<AuditLog>& audit, std::ostream& log) {
+	if (script.empty() || stopRequested()) { return; }
+	log << "MCP 后端：连接结束，执行断连安全动作 " << script << "\n";
+	AuditEntry e;
+	e.kind = "session";
+	e.status = "disconnect_action";
+	e.summary = script;
+	const Clock::time_point t0 = Clock::now();
+	try {
+		std::string echo;
+		const std::size_t bytes = runActionScriptFile(tctx, script, echo);
+		log << "MCP 后端：断连安全动作完成（" << bytes << " 字节）\n";
+	} catch (const std::exception& ex) {
+		e.error = ex.what();
+		log << "MCP 后端：断连安全动作失败: " << ex.what() << "（后端继续服务）\n";
+	} catch (...) {
+		e.error = "unknown exception";
+		log << "MCP 后端：断连安全动作失败: 未知异常（后端继续服务）\n";
+	}
+	e.ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
+	if (e.ms <= 0) { e.ms = 1; }	/* ms>0 才落字段；0 会让"跑过"这件事在审计里消失 */
+	if (audit && audit->enabled()) { audit->write(e); }
+}
+
 int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		const McpBackendOptions& opts, std::ostream& log) {
 	if (opts.socketPath.empty()) {
@@ -660,6 +697,10 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		backend.beginConnection();
 		log << "MCP 后端：sidecar 已连接，开始服务\n";
 		serveConnection(clientFd.get(), backend, opts, log);
+		/* 先关连接再跑安全动作：对端若还挂着（半关闭），不该看见动作期间的
+		 * 任何回帧；且动作脚本可能跑几秒，不占着 fd。 */
+		clientFd.close();
+		runDisconnectAction(tctx, cfg.onDisconnectScript, cfg.audit, log);
 		log << "MCP 后端：连接结束，回到 accept 等待\n";
 	}
 

@@ -60,6 +60,12 @@ if(MYBOT_SANITIZE)
   if(NOT MYBOT_SANITIZE STREQUAL "thread")
     add_compile_options(-fno-sanitize-recover=undefined)
   endif()
+  # 2026-09-25：sanitizer 构建里**不**做 PR_SET_DUMPABLE=0 进程自护（src/main.cpp
+  # hardenAgainstInspection）。LeakSanitizer 退出时 fork 一个 tracer 子进程
+  # ptrace 回父进程做 StopTheWorld；父进程 non-dumpable 后同 UID 的 tracer 被内核
+  # 拒绝 attach，LSan 直接失败——gate:sanitizer 会因此假红。sanitizer 产物本就
+  # 只在开发/CI 用，不是部署形态。
+  add_compile_definitions(MYBOT_SANITIZE_BUILD=1)
 endif()
 
 # ======================================================================

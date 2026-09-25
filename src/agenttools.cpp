@@ -228,6 +228,35 @@ public:
 	CallEchoScope& operator=(const CallEchoScope&) = delete;
 };
 
+std::string loadActionScriptFile(const std::string& scriptsDir, const std::string& requested) {
+	std::string path = resolveActionScriptPath(scriptsDir, requested);
+	std::string content = readFileLimited(path, kMaxScriptBytes);
+	if (trim(content).empty()) { throw IllegalArgumentException("脚本内容为空: " + path); }
+	return content;
+}
+
+std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& requested,
+		std::string& echo) {
+	std::string content = loadActionScriptFile(ctx.scriptsDir, requested);
+	/* @Include 基准目录 = scripts-dir 根：与工具的相对路径语义一致
+	 * （include 名同样不得越出该树），多轮执行重复设置幂等 */
+	ctx.robot->setActionIncludeBaseDir(ctx.scriptsDir);
+	const std::size_t bytes = content.size();
+	auto reader = std::make_unique<LimitedReader>(
+		std::make_unique<MemoryReader>(std::move(content)),
+		kMaxScriptBytes, "action script");
+	/* PL-2：执行预算窗口。RAII——异常路径也复原 JIT 与钩子；
+	 * 窗口只覆盖这一次 run()，窗口外一切照旧（见 luaexec.hpp）。 */
+	ScriptBudgetScope budget(ctx.robot, ctx.scriptTimeoutSec);
+	/* D（2026-09-23）：执行窗口内挂回显回收通道，把驱动 `play()` 的
+	 * 顶层返回表（器件读数）带回调用方——此前它只写 stderr，
+	 * 模型对硬件状态全盲。窗口只覆盖这一次 run()；异常路径由 RAII
+	 * 复原，窗口外回显照旧写 stderr（管道模式行为不变）。 */
+	CallEchoScope echoScope(&echo);
+	ctx.robot->run(*reader);
+	return bytes;
+}
+
 static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 	return AgentTool{
 		"run_action_script",		"在常驻的机器人上执行一个动作脚本（.mt），例如站立、前进、转向、举爪。"
@@ -250,28 +279,8 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 			}
 			const std::string req = requireString(args, "script");
 			try {
-				std::string path = resolveActionScriptPath(ctx.scriptsDir, req);
-				/* @Include 基准目录 = scripts-dir 根：与本工具的相对路径语义
-				 * 一致（include 名同样不得越出该树），多轮执行重复设置幂等 */
-				ctx.robot->setActionIncludeBaseDir(ctx.scriptsDir);
-				std::string content = readFileLimited(path, kMaxScriptBytes);
-				if (trim(content).empty()) { throw IllegalArgumentException("脚本内容为空: " + path); }
-				const std::size_t bytes = content.size();
-				auto reader = std::make_unique<LimitedReader>(
-					std::make_unique<MemoryReader>(std::move(content)),
-					kMaxScriptBytes, "action script");
-				/* PL-2：执行预算窗口。RAII——异常路径也复原 JIT 与钩子；
-				 * 窗口只覆盖这一次 run()，窗口外一切照旧（见 luaexec.hpp）。 */
-				ScriptBudgetScope budget(ctx.robot, ctx.scriptTimeoutSec);
-				/* D（2026-09-23）：执行窗口内挂回显回收通道，把驱动 `play()` 的
-				 * 顶层返回表（器件读数）带回模型上下文——此前它只写 stderr，
-				 * 模型对硬件状态全盲。窗口只覆盖这一次 run()；异常路径由 RAII
-				 * 复原，窗口外回显照旧写 stderr（管道模式行为不变）。 */
 				std::string echo;
-				{
-					CallEchoScope echoScope(&echo);
-					ctx.robot->run(*reader);
-				}
+				const std::size_t bytes = runActionScriptFile(ctx, req, echo);
 				std::string out = "已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）";
 				appendActionEcho(out, echo);
 				return {out, ""};

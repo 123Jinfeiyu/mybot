@@ -1369,6 +1369,70 @@ TH_TEST(agentconfig_summary_flags_missing_endpoint) {
 	TH_CHECK_MSG(s.find("未配置，首次调用将失败") != std::string::npos, s);
 }
 
+/* ---- 2026-09-25：--on-disconnect 的上电前预检 ----
+ * 脚本名拼错要在配置期就失败（退出 2），而不是等到**第一次断连**——那正是
+ * 最需要它的时刻——才发现硬件照旧停在最后一个姿态。判据与 run_action_script
+ * 同源（loadActionScriptFile）：越界/不存在/为空三种都拒。摘要点名脚本。 */
+TH_TEST(agentconfig_on_disconnect_prechecked_before_power) {
+	NoKeyEnv nokey;
+	TempDir tmp("on-disconnect");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({ "api_key": "k" })", fs::perms::owner_all);
+
+	/* 合法：仓库里的 scripts/relay-test.mt */
+	{
+		CliOptions o = baseOptions(cfg.string());
+		o.mcpBackend = true;
+		o.onDisconnect = "relay-test.mt";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+		TH_CHECK(out.onDisconnectScript == "relay-test.mt");
+		TH_CHECK_MSG(summarizeAgentConfig(out).find("断连安全动作: relay-test.mt") != std::string::npos,
+			summarizeAgentConfig(out));
+	}
+	/* 未配置：字段空，摘要明写"停在最后姿态" */
+	{
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out, err), err);
+		TH_CHECK(out.onDisconnectScript.empty());
+		TH_CHECK(summarizeAgentConfig(out).find("停在最后姿态") != std::string::npos);
+	}
+	/* 不存在 / 越界 / 空文件 → 配置错误，文案点名选项与脚本 */
+	{
+		CliOptions o = baseOptions(cfg.string());
+		o.mcpBackend = true;
+		o.onDisconnect = "no-such-safe.mt";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK_MSG(err.find("--on-disconnect") != std::string::npos
+			&& err.find("no-such-safe.mt") != std::string::npos, err);
+	}
+	{
+		CliOptions o = baseOptions(cfg.string());
+		o.mcpBackend = true;
+		o.onDisconnect = "../robots/relay-test.sql";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK_MSG(err.find("--on-disconnect") != std::string::npos, err);
+	}
+	{
+		TempDir scripts("on-disconnect-empty");
+		writeFile(scripts.path() / "empty.mt", "\n", fs::perms::owner_all);
+		CliOptions o = baseOptions(cfg.string());
+		o.mcpBackend = true;
+		o.scriptsDir = scripts.path().string();
+		o.onDisconnect = "empty.mt";
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK_MSG(err.find("为空") != std::string::npos, err);
+	}
+}
+
 /* ---- PL-2（2026-09-22）：动作脚本执行预算的配置面 ----
  * 0 是合法值（= 显式关闭预算），所以必须走 optional 的 has_value 语义：
  * 写成 `if (*opt)` 会让「配成 0」静默退回缺省 180——那正好把危险开关变成

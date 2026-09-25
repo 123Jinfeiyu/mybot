@@ -1,9 +1,13 @@
+#include <cerrno>
 #include <csignal>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 #include <memory>
 #include <string>
 
+#include <sys/prctl.h>
 #include <unistd.h>
 
 #include "actionsource.hpp"
@@ -42,6 +46,43 @@ extern "C" void onStopSignal(int sig) {
  * 此前它们定义在本文件里，而 main.cpp 不参与 mybot_tests 链接，CLI 面零单测。 */
 
 /* 阶段 3 拆分：结构装载 / 两条流水线（选项校验已迁 cliargs） */
+
+/* ---- 进程自护（2026-09-25）：PR_SET_DUMPABLE=0 ----
+ * 本进程内存里有不该被同 UID 邻居顺手读走的东西：--tcp-token 口令、（历史上）
+ * 注入进程环境的模型密钥、以及 run_command 回执里可能出现的任何值。此前的两道
+ * 环境防线（buildCleanEnvp 清洗子进程环境、scrubEnvSecrets 抹零自己的环境块）
+ * 都挡不住 **ptrace / 读 /proc/<pid>/mem**——docs/agent.md 安全一节如实写着
+ * 「同 UID 不构成隔离」。non-dumpable 让内核把这条路收窄：
+ *   * 同 UID 的非特权进程 PTRACE_ATTACH 被拒（__ptrace_may_access 对 non-dumpable
+ *     目标要求 CAP_SYS_PTRACE），gdb -p / strace -p / 读 /proc/<pid>/mem 一并失效；
+ *   * 崩溃不落 core（core 里就是整份内存，含密钥）；
+ *   * /proc/<pid>/ 的属主变 root，environ / maps 等对同 UID 不再可读。
+ * 边界如实：它挡的是「顺手一读」，root 与持 CAP_SYS_PTRACE 者不受影响；
+ * /proc/<pid>/cmdline 依旧全局可读（这正是 --llm-key 被移除、TCP 口令推荐走
+ * BOT4CJ_TCP_TOKEN 环境变量的理由，与本条互补而非替代）。
+ * 放在 main 的**第一行**：argv 里可能就有 --tcp-token，parseArgs 之后再设已经晚了。
+ * 两个逃生口：
+ *   * BOT4CJ_ALLOW_PTRACE=1 —— 开发者要 gdb attach / strace -p 时显式放开，
+ *     stderr 明写「已放开」（不静默）；
+ *   * MYBOT_SANITIZE_BUILD —— sanitizer 构建整体跳过（LSan 的 StopTheWorld
+ *     tracer 需要 ptrace 回父进程，理由见 CMakeLists.txt）。
+ * 失败只告警不退出：prctl 失败（非 Linux 语义的容器 seccomp 之类）不该让机器人
+ * 起不来，但操作者必须知道这层防线此刻缺位。 */
+void hardenAgainstInspection() {
+#ifdef MYBOT_SANITIZE_BUILD
+	return;
+#else
+	if (const char* allow = std::getenv("BOT4CJ_ALLOW_PTRACE"); allow != nullptr && std::strcmp(allow, "1") == 0) {
+		std::cerr << "注意: BOT4CJ_ALLOW_PTRACE=1，本进程保持可被同 UID ptrace / core dump"
+			"（仅调试用；密钥与口令可自内存读出）" << std::endl;
+		return;
+	}
+	if (::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0) != 0) {
+		std::cerr << "警告: prctl(PR_SET_DUMPABLE, 0) 失败（" << std::strerror(errno)
+			<< "）；同 UID 进程可 ptrace 本进程 / 崩溃会落 core" << std::endl;
+	}
+#endif
+}
 
 /* agent 配置组装 + key 注入进程环境 + 告警打印；失败已打印，返回 false。
  * 密钥只在进程环境里流转：驱动的参数表与 BOT4CJ_DEBUG 的参数转储都不该
@@ -249,6 +290,8 @@ int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
 
 int main(int argc, char** argv) {
 	using namespace bot;
+
+	hardenAgainstInspection();	/* 先于 parseArgs：argv 可能含 --tcp-token */
 
 	auto args = parseArgs(argc, argv);
 	const CliOptions& options = args.opts;

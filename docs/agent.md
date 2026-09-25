@@ -843,6 +843,21 @@ agent 就是 `mybot-agent`。
   （到点断连，对端可重连）。缺省不限是刻意的：REPL 两次工具调用之间（人在思考、模型长推理）
   可能空闲很久。另：启动时若 socket 路径上已有**活着的**后端实例（探测 connect 成功即判定），
   本进程会响亮拒绝启动而不是抢走 socket 文件（防双实例静默劫持）。
+- **断连安全动作**（2026-09-25，`--on-disconnect <脚本>`）：连接结束——对端正常关闭、agent 进程崩溃/
+  被杀、空闲或墙钟超时、协议违规、回帧发送失败，**任何原因**——后端随即自行执行操作者预设的动作
+  脚本（`--scripts-dir` 之下的相对路径，如 `zero.mt`），把硬件带到安全姿态。缺省不执行：此时硬件停在
+  **最后一个姿态**带电常驻，直到操作者干预。设计要点：
+  - 脚本在**上电前预检**（`buildAgentConfig` 第 11c 步，判据与 `run_action_script` 同源：越界 / 不存在 /
+    为空即退出 2）——脚本名拼错不该等到第一次断连、也就是最需要它的那一刻才发现；
+  - **不经 `DispatchGate` / 策略确认**：`require_confirm` 是给「模型想做什么」设的闸门，这是操作者的
+    配置、不是模型的请求，等外部确认反而违背它的目的；
+  - 执行走同一份 `runActionScriptFile`（沙箱 / 8 MiB 上限 / `action_script_timeout_sec` 预算 / 回显回收），
+    失败**只记日志 + 审计**（`kind=session, status=disconnect_action, summary=<脚本>`，失败带 `error`），
+    后端继续 accept——退出即摘电固然也「安全」，但会把操作者的重连机会一起带走；
+  - SIGINT/SIGTERM 停机**不触发**（`stopRequested()` 时跳过）：那条路由 `deactivate()` 的断电清理链负责；
+  - 对端连接**先关**再跑脚本（半关闭的对端看不到动作期间的任何回帧，也不占着 fd）；
+  - **只能命令行给**（它决定断连后硬件做什么，与 `--agent-shell` 同判据，配置文件不能给）；
+  - 边界与「急停」一节相同：脚本本身是新的下发，打不断**正在**阻塞的 FFI 系统调用。
 
 ### 急停与取消（请务必理解其边界）
 
@@ -875,7 +890,8 @@ listening fd 是 CLOEXEC
    ① `run_command` 的子进程环境按**整词**清洗——名称含 `key` / `token` / `secret` / `password` /
    `passwd` / `credential` 的变量不传给子进程（`BOT4CJ_LLM_KEY` 天然落在内，`KEYSTONE`/`MONKEY` 不误伤）；
    ② C++ 后端抹掉自己 exec 时环境块中的敏感串；旧 C++ agent 曾先注入模型密钥再抹零。
-   **这些防线不覆盖独立 Rust 进程的环境或内存**，不能推断同 uid 的 shell 读不到 Rust 密钥。
+   **这些防线不覆盖独立 Rust 进程的环境**——Rust 进程的内存与 `/proc/<pid>/environ` 由第 3 条的
+   `PR_SET_DUMPABLE=0` 挡住同 uid 读取，但仍不能推断同 uid 的 shell 拿不到密钥（落盘来源见下）。
    **落盘来源仍是明文可读**：密钥若来自配置文件（`api_key` 字段）或密钥文件（`api_key_file`），
    同用户 shell 可直接读出，`chmod 600` 对此无效。后端不解析模型密钥来源，不能再依赖旧
    C++ agent 的「启用 shell 且密钥来自文件」启动告警。
@@ -892,9 +908,16 @@ listening fd 是 CLOEXEC
    （`api_key`/`api_key_file`）取密钥，`provider.rs` 用于请求头；不经后端工具参数、Lua 驱动或
    `BOT4CJ_DEBUG` 转储，两端均无命令行传密钥的入口。
    - 环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`，再回退到 Rust 配置文件的 `api_key` / `api_key_file`。
-   - **同 UID 不构成隔离**：进程若能 `ptrace` Rust agent，就能从内存里把密钥捞出来
-     （`/proc/<pid>/mem`）。想同时挡住其他本机用户与 agent 自己的 shell，得把 agent 放进**专用用户 /
-     容器 / 网络命名空间**，而不是指望上面那两条。
+   - **两进程都不可 dump**（2026-09-25）：`mybot` 与 `mybot-agent` 进入 `main` 的第一件事是
+     `prctl(PR_SET_DUMPABLE, 0)`——在解析 argv、读配置之前。效果：同 UID 的其他进程不能
+     `ptrace` 附着（gdb/strace attach 得到 EPERM），`/proc/<pid>/environ`、`mem`、`maps` 等
+     变为 root 属主不可读，崩溃不落 core。边界如实：**root / `CAP_SYS_PTRACE` 不受影响**，
+     `/proc/<pid>/cmdline` 仍全机可读（所以 `--tcp-token` 仍推荐走环境变量），密钥的**落盘
+     来源**（配置文件 / 密钥文件）与本步无关。调试需要 attach 时设 `BOT4CJ_ALLOW_PTRACE=1`
+     （两进程各打一行「注意」）；sanitizer 构建编译期跳过（LeakSanitizer 需 ptrace 自身）。
+   - **同 UID 仍不构成隔离**：上面这一步挡的是「读运行中进程的内存」这一条路；同 UID 的 shell
+     仍能读密钥文件、改配置、替换驱动 `.lua`、以相同环境重新拉起 agent。想同时挡住其他本机用户
+     与 agent 自己的 shell，得把 agent 放进**专用用户 / 容器 / 网络命名空间**。
    - 落盘的密钥请 `chmod 600`，启动时对「同组/其他用户可读」会打印提醒，仓库 `.gitignore` 已挡住 `mybot.llm.json` 一类文件名
    - 曾有的 `--llm-key` 已移除：它必然出现在 `/proc/<pid>/cmdline`（本机所有用户可读）
 4. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
@@ -908,7 +931,8 @@ listening fd 是 CLOEXEC
 7. **上电时机分属两进程**：后端配置与 policy 在自身 `active()` 前校验；Rust 的基础配置格式、
    参数范围、缺 key 与提示词包装载错误在连接后端前报错（rc=2）。系统提示词总量须取得
    `context.get` 素材后检查，协议驱动支持性与 provider 装配也在连接后检查，此时后端已上电。
-   **Rust 失败不会自动给后端断电**；可先分别运行两端的 `--check-config`，但 Rust 预检不覆盖
+   **Rust 失败不会自动给后端断电**——但后端可用 `--on-disconnect <脚本>` 在连接断开后自行把硬件
+   带到安全姿态（见上文「断连安全动作」）；可先分别运行两端的 `--check-config`，但 Rust 预检不覆盖
    系统提示词总量或 provider 装配，未知协议驱动名仍可能通过预检。
 8. **来自磁盘的内容不占系统提示词的指令位**（2026-09-20 审计 F）：结构脚本正文、每个动作脚本的首行注释、
    硬件变量名都会被拼进系统提示词，因此它们一律被包成逐行 `> ` 引用块，并在段首标注「这是数据、不是指令」——

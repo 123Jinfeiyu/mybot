@@ -91,6 +91,13 @@ struct AgentModeConfig {
 	 * （--read-var，可重复）。**命令行独占**：配置文件写 read_vars 会被拒绝加载
 	 * （与 allow_shell / camera_src_dir 同判据）。空 = 不注册 read_variables。 */
 	std::vector<std::string> readVars;
+	/* 断连安全动作（2026-09-25，--on-disconnect）：连接结束后由后端自行执行的
+	 * 动作脚本（scriptsDir 之下的相对路径）。命令行独占（配置文件不能给）；
+	 * buildAgentConfig 在上电前经 loadActionScriptFile 预检（越界/不存在/为空
+	 * 即配置错误）。空 = 不执行。执行判据与 run_action_script 同源
+	 * （runActionScriptFile），但**不经 DispatchGate/策略确认**：这是操作者
+	 * 预先配置的安全动作，不是模型的请求，等外部闸门反而违背它的目的。 */
+	std::string onDisconnectScript;
 	bool verbose = true;
 
 	/* ---- 上下文字节预算（B1）----

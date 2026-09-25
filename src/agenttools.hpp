@@ -180,6 +180,20 @@ SqlOutcome runSqlStatement(const std::string& sql, const RobotStruct& robot);
  * fopen 截断路径，是「校验的路径 ≠ 打开的路径」经典绕过）。 */
 std::string resolveActionScriptPath(const std::string& scriptsDir, const std::string& requested);
 
+/* 动作脚本装载（沙箱解析 + 体积上限读取 + 非空校验），失败抛 std::exception。
+ * runActionScriptFile 的前半段；--on-disconnect 的上电前预检也走它——
+ * "这个脚本能不能跑"的判据不因校验时机不同而分叉。 */
+std::string loadActionScriptFile(const std::string& scriptsDir, const std::string& requested);
+
+/* 动作脚本执行核心（2026-09-25，随 --on-disconnect 抽出）：loadActionScriptFile →
+ * 执行预算窗口 → 回显回收 → robot->run。`run_action_script`
+ * 工具与后端断连安全动作（mcpbackend）共用这一份，于是"哪些路径能跑、跑多久、
+ * 回显怎么收"只有一处判据。requested 是 scriptsDir 之下的相对路径；返回脚本
+ * 字节数；失败抛 std::exception（脚本不存在/为空/越界/执行失败），由调用方
+ * 决定折成工具回执还是日志。@p echo 接收驱动 play() 的顶层回显文本。 */
+std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& requested,
+		std::string& echo);
+
 /* ---- D（2026-09-23）：动作脚本执行期间的驱动返回表回收 ----
  * `run_action_script` 此前只回一句「已执行动作脚本 X（N 字节）」——**模型看不到
  * 任何读数**，而器件读到的值事实上早已产生：`play()` 的顶层回显（luavar 的

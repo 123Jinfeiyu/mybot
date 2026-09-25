@@ -9,6 +9,34 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 两进程启动即 `PR_SET_DUMPABLE=0`，同 UID 不能 ptrace / 读内存
+
+- **`mybot` 与 `mybot-agent` 进入 `main` 第一步**（先于解析 argv）调
+  `prctl(PR_SET_DUMPABLE, 0)`：同 UID 其他进程不能 `ptrace` 附着，`/proc/<pid>/environ`、
+  `mem` 变为 root 属主不可读，崩溃不落 core——运行中进程内存里的模型密钥 / TCP 口令
+  不再对同用户 shell 敞开。root / `CAP_SYS_PTRACE` 不受影响，`cmdline` 仍全机可读，落盘
+  的密钥文件与此无关（docs/agent.md 安全说明第 3 条如实列出边界）。
+- **调试逃生口** `BOT4CJ_ALLOW_PTRACE=1`：两进程都跳过这一步并各向 stderr 打一行「注意」。
+  `prctl` 失败只告警不拒启。
+- **sanitizer 构建编译期跳过**：`-DMYBOT_SANITIZE=...` 现在同时定义 `MYBOT_SANITIZE_BUILD`，
+  `hardenAgainstInspection()` 据此直接返回——LeakSanitizer 的 StopTheWorld 靠 fork 出的
+  tracer ptrace 回附父进程，不可 dump 会让 `gate:sanitizer` 结构性失效。
+
+### 2026-09-25 后端断连安全动作 `--on-disconnect`
+
+- **新选项** `mybot --mcp-backend --on-disconnect <脚本>`：连接结束（对端关闭 / agent 崩溃
+  被杀 / 空闲或墙钟超时 / 协议违规——任何原因）后，后端自行执行 `--scripts-dir` 之下
+  的动作脚本（如 `zero.mt`），把硬件带到操作者预设的安全姿态。缺省不执行，行为与此前
+  一致（硬件停在最后一个姿态带电常驻）——docs/agent.md 已知限制「Rust 失败不会自动给
+  后端断电」由此有了操作者可配的兜底。
+- **上电前预检**：脚本越界 / 不存在 / 为空即退出 2，判据与 `run_action_script` 同源
+  （`loadActionScriptFile` / `runActionScriptFile` 自工具里抽成公开函数，工具与断连
+  动作共用一份）。`--check-config` 摘要新增「断连安全动作」行。
+- **不经策略确认**：它是操作者配置、不是模型请求，`require_confirm` 不拦它。执行失败
+  只记日志与审计（`kind=session, status=disconnect_action, summary=<脚本>`，失败带
+  `error`；session 记录的 `summary` 为加法字段），后端继续 accept。SIGINT/SIGTERM 停机
+  不触发（走 `deactivate()`）。命令行独占，非 `--mcp-backend` 下给出即拒绝。
+
 ### 2026-09-25 Rust agent 模型输出改流式（缺省），Ctrl-C 即时丢弃在途请求
 
 - **流式输出成为缺省**：`mybot-agent` 请求带 `stream:true`，模型正文按 SSE delta

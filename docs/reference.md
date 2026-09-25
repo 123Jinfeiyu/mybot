@@ -35,6 +35,7 @@
 | `--mcp-call-budget <N>` | 每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限；上限 1000000）。后端不假设调用方是谁，故自行再强制一层预算 |
 | `--mcp-wall-clock <秒>` | 每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。单次物理调用的 script/command 超时始终在工具层生效 |
 | `--mcp-idle-timeout <秒>` | 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽；墙钟预算同样在空闲期收口（到点断连，对端可重连） |
+| `--on-disconnect <脚本>` | **断连安全动作**：连接结束（对端关闭 / agent 崩溃 / 空闲或墙钟超时 / 协议违规——任何原因）后，后端自行执行的动作脚本（`--scripts-dir` 之下的相对路径，如 `zero.mt`）。缺省不执行——此时硬件停在**最后一个姿态**带电常驻。脚本在上电前预检（越界 / 不存在 / 为空即退出 2，判据与 `run_action_script` 同源）；**不经策略确认**（它是操作者预设的安全动作，不是模型请求）；执行失败只记日志与审计（`kind=session, status=disconnect_action`），后端继续 accept。SIGINT/SIGTERM 停机不触发（走 `deactivate()` 断电清理链）。**只能命令行给**（它决定断连后硬件做什么，与 `--agent-shell` 同判据） |
 
 > **已移除（2026-09-24）**：`--agent` 与模型循环类选项（`--task`、`--llm-*`、`--prompt-file`、`--session-file`、`--resume`）。agent 循环已迁 Rust（`agent/` 目录，`mybot-agent`）：C++ 宿主侧以 `--mcp-backend` 提供工具后端，模型侧参数由 `mybot-agent` 自己的选项面承载（`./agent/target/release/mybot-agent --help`，构建：`bash scripts/build_agent.sh`）。本程序对上述残留用法显式拒绝（退出 2）并给出替代指引。
 
@@ -146,7 +147,8 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 61 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
 | `BOT4CJ_TCP_TOKEN` | TCP 口令（等价 `--tcp-token`，优先级低于命令行）。argv 会出现在 `/proc/<pid>/cmdline`，多用户机器上推荐用本变量传口令 |
-| `BOT4CJ_LLM_KEY` | 由 **Rust `mybot-agent`** 读取并用于 provider 请求头；回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY` → 配置文件 `api_key` / `api_key_file`。不经后端工具参数或 `BOT4CJ_DEBUG` 转储；后端若继承了该变量，`run_command` 的环境清洗会剔除它，但这不是同 uid 进程间的密钥隔离 |
+| `BOT4CJ_LLM_KEY` | 由 **Rust `mybot-agent`** 读取并用于 provider 请求头；回退顺序：`ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY` → 配置文件 `api_key` / `api_key_file`。不经后端工具参数或 `BOT4CJ_DEBUG` 转储；后端若继承了该变量，`run_command` 的环境清洗会剔除它。两进程启动第一件事都是 `prctl(PR_SET_DUMPABLE, 0)`（见 `BOT4CJ_ALLOW_PTRACE`），同 uid 进程读不到 `/proc/<pid>/environ`、`mem`，也不能 `ptrace` 附着——但 root / `CAP_SYS_PTRACE` 不受此限 |
+| `BOT4CJ_ALLOW_PTRACE` | 设为 `1` 时 **`mybot` 与 `mybot-agent` 都不再**在启动时 `prctl(PR_SET_DUMPABLE, 0)`，进程保持可被同 UID `ptrace`（gdb/strace attach）、崩溃落 core、`/proc/<pid>/environ` 与 `mem` 对同 UID 可读；两进程各自向 stderr 打一行「注意」。**仅调试用**——密钥、TCP 口令都可自内存读出。缺省（不设）为不可 dump；`prctl` 失败只告警不拒启。sanitizer 构建（`-DMYBOT_SANITIZE=...`）**编译期跳过**这一步（LeakSanitizer 需要 ptrace 自身），不看本变量 |
 | `BOT4CJ_LLM_CONFIG` | 两端各自读取的配置文件路径。Rust 优先级为 `--llm-config` > 本变量 > 缺省查找；C++ 后端显式指定路径只能用本变量，不接受 `--llm-config`。`none` 禁用对应进程的配置文件读取；须分别传给两进程 |
 | `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL` | Rust agent 接入点 / 模型名（覆盖配置文件，低于命令行；两项均无内置缺省） |
 | `BOT4CJ_LLM_REASONING_EFFORT` | DeepSeek 驱动用：思考强度（`low`/`high`/`max`）。也可经配置文件或驱动参数 `reasoning_effort` 传入，优先级为 参数 > 环境变量 |

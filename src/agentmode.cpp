@@ -141,6 +141,7 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 			: "已声明 " + std::to_string(cfg.readVars.size()) + " 项") + "\n";
 	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
 	s += "  策略钩子    : " + orNone(cfg.policyPath, "(未启用)") + "\n";
+	s += "  断连安全动作: " + orNone(cfg.onDisconnectScript, "(未配置；断连后硬件停在最后姿态)") + "\n";
 	if (!cfg.configWarning.empty()) { s += "  配置告警    : " + cfg.configWarning + "\n"; }
 	s += "  任务模式    : " + std::string(cfg.task.empty() ? "交互 REPL" : "一次性 --task") + "\n";
 	return s;
@@ -574,6 +575,23 @@ bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& 
 	return true;
 }
 
+/* 11c) 断连安全动作（--on-disconnect）：上电前预检脚本能装载——路径越界 /
+ * 不存在 / 为空都是配置错误，必须在这里失败。否则要等到**第一次断连**、也就是
+ * 最需要它的那一刻才发现脚本名拼错，硬件照旧停在最后一个姿态。判据与
+ * run_action_script 同源（loadActionScriptFile），不另写一份。 */
+bool precheckDisconnectScript(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
+	out.onDisconnectScript = opts.onDisconnect;
+	if (out.onDisconnectScript.empty()) { return true; }
+	try {
+		(void)loadActionScriptFile(out.scriptsDir, out.onDisconnectScript);
+	} catch (const std::exception& e) {
+		err = "--on-disconnect 脚本不可用 [" + out.onDisconnectScript + "]: " + e.what()
+			+ "（须是 --scripts-dir 之下的相对路径，且非空）";
+		return false;
+	}
+	return true;
+}
+
 } // namespace
 
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
@@ -598,6 +616,7 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	if (!openAuditLog(opts, file, out, err)) { return false; }		/* 10) 审计 */
 	if (!loadPolicyHook(opts, file, out, err)) { return false; }		/* 11) 策略钩子 */
 	if (!enforceBackendConfirmPolicy(opts, out, err)) { return false; }	/* 11b) 后端强制确认 */
+	if (!precheckDisconnectScript(opts, out, err)) { return false; }	/* 11c) 断连安全动作 */
 
 	/* 12) 会话文件（--session-file / 配置文件 session_file；批次 1）：
 	 * 写入是纯输出，判据同 audit_log：可进配置文件。恢复的组合校验已在
