@@ -48,6 +48,7 @@ use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::provider::Backend;
 use crate::session::SessionFileWriter;
+use crate::summary;
 
 /// `PromptError` → 操作者可见文本：剥掉 rig 的枚举前缀（`PromptCancelled: `）——
 /// 钩子给的 reason 正是要让操作者看到的那句话（「执行被中断」「达到单任务墙钟预算
@@ -177,6 +178,7 @@ impl Session {
         material: PromptMaterial,
         mut audit: Option<AuditLog>,
         initial_history: Vec<Message>,
+        initial_summary: Option<String>,
         resumed: bool,
         writer: Option<SessionFileWriter>,
     ) -> Self {
@@ -199,7 +201,7 @@ impl Session {
             audit,
             material,
             tool_names,
-            history: ConversationHistory::resumed(initial_history),
+            history: ConversationHistory::resumed(initial_history, initial_summary),
             writer,
             stats: SessionStats::default(),
             started: Instant::now(),
@@ -231,23 +233,95 @@ impl Session {
         }
     }
 
+    /// 历史压缩（改进项 #7）：整块裁剪 + 把被裁块压进摘要。
+    ///
+    /// 预算先扣掉摘要一节在请求体里的体积（摘要挂在 preamble 上，history 的记账看
+    /// 不见它），再交给 `evict`；`max(1)` 是因为 0 对 evict 意味着「不裁」。摘要走
+    /// `model_handle()`——AgentBuilder 抹掉类型后的模型句柄，底下仍是 BudgetModel，
+    /// 超时/重试/停止标志/审计观测与正常请求同一套。摘要失败只告知不阻断：任务
+    /// 照跑，只是这次裁掉的上下文没进摘要（会话文件也什么都不写，下次恢复自愈）。
+    async fn compact_history(&mut self) {
+        let budget = self.cfg.max_history_bytes as usize;
+        if budget == 0 {
+            return;
+        }
+        let reserve = self
+            .history
+            .summary()
+            .map_or(0, summary::summary_section_weight);
+        let evicted = self
+            .history
+            .evict(budget.saturating_sub(reserve).max(1), &mut |t| errln!("{t}"));
+        if evicted.is_empty() || !self.cfg.history_summary {
+            return;
+        }
+        let previous = self.history.summary().map(str::to_string);
+        let handle = self.backend.agent.model_handle().clone();
+        let result = summary::summarize(
+            &handle,
+            previous.as_deref(),
+            &evicted,
+            self.cfg.max_summary_bytes as usize,
+            self.cfg.max_tokens as u64,
+            &mut |w| errln!("{w}"),
+        )
+        .await;
+        // 摘要请求的观测值单独落审计：turn=-1（不属于任何任务轮）、status=summary
+        let calls = self.state.drain_calls();
+        for rec in &calls {
+            self.stats.model_turns += 1;
+            self.stats.model_ms += rec.ms.max(0) as u128;
+            self.write_model_row(ModelEntry {
+                turn: -1,
+                ok: rec.ok,
+                status: if rec.ok { "summary" } else { "summary_error" }.to_string(),
+                error: rec.error.clone(),
+                ms: rec.ms,
+                req_bytes: rec.req_bytes,
+                resp_bytes: rec.resp_bytes,
+                attempts: rec.attempts,
+                prompt_tokens: rec.prompt_tokens,
+                completion_tokens: rec.completion_tokens,
+            });
+        }
+        match result {
+            Ok(text) => {
+                errln!(
+                    "[历史] 已将裁掉的 {} 条消息压缩进摘要（{} 字节）",
+                    evicted.len(),
+                    text.len()
+                );
+                if let Some(w) = self.writer.as_mut() {
+                    w.write_summary(&text, self.history.persisted_blocks());
+                }
+                self.history.set_summary(text);
+            }
+            Err(e) => errln!("[历史] 摘要失败（{e}），本次裁掉的上下文未进摘要，仅整块裁剪"),
+        }
+    }
+
     /// 跑一轮任务；模型输出由本函数打到 stdout（流式逐 delta / 阻塞整段）。
     /// `Err` = 本轮失败（历史已回滚到完整边界，会话可继续）。
     pub async fn run_turn(&mut self, task: &str) -> Result<(), String> {
-        // 任务开始前：按字节预算**整块**裁掉最早的旧任务块（最新块无条件保留；
-        // 0 = 不裁剪）。裁剪日志走 stderr：更早的任务上下文不再可见是必须告知的事实。
-        self.history
-            .trim(self.cfg.max_history_bytes as usize, &mut |t| errln!("{t}"));
-        // 任务内预算清零（含墙钟起点）与上一轮的观测值/图片清理
+        // 任务内预算清零（含墙钟起点）与上一轮的观测值/图片清理。必须先于压缩：
+        // 摘要请求走同一个 BudgetModel，上一轮残留的图片后注不能混进它。
         self.state.begin_task();
+        // 任务开始前：按字节预算**整块**裁掉最早的旧任务块（最新块无条件保留；
+        // 0 = 不裁剪），被裁的块交给摘要器。裁剪日志走 stderr：更早的任务上下文
+        // 不再可见（或只剩摘要）是必须告知的事实。
+        self.compact_history().await;
         let snapshot = self.history.snapshot();
+        let preamble = self
+            .history
+            .summary()
+            .map(|s| summary::preamble_with_summary(&self.backend.preamble, s));
 
         // 借用只活在块内：`result` 是拥有所有权的值，块一结束 `self.backend` 的
         // 不可变借用就结束，后面才能改 `self.history`。
         let result = if self.backend.stream {
-            self.drive_stream(task, snapshot.clone()).await
+            self.drive_stream(task, snapshot.clone(), preamble).await
         } else {
-            self.drive_blocking(task, snapshot.clone()).await
+            self.drive_blocking(task, snapshot.clone(), preamble).await
         };
 
         // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次。流式面的
@@ -292,17 +366,19 @@ impl Session {
         &self,
         task: &str,
         snapshot: Vec<Message>,
+        preamble: Option<String>,
     ) -> Result<PromptResponse, String> {
         let progress = self.show_progress.then(Progress::start);
-        let result = self
+        let mut runner = self
             .backend
             .agent
             .runner(task.to_string())
             .history(snapshot)
-            .max_turns(self.cfg.max_turns as usize)
-            .run()
-            .await
-            .map_err(format_prompt_error);
+            .max_turns(self.cfg.max_turns as usize);
+        if let Some(p) = preamble {
+            runner = runner.preamble(p);
+        }
+        let result = runner.run().await.map_err(format_prompt_error);
         if let Some(p) = progress {
             p.finish().await;
         }
@@ -317,16 +393,19 @@ impl Session {
         &self,
         task: &str,
         snapshot: Vec<Message>,
+        preamble: Option<String>,
     ) -> Result<PromptResponse, String> {
         let mut progress = self.show_progress.then(Progress::start);
-        let mut stream = self
+        let mut runner = self
             .backend
             .agent
             .runner(task.to_string())
             .history(snapshot)
-            .max_turns(self.cfg.max_turns as usize)
-            .stream()
-            .await;
+            .max_turns(self.cfg.max_turns as usize);
+        if let Some(p) = preamble {
+            runner = runner.preamble(p);
+        }
+        let mut stream = runner.stream().await;
         // 本模型轮是否已打过文本（决定要不要在工具轮/结束时补换行）
         let mut printed = false;
         let mut final_resp: Option<PromptResponse> = None;

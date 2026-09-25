@@ -48,6 +48,10 @@ pub mod limits {
     pub const MAX_RETRIES_MAX: i64 = 6;
     pub const RETRY_BACKOFF_MS_MIN: i64 = 0;
     pub const RETRY_BACKOFF_MS_MAX: i64 = 10_000;
+    /// 历史摘要正文的字节上限区间：太小写不下任何有用信息，太大就失去了
+    /// 「压缩」的意义（它是从 max_history_bytes 里扣出来的）。
+    pub const SUMMARY_BYTES_MIN: i64 = 256;
+    pub const SUMMARY_BYTES_MAX: i64 = 1 << 20;
 }
 
 /// 内置缺省（与 C++ `AgentModeConfig` 的成员初值逐值对齐）。
@@ -61,6 +65,8 @@ pub const DEFAULT_TIMEOUT_SEC: i64 = 180;
 pub const DEFAULT_MAX_TASK_SECONDS: i64 = 900;
 /// 会话历史的字节预算（估重，见 history.rs）；0 = 不裁剪
 pub const DEFAULT_MAX_HISTORY_BYTES: i64 = 4 << 20;
+/// 被裁任务块的模型摘要正文上限（见 summary.rs）
+pub const DEFAULT_MAX_SUMMARY_BYTES: i64 = 8192;
 /// 任务内文本/图片预算（见 budget.rs）；0 = 不限
 pub const DEFAULT_MAX_TASK_TOOL_RESULT_BYTES: i64 = 2 << 20;
 pub const DEFAULT_MAX_TASK_IMAGE_BYTES: i64 = 4 << 20;
@@ -110,6 +116,8 @@ const KNOWN_FIELDS: &[&str] = &[
     "run_command_max_timeout_sec",
     "action_script_timeout_sec",
     "stream",
+    "history_summary",
+    "max_summary_bytes",
 ];
 
 /// 命令行原文（**只解析、不校验**；校验与合流在 [`build`]）。
@@ -176,6 +184,10 @@ pub struct Config {
     pub thinking: String,
     /// 模型输出是否流式（逐 delta 打到 stdout）；false = 整段阻塞输出。
     pub stream: bool,
+    /// 被裁任务块是否交给模型压成摘要挂在系统提示词末尾（见 summary.rs）
+    pub history_summary: bool,
+    /// 摘要正文字节上限（超出在字符边界截断并告警）
+    pub max_summary_bytes: i64,
     pub prompt_files: Vec<String>,
     /// 提示词包成品文本（空 = 未使用）。
     pub prompt_pack: String,
@@ -212,6 +224,8 @@ struct FileConfig {
     reasoning_effort: Option<String>,
     thinking: Option<String>,
     stream: Option<bool>,
+    history_summary: Option<bool>,
+    max_summary_bytes: Option<i64>,
     prompt_files: Option<Vec<String>>,
     audit_log: Option<String>,
     /// 只用于写入（见 [`Config::session_file_from_cli`] 的判据）。
@@ -425,6 +439,15 @@ fn want_int(root: &Value, path: &str, key: &str, lo: i64, hi: i64) -> Result<Opt
     Ok(Some(f as i64))
 }
 
+/// 布尔字段（只认 JSON 布尔；"yes"/1 之类一律拒）。
+fn want_bool(root: &Value, path: &str, key: &str) -> Result<Option<bool>, String> {
+    match root.get(key) {
+        None => Ok(None),
+        Some(Value::Bool(b)) => Ok(Some(*b)),
+        Some(_) => Err(type_error(path, key, "布尔值")),
+    }
+}
+
 /// 浮点字段（区间判在调用方，因为 temperature/top_p 的开闭区间不同）。
 fn want_number(root: &Value, path: &str, key: &str) -> Result<Option<f64>, String> {
     let v = match root.get(key) {
@@ -567,11 +590,15 @@ fn load_config_file(path: &str) -> Result<FileConfig, String> {
         audit_log: want_string(&root, path, "audit_log")?,
         session_file: want_string(&root, path, "session_file")?,
         thinking: None,
-        stream: match root.get("stream") {
-            None => None,
-            Some(Value::Bool(b)) => Some(*b),
-            Some(_) => return Err(type_error(path, "stream", "布尔值")),
-        },
+        stream: want_bool(&root, path, "stream")?,
+        history_summary: want_bool(&root, path, "history_summary")?,
+        max_summary_bytes: want_int(
+            &root,
+            path,
+            "max_summary_bytes",
+            limits::SUMMARY_BYTES_MIN,
+            limits::SUMMARY_BYTES_MAX,
+        )?,
     };
     if let Some(t) = f.temperature {
         if !(0.0..=2.0).contains(&t) {
@@ -797,6 +824,8 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         // 「强制开」的选项——与其它字段「命令行 > 配置文件」的口径略有不同，因为
         // 关流式是保守方向，不需要放宽入口。
         stream: file.stream.unwrap_or(true) && !cli.llm_no_stream,
+        history_summary: file.history_summary.unwrap_or(true),
+        max_summary_bytes: file.max_summary_bytes.unwrap_or(DEFAULT_MAX_SUMMARY_BYTES),
         prompt_files: Vec::new(),
         prompt_pack: String::new(),
         audit_log: String::new(),
@@ -967,6 +996,16 @@ pub fn summarize(cfg: &Config) -> String {
             "不限".to_string()
         } else {
             cfg.max_calls_per_round.to_string()
+        }
+    );
+    s += &format!(
+        "  历史摘要    : {}\n",
+        if cfg.max_history_bytes == 0 {
+            "不适用（历史不裁剪）".to_string()
+        } else if cfg.history_summary {
+            format!("开（被裁任务块压成摘要，正文上限 {} 字节）", cfg.max_summary_bytes)
+        } else {
+            "关（history_summary=false：被裁任务块直接丢弃）".to_string()
         }
     );
     s += &format!(
@@ -1274,6 +1313,51 @@ mod tests {
         assert!(!build(&cli(&on, true)).unwrap().stream, "--llm-no-stream 关");
         assert!(!build(&cli(&off, false)).unwrap().stream, "配置 stream=false 关");
         assert!(parse_args(&["--llm-no-stream".to_string()]).unwrap().llm_no_stream);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 历史摘要（改进项 #7）：缺省开、8 KiB；只认布尔；字节上限有区间。
+    #[test]
+    fn history_summary_keys_default_on_and_are_range_checked() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_summary_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p.to_string_lossy().to_string()
+        };
+        let cli = |cfg: &str| Cli {
+            socket: "/tmp/x.sock".into(),
+            llm_config: cfg.to_string(),
+            llm_endpoint: "http://127.0.0.1:1/v1/chat/completions".into(),
+            llm_model: "m".into(),
+            ..Cli::default()
+        };
+        let plain = write("plain.json", r#"{"api_key":"k"}"#);
+        let cfg = build(&cli(&plain)).unwrap();
+        assert!(cfg.history_summary, "缺省开");
+        assert_eq!(cfg.max_summary_bytes, DEFAULT_MAX_SUMMARY_BYTES);
+
+        let off = write(
+            "off.json",
+            r#"{"api_key":"k","history_summary":false,"max_summary_bytes":256}"#,
+        );
+        let cfg = build(&cli(&off)).unwrap();
+        assert!(!cfg.history_summary);
+        assert_eq!(cfg.max_summary_bytes, 256);
+        assert!(summarize(&cfg).contains("history_summary=false"));
+
+        for (body, key) in [
+            (r#"{"history_summary":"yes"}"#, "history_summary"),
+            (r#"{"history_summary":1}"#, "history_summary"),
+            (r#"{"max_summary_bytes":255}"#, "max_summary_bytes"),
+            (r#"{"max_summary_bytes":1048577}"#, "max_summary_bytes"),
+            (r#"{"max_summary_bytes":"8k"}"#, "max_summary_bytes"),
+        ] {
+            let p = write("bad.json", body);
+            let e = load_config_file(&p).unwrap_err();
+            assert!(e.contains(key), "配置 {body} 应报 {key}：实际 {e}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

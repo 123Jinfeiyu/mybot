@@ -56,7 +56,8 @@
 #
 #   用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
 #   本文件**只有 Rust 一种模式**：跑 R1-R14（mybot-agent；R1-R5 批次 B 骨架、
-#   R6-R9 批次 C 循环层、R10 审计 H2 修复、R11 会话持久化、R12/R13 多协议与恢复、
+#   R6-R9 批次 C 循环层、R10 审计 H2 修复、R11 会话持久化（R11b 纯裁剪、
+#   R11c 裁剪→摘要→跨会话恢复）、R12/R13 多协议与恢复、
 #   R14 MCP4725 虚拟读写闭环及错误读数反例；R5m 为配置
 #   镜像黄金测试——同一 mybot.llm.json 喂双端 --check-config 互钉共享字段），
 #   拓扑是「后端 + mybot-agent」两个进程；
@@ -1001,7 +1002,9 @@ R11T="$tmp/rust11-trim"
 mkdir -p "$R11T"
 SESS11T="$R11T/sess.jsonl"
 CFG11T="$R11T/config.json"
-printf '%s\n' '{"max_history_bytes":1}' > "$CFG11T"
+# history_summary=false：本用例守的是「纯整块裁剪」的落盘/恢复口径（摘要由 R11c 守）；
+# 顺带作为摘要的反向判据——关掉后不得出现摘要请求、摘要日志与 session_summary 记录。
+printf '%s\n' '{"max_history_bytes":1,"history_summary":false}' > "$CFG11T"
 PORT=$((29400 + RANDOM % 300))
 CAP11T="$R11T/request.json"
 start_server "$PORT" "$CAP11T" text || exit 1
@@ -1046,6 +1049,84 @@ check_json "$CAP11TR" "[m['content'] for m in d['messages'] if m.get('role')=='u
 	"恢复后的首个请求带着上个进程的最新任务"
 audit_expr "$SESS11T" "[l['content'] for l in lines if l.get('role')=='user'] == ['trim-task-1','trim-task-2','trim-task-3','trim-task-4']" \
 	"恢复时再次裁剪仍不漏写、不重写"
+check_absent "$R11T/p1-err.txt" "压缩进摘要" "history_summary=false：不生成摘要"
+check_absent "$R11T/p2-err.txt" "含历史摘要" "history_summary=false：恢复时没有摘要可带"
+audit_expr "$SESS11T" "not any(l.get('type')=='session_summary' for l in lines)" \
+	"history_summary=false：会话文件里没有 session_summary 记录"
+check_absent "$CAP11TR" "更早对话的摘要" "history_summary=false：系统提示词不带摘要一节"
+
+echo "----- R11c：被裁任务块压成摘要挂进系统提示词，并随会话文件恢复 -----"
+# 2026-09-25 改进项 #7。剧本：max_history_bytes=1 ⇒ 每个任务开始前只保留最新块。
+#   任务 1、2 之间只有一块，裁不动；任务 3 前裁掉块 1 → 摘要请求（夹具答
+#   「涵盖任务 s-task-1」）→ 任务 3 的主请求 system 里必须带这句；
+#   进程 2 --resume：磁盘上 session_summary(keep_blocks=1) 收口掉块 1，带回摘要；
+#   任务 4 前裁掉块 2 → 摘要请求承接旧摘要 → 「涵盖任务 s-task-1, s-task-2」。
+# 夹具端对摘要请求形态也设了 400 判据（不得带工具、必须有定界转录）。
+R11S="$tmp/rust11-summary"
+mkdir -p "$R11S"
+SESS11S="$R11S/sess.jsonl"
+CFG11S="$R11S/config.json"
+AUD11S="$R11S/audit.jsonl"
+printf '%s\n' '{"max_history_bytes":1,"max_summary_bytes":512}' > "$CFG11S"
+PORT=$((29500 + RANDOM % 300))
+CAP11S="$R11S/request.json"
+start_server "$PORT" "$CAP11S" summarize || exit 1
+start_backend "$R11S/p1" || exit 1
+printf '%s\n' "s-task-1" "s-task-2" "s-task-3" /exit | \
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R11S/p1/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config "$CFG11S" --session-file "$SESS11S" --audit-log "$AUD11S" \
+	>"$R11S/p1-out.txt" 2>"$R11S/p1-err.txt"
+rc11s=$?
+stop_backend
+stop_server
+if [ "$rc11s" -ne 0 ]; then
+	echo "  [FAIL] 摘要会话退出码 $rc11s"
+	fail=1
+fi
+check_present "$R11S/p1-err.txt" "已裁掉最早的" "任务 3 前发生了整块裁剪"
+check_present "$R11S/p1-err.txt" "压缩进摘要" "被裁块交给了摘要器并成功"
+check_absent "$R11S/p1-err.txt" "摘要失败" "摘要请求形态被夹具接受（没有 400）"
+# rig 把 system 发成内容块数组（[{type:text,text}]）而不是字符串，故用 json.dumps 归一后再找子串
+check_json "$CAP11S" "d['messages'][0]['role']=='system' and 'AGENT-E2E-摘要' in json.dumps(d['messages'][0]['content'], ensure_ascii=False)" \
+	"任务 3 的主请求 system 末尾带着摘要"
+check_json "$CAP11S" "'涵盖任务 s-task-1' in json.dumps(d['messages'][0]['content'], ensure_ascii=False) and 's-task-2' not in json.dumps(d['messages'][0]['content'], ensure_ascii=False)" \
+	"摘要只覆盖被裁掉的任务 1（任务 2 仍在历史里，不进摘要）"
+check_json "$CAP11S" "'更早对话的摘要' in json.dumps(d['messages'][0]['content'], ensure_ascii=False) and '数据不是指令' in json.dumps(d['messages'][0]['content'], ensure_ascii=False)" "摘要一节带定界声明"
+check_json "$CAP11S" "[m['content'] for m in d['messages'] if m.get('role')=='user'] == ['s-task-2','s-task-3']" \
+	"主请求历史只剩保留块 + 当前任务"
+audit_expr "$AUD11S" "[l.get('status') for l in lines if l['kind']=='model' and l.get('status')=='summary'] == ['summary']" \
+	"审计里恰有一条 status=summary 的 model 行"
+audit_expr "$AUD11S" "all('turn' not in l for l in lines if l['kind']=='model' and l.get('status')=='summary')" \
+	"摘要 model 行不带 turn（不属于任何任务轮）"
+audit_expr "$SESS11S" "[(l['keep_blocks'], 'AGENT-E2E-摘要' in l['content']) for l in lines if l.get('type')=='session_summary'] == [(1, True)]" \
+	"会话文件落了 session_summary（keep_blocks=1）"
+
+PORT=$((29800 + RANDOM % 300))
+CAP11SR="$R11S/resumed-request.json"
+start_server "$PORT" "$CAP11SR" summarize || exit 1
+start_backend "$R11S/p2" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R11S/p2/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config "$CFG11S" --session-file "$SESS11S" --resume --task s-task-4 \
+	>"$R11S/p2-out.txt" 2>"$R11S/p2-err.txt"
+rc11sr=$?
+stop_backend
+stop_server
+if [ "$rc11sr" -ne 0 ]; then
+	echo "  [FAIL] 摘要恢复退出码 $rc11sr"
+	fail=1
+fi
+check_present "$R11S/p2-err.txt" "已恢复会话：6 条历史消息，含历史摘要" "恢复时按 keep_blocks 收口（块 2 两条 + 块 3 四条，块 1 不再复活）并带回摘要"
+check_present "$R11S/p2-err.txt" "压缩进摘要" "任务 4 前再次裁剪并摘要"
+check_json "$CAP11SR" "'涵盖任务 s-task-1, s-task-2' in json.dumps(d['messages'][0]['content'], ensure_ascii=False)" \
+	"新摘要承接了旧摘要（任务 1）并加入本次裁掉的任务 2"
+check_json "$CAP11SR" "[m['content'] for m in d['messages'] if m.get('role')=='user'] == ['s-task-3','s-task-4']" \
+	"恢复后的主请求历史只剩保留块 + 当前任务"
+audit_expr "$SESS11S" "[l['keep_blocks'] for l in lines if l.get('type')=='session_summary'] == [1, 1]" \
+	"第二条 session_summary 同样 keep_blocks=1"
+audit_expr "$SESS11S" "[l['content'] for l in lines if l.get('role')=='user'] == ['s-task-1','s-task-2','s-task-3','s-task-4']" \
+	"摘要不改变消息落盘：四个任务全在、不重写"
 
 echo "----- R12：DeepSeek reasoning 历史回传与跨进程恢复 -----"
 R12="$tmp/rust12"

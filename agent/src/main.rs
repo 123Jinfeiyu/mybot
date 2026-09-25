@@ -26,6 +26,7 @@ mod prompt;
 mod provider;
 mod repl;
 mod session;
+mod summary;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -189,6 +190,7 @@ async fn run() -> i32 {
     //      宁可当场拒绝）。
     // 任一不过即拒绝并退出 2；不是 `--resume` 时这一段整体跳过（零行为变更）。
     let mut resume_history: Vec<rig_agent::completion::Message> = Vec::new();
+    let mut resume_summary: Option<String> = None;
     let mut resume_session_id = String::new();
     if cfg.resume {
         let mut loaded = session::LoadedSession::default();
@@ -218,12 +220,18 @@ async fn run() -> i32 {
                     return 2;
                 }
                 errln!(
-                    "[mybot-agent] 已恢复会话：{} 条历史消息（来自 {}）",
+                    "[mybot-agent] 已恢复会话：{} 条历史消息{}（来自 {}）",
                     loaded.messages.len(),
+                    loaded
+                        .summary
+                        .as_ref()
+                        .map(|s| format!("，含历史摘要 {} 字节", s.len()))
+                        .unwrap_or_default(),
                     cfg.session_file
                 );
                 resume_session_id = loaded.head.session_id;
                 resume_history = loaded.messages;
+                resume_summary = loaded.summary;
             }
             Err(e) => {
                 errln!("错误: {e}");
@@ -310,6 +318,7 @@ async fn run() -> i32 {
         material,
         audit,
         resume_history,
+        resume_summary,
         resumed,
         session_writer,
     );

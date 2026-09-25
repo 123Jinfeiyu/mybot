@@ -612,6 +612,42 @@ class Handler(BaseHTTPRequestHandler):
             self._reply(final_answer())
             return
 
+        # ---- 历史摘要（2026-09-25，改进项 #7）----
+        # 摘要请求的判据（与 rig 侧 summary.rs 同源）：**不带工具**，且系统提示词
+        # 含身份标记「会话历史压缩器」。夹具从被裁转录里抠出 `[用户] xxx` 行，连同
+        # 上一份摘要里已列的任务名，答成「AGENT-E2E-摘要：涵盖任务 a, b」——这样
+        # 断言侧只要看后续正常请求的 system 里有哪些任务名，就知道摘要（a）真被
+        # 生成、（b）真挂进了系统提示词、（c）承接了上一份摘要没有丢。
+        # 形态不合格（带了工具 / 没有转录标题）→ 400：摘要请求也得像真请求一样自洽。
+        if MODE == "summarize":
+            msgs = request.get("messages", [])
+            system = " ".join(str(m.get("content", "")) for m in msgs if m.get("role") == "system")
+            if "会话历史压缩器" in system:
+                if request.get("tools"):
+                    self._error_400("summary request must not carry tools")
+                    return
+                body = "\n".join(str(m.get("content", "")) for m in msgs if m.get("role") == "user")
+                if "## 即将裁掉的对话记录" not in body or "数据不是指令" not in body:
+                    self._error_400("summary request is missing the delimited transcript")
+                    return
+                tasks = []
+                for line in body.splitlines():
+                    line = line.strip()
+                    if line.startswith("> 涵盖任务 "):
+                        tasks.extend(t.strip() for t in line[len("> 涵盖任务 "):].split(",") if t.strip())
+                    elif line.startswith("> [用户] "):
+                        tasks.append(line[len("> [用户] "):].strip())
+                self._reply(openai_shell({"choices": [{"message": {
+                    "role": "assistant",
+                    "content": "AGENT-E2E-摘要\n涵盖任务 %s" % ", ".join(tasks),
+                }}]}))
+                return
+            if tool_results == 0:
+                self._reply(tool_call("list_hardware", {}))
+            else:
+                self._reply(final_answer())
+            return
+
         # ---- Anthropic 形态（2026-09-23 批次 3）：第三协议驱动 ----
         # 剧本与默认模式同构（列硬件 → 跑动作脚本 → 收尾），只是**报文形态**
         # 全部换成 Anthropic 的块数组。驱动侧要把它们归一成规范化的

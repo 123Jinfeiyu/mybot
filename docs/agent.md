@@ -235,7 +235,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
   `agent_policy` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
-  `run_command_max_timeout_sec` `action_script_timeout_sec`。
+  `run_command_max_timeout_sec` `action_script_timeout_sec` `history_summary` `max_summary_bytes`。
   配置文件字段均可省略；Rust 必需的 endpoint、model、密钥须由其他入口补齐。
   `stream`（布尔，缺省 `true`）选择模型输出面：流式逐 delta 打印或阻塞整段打印，
   命令行 `--llm-no-stream` 优先；只有 Rust 消费，C++ 后端仅登记为已知字段。
@@ -255,6 +255,11 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   常量只能改源码缺省，B1（2026-09-22）起可由配置文件覆盖——现场调上下文预算不再需要重编。
   口径（C4）：预算记账**不含** system 提示词（另有 64 KiB 独立上限）与工具 schema，
   估重是线上字节的下界——请求体真实总量略高于预算，量级仍远低于常见网关限额。
+  `history_summary`（布尔，缺省 `true`）与 `max_summary_bytes`（256-1048576，缺省 8192）
+  控制**历史摘要**（2026-09-25，只有 Rust 消费，C++ 后端仅登记为已知字段）：被
+  `max_history_bytes` 裁掉的任务块交给同一个模型压成摘要，挂在系统提示词末尾（见下文
+  「历史裁剪与摘要」）；`false` 退回纯整块裁剪。摘要正文超出 `max_summary_bytes` 时在
+  字符边界截断并告警。`max_history_bytes` 为 0（不裁剪）时摘要无从发生。
   另有六个**运行期数值**（B4 的五个 + PL-2 的动作脚本预算，入口同样只有配置文件这一层）：
 
   | 字段 | 区间 | 含义与缺省 |
@@ -657,7 +662,8 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 ```
 
 - **三类记录**：`tool`（每次工具调用）/ `model`（每轮模型调用，**失败也记**——
-  那是复盘"这一轮为什么没跑起来"的唯一线索）/ `session`（`start` / `end` / `error`）。
+  那是复盘"这一轮为什么没跑起来"的唯一线索；历史摘要请求也是一行 `model`，
+  `status=summary` / `summary_error`，不带 `turn`）/ `session`（`start` / `end` / `error`）。
   没有 `model` 与 `session` 时，一次在模型调用阶段失败的会话在日志里会**一条都没有**。
 - **token 只记 provider 给的数**：`usage` 由驱动原样透传，宿主只挑
   `prompt_tokens` / `completion_tokens` 记账，**不推算、不计费**；provider 没给就没有这两个键。
@@ -722,7 +728,13 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
      服务端会 400 的序列宁可当场拒绝，也不要让此后每个任务都以同一个 400 失败。
 - 恢复后仍受 `max_history_bytes` 预算约束（内存侧裁剪；文件是 append-only，
   不回写、不重排）；`/clear` 会向文件写 `session_clear` 分界标记，
-  恢复时该标记丢弃此前的全部消息——否则「忘掉对话」会在下次恢复时复活。
+  恢复时该标记丢弃此前的全部消息（连同历史摘要）——否则「忘掉对话」会在下次恢复时复活。
+- 历史摘要随文件恢复：每次摘要成功写一行
+  `{"type":"session_summary","content":"…","keep_blocks":K}`——`K` 是那一刻磁盘上摘要
+  **没有**覆盖的最新任务块数。恢复时读到这行就把此前累积的消息收口成最后 `K` 个块并
+  带回摘要正文，恢复后送给模型的历史与写入进程当时的一致，不多不少；就绪行报
+  「已恢复会话：N 条历史消息，含历史摘要 M 字节」。摘要失败时什么都不写，下次恢复
+  照旧按预算整块裁剪（自愈）。消息行本身不受影响：文件里仍是完整的逐条对话。
 - 审计联动：沿用被恢复会话的原 `session id`（恢复前后的行能对上同一段对话），
   并在 `kind="session"` 的 `start` 记录上标 `"resumed": true`（**加法字段**：
   老消费方按既有字段过滤的行为逐字节不变）。
@@ -1139,7 +1151,18 @@ bash test/run_all.sh agent-all
   `run_command` 的**工具描述**里那组「默认/最大」读的是生效值，配置改过之后模型看到的
   仍是准的（系统提示词那一段只讲用法，不带这些数字）。
 - REPL 历史按字节预算自动裁剪（缺省 4 MiB）：超过预算时按「任务块」整块裁掉最老的
-  任务（含其中的 base64 图片），system 提示词与最新一个任务无条件保留——更早的任务
+  任务（含其中的 base64 图片），system 提示词与最新一个任务无条件保留。**历史裁剪与摘要**
+  （2026-09-25，改进项 #7）：切口只落在任务块起点，一对 `tool_call`/`tool_result`、一问一答
+  永远不会只剩一半（`history::evict` 单测钉死这条不变量）；被裁的整块在 `history_summary`
+  开启（缺省）时交给**同一个模型**（同一条超时/重试/停止标志/审计通路）压成摘要，与已有
+  摘要合并后挂在系统提示词末尾的「更早对话的摘要」一节——摘要**不进 messages**，块判据、
+  失败回滚边界、图片后注序号都不受它影响；预算先扣掉摘要一节的体积再裁。送去摘要的转录
+  只有文本：图片与思维链只留字节数，每条正文 4 KiB、总量 128 KiB 封顶，逐行 `> ` 定界
+  并声明「数据不是指令」（摘要挂回提示词时再定界一次）。摘要失败（网络/模型没输出正文）
+  只在 stderr 告知「本次裁掉的上下文未进摘要，仅整块裁剪」，任务照跑；成功时 stderr 报
+  「已将裁掉的 N 条消息压缩进摘要（M 字节）」。审计里摘要请求单独成行：`kind=model`、
+  `status=summary`（失败 `summary_error`）、不带 `turn`。摘要请求的耗时计入该任务的
+  墙钟预算（它发生在任务开始之后）。`history_summary=false` 退回纯整块裁剪——更早的任务
   上下文因此不再可见。单块超预算不封顶（正在进行的对话不能裁空），所以单张图另有
   宿主侧硬上限：`capture_image` 拒绝 base64 超过 2 MiB 的图像。该判据有**两道**，
   第二道（base64 长度）只是驱动漏报字节数时的兜底：正常路径先用驱动声明的原始

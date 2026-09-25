@@ -9,6 +9,26 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 Rust agent 会话历史压缩：被裁任务块压成摘要挂进系统提示词
+
+- **长会话不再「忘光」**：`max_history_bytes` 裁掉最早的任务块时，被裁块交给同一个模型
+  压成一段摘要（与已有摘要合并），挂在系统提示词末尾的「更早对话的摘要」一节。摘要不进
+  `messages`，块判据、失败回滚、图片后注序号一律不受影响；预算先扣掉摘要一节再裁。
+- **切口只落在任务块起点**：一对 `tool_call`/`tool_result`、一问一答永远不会只剩一半
+  ——被裁部分整块送摘要、留下部分整块送模型（单测钉死不变量）。恢复期把图片占位文本
+  形态的后注也排除在块起点之外，否则「任务 + 最终回答」会被切开。
+- **送去摘要的是数据不是指令**：转录只含文本（图片/思维链只留字节数），每条 4 KiB、
+  总量 128 KiB 封顶，逐行 `> ` 定界并声明；摘要挂回提示词时再定界一次。
+- **配置**：`history_summary`（缺省 `true`）、`max_summary_bytes`（256-1 MiB，缺省 8192，
+  超出在字符边界截断并告警）；C++ 后端只登记不解析。`--check-config` 新增「历史摘要」行。
+- **随会话文件恢复**：新记录 `session_summary`（`content` + `keep_blocks`），恢复时收口成
+  最后 K 个块并带回摘要，就绪行报「含历史摘要 M 字节」；`/clear` 连摘要一起忘掉；摘要
+  失败什么都不写（自愈）。
+- **审计**：摘要请求单独成行 `kind=model, status=summary|summary_error`，不带 `turn`。
+- 守门：`history.rs` / `summary.rs` / `session.rs` / `config.rs` 单测；`scripts/agent_e2e.sh`
+  R11c（三任务 + `--resume` 接力，夹具 `summarize` 模式对摘要请求形态设 400 判据），
+  R11b 显式 `history_summary=false` 作反向判据。
+
 ### 2026-09-25 wait_variable 工具：智能体能「等事件」了
 
 - **新工具** `wait_variable(name, key, condition, value, timeout_sec, poll_ms)`：后端按

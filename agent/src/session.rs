@@ -62,6 +62,13 @@ pub fn image_placeholder(total_image_bytes: usize) -> String {
     format!("[图片 {total_image_bytes} 字节，未随会话恢复]")
 }
 
+/// 一段 user 文本是否是恢复期的图片后注（encode_user 把占位追加在 caption 之后，
+/// 所以判据是「以占位文本收尾」）。history.rs 用它把这种消息排除在块起点之外——
+/// 判据与 `image_placeholder` 同源维护。
+pub fn is_image_placeholder_notice(text: &str) -> bool {
+    text.ends_with("字节，未随会话恢复]") && text.contains("[图片 ")
+}
+
 /// 工具集指纹：按注册序拼接工具名后取 fingerprint64（与 C++
 /// `sessionToolsFingerprint` 同式；名字串撞车概率与既有 image_fp 同量级，可接受）。
 pub fn tools_fingerprint(tool_names: &[String]) -> String {
@@ -410,6 +417,8 @@ pub fn protocol_violation(history: &[Message]) -> Option<String> {
 pub struct LoadedSession {
     pub head: SessionHead,
     pub messages: Vec<Message>,
+    /// 最后一条 `session_summary` 记录的正文（`/clear` 之后为 None）。
+    pub summary: Option<String>,
 }
 
 /// 读入会话文件（三道判据之一「逐行解析」由本函数承担）。
@@ -418,6 +427,11 @@ pub struct LoadedSession {
 /// **损坏行跳过并点名**（含行号与人话原因，进 warnings）不整份作废——崩溃留下的
 /// 最后一行残缺不该抹掉此前的完整历史。`/clear` 分界标记丢弃此前累积的全部消息
 /// （否则「忘掉对话」会在下次恢复时复活）。
+///
+/// `session_summary` 记录（改进项 #7）：写它的那一刻，磁盘上「摘要已覆盖」的旧任务
+/// 块之后只剩 `keep_blocks` 个块，本函数据此把此前累积的消息收口成最后 `keep_blocks`
+/// 个块并记下摘要正文——恢复后的历史与写入进程当时送给模型的一致，不多不少。
+/// 摘要失败时进程什么都不写，下次恢复照旧按预算整块裁剪（自愈）。
 ///
 /// 第二、三道判据（指纹核对、协议自洽）由调用方在拿到结果后执行——本函数只管
 /// 单行形态与分界语义。
@@ -433,6 +447,7 @@ pub fn load_session_file(
     let mut st = DecodeState::default();
     let mut messages: Vec<Message> = Vec::new();
     let mut head = SessionHead::default();
+    let mut summary: Option<String> = None;
 
     for (idx, line) in text.lines().enumerate() {
         let line_no = idx + 1;
@@ -464,7 +479,37 @@ pub fn load_session_file(
                 continue;
             }
             messages.clear();
+            summary = None;
             st = DecodeState::default();
+            continue;
+        }
+        if obj.get("type").and_then(Value::as_str) == Some("session_summary") {
+            if !head_seen {
+                warnings.push(format!(
+                    "会话文件 '{path}' 第 {line_no} 行的 session_summary 出现在会话头之前，已跳过该行"
+                ));
+                continue;
+            }
+            let (Some(content), Some(keep)) = (
+                obj.get("content").and_then(Value::as_str),
+                obj.get("keep_blocks").and_then(Value::as_u64),
+            ) else {
+                warnings.push(format!(
+                    "会话文件 '{path}' 第 {line_no} 行的 session_summary 缺 content/keep_blocks，已跳过该行"
+                ));
+                continue;
+            };
+            let starts = crate::history::block_starts(&messages);
+            let keep = keep as usize;
+            let cut = if keep == 0 {
+                messages.len()
+            } else if keep >= starts.len() {
+                0
+            } else {
+                starts[starts.len() - keep]
+            };
+            messages.drain(0..cut);
+            summary = Some(content.to_string());
             continue;
         }
         if !head_seen {
@@ -493,6 +538,7 @@ pub fn load_session_file(
     }
     out.head = head;
     out.messages = messages;
+    out.summary = summary;
     Ok(())
 }
 
@@ -622,6 +668,16 @@ impl SessionFileWriter {
     /// 与操作者在 REPL 里的意图相反。
     pub fn write_clear_marker(&mut self) -> bool {
         self.write_line(&json!({ "type": "session_clear" }))
+    }
+
+    /// 历史摘要记录：`content` = 摘要正文，`keep_blocks` = 此刻磁盘上摘要**没有**
+    /// 覆盖的最新任务块数（载入时据此收口，见 `load_session_file`）。
+    pub fn write_summary(&mut self, content: &str, keep_blocks: usize) -> bool {
+        self.write_line(&json!({
+            "type": "session_summary",
+            "content": content,
+            "keep_blocks": keep_blocks,
+        }))
     }
 
     /// 追加一条消息（可能拆成多行）。已停用（broken）后恒 `false`，不再写。
@@ -971,6 +1027,85 @@ mod tests {
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.messages[0], Message::user("清空后的新任务"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 摘要记录：载入时把此前的消息收口成最后 keep_blocks 个块，并带回摘要正文；
+    /// 图片后注（磁盘上是占位文本形态）不能被当作块起点切开任务块。
+    #[test]
+    fn summary_record_trims_to_keep_blocks_and_restores_summary() {
+        let dir = tmpdir("summary");
+        let path = (dir.join("s.jsonl")).to_string_lossy().to_string();
+        let mut w = fresh_writer(&path);
+        for m in sample_conversation() {
+            assert!(w.append_message(&m));
+        }
+        let second = vec![Message::user("任务二"), Message::assistant("二完成")];
+        let third = vec![Message::user("任务三"), Message::assistant("三完成")];
+        for m in second.iter().chain(third.iter()) {
+            assert!(w.append_message(m));
+        }
+        // 写入进程此刻裁掉了任务一（含图片后注），留下两块
+        assert!(w.write_summary("任务一：拍照并站立，已站立", 2));
+        assert!(w.append_message(&Message::user("任务四")));
+        drop(w);
+
+        let (loaded, warns) = load(&path);
+        assert!(warns.is_empty(), "{warns:?}");
+        assert_eq!(loaded.summary.as_deref(), Some("任务一：拍照并站立，已站立"));
+        let mut expected = second;
+        expected.extend(third);
+        expected.push(Message::user("任务四"));
+        assert_eq!(loaded.messages, expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn summary_keep_zero_drops_everything_and_clear_forgets_summary() {
+        let dir = tmpdir("summary0");
+        let path = (dir.join("s.jsonl")).to_string_lossy().to_string();
+        let mut w = fresh_writer(&path);
+        assert!(w.append_message(&Message::user("任务一")));
+        assert!(w.append_message(&Message::assistant("完成")));
+        assert!(w.write_summary("全裁", 0));
+        drop(w);
+        let (loaded, warns) = load(&path);
+        assert!(warns.is_empty(), "{warns:?}");
+        assert!(loaded.messages.is_empty());
+        assert_eq!(loaded.summary.as_deref(), Some("全裁"));
+
+        let mut w = SessionFileWriter::new();
+        w.open(&path, true).unwrap();
+        assert!(w.write_clear_marker());
+        drop(w);
+        let (loaded, _) = load(&path);
+        assert_eq!(loaded.summary, None, "/clear 连摘要一起忘掉");
+
+        // 缺字段的摘要行：跳过并点名，不影响其余历史
+        std::fs::write(
+            &path,
+            format!(
+                "{}\n{{\"type\":\"session_summary\"}}\n{{\"role\":\"user\",\"content\":\"x\"}}\n",
+                std::fs::read_to_string(&path).unwrap().lines().next().unwrap()
+            ),
+        )
+        .unwrap();
+        let (loaded, warns) = load(&path);
+        assert_eq!(warns.len(), 1);
+        assert!(warns[0].contains("session_summary"), "{warns:?}");
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.summary, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn image_placeholder_notice_is_recognised() {
+        assert!(is_image_placeholder_notice(&image_placeholder(10)));
+        assert!(is_image_placeholder_notice(&format!(
+            "以上工具返回的图片如下。{}",
+            image_placeholder(4096)
+        )));
+        assert!(!is_image_placeholder_notice("任务：[图片 3 字节，未随会话恢复] 之后还有话"));
+        assert!(!is_image_placeholder_notice("普通任务"));
     }
 
     #[test]

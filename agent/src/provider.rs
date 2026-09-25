@@ -115,6 +115,8 @@ pub struct Backend {
     pub effective_url: String,
     /// 模型输出走流式面（逐 delta）还是阻塞面（整段）。
     pub stream: bool,
+    /// 定稿的系统提示词：每轮若有历史摘要，repl.rs 以它为底拼出本轮的 preamble。
+    pub preamble: String,
 }
 
 /// 按配置装配 agent（工具表来自后端 `tool.list`，系统提示词来自 `prompt`）。
@@ -189,6 +191,7 @@ pub fn build(
         driver,
         effective_url: format!("{base}{}", driver.request_path()),
         stream: cfg.stream,
+        preamble: preamble.to_string(),
     })
 }
 
