@@ -101,6 +101,8 @@ set(MYBOT_CORE_SOURCES
   src/agent_subprocess.cpp
   src/agentproto.cpp
   src/agenttools.cpp
+  src/agentview.cpp
+  src/agentimage.cpp
   src/agenthistory.cpp
   src/agentdispatch.cpp
   src/agentprompt.cpp
