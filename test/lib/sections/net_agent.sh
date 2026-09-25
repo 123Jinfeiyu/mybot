@@ -108,6 +108,25 @@ run_one_agent_rust_e2e() {
 		record_skip "agent-rust-e2e(缺mybot-agent产物)"
 		return 2
 	fi
+	# ---- Rust 产物陈旧守卫（S17，2026-09-26）----
+	# run_all.sh 顶部的陈旧守卫只看 src/、test/cpp/、CMakeLists.txt，**不查 agent/**：
+	# 改完 Rust 源码忘跑 scripts/build_agent.sh，就会用**上一轮的 mybot-agent**跑本段。
+	# 本轮亲历：旧产物不认识 --resume，agent_e2e.sh 打出 86 条与真因无关的 [FAIL]，
+	# 极易被误判为产品回归。与 C++ 守卫不同——那里判失败（核心产物必重建），这里判
+	# **SKIP**：mybot-agent 是可选产物，且本机可能没装 cargo 无法自动重建，响亮提示 +
+	# 跳过比一片误导红更稳。逃生口 BOT_ALLOW_STALE=1 与 C++ 守卫共用同一语义。
+	if [ -z "${BOT_ALLOW_STALE:-}" ]; then
+		local _agent_stale
+		_agent_stale="$(find agent/src agent/Cargo.toml agent/Cargo.lock -type f \
+			-newer "$agent_bin" -print -quit 2>/dev/null)"
+		if [ -n "$_agent_stale" ]; then
+			echo "[SKIP] mybot-agent 产物早于 Rust 源码（例如 $_agent_stale），跑旧产物会得到一批与真因无关的 FAIL。"
+			echo "       请先重建： bash scripts/build_agent.sh --release"
+			echo "       确实要跑旧产物： BOT_ALLOW_STALE=1 bash test/run_all.sh"
+			record_skip "agent-rust-e2e(mybot-agent产物陈旧)"
+			return 2
+		fi
+	fi
 	local out rc
 	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh --rust 2>&1)"
 	rc=$?
