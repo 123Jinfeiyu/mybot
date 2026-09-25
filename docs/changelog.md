@@ -9,6 +9,26 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 Rust agent 模型输出改流式（缺省），Ctrl-C 即时丢弃在途请求
+
+- **流式输出成为缺省**：`mybot-agent` 请求带 `stream:true`，模型正文按 SSE delta
+  逐段打到 stdout（每段即刻 flush，管道下游同步可见），工具轮之间换行分隔；
+  `--llm-no-stream` 或配置文件新字段 `"stream": false`（布尔，两端识别，仅 Rust 消费）
+  退回原先的整段阻塞输出。`/status` 与 `--check-config` 摘要新增「输出模式」行。
+- **重试 / 超时 / 审计口径不因面而异**：首帧之前的非 2xx、连接失败、首帧超时按与阻塞面
+  同一张表分类重试；`--llm-timeout` 在流式下封顶首帧与之后的帧间空闲；审计 model 行
+  与 token 用量由流适配器在流收尾时落，两种面的最终回答逐字节一致。
+- **如实偏差**（详见 docs/agent.md「流式与阻塞的如实偏差」）：流式面会打出工具轮里的
+  中间文本；思维链 delta 不打印；首帧之后断流不重试、已打出的文本不撤回；流式 429 拿
+  不到 `Retry-After`，退避只按本地指数。
+- **取消收紧**：Ctrl-C 之后两个面都**立即丢弃在途模型请求**（此前阻塞面要等服务端
+  返回或 `--llm-timeout` 到期），退避等待同样即时中止；此前记档的「在飞请求由
+  `--llm-timeout` 封顶」偏差就此关闭。
+- **假模型服务** `scripts/fake_llm_server.py` 按请求体 `stream` 字段输出 OpenAI /
+  Anthropic 两种 SSE 形态，`FAKE_LLM_FRAME_DELAY_MS` 控制帧间隔；`agent_e2e.sh` 新增
+  R15（读端计时证明逐 delta 到达、`--llm-no-stream` 整段到齐、两面 stdout 一致、配置
+  与摘要互钉），R8b 改为断言在飞请求被丢弃且进程在信号后 5s 内退出。
+
 ### 2026-09-25 软门禁转硬本地预跑：clang / clang-tidy / musl 存量清障归零
 
 - **背景**：CI 六条软门禁各带转硬条件（最迟 2026-10-31），其中 clang / clang-tidy /

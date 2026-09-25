@@ -22,21 +22,102 @@
 //!
 //! 3. **审计**：每次模型调用（含重试的尝试次数、请求体估算字节）在这里记一条，
 //!    由 REPL 落 model 行。
+//!
+//! 4. **流式面**（`stream`）：rig 的 SSE 请求是惰性的——`inner.stream(req).await`
+//!    返回 Ok 时还没发 HTTP，第一次 poll 才发；非 2xx 变成流的第一个 Err。所以
+//!    这一层走 provider 的 `raw_stream` 出口：打开 → **预取首帧** → 首帧是 Err 就按
+//!    与阻塞面同一张表分类重试 → 首帧 Ok 再把「首帧 + 余流」串回 rig 的
+//!    `StreamingCompletionResponse`。首帧之后的中途断流**不重试**（已打给操作者
+//!    的文本收不回来），直接失败。余流套一层 [`Observed`] 适配器：帧间空闲超时
+//!    （`--llm-timeout` 在流式下的语义）、Ctrl-C 检查、以及流结束/出错/被丢弃时
+//!    落审计 model 行——审计口径与阻塞面一致，REPL 无需知道两种面的区别。
+//!    如实偏差：流式下 429 拿不到 Retry-After 头（rig 的 SSE 错误只带状态码），
+//!    退避只按本地指数；预取阶段的连接类错误以 `ProviderError` 形态到达，按瞬时
+//!    处理（判据：尚无字节被看到，重试不改变已见结果）。
+//!
+//! 5. **在飞取消**：Ctrl-C 置停止标志后，两个面都**立即丢弃在途请求**（`guard`
+//!    以 `select!` 对停止标志定时轮询；流式面余流由 `Observed` 在 Pending 时检查），
+//!    本轮以「请求被中断」收场——不再等服务端把整段响应吐完。
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use futures::{Stream, StreamExt};
 use rig_agent::completion::message::{ImageMediaType, MimeType, UserContent};
 use rig_agent::completion::{
     AssistantContent, CompletionError, CompletionModel, CompletionRequest, CompletionResponse,
-    Message, ProviderCapabilities,
+    Message, ProviderCapabilities, Usage,
 };
+use rig_core::client::Client;
+use rig_core::http_client::HttpClientExt;
+use rig_core::providers::anthropic::completion::AnthropicCompatibleProvider;
+use rig_core::providers::openai::completion::OpenAICompatibleProvider;
+use rig_core::providers::{anthropic, openai};
 // 流式响应类型在 rig-core 的 streaming 模块（completion 只重导出消息与 request 面）
-use rig_core::streaming::StreamingCompletionResponse;
+use rig_core::streaming::{
+    normalize_stream, RawStreamingChoice, StreamFinal, StreamingCompletionResponse,
+    StreamingResult,
+};
 
 use crate::hook::{has_tool_result, CallRecord, HookState, Injection, IMAGE_CAPTION};
 use crate::out::errln;
+
+/// 流式适配器查取消/空闲的醒来间隔。
+const STREAM_TICK_MS: u64 = 250;
+
+/// provider 模型的「原生流」出口：rig 的 `CompletionModel::stream` 把首帧错误藏进
+/// 流里，这里要的是能预取首帧再决定是否重试的形态。三族 provider 都是
+/// `GenericCompletionModel<Ext, H>`，各实现一次。
+pub trait RawStream {
+    const PROVIDER: &'static str;
+    fn raw_stream_normalized(
+        &self,
+        request: CompletionRequest,
+    ) -> impl Future<Output = Result<StreamingResult, CompletionError>> + Send;
+}
+
+impl<Ext, H> RawStream for openai::completion::GenericCompletionModel<Ext, H>
+where
+    Client<Ext, H>: HttpClientExt + Clone + 'static,
+    Ext: rig_core::client::Provider + OpenAICompatibleProvider + Clone + Send + Sync + 'static,
+    H: Sync,
+{
+    const PROVIDER: &'static str = Ext::PROVIDER_NAME;
+    fn raw_stream_normalized(
+        &self,
+        request: CompletionRequest,
+    ) -> impl Future<Output = Result<StreamingResult, CompletionError>> + Send {
+        async move {
+            let raw = self.raw_stream(request).await?;
+            Ok(normalize_stream(raw, |r| {
+                Ok(StreamFinal::from((Ext::PROVIDER_NAME, r)))
+            }))
+        }
+    }
+}
+
+impl<Ext, T> RawStream for anthropic::completion::GenericCompletionModel<Ext, T>
+where
+    T: HttpClientExt + Clone + Default + 'static,
+    Ext: AnthropicCompatibleProvider + Clone + Send + Sync + 'static,
+{
+    const PROVIDER: &'static str = Ext::PROVIDER_NAME;
+    fn raw_stream_normalized(
+        &self,
+        request: CompletionRequest,
+    ) -> impl Future<Output = Result<StreamingResult, CompletionError>> + Send {
+        async move {
+            let raw = self.raw_stream(request).await?;
+            Ok(normalize_stream(raw, |r| {
+                Ok(StreamFinal::from((Ext::PROVIDER_NAME, r)))
+            }))
+        }
+    }
+}
 
 /// 单次退避上限（毫秒）——与 C++ `llm_limits::kRetryBackoffCapMs` 逐值对齐。
 pub const RETRY_BACKOFF_CAP_MS: u64 = 60_000;
@@ -187,25 +268,45 @@ impl<M: CompletionModel> BudgetModel<M> {
         Ok(())
     }
 
-    /// 一次尝试：单次调用超时是可重试类失败。
+    /// 一次尝试：单次调用超时是可重试类失败；在飞期间 Ctrl-C 立即放弃（见 [`Self::guard`]）。
     async fn attempt(
         &self,
         request: CompletionRequest,
     ) -> Result<CompletionResponse, CompletionError> {
+        self.guard(self.inner.completion(request)).await
+    }
+
+    /// 给一次在飞的模型调用套上两道观测：单次调用超时（`--llm-timeout`，<=0 不限）
+    /// 与停止标志（Ctrl-C）。两者都以**丢弃 future** 的方式中止在途请求——HTTP
+    /// 客户端随之断连，不等服务端把整段响应吐完。
+    async fn guard<T>(
+        &self,
+        fut: impl Future<Output = Result<T, CompletionError>>,
+    ) -> Result<T, CompletionError> {
+        let stop_requested = async {
+            let mut tick = tokio::time::interval(Duration::from_millis(STREAM_TICK_MS));
+            loop {
+                tick.tick().await;
+                if self.state.stop.load(Ordering::Relaxed) {
+                    return;
+                }
+            }
+        };
+        let guarded = async {
+            tokio::select! {
+                r = fut => r,
+                _ = stop_requested => Err(CompletionError::RequestError(Box::new(Interrupted))),
+            }
+        };
         if self.timeout_sec > 0 {
-            match tokio::time::timeout(
-                Duration::from_secs(self.timeout_sec as u64),
-                self.inner.completion(request),
-            )
-            .await
-            {
+            match tokio::time::timeout(Duration::from_secs(self.timeout_sec as u64), guarded).await {
                 Ok(r) => r,
                 Err(_) => Err(CompletionError::RequestError(Box::new(ModelTimeout {
                     seconds: self.timeout_sec,
                 }))),
             }
         } else {
-            self.inner.completion(request).await
+            guarded.await
         }
     }
 
@@ -234,7 +335,20 @@ impl<M: CompletionModel> BudgetModel<M> {
             attempts = self.max_attempts,
             message = c.message
         );
-        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        // 退避期间 Ctrl-C 同样即时生效（调用方在返回后复查停止标志）
+        let deadline = tokio::time::sleep(Duration::from_millis(delay_ms));
+        tokio::pin!(deadline);
+        let mut tick = tokio::time::interval(Duration::from_millis(STREAM_TICK_MS));
+        loop {
+            tokio::select! {
+                _ = &mut deadline => return,
+                _ = tick.tick() => {
+                    if self.state.stop.load(Ordering::Relaxed) {
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     fn record(
@@ -246,27 +360,157 @@ impl<M: CompletionModel> BudgetModel<M> {
         started: Instant,
         res: Result<&CompletionResponse, &CompletionError>,
     ) {
-        let mut rec = CallRecord {
+        let rec = match res {
+            Ok(resp) => call_record(turn, req_bytes, resp_bytes, attempts, started, Ok(resp.usage)),
+            Err(e) => call_record(turn, req_bytes, 0, attempts, started, Err(e.to_string())),
+        };
+        self.state.record_call(rec);
+    }
+}
+
+/// 一条模型调用观测值（阻塞面与流式面共用）。`Ok(usage)`：provider 给的用量
+/// **只记不推算**（0 = provider 没给）。
+fn call_record(
+    turn: usize,
+    req_bytes: u64,
+    resp_bytes: u64,
+    attempts: u64,
+    started: Instant,
+    res: Result<Usage, String>,
+) -> CallRecord {
+    let mut rec = CallRecord {
+        turn,
+        req_bytes,
+        resp_bytes,
+        attempts,
+        ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
+        ..Default::default()
+    };
+    match res {
+        Ok(u) => {
+            rec.ok = true;
+            rec.prompt_tokens = (u.input_tokens > 0).then_some(u.input_tokens as i64);
+            rec.completion_tokens = (u.output_tokens > 0).then_some(u.output_tokens as i64);
+        }
+        Err(e) => rec.error = e,
+    }
+    rec
+}
+
+/// 首帧之后的余流适配器：观测 + 帧间空闲超时 + 取消 + 审计落行（见模块头第 4 条）。
+///
+/// 审计行在流**结束**（None）、**出错**（Err，含本层产生的超时/中断）或**被丢弃**
+/// （Drop）时落一次；三者互斥（`rec` 取走即标记已落）。被丢弃时若已收到 provider
+/// 的终帧（usage 到手）视为成功——rig 的 runner 拿到终帧后可能不再 poll 到 None。
+struct Observed {
+    inner: StreamingResult,
+    state: Arc<HookState>,
+    /// `Some` = 尚未落审计行；取走即落
+    pending: Option<(usize, u64, u64, Instant)>,
+    resp_bytes: u64,
+    usage: Option<Usage>,
+    idle_limit: Option<Duration>,
+    last_item: Instant,
+    tick: tokio::time::Interval,
+}
+
+impl Observed {
+    fn new(
+        inner: StreamingResult,
+        state: Arc<HookState>,
+        turn: usize,
+        req_bytes: u64,
+        attempts: u64,
+        started: Instant,
+        timeout_sec: i64,
+    ) -> Self {
+        let mut tick = tokio::time::interval(Duration::from_millis(STREAM_TICK_MS));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        Self {
+            inner,
+            state,
+            pending: Some((turn, req_bytes, attempts, started)),
+            resp_bytes: 0,
+            usage: None,
+            idle_limit: (timeout_sec > 0).then(|| Duration::from_secs(timeout_sec as u64)),
+            last_item: Instant::now(),
+            tick,
+        }
+    }
+
+    fn finish(&mut self, res: Result<(), String>) {
+        let Some((turn, req_bytes, attempts, started)) = self.pending.take() else {
+            return;
+        };
+        let res = match res {
+            Ok(()) => Ok(self.usage.unwrap_or_default()),
+            Err(e) => Err(e),
+        };
+        self.state.record_call(call_record(
             turn,
             req_bytes,
-            resp_bytes,
+            self.resp_bytes,
             attempts,
-            ms: started.elapsed().as_millis().min(i64::MAX as u128) as i64,
-            ..Default::default()
-        };
-        match res {
-            Ok(resp) => {
-                rec.ok = true;
-                // provider 给的用量：**只记不推算**（0 = provider 没给）
-                let u = resp.usage;
-                rec.prompt_tokens = (u.input_tokens > 0).then_some(u.input_tokens as i64);
-                rec.completion_tokens = (u.output_tokens > 0).then_some(u.output_tokens as i64);
+            started,
+            res,
+        ));
+    }
+
+    fn fail(&mut self, e: CompletionError) -> Poll<Option<<Self as Stream>::Item>> {
+        self.finish(Err(e.to_string()));
+        Poll::Ready(Some(Err(e)))
+    }
+}
+
+impl Stream for Observed {
+    type Item = Result<RawStreamingChoice<StreamFinal>, CompletionError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        if this.pending.is_none() {
+            return Poll::Ready(None);
+        }
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(item))) => {
+                this.last_item = Instant::now();
+                match &item {
+                    RawStreamingChoice::Message(t) => this.resp_bytes += t.len() as u64,
+                    RawStreamingChoice::FinalResponse(f) => this.usage = Some(f.usage),
+                    _ => {}
+                }
+                Poll::Ready(Some(Ok(item)))
             }
-            Err(e) => {
-                rec.error = e.to_string();
+            Poll::Ready(Some(Err(e))) => this.fail(e),
+            Poll::Ready(None) => {
+                this.finish(Ok(()));
+                Poll::Ready(None)
+            }
+            Poll::Pending => {
+                // 定时醒来：Ctrl-C 与帧间空闲都不会由 inner 唤醒，得自己挂一个 waker
+                while this.tick.poll_tick(cx).is_ready() {}
+                if this.state.stop.load(Ordering::Relaxed) {
+                    return this.fail(CompletionError::RequestError(Box::new(Interrupted)));
+                }
+                if let Some(limit) = this.idle_limit {
+                    if this.last_item.elapsed() >= limit {
+                        return this.fail(CompletionError::RequestError(Box::new(ModelTimeout {
+                            seconds: limit.as_secs() as i64,
+                        })));
+                    }
+                }
+                Poll::Pending
             }
         }
-        self.state.record_call(rec);
+    }
+}
+
+impl Drop for Observed {
+    fn drop(&mut self) {
+        if self.usage.is_some() {
+            self.finish(Ok(()));
+        } else {
+            self.finish(Err("流在完成前被丢弃".to_string()));
+        }
     }
 }
 
@@ -302,7 +546,7 @@ fn apply_injections(history: &mut [Message], injections: &[Injection]) {
 
 impl<M> CompletionModel for BudgetModel<M>
 where
-    M: CompletionModel + Send + Sync,
+    M: CompletionModel + RawStream + Send + Sync,
 {
     async fn completion(
         &self,
@@ -351,18 +595,87 @@ where
         }
     }
 
-    /// 流式面：本进程不用流式（REPL 只走阻塞面），但 trait 要求实现；
-    /// 图片注入与阻塞面一致，重试不做（流式重试的语义与 C++ 无对应物）。
+    /// 流式面：图片注入与阻塞面一致；打开 + 预取首帧 + 按同一张表重试；余流套
+    /// [`Observed`]（空闲超时/取消/审计）。见模块头第 4 条。
     async fn stream(
         &self,
         mut request: CompletionRequest,
     ) -> Result<StreamingCompletionResponse, CompletionError> {
         self.inject_images(&mut request)?;
-        self.inner.stream(request).await
+        let req_bytes = request_bytes_lower_bound(&request);
+        let turn = self.state.current_turn.load(Ordering::Relaxed);
+        let started = Instant::now();
+        let mut attempt = 0u64;
+        loop {
+            if self.state.stop.load(Ordering::Relaxed) {
+                let e = CompletionError::RequestError(Box::new(Interrupted));
+                self.record(turn, req_bytes, 0, attempt.max(1), started, Err(&e));
+                return Err(e);
+            }
+            attempt += 1;
+            match self.open_primed(request.clone()).await {
+                Ok(primed) => {
+                    let observed = Observed::new(
+                        primed,
+                        Arc::clone(&self.state),
+                        turn,
+                        req_bytes,
+                        attempt,
+                        started,
+                        self.timeout_sec,
+                    );
+                    return Ok(StreamingCompletionResponse::stream(
+                        M::PROVIDER,
+                        Box::pin(observed),
+                    ));
+                }
+                Err(e) => {
+                    let mut c = classify(&e);
+                    // 预取阶段的 ProviderError = 连接类失败被 rig 的 SSE 传输层抹成了
+                    // 字符串（见模块头第 4 条）；此时尚无字节被看到，按瞬时处理
+                    if c.class == RetryClass::No && matches!(e, CompletionError::ProviderError(_)) {
+                        c.class = RetryClass::Transient;
+                    }
+                    if c.class == RetryClass::No || attempt >= self.max_attempts {
+                        self.record(turn, req_bytes, 0, attempt, started, Err(&e));
+                        return Err(e);
+                    }
+                    self.backoff_and_log(&c, attempt).await;
+                    if self.state.stop.load(Ordering::Relaxed) {
+                        let e = CompletionError::RequestError(Box::new(Interrupted));
+                        self.record(turn, req_bytes, 0, attempt, started, Err(&e));
+                        return Err(e);
+                    }
+                }
+            }
+        }
     }
 
     fn capabilities(&self) -> ProviderCapabilities {
         self.inner.capabilities()
+    }
+}
+
+impl<M: CompletionModel + RawStream> BudgetModel<M> {
+    /// 打开原生流并预取首帧（整体受 [`Self::guard`] 约束：单次调用超时 + Ctrl-C）：
+    /// 首帧 Ok 才算「连上了」，返回「首帧 + 余流」；首帧 Err / 首帧前结束 / 超时 /
+    /// 中断都作为可分类的错误返回。
+    async fn open_primed(&self, request: CompletionRequest) -> Result<StreamingResult, CompletionError> {
+        self.guard(async {
+            let mut s = self.inner.raw_stream_normalized(request).await?;
+            match s.next().await {
+                Some(Ok(first)) => {
+                    let primed: StreamingResult =
+                        Box::pin(futures::stream::once(async move { Ok(first) }).chain(s));
+                    Ok(primed)
+                }
+                Some(Err(e)) => Err(e),
+                None => Err(CompletionError::ProviderError(
+                    "流在首帧前结束（服务端未发任何事件）".to_string(),
+                )),
+            }
+        })
+        .await
     }
 }
 

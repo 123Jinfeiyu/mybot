@@ -28,6 +28,9 @@ rig-agent = { version = "=0.42.0" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "time", "sync", "signal"] }
 serde_json = "1"
 anyhow = "1"
+# futures：流式面要自己实现 Stream 适配器（首帧预取重试、帧间空闲超时、审计落行），
+# rig 只重导出 Stream 类型别名不重导出 StreamExt/stream::once（已在 rig 依赖树里，不新增下载）。
+futures = "0.3"
 # libc：审计时间戳要**本地时间 + UTC 偏移**（localtime_r 与 C++ auditTimestamp 逐字段
 # 同构）；纯 std 拿不到本机时区偏移，自己解析 /etc/localtime 是重造轮子。
 # 另外：信号处置的强杀路径（SIG_DFL + raise）与 C++ onStopSignal 同款。

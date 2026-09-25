@@ -179,6 +179,12 @@ TH_TEST(llmconfig_runtime_fields_parse_and_reject) {
 	std::string e2;
 	TH_CHECK(!loadLlmConfigFile(typo.string(), o2, e2));
 	TH_CHECK(e2.find("未知字段") != std::string::npos);
+	/* `stream` 是 Rust agent 的字段：C++ 这侧只登记（不拒），两个进程共用一份配置 */
+	fs::path st = tmp.path() / "stream.json";
+	writeFile(st, R"({"stream":false})", fs::perms::owner_all);
+	LlmFileConfig o3;
+	std::string e3;
+	TH_CHECK_MSG(loadLlmConfigFile(st.string(), o3, e3), e3);
 }
 
 /* ================= A4：单任务墙钟预算的配置面 =================

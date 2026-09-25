@@ -109,6 +109,7 @@ const KNOWN_FIELDS: &[&str] = &[
     "run_command_timeout_sec",
     "run_command_max_timeout_sec",
     "action_script_timeout_sec",
+    "stream",
 ];
 
 /// 命令行原文（**只解析、不校验**；校验与合流在 [`build`]）。
@@ -124,6 +125,8 @@ pub struct Cli {
     pub llm_max_tokens: String,
     pub llm_max_turns: String,
     pub llm_task_timeout: String,
+    /// `--llm-no-stream`：模型输出退回整段阻塞模式（缺省流式）。
+    pub llm_no_stream: bool,
     pub prompt_files: Vec<String>,
     pub audit_log: String,
     /// 会话持久化落盘路径（批次 D）：只有**命令行给出**的路径才能用于 `--resume`
@@ -171,6 +174,8 @@ pub struct Config {
     pub retry_backoff_ms: i64,
     pub reasoning_effort: String,
     pub thinking: String,
+    /// 模型输出是否流式（逐 delta 打到 stdout）；false = 整段阻塞输出。
+    pub stream: bool,
     pub prompt_files: Vec<String>,
     /// 提示词包成品文本（空 = 未使用）。
     pub prompt_pack: String,
@@ -206,6 +211,7 @@ struct FileConfig {
     top_p: Option<f64>,
     reasoning_effort: Option<String>,
     thinking: Option<String>,
+    stream: Option<bool>,
     prompt_files: Option<Vec<String>>,
     audit_log: Option<String>,
     /// 只用于写入（见 [`Config::session_file_from_cli`] 的判据）。
@@ -237,6 +243,7 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--llm-max-tokens" => cli.llm_max_tokens = take("--llm-max-tokens")?,
             "--llm-max-turns" => cli.llm_max_turns = take("--llm-max-turns")?,
             "--llm-task-timeout" => cli.llm_task_timeout = take("--llm-task-timeout")?,
+            "--llm-no-stream" => cli.llm_no_stream = true,
             "--prompt-file" => {
                 let v = take("--prompt-file")?;
                 cli.prompt_files.push(v);
@@ -280,7 +287,9 @@ pub fn usage() -> String {
     s += "  --llm-timeout <秒>        单次模型调用超时（1..600，缺省 180）\n";
     s += "  --llm-max-tokens <n>      单次响应上限（1..200000，缺省 4096）\n";
     s += "  --llm-max-turns <n>       模型调用预算（1..100，缺省 8）\n";
-    s += "  --llm-task-timeout <秒>   单任务墙钟预算（0..86400，0 = 不限，缺省 900）\n\n";
+    s += "  --llm-task-timeout <秒>   单任务墙钟预算（0..86400，0 = 不限，缺省 900）\n";
+    s += "  --llm-no-stream           模型输出退回整段阻塞模式（缺省流式：逐 delta 打到 stdout；\n";
+    s += "                            也可用配置文件的 stream 字段，布尔）\n\n";
     s += "其它:\n";
     s += "  --prompt-file <路径>   提示词包（文件或目录；可重复；命令行给出即整体覆盖配置文件列表）\n";
     s += "  --audit-log <路径|->   审计轨迹（JSON Lines；\"-\" = stderr；缺省关闭）\n";
@@ -558,6 +567,11 @@ fn load_config_file(path: &str) -> Result<FileConfig, String> {
         audit_log: want_string(&root, path, "audit_log")?,
         session_file: want_string(&root, path, "session_file")?,
         thinking: None,
+        stream: match root.get("stream") {
+            None => None,
+            Some(Value::Bool(b)) => Some(*b),
+            Some(_) => return Err(type_error(path, "stream", "布尔值")),
+        },
     };
     if let Some(t) = f.temperature {
         if !(0.0..=2.0).contains(&t) {
@@ -779,6 +793,10 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         retry_backoff_ms: file.retry_backoff_ms.unwrap_or(DEFAULT_RETRY_BACKOFF_MS),
         reasoning_effort: file.reasoning_effort.clone().unwrap_or_default(),
         thinking: file.thinking.clone().unwrap_or_default(),
+        // 命令行 --llm-no-stream 只能关不能开：配置文件 stream=false 时命令行没有
+        // 「强制开」的选项——与其它字段「命令行 > 配置文件」的口径略有不同，因为
+        // 关流式是保守方向，不需要放宽入口。
+        stream: file.stream.unwrap_or(true) && !cli.llm_no_stream,
         prompt_files: Vec::new(),
         prompt_pack: String::new(),
         audit_log: String::new(),
@@ -909,6 +927,14 @@ pub fn summarize(cfg: &Config) -> String {
     s += &format!(
         "  轮次预算    : max_turns={}（rig 的模型调用预算，含重试）\n",
         cfg.max_turns
+    );
+    s += &format!(
+        "  输出模式    : {}\n",
+        if cfg.stream {
+            "流式（逐 delta 打到 stdout）"
+        } else {
+            "阻塞（整段输出；--llm-no-stream 或配置文件 stream=false）"
+        }
     );
     s += &format!("  API key     : {}（值不显示）\n", key_source);
     s += &format!(
@@ -1216,6 +1242,38 @@ mod tests {
         std::fs::write(&typo, r#"{"session_fil":"x"}"#).unwrap();
         let e = load_config_file(&typo.to_string_lossy()).unwrap_err();
         assert!(e.contains("未知字段"), "实际: {e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `stream`：布尔字段；缺省流式；配置文件 false 或 --llm-no-stream 任一即关。
+    #[test]
+    fn stream_field_and_flag_compose_conservatively() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_stream_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p.to_string_lossy().to_string()
+        };
+        let on = write("on.json", r#"{"api_key":"k"}"#);
+        let off = write("off.json", r#"{"api_key":"k","stream":false}"#);
+        let bad = write("bad.json", r#"{"api_key":"k","stream":"yes"}"#);
+        assert_eq!(load_config_file(&on).unwrap().stream, None);
+        assert_eq!(load_config_file(&off).unwrap().stream, Some(false));
+        assert!(load_config_file(&bad).unwrap_err().contains("stream"));
+
+        let cli = |cfg: &str, no_stream: bool| Cli {
+            socket: "/tmp/x.sock".into(),
+            llm_config: cfg.to_string(),
+            llm_endpoint: "http://127.0.0.1:1/v1/chat/completions".into(),
+            llm_model: "m".into(),
+            llm_no_stream: no_stream,
+            ..Cli::default()
+        };
+        assert!(build(&cli(&on, false)).unwrap().stream, "缺省流式");
+        assert!(!build(&cli(&on, true)).unwrap().stream, "--llm-no-stream 关");
+        assert!(!build(&cli(&off, false)).unwrap().stream, "配置 stream=false 关");
+        assert!(parse_args(&["--llm-no-stream".to_string()]).unwrap().llm_no_stream);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

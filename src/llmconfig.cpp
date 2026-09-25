@@ -184,6 +184,9 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"max_calls_per_round", "max_retries", "retry_backoff_ms",
 		"run_command_timeout_sec", "run_command_max_timeout_sec",
 		"action_script_timeout_sec",
+		/* Rust agent 专属：模型输出是否流式。C++ agent 只登记不解析（这一侧
+		 * 没有流式面），免得两个进程共用一份配置时被当未知字段拒绝 */
+		"stream",
 	};
 	for (const auto& kv : root.items()) {
 		if (kKnown.count(kv.first) == 0) {

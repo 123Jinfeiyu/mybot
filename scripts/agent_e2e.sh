@@ -755,14 +755,15 @@ else
 	fail=1
 fi
 
-# R8b：SIGINT 取消（D4）——置标志后**不再接新任务**，且进程优雅退出（不是被信号打死）
+# R8b：SIGINT 取消（D4）——在飞请求**立即放弃**、不再接新任务，且进程优雅退出（不是被信号打死）
 echo "----- R8b：SIGINT 取消 -----"
 PORT=$((27900 + RANDOM % 300))
 mkdir -p "$tmp/rust8b"
 # slow 剧本：每次模型调用睡 5 秒后给一句纯文本回答（无工具调用）。
-# 取消落在**第一次调用在飞时**（sleep 2 后发信号）：这一次调用照常返回（rig 侧
-# 没有取消哨兵，在飞请求由 --llm-timeout 封顶——如实偏差已记档），随后 REPL 在
-# 循环开头看到停止标志即退出——于是**管道里的第二条任务不会被受理**。
+# 取消落在**第一次调用在飞时**（sleep 2 后发信号）：这一次调用被丢弃（2026-09-25
+# 起两个面都在 select! 里轮询停止标志，不再等服务端吐完——此前「在飞请求由
+# --llm-timeout 封顶」的如实偏差就此关闭），本轮以「请求被中断」收场，随后 REPL
+# 在循环开头看到停止标志即退出——于是**管道里的第二条任务不会被受理**。
 start_server "$PORT" "$tmp/req-rust8b.json" slow || exit 1
 start_backend "$tmp/rust8b" || exit 1
 t0=$(date +%s)
@@ -778,9 +779,14 @@ sleep 2
 # 照跑；直连进程的取消语义完好——置标志、不再受理、优雅退出 0）。
 AGENTPID="$(pgrep -P "$REPLPID" -f mybot-agent 2>/dev/null | head -1 || true)"
 kill -INT "${AGENTPID:-$REPLPID}" 2>/dev/null
+# 计时以 agent 本体退出为准：wait 等的是整条管道（含 sleep 8 的供稿端），拿它计时会虚高
+for _ in $(seq 1 60); do
+	if [ -z "$AGENTPID" ] || ! kill -0 "$AGENTPID" 2>/dev/null; then break; fi
+	sleep 0.1
+done
+t1=$(date +%s)
 wait "$REPLPID" 2>/dev/null
 rcr8b=$?
-t1=$(date +%s)
 stop_backend
 stop_server
 echo "===== stdout ====="; cat "$tmp/rust8b/out.txt"
@@ -792,14 +798,15 @@ else
 	fail=1
 fi
 check_present "$tmp/rust8b/err.txt" "收到停止信号" "取消事件对操作者可见（stderr）"
-# 第二件事没被受理：slow 剧本每受理一条任务就产出一次「慢响应」——按条数判
-# （比按耗时判稳：不依赖机器快慢）
+check_present "$tmp/rust8b/err.txt" "请求被中断" "在飞的模型调用被立即放弃（本轮以「请求被中断」收场）"
+# 没有任何一条任务拿到「慢响应」：第一件事在飞被丢弃，第二件事没被受理——
+# 且整个过程不必等服务端睡完 5 秒（信号在 2s 发出，进程应在 5s 之前退出）
 n8b="$(grep -cF '慢响应' "$tmp/rust8b/out.txt" || true)"
 elapsed8b=$((t1 - t0))
-if [ "${n8b:-0}" -eq 1 ]; then
-	echo "  [OK] 取消之后不再受理新任务（只受理了第一件事，实测 ${elapsed8b}s）"
+if [ "${n8b:-0}" -eq 0 ] && [ "$elapsed8b" -lt 5 ]; then
+	echo "  [OK] 在飞请求被丢弃且不再受理新任务（0 条慢响应，实测 ${elapsed8b}s < 5s）"
 else
-	echo "  [FAIL] 取消后受理了 ${n8b:-0} 条任务（期望 1 条）"
+	echo "  [FAIL] 取消后收到 ${n8b:-0} 条慢响应 / 用时 ${elapsed8b}s（期望 0 条且 < 5s）"
 	fail=1
 fi
 
@@ -1173,6 +1180,102 @@ for variant in correct wrong; do
 	check_json "$R14/$variant.json" "'read_variables' in {t['function']['name'] for t in d['tools']} and 'run_command' not in {t['function']['name'] for t in d['tools']}" \
 		"闭环只开放回读与预置动作，不依赖 shell"
 done
+
+# ---- R15：流式输出（2026-09-25）——逐 delta 到达 stdout，与 --llm-no-stream 回退 ----
+# 判据必须是**到达时序**而不是最终文本：最终文本两种面一字不差，只看它分不出
+# 「真的边收边打」与「攒齐再打」。做法：假模型服务按 FAKE_LLM_FRAME_DELAY_MS
+# 在帧间停顿，stdout 经管道交给一个带时间戳的字节读取器——流式面下首字节与
+# 末字节相隔至少「若干帧 × 停顿」，阻塞面下同一份文本一次到齐（间隔近 0）。
+# text 剧本只给一句收尾（无工具调用），量到的间隔就是纯 delta 到达间隔。
+echo "----- R15：流式输出逐 delta 到达 stdout / --llm-no-stream 回退 -----"
+R15="$tmp/rust15"
+mkdir -p "$R15"
+# 带时间戳的字节读取器（独立文件：stdin 要留给管道，不能用 heredoc 喂脚本）
+cat > "$R15/timed_reader.py" <<'PY'
+import os, sys, time
+out = open(sys.argv[1], "wb")
+first = last = None
+reads = 0
+while True:
+    chunk = os.read(0, 4096)
+    if not chunk:
+        break
+    now = time.monotonic()
+    first = first if first is not None else now
+    last = now
+    reads += 1
+    out.write(chunk)
+out.close()
+gap = (last - first) if first is not None else -1.0
+open(sys.argv[2], "w").write("%.3f %d\n" % (gap, reads))
+PY
+# $1=模式标签 $2...=额外参数；stdout 经 timed reader：正文落 $R15/$1.out，
+# 时序落 $R15/$1.timing（首末字节间隔秒 + 收到的 read 次数）
+run_r15() {
+	local tag="$1"; shift
+	PORT=$((30900 + RANDOM % 300))
+	FAKE_LLM_FRAME_DELAY_MS=150 start_server "$PORT" "$R15/$tag.req.json" text || return 1
+	start_backend "$R15/$tag" || return 1
+	BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R15/$tag/mcp.sock" \
+		--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+		--llm-config none "$@" --task "说一句收尾" 2>"$R15/$tag.err" | \
+		python3 "$R15/timed_reader.py" "$R15/$tag.out" "$R15/$tag.timing"
+	local rc=${PIPESTATUS[0]}
+	stop_backend
+	stop_server
+	echo "===== $tag stdout ====="; cat "$R15/$tag.out"
+	echo "===== $tag stderr ====="; cat "$R15/$tag.err"
+	echo "===== $tag 时序（首末字节间隔秒 / read 次数）====="; cat "$R15/$tag.timing"
+	if [ "$rc" -ne 0 ]; then
+		echo "  [FAIL] $tag：mybot-agent 退出码 $rc"
+		fail=1
+	fi
+	check_present "$R15/$tag.out" "AGENT-E2E-完成" "$tag：最终回答到达 stdout"
+	check_absent "$R15/$tag.out" "[mybot-agent]" "$tag：日志不进 stdout"
+	check_absent "$R15/$tag.out" "收尾。" "$tag：思维链（reasoning_content）不打到 stdout"
+	return 0
+}
+# 流式（缺省）：请求体带 stream:true；首末字节间隔 ≥ 0.5s（收尾文案拆成 ≥5 帧 × 150ms）
+run_r15 stream || exit 1
+check_json "$R15/stream.req.json" "d.get('stream') is True" "stream：请求体带 stream:true（走的是 SSE 面）"
+read -r gap_s reads_s < "$R15/stream.timing"
+if python3 -c "import sys; sys.exit(0 if float('$gap_s') >= 0.5 and int('$reads_s') >= 3 else 1)"; then
+	echo "  [OK] stream：逐 delta 到达（首末字节相隔 ${gap_s}s，${reads_s} 次 read——不是攒齐再打）"
+else
+	echo "  [FAIL] stream：输出未逐 delta 到达（间隔 ${gap_s}s，${reads_s} 次 read；期望 ≥0.5s 且 ≥3 次）"
+	fail=1
+fi
+check_present "$R15/stream.err" "驱动 LlmOpenAI" "stream：就绪行照常"
+# 回退（--llm-no-stream）：请求体不带 stream:true；整段一次到齐
+run_r15 blocking --llm-no-stream || exit 1
+check_json "$R15/blocking.req.json" "d.get('stream') is not True" "blocking：请求体不带 stream:true（走的是阻塞面）"
+read -r gap_b reads_b < "$R15/blocking.timing"
+if python3 -c "import sys; sys.exit(0 if float('$gap_b') < 0.1 else 1)"; then
+	echo "  [OK] blocking：整段一次到齐（首末字节相隔 ${gap_b}s）"
+else
+	echo "  [FAIL] blocking：--llm-no-stream 下输出仍分批到达（间隔 ${gap_b}s）"
+	fail=1
+fi
+# 两种面的最终文本一字不差
+if cmp -s "$R15/stream.out" "$R15/blocking.out"; then
+	echo "  [OK] 两种面的 stdout 正文逐字节一致"
+else
+	echo "  [FAIL] 流式与阻塞面的 stdout 正文不一致"
+	diff "$R15/stream.out" "$R15/blocking.out" | sed 's/^/    /'
+	fail=1
+fi
+# 配置文件 stream:false 与 --check-config 的摘要行
+CFGR15="$R15/nostream.json"
+printf '%s\n' '{"stream": false}' > "$CFGR15"
+chmod 600 "$CFGR15"
+BOT4CJ_LLM_KEY=e2e-rust-key "$AGENT_BIN" --socket /nonexistent --llm-config "$CFGR15" \
+	--llm-endpoint http://127.0.0.1:1/v1/chat/completions --llm-model m --check-config \
+	>"$R15/cc.out" 2>&1
+check_present "$R15/cc.out" "输出模式    : 阻塞" "配置文件 stream:false 在 --check-config 摘要里如实呈现"
+BOT4CJ_LLM_KEY=e2e-rust-key "$AGENT_BIN" --socket /nonexistent --llm-config none \
+	--llm-endpoint http://127.0.0.1:1/v1/chat/completions --llm-model m --check-config \
+	>"$R15/cc2.out" 2>&1
+check_present "$R15/cc2.out" "输出模式    : 流式" "缺省输出模式是流式（--check-config 摘要）"
 
 if [ "$fail" -eq 0 ]; then
 	echo "mybot-agent 端到端测试通过"

@@ -52,6 +52,8 @@ export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 > 2026-09-24 起 agent 循环迁 Rust：`mybot --agent` 已移除（会显式拒绝并指引），
 > C++ 宿主侧以 `--mcp-backend` 提供工具后端，模型侧参数（`--task`/`--llm-*` 等）
 > 由 `mybot-agent` 承载（`mybot-agent --help`，详见 [docs/agent.md](docs/agent.md)）。
+> 2026-09-25 起模型输出缺省**流式**逐段打印；`--llm-no-stream` 或配置 `"stream": false`
+> 退回整段输出（两面差别见 docs/agent.md「流式与阻塞的如实偏差」）。
 
 **现在你可以直接对话**：
 

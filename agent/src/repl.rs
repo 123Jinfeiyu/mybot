@@ -2,9 +2,12 @@
 //!
 //! 三件事：
 //!   1. **一轮任务**（`run_turn`）：任务开始前整块裁剪旧历史 → `begin_task()` 清
-//!      任务内预算 → `runner(task).history(历史).max_turns(预算).run()`。成功把本轮
+//!      任务内预算 → `runner(task).history(历史).max_turns(预算)` 走流式面
+//!      （`.stream()`，缺省）或阻塞面（`.run()`，`--llm-no-stream`）。**模型输出由
+//!      本层打到 stdout**：流式逐 delta（`out!` 逐条 flush），阻塞整段。成功把本轮
 //!      新消息（含按位物化的图片后注）并进历史；失败**回滚到钩子记下的边界**（已完整
 //!      跑完的轮留在历史里）——不留半截 tool_calls 序列，会话可以继续下一条。
+//!      两条面共用 rig 的 drive loop 与 AgentHook：墙钟/单轮上限/回滚边界一致。
 //!   2. **审计**：model 行由本层写（turn/ok/status/error/ms/req+resp 字节/attempts/token，
 //!      数据来自模型装饰器记的逐次调用记录）；session 行在 `Session::new`/
 //!      `write_session_end`。**tool 行不在这里**——工具全经后端帧，后端
@@ -22,12 +25,18 @@
 //!     本进程不持有硬件，一律经工具（`list_hardware` / `list_action_scripts` /
 //!     `apply_sql` / `query_sql`）——所以「后端没给这个工具」时会明确报出缺哪个开关，
 //!     不假装执行过。
+//!   * 流式下失败发生在文本已经打出一部分之后时，已打出的文本**不会收回**（终端上
+//!     留着），stderr 再报错误；历史回滚口径不变（半截轮不进历史）。C++ 是整段
+//!     输出，没有这种「半句话」形态。思维链 delta 不打印。
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Instant;
 
+use futures::StreamExt;
+use rig_agent::agent::{MultiTurnStreamItem, PromptResponse, StreamingError};
 use rig_agent::completion::{Message, PromptError};
+use rig_core::streaming::StreamedAssistantContent;
 
 use crate::audit::{AuditLog, ModelEntry, SessionEntry};
 use crate::bridge::{Bridge, ToolOutcome};
@@ -43,11 +52,26 @@ use crate::session::SessionFileWriter;
 /// 钩子给的 reason 正是要让操作者看到的那句话（「执行被中断」「达到单任务墙钟预算
 /// （N 秒）…」），C++ 侧的异常文本同样没有前缀。
 fn format_prompt_error(e: PromptError) -> String {
-    let s = e.to_string();
+    strip_cancel_prefix(e.to_string())
+}
+
+fn strip_cancel_prefix(s: String) -> String {
     match s.strip_prefix("PromptCancelled: ") {
         Some(rest) => rest.to_string(),
         None => s,
     }
+}
+
+/// `StreamingError` → 操作者可见文本：与阻塞面同形。rig 的流式错误多包一层
+/// `PromptError: `（`PromptError: PromptCancelled: 执行被中断`），剥掉后余下的正是
+/// 阻塞面 `format_prompt_error` 看到的那一串；`CompletionError: …` 形态两面一致。
+fn format_stream_error(e: StreamingError) -> String {
+    let s = e.to_string();
+    let s = match s.strip_prefix("PromptError: ") {
+        Some(rest) => rest.to_string(),
+        None => s,
+    };
+    strip_cancel_prefix(s)
 }
 
 /// REPL 单行输入上限（与 C++ `kMaxReplInputBytes` 逐值对齐）：超限**响亮拒绝**并
@@ -206,8 +230,9 @@ impl Session {
         }
     }
 
-    /// 跑一轮任务。`Err` = 本轮失败（历史已回滚到完整边界，会话可继续）。
-    pub async fn run_turn(&mut self, task: &str) -> Result<String, String> {
+    /// 跑一轮任务；模型输出由本函数打到 stdout（流式逐 delta / 阻塞整段）。
+    /// `Err` = 本轮失败（历史已回滚到完整边界，会话可继续）。
+    pub async fn run_turn(&mut self, task: &str) -> Result<(), String> {
         // 任务开始前：按字节预算**整块**裁掉最早的旧任务块（最新块无条件保留；
         // 0 = 不裁剪）。裁剪日志走 stderr：更早的任务上下文不再可见是必须告知的事实。
         self.history
@@ -218,22 +243,14 @@ impl Session {
 
         // 借用只活在块内：`result` 是拥有所有权的值，块一结束 `self.backend` 的
         // 不可变借用就结束，后面才能改 `self.history`。
-        let progress = self.show_progress.then(Progress::start);
-        let result = {
-            let fut = self
-                .backend
-                .agent
-                .runner(task.to_string())
-                .history(snapshot.clone())
-                .max_turns(self.cfg.max_turns as usize)
-                .run();
-            fut.await.map_err(format_prompt_error)
+        let result = if self.backend.stream {
+            self.drive_stream(task, snapshot.clone()).await
+        } else {
+            self.drive_blocking(task, snapshot.clone()).await
         };
-        if let Some(p) = progress {
-            p.finish().await;
-        }
 
-        // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次
+        // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次。流式面的
+        // 观测值由模型层的流适配器在流结束/被丢弃时落——drive_* 返回前流已释放。
         let calls = self.state.drain_calls();
         let injections = self.state.take_injections();
 
@@ -255,7 +272,7 @@ impl Session {
                     self.history.persist(|m| w.append_message(m));
                 }
                 self.record_calls(&calls);
-                Ok(resp.output)
+                Ok(())
             }
             Err(e) => {
                 // 回滚：钩子记下的边界 = 已完整跑完的轮（含工具回执与其中的图片），
@@ -267,6 +284,106 @@ impl Session {
                 Err(e)
             }
         }
+    }
+
+    /// 阻塞面：整轮跑完后一次性打印最终文本。
+    async fn drive_blocking(
+        &self,
+        task: &str,
+        snapshot: Vec<Message>,
+    ) -> Result<PromptResponse, String> {
+        let progress = self.show_progress.then(Progress::start);
+        let result = self
+            .backend
+            .agent
+            .runner(task.to_string())
+            .history(snapshot)
+            .max_turns(self.cfg.max_turns as usize)
+            .run()
+            .await
+            .map_err(format_prompt_error);
+        if let Some(p) = progress {
+            p.finish().await;
+        }
+        let resp = result?;
+        outln!("{}", resp.output);
+        Ok(resp)
+    }
+
+    /// 流式面：文本 delta 逐条打到 stdout；工具轮之间换行并重开「思考中…」；
+    /// 思维链不打印。流的 `FinalResponse` 与阻塞面的返回值同型，后处理共用。
+    async fn drive_stream(
+        &self,
+        task: &str,
+        snapshot: Vec<Message>,
+    ) -> Result<PromptResponse, String> {
+        let mut progress = self.show_progress.then(Progress::start);
+        let mut stream = self
+            .backend
+            .agent
+            .runner(task.to_string())
+            .history(snapshot)
+            .max_turns(self.cfg.max_turns as usize)
+            .stream()
+            .await;
+        // 本模型轮是否已打过文本（决定要不要在工具轮/结束时补换行）
+        let mut printed = false;
+        let mut final_resp: Option<PromptResponse> = None;
+        let mut failure: Option<String> = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
+                    if t.text.is_empty() {
+                        continue;
+                    }
+                    if let Some(p) = progress.take() {
+                        p.finish().await;
+                    }
+                    out!("{}", t.text);
+                    printed = true;
+                }
+                Ok(MultiTurnStreamItem::StreamAssistantItem(
+                    StreamedAssistantContent::ToolCall { .. },
+                )) => {
+                    // 工具轮：本轮文本收口，工具执行 + 等下一轮模型期间重开动画
+                    if printed {
+                        outln!("");
+                        printed = false;
+                    }
+                    if self.show_progress && progress.is_none() {
+                        progress = Some(Progress::start());
+                    }
+                }
+                Ok(MultiTurnStreamItem::ModelTurnRetried { turn }) => {
+                    errln!("[agent] 第 {turn} 轮模型响应被判定重来");
+                }
+                Ok(MultiTurnStreamItem::FinalResponse(resp)) => final_resp = Some(resp),
+                Ok(_) => {}
+                Err(e) => {
+                    failure = Some(format_stream_error(e));
+                    break;
+                }
+            }
+        }
+        // 先释放流（模型层的适配器在 Drop 时落最后一条审计行），再收动画
+        drop(stream);
+        if let Some(p) = progress {
+            p.finish().await;
+        }
+        if let Some(e) = failure {
+            if printed {
+                outln!("");
+            }
+            return Err(e);
+        }
+        let resp = final_resp.ok_or_else(|| "模型流结束但没有最终响应".to_string())?;
+        if printed {
+            outln!("");
+        } else if !resp.output.is_empty() {
+            // provider 只给整段不给 delta 的兜底：最终文本仍要让操作者看到
+            outln!("{}", resp.output);
+        }
+        Ok(resp)
     }
 
     /// 把逐次模型调用的观测值落成审计 model 行（turn 减一：rig 从 1 数起，
@@ -316,6 +433,14 @@ impl Session {
         s += &format!(
             "  模型/接入点 : {} @ {}（超时 {}s，最大 {} 轮模型调用）\n",
             self.cfg.model, self.backend.effective_url, self.cfg.timeout_sec, self.cfg.max_turns
+        );
+        s += &format!(
+            "  输出模式    : {}\n",
+            if self.backend.stream {
+                "流式（逐 delta 打到 stdout）"
+            } else {
+                "阻塞（整段输出）"
+            }
         );
         s += &format!(
             "  本会话统计  : 模型 {} 轮/{}ms",
@@ -562,7 +687,7 @@ pub async fn run_repl(session: &mut Session) -> i32 {
         }
 
         match session.run_turn(task).await {
-            Ok(text) => outln!("{text}"),
+            Ok(()) => {}
             Err(e) => {
                 // REPL：单轮失败不结束会话（历史已回滚，可继续下一条任务）
                 errln!("错误: {e}");
@@ -573,15 +698,37 @@ pub async fn run_repl(session: &mut Session) -> i32 {
     0
 }
 
-/// 一次性任务（`--task`）：成功返回 `Ok(输出)`，失败 `Err(错误文本)`。
+/// 一次性任务（`--task`）：输出已由 `run_turn` 打到 stdout；失败 `Err(错误文本)`。
 /// 退出码与结束行的分派在 main（`end`/0 或 `error`/1）。
-pub async fn run_task_once(session: &mut Session, task: &str) -> Result<String, String> {
+pub async fn run_task_once(session: &mut Session, task: &str) -> Result<(), String> {
     session.run_turn(task).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rig_agent::completion::CompletionError;
+
+    #[test]
+    fn stream_error_text_matches_blocking_face() {
+        // 流式面的错误外面多套一层 `PromptError: `，取消再套一层 `PromptCancelled: `；
+        // 两个面给操作者看的文本必须一字不差（E2E 与文档都按同一份口径断言）
+        let cancelled = StreamingError::Prompt(Box::new(PromptError::PromptCancelled {
+            chat_history: Vec::new(),
+            reason: "任务被取消".to_string(),
+        }));
+        assert_eq!(format_stream_error(cancelled), "任务被取消");
+        let blocking = PromptError::PromptCancelled {
+            chat_history: Vec::new(),
+            reason: "任务被取消".to_string(),
+        };
+        assert_eq!(format_prompt_error(blocking), "任务被取消");
+        // 非取消类保留 rig 原文（不吞信息）
+        let other = StreamingError::Completion(CompletionError::ProviderError(
+            "boom".to_string(),
+        ));
+        assert_eq!(format_stream_error(other), "CompletionError: ProviderError: boom");
+    }
 
     #[test]
     fn sql_batch_write_op_detection_matches_cpp_set() {

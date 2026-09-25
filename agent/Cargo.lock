@@ -928,6 +928,7 @@ name = "mybot-agent"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "http",
  "libc",
  "rig-agent",

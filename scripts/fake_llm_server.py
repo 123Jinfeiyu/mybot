@@ -30,8 +30,17 @@
               专属回答 "AGENT-E2E-RELAY-完成"（不再走完整工具循环）；否则与
               默认剧本同构（新会话，从头走 list_hardware → 动作 → 命令 → 收尾）
       headers_file: 非空则把收到的请求头逐行写入（用来断言 API key 的来源）
+
+流式（2026-09-25，Rust agent 流式输出）：请求体带 "stream": true 时，同一份剧本
+应答改以 SSE 发出——OpenAI 系发 chat.completion.chunk 逐 delta 帧（content /
+reasoning_content / tool_calls 按 index 拼装）+ 末尾 usage 帧 + `data: [DONE]`；
+Anthropic 发 message_start → content_block_* → message_delta（usage）→ message_stop。
+文本会被拆成多帧；环境变量 FAKE_LLM_FRAME_DELAY_MS（缺省 0）给帧间加停顿，
+E2E 用它证明「第一个字节确实先于最后一个字节到达 stdout」。剧本、校验与错误
+模式（400/429/503/slow）不因流式与否而变——错误仍是整块 JSON + 非 200 状态码。
 """
 import json
+import os
 import sys
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -40,6 +49,9 @@ PORT = int(sys.argv[1])
 CAPTURE = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] else None
 MODE = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] else "ok"
 HEADERS = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] else None
+FRAME_DELAY = int(os.environ.get("FAKE_LLM_FRAME_DELAY_MS", "0")) / 1000.0
+# 文本拆帧粒度（字符数）：小到一句收尾文案能拆出好几帧，大到帧数不至于失控
+TEXT_PIECE = 6
 
 # 跨请求计数（429x2ok 用它决定第几次请求开始放行）。服务是单进程单线程
 # （HTTPServer 非 ThreadingHTTPServer），无并发，故不需要锁。
@@ -123,6 +135,84 @@ def final_answer():
         }],
         "usage": {"prompt_tokens": 1234, "completion_tokens": 56, "total_tokens": 1290},
     })
+
+
+def split_text(text):
+    """把一段文本拆成多个 delta（空文本 → 无帧）。"""
+    return [text[i:i + TEXT_PIECE] for i in range(0, len(text), TEXT_PIECE)]
+
+
+def openai_sse_frames(payload):
+    """把一份完整的 chat.completion 应答改写成 chat.completion.chunk 帧序列。
+
+    形态按真网关：首帧只带 role；reasoning_content / content 逐段；tool_calls 第一帧
+    带 id+name+空 arguments、其后按 index 只补 arguments 片段；finish_reason 单独一帧；
+    最后一帧 choices 为空、只带 usage（stream_options.include_usage 的形态）。
+    """
+    choice = payload["choices"][0]
+    msg = choice["message"]
+    base = {"id": payload["id"], "object": "chat.completion.chunk",
+            "created": 0, "model": payload["model"]}
+
+    def chunk(delta, finish=None):
+        c = dict(base)
+        c["choices"] = [{"index": 0, "delta": delta, "finish_reason": finish}]
+        return c
+
+    frames = [chunk({"role": "assistant", "content": ""})]
+    if msg.get("reasoning_content"):
+        for piece in split_text(msg["reasoning_content"]):
+            frames.append(chunk({"reasoning_content": piece}))
+    for piece in split_text(msg.get("content") or ""):
+        frames.append(chunk({"content": piece}))
+    for i, tc in enumerate(msg.get("tool_calls") or []):
+        frames.append(chunk({"tool_calls": [{
+            "index": i, "id": tc["id"], "type": "function",
+            "function": {"name": tc["function"]["name"], "arguments": ""},
+        }]}))
+        for piece in split_text(tc["function"]["arguments"]):
+            frames.append(chunk({"tool_calls": [{"index": i, "function": {"arguments": piece}}]}))
+    frames.append(chunk({}, finish=choice["finish_reason"]))
+    tail = dict(base)
+    tail["choices"] = []
+    tail["usage"] = payload["usage"]
+    frames.append(tail)
+    return [(None, f) for f in frames] + [(None, "[DONE]")]
+
+
+def anthropic_sse_frames(payload):
+    """把一份完整的 Anthropic message 改写成 message_start/…/message_stop 事件序列。"""
+    usage = payload["usage"]
+    frames = [("message_start", {"type": "message_start", "message": {
+        "id": payload["id"], "type": "message", "role": "assistant", "content": [],
+        "model": payload["model"], "stop_reason": None, "stop_sequence": None,
+        "usage": {"input_tokens": usage["input_tokens"], "output_tokens": 1},
+    }})]
+    for i, block in enumerate(payload["content"]):
+        if block["type"] == "text":
+            frames.append(("content_block_start", {
+                "type": "content_block_start", "index": i,
+                "content_block": {"type": "text", "text": ""}}))
+            for piece in split_text(block["text"]):
+                frames.append(("content_block_delta", {
+                    "type": "content_block_delta", "index": i,
+                    "delta": {"type": "text_delta", "text": piece}}))
+        else:
+            frames.append(("content_block_start", {
+                "type": "content_block_start", "index": i,
+                "content_block": {"type": "tool_use", "id": block["id"],
+                                  "name": block["name"], "input": {}}}))
+            for piece in split_text(json.dumps(block["input"])):
+                frames.append(("content_block_delta", {
+                    "type": "content_block_delta", "index": i,
+                    "delta": {"type": "input_json_delta", "partial_json": piece}}))
+        frames.append(("content_block_stop", {"type": "content_block_stop", "index": i}))
+    frames.append(("message_delta", {
+        "type": "message_delta",
+        "delta": {"stop_reason": payload["stop_reason"], "stop_sequence": None},
+        "usage": {"output_tokens": usage["output_tokens"]}}))
+    frames.append(("message_stop", {"type": "message_stop"}))
+    return frames
 
 
 def protocol_error(request):
@@ -331,7 +421,13 @@ def closed_loop_reply(request):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # 本次请求是否要求流式（do_POST 一开始就从请求体里读出来）
+    stream = False
+
     def _reply(self, payload):
+        if self.stream:
+            self._reply_sse(payload)
+            return
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         try:
             self.send_response(200)
@@ -341,6 +437,27 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
             pass	# 客户端超时先走了：本服务是守门夹具，不必抱怨
+
+    def _reply_sse(self, payload):
+        """同一份剧本应答改以 SSE 发出；每帧 flush，帧间按 FRAME_DELAY 停顿。"""
+        if payload.get("type") == "message":
+            frames = anthropic_sse_frames(payload)
+        else:
+            frames = openai_sse_frames(payload)
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+            for n, (event, data) in enumerate(frames):
+                if n and FRAME_DELAY > 0:
+                    time.sleep(FRAME_DELAY)
+                body = data if isinstance(data, str) else json.dumps(data, ensure_ascii=False)
+                line = ("event: %s\n" % event if event else "") + "data: %s\n\n" % body
+                self.wfile.write(line.encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def _error_400(self, message):
         data = json.dumps({"error": {"message": message, "type": "invalid_request_error"}},
@@ -376,6 +493,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
         raw = self.rfile.read(n) if n > 0 else b"{}"
+        # 流式标志先于一切分支读出：slow 模式也要按请求要求的形态应答。
+        # 这里解不出来不算错——严格的 UTF-8/JSON 校验在下面照常报 400。
+        try:
+            self.stream = json.loads(raw.decode("utf-8")).get("stream") is True
+        except (ValueError, AttributeError):
+            self.stream = False
         if CAPTURE:
             try:
                 with open(CAPTURE, "wb") as f:

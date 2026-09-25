@@ -284,8 +284,7 @@ async fn run() -> i32 {
         rc
     } else {
         match repl::run_task_once(&mut session, &task).await {
-            Ok(text) => {
-                outln!("{text}");
+            Ok(()) => {
                 session.write_session_end("end", "");
                 0
             }
@@ -311,10 +310,9 @@ fn config_error(msg: &str) -> i32 {
 /// 连退出码都交给信号本身），因为优雅路径本身也可能被卡住（驱动阻塞在不可中断的
 /// 系统调用里等）。
 ///
-/// 与 C++ 的差异（如实记录）：C++ 还用取消哨兵文件把「在飞的 libcurl 请求」在约
-/// 1 秒内掐断；rig 侧的在飞请求由 `--llm-timeout`（默认 180s）封顶，取消在两处
-/// 判定点与退避循环里生效——Ctrl-C 之后不再发起新调用，但当前这一次要等它自己
-/// 返回或超时。
+/// 在飞请求的处置：`model.rs` 的 `guard`（阻塞面与流式首帧）和 `Observed`（流式余流）
+/// 都对停止标志定时轮询，Ctrl-C 之后在途请求**立即被丢弃**、本轮以「请求被中断」
+/// 收场——与 C++ 用取消哨兵掐断 libcurl 请求的效果同款（延迟 ≤ 一个轮询周期）。
 fn install_signal_handlers(state: Arc<HookState>) {
     tokio::spawn(async move {
         let mut sigint = signal_stream(libc::SIGINT);

@@ -65,8 +65,14 @@ export DEEPSEEK_API_KEY=sk-xxx
 每轮输入一条自然语言任务，模型循环调工具直至完成或失败。
 
 **进度提示**（2026-09-24）：Rust agent 在交互 REPL 的模型调用期间显示"思考中..."动画
-（每 500ms 更新），响应完成后自动清除；`--task` 不显示动画。模型响应仍为非流式，
+（每 500ms 更新），首个 delta 到达（或阻塞面返回）后自动清除；`--task` 不显示动画。
 C++ 后端不参与模型请求。
+
+**流式输出**（2026-09-25 起缺省）：模型文本按服务端 SSE 的 delta 逐段打到 stdout
+（每段随即 flush，管道下游立刻可见），工具调用轮之间换行分隔。要退回「整轮生成完
+再整段打印」的阻塞面，用 `--llm-no-stream` 或配置文件 `"stream": false`；`/status`
+的「输出模式」行与 `--check-config` 摘要都如实呈现当前面。两种面的行为差别见
+下文「流式与阻塞的如实偏差」。
 
 REPL 内置命令：`/hardware` 打印硬件清单，`/scripts` 打印动作脚本清单，
 `/status` 打印**会话状态一览**（历史大小与任务块数、是否裁过、任务内预算用量、
@@ -76,11 +82,37 @@ session id、硬件变量数；只读，**不触发任何模型调用**——SAN
 污染后不必重启进程丢掉常驻状态，C1，2026-09-22），`/exit`（或 `/quit`、Ctrl-D）退出。
 首次 SIGINT/SIGTERM 使 mybot-agent 置停止标志，在检查点停止后续模型轮、重试与
 工具派发；REPL 正常收尾写 end 行、退出 0，`--task` 若返回中断错误则写 error 行、退出 1。
-在飞模型请求须等返回或 `--llm-timeout` 超时，退避也须等本次等待结束后检查标志。
+**在飞的模型请求随即被丢弃**（2026-09-25 起：阻塞面与流式首帧在 `select!` 里对停止
+标志定时轮询，流式余流在每次等待下一帧时检查；延迟 ≤ 一个轮询周期，不再等服务端
+吐完或 `--llm-timeout` 到期），本轮以「请求被中断」收场；退避等待同样即时中止。
 第二次信号立即退出 130（跳过清理）。停止 Rust 进程**不会自动停止后端**：需另向后端
 发送 SIGINT/SIGTERM，待服务循环退出并执行 `deactivate()` 才断电；阻塞的硬件调用可能延迟清理。
 原 C++ 侧的「取消哨兵文件」（libcurl 进度回调轮询，P2a/AG-27）已随旧模型调用路径移除。
-现役回归见 `scripts/agent_e2e.sh` / `scripts/mcp_e2e.sh`，不再承诺约 1 秒取消在飞模型请求。
+现役回归见 `scripts/agent_e2e.sh`（R8b：信号后 2s 内进程退出、0 条慢响应）/ `scripts/mcp_e2e.sh`。
+
+## 流式与阻塞的如实偏差
+
+流式（缺省）与阻塞（`--llm-no-stream` / `"stream": false`）走同一套重试、超时、
+审计与会话记账，最终回答逐字节一致（R15 守门 `cmp`）；以下是两者**确实不同**的地方：
+
+- **中间轮文本**：模型在工具调用轮里顺带说的话，流式面**边到边打**（各轮之间换行），
+  阻塞面只打最终回答。前者对操作者更透明，代价是 `--task` 的 stdout 不再只含最后一段。
+- **思维链**：`reasoning`/`reasoning_content` 的 delta **不打印**（与阻塞面一致，
+  只有正文进 stdout；stdout 是模型输出的保留通道，思维链既非输出也非日志）。
+- **中途失败不撤回**：首帧之后断流（网络断、服务端 5xx 中途出错、帧间空闲超
+  `--llm-timeout`）**不重试**——已打出的文本收不回来，重试会让操作者看到两段拼接；
+  本轮以错误收场，stderr 报原因。重试只覆盖**首帧之前**：非 2xx、连接失败、首帧超时
+  按与阻塞面同一张表分类（429/5xx/连接类可重试，其余 4xx 不可）。
+- **首帧前的连接类错误按瞬时处理**：rig 的 SSE 错误以 `ProviderError` 形态到达，
+  拿不到 curl 错误码那样的细分；判据是「尚无字节被看到，重试不改变已见结果」。
+- **流式 429 没有 `Retry-After`**：rig 的 SSE 错误只带状态码不带响应头，退避只按本地
+  指数（阻塞面仍取服务端值与本地值之大者）。
+- **超时语义**：阻塞面 `--llm-timeout` 封顶整次请求；流式面它封顶**首帧**与之后
+  每两帧之间的空闲，长回答只要持续出字就不会被切。
+- **审计 model 行**由流适配器在流结束/出错/被丢弃时落，token 用量取 provider 的收尾
+  帧（OpenAI 末尾 usage 块、Anthropic `message_delta.usage`）；provider 不给就记 0，
+  不推算——口径与阻塞面相同。
+- **Ctrl-C** 在两个面都即时丢弃在途请求（上节），这一条不再是偏差。
 
 ## 命令行参数
 
@@ -165,12 +197,14 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   缺省查找依赖各进程的 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
 - **字段归属**：Rust 消费模型、提示词、会话、模型重试及上下文预算字段；摄像头、脚本目录、工具超时、能力门控与策略由后端消费。Rust 对后端专属字段只登记为已知字段、不解析或授权；以下能力字段的拒绝规则由后端执行。`audit_log` 两端各自生效。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
-  `temperature` `top_p` `reasoning_effort` `thinking` `max_turns` `max_task_seconds` `scripts_dir`
+  `temperature` `top_p` `reasoning_effort` `thinking` `stream` `max_turns` `max_task_seconds` `scripts_dir`
   `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
   `agent_policy` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec` `action_script_timeout_sec`。
   配置文件字段均可省略；Rust 必需的 endpoint、model、密钥须由其他入口补齐。
+  `stream`（布尔，缺省 `true`）选择模型输出面：流式逐 delta 打印或阻塞整段打印，
+  命令行 `--llm-no-stream` 优先；只有 Rust 消费，C++ 后端仅登记为已知字段。
   空串按「未配置」处理；`prompt_files` 为字符串数组（每项为文件或目录，语义同
   `--prompt-file`），空数组按「未配置」。`allow_shell` / `allow_hot_sql` **不能授权开启能力**：
   未给对应后端开关却写 `true` 会退出 2；开启 `run_command` / `apply_sql` 必须分别显式给
@@ -1007,7 +1041,8 @@ bash test/run_all.sh agent-all
   * `scripts/agent_e2e.sh`——唯一模式是两个进程：`mybot-agent`（Rust，rig）↔ `mybot --mcp-backend`
     （AF_UNIX 帧）。覆盖工具循环、提示词包、审计轨迹、REPL 与能力门控、`--check-config`、
     单轮调用上限、限流重试、单次超时与 SIGINT 取消、图片后注、stdout 写失败不 panic、
-    `--session-file`/`--resume` 两进程接力（批次 D）；
+    `--session-file`/`--resume` 两进程接力（批次 D）、流式逐 delta 到达与 `--llm-no-stream`
+    回退（R15：假服务按 150ms 帧间隔发 SSE，读端计时证明不是攒齐再打）；
   * `scripts/mcp_e2e.sh`——C++ 后端 + 纯标准库 Python 帧客户端直连 socket，守工具面与安全属性：
     `run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`（正反两趟）、`apply_sql`
     带电生效与热删除、策略拒绝时零副作用、fd 卫生、socket 权限、审计与优雅停机。
@@ -1019,7 +1054,9 @@ bash test/run_all.sh agent-all
 
 ## 已知限制
 
-- **非流式**：`stream=false`，长回答要等整轮生成完；接口超时用 `--llm-timeout` 调整。
+- **流式面的边界**（2026-09-25）：见「流式与阻塞的如实偏差」——中途断流不重试、已打出的
+  文本不撤回；思维链 delta 不打印；流式下 429 拿不到 `Retry-After`。`--llm-no-stream`
+  退回阻塞面时长回答要等整轮生成完，帧间超时与整段超时都用 `--llm-timeout` 调整。
 - **动作脚本有执行预算，但拦不住「阻塞在系统调用里」的驱动**（PL-2，2026-09-22）：
   `run_action_script` 是唯一曾无上界的执行路径（有超时的 `run_command` 反而默认关闭）。
   现在它带一个可配置预算 `action_script_timeout_sec`（配置文件，缺省 180 秒，0 = 关闭）：

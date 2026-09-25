@@ -26,7 +26,7 @@ use serde_json::json;
 use crate::bridge::{self, Bridge, ToolSpec};
 use crate::config::Config;
 use crate::hook::{HookState, SessionHook};
-use crate::model::BudgetModel;
+use crate::model::{BudgetModel, RawStream};
 
 #[derive(Debug, Clone, Copy)]
 struct DeepSeekChat;
@@ -113,6 +113,8 @@ pub struct Backend {
     /// 实际请求 URL（base_url + 驱动固定路径）：`--check-config` 与启动提示用，
     /// 免得「接入点写错了路径」到第一次调用才暴露。
     pub effective_url: String,
+    /// 模型输出走流式面（逐 delta）还是阻塞面（整段）。
+    pub stream: bool,
 }
 
 /// 按配置装配 agent（工具表来自后端 `tool.list`，系统提示词来自 `prompt`）。
@@ -186,6 +188,7 @@ pub fn build(
         agent,
         driver,
         effective_url: format!("{base}{}", driver.request_path()),
+        stream: cfg.stream,
     })
 }
 
@@ -199,7 +202,7 @@ fn assemble<M>(
     preamble: &str,
 ) -> Agent
 where
-    M: rig_core::completion::CompletionModel + Send + Sync + 'static,
+    M: rig_core::completion::CompletionModel + RawStream + Send + Sync + 'static,
 {
     // 附加参数（rig 会把它们平铺进请求体，与 C++ 驱动发的位置一致）：
     //   * top_p 恒发；

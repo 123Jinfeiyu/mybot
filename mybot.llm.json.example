@@ -15,6 +15,7 @@
 
   "reasoning_effort": "",
   "thinking": "",
+  "stream": true,
 
   "max_turns": 8,
   "max_task_seconds": 900,
