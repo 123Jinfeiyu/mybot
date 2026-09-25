@@ -14,6 +14,29 @@
 > 预算、审计、图片后注与提示词定界由两端分工实现；沿革段保留旧实现说明，
 > 不代表现役调用链。当前模型侧行为以 `agent/src/` 为准。
 
+## 目录
+
+- [与管道模式的差别](#与管道模式的差别)
+- [快速开始](#快速开始)
+- [交互式 REPL](#交互式-repl)
+- [流式与阻塞的如实偏差](#流式与阻塞的如实偏差)
+- [命令行参数](#命令行参数)
+- [配置文件（推荐）](#配置文件推荐)
+- [模型调用（沿革：Lua 协议驱动 → Rust 直连）](#模型调用沿革lua-协议驱动--rust-直连)
+- [给智能体的工具](#给智能体的工具)
+- [摄像头：capture_image](#摄像头capture_image)
+- [提示词包：绑定机器人身份](#提示词包绑定机器人身份)
+- [审计轨迹：--audit-log](#审计轨迹--audit-log)
+- [会话持久化：--session-file / --resume](#会话持久化--session-file----resume)
+- [远程对话（已评估，不做）](#远程对话已评估不做)
+- [策略钩子：--agent-policy](#策略钩子--agent-policy)
+- [工具后端：--mcp-backend（agent 体系的 C++ 半边）](#工具后端--mcp-backendagent-体系的-c++-半边)
+- [安全说明（请务必读）](#安全说明请务必读)
+- [Lua 模型驱动的可选运行期依赖：libcurl](#lua-模型驱动的可选运行期依赖libcurl)
+- [源码分层](#源码分层)
+- [测试](#测试)
+- [已知限制](#已知限制)
+
 ## 与管道模式的差别
 
 | | 管道模式（默认） | agent 体系（后端 + mybot-agent） |
@@ -402,19 +425,20 @@ API key 不在这个表里——驱动自己读环境变量。
 `prompt_tokens`/`completion_tokens`，`stop_reason` 也进 `extras`（排障时
 「是不是被 max_tokens 截断了」全靠它）。
 
-### 结构脚本声明 vs 自动注入
+### 结构脚本声明
 
-优先用**结构脚本声明**（结构脚本是唯一事实源）：
+Lua 模型驱动由**结构脚本声明**挂载（结构脚本是唯一事实源）：
 
 ```sql
 CREATE TABLE LlmDeepSeek (name String);
 INSERT INTO LlmDeepSeek (name) VALUES ('llm0');
 ```
 
-没声明时宿主按 `--llm-driver`/`--llm-var` **自动注入**一个——所以任何既有
-`robots/*.sql` 都能直接 `--agent` 跑起来，切换协议也只需换一个命令行选项。
-表名与变量名都会校验为安全标识符（它们会被拼进合成 SQL，且表名还会当
-`modules/<表名>.lua` 解析）。
+声明后 `llm0` 就是一颗普通硬件变量，`.mt` 动作脚本或 `@Daemon` 可径直调用它
+（规范化请求/响应契约见上文）。**agent 会话不需要它**：`mybot-agent` 的模型调用
+由 Rust 侧 provider 直连，模型参数（`--llm-model` 等）给 `mybot-agent`、不给后端；
+C++ 宿主已拒绝 `--llm-driver`/`--llm-var`（退出 2），旧 `--agent` 时代
+「未声明即自动注入一颗 llm 变量」的机制随之移除。
 
 ### 自己写第三个驱动
 
@@ -1002,7 +1026,8 @@ HTTPS/TLS 由 libcurl 负责（默认 CA 路径），驱动不碰 OpenSSL，也�
 | `modules/lib/llm_http.lua` | ffi 直驱 libcurl 的 HTTP 传输 | 运行期 libcurl |
 | `modules/lib/llm_wire_openai.lua` | OpenAI 兼容报文整形与响应映射 | 无 |
 | `modules/lib/llm_wire_deepseek.lua` | DeepSeek 差异（thinking / reasoning_content / 采样参数） | 无 |
-| `modules/LlmOpenAI.lua`、`modules/LlmDeepSeek.lua` | 协议驱动（表名 = 文件名） | 无 |
+| `modules/lib/llm_wire_anthropic.lua` | Anthropic Messages 差异（system 顶层字段、tool 结果并入 user 消息、x-api-key 鉴权） | 无 |
+| `modules/LlmOpenAI.lua`、`modules/LlmDeepSeek.lua`、`modules/LlmAnthropic.lua` | 协议驱动（表名 = 文件名） | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 
 宿主侧**没有任何一处**知道 provider 报文字段。

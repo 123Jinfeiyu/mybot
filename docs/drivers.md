@@ -2,7 +2,7 @@
 
 > **清单与计数以 `modules/` 目录为准**（本页是速查索引，可能滞后于代码；`ls modules/*.lua` 即权威清单）。结构脚本里每张 `CREATE TABLE <矩阵名>` 对应加载 `modules/<矩阵名>.lua`。各驱动的协议细节与其内嵌 `<矩阵名>_VIRT` 仿真模型见 [virtbus.md](virtbus.md)。
 >
-> **计数口径**（README 与架构页引用的数字按此推导，可复算）：`ls modules/*.lua` = 59 = **47 款器件/执行器/系统接口驱动**（本页前六节：舵机/输出 11 + IMU 6 + 气压/环境/光 11 + 测距/闪电 3 + ADC/电源 11 + 气体/医疗/其他 5）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **9 个框架与模型驱动**（`Relay`/`dummy`/`Monitor`/`Kalman`/`Ema`/`bitcompat`/`Camera`/`LlmOpenAI`/`LlmDeepSeek`，即最后一节）。注意 `GPIO`/`PWM` 是**系统接口驱动**、归在 47 里（不是总线）；`bitcompat` 是纯 Lua 兼容库、不在 `lib/` 下。`modules/lib/` 另有 23 个共享库，不计入 59。
+> **计数口径**（README 与架构页引用的数字按此推导，可复算）：`ls modules/*.lua` = 61 = **48 款器件/执行器/系统接口驱动**（本页前六节：舵机/输出 12 + IMU 6 + 气压/环境/光 11 + 测距/闪电 3 + ADC/电源 11 + 气体/医疗/其他 5）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **10 个框架与模型驱动**（`Relay`/`dummy`/`Monitor`/`Kalman`/`Ema`/`bitcompat`/`Camera`/`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic`，即最后一节）。注意 `GPIO`/`PWM`/`Speaker` 是**系统接口/执行器驱动**、归在 48 里（不是总线）；`bitcompat` 是纯 Lua 兼容库、不在 `lib/` 下。`modules/lib/` 另有 25 个共享库（含 `asound`、`llm_wire_anthropic`），不计入 61。
 
 ## 舵机 / 输出执行器
 
@@ -19,6 +19,7 @@
 | `GPIO` | Linux GPIO |
 | `PWM` | Linux PWM |
 | `H03ARR` | H03A 电机驱动 |
+| `Speaker` | 声卡音频输出（ALSA ffi 直驱，经 `lib/asound.lua`）：预设波形（sine/square/triangle/sawtooth/noise/silence）+ 音调 + 时长阻塞播放；`simulate='1'` 为仿真模式 |
 
 ## IMU / 姿态
 
@@ -92,9 +93,10 @@
 | `Ema` | 指数移动平均（配 `alpha`∈(0,1]） |
 | `Monitor` | 消费 `$` 引用快照的观察/决策变量 |
 | `bitcompat` | Lua 5.1/5.3 位运算兼容库（非驱动） |
-| `LlmOpenAI` | **模型协议驱动**：OpenAI 兼容（当前协议：moma 网关 + zhipu/glm）；经 `lib/llm_http.lua` ffi 直驱 libcurl。agent 模式用，可被 `.mt` 直接调用 |
+| `LlmOpenAI` | **模型协议驱动**：OpenAI 兼容（当前协议：moma 网关 + zhipu/glm）；经 `lib/llm_http.lua` ffi 直驱 libcurl。供 `.mt` 脚本/`@Daemon` 直接调用（agent 会话走 Rust agent，不经此链路） |
 | `Camera` | **摄像头驱动**：V4L2 mmap 取帧、只取硬件编码的 MJPEG（ffi，无第三方库）；`src=<图片>` 为仿真模式。agent 模式的 `capture_image` 工具用它 |
 | `LlmDeepSeek` | **模型协议驱动**：DeepSeek（思考模式、`reasoning_content` 回传、采样参数限制）；与 `LlmOpenAI` 共用 `lib/llm_wire_openai.lua` 骨架 |
+| `LlmAnthropic` | **模型协议驱动**：Anthropic Messages 协议（system 为顶层字段、tool 结果并入 user 消息、非 Bearer 鉴权）；协议整形在本文件与 `lib/llm_wire_anthropic.lua`，宿主一行未改 |
 
 > 不依赖 HAL 的模块（如滤波器、virtbus 底座）可用 `luajit`/`lua5.4` 独立调试。
 > 模型协议驱动的规范化协议、切换方式与安全边界见 [agent.md](agent.md)。

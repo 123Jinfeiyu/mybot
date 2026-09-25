@@ -6,7 +6,7 @@
 
 | 你是 | 建议顺序 |
 | ---- | -------- |
-| 第一次上手 | [README 快速开始](../README.md#-快速开始) → [DSL 参考](dsl.md) → [驱动清单](drivers.md) |
+| 第一次上手 | [README 快速开始](../README.md#快速开始) → [DSL 参考](dsl.md) → [驱动清单](drivers.md) |
 | 接硬件 / 写驱动 | [HAL](hal.md) → [驱动清单](drivers.md)（驱动契约）→ [虚拟总线](virtbus.md) → [开发与贡献](development.md) |
 | 用守护线程做后台采样 | [@Daemon 守护线程](daemon.md) → [虚拟总线](virtbus.md)（`proto=virt`） |
 | 用大模型驱动机器人 | [agent 模式](agent.md) → [命令行参考](reference.md) |
@@ -17,7 +17,7 @@
 
 - [命令行与环境变量参考](reference.md)——动作输入源（TCP/文件/stdin）、CLI 参数、安全约束、`BOT4CJ_*` 环境变量
 - [DSL 参考：结构脚本与动作脚本](dsl.md)——占位符、引号字面量、`@Alias`/`@Vars`、`$(...)` 表达式、controller/trigger 与 `$` 引用完整语义
-- [硬件变量（驱动）清单](drivers.md)——`modules/` 下 **60 个模块**（47 款器件/执行器/系统接口驱动 + 3 条总线 + 10 个框架与模型驱动）按类别速查；
+- [硬件变量（驱动）清单](drivers.md)——`modules/` 下 **61 个模块**（48 款器件/执行器/系统接口驱动 + 3 条总线 + 10 个框架与模型驱动）按类别速查；
   含驱动契约（入口函数集 / 返回值 / 校验顺序 / destroy）、`SINGLE_CONSUMER` 名单与收敛豁免清单——
   **计数口径与推导写在 drivers.md 开头**，权威清单是 `ls modules/*.lua`
 - [已知限制与常见问题](faq.md)——平台/运行时边界与排障问答
@@ -31,7 +31,7 @@
 
 ## 架构与路线图
 
-- [架构分析与扩展开发路线图](architecture_analysis.html)——C++17 版全景分析（正文与配套两图按现行 `src/*.cpp` 分层重绘，2026-09-21 逐条复核更新）
+- [架构分析与扩展开发路线图](architecture_analysis.html)——C++17 版全景分析（正文与配套两图按现行两进程架构重绘：`mybot --mcp-backend` + Rust `mybot-agent`，2026-09-25 逐条复核更新）
 - [分层架构全景图](architecture_layers.svg)——L1–L7 分层 + 主数据流 + 守护并发引用
 - [一次 play 的数据流 / 时序展开](architecture_dataflow.svg)——四阶段调用链 + @Daemon 并发分支（336B 共享槽 IPC）
 

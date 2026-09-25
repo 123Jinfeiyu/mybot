@@ -250,7 +250,7 @@ cmake -S . -B build -DMYBOT_WERROR=ON && cmake --build build
 - **报错文案分语言**（有意分区，非漂移）：结构脚本装配/解析期的报错（`robot`/`sqlparse`/
   `hardware`/`daemonvar` 等，读者是 `.sql`/`.mt` 脚本作者）用**英文**——这类报错常被
   截断/转码后进日志或 CI 输出，ASCII 最稳；agent 与运行期操作者可见的报错
-  （`agentloop`/`agentmode`/`agenttools` 等，读者是与机器人对话的人）用**中文**。
+  （`mcpbackend`/`agentmode`/`agenttools` 等，读者是与机器人对话的人）用**中文**。
   两区都收口到同一异常体系（`IllegalArgumentException` 为根，运行期硬件失败用
   `std::runtime_error`），不要新增 `std::invalid_argument` 等散装类型。
   **Lua 驱动层同此分区**：驱动 `err()` 的报错串用**英文**（读者是脚本作者），

@@ -9,11 +9,14 @@
     <marker id="ahG" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
       <path d="M0,0 L0,6 L8,3 z" fill="#16a34a"/>
     </marker>
+    <marker id="ahP" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L0,6 L8,3 z" fill="#7c3aed"/>
+    </marker>
   </defs>
 
   <rect x="0" y="0" width="1500" height="940" fill="#f8fafc"/>
   <text x="750" y="40" text-anchor="middle" font-size="26" font-weight="700" fill="#0f172a">bot4cj.cpp 机器人控制框架 · 架构全景图</text>
-  <text x="750" y="64" text-anchor="middle" font-size="14" fill="#64748b">C++17 宿主（std::thread + LuaJIT C API）+ Lua 驱动层 + Linux HAL · 结构(.sql) / 驱动(.lua) / 动作(.mt) 三脚本分治</text>
+  <text x="750" y="64" text-anchor="middle" font-size="14" fill="#64748b">C++17 宿主（std::thread + LuaJIT C API，mybot --mcp-backend 工具后端）+ Rust agent 进程（mybot-agent，模型循环）+ Lua 驱动层 + Linux HAL · 结构(.sql) / 驱动(.lua) / 动作(.mt) 三脚本分治</text>
 
   <!-- ===== L7 输入层 ===== -->
   <g>
@@ -35,9 +38,9 @@
       <text x="910" y="172" text-anchor="middle" font-size="12" fill="#64748b">actionsource.cpp：TCP 单连接 / 文件 / stdin 管道</text>
     </g>
     <g>
-      <rect x="1100" y="128" width="320" height="58" rx="8" fill="#fff" stroke="#6366f1" stroke-width="1.5"/>
-      <text x="1260" y="152" text-anchor="middle" font-size="15" font-weight="600" fill="#312e81">agent 输入</text>
-      <text x="1260" y="172" text-anchor="middle" font-size="12" fill="#64748b">--task / --prompt-file / REPL（llmconfig 读配置）</text>
+      <rect x="1100" y="128" width="320" height="58" rx="8" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.8" stroke-dasharray="7 4"/>
+      <text x="1260" y="152" text-anchor="middle" font-size="15" font-weight="600" fill="#6d28d9">mybot-agent（Rust 独立进程）</text>
+      <text x="1260" y="172" text-anchor="middle" font-size="12" fill="#64748b">REPL / --task / --prompt-file · rig 0.42 直连 provider</text>
     </g>
   </g>
 
@@ -53,7 +56,7 @@
       <text x="208" y="320" text-anchor="middle" font-size="12.5" fill="#475569">cliargs.cpp 解析/校验/帮助</text>
       <text x="208" y="342" text-anchor="middle" font-size="12.5" fill="#475569">信号处理仅置 atomic 标志</text>
       <text x="208" y="364" text-anchor="middle" font-size="12.5" fill="#475569">runActionPipeline 动作管线</text>
-      <text x="208" y="386" text-anchor="middle" font-size="12.5" fill="#475569">runAgentPipeline agent 管线</text>
+      <text x="208" y="386" text-anchor="middle" font-size="12.5" fill="#475569">--mcp-backend 工具后端管线</text>
       <text x="208" y="412" text-anchor="middle" font-size="11.5" fill="#0ea5e9">activate → run → deactivate</text>
     </g>
 
@@ -90,15 +93,15 @@
       <text x="1024" y="412" text-anchor="middle" font-size="11.5" fill="#475569">唯一所有权：unique_ptr 独占</text>
     </g>
 
-    <!-- agent 层 -->
+    <!-- MCP 工具后端 -->
     <g>
       <rect x="1168" y="268" width="256" height="180" rx="8" fill="#fff" stroke="#3b82f6" stroke-width="1.5"/>
-      <text x="1296" y="294" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">agent 模式（工具循环）</text>
-      <text x="1296" y="320" text-anchor="middle" font-size="12.5" fill="#475569">agentloop 历史/轮次/回滚</text>
-      <text x="1296" y="342" text-anchor="middle" font-size="12.5" fill="#475569">agenttools 五工具（2 个条件提供）+ 路径沙箱</text>
-      <text x="1296" y="364" text-anchor="middle" font-size="12.5" fill="#475569">agentproto/agentdriver 封装</text>
-      <text x="1296" y="386" text-anchor="middle" font-size="12.5" fill="#475569">llmconfig/promptpack 配置</text>
-      <text x="1296" y="412" text-anchor="middle" font-size="11.5" fill="#0ea5e9">模型调用 = Lua 协议驱动</text>
+      <text x="1296" y="294" text-anchor="middle" font-size="15" font-weight="700" fill="#1e3a8a">MCP 工具后端</text>
+      <text x="1296" y="320" text-anchor="middle" font-size="12.5" fill="#475569">mcpbackend AF_UNIX 帧协议</text>
+      <text x="1296" y="342" text-anchor="middle" font-size="12.5" fill="#475569">socket 占用探测防双实例</text>
+      <text x="1296" y="364" text-anchor="middle" font-size="12.5" fill="#475569">agenttools 8 工具（3 需显式开启）</text>
+      <text x="1296" y="386" text-anchor="middle" font-size="12.5" fill="#475569">agentview/agentimage 视图与图像</text>
+      <text x="1296" y="412" text-anchor="middle" font-size="11.5" fill="#0ea5e9">agentpolicy/agentaudit 策略与审计</text>
     </g>
   </g>
 
@@ -137,9 +140,9 @@
   <!-- ===== L4 驱动 + 库 ===== -->
   <g>
     <rect x="40" y="662" width="1420" height="130" rx="10" fill="#fff7ed" stroke="#fed7aa" stroke-width="1.5"/>
-    <text x="60" y="690" font-size="16" font-weight="700" fill="#9a3412">L4 · 驱动 + 库层（LuaJIT · modules/）—— 59 模块 = 47 器件/执行器/系统接口 + 3 总线 + 9 框架模型，另 23 个 lib/ 共享库</text>
-    <text x="60" y="716" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">驱动（按总线/能力）：</tspan>I2C 传感（MPU6050/BME280/VL53L0X/AS7262/SGP30/MAX30102…）· SPI（ADS1256/MT6826S…）· UART（MHZ19/SDS011/SCSCL…）· 执行器（PCA9685/Servo/PWM/AD9833）· 电源（INA219/INA3221/LTC2944/MAX17043）· Camera（V4L2 + MJPEG）· LLM 协议（LlmOpenAI/LlmDeepSeek）· 框架（I2C/SPI/UART/Relay/Monitor/dummy）</text>
-    <text x="60" y="742" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">公共库（modules/lib/）：</tspan>HAL.lua（总线函数单点 · 按 BOT4CJ_HAL_BACKEND 选后端）· hal_backend_glibc.lua（ffi 直调 glibc 的后端实现）· drv_common.lua（arg_table/ERR 契约）· bus_contract.lua（总线契约单点）· virtbus.lua（虚拟总线桩替身）· sensor_daemon.lua（万能采样 chunk）· mpath.lua · ema/kalman/fft/nn.lua · llm_http + llm_wire_*.lua（ffi 直驱 libcurl，连接跨轮复用）· mjpeg_frame.lua · utf8.lua · daemon_tid/probe.lua（注：bitcompat.lua 在 modules/ 顶层，不在 lib/）</text>
+    <text x="60" y="690" font-size="16" font-weight="700" fill="#9a3412">L4 · 驱动 + 库层（LuaJIT · modules/）—— 61 模块 = 48 器件/执行器/系统接口 + 3 总线 + 10 框架模型，另 25 个 lib/ 共享库</text>
+    <text x="60" y="716" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">驱动（按总线/能力）：</tspan>I2C 传感（MPU6050/BME280/VL53L0X/AS7262/SGP30/MAX30102…）· SPI（ADS1256/MT6826S…）· UART（MHZ19/SDS011/SCSCL…）· 执行器（PCA9685/Servo/PWM/AD9833）· 电源（INA219/INA3221/LTC2944/MAX17043）· Camera（V4L2 + MJPEG）· Speaker（ALSA 音频输出）· LLM 协议（LlmOpenAI/LlmDeepSeek/LlmAnthropic）· 框架（I2C/SPI/UART/Relay/Monitor/dummy）</text>
+    <text x="60" y="742" font-size="13" fill="#475569"><tspan font-weight="600" fill="#9a3412">公共库（modules/lib/）：</tspan>HAL.lua（总线函数单点 · 按 BOT4CJ_HAL_BACKEND 选后端）· hal_backend_glibc.lua（ffi 直调 glibc 的后端实现）· drv_common.lua（arg_table/ERR 契约）· bus_contract.lua（总线契约单点）· virtbus.lua（虚拟总线桩替身）· sensor_daemon.lua（万能采样 chunk）· mpath.lua · ema/kalman/fft/nn.lua · asound.lua（ALSA ffi）· llm_http + llm_wire_*.lua（ffi 直驱 libcurl，连接跨轮复用）· mjpeg_frame.lua · utf8.lua · daemon_tid/probe.lua（注：bitcompat.lua 在 modules/ 顶层，不在 lib/）</text>
     <text x="60" y="768" font-size="12" fill="#64748b">传感器桩替身与 Relay 转发链路使「不接硬件也能跑通全流程」；virtbus 可在无真机时验证任意驱动 build/call/destroy 链路（故障注入：NACK / fd 泄漏计数）</text>
   </g>
 
@@ -168,6 +171,11 @@
   <g stroke="#2563eb" stroke-width="2.2" fill="none" marker-end="url(#ahA)">
     <path d="M1470 200 L1470 492"/>
   </g>
+  <!-- mybot-agent → MCP 工具后端（AF_UNIX socket） -->
+  <g stroke="#7c3aed" stroke-width="2.2" stroke-dasharray="6 4" fill="none" marker-end="url(#ahP)">
+    <path d="M1260 186 L1260 262"/>
+  </g>
+  <text x="1250" y="240" text-anchor="end" font-size="11.5" fill="#7c3aed" font-weight="600">AF_UNIX socket（MCP 帧协议）</text>
   <g stroke="#16a34a" stroke-width="2.2" fill="none" marker-end="url(#ahG)">
     <path d="M1470 642 L1470 812"/>
   </g>
@@ -185,5 +193,5 @@
   <text x="1030" y="288" font-size="11.5" fill="#b45309" font-weight="600">@Daemon 守护线程 std::thread + 独立 lua_State（336B 共享槽 static_assert 钉布局）→ 主线程 play() 加锁读槽</text>
 
   <!-- 底部说明 -->
-  <text x="750" y="928" text-anchor="middle" font-size="12" fill="#94a3b8">数据主干：.sql 定义硬件拓扑 → RobotStruct 建变量表 → .mt 逐行驱动 hv.play → Lua call → HAL 基元 → 内核设备文件；@Daemon 经共享内存槽做跨线程 IPC，controller 与 $ 引用列把「传感器 → 滤波 → 执行器」串成引用链；agent 模式以 LLM 工具循环为主执行流程</text>
+  <text x="750" y="928" text-anchor="middle" font-size="12" fill="#94a3b8">数据主干：.sql 定义硬件拓扑 → RobotStruct 建变量表 → .mt 逐行驱动 hv.play → Lua call → HAL 基元 → 内核设备文件；@Daemon 经共享内存槽做跨线程 IPC，controller 与 $ 引用列把「传感器 → 滤波 → 执行器」串成引用链；模型循环在独立 Rust 进程 mybot-agent（rig 直连 provider），经 AF_UNIX socket 调用 C++ 宿主的 MCP 工具后端</text>
 </svg>
