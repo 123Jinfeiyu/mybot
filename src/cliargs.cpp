@@ -375,8 +375,9 @@ std::string helpText() {
 	s += "                       **不可逆**。**缺省不提供**，配置文件的 allow_hot_sql\n";
 	s += "                       只能关不能开（只读的 query_sql 不受影响）；--mcp-backend\n";
 	s += "                       下开它同样强制策略确认（apply_sql）\n";
-	s += "  --read-var <变量名>    声明一个**可读**硬件变量（可重复；注册 read_variables\n";
-	s += "                       工具，让智能体主动读器件当前值）。**缺省不提供**该工具：\n";
+	s += "  --read-var <变量名>    声明一个**可读**硬件变量（可重复；注册 read_variables 与\n";
+	s += "                       wait_variable 工具，让智能体主动读器件当前值、或轮询等\n";
+	s += "                       某个读数满足条件）。**缺省不提供**这两个工具：\n";
 	s += "                       只有列进来的变量可读——执行器（Servo/Relay 等）也是 Lua\n";
 	s += "                       驱动，靠种类分不出传感器与执行器，故由操作者显式声明；\n";
 	s += "                       配置文件写 read_vars 会被拒绝加载（与 --agent-shell 同判据）\n";
@@ -444,7 +445,8 @@ std::string helpText(const std::string& topic) {
 		s += "                       强制要 --agent-policy 且 require_confirm 含 run_command\n";
 		s += "  --agent-hot-sql       显式开启 apply_sql（结构 SQL 带电生效）；后端下开它\n";
 		s += "                       强制要策略确认（apply_sql）。配置文件不能开\n";
-		s += "  --read-var <变量名>    声明可读硬件变量（可重复；注册 read_variables 工具）。\n";
+		s += "  --read-var <变量名>    声明可读硬件变量（可重复；注册 read_variables 与\n";
+		s += "                       wait_variable 工具）。\n";
 		s += "                       缺省不提供；配置文件不能给\n";
 		s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
 		s += "                       确认程序（退出 0 = 放行；超时按 on_timeout，缺省 deny）\n";

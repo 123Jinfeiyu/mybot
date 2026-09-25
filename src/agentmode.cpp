@@ -136,7 +136,7 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 	s += "  apply_sql   : " + std::string(cfg.allowHotSql ? "已开启（--agent-hot-sql）" : "未提供（缺省关）") + "\n";
 	/* 回读：只报**声明了什么**（能不能解析要到上电后才知道，判据不在摘要这一层；
 	 * 会话开始时的提示会点名被跳过的名字）。 */
-	s += "  read_variables: " + (cfg.readVars.empty()
+	s += "  read/wait_variable: " + (cfg.readVars.empty()
 			? std::string("未提供（缺省关；用 --read-var <变量名> 指定可读变量）")
 			: "已声明 " + std::to_string(cfg.readVars.size()) + " 项") + "\n";
 	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
@@ -675,7 +675,7 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 		const std::vector<std::string> resolved = resolvableReadVars(cfg.readVars, robot, &skipped);
 		if (resolved.empty()) {
 			log << "提示: --read-var 声明的变量一个都不可读（未注册，或种类不是 lua/daemon），"
-				"本次不提供 read_variables 工具\n";
+				"本次不提供 read_variables / wait_variable 工具\n";
 		}
 		if (!skipped.empty()) {
 			log << "提示: 以下 --read-var 声明被跳过（未注册，或种类不是 lua/daemon）: ";

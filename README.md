@@ -229,6 +229,7 @@ MYBOT 采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全�
 | `run_action_script` | 执行动作脚本（**回执带驱动返回的读数**） | ⚠️ 写入 |
 | `capture_image` | 拍照并送入上下文 | ⚠️ 隐私 |
 | `read_variables` | 主动读硬件变量当前值 | ✅ 只读，**需 `--read-var` 声明可读变量** |
+| `wait_variable` | 轮询等某个读数满足条件（阈值/变化），超时是结果 | ✅ 只读，与 `read_variables` 同门控 |
 | `apply_sql` | 结构 SQL **带电生效**（建表/插行；`DELETE FROM` 当场断电摘行、`DROP TABLE` 撤整张表，**不可逆**；`UPDATE ... SET ...` 按断电重建改写命中行） | 🔴 危险，**需 `--agent-hot-sql`** |
 | `run_command` | 执行 shell 命令 | 🔴 危险，**需 `--agent-shell`** |
 
@@ -240,7 +241,7 @@ MYBOT 在设计时将安全放在首位：
 
 - ✅ 动作脚本只能在 `scripts/` 目录下，不允许符号链接和路径遍历
 - ✅ 三个危险/放宽权限的开关（`run_command` / `apply_sql` / 可读变量清单）**缺省全关，且只能命令行给**——配置文件写 `allow_shell: true` / `allow_hot_sql: true`（放宽）或出现 `read_vars` 字段会被**拒绝加载**（写 `false` 合法，模板 `mybot.llm.json.example` 即如此）
-- ✅ `read_variables` 只放行已注册且种类为 `lua`/`daemon` 的变量，且只有 `--read-var` 列过的名字可读（执行器与传感器同属 `lua`，靠种类分不出，故由人列名）
+- ✅ `read_variables` / `wait_variable` 只放行已注册且种类为 `lua`/`daemon` 的变量，且只有 `--read-var` 列过的名字可读（执行器与传感器同属 `lua`，靠种类分不出，故由人列名）
 - ✅ 所有操作有体积上限和超时限制
 
 **配置隔离**

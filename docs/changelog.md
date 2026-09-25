@@ -9,6 +9,21 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 wait_variable 工具：智能体能「等事件」了
+
+- **新工具** `wait_variable(name, key, condition, value, timeout_sec, poll_ms)`：后端按
+  `poll_ms`（缺省 200，50..5000）轮询 `--read-var` 清单内某个变量的返回表键，直到
+  `gt/ge/lt/le/eq/ne/changed` 条件成立或 `timeout_sec`（缺省 30，上限 =
+  `action_script_timeout_sec`）到期，一次调用给一个结论。此前模型要等「水位到 30」
+  「守护计数推进」只能一轮一轮调 `read_variables`，每轮一次模型往返。
+- **与 `read_variables` 同门控同副作用面**：同一 `--read-var` 解析集合、同样只走
+  `playQuiet`；缺省不注册。**超时是结果不是失败**（`ok=true`，回执写明超时与最后读数，
+  键不存在时列出样本现有键）；参数问题（非法条件、缺 `value`、越界、变量不在清单、键在
+  而不是数值撞上排序条件）在触碰硬件前拦成 `paramError`。等待期间每 ≤100 ms 看一次停止
+  标志，Ctrl-C 不会坐满超时。`summary` 给审计 `satisfied=… elapsed_ms=… samples=…`。
+- 系统提示词在可读清单非空时同时引导 `wait_variable`；`--check-config` 摘要行改为
+  `read/wait_variable`。
+
 ### 2026-09-25 Rust agent 交互 REPL 行编辑 / 历史 / 命令补全（rustyline）
 
 - **终端上的 REPL 有了行编辑**：方向键、Ctrl-A/E/W/U、↑↓ 翻历史、Ctrl-R 搜索、`/命令`

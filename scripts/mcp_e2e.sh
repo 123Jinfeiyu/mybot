@@ -199,9 +199,21 @@ try:
 		d = tool_text("read_variables", {})
 		chk(d.get("ok") is True and "slept" in d.get("text", ""),
 			"read_variables 回执带回了驱动返回表里的读数；片段: " + repr(d.get("text", "")[:160]))
+		# wait_variable 与 read_variables 同门控：真跨帧等一次（首采样即满足），
+		# 结论在定界外、读数在定界内、summary 给审计机器可读结论。
+		chk("wait_variable" in tools, "--read-var 时 wait_variable 同时在工具表内")
+		d = tool_text("wait_variable", {"name": "relay0", "key": "result", "condition": "eq", "value": "OK"})
+		chk(d.get("ok") is True and "条件满足" in d.get("text", "") and "slept" in d.get("text", ""),
+			"wait_variable 首采样即满足并带回读数；片段: " + repr(d.get("text", "")[:160]))
+		chk(d.get("summary", "").startswith("satisfied=true"),
+			"wait_variable 的 summary 机器可读；实际: " + repr(d.get("summary")))
+		d = tool_text("wait_variable", {"name": "relay0", "key": "result", "condition": "between", "value": 1})
+		chk(d.get("ok") is False and d.get("paramError") is True and d.get("executed") is False,
+			"wait_variable 非法 condition → paramError（没执行）")
 	elif scenario == "readvaroff":
 		# 场景 15b 对照：缺省不注册该工具 ⇒「缺省即无此能力」。
 		chk("read_variables" not in tools, "缺 --read-var 时 read_variables 不在工具表内")
+		chk("wait_variable" not in tools, "缺 --read-var 时 wait_variable 也不在工具表内")
 		d = tool_text("read_variables", {})
 		chk(d.get("ok") is False and "未知工具" in d.get("text", ""),
 			"缺 --read-var 时调用 read_variables → 未知工具")

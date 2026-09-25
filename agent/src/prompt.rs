@@ -396,7 +396,10 @@ pub fn build_system_prompt(
     if !m.readable_vars.is_empty() {
         p += &format!(
             "- 需要读数（传感器当前值、器件状态）时用 read_variables：可读变量为 {}。\
-             它只读、不改变任何状态；清单之外的变量读不到，不要尝试。\n",
+             它只读、不改变任何状态；清单之外的变量读不到，不要尝试。\n\
+             - 需要**等某个读数满足条件**（超过阈值、发生变化）时用 wait_variable，\
+             一次调用轮询到满足或超时——不要用多轮 read_variables 手工轮询。\
+             超时是结果不是失败，按回执里的最后读数决定下一步。\n",
             m.readable_vars
         );
     }
@@ -487,6 +490,7 @@ mod tests {
         assert!(!p.contains("run_command"));
         assert!(!p.contains("apply_sql"));
         assert!(!p.contains("read_variables"));
+        assert!(!p.contains("wait_variable"));
 
         let m2 = PromptMaterial {
             allow_shell: true,
@@ -498,6 +502,7 @@ mod tests {
         assert!(p2.contains("run_command"));
         assert!(p2.contains("apply_sql"));
         assert!(p2.contains("可读变量为 light0, light1"));
+        assert!(p2.contains("wait_variable"));
         assert!(p2.ends_with("包内容"));
     }
 
