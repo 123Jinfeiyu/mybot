@@ -203,9 +203,9 @@ inline std::pair<IntParse, long long> parseLongStrict(const std::string& s) {
 }
 
 /* 整数选项越界报错的公共尾段。主体描述（「选项 --x」/「配置文件 f 的字段 'k'」）
- * 由调用方给，范围区间与实际值的呈现在此单点——CLI（agentmode parseIntOption）
- * 与配置文件（llmconfig wantInt）两条解析路径此前各自拼一份，措辞漂移会让
- * 按文案匹配的守门用例两头维护。 */
+ * 由调用方给，范围区间与实际值的呈现在此单点——CLI（cliargs 的 --mcp-* 预算、
+ * main 的 --daemon-grace-ms）与配置文件（llmconfig wantInt）两条解析路径此前
+ * 各自拼一份，措辞漂移会让按文案匹配的守门用例两头维护。 */
 inline std::string rangeErrorText(const std::string& subject, long long lo, long long hi,
 		const std::string& actual) {
 	return subject + " 需要在 [" + std::to_string(lo) + ", " + std::to_string(hi)

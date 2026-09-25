@@ -83,12 +83,12 @@ void hardenAgainstInspection() {
 #endif
 }
 
-/* agent 配置组装 + key 注入进程环境 + 告警打印；失败已打印，返回 false。
- * 密钥只在进程环境里流转：驱动的参数表与 BOT4CJ_DEBUG 的参数转储都不该
- * 出现它，真正读它的是 Lua 驱动自己。
- * 注入前后各做一件事把「环境来源的密钥」这条路收口：setenv **之前**抓取 exec 时
- * 环境块里敏感变量的原始串，注入**之后**抹零——/proc/<pid>/environ 对同 UID 进程
- * 可读，只清洗子进程继承的那份（buildCleanEnvp）挡不住它读常驻宿主的这份。 */
+/* agent 配置组装 + 环境密钥抹零 + 告警打印；失败已打印，返回 false。
+ * 2026-09-26：agent 循环迁 Rust 后，宿主（--mcp-backend）不再解析或注入模型
+ * 密钥——密钥由 mybot-agent 进程自持。这里仍保留 collectEnvSecrets/scrubEnvSecrets：
+ * 操作者可能把 BOT4CJ_LLM_KEY 放进了宿主继承的环境块，抹零它可收窄
+ * /proc/<宿主 pid>/environ 对同 UID 进程的暴露（与 buildCleanEnvp 清洗
+ * run_command 子进程环境互补）。 */
 bool prepareAgentConfig(const CliOptions& options, agent::AgentModeConfig& agentCfg) {
 	std::string cfgErr;
 	if (!agent::buildAgentConfig(options, agentCfg, cfgErr)) {
@@ -96,10 +96,6 @@ bool prepareAgentConfig(const CliOptions& options, agent::AgentModeConfig& agent
 		return false;
 	}
 	std::vector<char*> envSecrets = agent::collectEnvSecrets();
-	if (!agentCfg.resolvedApiKey.empty()) {
-		/* NOLINT(concurrency-mt-unsafe)：setenv 只在启动期、任何线程 spawn 之前执行 */
-		::setenv("BOT4CJ_LLM_KEY", agentCfg.resolvedApiKey.c_str(), 1);	/* NOLINT(concurrency-mt-unsafe) */
-	}
 	agent::scrubEnvSecrets(envSecrets);
 	if (!agentCfg.configPath.empty()) {
 		std::cerr << "配置文件: " << agentCfg.configPath << std::endl;
@@ -116,13 +112,6 @@ bool prepareAgentConfig(const CliOptions& options, agent::AgentModeConfig& agent
 		std::cerr << "策略钩子: " << agentCfg.policyPath
 			<< "（命中 require_confirm 的工具调用需过外部确认程序）" << std::endl;
 	}
-	if (!agentCfg.configWarning.empty()) {
-		std::cerr << agentCfg.configWarning << std::endl;
-	}
-	/* 密钥来源对 agent 的 shell 可见（命令行/配置文件/密钥文件）且
-	 * run_command 启用时如实告警：同用户子进程没有权限壁垒。 */
-	std::string keyWarn = agent::shellKeyExposureWarning(agentCfg);
-	if (!keyWarn.empty()) { std::cerr << keyWarn << std::endl; }
 	return true;
 }
 

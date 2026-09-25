@@ -452,13 +452,11 @@ Json McpBackend::routeContextGet() {
 	}
 	/* 磁盘内容三段的读法/消毒/定界与原 buildAgentSystemPrompt 完全一致（单一
 	 * 事实源；提示词最终拼装在 Rust 侧 agent/src/prompt.rs，语义与之逐字对齐）：
-	 * 有配置组装期的成品（structureHead / scriptsList）就用它，没有才实时读。
+	 * 后端不拼系统提示词、无配置组装期缓存，故每次 context.get 实时读。
 	 * 区别只在呈现：这里返回**已定界的块**，由 Rust agent 拼进它自己的系统
 	 * 提示词——「同一份磁盘内容，两条进上下文的通道必须有同一定界强度」。 */
-	const std::string sql = cfg_->structureHead ? *cfg_->structureHead
-			: structureScriptHead(cfg_->structurePath, kStructureHeadBytes);
-	const std::string scripts = cfg_->scriptsList ? *cfg_->scriptsList
-			: describeActionScripts(cfg_->scriptsDir);
+	const std::string sql = structureScriptHead(cfg_->structurePath, kStructureHeadBytes);
+	const std::string scripts = describeActionScripts(cfg_->scriptsDir);
 
 	Json data = JsonObject();
 	data.put("robotName", JsonString(structureDisplayName(cfg_->structurePath)));

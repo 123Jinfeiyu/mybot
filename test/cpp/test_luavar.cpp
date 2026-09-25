@@ -110,55 +110,6 @@ TH_TEST(empty_action_params_never_trip_the_guard) {
 	TH_CHECK(msg.find("is rejected because") == std::string::npos);
 }
 
-/* ---- B3：图片游标通道（__bot_img）的窗口/边界/fail-closed 契约 ----
- * 夹具驱动把 __bot_img(data.idx) 的返回值原样回传，便于逐条断言取值行为。 */
-TH_TEST(luavar_image_cursor_channel_window_bounds_and_failclosed) {
-	std::string s1 = "first-image-bytes";
-	std::string s2 = "second-image-bytes";
-
-	fx::TempDir tmp("imgcursor");
-	std::filesystem::path drv = tmp.path() / "imgdrv.lua";
-	{
-		std::ofstream f(drv, std::ios::binary);
-		f << "function build(data) return { result = \"OK\" } end\n"
-		     "function call(data) return { result = \"OK\", out = __bot_img(data.idx) } end\n";
-	}
-	auto v = MtVars_Lua::Factory(drv.string(), "cam0", [](bool) {
-		Json m = JsonObject();
-		m.put("name", JsonString("cam0"));
-		return m;
-	});
-	v->build();
-
-	/* 窗口外（尚未挂表）：fail-closed，报错点名「组包期通道」 */
-	TH_CHECK_THROWS_MSG(std::runtime_error, "当前没有宿主图片上下文",
-		v->play([] { Json p = JsonObject(); p.put("idx", JsonInt(1)); return p; }()));
-
-	/* 窗口内：游标 1/2 各取到对应串（字节从宿主进 Lua 的唯一一次拷贝） */
-	std::vector<const std::string*> imgs{ &s1, &s2 };
-	v->setHostImages(&imgs);
-	{
-		Json p = JsonObject(); p.put("idx", JsonInt(1));
-		Json r = v->play(p);
-		TH_CHECK(r.get("out")->getValue() == s1);
-	}
-	{
-		Json p = JsonObject(); p.put("idx", JsonInt(2));
-		Json r = v->play(p);
-		TH_CHECK(r.get("out")->getValue() == s2);
-	}
-	/* 越界与非数字游标：fail-closed */
-	TH_CHECK_THROWS_MSG(std::runtime_error, "游标越界",
-		v->play([] { Json p = JsonObject(); p.put("idx", JsonInt(3)); return p; }()));
-	TH_CHECK_THROWS_MSG(std::runtime_error, "游标必须是数字",
-		v->play([] { Json p = JsonObject(); p.put("idx", JsonString("x")); return p; }()));
-
-	/* 摘表后回到窗口外语义（RAII 挂/摘的正确性依据） */
-	v->setHostImages(nullptr);
-	TH_CHECK_THROWS_MSG(std::runtime_error, "当前没有宿主图片上下文",
-		v->play([] { Json p = JsonObject(); p.put("idx", JsonInt(1)); return p; }()));
-}
-
 TH_TEST(read_after_destroy_reports_instead_of_crashing) {
 	/* 防御回归：状态机已释放时 read() 必须清晰报错，
 	 * 而不是把空指针送进 LuaJIT（C1 环引用负路径实测暴露过的形态）。 */

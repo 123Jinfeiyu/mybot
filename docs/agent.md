@@ -427,8 +427,10 @@ rig provider 转换为 OpenAI 报文时，先输出本轮全部 `tool` 消息，
 消息组装与 provider 映射现由 Rust/rig 负责，不再调用 C++ `messageToJson`。
 注入顺序及跨轮位置由 `agent/src/model.rs` 中的图片注入单测约束。
 
-> **沿革（B3，2026-09-22）**：旧 C++/Lua 路径曾用 `{"__bot_img": N}` 游标，
-> 经 `MtVars_Lua::setHostImages` / `__bot_img(N)` 在组包时落值；这不是现役模型请求通道。
+> **沿革（B3，2026-09-22 → 2026-09-26 移除）**：旧 C++/Lua 路径曾用 `{"__bot_img": N}`
+> 游标，经 `MtVars_Lua::setHostImages` / `__bot_img(N)` 在组包时落值。agent 循环迁 Rust
+> 后宿主不再组装模型请求，该通道已无生产调用者，故连同 `setHostImages`/`__bot_img`
+> 一并从 luavar 删除；现役图片通道是 capture_image 工具直接把 base64 交给 Rust agent。
 
 图片由 Rust REPL 在任务结束时物化到会话历史里，后续任务仍然看得到它。
 
