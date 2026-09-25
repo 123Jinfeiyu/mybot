@@ -943,7 +943,8 @@ fi
 # 驱动见证）、R2 提示词包进系统提示词、R3 审计轨迹（agent 落 session/model 行、
 # 工具行归后端）、R4 REPL + 能力门控（缺 --agent-shell 时 run_command 不在工具表）、
 # R5 --check-config 正负路径、R6 单轮调用上限、R7/R7b 限流重试与恒失败、
-# R8/R8b 单次超时与 SIGINT 取消、R9 图片后注、R10 stdout 写失败不 panic。
+# R8/R8b 单次超时与 SIGINT 取消、R9 图片后注、R10 stdout 写失败不 panic、
+# R11 --session-file/--resume 两进程接力（批次 D，2026-09-25 落地）。
 # mybot-agent 是**可选**产物（Rust 由单独 CI job 构建）：缺它按 SKIP 计；
 # 缺 build/mybot 判失败（本段的后端就是它，且那是核心产物）。
 #
@@ -954,9 +955,9 @@ fi
 #   * 后端工具面的 6 条（apply_sql 带电生效与热删除、两者的门控对照、
 #     read_variables 回读与对照、策略拒绝零副作用）→ 迁进 scripts/mcp_e2e.sh
 #     的独立趟（纯 Python 帧客户端直连后端，不经模型，判据更硬）；
-#   * 循环层的（工具循环、超时、重试、取消、图片后注、stdout 纯净/写失败）→ R 段；
-#   * 仍未覆盖：--session-file/--resume 两进程接力（Rust 侧尚无实现，批次 D），
-#     以及 DeepSeek/Anthropic 的**协议差异**在整条循环上的表现（驱动层单测
+#   * 循环层的（工具循环、超时、重试、取消、图片后注、stdout 纯净/写失败、
+#     会话持久化两进程接力）→ R 段（R11 = --session-file/--resume，批次 D）；
+#   * 仍未覆盖：DeepSeek/Anthropic 的**协议差异**在整条循环上的表现（驱动层单测
 #     test_llm_drivers.lua / test_llm_wire_contract.lua 仍在守报文形态）。
 #     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
 # ======================================================================

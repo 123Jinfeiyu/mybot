@@ -25,6 +25,10 @@
             | 429x2ok（前两次 429 + Retry-After: 1，第三次正常回答——SAN-3：
               不重试则只收到 1 个 POST 且任务失败，重试则 3 个 POST 且成功）
             | http-503（恒 503 + Retry-After: 1——SAN-3：重试用尽后如实失败）
+            | relay（批次 D，R11 两进程接力）：请求历史里一旦出现上一个进程的
+              收尾文案 "AGENT-E2E-完成"（--resume 把它带回来了），立即给一句
+              专属回答 "AGENT-E2E-RELAY-完成"（不再走完整工具循环）；否则与
+              默认剧本同构（新会话，从头走 list_hardware → 动作 → 命令 → 收尾）
       headers_file: 非空则把收到的请求头逐行写入（用来断言 API key 的来源）
 """
 import json
@@ -439,6 +443,37 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._reply(final_answer())
             return
+        # ---- 会话恢复接力（批次 D，R11）：历史里带着上一个进程的收尾文案，
+        # 就是「--resume 真的把对话带回来了」的信号——不必重放整条工具循环，
+        # 一句专属回答就够证明请求里携带了跨进程的历史。 ----
+        if MODE == "relay":
+            def _msg_text(m):
+                c = m.get("content")
+                if isinstance(c, str):
+                    return c
+                if isinstance(c, list):
+                    return " ".join(str(p.get("text", "")) for p in c if isinstance(p, dict))
+                return ""
+            resumed = any(
+                m.get("role") == "assistant" and "AGENT-E2E-完成" in _msg_text(m)
+                for m in request.get("messages", []))
+            if resumed:
+                self._reply(openai_shell({"choices": [{"message": {
+                    "role": "assistant",
+                    "content": "AGENT-E2E-RELAY-完成：已看到此前会话的完整历史。",
+                }}]}))
+                return
+            # 未带历史（新会话）：与默认剧本同构，走完整工具循环
+            if tool_results == 0:
+                self._reply(tool_call("list_hardware", {}))
+            elif tool_results == 1:
+                self._reply(tool_call("run_action_script", {"script": "relay-test.mt"}))
+            elif tool_results == 2:
+                self._reply(tool_call("run_command", {"command": "echo agent-echo-ok"}))
+            else:
+                self._reply(final_answer())
+            return
+
         if tool_results == 0:
             self._reply(tool_call("list_hardware", {}))
         elif tool_results == 1:

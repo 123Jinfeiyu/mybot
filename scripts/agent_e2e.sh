@@ -54,11 +54,11 @@
 # 场景 1-3、5 显式 --llm-config none：否则 CWD 里恰好存在的 ./mybot.llm.json 会被
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
-# 用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
-#   本文件**只有 Rust 一种模式**：跑 R1-R10（mybot-agent；R1-R5 批次 B 骨架、
-#   R6-R9 批次 C 循环层、R10 审计 H2 修复；R5m 为配置镜像黄金测试——同一
-#   mybot.llm.json 喂双端 --check-config 互钉共享字段），拓扑是「后端 +
-#   mybot-agent」两个进程；
+#   用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
+#   本文件**只有 Rust 一种模式**：跑 R1-R11（mybot-agent；R1-R5 批次 B 骨架、
+#   R6-R9 批次 C 循环层、R10 审计 H2 修复、R11 批次 D 会话持久化；R5m 为配置
+#   镜像黄金测试——同一 mybot.llm.json 喂双端 --check-config 互钉共享字段），
+#   拓扑是「后端 + mybot-agent」两个进程；
 #   缺 agent/target/release/mybot-agent 时直接报错退出（守门那边按 SKIP 计，
 #   见 test/lib/sections/net_agent.sh）。`--rust` 保留为兼容空参（既有调用与
 #   scripts/build_agent.sh 都还带着它）。
@@ -68,9 +68,8 @@
 #   及其对照、策略拒绝零副作用）迁到 scripts/mcp_e2e.sh，由纯 Python 帧客户端直连后端
 #   跑——不经模型，判据更硬；属循环层的（工具循环、超时、重试、取消、图片后注、
 #   stdout 纯净/写失败不 panic）由下面 R 段守，R 段与 C++ 场景**同判据**。
-#   仍未覆盖的（如实记下）：--session-file/--resume 两进程接力——Rust 侧尚无实现
-#   （批次 D；C++ 原语与 test_sessionfile.cpp 保留为语义参考）。agent over TCP
-#   远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
+#   会话持久化（--session-file/--resume）由 R11 覆盖（2026-09-25 批次 D 落地）；
+#   agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
 # 退出码: 0 通过 / 1 失败 / 2 参数用法错 / 125 缺 python3（守门按 SKIP 计）
 set -u
 
@@ -202,6 +201,14 @@ TASK="先看硬件，再让继电器动作一次，最后跑一条命令"
 #     失败；R8b 取消：SIGINT 之后不再发起新调用，本轮以「执行被中断」收场、退出码 0。
 #   * R9 图片后注（C++ 场景 5）：工具回执进的是 tool 消息，图片只能走**紧随其后的
 #     user 消息**（OpenAI 不允许工具结果带图片）——线上报文的次序与 C++ 同序。
+#   * R11 会话持久化（2026-09-25 批次 D；C++ 场景 19 的 Rust 版）：**两个进程接力**
+#     ——进程一带 --session-file 落盘并完整跑完工具循环；重启假模型服务（新
+#     capture，指向同一份剧本的 relay 模式）后，进程二带 --session-file --resume
+#     启动，其**首个请求**里必须带进程一的完整对话（这是「重启不忘记」的唯一
+#     判据），且只需一句专属回答（不必重放工具循环）；审计沿用同一 session id
+#     且 start 行标 resumed:true。两条免服务负路径：换 --robot 令指纹不符必须
+#     拒绝并退出 2（不碰任何模型端点）；--resume 缺命令行 --session-file 同样
+#     退出 2（恢复只认命令行路径，配置文件来源不能授权读取）。
 # 起后端（`mybot --mcp-backend`）：$1=目录，其余为该后端要开的能力开关。
 # socket 目录先按 0700 建好（后端自己会建，但脚本先建可免掉那条权限告警——
 # 0700 的**创建语义**由 mcp_e2e.sh 专门守，这里不重复测）。
@@ -853,6 +860,116 @@ audit_expr "$AAUD10" "[l.get('status') for l in lines if l['kind']=='session'] =
 	"审计 start/end 齐全（写失败不吞审计收尾——这是 H2 的判据）"
 audit_expr "$AAUD10" "any(l['kind']=='model' and l.get('ok') is True for l in lines)" \
 	"模型轮次照常记账（工具循环完整跑完，输出丢失不影响执行）"
+
+# ---- R11：会话持久化 --session-file/--resume（2026-09-25 批次 D；两进程接力）----
+echo "----- R11：--session-file/--resume 两进程接力 -----"
+R11="$tmp/rust11"
+mkdir -p "$R11"
+SESS11="$R11/sess.jsonl"
+AAUD11A="$R11/agent-audit-p1.jsonl"
+AAUD11B="$R11/agent-audit-p2.jsonl"
+
+# 进程一：全新会话，落盘 --session-file，完整跑完工具循环（ok 剧本）
+PORT=$((28800 + RANDOM % 300))
+CAPR11A="$tmp/req-rust11a.json"
+start_server "$PORT" "$CAPR11A" ok || exit 1
+start_backend "$R11/p1" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R11/p1/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --audit-log "$AAUD11A" --session-file "$SESS11" \
+	--task "$TASK" >"$R11/p1-out.txt" 2>"$R11/p1-err.txt"
+rcr11a=$?
+stop_backend
+stop_server
+echo "===== 进程一 stdout ====="; cat "$R11/p1-out.txt"
+if [ "$rcr11a" -ne 0 ]; then
+	echo "  [FAIL] 进程一（落盘）退出码 $rcr11a"
+	fail=1
+fi
+check_present "$R11/p1-out.txt" "AGENT-E2E-完成" "进程一完整跑完工具循环"
+check_present "$SESS11" '"type":"session_head"' "会话文件首行是会话头"
+check_present "$SESS11" '"role":"assistant"' "会话文件落了 assistant 消息"
+check_absent "$SESS11" "data:" "会话文件里没有图片 data URL（本场景不含图片，双重保险）"
+sid11="$(python3 -c "
+import json
+for line in open('$AAUD11A'):
+    line = line.strip()
+    if not line:
+        continue
+    d = json.loads(line)
+    if d.get('kind') == 'session' and d.get('status') == 'start':
+        print(d.get('session', ''))
+        break
+")"
+if [ -n "$sid11" ]; then
+	echo "  [OK] 拿到进程一的 session id（$sid11，供进程二核对沿用）"
+else
+	echo "  [FAIL] 拿不到进程一的 session id"
+	fail=1
+fi
+
+# 进程二：重启假模型服务（新 capture，relay 剧本）+ --resume，验证首个请求带着
+# 进程一的完整历史；只需一句专属回答，不必重放工具循环。
+PORT=$((29100 + RANDOM % 300))
+CAPR11B="$tmp/req-rust11b.json"
+start_server "$PORT" "$CAPR11B" relay || exit 1
+start_backend "$R11/p2" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R11/p2/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --audit-log "$AAUD11B" --session-file "$SESS11" --resume \
+	--task "接着上次的对话，继续" >"$R11/p2-out.txt" 2>"$R11/p2-err.txt"
+rcr11b=$?
+stop_backend
+stop_server
+echo "===== 进程二 stdout ====="; cat "$R11/p2-out.txt"
+echo "===== 进程二 stderr ====="; cat "$R11/p2-err.txt"
+if [ "$rcr11b" -ne 0 ]; then
+	echo "  [FAIL] 进程二（恢复）退出码 $rcr11b"
+	fail=1
+fi
+check_present "$R11/p2-err.txt" "已恢复会话" "启动期如实报出已恢复（含历史条数与来源路径）"
+check_present "$R11/p2-out.txt" "AGENT-E2E-RELAY-完成" "首个请求就带着完整历史（一句专属回答，不必重放工具循环）"
+check_json "$CAPR11B" "any(m.get('role')=='assistant' and 'AGENT-E2E-完成' in str(m.get('content','')) for m in d['messages'])" \
+	"进程二的首个请求里带着进程一的收尾回答（历史真的接上了）"
+check_json "$CAPR11B" "any(m.get('role')=='tool' and '已注册硬件变量' in str(m.get('content','')) for m in d['messages'])" \
+	"进程二的首个请求里带着进程一的工具回执（不只是最后一句话）"
+audit_expr "$AAUD11B" "any(l['kind']=='session' and l.get('status')=='start' and l.get('resumed') is True and l.get('session')=='$sid11' for l in lines)" \
+	"审计 start 行标 resumed:true 且沿用进程一的 session id"
+
+# R11 负路径①：换结构脚本 → 指纹不符，拒绝恢复并退出 2（不碰任何模型端点，
+# 用不可达接入点即可证明——真走到模型说明判据没生效在前面就该拦住）
+echo "----- R11 负路径①：结构脚本不同，指纹不符拒绝恢复 -----"
+start_backend "$R11/p3" --robot robots/test.sql || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 20 "$AGENT_BIN" --socket "$R11/p3/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:1/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --session-file "$SESS11" --resume \
+	--task "不该被受理" >"$R11/p3-out.txt" 2>"$R11/p3-err.txt"
+rcr11c=$?
+stop_backend
+cat "$R11/p3-err.txt"
+if [ "$rcr11c" -eq 2 ]; then
+	echo "  [OK] 结构脚本不同时退出 2（fail-closed，未碰模型端点）"
+else
+	echo "  [FAIL] 结构脚本不同时应退出 2，实际 $rcr11c"
+	fail=1
+fi
+check_present "$R11/p3-err.txt" "结构脚本不同" "报错点名结构脚本不同（三道判据之一：指纹核对）"
+
+# R11 负路径②：--resume 缺命令行 --session-file → 退出 2（不需要后端/模型，
+# 这条判据在 config::build 里就已经失败，比连后端还早）
+echo "----- R11 负路径②：--resume 缺命令行 --session-file 拒绝 -----"
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 20 "$AGENT_BIN" --socket "/tmp/mybot-agent-e2e.sock" \
+	--llm-endpoint "http://127.0.0.1:1/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --resume --task "不该被受理" >"$R11/p4-out.txt" 2>"$R11/p4-err.txt"
+rcr11d=$?
+cat "$R11/p4-err.txt"
+if [ "$rcr11d" -eq 2 ]; then
+	echo "  [OK] 缺命令行 --session-file 时退出 2（恢复只认命令行来源）"
+else
+	echo "  [FAIL] 缺命令行 --session-file 时应退出 2，实际 $rcr11d"
+	fail=1
+fi
+check_present "$R11/p4-err.txt" "命令行" "报错点名恢复路径必须来自命令行"
 
 if [ "$fail" -eq 0 ]; then
 	echo "mybot-agent 端到端测试通过"
