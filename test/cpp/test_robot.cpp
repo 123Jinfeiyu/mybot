@@ -1873,6 +1873,57 @@ TH_TEST(robot_hot_delete_can_remove_a_row_inserted_in_the_same_batch) {
 	robot.deactivate();
 }
 
+/* A-4 回归（2026-09-25 审计收口）：热删除后存活提供者的行号必须重锚定。
+ * 原实现的已知边界：removeRows 保序擦除让同矩阵后续行前移，而提供者的 row()
+ * 是**后续批次** deadProvider 判据的坐标——不止混批（先插入后删除）新追加行，
+ * 任何同表删行（含 UPDATE 批次里未改写的既有行）都会让坐标过期，下一批删除
+ * 随即摘错/漏摘 metaProviders_ 条目。判据用 RobotStruct::metaProvidersMatchLiveRows
+ * （提供者 ↔ 数据行一一对应；行号错位/摘错/漏摘都会失衡），三批连删覆盖：
+ *   批 1 删中间行（纯删，存活行前移）；批 2 混批先插后删（新行坐标以追加时
+ *   值创建、随后被同批删行打乱——正是原注释点名的场景）；批 3 再删一行
+ *   （若批 1/2 未重锚定，本批判据必错）。 */
+TH_TEST(robot_hot_delete_rebases_surviving_provider_rows) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("hot-delete-rebase");
+	const fs::path m1 = tmp.path() / "d1";
+	const fs::path m2 = tmp.path() / "d2";
+	const fs::path m3 = tmp.path() / "d3";
+	const fs::path m4 = tmp.path() / "d4";
+
+	bot::MemoryReader sr(
+		"CREATE TABLE LifetimeProbe (name String, path String);\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + m1.string() + "');\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p1', '" + m2.string() + "');\n"
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p2', '" + m3.string() + "');\n");
+	bot::RobotStruct robot(sr);
+	robot.active();
+	TH_CHECK(robot.metaProvidersMatchLiveRows());
+
+	/* 批 1：删中间行 p1 → p0/p2 的提供者行号必须各前移一位 */
+	robot.applySql("DELETE FROM LifetimeProbe WHERE name = 'p1';\n");
+	TH_CHECK_MSG(robot.metaProvidersMatchLiveRows(), "批 1 后提供者与数据行失配");
+	TH_CHECK(markerOf(m2) == "D" && markerOf(m1).empty() && markerOf(m3).empty());
+	TH_CHECK(robot.registry().contains("p0") && robot.registry().contains("p2"));
+
+	/* 批 2（混批先插后删）：新行 p3 以追加行号创建提供者，同批删掉 p0 使其前移 */
+	robot.applySql(
+		"INSERT INTO LifetimeProbe (name, path) VALUES ('p3', '" + m4.string() + "');\n"
+		"DELETE FROM LifetimeProbe WHERE name = 'p0';\n");
+	TH_CHECK_MSG(robot.metaProvidersMatchLiveRows(), "批 2 后提供者与数据行失配");
+	TH_CHECK(markerOf(m1) == "D" && markerOf(m4).empty());
+	TH_CHECK(robot.registry().contains("p2") && robot.registry().contains("p3"));
+
+	/* 批 3：再删 p2——坐标链再走一步；结尾只剩 p3，收尾断电恰好一次 */
+	robot.applySql("DELETE FROM LifetimeProbe WHERE name = 'p2';\n");
+	TH_CHECK_MSG(robot.metaProvidersMatchLiveRows(), "批 3 后提供者与数据行失配");
+	TH_CHECK(markerOf(m3) == "D");
+	TH_CHECK(robot.registry().contains("p3"));
+	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 2);
+
+	robot.deactivate();
+	TH_CHECK(markerOf(m4) == "D");
+}
+
 /* 引用完整性（本功能的安全核心）：存活结构里引用着待删变量时必须拒绝，
  * 且报错**点名**是哪张表哪一行的哪一列。三类引用各一条：
  *   a) 流列 controller/trigger（MtVars_Lua::ctrlPtrs_/trigPtrs_ 终身缓存裸指针）

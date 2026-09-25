@@ -227,6 +227,14 @@ public:
 	 * **不清缓存**：存活表的内容逐字未变（只是位置变了），seed 结果（cols_/
 	 * vals_/refs_）语义仍然成立；行号 row_ 也不因整表移除而变。 */
 	void rebase(const mt::MatrixObject& m) { matrix_ = &m; }
+	/* 行删除的行号重锚定（2026-09-25 审计 A-4 收口）：removeRows 是保序擦除，
+	 * 同矩阵内位于被删行之后的行会前移，锚定这些行的提供者必须同步减行号
+	 * ——row() 是**后续批次** deadProvider 判据的坐标（executeHotDeletes 的
+	 * 4.6.4①），过期即摘错/漏摘提供者。**不清缓存**：seed 只在行号定值时
+	 * 读一次矩阵（active/commitHotBatch 的 validate 都是急切 seed），缓存
+	 * 的静态列与按名/指针锁定的引用不受行移动影响。delta 恒为负（行只会
+	 * 前移），签名保持通用减法。 */
+	void shiftRow(std::int64_t delta) { row_ += delta; }
 };
 
 /* ---- 脚本装载：SQL/矩阵 文本 → MatrixObject（R-1 拆自 RobotStruct）----
@@ -658,6 +666,12 @@ public:
 	 * 必须在 active() **之前**可判定，故直接扫矩阵表的 name 列，
 	 * 而不是查注册表（注册表要 active() 里 createHardVars 才装配）。 */
 	bool declaresVariable(const std::string& name) const;
+
+	/* 测试自检（2026-09-25 审计 A-4）：metaProviders_ 与活体结构一一对应——
+	 * 每个会装配 Lua 变量的数据行恰有一个提供者、每个提供者锚定一个范围内
+	 * 的真实数据行（multiset 比对，行号错位/摘错/漏摘都会失衡）。生产路径
+	 * 不调用；热删除 4.6.4 的 deadProvider 判据所声称的「精确」以此为准。 */
+	bool metaProvidersMatchLiveRows() const;
 
 	/* agent 模式：结构脚本未声明某个 Lua 驱动变量时注入一个（须在 active() 之前调用）。
 	 * LLM 协议驱动与摄像头驱动都走这里。

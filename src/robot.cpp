@@ -968,12 +968,8 @@ RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
 		}
 		/* ① 元数据提供者：指向被删行的整条摘除。判据是「矩阵 + 行号」而不是
 		 * 引用相等——矩阵是 std::deque 的元素，地址稳定（这正是选 deque 的
-		 * 原因），故该判据精确且不受行数变化影响。
-		 * 已知边界（先于热更新存在，本特性不改其口径）：先插入后删除的混批里，
-		 * 本批次新追加行的 provider 以追加时行号创建，随后 removeRows 擦掉更
-		 * 早的原始行会让新行前移、其 row_ 失配——而 seed() 是惰性的（首次
-		 * collect 才按 row_ 读矩阵），届时会读到错误的行。先删后建（UPDATE
-		 * 批次）天然无此问题：所有删除先于任何新行创建，行号生来就是终值。 */
+		 * 原因），故该判据精确且不受行数变化影响；行号此刻还是删除前的
+		 * 原始坐标，故必须先于 ①′/② 执行。 */
 		std::set<std::pair<const mt::MatrixObject*, std::int64_t>> deadProvider;
 		for (const auto& [mi, rs] : perTable) {
 			for (std::size_t r : rs) {
@@ -987,6 +983,27 @@ RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
 		};
 		metaProviders_.erase(std::remove_if(metaProviders_.begin(), metaProviders_.end(),
 			isDeadProvider), metaProviders_.end());
+		/* ①′ 存活提供者行号重锚定（2026-09-25 审计 A-4 收口）：② 的 removeRows
+		 * 是保序擦除——同矩阵内行号大于被删行的行全部前移。提供者的 row()
+		 * 是**后续批次** deadProvider 判据的坐标（上一步刚用过）与任何未来
+		 * 惰性取行的下标，必须按「本矩阵被删行中小于本行行号的数量」同步
+		 * 前移，否则下一批同表删除会摘错/漏摘提供者。原实现在这里留有已知
+		 * 边界：混批（先插入后删除）新追加行的提供者以追加时行号创建，随
+		 * 后的删行让其 row_ 过期——实际上不止混批，**任何**同表删行都会让
+		 * 存活行的坐标过期（含先删后建的 UPDATE 批次里未改写的既有行），
+		 * 本步骤一并收口。混批里追加行的 provider 已在 commitHotBatch 4.3
+		 * 急切 seed（缓存以追加时坐标取到的是正确内容），此处只修坐标。 */
+		for (const auto& [mi, rs] : perTable) {
+			const mt::MatrixObject* mat = &matrices_[mi];
+			for (const auto& p : metaProviders_) {
+				if (p->matrixPtr() != mat) { continue; }
+				std::int64_t shift = 0;
+				for (std::size_t r : rs) {
+					if (static_cast<std::int64_t>(r) < p->row()) { ++shift; }
+				}
+				if (shift > 0) { p->shiftRow(-shift); }
+			}
+		}
 		/* ② 结构行（保序擦除，销毁序不变式不动） */
 		for (const auto& [mi, rs] : perTable) {
 			matrices_[mi].removeRows(rs);
@@ -1040,6 +1057,24 @@ bool RobotStruct::declaresVariable(const std::string& name) const {
 		}
 	}
 	return false;
+}
+
+/* ---- metaProviders_ 与活体结构的一致性自检（测试用，见 robot.hpp 契约）----
+ * 期望集的表分派与 HwFactory::createHardVarsFrom 同集合：Alias/Vars/Action/
+ * Daemon 表不产生 MetaProvider（标量走 registerScalarMatrix、守护走
+ * MtVars_Daemon::Factory 且装配期即读全行），其余表每个数据行一个提供者。 */
+bool RobotStruct::metaProvidersMatchLiveRows() const {
+	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> expect;
+	for (const auto& m : matrices_) {
+		const std::string& t = m.getName();
+		if (t == "Alias" || t == "Vars" || t == "Action" || t == "Daemon") { continue; }
+		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
+			expect.emplace(&m, r);
+		}
+	}
+	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> got;
+	for (const auto& p : metaProviders_) { got.emplace(p->matrixPtr(), p->row()); }
+	return expect == got;
 }
 
 /* ---- agent 模式：注入 Lua 驱动变量（LLM / 摄像头共用）---- */
