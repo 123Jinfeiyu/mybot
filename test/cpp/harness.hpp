@@ -74,7 +74,14 @@ inline bool& outputEnabled() {
 
 template <typename... Args>
 inline void out(const char* fmt, Args... args) {
-	if (outputEnabled()) { std::printf(fmt, args...); }
+	if (!outputEnabled()) { return; }
+	if constexpr (sizeof...(Args) == 0) {
+		/* 无参调用按纯文本走 fputs：fmt 非 string literal（-Wformat-security），
+		 * 且 fmt 含 % 时被当格式符解析本就是隐患 */
+		std::fputs(fmt, stdout);
+	} else {
+		std::printf(fmt, args...);
+	}
 }
 
 inline bool& currentFailed() {

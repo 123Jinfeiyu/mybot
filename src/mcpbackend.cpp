@@ -221,7 +221,7 @@ bool mcpCheckPeerCred(int fd, std::ostream& log) {
 	struct ucred cred{};
 	socklen_t len = sizeof(cred);
 	if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) {
-		log << "MCP 后端：SO_PEERCRED 读取失败（" << std::strerror(errno)
+		log << "MCP 后端：SO_PEERCRED 读取失败（" << errnoText(errno)
 			<< "），拒绝连接\n";
 		return false;
 	}
@@ -462,7 +462,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 	if (!fs::exists(parent, ec)) {
 		if (::mkdir(parent.c_str(), 0700) != 0 && errno != EEXIST) {
 			log << "错误: 无法创建 socket 父目录 '" << parent.string() << "': "
-				<< std::strerror(errno) << "\n";
+				<< errnoText(errno) << "\n";
 			return 2;
 		}
 	} else {
@@ -477,19 +477,19 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 
 	FdGuard listenFd(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
 	if (listenFd.get() < 0) {
-		log << "错误: 无法创建 AF_UNIX 套接字: " << std::strerror(errno) << "\n";
+		log << "错误: 无法创建 AF_UNIX 套接字: " << errnoText(errno) << "\n";
 		return 1;
 	}
 	sockaddr_un addr{};
 	addr.sun_family = AF_UNIX;
 	std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", opts.socketPath.c_str());
 	if (::bind(listenFd.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-		log << "错误: 绑定 '" << opts.socketPath << "' 失败: " << std::strerror(errno) << "\n";
+		log << "错误: 绑定 '" << opts.socketPath << "' 失败: " << errnoText(errno) << "\n";
 		return 1;
 	}
 	::chmod(opts.socketPath.c_str(), 0600);	/* socket 文件 0600 */
 	if (::listen(listenFd.get(), 1) < 0) {
-		log << "错误: 监听失败: " << std::strerror(errno) << "\n";
+		log << "错误: 监听失败: " << errnoText(errno) << "\n";
 		::unlink(opts.socketPath.c_str());
 		return 1;
 	}
@@ -506,7 +506,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		const int r = ::poll(&p, 1, kPollIntervalMs);
 		if (r < 0) {
 			if (errno == EINTR) { continue; }
-			log << "MCP 后端：poll 失败: " << std::strerror(errno) << "\n";
+			log << "MCP 后端：poll 失败: " << errnoText(errno) << "\n";
 			rc = 1;
 			break;
 		}
@@ -514,7 +514,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		const int client = ::accept4(listenFd.get(), nullptr, nullptr, SOCK_CLOEXEC);
 		if (client < 0) {
 			if (errno == EINTR) { continue; }
-			log << "MCP 后端：accept 失败: " << std::strerror(errno) << "\n";
+			log << "MCP 后端：accept 失败: " << errnoText(errno) << "\n";
 			rc = 1;
 			break;
 		}

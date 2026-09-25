@@ -208,13 +208,13 @@ bool promptPathsWithinRoots(const std::vector<std::string>& inputs,
 			if (!allowed.empty()) { allowed += ", "; }
 			allowed += root.string();
 		}
-		err = "配置文件来源的提示词路径 '" + in + "' 落在允许的根之外（允许: " + allowed
-			+ "）：提示词内容会进系统提示词、随首个请求发往**同一份配置可控的**"
+		err = concatMsg("配置文件来源的提示词路径 '", in, "' 落在允许的根之外（允许: ", allowed,
+			"）：提示词内容会进系统提示词、随首个请求发往**同一份配置可控的**"
 			  " endpoint，若允许任意路径，一份落在工作目录的配置文件就成了一条"
 			  "「读任意文件并外发」的链路（/proc/self/environ 这类伪文件读得到，"
 			  "里面就有密钥）。配置文件来源的路径只能指向工作目录之内；"
 			  "确实要读该路径请改用命令行 --prompt-file（操作者本人授意），"
-			  "或把它加进环境变量 BOT4CJ_PROMPT_DIR（冒号分隔）";
+			  "或把它加进环境变量 BOT4CJ_PROMPT_DIR（冒号分隔）");
 		return false;
 	}
 	return true;

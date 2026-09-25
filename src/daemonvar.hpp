@@ -123,8 +123,9 @@ public:
 	 * 线程副本保证槽存活到其退出，析构交出引用既不悬垂也不泄漏。 */
 	~DaemonRunner();
 
-	/* 供线程捕获 self 保生命周期（构造期无法取得自身 shared_ptr） */
-	void bindSelf(std::shared_ptr<DaemonRunner> self) { self_ = std::move(self); }
+	/* 供线程捕获 self 保生命周期（构造期无法取得自身 shared_ptr）；weak_ptr 的
+	 * operator= 只有 const shared_ptr& 重载，按值接参 + std::move 不产生移动 */
+	void bindSelf(const std::shared_ptr<DaemonRunner>& self) { self_ = self; }
 
 	/* spawn 守护线程（槽已释放/自引用缺失时显式报错） */
 	void start(const std::string& name, const std::string& chunk,

@@ -32,7 +32,7 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 	const char* dupLabel = (kind == ScalarKind::Alias) ? "alias" : "Vars";
 	std::int64_t idxName = matrix.requireCol(0, "name", std::string(label) + " matrix");
 	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
-		std::string name = matrix(i, idxName);
+		const std::string& name = matrix(i, idxName);
 		std::unique_ptr<MatrixVars_Hardware> var;
 		if (kind == ScalarKind::Alias) {
 			var = MtVars_Alias::Factory(matrix, i);
@@ -129,7 +129,7 @@ std::string stripRef(const std::string& v) {
 std::string optCol(const mt::MatrixObject& m, std::int64_t row, const char* col) {
 	const std::int64_t idx = m.indexOfCol(0, col);
 	if (idx < 0) { return std::string(); }
-	const std::string v = m.inherited(row, idx);
+	const std::string& v = m.inherited(row, idx);
 	return (v == "-") ? std::string() : v;
 }
 
@@ -143,7 +143,7 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 	/* ---- 1) 总线名 → 设备路径（I2C/SPI/UART 表的 name/path 列）---- */
 	std::map<std::string, std::string> busPath;
 	for (const auto& m : matrices) {
-		const std::string t = m.getName();
+		const std::string& t = m.getName();
 		if (t != "I2C" && t != "SPI" && t != "UART") { continue; }
 		const std::int64_t idxName = m.indexOfCol(0, "name");
 		const std::int64_t idxPath = m.indexOfCol(0, "path");
@@ -185,7 +185,7 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 		return v;
 	};
 	for (const auto& m : matrices) {
-		const std::string t = m.getName();
+		const std::string& t = m.getName();
 		if (t == "Alias" || t == "Vars" || t == "Action" || m.rows() == 0) { continue; }
 		const std::int64_t idxName = m.indexOfCol(0, "name");
 		if (idxName < 0) { continue; }
@@ -237,9 +237,9 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 						const std::string specAddr = trim(spec.substr(at1 + 1,
 							(at2 == std::string::npos ? spec.size() : at2) - at1 - 1));
 						if (specDrv.empty() || !singleConsumer(specDrv + ".lua")) { continue; }
-						claim(path + " " + normalizeAddress(specAddr),
-							whoBase + " devices[" + std::to_string(specIdx) + "]='"
-								+ specDrv + "'");
+					claim(path + " " + normalizeAddress(specAddr),
+						concatMsg(whoBase, " devices[", std::to_string(specIdx), "]='",
+							specDrv, "'"));
 					}
 				}
 			}
@@ -282,7 +282,7 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 void HwFactory::warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices) {
 	std::map<std::string, std::vector<std::string>> users;	/* path -> 消费者定位串 */
 	for (const auto& m : matrices) {
-		const std::string t = m.getName();
+		const std::string& t = m.getName();
 		if (t == "Alias" || t == "Vars" || t == "Action" || m.rows() == 0) { continue; }
 		const std::int64_t idxName = m.indexOfCol(0, "name");
 		if (idxName < 0) { continue; }
@@ -307,7 +307,8 @@ void HwFactory::warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices
 			} else {
 				continue;	/* 器件行经 '$uart-x' 共享总线的 fd，非独立消费者 */
 			}
-			users[path].push_back(who + " (table '" + t + "', row " + std::to_string(i) + ")");
+			users[path].push_back(concatMsg(who, " (table '", t, "', row ",
+				std::to_string(i), ")"));
 		}
 	}
 	for (const auto& [path, who] : users) {
@@ -341,7 +342,7 @@ void HwFactory::precheckStructure(const std::deque<mt::MatrixObject>& matrices) 
 
 /* 单矩阵增量装配：全量装配的唯一下沉点（见头文件契约）。 */
 void HwFactory::createHardVarsFrom(const mt::MatrixObject& matrix, std::int64_t fromRow) {
-	std::string mtName = matrix.getName();
+	const std::string& mtName = matrix.getName();
 	if (mtName == "Alias") { registerScalarMatrix(matrix, nullptr, ScalarKind::Alias, fromRow); }
 	else if (mtName == "Vars") { registerScalarMatrix(matrix, nullptr, ScalarKind::Vars, fromRow); }
 	else if (mtName == "Action") { /* 结构期 Action 由 MR 动作脚本提供 */ }
@@ -353,7 +354,7 @@ void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::stri
 		std::int64_t fromRow) {
 	std::int64_t idxName = matrix.requireCol(0, "name", "Table");
 	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
-		std::string name = matrix(i, idxName);
+		const std::string& name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
 		registry_.add(name, MtVars_Daemon::Factory(matrix, i, daemonHolders_),
 			" (in table '" + mtName + "')");
@@ -381,55 +382,59 @@ FlowRowRefs parseFlowRow(const mt::MatrixObject& matrix, std::int64_t i, const s
 		const std::string& colName = matrix(0, j);
 		const bool isCtrl = flowColumnMatches(colName, "controller");
 		if (!isCtrl && !flowColumnMatches(colName, "trigger")) { continue; }
-		std::string raw = matrix.inherited(i, j);
+		const std::string& raw = matrix.inherited(i, j);
 		if (raw == "-") { continue; }
 		std::vector<std::string>& names = isCtrl ? out.ctrlNames : out.trigNames;
 		const char* kind = isCtrl ? "controller" : "trigger";
 		/* 同列族重复指向：扇出语义下只会对同一目标双调用，装配期拒绝 */
 		if (std::find(names.begin(), names.end(), raw) != names.end()) {
-			throw IllegalArgumentException("Hardware variable '" + name + "' declares "
-				+ kind + " '" + raw + "' more than once in table '" + mtName
-				+ "' (a flow column target must be unique per row).");
+			throw IllegalArgumentException(concatMsg("Hardware variable '", name, "' declares ",
+				kind, " '", raw, "' more than once in table '", mtName,
+				"' (a flow column target must be unique per row)."));
 		}
 		if (!isCtrl) {
-			if (raw.rfind("$", 0) == 0) {
-				throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-					+ raw + "' in table '" + mtName + "': the trigger column takes a plain"
-					+ " variable name and does not support '$' references (a trigger is an"
-					+ " invocation edge, not a data wire; use a '$' metadata column for snapshots).");
+			if (raw.rfind('$', 0) == 0) {
+				throw IllegalArgumentException(concatMsg("Hardware variable '", name,
+					"' declares trigger '", raw, "' in table '", mtName,
+					"': the trigger column takes a plain",
+					" variable name and does not support '$' references (a trigger is an",
+					" invocation edge, not a data wire; use a '$' metadata column for snapshots)."));
 			}
 			if (raw == "result" || raw == "message" || raw == "mode") {
-				throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-					+ raw + "' in table '" + mtName + "': '" + raw
-					+ "' is a framework-reserved key and cannot name a trigger.");
+				throw IllegalArgumentException(concatMsg("Hardware variable '", name,
+					"' declares trigger '", raw, "' in table '", mtName, "': '", raw,
+					"' is a framework-reserved key and cannot name a trigger."));
 			}
 		}
 		MatrixVars_Hardware* target = registry.find(raw);
 		if (target == nullptr) {
-			throw IllegalArgumentException("Hardware variable '" + name + "' declares " + kind + " '"
-				+ raw + "' in table '" + mtName
-				+ "', but it is not defined yet. The " + kind + " must be defined before the matrix that references it.");
+			throw IllegalArgumentException(concatMsg("Hardware variable '", name, "' declares ",
+				kind, " '", raw, "' in table '", mtName,
+				"', but it is not defined yet. The ", kind,
+				" must be defined before the matrix that references it."));
 		}
 		if (target->isScalarText()) {
-			throw IllegalArgumentException("Hardware variable '" + name + "' declares " + kind + " '"
-				+ raw + "' in table '" + mtName + "': '@Alias'/'@Vars' scalars cannot be "
-				+ kind + " targets (both are invoked via play and must return a result table).");
+			throw IllegalArgumentException(concatMsg("Hardware variable '", name, "' declares ",
+				kind, " '", raw, "' in table '", mtName,
+				"': '@Alias'/'@Vars' scalars cannot be ",
+				kind, " targets (both are invoked via play and must return a result table)."));
 		}
 		if (!isCtrl) {
 			/* 触发器结果以触发器名字为键并入调用参数——与本行元数据列同名会让
 			 * 该键易主，装配期拒绝（排除集 = name + 全部流引用列；列集合此刻已
 			 * 定型）；.mt 参数键同名由 MtVars_Lua::rejectReservedKeys 在派发期
 			 * 拒绝（.mt 此刻还没加载）。 */
-			for (std::int64_t c = 0; c < static_cast<std::int64_t>(matrix.cols()); ++c) {
-				const std::string& other = matrix(0, c);
-				if (other == "name" || isFlowColumn(other)) { continue; }
-				if (other == raw) {
-					throw IllegalArgumentException("Hardware variable '" + name + "' declares trigger '"
-						+ raw + "' in table '" + mtName + "': the trigger result is merged"
-						+ " under the trigger name, which collides with metadata column '"
-						+ other + "'. Rename one of them.");
+				for (std::int64_t c = 0; c < static_cast<std::int64_t>(matrix.cols()); ++c) {
+					const std::string& other = matrix(0, c);
+					if (other == "name" || isFlowColumn(other)) { continue; }
+					if (other == raw) {
+						throw IllegalArgumentException(concatMsg("Hardware variable '", name,
+							"' declares trigger '", raw, "' in table '", mtName,
+							"': the trigger result is merged",
+							" under the trigger name, which collides with metadata column '",
+							other, "'. Rename one of them."));
+					}
 				}
-			}
 		}
 		/* N-6：登记流引用，会话期覆盖将拒绝触碰该名字 */
 		registry.addFlowRef(raw);
@@ -444,7 +449,7 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 	std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
 	std::string scriptPath = firstExistingModule(modulePath, mtName + ".lua");
 	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
-		std::string name = matrix(i, idxName);
+		const std::string& name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
 		FlowRowRefs flow = parseFlowRow(matrix, i, name, mtName, registry_);
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, &registry_);

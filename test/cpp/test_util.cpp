@@ -418,7 +418,7 @@ TH_TEST(utils_numeric_parsers_reject_embedded_nul) {
 		const std::string s = std::string("90") + '\0' + "junk";
 		auto [st, v] = bot::parseLongStrict(s);
 		TH_CHECK_MSG(st == bot::IntParse::NOT_INT,
-			"内嵌 NUL 必须判非法，实际状态码 " + static_cast<int>(st));
+			"内嵌 NUL 必须判非法，实际状态码 " + std::to_string(static_cast<int>(st)));
 		TH_CHECK(v == 0);
 	}
 	/* 浮点：修复前是 OK/1.5 */

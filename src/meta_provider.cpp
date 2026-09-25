@@ -27,7 +27,7 @@ void MetaProvider::seed() {
 		std::string value = matrix_->inherited(row_, j);
 		if (value == "-") { continue; }
 		if (j == idxName || isFlowColumn(colName)) { continue; }
-		if (value.rfind("$", 0) == 0) {
+		if (value.rfind('$', 0) == 0) {
 			if (auto body = exprBody(value)) {
 				MetaRef ref;
 				ref.col = colName;
@@ -37,11 +37,12 @@ void MetaProvider::seed() {
 				ref.expr->collectVars(names);
 				for (const std::string& nm : names) {
 					if (!registry_->contains(nm)) {
-						throw IllegalArgumentException("'" + value + "' (column '" + colName
-							+ "') in table '" + matrix_->getName() + "' row " + std::to_string(row_)
-							+ ": expression references '" + nm + "', but it is not defined. "
-							+ "(identifiers in a $(...) expression are checked after all tables"
-							+ " are registered and before any driver build.)");
+						throw IllegalArgumentException(concatMsg("'", value,
+							"' (column '", colName, "') in table '", matrix_->getName(),
+							"' row ", std::to_string(row_), ": expression references '", nm,
+							"', but it is not defined. ",
+							"(identifiers in a $(...) expression are checked after all tables"
+							" are registered and before any driver build.)"));
 					}
 				}
 				rArr.push_back(std::move(ref));
@@ -57,9 +58,11 @@ void MetaProvider::seed() {
 					ref.target = registry_->find(refName);
 					rArr.push_back(std::move(ref));
 				} else {
-					throw IllegalArgumentException("'" + value + "' (column '" + colName
-						+ "') in table '" + matrix_->getName() + "' row " + std::to_string(row_)
-						+ ": references hardware variable '" + refName + "', but it is not defined. ('$' may forward-reference a variable declared later in the script, but the name must exist; checked after all tables are registered and before any driver build.)");
+					throw IllegalArgumentException(concatMsg("'", value,
+						"' (column '", colName, "') in table '", matrix_->getName(),
+						"' row ", std::to_string(row_),
+						": references hardware variable '", refName,
+						"', but it is not defined. ('$' may forward-reference a variable declared later in the script, but the name must exist; checked after all tables are registered and before any driver build.)"));
 				}
 			}
 		} else {

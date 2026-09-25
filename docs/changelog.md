@@ -6,6 +6,42 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-25 软门禁转硬本地预跑：clang / clang-tidy / musl 存量清障归零
+
+> 守门快照（落地提交时）：`run_all.sh` **270 / 0 / 1 跳**（rc=0；`test_camera_v4l2.lua`
+> 首轮因真机摄像头被占报 1 失败，复跑绿）；C++ 单测 **611 / 0 × 三编译器**（g++ 15.3、
+> clang 14.0.6、alpine 3.20 musl 13.2）；clang 构建零告警；clang-tidy
+> `--warnings-as-errors='*'` rc=0（存量 85 → 0）；TSan 三用例 rc=0 零报告；cargo 四检全绿。
+
+- **背景**：CI 六条软门禁各带转硬条件（最迟 2026-10-31），其中 gate:clang /
+  gate:clang-tidy / gate:musl 此前如实标注「开发机无相应工具链，未经本地预跑」。
+  本次在开发机**免 root** 补齐预跑环境——LLVM 14.0.6 官方预编译包（与 bookworm
+  基线镜像的 clang 同版本）、proot + alpine 3.20 minirootfs（与 alpine:3.20 镜像
+  同源；本地 musl-gcc 包装系统 libgcc 的路走不通：libgcc_eh 为 glibc 构建，静态
+  链接引用 glibc 2.35+ 的 `_dl_find_object`，C++ 单测必撞链接错）——三条门禁的
+  本地预跑全部通过。
+- **真 bug 修复 2 处**：`test_util.cpp` 内嵌 NUL 用例的断言消息把「字面量 + int」
+  当拼接用（指针算术，消息打出的是字面量中段而非状态码，改 `std::to_string`）；
+  `test/cpp/harness.hpp` 的 `out()` 无参调用改走 `fputs`（fmt 非 string literal，
+  `-Wformat-security`；且 fmt 含 `%` 时原实现按格式符解析）。
+- **musl 可移植**：`test_actionsource.cpp` 补 `<sys/time.h>`（timeval 在 glibc 经
+  `<sys/socket.h>` 间接可见、musl 不然）——alpine 下 `mybot_tests` 从编译不过到全绿。
+- **clang-tidy 存量 85 条逐条处置归零**：42 条文案拼接收敛到 `util.hpp` 新单点
+  `concatMsg()`（折叠表达式，等价 `+` 链但无中间临时串）；13 条 `strerror` 收敛到
+  新单点 `errnoText()`（`strerror_r` 实现，glibc GNU 变体 / musl XSI 变体分支——
+  mcpbackend 连接线程与守护线程都走错误文案路径，老 glibc 的静态缓冲是真竞态而非
+  check 误报）；15 条多余拷贝改 `const&`（`MatrixObject` 三方法本就返回
+  `const std::string&`）；`getenv`/`setenv`/`readdir` 单线程窗口定点 NOLINT 注明
+  理由（getenv 收敛到既有 `getEnvVar` 单点）；`bindSelf` 的 `std::move` 无效
+  （`weak_ptr` 只有 `const shared_ptr&` 重载）改 const& 直绑；两处 `rfind` 单字符
+  字面量改 char 重载；matrix.cpp 两空体分支合并；action_runner 去 const 保自动
+  移动 + size_t→int64 显式收窄；`Padding` 两条按先例写入 `.clang-tidy` 豁免
+  （配置结构启动期构造一次，重排零收益、打散贴身注释不值）。
+- **死代码**：删 `sqlparse.cpp` 的 `kDialectStatements`（`48dcb12` 改逐语句文案时
+  只删用法留了常量，注释声称的「单一事实源」已失真；语句清单权威文档在 dsl.md）。
+- **CI 注释对齐**：三条门禁的「未经本地预跑」声明改为本地预跑结论；
+  `allow_failure` 一律不动——转硬条件里的「连续 2 轮 pipeline」证据仍须 CI 侧产生。
+
 ### 2026-09-25 批次 D 落地：Rust agent 会话持久化（`--session-file` / `--resume`），C++ 参考清退
 
 > 守门快照（落地提交时）：C++ 单测 **611 / 0**（净删 9 例 `test_sessionfile_*`，

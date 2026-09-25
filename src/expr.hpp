@@ -62,7 +62,7 @@ ExprValueResolver numericResolver(std::function<double(const std::string&)> f);
 
 /* 数值语义出口：供「只收数值」的调用面（@Vars 的 value、SQL 元数据列）。
  * 文本结果在此显式拒绝——这些位置不引入拼接能力。 */
-double requireNum(ExprValue v);
+double requireNum(const ExprValue& v);
 
 class Expression {
 public:

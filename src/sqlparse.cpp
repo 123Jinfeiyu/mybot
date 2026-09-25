@@ -269,19 +269,6 @@ std::string tokenMsg(const Token& t) {
 	return m;
 }
 
-/* 方言支持语句的**单一事实源**：拒绝文案、SELECT/DELETE 的用法级报错都从这里
- * 取，避免「支持了什么」在四五条消息里各写一份而随语句增减漂移（本文件此前
- * 已有 `SELECT supports only ...` 与 `WHERE supports only ...` 两处各说一遍）。
- * 措辞刻意用「方言支持」而非「已实现」：读的人（含模型）要的是「能写什么」，
- * 不是变更史。
- * UPDATE（2026-09-23）入列：语义是**断电重建**（命中行按「断电摘除 + 重新装配
- * 上电」执行，见 UpdateTableEvent 注释），执行落点与 DELETE/DROP 同在
- * RobotStruct::applySql 的热插事务。 */
-constexpr const char* kDialectStatements =
-	"CREATE TABLE / INSERT INTO / SELECT ... FROM ... [WHERE col = value [AND ...]] /"
-	" SHOW TABLES /"
-	" DELETE FROM ... [WHERE col = value [AND ...]] / DROP TABLE ... /"
-	" UPDATE ... SET col = value [, ...] [WHERE col = value [AND ...]]";
 
 } // namespace
 

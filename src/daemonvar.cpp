@@ -389,7 +389,7 @@ std::string firstExistingModule(const std::string& paths, const std::string& rel
 }
 
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath) {
-	if (chunk.rfind("/", 0) == 0) { return chunk; }
+	if (chunk.rfind('/', 0) == 0) { return chunk; }
 	if (chunk.rfind(modulePath + "/", 0) == 0) { return chunk; }
 	/* 阶段 5：旧写法（"modules/..."，不带 "./"）兼容分支经全仓 robots/、
 	 * docs/ 核查无依赖，已删除——这类 chunk 现走 firstExistingModule，
@@ -506,12 +506,13 @@ static void checkDaemonFields(const std::string& v, const std::string& name,
 		}
 		if (++fieldCount > SLOT_MAXVALS) {
 			throw IllegalArgumentException(
-				"Daemon '" + name + "': column 'fields' declares " + std::to_string(fieldCount)
-				+ " fields, which exceeds the shared-slot capacity of "
-				+ std::to_string(SLOT_MAXVALS) + " (values[" + std::to_string(SLOT_MAXVALS)
-				+ "] in daemonvar.hpp / pthread.lua) (in table '" + tabName + "', row "
-				+ std::to_string(row) + "). Extra fields would never be published —"
-				" split the daemon or expose fewer fields.");
+				concatMsg("Daemon '", name, "': column 'fields' declares ",
+				std::to_string(fieldCount),
+				" fields, which exceeds the shared-slot capacity of ",
+				std::to_string(SLOT_MAXVALS), " (values[", std::to_string(SLOT_MAXVALS),
+				"] in daemonvar.hpp / pthread.lua) (in table '", tabName, "', row ",
+				std::to_string(row), "). Extra fields would never be published —",
+				" split the daemon or expose fewer fields."));
 		}
 		if (sep == std::string::npos) { break; }
 		pos = sep + 1;
@@ -542,10 +543,10 @@ static void checkDaemonValueChars(const std::string& colName, const std::string&
 	for (char c : v) {
 		if (c != '\0' && c != ';') { continue; }
 		throw IllegalArgumentException(
-			"Daemon '" + name + "': column '" + colName + "' value contains '"
-			+ (c == '\0' ? std::string("\\0") : std::string(1, c))
-			+ "' which would corrupt the DAEMON_CONFIG (k=v;k=v) string"
-			+ " (in table '" + tabName + "', row " + std::to_string(row) + ").");
+			concatMsg("Daemon '", name, "': column '", colName, "' value contains '",
+			(c == '\0' ? std::string("\\0") : std::string(1, c)),
+			"' which would corrupt the DAEMON_CONFIG (k=v;k=v) string",
+			" (in table '", tabName, "', row ", std::to_string(row), ")."));
 	}
 }
 
@@ -564,7 +565,7 @@ static DaemonConfigParts assembleDaemonConfig(const mt::MatrixObject& defs, int6
 	for (int64_t j = 0; j < static_cast<int64_t>(defs.cols()); ++j) {
 		const std::string& colName = defs(0, j);
 		if (colName == "name" || colName == "chunk") { continue; }
-		std::string v = defs.inherited(i, j);
+		const std::string& v = defs.inherited(i, j);
 		/* 先校验字符再拼串：配置串一旦拼好，NUL 之后的内容在 Lua 侧就不存在了，
 		 * 那时再校验也看不出被截断（审计 P4）。 */
 		checkDaemonValueChars(colName, v, name, defs.getName(), i);
@@ -576,7 +577,10 @@ static DaemonConfigParts assembleDaemonConfig(const mt::MatrixObject& defs, int6
 		 * 自身缺省。校验看到的与守护拿到的必须是同一份配置，否则"加载期校验通过"
 		 * 这句话对 '-' 那一列根本不成立。 */
 		if (v == "-") { continue; }
-		cfgAcc += colName + "=" + v + ";";
+		cfgAcc += colName;
+		cfgAcc += '=';
+		cfgAcc += v;
+		cfgAcc += ';';
 		if (colName == "interval") {
 			ivAcc = parseInterval(v, name, defs.getName(), i);
 		} else if (colName == "proto") {
@@ -613,7 +617,7 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 	int64_t idxName = defs.requireCol(0, "name", "Table");
 	int64_t idxChunk = defs.requireCol(0, "chunk", "Table");
 	std::string name = defs(i, idxName);
-	std::string chunkRaw = defs.inherited(i, idxChunk);
+	const std::string& chunkRaw = defs.inherited(i, idxChunk);
 
 	/* N-19：模块根目录统一走 util::modulePaths（空串也归一为缺省） */
 	std::string modulePath = modulePaths();

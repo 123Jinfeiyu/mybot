@@ -106,8 +106,39 @@ public:
 };
 
 inline std::optional<std::string> getEnvVar(const std::string& name) {
-	const char* v = std::getenv(name.c_str());
+	/* 读环境变量：本进程只在启动期（起线程之前）调 setenv（main.cpp 的
+	 * BOT4CJ_LLM_KEY 注入），此后 environ 不再变形 */
+	const char* v = std::getenv(name.c_str());	/* NOLINT(concurrency-mt-unsafe)：启动期单线程读 */
 	return v == nullptr ? std::nullopt : std::optional<std::string>(std::string(v));
+}
+
+/* errno → 人话文案（线程安全单点）。std::strerror 按 POSIX 判 mt-unsafe（glibc
+ * 2.32 前返回静态缓冲指针），而调用方横跨连接线程/守护线程，故统一走
+ * strerror_r：glibc 下 _GNU_SOURCE 已定义（g++ 缺省），是 GNU 变体返回 char*；
+ * musl（alpine）只有 XSI 变体返回 int、写用户缓冲。文案与 strerror 逐字一致。 */
+inline std::string errnoText(int err) {
+	char buf[128];
+	buf[0] = '\0';
+#if defined(__GLIBC__)
+	const char* s = ::strerror_r(err, buf, sizeof buf);	/* NOLINT(concurrency-mt-unsafe)：GNU 变体线程安全 */
+	return std::string(s != nullptr ? s : buf);
+#else
+	if (::strerror_r(err, buf, sizeof buf) != 0) {
+		return "Unknown error " + std::to_string(err);
+	}
+	return std::string(buf);
+#endif
+}
+
+/* 多段文案拼接单点：等价 `a + b + c` 链但不产生中间临时串（clang-tidy
+ * performance-inefficient-string-concatenation 的收敛点，错误/定位文案构造
+ * 一律走这里）。参数须能被 std::string::operator+= 接受（字面量/string/char）；
+ * 数值段先过 std::to_string。 */
+template <typename... Parts>
+inline std::string concatMsg(Parts&&... parts) {
+	std::string s;
+	((void)(s += std::forward<Parts>(parts)), ...);
+	return s;
 }
 
 /* N-19：Lua 驱动模块根目录——BOT4CJ_MODULE_PATH（':' 分段），缺省 ./modules。
@@ -141,7 +172,11 @@ inline std::vector<std::string> splitModulePaths(const std::string& paths) {
 inline std::optional<std::string> findExistingModule(const std::string& paths,
 		const std::string& rel) {
 	for (const std::string& p : splitModulePaths(paths)) {
-		std::string cand = p + "/" + rel;
+		std::string cand;
+		cand.reserve(p.size() + 1 + rel.size());
+		cand += p;
+		cand += '/';
+		cand += rel;
 		std::ifstream f(cand, std::ios::binary);
 		if (f.good()) { return cand; }
 	}

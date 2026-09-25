@@ -410,8 +410,8 @@ RobotStruct::HotDelPlanSet RobotStruct::planHotDeletes(const ScriptLoader::Mutat
 				/* 表里有行但注册表里没有该变量＝结构与装配脱节（例如启动期装配
 				 * 就失败过、或该行从未成功 build）。删不掉不存在的变量，如实报错
 				 * 而不是假装删过。 */
-				throw IllegalArgumentException("热删除：表 '" + tname + "' 的行 '"
-					+ v + "' 在硬件注册表里不存在（结构与该机器人的装配结果已脱节）");
+				throw IllegalArgumentException(concatMsg("热删除：表 '", tname, "' 的行 '",
+					v, "' 在硬件注册表里不存在（结构与该机器人的装配结果已脱节）"));
 			}
 			p.hw.push_back(hw);
 		}
@@ -469,8 +469,8 @@ RobotStruct::HotInsPlan RobotStruct::planHotInsertions(
 			 * 热插路径提前折成一句点名表名的人话（判据与 createLuaVars 同一来源）。 */
 			if (!isAction && tname != "Alias" && tname != "Vars" && tname != "Daemon") {
 				if (!findExistingModule(modulePaths(), tname + ".lua")) {
-					throw IllegalArgumentException("热插表：表 '" + tname
-						+ "' 需要驱动模块 modules/" + tname + ".lua，模块路径下找不到它");
+					throw IllegalArgumentException(concatMsg("热插表：表 '", tname,
+						"' 需要驱动模块 modules/", tname, ".lua，模块路径下找不到它"));
 				}
 			}
 		}
@@ -531,9 +531,9 @@ RobotStruct::HotInsPlan RobotStruct::planHotInsertions(
 				if (chunk != "-") {
 					if (checkRelPath(chunk) != RelPathCheck::OK
 							|| !findExistingModule(modulePaths(), chunk)) {
-						throw IllegalArgumentException("热插表：Daemon 表 '" + tname + "' 第 "
-							+ std::to_string(r) + " 行的 chunk '" + chunk
-							+ "' 必须是模块路径下存在的相对路径（热插不允许绝对路径/目录穿越）");
+						throw IllegalArgumentException(concatMsg("热插表：Daemon 表 '", tname,
+							"' 第 ", std::to_string(r), " 行的 chunk '", chunk,
+							"' 必须是模块路径下存在的相对路径（热插不允许绝对路径/目录穿越）"));
 					}
 				}
 			}
@@ -635,12 +635,12 @@ void RobotStruct::checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan
 					const std::string& colName = m(0, c);
 					const std::string val = m.inherited(r, c);
 					if (val.empty() || val == "-") { continue; }
-					const std::string where = "表 '" + tname + "' 第 "
-						+ std::to_string(r) + " 行的列 '" + colName + "'";
+					const std::string where = concatMsg("表 '", tname, "' 第 ",
+						std::to_string(r), " 行的列 '", colName, "'");
 					bool isFlow = isFlowColumn(colName);
 					if (isFlow && delPlan.doomedNames.count(val) != 0) {
-						refErrors.push_back(where + " 把 '" + val
-							+ "' 引用为 controller/trigger");
+						refErrors.push_back(concatMsg(where, " 把 '", val,
+							"' 引用为 controller/trigger"));
 						continue;
 					}
 					if (!isFlow && val[0] == '$') {
@@ -653,13 +653,13 @@ void RobotStruct::checkMergedView(const HotDelPlanSet& delPlan, const HotInsPlan
 							}
 							for (const std::string& nm : vars) {
 								if (delPlan.doomedNames.count(nm) != 0) {
-									refErrors.push_back(where + " 的表达式 '" + val
-										+ "' 引用了 '" + nm + "'");
+									refErrors.push_back(concatMsg(where, " 的表达式 '", val,
+										"' 引用了 '", nm, "'"));
 								}
 							}
 						} else if (delPlan.doomedNames.count(val.substr(1)) != 0) {
-							refErrors.push_back(where + " 以 '" + val + "' 引用了 '"
-								+ val.substr(1) + "'");
+							refErrors.push_back(concatMsg(where, " 以 '", val, "' 引用了 '",
+								val.substr(1), "'"));
 						}
 					}
 				}

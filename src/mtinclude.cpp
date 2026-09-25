@@ -97,7 +97,7 @@ std::string readIncludeFile(const std::string& path, std::size_t& totalBytes) {
 		throw bot::IllegalArgumentException("include rejected: symbolic link: " + path);
 	case bot::FdReadStatus::OPEN_FAILED:
 		throw bot::IllegalArgumentException("cannot open include file: " + path
-			+ " (" + std::strerror(errno) + ")");
+			+ " (" + bot::errnoText(errno) + ")");
 	case bot::FdReadStatus::READ_FAILED:
 		throw bot::IllegalArgumentException("read include file failed: " + path);
 	case bot::FdReadStatus::TOO_LARGE:
@@ -205,7 +205,7 @@ mt::MatrixObject dropOwnedRows(const mt::MatrixObject& m, const std::set<std::st
 	if (idxName < 0) { return m; }	/* 缺 name 列：原样放行，由 mergeScalarRows 报正错 */
 	bool anyDropped = false;
 	for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
-		std::string name = m(static_cast<std::size_t>(r), static_cast<std::size_t>(idxName));
+		const std::string& name = m(static_cast<std::size_t>(r), static_cast<std::size_t>(idxName));
 		if (owned.count(name) > 0) {
 			anyDropped = true;
 			std::cerr << "mtinclude: " << kind << " '" << name << "' from '" << file
@@ -218,7 +218,7 @@ mt::MatrixObject dropOwnedRows(const mt::MatrixObject& m, const std::set<std::st
 	for (std::size_t j = 0; j < m.cols(); ++j) { b.item(m(0, j)); }
 	b.line(0);
 	for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
-		std::string name = m(static_cast<std::size_t>(r), static_cast<std::size_t>(idxName));
+		const std::string& name = m(static_cast<std::size_t>(r), static_cast<std::size_t>(idxName));
 		if (owned.count(name) > 0) { continue; }
 		for (std::size_t j = 0; j < m.cols(); ++j) {
 			b.item(m(static_cast<std::size_t>(r), j));

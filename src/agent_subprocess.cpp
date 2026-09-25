@@ -175,7 +175,9 @@ static void markAllFdsCloexec() {
 	DIR* d = ::opendir("/proc/self/fd");
 	if (d == nullptr) { return; }
 	const int self = ::dirfd(d);
-	while (struct dirent* e = ::readdir(d) ) {
+	/* NOLINT(concurrency-mt-unsafe)：readdir 的不安全判据指「同一 DIR 流被并发
+	 * 遍历」；d 是本函数局部句柄，每次 spawn 各建各的，无共享 */
+	while (struct dirent* e = ::readdir(d) ) {	/* NOLINT(concurrency-mt-unsafe) */
 		const int fd = ::atoi(e->d_name);
 		if (fd < 3 || fd == self) { continue; }
 		const int flags = ::fcntl(fd, F_GETFD);
@@ -469,7 +471,7 @@ ChildOutcome runChild(const ChildSpec& spec) {
 	if (pid < 0) {
 		const int saved = errno;
 		closeAll();
-		throw std::runtime_error(std::string("fork 失败: ") + std::strerror(saved));
+		throw std::runtime_error(std::string("fork 失败: ") + errnoText(saved));
 	}
 	if (pid == 0) { execChild(spec, pi[0], po[0], po[1], pe[0], pe[1], envpPtr); }
 	setpgid(pid, pid);	/* 与子进程竞争设置，谁先成功效果一致 */
@@ -489,7 +491,7 @@ ChildOutcome runChild(const ChildSpec& spec) {
 			(void)killGroup(pid);
 			int reaped = 0;
 			(void)reapWithGrace(pid, reaped, 200);
-			throw std::runtime_error(std::string("fcntl 失败: ") + std::strerror(savedErrno));
+			throw std::runtime_error(std::string("fcntl 失败: ") + errnoText(savedErrno));
 		}
 	}
 

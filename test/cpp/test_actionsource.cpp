@@ -15,6 +15,8 @@
 #include <stdexcept>
 #include <string>
 #include <sys/socket.h>
+/* timeval 依赖本头直取：glibc 经 <sys/socket.h> 间接可见，musl（alpine）不然 */
+#include <sys/time.h>
 #include <unistd.h>
 
 #include "actionsource.hpp"

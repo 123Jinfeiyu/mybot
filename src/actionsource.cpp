@@ -1,11 +1,10 @@
 #include "actionsource.hpp"
+#include "util.hpp"	/* getEnvVar / errnoText */
 
 #include <arpa/inet.h>
 #include <poll.h>
 #include <cerrno>
 #include <cstddef>
-#include <cstdlib>
-#include <cstring>
 #include <fcntl.h>
 #include <iostream>
 #include <netinet/in.h>
@@ -78,7 +77,7 @@ int TcpStreamReader::read() {
 			}
 			return -1;
 		}
-		std::cerr << "TCP 动作源读错误：" << std::strerror(errno)
+		std::cerr << "TCP 动作源读错误：" << errnoText(errno)
 			<< "，按输入结束处理（脚本可能被截断）" << std::endl;
 		return -1;
 	}
@@ -103,7 +102,7 @@ TcpAuthStatus checkTcpToken(int client, const std::string& token) {
 			} else if (errno == EAGAIN || errno == EWOULDBLOCK) {
 				std::cerr << "TCP 口令校验：对端在空闲超时内未提供凭据行，关闭该连接" << std::endl;
 			} else {
-				std::cerr << "TCP 口令校验：接收凭据行失败（" << std::strerror(errno)
+				std::cerr << "TCP 口令校验：接收凭据行失败（" << errnoText(errno)
 					<< "），关闭该连接" << std::endl;
 			}
 			return TcpAuthStatus::NoCredential;
@@ -214,7 +213,7 @@ static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token,
 		tv.tv_sec = idleSec;
 		if (::setsockopt(clientFd.get(), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) != 0) {
 			throw std::runtime_error(std::string("设置 TCP 接收空闲超时失败：")
-				+ std::strerror(errno));
+				+ errnoText(errno));
 		}
 
 		if (!token.empty()) {
@@ -305,7 +304,7 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 		 * 多用户机器上凭据对同机其他用户可见；环境变量只在进程环境里。 */
 		std::string token = options.tcpToken;
 		if (token.empty()) {
-			if (const char* envToken = std::getenv("BOT4CJ_TCP_TOKEN")) { token = envToken; }
+			if (auto envToken = getEnvVar("BOT4CJ_TCP_TOKEN")) { token = *envToken; }
 		}
 
 		/* F-1：口令连续失败上限（缺省 tcp_limits::kAuthMaxFailsDefault=5） */

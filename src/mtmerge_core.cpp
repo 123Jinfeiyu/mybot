@@ -31,9 +31,9 @@ mt::MatrixObject mergeScalarRows(const mt::MatrixObject& acc, const mt::MatrixOb
 	}
 	for (std::size_t j = 0; j < acc.cols(); ++j) {
 		if (acc(0, j) != next(0, j)) {
-			throw bot::IllegalArgumentException(label + " matrix header differs at column "
-				+ std::to_string(j) + ": '" + acc(0, j) + "' (" + pa + ") vs '" + next(0, j)
-				+ "' (" + pb + ")");
+			throw bot::IllegalArgumentException(bot::concatMsg(label,
+				" matrix header differs at column ", std::to_string(j), ": '",
+				acc(0, j), "' (", pa, ") vs '", next(0, j), "' (", pb, ")"));
 		}
 	}
 	std::int64_t idxName = acc.indexOfCol(0, "name");
@@ -49,11 +49,12 @@ mt::MatrixObject mergeScalarRows(const mt::MatrixObject& acc, const mt::MatrixOb
 	std::set<std::string> seen;
 	auto appendRows = [&](const mt::MatrixObject& m) {
 		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
-			std::string name = m(r, idxName);
+			const std::string& name = m(r, idxName);
 			if (!seen.insert(name).second) {
-				throw bot::IllegalArgumentException("duplicate " + label + " name '" + name
-					+ "' (merging '" + pa + "' and '" + pb + "'; names must be unique"
-					+ " across merged scripts)");
+				throw bot::IllegalArgumentException(bot::concatMsg("duplicate ", label,
+					" name '", name, "' (merging '", pa, "' and '", pb,
+					"'; names must be unique",
+					" across merged scripts)"));
 			}
 			for (std::size_t j = 0; j < m.cols(); ++j) {
 				b.item(m(static_cast<std::size_t>(r), j));
@@ -91,8 +92,9 @@ void checkDisjoint(const mt::MatrixObject& a, const mt::MatrixObject& b,
 		auto [dev, param] = mt::splitActionColumn(b(0, j));
 		auto it = seen.find(dev);
 		if (it != seen.end()) {
-			throw bot::IllegalArgumentException("device '" + dev + "' appears in both scripts: '"
-				+ it->second + "' (" + pa + ") and '" + b(0, j) + "' (" + pb + ")");
+			throw bot::IllegalArgumentException(bot::concatMsg("device '", dev,
+				"' appears in both scripts: '", it->second, "' (", pa, ") and '",
+				b(0, j), "' (", pb, ")"));
 		}
 	}
 }

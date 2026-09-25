@@ -94,8 +94,9 @@ gate:tsan:
 # 本 job 只做烟雾验证：clang 能构建 + C++ 单测全绿（Lua 层与编译器无关，
 # 不重复跑整段守门）。构建日志含告警文本。
 # 转硬（移除 allow_failure）条件：clang 构建在 CI 基线镜像上连续 2 轮无新增
-# 告警且 C++ 单测全绿——最迟 2026-10-31。在此之前保持 allow_failure: true
-# （如实：开发机无 clang，本 job 未经本地预跑验证，尚未转硬）。
+# 告警且 C++ 单测全绿——最迟 2026-10-31。在此之前保持 allow_failure: true。
+# 2026-09-25 本地预跑已过：LLVM 14.0.6（与 bookworm 基线镜像同版本）构建
+# 零告警 + 单测全绿，本 job 在 CI 上首次运行即应为绿。
 gate:clang:
   stage: gate
   image: debian:bookworm
@@ -121,7 +122,10 @@ gate:clang:
 # 「首轮全量告警基线留档」由此有真实落点。
 # 转硬（移除 allow_failure）条件：首轮全量基线已随 artifacts 产出，且存量告警
 # 逐条处置或写入豁免清单后，连续 2 轮 pipeline 无新增告警——最迟 2026-10-31。
-# 在此之前保持 allow_failure: true（如实：尚未转硬）。
+# 在此之前保持 allow_failure: true（如实：连续两轮的 CI 证据尚待产生）。
+# 2026-09-25 本地预跑与存量处置已完成：clang-tidy 14.0.6（与 bookworm 同版本）
+# 全量基线 85 条逐条清障后归零（清单与处置方式见 docs/changelog.md 当日条目），
+# 本 job 在 CI 上首轮即应为「0 告警」基线。
 gate:clang-tidy:
   stage: gate
   image: debian:bookworm
@@ -193,10 +197,12 @@ gate:coverage:
 # test_v4l2_consts，均为 _Static_assert/编译期比对，跑起来即证明常量在 musl
 # 头文件下仍成立），能构建的话再跑 mybot_tests。
 # 覆盖边界（如实）：本 job 只覆盖 C++ 与常量自检层，**不覆盖** Lua 层 HAL 的
-# 运行时行为（ffi 直调 glibc 符号、波特率分叉探测仍无 musl 实证）；且开发机
-# 无 musl 工具链/无 docker，本 job 未经本地预跑验证。
+# 运行时行为（ffi 直调 glibc 符号、波特率分叉探测仍无 musl 实证）。
 # 转硬（移除 allow_failure）条件：mybot_tests 在 musl 下稳定构建运行、
 # 并补上 Lua 层 HAL 的 musl 运行时实证后——最迟 2026-10-31。
+# 2026-09-25 本地预跑已过：proot + alpine 3.20 rootfs（与 alpine:3.20 镜像
+# 同源同版本、免 root 用户态）下三常量自检与 mybot_tests 全绿；Lua 层
+# HAL 运行时实证仍是转硬前待补项。
 gate:musl:
   stage: gate
   image: alpine:3.20

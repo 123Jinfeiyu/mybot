@@ -57,7 +57,8 @@ bool prepareAgentConfig(const CliOptions& options, agent::AgentModeConfig& agent
 	}
 	std::vector<char*> envSecrets = agent::collectEnvSecrets();
 	if (!agentCfg.resolvedApiKey.empty()) {
-		::setenv("BOT4CJ_LLM_KEY", agentCfg.resolvedApiKey.c_str(), 1);
+		/* NOLINT(concurrency-mt-unsafe)：setenv 只在启动期、任何线程 spawn 之前执行 */
+		::setenv("BOT4CJ_LLM_KEY", agentCfg.resolvedApiKey.c_str(), 1);	/* NOLINT(concurrency-mt-unsafe) */
 	}
 	agent::scrubEnvSecrets(envSecrets);
 	if (!agentCfg.configPath.empty()) {

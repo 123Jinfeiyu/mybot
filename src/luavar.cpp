@@ -135,11 +135,12 @@ void MtVars_Lua::rejectReservedKeys(const Json& metadata, const Json& params) co
 			}
 		}
 		if (why != nullptr) {
-			throw IllegalArgumentException("Hardware variable '" + name_ + "': @Action column '"
-				+ name_ + "." + key + "' is rejected because '" + key + "' is " + why
-				+ " and cannot be supplied by the action script. Action columns may only introduce"
-				+ " new parameter names; bus handles, addresses and range limits come from the"
-				+ " structure script.");
+			throw IllegalArgumentException(concatMsg("Hardware variable '", name_,
+				"': @Action column '", name_, ".", key, "' is rejected because '", key,
+				"' is ", why,
+				" and cannot be supplied by the action script. Action columns may only introduce"
+				" new parameter names; bus handles, addresses and range limits come from the"
+				" structure script."));
 		}
 	}
 }

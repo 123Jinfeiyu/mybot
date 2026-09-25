@@ -30,7 +30,7 @@ std::string ActionRunner::resolveActionDevice(const HwLookup& registry, const st
 			+ "' is a numeric constant and cannot name a device in an @Action"
 			" column; use an @Alias or the device name itself.");
 	}
-	const std::string target = hv->read().asString().getValue();
+	std::string target = hv->read().asString().getValue();
 	MatrixVars_Hardware* resolved = registry.find(target);
 	if (resolved == nullptr) {
 		throw IllegalArgumentException("@Action device column '" + dev
@@ -171,7 +171,7 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 	 * 拼接由 '+' 的类型分派产生）；否则走既有数值/继承解析。
 	 * inherited 已解析 "-" 继承（上一行是表达式时按上一行表达式再算一次）。 */
 	Json paramVal;
-	std::string raw = actionDefs.inherited(i, j);
+	const std::string& raw = actionDefs.inherited(i, j);
 	if (auto body = exprBody(raw)) {
 		/* C-M3：AST 按列缓存——"-" 继承链上同一表达式文本原每行重解析 */
 		if (exprCache.body != *body) {
@@ -296,7 +296,7 @@ void ActionRunner::runReflex(std::vector<mt::MatrixObject>& actionMatrices) {
 		/* 组装该反射的动作矩阵（列 1.. 为动作列；组内行序 = 拍序） */
 		mt::MatrixBuilder b;
 		b.name("Action");
-		const std::int64_t ncols = reflexDefs->cols();
+		const std::int64_t ncols = static_cast<std::int64_t>(reflexDefs->cols());
 		for (std::int64_t j = 1; j < ncols; ++j) { b.item(reflexDefs->operator()(0, j)); }
 		b.line(1);
 		for (const std::int64_t row : git->second) {

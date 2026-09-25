@@ -22,7 +22,7 @@ ExprValueResolver numericResolver(std::function<double(const std::string&)> f) {
 	};
 }
 
-double requireNum(ExprValue v) {
+double requireNum(const ExprValue& v) {
 	if (v.isText()) {
 		throw IllegalArgumentException("expression produced a text result"
 			" (an @Alias may only take part in '+' concatenation inside @Action"

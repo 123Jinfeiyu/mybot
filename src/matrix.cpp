@@ -39,9 +39,9 @@ std::int64_t MatrixParser::next_(char c, std::int64_t count) {
 		cm_ = false;
 		count += 1;
 	}
-	else if (cm_ && c != '\n') { ; }
-	/* ------------ new line ------------ */
-	else if (nl_ && (c == ' ' || c == '\t' || c == '\r')) { ; }
+	/* 注释中段与行首空白都是「跳过该字符」——合并为同一分支（两判据互不冲突，
+	 * 主体同为空），避免条件链出现克隆分支 */
+	else if ((cm_ && c != '\n') || (nl_ && (c == ' ' || c == '\t' || c == '\r'))) { ; }
 	else if (nl_ && c == '\n') { count += 1; }
 	else if (nl_ && c == '@' && !builder_.hasName()) {
 		nl_ = false;
