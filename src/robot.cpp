@@ -21,6 +21,59 @@
 
 namespace bot {
 
+namespace {
+
+/* ---- 守护退场屏障：deactivate（断电前）与热删除（摘件前）共用的同一套安全序列 ----
+ * 原先在两处各手抄一份，属安全序列的分叉温床（2026-09-25 去重），机械步骤：
+ * requestStop 全体 → 全体共享一个 deadline 等待（取各守护 joinTimeout 的最大值；
+ * 逐个累加会让最坏退出延迟随守护数量线性增长）→ 超时弃管者给二段宽限（封顶
+ * graceCapMs）→ 宽限耗尽仍存活者如实点名。审计出处与理由：
+ *  屏障本体（审计 P2）：原实现把 join 延后到各守护自己的 destroy，于是执行器
+ *  可能已经断电、而某个守护正在跑的那一拍又写它一次——最后一次写随机胜出，
+ *  进程退出时器件可能重新带电。等过之后 destroy 里的 waitForExit 幂等直返。
+ *  二段宽限（审计 P1 修复，2026-09-21）：弃管只是交出槽所有权，detached 线程
+ *  并没有停——调用点紧跟着的逆序 destroy 会关闭总线/去初始化器件，与仍在
+ *  tick/cleanup 的线程构成硬件竞态。这里在动硬件之前给弃管守护一次真正退场的
+ *  机会（宽限 = 共享预算，封顶 graceCapMs：无法在 join 超时内退场的守护多半
+ *  卡死在不可中断的调用里，更长的等待只是把停机挂死换掉竞态）。宽限内退场的
+ *  线程不再与 destroy 并发；耗尽仍活着的才真正带着竞态进入 destroy。
+ * 调用点契约：屏障返回后才许动硬件。stillNote 承载两处的后果差异（断电后
+ * 器件可被重新写亮 vs 采样对象即将被摘除），由调用点如实描述。
+ * 文案单点（同 agent_subprocess 的 reapGiveUpWarning 先例）：Deactivate 一侧
+ * 被 test_robot 的 daemon_grace_ms 用例钉住（"granting 100ms grace"，数字与
+ * "ms" 之间无空格），改文案须过那条用例。 */
+void daemonStopBarrier(const std::vector<std::shared_ptr<DaemonRunner>>& holders,
+		std::int64_t graceCapMs, const char* label, const char* stillNote) {
+	for (const auto& h : holders) { h->requestStop(); }
+	if (holders.empty()) { return; }
+	int64_t budgetMs = 0;
+	for (const auto& h : holders) {
+		budgetMs = std::max(budgetMs, h->joinTimeoutMs());
+	}
+	const auto deadline = std::chrono::steady_clock::now()
+		+ std::chrono::milliseconds(budgetMs);
+	std::vector<DaemonRunner*> abandoned;
+	for (const auto& h : holders) {
+		if (!h->waitUntil(deadline)) { abandoned.push_back(h.get()); }
+	}
+	if (abandoned.empty()) { return; }
+	const int64_t graceMs = std::min<int64_t>(budgetMs, graceCapMs);
+	std::cerr << label << ": " << abandoned.size()
+		<< " daemon(s) outlived the stop barrier, granting " << graceMs
+		<< "ms grace before hardware de-init" << std::endl;
+	std::size_t stillRunning = 0;
+	for (auto* d : abandoned) {
+		if (!d->awaitExit(graceMs)) { ++stillRunning; }
+	}
+	if (stillRunning > 0) {
+		std::cerr << label << ": " << stillRunning
+			<< " daemon(s) STILL running after grace window — " << stillNote
+			<< std::endl;
+	}
+}
+
+} // namespace
+
 /* ==================== RobotStruct：编排门面 ==================== */
 
 /* ---- 构建硬件：两阶段（build 失败上抛，active 由 finally 清理）---- */
@@ -56,52 +109,11 @@ void RobotStruct::active() {
  * 该顺序的源头是 build 期约束：器件 build 要经 `$` 引用拿 fd，就必须让总线先 build，
  * 即总线必须先声明（总线前向引用在 build 期失败，见 robots/test/ref_bus_forward.sql）。 */
 void RobotStruct::deactivate() {
-	for (const auto& h : daemonHolders_) {
-		h->requestStop();
-	}
-	/* ---- 断电屏障（审计 P2）----
-	 * 统一等到守护线程退场，然后才动硬件。原实现把 join 延后到各守护自己的
-	 * destroy，于是执行器可能已经断电、而某个守护正在跑的那一拍又写它一次
-	 * ——最后一次写随机胜出，进程退出时器件可能重新带电。
-	 * deadline 全体共享（取各守护 joinTimeout 的最大值）：逐个累加会让最坏
-	 * 退出延迟随守护数量线性增长。等过之后 destroy 里的 waitForExit 幂等直返。
-	 * 超时弃管的守护仍可能碰总线——那一条由 waitUntil 的告警如实说明。 */
-	if (!daemonHolders_.empty()) {
-		int64_t budgetMs = 0;
-		for (const auto& h : daemonHolders_) {
-			budgetMs = std::max(budgetMs, h->joinTimeoutMs());
-		}
-		const auto deadline = std::chrono::steady_clock::now()
-			+ std::chrono::milliseconds(budgetMs);
-		std::vector<DaemonRunner*> abandoned;
-		for (const auto& h : daemonHolders_) {
-			if (!h->waitUntil(deadline)) { abandoned.push_back(h.get()); }
-		}
-		/* ---- 二段屏障（审计 P1 修复，2026-09-21）----
-		 * 弃管只是交出槽所有权，detached 线程并没有停——下面紧跟着的逆序
-		 * destroy 会关闭总线/去初始化器件，与仍在 tick/cleanup 的线程构成
-		 * 硬件竞态。这里在动硬件之前给弃管守护一次真正退场的机会（宽限 =
-		 * 共享预算，封顶 30s：无法在 join 超时内退场的守护多半卡死在不可
-		 * 中断的调用里，更长的等待只是把停机挂死换掉竞态）。宽限内退场的
-		 * 线程不再与 destroy 并发；耗尽仍活着的才真正带着竞态进入 destroy，
-		 * 由下方告警如实点名。 */
-		if (!abandoned.empty()) {
-			const int64_t graceMs = std::min<int64_t>(budgetMs, deactivateGraceMs_);
-			std::cerr << "Deactivate: " << abandoned.size()
-				<< " daemon(s) outlived the stop barrier, granting " << graceMs
-				<< "ms grace before hardware de-init" << std::endl;
-			std::size_t stillRunning = 0;
-			for (auto* d : abandoned) {
-				if (!d->awaitExit(graceMs)) { ++stillRunning; }
-			}
-			if (stillRunning > 0) {
-				std::cerr << "Deactivate: " << stillRunning
-					<< " daemon(s) STILL running after grace window —"
-					<< " hardware de-init will race with them (they may touch the"
-					<< " bus after de-init)" << std::endl;
-			}
-		}
-	}
+	/* ---- 断电屏障 ----统一等到守护线程退场，然后才动硬件；序列理由、二段
+	 * 宽限与告警文案都在单点 daemonStopBarrier（本文件顶部）。 */
+	daemonStopBarrier(daemonHolders_, deactivateGraceMs_, "Deactivate",
+		"hardware de-init will race with them (they may touch the"
+		" bus after de-init)");
 	std::string lastWarn;
 	std::size_t failed = 0;
 	const auto& seq = registry_.sequence();
@@ -863,35 +875,11 @@ RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
 			dyingHolders.push_back(daemonHolders_[slot->second]);
 		}
 	}
-	/* 4.6.2 守护退场屏障：与 deactivate() 同一手法——全体共享一个 deadline
-	 * （逐个累加会让最坏退出延迟随守护数线性增长），超时者给宽限并如实告警。
-	 * 这一步之后才允许动硬件。 */
-	for (const auto& h : dyingHolders) { h->requestStop(); }
-	if (!dyingHolders.empty()) {
-		int64_t budgetMs = 0;
-		for (const auto& h : dyingHolders) { budgetMs = std::max(budgetMs, h->joinTimeoutMs()); }
-		const auto deadline = std::chrono::steady_clock::now()
-			+ std::chrono::milliseconds(budgetMs);
-		std::vector<DaemonRunner*> abandoned;
-		for (const auto& h : dyingHolders) {
-			if (!h->waitUntil(deadline)) { abandoned.push_back(h.get()); }
-		}
-		if (!abandoned.empty()) {
-			const int64_t graceMs = std::min<int64_t>(budgetMs, deactivateGraceMs_);
-			std::cerr << "热删除: " << abandoned.size()
-				<< " 个守护未在停止屏障内退场，给予 " << graceMs
-				<< "ms 宽限后再摘器件" << std::endl;
-			std::size_t stillRunning = 0;
-			for (DaemonRunner* d : abandoned) {
-				if (!d->awaitExit(graceMs)) { ++stillRunning; }
-			}
-			if (stillRunning > 0) {
-				std::cerr << "热删除: " << stillRunning
-					<< " 个守护在宽限后仍在运行——它们可能继续触碰总线"
-					"（其采样对象即将被摘除）" << std::endl;
-			}
-		}
-	}
+	/* 4.6.2 守护退场屏障：与 deactivate() 同一套安全序列，单点在
+	 * daemonStopBarrier（本文件顶部）——屏障之后才允许动硬件。 */
+	daemonStopBarrier(dyingHolders, deactivateGraceMs_, "HotDelete",
+		"the doomed hardware's destroy will race with them"
+		" (their sampling targets are being removed)");
 	if (stopRequested()) {
 		throw std::runtime_error("热删除被中断（收到停止信号）：本批次的删除尚未开始");
 	}
