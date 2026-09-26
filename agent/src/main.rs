@@ -19,6 +19,7 @@ mod config;
 mod frame;
 mod history;
 mod hook;
+mod ica;
 mod linein;
 mod model;
 mod out;
@@ -172,7 +173,7 @@ async fn run() -> i32 {
             return 2;
         }
     };
-    let preamble =
+    let mut preamble =
         match prompt::build_system_prompt(&cfg.driver, &cfg.llm_var, &cfg.prompt_pack, &material) {
             Ok(p) => p,
             Err(e) => {
@@ -180,6 +181,17 @@ async fn run() -> i32 {
                 return 2;
             }
         };
+    if bridge.ica_enabled() {
+        preamble.push_str(
+            "\n## ICA 实验性证据层\n用户输入与工具回执先登记为观察，不自动成为事实。\
+            需要陈述可核验事实时，用 ICA 工具登记主张、引用观察和未来候选；\
+            这些工具不能验证主张，也不会自动执行行动。相同工具名的回执保守地视为同一来源。\n",
+        );
+        if preamble.len() > 65_536 {
+            errln!("错误: 开启 ICA 后系统提示词超过 65536 字节上限");
+            return 2;
+        }
+    }
 
     // ---- 会话持久化（批次 D）：--resume 的三道判据，放在系统提示词定稿之后、
     //      任何审计写之前（早一步还没有 preamble 可比，晚一步就核不出「提示词
@@ -237,6 +249,12 @@ async fn run() -> i32 {
                 errln!("错误: {e}");
                 return 2;
             }
+        }
+    }
+    if cfg.resume {
+        if let Err(e) = bridge.ica_restore(&cfg.session_file) {
+            errln!("错误: ICA 会话恢复失败: {e}");
+            return 2;
         }
     }
     if !cfg.session_file.is_empty() {

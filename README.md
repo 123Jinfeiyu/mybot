@@ -4,6 +4,8 @@
 
 C++17 宿主（`mybot`，MCP 工具后端，硬件常驻）+ Rust agent（`mybot-agent`，模型循环与 REPL）+ LuaJIT 驱动层。结构脚本（`.sql`）、驱动（`.lua`）、动作脚本（`.mt`）三层完全解耦，不接任何硬件也能跑通全流程。
 
+本地 ICA 实验分支可在 Rust Agent 侧用 `BOT4CJ_ICA=1` 开启证据账本；接入边界见 [ICA 原型说明](docs/ica.md)。
+
 ## 目录
 
 - [核心特性](#核心特性)

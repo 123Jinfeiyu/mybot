@@ -214,8 +214,12 @@ impl Session {
     /// 丢弃此前的全部消息，否则「忘掉对话」会在下次恢复时复活。
     pub fn clear_history(&mut self) {
         self.history.clear();
+        self.bridge.ica_clear();
         if let Some(w) = self.writer.as_mut() {
             w.write_clear_marker();
+        }
+        if let Err(e) = self.bridge.ica_save(&self.cfg.session_file) {
+            errln!("[ICA] 清空后保存账本失败: {e}");
         }
     }
 
@@ -308,6 +312,7 @@ impl Session {
         // 任务内预算清零（含墙钟起点）与上一轮的观测值/图片清理。必须先于压缩：
         // 摘要请求走同一个 BudgetModel，上一轮残留的图片后注不能混进它。
         self.state.begin_task();
+        self.bridge.observe_user(task);
         // 任务开始前：按字节预算**整块**裁掉最早的旧任务块（最新块无条件保留；
         // 0 = 不裁剪），被裁的块交给摘要器。裁剪日志走 stderr：更早的任务上下文
         // 不再可见（或只剩摘要）是必须告知的事实。
@@ -348,7 +353,13 @@ impl Session {
                 if let Some(w) = self.writer.as_mut() {
                     self.history.persist(|m| w.append_message(m));
                 }
+                if let Err(e) = self.bridge.ica_save(&self.cfg.session_file) {
+                    errln!("[ICA] 保存账本失败: {e}");
+                }
                 self.record_calls(&calls);
+                if let Some(note) = self.bridge.ica_note() {
+                    outln!("\n{note}");
+                }
                 Ok(())
             }
             Err(e) => {
@@ -567,6 +578,12 @@ impl Session {
             hw.map(|n| n.to_string()).unwrap_or_else(|| "?".to_string())
         );
         s += &format!("  动作脚本目录: {}\n", self.material.scripts_dir);
+        if let Some(summary) = self.bridge.ica_summary() {
+            s += &format!(
+                "  ICA 账本    : {}\n",
+                summary.replace('\n', "\n                ")
+            );
+        }
         s
     }
 
