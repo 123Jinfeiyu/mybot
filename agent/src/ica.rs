@@ -217,10 +217,10 @@ impl IcaLedger {
 
     pub fn final_note(&self) -> String {
         if self.claims.is_empty() {
-            "[ICA] 本轮回答未登记事实主张，尚未经过事实核验。".into()
+            "[ICA 证据账本原型] 本轮没有登记可核验主张；此功能不是原生 ICA 时间想象模型，也未验证这段回答。".into()
         } else {
             format!(
-                "[ICA] 主张状态仍需人工核验；{} 个主张，{} 个待审。",
+                "[ICA 证据账本原型] 主张状态仍需人工核验；{} 个主张，{} 个待审。此功能不是原生 ICA 时间想象模型。",
                 self.claims.len(),
                 self.claims
                     .iter()
