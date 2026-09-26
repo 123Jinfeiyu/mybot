@@ -137,25 +137,24 @@ std::string optCol(const mt::MatrixObject& m, std::int64_t row, const char* col)
  * 缺列不等于"不参与判据"，必须按 sensor_daemon.lua 的缺省补全；两侧漂移由
  * test/cpp/test_robot.cpp 的 daemon_defaults_match_lua_source 读 Lua 源钉住）。 */
 
-} // namespace
-
-void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices) {
-	/* ---- 1) 总线名 → 设备路径（I2C/SPI/UART 表的 name/path 列）---- */
-	std::map<std::string, std::string> busPath;
-	for (const auto& m : matrices) {
-		const std::string& t = m.getName();
-		if (t != "I2C" && t != "SPI" && t != "UART") { continue; }
-		const std::int64_t idxName = m.indexOfCol(0, "name");
-		const std::int64_t idxPath = m.indexOfCol(0, "path");
-		if (idxName < 0 || idxPath < 0) { continue; }
-		for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
-			busPath[m.inherited(i, idxName)] = m.inherited(i, idxPath);
-		}
-	}
-
-	/* ---- 2) 逐表登记消费者，第二个即冲突 ---- */
+/* checkSingleConsumer 的跨表共享状态 + claim/singleConsumer 判据 + 每类表的登记
+ * （拆自 checkSingleConsumer，2026-09-26 批次 5）。原函数 127 行把「建总线路径表 /
+ * 两个捕获状态的 lambda / Daemon 分支（含多器件 devices 解析）/ 常规硬件分支」全
+ * 内联在一处；收进本结构后 checkSingleConsumer 只留「建状态 → 扫总线表 → 逐表分派」
+ * 的编排。成员名与原局部量/lambda 逐字相同，故各分支体原样搬入、行为不变。 */
+struct SingleConsumerCheck {
+	std::map<std::string, std::string> busPath;	/* 总线名 → 设备路径（I2C/SPI/UART 表） */
 	std::map<std::string, std::string> owner;	/* 键 -> 首个消费者的定位串 */
-	auto claim = [&](const std::string& key, const std::string& who) {
+	/* SINGLE_CONSUMER 判读的批内缓存：判定要重读整个驱动模块文件（上限 1 MiB），
+	 * Daemon 表逐行/逐 devices-spec 调用会让同一模块被反复读盘（spider1 这类
+	 * 「PCA9685 + 14 路 Servo + 守护」结构是 O(行数) 次同名文件）。键用调用点的
+	 * 模块名形态（含 .lua）：firstExistingModule 只依赖 modulePath，本函数内
+	 * 不变形，批内同名判据必然一致。跨批不缓存——热插表逐批调用，保守起见
+	 * 允许模块文件在两批之间被替换后的新判定生效。 */
+	std::map<std::string, bool> scCache;
+	std::string modulePath;			/* N-19：模块根目录单点 */
+
+	void claim(const std::string& key, const std::string& who) {
 		if (key.empty()) { return; }
 		const auto it = owner.find(key);
 		if (it != owner.end()) {
@@ -167,90 +166,98 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 				" or sample it from the daemon only and consume via '$' reference.");
 		}
 		owner.emplace(key, who);
-	};
+	}
 
-	const std::string modulePath = modulePaths();	/* N-19：模块根目录单点 */
-	/* SINGLE_CONSUMER 判读的批内缓存：判定要重读整个驱动模块文件（上限 1 MiB），
-	 * Daemon 表逐行/逐 devices-spec 调用会让同一模块被反复读盘（spider1 这类
-	 * 「PCA9685 + 14 路 Servo + 守护」结构是 O(行数) 次同名文件）。键用调用点的
-	 * 模块名形态（含 .lua）：firstExistingModule 只依赖 modulePath，本函数内
-	 * 不变形，批内同名判据必然一致。跨批不缓存——热插表逐批调用，保守起见
-	 * 允许模块文件在两批之间被替换后的新判定生效。 */
-	std::map<std::string, bool> scCache;
-	auto singleConsumer = [&](const std::string& moduleName) -> bool {
+	bool singleConsumer(const std::string& moduleName) {
 		const auto it = scCache.find(moduleName);
 		if (it != scCache.end()) { return it->second; }
 		const bool v = declaresSingleConsumer(firstExistingModule(modulePath, moduleName));
 		scCache.emplace(moduleName, v);
 		return v;
-	};
-	for (const auto& m : matrices) {
-		const std::string& t = m.getName();
-		if (t == "Alias" || t == "Vars" || t == "Action" || m.rows() == 0) { continue; }
-		const std::int64_t idxName = m.indexOfCol(0, "name");
-		if (idxName < 0) { continue; }
+	}
 
-		if (t == "Daemon") {
-			/* 守护采样的是 driver 列指名的那颗器件；多器件守护
-			 * （chunk = lib/sensor_daemon_multi.lua）的清单在 devices 列。
-			 * proto=virt 是内存仿真，不碰真器件，不参与判据（否则无硬件夹具
-			 * 会全线误报）；**缺列不等于 virt**——守护侧缺省就是 i2c，
-			 * 见上面 kDaemonDefaultProto 的注释。 */
+	/* ---- 1) 总线名 → 设备路径（I2C/SPI/UART 表的 name/path 列）---- */
+	void scanBusTables(const std::deque<mt::MatrixObject>& matrices) {
+		for (const auto& m : matrices) {
+			const std::string& t = m.getName();
+			if (t != "I2C" && t != "SPI" && t != "UART") { continue; }
+			const std::int64_t idxName = m.indexOfCol(0, "name");
+			const std::int64_t idxPath = m.indexOfCol(0, "path");
+			if (idxName < 0 || idxPath < 0) { continue; }
 			for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
-				const std::string protoRaw = optCol(m, i, "proto");
-				const std::string proto = protoRaw.empty() ? kDaemonDefaultProto : protoRaw;
-				if (proto == "virt") { continue; }
-				const std::string pathRaw = optCol(m, i, "path");
-				const std::string path = pathRaw.empty()
-					? std::string(proto == "spi" ? kDaemonDefaultPathSpi : kDaemonDefaultPathI2c)
-					: pathRaw;
-				const std::string whoBase = "daemon '" + m.inherited(i, idxName)
-					+ "' (in table '" + t + "', row " + std::to_string(i) + ")";
-
-				const std::string drv = optCol(m, i, "driver");
-				const std::string devices = optCol(m, i, "devices");
-				if (!drv.empty()) {
-					/* ① 单器件守护：driver + addr 列 */
-					if (singleConsumer(drv + ".lua")) {
-						claim(path + " " + normalizeAddress(optCol(m, i, "addr")), whoBase);
-					}
-				} else if (!devices.empty()) {
-					/* ② 多器件守护：`driver@addr@fields[@k=v...]`，以 '|' 分隔。
-					 * 宿主此前从不解析这一列 ⇒ 整类守护不在判据内（漏标）。
-					 * spec 语法错（缺 @、字段空）由守护侧 fail(-2) 在运行期报，
-					 * 这里只跳过解析不出来的片段，不重复造一套语法校验。
-					 * driver 列与 devices 列互斥（多器件守护不用 driver/addr/fields
-					 * 列，见 sensor_daemon_multi.lua 文件头），故用 else if —— 否则
-					 * 同一行会被 claim 两次，自己和自己冲突（误报）。 */
-					std::size_t pos = 0;
-					std::size_t specIdx = 0;
-					while (pos < devices.size()) {
-						const std::size_t bar = devices.find('|', pos);
-						const std::string spec = devices.substr(pos,
-							bar == std::string::npos ? std::string::npos : bar - pos);
-						pos = (bar == std::string::npos) ? devices.size() : bar + 1;
-						++specIdx;
-						const std::size_t at1 = spec.find('@');
-						if (spec.empty() || at1 == std::string::npos) { continue; }
-						const std::string specDrv = trim(spec.substr(0, at1));
-						const std::size_t at2 = spec.find('@', at1 + 1);
-						const std::string specAddr = trim(spec.substr(at1 + 1,
-							(at2 == std::string::npos ? spec.size() : at2) - at1 - 1));
-						if (specDrv.empty() || !singleConsumer(specDrv + ".lua")) { continue; }
-					claim(path + " " + normalizeAddress(specAddr),
-						concatMsg(whoBase, " devices[", std::to_string(specIdx), "]='",
-							specDrv, "'"));
-					}
-				}
+				busPath[m.inherited(i, idxName)] = m.inherited(i, idxPath);
 			}
-			continue;
 		}
+	}
 
-		if (!singleConsumer(t + ".lua")) { continue; }
+	/* ② 多器件守护：`driver@addr@fields[@k=v...]`，以 '|' 分隔。
+	 * 宿主此前从不解析这一列 ⇒ 整类守护不在判据内（漏标）。
+	 * spec 语法错（缺 @、字段空）由守护侧 fail(-2) 在运行期报，
+	 * 这里只跳过解析不出来的片段，不重复造一套语法校验。 */
+	void claimDevicesSpec(const std::string& devices, const std::string& path,
+			const std::string& whoBase) {
+		std::size_t pos = 0;
+		std::size_t specIdx = 0;
+		while (pos < devices.size()) {
+			const std::size_t bar = devices.find('|', pos);
+			const std::string spec = devices.substr(pos,
+				bar == std::string::npos ? std::string::npos : bar - pos);
+			pos = (bar == std::string::npos) ? devices.size() : bar + 1;
+			++specIdx;
+			const std::size_t at1 = spec.find('@');
+			if (spec.empty() || at1 == std::string::npos) { continue; }
+			const std::string specDrv = trim(spec.substr(0, at1));
+			const std::size_t at2 = spec.find('@', at1 + 1);
+			const std::string specAddr = trim(spec.substr(at1 + 1,
+				(at2 == std::string::npos ? spec.size() : at2) - at1 - 1));
+			if (specDrv.empty() || !singleConsumer(specDrv + ".lua")) { continue; }
+			claim(path + " " + normalizeAddress(specAddr),
+				concatMsg(whoBase, " devices[", std::to_string(specIdx), "]='",
+					specDrv, "'"));
+		}
+	}
+
+	/* 守护采样的是 driver 列指名的那颗器件；多器件守护
+	 * （chunk = lib/sensor_daemon_multi.lua）的清单在 devices 列。
+	 * proto=virt 是内存仿真，不碰真器件，不参与判据（否则无硬件夹具
+	 * 会全线误报）；**缺列不等于 virt**——守护侧缺省就是 i2c，
+	 * 见 kDaemonDefaultProto 的注释。 */
+	void claimDaemonRow(const mt::MatrixObject& m, std::int64_t i, std::int64_t idxName) {
+		const std::string protoRaw = optCol(m, i, "proto");
+		const std::string proto = protoRaw.empty()
+			? std::string(HwFactory::kDaemonDefaultProto) : protoRaw;
+		if (proto == "virt") { return; }
+		const std::string pathRaw = optCol(m, i, "path");
+		const std::string path = pathRaw.empty()
+			? std::string(proto == "spi" ? HwFactory::kDaemonDefaultPathSpi
+						     : HwFactory::kDaemonDefaultPathI2c)
+			: pathRaw;
+		const std::string whoBase = "daemon '" + m.inherited(i, idxName)
+			+ "' (in table '" + m.getName() + "', row " + std::to_string(i) + ")";
+
+		const std::string drv = optCol(m, i, "driver");
+		const std::string devices = optCol(m, i, "devices");
+		if (!drv.empty()) {
+			/* ① 单器件守护：driver + addr 列 */
+			if (singleConsumer(drv + ".lua")) {
+				claim(path + " " + normalizeAddress(optCol(m, i, "addr")), whoBase);
+			}
+		} else if (!devices.empty()) {
+			/* driver 列与 devices 列互斥（多器件守护不用 driver/addr/fields
+			 * 列，见 sensor_daemon_multi.lua 文件头），故用 else if —— 否则
+			 * 同一行会被 claim 两次，自己和自己冲突（误报）。 */
+			claimDevicesSpec(devices, path, whoBase);
+		}
+	}
+
+	/* 常规硬件表：表名即驱动模块名（modules/<表名>.lua）。只登记**直接持总线
+	 * 句柄**的行：有 I2C/SPI/UART 引用列才算消费者。经 controller 转发的行
+	 * （如挂在 PCA9685 上的 14 路 Servo）不自己开总线，也就不是本判据意义上的
+	 * 消费者。 */
+	void claimHardwareTable(const mt::MatrixObject& m, std::int64_t idxName) {
+		const std::string& t = m.getName();
+		if (!singleConsumer(t + ".lua")) { return; }
 		for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
-			/* 只登记**直接持总线句柄**的行：有 I2C/SPI/UART 引用列才算消费者。
-			 * 经 controller 转发的行（如挂在 PCA9685 上的 14 路 Servo）不自己开总线，
-			 * 也就不是本判据意义上的消费者。 */
 			std::string path;
 			for (const char* busCol : {"I2C", "SPI", "UART"}) {
 				const std::string ref = stripRef(optCol(m, i, busCol));
@@ -264,6 +271,34 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
 				+ "' (in table '" + t + "', row " + std::to_string(i) + ")";
 			claim(path + " " + normalizeAddress(optCol(m, i, "address")), who);
 		}
+	}
+};
+
+} // namespace
+
+void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices) {
+	/* 判据与跨表状态都在 SingleConsumerCheck（见其注释）；本函数只负责编排：
+	 * 建状态 → 扫总线表（name→path）→ 逐表按种类分派登记消费者，第二个消费者
+	 * 即由 claim 抛出。装配前的单消费者判据（审计 1.3）：只对**自己声明**
+	 * SINGLE_CONSUMER 的驱动生效（其寄存器访问跨多个总线事务，器件侧地址相位
+	 * 会被第二个消费者踩掉）。HAL 的每次访问是单次 I2C_RDWR 原子事务，故绝大多数
+	 * 器件允许多消费者，不做一刀切。判据 = (总线设备路径, 归一化地址) 唯一。 */
+	SingleConsumerCheck c;
+	c.modulePath = modulePaths();	/* N-19：模块根目录单点 */
+	c.scanBusTables(matrices);
+
+	for (const auto& m : matrices) {
+		const std::string& t = m.getName();
+		if (t == "Alias" || t == "Vars" || t == "Action" || m.rows() == 0) { continue; }
+		const std::int64_t idxName = m.indexOfCol(0, "name");
+		if (idxName < 0) { continue; }
+		if (t == "Daemon") {
+			for (std::int64_t i = 1; i < static_cast<std::int64_t>(m.rows()); ++i) {
+				c.claimDaemonRow(m, i, idxName);
+			}
+			continue;
+		}
+		c.claimHardwareTable(m, idxName);
 	}
 }
 
