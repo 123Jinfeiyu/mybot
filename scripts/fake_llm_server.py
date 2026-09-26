@@ -549,6 +549,33 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, KeyError, TypeError) as e:
                 self._error_400(str(e))
             return
+        if MODE == "ica-flow":
+            # First try an action without ICA preparation: the Rust agent must deny it.
+            # Then inspect reality, register a prediction, execute, and compare.
+            n = sum(1 for m in request.get("messages", []) if m.get("role") == "tool")
+            if n == 0:
+                reply = tool_call("run_action_script", {"script": "relay-test.mt"}, "ica_denied_action")
+            elif n == 1:
+                reply = tool_call("list_hardware", {})
+            elif n == 2:
+                reply = tool_call("ica_propose_action", {
+                    "tool": "run_action_script",
+                    "arguments": {"script": "relay-test.mt"},
+                    "reason": "检查虚拟继电器动作",
+                    "predicted_observation": "脚本执行成功并返回动作回执",
+                })
+            elif n == 3:
+                reply = tool_call("run_action_script", {"script": "relay-test.mt"}, "ica_allowed_action")
+            elif n == 4:
+                reply = tool_call("ica_compare_future", {
+                    "future_id": "F1", "event_id": "E3", "possible_match": True,
+                })
+            else:
+                reply = openai_shell({"choices": [{"message": {
+                    "role": "assistant", "content": "ICA-E2E-完成：先检查状态，再登记预测，执行并比较回执。"
+                }}]})
+            self._reply(reply)
+            return
         # 工具结果的**计数**同样按形状分派（批次 3）：OpenAI 系是独立的
         # role="tool" 消息；Anthropic 把结果并进 user 消息的 tool_result 块里
         # （role="user"）。只认前者会让 Anthropic 形态的剧本永远停在第一轮

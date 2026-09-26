@@ -124,7 +124,7 @@ impl Bridge {
     pub fn observe_user(&self, task: &str) {
         if let Some(ica) = &self.ica {
             let mut ledger = ica.lock().unwrap_or_else(|e| e.into_inner());
-            ledger.observe("user", "user", task);
+            ledger.begin_task(task);
         }
     }
 
@@ -238,6 +238,12 @@ impl Bridge {
                 ..Default::default()
             });
         }
+        let action_future = if let Some(ica) = &self.ica {
+            let ledger = ica.lock().unwrap_or_else(|e| e.into_inner());
+            ledger.authorize_action(name, &arguments)?
+        } else {
+            String::new()
+        };
         let mut extra = Map::new();
         extra.insert("name".to_string(), Value::String(name.to_string()));
         extra.insert("arguments".to_string(), arguments);
@@ -275,9 +281,19 @@ impl Bridge {
                 name,
                 &outcome.model_text(),
             );
+            if !action_future.is_empty() {
+                ica.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .action_result(&action_future, &id);
+            }
             outcome.text.push_str(&format!(
                 "\n[ICA observation {id}; source={name}; this is not verified fact]"
             ));
+            if !action_future.is_empty() {
+                outcome.text.push_str(&format!(
+                    "\n[ICA {action_future}] 行动回执已经到达；请用 ica_compare_future 对照预测与观察 {id}，不要把执行成功等同于目标达成。"
+                ));
+            }
         }
         Ok(outcome)
     }

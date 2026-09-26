@@ -44,6 +44,16 @@ struct FutureItem {
     text: String,
     predicted_observation: String,
     state: String,
+    #[serde(default)]
+    task_id: u64,
+    #[serde(default)]
+    created_after_event: usize,
+    #[serde(default)]
+    tool: String,
+    #[serde(default)]
+    arguments: Value,
+    #[serde(default)]
+    result_event_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,6 +67,8 @@ struct Comparison {
 
 #[derive(Default, Serialize, Deserialize)]
 pub struct IcaLedger {
+    #[serde(default)]
+    current_task: u64,
     events: Vec<Event>,
     claims: Vec<Claim>,
     evidence: Vec<Evidence>,
@@ -84,6 +96,63 @@ fn limit_content(s: &str) -> String {
 }
 
 impl IcaLedger {
+    pub fn begin_task(&mut self, task: &str) {
+        self.current_task += 1;
+        self.observe("user", "user", task);
+    }
+
+    fn action_tool(name: &str) -> bool {
+        matches!(name, "run_action_script" | "apply_sql" | "run_command")
+    }
+
+    fn has_current_inspection(&self) -> bool {
+        self.events.iter().skip(self.task_start_event()).any(|e| {
+            e.source_type == "tool"
+                && !e.retracted
+                && matches!(
+                    e.origin_id.as_str(),
+                    "list_hardware" | "query_sql" | "read_variables"
+                )
+        })
+    }
+
+    pub fn authorize_action(&self, name: &str, arguments: &Value) -> Result<String, String> {
+        if !Self::action_tool(name) {
+            return Ok(String::new());
+        }
+        if !self.has_current_inspection() {
+            return Err("ICA 现实检查：本任务尚未读取机器人状态。请先调用 list_hardware、query_sql 或 read_variables。动作未执行。".into());
+        }
+        self.futures
+            .iter()
+            .rev()
+            .find(|f| {
+                f.kind == "action_proposal"
+                    && f.task_id == self.current_task
+                    && f.tool == name
+                    && f.arguments == *arguments
+                    && f.state == "proposed"
+                    && !f.predicted_observation.trim().is_empty()
+            })
+            .map(|f| f.id.clone())
+            .ok_or_else(|| "ICA 行动门：请先用 ica_propose_action 登记相同工具和参数、预期可观察结果，再执行。动作未执行。".into())
+    }
+
+    fn task_start_event(&self) -> usize {
+        self.events
+            .iter()
+            .rposition(|e| e.source_type == "user")
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    }
+
+    pub fn action_result(&mut self, future_id: &str, event_id: &str) {
+        if let Some(f) = self.futures.iter_mut().find(|f| f.id == future_id) {
+            f.result_event_id = event_id.into();
+            f.state = "awaiting_comparison".into();
+        }
+    }
+
     pub fn observe(&mut self, source_type: &str, origin_id: &str, content: &str) -> String {
         let id = format!("E{}", self.events.len() + 1);
         self.events.push(Event {
@@ -216,6 +285,21 @@ impl IcaLedger {
     }
 
     pub fn final_note(&self) -> String {
+        let current: Vec<&FutureItem> = self
+            .futures
+            .iter()
+            .filter(|f| f.task_id == self.current_task)
+            .collect();
+        if !current.is_empty() {
+            let states = current
+                .iter()
+                .map(|f| format!("{}:{}", f.id, f.state))
+                .collect::<Vec<_>>()
+                .join(", ");
+            return format!(
+                "[ICA] 本任务候选状态 {states}。预测与回执的匹配仍是暂定判断，不等于事实验证。"
+            );
+        }
         if self.claims.is_empty() {
             "[ICA 证据账本原型] 本轮没有登记可核验主张；此功能不是原生 ICA 时间想象模型，也未验证这段回答。".into()
         } else {
@@ -266,8 +350,47 @@ impl IcaLedger {
                     text,
                     predicted_observation,
                     state: "proposed".into(),
+                    task_id: self.current_task,
+                    created_after_event: self.events.len(),
+                    tool: String::new(),
+                    arguments: Value::Null,
+                    result_event_id: String::new(),
                 });
                 Ok(format!("已登记未来候选 {id}；没有执行动作。"))
+            }
+            "ica_propose_action" => {
+                if !self.has_current_inspection() {
+                    return Err("ICA 请先读取本任务的机器人状态，再提出动作预测".into());
+                }
+                let tool = required(args, "tool")?.to_string();
+                if !Self::action_tool(&tool) {
+                    return Err(
+                        "ICA 仅接受 run_action_script、apply_sql、run_command 行动工具".into(),
+                    );
+                }
+                let arguments = args
+                    .get("arguments")
+                    .filter(|v| v.is_object())
+                    .ok_or("ICA 缺少对象字段 arguments")?
+                    .clone();
+                let predicted_observation = required(args, "predicted_observation")?.to_string();
+                let text = required(args, "reason")?.to_string();
+                let id = format!("F{}", self.futures.len() + 1);
+                self.futures.push(FutureItem {
+                    id: id.clone(),
+                    kind: "action_proposal".into(),
+                    text,
+                    predicted_observation,
+                    state: "proposed".into(),
+                    task_id: self.current_task,
+                    created_after_event: self.events.len(),
+                    tool,
+                    arguments,
+                    result_event_id: String::new(),
+                });
+                Ok(format!(
+                    "已登记行动候选 {id}。这不是执行结果；下一步须调用对应工具，随后比较现实回执。"
+                ))
             }
             "ica_cite_observation" => {
                 let claim_id = required(args, "claim_id")?.to_string();
@@ -300,11 +423,27 @@ impl IcaLedger {
                     .and_then(Value::as_bool)
                     .ok_or("ICA 缺少布尔字段 possible_match")?;
                 if !self.futures.iter().any(|f| f.id == future_id)
-                    || !self
-                        .event(&event_id)
-                        .is_some_and(|e| !e.retracted && e.source_type != "tool_error")
+                    || !self.event(&event_id).is_some_and(|e| !e.retracted)
+                    || self
+                        .futures
+                        .iter()
+                        .find(|f| f.id == future_id)
+                        .is_some_and(|f| {
+                            self.events
+                                .iter()
+                                .position(|e| e.id == event_id)
+                                .unwrap_or(0)
+                                < f.created_after_event
+                        })
+                    || self
+                        .futures
+                        .iter()
+                        .find(|f| f.id == future_id)
+                        .is_some_and(|f| {
+                            f.kind == "action_proposal" && f.result_event_id != event_id
+                        })
                 {
-                    return Err("ICA 对比的未来候选或观察不存在，或观察已失效".into());
+                    return Err("ICA 对比的未来候选或后续观察不存在，或观察已失效".into());
                 }
                 let id = format!("X{}", self.comparisons.len() + 1);
                 self.comparisons.push(Comparison {
@@ -393,6 +532,7 @@ impl IcaLedger {
 
     fn clone_for_save(&self) -> Self {
         Self {
+            current_task: self.current_task,
             events: self.events.clone(),
             claims: self.claims.clone(),
             evidence: self.evidence.clone(),
@@ -433,6 +573,11 @@ pub fn specs() -> Vec<ToolSpec> {
             "ica_propose_future",
             "记录假设、计划、未知缺口或行动建议；不执行。",
             json!({"type":"object","properties":{"kind":{"type":"string","enum":["hypothesis","plan","unknown_gap","action_proposal"]},"text":{"type":"string"},"predicted_observation":{"type":"string"}},"required":["kind","text"]}),
+        ),
+        spec(
+            "ica_propose_action",
+            "在执行现实动作前，登记工具、完整参数、理由和预期可观察结果；登记不执行动作。",
+            json!({"type":"object","properties":{"tool":{"type":"string","enum":["run_action_script","apply_sql","run_command"]},"arguments":{"type":"object"},"reason":{"type":"string"},"predicted_observation":{"type":"string"}},"required":["tool","arguments","reason","predicted_observation"]}),
         ),
         spec(
             "ica_compare_future",
@@ -556,5 +701,93 @@ mod tests {
         assert!(IcaLedger::load(name).is_err());
         fs::remove_file(&path).unwrap();
         fs::remove_file(format!("{name}.ica.json")).unwrap();
+    }
+
+    #[test]
+    fn action_requires_current_inspection_and_matching_prediction() {
+        let mut ledger = IcaLedger::default();
+        let args = json!({"name":"relay-test"});
+        ledger.begin_task("运行脚本");
+        assert!(ledger.authorize_action("run_action_script", &args).is_err());
+        assert!(ledger
+            .execute(
+                "ica_propose_action",
+                &json!({
+                    "tool":"run_action_script", "arguments":args,
+                    "reason":"测试继电器", "predicted_observation":"脚本成功"
+                })
+            )
+            .is_err());
+        ledger.observe("tool", "list_hardware", "继电器在位");
+        assert!(ledger.authorize_action("run_action_script", &args).is_err());
+        ledger
+            .execute(
+                "ica_propose_action",
+                &json!({
+                    "tool":"run_action_script", "arguments":args,
+                    "reason":"测试继电器", "predicted_observation":"动作回执表明成功"
+                }),
+            )
+            .unwrap();
+        assert_eq!(
+            ledger.authorize_action("run_action_script", &args).unwrap(),
+            "F1"
+        );
+        assert!(ledger
+            .authorize_action("run_action_script", &json!({"name":"other"}))
+            .is_err());
+        let result = ledger.observe("tool", "run_action_script", "脚本成功");
+        ledger.action_result("F1", &result);
+        assert!(ledger.authorize_action("run_action_script", &args).is_err());
+        let unrelated = ledger.observe("tool", "list_hardware", "另一次状态");
+        assert!(ledger
+            .execute(
+                "ica_compare_future",
+                &json!({"future_id":"F1", "event_id":unrelated, "possible_match":true})
+            )
+            .is_err());
+        ledger
+            .execute(
+                "ica_compare_future",
+                &json!({
+                    "future_id":"F1", "event_id":result, "possible_match":true
+                }),
+            )
+            .unwrap();
+        assert_eq!(ledger.futures[0].state, "possible_match");
+        ledger.begin_task("再运行一次");
+        assert!(ledger.authorize_action("run_action_script", &args).is_err());
+    }
+
+    #[test]
+    fn future_cannot_compare_with_earlier_observation() {
+        let mut ledger = IcaLedger::default();
+        ledger.begin_task("检查");
+        let earlier = ledger.observe("tool", "list_hardware", "旧状态");
+        ledger
+            .execute(
+                "ica_propose_future",
+                &json!({
+                    "kind":"hypothesis", "text":"稍后继电器会打开"
+                }),
+            )
+            .unwrap();
+        assert!(ledger
+            .execute(
+                "ica_compare_future",
+                &json!({
+                    "future_id":"F1", "event_id":earlier, "possible_match":true
+                })
+            )
+            .is_err());
+        let later = ledger.observe("tool", "read_variables", "新状态");
+        assert!(ledger
+            .execute(
+                "ica_compare_future",
+                &json!({
+                    "future_id":"F1", "event_id":later, "possible_match":true
+                })
+            )
+            .is_ok());
     }
 }

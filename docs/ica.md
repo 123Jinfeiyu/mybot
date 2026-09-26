@@ -1,7 +1,9 @@
 # ICA 证据账本原型接入 Rust Agent
 
 **范围更正：**这个分支只实现了 ICA 思想中的外围观察与证据账本。
-DeepSeek 仍负责生成回答和选择工具。这里没有实现《ICA 原生时间想象架构》
+DeepSeek 仍负责生成回答和提出工具调用。ICA 已加入一个确定性的现实动作门：
+模型先读取当前机器人状态，再登记动作与预期回执，才能派发动作工具；真实
+执行结果必须回到观察账本。这里没有实现《ICA 原生时间想象架构》
 所要求的过去、现在、未来、Self 四个神经计算场，也没有状态复制、多分支多步
 演化、主动实验决策、现实两阶段提交或从零训练的 100M 模型。用户看到的普通
 聊天行为不能被解释为原生 ICA 已落地。
@@ -13,9 +15,10 @@ DeepSeek 仍负责生成回答和选择工具。这里没有实现《ICA 原生�
 ## 启动
 
 构建两端后，启动 C++ 控制器，再用 `BOT4CJ_ICA=1` 启动 Rust Agent。
-启用时，Rust Agent 在控制器工具之外注册七个本地 ICA 工具：
+启用时，Rust Agent 在控制器工具之外注册八个本地 ICA 工具：
 `ica_propose_claim`、`ica_propose_future`、`ica_compare_future`、
-`ica_cite_observation`、`ica_depend`、`ica_retract_observation`、`ica_status`。
+`ica_propose_action`、`ica_cite_observation`、`ica_depend`、
+`ica_retract_observation`、`ica_status`。
 不设该环境变量时，控制器和 Rust Agent 的原有工具流程不变。
 
 Windows 本机的双进程脚本为 `D:\ICA-Agent\launch-rust-agent.cmd`。脚本在
@@ -32,6 +35,13 @@ Windows 本机的双进程脚本为 `D:\ICA-Agent\launch-rust-agent.cmd`。脚�
   无权将状态改为 `supported_in_scope`。
 - 假设、计划、未知缺口和行动建议只作为未来候选记录。登记和暂定比较都不会
   执行硬件动作，也不等同于未来已获证实。
+- `run_action_script`、`apply_sql`、`run_command` 在 ICA 模式下增加动作门：
+  本任务先有成功的只读硬件/结构观察，再用 `ica_propose_action` 登记与工具调用
+  **完全一致**的名称和参数、理由及预期可观察结果。任一步缺少即拒绝派发，
+  不产生动作副作用。后端原有策略门继续生效，ICA 登记不替代权限确认。
+- 动作回执自动进入观察账本，候选转为 `awaiting_comparison`；
+  `ica_compare_future` 只能把该动作候选与对应的后续回执比较，不能拿旧观察
+  充当预测命中。比较结论仍是暂定的，不是机器验真。
 - 撤回观察会令对应引用和未来比较失效，并把依赖相关主张的下游主张标为
   `stale`。历史记录保留。
 - 模型每轮完成后的 ICA 注记显示当前主张核验状态；它不是逐句自动事实判定。
@@ -48,4 +58,6 @@ Windows 本机的双进程脚本为 `D:\ICA-Agent\launch-rust-agent.cmd`。脚�
 可检查的比赛原型，不是 100M 模型、自主科学发现或完整的 Self 神经场。
 
 Rust 单元测试覆盖复制来源、用户输入不能验证主张、观察撤回与依赖失效、会话
-账本长度校验。双进程连接及模型工具循环由项目现有端到端脚本检查。
+账本长度校验、动作门与预测时间顺序。`scripts/ica_e2e.sh` 用虚拟继电器和假模型
+验证：未准备动作被拒、先只读观察、登记预测、执行一次、比较回执。完整原生
+时间想象循环与 100M 模型仍属后续独立研究线。
