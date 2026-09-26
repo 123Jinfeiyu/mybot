@@ -570,28 +570,22 @@ static void runDisconnectAction(const AgentToolContext& tctx, const std::string&
 	if (audit && audit->enabled()) { audit->write(e); }
 }
 
-int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
-		const McpBackendOptions& opts, std::ostream& log) {
-	if (opts.socketPath.empty()) {
-		log << "错误: --mcp-backend 需要 --mcp-socket <AF_UNIX 路径>\n";
-		return 2;
-	}
-	if (opts.socketPath.size() >= sizeof(sockaddr_un::sun_path)) {
-		log << "错误: --mcp-socket 路径过长（" << opts.socketPath.size() << " 字节，上限 "
-			<< (sizeof(sockaddr_un::sun_path) - 1) << "）\n";
-		return 2;
-	}
+namespace {
 
-	/* 工具层：与 agent 模式共用 makeToolContext + makeAgentTools，能力门控
-	 * （--agent-shell / --agent-hot-sql / --read-var / camera）逐字节一致，
-	 * 于是 tool.list 天然只宣告已放行的工具（评估 §3.1）。 */
-	AgentToolContext tctx = makeToolContext(cfg, robot, log);
-	AgentToolRegistry tools = makeAgentTools(tctx);
-	McpBackend backend(std::move(tools), cfg.policy, cfg.audit,
-		opts.callBudget, opts.wallClockBudgetSec, &cfg, &robot);
+/* AF_UNIX 监听套接字的准备结果（拆自 runMcpBackend，2026-09-26 批次 5）：
+ * fd 为已 bind+listen 的套接字（get() < 0 = 失败），rc 为失败时的进程退出码
+ * （0 = 成功；配置类错误 2、系统调用类错误 1，与 runMcpBackend 原口径一致）。 */
+struct ListenSocket {
+	FdGuard fd;
+	int rc = 0;
+};
 
+/* 准备 AF_UNIX 监听套接字：父目录创建/权限体检 → 启动前探测（A-1）→
+ * socket/bind/chmod 0600/listen。成功返回已监听的 fd（rc=0）；失败把原因写进
+ * log 并返回相应退出码，fd 为空。 */
+ListenSocket prepareListenSocket(const std::string& socketPath, std::ostream& log) {
 	/* 父目录：缺失则以 0700 建（单级）；已存在但权限过松则告警（不静默）。 */
-	const fs::path sp(opts.socketPath);
+	const fs::path sp(socketPath);
 	fs::path parent = sp.parent_path();
 	if (parent.empty()) { parent = "."; }
 	std::error_code ec;
@@ -599,7 +593,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		if (::mkdir(parent.c_str(), 0700) != 0 && errno != EEXIST) {
 			log << "错误: 无法创建 socket 父目录 '" << parent.string() << "': "
 				<< errnoText(errno) << "\n";
-			return 2;
+			return ListenSocket{FdGuard(), 2};
 		}
 	} else {
 		struct stat st{};
@@ -615,49 +609,53 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 	 * 陈旧残留（上次实例没清理）→ 安全 unlink 后绑定；非 socket 文件 →
 	 * 不替操作者删陌生文件。 */
 	std::string probeWhy;
-	switch (mcpProbeSocketPath(opts.socketPath, probeWhy)) {
+	switch (mcpProbeSocketPath(socketPath, probeWhy)) {
 	case McpSocketProbe::PathBusy:
-		log << "错误: socket 路径 '" << opts.socketPath << "' 已被占用（" << probeWhy
+		log << "错误: socket 路径 '" << socketPath << "' 已被占用（" << probeWhy
 			<< "）。两个后端共用一条路径会让后启动者静默偷走 socket、先启动者"
 			"继续监听却永远不可达。请给本实例换 --mcp-socket，或先停掉占用者。\n";
-		return 2;
+		return ListenSocket{FdGuard(), 2};
 	case McpSocketProbe::PathUnusable:
-		log << "错误: socket 路径 '" << opts.socketPath << "' 不可用（" << probeWhy
+		log << "错误: socket 路径 '" << socketPath << "' 不可用（" << probeWhy
 			<< "）；不会自动删除它，请手工处理后重试。\n";
-		return 2;
+		return ListenSocket{FdGuard(), 2};
 	case McpSocketProbe::PathFree:
 		break;
 	}
-	::unlink(opts.socketPath.c_str());	/* 陈旧 socket（探测确认无人监听）：清掉再绑定 */
+	::unlink(socketPath.c_str());	/* 陈旧 socket（探测确认无人监听）：清掉再绑定 */
 
 	FdGuard listenFd(::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0));
 	if (listenFd.get() < 0) {
 		log << "错误: 无法创建 AF_UNIX 套接字: " << errnoText(errno) << "\n";
-		return 1;
+		return ListenSocket{FdGuard(), 1};
 	}
 	sockaddr_un addr{};
 	addr.sun_family = AF_UNIX;
-	std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", opts.socketPath.c_str());
+	std::snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socketPath.c_str());
 	if (::bind(listenFd.get(), reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-		log << "错误: 绑定 '" << opts.socketPath << "' 失败: " << errnoText(errno) << "\n";
-		return 1;
+		log << "错误: 绑定 '" << socketPath << "' 失败: " << errnoText(errno) << "\n";
+		return ListenSocket{FdGuard(), 1};
 	}
 	/* 0600 收紧失败要告警（不阻断）：目录 0700 已挡住其他用户，但静默缺位
 	 * 会让「以为收紧了」与「实际靠 umask」漂移。 */
-	if (::chmod(opts.socketPath.c_str(), 0600) != 0) {
+	if (::chmod(socketPath.c_str(), 0600) != 0) {
 		log << "警告: socket 文件 chmod 0600 失败（" << errnoText(errno)
-			<< "）；文件权限取决于当前 umask，建议检查 " << opts.socketPath << "\n";
+			<< "）；文件权限取决于当前 umask，建议检查 " << socketPath << "\n";
 	}
 	if (::listen(listenFd.get(), 1) < 0) {
 		log << "错误: 监听失败: " << errnoText(errno) << "\n";
-		::unlink(opts.socketPath.c_str());
-		return 1;
+		::unlink(socketPath.c_str());
+		return ListenSocket{FdGuard(), 1};
 	}
+	return ListenSocket{std::move(listenFd), 0};
+}
 
-	backend.writeSessionRecord("start");
-	log << "MCP 后端监听 " << opts.socketPath
-		<< "（单连接串行；SO_PEERCRED 校验 uid/gid；等待 sidecar 连接）\n";
-
+/* accept 循环（拆自 runMcpBackend，2026-09-26 批次 5）：poll 等连接（带超时以便
+ * 轮询 stopRequested）→ accept4 → SO_PEERCRED 校验 → SO_SNDTIMEO 防慢读端 →
+ * serveConnection 服务 → 关连接 → 断连安全动作。单连接串行。返回退出码
+ * （0 = 收到停止信号正常退出，1 = poll/accept 出错）。 */
+int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& tctx,
+		const AgentModeConfig& cfg, const McpBackendOptions& opts, std::ostream& log) {
 	int rc = 0;
 	while (!stopRequested()) {
 		struct pollfd p{};
@@ -701,6 +699,41 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 		runDisconnectAction(tctx, cfg.onDisconnectScript, cfg.audit, log);
 		log << "MCP 后端：连接结束，回到 accept 等待\n";
 	}
+	return rc;
+}
+
+} // namespace
+
+int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
+		const McpBackendOptions& opts, std::ostream& log) {
+	if (opts.socketPath.empty()) {
+		log << "错误: --mcp-backend 需要 --mcp-socket <AF_UNIX 路径>\n";
+		return 2;
+	}
+	if (opts.socketPath.size() >= sizeof(sockaddr_un::sun_path)) {
+		log << "错误: --mcp-socket 路径过长（" << opts.socketPath.size() << " 字节，上限 "
+			<< (sizeof(sockaddr_un::sun_path) - 1) << "）\n";
+		return 2;
+	}
+
+	/* 工具层：与 agent 模式共用 makeToolContext + makeAgentTools，能力门控
+	 * （--agent-shell / --agent-hot-sql / --read-var / camera）逐字节一致，
+	 * 于是 tool.list 天然只宣告已放行的工具（评估 §3.1）。 */
+	AgentToolContext tctx = makeToolContext(cfg, robot, log);
+	AgentToolRegistry tools = makeAgentTools(tctx);
+	McpBackend backend(std::move(tools), cfg.policy, cfg.audit,
+		opts.callBudget, opts.wallClockBudgetSec, &cfg, &robot);
+
+	/* 监听套接字准备（父目录 / A-1 探测 / bind / chmod / listen）单点在
+	 * prepareListenSocket；失败已写 log，这里只传导退出码。 */
+	ListenSocket ls = prepareListenSocket(opts.socketPath, log);
+	if (ls.rc != 0) { return ls.rc; }
+
+	backend.writeSessionRecord("start");
+	log << "MCP 后端监听 " << opts.socketPath
+		<< "（单连接串行；SO_PEERCRED 校验 uid/gid；等待 sidecar 连接）\n";
+
+	const int rc = acceptLoop(ls.fd, backend, tctx, cfg, opts, log);
 
 	backend.writeSessionRecord("end");
 	::unlink(opts.socketPath.c_str());
