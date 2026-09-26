@@ -123,6 +123,13 @@ impl IcaLedger {
         if !self.has_current_inspection() {
             return Err("ICA 现实检查：本任务尚未读取机器人状态。请先调用 list_hardware、query_sql 或 read_variables。动作未执行。".into());
         }
+        if self.futures.iter().any(|f| {
+            f.kind == "action_proposal"
+                && f.task_id == self.current_task
+                && !f.result_event_id.is_empty()
+        }) {
+            return Err("ICA 校准门：本任务已有现实动作。执行回执不等于目标状态；没有可信的动作后传感器核对，拒绝连续派发第二个动作。请检查实际状态并重新建立任务。".into());
+        }
         self.futures
             .iter()
             .rev()
@@ -296,9 +303,10 @@ impl IcaLedger {
                 .map(|f| format!("{}:{}", f.id, f.state))
                 .collect::<Vec<_>>()
                 .join(", ");
-            return format!(
-                "[ICA] 本任务候选状态 {states}。预测与回执的匹配仍是暂定判断，不等于事实验证。"
-            );
+            if current.iter().any(|f| !f.result_event_id.is_empty()) {
+                return format!("[ICA 校准] {states}。只记录了动作回执；未由独立传感器确认目标状态，不能保证动作正确。此任务不会连续派发第二个动作。");
+            }
+            return format!("[ICA] 本任务候选状态 {states}。预测仍待现实结果检验。");
         }
         if self.claims.is_empty() {
             "[ICA 证据账本原型] 本轮没有登记可核验主张；此功能不是原生 ICA 时间想象模型，也未验证这段回答。".into()
@@ -755,6 +763,16 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ledger.futures[0].state, "possible_match");
+        ledger
+            .execute(
+                "ica_propose_action",
+                &json!({
+                    "tool":"run_action_script", "arguments":args,
+                    "reason":"再运行一次", "predicted_observation":"再次成功"
+                }),
+            )
+            .unwrap();
+        assert!(ledger.authorize_action("run_action_script", &args).is_err());
         ledger.begin_task("再运行一次");
         assert!(ledger.authorize_action("run_action_script", &args).is_err());
     }
