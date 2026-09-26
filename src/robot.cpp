@@ -87,6 +87,33 @@ mt::MatrixObject copyRows(const mt::MatrixObject& src, std::size_t rowBegin, std
 	return b.take();
 }
 
+/* 热删除中途失败的报错文本拼装（拆自 executeHotDeletes，2026-09-26 批次 5）。
+ * 口径：如实报「已删 N 个、M 个未删」+ 逐个点名 + 成因，并说明结构与注册表
+ * 只反映已成功摘除的部分（不假装回滚——destroy 是物理断电，不可逆）。 */
+std::string hotDeleteFailureMessage(std::size_t orderSize, std::size_t deletedVars,
+		const std::vector<std::string>& deletedNames,
+		const std::vector<std::string>& failures) {
+	std::string msg = "热删除中途失败：已删除 " + std::to_string(deletedVars)
+		+ " 个硬件变量";
+	if (!deletedNames.empty()) {
+		msg += "（";
+		for (std::size_t i = 0; i < deletedNames.size(); ++i) {
+			if (i > 0) { msg += ", "; }
+			msg += deletedNames[i];
+		}
+		msg += "）";
+	}
+	msg += "，" + std::to_string(orderSize - deletedVars) + " 个未删除。成因：";
+	for (std::size_t i = 0; i < failures.size(); ++i) {
+		if (i > 0) { msg += "; "; }
+		msg += failures[i];
+	}
+	msg += "。结构与注册表只反映已成功摘除的部分，未删的行保持原状。"
+		"（destroy 是物理断电，已断电的器件不会因报错而复电——修好成因后"
+		"对剩余项重发 DELETE 即可。）";
+	return msg;
+}
+
 } // namespace
 
 /* ==================== RobotStruct：编排门面 ==================== */
@@ -966,85 +993,86 @@ RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
 			}
 			for (auto& [mi, rs] : byMat) { perTable.emplace_back(mi, std::move(rs)); }
 		}
-		/* ① 元数据提供者：指向被删行的整条摘除。判据是「矩阵 + 行号」而不是
-		 * 引用相等——矩阵是 std::deque 的元素，地址稳定（这正是选 deque 的
-		 * 原因），故该判据精确且不受行数变化影响；行号此刻还是删除前的
-		 * 原始坐标，故必须先于 ①′/② 执行。 */
-		std::set<std::pair<const mt::MatrixObject*, std::int64_t>> deadProvider;
-		for (const auto& [mi, rs] : perTable) {
-			for (std::size_t r : rs) {
-				deadProvider.emplace(&matrices_[mi], static_cast<std::int64_t>(r));
-			}
-		}
-		auto isDeadProvider = [&](const std::shared_ptr<MetaProvider>& p) {
-			/* emplace 的显式构造：count({a, b}) 的括号初始化列表无法推导
-			 * 到 set 的 value_type（pair 的转换构造函数不参与该重载）。 */
-			return deadProvider.count(std::make_pair(&p->matrix(), p->row())) != 0;
-		};
-		metaProviders_.erase(std::remove_if(metaProviders_.begin(), metaProviders_.end(),
-			isDeadProvider), metaProviders_.end());
-		/* ①′ 存活提供者行号重锚定（2026-09-25 审计 A-4 收口）：② 的 removeRows
-		 * 是保序擦除——同矩阵内行号大于被删行的行全部前移。提供者的 row()
-		 * 是**后续批次** deadProvider 判据的坐标（上一步刚用过）与任何未来
-		 * 惰性取行的下标，必须按「本矩阵被删行中小于本行行号的数量」同步
-		 * 前移，否则下一批同表删除会摘错/漏摘提供者。原实现在这里留有已知
-		 * 边界：混批（先插入后删除）新追加行的提供者以追加时行号创建，随
-		 * 后的删行让其 row_ 过期——实际上不止混批，**任何**同表删行都会让
-		 * 存活行的坐标过期（含先删后建的 UPDATE 批次里未改写的既有行），
-		 * 本步骤一并收口。混批里追加行的 provider 已在 commitHotBatch 4.3
-		 * 急切 seed（缓存以追加时坐标取到的是正确内容），此处只修坐标。 */
-		for (const auto& [mi, rs] : perTable) {
-			const mt::MatrixObject* mat = &matrices_[mi];
-			for (const auto& p : metaProviders_) {
-				if (p->matrixPtr() != mat) { continue; }
-				std::int64_t shift = 0;
-				for (std::size_t r : rs) {
-					if (static_cast<std::int64_t>(r) < p->row()) { ++shift; }
-				}
-				if (shift > 0) { p->shiftRow(-shift); }
-			}
-		}
-		/* ② 结构行（保序擦除，销毁序不变式不动） */
-		for (const auto& [mi, rs] : perTable) {
-			matrices_[mi].removeRows(rs);
-			out.deletedRows += rs.size();
-		}
-		/* ③ 守护登记表：按保留项重建（不做 resize——删中间项会让尾部前移，
-		 * resize 只能表达「砍掉尾巴」）。 */
-		std::set<const DaemonRunner*> deadRunners;
-		for (const auto& h : dyingHolders) { deadRunners.insert(h.get()); }
-		std::vector<std::shared_ptr<DaemonRunner>> kept;
-		kept.reserve(daemonHolders_.size());
-		for (const auto& h : daemonHolders_) {
-			if (deadRunners.count(h.get()) == 0) { kept.push_back(h); }
-		}
-		daemonHolders_ = std::move(kept);
-		/* ④ 撤注册（所有权 + 名字索引 + 流引用） */
-		registry_.removeBatch(removed);
+		applyHotDeleteConsistency(perTable, removed, dyingHolders, out);
 	}
 
 	if (!failures.empty()) {
-		std::string msg = "热删除中途失败：已删除 " + std::to_string(out.deletedVars)
-			+ " 个硬件变量";
-		if (!out.deletedNames.empty()) {
-			msg += "（";
-			for (std::size_t i = 0; i < out.deletedNames.size(); ++i) {
-				if (i > 0) { msg += ", "; }
-				msg += out.deletedNames[i];
-			}
-			msg += "）";
-		}
-		msg += "，" + std::to_string(order.size() - out.deletedVars) + " 个未删除。成因：";
-		for (std::size_t i = 0; i < failures.size(); ++i) {
-			if (i > 0) { msg += "; "; }
-			msg += failures[i];
-		}
-		msg += "。结构与注册表只反映已成功摘除的部分，未删的行保持原状。"
-			"（destroy 是物理断电，已断电的器件不会因报错而复电——修好成因后"
-			"对剩余项重发 DELETE 即可。）";
-		throw std::runtime_error(msg);
+		throw std::runtime_error(hotDeleteFailureMessage(order.size(), out.deletedVars,
+			out.deletedNames, failures));
 	}
 	return out;
+}
+
+/* ---- 热删除的一致性收尾（原 executeHotDeletes 阶段 4.6.4，2026-09-26 批次 5 拆出）----
+ * 只对**已成功断电**的部分落实「结构矩阵与注册表保持一致」；未删成的行原样留在
+ * 结构里（仍是活体的一部分，语义自洽）。五步顺序是死的：
+ *  ① 先摘指向被删行的 MetaProvider——判据用「矩阵 + 行号」，而行号此刻还是删除前
+ *     的原始坐标，故必须先于 ①′/②（擦行会让坐标前移）。
+ *  ①′ 重锚定存活提供者行号——② 的保序擦除使其后行前移，提供者 row() 必须同步。
+ *  ② 擦结构行（保序，销毁序不变式不动）。
+ *  ③ 守护登记表按保留项重建（不 resize：删中间项会让尾部前移）。
+ *  ④ 最后撤注册：registry_.removeBatch 在对象析构前撤所有权，故「名字查得到但
+ *     器件已断电」的窗口不存在。 */
+void RobotStruct::applyHotDeleteConsistency(
+		const std::vector<std::pair<std::size_t, std::vector<std::size_t>>>& perTable,
+		const std::set<MatrixVars_Hardware*>& removed,
+		const std::vector<std::shared_ptr<DaemonRunner>>& dyingHolders,
+		HotDeleteOutcome& out) {
+	/* ① 元数据提供者：指向被删行的整条摘除。判据是「矩阵 + 行号」而不是
+	 * 引用相等——矩阵是 std::deque 的元素，地址稳定（这正是选 deque 的
+	 * 原因），故该判据精确且不受行数变化影响；行号此刻还是删除前的
+	 * 原始坐标，故必须先于 ①′/② 执行。 */
+	std::set<std::pair<const mt::MatrixObject*, std::int64_t>> deadProvider;
+	for (const auto& [mi, rs] : perTable) {
+		for (std::size_t r : rs) {
+			deadProvider.emplace(&matrices_[mi], static_cast<std::int64_t>(r));
+		}
+	}
+	auto isDeadProvider = [&](const std::shared_ptr<MetaProvider>& p) {
+		/* emplace 的显式构造：count({a, b}) 的括号初始化列表无法推导
+		 * 到 set 的 value_type（pair 的转换构造函数不参与该重载）。 */
+		return deadProvider.count(std::make_pair(&p->matrix(), p->row())) != 0;
+	};
+	metaProviders_.erase(std::remove_if(metaProviders_.begin(), metaProviders_.end(),
+		isDeadProvider), metaProviders_.end());
+	/* ①′ 存活提供者行号重锚定（2026-09-25 审计 A-4 收口）：② 的 removeRows
+	 * 是保序擦除——同矩阵内行号大于被删行的行全部前移。提供者的 row()
+	 * 是**后续批次** deadProvider 判据的坐标（上一步刚用过）与任何未来
+	 * 惰性取行的下标，必须按「本矩阵被删行中小于本行行号的数量」同步
+	 * 前移，否则下一批同表删除会摘错/漏摘提供者。原实现在这里留有已知
+	 * 边界：混批（先插入后删除）新追加行的提供者以追加时行号创建，随
+	 * 后的删行让其 row_ 过期——实际上不止混批，**任何**同表删行都会让
+	 * 存活行的坐标过期（含先删后建的 UPDATE 批次里未改写的既有行），
+	 * 本步骤一并收口。混批里追加行的 provider 已在 commitHotBatch 4.3
+	 * 急切 seed（缓存以追加时坐标取到的是正确内容），此处只修坐标。 */
+	for (const auto& [mi, rs] : perTable) {
+		const mt::MatrixObject* mat = &matrices_[mi];
+		for (const auto& p : metaProviders_) {
+			if (p->matrixPtr() != mat) { continue; }
+			std::int64_t shift = 0;
+			for (std::size_t r : rs) {
+				if (static_cast<std::int64_t>(r) < p->row()) { ++shift; }
+			}
+			if (shift > 0) { p->shiftRow(-shift); }
+		}
+	}
+	/* ② 结构行（保序擦除，销毁序不变式不动） */
+	for (const auto& [mi, rs] : perTable) {
+		matrices_[mi].removeRows(rs);
+		out.deletedRows += rs.size();
+	}
+	/* ③ 守护登记表：按保留项重建（不做 resize——删中间项会让尾部前移，
+	 * resize 只能表达「砍掉尾巴」）。 */
+	std::set<const DaemonRunner*> deadRunners;
+	for (const auto& h : dyingHolders) { deadRunners.insert(h.get()); }
+	std::vector<std::shared_ptr<DaemonRunner>> kept;
+	kept.reserve(daemonHolders_.size());
+	for (const auto& h : daemonHolders_) {
+		if (deadRunners.count(h.get()) == 0) { kept.push_back(h); }
+	}
+	daemonHolders_ = std::move(kept);
+	/* ④ 撤注册（所有权 + 名字索引 + 流引用） */
+	registry_.removeBatch(removed);
 }
 
 /* ---- agent 模式：变量存在性判定（active() 之前可判定）---- */

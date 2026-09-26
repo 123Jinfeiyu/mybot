@@ -578,6 +578,19 @@ class RobotStruct {
 	HotDeleteOutcome executeHotDeletes(const std::vector<HotSqlPlan::Deletion>& plans,
 		const std::map<std::string, std::size_t>& daemonNameIndex);
 
+	/* ---- 热删除的一致性收尾（原 executeHotDeletes 阶段 4.6.4，2026-09-26 批次 5 拆出）----
+	 * 只对**已成功断电**的部分落实：① 摘除指向被删行的 MetaProvider → ①′ 重锚定
+	 * 存活提供者的行号（removeRows 保序擦除会让其后行前移）→ ② 擦结构行 →
+	 * ③ 按保留项重建守护登记表 → ④ registry_.removeBatch 撤注册。perTable 是
+	 * 「矩阵下标 → 被删行号（原始坐标，升序）」、removed 是已断电变量指针集，二者
+	 * 由调用方从销毁序清单算好传入——本方法不认 Doomed，只认这两个派生视图与
+	 * dyingHolders。deletedRows 累加进 out。语义与顺序理由见 robot.cpp 实现处。 */
+	void applyHotDeleteConsistency(
+		const std::vector<std::pair<std::size_t, std::vector<std::size_t>>>& perTable,
+		const std::set<MatrixVars_Hardware*>& removed,
+		const std::vector<std::shared_ptr<DaemonRunner>>& dyingHolders,
+		HotDeleteOutcome& out);
+
 	/* ---- applySql 的阶段机（2026-09-25 拆分）----
 	 * applySql 原本约 600 行单函数，阶段编号（0/1/1.5/2/2.4/3/4/4.6/4.7）早已
 	 * 写在注释里；拆分就是把每段注释与代码一起搬进具名函数，applySql 留阶段
