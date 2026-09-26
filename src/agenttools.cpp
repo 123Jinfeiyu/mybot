@@ -590,6 +590,159 @@ Json valueParam(const std::string& desc) {
 	return p;
 }
 
+/* wait_variable 已校验的参数包（拆自 execute lambda，2026-09-26 批次 5）。
+ * hw 是按 name 从注册表解析到的硬件变量指针（调用期内常驻，生命周期由 robot 保证）。 */
+struct WaitParams {
+	std::string name;
+	std::string key;
+	std::string condText;
+	WaitCond cond = WaitCond::Eq;
+	Json want = JsonNull();
+	int timeoutSec = 0;
+	int pollMs = 0;
+	MatrixVars_Hardware* hw = nullptr;
+};
+
+/* 轮询结果（供回执拼装）：是否满足、采样次数、耗时、最后一次样本与读取错误。 */
+struct WaitOutcome {
+	bool satisfied = false;
+	int samples = 0;
+	long long elapsedMs = 0;
+	Json lastSample = JsonNull();
+	std::string lastError;
+};
+
+/* 参数解析与校验：全部在第一次触碰硬件之前完成，错即抛（上层折成 paramError）。 */
+WaitParams parseWaitParams(const AgentToolContext& ctx, int capSec, int defaultSec,
+		const Json& args) {
+	WaitParams p;
+	p.name = requireString(args, "name");
+	p.key = requireString(args, "key");
+	p.condText = requireString(args, "condition");
+	p.cond = parseWaitCond(p.condText);
+	if (p.cond != WaitCond::Changed) {
+		auto v = args.get("value");
+		if (!v || v->isNull()) {
+			throw IllegalArgumentException("条件 " + p.condText + " 需要参数 value");
+		}
+		if (!(v->isInt() || v->isFloat() || v->isStr())) {
+			throw IllegalArgumentException("参数 value 类型不符：需要数值或字串");
+		}
+		if (isOrderingCond(p.cond) && !numericView(*v)) {
+			throw IllegalArgumentException("条件 " + p.condText + " 需要数值 value，实际 "
+				+ v->toString());
+		}
+		p.want = *v;
+	}
+	p.timeoutSec = optionalInt(args, "timeout_sec", defaultSec);
+	if (p.timeoutSec < 1 || p.timeoutSec > capSec) {
+		throw IllegalArgumentException("参数 timeout_sec 须在 1.." + std::to_string(capSec)
+			+ " 之间，实际 " + std::to_string(p.timeoutSec));
+	}
+	p.pollMs = optionalInt(args, "poll_ms", kWaitDefaultPollMs);
+	if (p.pollMs < kWaitMinPollMs || p.pollMs > kWaitMaxPollMs) {
+		throw IllegalArgumentException("参数 poll_ms 须在 " + std::to_string(kWaitMinPollMs)
+			+ ".." + std::to_string(kWaitMaxPollMs) + " 之间，实际 "
+			+ std::to_string(p.pollMs));
+	}
+	if (ctx.robot == nullptr) { throw std::runtime_error("没有常驻机器人实例"); }
+	const std::vector<std::string> readable = resolvableReadVars(ctx.readVars, *ctx.robot);
+	if (std::find(readable.begin(), readable.end(), p.name) == readable.end()) {
+		throw IllegalArgumentException("变量 " + p.name + " 不在可读清单内（--read-var）");
+	}
+	p.hw = ctx.robot->registry().find(p.name);
+	if (p.hw == nullptr) { throw std::runtime_error("变量 " + p.name + " 已不存在"); }
+	return p;
+}
+
+/* 回执：结论在定界外（是本工具的判定），读数在定界内（来自驱动）。 */
+AgentToolResult buildWaitReceipt(const WaitParams& p, const WaitOutcome& o) {
+	const std::string label = p.name + "." + p.key + " " + p.condText
+		+ (p.cond == WaitCond::Changed ? "" : " " + scalarText(p.want));
+	std::string head = "wait_variable " + label + "：";
+	if (o.satisfied) {
+		head += "条件满足（等待 " + std::to_string(o.elapsedMs) + " ms，采样 "
+			+ std::to_string(o.samples) + " 次）\n";
+	} else {
+		head += "超时未满足（" + std::to_string(p.timeoutSec) + " s，采样 "
+			+ std::to_string(o.samples) + " 次）\n";
+	}
+	std::string body;
+	const Json* cur = o.lastSample.isObj() ? o.lastSample.find(p.key) : nullptr;
+	if (cur != nullptr) {
+		body += "  " + p.name + "." + p.key + " = " + cur->toString() + "\n";
+	} else {
+		body += "  " + p.name + "." + p.key + " = (键不存在；样本现有键: " + keysOf(o.lastSample)
+			+ ")\n";
+	}
+	body += "  " + p.name + " = " + o.lastSample.toString() + "\n";
+	if (!o.lastError.empty()) { body += "  最后一次读取失败: " + o.lastError + "\n"; }
+	const std::string summary = std::string("satisfied=") + (o.satisfied ? "true" : "false")
+		+ " elapsed_ms=" + std::to_string(o.elapsedMs)
+		+ " samples=" + std::to_string(o.samples);
+	return {head + formatReadResult(body), "", true, "", true, false, summary};
+}
+
+/* 编排：解析参数 → 只读轮询直到条件满足/超时/被中断 → 拼回执。 */
+AgentToolResult runWaitVariable(const AgentToolContext& ctx, int capSec, int defaultSec,
+		const Json& args) {
+	using Clock = std::chrono::steady_clock;
+	const WaitParams p = parseWaitParams(ctx, capSec, defaultSec, args);
+
+	/* ---- 轮询 ---- */
+	const Clock::time_point t0 = Clock::now();
+	const Clock::time_point deadline = t0 + std::chrono::seconds(p.timeoutSec);
+	std::string baseline;
+	bool haveBaseline = false;
+	WaitOutcome o;
+	auto interrupted = [] {
+		throw std::runtime_error("执行被中断（收到停止信号），已放弃等待");
+	};
+	while (true) {
+		if (stopRequested().load()) { interrupted(); }
+		++o.samples;
+		try {
+			o.lastSample = p.hw->playQuiet(JsonObject());
+			o.lastError.clear();
+		} catch (const std::exception& e) {
+			/* 首采样就读不到 → 快速失败（大概率是永久故障）；之后的读失败
+			 * 按瞬时抖动看，记下继续等，超时回执如实带上。 */
+			if (o.samples == 1) { throw; }
+			o.lastError = e.what();
+		}
+		const Json* cur = o.lastSample.isObj() ? o.lastSample.find(p.key) : nullptr;
+		if (cur != nullptr && !haveBaseline) {
+			/* 键**首次出现**的那次采样：类型永久不匹配即刻报参数错；
+			 * changed 的基线也取这里（键缺失的采样不能当基线） */
+			if (isOrderingCond(p.cond) && !numericView(*cur)) {
+				throw IllegalArgumentException(concatMsg("键 ", p.key, " 的当前值不是数值（",
+					cur->toString(), "），条件 ", p.condText, " 无法比较"));
+			}
+			baseline = cur->toString();
+			haveBaseline = true;
+			if (p.cond != WaitCond::Changed) {
+				o.satisfied = waitCondHolds(p.cond, *cur, p.want, baseline);
+			}
+		} else if (cur != nullptr) {
+			o.satisfied = waitCondHolds(p.cond, *cur, p.want, baseline);
+		}
+		if (o.satisfied) { break; }
+		const Clock::time_point now = Clock::now();
+		if (now >= deadline) { break; }
+		/* 睡眠切片 ≤100ms：停止信号最多迟 100ms 被看见 */
+		Clock::time_point until = now + std::chrono::milliseconds(p.pollMs);
+		if (until > deadline) { until = deadline; }
+		for (Clock::time_point t = Clock::now(); t < until; t = Clock::now()) {
+			if (stopRequested().load()) { interrupted(); }
+			std::this_thread::sleep_for(std::min<Clock::duration>(
+				until - t, std::chrono::milliseconds(100)));
+		}
+	}
+	o.elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+		Clock::now() - t0).count();
+	return buildWaitReceipt(p, o);
+}
+
 } // namespace
 
 static AgentTool makeWaitVariableTool(const AgentToolContext& ctx) {
@@ -614,126 +767,7 @@ static AgentTool makeWaitVariableTool(const AgentToolContext& ctx) {
 				+ std::to_string(kWaitMaxPollMs) + "）")}},
 			{"name", "key", "condition"}),
 		[ctx, capSec, defaultSec](const Json& args) -> AgentToolResult {
-			using Clock = std::chrono::steady_clock;
-			/* ---- 参数（全部在第一次触碰硬件之前校验，错即 paramError）---- */
-			const std::string name = requireString(args, "name");
-			const std::string key = requireString(args, "key");
-			const std::string condText = requireString(args, "condition");
-			const WaitCond cond = parseWaitCond(condText);
-			Json want = JsonNull();
-			if (cond != WaitCond::Changed) {
-				auto v = args.get("value");
-				if (!v || v->isNull()) {
-					throw IllegalArgumentException("条件 " + condText + " 需要参数 value");
-				}
-				if (!(v->isInt() || v->isFloat() || v->isStr())) {
-					throw IllegalArgumentException("参数 value 类型不符：需要数值或字串");
-				}
-				if (isOrderingCond(cond) && !numericView(*v)) {
-					throw IllegalArgumentException("条件 " + condText + " 需要数值 value，实际 "
-						+ v->toString());
-				}
-				want = *v;
-			}
-			const int timeoutSec = optionalInt(args, "timeout_sec", defaultSec);
-			if (timeoutSec < 1 || timeoutSec > capSec) {
-				throw IllegalArgumentException("参数 timeout_sec 须在 1.." + std::to_string(capSec)
-					+ " 之间，实际 " + std::to_string(timeoutSec));
-			}
-			const int pollMs = optionalInt(args, "poll_ms", kWaitDefaultPollMs);
-			if (pollMs < kWaitMinPollMs || pollMs > kWaitMaxPollMs) {
-				throw IllegalArgumentException("参数 poll_ms 须在 " + std::to_string(kWaitMinPollMs)
-					+ ".." + std::to_string(kWaitMaxPollMs) + " 之间，实际 "
-					+ std::to_string(pollMs));
-			}
-			if (ctx.robot == nullptr) { throw std::runtime_error("没有常驻机器人实例"); }
-			const std::vector<std::string> readable = resolvableReadVars(ctx.readVars, *ctx.robot);
-			if (std::find(readable.begin(), readable.end(), name) == readable.end()) {
-				throw IllegalArgumentException("变量 " + name + " 不在可读清单内（--read-var）");
-			}
-			MatrixVars_Hardware* hw = ctx.robot->registry().find(name);
-			if (hw == nullptr) { throw std::runtime_error("变量 " + name + " 已不存在"); }
-
-			/* ---- 轮询 ---- */
-			const Clock::time_point t0 = Clock::now();
-			const Clock::time_point deadline = t0 + std::chrono::seconds(timeoutSec);
-			const std::string label = name + "." + key + " " + condText
-				+ (cond == WaitCond::Changed ? "" : " " + scalarText(want));
-			std::string baseline;
-			bool haveBaseline = false;
-			Json lastSample = JsonNull();
-			std::string lastError;
-			int samples = 0;
-			bool satisfied = false;
-			auto interrupted = [] {
-				throw std::runtime_error("执行被中断（收到停止信号），已放弃等待");
-			};
-			while (true) {
-				if (stopRequested().load()) { interrupted(); }
-				++samples;
-				try {
-					lastSample = hw->playQuiet(JsonObject());
-					lastError.clear();
-				} catch (const std::exception& e) {
-					/* 首采样就读不到 → 快速失败（大概率是永久故障）；之后的读失败
-					 * 按瞬时抖动看，记下继续等，超时回执如实带上。 */
-					if (samples == 1) { throw; }
-					lastError = e.what();
-				}
-				const Json* cur = lastSample.isObj() ? lastSample.find(key) : nullptr;
-				if (cur != nullptr && !haveBaseline) {
-					/* 键**首次出现**的那次采样：类型永久不匹配即刻报参数错；
-					 * changed 的基线也取这里（键缺失的采样不能当基线） */
-					if (isOrderingCond(cond) && !numericView(*cur)) {
-						throw IllegalArgumentException(concatMsg("键 ", key, " 的当前值不是数值（",
-							cur->toString(), "），条件 ", condText, " 无法比较"));
-					}
-					baseline = cur->toString();
-					haveBaseline = true;
-					if (cond != WaitCond::Changed) {
-						satisfied = waitCondHolds(cond, *cur, want, baseline);
-					}
-				} else if (cur != nullptr) {
-					satisfied = waitCondHolds(cond, *cur, want, baseline);
-				}
-				if (satisfied) { break; }
-				const Clock::time_point now = Clock::now();
-				if (now >= deadline) { break; }
-				/* 睡眠切片 ≤100ms：停止信号最多迟 100ms 被看见 */
-				Clock::time_point until = now + std::chrono::milliseconds(pollMs);
-				if (until > deadline) { until = deadline; }
-				for (Clock::time_point t = Clock::now(); t < until; t = Clock::now()) {
-					if (stopRequested().load()) { interrupted(); }
-					std::this_thread::sleep_for(std::min<Clock::duration>(
-						until - t, std::chrono::milliseconds(100)));
-				}
-			}
-			const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-				Clock::now() - t0).count();
-
-			/* ---- 回执：结论在定界外（是本工具的判定），读数在定界内（来自驱动）---- */
-			std::string head = "wait_variable " + label + "：";
-			if (satisfied) {
-				head += "条件满足（等待 " + std::to_string(elapsedMs) + " ms，采样 "
-					+ std::to_string(samples) + " 次）\n";
-			} else {
-				head += "超时未满足（" + std::to_string(timeoutSec) + " s，采样 "
-					+ std::to_string(samples) + " 次）\n";
-			}
-			std::string body;
-			const Json* cur = lastSample.isObj() ? lastSample.find(key) : nullptr;
-			if (cur != nullptr) {
-				body += "  " + name + "." + key + " = " + cur->toString() + "\n";
-			} else {
-				body += "  " + name + "." + key + " = (键不存在；样本现有键: " + keysOf(lastSample)
-					+ ")\n";
-			}
-			body += "  " + name + " = " + lastSample.toString() + "\n";
-			if (!lastError.empty()) { body += "  最后一次读取失败: " + lastError + "\n"; }
-			const std::string summary = std::string("satisfied=") + (satisfied ? "true" : "false")
-				+ " elapsed_ms=" + std::to_string(elapsedMs)
-				+ " samples=" + std::to_string(samples);
-			return {head + formatReadResult(body), "", true, "", true, false, summary};
+			return runWaitVariable(ctx, capSec, defaultSec, args);
 		}};
 }
 
