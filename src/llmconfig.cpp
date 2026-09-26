@@ -1,8 +1,5 @@
 #include "llmconfig.hpp"
 
-#include <sys/stat.h>
-
-#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <set>
@@ -19,20 +16,10 @@ namespace bot {
 namespace {
 
 constexpr std::size_t kMaxConfigBytes = 64u << 10;
-constexpr std::size_t kMaxKeyFileBytes = 64u << 10;
 
 bool fileReadable(const std::string& path) {
 	std::ifstream f(path, std::ios::binary);
 	return static_cast<bool>(f);
-}
-
-/* ~ 展开：只处理 "~" 与 "~/" 两种形态（不做 ~user，那要查 passwd，收益不值当） */
-std::string expandHome(const std::string& path) {
-	if (path.empty() || path[0] != '~') { return path; }
-	if (path.size() > 1 && path[1] != '/') { return path; }
-	auto home = getEnvVar("HOME");
-	if (!home || home->empty()) { return path; }
-	return *home + path.substr(1);
 }
 
 /* 阶段 4.1：本地 readWholeFile 已收敛到 util::readWholeFileLimited——
@@ -357,49 +344,6 @@ std::string findDefaultLlmConfig() {
 		if (fileReadable(p)) { return p; }
 	}
 	return "";
-}
-
-bool readApiKeyFile(const std::string& path, std::string& out, std::string& err) {
-	std::string real = expandHome(path);
-	std::string text;
-	if (!readWholeFileLimited(real, kMaxKeyFileBytes, text, err, "密钥文件")) { return false; }
-	out = trim(text);	/* 末尾换行混进 Authorization 头会变成 401 */
-	if (out.empty()) {
-		err = "密钥文件为空: " + real;
-		return false;
-	}
-	return true;
-}
-
-std::string secretFilePermissionWarning(const std::string& path) {
-	struct stat st {};
-	std::string real = expandHome(path);
-	if (::stat(real.c_str(), &st) != 0) { return ""; }
-	mode_t bad = S_IRGRP | S_IWGRP | S_IROTH | S_IWOTH;
-	if ((st.st_mode & bad) == 0) { return ""; }
-	return "提示: " + real + " 对同组/其他用户可读（建议 chmod 600），它保存着 API key";
-}
-
-/* 密钥字符集判据（2026-09-21 审计 AG-14）。见头文件；这里补两点实现理由：
- *   * 判据是「全部控制字符」而不是只挑 CR/LF——旧 libcurl 链路实测它对 slist
- *     条目整条交出，任何控制字符都没有出现在合法 Bearer token 里的理由；
- *     宽判据也更抗未来 HTTP 栈行为变化。
- *   * err 里带**位置与字节值**：多行密钥文件的成因通常是「顺手 cat 了别的东西
- *     进来」，操作者需要一眼看到是第几个字节坏了。 */
-bool validateApiKeyChars(const std::string& key, std::string& err) {
-	for (std::size_t i = 0; i < key.size(); ++i) {
-		const unsigned char c = static_cast<unsigned char>(key[i]);
-		if (c < 0x20 || c == 0x7f) {
-			char buf[8];
-			std::snprintf(buf, sizeof buf, "0x%02x", c);
-			err = "含控制字符 " + std::string(buf) + "（第 " + std::to_string(i + 1)
-				+ " 个字节）：密钥必须是**单行**文本，换行会随 Authorization 头"
-				  "原样发出，等于把后面的内容变成额外请求头；"
-				  "请检查密钥文件是否混入了多行内容或 CRLF 行尾";
-			return false;
-		}
-	}
-	return true;
 }
 
 } // namespace bot

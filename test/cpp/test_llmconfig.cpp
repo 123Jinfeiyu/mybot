@@ -383,39 +383,6 @@ TH_TEST(llmconfig_rejects_bad_files) {
 	TH_CHECK(err.find("顶层必须是 JSON 对象") != std::string::npos);
 }
 
-TH_TEST(llmconfig_api_key_file) {
-	TempDir tmp("keyfile");
-	fs::path key = tmp.path() / "moma.key";
-	/* 末尾换行混进 Authorization 头就会 401，必须剥掉 */
-	writeFile(key, "sk-from-file\n", fs::perms::owner_all);
-	std::string out, err;
-	TH_CHECK(readApiKeyFile(key.string(), out, err));
-	TH_CHECK(out == "sk-from-file");
-
-	fs::path blank = tmp.path() / "blank.key";
-	writeFile(blank, "   \n", fs::perms::owner_all);
-	err.clear();
-	TH_CHECK(!readApiKeyFile(blank.string(), out, err));
-	TH_CHECK(err.find("为空") != std::string::npos);
-
-	err.clear();
-	TH_CHECK(!readApiKeyFile("/no/such.key", out, err));
-	TH_CHECK(err.find("无法打开") != std::string::npos);
-}
-
-TH_TEST(llmconfig_permission_warning) {
-	TempDir tmp("perm");
-	fs::path open = tmp.path() / "open.key";
-	writeFile(open, "sk", fs::perms::owner_all | fs::perms::group_read | fs::perms::others_read);
-	TH_CHECK(!secretFilePermissionWarning(open.string()).empty());
-
-	fs::path tight = tmp.path() / "tight.key";
-	writeFile(tight, "sk", fs::perms::owner_read | fs::perms::owner_write);
-	TH_CHECK(secretFilePermissionWarning(tight.string()).empty());
-
-	TH_CHECK(secretFilePermissionWarning("/no/such.key").empty());
-}
-
 /* ================= buildAgentConfig：优先级与合并 ================= */
 
 /* 上下文字节预算从配置文件搬进 AgentModeConfig（applyContextBudgets）。后端不消费
@@ -856,40 +823,6 @@ TH_TEST(llmconfig_oversized_file_reports_the_limit_not_json) {
 	TH_CHECK(!loadLlmConfigFile(big.string(), c, err));
 	TH_CHECK(err.find("不是合法 JSON") == std::string::npos);
 	TH_CHECK(err.find("上限") != std::string::npos);
-}
-
-TH_TEST(llmconfig_oversized_key_file_reports_the_limit) {
-	TempDir tmp("oversizekey");
-	fs::path big = tmp.path() / "big.key";
-	writeFile(big, std::string(70 * 1024, 'k'), fs::perms::owner_all);
-	std::string out, err;
-	TH_CHECK(!readApiKeyFile(big.string(), out, err));
-	TH_CHECK(err.find("上限") != std::string::npos);
-}
-
-/* ---- API key 控制字符判据（2026-09-21 审计 AG-14）----
- * 旧 libcurl 链路实测：密钥被拼进 `Authorization: Bearer <key>` 交给
- * curl_slist_append，而 libcurl 不拒绝 slist 里的 CR/LF——多行密钥会把换行后的
- * 内容变成**额外的请求头**发给网关。现役 Rust agent 同样把密钥放进
- * Authorization 头，判据保持不变。 */
-TH_TEST(llmconfig_api_key_control_chars_rejected) {
-	std::string err;
-	/* 正常密钥：单行可打印 */
-	TH_CHECK(validateApiKeyChars("sk-abc123", err));
-	TH_CHECK(validateApiKeyChars("", err));			/* 空串本身无控制字符（缺失由上层拦） */
-	TH_CHECK(validateApiKeyChars("sk-a b~c!", err));
-	/* 头注入的两个主角 */
-	TH_CHECK(!validateApiKeyChars("sk-abc\r\nX-Injected: yes", err));
-	TH_CHECK(err.find("0x0d") != std::string::npos);	/* 点名是哪个字节 */
-	TH_CHECK(err.find("第 7 个字节") != std::string::npos);	/* 与位置 */
-	TH_CHECK(!validateApiKeyChars("sk-a\nb", err));
-	/* 其余控制字符一并拒绝（宽判据，抗 HTTP 栈行为变化） */
-	TH_CHECK(!validateApiKeyChars(std::string("sk-a\0b", 5), err));
-	TH_CHECK(!validateApiKeyChars("sk-a\tb", err));
-	TH_CHECK(!validateApiKeyChars("sk-a\x7f" "b", err));
-	TH_CHECK(!validateApiKeyChars("sk-a\x01" "b", err));
-	/* 高位字节不是控制字符：UTF-8 密钥不该被误伤 */
-	TH_CHECK(validateApiKeyChars("sk-\xe5\xaf\x86", err));
 }
 
 /* ---- PL-1（2026-09-22）：--check-config 的摘要渲染 ----
