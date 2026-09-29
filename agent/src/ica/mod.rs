@@ -1,15 +1,18 @@
 //! ICA experimental evidence ledger for the Rust agent. Observations are records of
 //! inputs/results, never automatic facts. Model tools cannot verify a claim.
+//!
+//! 2026-09-29 B1 拆分：账本核心（本文件）／工具 schema（specs.rs）／sidecar
+//! 持久化（persist.rs）三个文件；`execute` 的八个工具分支各成私有方法。
+
+mod persist;
+mod specs;
+
+pub use specs::specs;
 
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
-
-use crate::bridge::ToolSpec;
+use serde_json::Value;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Event {
@@ -75,13 +78,6 @@ pub struct IcaLedger {
     futures: Vec<FutureItem>,
     comparisons: Vec<Comparison>,
     dependencies: Vec<(String, String)>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct SavedLedger {
-    version: u32,
-    session_size: u64,
-    ledger: IcaLedger,
 }
 
 fn required<'a>(args: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -322,302 +318,218 @@ impl IcaLedger {
         }
     }
 
+    /// 八个 ICA 工具的统一入口；各分支的参数校验与入账在下方私有方法
+    /// （2026-09-29 B1 拆分，行为逐字保持）。
     pub fn execute(&mut self, name: &str, args: &Value) -> Result<String, String> {
         match name {
-            "ica_propose_claim" => {
-                let text = required(args, "text")?.to_string();
-                let scope = args
-                    .get("scope")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let id = format!("C{}", self.claims.len() + 1);
-                self.claims.push(Claim {
-                    id: id.clone(),
-                    text,
-                    scope,
-                    state: "locked".into(),
-                });
-                Ok(format!("已登记 {id}，状态 locked；尚未核验。"))
-            }
-            "ica_propose_future" => {
-                let kind = required(args, "kind")?;
-                if !["hypothesis", "plan", "unknown_gap", "action_proposal"].contains(&kind) {
-                    return Err("ICA future kind 无效".into());
-                }
-                let text = required(args, "text")?.to_string();
-                let predicted_observation = args
-                    .get("predicted_observation")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string();
-                let id = format!("F{}", self.futures.len() + 1);
-                self.futures.push(FutureItem {
-                    id: id.clone(),
-                    kind: kind.into(),
-                    text,
-                    predicted_observation,
-                    state: "proposed".into(),
-                    task_id: self.current_task,
-                    created_after_event: self.events.len(),
-                    tool: String::new(),
-                    arguments: Value::Null,
-                    result_event_id: String::new(),
-                });
-                Ok(format!("已登记未来候选 {id}；没有执行动作。"))
-            }
-            "ica_propose_action" => {
-                if !self.has_current_inspection() {
-                    return Err("ICA 请先读取本任务的机器人状态，再提出动作预测".into());
-                }
-                let tool = required(args, "tool")?.to_string();
-                if !Self::action_tool(&tool) {
-                    return Err(
-                        "ICA 仅接受 run_action_script、apply_sql、run_command 行动工具".into(),
-                    );
-                }
-                let arguments = args
-                    .get("arguments")
-                    .filter(|v| v.is_object())
-                    .ok_or("ICA 缺少对象字段 arguments")?
-                    .clone();
-                let predicted_observation = required(args, "predicted_observation")?.to_string();
-                let text = required(args, "reason")?.to_string();
-                let id = format!("F{}", self.futures.len() + 1);
-                self.futures.push(FutureItem {
-                    id: id.clone(),
-                    kind: "action_proposal".into(),
-                    text,
-                    predicted_observation,
-                    state: "proposed".into(),
-                    task_id: self.current_task,
-                    created_after_event: self.events.len(),
-                    tool,
-                    arguments,
-                    result_event_id: String::new(),
-                });
-                Ok(format!(
-                    "已登记行动候选 {id}。这不是执行结果；下一步须调用对应工具，随后比较现实回执。"
-                ))
-            }
-            "ica_cite_observation" => {
-                let claim_id = required(args, "claim_id")?.to_string();
-                let event_id = required(args, "event_id")?.to_string();
-                if !self.claim_exists(&claim_id)
-                    || !self.event(&event_id).is_some_and(|e| !e.retracted)
-                {
-                    return Err("ICA 引用的主张或观察不存在，或观察已撤回".into());
-                }
-                let supports = args
-                    .get("supports")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(true);
-                let id = format!("R{}", self.evidence.len() + 1);
-                self.evidence.push(Evidence {
-                    id: id.clone(),
-                    claim_id: claim_id.clone(),
-                    event_id,
-                    supports,
-                    active: true,
-                });
-                self.reassess_claim(&claim_id);
-                Ok(format!("已关联 {id}。{}", self.summary()))
-            }
-            "ica_compare_future" => {
-                let future_id = required(args, "future_id")?.to_string();
-                let event_id = required(args, "event_id")?.to_string();
-                let possible_match = args
-                    .get("possible_match")
-                    .and_then(Value::as_bool)
-                    .ok_or("ICA 缺少布尔字段 possible_match")?;
-                if !self.futures.iter().any(|f| f.id == future_id)
-                    || !self.event(&event_id).is_some_and(|e| !e.retracted)
-                    || self
-                        .futures
-                        .iter()
-                        .find(|f| f.id == future_id)
-                        .is_some_and(|f| {
-                            self.events
-                                .iter()
-                                .position(|e| e.id == event_id)
-                                .unwrap_or(0)
-                                < f.created_after_event
-                        })
-                    || self
-                        .futures
-                        .iter()
-                        .find(|f| f.id == future_id)
-                        .is_some_and(|f| {
-                            f.kind == "action_proposal" && f.result_event_id != event_id
-                        })
-                {
-                    return Err("ICA 对比的未来候选或后续观察不存在，或观察已失效".into());
-                }
-                let id = format!("X{}", self.comparisons.len() + 1);
-                self.comparisons.push(Comparison {
-                    id: id.clone(),
-                    future_id: future_id.clone(),
-                    event_id,
-                    possible_match,
-                    active: true,
-                });
-                self.reassess_future(&future_id);
-                Ok(format!("已登记暂定比较 {id}。{}", self.summary()))
-            }
-            "ica_depend" => {
-                let upstream = required(args, "upstream_id")?.to_string();
-                let downstream = required(args, "downstream_id")?.to_string();
-                if upstream == downstream
-                    || !self.claim_exists(&upstream)
-                    || !self.claim_exists(&downstream)
-                {
-                    return Err("ICA 依赖关系无效".into());
-                }
-                self.dependencies.push((upstream, downstream));
-                Ok("ICA 依赖关系已登记。".into())
-            }
-            "ica_retract_observation" => {
-                let id = required(args, "event_id")?.to_string();
-                let Some(e) = self.events.iter_mut().find(|e| e.id == id && !e.retracted) else {
-                    return Ok("观察不存在或已经撤回。".into());
-                };
-                e.retracted = true;
-                let affected: HashSet<String> = self
-                    .evidence
-                    .iter_mut()
-                    .filter(|r| r.event_id == id && r.active)
-                    .map(|r| {
-                        r.active = false;
-                        r.claim_id.clone()
-                    })
-                    .collect();
-                for claim in affected {
-                    self.reassess_claim(&claim);
-                    self.mark_dependents_stale(&claim, &mut HashSet::new());
-                }
-                let futures: HashSet<String> = self
-                    .comparisons
-                    .iter_mut()
-                    .filter(|x| x.event_id == id && x.active)
-                    .map(|x| {
-                        x.active = false;
-                        x.future_id.clone()
-                    })
-                    .collect();
-                for future_id in futures {
-                    self.reassess_future(&future_id);
-                }
-                Ok(format!("观察已撤回。{}", self.summary()))
-            }
+            "ica_propose_claim" => self.propose_claim(args),
+            "ica_propose_future" => self.propose_future(args),
+            "ica_propose_action" => self.propose_action(args),
+            "ica_cite_observation" => self.cite_observation(args),
+            "ica_compare_future" => self.compare_future(args),
+            "ica_depend" => self.depend(args),
+            "ica_retract_observation" => self.retract_observation(args),
             "ica_status" => Ok(self.summary()),
             _ => Err(format!("未知 ICA 工具: {name}")),
         }
     }
 
-    pub fn save(&self, session_file: &str) -> Result<(), String> {
-        if session_file.is_empty() {
-            return Ok(());
-        }
-        let session_size = fs::metadata(session_file).map_err(|e| e.to_string())?.len();
-        let sidecar = format!("{session_file}.ica.json");
-        let temp = format!("{sidecar}.{}.tmp", std::process::id());
-        let bytes = serde_json::to_vec(&SavedLedger {
-            version: 1,
-            session_size,
-            ledger: self.clone_for_save(),
-        })
-        .map_err(|e| e.to_string())?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&temp)
-            .map_err(|e| e.to_string())?;
-        file.write_all(&bytes).map_err(|e| e.to_string())?;
-        file.sync_all().map_err(|e| e.to_string())?;
-        fs::rename(&temp, &sidecar).map_err(|e| e.to_string())
+    fn propose_claim(&mut self, args: &Value) -> Result<String, String> {
+        let text = required(args, "text")?.to_string();
+        let scope = args
+            .get("scope")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let id = format!("C{}", self.claims.len() + 1);
+        self.claims.push(Claim {
+            id: id.clone(),
+            text,
+            scope,
+            state: "locked".into(),
+        });
+        Ok(format!("已登记 {id}，状态 locked；尚未核验。"))
     }
 
-    fn clone_for_save(&self) -> Self {
-        Self {
-            current_task: self.current_task,
-            events: self.events.clone(),
-            claims: self.claims.clone(),
-            evidence: self.evidence.clone(),
-            futures: self.futures.clone(),
-            comparisons: self.comparisons.clone(),
-            dependencies: self.dependencies.clone(),
+    fn propose_future(&mut self, args: &Value) -> Result<String, String> {
+        let kind = required(args, "kind")?;
+        if !["hypothesis", "plan", "unknown_gap", "action_proposal"].contains(&kind) {
+            return Err("ICA future kind 无效".into());
         }
+        let text = required(args, "text")?.to_string();
+        let predicted_observation = args
+            .get("predicted_observation")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let id = format!("F{}", self.futures.len() + 1);
+        self.futures.push(FutureItem {
+            id: id.clone(),
+            kind: kind.into(),
+            text,
+            predicted_observation,
+            state: "proposed".into(),
+            task_id: self.current_task,
+            created_after_event: self.events.len(),
+            tool: String::new(),
+            arguments: Value::Null,
+            result_event_id: String::new(),
+        });
+        Ok(format!("已登记未来候选 {id}；没有执行动作。"))
     }
 
-    pub fn load(session_file: &str) -> Result<Self, String> {
-        let sidecar = format!("{session_file}.ica.json");
-        let bytes = fs::read(&sidecar).map_err(|e| format!("ICA 账本读取失败 ({sidecar}): {e}"))?;
-        let saved: SavedLedger =
-            serde_json::from_slice(&bytes).map_err(|e| format!("ICA 账本解析失败: {e}"))?;
-        let actual = fs::metadata(session_file).map_err(|e| e.to_string())?.len();
-        if saved.version != 1 || saved.session_size != actual {
-            return Err("ICA 账本与会话文件大小不一致，拒绝恢复".into());
+    fn propose_action(&mut self, args: &Value) -> Result<String, String> {
+        if !self.has_current_inspection() {
+            return Err("ICA 请先读取本任务的机器人状态，再提出动作预测".into());
         }
-        Ok(saved.ledger)
+        let tool = required(args, "tool")?.to_string();
+        if !Self::action_tool(&tool) {
+            return Err("ICA 仅接受 run_action_script、apply_sql、run_command 行动工具".into());
+        }
+        let arguments = args
+            .get("arguments")
+            .filter(|v| v.is_object())
+            .ok_or("ICA 缺少对象字段 arguments")?
+            .clone();
+        let predicted_observation = required(args, "predicted_observation")?.to_string();
+        let text = required(args, "reason")?.to_string();
+        let id = format!("F{}", self.futures.len() + 1);
+        self.futures.push(FutureItem {
+            id: id.clone(),
+            kind: "action_proposal".into(),
+            text,
+            predicted_observation,
+            state: "proposed".into(),
+            task_id: self.current_task,
+            created_after_event: self.events.len(),
+            tool,
+            arguments,
+            result_event_id: String::new(),
+        });
+        Ok(format!(
+            "已登记行动候选 {id}。这不是执行结果；下一步须调用对应工具，随后比较现实回执。"
+        ))
     }
-}
 
-pub fn specs() -> Vec<ToolSpec> {
-    fn spec(name: &str, description: &str, schema: Value) -> ToolSpec {
-        ToolSpec {
-            name: name.into(),
-            description: description.into(),
-            parameters: schema,
+    fn cite_observation(&mut self, args: &Value) -> Result<String, String> {
+        let claim_id = required(args, "claim_id")?.to_string();
+        let event_id = required(args, "event_id")?.to_string();
+        if !self.claim_exists(&claim_id) || !self.event(&event_id).is_some_and(|e| !e.retracted) {
+            return Err("ICA 引用的主张或观察不存在，或观察已撤回".into());
         }
+        let supports = args
+            .get("supports")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let id = format!("R{}", self.evidence.len() + 1);
+        self.evidence.push(Evidence {
+            id: id.clone(),
+            claim_id: claim_id.clone(),
+            event_id,
+            supports,
+            active: true,
+        });
+        self.reassess_claim(&claim_id);
+        Ok(format!("已关联 {id}。{}", self.summary()))
     }
-    vec![
-        spec(
-            "ica_propose_claim",
-            "记录待核验事实主张；不会自动验证。",
-            json!({"type":"object","properties":{"text":{"type":"string"},"scope":{"type":"string"}},"required":["text"]}),
-        ),
-        spec(
-            "ica_propose_future",
-            "记录假设、计划、未知缺口或行动建议；不执行。",
-            json!({"type":"object","properties":{"kind":{"type":"string","enum":["hypothesis","plan","unknown_gap","action_proposal"]},"text":{"type":"string"},"predicted_observation":{"type":"string"}},"required":["kind","text"]}),
-        ),
-        spec(
-            "ica_propose_action",
-            "在执行现实动作前，登记工具、完整参数、理由和预期可观察结果；登记不执行动作。",
-            json!({"type":"object","properties":{"tool":{"type":"string","enum":["run_action_script","apply_sql","run_command"]},"arguments":{"type":"object"},"reason":{"type":"string"},"predicted_observation":{"type":"string"}},"required":["tool","arguments","reason","predicted_observation"]}),
-        ),
-        spec(
-            "ica_compare_future",
-            "把未来候选和之后的观察作暂定比较，不是事实验证。",
-            json!({"type":"object","properties":{"future_id":{"type":"string"},"event_id":{"type":"string"},"possible_match":{"type":"boolean"}},"required":["future_id","event_id","possible_match"]}),
-        ),
-        spec(
-            "ica_cite_observation",
-            "把已有观察关联到主张；同来源只计一次。",
-            json!({"type":"object","properties":{"claim_id":{"type":"string"},"event_id":{"type":"string"},"supports":{"type":"boolean"}},"required":["claim_id","event_id"]}),
-        ),
-        spec(
-            "ica_depend",
-            "记录主张间的依赖。",
-            json!({"type":"object","properties":{"upstream_id":{"type":"string"},"downstream_id":{"type":"string"}},"required":["upstream_id","downstream_id"]}),
-        ),
-        spec(
-            "ica_retract_observation",
-            "撤回观察并使相关证据失效。",
-            json!({"type":"object","properties":{"event_id":{"type":"string"}},"required":["event_id"]}),
-        ),
-        spec(
-            "ica_status",
-            "读取观察、主张、未来候选及其状态。",
-            json!({"type":"object","properties":{}}),
-        ),
-    ]
+
+    /// ica_compare_future 的四重拒绝判据（B1 拆出）：候选不存在 / 观察不
+    /// 存在或已撤回 / 观察早于候选登记（旧观察不能充当预测命中）/ 行动
+    /// 候选只能与自己的执行回执比较。
+    fn comparison_invalid(&self, future_id: &str, event_id: &str) -> bool {
+        let Some(f) = self.futures.iter().find(|f| f.id == future_id) else {
+            return true;
+        };
+        if !self.event(event_id).is_some_and(|e| !e.retracted) {
+            return true;
+        }
+        if self
+            .events
+            .iter()
+            .position(|e| e.id == event_id)
+            .unwrap_or(0)
+            < f.created_after_event
+        {
+            return true;
+        }
+        f.kind == "action_proposal" && f.result_event_id != event_id
+    }
+
+    fn compare_future(&mut self, args: &Value) -> Result<String, String> {
+        let future_id = required(args, "future_id")?.to_string();
+        let event_id = required(args, "event_id")?.to_string();
+        let possible_match = args
+            .get("possible_match")
+            .and_then(Value::as_bool)
+            .ok_or("ICA 缺少布尔字段 possible_match")?;
+        if self.comparison_invalid(&future_id, &event_id) {
+            return Err("ICA 对比的未来候选或后续观察不存在，或观察已失效".into());
+        }
+        let id = format!("X{}", self.comparisons.len() + 1);
+        self.comparisons.push(Comparison {
+            id: id.clone(),
+            future_id: future_id.clone(),
+            event_id,
+            possible_match,
+            active: true,
+        });
+        self.reassess_future(&future_id);
+        Ok(format!("已登记暂定比较 {id}。{}", self.summary()))
+    }
+
+    fn depend(&mut self, args: &Value) -> Result<String, String> {
+        let upstream = required(args, "upstream_id")?.to_string();
+        let downstream = required(args, "downstream_id")?.to_string();
+        if upstream == downstream
+            || !self.claim_exists(&upstream)
+            || !self.claim_exists(&downstream)
+        {
+            return Err("ICA 依赖关系无效".into());
+        }
+        self.dependencies.push((upstream, downstream));
+        Ok("ICA 依赖关系已登记。".into())
+    }
+
+    fn retract_observation(&mut self, args: &Value) -> Result<String, String> {
+        let id = required(args, "event_id")?.to_string();
+        let Some(e) = self.events.iter_mut().find(|e| e.id == id && !e.retracted) else {
+            return Ok("观察不存在或已经撤回。".into());
+        };
+        e.retracted = true;
+        let affected: HashSet<String> = self
+            .evidence
+            .iter_mut()
+            .filter(|r| r.event_id == id && r.active)
+            .map(|r| {
+                r.active = false;
+                r.claim_id.clone()
+            })
+            .collect();
+        for claim in affected {
+            self.reassess_claim(&claim);
+            self.mark_dependents_stale(&claim, &mut HashSet::new());
+        }
+        let futures: HashSet<String> = self
+            .comparisons
+            .iter_mut()
+            .filter(|x| x.event_id == id && x.active)
+            .map(|x| {
+                x.active = false;
+                x.future_id.clone()
+            })
+            .collect();
+        for future_id in futures {
+            self.reassess_future(&future_id);
+        }
+        Ok(format!("观察已撤回。{}", self.summary()))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    use std::fs;
 
     #[test]
     fn copied_origin_and_user_statement_cannot_verify_claim() {
