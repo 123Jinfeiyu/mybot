@@ -1,6 +1,6 @@
 #include "agentdispatch.hpp"
 
-#include "util.hpp"	/* kNonStdExceptionNote（A5 判据锚点） */
+#include "util_except.hpp"	/* kNonStdExceptionNote（A5 判据锚点） */
 
 #include <chrono>
 #include <utility>

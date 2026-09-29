@@ -27,7 +27,9 @@
 #include "actionsource.hpp"
 #include "matrix.hpp"
 #include "mtmerge_core.hpp"
-#include "util.hpp"
+#include "util_cli.hpp"
+#include "util_except.hpp"
+#include "util_num.hpp"
 
 namespace {
 

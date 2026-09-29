@@ -17,7 +17,12 @@
 
 #include "fixtures.hpp"
 #include "harness.hpp"
-#include "util.hpp"
+#include "util_cli.hpp"
+#include "util_except.hpp"
+#include "util_file.hpp"
+#include "util_num.hpp"
+#include "util_str.hpp"
+#include "util_utf8.hpp"
 
 namespace {
 

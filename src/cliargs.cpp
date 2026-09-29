@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <iostream>
 
-#include "util.hpp"
+#include "util_cli.hpp"
+#include "util_num.hpp"
+#include "util_str.hpp"
 
 namespace bot {
 

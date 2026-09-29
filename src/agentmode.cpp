@@ -12,7 +12,8 @@
 #include "agenttools.hpp"
 #include "hardware.hpp"
 #include "robot.hpp"
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_str.hpp"
 
 namespace fs = std::filesystem;
 

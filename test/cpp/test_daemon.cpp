@@ -21,7 +21,7 @@
 #include "fixtures.hpp"
 #include "harness.hpp"
 #include "robot.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using bot::DaemonRunner;
 using bot::MtVars_Daemon;

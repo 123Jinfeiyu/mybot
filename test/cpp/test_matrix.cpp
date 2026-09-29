@@ -15,7 +15,8 @@
 #include "fixtures.hpp"
 #include "harness.hpp"
 #include "matrix.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
+#include "util_str.hpp"
 
 TH_TEST(matrix_parses_name_rows_and_cols) {
 	mt::MatrixObject m = fx::oneMatrix("@Timer\nname period;\nt0 100;\n@\n");

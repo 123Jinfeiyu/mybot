@@ -28,8 +28,9 @@ using fx::TempDir;
 #include "luaexec.hpp"
 #include "luavar.hpp"	/* D：回显回收通道的单点断言 */
 #include "robot.hpp"
-#include "util.hpp"	/* stopRequested：wait_variable 的停止信号用例 */
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_utf8.hpp"	/* stopRequested：wait_variable 的停止信号用例 */
 
 namespace fs = std::filesystem;
 

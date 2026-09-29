@@ -11,6 +11,8 @@
 #include <sstream>
 #include <utility>
 
+#include "util_env.hpp"
+
 namespace bot {
 
 /* ---- 设备列解析单点（契约见 robot.hpp 的声明处）---- */

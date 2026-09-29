@@ -16,7 +16,10 @@
 #include "cliargs.hpp"
 #include "robot.hpp"
 #include "daemonvar.hpp"	/* abandonedDaemonCount（2.2 后不再经 robot.hpp 传导） */
-#include "util.hpp"
+#include "util_cli.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_num.hpp"
 
 namespace bot {
 

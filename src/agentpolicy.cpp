@@ -7,7 +7,6 @@
 #include "agent_subprocess.hpp"
 #include "agentaudit.hpp"
 #include "jsonconfig.hpp"
-#include "util.hpp"
 
 namespace bot {
 namespace agent {

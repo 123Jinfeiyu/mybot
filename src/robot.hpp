@@ -20,7 +20,8 @@
 #include "json.hpp"
 #include "matrix.hpp"
 #include "sqlparse.hpp"
-#include "util.hpp"
+#include "util_cli.hpp"
+#include "util_except.hpp"
 
 namespace bot {
 

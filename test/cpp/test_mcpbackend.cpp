@@ -33,7 +33,8 @@
 #include "jsonparse.hpp"
 #include "mcpbackend.hpp"
 #include "robot.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
+#include "util_utf8.hpp"
 
 using namespace bot;
 using namespace bot::agent;

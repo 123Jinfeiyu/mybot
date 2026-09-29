@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "util.hpp"
+#include "util_except.hpp"
 
 namespace sql4cj {
 

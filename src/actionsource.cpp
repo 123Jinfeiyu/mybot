@@ -1,5 +1,10 @@
 #include "actionsource.hpp"
-#include "util.hpp"	/* getEnvVar / errnoText */
+#include "util_cli.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_file.hpp"
+#include "util_num.hpp"
+#include "util_str.hpp"	/* getEnvVar / errnoText */
 
 #include <arpa/inet.h>
 #include <poll.h>

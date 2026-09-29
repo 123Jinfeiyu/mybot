@@ -23,7 +23,7 @@
 #include <string>
 
 #include "sqlparse.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 namespace fx {
 

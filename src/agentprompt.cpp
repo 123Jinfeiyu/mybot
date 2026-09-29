@@ -3,7 +3,8 @@
 #include <iostream>
 #include <string>
 
-#include "util.hpp"
+#include "util_file.hpp"
+#include "util_utf8.hpp"
 
 namespace bot {
 namespace agent {

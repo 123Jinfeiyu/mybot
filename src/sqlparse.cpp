@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "expr.hpp"
+#include "util_num.hpp"
 
 namespace sql4cj {
 

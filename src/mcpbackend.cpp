@@ -40,7 +40,9 @@
 #include "agentprompt.hpp"	/* structureScriptHead / quoteUntrusted（context.get 素材） */
 #include "jsonparse.hpp"	/* parseJson */
 #include "robot.hpp"		/* RobotStruct 完整定义（context.get 的 registry()） */
-#include "util.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
+#include "util_env.hpp"
+#include "util_file.hpp"
+#include "util_utf8.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
 
 namespace fs = std::filesystem;
 

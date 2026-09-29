@@ -22,7 +22,8 @@
 #include "actionsource.hpp"
 #include "harness.hpp"
 #include "matrix.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
+#include "util_str.hpp"
 
 TH_TEST(limited_reader_passes_bytes_under_the_cap) {
 	std::unique_ptr<bot::Reader> inner(new bot::MemoryReader("abc"));

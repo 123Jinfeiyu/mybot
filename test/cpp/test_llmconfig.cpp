@@ -14,7 +14,7 @@
 #include "agentprompt.hpp"	/* quoteUntrusted（disk_content 用例直接调用；IWYU） */
 #include "llmconfig.hpp"
 #include "robot.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 namespace fs = std::filesystem;
 

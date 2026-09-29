@@ -29,7 +29,10 @@
 #include <utility>
 #include <vector>
 
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_file.hpp"
+#include "util_str.hpp"
+#include "util_utf8.hpp"
 
 /* 进程环境块。glibc 不在 <unistd.h> 里声明它，必须在**全局作用域**声明：
  * 放进匿名命名空间会变成另一个符号（bot::agent::{anon}::environ），链接期

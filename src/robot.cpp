@@ -19,6 +19,9 @@
 #include <iostream>
 #include <utility>
 
+#include "util_env.hpp"
+#include "util_path.hpp"
+
 namespace bot {
 
 namespace {

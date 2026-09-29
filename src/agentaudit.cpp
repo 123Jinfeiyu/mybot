@@ -9,9 +9,11 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <unistd.h>
 
 #include "agent_subprocess.hpp"
-#include "util.hpp"
+#include "util_str.hpp"
+#include "util_utf8.hpp"
 
 namespace bot {
 namespace agent {

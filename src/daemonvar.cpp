@@ -10,7 +10,11 @@
 #include <stdexcept>
 #include <thread>
 
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_num.hpp"
+#include "util_path.hpp"
+#include "util_str.hpp"
 
 namespace bot {
 

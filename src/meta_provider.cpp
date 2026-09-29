@@ -14,6 +14,9 @@
 #include <string_view>
 #include <utility>
 
+#include "util_env.hpp"
+#include "util_num.hpp"
+
 namespace bot {
 
 /* ---- seed：字面列冻结 + 引用列解析（build 前统一校验存在性）---- */

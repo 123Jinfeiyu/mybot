@@ -22,7 +22,7 @@
 #include "json.hpp"
 #include "luaexec.hpp"
 #include "luavar.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using bot::Json;
 using bot::JsonFloat;
