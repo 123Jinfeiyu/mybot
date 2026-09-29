@@ -72,6 +72,166 @@ constexpr OptionSpec kValueOptions[] = {
 	{"llm-task-timeout", [](CliOptions& o, const std::string& v) { o.llmTaskTimeout = v; }, true},
 };
 
+/* ---- validateOptions 的校验块（2026-09-29 A3 拆分）----
+ * 各块违规即打印并返回 2，通过返回 0；判定与文案逐字保持原样，
+ * 块间顺序是既有契约（见 validateOptions 编排处的顺序说明）。 */
+
+/* F-20：未知/拼错的 --key 一律拒绝（退出码 2）。
+ * 旧行为是静默忽略：`--robott=foo` 打印帮助后 exit 0（CI 里的假成功），
+ * `--robot` 拼错还会让程序在「没给结构脚本」的路径上看似正常退出。 */
+int rejectUnknownKeys(ParsedArgs& args) {
+	if (args.unknown.empty()) { return 0; }
+	std::sort(args.unknown.begin(), args.unknown.end());
+	for (const auto& key : args.unknown) {
+		std::cerr << "未知参数：--" << key << "；用 --help 查看支持的参数" << std::endl;
+	}
+	return 2;
+}
+
+/* N-4：带值键裸写（漏值）在解析层即拒绝，退出码与 unknown 一致 */
+int rejectMissingValues(const ParsedArgs& args) {
+	for (const auto& key : args.missingValue) {
+		std::cerr << "选项 --" << key << " 缺少值；用法：--" << key << " <值>"
+			<< "，用 --help 查看说明" << std::endl;
+	}
+	return args.missingValue.empty() ? 0 : 2;
+}
+
+/* --agent 已移除（agent 循环迁 Rust）：在此快速失败。
+ * 旧路径会先做 LLM 驱动注入、取消哨兵装配、agent-over-TCP 甚至 accept 一条
+ * 连接，才在 main 的「已移除」桩上报错。F-20 同族口径：显式拒绝并退出 2，
+ * 文案给出替代用法（新拓扑：mybot --mcp-backend 提供工具后端，
+ * mybot-agent 跑模型循环，两者经 --mcp-socket 互联）。 */
+int rejectRemovedAgent(const CliOptions& options) {
+	if (!options.agent) { return 0; }
+	std::cerr << "参数错误：--agent 已移除（agent 循环已迁 Rust）。替代用法：\n"
+		"  1) 启动工具后端：./build/mybot --robot <结构脚本> --mcp-backend "
+		"--mcp-socket /tmp/mybot.sock\n"
+		"  2) 启动 agent：./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n"
+		"（构建 agent：bash scripts/build_agent.sh；详见 docs/agent.md）"
+		<< std::endl;
+	return 2;
+}
+
+/* 模型循环类选项：属于 Rust agent（mybot-agent），本程序一律拒绝。
+ * 这些是 mybot-agent 自己的选项面（它另有 --help）；本程序（C++ 宿主）不跑
+ * 模型循环。保留解析表条目是为了给出指路的报错，而不是「未知参数」。 */
+int rejectLoopOnlyOptions(const CliOptions& options) {
+	const char* loopOnly = nullptr;
+	if (!options.agentTask.empty()) { loopOnly = "--task"; }
+	else if (options.resume) { loopOnly = "--resume"; }
+	else if (!options.sessionFile.empty()) { loopOnly = "--session-file"; }
+	else if (!options.promptFiles.empty()) { loopOnly = "--prompt-file"; }
+	else if (!options.llmEndpoint.empty()) { loopOnly = "--llm-endpoint"; }
+	else if (!options.llmModel.empty()) { loopOnly = "--llm-model"; }
+	else if (!options.llmConfig.empty()) { loopOnly = "--llm-config"; }
+	else if (!options.llmDriver.empty()) { loopOnly = "--llm-driver"; }
+	else if (!options.llmVar.empty()) { loopOnly = "--llm-var"; }
+	else if (!options.llmMaxTurns.empty()) { loopOnly = "--llm-max-turns"; }
+	else if (!options.llmMaxTokens.empty()) { loopOnly = "--llm-max-tokens"; }
+	else if (!options.llmTimeout.empty()) { loopOnly = "--llm-timeout"; }
+	else if (!options.llmTaskTimeout.empty()) { loopOnly = "--llm-task-timeout"; }
+	if (loopOnly == nullptr) { return 0; }
+	std::cerr << "参数错误：" << loopOnly << " 属于 Rust agent（mybot-agent，"
+		"经 --socket 连接本程序的工具后端）；C++ 宿主侧请用 --mcp-backend"
+		<< std::endl;
+	return 2;
+}
+
+/* 工具门控类选项：只在 --mcp-backend 模式下有效
+ * （先于结构脚本装载与任何硬件上电；F-20 同族口径：显式拒绝退出 2，
+ * 不静默忽略。） */
+int rejectAgentOptionsOutsideBackend(const CliOptions& options) {
+	if (options.mcpBackend || !options.agentOptionsUsed) { return 0; }
+	/* PL-5（2026-09-22）：选项名单与 docs 的选项表保持一致——用户敲了
+	 * --no-camera 却被报「选项无效」，而文案里没有他刚敲的那一个，
+	 * 看起来像撞上了另一个错误。 */
+	std::cerr << "参数错误：--agent-shell "
+		"/ --agent-hot-sql / --agent-policy / --read-var / --scripts-dir "
+		"/ --camera-var / --camera-device / --camera-src / --camera-src-dir "
+		"/ --no-camera / --audit-log / --check-config 只在 --mcp-backend 模式下有效；"
+		"用 --help 查看说明"
+		<< std::endl;
+	return 2;
+}
+
+/* MCP 后端选项在非 backend 模式下出现：拒绝（与 F-20 同口径，组合错
+ * 显式拒绝退出 2，不静默忽略。后端复用 agent 的工具上下文选项（能力门控），
+ * 但**不跑 loop、不发模型调用**，故 loop/LLM 专属选项一律拒绝
+ * （silently ignored 会误导使用者）。 */
+int rejectMcpOptionsOutsideBackend(const CliOptions& options) {
+	if (options.mcpBackend) { return 0; }
+	if (!options.mcpSocket.empty()) {
+		std::cerr << "参数错误：--mcp-socket 只在 --mcp-backend 模式下有效" << std::endl;
+		return 2;
+	}
+	if (!options.mcpCallBudget.empty() || !options.mcpWallClock.empty()
+			|| !options.mcpIdleTimeout.empty()) {
+		std::cerr << "参数错误：--mcp-call-budget / --mcp-wall-clock / --mcp-idle-timeout"
+			" 只在 --mcp-backend 模式下有效" << std::endl;
+		return 2;
+	}
+	if (!options.onDisconnect.empty()) {
+		std::cerr << "参数错误：--on-disconnect 只在 --mcp-backend 模式下有效"
+			"（它是后端连接结束后的安全动作）" << std::endl;
+		return 2;
+	}
+	return 0;
+}
+
+/* --mcp-backend 模式内的组合校验（方案 F / 拓扑 F3）：互斥项、必备项与
+ * 每连接预算数值。空 = 不限；配置错误不碰真机，故在此单点拒；
+ * 数值上限只是防呆（跑飞护栏本就不该设成天文数字）。 */
+int validateMcpBackendCombos(const CliOptions& options) {
+	if (!options.mcpBackend) { return 0; }
+	if (options.tcp) {
+		std::cerr << "参数错误：--mcp-backend 与 --tcp 互斥"
+			"（后端经 AF_UNIX socket 服务，不监听 TCP 端口）" << std::endl;
+		return 2;
+	}
+	if (options.input) {
+		std::cerr << "参数错误：--mcp-backend 与 --input 互斥"
+			"（后端不接受一次性动作输入源）" << std::endl;
+		return 2;
+	}
+	if (!options.robot) {
+		std::cerr << "参数错误：--mcp-backend 需要同时提供 --robot <结构脚本>" << std::endl;
+		return 2;
+	}
+	if (options.mcpSocket.empty() && !options.checkConfig) {
+		std::cerr << "参数错误：--mcp-backend 需要 --mcp-socket <AF_UNIX 路径>"
+			"（mybot-agent 经此路径连接后端）" << std::endl;
+		return 2;
+	}
+	if (!options.mcpCallBudget.empty()) {
+		auto [st, v] = parseLongStrict(options.mcpCallBudget);
+		if (st != IntParse::OK || v < 0 || v > 1000000) {
+			std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
+				options.mcpCallBudget) << std::endl;
+			return 2;
+		}
+	}
+	if (!options.mcpWallClock.empty()) {
+		auto [st, v] = parseLongStrict(options.mcpWallClock);
+		if (st != IntParse::OK || v < 0 || v > 86400) {
+			std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
+				options.mcpWallClock) << std::endl;
+			return 2;
+		}
+	}
+	/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
+	 * 0 = 不限（缺省），与既有预算选项同口径。 */
+	if (!options.mcpIdleTimeout.empty()) {
+		auto [st, v] = parseLongStrict(options.mcpIdleTimeout);
+		if (st != IntParse::OK || v < 0 || v > 86400) {
+			std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
+				options.mcpIdleTimeout) << std::endl;
+			return 2;
+		}
+	}
+	return 0;
+}
+
 } // namespace
 
 ParsedArgs parseArgs(int argc, char** argv) {
@@ -151,155 +311,18 @@ Preflight preflightCli(ParsedArgs& args) {
 	return validateOptions(args) == 0 ? Preflight::Proceed : Preflight::ConfigError;
 }
 
-/* F-20/N-4/agent 选项组合校验：违规即打印并返回退出码 2，通过返回 0 */
+/* F-20/N-4/agent 选项组合校验：违规即打印并返回退出码 2，通过返回 0。
+ * 149 行单函数拆成七个具名校验块（2026-09-29 A3），本函数只留顺序敏感的
+ * 编排——块序是既有契约：解析层问题（未知/漏值）先于入口形态（--agent/
+ * loop 类）先于工具门控先于 backend 组合；报错文案逐字不变。 */
 int validateOptions(ParsedArgs& args) {
-	const CliOptions& options = args.opts;
-
-	/* ---- F-20：未知/拼错的 --key 一律拒绝（退出码 2）----
-	 * 旧行为是静默忽略：`--robott=foo` 打印帮助后 exit 0（CI 里的假成功），
-	 * `--robot` 拼错还会让程序在「没给结构脚本」的路径上看似正常退出。 */
-	if (!args.unknown.empty()) {
-		std::sort(args.unknown.begin(), args.unknown.end());
-		for (const auto& key : args.unknown) {
-			std::cerr << "未知参数：--" << key << "；用 --help 查看支持的参数" << std::endl;
-		}
-		return 2;
-	}
-
-	/* N-4：带值键裸写（漏值）在解析层即拒绝，退出码与 unknown 一致 */
-	if (!args.missingValue.empty()) {
-		for (const auto& key : args.missingValue) {
-			std::cerr << "选项 --" << key << " 缺少值；用法：--" << key << " <值>"
-				<< "，用 --help 查看说明" << std::endl;
-		}
-		return 2;
-	}
-
-	/* ---- --agent 已移除（agent 循环迁 Rust）：在此快速失败 ----
-	 * 旧路径会先做 LLM 驱动注入、取消哨兵装配、agent-over-TCP 甚至 accept 一条
-	 * 连接，才在 main 的「已移除」桩上报错。F-20 同族口径：显式拒绝并退出 2，
-	 * 文案给出替代用法（新拓扑：mybot --mcp-backend 提供工具后端，
-	 * mybot-agent 跑模型循环，两者经 --mcp-socket 互联）。 */
-	if (options.agent) {
-		std::cerr << "参数错误：--agent 已移除（agent 循环已迁 Rust）。替代用法：\n"
-			"  1) 启动工具后端：./build/mybot --robot <结构脚本> --mcp-backend "
-			"--mcp-socket /tmp/mybot.sock\n"
-			"  2) 启动 agent：./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n"
-			"（构建 agent：bash scripts/build_agent.sh；详见 docs/agent.md）"
-			<< std::endl;
-		return 2;
-	}
-
-	/* ---- 模型循环类选项：属于 Rust agent（mybot-agent），本程序一律拒绝 ----
-	 * 这些是 mybot-agent 自己的选项面（它另有 --help）；本程序（C++ 宿主）不跑
-	 * 模型循环。保留解析表条目是为了给出指路的报错，而不是「未知参数」。 */
-	const char* loopOnly = nullptr;
-	if (!options.agentTask.empty()) { loopOnly = "--task"; }
-	else if (options.resume) { loopOnly = "--resume"; }
-	else if (!options.sessionFile.empty()) { loopOnly = "--session-file"; }
-	else if (!options.promptFiles.empty()) { loopOnly = "--prompt-file"; }
-	else if (!options.llmEndpoint.empty()) { loopOnly = "--llm-endpoint"; }
-	else if (!options.llmModel.empty()) { loopOnly = "--llm-model"; }
-	else if (!options.llmConfig.empty()) { loopOnly = "--llm-config"; }
-	else if (!options.llmDriver.empty()) { loopOnly = "--llm-driver"; }
-	else if (!options.llmVar.empty()) { loopOnly = "--llm-var"; }
-	else if (!options.llmMaxTurns.empty()) { loopOnly = "--llm-max-turns"; }
-	else if (!options.llmMaxTokens.empty()) { loopOnly = "--llm-max-tokens"; }
-	else if (!options.llmTimeout.empty()) { loopOnly = "--llm-timeout"; }
-	else if (!options.llmTaskTimeout.empty()) { loopOnly = "--llm-task-timeout"; }
-	if (loopOnly != nullptr) {
-		std::cerr << "参数错误：" << loopOnly << " 属于 Rust agent（mybot-agent，"
-			"经 --socket 连接本程序的工具后端）；C++ 宿主侧请用 --mcp-backend"
-			<< std::endl;
-		return 2;
-	}
-
-	/* ---- 工具门控类选项：只在 --mcp-backend 模式下有效 ----
-	 * （先于结构脚本装载与任何硬件上电；F-20 同族口径：显式拒绝退出 2，
-	 * 不静默忽略。） */
-	if (!options.mcpBackend && options.agentOptionsUsed) {
-		/* PL-5（2026-09-22）：选项名单与 docs 的选项表保持一致——用户敲了
-		 * --no-camera 却被报「选项无效」，而文案里没有他刚敲的那一个，
-		 * 看起来像撞上了另一个错误。 */
-		std::cerr << "参数错误：--agent-shell "
-			"/ --agent-hot-sql / --agent-policy / --read-var / --scripts-dir "
-			"/ --camera-var / --camera-device / --camera-src / --camera-src-dir "
-			"/ --no-camera / --audit-log / --check-config 只在 --mcp-backend 模式下有效；"
-			"用 --help 查看说明"
-			<< std::endl;
-		return 2;
-	}
-
-	/* ---- MCP 后端模式（--mcp-backend）组合校验（方案 F / 拓扑 F3）----
-	 * 与 F-20 同口径：组合错显式拒绝退出 2，不静默忽略。后端复用 agent 的工具
-	 * 上下文选项（能力门控），但**不跑 loop、不发模型调用**，故 loop/LLM 专属
-	 * 选项一律拒绝（silently ignored 会误导使用者）。 */
-	if (!options.mcpBackend && !options.mcpSocket.empty()) {
-		std::cerr << "参数错误：--mcp-socket 只在 --mcp-backend 模式下有效" << std::endl;
-		return 2;
-	}
-	if (!options.mcpBackend
-		&& (!options.mcpCallBudget.empty() || !options.mcpWallClock.empty()
-			|| !options.mcpIdleTimeout.empty())) {
-		std::cerr << "参数错误：--mcp-call-budget / --mcp-wall-clock / --mcp-idle-timeout"
-			" 只在 --mcp-backend 模式下有效" << std::endl;
-		return 2;
-	}
-	if (!options.mcpBackend && !options.onDisconnect.empty()) {
-		std::cerr << "参数错误：--on-disconnect 只在 --mcp-backend 模式下有效"
-			"（它是后端连接结束后的安全动作）" << std::endl;
-		return 2;
-	}
-	if (options.mcpBackend) {
-		if (options.tcp) {
-			std::cerr << "参数错误：--mcp-backend 与 --tcp 互斥"
-				"（后端经 AF_UNIX socket 服务，不监听 TCP 端口）" << std::endl;
-			return 2;
-		}
-		if (options.input) {
-			std::cerr << "参数错误：--mcp-backend 与 --input 互斥"
-				"（后端不接受一次性动作输入源）" << std::endl;
-			return 2;
-		}
-		if (!options.robot) {
-			std::cerr << "参数错误：--mcp-backend 需要同时提供 --robot <结构脚本>" << std::endl;
-			return 2;
-		}
-		if (options.mcpSocket.empty() && !options.checkConfig) {
-			std::cerr << "参数错误：--mcp-backend 需要 --mcp-socket <AF_UNIX 路径>"
-				"（mybot-agent 经此路径连接后端）" << std::endl;
-			return 2;
-		}
-		/* 每连接预算数值校验（空 = 不限；配置错误不碰真机，故在此单点拒）。
-		 * 上限只是防呆（跑飞护栏本就不该设成天文数字）。 */
-		if (!options.mcpCallBudget.empty()) {
-			auto [st, v] = parseLongStrict(options.mcpCallBudget);
-			if (st != IntParse::OK || v < 0 || v > 1000000) {
-				std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
-					options.mcpCallBudget) << std::endl;
-				return 2;
-			}
-		}
-		if (!options.mcpWallClock.empty()) {
-			auto [st, v] = parseLongStrict(options.mcpWallClock);
-			if (st != IntParse::OK || v < 0 || v > 86400) {
-				std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
-					options.mcpWallClock) << std::endl;
-				return 2;
-			}
-		}
-		/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
-		 * 0 = 不限（缺省），与既有预算选项同口径。 */
-		if (!options.mcpIdleTimeout.empty()) {
-			auto [st, v] = parseLongStrict(options.mcpIdleTimeout);
-			if (st != IntParse::OK || v < 0 || v > 86400) {
-				std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
-					options.mcpIdleTimeout) << std::endl;
-				return 2;
-			}
-		}
-	}
-	return 0;
+	if (int rc = rejectUnknownKeys(args)) { return rc; }
+	if (int rc = rejectMissingValues(args)) { return rc; }
+	if (int rc = rejectRemovedAgent(args.opts)) { return rc; }
+	if (int rc = rejectLoopOnlyOptions(args.opts)) { return rc; }
+	if (int rc = rejectAgentOptionsOutsideBackend(args.opts)) { return rc; }
+	if (int rc = rejectMcpOptionsOutsideBackend(args.opts)) { return rc; }
+	return validateMcpBackendCombos(args.opts);
 }
 
 /* TCP 选项块（全文帮助与 --help tcp 共用单点，2026-09-25 D3）：两处此前逐行
