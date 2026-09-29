@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "json.hpp"
-#include "jsonparse.hpp"
+#include "jsonconfig.hpp"
 #include "util.hpp"
 
 namespace bot {
@@ -16,6 +16,9 @@ namespace bot {
 namespace {
 
 constexpr std::size_t kMaxConfigBytes = 64u << 10;
+
+/* 本类文件的读取口径：报错名词/动词逐字沿用旧文案；空文件独立报错。 */
+const jsonconfig::ConfigKind kConfigKind = {"配置文件", "需要", true, kMaxConfigBytes};
 
 bool fileReadable(const std::string& path) {
 	std::ifstream f(path, std::ios::binary);
@@ -26,9 +29,10 @@ bool fileReadable(const std::string& path) {
  * 旧实现读满 cap 即返回、不查剩余，把超限文件静默截断后伪装成
  * 「不是合法 JSON」（密钥文件则伪装成「密钥错误」）。 */
 
-/* 字段类型不符时的统一报错（带字段名与期望类型，排障时不用猜） */
+/* 字段类型不符时的统一报错（带字段名与期望类型，排障时不用猜）——
+ * 文案本体在 jsonconfig 单点，这里只绑定本文件的读取口径 */
 std::string typeError(const std::string& path, const std::string& key, const char* want) {
-	return "配置文件 " + path + " 的字段 '" + key + "' 需要" + want;
+	return jsonconfig::typeError(kConfigKind, path, key, want);
 }
 
 bool wantString(const std::string& path, const Json& root, const char* key,
@@ -140,25 +144,9 @@ bool wantStringArray(const std::string& path, const Json& root, const char* key,
 }
 
 /* ---- 读取 + 解析 + 顶层形态 + 未知字段（F2-8 拆分之一）----
- * 未知字段拒绝：拼错一个键（如 "apikey"）而静默走缺省，会让人以为配置生效了。
- * 与「未知 --key 退出 2」同一口径。 */
+ * 骨架（受限读取/解析/顶层形态/未知字段拒绝）已收敛到 jsonconfig::loadRoot
+ * 单点，与 agentpolicy 共用；这里只登记本文件自己的 schema 白名单。 */
 bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
-	std::string text;
-	if (!readWholeFileLimited(path, kMaxConfigBytes, text, err, "配置文件")) { return false; }
-	if (text.empty()) {
-		err = "配置文件为空: " + path;
-		return false;
-	}
-	try {
-		root = parseJson(text);
-	} catch (const std::exception& e) {
-		err = "配置文件 " + path + " 不是合法 JSON: " + e.what();
-		return false;
-	}
-	if (!root.isObj()) {
-		err = "配置文件 " + path + " 的顶层必须是 JSON 对象";
-		return false;
-	}
 	static const std::set<std::string> kKnown = {
 		"driver", "var", "endpoint", "model", "api_key", "api_key_file",
 		"timeout", "max_tokens", "temperature", "top_p", "max_task_seconds",
@@ -178,13 +166,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		 * （C++ agent 的历史裁剪不做摘要） */
 		"history_summary", "max_summary_bytes",
 	};
-	for (const auto& kv : root.items()) {
-		if (kKnown.count(kv.first) == 0) {
-			err = "配置文件 " + path + " 含未知字段 '" + kv.first + "'（拼写错误？）";
-			return false;
-		}
-	}
-	return true;
+	return jsonconfig::loadRoot(kConfigKind, path, kKnown, root, err);
 }
 
 /* 字符串族字段（含 thinking 的三态：字符串 enabled/disabled 或布尔） */
