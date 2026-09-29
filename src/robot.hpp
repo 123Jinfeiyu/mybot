@@ -114,6 +114,16 @@ class RobotStruct {
 		HotSqlPlan::Insertions& insPlan, const HotDeleteOutcome& alreadyDeleted);
 	DropOutcome dropTableShells(const ScriptLoader::Mutations& muts);
 
+	/* ---- commitHotBatch 的两块拆出（2026-09-29 A3）----
+	 * rollbackHotBatch：插入段失败的逆序断电 + 撤注册 + 恢复矩阵（原 45 行
+	 * rollback lambda，语义逐字保持）；rethrowWithLostVars：先删后建批次的
+	 * 失败重包装（点名已摘除且未重建的变量，理由见实现处注释）。 */
+	void rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t metaMark,
+		std::size_t daemonMark,
+		const std::vector<std::pair<std::size_t, std::size_t>>& appended,
+		std::size_t addedTables);
+	[[noreturn]] void rethrowWithLostVars(const HotDeleteOutcome& alreadyDeleted);
+
 public:
 	explicit RobotStruct(bot::Reader& input)
 		: factory_(registry_, daemonHolders_, metaProviders_), runner_(registry_) {

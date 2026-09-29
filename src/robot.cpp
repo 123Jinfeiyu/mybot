@@ -756,25 +756,6 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 	std::vector<std::pair<std::size_t, std::size_t>> appended;	/* (矩阵下标, 追加行数) */
 	std::size_t addedTables = 0;
 
-	auto rollback = [&]() {
-		/* ① 逆序断电：destroy 逐项容错（半装配/未 build 的项也要能安全 destroy，
-		 *    与 deactivate 同口径），单个失败不能中断整轮回滚。 */
-		const auto& seq = registry_.sequence();
-		for (std::size_t i = seq.size(); i > mark.seq; --i) {
-			try {
-				seq[i - 1]->destroy();
-			} catch (const std::exception& e) {
-				std::cerr << "Hot SQL rollback warning: " << e.what() << std::endl;
-			}
-		}
-		/* ② 撤注册（含流引用快照还原）→ ③ 弹登记表 → ④ 恢复矩阵 */
-		registry_.rollbackTo(mark);
-		metaProviders_.resize(metaMark);
-		daemonHolders_.resize(daemonMark);
-		for (const auto& [idx, n] : appended) { matrices_[idx].popRows(n); }
-		matrices_.resize(matrices_.size() - addedTables);
-	};
-
 	try {
 		/* 4.1 既有表：先落行（矩阵是装配的输入），再按旧行数增量装配 */
 		for (const auto& [idx, rows] : insPlan.appends) {
@@ -812,7 +793,7 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 		if (!insPlan.actionMats.empty()) { runner_.runAction(insPlan.actionMats); }
 	} catch (...) {
 		try {
-			rollback();
+			rollbackHotBatch(mark, metaMark, daemonMark, appended, addedTables);
 		} catch (const std::exception& e) {
 			/* 回滚本身失败已超出手头能修的范畴：如实留痕，但不掩盖原错误
 			 * （原错误才是调用方要看的成因）。 */
@@ -820,29 +801,9 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 		}
 		/* 先删后建的失败口径（区别于既有批次的「原样上抛」）：本批次含 UPDATE
 		 * 且已摘除过旧件时，活体**已经动过**——插入段失败只是「新件未建成」，
-		 * 旧件不会回来。这里把成因包装成 runtime_error 并点名丢失的变量：
-		 *  - 不谎报：模型/操作者必须知道「哪些变量已经没了」；
-		 *  - 类型必须是 runtime_error 而非原样上抛——若成因本身是
-		 *    IllegalArgumentException（如装配期重名），apply_sql 的派发漏斗
-		 *    会按异常类型把它归类成「校验拒绝、活体一字未动」（paramError /
-		 *    executed=false），对本口径是谎报：删旧件是真实发生过的副作用。 */
+		 * 旧件不会回来（重包装的理由见 rethrowWithLostVars 注释）。 */
 		if (delPlan.deleteFirst && alreadyDeleted.deletedVars > 0) {
-			std::string names;
-			for (const std::string& n : alreadyDeleted.deletedNames) {
-				if (!names.empty()) { names += ", "; }
-				names += n;
-			}
-			const std::string tail =
-				"；注意：本批次含 UPDATE，其命中旧行已断电摘除且未能重建（"
-				+ names + "）——硬件不会自动复原，请核对状态后按需要的值重新 INSERT";
-			try {
-				throw;
-			} catch (const std::exception& e) {
-				throw std::runtime_error(std::string(e.what()) + tail);
-			} catch (...) {
-				throw std::runtime_error(
-					std::string(kNonStdExceptionNote) + tail);
-			}
+			rethrowWithLostVars(alreadyDeleted);
 		}
 		throw;
 	}
@@ -857,6 +818,56 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 	for (const auto& [idx, n] : appended) { (void)idx; out.addedRows += n; }
 	out.addedTables = addedTables;
 	return out;
+}
+
+/* 插入段失败的回滚（原 commitHotBatch 内 45 行 rollback lambda，2026-09-29
+ * A3 拆出；四步语义逐字保持）：
+ * ① 逆序断电：destroy 逐项容错（半装配/未 build 的项也要能安全 destroy，
+ *    与 deactivate 同口径），单个失败不能中断整轮回滚。
+ * ② 撤注册（含流引用快照还原）→ ③ 弹登记表 → ④ 恢复矩阵。 */
+void RobotStruct::rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t metaMark,
+		std::size_t daemonMark,
+		const std::vector<std::pair<std::size_t, std::size_t>>& appended,
+		std::size_t addedTables) {
+	const auto& seq = registry_.sequence();
+	for (std::size_t i = seq.size(); i > mark.seq; --i) {
+		try {
+			seq[i - 1]->destroy();
+		} catch (const std::exception& e) {
+			std::cerr << "Hot SQL rollback warning: " << e.what() << std::endl;
+		}
+	}
+	registry_.rollbackTo(mark);
+	metaProviders_.resize(metaMark);
+	daemonHolders_.resize(daemonMark);
+	for (const auto& [idx, n] : appended) { matrices_[idx].popRows(n); }
+	matrices_.resize(matrices_.size() - addedTables);
+}
+
+/* 先删后建批次插入段失败的重包装：本批次含 UPDATE 且已摘除过旧件时，活体
+ * **已经动过**——插入段失败只是「新件未建成」，旧件不会回来。把成因包装成
+ * runtime_error 并点名丢失的变量：
+ *  - 不谎报：模型/操作者必须知道「哪些变量已经没了」；
+ *  - 类型必须是 runtime_error 而非原样上抛——若成因本身是
+ *    IllegalArgumentException（如装配期重名），apply_sql 的派发漏斗
+ *    会按异常类型把它归类成「校验拒绝、活体一字未动」（paramError /
+ *    executed=false），对本口径是谎报：删旧件是真实发生过的副作用。 */
+void RobotStruct::rethrowWithLostVars(const HotDeleteOutcome& alreadyDeleted) {
+	std::string names;
+	for (const std::string& n : alreadyDeleted.deletedNames) {
+		if (!names.empty()) { names += ", "; }
+		names += n;
+	}
+	const std::string tail =
+		"；注意：本批次含 UPDATE，其命中旧行已断电摘除且未能重建（"
+		+ names + "）——硬件不会自动复原，请核对状态后按需要的值重新 INSERT";
+	try {
+		throw;
+	} catch (const std::exception& e) {
+		throw std::runtime_error(std::string(e.what()) + tail);
+	} catch (...) {
+		throw std::runtime_error(std::string(kNonStdExceptionNote) + tail);
+	}
 }
 
 /* ==================== 阶段 4.7：整表撤下（DROP TABLE，不可逆）====================
