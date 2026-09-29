@@ -111,7 +111,33 @@ def call(o):
 	n = struct.unpack(">I", recv_exact(4))[0]
 	chk(n <= MAX, "响应帧长 %d 在 8MiB 上限内" % n)
 	return json.loads(recv_exact(n).decode("utf-8"))
+def finish():
+	s.close()
+	print("FRAMESUMMARY pass=%d fail=%d" % (passed, failed))
+	sys.exit(0 if failed == 0 else 1)
 try:
+	# M6（BOT4CJ_MCP_TOKEN 首帧认证）：认证场景必须把 auth 帧打在最前面
+	if scenario in ("auth-ok", "auth-bad", "auth-none"):
+		import os
+		if scenario == "auth-ok":
+			r = call({"_route": "auth", "token": os.environ.get("BOT4CJ_MCP_TOKEN", "")})
+			chk(r.get("success") is True and r.get("data", {}).get("auth") is True,
+				"首帧认证通过（共享密钥匹配）")
+		else:
+			if scenario == "auth-bad":
+				r = call({"_route": "auth", "token": os.environ.get("BOT4CJ_MCP_TOKEN", "") + "-wrong"})
+				chk(r.get("success") is False and "auth" in r.get("error", ""),
+					"错误密钥被拒（回执不含密钥本体）")
+			else:	# auth-none：跳过认证直发业务请求（旧客户端形态）
+				r = call({"_route": "ping"})
+				chk(r.get("success") is False and "auth" in r.get("error", ""),
+					"无认证帧直发业务请求被拒")
+			try:
+				call({"_route": "ping"})
+				ng("认证失败后后端未断连")
+			except (ConnectionError, OSError):
+				ok("认证失败后后端断连（对端可修正重连）")
+			finish()	# 负面场景到此为止，不跑公共断言（后端已断连）
 	r = call({"_route": "ping"})
 	chk(r.get("success") is True and r.get("data", {}).get("pong") is True,
 		"ping → pong（4B BE 帧，Python 独立实现字节兼容）")
@@ -240,8 +266,7 @@ try:
 	chk(r.get("success") is False and "unknown route" in r.get("error", ""), "未知路由 → unknown route")
 finally:
 	s.close()
-print("FRAMESUMMARY pass=%d fail=%d" % (passed, failed))
-sys.exit(0 if failed == 0 else 1)
+finish()
 PY
 
 # ---- 一趟：起后端 → 校验 perms → 跑帧客户端 → 校验审计/停机 ----
@@ -361,6 +386,50 @@ wait "$rpid"; rrc=$?
 chk "反面：退出码 2（配置错误不碰真机）" "$rrc" "2"
 if [ -S "$REJ/run/mcp.sock" ]; then ng "反面：socket 不应被创建"; else ok "反面：socket 未创建"; fi
 grep -q 'run_command' "$REJ/log" && ok "反面：报错点名 run_command" || ng "反面：报错未点名 run_command"
+
+# ---- M6：首帧共享密钥（BOT4CJ_MCP_TOKEN，2026-09-29 审计 P2-1）----
+# 正面：同一环境变量喂两端（正是生产拓扑：后端在宿主抹零前捕获、agent 连接后
+# 首帧发认证）。auth 帧通过后公共断言照跑，审计/停机检查沿用 phase。
+export BOT4CJ_MCP_TOKEN=secret-e2e-m6
+phase "M6 首帧认证（正确密钥）" false "$TMP/p-auth" auth-ok
+grep -q '首帧共享密钥已启用' "$TMP/p-auth/backend.log" \
+	&& ok "M6: 启动日志声明密钥已启用" || ng "M6: 启动日志未声明密钥状态"
+grep -q '首帧认证通过' "$TMP/p-auth/backend.log" \
+	&& ok "M6: 后端日志记录认证通过" || ng "M6: 后端日志未见认证通过"
+unset BOT4CJ_MCP_TOKEN
+
+# 反面一：错误密钥 / 不发认证帧 —— 拒绝 + 断连 + 审计 auth_failed
+for neg in auth-bad auth-none; do
+	echo "----- M6 反面（$neg）-----"
+	ND="$TMP/neg-$neg"; mkdir -p "$ND"
+	BOT4CJ_MCP_TOKEN=secret-e2e-m6 "$MYBOT" --robot=robots/relay-test.sql --mcp-backend \
+		--mcp-socket "$ND/run/mcp.sock" --scripts-dir scripts \
+		--audit-log "$ND/audit.jsonl" >"$ND/log" 2>&1 &
+	npid=$!; PIDS="$PIDS $npid"
+	nup=no; for _ in $(seq 1 60); do [ -S "$ND/run/mcp.sock" ] && { nup=yes; break; }; sleep 0.1; done
+	if [ "$nup" != yes ]; then ng "$neg: 后端未监听"; sed 's/^/    /' "$ND/log"; continue; fi
+	npyout="$(BOT4CJ_MCP_TOKEN=secret-e2e-m6 python3 "$TMP/frame_client.py" \
+		"$ND/run/mcp.sock" false "$neg" 2>&1)"
+	echo "$npyout"
+	npp="$(echo "$npyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\1/p')"
+	npf="$(echo "$npyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\2/p')"
+	pass=$((pass + ${npp:-0})); fail=$((fail + ${npf:-0}))
+	kill -TERM "$npid" 2>/dev/null; wait "$npid" 2>/dev/null
+	grep -q '"status":"auth_failed"' "$ND/audit.jsonl" 2>/dev/null \
+		&& ok "$neg: 审计记录 auth_failed" || ng "$neg: 审计缺 auth_failed"
+	grep -q '首帧认证失败' "$ND/log" && ok "$neg: 后端日志点名认证失败" || ng "$neg: 后端日志未点名认证失败"
+done
+
+# 反面二：设置但为空 —— fail-closed 拒绝启动（不会静默退回无认证裸奔）
+AUTHREJ="$TMP/auth-reject"; mkdir -p "$AUTHREJ"
+BOT4CJ_MCP_TOKEN= "$MYBOT" --robot=robots/relay-test.sql --mcp-backend \
+	--mcp-socket "$AUTHREJ/run/mcp.sock" --scripts-dir scripts >"$AUTHREJ/log" 2>&1 &
+apid=$!; PIDS="$PIDS $apid"
+for _ in $(seq 1 40); do kill -0 "$apid" 2>/dev/null || break; sleep 0.1; done
+wait "$apid"; arc=$?
+chk "M6 反面：空密钥退出码 2（配置错误不碰真机）" "$arc" "2"
+grep -q 'BOT4CJ_MCP_TOKEN' "$AUTHREJ/log" \
+	&& ok "M6 反面：报错点名 BOT4CJ_MCP_TOKEN" || ng "M6 反面：报错未点名 BOT4CJ_MCP_TOKEN"
 
 # ---- 调试逃生口：BOT4CJ_ALLOW_PTRACE=1 ⇒ 保持可 dump，且 stderr 有「注意」----
 if [ "$SAN_BUILD" = yes ]; then

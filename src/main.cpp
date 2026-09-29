@@ -170,6 +170,9 @@ int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agen
 	robot.active();
 	agent::McpBackendOptions bopts;
 	bopts.socketPath = options.mcpSocket;
+	/* 首帧共享密钥（MCP-1，审计 P2-1）：buildAgentConfig 在宿主环境抹零前
+	 * 捕获的 BOT4CJ_MCP_TOKEN。空 = 不启用。 */
+	bopts.authToken = agentCfg.mcpAuthToken;
 	/* 每连接预算（评估 §3.2「预算再强制」）：cliargs 已校验为 [0,上限] 的整数，
 	 * 空 = 不限（保持 0）。这里只做转换。注意这与**单次**物理调用的
 	 * scriptTimeoutSec / commandTimeoutSec 是不同维度——后者始终在工具层生效。 */

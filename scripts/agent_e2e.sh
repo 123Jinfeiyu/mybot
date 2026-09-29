@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rust agent 端到端：本地假模型 + C++ 后端，无硬件运行 R1–R14。
+# Rust agent 端到端：本地假模型 + C++ 后端，无硬件运行 R1–R17。
 #
 # 以下是已移除 C++ agent 的历史场景索引，现役覆盖见下方 R 段：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
@@ -55,7 +55,7 @@
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
 #   用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
-#   本文件**只有 Rust 一种模式**：跑 R1-R14（mybot-agent；R1-R5 批次 B 骨架、
+#   本文件**只有 Rust 一种模式**：跑 R1-R17（mybot-agent；R1-R5 批次 B 骨架、
 #   R6-R9 批次 C 循环层、R10 审计 H2 修复、R11 会话持久化（R11b 纯裁剪、
 #   R11c 裁剪→摘要→跨会话恢复）、R12/R13 多协议与恢复、
 #   R14 MCP4725 虚拟读写闭环及错误读数反例；R5m 为配置
@@ -1430,6 +1430,47 @@ if [ -e "$DEF_HIST" ] && [ "$DEF_HIST" -nt "$tmp/.t0" ]; then
 else
 	echo "  [OK] R16：管道面场景未触碰缺省历史文件"
 fi
+
+# ---- R17：MCP 首帧共享密钥（BOT4CJ_MCP_TOKEN，2026-09-29 审计 P2-1）----
+# 生产拓扑：同一环境变量喂两个进程（后端在宿主环境抹零前捕获，agent 连接后
+# 首帧发认证帧）。正反两面：密钥一致 → 全链路照跑；agent 侧缺密钥 → 启动即败。
+echo "----- R17：首帧共享密钥（后端 + agent 两进程） -----"
+PORT=$((25500 + RANDOM % 300))
+R17="$tmp/rust17"
+start_server "$PORT" "$R17/req.json" ok || exit 1
+# 与 R1 同款开 --agent-shell + policy：ok 剧本会调 run_command，不开则工具表缺它
+BOT4CJ_MCP_TOKEN=secret-r17 start_backend "$R17" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key BOT4CJ_MCP_TOKEN=secret-r17 timeout 60 "$AGENT_BIN" \
+	--socket "$R17/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --task "随便问一句" >"$R17/out.txt" 2>"$R17/err.txt"
+rcr17=$?
+stop_backend
+stop_server
+if [ "$rcr17" -eq 0 ]; then
+	echo "  [OK] R17 正面：密钥一致，agent 正常完成（退出码 0）"
+else
+	echo "  [FAIL] R17 正面：agent 退出码 $rcr17"; tail -5 "$R17/err.txt" | sed 's/^/    /'; fail=1
+fi
+check_present "$R17/backend.log" "首帧认证通过" "R17 正面：后端日志见证认证帧"
+
+# 反面：后端带密钥、agent 不带 —— 首个业务帧被拒，启动即败（不会静默裸奔）
+R17B="$tmp/rust17b"
+start_server "$PORT" "$R17B/req.json" ok || exit 1
+BOT4CJ_MCP_TOKEN=secret-r17 start_backend "$R17B" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 20 "$AGENT_BIN" --socket "$R17B/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --task "随便问一句" >"$R17B/out.txt" 2>"$R17B/err.txt"
+rcr17b=$?
+stop_backend
+stop_server
+if [ "$rcr17b" -ne 0 ]; then
+	echo "  [OK] R17 反面：agent 侧缺密钥，启动即败（退出码 $rcr17b）"
+else
+	echo "  [FAIL] R17 反面：agent 竟在缺密钥时完成"; fail=1
+fi
+check_present "$R17B/err.txt" "auth required" "R17 反面：报错指明需要首帧认证"
+check_present "$R17B/backend.log" "首帧认证失败" "R17 反面：后端日志点名认证失败"
 
 if [ "$fail" -eq 0 ]; then
 	echo "mybot-agent 端到端测试通过"

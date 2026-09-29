@@ -308,6 +308,34 @@ bool precheckDisconnectScript(const CliOptions& opts, AgentModeConfig& out, std:
 	return true;
 }
 
+/* 11d) MCP 首帧共享密钥（2026-09-29，审计 P2-1）：环境变量 BOT4CJ_MCP_TOKEN。
+ * 只认环境变量（命令行会进全局可读的 cmdline；配置文件是低信任层）。
+ * fail-closed 两类显式拒绝：set-but-empty（操作者以为开了认证、实际静默裸奔）
+ * 与超长（多半是把文件路径或别的什么误当密钥给了）。上限 256：真实共享密钥
+ * 用不到更长，而帧上限/日志体积都不必为它让路。
+ * 必须在 prepareAgentConfig 的 scrubEnvSecrets 之前调用（此后 environ 里
+ * 这个名字已被抹零，再 getenv 只得 nullptr）——buildAgentConfig 的调用序
+ * 已保证（scrub 在 build 之后）。 */
+bool captureMcpAuthToken(AgentModeConfig& out, std::string& err) {
+	const auto v = getEnvVar("BOT4CJ_MCP_TOKEN");
+	if (!v) { return true; }	/* 未设置 = 不启用（现状语义） */
+	constexpr std::size_t kMaxTokenBytes = 256;
+	if (v->empty()) {
+		err = "BOT4CJ_MCP_TOKEN 已设置但为空——首帧认证无法启用。"
+			"要么给非空值，要么 unset 它；空值会被当作「想开认证但没开成」"
+			"处理（拒绝启动），不会静默退回无认证。";
+		return false;
+	}
+	if (v->size() > kMaxTokenBytes) {
+		err = "BOT4CJ_MCP_TOKEN 过长（" + std::to_string(v->size())
+			+ " 字节，上限 " + std::to_string(kMaxTokenBytes)
+			+ "）——共享密钥不需要这么长，请确认给的不是文件路径。";
+		return false;
+	}
+	out.mcpAuthToken = *v;
+	return true;
+}
+
 } // namespace
 
 bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
@@ -334,6 +362,7 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	if (!loadPolicyHook(opts, file, out, err)) { return false; }		/* 11) 策略钩子 */
 	if (!enforceBackendConfirmPolicy(opts, out, err)) { return false; }	/* 11b) 后端强制确认 */
 	if (!precheckDisconnectScript(opts, out, err)) { return false; }	/* 11c) 断连安全动作 */
+	if (!captureMcpAuthToken(out, err)) { return false; }		/* 11d) MCP 首帧密钥 */
 	return true;
 }
 

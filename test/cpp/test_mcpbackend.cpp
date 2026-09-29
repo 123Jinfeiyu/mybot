@@ -735,3 +735,50 @@ TH_TEST(mcpbackend_toolresult_schema_matches_rust_outcome) {
 		"ToolOutcome 字段（" + joinNames(fields) + "）应与七字段契约（"
 		+ joinNames(snake) + "）一致——Rust 侧漏字段会在回执处理时静默丢失");
 }
+
+/* ---- 首帧共享密钥（MCP-1，2026-09-29 审计 P2-1）----
+ * 纯协议件 mcpCheckAuthFrame 的三态判据：正确密钥 Ok；错误密钥/缺 token 字段/
+ * token 非字符串/非法 JSON/顶层非对象 Failed；合法 JSON 对象但 _route 不是 auth
+ * （旧客户端直发业务请求）NotAuthFrame——serveConnection 据此区分报错文案。 */
+TH_TEST(mcpbackend_auth_frame_accepts_matching_token) {
+	using bot::agent::McpAuthOutcome;
+	const std::string payload = R"({"_route":"auth","token":"secret-1"})";
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1", payload) == McpAuthOutcome::Ok);
+	/* 参数顺序无关：serde_json 按键取值 */
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1",
+			R"({"token":"secret-1","_route":"auth"})") == McpAuthOutcome::Ok);
+}
+
+TH_TEST(mcpbackend_auth_frame_rejects_mismatch_and_malformed) {
+	using bot::agent::McpAuthOutcome;
+	/* 错误密钥：长度相同（防止「比长度短路」的假实现混过）与长度不同两类 */
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1",
+			R"({"_route":"auth","token":"secret-2"})") == McpAuthOutcome::Failed);
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1",
+			R"({"_route":"auth","token":"s"})") == McpAuthOutcome::Failed);
+	/* 注：expected="" 对 token="" 是合法匹配（Ok），不在本用例——不可达路径：
+	 * captureMcpAuthToken 对空值拒绝启动，serveConnection 只在 authToken
+	 * 非空时才强制首帧认证；纯函数不重复上游不变式。 */
+	/* token 字段缺失 / 非字符串 */
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1",
+			R"({"_route":"auth"})") == McpAuthOutcome::Failed);
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1",
+			R"({"_route":"auth","token":123})") == McpAuthOutcome::Failed);
+	/* 非法 JSON / 顶层非对象（与 handleFrame 的固定串口径一致：不回显输入） */
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1", "not json")
+		== McpAuthOutcome::Failed);
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1", "[1,2]")
+		== McpAuthOutcome::Failed);
+}
+
+TH_TEST(mcpbackend_auth_frame_distinguishes_non_auth_first_frame) {
+	using bot::agent::McpAuthOutcome;
+	/* 旧客户端形态：首帧直接是业务请求（合法 JSON 对象、_route 非 auth） */
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1",
+			R"({"_route":"tool.list"})") == McpAuthOutcome::NotAuthFrame);
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1",
+			R"({"_route":"ping"})") == McpAuthOutcome::NotAuthFrame);
+	/* _route 缺失或非字符串同样落 NotAuthFrame（有 _route 判据才有区分意义） */
+	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1", "{}")
+		== McpAuthOutcome::NotAuthFrame);
+}

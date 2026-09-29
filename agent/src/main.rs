@@ -209,8 +209,8 @@ async fn run() -> i32 {
     ));
     install_signal_handlers(Arc::clone(&state));
 
-    // ---- 后端：连接 → 工具表 → 提示词素材 ----
-    let client =
+    // ---- 后端：连接 → 首帧认证（可选） → 工具表 → 提示词素材 ----
+    let mut client =
         match BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
             .await
         {
@@ -220,6 +220,17 @@ async fn run() -> i32 {
                 return 1;
             }
         };
+    // MCP-1（审计 P2-1）：后端设了 BOT4CJ_MCP_TOKEN 时，第一条帧必须是共享密钥
+    // 认证。与 C++ 宿主读取同一个环境变量名（宿主在抹零前捕获，本进程在
+    // prctl 收窄 /proc 下读取之后、此处第一次也是唯一一次读）。
+    if let Ok(token) = std::env::var("BOT4CJ_MCP_TOKEN") {
+        if !token.is_empty() {
+            if let Err(e) = client.authenticate(&token).await {
+                errln!("错误: {e}");
+                return 1;
+            }
+        }
+    }
     let bridge = Arc::new(Bridge::new(client, Arc::clone(&state)));
     let specs = match bridge.list_tools().await {
         Ok(s) => s,
