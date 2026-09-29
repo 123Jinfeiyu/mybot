@@ -133,6 +133,80 @@ std::string sanitizeEndpoint(const std::string& url) {
 	return out;
 }
 
+/* ---- AuditLog::write 的每 kind 字段段（2026-09-29 A3 拆分）----
+ * 三个函数只往 line 里放各自 kind 的字段；公共头（ts/session/kind）与
+ * 输出尾（stderr/文件落盘）留在 write()。字段与顺序逐字保持。 */
+
+/* 会话边界记录（SAN-9）：只记"这次会话是用什么配置跑的"，供事后复盘时定位
+ * "这一轮到底连的是哪、用的哪个模型"。**绝不写密钥**：只写 api_key_source
+ * 枚举名（与 --check-config 的摘要同口径：只报来源不报值）。 */
+static void writeSessionFields(const AuditEntry& e, Json& line) {
+	line.put("status", JsonString(e.status.empty() ? "start" : e.status));
+	if (!e.driver.empty()) { line.put("driver", JsonString(e.driver)); }
+	if (!e.model.empty()) { line.put("model", JsonString(e.model)); }
+	if (!e.endpoint.empty()) {
+		line.put("endpoint", JsonString(sanitizeEndpoint(e.endpoint)));
+	}
+	if (!e.apiKeySource.empty()) {
+		line.put("api_key_source", JsonString(e.apiKeySource));
+	}
+	/* 批次 1：恢复的会话（加法字段，既有字段与顺序不动） */
+	if (e.resumed) { line.put("resumed", JsonBool(true)); }
+	if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
+	if (e.ms > 0) { line.put("ms", JsonInt(e.ms)); }
+	/* 2026-09-25：断连安全动作（status=disconnect_action）自报"跑了哪个脚本"。
+	 * 加法字段，既有 start/end 记录不给、不出现。 */
+	if (!e.summary.empty()) { line.put("summary", JsonString(e.summary)); }
+}
+
+/* 模型轮次记录（SAN-9）：为什么需要它——工具行只能回答"调了什么工具"，
+ * 回答不了"模型说了什么、花了多久、这一轮有没有发出请求"。一次在模型
+ * 调用阶段失败的会话此前在日志里**一条都没有**。 */
+static void writeModelFields(const AuditEntry& e, Json& line) {
+	if (e.turn >= 0) { line.put("turn", JsonInt(e.turn)); }
+	line.put("ok", JsonBool(e.ok));
+	if (!e.status.empty()) { line.put("status", JsonString(e.status)); }
+	if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
+	line.put("ms", JsonInt(e.ms));
+	if (e.reqBytes > 0) { line.put("req_bytes", JsonInt(static_cast<std::int64_t>(e.reqBytes))); }
+	if (e.respBytes > 0) { line.put("resp_bytes", JsonInt(static_cast<std::int64_t>(e.respBytes))); }
+	if (e.attempts > 0) { line.put("attempts", JsonInt(e.attempts)); }
+	/* token 用量：**只记 provider 给的数**，不做任何推算/计费估算 */
+	if (e.promptTokens.has_value()) { line.put("prompt_tokens", JsonInt(*e.promptTokens)); }
+	if (e.completionTokens.has_value()) {
+		line.put("completion_tokens", JsonInt(*e.completionTokens));
+	}
+}
+
+/* 既有工具行：字段与顺序**一个不动**（兼容性硬约束） */
+static void writeToolFields(const AuditEntry& e, Json& line) {
+	line.put("turn", JsonInt(e.turn));
+	line.put("tool", JsonString(e.tool));
+	if (e.args.isObj()) {
+		line.put("args", e.args);
+	} else if (!e.argsRaw.empty()) {
+		/* 参数解析失败/非对象：记原始文本（截断，显式标注） */
+		std::string raw = e.argsRaw;
+		if (raw.size() > kMaxAuditArgsRaw) {
+			raw = raw.substr(0, kMaxAuditArgsRaw)
+				+ "...(截断，原始 " + std::to_string(e.argsRaw.size()) + " 字节)";
+		}
+		line.put("args_raw", JsonString(sanitizeUtf8(raw)));
+	}
+	line.put("ok", JsonBool(e.ok));
+	if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
+	line.put("ms", JsonInt(e.ms));
+	line.put("bytes", JsonInt(static_cast<std::int64_t>(e.bytes)));
+	if (e.imageBytes > 0) {
+		/* 图片只记体积与指纹：base64 不落盘（体积 + 隐私，见头文件约束） */
+		line.put("image_bytes", JsonInt(static_cast<std::int64_t>(e.imageBytes)));
+		line.put("image_fp", JsonString(e.imageFp));
+	}
+	if (e.exitCode.has_value()) { line.put("exit_code", JsonInt(*e.exitCode)); }
+	/* G2：工具自报的生效摘要（apply_sql 等）。加法字段，老行没有。 */
+	if (!e.summary.empty()) { line.put("summary", JsonString(e.summary)); }
+}
+
 void AuditLog::write(const AuditEntry& e) {
 	if (!opened_) { return; }
 
@@ -144,70 +218,11 @@ void AuditLog::write(const AuditEntry& e) {
 	line.put("kind", JsonString(e.kind.empty() ? "tool" : e.kind));
 
 	if (e.kind == "session") {
-		/* ---- 会话边界记录（SAN-9）：只记"这次会话是用什么配置跑的"，
-		 * 供事后复盘时定位"这一轮到底连的是哪、用的哪个模型"。
-		 * **绝不写密钥**：只写 api_key_source 枚举名（与 --check-config 的
-		 * 摘要同口径：只报来源不报值）。 */
-		line.put("status", JsonString(e.status.empty() ? "start" : e.status));
-		if (!e.driver.empty()) { line.put("driver", JsonString(e.driver)); }
-		if (!e.model.empty()) { line.put("model", JsonString(e.model)); }
-		if (!e.endpoint.empty()) {
-			line.put("endpoint", JsonString(sanitizeEndpoint(e.endpoint)));
-		}
-		if (!e.apiKeySource.empty()) {
-			line.put("api_key_source", JsonString(e.apiKeySource));
-		}
-		/* 批次 1：恢复的会话（加法字段，既有字段与顺序不动） */
-		if (e.resumed) { line.put("resumed", JsonBool(true)); }
-		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
-		if (e.ms > 0) { line.put("ms", JsonInt(e.ms)); }
-		/* 2026-09-25：断连安全动作（status=disconnect_action）自报"跑了哪个脚本"。
-		 * 加法字段，既有 start/end 记录不给、不出现。 */
-		if (!e.summary.empty()) { line.put("summary", JsonString(e.summary)); }
+		writeSessionFields(e, line);
 	} else if (e.kind == "model") {
-		/* ---- 模型轮次记录（SAN-9）：为什么需要它——工具行只能回答
-		 * "调了什么工具"，回答不了"模型说了什么、花了多久、这一轮有没有发出
-		 * 请求"。一次在模型调用阶段失败的会话此前在日志里**一条都没有**。 */
-		if (e.turn >= 0) { line.put("turn", JsonInt(e.turn)); }
-		line.put("ok", JsonBool(e.ok));
-		if (!e.status.empty()) { line.put("status", JsonString(e.status)); }
-		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
-		line.put("ms", JsonInt(e.ms));
-		if (e.reqBytes > 0) { line.put("req_bytes", JsonInt(static_cast<std::int64_t>(e.reqBytes))); }
-		if (e.respBytes > 0) { line.put("resp_bytes", JsonInt(static_cast<std::int64_t>(e.respBytes))); }
-		if (e.attempts > 0) { line.put("attempts", JsonInt(e.attempts)); }
-		/* token 用量：**只记 provider 给的数**，不做任何推算/计费估算 */
-		if (e.promptTokens.has_value()) { line.put("prompt_tokens", JsonInt(*e.promptTokens)); }
-		if (e.completionTokens.has_value()) {
-			line.put("completion_tokens", JsonInt(*e.completionTokens));
-		}
+		writeModelFields(e, line);
 	} else {
-		/* ---- 既有工具行：字段与顺序**一个不动**（兼容性硬约束）---- */
-		line.put("turn", JsonInt(e.turn));
-		line.put("tool", JsonString(e.tool));
-		if (e.args.isObj()) {
-			line.put("args", e.args);
-		} else if (!e.argsRaw.empty()) {
-			/* 参数解析失败/非对象：记原始文本（截断，显式标注） */
-			std::string raw = e.argsRaw;
-			if (raw.size() > kMaxAuditArgsRaw) {
-				raw = raw.substr(0, kMaxAuditArgsRaw)
-					+ "...(截断，原始 " + std::to_string(e.argsRaw.size()) + " 字节)";
-			}
-			line.put("args_raw", JsonString(sanitizeUtf8(raw)));
-		}
-		line.put("ok", JsonBool(e.ok));
-		if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
-		line.put("ms", JsonInt(e.ms));
-		line.put("bytes", JsonInt(static_cast<std::int64_t>(e.bytes)));
-		if (e.imageBytes > 0) {
-			/* 图片只记体积与指纹：base64 不落盘（体积 + 隐私，见头文件约束） */
-			line.put("image_bytes", JsonInt(static_cast<std::int64_t>(e.imageBytes)));
-			line.put("image_fp", JsonString(e.imageFp));
-		}
-		if (e.exitCode.has_value()) { line.put("exit_code", JsonInt(*e.exitCode)); }
-		/* G2：工具自报的生效摘要（apply_sql 等）。加法字段，老行没有。 */
-		if (!e.summary.empty()) { line.put("summary", JsonString(e.summary)); }
+		writeToolFields(e, line);
 	}
 
 	std::string text = line.toString();
