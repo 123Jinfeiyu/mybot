@@ -203,31 +203,25 @@ int validateMcpBackendCombos(const CliOptions& options) {
 			"（mybot-agent 经此路径连接后端）" << std::endl;
 		return 2;
 	}
-	if (!options.mcpCallBudget.empty()) {
-		auto [st, v] = parseLongStrict(options.mcpCallBudget);
-		if (st != IntParse::OK || v < 0 || v > 1000000) {
-			std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
-				options.mcpCallBudget) << std::endl;
-			return 2;
-		}
+	if (!options.mcpCallBudget.empty()
+			&& !parseBoundedLong(options.mcpCallBudget, 0, 1000000)) {
+		std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
+			options.mcpCallBudget) << std::endl;
+		return 2;
 	}
-	if (!options.mcpWallClock.empty()) {
-		auto [st, v] = parseLongStrict(options.mcpWallClock);
-		if (st != IntParse::OK || v < 0 || v > 86400) {
-			std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
-				options.mcpWallClock) << std::endl;
-			return 2;
-		}
+	if (!options.mcpWallClock.empty()
+			&& !parseBoundedLong(options.mcpWallClock, 0, 86400)) {
+		std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
+			options.mcpWallClock) << std::endl;
+		return 2;
 	}
 	/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
 	 * 0 = 不限（缺省），与既有预算选项同口径。 */
-	if (!options.mcpIdleTimeout.empty()) {
-		auto [st, v] = parseLongStrict(options.mcpIdleTimeout);
-		if (st != IntParse::OK || v < 0 || v > 86400) {
-			std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
-				options.mcpIdleTimeout) << std::endl;
-			return 2;
-		}
+	if (!options.mcpIdleTimeout.empty()
+			&& !parseBoundedLong(options.mcpIdleTimeout, 0, 86400)) {
+		std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
+			options.mcpIdleTimeout) << std::endl;
+		return 2;
 	}
 	return 0;
 }

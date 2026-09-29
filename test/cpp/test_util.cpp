@@ -451,6 +451,20 @@ TH_TEST(utils_numeric_parsers_reject_embedded_nul) {
 	TH_CHECK(bot::parseLongStrict("90junk").first == bot::IntParse::NOT_INT);
 }
 
+/* ---- parseBoundedLong：解析 + 双边界钳制单点（2026-09-29 A4.2）----
+ * 钉住三件事：边界含端点、两侧越界都拒、非整数拒。手写站点抄漏一侧
+ * 边界即防线缺口，此处是谓词的单一事实源。 */
+TH_TEST(utils_parse_bounded_long_enforces_both_bounds_inclusive) {
+	TH_CHECK(bot::parseBoundedLong("8080", 1, 65535).value_or(-1) == 8080);
+	TH_CHECK(bot::parseBoundedLong("1", 1, 65535).value_or(-1) == 1);	/* 下界含端点 */
+	TH_CHECK(bot::parseBoundedLong("65535", 1, 65535).value_or(-1) == 65535);	/* 上界含端点 */
+	TH_CHECK(!bot::parseBoundedLong("0", 1, 65535).has_value());	/* 低于下界 */
+	TH_CHECK(!bot::parseBoundedLong("65536", 1, 65535).has_value());	/* 越上界 */
+	TH_CHECK(!bot::parseBoundedLong("abc", 1, 65535).has_value());	/* 非整数 */
+	TH_CHECK(!bot::parseBoundedLong("90junk", 1, 65535).has_value());	/* 尾随垃圾 */
+	TH_CHECK(!bot::parseBoundedLong("-5", 0, 100).has_value());	/* 负值越过 [0,…] 下界 */
+}
+
 /* ---- AG-11 / AG-22：`agent:` 作用域过滤器的完备性（必须放在**主套件**里）----
  * 起因：docs/agent.md 推荐的 `./build/mybot_tests agent` 是子串匹配，只命中用例名
  * 里含 "agent" 的那部分——promptpack / llmconfig / cliargs 这些同属 agent 配置面的

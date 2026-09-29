@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -41,6 +42,19 @@ inline std::string rangeErrorText(const std::string& subject, long long lo, long
 		const std::string& actual) {
 	return subject + " 需要在 [" + std::to_string(lo) + ", " + std::to_string(hi)
 		+ "] 范围内，实际是 " + actual;
+}
+
+/* 带范围校验的严格整数解析（2026-09-29 A4.2 单点）：非整数或越 [lo, hi]
+ * 界返回 nullopt，边界含端点。只收敛「OK 判定 + 双边界钳制」这个谓词——
+ * 此前各站点手写 `st != IntParse::OK || v < lo || v > hi`，抄漏一侧边界
+ * 即防线缺口。报错文案仍由调用方按各自口径组（rangeErrorText / 自定义
+ * 格式，逐字保持）；需要区分「非整数」与「越界」两种报错的站点
+ * （--daemon-grace-ms、--phase）继续直接用 parseLongStrict。 */
+inline std::optional<long long> parseBoundedLong(const std::string& text,
+		long long lo, long long hi) {
+	auto [st, v] = parseLongStrict(text);
+	if (st != IntParse::OK || v < lo || v > hi) { return std::nullopt; }
+	return v;
 }
 
 /* ---- 有限数值解析（M2/B2-2 单点，2026-09-20）----
