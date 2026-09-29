@@ -117,6 +117,99 @@ std::string hotDeleteFailureMessage(std::size_t orderSize, std::size_t deletedVa
 	return msg;
 }
 
+/* ---- 阶段 2 的两个只读校验块（拆自 planHotInsertions，2026-09-29 A3）----
+ * 判定与报错文案逐字保持；抽出后 planHotInsertions 只留区间计算与建计划。 */
+
+/* 本批次新建表（staged[si]，si ≥ liveCount）的表级校验：批内/结构内重名、
+ * 表名与列名的安全标识符、驱动模块存在性。 */
+void validateNewTableDecl(const std::deque<mt::MatrixObject>& staged, std::size_t si) {
+	const mt::MatrixObject& st = staged[si];
+	const std::string tname = trim(st.getName());
+	const bool isAction = (tname == "Action");
+
+	for (std::size_t sj = 0; sj < si; ++sj) {
+		if (trim(staged[sj].getName()) == tname) {
+			throw IllegalArgumentException("热插表：表 '" + tname + "' 已存在"
+				"（结构里既有同名表，或本批次内重复 CREATE）");
+		}
+	}
+	/* 表名决定 modules/<表名>.lua 的解析路径（createLuaVars 的唯一分派依据），
+	 * 而热插语句来自不可信输入（REPL / 模型）——含 '/' 或 ".." 的表名会把
+	 * 模块查找指到任意文件。启动期脚本是可信文件，故只在热插这条路上拦。 */
+	if (!isSafeIdent(tname)) {
+		throw IllegalArgumentException("热插表：表名 '" + tname + "' 不是安全标识符"
+			"（字母/数字/下划线，且以字母或下划线开头）");
+	}
+	if (!isAction) {
+		/* 列名进 Daemon 配置串（`列名=值;`）与元数据键：含 ';'/'=' 的列名
+		 * 能在配置串里造出额外字段（等价于改写守护的 driver/proto）。
+		 * Action 表列名是 <设备>.<参数>，天然含 '.'，不在此列。 */
+		for (std::size_t c = 0; c < st.cols(); ++c) {
+			if (!isSafeIdent(st(0, c))) {
+				throw IllegalArgumentException("热插表：表 '" + tname + "' 的列名 '"
+					+ st(0, c) + "' 不是安全标识符");
+			}
+		}
+	}
+	/* 驱动模块存在性：启动期这条缺失要到 build 才以 loadfile 失败暴露，
+	 * 热插路径提前折成一句点名表名的人话（判据与 createLuaVars 同一来源）。 */
+	if (!isAction && tname != "Alias" && tname != "Vars" && tname != "Daemon") {
+		if (!findExistingModule(modulePaths(), tname + ".lua")) {
+			throw IllegalArgumentException(concatMsg("热插表：表 '", tname,
+				"' 需要驱动模块 modules/", tname, ".lua，模块路径下找不到它"));
+		}
+	}
+}
+
+/* 单条新增数据行的校验：name 列存在/非空、重名（含 doomed 豁免）、Daemon 行的
+ * chunk 相对路径存在性。idxName 由调用方按表算好传入。 */
+void validateHotNewRow(const HwLookup& registry, const mt::MatrixObject& st,
+		const std::string& tname, bool isAction, std::size_t r, std::int64_t idxName,
+		const HotSqlPlan::Deletes& delPlan, std::set<std::string>& batchNames) {
+	if (!isAction) {
+		if (idxName < 0) {
+			throw IllegalArgumentException("热插表：表 '" + tname
+				+ "' 没有 'name' 列，无法为新增行命名硬件变量");
+		}
+		const std::string v = trim(st(r, static_cast<std::size_t>(idxName)));
+		if (v.empty()) {
+			throw IllegalArgumentException("热插表：表 '" + tname + "' 第 "
+				+ std::to_string(r) + " 行的 name 列为空");
+		}
+		/* 重名判据的 doomed 豁免（先删后建模式）：UPDATE 同名重建的行
+		 * 复用旧名，而旧名此刻仍挂在注册表上（本批次的物理摘除排在
+		 * 插入之前执行）——不豁免会把「改写」误判成「重名」。豁免只在
+		 * deleteFirst 下给：普通批次（先插入后删除）里「删 A 再插 A」
+		 * 仍然拒绝，保持既有行为与报错位置逐字不变。改名（SET name）
+		 * 到仍存活的名字不豁免，照常拒绝。 */
+		if ((registry.contains(v)
+					&& !(delPlan.deleteFirst && delPlan.doomedNames.count(v) != 0))
+				|| !batchNames.insert(v).second) {
+			throw IllegalArgumentException("热插表：硬件变量名 '" + v + "' 重复"
+				"（结构里已有同名变量，或本批次内重复）");
+		}
+	}
+	if (tname == "Daemon") {
+		const std::int64_t idxChunk = st.indexOfCol(0, "chunk");
+		if (idxChunk < 0) {
+			throw IllegalArgumentException("热插表：Daemon 表没有 'chunk' 列");
+		}
+		const std::string chunk = trim(st(r, static_cast<std::size_t>(idxChunk)));
+		/* '-' = 继承上一行的 chunk（来自可信的既有行或本批次已校验的行），跳过。
+		 * 真实值必须是模块根下存在的相对路径：resolveDaemonChunk 允许绝对路径
+		 * （启动期脚本可信，不拦），而热插的语句不可信——放行即等于让模型
+		 * 指定任意 Lua 文件当守护 chunk 加载。 */
+		if (chunk != "-") {
+			if (checkRelPath(chunk) != RelPathCheck::OK
+					|| !findExistingModule(modulePaths(), chunk)) {
+				throw IllegalArgumentException(concatMsg("热插表：Daemon 表 '", tname,
+					"' 第 ", std::to_string(r), " 行的 chunk '", chunk,
+					"' 必须是模块路径下存在的相对路径（热插不允许绝对路径/目录穿越）"));
+			}
+		}
+	}
+}
+
 } // namespace
 
 /* ==================== RobotStruct：编排门面 ==================== */
@@ -464,7 +557,9 @@ HotSqlPlan::Deletes HotSqlPlanner::planHotDeletes(const ScriptLoader::Mutations&
 }
 
 /* ---- 阶段 2：建计划 + 只读全量校验（不触碰活体、不申请任何资源）----
- * 影子下标 [0, liveCount) 与 matrices_ 一一对应（影子就是按它顺序填的）。 */
+ * 影子下标 [0, liveCount) 与 matrices_ 一一对应（影子就是按它顺序填的）。
+ * 表级与逐行校验在 validateNewTableDecl / validateHotNewRow（2026-09-29 A3
+ * 拆出），本函数只留区间计算与三路建计划。 */
 HotSqlPlan::Insertions HotSqlPlanner::planHotInsertions(
 		const std::deque<mt::MatrixObject>& staged, std::size_t liveCount,
 		const ScriptLoader::Mutations& muts, const HotSqlPlan::Deletes& delPlan) const {
@@ -483,40 +578,7 @@ HotSqlPlan::Insertions HotSqlPlanner::planHotInsertions(
 		const std::string tname = trim(st.getName());
 		const bool isAction = (tname == "Action");
 
-		if (!isShadow) {
-			for (std::size_t sj = 0; sj < si; ++sj) {
-				if (trim(staged[sj].getName()) == tname) {
-					throw IllegalArgumentException("热插表：表 '" + tname + "' 已存在"
-						"（结构里既有同名表，或本批次内重复 CREATE）");
-				}
-			}
-			/* 表名决定 modules/<表名>.lua 的解析路径（createLuaVars 的唯一分派依据），
-			 * 而热插语句来自不可信输入（REPL / 模型）——含 '/' 或 ".." 的表名会把
-			 * 模块查找指到任意文件。启动期脚本是可信文件，故只在热插这条路上拦。 */
-			if (!isSafeIdent(tname)) {
-				throw IllegalArgumentException("热插表：表名 '" + tname + "' 不是安全标识符"
-					"（字母/数字/下划线，且以字母或下划线开头）");
-			}
-			if (!isAction) {
-				/* 列名进 Daemon 配置串（`列名=值;`）与元数据键：含 ';'/'=' 的列名
-				 * 能在配置串里造出额外字段（等价于改写守护的 driver/proto）。
-				 * Action 表列名是 <设备>.<参数>，天然含 '.'，不在此列。 */
-				for (std::size_t c = 0; c < st.cols(); ++c) {
-					if (!isSafeIdent(st(0, c))) {
-						throw IllegalArgumentException("热插表：表 '" + tname + "' 的列名 '"
-							+ st(0, c) + "' 不是安全标识符");
-					}
-				}
-			}
-			/* 驱动模块存在性：启动期这条缺失要到 build 才以 loadfile 失败暴露，
-			 * 热插路径提前折成一句点名表名的人话（判据与 createLuaVars 同一来源）。 */
-			if (!isAction && tname != "Alias" && tname != "Vars" && tname != "Daemon") {
-				if (!findExistingModule(modulePaths(), tname + ".lua")) {
-					throw IllegalArgumentException(concatMsg("热插表：表 '", tname,
-						"' 需要驱动模块 modules/", tname, ".lua，模块路径下找不到它"));
-				}
-			}
-		}
+		if (!isShadow) { validateNewTableDecl(staged, si); }
 
 		/* insCount = 本批次插入到这张表的行数（readSQL 回报的权威计数）。 */
 		const std::size_t insCount = [&]() {
@@ -538,48 +600,8 @@ HotSqlPlan::Insertions HotSqlPlanner::planHotInsertions(
 
 		const std::int64_t idxName = st.indexOfCol(0, "name");
 		for (std::size_t r = newFrom; r < newTo; ++r) {
-			if (!isAction) {
-				if (idxName < 0) {
-					throw IllegalArgumentException("热插表：表 '" + tname
-						+ "' 没有 'name' 列，无法为新增行命名硬件变量");
-				}
-				const std::string v = trim(st(r, static_cast<std::size_t>(idxName)));
-				if (v.empty()) {
-					throw IllegalArgumentException("热插表：表 '" + tname + "' 第 "
-						+ std::to_string(r) + " 行的 name 列为空");
-				}
-					/* 重名判据的 doomed 豁免（先删后建模式）：UPDATE 同名重建的行
-					 * 复用旧名，而旧名此刻仍挂在注册表上（本批次的物理摘除排在
-					 * 插入之前执行）——不豁免会把「改写」误判成「重名」。豁免只在
-					 * deleteFirst 下给：普通批次（先插入后删除）里「删 A 再插 A」
-					 * 仍然拒绝，保持既有行为与报错位置逐字不变。改名（SET name）
-					 * 到仍存活的名字不豁免，照常拒绝。 */
-					if ((registry_.contains(v)
-								&& !(delPlan.deleteFirst && delPlan.doomedNames.count(v) != 0))
-							|| !batchNames.insert(v).second) {
-						throw IllegalArgumentException("热插表：硬件变量名 '" + v + "' 重复"
-							"（结构里已有同名变量，或本批次内重复）");
-					}
-			}
-			if (tname == "Daemon") {
-				const std::int64_t idxChunk = st.indexOfCol(0, "chunk");
-				if (idxChunk < 0) {
-					throw IllegalArgumentException("热插表：Daemon 表没有 'chunk' 列");
-				}
-				const std::string chunk = trim(st(r, static_cast<std::size_t>(idxChunk)));
-				/* '-' = 继承上一行的 chunk（来自可信的既有行或本批次已校验的行），跳过。
-				 * 真实值必须是模块根下存在的相对路径：resolveDaemonChunk 允许绝对路径
-				 * （启动期脚本可信，不拦），而热插的语句不可信——放行即等于让模型
-				 * 指定任意 Lua 文件当守护 chunk 加载。 */
-				if (chunk != "-") {
-					if (checkRelPath(chunk) != RelPathCheck::OK
-							|| !findExistingModule(modulePaths(), chunk)) {
-						throw IllegalArgumentException(concatMsg("热插表：Daemon 表 '", tname,
-							"' 第 ", std::to_string(r), " 行的 chunk '", chunk,
-							"' 必须是模块路径下存在的相对路径（热插不允许绝对路径/目录穿越）"));
-					}
-				}
-			}
+			validateHotNewRow(registry_, st, tname, isAction, r, idxName, delPlan,
+				batchNames);
 		}
 
 		if (isAction) {
