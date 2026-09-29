@@ -34,7 +34,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use futures::StreamExt;
-use rig_agent::agent::{MultiTurnStreamItem, PromptResponse, StreamingError};
+use rig_agent::agent::{AgentRunner, MultiTurnStreamItem, PromptResponse, StreamingError};
 use rig_agent::completion::{Message, PromptError};
 use rig_core::streaming::StreamedAssistantContent;
 
@@ -374,14 +374,14 @@ impl Session {
         }
     }
 
-    /// 阻塞面：整轮跑完后一次性打印最终文本。
-    async fn drive_blocking(
+    /// 装配模型循环 runner（B4 拆出）：阻塞面与流式面共用的三件套
+    /// （任务文本 + 历史快照 + 轮次上限）与可选 preamble。
+    fn prime_runner(
         &self,
         task: &str,
         snapshot: Vec<Message>,
         preamble: Option<String>,
-    ) -> Result<PromptResponse, String> {
-        let progress = self.show_progress.then(Progress::start);
+    ) -> AgentRunner {
         let mut runner = self
             .backend
             .agent
@@ -391,6 +391,18 @@ impl Session {
         if let Some(p) = preamble {
             runner = runner.preamble(p);
         }
+        runner
+    }
+
+    /// 阻塞面：整轮跑完后一次性打印最终文本。
+    async fn drive_blocking(
+        &self,
+        task: &str,
+        snapshot: Vec<Message>,
+        preamble: Option<String>,
+    ) -> Result<PromptResponse, String> {
+        let progress = self.show_progress.then(Progress::start);
+        let runner = self.prime_runner(task, snapshot, preamble);
         let result = runner.run().await.map_err(format_prompt_error);
         if let Some(p) = progress {
             p.finish().await;
@@ -409,16 +421,7 @@ impl Session {
         preamble: Option<String>,
     ) -> Result<PromptResponse, String> {
         let mut progress = self.show_progress.then(Progress::start);
-        let mut runner = self
-            .backend
-            .agent
-            .runner(task.to_string())
-            .history(snapshot)
-            .max_turns(self.cfg.max_turns as usize);
-        if let Some(p) = preamble {
-            runner = runner.preamble(p);
-        }
-        let mut stream = runner.stream().await;
+        let mut stream = self.prime_runner(task, snapshot, preamble).stream().await;
         // 本模型轮是否已打过文本（决定要不要在工具轮/结束时补换行）
         let mut printed = false;
         let mut final_resp: Option<PromptResponse> = None;
@@ -650,6 +653,90 @@ const HELP_TEXT: &str = "内置命令:\n\
   让机器人站立\n\
   拍照并描述看到的内容";
 
+/// 斜杠命令分派（B4 拆自 run_repl 循环体）：命中并处理完毕返回 true
+/// （调用方 continue，不进模型）；不是斜杠命令返回 false（当任务发给模型）。
+/// hw 是当轮提示符已取好的硬件数（/status 复用，避免二次往返）。
+/// `/exit` 不在这里——它在历史 remember 之前就 break，时序与拆分前一致。
+async fn handle_slash_command(session: &mut Session, task: &str, hw: Option<u64>) -> bool {
+    if task == "/help" {
+        outln!("{HELP_TEXT}");
+        return true;
+    }
+    if task == "/clear" {
+        session.clear_history();
+        outln!("已清空对话记忆（硬件保持上电，系统提示词不变）。");
+        return true;
+    }
+    if task == "/status" {
+        outln!("{}", session.status_text(hw));
+        return true;
+    }
+    if task == "/hardware" {
+        if !session.has_tool("list_hardware") {
+            outln!(
+                "错误: 后端没有提供 list_hardware 工具（检查 mybot --mcp-backend 那一侧的开关）"
+            );
+            return true;
+        }
+        outln!(
+            "{}",
+            session
+                .call_tool("list_hardware", serde_json::json!({}))
+                .await
+        );
+        return true;
+    }
+    if task == "/scripts" {
+        if !session.has_tool("list_action_scripts") {
+            outln!(
+                "错误: 后端没有提供 list_action_scripts 工具（检查 mybot --mcp-backend 那一侧的开关）"
+            );
+            return true;
+        }
+        outln!(
+            "{}",
+            session
+                .call_tool("list_action_scripts", serde_json::json!({}))
+                .await
+        );
+        return true;
+    }
+    // /sql <语句>：全只读走 query_sql；含变更语句走 apply_sql（后端那侧才真正
+    // 带电生效/断电摘除）。
+    if task.starts_with("/sql")
+        && matches!(
+            task.as_bytes()[4..].first(),
+            None | Some(b' ') | Some(b'\t')
+        )
+    {
+        let sql = task[4..].trim();
+        if sql.is_empty() {
+            outln!("{SQL_USAGE}");
+            return true;
+        }
+        let (tool, flag) = if batch_has_write_ops(sql) {
+            ("apply_sql", "--agent-hot-sql")
+        } else {
+            ("query_sql", "--agent-hot-sql")
+        };
+        if !session.has_tool(tool) {
+            outln!(
+                "错误: 后端没有提供 {tool} 工具——结构 SQL 需要 mybot --mcp-backend 侧开 {flag}\
+                 （配置文件不能放宽，只能收紧）"
+            );
+            return true;
+        }
+        outln!(
+            "{}",
+            session
+                .call_tool(tool, serde_json::json!({ "sql": sql }))
+                .await
+        );
+        return true;
+    }
+    false
+}
+
 /// 交互 REPL（C++ `runAgentRepl` 镜像）。返回进程退出码（恒 0：退出是操作者的
 /// 意思，不是失败）。日志/告警走 stderr，界面走 stdout。
 pub async fn run_repl(session: &mut Session) -> i32 {
@@ -715,78 +802,7 @@ pub async fn run_repl(session: &mut Session) -> i32 {
             break;
         }
         input.remember(task);
-        if task == "/help" {
-            outln!("{HELP_TEXT}");
-            continue;
-        }
-        if task == "/clear" {
-            session.clear_history();
-            outln!("已清空对话记忆（硬件保持上电，系统提示词不变）。");
-            continue;
-        }
-        if task == "/status" {
-            outln!("{}", session.status_text(hw));
-            continue;
-        }
-        if task == "/hardware" {
-            if !session.has_tool("list_hardware") {
-                outln!("错误: 后端没有提供 list_hardware 工具（检查 mybot --mcp-backend 那一侧的开关）");
-                continue;
-            }
-            outln!(
-                "{}",
-                session
-                    .call_tool("list_hardware", serde_json::json!({}))
-                    .await
-            );
-            continue;
-        }
-        if task == "/scripts" {
-            if !session.has_tool("list_action_scripts") {
-                outln!(
-                    "错误: 后端没有提供 list_action_scripts 工具（检查 mybot --mcp-backend 那一侧的开关）"
-                );
-                continue;
-            }
-            outln!(
-                "{}",
-                session
-                    .call_tool("list_action_scripts", serde_json::json!({}))
-                    .await
-            );
-            continue;
-        }
-        // /sql <语句>：全只读走 query_sql；含变更语句走 apply_sql（后端那侧才真正
-        // 带电生效/断电摘除）。必须在本派发点 continue —— 否则会被当任务发给模型。
-        if task.starts_with("/sql")
-            && matches!(
-                task.as_bytes()[4..].first(),
-                None | Some(b' ') | Some(b'\t')
-            )
-        {
-            let sql = task[4..].trim();
-            if sql.is_empty() {
-                outln!("{SQL_USAGE}");
-                continue;
-            }
-            let (tool, flag) = if batch_has_write_ops(sql) {
-                ("apply_sql", "--agent-hot-sql")
-            } else {
-                ("query_sql", "--agent-hot-sql")
-            };
-            if !session.has_tool(tool) {
-                outln!(
-                    "错误: 后端没有提供 {tool} 工具——结构 SQL 需要 mybot --mcp-backend 侧开 {flag}\
-                     （配置文件不能放宽，只能收紧）"
-                );
-                continue;
-            }
-            outln!(
-                "{}",
-                session
-                    .call_tool(tool, serde_json::json!({ "sql": sql }))
-                    .await
-            );
+        if handle_slash_command(session, task, hw).await {
             continue;
         }
 
