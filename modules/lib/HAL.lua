@@ -41,6 +41,13 @@ long read(int fd, void *buf, unsigned long count);
 long write(int fd, const void *buf, unsigned long count);
 int  usleep(unsigned int usec);
 
+/* 守护槽互斥锁（BQ-1 灭火检查用）。与 modules/lib/pthread.lua 的声明逐字
+ * 相同——守护 chunk 同时加载两库，LuaJIT 对相同签名的重复声明幂等，签名
+ * 漂移则静默失配，靠这份注释双向钉住。 */
+typedef struct { char __m[64]; } cj_pthread_mutex_t;
+int  pthread_mutex_lock(cj_pthread_mutex_t *mutex);
+int  pthread_mutex_unlock(cj_pthread_mutex_t *mutex);
+
 /* /usr/include/linux/spi/spidev.h（内核 6.18），共 32 字节 */
 typedef struct {
 	unsigned long long tx_buf;
@@ -167,6 +174,40 @@ end
 local byte_of, uint_of, int_of = bus.byte_of, bus.uint_of, bus.int_of
 
 ------------------------------------------------------------------
+-- 停机灭火检查（BQ-1，与 src/daemonvar.hpp 的 quiesce 位配对）
+------------------------------------------------------------------
+-- 守护线程的 lua_State 里有宿主注入的 DAEMON_SLOT_ADDR / DAEMON_SLOT_LAYOUT；
+-- 主线程的状态两者皆无。宿主在「宽限耗尽仍存活」的守护上置槽内 quiesce 位
+-- （先置位后弃管，见 daemonvar.cpp finishTeardown），此后本状态的一切真实
+-- 总线传输（i2c/spi/uart）在进内核前被拒绝——把「弃管守护触总线」的竞态窗口
+-- 从无界收敛到灭火时刻的在途单次传输。
+-- 主线程路径的代价是两次 rawget（无全局注入即短路），virt 仿真路径不受此位
+-- 约束（虚拟总线无物理副作用）。持同一把槽锁读，与 C++ 侧 daemon_quiesce
+-- 的写纪律一致（TSan 经 pthread 调用拦截建立同步边）。
+-- cdef 与 pthread.lua 逐字相同（LuaJIT 对相同签名的重复声明是幂等 no-op；
+-- 守护 chunk 会同时加载两库，签名漂移会静默失配，故此约束双向钉死）。
+local quiesce_warned = false
+local function bus_quiesced()
+	local addr = rawget(_G, "DAEMON_SLOT_ADDR")
+	if addr == nil then return false end
+	local layout = rawget(_G, "DAEMON_SLOT_LAYOUT")
+	if type(layout) ~= "table" or layout.quiesce == nil then return false end
+	local base = ffi.cast("char*", addr)
+	local m = ffi.cast("cj_pthread_mutex_t *", base)
+	if ffi.C.pthread_mutex_lock(m) ~= 0 then
+		error("HAL: cannot lock daemon slot mutex for quiesce check")
+	end
+	local q = ffi.cast("int32_t *", base + layout.quiesce)[0]
+	ffi.C.pthread_mutex_unlock(m)
+	if q ~= 0 and not quiesce_warned then
+		quiesce_warned = true
+		print("HAL: bus access refused (daemon slot quiesced;"
+			.. " hardware teardown in progress)")
+	end
+	return q ~= 0
+end
+
+------------------------------------------------------------------
 -- I2C（fd 为真实内核句柄，跨 Lua 状态机有效）
 ------------------------------------------------------------------
 
@@ -209,6 +250,7 @@ end
 
 -- 内部：执行一次 I2C_RDWR 原子事务（msgs 为 cj_i2c_msg[n]），返回内核传输数或负值
 local function i2c_rdwr(fd, msgs, nmsgs)
+	if bus_quiesced() then return -1 end
 	local data = ffi.new("cj_i2c_rdwr[1]")
 	data[0].msgs = msgs
 	data[0].nmsgs = nmsgs
@@ -483,6 +525,7 @@ end
 -- delay_us：可选，本次传输最后一位之后、CS 拉高之前的等待微秒数
 -- （内核无 per-fd 持久化途径，由驱动逐次显式传入，__u16 钳制到 65535）。
 local function spi_xfer(fd, tx, rx, len, delay_us)
+	if bus_quiesced() then return false end
 	local msg = ffi.new("spi_ioc_transfer[1]")	-- ffi.new 零初始化
 	msg[0].len = len
 	delay_us = uint_of(delay_us)
@@ -893,6 +936,7 @@ function uart_write(fd, data)
 	fd = tonumber(fd)
 	if fd == nil or type(data) ~= "table" or #data == 0 then return -1 end
 	if #data > bus.UART_IO_MAX_BYTES then return -1 end
+	if bus_quiesced() then return -1 end
 	local buf = ffi.new("uint8_t[?]", #data)
 	for i = 1, #data do
 		local b = byte_of(data[i])
@@ -927,6 +971,7 @@ function uart_read(fd, n, timeout_ms)
 		timeout_ms = 0
 	end
 	if fd == nil or n == nil or n < 1 then return nil end
+	if bus_quiesced() then return nil end
 	if timeout_ms > HAL.UART_READ_MAX_MS then
 		print("HAL: uart_read timeout " .. tostring(timeout_ms) .. "ms exceeds max "
 			.. tostring(HAL.UART_READ_MAX_MS) .. "ms")
