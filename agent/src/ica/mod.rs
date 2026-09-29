@@ -91,6 +91,17 @@ fn limit_content(s: &str) -> String {
     s.chars().take(8192).collect()
 }
 
+/// 开启 ICA 时追加进系统提示词的行为约束段（2026-09-29 B2 归位自 main.rs，
+/// 文本逐字保持）。
+pub fn preamble_section() -> &'static str {
+    "\n## ICA 实验性证据层\n用户输入与工具回执先登记为观察，不自动成为事实。\
+     需要陈述可核验事实时，用 ICA 工具登记主张、引用观察和未来候选；\
+     这些工具不能验证主张，也不会自动执行行动。相同工具名的回执保守地视为同一来源。\
+     对机器人现实动作，先用只读工具检查当前状态，再调用 ica_propose_action 登记完整工具参数、理由和预期可观察结果，\
+     然后才调用对应动作工具。动作回执返回后用 ica_compare_future 对比预测；若未达预期，应说明差异并修订。\
+     在资料不足、没有适用工具时保留未知缺口，不要伪造验证。创作任务无需事实验证。\n"
+}
+
 impl IcaLedger {
     pub fn begin_task(&mut self, task: &str) {
         self.current_task += 1;
