@@ -7,9 +7,11 @@
 
 #include "luaend.hpp"
 
+#include <cstdio>
 #include <cstring>
 #include <string>
 
+#include "util_file.hpp"
 #include "util_path.hpp"
 
 namespace bot {
@@ -50,6 +52,10 @@ static int restrictedLoader(lua_State* L) {
 	if (hasDotDotComponent(path)) {
 		return luaL_error(L, "sandbox: dofile/loadfile path must not contain '..' component (traversal rejected): %s", path);
 	}
+
+	/* BQ-2：白名单只保证「路径在模块树内」，不保证「文件没被别人改写」——
+	 * ffi 全能力的信任前提体检（组/他可写 → 响亮告警，判据单点 util_file）。 */
+	auditTrustedFilePath(path, "沙箱加载文件");
 
 	lua_pushvalue(L, lua_upvalueindex(2));		/* 原函数 */
 	lua_pushvalue(L, 1);						/* path */
@@ -111,7 +117,21 @@ static void wrapLoader(lua_State* L, const char* name) {
  *     local mpath = __mpath or dofile(<单根回退>)
  * ——回退分支只在**没有宿主**时走到（luajit 直跑测试、scscl_scan.lua、
  * virtbus.load_driver），那些场景下仓库根布局固定、单根即正确。
- * 探测/加载失败一律静默跳过（fail-open）：不改变今天能跑通的任何场景。 */
+ * 失败仍走 fail-open（注入不了就不改变行为），但 BQ-2 起**响亮**：
+ * 加载失败（mpath.lua 坏了）或「多段路径里一段都找不到」意味着 docs 承诺的
+ * 多路径解析在宿主侧已经缺位——静默跳过会让「按序查找」退化成驱动各自的
+ * 首段猜测且无任何线索。单段路径找不到不告警（单根回退对单根配置语义等价，
+ * 也是 .tmp 类测试夹具的常态）。每进程一次。 */
+static void warnMpathUnavailable(const char* why) {
+	static bool warned = false;
+	if (warned) { return; }
+	warned = true;
+	std::fprintf(stderr,
+		"警告: 宿主未能注入 __mpath 模块路径解析器（%s）——"
+		"驱动将退回各自模块路径首段的单根猜测，':' 分隔多路径按序查找"
+		"在此进程内不成立\n", why);
+}
+
 static int returnUpvalue(lua_State* L) {
 	lua_pushvalue(L, lua_upvalueindex(1));
 	return 1;
@@ -180,10 +200,29 @@ static void restrictRequireLoaders(lua_State* L) {
 
 static void injectModulePathResolver(lua_State* L) {
 	auto found = findExistingModule(modulePaths(), "lib/mpath.lua");
-	if (!found) { return; }
-	if (luaL_loadfile(L, found->c_str()) != LUA_OK) { lua_pop(L, 1); return; }
-	if (lua_pcall(L, 0, 1, 0) != LUA_OK) { lua_pop(L, 1); return; }
-	if (lua_type(L, -1) != LUA_TTABLE) { lua_pop(L, 1); return; }
+	if (!found) {
+		/* BQ-2：多段配置一段都找不到 = 「按序查找」承诺缺位，响亮；
+		 * 单段找不到 = 单根回退语义等价（测试夹具常态），保持静默。 */
+		if (splitModulePaths(modulePaths()).size() > 1) {
+			warnMpathUnavailable("任何模块路径段都未找到 lib/mpath.lua");
+		}
+		return;
+	}
+	if (luaL_loadfile(L, found->c_str()) != LUA_OK) {
+		lua_pop(L, 1);
+		warnMpathUnavailable("lib/mpath.lua 语法加载失败");
+		return;
+	}
+	if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+		lua_pop(L, 1);
+		warnMpathUnavailable("lib/mpath.lua 执行失败");
+		return;
+	}
+	if (lua_type(L, -1) != LUA_TTABLE) {
+		lua_pop(L, 1);
+		warnMpathUnavailable("lib/mpath.lua 未返回模块表");
+		return;
+	}
 
 	/* package.preload["mpath"] = function() return <表> end */
 	lua_pushvalue(L, -1);						/* [t, t] */

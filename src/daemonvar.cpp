@@ -12,6 +12,7 @@
 
 #include "util_env.hpp"
 #include "util_except.hpp"
+#include "util_file.hpp"
 #include "util_num.hpp"
 #include "util_path.hpp"
 #include "util_str.hpp"
@@ -111,6 +112,8 @@ static void injectDaemonGlobals(lua_State* L, DaemonSlot* slot, const std::strin
 /* ---- setup：跑 chunk 一次定义 daemon_tick ----
  * 失败按 load/setup 两段打印分段错误（run_all.sh 守门按两种短语匹配）。 */
 static bool setupDaemonChunk(lua_State* L, const std::string& chunk) {
+	/* BQ-2：守护 chunk 与主线程驱动同一信任前提（ffi 全能力），体检同规 */
+	auditTrustedFilePath(chunk, "守护 chunk");
 	int st = luaL_loadfile(L, chunk.c_str());
 	if (st != LUA_OK) {
 		std::cerr << "[daemon] chunk load error: " << luaErrorString(L) << std::endl;
