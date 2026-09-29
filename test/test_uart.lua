@@ -1,4 +1,6 @@
 -- HAL.lua uart 段 离线测试（mock HAL.sys 系统调用，不触碰真实串口）
+-- 覆盖：open 路径/波特率白名单、raw 8N1 配置、read/write/flush、
+-- close 恢复 open 前 termios（销毁重置）及恢复失败/无快照等分支
 -- 用法: luajit test_uart.lua（HAL 依赖 ffi，需 LuaJIT）
 --
 -- mock 注入 HAL.sys 的 termios/read/write/usleep/close 条目（test_hal_ffi
@@ -10,12 +12,30 @@ local ffi = require("ffi")
 local bit = require("bit")
 local HAL = dofile("modules/lib/HAL.lua")
 
+-- 波特率期望编码随 glibc 版本分叉（glibc 2.42 起 B* 即字面 Hz，见 HAL.lua
+-- uart 段首注释与 test_uart_baud.lua）：此处独立推导期望值，避免与 HAL 的
+-- 探测逻辑同义反复。旧版 B9600=13，2.42+ B9600=9600（余档同形）。
+-- 非 glibc（musl）没有该符号：取符号那步用 pcall 包住，按旧编号表处理
+-- （musl 的 B* 就是 Linux ABI 旧编号，test_uart_consts 在 alpine 下已实证）。
+pcall(ffi.cdef, [[ const char* gnu_get_libc_version(void); ]])
+local ok_v, vstr_p = pcall(function() return ffi.C.gnu_get_libc_version() end)
+local v_major, v_minor = string.match((ok_v and vstr_p ~= nil) and ffi.string(vstr_p) or "", "(%d+)%.(%d+)")
+local glibc_hz_baud = v_major ~= nil
+	and (tonumber(v_major) * 1000 + tonumber(v_minor)) >= 2042
+-- 旧 ABI 编码表（glibc < 2.42；与 HAL.lua UART_B_CONST_LEGACY 同源）
+local LEGACY_BCONST = {
+	[1200] = 9, [2400] = 11, [4800] = 12, [9600] = 13, [19200] = 14, [38400] = 15,
+	[57600] = 0x1001, [115200] = 0x1002, [230400] = 0x1003, [460800] = 0x1004,
+	[500000] = 0x1005, [921600] = 0x1007, [1000000] = 0x1008,
+}
+local function expect_bconst(hz) return glibc_hz_baud and hz or LEGACY_BCONST[hz] end
+
 -- ==================== HAL.sys mock ====================
 local calls = {}			-- 操作记录
 local mock_open_fd = 7
 local mock_tcgetattr_ok = true
 local mock_tcsetattr_ok = true
-local mock_cfset_ok = true	-- false = glibc 拒绝该 speed_t（cfset* 返回 -1）
+local mock_cfspeed_ok = true	-- false = cfsetispeed/cfsetospeed 返回 -1
 local mock_write_ret = nil	-- nil = 真实语义（按需返回）
 local read_feed = {}		-- read 桩按调用次序吐 {bytes 或 -1}
 local read_feed_i = 0
@@ -55,6 +75,10 @@ HAL.sys.errno = function() return 11 end	-- EAGAIN
 HAL.sys.tcgetattr = function(fd, ptr)
 	calls[#calls + 1] = { op = "tcgetattr", fd = fd }
 	if not mock_tcgetattr_ok then return -1 end
+	-- 模拟 open 前设备侧的常规（非 raw）配置：close 恢复断言据此比对
+	local t = ffi.cast("cj_termios *", ptr)
+	t[0].c_cflag = 0x1234
+	t[0].c_cc[HAL.UART_VMIN_IDX] = 4
 	return 0
 end
 HAL.sys.cfmakeraw = function(ptr)
@@ -62,15 +86,16 @@ HAL.sys.cfmakeraw = function(ptr)
 	local t = ffi.cast("cj_termios *", ptr)
 	t[0].c_cflag = 0x8BD	-- 模拟 cfmakeraw 后的 cflag（含 CS8，不含 CREAD/CLOCAL）
 end
-HAL.sys.cfsetispeed = function(ptr, speed)
-	calls[#calls + 1] = { op = "cfsetispeed", speed = speed }
-	last_ispeed = speed
-	if not mock_cfset_ok then return -1 end
+-- cfset*speed 收到的是 glibc 常量而非 Hz（见 HAL 段首注释）；返回 0 表成功
+HAL.sys.cfsetispeed = function(ptr, baud)
+	calls[#calls + 1] = { op = "cfsetispeed", baud = baud }
+	if mock_cfspeed_ok == false then return -1 end
+	last_ispeed = baud
 	return 0
 end
-HAL.sys.cfsetospeed = function(ptr, speed)
-	calls[#calls + 1] = { op = "cfsetospeed", speed = speed }
-	if not mock_cfset_ok then return -1 end
+HAL.sys.cfsetospeed = function(ptr, baud)
+	calls[#calls + 1] = { op = "cfsetospeed", baud = baud }
+	if mock_cfspeed_ok == false then return -1 end
 	return 0
 end
 HAL.sys.tcsetattr = function(fd, act, ptr)
@@ -85,15 +110,10 @@ HAL.sys.tcflush = function(fd, q)
 end
 
 -- ==================== 断言辅助 ====================
-local fails = 0
-local function check(cond, label, extra)
-	if cond then
-		print(string.format("[PASS] %s", label))
-	else
-		fails = fails + 1
-		print(string.format("[FAIL] %s%s", label, extra and (" (" .. tostring(extra) .. ")") or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua。本文件调用点是 check(cond, label, extra)
+-- 的「条件在前」序，逐个改序收益为零，故保留一个薄委托（断言实现单点在 tester）。
+local tester = dofile("test/lib/tester.lua")
+local check = function(cond, label, extra) tester.check(label, cond, extra) end
 
 local function has_call(op, key, val)
 	for _, c in ipairs(calls) do
@@ -110,22 +130,19 @@ local function reset(feed)
 	last_write = nil
 	last_ispeed = nil
 	mock_tcgetattr_ok, mock_tcsetattr_ok = true, true
-	mock_cfset_ok = true
+	mock_cfspeed_ok = true
 	mock_write_ret = nil
 end
 
 -- ==================== uart_open：路径/波特率白名单 ====================
 reset()
 check(uart_open("/dev/ttyUSB0", 9600) == 7, "open ttyUSB0@9600 成功")
-check(has_call("open", "flags", HAL.UART_O_FLAGS), "open 旗帜 = RDWR|NOCTTY|NONBLOCK(2306)",
+check(has_call("open", "flags", HAL.UART_O_FLAGS),
+	"open 旗帜 = RDWR|NOCTTY|NONBLOCK|CLOEXEC(526594)",
 	tostring(calls[1] and calls[1].flags))
 check(has_call("cfmakeraw"), "cfmakeraw 进入 raw 模式")
--- cfsetispeed 收 termios speed_t 而非 Hz（传 9600 会被 glibc 拒为 EINVAL，
--- 且原实现不查返回值 → 波特率从未设置；旧断言「收到数值波特率 9600」正是
--- 把该缺陷固化进了测试，见 test_abi_consts.lua 与 <termios.h> 的交叉校验）
-check(last_ispeed == HAL.UART_BAUD_SPT[9600] and last_ispeed == 13,
-	"cfsetispeed 收到 speed_t B9600(13)", tostring(last_ispeed))
-check(last_ispeed ~= 9600, "cfsetispeed 不得再收 Hz 值")
+check(last_ispeed == expect_bconst(9600), "cfsetispeed 收到当版 glibc 编码 B9600（非错编码）",
+	tostring(last_ispeed))
 check(has_call("tcsetattr", "act", HAL.UART_TCSANOW), "tcsetattr(TCSANOW)")
 check(last_tcsetattr ~= nil
 	and last_tcsetattr.c_cc[HAL.UART_VMIN_IDX] == 0
@@ -145,6 +162,15 @@ check(uart_open("/dev/serial0", 9600) == 7, "open /dev/serial0（树莓派软链
 check(uart_open("/dev/ttyUSB0", 1234) == -1, "波特率白名单拒绝 1234")
 check(uart_open("/dev/ttyUSB0", "9600") == 7, "字符串波特率经 tonumber 接受")
 
+-- 高波特率档：常数映射（SCSCL 总线舵机出厂默认 500k/1M）
+check(uart_open("/dev/ttyUSB0", 115200) == 7, "115200 白名单接受")
+check(last_ispeed == expect_bconst(115200), "115200 -> 当版 glibc B115200 编码", string.format("0x%X", last_ispeed or 0))
+check(uart_open("/dev/ttyUSB0", 500000) == 7, "500000 白名单接受")
+check(last_ispeed == expect_bconst(500000), "500000 -> 当版 glibc B500000 编码", string.format("0x%X", last_ispeed or 0))
+check(uart_open("/dev/ttyUSB0", 1000000) == 7, "1000000 白名单接受")
+check(last_ispeed == expect_bconst(1000000), "1000000 -> 当版 glibc B1000000 编码", string.format("0x%X", last_ispeed or 0))
+check(uart_open("/dev/ttyUSB0", 576000) == -1, "波特率白名单拒绝 576000（未列入）")
+
 reset()
 mock_tcgetattr_ok = false
 check(uart_open("/dev/ttyUSB0", 9600) == -1, "tcgetattr 失败 -> -1")
@@ -157,13 +183,11 @@ check(uart_open("/dev/ttyUSB0", 9600) == -1, "tcsetattr 失败 -> -1")
 check(has_call("close"), "失败路径关闭 fd（2）")
 mock_tcsetattr_ok = true
 
--- glibc 拒绝该 speed_t（cfset* 返回 -1）：不得把未改速率的结构体继续写回设备
 reset()
-mock_cfset_ok = false
-check(uart_open("/dev/ttyUSB0", 9600) == -1, "cfsetispeed 失败 -> -1")
+mock_cfspeed_ok = false
+check(uart_open("/dev/ttyUSB0", 9600) == -1, "cfsetispeed 失败 -> -1（返回码被检查）")
 check(has_call("close"), "失败路径关闭 fd（3）")
-check(not has_call("tcsetattr"), "cfset 失败后不再下发 tcsetattr")
-mock_cfset_ok = true
+mock_cfspeed_ok = true
 
 -- ==================== uart_write ====================
 reset()
@@ -209,19 +233,87 @@ check(uart_read(7, 100) == nil or true, "参数校验不炸")	-- fd nil -> nil �
 reset()
 check(uart_read(7, 0, 100) == nil, "n=0 拒绝（返回 nil）")
 
--- ==================== uart_flush / uart_close ====================
+-- 超时上限：超过 UART_READ_MAX_MS 显式返回 nil，不得与参数线性空转
+reset({ -1 })
+check(uart_read(7, 4, HAL.UART_READ_MAX_MS + 1) == nil,
+	"超时超上限（60001ms）显式返回 nil")
+check(not has_call("read"), "超上限不发 read 系统调用（配置错误立即暴露）")
+reset({ { 1, 2 } })
+local got_cap = uart_read(7, 2, HAL.UART_READ_MAX_MS)
+check(type(got_cap) == "table" and #got_cap == 2, "上限值 60000ms 本身放行")
+
+-- 主评估 B：非有限超时（NaN/±inf，含字符串形态）在真机路径显式拒绝返回 nil
+reset()
+check(uart_read(7, 2, 0 / 0) == nil, "NaN 超时返回 nil")
+check(uart_read(7, 2, math.huge) == nil, "+inf 超时返回 nil")
+check(uart_read(7, 2, -math.huge) == nil, "-inf 超时返回 nil")
+check(uart_read(7, 2, "nan") == nil, "字符串 'nan' 超时返回 nil")
+check(uart_read(7, 2, "1e400") == nil, "字符串 '1e400'（溢出为 inf）超时返回 nil")
+
+-- ==================== uart_flush ====================
 reset()
 check(uart_flush(7) == 0, "flush 返回 0")
 check(has_call("tcflush", "q", HAL.UART_TCIFLUSH), "tcflush(TCIFLUSH)")
+
+-- ==================== uart_close：销毁时恢复原始 termios ====================
+-- open 建立快照（mock tcgetattr 以 cflag=0x1234/VMIN=4 模拟设备原始配置）
+reset()
+check(uart_open("/dev/ttyUSB0", 9600) == 7, "open 建立恢复快照")
 reset()
 check(uart_close(7) == 0, "close 返回 0")
+check(has_call("tcsetattr", "act", HAL.UART_TCSANOW), "close 前 tcsetattr(TCSANOW) 恢复")
+check(last_tcsetattr ~= nil and last_tcsetattr.c_cflag == 0x1234
+	and last_tcsetattr.c_cc[HAL.UART_VMIN_IDX] == 4,
+	"恢复的是 open 前原始 termios（cflag/VMIN）",
+	last_tcsetattr and string.format("0x%X", last_tcsetattr.c_cflag) or "nil")
 check(has_call("close"), "close 落到 HAL.sys.close")
 
+-- 快照一次性：恢复并清除后，重复 close 不再 tcsetattr
+reset()
+check(uart_close(7) == 0, "重复 close 仍返回 0")
+check(not has_call("tcsetattr"), "无快照不再 tcsetattr")
+check(has_call("close"), "重复 close 仍落到 HAL.sys.close")
+
+-- 未打开过的 fd：无快照直接关闭，不试图恢复
+check(uart_close(99) == 0, "未打开 fd 直接 close")
+check(not has_call("tcsetattr"), "未打开 fd 不 tcsetattr")
+
+-- 恢复失败（设备已拔出等）：告警但关闭不被阻断，返回值仍是 close 的结果
+reset()
+check(uart_open("/dev/ttyUSB0", 9600) == 7, "open 重建快照（恢复失败路径）")
+reset()
+mock_tcsetattr_ok = false
+check(uart_close(7) == 0, "恢复失败仍返回 close 结果")
+check(has_call("tcsetattr"), "恢复失败已尝试 tcsetattr")
+check(has_call("close"), "恢复失败仍关闭 fd")
+mock_tcsetattr_ok = true
+
+-- open 配置失败路径不登记快照：此后 close 不产生恢复调用
+reset()
+mock_tcsetattr_ok = false
+check(uart_open("/dev/ttyUSB0", 9600) == -1, "open tcsetattr 失败 -> -1（不登记快照）")
+mock_tcsetattr_ok = true
+reset()
+check(uart_close(7) == 0, "配置失败的 fd close 返回 0")
+check(not has_call("tcsetattr"), "失败路径不产生残留快照")
+
+-- ==================== virtbus uart_read 超时对偶（主评估 B） ====================
+-- 旧 virtbus 实现：`local timeout = tonumber(timeout_ms) or 0` 之后
+-- `if timeout > bus.UART_READ_MAX_MS then return nil end` —— NaN 与任何数比较
+-- 均为 false，NaN **穿过**上限检查被放行、返回空表；而真机 HAL 显式返回 nil
+-- （上一节已钉死同一组入参）→「仿真绿真机红」。修复改走 bus.finite_of。
+local vbus = dofile("modules/lib/virtbus.lua")
+vbus.reset()
+vbus.inject()
+local vfd = uart_open("/dev/ttyUSB0", 9600)
+check(vfd ~= nil and vfd >= 0, "virtbus：uart_open 成功")
+check(uart_read(vfd, 2, 0 / 0) == nil, "virtbus：NaN 超时返回 nil（旧实现放行返回空表）")
+check(uart_read(vfd, 2, math.huge) == nil, "virtbus：+inf 超时返回 nil")
+check(uart_read(vfd, 2, -math.huge) == nil, "virtbus：-inf 超时返回 nil")
+check(uart_read(vfd, 2, "nan") == nil, "virtbus：字符串 'nan' 超时返回 nil")
+check(type(uart_read(vfd, 2, 10)) == "table", "virtbus：合法超时仍返回表（放行集不变）")
+check(type(uart_read(vfd, 2)) == "table", "virtbus：缺省超时仍返回表（nil→0 语义不变）")
+vbus.reset()
+
 -- ==================== 汇总 ====================
-if fails == 0 then
-	print("all passed")
-	print("[DONE] test_uart.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-else
-	print(fails .. " case(s) failed")
-	os.exit(1)
-end
+tester.summary("test_uart.lua")

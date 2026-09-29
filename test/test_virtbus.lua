@@ -61,8 +61,10 @@ tester.check("read_reg16 读前送 16 位大端指针",
 	#last_write == 2 and last_write[1] == 0x01 and last_write[2] == 0x02)
 tester.check("器件 read 收到请求长度", last_read_n == 2)
 
--- 长度约束对齐 HAL：合并值类越界显式失败，字节表类钳到 1~16
-tester.check("read n=9 越界显式 -1（HAL 上限 8）", i2c_read(fd, 9) == -1)
+-- 长度约束对齐 HAL：合并值类 n 1~6 越界显式失败（2^53 精度上限），字节表类钳到 1~16
+fake_dev.read = function(n) last_read_n = n; return { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 } end
+tester.check("read n=6 边界通过", i2c_read(fd, 6) == 0x010203040506)
+tester.check("read n=7 越界显式 -1（HAL 上限 6）", i2c_read(fd, 7) == -1)
 tester.check("read n=0 非法显式 -1", i2c_read(fd, 0) == -1)
 tester.check("read_multi n=7 越界显式 -1（HAL 上限 6）", i2c_read_multi(fd, 0x00, 7) == -1)
 tester.check("read_reg16 n=7 越界显式 -1", i2c_read_reg16(fd, 0x0102, 7) == -1)
@@ -70,6 +72,28 @@ i2c_read_bytes(fd, 20)
 tester.check("read_bytes n=20 钳到 16 下发模型", last_read_n == 16)
 i2c_read_multi_bytes(fd, 0x00, 20)
 tester.check("read_multi_bytes n=20 钳到 16（指针写后按 16 读）", last_read_n == 16)
+
+-- F-07：读族入参校验逐函数对齐 HAL——旧实现 tonumber 未归一（负数/超界寄存器
+-- 被 math.floor % 256 静默回绕成别的地址）与 nil→1 静默钳制（字节表族），
+-- 会让真机直接失败的调用在仿真里成功。以下断言钉住 HAL 的接受集与失败值。
+local before_tx = #vbus.txlog
+tester.check("set_addr 负地址拒绝（HAL uint_of 语义，旧实现静默接受）",
+	i2c_set_addr(fd, -1) == false)
+tester.check("read_reg reg=-1 显式 -1（旧实现回绕成 0xFF 指针读）",
+	i2c_read_reg(fd, -1) == -1)
+tester.check("read_reg reg=300 显式 -1（旧实现回绕成 44）",
+	i2c_read_reg(fd, 300) == -1)
+tester.check("read_multi reg=0x100 显式 -1", i2c_read_multi(fd, 0x100, 2) == -1)
+tester.check("非法寄存器不产生任何总线事务", #vbus.txlog == before_tx)
+tester.check("read_multi_bytes n=nil 返回 nil（旧实现钳 1 静默成功）",
+	i2c_read_multi_bytes(fd, 0x00, nil) == nil)
+tester.check("read_bytes n=nil 返回 nil", i2c_read_bytes(fd, nil) == nil)
+tester.check("read_bytes n=-3 返回 nil", i2c_read_bytes(fd, -3) == nil)
+tester.check("read n=2.9 按 HAL uint_of 归一为 2（接受并取整）", (function()
+	i2c_read(fd, 2.9)
+	return last_read_n == 2
+end)())
+tester.check("set_addr 重新绑定回 0x23", i2c_set_addr(fd, 0x23) == true)
 
 -- ==================== 2.5) 模型主动 NACK（故障注入契约） ====================
 fake_dev.write = function() return false end

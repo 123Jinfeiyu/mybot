@@ -29,9 +29,9 @@
 --      odr snap_near、'-' 与非法值归缺省）
 --   4) build 负路径：0x26 变体/ID 读失败/stuck 0x02 与 never_ready
 --      各 50 轮询 500ms/逐帧 fail_write 短路点/缺 fd/set_addr/错地址
---   5) 真实 call：0x0C/0x12 两指针读各 6B、小端拼字 0x1000/0xFFFF/
---      0xFC00、tick 闭环、零睡眠、二次 call
---   6) call 负路径：acc/gyr 读失败、非表/缺 fd/错地址
+--   5) 真实 call：0x0C 单指针读 12B（acc+gyr 并读防撕裂，C-L1）、
+--      小端拼字 0x1000/0xFFFF/0xFC00、tick 闭环、零睡眠、二次 call
+--   6) call 负路径：传感器读失败（单事务）、非表/缺 fd/错地址
 --   7) destroy：零事务、非表 ERR
 
 if os.getenv("BMI270_GC") == "1" then
@@ -684,15 +684,15 @@ if r then
 	check("GYRO_X=0xFC00 原始码（-1024 补码语义）", r.GYRO_X == 64512, tostring(r.GYRO_X))
 	check("GYRO_Y/Z=0", r.GYRO_Y == 0 and r.GYRO_Z == 0)
 	local pr = ptr_reads(mark)
-	check("call 恰两次指针读 0x0C×6 → 0x12×6",
-		#pr == 2 and pr[1].p == 0x0C and pr[1].n == 6 and pr[2].p == 0x12 and pr[2].n == 6,
+	check("call 恰一次指针读 0x0C×12（单事务防撕裂）",
+		#pr == 1 and pr[1].p == 0x0C and pr[1].n == 12,
 		(function()
 			local t = {} for _, e in ipairs(pr) do t[#t + 1] = string.format("%02X×%d", e.p, e.n) end
 			return table.concat(t, ",")
 		end)())
 	check("call 零睡眠", sleep_total - sleep_base == 0, tostring(sleep_total - sleep_base))
-	check("call set_addr 一次 / 总事务 5（set+2 指针写+2 读）",
-		#set_addrs(mark) == 1 and #entries(mark) == 5, tostring(#entries(mark)))
+	check("call set_addr 一次 / 总事务 3（set+1 指针写+1 读）",
+		#set_addrs(mark) == 1 and #entries(mark) == 3, tostring(#entries(mark)))
 	check("call 无 ≥2B 数据写", #frames(mark) == 0, tostring(#frames(mark)))
 end
 
@@ -700,7 +700,7 @@ end
 mark = #vbus.txlog
 r = expect_ok("二次 call 正常", function() return call({ fd = fd, address = "0x68" }) end)
 if r then
-	check("二次 call 仍恰两指针读", #ptr_reads(mark) == 2 and #frames(mark) == 0)
+	check("二次 call 仍恰一指针读", #ptr_reads(mark) == 1 and #frames(mark) == 0)
 end
 
 -- virt_tick 闭环：tick(8) 码经真实驱动读出
@@ -726,22 +726,15 @@ expect_err("call fd=99", function() return call({ fd = 99, address = "0x68" }) e
 	"set_addr failed")
 
 section()
-expect_err("call 错地址 0x60（acc 指针写 NACK）",
-	function() return call({ fd = fd, address = "0x60" }) end, "accel data")
+expect_err("call 错地址 0x60（指针写 NACK）",
+	function() return call({ fd = fd, address = "0x60" }) end, "sensor data")
 
 section()
 dev:virt_tick(0)
 build({ fd = fd, address = "0x68" })
 dev:fail_read(function(p) return p == 0x0C end)
-expect_err("call acc 读失败",
-	function() return call({ fd = fd, address = "0x68" }) end, "accel data")
-
-section()
-dev:virt_tick(0)
-build({ fd = fd, address = "0x68" })
-dev:fail_read(function(p) return p == 0x12 end)
-expect_err("call gyro 读失败（acc 已成功）",
-	function() return call({ fd = fd, address = "0x68" }) end, "gyro data")
+expect_err("call 传感器读失败（单事务）",
+	function() return call({ fd = fd, address = "0x68" }) end, "sensor data")
 
 -- ======================================================================
 -- 组 7：destroy

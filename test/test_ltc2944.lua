@@ -176,9 +176,12 @@ check("空表=false", dev.write({}) == false)
 check("非字节 256 整笔 NACK", dev.write({ 0x01, 256 }) == false)
 check("非字节 -1 整笔 NACK", i2c_write_multi(fd, 0x01, -1) == -1)
 check("坏帧后 CONTROL 仍 POR 0", dev:control() == 0)
--- 模型侧整笔拒收：write_count 不增；但主机发起的尝试仍照实记 txlog（1 笔 HAL 写）
+-- 模型侧整笔拒收：write_count 不增。主机侧的非法实参（走 i2c_write_multi）在
+-- HAL 的 byte_of 处即被拒、根本不发起事务，故 txlog 也不留痕——此前 virt 会把
+-- 坏帧照送再 NACK，比真机多出一笔总线活动，该偏差已随写族校验对齐 HAL 而消除。
+-- （174-176 行是直接调 dev.write，不经总线层，行为不变）
 check("坏帧模型侧不留痕", dev:write_count() == 0)
-check("坏帧尝试仍上总线留痕（NACK）", nwr(m) == 1, tostring(nwr(m)))
+check("坏帧不入总线（同 HAL：校验失败不发事务）", nwr(m) == 0, tostring(nwr(m)))
 check("read(0) 钳 1B", #dev.read(0) == 1)
 check("read(99) 钳 16B", #dev.read(99) == 16)
 check("read(非数) 钳 1B", #dev.read("x") == 1)
@@ -504,6 +507,21 @@ r = expect_ok("call M=1 满码电荷", function() return call({ fd = fd, address
 if r then
 	check("M=1 满码电荷≈0.00544 mAh", near(r.CHARGE, ref_q(65535, 1, 0.05), 1e-9),
 		tostring(r.CHARGE))
+end
+
+-- mAh ↔ code 往返闭锁（2026-09-20 审计：:424 注释单位笔误收口）：
+-- set_charge_mah 逆注入后 driver call 读回 CHARGE 应还原为所设 mAh
+for _, mh in ipairs({ 0.34, 1.7, 3.4, 8.0 }) do
+	section()
+	build_ok()
+	dev:set_charge_mah(mh, 4096, 0.05)
+	r = expect_ok(string.format("call 往返 charge=%.2f", mh),
+		function() return call({ fd = fd, address = "0x64" }) end)
+	if r then
+		check(string.format("mAh=%.2f 读回一致（±0.5 code 量化）", mh),
+			math.abs(r.CHARGE - mh) <= 0.34e-6 * 1000 * (4096 * 0.05) / (0.05 * 4096) * 0.5,
+			string.format("got %.6f", r.CHARGE))
+	end
 end
 
 -- rsense=0.01：电流量程 ±6.4A、电荷 LSB 放大 5 倍

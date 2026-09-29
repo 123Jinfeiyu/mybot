@@ -1,6 +1,6 @@
 # MH-Z19B NDIR CO₂ 传感器测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/mhz19.sql（UART uart-0@/dev/serial0@9600 + co2-0 + Timer + co2-d0 守护）
-# 运行：cat scripts/test/mhz19.mt | ./target/release/bin/main --robot=robots/test/mhz19.sql
+# 运行：cat scripts/test/mhz19.mt | ./build/mybot --robot=robots/test/mhz19.sql
 #
 # 实机测试（需 /dev/serial0 串口 + MH-Z19B 模块；无器件机器走 halt-on-error
 # 验证错误通道：build/请求写失败即 exit 1）。

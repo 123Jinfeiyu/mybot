@@ -40,12 +40,12 @@
 --   驱动、libdriver/mcp3421、Adafruit_MCP3421 三方实现交叉验证。
 --   单次触发极性（写 RDY=1 启动转换）沿用两套参考库的实现。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -100,7 +100,7 @@ local function decode(v)
 	else
 		-- 3 字节：16 位字（顶部为重复符号位）+ 回显；int16 即该分辨率有符号值
 		local w = math.floor(v / 256) % 65536
-		if w >= 0x8000 then w = w - 0x10000 end
+		w = bitc.s16(w)
 		raw = w
 	end
 	return raw, echo
@@ -110,11 +110,9 @@ end
 -- 写配置 -> 读回回显校验（兼在位探测）
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -122,29 +120,17 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 解析配置
 	local res, e1 = cfg_num(data.res, 18, RES_CODE, "res(bits)")
-	if e1 then return { result = "ERR", message = e1 } end
+	if e1 then return err(e1) end
 
 	local pga, e2 = cfg_num(data.pga, 1, PGA_CODE, "pga(gain)")
-	if e2 then return { result = "ERR", message = e2 } end
+	if e2 then return err(e2) end
 
 	local opmode_s = data.opmode
 	if opmode_s == nil or opmode_s == "-" or opmode_s == "" then opmode_s = "cont" end
@@ -153,13 +139,10 @@ function build(data)
 	if opmode_s == "cont" then cont = true
 	elseif opmode_s == "oneshot" then cont = false
 	else
-		return {
-			result = "ERR",
-			message = "Invalid Argument: opmode '" .. opmode_s .. "' (cont|oneshot)"
-		}
+		return err("Invalid Argument: opmode '" .. opmode_s .. "' (cont|oneshot)")
 	end
 
-	local wait = tonumber(data.wait)
+	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = T_CONV_MS[res] + 20 end
 
 	-- 配置字节：RDY=1（连续模式下启动转换流；单次模式下触发首次转换）
@@ -169,10 +152,7 @@ function build(data)
 	-----------------------------------------------------
 	-- 写配置（MCP3421 无寄存器指针：单字节写入即配置）
 	if i2c_write_multi(fd, cfg) ~= 0 then
-		return {
-			result = "ERR",
-			message = "MCP3421 not responding (config write failed, check address 0x68 and wiring)"
-		}
+		return err("MCP3421 not responding (config write failed, check address 0x68 and wiring)")
 	end
 
 	-- 读回回显校验（兼在位探测）：RDY 位随转换状态浮动，仅比对低 6 位
@@ -180,17 +160,11 @@ function build(data)
 	local nbytes = (res == 18) and 4 or 3
 	local v = i2c_read(fd, nbytes)
 	if v < 0 then
-		return {
-			result = "ERR",
-			message = "MCP3421 not responding (echo read failed)"
-		}
+		return err("MCP3421 not responding (echo read failed)")
 	end
 	local echo = v % 256
 	if echo % 64 ~= cfg % 64 then
-		return {
-			result = "ERR",
-			message = string.format("MCP3421 config echo mismatch: got 0x%02X (expect 0x%02X masked 0x%02X)", echo, cfg, MASK_ECHO)
-		}
+		return err(string.format("MCP3421 config echo mismatch: got 0x%02X (expect 0x%02X masked 0x%02X)", echo, cfg, MASK_ECHO))
 	end
 
 	cfg_res = res
@@ -211,11 +185,9 @@ end
 -- 返回 { result, raw, voltage }，键名与 ADS1115 驱动对齐。
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -223,33 +195,19 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
-	local wait_ms = tonumber(data.wait) or cfg_wait or 0
+	local wait_ms = finite_of(data.wait)
+	if wait_ms == nil then wait_ms = cfg_wait or 0 end
 	if wait_ms < 0 then wait_ms = 0 end
 
 	-- 单次模式：每次 call 重写配置触发新转换；连续模式芯片自行持续转换
 	if not cfg_cont then
 		if i2c_write_multi(fd, cfg_trigger) ~= 0 then
-			return {
-				result = "ERR",
-				message = "MCP3421 not responding (trigger write failed)"
-			}
+			return err("MCP3421 not responding (trigger write failed)")
 		end
 	end
 
@@ -258,10 +216,7 @@ function call(data)
 	while true do
 		local v = i2c_read(fd, cfg_nbytes)
 		if v < 0 then
-			return {
-				result = "ERR",
-				message = "MCP3421 not responding (read failed)"
-			}
+			return err("MCP3421 not responding (read failed)")
 		end
 		local raw, echo = decode(v)
 		if math.floor(echo / 128) % 2 == 0 then
@@ -272,10 +227,7 @@ function call(data)
 			}
 		end
 		if waited >= wait_ms then
-			return {
-				result = "ERR",
-				message = "MCP3421 conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)"
-			}
+			return err("MCP3421 conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)")
 		end
 		milli_sleep(5)
 		waited = waited + 5

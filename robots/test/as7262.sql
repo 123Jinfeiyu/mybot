@@ -30,7 +30,15 @@ CREATE TABLE Timer (
 INSERT INTO Timer (name) VALUES ('t0');
 
 /* 万能采样守护：间隔 >= 一轮积分时间（缺省配置约 280ms）；
- * 消费侧看原始计数是否顶格 0xFFFF 判断饱和 */
+ * 消费侧看原始计数是否顶格 0xFFFF 判断饱和。
+ *
+ * proto=virt 而非 i2c（审计 1.3）：本器件的间接访问有芯片侧握手状态，上面
+ * AS7262 表注释里那句"禁止多消费者并发读同一器件"是硬约束——而 spec0 已经是
+ * 一个真器件消费者，守护再走 i2c 就是第二个，装配期的单消费者判据
+ * （src/hw_factory.cpp 的 checkSingleConsumer）会直接拒绝加载。
+ * 改 virt 后守护走内嵌 AS7262_VIRT 模型：双路径覆盖都保留、真器件只剩一个
+ * 消费者，且守护侧结果与主机有没有 /dev/i2c-1 无关（同 mpu_daemon.sql 的理由）。
+ * 判据本身的负值契约见 robots/test/single_consumer.sql。 */
 CREATE TABLE Daemon (
 	name     String,
 	chunk    String,
@@ -42,4 +50,4 @@ CREATE TABLE Daemon (
 	fields   String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
-  VALUES ('spec-d0', 'lib/sensor_daemon.lua', 'AS7262', 'i2c', '/dev/i2c-1', '0x49', '300', 'V|B|G|Y|O|R');
+  VALUES ('spec-d0', 'lib/sensor_daemon.lua', 'AS7262', 'virt', '/dev/i2c-1', '0x49', '300', 'V|B|G|Y|O|R');

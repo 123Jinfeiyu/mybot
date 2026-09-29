@@ -40,9 +40,8 @@
 --   （drivers/misc/apds990x.c，N9 机型实践）交叉验证：命令字节协议、ID 值、
 --   ENABLE/CONTROL 位域、lux 算法与校准常量。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -120,11 +119,9 @@ end
 -- ==================== 配置脚本 ====================
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -132,42 +129,21 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 上电断言：先断电，读 ID 在位探测（无独立 ID 的写读回显需求，ID 寄存器可用）
 	if not i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, 0x00) then
-		return {
-			result = "ERR",
-			message = "APDS9900 not responding (enable write failed, check address 0x39 and wiring)"
-		}
+		return err("APDS9900 not responding (enable write failed, check address 0x39 and wiring)")
 	end
 	local id = i2c_read_reg(fd, CMD_BYTE + REG_ID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "APDS9900 not responding (read ID failed)"
-		}
+		return err("APDS9900 not responding (read ID failed)")
 	end
 	if id ~= 0x00 and id ~= 0x04 and id ~= 0x29 then
-		return {
-			result = "ERR",
-			message = string.format("APDS9900 unexpected ID 0x%02X (expect 0x00/0x04/0x29)", id)
-		}
+		return err(string.format("APDS9900 unexpected ID 0x%02X (expect 0x00/0x04/0x29)", id))
 	end
 
 	-----------------------------------------------------
@@ -175,11 +151,12 @@ function build(data)
 	-- atime 为连续量：2.73~696 ms -> 周期数 1~256（每周期 87/32 ms）
 	local atime_ms = tonumber(data.atime)
 	if data.atime == nil or data.atime == "-" or data.atime == "" then atime_ms = 50 end
-	local err
+	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+	local emsg
 	if atime_ms == nil or atime_ms < 2.73 or atime_ms > 696 then
-		err = "Invalid Argument: atime(ms) '" .. tostring(data.atime) .. "' (range 2.73~696)"
+		emsg = "Invalid Argument: atime(ms) '" .. tostring(data.atime) .. "' (range 2.73~696)"
 	end
-	if err then return { result = "ERR", message = err } end
+	if emsg then return err(emsg) end
 	local cycles = math.floor(atime_ms * TIME_SCALER)
 	if cycles < 1 then cycles = 1 elseif cycles > 256 then cycles = 256 end
 	local atime_actual = cycles * 87 / 32
@@ -188,24 +165,18 @@ function build(data)
 	local pdrive, e3 = cfg_choice(data.pdrive, 100, PDRIVE_CODE, "pdrive(mA)")
 	local pgain, e4 = cfg_choice(data.pgain, 1, PGA_CODE, "pgain")
 	if e2 or e3 or e4 then
-		return { result = "ERR", message = e2 or e3 or e4 }
+		return err(e2 or e3 or e4)
 	end
 
 	local ppcount = math.floor(tonumber(data.ppcount) or 8)
 	if ppcount < 1 or ppcount > 255 then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: ppcount '" .. tostring(data.ppcount) .. "' (range 1~255)"
-		}
+		return err("Invalid Argument: ppcount '" .. tostring(data.ppcount) .. "' (range 1~255)")
 	end
 
 	local df = tonumber(data.df) or 52
 	local ga = tonumber(data.ga) or 0.48
 	if df <= 0 or ga <= 0 or ga > 1 then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: df/ga (df>0, 0<ga<=1)"
-		}
+		return err("Invalid Argument: df/ga (df>0, 0<ga<=1)")
 	end
 	local ga_scaled = math.floor(ga * SCALE + 0.5)
 
@@ -226,18 +197,12 @@ function build(data)
 	wr(REG_PPCOUNT, ppcount, "PPCOUNT")
 	wr(REG_CONTROL, PDRIVE_CODE[pdrive] * 64 + PDIODE_IR * 16 + PGA_CODE[pgain] * 4 + AGAIN_CODE[again], "CONTROL")
 	if wfail ~= nil then
-		return {
-			result = "ERR",
-			message = wfail
-		}
+		return err(wfail)
 	end
 
 	-- 启动连续转换：上电 + ALS + 近距（无等待态、无中断）
 	if not i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, EN_PON + EN_AEN + EN_PEN) then
-		return {
-			result = "ERR",
-			message = "APDS9900 not responding (enable failed)"
-		}
+		return err("APDS9900 not responding (enable failed)")
 	end
 
 	cfg_atime_ms = atime_actual
@@ -256,11 +221,9 @@ end
 -- 读最新 ALS 两通道与近距计数，LUX 按内核算法换算。连续转换无"未就绪"态。
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -268,43 +231,22 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	local ch0 = read_word_le(fd, REG_CDATA)
 	if ch0 < 0 then
-		return {
-			result = "ERR",
-			message = "APDS9900 not responding (read CH0 failed)"
-		}
+		return err("APDS9900 not responding (read CH0 failed)")
 	end
 	local ch1 = read_word_le(fd, REG_IRDATA)
 	if ch1 < 0 then
-		return {
-			result = "ERR",
-			message = "APDS9900 not responding (read CH1 failed)"
-		}
+		return err("APDS9900 not responding (read CH1 failed)")
 	end
 	local prox = read_word_le(fd, REG_PDATA)
 	if prox < 0 then
-		return {
-			result = "ERR",
-			message = "APDS9900 not responding (read PROX failed)"
-		}
+		return err("APDS9900 not responding (read PROX failed)")
 	end
 
 	return {

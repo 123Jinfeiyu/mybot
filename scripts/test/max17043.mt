@@ -1,6 +1,6 @@
 # MAX17043 锂电池电量计测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/max17043.sql（I2C + fuel-0@0x36 + Timer + fuel-d0 守护）
-# 运行：cat scripts/test/max17043.mt | ./target/release/bin/main --robot=robots/test/max17043.sql
+# 运行：cat scripts/test/max17043.mt | ./build/mybot --robot=robots/test/max17043.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x36 电量计 + 真电池）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/MAX17043 的 build 一旦返回 ERR

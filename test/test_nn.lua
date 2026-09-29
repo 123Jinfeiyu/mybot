@@ -8,18 +8,9 @@
 --   4. saveMt / loadMt 往返一致性（权重 .mt 矩阵脚本存储）
 --   5. 错误路径：维度不符 / 层序不连续 / 权重行缺失
 
-local pass = 0
-local fail = 0
-local function check(name, cond, detail)
-	-- 逐断言打印 [PASS]/[FAIL]（run_all.sh 假绿判定以 [PASS] 计数为据，P0-2）
-	if cond then
-		pass = pass + 1
-		print("[PASS] " .. name)
-	else
-		fail = fail + 1
-		print("[FAIL] " .. name .. (detail and " (" .. tostring(detail) .. ")" or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local Nn = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/nn.lua")
 
@@ -112,6 +103,4 @@ end
 print(string.rep("-", 44))
 print("nn 前向推理引擎离线桩测试")
 print(string.rep("-", 44))
-print(string.format("通过: %d  失败: %d", pass, fail))
-print("[DONE] test_nn.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if fail > 0 then os.exit(1) end
+tester.summary("test_nn.lua")

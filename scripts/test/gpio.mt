@@ -1,6 +1,6 @@
 # GPIO gpiod uAPI 测试（输出点闪 + 输入轮询）
 # 结构脚本：robots/test/gpio.sql（led-0@BCM17 输出 + sw-0@BCM27 输入 + Timer）
-# 运行：cat scripts/test/gpio.mt | ./target/release/bin/main --robot=robots/test/gpio.sql
+# 运行：cat scripts/test/gpio.mt | ./build/mybot --robot=robots/test/gpio.sql
 #
 # 实机测试（需 /dev/gpiochipN + gpio 组权限；Pi 5 用 /dev/gpiochip4 改 .sql）。
 # halt-on-error 生效后无 GPIO 控制器无法优雅跑完：GPIO 的 build 一旦返回 ERR

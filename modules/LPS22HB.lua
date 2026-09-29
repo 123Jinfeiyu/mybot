@@ -31,12 +31,12 @@
 --   5. 补码：气压 24 位（负值减 0x1000000）、温度 16 位
 --      （Adafruit 实现减 0xFFFFFF 少 1，本驱动按标准补码修正）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：气压计低频读取，默认关闭逐次打印
 local DEBUG = false
@@ -77,33 +77,21 @@ function build(data)
 	-- WHO_AM_I 自检
 	local id = i2c_read_reg(fd, REG_WHOAMI)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (read WHO_AM_I failed, check address 0x5C/0x5D and wiring)"
-		}
+		return err("LPS22HB not responding (read WHO_AM_I failed, check address 0x5C/0x5D and wiring)")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("LPS22HB unexpected WHO_AM_I 0x%02X (expect 0xB1; 0xBD=LPS25HB)", id)
-		}
+		return err(string.format("LPS22HB unexpected WHO_AM_I 0x%02X (expect 0xB1; 0xBD=LPS25HB)", id))
 	end
 
 	-- 软复位（SWRESET 自清零），轮询至完成
 	if not i2c_write_reg(fd, REG_CTRL2, BIT_SWRESET) then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (soft reset write failed)"
-		}
+		return err("LPS22HB not responding (soft reset write failed)")
 	end
 	local waited = 0
 	while waited < 20 do
 		local c2 = i2c_read_reg(fd, REG_CTRL2)
 		if c2 < 0 then
-			return {
-				result = "ERR",
-				message = "LPS22HB not responding (reset poll failed)"
-			}
+			return err("LPS22HB not responding (reset poll failed)")
 		end
 		if math.floor(c2 / 4) % 2 == 0 then break end
 		milli_sleep(1)
@@ -112,13 +100,12 @@ function build(data)
 
 	-- 单次模式 + BDU（输出寄存器读期间不刷新，防撕裂）
 	if not i2c_write_reg(fd, REG_CTRL1, CTRL1_VALUE) then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (CTRL_REG1 write failed)"
-		}
+		return err("LPS22HB not responding (CTRL_REG1 write failed)")
 	end
 
-	local wait = tonumber(data.wait)
+	-- 审计 2026-09-20（中）：非有限入参必须回落缺省——`wait < 0` 对 NaN/inf 恒假，
+	-- NaN 会一路带到下方 `waited >= wait_ms` 的轮询条件（恒假）→ 无界轮询挂死。
+	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = wait_default end
 	cfg_wait = math.floor(wait)
 
@@ -145,22 +132,18 @@ function call(data)
 		return ek
 	end
 
-	local wait_ms = tonumber(data.wait) or cfg_wait or wait_default
+	-- 审计 2026-09-20（中）：同 build —— NaN/inf 会让下方转换完成轮询无界挂死。
+	local wait_ms = finite_of(data.wait)
+	if wait_ms == nil then wait_ms = cfg_wait or wait_default end
 	if wait_ms < 0 then wait_ms = 0 end
 
 	-- 触发单次转换（读改写保留其余位；ONE_SHOT 硬件自清零）
 	local c2 = i2c_read_reg(fd, REG_CTRL2)
 	if c2 < 0 then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (read CTRL_REG2 failed)"
-		}
+		return err("LPS22HB not responding (read CTRL_REG2 failed)")
 	end
 	if not i2c_write_reg(fd, REG_CTRL2, c2 - c2 % 2 + BIT_ONESHOT) then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (trigger write failed)"
-		}
+		return err("LPS22HB not responding (trigger write failed)")
 	end
 
 	-- 轮询 ONE_SHOT 位清零（转换完成）
@@ -168,17 +151,11 @@ function call(data)
 	while true do
 		local v = i2c_read_reg(fd, REG_CTRL2)
 		if v < 0 then
-			return {
-				result = "ERR",
-				message = "LPS22HB not responding (poll failed)"
-			}
+			return err("LPS22HB not responding (poll failed)")
 		end
 		if v % 2 == 0 then break end
 		if waited >= wait_ms then
-			return {
-				result = "ERR",
-				message = "LPS22HB conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)"
-			}
+			return err("LPS22HB conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)")
 		end
 		milli_sleep(1)
 		waited = waited + 1
@@ -187,17 +164,14 @@ function call(data)
 	-- 5 字节突发读：气压 24 位（小端）+ 温度 16 位（小端）
 	local v = i2c_read_multi(fd, REG_PRESS, 5)
 	if v < 0 then
-		return {
-			result = "ERR",
-			message = "LPS22HB not responding (read data failed)"
-		}
+		return err("LPS22HB not responding (read data failed)")
 	end
 	local b = {}
 	for i = 0, 4 do b[i + 1] = math.floor(v / 256 ^ (4 - i)) % 256 end
 	local pres = b[1] + b[2] * 256 + b[3] * 65536
 	if pres >= 0x800000 then pres = pres - 0x1000000 end		-- 24 位补码
 	local temp = b[4] + b[5] * 256
-	if temp >= 0x8000 then temp = temp - 0x10000 end			-- 16 位补码
+	temp = bitc.s16(temp)			-- 16 位补码
 
 	return {
 		result = "OK",
@@ -226,7 +200,7 @@ end
 -- 【内嵌虚拟器件模型】LPS22HB_VIRT —— 2026-09-15 自 modules/lib/virtbus/lps22hb.lua
 -- 整体迁入（单文件驱动+模型第四十个，7 位地址空间 + 地址 bit7 自增 + 命令位
 -- 自清族，守护 E2E 走 sensor_daemon 回退路径）。约定同前三十九者：① 生产
--- 路径零执行（new() 仅虚拟总线测试调用；regmap 底座/mpath 延迟到段内加载——
+-- 路径零执行（new() 仅虚拟总线测试调用；regmap 底座延迟到 new() 内加载——
 -- 与驱动共享 regmap.lua 单一实现，lps22hb/regmap 命名空间本就一致，无需
 -- 改名避让；new() 内 `local lps22hb = LPS22HB_VIRT` 绑定使模型体零改动
 -- 移植）；② 工厂经全局表而非文件 return（生产侧 Lua.cj build_lua 以
@@ -259,9 +233,6 @@ end
 -- 公开 API 一律冒号定义；write/read 总线回调用点定义（无 self 参数，
 -- attach 动态委托 dev.write(bytes) 契约）。
 -- =====================================================================
-
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
-local regmap = dofile(mpath.resolve("lib/virtbus/regmap.lua"))
 
 LPS22HB_VIRT = { _VERSION = "0.1.0" }
 
@@ -327,6 +298,9 @@ end
 
 function LPS22HB_VIRT.new(opts)
 	local lps22hb = LPS22HB_VIRT	-- 模型体沿用原模块表引用（零改动移植）
+	-- 懒加载：regmap 底座只在虚拟路径真正 new() 时读盘（与 ADXL345/BME280/
+	-- MPU6050/PCA9685/VL53L4CD 五个模型同形），生产路径零 I/O。
+	local regmap = dofile(mpath.resolve("lib/virtbus/regmap.lua"))
 
 	opts = opts or {}
 	local dev_id = opts.who or lps22hb.DEVID

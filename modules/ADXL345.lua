@@ -39,9 +39,8 @@
 --   6. 敲击/自由落体/活动检测引擎（0x1D~0x30 中断组）本驱动未接——
 --      框架为守护轮询路径，中断型事件驱动待框架支持后再扩展
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -115,11 +114,9 @@ end
 -- 【配置脚本】DEVID 甄别 -> FULL_RES+量程 -> 速率 -> 测量模式
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -127,21 +124,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 列配置
 	local range_v, range_g = range_code_of(data.range)
@@ -151,48 +136,30 @@ function build(data)
 	-- 芯片甄别
 	local id = i2c_read_reg(fd, REG_DEVID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read ADXL345 DEVID"
-		}
+		return err("Failed to read ADXL345 DEVID")
 	end
 	if id ~= DEVID then
-		return {
-			result = "ERR",
-			message = string.format("DEVID = 0x%02X (expect 0xE5, not ADXL345?)", id)
-		}
+		return err(string.format("DEVID = 0x%02X (expect 0xE5, not ADXL345?)", id))
 	end
 
 	-- 数据格式：保留高位、置 FULL_RES + 量程
 	local df = i2c_read_reg(fd, REG_DATA_FORMAT)
 	if df < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read ADXL345 DATA_FORMAT"
-		}
+		return err("Failed to read ADXL345 DATA_FORMAT")
 	end
 	if not i2c_write_reg(fd, REG_DATA_FORMAT,
 		bitc.bor(bitc.band(df, 0xF0), bitc.bor(FULL_RES, range_v))) then
-		return {
-			result = "ERR",
-			message = "Failed to write ADXL345 DATA_FORMAT"
-		}
+		return err("Failed to write ADXL345 DATA_FORMAT")
 	end
 
 	-- 数据率（高性能档，清低功耗位）
 	if not i2c_write_reg(fd, REG_BW_RATE, odr_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write ADXL345 BW_RATE"
-		}
+		return err("Failed to write ADXL345 BW_RATE")
 	end
 
 	-- 进入测量模式（清 Sleep/Link 位，同 Adafruit 参考）
 	if not i2c_write_reg(fd, REG_POWER_CTL, MEASURE) then
-		return {
-			result = "ERR",
-			message = "Failed to write ADXL345 POWER_CTL"
-		}
+		return err("Failed to write ADXL345 POWER_CTL")
 	end
 
 	-- 等两个测量周期，首拍数据就绪
@@ -223,11 +190,9 @@ end
 -- （负值由守护 sign='16' 展开；FULL_RES 下 256 LSB/g 恒定）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -235,29 +200,14 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	local b = read_bytes6(fd, REG_DATAX0)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read ADXL345 accel data"
-		}
+		return err("Failed to read ADXL345 accel data")
 	end
 
 	local ret = {

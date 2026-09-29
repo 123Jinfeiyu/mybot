@@ -49,9 +49,8 @@
 --      两字 -> 相位字 -> 波形位清 RESET 放行输出
 --   7. 相位字 = 11<<14 | floor(deg x 4096/360 + 0.5)（12 位）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -113,11 +112,9 @@ end
 -- 【配置脚本】RESET|B28 -> 频率两字 -> 相位字 -> 波形位清 RESET 放行
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -127,35 +124,23 @@ function build(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-- 列配置（缺省 1kHz / sine / 0°，MD_AD9833 同款缺省频率）；
 	-- 全部校验通过后才落模块状态（失败半途不得污染跨 call 状态）
 	local f = tonumber(data.freq) or 1000
 	if f <= 0 or f > WAVE_MAX_F then
-		return {
-			result = "ERR",
-			message = string.format("Invalid freq: %s (expect 0 < f <= %d Hz)",
-				tostring(data.freq), WAVE_MAX_F)
-		}
+		return err(string.format("Invalid freq: %s (expect 0 < f <= %d Hz)",
+				tostring(data.freq), WAVE_MAX_F))
 	end
 	local wbits, wname = wave_bits_of(data.wave or "sine")
 	if wbits == nil then
-		return {
-			result = "ERR",
-			message = "Invalid wave: '" .. tostring(data.wave) .. "' (expect sine/triangle/square)"
-		}
+		return err("Invalid wave: '" .. tostring(data.wave) .. "' (expect sine/triangle/square)")
 	end
 	local d = tonumber(data.phase) or 0
 	if d < 0 or d >= 360 then
-		return {
-			result = "ERR",
-			message = "Invalid phase: " .. tostring(data.phase) .. " (expect 0 ~ 360)"
-		}
+		return err("Invalid phase: " .. tostring(data.phase) .. " (expect 0 ~ 360)")
 	end
 	freq_hz, wave_str, phase_deg = f, wname, d
 	muted = false
@@ -163,41 +148,26 @@ function build(data)
 	-----------------------------------------------------
 	-- 复位静音 + B28
 	if not send16(fd, bitc.bor(BIT_RESET, BIT_B28)) then
-		return {
-			result = "ERR",
-			message = "Failed to send AD9833 control word"
-		}
+		return err("Failed to send AD9833 control word")
 	end
 
 	-- 频率字两段（低 14 位在前，B28 原子加载）
 	local tw = tuning_word(freq_hz)
 	if not send16(fd, SEL_FREQ0 + (tw % 0x4000)) then
-		return {
-			result = "ERR",
-			message = "Failed to send AD9833 freq LSBs"
-		}
+		return err("Failed to send AD9833 freq LSBs")
 	end
 	if not send16(fd, SEL_FREQ0 + (math.floor(tw / 0x4000) % 0x4000)) then
-		return {
-			result = "ERR",
-			message = "Failed to send AD9833 freq MSBs"
-		}
+		return err("Failed to send AD9833 freq MSBs")
 	end
 
 	-- 相位字
 	if not send16(fd, SEL_PHASE + phase_word(phase_deg)) then
-		return {
-			result = "ERR",
-			message = "Failed to send AD9833 phase word"
-		}
+		return err("Failed to send AD9833 phase word")
 	end
 
 	-- 波形位 + 清 RESET，放行输出
 	if not send16(fd, run_ctrl(wbits)) then
-		return {
-			result = "ERR",
-			message = "Failed to send AD9833 waveform word"
-		}
+		return err("Failed to send AD9833 waveform word")
 	end
 
 	print(string.format("AD9833 init OK: freq=%.3fHz, wave=%s, phase=%g deg",
@@ -223,11 +193,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -237,10 +205,7 @@ function call(data)
 	-----------------------------------------------------
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -249,10 +214,7 @@ function call(data)
 	if mute_v ~= nil then
 		muted = (mute_v ~= 0)
 		if not send16(fd, run_ctrl(WAVE_BITS[wave_str])) then
-			return {
-				result = "ERR",
-				message = "Failed to send AD9833 control word"
-			}
+			return err("Failed to send AD9833 control word")
 		end
 	end
 
@@ -260,17 +222,11 @@ function call(data)
 	if data.wave ~= nil then
 		local wbits, wname = wave_bits_of(data.wave)
 		if wbits == nil then
-			return {
-				result = "ERR",
-				message = "Invalid wave: '" .. tostring(data.wave) .. "' (expect sine/triangle/square)"
-			}
+			return err("Invalid wave: '" .. tostring(data.wave) .. "' (expect sine/triangle/square)")
 		end
 		wave_str = wname
 		if not send16(fd, run_ctrl(wbits)) then
-			return {
-				result = "ERR",
-				message = "Failed to send AD9833 waveform word"
-			}
+			return err("Failed to send AD9833 waveform word")
 		end
 	end
 
@@ -278,32 +234,20 @@ function call(data)
 	if data.freq ~= nil then
 		local f = tonumber(data.freq)
 		if f == nil or f <= 0 or f > WAVE_MAX_F then
-			return {
-				result = "ERR",
-				message = string.format("Invalid freq: %s (expect 0 < f <= %d Hz)",
-					tostring(data.freq), WAVE_MAX_F)
-			}
+			return err(string.format("Invalid freq: %s (expect 0 < f <= %d Hz)",
+					tostring(data.freq), WAVE_MAX_F))
 		end
 		freq_hz = f
 		local tw = tuning_word(freq_hz)
 		-- B28 + 当前波形位（静音态保持 RESET）：两段频率字原子加载
 		if not send16(fd, run_ctrl(WAVE_BITS[wave_str])) then
-			return {
-				result = "ERR",
-				message = "Failed to send AD9833 control word"
-			}
+			return err("Failed to send AD9833 control word")
 		end
 		if not send16(fd, SEL_FREQ0 + (tw % 0x4000)) then
-			return {
-				result = "ERR",
-				message = "Failed to send AD9833 freq LSBs"
-			}
+			return err("Failed to send AD9833 freq LSBs")
 		end
 		if not send16(fd, SEL_FREQ0 + (math.floor(tw / 0x4000) % 0x4000)) then
-			return {
-				result = "ERR",
-				message = "Failed to send AD9833 freq MSBs"
-			}
+			return err("Failed to send AD9833 freq MSBs")
 		end
 	end
 
@@ -311,17 +255,11 @@ function call(data)
 	if data.phase ~= nil then
 		local d = tonumber(data.phase)
 		if d == nil or d < 0 or d >= 360 then
-			return {
-				result = "ERR",
-				message = "Invalid phase: " .. tostring(data.phase) .. " (expect 0 ~ 360)"
-			}
+			return err("Invalid phase: " .. tostring(data.phase) .. " (expect 0 ~ 360)")
 		end
 		phase_deg = d
 		if not send16(fd, SEL_PHASE + phase_word(phase_deg)) then
-			return {
-				result = "ERR",
-				message = "Failed to send AD9833 phase word"
-			}
+			return err("Failed to send AD9833 phase word")
 		end
 	end
 

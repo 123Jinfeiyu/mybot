@@ -1,21 +1,16 @@
 -- test_slot_addr.lua - 注入槽地址精度/契约回归（Low：注入地址精度）
 -- 验证 modules/lib/pthread.lua 的地址注入契约：
---   1) 宿主 lua_pushinteger 以 64 位整数 tag 注入，任意值（含 >=2^53）逐位保真；
---   2) slot_attach 前置守卫：地址被 double 化（非整/负/非 number）→ error；
---   3) >=2^53 因注入路径逐位保真，只告警不拦截（拦截会误伤精确路径）。
+--   1) 生产路径 = 宿主 lua_pushlightuserdata 注入（类型安全句柄，无算术/
+--      tonumber；lightuserdata 无法在纯 Lua 自造，由 run_all.sh 守护 e2e 覆盖）；
+--   2) 整数兜底路径：slot_attach 前置守卫——地址被 double 化（非整/负/非 number）→ error；
+--   3) 整数路径 >=2^53 只告警不拦截（拦截会误伤精确路径）。
 -- 比较统一走 cdata 整数域（ffi.cast uint64 == 整数），避开 P.addr 的 tonumber 双精度化。
 -- 用法（项目根目录）: luajit test/test_slot_addr.lua（run_all.sh 自动纳入）
 -- 前置：LuaJIT ffi；非 LuaJIT（lua5.4）时跳过 ffi 组，仅打印跳过说明。
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1; print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 逐字重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local dir = os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
 local ok_ffi, ffi = pcall(require, "ffi")
@@ -66,8 +61,4 @@ pcall_ok, slot = pcall(P.slot_attach, 2^55)
 check(">=2^53 不拦截（告警放行）", pcall_ok)
 check(">=2^53 仍逐位还原", slot ~= nil and ffi.cast("uint64_t", slot) == 2^55)
 
-print("===============================================")
-print(("汇总: %d 通过, %d 失败"):format(passed, failed))
-print("[DONE] test_slot_addr.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if failed > 0 then os.exit(1) end
-return 0
+tester.summary("test_slot_addr.lua")

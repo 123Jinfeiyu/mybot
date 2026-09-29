@@ -1,6 +1,6 @@
 # INA226 单通道电流/功率测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/ina226.sql（I2C + ina226-0@0x40 + Timer + ina-d0 守护）
-# 运行：cat scripts/test/ina226.mt | ./target/release/bin/main --robot=robots/test/ina226.sql
+# 运行：cat scripts/test/ina226.mt | ./build/mybot --robot=robots/test/ina226.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x40 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/INA226 的 build 一旦返回 ERR

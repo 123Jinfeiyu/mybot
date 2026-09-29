@@ -179,6 +179,26 @@ do
 		#s)
 end
 
+-- 平台差异单点（主评估 C）：HAL.lua:960 曾用字面量把 HAL.PWM_SYSFS_ROOT 重置回
+-- /sys/class/pwm，而 pwm_chip_path/pwm_attr_path 读的正是该快照 —— 改
+-- HAL.platform.pwm_sysfs_root 做移植/桩时静默失效（旧实现前缀恒为 /sys/class/pwm）。
+-- 修复后两路径函数直接取平台表值，本组断言据此跟随；结束前还原被改的字段。
+do
+	local saved_root = HAL.platform.pwm_sysfs_root
+	HAL.platform.pwm_sysfs_root = "/tmp/pwmtest"
+	reset(true)
+	pwm_npwm(CHIP)
+	check("平台单点: pwm_chip_path 跟随 HAL.platform.pwm_sysfs_root",
+		(log[#log] or {}).path == "/tmp/pwmtest/pwmchip0/npwm",
+		(log[#log] or {}).path)
+	reset(true)
+	pwm_config(CHIP, CH, 1000, 50)
+	check("平台单点: pwm_attr_path 跟随 HAL.platform.pwm_sysfs_root",
+		(seq()[1] or {}).path == "/tmp/pwmtest/pwmchip0/pwm1/duty_cycle",
+		(seq()[1] or {}).path)
+	HAL.platform.pwm_sysfs_root = saved_root
+end
+
 ------------------------------------------------------------------
 -- 第二层：驱动层（桩替换全局 pwm_*）
 ------------------------------------------------------------------

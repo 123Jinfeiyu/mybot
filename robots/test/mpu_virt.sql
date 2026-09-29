@@ -14,7 +14,7 @@
  *
  * 配合 mpu_virt.mt：200ms 预热等守护 setup（含驱动 build 的 100ms sleep），
  * 随后 20 拍 ×50ms pump 七路滤波并消费两个 Monitor。
- * 用法：cat scripts/test/mpu_virt.mt | bash _run.sh --robot=robots/test/mpu_virt.sql
+ * 用法：cat scripts/test/mpu_virt.mt | ./build/mybot --robot=robots/test/mpu_virt.sql
  */
 CREATE TABLE Timer (
 	name String

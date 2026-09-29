@@ -40,9 +40,8 @@
 --   6. 通用呼叫复位（地址 0x00 + 0x06，模拟上电重载 EEPROM）本驱动未用；
 --      掉电模式（PD1:0）亦未暴露
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -82,11 +81,9 @@ end
 -- 【配置脚本】读回一次作为在位验证（无寄存器可校验器件，读通即在）
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -94,20 +91,16 @@ function build(data)
 	end
 
 	-----------------------------------------------------
+	-- 豁免 i2c_pair：本器件地址硬件固定（A0 接地 = 0x62），address 列可省，
+	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address) or 0x62
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
+		return err("Invalid Argument: fd or address (set_addr failed)")
 	end
 
 	-- 参考电压列（'-' 缺省 5.0；非正数同缺省，防除零）
@@ -118,10 +111,7 @@ function build(data)
 	-----------------------------------------------------
 	local r = i2c_read(fd, 5)
 	if r < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read MCP4725 (器件在位检查)"
-		}
+		return err("Failed to read MCP4725 (device presence check)")
 	end
 	local rb = decode_readback(r)
 
@@ -149,11 +139,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -161,12 +149,11 @@ function call(data)
 	end
 
 	-----------------------------------------------------
+	-- 豁免 i2c_pair：本器件地址硬件固定（A0 接地 = 0x62），address 列可省，
+	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
 	local fd = tonumber(data.fd)
 	if fd == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd"
-		}
+		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -179,10 +166,7 @@ function call(data)
 	if level == nil and volt == nil and percent == nil then
 		local r = i2c_read(fd, 5)
 		if r < 0 then
-			return {
-				result = "ERR",
-				message = "Failed to read MCP4725"
-			}
+			return err("Failed to read MCP4725")
 		end
 		local rb = decode_readback(r)
 		return {
@@ -212,10 +196,7 @@ function call(data)
 		-- 写 DAC+EEPROM（3 字节，C2..C0=011）
 		if i2c_write_multi(fd, CMD_DAC_EEPROM,
 			math.floor(code / 16) % 256, (code * 16) % 256) ~= 0 then
-			return {
-				result = "ERR",
-				message = "Failed to write MCP4725 DAC+EEPROM"
-			}
+			return err("Failed to write MCP4725 DAC+EEPROM")
 		end
 		-- 轮询 RDY（50ms 步进 500ms 超时；1 字节读的合并值即 byte0）
 		for _ = 1, 10 do
@@ -224,10 +205,7 @@ function call(data)
 			-- 总线读失败（-1）必须与"未就绪"区分：断线误报成
 			-- "EEPROM 写超时"会把排障引向错误方向（2026-09 审计）
 			if r < 0 then
-				return {
-					result = "ERR",
-					message = "MCP4725 EEPROM write: bus read failed while polling RDY"
-				}
+				return err("MCP4725 EEPROM write: bus read failed while polling RDY")
 			end
 			if r >= RDY_MASK then
 				dbg(string.format("MCP4725 EEPROM write done: code=%d", code))
@@ -240,18 +218,12 @@ function call(data)
 				}
 			end
 		end
-		return {
-			result = "ERR",
-			message = "MCP4725 EEPROM write timeout (RDY not set in 500ms)"
-		}
+		return err("MCP4725 EEPROM write timeout (RDY not set in 500ms)")
 	end
 
 	-- 快速写（2 字节，仅 DAC，适合高频更新）
 	if i2c_write_multi(fd, CMD_FAST + math.floor(code / 256) % 256, code % 256) ~= 0 then
-		return {
-			result = "ERR",
-			message = "Failed to write MCP4725 DAC"
-		}
+		return err("Failed to write MCP4725 DAC")
 	end
 
 	dbg(string.format("MCP4725 set: code=%d", code))

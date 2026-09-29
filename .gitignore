@@ -1,46 +1,12 @@
-# prjs
-nn/
-/bot
-/bot?
-# 注意：cjpm.lock 已入库（0.3.2 起保证构建可复现），不要再忽略
-
-.git/
-.vscode/
-.idea/
-.cache/
-.trae/
-
-#
-*.so
-*.o
-*.cjo
-*.dll
-*.exe
-*.lib
-*.exp
-/main
-
-# cangjie
 build/
-target/
-output/
-module-resolve.json
-module-lock.json
-# cjpm.lock 入库（0.3.2）：锁定依赖版本保证构建可复现；升级依赖时
-# 手动 cjpm update 后连同锁文件一起提交
-.cjpm-history
-*.macrocall
-*.gcda
-*.gcno
-
-
-# 其他
-/log
-/report
-/tmp
+build-*/
+*.o
 .tmp/
-*.deb
+target/
+# 会话/计划目录（.zcode/plans 等为本地临时产物，不入库）
+.zcode/
 
-# 工具配置
-.opencode/
-opencode.json
+# agent 模式的 LLM 配置：内含 API key，别提交（示例见 mybot.llm.json.example）
+mybot.llm.json
+mybot.llm.conf.json
+*.llm.json

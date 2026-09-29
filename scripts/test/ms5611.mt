@@ -1,6 +1,6 @@
 # MS5611 高分辨率气压计测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/ms5611.sql（I2C + baro0@0x77 + Timer + baro-d0 守护）
-# 运行：cat scripts/test/ms5611.mt | ./target/release/bin/main --robot=robots/test/ms5611.sql
+# 运行：cat scripts/test/ms5611.mt | ./build/mybot --robot=robots/test/ms5611.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x77 地址器件；CSB=VDD 的模块地址是 0x76）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/MS5611 的 build 一旦返回 ERR

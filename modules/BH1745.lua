@@ -40,9 +40,8 @@
 --      build 后等一个完整测量时间首拍数据才就绪
 --   6. 中断/阈值/持久化（0x60~0x65）本驱动未用（守护周期采样路径不需要）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -98,11 +97,9 @@ end
 -- 【配置脚本】软复位 -> 双 ID 甄别 -> 测量时间/增益 -> 启动测量 -> 等首拍
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -110,21 +107,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 列配置
 	local mt_code_v, mt_n = mt_code_of(data.mt)
@@ -134,10 +119,7 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位（bit7 自清，随后系统控制仅剩 Part ID）
 	if not i2c_write_reg(fd, REG_SYS_CTRL, SW_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 soft reset"
-		}
+		return err("Failed to write BH1745 soft reset")
 	end
 	milli_sleep(5)
 
@@ -145,38 +127,23 @@ function build(data)
 	local sys = i2c_read_reg(fd, REG_SYS_CTRL)
 	local mfr = i2c_read_reg(fd, REG_MFR_ID)
 	if sys < 0 or mfr < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BH1745 ID registers"
-		}
+		return err("Failed to read BH1745 ID registers")
 	end
 	local part = sys % 64		-- [5:0] Part ID（算术取低位）
 	if part ~= PART_ID or mfr ~= MFR_ID then
-		return {
-			result = "ERR",
-			message = string.format("Not BH1745: PART_ID=0x%02X (expect 0x0B), MFR_ID=0x%02X (expect 0xE0)",
-				part, mfr)
-		}
+		return err(string.format("Not BH1745: PART_ID=0x%02X (expect 0x0B), MFR_ID=0x%02X (expect 0xE0)",
+			part, mfr))
 	end
 
 	-- 测量时间（MODE1 [2:0]）+ 增益（MODE2 [1:0]）+ 启动测量（bit4）
 	if not i2c_write_reg(fd, REG_MODE1, mt_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 mode control 1"
-		}
+		return err("Failed to write BH1745 mode control 1")
 	end
 	if not i2c_write_reg(fd, REG_MODE2, bitc.bor(RGBC_EN, gain_code_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 mode control 2"
-		}
+		return err("Failed to write BH1745 mode control 2")
 	end
 	if not i2c_write_reg(fd, REG_MODE3, 0x02) then
-		return {
-			result = "ERR",
-			message = "Failed to write BH1745 mode control 3"
-		}
+		return err("Failed to write BH1745 mode control 3")
 	end
 
 	-- 等一个完整测量时间，首拍数据就绪
@@ -204,11 +171,9 @@ end
 -- NOTE: 数据小端（0x50=LSB、0x51=MSB，datasheet Rev.002）；一次 8 字节原子读
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -216,30 +181,15 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 8 字节一次原子读（字节表接口：合并数值接口 6 字节以上超 Lua number 精度）
 	local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BH1745 colour data"
-		}
+		return err("Failed to read BH1745 colour data")
 	end
 
 	-- 8 字节按小端拆 4 个 16 位通道（偶地址 LSB）：R/G/B/C
@@ -323,13 +273,6 @@ local RW_REGS = {
 local RO_REGS = {}
 for a = 0x50, 0x59 do RO_REGS[a] = true end
 RO_REGS[0x92] = true
-
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo end
-	if v > hi then return hi end
-	return v
-end
 
 function BH1745_VIRT.new(opts)
 	local bh1745 = BH1745_VIRT	-- 模型体沿用原模块表引用（零改动移植）

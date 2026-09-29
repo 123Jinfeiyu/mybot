@@ -30,6 +30,16 @@ function Kalman.new(Q, R)
 	if Q == nil or R == nil then
 		error("Kalman.new: Q and R must be numbers")
 	end
+	-- NaN 防线（2026-09-20 评估）：`Q < 0` / `R <= 0` 对 NaN 均为假 → NaN 会
+	-- 穿过检查进入滤波器，输出整条 NaN 序列且驱动返回 OK。±inf 是**允许**的
+	-- 既有语义（Q 无穷 = 只用测量值，见上方参数说明），故只显式拒 NaN；
+	-- inf 的 kg=inf/inf 由 filter 按极限处理（2026-09-20 修复）。
+	if Q ~= Q then
+		error("Kalman.new: Q must not be NaN (system noise covariance)")
+	end
+	if R ~= R then
+		error("Kalman.new: R must not be NaN (measurement noise covariance)")
+	end
 	if Q < 0 then
 		error("Kalman.new: Q must be >= 0 (system noise covariance)")
 	end
@@ -51,14 +61,25 @@ end
 -- Z(k) 是测量值；W(k)/V(k) 为叠加在测量值上的高斯白噪声，无需显式处理
 function Kalman:filter(dat)
 	dat = tonumber(dat)
-	if dat == nil then
-		error("Kalman:filter: data must be a number")
+	if not (dat ~= nil and dat > -math.huge and dat < math.huge) then
+		error("Kalman:filter: data must be a finite number")
 	end
 	local X_mid = self.A * self.X_last			-- 公式(1)
 	local P_mid = self.A * self.P_last + self.Q		-- 公式(2)
-	local kg = P_mid / (P_mid + self.R)			-- 公式(4)
-	local X_now = X_mid + kg * (dat - X_mid)		-- 公式(3)
-	self.P_last = (1.0 - kg) * P_mid			-- 公式(5)
+	-- Q=±inf 时 P_mid 发散，kg = P_mid/(P_mid+R) = inf/inf = NaN，会污染整条
+	-- 后续输出（2026-09-20 审计遗留）。既有语义「Q 无穷 = 只用测量值」：
+	-- kg→1 的极限即输出测量值本身；P 回落 (1-kg)*P_mid = P_mid*R/(P_mid+R)，
+	-- 极限为 R。直接取极限，避免 inf/inf。R 恒有限（new 已拒 NaN 与 ≤0）。
+	local kg, X_now
+	if P_mid == math.huge or P_mid == -math.huge then
+		kg = 1.0
+		X_now = dat
+		self.P_last = self.R
+	else
+		kg = P_mid / (P_mid + self.R)			-- 公式(4)
+		X_now = X_mid + kg * (dat - X_mid)		-- 公式(3)
+		self.P_last = (1.0 - kg) * P_mid		-- 公式(5)
+	end
 	self.X_last = X_now
 	return X_now					-- 输出预测结果 X(k|k)
 end

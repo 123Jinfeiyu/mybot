@@ -32,12 +32,12 @@
 --   CTRL_GAS_1 的 RUN_GAS：0x10=BME680 低量程 / 0x20=BME688 高量程。
 --   过采样固定 x1（T/P/H），IIR 滤波 ×3，可按需调。
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -74,34 +74,12 @@ local MODE_MSK      = 0x03
 local MODE_FORCED   = 0x01
 
 -- ==================== 工具 ====================
-local function s8(v)
-	v = v % 256
-	if v >= 128 then v = v - 256 end
-	return v
-end
+local s8 = function(v) return bitc.s8(v % 256) end
 
-local function s16(v)
-	v = v % 65536
-	if v >= 32768 then v = v - 65536 end
-	return v
-end
+local s16 = function(v) return bitc.s16(v % 65536) end
 
 -- 分块读 n 字节（HAL 合并读上限 8 字节；寄存器自动增量跨块连续）
-local function read_block(fd, reg, n)
-	local out = {}
-	local done = 0
-	while done < n do
-		-- HAL 合并读钳制 1~6（8 字节合并值超 2^53 丢精度），按 6 分块
-		local chunk = math.min(6, n - done)
-		local v = i2c_read_multi(fd, reg + done, chunk)
-		if v < 0 then return nil end
-		for i = 0, chunk - 1 do
-			out[done + i + 1] = math.floor(v / 256 ^ (chunk - 1 - i)) % 256
-		end
-		done = done + chunk
-	end
-	return out
-end
+-- 分块读寄存器块（实现收敛至 drv_common.read_block_bytes，chunk 缺省 6，N-24）
 
 -- ==================== 校准解析（get_calib_data，42 字节 1 基表） ====================
 local function parse_calib(b)
@@ -248,42 +226,27 @@ function build(data)
 
 	-- 软复位 -> Chip ID -> 变体甄别
 	if not i2c_write_reg(fd, REG_SOFT_RST, RST_CMD) then
-		return {
-			result = "ERR",
-			message = "BME688 not responding (soft reset failed, check address 0x76/0x77 and wiring)"
-		}
+		return err("BME688 not responding (soft reset failed, check address 0x76/0x77 and wiring)")
 	end
 	milli_sleep(10)
 	local id = i2c_read_reg(fd, REG_CHIP_ID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "BME688 not responding (read chip id failed)"
-		}
+		return err("BME688 not responding (read chip id failed)")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("BME688 unexpected chip id 0x%02X (expect 0x61)", id)
-		}
+		return err(string.format("BME688 unexpected chip id 0x%02X (expect 0x61)", id))
 	end
 	local variant = i2c_read_reg(fd, REG_VARIANT)
 	if variant ~= VARIANT_680 and variant ~= VARIANT_688 then
-		return {
-			result = "ERR",
-			message = string.format("BME688 unexpected variant id 0x%02X (expect 0x00/0x01)", variant)
-		}
+		return err(string.format("BME688 unexpected variant id 0x%02X (expect 0x00/0x01)", variant))
 	end
 
 	-- 读 42 字节校准（3 块）并解析
-	local b1 = read_block(fd, REG_COEFF1, 23)
-	local b2 = read_block(fd, REG_COEFF2, 14)
-	local b3 = read_block(fd, REG_COEFF3, 5)
+	local b1 = read_block_bytes(fd, REG_COEFF1, 23)
+	local b2 = read_block_bytes(fd, REG_COEFF2, 14)
+	local b3 = read_block_bytes(fd, REG_COEFF3, 5)
 	if b1 == nil or b2 == nil or b3 == nil then
-		return {
-			result = "ERR",
-			message = "BME688 not responding (read calibration failed)"
-		}
+		return err("BME688 not responding (read calibration failed)")
 	end
 	local coeff = {}
 	for i = 1, 23 do coeff[i] = b1[i] end
@@ -291,22 +254,19 @@ function build(data)
 	for i = 1, 5 do coeff[37 + i] = b3[i] end
 	C = parse_calib(coeff)
 
-	-- 解析配置
-	local err
+	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+	local emsg
 	local heatr_temp = math.floor(tonumber(data.heatr_temp) or 320)
 	if heatr_temp < 100 or heatr_temp > 400 then
-		err = "Invalid Argument: heatr_temp '" .. tostring(data.heatr_temp) .. "' (range 100~400)"
+		emsg = "Invalid Argument: heatr_temp '" .. tostring(data.heatr_temp) .. "' (range 100~400)"
 	end
-	if err then return { result = "ERR", message = err } end
+	if emsg then return err(emsg) end
 	local heatr_dur = math.floor(tonumber(data.heatr_dur) or 150)
 	if heatr_dur < 1 or heatr_dur > 4032 then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: heatr_dur '" .. tostring(data.heatr_dur) .. "' (range 1~4032)"
-		}
+		return err("Invalid Argument: heatr_dur '" .. tostring(data.heatr_dur) .. "' (range 1~4032)")
 	end
 	local amb_temp = tonumber(data.amb_temp) or 25
-	local wait = tonumber(data.wait)
+	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = 300 end
 
 	-- 写配置：过采样 x1 x1 x1 + IIR x3 + 加热器设定点 0 + 运行气体位
@@ -326,10 +286,7 @@ function build(data)
 	local run_gas = (variant == VARIANT_688) and RUN_GAS_H or RUN_GAS_L
 	wr(REG_CTRL_GAS1, run_gas + 0x00, "CTRL_GAS1")	-- 设定点 0
 	if wfail ~= nil then
-		return {
-			result = "ERR",
-			message = wfail
-		}
+		return err(wfail)
 	end
 
 	cfg_variant = variant
@@ -365,25 +322,16 @@ function call(data)
 	-- 触发强制模式：先置睡眠再写模式位（Bosch set_op_mode 时序）
 	local ctrl = i2c_read_reg(fd, REG_CTRL_MEAS)
 	if ctrl < 0 then
-		return {
-			result = "ERR",
-			message = "BME688 not responding (read CTRL_MEAS failed)"
-		}
+		return err("BME688 not responding (read CTRL_MEAS failed)")
 	end
 	local base = ctrl - (ctrl % 4)			-- 清模式位
 	if ctrl % 4 ~= 0 then
 		if not i2c_write_reg(fd, REG_CTRL_MEAS, base) then
-			return {
-				result = "ERR",
-				message = "BME688 not responding (sleep write failed)"
-			}
+			return err("BME688 not responding (sleep write failed)")
 		end
 	end
 	if not i2c_write_reg(fd, REG_CTRL_MEAS, base + MODE_FORCED) then
-		return {
-			result = "ERR",
-			message = "BME688 not responding (trigger write failed)"
-		}
+		return err("BME688 not responding (trigger write failed)")
 	end
 
 	-- 轮询数据场 0 的 NEW_DATA 位
@@ -392,29 +340,20 @@ function call(data)
 	while true do
 		st = i2c_read_reg(fd, REG_FIELD0)
 		if st < 0 then
-			return {
-				result = "ERR",
-				message = "BME688 not responding (poll failed)"
-			}
+			return err("BME688 not responding (poll failed)")
 		end
 		if st % 256 >= 128 then break end		-- bit7 NEW_DATA
 		if waited >= wait_ms then
-			return {
-				result = "ERR",
-				message = "BME688 conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)"
-			}
+			return err("BME688 conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)")
 		end
 		milli_sleep(5)
 		waited = waited + 5
 	end
 
 	-- 读 17 字节数据场
-	local f = read_block(fd, REG_FIELD0, 17)
+	local f = read_block_bytes(fd, REG_FIELD0, 17)
 	if f == nil then
-		return {
-			result = "ERR",
-			message = "BME688 not responding (read field failed)"
-		}
+		return err("BME688 not responding (read field failed)")
 	end
 
 	local adc_pres = f[3] * 4096 + f[4] * 16 + math.floor(f[5] / 16)

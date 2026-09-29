@@ -47,9 +47,8 @@
 --      4.375/8.75/17.5/35/70/140 mdps/LSB
 --   7. 仅支持 LSM6DSV16X（WHO_AM_I 0x70）；V32X 等其他家族 ID 明确报错
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -146,11 +145,9 @@ end
 -- 【配置脚本】WHO_AM_I 甄别 -> 软复位（自清轮询）-> BDU -> ODR/量程 -> 等启动
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -158,21 +155,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 列配置
 	local fs_xl_v, acc_g = acc_code_of(data.range)
@@ -183,31 +168,19 @@ function build(data)
 	-- 芯片甄别
 	local id = i2c_read_reg(fd, REG_WHO_AM_I)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X WHO_AM_I"
-		}
+		return err("Failed to read LSM6DSV16X WHO_AM_I")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO 系，V32X 等家族亦不同)", id)
-		}
+		return err(string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO family, V32X and other families also differ)", id))
 	end
 
 	-- 软复位：读改写置 bit0（保留 IF_INC），轮询自清（10ms 步进 10 次）
 	local c3 = read_reg8(fd, REG_CTRL3)
 	if c3 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X CTRL3"
-		}
+		return err("Failed to read LSM6DSV16X CTRL3")
 	end
 	if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(c3, SW_RESET)) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X soft reset"
-		}
+		return err("Failed to write LSM6DSV16X soft reset")
 	end
 	local settled = false
 	for _ = 1, 10 do
@@ -217,60 +190,36 @@ function build(data)
 		if bitc.band(s, SW_RESET) == 0 then settled = true; break end
 	end
 	if not settled then
-		return {
-			result = "ERR",
-			message = "LSM6DSV16X soft reset not completed (sw_reset bit stuck)"
-		}
+		return err("LSM6DSV16X soft reset not completed (sw_reset bit stuck)")
 	end
 
 	-- 置 BDU（输出寄存器不被读撕裂），保 IF_INC（地址自增，突发读前提）；
 	-- bitcompat 无 bnot，清 bit0 用字面掩码 0xFE（此时复位已完成 bit0 必为 0）
 	c3 = read_reg8(fd, REG_CTRL3)
 	if c3 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X CTRL3"
-		}
+		return err("Failed to read LSM6DSV16X CTRL3")
 	end
 	if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(bitc.band(c3, 0xFE), bitc.bor(BDU_MASK, IF_INC_MASK))) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL3 (BDU)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL3 (BDU)")
 	end
 
 	-- ODR（op_mode=0 高性能模式）+ 量程（CTRL6/CTRL8 读改写保留滤波域）
 	if not i2c_write_reg(fd, REG_CTRL1, odr_xl_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL1 (accel ODR)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL1 (accel ODR)")
 	end
 	if not i2c_write_reg(fd, REG_CTRL2, odr_xl_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL2 (gyro ODR)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL2 (gyro ODR)")
 	end
 	local c6 = read_reg8(fd, REG_CTRL6)
 	local c8 = read_reg8(fd, REG_CTRL8)
 	if c6 == nil or c8 == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X CTRL6/CTRL8"
-		}
+		return err("Failed to read LSM6DSV16X CTRL6/CTRL8")
 	end
 	if not i2c_write_reg(fd, REG_CTRL6, bitc.bor(bitc.band(c6, 0xF0), fs_g_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL6 (gyro FS)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL6 (gyro FS)")
 	end
 	if not i2c_write_reg(fd, REG_CTRL8, bitc.bor(bitc.band(c8, 0xFC), fs_xl_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write LSM6DSV16X CTRL8 (accel FS)"
-		}
+		return err("Failed to write LSM6DSV16X CTRL8 (accel FS)")
 	end
 
 	-- 陀螺仪启动等待（ST 惯例 ~70-80ms，取 100ms 余量，首拍数据就绪）
@@ -300,11 +249,9 @@ end
 -- （与 MPU6050/BMI270 驱动同约定，负值由守护 sign='16' 展开）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -312,36 +259,18 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	local g = read_bytes6(fd, REG_OUT_G)
 	if g == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X gyro data"
-		}
+		return err("Failed to read LSM6DSV16X gyro data")
 	end
 	local a = read_bytes6(fd, REG_OUT_A)
 	if a == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read LSM6DSV16X accel data"
-		}
+		return err("Failed to read LSM6DSV16X accel data")
 	end
 
 	-- 返回字典（小端拼字：值 = MSB<<8 | LSB）
@@ -442,11 +371,6 @@ local GYR_LSB_PER_DPS = {
 local GYR_DPS = { [0x0] = 125, [0x1] = 250, [0x2] = 500, [0x3] = 1000,
                   [0x4] = 2000, [0xC] = 4000 }
 local GYR_CODE_DEFAULT = 0x2
-
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
 
 local function is_byte(v)
 	return type(v) == "number" and v == math.floor(v) and v >= 0 and v <= 255

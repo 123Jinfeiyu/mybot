@@ -1,6 +1,6 @@
 # BMI270 六轴 IMU 测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/bmi270.sql（I2C + imu0@0x68 + Timer + imu-d0 守护）
-# 运行：cat scripts/test/bmi270.mt | ./target/release/bin/main --robot=robots/test/bmi270.sql
+# 运行：cat scripts/test/bmi270.mt | ./build/mybot --robot=robots/test/bmi270.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x68 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/BMI270 的 build 一旦返回 ERR

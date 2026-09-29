@@ -1,6 +1,6 @@
 # AS3935 闪电传感器测试（直连读事件 + 守护低频轮询）
 # 结构脚本：robots/test/as3935.sql（I2C + as3935-0@0x03 + Timer + as-d0 守护）
-# 运行：cat scripts/test/as3935.mt | ./target/release/bin/main --robot=robots/test/as3935.sql
+# 运行：cat scripts/test/as3935.mt | ./build/mybot --robot=robots/test/as3935.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x03 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/AS3935 的 build 一旦返回 ERR

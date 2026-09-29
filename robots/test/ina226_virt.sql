@@ -34,7 +34,7 @@
  * 配合 ina226_virt.mt：200ms 预热等守护 setup（build 真实睡约 48ms），
  * 随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护 interval=20ms
  *（call 零睡眠，远快于 50ms 拍点，count 持续增长）。
- * 用法：cat scripts/test/ina226_virt.mt | bash _run.sh --robot=robots/test/ina226_virt.sql
+ * 用法：cat scripts/test/ina226_virt.mt | ./build/mybot --robot=robots/test/ina226_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -45,16 +45,15 @@
 --      变体）-> 关高级省电(PWR_CONF=0) -> 上电配置上传 -> ODR 读改写 [3:0] 域
 --      （保留复位默认滤波）-> 量程 -> PWR_CTRL |0x06（acc+gyr）-> 等 100ms
 --      陀螺仪启动
---   4. call 用 0x0C/0x12 两次 6 字节原子读（HAL.i2c_read_multi 的 I2C_RDWR
---      合并事务，无指针竞态；不并成一次 12 字节读——HAL 合并读 6 字节以上
---      超 Lua number 精度上限）
+--   4. call 用 0x0C 起单次 12 字节原子读（i2c_read_multi_bytes 的 I2C_RDWR
+--      合并事务，字节表版无 2^53 精度限制；并读防六轴两笔事务间新采样完成
+--      造成 acc/gyr 时间错位——C-L1，与 MPU6050 14 字节 burst 同一结论）
 --   5. 原始码换算（写配置时定）：加速度计 LSB/g = 16384/8192/4096/2048
 --      （±2/4/8/16g）；陀螺仪 LSB/dps = 262.144/131.072/65.536/32.768/16.384
 --      （±125/250/500/1000/2000dps）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -64,14 +63,10 @@ local unpack = unpack or table.unpack		-- LuaJIT 5.1 / Lua 5.4 双兼容
 
 -- 调试开关：高频采样，默认关闭逐次打印
 local DEBUG = false
-local function dbg(msg)
-	if DEBUG then print(msg) end
-end
 
 -- ==================== 寄存器 ====================
 local REG_CHIP_ID    = 0x00
 local REG_ACC_DATA   = 0x0C		-- 加速度计 X_LSB 起 6 字节（小端）
-local REG_GYR_DATA   = 0x12		-- 陀螺仪 X_LSB 起 6 字节（小端）
 local REG_INT_STATUS = 0x21		-- 内部状态码：0x01 = BMI2_INIT_OK
 local REG_ACC_CONF   = 0x40		-- [3:0]=ODR [6:4]=滤波 [7]=性能模式
 local REG_ACC_RANGE  = 0x41		-- [1:0]：0=±2g 1=±4g 2=±8g 3=±16g
@@ -170,17 +165,6 @@ local function upload_blob(fd, blob)
 	return true
 end
 
--- 读 6 字节并拆 1 基字节数组；失败返回 nil
-local function read_bytes6(fd, reg)
-	local raw = i2c_read_multi(fd, reg, 6)
-	if raw < 0 then return nil end
-	local b = {}
-	for i = 0, 5 do
-		b[i + 1] = math.floor(raw / 256 ^ (5 - i)) % 256
-	end
-	return b
-end
-
 -- 读 1 字节寄存器；失败返回 nil
 local function read_reg8(fd, reg)
 	local v = i2c_read_multi(fd, reg, 1)
@@ -191,11 +175,9 @@ end
 -- 【配置脚本】软复位 -> 验 ID -> 上传 blob -> ODR/量程 -> 上电
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -203,21 +185,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 列配置
 	local acc_code_v, acc_g = acc_code_of(data.range)
@@ -229,62 +199,38 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位（含 450µs 复位延时，取 2ms 余量）
 	if not i2c_write_reg(fd, REG_CMD, CMD_SOFT_RESET) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 soft reset"
-		}
+		return err("Failed to write BMI270 soft reset")
 	end
 	milli_sleep(2)
 
 	-- 芯片甄别（0x26 = BMI260 变体，blob 不通用）
 	local id = i2c_read_reg(fd, REG_CHIP_ID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 chip ID"
-		}
+		return err("Failed to read BMI270 chip ID")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("Chip ID = 0x%02X (expect 0x24; 0x26 means BMI260 variant?)", id)
-		}
+		return err(string.format("Chip ID = 0x%02X (expect 0x24; 0x26 means BMI260 variant?)", id))
 	end
 
 	-- 关高级省电（上传前提）+ 全传感器下电（复位后本就为 0，显式写保平安）
 	if not i2c_write_reg(fd, REG_PWR_CONF, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 PWR_CONF"
-		}
+		return err("Failed to write BMI270 PWR_CONF")
 	end
 	milli_sleep(1)
 	if not i2c_write_reg(fd, REG_PWR_CTRL, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 PWR_CTRL"
-		}
+		return err("Failed to write BMI270 PWR_CTRL")
 	end
 	milli_sleep(1)
 
 	-- 上传配置文件 blob
 	if not i2c_write_reg(fd, REG_INIT_CTRL, 0x00) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 INIT_CTRL"
-		}
+		return err("Failed to write BMI270 INIT_CTRL")
 	end
 	if not upload_blob(fd, blob) then
-		return {
-			result = "ERR",
-			message = "Failed to upload BMI270 config file (" .. blob_name .. ")"
-		}
+		return err("Failed to upload BMI270 config file (" .. blob_name .. ")")
 	end
 	if not i2c_write_reg(fd, REG_INIT_CTRL, 0x01) then
-		return {
-			result = "ERR",
-			message = "Failed to start BMI270 config load"
-		}
+		return err("Failed to start BMI270 config load")
 	end
 
 	-- 轮询内部状态码（0x01 = BMI2_INIT_OK），10ms 步进 50 次（500ms 超时）
@@ -295,70 +241,43 @@ function build(data)
 		if st == INIT_OK or st < 0 then break end
 	end
 	if st < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 internal status"
-		}
+		return err("Failed to read BMI270 internal status")
 	end
 	if st ~= INIT_OK then
-		return {
-			result = "ERR",
-			message = string.format("BMI270 config load failed: internal status 0x%02X (expect 0x01 INIT_OK)",
-				st)
-		}
+		return err(string.format("BMI270 config load failed: internal status 0x%02X (expect 0x01 INIT_OK)",
+				st))
 	end
 
 	-- ODR：读改写 [3:0] 域，保留复位默认滤波/性能位
 	local acc_conf = read_reg8(fd, REG_ACC_CONF)
 	local gyr_conf = read_reg8(fd, REG_GYR_CONF)
 	if acc_conf == nil or gyr_conf == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 CONF registers"
-		}
+		return err("Failed to read BMI270 CONF registers")
 	end
 	if not i2c_write_reg(fd, REG_ACC_CONF,
 		bitc.bor(bitc.band(acc_conf, 0xF0), odr_code_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 ACC_CONF"
-		}
+		return err("Failed to write BMI270 ACC_CONF")
 	end
 	if not i2c_write_reg(fd, REG_GYR_CONF,
 		bitc.bor(bitc.band(gyr_conf, 0xF0), odr_code_v)) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 GYR_CONF"
-		}
+		return err("Failed to write BMI270 GYR_CONF")
 	end
 
 	-- 量程
 	if not i2c_write_reg(fd, REG_ACC_RANGE, acc_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 ACC_RANGE"
-		}
+		return err("Failed to write BMI270 ACC_RANGE")
 	end
 	if not i2c_write_reg(fd, REG_GYR_RANGE, gyr_code_v) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMI270 GYR_RANGE"
-		}
+		return err("Failed to write BMI270 GYR_RANGE")
 	end
 
 	-- 上电：加速度计 + 陀螺仪（温度恒开；保留其余位）
 	local pc = read_reg8(fd, REG_PWR_CTRL)
 	if pc == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 PWR_CTRL"
-		}
+		return err("Failed to read BMI270 PWR_CTRL")
 	end
 	if not i2c_write_reg(fd, REG_PWR_CTRL, bitc.bor(pc, PWR_ACC_GYR)) then
-		return {
-			result = "ERR",
-			message = "Failed to enable BMI270 acc+gyr"
-		}
+		return err("Failed to enable BMI270 acc+gyr")
 	end
 
 	-- 陀螺仪启动等待（数据手册 ~40ms，取 100ms 余量，首拍数据就绪）
@@ -388,11 +307,9 @@ end
 -- 语义的无符号原始码（与 MPU6050 驱动同约定，负值由守护 sign='16' 展开）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -400,37 +317,18 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
-	local a = read_bytes6(fd, REG_ACC_DATA)
-	if a == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 accel data"
-		}
+	-- 0x0C~0x17 地址连续：acc+gyr 12 字节单事务读，防两笔事务间撕裂（C-L1）
+	local d = i2c_read_multi_bytes(fd, REG_ACC_DATA, 12)
+	if d == nil then
+		return err("Failed to read BMI270 sensor data")
 	end
-	local g = read_bytes6(fd, REG_GYR_DATA)
-	if g == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMI270 gyro data"
-		}
-	end
+	local a = { d[1], d[2], d[3], d[4], d[5], d[6] }
+	local g = { d[7], d[8], d[9], d[10], d[11], d[12] }
 
 	-- 返回字典（小端拼字：值 = MSB<<8 | LSB）
  	return {
@@ -507,11 +405,6 @@ local POR_PWR_CTRL  = 0x00
 -- 量程码 → LSB/物理量（物理量注入反算用；驱动头注释常数）
 local ACC_LSB_PER_G = { 16384, 8192, 4096, 2048 }		-- ±2/4/8/16g
 local GYR_LSB_PER_DPS = { 16.384, 32.768, 65.536, 131.072, 262.144 } -- ±2000..±125
-
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
 
 local function is_byte(v)
 	return type(v) == "number" and v == math.floor(v) and v >= 0 and v <= 255

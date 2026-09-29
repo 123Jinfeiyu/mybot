@@ -1,4 +1,4 @@
-# ONE STEP
+# 蜘蛛左脚起手，向前方行走几步
 @Action
 s5.A s6.A s7.A s8.A s1.A s2.A s3.A s4.A s9.A s10.A spk.F spk.delay;	# column name
 

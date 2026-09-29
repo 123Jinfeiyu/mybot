@@ -1,0 +1,73 @@
+#!/bin/bash
+# bot4cj pre-push 钩子：推送前跑全部离线守门（bash test/run_all.sh），失败则中止推送。
+#
+# 本文件是版本管理的正身，经 scripts/install-hooks.sh 软链进 .git/hooks/pre-push
+# （.git/ 不入库，钩子必须随仓库分发，否则只有作者本机受保护）。
+# 重新装一次：bash scripts/install-hooks.sh
+# 单次绕过（仅在确认无误时）：git push --no-verify
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+cd "$repo_root" || exit 1
+
+# ---------------------------------------------------------------
+# 提交信息校验（fix-plan 2026-09-20 阶段 B-2，先于守门、成本低）：
+# 对待推送范围（@{push}..HEAD）的每个非 merge 提交检查 subject 非空、
+# 长度 >= 10、带类型前缀（规范见 docs/development.md「提交信息规范」）。
+# 历史 `^-^` / `add "speed"` 类零信息提交不再新增；历史不回改。
+# 无 @{push}（推送新分支等）时跳过——与下方守门的放行分支同一取向：
+# 校验不到的对象不猜，防手滑而非防绕过（--no-verify 随时可绕）。
+# ---------------------------------------------------------------
+push_ref="$(git rev-parse --abbrev-ref --symbolic-full-name '@{push}' 2>/dev/null || true)"
+if [ -n "$push_ref" ]; then
+	# 类型前缀；可用 + 联合多个（如 feat(mcp)+fix(gate): ...——一次提交同时落在
+	# 两个域时的既有写法，2026-09-24 修：旧正则只认单前缀，把 a6eb33d 误拦下）。
+	type_group='(feat|fix|docs|test|refactor|gate)(\([^)]*\))?'
+	violations=""
+	for c in $(git rev-list --no-merges "$push_ref..HEAD"); do
+		subj="$(git log -1 --format=%s "$c")"
+		case "$subj" in
+			"")
+				violations="$violations
+  $c: subject 为空" ;;
+			*)
+				if [ "${#subj}" -lt 10 ]; then
+					violations="$violations
+  $c: subject 过短（< 10 字符）：$subj"
+				elif ! printf '%s' "$subj" | grep -Eq "^${type_group}(\+${type_group})*: "; then
+					violations="$violations
+  $c: 缺类型前缀（feat|fix|docs|test|refactor|gate(<scope>)? 可 + 联合: ...）：$subj"
+				fi ;;
+		esac
+	done
+	if [ -n "$violations" ]; then
+		echo "pre-push: 提交信息不符合规范，推送已中止：" >&2
+		printf '%s\n' "$violations" >&2
+		echo "  - 末提交用 git commit --amend 补写；更早提交用 git rebase -i 改写（reword）" >&2
+		echo "  - 确认为误判时可用 git push --no-verify 跳过本钩子" >&2
+		exit 1
+	fi
+fi
+
+if [ ! -f test/run_all.sh ]; then
+	echo "pre-push: 未找到 test/run_all.sh（不在 bot4cj 仓库根？），跳过测试直接推送" >&2
+	exit 0
+fi
+
+# 守门自检（计划 M0 的 C7 起步）：便宜且有判别力，放在整段守门之前——
+# 「用例没被收集 / 没被编译」这类静默消失在这里就拦下，不必等跑完两百多条。
+if [ -f test/run_all_selftest.sh ]; then
+	if ! bash test/run_all_selftest.sh; then
+		echo "pre-push: 守门自检未通过，推送已中止" >&2
+		echo "  - 补登记用例或改用 test_*.lua 命名；确认误判时用 git push --no-verify 跳过" >&2
+		exit 1
+	fi
+fi
+
+echo "pre-push: 运行离线测试（bash test/run_all.sh）……"
+if bash test/run_all.sh; then
+	echo "pre-push: 测试全部通过，允许推送"
+else
+	echo "" >&2
+	echo "pre-push: 测试未通过，推送已中止" >&2
+	echo "  - 修复失败用例后重试；或确认无误时用 git push --no-verify 跳过本钩子" >&2
+	exit 1
+fi

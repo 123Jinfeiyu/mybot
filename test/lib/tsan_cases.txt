@@ -1,0 +1,12 @@
+# TSan 并发用例名单（单一来源，F3-5 / C10）
+#
+# 谁读它：
+#   - .gitlab-ci.yml 的 gate:tsan：逐条跑 build-tsan/mybot_tests <名字>；
+#   - test/run_all_selftest.sh：机械核对每个名字在
+#     test/cpp/test_daemon_concurrency.cpp 里至少命中一条 TH_TEST。
+# 为什么单列：此前 CI 与单测文件两处手抄同名清单，改一处忘一处就静默少跑
+# （或跑一个不存在的名字——测试入口对零匹配返回 1，不会假绿）。
+# 格式：每行一个**前缀**（测试入口按子串过滤）；# 开头与空行忽略。
+daemon_concurrent
+daemon_multi_runner
+daemon_stop_and_exit

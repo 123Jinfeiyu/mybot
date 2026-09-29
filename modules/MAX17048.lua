@@ -41,9 +41,8 @@
 --   7. ATHD：CONFIG（0x0C）低 5 位，值 = 32 - 阈值%（00000=32%）
 --   8. QuickStart：MODE（0x06）写 0x4000（本驱动仅在 build 配置时发一次）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -72,11 +71,7 @@ local STATUS_FLAGS    = 0x3F00	-- 高字节 bit0~5 的 16 位掩码
 local STATUS_ENVR     = 0x4000
 
 -- ==================== 工具 ====================
-local function s16(v)
-	v = v % 65536
-	if v >= 32768 then v = v - 65536 end
-	return v
-end
+local s16 = function(v) return bitc.s16(v % 65536) end
 
 -- ==================== 模块级配置 ====================
 local cfg_lsb_v		-- VCELL 每 LSB 伏特（17048: 78.125uV / 17049: 156.25uV）
@@ -102,22 +97,13 @@ function build(data)
 	-- VERSION 自检（家族地址相同，插错芯片在这里拦下）
 	local ver = i2c_read_multi(fd, REG_VER, 2)
 	if ver < 0 then
-		return {
-			result = "ERR",
-			message = "MAX17048 not responding (read version failed, check address 0x36 and wiring)"
-		}
+		return err("MAX17048 not responding (read version failed, check address 0x36 and wiring)")
 	end
 	if ver == VER_17043 or ver == VER_17044 then
-		return {
-			result = "ERR",
-			message = string.format("MAX17048 wrong chip: version 0x%04X is MAX17043/44, use the MAX17043 driver", ver)
-		}
+		return err(string.format("MAX17048 wrong chip: version 0x%04X is MAX17043/44, use the MAX17043 driver", ver))
 	end
 	if ver ~= VER_17048 and ver ~= VER_17049 then
-		return {
-			result = "ERR",
-			message = string.format("MAX17048 unexpected version 0x%04X (expect 0x0012/0x0013)", ver)
-		}
+		return err(string.format("MAX17048 unexpected version 0x%04X (expect 0x0012/0x0013)", ver))
 	end
 	cfg_variant = (ver == VER_17048) and "MAX17048" or "MAX17049"
 	cfg_lsb_v = (ver == VER_17048) and 78.125e-6 or 156.25e-6
@@ -125,10 +111,7 @@ function build(data)
 	-- QuickStart（可选）：换电池/上电后跳过慢收敛
 	if tostring(data.quickstart) == "1" then
 		if i2c_write_multi(fd, REG_MODE, 0x40, 0x00) ~= 0 then
-			return {
-				result = "ERR",
-				message = "MAX17048 not responding (quickstart write failed)"
-			}
+			return err("MAX17048 not responding (quickstart write failed)")
 		end
 		milli_sleep(5)
 	end
@@ -141,38 +124,26 @@ function build(data)
 	if vmax ~= nil or vmin ~= nil then
 		local cur = i2c_read_multi(fd, REG_VALRT, 2)
 		if cur < 0 then
-			return {
-				result = "ERR",
-				message = "MAX17048 not responding (read VALRT failed)"
-			}
+			return err("MAX17048 not responding (read VALRT failed)")
 		end
 		local min_code = math.floor(cur / 256) % 256	-- 0x14 = MIN
 		local max_code = cur % 256				-- 0x15 = MAX
 		if vmax ~= nil then
 			if vmax < 0 or vmax > 5.1 then
-				return {
-					result = "ERR",
-					message = "Invalid Argument: valrt_max '" .. tostring(data.valrt_max) .. "' (range 0~5.1V)"
-				}
+				return err("Invalid Argument: valrt_max '" .. tostring(data.valrt_max) .. "' (range 0~5.1V)")
 			end
 			max_code = math.floor(vmax / 0.02 + 0.5)
 			if max_code > 255 then max_code = 255 end
 		end
 		if vmin ~= nil then
 			if vmin < 0 or vmin > 5.1 then
-				return {
-					result = "ERR",
-					message = "Invalid Argument: valrt_min '" .. tostring(data.valrt_min) .. "' (range 0~5.1V)"
-				}
+				return err("Invalid Argument: valrt_min '" .. tostring(data.valrt_min) .. "' (range 0~5.1V)")
 			end
 			min_code = math.floor(vmin / 0.02 + 0.5)
 			if min_code > 255 then min_code = 255 end
 		end
 		if i2c_write_multi(fd, REG_VALRT, min_code, max_code) ~= 0 then
-			return {
-				result = "ERR",
-				message = "MAX17048 not responding (VALRT write failed)"
-			}
+			return err("MAX17048 not responding (VALRT write failed)")
 		end
 	end
 
@@ -180,26 +151,17 @@ function build(data)
 	local athd = tonumber(data.athd)
 	if athd ~= nil then
 		if athd < 1 or athd > 32 then
-			return {
-				result = "ERR",
-				message = "Invalid Argument: athd '" .. tostring(data.athd) .. "' (range 1~32%)"
-			}
+			return err("Invalid Argument: athd '" .. tostring(data.athd) .. "' (range 1~32%)")
 		end
 		local cur = i2c_read_multi(fd, REG_CONFIG, 2)
 		if cur < 0 then
-			return {
-				result = "ERR",
-				message = "MAX17048 not responding (read CONFIG failed)"
-			}
+			return err("MAX17048 not responding (read CONFIG failed)")
 		end
 		-- 低字节 bit7:5（SLEEP/ALSC/ETHRM）保留，仅替换 bit4:0 的 ATHD
 		local lo = (cur % 256) - (cur % 32) + (32 - math.floor(athd))
 		local hi = math.floor(cur / 256) % 256
 		if i2c_write_multi(fd, REG_CONFIG, hi, lo % 256) ~= 0 then
-			return {
-				result = "ERR",
-				message = "MAX17048 not responding (CONFIG write failed)"
-			}
+			return err("MAX17048 not responding (CONFIG write failed)")
 		end
 	end
 
@@ -234,31 +196,19 @@ function call(data)
 	-----------------------------------------------------
 	local vraw = i2c_read_multi(fd, REG_VCELL, 2)
 	if vraw < 0 then
-		return {
-			result = "ERR",
-			message = "MAX17048 not responding (read VCELL failed)"
-		}
+		return err("MAX17048 not responding (read VCELL failed)")
 	end
 	local sraw = i2c_read_multi(fd, REG_SOC, 2)
 	if sraw < 0 then
-		return {
-			result = "ERR",
-			message = "MAX17048 not responding (read SOC failed)"
-		}
+		return err("MAX17048 not responding (read SOC failed)")
 	end
 	local craw = i2c_read_multi(fd, REG_CRATE, 2)
 	if craw < 0 then
-		return {
-			result = "ERR",
-			message = "MAX17048 not responding (read CRATE failed)"
-		}
+		return err("MAX17048 not responding (read CRATE failed)")
 	end
 	local straw = i2c_read_multi(fd, REG_STATUS, 2)
 	if straw < 0 then
-		return {
-			result = "ERR",
-			message = "MAX17048 not responding (read STATUS failed)"
-		}
+		return err("MAX17048 not responding (read STATUS failed)")
 	end
 
 	-- clear=1：按位清除告警标志（高字节 bit0~5；保留 bit6 EnVR 等）
@@ -654,12 +604,8 @@ function MAX17048_VIRT.new(opts)
 	end
 
 	-- ---------------- 观察口 ----------------
-
-	local function s16(word)
-		word = word % 65536
-		if word >= 32768 then word = word - 65536 end
-		return word
-	end
+	-- （s16 统一走模块级 bitc 包装（第 74 行）。#30：此前此处另有一份独立
+	-- 实现遮蔽 74 行 bitc 包装——实际运行时用的是这份独立拷贝，属重复造轮子）
 
 	function d:version() return regs[max17048.REG.VER] or 0 end
 	function d:config()  return regs[max17048.REG.CONFIG] or 0 end

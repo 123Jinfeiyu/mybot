@@ -1,6 +1,6 @@
 # MLX90393 三轴磁力计测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/mlx90393.sql（I2C + mlx0@0x0C + Timer + mlx-d0 守护）
-# 运行：cat scripts/test/mlx90393.mt | ./target/release/bin/main --robot=robots/test/mlx90393.sql
+# 运行：cat scripts/test/mlx90393.mt | ./build/mybot --robot=robots/test/mlx90393.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x0C 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/MLX90393 的 build 一旦返回 ERR
