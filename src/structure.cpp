@@ -4,7 +4,7 @@
  * createdHere/touchedHere/updatedHere/droppedHere 四个批次集合的交互判据），
  * 与硬件装配（HwFactory：矩阵表 → 硬件变量）无关——原先同住 hw_factory.cpp
  * 只是拆分历史（R-1 从 robot.cpp 按类邻近归置）的惯性，独立成文件后两边各有
- * 聚焦的注释面。声明仍在 robot.hpp（ScriptLoader 是其门面类之一）；
+ * 聚焦的注释面。声明在 script_loader.hpp（2026-09-29 A2 起从 robot.hpp 拆出）；
  * 硬件装配在 hw_factory.cpp。
  *
  * 2026-09-26 批次 5：readSQL 原为 429 行单函数（5 个 SQL 事件分支 + 三个捕获大量
@@ -13,7 +13,8 @@
  * 分派」的编排。事件体逐字照搬（原 lambda 捕获名全部变成同名成员），行为不变——
  * 由 test_robot 的 readSQL 与热 SQL 用例群钉住。 */
 
-#include "robot.hpp"
+#include "script_loader.hpp"
+#include "sqlparse.hpp"
 
 #include <cstddef>
 #include <deque>

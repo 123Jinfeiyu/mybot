@@ -15,6 +15,7 @@
 
 #include "agentprompt.hpp"	/* quoteUntrusted（C2：回显/读数包装与系统提示词同一定界单点） */
 #include "robot.hpp"
+#include "sqlparse.hpp"
 #include "util_file.hpp"
 #include "util_path.hpp"
 #include "util_utf8.hpp"

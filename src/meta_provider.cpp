@@ -5,7 +5,7 @@
  * 引用列（值以 $ 前缀显式标记）→ 运行期每次实时 read() 快照，不入缓存；
  * $(...) 表达式引用 → seed 期解析/校验标识符，collect 期惰性求值。 */
 
-#include "robot.hpp"
+#include "meta_provider.hpp"
 
 #include "flowcolumn.hpp"
 
