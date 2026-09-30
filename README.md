@@ -62,9 +62,10 @@ bash scripts/build_agent.sh
 ### 3. 启动智能体（无需硬件）
 
 ```bash
-# 配置API密钥与接入点（endpoint 必须显式配置，无内置缺省）
+# 配置模型三件套：密钥、接入点、模型名（三者都必填，无内置缺省）
 export BOT4CJ_LLM_KEY=sk-xxx
 export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
+export BOT4CJ_LLM_MODEL=gpt-4o
 
 # 终端 1：工具后端（虚拟机器人，硬件上电常驻；C++ 侧唯一形态）
 ./build/mybot --robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot.sock
@@ -361,7 +362,7 @@ mybot/
 │   ├── left-turn.mt     # 左转
 │   └── jump.mt          # 跳跃
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（85 Lua + 25 C++ + E2E）
+├── test/          # 三层测试（86 Lua + 25 C++ + E2E）
 └── docs/          # 深入文档（12篇Markdown + 架构分析网页与两张全景图）
 ```
 
@@ -383,7 +384,7 @@ bash test/run_all.sh agent-all
 测试规模（2026-09 快照，权威口径以 `bash test/run_all.sh` 与 `./build/mybot_tests` 实时输出为准）：
 
 - 600+ 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 85 个 Lua 测试文件 + 25 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 86 个 Lua 测试文件 + 25 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
 - 260+ 道 Lua/e2e 守门
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
@@ -407,6 +408,7 @@ bash test/run_all.sh agent-all
 | [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
 | [FAQ](docs/faq.md) | 已知限制、排障问答 |
 | [更新日志](docs/changelog.md) | 版本演进与变更记录 |
+| [ICA 证据账本原型](docs/ica.md) | Rust agent 实验特性（BOT4CJ_ICA=1）的事实边界 |
 | [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图 |
 | [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用 |
 | [play 数据流时序图（SVG）](docs/architecture_dataflow.svg) | 四阶段调用链 + @Daemon 并发分支 |

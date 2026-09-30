@@ -34,10 +34,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::audit::AuditLog;
-use crate::bridge::Bridge;
+use crate::bridge::{Bridge, ConnParams};
 use crate::budget::TaskBudget;
 use crate::config::Config;
-use crate::frame::BackendClient;
+use crate::frame::{BackendClient, HARD_READ_CEILING};
 use crate::hook::HookState;
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
@@ -47,6 +47,10 @@ use crate::signals::install_signal_handlers;
 
 /// 连接后端的预算：后端上电 + 装结构脚本可能耗时（与 MCP sidecar 时代同值）。
 const CONNECT_TIMEOUT_SEC: u64 = 120;
+
+/// **重连**预算（区别于启动期）：后端中途重启一般在秒级完成；重连快失败、
+/// 失败留给下一次调用再试，不长时间阻塞当次调用。
+const RECONNECT_TIMEOUT_SEC: u64 = 30;
 
 #[tokio::main]
 async fn main() {
@@ -209,7 +213,7 @@ async fn run() -> i32 {
     ));
     install_signal_handlers(Arc::clone(&state));
 
-    // ---- 后端：连接 → 首帧认证（可选） → 工具表 → 提示词素材 ----
+    // ---- 后端：连接 → 读超时装配 → 首帧认证（可选） → 工具表 → 提示词素材 ----
     let mut client =
         match BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
             .await
@@ -220,18 +224,35 @@ async fn run() -> i32 {
                 return 1;
             }
         };
+    // 读侧 deadline = 轮墙钟预算（--llm-task-timeout / max_task_seconds）：预算由此
+    // 贯穿到工具调用内部（此前只判模型调用边界，后端活着但不回帧时无限挂起，
+    // 2026-09-30 审计 P1）。0 = 不限 → 用 frame 的兜底上限。
+    let read_timeout = if cfg.max_task_seconds > 0 {
+        Duration::from_secs(cfg.max_task_seconds as u64)
+    } else {
+        HARD_READ_CEILING
+    };
+    client.set_read_timeout(read_timeout);
     // MCP-1（审计 P2-1）：后端设了 BOT4CJ_MCP_TOKEN 时，第一条帧必须是共享密钥
     // 认证。与 C++ 宿主读取同一个环境变量名（宿主在抹零前捕获，本进程在
     // prctl 收窄 /proc 下读取之后、此处第一次也是唯一一次读）。
-    if let Ok(token) = std::env::var("BOT4CJ_MCP_TOKEN") {
-        if !token.is_empty() {
-            if let Err(e) = client.authenticate(&token).await {
-                errln!("错误: {e}");
-                return 1;
-            }
+    let mcp_token = std::env::var("BOT4CJ_MCP_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    if let Some(token) = &mcp_token {
+        if let Err(e) = client.authenticate(token).await {
+            errln!("错误: {e}");
+            return 1;
         }
     }
-    let bridge = Arc::new(Bridge::new(client, Arc::clone(&state)));
+    // 重连参数（连接判死后的下一次调用透明重连，见 bridge::Conn）：
+    let conn_params = ConnParams {
+        path: cfg.socket.clone(),
+        token: mcp_token,
+        connect_timeout: Duration::from_secs(RECONNECT_TIMEOUT_SEC),
+        read_timeout,
+    };
+    let bridge = Arc::new(Bridge::new(client, conn_params, Arc::clone(&state)));
     let specs = match bridge.list_tools().await {
         Ok(s) => s,
         Err(e) => {

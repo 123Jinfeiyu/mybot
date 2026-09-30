@@ -782,3 +782,35 @@ TH_TEST(mcpbackend_auth_frame_distinguishes_non_auth_first_frame) {
 	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1", "{}")
 		== McpAuthOutcome::NotAuthFrame);
 }
+
+/* ---- 首帧认证失败门（2026-09-30 审计 P1：与 TCP 口令 authMaxFails=5 同口径）----
+ * serveConnection/acceptLoop 是匿名命名空间静态函数，单测触不到；判据本体
+ * AuthFailGate 是纯结构，这里钉住语义：只数认证失败、通过才归零、
+ * 第 5 次到顶触发停止。哑对端不动计数由 ConnAuth::Neutral 保证（类型层面
+ * 已区分，不在此重复）。 */
+TH_TEST(mcpbackend_auth_fail_gate_counts_consecutive_rejections) {
+	bot::agent::AuthFailGate g;
+	TH_CHECK(g.fails == 0);
+	/* 前 4 次失败：仍在窗口内，不触发 */
+	for (int i = 1; i < bot::agent::AuthFailGate::kMaxFails; ++i) {
+		TH_CHECK(!g.recordRejected());
+		TH_CHECK(g.fails == i);
+	}
+	/* 第 5 次到顶：返回 true（acceptLoop 据此停止服务） */
+	TH_CHECK(g.recordRejected());
+	TH_CHECK(g.fails == bot::agent::AuthFailGate::kMaxFails);
+
+	/* 通过归零：爆破计数是「连续」语义，一次成功认证重新开窗 */
+	g.recordPassed();
+	TH_CHECK(g.fails == 0);
+	TH_CHECK(!g.recordRejected());
+	TH_CHECK(g.fails == 1);
+
+	/* 交错失败与通过永远到不了顶：合法 agent 的偶发手滑不会锁死后端 */
+	bot::agent::AuthFailGate interleave;
+	for (int i = 0; i < 100; ++i) {
+		(void)interleave.recordRejected();
+		interleave.recordPassed();
+	}
+	TH_CHECK(interleave.fails == 0);
+}

@@ -133,6 +133,24 @@ McpSocketProbe mcpProbeSocketPath(const std::string& path, std::string& why);
 enum class McpAuthOutcome { Ok, Failed, NotAuthFrame };
 McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string& payload);
 
+/* ---- 首帧认证失败门（2026-09-30 审计 P1：与 TCP 口令 authMaxFails 同口径）----
+ * 此前同 UID 对端可无限次重连试探 token，每次成本仅一个连接周期，与 TCP
+ * 通道的 5 次爆破上限不对称。serveConnection/acceptLoop 是匿名命名空间
+ * 静态函数（单测触不到），判据收敛为纯结构放头文件，acceptLoop 只记账执行。
+ * 语义与 TCP 侧（actionsource 的口令三态鉴权）一致：
+ *   - 只数「连上并给出首帧但认证不通过」的失败（mismatch 与 NotAuthFrame 都算
+ *     ——试探者不能靠改发业务帧绕开计数）；
+ *   - 认证**通过**才归零：哑对端（连上不发帧/超时/违规断连）不动计数——
+ *     「连了就断」刷不掉别人的失败窗口，也刷不出自己的清白；
+ *   - 连续到 5 次返回 true：acceptLoop 停止服务（fail-closed，走正常停机
+ *     断电链），操作者重启后端恢复、必要时换 token。 */
+struct AuthFailGate {
+	static constexpr int kMaxFails = 5;
+	int fails = 0;
+	bool recordRejected() { return ++fails >= kMaxFails; }
+	void recordPassed() { fails = 0; }
+};
+
 /* 后端会话状态 + 路由。持有工具注册表、派发漏斗（DispatchGate）与每连接预算。
  * handleRequest / handleFrame 是纯逻辑（Json/文本 → Json/文本），不碰 socket，
  * 便于单测；socket 收发在 runMcpBackend 里。 */

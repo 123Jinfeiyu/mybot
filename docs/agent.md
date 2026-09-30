@@ -734,6 +734,10 @@ agent 就是 `mybot-agent`。
 - **强制外部确认（折中）**：后端开 `--agent-shell`（run_command）或 `--agent-hot-sql`（apply_sql）时，
   **强制**要 `--agent-policy`，且其 `require_confirm` 必须分别包含 `run_command` / `apply_sql`，
   否则 `buildAgentConfig` 拒绝启动（配置错误不碰真机）。纯只读 / 查询 / 动作脚本后端不受此约束。
+- **agent 侧断连重连（2026-09-30，审计 P1）**：传输失败（I/O/读超时/超限）后 agent 把连接
+  判死，**下一次调用**前透明重连（connect 退避 30s + 按需重走首帧认证，`bridge::Conn`）——
+  后端中途重启不再要求 agent 跟着重启。**在途调用绝不重试**：回执丢失的 `tool.call` 可能已在
+  后端执行，重发即重复物理动作；判死的那次调用如实报错给模型，lock-step 物理安全语义不变。
 - **每连接预算再强制**：后端不假设调用方是 agent loop，故自行再强制一层跑飞护栏——
   `--mcp-call-budget <N>` / `--mcp-wall-clock <秒>`（0/空 = 不限）。超限的调用**在派发前**被拒
   （无副作用）。注意**单次**物理调用的 `scriptTimeoutSec`/`commandTimeoutSec` 始终在工具层生效，
@@ -787,8 +791,12 @@ listening fd 是 CLOEXEC
 进程的内存：名字含 `token`，被 `run_command` 的环境清洗自动剔除；宿主与 agent 各自
 `prctl(PR_SET_DUMPABLE, 0)` 后 `/proc/<pid>/environ` 对同 uid 不可读。**版本配对**：不支持
 auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提示两侧须同升/同不设），带
-密钥的新后端对不先认证的旧 agent 同样拒绝。回归：`test_mcpbackend` 三态单测、`mcp_e2e.sh`
-M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进程正反两面）。
+密钥的新后端对不先认证的旧 agent 同样拒绝。**连续失败门（2026-09-30，审计 P1）**：首帧认证
+连续 5 次失败后端即停止服务（`AuthFailGate`，与 TCP 口令的 `authMaxFails=5` 同口径；哑对端
+「连上不发帧」不动计数、认证通过才归零——试探者无法用「连了就断」刷新失败窗口）。到顶走正常
+停机断电链（fail-closed），操作者重启后端恢复、必要时更换密钥。回归：`test_mcpbackend` 的
+`mcpbackend_auth_fail_gate_counts_consecutive_rejections`。其余回归：`test_mcpbackend` 三态单测、
+`mcp_e2e.sh` M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进程正反两面）。
 
 ## 安全说明（请务必读）
 
@@ -945,7 +953,7 @@ M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl.rs` 等 15 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
+| `agent/src/repl.rs` 等 16 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 
@@ -1057,8 +1065,10 @@ bash test/run_all.sh agent-all
   **真的执行过**的调用出现——包括执行到一半失败的脚本（那种情况机器人可能停在半途）。
   这四类结果的字节数**仍然计入额度**。
 - **单任务墙钟预算（A4，缺省 900 秒）的三条确切边界**：
-  ① 判定点只有两处——**发起模型调用之前**与**一轮内逐条派发工具之前**，所以实际
-  超限量最多是「一次模型调用 + 一条工具」，不会是一整轮；② 预算耗尽时**已执行的
+  ① 模型/派发侧判定点只有两处——**发起模型调用之前**与**一轮内逐条派发工具之前**，所以实际
+  超限量最多是「一次模型调用 + 一条工具」，不会是一整轮；2026-09-30 起预算还贯穿到工具调用
+  **内部**：后端帧读侧的 deadline 同取本值（`frame::HARD_READ_CEILING`，`--llm-task-timeout 0`
+  = 不限时用 3700s 兜底 = 后端工具执行上限 + 余量）——后端进程活着但不回帧时任务不再无限挂起；② 预算耗尽时**已执行的
   动作不回退**（硬件不会倒回去），报错文案与留在历史里的记录都如实说明这一点；
   ③ 若预算在一轮**中间**耗尽，剩余调用不派发、但每条各留一条「未派发（不是执行
   失败，也没有产生副作用）」的 tool 回执——`tool_calls` 与 `tool` 消息必须一一对应，

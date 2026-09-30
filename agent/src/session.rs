@@ -629,6 +629,11 @@ impl SessionFileWriter {
     }
 
     /// 打开会话文件。`append=true` 只在恢复路径用（文件已被调用方确认存在）。
+    /// 新建（含截断重建）以 0600 创建——与 REPL 历史 / ICA sidecar / 审计同规，
+    /// 会话文件含完整对话内容，同等敏感（2026-09-30 审计 P1：此前按 umask
+    /// 落盘，常见 0644，且 `perms_warning` 只对已存在文件生效，首次会话
+    /// 全程无告警）。既有文件的权限不在此改动：恢复路径的宽权限提醒由
+    /// [`perms_warning`] 负责。
     pub fn open(&mut self, path: &str, append: bool) -> Result<(), String> {
         if self.file.is_some() {
             return Err(format!("会话文件已打开: {path}"));
@@ -639,6 +644,13 @@ impl SessionFileWriter {
             opts.append(true);
         } else {
             opts.write(true).truncate(true);
+        }
+        /* mode() 只在**创建新文件**时生效（打开既有文件时被忽略），故无条件
+         * 设置即可；umask 只能进一步收紧，不会放宽。 */
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
         }
         let f = opts.open(path).map_err(|e| {
             format!("无法打开会话文件 '{path}'（{e}）；请检查目录是否存在、是否有写权限")
@@ -991,6 +1003,31 @@ mod tests {
         let mut old = now.clone();
         old.session_id = "different".into();
         assert!(head_mismatch(&now, &old).is_none());
+    }
+
+    #[test]
+    fn writer_creates_session_file_with_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        // 新会话文件与 REPL 历史 / ICA sidecar 同规：0600 创建，不随 umask 放宽
+        // （2026-09-30 审计 P1；此前常见 0644 且 perms_warning 只查已存在文件）。
+        let dir = tmpdir("create0600");
+        let path = (dir.join("s.jsonl")).to_string_lossy().to_string();
+        let mut w = SessionFileWriter::new();
+        w.open(&path, false).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "新会话文件应以 0600 创建（实际 {:o}）",
+            mode
+        );
+        // 截断重建（同一 open(false) 路径）不放宽既有 0600 文件的权限
+        drop(w);
+        let mut w2 = SessionFileWriter::new();
+        w2.open(&path, false).unwrap();
+        let mode2 = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode2 & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

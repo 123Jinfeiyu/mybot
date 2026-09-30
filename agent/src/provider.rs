@@ -141,7 +141,7 @@ pub fn build(
     let agent = match driver {
         Driver::OpenAi => {
             let client = openai::CompletionsClient::builder()
-                .api_key(cfg.api_key.clone())
+                .api_key(cfg.api_key.expose().to_string())
                 .base_url(&base)
                 .build()
                 .context("装配 OpenAI 兼容客户端（LlmOpenAI）")?;
@@ -155,7 +155,7 @@ pub fn build(
         }
         Driver::DeepSeek => {
             let client = deepseek::Client::builder()
-                .api_key(cfg.api_key.clone())
+                .api_key(cfg.api_key.expose().to_string())
                 .base_url(&base)
                 .build()
                 .context("装配 DeepSeek 客户端（LlmDeepSeek）")?;
@@ -172,7 +172,7 @@ pub fn build(
         }
         Driver::Anthropic => {
             let client = anthropic::Client::builder()
-                .api_key(cfg.api_key.clone())
+                .api_key(cfg.api_key.expose().to_string())
                 .base_url(&cfg.endpoint)
                 .build()
                 .context("装配 Anthropic 客户端（LlmAnthropic）")?;

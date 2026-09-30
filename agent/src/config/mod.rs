@@ -82,6 +82,38 @@ pub const DEFAULT_MAX_CALLS_PER_ROUND: i64 = 16;
 pub const DEFAULT_MAX_RETRIES: i64 = 3;
 pub const DEFAULT_RETRY_BACKOFF_MS: i64 = 1000;
 
+/// 密钥包装（2026-09-30 审计 P1）：`Config` 曾派生 Debug 且含明文 `api_key`——
+/// 当时没有任何 `{:?}` 打印它，但距离「一条 `errln!("{cfg:?}")` 把密钥写进
+/// stderr/审计」只差一次手滑，与全仓「密钥只报来源不报值」的纪律不符。
+/// 类型层面封死：`Debug`/`Display` 都只渲染 `<redacted>`，唯一取值口是
+/// [`Secret::expose`]（调用点即用即弃，一眼可审——目前仅 provider.rs 装配
+/// 请求头三处）。
+#[derive(Clone)]
+pub struct Secret(String);
+
+impl Secret {
+    pub fn new(s: String) -> Self {
+        Self(s)
+    }
+
+    /// 唯一取值口：只应在装配请求头（provider.rs）处调用。
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Secret(<redacted>)")
+    }
+}
+
+impl std::fmt::Display for Secret {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 /// 已校验、已合流的生效配置。
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -94,7 +126,8 @@ pub struct Config {
     pub endpoint: String,
     pub model: String,
     /// **绝不进日志、绝不进 argv**：只用于注入请求头（rig 客户端装配）。
-    pub api_key: String,
+    /// [`Secret`] 包装：Debug/Display 均 redacted（见其文档）。
+    pub api_key: Secret,
     /// 密钥来源枚举名（与审计 `api_key_source` 同口径：只报来源不报值）。
     pub api_key_source: &'static str,
     /// 配置文件相关告警（如密钥文件权限过松），空 = 无。
@@ -307,7 +340,7 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         llm_var,
         endpoint,
         model,
-        api_key,
+        api_key: Secret::new(api_key),
         api_key_source,
         config_warning,
         timeout_sec: file.timeout_sec.unwrap_or(DEFAULT_TIMEOUT_SEC),
@@ -882,5 +915,30 @@ mod tests {
             assert!(e.contains(key), "配置 {body} 应报 {key}：实际 {e}");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_debug_and_display_never_leak_the_api_key() {
+        // 2026-09-30 审计 P1：Config 曾派生 Debug 且含明文密钥——距离一次
+        // errln!("{cfg:?}") 把密钥写进 stderr/审计只差手滑。Secret 包装后，
+        // 任何 {:?}/{} 渲染都只见 redacted；expose() 是唯一取值口。
+        for k in ["BOT4CJ_LLM_KEY", "ROBOT_AGENT_API_KEY", "DEEPSEEK_API_KEY"] {
+            std::env::remove_var(k);
+        }
+        std::env::set_var("BOT4CJ_LLM_KEY", "sk-DO-NOT-PRINT-9f8e7d");
+        let cli = Cli {
+            llm_endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+            llm_model: "m".into(),
+            ..base_cli()
+        };
+        let cfg = build(&cli).unwrap();
+        let dbg = format!("{cfg:?}");
+        assert!(!dbg.contains("sk-DO-NOT-PRINT"), "Debug 泄密: {dbg}");
+        assert!(dbg.contains("redacted"), "应可见 redacted 占位: {dbg}");
+        let disp = format!("{}", cfg.api_key);
+        assert!(!disp.contains("sk-"), "Display 泄密: {disp}");
+        // 唯一取值口照常可用（provider.rs 装配请求头用）
+        assert_eq!(cfg.api_key.expose(), "sk-DO-NOT-PRINT-9f8e7d");
+        std::env::remove_var("BOT4CJ_LLM_KEY");
     }
 }

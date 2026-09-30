@@ -196,14 +196,21 @@ bool sendFrame(int fd, const std::string& payload) {
 	return true;
 }
 
+/* serveConnection 的认证记账结果（AuthFailGate 的输入，2026-09-30 审计 P1）：
+ *   Failed——给出了首帧但认证不通过（连续失败计数 +1）；
+ *   Passed——认证通过（业务循环无论怎么结束都算，连续失败计数归零）；
+ *   Neutral——没走到认证判定（哑对端/无 token 模式），计数不动。 */
+enum class ConnAuth { Neutral, Passed, Failed };
+
 /* 服务单条连接：帧循环直到对端关闭 / 协议违规 / 空闲超时 / 停止信号。
  * 空闲 deadline 逐帧重取（--mcp-idle-timeout 是「从现在起再等这么久」，
  * 墙钟预算是从连接起的绝对终点——两者由 idleDeadline 合成）。
  * MCP-1（审计 P2-1）：authToken 非空时第一帧是认证帧——通过才进入正常循环，
  * 不通过回执后断连（对端可修正重连）。失败的认证要落审计（kind=session，
  * status=auth_failed）：它是「有进程在试探这条 socket」的信号，事后复盘
- * 必须看得见；token 本身绝不进日志/审计/回执。 */
-void serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
+ * 必须看得见；token 本身绝不进日志/审计/回执。返回 ConnAuth 供 acceptLoop
+ * 记账连续失败（见 AuthFailGate）。 */
+ConnAuth serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
 		std::ostream& log) {
 	if (!opts.authToken.empty()) {
 		std::string payload;
@@ -217,14 +224,14 @@ void serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
 			} else if (fr == FrameResult::Violation) {
 				log << "MCP 后端：认证帧违规，断开连接\n";
 			}
-			return;
+			return ConnAuth::Neutral;
 		}
 		const McpAuthOutcome a = mcpCheckAuthFrame(opts.authToken, payload);
 		if (a == McpAuthOutcome::Ok) {
 			/* lock-step：认证帧也要回执（Rust 侧 authenticate 在等这一帧） */
 			if (!sendFrame(fd, "{\"success\":true,\"data\":{\"auth\":true}}")) {
 				log << "MCP 后端：认证回帧发送失败，断开连接\n";
-				return;
+				return ConnAuth::Neutral;
 			}
 			log << "MCP 后端：首帧认证通过\n";
 		} else {
@@ -237,28 +244,30 @@ void serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
 				? "第一帧不是 auth 帧" : "共享密钥不匹配")
 				<< "），断开连接\n";
 			backend.recordAuthRejected();
-			return;
+			return ConnAuth::Failed;
 		}
 	}
+	const ConnAuth result = opts.authToken.empty() ? ConnAuth::Neutral : ConnAuth::Passed;
 	while (!stopRequested()) {
 		std::string payload;
 		const FrameResult fr = readFrame(fd, payload, opts.recvTimeoutSec,
 			backend.idleDeadline(opts.idleTimeoutSec), log);
-		if (fr == FrameResult::PeerClosed) { return; }
+		if (fr == FrameResult::PeerClosed) { return result; }
 		if (fr == FrameResult::IdleTimeout) {
 			log << "MCP 后端：空闲超时/每连接墙钟预算耗尽，断开连接（对端可重连）\n";
-			return;
+			return result;
 		}
 		if (fr == FrameResult::Violation) {
 			log << "MCP 后端：协议违规，断开连接\n";
-			return;
+			return result;
 		}
 		const std::string resp = backend.handleFrame(payload);
 		if (!sendFrame(fd, resp)) {
 			log << "MCP 后端：回帧发送失败，断开连接\n";
-			return;
+			return result;
 		}
 	}
+	return result;
 }
 
 } // namespace
@@ -745,6 +754,11 @@ ListenSocket prepareListenSocket(const std::string& socketPath, std::ostream& lo
 int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& tctx,
 		const AgentModeConfig& cfg, const McpBackendOptions& opts, std::ostream& log) {
 	int rc = 0;
+	/* 首帧认证连续失败门（2026-09-30 审计 P1）：此前同 UID 对端可无限次重连
+	 * 试探 token（每次成本仅一个连接周期），与 TCP 口令通道的 5 次爆破上限
+	 * 不对称。语义见 AuthFailGate；到顶 = 停止服务（fail-closed，走正常
+	 * 停机断电链），操作者重启后端恢复。 */
+	AuthFailGate authGate;
 	while (!stopRequested()) {
 		struct pollfd p{};
 		p.fd = listenFd.get();
@@ -780,11 +794,25 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 
 		backend.beginConnection();
 		log << "MCP 后端：sidecar 已连接，开始服务\n";
-		serveConnection(clientFd.get(), backend, opts, log);
+		const ConnAuth a = serveConnection(clientFd.get(), backend, opts, log);
 		/* 先关连接再跑安全动作：对端若还挂着（半关闭），不该看见动作期间的
 		 * 任何回帧；且动作脚本可能跑几秒，不占着 fd。 */
 		clientFd.close();
 		runDisconnectAction(tctx, cfg.onDisconnectScript, cfg.audit, log);
+		if (a == ConnAuth::Passed) {
+			authGate.recordPassed();
+		} else if (a == ConnAuth::Failed) {
+			if (authGate.recordRejected()) {
+				log << "MCP 后端：首帧认证连续 " << AuthFailGate::kMaxFails
+					<< " 次失败，停止服务（可能为爆破；重启后端恢复，"
+					"必要时更换 BOT4CJ_MCP_TOKEN）\n";
+				rc = 1;
+				break;
+			}
+			log << "MCP 后端：认证失败（连续 " << authGate.fails << "/"
+				<< AuthFailGate::kMaxFails << "），回到 accept 等待\n";
+			continue;
+		}
 		log << "MCP 后端：连接结束，回到 accept 等待\n";
 	}
 	return rc;

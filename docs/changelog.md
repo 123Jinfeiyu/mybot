@@ -9,6 +9,50 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-30 全仓审计九项收口（C++ 宿主 9 / Rust agent 8.5 / Lua 与测试 8.5 / 文档 8.5）
+
+- **新人卡点两处（审计 P1，实测复现后修复）**：① `mybot.llm.json.example` 含 `//` 注释
+  ——自家严格解析器（C++ `jsonparse` 与 Rust `serde_json` 均不容注释）拒载，README 推荐的
+  「配置文件方式」首启即「不是合法 JSON: line 44」。注释移除（字段说明 docs/agent.md 字段表
+  本就有），新增 C++ 单测 `llmconfig_example_template_loads_strictly` 钉住模板永不回漂。
+  ② 根 README 快速开始只导出 KEY/ENDPOINT——`mybot-agent` 的 model 是 fail-closed 必填，
+  首启报「缺少模型名」。快速开始补 `BOT4CJ_LLM_MODEL`，实测两条路径都能到达 REPL 提示符。
+- **MCP 首帧认证连续失败门（审计 P1）**：同 UID 对端此前可无限次重连试探 token（每次成本
+  仅一个连接周期），与 TCP 口令的 `authMaxFails=5` 不对称。新增 `AuthFailGate`（mcpbackend.hpp，
+  纯结构可单测）：连续 5 次认证失败停止服务（fail-closed 走正常停机断电链），哑对端
+  「连上不发帧」不动计数、认证通过才归零——试探者无法用「连了就断」刷新失败窗口。
+  回归：`mcpbackend_auth_fail_gate_counts_consecutive_rejections`。
+- **agent 后端链路两处健壮性（审计 P1）**：① 帧读超时——`BackendClient::call` 的
+  `read_exact` 此前无 deadline，后端活着但不回帧（工具层卡死）时任务无限挂起，模型侧
+  超时与 Ctrl-C 都够不到这条 await。读超时 = `--llm-task-timeout`（轮墙钟预算贯穿到
+  工具调用内部；0=不限时用 3700s 兜底 = 后端工具执行上限 3600s + 余量，见
+  `frame::HARD_READ_CEILING`）。② 连接判死后**下一次调用**透明重连（`bridge::Conn`）——
+  此前后端中途重启 = agent 必须跟着重启。在途调用绝不重试：回执丢失的 `tool.call`
+  可能已在后端执行，重发即重复物理动作（lock-step 物理安全语义不变）。`frame.rs` 头注释
+  里「断连即 resync」的言过其实一并订正。回归：`frame` 两条 + `bridge::reconnect_tests`
+  两条（真 AF_UNIX 监听双代后端场景）。
+- **会话文件 0600 创建（审计 P1）**：`SessionFileWriter` 此前按 umask 落盘（常见 0644）
+  且含完整对话内容，而同仓 REPL 历史 / ICA sidecar 都是 0600、`perms_warning` 又只对
+  已存在文件生效——首次会话全程无告警。新建/截断重建一律 0600（`mode()` 只影响新建，
+  append 既有文件不动）。回归：`writer_creates_session_file_with_0600`。
+- **`Config` 密钥面类型收口（审计 P1）**：`api_key` 字段换 `Secret` newtype——Debug/Display
+  均渲染 `<redacted>`，唯一取值口 `expose()`（仅 provider.rs 装配请求头三处）。此前派生
+  Debug 含明文密钥，距一条 `errln!("{cfg:?}")` 把密钥写进 stderr/审计只差手滑。
+  回归：`config_debug_and_display_never_leak_the_api_key`。
+- **守护 chunk 热插 UPDATE 路径钉住（审计 P1 复核）**：复核确认机制已闭环——启动期脚本
+  可信故允许绝对路径（robot.cpp 注释明示），热插 INSERT 的绝对路径/穿越拒绝早已落地，
+  09-29 批次又补了守护 chunk 加载前的信任前提体检。审计指出的缺口只剩 UPDATE 改写行
+  无测试：新增 `hot_sql_plan_update_daemon_chunk_hits_the_new_row_gate` 钉住「改写行计入
+  insertedRows → 落进新增行校验区间」这座桥（桥若断，UPDATE 侧即绕过 INSERT 侧防线）。
+- **文档同步（审计 P1/P2）**：守护共享槽 336B→600B（TD-3+BQ-1 后未同步）在 daemon.md、
+  docs/README.md、architecture_dataflow.svg、architecture_analysis.html 共 7 处订正，
+  daemon.md 的槽布局明细（values[64]/stop@584/quiesce@592）一并补齐；README「85 个 Lua
+  测试」→86、agent.md「15 个 .rs」→16；reference.md 环境变量总表补 `BOT4CJ_TRACE_FDS`
+  与 `BOT4CJ_ICA`（「全部可调接口」闭环）；ica.md 登记进 docs/README.md 与根 README 的
+  文档索引；sqlparse.cpp 头注释「'' 双写转义仍不实现」与 #33 之后的实现矛盾——订正为
+  实际语义（安全判据的注释漂移比代码漂移更危险）；run_coverage.sh 的「gate:coverage 是
+  软门禁」过期注释订正（2026-09-25 起已硬）。
+
 ### 2026-09-29 三项安全收口：MCP 首帧共享密钥 / 停机灭火 / 信任前提体检
 
 - **MCP 首帧共享密钥 `BOT4CJ_MCP_TOKEN`（审计 P2-1）**：设了它，`SO_PEERCRED` 之上每条连接

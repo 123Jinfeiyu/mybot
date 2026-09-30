@@ -27,6 +27,16 @@ pub const HEADER_LEN: usize = 4;
 /// 读本文件比对钉住（改本常量会红那条用例）。
 pub const MAX_FRAME_BYTES: u32 = 8 * 1024 * 1024;
 
+/// 读侧的**兜底** deadline（2026-09-30 审计 P1）。后端工具执行的最长合法等待 =
+/// `--script-timeout` / `action_script_timeout_sec`（上限 3600s，见
+/// src/agenttools.cpp 与 docs/agent.md 字段表）+ 组帧/认证余量。缺省用本值；
+/// `--llm-task-timeout`（max_task_seconds）非零时 main.rs 会把读超时设成它——
+/// 一轮任务的墙钟预算由此贯穿到工具调用**内部**（此前预算只判模型调用边界，
+/// 后端进程活着但永不回帧时这条 await 无限挂起，模型侧超时与 Ctrl-C 都够
+/// 不到它）。「不限」（max_task_seconds=0）也用本兜底：不限的是任务时长，
+/// 不是「后端死了也要陪它挂到永远」。
+pub const HARD_READ_CEILING: Duration = Duration::from_secs(3700);
+
 /// 把载荷封成一帧：4 字节 BE 长度前缀 + 载荷。纯函数，便于单测。
 pub fn encode_frame(payload: &[u8]) -> Result<Vec<u8>> {
     let len = payload.len();
@@ -47,6 +57,9 @@ pub fn decode_len(hdr: &[u8; HEADER_LEN]) -> u32 {
 /// 到 mybot 后端的单连接客户端。
 pub struct BackendClient {
     stream: UnixStream,
+    /// 单次调用读侧 deadline（语义来源见 [`HARD_READ_CEILING`]）。超时与 I/O
+    /// 错误同级：连接判死——超时后对端可能补发回帧，lock-step 语义已不可恢复。
+    read_timeout: Duration,
 }
 
 impl BackendClient {
@@ -57,7 +70,12 @@ impl BackendClient {
         let mut delay = Duration::from_millis(250);
         loop {
             match UnixStream::connect(path).await {
-                Ok(stream) => return Ok(Self { stream }),
+                Ok(stream) => {
+                    return Ok(Self {
+                        stream,
+                        read_timeout: HARD_READ_CEILING,
+                    })
+                }
                 Err(e) => {
                     if Instant::now() >= deadline {
                         return Err(anyhow!(
@@ -78,14 +96,28 @@ impl BackendClient {
         }
     }
 
+    /// 设置读侧 deadline（main.rs 按 `--llm-task-timeout` 装配；0/不限时保留
+    /// [`HARD_READ_CEILING`] 兜底）。锁零散值不合法，≤0 一律回落兜底。
+    pub fn set_read_timeout(&mut self, d: Duration) {
+        self.read_timeout = d;
+        if self.read_timeout.is_zero() {
+            self.read_timeout = HARD_READ_CEILING;
+        }
+    }
+
     /// 从已建立的流构造（**测试缝**：单测用 `UnixStream::pair()` 注入假后端）。
     #[cfg(test)]
     pub fn from_stream(stream: UnixStream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            read_timeout: HARD_READ_CEILING,
+        }
     }
 
     /// 发一个请求帧、收一个响应帧（lock-step）。任何协议违规（超限、非法 UTF-8、
-    /// I/O 错误）都返回 Err——上层据此把连接判死（断连即 resync，评估 §7.1）。
+    /// I/O 错误、读超时）都返回 Err——上层据此把连接判死，**下一次调用前**重连
+    /// （见 bridge.rs 的 Conn::ensure）。在途调用本身不重试：回执丢失的
+    /// `tool.call` 可能已在后端执行，重发即重复物理动作。
     pub async fn call(&mut self, req: &Value) -> Result<Value> {
         let payload = serde_json::to_vec(req).context("序列化请求")?;
         let frame = encode_frame(&payload)?;
@@ -93,20 +125,16 @@ impl BackendClient {
         self.stream.flush().await.context("flush 请求帧")?;
 
         let mut hdr = [0u8; HEADER_LEN];
-        self.stream
-            .read_exact(&mut hdr)
-            .await
-            .context("读响应帧头")?;
+        read_exact_with_deadline(&mut self.stream, &mut hdr, self.read_timeout, "读响应帧头")
+            .await?;
         let rlen = decode_len(&hdr);
         // 上限在**分配之前**检查（评估 §7.1）：u32 直接比较，无溢出暴露面。
         if rlen > MAX_FRAME_BYTES {
             bail!("响应帧 {rlen} 字节超过上限 {MAX_FRAME_BYTES}");
         }
         let mut buf = vec![0u8; rlen as usize];
-        self.stream
-            .read_exact(&mut buf)
-            .await
-            .context("读响应载荷")?;
+        read_exact_with_deadline(&mut self.stream, &mut buf, self.read_timeout, "读响应载荷")
+            .await?;
         let text = String::from_utf8(buf).map_err(|_| anyhow!("响应帧不是合法 UTF-8"))?;
         let value: Value = serde_json::from_str(&text).context("解析响应 JSON")?;
         Ok(value)
@@ -149,6 +177,25 @@ impl BackendClient {
     }
 }
 
+/// 带整体 deadline 的 read_exact：超时与 I/O 错误同级返回 Err（连接判死）。
+/// deadline 覆盖「读满整个缓冲」而不是每个字节——慢速滴流（Slowloris 形态）
+/// 同样会被截断在预算内。
+async fn read_exact_with_deadline(
+    stream: &mut UnixStream,
+    buf: &mut [u8],
+    timeout: Duration,
+    what: &str,
+) -> Result<()> {
+    match tokio::time::timeout(timeout, stream.read_exact(buf)).await {
+        Ok(r) => r.context(what.to_string()).map(|_| ()),
+        Err(_) => bail!(
+            "{what}超时（{}s）：后端在预算内未回帧——进程可能在但不响应，\
+             或工具执行超出 --llm-task-timeout 预算；连接按死处理，可重启 agent 重试",
+            timeout.as_secs()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,6 +217,39 @@ mod tests {
     fn decode_len_roundtrips() {
         assert_eq!(decode_len(&[0, 0, 0x01, 0x2C]), 300);
         assert_eq!(decode_len(&[0xFF, 0xFF, 0xFF, 0xFF]), u32::MAX);
+    }
+
+    #[tokio::test]
+    async fn call_times_out_when_backend_goes_silent() {
+        // 2026-09-30 审计 P1：后端进程活着但不回帧（工具层卡死）时，此前的
+        // read_exact 会无限挂起——模型侧超时与 Ctrl-C 的取消都够不到它。
+        let (client_io, mut server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        client.set_read_timeout(Duration::from_millis(150));
+        let server = tokio::spawn(async move {
+            // 收下请求但永不回帧（卡死后端）
+            let mut hdr = [0u8; 4];
+            server_io.read_exact(&mut hdr).await.unwrap();
+            let n = u32::from_be_bytes(hdr) as usize;
+            let mut buf = vec![0u8; n];
+            server_io.read_exact(&mut buf).await.unwrap();
+            sleep(Duration::from_secs(30)).await;
+        });
+        let err = client.call(&json!({"_route": "ping"})).await.unwrap_err();
+        assert!(err.to_string().contains("超时"), "实际: {err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn set_read_timeout_rejects_zero_and_falls_back_to_ceiling() {
+        let (client_io, _server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        assert_eq!(client.read_timeout, HARD_READ_CEILING);
+        // 0 = 不限任务时长 ≠ 陪后端挂到永远：回落兜底上限
+        client.set_read_timeout(Duration::ZERO);
+        assert_eq!(client.read_timeout, HARD_READ_CEILING);
+        client.set_read_timeout(Duration::from_secs(1));
+        assert_eq!(client.read_timeout, Duration::from_secs(1));
     }
 
     #[tokio::test]

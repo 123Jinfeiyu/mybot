@@ -100,7 +100,7 @@
      mybot --mcp-backend（AF_UNIX 工具后端），模型循环在独立 Rust 进程 mybot-agent
      （agent/，rig 0.42 直连 provider）；--agent/agentloop/agentdriver 已删除。
      核心层名与 src/*.cpp 逐字对应（RobotStruct/HwFactory/ActionRunner/mcpbackend 等）；
-     守护共享槽为 336B（values[32]@72 / stop@328 / status@332）。 -->
+     守护共享槽为 600B（values[64]@72 / stop@584 / status@588 / quiesce@592，TD-3 扩容 + BQ-1 灭火位）。 -->
 <div style="background:#eff6ff;border:1px solid #93c5fd;color:#1e3a8a;padding:12px 20px;font-size:14px">
   &#8505;&#65039; 本页正文与配套两张 SVG 图均为<strong>现行两进程架构（本地目录 bot4cj.cpp）</strong>描述（2026-09-25 重绘复核）：
   C++ 宿主 = <code>mybot --mcp-backend</code> 工具后端，模型循环在独立 Rust 进程 <code>mybot-agent</code>，
@@ -197,7 +197,7 @@
 <!-- ============ S3 ============ -->
 <section id="s3">
   <h2 class="sec"><span class="no">03</span>数据流 / 时序展开（一次 play 动作）</h2>
-  <p>把"管道输入一帧 .mt"到"内核设备文件落盘"的完整调用链展开成四个纵向阶段，并把 <code>@Daemon</code> 并发旁路（经 336B 共享槽）画在同一张图上。</p>
+  <p>把"管道输入一帧 .mt"到"内核设备文件落盘"的完整调用链展开成四个纵向阶段，并把 <code>@Daemon</code> 并发旁路（经 600B 共享槽）画在同一张图上。</p>
 
   <div class="figure">
     <figure style="text-align:center">
@@ -237,7 +237,7 @@
     </div>
     <div class="card">
       <h4><span class="tag t-amber">M3</span>@Daemon 守护线程</h4>
-      <p><code>std::thread</code> 原生线程 + 独立 lua_State（jit.off），逐拍采样后写入 <strong>336B 共享内存槽</strong>（values[32]@72 / stop@328 / status@332）。主线程 <code>play()</code> 加锁读槽。join 超时走「弃管 + 槽位由线程自释放」的安全取舍，退出时如实告警弃管数量。</p>
+      <p><code>std::thread</code> 原生线程 + 独立 lua_State（jit.off），逐拍采样后写入 <strong>600B 共享内存槽</strong>（values[64]@72 / stop@584 / status@588 / quiesce@592）。主线程 <code>play()</code> 加锁读槽。join 超时走「弃管 + 槽位由线程自释放」的安全取舍，退出时如实告警弃管数量。</p>
     </div>
     <div class="card">
       <h4><span class="tag t-indigo">M4</span><code>$</code> 引用列 + controller</h4>

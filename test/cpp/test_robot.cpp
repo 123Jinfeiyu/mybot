@@ -1305,6 +1305,27 @@ TH_TEST(hot_sql_plan_rejects_unsafe_paths_names_and_missing_modules_without_muta
 	}
 }
 
+/* UPDATE 改写守护行同样要过 chunk 判据：改写行的物理事实是「擦原行 + 尾部
+ * 追加改后行」，改后行计入 insertedRows 才落进「本批次新增行」校验区间
+ * （script_loader.hpp 的记账注释）。钉住这座桥——若 UPDATE 只对擦除侧记账而
+ * 漏了追加侧，绝对路径会绕过 INSERT 侧的同一条防线，本用例立即红。 */
+TH_TEST(hot_sql_plan_update_daemon_chunk_hits_the_new_row_gate) {
+	ModulePathGuard guard("modules:test/cpp");
+	HotPlanFixture f("CREATE TABLE Daemon (name String, chunk String, interval String);\n"
+		"INSERT INTO Daemon (name, chunk, interval)\n"
+		"VALUES ('z', 'lib/sensor_daemon.lua', '10');\n");
+	const bot::HotSqlPlanner planner(f.matrices, f.registry);
+	for (const std::string evil : {"/tmp/evil.lua", "../evil.lua", "missing-plan-chunk.lua"}) {
+		TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "必须是模块路径下存在的相对路径",
+			planner.build("UPDATE Daemon SET chunk = '" + evil + "' WHERE name = 'z';"));
+		f.checkUnchanged();
+	}
+	/* 合法改写照常可计划：改写行计入 updatedRows（先删后建执行序的判据） */
+	const auto plan = planner.build("UPDATE Daemon SET interval = '20' WHERE name = 'z';");
+	TH_CHECK(plan.mutations.updatedRows.at("Daemon") == 1);
+	TH_CHECK(plan.deletions.deleteFirst);
+}
+
 TH_TEST(hot_sql_plan_drop_and_new_table_deletion_keep_only_planned_effects) {
 	ModulePathGuard guard("modules:test/cpp");
 	HotPlanFixture f("CREATE TABLE Timer (name String);");

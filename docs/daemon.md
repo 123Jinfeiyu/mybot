@@ -15,7 +15,7 @@ INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/daemon_probe.lua');
 
 - 每个守护 = 独立线程 + **独立 Lua 状态**，规避 LuaJIT VM 非线程安全
 - 共享内存槽 + pthread 互斥锁：守护侧 `P.publish(slot,{...})` 写，主线程侧 `play()` 加锁读
-- 共享槽 336B：`mutex[64]` / `count` / `nvals` / `values[32]` / `stop` / `status`（C++ 侧 `src/daemonvar.hpp` 的 `static_assert` 与 Lua 侧 `pthread.lua` 的 `assert_layout` 双侧互锁，布局漂移在守护启动时即暴露）
+- 共享槽 600B：`mutex[64]` / `count` / `nvals` / `values[64]`（TD-3，2026-09-22 扩容） / `stop@584` / `status@588` / `quiesce@592`（BQ-1 停机灭火位，2026-09-29）（C++ 侧 `src/daemonvar.hpp` 的 `static_assert` 与 Lua 侧 `pthread.lua` 的 `assert_layout` 双侧互锁，布局漂移在守护启动时即暴露）
 - chunk 先跑一次完成 setup 并定义全局 `daemon_tick`，之后逐拍 `pcall`；**拍间用线程 sleep 让出**，切忌在 chunk 内 ffi `usleep` 自旋（阻塞调度不放）
 - `@Daemon` 除 `name`/`chunk` 外的列序列化为 `DAEMON_CONFIG` 串注入 chunk
 - **停机顺序（断电屏障）**：`deactivate()` 先对全体守护置 `stop`，再**统一等到退场**

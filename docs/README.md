@@ -33,10 +33,11 @@
 
 - [架构分析与扩展开发路线图](architecture_analysis.html)——C++17 版全景分析（正文与配套两图按现行两进程架构重绘：`mybot --mcp-backend` + Rust `mybot-agent`，2026-09-25 逐条复核更新）
 - [分层架构全景图](architecture_layers.svg)——L1–L7 分层 + 主数据流 + 守护并发引用
-- [一次 play 的数据流 / 时序展开](architecture_dataflow.svg)——四阶段调用链 + @Daemon 并发分支（336B 共享槽 IPC）
+- [一次 play 的数据流 / 时序展开](architecture_dataflow.svg)——四阶段调用链 + @Daemon 并发分支（600B 共享槽 IPC）
 
 ## 测试与贡献
 
 - [回归测试手册](testing.md)——守门分段明细、守门完整性规则、ctest 逐用例入口、sanitizer 与 CI 跑法
 - [开发与贡献](development.md)——pre-push 钩子、提交信息规范、新增驱动/回归/单测流程、代码规范
 - [更新日志](changelog.md)——按主题分组的版本演进记录
+- [ICA 证据账本原型](ica.md)——Rust agent 侧实验特性（BOT4CJ_ICA=1）的事实边界

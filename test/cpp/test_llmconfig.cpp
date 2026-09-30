@@ -960,3 +960,19 @@ TH_TEST(agentconfig_action_script_timeout_round_trips) {
 		fs::perms::owner_all);
 	TH_CHECK(!buildAgentConfig(baseOptions(cfg3.string()), out3, err3));
 }
+
+/* 模板必须能被自家严格解析器加载：曾含 // 注释导致 `cp example mybot.llm.json`
+ * 首启即「不是合法 JSON」（2026-09-30 审计 P1）。JSON 无注释语法，说明文字
+ * 一律放 docs/agent.md 字段表，本用例钉住模板永不回漂。 */
+TH_TEST(llmconfig_example_template_loads_strictly) {
+	NoKeyEnv nokey;
+	LlmFileConfig c;
+	std::string err;
+	TH_CHECK_MSG(loadLlmConfigFile("mybot.llm.json.example", c, err), err);
+	/* 快速开始两条路径（环境变量/配置文件）共同依赖的必填三件套都在模板里 */
+	TH_CHECK(c.endpoint && !c.endpoint->empty());
+	TH_CHECK(c.model && !c.model->empty());
+	TH_CHECK(c.apiKey && !c.apiKey->empty());
+	/* allow_shell 只许命令行给：模板必须保持 false */
+	TH_CHECK(c.allowShell && !*c.allowShell);
+}

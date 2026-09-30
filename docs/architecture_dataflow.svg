@@ -177,7 +177,7 @@
     <!-- 共享槽 -->
     <g>
       <rect x="420" y="748" width="300" height="154" rx="8" fill="#fff" stroke="#ca8a04" stroke-width="1.8"/>
-      <text x="570" y="774" text-anchor="middle" font-size="14" font-weight="700" fill="#854d0e">DaemonSlot（336B 共享内存槽）</text>
+      <text x="570" y="774" text-anchor="middle" font-size="14" font-weight="700" fill="#854d0e">DaemonSlot（600B 共享内存槽）</text>
       <text x="445" y="802" font-size="12.5" fill="#475569">mutex @ 0（槽内 pthread_mutex）</text>
       <text x="445" y="824" font-size="12.5" fill="#475569">count / nvals · values[32] @ 72（double）</text>
       <text x="445" y="846" font-size="12.5" fill="#475569">stop @ 328 · status @ 332</text>
@@ -221,5 +221,5 @@
   </g>
 
   <!-- 底部说明 -->
-  <text x="700" y="1004" text-anchor="middle" font-size="11.8" fill="#94a3b8">主路径（串行）：stdin/TCP/文件 → sqlparse/matrix 解析 → RobotStruct.play → ensureOk → Lua call → HAL.sys → glibc → /dev → 内核 → 硬件；返回逆向校验；@Daemon 为并行旁路（std::thread），经 336B 共享槽与主线程解耦</text>
+  <text x="700" y="1004" text-anchor="middle" font-size="11.8" fill="#94a3b8">主路径（串行）：stdin/TCP/文件 → sqlparse/matrix 解析 → RobotStruct.play → ensureOk → Lua call → HAL.sys → glibc → /dev → 内核 → 硬件；返回逆向校验；@Daemon 为并行旁路（std::thread），经 600B 共享槽与主线程解耦</text>
 </svg>
