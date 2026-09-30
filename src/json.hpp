@@ -84,6 +84,9 @@ inline Json JsonBool(bool v) { Json j(Json::T::Bool); j.b = v; return j; }
 inline Json JsonInt(std::int64_t v) { Json j(Json::T::Int); j.i = v; return j; }
 inline Json JsonFloat(double v) { Json j(Json::T::Float); j.d = v; return j; }
 inline Json JsonString(const std::string& v) { Json j(Json::T::Str); j.s = v; return j; }
+/* 移动重载：大字符串（base64 图像 ~2MB）从 luabridge 过来时 `std::string(s, n)`
+ * 是临时量，走这条直接 move 进 j.s，省掉一次等大全量拷贝。 */
+inline Json JsonString(std::string&& v) { Json j(Json::T::Str); j.s = std::move(v); return j; }
 inline Json JsonArray() { return Json(Json::T::Arr); }
 inline Json JsonObject() { return Json(Json::T::Obj); }
 

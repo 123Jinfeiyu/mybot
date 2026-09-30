@@ -307,7 +307,15 @@ AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 			 * PNG 字节」发给网关，严格解析器直接 400。驱动侧已按魔数判定并对
 			 * 不认识的格式响亮拒绝，这里只需原样采用并做一次自洽交叉校验。 */
 			std::string mime = dataUrlMimeFor(res, b64);
-			return {desc, "data:" + mime + ";base64," + b64};
+			/* 单次 reserve 构造 data URL：链式 `+` 每步都分配新串并拷贝已有内容，
+			 * 2MB base64 会产生三次分配、约 4MB 拷贝。reserve 一次到位后 append
+			 * 只做一次 memcpy（前缀小、b64 是连续块，编译器能展开成单次调用）。 */
+			const std::string prefix = "data:" + mime + ";base64,";
+			std::string url;
+			url.reserve(prefix.size() + b64.size());
+			url.append(prefix);
+			url.append(b64);
+			return {desc, std::move(url)};
 		}};
 }
 
