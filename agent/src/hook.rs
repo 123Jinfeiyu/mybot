@@ -168,6 +168,7 @@ impl HookState {
 }
 
 fn poisoned<T>(e: std::sync::PoisonError<T>) -> T {
+    eprintln!("[warn] mutex poisoned — recovering inner value");
     e.into_inner()
 }
 
