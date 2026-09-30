@@ -314,10 +314,11 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
  * 安全形态：fd 只有一个、termios 只设一次，器件行不持有句柄——不告警。
  * virt 侧（总线 proto=virt、守护 proto=virt）走内存仿真不碰真串口，跳过
  * （否则无硬件夹具全线误报）。路径按字符串精确比对：/dev/serial0 与
- * /dev/ttyS0 这类符号链接别名无法在结构期归一，宁可漏告（与
- * normalizeAddress「宁漏不误」同取向）。只告警不拒绝——同配置轮询下
- * 实际可用，引用计数/共享 fd 属破坏性决策（fix-plan F6）。 */
-void HwFactory::warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices) {
+ * /dev/ttyS0 这类符号链接别名无法在结构期归一，宁可漏报（与
+ * normalizeAddress「宁漏不误」同取向）。P1-3 起升级为硬拒绝——此前只告警
+ * 容易被日志淹没、配置漂移无人感知；强制使用者显式共享一个 UART 总线变量
+ * （'$uart-x' 引用）或走守护采样。 */
+void HwFactory::rejectSharedUartPaths(const std::deque<mt::MatrixObject>& matrices) {
 	std::map<std::string, std::vector<std::string>> users;	/* path -> 消费者定位串 */
 	for (const auto& m : matrices) {
 		const std::string& t = m.getName();
@@ -353,12 +354,12 @@ void HwFactory::warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices
 		if (who.size() < 2) { continue; }
 		std::string names;
 		for (const auto& w : who) { names += (names.empty() ? "" : ", ") + w; }
-		std::cerr << "Warning: UART path '" << path << "' is opened independently by "
-			<< who.size() << " consumers: " << names << ". Each keeps its own termios"
-			" snapshot and the last one to close wins (no cross-variable reference"
-			" counting); mixing baud rates or interleaved use may corrupt the serial"
-			" line config. Share one UART bus variable via '$' reference, or sample"
-			" via the daemon only." << std::endl;
+		throw IllegalArgumentException(concatMsg(
+			"UART path '", path, "' is opened independently by ",
+			std::to_string(who.size()), " consumers: ", names,
+			". HAL does not do cross-variable reference counting; the last close",
+			" wins and mixing baud rates corrupts the serial line config.",
+			" Share one UART bus variable via '$' reference, or sample via daemon only."));
 	}
 }
 
@@ -367,7 +368,7 @@ void HwFactory::createHardVars(const std::deque<mt::MatrixObject>& matrices) {
 	/* 装配前先做单消费者判据：此时还没申请任何资源（Lua 状态/共享槽/总线句柄），
 	 * 报错即干净退出，不会留下半装配的机器人。 */
 	checkSingleConsumer(matrices);
-	warnSharedUartPaths(matrices);	/* F5-4：同物理串口多独立 fd 告警（不改变行为） */
+	rejectSharedUartPaths(matrices);	/* F5-4/P1-3：同物理串口多独立 fd 硬拒绝 */
 	for (const auto& matrix : matrices) { createHardVarsFrom(matrix, 1); }
 }
 
@@ -375,7 +376,7 @@ void HwFactory::createHardVars(const std::deque<mt::MatrixObject>& matrices) {
  * 热插表事务在提交前对「提交之后的结构视图」调用它——见头文件契约。 */
 void HwFactory::precheckStructure(const std::deque<mt::MatrixObject>& matrices) {
 	checkSingleConsumer(matrices);
-	warnSharedUartPaths(matrices);
+	rejectSharedUartPaths(matrices);
 }
 
 /* 单矩阵增量装配：全量装配的唯一下沉点（见头文件契约）。 */

@@ -9,6 +9,18 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-30 P1 收口：沙箱 print 拦截 + UART 共享路径硬拒绝
+
+- **Lua 沙箱 print → stderr**：`sandbox_lua()` 新增 `stderrPrint` C 闭包覆盖全局 `print`，
+  驱动层全部输出统一走 stderr（与宿主日志/诊断流同通道）。此前 48+ 驱动的 print 混在 stdout
+  污染业务输出，故障定位时无法按流过滤。单点覆盖无需逐驱动修改，语义对齐原生 print
+  （tab 分隔、末尾换行、tostring 转换）。
+- **UART 共享路径告警 → 硬拒绝**：`HwFactory::rejectSharedUartPaths`（原 `warnSharedUartPaths`）
+  从打印告警升级为抛 `IllegalArgumentException`。此前告警容易被日志淹没、配置漂移无人感知；
+  现强制使用者显式共享一个 UART 总线变量（`'$uart-x'` 引用）或走守护采样。守门用例
+  `uart_shared_path_rejected`（原 `uart_shared_path_warning`）同步更新为断言异常抛出。
+  `docs/faq.md` 相关条目同步更新。
+
 ### 2026-09-30 库层诊断语言统一 + 文档过期修正
 
 - **库层诊断统一为英文**：`HAL.lua`（UART/PWM 提示 10 处）、`nn.lua`（error 9 处）、

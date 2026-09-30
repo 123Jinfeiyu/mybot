@@ -1170,13 +1170,11 @@ SQLEOF
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
 
-	# F5-4：同一物理串口被两个「各自 open 独立 fd」的 UART 总线变量声明
-	# （不同波特率，危险形态最小样本）。断言：结构装配期打印告警（先于上电、
-	# 点名双方）且装配不因此失败——进程继续走到上电，以 UART open 失败结束
-	# （path=/dev/null 在 HAL uart 路径白名单外，任何机器都确定性 rc=1，
-	# 不受本机是否接串口影响）。取向声明见 docs/faq.md。夹具按 hardening
-	# 段惯例运行期生成进 .tmp/（不进 robots/test/：孤儿检测要求静态夹具
-	# 必须接进用例表，而 hardening 是命令行调用形态）。
+	# F5-4/P1-3：同一物理串口被两个「各自 open 独立 fd」的 UART 总线变量声明
+	# （不同波特率，危险形态最小样本）。断言：结构装配期硬拒绝（ IllegalArgumentException
+	# 折成 ERR 输出，rc=1）——此前只告警，P1-3 起升级为硬门禁。
+	# 取向声明见 docs/faq.md。夹具按 hardening 段惯例运行期生成进 .tmp/
+	# （不进 robots/test/：孤儿检测要求静态夹具必须接进用例表）。
 	cat > .tmp/uart_two_vars.sql <<'SQLEOF'
 CREATE TABLE UART (
 	name String,
@@ -1186,7 +1184,7 @@ CREATE TABLE UART (
 INSERT INTO UART (name, path, baud) VALUES ('uart-0', '/dev/null', '9600');
 INSERT INTO UART (name, path, baud) VALUES ('uart-1', '/dev/null', '115200');
 SQLEOF
-	run_one_hardening 'uart_shared_path_warning' 1 'Warning: UART path' \
+	run_one_hardening 'uart_shared_path_rejected' 1 'is opened independently by 2 consumers' \
 		env BOT4CJ_MODULE_PATH="./modules" timeout 30 "$bin" \
 		--robot=.tmp/uart_two_vars.sql --input /dev/null
 

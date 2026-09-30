@@ -48,11 +48,13 @@ class HwFactory {
 	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
 	static void checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices);
 
-	/* F5-4：同一物理串口被 2+ 个「各自 open 独立 fd」的消费者（UART 总线变量 /
-	 * 真机守护）声明时的加载期告警——HAL 不做跨变量引用计数，后关闭者以自己
-	 * open 时的配置为准。只告警不拒绝（同配置轮询下实际可用；是否收紧属
-	 * 破坏性决策）。实现与理由见 hw_factory.cpp 的同名函数注释。 */
-	static void warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices);
+	/* F5-4 → P1-3：同一物理串口被 2+ 个「各自 open 独立 fd」的消费者（UART 总线
+	 * 变量 / 真机守护）声明时硬拒绝——HAL 不做跨变量引用计数，后关闭者以自己
+	 * open 时的配置为准，混用波特率会互相改线速。此前只告警（同配置轮询下实际
+	 * 可用），但告警容易被日志淹没、配置漂移无人感知；升级为加载期硬门禁，
+	 * 强制使用者显式共享一个 UART 总线变量（'$uart-x' 引用）或走守护采样。
+	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
+	static void rejectSharedUartPaths(const std::deque<mt::MatrixObject>& matrices);
 
 	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名数值) */
 	enum class ScalarKind { Alias, Vars };

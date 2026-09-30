@@ -241,6 +241,28 @@ static void injectModulePathResolver(lua_State* L) {
 	lua_setglobal(L, "__mpath");				/* [] */
 }
 
+/* ---- P1-2：print → stderr 单点收口 ----
+ * 驱动层 print() 默认走 stdout，与宿主的日志/诊断流（stderr）分离，导致：
+ * ① 守护进程 stdout 被驱动输出污染，日志收集管道拿不到带时间戳的驱动诊断；
+ * ② 48+ 驱动各自 print 混在业务输出里，故障定位时无法按流过滤。
+ * 在沙箱层统一重定向——单点覆盖全部驱动，无需逐文件改。
+ * 语义对齐 Lua 原生 print：参数间 tab 分隔、末尾换行、tostring 转换。 */
+static int stderrPrint(lua_State* L) {
+	const int n = lua_gettop(L);
+	for (int i = 1; i <= n; ++i) {
+		if (i > 1) { std::fputc('\t', stderr); }
+		const char* s = lua_tostring(L, i);
+		if (s != nullptr) {
+			std::fputs(s, stderr);
+		} else {
+			/* 非字符串/数字：用类型名兜底（对齐 Lua 5.1 print 行为） */
+			std::fprintf(stderr, "%s: %p", lua_typename(L, lua_type(L, i)), lua_topointer(L, i));
+		}
+	}
+	std::fputc('\n', stderr);
+	return 0;
+}
+
 void sandbox_lua(lua_State* L) {
 	struct Group { const char* tab; const char* keys[5]; int n; };
 	static const Group groups[] = {
@@ -257,6 +279,10 @@ void sandbox_lua(lua_State* L) {
 		}
 		lua_pop(L, 1);
 	}
+
+	/* P1-2：print → stderr，驱动诊断统一走 stderr（与宿主日志流同通道）。 */
+	lua_pushcfunction(L, stderrPrint);
+	lua_setglobal(L, "print");
 
 	pushModuleWhitelist(L);
 	wrapLoader(L, "dofile");

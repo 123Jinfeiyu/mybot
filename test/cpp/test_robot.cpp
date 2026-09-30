@@ -1368,22 +1368,15 @@ TH_TEST(hot_sql_plan_reuses_single_consumer_precheck_on_merged_structure) {
 	TH_CHECK(plan.deletions.deleteFirst); /* 合并视图必须先擦旧行，否则自己与自己冲突 */
 }
 
-TH_TEST(hot_sql_plan_preserves_shared_uart_warning_without_opening_devices) {
+TH_TEST(hot_sql_plan_rejects_shared_uart_paths_at_precheck) {
 	ModulePathGuard guard("modules:test/cpp");
 	HotPlanFixture f("CREATE TABLE UART (name String, path String);"
 		"INSERT INTO UART (name, path) VALUES ('u0', '/dev/plan-test-uart');");
-	std::ostringstream warnings;
-	struct StderrGuard {
-		std::streambuf* old;
-		explicit StderrGuard(std::ostream& out) : old(std::cerr.rdbuf(out.rdbuf())) {}
-		~StderrGuard() { std::cerr.rdbuf(old); }
-	} capture(warnings);
-	const auto plan = bot::HotSqlPlanner(f.matrices, f.registry).build(
-		"INSERT INTO UART (name, path) VALUES ('u1', '/dev/plan-test-uart');");
-	TH_CHECK(plan.insertions.appends.size() == 1);
-	TH_CHECK(warnings.str().find("opened independently by 2 consumers") != std::string::npos);
-	TH_CHECK(warnings.str().find("u0") != std::string::npos);
-	TH_CHECK(warnings.str().find("u1") != std::string::npos);
+	/* P1-3：共享 UART 路径从告警升级为硬拒绝——HotSqlPlanner.build 调用
+	 * precheckStructure，后者调 rejectSharedUartPaths，冲突即抛 IllegalArgumentException。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "opened independently by 2 consumers",
+		bot::HotSqlPlanner(f.matrices, f.registry).build(
+			"INSERT INTO UART (name, path) VALUES ('u1', '/dev/plan-test-uart');"));
 }
 
 /* ==================== 热插表：结构 SQL 带电生效（2026-09-23）====================
