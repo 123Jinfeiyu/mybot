@@ -197,6 +197,7 @@ add_executable(mybot_tests
   test/cpp/test_agentpolicy.cpp
   test/cpp/test_promptpack.cpp
   test/cpp/test_mcpbackend.cpp
+  test/cpp/test_cross_lang_limits.cpp
   src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
 )
@@ -329,8 +330,8 @@ endif()
 file(GLOB MYBOT_CPP_TEST_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/cpp/test_*.cpp)
 set(MYBOT_CPP_TEST_REGISTERED
   test_actionsource test_agentaudit test_agentpolicy test_agentproto test_agenttools test_mcpbackend
-  test_cliargs test_daemon_concurrency test_daemon test_expr test_hardware test_json
-  test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
+  test_cliargs test_cross_lang_limits test_daemon_concurrency test_daemon test_expr test_hardware
+  test_json test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
   test_mtmerge test_promptpack test_robot test_sqlparse test_util)
 set(_missing_registered)
 foreach(_t IN LISTS MYBOT_CPP_TEST_SRCS)

@@ -498,6 +498,7 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"alias", "结构期 @Alias 语义"},
 	{"call", "驱动 call 契约（硬件层）"},
 	{"controller", "结构脚本 controller 引用"},
+	{"cross", "跨语言契约钉子（C++↔Rust 常量对齐，非 agent 专属）"},
 	{"daemon", "守护线程"},
 	{"deactivate", "硬件生命周期（非 agent 专属）"},
 	{"destructor", "硬件析构语义"},
