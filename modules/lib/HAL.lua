@@ -31,56 +31,13 @@ if not has_ffi then
 end
 
 ------------------------------------------------------------------
--- ffi 声明（glibc + Linux spidev ABI）
+-- ffi 声明与布局自检（2026-09-30 方案 A 重构）
 ------------------------------------------------------------------
-ffi.cdef[[
-int  open(const char *pathname, int flags, ...);
-int  close(int fd);
-int  ioctl(int fd, unsigned long request, ...);
-long read(int fd, void *buf, unsigned long count);
-long write(int fd, const void *buf, unsigned long count);
-int  usleep(unsigned int usec);
-
-/* 守护槽互斥锁（BQ-1 灭火检查用）。与 modules/lib/pthread.lua 的声明逐字
- * 相同——守护 chunk 同时加载两库，LuaJIT 对相同签名的重复声明幂等，签名
- * 漂移则静默失配，靠这份注释双向钉住。 */
-typedef struct { char __m[64]; } cj_pthread_mutex_t;
-int  pthread_mutex_lock(cj_pthread_mutex_t *mutex);
-int  pthread_mutex_unlock(cj_pthread_mutex_t *mutex);
-
-/* /usr/include/linux/spi/spidev.h（内核 6.18），共 32 字节 */
-typedef struct {
-	unsigned long long tx_buf;
-	unsigned long long rx_buf;
-	unsigned int       len;
-	unsigned int       speed_hz;
-	unsigned short     delay_usecs;
-	unsigned char      bits_per_word;
-	unsigned char      cs_change;
-	unsigned char      tx_nbits;
-	unsigned char      rx_nbits;
-	unsigned char      word_delay_usecs;
-	unsigned char      pad;
-} spi_ioc_transfer;
-
-/* /usr/include/linux/i2c.h：I2C_RDWR 原子事务（写指针+读合并为单次内核传输） */
-typedef struct {
-	unsigned short  addr;
-	unsigned short  flags;
-	unsigned short  len;
-	unsigned char  *buf;
-} cj_i2c_msg;
-typedef struct {
-	cj_i2c_msg   *msgs;
-	unsigned int  nmsgs;
-} cj_i2c_rdwr;
-]]
-
--- 布局自检：结构体尺寸与内核头文件不符则立即失败（防止静默内存越界）
-assert(ffi.sizeof("spi_ioc_transfer") == 32,
-	"spi_ioc_transfer size mismatch: expect 32, got " .. ffi.sizeof("spi_ioc_transfer"))
-assert(ffi.sizeof("cj_i2c_msg") == 16,
-	"cj_i2c_msg size mismatch: expect 16, got " .. ffi.sizeof("cj_i2c_msg"))
+-- 所有 ffi.cdef 声明（glibc 函数、pthread 互斥锁、spidev/i2c/gpio/termios 结构体）
+-- 与尺寸自检已下沉到后端（hal_backend_glibc.lua）。后端由下方加载段 dofile 加载，
+-- ffi.cdef 全局生效，本文件可直接使用已声明的类型（spi_ioc_transfer、cj_i2c_msg 等）。
+-- 换平台 = 新增 hal_backend_<平台>.lua（提供同构 ffi.cdef + 常量 + 原语），
+-- HAL.lua 与驱动零改动。
 
 local HAL = {}
 _G.__BOT4CJ_HAL = HAL
@@ -97,24 +54,13 @@ HAL.backend = "ffi"			-- ABI 类标记（ffi=真实句柄后端；test_hal_ffi/t
 HAL.backend_name = "glibc"	-- 后端模块名（BOT4CJ_HAL_BACKEND 指定，见下方加载段）
 
 ------------------------------------------------------------------
--- 常量
+-- 常量（2026-09-30 方案 A 重构）
 ------------------------------------------------------------------
+-- 平台常量（O_CLOEXEC、I2C_RDWR、SPI_IOC_*、GPIO_*、UART_*、errno）全部由后端
+-- 经 HAL.sys.consts 表导出——换平台只需后端提供同键名常量表，HAL.lua 零改动。
+-- 下方后端加载段完成后，从 HAL.sys.consts 逐项重导出为 HAL.* 兼容既有引用。
 local O_RDWR = 2
--- exec 时自动关闭。**每一个**器件 open 都必须带上它：agent 模式的 run_command
--- 会 fork /bin/sh，未标 CLOEXEC 的句柄被子进程继承后，模型驱动的命令可以直接
--- ioctl 它拨动硬件——而且在 robot->deactivate() 之后依然有效（宿主侧另有
--- close_range 兜底，见 src/agent_subprocess.cpp 的 revokeInheritedFds）。
--- Linux 各架构同为 0x80000；由 test/test_ioctl_nums.c 与 fcntl.h 双边钉住。
-HAL.O_CLOEXEC = 0x80000
-HAL.I2C_RDWR = 0x0707		-- i2c-dev 原子多消息事务
-HAL.I2C_M_RD = 0x0001		-- i2c_msg.flags：读（0 为写）
 HAL.i2c_addr = {}		-- fd -> 7位从地址（per-state；每条 i2c_msg 自带地址，无需 I2C_SLAVE ioctl）
-
--- ioctl 编号按 _IOC(dir=WRITE(1)<<30 | size<<16 | type('k'=0x6b)<<8 | nr) 计算
-HAL.SPI_IOC_WR_MODE          = 0x40016b01	-- _IOW('k', 1, __u8)
-HAL.SPI_IOC_WR_BITS_PER_WORD = 0x40016b03	-- _IOW('k', 3, __u8)
-HAL.SPI_IOC_WR_MAX_SPEED_HZ  = 0x40046b04	-- _IOW('k', 4, __u32)
-HAL.SPI_IOC_MESSAGE_1        = 0x40206b00	-- _IOW('k', 0, spi_ioc_transfer[1])
 
 ------------------------------------------------------------------
 -- 系统调用间接层（离线单测在此注入 mock）
@@ -143,14 +89,34 @@ do
 		"HAL: backend not found: modules/lib/hal_backend_" .. wanted .. ".lua (BOT4CJ_HAL_BACKEND=" .. wanted .. ")")
 	for _, k in ipairs({ "open", "close", "ioctl_i", "ioctl_p", "read", "write",
 		"usleep", "errno", "version", "tcgetattr", "tcsetattr", "cfmakeraw",
-		"cfsetispeed", "cfsetospeed", "tcflush" }) do
+		"cfsetispeed", "cfsetospeed", "tcflush",
+		"i2c_rdwr", "spi_setup", "spi_xfer" }) do
 		assert(type(loaded[k]) == "function",
 			"HAL: backend '" .. wanted .. "' missing contract function: " .. k
 			.. " (see modules/lib/hal_backend_glibc.lua)")
 	end
+	assert(type(loaded.consts) == "table",
+		"HAL: backend '" .. wanted .. "' missing consts table")
 	HAL.sys = loaded
 	HAL.backend_name = wanted
 end
+
+-- 2026-09-30 方案 A 重构：平台常量由后端 consts 表重导出，兼容既有 HAL.* 引用
+-- （测试、Camera.lua 等直接访问 HAL.I2C_RDWR / HAL.SPI_IOC_* 等）。
+local _c = HAL.sys.consts
+HAL.O_CLOEXEC = _c.O_CLOEXEC
+HAL.I2C_RDWR  = _c.I2C_RDWR
+HAL.I2C_M_RD  = _c.I2C_M_RD
+HAL.SPI_IOC_WR_MODE          = _c.SPI_IOC_WR_MODE
+HAL.SPI_IOC_WR_BITS_PER_WORD = _c.SPI_IOC_WR_BITS_PER_WORD
+HAL.SPI_IOC_WR_MAX_SPEED_HZ  = _c.SPI_IOC_WR_MAX_SPEED_HZ
+HAL.SPI_IOC_MESSAGE_1        = _c.SPI_IOC_MESSAGE_1
+HAL.GPIO_GET_LINEHANDLE         = _c.GPIO_GET_LINEHANDLE
+HAL.GPIOHANDLE_GET_LINE_VALUES  = _c.GPIOHANDLE_GET_LINE_VALUES
+HAL.GPIOHANDLE_SET_LINE_VALUES  = _c.GPIOHANDLE_SET_LINE_VALUES
+HAL.GPIOHANDLE_REQUEST_INPUT      = _c.GPIOHANDLE_REQUEST_INPUT
+HAL.GPIOHANDLE_REQUEST_OUTPUT     = _c.GPIOHANDLE_REQUEST_OUTPUT
+HAL.GPIOHANDLE_REQUEST_ACTIVE_LOW = _c.GPIOHANDLE_REQUEST_ACTIVE_LOW
 
 ------------------------------------------------------------------
 -- 总线契约单点（N-25）
@@ -249,12 +215,10 @@ function i2c_set_addr(fd, addr)
 end
 
 -- 内部：执行一次 I2C_RDWR 原子事务（msgs 为 cj_i2c_msg[n]），返回内核传输数或负值
+-- 2026-09-30 方案 A 重构：组装 cj_i2c_rdwr 结构 + ioctl 下沉到后端原语
 local function i2c_rdwr(fd, msgs, nmsgs)
 	if bus_quiesced() then return -1 end
-	local data = ffi.new("cj_i2c_rdwr[1]")
-	data[0].msgs = msgs
-	data[0].nmsgs = nmsgs
-	return HAL.sys.ioctl_p(fd, HAL.I2C_RDWR, data)
+	return HAL.sys.i2c_rdwr(fd, msgs, nmsgs)
 end
 
 -- 内部：读缓冲区 n 字节按大端合并
@@ -510,13 +474,8 @@ function spi_setup(fd, mode, bits, speed, delay)
 		print("HAL: spi_setup delay cannot persist on fd; pass delay_us per transfer instead")
 	end
 
-	local m8 = ffi.new("uint8_t[1]", mode)
-	if HAL.sys.ioctl_p(fd, HAL.SPI_IOC_WR_MODE, m8) ~= 0 then return -1 end
-	local b8 = ffi.new("uint8_t[1]", bits)
-	if HAL.sys.ioctl_p(fd, HAL.SPI_IOC_WR_BITS_PER_WORD, b8) ~= 0 then return -1 end
-	local s32 = ffi.new("uint32_t[1]", speed)
-	if HAL.sys.ioctl_p(fd, HAL.SPI_IOC_WR_MAX_SPEED_HZ, s32) ~= 0 then return -1 end
-	return 0
+	-- 2026-09-30 方案 A 重构：三次 ioctl 配置下沉到后端原语
+	return HAL.sys.spi_setup(fd, mode, bits, speed)
 end
 
 -- 内部：单次 SPI 事务（一条 message，CS 保持低）。
@@ -524,22 +483,12 @@ end
 -- speed_hz/bits_per_word 填 0：内核自动沿用 fd 上 spi_setup 配置的值。
 -- delay_us：可选，本次传输最后一位之后、CS 拉高之前的等待微秒数
 -- （内核无 per-fd 持久化途径，由驱动逐次显式传入，__u16 钳制到 65535）。
+-- 2026-09-30 方案 A 重构：组装 spi_ioc_transfer 结构 + ioctl 下沉到后端原语
 local function spi_xfer(fd, tx, rx, len, delay_us)
 	if bus_quiesced() then return false end
-	local msg = ffi.new("spi_ioc_transfer[1]")	-- ffi.new 零初始化
-	msg[0].len = len
 	delay_us = uint_of(delay_us)
-	if delay_us ~= nil then
-		if delay_us > 65535 then delay_us = 65535 end
-		msg[0].delay_usecs = delay_us
-	end
-	if tx ~= nil then
-		msg[0].tx_buf = ffi.cast("unsigned long long", ffi.cast("const uint8_t *", tx))
-	end
-	if rx ~= nil then
-		msg[0].rx_buf = ffi.cast("unsigned long long", ffi.cast("uint8_t *", rx))
-	end
-	local r = HAL.sys.ioctl_p(fd, HAL.SPI_IOC_MESSAGE_1, msg)
+	if delay_us ~= nil and delay_us > 65535 then delay_us = 65535 end
+	local r = HAL.sys.spi_xfer(fd, tx, rx, len, delay_us)
 	return r ~= nil and r >= 0
 end
 
@@ -637,37 +586,8 @@ end
 ------------------------------------------------------------------
 -- 内核标准接口（>= 4.8），跨 SoC 通用：树莓派/瑞芯微/全志等仅路径与
 -- 线号不同。结构体全部定宽字段，x86_64/aarch64 布局一致。
--- ioctl 编号经 test/test_ioctl_nums.c 与系统头文件实证。
-
-HAL.GPIO_GET_LINEHANDLE         = 0xC16CB403	-- _IOWR(0xB4, 0x03, gpiohandle_request)
-HAL.GPIOHANDLE_GET_LINE_VALUES  = 0xC040B408	-- _IOWR(0xB4, 0x08, gpiohandle_data)
-HAL.GPIOHANDLE_SET_LINE_VALUES  = 0xC040B409	-- _IOWR(0xB4, 0x09, gpiohandle_data)
--- 注意：HAL 运行于 LuaJIT（5.1），无 << 运算符，标志位用字面量（INPUT=1<<0 等）
-HAL.GPIOHANDLE_REQUEST_INPUT      = 1
-HAL.GPIOHANDLE_REQUEST_OUTPUT     = 2
-HAL.GPIOHANDLE_REQUEST_ACTIVE_LOW = 4
-
-ffi.cdef[[
-/* /usr/include/linux/gpio.h（ABI v1，deprecated 但全内核支持；uAPI v2 结构含
- * __u64 对齐字段与位掩码语义，对 Lua 侧过重，基础输入输出用 v1 足够） */
-typedef struct {
-	unsigned int lineoffsets[64];
-	unsigned int flags;
-	unsigned char default_values[64];
-	char consumer_label[32];
-	unsigned int lines;
-	int fd;
-} cj_gpiohandle_request;
-typedef struct {
-	unsigned char values[64];
-} cj_gpiohandle_data;
-]]
-
--- 结构体尺寸自检（防 ABI 静默漂移；字段全定宽，两架构同值）
-assert(ffi.sizeof("cj_gpiohandle_request") == 364,
-	"gpiohandle_request size mismatch: expect 364, got " .. ffi.sizeof("cj_gpiohandle_request"))
-assert(ffi.sizeof("cj_gpiohandle_data") == 64,
-	"gpiohandle_data size mismatch: expect 64, got " .. ffi.sizeof("cj_gpiohandle_data"))
+-- 2026-09-30 方案 A 重构：ffi.cdef 声明、尺寸自检、ioctl 编号常量全部下沉到后端，
+-- HAL.lua 经 HAL.GPIO_* 访问（后端加载段已重导出）。
 
 -- 请求一条 GPIO 线，返回句柄 fd（供 set/get 使用）；失败返回 -1
 -- direction: "out" | "in"；default_value：输出模式的上电值（0/1）
@@ -778,36 +698,20 @@ end
 --           「13 波特」静默生效。
 -- 因此 UART_B_CONST 按运行时 glibc 版本（gnu_get_libc_version）二选一；
 -- test_uart_consts.c 以 #if 分支与两套表同步断言（审计 P0-3）。
+-- 2026-09-30 方案 A 重构：ffi.cdef、尺寸自检、UART/errno 常量全部下沉到后端。
 
-ffi.cdef[[
-int  tcgetattr(int fd, void *termios_p);
-int  tcsetattr(int fd, int act, const void *termios_p);
-void cfmakeraw(void *termios_p);
-int  cfsetispeed(void *termios_p, unsigned int speed);
-int  cfsetospeed(void *termios_p, unsigned int speed);
-int  tcflush(int fd, int queue_selector);
-
-typedef struct {
-	unsigned int c_iflag, c_oflag, c_cflag, c_lflag;
-	unsigned char c_line;
-	unsigned char c_cc[32];
-	unsigned int c_ispeed, c_ospeed;
-} cj_termios;
-]]
-
--- 结构体尺寸自检：glibc x86_64/aarch64 均为 60 字节，不符则立即失败
--- （防止分架构布局静默漂移导致 c_cc 下标越界写）
-assert(ffi.sizeof("cj_termios") == 60,
-	"cj_termios size mismatch: expect 60, got " .. ffi.sizeof("cj_termios"))
-
-HAL.UART_O_FLAGS  = 526594	-- O_RDWR(2)|O_NOCTTY(256)|O_NONBLOCK(2048)|O_CLOEXEC(524288)
-HAL.UART_TCSANOW  = 0
-HAL.UART_TCIFLUSH = 0
-HAL.UART_VMIN_IDX = 6			-- c_cc 下标（VMIN）
-HAL.UART_VTIME_IDX = 5			-- c_cc 下标（VTIME）
-HAL.UART_CREAD_CLOCAL = 2176	-- CREAD(128) | CLOCAL(2048)
-HAL.EAGAIN = 11					-- Linux errno：非阻塞读暂无数据
-HAL.EINTR = 4					-- Linux errno：被信号打断
+-- UART 常量由后端 consts 表重导出
+HAL.UART_O_FLAGS  = _c.UART_O_FLAGS
+HAL.UART_TCSANOW  = _c.UART_TCSANOW
+HAL.UART_TCIFLUSH = _c.UART_TCIFLUSH
+HAL.UART_VMIN_IDX = _c.UART_VMIN_IDX
+HAL.UART_VTIME_IDX = _c.UART_VTIME_IDX
+HAL.UART_CREAD_CLOCAL = _c.UART_CREAD_CLOCAL
+HAL.EAGAIN = _c.EAGAIN
+HAL.EINTR  = _c.EINTR
+HAL.ENOENT = _c.ENOENT
+HAL.EACCES = _c.EACCES
+HAL.EINVAL = _c.EINVAL
 HAL.UART_READ_MAX_MS = bus.UART_READ_MAX_MS	-- uart_read 轮询上限：iters=timeout_ms+1 按 1ms 空转，
 								-- 超长值（配置笔误）必须立即失败而非阻塞数小时
 
@@ -1038,11 +942,7 @@ HAL.pwm_state = {}			-- "chip/channel" -> {freq, duty, period_ns, duty_ns, enabl
 local O_WRONLY = 1
 local O_RDONLY = 0
 
--- sysfs 写失败几乎总是这两种原因，给出人话提示（errno 取自 Linux 通用值）
-HAL.ENOENT = 2			-- 节点不存在：overlay 未启用 / chip 编号不对
-HAL.EACCES = 13			-- 权限不足：export 通常仅 root 可写
-HAL.EINVAL = 22			-- 参数被内核拒绝（如越界通道号、重复 export）
-
+-- sysfs 写失败几乎总是这两种原因，给出人话提示（errno 已由后端 consts 表重导出）
 local function errno_hint(e)
 	if e == HAL.ENOENT then
 		return "ENOENT(node not found: PWM overlay not enabled, or pwmchip number incorrect?)"

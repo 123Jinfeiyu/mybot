@@ -35,6 +35,20 @@ HAL.sys.write = function(fd, buf, n)
 end
 HAL.sys.errno = function() return 0 end
 
+-- 2026-09-30 方案 A 重构：新增总线传输原语 mock
+HAL.sys.i2c_rdwr = function(fd, msgs, nmsgs)
+	syscalls = syscalls + 1
+	return mock_ioctl_ret
+end
+HAL.sys.spi_setup = function(fd, mode, bits, speed)
+	syscalls = syscalls + 1
+	return 0
+end
+HAL.sys.spi_xfer = function(fd, tx, rx, len, delay_us)
+	syscalls = syscalls + 1
+	return mock_ioctl_ret
+end
+
 -- 与宿主 injectDaemonGlobals 注入的布局同形（daemonvar.hpp：quiesce@592）
 local slot = ffi.new("char[600]")
 local layout = { count = 64, nvals = 68, values = 72, stop = 584,

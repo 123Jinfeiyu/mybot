@@ -91,6 +91,42 @@ HAL.sys.usleep = function(us)
 	return 0
 end
 
+-- 2026-09-30 方案 A 重构：新增总线传输原语 mock
+HAL.sys.i2c_rdwr = function(fd, msgs, nmsgs)
+	local rec = { op = "i2c_rdwr", fd = fd, nmsgs = tonumber(nmsgs) }
+	rec.msgs = {}
+	for m = 0, nmsgs - 1 do
+		local msg = msgs[m]
+		local e = { addr = tonumber(msg.addr), flags = tonumber(msg.flags), len = tonumber(msg.len) }
+		if e.flags == HAL.I2C_M_RD then
+			for i = 0, e.len - 1 do msg.buf[i] = rx_preset[i + 1] or 0 end
+		else
+			e.data = ffi.string(msg.buf, e.len)
+		end
+		rec.msgs[m + 1] = e
+	end
+	calls[#calls + 1] = rec
+	return mock_ioctl_ret
+end
+
+HAL.sys.spi_setup = function(fd, mode, bits, speed)
+	calls[#calls + 1] = { op = "spi_setup", fd = fd, mode = mode, bits = bits, speed = speed }
+	return mock_ioctl_ret
+end
+
+HAL.sys.spi_xfer = function(fd, tx, rx, len, delay_us)
+	local rec = { op = "spi_xfer", fd = fd, len = tonumber(len), delay = tonumber(delay_us) or 0 }
+	if tx ~= nil then
+		rec.tx = ffi.string(ffi.cast("const char *", ffi.cast("const uint8_t *", tx)), len)
+	end
+	if rx ~= nil then
+		local rxb = ffi.cast("uint8_t *", rx)
+		for i = 0, len - 1 do rxb[i] = rx_preset[i + 1] or 0 end
+	end
+	calls[#calls + 1] = rec
+	return mock_ioctl_ret
+end
+
 local function reset()
 	calls, rx_preset = {}, {}
 	mock_open_fd, mock_ioctl_ret, mock_rw_ok = 7, 0, true
@@ -123,7 +159,7 @@ check("i2c_set_addr 注入地址拒绝", i2c_set_addr(fd, "0x40; reboot") == fal
 reset()
 i2c_set_addr(fd, 0x40)
 check("i2c_write_reg 成功", i2c_write_reg(fd, 0xFE, 0x03) == true)
-local c = find("ioctl_p", "req", HAL.I2C_RDWR)
+local c = find("i2c_rdwr")
 check("write_reg 单次 I2C_RDWR 含 1 条写消息", c ~= nil and c.nmsgs == 1)
 check("write_reg msg: addr=0x40 flags=写 len=2 data=FE,03",
 	c ~= nil and c.msgs[1].addr == 0x40 and c.msgs[1].flags == 0
@@ -136,7 +172,7 @@ reset()
 i2c_set_addr(fd, 0x40)
 rx_preset = { 0x1a }
 check("i2c_read_reg 返回字节值", i2c_read_reg(fd, 0x00) == 0x1a)
-c = find("ioctl_p", "req", HAL.I2C_RDWR)
+c = find("i2c_rdwr")
 check("read_reg 单次 I2C_RDWR 含 2 条消息（原子）", c ~= nil and c.nmsgs == 2)
 check("read_reg msg1=写指针(0x00) msg2=读1字节",
 	c ~= nil and c.msgs[1].flags == 0 and c.msgs[1].data == string.char(0x00)
@@ -148,7 +184,7 @@ check("read_reg 失败返回 -1", i2c_read_reg(fd, 0x00) == -1)
 reset()
 i2c_set_addr(fd, 0x48)
 check("i2c_write_multi 返回 0", i2c_write_multi(fd, 0x01, 0x84, 0x83) == 0)
-c = find("ioctl_p", "req", HAL.I2C_RDWR)
+c = find("i2c_rdwr")
 check("write_multi 单消息 reg+b1+b2",
 	c ~= nil and c.nmsgs == 1 and c.msgs[1].len == 3
 	and c.msgs[1].data == string.char(0x01, 0x84, 0x83))
@@ -158,7 +194,7 @@ reset()
 i2c_set_addr(fd, 0x48)
 rx_preset = { 0x12, 0x34 }
 check("i2c_read_multi 大端合并", i2c_read_multi(fd, 0x00, 2) == 0x1234)
-c = find("ioctl_p", "req", HAL.I2C_RDWR)
+c = find("i2c_rdwr")
 check("read_multi 单次原子含 2 消息、读 2 字节",
 	c ~= nil and c.nmsgs == 2 and c.msgs[2].len == 2)
 rx_preset = { 0xaa, 0xbb, 0xcc }
@@ -184,7 +220,7 @@ reset()
 i2c_set_addr(fd, 0x58)
 rx_preset = { 0x00, 0x2a }
 check("i2c_read 纯读大端合并", i2c_read(fd, 2) == 0x2a)
-c = find("ioctl_p", "req", HAL.I2C_RDWR)
+c = find("i2c_rdwr")
 check("i2c_read 为单条读消息（无写指针）",
 	c ~= nil and c.nmsgs == 1 and c.msgs[1].flags == HAL.I2C_M_RD)
 rx_preset = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 }
@@ -226,27 +262,24 @@ check("spi_open 注入路径拒绝", spi_open("/dev/spidev0.0; reboot") == -1)
 
 reset()
 check("spi_setup 返回 0", spi_setup(sfd, 1, 8, 4000000, 0) == 0)
-c = find("ioctl_p", "req", HAL.SPI_IOC_WR_MODE)
-check("spi_setup 写 mode=1", c ~= nil and c.u8 == 1)
-c = find("ioctl_p", "req", HAL.SPI_IOC_WR_BITS_PER_WORD)
-check("spi_setup 写 bits=8", c ~= nil and c.u8 == 8)
-c = find("ioctl_p", "req", HAL.SPI_IOC_WR_MAX_SPEED_HZ)
-check("spi_setup 写 speed=4000000", c ~= nil and c.u32 == 4000000)
+c = find("spi_setup")
+check("spi_setup 写 mode=1", c ~= nil and c.mode == 1)
+check("spi_setup 写 bits=8", c ~= nil and c.bits == 8)
+check("spi_setup 写 speed=4000000", c ~= nil and c.speed == 4000000)
 check("spi_setup 非法 mode 拒绝", spi_setup(sfd, 9, 8, 1000, 0) == -1)
 mock_ioctl_ret = -1
 check("spi_setup ioctl 失败返回 -1", spi_setup(sfd, 0, 8, 1000, 0) == -1)
 
 reset()
 check("spi_write3 返回 0", spi_write3(sfd, 0x50, 0x00, 0x03) == 0)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_write3 单次 3 字节传输（CS 保持低）",
 	c ~= nil and c.len == 3 and c.tx == string.char(0x50, 0x00, 0x03))
-check("spi_write3 speed_hz=0（沿用 fd 配置）", c ~= nil and c.speed == 0)
 check("spi_write3 缺省 delay_usecs=0（向后兼容）", c ~= nil and c.delay == 0, c and c.delay)
 
 reset()
 check("spi_write_multi 返回 0", spi_write_multi(sfd, { 0x21, 0x00 }, 0) == 0)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_write_multi 单次 2 字节帧（CS 保持低）",
 	c ~= nil and c.len == 2 and c.tx == string.char(0x21, 0x00))
 check("spi_write_multi 非法字节拒绝", spi_write_multi(sfd, { 0x21, 300 }, 0) == -1)
@@ -254,11 +287,11 @@ check("spi_write_multi 空表拒绝", spi_write_multi(sfd, {}, 0) == -1)
 check("spi_write_multi 缺表拒绝", spi_write_multi(sfd, nil, 0) == -1)
 reset()
 check("spi_write_multi 携带 delay_us", spi_write_multi(sfd, { 0x40, 0x00 }, 120) == 0
-	and (find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1) or {}).delay == 120)
+	and (find("spi_xfer") or {}).delay == 120)
 
 reset()
 check("spi_write 单字节", spi_write(sfd, 0xAB) == 0)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_write 传输 1 字节", c ~= nil and c.len == 1 and c.tx == string.char(0xAB))
 
 reset()
@@ -268,7 +301,7 @@ check("spi_read 解析收到的字节", spi_read(sfd) == 0x2a)
 reset()
 rx_preset = { 0x00, 0x12, 0x34, 0x56 }
 check("spi_read_multi 大端合并 4 字节", spi_read_multi(sfd, 4) == 0x00123456)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_read_multi 单次 4 字节传输", c ~= nil and c.len == 4)
 mock_ioctl_ret = -1
 check("spi_read_multi ioctl 失败返回 -1", spi_read_multi(sfd, 4) == -1)
@@ -286,7 +319,7 @@ local xf = spi_xfer_full(sfd, { 0x33, 0x03, 0x00 }, 10)
 check("spi_xfer_full 返回等长 1 基接收表",
 	type(xf) == "table" and #xf == 3 and xf[1] == 0x00 and xf[2] == 0x00 and xf[3] == 0x5A,
 	tostring(xf))
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_xfer_full 同帧 3 字节、MOSI 原样、delay=10",
 	c ~= nil and c.len == 3
 	and c.tx == string.char(0x33, 0x03, 0x00) and c.delay == 10)
@@ -302,7 +335,7 @@ check("spi_xfer_full ioctl 失败返回 nil", spi_xfer_full(sfd, { 0x33, 0x03, 0
 mock_ioctl_ret = 0
 reset()
 spi_xfer_full(sfd, { 0x01, 0x02, 0x03 }, 99999)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_xfer_full delay_us 超 __u16 钳 65535",
 	c ~= nil and c.delay == 65535, c and c.delay)
 
@@ -310,28 +343,28 @@ check("spi_xfer_full delay_us 超 __u16 钳 65535",
 reset()
 mock_ioctl_ret = 0
 check("spi_write3 携带 delay_us", spi_write3(sfd, 0x50, 0x00, 0x03, 50) == 0)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("delay_usecs 写入传输结构体", c ~= nil and c.delay == 50, c and c.delay)
 
 reset()
 check("spi_read_multi 携带 delay_us", spi_read_multi(sfd, 2, 120) ~= nil)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_read_multi delay_usecs=120", c ~= nil and c.delay == 120, c and c.delay)
 
 reset()
 spi_write(sfd, 0x01, 30)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_write 携带 delay_us", c ~= nil and c.delay == 30, c and c.delay)
 
 reset()
 rx_preset = { 0x11 }
 spi_read(sfd, 40)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("spi_read 携带 delay_us", c ~= nil and c.delay == 40, c and c.delay)
 
 reset()
 spi_write3(sfd, 1, 2, 3, 99999)
-c = find("ioctl_p", "req", HAL.SPI_IOC_MESSAGE_1)
+c = find("spi_xfer")
 check("delay_usecs 超 __u16 钳制为 65535", c ~= nil and c.delay == 65535, c and c.delay)
 
 ------------------------------------------------------------------
@@ -347,8 +380,8 @@ dofile("modules/PCA9685.lua")
 reset()
 r = build({ mode = "build", fd = 7, address = "0x40" })
 check("PCA9685.lua build 配置芯片", r.result == "OK", r.result)
-check("build 经 I2C_RDWR 原子写配置寄存器",
-	find("ioctl_p", "req", HAL.I2C_RDWR) ~= nil)
+check("build 经 i2c_rdwr 原子写配置寄存器",
+	find("i2c_rdwr") ~= nil)
 
 reset()
 r = call({ mode = "call", fd = 7, address = "0x40", channel = 6, angle = 45 })
@@ -357,7 +390,7 @@ check("PCA9685.lua call 设置角度", r.result == "OK", r.result)
 -- call 为单次 i2c_write_multi（AI 自增）：一条写消息 = 寄存器指针 + ON(2B) + OFF(2B)
 local writes = {}
 for _, cc in ipairs(calls) do
-	if cc.op == "ioctl_p" and cc.req == HAL.I2C_RDWR and cc.msgs then
+	if cc.op == "i2c_rdwr" and cc.msgs then
 		for _, m in ipairs(cc.msgs) do
 			if m.flags == 0 and m.data then writes[#writes + 1] = m.data end
 		end

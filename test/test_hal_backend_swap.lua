@@ -13,9 +13,11 @@ tester.check("ABI 类标记为 ffi", HAL.backend == "ffi", HAL.backend)
 tester.check("后端模块名缺省 glibc", HAL.backend_name == "glibc", HAL.backend_name)
 for _, k in ipairs({ "open", "close", "ioctl_i", "ioctl_p", "read", "write",
 	"usleep", "errno", "version", "tcgetattr", "tcsetattr", "cfmakeraw",
-	"cfsetispeed", "cfsetospeed", "tcflush" }) do
+	"cfsetispeed", "cfsetospeed", "tcflush",
+	"i2c_rdwr", "spi_setup", "spi_xfer" }) do
 	tester.check("契约函数在位: " .. k, type(HAL.sys[k]) == "function", type(HAL.sys[k]))
 end
+tester.check("后端 consts 表存在", type(HAL.sys.consts) == "table", type(HAL.sys.consts))
 local ver = HAL.sys.version()
 tester.check("glibc 版本串形如 2.x（musl 等 nil 也接受）",
 	ver == nil or tostring(ver):match("^%d+%.%d+$") ~= nil, tostring(ver))
@@ -47,6 +49,45 @@ local stub = {
 	cfsetispeed = function() end,
 	cfsetospeed = function() end,
 	tcflush   = function() end,
+	-- 2026-09-30 方案 A 重构：新增总线传输原语
+	i2c_rdwr  = function(fd, msgs, nmsgs)
+		calls[#calls + 1] = { cmd = "i2c_rdwr", fd = fd, nmsgs = nmsgs }
+		return 1	-- >=0 即事务成功
+	end,
+	spi_setup = function(fd, mode, bits, speed)
+		calls[#calls + 1] = { cmd = "spi_setup", fd = fd, mode = mode, bits = bits, speed = speed }
+		return 0
+	end,
+	spi_xfer  = function(fd, tx, rx, len, delay_us)
+		calls[#calls + 1] = { cmd = "spi_xfer", fd = fd, len = len }
+		return 0
+	end,
+	consts = {
+		O_CLOEXEC = 0x80000,
+		I2C_RDWR = 0x0707,
+		I2C_M_RD = 0x0001,
+		SPI_IOC_WR_MODE = 0x40016b01,
+		SPI_IOC_WR_BITS_PER_WORD = 0x40016b03,
+		SPI_IOC_WR_MAX_SPEED_HZ = 0x40046b04,
+		SPI_IOC_MESSAGE_1 = 0x40206b00,
+		GPIO_GET_LINEHANDLE = 0xC16CB403,
+		GPIOHANDLE_GET_LINE_VALUES = 0xC040B408,
+		GPIOHANDLE_SET_LINE_VALUES = 0xC040B409,
+		GPIOHANDLE_REQUEST_INPUT = 1,
+		GPIOHANDLE_REQUEST_OUTPUT = 2,
+		GPIOHANDLE_REQUEST_ACTIVE_LOW = 4,
+		UART_O_FLAGS = 526594,
+		UART_TCSANOW = 0,
+		UART_TCIFLUSH = 0,
+		UART_VMIN_IDX = 6,
+		UART_VTIME_IDX = 5,
+		UART_CREAD_CLOCAL = 2176,
+		EAGAIN = 11,
+		EINTR = 4,
+		ENOENT = 2,
+		EACCES = 13,
+		EINVAL = 22,
+	},
 }
 local saved_sys, saved_name = HAL.sys, HAL.backend_name
 HAL.sys = stub
@@ -57,13 +98,13 @@ tester.check("open 调用记录到 stub",
 	calls[1] ~= nil and calls[1].cmd == "open" and calls[1].path == "/dev/i2c-1",
 	calls[1] and tostring(calls[1].path))
 tester.check("i2c_set_addr 走通", i2c_set_addr(fd, 0x68) == true)
-tester.check("i2c_write_reg 原子事务成功（ioctl_p >= 0）", i2c_write_reg(fd, 0x6B, 0x00) == true)
+tester.check("i2c_write_reg 原子事务成功（i2c_rdwr >= 0）", i2c_write_reg(fd, 0x6B, 0x00) == true)
 tester.check("i2c_read_reg 读缓冲默认 0（事务成功路径）", i2c_read_reg(fd, 0x75) == 0)
-local ioctl_req_ok = false
+local i2c_rdwr_ok = false
 for _, w in ipairs(calls) do
-	if w.cmd == "ioctl_p" and w.fd == 7 and w.req == HAL.I2C_RDWR then ioctl_req_ok = true end
+	if w.cmd == "i2c_rdwr" and w.fd == 7 then i2c_rdwr_ok = true end
 end
-tester.check("事务请求带 I2C_RDWR 编号且 fd 正确", ioctl_req_ok)
+tester.check("事务经 i2c_rdwr 原语且 fd 正确", i2c_rdwr_ok)
 i2c_close(fd)
 tester.check("i2c_close 经 stub 收口", calls[#calls] ~= nil and calls[#calls].cmd == "close"
 	and calls[#calls].fd == 7, calls[#calls] and tostring(calls[#calls].cmd))
