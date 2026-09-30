@@ -34,19 +34,20 @@
 --   3. 量化：100k 型每步约 390Ω，10k 型每步约 39Ω
 --   4. fd/delay 经元数据引用机制从 @SPI 变量流入（同 ADS1256 的模式）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
-local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
-dofile(mpath.resolve("lib/drv_common.lua"))
-
--- 调试开关：电位器一般低频调节，默认关闭逐次打印
-local DEBUG = false
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + fd 校验 + destroy 空操作
+-- 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍在文件尾部。
+-- 1 行 prelude 加载 drv_common（自带 require_driver 定义）；HAL/print_table
+-- 由 require_driver 内部代劳，新驱动作者漏加载的旧坑从根上消失。
+dofile((__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+	.resolve("lib/drv_common.lua"))
 
 local WIPER_MAX = 255			-- 256 抽头（0~255）
 local DEF_RTOTAL = 100000		-- 缺省按 TPL0501-100（100kΩ）
 
--- 模块级配置（build 写入，跨 call 保持于状态机内存，destroy 后废弃）
+-- 调试开关：电位器一般低频调节，默认关闭逐次打印
+local DEBUG = false
+
+-- 模块级配置（build 写入，跨 call 保持于状态机内存）
 local rtotal
 
 -- 抽头位置 -> W-L 实际阻值（Ω）
@@ -54,111 +55,75 @@ local function level_to_ohms(level)
 	return level / WIPER_MAX * (rtotal or DEF_RTOTAL)
 end
 
--- 【配置脚本】写-only 器件无寄存器可校验，仅记录换算配置
-function build(data)
+require_driver("spi", {
+	name = "TPL0501",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- TPL0501 builder func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
-
-	local rt = tonumber(data.rtotal)
-	if rt ~= nil and rt > 0 then rtotal = rt else rtotal = DEF_RTOTAL end
-
-	print(string.format(
-		"TPL0501 init OK: rtotal=%d Ω（上电抽头为中点 127，非 0）", rtotal))
-	return {  result = "OK"  }
-
-end
-
--- 【销毁TPL0501】无资源需要释放（总线归 SPI 硬件变量所有；抽头掉电即失）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用TPL0501】设置抽头位置（level/percent/ohms 三选一）
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- TPL0501 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
-
-	-----------------------------------------------------
-	-- 三选一换算（优先级 level > percent > ohms）
-	local level
-	if data.level ~= nil then
-		level = tonumber(data.level)
-		if level == nil then
-			return err("Invalid Argument: level (not a number)")
+	-- 【配置脚本】写-only 器件无寄存器可校验，仅记录换算配置
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- TPL0501 builder func get a table --------", data)
 		end
-	elseif data.percent ~= nil then
-		local pct = tonumber(data.percent)
-		if pct == nil then
-			return err("Invalid Argument: percent (not a number)")
+
+		local rt = tonumber(data.rtotal)
+		if rt ~= nil and rt > 0 then rtotal = rt else rtotal = DEF_RTOTAL end
+
+		print(string.format(
+			"TPL0501 init OK: rtotal=%d Ω（上电抽头为中点 127，非 0）", rtotal))
+		return {  result = "OK"  }
+	end,
+
+	-- 【调用TPL0501】设置抽头位置（level/percent/ohms 三选一）
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- TPL0501 caller func get a table --------", data)
 		end
-		level = math.floor(pct / 100.0 * WIPER_MAX + 0.5)
-	elseif data.ohms ~= nil then
-		local ohms = tonumber(data.ohms)
-		if ohms == nil then
-			return err("Invalid Argument: ohms (not a number)")
+
+		-- 三选一换算（优先级 level > percent > ohms）
+		local level
+		if data.level ~= nil then
+			level = tonumber(data.level)
+			if level == nil then
+				return err("Invalid Argument: level (not a number)")
+			end
+		elseif data.percent ~= nil then
+			local pct = tonumber(data.percent)
+			if pct == nil then
+				return err("Invalid Argument: percent (not a number)")
+			end
+			level = math.floor(pct / 100.0 * WIPER_MAX + 0.5)
+		elseif data.ohms ~= nil then
+			local ohms = tonumber(data.ohms)
+			if ohms == nil then
+				return err("Invalid Argument: ohms (not a number)")
+			end
+			level = math.floor(ohms / (rtotal or DEF_RTOTAL) * WIPER_MAX + 0.5)
+		else
+			return err("Invalid Argument: need level / percent / ohms")
 		end
-		level = math.floor(ohms / (rtotal or DEF_RTOTAL) * WIPER_MAX + 0.5)
-	else
-		return err("Invalid Argument: need level / percent / ohms")
-	end
 
-	-- 限幅到 0~255
-	if level < 0 then level = 0 end
-	if level > WIPER_MAX then level = WIPER_MAX end
-	level = math.floor(level)
+		-- 限幅到 0~255
+		if level < 0 then level = 0 end
+		if level > WIPER_MAX then level = WIPER_MAX end
+		level = math.floor(level)
 
-	-----------------------------------------------------
-	-- 写抽头：一个 SPI 字节即完整操作；delay 经元数据从 @SPI 流入
-	if spi_write(fd, level, tonumber(data.delay)) ~= 0 then
-		return err("Failed to write TPL0501 wiper")
-	end
+		-- 写抽头：一个 SPI 字节即完整操作；delay 经元数据从 @SPI 流入
+		if spi_write(ctx.fd, level, tonumber(data.delay)) ~= 0 then
+			return err("Failed to write TPL0501 wiper")
+		end
 
-	if DEBUG then
-		print(string.format("TPL0501: level=%d (≈%.0f Ω)", level, level_to_ohms(level)))
-	end
+		if DEBUG then
+			print(string.format("TPL0501: level=%d (≈%.0f Ω)", level, level_to_ohms(level)))
+		end
 
-	return {
-		result = "OK",
-		level  = level,
-		ohms   = level_to_ohms(level)
-	}
+		return {
+			result = "OK",
+			level  = level,
+			ohms   = level_to_ohms(level)
+		}
+	end,
 
-end
+	-- destroy 缺省 = 空操作（原 TPL0501 destroy 仅 arg_table + return OK，等价）
+})
 
 
 -- =====================================================================
