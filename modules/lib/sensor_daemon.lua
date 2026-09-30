@@ -222,8 +222,8 @@ if proto == "virt" then
 	log(" [sensor_daemon] *** VIRTUAL HARDWARE -- NO REAL DEVICE ***")
 	log(string.format(" proto=virt driver=%s bus=%s(%s) addr=%s",
 		tostring(driver), bus_kind, tostring(path), tostring(addr)))
-	log(" 采样值全部来自内存仿真模型（合成波形），不代表任何真机！")
-	log(" 仅限无硬件链路测试，禁止用于生产环境。")
+	log(" all samples from in-memory simulation model (synthetic waveforms), NOT from any real device!")
+	log(" for hardware-free testing only; must NOT be used in production.")
 	log("================================================================")
 end
 

@@ -359,7 +359,7 @@ TH_TEST(utf8_sanitize_folds_consecutive_illegal_runs) {
 	for (int i = 0; i < 5; ++i) { run.push_back(static_cast<char>(0xff)); }
 	const std::string fixed = bot::sanitizeUtf8(bytes({0x41}) + run + bytes({0x42}));
 	TH_CHECK(bot::isValidUtf8(fixed));
-	TH_CHECK(fixed.find("[! 非法 UTF-8 字节已省略5 字节]") != std::string::npos);
+	TH_CHECK(fixed.find("[! invalid UTF-8 bytes omitted5 bytes]") != std::string::npos);
 	/* 折叠后仍以 A/B 收尾，坏字节只占一个替换符 */
 	TH_CHECK(fixed.compare(0, 1, "A") == 0);
 	TH_CHECK(fixed.back() == 'B');

@@ -24,7 +24,7 @@ if _G.__BOT4CJ_UTF8 ~= nil then return _G.__BOT4CJ_UTF8 end
 local M = {}
 
 -- 折叠说明的文案，与 src/util.hpp 的 kInvalidUtf8Marker 同字面
-M.MARKER = "[! 非法 UTF-8 字节已省略"
+M.MARKER = "[! invalid UTF-8 bytes omitted"
 
 -- 取 s 中从 i 开始的序列：返回 (合法字节数, 码点)；非法返回 (0, nil)
 local function decode_at(s, i, n)
@@ -92,7 +92,7 @@ function M.sanitize(s)
 			end
 			out[#out + 1] = "\239\191\189"
 			if run > 1 then
-				out[#out + 1] = M.MARKER .. run .. " 字节]"
+				out[#out + 1] = M.MARKER .. run .. " bytes]"
 			end
 		end
 	end

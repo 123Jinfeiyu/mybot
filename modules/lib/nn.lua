@@ -94,7 +94,7 @@ function Nn:forward(input)
 	-- 成整段 NaN 输出，驱动无从察觉（C2 防线口径）。
 	for k = 1, #input do
 		if not is_finite(input[k]) then
-			error(string.format("nn.forward: input[%d] 不是有限数值", k))
+			error(string.format("nn.forward: input[%d] is not a finite number", k))
 		end
 	end
 	local out = { input }          -- 0 层激活即输入
@@ -189,37 +189,37 @@ function Nn:loadMt(text)
 	while pos <= #lines do
 		local head = lines[pos]:match("^NnLayer")
 		if not head then
-			error("nn.loadMt: 期望 NnLayer 层头，实际行: " .. lines[pos])
+			error("nn.loadMt: expected NnLayer header, got: " .. lines[pos])
 		end
 		local m1, m2, m3, m4 = lines[pos]:match("NnLayer (%d+) (%d+) (%d+) (%S+)")
 		local id, in_, out = tonumber(m1), tonumber(m2), tonumber(m3)
 		local act = m4
 		pos = pos + 1
 		if id ~= expectLayer then
-			error(string.format("nn.loadMt: 层序号不连续，期望 %d 得 %d", expectLayer, id))
+			error(string.format("nn.loadMt: non-contiguous layer id, expected %d got %d", expectLayer, id))
 		end
 		if in_ ~= self.layers[id-1] or out ~= self.layers[id] then
-			error(string.format("nn.loadMt: 第%d层维度不符(%d,%d)，期望(%d,%d)",
+			error(string.format("nn.loadMt: layer %d dimension mismatch (%d,%d), expected (%d,%d)",
 				id, in_, out, self.layers[id-1], self.layers[id]))
 		end
 		-- 期望的输出激活类型
 		local want = (id == #self.layers and self.outAct == "sigmoid") and "sigmoid" or "leaky_relu"
 		if act ~= want then
-			error(string.format("nn.loadMt: 第%d层激活 %s != 期望 %s", id, act, want))
+			error(string.format("nn.loadMt: layer %d activation %s != expected %s", id, act, want))
 		end
 		-- 读 out 行权重（每行 in+1 个数：bias + in 权重）
 		for o = 1, out do
-			if pos > #lines then error("nn.loadMt: 权重行不足，第" .. id .. "层第" .. o .. "行缺失") end
+			if pos > #lines then error("nn.loadMt: weight row missing, layer " .. id .. " row " .. o) end
 			local nums = {}
 			for tok in lines[pos]:gmatch("%S+") do nums[#nums+1] = tonumber(tok) end
 			if #nums ~= in_ + 1 then
-				error(string.format("nn.loadMt: 第%d层第%d行元素数 %d != %d", id, o, #nums, in_+1))
+				error(string.format("nn.loadMt: layer %d row %d element count %d != %d", id, o, #nums, in_+1))
 			end
 			-- 权重非有限即整层拒绝：loadMt 是从外部文本载入权重的边界，NaN/inf
 			-- 权重会把整条推理链路静默污染（C2 防线口径，与 kalman/ema 一致）。
 			for ei = 1, #nums do
 				if not is_finite(nums[ei]) then
-					error(string.format("nn.loadMt: 第%d层第%d行第%d个权重不是有限数值",
+					error(string.format("nn.loadMt: layer %d row %d weight %d is not a finite number",
 						id, o, ei))
 				end
 			end
@@ -230,7 +230,7 @@ function Nn:loadMt(text)
 		expectLayer = expectLayer + 1
 	end
 	if expectLayer ~= #(self.layers) + 1 then
-		error(string.format("nn.loadMt: 层数不足，期望顶层 %d，实际到 %d", #(self.layers), expectLayer-1))
+		error(string.format("nn.loadMt: insufficient layers, expected top layer %d, got to %d", #(self.layers), expectLayer-1))
 	end
 	return self
 end

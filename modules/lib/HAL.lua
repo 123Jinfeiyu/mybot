@@ -873,7 +873,7 @@ function uart_open(path, baud)
 	end
 	local t = ffi.new("cj_termios[1]")	-- ffi.new 零初始化
 	if HAL.sys.tcgetattr(fd, t) ~= 0 then
-		print("HAL: tcgetattr failed: " .. path .. " (是串口设备吗?)")
+		print("HAL: tcgetattr failed: " .. path .. " (is this a serial device?)")
 		HAL.sys.close(fd)
 		return -1
 	end
@@ -1045,11 +1045,11 @@ HAL.EINVAL = 22			-- 参数被内核拒绝（如越界通道号、重复 export�
 
 local function errno_hint(e)
 	if e == HAL.ENOENT then
-		return "ENOENT(节点不存在：PWM overlay 未启用，或 pwmchip 编号不对?)"
+		return "ENOENT(node not found: PWM overlay not enabled, or pwmchip number incorrect?)"
 	elseif e == HAL.EACCES then
-		return "EACCES(权限不足：export/unexport 默认仅 root 可写，需 udev 规则或 sudo -E)"
+		return "EACCES(permission denied: export/unexport usually requires root, need udev rule or sudo -E)"
 	elseif e == HAL.EINVAL then
-		return "EINVAL(参数被内核拒绝)"
+		return "EINVAL(parameter rejected by kernel)"
 	end
 	return "errno=" .. tostring(e)
 end
@@ -1149,8 +1149,8 @@ function pwm_export(chip, channel)
 	local n = pwm_npwm(chip)
 	if n ~= nil and tonumber(h) >= n then
 		print("HAL: pwm channel " .. h .. " out of range on pwmchip" .. tostring(chip) ..
-			": 该 chip 只有 " .. tostring(n) .. " 个通道（合法值 0~" .. tostring(n - 1) .. "）。" ..
-			"channel 是 PWM 硬件通道号，不是 GPIO 引脚号——引脚由 dtoverlay 决定。")
+			": this chip only has " .. tostring(n) .. " channel(s) (valid range 0~" .. tostring(n - 1) .. "). " ..
+			"channel is the PWM hardware channel number, not a GPIO pin -- pin assignment is controlled by dtoverlay.")
 		return false
 	end
 	if not sysfs_write(p, h) then return false end
@@ -1159,12 +1159,12 @@ function pwm_export(chip, channel)
 		local n = pwm_npwm(chip)
 		if n ~= nil then
 			print("HAL: pwm export did not take effect: pwmchip" .. tostring(chip) ..
-				" pwm" .. tostring(h) .. " — 该 chip 只有 " .. tostring(n) ..
-				" 个通道，channel 须为 0~" .. tostring(n - 1) ..
-				"（要双通道请用 dtoverlay=pwm-2chan 并重启）")
+				" pwm" .. tostring(h) .. " -- this chip only has " .. tostring(n) ..
+				" channel(s), channel must be 0~" .. tostring(n - 1) ..
+				" (for dual channel use dtoverlay=pwm-2chan and reboot)")
 		else
 			print("HAL: pwm export did not take effect: pwmchip" .. tostring(chip) ..
-				" pwm" .. tostring(h) .. "（无法读取 npwm，检查 /sys/class/pwm 挂载与权限）")
+				" pwm" .. tostring(h) .. " (cannot read npwm, check /sys/class/pwm mount and permissions)")
 		end
 		return false
 	end

@@ -156,7 +156,7 @@ function virt_prepare(data)
 			if type(data.path) ~= "string" then
 				virt_state = "error:" .. tostring(driver)
 					.. " is a BUS=\"uart\" model but metadata has no tty path"
-					.. " (缺 @UART 引用列或 UART call 未下发 path?)"
+					.. " (missing @UART reference column or UART call did not send path?)"
 				return virt_state:sub(7)
 			end
 			vbus.attach_model("VIRT:" .. tostring(driver) .. "@" .. data.path,

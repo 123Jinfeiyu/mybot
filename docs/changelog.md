@@ -9,6 +9,18 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-30 库层诊断语言统一 + 文档过期修正
+
+- **库层诊断统一为英文**：`HAL.lua`（UART/PWM 提示 10 处）、`nn.lua`（error 9 处）、
+  `sensor_daemon.lua` / `sensor_daemon_multi.lua`（虚拟硬件横幅各 2 处）、`drv_common.lua`
+  （UART 缺路径提示 1 处）共 26 处中文诊断字符串转为英文，与驱动层 `err()` 英文策略对齐。
+  `utf8.lua` 的 `MARKER` 与 C++ `kInvalidUtf8Marker`、Rust `INVALID_UTF8_MARKER` 三侧同步
+  更新为英文（`[! invalid UTF-8 bytes omitted` / `bytes]`），对应测试断言同步修改。
+- **`docs/architecture_analysis.html` 过期修正**：共享槽 `values[32]` → `values[64]`（5 处，
+  对齐 `SLOT_MAXVALS=64` TD-3 变更）；软门禁描述更新为全部硬门禁（3 处，对齐 2026-09-25
+  CI 全硬化）；CURL 常量自检移除（随 Lua 协议驱动轨道删除）；C++ 单测数量 600+ → 634。
+- **`docs/development.md`**：库层诊断语言条目从"另议"更新为"已统一"。
+
 ### 2026-09-30 全仓审计九项收口（C++ 宿主 9 / Rust agent 8.5 / Lua 与测试 8.5 / 文档 8.5）
 
 - **新人卡点两处（审计 P1，实测复现后修复）**：① `mybot.llm.json.example` 含 `//` 注释

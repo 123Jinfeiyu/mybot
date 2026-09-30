@@ -97,7 +97,7 @@ do
 	ok, err = pcall(function()
 		Nn.new({4, 4, 2}):loadMt(txt)   -- 第一层 in 4 ≠ 3
 	end)
-	check("loadMt 维度不符报错", not ok and tostring(err):find("维度不符") ~= nil)
+	check("loadMt 维度不符报错", not ok and tostring(err):find("dimension mismatch") ~= nil)
 end
 
 print(string.rep("-", 44))

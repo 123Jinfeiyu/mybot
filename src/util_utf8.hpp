@@ -70,7 +70,7 @@ inline bool isValidUtf8(const std::string& s) {
 	return true;
 }
 
-inline constexpr const char* kInvalidUtf8Marker = "[! 非法 UTF-8 字节已省略";
+inline constexpr const char* kInvalidUtf8Marker = "[! invalid UTF-8 bytes omitted";
 
 /* 消毒：把非法序列替换成 U+FFFD（EF BF BD），保持合法前缀逐字节不变。
  * 连续非法字节折叠成**一个** U+FFFD 并计数——64 个连续坏字节最多产出
@@ -97,7 +97,7 @@ inline std::string sanitizeUtf8(const std::string& s) {
 		if (run > 1) {
 			out += kInvalidUtf8Marker;
 			out += std::to_string(run);
-			out += " 字节]";
+			out += " bytes]";
 		}
 	}
 	return out;

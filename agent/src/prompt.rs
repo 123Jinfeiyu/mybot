@@ -21,7 +21,7 @@ pub const K_MAX_PROMPT_FILE_BYTES: u64 = 1 << 20;
 /// 系统提示词总量上限（与 C++ `kMaxSystemPromptBytes` 逐值对齐）。
 pub const K_MAX_SYSTEM_PROMPT_BYTES: usize = 64 << 10;
 /// C++ `kInvalidUtf8Marker` 的同文本（消毒时点名被折叠掉的非法字节数）。
-const INVALID_UTF8_MARKER: &str = "[! 非法 UTF-8 字节已省略";
+const INVALID_UTF8_MARKER: &str = "[! invalid UTF-8 bytes omitted";
 
 /// UTF-8 消毒（C++ `sanitizeUtf8` 同判据）：非法序列折叠成**一个** U+FFFD，
 /// 连续多字节非法串附上计数标记，合法前缀逐字节不变。
@@ -59,7 +59,7 @@ pub fn sanitize_utf8(bytes: &[u8]) -> String {
                 }
                 out.push('\u{FFFD}');
                 if bad > 1 {
-                    out.push_str(&format!("{INVALID_UTF8_MARKER}{bad} 字节]"));
+                    out.push_str(&format!("{INVALID_UTF8_MARKER}{bad} bytes]"));
                 }
                 rest = &rest[pos..];
             }
@@ -434,7 +434,7 @@ mod tests {
         // 连续非法字节折叠成一个 U+FFFD + 计数标记
         let s = sanitize_utf8(b"a\xff\xfe\xfdb");
         assert!(s.starts_with("a\u{FFFD}"), "实际: {s}");
-        assert!(s.contains("非法 UTF-8 字节已省略"), "实际: {s}");
+        assert!(s.contains("invalid UTF-8 bytes omitted"), "actual: {s}");
         assert!(s.ends_with('b'));
     }
 

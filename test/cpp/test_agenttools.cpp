@@ -1811,7 +1811,7 @@ TH_TEST(agenttools_run_command_collapses_invalid_byte_runs) {
 	TH_CHECK(isValidUtf8(out));
 	TH_CHECK(out.find(kInvalidUtf8Marker) != std::string::npos);
 	/* 折叠说明里点名了字节数 */
-	TH_CHECK(out.find("200 字节]") != std::string::npos);
+	TH_CHECK(out.find("200 bytes]") != std::string::npos);
 }
 
 /* 磁盘内容同样要消毒：动作脚本首行注释进系统提示词（AG-1 的 system 消息来源）。
