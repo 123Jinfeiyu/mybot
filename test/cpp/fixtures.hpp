@@ -74,6 +74,20 @@ inline std::string fingerprint(const std::vector<sql4cj::Token>& ts) {
 	return out;
 }
 
+/* 语法分析器事件流（Parser::next 的完整序列，词法→语法两段测试共用；
+ * 2026-10-01 自 test_sqlparse.cpp 上收，fx::tokens 的姊妹件） */
+inline std::vector<sql4cj::Event> events(const std::string& text) {
+	std::vector<sql4cj::Token> ts = fx::tokens(text);
+	sql4cj::Parser parser(ts);
+	std::vector<sql4cj::Event> out;
+	for (;;) {
+		sql4cj::Event e = parser.next();
+		if (e.type == sql4cj::EventType::END) { break; }
+		out.push_back(std::move(e));
+	}
+	return out;
+}
+
 /* 单元格取值的窄化助手
  * MatrixObject::operator() 同时提供 (size_t,size_t) 与 (int64_t,int64_t) 两个重载，
  * 传字面量 int 会命中「两条同为整型转换」的二义性；测试里统一走这两个

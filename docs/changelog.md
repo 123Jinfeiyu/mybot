@@ -9,6 +9,35 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 测试侧上帝文件拆分：test_robot 七分 + test_agenttools 六分 + 传输/方言域析出（行为保持）
+
+- **test_robot.cpp（2812→311 行）一拆七**：结构装配与 run() 前置校验留守，
+  派发/注册表域 → test_robot_dispatch.cpp（@Reflex 并入）、生命周期与硬件
+  独占 → test_robot_lifecycle.cpp、热 SQL 只读计划层 → test_robot_hotsql_plan.cpp、
+  热插/热删撤/热更新 → test_robot_hot{insert,delete,update}.cpp；跨域共用
+  夹具（kBasicSql/sqlError/runTexts/loadMatrices/cell/markerOf/probeSql/
+  hotSqlError）上收 robot_fixtures.hpp（namespace rfx，各 TU 以 using 引名，
+  用例体零改动）。125 用例数守门不变。
+- **test_agenttools.cpp（2242→444 行）一拆六**：镜像 src 侧 TU 边界——wait 域 →
+  test_agenttools_wait.cpp、SQL/硬件清单 → test_agenttools_sql.cpp、
+  capture_image → test_agenttools_image.cpp、run_command →
+  test_agenttools_runcommand.cpp、子进程与动作脚本预算 → test_agenttools_subproc.cpp；
+  readAll/makeRelayRobot/writeFile/execText 上收 agenttools_fixtures.hpp（afx），
+  test_mcpbackend.cpp 的同款副本一并消除。73 用例数守门不变。
+- **test_mcpbackend.cpp（814→约 400 行）析出 test_mcptransport.cpp**：镜像
+  src/mcptransport.cpp 边界（帧编码/UTF-8/SO_PEERCRED/socket 占用探测/
+  空闲 deadline/Rust 孪生契约钉子/首帧认证三态/AuthFailGate）；共享假工具与
+  回执判读助手（echoTool/countingTool/respOk/respData/makeBackend 等）上收
+  mcp_fixtures.hpp（mfx）。
+- **test_sqlparse.cpp（923→约 500 行）析出 test_sqlparse_query.cpp**：
+  SELECT/WHERE/AND/DROP/UPDATE/SHOW 查询方言段整体迁出；事件流助手
+  events() 上收 fixtures.hpp（fx::tokens 的姊妹件）。
+- **test_llmconfig.cpp（978 行）评估后不拆**：llmconfig_*/agentconfig_* 两前缀
+  按装载/装配面交错排布，NS 夹具（NoKeyEnv/baseOptions）首尾共用，域纯净对应
+  src/llmconfig.cpp+agentmode.cpp——强拆需逐用例拣选，收益低于共享头成本。
+- 收口：干净重建后 run_all 269 通过/0 失败/1 跳过（与基线一致）、ASan/UBSan
+  双跑同口径全绿、C++ 单测 630 与 TH_TEST 分布逐文件核对不变。
+
 ### 2026-10-01 守门可靠性：config 单测密钥链 env 竞态加互斥
 
 - **cargo 单测 env 竞态修复**：`build_is_fail_closed…` 与
