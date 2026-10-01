@@ -38,6 +38,7 @@ use serde_json::{json, Map, Value};
 
 use crate::audit::{audit_timestamp, fingerprint64};
 use crate::out::errln;
+use crate::placeholder::{image_placeholder, source_len};
 
 /// 会话文件版本（本程序只认 v=1；v 之外整份拒绝，口径同 C++ 参考）。
 pub const SESSION_FILE_VERSION: i64 = 1;
@@ -56,18 +57,9 @@ pub struct SessionHead {
     pub system_fp: String,
 }
 
-/// 图片占位文本（写入期排除后的落盘形态；恢复后模型可见，据此知道图片不在）。
-/// 与 C++ `sessionImagePlaceholder` 逐字同文本。
-pub fn image_placeholder(total_image_bytes: usize) -> String {
-    format!("[图片 {total_image_bytes} 字节，未随会话恢复]")
-}
-
-/// 一段 user 文本是否是恢复期的图片后注（encode_user 把占位追加在 caption 之后，
-/// 所以判据是「以占位文本收尾」）。history.rs 用它把这种消息排除在块起点之外——
-/// 判据与 `image_placeholder` 同源维护。
-pub fn is_image_placeholder_notice(text: &str) -> bool {
-    text.ends_with("字节，未随会话恢复]") && text.contains("[图片 ")
-}
+/* 图片占位文本与图片后注判据（image_placeholder / is_image_placeholder_notice）
+ * 已下沉到叶子模块 placeholder.rs（2026-10-01，解 session ↔ history 环）；
+ * 本模块经下方 use 继续使用。 */
 
 /// 工具集指纹：按注册序拼接工具名后取 fingerprint64（与 C++
 /// `sessionToolsFingerprint` 同式；名字串撞车概率与既有 image_fp 同量级，可接受）。
@@ -219,15 +211,6 @@ fn tool_result_text(content: &[ToolResultContent]) -> String {
         }
     }
     out
-}
-
-fn source_len(kind: &rig_agent::completion::message::DocumentSourceKind) -> usize {
-    use rig_agent::completion::message::DocumentSourceKind as K;
-    match kind {
-        K::Url(s) | K::Base64(s) | K::FileId(s) | K::String(s) => s.len(),
-        K::Raw(b) => b.len(),
-        K::Unknown => 0,
-    }
 }
 
 // ---------------- 载入：行 JSON → rig Message ----------------
@@ -451,6 +434,14 @@ pub fn load_session_file(
 
     for (idx, line) in text.lines().enumerate() {
         let line_no = idx + 1;
+        /* 跳行告警的单点（2026-10-01 收敛）：此前 8 处手拼「会话文件 '{path}'
+         * 第 {line_no} 行…，已跳过该行」——前置/尾缀样板漂移会让告警文案在
+         * 恢复日志里长短不一。只改落形，文案逐字保持。 */
+        let mut skip = |why: &str| {
+            warnings.push(format!(
+                "会话文件 '{path}' 第 {line_no} 行{why}，已跳过该行"
+            ));
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -458,24 +449,18 @@ pub fn load_session_file(
             Ok(v) => v,
             Err(e) => {
                 // 崩溃可能留下最后一行残缺：跳过并点名，不整份作废
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行不是合法 JSON（{e}），已跳过该行"
-                ));
+                skip(&format!("不是合法 JSON（{e}）"));
                 continue;
             }
         };
         let Some(obj) = parsed.as_object() else {
-            warnings.push(format!(
-                "会话文件 '{path}' 第 {line_no} 行不是 JSON 对象，已跳过该行"
-            ));
+            skip("不是 JSON 对象");
             continue;
         };
         // /clear 分界标记：丢弃此前累积的消息
         if obj.get("type").and_then(Value::as_str) == Some("session_clear") {
             if !head_seen {
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行的 session_clear 出现在会话头之前，已跳过该行"
-                ));
+                skip("的 session_clear 出现在会话头之前");
                 continue;
             }
             messages.clear();
@@ -485,18 +470,14 @@ pub fn load_session_file(
         }
         if obj.get("type").and_then(Value::as_str) == Some("session_summary") {
             if !head_seen {
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行的 session_summary 出现在会话头之前，已跳过该行"
-                ));
+                skip("的 session_summary 出现在会话头之前");
                 continue;
             }
             let (Some(content), Some(keep)) = (
                 obj.get("content").and_then(Value::as_str),
                 obj.get("keep_blocks").and_then(Value::as_u64),
             ) else {
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行的 session_summary 缺 content/keep_blocks，已跳过该行"
-                ));
+                skip("的 session_summary 缺 content/keep_blocks");
                 continue;
             };
             let starts = crate::history::block_starts(&messages);
@@ -516,9 +497,7 @@ pub fn load_session_file(
             head = match parse_head(&parsed, path)? {
                 Some(h) => h,
                 None => {
-                    warnings.push(format!(
-                        "会话文件 '{path}' 第 {line_no} 行不是合法消息行（首行必须是会话头），已跳过该行"
-                    ));
+                    skip("不是合法消息行（首行必须是会话头）");
                     continue;
                 }
             };
@@ -527,9 +506,7 @@ pub fn load_session_file(
         }
         match decode_message(&parsed, &mut st) {
             Ok(m) => messages.push(m),
-            Err(e) => warnings.push(format!(
-                "会话文件 '{path}' 第 {line_no} 行不是合法消息行（{e}），已跳过该行"
-            )),
+            Err(e) => skip(&format!("不是合法消息行（{e}）")),
         }
     }
 
@@ -737,6 +714,7 @@ impl Default for SessionFileWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placeholder::is_image_placeholder_notice;
     use rig_agent::completion::message::ToolResultContent;
 
     /// 每个用例一个独立临时目录（进程内唯一名 + 计数，避免并行测试相互踩）。

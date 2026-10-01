@@ -138,50 +138,19 @@ pub struct SessionStats {
     pub last_completion_tokens: Option<i64>,
 }
 
-pub struct Session {
-    cfg: Config,
-    backend: Backend,
-    bridge: Arc<Bridge>,
-    /// 循环层共享状态（预算/图片/回滚边界/取消标志）
-    state: Arc<HookState>,
+/// 审计/统计面（拆自 Session，2026-10-01）：会话统计 + 审计落行。Session 此前
+/// 11 个字段里 audit/stats/started 三个只服务「记账与落行」这一件事，抽成独立
+/// 结构后 Session 只剩真实的装配输入。
+pub struct SessionAudit {
     audit: Option<AuditLog>,
-    /// 首轮 `context.get` 素材（结构脚本路径、动作脚本目录……；**硬件数每轮重取**，
-    /// 因为后端的 /sql 热插会长出新硬件，缓存首轮值会让提示符一直少报）。
-    material: PromptMaterial,
-    /// 后端 `tool.list` 给的工具名（`/sql` 能力预检用：缺工具时点名后端开关，
-    /// 而不是把一句含糊的「未知工具」丢给操作者）。
-    tool_names: Vec<String>,
-    history: ConversationHistory,
-    /// 会话持久化写入器（批次 D；`None` = 未开启 `--session-file`）。
-    writer: Option<SessionFileWriter>,
     stats: SessionStats,
     started: Instant,
-    /// 「思考中…」动画只在交互 REPL 开（`run_repl` 入口置位）；`--task` 一次性
-    /// 模式的输出常被管道消费，逐格动画只会污染 stderr。
-    show_progress: bool,
 }
 
-impl Session {
-    /// 建会话并**立刻**写审计的 session start 行（driver/model/接入点/密钥来源；
+impl SessionAudit {
+    /// 建审计面并**立刻**写审计的 session start 行（driver/model/接入点/密钥来源；
     /// 接入点在 audit 侧去凭据）。写不出 start 是审计自己的告警，不阻断会话。
-    ///
-    /// `initial_history` / `resumed`：批次 D 的 `--resume` 载入结果——已过三道判据
-    /// （逐行解析/指纹核对/协议自洽）的历史直接作为会话起点；非恢复路径传空
-    /// 历史与 `false`。`writer`：`--session-file` 开启时的落盘器（`None` = 未开启）。
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        cfg: Config,
-        backend: Backend,
-        bridge: Arc<Bridge>,
-        state: Arc<HookState>,
-        tool_names: Vec<String>,
-        material: PromptMaterial,
-        mut audit: Option<AuditLog>,
-        initial_history: Vec<Message>,
-        initial_summary: Option<String>,
-        resumed: bool,
-        writer: Option<SessionFileWriter>,
-    ) -> Self {
+    pub fn new(cfg: &Config, mut audit: Option<AuditLog>, resumed: bool) -> Self {
         if let Some(a) = audit.as_mut() {
             a.write_session(&SessionEntry {
                 status: "start".to_string(),
@@ -194,6 +163,144 @@ impl Session {
             });
         }
         Self {
+            audit,
+            stats: SessionStats::default(),
+            started: Instant::now(),
+        }
+    }
+
+    /// 会话结束行（`end` / `error`）。C++ 的 `writeSessionEnd` 同契约：失败会话也
+    /// 必须留一条——「这次会话怎么结束的」是复盘的第一句话。
+    pub fn write_session_end(&mut self, status: &str, error: &str) {
+        let ms = self.started.elapsed().as_millis().min(i64::MAX as u128) as i64;
+        if let Some(a) = self.audit.as_mut() {
+            a.write_session(&SessionEntry {
+                status: status.to_string(),
+                error: error.to_string(),
+                ms,
+                ..Default::default()
+            });
+        }
+    }
+
+    /// 把逐次模型调用的观测值落成审计 model 行 + 会话统计。turn 与 status 由调用方
+    /// 按轮次语义给：普通轮 = `turn-1` / `ok|error`（rig 从 1 数起，C++ 的 turn 从 0
+    /// 数起——两侧审计口径必须一致）；摘要轮 = `-1` / `summary|summary_error`。
+    /// 此前普通轮（record_calls）与摘要轮（compact_history 内联）各写一份同构循环、
+    /// 仅 turn/status 不同，合一为映射器参数。`track_tokens` 控制「最近一次 token」
+    /// 是否跟进：普通轮跟、摘要轮不跟——摘要请求是内部的模型调用，/status 的
+    /// 「最近一次」应反映任务轮而不是压缩器。
+    pub fn record_calls(
+        &mut self,
+        calls: &[CallRecord],
+        turn_of: impl Fn(&CallRecord) -> i64,
+        status_of: impl Fn(&CallRecord) -> String,
+        track_tokens: bool,
+    ) {
+        for rec in calls {
+            self.stats.model_turns += 1;
+            self.stats.model_ms += rec.ms.max(0) as u128;
+            if track_tokens && (rec.prompt_tokens.is_some() || rec.completion_tokens.is_some()) {
+                self.stats.last_prompt_tokens = rec.prompt_tokens;
+                self.stats.last_completion_tokens = rec.completion_tokens;
+            }
+            let entry = ModelEntry {
+                turn: turn_of(rec),
+                ok: rec.ok,
+                status: status_of(rec),
+                error: rec.error.clone(),
+                ms: rec.ms,
+                req_bytes: rec.req_bytes,
+                resp_bytes: rec.resp_bytes,
+                attempts: rec.attempts,
+                prompt_tokens: rec.prompt_tokens,
+                completion_tokens: rec.completion_tokens,
+            };
+            if let Some(a) = self.audit.as_mut() {
+                a.write_model(&entry);
+            }
+        }
+    }
+
+    /// `/status` 的统计渲染（只渲染、不判定）。
+    pub fn stats(&self) -> &SessionStats {
+        &self.stats
+    }
+
+    /// `/status` 的审计落点描述。
+    pub fn audit_landing(&self) -> String {
+        match self.audit.as_ref() {
+            Some(a) => format!("{}（session {}）", a.path(), a.session_id()),
+            None => "(未开启)".to_string(),
+        }
+    }
+}
+
+/// `--resume` 载入结果（Session 装配件的组成部分）：历史已过三道判据
+/// （逐行解析/指纹核对/协议自洽），非恢复路径传空历史与 `false`。
+pub struct ResumeContext {
+    pub history: Vec<Message>,
+    pub summary: Option<String>,
+    pub resumed: bool,
+}
+
+/// 会话装配件（Session::new 的入参打包，2026-10-01）：构造参数从 11 个收敛为 1
+/// 个结构体——参数数量本身曾是全仓两处 clippy too_many_arguments 豁免之一；
+/// 打包后豁免移除。字段语义见 Session 各字段注释。
+pub struct SessionAssembly {
+    pub cfg: Config,
+    pub backend: Backend,
+    pub bridge: Arc<Bridge>,
+    /// 循环层共享状态（预算/图片/回滚边界/取消标志）
+    pub state: Arc<HookState>,
+    /// 后端 `tool.list` 给的工具名（`/sql` 能力预检用：缺工具时点名后端开关，
+    /// 而不是把一句含糊的「未知工具」丢给操作者）。
+    pub tool_names: Vec<String>,
+    /// 首轮 `context.get` 素材（结构脚本路径、动作脚本目录……）
+    pub material: PromptMaterial,
+    pub audit: Option<AuditLog>,
+    /// 会话持久化写入器（批次 D；`None` = 未开启 `--session-file`）。
+    pub writer: Option<SessionFileWriter>,
+    pub resume: ResumeContext,
+}
+
+pub struct Session {
+    cfg: Config,
+    backend: Backend,
+    bridge: Arc<Bridge>,
+    /// 循环层共享状态（预算/图片/回滚边界/取消标志）
+    state: Arc<HookState>,
+    audit: SessionAudit,
+    /// 首轮 `context.get` 素材（结构脚本路径、动作脚本目录……；**硬件数每轮重取**，
+    /// 因为后端的 /sql 热插会长出新硬件，缓存首轮值会让提示符一直少报）。
+    material: PromptMaterial,
+    /// 后端 `tool.list` 给的工具名（`/sql` 能力预检用：缺工具时点名后端开关，
+    /// 而不是把一句含糊的「未知工具」丢给操作者）。
+    tool_names: Vec<String>,
+    history: ConversationHistory,
+    /// 会话持久化写入器（批次 D；`None` = 未开启 `--session-file`）。
+    writer: Option<SessionFileWriter>,
+    /// 「思考中…」动画只在交互 REPL 开（`run_repl` 入口置位）；`--task` 一次性
+    /// 模式的输出常被管道消费，逐格动画只会污染 stderr。
+    show_progress: bool,
+}
+
+impl Session {
+    /// 建会话（审计的 session start 行由 SessionAudit::new 立即写）。
+    pub fn new(parts: SessionAssembly) -> Self {
+        let SessionAssembly {
+            cfg,
+            backend,
+            bridge,
+            state,
+            tool_names,
+            material,
+            audit,
+            writer,
+            resume,
+        } = parts;
+        let audit = SessionAudit::new(&cfg, audit, resume.resumed);
+        Self {
             cfg,
             backend,
             bridge,
@@ -201,10 +308,8 @@ impl Session {
             audit,
             material,
             tool_names,
-            history: ConversationHistory::resumed(initial_history, initial_summary),
+            history: ConversationHistory::resumed(resume.history, resume.summary),
             writer,
-            stats: SessionStats::default(),
-            started: Instant::now(),
             show_progress: false,
         }
     }
@@ -226,15 +331,7 @@ impl Session {
     /// 会话结束行（`end` / `error`）。C++ 的 `writeSessionEnd` 同契约：失败会话也
     /// 必须留一条——「这次会话怎么结束的」是复盘的第一句话。
     pub fn write_session_end(&mut self, status: &str, error: &str) {
-        let ms = self.started.elapsed().as_millis().min(i64::MAX as u128) as i64;
-        if let Some(a) = self.audit.as_mut() {
-            a.write_session(&SessionEntry {
-                status: status.to_string(),
-                error: error.to_string(),
-                ms,
-                ..Default::default()
-            });
-        }
+        self.audit.write_session_end(status, error);
     }
 
     /// 历史压缩（改进项 #7）：整块裁剪 + 把被裁块压进摘要。
@@ -272,24 +369,16 @@ impl Session {
             &mut |w| errln!("{w}"),
         )
         .await;
-        // 摘要请求的观测值单独落审计：turn=-1（不属于任何任务轮）、status=summary
+        // 摘要请求的观测值单独落审计：turn=-1（不属于任何任务轮）、status=summary；
+        // track_tokens=false——摘要请求是内部模型调用，/status 的「最近一次 token」
+        // 应反映任务轮而不是压缩器。
         let calls = self.state.drain_calls();
-        for rec in &calls {
-            self.stats.model_turns += 1;
-            self.stats.model_ms += rec.ms.max(0) as u128;
-            self.write_model_row(ModelEntry {
-                turn: -1,
-                ok: rec.ok,
-                status: if rec.ok { "summary" } else { "summary_error" }.to_string(),
-                error: rec.error.clone(),
-                ms: rec.ms,
-                req_bytes: rec.req_bytes,
-                resp_bytes: rec.resp_bytes,
-                attempts: rec.attempts,
-                prompt_tokens: rec.prompt_tokens,
-                completion_tokens: rec.completion_tokens,
-            });
-        }
+        self.audit.record_calls(
+            &calls,
+            |_| -1,
+            |rec| if rec.ok { "summary" } else { "summary_error" }.to_string(),
+            false,
+        );
         match result {
             Ok(text) => {
                 errln!(
@@ -485,32 +574,12 @@ impl Session {
     /// 把逐次模型调用的观测值落成审计 model 行（turn 减一：rig 从 1 数起，
     /// C++ 的 turn 从 0 数起——两侧审计口径必须一致）+ 会话统计。
     fn record_calls(&mut self, calls: &[CallRecord]) {
-        for rec in calls {
-            self.stats.model_turns += 1;
-            self.stats.model_ms += rec.ms.max(0) as u128;
-            if rec.prompt_tokens.is_some() || rec.completion_tokens.is_some() {
-                self.stats.last_prompt_tokens = rec.prompt_tokens;
-                self.stats.last_completion_tokens = rec.completion_tokens;
-            }
-            self.write_model_row(ModelEntry {
-                turn: rec.turn.saturating_sub(1) as i64,
-                ok: rec.ok,
-                status: if rec.ok { "ok" } else { "error" }.to_string(),
-                error: rec.error.clone(),
-                ms: rec.ms,
-                req_bytes: rec.req_bytes,
-                resp_bytes: rec.resp_bytes,
-                attempts: rec.attempts,
-                prompt_tokens: rec.prompt_tokens,
-                completion_tokens: rec.completion_tokens,
-            });
-        }
-    }
-
-    fn write_model_row(&mut self, entry: ModelEntry) {
-        if let Some(a) = self.audit.as_mut() {
-            a.write_model(&entry);
-        }
+        self.audit.record_calls(
+            calls,
+            |rec| rec.turn.saturating_sub(1) as i64,
+            |rec| if rec.ok { "ok" } else { "error" }.to_string(),
+            true,
+        );
     }
 
     /// 每轮重取硬件数（`context.get` 的 `hardwareCount`）。取不到 → `None`
@@ -523,7 +592,7 @@ impl Session {
 
     /// `/status` 一览（只渲染、不判定；缺的数字给 `?`，不给假值）。
     fn status_text(&self, hw: Option<u64>) -> String {
-        let st = &self.stats;
+        let st = self.audit.stats();
         let mut s = String::new();
         s += "会话状态:\n";
         s += &format!(
@@ -555,13 +624,7 @@ impl Session {
             "  对话历史    : {} 条消息（rig transcript）\n",
             self.history.len()
         );
-        s += &format!(
-            "  审计落点    : {}\n",
-            match self.audit.as_ref() {
-                Some(a) => format!("{}（session {}）", a.path(), a.session_id()),
-                None => "(未开启)".to_string(),
-            }
-        );
+        s += &format!("  审计落点    : {}\n", self.audit.audit_landing());
         s += "  工具审计    : 工具行由后端 mybot --mcp-backend 落（含 exit_code/image_fp/summary），\
               本进程只记 session/model 行\n";
         s += &format!(

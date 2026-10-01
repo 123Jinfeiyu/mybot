@@ -23,6 +23,7 @@ mod ica;
 mod linein;
 mod model;
 mod out;
+mod placeholder;
 mod prompt;
 mod provider;
 mod repl;
@@ -34,7 +35,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::audit::AuditLog;
-use crate::bridge::{Bridge, ConnParams};
+use crate::bridge::{Bridge, ConnParams, ToolSpec};
 use crate::budget::TaskBudget;
 use crate::config::Config;
 use crate::frame::{BackendClient, HARD_READ_CEILING};
@@ -214,84 +215,20 @@ async fn run() -> i32 {
     install_signal_handlers(Arc::clone(&state));
 
     // ---- 后端：连接 → 读超时装配 → 首帧认证（可选） → 工具表 → 提示词素材 ----
-    let mut client =
-        match BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
-            .await
-        {
-            Ok(c) => c,
-            Err(e) => {
-                errln!("错误: 无法连接后端 socket: {e}");
-                return 1;
-            }
-        };
-    // 读侧 deadline = 轮墙钟预算（--llm-task-timeout / max_task_seconds）：预算由此
-    // 贯穿到工具调用内部（此前只判模型调用边界，后端活着但不回帧时无限挂起，
-    // 2026-09-30 审计 P1）。0 = 不限 → 用 frame 的兜底上限。
-    let read_timeout = if cfg.max_task_seconds > 0 {
-        Duration::from_secs(cfg.max_task_seconds as u64)
-    } else {
-        HARD_READ_CEILING
-    };
-    client.set_read_timeout(read_timeout);
-    // MCP-1（审计 P2-1）：后端设了 BOT4CJ_MCP_TOKEN 时，第一条帧必须是共享密钥
-    // 认证。与 C++ 宿主读取同一个环境变量名（宿主在抹零前捕获，本进程在
-    // prctl 收窄 /proc 下读取之后、此处第一次也是唯一一次读）。
-    let mcp_token = std::env::var("BOT4CJ_MCP_TOKEN")
-        .ok()
-        .filter(|t| !t.is_empty());
-    if let Some(token) = &mcp_token {
-        if let Err(e) = client.authenticate(token).await {
-            errln!("错误: {e}");
-            return 1;
-        }
-    }
-    // 重连参数（连接判死后的下一次调用透明重连，见 bridge::Conn）：
-    let conn_params = ConnParams {
-        path: cfg.socket.clone(),
-        token: mcp_token,
-        connect_timeout: Duration::from_secs(RECONNECT_TIMEOUT_SEC),
-        read_timeout,
-    };
-    let bridge = Arc::new(Bridge::new(client, conn_params, Arc::clone(&state)));
-    let specs = match bridge.list_tools().await {
-        Ok(s) => s,
-        Err(e) => {
-            errln!("错误: 取后端工具表失败: {e}");
-            return 1;
+    let assembly = match assemble_backend(&cfg, &state).await {
+        Ok(a) => a,
+        Err((msg, code)) => {
+            errln!("错误: {msg}");
+            return code;
         }
     };
-    let tool_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
-    let data = match bridge.context_get().await {
-        Ok(d) => d,
-        Err(e) => {
-            errln!("错误: 取后端上下文失败: {e}");
-            return 1;
-        }
-    };
-    let material = match PromptMaterial::from_context(&data) {
-        Ok(m) => m,
-        Err(e) => {
-            // 退出码 2：与下方 build_system_prompt 的超限同属「提示词素材不
-            // 合格」一类（口径：配置/素材错误 = 2；连接与传输失败 = 1）
-            errln!("错误: {e}");
-            return 2;
-        }
-    };
-    let mut preamble =
-        match prompt::build_system_prompt(&cfg.driver, &cfg.llm_var, &cfg.prompt_pack, &material) {
-            Ok(p) => p,
-            Err(e) => {
-                errln!("错误: {e}");
-                return 2;
-            }
-        };
-    if bridge.ica_enabled() {
-        preamble.push_str(ica::preamble_section());
-        if preamble.len() > 65_536 {
-            errln!("错误: 开启 ICA 后系统提示词超过 65536 字节上限");
-            return 2;
-        }
-    }
+    let BackendAssembly {
+        bridge,
+        specs,
+        tool_names,
+        material,
+        preamble,
+    } = assembly;
 
     // ---- 会话恢复（--resume；判据与时序契约见 try_resume）----
     let (resume_history, resume_summary, resume_session_id) = if cfg.resume {
@@ -372,7 +309,7 @@ async fn run() -> i32 {
 
     let task = cli.task.clone();
     let resumed = cfg.resume;
-    let mut session = Session::new(
+    let mut session = Session::new(repl::SessionAssembly {
         cfg,
         backend,
         bridge,
@@ -380,11 +317,13 @@ async fn run() -> i32 {
         tool_names,
         material,
         audit,
-        resume_history,
-        resume_summary,
-        resumed,
-        session_writer,
-    );
+        writer: session_writer,
+        resume: repl::ResumeContext {
+            history: resume_history,
+            summary: resume_summary,
+            resumed,
+        },
+    });
     if task.is_empty() {
         let rc = repl::run_repl(&mut session).await;
         session.write_session_end("end", "");
@@ -409,6 +348,87 @@ async fn run() -> i32 {
 fn config_error(msg: &str) -> i32 {
     errln!("错误: {msg}");
     2
+}
+
+/// 后端连接 + 提示词素材装配的产物（`assemble_backend` 的返回值）。
+struct BackendAssembly {
+    bridge: Arc<Bridge>,
+    specs: Vec<ToolSpec>,
+    tool_names: Vec<String>,
+    material: PromptMaterial,
+    preamble: String,
+}
+
+/// 后端连接与提示词素材装配（run() 的中段，2026-10-01 拆出）。原 run() 这一段
+/// 有 9 个「errln! + return 1|2」出口，与开头的配置出口交织成 12 处——
+/// 收敛为 `Err((消息, 退出码))` 后 run() 只剩一条出口。退出码口径逐字保持：
+/// 连接与传输失败 = 1；提示词素材/系统提示词超限等配置类 = 2。
+async fn assemble_backend(
+    cfg: &Config,
+    state: &Arc<HookState>,
+) -> Result<BackendAssembly, (String, i32)> {
+    let mut client =
+        BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
+            .await
+            .map_err(|e| (format!("无法连接后端 socket: {e}"), 1))?;
+    // 读侧 deadline = 轮墙钟预算（--llm-task-timeout / max_task_seconds）：预算由此
+    // 贯穿到工具调用内部（此前只判模型调用边界，后端活着但不回帧时无限挂起，
+    // 2026-09-30 审计 P1）。0 = 不限 → 用 frame 的兜底上限。
+    let read_timeout = if cfg.max_task_seconds > 0 {
+        Duration::from_secs(cfg.max_task_seconds as u64)
+    } else {
+        HARD_READ_CEILING
+    };
+    client.set_read_timeout(read_timeout);
+    // MCP-1（审计 P2-1）：后端设了 BOT4CJ_MCP_TOKEN 时，第一条帧必须是共享密钥
+    // 认证。与 C++ 宿主读取同一个环境变量名（宿主在抹零前捕获，本进程在
+    // prctl 收窄 /proc 下读取之后、此处第一次也是唯一一次读）。
+    let mcp_token = std::env::var("BOT4CJ_MCP_TOKEN")
+        .ok()
+        .filter(|t| !t.is_empty());
+    if let Some(token) = &mcp_token {
+        client
+            .authenticate(token)
+            .await
+            .map_err(|e| (e.to_string(), 1))?;
+    }
+    // 重连参数（连接判死后的下一次调用透明重连，见 bridge::Conn）：
+    let conn_params = ConnParams {
+        path: cfg.socket.clone(),
+        token: mcp_token,
+        connect_timeout: Duration::from_secs(RECONNECT_TIMEOUT_SEC),
+        read_timeout,
+    };
+    let bridge = Arc::new(Bridge::new(client, conn_params, Arc::clone(state)));
+    let specs = bridge
+        .list_tools()
+        .await
+        .map_err(|e| (format!("取后端工具表失败: {e}"), 1))?;
+    let tool_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+    let data = bridge
+        .context_get()
+        .await
+        .map_err(|e| (format!("取后端上下文失败: {e}"), 1))?;
+    let material = PromptMaterial::from_context(&data)
+        // 退出码 2：与下方 build_system_prompt 的超限同属「提示词素材不
+        // 合格」一类（口径：配置/素材错误 = 2；连接与传输失败 = 1）
+        .map_err(|e| (e.to_string(), 2))?;
+    let mut preamble =
+        prompt::build_system_prompt(&cfg.driver, &cfg.llm_var, &cfg.prompt_pack, &material)
+            .map_err(|e| (e.to_string(), 2))?;
+    if bridge.ica_enabled() {
+        preamble.push_str(ica::preamble_section());
+        if preamble.len() > 65_536 {
+            return Err(("开启 ICA 后系统提示词超过 65536 字节上限".to_string(), 2));
+        }
+    }
+    Ok(BackendAssembly {
+        bridge,
+        specs,
+        tool_names,
+        material,
+        preamble,
+    })
 }
 
 /// 提示词包：加载 + H2 根约束。

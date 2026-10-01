@@ -178,33 +178,35 @@ impl Bridge {
 
     pub fn observe_user(&self, task: &str) {
         if let Some(ica) = &self.ica {
-            let mut ledger = ica.lock().unwrap_or_else(|e| e.into_inner());
+            let mut ledger = ica.lock().unwrap_or_else(crate::hook::poisoned);
             ledger.begin_task(task);
         }
     }
 
     pub fn ica_note(&self) -> Option<String> {
-        self.ica
-            .as_ref()
-            .map(|ica| ica.lock().unwrap_or_else(|e| e.into_inner()).final_note())
+        self.ica.as_ref().map(|ica| {
+            ica.lock()
+                .unwrap_or_else(crate::hook::poisoned)
+                .final_note()
+        })
     }
 
     pub fn ica_summary(&self) -> Option<String> {
         self.ica
             .as_ref()
-            .map(|ica| ica.lock().unwrap_or_else(|e| e.into_inner()).summary())
+            .map(|ica| ica.lock().unwrap_or_else(crate::hook::poisoned).summary())
     }
 
     pub fn ica_clear(&self) {
         if let Some(ica) = &self.ica {
-            *ica.lock().unwrap_or_else(|e| e.into_inner()) = IcaLedger::default();
+            *ica.lock().unwrap_or_else(crate::hook::poisoned) = IcaLedger::default();
         }
     }
 
     pub fn ica_save(&self, session_file: &str) -> Result<(), String> {
         if let Some(ica) = &self.ica {
             ica.lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(crate::hook::poisoned)
                 .save(session_file)?;
         }
         Ok(())
@@ -212,7 +214,7 @@ impl Bridge {
 
     pub fn ica_restore(&self, session_file: &str) -> Result<(), String> {
         if let Some(ica) = &self.ica {
-            *ica.lock().unwrap_or_else(|e| e.into_inner()) = IcaLedger::load(session_file)?;
+            *ica.lock().unwrap_or_else(crate::hook::poisoned) = IcaLedger::load(session_file)?;
         }
         Ok(())
     }
@@ -297,7 +299,7 @@ impl Bridge {
             let ica = self.ica.as_ref().ok_or("ICA 未启用")?;
             let text = ica
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(crate::hook::poisoned)
                 .execute(name, &arguments)?;
             return Ok(ToolOutcome {
                 text,
@@ -307,7 +309,7 @@ impl Bridge {
             });
         }
         let action_future = if let Some(ica) = &self.ica {
-            let ledger = ica.lock().unwrap_or_else(|e| e.into_inner());
+            let ledger = ica.lock().unwrap_or_else(crate::hook::poisoned);
             ledger.authorize_action(name, &arguments)?
         } else {
             String::new()
@@ -344,14 +346,14 @@ impl Bridge {
             } else {
                 "tool_error"
             };
-            let id = ica.lock().unwrap_or_else(|e| e.into_inner()).observe(
+            let id = ica.lock().unwrap_or_else(crate::hook::poisoned).observe(
                 source,
                 name,
                 &outcome.model_text(),
             );
             if !action_future.is_empty() {
                 ica.lock()
-                    .unwrap_or_else(|e| e.into_inner())
+                    .unwrap_or_else(crate::hook::poisoned)
                     .action_result(&action_future, &id);
             }
             outcome.text.push_str(&format!(
@@ -375,7 +377,11 @@ impl Bridge {
         let mut text = outcome.text.clone();
         let mut image = outcome.image_data_url.clone();
         {
-            let mut budget = self.state.budget.lock().unwrap_or_else(|e| e.into_inner());
+            let mut budget = self
+                .state
+                .budget
+                .lock()
+                .unwrap_or_else(crate::hook::poisoned);
             budget.admit(&mut text, &mut image, outcome.executed);
         }
         outcome.text = text;

@@ -565,37 +565,19 @@ where
         let req_bytes = request_bytes_lower_bound(&request);
         let turn = self.state.current_turn.load(Ordering::Relaxed);
         let started = Instant::now();
-        let mut attempt = 0u64;
-        loop {
-            // D4：Ctrl-C 后不再发起新的模型轮
-            if self.state.stop.load(Ordering::Relaxed) {
-                let e = CompletionError::RequestError(Box::new(Interrupted));
-                self.record(turn, req_bytes, 0, attempt.max(1), started, Err(&e));
-                return Err(e);
-            }
-            attempt += 1;
-            match self.attempt(request.clone()).await {
-                Ok(resp) => {
-                    let resp_bytes = response_text_bytes(&resp);
-                    self.record(turn, req_bytes, resp_bytes, attempt, started, Ok(&resp));
-                    return Ok(resp);
-                }
-                Err(e) => {
-                    let c = classify(&e);
-                    if c.class == RetryClass::No || attempt >= self.max_attempts {
-                        self.record(turn, req_bytes, 0, attempt, started, Err(&e));
-                        return Err(e);
-                    }
-                    self.backoff_and_log(&c, attempt).await;
-                    // 二次中断检查（退避期间可能 Ctrl-C）
-                    if self.state.stop.load(Ordering::Relaxed) {
-                        let e = CompletionError::RequestError(Box::new(Interrupted));
-                        self.record(turn, req_bytes, 0, attempt, started, Err(&e));
-                        return Err(e);
-                    }
-                }
-            }
-        }
+        let (resp, attempt) = self
+            .retry_open(
+                &request,
+                turn,
+                req_bytes,
+                started,
+                |_, c| c,
+                |req| self.attempt(req),
+            )
+            .await?;
+        let resp_bytes = response_text_bytes(&resp);
+        self.record(turn, req_bytes, resp_bytes, attempt, started, Ok(&resp));
+        Ok(resp)
     }
 
     /// 流式面：图片注入与阻塞面一致；打开 + 预取首帧 + 按同一张表重试；余流套
@@ -608,6 +590,64 @@ where
         let req_bytes = request_bytes_lower_bound(&request);
         let turn = self.state.current_turn.load(Ordering::Relaxed);
         let started = Instant::now();
+        // 预取阶段的 ProviderError = 连接类失败被 rig 的 SSE 传输层抹成了字符串
+        // （见模块头第 4 条）；此时尚无字节被看到，按瞬时处理——经 adjust 传入
+        // 骨架，与阻塞面的分类差异只在此处表达。
+        let (primed, attempt) = self
+            .retry_open(
+                &request,
+                turn,
+                req_bytes,
+                started,
+                |e, mut c| {
+                    if c.class == RetryClass::No && matches!(e, CompletionError::ProviderError(_)) {
+                        c.class = RetryClass::Transient;
+                    }
+                    c
+                },
+                |req| self.open_primed(req),
+            )
+            .await?;
+        let observed = Observed::new(
+            primed,
+            Arc::clone(&self.state),
+            turn,
+            req_bytes,
+            attempt,
+            started,
+            self.timeout_sec,
+        );
+        Ok(StreamingCompletionResponse::stream(
+            M::PROVIDER,
+            Box::pin(observed),
+        ))
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        self.inner.capabilities()
+    }
+}
+
+impl<M: CompletionModel + RawStream> BudgetModel<M> {
+    /// 阻塞（completion）与流式（stream）两条面共用的重试骨架（2026-10-01
+    /// 合一，此前是两份近复制的循环）：stop 前置检查（D4：Ctrl-C 后不再发起
+    /// 新的模型轮）→ attempt++ → open → 错误分类（classify 后经 adjust 修正）
+    /// → No/耗尽即记错返回 → 退避 → 二次 stop 检查（退避期间可能 Ctrl-C）。
+    /// Ok 返回 (产物, 实际尝试次数)；**Ok 侧的 record 留给调用方**——阻塞面
+    /// 要记响应文本字节，流式面由 Observed 在流结束时代记，两边记账口径不同。
+    async fn retry_open<T, F, Fut>(
+        &self,
+        request: &CompletionRequest,
+        turn: usize,
+        req_bytes: u64,
+        started: Instant,
+        adjust: impl Fn(&CompletionError, Classified) -> Classified,
+        mut open: F,
+    ) -> Result<(T, u64), CompletionError>
+    where
+        F: FnMut(CompletionRequest) -> Fut,
+        Fut: std::future::Future<Output = Result<T, CompletionError>>,
+    {
         let mut attempt = 0u64;
         loop {
             if self.state.stop.load(Ordering::Relaxed) {
@@ -616,29 +656,10 @@ where
                 return Err(e);
             }
             attempt += 1;
-            match self.open_primed(request.clone()).await {
-                Ok(primed) => {
-                    let observed = Observed::new(
-                        primed,
-                        Arc::clone(&self.state),
-                        turn,
-                        req_bytes,
-                        attempt,
-                        started,
-                        self.timeout_sec,
-                    );
-                    return Ok(StreamingCompletionResponse::stream(
-                        M::PROVIDER,
-                        Box::pin(observed),
-                    ));
-                }
+            match open(request.clone()).await {
+                Ok(x) => return Ok((x, attempt)),
                 Err(e) => {
-                    let mut c = classify(&e);
-                    // 预取阶段的 ProviderError = 连接类失败被 rig 的 SSE 传输层抹成了
-                    // 字符串（见模块头第 4 条）；此时尚无字节被看到，按瞬时处理
-                    if c.class == RetryClass::No && matches!(e, CompletionError::ProviderError(_)) {
-                        c.class = RetryClass::Transient;
-                    }
+                    let c = adjust(&e, classify(&e));
                     if c.class == RetryClass::No || attempt >= self.max_attempts {
                         self.record(turn, req_bytes, 0, attempt, started, Err(&e));
                         return Err(e);
@@ -654,12 +675,6 @@ where
         }
     }
 
-    fn capabilities(&self) -> ProviderCapabilities {
-        self.inner.capabilities()
-    }
-}
-
-impl<M: CompletionModel + RawStream> BudgetModel<M> {
     /// 打开原生流并预取首帧（整体受 [`Self::guard`] 约束：单次调用超时 + Ctrl-C）：
     /// 首帧 Ok 才算「连上了」，返回「首帧 + 余流」；首帧 Err / 首帧前结束 / 超时 /
     /// 中断都作为可分类的错误返回。
@@ -685,10 +700,10 @@ impl<M: CompletionModel + RawStream> BudgetModel<M> {
     }
 }
 
-/// 响应里**模型可见文本**的字节数（C++ 记的是 `resp.content.size()`——
-/// 只算文本，不算工具调用参数；工具调用轮次的响应文本常为空，此时该字段缺省不写）。
-/// SAN-9 的求和估算（口径见调用点注释）。preamble/工具 schema 每次请求
-/// 随行，与历史消息一起计入下界。
+/// 请求体线上体积的**下界**估算：preamble + 历史消息（message_weight 同口径）
+/// + 工具 schema（名字/描述/参数 JSON），不计 JSON 语法开销与转义膨胀。
+///
+/// SAN-9 的求和估算（口径见调用点注释）。
 fn request_bytes_lower_bound(req: &CompletionRequest) -> u64 {
     let mut n = req.preamble.as_ref().map_or(0, |s| s.len());
     for m in &req.chat_history {

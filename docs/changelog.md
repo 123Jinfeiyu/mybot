@@ -9,6 +9,36 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 结构重构三批：C++ 判据单点化/TU 拆分 + Rust agent 结构治理（行为保持）
+
+第三批（Rust agent）：模块环解环、判据单点化、上帝对象拆分，收口过 cargo
+build/test/clippy/fmt 四检（106 测试全绿、零告警）与两进程 agent E2E。
+行为保持纪律与前两批一致；唯一的有意行为差为**恢复期跳行告警的落形**
+（文案逐字保持、只改构造方式）。
+
+- **解 `session ↔ history` 模块环**：图片占位文本与后注判据、媒体体积估算
+  （`image_placeholder` / `is_image_placeholder_notice` / `source_len`）下沉为
+  独立叶子模块 `placeholder.rs`——此前 history 引用 session 的占位判据、session
+  反向引用 history 的块起点，判据与体积三个口径各抄一份。
+- **`BudgetModel` 重试骨架合一**：阻塞面 `completion` 与流式面 `stream` 两份
+  近复制的重试循环（stop 检查→attempt→请求→分类→退避→二次检查）抽为
+  `retry_open` + 分类修正器参数；顺带修正 `request_bytes_lower_bound` 抄自
+  `response_text_bytes` 的错误 doc 注释。
+- **mutex 中毒恢复单点化**：bridge.rs 的 ICA 账本 11 处匿名
+  `unwrap_or_else(|e| e.into_inner())` 换用 `hook::poisoned`（带 warn 留痕——
+  中毒是持锁线程 panic 过的信号，静默恢复会丢掉完整性问题的第一次现场）。
+- **`repl::Session` 上帝对象拆分**：audit/stats/started 三字段抽为
+  `SessionAudit`（会话统计 + 审计落行），构造参数 11 个打包成
+  `SessionAssembly`/`ResumeContext`——全仓两处 `too_many_arguments` 豁免
+  之一就此移除；普通轮与摘要轮的 CallRecord→ModelEntry 双循环合一，差异
+  （turn/status/是否跟进「最近一次 token」）显式化为参数。
+- **`main.rs run()` 再拆**：后端连接 + 提示词素材装配段抽为
+  `assemble_backend`（`Err((消息, 退出码))` 收敛 9 个「errln! + return」出口，
+  退出码口径逐字保持）；`config::summarize` 纯渲染器下沉
+  `config/summarize.rs`，mod.rs 只留 Config/limits/合流。
+- **恢复期跳行告警样板收敛**：`load_session_file` 的 8 处「会话文件…第 N 行
+  …已跳过该行」手拼收敛为单点 `skip` 闭包。
+
 ### 2026-10-01 结构重构两批：安全判据单点化 + 五个上帝文件 TU 拆分（行为保持）
 
 全仓行为保持的结构治理，分两批提交。每批收口过零告警构建（-Werror）、

@@ -167,7 +167,12 @@ impl HookState {
     }
 }
 
-fn poisoned<T>(e: std::sync::PoisonError<T>) -> T {
+/// mutex 中毒恢复的唯一口径（2026-10-01 收敛，bridge.rs 的 ICA 账本 11 处匿名
+/// `unwrap_or_else(|e| e.into_inner())` 换用此单点）：中毒是「某持锁线程 panic 过」
+/// 的信号，恢复内部值的同时必须留痕——静默恢复会让 hook/ICA 状态完整性问题的
+/// 第一次现场消失。共享状态经 panic 中途改写过属逻辑错误，留痕只是让它可观测，
+/// 恢复口径本身与旧行为一致。
+pub(crate) fn poisoned<T>(e: std::sync::PoisonError<T>) -> T {
     eprintln!("[warn] mutex poisoned — recovering inner value");
     e.into_inner()
 }

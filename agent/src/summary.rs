@@ -22,6 +22,8 @@ use rig_agent::completion::{AssistantContent, Message};
 use rig_agent::ModelHandle;
 use rig_core::completion::CompletionRequestBuilder;
 
+use crate::placeholder::source_len;
+
 /// 系统提示词里的身份标记：e2e 夹具据此识别「这是一次摘要请求」。
 pub const MARKER: &str = "会话历史压缩器";
 
@@ -53,15 +55,6 @@ fn capped(s: &str) -> String {
         s.to_string()
     } else {
         format!("{}{TRUNCATED_MARK}", cut_at_char_boundary(s, ITEM_CAP))
-    }
-}
-
-fn source_len(kind: &rig_agent::completion::message::DocumentSourceKind) -> usize {
-    use rig_agent::completion::message::DocumentSourceKind as K;
-    match kind {
-        K::Url(s) | K::Base64(s) | K::FileId(s) | K::String(s) => s.len(),
-        K::Raw(b) => b.len(),
-        K::Unknown => 0,
     }
 }
 
