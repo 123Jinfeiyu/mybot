@@ -250,8 +250,8 @@ void McpBackend::writeSessionRecord(const char* status) const {
 	AuditEntry e;
 	e.kind = "session";
 	e.status = status;
-	/* driver/model/endpoint 留空：后端不发起模型调用。AuditLog::write 对空字段
-	 * 不输出，故审计行里不会出现这些键（schema 与 agent 会话记录一致）。 */
+	/* 会话行只带 status（模型侧字段已随 agent 循环迁 Rust 退场，2026-10-01
+	 * 批次 A；后端本就不发起模型调用）。 */
 	audit_->write(e);
 }
 

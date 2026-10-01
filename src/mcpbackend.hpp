@@ -144,7 +144,7 @@ public:
 	std::string handleFrame(const std::string& payload);
 
 	/* 整服务端**一** session（用户定）：在 accept 循环外写 start，停机时写 end。
-	 * driver/model/endpoint 留空（后端不调模型）；audit 未开启时 no-op。 */
+	 * 会话行只带 status（模型侧字段已迁 Rust 退场，后端不调模型）；audit 未开启时 no-op。 */
 	void writeSessionRecord(const char* status) const;
 
 	/* MCP-1：首帧认证失败落审计（kind=session, status=auth_failed；无 token 泄漏）。 */

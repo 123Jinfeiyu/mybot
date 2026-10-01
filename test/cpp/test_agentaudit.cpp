@@ -255,13 +255,13 @@ TH_TEST(agentaudit_stderr_sink_is_enabled_and_session_is_stable) {
 	TH_CHECK(!err.empty());
 }
 
-/* ============ SAN-9：会话边界与模型轮次记录 ============
- * 缺口（读码 + 实测）：审计此前**只记工具调用**，于是"模型说了什么、花了多久、
- * 这一轮有没有真的发出请求"完全不可查；一次在模型调用阶段失败的会话在日志里
- * **一条记录都没有**——而那恰恰是最需要复盘的时候。
- * 判据（三条一起）：① 纯文本回答的任务（不调任何工具）也必须留下 model 记录；
- * ② 会话头尾各一条 session 记录；③ 既有工具行的字段**一个不少**（加法演进）。 */
-TH_TEST(agentaudit_model_and_session_records_are_additive) {
+/* ============ SAN-9：会话边界与工具行记录 ============
+ * 2026-10-01 批次 A（P1-6）：model 行与 session 的模型侧字段（driver/model/
+ * endpoint/api_key_source/resumed）已随 agent 循环迁 Rust 退场——模型轮次的
+ * 审计记进 agent 侧文件（agent/src/audit.rs，字段名同源），由 agent_e2e 断言。
+ * 本用例钉 C++ 后端侧的活形态：会话头尾各一条 session 记录（只有 status/
+ * error/ms/summary），工具行字段**一个不少**（加法演进）。 */
+TH_TEST(agentaudit_session_and_tool_records_fields) {
 	using namespace bot;
 	using namespace bot::agent;
 	fx::TempDir tmp("audit-session");
@@ -276,29 +276,9 @@ TH_TEST(agentaudit_model_and_session_records_are_additive) {
 		AuditEntry e;
 		e.kind = "session";
 		e.status = "start";
-		e.driver = "LlmOpenAI";
-		e.model = "m0";
-		/* 接入点带 userinfo + query：**必须**在落盘前被剥掉 */
-		e.endpoint = "https://user:tok@gateway.example/v1/chat/completions?key=SECRET";
-		e.apiKeySource = "env";
 		log.write(e);
 	}
-	/* ② 模型轮次（含 provider 给的用量） */
-	{
-		AuditEntry e;
-		e.kind = "model";
-		e.turn = 0;
-		e.ok = true;
-		e.status = "ok";
-		e.ms = 42;
-		e.reqBytes = 1024;
-		e.respBytes = 128;
-		e.attempts = 2;		/* 发生过重试 */
-		e.promptTokens = 1234;
-		e.completionTokens = 56;
-		log.write(e);
-	}
-	/* ③ 既有工具行（字段一个不少） */
+	/* ② 既有工具行（字段一个不少） */
 	{
 		AuditEntry e;
 		e.kind = "tool";
@@ -309,7 +289,7 @@ TH_TEST(agentaudit_model_and_session_records_are_additive) {
 		e.bytes = 64;
 		log.write(e);
 	}
-	/* ④ 会话尾（error） */
+	/* ③ 会话尾（error） */
 	{
 		AuditEntry e;
 		e.kind = "session";
@@ -319,15 +299,9 @@ TH_TEST(agentaudit_model_and_session_records_are_additive) {
 	}
 
 	const std::string raw = slurp(path);
-	/* 密钥与凭据绝不落盘（顺带钉住 endpoint 的剥 query/userinfo 行为） */
-	TH_CHECK_MSG(raw.find("SECRET") == std::string::npos, "query 进了审计日志");
-	TH_CHECK_MSG(raw.find("user:tok") == std::string::npos, "URL userinfo 进了审计日志");
-	TH_CHECK_MSG(raw.find("gateway.example") != std::string::npos,
-		"接入点的 host 应当保留（否则复盘时看不出连的哪）");
-
 	std::istringstream ss(raw);
 	std::string line;
-	int nSession = 0, nModel = 0, nTool = 0;
+	int nSession = 0, nTool = 0;
 	while (std::getline(ss, line)) {
 		if (line.empty()) { continue; }
 		Json d = parseJson(line);
@@ -337,22 +311,13 @@ TH_TEST(agentaudit_model_and_session_records_are_additive) {
 		if (k == "session") {
 			++nSession;
 			TH_CHECK(d.find("status") != nullptr);
-			/* 会话记录**不带**工具字段（避免 fake 语义：tool 为空串） */
+			/* 会话记录**不带**工具字段（避免 fake 语义：tool 为空串），
+			 * 也不带已迁 Rust 的模型侧字段（它们不该再出现） */
 			TH_CHECK(d.find("tool") == nullptr);
-			/* start 记录带驱动/模型/接入点/密钥来源；end 记录只带 status
-			 * （收尾不需要重复配置，重复反而让日志变长） */
-			const Json* st = d.find("status");
-			if (st != nullptr && st->isStr() && st->getValue() == "start") {
-				TH_CHECK(d.find("driver") != nullptr);
-				TH_CHECK(d.find("endpoint") != nullptr);
-				TH_CHECK(d.find("api_key_source") != nullptr);
-			}
-		} else if (k == "model") {
-			++nModel;
-			TH_CHECK(d.find("ms") != nullptr);
-			TH_CHECK(d.find("attempts") != nullptr);
-			TH_CHECK(d.find("prompt_tokens") != nullptr);
-			TH_CHECK(d.find("completion_tokens") != nullptr);
+			TH_CHECK(d.find("driver") == nullptr);
+			TH_CHECK(d.find("endpoint") == nullptr);
+			TH_CHECK(d.find("api_key_source") == nullptr);
+			TH_CHECK(d.find("resumed") == nullptr);
 		} else if (k == "tool") {
 			++nTool;
 			/* 既有工具行字段一个不少 */
@@ -366,13 +331,12 @@ TH_TEST(agentaudit_model_and_session_records_are_additive) {
 		}
 	}
 	TH_CHECK(nSession == 2);
-	TH_CHECK(nModel == 1);
 	TH_CHECK(nTool == 1);
 }
 
 /* SAN-9 兼容性钉子：老消费方按工具字段过滤，结果必须与"没有新记录类型"时一致。
- * 判据是**过滤器语义不变**：`tool == "x"` 只会命中工具行，不会误命中 session/model
- * 记录（它们的 tool 字段根本不出现）。 */
+ * 判据是**过滤器语义不变**：`tool == "x"` 只会命中工具行，不会误命中 session
+ * 记录（它的 tool 字段根本不出现）。 */
 TH_TEST(agentaudit_legacy_tool_filter_still_selects_only_tool_rows) {
 	using namespace bot;
 	using namespace bot::agent;
@@ -386,11 +350,6 @@ TH_TEST(agentaudit_legacy_tool_filter_still_selects_only_tool_rows) {
 	s.kind = "session";
 	s.status = "start";
 	log.write(s);
-	AuditEntry m;
-	m.kind = "model";
-	m.turn = 0;
-	m.ok = true;
-	log.write(m);
 	AuditEntry t;
 	t.kind = "tool";
 	t.tool = "run_command";
@@ -408,7 +367,7 @@ TH_TEST(agentaudit_legacy_tool_filter_still_selects_only_tool_rows) {
 		const Json* tool = d.find("tool");
 		if (tool != nullptr && tool->isStr() && tool->getValue() == "run_command") { ++matched; }
 	}
-	TH_CHECK(parsed == 3);
+	TH_CHECK(parsed == 2);
 	TH_CHECK_MSG(matched == 1, "老过滤表达式只应命中那一条工具行，实际 " + std::to_string(matched));
 }
 

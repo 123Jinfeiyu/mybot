@@ -33,14 +33,15 @@ namespace agent {
 /* 一条工具调用审计记录。字段与 JSON 行的映射见 AuditLog::write。 */
 struct AuditEntry {
 	/* SAN-9（2026-09-22）：记录类型。**加法演进**——既有工具行的字段名、
-	 * 顺序与语义一个不动，新增两类记录靠这个字段区分（老消费方按
+	 * 顺序与语义一个不动，新增记录类型靠这个字段区分（老消费方按
 	 * `tool == "run_command"` 之类的过滤表达式解析，结果逐字节不变）。
 	 *   "tool"    —— 既有形态：一次工具调用；
-	 *   "model"   —— 一轮模型调用（耗时、请求/响应字节、provider 给的 token 数）；
-	 *   "session" —— 会话开始/结束（含驱动、模型、接入点、各项上限）。
-	 * 为什么需要：审计此前**只记工具调用**，于是"模型说了什么、花了多久、
-	 * 这一轮到底有没有发出请求"完全不可查；而一次在模型调用阶段中断的会话
-	 * 在日志里**一条记录都没有**——那恰恰是最需要复盘的时候。 */
+	 *   "session" —— 会话边界（start/end/error/disconnect_action/auth_failed）。
+	 * 2026-10-01 批次 A（P1-6）：kind="model" 与 session 的模型侧字段
+	 * （driver/model/endpoint/api_key_source/resumed）随 agent 循环迁 Rust
+	 * 退场——C++ 后端不发起模型调用，这些字段在本侧零写入者；模型轮次与
+	 * 会话配置行由 Rust agent 自己的审计（agent/src/audit.rs，字段名同源）
+	 * 写进 agent 侧审计文件，两端文件互不混合。 */
 	std::string kind = "tool";
 	int turn = -1;			/* 任务内的模型轮次（未知为 -1） */
 	std::string tool;		/* 工具名（kind="tool"）/ 事件名（kind="session"） */
@@ -57,24 +58,8 @@ struct AuditEntry {
 	 * 只做加法：老工具不给，工具行的既有字段与顺序不动。 */
 	std::string summary;
 
-	/* ---- SAN-9：kind="session" 专用（全部只在会话记录里出现）---- */
-	std::string driver;		/* 协议驱动表名 */
-	std::string model;		/* 模型名（可为空 = 用驱动缺省） */
-	std::string endpoint;		/* 接入点（**去掉 query 与 userinfo**，见 write） */
-	std::string status;		/* "start" / "end" / "error" */
-	std::string apiKeySource;	/* 只记来源枚举名，绝不记值 */
-	/* 批次 1（2026-09-23）：该会话由 --resume 恢复而来。加法字段——只在
-	 * kind="session" 的 start 记录上出现（"resumed": true），既有字段与
-	 * 顺序不动，老消费方按既有字段过滤的行为逐字节不变（schema 演进已在
-	 * changelog 声明）。 */
-	bool resumed = false;
-
-	/* ---- SAN-9：kind="model" 专用 ---- */
-	std::size_t reqBytes = 0;	/* 本次请求体估算字节（可 0 = 未统计） */
-	std::size_t respBytes = 0;	/* 本次响应文本字节 */
-	int attempts = 0;		/* 实际尝试次数（>1 = 发生过重试） */
-	std::optional<long long> promptTokens;		/* provider 给的用量，缺则无 */
-	std::optional<long long> completionTokens;
+	/* ---- kind="session" 专用 ---- */
+	std::string status;		/* "start" / "end" / "error" / "disconnect_action" / "auth_failed" */
 };
 
 /* 参数原文进审计前的截断上限：审计要能对账，但一条 2 MiB 的参数串会把日志
@@ -99,15 +84,9 @@ public:
 	const std::string& sessionId() const { return sessionId_; }
 	const std::string& path() const { return path_; }
 
-	/* 批次 1（会话恢复）：沿用被恢复会话的原 id，让审计里恢复前后的行能
-	 * 对上同一段对话。只生效一次（重复调用忽略），须在 open 之后、首次
-	 * write 之前调用——首条记录一旦带上了旧 id，再改反而制造断层。 */
-	void adoptSessionId(const std::string& id);
-
 private:
 	std::string path_;
 	std::string sessionId_;
-	bool sessionIdAdopted_ = false;	/* adoptSessionId 只生效一次 */
 	bool opened_ = false;
 	bool toStderr_ = false;
 	bool warnBroken_ = false;	/* 损坏告警只打一次 */
