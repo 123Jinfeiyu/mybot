@@ -474,11 +474,13 @@ fi
 
 # ---- R5m：配置镜像黄金测试（2026-09-25）----
 # config.rs 逐条镜像 llmconfig.cpp+agentmode.cpp 的解析与拒绝语义；但迁 Rust 后
-# C++ 宿主的现役形态是 --mcp-backend，mergeLlmLayer 在后端模式**整层跳过模型侧
-# 字段**（endpoint/model/key/采样是 agent 的事，agentmode.cpp 的 mcpBackend 早退）。
-# 故两侧真正共享、可互钉的语义面是：
-#   ① 配置文件解析与拒绝——两侧都全量 parse（未知字段/类型错都退出 2）；
-#   ② 后端侧字段的生效——预算、审计落点（C++ 门控/审计与 Rust 循环各用一半，
+# C++ 宿主的现役形态是 --mcp-backend，后端**只消费工具面字段**（模型侧
+# endpoint/model/key/采样/预算由 Rust 独占校验）。2026-10-01 批次 A（P1-5）退役
+# 了 C++ 侧模型侧字段的解析与字节预算摘要（R5m 的预算三行比对一并撤下）——
+# 故两侧真正共享、可互钉的语义面收窄为：
+#   ① 配置文件解析与拒绝——未知字段两侧都退出 2；类型/值域校验各管各的消费面
+#     （共享拒绝面只剩 audit_log 这类**双消费**字段：C++ 落盘、Rust 校验类型）；
+#   ② 后端侧字段的生效——审计落点（C++ 门控/审计与 Rust 循环各用一半，
 #     但两侧都从同一份文件读同一批字段）；
 #   ③ 配置文件通道本身——BOT4CJ_LLM_CONFIG（两侧现役同名 env，CLI 的
 #     --llm-config 已是 Rust 专属，C++ 侧显式拒绝）。
@@ -513,8 +515,6 @@ chmod 600 "$CFGR5M"
 # 变体运行再按需注入——否则开发者 shell 里已有的配置会让「文件生效」变成假绿。
 r5m_envclean=(env -u BOT4CJ_LLM_KEY -u ROBOT_AGENT_API_KEY -u DEEPSEEK_API_KEY -u BOT4CJ_LLM_ENDPOINT)
 r5m_line_of() { printf '%s\n' "$1" | grep -F "$2" | head -1; }
-r5m_num_of() { printf '%s\n' "$1" | grep -oE "$2" | head -1; }
-r5m_num_eq() { awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 == b + 0) }'; }
 r5m_cmp_line() { # $1=cpp $2=rs $3=行标签 $4=说明
 	local a b
 	a="$(r5m_line_of "$1" "$3")"; b="$(r5m_line_of "$2" "$3")"
@@ -527,20 +527,8 @@ r5m_cmp_line() { # $1=cpp $2=rs $3=行标签 $4=说明
 		fail=1
 	fi
 }
-r5m_cmp_num() { # $1=cpp $2=rs $3=cpp正则 $4=rs正则 $5=说明
-	local a b
-	a="$(r5m_num_of "$1" "$3")"; b="$(r5m_num_of "$2" "$4")"
-	if [ -n "$a" ] && [ -n "$b" ] \
-			&& r5m_num_eq "$(printf '%s' "$a" | tr -cd '0-9.')" "$(printf '%s' "$b" | tr -cd '0-9.')"; then
-		echo "  [OK] $5（$a ↔ $b）"
-	else
-		echo "  [FAIL] $5（C++ '${a:-<缺>}' vs Rust '${b:-<缺>}'）"
-		fail=1
-	fi
-}
-
 # 基准层：配置文件经 BOT4CJ_LLM_CONFIG 进两侧（C++ 的 --llm-config 已被显式拒绝，
-# 这正是两侧现役的同名 env 通道）；模型侧字段两侧都全量 parse，但只有 Rust 消费。
+# 这正是两侧现役的同名 env 通道）；模型侧字段 C++ 只经白名单不解析（批次 A）。
 out5m_cpp="$("${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$CFGR5M" timeout 20 "$BOT" \
 	--robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot-agent-e2e.sock \
 	--check-config 2>&1)"; rc5m_cpp=$?
@@ -557,9 +545,8 @@ fi
 check "$out5m_cpp" "run_command=3s，上限=5s，action_script=0s" "后端独立合并工具超时并保留显式 0"
 r5m_cmp_line "$out5m_cpp" "$out5m_rs" "配置文件    : " "配置文件通道（同名 env）双端一致"
 r5m_cmp_line "$out5m_cpp" "$out5m_rs" "审计轨迹    : " "审计落点（文件 audit_log）双端一致"
-r5m_cmp_num "$out5m_cpp" "$out5m_rs" "历史 [0-9]+" "历史 [0-9]+" "历史预算双端一致"
-r5m_cmp_num "$out5m_cpp" "$out5m_rs" "单任务文本 [0-9]+" "任务文本 [0-9]+" "任务文本预算双端一致"
-r5m_cmp_num "$out5m_cpp" "$out5m_rs" "单任务图片 [0-9]+" "任务图片 [0-9]+" "任务图片预算双端一致"
+# 字节预算摘要已随批次 A（P1-5）自 C++ 退役：单一事实源是 Rust config.rs——
+# C++ 摘要不再报预算行，互钉面收窄（见本段头注）。
 
 # CLI 层：--audit-log 两侧都收，必须同侧压过文件的 audit_log（分层顺序 CLI > file）
 out5m_cpp_cli="$("${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$CFGR5M" timeout 20 "$BOT" \
@@ -569,13 +556,15 @@ out5m_rs_cli="$("${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$CFGR5M" timeout 20 "$AG
 	--check-config --socket /tmp/mybot-agent-e2e.sock --audit-log "$R5M/audit-cli.jsonl" 2>&1)"
 r5m_cmp_line "$out5m_cpp_cli" "$out5m_rs_cli" "审计轨迹    : " "CLI --audit-log 压过文件（双端一致）"
 
-# 负路径镜像：未知字段（拼错的 "apikey"）与类型错（temperature 给字符串）——
+# 负路径镜像：未知字段（拼错的 "apikey"）与类型错（audit_log 给数字）——
 # 静默走缺省正是这层校验存在的理由（llmconfig.cpp F2-8 / config.rs 同口径），
-# 两侧都必须退出 2。模型侧字段仍在 fixture 里：C++ 后端虽不消费，parse 照做。
+# 两侧都必须退出 2。类型错用 audit_log 这类**双消费**字段（C++ 落盘、Rust 校验
+# 类型）：批次 A（P1-5）后模型侧字段（temperature 等）C++ 只登记不校验，若还用
+# 模型侧字段钉双端拒绝，C++ 侧会正确放行而误判假红。
 BAD5M="$R5M/bad.json"
 printf '{ "endpoint": "http://127.0.0.1:9/v1/chat/completions", "apikey": "typo" }\n' > "$BAD5M"
 BADT5M="$R5M/badtype.json"
-printf '{ "endpoint": "http://127.0.0.1:9/v1/chat/completions", "api_key": "k", "temperature": "hot" }\n' > "$BADT5M"
+printf '{ "endpoint": "http://127.0.0.1:9/v1/chat/completions", "audit_log": 123 }\n' > "$BADT5M"
 "${r5m_envclean[@]}" BOT4CJ_LLM_CONFIG="$BAD5M" timeout 20 "$BOT" \
 	--robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot-agent-e2e.sock \
 	--check-config >"$R5M/bad-cpp.txt" 2>&1; rc5m_bad_cpp=$?

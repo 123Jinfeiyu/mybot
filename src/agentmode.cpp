@@ -67,10 +67,6 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 	s += "  工具超时    : run_command=" + std::to_string(cfg.commandTimeoutSec)
 		+ "s，上限=" + std::to_string(cfg.maxCommandTimeoutSec)
 		+ "s，action_script=" + std::to_string(cfg.scriptTimeoutSec) + "s\n";
-	/* 上下文字节预算：后端不消费，只为 R5m 双端互钉摆出来（详见 agentmode.hpp 字段注） */
-	s += "  历史/任务预算: 历史 " + std::to_string(cfg.maxHistoryBytes)
-		+ " 字节，单任务文本 " + std::to_string(cfg.maxTaskToolResultBytes)
-		+ " 字节，单任务图片 " + std::to_string(cfg.maxTaskImageBytes) + " 字节\n";
 	s += "  摄像头      : " + std::string(cfg.allowCamera
 			? (cfg.cameraSrc.empty() ? "启用（变量 " + cfg.cameraVar + "，设备 "
 					+ orNone(cfg.cameraDevice, "/dev/video0（驱动缺省）") + "）"
@@ -222,16 +218,6 @@ bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	return true;
 }
 
-/* 8a) 上下文字节预算（B1）：配置文件覆盖编译期缺省；0 = 不限。
- * 严格解析（类型/区间/未知字段）已在 llmconfig 完成，这里只做搬运。后端**不消费**
- * 这三个值（实际预算由 Rust agent 强制）；搬运它们只为 --check-config 摘要摆出来，
- * 供 agent_e2e.sh R5m 双端互钉（详见 agentmode.hpp 字段注）。 */
-void applyContextBudgets(const LlmFileConfig& file, AgentModeConfig& out) {
-	if (file.maxHistoryBytes) { out.maxHistoryBytes = *file.maxHistoryBytes; }
-	if (file.maxTaskToolResultBytes) { out.maxTaskToolResultBytes = *file.maxTaskToolResultBytes; }
-	if (file.maxTaskImageBytes) { out.maxTaskImageBytes = *file.maxTaskImageBytes; }
-}
-
 /* 10) 审计轨迹：在这里就打开——路径打不开属于配置错误，必须在结构装载与
  * 上电之前失败（「配置错误不碰真机」），而不是等到第一次工具调用才炸。 */
 bool openAuditLog(const CliOptions& opts, const LlmFileConfig& file,
@@ -344,9 +330,9 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	 * 任何一步失败都发生在结构装载与上电之前（「配置错误不碰真机」）。
 	 * 2026-09-26：agent 循环迁 Rust 后，LLM 层（endpoint/model/key/采样）、
 	 * 提示词包装载、体积预检与会话恢复组合校验都已删除——它们在 --mcp-backend
-	 * 下永不生效（详见 agentmode.hpp 的 AgentModeConfig 收缩说明）。上下文字节
-	 * 预算（applyContextBudgets）保留：后端不消费，但 --check-config 摘要要摆
-	 * 出来供 R5m 双端互钉。 */
+	 * 下永不生效（详见 agentmode.hpp 的 AgentModeConfig 收缩说明）。
+	 * 2026-10-01 批次 A（P1-5）：上下文字节预算的搬运与摘要行（applyContextBudgets）
+	 * 连同 R5m 互钉一并退役——后端从不消费这三个值，单一事实源是 Rust config.rs。 */
 
 	/* 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） */
 	LlmFileConfig file;
@@ -358,7 +344,6 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 
 	if (!mergeToolBudgets(file, out, err)) { return false; }			/* 工具层超时 */
 	if (!applyGatingLayer(opts, file, cfgPath, out, err)) { return false; }	/* 6/7/7b) 门控 */
-	applyContextBudgets(file, out);						/* 8a) 上下文预算（R5m 互钉用） */
 	if (!openAuditLog(opts, file, out, err)) { return false; }		/* 10) 审计 */
 	if (!loadPolicyHook(opts, file, out, err)) { return false; }		/* 11) 策略钩子 */
 	if (!enforceBackendConfirmPolicy(opts, out, err)) { return false; }	/* 11b) 后端强制确认 */

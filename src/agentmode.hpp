@@ -84,21 +84,11 @@ struct AgentModeConfig {
 	std::string mcpAuthToken;
 	bool verbose = true;
 
-	/* ---- 上下文字节预算（B1）----
-	 * 0 = 不限；可由配置文件覆盖。后端**不消费**这三个值（实际预算由 Rust agent
-	 * 强制）；保留它们只为 --check-config 摘要把它们摆出来，供 agent_e2e.sh R5m
-	 * 「双端 --check-config 互钉」校验 C++ 与 Rust 对同一份 mybot.llm.json 的解析
-	 * 一致（两侧都全量 parse 模型侧字段，只有 Rust 消费）。批次 2（配置单一事实源）
-	 * 将连同 C++ 侧解析与该互钉一并退役。 */
-	std::size_t maxHistoryBytes = 4 * 1024 * 1024;
-	std::size_t maxTaskToolResultBytes = 2 * 1024 * 1024;
-	std::size_t maxTaskImageBytes = 4 * 1024 * 1024;
-
 	/* ---- 工具层超时（后端真实消费：makeToolContext → AgentToolContext）----
 	 * 配置文件同名字段（run_command_timeout_sec 等）的落点；区间单点见 llm_limits。
 	 * 与已迁 Rust 的模型循环预算（max_calls_per_round / 重试次数 / 退避时长）不同：
-	 * 那三类是 agent 侧的事，后端不再镜像，已于 2026-09-26 删除（上下文字节预算
-	 * 三字段的去留理由见其自身注释）。 */
+	 * 那三类是 agent 侧的事，后端不再镜像，已于 2026-09-26 删除。上下文字节预算
+	 * 三字段随 2026-10-01 批次 A（P1-5）一并退役（见 llmconfig.hpp 头注）。 */
 	int commandTimeoutSec = 10;	/* run_command 缺省超时 → AgentToolContext */
 	int maxCommandTimeoutSec = 60;	/* run_command 超时上限 → AgentToolContext */
 	/* PL-2：动作脚本执行预算（秒）→ AgentToolContext。0 = 显式关闭预算。 */

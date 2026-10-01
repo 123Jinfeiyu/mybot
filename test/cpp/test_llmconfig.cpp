@@ -54,6 +54,10 @@ CliOptions baseOptions(const std::string& configPath) {
 } // namespace
 
 TH_TEST(llmconfig_parses_all_fields) {
+	/* 批次 2（2026-10-01）：模型侧字段（driver/var/endpoint/model/api_key/采样/
+	 * 预算/重试/提示词包/会话）只经白名单**不解析**——本结构只落后端消费面。
+	 * fixture 同时含两端键：模型侧键必须不拒（两端共用一份文件），本侧消费的
+	 * 键必须照常解析。 */
 	TempDir tmp("all");
 	fs::path cfg = tmp.path() / "llm.json";
 	writeFile(cfg, R"({
@@ -71,98 +75,102 @@ TH_TEST(llmconfig_parses_all_fields) {
 	  "thinking": "disabled",
 	  "max_turns": 12,
 	  "max_task_seconds": 1234,
+	  "max_history_bytes": 8388608,
+	  "max_calls_per_round": 32,
+	  "max_retries": 6,
+	  "retry_backoff_ms": 0,
+	  "prompt_files": ["prompts/a"],
+	  "stream": false,
+	  "history_summary": true,
+	  "max_summary_bytes": 4096,
 	  "scripts_dir": "scripts/test",
 	  "allow_shell": false,
-	  "max_history_bytes": 8388608,
-	  "max_task_tool_result_bytes": 0,
-	  "max_task_image_bytes": 6291456
+	  "run_command_timeout_sec": 30,
+	  "run_command_max_timeout_sec": 120,
+	  "action_script_timeout_sec": 0
 	})", fs::perms::owner_read | fs::perms::owner_write);
 
 	LlmFileConfig c;
 	std::string err;
 	TH_CHECK(loadLlmConfigFile(cfg.string(), c, err));
 	TH_CHECK(err.empty());
-	TH_CHECK(c.driver && *c.driver == "LlmDeepSeek");
-	TH_CHECK(c.var && *c.var == "brain");
-	TH_CHECK(c.endpoint && *c.endpoint == "https://api.deepseek.com/chat/completions");
-	TH_CHECK(c.model && *c.model == "deepseek-chat");
-	TH_CHECK(c.apiKey && *c.apiKey == "sk-inline");
-	TH_CHECK(c.apiKeyFile && *c.apiKeyFile == "/tmp/ignored.key");
-	TH_CHECK(c.timeoutSec && *c.timeoutSec == 42);
-	TH_CHECK(c.maxTokens && *c.maxTokens == 2048);
-	TH_CHECK(c.temperature && *c.temperature == 0.3);
-	TH_CHECK(c.topP && *c.topP == 0.8);
-	TH_CHECK(c.reasoningEffort && *c.reasoningEffort == "low");
-	TH_CHECK(c.thinking && *c.thinking == "disabled");
-	TH_CHECK(c.maxTurns && *c.maxTurns == 12);
-	TH_CHECK(c.maxTaskSeconds && *c.maxTaskSeconds == 1234);
+	/* 后端消费面照常解析 */
 	TH_CHECK(c.scriptsDir && *c.scriptsDir == "scripts/test");
 	TH_CHECK(c.allowShell && !*c.allowShell);
-	/* B1：上下文字节预算字段；0 = 不限合法 */
-	TH_CHECK(c.maxHistoryBytes && *c.maxHistoryBytes == 8388608);
-	TH_CHECK(c.maxTaskToolResultBytes && *c.maxTaskToolResultBytes == 0);
-	TH_CHECK(c.maxTaskImageBytes && *c.maxTaskImageBytes == 6291456);
+	TH_CHECK(c.runCommandTimeoutSec && *c.runCommandTimeoutSec == 30);
+	TH_CHECK(c.runCommandMaxTimeoutSec && *c.runCommandMaxTimeoutSec == 120);
+	TH_CHECK(c.actionScriptTimeoutSec && *c.actionScriptTimeoutSec == 0);
 }
 
-TH_TEST(llmconfig_budget_fields_value_and_range) {
-	/* 负值、超上限、非整数一律拒（严格解析，带字段名） */
-	for (const char* body : {
-		"{\"max_history_bytes\":-1}",
-		"{\"max_history_bytes\":99999999999}",
-		"{\"max_task_image_bytes\":1.5}",
-		"{\"max_task_tool_result_bytes\":true}",
-	}) {
-		TempDir d("budget-case");
-		fs::path p = d.path() / "llm.json";
-		writeFile(p, body, fs::perms::owner_all);
+/* 批次 2（2026-10-01）：模型侧字段的类型/值域由 mybot-agent 的 config.rs 校验，
+ * C++ 侧只经白名单——同一份文件里有（Rust 会拒的）坏值时，后端不得拒绝加载
+ * （拒绝它的权限在 agent 那侧，不在后端）。「未知字段仍拒」的拼错防线不受影响。 */
+TH_TEST(llmconfig_model_side_fields_pass_through_unchecked) {
+	struct Case { const char* json; };
+	const Case ok[] = {
+		{R"({"max_history_bytes":-1})"},
+		{R"({"max_history_bytes":99999999999})"},
+		{R"({"max_task_image_bytes":1.5})"},
+		{R"({"max_task_tool_result_bytes":true})"},
+		{R"({"max_calls_per_round":0})"},
+		{R"({"max_calls_per_round":1025})"},
+		{R"({"max_retries":-1})"},
+		{R"({"retry_backoff_ms":1.5})"},
+		{R"({"endpoint":123})"},
+		{R"({"timeout":"30"})"},
+		{R"({"temperature":3})"},
+		{R"({"temperature":"0.5"})"},
+		{R"({"max_turns":0})"},
+		{R"({"thinking":{}})"},
+		{R"({"api_key_file":7})"},
+		{R"({"prompt_files":"prompts/a"})"},
+		{R"({"prompt_files":[1]})"},
+		{R"({"max_tokens":1e300})"},
+	};
+	int n = 0;
+	for (const auto& cse : ok) {
+		TempDir d("passthrough");
+		fs::path p = d.path() / ("m" + std::to_string(n++) + ".json");
+		writeFile(p, cse.json, fs::perms::owner_all);
 		LlmFileConfig c;
 		std::string err;
-		TH_CHECK(!loadLlmConfigFile(p.string(), c, err));
+		TH_CHECK_MSG(loadLlmConfigFile(p.string(), c, err),
+			std::string(cse.json) + " 应只登记不校验，却拒了: " + err);
 	}
-	/* 未配置（缺省文件）三个字段应为 unset，不会被误填 */
-	TempDir p2("budget-unset");
-	fs::path cp = p2.path() / "llm.json";
-	writeFile(cp, R"({"api_key":"k"})", fs::perms::owner_all);
-	LlmFileConfig c;
-	std::string err;
-	TH_CHECK(loadLlmConfigFile(cp.string(), c, err));
-	TH_CHECK(!c.maxHistoryBytes && !c.maxTaskToolResultBytes && !c.maxTaskImageBytes);
+	/* 拼错的名字仍按未知字段拒绝——白名单不覆盖拼错形态 */
+	TempDir d2("passthrough-typo");
+	fs::path typo = d2.path() / "typo.json";
+	writeFile(typo, R"({"max_retry":3})", fs::perms::owner_all);
+	LlmFileConfig c2;
+	std::string e2;
+	TH_CHECK(!loadLlmConfigFile(typo.string(), c2, e2));
+	TH_CHECK(e2.find("未知字段") != std::string::npos);
 }
 
 TH_TEST(llmconfig_runtime_fields_parse_and_reject) {
-	/* B4：五个运行期数值。合法值全收（含两个 0：不重试 / 零退避基础时长） */
+	/* 后端消费的工具层数值：合法值全收；越界/非整数一律拒并点名 */
 	TempDir tmp("runtime");
 	fs::path cfg = tmp.path() / "ok.json";
 	writeFile(cfg, R"({
-	  "max_calls_per_round": 32,
-	  "max_retries": 6,
-	  "retry_backoff_ms": 0,
 	  "run_command_timeout_sec": 30,
-	  "run_command_max_timeout_sec": 120
+	  "run_command_max_timeout_sec": 120,
+	  "action_script_timeout_sec": 0
 	})", fs::perms::owner_all);
 	LlmFileConfig c;
 	std::string err;
 	TH_CHECK_MSG(loadLlmConfigFile(cfg.string(), c, err), err);
-	TH_CHECK(c.maxCallsPerRound && *c.maxCallsPerRound == 32);
-	TH_CHECK(c.maxRetries && *c.maxRetries == 6);
-	TH_CHECK(c.retryBackoffMs && *c.retryBackoffMs == 0);
 	TH_CHECK(c.runCommandTimeoutSec && *c.runCommandTimeoutSec == 30);
 	TH_CHECK(c.runCommandMaxTimeoutSec && *c.runCommandMaxTimeoutSec == 120);
+	TH_CHECK(c.actionScriptTimeoutSec && *c.actionScriptTimeoutSec == 0);
 
-	/* 越界/非整数一律拒并点名。`max_calls_per_round=0` 是重点：0 在下游是
-	 * 「一轮不限量下发动作」的旧语义，对物理机器人没有正当用法，配置文件不得放宽 */
 	struct Case { const char* json; const char* field; };
 	const Case bad[] = {
-		{R"({"max_calls_per_round":0})", "max_calls_per_round"},
-		{R"({"max_calls_per_round":1025})", "max_calls_per_round"},
-		{R"({"max_retries":-1})", "max_retries"},
-		{R"({"max_retries":7})", "max_retries"},
-		{R"({"retry_backoff_ms":10001})", "retry_backoff_ms"},
-		{R"({"retry_backoff_ms":1.5})", "retry_backoff_ms"},
 		{R"({"run_command_timeout_sec":0})", "run_command_timeout_sec"},
 		{R"({"run_command_timeout_sec":601})", "run_command_timeout_sec"},
 		{R"({"run_command_max_timeout_sec":3601})", "run_command_max_timeout_sec"},
 		{R"({"run_command_max_timeout_sec":true})", "run_command_max_timeout_sec"},
+		{R"({"action_script_timeout_sec":-1})", "action_script_timeout_sec"},
+		{R"({"action_script_timeout_sec":3601})", "action_script_timeout_sec"},
 	};
 	int n = 0;
 	for (const auto& b : bad) {
@@ -173,19 +181,6 @@ TH_TEST(llmconfig_runtime_fields_parse_and_reject) {
 		TH_CHECK(!loadLlmConfigFile(p.string(), o, e));
 		TH_CHECK_MSG(e.find(b.field) != std::string::npos, b.json);
 	}
-	/* 新键进了白名单不等于放过拼写：写错的名字仍按未知字段拒绝 */
-	fs::path typo = tmp.path() / "typo.json";
-	writeFile(typo, R"({"max_retry":3})", fs::perms::owner_all);
-	LlmFileConfig o2;
-	std::string e2;
-	TH_CHECK(!loadLlmConfigFile(typo.string(), o2, e2));
-	TH_CHECK(e2.find("未知字段") != std::string::npos);
-	/* `stream` 是 Rust agent 的字段：C++ 这侧只登记（不拒），两个进程共用一份配置 */
-	fs::path st = tmp.path() / "stream.json";
-	writeFile(st, R"({"stream":false})", fs::perms::owner_all);
-	LlmFileConfig o3;
-	std::string e3;
-	TH_CHECK_MSG(loadLlmConfigFile(st.string(), o3, e3), e3);
 }
 
 /* ================= H1：capture_image 白名单根的配置面 =================
@@ -245,48 +240,37 @@ TH_TEST(agentconfig_camera_src_dir_is_cli_only) {
 TH_TEST(llmconfig_partial_file_leaves_fields_unset) {
 	TempDir tmp("partial");
 	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({"api_key":"k"})", fs::perms::owner_all);
+	writeFile(cfg, R"({"scripts_dir":"myscripts"})", fs::perms::owner_all);
 
 	LlmFileConfig c;
 	std::string err;
 	TH_CHECK(loadLlmConfigFile(cfg.string(), c, err));
-	TH_CHECK(c.apiKey && *c.apiKey == "k");
-	TH_CHECK(!c.endpoint);		/* 未配置 = 交给下一层 */
-	TH_CHECK(!c.model);
-	TH_CHECK(!c.timeoutSec);
+	TH_CHECK(c.scriptsDir && *c.scriptsDir == "myscripts");
+	TH_CHECK(!c.auditLog);		/* 未配置 = 交给下一层 */
+	TH_CHECK(!c.agentPolicy);
 	TH_CHECK(!c.allowShell);
-}
-
-TH_TEST(llmconfig_thinking_accepts_bool) {
-	TempDir tmp("thinking");
-	for (auto [text, want] : {std::pair<const char*, const char*>{"true", "enabled"},
-				  {"false", "disabled"}}) {
-		fs::path cfg = tmp.path() / (std::string("t-") + text + ".json");
-		writeFile(cfg, std::string("{\"thinking\":") + text + "}", fs::perms::owner_all);
-		LlmFileConfig c;
-		std::string err;
-		TH_CHECK(loadLlmConfigFile(cfg.string(), c, err));
-		TH_CHECK(c.thinking && *c.thinking == want);
-	}
+	TH_CHECK(!c.runCommandTimeoutSec);
 }
 
 TH_TEST(llmconfig_empty_strings_mean_unset) {
 	TempDir tmp("empty");
 	fs::path cfg = tmp.path() / "llm.json";
-	/* 示例配置常留空占位：空串必须按「未配置」处理，否则 endpoint 会被压成空、
-	 * api_key_file 会变成「打开空路径」 */
+	/* 示例配置常留空占位：空串必须按「未配置」处理，否则 audit_log 会被压成
+	 * 空落点（空串本来表示"不记录"）、camera_device 会变成「空设备名」 */
 	writeFile(cfg, R"({
-	  "endpoint": "", "model": "", "api_key_file": "", "driver": "", "var": ""
+	  "scripts_dir": "", "audit_log": "", "agent_policy": "",
+	  "camera_var": "", "camera_device": "", "camera_src": ""
 	})", fs::perms::owner_all);
 
 	LlmFileConfig c;
 	std::string err;
 	TH_CHECK(loadLlmConfigFile(cfg.string(), c, err));
-	TH_CHECK(!c.endpoint);
-	TH_CHECK(!c.model);
-	TH_CHECK(!c.apiKeyFile);
-	TH_CHECK(!c.driver);
-	TH_CHECK(!c.var);
+	TH_CHECK(!c.scriptsDir);
+	TH_CHECK(!c.auditLog);
+	TH_CHECK(!c.agentPolicy);
+	TH_CHECK(!c.cameraVar);
+	TH_CHECK(!c.cameraDevice);
+	TH_CHECK(!c.cameraSrc);
 }
 
 TH_TEST(llmconfig_rejects_unknown_field) {
@@ -302,17 +286,19 @@ TH_TEST(llmconfig_rejects_unknown_field) {
 }
 
 TH_TEST(llmconfig_rejects_wrong_types) {
+	/* 类型错拒的防线只覆盖**本侧消费**字段；模型侧字段见 pass_through 用例 */
 	TempDir tmp("types");
 	struct Case { const char* json; const char* field; };
 	const Case cases[] = {
-		{R"({"endpoint":123})", "endpoint"},
-		{R"({"model":["m"]})", "model"},
-		{R"({"timeout":"30"})", "timeout"},
-		{R"({"max_tokens":1.5})", "max_tokens"},
-		{R"({"temperature":"0.5"})", "temperature"},
 		{R"({"allow_shell":"yes"})", "allow_shell"},
-		{R"({"thinking":{}})", "thinking"},
-		{R"({"api_key_file":7})", "api_key_file"},
+		{R"({"allow_hot_sql":1})", "allow_hot_sql"},
+		{R"({"allow_camera":"yes"})", "allow_camera"},
+		{R"({"scripts_dir":["d"]})", "scripts_dir"},
+		{R"({"camera_var":7})", "camera_var"},
+		{R"({"audit_log":false})", "audit_log"},
+		{R"({"read_vars":"relay0"})", "read_vars"},
+		{R"({"read_vars":[1]})", "read_vars"},
+		{R"({"run_command_timeout_sec":"30"})", "run_command_timeout_sec"},
 	};
 	int n = 0;
 	for (const auto& c : cases) {
@@ -327,23 +313,20 @@ TH_TEST(llmconfig_rejects_wrong_types) {
 }
 
 TH_TEST(llmconfig_rejects_out_of_range) {
+	/* 值域拒的防线只覆盖**本侧消费**字段（run_command/action_script 超时）；
+	 * 模型侧字段见 pass_through 用例。 */
 	TempDir tmp("range");
 	struct Case { const char* json; const char* field; };
 	const Case cases[] = {
-		{R"({"temperature":3})", "temperature"},
-		{R"({"temperature":-0.1})", "temperature"},
-		{R"({"top_p":0})", "top_p"},
-		{R"({"top_p":1.5})", "top_p"},
-		{R"({"timeout":0})", "timeout"},
-		{R"({"timeout":99999})", "timeout"},
-		{R"({"max_turns":0})", "max_turns"},
-		{R"({"max_turns":101})", "max_turns"},
-		{R"({"max_tokens":0})", "max_tokens"},
+		{R"({"run_command_timeout_sec":0})", "run_command_timeout_sec"},
+		{R"({"run_command_timeout_sec":601})", "run_command_timeout_sec"},
+		{R"({"run_command_max_timeout_sec":0})", "run_command_max_timeout_sec"},
+		{R"({"run_command_max_timeout_sec":3601})", "run_command_max_timeout_sec"},
+		{R"({"action_script_timeout_sec":-1})", "action_script_timeout_sec"},
+		{R"({"action_script_timeout_sec":3601})", "action_script_timeout_sec"},
 		/* P1-5 防线：非有限/超出 int64 的浮点曾直接进 static_cast（UB）。
 		 * 现在必须在范围判定处就被拒，绝不能走到转换。 */
-		{R"({"timeout":1e300})", "timeout"},
-		{R"({"max_tokens":1e300})", "max_tokens"},
-		{R"({"max_turns":1e300})", "max_turns"},
+		{R"({"run_command_timeout_sec":1e300})", "run_command_timeout_sec"},
 	};
 	int n = 0;
 	for (const auto& c : cases) {
@@ -384,29 +367,6 @@ TH_TEST(llmconfig_rejects_bad_files) {
 }
 
 /* ================= buildAgentConfig：优先级与合并 ================= */
-
-/* 上下文字节预算从配置文件搬进 AgentModeConfig（applyContextBudgets）。后端不消费
- * 这三个值（实际预算由 Rust agent 强制），搬运只为 --check-config 摘要摆出来供
- * agent_e2e.sh R5m 双端互钉；0 = 不限是合法值。 */
-TH_TEST(agentconfig_reads_budget_fields_from_file) {
-	NoKeyEnv nokey;
-	TempDir tmp("budget-merge");
-	fs::path cfg = tmp.path() / "llm.json";
-	writeFile(cfg, R"({
-	  "max_history_bytes": 8388608,
-	  "max_task_tool_result_bytes": 0,
-	  "max_task_image_bytes": 6291456
-	})", fs::perms::owner_all);
-
-	AgentModeConfig out;
-	std::string err;
-	TH_CHECK(buildAgentConfig(baseOptions(cfg.string()), out, err));
-	TH_CHECK(err.empty());
-	/* 默认 4/2/4 MiB 被配置覆盖：历史 8 MiB、文本 0（不限）、图片 6 MiB */
-	TH_CHECK(out.maxHistoryBytes == 8388608);
-	TH_CHECK(out.maxTaskToolResultBytes == 0);
-	TH_CHECK(out.maxTaskImageBytes == 6291456);
-}
 
 TH_TEST(agentconfig_backend_tool_budgets_reach_execution_context) {
 	NoKeyEnv nokey;
@@ -721,43 +681,25 @@ TH_TEST(agentconfig_config_path_from_env) {
 	TH_CHECK(out2.scriptsDir == "cli-scripts");
 }
 
-/* ================= 提示词包（--prompt-file / 配置文件 prompt_files） =================
- * 加载发生在 buildAgentConfig（配置组装期，不碰真机）；成品文本由
- * buildAgentSystemPrompt 追加到内置段落之后。 */
+/* ================= 提示词包（配置文件 prompt_files） =================
+ * 批次 2（2026-10-01）：prompt_files 是模型侧字段——提示词拼装已迁 Rust
+ * （agent/src/prompt.rs），本侧只经白名单不解析（坏形态见 pass_through 用例）。 */
 
-TH_TEST(llmconfig_prompt_files_parses_and_rejects_bad_shapes) {
+TH_TEST(llmconfig_prompt_files_pass_through) {
 	TempDir tmp("pfcfg");
 	fs::path cfg = tmp.path() / "llm.json";
-
-	writeFile(cfg, R"({"prompt_files":["prompts/a","prompts/b"]})", fs::perms::owner_all);
-	LlmFileConfig c;
-	std::string err;
-	TH_CHECK(loadLlmConfigFile(cfg.string(), c, err));
-	TH_CHECK(err.empty());
-	TH_CHECK(c.promptFiles && c.promptFiles->size() == 2);
-	TH_CHECK((*c.promptFiles)[0] == "prompts/a");
-
-	/* 非数组 / 元素非字符串 → 人话报错，不静默失效。
-	 * 每个负路径用例给全新 err：loadLlmConfigFile 的契约是「失败时写入」，
-	 * 不清上一轮的 err 会让下一轮误判失败。 */
-	writeFile(cfg, R"({"prompt_files":"prompts/a"})", fs::perms::owner_all);
-	LlmFileConfig c2;
-	err.clear();
-	TH_CHECK(!loadLlmConfigFile(cfg.string(), c2, err));
-	TH_CHECK(err.find("字符串数组") != std::string::npos);
-
-	writeFile(cfg, R"({"prompt_files":[1]})", fs::perms::owner_all);
-	LlmFileConfig c3;
-	err.clear();
-	TH_CHECK(!loadLlmConfigFile(cfg.string(), c3, err));
-	TH_CHECK(err.find("字符串") != std::string::npos);
-
-	/* 空数组按「未配置」（与 wantString 的空串口径一致） */
-	writeFile(cfg, R"({"prompt_files":[]})", fs::perms::owner_all);
-	LlmFileConfig c4;
-	err.clear();
-	TH_CHECK(loadLlmConfigFile(cfg.string(), c4, err));
-	TH_CHECK(!c4.promptFiles);
+	/* 任意形态都放行（校验在 Rust 侧）；空数组/合法数组只是其中两种 */
+	for (const char* body : {
+		R"({"prompt_files":["prompts/a","prompts/b"]})",
+		R"({"prompt_files":[]})",
+		R"({"prompt_files":"prompts/a"})",
+	}) {
+		writeFile(cfg, body, fs::perms::owner_all);
+		LlmFileConfig c;
+		std::string err;
+		TH_CHECK_MSG(loadLlmConfigFile(cfg.string(), c, err),
+			std::string(body) + " 应只登记不校验，却拒了: " + err);
+	}
 }
 
 /* 回读清单只能命令行给（发现 2 的 A 步）：配置文件写 read_vars 一律拒绝加载，
@@ -963,16 +905,14 @@ TH_TEST(agentconfig_action_script_timeout_round_trips) {
 
 /* 模板必须能被自家严格解析器加载：曾含 // 注释导致 `cp example mybot.llm.json`
  * 首启即「不是合法 JSON」（2026-09-30 审计 P1）。JSON 无注释语法，说明文字
- * 一律放 docs/agent.md 字段表，本用例钉住模板永不回漂。 */
+ * 一律放 docs/agent.md 字段表，本用例钉住模板永不回漂。
+ * 批次 2 后校验面只剩本侧消费字段：模板里全部键（含模型侧）都过白名单，
+ * allow_shell 仍须为 false（只许命令行开）。 */
 TH_TEST(llmconfig_example_template_loads_strictly) {
 	NoKeyEnv nokey;
 	LlmFileConfig c;
 	std::string err;
 	TH_CHECK_MSG(loadLlmConfigFile("mybot.llm.json.example", c, err), err);
-	/* 快速开始两条路径（环境变量/配置文件）共同依赖的必填三件套都在模板里 */
-	TH_CHECK(c.endpoint && !c.endpoint->empty());
-	TH_CHECK(c.model && !c.model->empty());
-	TH_CHECK(c.apiKey && !c.apiKey->empty());
 	/* allow_shell 只许命令行给：模板必须保持 false */
 	TH_CHECK(c.allowShell && !*c.allowShell);
 }

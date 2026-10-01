@@ -498,7 +498,8 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"alias", "结构期 @Alias 语义"},
 	{"call", "驱动 call 契约（硬件层）"},
 	{"controller", "结构脚本 controller 引用"},
-	{"cross", "跨语言契约钉子（C++↔Rust 常量对齐，非 agent 专属）"},
+	/* cross_（跨语言常量互钉 test_cross_lang_limits）已随 2026-10-01 批次 A
+	 * （P1-5）删除：C++ 不再镜像任何 Rust 常量，唯一事实源是 Rust config.rs。 */
 	{"daemon", "守护线程"},
 	{"deactivate", "硬件生命周期（非 agent 专属）"},
 	{"destructor", "硬件析构语义"},
