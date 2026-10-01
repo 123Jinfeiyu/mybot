@@ -9,6 +9,50 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 全仓审计收口：P0 构建断裂 + 三项 P2（安全/健壮性）
+
+外部审计（C++ 宿主 / Rust agent / Lua 驱动 / 测试与文档四路）发现 1 个 P0、6 个 P2，
+本轮收口 P0 + 三项本周 P2 + 一项被 lint 门拦下的 P3；其余（TCP 回环鉴权策略、流式
+总时长预算、virt 逐次判定、孪生驱动收敛）记入待办。每项修复均带回归与反向验证。
+
+- **P0：dev 干净检出无法配置构建**。方案 A 常量下沉（955a2c3）把 `HAL.lua` 的
+  `HAL.X = <字面量>` 改成 `HAL.X = _c.X` 重导出（真值移入 `hal_backend_glibc.lua`
+  的 consts 表），但 `test/gen_const_check.cmake` 仍按旧模式从 HAL.lua 抽取 → 配置期
+  FATAL_ERROR。旧 build 目录缓存不触发重新配置，把断裂掩盖到推送之后（origin/dev
+  挂着必红提交）。修复：抽取源改指 `hal_backend_glibc.lua`，`read_const` 剥离表项
+  尾逗号；教训（抽取模式与被抽文件书写风格是同一份契约）已写进脚本头注。
+  验证：`rm -rf build && cmake -S . -B build` 全新配置+构建全绿。
+- **P2：MCP 断连安全动作加认证门**（src/mcpbackend.cpp）。此前 `--on-disconnect`
+  动作脚本在**任何**连接结束后无条件执行——同 UID 对端反复 connect+close（或反复
+  发错密钥）可反复驱动执行器到"安全姿态"，连败 5 次还会借停机断电链把后端打停；
+  首帧认证门（MCP-1/AuthFailGate）只盖住工具派发路径，没盖住断连路径。修复：
+  `serveConnection` 返回值从 `ConnAuth` 扩为 `ConnOutcome{auth, admitted}`，断连动作
+  只对 admitted（进入过业务循环：无 token 模式恒真、token 模式认证通过才真）连接
+  执行，跳过时日志点名。回归：mcp_e2e.sh M6 正面（认证通过 → 动作执行）+ 反面
+  （auth-bad/auth-none → 审计无 disconnect_action + 日志点名跳过）。
+- **P2：守护线程补第五个异常边界**（src/daemonvar.cpp）。detached 线程的 `body()`
+  内多处裸 Lua C API 调用（injectDaemonGlobals 的 push、tick 循环的 getglobal）不经
+  pcall——chunk 给 `_G` 装报错 `__index` 元表即可让异常穿出线程函数：
+  反向实测旧代码 `PANIC: unprotected error in call to Lua API`，进程当场消亡，停机
+  断电链整条被跳过（执行器带电滞留）。修复：`body()` 全体纳入 try/catch（含
+  `catch(...)`——Lua 错误从 C++ 帧抛出不是 std::exception），异常折成 -1 + 响亮日志，
+  promise 照常 set；`util_except.hpp` 边界清单四处 → 五处。回归：
+  `daemon_body_exception_folds_to_error_not_terminate`（旧代码下该用例直接打死
+  测试进程）。
+- **P2：agent 帧写侧 deadline**（agent/src/frame.rs）。2026-09-30 的读侧修复漏了
+  写侧：后端活着但停止**读** socket 时，超过内核 socket 缓冲（~200 KiB）的
+  `write_all` 无限挂起——帧上限 8 MiB，模型可控的大参数帧（长 SQL）可必现，
+  `--llm-task-timeout`/`HARD_READ_CEILING`/Ctrl-C 全都够不到这段 await。修复：
+  新增 `write_with_deadline`（与读侧对称），`call()` 的整帧写+flush 纳入与读侧同一
+  预算。回归：`call_write_times_out_when_backend_stops_reading`（4 MiB 请求 + 假后端
+  只收帧头就睡死 → 150ms 内报"写请求帧超时"）。
+- **P3：require_driver 的 mpath 兜底只取首段**（modules/lib/drv_common.lua）。驱动
+  框架迁移（6966c9b/822b0eb）在 `__mpath` 注入缺位的兜底分支用了单段 match——
+  多路径布局（BOT4CJ_MODULE_PATH 多段且首段没有 mpath.lua）下驱动加载必失败。
+  这是 dev 上 `lint-module-path-bootstrap` 红门的成因（迁移期按过滤器分批跑测试，
+  lint 在过滤器模式下跳过，全量未跑）。修复：改为与 virt_prepare（fix-plan 3-3）/
+  HAL.lua 同规的逐段探测 + 仓库缺省布局兜底。
+
 ### 2026-10-01 驱动框架迁移：require_driver 高阶函数，39 驱动全量迁移
 
 - **`drv_common.lua` 新增 `require_driver(bus, spec)`**：声明式驱动框架，收敛 39 份驱动文件
