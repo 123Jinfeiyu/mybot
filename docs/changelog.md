@@ -9,6 +9,46 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 审计批次 A：迁 Rust 残留清退 + 安全设限三补（收口）
+
+- **promptpack 死模块退场**（P1-4）：`loadPromptPack` 在 src/ 内零调用者
+  （`--prompt-file` 已被 cliargs 判 loop-only 拒绝），src/promptpack.{cpp,hpp}
+  （227 行）与 test_promptpack.cpp（16 例）删除，CMakeLists 三处登记与 harness
+  作用域表同步退场；C++ 单测 630→614。
+- **llmconfig「批次 2」落地**（P1-5，agentmode.hpp 自计划项）：模型侧 20+
+  字段（driver/var/endpoint/model/api_key/采样/预算/重试/thinking/prompt_files/
+  session_file 等）的解析与 llm_limits 模型侧区间常量随 agent 循环迁 Rust
+  退役——本侧解析后无消费者，唯一事实源是 Rust config.rs。`LlmFileConfig`
+  只保留后端真实消费面（scripts_dir/摄像头/审计/策略/能力门控/工具层超时）。
+  **白名单 kKnown 全量保留**：两端共用一份 mybot.llm.json，模型侧键仍是
+  mybot-agent 的合法配置，C++ 只登记不校验（类型/值域坏值由 Rust 独占拒绝，
+  新增 pass_through 用例 18 例钉住）。R5m 互钉面如实收窄：字节预算摘要行与
+  test_cross_lang_limits（C++ 不再镜像任何 Rust 常量）退役，类型错镜像改用
+  audit_log（双消费字段）。
+- **agentaudit 死字段清退**（P1-6）：kind="model" 分支、session 行的
+  driver/model/endpoint/api_key_source/resumed 与 adoptSessionId/sanitizeEndpoint
+  在 C++ 侧零写入者（模型轮次审计由 agent/src/audit.rs 写进 agent 侧文件，
+  agent_e2e 已钉住），随 10 个死字段一并删除。
+- **安全设限三补**（P1-1/P1-2/P1-3）：
+  - Rust 审计日志新建以 0600 建立（此前随 umask 常 0644，而 model 行的 error
+    字段可能带回显片段）+ 既有宽权限文件响亮提醒一次（判据与
+    session::perms_warning 同口径）。
+  - 会话文件与 ICA sidecar 读取前 metadata 设限（上限与 BUDGET_BYTES_MAX 同源
+    64 MiB）——误指向大文件不整份进内存，与配置 64 KiB/提示词 1 MiB/密钥
+    64 KiB 的处处设限纪律对齐。
+  - C++ `sendFrame` 写侧 deadline（对齐 Rust 0333f1a 的修法）：MSG_DONTWAIT +
+    短拍休眠 + 进程内绝对 deadline，移除对 SO_SNDTIMEO setsockopt 的依赖
+    （其失败只告警的路径上防线静默缺位）；刻意不用 poll(POLLOUT)——AF_UNIX
+    在对端接收缓冲已满时仍报告可写，实测恒就绪而 send 永久阻塞。
+- **顺手收口**：config 的 llm-max-turns 区间改引 limits::MAX_TURNS_MIN/MAX
+  （区间单点）；hook::poisoned 的裸 eprintln 改检查式写出 errln；config 头注
+  「命令行 > env > 文件 > 缺省」按字段分列如实陈述（env 层只覆盖 4 个变量，
+  api_key 方向与其余字段相反）；dump_consts.lua 自 test/ 根移入 test/lib/
+  （phase5 引入的存量 selftest 红，构建期工具误放测试用例目录）。
+- 收口：干净重建零告警、run_all 269 通过/0 失败/1 跳过、ASan/UBSan 双跑全绿、
+  mcp_e2e 354 项、agent_e2e R1–R17、cargo 四检全绿（Rust 单测 118→120、
+  C++ 单测 630→611）。
+
 ### 2026-10-01 Rust agent 结构治理二批 + CliOptions 分组化（行为保持）
 
 - **解 `bridge ↔ ica` 类型环**（上轮 Phase 3 项 8 关联遗留）：`ToolSpec` 自
