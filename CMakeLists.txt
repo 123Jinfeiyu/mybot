@@ -123,7 +123,6 @@ set(MYBOT_CORE_SOURCES
   src/mcpbackend.cpp
   src/mcplisten.cpp
   src/mcptransport.cpp
-  src/promptpack.cpp
 )
 
 # 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，
@@ -215,7 +214,6 @@ add_executable(mybot_tests
   test/cpp/test_agenttools_subproc.cpp
   test/cpp/test_agentaudit.cpp
   test/cpp/test_agentpolicy.cpp
-  test/cpp/test_promptpack.cpp
   test/cpp/test_mcpbackend.cpp
   test/cpp/test_mcptransport.cpp
   test/cpp/test_cross_lang_limits.cpp
@@ -357,7 +355,7 @@ set(MYBOT_CPP_TEST_REGISTERED
   test_actionsource test_agentaudit test_agentpolicy test_agentproto test_agenttools test_agenttools_image test_agenttools_runcommand test_agenttools_sql test_agenttools_subproc test_agenttools_wait test_mcpbackend
   test_cliargs test_cross_lang_limits test_daemon_concurrency test_daemon test_expr test_hardware
   test_json test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
-  test_mcptransport test_mtmerge test_promptpack test_sqlparse_query test_robot test_robot_dispatch test_robot_hotdelete
+  test_mcptransport test_mtmerge test_sqlparse_query test_robot test_robot_dispatch test_robot_hotdelete
   test_robot_hotinsert test_robot_hotupdate test_robot_hotsql_plan test_robot_lifecycle
   test_sqlparse test_util)
 set(_missing_registered)
