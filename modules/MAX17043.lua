@@ -30,10 +30,10 @@
 --   5. 复位字 0x0054 -> CMD（0xFE）可全片复位（内核 reset_val），本驱动不用
 --   6. 需真电池才有意义：空载/无电池时 VCELL 趋近 0、SOC 无意义
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -57,92 +57,67 @@ local function read_reg16(fd, reg)
 	return v
 end
 
--- 【配置脚本】读版本号与 POR 标志（纯只读，不写寄存器）
-function build(data)
+require_driver("i2c", {
+	name = "MAX17043",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】读版本号与 POR 标志（纯只读，不写寄存器）
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- MAX17043 builder func get a table --------", data)
-	end
+		if DEBUG then
+			dbg_table("-------- MAX17043 builder func get a table --------", data)
+		end
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-----------------------------------------------------
+		-- 版本号（家族内不固定，仅日志；读不到 = 器件不在/总线不通）
+		local ver = read_reg16(fd, REG_VER)
+		if ver == nil then
+			return err("Failed to read MAX17043 version")
+		end
 
-	-----------------------------------------------------
-	-- 版本号（家族内不固定，仅日志；读不到 = 器件不在/总线不通）
-	local ver = read_reg16(fd, REG_VER)
-	if ver == nil then
-		return err("Failed to read MAX17043 version")
-	end
+		if os.getenv("BOT4CJ_DEBUG") == "1" then
+			print(string.format("MAX17043 init OK: addr=0x%02X, version=0x%04X", addr, ver))
+		end
+		return {  result = "OK"  }
+	end,
 
-	if os.getenv("BOT4CJ_DEBUG") == "1" then
-		print(string.format("MAX17043 init OK: addr=0x%02X, version=0x%04X", addr, ver))
-	end
-	return {  result = "OK"  }
-
-end
-
--- 【销毁MAX17043】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+	-- destroy 缺省 = 空操作（原 MAX17043 destroy 仅 arg_table + return OK，等价）
 
 
--- 【调用MAX17043】读电池电压与剩余电量
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
+	-- 【调用MAX17043】读电池电压与剩余电量
+	-- NOTE: 接收一个参数（表），返回一个结果（表）
+	call = function(ctx, data)
+		local fd = ctx.fd
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		if DEBUG then
+			dbg_table("-------- MAX17043 caller func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- MAX17043 caller func get a table --------", data)
-	end
+		-----------------------------------------------------
+		local v = read_reg16(fd, REG_VCELL)
+		if v == nil then
+			return err("Failed to read MAX17043 VCELL")
+		end
+		local s = read_reg16(fd, REG_SOC)
+		if s == nil then
+			return err("Failed to read MAX17043 SOC")
+		end
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- 返回字典：SOC 保留 1/256% 小数精度（内核取整为 >>8）
+		local ret = {
+			result = "OK",
+			VCELL = bitc.rshift(v, 4) * VCELL_LSB_V,
+			SOC   = s / 256.0
+		}
 
-	-----------------------------------------------------
-	local v = read_reg16(fd, REG_VCELL)
-	if v == nil then
-		return err("Failed to read MAX17043 VCELL")
-	end
-	local s = read_reg16(fd, REG_SOC)
-	if s == nil then
-		return err("Failed to read MAX17043 SOC")
-	end
+		if DEBUG then
+			print(string.format("MAX17043: VCELL=%.3fV SOC=%.2f%%", ret.VCELL, ret.SOC))
+		end
 
-	-- 返回字典：SOC 保留 1/256% 小数精度（内核取整为 >>8）
-	local ret = {
-		result = "OK",
-		VCELL = bitc.rshift(v, 4) * VCELL_LSB_V,
-		SOC   = s / 256.0
-	}
-
-	if DEBUG then
-		print(string.format("MAX17043: VCELL=%.3fV SOC=%.2f%%", ret.VCELL, ret.SOC))
-	end
-
-	return ret
-
-end
+		return ret
+	end,
+})
 
 
 -- =====================================================================

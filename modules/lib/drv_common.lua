@@ -361,8 +361,20 @@ function require_driver(bus, spec)
 	-- ② 总线校验分派（三族文案与旧驱动内联版本逐字对齐）
 	-- 统一返回 (fd, addr, err)：成功 = (fd, addr_or_nil, nil)；失败 = (nil, nil, err表)
 	-- addr 仅 i2c 非 nil；spi/uart 失败路径也返回三值，避免调用方解包错位
+	local i2c_default_addr = spec.i2c_addr_default
 	local validators = {
 		i2c = function(d)
+			-- 缺省地址器件（如 AMG8833 硬件固定 0x69）：address 列可省
+			if i2c_default_addr ~= nil and tonumber(d.address) == nil then
+				local fd = tonumber(d.fd)
+				if fd == nil then
+					return nil, nil, err("Invalid Argument: fd or address")
+				end
+				if not i2c_set_addr(fd, i2c_default_addr) then
+					return nil, nil, err("Invalid Argument: fd or address (set_addr failed)")
+				end
+				return fd, i2c_default_addr, nil
+			end
 			local fd, addr, ek = i2c_pair(d)
 			if fd == nil then return nil, nil, ek end
 			return fd, addr, nil
@@ -378,7 +390,7 @@ function require_driver(bus, spec)
 			-- fd 0 合法（HAL 约定 >= 0 即成功）；与 MHZ19/SCSCL 旧口径一致
 			local fd = tonumber(d.fd)
 			if fd == nil or fd < 0 then
-				return nil, nil, err("Invalid Argument: fd")
+				return nil, nil, err("Invalid Argument: fd (does the UART column reference an @UART variable?)")
 			end
 			return fd, nil, nil
 		end,

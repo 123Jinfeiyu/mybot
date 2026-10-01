@@ -31,10 +31,10 @@
 --   5. 补码：气压 24 位（负值减 0x1000000）、温度 16 位
 --      （Adafruit 实现减 0xFFFFFF 少 1，本驱动按标准补码修正）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -57,142 +57,116 @@ local wait_default = 50
 -- ==================== 模块级配置 ====================
 local cfg_wait
 
--- ==================== 配置脚本 ====================
-function build(data)
+require_driver("i2c", {
+	name = "LPS22HB",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- ==================== 配置脚本 ====================
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- LPS22HB builder func get a table --------", data)
-	end
+		if DEBUG then
+			dbg_table("-------- LPS22HB builder func get a table --------", data)
+		end
 
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
+		-- WHO_AM_I 自检
+		local id = i2c_read_reg(fd, REG_WHOAMI)
+		if id < 0 then
+			return err("LPS22HB not responding (read WHO_AM_I failed, check address 0x5C/0x5D and wiring)")
+		end
+		if id ~= CHIP_ID then
+			return err(string.format("LPS22HB unexpected WHO_AM_I 0x%02X (expect 0xB1; 0xBD=LPS25HB)", id))
+		end
 
-	-- WHO_AM_I 自检
-	local id = i2c_read_reg(fd, REG_WHOAMI)
-	if id < 0 then
-		return err("LPS22HB not responding (read WHO_AM_I failed, check address 0x5C/0x5D and wiring)")
-	end
-	if id ~= CHIP_ID then
-		return err(string.format("LPS22HB unexpected WHO_AM_I 0x%02X (expect 0xB1; 0xBD=LPS25HB)", id))
-	end
+		-- 软复位（SWRESET 自清零），轮询至完成
+		if not i2c_write_reg(fd, REG_CTRL2, BIT_SWRESET) then
+			return err("LPS22HB not responding (soft reset write failed)")
+		end
+		local waited = 0
+		while waited < 20 do
+			local c2 = i2c_read_reg(fd, REG_CTRL2)
+			if c2 < 0 then
+				return err("LPS22HB not responding (reset poll failed)")
+			end
+			if math.floor(c2 / 4) % 2 == 0 then break end
+			milli_sleep(1)
+			waited = waited + 1
+		end
 
-	-- 软复位（SWRESET 自清零），轮询至完成
-	if not i2c_write_reg(fd, REG_CTRL2, BIT_SWRESET) then
-		return err("LPS22HB not responding (soft reset write failed)")
-	end
-	local waited = 0
-	while waited < 20 do
+		-- 单次模式 + BDU（输出寄存器读期间不刷新，防撕裂）
+		if not i2c_write_reg(fd, REG_CTRL1, CTRL1_VALUE) then
+			return err("LPS22HB not responding (CTRL_REG1 write failed)")
+		end
+
+		-- 审计 2026-09-20（中）：非有限入参必须回落缺省——`wait < 0` 对 NaN/inf 恒假，
+		-- NaN 会一路带到下方 `waited >= wait_ms` 的轮询条件（恒假）→ 无界轮询挂死。
+		local wait = finite_of(data.wait)
+		if wait == nil or wait < 0 then wait = wait_default end
+		cfg_wait = math.floor(wait)
+
+		print(string.format("LPS22HB init OK: addr=0x%02X id=0xB1 mode=oneshot wait=%dms", addr, cfg_wait))
+		return {  result = "OK"  }
+	end,
+
+	-- destroy 缺省 = 空操作（原 LPS22HB destroy 仅 arg_table + return OK，等价）
+
+	-- ==================== 调用 ====================
+	-- 触发单次转换 -> 轮询完成 -> 5 字节突发读 -> 换算 P/T
+	call = function(ctx, data)
+		local fd = ctx.fd
+
+		if DEBUG then
+			dbg_table("-------- LPS22HB caller func get a table --------", data)
+		end
+
+		-- 审计 2026-09-20（中）：同 build —— NaN/inf 会让下方转换完成轮询无界挂死。
+		local wait_ms = finite_of(data.wait)
+		if wait_ms == nil then wait_ms = cfg_wait or wait_default end
+		if wait_ms < 0 then wait_ms = 0 end
+
+		-- 触发单次转换（读改写保留其余位；ONE_SHOT 硬件自清零）
 		local c2 = i2c_read_reg(fd, REG_CTRL2)
 		if c2 < 0 then
-			return err("LPS22HB not responding (reset poll failed)")
+			return err("LPS22HB not responding (read CTRL_REG2 failed)")
 		end
-		if math.floor(c2 / 4) % 2 == 0 then break end
-		milli_sleep(1)
-		waited = waited + 1
-	end
+		if not i2c_write_reg(fd, REG_CTRL2, c2 - c2 % 2 + BIT_ONESHOT) then
+			return err("LPS22HB not responding (trigger write failed)")
+		end
 
-	-- 单次模式 + BDU（输出寄存器读期间不刷新，防撕裂）
-	if not i2c_write_reg(fd, REG_CTRL1, CTRL1_VALUE) then
-		return err("LPS22HB not responding (CTRL_REG1 write failed)")
-	end
+		-- 轮询 ONE_SHOT 位清零（转换完成）
+		local waited = 0
+		while true do
+			local v = i2c_read_reg(fd, REG_CTRL2)
+			if v < 0 then
+				return err("LPS22HB not responding (poll failed)")
+			end
+			if v % 2 == 0 then break end
+			if waited >= wait_ms then
+				return err("LPS22HB conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)")
+			end
+			milli_sleep(1)
+			waited = waited + 1
+		end
 
-	-- 审计 2026-09-20（中）：非有限入参必须回落缺省——`wait < 0` 对 NaN/inf 恒假，
-	-- NaN 会一路带到下方 `waited >= wait_ms` 的轮询条件（恒假）→ 无界轮询挂死。
-	local wait = finite_of(data.wait)
-	if wait == nil or wait < 0 then wait = wait_default end
-	cfg_wait = math.floor(wait)
-
-	print(string.format("LPS22HB init OK: addr=0x%02X id=0xB1 mode=oneshot wait=%dms", addr, cfg_wait))
-	return {  result = "OK"  }
-
-end
-
--- ==================== 调用 ====================
--- 触发单次转换 -> 轮询完成 -> 5 字节突发读 -> 换算 P/T
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- LPS22HB caller func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
-
-	-- 审计 2026-09-20（中）：同 build —— NaN/inf 会让下方转换完成轮询无界挂死。
-	local wait_ms = finite_of(data.wait)
-	if wait_ms == nil then wait_ms = cfg_wait or wait_default end
-	if wait_ms < 0 then wait_ms = 0 end
-
-	-- 触发单次转换（读改写保留其余位；ONE_SHOT 硬件自清零）
-	local c2 = i2c_read_reg(fd, REG_CTRL2)
-	if c2 < 0 then
-		return err("LPS22HB not responding (read CTRL_REG2 failed)")
-	end
-	if not i2c_write_reg(fd, REG_CTRL2, c2 - c2 % 2 + BIT_ONESHOT) then
-		return err("LPS22HB not responding (trigger write failed)")
-	end
-
-	-- 轮询 ONE_SHOT 位清零（转换完成）
-	local waited = 0
-	while true do
-		local v = i2c_read_reg(fd, REG_CTRL2)
+		-- 5 字节突发读：气压 24 位（小端）+ 温度 16 位（小端）
+		local v = i2c_read_multi(fd, REG_PRESS, 5)
 		if v < 0 then
-			return err("LPS22HB not responding (poll failed)")
+			return err("LPS22HB not responding (read data failed)")
 		end
-		if v % 2 == 0 then break end
-		if waited >= wait_ms then
-			return err("LPS22HB conversion not ready (wait " .. math.floor(wait_ms) .. "ms timeout)")
-		end
-		milli_sleep(1)
-		waited = waited + 1
-	end
+		local b = {}
+		for i = 0, 4 do b[i + 1] = math.floor(v / 256 ^ (4 - i)) % 256 end
+		local pres = b[1] + b[2] * 256 + b[3] * 65536
+		if pres >= 0x800000 then pres = pres - 0x1000000 end		-- 24 位补码
+		local temp = b[4] + b[5] * 256
+		temp = bitc.s16(temp)			-- 16 位补码
 
-	-- 5 字节突发读：气压 24 位（小端）+ 温度 16 位（小端）
-	local v = i2c_read_multi(fd, REG_PRESS, 5)
-	if v < 0 then
-		return err("LPS22HB not responding (read data failed)")
-	end
-	local b = {}
-	for i = 0, 4 do b[i + 1] = math.floor(v / 256 ^ (4 - i)) % 256 end
-	local pres = b[1] + b[2] * 256 + b[3] * 65536
-	if pres >= 0x800000 then pres = pres - 0x1000000 end		-- 24 位补码
-	local temp = b[4] + b[5] * 256
-	temp = bitc.s16(temp)			-- 16 位补码
-
-	return {
-		result = "OK",
-		P = pres / 4096.0,
-		T = temp / 100.0
-	}
-
-end
-
--- ==================== 销毁 ====================
--- 单次模式本身即 power-down；fd 归 I2C 硬件变量所有
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+		return {
+			result = "OK",
+			P = pres / 4096.0,
+			T = temp / 100.0
+		}
+	end,
+})
 
 
 

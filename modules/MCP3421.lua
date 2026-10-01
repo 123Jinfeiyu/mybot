@@ -40,10 +40,10 @@
 --   驱动、libdriver/mcp3421、Adafruit_MCP3421 三方实现交叉验证。
 --   单次触发极性（写 RDY=1 启动转换）沿用两套参考库的实现。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -108,21 +108,17 @@ end
 
 -- ==================== 配置脚本 ====================
 -- 写配置 -> 读回回显校验（兼在位探测）
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "MCP3421",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- MCP3421 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 解析配置
@@ -178,26 +174,19 @@ function build(data)
 		addr, res, pga, opmode_s, RES_SPS[res], cfg_lsb_v * 1e6))
 	return {  result = "OK"  }
 
-end
+	end,
 
 -- ==================== 调用 ====================
 -- 取一次转换结果。数据未就绪时轮询等待（wait 超时仍无新数据则 ERR）。
 -- 返回 { result, raw, voltage }，键名与 ADS1115 驱动对齐。
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- MCP3421 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	local wait_ms = finite_of(data.wait)
@@ -233,32 +222,17 @@ function call(data)
 		waited = waited + 5
 	end
 
-end
-
--- ==================== 销毁 ====================
--- 写 O/C=0（RDY=0 不触发）：当前转换完成后器件进入低功耗待机，保留速率/增益
--- 配置；总线 fd 归 I2C 硬件变量所有，不 close。
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- MCP3421 ender func get a table --------", data)
-	end
-
+end,
+destroy = function(ctx, data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address)
 	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) and cfg_trigger then
 		-- 仅保留速率+增益位（低 4 位）：RDY=0 不触发、O/C=0 单次 -> 转换完即待机
 		i2c_write_multi(fd, cfg_trigger % 16)
 	end
-
 	return {  result = "OK"  }
-
-end
+end,
+})
 
 
 -- =====================================================================

@@ -32,10 +32,10 @@
 --   CTRL_GAS_1 的 RUN_GAS：0x10=BME680 低量程 / 0x20=BME688 高量程。
 --   过采样固定 x1（T/P/H），IIR 滤波 ×3，可按需调。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -208,20 +208,14 @@ local cfg_variant		-- VARIANT_680 / VARIANT_688
 local cfg_wait			-- call 转换超时 ms
 
 -- ==================== 配置脚本 ====================
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "BME688",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- BME688 builder func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
 	end
 
 	-- 软复位 -> Chip ID -> 变体甄别
@@ -296,24 +290,15 @@ function build(data)
 		addr, variant == VARIANT_688 and "BME688" or "BME680", heatr_temp, heatr_dur, C.t1, C.p1, C.h1))
 	return {  result = "OK"  }
 
-end
+	end,
 
 -- ==================== 调用 ====================
 -- 触发一次强制模式转换（T+P+H+气体），等待完成后读场数据并补偿。
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- BME688 caller func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
 	end
 
 	local wait_ms = tonumber(data.wait) or cfg_wait or 300
@@ -389,21 +374,8 @@ function call(data)
 		GAS_OK = gas_ok and 1 or 0
 	}
 
-end
-
--- ==================== 销毁 ====================
--- 置睡眠模式（清 CTRL_MEAS 模式位），加热器停止；fd 归 I2C 硬件变量所有
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- BME688 ender func get a table --------", data)
-	end
-
+end,
+destroy = function(ctx, data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address)
 	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
@@ -412,10 +384,9 @@ function destroy(data)
 			i2c_write_reg(fd, REG_CTRL_MEAS, ctrl - (ctrl % 4))
 		end
 	end
-
 	return {  result = "OK"  }
-
-end
+end,
+})
 
 
 

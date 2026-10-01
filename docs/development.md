@@ -83,10 +83,13 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 ## 新增驱动
 
-在 `modules/` 加一个 `<矩阵名>.lua`（dofile HAL，实现 build/call/destroy 语义）。契约要点：
+在 `modules/` 加一个 `<矩阵名>.lua`。硬件/总线驱动使用 `require_driver` 框架声明
+总线类型与业务闭包（见下）；非驱动模块（`Relay`/`dummy` 等）仍用独立 `function`
+定义。契约要点：
 
 - `build`/`call`/`destroy` 必须返回带 `result` 键的表（`"OK"` 或 `"ERR"`）；返回非表或漏写 `return` 会被判契约违反并中断。协议型驱动（如 `Llm*`）同样适用——`call(nil)` 必须返 ERR 契约表而非抛 Lua error
-- 入口第一行必须是 `local ok, ek = arg_table(data)` + `if not ok then return ek end`（`drv_common`）——它同时承担入参类型校验与 `proto=virt` 虚拟总线注入前置，手写 `type(data) ~= "table"` 内联检查会绕过注入钩子（`run_all.sh` 的 lint 段会拦；Camera 是唯一豁免，见其头注）
+- 硬件驱动使用 `require_driver("i2c"|"spi"|"uart", { name=, build=, call=, destroy= })`，框架自动处理 `arg_table` 入参校验与总线校验（`i2c_pair` / `fd≥0`）、`proto=virt` 虚拟总线注入前置，驱动闭包接收 `ctx.fd`/`ctx.addr` 直接写业务逻辑
+- 非驱动模块（`Relay`/`dummy` 等）入口第一行仍需 `local ok, ek = arg_table(data)` + `if not ok then return ek end`（`drv_common`）——它同时承担入参类型校验与 `proto=virt` 虚拟总线注入前置，手写 `type(data) ~= "table"` 内联检查会绕过注入钩子（`run_all.sh` 的 lint 段会拦；Camera 是唯一豁免，见其头注）
 - **模块路径引导固定写法**（多路径加载的前提）：`local mpath = __mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")`，后续 lib 一律 `dofile(mpath.resolve("lib/xxx.lua"))`。`__mpath` 由宿主建沙箱时注入（逐段探测），直接写 `(env):match("[^:]+")` 只取首段、多路径布局下会失败；`run_all.sh` 的 lint 段会拦
 - `result`/`message`/`mode` 三键由框架保留（见 [dsl.md](dsl.md)）
 - 建议随驱动在文件尾部内嵌 `<矩阵名>_VIRT` 仿真模型，接入 virtbus 回归（见 [virtbus.md](virtbus.md)）
@@ -103,7 +106,7 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 一个 Lua 文件 = 一类硬件。结构脚本里 `CREATE TABLE Buzzer ...`，框架按表名在 `modules/` 下找 `Buzzer.lua`（目录由 `BOT4CJ_MODULE_PATH` 指定，默认 `./modules`，冒号分隔多段逐段探测）；矩阵每一行的 `name` 列成为一个硬件变量实例（如 `relay0`、`timer-0`），结构脚本里其他列的值按列名进入驱动的 data 表。
 
-驱动最多定义**三个全局函数**：`build` / `call` / `destroy`。三者签名一致：收一张表、返回一张表。
+硬件/总线驱动使用 `require_driver` 声明式框架：指定总线类型（`"i2c"` / `"spi"` / `"uart"`）和业务闭包（`build`/`call`/可选 `destroy`），框架自动生成全局 `build`/`call`/`destroy` 并处理入参校验与总线初始化。非驱动工具模块（`Relay`/`dummy`/`Kalman`/`Ema` 等）仍用传统的全局函数模式。
 
 ### 二、三段式契约
 
@@ -119,7 +122,10 @@ cd build && ctest --output-on-failure -R cpp_unit
 2. **引用机制**：某列的值如果是**别的硬件变量名**，框架先调它并把返回表字段合并进来——@Monitor 读守护的 `data.v0`、I2C 驱动拿总线的 `data.i2c` 都来自这里；驱动自己写的 `return { delay = ... }` 同样经框架合并后转发（Relay 返回 delay → controller 指定的 Timer）；
 3. **返回值协议**：返回表与框架元数据合并后继续向下游转发；失败返回 `err(...)` 表，框架停止该行并报错退出。
 
-### 三、最小模板：modules/Relay.lua 逐段
+### 三、最小模板：modules/Relay.lua 逐段（非驱动模块写法）
+
+> **注意**：`Relay` 是非驱动工具模块，仍用独立全局函数模式。硬件/总线驱动请使用
+> `require_driver` 框架（见下节 EMC2101 示例与 [drivers.md](drivers.md) 的驱动契约节）。
 
 ```lua
 -- 标准前导（纯软件模块不需要 HAL，只需要 mpath/print_table/drv_common）
@@ -149,7 +155,8 @@ end
 ```
 
 **drv_common 关键工具**（modules/lib/drv_common.lua）：
-- `arg_table(data)`：非表直接拒；`proto=virt` 时先 `virt_prepare`（虚拟硬件前置），真机路径一次比较即关闭；
+- `require_driver(bus, spec)`：声明式驱动框架（详见 [drivers.md](drivers.md)），`arg_table` 入参校验 + 虚拟硬件前置 + 总线校验由框架统一处理，驱动闭包接收 `ctx.fd`/`ctx.addr`；
+- `arg_table(data)`：非驱动模块（`Relay`/`dummy` 等）仍需手动调用；非表直接拒；`proto=virt` 时先 `virt_prepare`（虚拟硬件前置），真机路径一次比较即关闭；
 - `finite_of(v)`：NaN 防护（审计 P3）——NaN 非 nil，`== nil` 兜不住，会把 NaN 当真实值转发到下游；请一律经它归一；
 - `err(msg)`：失败契约，返回错误表；`clampi(v, lo, hi)`、`int_or(v, def, lo, hi)`、`num_or(v, def)` 数值归一；
 - `guard_build(rollback, fn, data)`：build 失败回滚骨架。
@@ -157,25 +164,34 @@ end
 ### 四、有硬件的驱动：I2C 为例（EMC2101 同款写法）
 
 ```lua
-dofile(mpath.resolve("lib/HAL.lua"))    -- + HAL：i2c/GPIO/SPI/UART
-local bitc = dofile(mpath.resolve("bitcompat.lua"))  -- 符号扩展单点
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+dofile(mpath.resolve("lib/drv_common.lua"))                       -- 1 行前导（框架处理校验）
+local bitc = dofile(mpath.resolve("bitcompat.lua"))               -- 符号扩展单点
 
-function build(data)
-	local ok, ek = arg_table(data)
-	if not ok then return ek end
-	local fd, addr, ek = i2c_pair(data) -- fd/address 存在性 + set_addr 校验（drv_common 单点）
-	if fd == nil then return ek end
-	local part = i2c_read_reg(fd, REG_PART_ID)   -- 身份甄别
-	if part < 0 then return err("Failed to read ID") end
-	return { result = "OK" }
-end
+require_driver("i2c", {
+    name = "EMC2101",
+    build = function(ctx, data)
+        local fd = ctx.fd   -- 框架已完成 arg_table + i2c_pair
+        local part = i2c_read_reg(fd, REG_PART_ID)   -- 身份甄别
+        if part < 0 then return err("Failed to read ID") end
+        return { result = "OK" }
+    end,
+    call = function(ctx, data)
+        local fd = ctx.fd
+        -- 业务读数逻辑
+        return { result = "OK", v0 = temperature }
+    end,
+    -- destroy 省略 = 框架默认 no-op（无需器件收尾）
+})
 ```
 
 要点：
+- **前导简化**：旧模式 5 行（HAL + print_table + drv_common + arg_table + i2c_pair）→ 新模式 1 行（`drv_common.lua`），`arg_table` + `i2c_pair` 样板由框架收敛；
+- **`ctx.fd`/`ctx.addr`**：框架按总线类型自动校验并注入，驱动直接使用，无需手动提取；
 - HAL 总线 API（modules/lib/HAL.lua）：`i2c_open(path)` / `i2c_close(fd)` / `i2c_write_reg(fd, reg, val)` / `i2c_read_multi_bytes(fd, reg, n)` / `i2c_read_bytes(fd, n)` / `i2c_write_reg16(fd, reg16, ...)`；
-- 需要 set_addr 前额外校验的驱动用 `i2c_check(data)`（MS5611 OSR 档位、PCF8574 地址族），否则 `i2c_pair(data)`；
+- 需要 set_addr 前额外校验的驱动在 build 闭包里用 `i2c_check(data)`（MS5611 OSR 档位、PCF8574 地址族），否则框架的 `i2c_pair` 已覆盖；
 - 符号扩展一律走 `bitcompat.lua` 单点（`M.u16le/M.s16le/M.s16/M.s12/M.s8`，LuaJIT 内建 bit / 纯 Lua 双兼容）；不要手写补码拷贝（审计 #30 已清掉 3 处同文件遮蔽）；
-- **虚拟硬件**：`arg_table` 在 `proto=virt` 时自动 `virt_prepare`，测试不碰真总线。
+- **虚拟硬件**：框架在调用驱动闭包前自动完成 `arg_table` → `virt_prepare`，测试不碰真总线。
 
 ### 五、结构脚本 + 动作脚本
 
@@ -205,7 +221,7 @@ d1.test;
 
 ### 七、新驱动 checklist（照抄即通）
 
-1. `modules/X.lua`：标准前导 + build/call/destroy 三段 + arg_table 开头 + err 失败契约；
+1. `modules/X.lua`：硬件驱动用 `require_driver("i2c"|"spi"|"uart", { name=, build=, call= })` 声明总线与业务闭包（`destroy` 可省 = 框架默认 no-op）；非驱动模块用独立 `function build/call/destroy` + `arg_table` 开头；
 2. 数值/布尔入参过 `finite_of` / `int_or` / `clampi`；符号扩展走 bitc；
 3. `robots/xxx.sql` 结构脚本（含 controller 列则配引用机制）；
 4. `scripts/xxx.mt` 动作脚本（@Action）；

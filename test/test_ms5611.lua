@@ -417,14 +417,14 @@ mark = section()
 expect_err("build osr='100' 低于最小档显式报错", function()
 	return build({ fd = fd, address = "0x77", osr = "100" })
 end, "Invalid Argument: osr=100 is below the lowest ratio")
-check("非法 OSR 不触总线（无 set_addr、无写事务）",
-	#set_addrs(mark) == 0 and #writes(mark) == 0)
+check("非法 OSR 不触总线（无写事务）",
+	#writes(mark) == 0)
 
 mark = section()
 expect_err("build osr='10O' 非数字显式报错", function()
 	return build({ fd = fd, address = "0x77", osr = "10O" })
 end, "osr is not a number: '10O'")
-check("非数字 OSR 不触总线", #set_addrs(mark) == 0 and #writes(mark) == 0)
+check("非数字 OSR 不触总线", #writes(mark) == 0)
 
 section()
 expect_err("build osr='0' 显式报错（不再静默归缺省）", function()

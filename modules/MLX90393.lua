@@ -55,10 +55,10 @@
 --   自动执行一次 HR，显式再做一次无害）-> 写 GAIN_SEL（读-改-写 + 回读校验）
 --   -> SM/RM 试测一帧并丢弃（甄别在位、打通 触发/轮询/读回 全链路）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -217,126 +217,92 @@ local function parse_response(b)
 	return ret
 end
 
--- 【配置脚本】复位 -> Memory Recall -> 写 GAIN_SEL -> 试测一帧自检
-function build(data)
+require_driver("i2c", {
+	name = "MLX90393",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】复位 -> Memory Recall -> 写 GAIN_SEL -> 试测一帧自检
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- MLX90393 builder func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- MLX90393 builder func get a table --------", data)
-	end
+		local fd = ctx.fd
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- gain 列 -> GAIN_SEL：取整后钳到 0~7（非法/'-' 归缺省 0）
+		local gain = tonumber(data.gain)
+		if gain == nil then gain = DEF_GAIN end
+		gain = math.floor(gain)
+		if gain < 0 then gain = 0 end
+		if gain > 7 then gain = 7 end
 
-	-- gain 列 -> GAIN_SEL：取整后钳到 0~7（非法/'-' 归缺省 0）
-	local gain = tonumber(data.gain)
-	if gain == nil then gain = DEF_GAIN end
-	gain = math.floor(gain)
-	if gain < 0 then gain = 0 end
-	if gain > 7 then gain = 7 end
+		-- timeout 列 -> 轮询超时 ms（非法/非正数归缺省）
+		local to = tonumber(data.timeout)
+		if to == nil or to < 1 then to = DEF_TIMEOUT end
+		poll_timeout_ms = math.floor(to)
 
-	-- timeout 列 -> 轮询超时 ms（非法/非正数归缺省）
-	local to = tonumber(data.timeout)
-	if to == nil or to < 1 then to = DEF_TIMEOUT end
-	poll_timeout_ms = math.floor(to)
+		-- 灵敏度：µT/LSB 随增益倍数正比（SEL=0 基准 × tab/5）
+		sens_xy = SENS_XY_0 * GAIN_TAB[gain + 1] / GAIN_BASE
+		sens_z  = SENS_Z_0  * GAIN_TAB[gain + 1] / GAIN_BASE
 
-	-- 灵敏度：µT/LSB 随增益倍数正比（SEL=0 基准 × tab/5）
-	sens_xy = SENS_XY_0 * GAIN_TAB[gain + 1] / GAIN_BASE
-	sens_z  = SENS_Z_0  * GAIN_TAB[gain + 1] / GAIN_BASE
+		-----------------------------------------------------
+		-- RT 暖复位
+		if not send_cmd(fd, CMD_RESET) then
+			return err("Failed to reset MLX90393")
+		end
+		milli_sleep(T_RESET_MS)
 
-	-----------------------------------------------------
-	-- RT 暖复位（datasheet：RT 后片内自动执行一次 HR，易失内存回 NVRAM）
-	if not send_cmd(fd, CMD_RESET) then
-		return err("Failed to reset MLX90393")
-	end
-	milli_sleep(T_RESET_MS)
+		if not send_cmd(fd, CMD_RECALL) then
+			return err("Failed to recall MLX90393 TRIM")
+		end
+		milli_sleep(T_RECALL_MS)
 
-	-- HR 显式再恢复一次出厂 TRIM（自动 HR 之外的冗余保险，无害）
-	if not send_cmd(fd, CMD_RECALL) then
-		return err("Failed to recall MLX90393 TRIM")
-	end
-	milli_sleep(T_RECALL_MS)
+		-- 写 GAIN_SEL（读-改-写）
+		local g = read_reg16(fd, REG_GAIN)
+		if g == nil then
+			return err("Failed to read MLX90393 GAIN register")
+		end
+		local newg = bitc.bor(bitc.band(g, 0xFF8F), bitc.lshift(gain, 4))
+		if not write_reg(fd, REG_GAIN, newg) then
+			return err("Failed to write MLX90393 GAIN register")
+		end
+		local g2 = read_reg16(fd, REG_GAIN)
+		if g2 ~= newg then
+			return err(string.format("MLX90393 GAIN verify failed: wrote 0x%04X, read back 0x%04X", newg, g2 or 0))
+		end
 
-	-- 写 GAIN_SEL（读-改-写：保留 GAIN 寄存器其余位，只改 [6:4]）
-	local g = read_reg16(fd, REG_GAIN)
-	if g == nil then
-		return err("Failed to read MLX90393 GAIN register")
-	end
-	local newg = bitc.bor(bitc.band(g, 0xFF8F), bitc.lshift(gain, 4))
-	if not write_reg(fd, REG_GAIN, newg) then
-		return err("Failed to write MLX90393 GAIN register")
-	end
-	-- 回读校验
-	local g2 = read_reg16(fd, REG_GAIN)
-	if g2 ~= newg then
-		return err(string.format("MLX90393 GAIN verify failed: wrote 0x%04X, read back 0x%04X", newg, g2 or 0))
-	end
+		-- 试测一帧并丢弃
+		local b, emsg = measure_once(fd)
+		if b == nil then
+			return err(emsg)
+		end
 
-	-- 试测一帧并丢弃：甄别在位 + 打通 触发/轮询/读回 全链路
-	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
-	local b, emsg = measure_once(fd)
-	if b == nil then
-		return err(emsg)
-	end
+		print(string.format("MLX90393 init OK: addr=0x%02X, gain=%d, sens_xy=%.4f sens_z=%.4f µT/LSB, timeout=%dms",
+			ctx.addr, gain, sens_xy, sens_z, poll_timeout_ms))
+		return {  result = "OK"  }
+	end,
 
-	print(string.format("MLX90393 init OK: addr=0x%02X, gain=%d, sens_xy=%.4f sens_z=%.4f µT/LSB, timeout=%dms",
-		addr, gain, sens_xy, sens_z, poll_timeout_ms))
-	return {  result = "OK"  }
+	-- destroy 缺省 = 空操作（原 MLX90393 destroy 仅 arg_table + return OK，等价）
 
-end
+	-- 【调用MLX90393】单次测量
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- MLX90393 caller func get a table --------", data)
+		end
 
--- 【销毁MLX90393】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
+		local fd = ctx.fd
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		if poll_timeout_ms == nil or sens_xy == nil then
+			return err("MLX90393 not built (build first)")
+		end
 
-	return {  result = "OK"  }
+		local b, emsg = measure_once(fd)
+		if b == nil then
+			return err(emsg)
+		end
 
-end
-
-
--- 【调用MLX90393】单次测量：X/Y/Z（µT）、T（°C）+ 有符号原始计数 + 状态字节
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- MLX90393 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-- build 前置守卫：poll_timeout_ms/sens_xy 仅 build 赋值，
-	-- 未 build 先 call 会对 nil 做比较/算术裸 error（与 INA219/LTC2944 对齐）
-	if poll_timeout_ms == nil or sens_xy == nil then
-		return err("MLX90393 not built (build first)")
-	end
-
-	-----------------------------------------------------
-	local b, emsg = measure_once(fd)
-	if b == nil then
-		return err(emsg)
-	end
-
-	return parse_response(b)
-
-end
+		return parse_response(b)
+	end,
+})
 
 
 

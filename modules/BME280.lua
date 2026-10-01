@@ -23,11 +23,10 @@
 --   5. 补偿公式为数据手册附录 8.3 的浮点版
 --   6. 过采样固定 x1/x1/x1（单次测量约 6~9ms），两次 call 建议间隔 > 1s
 
--- ==================== 寄存器 ====================
--- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -69,201 +68,185 @@ local cal_ok = false
 local u16le, s16le = bitc.u16le, bitc.s16le
 local s12, s8 = bitc.s12, bitc.s8
 
--- 【配置脚本】初始化BME280：校验ID、软复位、读校准系数、配置过采样
-function build(data)
-    local ok, ek = arg_table(data)
-    if not ok then
-    	return ek
-    end
+require_driver("i2c", {
+	name = "BME280",
 
-    if DEBUG then
-        dbg_table("-------- BME280 builder func get a table --------", data)
-    end
+	-- 【配置脚本】初始化BME280：校验ID、软复位、读校准系数、配置过采样
+	build = function(ctx, data)
+	    if DEBUG then
+	        dbg_table("-------- BME280 builder func get a table --------", data)
+	    end
 
-    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-    local fd, addr, ek = i2c_pair(data)
-    if fd == nil then return ek end
+	    local fd = ctx.fd
 
-    -- 校验芯片ID
-    local id = i2c_read_multi(fd, REG_ID, 1)
-    if id < 0 then
-        return err("Failed to read chip id")
-    end
-    if id ~= CHIP_ID_BME280 then
-        return err(string.format("Unexpected chip id: 0x%02X (BMP280?)", id))
-    end
+	    -- 校验芯片ID
+	    local id = i2c_read_multi(fd, REG_ID, 1)
+	    if id < 0 then
+	        return err("Failed to read chip id")
+	    end
+	    if id ~= CHIP_ID_BME280 then
+	        return err(string.format("Unexpected chip id: 0x%02X (BMP280?)", id))
+	    end
 
-    -- 软复位，等待NVM校准数据拷贝完成（im_update位清零）
-    i2c_write_reg(fd, REG_RESET, RESET_CMD)
-    milli_sleep(3)
-    local copied = false
-    for _ = 1, 50 do
-        local st = i2c_read_multi(fd, REG_STATUS, 1)
-        if st >= 0 and bitc.band(st, STATUS_IM_UPDATE) == 0 then
-            copied = true
-            break
-        end
-        milli_sleep(1)
-    end
-    if not copied then
-        return err("Calibration copy timeout")
-    end
+	    -- 软复位，等待NVM校准数据拷贝完成（im_update位清零）
+	    i2c_write_reg(fd, REG_RESET, RESET_CMD)
+	    milli_sleep(3)
+	    local copied = false
+	    for _ = 1, 50 do
+	        local st = i2c_read_multi(fd, REG_STATUS, 1)
+	        if st >= 0 and bitc.band(st, STATUS_IM_UPDATE) == 0 then
+	            copied = true
+	            break
+	        end
+	        milli_sleep(1)
+	    end
+	    if not copied then
+	        return err("Calibration copy timeout")
+	    end
 
-    -- 校准系数：0x88~0x9F共24字节（小端），按4字节块读取
-    local b = read_block_bytes(fd, REG_TP_CAL, 24, 4)
-    if b == nil then
-        return err("Failed to read calibration")
-    end
-    dig_T1 = u16le(b, 1);  dig_T2 = s16le(b, 3);  dig_T3 = s16le(b, 5)
-    dig_P1 = u16le(b, 7);  dig_P2 = s16le(b, 9);  dig_P3 = s16le(b, 11)
-    dig_P4 = s16le(b, 13); dig_P5 = s16le(b, 15); dig_P6 = s16le(b, 17)
-    dig_P7 = s16le(b, 19); dig_P8 = s16le(b, 21); dig_P9 = s16le(b, 23)
+	    -- 校准系数：0x88~0x9F共24字节（小端），按4字节块读取
+	    local b = read_block_bytes(fd, REG_TP_CAL, 24, 4)
+	    if b == nil then
+	        return err("Failed to read calibration")
+	    end
+	    dig_T1 = u16le(b, 1);  dig_T2 = s16le(b, 3);  dig_T3 = s16le(b, 5)
+	    dig_P1 = u16le(b, 7);  dig_P2 = s16le(b, 9);  dig_P3 = s16le(b, 11)
+	    dig_P4 = s16le(b, 13); dig_P5 = s16le(b, 15); dig_P6 = s16le(b, 17)
+	    dig_P7 = s16le(b, 19); dig_P8 = s16le(b, 21); dig_P9 = s16le(b, 23)
 
-    local h1 = i2c_read_multi(fd, REG_H1, 1)
-    if h1 < 0 then
-        return err("Failed to read calibration")
-    end
-    dig_H1 = h1
+	    local h1 = i2c_read_multi(fd, REG_H1, 1)
+	    if h1 < 0 then
+	        return err("Failed to read calibration")
+	    end
+	    dig_H1 = h1
 
-    -- H2(0xE1,s16) H3(0xE3,u8) H4(s12: E4<<4|E5低4位) H5(s12: E6<<4|E5高4位) H6(0xE7,s8)
-    -- 共7字节：HAL 合并读上限 6，走字节表版一次事务读全块（不合并、无 2^53 精度问题）
-    local e = i2c_read_multi_bytes(fd, REG_H_CAL, 7)
-    if e == nil then
-        return err("Failed to read calibration")
-    end
-    dig_H2 = s16le(e, 1)
-    dig_H3 = e[3]
-    dig_H4 = s12(bitc.bor(bitc.lshift(e[4], 4), bitc.band(e[5], 0x0F)))
-    dig_H5 = s12(bitc.bor(bitc.lshift(e[6], 4), bitc.rshift(e[5], 4)))
-    dig_H6 = s8(e[7])
+	    -- H2(0xE1,s16) H3(0xE3,u8) H4(s12: E4<<4|E5低4位) H5(s12: E6<<4|E5高4位) H6(0xE7,s8)
+	    -- 共7字节：HAL 合并读上限 6，走字节表版一次事务读全块（不合并、无 2^53 精度问题）
+	    local e = i2c_read_multi_bytes(fd, REG_H_CAL, 7)
+	    if e == nil then
+	        return err("Failed to read calibration")
+	    end
+	    dig_H2 = s16le(e, 1)
+	    dig_H3 = e[3]
+	    dig_H4 = s12(bitc.bor(bitc.lshift(e[4], 4), bitc.band(e[5], 0x0F)))
+	    dig_H5 = s12(bitc.bor(bitc.lshift(e[6], 4), bitc.rshift(e[5], 4)))
+	    dig_H6 = s8(e[7])
 
-    -- 配置：滤波关闭 -> 湿度过采样 -> 温/压过采样，保持睡眠模式
-    i2c_write_reg(fd, REG_CONFIG, 0x00)
-    i2c_write_reg(fd, REG_CTRL_HUM, OSRS_H_X1)
-    i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP))
+	    -- 配置：滤波关闭 -> 湿度过采样 -> 温/压过采样，保持睡眠模式
+	    i2c_write_reg(fd, REG_CONFIG, 0x00)
+	    i2c_write_reg(fd, REG_CTRL_HUM, OSRS_H_X1)
+	    i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP))
 
-    -- 写后回读寄存器，确认配置生效（覆盖写失败与器件未应用两种情形）
-    local chk_hum = i2c_read_multi(fd, REG_CTRL_HUM, 1)
-    local chk_meas = i2c_read_multi(fd, REG_CTRL_MEAS, 1)
-    if chk_hum ~= OSRS_H_X1 or chk_meas ~= (bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP)) then
-        return err("Failed to configure BME280")
-    end
+	    -- 写后回读寄存器，确认配置生效（覆盖写失败与器件未应用两种情形）
+	    local chk_hum = i2c_read_multi(fd, REG_CTRL_HUM, 1)
+	    local chk_meas = i2c_read_multi(fd, REG_CTRL_MEAS, 1)
+	    if chk_hum ~= OSRS_H_X1 or chk_meas ~= (bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP)) then
+	        return err("Failed to configure BME280")
+	    end
 
-    cal_ok = true
-    print(string.format("BME280 init OK: addr=0x%02X, oversampling=x1/x1/x1", addr))
-    return { result = "OK" }
-end
+	    cal_ok = true
+	    print(string.format("BME280 init OK: addr=0x%02X, oversampling=x1/x1/x1", ctx.addr))
+	    return { result = "OK" }
+	end,
 
--- 【销毁脚本】进入睡眠模式
-function destroy(data)
-    local ok, ek = arg_table(data)
-    if not ok then
-    	return ek
-    end
+	-- 【销毁脚本】进入睡眠模式（非空：写寄存器 + 清 cal_ok 标记；缺 fd/addr 安全跳过）
+	destroy = function(ctx, data)
+	    local fd = tonumber(data.fd)
+	    local addr = tonumber(data.address)
+	    if fd ~= nil and fd >= 0 and addr ~= nil and i2c_set_addr(fd, addr) then
+	        i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP))
+	    end
+	    cal_ok = false
+	    return { result = "OK" }
+	end,
 
-    local fd = tonumber(data.fd)
-    local addr = tonumber(data.address)
-    if fd ~= nil and fd >= 0 and addr ~= nil and i2c_set_addr(fd, addr) then
-        i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_SLEEP))
-    end
-    cal_ok = false
+	-- 【调用脚本】单次触发测量并返回 T(°C) / P(Pa) / H(%RH)
+	call = function(ctx, data)
+	    if not cal_ok then
+	        return err("BME280 not initialized, run build first")
+	    end
 
-    return { result = "OK" }
-end
+	    local fd = ctx.fd
 
--- 【调用脚本】单次触发测量并返回 T(°C) / P(Pa) / H(%RH)
-function call(data)
-    local ok, ek = arg_table(data)
-    if not ok then
-    	return ek
-    end
+	    -- 单次触发测量（forced模式，完成后自动回到睡眠）
+	    -- 审计 #3：触发写必须判错——NACK 时 STATUS.measuring 本就为 0，轮询会
+	    -- 立即通过并把上一次的陈旧数据以 result=OK 发布
+	    if not i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_FORCED)) then
+	        return err("Failed to trigger forced measurement")
+	    end
 
-    if not cal_ok then
-        return err("BME280 not initialized, run build first")
-    end
+	    -- x1过采样单次测量约6~9ms，先等5ms再轮询measuring位，最多再等100ms
+	    milli_sleep(5)
+	    local ready = false
+	    for _ = 1, 100 do
+	        local st = i2c_read_multi(fd, REG_STATUS, 1)
+	        if st >= 0 and bitc.band(st, STATUS_MEASURING) == 0 then
+	            ready = true
+	            break
+	        end
+	        milli_sleep(1)
+	    end
+	    if not ready then
+	        return err("Measurement timeout")
+	    end
 
-    -- 校验收敛至 drv_common.i2c_pair（报错口径不变）
-    local fd, addr, ek = i2c_pair(data)
-    if fd == nil then return ek end
+	    -- 数据区 0xF7~0xFE（大端）：P(20bit) T(20bit) H(16bit)，单事务 8 字节读
+	    -- （C-L1：forced 模式下新测量可在两笔事务之间完成，分块读会撕裂 P/T/H；
+	    -- 字节表版无 2^53 精度限制，8 字节单事务合法）
+	    local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
+	    if b == nil then
+	        return err("Failed to read measurement")
+	    end
 
-    -- 单次触发测量（forced模式，完成后自动回到睡眠）
-    -- 审计 #3：触发写必须判错——NACK 时 STATUS.measuring 本就为 0，轮询会
-    -- 立即通过并把上一次的陈旧数据以 result=OK 发布
-    if not i2c_write_reg(fd, REG_CTRL_MEAS, bitc.bor(CTRL_MEAS_BASE, MODE_FORCED)) then
-        return err("Failed to trigger forced measurement")
-    end
+	    local adc_P = bitc.bor(bitc.bor(bitc.lshift(b[1], 12), bitc.lshift(b[2], 4)), bitc.rshift(b[3], 4))
+	    local adc_T = bitc.bor(bitc.bor(bitc.lshift(b[4], 12), bitc.lshift(b[5], 4)), bitc.rshift(b[6], 4))
+	    local adc_H = bitc.bor(bitc.lshift(b[7], 8), b[8])
 
-    -- x1过采样单次测量约6~9ms，先等5ms再轮询measuring位，最多再等100ms
-    milli_sleep(5)
-    local ready = false
-    for _ = 1, 100 do
-        local st = i2c_read_multi(fd, REG_STATUS, 1)
-        if st >= 0 and bitc.band(st, STATUS_MEASURING) == 0 then
-            ready = true
-            break
-        end
-        milli_sleep(1)
-    end
-    if not ready then
-        return err("Measurement timeout")
-    end
+	    if adc_T == 0x80000 then
+	        return err("Invalid temperature reading")
+	    end
+	    if adc_H == 0x8000 then
+	        return err("Invalid humidity reading")
+	    end
 
-    -- 数据区 0xF7~0xFE（大端）：P(20bit) T(20bit) H(16bit)，单事务 8 字节读
-    -- （C-L1：forced 模式下新测量可在两笔事务之间完成，分块读会撕裂 P/T/H；
-    -- 字节表版无 2^53 精度限制，8 字节单事务合法）
-    local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
-    if b == nil then
-        return err("Failed to read measurement")
-    end
+	    -- 温度补偿（数据手册附录8.3浮点版），t_fine 供气压/湿度复用
+	    local var1 = (adc_T / 16384.0 - dig_T1 / 1024.0) * dig_T2
+	    local var2 = adc_T / 131072.0 - dig_T1 / 8192.0
+	    var2 = var2 * var2 * dig_T3
+	    local t_fine = var1 + var2
+	    local T = t_fine / 5120.0
 
-    local adc_P = bitc.bor(bitc.bor(bitc.lshift(b[1], 12), bitc.lshift(b[2], 4)), bitc.rshift(b[3], 4))
-    local adc_T = bitc.bor(bitc.bor(bitc.lshift(b[4], 12), bitc.lshift(b[5], 4)), bitc.rshift(b[6], 4))
-    local adc_H = bitc.bor(bitc.lshift(b[7], 8), b[8])
+	    -- 气压补偿（Pa）
+	    var1 = t_fine / 2.0 - 64000.0
+	    var2 = var1 * var1 * dig_P6 / 32768.0
+	    var2 = var2 + var1 * dig_P5 * 2.0
+	    var2 = var2 / 4.0 + dig_P4 * 65536.0
+	    var1 = (dig_P3 * var1 * var1 / 524288.0 + dig_P2 * var1) / 524288.0
+	    var1 = (1.0 + var1 / 32768.0) * dig_P1
+	    if var1 == 0 then
+	        return err("Pressure compensation failed")
+	    end
+	    local p = 1048576.0 - adc_P
+	    p = (p - var2 / 4096.0) * 6250.0 / var1
+	    var1 = dig_P9 * p * p / 2147483648.0
+	    var2 = p * dig_P8 / 32768.0
+	    p = p + (var1 + var2 + dig_P7) / 16.0
 
-    if adc_T == 0x80000 then
-        return err("Invalid temperature reading")
-    end
-    if adc_H == 0x8000 then
-        return err("Invalid humidity reading")
-    end
+	    -- 湿度补偿（%RH，钳位0~100）
+	    local h = t_fine - 76800.0
+	    h = (adc_H - (dig_H4 * 64.0 + dig_H5 / 16384.0 * h))
+	        * (dig_H2 / 65536.0 * (1.0 + dig_H6 / 67108864.0 * h
+	            * (1.0 + dig_H3 / 67108864.0 * h)))
+	    h = h * (1.0 - dig_H1 * h / 524288.0)
+	    if h > 100.0 then h = 100.0 elseif h < 0.0 then h = 0.0 end
 
-    -- 温度补偿（数据手册附录8.3浮点版），t_fine 供气压/湿度复用
-    local var1 = (adc_T / 16384.0 - dig_T1 / 1024.0) * dig_T2
-    local var2 = adc_T / 131072.0 - dig_T1 / 8192.0
-    var2 = var2 * var2 * dig_T3
-    local t_fine = var1 + var2
-    local T = t_fine / 5120.0
+	    if DEBUG then
+	        print(string.format("BME280: T=%.2f C, P=%.2f Pa, H=%.2f %%RH", T, p, h))
+	    end
 
-    -- 气压补偿（Pa）
-    var1 = t_fine / 2.0 - 64000.0
-    var2 = var1 * var1 * dig_P6 / 32768.0
-    var2 = var2 + var1 * dig_P5 * 2.0
-    var2 = var2 / 4.0 + dig_P4 * 65536.0
-    var1 = (dig_P3 * var1 * var1 / 524288.0 + dig_P2 * var1) / 524288.0
-    var1 = (1.0 + var1 / 32768.0) * dig_P1
-    if var1 == 0 then
-        return err("Pressure compensation failed")
-    end
-    local p = 1048576.0 - adc_P
-    p = (p - var2 / 4096.0) * 6250.0 / var1
-    var1 = dig_P9 * p * p / 2147483648.0
-    var2 = p * dig_P8 / 32768.0
-    p = p + (var1 + var2 + dig_P7) / 16.0
-
-    -- 湿度补偿（%RH，钳位0~100）
-    local h = t_fine - 76800.0
-    h = (adc_H - (dig_H4 * 64.0 + dig_H5 / 16384.0 * h))
-        * (dig_H2 / 65536.0 * (1.0 + dig_H6 / 67108864.0 * h
-            * (1.0 + dig_H3 / 67108864.0 * h)))
-    h = h * (1.0 - dig_H1 * h / 524288.0)
-    if h > 100.0 then h = 100.0 elseif h < 0.0 then h = 0.0 end
-
-    if DEBUG then
-        print(string.format("BME280: T=%.2f C, P=%.2f Pa, H=%.2f %%RH", T, p, h))
-    end
-
-    return { result = "OK", T = T, P = p, H = h }
-end
+	    return { result = "OK", T = T, P = p, H = h }
+	end,
+})
 
 
 -- =====================================================================

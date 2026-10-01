@@ -62,10 +62,10 @@ SINGLE_CONSUMER = "事件锁存 + 读即清：消费性读取，第二个读者�
 -- 已知兼容性坑：个别模块（DFRobot SEN0290）中断锁存经 I2C 清除不干净
 --   （ESPHome #17581），若同一事件反复上报，在消费侧按 CODE 去重。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -135,21 +135,17 @@ local function modify_reg(fd, reg, keep_mask, value, pos)
 end
 
 -- 【配置脚本】软复位 -> 在位甄别 -> 写环境配置 -> RCO 校准
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "AS3935",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- AS3935 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-- 配置列解析
 	local indoor = (tonumber(data.indoor) or 1) ~= 0
@@ -227,38 +223,15 @@ function build(data)
 		addr, indoor and "indoor" or "outdoor", nf, wdth, srej, lig_c, tostring(mask), cap_pF))
 	return {  result = "OK"  }
 
-end
-
--- 【销毁AS3935】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用AS3935】读取最近一次锁存事件（读 INT 寄存器会清锁存）
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+end,
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- AS3935 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-- 与参考实现一致：事件锁存稳定后再读（IRQ 触发后约 2ms 才可读）
 	milli_sleep(2)
@@ -313,7 +286,8 @@ function call(data)
 
 	return ret
 
-end
+	end,
+})
 
 
 

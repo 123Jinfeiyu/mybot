@@ -49,10 +49,10 @@
 --      两字 -> 相位字 -> 波形位清 RESET 放行输出
 --   7. 相位字 = 11<<14 | floor(deg x 4096/360 + 0.5)（12 位）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -110,22 +110,16 @@ local function run_ctrl(wbits)
 end
 
 -- 【配置脚本】RESET|B28 -> 频率两字 -> 相位字 -> 波形位清 RESET 放行
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("spi", {
+name = "AD9833",
+build = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- AD9833 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
 
 	-- 列配置（缺省 1kHz / sine / 0°，MD_AD9833 同款缺省频率）；
 	-- 全部校验通过后才落模块状态（失败半途不得污染跨 call 状态）
@@ -174,38 +168,16 @@ function build(data)
 		freq_hz, wave_str, phase_deg))
 	return {  result = "OK"  }
 
-end
-
--- 【销毁AD9833】无资源需要释放（输出状态维持，总线归 SPI 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+end,
 
 
 -- 【调用AD9833】按需更新输出（键任意组合；无键仅回显状态不发字）
 -- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- AD9833 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -274,7 +246,8 @@ function call(data)
 		mute   = muted and 1 or 0
 	}
 
-end
+end,
+})
 
 
 -- =====================================================================

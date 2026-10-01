@@ -40,11 +40,11 @@
 --   （drivers/misc/apds990x.c，N9 机型实践）交叉验证：命令字节协议、ID 值、
 --   ENABLE/CONTROL 位域、lux 算法与校准常量。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
-local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
-dofile(mpath.resolve("lib/drv_common.lua"))
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
+dofile((__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+	.resolve("lib/drv_common.lua"))
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -116,171 +116,149 @@ local function lux_of(ch0, ch1, again, atime_ms, df, ga_scaled)
 	return iac * df * (ga_scaled / SCALE) / (again * atime_ms)
 end
 
--- ==================== 配置脚本 ====================
-function build(data)
+require_driver("i2c", {
+	name = "APDS9900",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- ==================== 配置脚本 ====================
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- APDS9900 builder func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	-- 上电断言：先断电，读 ID 在位探测（无独立 ID 的写读回显需求，ID 寄存器可用）
-	if not i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, 0x00) then
-		return err("APDS9900 not responding (enable write failed, check address 0x39 and wiring)")
-	end
-	local id = i2c_read_reg(fd, CMD_BYTE + REG_ID)
-	if id < 0 then
-		return err("APDS9900 not responding (read ID failed)")
-	end
-	if id ~= 0x00 and id ~= 0x04 and id ~= 0x29 then
-		return err(string.format("APDS9900 unexpected ID 0x%02X (expect 0x00/0x04/0x29)", id))
-	end
-
-	-----------------------------------------------------
-	-- 解析配置
-	-- atime 为连续量：2.73~696 ms -> 周期数 1~256（每周期 87/32 ms）
-	local atime_ms = tonumber(data.atime)
-	if data.atime == nil or data.atime == "-" or data.atime == "" then atime_ms = 50 end
-	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
-	local emsg
-	if atime_ms == nil or atime_ms < 2.73 or atime_ms > 696 then
-		emsg = "Invalid Argument: atime(ms) '" .. tostring(data.atime) .. "' (range 2.73~696)"
-	end
-	if emsg then return err(emsg) end
-	local cycles = math.floor(atime_ms * TIME_SCALER)
-	if cycles < 1 then cycles = 1 elseif cycles > 256 then cycles = 256 end
-	local atime_actual = cycles * 87 / 32
-
-	local again, e2 = cfg_choice(data.again, 1, AGAIN_CODE, "again")
-	local pdrive, e3 = cfg_choice(data.pdrive, 100, PDRIVE_CODE, "pdrive(mA)")
-	local pgain, e4 = cfg_choice(data.pgain, 1, PGA_CODE, "pgain")
-	if e2 or e3 or e4 then
-		return err(e2 or e3 or e4)
-	end
-
-	local ppcount = math.floor(tonumber(data.ppcount) or 8)
-	if ppcount < 1 or ppcount > 255 then
-		return err("Invalid Argument: ppcount '" .. tostring(data.ppcount) .. "' (range 1~255)")
-	end
-
-	local df = tonumber(data.df) or 52
-	local ga = tonumber(data.ga) or 0.48
-	if df <= 0 or ga <= 0 or ga > 1 then
-		return err("Invalid Argument: df/ga (df>0, 0<ga<=1)")
-	end
-	local ga_scaled = math.floor(ga * SCALE + 0.5)
-
-	-----------------------------------------------------
-	-- 逐项配置（内核 apds990x_configure 同序，等待态/中断不用）
-	local wfail = nil
-	local function wr(reg, val, what)
-		if wfail == nil and not i2c_write_reg(fd, CMD_BYTE + reg, val) then
-			wfail = "APDS9900 not responding (" .. what .. " write failed)"
+		if DEBUG then
+			dbg_table("-------- APDS9900 builder func get a table --------", data)
 		end
-	end
 
-	wr(REG_ATIME, 256 - cycles, "ATIME")
-	wr(REG_PTIME, 0xFF, "PTIME")		-- 近距积分 1 周期（2.7ms）
-	wr(REG_WTIME, 0xFF, "WTIME")		-- 等待态不用（WEN=0），保持最短
-	wr(REG_CONFIG, 0x00, "CONFIG")
-	wr(REG_PERS, 0x00, "PERS")
-	wr(REG_PPCOUNT, ppcount, "PPCOUNT")
-	wr(REG_CONTROL, PDRIVE_CODE[pdrive] * 64 + PDIODE_IR * 16 + PGA_CODE[pgain] * 4 + AGAIN_CODE[again], "CONTROL")
-	if wfail ~= nil then
-		return err(wfail)
-	end
+		-----------------------------------------------------
+		-- 上电断言：先断电，读 ID 在位探测（无独立 ID 的写读回显需求，ID 寄存器可用）
+		if not i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, 0x00) then
+			return err("APDS9900 not responding (enable write failed, check address 0x39 and wiring)")
+		end
+		local id = i2c_read_reg(fd, CMD_BYTE + REG_ID)
+		if id < 0 then
+			return err("APDS9900 not responding (read ID failed)")
+		end
+		if id ~= 0x00 and id ~= 0x04 and id ~= 0x29 then
+			return err(string.format("APDS9900 unexpected ID 0x%02X (expect 0x00/0x04/0x29)", id))
+		end
 
-	-- 启动连续转换：上电 + ALS + 近距（无等待态、无中断）
-	if not i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, EN_PON + EN_AEN + EN_PEN) then
-		return err("APDS9900 not responding (enable failed)")
-	end
+		-----------------------------------------------------
+		-- 解析配置
+		-- atime 为连续量：2.73~696 ms -> 周期数 1~256（每周期 87/32 ms）
+		local atime_ms = tonumber(data.atime)
+		if data.atime == nil or data.atime == "-" or data.atime == "" then atime_ms = 50 end
+		-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+		local emsg
+		if atime_ms == nil or atime_ms < 2.73 or atime_ms > 696 then
+			emsg = "Invalid Argument: atime(ms) '" .. tostring(data.atime) .. "' (range 2.73~696)"
+		end
+		if emsg then return err(emsg) end
+		local cycles = math.floor(atime_ms * TIME_SCALER)
+		if cycles < 1 then cycles = 1 elseif cycles > 256 then cycles = 256 end
+		local atime_actual = cycles * 87 / 32
 
-	cfg_atime_ms = atime_actual
-	cfg_again = again
-	cfg_df = df
-	cfg_ga_scaled = ga_scaled
+		local again, e2 = cfg_choice(data.again, 1, AGAIN_CODE, "again")
+		local pdrive, e3 = cfg_choice(data.pdrive, 100, PDRIVE_CODE, "pdrive(mA)")
+		local pgain, e4 = cfg_choice(data.pgain, 1, PGA_CODE, "pgain")
+		if e2 or e3 or e4 then
+			return err(e2 or e3 or e4)
+		end
 
-	print(string.format(
-		"APDS9900 init OK: addr=0x%02X id=0x%02X atime=%.1fms again=x%d led=%.1fmA pgain=x%d ppulse=%d df=%g ga=%.2f",
-		addr, id, atime_actual, again, pdrive, pgain, ppcount, df, ga_scaled / SCALE))
-	return {  result = "OK"  }
+		local ppcount = math.floor(tonumber(data.ppcount) or 8)
+		if ppcount < 1 or ppcount > 255 then
+			return err("Invalid Argument: ppcount '" .. tostring(data.ppcount) .. "' (range 1~255)")
+		end
 
-end
+		local df = tonumber(data.df) or 52
+		local ga = tonumber(data.ga) or 0.48
+		if df <= 0 or ga <= 0 or ga > 1 then
+			return err("Invalid Argument: df/ga (df>0, 0<ga<=1)")
+		end
+		local ga_scaled = math.floor(ga * SCALE + 0.5)
 
--- ==================== 调用 ====================
--- 读最新 ALS 两通道与近距计数，LUX 按内核算法换算。连续转换无"未就绪"态。
-function call(data)
+		-----------------------------------------------------
+		-- 逐项配置（内核 apds990x_configure 同序，等待态/中断不用）
+		local wfail = nil
+		local function wr(reg, val, what)
+			if wfail == nil and not i2c_write_reg(fd, CMD_BYTE + reg, val) then
+				wfail = "APDS9900 not responding (" .. what .. " write failed)"
+			end
+		end
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		wr(REG_ATIME, 256 - cycles, "ATIME")
+		wr(REG_PTIME, 0xFF, "PTIME")		-- 近距积分 1 周期（2.7ms）
+		wr(REG_WTIME, 0xFF, "WTIME")		-- 等待态不用（WEN=0），保持最短
+		wr(REG_CONFIG, 0x00, "CONFIG")
+		wr(REG_PERS, 0x00, "PERS")
+		wr(REG_PPCOUNT, ppcount, "PPCOUNT")
+		wr(REG_CONTROL, PDRIVE_CODE[pdrive] * 64 + PDIODE_IR * 16 + PGA_CODE[pgain] * 4 + AGAIN_CODE[again], "CONTROL")
+		if wfail ~= nil then
+			return err(wfail)
+		end
 
-	if DEBUG then
-		dbg_table("-------- APDS9900 caller func get a table --------", data)
-	end
+		-- 启动连续转换：上电 + ALS + 近距（无等待态、无中断）
+		if not i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, EN_PON + EN_AEN + EN_PEN) then
+			return err("APDS9900 not responding (enable failed)")
+		end
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		cfg_atime_ms = atime_actual
+		cfg_again = again
+		cfg_df = df
+		cfg_ga_scaled = ga_scaled
 
-	-----------------------------------------------------
-	local ch0 = read_word_le(fd, REG_CDATA)
-	if ch0 < 0 then
-		return err("APDS9900 not responding (read CH0 failed)")
-	end
-	local ch1 = read_word_le(fd, REG_IRDATA)
-	if ch1 < 0 then
-		return err("APDS9900 not responding (read CH1 failed)")
-	end
-	local prox = read_word_le(fd, REG_PDATA)
-	if prox < 0 then
-		return err("APDS9900 not responding (read PROX failed)")
-	end
+		print(string.format(
+			"APDS9900 init OK: addr=0x%02X id=0x%02X atime=%.1fms again=x%d led=%.1fmA pgain=x%d ppulse=%d df=%g ga=%.2f",
+			addr, id, atime_actual, again, pdrive, pgain, ppcount, df, ga_scaled / SCALE))
+		return {  result = "OK"  }
+	end,
 
-	return {
-		result = "OK",
-		LUX = lux_of(ch0, ch1, cfg_again or 1, cfg_atime_ms or 50, cfg_df or 52, cfg_ga_scaled or 1966),
-		CH0 = ch0,
-		CH1 = ch1,
-		PROX = prox
-	}
+	-- ==================== 调用 ====================
+	-- 读最新 ALS 两通道与近距计数，LUX 按内核算法换算。连续转换无"未就绪"态。
+	call = function(ctx, data)
+		local fd = ctx.fd
 
-end
+		if DEBUG then
+			dbg_table("-------- APDS9900 caller func get a table --------", data)
+		end
 
--- ==================== 销毁 ====================
--- 写 ENABLE=0 断电（PON 清零，所有子模块停止；fd 归 I2C 硬件变量所有）
-function destroy(data)
+		-----------------------------------------------------
+		local ch0 = read_word_le(fd, REG_CDATA)
+		if ch0 < 0 then
+			return err("APDS9900 not responding (read CH0 failed)")
+		end
+		local ch1 = read_word_le(fd, REG_IRDATA)
+		if ch1 < 0 then
+			return err("APDS9900 not responding (read CH1 failed)")
+		end
+		local prox = read_word_le(fd, REG_PDATA)
+		if prox < 0 then
+			return err("APDS9900 not responding (read PROX failed)")
+		end
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		return {
+			result = "OK",
+			LUX = lux_of(ch0, ch1, cfg_again or 1, cfg_atime_ms or 50, cfg_df or 52, cfg_ga_scaled or 1966),
+			CH0 = ch0,
+			CH1 = ch1,
+			PROX = prox
+		}
+	end,
 
-	if DEBUG then
-		dbg_table("-------- APDS9900 ender func get a table --------", data)
-	end
+	-- ==================== 销毁 ====================
+	-- 写 ENABLE=0 断电（PON 清零，所有子模块停止；fd 归 I2C 硬件变量所有）
+	destroy = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- APDS9900 ender func get a table --------", data)
+		end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-		i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, 0x00)
-	end
+		local fd = tonumber(data.fd)
+		local addr = tonumber(data.address)
+		if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+			i2c_write_reg(fd, CMD_BYTE + REG_ENABLE, 0x00)
+		end
 
-	return {  result = "OK"  }
-
-end
+		return {  result = "OK"  }
+	end,
+})
 
 
 

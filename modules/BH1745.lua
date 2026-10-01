@@ -40,10 +40,10 @@
 --      build 后等一个完整测量时间首拍数据才就绪
 --   6. 中断/阈值/持久化（0x60~0x65）本驱动未用（守护周期采样路径不需要）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -94,120 +94,95 @@ local function gain_code_of(v)
 	return i - 1, gain_tab[i]
 end
 
--- 【配置脚本】软复位 -> 双 ID 甄别 -> 测量时间/增益 -> 启动测量 -> 等首拍
-function build(data)
+require_driver("i2c", {
+	name = "BH1745",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】软复位 -> 双 ID 甄别 -> 测量时间/增益 -> 启动测量 -> 等首拍
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- BH1745 builder func get a table --------", data)
-	end
+		if DEBUG then
+			dbg_table("-------- BH1745 builder func get a table --------", data)
+		end
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- 列配置
+		local mt_code_v, mt_n = mt_code_of(data.mt)
+		local gain_code_v, gain_n = gain_code_of(data.gain)
+		mt_ms = mt_n
 
-	-- 列配置
-	local mt_code_v, mt_n = mt_code_of(data.mt)
-	local gain_code_v, gain_n = gain_code_of(data.gain)
-	mt_ms = mt_n
+		-----------------------------------------------------
+		-- 软复位（bit7 自清，随后系统控制仅剩 Part ID）
+		if not i2c_write_reg(fd, REG_SYS_CTRL, SW_RESET) then
+			return err("Failed to write BH1745 soft reset")
+		end
+		milli_sleep(5)
 
-	-----------------------------------------------------
-	-- 软复位（bit7 自清，随后系统控制仅剩 Part ID）
-	if not i2c_write_reg(fd, REG_SYS_CTRL, SW_RESET) then
-		return err("Failed to write BH1745 soft reset")
-	end
-	milli_sleep(5)
+		-- 双 ID 甄别
+		local sys = i2c_read_reg(fd, REG_SYS_CTRL)
+		local mfr = i2c_read_reg(fd, REG_MFR_ID)
+		if sys < 0 or mfr < 0 then
+			return err("Failed to read BH1745 ID registers")
+		end
+		local part = sys % 64		-- [5:0] Part ID（算术取低位）
+		if part ~= PART_ID or mfr ~= MFR_ID then
+			return err(string.format("Not BH1745: PART_ID=0x%02X (expect 0x0B), MFR_ID=0x%02X (expect 0xE0)",
+				part, mfr))
+		end
 
-	-- 双 ID 甄别
-	local sys = i2c_read_reg(fd, REG_SYS_CTRL)
-	local mfr = i2c_read_reg(fd, REG_MFR_ID)
-	if sys < 0 or mfr < 0 then
-		return err("Failed to read BH1745 ID registers")
-	end
-	local part = sys % 64		-- [5:0] Part ID（算术取低位）
-	if part ~= PART_ID or mfr ~= MFR_ID then
-		return err(string.format("Not BH1745: PART_ID=0x%02X (expect 0x0B), MFR_ID=0x%02X (expect 0xE0)",
-			part, mfr))
-	end
+		-- 测量时间（MODE1 [2:0]）+ 增益（MODE2 [1:0]）+ 启动测量（bit4）
+		if not i2c_write_reg(fd, REG_MODE1, mt_code_v) then
+			return err("Failed to write BH1745 mode control 1")
+		end
+		if not i2c_write_reg(fd, REG_MODE2, bitc.bor(RGBC_EN, gain_code_v)) then
+			return err("Failed to write BH1745 mode control 2")
+		end
+		if not i2c_write_reg(fd, REG_MODE3, 0x02) then
+			return err("Failed to write BH1745 mode control 3")
+		end
 
-	-- 测量时间（MODE1 [2:0]）+ 增益（MODE2 [1:0]）+ 启动测量（bit4）
-	if not i2c_write_reg(fd, REG_MODE1, mt_code_v) then
-		return err("Failed to write BH1745 mode control 1")
-	end
-	if not i2c_write_reg(fd, REG_MODE2, bitc.bor(RGBC_EN, gain_code_v)) then
-		return err("Failed to write BH1745 mode control 2")
-	end
-	if not i2c_write_reg(fd, REG_MODE3, 0x02) then
-		return err("Failed to write BH1745 mode control 3")
-	end
+		-- 等一个完整测量时间，首拍数据就绪
+		milli_sleep(mt_n + 2)
 
-	-- 等一个完整测量时间，首拍数据就绪
-	milli_sleep(mt_n + 2)
+		print(string.format("BH1745 init OK: addr=0x%02X, mt=%dms, gain=x%d", addr, mt_n, gain_n))
+		return {  result = "OK"  }
+	end,
 
-	print(string.format("BH1745 init OK: addr=0x%02X, mt=%dms, gain=x%d", addr, mt_n, gain_n))
-	return {  result = "OK"  }
-
-end
-
--- 【销毁BH1745】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+	-- destroy 缺省 = 空操作（原 BH1745 destroy 仅 arg_table + return OK，等价）
 
 
--- 【调用BH1745】读四通道原始计数
--- NOTE: 数据小端（0x50=LSB、0x51=MSB，datasheet Rev.002）；一次 8 字节原子读
-function call(data)
+	-- 【调用BH1745】读四通道原始计数
+	-- NOTE: 数据小端（0x50=LSB、0x51=MSB，datasheet Rev.002）；一次 8 字节原子读
+	call = function(ctx, data)
+		local fd = ctx.fd
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		if DEBUG then
+			dbg_table("-------- BH1745 caller func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- BH1745 caller func get a table --------", data)
-	end
+		-----------------------------------------------------
+		-- 8 字节一次原子读（字节表接口：合并数值接口 6 字节以上超 Lua number 精度）
+		local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
+		if b == nil then
+			return err("Failed to read BH1745 colour data")
+		end
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- 8 字节按小端拆 4 个 16 位通道（偶地址 LSB）：R/G/B/C
+		local ret = {
+			result = "OK",
+			R = b[2] * 256 + b[1],
+			G = b[4] * 256 + b[3],
+			B = b[6] * 256 + b[5],
+			C = b[8] * 256 + b[7]
+		}
 
-	-----------------------------------------------------
-	-- 8 字节一次原子读（字节表接口：合并数值接口 6 字节以上超 Lua number 精度）
-	local b = i2c_read_multi_bytes(fd, REG_DATA, 8)
-	if b == nil then
-		return err("Failed to read BH1745 colour data")
-	end
+		if DEBUG then
+			print(string.format("BH1745: R=%d G=%d B=%d C=%d", ret.R, ret.G, ret.B, ret.C))
+		end
 
-	-- 8 字节按小端拆 4 个 16 位通道（偶地址 LSB）：R/G/B/C
-	local ret = {
-		result = "OK",
-		R = b[2] * 256 + b[1],
-		G = b[4] * 256 + b[3],
-		B = b[6] * 256 + b[5],
-		C = b[8] * 256 + b[7]
-	}
-
-	if DEBUG then
-		print(string.format("BH1745: R=%d G=%d B=%d C=%d", ret.R, ret.G, ret.B, ret.C))
-	end
-
-	return ret
-
-end
+		return ret
+	end,
+})
 
 
 

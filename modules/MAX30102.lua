@@ -52,10 +52,10 @@
 -- 硬件注意：GY 兼容板 VIN 喂 5V（板载 LDO 有压差，喂 3.3V 会欠压）；INT 引脚本驱动未用，
 --   全靠轮询 FIFO 指针。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
@@ -176,21 +176,17 @@ end
 
 -- ==================== 配置脚本 ====================
 -- 读 Part ID 自检 -> RESET -> 配置 -> 清 FIFO 指针 -> 写模式启动采样
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "MAX30102",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- MAX30102 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-- 在位探测 + 型号自检（Part ID 固定 0x15）
 	local pid = i2c_read_reg(fd, REG_PART_ID)
@@ -272,26 +268,17 @@ function build(data)
 		addr, opmode_s, rate, pw, adc, avg, led1 * 0.2, led2 * 0.2, n))
 	return {  result = "OK"  }
 
-end
+	end,
 
 -- ==================== 调用 ====================
 -- 排空 FIFO（至多 n 个样本）。FIFO 空返回 ERR（守护跳拍不发布）；数据质量
 -- 问题（饱和）只置 SAT 标志。返回样本键 RED0..RED{k-1}（+IR0..）与最新样本别名 RED/IR。
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- MAX30102 caller func get a table --------", data)
 	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- n/wait 取本次调用参数（缺省用 build 配置）——直连路径可按行动态批量读/等待。
@@ -363,30 +350,16 @@ function call(data)
 	end
 	return out
 
-end
-
--- ==================== 销毁 ====================
--- 置 SHDN 关 LED 停采样省电（配置保留；总线 fd 归 I2C 硬件变量所有，不 close）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- MAX30102 ender func get a table --------", data)
-	end
-
+end,
+destroy = function(ctx, data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address)
 	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
 		i2c_write_reg(fd, REG_MODE, BIT_SHDN)
 	end
-
 	return {  result = "OK"  }
-
-end
+end,
+})
 
 
 

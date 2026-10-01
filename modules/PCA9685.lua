@@ -5,10 +5,10 @@
 
 
 
--- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -30,165 +30,99 @@ local PULSE_180DEG_MS= 2.5	-- 180 度对应脉宽
 
 
 
--- 【配置脚本】
--- 该脚本负责初始化PCA9685
---
-function build(data)
+require_driver("i2c", {
+	name = "PCA9685",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】
+	build = function(ctx, data)
+		dbg_table("-------- Lua builder func get a table --------", data)
 
-	dbg_table("-------- Lua builder func get a table --------", data)
+		local fd = ctx.fd
 
+		local freq = 50.0							-- 设置PWM频率
+		local prescale_val = OSC_CLK_HZ / (PWM_RESOLUTION * freq) - 1.0
+		local prescale = prescale_val + 0.5
 
-	-----------------------------------------------------
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
+		if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then
+			return err("PCA9685 not responding (MODE1 write failed, check address and wiring)")
+		end
 
-	-----------------------------------------------------
-	-----------------------------------------------------
-	local freq = 50.0							-- 设置PWM频率
-	local prescale_val = OSC_CLK_HZ / (PWM_RESOLUTION * freq) - 1.0	-- 25MHz主频
-	-- datasheet §7.3.1 要求 prescale = round(25MHz/(4096*freq)) - 1：
-	-- 先 +0.5 再 floor 即四舍五入到最近整数（50Hz 时 25M/(4096*50)-1 ≈ 121.07 → 121）
-	local prescale = prescale_val + 0.5
+		milli_sleep(5)			-- 等待振荡器启动
 
-	if not i2c_write_reg(fd, REG_MODE1, MODE1_RESTART) then	-- 触发一次重启（唤醒振荡器）
-		return err("PCA9685 not responding (MODE1 write failed, check address and wiring)")
-	end
+		if not i2c_write_reg(fd, REG_MODE1, MODE1_SLEEP) then
+			return err("PCA9685 write failed: MODE1 (SLEEP)")
+		end
+		if not i2c_write_reg(fd, REG_PRESCALE, math.floor(prescale)) then
+			return err("PCA9685 write failed: PRE_SCALE")
+		end
+		if not i2c_write_reg(fd, REG_MODE1, bitc.bor(MODE1_AI, MODE1_RESTART)) then
+			return err("PCA9685 write failed: MODE1 (AI|RESTART)")
+		end
 
-	milli_sleep(5)			-- 等待振荡器启动
+		milli_sleep(5)			-- 等待振荡器启动
 
-	if not i2c_write_reg(fd, REG_MODE1, MODE1_SLEEP) then	-- 进入SLEEP模式（允许改频率）
-		return err("PCA9685 write failed: MODE1 (SLEEP)")
-	end
-	if not i2c_write_reg(fd, REG_PRESCALE, math.floor(prescale)) then
-		return err("PCA9685 write failed: PRE_SCALE")
-	end
-	-- 退出 SLEEP 用 AI|RESTART（datasheet 推荐时序）：唤醒振荡器并立即执行
-	-- build 开头 SLEEP 前排下的重启请求；只写 AI 会依赖 SLEEP 清零自恢复，
-	-- 重启请求持续挂起（模型 restart_pending 保持 1，MODE1 读回 bit7=1）
-	if not i2c_write_reg(fd, REG_MODE1, bitc.bor(MODE1_AI, MODE1_RESTART)) then
-		return err("PCA9685 write failed: MODE1 (AI|RESTART)")
-	end
+		return {  result = "OK"  }
+	end,
 
-	milli_sleep(5)			-- 等待振荡器启动
+	-- 【销毁PCA9685】尽力触发重启，失败不报错（M3 语义）
+	destroy = function(ctx, data)
+		dbg_table("-------- Lua ender func get a table --------", data)
 
-	return {  result = "OK"  }	-- 返回成功信号
+		local fd, addr = tonumber(data.fd), tonumber(data.address)
+		if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+			i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)
+		end
 
-end
+		return {  result = "OK"  }
+	end,
 
--- 【销毁PCA9685的脚本】重置PCA9685
--- NOTE(20260612-qing): 其实可以不需要，因为我们只是清空设置
--- M3（2026-09-23 安全审计）+ D2-1 调和（2026-09-24）：destroy 保留 arg_table 守卫
--- （非表入参返 ERR 契约，lint-driver-entry 与契约 sweep 都要求样板在位；M3 一度
--- 整体摘掉，结果 destroy(nil) 裸抛「attempt to index a nil value」），但**表内**
--- 资源缺失/写失败按 M3 语义「尽力释放、静默成功」（drv_common.lua:52-64 约定，
--- 例外只有 ADS1115）——重启写不动不算 destroy 失败。
-function destroy(data)
+	-- 【调用PCA9685】将一个舵机通道转动到一个角度
+	call = function(ctx, data)
+		dbg_table("-------- Lua caller func get a table --------", data)
 
-	dbg_table("-------- Lua ender func get a table --------", data)
+		local fd = ctx.fd
 
-	local ok, e = arg_table(data)
-	if not ok then
-		return e	-- 非表：ERR 契约（无资源可释放，拒绝静默成功）
-	end
+		local channel = data.channel
+		if channel == nil then
+			return err("Invalid Argument: channel")
+		end
+		channel = tonumber(channel)
+		if channel == nil then
+			return err("Invalid Argument: channel (not a number)")
+		end
+		channel = math.floor(channel)
 
-	-----------------------------------------------------
-	local fd, addr = tonumber(data.fd), tonumber(data.address)
-	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-		-----------------------------------------------------
-		-- 尽力触发重启（非复位配置，仅重新开始计数），失败不报错
-		i2c_write_reg(fd, REG_MODE1, MODE1_RESTART)
-	end
+		if channel < 0 or channel > 15 then
+			return err("Invalid Argument: channel (out of range 0-15)")
+		end
 
-	return {  result = "OK"  }	-- 资源缺失/写失败：静默成功（M3）
+		local angle = finite_of(data.angle)
+		if angle == nil then
+			return err("Invalid Argument: angle (missing or not a finite number)")
+		end
+		if angle < 0 then angle = 0 end
+		if angle > 180 then angle = 180 end
 
-end
+		if os.getenv("BOT4CJ_DEBUG") == "1" then
+			print(string.format("Lua hardware drive set angle: %.2f", angle))
+		end
 
+		local min = PULSE_0DEG_MS
+		local max = PULSE_180DEG_MS
+		local width = min + (max - min) * (angle / 180.0)
+		local offval = math.floor(width * PWM_RESOLUTION / PERIOD_MS)
+		if offval < 0 then offval = 0 elseif offval > PWM_RESOLUTION - 1 then offval = PWM_RESOLUTION - 1 end
+		local reg = LED0_ON_L + 4 * channel
 
--- 【调用PCA9685】
--- 将一个舵机通道转动到一个角度
--- NOTE(20260612-qing): 接收一个参数（表），返回一个结果（表）
-function call(data)
+		local off_lo = bitc.band(offval, 0xFF)
+		local off_hi = bitc.band(bitc.rshift(offval, 8), 0xFF)
+		if i2c_write_multi(fd, reg, 0x00, 0x00, off_lo, off_hi) ~= 0 then
+			return err("PCA9685 write failed: PWM registers (channel " .. tostring(channel) .. ")")
+		end
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	dbg_table("-------- Lua caller func get a table --------", data)
-
-
-	-----------------------------------------------------
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
-
-	-----------------------------------------------------
-	local channel = data.channel
-	if channel == nil then	-- 检查channel参数是否存在
-		return err("Invalid Argument: channel")
-	end
-	channel = tonumber(channel)
-	if channel == nil then	-- 检查channel是否是数值
-		return err("Invalid Argument: channel (not a number)")
-	end
-	channel = math.floor(channel)	-- 寄存器地址需要整数通道号
-
-	-- PCA9685 只有 16 路输出：越界的 channel 会写出 0x06+4*channel 之外的
-	-- 寄存器（如 -1 落到 MODE 区），污染同总线器件配置甚至击穿脉宽，显式拒绝
-	if channel < 0 or channel > 15 then
-		return err("Invalid Argument: channel (out of range 0-15)")
-	end
-
-	-----------------------------------------------------
-	-- 审计 P3：angle 必须过 finite_of（drv_common 单点，Servo.lua 同款）。
-	-- NaN 与任何数比较恒假，下面两道限幅会整体失效；NaN 一路走到 math.floor
-	-- 再撞 bitcompat 守卫抛 Lua error——末梢虽然兜住了（不会写出坏脉宽），
-	-- 但那是"炸在错误的层"：宿主收到的是异常而非 ERR 契约，排障看不出是入参问题。
-	local angle = finite_of(data.angle)
-	if angle == nil then	-- 缺失 / 非数字 / NaN / ±inf 一律拒
-		return err("Invalid Argument: angle (missing or not a finite number)")
-	end
-	if angle < 0 then angle = 0 end
-	if angle > 180 then angle = 180 end	-- 限幅，防止超出0.5~2.5ms脉宽损伤舵机
-
-	if os.getenv("BOT4CJ_DEBUG") == "1" then
-		print(string.format("Lua hardware drive set angle: %.2f", angle))
-	end
-
-	-----------------------------------------------------
-
-	-- 计算需要的参数
-	local min = PULSE_0DEG_MS	-- 0度对应0.5ms
-	local max = PULSE_180DEG_MS	-- 180度对应2.5ms
-	local width = min + (max - min) * (angle / 180.0)
-	local offval = math.floor(width * PWM_RESOLUTION / PERIOD_MS)
-	-- 硬件不变式：OFF 计数只有 12 位有效（bit12 是"全程通/断"开关）。
-	-- angle 已钳到 0~180，正常算不出界；这一道是把不变式写成代码——
-	-- 将来 PULSE_* / PERIOD_MS 常量被改动时，越界不会变成静默的常开输出。
-	if offval < 0 then offval = 0 elseif offval > PWM_RESOLUTION - 1 then offval = PWM_RESOLUTION - 1 end
-	local reg = LED0_ON_L + 4 * channel
-
-	-- ON 计数恒为 0（脉宽自周期起点起算），OFF 计数写入低/高字节。
-	-- build 已开 AI 自增：4 字节合为单次 I2C_RDWR 原子更新——原 4 次独立事务
-	-- 存在半更新窗口，并发访问同一总线时舵机会吃到新旧混合脉宽
-	local off_lo = bitc.band(offval, 0xFF)
-	local off_hi = bitc.band(bitc.rshift(offval, 8), 0xFF)
-	if i2c_write_multi(fd, reg, 0x00, 0x00, off_lo, off_hi) ~= 0 then
-		return err("PCA9685 write failed: PWM registers (channel " .. tostring(channel) .. ")")
-	end
-
-	-- 返回字典
- 	return { result = "OK" }
-
-end
+	 	return { result = "OK" }
+	end,
+})
 
 
 -- =====================================================================

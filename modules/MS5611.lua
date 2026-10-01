@@ -53,10 +53,10 @@ SINGLE_CONSUMER = "转换命令式：器件侧记着'在转换哪个量'，交�
 -- 部署提醒：芯片裸露受光会引入气压噪声，模块出厂遮光海绵/胶勿撕除；
 --   压高公式为国际标准大气近似，且海拔参考点 p0 随天气漂移（1hPa ≈ 8.5m）。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -161,171 +161,141 @@ local function read_adc24(fd)
 	return v
 end
 
--- 【配置脚本】复位 -> 读 PROM -> CRC 自检 -> 缓存系数
-function build(data)
+require_driver("i2c", {
+	name = "MS5611",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】复位 -> 读 PROM -> CRC 自检 -> 缓存系数
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- MS5611 builder func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性收敛至 drv_common.i2c_check（报错口径不变）；set_addr
-	-- 刻意留到 OSR 校验之后——非法档位不碰总线（见下）
-	local fd, addr, ek = i2c_check(data)
-	if fd == nil then return ek end
-
-	-- OSR 档位校验先于一切总线动作：非法值不碰硬件
-	local oi, oerr = osr_idx_of(data.osr)
-	if oi == nil then
-		return err("Invalid Argument: " .. oerr)
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return err("Invalid Argument: fd or address (set_addr failed)")
-	end
-
-	-- OSR 档位与等待时间
-	conv_cmd_d1 = CMD_CONV_D1 + 2 * (oi - 1)
-	conv_cmd_d2 = CMD_CONV_D2 + 2 * (oi - 1)
-	wait_ms = WAIT_TAB[oi]
-
-	-- 参考海平面气压（非法/非正归缺省）
-	local p0 = tonumber(data.p0)
-	if p0 == nil or p0 <= 0 then p0 = DEF_P0 end
-	p0_hpa = p0
-
-	-----------------------------------------------------
-	-- 复位
-	if not send_cmd(fd, CMD_RESET) then
-		return err("Failed to reset MS5611")
-	end
-	milli_sleep(T_RESET_MS)
-
-	-- 读 8 字 PROM（word0 = 出厂数据，word1~6 = C1~C6，word7 = 序列号 + CRC）
-	local prom = {}
-	for i = 0, 7 do
-		local w = i2c_read_multi(fd, CMD_PROM_BASE + 2 * i, 2)
-		if w < 0 then
-			return err("Failed to read MS5611 PROM")
+		if DEBUG then
+			dbg_table("-------- MS5611 builder func get a table --------", data)
 		end
-		prom[i + 1] = w
-	end
 
-	-- CRC-4 自检（兼在位甄别：错挂器件/总线异常过不了这关）
-	if not crc4_ok(prom) then
-		return err(string.format("MS5611 PROM CRC mismatch (word0=0x%04X, not MS5611?)", prom[1]))
-	end
-
-	c1 = prom[2]; c2 = prom[3]; c3 = prom[4]
-	c4 = prom[5]; c5 = prom[6]; c6 = prom[7]
-
-	print(string.format("MS5611 init OK: addr=0x%02X, osr=%d, wait=%dms, C1=%d C6=%d",
-		addr, OSR_TAB[oi], wait_ms, c1, c6))
-	return {  result = "OK"  }
-
-end
-
--- 【销毁MS5611】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用MS5611】双段转换（D1 气压 / D2 温度）+ 一阶/二阶补偿解算
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- MS5611 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	-- D1（气压）转换
-	if not send_cmd(fd, conv_cmd_d1) then
-		return err("Failed to start MS5611 D1 conversion")
-	end
-	milli_sleep(wait_ms)
-	local d1 = read_adc24(fd)
-	if d1 == nil then
-		return err("Failed to read MS5611 D1")
-	end
-
-	-- D2（温度）转换
-	if not send_cmd(fd, conv_cmd_d2) then
-		return err("Failed to start MS5611 D2 conversion")
-	end
-	milli_sleep(wait_ms)
-	local d2 = read_adc24(fd)
-	if d2 == nil then
-		return err("Failed to read MS5611 D2")
-	end
-
-	-----------------------------------------------------
-	-- 一阶补偿（datasheet 整数算法，除法 floor = 算术移位语义）
-	local dt = d2 - c5 * 256
-	local temp = 2000 + shr(dt * c6, 23)
-	local off = c2 * 65536 + shr(c4 * dt, 7)
-	local sens = c1 * 32768 + shr(c3 * dt, 8)
-
-	-- 二阶补偿（低温非线性；OFF2/SENS2 用一阶 TEMP，顺序同 datasheet 流程图）
-	if temp < 2000 then
-		local t2 = shr(dt * dt, 31)
-		local off2 = shr(5 * (temp - 2000) * (temp - 2000), 1)
-		local sens2 = shr(5 * (temp - 2000) * (temp - 2000), 2)
-		if temp < -1500 then
-			off2 = off2 + 7 * (temp + 1500) * (temp + 1500)
-			sens2 = sens2 + shr(11 * (temp + 1500) * (temp + 1500), 1)
+		-- OSR 档位校验先于一切总线动作：非法值不碰硬件
+		local oi, oerr = osr_idx_of(data.osr)
+		if oi == nil then
+			return err("Invalid Argument: " .. oerr)
 		end
-		temp = temp - t2
-		off = off - off2
-		sens = sens - sens2
-	end
 
-	-- 气压（0.01 mbar 单位 -> hPa）
-	local p_cbar = d1_sens_shr21(d1, sens) - off
-	p_cbar = shr(p_cbar, 15)
-	local p_hpa = p_cbar / 100
-	local t_c = temp / 100
+		-- OSR 档位与等待时间
+		conv_cmd_d1 = CMD_CONV_D1 + 2 * (oi - 1)
+		conv_cmd_d2 = CMD_CONV_D2 + 2 * (oi - 1)
+		wait_ms = WAIT_TAB[oi]
 
-	-- 压高公式（国际标准大气近似）：h = 44330 x (1 - (p/p0)^0.1902949)
-	local alt_m = 44330 * (1 - (p_hpa / p0_hpa) ^ 0.1902949)
+		-- 参考海平面气压（非法/非正归缺省）
+		local p0 = tonumber(data.p0)
+		if p0 == nil or p0 <= 0 then p0 = DEF_P0 end
+		p0_hpa = p0
 
-	local ret = {
-		result = "OK",
-		P_HPA = p_hpa,
-		T_C = t_c,
-		ALT_M = alt_m
-	}
+		-----------------------------------------------------
+		-- 复位
+		if not send_cmd(fd, CMD_RESET) then
+			return err("Failed to reset MS5611")
+		end
+		milli_sleep(T_RESET_MS)
 
-	if DEBUG then
-		print(string.format("MS5611: P=%.2fhPa T=%.2f°C alt=%.1fm", p_hpa, t_c, alt_m))
-	end
+		-- 读 8 字 PROM（word0 = 出厂数据，word1~6 = C1~C6，word7 = 序列号 + CRC）
+		local prom = {}
+		for i = 0, 7 do
+			local w = i2c_read_multi(fd, CMD_PROM_BASE + 2 * i, 2)
+			if w < 0 then
+				return err("Failed to read MS5611 PROM")
+			end
+			prom[i + 1] = w
+		end
 
-	return ret
+		-- CRC-4 自检（兼在位甄别：错挂器件/总线异常过不了这关）
+		if not crc4_ok(prom) then
+			return err(string.format("MS5611 PROM CRC mismatch (word0=0x%04X, not MS5611?)", prom[1]))
+		end
 
-end
+		c1 = prom[2]; c2 = prom[3]; c3 = prom[4]
+		c4 = prom[5]; c5 = prom[6]; c6 = prom[7]
+
+		print(string.format("MS5611 init OK: addr=0x%02X, osr=%d, wait=%dms, C1=%d C6=%d",
+			addr, OSR_TAB[oi], wait_ms, c1, c6))
+		return {  result = "OK"  }
+
+	end,
+
+	-- destroy 缺省 = 空操作（原 MS5611 destroy 仅 arg_table + return OK，等价）
+
+	-- 【调用MS5611】双段转换（D1 气压 / D2 温度）+ 一阶/二阶补偿解算
+	call = function(ctx, data)
+		local fd = ctx.fd
+
+		if DEBUG then
+			dbg_table("-------- MS5611 caller func get a table --------", data)
+		end
+
+		-----------------------------------------------------
+		-- D1（气压）转换
+		if not send_cmd(fd, conv_cmd_d1) then
+			return err("Failed to start MS5611 D1 conversion")
+		end
+		milli_sleep(wait_ms)
+		local d1 = read_adc24(fd)
+		if d1 == nil then
+			return err("Failed to read MS5611 D1")
+		end
+
+		-- D2（温度）转换
+		if not send_cmd(fd, conv_cmd_d2) then
+			return err("Failed to start MS5611 D2 conversion")
+		end
+		milli_sleep(wait_ms)
+		local d2 = read_adc24(fd)
+		if d2 == nil then
+			return err("Failed to read MS5611 D2")
+		end
+
+		-----------------------------------------------------
+		-- 一阶补偿（datasheet 整数算法，除法 floor = 算术移位语义）
+		local dt = d2 - c5 * 256
+		local temp = 2000 + shr(dt * c6, 23)
+		local off = c2 * 65536 + shr(c4 * dt, 7)
+		local sens = c1 * 32768 + shr(c3 * dt, 8)
+
+		-- 二阶补偿（低温非线性；OFF2/SENS2 用一阶 TEMP，顺序同 datasheet 流程图）
+		if temp < 2000 then
+			local t2 = shr(dt * dt, 31)
+			local off2 = shr(5 * (temp - 2000) * (temp - 2000), 1)
+			local sens2 = shr(5 * (temp - 2000) * (temp - 2000), 2)
+			if temp < -1500 then
+				off2 = off2 + 7 * (temp + 1500) * (temp + 1500)
+				sens2 = sens2 + shr(11 * (temp + 1500) * (temp + 1500), 1)
+			end
+			temp = temp - t2
+			off = off - off2
+			sens = sens - sens2
+		end
+
+		-- 气压（0.01 mbar 单位 -> hPa）
+		local p_cbar = d1_sens_shr21(d1, sens) - off
+		p_cbar = shr(p_cbar, 15)
+		local p_hpa = p_cbar / 100
+		local t_c = temp / 100
+
+		-- 压高公式（国际标准大气近似）：h = 44330 x (1 - (p/p0)^0.1902949)
+		local alt_m = 44330 * (1 - (p_hpa / p0_hpa) ^ 0.1902949)
+
+		local ret = {
+			result = "OK",
+			P_HPA = p_hpa,
+			T_C = t_c,
+			ALT_M = alt_m
+		}
+
+		if DEBUG then
+			print(string.format("MS5611: P=%.2fhPa T=%.2f°C alt=%.1fm", p_hpa, t_c, alt_m))
+		end
+
+		return ret
+
+	end,
+})
 
 
 -- =====================================================================

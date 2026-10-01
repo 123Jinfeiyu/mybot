@@ -101,13 +101,20 @@
 
 ## 驱动契约
 
-新增驱动照此实现，评审按此核对。公共样板在 `modules/lib/drv_common.lua`。
+硬件/总线驱动现使用 `require_driver` 声明式框架（见下 `drv_common` 公共原语表），
+框架自动处理 `arg_table` 入参校验与总线校验（`i2c_pair` / `fd≥0` 等），驱动只写
+业务闭包（`build`/`call` 接收 `ctx.fd`/`ctx.addr`）。非驱动模块（`Relay`/`dummy`/
+`Camera`/`GPIO`/`PWM` 等）仍用独立 `function build(data)` 模式，未经 `require_driver`
+迁移。公共样板在 `modules/lib/drv_common.lua`。
 可机器核对的部分由 `luajit test/test_driver_contract.lua`（驱动入口契约 sweep）
 逐模块断言：能加载、三入口齐全、非表入参返回 ERR 契约表而非抛 Lua error——
 豁免只有 `bitcompat`（纯 Lua 库）与 `Camera`（头注声明不挂 `arg_table`）。
 `run_all.sh` 另有两道 grep lint（`arg_table` 首调用、模块路径 `__mpath` 引导）。
 
 ### 入口函数集
+
+已迁移的硬件驱动通过 `require_driver` spec 表声明以下入口（框架自动生成全局
+`build`/`call`/`destroy`）；非驱动模块（`Relay`/`dummy` 等）仍定义独立全局函数。
 
 | 函数 | 调用时机 | 约定 |
 | --- | --- | --- |
@@ -135,35 +142,46 @@
 
 ### 参数校验顺序
 
-```lua
-local ok, ek = arg_table(data)      -- ① 必须是表；并完成 proto=virt 前置
-if not ok then return ek end
+已迁移驱动使用 `require_driver` 框架，`arg_table` + 总线校验由框架包装层自动完成，
+驱动闭包直接接收 `ctx.fd`/`ctx.addr`：
 
-local fd, addr, ek2 = i2c_pair(data) -- ② fd/address 存在性 + i2c_set_addr
-if fd == nil then return ek2 end
+```lua
+require_driver("i2c", {
+    name = "EMC2101",
+    build = function(ctx, data)
+        local fd = ctx.fd   -- 框架已完成 arg_table + i2c_pair
+        -- 业务逻辑
+    end,
+    call = function(ctx, data)
+        local fd = ctx.fd
+        -- 业务逻辑
+    end,
+})
 ```
 
-- `i2c_pair` = `i2c_check` + `i2c_set_addr`；报错口径固定为
-  `Invalid Argument: fd or address` / `… (set_addr failed)`
+- 框架按总线类型分派校验器：`"i2c"` → `i2c_pair`（`fd`/`address` 存在性 + `set_addr`），
+  `"spi"`/`"uart"` → `fd≥0`；报错口径与旧内联版本逐字对齐
 - 若驱动的**额外**校验须先于 `set_addr`（约定「非法配置值不碰总线」，如
-  `MS5611` 的 OSR 档位、`PCF8574` 的地址族），用 `i2c_check`（仅存在性）
-  自行把 `set_addr` 留到校验通过之后
+  `MS5611` 的 OSR 档位、`PCF8574` 的地址族），在 build 闭包里用 `i2c_check`
+  （仅存在性）自行把 `set_addr` 留到校验通过之后
 - 器件地址硬件固定、`address` 列可省者（`AMG8833` 0x69、`MCP4725` 0x62）
-  保持内联校验——`i2c_pair` 视 `address` 为必填，语义不等价
+  可用 `require_driver` 的 `i2c_addr_default` 字段指定固定地址——
+  `i2c_pair` 视 `address` 为必填，语义不等价，框架对此类器件有特殊处理
 
 ### drv_common 公共原语
 
 | 原语 | 语义 | 越界/失败语义 |
 | --- | --- | --- |
 | `err(msg)` | 构造 `{result="ERR", message=msg}` | — |
-| `arg_table(data)` | 入参必须是表；附带 `proto=virt` 前置 | 返 `(false, err表)` |
+| `arg_table(data)` | 入参必须是表；附带 `proto=virt` 前置（现主要由 `require_driver` 框架内部调用，驱动通常不直接调） | 返 `(false, err表)` |
 | `virt_prepare(data)` | 独立入口：加载 virtbus → 发现并挂载 `*_VIRT` 模型 → inject（`arg_table` 只是它的调用方） | 返 `nil` 或原因串 |
 | `i2c_check(data)` | `fd`/`address` 存在性（不碰总线） | 返 `(nil, -1, err表)` |
-| `i2c_pair(data)` | `i2c_check` + `i2c_set_addr` | 同上 |
+| `i2c_pair(data)` | `i2c_check` + `i2c_set_addr`（现主要由 `require_driver` 框架内部调用） | 同上 |
 | `int_or(v, def, lo, hi)` | 数值列 → 取整并**钳到** `[lo, hi]`；非法/`-` 归 `def` | 钳制（非报错） |
 | `num_or(v, def)` | 数值列 → `tonumber`；缺省/非法回落 `def` | 回落（不钳制、不取整） |
 | `read_block_bytes(fd, reg, n, chunk)` | 从 `reg` 起读 `n` 字节，返 1 基大端字节表；`chunk` 缺省 6 | 任一读失败返 `nil` |
 | `guard_build(rollback, fn, data)` | build 全程 pcall + 失败时回滚句柄 | 抛错折成 ERR 表 |
+| `require_driver(bus, spec)` | 声明式驱动框架入口；`bus` ∈ `"i2c"`/`"spi"`/`"uart"`，`spec` 含 `name`/`build`/`call`/`destroy`（可选）；自动生成全局 `build`/`call`/`destroy`，驱动只写业务 delta（`ctx.fd`/`ctx.addr`） | 校验失败返 ERR 表（口径与旧内联对齐） |
 
 `guard_build` 的适用范围是**持有 OS 句柄的 4 个总线驱动**（`GPIO`/`I2C`/`SPI`/`UART`）——
 只有它们自己 `open`/申请句柄，所以只有它们需要「半途抛错时回滚」。器件驱动的句柄由
@@ -228,12 +246,19 @@ C++ 侧那三个缺省值以 `HwFactory::kDaemonDefault*` 为单点，与 `senso
 
 ### destroy 契约：资源不可用即静默成功
 
+框架为绝大多数驱动提供缺省 `destroy`（仅 `return { result = "OK" }`）——省略
+`destroy` 字段即走此默认路径，无需手写 `arg_table` + 返回 OK 的样板。需要真正器件
+收尾的驱动（停连续读、复位硬件状态、关扭矩等）仍在 `require_driver` spec 里提供
+自定义 `destroy` 闭包：
+
 ```lua
-local fd, addr = tonumber(data.fd), tonumber(data.address)
-if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-    ...与器件状态有关的收尾动作...
+destroy = function(ctx, data)
+    local fd = ctx.fd
+    if fd ~= nil then
+        ...与器件状态有关的收尾动作...
+    end
+    return { result = "OK" }
 end
-return { result = "OK" }
 ```
 
 收尾不是校验：器件可能因 build 失败或总线先行释放而拿不到 `fd`，此时报 ERR

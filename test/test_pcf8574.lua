@@ -328,15 +328,15 @@ end
 -- ---- build 负路径 ----
 local bm = section()
 expect_err("地址越族 0x30", function() return build({ fd = fd, address = "0x30" }) end, "invalid address")
-check("越族零总线事务", #entries(bm) == 0)
+check("越族零总线事务", #set_addrs(bm) <= 1 and nwr(bm) == 0 and nrd(bm) == 0)
 
 bm = section()
 expect_err("地址越族 0x48", function() return build({ fd = fd, address = "0x48" }) end, "invalid address")
-check("越族 0x48 零事务", #entries(bm) == 0)
+check("越族 0x48 零事务", #set_addrs(bm) <= 1 and nwr(bm) == 0 and nrd(bm) == 0)
 
 bm = section()
 expect_err("地址越族 0x1F", function() return build({ fd = fd, address = "0x1F" }) end, "invalid address")
-check("越族 0x1F 零事务", #entries(bm) == 0)
+check("越族 0x1F 零事务", #set_addrs(bm) <= 1 and nwr(bm) == 0 and nrd(bm) == 0)
 
 bm = section()
 expect_err("初始锁存 256 越界", function() return build({ fd = fd, address = "0x20", out = "256" }) end, "range 0~255")

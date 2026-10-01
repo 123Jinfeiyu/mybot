@@ -9,6 +9,19 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 驱动框架迁移：require_driver 高阶函数，39 驱动全量迁移
+
+- **`drv_common.lua` 新增 `require_driver(bus, spec)`**：声明式驱动框架，收敛 39 份驱动文件
+  里重复的四段样板（标准前导 5→1 行、arg_table 守卫、总线校验、空 destroy）。驱动只写
+  业务 delta（build/call 闭包接收 `ctx.fd`/`ctx.addr`），框架自动生成全局 build/call/destroy。
+- **三族总线统一入口**：`require_driver("i2c"|"spi"|"uart", { name=, build=, call=, destroy= })`，
+  校验器按总线类型分派（i2c_pair / fd≥0 / uart fd≥0），错误文案与旧内联版本逐字对齐。
+- **39 驱动全量迁移**（5 批），净减约 1000 行样板。6951 个 Lua 测试全部通过，零回归。
+- **框架增强**：① UART 校验器补充 `@UART variable` 提示；② 新增 `i2c_addr_default` 字段
+  支持固定地址器件（如 AMG8833 0x69），address 列可省。
+- 新驱动写法见 [drivers.md](drivers.md) 的驱动契约节与 [development.md](development.md)
+  的「10 分钟写一个新硬件驱动」节。
+
 ### 2026-09-30 P1 收口：沙箱 print 拦截 + UART 共享路径硬拒绝
 
 - **Lua 沙箱 print → stderr**：`sandbox_lua()` 新增 `stderrPrint` C 闭包覆盖全局 `print`，

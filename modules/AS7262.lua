@@ -52,10 +52,10 @@ SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访�
 -- 应用提示：六通道模式一次测量 ~2 x 积分时间，采样率受此限制；
 --   各通道可直接挂 Ema/Kalman 滤波链做平滑光谱。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -172,163 +172,134 @@ local function read_channel(fd, vaddr)
 	return hi * 256 + lo
 end
 
--- 【配置脚本】软复位 -> 器件甄别 -> 积分/增益/模式 2
-function build(data)
+require_driver("i2c", {
+	name = "AS7262",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】软复位 -> 器件甄别 -> 积分/增益/模式 2
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- AS7262 builder func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- AS7262 builder func get a table --------", data)
-	end
+		local fd = ctx.fd
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- 配置列
+		local gain = gain_code_of(data.gain)
+		local integ = int_or(data.integ, DEF_INTEG, 0, 255)
+		local to = finite_of(data.timeout)
+		if to == nil or to < 1 then
+			to = math.floor(integ * 11.2) + 500
+		end
+		poll_timeout = math.floor(to)
 
-	-- 配置列
-	local gain = gain_code_of(data.gain)
-	local integ = int_or(data.integ, DEF_INTEG, 0, 255)
-	local to = finite_of(data.timeout)
-	if to == nil or to < 1 then
-		-- 自动超时：2 x 一轮积分(2 x integ x 2.8ms) + 500ms
-		to = math.floor(integ * 11.2) + 500
-	end
-	poll_timeout = math.floor(to)
-
-	-----------------------------------------------------
-	-- 软复位（RST 位，自清除；SparkFun 同款等 1s 不轮询启动）
-	local ctl = virtual_read(fd, V_CONTROL_SETUP)
-	if ctl == nil then
-		return err("Failed to read AS7262 CONTROL_SETUP")
-	end
-	if virtual_write(fd, V_CONTROL_SETUP, bitc.bor(ctl % 256, BIT_RST)) == nil then
-		return err("Failed to reset AS7262")
-	end
-	milli_sleep(T_RESET_MS)
-
-	-- 器件甄别（虚拟寄存器 0x00 = 0x3E）
-	local dtype = virtual_read(fd, V_DEVICE_TYPE)
-	if dtype == nil then
-		return err("Failed to read AS7262 device type")
-	end
-	if dtype ~= DEV_TYPE_AS7262 then
-		return err(string.format("Device type = 0x%02X (expect 0x3E AS7262, not AS7262?)", dtype))
-	end
-
-	-- 积分时间
-	if virtual_write(fd, V_INT_T, integ) == nil then
-		return err("Failed to write AS7262 integration time")
-	end
-
-	-- 增益（[5:4]）与模式 2 连续全通道（[3:2]），读-改-写合并一次
-	ctl = virtual_read(fd, V_CONTROL_SETUP)
-	if ctl == nil then
-		return err("Failed to read AS7262 CONTROL_SETUP")
-	end
-	local v = bitc.band(ctl % 256, bitc.band(MASK_GAIN, MASK_BANK))
-	v = bitc.bor(v, bitc.bor(bitc.lshift(gain, 4), bitc.lshift(BANK_ALL_CONT, 2)))
-	if virtual_write(fd, V_CONTROL_SETUP, v) == nil then
-		return err("Failed to write AS7262 gain/mode")
-	end
-
-	print(string.format("AS7262 init OK: addr=0x%02X, gain=%dx, integ=%d (每轮约%.0fms), timeout=%dms",
-		addr, GAIN_TAB[gain + 1][1], integ, integ * 2.8 * 2, poll_timeout))
-	return {  result = "OK"  }
-
-end
-
--- 【销毁AS7262】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用AS7262】等 DATA_RDY -> 读六通道 + 温度 -> 清 DATA_RDY
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- AS7262 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	-- 等 DATA_RDY（连续模式自动转换）
-	local left = poll_timeout or 1000
-	while true do
+		-----------------------------------------------------
+		-- 软复位（RST 位，自清除；SparkFun 同款等 1s 不轮询启动）
 		local ctl = virtual_read(fd, V_CONTROL_SETUP)
 		if ctl == nil then
-			return err("Failed to poll AS7262 data-ready")
+			return err("Failed to read AS7262 CONTROL_SETUP")
 		end
-		if bitc.band(ctl % 256, BIT_DATA_RDY) ~= 0 then break end
-		if left <= 0 then
-			return err(string.format("AS7262 data-ready timeout (%dms)", poll_timeout or 1000))
+		if virtual_write(fd, V_CONTROL_SETUP, bitc.bor(ctl % 256, BIT_RST)) == nil then
+			return err("Failed to reset AS7262")
 		end
-		milli_sleep(POLL_MS)
-		left = left - POLL_MS
-	end
+		milli_sleep(T_RESET_MS)
 
-	-- 读六通道
-	local vals = {}
-	for _, ch in ipairs(CHANS) do
-		local v = read_channel(fd, ch[2])
-		if v == nil then
-			return err("Failed to read AS7262 channel " .. ch[1])
+		-- 器件甄别（虚拟寄存器 0x00 = 0x3E）
+		local dtype = virtual_read(fd, V_DEVICE_TYPE)
+		if dtype == nil then
+			return err("Failed to read AS7262 device type")
 		end
-		vals[ch[1]] = v
-	end
+		if dtype ~= DEV_TYPE_AS7262 then
+			return err(string.format("Device type = 0x%02X (expect 0x3E AS7262, not AS7262?)", dtype))
+		end
 
-	-- 片上温度（二进制补码）
-	local tb = virtual_read(fd, V_DEVICE_TEMP)
-	if tb == nil or tb < 0 then
-		return err("Failed to read AS7262 temperature")
-	end
-	local temp_c = bitc.s8(tb)
+		-- 积分时间
+		if virtual_write(fd, V_INT_T, integ) == nil then
+			return err("Failed to write AS7262 integration time")
+		end
 
-	-- 清 DATA_RDY（SparkFun 同款 RMW 清位；连续模式下芯片随即开始下一轮）
-	local ctl = virtual_read(fd, V_CONTROL_SETUP)
-	if ctl == nil then
-		return err("Failed to read AS7262 CONTROL_SETUP")
-	end
-	if virtual_write(fd, V_CONTROL_SETUP, bitc.band(ctl % 256, bitc.bxor(BIT_DATA_RDY, 0xFF))) == nil then
-		return err("Failed to clear AS7262 data-ready")
-	end
+		-- 增益（[5:4]）与模式 2 连续全通道（[3:2]），读-改-写合并一次
+		ctl = virtual_read(fd, V_CONTROL_SETUP)
+		if ctl == nil then
+			return err("Failed to read AS7262 CONTROL_SETUP")
+		end
+		local v = bitc.band(ctl % 256, bitc.band(MASK_GAIN, MASK_BANK))
+		v = bitc.bor(v, bitc.bor(bitc.lshift(gain, 4), bitc.lshift(BANK_ALL_CONT, 2)))
+		if virtual_write(fd, V_CONTROL_SETUP, v) == nil then
+			return err("Failed to write AS7262 gain/mode")
+		end
 
-	local ret = {
-		result = "OK",
-		V = vals.V, B = vals.B, G = vals.G,
-		Y = vals.Y, O = vals.O, R = vals.R,
-		TEMP_C = temp_c
-	}
+		print(string.format("AS7262 init OK: addr=0x%02X, gain=%dx, integ=%d (每轮约%.0fms), timeout=%dms",
+			ctx.addr, GAIN_TAB[gain + 1][1], integ, integ * 2.8 * 2, poll_timeout))
+		return {  result = "OK"  }
+	end,
 
-	if DEBUG then
-		print(string.format("AS7262: V=%d B=%d G=%d Y=%d O=%d R=%d T=%d°C",
-			ret.V, ret.B, ret.G, ret.Y, ret.O, ret.R, ret.TEMP_C))
-	end
+	-- destroy 缺省 = 空操作（原 AS7262 destroy 仅 arg_table + return OK，等价）
 
-	return ret
+	-- 【调用AS7262】等 DATA_RDY -> 读六通道 + 温度 -> 清 DATA_RDY
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- AS7262 caller func get a table --------", data)
+		end
 
-end
+		local fd = ctx.fd
+
+		-----------------------------------------------------
+		-- 等 DATA_RDY（连续模式自动转换）
+		local left = poll_timeout or 1000
+		while true do
+			local ctl = virtual_read(fd, V_CONTROL_SETUP)
+			if ctl == nil then
+				return err("Failed to poll AS7262 data-ready")
+			end
+			if bitc.band(ctl % 256, BIT_DATA_RDY) ~= 0 then break end
+			if left <= 0 then
+				return err(string.format("AS7262 data-ready timeout (%dms)", poll_timeout or 1000))
+			end
+			milli_sleep(POLL_MS)
+			left = left - POLL_MS
+		end
+
+		-- 读六通道
+		local vals = {}
+		for _, ch in ipairs(CHANS) do
+			local v = read_channel(fd, ch[2])
+			if v == nil then
+				return err("Failed to read AS7262 channel " .. ch[1])
+			end
+			vals[ch[1]] = v
+		end
+
+		-- 片上温度（二进制补码）
+		local tb = virtual_read(fd, V_DEVICE_TEMP)
+		if tb == nil or tb < 0 then
+			return err("Failed to read AS7262 temperature")
+		end
+		local temp_c = bitc.s8(tb)
+
+		-- 清 DATA_RDY（SparkFun 同款 RMW 清位；连续模式下芯片随即开始下一轮）
+		local ctl = virtual_read(fd, V_CONTROL_SETUP)
+		if ctl == nil then
+			return err("Failed to read AS7262 CONTROL_SETUP")
+		end
+		if virtual_write(fd, V_CONTROL_SETUP, bitc.band(ctl % 256, bitc.bxor(BIT_DATA_RDY, 0xFF))) == nil then
+			return err("Failed to clear AS7262 data-ready")
+		end
+
+		local ret = {
+			result = "OK",
+			V = vals.V, B = vals.B, G = vals.G,
+			Y = vals.Y, O = vals.O, R = vals.R,
+			TEMP_C = temp_c
+		}
+
+		if DEBUG then
+			print(string.format("AS7262: V=%d B=%d G=%d Y=%d O=%d R=%d T=%d°C",
+				ret.V, ret.B, ret.G, ret.Y, ret.O, ret.R, ret.TEMP_C))
+		end
+
+		return ret
+	end,
+})
 
 
 
