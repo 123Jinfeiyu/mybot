@@ -245,95 +245,12 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
     };
     let config_path = config_path.unwrap_or_default();
 
-    // ---- 2) 协议驱动与变量名 ----
-    let driver = if !cli.llm_driver.is_empty() {
-        cli.llm_driver.clone()
-    } else {
-        file.driver
-            .clone()
-            .unwrap_or_else(|| DEFAULT_DRIVER.to_string())
-    };
-    let llm_var = if !cli.llm_var.is_empty() {
-        cli.llm_var.clone()
-    } else {
-        file.var
-            .clone()
-            .unwrap_or_else(|| DEFAULT_LLM_VAR.to_string())
-    };
-    if !is_safe_ident(&driver) {
-        return Err(format!(
-            "协议驱动表名必须是安全标识符（字母/数字/下划线），实际是 '{driver}'\
-             （来自 --llm-driver 或配置文件的 driver 字段）"
-        ));
-    }
-    if !is_safe_ident(&llm_var) {
-        return Err(format!(
-            "驱动变量名必须是安全标识符（字母/数字/下划线），实际是 '{llm_var}'\
-             （来自 --llm-var 或配置文件的 var 字段）"
-        ));
-    }
-
-    // ---- 3) endpoint / model：命令行 > 环境变量 > 配置文件；无内置缺省 ----
-    let endpoint = if !cli.llm_endpoint.is_empty() {
-        cli.llm_endpoint.clone()
-    } else if let Some(v) = env_var("BOT4CJ_LLM_ENDPOINT") {
-        v
-    } else {
-        file.endpoint.clone().unwrap_or_default()
-    };
-    if endpoint.is_empty() {
-        return Err(
-            "缺少模型接入点（endpoint）：用 --llm-endpoint 或配置文件的 endpoint 字段给出"
-                .to_string()
-                + "（没有内置缺省：Rust agent 不知道你要连哪个网关，猜一个只会把上下文发到错的地方）",
-        );
-    }
-    let model = if !cli.llm_model.is_empty() {
-        cli.llm_model.clone()
-    } else if let Some(v) = env_var("BOT4CJ_LLM_MODEL") {
-        v
-    } else {
-        file.model.clone().unwrap_or_default()
-    };
-    if model.is_empty() {
-        return Err(
-            "缺少模型名：用 --llm-model 或配置文件的 model 字段给出（rig 需要显式模型串，"
-                .to_string()
-                + "没有「驱动内置缺省」可回落）",
-        );
-    }
-
-    // ---- 4) API key：环境变量链 > 配置文件 api_key > 配置文件 api_key_file ----
-    let mut config_warning = String::new();
-    let (api_key, api_key_source) = if let Some(k) = resolve_llm_key_from_env() {
-        (k, "env")
-    } else if let Some(k) = file.api_key.clone() {
-        if !config_path.is_empty() {
-            config_warning = secret_file_permission_warning(&config_path);
-        }
-        (k, "config_inline")
-    } else if let Some(path) = file.api_key_file.clone() {
-        let k = read_api_key_file(&path)
-            .map_err(|e| format!("读取配置文件的 api_key_file 失败: {e}"))?;
-        config_warning = secret_file_permission_warning(&path);
-        (k, "config_file")
-    } else {
-        return Err(
-            "缺少 API key：请设环境变量 BOT4CJ_LLM_KEY（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY），"
-                .to_string()
-                + "或在配置文件的 api_key / api_key_file 字段提供"
-                + "（命令行不提供密钥选项：argv 对同用户进程可读）",
-        );
-    };
-    if let Err(e) = validate_api_key_chars(&api_key) {
-        let src = match api_key_source {
-            "config_inline" => "配置文件 api_key 字段",
-            "config_file" => "配置文件 api_key_file",
-            _ => "环境变量",
-        };
-        return Err(format!("API key 非法（来源: {src}）: {e}"));
-    }
-
+    // ---- 2) 协议驱动与变量名（拆解见 resolve_driver_and_var）----
+    let (driver, llm_var) = resolve_driver_and_var(cli, &file)?;
+    // ---- 3) endpoint / model（拆解见 resolve_endpoint_and_model）----
+    let (endpoint, model) = resolve_endpoint_and_model(cli, &file)?;
+    // ---- 4) API key（拆解见 resolve_api_key）----
+    let (api_key, api_key_source, config_warning) = resolve_api_key(&file, &config_path)?;
     // ---- 5) 采样/超时/轮次：配置文件覆盖缺省，命令行再覆盖 ----
     let mut cfg = Config {
         socket: cli.socket.clone(),
@@ -452,6 +369,110 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         }
     }
     Ok(cfg)
+}
+
+/// §2 协议驱动与变量名：命令行 > 配置文件 > 缺省；两名字都必须是安全标识符。
+fn resolve_driver_and_var(cli: &Cli, file: &FileConfig) -> Result<(String, String), String> {
+    let driver = if !cli.llm_driver.is_empty() {
+        cli.llm_driver.clone()
+    } else {
+        file.driver
+            .clone()
+            .unwrap_or_else(|| DEFAULT_DRIVER.to_string())
+    };
+    let llm_var = if !cli.llm_var.is_empty() {
+        cli.llm_var.clone()
+    } else {
+        file.var
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LLM_VAR.to_string())
+    };
+    if !is_safe_ident(&driver) {
+        return Err(format!(
+            "协议驱动表名必须是安全标识符（字母/数字/下划线），实际是 '{driver}'\
+             （来自 --llm-driver 或配置文件的 driver 字段）"
+        ));
+    }
+    if !is_safe_ident(&llm_var) {
+        return Err(format!(
+            "驱动变量名必须是安全标识符（字母/数字/下划线），实际是 '{llm_var}'\
+             （来自 --llm-var 或配置文件的 var 字段）"
+        ));
+    }
+
+    Ok((driver, llm_var))
+}
+
+/// §3 endpoint/model：命令行 > 环境变量 > 配置文件；无内置缺省（猜一个只会把上下文发到错的地方）。
+fn resolve_endpoint_and_model(cli: &Cli, file: &FileConfig) -> Result<(String, String), String> {
+    let endpoint = if !cli.llm_endpoint.is_empty() {
+        cli.llm_endpoint.clone()
+    } else if let Some(v) = env_var("BOT4CJ_LLM_ENDPOINT") {
+        v
+    } else {
+        file.endpoint.clone().unwrap_or_default()
+    };
+    if endpoint.is_empty() {
+        return Err(
+            "缺少模型接入点（endpoint）：用 --llm-endpoint 或配置文件的 endpoint 字段给出"
+                .to_string()
+                + "（没有内置缺省：Rust agent 不知道你要连哪个网关，猜一个只会把上下文发到错的地方）",
+        );
+    }
+    let model = if !cli.llm_model.is_empty() {
+        cli.llm_model.clone()
+    } else if let Some(v) = env_var("BOT4CJ_LLM_MODEL") {
+        v
+    } else {
+        file.model.clone().unwrap_or_default()
+    };
+    if model.is_empty() {
+        return Err(
+            "缺少模型名：用 --llm-model 或配置文件的 model 字段给出（rig 需要显式模型串，"
+                .to_string()
+                + "没有「驱动内置缺省」可回落）",
+        );
+    }
+
+    Ok((endpoint, model))
+}
+
+/// §4 API key：环境变量链 > 配置文件 api_key > api_key_file；内联/文件来源要给权限告警。
+fn resolve_api_key(
+    file: &FileConfig,
+    config_path: &str,
+) -> Result<(String, &'static str, String), String> {
+    let mut config_warning = String::new();
+    let (api_key, api_key_source) = if let Some(k) = resolve_llm_key_from_env() {
+        (k, "env")
+    } else if let Some(k) = file.api_key.clone() {
+        if !config_path.is_empty() {
+            config_warning = secret_file_permission_warning(config_path);
+        }
+        (k, "config_inline")
+    } else if let Some(path) = file.api_key_file.clone() {
+        let k = read_api_key_file(&path)
+            .map_err(|e| format!("读取配置文件的 api_key_file 失败: {e}"))?;
+        config_warning = secret_file_permission_warning(&path);
+        (k, "config_file")
+    } else {
+        return Err(
+            "缺少 API key：请设环境变量 BOT4CJ_LLM_KEY（也兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY），"
+                .to_string()
+                + "或在配置文件的 api_key / api_key_file 字段提供"
+                + "（命令行不提供密钥选项：argv 对同用户进程可读）",
+        );
+    };
+    if let Err(e) = validate_api_key_chars(&api_key) {
+        let src = match api_key_source {
+            "config_inline" => "配置文件 api_key 字段",
+            "config_file" => "配置文件 api_key_file",
+            _ => "环境变量",
+        };
+        return Err(format!("API key 非法（来源: {src}）: {e}"));
+    }
+
+    Ok((api_key, api_key_source, config_warning))
 }
 
 /// 解析 CLI 里的整数字符串选项；越界/非数字给出带选项名的人话报错。
