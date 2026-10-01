@@ -134,4 +134,27 @@ public:
 	EnvVar& operator=(const EnvVar&) = delete;
 };
 
+/* 模块路径守卫：让驱动解析路径同时看到真模块树与测试夹具目录
+ * （modules 在前，与生产语义一致：同名以 modules 为准）。退出时还原，
+ * 避免影响其它用例。2026-10-01 自 test_agenttools 上收（test_robot 系
+ * 原有一份 const char* 构造的同名类，robot_fixtures.hpp 侧同步改用本类）。 */
+class ModulePathGuard {
+	std::string old_;
+	bool had_ = false;
+
+public:
+	explicit ModulePathGuard(const std::string& path) {
+		const char* v = std::getenv("BOT4CJ_MODULE_PATH");
+		had_ = v != nullptr;
+		if (had_) { old_ = v; }
+		::setenv("BOT4CJ_MODULE_PATH", path.c_str(), 1);
+	}
+	~ModulePathGuard() {
+		if (had_) { ::setenv("BOT4CJ_MODULE_PATH", old_.c_str(), 1); }
+		else { ::unsetenv("BOT4CJ_MODULE_PATH"); }
+	}
+	ModulePathGuard(const ModulePathGuard&) = delete;
+	ModulePathGuard& operator=(const ModulePathGuard&) = delete;
+};
+
 } // namespace fx

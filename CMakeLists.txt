@@ -204,6 +204,11 @@ add_executable(mybot_tests
   test/cpp/test_mtinclude.cpp
   test/cpp/test_agentproto.cpp
   test/cpp/test_agenttools.cpp
+  test/cpp/test_agenttools_wait.cpp
+  test/cpp/test_agenttools_sql.cpp
+  test/cpp/test_agenttools_image.cpp
+  test/cpp/test_agenttools_runcommand.cpp
+  test/cpp/test_agenttools_subproc.cpp
   test/cpp/test_agentaudit.cpp
   test/cpp/test_agentpolicy.cpp
   test/cpp/test_promptpack.cpp
@@ -344,7 +349,7 @@ endif()
 # ======================================================================
 file(GLOB MYBOT_CPP_TEST_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/cpp/test_*.cpp)
 set(MYBOT_CPP_TEST_REGISTERED
-  test_actionsource test_agentaudit test_agentpolicy test_agentproto test_agenttools test_mcpbackend
+  test_actionsource test_agentaudit test_agentpolicy test_agentproto test_agenttools test_agenttools_image test_agenttools_runcommand test_agenttools_sql test_agenttools_subproc test_agenttools_wait test_mcpbackend
   test_cliargs test_cross_lang_limits test_daemon_concurrency test_daemon test_expr test_hardware
   test_json test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
   test_mtmerge test_promptpack test_robot test_robot_dispatch test_robot_hotdelete

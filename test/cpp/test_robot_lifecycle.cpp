@@ -25,7 +25,7 @@
 namespace fs = std::filesystem;
 using fx::TempDir;
 
-using rfx::ModulePathGuard;
+using fx::ModulePathGuard;
 using rfx::markerOf;
 using rfx::probeSql;
 /* ==================== 析构兜底断电（审计 P7 / 阶段 1.4）====================

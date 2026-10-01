@@ -7,7 +7,6 @@
  * 全部直走生产代码公开接口。各 TU 以 using 声明按需引名，用例体零改动。
  */
 
-#include <cstdlib>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -72,27 +71,6 @@ inline std::deque<mt::MatrixObject> loadMatrices(const std::string& sql) {
 /* 显式 size_t 下标：MatrixObject 同时有 size_t 与 int64_t 两个 operator()，
  * 字面量实参会在两个整型转换间产生歧义 */
 inline std::string cell(const mt::MatrixObject& m, std::size_t r, std::size_t c) { return m(r, c); }
-
-/* BOT4CJ_MODULE_PATH 临时指向 modules:test/cpp（探针驱动在后者），出作用域还原。
- * 沙箱按该变量逐段构建 dofile 白名单（src/luasandbox.cpp），不设则探针加载不到。 */
-class ModulePathGuard {
-public:
-	explicit ModulePathGuard(const char* path) : had_(::getenv(kVar) != nullptr) {
-		if (had_) { old_ = ::getenv(kVar); }
-		::setenv(kVar, path, 1);
-	}
-	~ModulePathGuard() {
-		if (had_) { ::setenv(kVar, old_.c_str(), 1); }
-		else { ::unsetenv(kVar); }
-	}
-	ModulePathGuard(const ModulePathGuard&) = delete;
-	ModulePathGuard& operator=(const ModulePathGuard&) = delete;
-
-private:
-	static constexpr const char* kVar = "BOT4CJ_MODULE_PATH";
-	bool had_;
-	std::string old_;
-};
 
 inline std::string markerOf(const fs::path& p) {
 	std::ifstream f(p, std::ios::binary);

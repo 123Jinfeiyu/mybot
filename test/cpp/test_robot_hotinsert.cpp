@@ -25,7 +25,7 @@
 namespace fs = std::filesystem;
 using fx::TempDir;
 
-using rfx::ModulePathGuard;
+using fx::ModulePathGuard;
 using rfx::hotSqlError;
 using rfx::markerOf;
 using rfx::probeSql;

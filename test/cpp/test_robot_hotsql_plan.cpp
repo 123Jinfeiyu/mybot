@@ -24,7 +24,7 @@
 namespace fs = std::filesystem;
 using fx::TempDir;
 
-using rfx::ModulePathGuard;
+using fx::ModulePathGuard;
 using rfx::cell;
 using rfx::loadMatrices;
 /* ==================== 热 SQL 只读计划层（不构造 RobotStruct、不装配硬件）==================== */
