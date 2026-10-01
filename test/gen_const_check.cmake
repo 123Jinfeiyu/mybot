@@ -14,7 +14,7 @@
 # 用法：cmake -DOUT=<生成的头文件> -DSRC=<仓库根> -P test/gen_const_check.cmake
 #
 # 2026-10-01 加固（P0 复发预防，2026-10-01 P0 的教训收口）：hal_backend_glibc.lua
-# 的 consts 表改**执行期求值**（luajit 加载后端 → test/dump_consts.lua 倒出
+# 的 consts 表改**执行期求值**（luajit 加载后端 → test/lib/dump_consts.lua 倒出
 # M.consts 表），抽取契约从「正则模式 ↔ 书写风格」收窄为「后端导出 M.consts 表」
 # 这一条既有接口契约——方案 A 下沉搬走常量时不再有隐式的书写风格耦合可断。
 # Camera.lua 的 V4L2 常量与 ABI 尺寸表、HAL.lua 的波特率表保持纯文本抽取：
@@ -96,7 +96,7 @@ if(NOT MYBOT_LUAJIT_EXECUTABLE)
     "静默生成空头会让常量自检退化为自证（A2 的原始缺陷形态）。")
 endif()
 execute_process(
-  COMMAND "${MYBOT_LUAJIT_EXECUTABLE}" "${SRC}/test/dump_consts.lua"
+  COMMAND "${MYBOT_LUAJIT_EXECUTABLE}" "${SRC}/test/lib/dump_consts.lua"
           "${SRC_MODULES}/lib/hal_backend_glibc.lua"
   RESULT_VARIABLE _const_dump_rc
   OUTPUT_VARIABLE _const_dump_out

@@ -257,7 +257,7 @@ set_tests_properties(cpp_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 # 2026-09-30 方案 A 下沉后的唯一事实源）、modules/Camera.lua 抽取真实值生成
 # const_lua.h，断言对**两侧**各钉一次：
 # Lua 抽取值 == 手抄预期值（抽取生效 + Lua 未漂移）+ 预期值 == 系统头。
-# consts 表走**执行期求值**（luajit + test/dump_consts.lua，2026-10-01 加固：
+# consts 表走**执行期求值**（luajit + test/lib/dump_consts.lua，2026-10-01 加固：
 # 2026-10-01 P0 的教训「抽取模式与被抽文件的书写风格是同一份契约」由此收口——
 # 契约只剩「后端导出 M.consts 表」）；Camera.lua 仍为纯文本抽取（其顶层会执行
 # 整套 HAL 加载，不宜在配置期跑）。抽不到/执行失败即 FATAL_ERROR（静默生成
