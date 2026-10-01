@@ -5,7 +5,7 @@
  * McpBackend 路由；跨 TU 接缝（FrameResult/readFrame/sendFrame/常量）在
  * mcpbackend.hpp。 */
 
-#include "mcpbackend.hpp"
+#include "mcptransport.hpp"
 
 #include <cerrno>
 #include <cctype>

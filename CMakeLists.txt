@@ -119,6 +119,7 @@ set(MYBOT_CORE_SOURCES
   src/agentaudit.cpp
   src/agentpolicy.cpp
   src/mcpbackend.cpp
+  src/mcplisten.cpp
   src/mcptransport.cpp
   src/promptpack.cpp
 )
