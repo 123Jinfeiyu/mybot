@@ -202,16 +202,28 @@ bool sendFrame(int fd, const std::string& payload) {
  *   Neutral——没走到认证判定（哑对端/无 token 模式），计数不动。 */
 enum class ConnAuth { Neutral, Passed, Failed };
 
+/* serveConnection 的连接结局（2026-10-01 审计 P2 前只有 ConnAuth，断连安全动作
+ * 无条件执行——语义缺口见 acceptLoop 的门）。两个判据服务两件事，必须分开记：
+ *   auth——AuthFailGate 爆破计数口径（见上）；
+ *   admitted——是否真正进入过业务循环：无 token 模式恒 true；token 模式认证
+ *     通过才 true。断连安全动作只对 admitted 连接执行——探连（连上就断/
+ *     认证帧未到）与认证失败从未被服务，不该拥有触发硬件动作的通道。 */
+struct ConnOutcome {
+	ConnAuth auth = ConnAuth::Neutral;
+	bool admitted = false;
+};
+
 /* 服务单条连接：帧循环直到对端关闭 / 协议违规 / 空闲超时 / 停止信号。
  * 空闲 deadline 逐帧重取（--mcp-idle-timeout 是「从现在起再等这么久」，
  * 墙钟预算是从连接起的绝对终点——两者由 idleDeadline 合成）。
  * MCP-1（审计 P2-1）：authToken 非空时第一帧是认证帧——通过才进入正常循环，
  * 不通过回执后断连（对端可修正重连）。失败的认证要落审计（kind=session，
  * status=auth_failed）：它是「有进程在试探这条 socket」的信号，事后复盘
- * 必须看得见；token 本身绝不进日志/审计/回执。返回 ConnAuth 供 acceptLoop
- * 记账连续失败（见 AuthFailGate）。 */
-ConnAuth serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
+ * 必须看得见；token 本身绝不进日志/审计/回执。返回 ConnOutcome：auth 供
+ * acceptLoop 记账连续失败（见 AuthFailGate），admitted 供断连安全动作门控。 */
+ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
 		std::ostream& log) {
+	bool admitted = opts.authToken.empty();
 	if (!opts.authToken.empty()) {
 		std::string payload;
 		const FrameResult fr = readFrame(fd, payload, opts.recvTimeoutSec,
@@ -224,16 +236,17 @@ ConnAuth serveConnection(int fd, McpBackend& backend, const McpBackendOptions& o
 			} else if (fr == FrameResult::Violation) {
 				log << "MCP 后端：认证帧违规，断开连接\n";
 			}
-			return ConnAuth::Neutral;
+			return ConnOutcome{ConnAuth::Neutral, false};
 		}
 		const McpAuthOutcome a = mcpCheckAuthFrame(opts.authToken, payload);
 		if (a == McpAuthOutcome::Ok) {
 			/* lock-step：认证帧也要回执（Rust 侧 authenticate 在等这一帧） */
 			if (!sendFrame(fd, "{\"success\":true,\"data\":{\"auth\":true}}")) {
 				log << "MCP 后端：认证回帧发送失败，断开连接\n";
-				return ConnAuth::Neutral;
+				return ConnOutcome{ConnAuth::Neutral, false};
 			}
 			log << "MCP 后端：首帧认证通过\n";
+			admitted = true;
 		} else {
 			/* 回执不回显 token、不区分「错密钥」与「没带密钥」——对试探者
 			 * 两者给同一句话，信息量最小化。 */
@@ -244,7 +257,7 @@ ConnAuth serveConnection(int fd, McpBackend& backend, const McpBackendOptions& o
 				? "第一帧不是 auth 帧" : "共享密钥不匹配")
 				<< "），断开连接\n";
 			backend.recordAuthRejected();
-			return ConnAuth::Failed;
+			return ConnOutcome{ConnAuth::Failed, false};
 		}
 	}
 	const ConnAuth result = opts.authToken.empty() ? ConnAuth::Neutral : ConnAuth::Passed;
@@ -252,22 +265,22 @@ ConnAuth serveConnection(int fd, McpBackend& backend, const McpBackendOptions& o
 		std::string payload;
 		const FrameResult fr = readFrame(fd, payload, opts.recvTimeoutSec,
 			backend.idleDeadline(opts.idleTimeoutSec), log);
-		if (fr == FrameResult::PeerClosed) { return result; }
+		if (fr == FrameResult::PeerClosed) { return ConnOutcome{result, admitted}; }
 		if (fr == FrameResult::IdleTimeout) {
 			log << "MCP 后端：空闲超时/每连接墙钟预算耗尽，断开连接（对端可重连）\n";
-			return result;
+			return ConnOutcome{result, admitted};
 		}
 		if (fr == FrameResult::Violation) {
 			log << "MCP 后端：协议违规，断开连接\n";
-			return result;
+			return ConnOutcome{result, admitted};
 		}
 		const std::string resp = backend.handleFrame(payload);
 		if (!sendFrame(fd, resp)) {
 			log << "MCP 后端：回帧发送失败，断开连接\n";
-			return result;
+			return ConnOutcome{result, admitted};
 		}
 	}
-	return result;
+	return ConnOutcome{result, admitted};
 }
 
 } // namespace
@@ -749,8 +762,8 @@ ListenSocket prepareListenSocket(const std::string& socketPath, std::ostream& lo
 
 /* accept 循环（拆自 runMcpBackend，2026-09-26 批次 5）：poll 等连接（带超时以便
  * 轮询 stopRequested）→ accept4 → SO_PEERCRED 校验 → SO_SNDTIMEO 防慢读端 →
- * serveConnection 服务 → 关连接 → 断连安全动作。单连接串行。返回退出码
- * （0 = 收到停止信号正常退出，1 = poll/accept 出错）。 */
+ * serveConnection 服务 → 关连接 → 断连安全动作（仅 admitted 连接）。单连接串行。
+ * 返回退出码（0 = 收到停止信号正常退出，1 = poll/accept 出错）。 */
 int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& tctx,
 		const AgentModeConfig& cfg, const McpBackendOptions& opts, std::ostream& log) {
 	int rc = 0;
@@ -794,14 +807,25 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 
 		backend.beginConnection();
 		log << "MCP 后端：sidecar 已连接，开始服务\n";
-		const ConnAuth a = serveConnection(clientFd.get(), backend, opts, log);
+		const ConnOutcome oc = serveConnection(clientFd.get(), backend, opts, log);
 		/* 先关连接再跑安全动作：对端若还挂着（半关闭），不该看见动作期间的
 		 * 任何回帧；且动作脚本可能跑几秒，不占着 fd。 */
 		clientFd.close();
-		runDisconnectAction(tctx, cfg.onDisconnectScript, cfg.audit, log);
-		if (a == ConnAuth::Passed) {
+		/* 断连安全动作的门（2026-10-01 审计 P2）：只对「进入过业务循环」的连接
+		 * 执行。此前无条件执行——同 UID 对端反复 connect+close（或反复发错
+		 * 密钥）可以反复驱动执行器到"安全姿态"，连败 5 次还会借停机断电链把
+		 * 后端打停；认证门（MCP-1/AuthFailGate）只盖住了工具派发路径，没盖住
+		 * 断连路径。admitted 语义见 ConnOutcome。跳过要留痕：这是安全相关的
+		 * 可观测行为，不该静默。 */
+		if (oc.admitted) {
+			runDisconnectAction(tctx, cfg.onDisconnectScript, cfg.audit, log);
+		} else if (!cfg.onDisconnectScript.empty()) {
+			log << "MCP 后端：连接未通过认证，跳过断连安全动作 " << cfg.onDisconnectScript
+				<< "\n";
+		}
+		if (oc.auth == ConnAuth::Passed) {
 			authGate.recordPassed();
-		} else if (a == ConnAuth::Failed) {
+		} else if (oc.auth == ConnAuth::Failed) {
 			if (authGate.recordRejected()) {
 				log << "MCP 后端：首帧认证连续 " << AuthFailGate::kMaxFails
 					<< " 次失败，停止服务（可能为爆破；重启后端恢复，"

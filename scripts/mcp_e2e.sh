@@ -390,20 +390,28 @@ grep -q 'run_command' "$REJ/log" && ok "反面：报错点名 run_command" || ng
 # ---- M6：首帧共享密钥（BOT4CJ_MCP_TOKEN，2026-09-29 审计 P2-1）----
 # 正面：同一环境变量喂两端（正是生产拓扑：后端在宿主抹零前捕获、agent 连接后
 # 首帧发认证）。auth 帧通过后公共断言照跑，审计/停机检查沿用 phase。
+# 顺带 2026-10-01 审计 P2 正面侧：认证通过 = 被服务连接，--on-disconnect 应执行
+# （WAIT_LOG 等它跑完再 kill，否则脚本会被停机信号打断）。
 export BOT4CJ_MCP_TOKEN=secret-e2e-m6
-phase "M6 首帧认证（正确密钥）" false "$TMP/p-auth" auth-ok
+WAIT_LOG="断连安全动作完成" phase "M6 首帧认证（正确密钥）" false "$TMP/p-auth" auth-ok \
+	--on-disconnect relay-test.mt
 grep -q '首帧共享密钥已启用' "$TMP/p-auth/backend.log" \
 	&& ok "M6: 启动日志声明密钥已启用" || ng "M6: 启动日志未声明密钥状态"
 grep -q '首帧认证通过' "$TMP/p-auth/backend.log" \
 	&& ok "M6: 后端日志记录认证通过" || ng "M6: 后端日志未见认证通过"
+grep -q '"status":"disconnect_action"' "$TMP/p-auth/audit.jsonl" 2>/dev/null \
+	&& ok "M6: 认证通过的连接触发断连安全动作" || ng "M6: 认证通过的连接缺断连安全动作记录"
 unset BOT4CJ_MCP_TOKEN
 
 # 反面一：错误密钥 / 不发认证帧 —— 拒绝 + 断连 + 审计 auth_failed
+# 附带 2026-10-01 审计 P2 反面侧：这趟后端带 --on-disconnect 启动，但探连从未
+# 进入业务循环，断连动作**不得**执行（旧代码会执行——本断言就是那时的回归）。
 for neg in auth-bad auth-none; do
 	echo "----- M6 反面（$neg）-----"
 	ND="$TMP/neg-$neg"; mkdir -p "$ND"
 	BOT4CJ_MCP_TOKEN=secret-e2e-m6 "$MYBOT" --robot=robots/relay-test.sql --mcp-backend \
 		--mcp-socket "$ND/run/mcp.sock" --scripts-dir scripts \
+		--on-disconnect relay-test.mt \
 		--audit-log "$ND/audit.jsonl" >"$ND/log" 2>&1 &
 	npid=$!; PIDS="$PIDS $npid"
 	nup=no; for _ in $(seq 1 60); do [ -S "$ND/run/mcp.sock" ] && { nup=yes; break; }; sleep 0.1; done
@@ -415,9 +423,19 @@ for neg in auth-bad auth-none; do
 	npf="$(echo "$npyout" | sed -n 's/.*FRAMESUMMARY pass=\([0-9]*\) fail=\([0-9]*\)/\2/p')"
 	pass=$((pass + ${npp:-0})); fail=$((fail + ${npf:-0}))
 	kill -TERM "$npid" 2>/dev/null; wait "$npid" 2>/dev/null
+	# 同步点：等后端回到 accept（断连路径已走完）再断言审计，消除与动作执行的竞态
+	nseen=no; for _ in $(seq 1 100); do grep -q '回到 accept 等待' "$ND/log" && { nseen=yes; break; }; sleep 0.1; done
+	[ "$nseen" = yes ] || ng "$neg: 后端 10s 内未回到 accept（断连路径卡住？）"
 	grep -q '"status":"auth_failed"' "$ND/audit.jsonl" 2>/dev/null \
 		&& ok "$neg: 审计记录 auth_failed" || ng "$neg: 审计缺 auth_failed"
 	grep -q '首帧认证失败' "$ND/log" && ok "$neg: 后端日志点名认证失败" || ng "$neg: 后端日志未点名认证失败"
+	if grep -q '"status":"disconnect_action"' "$ND/audit.jsonl" 2>/dev/null; then
+		ng "$neg: 未认证连接竟触发断连安全动作"
+	else
+		ok "$neg: 未认证连接未触发断连安全动作"
+	fi
+	grep -q '跳过断连安全动作' "$ND/log" \
+		&& ok "$neg: 后端日志点名跳过断连安全动作" || ng "$neg: 后端日志未点名跳过断连安全动作"
 done
 
 # 反面二：设置但为空 —— fail-closed 拒绝启动（不会静默退回无认证裸奔）
