@@ -96,17 +96,21 @@ set(MYBOT_CORE_SOURCES
   src/hardware.cpp
   src/luavar.cpp
   src/daemonvar.cpp
+  src/daemonconf.cpp
   src/hw_registry.cpp
   src/meta_provider.cpp
   src/hw_factory.cpp
   src/action_runner.cpp
   src/luaexec.cpp
   src/robot.cpp
+  src/hotsql_plan.cpp
   src/actionsource.cpp
   src/cliargs.cpp
+  src/cliargs_help.cpp
   src/agent_subprocess.cpp
   src/agentproto.cpp
   src/agenttools.cpp
+  src/agenttools_wait.cpp
   src/agentview.cpp
   src/agentimage.cpp
   src/agentdispatch.cpp
@@ -115,6 +119,7 @@ set(MYBOT_CORE_SOURCES
   src/agentaudit.cpp
   src/agentpolicy.cpp
   src/mcpbackend.cpp
+  src/mcptransport.cpp
   src/promptpack.cpp
 )
 

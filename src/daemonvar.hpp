@@ -89,9 +89,15 @@ bool daemon_quiesced(DaemonSlot* slot);
 int64_t parseInterval(const std::string& iv, const std::string& name,
 	const std::string& tabName, int64_t row);
 
-/* ---- chunk 路径寻址（issue #19 多路径）---- */
+/* ---- chunk 路径寻址（issue #19 多路径）----
+ * 实现自 2026-10-01 起在 daemonconf.cpp（配置校验/装配 TU）。 */
 std::string firstExistingModule(const std::string& paths, const std::string& rel);
 std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath);
+
+/* ---- 共享槽的模块内接缝（定义在 daemonvar.cpp 线程机 TU；daemonconf.cpp
+ * 的 allocateSlot 装配时要用同一份 mutex 定位与释放例程）---- */
+pthread_mutex_t* mutexOf(DaemonSlot* slot);
+void releaseSlot(DaemonSlot* slot);
 
 /* N-7：本次进程内被弃管（join 超时 abandoned）的守护线程数——
  * 供 main 退出前统一告警（弃管线程的 lua_State 在 exit 路径上不可回收） */

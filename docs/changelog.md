@@ -9,6 +9,47 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 结构重构两批：安全判据单点化 + 五个上帝文件 TU 拆分（行为保持）
+
+全仓行为保持的结构治理，分两批提交。每批收口过零告警构建（-Werror）、
+`run_all.sh` 全量（269 通过 / 0 失败 / 1 跳过，与重构前基线一致）与
+ASan/UBSan 双跑；新增/迁移代码以「搬迁不改写」为纪律（指针注释保留原判据
+与审计编号锚点）。
+
+- **安全判据四处单点化**（Phase 1）：
+  - 恒时字符串比较合一——`util_str.hpp` 的 `safeEquals` 取严格版（长度差折叠
+    进累计差、按较长一方全长走完），删除 mcpbackend.cpp 的 `constantTimeEqual`
+    副本；TCP 口令与 MCP 首帧 token 两条凭据防线同一单点（审计 M1 + MCP-1）。
+  - `AuthFailGate` 跨通道共用——结构体自 mcpbackend.hpp 移 util_cli.hpp（上限
+    缺省同 `tcp_limits::kAuthMaxFailsDefault`，TCP 侧经构造参数接
+    `--tcp-max-auth-attempts`），actionsource 的手写 authFails 计数换用同一点，
+    语义与文案逐字保持。
+  - `joinNames` 拼接单点（util_str.hpp）——收敛 robot.cpp 四处与 agentmode.cpp
+    一处手写的「点名/成因列表」循环；test_mcpbackend 的本地副本删除、直接用
+    生产单点。
+  - `Lexer::next` 分隔符阶梯表驱动——五组同构 else-if（')'/'=' 两段带历史缩进
+    错层）收敛为 `separatorType` 判据表 + 单分支，行为逐字保持。
+  - 评估后不改：FdReadStatus 错误文案翻译层（agentview/mtinclude 两份 switch）——
+    守门锚定各处原文（test_mtinclude.cpp、run_all.sh 的 grep 门），且两处异常
+    类型/errno 口径刻意不同，util_file.hpp 头注明言文案留在调用方。
+- **五个上帝文件 TU 拆分**（Phase 2，均为代码搬迁 + 跨 TU 接缝声明，净
+  -1522 行 / +5 个新 TU）：
+  - `robot.cpp`（1177→760 行）：HotSqlPlanner 只读计划层整体迁出
+    `hotsql_plan.cpp`（hpp 早已独立）；applySql 尾部 30 行生效摘要抽为
+    `summarizeHotOutcome()`；顺手清除上次拆分残留的重复注释块。
+  - `agenttools.cpp`（796→521 行）：wait_variable 轮询机器（条件解析/判定/
+    轮询/回执/装配）迁出 `agenttools_wait.cpp`，经 agenttools_internal.hpp
+    接缝挂载；`requireString`/`stringParam` 随之升为模块内接缝。
+  - `mcpbackend.cpp`（889→617 行）：帧编解码/deadline 收发/首帧密钥校验/
+    SO_PEERCRED/socket 占用探测迁出 `mcptransport.cpp`；FrameResult 与两个
+    轮询/超时常量升入 hpp 模块接缝。
+  - `daemonvar.cpp`（714→445 行）：@Daemon 配置校验与装配（schema 校验/配置串
+    组装/槽分配/Factory）迁出 `daemonconf.cpp`，线程机（DaemonRunner 逐拍循环
+    与生命周期）留下；`mutexOf`/`releaseSlot` 升为模块内接缝。
+  - `cliargs.cpp`（581→319 行）：全部帮助文案（全文 + 五个 topic + 分发 +
+    printHelp）迁出 `cliargs_help.cpp` 数据性 TU——文案被字节级单测与
+    docs/reference.md 黄金比对锚定，独立后不再与解析逻辑互相搅动。
+
 ### 2026-10-01 全仓审计收口：P0 构建断裂 + 三项 P2（安全/健壮性）
 
 外部审计（C++ 宿主 / Rust agent / Lua 驱动 / 测试与文档四路）发现 1 个 P0、6 个 P2，

@@ -114,6 +114,12 @@ class RobotStruct {
 		HotSqlPlan::Insertions& insPlan, const HotDeleteOutcome& alreadyDeleted);
 	DropOutcome dropTableShells(const ScriptLoader::Mutations& muts);
 
+	/* 生效摘要（applySql 尾段，2026-10-01 拆出为纯拼装）：REPL /sql 与 agent
+	 * apply_sql 共用同一句话，各计数口径见 robot.cpp 实现处。 */
+	std::string summarizeHotOutcome(const CommitOutcome& committed,
+		const ScriptLoader::Mutations& muts, const HotDeleteOutcome& delOutcome,
+		const HotSqlPlan::Insertions& insPlan, const DropOutcome& dropped) const;
+
 	/* ---- commitHotBatch 的两块拆出（2026-09-29 A3）----
 	 * rollbackHotBatch：插入段失败的逆序断电 + 撤注册 + 恢复矩阵（原 45 行
 	 * rollback lambda，语义逐字保持）；rethrowWithLostVars：先删后建批次的

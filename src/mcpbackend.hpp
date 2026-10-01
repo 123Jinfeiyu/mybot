@@ -133,6 +133,26 @@ McpSocketProbe mcpProbeSocketPath(const std::string& path, std::string& why);
 enum class McpAuthOutcome { Ok, Failed, NotAuthFrame };
 McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string& payload);
 
+/* ---- 帧传输接缝（实现在 mcptransport.cpp，2026-10-01 TU 拆分；
+ * serveConnection / acceptLoop 在 mcpbackend.cpp 消费）----
+ * readFrame 两段式（空闲等首字节 + 帧开始后共享绝对 deadline 防 Slowloris）
+ * 与 sendFrame（MSG_NOSIGNAL 全量发送）的完整语义见 mcptransport.cpp 实现处。 */
+enum class FrameResult { Ok, PeerClosed, Violation, IdleTimeout };
+FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec,
+	std::chrono::steady_clock::time_point idleDeadline, std::ostream& log);
+bool sendFrame(int fd, const std::string& payload);
+
+/* 主线程轮询粒度：accept 与逐帧接收共用（200ms = 对停止信号的响应上限，
+ * 不是超时——空闲时不断连，靠 deadline 收口）。 */
+inline constexpr int kMcpPollIntervalMs = 200;
+/* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）——accept 后
+ * 挂 SO_SNDTIMEO 用。 */
+inline constexpr int kMcpSendTimeoutSec = 5;
+
+/* 错误文案里的路径段遮蔽（'/' 起整段换 <redacted>）：routeToolCall 的回执
+ * 防泄路径用；实现随传输件在 mcptransport.cpp。 */
+std::string sanitizeError(const std::string& in);
+
 /* ---- 首帧认证失败门（2026-09-30 审计 P1）----
  * 此前同 UID 对端可无限次重连试探 token，每次成本仅一个连接周期，与 TCP
  * 通道的 5 次爆破上限不对称。判据结构与 TCP 口令共用单点 AuthFailGate
