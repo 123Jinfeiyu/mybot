@@ -40,7 +40,7 @@ C++17 宿主（`mybot`，MCP 工具后端，硬件常驻）+ Rust agent（`mybot
 ### 1. 安装依赖
 
 ```bash
-sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev
+sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev luajit
 ```
 
 构建 Rust agent 还需要 Rust 工具链（cargo）：

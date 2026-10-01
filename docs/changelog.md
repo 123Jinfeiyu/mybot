@@ -9,6 +9,24 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 gen_const_check 加固：consts 表改执行期求值（P0 复发预防）
+
+2026-10-01 P0（方案 A 下沉搬走常量、抽取脚本漏改 → 干净检出配置必败）的教训
+「抽取模式与被抽文件的书写风格是同一份契约」由此收口：
+
+- **hal_backend_glibc.lua 的 consts 表改执行期求值**：配置期以 luajit 加载后端、
+  `test/dump_consts.lua` 倒出 `M.consts` 表（键排序保证输出确定，只收 number 值）。
+  抽取契约从「正则模式 ↔ 书写风格」收窄为「后端导出 M.consts 表」——这条本就是
+  后端接口注释里写明的契约，书写风格不再有可断的隐式耦合。
+- **反向验证两条**：① 把 `O_CLOEXEC = 0x80000,` 改写成 `["O_CLOEXEC"] = 0x80000,`
+  （合法 Lua、旧正则会漏抽）——新机制照常抽取；② 移除 `consts = consts,` 导出——
+  配置期 FATAL_ERROR 并点名「后端接口契约被破坏」。
+- Camera.lua 的 V4L2 常量/ABI 尺寸表与 HAL.lua 波特率表保持纯文本抽取（理由在
+  脚本头注：Camera 顶层会执行整套 HAL 加载 + 运行期 glibc 调用，不宜在配置期跑；
+  且它们是函数内局部量、无导出接口）。任何一方抽取失效仍响亮失败，不静默降级。
+- 新依赖 `luajit` 可执行文件（与 libluajit-5.1-dev 分开装的包）：CI 各 job 早已
+  安装（测试期 LUACMD 依赖），README 依赖行同步补上。
+
 ### 2026-10-01 测试体系补强：camera 入 agent-all 守门 + Rust 编排层补测（行为保持）
 
 - **`agent-all` 的 Lua 段改走 roster 精确清单，纳入 `test_camera.lua`**：此前改
