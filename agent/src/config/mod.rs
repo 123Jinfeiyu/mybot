@@ -472,6 +472,12 @@ fn parse_int_option(raw: &str, key: &str, lo: i64, hi: i64) -> Result<i64, Strin
 mod tests {
     use super::*;
 
+    /// 环境变量是进程级全局，动它的用例必须彼此互斥——cargo 单测默认多线程
+    /// 并行（502 行旧注释「测试串行由 cargo 保证」是错的），2026-10-01 基线
+    /// 曾在 build_is_fail_closed… 与 config_debug_and_display… 之间竞出
+    /// 「缺少 API key」假红（一方 remove_var 恰落在另一方 set_var 与 build 之间）。
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn safe_ident_matches_cpp_rule() {
         assert!(is_safe_ident("LlmOpenAI"));
@@ -501,15 +507,17 @@ mod tests {
 
     #[test]
     fn build_is_fail_closed_on_missing_endpoint_and_model_and_key() {
+        let _env = ENV_LOCK.lock().unwrap();
         // 干净环境：不读任何配置文件（"none"），密钥链置空
+        // （单测默认多线程；本用例与其它动密钥链 env 的用例经 ENV_LOCK 互斥）
         let base = Cli {
             socket: "/tmp/x.sock".into(),
             llm_config: "none".into(),
             ..Cli::default()
         };
         // 环境变量在本进程里可能被外部设置，故显式清掉这几条再断言
-        // （edition 2021 下 set_var/remove_var 仍是安全函数；测试串行由 cargo 保证
-        //  单测默认多线程，故本用例只读自己清过的这几条，不依赖其它用例）
+        // （edition 2021 下 set_var/remove_var 仍是安全函数；单测默认多线程，
+        //  与其它动密钥链 env 的用例经模块级 ENV_LOCK 互斥）
         for k in [
             "BOT4CJ_LLM_KEY",
             "ROBOT_AGENT_API_KEY",
@@ -812,6 +820,7 @@ mod tests {
 
     #[test]
     fn config_debug_and_display_never_leak_the_api_key() {
+        let _env = ENV_LOCK.lock().unwrap();
         // 2026-09-30 审计 P1：Config 曾派生 Debug 且含明文密钥——距离一次
         // errln!("{cfg:?}") 把密钥写进 stderr/审计只差手滑。Secret 包装后，
         // 任何 {:?}/{} 渲染都只见 redacted；expose() 是唯一取值口。

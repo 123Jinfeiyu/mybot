@@ -9,6 +9,15 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 守门可靠性：config 单测密钥链 env 竞态加互斥
+
+- **cargo 单测 env 竞态修复**：`build_is_fail_closed…` 与
+  `config_debug_and_display_never_leak…` 两个用例都会 remove/set
+  `BOT4CJ_LLM_KEY`——cargo 单测默认多线程并行，一方的 remove_var 落在另一方
+  set_var 与 `build()` 之间即假红「缺少 API key」（基线复核实跑竞出一次；
+  旧注释「测试串行由 cargo 保证」系误记，已改正）。修复：config::tests 模块级
+  `ENV_LOCK` 互斥，动密钥链 env 的用例持锁串行；连跑 5 次全量稳定绿。
+
 ### 2026-10-01 编译扇出收窄：matrix.hpp 冷路径下放 + hardware.hpp 摘 Lua 头（行为保持）
 
 - **matrix.hpp 冷路径方法下放 matrix.cpp**：buildInherited（惰性继承填充）/
