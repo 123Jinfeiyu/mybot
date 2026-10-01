@@ -632,4 +632,151 @@ do
 	check("#6：用例体无 Lua error", ok)
 end
 
+------------------------------------------------------------------
+-- sim-live：从拍照 socket 抓实时帧（MYBOT_SIM_CAPTURE_SOCK）
+------------------------------------------------------------------
+-- Camera.lua 的 sim-live 是**一问一答**：call() 发 "capture\n" 后阻塞等响应。
+-- 单线程测试没法同时既驱动 call() 又充当服务端，故 fork 一个子进程当假仿真器：
+-- 子进程 accept→收请求→回响应→_exit，父进程跑 call()。用 fork 而非外部进程，
+-- 是为了不引入 python/nc 依赖、也不依赖调度时序（listen backlog 让父进程 connect
+-- 立即成功，子进程随后 accept）。子进程**绝不**调 tester.check——它 fork 自父进程
+-- 的计数状态，双写会污染汇总；它把收到的请求写进 echo 文件，父进程 waitpid 后读回断言。
+do
+	-- 复用 Camera.lua 已 cdef 的 cam_sockaddr_un / socket / send / recv；测试只补
+	-- 服务端与进程控制所需的符号。
+	ffi.cdef[[
+	int bind(int fd, const struct cam_sockaddr_un *addr, unsigned int addrlen);
+	int listen(int fd, int backlog);
+	int accept(int fd, struct cam_sockaddr_un *addr, unsigned int *addrlen);
+	int fork(void);
+	void _exit(int status);
+	long waitpid(int pid, int *status, int options);
+	]]
+
+	local CAP_SOCK = "/tmp/mybot-test-cam-cap.sock"
+	local REQ_ECHO = "/tmp/mybot-test-cam-cap.req"
+	local NOSIGNAL = 0x4000
+	-- 伪 JPEG 字节（首 4 字节 FF D8 FF E0 恰是 JPEG 魔数，够文件 src 用例复用）：
+	-- sim-live 传输校验只关心字节原样往返，不解析图片内容。
+	local CANNED = "\255\216\255\224FAKE-JPEG-BODY-0123456789\255\217"
+
+	local function read_file(path)
+		local f = io.open(path, "rb")
+		if not f then return nil end
+		local s = f:read("*a"); f:close()
+		return s
+	end
+
+	local function start_listener(path)
+		os.remove(path)
+		local lfd = ffi.C.socket(1, 1, 0)	-- AF_UNIX, SOCK_STREAM
+		assert(lfd >= 0, "socket() 失败")
+		local addr = ffi.new("struct cam_sockaddr_un")
+		addr.sun_family = 1
+		ffi.copy(addr.sun_path, path)
+		assert(ffi.C.bind(lfd, addr, 2 + #path + 1) == 0, "bind 失败")
+		assert(ffi.C.listen(lfd, 4) == 0, "listen 失败")
+		return lfd
+	end
+
+	-- fork 出假仿真器：accept 一个连接，收一次请求写进 echo 文件，回一段响应。
+	local function spawn_server(lfd, respond)
+		os.remove(REQ_ECHO)
+		local pid = ffi.C.fork()
+		assert(pid >= 0, "fork 失败")
+		if pid == 0 then
+			local cfd = ffi.C.accept(lfd, nil, nil)
+			if cfd >= 0 then
+				local buf = ffi.new("unsigned char[64]")
+				local n = tonumber(ffi.C.recv(cfd, buf, 64, 0))
+				local reqline = (n and n > 0) and ffi.string(buf, n) or ""
+				local f = io.open(REQ_ECHO, "wb"); if f then f:write(reqline); f:close() end
+				respond(cfd)
+				ffi.C.close(cfd)
+			end
+			ffi.C._exit(0)
+		end
+		return pid
+	end
+
+	local function reap(pid, lfd)
+		ffi.C.close(lfd)
+		local st = ffi.new("int[1]")
+		ffi.C.waitpid(pid, st, 0)
+	end
+
+	-- ① 正常抓帧：OK 头 + 固定体，校验 source/format/尺寸/字节数/base64 逐字节
+	ffi.C.setenv("MYBOT_SIM_CAPTURE_SOCK", CAP_SOCK, 1)
+	local lfd = start_listener(CAP_SOCK)
+	local pid = spawn_server(lfd, function(cfd)
+		local hdr = string.format("OK jpeg %d %d %d\n", #CANNED, 320, 200)
+		ffi.C.send(cfd, hdr, #hdr, NOSIGNAL)
+		ffi.C.send(cfd, CANNED, #CANNED, NOSIGNAL)
+	end)
+	local rb = build({})
+	check("sim-live: build 返 OK（不连 socket）", rb.result == "OK", tostring(rb.result))
+	local r = call({})
+	reap(pid, lfd)
+	check("sim-live: 发回的请求正是 'capture\\n'", read_file(REQ_ECHO) == "capture\n",
+		tostring(read_file(REQ_ECHO)))
+	check("sim-live: source=sim", r.result == "OK" and r.source == "sim", tostring(r.source))
+	check("sim-live: format=jpeg", r.format == "jpeg", tostring(r.format))
+	check("sim-live: width/height 从头透传", r.width == 320 and r.height == 200,
+		tostring(r.width) .. "x" .. tostring(r.height))
+	check("sim-live: bytes 数与体一致", r.bytes == #CANNED, tostring(r.bytes))
+	check("sim-live: b64 解码逐字节等于服务端回的体", b64decode(r.b64) == CANNED,
+		"len=" .. tostring(#b64decode(r.b64 or "")))
+
+	-- ② 仿真器回 ERR 头 → 驱动返 ERR 契约（附原因）
+	lfd = start_listener(CAP_SOCK)
+	pid = spawn_server(lfd, function(cfd)
+		local m = "ERR frame grab or jpeg encode failed\n"
+		ffi.C.send(cfd, m, #m, NOSIGNAL)
+	end)
+	r = call({})
+	reap(pid, lfd)
+	check("sim-live: 仿真器 ERR → ERR 契约并带回原因",
+		r.result == "ERR" and tostring(r.message):find("取帧失败", 1, true) ~= nil
+			and tostring(r.message):find("jpeg encode failed", 1, true) ~= nil,
+		tostring(r.message))
+
+	-- ③ 畸形响应头 → ERR（协议不符要响亮，不能当成图片）
+	lfd = start_listener(CAP_SOCK)
+	pid = spawn_server(lfd, function(cfd)
+		local m = "GARBAGE-NOT-A-HEADER\n"
+		ffi.C.send(cfd, m, #m, NOSIGNAL)
+	end)
+	r = call({})
+	reap(pid, lfd)
+	check("sim-live: 畸形响应头 → ERR", r.result == "ERR"
+		and tostring(r.message):find("无法解析", 1, true) ~= nil, tostring(r.message))
+
+	-- ④ 无监听端 → 响亮 ERR（与 Sim.lua 动作的静默成功刻意相反：拍照抓空比报错危险）
+	ffi.C.setenv("MYBOT_SIM_CAPTURE_SOCK", "/tmp/mybot-test-cam-absent.sock", 1)
+	os.remove("/tmp/mybot-test-cam-absent.sock")
+	r = call({})
+	check("sim-live: 无监听端 → 响亮 ERR（非静默成功）",
+		r.result == "ERR" and tostring(r.message):find("connect", 1, true) ~= nil,
+		tostring(r.message))
+
+	-- ⑤ 文件 src 优先于 live env：给了 src 就走文件，压根不连拍照 socket
+	--    （capture env 指向一个没人监听的路径，若驱动误走 live 必 ERR，以此反证优先级）
+	local imgpath = tmpdir("camcap") .. "/frame.jpg"
+	write_file(imgpath, CANNED)
+	r = call({ src = imgpath, src_root = dirname(imgpath) })
+	check("sim-live: 文件 src 优先于 live env（source=file）",
+		r.result == "OK" and r.source == "file", tostring(r.source))
+
+	-- ⑥ 未设 capture env → 跳过 live，落回真机路径（这里指向不存在的设备，
+	--    断言它没被当成 sim，而是走 V4L2 并因打不开设备报错）
+	ffi.C.unsetenv("MYBOT_SIM_CAPTURE_SOCK")
+	r = call({ path = "/dev/video9" })
+	check("sim-live: 未设 env 时不走 live（source≠sim）",
+		r.source ~= "sim", tostring(r.source))
+
+	-- 清理
+	ffi.C.unsetenv("MYBOT_SIM_CAPTURE_SOCK")
+	os.remove(CAP_SOCK); os.remove(REQ_ECHO); os.remove("/tmp/mybot-test-cam-absent.sock")
+end
+
 tester.summary("Camera.lua 单测")

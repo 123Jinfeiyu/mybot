@@ -9,6 +9,36 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-02 仿真蜘蛛机器人：simulator 迁入 + 语义动作桥接 + 仿真内拍照
+
+- **仿真器迁入仓库**：原独立项目 mybot-simulator 复制为 `sim/`，改为独立 CMake
+  工程（`project(mybot-sim)`，产物 `sim/build/mybot-sim`），根 CMakeLists 不
+  `add_subdirectory` 它——CI 镜像无 GL/X11、musl 亦无法构建 GLFW，挂靠会拖红
+  全量目标构建；构建入口 `scripts/build_sim.sh`（仿 build_agent.sh）。
+- **小车换成蜘蛛**：删除差速小车的外观与键盘驾驶，改为程序化四足蜘蛛
+  （`sim/src/spider.cpp`，trot 步态由 bodySpeed 驱动相位）；差速运动学保留在
+  `robot.cpp` 作为底盘位姿来源。蜘蛛在语义动作层被驱动，不暴露关节角。
+- **AF_UNIX 命令桥**：`sim/src/bridge.cpp` 起单客户端行文本服务，收
+  `forward|backward|left|right|stop [speed]`，命令持续到下一条为止，控制器断开
+  即停蜘蛛。socket 路径单一事实源为 env `MYBOT_SIM_SOCK`（默认
+  `/tmp/mybot-sim.sock`），sim 与驱动两侧同读。
+- **仿真内拍照（agent 能「看」仿真画面）**：第二条 AF_UNIX 取帧桥
+  `sim/src/capture.cpp`（一问一答：收 `capture\n`，SwapBuffers 前 `glReadPixels`
+  抓 GL_BACK → 垂直翻转 → public-domain stb_image_write 编 JPEG → 回
+  `OK jpeg <len> <w> <h>\n`+体）。`modules/Camera.lua` 增第三来源 sim-live：
+  env `MYBOT_SIM_CAPTURE_SOCK` 非空且无文件 src 时走它，`source="sim"` 回传。
+  socket 路径只取自 env（杜绝「连任意 socket」原语）；与 Sim.lua 动作的静默成功
+  相反，拍照抓不到即响亮 ERR。`spider_sim.sql` 注册 `Camera 'cam0'` 使宿主
+  `capture_image` 工具出现。与命令桥分两条 socket：Sim/Camera 是各自独立驱动
+  实例，无法共用一条连接。
+- **mybot 侧零 C++ 改动**：新增 SQL 表即挂上通用「表名→`modules/<表>.lua`」
+  注册链——`modules/Sim.lua`（驱动，惰性连接、无监听端时静默成功、坏动作码响亮
+  ERR、send 带 MSG_NOSIGNAL 防 SIGPIPE）、`robots/spider_sim.sql`、
+  `scripts/sim_*.mt`（动作码 0=停 1=前 2=后 3=左 4=右，S=speed 0~1）。
+- **守门**：新增 `test/test_sim.lua`，并在 `test/test_camera.lua` 增 sim-live 用例
+  （fork 子进程充当假仿真器做请求-响应回环）；用例名单与计数以
+  `bash test/run_all.sh` 实时输出为准，不在此复述。
+
 ### 2026-10-01 审计批次 A：迁 Rust 残留清退 + 安全设限三补（收口）
 
 - **promptpack 死模块退场**（P1-4）：`loadPromptPack` 在 src/ 内零调用者
