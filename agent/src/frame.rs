@@ -57,8 +57,9 @@ pub fn decode_len(hdr: &[u8; HEADER_LEN]) -> u32 {
 /// 到 mybot 后端的单连接客户端。
 pub struct BackendClient {
     stream: UnixStream,
-    /// 单次调用读侧 deadline（语义来源见 [`HARD_READ_CEILING`]）。超时与 I/O
-    /// 错误同级：连接判死——超时后对端可能补发回帧，lock-step 语义已不可恢复。
+    /// 单次调用 deadline：读侧 [`HARD_READ_CEILING`] 语义来源见其文档；写侧与
+    /// 读侧共用（语义见 [`BackendClient::call`] 的写侧注释）。超时与 I/O 错误
+    /// 同级：连接判死——lock-step 语义下超时后对端可能补收/补发，不可恢复。
     read_timeout: Duration,
 }
 
@@ -115,14 +116,18 @@ impl BackendClient {
     }
 
     /// 发一个请求帧、收一个响应帧（lock-step）。任何协议违规（超限、非法 UTF-8、
-    /// I/O 错误、读超时）都返回 Err——上层据此把连接判死，**下一次调用前**重连
+    /// I/O 错误、读/写超时）都返回 Err——上层据此把连接判死，**下一次调用前**重连
     /// （见 bridge.rs 的 Conn::ensure）。在途调用本身不重试：回执丢失的
     /// `tool.call` 可能已在后端执行，重发即重复物理动作。
     pub async fn call(&mut self, req: &Value) -> Result<Value> {
         let payload = serde_json::to_vec(req).context("序列化请求")?;
         let frame = encode_frame(&payload)?;
-        self.stream.write_all(&frame).await.context("写请求帧")?;
-        self.stream.flush().await.context("flush 请求帧")?;
+        // 写侧 deadline（2026-10-01 审计 P2）：读侧修了（2026-09-30 P1）、写侧
+        // 漏了——后端活着但不读 socket 时，超过内核 socket 缓冲（~200 KiB）的
+        // write_all 会无限挂起，帧上限 8 MiB 下模型可控的大参数（长 SQL 等）可
+        // 必现；--llm-task-timeout / HARD_READ_CEILING / Ctrl-C 轮询全都够不到
+        // 这段 await。与读侧共用同一预算：单次调用的墙钟预算应覆盖整个一发一收。
+        write_with_deadline(&mut self.stream, &frame, self.read_timeout, "写请求帧").await?;
 
         let mut hdr = [0u8; HEADER_LEN];
         read_exact_with_deadline(&mut self.stream, &mut hdr, self.read_timeout, "读响应帧头")
@@ -196,6 +201,29 @@ async fn read_exact_with_deadline(
     }
 }
 
+/// 带整体 deadline 的写侧（2026-10-01 审计 P2，与上方读侧对称）：deadline 覆盖
+/// 「整帧写完 + flush」。对端停止读 socket 时内核缓冲（~200 KiB）填满后
+/// write_all 永久挂起——帧上限 8 MiB，模型可控的大参数帧可必现。
+async fn write_with_deadline(
+    stream: &mut UnixStream,
+    frame: &[u8],
+    timeout: Duration,
+    what: &str,
+) -> Result<()> {
+    let written = async {
+        stream.write_all(frame).await?;
+        stream.flush().await
+    };
+    match tokio::time::timeout(timeout, written).await {
+        Ok(r) => r.context(what.to_string()).map(|_| ()),
+        Err(_) => bail!(
+            "{what}超时（{}s）：后端在预算内没有收下请求帧——进程可能在但不读 \
+             socket；连接按死处理，可重启 agent 重试",
+            timeout.as_secs()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,6 +265,29 @@ mod tests {
         });
         let err = client.call(&json!({"_route": "ping"})).await.unwrap_err();
         assert!(err.to_string().contains("超时"), "实际: {err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn call_write_times_out_when_backend_stops_reading() {
+        // 2026-10-01 审计 P2：读侧修了（上一用例）、写侧漏了——后端活着但停止
+        // 读 socket（同一 wedged 形态）时，超过内核 socket 缓冲（~200 KiB）的
+        // write_all 无限挂起，--llm-task-timeout / HARD_READ_CEILING / Ctrl-C
+        // 全都够不到这段 await。4 MiB 请求帧（< 8 MiB 上限，模型可控大参数
+        // 形态）+ 假后端只收帧头就睡死 → 必然写不进去。
+        let (client_io, mut server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        client.set_read_timeout(Duration::from_millis(150));
+        let blob = String::from_utf8(vec![b'x'; 4 * 1024 * 1024]).unwrap();
+        let req = json!({"_route": "tool.call", "arguments": blob});
+        let server = tokio::spawn(async move {
+            let mut hdr = [0u8; 4];
+            server_io.read_exact(&mut hdr).await.unwrap();
+            // 不读载荷、不回帧：客户端的 4 MiB 写必然撑爆缓冲后挂起
+            sleep(Duration::from_secs(30)).await;
+        });
+        let err = client.call(&req).await.unwrap_err();
+        assert!(err.to_string().contains("写请求帧"), "实际: {err}");
         server.abort();
     }
 
