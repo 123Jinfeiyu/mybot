@@ -73,15 +73,21 @@ struct RoundCalls {
 }
 
 /// 钩子、桥、模型装饰器、REPL 共享的运行期状态。
+///
+/// 2026-10-01 结构治理：判定核心已收进 `gate_completion`/`gate_tool_call`
+/// （可单测接缝）；pub 面收紧为 pub(crate)（六个消费者全在本 crate）。字段
+/// 分组评估后**保持单结构**：12 个字段同属「一轮任务」的生命周期
+/// （begin_task 一并清零），拆子结构只加间接层而不改变任何消费者契约；
+/// 真正的共享面已全部经方法（记账/取队列/判定）而非裸字段。
 pub struct HookState {
-    pub max_task_seconds: i64,
+    pub(crate) max_task_seconds: i64,
     /// 0 = 不限
-    pub max_calls_per_round: i64,
+    pub(crate) max_calls_per_round: i64,
     /// SIGINT/SIGTERM 置位（一次置位即锁存：取消是操作者的意思，不该被下一轮任务清掉）
-    pub stop: AtomicBool,
-    pub budget: Mutex<TaskBudget>,
+    pub(crate) stop: AtomicBool,
+    pub(crate) budget: Mutex<TaskBudget>,
     /// 当前模型调用序号（1-based）——模型装饰器记审计用
-    pub current_turn: AtomicUsize,
+    pub(crate) current_turn: AtomicUsize,
     round: Mutex<RoundCalls>,
     /// 本轮的「[上限]」stderr 行只打一次
     round_capped: AtomicBool,
@@ -95,7 +101,7 @@ pub struct HookState {
 }
 
 impl HookState {
-    pub fn new(max_task_seconds: i64, max_calls_per_round: i64, budget: TaskBudget) -> Self {
+    pub(crate) fn new(max_task_seconds: i64, max_calls_per_round: i64, budget: TaskBudget) -> Self {
         Self {
             max_task_seconds,
             max_calls_per_round,
