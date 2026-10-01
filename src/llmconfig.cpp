@@ -36,14 +36,35 @@ std::string typeError(const std::string& path, const std::string& key, const cha
 	return jsonconfig::typeError(kConfigKind, path, key, want);
 }
 
+/* ---- wantXxx 六同形校验器的公共骨架（2026-10-01 表驱动化收敛）----
+ * 六个校验器同形：「字段缺失 → 通过（保持未配置）」+「类型不符 → typeError」
+ * 这两步完全一致，差异只在类型判据与转换。骨架单点化后，各 wantXxx 只剩
+ * 自己的类型语义（空串口径 / 值域 / 取整 / 元素遍历），类型判据以谓词表
+ * 传入。返回三态：字段缺失 / 类型不符（err 已填）/ 取到值。 */
+enum class Fetched { Absent, Mismatch, Ok };
+
+Fetched fetchField(const std::string& path, const Json& root, const char* key,
+		bool (*typeOk)(const Json&), const char* wantName,
+		std::optional<Json>& out, std::string& err) {
+	out = root.get(key);
+	if (!out) { return Fetched::Absent; }
+	if (!typeOk(*out)) {
+		err = typeError(path, key, wantName);
+		return Fetched::Mismatch;
+	}
+	return Fetched::Ok;
+}
+
+bool isStrField(const Json& v) { return v.isStr(); }
+bool isNumField(const Json& v) { return v.isInt() || v.isFloat(); }
+bool isBoolField(const Json& v) { return v.isBool(); }
+bool isArrField(const Json& v) { return v.isArr(); }
+
 bool wantString(const std::string& path, const Json& root, const char* key,
 		std::optional<std::string>& out, std::string& err) {
-	auto v = root.get(key);
-	if (!v) { return true; }
-	if (!v->isStr()) {
-		err = typeError(path, key, "字符串");
-		return false;
-	}
+	std::optional<Json> v;
+	const Fetched f = fetchField(path, root, key, isStrField, "字符串", v, err);
+	if (f != Fetched::Ok) { return f == Fetched::Absent; }
 	/* 空串按「未配置」处理：示例配置里留空占位是常见写法，若当成有效值会让
 	 * api_key_file:"" 变成「打开空路径」这种与意图脱节的报错，也会把
 	 * endpoint:"" 错误地压成空接入点。 */
@@ -53,12 +74,9 @@ bool wantString(const std::string& path, const Json& root, const char* key,
 
 bool wantNumber(const std::string& path, const Json& root, const char* key,
 		std::optional<double>& out, std::string& err) {
-	auto v = root.get(key);
-	if (!v) { return true; }
-	if (!v->isInt() && !v->isFloat()) {
-		err = typeError(path, key, "数字");
-		return false;
-	}
+	std::optional<Json> v;
+	const Fetched f = fetchField(path, root, key, isNumField, "数字", v, err);
+	if (f != Fetched::Ok) { return f == Fetched::Absent; }
 	out = v->isInt() ? static_cast<double>(v->getInt()) : v->getFloat();
 	return true;
 }
@@ -90,12 +108,9 @@ bool wantInt(const std::string& path, const Json& root, const char* key,
  * 与 wantInt 同一条有限/值域/取整防线。 */
 bool wantBudgetLong(const std::string& path, const Json& root, const char* key,
 		long hi, std::optional<long>& out, std::string& err) {
-	auto v = root.get(key);
-	if (!v) { return true; }
-	if (!v->isInt() && !v->isFloat()) {
-		err = typeError(path, key, "数字");
-		return false;
-	}
+	std::optional<Json> v;
+	const Fetched f = fetchField(path, root, key, isNumField, "数字", v, err);
+	if (f != Fetched::Ok) { return f == Fetched::Absent; }
 	double d = v->isInt() ? static_cast<double>(v->getInt()) : v->getFloat();
 	if (!std::isfinite(d) || d < 0.0 || d > static_cast<double>(hi)) {
 		std::ostringstream os;
@@ -113,24 +128,18 @@ bool wantBudgetLong(const std::string& path, const Json& root, const char* key,
 
 bool wantBool(const std::string& path, const Json& root, const char* key,
 		std::optional<bool>& out, std::string& err) {
-	auto v = root.get(key);
-	if (!v) { return true; }
-	if (!v->isBool()) {
-		err = typeError(path, key, "布尔值");
-		return false;
-	}
+	std::optional<Json> v;
+	const Fetched f = fetchField(path, root, key, isBoolField, "布尔值", v, err);
+	if (f != Fetched::Ok) { return f == Fetched::Absent; }
 	out = v->getBool();
 	return true;
 }
 
 bool wantStringArray(const std::string& path, const Json& root, const char* key,
 		std::optional<std::vector<std::string>>& out, std::string& err) {
-	auto v = root.get(key);
-	if (!v) { return true; }
-	if (!v->isArr()) {
-		err = typeError(path, key, "字符串数组");
-		return false;
-	}
+	std::optional<Json> v;
+	const Fetched f = fetchField(path, root, key, isArrField, "字符串数组", v, err);
+	if (f != Fetched::Ok) { return f == Fetched::Absent; }
 	std::vector<std::string> items;
 	for (const Json& item : v->arr) {
 		if (!item.isStr()) {
