@@ -231,7 +231,9 @@ impl HookState {
 /// 第一次现场消失。共享状态经 panic 中途改写过属逻辑错误，留痕只是让它可观测，
 /// 恢复口径本身与旧行为一致。
 pub(crate) fn poisoned<T>(e: std::sync::PoisonError<T>) -> T {
-    eprintln!("[warn] mutex poisoned — recovering inner value");
+    // errln（而非裸 eprintln）：检查式写出（out.rs），stderr 坏了也不 panic——
+    // 本函数处在锁恢复路径上，再 panic 就没有恢复可言了（H2 口径）。
+    errln!("[warn] mutex poisoned — recovering inner value");
     e.into_inner()
 }
 

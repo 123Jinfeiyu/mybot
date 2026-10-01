@@ -1,4 +1,15 @@
-//! config —— LLM/agent 配置链（命令行 > 环境变量 > 配置文件 > 内置缺省）
+//! config —— LLM/agent 配置链。**取值链按字段分列**（2026-10-01 批次 A 头注
+//! 修正：此前一句「命令行 > 环境变量 > 配置文件 > 内置缺省」以偏概全——env 层
+//! 只覆盖少数变量，且 api_key 的方向与其余字段相反）：
+//!   * endpoint / model：命令行 > `BOT4CJ_LLM_ENDPOINT` / `BOT4CJ_LLM_MODEL`
+//!     > 配置文件（无缺省，fail-closed）；
+//!   * api_key：**env 链（`BOT4CJ_LLM_KEY` > `ROBOT_AGENT_API_KEY` >
+//!     `DEEPSEEK_API_KEY`）> 文件内联 > 文件 `api_key_file`**——env 优先于
+//!     文件，与其余字段方向相反（沿 C++ 既有口径；密钥不给命令行入口，防 argv 泄漏）；
+//!   * 其余字段（驱动/变量名/采样/预算/流式/会话文件）：命令行 > 配置文件 >
+//!     内置缺省，**无 env 层**；
+//!   * 配置文件本身的选择：命令行 `--llm-config` > `BOT4CJ_LLM_CONFIG` >
+//!     缺省查找 `./mybot.llm.json`。
 //!
 //! 语义**逐条镜像** C++ 侧（llmconfig.cpp + agentmode.cpp 的 buildAgentConfig），
 //! 因为两侧常常吃同一份 `mybot.llm.json`：字段名、取值区间、未知字段拒绝、
@@ -296,7 +307,12 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         resume: false,
     };
     if !cli.llm_max_turns.is_empty() {
-        cfg.max_turns = parse_int_option(&cli.llm_max_turns, "llm-max-turns", 1, 100)?;
+        cfg.max_turns = parse_int_option(
+            &cli.llm_max_turns,
+            "llm-max-turns",
+            limits::MAX_TURNS_MIN,
+            limits::MAX_TURNS_MAX,
+        )?;
     }
     if !cli.llm_max_tokens.is_empty() {
         cfg.max_tokens = parse_int_option(
