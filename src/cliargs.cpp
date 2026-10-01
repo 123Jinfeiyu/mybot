@@ -28,41 +28,41 @@ struct OptionSpec {
 
 constexpr OptionSpec kValueOptions[] = {
 	{"robot", [](CliOptions& o, const std::string& v) { o.robot = v; }, false},
-	{"tcp-host", [](CliOptions& o, const std::string& v) { o.tcpHost = v; }, false},
-	{"tcp-token", [](CliOptions& o, const std::string& v) { o.tcpToken = v; }, false},
-	{"tcp-idle", [](CliOptions& o, const std::string& v) { o.tcpIdle = v; }, false},
-	{"tcp-max-auth-attempts", [](CliOptions& o, const std::string& v) { o.tcpMaxAuthAttempts = v; }, false},
-	{"tcp-total-timeout", [](CliOptions& o, const std::string& v) { o.tcpTotalTimeout = v; }, false},
+	{"tcp-host", [](CliOptions& o, const std::string& v) { o.tcp.tcpHost = v; }, false},
+	{"tcp-token", [](CliOptions& o, const std::string& v) { o.tcp.tcpToken = v; }, false},
+	{"tcp-idle", [](CliOptions& o, const std::string& v) { o.tcp.tcpIdle = v; }, false},
+	{"tcp-max-auth-attempts", [](CliOptions& o, const std::string& v) { o.tcp.tcpMaxAuthAttempts = v; }, false},
+	{"tcp-total-timeout", [](CliOptions& o, const std::string& v) { o.tcp.tcpTotalTimeout = v; }, false},
 	{"daemon-grace-ms", [](CliOptions& o, const std::string& v) { o.daemonGraceMs = v; }, false},
 	{"input", [](CliOptions& o, const std::string& v) { o.input = v; }, false},
 	/* --mcp-socket：MCP 后端的 AF_UNIX 路径。非 agentOnly（它属 --mcp-backend
 	 * 独立模式），backend-only 的组合校验在 validateOptions 里单点做。 */
-	{"mcp-socket", [](CliOptions& o, const std::string& v) { o.mcpSocket = v; }, false},
-	{"mcp-call-budget", [](CliOptions& o, const std::string& v) { o.mcpCallBudget = v; }, false},
-	{"mcp-wall-clock", [](CliOptions& o, const std::string& v) { o.mcpWallClock = v; }, false},
-	{"mcp-idle-timeout", [](CliOptions& o, const std::string& v) { o.mcpIdleTimeout = v; }, false},
-	{"on-disconnect", [](CliOptions& o, const std::string& v) { o.onDisconnect = v; }, false},
-	{"camera-var", [](CliOptions& o, const std::string& v) { o.cameraVar = v; }, true},
-	{"camera-device", [](CliOptions& o, const std::string& v) { o.cameraDevice = v; }, true},
-	{"camera-src", [](CliOptions& o, const std::string& v) { o.cameraSrc = v; }, true},
-	{"audit-log", [](CliOptions& o, const std::string& v) { o.auditLog = v; }, true},
-	{"agent-policy", [](CliOptions& o, const std::string& v) { o.agentPolicy = v; }, true},
-	{"session-file", [](CliOptions& o, const std::string& v) { o.sessionFile = v; }, true},
-	{"camera-src-dir", [](CliOptions& o, const std::string& v) { o.cameraSrcDir = v; }, true},
-	{"task", [](CliOptions& o, const std::string& v) { o.agentTask = v; }, true},
+	{"mcp-socket", [](CliOptions& o, const std::string& v) { o.mcp.mcpSocket = v; }, false},
+	{"mcp-call-budget", [](CliOptions& o, const std::string& v) { o.mcp.mcpCallBudget = v; }, false},
+	{"mcp-wall-clock", [](CliOptions& o, const std::string& v) { o.mcp.mcpWallClock = v; }, false},
+	{"mcp-idle-timeout", [](CliOptions& o, const std::string& v) { o.mcp.mcpIdleTimeout = v; }, false},
+	{"on-disconnect", [](CliOptions& o, const std::string& v) { o.mcp.onDisconnect = v; }, false},
+	{"camera-var", [](CliOptions& o, const std::string& v) { o.agent.cameraVar = v; }, true},
+	{"camera-device", [](CliOptions& o, const std::string& v) { o.agent.cameraDevice = v; }, true},
+	{"camera-src", [](CliOptions& o, const std::string& v) { o.agent.cameraSrc = v; }, true},
+	{"audit-log", [](CliOptions& o, const std::string& v) { o.agent.auditLog = v; }, true},
+	{"agent-policy", [](CliOptions& o, const std::string& v) { o.agent.agentPolicy = v; }, true},
+	{"session-file", [](CliOptions& o, const std::string& v) { o.agent.sessionFile = v; }, true},
+	{"camera-src-dir", [](CliOptions& o, const std::string& v) { o.agent.cameraSrcDir = v; }, true},
+	{"task", [](CliOptions& o, const std::string& v) { o.agent.agentTask = v; }, true},
 	/* 可重复：每项一个可读变量名（发现 2 的 A 步，命令行独占） */
-	{"read-var", [](CliOptions& o, const std::string& v) { o.readVars.push_back(v); }, true},
-	{"scripts-dir", [](CliOptions& o, const std::string& v) { o.scriptsDir = v; }, true},
-	{"prompt-file", [](CliOptions& o, const std::string& v) { o.promptFiles.push_back(v); }, true},
-	{"llm-endpoint", [](CliOptions& o, const std::string& v) { o.llmEndpoint = v; }, true},
-	{"llm-model", [](CliOptions& o, const std::string& v) { o.llmModel = v; }, true},
-	{"llm-config", [](CliOptions& o, const std::string& v) { o.llmConfig = v; }, true},
-	{"llm-driver", [](CliOptions& o, const std::string& v) { o.llmDriver = v; }, true},
-	{"llm-var", [](CliOptions& o, const std::string& v) { o.llmVar = v; }, true},
-	{"llm-max-turns", [](CliOptions& o, const std::string& v) { o.llmMaxTurns = v; }, true},
-	{"llm-max-tokens", [](CliOptions& o, const std::string& v) { o.llmMaxTokens = v; }, true},
-	{"llm-timeout", [](CliOptions& o, const std::string& v) { o.llmTimeout = v; }, true},
-	{"llm-task-timeout", [](CliOptions& o, const std::string& v) { o.llmTaskTimeout = v; }, true},
+	{"read-var", [](CliOptions& o, const std::string& v) { o.agent.readVars.push_back(v); }, true},
+	{"scripts-dir", [](CliOptions& o, const std::string& v) { o.agent.scriptsDir = v; }, true},
+	{"prompt-file", [](CliOptions& o, const std::string& v) { o.agent.promptFiles.push_back(v); }, true},
+	{"llm-endpoint", [](CliOptions& o, const std::string& v) { o.agent.llmEndpoint = v; }, true},
+	{"llm-model", [](CliOptions& o, const std::string& v) { o.agent.llmModel = v; }, true},
+	{"llm-config", [](CliOptions& o, const std::string& v) { o.agent.llmConfig = v; }, true},
+	{"llm-driver", [](CliOptions& o, const std::string& v) { o.agent.llmDriver = v; }, true},
+	{"llm-var", [](CliOptions& o, const std::string& v) { o.agent.llmVar = v; }, true},
+	{"llm-max-turns", [](CliOptions& o, const std::string& v) { o.agent.llmMaxTurns = v; }, true},
+	{"llm-max-tokens", [](CliOptions& o, const std::string& v) { o.agent.llmMaxTokens = v; }, true},
+	{"llm-timeout", [](CliOptions& o, const std::string& v) { o.agent.llmTimeout = v; }, true},
+	{"llm-task-timeout", [](CliOptions& o, const std::string& v) { o.agent.llmTaskTimeout = v; }, true},
 };
 
 /* ---- validateOptions 的校验块（2026-09-29 A3 拆分）----
@@ -96,7 +96,7 @@ int rejectMissingValues(const ParsedArgs& args) {
  * 文案给出替代用法（新拓扑：mybot --mcp-backend 提供工具后端，
  * mybot-agent 跑模型循环，两者经 --mcp-socket 互联）。 */
 int rejectRemovedAgent(const CliOptions& options) {
-	if (!options.agent) { return 0; }
+	if (!options.agent.enabled) { return 0; }
 	std::cerr << "参数错误：--agent 已移除（agent 循环已迁 Rust）。替代用法：\n"
 		"  1) 启动工具后端：./build/mybot --robot <结构脚本> --mcp-backend "
 		"--mcp-socket /tmp/mybot.sock\n"
@@ -111,19 +111,19 @@ int rejectRemovedAgent(const CliOptions& options) {
  * 模型循环。保留解析表条目是为了给出指路的报错，而不是「未知参数」。 */
 int rejectLoopOnlyOptions(const CliOptions& options) {
 	const char* loopOnly = nullptr;
-	if (!options.agentTask.empty()) { loopOnly = "--task"; }
-	else if (options.resume) { loopOnly = "--resume"; }
-	else if (!options.sessionFile.empty()) { loopOnly = "--session-file"; }
-	else if (!options.promptFiles.empty()) { loopOnly = "--prompt-file"; }
-	else if (!options.llmEndpoint.empty()) { loopOnly = "--llm-endpoint"; }
-	else if (!options.llmModel.empty()) { loopOnly = "--llm-model"; }
-	else if (!options.llmConfig.empty()) { loopOnly = "--llm-config"; }
-	else if (!options.llmDriver.empty()) { loopOnly = "--llm-driver"; }
-	else if (!options.llmVar.empty()) { loopOnly = "--llm-var"; }
-	else if (!options.llmMaxTurns.empty()) { loopOnly = "--llm-max-turns"; }
-	else if (!options.llmMaxTokens.empty()) { loopOnly = "--llm-max-tokens"; }
-	else if (!options.llmTimeout.empty()) { loopOnly = "--llm-timeout"; }
-	else if (!options.llmTaskTimeout.empty()) { loopOnly = "--llm-task-timeout"; }
+	if (!options.agent.agentTask.empty()) { loopOnly = "--task"; }
+	else if (options.agent.resume) { loopOnly = "--resume"; }
+	else if (!options.agent.sessionFile.empty()) { loopOnly = "--session-file"; }
+	else if (!options.agent.promptFiles.empty()) { loopOnly = "--prompt-file"; }
+	else if (!options.agent.llmEndpoint.empty()) { loopOnly = "--llm-endpoint"; }
+	else if (!options.agent.llmModel.empty()) { loopOnly = "--llm-model"; }
+	else if (!options.agent.llmConfig.empty()) { loopOnly = "--llm-config"; }
+	else if (!options.agent.llmDriver.empty()) { loopOnly = "--llm-driver"; }
+	else if (!options.agent.llmVar.empty()) { loopOnly = "--llm-var"; }
+	else if (!options.agent.llmMaxTurns.empty()) { loopOnly = "--llm-max-turns"; }
+	else if (!options.agent.llmMaxTokens.empty()) { loopOnly = "--llm-max-tokens"; }
+	else if (!options.agent.llmTimeout.empty()) { loopOnly = "--llm-timeout"; }
+	else if (!options.agent.llmTaskTimeout.empty()) { loopOnly = "--llm-task-timeout"; }
 	if (loopOnly == nullptr) { return 0; }
 	std::cerr << "参数错误：" << loopOnly << " 属于 Rust agent（mybot-agent，"
 		"经 --socket 连接本程序的工具后端）；C++ 宿主侧请用 --mcp-backend"
@@ -135,7 +135,7 @@ int rejectLoopOnlyOptions(const CliOptions& options) {
  * （先于结构脚本装载与任何硬件上电；F-20 同族口径：显式拒绝退出 2，
  * 不静默忽略。） */
 int rejectAgentOptionsOutsideBackend(const CliOptions& options) {
-	if (options.mcpBackend || !options.agentOptionsUsed) { return 0; }
+	if (options.mcp.enabled || !options.agent.agentOptionsUsed) { return 0; }
 	/* PL-5（2026-09-22）：选项名单与 docs 的选项表保持一致——用户敲了
 	 * --no-camera 却被报「选项无效」，而文案里没有他刚敲的那一个，
 	 * 看起来像撞上了另一个错误。 */
@@ -153,18 +153,18 @@ int rejectAgentOptionsOutsideBackend(const CliOptions& options) {
  * 但**不跑 loop、不发模型调用**，故 loop/LLM 专属选项一律拒绝
  * （silently ignored 会误导使用者）。 */
 int rejectMcpOptionsOutsideBackend(const CliOptions& options) {
-	if (options.mcpBackend) { return 0; }
-	if (!options.mcpSocket.empty()) {
+	if (options.mcp.enabled) { return 0; }
+	if (!options.mcp.mcpSocket.empty()) {
 		std::cerr << "参数错误：--mcp-socket 只在 --mcp-backend 模式下有效" << std::endl;
 		return 2;
 	}
-	if (!options.mcpCallBudget.empty() || !options.mcpWallClock.empty()
-			|| !options.mcpIdleTimeout.empty()) {
+	if (!options.mcp.mcpCallBudget.empty() || !options.mcp.mcpWallClock.empty()
+			|| !options.mcp.mcpIdleTimeout.empty()) {
 		std::cerr << "参数错误：--mcp-call-budget / --mcp-wall-clock / --mcp-idle-timeout"
 			" 只在 --mcp-backend 模式下有效" << std::endl;
 		return 2;
 	}
-	if (!options.onDisconnect.empty()) {
+	if (!options.mcp.onDisconnect.empty()) {
 		std::cerr << "参数错误：--on-disconnect 只在 --mcp-backend 模式下有效"
 			"（它是后端连接结束后的安全动作）" << std::endl;
 		return 2;
@@ -176,8 +176,8 @@ int rejectMcpOptionsOutsideBackend(const CliOptions& options) {
  * 每连接预算数值。空 = 不限；配置错误不碰真机，故在此单点拒；
  * 数值上限只是防呆（跑飞护栏本就不该设成天文数字）。 */
 int validateMcpBackendCombos(const CliOptions& options) {
-	if (!options.mcpBackend) { return 0; }
-	if (options.tcp) {
+	if (!options.mcp.enabled) { return 0; }
+	if (options.tcp.enabled) {
 		std::cerr << "参数错误：--mcp-backend 与 --tcp 互斥"
 			"（后端经 AF_UNIX socket 服务，不监听 TCP 端口）" << std::endl;
 		return 2;
@@ -191,29 +191,29 @@ int validateMcpBackendCombos(const CliOptions& options) {
 		std::cerr << "参数错误：--mcp-backend 需要同时提供 --robot <结构脚本>" << std::endl;
 		return 2;
 	}
-	if (options.mcpSocket.empty() && !options.checkConfig) {
+	if (options.mcp.mcpSocket.empty() && !options.agent.checkConfig) {
 		std::cerr << "参数错误：--mcp-backend 需要 --mcp-socket <AF_UNIX 路径>"
 			"（mybot-agent 经此路径连接后端）" << std::endl;
 		return 2;
 	}
-	if (!options.mcpCallBudget.empty()
-			&& !parseBoundedLong(options.mcpCallBudget, 0, 1000000)) {
+	if (!options.mcp.mcpCallBudget.empty()
+			&& !parseBoundedLong(options.mcp.mcpCallBudget, 0, 1000000)) {
 		std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
-			options.mcpCallBudget) << std::endl;
+			options.mcp.mcpCallBudget) << std::endl;
 		return 2;
 	}
-	if (!options.mcpWallClock.empty()
-			&& !parseBoundedLong(options.mcpWallClock, 0, 86400)) {
+	if (!options.mcp.mcpWallClock.empty()
+			&& !parseBoundedLong(options.mcp.mcpWallClock, 0, 86400)) {
 		std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
-			options.mcpWallClock) << std::endl;
+			options.mcp.mcpWallClock) << std::endl;
 		return 2;
 	}
 	/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
 	 * 0 = 不限（缺省），与既有预算选项同口径。 */
-	if (!options.mcpIdleTimeout.empty()
-			&& !parseBoundedLong(options.mcpIdleTimeout, 0, 86400)) {
+	if (!options.mcp.mcpIdleTimeout.empty()
+			&& !parseBoundedLong(options.mcp.mcpIdleTimeout, 0, 86400)) {
 		std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
-			options.mcpIdleTimeout) << std::endl;
+			options.mcp.mcpIdleTimeout) << std::endl;
 		return 2;
 	}
 	return 0;
@@ -241,35 +241,35 @@ ParsedArgs parseArgs(int argc, char** argv) {
 			if (!noValue) { out.opts.helpTopic = val; }
 		}
 		else if (key == "tcp") {
-			out.opts.tcp = true;
+			out.opts.tcp.enabled = true;
 			/* 裸 --tcp：tcp 置位但端口留空，由 openActionSource 报「缺端口号」 */
-			if (!noValue) { out.opts.tcpPort = val; }
+			if (!noValue) { out.opts.tcp.tcpPort = val; }
 		}
-		else if (key == "agent") { out.opts.agent = true; out.opts.agentOptionsUsed = true; }
+		else if (key == "agent") { out.opts.agent.enabled = true; out.opts.agent.agentOptionsUsed = true; }
 		else if (key == "agent-shell") {
-			out.opts.agentShell = true;
-			out.opts.agentOptionsUsed = true;
+			out.opts.agent.agentShell = true;
+			out.opts.agent.agentOptionsUsed = true;
 		}
 		else if (key == "agent-hot-sql") {
-			out.opts.agentHotSql = true;
-			out.opts.agentOptionsUsed = true;
+			out.opts.agent.agentHotSql = true;
+			out.opts.agent.agentOptionsUsed = true;
 		}
 		else if (key == "no-camera") {
-			out.opts.noCamera = true;
-			out.opts.agentOptionsUsed = true;
+			out.opts.agent.noCamera = true;
+			out.opts.agent.agentOptionsUsed = true;
 		}
 		else if (key == "resume") {
-			out.opts.resume = true;
-			out.opts.agentOptionsUsed = true;
+			out.opts.agent.resume = true;
+			out.opts.agent.agentOptionsUsed = true;
 		}
 		else if (key == "check-config") {
-			out.opts.checkConfig = true;
-			out.opts.agentOptionsUsed = true;
+			out.opts.agent.checkConfig = true;
+			out.opts.agent.agentOptionsUsed = true;
 		}
 		else if (key == "mcp-backend") {
 			/* 独立模式：不置 agentOptionsUsed（它不是 agent 模式，只是复用 agent
 			 * 的工具上下文选项）。组合校验见 validateOptions。 */
-			out.opts.mcpBackend = true;
+			out.opts.mcp.enabled = true;
 		}
 		else {
 			/* ---- 带值选项：表驱动 ---- */
@@ -281,7 +281,7 @@ ParsedArgs parseArgs(int argc, char** argv) {
 			else {
 				/* agentOnly 先于缺值检查置位——裸写 --camera-var 也算
 				 * 「用过 agent 选项」，与既有顺序一致 */
-				if (spec->agentOnly) { out.opts.agentOptionsUsed = true; }
+				if (spec->agentOnly) { out.opts.agent.agentOptionsUsed = true; }
 				if (noValue) { out.missingValue.push_back(key); }
 				else { spec->set(out.opts, val); }
 			}

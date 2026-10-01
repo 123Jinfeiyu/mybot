@@ -35,8 +35,8 @@ bool isConfigDisabled(const std::string& s) {
  * （配置文件是可选的）；显式给了路径却读不到由 loadLlmConfigFile 报错——不能
  * 静默回落到缺省，否则用户会以为配置生效了。 */
 std::string pickConfigPath(const CliOptions& opts) {
-	if (!opts.llmConfig.empty()) {
-		return isConfigDisabled(opts.llmConfig) ? std::string() : opts.llmConfig;
+	if (!opts.agent.llmConfig.empty()) {
+		return isConfigDisabled(opts.agent.llmConfig) ? std::string() : opts.agent.llmConfig;
 	}
 	if (auto env = getEnvVar("BOT4CJ_LLM_CONFIG"); env && !env->empty()) {
 		return isConfigDisabled(*env) ? std::string() : *env;
@@ -136,22 +136,22 @@ bool mergeToolBudgets(const LlmFileConfig& file, AgentModeConfig& out, std::stri
 /* ---- 6) 摄像头（capture_image） ---- */
 bool pickCamera(const CliOptions& opts, const LlmFileConfig& file,
 		AgentModeConfig& out, std::string& err) {
-	out.allowCamera = opts.noCamera ? false : file.allowCamera.value_or(true);
-	out.cameraVar = pickString(opts.cameraVar, nullptr, file.cameraVar);
+	out.allowCamera = opts.agent.noCamera ? false : file.allowCamera.value_or(true);
+	out.cameraVar = pickString(opts.agent.cameraVar, nullptr, file.cameraVar);
 	if (out.cameraVar.empty()) { out.cameraVar = "cam0"; }
 	if (!isSafeIdent(out.cameraVar)) {
 		err = "摄像头变量名必须是安全标识符（字母/数字/下划线），实际是 '"
 			+ out.cameraVar + "'（来自 --camera-var 或配置文件的 camera_var 字段）";
 		return false;
 	}
-	out.cameraDevice = pickString(opts.cameraDevice, nullptr, file.cameraDevice);
-	out.cameraSrc = pickString(opts.cameraSrc, nullptr, file.cameraSrc);
+	out.cameraDevice = pickString(opts.agent.cameraDevice, nullptr, file.cameraDevice);
+	out.cameraSrc = pickString(opts.agent.cameraSrc, nullptr, file.cameraSrc);
 	/* H1：来源决定「能不能用 src 自己推导白名单根」（判据见 agenttools.hpp 的
 	 * AgentToolContext）。pickString 里命令行优先，故命令行非空即等于采用了它。 */
-	out.cameraSrcFromCli = !opts.cameraSrc.empty();
+	out.cameraSrcFromCli = !opts.agent.cameraSrc.empty();
 	/* H1：白名单根目录**只从命令行**取；配置文件写 camera_src_dir 由
 	 * buildAgentConfig 拒绝加载（与 allow_shell 同判据，见那里）。 */
-	out.cameraSrcDir = opts.cameraSrcDir;
+	out.cameraSrcDir = opts.agent.cameraSrcDir;
 	return true;
 }
 
@@ -193,16 +193,16 @@ bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	 * 且只能命令行开（安全缺省：评估 C12 翻转 + 审计 4.1 收紧；
 	 * 热插表 2026-09-23 与 run_command 同判据——apply_sql 会长出新硬件并
 	 * **立即上电**，「模型回复直接改变带电的硬件结构」）。 */
-	out.scriptsDir = opts.scriptsDir.empty() ? "scripts" : opts.scriptsDir;
-	if (opts.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
-	out.allowShell = opts.agentShell;
-	if (!opts.agentShell && file.allowShell.value_or(false)) {
+	out.scriptsDir = opts.agent.scriptsDir.empty() ? "scripts" : opts.agent.scriptsDir;
+	if (opts.agent.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
+	out.allowShell = opts.agent.agentShell;
+	if (!opts.agent.agentShell && file.allowShell.value_or(false)) {
 		err = relaxingFieldError(cfgPath, "allow_shell",
 			"run_command 等于把主机 shell 交给模型", "--agent-shell");
 		return false;
 	}
-	out.allowHotSql = opts.agentHotSql;
-	if (!opts.agentHotSql && file.allowHotSql.value_or(false)) {
+	out.allowHotSql = opts.agent.agentHotSql;
+	if (!opts.agent.agentHotSql && file.allowHotSql.value_or(false)) {
 		err = relaxingFieldError(cfgPath, "allow_hot_sql",
 			"apply_sql 会按模型给的 SQL 立即装配并给新硬件上电（开 fd、进断电清理链）",
 			"--agent-hot-sql");
@@ -213,7 +213,7 @@ bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	/* 7b) 回读清单（发现 2 的 A 步，2026-09-23）：「能读哪些变量」是由操作者
 	 * 授予的能力（执行器与传感器靠种类分不开，Servo/Relay 也是 lua 驱动，
 	 * 清单必须由人列），同上四个字段：只能命令行给。 */
-	out.readVars = opts.readVars;
+	out.readVars = opts.agent.readVars;
 	if (file.readVars) {
 		err = relaxingFieldError(cfgPath, "read_vars",
 			"它决定模型能主动读哪些硬件变量（等同于给模型一条读通道）", "--read-var");
@@ -236,7 +236,7 @@ void applyContextBudgets(const LlmFileConfig& file, AgentModeConfig& out) {
  * 上电之前失败（「配置错误不碰真机」），而不是等到第一次工具调用才炸。 */
 bool openAuditLog(const CliOptions& opts, const LlmFileConfig& file,
 		AgentModeConfig& out, std::string& err) {
-	out.auditLogPath = pickString(opts.auditLog, nullptr, file.auditLog);
+	out.auditLogPath = pickString(opts.agent.auditLog, nullptr, file.auditLog);
 	if (!out.auditLogPath.empty()) {
 		out.audit = std::make_shared<AuditLog>();
 		if (std::string auditErr; !out.audit->open(out.auditLogPath, auditErr)) {
@@ -252,7 +252,7 @@ bool openAuditLog(const CliOptions& opts, const LlmFileConfig& file,
  * 隔离仍是专用用户 / 容器（docs/agent.md 安全一节的既有口径不变）。 */
 bool loadPolicyHook(const CliOptions& opts, const LlmFileConfig& file,
 		AgentModeConfig& out, std::string& err) {
-	out.policyPath = pickString(opts.agentPolicy, nullptr, file.agentPolicy);
+	out.policyPath = pickString(opts.agent.agentPolicy, nullptr, file.agentPolicy);
 	if (!out.policyPath.empty()) {
 		if (std::string policyErr; !(out.policy = AgentPolicy::load(out.policyPath, policyErr))) {
 			err = policyErr;
@@ -274,7 +274,7 @@ bool loadPolicyHook(const CliOptions& opts, const LlmFileConfig& file,
  * 与 mcpbackend.hpp 的残留风险说明）——它是「每次调用先过人/审批」的确认闸门。 */
 bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& out,
 		std::string& err) {
-	if (!opts.mcpBackend) { return true; }
+	if (!opts.mcp.enabled) { return true; }
 	if (out.allowShell
 		&& (out.policy == nullptr || !out.policy->requiresConfirm("run_command"))) {
 		err = "--mcp-backend 开了 --agent-shell（run_command）：后端对外暴露且硬件带电，"
@@ -297,7 +297,7 @@ bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& 
  * 最需要它的那一刻才发现脚本名拼错，硬件照旧停在最后一个姿态。判据与
  * run_action_script 同源（loadActionScriptFile），不另写一份。 */
 bool precheckDisconnectScript(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
-	out.onDisconnectScript = opts.onDisconnect;
+	out.onDisconnectScript = opts.mcp.onDisconnect;
 	if (out.onDisconnectScript.empty()) { return true; }
 	try {
 		(void)loadActionScriptFile(out.scriptsDir, out.onDisconnectScript);

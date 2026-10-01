@@ -45,9 +45,9 @@ struct NoKeyEnv {
 
 CliOptions baseOptions(const std::string& configPath) {
 	CliOptions o;
-	o.agent = true;
+	o.agent.enabled = true;
 	o.robot = std::string("./robots/relay-test.sql");
-	o.llmConfig = configPath;
+	o.agent.llmConfig = configPath;
 	return o;
 }
 
@@ -213,7 +213,7 @@ TH_TEST(agentconfig_camera_src_dir_is_cli_only) {
 	/* 2) 命令行给 → 落到 cameraSrcDir */
 	{
 		CliOptions o = baseOptions("none");
-		o.cameraSrcDir = "/opt/pics";
+		o.agent.cameraSrcDir = "/opt/pics";
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
@@ -222,7 +222,7 @@ TH_TEST(agentconfig_camera_src_dir_is_cli_only) {
 	/* 3) 来源标记：命令行给的 camera_src 才允许推导根 */
 	{
 		CliOptions o = baseOptions("none");
-		o.cameraSrc = "/opt/pics/a.jpg";
+		o.agent.cameraSrc = "/opt/pics/a.jpg";
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
@@ -414,8 +414,8 @@ TH_TEST(agentconfig_backend_tool_budgets_reach_execution_context) {
 	const fs::path cfg = tmp.path() / "config.json";
 	EnvVar configEnv("BOT4CJ_LLM_CONFIG", cfg.c_str());
 	CliOptions opts;
-	opts.mcpBackend = true;
-	opts.noCamera = true;
+	opts.mcp.enabled = true;
+	opts.agent.noCamera = true;
 	MemoryReader input("");
 	RobotStruct robot(input);
 	for (const int scriptSeconds : {7, 0}) {
@@ -439,7 +439,7 @@ TH_TEST(agentconfig_backend_tool_budgets_validate_effective_values) {
 	const fs::path cfg = tmp.path() / "config.json";
 	EnvVar configEnv("BOT4CJ_LLM_CONFIG", cfg.c_str());
 	CliOptions opts;
-	opts.mcpBackend = true;
+	opts.mcp.enabled = true;
 	for (const char* body : {
 		R"({"run_command_max_timeout_sec":5})",
 		R"({"run_command_timeout_sec":20,"run_command_max_timeout_sec":10})",
@@ -456,8 +456,8 @@ TH_TEST(agentconfig_backend_tool_budgets_keep_defaults) {
 	NoKeyEnv nokey;
 	EnvVar configEnv("BOT4CJ_LLM_CONFIG", "none");
 	CliOptions opts;
-	opts.mcpBackend = true;
-	opts.noCamera = true;
+	opts.mcp.enabled = true;
+	opts.agent.noCamera = true;
 	AgentModeConfig out;
 	std::string err;
 	TH_CHECK_MSG(buildAgentConfig(opts, out, err), err);
@@ -510,7 +510,7 @@ TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 
 	/* 2) --agent-shell：注册 run_command */
 	CliOptions o = baseOptions(cfg.string());
-	o.agentShell = true;
+	o.agent.agentShell = true;
 	AgentModeConfig out2;
 	TH_CHECK(buildAgentConfig(o, out2, err));
 	TH_CHECK(out2.allowShell);
@@ -530,7 +530,7 @@ TH_TEST(agentconfig_shell_is_off_by_default_and_on_by_explicit_flag) {
 
 	/* 4) 命令行已授权时，配置里同向写 true 不该报错（授权来自命令行） */
 	CliOptions o2 = baseOptions(cfg2.string());
-	o2.agentShell = true;
+	o2.agent.agentShell = true;
 	AgentModeConfig out4;
 	std::string err4;
 	TH_CHECK(buildAgentConfig(o2, out4, err4));
@@ -558,7 +558,7 @@ TH_TEST(agentconfig_hot_sql_is_off_by_default_and_on_by_explicit_flag) {
 	/* 2) --agent-hot-sql：注册 */
 	{
 		CliOptions o = baseOptions(cfg.string());
-		o.agentHotSql = true;
+		o.agent.agentHotSql = true;
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK(buildAgentConfig(o, out, err));
@@ -579,7 +579,7 @@ TH_TEST(agentconfig_hot_sql_is_off_by_default_and_on_by_explicit_flag) {
 	{
 		fs::path bad = tmp.path() / "hot.json";
 		CliOptions o = baseOptions(bad.string());
-		o.agentHotSql = true;
+		o.agent.agentHotSql = true;
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK(buildAgentConfig(o, out, err));
@@ -610,17 +610,17 @@ TH_TEST(agentconfig_mcp_backend_requires_policy_for_dangerous_caps) {
 
 	auto backendOpts = []() {
 		CliOptions o;
-		o.mcpBackend = true;	/* 注意：不是 agent 模式 */
+		o.mcp.enabled = true;	/* 注意：不是 agent 模式 */
 		o.robot = std::string("./robots/relay-test.sql");
-		o.llmConfig = "none";	/* 不查 CWD 配置 */
-		o.mcpSocket = "/tmp/mcp-backend-test.sock";
+		o.agent.llmConfig = "none";	/* 不查 CWD 配置 */
+		o.mcp.mcpSocket = "/tmp/mcp-backend-test.sock";
 		return o;
 	};
 
 	/* ① 后端 + --agent-shell，无策略 → 拒，且报错点名 run_command */
 	{
 		CliOptions o = backendOpts();
-		o.agentShell = true;
+		o.agent.agentShell = true;
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK(!buildAgentConfig(o, out, err));
@@ -629,8 +629,8 @@ TH_TEST(agentconfig_mcp_backend_requires_policy_for_dangerous_caps) {
 	/* ② 后端 + --agent-shell + 策略命中 run_command → 放行 */
 	{
 		CliOptions o = backendOpts();
-		o.agentShell = true;
-		o.agentPolicy = gateBoth.string();
+		o.agent.agentShell = true;
+		o.agent.agentPolicy = gateBoth.string();
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
@@ -645,8 +645,8 @@ TH_TEST(agentconfig_mcp_backend_requires_policy_for_dangerous_caps) {
 	/* ④ 后端 + --agent-hot-sql，策略只命中 run_command（漏 apply_sql）→ 拒，点名 apply_sql */
 	{
 		CliOptions o = backendOpts();
-		o.agentHotSql = true;
-		o.agentPolicy = gateShellOnly.string();
+		o.agent.agentHotSql = true;
+		o.agent.agentPolicy = gateShellOnly.string();
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK(!buildAgentConfig(o, out, err));
@@ -779,7 +779,7 @@ TH_TEST(agentconfig_read_vars_from_config_is_rejected) {
 	 * 不采用 --agent-shell 那种「命令行已授权就放行」的合并语义）。 */
 	writeFile(cfg, R"({"read_vars":["relay0"]})", fs::perms::owner_all);
 	CliOptions o = baseOptions(cfg.string());
-	o.readVars.push_back("timer-0");
+	o.agent.readVars.push_back("timer-0");
 	AgentModeConfig out2;
 	std::string err2;
 	TH_CHECK(!buildAgentConfig(o, out2, err2));
@@ -871,8 +871,8 @@ TH_TEST(agentconfig_on_disconnect_prechecked_before_power) {
 	/* 合法：仓库里的 scripts/relay-test.mt */
 	{
 		CliOptions o = baseOptions(cfg.string());
-		o.mcpBackend = true;
-		o.onDisconnect = "relay-test.mt";
+		o.mcp.enabled = true;
+		o.mcp.onDisconnect = "relay-test.mt";
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
@@ -891,8 +891,8 @@ TH_TEST(agentconfig_on_disconnect_prechecked_before_power) {
 	/* 不存在 / 越界 / 空文件 → 配置错误，文案点名选项与脚本 */
 	{
 		CliOptions o = baseOptions(cfg.string());
-		o.mcpBackend = true;
-		o.onDisconnect = "no-such-safe.mt";
+		o.mcp.enabled = true;
+		o.mcp.onDisconnect = "no-such-safe.mt";
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK(!buildAgentConfig(o, out, err));
@@ -901,8 +901,8 @@ TH_TEST(agentconfig_on_disconnect_prechecked_before_power) {
 	}
 	{
 		CliOptions o = baseOptions(cfg.string());
-		o.mcpBackend = true;
-		o.onDisconnect = "../robots/relay-test.sql";
+		o.mcp.enabled = true;
+		o.mcp.onDisconnect = "../robots/relay-test.sql";
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK(!buildAgentConfig(o, out, err));
@@ -912,9 +912,9 @@ TH_TEST(agentconfig_on_disconnect_prechecked_before_power) {
 		TempDir scripts("on-disconnect-empty");
 		writeFile(scripts.path() / "empty.mt", "\n", fs::perms::owner_all);
 		CliOptions o = baseOptions(cfg.string());
-		o.mcpBackend = true;
-		o.scriptsDir = scripts.path().string();
-		o.onDisconnect = "empty.mt";
+		o.mcp.enabled = true;
+		o.agent.scriptsDir = scripts.path().string();
+		o.mcp.onDisconnect = "empty.mt";
 		AgentModeConfig out;
 		std::string err;
 		TH_CHECK(!buildAgentConfig(o, out, err));

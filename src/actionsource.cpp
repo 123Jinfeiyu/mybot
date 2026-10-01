@@ -281,21 +281,21 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 static std::unique_ptr<Reader> openTcpSource(const CliOptions& options) {
 	/* 审计中-3：裸 --tcp（漏写端口号）在此明确报错，而非静默按端口 1
 	 * 走到 bind 特权端口失败、给出与用户意图相去甚远的错误 */
-	if (options.tcpPort.empty()) {
+	if (options.tcp.tcpPort.empty()) {
 		std::cerr << "--tcp 需要端口号，例如 --tcp 9000（合法范围 1-65535）" << std::endl;
 		return nullptr;
 	}
-	const auto port = parseBoundedLong(options.tcpPort, 1, 65535);
+	const auto port = parseBoundedLong(options.tcp.tcpPort, 1, 65535);
 	if (!port) {
-		std::cerr << "--tcp 端口号无效：" << options.tcpPort
+		std::cerr << "--tcp 端口号无效：" << options.tcp.tcpPort
 			<< "（合法范围 1-65535）" << std::endl;
 		return nullptr;
 	}
-	std::string host = options.tcpHost;
+	std::string host = options.tcp.tcpHost;
 	if (host.empty()) { host = "127.0.0.1"; }	/* 缺省只监听回环，对外暴露需显式指定 */
 
 	int idleSec = kTcpIdleSecDefault;
-	const std::string& idleStr = options.tcpIdle;
+	const std::string& idleStr = options.tcp.tcpIdle;
 	if (!idleStr.empty()) {
 		const auto idle = parseBoundedLong(idleStr, 1, 86400);
 		if (!idle) {
@@ -307,14 +307,14 @@ static std::unique_ptr<Reader> openTcpSource(const CliOptions& options) {
 
 	/* C-L4：口令可经环境变量传递——--tcp-token 出现在 /proc/<pid>/cmdline，
 	 * 多用户机器上凭据对同机其他用户可见；环境变量只在进程环境里。 */
-	std::string token = options.tcpToken;
+	std::string token = options.tcp.tcpToken;
 	if (token.empty()) {
 		if (auto envToken = getEnvVar("BOT4CJ_TCP_TOKEN")) { token = *envToken; }
 	}
 
 	/* F-1：口令连续失败上限（缺省 tcp_limits::kAuthMaxFailsDefault=5） */
 	int authMaxFails = tcp_limits::kAuthMaxFailsDefault;
-	const std::string& authStr = options.tcpMaxAuthAttempts;
+	const std::string& authStr = options.tcp.tcpMaxAuthAttempts;
 	if (!authStr.empty()) {
 		const auto auth = parseBoundedLong(authStr,
 			tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax);
@@ -329,7 +329,7 @@ static std::unique_ptr<Reader> openTcpSource(const CliOptions& options) {
 
 	/* F-3：连接总时长预算下限（缺省 tcp_limits::kTotalTimeoutDefault=600） */
 	int totalTimeoutFloorSec = tcp_limits::kTotalTimeoutDefault;
-	const std::string& totalStr = options.tcpTotalTimeout;
+	const std::string& totalStr = options.tcp.tcpTotalTimeout;
 	if (!totalStr.empty()) {
 		const auto total = parseBoundedLong(totalStr,
 			tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax);
@@ -363,7 +363,7 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 	std::unique_ptr<Reader> raw;
 
 	/* 1) TCP 通道（校验与装配在 openTcpSource） */
-	if (options.tcp) {
+	if (options.tcp.enabled) {
 		raw = openTcpSource(options);
 	}
 	/* 2) 文件通道（openFileSource） */

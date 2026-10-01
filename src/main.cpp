@@ -169,24 +169,24 @@ int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agen
 		const CliOptions& options) {
 	robot.active();
 	agent::McpBackendOptions bopts;
-	bopts.socketPath = options.mcpSocket;
+	bopts.socketPath = options.mcp.mcpSocket;
 	/* 首帧共享密钥（MCP-1，审计 P2-1）：buildAgentConfig 在宿主环境抹零前
 	 * 捕获的 BOT4CJ_MCP_TOKEN。空 = 不启用。 */
 	bopts.authToken = agentCfg.mcpAuthToken;
 	/* 每连接预算（评估 §3.2「预算再强制」）：cliargs 已校验为 [0,上限] 的整数，
 	 * 空 = 不限（保持 0）。这里只做转换。注意这与**单次**物理调用的
 	 * scriptTimeoutSec / commandTimeoutSec 是不同维度——后者始终在工具层生效。 */
-	if (!options.mcpCallBudget.empty()) {
-		bopts.callBudget = static_cast<long>(parseLongStrict(options.mcpCallBudget).second);
+	if (!options.mcp.mcpCallBudget.empty()) {
+		bopts.callBudget = static_cast<long>(parseLongStrict(options.mcp.mcpCallBudget).second);
 	}
-	if (!options.mcpWallClock.empty()) {
+	if (!options.mcp.mcpWallClock.empty()) {
 		bopts.wallClockBudgetSec =
-			static_cast<long>(parseLongStrict(options.mcpWallClock).second);
+			static_cast<long>(parseLongStrict(options.mcp.mcpWallClock).second);
 	}
 	/* 空闲超时（A-2，2026-09-25 审计）：同一单点口径——cliargs 校验区间，
 	 * 这里只做转换；空 = 不限（保持 0）。 */
-	if (!options.mcpIdleTimeout.empty()) {
-		bopts.idleTimeoutSec = static_cast<int>(parseLongStrict(options.mcpIdleTimeout).second);
+	if (!options.mcp.mcpIdleTimeout.empty()) {
+		bopts.idleTimeoutSec = static_cast<int>(parseLongStrict(options.mcp.mcpIdleTimeout).second);
 	}
 	return agent::runMcpBackend(robot, agentCfg, bopts, std::cerr);
 }
@@ -250,7 +250,7 @@ int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
 		const agent::AgentModeConfig& agentCfg) {
 	int rc = 0;
 	try {
-		if (options.mcpBackend) {
+		if (options.mcp.enabled) {
 			/* MCP 后端（方案 F / 拓扑 F3）：独立模式，不争 stdin、不跑 agent loop。
 			 * 同步服务阻塞主线程正是正确行为（评估 §2.3）；deactivate 照常在其后。 */
 			rc = runMcpBackendPipeline(robot, agentCfg, options);
@@ -310,12 +310,12 @@ int main(int argc, char** argv) {
 		/* agent 配置先组装并校验（含配置文件读取与优先级合并）：
 		 * 结构装载与上电都在其后，配置错误不碰真机 */
 		agent::AgentModeConfig agentCfg;
-		if (options.mcpBackend && !prepareAgentConfig(options, agentCfg)) { return 2; }
+		if (options.mcp.enabled && !prepareAgentConfig(options, agentCfg)) { return 2; }
 
 		/* PL-1：--check-config —— 配置此时已校验完毕（错误路径上面已 return 2）。
 		 * 这里只打印摘要后退出 0：**不装载结构脚本、不上电、不发起任何网络请求**。
 		 * 放在 loadStructure 之前是有意的——校验模式连结构都不装。 */
-		if (options.checkConfig) {
+		if (options.agent.checkConfig) {
 			std::cout << agent::summarizeAgentConfig(agentCfg);
 			return 0;
 		}
@@ -336,7 +336,7 @@ int main(int argc, char** argv) {
 			robot->setActionIncludeBaseDir(parent.empty() ? "." : parent);
 		}
 
-		if (options.mcpBackend && !injectCameraDriver(*robot, agentCfg)) { return 2; }
+		if (options.mcp.enabled && !injectCameraDriver(*robot, agentCfg)) { return 2; }
 
 		installStopSignalHandlers();
 		return runRobotAndCleanup(*robot, options, agentCfg);

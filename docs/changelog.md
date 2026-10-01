@@ -9,6 +9,44 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 Rust agent 结构治理二批 + CliOptions 分组化（行为保持）
+
+- **解 `bridge ↔ ica` 类型环**（上轮 Phase 3 项 8 关联遗留）：`ToolSpec` 自
+  bridge.rs 下沉叶子模块 toolspec.rs（placeholder.rs 解环同款手法），ica/specs
+  的工具 schema 声明不再反向依赖传输层；bridge/provider/main 改引新路径。
+- **ICA 收边**（上轮可选项落地）：BOT4CJ_ICA 开关读取、账本持有与
+  观察/清单/清空/落盘/恢复收进 ica 模块的 `IcaSession` 门面（锁中毒统一
+  hook::poisoned），bridge 只留工具清单合并与 ica_* 派发两个取用点，
+  repl/main 经 `bridge.ica` 使用——启停判据归 ica 单点。
+- **循环语义可测接缝 + 测试补强**（上轮 Phase 4 残留，单测 111→118）：
+  rig 的 HookContext 为 pub(crate) 构造，钩子方法进不了单测——判定核心
+  （判定点①②墙钟/停止/单轮上限）自钩子方法抽成 `gate_completion`/
+  `gate_tool_call` 状态接缝。新增：hook 循环语义五例（单轮上限随 turn 重置、
+  0=不限、停止锁存跨 begin_task、两处墙钟文案逐字钉住、begin_task 清观测
+  不清锁存）、ica/persist 落盘往返（0600 权限 + 会话长度漂移拒恢复）、
+  main 的 resume 判据接缝（`resume_from` 抽出，临时 listener 离线构造 Bridge，
+  缺文件 fail-closed 与头不符拒恢复两例）。repl 的 run_turn/drive_stream
+  单测接缝评估后不做：编排路径已由 agent_e2e R1–R17 双进程场景覆盖，单元
+  接缝需重排 Session 内部，收益低于改动面（config/file.rs 的区间校验面已由
+  config::tests 的 bad.json 表驱动用例群覆盖）。
+- **HookState 治理收口**：判定核心已入 gates；pub 面收紧 pub(crate)（六个
+  消费者全在本 crate）。字段分组评估后**保持单结构**：12 字段同属一轮任务
+  生命周期（begin_task 一并清零），拆子结构只加间接层不改任何消费者契约。
+- **repl 拆 slash 域**：/help /clear /status /hardware /scripts /sql 命令
+  分派、SQL 变更语句甄别（batch_has_write_ops，判据同 C++）与用法/帮助文案
+  析出 repl/slash.rs（子模块形态，经 super::Session 调会话方法，不引跨模块环）。
+- **config build() 三段取值链拆解**（227→约 130 行）：协议驱动/变量名、
+  endpoint/model、API key 三段各成 Result 函数，build 只留装配。
+- **CliOptions 分组化**（45 字段三模式域）：actionsource.hpp 的 CliOptions
+  按域分组成嵌套子结构——tcp（TCP 动作源 7 字段）、agent（agent 模式 27 字段，
+  MCP 后端复用其工具上下文门控）、mcp（后端模式 6 字段），全局/输入源 5 字段
+  留顶层；模式布尔改组内 enabled，其余字段名不变（调用点只加一段路径）。
+  改写采用接收者限定（o/opts/options/o2 均核实为 CliOptions；同名无关字段
+  如 AgentModeConfig.cameraSrcDir 明确不动），约 140 处调用点机械迁移。
+- 收口：干净重建零告警；run_all 269 通过/0 失败/1 跳过、ASan/UBSan 双跑
+  同口径全绿（C++ 630 单测）；cargo 四检全绿 + agent_e2e R1–R17 通过
+  （Rust 118 单测）。
+
 ### 2026-10-01 C++ 伞头收窄 + TU 二连拆 + 两项评估收口（行为保持）
 
 - **mcpbackend 域拆分**：mcpbackend.cpp（617→268 行）留守路由类 McpBackend；

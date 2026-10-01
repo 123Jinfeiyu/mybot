@@ -115,9 +115,9 @@ TH_TEST(cliargs_missing_value_is_rejected_with_exit_2) {
 TH_TEST(cliargs_loop_only_option_is_rejected_with_guidance) {
 	Argv a({"mybot", "--robot=robots/test.sql", "--task", "hi"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-	TH_CHECK(!p.opts.agent);
-	TH_CHECK(p.opts.agentOptionsUsed);	/* agentOnly 先于缺值检查置位 */
-	TH_CHECK(p.opts.agentTask == "hi");
+	TH_CHECK(!p.opts.agent.enabled);
+	TH_CHECK(p.opts.agent.agentOptionsUsed);	/* agentOnly 先于缺值检查置位 */
+	TH_CHECK(p.opts.agent.agentTask == "hi");
 	TH_CHECK(bot::validateOptions(p) == 2);
 }
 
@@ -129,15 +129,15 @@ TH_TEST(cliargs_hot_sql_flag_is_mcp_backend_only) {
 		Argv a({"mybot", "--robot=robots/test.sql", "--mcp-backend",
 			"--mcp-socket=/tmp/s.sock", "--agent-hot-sql"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-		TH_CHECK(p.opts.agentHotSql);
-		TH_CHECK(p.opts.agentOptionsUsed);
+		TH_CHECK(p.opts.agent.agentHotSql);
+		TH_CHECK(p.opts.agent.agentOptionsUsed);
 		TH_CHECK(bot::validateOptions(p) == 0);
 	}
 	{	/* 裸用：拒绝，退出码 2 */
 		Argv a({"mybot", "--robot=robots/test.sql", "--agent-hot-sql"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-		TH_CHECK(p.opts.agentHotSql);		/* 解析层照样置位 */
-		TH_CHECK(!p.opts.agent);
+		TH_CHECK(p.opts.agent.agentHotSql);		/* 解析层照样置位 */
+		TH_CHECK(!p.opts.agent.enabled);
 		TH_CHECK(bot::validateOptions(p) == 2);
 	}
 }
@@ -150,16 +150,16 @@ TH_TEST(cliargs_read_var_is_mcp_backend_only_and_repeatable) {
 			"--mcp-socket=/tmp/s.sock", "--read-var=relay0", "--read-var", "timer-0"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK(bot::validateOptions(p) == 0);
-		TH_CHECK(p.opts.readVars.size() == 2);
-		TH_CHECK(p.opts.readVars.size() == 2 && p.opts.readVars[0] == "relay0"
-			&& p.opts.readVars[1] == "timer-0");
-		TH_CHECK(p.opts.agentOptionsUsed);
+		TH_CHECK(p.opts.agent.readVars.size() == 2);
+		TH_CHECK(p.opts.agent.readVars.size() == 2 && p.opts.agent.readVars[0] == "relay0"
+			&& p.opts.agent.readVars[1] == "timer-0");
+		TH_CHECK(p.opts.agent.agentOptionsUsed);
 	}
 	{	/* 裸用：拒绝，退出码 2 */
 		Argv a({"mybot", "--robot=robots/test.sql", "--read-var=relay0"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-		TH_CHECK(p.opts.readVars.size() == 1);	/* 解析层照样收 */
-		TH_CHECK(!p.opts.agent);
+		TH_CHECK(p.opts.agent.readVars.size() == 1);	/* 解析层照样收 */
+		TH_CHECK(!p.opts.agent.enabled);
 		TH_CHECK(bot::validateOptions(p) == 2);
 	}
 }
@@ -171,20 +171,20 @@ TH_TEST(cliargs_task_timeout_option_is_parsed_and_loop_only) {
 	{	/* 等号写法 */
 		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout=77"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-		TH_CHECK_MSG(p.opts.llmTaskTimeout == "77", "实际: '" + p.opts.llmTaskTimeout + "'");
-		TH_CHECK(p.opts.agentOptionsUsed);
+		TH_CHECK_MSG(p.opts.agent.llmTaskTimeout == "77", "实际: '" + p.opts.agent.llmTaskTimeout + "'");
+		TH_CHECK(p.opts.agent.agentOptionsUsed);
 		TH_CHECK(bot::validateOptions(p) == 2);
 	}
 	{	/* 空格写法（值在下一个 argv） */
 		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout", "900"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-		TH_CHECK_MSG(p.opts.llmTaskTimeout == "900", "实际: '" + p.opts.llmTaskTimeout + "'");
+		TH_CHECK_MSG(p.opts.agent.llmTaskTimeout == "900", "实际: '" + p.opts.agent.llmTaskTimeout + "'");
 		TH_CHECK(p.missingValue.empty());
 	}
 	{	/* 0 是合法值（= 不限），不能在解析层被当成缺值 */
 		Argv a({"mybot", "--robot=robots/test.sql", "--llm-task-timeout", "0"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-		TH_CHECK_MSG(p.opts.llmTaskTimeout == "0", "实际: '" + p.opts.llmTaskTimeout + "'");
+		TH_CHECK_MSG(p.opts.agent.llmTaskTimeout == "0", "实际: '" + p.opts.agent.llmTaskTimeout + "'");
 	}
 }
 
@@ -193,7 +193,7 @@ TH_TEST(cliargs_agent_is_removed_and_rejected_with_guidance) {
 	 * 失败退出 2，不再有「agent-over-TCP 远程 REPL」组合。 */
 	Argv a({"mybot", "--agent", "--robot=robots/test.sql", "--tcp=19301"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-	TH_CHECK(p.opts.agent && p.opts.tcp);
+	TH_CHECK(p.opts.agent.enabled && p.opts.tcp.enabled);
 	TH_CHECK(bot::validateOptions(p) == 2);
 
 	Argv b({"mybot", "--agent", "--robot=robots/test.sql"});
@@ -210,7 +210,7 @@ TH_TEST(cliargs_agent_without_robot_is_rejected) {
 	/* --agent 已移除：无论是否给 --robot 都拒绝（退出 2） */
 	Argv a({"mybot", "--agent", "--llm-var", "llm0"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-	TH_CHECK(p.opts.agentOptionsUsed && !p.opts.robot.has_value());
+	TH_CHECK(p.opts.agent.agentOptionsUsed && !p.opts.robot.has_value());
 	TH_CHECK(bot::validateOptions(p) == 2);
 }
 
@@ -251,8 +251,8 @@ TH_TEST(cliargs_mcp_backend_mode_validation) {
 			"--mcp-call-budget", "100", "--mcp-wall-clock", "600"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK(bot::validateOptions(p) == 0);
-		TH_CHECK(p.opts.mcpCallBudget == "100");
-		TH_CHECK(p.opts.mcpWallClock == "600");
+		TH_CHECK(p.opts.mcp.mcpCallBudget == "100");
+		TH_CHECK(p.opts.mcp.mcpWallClock == "600");
 	}
 	/* 预算非整数 → 2 */
 	{
@@ -280,7 +280,7 @@ TH_TEST(cliargs_mcp_backend_mode_validation) {
 			"--on-disconnect", "zero.mt"});
 		bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
 		TH_CHECK(bot::validateOptions(p) == 0);
-		TH_CHECK(p.opts.onDisconnect == "zero.mt");
+		TH_CHECK(p.opts.mcp.onDisconnect == "zero.mt");
 	}
 	{
 		Argv a({"mybot", "--robot=r.sql", "--on-disconnect", "zero.mt"});
@@ -308,19 +308,19 @@ TH_TEST(cliargs_valid_action_mode_args_pass) {
 TH_TEST(cliargs_bare_tcp_flag_keeps_port_unset) {
 	Argv a({"mybot", "--tcp", "--robot=robots/test.sql"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-	TH_CHECK(p.opts.tcp);
-	TH_CHECK(p.opts.tcpPort.empty());	/* 由 openActionSource 报「缺端口号」 */
+	TH_CHECK(p.opts.tcp.enabled);
+	TH_CHECK(p.opts.tcp.tcpPort.empty());	/* 由 openActionSource 报「缺端口号」 */
 	TH_CHECK(bot::validateOptions(p) == 0);
 }
 
 TH_TEST(cliargs_tcp_with_equals_and_separate_value_forms) {
 	Argv eq({"mybot", "--tcp=19301", "--robot=robots/test.sql"});
 	bot::ParsedArgs p1 = bot::parseArgs(eq.argc(), eq.argv());
-	TH_CHECK(p1.opts.tcp && p1.opts.tcpPort == "19301");
+	TH_CHECK(p1.opts.tcp.enabled && p1.opts.tcp.tcpPort == "19301");
 
 	Argv sep({"mybot", "--tcp", "19302", "--robot=robots/test.sql"});
 	bot::ParsedArgs p2 = bot::parseArgs(sep.argc(), sep.argv());
-	TH_CHECK(p2.opts.tcp && p2.opts.tcpPort == "19302");
+	TH_CHECK(p2.opts.tcp.enabled && p2.opts.tcp.tcpPort == "19302");
 }
 
 /* ---- F-1/F-2/F-3（2026-09-22，原 TD-2 剩余部分）：三个新选项解析进对应字段 ----
@@ -332,11 +332,11 @@ TH_TEST(cliargs_parses_tcp_auth_and_total_timeout_and_daemon_grace) {
 	Argv a({"mybot", "--robot=robots/test.sql", "--tcp-max-auth-attempts", "10",
 		"--tcp-total-timeout", "900", "--daemon-grace-ms", "5000"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-	TH_CHECK(p.opts.tcpMaxAuthAttempts == "10");
-	TH_CHECK(p.opts.tcpTotalTimeout == "900");
+	TH_CHECK(p.opts.tcp.tcpMaxAuthAttempts == "10");
+	TH_CHECK(p.opts.tcp.tcpTotalTimeout == "900");
 	TH_CHECK(p.opts.daemonGraceMs == "5000");
 	/* 三者都不是 agentOnly：非 agent 模式下合法使用 */
-	TH_CHECK(!p.opts.agentOptionsUsed);
+	TH_CHECK(!p.opts.agent.agentOptionsUsed);
 	TH_CHECK(bot::validateOptions(p) == 0);
 }
 
@@ -357,13 +357,13 @@ TH_TEST(cliargs_check_config_is_rejected_outside_mcp_backend_mode) {
 	 * --mcp-backend 联用；--agent 已移除，一律拒绝。 */
 	Argv a({"mybot", "--robot=robots/relay-test.sql", "--mcp-backend", "--check-config"});
 	bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
-	TH_CHECK(p.opts.checkConfig);
-	TH_CHECK(p.opts.agentOptionsUsed);
+	TH_CHECK(p.opts.agent.checkConfig);
+	TH_CHECK(p.opts.agent.agentOptionsUsed);
 	TH_CHECK(bot::preflightCli(p) == bot::Preflight::Proceed);
 
 	Argv b({"mybot", "--robot=robots/relay-test.sql", "--check-config"});
 	bot::ParsedArgs q = bot::parseArgs(b.argc(), b.argv());
-	TH_CHECK(q.opts.checkConfig);		/* 解析层照样置位 */
+	TH_CHECK(q.opts.agent.checkConfig);		/* 解析层照样置位 */
 	TH_CHECK(bot::preflightCli(q) == bot::Preflight::ConfigError);
 
 	Argv c({"mybot", "--agent", "--check-config"});		/* --agent 已移除 */
