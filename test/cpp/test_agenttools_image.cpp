@@ -24,6 +24,7 @@
 #include "agentdispatch.hpp"
 #include "agentproto.hpp"
 #include "agenttools.hpp"
+#include "agenttools_internal.hpp"
 #include "jsonparse.hpp"
 #include "luaend.hpp"
 #include "luaexec.hpp"

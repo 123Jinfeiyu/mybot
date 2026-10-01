@@ -32,6 +32,7 @@ using fx::TempDir;
 #include "agentdispatch.hpp"
 #include "agentproto.hpp"
 #include "agenttools.hpp"
+#include "agentview.hpp"
 #include "jsonparse.hpp"
 #include "luaend.hpp"
 #include "luaexec.hpp"

@@ -3,6 +3,7 @@
  * 装配入口 makeWaitVariableTool 经 agenttools_internal.hpp 供 makeAgentTools
  * 按门控挂载）。 */
 
+#include "agentview.hpp"
 #include "agenttools_internal.hpp"
 
 #include <algorithm>

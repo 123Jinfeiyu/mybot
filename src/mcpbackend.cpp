@@ -6,6 +6,7 @@
  * 连接服务/断连安全动作/accept 主循环 → mcplisten.cpp（本文件头注的 socket
  * 服务与审计加固说明随之迁移，见 mcplisten.cpp / mcptransport.cpp 头注）。
  */
+#include "agentview.hpp"
 #include "mcpbackend.hpp"
 
 #include <cerrno>

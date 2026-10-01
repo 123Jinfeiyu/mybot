@@ -5,6 +5,7 @@
  * 本 TU 不再与门面共用注释面。阶段编号（1/1.5/2/2.4/3）的语义与理由见各
  * 函数实现处注释。 */
 
+#include "daemonconf.hpp"
 #include "hotsql_plan.hpp"
 
 /* 流引用列判定（controller/trigger 及编号列）——热删除的引用完整性预检要用。

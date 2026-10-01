@@ -34,7 +34,9 @@ std::string readFileLimited(const std::string& path, std::size_t cap);
 /* SHOW TABLES 的只读渲染（runSqlStatement 的 SHOW 分支单点，agentview.cpp） */
 std::string renderShowTables(const RobotStruct& robot);
 
-/* capture_image 工具的装配（agentimage.cpp；makeAgentTools 按能力门控挂载） */
+/* capture_image 工具的装配（agentimage.cpp；makeAgentTools 按能力门控挂载）。
+ * 体积上限：base64 后的图像字节预算（8 MiB 帧上限的孪生判据，见 mcptransport.hpp）。 */
+inline constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
 AgentTool makeCaptureImageTool(const AgentToolContext& ctx);
 
 /* wait_variable 工具的装配（agenttools_wait.cpp；与 read_variables 同门控，

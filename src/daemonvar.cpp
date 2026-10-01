@@ -1,4 +1,5 @@
 #include "daemonvar.hpp"
+#include "daemonconf.hpp"
 
 #include <algorithm>
 #include <atomic>

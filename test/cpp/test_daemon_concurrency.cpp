@@ -25,6 +25,7 @@
 #include <thread>
 #include <vector>
 
+#include "daemonconf.hpp"
 #include "daemonvar.hpp"
 #include "fixtures.hpp"
 #include "harness.hpp"

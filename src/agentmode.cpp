@@ -10,6 +10,7 @@
 
 #include "llmconfig.hpp"
 #include "agenttools.hpp"
+#include "agentview.hpp"
 #include "hardware.hpp"
 #include "robot.hpp"
 #include "util_env.hpp"

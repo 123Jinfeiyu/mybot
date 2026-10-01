@@ -5,6 +5,7 @@
  * 逐拍循环与生命周期）留在 daemonvar.cpp；跨 TU 接缝（mutexOf/releaseSlot）
  * 见 daemonvar.hpp。 */
 
+#include "daemonconf.hpp"
 #include "daemonvar.hpp"
 
 #include <cstdlib>

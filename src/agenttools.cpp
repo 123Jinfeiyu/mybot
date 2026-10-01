@@ -1,4 +1,5 @@
 #include "agenttools.hpp"
+#include "agentview.hpp"
 #include "luaexec.hpp"	/* LuaExecBudget 按值构造 + setLuaExecBudget（run_action_script 预算窗口） */
 /* B3 拆分（2026-09-25）：只读视图族在 agentview.cpp、capture_image 摄像头簇在
  * agentimage.cpp；wait_variable 轮询机器在 agenttools_wait.cpp（2026-10-01）。

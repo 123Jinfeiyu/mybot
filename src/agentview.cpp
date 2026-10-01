@@ -6,6 +6,7 @@
  * agenttools.hpp，模块内接缝（readFileLimited/renderShowTables）在
  * agenttools_internal.hpp。 */
 
+#include "agentview.hpp"
 #include "agenttools_internal.hpp"
 
 #include <algorithm>
