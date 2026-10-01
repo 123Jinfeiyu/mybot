@@ -350,10 +350,18 @@ function require_driver(bus, spec)
 	-- HAL + print_table 由这里代劳；新驱动作者漏加载是过去高频新手坑，
 	-- 5 行前导 → 1 行，且漏加载的后果从「静默崩溃」变成「require_driver
 	-- 未定义」的明确报错。
+	-- 2026-10-01 审计收口：mpath 引导从「只取首段的单段 match」改为与
+	-- virt_prepare（fix-plan 3-3）/HAL.lua 同规的逐段探测——首段没有
+	-- mpath.lua 的多路径布局下加载必失败；旧形态正是 run_all.sh 的
+	-- lint-module-path-bootstrap 门要拦的已知坏形态。
 	local mp = __mpath
 	if mp == nil then
-		local root = (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+")
-		mp = dofile(root .. "/lib/mpath.lua")
+		local probed
+		for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+			local ok, m = pcall(dofile, p .. "/lib/mpath.lua")
+			if ok and type(m) == "table" then probed = m break end
+		end
+		mp = probed or dofile("./modules/lib/mpath.lua")
 	end
 	dofile(mp.resolve("lib/HAL.lua"))
 	dofile(mp.resolve("lib/print_table.lua"))
