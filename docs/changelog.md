@@ -9,6 +9,40 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 C++ 伞头收窄 + TU 二连拆 + 两项评估收口（行为保持）
+
+- **mcpbackend 域拆分**：mcpbackend.cpp（617→268 行）留守路由类 McpBackend；
+  serveConnection/断连安全动作（--on-disconnect）/acceptLoop/runMcpBackend 析出
+  mcplisten.cpp（396 行）；帧传输与纯协议件声明自 mcpbackend.hpp（253→188 行）
+  析出 mcptransport.hpp（88 行）——声明归属与实现 TU 对齐，mcplisten 只经公开面
+  驱动路由类。
+- **agent_subprocess 三分**：环境清洗域（敏感词判据/清洗/抹零，即 agentaudit
+  复用的判据锚地）→ agent_envscrub.cpp；子进程侧 fd 卫生与 execChild →
+  agent_fdguard.cpp；spawn/pump/reap/回执格式化留守；跨 TU 接缝入新建
+  agent_subprocess_internal.hpp（agenttools_internal.hpp 同款形态）。
+- **伞头声明析出**：daemonconf.hpp（interval 解析与 chunk 路径寻址，自
+  daemonvar.hpp）、agentview.hpp（可读变量清单判据/回执渲染/清单描述，自
+  agenttools.hpp）——消费者（hw_factory/hotsql_plan/agentmode/mcpbackend 等）
+  改引窄头；capture_image 的 kMaxImageBase64Bytes 随装配判据入 internal 头。
+- **wantXxx 六同形校验器骨架单点化**（上轮 Phase 2 项 6 遗留可选项）：
+  「字段缺失 → 通过」+「类型不符 → typeError」两步收敛为 fetchField 单点
+  （类型判据谓词表传入），各校验器只剩自己的类型语义（空串口径/值域/取整/
+  元素遍历），错误文案逐字不变。
+- **Lua 头扇出余量核查（Phase 10-2）**：daemonvar.hpp 对 Lua 符号的引用只在
+  注释里——摘除 luaend.hpp 传导后 robot/daemonconf 两个 TU 脱离 LuaJIT 头
+  编译集（gcc -H 实证 0 引用；11→9 个 TU 碰 Lua 头），daemonvar.cpp 自引。
+  评估后刻意不动：hw_registry（luavar.hpp 的 MtVars_Lua 构造接口直接收
+  lua_State，切断需拆 MtVars_Alias/Vars 窄头，接口手术收益低）与 agenttools
+  （luaexec.hpp 为预算钩子挂摘点，phase6 已判真依赖）。
+- **秘密判据「双轨」评估（Phase 10-1）——判不改，已是单点分层**：
+  agentaudit 的 maskedWord = isSensitiveEnvName ∥ {authorization, bearer}——
+  基础词表（kWORDS/kCOMPOUNDS）与整词切词法（util::anyWordOf）均复用环境清洗
+  单点（现 agent_envscrub.cpp），仅遮蔽词是命令文本特有扩展（注释自述「没有
+  叫这个的环境变量要挡」）。两处威胁模型（子进程环境 vs 命令文本回显）刻意
+  分层，共享底座不漂移。
+- 收口：干净重建零告警、run_all 269 通过/0 失败/1 跳过（与基线一致）、
+  ASan/UBSan 双跑全绿、C++ 单测 630。
+
 ### 2026-10-01 测试侧上帝文件拆分：test_robot 七分 + test_agenttools 六分 + 传输/方言域析出（行为保持）
 
 - **test_robot.cpp（2812→311 行）一拆七**：结构装配与 run() 前置校验留守，
