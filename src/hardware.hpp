@@ -11,10 +11,16 @@
 
 #include "expr.hpp"
 #include "json.hpp"
-#include "luaexec.hpp"
 #include "matrix.hpp"
 
 namespace bot {
+
+/* 执行预算结构体（luaexec.hpp）——本头只用指针形态（armExecBudget 挂接点），
+ * 前置声明即可：luaexec.hpp 会带进 lua.h/lauxlib/lualib（luaend.hpp），本头
+ * 被半个仓库包含，把它留在链上等于让所有 TU 都编译 LuaJIT 头（2026-10-01
+ * 编译扇出收窄）。真正构造预算或挂/摘钩子的 TU（agenttools/luavar）自引
+ * luaexec.hpp。 */
+struct LuaExecBudget;
 
 class MatrixVars_Hardware {
 public:

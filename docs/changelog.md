@@ -9,6 +9,20 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 编译扇出收窄：matrix.hpp 冷路径下放 + hardware.hpp 摘 Lua 头（行为保持）
+
+- **matrix.hpp 冷路径方法下放 matrix.cpp**：buildInherited（惰性继承填充）/
+  requireCol/save/appendRow/popRows/removeRows 六段大 inline（约 110 行）从
+  11 个 TU 共享的头下放——它们都是解析期/生命周期级调用，不在逐格热路径上；
+  operator()/inherited/indexOfCol 逐格热路径留在头内 inline。
+- **hardware.hpp 摘掉 luaexec.hpp 传导**：基类只在 armExecBudget 挂接点用
+  `const LuaExecBudget*` 指针形态，前置声明即可——此前经 luaexec→luaend 把
+  lua.h/lauxlib/lualib 传进半个仓库；真正构造预算/挂摘钩子的 TU
+  （agenttools/luavar）自引 luaexec.hpp，依赖图回到「谁碰 Lua 谁引头」。
+- 实测（本机干净检出，同机前后各一次）：构建墙钟 52.0s → 50.8s（-2%）、
+  user CPU 14m06s → 13m58s（-1%）——收益主要在依赖诚实而非秒表；行为零变化
+  （630 C++ 单测 + 269 道守门 + ASan/UBSan 双跑全绿）。量化如实记录，不夸大。
+
 ### 2026-10-01 gen_const_check 加固：consts 表改执行期求值（P0 复发预防）
 
 2026-10-01 P0（方案 A 下沉搬走常量、抽取脚本漏改 → 干净检出配置必败）的教训

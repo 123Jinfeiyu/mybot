@@ -44,26 +44,10 @@ class MatrixObject {
 	mutable std::vector<std::string> inherited_;
 	mutable bool inheritedReady_ = false;
 
-	void buildInherited() const {
-		inherited_.clear();
-		inheritedReady_ = false;
-		const std::size_t nrow = values_.size();
-		const std::size_t ncol = cols();
-		inherited_.reserve(nrow * ncol);
-		for (std::size_t r = 0; r < nrow; ++r) {
-			for (std::size_t c = 0; c < ncol; ++c) {
-				/* 语义与旧的逐格递归完全一致：row<=1 的 "-" 不继承，
-				 * 原样保留字面值，由调用方决定含义（inherited 返 "-"、parseMtDouble 返 0.0；
-				 * 动作派发另把「首数据行即 '-'」判为未起拍、不投递该参数，见 robot.cpp）。 */
-				if (r > 1 && values_[r][c] == "-") {
-					inherited_.push_back(inherited_[(r - 1) * ncol + c]);
-				} else {
-					inherited_.push_back(values_[r][c]);
-				}
-			}
-		}
-		inheritedReady_ = true;
-	}
+	/* 冷路径实现下放 matrix.cpp（2026-10-01 编译扇出收窄：本头被 11 个 TU
+	 * 包含，大段 inline 只在各 TU 里膨胀二进制与编译时间）——operator()/
+	 * inherited/indexOfCol 是逐格热路径，留 inline。 */
+	void buildInherited() const;
 
 public:
 	bool hasName() const { return !name_.empty(); }
@@ -132,49 +116,20 @@ public:
 	 * 本方法把「缺列」的判定提到定位点、报错主语带表名，指向性更强。
 	 * 容许缺列的场景（如把 name 列当跳过标记的元数据收集）仍用 indexOfCol。 */
 	std::int64_t requireCol(std::size_t row, const std::string& key,
-			const std::string& what) const {
-		std::int64_t idx = indexOfCol(row, key);
-		if (idx < 0) {
-			throw bot::IllegalArgumentException(what + " '" + name_ + "' has no '"
-				+ key + "' column.");
-		}
-		return idx;
-	}
+			const std::string& what) const;
 
 	/* 储存对象 */
-	void save(std::ostream& out) const {
-		out << "@" << getName() << "\n";
-		for (const auto& vec : values_) {
-			for (const auto& item : vec) {
-				out << item << " ";
-			}
-			out << ";\n";
-		}
-		out << "@\n";
-	}
+	void save(std::ostream& out) const;
 
 	/* 解析期追加一行（R-4）：宽度一致性校验 + 继承缓存作废。
 	 * 头行与 INSERT 行都经此入口，保证校验只此一处。 */
-	void appendRow(std::vector<std::string> row, std::int64_t count) {
-		if (!values_.empty() && row.size() != values_.back().size()) {
-			throw DoesNotSync(count, values_.back().size(), row.size());
-		}
-		values_.push_back(std::move(row));
-		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
-	}
+	void appendRow(std::vector<std::string> row, std::int64_t count);
 
 	/* 丢弃尾部 count 行（2026-09-23 热插表）：**只给回滚路径用**。
 	 * 结构表在装配期是只增的（顺序不变式见 RobotStruct::applySql），
 	 * 唯一的删除需求是「热插批次失败 ⇒ 撤销刚追加的 INSERT 行」。
 	 * count 超出行数即调用方算错（回滚记录与提交记录不匹配），响亮报错。 */
-	void popRows(std::size_t count) {
-		if (count > values_.size()) {
-			throw bot::IllegalArgumentException("MatrixObject::popRows(" + std::to_string(count)
-				+ ") exceeds " + std::to_string(values_.size()) + " row(s)");
-		}
-		values_.resize(values_.size() - count);
-		inheritedReady_ = false;
-	}
+	void popRows(std::size_t count);
 
 	/* 按行号删除任意行（2026-09-23 热删除）：**存活行相对顺序逐字不变**。
 	 * 这不是实现细节而是不变式——行序就是声明序，而销毁序 = 声明序倒序
@@ -187,33 +142,7 @@ public:
 	 * 越界同样报错——两者都是调用方算错，静默容忍只会让「删了几行」与
 	 * 生效摘要对不上。删除在单趟内完成（按行号集合过滤一次重排），故传入
 	 * 的行号无需有序、也无需倒序，调用方不必替本方法做排序。 */
-	void removeRows(const std::vector<std::size_t>& rows) {
-		if (rows.empty()) { return; }
-		std::vector<char> doomed(values_.size(), 0);
-		for (std::size_t r : rows) {
-			if (r == 0) {
-				throw bot::IllegalArgumentException(
-					"MatrixObject::removeRows: row 0 is the column header and cannot be removed");
-			}
-			if (r >= values_.size()) {
-				throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
-					+ std::to_string(r) + " is out of range (" + std::to_string(values_.size())
-					+ " row(s))");
-			}
-			if (doomed[r] != 0) {
-				throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
-					+ std::to_string(r) + " listed twice");
-			}
-			doomed[r] = 1;
-		}
-		std::vector<std::vector<std::string>> kept;
-		kept.reserve(values_.size() - rows.size());
-		for (std::size_t r = 0; r < values_.size(); ++r) {
-			if (doomed[r] == 0) { kept.push_back(std::move(values_[r])); }
-		}
-		values_ = std::move(kept);
-		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
-	}
+	void removeRows(const std::vector<std::size_t>& rows);
 };
 
 /* ------------- 解析期增量构建器（R-4）-------------

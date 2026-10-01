@@ -2,6 +2,99 @@
 
 namespace mt {
 
+/* ------------- MatrixObject 冷路径方法（2026-10-01 自 matrix.hpp 下放）-------------
+ * 本头被 11 个 TU 包含，大段 inline 只在各 TU 里膨胀二进制与编译时间；
+ * 这些方法（惰性继承填充/列定位/存盘/增删行）都是解析期或生命周期级调用，
+ * 不在逐格热路径上——热路径 operator()/inherited/indexOfCol 留在头内 inline。
+ * 实现与下放前逐字一致。 */
+
+void MatrixObject::buildInherited() const {
+	inherited_.clear();
+	inheritedReady_ = false;
+	const std::size_t nrow = values_.size();
+	const std::size_t ncol = cols();
+	inherited_.reserve(nrow * ncol);
+	for (std::size_t r = 0; r < nrow; ++r) {
+		for (std::size_t c = 0; c < ncol; ++c) {
+			/* 语义与旧的逐格递归完全一致：row<=1 的 "-" 不继承，
+			 * 原样保留字面值，由调用方决定含义（inherited 返 "-"、parseMtDouble 返 0.0；
+			 * 动作派发另把「首数据行即 '-'」判为未起拍、不投递该参数，见 robot.cpp）。 */
+			if (r > 1 && values_[r][c] == "-") {
+				inherited_.push_back(inherited_[(r - 1) * ncol + c]);
+			} else {
+				inherited_.push_back(values_[r][c]);
+			}
+		}
+	}
+	inheritedReady_ = true;
+}
+
+std::int64_t MatrixObject::requireCol(std::size_t row, const std::string& key,
+		const std::string& what) const {
+	std::int64_t idx = indexOfCol(row, key);
+	if (idx < 0) {
+		throw bot::IllegalArgumentException(what + " '" + name_ + "' has no '"
+			+ key + "' column.");
+	}
+	return idx;
+}
+
+void MatrixObject::save(std::ostream& out) const {
+	out << "@" << getName() << "\n";
+	for (const auto& vec : values_) {
+		for (const auto& item : vec) {
+			out << item << " ";
+		}
+		out << ";\n";
+	}
+	out << "@\n";
+}
+
+void MatrixObject::appendRow(std::vector<std::string> row, std::int64_t count) {
+	if (!values_.empty() && row.size() != values_.back().size()) {
+		throw DoesNotSync(count, values_.back().size(), row.size());
+	}
+	values_.push_back(std::move(row));
+	inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
+}
+
+void MatrixObject::popRows(std::size_t count) {
+	if (count > values_.size()) {
+		throw bot::IllegalArgumentException("MatrixObject::popRows(" + std::to_string(count)
+			+ ") exceeds " + std::to_string(values_.size()) + " row(s)");
+	}
+	values_.resize(values_.size() - count);
+	inheritedReady_ = false;
+}
+
+void MatrixObject::removeRows(const std::vector<std::size_t>& rows) {
+	if (rows.empty()) { return; }
+	std::vector<char> doomed(values_.size(), 0);
+	for (std::size_t r : rows) {
+		if (r == 0) {
+			throw bot::IllegalArgumentException(
+				"MatrixObject::removeRows: row 0 is the column header and cannot be removed");
+		}
+		if (r >= values_.size()) {
+			throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
+				+ std::to_string(r) + " is out of range (" + std::to_string(values_.size())
+				+ " row(s))");
+		}
+		if (doomed[r] != 0) {
+			throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
+				+ std::to_string(r) + " listed twice");
+		}
+		doomed[r] = 1;
+	}
+	std::vector<std::vector<std::string>> kept;
+	kept.reserve(values_.size() - rows.size());
+	for (std::size_t r = 0; r < values_.size(); ++r) {
+		if (doomed[r] == 0) { kept.push_back(std::move(values_[r])); }
+	}
+	values_ = std::move(kept);
+	inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
+}
+
 /* 解析器主体：一个 _next 消费一个字符，返回更新后的行号。
  *
  * N-18 状态转移表（三状态位组合驱动，全部 8 分支罗列如下）：
