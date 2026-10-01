@@ -14,8 +14,13 @@
 # 用法：cmake -DOUT=<生成的头文件> -DSRC=<仓库根> -P test/gen_const_check.cmake
 #
 # 抽取是**纯文本模式匹配**，不执行 Lua（不依赖 luajit、不受 CWD 影响）：每个常量
-# 的行格式在本仓库内是稳定的（`HAL.NAME<spaces>=<spaces>值`）。抽不到即
+# 的行格式在本仓库内是稳定的（`NAME<spaces>=<spaces>值`）。抽不到即
 # FATAL_ERROR —— 「抽取失效」必须响亮失败，而不是静默生成空头让断言退化成自证。
+# 2026-10-01 P0 修复：方案 A 下沉（955a2c3，2026-09-30）把 HAL.lua 的
+# `HAL.X = <字面量>` 改成了 `HAL.X = _c.X` 重导出（真值移入 hal_backend_glibc.lua
+# 的 consts 表），本脚本仍按旧模式从 HAL.lua 抽取 → 全新检出配置必败。旧 build
+# 目录缓存不触发重新配置，把断裂掩盖到了推送之后。教训：**抽取模式与被抽文件的
+# 书写风格是同一份契约**，重构搬走常量时必须连本脚本一起改。
 
 if(NOT DEFINED OUT OR NOT DEFINED SRC)
   message(FATAL_ERROR "gen_const_check.cmake: 需要 -DOUT=<头文件> -DSRC=<仓库根>")
@@ -41,6 +46,8 @@ function(read_const path prefix out_var)
       set(val "${CMAKE_MATCH_2}")
       # 去掉值尾部的空白
       string(STRIP "${val}" val)
+      # 表项形如 `NAME = 0x80000,`（consts 表内一员）——剥掉尾逗号再过字面量过滤
+      string(REGEX REPLACE ",[ \t]*$" "" val "${val}")
       # 只收「纯字面量或字面量算术」——含标识符的值（如 bus.UART_READ_MAX_MS、
       # UART_B_CONST_HZ）不是常量表项，跳过：本检查的定位是编号/布局常量。
       if(val MATCHES "^[0-9A-Fa-fxX|+() \t]+$")
@@ -66,7 +73,10 @@ endfunction()
 
 set(SRC_MODULES "${SRC}/modules")
 
-read_const("${SRC_MODULES}/lib/HAL.lua" "HAL\\." HAL_ALL)
+# 平台常量（ioctl 编号/termios/errno）的唯一事实源是后端 consts 表
+# （hal_backend_glibc.lua 的 `local consts = { NAME = <值>, ... }`）；HAL.lua 自
+# 方案 A 起只做 `HAL.X = _c.X` 重导出，无字面量可抽。空前缀 = 表项裸名开头。
+read_const("${SRC_MODULES}/lib/hal_backend_glibc.lua" "" HAL_ALL)
 # Camera.lua 的 V4L2 ioctl 编号也是 `local NAME = <值>`（同名声明），同法抽取。
 read_const("${SRC_MODULES}/Camera.lua" "local[ \t]+" CAM_ALL)
 
@@ -136,7 +146,7 @@ read_baud_table("${SRC_MODULES}/lib/HAL.lua" "HZ" BAUD_HZ)
 
 # ---- 生成头文件 ----
 set(hdr "/* 本文件由 test/gen_const_check.cmake 在 cmake 配置期生成，请勿手工编辑。\n")
-string(APPEND hdr " * 事实源：modules/lib/HAL.lua 与 modules/Camera.lua（纯文本抽取）。\n")
+string(APPEND hdr " * 事实源：modules/lib/hal_backend_glibc.lua（consts 表）与 modules/Camera.lua（纯文本抽取）。\n")
 string(APPEND hdr " * 常量自检（test_ioctl_nums.c / test_uart_consts.c / test_v4l2_consts.c）\n")
 string(APPEND hdr " * 用它把 Lua 值钉进 C 断言——A2：此前 C 里手抄数字，Lua 漂移无人发现。 */\n")
 string(APPEND hdr "#pragma once\n\n")
