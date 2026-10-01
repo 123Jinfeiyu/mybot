@@ -165,6 +165,58 @@ impl HookState {
     pub fn injections(&self) -> Vec<Injection> {
         self.injections.lock().unwrap_or_else(poisoned).clone()
     }
+
+    /// 判定点①的决策核心（on_completion_call 的可单测接缝，2026-10-13 抽出：
+    /// rig 的 HookContext 是 pub(crate) 构造，钩子方法本身进不了单测——决策
+    /// 收在状态上，钩子方法只剩装配）。返回 Some(理由) = 本轮不发起新的模型
+    /// 调用；None = 放行。
+    pub(crate) fn gate_completion(&self) -> Option<String> {
+        if self.stop.load(Ordering::Relaxed) {
+            return Some(STOP_TEXT.to_string());
+        }
+        if self.budget.lock().unwrap_or_else(poisoned).exhausted() {
+            return Some(wall_clock_turn_text(self.max_task_seconds));
+        }
+        None
+    }
+
+    /// 判定点② + 单轮调用上限的决策核心（on_tool_call 的可单测接缝，同上）。
+    /// 先做单轮计数（turn 一变即新一轮，从零起），再依次过停止/墙钟/单轮上限
+    /// 三道闸。返回 Some(回执文案) = 不派发（模型收到「未派发」回执）；
+    /// None = 放行派发。
+    pub(crate) fn gate_tool_call(&self, turn: usize) -> Option<String> {
+        let nth = {
+            let mut round = self.round.lock().unwrap_or_else(poisoned);
+            if round.turn != turn {
+                round.turn = turn;
+                round.calls = 0;
+                self.round_capped.store(false, Ordering::Relaxed);
+            }
+            round.calls += 1;
+            round.calls
+        };
+        if self.stop.load(Ordering::Relaxed) {
+            return Some(STOP_TEXT.to_string());
+        }
+        if self.budget.lock().unwrap_or_else(poisoned).exhausted() {
+            return Some(wall_clock_call_text(self.max_task_seconds));
+        }
+        if self.max_calls_per_round > 0 && nth > self.max_calls_per_round as usize {
+            if !self.round_capped.swap(true, Ordering::Relaxed) {
+                errln!(
+                    "[上限] 本轮工具调用超过单轮上限 {} 条，超出部分未派发\
+                     （模型收到「未派发」回执，不是执行失败）",
+                    self.max_calls_per_round
+                );
+            }
+            return Some(format!(
+                "未派发：本轮工具调用数超过单轮上限（{} 条），本条调用没有下发\
+                 （不是执行失败，也没有产生任何副作用）。",
+                self.max_calls_per_round
+            ));
+        }
+        None
+    }
 }
 
 /// mutex 中毒恢复的唯一口径（2026-10-01 收敛，bridge.rs 的 ICA 账本 11 处匿名
@@ -255,18 +307,10 @@ impl AgentHook for SessionHook {
         _ctx: &HookContext,
         event: CompletionCallEvent<'_>,
     ) -> CompletionCallAction {
-        // D4：Ctrl-C 之后不再发起新的模型轮，让主流程尽快走清理链
-        if self.state.stop.load(Ordering::Relaxed) {
-            return CompletionCallAction::Stop(STOP_TEXT.to_string());
-        }
-        let exhausted = self
-            .state
-            .budget
-            .lock()
-            .unwrap_or_else(poisoned)
-            .exhausted();
-        if exhausted {
-            return CompletionCallAction::Stop(wall_clock_turn_text(self.state.max_task_seconds));
+        // D4：Ctrl-C 之后不再发起新的模型轮，让主流程尽快走清理链；
+        // 墙钟耗尽同理（判定核心在 gate_completion，见模块头「可单测接缝」注）
+        if let Some(reason) = self.state.gate_completion() {
+            return CompletionCallAction::Stop(reason);
         }
         // 回滚边界：turn 1 时 history 恰是任务开始前的历史（本轮 user 任务还只是
         // prompt）→ 失败要连它一起丢掉，与 C++ 的 `complete = base` 同口径；
@@ -293,50 +337,13 @@ impl AgentHook for SessionHook {
 
     /// 判定点② + 单轮调用上限。
     async fn on_tool_call(&self, ctx: &HookContext, _event: ToolCall<'_>) -> ToolCallAction {
-        // 单轮计数：turn 一变就是新一轮（模型的新响应），计数从零起
-        let turn = ctx.turn();
-        let nth = {
-            let mut round = self.state.round.lock().unwrap_or_else(poisoned);
-            if round.turn != turn {
-                round.turn = turn;
-                round.calls = 0;
-                self.state.round_capped.store(false, Ordering::Relaxed);
-            }
-            round.calls += 1;
-            round.calls
-        };
-
-        if self.state.stop.load(Ordering::Relaxed) {
-            return ToolCallAction::Skip(STOP_TEXT.to_string());
+        // 判定核心（单轮计数 + 停止/墙钟/单轮上限三道闸）在 gate_tool_call——
+        // 决策收在状态上便于单测；「未派发」语义与 C++ 的 excess 分支一致
+        // （呈现位置不同：C++ 挂 assistant 文本，rig 挂回执）。
+        match self.state.gate_tool_call(ctx.turn()) {
+            Some(receipt) => ToolCallAction::Skip(receipt),
+            None => ToolCallAction::Run,
         }
-        let exhausted = self
-            .state
-            .budget
-            .lock()
-            .unwrap_or_else(poisoned)
-            .exhausted();
-        if exhausted {
-            return ToolCallAction::Skip(wall_clock_call_text(self.state.max_task_seconds));
-        }
-        // 单轮上限：超出的调用**不派发**（不给硬件一次性下发失控数量的动作），
-        // 但必须如实告知模型本条没有被下发。C++ 侧这条说明挂在 assistant 文本里
-        // （见 agentloop.cpp 的 excess 分支），rig 侧挂在回执上——呈现位置不同、
-        // 「未派发」语义一致。
-        if self.state.max_calls_per_round > 0 && nth > self.state.max_calls_per_round as usize {
-            if !self.state.round_capped.swap(true, Ordering::Relaxed) {
-                errln!(
-                    "[上限] 本轮工具调用超过单轮上限 {} 条，超出部分未派发\
-                     （模型收到「未派发」回执，不是执行失败）",
-                    self.state.max_calls_per_round
-                );
-            }
-            return ToolCallAction::Skip(format!(
-                "未派发：本轮工具调用数超过单轮上限（{} 条），本条调用没有下发\
-                 （不是执行失败，也没有产生任何副作用）。",
-                self.state.max_calls_per_round
-            ));
-        }
-        ToolCallAction::Run
     }
 }
 
@@ -394,5 +401,104 @@ mod tests {
             content: vec![UserContent::image_base64("AAAA", None, None)],
         };
         assert!(!has_tool_result(&img));
+    }
+
+    fn state_with(max_calls: i64) -> HookState {
+        HookState::new(60, max_calls, TaskBudget::new(0, 0, 0))
+    }
+
+    #[test]
+    fn gate_tool_call_caps_round_and_resets_on_new_turn() {
+        let st = state_with(2);
+        // 第 1 轮：前 2 条放行，第 3 条起「未派发」且回执点名上限与无副作用
+        assert!(st.gate_tool_call(1).is_none());
+        assert!(st.gate_tool_call(1).is_none());
+        for _ in 0..3 {
+            let why = st.gate_tool_call(1).expect("超限应 Skip");
+            assert!(why.contains("本轮工具调用数超过单轮上限（2 条）"), "{why}");
+            assert!(why.contains("不是执行失败，也没有产生任何副作用"), "{why}");
+        }
+        // 第 2 轮：计数随 turn 重置，重新放行
+        assert!(st.gate_tool_call(2).is_none());
+        assert!(st.gate_tool_call(2).is_none());
+        assert!(st.gate_tool_call(2).is_some());
+    }
+
+    #[test]
+    fn gate_tool_call_zero_limit_means_unlimited() {
+        let st = state_with(0);
+        for _ in 0..10 {
+            assert!(st.gate_tool_call(1).is_none(), "0 = 不限");
+        }
+    }
+
+    #[test]
+    fn stop_latches_across_begin_task_and_gates_both_sides() {
+        let st = state_with(0);
+        // 未停止：两侧放行
+        assert!(st.gate_completion().is_none());
+        assert!(st.gate_tool_call(1).is_none());
+        st.stop.store(true, Ordering::Relaxed);
+        // 判定点①：不再发起新的模型轮，文案逐字同 C++
+        assert_eq!(st.gate_completion().as_deref(), Some(STOP_TEXT));
+        // 判定点②：本条不派发（回执同口径）
+        assert_eq!(st.gate_tool_call(1).as_deref(), Some(STOP_TEXT));
+        // begin_task 清观测值但**不清 stop**——取消是操作者的意思，锁存到进程退出
+        st.begin_task();
+        assert_eq!(st.gate_completion().as_deref(), Some(STOP_TEXT));
+    }
+
+    #[test]
+    fn wall_clock_gates_report_verbatim_texts() {
+        let mut budget = TaskBudget::new(0, 0, 30);
+        // 把任务起点拨回过去：墙钟 30 秒预算已耗尽（单调时钟，不受 NTP 拨动影响）
+        budget.task_start = std::time::Instant::now() - std::time::Duration::from_secs(31);
+        let st = HookState::new(30, 0, budget);
+        // 判定点①：不再发起新的模型调用，如实说明「已执行的动作不会回退」
+        let why = st.gate_completion().expect("墙钟耗尽应停");
+        assert_eq!(
+            why,
+            "达到单任务墙钟预算（30 秒）仍未得到最终回答；此前已执行的动作不会回退。\
+             可调大 --llm-task-timeout（或配置文件的 max_task_seconds），或把任务拆小"
+        );
+        // 判定点②：剩余调用不派发，回执说清「没下发、也没有副作用」
+        let why = st.gate_tool_call(1).expect("墙钟耗尽应 Skip");
+        assert_eq!(
+            why,
+            "未派发：单任务墙钟预算（30 秒）已耗尽，本条调用没有下发\
+             （不是执行失败，也没有产生任何副作用）。"
+        );
+    }
+
+    #[test]
+    fn begin_task_clears_observations_and_image_queues() {
+        let st = state_with(0);
+        st.record_call(CallRecord {
+            turn: 1,
+            ..Default::default()
+        });
+        st.push_image("data:image/png;base64,AAAA".to_string());
+        st.push_injection(Injection {
+            ordinal: 1,
+            content: vec![],
+        });
+        assert_eq!(st.drain_calls().len(), 1);
+        assert_eq!(st.take_pending_images().len(), 1);
+        assert_eq!(st.take_injections().len(), 1);
+        // 再填一遍：begin_task 后应全空（回滚边界回到「任务开始前」= None）
+        st.record_call(CallRecord {
+            turn: 2,
+            ..Default::default()
+        });
+        st.push_image("data:image/png;base64,BBBB".to_string());
+        st.push_injection(Injection {
+            ordinal: 2,
+            content: vec![],
+        });
+        st.begin_task();
+        assert!(st.drain_calls().is_empty());
+        assert!(st.take_pending_images().is_empty());
+        assert!(st.take_injections().is_empty());
+        assert!(st.rollback_boundary().is_none());
     }
 }

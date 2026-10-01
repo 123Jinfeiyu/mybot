@@ -95,6 +95,7 @@ fn harden_against_inspection() {
 }
 
 /// `--resume` 恢复出来的会话三件套（历史消息 / 历史摘要 / 原 session id）。
+#[derive(Debug)]
 struct Resumed {
     history: Vec<rig_agent::completion::Message>,
     summary: Option<String>,
@@ -118,9 +119,21 @@ async fn try_resume(
     preamble: &str,
     material: &PromptMaterial,
 ) -> Result<Resumed, String> {
+    resume_from(&cfg.session_file, bridge, tool_names, preamble, material).await
+}
+
+/// 恢复判据的接缝本体（2026-10-01 抽出：只依赖 session_file 一个配置项，
+/// 可离线单测——Bridge 对临时 listener 构造即得，无需真后端/真 LLM）。
+async fn resume_from(
+    session_file: &str,
+    bridge: &Bridge,
+    tool_names: &[String],
+    preamble: &str,
+    material: &PromptMaterial,
+) -> Result<Resumed, String> {
     let mut loaded = session::LoadedSession::default();
     let mut warnings = Vec::new();
-    match session::load_session_file(&cfg.session_file, &mut loaded, &mut warnings) {
+    match session::load_session_file(&session_file, &mut loaded, &mut warnings) {
         Ok(()) => {
             for w in &warnings {
                 errln!("[mybot-agent] {w}");
@@ -139,7 +152,7 @@ async fn try_resume(
                 return Err(format!(
                     "会话文件 '{}' 的历史不满足工具调用协议自洽（{reason}），\
                      拒绝恢复（这份历史送去模型服务端会被 400）",
-                    cfg.session_file
+                    session_file
                 ));
             }
             errln!(
@@ -150,14 +163,14 @@ async fn try_resume(
                     .as_ref()
                     .map(|s| format!("，含历史摘要 {} 字节", s.len()))
                     .unwrap_or_default(),
-                cfg.session_file
+                session_file
             );
         }
         Err(e) => return Err(e),
     }
     bridge
         .ica
-        .restore(&cfg.session_file)
+        .restore(&session_file)
         .map_err(|e| format!("ICA 会话恢复失败: {e}"))?;
     Ok(Resumed {
         history: loaded.messages,
@@ -450,4 +463,109 @@ fn load_prompt_pack(cfg: &mut Config, cli: &config::Cli) -> Result<(), String> {
     }
     cfg.prompt_pack = prompt::load_prompt_pack(&cfg.prompt_files)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::budget::TaskBudget;
+    use crate::frame::BackendClient;
+    use crate::hook::HookState;
+    use crate::prompt::PromptMaterial;
+    use crate::session::{self, SessionHead};
+    use std::os::unix::net::UnixListener as StdListener;
+    use std::time::Duration;
+
+    /// 与 bridge.rs 测试同款的离线构造：临时 listener + 立即接受的 BackendClient。
+    /// try_resume 路径不发起任何帧调用（ICA 未启用时零行为），连接只需存在。
+    async fn offline_bridge(tag: &str) -> Bridge {
+        let dir = std::env::temp_dir().join(format!("mybot_resume_{}_{}", tag, std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("b.sock");
+        let listener = StdListener::bind(&path).unwrap();
+        let client =
+            BackendClient::connect_timeout(&path.to_string_lossy(), Duration::from_secs(5))
+                .await
+                .unwrap();
+        let _accepted = listener.accept().unwrap(); // 保持对端存活
+        std::mem::forget(listener); // 对端保持存活即可,监听器不必关闭
+        Bridge::new(
+            client,
+            crate::bridge::ConnParams {
+                path: String::new(),
+                token: None,
+                connect_timeout: Duration::from_secs(1),
+                read_timeout: Duration::from_secs(1),
+            },
+            std::sync::Arc::new(HookState::new(60, 0, TaskBudget::new(0, 0, 0))),
+        )
+    }
+
+    fn material() -> PromptMaterial {
+        PromptMaterial {
+            robot_name: "relay-test".into(),
+            ..Default::default()
+        }
+    }
+
+    fn write_session(path: &std::path::Path, head: &SessionHead) {
+        use std::io::Write;
+        let mut w = session::SessionFileWriter::new();
+        w.open(path.to_string_lossy().as_ref(), false).unwrap();
+        w.write_header(head);
+        let _ = std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .unwrap()
+            .write(b"");
+    }
+
+    #[tokio::test]
+    async fn resume_rejects_missing_and_mismatched_sessions() {
+        let bridge = offline_bridge("missing").await;
+        let dir = std::env::temp_dir().join(format!("mybot_resume_files_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // 文件不存在：错误如实冒出（fail-closed，不静默当新会话）
+        let missing = dir.join("none.jsonl");
+        let err = resume_from(
+            missing.to_string_lossy().as_ref(),
+            &bridge,
+            &[],
+            "p",
+            &material(),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            err.contains(&missing.to_string_lossy().to_string()),
+            "{err}"
+        );
+
+        // 头不符（robot 名对不上）：点名「会话恢复失败」
+        let session = dir.join("s.jsonl");
+        write_session(
+            &session,
+            &SessionHead {
+                version: session::SESSION_FILE_VERSION,
+                session_id: String::new(),
+                robot: "another-robot".into(),
+                tools_fp: String::new(),
+                system_fp: String::new(),
+            },
+        );
+        let err = resume_from(
+            session.to_string_lossy().as_ref(),
+            &bridge,
+            &[],
+            "p",
+            &material(),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("会话恢复失败"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
