@@ -183,34 +183,57 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	lua_State* L = openSandboxedState();
 	if (L == nullptr) { return -1; }
 
-	/* 注入共享槽地址（lightuserdata）+ 配置串 + 布局表为 Lua 全局 */
-	injectDaemonGlobals(L, slot.get(), config);
+	/* 第五个「异常不得穿出」边界（2026-10-01 审计 P2，判据锚点见 util_except.hpp）：
+	 * 本线程是 detached，异常穿出线程函数即 std::terminate，主线程的停机清理链
+	 * （deactivate 断电）整条被跳过——执行器带电滞留，正是本项目自评最严重的
+	 * 失效形态。主线程同型风险此前已由 luabridge 的 F5-2（pcall 包裹 getglobal）
+	 * 修复，daemon 线程是被漏掉的边界。裸露点：body 内多处 Lua C API 调用不经
+	 * pcall——injectDaemonGlobals 的 push 系列（OOM 即 luaD_throw）、tick 循环与
+	 * cleanup 段的 getglobal（chunk 可给 _G 装带报错 __index 的元表）。异常折成
+	 * -1（中途计数不可信）+ 响亮日志；promise 照常 set，join 路径正常走完。 */
+	int64_t n = -1;
+	try {
+		/* 注入共享槽地址（lightuserdata）+ 配置串 + 布局表为 Lua 全局 */
+		injectDaemonGlobals(L, slot.get(), config);
 
-	if (!setupDaemonChunk(L, chunk)) {
-		lua_close(L);
-		return -1;
-	}
-	lua_settop(L, 0);
+		if (setupDaemonChunk(L, chunk)) {
+			lua_settop(L, 0);
 
-	runTickLoop(L, slot.get(), intervalMs);
+			runTickLoop(L, slot.get(), intervalMs);
 
-	/* H-07：stop 后、lua_close 前调用 chunk 定义的 daemon_cleanup()（若存在） */
-	lua_getglobal(L, "daemon_cleanup");
-	if (lua_type(L, -1) == LUA_TFUNCTION) {
-		int st3 = lua_pcall(L, 0, LUA_MULTRET, 0);
-		if (st3 != LUA_OK) {
-			std::cerr << "[daemon] cleanup error: " << luaErrorString(L) << std::endl;
+			/* H-07：stop 后、lua_close 前调用 chunk 定义的 daemon_cleanup()（若存在） */
+			lua_getglobal(L, "daemon_cleanup");
+			if (lua_type(L, -1) == LUA_TFUNCTION) {
+				int st3 = lua_pcall(L, 0, LUA_MULTRET, 0);
+				if (st3 != LUA_OK) {
+					std::cerr << "[daemon] cleanup error: " << luaErrorString(L) << std::endl;
+				}
+			}
+			lua_settop(L, 0);
+
+			/* F-01：count 与 stop 同规——都在槽内 mutex 临界区读取（此前锁外裸读，
+			 * 与 daemonvar.hpp 的 stop 纪律不对称） */
+			pthread_mutex_lock(mutexOf(slot.get()));
+			n = slot->count;
+			pthread_mutex_unlock(mutexOf(slot.get()));
 		}
+	} catch (const std::exception& e) {
+		std::cerr << "[daemon] body aborted by exception: " << e.what()
+			<< " — closing state, publish count unreliable, returning -1" << std::endl;
+		n = -1;
+	} catch (...) {
+		std::cerr << "[daemon] body aborted by " << kNonStdExceptionNote
+			<< " — closing state, publish count unreliable, returning -1" << std::endl;
+		n = -1;
 	}
-	lua_settop(L, 0);
-
-	/* F-01：count 与 stop 同规——都在槽内 mutex 临界区读取（此前锁外裸读，
-	 * 与 daemonvar.hpp 的 stop 纪律不对称） */
-	int64_t n;
-	pthread_mutex_lock(mutexOf(slot.get()));
-	n = slot->count;
-	pthread_mutex_unlock(mutexOf(slot.get()));
-	lua_close(L);
+	try {
+		lua_close(L);
+	} catch (...) {
+		/* lua_close 跑 ffi __gc 收尾同样可能抛（判据同上）。吞掉但留痕：此刻
+		 * 状态机已半释放，进程续命让停机断电链可达，比 terminate 重要。 */
+		std::cerr << "[daemon] lua_close threw (" << kNonStdExceptionNote
+			<< ") — state partially freed, continuing" << std::endl;
+	}
 	/* 2.4：返回即交还本线程的引用副本。弃管路径下这里是最后所有者，
 	 * 删除器（mutex_destroy + free）在本线程执行——与旧协议「线程自行
 	 * 释放」语义一致，仲裁交给引用计数。 */

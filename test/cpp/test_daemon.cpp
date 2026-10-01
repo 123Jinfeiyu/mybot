@@ -61,6 +61,19 @@ void writeStuckTickChunk() {
 	    << "end\n";
 }
 
+/* 2026-10-01 审计 P2（第五个异常边界）：chunk 给 _G 装报错 __index 且故意不
+ * 定义 daemon_tick——body 的 tick 循环里裸 lua_getglobal("daemon_tick") 查询
+ * 命中 __index 元方法 → luaD_throw 从无 Lua CFRAME 的 C++ 帧抛出**非标准
+ * 异常**。daemon_tick 不定义意味着首拍即触发，无需等 stop。 */
+const char* const kHostileIndexRel = "test_daemon_hostile_index.lua";
+void writeHostileIndexChunk() {
+	std::ofstream out(std::string(".tmp/") + kHostileIndexRel, std::ios::binary | std::ios::trunc);
+	out << "-- hostile __index: first bare getglobal in body() must throw\n"
+	    << "setmetatable(_G, { __index = function() error(\"hostile __index\") end })\n"
+	    << "-- daemon_tick intentionally undefined\n"
+	    << "return\n";
+}
+
 mt::MatrixObject daemonDefs(const std::string& chunk) {
 	return fx::oneMatrix("@Daemon\nname chunk interval;\nd1 " + chunk + " 10;\n@\n");
 }
@@ -209,6 +222,29 @@ TH_TEST(daemon_finish_teardown_quiesces_stuck_thread) {
 	TH_CHECK(!registry[0]->finishTeardown(0, t0));
 	TH_CHECK(!registry[0]->slotAlive());
 	TH_CHECK(registry[0]->quiesced());
+	bot::Json err = var->play(bot::JsonObject());
+	TH_CHECK(err.get("result")->getValue() == "ERR");
+}
+
+/* 2026-10-01 审计 P2（第五个异常边界）：detached 守护线程的 body() 抛非标准
+ * 异常不得穿出线程函数。旧行为：异常逃出线程 lambda 即 std::terminate，测试
+ * 进程当场消亡（非零退出码，不是普通断言失败），停机断电链整条被跳过——
+ * 正是本项目自评最严重的失效形态。修复后：异常折成 -1 + stderr 留痕，
+ * promise 照常 set，destroy 的 join 路径正常收尾。
+ * 触发：见 writeHostileIndexChunk——首拍裸 getglobal 即抛。 */
+TH_TEST(daemon_body_exception_folds_to_error_not_terminate) {
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	writeHostileIndexChunk();
+	mt::MatrixObject defs = daemonDefs(kHostileIndexRel);
+	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
+	var->build();
+	/* 守护线程在首拍（interval=10ms）即触发异常路径；给 200ms 让它完成
+	 * 退场与 promise set。进程活到 destroy 之后本身就是修复的证明。 */
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	var->destroy();
+	TH_CHECK(!registry[0]->slotAlive());
+	/* 弃管后的读按 ERR 契约返回，不碰悬垂指针 */
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
 }
