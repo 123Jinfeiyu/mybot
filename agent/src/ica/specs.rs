@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::bridge::ToolSpec;
+use crate::toolspec::ToolSpec;
 
 pub fn specs() -> Vec<ToolSpec> {
     fn spec(name: &str, description: &str, schema: Value) -> ToolSpec {

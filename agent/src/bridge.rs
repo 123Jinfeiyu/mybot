@@ -24,7 +24,6 @@
 //! 如实写明「已执行」）。语义单点在 budget.rs。
 
 use std::sync::Arc;
-use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use rig_agent::tool::DynamicTool;
@@ -34,18 +33,9 @@ use tokio::sync::Mutex;
 
 use crate::frame::BackendClient;
 use crate::hook::HookState;
-use crate::ica::IcaLedger;
+use crate::ica::IcaSession;
 use crate::out::errln;
-
-/// 一条工具描述（后端 `tool.list` 的一条）。
-#[derive(Debug, Clone)]
-pub struct ToolSpec {
-    pub name: String,
-    pub description: String,
-    /// JSON Schema object（非对象时回落 `{"type":"object"}`，不让一个坏 schema
-    /// 整条 list 失败）
-    pub parameters: Value,
-}
+use crate::toolspec::ToolSpec;
 
 /// 一条工具回执的七个字段（后端 `data`）。
 /// 与后端 `AgentToolResult`（src/agenttools.hpp，JSON 键序列化在
@@ -156,7 +146,9 @@ pub struct Bridge {
     conn: Arc<Mutex<Conn>>,
     /// 循环层共享状态：任务内预算（admit）与待注入图片队列
     state: Arc<HookState>,
-    ica: Option<Arc<StdMutex<IcaLedger>>>,
+    /// ICA 会话门面（BOT4CJ_ICA 开关/账本/落盘恢复；2026-10-01 收边至 ica 模块，
+    /// 本结构只留桥接与预算降级）
+    pub ica: IcaSession,
 }
 
 impl Bridge {
@@ -167,56 +159,13 @@ impl Bridge {
                 client: Some(client),
             })),
             state,
-            ica: (std::env::var("BOT4CJ_ICA").as_deref() == Ok("1"))
-                .then(|| Arc::new(StdMutex::new(IcaLedger::default()))),
+            ica: IcaSession::from_env(),
         }
     }
 
-    pub fn ica_enabled(&self) -> bool {
-        self.ica.is_some()
-    }
-
+    /// 任务起点观察（ICA 账本记 begin_task；未启用时零行为）
     pub fn observe_user(&self, task: &str) {
-        if let Some(ica) = &self.ica {
-            let mut ledger = ica.lock().unwrap_or_else(crate::hook::poisoned);
-            ledger.begin_task(task);
-        }
-    }
-
-    pub fn ica_note(&self) -> Option<String> {
-        self.ica.as_ref().map(|ica| {
-            ica.lock()
-                .unwrap_or_else(crate::hook::poisoned)
-                .final_note()
-        })
-    }
-
-    pub fn ica_summary(&self) -> Option<String> {
-        self.ica
-            .as_ref()
-            .map(|ica| ica.lock().unwrap_or_else(crate::hook::poisoned).summary())
-    }
-
-    pub fn ica_clear(&self) {
-        if let Some(ica) = &self.ica {
-            *ica.lock().unwrap_or_else(crate::hook::poisoned) = IcaLedger::default();
-        }
-    }
-
-    pub fn ica_save(&self, session_file: &str) -> Result<(), String> {
-        if let Some(ica) = &self.ica {
-            ica.lock()
-                .unwrap_or_else(crate::hook::poisoned)
-                .save(session_file)?;
-        }
-        Ok(())
-    }
-
-    pub fn ica_restore(&self, session_file: &str) -> Result<(), String> {
-        if let Some(ica) = &self.ica {
-            *ica.lock().unwrap_or_else(crate::hook::poisoned) = IcaLedger::load(session_file)?;
-        }
-        Ok(())
+        self.ica.observe_user(task);
     }
 
     /// 发一个 `_route` 请求。传输失败与后端 `success:false` 都折成 `Err(文本)`——
@@ -274,15 +223,7 @@ impl Bridge {
                 parameters: to_input_schema(t.get("inputSchema")),
             });
         }
-        if self.ica.is_some() {
-            if crate::ica::specs()
-                .iter()
-                .any(|i| specs.iter().any(|s| s.name == i.name))
-            {
-                return Err("后端工具名与 ICA 工具名冲突".into());
-            }
-            specs.extend(crate::ica::specs());
-        }
+        self.ica.merge_specs(&mut specs)?;
         Ok(specs)
     }
 
@@ -296,7 +237,7 @@ impl Bridge {
     /// = 工具级失败（回执文本照样给模型看）。
     pub async fn call(&self, name: &str, arguments: Value) -> Result<ToolOutcome, String> {
         if name.starts_with("ica_") {
-            let ica = self.ica.as_ref().ok_or("ICA 未启用")?;
+            let ica = self.ica.ledger().ok_or("ICA 未启用")?;
             let text = ica
                 .lock()
                 .unwrap_or_else(crate::hook::poisoned)
@@ -308,11 +249,12 @@ impl Bridge {
                 ..Default::default()
             });
         }
-        let action_future = if let Some(ica) = &self.ica {
-            let ledger = ica.lock().unwrap_or_else(crate::hook::poisoned);
-            ledger.authorize_action(name, &arguments)?
-        } else {
-            String::new()
+        let action_future = match self.ica.ledger() {
+            Some(ica) => {
+                let ledger = ica.lock().unwrap_or_else(crate::hook::poisoned);
+                ledger.authorize_action(name, &arguments)?
+            }
+            None => String::new(),
         };
         let mut extra = Map::new();
         extra.insert("name".to_string(), Value::String(name.to_string()));
@@ -340,7 +282,7 @@ impl Bridge {
                 .unwrap_or(false),
             summary: get_str("summary"),
         };
-        if let Some(ica) = &self.ica {
+        if let Some(ica) = self.ica.ledger() {
             let source = if outcome.ok && outcome.executed {
                 "tool"
             } else {

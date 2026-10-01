@@ -319,11 +319,11 @@ impl Session {
     /// 丢弃此前的全部消息，否则「忘掉对话」会在下次恢复时复活。
     pub fn clear_history(&mut self) {
         self.history.clear();
-        self.bridge.ica_clear();
+        self.bridge.ica.clear();
         if let Some(w) = self.writer.as_mut() {
             w.write_clear_marker();
         }
-        if let Err(e) = self.bridge.ica_save(&self.cfg.session_file) {
+        if let Err(e) = self.bridge.ica.save(&self.cfg.session_file) {
             errln!("[ICA] 清空后保存账本失败: {e}");
         }
     }
@@ -442,11 +442,11 @@ impl Session {
                 if let Some(w) = self.writer.as_mut() {
                     self.history.persist(|m| w.append_message(m));
                 }
-                if let Err(e) = self.bridge.ica_save(&self.cfg.session_file) {
+                if let Err(e) = self.bridge.ica.save(&self.cfg.session_file) {
                     errln!("[ICA] 保存账本失败: {e}");
                 }
                 self.record_calls(&calls);
-                if let Some(note) = self.bridge.ica_note() {
+                if let Some(note) = self.bridge.ica.note() {
                     outln!("\n{note}");
                 }
                 Ok(())
@@ -644,7 +644,7 @@ impl Session {
             hw.map(|n| n.to_string()).unwrap_or_else(|| "?".to_string())
         );
         s += &format!("  动作脚本目录: {}\n", self.material.scripts_dir);
-        if let Some(summary) = self.bridge.ica_summary() {
+        if let Some(summary) = self.bridge.ica.summary() {
             s += &format!(
                 "  ICA 账本    : {}\n",
                 summary.replace('\n', "\n                ")

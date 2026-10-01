@@ -30,12 +30,13 @@ mod repl;
 mod session;
 mod signals;
 mod summary;
+mod toolspec;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::audit::AuditLog;
-use crate::bridge::{Bridge, ConnParams, ToolSpec};
+use crate::bridge::{Bridge, ConnParams};
 use crate::budget::TaskBudget;
 use crate::config::Config;
 use crate::frame::{BackendClient, HARD_READ_CEILING};
@@ -45,6 +46,7 @@ use crate::prompt::PromptMaterial;
 use crate::repl::Session;
 use crate::session::{SessionFileWriter, SessionHead};
 use crate::signals::install_signal_handlers;
+use crate::toolspec::ToolSpec;
 
 /// 连接后端的预算：后端上电 + 装结构脚本可能耗时（与 MCP sidecar 时代同值）。
 const CONNECT_TIMEOUT_SEC: u64 = 120;
@@ -154,7 +156,8 @@ async fn try_resume(
         Err(e) => return Err(e),
     }
     bridge
-        .ica_restore(&cfg.session_file)
+        .ica
+        .restore(&cfg.session_file)
         .map_err(|e| format!("ICA 会话恢复失败: {e}"))?;
     Ok(Resumed {
         history: loaded.messages,
@@ -416,7 +419,7 @@ async fn assemble_backend(
     let mut preamble =
         prompt::build_system_prompt(&cfg.driver, &cfg.llm_var, &cfg.prompt_pack, &material)
             .map_err(|e| (e.to_string(), 2))?;
-    if bridge.ica_enabled() {
+    if bridge.ica.enabled() {
         preamble.push_str(ica::preamble_section());
         if preamble.len() > 65_536 {
             return Err(("开启 ICA 后系统提示词超过 65536 字节上限".to_string(), 2));

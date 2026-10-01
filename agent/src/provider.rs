@@ -23,10 +23,11 @@ use rig_core::providers::openai::completion::OpenAICompatibleProvider;
 use rig_core::providers::{anthropic, deepseek, openai};
 use serde_json::json;
 
-use crate::bridge::{self, Bridge, ToolSpec};
+use crate::bridge::{self, Bridge};
 use crate::config::Config;
 use crate::hook::{HookState, SessionHook};
 use crate::model::{BudgetModel, RawStream};
+use crate::toolspec::ToolSpec;
 
 #[derive(Debug, Clone, Copy)]
 struct DeepSeekChat;
