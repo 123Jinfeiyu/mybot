@@ -133,7 +133,7 @@ async fn resume_from(
 ) -> Result<Resumed, String> {
     let mut loaded = session::LoadedSession::default();
     let mut warnings = Vec::new();
-    match session::load_session_file(&session_file, &mut loaded, &mut warnings) {
+    match session::load_session_file(session_file, &mut loaded, &mut warnings) {
         Ok(()) => {
             for w in &warnings {
                 errln!("[mybot-agent] {w}");
@@ -170,7 +170,7 @@ async fn resume_from(
     }
     bridge
         .ica
-        .restore(&session_file)
+        .restore(session_file)
         .map_err(|e| format!("ICA 会话恢复失败: {e}"))?;
     Ok(Resumed {
         history: loaded.messages,
