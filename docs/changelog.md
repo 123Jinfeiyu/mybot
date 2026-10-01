@@ -9,6 +9,21 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-01 测试体系补强：camera 入 agent-all 守门 + Rust 编排层补测（行为保持）
+
+- **`agent-all` 的 Lua 段改走 roster 精确清单，纳入 `test_camera.lua`**：此前改
+  `modules/Camera.lua` 或图像链路不会被 agent-all 拦住（摄像头协议面刻意留在
+  过滤器外——子串过滤器分不开仿真用例 `test_camera.lua` 与真机的
+  `test_camera_v4l2.lua`，纳入会连带真机用例）。现在 `agent_lua_roster` 点名
+  仿真用例，Lua 段对 agent-all 按清单精确执行；自证同步升级（①只查存在性、
+  ②新增「camera 仿真用例文件在而漏登记即红」的反向检查），`test_camera_v4l2.lua`
+  仍只由全量跑/真机上显式跑。docs/testing.md 同步。
+- **Rust 编排层补测**（agent 单测 106 → 111）：`SessionAudit` 三个用例钉住
+  拆分后的核心语义——turn 映射（rig 1-based → C++ 0-based 口径）、摘要轮
+  `track_tokens=false` 不跟进「最近一次 token」、`turn<0` 不写字段的落形、
+  session start/end 两行落审计；`placeholder.rs` 的 `source_len` 六变体全覆盖
+  与占位判据往返。test_camera 入 agent-all 后该过滤器实测 14 条全过。
+
 ### 2026-10-01 结构重构三批：C++ 判据单点化/TU 拆分 + Rust agent 结构治理（行为保持）
 
 第三批（Rust agent）：模块环解环、判据单点化、上帝对象拆分，收口过 cargo

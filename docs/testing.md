@@ -101,10 +101,13 @@ bash test/run_all.sh agent-all # agent 全表面（过滤口径见下面的方�
 > 自动纳入自证，而不是悄悄跑 0 个文件还报绿。
 > 旧自证检查的是**映射的形状**，新自证检查的是**被映射到的文件**。
 >
-> **不在 `agent-all` 内**：`test_camera.lua`（`capture_image` 依赖的摄像头协议面：
-> 仿真取帧、base64、错误路径）——纳入它会连带 `test_camera_v4l2.lua`（真机用例）。
-> **改动 `modules/Camera.lua` 或图像链路时请单独跑它**。摄像头链路的端到端覆盖在
-> `scripts/agent_e2e.sh` 的 R9（OpenAI `image_url`）与 R13（Anthropic base64 图片块及恢复占位）。
+> `agent-all` 的 Lua 段经 `agent_lua_roster` **精确清单**纳入 `test_camera.lua`
+> （`capture_image` 依赖的摄像头协议面：仿真取帧、base64、错误路径）——2026-10-01
+> 起改 `modules/Camera.lua` 或图像链路，`run_all.sh agent-all` 会拦住。真机的
+> `test_camera_v4l2.lua`（需 /dev/video*）**不在**清单内：子串过滤器分不开两文件，
+> 精确清单只点名仿真用例；真机 ABI 回归仍由全量跑/真机上显式跑。摄像头链路的
+> 端到端覆盖在 `scripts/agent_e2e.sh` 的 R9（OpenAI `image_url`）与 R13（Anthropic
+> base64 图片块及恢复占位）。
 
 ### ctest 逐用例入口（可选）
 

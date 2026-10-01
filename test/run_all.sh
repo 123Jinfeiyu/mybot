@@ -76,10 +76,10 @@ if [ "$filter" = "agent-all" ]; then
 	# 也就是 SAN-3 改动的那三个文件所在的那一层。
 	# 2026-09-25 #8：Lua 协议驱动轨道整条删除（模块 + 库 + 两个 test_llm_*.lua），
 	# agent 的协议面现由 Rust mybot-agent 直连承担，报文的假模型回归在 e2e 段
-	# （R12/R13 多协议），Lua 段对 agent-all 的贡献由此**有意为空**（不是 SAN-2
-	# 那种"指向不存在文件"的退化）。自证机制保留：将来若新增 test_llm_*.lua
-	# 而漏登记 roster，反向检查（下方第 ② 步）仍会红。
-	filter_lua="llm"	# test_llm_*.lua：已删尽；保留过滤器以备将来回归
+	# （R12/R13 多协议）。2026-10-01：Lua 段对 agent-all 的贡献不再是空表——
+	# 摄像头协议面 test_camera.lua 经 agent_lua_roster 精确清单纳入（子串过滤器
+	# 会连带真机的 test_camera_v4l2.lua，故改走 roster，见 Lua 段循环处注释）。
+	filter_lua="llm"	# test_llm_*.lua：已删尽；Lua 段实际由 roster 驱动
 	filter_e2e="agent"
 	filter_hardening="agent_"
 	filter_cpp="agent:"
@@ -110,7 +110,10 @@ case_matches() {
 # 2026-09-25 #8：Lua 协议驱动轨道整条删除，agent 协议面不再有 test_llm_*.lua，
 # roster 因此为空——第 ② 步反向检查（test_llm_*.lua 必须全部登记）对空 glob
 # 自然通过，将来若新增协议面 Lua 用例而漏登记，这一步仍会红（机制保留不拆）。
-agent_lua_roster=""
+agent_lua_roster="test/test_camera.lua"
+# 2026-10-01：agent 表面的摄像头协议面（capture_image 依赖的仿真取帧/base64/
+# 错误路径）经 roster 精确清单纳入 agent-all——真机的 test_camera_v4l2.lua 因
+# 同名子串刻意**不在**清单里（理由见 Lua 段循环处的 roster 注释）。
 if [ "$filter" = "agent-all" ]; then
 	_agentall_bad=""
 	[ -n "$filter_lua" ] || _agentall_bad="$_agentall_bad lua(空值=跑全部文件)"
@@ -118,14 +121,9 @@ if [ "$filter" = "agent-all" ]; then
 	filter_matches "agent:" "$filter_cpp" || _agentall_bad="$_agentall_bad cpp"
 	# ① roster 里的文件必须存在，且在 agent-all 下会被跑到
 	for _f in $agent_lua_roster; do
-		if [ ! -f "$_f" ]; then
-			_agentall_bad="$_agentall_bad $_f(roster 声明的文件不存在)"
-			continue
-		fi
-		case "$(basename "$_f")" in
-			*"$filter_lua"*) ;;
-			*) _agentall_bad="$_agentall_bad $_f(不在过滤器 '$filter_lua' 的命中范围内)" ;;
-		esac
+		# Lua 段对 agent-all 走 roster 精确清单（见循环处），故只查存在性，
+		# 不再与子串过滤器对账（子串判据已不是 agent-all 的执行依据）。
+		[ -f "$_f" ] || _agentall_bad="$_agentall_bad $_f(roster 声明的文件不存在)"
 	done
 	# ② 反向：agent 协议面的用例文件必须全部登记（漏登记即红）——
 	#    与 C++ 侧 test_util.cpp 的「非 agent 面 roster 带理由登记」同一条纪律。
@@ -137,6 +135,14 @@ if [ "$filter" = "agent-all" ]; then
 			*) _agentall_bad="$_agentall_bad $_f(未登记进 agent_lua_roster)" ;;
 		esac
 	done
+	# 摄像头协议面（仿真）已入 agent 表面：文件在而漏登记即红（与 test_llm_*
+	# 同一条「agent 面用例必须登记」纪律）。真机 v4l2 用例不在此列。
+	if [ -f "test/test_camera.lua" ]; then
+		case " $agent_lua_roster " in
+			*" test/test_camera.lua "*) ;;
+			*) _agentall_bad="$_agentall_bad test/test_camera.lua(未登记进 agent_lua_roster)" ;;
+		esac
+	fi
 	if [ -n "$_agentall_bad" ]; then
 		echo "错误：agent-all 的分段过滤器映射失效，以下分段/文件不会执行：$_agentall_bad" >&2
 		echo "（见 test/run_all.sh 顶部的 filter_* 映射与 agent_lua_roster。本自证防的就是" >&2
@@ -223,7 +229,16 @@ for t in test/test_*.lua; do
 	name="$(basename "$t")"
 	# AG-23：分段过滤器。旧入口在这条判断上用 raw filter，于是
 	# `bash test/run_all.sh agent` 匹配到 0 个 Lua 文件而汇总照绿。
-	if [ -n "$filter_lua" ] && [[ "$name" != *"$filter_lua"* ]]; then
+	if [ "$filter" = "agent-all" ]; then
+		# agent-all 的 Lua 段走 roster **精确清单**（2026-10-01）：子串过滤器
+		# 分不开 test_camera.lua（仿真协议面，应入 agent 表面）与
+		# test_camera_v4l2.lua（真机 ABI 回归，只该由全量/显式过滤器跑）——
+		# "camera" 子串会把真机用例一起卷进来。
+		case " $agent_lua_roster " in
+			*" $t "*) ;;
+			*) continue ;;
+		esac
+	elif [ -n "$filter_lua" ] && [[ "$name" != *"$filter_lua"* ]]; then
 		continue
 	fi
 	echo "----- $name -----"

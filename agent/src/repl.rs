@@ -958,4 +958,166 @@ mod tests {
         };
         assert_eq!(render_outcome(&bad), "错误: 设备忙");
     }
+
+    // ---- SessionAudit（审计/统计面拆分的核心语义，2026-10-01 补测）----
+
+    fn tmpdir(tag: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "mybot_auditface_{}_{}_{}",
+            std::process::id(),
+            tag,
+            n
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn call(ms: i64, tokens: Option<(i64, i64)>) -> CallRecord {
+        CallRecord {
+            turn: 2, // rig 1-based：审计 turn 应记 1
+            req_bytes: 100,
+            resp_bytes: 50,
+            attempts: 1,
+            ms,
+            ok: true,
+            error: String::new(),
+            prompt_tokens: tokens.map(|t| t.0),
+            completion_tokens: tokens.map(|t| t.1),
+        }
+    }
+
+    fn audit_log_lines(path: &std::path::Path) -> Vec<serde_json::Value> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// 最小可用的 Config：SessionAudit 只读 driver/model/endpoint/api_key_source
+    /// 四个字段写 start 行，其余字段与审计面无关（此处只求构造合法）。
+    fn test_config() -> Config {
+        Config {
+            socket: String::new(),
+            config_path: String::new(),
+            driver: "mcp".to_string(),
+            llm_var: "llm0".to_string(),
+            endpoint: "http://example.invalid/v1".to_string(),
+            model: "test-model".to_string(),
+            api_key: crate::config::Secret::new(String::new()),
+            api_key_source: "env",
+            config_warning: String::new(),
+            timeout_sec: 60,
+            max_tokens: 1024,
+            temperature: 1.0,
+            top_p: 1.0,
+            max_turns: 20,
+            max_task_seconds: 0,
+            max_history_bytes: 0,
+            max_task_tool_result_bytes: 0,
+            max_task_image_bytes: 0,
+            max_calls_per_round: 10,
+            max_retries: 3,
+            retry_backoff_ms: 500,
+            reasoning_effort: String::new(),
+            thinking: String::new(),
+            stream: true,
+            history_summary: false,
+            max_summary_bytes: 0,
+            prompt_files: Vec::new(),
+            prompt_pack: String::new(),
+            audit_log: String::new(),
+            session_file: String::new(),
+            session_file_from_cli: false,
+            resume: false,
+        }
+    }
+
+    #[test]
+    fn audit_face_records_turn_mapping_and_stats() {
+        let dir = tmpdir("turnmap");
+        let path = dir.join("audit.jsonl");
+        let log = AuditLog::open(path.to_str().unwrap()).unwrap();
+        let cfg = test_config();
+        let mut face = SessionAudit::new(&cfg, Some(log), false);
+        let calls = vec![call(120, Some((10, 20))), call(300, None)];
+        face.record_calls(
+            &calls,
+            |r| r.turn.saturating_sub(1) as i64,
+            |r| if r.ok { "ok" } else { "error" }.to_string(),
+            true,
+        );
+        // 统计：两轮、420ms；「最近一次 token」跟进到有值的那次（第二次无值不覆盖）
+        assert_eq!(face.stats().model_turns, 2);
+        assert_eq!(face.stats().model_ms, 420);
+        assert_eq!(face.stats().last_prompt_tokens, Some(10));
+        assert_eq!(face.stats().last_completion_tokens, Some(20));
+        // 审计行：turn 从 rig 的 1-based 2 记成 C++ 口径 1；token 字段在行里
+        let lines = audit_log_lines(&path);
+        let models: Vec<_> = lines
+            .iter()
+            .filter(|l| l.get("kind").and_then(|v| v.as_str()) == Some("model"))
+            .collect();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].get("turn").and_then(|v| v.as_i64()), Some(1));
+        assert_eq!(
+            models[0].get("prompt_tokens").and_then(|v| v.as_i64()),
+            Some(10)
+        );
+        assert_eq!(models[1].get("prompt_tokens"), None);
+    }
+
+    #[test]
+    fn audit_face_summary_rows_do_not_track_tokens() {
+        // 摘要轮：turn 恒 -1、status=summary；track_tokens=false 不跟进「最近一次」
+        let dir = tmpdir("summary");
+        let path = dir.join("audit.jsonl");
+        let log = AuditLog::open(path.to_str().unwrap()).unwrap();
+        let cfg = test_config();
+        let mut face = SessionAudit::new(&cfg, Some(log), false);
+        face.record_calls(
+            &[call(50, Some((7, 8)))],
+            |_| -1,
+            |_| "summary".to_string(),
+            false,
+        );
+        assert_eq!(face.stats().model_turns, 1);
+        assert_eq!(
+            face.stats().last_prompt_tokens,
+            None,
+            "摘要轮不跟进最近 token"
+        );
+        let lines = audit_log_lines(&path);
+        let models: Vec<_> = lines
+            .iter()
+            .filter(|l| l.get("kind").and_then(|v| v.as_str()) == Some("model"))
+            .collect();
+        // turn<0 不写字段（ModelEntry 契约）：摘要轮的 -1 落形就是「无 turn 键」
+        assert_eq!(models[0].get("turn"), None);
+        assert_eq!(
+            models[0].get("status").and_then(|v| v.as_str()),
+            Some("summary")
+        );
+    }
+
+    #[test]
+    fn audit_face_session_start_and_end_land() {
+        // SessionAudit::new 即写 start 行；write_session_end 写 end 行（含 ms）
+        let dir = tmpdir("lifetime");
+        let path = dir.join("audit.jsonl");
+        let log = AuditLog::open(path.to_str().unwrap()).unwrap();
+        let cfg = test_config();
+        let mut face = SessionAudit::new(&cfg, Some(log), false);
+        face.write_session_end("end", "");
+        let lines = audit_log_lines(&path);
+        let kinds: Vec<_> = lines
+            .iter()
+            .filter(|l| l.get("kind").and_then(|v| v.as_str()) == Some("session"))
+            .map(|l| l.get("status").and_then(|v| v.as_str()).unwrap_or(""))
+            .collect();
+        assert_eq!(kinds, vec!["start", "end"]);
+    }
 }

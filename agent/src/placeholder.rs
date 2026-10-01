@@ -38,3 +38,28 @@ pub fn source_len(kind: &DocumentSourceKind) -> usize {
         DocumentSourceKind::Unknown => 0,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rig_agent::completion::message::DocumentSourceKind as K;
+
+    #[test]
+    fn source_len_covers_all_variants() {
+        assert_eq!(source_len(&K::Url("https://x/".into())), 10);
+        assert_eq!(source_len(&K::Base64("QUJD".into())), 4);
+        assert_eq!(source_len(&K::FileId("f-1".into())), 3);
+        assert_eq!(source_len(&K::String("data".into())), 4);
+        assert_eq!(source_len(&K::Raw(vec![0u8, 1, 2])), 3);
+        assert_eq!(source_len(&K::Unknown), 0);
+    }
+
+    #[test]
+    fn placeholder_notice_roundtrips() {
+        let p = image_placeholder(4096);
+        assert!(p.contains("4096"));
+        assert!(is_image_placeholder_notice(&p));
+        assert!(is_image_placeholder_notice(&format!("图片说明如下。{p}")));
+        assert!(!is_image_placeholder_notice("普通任务"));
+    }
+}
