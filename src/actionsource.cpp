@@ -185,11 +185,12 @@ static FdGuard setupListenSocket(long long port, const std::string& host,
 /* accept 循环：EINTR/停止信号响应（D5/D4）+ 对端日志 + 空闲超时（审计 #9）
  * + 口令失败预算（C-M1：关连接回 accept，连续失败才放弃）。
  * authMaxFails：连续失败上限的生效值（2026-09-22 F-1，缺省
- * tcp_limits::kAuthMaxFailsDefault，可经 --tcp-max-auth-attempts 覆盖）。 */
+ * tcp_limits::kAuthMaxFailsDefault，可经 --tcp-max-auth-attempts 覆盖）。
+ * 记账走 AuthFailGate（util_cli.hpp 单点，与 MCP 首帧认证同一判据结构）。 */
 static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token, int idleSec,
 		int authMaxFails) {
 	FdGuard clientFd;		/* 每轮重置；本轮失败时由 close() 关闭 */
-	int authFails = 0;
+	AuthFailGate gate(authMaxFails);
 	while (true) {
 		int client = ::accept(listenFd, nullptr, nullptr);
 		if (client < 0) {
@@ -233,13 +234,12 @@ static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token,
 						<< std::endl;
 					continue;
 				}
-				++authFails;
-				if (authFails >= authMaxFails) {
-					throw std::runtime_error("TCP 口令连续 " + std::to_string(authFails)
+				if (gate.recordRejected()) {
+					throw std::runtime_error("TCP 口令连续 " + std::to_string(gate.fails)
 						+ " 次校验失败，停止等待（可能为扫描/爆破）");
 				}
 				std::cerr << "关闭该连接，继续等待下一个客户端（剩余尝试 "
-					<< (authMaxFails - authFails) << " 次）" << std::endl;
+					<< (gate.max - gate.fails) << " 次）" << std::endl;
 				continue;
 			}
 		}

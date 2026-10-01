@@ -40,8 +40,10 @@
 #include "agentprompt.hpp"	/* structureScriptHead / quoteUntrusted（context.get 素材） */
 #include "jsonparse.hpp"	/* parseJson */
 #include "robot.hpp"		/* RobotStruct 完整定义（context.get 的 registry()） */
+#include "util_cli.hpp"		/* AuthFailGate（认证爆破失败门单点） */
 #include "util_env.hpp"
 #include "util_file.hpp"
+#include "util_str.hpp"		/* safeEquals 恒时比较（凭据比对安全单点） */
 #include "util_utf8.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
 
 namespace fs = std::filesystem;
@@ -297,24 +299,9 @@ std::string mcpEncodeFrame(const std::string& payload) {
 }
 
 /* ---- 首帧共享密钥校验（MCP-1，审计 P2-1）----
- * 常数时间比对：长度差异折叠进累计差（先给 diff 喂长度差，再逐位异或累计），
- * 全长走完才判——回应时间不泄露已匹配前缀的信息。 */
-namespace {
-
-bool constantTimeEqual(const std::string& a, const std::string& b) {
-	/* 上限对齐：token 上限 256（captureMcpAuthToken），两个短串不会溢出 */
-	const std::size_t n = std::max(a.size(), b.size());
-	unsigned diff = static_cast<unsigned>(a.size() ^ b.size());
-	for (std::size_t i = 0; i < n; ++i) {
-		const unsigned ca = i < a.size() ? static_cast<unsigned char>(a[i]) : 0u;
-		const unsigned cb = i < b.size() ? static_cast<unsigned char>(b[i]) : 0u;
-		diff |= ca ^ cb;
-	}
-	return diff == 0;
-}
-
-} // namespace
-
+ * 恒时比对收敛到 util_str.hpp 的 safeEquals 单点（2026-10-01）：此处取
+ * 严格版语义——长度差异折叠进累计差，全长走完才判，回应时间不泄露已
+ * 匹配前缀的信息。TCP 口令侧（actionsource）同一单点。 */
 McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string& payload) {
 	Json req;
 	try {
@@ -329,7 +316,7 @@ McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string&
 	}
 	const Json* token = req.find("token");
 	if (token == nullptr || !token->isStr()) { return McpAuthOutcome::Failed; }
-	return constantTimeEqual(expected, token->getValue())
+	return safeEquals(expected, token->getValue())
 		? McpAuthOutcome::Ok : McpAuthOutcome::Failed;
 }
 
@@ -827,14 +814,14 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 			authGate.recordPassed();
 		} else if (oc.auth == ConnAuth::Failed) {
 			if (authGate.recordRejected()) {
-				log << "MCP 后端：首帧认证连续 " << AuthFailGate::kMaxFails
+				log << "MCP 后端：首帧认证连续 " << authGate.max
 					<< " 次失败，停止服务（可能为爆破；重启后端恢复，"
 					"必要时更换 BOT4CJ_MCP_TOKEN）\n";
 				rc = 1;
 				break;
 			}
 			log << "MCP 后端：认证失败（连续 " << authGate.fails << "/"
-				<< AuthFailGate::kMaxFails << "），回到 accept 等待\n";
+				<< authGate.max << "），回到 accept 等待\n";
 			continue;
 		}
 		log << "MCP 后端：连接结束，回到 accept 等待\n";

@@ -393,11 +393,8 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 				"本次不提供 read_variables / wait_variable 工具\n";
 		}
 		if (!skipped.empty()) {
-			log << "提示: 以下 --read-var 声明被跳过（未注册，或种类不是 lua/daemon）: ";
-			for (std::size_t i = 0; i < skipped.size(); ++i) {
-				log << (i > 0 ? ", " : "") << skipped[i];
-			}
-			log << "\n";
+			log << "提示: 以下 --read-var 声明被跳过（未注册，或种类不是 lua/daemon）: "
+				<< joinNames(skipped) << "\n";
 		}
 	}
 	if (cfg.allowCamera) {

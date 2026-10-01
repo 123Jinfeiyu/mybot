@@ -41,6 +41,24 @@ inline constexpr int kTotalTimeoutMax = 86400;
 inline constexpr int kTotalTimeoutDefault = 600;
 } // namespace tcp_limits
 
+/* ---- 认证爆破失败门（安全判据单点；2026-09-30 审计 P1，2026-10-01 跨通道共用）----
+ * 「连上并给出凭据但认证不通过」连续 N 次即停止服务的记账器。MCP 首帧
+ * 认证（mcpbackend 的 acceptLoop）与 TCP 口令（actionsource 的
+ * acceptAuthenticatedClient）共用同一结构与同一语义：
+ *   - 只数「给出凭据但认证不通过」的失败（TCP 侧 NoCredential / MCP 侧
+ *     哑对端——连上不发帧/超时/断连——都不计数）；
+ *   - 认证**通过**才归零：「连了就断」刷不掉别人的失败窗口；
+ *   - 连续到上限 recordRejected() 返回 true：调用方停止服务（fail-closed）。
+ * 上限缺省同 tcp_limits::kAuthMaxFailsDefault；TCP 侧可经
+ * --tcp-max-auth-attempts 覆盖（构造参数），MCP 侧固定用缺省。 */
+struct AuthFailGate {
+	explicit AuthFailGate(int maxIn = tcp_limits::kAuthMaxFailsDefault) : max(maxIn) {}
+	int max;
+	int fails = 0;
+	bool recordRejected() { return ++fails >= max; }
+	void recordPassed() { fails = 0; }
+};
+
 namespace cli {
 
 /* 单个 argv 选项 token 的解析结果。hasValue=false 表示裸 flag——值语义

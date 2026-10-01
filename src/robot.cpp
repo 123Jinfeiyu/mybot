@@ -21,6 +21,7 @@
 
 #include "util_env.hpp"
 #include "util_path.hpp"
+#include "util_str.hpp"		/* joinNames（点名/成因列表拼接单点） */
 
 namespace bot {
 
@@ -101,17 +102,11 @@ std::string hotDeleteFailureMessage(std::size_t orderSize, std::size_t deletedVa
 		+ " 个硬件变量";
 	if (!deletedNames.empty()) {
 		msg += "（";
-		for (std::size_t i = 0; i < deletedNames.size(); ++i) {
-			if (i > 0) { msg += ", "; }
-			msg += deletedNames[i];
-		}
+		msg += joinNames(deletedNames);
 		msg += "）";
 	}
 	msg += "，" + std::to_string(orderSize - deletedVars) + " 个未删除。成因：";
-	for (std::size_t i = 0; i < failures.size(); ++i) {
-		if (i > 0) { msg += "; "; }
-		msg += failures[i];
-	}
+	msg += joinNames(failures, "; ");
 	msg += "。结构与注册表只反映已成功摘除的部分，未删的行保持原状。"
 		"（destroy 是物理断电，已断电的器件不会因报错而复电——修好成因后"
 		"对剩余项重发 DELETE 即可。）";
@@ -410,10 +405,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 	}
 	if (delOutcome.deletedVars > 0) {
 		msg += "，已删除硬件变量 " + std::to_string(delOutcome.deletedVars) + " 个（";
-		for (std::size_t i = 0; i < delOutcome.deletedNames.size(); ++i) {
-			if (i > 0) { msg += ", "; }
-			msg += delOutcome.deletedNames[i];
-		}
+		msg += joinNames(delOutcome.deletedNames);
 		msg += "）";
 		if (delOutcome.deletedRows > delOutcome.deletedVars) {
 			msg += "、结构表删除 " + std::to_string(delOutcome.deletedRows) + " 行";
@@ -426,10 +418,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 	}
 	if (dropped.count > 0) {
 		msg += "，已撤下表 " + std::to_string(dropped.count) + " 张（";
-		for (std::size_t i = 0; i < dropped.names.size(); ++i) {
-			if (i > 0) { msg += ", "; }
-			msg += dropped.names[i];
-		}
+		msg += joinNames(dropped.names);
 		msg += "）";
 	}
 	return msg;
@@ -854,11 +843,7 @@ void RobotStruct::rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t met
  *    会按异常类型把它归类成「校验拒绝、活体一字未动」（paramError /
  *    executed=false），对本口径是谎报：删旧件是真实发生过的副作用。 */
 void RobotStruct::rethrowWithLostVars(const HotDeleteOutcome& alreadyDeleted) {
-	std::string names;
-	for (const std::string& n : alreadyDeleted.deletedNames) {
-		if (!names.empty()) { names += ", "; }
-		names += n;
-	}
+	const std::string names = joinNames(alreadyDeleted.deletedNames);
 	const std::string tail =
 		"；注意：本批次含 UPDATE，其命中旧行已断电摘除且未能重建（"
 		+ names + "）——硬件不会自动复原，请核对状态后按需要的值重新 INSERT";

@@ -159,6 +159,22 @@ void Lexer::appendQuoted(bot::Reader& sr, char c, bool& inQuote, char quoteChar,
 	if (c == quoteChar) { inQuote = false; }
 }
 
+/* ---- 单字符分隔符 → 词元类型（C2 防线的判据表，2026-10-01 表驱动收敛）----
+ * ';'/','/'('/')'/'=' 五个分隔符在 Lexer::next 里一律「空 token 直返对应
+ * 词元 / 非空 token 挂 pending 标志后交出当前 token」——此前是十段同构
+ * else-if（')' 与 '=' 两段还带着历史追加痕迹的多余缩进）。判据收进本表，
+ * 行为逐字保持；新增分隔符只改这里。 */
+static bool separatorType(char c, TokenType& out) {
+	switch (c) {
+	case ';': out = TokenType::END; return true;
+	case ',': out = TokenType::COMMA; return true;
+	case '(': out = TokenType::LEFT; return true;
+	case ')': out = TokenType::RGHT; return true;
+	case '=': out = TokenType::EQ; return true;
+	default: return false;
+	}
+}
+
 Token Lexer::next(bot::Reader& sr) {
 	if (pendSep_) {
 		const TokenType t = *pendSep_;
@@ -223,32 +239,13 @@ Token Lexer::next(bot::Reader& sr) {
 		 * '=' 加入（2026-09-23 WHERE）：同模式第五个分隔符——`WHERE col=value`
 		 * 紧贴写法靠 pending 切分。仓内 robots/ 全部 .sql 的 '=' 都在引号
 		 * 值或注释里（144 个文件逐一扫描），引号态在分隔符判定之前消费，
-		 * 零行为变化。 */
-		else if (s.empty() && c == ';') { return positionedToken(TokenType::END, curLine, curCol); }
-		else if (!s.empty() && c == ';') {
-			pendSep_ = TokenType::END; pendLine_ = curLine; pendCol_ = curCol;
+		 * 零行为变化。分隔符集合单点在 separatorType（上方）。 */
+		TokenType sep;
+		if (separatorType(c, sep)) {
+			if (s.empty()) { return positionedToken(sep, curLine, curCol); }
+			pendSep_ = sep; pendLine_ = curLine; pendCol_ = curCol;
 			return finishToken(s, tokLine, tokCol);
 		}
-		else if (s.empty() && c == ',') { return positionedToken(TokenType::COMMA, curLine, curCol); }
-		else if (!s.empty() && c == ',') {
-			pendSep_ = TokenType::COMMA; pendLine_ = curLine; pendCol_ = curCol;
-			return finishToken(s, tokLine, tokCol);
-		}
-		else if (s.empty() && c == '(') { return positionedToken(TokenType::LEFT, curLine, curCol); }
-		else if (!s.empty() && c == '(') {
-			pendSep_ = TokenType::LEFT; pendLine_ = curLine; pendCol_ = curCol;
-			return finishToken(s, tokLine, tokCol);
-		}
-			else if (s.empty() && c == ')') { return positionedToken(TokenType::RGHT, curLine, curCol); }
-			else if (!s.empty() && c == ')') {
-				pendSep_ = TokenType::RGHT; pendLine_ = curLine; pendCol_ = curCol;
-				return finishToken(s, tokLine, tokCol);
-			}
-			else if (s.empty() && c == '=') { return positionedToken(TokenType::EQ, curLine, curCol); }
-			else if (!s.empty() && c == '=') {
-				pendSep_ = TokenType::EQ; pendLine_ = curLine; pendCol_ = curCol;
-				return finishToken(s, tokLine, tokCol);
-			}
 		else {
 			if (s.empty()) { tokLine = curLine; tokCol = curCol; }
 			s += c;
