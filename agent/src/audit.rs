@@ -77,16 +77,29 @@ impl AuditLog {
         let (to_stderr, file) = if path == "-" {
             (true, None)
         } else {
-            let f = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|e| {
-                    format!(
-                        "无法打开审计日志文件 '{path}'（{e}）；请检查目录是否存在、\
+            // 新建以 0600 建立（与 REPL 历史 / ICA sidecar / 会话文件同规）；
+            // 既有文件权限宽于 0600 时响亮提醒一次（打开只发生一次，不会刷屏）。
+            // 2026-10-01 审计批次 A（P1-1）：此前随 umask 常落 0644——model 行的
+            // error 字段可能带回显片段，日志本身按敏感文件对待。
+            #[cfg(unix)]
+            let wide = wide_perms_warning(path);
+            let mut opts = OpenOptions::new();
+            opts.create(true).append(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let f = opts.open(path).map_err(|e| {
+                format!(
+                    "无法打开审计日志文件 '{path}'（{e}）；请检查目录是否存在、\
                          是否有写权限，或在配置错误阶段先修正路径"
-                    )
-                })?;
+                )
+            })?;
+            #[cfg(unix)]
+            if !wide.is_empty() {
+                errln!("{wide}");
+            }
             (false, Some(f))
         };
         Ok(Self {
@@ -235,6 +248,24 @@ fn new_session_id() -> String {
         .wrapping_add(nsec as u64)
         .wrapping_add((std::process::id() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
     fingerprint64(&seed.to_string())[..8].to_string()
+}
+
+/// 既有审计日志文件权限宽于 0600 时的告警文本（判据与 `session::perms_warning`
+/// 同口径：mode & 0o077 != 0）。不存在/取不到权限/非 unix → 空串（新建路径由
+/// `open` 的 `mode(0o600)` 兜住，不会走到这里）。
+#[cfg(unix)]
+fn wide_perms_warning(path: &str) -> String {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(st) = std::fs::metadata(path) else {
+        return String::new();
+    };
+    if !st.is_file() || st.mode() & 0o077 == 0 {
+        return String::new();
+    }
+    format!(
+        "警告: 审计日志文件 '{path}' 权限宽于 600（model 行的 error 字段可能带回显片段，\
+         同等敏感），建议 chmod 600 {path}"
+    )
 }
 
 /// FNV-1a 64 位 → 16 位小写 hex（算法标准参数）。
@@ -479,6 +510,37 @@ mod tests {
         let before = log2.session_id().to_string();
         log2.adopt_session_id("");
         assert_eq!(log2.session_id(), before);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// 批次 A（P1-1）：新建审计文件以 0600 建立（不随 umask 落 0644），
+    /// 既有宽权限文件由 `wide_perms_warning` 提醒（判据与 session::perms_warning 同口径）。
+    #[test]
+    fn audit_file_is_created_0600_and_wide_perms_flagged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mybot_audit_perm_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.jsonl");
+        let p = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        // 新建：0600（mode() 只对创建生效，umask 只能进一步收紧）
+        let log = AuditLog::open(&p).unwrap();
+        drop(log);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "审计日志应以 0600 建立");
+
+        // 既有 0600 文件：不告警
+        assert!(wide_perms_warning(&p).is_empty());
+        // 既有宽权限文件：告警点名路径与修法
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let w = wide_perms_warning(&p);
+        assert!(w.contains("chmod 600") && w.contains(&p), "实际: {w}");
+        // 不存在 / 非文件：不告警（新建路径由 mode(0o600) 兜住）
+        let missing = dir.join("nope.jsonl").to_string_lossy().to_string();
+        assert!(wide_perms_warning(&missing).is_empty());
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);

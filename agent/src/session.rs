@@ -423,6 +423,20 @@ pub fn load_session_file(
     out: &mut LoadedSession,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
+    // 读前设限（2026-10-01 批次 A / P1-2）：与配置 64 KiB、提示词 1 MiB、密钥
+    // 64 KiB 的处处设限同纪律——误把大文件（如视频）当会话文件时，不该整份
+    // 读进内存。上限与上下文预算同源（`limits::BUDGET_BYTES_MAX`）：会话内容
+    // 本就受该预算约束，超过它就不像会话文件。
+    let cap = crate::config::limits::BUDGET_BYTES_MAX as u64;
+    let len = std::fs::metadata(path)
+        .map_err(|_| format!("无法读取会话文件 '{path}'（不存在或没有读权限）"))?
+        .len();
+    if len > cap {
+        return Err(format!(
+            "会话文件 '{path}' 大小 {len} 字节，超过上限 {cap} 字节（与上下文预算同源）——\
+             不像会话文件，可能指向了别的大文件；拒绝读入"
+        ));
+    }
     let text = std::fs::read_to_string(path)
         .map_err(|_| format!("无法读取会话文件 '{path}'（不存在或没有读权限）"))?;
 
@@ -1242,6 +1256,34 @@ mod tests {
             panic!()
         };
         assert_eq!(r.name, "tool_a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 批次 A（P1-2）：读取面设限——超过 `BUDGET_BYTES_MAX` 的文件在 read 之前
+    /// 拒绝（稀疏文件构造，不真写盘）；不存在的文件维持既有文案。
+    #[test]
+    fn load_rejects_oversized_file_before_reading() {
+        let dir = tmpdir("toolarge");
+        let path = (dir.join("huge.jsonl")).to_string_lossy().to_string();
+        let cap = crate::config::limits::BUDGET_BYTES_MAX as u64;
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(cap + 1).unwrap(); // sparse：只在 metadata 上超限
+        drop(f);
+
+        let mut loaded = LoadedSession::default();
+        let mut warns = Vec::new();
+        let err = match load_session_file(&path, &mut loaded, &mut warns) {
+            Ok(()) => panic!("超限文件必须被拒绝"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("超过上限") && err.contains(&path),
+            "实际: {err}"
+        );
+
+        let missing = (dir.join("nope.jsonl")).to_string_lossy().to_string();
+        let err2 = load_session_file(&missing, &mut loaded, &mut warns).unwrap_err();
+        assert!(err2.contains("无法读取会话文件"), "实际: {err2}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

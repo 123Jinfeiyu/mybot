@@ -58,6 +58,18 @@ impl IcaLedger {
 
     pub fn load(session_file: &str) -> Result<Self, String> {
         let sidecar = format!("{session_file}.ica.json");
+        // 读前设限（2026-10-01 批次 A / P1-2）：误指向大文件时不整份进内存
+        // （与会话文件/配置/提示词的处处设限同纪律，上限同 `BUDGET_BYTES_MAX`）。
+        let cap = crate::config::limits::BUDGET_BYTES_MAX as u64;
+        let len = fs::metadata(&sidecar)
+            .map_err(|e| format!("ICA 账本读取失败 ({sidecar}): {e}"))?
+            .len();
+        if len > cap {
+            return Err(format!(
+                "ICA 账本 {sidecar} 大小 {len} 字节，超过上限 {cap} 字节——\
+                 不像账本文件，拒绝读入"
+            ));
+        }
         let bytes = fs::read(&sidecar).map_err(|e| format!("ICA 账本读取失败 ({sidecar}): {e}"))?;
         let saved: SavedLedger =
             serde_json::from_slice(&bytes).map_err(|e| format!("ICA 账本解析失败: {e}"))?;
@@ -111,6 +123,20 @@ mod tests {
         // 会话文件缺失/路径为空：读取侧如实报错
         let missing = dir.join("none.jsonl");
         assert!(IcaLedger::load(missing.to_str().unwrap()).is_err());
+
+        // 批次 A（P1-2）：超限 sidecar 在 read 之前拒绝（稀疏文件，不真写盘）
+        let huge_session = dir.join("huge.jsonl");
+        std::fs::write(&huge_session, "x\n").unwrap();
+        let huge_sidecar = format!("{}.ica.json", huge_session.to_str().unwrap());
+        let cap = crate::config::limits::BUDGET_BYTES_MAX as u64;
+        let f = std::fs::File::create(&huge_sidecar).unwrap();
+        f.set_len(cap + 1).unwrap();
+        drop(f);
+        let err = match IcaLedger::load(huge_session.to_str().unwrap()) {
+            Ok(_) => panic!("超限 sidecar 必须被拒绝"),
+            Err(e) => e,
+        };
+        assert!(err.contains("拒绝读入"), "实际: {err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
