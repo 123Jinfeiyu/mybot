@@ -43,7 +43,6 @@
 #include <vector>
 
 #include "hardware.hpp"
-#include "luaend.hpp"
 
 namespace bot {
 

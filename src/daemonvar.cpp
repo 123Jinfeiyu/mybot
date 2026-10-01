@@ -1,4 +1,5 @@
 #include "daemonvar.hpp"
+#include "luaend.hpp"	/* 线程体直接调 Lua C API（hpp 已摘传导） */
 #include "daemonconf.hpp"
 
 #include <algorithm>
