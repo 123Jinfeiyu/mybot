@@ -189,6 +189,12 @@ add_executable(mybot_tests
   test/cpp/test_cliargs.cpp
   test/cpp/test_hardware.cpp
   test/cpp/test_robot.cpp
+  test/cpp/test_robot_dispatch.cpp
+  test/cpp/test_robot_lifecycle.cpp
+  test/cpp/test_robot_hotsql_plan.cpp
+  test/cpp/test_robot_hotinsert.cpp
+  test/cpp/test_robot_hotdelete.cpp
+  test/cpp/test_robot_hotupdate.cpp
   test/cpp/test_luaend.cpp
   test/cpp/test_luavar.cpp
   test/cpp/test_actionsource.cpp
@@ -341,7 +347,9 @@ set(MYBOT_CPP_TEST_REGISTERED
   test_actionsource test_agentaudit test_agentpolicy test_agentproto test_agenttools test_mcpbackend
   test_cliargs test_cross_lang_limits test_daemon_concurrency test_daemon test_expr test_hardware
   test_json test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
-  test_mtmerge test_promptpack test_robot test_sqlparse test_util)
+  test_mtmerge test_promptpack test_robot test_robot_dispatch test_robot_hotdelete
+  test_robot_hotinsert test_robot_hotupdate test_robot_hotsql_plan test_robot_lifecycle
+  test_sqlparse test_util)
 set(_missing_registered)
 foreach(_t IN LISTS MYBOT_CPP_TEST_SRCS)
   get_filename_component(_n "${_t}" NAME_WE)
