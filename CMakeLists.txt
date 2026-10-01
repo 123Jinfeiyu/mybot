@@ -108,6 +108,8 @@ set(MYBOT_CORE_SOURCES
   src/cliargs.cpp
   src/cliargs_help.cpp
   src/agent_subprocess.cpp
+  src/agent_envscrub.cpp
+  src/agent_fdguard.cpp
   src/agentproto.cpp
   src/agenttools.cpp
   src/agenttools_wait.cpp
