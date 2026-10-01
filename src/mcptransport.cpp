@@ -81,6 +81,39 @@ bool recvAllDeadline(int fd, char* buf, std::size_t n, Clock::time_point deadlin
 	return true;
 }
 
+/* deadline 模式发满 n 字节（2026-10-01 批次 A / P1-3）。
+ * 此前 sendFrame 无 deadline，靠 acceptLoop 挂的 SO_SNDTIMEO 兜底——而
+ * setsockopt 失败只告警，该路径上慢读端可无限挂住单线程后端（Rust 侧同类
+ * 修复见 0333f1a：写侧纳入与读侧同预算）。这里用 MSG_DONTWAIT + 短拍休眠 +
+ * 进程内绝对 deadline：**不用 poll(POLLOUT)**——AF_UNIX 在对端接收缓冲已满时
+ * 仍报告可写（POLLOUT 不反映缓冲余量，实测 poll 恒就绪而 send 永久阻塞），
+ * 而 MSG_DONTWAIT 的 EAGAIN 才是「缓冲满」的可靠信号；休眠粒度取
+ * kMcpPollIntervalMs（与全仓的停止响应粒度同一量级）。
+ * 返回 true=发满；false=超时/错误/对端关闭。 */
+bool sendAllDeadline(int fd, const char* buf, std::size_t n, Clock::time_point deadline) {
+	std::size_t sent = 0;
+	while (sent < n) {
+		const auto now = Clock::now();
+		if (now >= deadline) { return false; }
+		const ssize_t k = ::send(fd, buf + sent, n - sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+		if (k > 0) {
+			sent += static_cast<std::size_t>(k);
+			continue;
+		}
+		if (k < 0 && errno == EAGAIN) {
+			/* 缓冲满：睡一小拍再试（deadline 在循环顶收口）。 */
+			const long remainMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+				deadline - Clock::now()).count();
+			const long nap = remainMs < kMcpPollIntervalMs ? remainMs : kMcpPollIntervalMs;
+			::usleep(static_cast<useconds_t>(nap > 0 ? nap : 0) * 1000);
+			continue;
+		}
+		if (k < 0 && errno == EINTR) { continue; }
+		return false;	/* 其余错误 / 对端关闭 */
+	}
+	return true;
+}
+
 } // namespace
 
 /* ---- 纯协议件 ---- */
@@ -167,19 +200,11 @@ FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec,
 	return FrameResult::Ok;
 }
 
-bool sendFrame(int fd, const std::string& payload) {
+bool sendFrame(int fd, const std::string& payload, int sendTimeoutSec) {
 	const std::string frame = mcpEncodeFrame(payload);
-	std::size_t sent = 0;
-	while (sent < frame.size()) {
-		const ssize_t k = ::send(fd, frame.data() + sent, frame.size() - sent, MSG_NOSIGNAL);
-		if (k < 0) {
-			if (errno == EINTR) { continue; }
-			return false;
-		}
-		if (k == 0) { return false; }
-		sent += static_cast<std::size_t>(k);
-	}
-	return true;
+	/* 帧头与载荷共享同一绝对 deadline（与读侧 recvAllDeadline 对称） */
+	const Clock::time_point deadline = Clock::now() + std::chrono::seconds(sendTimeoutSec);
+	return sendAllDeadline(fd, frame.data(), frame.size(), deadline);
 }
 
 /* ---- 首帧共享密钥校验（MCP-1，审计 P2-1）----

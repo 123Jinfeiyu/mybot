@@ -67,17 +67,21 @@ McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string&
 /* ---- 帧传输接缝（实现在 mcptransport.cpp，2026-10-01 TU 拆分；
  * serveConnection / acceptLoop 在 mcpbackend.cpp 消费）----
  * readFrame 两段式（空闲等首字节 + 帧开始后共享绝对 deadline 防 Slowloris）
- * 与 sendFrame（MSG_NOSIGNAL 全量发送）的完整语义见 mcptransport.cpp 实现处。 */
+ * 与 sendFrame（写侧共享绝对 deadline + poll(POLLOUT)，与读侧同一条防线）
+ * 的完整语义见 mcptransport.cpp 实现处。 */
 enum class FrameResult { Ok, PeerClosed, Violation, IdleTimeout };
 FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec,
 	std::chrono::steady_clock::time_point idleDeadline, std::ostream& log);
-bool sendFrame(int fd, const std::string& payload);
+/* 发一帧：帧头与载荷共享 sendTimeoutSec 的绝对 deadline（慢读端不能无限
+ * 挂住单线程后端——2026-10-01 批次 A / P1-3，此前靠 acceptLoop 的
+ * SO_SNDTIMEO 兜底且 setsockopt 失败只告警）。 */
+bool sendFrame(int fd, const std::string& payload, int sendTimeoutSec);
 
 /* 主线程轮询粒度：accept 与逐帧接收共用（200ms = 对停止信号的响应上限，
  * 不是超时——空闲时不断连，靠 deadline 收口）。 */
 inline constexpr int kMcpPollIntervalMs = 200;
-/* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）——accept 后
- * 挂 SO_SNDTIMEO 用。 */
+/* 发送 deadline：慢读端挂住写侧的上限（评估 §7.6 加固清单；2026-10-01 起
+ * 由 sendFrame 的 poll+deadline 直接执行，不再经 SO_SNDTIMEO 间接生效）。 */
 inline constexpr int kMcpSendTimeoutSec = 5;
 
 /* 错误文案里的路径段遮蔽（'/' 起整段换 <redacted>）：routeToolCall 的回执

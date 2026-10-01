@@ -62,6 +62,39 @@ TH_TEST(mcpbackend_frame_encode_is_4byte_be_plus_payload) {
 	TH_CHECK(static_cast<unsigned char>(big[3]) == 0x2Cu);
 }
 
+/* ---- 写侧 deadline（2026-10-01 批次 A / P1-3）----
+ * 此前 sendFrame 无 deadline，靠 acceptLoop 的 SO_SNDTIMEO 兜底——而 setsockopt
+ * 失败只告警，该路径上慢读端可无限挂住单线程后端。Rust 侧同类修复见 0333f1a。
+ * 这里钉：对端不读 + 载荷远超 socket 缓冲 → deadline 内返回 false（不再无限
+ * 挂住）；对端正常读 → 发满返回 true 且字节形态正确。 */
+TH_TEST(mcpbackend_sendframe_deadline_unblocks_slow_reader) {
+	int fds[2] = {-1, -1};
+	if (::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+		TH_SKIP("socketpair 不可用");
+	}
+	/* 对端不读：send 缓冲填满后 send() 阻塞——旧实现在这里永久挂住 */
+	const std::string big(kMcpMaxFrameBytes, 'x');
+	const auto t0 = std::chrono::steady_clock::now();
+	TH_CHECK(!sendFrame(fds[0], big, 1));	/* 1 秒 deadline */
+	const long elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - t0).count();
+	TH_CHECK_MSG(elapsed < 5000, "慢读端挂住写侧: " + std::to_string(elapsed) + "ms");
+	::close(fds[0]);
+	::close(fds[1]);
+
+	/* 对端正常读：小载荷发满，4 字节 BE 长度 + 载荷字节形态正确 */
+	int ok[2] = {-1, -1};
+	if (::socketpair(AF_UNIX, SOCK_STREAM, 0, ok) != 0) {
+		TH_SKIP("socketpair 不可用");
+	}
+	TH_CHECK(sendFrame(ok[0], "hello", kMcpSendTimeoutSec));
+	char buf[16] = {0};
+	TH_CHECK(::recv(ok[1], buf, sizeof(buf), 0) == 9);
+	TH_CHECK(std::memcmp(buf + 4, "hello", 5) == 0);
+	::close(ok[0]);
+	::close(ok[1]);
+}
+
 /* ---- 严格 UTF-8 校验：拒 overlong / 代理区 / 截断 / 超范围 ---- */
 TH_TEST(mcpbackend_valid_utf8_accepts_and_rejects) {
 	TH_CHECK(isValidUtf8("hello"));			/* ASCII */

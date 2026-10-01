@@ -104,7 +104,8 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 		const McpAuthOutcome a = mcpCheckAuthFrame(opts.authToken, payload);
 		if (a == McpAuthOutcome::Ok) {
 			/* lock-step：认证帧也要回执（Rust 侧 authenticate 在等这一帧） */
-			if (!sendFrame(fd, "{\"success\":true,\"data\":{\"auth\":true}}")) {
+			if (!sendFrame(fd, "{\"success\":true,\"data\":{\"auth\":true}}",
+					kMcpSendTimeoutSec)) {
 				log << "MCP 后端：认证回帧发送失败，断开连接\n";
 				return ConnOutcome{ConnAuth::Neutral, false};
 			}
@@ -115,7 +116,7 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 			 * 两者给同一句话，信息量最小化。 */
 			(void)sendFrame(fd, "{\"success\":false,\"error\":\"auth required:"
 				" first frame must be {\\\"_route\\\":\\\"auth\\\","
-				"\\\"token\\\":...}\"}");
+				"\\\"token\\\":...}\"}", kMcpSendTimeoutSec);
 			log << "MCP 后端：首帧认证失败（" << (a == McpAuthOutcome::NotAuthFrame
 				? "第一帧不是 auth 帧" : "共享密钥不匹配")
 				<< "），断开连接\n";
@@ -138,7 +139,7 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 			return ConnOutcome{result, admitted};
 		}
 		const std::string resp = backend.handleFrame(payload);
-		if (!sendFrame(fd, resp)) {
+		if (!sendFrame(fd, resp, kMcpSendTimeoutSec)) {
 			log << "MCP 后端：回帧发送失败，断开连接\n";
 			return ConnOutcome{result, admitted};
 		}
@@ -268,8 +269,10 @@ ListenSocket prepareListenSocket(const std::string& socketPath, std::ostream& lo
 }
 
 /* accept 循环（拆自 runMcpBackend，2026-09-26 批次 5）：poll 等连接（带超时以便
- * 轮询 stopRequested）→ accept4 → SO_PEERCRED 校验 → SO_SNDTIMEO 防慢读端 →
- * serveConnection 服务 → 关连接 → 断连安全动作（仅 admitted 连接）。单连接串行。
+ * 轮询 stopRequested）→ accept4 → SO_PEERCRED 校验 → serveConnection 服务 →
+ * 关连接 → 断连安全动作（仅 admitted 连接）。单连接串行。慢读端防挂由写侧的
+ * sendFrame deadline 承担（2026-10-01 批次 A / P1-3：SO_SNDTIMEO 移除——
+ * 其 setsockopt 失败只告警的路径上防线是静默缺位的）。
  * 返回退出码（0 = 收到停止信号正常退出，1 = poll/accept 出错）。 */
 int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& tctx,
 		const AgentModeConfig& cfg, const McpBackendOptions& opts, std::ostream& log) {
@@ -301,15 +304,6 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 		FdGuard clientFd(client);
 		if (opts.requirePeerCred && !mcpCheckPeerCred(clientFd.get(), log)) {
 			continue;	/* 关掉这条，回去等下一个（可能是扫描/误连） */
-		}
-		/* 发送超时：防慢读端把 send() 永久阻塞（评估 §7.6 加固清单）。
-		 * 设置失败要告警：防慢读端的那条防线静默缺位时，症状只会是将来某次
-		 * send 永久挂住——届时可用的第一条线索就是这行告警。 */
-		timeval snd{};
-		snd.tv_sec = kMcpSendTimeoutSec;
-		if (::setsockopt(clientFd.get(), SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof(snd)) != 0) {
-			log << "警告: SO_SNDTIMEO 设置失败（" << errnoText(errno)
-				<< "）；慢读端可能挂住回帧发送\n";
 		}
 
 		backend.beginConnection();
