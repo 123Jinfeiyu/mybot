@@ -19,7 +19,7 @@
 #   TASK="朝 +x 方向前进，绕过挡路的障碍" bash scripts/sim_agent_demo.sh
 #   LLM_CFG=/path/other.json ROBOT=robots/spider_sim.sql bash scripts/sim_agent_demo.sh
 #
-# 环境可覆盖：SIM_BIN BOT_BIN AGENT_BIN LLM_CFG ROBOT PROMPTS_DIR TASK MYBOT_SIM_SOCK MYBOT_SIM_CAPTURE_SOCK
+# 环境可覆盖：SIM_BIN BOT_BIN AGENT_BIN LLM_CFG ROBOT PROMPTS_DIR TASK MYBOT_SIM_SOCK MYBOT_SIM_CAPTURE_SOCK MYBOT_SIM_SCENE
 # 退出：agent 跑完或 Ctrl-C，自动拆链路、清 socket；日志目录路径退出时打印（保留）。
 set -u
 
@@ -95,7 +95,9 @@ wait_sock() { # $1=socket $2= tries $3=名字 $4=日志
 rm -f "$SIM_SOCK" "$CAP_SOCK" "$SENSOR_SOCK"
 
 echo "=== 1/3 起仿真器 sim（窗口会出现；标题显示最近动作）==="
-"$SIM_BIN" >"$SIM_LOG" 2>&1 &
+# MYBOT_SIM_SCENE：场景文件。agent/人搬动过的环境可经 save 指令或 S 键写回，
+# 下次跑 demo 从改过的场景继续。
+MYBOT_SIM_SCENE="${MYBOT_SIM_SCENE:-$root/sim/scenes/default.scene}" "$SIM_BIN" >"$SIM_LOG" 2>&1 &
 SIM_PID=$!
 wait_sock "$SIM_SOCK" 60 "sim 命令桥" "$SIM_LOG" || exit 1
 

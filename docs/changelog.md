@@ -9,6 +9,24 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-02 仿真场景数据化：环境与代码解耦 + 可保存
+
+- **场景文件**：障碍布局从 C++ 硬编码挪到 `sim/scenes/default.scene`（行文本
+  v1：魔数行 + `box`/`robot` 行，注释/空行忽略，坏行告警跳过，mass 缺省按
+  体积×800kg/m³）；`readScene`/`writeScene`/`World::applyScene` 落在 simcore，
+  C++ 侧 `World::defaultScene()` 保留为无文件时的内置回落。
+- **路径与保存**：场景路径 `argv[4] > MYBOT_SIM_SCENE > 内置`（与三桥同规矩）；
+  `S` 键或命令桥 `save` 一次性事件（Sim.lua 动作码 **9**）把当前世界状态
+  （障碍+机器人位姿+搬运索引）**原子写回**（tmp+rename）。线上不收路径参数，
+  只写启动时配置的文件——沿用「不给 socket 任意路径原语」的安全口径。
+- **R 键升级**：复位从「只归零机器人」改为**从场景源头整体重载**（文件版重读
+  文件、内置版回默认），被搬走的障碍可恢复。
+- **demo 接线**：`sim_agent_demo.sh` 缺省给 sim 传 `sim/scenes/default.scene`，
+  agent 搬动过的环境可存续。
+- **守门**：`sim/tests` 扩到 105 例（场景 round-trip、容错解析、缺魔数拒绝、
+  carried 越界、原子写不残留 tmp、save 事件）；`test_sim.lua` 扩到 32 例
+  （fdist/turn/pick/place/save 线上逐字核对，越界上界随码表上调）。
+
 ### 2026-10-02 搬运任务链路 + 仿真器核心重构
 
 - **搬运任务链路**：命令桥增 `fdist <m>`/`turn <deg>`（相对运动到量自停）与

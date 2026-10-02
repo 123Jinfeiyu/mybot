@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <string>
 
 #include "bridge.h"
@@ -46,6 +47,7 @@ std::string resolveSocketPath(int argc, char** argv, int argvIndex, const char* 
 Camera g_camera;
 bool g_resetRequested = false;
 bool g_toggleCamera = false;
+bool g_saveRequested = false;
 bool g_dragging = false;
 double g_lastX = 0.0, g_lastY = 0.0;
 
@@ -60,6 +62,8 @@ void keyCallback(GLFWwindow* window, int key, int, int action, int) {
         g_resetRequested = true;
     if (key == GLFW_KEY_C && action == GLFW_PRESS)
         g_toggleCamera = true;
+    if (key == GLFW_KEY_S && action == GLFW_PRESS)
+        g_saveRequested = true;
 }
 
 void mouseButtonCallback(GLFWwindow*, int button, int action, int) {
@@ -99,45 +103,10 @@ RobotInput commandToInput(SimCommand cmd, float speed) {
     return input;
 }
 
-// 处理一条一次性事件：相对运动设剩余量、pick/place 交给 World 并把结果
-// 打到 stderr（对端看不到回执，日志是唯一的排障线索）
-void dispatchEvent(const SimEvent& ev, Robot& robot, World& world) {
-    switch (ev.type) {
-        case SimEvent::Type::FwdDist:
-            std::fprintf(stderr, "cmd: fdist %.2f\n", ev.param);
-            robot.setRelativeDist(ev.param);
-            break;
-        case SimEvent::Type::Turn:
-            std::fprintf(stderr, "cmd: turn %.2f\n", ev.param);
-            robot.setRelativeTurn(glm::radians(ev.param));
-            break;
-        case SimEvent::Type::Pick:
-            if (world.isCarrying()) {
-                std::fprintf(stderr, "pick: 已持有物体 (idx=%d, %.2fkg)，忽略\n",
-                             world.carriedIndex(), world.carriedMass());
-            } else if (world.pick(robot)) {
-                const auto& ob = world.obstacles()[world.carriedIndex()];
-                std::fprintf(stderr, "pick: 成功拾取 idx=%d mass=%.2fkg pos=(%.2f,%.2f)\n",
-                             world.carriedIndex(), world.carriedMass(),
-                             ob.center.x, ob.center.z);
-            } else {
-                std::fprintf(stderr, "pick: 前方 %.2fm 内无障碍物，拾取失败\n",
-                             World::kPickRange);
-            }
-            break;
-        case SimEvent::Type::Place:
-            if (world.place(robot)) {
-                std::fprintf(stderr, "place: 放置成功\n");
-            } else {
-                std::fprintf(stderr, "place: 未持有物体，放置失败\n");
-            }
-            break;
-    }
-}
-
 // 窗口标题即仪表盘：动作/速度/位姿/测距/搬运/三桥状态一页看全
 void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureBridge& capture,
-                 const SensorBridge& sensor, const Robot& robot, const World& world) {
+                 const SensorBridge& sensor, const Robot& robot, const World& world,
+                 const char* sceneName) {
     char cmdBuf[48];
     if (bridge.command() == SimCommand::Stop) {
         std::snprintf(cmdBuf, sizeof(cmdBuf), "stop");
@@ -158,15 +127,16 @@ void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureB
         std::snprintf(carryBuf, sizeof(carryBuf), "empty");
     }
 
-    char title[420];
+    char title[512];
     std::snprintf(title, sizeof(title),
-                  "MyBot Spider | cmd %-16s last %-14s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg | range %.2fm | %s | %s %s | cam %s sensor %s | C camera[%s]  R reset",
+                  "MyBot Spider | cmd %-16s last %-14s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg | range %.2fm | %s | scene %s | %s %s | cam %s sensor %s | C camera[%s]  R reset+reload  S save",
                   cmdBuf,
                   lastBuf,
                   robot.v(), robot.omega(),
                   robot.x(), robot.z(), glm::degrees(robot.theta()),
                   rangeM,
                   carryBuf,
+                  sceneName,
                   bridge.listening() ? "listening" : "NOT LISTENING",
                   bridge.path().c_str(),
                   capture.listening() ? "on" : "OFF",
@@ -247,6 +217,95 @@ int main(int argc, char** argv) {
     Spider spider;
     World world;
 
+    // 场景：argv[4] > MYBOT_SIM_SCENE > 内置默认（空串=内置）。环境与代码解耦
+    // 的落点：障碍布局来自文件。save 只写这个启动时定下的路径——socket 线上
+    // 不收路径参数，杜绝「连任意文件写」原语（与 Camera.lua 只认 env 的口径同源）。
+    const std::string scenePath = resolveSocketPath(argc, argv, 4, "MYBOT_SIM_SCENE", "");
+    const char* sceneName = "builtin";
+    if (!scenePath.empty()) {
+        const char* slash = std::strrchr(scenePath.c_str(), '/');
+        sceneName = slash ? slash + 1 : scenePath.c_str();
+    }
+
+    // 装载场景（含机器人位姿）。文件读失败回落内置默认并告警，不开黑屏世界。
+    auto reloadScene = [&] {
+        if (!scenePath.empty()) {
+            SceneState st;
+            if (readScene(scenePath, st)) {
+                world.applyScene(st);
+                robot = Robot();
+                robot.setPose(st.robotX, st.robotZ, st.robotTheta);
+                std::fprintf(stderr, "scene: 已装载 %s（%zu 个障碍）\n", scenePath.c_str(),
+                             st.obstacles.size());
+                return;
+            }
+            std::fprintf(stderr, "scene: 回落内置默认场景\n");
+        }
+        world = World();
+        robot = Robot();
+    };
+
+    // 把当前世界状态原子写回场景文件（tmp + rename）
+    auto saveSceneFile = [&] {
+        if (scenePath.empty()) {
+            std::fprintf(stderr, "save: 未配置场景路径（argv[4] 或 MYBOT_SIM_SCENE），无处置写\n");
+            return;
+        }
+        SceneState st;
+        st.obstacles = world.obstacles();
+        st.robotX = robot.x();
+        st.robotZ = robot.z();
+        st.robotTheta = robot.theta();
+        st.carriedIdx = world.isCarrying() ? world.carriedIndex() : -1;
+        if (writeScene(scenePath, st)) {
+            std::fprintf(stderr, "save: 场景已写入 %s（%zu 个障碍）\n", scenePath.c_str(),
+                         st.obstacles.size());
+        } else {
+            std::fprintf(stderr, "save: 写入 %s 失败\n", scenePath.c_str());
+        }
+    };
+
+    // 一次性事件派发：相对运动设剩余量、pick/place 交给 World、save 落盘，
+    // 结果都打到 stderr（对端看不到回执，日志是唯一的排障线索）
+    auto dispatchEvent = [&](const SimEvent& ev) {
+        switch (ev.type) {
+            case SimEvent::Type::FwdDist:
+                std::fprintf(stderr, "cmd: fdist %.2f\n", ev.param);
+                robot.setRelativeDist(ev.param);
+                break;
+            case SimEvent::Type::Turn:
+                std::fprintf(stderr, "cmd: turn %.2f\n", ev.param);
+                robot.setRelativeTurn(glm::radians(ev.param));
+                break;
+            case SimEvent::Type::Pick:
+                if (world.isCarrying()) {
+                    std::fprintf(stderr, "pick: 已持有物体 (idx=%d, %.2fkg)，忽略\n",
+                                 world.carriedIndex(), world.carriedMass());
+                } else if (world.pick(robot)) {
+                    const auto& ob = world.obstacles()[world.carriedIndex()];
+                    std::fprintf(stderr, "pick: 成功拾取 idx=%d mass=%.2fkg pos=(%.2f,%.2f)\n",
+                                 world.carriedIndex(), world.carriedMass(),
+                                 ob.center.x, ob.center.z);
+                } else {
+                    std::fprintf(stderr, "pick: 前方 %.2fm 内无障碍物，拾取失败\n",
+                                 World::kPickRange);
+                }
+                break;
+            case SimEvent::Type::Place:
+                if (world.place(robot)) {
+                    std::fprintf(stderr, "place: 放置成功\n");
+                } else {
+                    std::fprintf(stderr, "place: 未持有物体，放置失败\n");
+                }
+                break;
+            case SimEvent::Type::Save:
+                saveSceneFile();
+                break;
+        }
+    };
+
+    reloadScene();
+
     const glm::vec3 lightDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
     const glm::vec3 lightColor(1.0f, 0.98f, 0.92f);
 
@@ -267,9 +326,14 @@ int main(int argc, char** argv) {
         const bool wantRange = sensor.poll();
 
         if (g_resetRequested) {
-            robot.reset();
+            // 复位 = 场景连同机器人回到装载时状态（文件版重读文件、内置版回默认）
+            reloadScene();
             spider.reset();
             g_resetRequested = false;
+        }
+        if (g_saveRequested) {
+            saveSceneFile();
+            g_saveRequested = false;
         }
         if (g_toggleCamera) {
             g_camera.follow = !g_camera.follow;
@@ -289,7 +353,7 @@ int main(int argc, char** argv) {
         // 一次性事件 drain 到空：每条必触发一次（连续两次 fdist 不再互相吞）
         SimEvent ev;
         while (bridge.pollEvent(ev)) {
-            dispatchEvent(ev, robot, world);
+            dispatchEvent(ev);
         }
 
         RobotInput input = commandToInput(cmd, bridge.speed());
@@ -355,7 +419,7 @@ int main(int argc, char** argv) {
         lines.setVec3("color", glm::vec3(0.18f, 0.22f, 0.18f));
         meshes.grid.draw();
 
-        updateTitle(window, bridge, capture, sensor, robot, world);
+        updateTitle(window, bridge, capture, sensor, robot, world, sceneName);
 
         // 抓帧回传放在 SwapBuffers 之前：此刻 GL_BACK 是刚画好的这一帧。
         if (wantCapture) {

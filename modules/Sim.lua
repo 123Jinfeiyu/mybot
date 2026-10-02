@@ -16,6 +16,7 @@
 -- （matrix.cpp 对 'forward' 这类字符串直接报 cannot parse matrix cell），
 -- 语义名字只存在于 socket 线上与下面的 CODES 表里：
 --   0=stop  1=forward  2=backward  3=left  4=right  5=fdist  6=turn  7=pick  8=place
+--   9=save（把当前场景写回仿真器启动时配置的场景文件，见 docs/sim.md）
 --
 -- 测距（range 函数）走独立的 sensor socket（MYBOT_SIM_SENSOR_SOCK），
 -- 协议：发 "range\n"，收 "OK <mm>\n" 或 "ERR <reason>\n"。
@@ -75,8 +76,9 @@ local CODES = {
 	[6] = "turn",
 	[7] = "pick",
 	[8] = "place",
+	[9] = "save",
 }
-local CODE_MAX = 8
+local CODE_MAX = 9
 
 -- 带参数的动作码（fdist/turn 需要数值参数）
 local PARAM_CODES = { [5] = true, [6] = true }
@@ -171,7 +173,7 @@ end
 -- 【调用Sim】发一条语义动作
 -- 元数据列：无（socket 路径走 MYBOT_SIM_SOCK，见文件头）
 -- 输入参数：
---   action: 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place
+--   action: 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place 9=save
 --   speed:  可选 0~1（持续型动作用）
 --   param:  fdist 的距离（米）或 turn 的角度（正=左，负=右）
 function call(data)
@@ -185,10 +187,10 @@ function call(data)
 	if code == nil then
 		return err("Invalid Argument: action (missing or not a number)")
 	end
-	-- 动作码必须是 0..8 的整数：矩阵是 Float64，1.5 这种值只会是脚本笔误
+	-- 动作码必须是 0..9 的整数：矩阵是 Float64，1.5 这种值只会是脚本笔误
 	if code ~= math.floor(code) or code < 0 or code > CODE_MAX then
 		return err("Invalid Argument: action " .. tostring(code)
-			.. " (expected 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place)")
+			.. " (expected 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place 9=save)")
 	end
 	local action = CODES[code]
 

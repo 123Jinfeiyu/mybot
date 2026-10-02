@@ -103,6 +103,9 @@ void CommandBridge::handleLine(const std::string& rawLine) {
     } else if (std::strcmp(word, "place") == 0) {
         oneShot = true;
         ev.type = SimEvent::Type::Place;
+    } else if (std::strcmp(word, "save") == 0) {
+        oneShot = true;
+        ev.type = SimEvent::Type::Save;
     } else {
         std::fprintf(stderr, "bridge: unknown command '%s' (ignored)\n", word);
         lastLine_ = rawLine;

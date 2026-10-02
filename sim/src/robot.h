@@ -46,6 +46,8 @@ public:
 
     void setX(float x) { x_ = x; }
     void setZ(float z) { z_ = z; }
+    // 场景装载/重载用：整体设位姿（theta 弧度），不动速度
+    void setPose(float x, float z, float theta) { x_ = x; z_ = z; theta_ = theta; }
 
     // 相对运动：设定后每帧由主循环调用 tickRelative()，到量即自动停。
     void setRelativeDist(float meters);

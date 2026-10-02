@@ -27,6 +27,7 @@ struct SimEvent {
         Turn,     // turn N degrees: param = degrees (positive=left, negative=right)
         Pick,     // pick up obstacle in front
         Place,    // place carried obstacle in front
+        Save,     // save scene to the configured scene file (path comes from argv/env, never from the wire)
     };
     Type type;
     float param = 0.0f;
@@ -36,7 +37,7 @@ struct SimEvent {
 //   forward | backward | left | right | stop   [速度 0.0~1.0]
 //   fdist <meters>
 //   turn <degrees>
-//   pick / place
+//   pick / place / save
 // 例如 "forward 0.8"、"fdist 2.0"、"turn 90"。
 // 选行文本是为了能用 socat 直接手测：
 //   socat - UNIX-CONNECT:/tmp/mybot-sim.sock

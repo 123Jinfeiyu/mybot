@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 namespace {
 
@@ -12,6 +14,34 @@ constexpr float kRobotRadius = 0.20f;
 
 // 默认密度 kg/m³（近似木材）
 constexpr float kDefaultDensity = 800.0f;
+
+// 场景文件魔数与上限
+constexpr char kSceneMagic[] = "mybot-sim scene v1";
+constexpr std::size_t kMaxSceneObstacles = 512;
+constexpr std::size_t kMaxSceneLine = 512;
+
+// 从 p 起连续解析至多 want 个浮点数，got 返回实际解析个数。
+// 遇到非数字即停（返回 false）；解析不足 want 个不算错——由调用方按各自
+// 的「必填/可选字段数」校验 got。
+bool parseFloats(const char* p, float* vals, int want, int& got) {
+    got = 0;
+    while (got < want) {
+        while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+            ++p;
+        }
+        if (*p == '\0') {
+            break;
+        }
+        char* end = nullptr;
+        const double v = std::strtod(p, &end);
+        if (end == p) {
+            return false;
+        }
+        vals[got++] = static_cast<float>(v);
+        p = end;
+    }
+    return true;
+}
 
 // 2D 射线 vs AABB（XZ 平面）求交：slab 法。
 // 射线从 (ox,oz) 沿 (dx,dz) 方向，返回命中距离；无命中返回 false。
@@ -219,4 +249,143 @@ void World::updateCarried(const Robot& robot) {
     ob.center.x = robot.x();
     ob.center.z = robot.z();
     ob.center.y = Robot::kBodyY + Robot::kBodyHeight + ob.half.y + 0.10f;
+}
+
+void World::applyScene(const SceneState& scene) {
+    obstacles_ = scene.obstacles;
+    carriedIdx_ = -1;
+    carriedMass_ = 0.0f;
+    if (scene.carriedIdx >= 0 && scene.carriedIdx < (int)obstacles_.size()) {
+        carriedIdx_ = scene.carriedIdx;
+        carriedMass_ = obstacles_[carriedIdx_].mass;
+    }
+}
+
+bool readScene(const std::string& path, SceneState& out) {
+    FILE* f = std::fopen(path.c_str(), "r");
+    if (!f) {
+        std::fprintf(stderr, "scene: 无法打开 %s\n", path.c_str());
+        return false;
+    }
+
+    SceneState st;
+    char line[kMaxSceneLine];
+    bool magicSeen = false;
+    bool ok = true;
+    while (std::fgets(line, sizeof(line), f)) {
+        // 去注释与首尾空白
+        if (char* hash = std::strchr(line, '#')) {
+            *hash = '\0';
+        }
+        char* text = line;
+        while (*text == ' ' || *text == '\t' || *text == '\r' || *text == '\n') {
+            ++text;
+        }
+        if (*text == '\0') {
+            continue;
+        }
+
+        if (!magicSeen) {
+            if (std::strncmp(text, kSceneMagic, sizeof(kSceneMagic) - 1) == 0) {
+                magicSeen = true;
+            } else {
+                std::fprintf(stderr, "scene: 首个有效行不是魔数 '%s'，拒绝整个文件\n",
+                             kSceneMagic);
+                ok = false;
+                break;
+            }
+            continue;
+        }
+
+        char word[16] = {};
+        if (std::sscanf(text, "%15s", word) != 1) {
+            continue;
+        }
+        const char* rest = text + std::strlen(word);
+
+        if (std::strcmp(word, "box") == 0) {
+            float v[10] = {};
+            int got = 0;
+            if (!parseFloats(rest, v, 10, got) || (got != 9 && got != 10)) {
+                std::fprintf(stderr, "scene: box 行需要 9 或 10 个数（cx cy cz hx hy hz r g b [mass]），跳过: %s", text);
+                continue;
+            }
+            if (v[3] <= 0.0f || v[4] <= 0.0f || v[5] <= 0.0f) {
+                std::fprintf(stderr, "scene: box 半尺寸必须为正，跳过: %s", text);
+                continue;
+            }
+            if (st.obstacles.size() >= kMaxSceneObstacles) {
+                std::fprintf(stderr, "scene: 障碍数超过上限 %zu，多余忽略\n", kMaxSceneObstacles);
+                continue;
+            }
+            Obstacle ob;
+            ob.center = glm::vec3(v[0], v[1], v[2]);
+            ob.half = glm::vec3(v[3], v[4], v[5]);
+            ob.color = glm::vec3(v[6], v[7], v[8]);
+            ob.mass = (got == 10) ? v[9]
+                                  : 8.0f * ob.half.x * ob.half.y * ob.half.z * kDefaultDensity;
+            st.obstacles.push_back(ob);
+        } else if (std::strcmp(word, "robot") == 0) {
+            float v[4] = {};
+            int got = 0;
+            if (!parseFloats(rest, v, 4, got) || (got != 3 && got != 4)) {
+                std::fprintf(stderr, "scene: robot 行需要 3 或 4 个数（x z theta_deg [carried_idx]），跳过: %s", text);
+                continue;
+            }
+            st.robotX = v[0];
+            st.robotZ = v[1];
+            st.robotTheta = glm::radians(v[2]);
+            st.carriedIdx = (got == 4) ? static_cast<int>(v[3]) : -1;
+        } else {
+            std::fprintf(stderr, "scene: 未知行类型 '%s'（忽略）\n", word);
+        }
+    }
+    std::fclose(f);
+
+    if (!ok || !magicSeen) {
+        return false;
+    }
+    if (st.carriedIdx >= (int)st.obstacles.size()) {
+        std::fprintf(stderr, "scene: carried_idx=%d 越界（共 %zu 个障碍），按无搬运处理\n",
+                     st.carriedIdx, st.obstacles.size());
+        st.carriedIdx = -1;
+    }
+    out = std::move(st);
+    return true;
+}
+
+bool writeScene(const std::string& path, const SceneState& state) {
+    const std::string tmp = path + ".tmp";
+    FILE* f = std::fopen(tmp.c_str(), "w");
+    if (!f) {
+        std::fprintf(stderr, "scene: 无法写 %s\n", tmp.c_str());
+        return false;
+    }
+
+    std::fprintf(f, "%s\n", kSceneMagic);
+    std::fprintf(f, "# box cx cy cz hx hy hz r g b [mass（缺省=体积x800kg/m3）]\n");
+    std::fprintf(f, "# robot x z theta_deg [carried_idx]\n");
+    std::fprintf(f, "robot %.4f %.4f %.4f", state.robotX, state.robotZ,
+                 glm::degrees(state.robotTheta));
+    if (state.carriedIdx >= 0) {
+        std::fprintf(f, " %d", state.carriedIdx);
+    }
+    std::fputc('\n', f);
+    for (const Obstacle& ob : state.obstacles) {
+        std::fprintf(f, "box %.4f %.4f %.4f %.4f %.4f %.4f %.3f %.3f %.3f %.2f\n",
+                     ob.center.x, ob.center.y, ob.center.z,
+                     ob.half.x, ob.half.y, ob.half.z,
+                     ob.color.r, ob.color.g, ob.color.b, ob.mass);
+    }
+
+    const bool flushed = std::fflush(f) == 0;
+    if (!flushed || std::fclose(f) != 0) {
+        std::fprintf(stderr, "scene: 写 %s 失败（磁盘满？）\n", tmp.c_str());
+        return false;
+    }
+    if (std::rename(tmp.c_str(), path.c_str()) != 0) {
+        std::fprintf(stderr, "scene: rename %s -> %s 失败\n", tmp.c_str(), path.c_str());
+        return false;
+    }
+    return true;
 }

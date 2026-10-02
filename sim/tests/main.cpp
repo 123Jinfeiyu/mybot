@@ -274,6 +274,91 @@ void testPickPlace() {
     check(!behindWorld.pick(far), "身后的盒拾取失败");
 }
 
+// ---- 场景文件：round-trip 与解析容错 ----
+
+void writeTextFile(const std::string& path, const char* content) {
+    FILE* f = std::fopen(path.c_str(), "w");
+    if (f) {
+        std::fputs(content, f);
+        std::fclose(f);
+    }
+}
+
+void testSceneIo() {
+    const std::string path = "/tmp/mybot-sim-tests-" + std::to_string(::getpid()) + "-scene.scene";
+
+    // round-trip：障碍/位姿/搬运状态
+    SceneState st;
+    st.obstacles = {
+        {{1.0f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 0.0f, 0.0f}, 7.5f},
+        {{3.0f, 0.2f, 1.0f}, {0.3f, 0.3f, 0.3f}, {0.0f, 1.0f, 0.0f}, 2.0f},
+    };
+    st.robotX = 1.5f;
+    st.robotZ = -0.25f;
+    st.robotTheta = 0.7f;
+    st.carriedIdx = 1;
+    check(writeScene(path, st), "writeScene 成功");
+    SceneState back;
+    check(readScene(path, back), "readScene 成功");
+    check(back.obstacles.size() == 2, "障碍数 round-trip");
+    check(near(back.obstacles[1].mass, 2.0f, 1e-4f), "质量 round-trip");
+    check(near(back.obstacles[0].center.x, 1.0f, 1e-4f) &&
+              near(back.obstacles[1].half.z, 0.3f, 1e-4f) &&
+              near(back.obstacles[0].color.g, 0.0f, 1e-4f),
+          "盒字段 round-trip");
+    check(near(back.robotX, 1.5f, 1e-4f) && near(back.robotZ, -0.25f, 1e-4f) &&
+              near(back.robotTheta, 0.7f, 1e-4f),
+          "机器人位姿 round-trip");
+    check(back.carriedIdx == 1, "搬运索引 round-trip");
+
+    // applyScene：障碍与搬运状态整体替换
+    World w(std::vector<Obstacle>{});
+    w.applyScene(back);
+    check(w.obstacles().size() == 2 && w.isCarrying() && near(w.carriedMass(), 2.0f, 1e-4f),
+          "applyScene 恢复障碍与搬运状态");
+    check(near(w.effectiveMaxSpeed(), Robot::kMaxSpeed / (1.0f + 2.0f * 0.01f), 1e-4f),
+          "applyScene 后搬运减速生效");
+
+    // 注释/空行/未知行/坏行：告警跳过，不毁整个文件
+    writeTextFile(path,
+                  "mybot-sim scene v1\n"
+                  "# 注释行\n"
+                  "\n"
+                  "box abc def ghi\n"
+                  "bogus 1 2 3\n"
+                  "box 1 0.2 0 0.2 0.2 0.2 1 0 0\n"
+                  "robot 1 2 90\n");
+    SceneState st2;
+    check(readScene(path, st2), "容错解析成功");
+    check(st2.obstacles.size() == 1, "坏行/未知行被跳过");
+    check(near(st2.obstacles[0].mass, 51.2f, 0.1f), "缺省质量按体积×800");
+    check(near(st2.robotTheta, glm::radians(90.0f), 1e-4f), "theta 度→弧度换算");
+    check(st2.carriedIdx == -1, "robot 行无 carried 即无搬运");
+
+    // carried 越界按无搬运处理
+    writeTextFile(path, "mybot-sim scene v1\nrobot 0 0 0 5\n");
+    check(readScene(path, st2) && st2.carriedIdx == -1, "carried 越界按无搬运处理");
+
+    // 缺魔数：整文件拒绝
+    writeTextFile(path, "# 只有注释\nbox 1 2 3 4 5 6 7 8 9\n");
+    check(!readScene(path, st2), "缺魔数整文件拒绝");
+
+    // 缺文件
+    check(!readScene("/tmp/mybot-sim-tests-not-exist.scene", st2), "缺文件返回 false");
+
+    // 原子写不残留 .tmp
+    check(writeScene(path, st), "再次 writeScene 成功");
+    const std::string tmp = path + ".tmp";
+    FILE* probe = std::fopen(tmp.c_str(), "r");
+    check(probe == nullptr, "原子写不残留 .tmp");
+    if (probe) {
+        std::fclose(probe);
+    }
+
+    ::unlink(path.c_str());
+    ::unlink(tmp.c_str());
+}
+
 // ---- CommandBridge：线上协议（持续型状态 + 一次性事件） ----
 
 void testCommandBridge() {
@@ -327,6 +412,11 @@ void testCommandBridge() {
     bridge.poll();
     check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Pick, "pick 入队");
     check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Place, "place 入队");
+
+    // save 同为事件（线上不带路径——路径只来自本进程的 argv/env）
+    say(fd, "save\n");
+    bridge.poll();
+    check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Save, "save 入队");
 
     // 半关写端（socat 手测模式）：事件不能被 EOF 连带清掉
     say(fd, "fdist 3\n");
@@ -439,6 +529,7 @@ int main() {
     testQueryRange();
     testCollisions();
     testPickPlace();
+    testSceneIo();
     testCommandBridge();
     testSensorBridge();
     testCaptureBridge();

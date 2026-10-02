@@ -54,6 +54,7 @@ fdist <meters>      # 相对前进 N 米后自动停（负=后退）
 turn <degrees>      # 相对转向 N 度后自动停（正=左，负=右）
 pick                # 拾取前方 0.6m 内最近障碍
 place               # 把搬运物放到前方 0.5m 处
+save                # 把当前场景写回配置的场景文件（见「场景文件」）
 ```
 
 指令分两类，**别混**：
@@ -69,7 +70,7 @@ place               # 把搬运物放到前方 0.5m 处
 
 ```
 0=stop  1=forward  2=backward  3=left  4=right
-5=fdist(配 param=米)  6=turn(配 param=度)  7=pick  8=place
+5=fdist(配 param=米)  6=turn(配 param=度)  7=pick  8=place  9=save
 ```
 
 手测：`socat - UNIX-CONNECT:/tmp/mybot-sim.sock` 然后敲 `forward 0.5` / `stop`。
@@ -106,6 +107,36 @@ mybot 侧两个消费者：`Sim.lua` 的 `range()`（动作脚本可用）与 C+
   指令整行忽略并告警，**不改当前状态**（持续型指令被垃圾打成 stop 是事故）。
 - SIGPIPE 一律 `MSG_NOSIGNAL` 折成 EPIPE 处理；上次异常退出留下的 socket inode
   先 unlink 再 bind。
+
+## 场景文件（环境与代码解耦）
+
+障碍布局是**数据不是代码**：`sim/scenes/default.scene`（行文本，与三桥协议同
+风格，可手编可 diff）。C++ 里的 `World::defaultScene()` 只是无场景文件时的内置
+回落，两者保持同值。
+
+```
+mybot-sim scene v1            ← 首行魔数，缺了整文件拒绝
+# box: cx cy cz hx hy hz r g b [mass]，mass 缺省=体积×800kg/m³
+box 2.0 0.40 1.2 0.40 0.40 0.40 0.72 0.30 0.24 61.44
+# robot: x z theta_deg [carried_idx]，carried 恢复搬运状态
+robot 0 0 0
+```
+
+注释（`#`）与空行忽略，未知/坏行告警跳过。`sim/tests` 有 round-trip 与容错
+解析的守门。
+
+**路径解析**：`argv[4] > env MYBOT_SIM_SCENE > 内置默认`（空=内置）。文件读失败
+回落内置并告警，不开黑屏世界。
+
+**保存**：`S` 键或命令桥 `save` 指令（动作码 9）把当前世界状态（障碍位置 +
+机器人位姿 + 搬运状态）**原子写回**（先落 `.tmp` 再 rename）启动时配置的场景
+文件。线上不接受路径参数——只写本进程启动时定下的那一个文件，与 Camera.lua
+「杜绝连任意 socket」同源的安全口径。`sim_agent_demo.sh` 缺省把
+`sim/scenes/default.scene` 传给 sim，agent 搬动过的环境可以经 save 存下来、
+下次续用。
+
+**复位**：`R` 键从场景源头整体重载（文件版重读文件、内置版回默认），机器人
+位姿与步态一并复位——被搬走的箱子能回来了。
 
 ## 架构分层
 

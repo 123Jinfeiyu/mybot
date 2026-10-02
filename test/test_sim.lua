@@ -51,7 +51,7 @@ do
 		{ "call(nil)", nil },
 		{ "缺 action", {} },
 		{ "action 是动作名字符串（矩阵只收 Float64）", { action = "forward" } },
-		{ "action 越界上", { action = 9 } },
+		{ "action 越界上", { action = 10 } },
 		{ "action 越界下", { action = -1 } },
 		{ "action 非整数", { action = 1.5 } },
 		{ "action 是 NaN", { action = 0 / 0 } },
@@ -126,6 +126,27 @@ if cfd >= 0 then
 	call({ action = 4, speed = 1 })
 	local line4 = recv_line(cfd)
 	tester.check("满速也走缺省口径 = 'right\\n'", line4 == "right\n", tostring(line4))
+
+	-- fdist/turn/pick/place/save 的线上形态
+	call({ action = 5, param = 2.5 })
+	local lineP1 = recv_line(cfd)
+	tester.check("fdist 行 = 'fdist 2.5000\\n'", lineP1 == "fdist 2.5000\n", tostring(lineP1))
+
+	call({ action = 6, param = -90 })
+	local lineP2 = recv_line(cfd)
+	tester.check("turn 行 = 'turn -90.0000\\n'", lineP2 == "turn -90.0000\n", tostring(lineP2))
+
+	call({ action = 7 })
+	local lineP3 = recv_line(cfd)
+	tester.check("pick 行 = 'pick\\n'", lineP3 == "pick\n", tostring(lineP3))
+
+	call({ action = 8 })
+	local lineP4 = recv_line(cfd)
+	tester.check("place 行 = 'place\\n'", lineP4 == "place\n", tostring(lineP4))
+
+	call({ action = 9 })
+	local lineP5 = recv_line(cfd)
+	tester.check("save 行 = 'save\\n'", lineP5 == "save\n", tostring(lineP5))
 
 	-- ==================== 4. 对端断开后重连 ====================
 	ffi.C.close(cfd)
