@@ -26,6 +26,9 @@ dofile(mpath.resolve("lib/drv_common.lua"))	-- 帧完整性校验（截断帧重
 local ffi = require("ffi")
 local bit = require("bit")
 
+-- AF_UNIX socket 公共模块：FFI 声明 + 连接工具（与 Sim.lua 共用，避免重复 cdef）
+local usock = dofile(mpath.resolve("lib/unix_socket_ffi.lua"))
+
 ffi.cdef[[
 /* V4L2 结构（与内核 ABI 对齐；尺寸见文件末尾 assert）。
  * 前缀 cam_ 避免与 HAL.lua 已声明的 spi_ioc_transfer / cj_i2c_msg 冲突。 */
@@ -546,24 +549,7 @@ end
 -- 缺席时静默返回空图，会让模型以为自己「看到了」一片虚无，比报错危险得多。
 -- （Sim.lua 的动作下发可以静默成功，是因为可视化从端缺席不该打断动作脚本。）
 local CAPTURE_ENV = "MYBOT_SIM_CAPTURE_SOCK"
-local CAM_MSG_NOSIGNAL = 0x4000		-- 对端没了时把 SIGPIPE 折成 EPIPE，别打死进程
-local CAM_AF_UNIX = 1
-local CAM_SOCK_STREAM = 1
-local CAM_MAX_PATH = 107			-- sun_path 定长 108，留一位给 NUL
 local CAPTURE_POLL_MS = 5000			-- 等响应上限：覆盖仿真器一帧的渲染节拍绰绰有余
-
--- 结构体名带 cam_ 前缀：与 Sim.lua 的 cj_sockaddr_un 区分——test_driver_contract
--- 的全量 sweep 把所有驱动加载进**同一个** lua_State，同名 struct 重复 cdef 是硬
--- 错误（connect 形参类型不同不算冲突，LuaJIT 允许函数以不同签名重复声明）。
--- socket/connect/send/recv 均非 HAL 已声明的符号（HAL 只声明 close/read/write）。
-ffi.cdef[[
-typedef unsigned short cam_sa_family_t;
-struct cam_sockaddr_un { cam_sa_family_t sun_family; char sun_path[108]; };
-int socket(int domain, int type, int protocol);
-int connect(int fd, const struct cam_sockaddr_un *addr, unsigned int addrlen);
-long send(int fd, const void *buf, unsigned long len, int flags);
-long recv(int fd, void *buf, unsigned long len, int flags);
-]]
 
 local function capture_sock_path()
 	local p = os.getenv(CAPTURE_ENV)
@@ -571,28 +557,7 @@ local function capture_sock_path()
 	return p
 end
 
--- 连到拍照 socket；成功返 fd，失败返 nil + 原因
-local function capture_connect(path)
-	if #path > CAM_MAX_PATH then
-		return nil, "capture socket 路径超长（>" .. CAM_MAX_PATH .. " 字节）：" .. path
-	end
-	local s = ffi.C.socket(CAM_AF_UNIX, CAM_SOCK_STREAM, 0)
-	if s < 0 then
-		return nil, "capture socket() 失败"
-	end
-	local addr = ffi.new("struct cam_sockaddr_un")
-	addr.sun_family = CAM_AF_UNIX
-	ffi.copy(addr.sun_path, path)		-- 字符串形态的 ffi.copy 带上结尾 NUL
-	local addrlen = 2 + #path + 1		-- family(2) + 路径字节 + NUL
-	if ffi.C.connect(s, addr, addrlen) ~= 0 then
-		HAL.sys.close(s)
-		return nil, "connect 拍照 socket 失败（仿真器没开？路径 " .. path .. "）"
-	end
-	return s
-end
-
--- 带超时收满 want 字节：socket 默认阻塞，裸 recv 会在仿真器不回话时永久挂死
--- mybot，故每次 recv 前先 poll。返回字符串，或 nil + 原因。
+-- 带超时收满 want 字节：用 cam_pollfd 做 poll 超时
 local function capture_recv_exact(fd, want)
 	local buf = ffi.new("unsigned char[?]", want)
 	local got = 0
@@ -623,7 +588,7 @@ local function capture_recv_exact(fd, want)
 	return ffi.string(buf, want)
 end
 
--- 收一行（到 \n 为止，不含 \n）。逐字节 recv：响应头就几十字节，简单优先。
+-- 收一行（到 \n 为止，不含 \n）：逐字节 recv，响应头就几十字节
 local function capture_recv_line(fd)
 	local chars = {}
 	while true do
@@ -641,40 +606,44 @@ end
 -- 一次完整拍照：连接→发请求→读响应→关闭（一问一答，不跨调用持连接）。
 -- 成功返 { bytes, format, width, height }，失败返 nil + 原因。
 local function capture_live(path)
-	local fd, cerr = capture_connect(path)
-	if fd == nil then return nil, cerr end
+	-- 连接：复用公共模块的 usock.connect
+	local fd, cerr = usock.connect(path)
+	if fd == nil then return nil, "connect 拍照 socket 失败（" .. (cerr or "未知错误") .. "）" end
 
 	local req = "capture\n"
-	local n = tonumber(ffi.C.send(fd, req, #req, CAM_MSG_NOSIGNAL))
-	if n == nil or n < 0 then
-		HAL.sys.close(fd)
-		return nil, "发送 capture 请求失败（仿真器已断开？）"
+	local sok, serr = usock.send_all(fd, req)
+	if not sok then
+		ffi.C.close(fd)
+		return nil, "发送 capture 请求失败（" .. (serr or "未知错误") .. "）"
 	end
 
+	-- 读响应头：一行文本，到 \n 为止
 	local header, herr = capture_recv_line(fd)
 	if header == nil then
-		HAL.sys.close(fd)
-		return nil, herr
+		ffi.C.close(fd)
+		return nil, "拍照响应头读取失败（" .. (herr or "未知错误") .. "）"
 	end
 	if header:sub(1, 3) == "ERR" then
-		HAL.sys.close(fd)
+		ffi.C.close(fd)
 		return nil, "仿真器取帧失败：" .. (header:sub(5):gsub("^%s+", ""))
 	end
 
+	-- 解析头部：OK jpeg <len> <w> <h>
 	local fmt, len, w, h = header:match("^OK%s+(%S+)%s+(%d+)%s+(%d+)%s+(%d+)%s*$")
 	if fmt == nil then
-		HAL.sys.close(fd)
+		ffi.C.close(fd)
 		return nil, "拍照响应头无法解析：" .. header
 	end
 	len = tonumber(len)
 	if len == nil or len <= 0 or len > MAX_SIM_BYTES then
-		HAL.sys.close(fd)
+		ffi.C.close(fd)
 		return nil, string.format("拍照响应长度非法（%s 字节，上限 %d）", tostring(len), MAX_SIM_BYTES)
 	end
 
+	-- 读响应体：精确 len 字节的二进制数据
 	local body, berr = capture_recv_exact(fd, len)
-	HAL.sys.close(fd)
-	if body == nil then return nil, berr end
+	ffi.C.close(fd)
+	if body == nil then return nil, "拍照响应体读取失败（" .. (berr or "未知错误") .. "）" end
 
 	return { bytes = body, format = fmt, width = tonumber(w), height = tonumber(h) }
 end

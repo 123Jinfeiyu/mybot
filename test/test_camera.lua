@@ -16,6 +16,18 @@ int symlink(const char *target, const char *linkpath);
 int setenv(const char *name, const char *value, int overwrite);
 int unsetenv(const char *name);
 int open(const char *path, int flags);
+
+/* 测试用的 AF_UNIX 地址结构（Camera.lua 现在用公共模块的 usock_sockaddr_un，
+   但测试代码里的 listener 还需要自己的声明） */
+typedef unsigned short cam_sa_family_t;
+struct cam_sockaddr_un { cam_sa_family_t sun_family; char sun_path[108]; };
+int bind(int fd, const struct cam_sockaddr_un *addr, unsigned int addrlen);
+int listen(int fd, int backlog);
+struct cam_pollfd { int fd; short events; short revents; };
+int poll(struct cam_pollfd *fds, unsigned long nfds, int timeout);
+int accept(int fd, struct cam_sockaddr_un *addr, unsigned int *addrlen);
+long recv(int fd, void *buf, unsigned long len, int flags);
+int close(int fd);
 ]]
 -- 用例确定性：环境变量会改变仿真白名单，先清掉
 ffi.C.unsetenv("BOT4CJ_CAMERA_SRC_DIR")

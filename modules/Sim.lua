@@ -38,32 +38,18 @@ local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
+-- AF_UNIX socket 公共模块：FFI 声明 + 连接工具（与 Camera.lua 共用，避免重复 cdef）
+local usock = dofile(mpath.resolve("lib/unix_socket_ffi.lua"))
 local ffi = require("ffi")
 
--- 结构体名带 cj_ 前缀：hal_backend_glibc.lua 在同一 Lua 状态里已 cdef 过一批
--- 类型，LuaJIT 对同名 struct 的重复 cdef 是硬错误（函数同签名重复则允许）。
+-- poll 结构单独声明：公共模块不包含 poll（各驱动的 pollfd 结构名不同）
 ffi.cdef[[
-typedef unsigned short cj_sa_family_t;
-struct cj_sockaddr_un { cj_sa_family_t sun_family; char sun_path[108]; };
 struct cj_pollfd { int fd; short events; short revents; };
-int socket(int domain, int type, int protocol);
-int connect(int fd, const struct cj_sockaddr_un *addr, unsigned int addrlen);
-long send(int fd, const void *buf, unsigned long len, int flags);
-long recv(int fd, void *buf, unsigned long len, int flags);
 int poll(struct cj_pollfd *fds, unsigned long nfds, int timeout);
 int errno(void);
-int close(int fd);
 ]]
 
-local AF_UNIX = 1
-local SOCK_STREAM = 1
--- 对端没了时 send 默认会发 SIGPIPE 直接打死整个 mybot 进程；MSG_NOSIGNAL
--- 把它折成 EPIPE 返回值，走下面的「断开重连」口径
-local MSG_NOSIGNAL = 0x4000
-
 local kDefaultSock = "/tmp/mybot-sim.sock"
--- sun_path 定长 108，留一位给 NUL；超长会被静默截断成另一个路径，显式拒绝
-local kMaxPathLen = 107
 
 -- .mt 动作码 → 线上动作名。下标即 .sql 注释里登记的动作码。
 local CODES = {
@@ -109,35 +95,17 @@ local function dropConnection()
 	end
 end
 
--- AF_UNIX 客户端连接小件：路径长度校验 + socket/connect，失败返回 nil。
--- 命令与 sensor 两条连接共用同一套连接规矩
-local function unixConnect(path, maxLen)
-	if #path > maxLen then
-		return nil
-	end
-	local s = ffi.C.socket(AF_UNIX, SOCK_STREAM, 0)
-	if s < 0 then
-		return nil
-	end
-	local addr = ffi.new("struct cj_sockaddr_un")
-	addr.sun_family = AF_UNIX
-	ffi.copy(addr.sun_path, path)	-- 字符串形态的 ffi.copy 会带上结尾 NUL
-	-- addrlen = family(2) + 路径字节 + NUL；按实际长度传，别传满 110
-	local addrlen = 2 + #path + 1
-	if ffi.C.connect(s, addr, addrlen) ~= 0 then
-		ffi.C.close(s)
-		return nil
-	end
-	return s
-end
-
 -- 惰性连接：build 时不连——仿真器常常后起，连接失败也不该让结构脚本 build 红
 local function ensureConnected()
 	if fd ~= nil then
 		return true
 	end
-	fd = unixConnect(sockPath(), kMaxPathLen)
-	return fd ~= nil
+	local s, _ = usock.connect(sockPath())
+	if s == nil then
+		return false
+	end
+	fd = s
+	return true
 end
 
 
@@ -226,7 +194,7 @@ function call(data)
 		return {  result = "OK"  }
 	end
 
-	local n = ffi.C.send(fd, line, #line, MSG_NOSIGNAL)
+	local n = ffi.C.send(fd, line, #line, usock.MSG_NOSIGNAL)
 	if n < 0 then
 		-- 对端没了：断开并按「仿真器缺席」口径静默成功，下次 call 重连
 		dropConnection()
@@ -246,7 +214,6 @@ end
 -- 测距（range）：走独立的 sensor socket
 ------------------------------------------------------------------
 local kSensorDefaultSock = "/tmp/mybot-sim-sensor.sock"
-local kSensorMaxPath = 107
 local kSensorPollMs = 3000
 
 local sensorFd = nil
@@ -274,11 +241,15 @@ local function ensureSensor()
 	if sensorFd ~= nil then
 		return true
 	end
-	sensorFd = unixConnect(sensorPath(), kSensorMaxPath)
-	return sensorFd ~= nil
+	local s, _ = usock.connect(sensorPath())
+	if s == nil then
+		return false
+	end
+	sensorFd = s
+	return true
 end
 
--- 带超时收一行（到 \n 为止）
+-- 带超时收一行（到 \n 为止）：用 cj_pollfd 做 poll 超时
 local function sensorRecvLine()
 	local buf = ffi.new("unsigned char[256]")
 	local got = 0
@@ -326,7 +297,7 @@ function range(data)
 	end
 
 	local req = "range\n"
-	local n = ffi.C.send(sensorFd, req, #req, MSG_NOSIGNAL)
+	local n = ffi.C.send(sensorFd, req, #req, usock.MSG_NOSIGNAL)
 	if n < 0 then
 		dropSensor()
 		return err("sensor send failed (对端断开？)")
