@@ -1,0 +1,131 @@
+# 仿真器（sim/）
+
+> 3D 蜘蛛机器人仿真器：GLFW/OpenGL 可视化从端，经三条 AF_UNIX 行文本 socket
+> 接入 mybot 链路。本文是三条桥的协议、成败口径与架构约定的单一事实源；
+> 逐字实现见 `sim/src/`（C++ 侧）与 `modules/Sim.lua` / `modules/Camera.lua`（驱动侧）。
+
+## 是什么、不是什么
+
+- **是**：可视化从端 + 感知源。上游只下发**语义动作**（前进/转向/停/拾取/放置），
+  蜘蛛步态由仿真器按身体速度自己生成，关节角不过桥——这让 `.mt` 动作脚本与
+  agent 工具层无需了解形态学。
+- **不是**：物理引擎。平面运动学（一阶滞后逼近目标速度）+ 球-AABB 碰撞推出，
+  无足地接触、无 IK；搬运减速只是「质量越大越慢」的折算公式。
+- **刻意缺席即成功**：命令桥的客户端（动作脚本）不该被一个调试窗口绑架，
+  仿真器没开 = 命令静默丢弃（`BOT4CJ_DEBUG=1` 可见）；感知桥（拍照/测距）相反，
+  抓不到就响亮 ERR——静默返回假数据比报错危险。
+
+## 构建与运行
+
+```bash
+bash scripts/build_sim.sh        # 构建 + 自动跑 simcore 单测（ctest）
+./sim/build/mybot-sim            # 监听三条缺省路径的 socket
+```
+
+独立 CMake 工程，刻意不被根 CMakeLists 引用（CI 五条 job 全 target 构建，
+镜像无 GL/X11、musl 编不过 GLFW）。依赖经 FetchContent 拉 glfw 3.4 + glm 1.0.1，
+仓库自带 glad 与 stb。
+
+目标分两层：**simcore**（GL 无关：运动学/场景交互/三桥，可单测）与
+**mybot-sim**（GLFW/OpenGL 壳）。`sim/tests/` 是 simcore 的单元测试（无 GL），
+`test/test_sim.lua` 从 mybot 侧守门 Sim 驱动的 ERR 契约与线上协议。
+
+## 三条 socket
+
+路径解析三桥同规矩：**argv > 环境变量 > 缺省**；环境变量名是 mybot 侧与仿真器
+侧的单一事实源，两侧同读。
+
+| 桥 | 环境变量 | 缺省路径 | 语义 |
+| --- | --- | --- | --- |
+| 命令 | `MYBOT_SIM_SOCK` | `/tmp/mybot-sim.sock` | 持续型即发即忘 + 一次性事件 |
+| 拍照 | `MYBOT_SIM_CAPTURE_SOCK` | `/tmp/mybot-sim-capture.sock` | 一问一答，回 JPEG 二进制体 |
+| 测距 | `MYBOT_SIM_SENSOR_SOCK` | `/tmp/mybot-sim-sensor.sock` | 一问一答，回毫米整数 |
+
+分三条的原因：Sim.lua 与 Camera.lua 是各自独立的驱动实例（各自的 lua_State /
+各自的 fd），物理上无法共用一条连接；语义上持续型命令与请求-应答也不同构。
+
+### 命令桥（`sim/src/bridge.cpp`）
+
+一行一条指令，`\n` 结尾，速度缺省 1.0：
+
+```
+forward | backward | left | right | stop   [速度 0.0~1.0]
+fdist <meters>      # 相对前进 N 米后自动停（负=后退）
+turn <degrees>      # 相对转向 N 度后自动停（正=左，负=右）
+pick                # 拾取前方 0.6m 内最近障碍
+place               # 把搬运物放到前方 0.5m 处
+```
+
+指令分两类，**别混**：
+
+- **持续型**（forward/backward/left/right/stop）：像油门位，保持到下一条持续型
+  指令为止。新持续型指令打断进行中的 fdist/turn；`stop` 只是松油门，**不打断**
+  相对运动（要取消请发一条持续型指令或新的 fdist 0）。
+- **一次性**（fdist/turn/pick/place）：入队逐条触发，每条必执行一次——连续
+  两条不同距离的 fdist 各自生效，不会互相吞。队列上限 32（防灌事件），
+  控制器断开时未执行事件作废、持续型指令回落 stop（没人管的蜘蛛不该继续走）。
+
+`.mt` 动作脚本里用**数字动作码**（矩阵单元格只解析 Float64）：
+
+```
+0=stop  1=forward  2=backward  3=left  4=right
+5=fdist(配 param=米)  6=turn(配 param=度)  7=pick  8=place
+```
+
+手测：`socat - UNIX-CONNECT:/tmp/mybot-sim.sock` 然后敲 `forward 0.5` / `stop`。
+
+### 拍照桥（`sim/src/capture.cpp`）
+
+请求 `capture\n`；响应先文本头一行、紧跟二进制体：
+
+```
+OK jpeg <len> <w> <h>\n   + <len> 字节 JPEG
+ERR <reason>\n
+```
+
+抓的是本帧渲染结果（SwapBuffers 前的 GL_BACK，垂直翻正后 stb 编码，质量 90）。
+mybot 侧归 `modules/Camera.lua` 的 sim-live 图源（`capture_image` 工具）。
+手测：`printf 'capture\n' | socat - UNIX-CONNECT:/tmp/mybot-sim-capture.sock | head -c 64`。
+
+### 测距桥（`sim/src/sensor.cpp`）
+
+请求 `range\n`；响应 `OK <mm>\n` 或 `ERR <reason>\n`。距离是身体前端中心沿
+heading 的射线与障碍盒的最近交点，无命中返回 10.0m 上限；被搬运的物体不计入。
+mybot 侧两个消费者：`Sim.lua` 的 `range()`（动作脚本可用）与 C++ 侧
+`querySimRange()`（`capture_image` 时把距离附进照片描述）。
+手测：`printf 'range\n' | socat - UNIX-CONNECT:/tmp/mybot-sim-sensor.sock`。
+
+## 三桥共同的行为约定（`sim/src/unix_line_server.cpp`）
+
+- **单线程**：无独立线程，主渲染循环每帧 `poll()` 一次；recv 非阻塞绝不卡画面，
+  发送侧带 3s 绝对 deadline（对端连上不读就断开，绝不无限阻塞）。
+- **单客户端、新顶旧**：新连接直接顶掉旧连接（对端每次请求都可能重连）。
+- **EOF 延迟断开**：对端关写端（socat 手测「发完即关」模式）时先把已到的行
+  全部派发、答复发出后再断开——请求不允许被 EOF 连带清掉。
+- **垃圾有界**：攒够 1024/4096 字节还没换行就断开，不无界吃内存；认不出的
+  指令整行忽略并告警，**不改当前状态**（持续型指令被垃圾打成 stop 是事故）。
+- SIGPIPE 一律 `MSG_NOSIGNAL` 折成 EPIPE 处理；上次异常退出留下的 socket inode
+  先 unlink 再 bind。
+
+## 架构分层
+
+```
+simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
+├─ robot.cpp    平面运动学+相对运动         ├─ main.cpp     主循环/输入/HUD
+├─ world.cpp    障碍场景/碰撞/测距/搬运     ├─ spider.cpp   四足外观步态
+├─ unix_line_server.cpp  三桥公共骨架       ├─ mesh/shader/camera
+├─ bridge.cpp   命令桥（状态+事件队列）     └─ framegrab.cpp glReadPixels→JPEG
+├─ capture.cpp  拍照桥
+└─ sensor.cpp   测距桥
+```
+
+Robot 只管运动学（`update(dt, input, maxSpeed)`，maxSpeed 由 World 按搬运负载
+折算后传入）；「世界里有什么、撞了怎么解、搬得动什么」全在 World。协调坐标系：
+机体局部 +X 前、+Y 上、+Z 右，theta 增大 = 左转。
+
+## 端到端链路
+
+`scripts/sim_agent_demo.sh` 起三层：sim + `mybot --mcp-backend` + `mybot-agent`，
+任务提示词从 `prompts/sim_obstacle_nav/`（避障探索）或 `PROMPTS_DIR` 指定目录
+按序号拼接；搬运任务提示词见 `prompts/sim_carry_task.md`（配
+`scripts/sim_pick.mt` / `sim_place.mt`）。退出时自动拆链路清 socket，日志保留。

@@ -25,6 +25,7 @@
 ## 机制深入
 
 - [agent 体系](agent.md)——`mybot --mcp-backend` + `mybot-agent` 两进程：C++ 工具后端管理**常驻**硬件，Rust 直连模型并运行工具循环；内置工具、配置归属与安全边界
+- [仿真器 sim/](sim.md)——三条 AF_UNIX 桥（命令/拍照/测距）的协议与成败口径、动作码表、simcore/GL 壳分层、socat 手测法
 - [@Daemon 守护线程](daemon.md)——并发模型、万能采样 chunk、滤波器链路、采样→滤波→消费闭环
 - [HAL 硬件抽象层](hal.md)——ffi 直调 glibc、I2C_RDWR 原子事务、驱动沙箱
 - [虚拟总线 virtbus](virtbus.md)——无真机验证驱动链路的完整参考手册（含器件模型库与回归清单）

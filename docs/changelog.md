@@ -9,6 +9,36 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-02 搬运任务链路 + 仿真器核心重构
+
+- **搬运任务链路**：命令桥增 `fdist <m>`/`turn <deg>`（相对运动到量自停）与
+  `pick`/`place`（拾取前方 0.6m 内最近障碍、按质量折算减速、放置前方 0.5m 处，
+  动作码扩到 0..8）；新增第三条 AF_UNIX 测距桥（`range\n` → `OK <mm>\n`），
+  `Sim.lua` 的 `range()`（仿真器缺席=响亮 ERR）与 `capture_image` 的照片描述
+  附加（C++ 侧 `querySimRange`）共用它；蜘蛛碰撞改为球-AABB 推出（被搬运物
+  豁免）；`prompts/sim_carry_task.md` 配 `scripts/sim_pick.mt`/`sim_place.mt`。
+- **仿真器核心重构（分四步提交，行为由测试锁住）**：
+  - **simcore/GL 壳分层**——GL 无关核心（运动学/场景交互/三桥）拆 `libsimcore`
+    静态库，新增 `sim/tests/`（85 例，无 GL 依赖即可跑），`build_sim.sh`
+    构建即 ctest，坏核心逻辑过不了构建；simcore 后续可单独挂 CI。
+  - **`UnixLineServer` 统一三桥公共骨架**（路径/bind/新顶旧 accept/按行派发/
+    带 deadline 发送），EOF 语义统一为「延迟断开」——修复 capture/sensor 对
+    「发完即关写端」（socat 手测模式）的请求会被 EOF 连带清掉的潜伏 bug；
+    发送 deadline 统一 3s。
+  - **`World` 承载场景交互**（障碍场景/碰撞解算/射线测距/拾取放置背负），
+    `Robot` 回归纯运动学（`update` 显式收 maxSpeed）；Obstacle、碰撞半径、
+    默认场景数据迁出 robot.h 与 main.cpp，物理常量归位。
+  - **命令桥改「持续状态 + 一次性事件队列」双通道**：fdist/turn/pick/place
+    逐条入队、主循环 drain 到空（队列上限 32，断连作废未执行事件）——从结构
+    上修掉「同枚举重复下发（连续两次不同距离的 fdist、两次 pick）第二条被
+    静默吞掉」的问题。
+- **文档**：新增 `docs/sim.md`——三条 socket 协议、动作码表、成败口径、
+  simcore/GL 壳分层与 socat 手测法的单一事实源；`Sim.lua` 内命令/sensor 两段
+  连接样板合并为 `unixConnect`。
+- **守门**：`test/test_sim.lua` 27 例全过；`sim/tests` 85 例（含碰撞推出、
+  连续两次 fdist 均入队的回归守门、半关写端请求不丢）。另修 `Sim.lua` 的
+  `destroy` 先于 `dropSensor` 定义导致关连接报错（Lua 局部函数前向声明）。
+
 ### 2026-10-02 仿真蜘蛛机器人：simulator 迁入 + 语义动作桥接 + 仿真内拍照
 
 - **仿真器迁入仓库**：原独立项目 mybot-simulator 复制为 `sim/`，改为独立 CMake

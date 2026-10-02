@@ -107,35 +107,35 @@ local function dropConnection()
 	end
 end
 
--- 惰性连接：build 时不连——仿真器常常后起，连接失败也不该让结构脚本 build 红
-local function ensureConnected()
-	if fd ~= nil then
-		return true
+-- AF_UNIX 客户端连接小件：路径长度校验 + socket/connect，失败返回 nil。
+-- 命令与 sensor 两条连接共用同一套连接规矩
+local function unixConnect(path, maxLen)
+	if #path > maxLen then
+		return nil
 	end
-
-	local path = sockPath()
-	if #path > kMaxPathLen then
-		return false
-	end
-
 	local s = ffi.C.socket(AF_UNIX, SOCK_STREAM, 0)
 	if s < 0 then
-		return false
+		return nil
 	end
-
 	local addr = ffi.new("struct cj_sockaddr_un")
 	addr.sun_family = AF_UNIX
 	ffi.copy(addr.sun_path, path)	-- 字符串形态的 ffi.copy 会带上结尾 NUL
 	-- addrlen = family(2) + 路径字节 + NUL；按实际长度传，别传满 110
 	local addrlen = 2 + #path + 1
-
 	if ffi.C.connect(s, addr, addrlen) ~= 0 then
 		ffi.C.close(s)
-		return false
+		return nil
 	end
+	return s
+end
 
-	fd = s
-	return true
+-- 惰性连接：build 时不连——仿真器常常后起，连接失败也不该让结构脚本 build 红
+local function ensureConnected()
+	if fd ~= nil then
+		return true
+	end
+	fd = unixConnect(sockPath(), kMaxPathLen)
+	return fd ~= nil
 end
 
 
@@ -272,24 +272,8 @@ local function ensureSensor()
 	if sensorFd ~= nil then
 		return true
 	end
-	local path = sensorPath()
-	if #path > kSensorMaxPath then
-		return false
-	end
-	local s = ffi.C.socket(AF_UNIX, SOCK_STREAM, 0)
-	if s < 0 then
-		return false
-	end
-	local addr = ffi.new("struct cj_sockaddr_un")
-	addr.sun_family = AF_UNIX
-	ffi.copy(addr.sun_path, path)
-	local addrlen = 2 + #path + 1
-	if ffi.C.connect(s, addr, addrlen) ~= 0 then
-		ffi.C.close(s)
-		return false
-	end
-	sensorFd = s
-	return true
+	sensorFd = unixConnect(sensorPath(), kSensorMaxPath)
+	return sensorFd ~= nil
 end
 
 -- 带超时收一行（到 \n 为止）
