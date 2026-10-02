@@ -5,6 +5,11 @@
 # 静态构建也编不过 GLFW。挂进根工程会直接把这五条打红。这里比照 agent/
 # （Rust）的模式：自带工程 + scripts/build_sim.sh 独立构建。
 #
+# 目标分两层：
+#   simcore   —— GL 无关的核心逻辑（运动学 + 三座 AF_UNIX 桥），可单测、可上 CI
+#   mybot-sim —— GLFW/OpenGL 可视化壳，链接 simcore
+#   sim_tests —— simcore 单元测试（无 GL 依赖，纯逻辑 + 本机 socket 回环）
+#
 # 构建：bash scripts/build_sim.sh，或
 #   cmake -S sim -B sim/build && cmake --build sim/build
 cmake_minimum_required(VERSION 3.20)
@@ -28,22 +33,38 @@ FetchContent_Declare(glm
 )
 FetchContent_MakeAvailable(glfw glm)
 
+find_package(Threads REQUIRED)
+
 add_library(glad STATIC external/glad/src/glad.c)
 target_include_directories(glad PUBLIC external/glad/include)
 
+# ---- 核心层：不 include 任何 GL 头，只依赖 glm 头与 POSIX socket ----
+add_library(simcore STATIC
+    src/robot.cpp
+    src/bridge.cpp
+    src/capture.cpp
+    src/sensor.cpp
+)
+target_include_directories(simcore PUBLIC src)
+target_link_libraries(simcore PUBLIC glm::glm Threads::Threads)
+
+# ---- 可视化壳 ----
 add_executable(mybot-sim
     src/main.cpp
     src/shader.cpp
     src/camera.cpp
     src/mesh.cpp
-    src/robot.cpp
     src/spider.cpp
-    src/bridge.cpp
-    src/capture.cpp
-    src/sensor.cpp
     src/framegrab.cpp
 )
 # external/stb：public-domain stb_image_write.h（JPEG 编码），仅 framegrab.cpp
 # 定义 STB_IMAGE_WRITE_IMPLEMENTATION 一处引入实现。
 target_include_directories(mybot-sim PRIVATE src external/stb)
-target_link_libraries(mybot-sim PRIVATE glfw glad glm::glm)
+target_link_libraries(mybot-sim PRIVATE simcore glfw glad)
+
+# ---- 核心层单测（无 GL；纯逻辑断言 + 本机 AF_UNIX 回环） ----
+add_executable(sim_tests tests/main.cpp)
+target_link_libraries(sim_tests PRIVATE simcore)
+
+enable_testing()
+add_test(NAME sim_core COMMAND sim_tests)

@@ -6,7 +6,7 @@
 # sim/build/ 已被 .gitignore 的 build/ 规则覆盖。
 #
 # 用法：bash scripts/build_sim.sh [额外的 cmake configure 参数...]
-#   缺省构建 Release，产物在 sim/build/mybot-sim
+#   缺省构建 Release，产物在 sim/build/mybot-sim，并跑 simcore 单测（sim_tests）
 #
 # 跑起来：
 #   bash scripts/build_sim.sh
@@ -19,5 +19,8 @@ root="$(cd "$here/.." && pwd)"
 
 cmake -S "$root/sim" -B "$root/sim/build" -DCMAKE_BUILD_TYPE=Release "$@"
 cmake --build "$root/sim/build" -j"$(nproc)"
+
+# simcore 单测：无 GL 依赖，毫秒级，构建立即跑，别让坏核心逻辑过夜
+ctest --test-dir "$root/sim/build" --output-on-failure
 
 echo "产物: $root/sim/build/mybot-sim"
