@@ -63,8 +63,10 @@ add_executable(mybot-sim
     src/framegrab.cpp
 )
 # external/stb：public-domain stb_image_write.h（JPEG 编码），仅 framegrab.cpp
-# 定义 STB_IMAGE_WRITE_IMPLEMENTATION 一处引入实现。
-target_include_directories(mybot-sim PRIVATE src external/stb)
+# 定义 STB_IMAGE_WRITE_IMPLEMENTATION 一处引入实现。标 SYSTEM 让 -Wall -Wextra
+# 不去警告这份第三方头（它自带一堆 -Wmissing-field-initializers），只查本仓代码。
+target_include_directories(mybot-sim PRIVATE src)
+target_include_directories(mybot-sim SYSTEM PRIVATE external/stb)
 target_link_libraries(mybot-sim PRIVATE simcore glfw glad)
 
 # ---- 核心层单测（无 GL；纯逻辑断言 + 本机 AF_UNIX 回环） ----
@@ -73,6 +75,16 @@ target_link_libraries(sim_tests PRIVATE simcore)
 # 一致性守门要读 modules/Sim.lua 交叉校验动作码，路径在编译期定死（源码树内）
 target_compile_definitions(sim_tests
     PRIVATE MYBOT_MODULES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../modules")
+
+# 编译期扩展性守门。-Wall -Wextra 保持代码整洁；-Werror=switch 专治本仓最痛的
+# 漏改：新增了 SimCommand / SimEvent::Type 枚举值，却忘了在 commandToInput /
+# applyEvent 的 switch 里补对应 case——这两处 switch 刻意不写 default，就是为了让
+# -Wswitch 生效，把「新动作静默 no-op」从运行期的隐蔽 bug 变成编译不过。
+# 只对本地三个 target 生效，不碰 FetchContent 拉来的 glfw/glm/glad。
+foreach(sim_tgt simcore mybot-sim sim_tests)
+    target_compile_options(${sim_tgt} PRIVATE
+        $<$<OR:$<CXX_COMPILER_ID:GNU>,$<CXX_COMPILER_ID:Clang>>:-Wall;-Wextra;-Werror=switch>)
+endforeach()
 
 enable_testing()
 add_test(NAME sim_core COMMAND sim_tests)

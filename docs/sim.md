@@ -85,6 +85,12 @@ save                # 把当前场景写回配置的场景文件（见「场景�
 与表一致——加动作只需在表里追加一行，漏改 Lua 会被测试挡下（数字码是对外契约，
 `.mt`/`.sql`/本文都用它，**只增不改**）。
 
+漏改还有第二道、且是编译期的防线：新增一个 `SimCommand` / `SimEvent::Type` 枚举值后，
+若忘了在 `sim_engine.cpp` 的 `commandToInput` / `applyEvent` 里补对应 case，动作会静默
+no-op。这两处 switch 刻意不写 `default`，配合 CMake 对本地三 target 开的
+`-Werror=switch`（`-Wall -Wextra` 之外单挑这一条升级为错误），漏 case 直接编译不过。
+第三方头（stb/glfw/glm）标 SYSTEM 或独立 target，不受这些告警影响。
+
 手测：`socat - UNIX-CONNECT:/tmp/mybot-sim.sock` 然后敲 `forward 0.5` / `stop`。
 
 ### 拍照桥（`sim/src/capture.cpp`）
