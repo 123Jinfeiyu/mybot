@@ -84,6 +84,70 @@ bool g_toggleCamera = false;
 bool g_dragging = false;
 double g_lastX = 0.0, g_lastY = 0.0;
 
+// 场景障碍物：静态盒体（center=中心, half=半尺寸, color=漫反射色）。
+// 蜘蛛从原点出发沿 +X 前进，障碍散布在前进路线两侧。2026-10-02 加碰撞：
+// 蜘蛛用 XZ 平面的球（半径 kRobotRadius）近似车身，与障碍 AABB 做球-盒碰撞，
+// 撞了就把球沿最短轴推出盒面（slide 行为，不反弹）。
+struct Obstacle {
+    glm::vec3 center;
+    glm::vec3 half;
+    glm::vec3 color;
+};
+constexpr float kRobotRadius = 0.20f;  // 蜘蛛碰撞球半径（XZ 平面，约半车身长）
+const Obstacle kObstacles[] = {
+    {{2.0f, 0.40f, 1.2f}, {0.40f, 0.40f, 0.40f}, {0.72f, 0.30f, 0.24f}},   // 前进左前方的红箱
+    {{3.5f, 0.50f, -0.6f}, {0.20f, 0.50f, 1.20f}, {0.45f, 0.52f, 0.60f}},  // 横在右前的矮墙
+    {{1.2f, 0.25f, -1.6f}, {0.50f, 0.25f, 0.50f}, {0.80f, 0.66f, 0.25f}},  // 右侧的黄块
+    {{4.5f, 0.75f, 1.8f}, {0.25f, 0.75f, 0.25f}, {0.30f, 0.55f, 0.35f}},   // 远处的绿柱
+    {{0.6f, 0.30f, 2.2f}, {0.30f, 0.30f, 0.30f}, {0.55f, 0.42f, 0.60f}},   // 左后的紫箱
+    {{6.0f, 0.35f, 0.8f}, {0.35f, 0.35f, 0.35f}, {0.85f, 0.45f, 0.20f}},   // 第二排橙箱
+    {{7.5f, 0.60f, -1.0f}, {0.20f, 0.60f, 0.80f}, {0.30f, 0.40f, 0.65f}},  // 深处蓝墙
+    {{5.5f, 0.25f, -2.2f}, {0.45f, 0.25f, 0.45f}, {0.25f, 0.60f, 0.55f}},  // 右深的青块
+    {{8.5f, 0.40f, 1.5f}, {0.40f, 0.40f, 0.40f}, {0.65f, 0.30f, 0.50f}},   // 远处品红箱
+    {{6.8f, 0.30f, 2.8f}, {0.30f, 0.30f, 0.30f}, {0.55f, 0.65f, 0.25f}},   // 左深的绿黄箱
+    {{9.5f, 0.50f, -0.2f}, {0.25f, 0.50f, 0.25f}, {0.75f, 0.75f, 0.72f}},  // 尽头白柱
+};
+
+// 球（XZ 平面）vs AABB（XZ 截面）碰撞解算：把球心推出盒面。
+// 返回 true 表示发生了碰撞（位置被修正）。
+bool resolveSphereAABB2D(float& sx, float& sz, float radius,
+                         const Obstacle& ob) {
+    const float bx = ob.center.x, bz = ob.center.z;
+    const float hx = ob.half.x, hz = ob.half.z;
+    // 盒面上离球心最近的点
+    const float cx = std::clamp(sx, bx - hx, bx + hx);
+    const float cz = std::clamp(sz, bz - hz, bz + hz);
+    const float dx = sx - cx, dz = sz - cz;
+    const float distSq = dx * dx + dz * dz;
+    if (distSq >= radius * radius) {
+        return false;  // 无碰撞
+    }
+    const float dist = std::sqrt(distSq);
+    if (dist < 1e-5f) {
+        // 球心在盒内：沿最短轴推出
+        const float penXp = (bx + hx) - sx, penXn = sx - (bx - hx);
+        const float penZp = (bz + hz) - sz, penZn = sz - (bz - hz);
+        float minPen = penXp;
+        int axis = 0;  // 0=x, 1=z
+        float sign = 1.0f;
+        if (penXn < minPen) { minPen = penXn; axis = 0; sign = -1.0f; }
+        if (penZp < minPen) { minPen = penZp; axis = 1; sign = 1.0f; }
+        if (penZn < minPen) { minPen = penZn; axis = 1; sign = -1.0f; }
+        const float push = radius + minPen;
+        if (axis == 0) {
+            sx += sign * push;
+        } else {
+            sz += sign * push;
+        }
+    } else {
+        // 球心在盒外但距离 < radius：沿 dx,dz 方向推出
+        const float push = radius - dist;
+        sx += (dx / dist) * push;
+        sz += (dz / dist) * push;
+    }
+    return true;
+}
+
 void framebufferSizeCallback(GLFWwindow*, int width, int height) {
     glViewport(0, 0, width, height);
 }
@@ -236,6 +300,14 @@ int main(int argc, char** argv) {
 
         const RobotInput input = commandToInput(bridge.command(), bridge.speed());
         robot.update(dt, input);
+        // 碰撞解算：逐个障碍检查，撞了就推出（多障碍时逐次解算，不迭代）
+        for (const Obstacle& ob : kObstacles) {
+            float rx = robot.x(), rz = robot.z();
+            if (resolveSphereAABB2D(rx, rz, kRobotRadius, ob)) {
+                robot.setX(rx);
+                robot.setZ(rz);
+            }
+        }
         spider.update(dt, robot.v());
 
         if (g_camera.follow) {
@@ -265,6 +337,15 @@ int main(int argc, char** argv) {
         phong.setMat4("model", ground);
         phong.setVec3("objectColor", glm::vec3(0.38f, 0.46f, 0.36f));
         meshes.cube.draw();
+
+        // 障碍盒：unit cube 经 translate(center)*scale(2*half) 摆到位
+        for (const Obstacle& ob : kObstacles) {
+            glm::mat4 m = glm::translate(glm::mat4(1.0f), ob.center) *
+                          glm::scale(glm::mat4(1.0f), ob.half * 2.0f);
+            phong.setMat4("model", m);
+            phong.setVec3("objectColor", ob.color);
+            meshes.cube.draw();
+        }
 
         drawSpider(robot, spider, phong, meshes);
 

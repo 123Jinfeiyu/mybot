@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# sim_agent_demo.sh —— 轻量方案：起 sim + backend + mybot-agent 三层链路，把 agent
+# 的输出实时打到终端，**不改 sim 渲染**（窗口内叠文字要新增字体图集+overlay，是另一档工作量）。
+#
+# 终端上同时看到两路：
+#   * agent 的「说」——stdout 流式叙述。run_task_once 里 out! 逐 delta flush（见
+#     agent/src/repl/mod.rs:529），故经 tee 边上屏边落盘；
+#   * agent 的「做」——backend 审计日志（--audit-log）每派发一个工具落一行 JSON，
+#     后台 tail -F 经格式化器打成「[tool] 名字 ok 耗时」单行。工具轮 stdout 往往静默
+#     （模型那轮只发工具调用、正文为空），这一路正好补上「它此刻在干什么」。
+#   * 另外 sim 窗口标题自带最近一条动作（CommandBridge::lastLine()），无需本脚本参与。
+#
+# 为什么合一路不会串行：工具调用轮 agent 正文为空（repl/mod.rs:523 跳过空文本），
+# 那段时间只有 [tool] 行；最终叙述轮不再调工具，那段时间只有流式正文。两路天然错开。
+#
+# 用法：
+#   bash scripts/sim_agent_demo.sh                       # 缺省探索任务
+#   TASK="朝 +x 方向前进，绕过挡路的障碍" bash scripts/sim_agent_demo.sh
+#   LLM_CFG=/path/other.json ROBOT=robots/spider_sim.sql bash scripts/sim_agent_demo.sh
+#
+# 环境可覆盖：SIM_BIN BOT_BIN AGENT_BIN LLM_CFG ROBOT TASK MYBOT_SIM_SOCK MYBOT_SIM_CAPTURE_SOCK
+# 退出：agent 跑完或 Ctrl-C，自动拆链路、清 socket；日志目录路径退出时打印（保留）。
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$root" || exit 1
+
+SIM_BIN="${SIM_BIN:-$root/sim/build/mybot-sim}"
+BOT_BIN="${BOT_BIN:-$root/build/mybot}"
+AGENT_BIN="${AGENT_BIN:-$root/agent/target/release/mybot-agent}"
+LLM_CFG="${LLM_CFG:-$root/mybot.llm.json}"
+ROBOT="${ROBOT:-robots/spider_sim.sql}"
+TASK="${TASK:-你在一个摆着障碍物的仿真环境里，是一只蜘蛛机器人。先用 capture_image 拍照看清周围，\
+然后自主前进并绕过挡路的障碍物：每做一次动作前都先拍照确认方向。走 6 到 10 步后停下，\
+用中文简要报告你看到了哪些障碍、你是怎么绕的、最后停在哪。}"
+
+SIM_SOCK="${MYBOT_SIM_SOCK:-/tmp/mybot-sim.sock}"
+CAP_SOCK="${MYBOT_SIM_CAPTURE_SOCK:-/tmp/mybot-sim-capture.sock}"
+
+# ---- preflight：缺任一要件就如实报错退出，不起半条链路 ----
+miss=0
+for b in "$SIM_BIN" "$BOT_BIN" "$AGENT_BIN"; do
+	[ -x "$b" ] || { echo "缺可执行文件: $b" >&2; miss=1; }
+done
+[ -f "$LLM_CFG" ] || { echo "缺 LLM 配置: $LLM_CFG（含 endpoint/model/api_key）" >&2; miss=1; }
+[ -f "$ROBOT" ] || { echo "缺结构脚本: $ROBOT" >&2; miss=1; }
+[ "$miss" -eq 0 ] || exit 1
+command -v python3 >/dev/null 2>&1 || { echo "缺 python3（审计格式化器）" >&2; exit 1; }
+
+RUN="$(mktemp -d /tmp/sim-agent-demo.XXXXXX)"
+chmod 700 "$RUN"
+MCP_SOCK="$RUN/mcp.sock"
+BAUD="$RUN/backend-audit.jsonl"
+AOUT="$RUN/agent.log"
+SIM_LOG="$RUN/sim.log"
+BOT_LOG="$RUN/backend.log"
+
+SIM_PID=""; BOT_PID=""; FEED_PID=""
+cleanup() {
+	trap - EXIT INT TERM
+	[ -n "$FEED_PID" ] && kill "$FEED_PID" 2>/dev/null
+	[ -n "$BOT_PID" ] && kill -TERM "$BOT_PID" 2>/dev/null
+	[ -n "$SIM_PID" ] && kill -TERM "$SIM_PID" 2>/dev/null
+	[ -n "$BOT_PID" ] && wait "$BOT_PID" 2>/dev/null
+	[ -n "$SIM_PID" ] && wait "$SIM_PID" 2>/dev/null
+	rm -f "$SIM_SOCK" "$CAP_SOCK"
+	echo
+	echo "日志保留在: $RUN"
+	echo "  agent 输出(说): $AOUT"
+	echo "  工具审计(做):   $BAUD"
+	echo "  sim/backend:    $SIM_LOG / $BOT_LOG"
+}
+trap cleanup EXIT INT TERM
+
+wait_sock() { # $1=socket $2= tries $3=名字 $4=日志
+	local _
+	for _ in $(seq 1 "$2"); do
+		[ -S "$1" ] && return 0
+		sleep 0.1
+	done
+	echo "$3 未就绪（$4 尾部）:" >&2
+	tail -5 "$4" 2>/dev/null | sed 's/^/    /' >&2
+	return 1
+}
+
+# 残留 socket 会让 sim 绑定失败——这两个是 sim 自己的，起前清掉安全。
+rm -f "$SIM_SOCK" "$CAP_SOCK"
+
+echo "=== 1/3 起仿真器 sim（窗口会出现；标题显示最近动作）==="
+"$SIM_BIN" >"$SIM_LOG" 2>&1 &
+SIM_PID=$!
+wait_sock "$SIM_SOCK" 60 "sim 命令桥" "$SIM_LOG" || exit 1
+
+echo "=== 2/3 起后端 mybot --mcp-backend（robot=$ROBOT, 审计=$BAUD）==="
+# MYBOT_SIM_CAPTURE_SOCK 让 Camera.lua 从 sim 抓实时帧（capture_image 工具的图源）。
+MYBOT_SIM_CAPTURE_SOCK="$CAP_SOCK" "$BOT_BIN" --robot="$ROBOT" --mcp-backend \
+	--mcp-socket "$MCP_SOCK" --scripts-dir scripts --audit-log "$BAUD" \
+	>"$BOT_LOG" 2>&1 &
+BOT_PID=$!
+wait_sock "$MCP_SOCK" 80 "后端 MCP" "$BOT_LOG" || exit 1
+
+echo "=== 3/3 起 agent（实时输出在下；[tool]=审计逐工具调用，其余=agent 流式正文）==="
+# 工具调用实时喂：tail -F 审计 → python 格式化器打成单行。先 touch 免 tail 报无文件。
+touch "$BAUD"
+(
+	tail -n +1 -F "$BAUD" 2>/dev/null | python3 -u -c '
+import json, sys
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    k = d.get("kind")
+    if k == "tool":
+        ok = "ok" if d.get("ok") else "FAIL"
+        ms = d.get("ms", "")
+        name = d.get("tool", "?")
+        extra = d.get("summary") or ""
+        extra = (" | " + str(extra)[:80]) if extra else ""
+        sys.stdout.write("[tool] %s %s %sms%s\n" % (name, ok, ms, extra))
+        sys.stdout.flush()
+    elif k == "session":
+        sys.stdout.write("[session] %s\n" % d.get("status", ""))
+        sys.stdout.flush()
+'
+) &
+FEED_PID=$!
+
+# agent 在前台：stdout(流式叙述)+stderr(就绪行/重试) 合流，经 tee 上屏并落盘。
+BOT4CJ_LLM_KEY="${BOT4CJ_LLM_KEY:-}" "$AGENT_BIN" --socket "$MCP_SOCK" \
+	--llm-config "$LLM_CFG" --task "$TASK" 2>&1 | tee "$AOUT"
+rc=${PIPESTATUS[0]}
+
+echo
+if [ "$rc" -eq 0 ]; then
+	echo "=== agent 跑完（rc=0）。拆链路中… ==="
+else
+	echo "=== agent 退出码 $rc（见上方输出与 $BOT_LOG）。拆链路中… ==="
+fi
+exit "$rc"

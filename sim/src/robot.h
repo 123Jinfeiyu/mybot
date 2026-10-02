@@ -40,6 +40,9 @@ public:
     float v() const { return v_; }
     float omega() const { return omega_; }
 
+    void setX(float x) { x_ = x; }
+    void setZ(float z) { z_ = z; }
+
 private:
     float x_ = 0.0f, z_ = 0.0f, theta_ = 0.0f;
     float v_ = 0.0f, omega_ = 0.0f;
