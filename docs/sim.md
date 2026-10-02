@@ -59,6 +59,7 @@ bash scripts/build_sim.sh        # 构建 + 自动跑 simcore 单测（ctest）
 forward | backward | left | right | stop   [速度 0.0~1.0]
 fdist <meters>      # 相对前进 N 米后自动停（负=后退）
 turn <degrees>      # 相对转向 N 度后自动停（正=左，负=右）
+jump <meters> <height>  # 向前弹道跳：水平前跳 N 米、apex 离地 height 米
 pick                # 拾取前方 0.6m 内最近障碍
 place               # 把搬运物放到前方 0.5m 处
 save                # 把当前场景写回配置的场景文件（见「场景文件」）
@@ -69,7 +70,7 @@ save                # 把当前场景写回配置的场景文件（见「场景�
 - **持续型**（forward/backward/left/right/stop）：像油门位，保持到下一条持续型
   指令为止。新持续型指令打断进行中的相对运动；`stop` 只是松油门，**不打断**
   相对运动（要取消请发一条持续型指令或新的 fdist 0）。
-- **一次性**（fdist/turn/pick/place/save）：入队逐条触发，每条必执行一次。
+- **一次性**（fdist/turn/jump/pick/place/save）：入队逐条触发，每条必执行一次。
   fdist 与 turn **顺序执行**（先走完再转，同帧连发也不互相吞），同通道新目标
   覆盖旧目标；到量前提前松油门刹车，实际位姿贴着目标（不再有减速尾程的
   滑出）。队列上限 32（防灌事件），控制器断开时未执行事件作废、持续型指令
@@ -80,11 +81,12 @@ save                # 把当前场景写回配置的场景文件（见「场景�
 ```
 0=stop  1=forward  2=backward  3=left  4=right
 5=fdist(配 param=米)  6=turn(配 param=度)  7=pick  8=place  9=save
+10=jump(配 param=前跳米数, param2=apex 高度米数，两参都必填)
 ```
 
 动作分类学（码↔线上名↔持续/一次性↔是否带参）的**单一事实源是
 `sim/src/action_table.h`**：命令桥查表分派（不再手写 if-else 字符串链），
-`sim/tests` 交叉校验 `modules/Sim.lua` 的 `CODES`/`PARAM_CODES`/`CODE_MAX`
+`sim/tests` 交叉校验 `modules/Sim.lua` 的 `CODES`/`PARAM_CODES`/`PARAM2_CODES`/`CODE_MAX`
 与表一致——加动作只需在表里追加一行，漏改 Lua 会被测试挡下（数字码是对外契约，
 `.mt`/`.sql`/本文都用它，**只增不改**）。
 
@@ -95,6 +97,31 @@ no-op。这两处 switch 刻意不写 `default`，配合 CMake 对本地三 targ
 第三方头（stb/glfw/glm）标 SYSTEM 或独立 target，不受这些告警影响。
 
 手测：`socat - UNIX-CONNECT:/tmp/mybot-sim.sock` 然后敲 `forward 0.5` / `stop`。
+
+### 跳跃与竖直动力学（动作码 10）
+
+`jump` 是仿真器**唯一的竖直动作**：其余动作全在 XZ 平面，蜘蛛身体高度是常量。
+它引入一套受控的最小竖直动力学（`robot.h`/`world.cpp`），既能跳过矮障碍，也能
+跳上箱子、在箱顶行走、走下箱沿坠落——但刻意不做完整刚体物理。
+
+- **起跳**：`launch(dist,height)` 折算竖直冲量 `vy0=√(2g·height)`、滞空
+  `t=2vy0/g`、水平发射速度 `vx=dist/t`。空中水平速度守恒（无阻力）、朝向冻结
+  （无空中转向/油门），只受重力拉一条抛物线。`height`/`dist` 分别钳到
+  `kMaxJumpHeight=1.5m`/`kMaxJumpDist=4m`。落到更低处会比 `dist` 滑得更远。
+- **支撑面**：`World::supportHeight()` 每帧算脚下（XZ 圆重叠、顶面不高于脚）
+  最高的箱顶，无箱则地面 0；`Robot::applySupport()` 据此在 `y≤support` 时吸附
+  落地、否则保持离地。走下箱沿 → 支撑突降 → 自动转坠落，带着走出边缘时的动量。
+- **高度感知碰撞**：`resolveCollisions` 把顶面 ≤ 脚下 `y+kGroundSnapTol(2cm)` 的
+  障碍当「地板」（可站/可跳过、不推），只有比脚高的「墙」才 XZ 推出。所以跳弧
+  apex 高过箱顶就能越过/落上它，不够高则被当墙挡回。2cm 容差也意味着**地面行驶
+  几乎不会自动爬箱**（碰撞语义与加跳跃前一致），要上箱必须跳。
+- **不影响**：射线测距仍是 XZ 平面读数（不按 y，站箱上时读的是平面投影距离）；
+  搬运物 y 跟随机体离地高度一起升降。相机跟随目标带上机体 y，跳跃时镜头跟着抬。
+
+`.mt` 侧：`scripts/sim_jump.mt` 用第二参数列 `sim.Q`（`spider_sim.sql` 的
+`Q→param2` 别名）传高度，`run_action_script(script="sim_jump.mt",
+vars={"dist":0.8,"height":0.35})` 注入。
+
 
 ### 拍照桥（`sim/src/capture.cpp`）
 

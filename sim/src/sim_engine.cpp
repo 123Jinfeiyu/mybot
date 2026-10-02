@@ -115,6 +115,10 @@ void SimEngine::applyEvent(const SimEvent& ev, std::size_t idx) {
             std::fprintf(stderr, "cmd[%zu]: turn %.2f\n", idx, ev.param);
             r.setRelativeTurn(glm::radians(ev.param));
             break;
+        case SimEvent::Type::Jump:
+            std::fprintf(stderr, "cmd[%zu]: jump dist=%.2f height=%.2f\n", idx, ev.param, ev.param2);
+            r.launch(ev.param, ev.param2);
+            break;
         case SimEvent::Type::Pick:
             if (r.isCarrying()) {
                 std::fprintf(stderr, "pick[%zu]: 已持有物体 (idx=%d, %.2fkg)，忽略\n", idx,
@@ -145,12 +149,19 @@ void SimEngine::step(float dt) {
     for (RobotSlot& s : slots_) {
         Robot& r = s.robot;
         RobotInput input = commandToInput(s.command, s.speed);
-        RobotInput relInput;
-        if (r.tickRelative(dt, relInput)) {
-            input = relInput;
+        // 空中不接受持续型/相对运动控制（update 走弹道分支会忽略 input），故跳过
+        // tickRelative，让进行中的 fdist/turn 剩余量冻结到落地后再续——否则滞空期
+        // 会按发射速度空耗掉相对运动的量。
+        if (!r.isAirborne()) {
+            RobotInput relInput;
+            if (r.tickRelative(dt, relInput)) {
+                input = relInput;
+            }
         }
         r.update(dt, input, r.effectiveMaxSpeed());
         world_.resolveCollisions(r);
+        // 竖直：按脚下支撑面（地面或箱顶）落地吸附；支撑突降（走下箱沿）即转坠落。
+        r.applySupport(world_.supportHeight(r));
         world_.updateCarried(r);
     }
 }

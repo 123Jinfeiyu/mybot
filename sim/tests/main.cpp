@@ -487,6 +487,21 @@ void testCommandBridge() {
     bridge.poll();
     check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Save, "save 入队");
 
+    // jump 带两个数值参数：param=前跳距离、param2=apex 高度
+    say(fd, "jump 0.8 0.35\n");
+    bridge.poll();
+    check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Jump &&
+              near(ev.param, 0.8f, 1e-4f) && near(ev.param2, 0.35f, 1e-4f),
+          "jump 双参入队（param=距离, param2=高度）");
+    // 缺第二参数：整行忽略，不产生半截跳跃事件
+    say(fd, "jump 0.8\n");
+    bridge.poll();
+    check(!bridge.pollEvent(ev), "jump 缺高度参数被整行忽略");
+    // 第二参数非数字：同样整行忽略
+    say(fd, "jump 0.8 abc\n");
+    bridge.poll();
+    check(!bridge.pollEvent(ev), "jump 坏高度参数被整行忽略");
+
     // 半关写端（socat 手测模式）：事件不能被 EOF 连带清掉
     say(fd, "fdist 3\n");
     ::shutdown(fd, SHUT_WR);
@@ -702,6 +717,7 @@ void testActionTable() {
     }
     const std::map<int, std::string> codes = parseCodeNames(braceBlock(lua, "local CODES ="));
     const std::set<int> params = parseCodeSet(braceBlock(lua, "local PARAM_CODES ="));
+    const std::set<int> params2 = parseCodeSet(braceBlock(lua, "local PARAM2_CODES ="));
 
     int codeMax = -1;
     const std::size_t cmPos = lua.find("CODE_MAX");
@@ -717,6 +733,8 @@ void testActionTable() {
         check(it != codes.end() && it->second == a.wireName, "Lua CODES 动作名与表一致");
         const bool luaNeedsParam = params.count(a.code) != 0;
         check(luaNeedsParam == a.needsParam, "Lua PARAM_CODES 与表 needsParam 一致");
+        const bool luaNeedsParam2 = params2.count(a.code) != 0;
+        check(luaNeedsParam2 == a.needsParam2, "Lua PARAM2_CODES 与表 needsParam2 一致");
     }
 }
 
@@ -761,7 +779,9 @@ void testActionTableDispatch() {
 
         char line[64];
         if (a.kind == ActionKind::OneShot) {
-            if (a.needsParam) {
+            if (a.needsParam2) {
+                std::snprintf(line, sizeof(line), "%s 2.5 1.5\n", a.wireName);
+            } else if (a.needsParam) {
                 std::snprintf(line, sizeof(line), "%s 2.5\n", a.wireName);
             } else {
                 std::snprintf(line, sizeof(line), "%s\n", a.wireName);
@@ -770,7 +790,10 @@ void testActionTableDispatch() {
             bridge.poll();
             check(bridge.pollEvent(ev) && ev.type == a.oneShot, "一次性动作按表入队");
             if (a.needsParam) {
-                check(near(ev.param, 2.5f, 1e-4f), "带参动作参数被解析");
+                check(near(ev.param, 2.5f, 1e-4f), "带参动作首参被解析");
+            }
+            if (a.needsParam2) {
+                check(near(ev.param2, 1.5f, 1e-4f), "带双参动作第二参被解析");
             }
         } else {
             std::snprintf(line, sizeof(line), "%s\n", a.wireName);
@@ -1069,6 +1092,123 @@ void testEngineMultiRobot() {
     ::unlink(path.c_str());
 }
 
+// ---- 跳跃 / 竖直动力学 / 支撑面（动作码 10）headless 守门 ----
+//
+// 覆盖：起跳弹道 apex 与落回、跳到箱顶站稳、箱顶行走、走下箱沿坠落、apex 不够高
+// 被当墙挡（高度感知碰撞）、jump 经引擎事件派发。GL 无关，全在 SimEngine+World+Robot 上跑。
+SimEvent mkJump(float dist, float height) {
+    SimEvent ev;
+    ev.type = SimEvent::Type::Jump;
+    ev.param = dist;
+    ev.param2 = height;
+    return ev;
+}
+
+void testJump() {
+    const float dt = 1.0f / 60.0f;
+
+    // ① 空场景原地跳（dist=0）：升到设定 apex 再落回地面，无水平位移
+    {
+        const std::string p = engineScenePath("jump-empty");
+        writeTextFile(p, "mybot-sim scene v1\nrobot 0 0 0\n");
+        SimEngine eng(p);
+        eng.reloadScene();
+        eng.applyEvent(mkJump(0.0f, 0.5f));
+        float maxY = 0.0f;
+        int guard = 0;
+        while (eng.robot().isAirborne() && guard++ < 600) {
+            eng.step(dt);
+            if (eng.robot().y() > maxY) {
+                maxY = eng.robot().y();
+            }
+        }
+        check(!eng.robot().isAirborne(), "原地跳落地后 airborne 清除");
+        check(maxY > 0.40f && maxY < 0.55f, "跳跃 apex 接近设定高度 0.5m");
+        check(near(eng.robot().y(), 0.0f, 0.02f), "落回地面 y≈0");
+        check(near(eng.robot().x(), 0.0f, 1e-3f), "dist=0 原地跳无水平位移");
+        ::unlink(p.c_str());
+    }
+
+    // ② 跳到箱顶站稳（apex 高过箱顶）③ 箱顶行走 y 保持箱高
+    {
+        const std::string p = engineScenePath("jump-box");
+        // 宽箱 center(1.4,0.15,0) half(1.0,0.15,1.0) → x 0.4..2.4、顶面 0.3
+        writeTextFile(p, "mybot-sim scene v1\nrobot 0 0 0\nbox 1.4 0.15 0 1.0 0.15 1.0 1 0 0\n");
+        SimEngine eng(p);
+        eng.reloadScene();
+        eng.applyEvent(mkJump(0.8f, 0.6f));  // apex 0.6 > 箱顶 0.3
+        int guard = 0;
+        while (eng.robot().isAirborne() && guard++ < 600) {
+            eng.step(dt);
+        }
+        check(!eng.robot().isAirborne(), "跳上箱后落地");
+        check(near(eng.robot().y(), 0.3f, 0.05f), "落在箱顶 y≈箱高 0.3");
+        check(eng.robot().x() > 0.4f && eng.robot().x() < 2.4f, "落点在箱面 x 范围内");
+
+        const float landX = eng.robot().x();
+        eng.applyContinuous(SimCommand::Forward, 1.0f);
+        for (int i = 0; i < 30; ++i) {
+            eng.step(dt);
+        }
+        eng.applyContinuous(SimCommand::Stop, 1.0f);
+        check(near(eng.robot().y(), 0.3f, 0.05f), "箱顶行走 y 保持箱高（不掉下去）");
+        check(eng.robot().x() > landX + 0.1f, "箱顶行走 x 前进");
+        check(eng.robot().x() < 2.4f, "箱顶行走仍在箱面内");
+        ::unlink(p.c_str());
+    }
+
+    // ④ 走下箱沿 → 支撑突降 → 自动坠回地面
+    {
+        const std::string p = engineScenePath("jump-fall");
+        // 窄箱 x 0.4..1.2、顶面 0.3；跳上后一直前进会走出远端
+        writeTextFile(p, "mybot-sim scene v1\nrobot 0 0 0\nbox 0.8 0.15 0 0.4 0.15 0.4 1 0 0\n");
+        SimEngine eng(p);
+        eng.reloadScene();
+        eng.applyEvent(mkJump(0.6f, 0.6f));
+        int guard = 0;
+        while (eng.robot().isAirborne() && guard++ < 600) {
+            eng.step(dt);
+        }
+        check(near(eng.robot().y(), 0.3f, 0.05f), "先落在窄箱顶 y≈0.3");
+        eng.applyContinuous(SimCommand::Forward, 1.0f);
+        // 先前进到走出箱沿（airborne 再次为真 = 支撑突降开始坠落），再到重新落地。
+        // 不能用 y 阈值判落地：y 降到 0.05 时仍高于地面支撑 0，airborne 还没清。
+        guard = 0;
+        bool leftBox = false;
+        while (guard++ < 600) {
+            eng.step(dt);
+            if (eng.robot().isAirborne()) {
+                leftBox = true;
+            } else if (leftBox) {
+                break;  // 走过箱沿坠落、又落回地面
+            }
+        }
+        eng.applyContinuous(SimCommand::Stop, 1.0f);
+        check(leftBox, "前进后走出箱沿转为坠落（airborne 一度为真）");
+        check(near(eng.robot().y(), 0.0f, 0.02f), "走下箱沿后坠回地面 y≈0");
+        check(!eng.robot().isAirborne(), "坠地后 airborne 清除");
+        check(eng.robot().x() > 1.0f, "已走过箱子远端（x>1.0）");
+        ::unlink(p.c_str());
+    }
+
+    // ⑤ apex 不够高：箱子当墙挡回（高度感知碰撞），跳不上去、落回地面
+    {
+        const std::string p = engineScenePath("jump-wall");
+        // 高箱 center(0.8,0.25,0) half(0.4,0.25,0.4) → x 0.4..1.2、顶面 0.5
+        writeTextFile(p, "mybot-sim scene v1\nrobot 0 0 0\nbox 0.8 0.25 0 0.4 0.25 0.4 1 0 0\n");
+        SimEngine eng(p);
+        eng.reloadScene();
+        eng.applyEvent(mkJump(1.5f, 0.2f));  // apex 0.2 < 箱顶 0.5 → 挡回
+        int guard = 0;
+        while (eng.robot().isAirborne() && guard++ < 600) {
+            eng.step(dt);
+        }
+        check(near(eng.robot().y(), 0.0f, 0.05f), "跳不够高：落回地面 y≈0（没上箱）");
+        check(eng.robot().x() < 0.6f, "跳不够高：被箱当墙挡在近面外");
+        ::unlink(p.c_str());
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1088,6 +1228,7 @@ int main() {
     testSimEngine();
     testMultiRobot();
     testEngineMultiRobot();
+    testJump();
 
     std::printf("sim_tests: %d 通过, %d 失败\n", g_total - g_failed, g_failed);
     return g_failed == 0 ? 0 : 1;

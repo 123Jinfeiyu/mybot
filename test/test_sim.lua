@@ -51,12 +51,16 @@ do
 		{ "call(nil)", nil },
 		{ "缺 action", {} },
 		{ "action 是动作名字符串（矩阵只收 Float64）", { action = "forward" } },
-		{ "action 越界上", { action = 10 } },
+		{ "action 越界上", { action = 11 } },
 		{ "action 越界下", { action = -1 } },
 		{ "action 非整数", { action = 1.5 } },
 		{ "action 是 NaN", { action = 0 / 0 } },
 		{ "speed 非数值", { action = 1, speed = "abc" } },
 		{ "speed 是 NaN", { action = 1, speed = 0 / 0 } },
+		{ "fdist 缺 param", { action = 5 } },
+		{ "jump 缺 param", { action = 10 } },
+		{ "jump 缺 param2", { action = 10, param = 0.8 } },
+		{ "jump param2 非数值", { action = 10, param = 0.8, param2 = "abc" } },
 	}
 	for _, c in ipairs(bad) do
 		local cok, cres = call_of(c[2])
@@ -147,6 +151,11 @@ if cfd >= 0 then
 	call({ action = 9 })
 	local lineP5 = recv_line(cfd)
 	tester.check("save 行 = 'save\\n'", lineP5 == "save\n", tostring(lineP5))
+
+	call({ action = 10, param = 0.8, param2 = 0.35 })
+	local lineP6 = recv_line(cfd)
+	tester.check("jump 行 = 'jump 0.8000 0.3500\\n'",
+		lineP6 == "jump 0.8000 0.3500\n", tostring(lineP6))
 
 	-- ==================== 4. 对端断开后重连 ====================
 	ffi.C.close(cfd)

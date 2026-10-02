@@ -45,8 +45,16 @@ public:
     const std::vector<Obstacle>& obstacles() const { return obstacles_; }
 
     // 球（XZ 平面）vs 盒截面碰撞解算：把机器人推出盒面（逐障碍解算，不迭代）。
+    // **高度感知**：顶面 ≤ 机器人脚下 y_+kGroundSnapTol 的障碍视为「地板」（可站/
+    // 可跳过），不产生推出；只有比脚高的「墙」才推。故跳跃 apex 高过箱顶即可越过。
     // 该机器人正搬运的物体附着在它身上，跳过不参与碰撞。
     void resolveCollisions(Robot& robot);
+
+    // 机器人脚下的支撑面高度（米）：脚下 XZ 圆（半径 kRobotRadius）重叠、且顶面
+    // 不高于脚下（y_+kGroundSnapTol）的所有障碍里最高的那个顶面；无则地面 0。
+    // SimEngine 每帧用它给 Robot.applySupport()——落地吸附、走下箱沿转坠落都靠它。
+    // 该机器人搬运的物体不计入（背着的箱子不能踩）。
+    float supportHeight(const Robot& robot) const;
 
     // 机器人前方射线与障碍求交，返回最近命中距离（米）；无命中返回 maxRange。
     // 射线从身体前端中心出发、沿 heading 方向；该机器人搬运的物体不计入。

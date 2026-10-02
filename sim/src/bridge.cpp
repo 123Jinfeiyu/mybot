@@ -22,6 +22,22 @@ float parseSpeed(const char* text, bool& ok) {
     return value > 1.0f ? 1.0f : value;
 }
 
+// 严格把整个 token 解析成一个 float：token 非空且整体是数字（末尾无杂字符）才成功。
+// 用于一次性动作的参数（fdist 米数 / turn 度数 / jump 的距离与高度）——半截数字
+// （"2.5x"）视为笔误拒绝，与旧的内联判定同口径，只是抽出来给 param/param2 共用。
+bool parseStrictFloat(const char* token, float* out) {
+    if (token == nullptr || token[0] == '\0') {
+        return false;
+    }
+    char* end = nullptr;
+    const float value = std::strtof(token, &end);
+    if (end == token || *end != '\0') {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
 }  // namespace
 
 const char* commandName(SimCommand cmd) {
@@ -69,7 +85,10 @@ void CommandBridge::handleLine(const std::string& rawLine) {
 
     char word[32] = {};
     char rest[32] = {};
-    const int fields = std::sscanf(text, "%31s %31s", word, rest);
+    char rest2[32] = {};
+    // 最多收三个 token：动作名 + 参数 + 第二参数（仅 jump 用「距离 高度」）。
+    // 其余动作 fields≤2，rest2 恒空，多余字段照旧忽略。
+    const int fields = std::sscanf(text, "%31s %31s %31s", word, rest, rest2);
     if (fields < 1) {
         return;
     }
@@ -87,19 +106,19 @@ void CommandBridge::handleLine(const std::string& rawLine) {
     if (action->kind == ActionKind::OneShot) {
         SimEvent ev{};
         ev.type = action->oneShot;
-        // fdist/turn 需要数值参数；pick/place/save 不带参数，多余字段忽略
-        if (action->needsParam) {
-            if (fields < 2 || rest[0] == '\0') {
-                std::fprintf(stderr, "bridge: %s requires a parameter\n", word);
-                return;
-            }
-            char* end = nullptr;
-            ev.param = std::strtof(rest, &end);
-            if (end == rest || *end != '\0') {
-                std::fprintf(stderr, "bridge: bad param '%s' in '%s' (ignored)\n", rest,
-                             rawLine.c_str());
-                return;
-            }
+        // fdist/turn/jump 需数值参数；pick/place/save 不带参数，多余字段忽略。
+        if (action->needsParam && !parseStrictFloat(rest, &ev.param)) {
+            std::fprintf(stderr, "bridge: %s requires a numeric parameter (got '%s', ignored)\n",
+                         word, rest);
+            lastLine_ = rawLine;
+            return;
+        }
+        // 第二参数（jump 的 apex 高度）：坏值/缺失同样整行忽略，不入队半截动作。
+        if (action->needsParam2 && !parseStrictFloat(rest2, &ev.param2)) {
+            std::fprintf(stderr, "bridge: %s requires a second parameter (got '%s', ignored)\n",
+                         word, rest2);
+            lastLine_ = rawLine;
+            return;
         }
         if (events_.size() >= SimConfig::kMaxQueuedEvents) {
             std::fprintf(stderr, "bridge: event queue full (%zu), dropping '%s'\n",

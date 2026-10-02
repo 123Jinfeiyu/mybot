@@ -9,6 +9,16 @@ using glm::mat4;
 using glm::vec3;
 
 void Robot::update(float dt, const RobotInput& input, float maxSpeed) {
+    if (airborne_) {
+        // 空中弹道：忽略 input（无油门/舵），水平速度守恒，竖直受重力。theta_ 冻结。
+        // 落地由 SimEngine 调 applySupport() 收住——这里只管把抛物线积分下去。
+        vy_ -= kGravity * dt;
+        y_ += vy_ * dt;
+        x_ += v_ * std::cos(theta_) * dt;
+        z_ += v_ * -std::sin(theta_) * dt;
+        return;
+    }
+
     const float targetV = input.throttle * maxSpeed;
     const float targetOmega = input.steer * kMaxTurnRate;
     // 松开指令（throttle=0）时减速明显快于加速，否则「停」之后还溜一大段
@@ -20,6 +30,8 @@ void Robot::update(float dt, const RobotInput& input, float maxSpeed) {
     theta_ += omega_ * dt;
     x_ += v_ * std::cos(theta_) * dt;
     z_ += v_ * -std::sin(theta_) * dt;
+    // 地面：y_ 贴住支撑面（由 applySupport 钳制），此处不积分重力——走下箱沿时
+    // 支撑面高度会突降，applySupport 发现 y_>support 即转 airborne，下一帧起弹道。
 }
 
 void Robot::reset() {
@@ -31,7 +43,8 @@ float Robot::effectiveMaxSpeed() const {
 }
 
 mat4 Robot::baseTransform() const {
-    return glm::translate(mat4(1.0f), vec3(x_, 0.0f, z_)) *
+    // y_ 让整个机体（含腿，spider.cpp 全相对 base 画）随跳跃离地/落箱一起升降。
+    return glm::translate(mat4(1.0f), vec3(x_, y_, z_)) *
            glm::rotate(mat4(1.0f), theta_, vec3(0.0f, 1.0f, 0.0f));
 }
 
@@ -74,3 +87,32 @@ bool Robot::tickRelative(float dt, RobotInput& out) {
     }
     return false;
 }
+
+void Robot::launch(float dist, float height) {
+    // 钳到安全范围：负值/超限都归一，避免把蜘蛛弹上天或弹出场景。
+    height = std::max(0.0f, std::min(height, kMaxJumpHeight));
+    dist = std::max(0.0f, std::min(dist, kMaxJumpDist));
+    // 给一个极小下限，保证 dist=0（原地跳）也有非零滞空时间，避免除零。
+    const float vy0 = std::sqrt(2.0f * kGravity * std::max(height, 0.01f));
+    const float airtime = 2.0f * vy0 / kGravity;   // 上升+回落到同高度
+    v_ = dist / airtime;                            // 水平发射速度（空中守恒）
+    vy_ = vy0;
+    omega_ = 0.0f;                                  // 空中不转
+    // 起跳打断进行中的相对运动：空中不受 fdist/turn 控制，落地后重新接受指令。
+    remainingDist_ = 0.0f;
+    remainingTurn_ = 0.0f;
+    airborne_ = true;
+}
+
+void Robot::applySupport(float supportY) {
+    if (y_ <= supportY) {
+        // 落到支撑面（地面或箱顶）：吸附、竖直速度清零、转为地面态。
+        y_ = supportY;
+        vy_ = 0.0f;
+        airborne_ = false;
+    } else {
+        // 仍高于支撑面：在空中（跳跃途中，或走下箱沿后支撑突降）。
+        airborne_ = true;
+    }
+}
+

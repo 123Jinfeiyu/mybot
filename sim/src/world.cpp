@@ -144,8 +144,12 @@ std::vector<Obstacle> World::defaultScene() {
 World::World(std::vector<Obstacle> obstacles) : obstacles_(std::move(obstacles)) {}
 
 void World::resolveCollisions(Robot& robot) {
+    const float footY = robot.y() + Robot::kGroundSnapTol;
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
         if (i == robot.carriedIndex()) continue;  // 该机器人搬运物附着在身上，不参与碰撞
+        // 高度感知：顶面不高于脚下的障碍是「地板」（能站上去/跳过去），不推；
+        // 只有比脚高的「墙」才把机器人推出 XZ。跳够高越过矮箱即源于此。
+        if (obstacles_[i].center.y + obstacles_[i].half.y <= footY) continue;
         float rx = robot.x(), rz = robot.z();
         if (resolveSphereAABB2D(rx, rz, SimConfig::kRobotRadius, obstacles_[i])) {
             robot.setX(rx);
@@ -153,6 +157,28 @@ void World::resolveCollisions(Robot& robot) {
         }
     }
 }
+
+float World::supportHeight(const Robot& robot) const {
+    float support = 0.0f;  // 缺省地面
+    const float footY = robot.y() + Robot::kGroundSnapTol;
+    const int carried = robot.carriedIndex();
+    const float r2 = SimConfig::kRobotRadius * SimConfig::kRobotRadius;
+    for (int i = 0; i < (int)obstacles_.size(); ++i) {
+        if (i == carried) continue;  // 背着的箱子不能踩
+        const Obstacle& ob = obstacles_[i];
+        const float top = ob.center.y + ob.half.y;
+        if (top > footY) continue;  // 比脚高的是墙，不是可站的地板
+        // 脚下 XZ 圆与盒截面是否重叠（与碰撞同用最近点判定）
+        const float cx = std::clamp(robot.x(), ob.center.x - ob.half.x, ob.center.x + ob.half.x);
+        const float cz = std::clamp(robot.z(), ob.center.z - ob.half.z, ob.center.z + ob.half.z);
+        const float dx = robot.x() - cx, dz = robot.z() - cz;
+        if (dx * dx + dz * dz <= r2 && top > support) {
+            support = top;
+        }
+    }
+    return support;
+}
+
 
 float World::queryRange(const Robot& robot, float maxRange) const {
     const float forwardX = std::cos(robot.theta());
@@ -238,10 +264,11 @@ void World::updateCarried(const Robot& robot) {
         return;
     }
     auto& ob = obstacles_[idx];
-    // 放在机器人正上方，抬高避免挡住摄像机
+    // 放在机器人正上方，抬高避免挡住摄像机；y 跟随机器人离地高度（跳起/站箱上时
+    // 背着的箱子一起升，否则会相对机体下沉）。
     ob.center.x = robot.x();
     ob.center.z = robot.z();
-    ob.center.y = Robot::kBodyY + Robot::kBodyHeight + ob.half.y + 0.10f;
+    ob.center.y = robot.y() + Robot::kBodyY + Robot::kBodyHeight + ob.half.y + 0.10f;
 }
 
 void World::applyScene(const SceneState& scene) {

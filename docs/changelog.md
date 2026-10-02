@@ -9,6 +9,24 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-03 仿真蜘蛛跳跃：竖直动力学 + 支撑面 + 高度感知碰撞
+
+- **新动作码 10=jump**（`jump <米> <高度>`，两个数值参数）：向前弹道跳，可跳过矮
+  障碍、跳上箱子。纯加法——线上语法、三桥路径、动作码 0-9 全不变（冻结契约「只增
+  不改」）。`SimEvent` 增 `param2` 承载第二参数，`bridge.cpp` 严格解析双参、坏值整行
+  忽略；`action_table` 增 `needsParam2`，`spider_sim.sql` 增 `Q→param2` 别名，
+  `modules/Sim.lua` 增 `CODES[10]`/`PARAM2_CODES`（`sim/tests` 交叉校验随之扩展）。
+- **仿真首个竖直动力学**：`Robot` 加 `y_/vy_/airborne_`，起跳折算竖直冲量
+  `vy0=√(2g·height)` 与水平发射速度，空中水平速度守恒做弹道、朝向冻结，落地由
+  `applySupport` 吸附。`baseTransform` 带上 `y_`，整只蜘蛛（含腿）随跳跃离地。
+- **支撑面 + 高度感知碰撞**：`World::supportHeight` 每帧算脚下最高箱顶（无箱则地面
+  0），据此落地/走下箱沿自动坠落；`resolveCollisions` 把顶面不高于脚下的障碍当「地板」
+  不推、只有比脚高的「墙」才推——故跳够高能越过/落上箱顶，不够高被挡回。2cm 台阶
+  容差意味着地面行驶几乎不自动爬箱（碰撞语义与加跳跃前一致），要上箱必须跳。
+- **不影响**：射线测距仍是 XZ 平面读数；搬运物 y 随机体升降；相机跟随带上机体 y。
+- `.mt` 侧 `scripts/sim_jump.mt`（第二参数列 `sim.Q`）配
+  `run_action_script(vars={"dist":..,"height":..})` 注入。
+
 ### 2026-10-02 相对运动精度：到量刹车 + fdist/turn 顺序执行
 
 - **到量刹车**：`tickRelative` 在剩余量小于一阶滞后的滑行尾程（`v/kStopRate`）

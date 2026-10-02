@@ -334,9 +334,9 @@ int main(int argc, char** argv) {
             }
         }
 
-        // 相机跟随主机器人（idx 0）。
+        // 相机跟随主机器人（idx 0）。跟随目标 y 带上机体离地高度，跳跃时镜头跟着抬。
         if (g_camera.follow) {
-            glm::vec3 robotPos(engine.robot().x(), 0.2f, engine.robot().z());
+            glm::vec3 robotPos(engine.robot().x(), engine.robot().y() + 0.2f, engine.robot().z());
             float k = std::min(1.0f, 5.0f * dt);
             g_camera.target += (robotPos - g_camera.target) * k;
         }

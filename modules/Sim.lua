@@ -9,6 +9,7 @@
 --   forward | backward | left | right | stop   [速度 0.00~1.00]
 --   fdist <meters>     -- 相对前进 N 米后停
 --   turn <degrees>     -- 相对转向 N 度后停（正=左，负=右）
+--   jump <meters> <height>  -- 向前弹道跳：水平前跳 N 米、apex 离地 height 米
 -- 每条一行，以 \n 结尾；速度缺省 1.0。手测：
 --   socat - UNIX-CONNECT:/tmp/mybot-sim.sock
 --
@@ -17,6 +18,7 @@
 -- 语义名字只存在于 socket 线上与下面的 CODES 表里：
 --   0=stop  1=forward  2=backward  3=left  4=right  5=fdist  6=turn  7=pick  8=place
 --   9=save（把当前场景写回仿真器启动时配置的场景文件，见 docs/sim.md）
+--   10=jump（向前跳；param=前跳米数、param2=apex 高度米数，两个参数都必填）
 --
 -- 测距（range 函数）走独立的 sensor socket（MYBOT_SIM_SENSOR_SOCK），
 -- 协议：发 "range\n"，收 "OK <mm>\n" 或 "ERR <reason>\n"。
@@ -63,11 +65,16 @@ local CODES = {
 	[7] = "pick",
 	[8] = "place",
 	[9] = "save",
+	[10] = "jump",
 }
-local CODE_MAX = 9
+local CODE_MAX = 10
 
--- 带参数的动作码（fdist/turn 需要数值参数）
-local PARAM_CODES = { [5] = true, [6] = true }
+-- 带参数的动作码（fdist/turn 需 param；jump 需 param=距离）
+local PARAM_CODES = { [5] = true, [6] = true, [10] = true }
+
+-- 带**第二**参数的动作码（jump 除距离外还需 param2=apex 高度）。
+-- 宿主侧经 spider_sim.sql 的 Q→param2 别名从 .mt 的第二参数列喂进来。
+local PARAM2_CODES = { [10] = true }
 
 -- 每个 Lua 状态（= 每个设备实例）一份连接，跨 call 复用
 local fd = nil
@@ -141,9 +148,11 @@ end
 -- 【调用Sim】发一条语义动作
 -- 元数据列：无（socket 路径走 MYBOT_SIM_SOCK，见文件头）
 -- 输入参数：
---   action: 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place 9=save
+--   action: 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place
+--           9=save 10=jump
 --   speed:  可选 0~1（持续型动作用）
---   param:  fdist 的距离（米）或 turn 的角度（正=左，负=右）
+--   param:  fdist 的距离（米）/ turn 的角度（正=左，负=右）/ jump 的前跳距离（米）
+--   param2: jump 的起跳 apex 高度（米）——仅 jump（码 10）需要
 function call(data)
 
 	local ok, ek = arg_table(data)
@@ -155,21 +164,31 @@ function call(data)
 	if code == nil then
 		return err("Invalid Argument: action (missing or not a number)")
 	end
-	-- 动作码必须是 0..9 的整数：矩阵是 Float64，1.5 这种值只会是脚本笔误
+	-- 动作码必须是 0..CODE_MAX 的整数：矩阵是 Float64，1.5 这种值只会是脚本笔误
 	if code ~= math.floor(code) or code < 0 or code > CODE_MAX then
 		return err("Invalid Argument: action " .. tostring(code)
-			.. " (expected 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place 9=save)")
+			.. " (expected 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn"
+			.. " 7=pick 8=place 9=save 10=jump)")
 	end
 	local action = CODES[code]
 
 	local line = action
 	if PARAM_CODES[code] then
-		-- fdist/turn 需要 param 参数
+		-- fdist/turn/jump 需要 param 参数
 		local param = finite_of(tonumber(data.param))
 		if param == nil then
 			return err("Invalid Argument: param (missing or not a number for " .. action .. ")")
 		end
-		line = action .. " " .. string.format("%.4f", param) .. "\n"
+		line = action .. " " .. string.format("%.4f", param)
+		if PARAM2_CODES[code] then
+			-- jump 还需第二参数（apex 高度）
+			local param2 = finite_of(tonumber(data.param2))
+			if param2 == nil then
+				return err("Invalid Argument: param2 (missing or not a number for " .. action .. ")")
+			end
+			line = line .. " " .. string.format("%.4f", param2)
+		end
+		line = line .. "\n"
 	else
 		local speed = 1.0
 		if data.speed ~= nil then

@@ -22,7 +22,8 @@ struct ActionDef {
     const char* wireName;       // 线上规范名（bridge 按它匹配）
     const char* alias;          // 线上别名（nullptr=无）；如 backward 的 "back"
     ActionKind kind;
-    bool needsParam;            // fdist/turn 需数值参数（米/度）
+    bool needsParam;            // fdist/turn/jump 需首个数值参数（米/度/米）
+    bool needsParam2;           // jump 额外需第二数值参数（apex 高度）；其余动作 false
     SimCommand continuous;      // kind==Continuous 时的语义（OneShot 行忽略）
     SimEvent::Type oneShot;     // kind==OneShot 时的语义（Continuous 行忽略）
 };

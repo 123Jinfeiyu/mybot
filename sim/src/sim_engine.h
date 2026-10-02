@@ -43,11 +43,13 @@ public:
     // 持续型指令：每帧从对应命令桥喂入当前状态。改油门/方向；非 stop 的新持续型
     // 指令打断进行中的相对运动（stop 只松油门、不打断）。边沿触发日志。
     void applyContinuous(SimCommand cmd, float speed, std::size_t idx = kPrimaryRobot);
-    // 一次性事件：fdist/turn 设相对运动剩余量、pick/place 交给 World、save 落盘。
+    // 一次性事件：fdist/turn 设相对运动剩余量、jump 起跳（弹道 + 竖直冲量）、
+    // pick/place 交给 World、save 落盘。
     void applyEvent(const SimEvent& ev, std::size_t idx = kPrimaryRobot);
 
     // 每帧推进：逐只机器人按**本 slot 的命令**生成输入 → tickRelative（相对运动接管
-    // 则覆盖输入）→ update（按各自搬运负载折算最大速度）→ resolveCollisions → updateCarried。
+    // 则覆盖输入；空中跳过）→ update（地面平面滞后 / 空中弹道）→ resolveCollisions
+    // （高度感知）→ applySupport（脚下支撑面：落地吸附或走下箱沿转坠落）→ updateCarried。
     void step(float dt);
 
     // 感知：指定机器人身体前端中心沿 heading 的射线测距（米）。

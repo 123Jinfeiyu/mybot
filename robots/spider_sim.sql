@@ -28,6 +28,7 @@ CREATE TABLE Alias (
 INSERT INTO Alias (name, alias) VALUES (M, action);
 INSERT INTO Alias (name, alias) VALUES (S, speed);
 INSERT INTO Alias (name, alias) VALUES (P, param);
+INSERT INTO Alias (name, alias) VALUES (Q, param2);
 
 /* Timer：spk 仅作动作矩阵的节拍（spk.delay 单位毫秒） */
 CREATE TABLE Timer (
@@ -39,9 +40,11 @@ INSERT INTO Timer (name) VALUES ('spk');
  * 动作码 sim.M（矩阵单元格只收 Float64，故用码不用名）：
  *   0=stop  1=forward  2=backward  3=left  4=right
  *   5=fdist(相对前进 N 米)  6=turn(相对转 N 度，正=左负=右)  7=pick  8=place  9=save
+ *   10=jump(向前弹道跳：param=前跳米数、param2=apex 高度米数，两参都必填)
  * 速度 sim.S：0.00~1.00，缺省 1.0（持续型动作 1-4 用）
- * 参数 sim.P：fdist 的米数 / turn 的度数（仅 5、6 两个带参动作需要；精确相对
- *   运动，仿真器内带刹车到量，比按时长的 left/right 可控得多） */
+ * 参数 sim.P：fdist 的米数 / turn 的度数 / jump 的前跳距离（带参动作 5、6、10 需要；
+ *   fdist/turn 是精确相对运动，仿真器内带刹车到量，比按时长的 left/right 可控得多）
+ * 参数 sim.Q：jump 的起跳 apex 高度（仅动作 10 需要，是 jump 的第二参数） */
 CREATE TABLE Sim (
 	name String
 );

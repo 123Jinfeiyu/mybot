@@ -25,20 +25,24 @@ struct SimEvent {
     enum class Type {
         FwdDist,  // forward N meters: param = meters (positive)
         Turn,     // turn N degrees: param = degrees (positive=left, negative=right)
+        Jump,     // forward jump: param = distance (meters), param2 = apex height (meters)
         Pick,     // pick up obstacle in front
         Place,    // place carried obstacle in front
         Save,     // save scene to the configured scene file (path comes from argv/env, never from the wire)
     };
     Type type;
     float param = 0.0f;
+    // 第二数值参数：目前仅 Jump 用（起跳 apex 高度）。其余事件恒 0，线上不多带字段。
+    float param2 = 0.0f;
 };
 
 // AF_UNIX 行文本服务端。mybot 侧 modules/Sim.lua 每发一条动作写一行：
 //   forward | backward | left | right | stop   [速度 0.0~1.0]
 //   fdist <meters>
 //   turn <degrees>
+//   jump <meters> <height>
 //   pick / place / save
-// 例如 "forward 0.8"、"fdist 2.0"、"turn 90"。
+// 例如 "forward 0.8"、"fdist 2.0"、"turn 90"、"jump 0.8 0.35"。
 // 选行文本是为了能用 socat 直接手测：
 //   socat - UNIX-CONNECT:/tmp/mybot-sim.sock
 //
