@@ -301,8 +301,10 @@ int main(int argc, char** argv) {
     const glm::vec3 lightDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
     const glm::vec3 lightColor(1.0f, 0.98f, 0.92f);
 
-    // 跟踪上一条命令，只在命令变化时设置相对运动参数，避免每帧重置
-    SimCommand lastCommand = SimCommand::Stop;
+    // 跟踪上一条已派发指令的序号：fdist/turn/pick/place 是一次性指令，同枚举
+    // 重复下发（如连续两次不同距离的 fdist）也必须重新触发，故按「新行到达」
+    // 取边沿而不是按「枚举变化」
+    unsigned lastSeq = 0;
 
     double last = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
@@ -328,11 +330,14 @@ int main(int argc, char** argv) {
 
         // 相对运动拦截：fdist/turn 到达时设到 robot 的剩余量里，后续帧由
         // tickRelative() 接管 input 直到量耗尽。新的持续型指令（forward 等）
-        // 或 stop 会清零剩余量，交回手动控制。
-        // 只在命令变化时设置相对运动参数，避免每帧重置
+        // 会清零剩余量交回手动控制；stop 不打断进行中的相对运动。
         const SimCommand cmd = bridge.command();
-        if (cmd != lastCommand) {
-            std::fprintf(stderr, "cmd: %d -> %d\n", static_cast<int>(lastCommand), static_cast<int>(cmd));
+        if (bridge.seq() != lastSeq) {
+            if (cmd == SimCommand::FwdDist || cmd == SimCommand::Turn) {
+                std::fprintf(stderr, "cmd: %s %.2f\n", commandName(cmd), bridge.param());
+            } else {
+                std::fprintf(stderr, "cmd: %s\n", commandName(cmd));
+            }
             if (cmd == SimCommand::FwdDist) {
                 robot.setRelativeDist(bridge.param());
             } else if (cmd == SimCommand::Turn) {
@@ -360,20 +365,13 @@ int main(int argc, char** argv) {
                 robot.setRelativeDist(0.0f);
                 robot.setRelativeTurn(0.0f);
             }
-            lastCommand = cmd;
+            lastSeq = bridge.seq();
         }
 
-        static int frameCount = 0;
-        ++frameCount;
-        
         RobotInput input = commandToInput(cmd, bridge.speed());
         RobotInput relInput;
         if (robot.tickRelative(dt, relInput)) {
             input = relInput;
-        }
-        if (robot.isCarrying() && frameCount % 60 == 0) {
-            std::fprintf(stderr, "input: throttle=%.2f steer=%.2f cmd=%d\n",
-                         input.throttle, input.steer, static_cast<int>(cmd));
         }
         robot.update(dt, input);
         // 碰撞解算：逐个障碍检查，撞了就推出（多障碍时逐次解算，不迭代）
@@ -390,13 +388,6 @@ int main(int argc, char** argv) {
         }
         // 搬运中的物体跟随机器人移动：放在身体前端上方
         robot.updateCarriedPosition(g_obstacles);
-        if (robot.isCarrying()) {
-            if (frameCount % 60 == 0) {  // 每秒输出一次
-                const auto& ob = g_obstacles[robot.carriedObstacleIndex()];
-                std::fprintf(stderr, "carry: robot=(%.2f,%.2f) v=%.3f carried=(%.2f,%.2f) theta=%.2f\n",
-                             robot.x(), robot.z(), robot.v(), ob.center.x, ob.center.z, robot.theta());
-            }
-        }
         spider.update(dt, robot.v());
 
         // 测距响应：碰撞解算完成后算距离，保证拿到的是本帧最终位姿
@@ -404,7 +395,7 @@ int main(int argc, char** argv) {
             const float dist = robot.queryRange(g_obstacles);
             const int distMm = static_cast<int>(dist * 1000.0f + 0.5f);
             if (!sensor.sendRange(distMm)) {
-                sensor.sendError("frame grab or send failed");
+                sensor.sendError("range send failed");
             }
         }
 

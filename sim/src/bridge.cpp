@@ -256,6 +256,7 @@ void CommandBridge::handleLine(const std::string& rawLine) {
     command_ = parsed;
     speed_ = speed;
     param_ = param;
+    ++seq_;
     lastLine_ = rawLine;
 }
 

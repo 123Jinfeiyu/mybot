@@ -46,6 +46,10 @@ public:
     // fdist/turn 的参数值；其他指令返回 0。
     float param() const { return param_; }
 
+    // 已接受指令的序号，每解析成功一条自增。一次性指令（fdist/turn/pick/place）
+    // 同枚举重复下发也必须重新触发，主循环按「序号变化」而非「枚举变化」取边沿。
+    unsigned seq() const { return seq_; }
+
     // 最近一条解析过的原始行，仅用于窗口标题上给人看
     const std::string& lastLine() const { return lastLine_; }
 
@@ -62,6 +66,7 @@ private:
     SimCommand command_ = SimCommand::Stop;
     float speed_ = 1.0f;
     float param_ = 0.0f;
+    unsigned seq_ = 0;
     std::string lastLine_;
     bool clientEof_ = false;  // recv() 返回 0 时置 true，buffer 处理完再断开
 };
