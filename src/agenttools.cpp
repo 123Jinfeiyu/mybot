@@ -114,6 +114,56 @@ Json stringParam(const std::string& desc) {
 	return p;
 }
 
+/* vars 参数（run_action_script）：一个自由键值对象，值允许字符串或数字
+ * （JSON Schema 的 type 可为数组）。模型据此给脚本传「实参」。 */
+Json varsParam() {
+	Json valType = JsonArray();
+	valType.add(JsonString("string"));
+	valType.add(JsonString("number"));
+	Json val = JsonObject();
+	val.put("type", valType);
+	Json p = JsonObject();
+	p.put("type", JsonString("object"));
+	p.put("description", JsonString("可选。本次执行临时注入的变量：键=变量名，"
+			"值=字符串或数字；脚本里写 $(键) 的地方就地取该值，执行完即撤销。"
+			"例：{\"deg\":35}"));
+	p.put("additionalProperties", val);
+	return p;
+}
+
+/* 解析 run_action_script 的 vars（可选对象）为 name→文本映射。键须为安全标识符
+ * （拼进别名/表达式查找，放行点号分号等于让实参改写解析目标）；值接受字符串
+ * （原样，拒 NUL）或数字（toString 的紧凑十进制），null/bool/obj/array 报清晰
+ * 类型错。与 requireString/optionalInt 同款严格：类型不符不静默丢弃。键缺失或
+ * 显式 null = 不注入（返回空表）。 */
+std::map<std::string, std::string> parseVarsObject(const Json& args, const std::string& key) {
+	std::map<std::string, std::string> out;
+	auto v = args.get(key);
+	if (!v || v->isNull()) { return out; }
+	if (!v->isObj()) {
+		throw IllegalArgumentException("参数 " + key + " 类型不符：需要对象（键值对）");
+	}
+	for (const auto& kv : v->items()) {
+		const std::string& name = kv.first;
+		const Json& val = kv.second;
+		if (!isSafeIdent(name)) {
+			throw IllegalArgumentException("参数 " + key + " 的键不是安全标识符：'" + name + "'");
+		}
+		if (val.isStr()) {
+			const std::string s = val.getValue();
+			if (s.find('\0') != std::string::npos) {
+				throw IllegalArgumentException("参数 " + key + "." + name + " 含非法字符（NUL）");
+			}
+			out.emplace(name, s);
+		} else if (val.isInt() || val.isFloat()) {
+			out.emplace(name, val.toString());
+		} else {
+			throw IllegalArgumentException("参数 " + key + "." + name + " 类型不符：需要字符串或数字");
+		}
+	}
+	return out;
+}
+
 Json toolSchema(const std::vector<std::pair<std::string, Json>>& props,
 		const std::vector<std::string>& required) {
 	Json properties = JsonObject();
@@ -247,7 +297,7 @@ std::string loadActionScriptFile(const std::string& scriptsDir, const std::strin
 }
 
 std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& requested,
-		std::string& echo) {
+		std::string& echo, const std::map<std::string, std::string>& vars) {
 	std::string content = loadActionScriptFile(ctx.scriptsDir, requested);
 	/* @Include 基准目录 = scripts-dir 根：与工具的相对路径语义一致
 	 * （include 名同样不得越出该树），多轮执行重复设置幂等 */
@@ -264,7 +314,7 @@ std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& 
 	 * 模型对硬件状态全盲。窗口只覆盖这一次 run()；异常路径由 RAII
 	 * 复原，窗口外回显照旧写 stderr（管道模式行为不变）。 */
 	CallEchoScope echoScope(&echo);
-	ctx.robot->run(*reader);
+	ctx.robot->run(*reader, vars);
 	return bytes;
 }
 
@@ -274,8 +324,12 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 		"脚本执行完毕后硬件保持上电常驻，可以接着执行下一个脚本。"
 		"script 必须是 list_action_scripts 返回的相对路径。返回执行成功或报错原因；"
 		"回执里还会带上驱动返回的读数（如传感器数值），据此核对硬件当前状态；"
-		"报错时机器人状态可能停在半途，请读清原因再决定下一步。",
-		toolSchema({{"script", stringParam("动作脚本相对路径，如 std.mt 或 test/pwm.mt")}},
+		"报错时机器人状态可能停在半途，请读清原因再决定下一步。"
+		"可选 vars：给脚本临时传参——脚本里写 $(名字) 的地方就地取 vars 里同名值，"
+		"执行完即撤销（像函数调用的实参）。例：脚本 sim_turn.mt 内含 `6 $(deg)`，"
+		"传 vars={\"deg\":35} 即精确转 35 度，无需为每个角度各写一个脚本。",
+		toolSchema({{"script", stringParam("动作脚本相对路径，如 std.mt 或 test/pwm.mt")},
+				{"vars", varsParam()}},
 			{"script"}),
 		[ctx](const Json& args) -> AgentToolResult {
 			/* SAN-8②（2026-09-22）：**参数错误与执行失败必须分开**。
@@ -289,9 +343,10 @@ static AgentTool makeRunActionScriptTool(const AgentToolContext& ctx) {
 				throw std::runtime_error("没有常驻机器人实例");
 			}
 			const std::string req = requireString(args, "script");
+			const std::map<std::string, std::string> vars = parseVarsObject(args, "vars");
 			try {
 				std::string echo;
-				const std::size_t bytes = runActionScriptFile(ctx, req, echo);
+				const std::size_t bytes = runActionScriptFile(ctx, req, echo, vars);
 				std::string out = "已执行动作脚本 " + req + "（" + std::to_string(bytes) + " 字节）";
 				appendActionEcho(out, echo);
 				return {out, ""};

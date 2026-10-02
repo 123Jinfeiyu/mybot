@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -189,9 +190,11 @@ std::string loadActionScriptFile(const std::string& scriptsDir, const std::strin
  * 工具与后端断连安全动作（mcpbackend）共用这一份，于是"哪些路径能跑、跑多久、
  * 回显怎么收"只有一处判据。requested 是 scriptsDir 之下的相对路径；返回脚本
  * 字节数；失败抛 std::exception（脚本不存在/为空/越界/执行失败），由调用方
- * 决定折成工具回执还是日志。@p echo 接收驱动 play() 的顶层回显文本。 */
+ * 决定折成工具回执还是日志。@p echo 接收驱动 play() 的顶层回显文本。
+ * @p vars：调用方临时注入的会话别名（透传给 robot->run 的 injectVars，见
+ * robot.hpp）——脚本里的 $(键) 就地解析，作用域限本次 run()。缺省空 = 不注入。 */
 std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& requested,
-		std::string& echo);
+		std::string& echo, const std::map<std::string, std::string>& vars = {});
 
 /* ---- D（2026-09-23）：动作脚本执行期间的驱动返回表回收 ----
  * `run_action_script` 此前只回一句「已执行动作脚本 X（N 字节）」——**模型看不到

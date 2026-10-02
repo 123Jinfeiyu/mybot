@@ -183,7 +183,7 @@ RobotStruct::~RobotStruct() {
 }
 
 /* ---- 执行 @Action 矩阵 + 内联 @Alias ---- */
-void RobotStruct::run(bot::Reader& input) {
+void RobotStruct::run(bot::Reader& input, const std::map<std::string, std::string>& injectVars) {
 	std::vector<mt::MatrixObject> actionMatrices;
 	mt::readMatrix(input, actionMatrices);
 	/* @Include 展开（无 @Include 时逐字不动）：先于 @Alias/@Vars 注册与
@@ -205,6 +205,18 @@ void RobotStruct::run(bot::Reader& input) {
 		std::string mtName = trim(matrix.getName());
 		if (mtName == "Alias") { factory_.registerAliasMatrix(matrix, &session); }
 		else if (mtName == "Vars") { factory_.registerVarsMatrix(matrix, &session); }
+	}
+	/* 调用方注入的临时别名（#34 条件反射的工具侧「函数实参」入口）：在内联
+	 * @Alias/@Vars 注册**之后**绑定，故显式实参覆盖脚本内同名默认值。键须为安全
+	 * 标识符（否则拼进表达式/别名查找会出歧义），值按文本注册为 MtVars_Alias，
+	 * 脚本里的 $(键) 经表达式解析器就地取值。override 自带 N-6 判据：被结构引用
+	 * 为 controller/trigger 的名字拒绝覆盖。绑定同样落在 SessionScope 内，出口
+	 * 随作用域整体回滚。 */
+	for (const auto& kv : injectVars) {
+		if (!isSafeIdent(kv.first)) {
+			throw IllegalArgumentException("注入变量名不是安全标识符：'" + kv.first + "'");
+		}
+		registry_.override(kv.first, MtVars_Alias::Make(kv.second));
 	}
 	runner_.runAction(actionMatrices);
 	runner_.runReflex(actionMatrices);

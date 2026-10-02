@@ -445,6 +445,29 @@ TH_TEST(agenttools_run_action_script_missing_arg_is_not_reported_as_execution_fa
 		"类型不符应报工具参数错误，实际: " + badType.text);
 	TH_CHECK(badType.executed == false);
 
+	/* ②b vars 参数错误同样走"参数错误"口径（parseVarsObject 在 try 之外抛
+	 * IllegalArgumentException）：非对象、键非安全标识符、值类型不符——都不得
+	 * 被说成"执行失败/停在半途"，因为它们发生在派发之前。 */
+	AgentToolResult varsNotObj = gate.run(
+		ToolCall{"c2a", "run_action_script", "{\"script\":\"relay-test.mt\",\"vars\":42}"}, 0);
+	TH_CHECK_MSG(varsNotObj.text.find("工具参数错误") != std::string::npos,
+		"vars 非对象应报工具参数错误，实际: " + varsNotObj.text);
+	TH_CHECK(varsNotObj.executed == false);
+
+	AgentToolResult varsBadKey = gate.run(
+		ToolCall{"c2b", "run_action_script",
+		"{\"script\":\"relay-test.mt\",\"vars\":{\"a.b\":1}}"}, 0);
+	TH_CHECK_MSG(varsBadKey.text.find("工具参数错误") != std::string::npos,
+		"vars 键非安全标识符应报工具参数错误，实际: " + varsBadKey.text);
+	TH_CHECK(varsBadKey.executed == false);
+
+	AgentToolResult varsBadVal = gate.run(
+		ToolCall{"c2c", "run_action_script",
+		"{\"script\":\"relay-test.mt\",\"vars\":{\"ms\":true}}"}, 0);
+	TH_CHECK_MSG(varsBadVal.text.find("工具参数错误") != std::string::npos,
+		"vars 值类型不符应报工具参数错误，实际: " + varsBadVal.text);
+	TH_CHECK(varsBadVal.executed == false);
+
 	/* ③ 对照：**真的执行失败**（脚本不存在）仍须是"执行失败"口径，
 	 * 且 executed=true——脚本可能跑到一半，机器人可能停在半途，
 	 * 这个警告必须留给模型（方向相反的谎报同样不可接受）。 */

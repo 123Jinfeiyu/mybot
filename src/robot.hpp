@@ -146,8 +146,16 @@ public:
 	/* 消除所有硬件变量（先统一置守护 stop 防饿死，再按声明序倒序 destroy） */
 	void deactivate();
 
-	/* 执行 @Action 矩阵（含内联 @Alias 注册） */
-	void run(bot::Reader& input);
+	/* 执行 @Action 矩阵（含内联 @Alias 注册）。
+	 * injectVars：调用方在本次 run() 临时注入的会话别名（#34 条件反射「像函数
+	 * 调用传参」的工具侧入口，见 run_action_script 的 vars）。每个键值注册为
+	 * MtVars_Alias，脚本里的 $(键) 就地解析；生命周期 = 本次 run() 的
+	 * SessionScope，出口（含异常路径）随作用域整体回滚，绝不跨 run() 残留。
+	 * 键须为安全标识符（isSafeIdent），且不得是被结构引用的 controller/trigger
+	 * 名（override 的 N-6 判据），违规即抛 IllegalArgumentException。
+	 * 绑定发生在脚本内联 @Alias/@Vars 注册**之后**——调用方显式实参覆盖脚本内
+	 * 同名默认值，与「函数实参优先于形参默认」一致。 */
+	void run(bot::Reader& input, const std::map<std::string, std::string>& injectVars = {});
 
 	/* ---- 热插表：结构 SQL 在上电之后真正生效（2026-09-23）----
 	 * 契约：

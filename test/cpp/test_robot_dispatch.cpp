@@ -470,3 +470,80 @@ TH_TEST(robot_reflex_scope_does_not_leak) {
 	}
 	robot.deactivate();
 }
+
+/* ---- #34 条件反射的工具侧入口：run(reader, injectVars) 调用时注入会话别名 ----
+ * 与 @Trigger 的 `name(k=v)` 走同一条 override → 表达式解析路径，只是实参来自
+ * 调用方（run_action_script 的 vars）而非脚本内的 @Trigger 行。断言锚点沿用反射
+ * 那套：kBasicSql 的 relay0/relay9 是纯数据行（非硬件变量），$(名) 解析成功后
+ * 走到派发才报 "<名> not defined"——故「报到哪个设备名」既证明绑定生效、又证明
+ * 解析到的值。 */
+
+TH_TEST(robot_inject_vars_binds_dollar_ref) {
+	/* 注入 deg=1 → $(deg) 解析成功 → 走到派发（relay0 非硬件变量报 not defined） */
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n  $(deg);\n@\n",
+		{{"deg", "1"}});
+	TH_CHECK(msg.find("relay0") != std::string::npos);
+	TH_CHECK(msg.find("not defined") != std::string::npos);
+}
+
+TH_TEST(robot_inject_vars_unbound_reports) {
+	/* 不注入 → $(deg) 无从解析，报表达式引用未定义（不落到派发） */
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n  $(deg);\n@\n");
+	TH_CHECK(msg.find("deg") != std::string::npos);
+	TH_CHECK(msg.find("not defined") == std::string::npos);
+}
+
+TH_TEST(robot_inject_vars_override_inline_alias) {
+	/* 调用方实参覆盖脚本内联 @Alias 默认值（函数实参优先于形参默认）。
+	 * 内联把 who 别名指向 relay9；注入 who=relay0 应把它改绑到 relay0——
+	 * 设备位 $(who) 求值产物即派发目标，故报错点名的设备直接暴露谁生效。 */
+	const std::string mt =
+		"@Alias\nname alias;\nwho relay9;\n@\n"
+		"@Action\n$(who).deg;\n  1;\n@\n";
+	const std::string inlineOnly = runTexts(kBasicSql, mt);
+	TH_CHECK(inlineOnly.find("relay9") != std::string::npos);	/* 无注入：内联默认生效 */
+
+	const std::string injected = runTexts(kBasicSql, mt, {{"who", "relay0"}});
+	TH_CHECK(injected.find("relay0") != std::string::npos);		/* 注入：实参覆盖默认 */
+	TH_CHECK(injected.find("relay9") == std::string::npos);
+}
+
+TH_TEST(robot_inject_vars_rejects_unsafe_name) {
+	/* 键不是安全标识符（含点）→ 拒绝，不落派发 */
+	const std::string msg = runTexts(kBasicSql,
+		"@Action\nrelay0.deg;\n  1;\n@\n",
+		{{"a.b", "1"}});
+	TH_CHECK(msg.find("安全标识符") != std::string::npos);
+}
+
+TH_TEST(robot_inject_vars_scope_does_not_leak) {
+	/* 同一 RobotStruct 连跑两次：第一次注入 deg（p0 探针可真实 play，$(deg) 解析
+	 * 成功、run 不抛）；第二次不注入 → $(deg) 未绑定报错，证明注入随 run() 的
+	 * SessionScope 回滚、绝不跨 run() 残留。 */
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("inject-scope");
+	const fs::path marker = tmp.path() / "destroyed";
+	bot::MemoryReader sr(probeSql(marker));
+	bot::RobotStruct robot(sr);
+	robot.active();	/* p0 探针上电注册：派发 play 需要真硬件变量在注册表 */
+
+	bot::MemoryReader mr1("@Action\np0.probe;\n  $(deg);\n@\n");
+	try {
+		robot.run(mr1, {{"deg", "1"}});
+	} catch (const std::exception& e) {
+		TH_CHECK(false && "首次注入 deg 应成功走完派发");
+		(void)e;
+	}
+
+	bot::MemoryReader mr2("@Action\np0.probe;\n  $(deg);\n@\n");
+	try {
+		robot.run(mr2);
+		TH_CHECK(false && "第二次不注入应报未绑定 deg");
+	} catch (const std::exception& e) {
+		TH_CHECK(std::string(e.what()).find("deg") != std::string::npos);
+	}
+	robot.deactivate();
+}
+

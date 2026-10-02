@@ -10,6 +10,7 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <stdexcept>
 #include <string>
 
@@ -54,6 +55,21 @@ inline std::string runTexts(const std::string& sql, const std::string& mt) {
 		bot::RobotStruct robot(sr);
 		bot::MemoryReader mr(mt);
 		robot.run(mr);
+	} catch (const std::exception& e) {
+		return std::string(e.what());
+	}
+	return std::string();
+}
+
+/* 同上，但把 injectVars 透传给 run() 的会话别名注入口（#34 条件反射的工具侧
+ * 「函数实参」入口）——脚本里的 $(键) 就地取注入值。 */
+inline std::string runTexts(const std::string& sql, const std::string& mt,
+		const std::map<std::string, std::string>& injectVars) {
+	try {
+		bot::MemoryReader sr(sql);
+		bot::RobotStruct robot(sr);
+		bot::MemoryReader mr(mt);
+		robot.run(mr, injectVars);
 	} catch (const std::exception& e) {
 		return std::string(e.what());
 	}

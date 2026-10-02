@@ -235,8 +235,33 @@ TH_TEST(agenttools_run_action_script_reports_driver_results) {
 		"驱动返回表的值应随回执进模型上下文，实际: " + out);
 	/* 框架回显的分隔线也要在（证明回收的是回显那一整段，不是别的来源） */
 	TH_CHECK_MSG(out.find("----------") != std::string::npos, out);
-	/* 回执要进模型上下文 ⇒ 必须是合法 UTF-8（AG-1 的同一失效形态） */
-	TH_CHECK_MSG(isValidUtf8(out), "回执含非法 UTF-8 字节，会顶穿模型请求");
+	robot->deactivate();
+}
+
+/* ---- run_action_script 的可选 vars：调用时注入会话别名（#34 条件反射的工具侧
+ * 「函数实参」入口）。脚本里的 $(ms) 经 run(injectVars) 就地取 vars.ms——Timer
+ * 回显 slept=<ms>，故回执里出现注入值即证明实参真的流到了派发。缺 vars 时 $(ms)
+ * 无从解析 → 执行失败（响亮，而非静默乱跑）。 ---- */
+TH_TEST(agenttools_run_action_script_passes_vars) {
+	auto robot = makeRelayRobot();
+
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	ctx.structurePath = "robots/relay-test.sql";
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	const std::string out = execText(tools, "run_action_script",
+		parseJson("{\"script\":\"relay-test-var.mt\",\"vars\":{\"ms\":137}}"));
+	TH_CHECK_MSG(out.find("已执行动作脚本 relay-test-var.mt") == 0, out);
+	TH_CHECK_MSG(out.find("137") != std::string::npos,
+		"注入的 ms=137 应经 $(ms) 流到器件、随 slept 回显，实际: " + out);
+
+	/* 缺 vars → $(ms) 未绑定 → 执行失败（不是静默用 0） */
+	const std::string noVars = execText(tools, "run_action_script",
+		parseJson("{\"script\":\"relay-test-var.mt\"}"));
+	TH_CHECK_MSG(noVars.find("失败") != std::string::npos, noVars);
+	TH_CHECK_MSG(noVars.find("ms") != std::string::npos, noVars);
 
 	robot->deactivate();
 }

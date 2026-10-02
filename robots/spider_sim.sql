@@ -27,6 +27,7 @@ CREATE TABLE Alias (
 );
 INSERT INTO Alias (name, alias) VALUES (M, action);
 INSERT INTO Alias (name, alias) VALUES (S, speed);
+INSERT INTO Alias (name, alias) VALUES (P, param);
 
 /* Timer：spk 仅作动作矩阵的节拍（spk.delay 单位毫秒） */
 CREATE TABLE Timer (
@@ -37,7 +38,10 @@ INSERT INTO Timer (name) VALUES ('spk');
 /* Sim：语义动作桥，一行一条动作发给仿真器（modules/Sim.lua）
  * 动作码 sim.M（矩阵单元格只收 Float64，故用码不用名）：
  *   0=stop  1=forward  2=backward  3=left  4=right
- * 速度 sim.S：0.00~1.00，缺省 1.0 */
+ *   5=fdist(相对前进 N 米)  6=turn(相对转 N 度，正=左负=右)  7=pick  8=place  9=save
+ * 速度 sim.S：0.00~1.00，缺省 1.0（持续型动作 1-4 用）
+ * 参数 sim.P：fdist 的米数 / turn 的度数（仅 5、6 两个带参动作需要；精确相对
+ *   运动，仿真器内带刹车到量，比按时长的 left/right 可控得多） */
 CREATE TABLE Sim (
 	name String
 );
