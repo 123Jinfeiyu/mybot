@@ -1,6 +1,6 @@
-// simcore 单元测试：GL 无关的核心逻辑——运动学、相对运动、射线测距、搬运、
-// 三座 AF_UNIX 桥的线上协议。GLFW/OpenGL 可视化壳不在覆盖范围，那部分由
-// scripts/sim_agent_demo.sh 的三层端到端链路兜底。
+// simcore 单元测试：GL 无关的核心逻辑——运动学、相对运动、射线测距、碰撞、
+// 搬运、三座 AF_UNIX 桥的线上协议。GLFW/OpenGL 可视化壳不在覆盖范围，那部分
+// 由 scripts/sim_agent_demo.sh 的三层端到端链路兜底。
 //
 // 运行：./sim/build/sim_tests（或 ctest --test-dir sim/build）
 // 风格与 test/ 的 Lua 守门一致：不起测试框架，宏断言 + 汇总退出码。
@@ -22,6 +22,7 @@
 #include "capture.h"
 #include "robot.h"
 #include "sensor.h"
+#include "world.h"
 
 namespace {
 
@@ -102,7 +103,7 @@ void testKinematics() {
 
     // 满油门 4 秒：v 向 kMaxSpeed 一阶逼近，theta=0 时沿 +X 积分
     for (int i = 0; i < 240; ++i) {
-        r.update(1.0f / 60.0f, {1.0f, 0.0f});
+        r.update(1.0f / 60.0f, {1.0f, 0.0f}, Robot::kMaxSpeed);
     }
     check(r.v() > 0.9f * Robot::kMaxSpeed, "油门=1 时 v 逼近 kMaxSpeed");
     check(r.x() > 1.0f, "theta=0 前进 x 增加");
@@ -111,7 +112,7 @@ void testKinematics() {
     // 松油门：v 快速衰减且不为负
     const float v0 = r.v();
     for (int i = 0; i < 60; ++i) {
-        r.update(1.0f / 60.0f, {0.0f, 0.0f});
+        r.update(1.0f / 60.0f, {0.0f, 0.0f}, Robot::kMaxSpeed);
     }
     check(r.v() < v0 * 0.5f, "油门=0 时 v 快速衰减");
     check(r.v() >= 0.0f, "v 不为负");
@@ -119,12 +120,12 @@ void testKinematics() {
     // steer>0 = 左转（theta 增加）；steer<0 = 右转
     Robot left;
     for (int i = 0; i < 120; ++i) {
-        left.update(1.0f / 60.0f, {0.0f, 1.0f});
+        left.update(1.0f / 60.0f, {0.0f, 1.0f}, Robot::kMaxSpeed);
     }
     check(left.theta() > 0.1f, "steer>0 左转 theta 增加");
     Robot right;
     for (int i = 0; i < 120; ++i) {
-        right.update(1.0f / 60.0f, {0.0f, -1.0f});
+        right.update(1.0f / 60.0f, {0.0f, -1.0f}, Robot::kMaxSpeed);
     }
     check(right.theta() < -0.1f, "steer<0 右转 theta 减小");
 }
@@ -144,7 +145,7 @@ void testRelativeMotion() {
     while (active && guard++ < 600) {
         RobotInput in;
         active = r.tickRelative(dt, in);
-        r.update(dt, in);
+        r.update(dt, in, Robot::kMaxSpeed);
     }
     check(!active, "fdist 走满后 tickRelative 返回 false");
     check(guard < 600, "fdist 1m 在时限内完成");
@@ -158,7 +159,7 @@ void testRelativeMotion() {
     while (active && guard++ < 600) {
         RobotInput in;
         active = back.tickRelative(dt, in);
-        back.update(dt, in);
+        back.update(dt, in, Robot::kMaxSpeed);
     }
     check(!active, "负 fdist 亦能完成");
     check(back.x() <= -0.45f && back.x() >= -0.60f, "fdist -0.5m 实走落在 [-0.60, -0.45]");
@@ -171,7 +172,7 @@ void testRelativeMotion() {
     while (active && guard++ < 600) {
         RobotInput in;
         active = t.tickRelative(dt, in);
-        t.update(dt, in);
+        t.update(dt, in, Robot::kMaxSpeed);
     }
     check(!active, "turn 完成后 tickRelative 返回 false");
     check(t.theta() <= glm::radians(-89.0f) && t.theta() >= glm::radians(-95.0f),
@@ -183,7 +184,7 @@ void testRelativeMotion() {
     check(!idle.tickRelative(dt, in), "无相对运动返回 false");
 }
 
-// ---- Robot：射线测距 ----
+// ---- World：射线测距 ----
 
 std::vector<Obstacle> oneBox(float cx, float cz, float mass = 1.0f) {
     return {{{cx, 0.4f, cz}, {0.4f, 0.4f, 0.4f}, {1.0f, 1.0f, 1.0f}, mass}};
@@ -192,70 +193,88 @@ std::vector<Obstacle> oneBox(float cx, float cz, float mass = 1.0f) {
 void testQueryRange() {
     Robot r;  // 原点 theta=0，射线起点 x=+0.2（半车长）
     // 盒中心 3.0 半宽 0.4 → 近面 2.6 → 命中距离 2.6-0.2 = 2.4
-    check(near(r.queryRange(oneBox(3.0f, 0.0f)), 2.4f, 1e-3f), "正前方命中距离 = 2.4m");
+    World w(oneBox(3.0f, 0.0f));
+    check(near(w.queryRange(r), 2.4f, 1e-3f), "正前方命中距离 = 2.4m");
 
-    check(near(r.queryRange({}), Robot::kRangeMax, 1e-6f), "无障碍返回 maxRange");
+    World empty(std::vector<Obstacle>{});
+    check(near(empty.queryRange(r), Robot::kRangeMax, 1e-6f), "无障碍返回 maxRange");
 
     // 障碍在身后：射线反向无命中
-    check(near(r.queryRange(oneBox(-3.0f, 0.0f)), Robot::kRangeMax, 1e-6f), "身后障碍不计入");
+    World behind(oneBox(-3.0f, 0.0f));
+    check(near(behind.queryRange(r), Robot::kRangeMax, 1e-6f), "身后障碍不计入");
 
-    // 转向后测侧方：theta=+90°（朝 -Z）时正前方变为 -Z 方向的盒
+    // 转向后测侧方：theta=+90°（朝 -Z）时命中 -Z 方向的盒
     Robot side;
     side.setRelativeTurn(glm::radians(90.0f));
     RobotInput in;
     int guard = 0;
     while (side.tickRelative(1.0f / 60.0f, in) && guard++ < 600) {
-        side.update(1.0f / 60.0f, in);
+        side.update(1.0f / 60.0f, in, Robot::kMaxSpeed);
     }
-    check(near(side.queryRange(oneBox(side.x(), -3.0f)), 2.4f - 0.0f, 0.15f),
-          "转 90° 后命中侧方障碍");
+    World sideBox(oneBox(side.x(), -3.0f));
+    check(near(sideBox.queryRange(side), 2.4f, 0.15f), "转 90° 后命中侧方障碍");
 }
 
-// ---- Robot：搬运 ----
+// ---- World：碰撞 ----
+
+void testCollisions() {
+    // 朝盒推进：解算把车推出盒面，车心进不到「近面 - 碰撞半径」以内
+    World w(oneBox(2.0f, 0.0f));  // 盒近面 x=1.6
+    Robot r;
+    for (int i = 0; i < 300; ++i) {
+        r.update(1.0f / 60.0f, {1.0f, 0.0f}, Robot::kMaxSpeed);
+        w.resolveCollisions(r);
+    }
+    check(r.x() <= 1.401f, "碰撞把车挡在盒面外（1.6-0.2）");
+    check(r.x() > 1.2f, "车确实贴到了盒面");
+}
+
+// ---- World：搬运 ----
 
 void testPickPlace() {
-    std::vector<Obstacle> obs{
+    World world(std::vector<Obstacle>{
         {{0.7f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 1.0f, 1.0f}, 5.0f},  // 前方近面 0.5
         {{2.0f, 0.2f, 3.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 1.0f, 1.0f}, 1.0f},  // 远处侧方
-    };
+    });
     Robot r;
-    check(!r.isCarrying(), "初始未搬运");
+    check(!world.isCarrying(), "初始未搬运");
 
     // 前端在 0.2、近面在 0.5 → 距离 0.3 < 0.6，可拾取
-    check(r.pick(obs), "前方 0.3m 的盒可拾取");
-    check(r.isCarrying(), "拾取后 isCarrying");
-    check(r.carriedObstacleIndex() == 0, "拾取的是最近的 idx=0");
-    check(near(r.carriedMass(), 5.0f, 1e-6f), "carriedMass = 障碍质量");
-    check(r.effectiveMaxSpeed() < Robot::kMaxSpeed, "搬运时最大速度被压低");
+    check(world.pick(r), "前方 0.3m 的盒可拾取");
+    check(world.isCarrying(), "拾取后 isCarrying");
+    check(world.carriedIndex() == 0, "拾取的是最近的 idx=0");
+    check(near(world.carriedMass(), 5.0f, 1e-6f), "carriedMass = 障碍质量");
+    check(world.effectiveMaxSpeed() < Robot::kMaxSpeed, "搬运时最大速度被压低");
 
-    check(!r.pick(obs), "已持有物体时再 pick 失败");
-    check(near(r.queryRange(obs), Robot::kRangeMax, 1e-6f), "被搬运物体不参与测距");
+    check(!world.pick(r), "已持有物体时再 pick 失败");
+    check(near(world.queryRange(r), Robot::kRangeMax, 1e-6f), "被搬运物体不参与测距");
 
-    // 被搬运物体跟随机器人：updateCarriedPosition 把它钉在机体正上方
+    // 被搬运物体跟随机器人：updateCarried 把它钉在机体正上方
     for (int i = 0; i < 60; ++i) {
-        r.update(1.0f / 60.0f, {0.5f, 0.0f});
+        r.update(1.0f / 60.0f, {0.5f, 0.0f}, world.effectiveMaxSpeed());
     }
-    r.updateCarriedPosition(obs);
+    world.updateCarried(r);
     check(r.x() > 0.1f, "搬运中机器人仍可前进（减速但不清零）");
-    check(near(obs[0].center.x, r.x(), 1e-6f), "搬运中物体 x 钉在机体正上方");
-    check(obs[0].center.y > Robot::kBodyY, "搬运中物体抬到身体上方");
+    check(near(world.obstacles()[0].center.x, r.x(), 1e-6f), "搬运中物体 x 钉在机体正上方");
+    check(world.obstacles()[0].center.y > Robot::kBodyY, "搬运中物体抬到身体上方");
 
-    // place：放到身体前端 + placeDist（0.2+0.5=0.7）
+    // place：放到身体前端 + kPlaceDist（0.2+0.5=0.7）
     const float px = r.x();
-    check(r.place(obs), "place 成功");
-    check(!r.isCarrying(), "place 后未搬运");
-    check(near(obs[0].center.x, px + 0.2f + 0.5f, 1e-3f), "物体落在前方 placeDist 处");
-    check(r.place(obs) == false, "未持有物体时 place 失败");
+    check(world.place(r), "place 成功");
+    check(!world.isCarrying(), "place 后未搬运");
+    check(near(world.obstacles()[0].center.x, px + 0.2f + 0.5f, 1e-3f),
+          "物体落在前方 placeDist 处");
+    check(!world.place(r), "未持有物体时 place 失败");
 
     // 拾不到的两种情形：太远 / 在身后
     Robot far;
-    std::vector<Obstacle> farBox = oneBox(2.0f, 0.0f);
-    std::vector<Obstacle> behindBox = oneBox(-1.0f, 0.0f);
-    check(!far.pick(farBox), "前方 1.8m 的盒拾取失败（超出 0.6m）");
-    check(!far.pick(behindBox), "身后的盒拾取失败");
+    World farWorld(oneBox(2.0f, 0.0f));
+    World behindWorld(oneBox(-1.0f, 0.0f));
+    check(!farWorld.pick(far), "前方 1.8m 的盒拾取失败（超出 0.6m）");
+    check(!behindWorld.pick(far), "身后的盒拾取失败");
 }
 
-// ---- CommandBridge：线上协议 ----
+// ---- CommandBridge：线上协议（持续型状态 + 一次性事件） ----
 
 void testCommandBridge() {
     const std::string path = testSockPath("cmd");
@@ -265,37 +284,56 @@ void testCommandBridge() {
     int fd = connectTo(path);
     check(fd >= 0, "客户端连上命令桥");
 
+    // 一次性事件：不改变持续型状态
     say(fd, "fdist 2.50\n");
     bridge.poll();
-    check(bridge.command() == SimCommand::FwdDist, "fdist 解析为 FwdDist");
-    check(near(bridge.param(), 2.5f, 1e-4f), "fdist 参数 = 2.5");
-    check(bridge.seq() == 1u, "第一条指令 seq=1");
+    check(bridge.command() == SimCommand::Stop, "fdist 不改持续型状态");
+    SimEvent ev;
+    check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::FwdDist && near(ev.param, 2.5f, 1e-4f),
+          "fdist 作为事件出队，参数 2.5");
+    check(!bridge.pollEvent(ev), "队列为空时 pollEvent 返回 false");
 
+    // 持续型指令
     say(fd, "forward 0.5\n");
     bridge.poll();
     check(bridge.command() == SimCommand::Forward && near(bridge.speed(), 0.5f, 1e-4f),
           "forward 0.5 解析成功");
-    check(bridge.seq() == 2u, "seq 随接受行自增");
+    check(!bridge.pollEvent(ev), "持续型指令不产生事件");
 
-    // 垃圾行/坏参数/缺参数：整行忽略，状态与 seq 都不动
+    // 连续两次 fdist：两条都要触发（回归守门：按枚举边沿触发的旧实现会吞掉第二条）
+    say(fd, "fdist 2.0\nfdist 3.5\n");
+    bridge.poll();
+    check(bridge.pollEvent(ev) && near(ev.param, 2.0f, 1e-4f), "第一条 fdist 入队");
+    check(bridge.pollEvent(ev) && near(ev.param, 3.5f, 1e-4f), "第二条 fdist 也入队（不被吞）");
+    check(!bridge.pollEvent(ev), "两条 drain 后为空");
+
+    // 垃圾行/坏参数/缺参数：不改状态、不产生事件
     say(fd, "xyzzy\nfdist abc\nturn\n");
     bridge.poll();
-    check(bridge.command() == SimCommand::Forward && bridge.seq() == 2u,
+    check(bridge.command() == SimCommand::Forward && !bridge.pollEvent(ev),
           "未知指令与坏参数整行忽略");
 
-    // 同帧多条指令以最后一条为准，但每条都计入 seq
+    // 同帧持续型多行以最后一条为准；一次性按 FIFO 入队
     say(fd, "turn -90\nleft 0.3\n");
     bridge.poll();
     check(bridge.command() == SimCommand::Left && near(bridge.speed(), 0.3f, 1e-4f),
-          "同帧多行以最后一条为准");
-    check(bridge.seq() == 4u, "两条都被接受（seq=4）");
+          "同帧多行以最后一条持续型为准");
+    check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Turn && near(ev.param, -90.0f, 1e-4f),
+          "turn -90 按序入队");
+    check(!bridge.pollEvent(ev), "队列 drain 完");
 
-    // 发完即关写端（socat 手测模式）：行必须被处理，不能被 EOF 连带清掉
+    // pick/place 也是事件
+    say(fd, "pick\nplace\n");
+    bridge.poll();
+    check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Pick, "pick 入队");
+    check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::Place, "place 入队");
+
+    // 半关写端（socat 手测模式）：事件不能被 EOF 连带清掉
     say(fd, "fdist 3\n");
     ::shutdown(fd, SHUT_WR);
     bridge.poll();
-    check(bridge.command() == SimCommand::FwdDist && near(bridge.param(), 3.0f, 1e-4f),
-          "半关写端后请求行仍被处理（延迟断开）");
+    check(bridge.pollEvent(ev) && ev.type == SimEvent::Type::FwdDist && near(ev.param, 3.0f, 1e-4f),
+          "半关写端后事件仍被处理（延迟断开）");
     bridge.poll();
     check(bridge.command() == SimCommand::Stop, "EOF 处理完后回落 Stop");
 
@@ -305,12 +343,21 @@ void testCommandBridge() {
     check(fd2 >= 0, "重连成功");
     say(fd2, "stop\n");
     bridge.poll();
-    check(bridge.command() == SimCommand::Stop && bridge.seq() == 6u,
-          "新连接顶掉旧连接并接受指令");
+    check(bridge.command() == SimCommand::Stop, "新连接顶掉旧连接并接受指令");
+
+    // 事件队列有界：灌超过上限的事件，多的被丢并告警
+    const int fd3 = connectTo(path);
+    for (int i = 0; i < 40; ++i) {
+        say(fd3, "pick\n");
+    }
+    bridge.poll();
+    int drained = 0;
+    while (bridge.pollEvent(ev)) {
+        ++drained;
+    }
+    check(drained == 32, "事件队列上限 32，超出的被丢");
 
     // 灌垃圾超限：断开并回落 Stop
-    ::close(fd2);
-    const int fd3 = connectTo(path);
     const std::string junk(5000, 'x');
     (void)::send(fd3, junk.data(), junk.size(), MSG_NOSIGNAL);
     bridge.poll();
@@ -390,6 +437,7 @@ int main() {
     testKinematics();
     testRelativeMotion();
     testQueryRange();
+    testCollisions();
     testPickPlace();
     testCommandBridge();
     testSensorBridge();

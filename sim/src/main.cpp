@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <string>
 
 #include "bridge.h"
 #include "camera.h"
@@ -16,7 +17,9 @@
 #include "robot.h"
 #include "sensor.h"
 #include "shader.h"
+#include "shaders.h"
 #include "spider.h"
+#include "world.h"
 
 namespace {
 
@@ -25,133 +28,26 @@ const char* kDefaultCaptureSocketPath = "/tmp/mybot-sim-capture.sock";
 const char* kDefaultSensorSocketPath = "/tmp/mybot-sim-sensor.sock";
 constexpr int kJpegQuality = 90;
 
-const char* kPhongVs = R"(
-#version 330 core
-layout(location = 0) in vec3 aPos;
-layout(location = 1) in vec3 aNormal;
-uniform mat4 model;
-uniform mat4 view;
-uniform mat4 projection;
-out vec3 fragPos;
-out vec3 normal;
-void main() {
-    fragPos = vec3(model * vec4(aPos, 1.0));
-    normal = mat3(transpose(inverse(model))) * aNormal;
-    gl_Position = projection * view * vec4(fragPos, 1.0);
+// 三条 socket 同一规矩：argv > 环境变量 > 缺省。路径的单一事实源是环境
+// 变量名，mybot 侧 Sim.lua / Camera.lua 与这里同读。
+std::string resolveSocketPath(int argc, char** argv, int argvIndex, const char* envName,
+                              const char* fallback) {
+    if (argc > argvIndex) {
+        return argv[argvIndex];
+    }
+    if (const char* fromEnv = std::getenv(envName)) {
+        if (fromEnv[0] != '\0') {
+            return fromEnv;
+        }
+    }
+    return fallback;
 }
-)";
-
-const char* kPhongFs = R"(
-#version 330 core
-in vec3 fragPos;
-in vec3 normal;
-uniform vec3 objectColor;
-uniform vec3 lightColor;
-uniform vec3 lightDir;
-uniform vec3 viewPos;
-out vec4 fragColor;
-void main() {
-    vec3 n = normalize(normal);
-    vec3 l = normalize(-lightDir);
-    float diff = max(dot(n, l), 0.0);
-    vec3 viewDir = normalize(viewPos - fragPos);
-    vec3 h = normalize(viewDir + l);
-    float spec = pow(max(dot(n, h), 0.0), 48.0) * 0.35;
-    vec3 color = (0.28 + diff) * objectColor * lightColor + spec * lightColor;
-    fragColor = vec4(color, 1.0);
-}
-)";
-
-const char* kLineVs = R"(
-#version 330 core
-layout(location = 0) in vec3 aPos;
-uniform mat4 mvp;
-void main() {
-    gl_Position = mvp * vec4(aPos, 1.0);
-}
-)";
-
-const char* kLineFs = R"(
-#version 330 core
-uniform vec3 color;
-out vec4 fragColor;
-void main() {
-    fragColor = vec4(color, 1.0);
-}
-)";
 
 Camera g_camera;
 bool g_resetRequested = false;
 bool g_toggleCamera = false;
 bool g_dragging = false;
 double g_lastX = 0.0, g_lastY = 0.0;
-
-// 场景障碍物：蜘蛛从原点出发沿 +X 前进，障碍散布在前进路线两侧。
-// Obstacle 定义在 robot.h（queryRange 需要访问）。
-// 非 const 是因为搬运设备会修改被搬运物体的位置。
-constexpr float kRobotRadius = 0.20f;  // 蜘蛛碰撞球半径（XZ 平面，约半车身长）
-constexpr float kDefaultDensity = 800.0f;  // 默认密度 kg/m³（近似木材）
-std::vector<Obstacle> g_obstacles = {
-    {{2.0f, 0.40f, 1.2f}, {0.40f, 0.40f, 0.40f}, {0.72f, 0.30f, 0.24f}},   // 前进左前方的红箱
-    {{3.5f, 0.50f, -0.6f}, {0.20f, 0.50f, 1.20f}, {0.45f, 0.52f, 0.60f}},  // 横在右前的矮墙
-    {{1.2f, 0.25f, -1.6f}, {0.50f, 0.25f, 0.50f}, {0.80f, 0.66f, 0.25f}},  // 右侧的黄块
-    {{4.5f, 0.75f, 1.8f}, {0.25f, 0.75f, 0.25f}, {0.30f, 0.55f, 0.35f}},   // 远处的绿柱
-    {{0.6f, 0.30f, 2.2f}, {0.30f, 0.30f, 0.30f}, {0.55f, 0.42f, 0.60f}},   // 左后的紫箱
-    {{6.0f, 0.35f, 0.8f}, {0.35f, 0.35f, 0.35f}, {0.85f, 0.45f, 0.20f}},   // 第二排橙箱
-    {{7.5f, 0.60f, -1.0f}, {0.20f, 0.60f, 0.80f}, {0.30f, 0.40f, 0.65f}},  // 深处蓝墙
-    {{5.5f, 0.25f, -2.2f}, {0.45f, 0.25f, 0.45f}, {0.25f, 0.60f, 0.55f}},  // 右深的青块
-    {{8.5f, 0.40f, 1.5f}, {0.40f, 0.40f, 0.40f}, {0.65f, 0.30f, 0.50f}},   // 远处品红箱
-    {{6.8f, 0.30f, 2.8f}, {0.30f, 0.30f, 0.30f}, {0.55f, 0.65f, 0.25f}},   // 左深的绿黄箱
-    {{9.5f, 0.50f, -0.2f}, {0.25f, 0.50f, 0.25f}, {0.75f, 0.75f, 0.72f}},  // 尽头白柱
-};
-
-// 初始化障碍物质量：体积 × 密度。在 main() 开头调用一次。
-void initObstacleMass() {
-    for (auto& ob : g_obstacles) {
-        const float volume = 8.0f * ob.half.x * ob.half.y * ob.half.z;  // 2*half 是全尺寸
-        ob.mass = volume * kDefaultDensity;
-    }
-}
-
-// 球（XZ 平面）vs AABB（XZ 截面）碰撞解算：把球心推出盒面。
-// 返回 true 表示发生了碰撞（位置被修正）。
-bool resolveSphereAABB2D(float& sx, float& sz, float radius,
-                         const Obstacle& ob) {
-    const float bx = ob.center.x, bz = ob.center.z;
-    const float hx = ob.half.x, hz = ob.half.z;
-    // 盒面上离球心最近的点
-    const float cx = std::clamp(sx, bx - hx, bx + hx);
-    const float cz = std::clamp(sz, bz - hz, bz + hz);
-    const float dx = sx - cx, dz = sz - cz;
-    const float distSq = dx * dx + dz * dz;
-    if (distSq >= radius * radius) {
-        return false;  // 无碰撞
-    }
-    const float dist = std::sqrt(distSq);
-    if (dist < 1e-5f) {
-        // 球心在盒内：沿最短轴推出
-        const float penXp = (bx + hx) - sx, penXn = sx - (bx - hx);
-        const float penZp = (bz + hz) - sz, penZn = sz - (bz - hz);
-        float minPen = penXp;
-        int axis = 0;  // 0=x, 1=z
-        float sign = 1.0f;
-        if (penXn < minPen) { minPen = penXn; axis = 0; sign = -1.0f; }
-        if (penZp < minPen) { minPen = penZp; axis = 1; sign = 1.0f; }
-        if (penZn < minPen) { minPen = penZn; axis = 1; sign = -1.0f; }
-        const float push = radius + minPen;
-        if (axis == 0) {
-            sx += sign * push;
-        } else {
-            sz += sign * push;
-        }
-    } else {
-        // 球心在盒外但距离 < radius：沿 dx,dz 方向推出
-        const float push = radius - dist;
-        sx += (dx / dist) * push;
-        sz += (dz / dist) * push;
-    }
-    return true;
-}
 
 void framebufferSizeCallback(GLFWwindow*, int width, int height) {
     glViewport(0, 0, width, height);
@@ -203,39 +99,93 @@ RobotInput commandToInput(SimCommand cmd, float speed) {
     return input;
 }
 
+// 处理一条一次性事件：相对运动设剩余量、pick/place 交给 World 并把结果
+// 打到 stderr（对端看不到回执，日志是唯一的排障线索）
+void dispatchEvent(const SimEvent& ev, Robot& robot, World& world) {
+    switch (ev.type) {
+        case SimEvent::Type::FwdDist:
+            std::fprintf(stderr, "cmd: fdist %.2f\n", ev.param);
+            robot.setRelativeDist(ev.param);
+            break;
+        case SimEvent::Type::Turn:
+            std::fprintf(stderr, "cmd: turn %.2f\n", ev.param);
+            robot.setRelativeTurn(glm::radians(ev.param));
+            break;
+        case SimEvent::Type::Pick:
+            if (world.isCarrying()) {
+                std::fprintf(stderr, "pick: 已持有物体 (idx=%d, %.2fkg)，忽略\n",
+                             world.carriedIndex(), world.carriedMass());
+            } else if (world.pick(robot)) {
+                const auto& ob = world.obstacles()[world.carriedIndex()];
+                std::fprintf(stderr, "pick: 成功拾取 idx=%d mass=%.2fkg pos=(%.2f,%.2f)\n",
+                             world.carriedIndex(), world.carriedMass(),
+                             ob.center.x, ob.center.z);
+            } else {
+                std::fprintf(stderr, "pick: 前方 %.2fm 内无障碍物，拾取失败\n",
+                             World::kPickRange);
+            }
+            break;
+        case SimEvent::Type::Place:
+            if (world.place(robot)) {
+                std::fprintf(stderr, "place: 放置成功\n");
+            } else {
+                std::fprintf(stderr, "place: 未持有物体，放置失败\n");
+            }
+            break;
+    }
+}
+
+// 窗口标题即仪表盘：动作/速度/位姿/测距/搬运/三桥状态一页看全
+void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureBridge& capture,
+                 const SensorBridge& sensor, const Robot& robot, const World& world) {
+    char cmdBuf[48];
+    if (bridge.command() == SimCommand::Stop) {
+        std::snprintf(cmdBuf, sizeof(cmdBuf), "stop");
+    } else {
+        std::snprintf(cmdBuf, sizeof(cmdBuf), "%s %.0f%%", commandName(bridge.command()),
+                      bridge.speed() * 100.0f);
+    }
+
+    char lastBuf[48];
+    std::snprintf(lastBuf, sizeof(lastBuf), "%s", bridge.lastLine().c_str());
+
+    const float rangeM = world.queryRange(robot);
+
+    char carryBuf[32];
+    if (world.isCarrying()) {
+        std::snprintf(carryBuf, sizeof(carryBuf), "carrying %.1fkg", world.carriedMass());
+    } else {
+        std::snprintf(carryBuf, sizeof(carryBuf), "empty");
+    }
+
+    char title[420];
+    std::snprintf(title, sizeof(title),
+                  "MyBot Spider | cmd %-16s last %-14s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg | range %.2fm | %s | %s %s | cam %s sensor %s | C camera[%s]  R reset",
+                  cmdBuf,
+                  lastBuf,
+                  robot.v(), robot.omega(),
+                  robot.x(), robot.z(), glm::degrees(robot.theta()),
+                  rangeM,
+                  carryBuf,
+                  bridge.listening() ? "listening" : "NOT LISTENING",
+                  bridge.path().c_str(),
+                  capture.listening() ? "on" : "OFF",
+                  sensor.listening() ? "on" : "OFF",
+                  g_camera.follow ? "follow" : "free");
+    glfwSetWindowTitle(window, title);
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
-    const char* socketPath = kDefaultSocketPath;
-    if (argc > 1) {
-        socketPath = argv[1];
-    } else if (const char* fromEnv = std::getenv("MYBOT_SIM_SOCK")) {
-        if (fromEnv[0] != '\0') {
-            socketPath = fromEnv;
-        }
-    }
-
-    // 拍照 socket 与命令 socket 分开两条：命令是持续型即发即忘、拍照是一问一答
-    // 带二进制体，且 mybot 侧 Sim.lua 与 Camera.lua 是各自独立的驱动实例，无法
-    // 共用一条连接。路径来源同命令 socket 的规矩：argv[2] > 环境变量 > 缺省。
-    const char* capturePath = kDefaultCaptureSocketPath;
-    if (argc > 2) {
-        capturePath = argv[2];
-    } else if (const char* fromEnv = std::getenv("MYBOT_SIM_CAPTURE_SOCK")) {
-        if (fromEnv[0] != '\0') {
-            capturePath = fromEnv;
-        }
-    }
-
-    // 测距 sensor socket：argv[3] > 环境变量 > 缺省。
-    const char* sensorPath = kDefaultSensorSocketPath;
-    if (argc > 3) {
-        sensorPath = argv[3];
-    } else if (const char* fromEnv = std::getenv("MYBOT_SIM_SENSOR_SOCK")) {
-        if (fromEnv[0] != '\0') {
-            sensorPath = fromEnv;
-        }
-    }
+    // 三条 socket：命令（持续型即发即忘）、拍照（一问一答带二进制体）、测距
+    // （同步查询）。mybot 侧 Sim.lua 与 Camera.lua 是独立驱动实例，无法共用连接。
+    const std::string socketPath =
+        resolveSocketPath(argc, argv, 1, "MYBOT_SIM_SOCK", kDefaultSocketPath);
+    const std::string capturePath =
+        resolveSocketPath(argc, argv, 2, "MYBOT_SIM_CAPTURE_SOCK", kDefaultCaptureSocketPath);
+    const std::string sensorPath =
+        resolveSocketPath(argc, argv, 3, "MYBOT_SIM_SENSOR_SOCK", kDefaultSensorSocketPath);
 
     if (!glfwInit()) {
         std::fprintf(stderr, "failed to initialize GLFW\n");
@@ -295,16 +245,14 @@ int main(int argc, char** argv) {
     SceneMeshes meshes = buildSceneMeshes();
     Robot robot;
     Spider spider;
-
-    initObstacleMass();  // 按体积×密度填充质量
+    World world;
 
     const glm::vec3 lightDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
     const glm::vec3 lightColor(1.0f, 0.98f, 0.92f);
 
-    // 跟踪上一条已派发指令的序号：fdist/turn/pick/place 是一次性指令，同枚举
-    // 重复下发（如连续两次不同距离的 fdist）也必须重新触发，故按「新行到达」
-    // 取边沿而不是按「枚举变化」
-    unsigned lastSeq = 0;
+    // 跟踪上一条持续型指令：新持续型指令打断进行中的相对运动（stop 除外——
+    // 它只是松油门，不打断 fdist/turn）
+    SimCommand lastContinuous = SimCommand::Stop;
 
     double last = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
@@ -328,44 +276,20 @@ int main(int argc, char** argv) {
             g_toggleCamera = false;
         }
 
-        // 相对运动拦截：fdist/turn 到达时设到 robot 的剩余量里，后续帧由
-        // tickRelative() 接管 input 直到量耗尽。新的持续型指令（forward 等）
-        // 会清零剩余量交回手动控制；stop 不打断进行中的相对运动。
         const SimCommand cmd = bridge.command();
-        if (bridge.seq() != lastSeq) {
-            if (cmd == SimCommand::FwdDist || cmd == SimCommand::Turn) {
-                std::fprintf(stderr, "cmd: %s %.2f\n", commandName(cmd), bridge.param());
-            } else {
-                std::fprintf(stderr, "cmd: %s\n", commandName(cmd));
-            }
-            if (cmd == SimCommand::FwdDist) {
-                robot.setRelativeDist(bridge.param());
-            } else if (cmd == SimCommand::Turn) {
-                robot.setRelativeTurn(glm::radians(bridge.param()));
-            } else if (cmd == SimCommand::Pick) {
-                if (robot.isCarrying()) {
-                    std::fprintf(stderr, "pick: 已持有物体 (idx=%d, %.2fkg)，忽略\n",
-                                 robot.carriedObstacleIndex(), robot.carriedMass());
-                } else if (robot.pick(g_obstacles)) {
-                    const auto& ob = g_obstacles[robot.carriedObstacleIndex()];
-                    std::fprintf(stderr, "pick: 成功拾取 idx=%d mass=%.2fkg pos=(%.2f,%.2f)\n",
-                                 robot.carriedObstacleIndex(), robot.carriedMass(),
-                                 ob.center.x, ob.center.z);
-                } else {
-                    std::fprintf(stderr, "pick: 前方 %.2fm 内无障碍物，拾取失败\n", 0.6f);
-                }
-            } else if (cmd == SimCommand::Place) {
-                if (robot.place(g_obstacles)) {
-                    std::fprintf(stderr, "place: 放置成功\n");
-                } else {
-                    std::fprintf(stderr, "place: 未持有物体，放置失败\n");
-                }
-            } else if (cmd != SimCommand::Stop) {
+        if (cmd != lastContinuous) {
+            std::fprintf(stderr, "cmd: %s\n", commandName(cmd));
+            if (cmd != SimCommand::Stop) {
                 // 持续型指令覆盖相对运动
                 robot.setRelativeDist(0.0f);
                 robot.setRelativeTurn(0.0f);
             }
-            lastSeq = bridge.seq();
+            lastContinuous = cmd;
+        }
+        // 一次性事件 drain 到空：每条必触发一次（连续两次 fdist 不再互相吞）
+        SimEvent ev;
+        while (bridge.pollEvent(ev)) {
+            dispatchEvent(ev, robot, world);
         }
 
         RobotInput input = commandToInput(cmd, bridge.speed());
@@ -373,26 +297,14 @@ int main(int argc, char** argv) {
         if (robot.tickRelative(dt, relInput)) {
             input = relInput;
         }
-        robot.update(dt, input);
-        // 碰撞解算：逐个障碍检查，撞了就推出（多障碍时逐次解算，不迭代）
-        // 跳过被搬运的物体——它附着在机器人上，不应该参与碰撞
-        const int carriedIdx = robot.carriedObstacleIndex();
-        for (int i = 0; i < (int)g_obstacles.size(); ++i) {
-            if (i == carriedIdx) continue;
-            const Obstacle& ob = g_obstacles[i];
-            float rx = robot.x(), rz = robot.z();
-            if (resolveSphereAABB2D(rx, rz, kRobotRadius, ob)) {
-                robot.setX(rx);
-                robot.setZ(rz);
-            }
-        }
-        // 搬运中的物体跟随机器人移动：放在身体前端上方
-        robot.updateCarriedPosition(g_obstacles);
+        robot.update(dt, input, world.effectiveMaxSpeed());
+        world.resolveCollisions(robot);
+        world.updateCarried(robot);
         spider.update(dt, robot.v());
 
         // 测距响应：碰撞解算完成后算距离，保证拿到的是本帧最终位姿
         if (wantRange) {
-            const float dist = robot.queryRange(g_obstacles);
+            const float dist = world.queryRange(robot);
             const int distMm = static_cast<int>(dist * 1000.0f + 0.5f);
             if (!sensor.sendRange(distMm)) {
                 sensor.sendError("range send failed");
@@ -428,7 +340,7 @@ int main(int argc, char** argv) {
         meshes.cube.draw();
 
         // 障碍盒：unit cube 经 translate(center)*scale(2*half) 摆到位
-        for (const Obstacle& ob : g_obstacles) {
+        for (const Obstacle& ob : world.obstacles()) {
             glm::mat4 m = glm::translate(glm::mat4(1.0f), ob.center) *
                           glm::scale(glm::mat4(1.0f), ob.half * 2.0f);
             phong.setMat4("model", m);
@@ -443,41 +355,7 @@ int main(int argc, char** argv) {
         lines.setVec3("color", glm::vec3(0.18f, 0.22f, 0.18f));
         meshes.grid.draw();
 
-        char cmdBuf[48];
-        if (bridge.command() == SimCommand::Stop) {
-            std::snprintf(cmdBuf, sizeof(cmdBuf), "stop");
-        } else if (bridge.command() == SimCommand::FwdDist) {
-            std::snprintf(cmdBuf, sizeof(cmdBuf), "fdist %.2fm", bridge.param());
-        } else if (bridge.command() == SimCommand::Turn) {
-            std::snprintf(cmdBuf, sizeof(cmdBuf), "turn %.0f deg", bridge.param());
-        } else {
-            std::snprintf(cmdBuf, sizeof(cmdBuf), "%s %.0f%%", commandName(bridge.command()),
-                          bridge.speed() * 100.0f);
-        }
-
-        const float rangeM = robot.queryRange(g_obstacles);
-
-        char carryBuf[32];
-        if (robot.isCarrying()) {
-            std::snprintf(carryBuf, sizeof(carryBuf), "carrying %.1fkg", robot.carriedMass());
-        } else {
-            std::snprintf(carryBuf, sizeof(carryBuf), "empty");
-        }
-
-        char title[420];
-        std::snprintf(title, sizeof(title),
-                      "MyBot Spider | cmd %-16s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg | range %.2fm | %s | %s %s | cam %s sensor %s | C camera[%s]  R reset",
-                      cmdBuf,
-                      robot.v(), robot.omega(),
-                      robot.x(), robot.z(), glm::degrees(robot.theta()),
-                      rangeM,
-                      carryBuf,
-                      bridge.listening() ? "listening" : "NOT LISTENING",
-                      bridge.path().c_str(),
-                      capture.listening() ? "on" : "OFF",
-                      sensor.listening() ? "on" : "OFF",
-                      g_camera.follow ? "follow" : "free");
-        glfwSetWindowTitle(window, title);
+        updateTitle(window, bridge, capture, sensor, robot, world);
 
         // 抓帧回传放在 SwapBuffers 之前：此刻 GL_BACK 是刚画好的这一帧。
         if (wantCapture) {

@@ -6,6 +6,10 @@
 
 namespace {
 
+// 一次性事件队列上限。对端连发超过这个数还没等主循环 drain，说明脚本在灌
+// 事件——丢弃新的并报出来，别让队列无界生长。
+constexpr std::size_t kMaxQueuedEvents = 32;
+
 float parseSpeed(const char* text, bool& ok) {
     char* end = nullptr;
     const float value = std::strtof(text, &end);
@@ -33,14 +37,6 @@ const char* commandName(SimCommand cmd) {
             return "right";
         case SimCommand::Stop:
             return "stop";
-        case SimCommand::FwdDist:
-            return "fdist";
-        case SimCommand::Turn:
-            return "turn";
-        case SimCommand::Pick:
-            return "pick";
-        case SimCommand::Place:
-            return "place";
     }
     return "stop";
 }
@@ -51,7 +47,16 @@ CommandBridge::CommandBridge(const std::string& socketPath)
 void CommandBridge::onClientGone() {
     command_ = SimCommand::Stop;
     speed_ = 1.0f;
-    param_ = 0.0f;
+    events_.clear();
+}
+
+bool CommandBridge::pollEvent(SimEvent& out) {
+    if (events_.empty()) {
+        return false;
+    }
+    out = events_.front();
+    events_.erase(events_.begin());
+    return true;
 }
 
 void CommandBridge::handleLine(const std::string& rawLine) {
@@ -70,45 +75,65 @@ void CommandBridge::handleLine(const std::string& rawLine) {
         return;
     }
 
-    SimCommand parsed = SimCommand::Stop;
-    float param = 0.0f;
+    // 分类：持续型改状态、一次性入队、认不出的什么都不改——动作是持续型的，
+    // 被一行垃圾打成 stop 会让蜘蛛莫名其妙停在半路，只报出来给人看。
+    SimCommand cont = SimCommand::Stop;
+    SimEvent ev{};
+    bool oneShot = false;
+
     if (std::strcmp(word, "forward") == 0) {
-        parsed = SimCommand::Forward;
+        cont = SimCommand::Forward;
     } else if (std::strcmp(word, "backward") == 0 || std::strcmp(word, "back") == 0) {
-        parsed = SimCommand::Backward;
+        cont = SimCommand::Backward;
     } else if (std::strcmp(word, "left") == 0) {
-        parsed = SimCommand::Left;
+        cont = SimCommand::Left;
     } else if (std::strcmp(word, "right") == 0) {
-        parsed = SimCommand::Right;
+        cont = SimCommand::Right;
     } else if (std::strcmp(word, "stop") == 0) {
-        parsed = SimCommand::Stop;
+        cont = SimCommand::Stop;
     } else if (std::strcmp(word, "fdist") == 0) {
-        parsed = SimCommand::FwdDist;
+        oneShot = true;
+        ev.type = SimEvent::Type::FwdDist;
     } else if (std::strcmp(word, "turn") == 0) {
-        parsed = SimCommand::Turn;
+        oneShot = true;
+        ev.type = SimEvent::Type::Turn;
     } else if (std::strcmp(word, "pick") == 0) {
-        parsed = SimCommand::Pick;
+        oneShot = true;
+        ev.type = SimEvent::Type::Pick;
     } else if (std::strcmp(word, "place") == 0) {
-        parsed = SimCommand::Place;
+        oneShot = true;
+        ev.type = SimEvent::Type::Place;
     } else {
-        // 认不出的指令不改状态：动作是持续型的，被一行垃圾打成 stop 会让蜘蛛
-        // 莫名其妙停在半路。只报出来给人看。
         std::fprintf(stderr, "bridge: unknown command '%s' (ignored)\n", word);
         lastLine_ = rawLine;
         return;
     }
 
-    float speed = 1.0f;
-    if (fields >= 2 && rest[0] != '\0') {
-        if (parsed == SimCommand::FwdDist || parsed == SimCommand::Turn) {
+    if (oneShot) {
+        // fdist/turn 需要数值参数；pick/place 不带参数，多余字段忽略
+        if (ev.type == SimEvent::Type::FwdDist || ev.type == SimEvent::Type::Turn) {
+            if (fields < 2 || rest[0] == '\0') {
+                std::fprintf(stderr, "bridge: %s requires a parameter\n", word);
+                return;
+            }
             char* end = nullptr;
-            param = std::strtof(rest, &end);
+            ev.param = std::strtof(rest, &end);
             if (end == rest || *end != '\0') {
                 std::fprintf(stderr, "bridge: bad param '%s' in '%s' (ignored)\n", rest,
                              rawLine.c_str());
                 return;
             }
-        } else {
+        }
+        if (events_.size() >= kMaxQueuedEvents) {
+            std::fprintf(stderr, "bridge: event queue full (%zu), dropping '%s'\n",
+                         kMaxQueuedEvents, word);
+            lastLine_ = rawLine;
+            return;
+        }
+        events_.push_back(ev);
+    } else {
+        float speed = 1.0f;
+        if (fields >= 2 && rest[0] != '\0') {
             bool ok = false;
             speed = parseSpeed(rest, ok);
             if (!ok) {
@@ -116,14 +141,9 @@ void CommandBridge::handleLine(const std::string& rawLine) {
                              rawLine.c_str());
             }
         }
-    } else if (parsed == SimCommand::FwdDist || parsed == SimCommand::Turn) {
-        std::fprintf(stderr, "bridge: %s requires a parameter\n", word);
-        return;
+        command_ = cont;
+        speed_ = speed;
     }
 
-    command_ = parsed;
-    speed_ = speed;
-    param_ = param;
-    ++seq_;
     lastLine_ = rawLine;
 }
