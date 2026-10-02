@@ -41,6 +41,8 @@ protected:
     bool sendAll(const void* data, std::size_t len);
     // 断开当前对端并回调 onClientGone 复位派生状态
     void dropClient();
+    // stderr 诊断行前缀（"bridge:"/"capture:"/"sensor:"）；派生类拼告警时用
+    const char* logTag() const { return logTag_; }
 
 private:
     virtual void handleLine(const std::string& line) = 0;

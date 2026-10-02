@@ -43,6 +43,8 @@ add_library(simcore STATIC
     src/robot.cpp
     src/world.cpp
     src/unix_line_server.cpp
+    src/request_bridge.cpp
+    src/action_table.cpp
     src/bridge.cpp
     src/capture.cpp
     src/sensor.cpp
@@ -67,6 +69,9 @@ target_link_libraries(mybot-sim PRIVATE simcore glfw glad)
 # ---- 核心层单测（无 GL；纯逻辑断言 + 本机 AF_UNIX 回环） ----
 add_executable(sim_tests tests/main.cpp)
 target_link_libraries(sim_tests PRIVATE simcore)
+# 一致性守门要读 modules/Sim.lua 交叉校验动作码，路径在编译期定死（源码树内）
+target_compile_definitions(sim_tests
+    PRIVATE MYBOT_MODULES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../modules")
 
 enable_testing()
 add_test(NAME sim_core COMMAND sim_tests)

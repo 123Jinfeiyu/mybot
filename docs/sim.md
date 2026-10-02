@@ -75,6 +75,12 @@ save                # 把当前场景写回配置的场景文件（见「场景�
 5=fdist(配 param=米)  6=turn(配 param=度)  7=pick  8=place  9=save
 ```
 
+动作分类学（码↔线上名↔持续/一次性↔是否带参）的**单一事实源是
+`sim/src/action_table.h`**：命令桥查表分派（不再手写 if-else 字符串链），
+`sim/tests` 交叉校验 `modules/Sim.lua` 的 `CODES`/`PARAM_CODES`/`CODE_MAX`
+与表一致——加动作只需在表里追加一行，漏改 Lua 会被测试挡下（数字码是对外契约，
+`.mt`/`.sql`/本文都用它，**只增不改**）。
+
 手测：`socat - UNIX-CONNECT:/tmp/mybot-sim.sock` 然后敲 `forward 0.5` / `stop`。
 
 ### 拍照桥（`sim/src/capture.cpp`）
@@ -146,10 +152,12 @@ robot 0 0 0
 simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
 ├─ robot.cpp    平面运动学+相对运动         ├─ main.cpp     主循环/输入/HUD
 ├─ world.cpp    障碍场景/碰撞/测距/搬运     ├─ spider.cpp   四足外观步态
-├─ unix_line_server.cpp  三桥公共骨架       ├─ mesh/shader/camera
-├─ bridge.cpp   命令桥（状态+事件队列）     └─ framegrab.cpp glReadPixels→JPEG
-├─ capture.cpp  拍照桥
-└─ sensor.cpp   测距桥
+├─ action_table.cpp  动作分类学单一事实源   ├─ mesh/shader/camera
+├─ unix_line_server.cpp  三桥公共骨架       └─ framegrab.cpp glReadPixels→JPEG
+├─ request_bridge.cpp  请求-应答桥公共基类（一问一答）
+├─ bridge.cpp   命令桥（状态+事件队列，查 action_table 分派）
+├─ capture.cpp  拍照桥（RequestResponseBridge 子类，只补二进制体帧化）
+└─ sensor.cpp   测距桥（RequestResponseBridge 子类，只补文本响应帧化）
 ```
 
 Robot 只管运动学（`update(dt, input, maxSpeed)`，maxSpeed 由 World 按搬运负载
