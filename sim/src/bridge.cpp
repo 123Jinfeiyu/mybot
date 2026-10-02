@@ -54,6 +54,14 @@ const char* commandName(SimCommand cmd) {
             return "right";
         case SimCommand::Stop:
             return "stop";
+        case SimCommand::FwdDist:
+            return "fdist";
+        case SimCommand::Turn:
+            return "turn";
+        case SimCommand::Pick:
+            return "pick";
+        case SimCommand::Place:
+            return "place";
     }
     return "stop";
 }
@@ -120,6 +128,8 @@ void CommandBridge::dropClient() {
     // 断开。让一只没人管的蜘蛛继续走比让它站住危险得多。
     command_ = SimCommand::Stop;
     speed_ = 1.0f;
+    param_ = 0.0f;
+    clientEof_ = false;
 }
 
 void CommandBridge::acceptPending() {
@@ -138,6 +148,7 @@ void CommandBridge::acceptPending() {
         // 已有连接就让位给新的：mybot 每次跑动作脚本都重连，旧的多半是上一次的残骸
         dropClient();
         clientFd_ = fd;
+        clientEof_ = false;
     }
 }
 
@@ -159,7 +170,9 @@ void CommandBridge::readPending() {
             continue;
         }
         if (n == 0) {
-            dropClient();
+            // 对端关了写端（发完命令就断开的常见模式）：标记 EOF，等 buffer 处理
+            // 完再 dropClient()，否则命令还没解析就被清空了。
+            clientEof_ = true;
             return;
         }
         if (errno == EINTR) {
@@ -190,6 +203,7 @@ void CommandBridge::handleLine(const std::string& rawLine) {
     }
 
     SimCommand parsed = SimCommand::Stop;
+    float param = 0.0f;
     if (std::strcmp(word, "forward") == 0) {
         parsed = SimCommand::Forward;
     } else if (std::strcmp(word, "backward") == 0 || std::strcmp(word, "back") == 0) {
@@ -200,6 +214,14 @@ void CommandBridge::handleLine(const std::string& rawLine) {
         parsed = SimCommand::Right;
     } else if (std::strcmp(word, "stop") == 0) {
         parsed = SimCommand::Stop;
+    } else if (std::strcmp(word, "fdist") == 0) {
+        parsed = SimCommand::FwdDist;
+    } else if (std::strcmp(word, "turn") == 0) {
+        parsed = SimCommand::Turn;
+    } else if (std::strcmp(word, "pick") == 0) {
+        parsed = SimCommand::Pick;
+    } else if (std::strcmp(word, "place") == 0) {
+        parsed = SimCommand::Place;
     } else {
         // 认不出的指令不改状态：动作是持续型的，被一行垃圾打成 stop 会让蜘蛛
         // 莫名其妙停在半路。只报出来给人看。
@@ -210,20 +232,39 @@ void CommandBridge::handleLine(const std::string& rawLine) {
 
     float speed = 1.0f;
     if (fields >= 2 && rest[0] != '\0') {
-        bool ok = false;
-        speed = parseSpeed(rest, ok);
-        if (!ok) {
-            std::fprintf(stderr, "bridge: bad speed '%s' in '%s' (using 1.0)\n", rest,
-                         rawLine.c_str());
+        if (parsed == SimCommand::FwdDist || parsed == SimCommand::Turn) {
+            char* end = nullptr;
+            param = std::strtof(rest, &end);
+            if (end == rest || *end != '\0') {
+                std::fprintf(stderr, "bridge: bad param '%s' in '%s' (ignored)\n", rest,
+                             rawLine.c_str());
+                return;
+            }
+        } else {
+            bool ok = false;
+            speed = parseSpeed(rest, ok);
+            if (!ok) {
+                std::fprintf(stderr, "bridge: bad speed '%s' in '%s' (using 1.0)\n", rest,
+                             rawLine.c_str());
+            }
         }
+    } else if (parsed == SimCommand::FwdDist || parsed == SimCommand::Turn) {
+        std::fprintf(stderr, "bridge: %s requires a parameter\n", word);
+        return;
     }
 
     command_ = parsed;
     speed_ = speed;
+    param_ = param;
     lastLine_ = rawLine;
 }
 
 void CommandBridge::poll() {
+    // 上一帧处理完 buffer 后标记了 EOF，这帧开头再断开，给主循环一帧时间读取命令
+    if (clientEof_) {
+        dropClient();
+    }
+
     acceptPending();
 
     if (clientFd_ < 0) {

@@ -9,9 +9,14 @@
 #include "agenttools_internal.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <string>
 #include <limits>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <poll.h>
+#include <unistd.h>
 
 #include "robot.hpp"
 
@@ -252,10 +257,69 @@ static std::string buildImageDescription(const Json& res, int reqW, int reqH) {
 	return desc + "。画面已加入你的上下文。";
 }
 
+/* 查询仿真器测距仪（如果可用）。连接 MYBOT_SIM_SENSOR_SOCK，发 "range\n"，
+ * 收 "OK <mm>\n" 或 "ERR <reason>\n"。返回空串表示测距仪不可用（仿真器没开或
+ * 没设环境变量），调用方据此决定是否附加距离信息。 */
+static std::string querySimRange() {
+	const char* envSock = std::getenv("MYBOT_SIM_SENSOR_SOCK");
+	if (!envSock || !*envSock) { return ""; }
+	std::string sockPath = envSock;
+
+	int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	if (fd < 0) { return ""; }
+
+	struct sockaddr_un addr{};
+	addr.sun_family = AF_UNIX;
+	if (sockPath.size() >= sizeof(addr.sun_path)) {
+		close(fd);
+		return "";
+	}
+	std::copy(sockPath.begin(), sockPath.end(), addr.sun_path);
+	addr.sun_path[sockPath.size()] = '\0';
+
+	if (connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
+		close(fd);
+		return "";
+	}
+
+	const char* req = "range\n";
+	if (send(fd, req, std::strlen(req), MSG_NOSIGNAL) < 0) {
+		close(fd);
+		return "";
+	}
+
+	/* 收一行（3 秒超时） */
+	char buf[256];
+	std::string line;
+	struct pollfd pfd{};
+	pfd.fd = fd;
+	pfd.events = POLLIN;
+	while (line.find('\n') == std::string::npos && line.size() < sizeof(buf) - 1) {
+		int pr = poll(&pfd, 1, 3000);
+		if (pr <= 0) { break; }
+		ssize_t n = recv(fd, buf, 1, 0);
+		if (n <= 0) { break; }
+		if (buf[0] == '\n') { break; }
+		line += buf[0];
+	}
+	close(fd);
+
+	if (line.size() < 3 || line.substr(0, 3) != "OK ") { return ""; }
+	std::string mmStr = line.substr(3);
+	char* end = nullptr;
+	long mm = std::strtol(mmStr.c_str(), &end, 10);
+	if (!end || *end != '\0' || mm < 0) { return ""; }
+	double meters = mm / 1000.0;
+	char tmp[64];
+	std::snprintf(tmp, sizeof(tmp), "%.2f", meters);
+	return tmp;
+}
+
 AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 	return AgentTool{
 		"capture_image",
-		"拍摄一张机器人当前环境的照片。图片会直接进入你的上下文，你能看到画面内容；"
+		"拍摄一张机器人当前环境的照片，同时查询前方障碍物距离（如果测距仪可用）。"
+		"图片会直接进入你的上下文，你能看到画面内容；测距数据会附加在描述里。"
 		"任务涉及观察环境、寻找物体、判断前方是否有障碍时，先调用它再做结论。"
 		"可选的 width/height（像素，须同时给出，" + std::to_string(kCaptureMinDim)
 			+ ".." + std::to_string(kCaptureMaxDim)
@@ -315,6 +379,13 @@ AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 			url.reserve(prefix.size() + b64.size());
 			url.append(prefix);
 			url.append(b64);
+
+			/* 同时查询测距仪（仿真环境）。如果可用，把距离信息附加到描述里 */
+			std::string range = querySimRange();
+			if (!range.empty()) {
+				desc += "\n\n【测距仪】前方障碍物距离：" + range + " 米";
+			}
+
 			return {desc, std::move(url)};
 		}};
 }

@@ -7,13 +7,18 @@
 --
 -- 协议（与 sim/src/bridge.cpp 逐字对应）：
 --   forward | backward | left | right | stop   [速度 0.00~1.00]
+--   fdist <meters>     -- 相对前进 N 米后停
+--   turn <degrees>     -- 相对转向 N 度后停（正=左，负=右）
 -- 每条一行，以 \n 结尾；速度缺省 1.0。手测：
 --   socat - UNIX-CONNECT:/tmp/mybot-sim.sock
 --
 -- .mt 侧用**数字动作码**而非动作名：矩阵单元格只解析 Float64
 -- （matrix.cpp 对 'forward' 这类字符串直接报 cannot parse matrix cell），
 -- 语义名字只存在于 socket 线上与下面的 CODES 表里：
---   0=stop  1=forward  2=backward  3=left  4=right
+--   0=stop  1=forward  2=backward  3=left  4=right  5=fdist  6=turn  7=pick  8=place
+--
+-- 测距（range 函数）走独立的 sensor socket（MYBOT_SIM_SENSOR_SOCK），
+-- 协议：发 "range\n"，收 "OK <mm>\n" 或 "ERR <reason>\n"。
 --
 -- socket 路径取环境变量 MYBOT_SIM_SOCK，缺省 /tmp/mybot-sim.sock——与
 -- sim/src/main.cpp 的取值同源，两侧不用各自配置。
@@ -24,6 +29,8 @@
 --     起来即接上；BOT4CJ_DEBUG=1 时把丢弃动作打印出来。
 --   * 动作名非法 = 响亮报错（ERR 契约）。那是脚本作者的笔误，不是环境问题，
 --     静默丢弃会让 .mt 里的错字永远查不出来。
+--   * range() 仿真器缺席 = 响亮 ERR。测距是模型的显式感知动作，静默返回
+--     假数据比报错危险。
 --
 -- 标准前导：print_table 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
@@ -37,9 +44,13 @@ local ffi = require("ffi")
 ffi.cdef[[
 typedef unsigned short cj_sa_family_t;
 struct cj_sockaddr_un { cj_sa_family_t sun_family; char sun_path[108]; };
+struct cj_pollfd { int fd; short events; short revents; };
 int socket(int domain, int type, int protocol);
 int connect(int fd, const struct cj_sockaddr_un *addr, unsigned int addrlen);
 long send(int fd, const void *buf, unsigned long len, int flags);
+long recv(int fd, void *buf, unsigned long len, int flags);
+int poll(struct cj_pollfd *fds, unsigned long nfds, int timeout);
+int errno(void);
 int close(int fd);
 ]]
 
@@ -60,12 +71,23 @@ local CODES = {
 	[2] = "backward",
 	[3] = "left",
 	[4] = "right",
+	[5] = "fdist",
+	[6] = "turn",
+	[7] = "pick",
+	[8] = "place",
 }
-local CODE_MAX = 4
+local CODE_MAX = 8
+
+-- 带参数的动作码（fdist/turn 需要数值参数）
+local PARAM_CODES = { [5] = true, [6] = true }
 
 -- 每个 Lua 状态（= 每个设备实例）一份连接，跨 call 复用
 local fd = nil
 local sock_path = nil
+
+-- 前向声明：destroy 在文件前段就要关 sensor 连接，而它的定义在文件后段
+-- sensor 区——Lua 局部函数只对定义点之前已声明的名字可见
+local dropSensor
 
 local function sockPath()
 	if sock_path == nil then
@@ -139,6 +161,7 @@ function destroy(data)
 	end
 
 	dropConnection()
+	dropSensor()
 
 	return {  result = "OK"  }
 
@@ -147,7 +170,10 @@ end
 
 -- 【调用Sim】发一条语义动作
 -- 元数据列：无（socket 路径走 MYBOT_SIM_SOCK，见文件头）
--- 输入参数：action（forward/backward/left/right/stop）、speed（可选 0~1）
+-- 输入参数：
+--   action: 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place
+--   speed:  可选 0~1（持续型动作用）
+--   param:  fdist 的距离（米）或 turn 的角度（正=左，负=右）
 function call(data)
 
 	local ok, ek = arg_table(data)
@@ -159,28 +185,36 @@ function call(data)
 	if code == nil then
 		return err("Invalid Argument: action (missing or not a number)")
 	end
-	-- 动作码必须是 0..4 的整数：矩阵是 Float64，1.5 这种值只会是脚本笔误
+	-- 动作码必须是 0..8 的整数：矩阵是 Float64，1.5 这种值只会是脚本笔误
 	if code ~= math.floor(code) or code < 0 or code > CODE_MAX then
 		return err("Invalid Argument: action " .. tostring(code)
-			.. " (expected 0=stop 1=forward 2=backward 3=left 4=right)")
+			.. " (expected 0=stop 1=forward 2=backward 3=left 4=right 5=fdist 6=turn 7=pick 8=place)")
 	end
 	local action = CODES[code]
 
-	local speed = 1.0
-	if data.speed ~= nil then
-		local s = finite_of(tonumber(data.speed))
-		if s == nil then
-			return err("Invalid Argument: speed (not a finite number)")
-		end
-		if s < 0 then s = 0 elseif s > 1 then s = 1 end
-		speed = s
-	end
-
 	local line = action
-	if speed ~= 1.0 then
-		line = action .. " " .. string.format("%.2f", speed)
+	if PARAM_CODES[code] then
+		-- fdist/turn 需要 param 参数
+		local param = finite_of(tonumber(data.param))
+		if param == nil then
+			return err("Invalid Argument: param (missing or not a number for " .. action .. ")")
+		end
+		line = action .. " " .. string.format("%.4f", param) .. "\n"
+	else
+		local speed = 1.0
+		if data.speed ~= nil then
+			local s = finite_of(tonumber(data.speed))
+			if s == nil then
+				return err("Invalid Argument: speed (not a finite number)")
+			end
+			if s < 0 then s = 0 elseif s > 1 then s = 1 end
+			speed = s
+		end
+		if speed ~= 1.0 then
+			line = action .. " " .. string.format("%.2f", speed)
+		end
+		line = line .. "\n"
 	end
-	line = line .. "\n"
 
 	if not ensureConnected() then
 		if os.getenv("BOT4CJ_DEBUG") == "1" then
@@ -203,4 +237,134 @@ function call(data)
 
 	return {  result = "OK"  }
 
+end
+
+
+------------------------------------------------------------------
+-- 测距（range）：走独立的 sensor socket
+------------------------------------------------------------------
+local kSensorDefaultSock = "/tmp/mybot-sim-sensor.sock"
+local kSensorMaxPath = 107
+local kSensorPollMs = 3000
+
+local sensorFd = nil
+local sensorSockPath = nil
+
+local function sensorPath()
+	if sensorSockPath == nil then
+		local p = os.getenv("MYBOT_SIM_SENSOR_SOCK")
+		if p == nil or p == "" then
+			p = kSensorDefaultSock
+		end
+		sensorSockPath = p
+	end
+	return sensorSockPath
+end
+
+function dropSensor()
+	if sensorFd ~= nil then
+		ffi.C.close(sensorFd)
+		sensorFd = nil
+	end
+end
+
+local function ensureSensor()
+	if sensorFd ~= nil then
+		return true
+	end
+	local path = sensorPath()
+	if #path > kSensorMaxPath then
+		return false
+	end
+	local s = ffi.C.socket(AF_UNIX, SOCK_STREAM, 0)
+	if s < 0 then
+		return false
+	end
+	local addr = ffi.new("struct cj_sockaddr_un")
+	addr.sun_family = AF_UNIX
+	ffi.copy(addr.sun_path, path)
+	local addrlen = 2 + #path + 1
+	if ffi.C.connect(s, addr, addrlen) ~= 0 then
+		ffi.C.close(s)
+		return false
+	end
+	sensorFd = s
+	return true
+end
+
+-- 带超时收一行（到 \n 为止）
+local function sensorRecvLine()
+	local buf = ffi.new("unsigned char[256]")
+	local got = 0
+	local fds = ffi.new("struct cj_pollfd[1]")
+	for _ = 1, 256 do
+		fds[0].fd = sensorFd
+		fds[0].events = 1  -- POLLIN
+		local pr = ffi.C.poll(fds, 1, kSensorPollMs)
+		if pr < 0 then
+			local e = ffi.C.errno()
+			if e ~= 4 then  -- EINTR
+				return nil, "poll sensor failed (errno=" .. tostring(e) .. ")"
+			end
+		elseif pr == 0 then
+			return nil, "sensor response timeout"
+		else
+			local n = ffi.C.recv(sensorFd, buf + got, 1, 0)
+			if n <= 0 then
+				return nil, "sensor recv failed"
+			end
+			if buf[got] == 10 then  -- '\n'
+				return ffi.string(buf, got)
+			end
+			got = got + 1
+			if got >= 255 then
+				return nil, "sensor response too long"
+			end
+		end
+	end
+	return nil, "sensor recv loop error"
+end
+
+-- 【测距】查询前方障碍距离
+-- 返回 { result="OK", distance=<meters> } 或 ERR
+function range(data)
+	if data ~= nil then
+		local ok, ek = arg_table(data)
+		if not ok then
+			return ek
+		end
+	end
+
+	if not ensureSensor() then
+		return err("sensor socket not available (仿真器没开？路径 " .. sensorPath() .. ")")
+	end
+
+	local req = "range\n"
+	local n = ffi.C.send(sensorFd, req, #req, MSG_NOSIGNAL)
+	if n < 0 then
+		dropSensor()
+		return err("sensor send failed (对端断开？)")
+	end
+
+	local line, rerr = sensorRecvLine()
+	if line == nil then
+		dropSensor()
+		return err(rerr or "sensor recv failed")
+	end
+
+	if line:sub(1, 3) == "ERR" then
+		return err("sensor: " .. (line:sub(5):gsub("^%s+", "")))
+	end
+
+	local okStr, mmStr = line:match("^(OK)%s+(%d+)$")
+	if okStr == nil then
+		return err("sensor response malformed: " .. line)
+	end
+
+	local mm = tonumber(mmStr)
+	return {
+		result = "OK",
+		distance = mm / 1000.0,  -- 毫米 → 米
+		distance_mm = mm,
+	}
 end

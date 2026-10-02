@@ -40,6 +40,7 @@ add_executable(mybot-sim
     src/spider.cpp
     src/bridge.cpp
     src/capture.cpp
+    src/sensor.cpp
     src/framegrab.cpp
 )
 # external/stb：public-domain stb_image_write.h（JPEG 编码），仅 framegrab.cpp

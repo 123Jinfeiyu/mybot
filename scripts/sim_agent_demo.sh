@@ -14,11 +14,12 @@
 # 那段时间只有 [tool] 行；最终叙述轮不再调工具，那段时间只有流式正文。两路天然错开。
 #
 # 用法：
-#   bash scripts/sim_agent_demo.sh                       # 缺省探索任务
+#   bash scripts/sim_agent_demo.sh                       # 缺省探索任务（读 prompts/sim_obstacle_nav/）
+#   PROMPTS_DIR=prompts/other_task bash scripts/sim_agent_demo.sh
 #   TASK="朝 +x 方向前进，绕过挡路的障碍" bash scripts/sim_agent_demo.sh
 #   LLM_CFG=/path/other.json ROBOT=robots/spider_sim.sql bash scripts/sim_agent_demo.sh
 #
-# 环境可覆盖：SIM_BIN BOT_BIN AGENT_BIN LLM_CFG ROBOT TASK MYBOT_SIM_SOCK MYBOT_SIM_CAPTURE_SOCK
+# 环境可覆盖：SIM_BIN BOT_BIN AGENT_BIN LLM_CFG ROBOT PROMPTS_DIR TASK MYBOT_SIM_SOCK MYBOT_SIM_CAPTURE_SOCK
 # 退出：agent 跑完或 Ctrl-C，自动拆链路、清 socket；日志目录路径退出时打印（保留）。
 set -u
 
@@ -30,12 +31,19 @@ BOT_BIN="${BOT_BIN:-$root/build/mybot}"
 AGENT_BIN="${AGENT_BIN:-$root/agent/target/release/mybot-agent}"
 LLM_CFG="${LLM_CFG:-$root/mybot.llm.json}"
 ROBOT="${ROBOT:-robots/spider_sim.sql}"
-TASK="${TASK:-你在一个摆着障碍物的仿真环境里，是一只蜘蛛机器人。先用 capture_image 拍照看清周围，\
-然后自主前进并绕过挡路的障碍物：每做一次动作前都先拍照确认方向。走 6 到 10 步后停下，\
-用中文简要报告你看到了哪些障碍、你是怎么绕的、最后停在哪。}"
+PROMPTS_DIR="${PROMPTS_DIR:-$root/prompts/sim_obstacle_nav}"
+# TASK 优先用环境变量；否则按序号拼接 PROMPTS_DIR 下所有 .md 文件
+if [ -z "${TASK:-}" ]; then
+	TASK="$(cat "$PROMPTS_DIR"/*.md 2>/dev/null)"
+	if [ -z "$TASK" ]; then
+		echo "提示词目录不存在或为空: $PROMPTS_DIR" >&2
+		exit 1
+	fi
+fi
 
 SIM_SOCK="${MYBOT_SIM_SOCK:-/tmp/mybot-sim.sock}"
 CAP_SOCK="${MYBOT_SIM_CAPTURE_SOCK:-/tmp/mybot-sim-capture.sock}"
+SENSOR_SOCK="${MYBOT_SIM_SENSOR_SOCK:-/tmp/mybot-sim-sensor.sock}"
 
 # ---- preflight：缺任一要件就如实报错退出，不起半条链路 ----
 miss=0
@@ -63,7 +71,7 @@ cleanup() {
 	[ -n "$SIM_PID" ] && kill -TERM "$SIM_PID" 2>/dev/null
 	[ -n "$BOT_PID" ] && wait "$BOT_PID" 2>/dev/null
 	[ -n "$SIM_PID" ] && wait "$SIM_PID" 2>/dev/null
-	rm -f "$SIM_SOCK" "$CAP_SOCK"
+	rm -f "$SIM_SOCK" "$CAP_SOCK" "$SENSOR_SOCK"
 	echo
 	echo "日志保留在: $RUN"
 	echo "  agent 输出(说): $AOUT"
@@ -83,8 +91,8 @@ wait_sock() { # $1=socket $2= tries $3=名字 $4=日志
 	return 1
 }
 
-# 残留 socket 会让 sim 绑定失败——这两个是 sim 自己的，起前清掉安全。
-rm -f "$SIM_SOCK" "$CAP_SOCK"
+# 残留 socket 会让 sim 绑定失败——这三个是 sim 自己的，起前清掉安全。
+rm -f "$SIM_SOCK" "$CAP_SOCK" "$SENSOR_SOCK"
 
 echo "=== 1/3 起仿真器 sim（窗口会出现；标题显示最近动作）==="
 "$SIM_BIN" >"$SIM_LOG" 2>&1 &
@@ -93,7 +101,9 @@ wait_sock "$SIM_SOCK" 60 "sim 命令桥" "$SIM_LOG" || exit 1
 
 echo "=== 2/3 起后端 mybot --mcp-backend（robot=$ROBOT, 审计=$BAUD）==="
 # MYBOT_SIM_CAPTURE_SOCK 让 Camera.lua 从 sim 抓实时帧（capture_image 工具的图源）。
-MYBOT_SIM_CAPTURE_SOCK="$CAP_SOCK" "$BOT_BIN" --robot="$ROBOT" --mcp-backend \
+# MYBOT_SIM_SENSOR_SOCK 让 Sim.lua 的 range() 函数从 sim 读测距数据。
+MYBOT_SIM_CAPTURE_SOCK="$CAP_SOCK" MYBOT_SIM_SENSOR_SOCK="$SENSOR_SOCK" \
+	"$BOT_BIN" --robot="$ROBOT" --mcp-backend \
 	--mcp-socket "$MCP_SOCK" --scripts-dir scripts --audit-log "$BAUD" \
 	>"$BOT_LOG" 2>&1 &
 BOT_PID=$!
