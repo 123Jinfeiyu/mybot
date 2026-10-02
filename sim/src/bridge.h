@@ -2,8 +2,11 @@
 
 #include <string>
 
-// mybot 下发的语义动作。持续型（forward/backward/left/right/stop）和一次性
-// 相对运动（fdist/turn）共用同一枚举。相对运动带参数，由 param() 返回。
+#include "unix_line_server.h"
+
+// mybot 下发的语义动作。持续型（forward/backward/left/right/stop）保存在桥的
+// 状态里由 command()/speed() 读出；一次性（fdist/turn/pick/place）也共用同一
+// 枚举，靠主循环按 seq() 边沿触发。
 enum class SimCommand {
     Stop,
     Forward,
@@ -28,18 +31,9 @@ const char* commandName(SimCommand cmd);
 //
 // 非阻塞、无独立线程：主渲染循环每帧 poll() 一次。同一帧内到达多条指令时
 // 以最后一条为准（动作是持续型状态，中间态没有渲染意义）。
-class CommandBridge {
+class CommandBridge : public UnixLineServer {
 public:
     explicit CommandBridge(const std::string& socketPath);
-    ~CommandBridge();
-
-    CommandBridge(const CommandBridge&) = delete;
-    CommandBridge& operator=(const CommandBridge&) = delete;
-
-    bool listening() const { return listenFd_ >= 0; }
-    const std::string& path() const { return path_; }
-
-    void poll();
 
     SimCommand command() const { return command_; }
     float speed() const { return speed_; }
@@ -54,19 +48,14 @@ public:
     const std::string& lastLine() const { return lastLine_; }
 
 private:
-    void acceptPending();
-    void readPending();
-    void handleLine(const std::string& line);
-    void dropClient();
+    void handleLine(const std::string& line) override;
+    // 控制器走了蜘蛛就该停：mybot 跑完动作脚本退出、或中途崩掉，都表现为连接
+    // 断开。让一只没人管的蜘蛛继续走比让它站住危险得多。
+    void onClientGone() override;
 
-    std::string path_;
-    int listenFd_ = -1;
-    int clientFd_ = -1;
-    std::string buffer_;
     SimCommand command_ = SimCommand::Stop;
     float speed_ = 1.0f;
     float param_ = 0.0f;
     unsigned seq_ = 0;
     std::string lastLine_;
-    bool clientEof_ = false;  // recv() 返回 0 时置 true，buffer 处理完再断开
 };

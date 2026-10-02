@@ -1,31 +1,10 @@
 #include "bridge.h"
 
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <unistd.h>
-
-#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 namespace {
-
-// 一帧内攒下的未分行字节上限。mybot 一行指令最长也就几十字节，超限说明对端
-// 在灌垃圾，直接断开而不是无界吃内存。
-constexpr std::size_t kMaxBufferBytes = 4096;
-
-// sun_path 是定长数组，超长会被静默截断成另一个路径，必须显式拒绝
-constexpr std::size_t kMaxPathLen = sizeof(sockaddr_un::sun_path) - 1;
-
-bool setNonBlocking(int fd) {
-    const int flags = fcntl(fd, F_GETFL, 0);
-    if (flags < 0) {
-        return false;
-    }
-    return fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
-}
 
 float parseSpeed(const char* text, bool& ok) {
     char* end = nullptr;
@@ -66,124 +45,13 @@ const char* commandName(SimCommand cmd) {
     return "stop";
 }
 
-CommandBridge::CommandBridge(const std::string& socketPath) : path_(socketPath) {
-    if (path_.size() > kMaxPathLen) {
-        std::fprintf(stderr, "bridge: socket path too long (max %zu bytes): %s\n", kMaxPathLen,
-                     path_.c_str());
-        return;
-    }
+CommandBridge::CommandBridge(const std::string& socketPath)
+    : UnixLineServer(socketPath, "bridge", 4096) {}
 
-    listenFd_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (listenFd_ < 0) {
-        std::fprintf(stderr, "bridge: socket() failed: %s\n", std::strerror(errno));
-        return;
-    }
-
-    // 上次异常退出会留下 inode，不先摘掉 bind 就 EADDRINUSE
-    ::unlink(path_.c_str());
-
-    sockaddr_un addr{};
-    addr.sun_family = AF_UNIX;
-    std::memcpy(addr.sun_path, path_.c_str(), path_.size());
-
-    if (::bind(listenFd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
-        std::fprintf(stderr, "bridge: bind(%s) failed: %s\n", path_.c_str(), std::strerror(errno));
-        ::close(listenFd_);
-        listenFd_ = -1;
-        return;
-    }
-
-    if (::listen(listenFd_, 4) != 0) {
-        std::fprintf(stderr, "bridge: listen() failed: %s\n", std::strerror(errno));
-        ::close(listenFd_);
-        listenFd_ = -1;
-        ::unlink(path_.c_str());
-        return;
-    }
-
-    if (!setNonBlocking(listenFd_)) {
-        std::fprintf(stderr, "bridge: cannot set listen socket non-blocking: %s\n",
-                     std::strerror(errno));
-    }
-}
-
-CommandBridge::~CommandBridge() {
-    dropClient();
-    if (listenFd_ >= 0) {
-        ::close(listenFd_);
-        listenFd_ = -1;
-    }
-    if (!path_.empty()) {
-        ::unlink(path_.c_str());
-    }
-}
-
-void CommandBridge::dropClient() {
-    if (clientFd_ >= 0) {
-        ::close(clientFd_);
-        clientFd_ = -1;
-    }
-    buffer_.clear();
-    // 控制器走了蜘蛛就该停：mybot 跑完动作脚本退出、或中途崩掉，都表现为连接
-    // 断开。让一只没人管的蜘蛛继续走比让它站住危险得多。
+void CommandBridge::onClientGone() {
     command_ = SimCommand::Stop;
     speed_ = 1.0f;
     param_ = 0.0f;
-    clientEof_ = false;
-}
-
-void CommandBridge::acceptPending() {
-    if (listenFd_ < 0) {
-        return;
-    }
-    for (;;) {
-        const int fd = ::accept(listenFd_, nullptr, nullptr);
-        if (fd < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                std::fprintf(stderr, "bridge: accept() failed: %s\n", std::strerror(errno));
-            }
-            return;
-        }
-        setNonBlocking(fd);
-        // 已有连接就让位给新的：mybot 每次跑动作脚本都重连，旧的多半是上一次的残骸
-        dropClient();
-        clientFd_ = fd;
-        clientEof_ = false;
-    }
-}
-
-void CommandBridge::readPending() {
-    if (clientFd_ < 0) {
-        return;
-    }
-    for (;;) {
-        char chunk[256];
-        const ssize_t n = ::recv(clientFd_, chunk, sizeof(chunk), 0);
-        if (n > 0) {
-            buffer_.append(chunk, static_cast<std::size_t>(n));
-            if (buffer_.size() > kMaxBufferBytes) {
-                std::fprintf(stderr, "bridge: client exceeded %zu bytes without newline, dropping\n",
-                             kMaxBufferBytes);
-                dropClient();
-                return;
-            }
-            continue;
-        }
-        if (n == 0) {
-            // 对端关了写端（发完命令就断开的常见模式）：标记 EOF，等 buffer 处理
-            // 完再 dropClient()，否则命令还没解析就被清空了。
-            clientEof_ = true;
-            return;
-        }
-        if (errno == EINTR) {
-            continue;
-        }
-        if (errno != EAGAIN && errno != EWOULDBLOCK) {
-            std::fprintf(stderr, "bridge: recv() failed: %s\n", std::strerror(errno));
-            dropClient();
-        }
-        return;
-    }
 }
 
 void CommandBridge::handleLine(const std::string& rawLine) {
@@ -258,28 +126,4 @@ void CommandBridge::handleLine(const std::string& rawLine) {
     param_ = param;
     ++seq_;
     lastLine_ = rawLine;
-}
-
-void CommandBridge::poll() {
-    // 上一帧处理完 buffer 后标记了 EOF，这帧开头再断开，给主循环一帧时间读取命令
-    if (clientEof_) {
-        dropClient();
-    }
-
-    acceptPending();
-
-    if (clientFd_ < 0) {
-        return;
-    }
-    readPending();
-
-    std::size_t start = 0;
-    for (std::size_t i = 0; i < buffer_.size(); ++i) {
-        if (buffer_[i] != '\n') {
-            continue;
-        }
-        handleLine(buffer_.substr(start, i - start));
-        start = i + 1;
-    }
-    buffer_.erase(0, start);
 }

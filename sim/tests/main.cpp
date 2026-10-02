@@ -340,6 +340,13 @@ void testSensorBridge() {
     check(sensor.sendError("boom"), "sendError 成功");
     check(recvLine(fd) == "ERR boom", "错误响应行 = 'ERR boom'");
 
+    // 半关写端（socat 手测模式）：请求不能再被 EOF 连带清掉，答复要发得出去
+    say(fd, "range\n");
+    ::shutdown(fd, SHUT_WR);
+    check(sensor.poll(), "半关写端后 range 请求仍被检出（延迟断开）");
+    check(sensor.sendRange(4321), "半关连接上答复仍可发送");
+    check(recvLine(fd) == "OK 4321", "半关连接答复 = 'OK 4321'");
+
     ::close(fd);
 }
 
@@ -365,6 +372,15 @@ void testCaptureBridge() {
 
     say(fd, "bogus\n");
     check(!capture.poll(), "未知请求不置位");
+
+    // 半关写端（socat 手测模式）：请求不能再被 EOF 连带清掉，答复要发得出去
+    say(fd, "capture\n");
+    ::shutdown(fd, SHUT_WR);
+    check(capture.poll(), "半关写端后 capture 请求仍被检出（延迟断开）");
+    check(capture.sendFrame(fake, sizeof(fake), 2, 2), "半关连接上答复仍可发送");
+    check(recvLine(fd) == "OK jpeg 4 2 2", "半关连接帧头一致");
+    check(recvExact(fd, body, sizeof(body)), "半关连接帧体收满");
+
     ::close(fd);
 }
 
