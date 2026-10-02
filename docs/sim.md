@@ -33,7 +33,11 @@ bash scripts/build_sim.sh        # 构建 + 自动跑 simcore 单测（ctest）
 ## 三条 socket
 
 路径解析三桥同规矩：**argv > 环境变量 > 缺省**；环境变量名是 mybot 侧与仿真器
-侧的单一事实源，两侧同读。
+侧的单一事实源，两侧同读。缺省路径的 C++ 侧单一事实源是 `sim/src/sim_config.h`
+的 `kDefault*SocketPath`（main.cpp 不再各写字面量）；Lua 侧 `Sim.lua` 也硬编码了
+命令/测距两条缺省路径——两套构建系统间不做代码生成，改由 `sim_tests` 的
+`testSharedConstants` 运行期读 `Sim.lua` 交叉校验字面量一致，任一侧漏改即红
+（拍照路径 Camera.lua 只取自 env、无硬编码缺省，不参与校验）。
 
 | 桥 | 环境变量 | 缺省路径 | 语义 |
 | --- | --- | --- | --- |
@@ -155,6 +159,7 @@ simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
 ├─ robot.cpp    平面运动学+相对运动         ├─ mesh/shader/camera
 ├─ world.cpp    障碍场景/碰撞/测距/搬运     └─ framegrab.cpp glReadPixels→JPEG
 ├─ action_table.cpp  动作分类学单一事实源
+├─ sim_config.h   全局可调常量 + 缺省 socket 路径（C++ 侧 SSOT）
 ├─ unix_line_server.cpp  三桥公共骨架
 ├─ request_bridge.cpp  请求-应答桥公共基类（一问一答）
 ├─ bridge.cpp   命令桥（状态+事件队列，查 action_table 分派）

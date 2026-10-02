@@ -28,6 +28,7 @@
 #include "request_bridge.h"
 #include "robot.h"
 #include "sensor.h"
+#include "sim_config.h"
 #include "sim_engine.h"
 #include "world.h"
 
@@ -623,6 +624,23 @@ std::set<int> parseCodeSet(const std::string& block) {
     return out;
 }
 
+// 取 marker 之后第一个双引号字符串字面量的内容；找不到返回空串。
+std::string quotedAfter(const std::string& src, const std::string& marker) {
+    const std::size_t m = src.find(marker);
+    if (m == std::string::npos) {
+        return {};
+    }
+    const std::size_t q1 = src.find('"', m);
+    if (q1 == std::string::npos) {
+        return {};
+    }
+    const std::size_t q2 = src.find('"', q1 + 1);
+    if (q2 == std::string::npos) {
+        return {};
+    }
+    return src.substr(q1 + 1, q2 - q1 - 1);
+}
+
 void testActionTable() {
     // 内部不变量：码连续覆盖 0..kMaxActionCode、每码唯一、规范名可反查
     check(kActionCount == kMaxActionCode + 1, "动作表条目数 = 最大码 + 1");
@@ -664,6 +682,30 @@ void testActionTable() {
         const bool luaNeedsParam = params.count(a.code) != 0;
         check(luaNeedsParam == a.needsParam, "Lua PARAM_CODES 与表 needsParam 一致");
     }
+}
+
+// 缺省 socket 路径是 C++/Lua 两侧的对外契约。两套构建系统之间不做代码生成
+// （跨 build 生成脆弱，同阶段1 动作码守门的取舍），改由这里运行期读
+// modules/Sim.lua 交叉校验字面量一致——任一侧改了缺省路径而漏改另一侧即红。
+// 拍照路径 Camera.lua 只取自 env、无硬编码缺省，故不参与校验。
+void testSharedConstants() {
+    const std::string lua = slurp(std::string(MYBOT_MODULES_DIR) + "/Sim.lua");
+    if (lua.empty()) {
+        check(false, "读到 modules/Sim.lua（MYBOT_MODULES_DIR 是否正确）");
+        return;
+    }
+    check(quotedAfter(lua, "local kDefaultSock =") == SimConfig::kDefaultSocketPath,
+          "Lua 命令 socket 缺省路径与 SimConfig 一致");
+    check(quotedAfter(lua, "local kSensorDefaultSock =") == SimConfig::kDefaultSensorSocketPath,
+          "Lua sensor socket 缺省路径与 SimConfig 一致");
+
+    // 三条缺省路径互不相同（防复制粘贴串台），且都是 /tmp 下绝对路径
+    const std::string cmd = SimConfig::kDefaultSocketPath;
+    const std::string cap = SimConfig::kDefaultCaptureSocketPath;
+    const std::string sen = SimConfig::kDefaultSensorSocketPath;
+    check(cmd != cap && cmd != sen && cap != sen, "三条缺省 socket 路径互不相同");
+    check(cmd.rfind("/tmp/", 0) == 0 && cap.rfind("/tmp/", 0) == 0 && sen.rfind("/tmp/", 0) == 0,
+          "缺省路径均为 /tmp 下绝对路径");
 }
 
 // 遍历动作表逐条过命令桥：证明 handleLine 对每个动作都按表分派（持续型改状态、
@@ -887,6 +929,7 @@ int main() {
     testPickPlace();
     testSceneIo();
     testActionTable();
+    testSharedConstants();
     testCommandBridge();
     testActionTableDispatch();
     testSensorBridge();

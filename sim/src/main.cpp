@@ -26,12 +26,9 @@
 
 namespace {
 
-const char* kDefaultSocketPath = "/tmp/mybot-sim.sock";
-const char* kDefaultCaptureSocketPath = "/tmp/mybot-sim-capture.sock";
-const char* kDefaultSensorSocketPath = "/tmp/mybot-sim-sensor.sock";
-
-// 三条 socket 同一规矩：argv > 环境变量 > 缺省。路径的单一事实源是环境
-// 变量名，mybot 侧 Sim.lua / Camera.lua 与这里同读。
+// 三条 socket 同一规矩：argv > 环境变量 > 缺省。缺省路径的单一事实源是
+// SimConfig::kDefault*SocketPath（sim_config.h），环境变量名是运行期的单一事实
+// 源，mybot 侧 Sim.lua / Camera.lua 与这里同读。sim_tests 交叉校验两侧缺省一致。
 std::string resolveSocketPath(int argc, char** argv, int argvIndex, const char* envName,
                               const char* fallback) {
     if (argc > argvIndex) {
@@ -131,11 +128,11 @@ int main(int argc, char** argv) {
     // 三条 socket：命令（持续型即发即忘）、拍照（一问一答带二进制体）、测距
     // （同步查询）。mybot 侧 Sim.lua 与 Camera.lua 是独立驱动实例，无法共用连接。
     const std::string socketPath =
-        resolveSocketPath(argc, argv, 1, "MYBOT_SIM_SOCK", kDefaultSocketPath);
+        resolveSocketPath(argc, argv, 1, "MYBOT_SIM_SOCK", SimConfig::kDefaultSocketPath);
     const std::string capturePath =
-        resolveSocketPath(argc, argv, 2, "MYBOT_SIM_CAPTURE_SOCK", kDefaultCaptureSocketPath);
+        resolveSocketPath(argc, argv, 2, "MYBOT_SIM_CAPTURE_SOCK", SimConfig::kDefaultCaptureSocketPath);
     const std::string sensorPath =
-        resolveSocketPath(argc, argv, 3, "MYBOT_SIM_SENSOR_SOCK", kDefaultSensorSocketPath);
+        resolveSocketPath(argc, argv, 3, "MYBOT_SIM_SENSOR_SOCK", SimConfig::kDefaultSensorSocketPath);
 
     if (!glfwInit()) {
         std::fprintf(stderr, "failed to initialize GLFW\n");

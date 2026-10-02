@@ -40,13 +40,17 @@ constexpr std::size_t kMaxSceneObstacles = 512;
 // 超限视为格式错误，防止恶意构造的超长行撑爆内存。
 constexpr std::size_t kMaxSceneLine = 512;
 
-// ── Lua 侧常量（与 modules/Sim.lua、Camera.lua 共享）──────────────────
-// 这些常量在 C++ 和 Lua 两侧都要用，集中在这里方便对照。Lua 侧目前各自定义，
-// 未来可以生成一个 sim_config.lua 从这里的常量自动导出，避免手工同步。
-
-// 默认 socket 路径（C++ 侧 main.cpp 用，Lua 侧 Sim.lua 也有同名常量）
-// inline const char* kDefaultSocketPath = "/tmp/mybot-sim.sock";
-// inline const char* kDefaultCaptureSocketPath = "/tmp/mybot-sim-capture.sock";
-// inline const char* kDefaultSensorSocketPath = "/tmp/mybot-sim-sensor.sock";
+// ── 默认 socket 路径（与 Lua 侧共享的对外契约）─────────────────────────
+// 三条 AF_UNIX 缺省路径。运行期实际路径的优先级是 argv > 环境变量 > 这里的
+// 缺省（见 main.cpp resolveSocketPath）。这是 C++ 侧的单一事实源：main.cpp
+// 不再各写一份字面量。
+//
+// Lua 侧（modules/Sim.lua 的 kDefaultSock / kSensorDefaultSock）也硬编码了同样
+// 的缺省路径——两套构建系统之间不做代码生成（跨 build 生成脆弱，同阶段1 的取舍），
+// 改由 sim_tests 的 testSharedConstants 运行期读 Sim.lua 交叉校验字面量一致，
+// 任一侧漏改即红。Camera.lua 的拍照路径只取自 env、无硬编码缺省，故不参与校验。
+inline constexpr const char* kDefaultSocketPath = "/tmp/mybot-sim.sock";
+inline constexpr const char* kDefaultCaptureSocketPath = "/tmp/mybot-sim-capture.sock";
+inline constexpr const char* kDefaultSensorSocketPath = "/tmp/mybot-sim-sensor.sock";
 
 }  // namespace SimConfig
