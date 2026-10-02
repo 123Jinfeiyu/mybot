@@ -98,8 +98,8 @@ void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureB
     const float rangeM = world.queryRange(robot);
 
     char carryBuf[32];
-    if (world.isCarrying()) {
-        std::snprintf(carryBuf, sizeof(carryBuf), "carrying %.1fkg", world.carriedMass());
+    if (robot.isCarrying()) {
+        std::snprintf(carryBuf, sizeof(carryBuf), "carrying %.1fkg", robot.carriedMass());
     } else {
         std::snprintf(carryBuf, sizeof(carryBuf), "empty");
     }
@@ -289,6 +289,8 @@ int main(int argc, char** argv) {
             meshes.cube.draw();
         }
 
+        // C1：壳只渲染主机器人（引擎容器当前恒 1 只）。多机器人的可视化（每只
+        // 一份 Spider 步态、相机跟随目标）随 C2 上线，属壳侧改动，不碰 simcore。
         drawSpider(engine.robot(), spider, phong, meshes);
 
         lines.use();

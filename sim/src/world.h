@@ -26,8 +26,10 @@ struct SceneState {
 };
 
 // 仿真场景：障碍物集合 + 机器人与场景的相互作用（碰撞推出、射线测距、
-// 拾取/放置/背负）。Robot 只管运动学；「世界里有什么、撞了怎么解、搬得动
-// 什么」都在这里。GL 无关，归 simcore。
+// 拾取/放置/背负跟随）。Robot 管运动学与**自己背着哪个障碍**；「世界里有什么、
+// 撞了怎么解、能不能搬」都在这里。所有交互都按传入的 Robot 参数化、World 自身
+// 不持有任何单只机器人的状态——因此同一 World 可服务 N 只机器人，各搬各的。
+// GL 无关，归 simcore。
 class World {
 public:
     // 装载给定障碍（不改动质量，测试用自定义场景）；缺省装载 defaultScene()
@@ -37,30 +39,26 @@ public:
     const std::vector<Obstacle>& obstacles() const { return obstacles_; }
 
     // 球（XZ 平面）vs 盒截面碰撞解算：把机器人推出盒面（逐障碍解算，不迭代）。
-    // 被搬运的物体附着在机器人上，跳过不参与碰撞。
+    // 该机器人正搬运的物体附着在它身上，跳过不参与碰撞。
     void resolveCollisions(Robot& robot);
 
     // 机器人前方射线与障碍求交，返回最近命中距离（米）；无命中返回 maxRange。
-    // 射线从身体前端中心出发、沿 heading 方向；被搬运的物体不计入。
+    // 射线从身体前端中心出发、沿 heading 方向；该机器人搬运的物体不计入。
     float queryRange(const Robot& robot, float maxRange = Robot::kRangeMax) const;
 
-    // 搬运设备：拾取/放置前方物体。
+    // 搬运设备：拾取/放置前方物体。搬运状态写回**传入的这只 Robot**（各背各的）。
     // pick: 尝试拾取前方最近的可搬运物体（距离 < kPickRange 且在前方），成功
-    // 返回 true；已持有物体时直接失败。
-    // place: 把当前搬运的物体放到前方 kPlaceDist 处，成功返回 true。
-    bool pick(const Robot& robot);
-    bool place(const Robot& robot);
-    bool isCarrying() const { return carriedIdx_ >= 0; }
-    int carriedIndex() const { return carriedIdx_; }
-    float carriedMass() const { return carriedMass_; }
+    // 返回 true；该机器人已持有物体时直接失败。
+    // place: 把该机器人当前搬运的物体放到前方 kPlaceDist 处，成功返回 true。
+    bool pick(Robot& robot);
+    bool place(Robot& robot);
 
-    // 考虑搬运负载后的最大速度（m/s）：质量越大越慢。
-    float effectiveMaxSpeed() const;
-
-    // 搬运中的物体跟随机器人移动：钉在身体正上方（抬高避免挡住摄像机）
+    // 该机器人搬运中的物体跟随它移动：钉在身体正上方（抬高避免挡住摄像机）
     void updateCarried(const Robot& robot);
 
-    // 整体替换场景（障碍 + 搬运状态）；carriedIdx 越界按无搬运处理
+    // 整体替换障碍集合。搬运状态属于每只 Robot、不由场景承载——重载后由
+    // SimEngine 按 SceneState.carriedIdx 恢复到主机器人身上。carriedIdx 越界
+    // 由 readScene 归一为 -1。
     void applyScene(const SceneState& scene);
 
     static constexpr float kPickRange = 0.6f;  // 拾取半径（米）
@@ -72,8 +70,6 @@ public:
 
 private:
     std::vector<Obstacle> obstacles_;
-    int carriedIdx_ = -1;          // 当前搬运的障碍物索引（-1=未搬运）
-    float carriedMass_ = 0.0f;     // 搬运物质量缓存
 };
 
 // ---- 场景文件读写（行文本，与三桥协议同风格，可手编可 diff） ----

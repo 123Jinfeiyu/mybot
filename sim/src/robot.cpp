@@ -26,6 +26,10 @@ void Robot::reset() {
     *this = Robot();
 }
 
+float Robot::effectiveMaxSpeed() const {
+    return kMaxSpeed / (1.0f + carriedMass_ * kLoadSlowdownPerKg);
+}
+
 mat4 Robot::baseTransform() const {
     return glm::translate(mat4(1.0f), vec3(x_, 0.0f, z_)) *
            glm::rotate(mat4(1.0f), theta_, vec3(0.0f, 1.0f, 0.0f));

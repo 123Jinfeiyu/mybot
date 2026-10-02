@@ -141,7 +141,7 @@ World::World(std::vector<Obstacle> obstacles) : obstacles_(std::move(obstacles))
 
 void World::resolveCollisions(Robot& robot) {
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
-        if (i == carriedIdx_) continue;  // 被搬运物附着在机器人上，不参与碰撞
+        if (i == robot.carriedIndex()) continue;  // 该机器人搬运物附着在身上，不参与碰撞
         float rx = robot.x(), rz = robot.z();
         if (resolveSphereAABB2D(rx, rz, SimConfig::kRobotRadius, obstacles_[i])) {
             robot.setX(rx);
@@ -159,7 +159,7 @@ float World::queryRange(const Robot& robot, float maxRange) const {
 
     float nearest = maxRange;
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
-        if (i == carriedIdx_) continue;  // 跳过被搬运的物体
+        if (i == robot.carriedIndex()) continue;  // 跳过该机器人搬运的物体
         float t;
         if (rayAABB2D(ox, oz, forwardX, forwardZ, obstacles_[i], t) && t < nearest) {
             nearest = t;
@@ -168,9 +168,9 @@ float World::queryRange(const Robot& robot, float maxRange) const {
     return nearest;
 }
 
-bool World::pick(const Robot& robot) {
-    if (carriedIdx_ >= 0) {
-        return false;  // 已搬运
+bool World::pick(Robot& robot) {
+    if (robot.isCarrying()) {
+        return false;  // 该机器人已搬运
     }
 
     const float forwardX = std::cos(robot.theta());
@@ -202,42 +202,35 @@ bool World::pick(const Robot& robot) {
     }
 
     if (bestIdx >= 0) {
-        carriedIdx_ = bestIdx;
-        carriedMass_ = obstacles_[bestIdx].mass;
+        robot.setCarried(bestIdx, obstacles_[bestIdx].mass);
         return true;
     }
     return false;
 }
 
-bool World::place(const Robot& robot) {
-    if (carriedIdx_ < 0 || carriedIdx_ >= (int)obstacles_.size()) {
+bool World::place(Robot& robot) {
+    const int idx = robot.carriedIndex();
+    if (idx < 0 || idx >= (int)obstacles_.size()) {
         return false;
     }
 
     // 把搬运的物体放到前方 kPlaceDist 处
     const float forwardX = std::cos(robot.theta());
     const float forwardZ = -std::sin(robot.theta());
-    auto& ob = obstacles_[carriedIdx_];
+    auto& ob = obstacles_[idx];
     ob.center.x = robot.x() + forwardX * (Robot::kBodyLength * 0.5f + kPlaceDist);
     ob.center.z = robot.z() + forwardZ * (Robot::kBodyLength * 0.5f + kPlaceDist);
 
-    carriedIdx_ = -1;
-    carriedMass_ = 0.0f;
+    robot.clearCarried();
     return true;
 }
 
-float World::effectiveMaxSpeed() const {
-    // 搬运时的减速：质量越大，速度越慢。
-    // 公式：maxSpeed / (1 + mass * k)，k=0.01 时 1kg 减速 1%，400kg 减速 80%。
-    constexpr float k = 0.01f;
-    return Robot::kMaxSpeed / (1.0f + carriedMass_ * k);
-}
-
 void World::updateCarried(const Robot& robot) {
-    if (carriedIdx_ < 0 || carriedIdx_ >= (int)obstacles_.size()) {
+    const int idx = robot.carriedIndex();
+    if (idx < 0 || idx >= (int)obstacles_.size()) {
         return;
     }
-    auto& ob = obstacles_[carriedIdx_];
+    auto& ob = obstacles_[idx];
     // 放在机器人正上方，抬高避免挡住摄像机
     ob.center.x = robot.x();
     ob.center.z = robot.z();
@@ -246,12 +239,6 @@ void World::updateCarried(const Robot& robot) {
 
 void World::applyScene(const SceneState& scene) {
     obstacles_ = scene.obstacles;
-    carriedIdx_ = -1;
-    carriedMass_ = 0.0f;
-    if (scene.carriedIdx >= 0 && scene.carriedIdx < (int)obstacles_.size()) {
-        carriedIdx_ = scene.carriedIdx;
-        carriedMass_ = obstacles_[carriedIdx_].mass;
-    }
 }
 
 bool readScene(const std::string& path, SceneState& out) {

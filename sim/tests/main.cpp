@@ -270,21 +270,21 @@ void testPickPlace() {
         {{2.0f, 0.2f, 3.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 1.0f, 1.0f}, 1.0f},  // 远处侧方
     });
     Robot r;
-    check(!world.isCarrying(), "初始未搬运");
+    check(!r.isCarrying(), "初始未搬运");
 
     // 前端在 0.2、近面在 0.5 → 距离 0.3 < 0.6，可拾取
     check(world.pick(r), "前方 0.3m 的盒可拾取");
-    check(world.isCarrying(), "拾取后 isCarrying");
-    check(world.carriedIndex() == 0, "拾取的是最近的 idx=0");
-    check(near(world.carriedMass(), 5.0f, 1e-6f), "carriedMass = 障碍质量");
-    check(world.effectiveMaxSpeed() < Robot::kMaxSpeed, "搬运时最大速度被压低");
+    check(r.isCarrying(), "拾取后 isCarrying");
+    check(r.carriedIndex() == 0, "拾取的是最近的 idx=0");
+    check(near(r.carriedMass(), 5.0f, 1e-6f), "carriedMass = 障碍质量");
+    check(r.effectiveMaxSpeed() < Robot::kMaxSpeed, "搬运时最大速度被压低");
 
     check(!world.pick(r), "已持有物体时再 pick 失败");
     check(near(world.queryRange(r), Robot::kRangeMax, 1e-6f), "被搬运物体不参与测距");
 
     // 被搬运物体跟随机器人：updateCarried 把它钉在机体正上方
     for (int i = 0; i < 60; ++i) {
-        r.update(1.0f / 60.0f, {0.5f, 0.0f}, world.effectiveMaxSpeed());
+        r.update(1.0f / 60.0f, {0.5f, 0.0f}, r.effectiveMaxSpeed());
     }
     world.updateCarried(r);
     check(r.x() > 0.1f, "搬运中机器人仍可前进（减速但不清零）");
@@ -294,7 +294,7 @@ void testPickPlace() {
     // place：放到身体前端 + kPlaceDist（0.2+0.5=0.7）
     const float px = r.x();
     check(world.place(r), "place 成功");
-    check(!world.isCarrying(), "place 后未搬运");
+    check(!r.isCarrying(), "place 后未搬运");
     check(near(world.obstacles()[0].center.x, px + 0.2f + 0.5f, 1e-3f),
           "物体落在前方 placeDist 处");
     check(!world.place(r), "未持有物体时 place 失败");
@@ -344,13 +344,18 @@ void testSceneIo() {
           "机器人位姿 round-trip");
     check(back.carriedIdx == 1, "搬运索引 round-trip");
 
-    // applyScene：障碍与搬运状态整体替换
+    // applyScene：只整体替换障碍集合（搬运状态属于每只 Robot，不由场景承载）
     World w(std::vector<Obstacle>{});
     w.applyScene(back);
-    check(w.obstacles().size() == 2 && w.isCarrying() && near(w.carriedMass(), 2.0f, 1e-4f),
-          "applyScene 恢复障碍与搬运状态");
-    check(near(w.effectiveMaxSpeed(), Robot::kMaxSpeed / (1.0f + 2.0f * 0.01f), 1e-4f),
-          "applyScene 后搬运减速生效");
+    check(w.obstacles().size() == 2, "applyScene 替换障碍集合");
+    // 搬运恢复是调用方（SimEngine.reloadScene）按 carriedIdx 落到某只 Robot 上：
+    check(back.carriedIdx == 1, "场景记录了待恢复的搬运索引");
+    Robot carried;
+    carried.setCarried(back.carriedIdx, w.obstacles()[back.carriedIdx].mass);
+    check(carried.isCarrying() && near(carried.carriedMass(), 2.0f, 1e-4f),
+          "按场景索引恢复某只机器人的搬运态");
+    check(near(carried.effectiveMaxSpeed(), Robot::kMaxSpeed / (1.0f + 2.0f * 0.01f), 1e-4f),
+          "恢复搬运后减速生效");
 
     // 注释/空行/未知行/坏行：告警跳过，不毁整个文件
     writeTextFile(path,
@@ -873,10 +878,10 @@ void testSimEngine() {
     {
         SimEngine eng(pickPath);
         eng.reloadScene();
-        check(!eng.world().isCarrying(), "初始未搬运");
+        check(!eng.robot().isCarrying(), "初始未搬运");
         eng.applyEvent(mkEvent(SimEvent::Type::Pick));
-        check(eng.world().isCarrying(), "pick 事件后 isCarrying");
-        check(eng.world().effectiveMaxSpeed() < Robot::kMaxSpeed, "搬运后最大速度被压低");
+        check(eng.robot().isCarrying(), "pick 事件后 isCarrying");
+        check(eng.robot().effectiveMaxSpeed() < Robot::kMaxSpeed, "搬运后最大速度被压低");
         // 搬运中前进，物体跟随
         eng.applyContinuous(SimCommand::Forward, 1.0f);
         for (int i = 0; i < 60; ++i) {
@@ -887,7 +892,7 @@ void testSimEngine() {
         eng.applyContinuous(SimCommand::Stop, 1.0f);
         const float px = eng.robot().x();
         eng.applyEvent(mkEvent(SimEvent::Type::Place));
-        check(!eng.world().isCarrying(), "place 事件后未搬运");
+        check(!eng.robot().isCarrying(), "place 事件后未搬运");
         check(eng.world().obstacles()[0].center.x > px, "物体放到机体前方");
     }
 
@@ -915,8 +920,75 @@ void testSimEngine() {
         ::unlink(savePath.c_str());
     }
 
+    // ⑥ 搬运态 round-trip：搬运属于 Robot，save/reload 经 SceneState.carriedIdx
+    //    由引擎恢复到主机器人身上（applyScene 只管障碍）
+    {
+        const std::string carryPath = engineScenePath("carry");
+        writeTextFile(carryPath,
+                      "mybot-sim scene v1\n"
+                      "robot 0 0 0\n"
+                      "box 0.5 0.2 0 0.2 0.2 0.2 1 1 1 5\n");
+        SimEngine eng(carryPath);
+        eng.reloadScene();
+        eng.applyEvent(mkEvent(SimEvent::Type::Pick));
+        check(eng.robot().isCarrying(), "pick 后主机器人背负");
+        eng.applyEvent(mkEvent(SimEvent::Type::Save));  // 写回（含 carried_idx）
+        eng.reloadScene();                              // 从文件重载
+        check(eng.robot().isCarrying(), "reload 恢复搬运态");
+        check(eng.robot().carriedIndex() == 0, "恢复的是同一障碍 idx=0");
+        check(near(eng.robot().carriedMass(), 5.0f, 1e-4f), "恢复搬运质量一致");
+        ::unlink(carryPath.c_str());
+    }
+
     ::unlink(emptyPath.c_str());
     ::unlink(pickPath.c_str());
+}
+
+// ---- 多机器人实体化（C1 核心守门）：搬运属于每只 Robot，World 服务 N 只 ----
+//
+// 此前搬运状态是 World 级单例，两只机器人会互相覆盖。C1 把它下沉到 Robot、
+// World 改为按传入 Robot 参数化的无状态交互。这条测试用两只机器人在同一 World
+// 里各自拾取/背负/减速/放置，证明「N 只各搬各的」在核心层已成立——上线多机器人
+// （C2）只剩填容器 + 给指令加寻址，物理无需再改。
+void testMultiRobot() {
+    std::vector<Obstacle> obs = {
+        {{0.5f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 1.0f, 1.0f}, 5.0f},   // idx0：A 正前方
+        {{0.5f, 0.2f, 3.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 1.0f, 1.0f}, 20.0f},  // idx1：B 正前方
+    };
+    World w(obs);
+    Robot a, b;
+    a.setPose(0.0f, 0.0f, 0.0f);  // 朝 +X，前方 0.3m 是 idx0
+    b.setPose(0.0f, 3.0f, 0.0f);  // 朝 +X，前方 0.3m 是 idx1
+
+    check(!a.isCarrying() && !b.isCarrying(), "两只初始均空载");
+    check(w.pick(a), "A 拾取前方 idx0");
+    check(a.isCarrying() && a.carriedIndex() == 0, "A 背负 idx0");
+    check(!b.isCarrying(), "A 拾取不影响 B（搬运是每只各自的状态，非 World 单例）");
+    check(w.pick(b), "B 仍可独立拾取前方 idx1");
+    check(b.isCarrying() && b.carriedIndex() == 1, "B 背负 idx1");
+    check(near(a.carriedMass(), 5.0f, 1e-6f) && near(b.carriedMass(), 20.0f, 1e-6f),
+          "两只背负质量各自独立");
+
+    // 负载减速按各自 mass：B 更重更慢
+    check(a.effectiveMaxSpeed() > b.effectiveMaxSpeed(), "负重更大的 B 最大速度更低");
+    check(near(b.effectiveMaxSpeed(), Robot::kMaxSpeed / (1.0f + 20.0f * 0.01f), 1e-4f),
+          "B 减速公式按其自身质量");
+
+    // 各自的搬运物跟随各自机体，互不干扰
+    w.updateCarried(a);
+    w.updateCarried(b);
+    check(near(w.obstacles()[0].center.z, a.z(), 1e-6f) &&
+              near(w.obstacles()[1].center.z, b.z(), 1e-6f),
+          "两只搬运物分别钉在各自机体上方");
+
+    // 各自放置互不干扰
+    check(w.place(a), "A 放置成功");
+    check(!a.isCarrying() && b.isCarrying(), "A 放下后 B 仍背负（状态隔离）");
+    check(w.place(b), "B 放置成功");
+    check(!b.isCarrying(), "B 放下后空载");
+
+    // 测距/碰撞也按各自搬运物跳过：A 放下后 idx0 重新参与 A 的测距
+    check(w.queryRange(a) < Robot::kRangeMax, "A 空载后前方障碍重新计入测距");
 }
 
 }  // namespace
@@ -936,6 +1008,7 @@ int main() {
     testCaptureBridge();
     testRequestResponseBase();
     testSimEngine();
+    testMultiRobot();
 
     std::printf("sim_tests: %d 通过, %d 失败\n", g_total - g_failed, g_failed);
     return g_failed == 0 ? 0 : 1;

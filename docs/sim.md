@@ -160,10 +160,10 @@ robot 0 0 0
 
 ```
 simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
-├─ sim_engine.cpp  引擎：拥有 Robot+World+场景会话，  ├─ main.cpp  薄壳：主循环/输入/HUD
-│                  每帧推进 + 指令派发（可 headless 测）├─ spider.cpp 四足外观步态
-├─ robot.cpp    平面运动学+相对运动         ├─ mesh/shader/camera
-├─ world.cpp    障碍场景/碰撞/测距/搬运     └─ framegrab.cpp glReadPixels→JPEG
+├─ sim_engine.cpp  引擎：拥有 vector<Robot>+World+场景会话，├─ main.cpp  薄壳：主循环/输入/HUD
+│                  每帧逐只推进 + 指令派发（可 headless 测）  ├─ spider.cpp 四足外观步态
+├─ robot.cpp    平面运动学+相对运动+各自搬运态  ├─ mesh/shader/camera
+├─ world.cpp    障碍场景/碰撞/测距/拾放（无状态，按 Robot 参数化）└─ framegrab.cpp glReadPixels→JPEG
 ├─ action_table.cpp  动作分类学单一事实源
 ├─ sim_config.h   全局可调常量 + 缺省 socket 路径（C++ 侧 SSOT）
 ├─ unix_line_server.cpp  三桥公共骨架
@@ -173,7 +173,7 @@ simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
 └─ sensor.cpp   测距桥（RequestResponseBridge 子类，只补文本响应帧化）
 ```
 
-**SimEngine**（`sim/src/sim_engine.cpp`）是仿真逻辑的落点：拥有 `Robot` + `World` +
+**SimEngine**（`sim/src/sim_engine.cpp`）是仿真逻辑的落点：拥有 `vector<Robot>` + `World` +
 场景路径，暴露 `reloadScene/saveScene`、`applyContinuous(cmd,speed)`、`applyEvent(ev)`、
 `step(dt)`、`queryRange()`。此前这些是 `main.cpp` 里的自由函数与 lambda，困在 GLFW 壳中
 无法单测；抽进 simcore 后，fdist 到量、pick/place、save/reload 都能在 `sim/tests` 里
@@ -181,9 +181,18 @@ headless 验证。壳只管窗口/输入/渲染/HUD，每帧把命令桥的持�
 引擎、调 `step(dt)`，再读 `robot()/world()` 渲染——蜘蛛外观步态（`Spider`）是可视化，
 仍留在壳里按 `robot().v()` 自己生成。
 
-`Robot` 只管运动学（`update(dt, input, maxSpeed)`，maxSpeed 由 World 按搬运负载
-折算后传入）；「世界里有什么、撞了怎么解、搬得动什么」全在 World。协调坐标系：
-机体局部 +X 前、+Y 上、+Z 右，theta 增大 = 左转。
+**多机器人（C1 内部实体化）**：`step(dt)` 逐只推进 `robots_`，`World` 不持有任何单只
+机器人的状态、所有交互（碰撞/测距/拾放/背负跟随）都按传入的 `Robot` 参数化，**搬运状态
+下沉到每只 `Robot` 各自持有**（此前是 World 级单例，两只会互相覆盖）。因此同一 World
+可服务 N 只、各搬各的，由 `testMultiRobot` headless 守门。当前场景文件 v1 只表达一只、
+命令桥只有一条无寻址通道，故 **C1 容器恒为 1 只主机器人**（`kPrimaryRobot`），全部指令
+打到它、壳也只渲染它；上线多机器人（C2）= 场景填多只 + 给指令加可寻址（加法式扩展协议），
+核心物理无需再改。
+
+`Robot` 管运动学（`update(dt, input, maxSpeed)`）与**自己背着哪个障碍**（`carriedIndex/`
+`carriedMass`，`effectiveMaxSpeed()` 按自身负载折算上限）；「世界里有什么、撞了怎么解、
+能不能搬、搬起来钉哪」全在 World。协调坐标系：机体局部 +X 前、+Y 上、+Z 右，theta 增大
+= 左转。
 
 ## 端到端链路
 

@@ -11,9 +11,14 @@ struct RobotInput {
 
 // 蜘蛛身体的平面运动学：一阶滞后逼近目标速度，再积分出位姿。
 //
-// 刻意不含物理、不含足地接触、不做 IK、也不知道场景里有什么——
-// mybot 只发「前进/后退/转向/停」，这里只负责把这些动作变成身体在场景里
-// 的位移结果；碰撞解算/射线测距/搬运等与场景的相互作用归 World。
+// 刻意不含物理、不含足地接触、不做 IK——mybot 只发「前进/后退/转向/停」，
+// 这里只负责把这些动作变成身体在场景里的位移结果；碰撞解算/射线测距/拾取放置
+// 等与场景的相互作用归 World。
+//
+// 例外是**搬运状态**：每只机器人各自记「我背着第几个障碍、多重」，因为它是
+// 机器人自身的属性、且必须多机器人各背各的（此前寄存在 World 里是单例，两只
+// 机器人会互相覆盖）。Robot 只持有 idx+mass，「哪个 idx 在哪、怎么拾怎么放」
+// 仍是 World 的事。
 //
 // 坐标系：机体局部 +X 为前、+Y 为上、+Z 为**右**（右手系 X×Y=Z 的必然结果）。
 // 因此 theta 增大 = 向左转，与 steer>0 = 左转 一致。
@@ -24,6 +29,9 @@ public:
     // 松开指令后的减速速率（1/s）。update() 的滞后常数与 tickRelative() 的
     // 刹车尾程估算共用这一个值——两处不一致刹车就会失准
     static constexpr float kStopRate = 6.0f;
+    // 搬运负载的减速系数（每 kg）：maxSpeed = kMaxSpeed/(1+mass*此值)，
+    // 0.01 时 1kg 减速 1%、400kg 减速 80%。
+    static constexpr float kLoadSlowdownPerKg = 0.01f;
 
     // 躯干尺寸，spider.cpp 按这些常量摆放身体与髋部；World 用车身前端作
     // 测距射线与拾取判定的原点
@@ -61,6 +69,17 @@ public:
     // 返回 true 表示相对运动仍在进行、false 表示已完成或没有。
     bool tickRelative(float dt, RobotInput& out);
 
+    // 搬运状态（每只各自持有；idx<0 = 空载）。setCarried/clearCarried 由 World
+    // 的 pick/place 调用——Robot 只存「背着哪个、多重」，不含拾放逻辑。
+    bool isCarrying() const { return carriedIdx_ >= 0; }
+    int carriedIndex() const { return carriedIdx_; }
+    float carriedMass() const { return carriedMass_; }
+    void setCarried(int idx, float mass) { carriedIdx_ = idx; carriedMass_ = mass; }
+    void clearCarried() { carriedIdx_ = -1; carriedMass_ = 0.0f; }
+
+    // 负载折算后的最大速度（m/s）：空载 = kMaxSpeed，负重越大越慢。
+    float effectiveMaxSpeed() const;
+
 private:
     float x_ = 0.0f, z_ = 0.0f, theta_ = 0.0f;
     float v_ = 0.0f, omega_ = 0.0f;
@@ -68,4 +87,8 @@ private:
     // 相对运动剩余量；<=0 表示无待执行的相对运动。
     float remainingDist_ = 0.0f;   // 米（正=前进，负=后退）
     float remainingTurn_ = 0.0f;   // 弧度（正=左转，负=右转）
+
+    // 当前背负的障碍下标与质量缓存（-1 = 空载）。
+    int carriedIdx_ = -1;
+    float carriedMass_ = 0.0f;
 };
