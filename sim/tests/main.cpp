@@ -135,9 +135,7 @@ void testKinematics() {
 void testRelativeMotion() {
     const float dt = 1.0f / 60.0f;
 
-    // 记账口径：tickRelative 按上一帧速度减剩余量，位置按更新后速度积分，
-    // 到量那帧车仍在满速——实走会比目标多出至多约 2*v*dt（60fps 下 ~5cm）。
-    // 这是现有实现的固有过冲，断言按区间核对而不是掐死在目标值上。
+    // tickRelative 到量前提前松油门刹车（尾程= v/kStopRate），实走应贴着目标。
     Robot r;
     r.setRelativeDist(1.0f);
     bool active = true;
@@ -149,7 +147,14 @@ void testRelativeMotion() {
     }
     check(!active, "fdist 走满后 tickRelative 返回 false");
     check(guard < 600, "fdist 1m 在时限内完成");
-    check(r.x() >= 0.95f && r.x() <= 1.10f, "fdist 1m 实走落在 [0.95, 1.10]");
+    check(near(r.x(), 1.0f, 0.05f), "fdist 1m 实走落在 1.0±0.05");
+
+    // 到量后主循环仍在继续 update（现实情形）：残余动量不再拖走位姿
+    // （回归：旧实现满速到量后会多滑 v/6 ≈ 0.27m）
+    for (int i = 0; i < 90; ++i) {
+        r.update(dt, {0.0f, 0.0f}, Robot::kMaxSpeed);
+    }
+    check(near(r.x(), 1.0f, 0.05f), "到量后减速尾程不再多滑");
 
     // 后退 0.5m
     Robot back;
@@ -162,9 +167,9 @@ void testRelativeMotion() {
         back.update(dt, in, Robot::kMaxSpeed);
     }
     check(!active, "负 fdist 亦能完成");
-    check(back.x() <= -0.45f && back.x() >= -0.60f, "fdist -0.5m 实走落在 [-0.60, -0.45]");
+    check(near(back.x(), -0.5f, 0.05f), "fdist -0.5m 实走落在 -0.5±0.05");
 
-    // 右转 90°（过冲同上，至多约 2*ωmax*dt ≈ 4°）
+    // 右转 90°（回归：旧实现满速到量后角动量尾程会多转 ω/6 ≈ 21°）
     Robot t;
     t.setRelativeTurn(glm::radians(-90.0f));
     active = true;
@@ -175,8 +180,28 @@ void testRelativeMotion() {
         t.update(dt, in, Robot::kMaxSpeed);
     }
     check(!active, "turn 完成后 tickRelative 返回 false");
-    check(t.theta() <= glm::radians(-89.0f) && t.theta() >= glm::radians(-95.0f),
-          "turn -90° 实转落在 [-95°, -89°]");
+    for (int i = 0; i < 90; ++i) {
+        t.update(dt, {0.0f, 0.0f}, Robot::kMaxSpeed);
+    }
+    check(near(t.theta(), glm::radians(-90.0f), glm::radians(1.5f)),
+          "turn -90° 实转落在 -90°±1.5°（含尾程）");
+
+    // fdist 与 turn 顺序执行：先走完再转，同帧设定也不互相吞
+    // （回归：旧实现 setRelativeTurn 会清掉 remainingDist，.mt 里
+    //   「fdist 2 后 turn 90」两行连续下发时走路段被静默丢弃）
+    Robot seq;
+    seq.setRelativeDist(0.5f);
+    seq.setRelativeTurn(glm::radians(90.0f));
+    active = true;
+    guard = 0;
+    while (active && guard++ < 1200) {
+        RobotInput in;
+        active = seq.tickRelative(dt, in);
+        seq.update(dt, in, Robot::kMaxSpeed);
+    }
+    check(!active, "fdist+turn 队列执行完成");
+    check(near(seq.x(), 0.5f, 0.05f), "先走完 0.5m");
+    check(near(seq.theta(), glm::radians(90.0f), glm::radians(1.5f)), "再转 90°");
 
     // 无相对运动时 tickRelative 不接管
     Robot idle;

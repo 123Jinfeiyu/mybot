@@ -21,6 +21,9 @@ class Robot {
 public:
     static constexpr float kMaxSpeed = 1.6f;     // m/s（空载上限）
     static constexpr float kMaxTurnRate = 2.2f;  // rad/s
+    // 松开指令后的减速速率（1/s）。update() 的滞后常数与 tickRelative() 的
+    // 刹车尾程估算共用这一个值——两处不一致刹车就会失准
+    static constexpr float kStopRate = 6.0f;
 
     // 躯干尺寸，spider.cpp 按这些常量摆放身体与髋部；World 用车身前端作
     // 测距射线与拾取判定的原点
@@ -49,7 +52,9 @@ public:
     // 场景装载/重载用：整体设位姿（theta 弧度），不动速度
     void setPose(float x, float z, float theta) { x_ = x; z_ = z; theta_ = theta; }
 
-    // 相对运动：设定后每帧由主循环调用 tickRelative()，到量即自动停。
+    // 相对运动：fdist 与 turn 各记各的剩余量、**顺序执行**（先走完再转），
+    // 同通道新目标覆盖旧目标。设定后每帧由主循环调用 tickRelative()，到量即
+    // 自动停——到量前会提前松油门刹车，消掉一阶滞后的减速尾程。
     void setRelativeDist(float meters);
     void setRelativeTurn(float radians);
     // 每帧调用，返回本帧应覆盖的 input（有相对运动时忽略外部 input）。
