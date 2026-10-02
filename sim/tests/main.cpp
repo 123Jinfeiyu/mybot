@@ -293,10 +293,13 @@ void testPickPlace() {
 
     // place：放到身体前端 + kPlaceDist（0.2+0.5=0.7）
     const float px = r.x();
+    check(world.obstacles()[0].center.y > Robot::kBodyY, "搬运中物体被抬高（place 前）");
     check(world.place(r), "place 成功");
     check(!r.isCarrying(), "place 后未搬运");
     check(near(world.obstacles()[0].center.x, px + 0.2f + 0.5f, 1e-3f),
           "物体落在前方 placeDist 处");
+    check(near(world.obstacles()[0].center.y, world.obstacles()[0].half.y, 1e-3f),
+          "place 后物体落回地面（center.y=half.y，不悬空）");
     check(!world.place(r), "未持有物体时 place 失败");
 
     // 拾不到的两种情形：太远 / 在身后
@@ -922,6 +925,8 @@ void testSimEngine() {
         eng.applyEvent(mkEvent(SimEvent::Type::Place));
         check(!eng.robot().isCarrying(), "place 事件后未搬运");
         check(eng.world().obstacles()[0].center.x > px, "物体放到机体前方");
+        check(near(eng.world().obstacles()[0].center.y, eng.world().obstacles()[0].half.y, 1e-3f),
+              "place 事件后物体落回地面（不悬空）");
     }
 
     // ⑤ save/reload round-trip：save 落盘当前位姿，reload 从文件恢复

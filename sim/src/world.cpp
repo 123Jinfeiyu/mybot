@@ -224,6 +224,9 @@ bool World::place(Robot& robot) {
     auto& ob = obstacles_[idx];
     ob.center.x = robot.x() + forwardX * (Robot::kBodyLength * 0.5f + kPlaceDist);
     ob.center.z = robot.z() + forwardZ * (Robot::kBodyLength * 0.5f + kPlaceDist);
+    // 背负时被 updateCarried 抬到身体上方，落地必须把 y 还原到静置高度（底面贴
+    // 地面 y=0 → center.y = half.y），否则方块会悬在空中。
+    ob.center.y = ob.half.y;
 
     robot.clearCarried();
     return true;
