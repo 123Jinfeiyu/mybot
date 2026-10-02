@@ -11,15 +11,12 @@
 #include <cstring>
 #include <thread>
 
+#include "sim_config.h"
+
 namespace {
 
 // sun_path 是定长数组，超长会被静默截断成另一个路径，必须显式拒绝
 constexpr std::size_t kMaxPathLen = sizeof(sockaddr_un::sun_path) - 1;
-
-// 发送侧绝对 deadline：响应撑死几百 KB，正常几毫秒就发完；给 3 秒纯粹是兜住
-// 「对端连上却不读」的卡死，超时就断开，绝不无限阻塞渲染循环。
-// （AF_UNIX 在对端缓冲满时仍报可写，poll(POLLOUT) 恒就绪，靠不住。）
-constexpr int kSendDeadlineMs = 3000;
 
 bool setNonBlocking(int fd) {
     const int flags = fcntl(fd, F_GETFL, 0);
@@ -182,7 +179,7 @@ bool UnixLineServer::sendAll(const void* data, std::size_t len) {
         return false;
     }
     const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds(kSendDeadlineMs);
+        std::chrono::steady_clock::now() + std::chrono::milliseconds(SimConfig::kSendDeadlineMs);
     const unsigned char* ptr = static_cast<const unsigned char*>(data);
     std::size_t off = 0;
     while (off < len) {
@@ -198,7 +195,7 @@ bool UnixLineServer::sendAll(const void* data, std::size_t len) {
         if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
             if (std::chrono::steady_clock::now() >= deadline) {
                 std::fprintf(stderr, "%s: send timed out after %d ms, dropping client\n",
-                             logTag_, kSendDeadlineMs);
+                             logTag_, SimConfig::kSendDeadlineMs);
                 dropClient();
                 return false;
             }

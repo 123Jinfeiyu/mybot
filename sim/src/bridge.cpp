@@ -4,11 +4,9 @@
 #include <cstdlib>
 #include <cstring>
 
-namespace {
+#include "sim_config.h"
 
-// 一次性事件队列上限。对端连发超过这个数还没等主循环 drain，说明脚本在灌
-// 事件——丢弃新的并报出来，别让队列无界生长。
-constexpr std::size_t kMaxQueuedEvents = 32;
+namespace {
 
 float parseSpeed(const char* text, bool& ok) {
     char* end = nullptr;
@@ -127,9 +125,9 @@ void CommandBridge::handleLine(const std::string& rawLine) {
                 return;
             }
         }
-        if (events_.size() >= kMaxQueuedEvents) {
+        if (events_.size() >= SimConfig::kMaxQueuedEvents) {
             std::fprintf(stderr, "bridge: event queue full (%zu), dropping '%s'\n",
-                         kMaxQueuedEvents, word);
+                         SimConfig::kMaxQueuedEvents, word);
             lastLine_ = rawLine;
             return;
         }

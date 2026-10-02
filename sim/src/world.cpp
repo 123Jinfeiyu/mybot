@@ -6,19 +6,12 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "sim_config.h"
+
 namespace {
 
-// 蜘蛛碰撞球半径（XZ 平面，约半车身长）。刻意贴着 Robot::kBodyLength 而不
-// 直接引用：碰撞体是圆的，车身是方的，取半车长会卡进盒缝。
-constexpr float kRobotRadius = 0.20f;
-
-// 默认密度 kg/m³（近似木材）
-constexpr float kDefaultDensity = 800.0f;
-
-// 场景文件魔数与上限
+// 场景文件魔数
 constexpr char kSceneMagic[] = "mybot-sim scene v1";
-constexpr std::size_t kMaxSceneObstacles = 512;
-constexpr std::size_t kMaxSceneLine = 512;
 
 // 从 p 起连续解析至多 want 个浮点数，got 返回实际解析个数。
 // 遇到非数字即停（返回 false）；解析不足 want 个不算错——由调用方按各自
@@ -139,7 +132,7 @@ std::vector<Obstacle> World::defaultScene() {
     };
     for (auto& ob : obs) {
         const float volume = 8.0f * ob.half.x * ob.half.y * ob.half.z;  // 2*half 是全尺寸
-        ob.mass = volume * kDefaultDensity;
+        ob.mass = volume * SimConfig::kDefaultDensity;
     }
     return obs;
 }
@@ -150,7 +143,7 @@ void World::resolveCollisions(Robot& robot) {
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
         if (i == carriedIdx_) continue;  // 被搬运物附着在机器人上，不参与碰撞
         float rx = robot.x(), rz = robot.z();
-        if (resolveSphereAABB2D(rx, rz, kRobotRadius, obstacles_[i])) {
+        if (resolveSphereAABB2D(rx, rz, SimConfig::kRobotRadius, obstacles_[i])) {
             robot.setX(rx);
             robot.setZ(rz);
         }
@@ -269,7 +262,7 @@ bool readScene(const std::string& path, SceneState& out) {
     }
 
     SceneState st;
-    char line[kMaxSceneLine];
+    char line[SimConfig::kMaxSceneLine];
     bool magicSeen = false;
     bool ok = true;
     while (std::fgets(line, sizeof(line), f)) {
@@ -314,8 +307,8 @@ bool readScene(const std::string& path, SceneState& out) {
                 std::fprintf(stderr, "scene: box 半尺寸必须为正，跳过: %s", text);
                 continue;
             }
-            if (st.obstacles.size() >= kMaxSceneObstacles) {
-                std::fprintf(stderr, "scene: 障碍数超过上限 %zu，多余忽略\n", kMaxSceneObstacles);
+            if (st.obstacles.size() >= SimConfig::kMaxSceneObstacles) {
+                std::fprintf(stderr, "scene: 障碍数超过上限 %zu，多余忽略\n", SimConfig::kMaxSceneObstacles);
                 continue;
             }
             Obstacle ob;
@@ -323,7 +316,7 @@ bool readScene(const std::string& path, SceneState& out) {
             ob.half = glm::vec3(v[3], v[4], v[5]);
             ob.color = glm::vec3(v[6], v[7], v[8]);
             ob.mass = (got == 10) ? v[9]
-                                  : 8.0f * ob.half.x * ob.half.y * ob.half.z * kDefaultDensity;
+                                  : 8.0f * ob.half.x * ob.half.y * ob.half.z * SimConfig::kDefaultDensity;
             st.obstacles.push_back(ob);
         } else if (std::strcmp(word, "robot") == 0) {
             float v[4] = {};

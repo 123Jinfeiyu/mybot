@@ -19,6 +19,7 @@
 #include "sensor.h"
 #include "shader.h"
 #include "shaders.h"
+#include "sim_config.h"
 #include "spider.h"
 #include "world.h"
 
@@ -27,7 +28,6 @@ namespace {
 const char* kDefaultSocketPath = "/tmp/mybot-sim.sock";
 const char* kDefaultCaptureSocketPath = "/tmp/mybot-sim-capture.sock";
 const char* kDefaultSensorSocketPath = "/tmp/mybot-sim-sensor.sock";
-constexpr int kJpegQuality = 90;
 
 // 三条 socket 同一规矩：argv > 环境变量 > 缺省。路径的单一事实源是环境
 // 变量名，mybot 侧 Sim.lua / Camera.lua 与这里同读。
@@ -424,7 +424,7 @@ int main(int argc, char** argv) {
         // 抓帧回传放在 SwapBuffers 之前：此刻 GL_BACK 是刚画好的这一帧。
         if (wantCapture) {
             int capW = 0, capH = 0;
-            std::vector<unsigned char> jpeg = grabFrameJpeg(kJpegQuality, capW, capH);
+            std::vector<unsigned char> jpeg = grabFrameJpeg(SimConfig::kJpegQuality, capW, capH);
             if (jpeg.empty()) {
                 capture.sendError("frame grab or jpeg encode failed");
             } else {
