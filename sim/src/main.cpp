@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -67,6 +68,14 @@ bool g_toggleCamera = false;
 bool g_saveRequested = false;
 bool g_dragging = false;
 double g_lastX = 0.0, g_lastY = 0.0;
+
+// 退出请求（SIGTERM/SIGINT）：demo 拆链路用 kill -TERM，默认会**瞬杀**进程，
+// 来不及保存场景。这里把信号折成「请求关窗」——只置一个 async-signal-safe 的
+// sig_atomic_t 标志（信号处理器里绝不碰 GLFW/IO），主循环每帧轮询到它就优雅退出，
+// 退出前统一 saveScene()。于是 ESC、点窗口 X、Ctrl-C、demo 的 SIGTERM 走同一条
+// 「保存再退」的路。
+volatile std::sig_atomic_t g_signalClose = 0;
+void signalCloseHandler(int) { g_signalClose = 1; }
 
 void framebufferSizeCallback(GLFWwindow*, int width, int height) {
     glViewport(0, 0, width, height);
@@ -185,6 +194,15 @@ int main(int argc, char** argv) {
 
     glEnable(GL_DEPTH_TEST);
 
+    // glfwTerminate 必须**晚于**所有持 GL 资源的对象（Shader/Mesh/Spider）析构——
+    // 它们的析构里是 glDeleteProgram/glDeleteVertexArrays/glDeleteBuffers，上下文
+    // 已经没了就是 use-after-free（退出时段错误）。此前显式在 main 末尾调
+    // glfwTerminate()，而这些对象是更早声明的局部量、析构序在 terminate 之后，
+    // 只是过去 demo 用 SIGTERM 瞬杀进程、析构根本没跑，问题被掩盖了。改用一个
+    // **早声明**的 RAII 守卫：C++ 析构序 = 声明序逆序，它最后走，于是先释放全部
+    // GL 再 terminate。建窗/加载 GL 之前的早退失败路径不经过这里，仍各自手动 terminate。
+    struct GlfwGuard { ~GlfwGuard() { glfwTerminate(); } } glfwGuard;
+
     // 拍照桥单条即可：它抓的是整个 GL 视口（一帧全景），与机器人数量无关。
     // 命令桥/测距桥则**每只机器人一套**（见 deriveRobotPath），多 agent 各连各的。
     // 监听失败不退出：窗口照常开着，标题上标出 NOT LISTENING 让人去查路径，
@@ -243,8 +261,14 @@ int main(int argc, char** argv) {
     const glm::vec3 lightDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
     const glm::vec3 lightColor(1.0f, 0.98f, 0.92f);
 
+    // SIGTERM/SIGINT → 请求关窗（见 g_signalClose 注释）：让 demo 的 kill -TERM
+    // 与 Ctrl-C 都走「保存再退」而非瞬杀。SIGPIPE 不在此列——三桥 send 一律
+    // MSG_NOSIGNAL 折成 EPIPE，进程级无需处理。
+    std::signal(SIGTERM, signalCloseHandler);
+    std::signal(SIGINT, signalCloseHandler);
+
     double last = glfwGetTime();
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(window) && !g_signalClose) {
         double now = glfwGetTime();
         float dt = std::min(0.05f, (float)(now - last));
         last = now;
@@ -377,6 +401,11 @@ int main(int argc, char** argv) {
         glfwPollEvents();
     }
 
-    glfwTerminate();
+    // 退出即保存：无论 ESC / 点窗口 X / Ctrl-C / demo 的 SIGTERM，都把当前世界
+    // 状态（障碍位置 + 各机器人位姿 + 搬运态）原子写回启动时配置的场景文件，
+    // 下次从改过的环境续用。未配置场景路径（内置默认）时 saveScene 自行 no-op。
+    engine.saveScene();
+
+    // glfwTerminate 由上面早声明的 glfwGuard 在所有 GL 对象析构后统一调用。
     return 0;
 }

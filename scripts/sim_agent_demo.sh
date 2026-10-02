@@ -95,8 +95,9 @@ wait_sock() { # $1=socket $2= tries $3=名字 $4=日志
 rm -f "$SIM_SOCK" "$CAP_SOCK" "$SENSOR_SOCK"
 
 echo "=== 1/3 起仿真器 sim（窗口会出现；标题显示最近动作）==="
-# MYBOT_SIM_SCENE：场景文件。agent/人搬动过的环境可经 save 指令或 S 键写回，
-# 下次跑 demo 从改过的场景继续。
+# MYBOT_SIM_SCENE：场景文件。agent/人搬动过的环境**退出时自动写回**（sim 捕获本脚本
+# cleanup 的 SIGTERM 优雅退出并 saveScene；S 键 / save 指令仍可手动写回），下次跑
+# demo 从改过的场景继续。想让每次跑都从原始布局开始，请另指一个临时场景文件或先复位。
 MYBOT_SIM_SCENE="${MYBOT_SIM_SCENE:-$root/sim/scenes/default.scene}" "$SIM_BIN" >"$SIM_LOG" 2>&1 &
 SIM_PID=$!
 wait_sock "$SIM_SOCK" 60 "sim 命令桥" "$SIM_LOG" || exit 1
