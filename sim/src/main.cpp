@@ -20,6 +20,7 @@
 #include "shader.h"
 #include "shaders.h"
 #include "sim_config.h"
+#include "sim_engine.h"
 #include "spider.h"
 #include "world.h"
 
@@ -80,27 +81,6 @@ void cursorPosCallback(GLFWwindow*, double x, double y) {
 
 void scrollCallback(GLFWwindow*, double, double yOffset) {
     g_camera.onScroll((float)yOffset);
-}
-
-RobotInput commandToInput(SimCommand cmd, float speed) {
-    RobotInput input;
-    switch (cmd) {
-        case SimCommand::Forward:
-            input.throttle = speed;
-            break;
-        case SimCommand::Backward:
-            input.throttle = -speed;
-            break;
-        case SimCommand::Left:
-            input.steer = speed;
-            break;
-        case SimCommand::Right:
-            input.steer = -speed;
-            break;
-        case SimCommand::Stop:
-            break;
-    }
-    return input;
 }
 
 // 窗口标题即仪表盘：动作/速度/位姿/测距/搬运/三桥状态一页看全
@@ -213,105 +193,20 @@ int main(int argc, char** argv) {
     Shader phong(kPhongVs, kPhongFs);
     Shader lines(kLineVs, kLineFs);
     SceneMeshes meshes = buildSceneMeshes();
-    Robot robot;
     Spider spider;
-    World world;
 
     // 场景：argv[4] > MYBOT_SIM_SCENE > 内置默认（空串=内置）。环境与代码解耦
     // 的落点：障碍布局来自文件。save 只写这个启动时定下的路径——socket 线上
     // 不收路径参数，杜绝「连任意文件写」原语（与 Camera.lua 只认 env 的口径同源）。
     const std::string scenePath = resolveSocketPath(argc, argv, 4, "MYBOT_SIM_SCENE", "");
-    const char* sceneName = "builtin";
-    if (!scenePath.empty()) {
-        const char* slash = std::strrchr(scenePath.c_str(), '/');
-        sceneName = slash ? slash + 1 : scenePath.c_str();
-    }
 
-    // 装载场景（含机器人位姿）。文件读失败回落内置默认并告警，不开黑屏世界。
-    auto reloadScene = [&] {
-        if (!scenePath.empty()) {
-            SceneState st;
-            if (readScene(scenePath, st)) {
-                world.applyScene(st);
-                robot = Robot();
-                robot.setPose(st.robotX, st.robotZ, st.robotTheta);
-                std::fprintf(stderr, "scene: 已装载 %s（%zu 个障碍）\n", scenePath.c_str(),
-                             st.obstacles.size());
-                return;
-            }
-            std::fprintf(stderr, "scene: 回落内置默认场景\n");
-        }
-        world = World();
-        robot = Robot();
-    };
-
-    // 把当前世界状态原子写回场景文件（tmp + rename）
-    auto saveSceneFile = [&] {
-        if (scenePath.empty()) {
-            std::fprintf(stderr, "save: 未配置场景路径（argv[4] 或 MYBOT_SIM_SCENE），无处置写\n");
-            return;
-        }
-        SceneState st;
-        st.obstacles = world.obstacles();
-        st.robotX = robot.x();
-        st.robotZ = robot.z();
-        st.robotTheta = robot.theta();
-        st.carriedIdx = world.isCarrying() ? world.carriedIndex() : -1;
-        if (writeScene(scenePath, st)) {
-            std::fprintf(stderr, "save: 场景已写入 %s（%zu 个障碍）\n", scenePath.c_str(),
-                         st.obstacles.size());
-        } else {
-            std::fprintf(stderr, "save: 写入 %s 失败\n", scenePath.c_str());
-        }
-    };
-
-    // 一次性事件派发：相对运动设剩余量、pick/place 交给 World、save 落盘，
-    // 结果都打到 stderr（对端看不到回执，日志是唯一的排障线索）
-    auto dispatchEvent = [&](const SimEvent& ev) {
-        switch (ev.type) {
-            case SimEvent::Type::FwdDist:
-                std::fprintf(stderr, "cmd: fdist %.2f\n", ev.param);
-                robot.setRelativeDist(ev.param);
-                break;
-            case SimEvent::Type::Turn:
-                std::fprintf(stderr, "cmd: turn %.2f\n", ev.param);
-                robot.setRelativeTurn(glm::radians(ev.param));
-                break;
-            case SimEvent::Type::Pick:
-                if (world.isCarrying()) {
-                    std::fprintf(stderr, "pick: 已持有物体 (idx=%d, %.2fkg)，忽略\n",
-                                 world.carriedIndex(), world.carriedMass());
-                } else if (world.pick(robot)) {
-                    const auto& ob = world.obstacles()[world.carriedIndex()];
-                    std::fprintf(stderr, "pick: 成功拾取 idx=%d mass=%.2fkg pos=(%.2f,%.2f)\n",
-                                 world.carriedIndex(), world.carriedMass(),
-                                 ob.center.x, ob.center.z);
-                } else {
-                    std::fprintf(stderr, "pick: 前方 %.2fm 内无障碍物，拾取失败\n",
-                                 World::kPickRange);
-                }
-                break;
-            case SimEvent::Type::Place:
-                if (world.place(robot)) {
-                    std::fprintf(stderr, "place: 放置成功\n");
-                } else {
-                    std::fprintf(stderr, "place: 未持有物体，放置失败\n");
-                }
-                break;
-            case SimEvent::Type::Save:
-                saveSceneFile();
-                break;
-        }
-    };
-
-    reloadScene();
+    // 仿真逻辑（场景会话 + 每帧推进 + 指令派发）全在 GL 无关的 SimEngine 里，
+    // 可 headless 单测；壳只负责窗口/输入/渲染/HUD，把语义动作喂引擎再 step()。
+    SimEngine engine(scenePath);
+    engine.reloadScene();
 
     const glm::vec3 lightDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
     const glm::vec3 lightColor(1.0f, 0.98f, 0.92f);
-
-    // 跟踪上一条持续型指令：新持续型指令打断进行中的相对运动（stop 除外——
-    // 它只是松油门，不打断 fdist/turn）
-    SimCommand lastContinuous = SimCommand::Stop;
 
     double last = glfwGetTime();
     while (!glfwWindowShouldClose(window)) {
@@ -327,12 +222,12 @@ int main(int argc, char** argv) {
 
         if (g_resetRequested) {
             // 复位 = 场景连同机器人回到装载时状态（文件版重读文件、内置版回默认）
-            reloadScene();
+            engine.reloadScene();
             spider.reset();
             g_resetRequested = false;
         }
         if (g_saveRequested) {
-            saveSceneFile();
+            engine.saveScene();
             g_saveRequested = false;
         }
         if (g_toggleCamera) {
@@ -340,35 +235,20 @@ int main(int argc, char** argv) {
             g_toggleCamera = false;
         }
 
-        const SimCommand cmd = bridge.command();
-        if (cmd != lastContinuous) {
-            std::fprintf(stderr, "cmd: %s\n", commandName(cmd));
-            if (cmd != SimCommand::Stop) {
-                // 持续型指令覆盖相对运动
-                robot.setRelativeDist(0.0f);
-                robot.setRelativeTurn(0.0f);
-            }
-            lastContinuous = cmd;
-        }
-        // 一次性事件 drain 到空：每条必触发一次（连续两次 fdist 不再互相吞）
+        // 语义动作喂引擎：持续型同步状态（新非-stop 指令打断相对运动在引擎内处理），
+        // 一次性事件 drain 到空——每条必触发一次（连续两次 fdist 不再互相吞）。
+        engine.applyContinuous(bridge.command(), bridge.speed());
         SimEvent ev;
         while (bridge.pollEvent(ev)) {
-            dispatchEvent(ev);
+            engine.applyEvent(ev);
         }
 
-        RobotInput input = commandToInput(cmd, bridge.speed());
-        RobotInput relInput;
-        if (robot.tickRelative(dt, relInput)) {
-            input = relInput;
-        }
-        robot.update(dt, input, world.effectiveMaxSpeed());
-        world.resolveCollisions(robot);
-        world.updateCarried(robot);
-        spider.update(dt, robot.v());
+        engine.step(dt);
+        spider.update(dt, engine.robot().v());
 
         // 测距响应：碰撞解算完成后算距离，保证拿到的是本帧最终位姿
         if (wantRange) {
-            const float dist = world.queryRange(robot);
+            const float dist = engine.queryRange();
             const int distMm = static_cast<int>(dist * 1000.0f + 0.5f);
             if (!sensor.sendRange(distMm)) {
                 sensor.sendError("range send failed");
@@ -376,7 +256,7 @@ int main(int argc, char** argv) {
         }
 
         if (g_camera.follow) {
-            glm::vec3 robotPos(robot.x(), 0.2f, robot.z());
+            glm::vec3 robotPos(engine.robot().x(), 0.2f, engine.robot().z());
             float k = std::min(1.0f, 5.0f * dt);
             g_camera.target += (robotPos - g_camera.target) * k;
         }
@@ -404,7 +284,7 @@ int main(int argc, char** argv) {
         meshes.cube.draw();
 
         // 障碍盒：unit cube 经 translate(center)*scale(2*half) 摆到位
-        for (const Obstacle& ob : world.obstacles()) {
+        for (const Obstacle& ob : engine.world().obstacles()) {
             glm::mat4 m = glm::translate(glm::mat4(1.0f), ob.center) *
                           glm::scale(glm::mat4(1.0f), ob.half * 2.0f);
             phong.setMat4("model", m);
@@ -412,14 +292,15 @@ int main(int argc, char** argv) {
             meshes.cube.draw();
         }
 
-        drawSpider(robot, spider, phong, meshes);
+        drawSpider(engine.robot(), spider, phong, meshes);
 
         lines.use();
         lines.setMat4("mvp", projection * view);
         lines.setVec3("color", glm::vec3(0.18f, 0.22f, 0.18f));
         meshes.grid.draw();
 
-        updateTitle(window, bridge, capture, sensor, robot, world, sceneName);
+        updateTitle(window, bridge, capture, sensor, engine.robot(), engine.world(),
+                    engine.sceneName().c_str());
 
         // 抓帧回传放在 SwapBuffers 之前：此刻 GL_BACK 是刚画好的这一帧。
         if (wantCapture) {

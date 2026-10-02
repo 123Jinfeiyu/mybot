@@ -28,6 +28,7 @@
 #include "request_bridge.h"
 #include "robot.h"
 #include "sensor.h"
+#include "sim_engine.h"
 #include "world.h"
 
 namespace {
@@ -747,6 +748,135 @@ void testRequestResponseBase() {
     ::close(fd);
 }
 
+// ---- SimEngine：headless 验证仿真逻辑（原本困在 GL 壳里，无法单测） ----
+
+std::string engineScenePath(const char* tag) {
+    return "/tmp/mybot-sim-tests-" + std::to_string(::getpid()) + "-engine-" + tag + ".scene";
+}
+
+SimEvent mkEvent(SimEvent::Type type, float param = 0.0f) {
+    SimEvent ev;
+    ev.type = type;
+    ev.param = param;
+    return ev;
+}
+
+void testSimEngine() {
+    const float dt = 1.0f / 60.0f;
+
+    // 无障碍场景：持续型推进与相对运动都不受碰撞干扰
+    const std::string emptyPath = engineScenePath("empty");
+    writeTextFile(emptyPath, "mybot-sim scene v1\nrobot 0 0 0\n");
+    // 拾取场景：正前方 0.3m 处一个可搬盒（近面在拾取半径内）
+    const std::string pickPath = engineScenePath("pick");
+    writeTextFile(pickPath,
+                  "mybot-sim scene v1\n"
+                  "robot 0 0 0\n"
+                  "box 0.5 0.2 0 0.2 0.2 0.2 1 1 1 5\n");
+
+    // ① 持续型前进：油门=1 沿 +X 积分；stop 后减速
+    {
+        SimEngine eng(emptyPath);
+        eng.reloadScene();
+        check(!eng.sceneName().empty() && eng.sceneName().find('/') == std::string::npos,
+              "sceneName 取自路径 basename（无斜杠、非空）");
+        eng.applyContinuous(SimCommand::Forward, 1.0f);
+        for (int i = 0; i < 120; ++i) {
+            eng.step(dt);
+        }
+        check(eng.robot().x() > 1.0f, "持续型 forward 推进 +X");
+        check(near(eng.robot().z(), 0.0f, 1e-3f), "theta=0 前进不偏 z");
+        eng.applyContinuous(SimCommand::Stop, 1.0f);
+        const float v0 = eng.robot().v();
+        for (int i = 0; i < 60; ++i) {
+            eng.step(dt);
+        }
+        check(eng.robot().v() < v0 * 0.5f, "stop 后速度衰减");
+    }
+
+    // ② 一次性 fdist/turn：引擎 step 内 tickRelative 到量自动停
+    {
+        SimEngine eng(emptyPath);
+        eng.reloadScene();
+        eng.applyEvent(mkEvent(SimEvent::Type::FwdDist, 1.0f));
+        for (int i = 0; i < 300; ++i) {
+            eng.step(dt);
+        }
+        check(near(eng.robot().x(), 1.0f, 0.05f), "fdist 1m 实走落在 1.0±0.05");
+
+        eng.applyEvent(mkEvent(SimEvent::Type::Turn, 90.0f));
+        for (int i = 0; i < 300; ++i) {
+            eng.step(dt);
+        }
+        check(near(eng.robot().theta(), glm::radians(90.0f), glm::radians(1.5f)),
+              "turn 90° 实转落在 90°±1.5°");
+    }
+
+    // ③ 新持续型指令打断进行中的相对运动（stop 不打断）
+    {
+        SimEngine eng(emptyPath);
+        eng.reloadScene();
+        eng.applyEvent(mkEvent(SimEvent::Type::FwdDist, 1.0f));
+        for (int i = 0; i < 20; ++i) {
+            eng.step(dt);  // 走一段，未到量
+        }
+        eng.applyContinuous(SimCommand::Forward, 1.0f);  // 打断 fdist
+        for (int i = 0; i < 300; ++i) {
+            eng.step(dt);
+        }
+        check(eng.robot().x() > 2.0f, "持续型 forward 打断 fdist 后继续前进（不止于 1m）");
+    }
+
+    // ④ pick/place 经引擎事件派发
+    {
+        SimEngine eng(pickPath);
+        eng.reloadScene();
+        check(!eng.world().isCarrying(), "初始未搬运");
+        eng.applyEvent(mkEvent(SimEvent::Type::Pick));
+        check(eng.world().isCarrying(), "pick 事件后 isCarrying");
+        check(eng.world().effectiveMaxSpeed() < Robot::kMaxSpeed, "搬运后最大速度被压低");
+        // 搬运中前进，物体跟随
+        eng.applyContinuous(SimCommand::Forward, 1.0f);
+        for (int i = 0; i < 60; ++i) {
+            eng.step(dt);
+        }
+        check(near(eng.world().obstacles()[0].center.x, eng.robot().x(), 1e-4f),
+              "搬运中物体跟随机体");
+        eng.applyContinuous(SimCommand::Stop, 1.0f);
+        const float px = eng.robot().x();
+        eng.applyEvent(mkEvent(SimEvent::Type::Place));
+        check(!eng.world().isCarrying(), "place 事件后未搬运");
+        check(eng.world().obstacles()[0].center.x > px, "物体放到机体前方");
+    }
+
+    // ⑤ save/reload round-trip：save 落盘当前位姿，reload 从文件恢复
+    {
+        const std::string savePath = engineScenePath("save");
+        writeTextFile(savePath, "mybot-sim scene v1\nrobot 0 0 0\n");
+        SimEngine eng(savePath);
+        eng.reloadScene();
+        eng.applyEvent(mkEvent(SimEvent::Type::FwdDist, 1.0f));
+        for (int i = 0; i < 300; ++i) {
+            eng.step(dt);
+        }
+        const float savedX = eng.robot().x();
+        check(near(savedX, 1.0f, 0.05f), "save 前走到 ~1m");
+        eng.applyEvent(mkEvent(SimEvent::Type::Save));  // 写回文件
+        // 再走一段，位姿前移
+        eng.applyEvent(mkEvent(SimEvent::Type::FwdDist, 1.0f));
+        for (int i = 0; i < 300; ++i) {
+            eng.step(dt);
+        }
+        check(eng.robot().x() > savedX + 0.5f, "reload 前位姿已前移");
+        eng.reloadScene();  // 从刚保存的文件重载
+        check(near(eng.robot().x(), savedX, 1e-3f), "reload 恢复到 save 时的位姿");
+        ::unlink(savePath.c_str());
+    }
+
+    ::unlink(emptyPath.c_str());
+    ::unlink(pickPath.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -762,6 +892,7 @@ int main() {
     testSensorBridge();
     testCaptureBridge();
     testRequestResponseBase();
+    testSimEngine();
 
     std::printf("sim_tests: %d 通过, %d 失败\n", g_total - g_failed, g_failed);
     return g_failed == 0 ? 0 : 1;

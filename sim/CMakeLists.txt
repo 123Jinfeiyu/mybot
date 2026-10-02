@@ -42,6 +42,7 @@ target_include_directories(glad PUBLIC external/glad/include)
 add_library(simcore STATIC
     src/robot.cpp
     src/world.cpp
+    src/sim_engine.cpp
     src/unix_line_server.cpp
     src/request_bridge.cpp
     src/action_table.cpp

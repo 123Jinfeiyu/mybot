@@ -150,17 +150,27 @@ robot 0 0 0
 
 ```
 simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
-├─ robot.cpp    平面运动学+相对运动         ├─ main.cpp     主循环/输入/HUD
-├─ world.cpp    障碍场景/碰撞/测距/搬运     ├─ spider.cpp   四足外观步态
-├─ action_table.cpp  动作分类学单一事实源   ├─ mesh/shader/camera
-├─ unix_line_server.cpp  三桥公共骨架       └─ framegrab.cpp glReadPixels→JPEG
+├─ sim_engine.cpp  引擎：拥有 Robot+World+场景会话，  ├─ main.cpp  薄壳：主循环/输入/HUD
+│                  每帧推进 + 指令派发（可 headless 测）├─ spider.cpp 四足外观步态
+├─ robot.cpp    平面运动学+相对运动         ├─ mesh/shader/camera
+├─ world.cpp    障碍场景/碰撞/测距/搬运     └─ framegrab.cpp glReadPixels→JPEG
+├─ action_table.cpp  动作分类学单一事实源
+├─ unix_line_server.cpp  三桥公共骨架
 ├─ request_bridge.cpp  请求-应答桥公共基类（一问一答）
 ├─ bridge.cpp   命令桥（状态+事件队列，查 action_table 分派）
 ├─ capture.cpp  拍照桥（RequestResponseBridge 子类，只补二进制体帧化）
 └─ sensor.cpp   测距桥（RequestResponseBridge 子类，只补文本响应帧化）
 ```
 
-Robot 只管运动学（`update(dt, input, maxSpeed)`，maxSpeed 由 World 按搬运负载
+**SimEngine**（`sim/src/sim_engine.cpp`）是仿真逻辑的落点：拥有 `Robot` + `World` +
+场景路径，暴露 `reloadScene/saveScene`、`applyContinuous(cmd,speed)`、`applyEvent(ev)`、
+`step(dt)`、`queryRange()`。此前这些是 `main.cpp` 里的自由函数与 lambda，困在 GLFW 壳中
+无法单测；抽进 simcore 后，fdist 到量、pick/place、save/reload 都能在 `sim/tests` 里
+headless 验证。壳只管窗口/输入/渲染/HUD，每帧把命令桥的持续型状态与一次性事件喂给
+引擎、调 `step(dt)`，再读 `robot()/world()` 渲染——蜘蛛外观步态（`Spider`）是可视化，
+仍留在壳里按 `robot().v()` 自己生成。
+
+`Robot` 只管运动学（`update(dt, input, maxSpeed)`，maxSpeed 由 World 按搬运负载
 折算后传入）；「世界里有什么、撞了怎么解、搬得动什么」全在 World。协调坐标系：
 机体局部 +X 前、+Y 上、+Z 右，theta 增大 = 左转。
 
