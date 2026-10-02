@@ -19,22 +19,28 @@ void SimEngine::reloadScene() {
         SceneState st;
         if (readScene(scenePath_, st)) {
             world_.applyScene(st);
-            // C1：场景恒装载 1 只主机器人（v1 文件格式只表达一只）。
-            robots_.assign(1, Robot());
-            Robot& r = primary();
-            r.setPose(st.robotX, st.robotZ, st.robotTheta);
-            // 搬运状态属于 Robot，由引擎从 SceneState 恢复到主机器人身上。
-            if (st.carriedIdx >= 0 && st.carriedIdx < (int)world_.obstacles().size()) {
-                r.setCarried(st.carriedIdx, world_.obstacles()[st.carriedIdx].mass);
+            // 场景里有几只机器人就建几个 slot；已有下标沿用其命令状态（重载不打断
+            // 正在执行的 forward），新增下标默认构造即 Stop。
+            slots_.resize(st.robots.size());
+            for (std::size_t i = 0; i < st.robots.size(); ++i) {
+                const RobotSpawn& sp = st.robots[i];
+                Robot& r = slots_[i].robot;
+                r = Robot();  // 复位位姿/速度/相对运动/搬运
+                r.setPose(sp.x, sp.z, sp.theta);
+                // 搬运状态属于 Robot，由引擎从 RobotSpawn 恢复；越界由 readScene 归一为 -1。
+                if (sp.carriedIdx >= 0 && sp.carriedIdx < (int)world_.obstacles().size()) {
+                    r.setCarried(sp.carriedIdx, world_.obstacles()[sp.carriedIdx].mass);
+                }
             }
-            std::fprintf(stderr, "scene: 已装载 %s（%zu 个障碍）\n", scenePath_.c_str(),
-                         st.obstacles.size());
+            std::fprintf(stderr, "scene: 已装载 %s（%zu 个障碍, %zu 只机器人）\n",
+                         scenePath_.c_str(), st.obstacles.size(), st.robots.size());
             return;
         }
         std::fprintf(stderr, "scene: 回落内置默认场景\n");
     }
     world_ = World();
-    robots_.assign(1, Robot());
+    slots_.resize(1);
+    slots_[0].robot = Robot();
 }
 
 void SimEngine::saveScene() {
@@ -42,16 +48,20 @@ void SimEngine::saveScene() {
         std::fprintf(stderr, "save: 未配置场景路径（argv[4] 或 MYBOT_SIM_SCENE），无处置写\n");
         return;
     }
-    const Robot& r = primary();
     SceneState st;
     st.obstacles = world_.obstacles();
-    st.robotX = r.x();
-    st.robotZ = r.z();
-    st.robotTheta = r.theta();
-    st.carriedIdx = r.isCarrying() ? r.carriedIndex() : -1;
+    st.robots.reserve(slots_.size());
+    for (const RobotSlot& s : slots_) {
+        RobotSpawn sp;
+        sp.x = s.robot.x();
+        sp.z = s.robot.z();
+        sp.theta = s.robot.theta();
+        sp.carriedIdx = s.robot.isCarrying() ? s.robot.carriedIndex() : -1;
+        st.robots.push_back(sp);
+    }
     if (writeScene(scenePath_, st)) {
-        std::fprintf(stderr, "save: 场景已写入 %s（%zu 个障碍）\n", scenePath_.c_str(),
-                     st.obstacles.size());
+        std::fprintf(stderr, "save: 场景已写入 %s（%zu 个障碍, %zu 只机器人）\n",
+                     scenePath_.c_str(), st.obstacles.size(), st.robots.size());
     } else {
         std::fprintf(stderr, "save: 写入 %s 失败\n", scenePath_.c_str());
     }
@@ -78,48 +88,51 @@ RobotInput SimEngine::commandToInput(SimCommand cmd, float speed) const {
     return input;
 }
 
-void SimEngine::applyContinuous(SimCommand cmd, float speed) {
-    command_ = cmd;
-    speed_ = speed;
-    if (cmd != lastContinuous_) {
-        std::fprintf(stderr, "cmd: %s\n", commandName(cmd));
+void SimEngine::applyContinuous(SimCommand cmd, float speed, std::size_t idx) {
+    RobotSlot& s = slot(idx);
+    s.command = cmd;
+    s.speed = speed;
+    if (cmd != s.lastContinuous) {
+        std::fprintf(stderr, "cmd[%zu]: %s\n", idx, commandName(cmd));
         if (cmd != SimCommand::Stop) {
             // 新持续型指令覆盖进行中的相对运动（stop 只松油门，不打断 fdist/turn）
-            primary().setRelativeDist(0.0f);
-            primary().setRelativeTurn(0.0f);
+            s.robot.setRelativeDist(0.0f);
+            s.robot.setRelativeTurn(0.0f);
         }
-        lastContinuous_ = cmd;
+        s.lastContinuous = cmd;
     }
 }
 
-void SimEngine::applyEvent(const SimEvent& ev) {
-    Robot& r = primary();
+void SimEngine::applyEvent(const SimEvent& ev, std::size_t idx) {
+    RobotSlot& s = slot(idx);
+    Robot& r = s.robot;
     switch (ev.type) {
         case SimEvent::Type::FwdDist:
-            std::fprintf(stderr, "cmd: fdist %.2f\n", ev.param);
+            std::fprintf(stderr, "cmd[%zu]: fdist %.2f\n", idx, ev.param);
             r.setRelativeDist(ev.param);
             break;
         case SimEvent::Type::Turn:
-            std::fprintf(stderr, "cmd: turn %.2f\n", ev.param);
+            std::fprintf(stderr, "cmd[%zu]: turn %.2f\n", idx, ev.param);
             r.setRelativeTurn(glm::radians(ev.param));
             break;
         case SimEvent::Type::Pick:
             if (r.isCarrying()) {
-                std::fprintf(stderr, "pick: 已持有物体 (idx=%d, %.2fkg)，忽略\n",
+                std::fprintf(stderr, "pick[%zu]: 已持有物体 (idx=%d, %.2fkg)，忽略\n", idx,
                              r.carriedIndex(), r.carriedMass());
             } else if (world_.pick(r)) {
                 const auto& ob = world_.obstacles()[r.carriedIndex()];
-                std::fprintf(stderr, "pick: 成功拾取 idx=%d mass=%.2fkg pos=(%.2f,%.2f)\n",
-                             r.carriedIndex(), r.carriedMass(), ob.center.x, ob.center.z);
+                std::fprintf(stderr, "pick[%zu]: 成功拾取 idx=%d mass=%.2fkg pos=(%.2f,%.2f)\n",
+                             idx, r.carriedIndex(), r.carriedMass(), ob.center.x, ob.center.z);
             } else {
-                std::fprintf(stderr, "pick: 前方 %.2fm 内无障碍物，拾取失败\n", World::kPickRange);
+                std::fprintf(stderr, "pick[%zu]: 前方 %.2fm 内无障碍物，拾取失败\n", idx,
+                             World::kPickRange);
             }
             break;
         case SimEvent::Type::Place:
             if (world_.place(r)) {
-                std::fprintf(stderr, "place: 放置成功\n");
+                std::fprintf(stderr, "place[%zu]: 放置成功\n", idx);
             } else {
-                std::fprintf(stderr, "place: 未持有物体，放置失败\n");
+                std::fprintf(stderr, "place[%zu]: 未持有物体，放置失败\n", idx);
             }
             break;
         case SimEvent::Type::Save:
@@ -129,11 +142,9 @@ void SimEngine::applyEvent(const SimEvent& ev) {
 }
 
 void SimEngine::step(float dt) {
-    for (std::size_t i = 0; i < robots_.size(); ++i) {
-        Robot& r = robots_[i];
-        // C1：只有主机器人接命令桥的持续型状态；其余（若有）空转。C2 上线多机器人
-        // 时这里按 robot-id 取各自的命令通道。
-        RobotInput input = (i == kPrimaryRobot) ? commandToInput(command_, speed_) : RobotInput{};
+    for (RobotSlot& s : slots_) {
+        Robot& r = s.robot;
+        RobotInput input = commandToInput(s.command, s.speed);
         RobotInput relInput;
         if (r.tickRelative(dt, relInput)) {
             input = relInput;

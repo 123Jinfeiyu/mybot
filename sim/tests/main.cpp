@@ -320,16 +320,16 @@ void writeTextFile(const std::string& path, const char* content) {
 void testSceneIo() {
     const std::string path = "/tmp/mybot-sim-tests-" + std::to_string(::getpid()) + "-scene.scene";
 
-    // round-trip：障碍/位姿/搬运状态
+    // round-trip：障碍 + 多机器人位姿/搬运（writeScene 一律写 v2）
     SceneState st;
     st.obstacles = {
         {{1.0f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 0.0f, 0.0f}, 7.5f},
         {{3.0f, 0.2f, 1.0f}, {0.3f, 0.3f, 0.3f}, {0.0f, 1.0f, 0.0f}, 2.0f},
     };
-    st.robotX = 1.5f;
-    st.robotZ = -0.25f;
-    st.robotTheta = 0.7f;
-    st.carriedIdx = 1;
+    st.robots = {
+        {1.5f, -0.25f, 0.7f, 1},   // robot0：位姿 + 搬运 idx1
+        {-2.0f, 0.5f, 1.57f, -1},  // robot1：空载
+    };
     check(writeScene(path, st), "writeScene 成功");
     SceneState back;
     check(readScene(path, back), "readScene 成功");
@@ -339,25 +339,37 @@ void testSceneIo() {
               near(back.obstacles[1].half.z, 0.3f, 1e-4f) &&
               near(back.obstacles[0].color.g, 0.0f, 1e-4f),
           "盒字段 round-trip");
-    check(near(back.robotX, 1.5f, 1e-4f) && near(back.robotZ, -0.25f, 1e-4f) &&
-              near(back.robotTheta, 0.7f, 1e-4f),
-          "机器人位姿 round-trip");
-    check(back.carriedIdx == 1, "搬运索引 round-trip");
+    check(back.robots.size() == 2, "机器人数 round-trip（v2 多 robot 行）");
+    check(near(back.robots[0].x, 1.5f, 1e-4f) && near(back.robots[0].z, -0.25f, 1e-4f) &&
+              near(back.robots[0].theta, 0.7f, 1e-4f),
+          "robot0 位姿 round-trip");
+    check(back.robots[0].carriedIdx == 1, "robot0 搬运索引 round-trip");
+    check(near(back.robots[1].x, -2.0f, 1e-4f) && near(back.robots[1].z, 0.5f, 1e-4f) &&
+              back.robots[1].carriedIdx == -1,
+          "robot1 位姿/空载 round-trip");
+
+    // writeScene 一律写 v2 魔数（v2 是 v1 超集，单机器人也写 v2）
+    {
+        std::ifstream mf(path);
+        std::string magic;
+        std::getline(mf, magic);
+        check(magic.rfind("mybot-sim scene v2", 0) == 0, "writeScene 落 v2 魔数");
+    }
 
     // applyScene：只整体替换障碍集合（搬运状态属于每只 Robot，不由场景承载）
     World w(std::vector<Obstacle>{});
     w.applyScene(back);
     check(w.obstacles().size() == 2, "applyScene 替换障碍集合");
-    // 搬运恢复是调用方（SimEngine.reloadScene）按 carriedIdx 落到某只 Robot 上：
-    check(back.carriedIdx == 1, "场景记录了待恢复的搬运索引");
+    // 搬运恢复是调用方（SimEngine.reloadScene）按各 RobotSpawn.carriedIdx 落到对应 Robot：
+    const int c0 = back.robots[0].carriedIdx;
     Robot carried;
-    carried.setCarried(back.carriedIdx, w.obstacles()[back.carriedIdx].mass);
+    carried.setCarried(c0, w.obstacles()[c0].mass);
     check(carried.isCarrying() && near(carried.carriedMass(), 2.0f, 1e-4f),
           "按场景索引恢复某只机器人的搬运态");
     check(near(carried.effectiveMaxSpeed(), Robot::kMaxSpeed / (1.0f + 2.0f * 0.01f), 1e-4f),
           "恢复搬运后减速生效");
 
-    // 注释/空行/未知行/坏行：告警跳过，不毁整个文件
+    // v1 文件（单 robot 行）仍可读，读成 1 只；坏行/未知行告警跳过不毁整个文件
     writeTextFile(path,
                   "mybot-sim scene v1\n"
                   "# 注释行\n"
@@ -367,15 +379,31 @@ void testSceneIo() {
                   "box 1 0.2 0 0.2 0.2 0.2 1 0 0\n"
                   "robot 1 2 90\n");
     SceneState st2;
-    check(readScene(path, st2), "容错解析成功");
+    check(readScene(path, st2), "v1 容错解析成功");
     check(st2.obstacles.size() == 1, "坏行/未知行被跳过");
     check(near(st2.obstacles[0].mass, 51.2f, 0.1f), "缺省质量按体积×800");
-    check(near(st2.robotTheta, glm::radians(90.0f), 1e-4f), "theta 度→弧度换算");
-    check(st2.carriedIdx == -1, "robot 行无 carried 即无搬运");
+    check(st2.robots.size() == 1, "v1 单 robot 行读成 1 只");
+    check(near(st2.robots[0].theta, glm::radians(90.0f), 1e-4f), "theta 度→弧度换算");
+    check(st2.robots[0].carriedIdx == -1, "robot 行无 carried 即无搬运");
 
-    // carried 越界按无搬运处理
-    writeTextFile(path, "mybot-sim scene v1\nrobot 0 0 0 5\n");
-    check(readScene(path, st2) && st2.carriedIdx == -1, "carried 越界按无搬运处理");
+    // 缺 robot 行：补一只原点默认（robots 至少 1 只，保证 reload 后 robot() 可访问）
+    writeTextFile(path, "mybot-sim scene v2\nbox 1 0.2 0 0.2 0.2 0.2 1 0 0\n");
+    check(readScene(path, st2) && st2.robots.size() == 1, "缺 robot 行补一只默认");
+    check(near(st2.robots[0].x, 0.0f, 1e-6f) && near(st2.robots[0].z, 0.0f, 1e-6f) &&
+              near(st2.robots[0].theta, 0.0f, 1e-6f),
+          "默认机器人在原点 theta=0");
+
+    // 多 robot 行（v2）：按出现顺序读进 robots；carried 越界（无 box）归一为 -1
+    writeTextFile(path,
+                  "mybot-sim scene v2\n"
+                  "robot 0 0 0\n"
+                  "robot 1 2 90\n"
+                  "robot -1 -2 -45 0\n");
+    check(readScene(path, st2) && st2.robots.size() == 3, "v2 多 robot 行按序读入");
+    check(near(st2.robots[1].x, 1.0f, 1e-4f) && near(st2.robots[1].z, 2.0f, 1e-4f) &&
+              near(st2.robots[1].theta, glm::radians(90.0f), 1e-4f),
+          "第二只位姿/朝向正确");
+    check(st2.robots[2].carriedIdx == -1, "carried 越界按无搬运处理");
 
     // 缺魔数：整文件拒绝
     writeTextFile(path, "# 只有注释\nbox 1 2 3 4 5 6 7 8 9\n");
@@ -991,6 +1019,51 @@ void testMultiRobot() {
     check(w.queryRange(a) < Robot::kRangeMax, "A 空载后前方障碍重新计入测距");
 }
 
+// ---- 引擎多机器人寻址（C2 核心守门）：每只 slot 各接各的命令通道 ----
+//
+// 壳里每只机器人一套命令桥/测距桥，按 idx 把各自桥的状态喂进 applyContinuous /
+// applyEvent(...,idx)。这条测试用一个 v2 双机器人场景，让两只各自拾取、再朝相反
+// 方向各走各的，证明「N 只独立受控、互不串台」在引擎层成立——寻址只加了个默认
+// 参数（kPrimaryRobot），单机器人旧调用方无感。
+void testEngineMultiRobot() {
+    const float dt = 1.0f / 60.0f;
+    const std::string path = engineScenePath("multi");
+    // robot0 在原点朝 +X、robot1 在 (0,5) 朝 +X；各正前方 0.3m 一个可搬盒
+    writeTextFile(path,
+                  "mybot-sim scene v2\n"
+                  "robot 0 0 0\n"
+                  "robot 0 5 0\n"
+                  "box 0.5 0.2 0 0.2 0.2 0.2 1 1 1 5\n"
+                  "box 0.5 0.2 5 0.2 0.2 0.2 1 1 1 8\n");
+    SimEngine eng(path);
+    eng.reloadScene();
+    check(eng.robotCount() == 2, "v2 场景装载 2 只机器人");
+    check(near(eng.robot(0).z(), 0.0f, 1e-3f) && near(eng.robot(1).z(), 5.0f, 1e-3f),
+          "两只位姿分别来自两条 robot 行");
+    check(near(eng.robot().z(), eng.robot(0).z(), 1e-6f), "robot() 缺省即主机器人 idx0");
+
+    // 各自独立拾取：idx 寻址到对应机器人，一只拾取不动另一只
+    eng.applyEvent(mkEvent(SimEvent::Type::Pick), 0);
+    check(eng.robot(0).isCarrying() && eng.robot(0).carriedIndex() == 0, "robot0 拾取 idx0");
+    check(!eng.robot(1).isCarrying(), "robot0 拾取不影响 robot1");
+    eng.applyEvent(mkEvent(SimEvent::Type::Pick), 1);
+    check(eng.robot(1).isCarrying() && eng.robot(1).carriedIndex() == 1, "robot1 独立拾取 idx1");
+    check(near(eng.robot(0).carriedMass(), 5.0f, 1e-4f) &&
+              near(eng.robot(1).carriedMass(), 8.0f, 1e-4f),
+          "两只背负质量各自独立");
+
+    // 两只朝相反方向各走各的：持续型命令通道按 idx 隔离
+    eng.applyContinuous(SimCommand::Forward, 1.0f, 0);
+    eng.applyContinuous(SimCommand::Backward, 1.0f, 1);
+    for (int i = 0; i < 120; ++i) {
+        eng.step(dt);
+    }
+    check(eng.robot(0).x() > 0.5f, "robot0 forward 沿 +X 前进");
+    check(eng.robot(1).x() < -0.5f, "robot1 backward 沿 -X 后退（各自命令独立）");
+
+    ::unlink(path.c_str());
+}
+
 }  // namespace
 
 int main() {
@@ -1009,6 +1082,7 @@ int main() {
     testRequestResponseBase();
     testSimEngine();
     testMultiRobot();
+    testEngineMultiRobot();
 
     std::printf("sim_tests: %d 通过, %d 失败\n", g_total - g_failed, g_failed);
     return g_failed == 0 ? 0 : 1;

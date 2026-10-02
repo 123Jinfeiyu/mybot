@@ -16,13 +16,19 @@ struct Obstacle {
     float mass = 1.0f;
 };
 
-// 场景文件的内存形态。theta 用弧度（文件里是度，读写边界换算）。
+// 场景里一只机器人的初始状态。theta 用弧度（文件里是度，读写边界换算）。
+struct RobotSpawn {
+    float x = 0.0f;
+    float z = 0.0f;
+    float theta = 0.0f;   // 弧度
+    int carriedIdx = -1;  // 装载时该机器人已搬运的障碍下标（-1=无）
+};
+
+// 场景文件的内存形态：障碍集合 + N 只机器人。v1 文件读成 1 只、v2 可多只；
+// readScene 保证 robots 至少 1 只（缺 robot 行补一只原点默认）。
 struct SceneState {
     std::vector<Obstacle> obstacles;
-    float robotX = 0.0f;
-    float robotZ = 0.0f;
-    float robotTheta = 0.0f;  // 弧度
-    int carriedIdx = -1;      // 搬运中的障碍下标（-1=无）
+    std::vector<RobotSpawn> robots;
 };
 
 // 仿真场景：障碍物集合 + 机器人与场景的相互作用（碰撞推出、射线测距、
@@ -74,14 +80,17 @@ private:
 
 // ---- 场景文件读写（行文本，与三桥协议同风格，可手编可 diff） ----
 //
-// 格式 v1：首行必须是魔数 "mybot-sim scene v1"，之后每行一条——
+// 首行必须是魔数 "mybot-sim scene v1" 或 "mybot-sim scene v2"，之后每行一条——
 //   box <cx> <cy> <cz> <hx> <hy> <hz> <r> <g> <b> [<mass>]
 //   robot <x> <z> <theta_deg> [<carried_idx>]
-// # 开头的注释与空行忽略；行内 '#' 起视为注释。未知/坏行告警后跳过
-// （与命令桥「垃圾不打断当前状态」同口径）；mass 缺省按体积×800kg/m³。
+// v1 与 v2 的差别只在 robot 行数：v1 恒 1 只，v2 允许**多条 robot 行**（多机器人）。
+// readScene 两者都收，按出现顺序读进 SceneState.robots；writeScene 一律写 v2
+// （v2 是 v1 的超集，单机器人也写 v2）。# 开头的注释与空行忽略；行内 '#' 起视为
+// 注释。未知/坏行告警后跳过（与命令桥「垃圾不打断当前状态」同口径）；mass 缺省按
+// 体积×800kg/m³；无 robot 行补一只原点默认。
 //
 // 读失败（缺文件/缺魔数/超障碍数上限）返回 false 并置 stderr。
 bool readScene(const std::string& path, SceneState& out);
 
-// 原子写：先落 <path>.tmp 再 rename，写一半崩溃不会毁掉已有场景。
+// 原子写：先落 <path>.tmp 再 rename，写一半崩溃不会毁掉已有场景。写 v2 魔数。
 bool writeScene(const std::string& path, const SceneState& state);

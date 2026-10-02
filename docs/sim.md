@@ -48,6 +48,9 @@ bash scripts/build_sim.sh        # 构建 + 自动跑 simcore 单测（ctest）
 分三条的原因：Sim.lua 与 Camera.lua 是各自独立的驱动实例（各自的 lua_State /
 各自的 fd），物理上无法共用一条连接；语义上持续型命令与请求-应答也不同构。
 
+多机器人时命令桥/测距桥**每只一套**（robot[0] 用上表原缺省路径，robot[i>0] 在
+`.sock` 前插 `-<i>`），拍照桥仍单条——详见「多机器人（C2）」。
+
 ### 命令桥（`sim/src/bridge.cpp`）
 
 一行一条指令，`\n` 结尾，速度缺省 1.0：
@@ -128,40 +131,70 @@ mybot 侧两个消费者：`Sim.lua` 的 `range()`（动作脚本可用）与 C+
 
 ## 场景文件（环境与代码解耦）
 
-障碍布局是**数据不是代码**：`sim/scenes/default.scene`（行文本，与三桥协议同
-风格，可手编可 diff）。C++ 里的 `World::defaultScene()` 只是无场景文件时的内置
-回落，两者保持同值。
+障碍布局与机器人数量都是**数据不是代码**：`sim/scenes/default.scene`（单机器人，
+行文本，与三桥协议同风格，可手编可 diff）、`sim/scenes/two_robots.scene`（双机器人
+v2 示例）。C++ 里的 `World::defaultScene()` 只是无场景文件时的内置回落，与
+default.scene 保持同值。
 
 ```
-mybot-sim scene v1            ← 首行魔数，缺了整文件拒绝
+mybot-sim scene v2            ← 首行魔数 v1 或 v2，缺了整文件拒绝
 # box: cx cy cz hx hy hz r g b [mass]，mass 缺省=体积×800kg/m³
 box 2.0 0.40 1.2 0.40 0.40 0.40 0.72 0.30 0.24 61.44
 # robot: x z theta_deg [carried_idx]，carried 恢复搬运状态
-robot 0 0 0
+robot 0 -1.5 0                ← 多条 robot 行 = 多机器人，按序对应 robot[0]、[1]…
+robot 0  1.5 0
 ```
 
-注释（`#`）与空行忽略，未知/坏行告警跳过。`sim/tests` 有 round-trip 与容错
-解析的守门。
+v1 与 v2 的**唯一差别是 robot 行数**：v1 恒 1 只，v2 允许多条 robot 行（多机器人）。
+readScene 两者都收（旧 v1 文件无感继续用），按出现顺序读进 `SceneState.robots`；
+无 robot 行补一只原点默认，`carried_idx` 越界归一为 -1。writeScene **一律写 v2**
+（v2 是 v1 超集，单机器人也写 v2）。注释（`#`）与空行忽略，未知/坏行告警跳过。
+`sim/tests` 有 v1/v2 round-trip、多 robot 行、缺 robot 行补默认与容错解析的守门。
 
 **路径解析**：`argv[4] > env MYBOT_SIM_SCENE > 内置默认`（空=内置）。文件读失败
 回落内置并告警，不开黑屏世界。
 
 **保存**：`S` 键或命令桥 `save` 指令（动作码 9）把当前世界状态（障碍位置 +
-机器人位姿 + 搬运状态）**原子写回**（先落 `.tmp` 再 rename）启动时配置的场景
-文件。线上不接受路径参数——只写本进程启动时定下的那一个文件，与 Camera.lua
-「杜绝连任意 socket」同源的安全口径。`sim_agent_demo.sh` 缺省把
+**全部机器人**位姿 + 各自搬运状态）**原子写回**（先落 `.tmp` 再 rename）启动时
+配置的场景文件。线上不接受路径参数——只写本进程启动时定下的那一个文件，与
+Camera.lua「杜绝连任意 socket」同源的安全口径。`sim_agent_demo.sh` 缺省把
 `sim/scenes/default.scene` 传给 sim，agent 搬动过的环境可以经 save 存下来、
 下次续用。
 
-**复位**：`R` 键从场景源头整体重载（文件版重读文件、内置版回默认），机器人
-位姿与步态一并复位——被搬走的箱子能回来了。
+**复位**：`R` 键从场景源头整体重载（文件版重读文件、内置版回默认），所有机器人
+位姿与步态一并复位——被搬走的箱子能回来了。若重载后机器人数量变化，壳会按新数量
+重建每只的命令桥/测距桥与蜘蛛（见「多机器人」）。
+
+## 多机器人（C2）
+
+一个 sim 进程可承载 N 只机器人，数量由场景 robot 行数决定。寻址用**每只一套独立
+socket**（选项 b），好处是**行协议零改动**——线上语法、动作码、三桥行为全不变：
+
+- `robot[0]` 用原缺省路径（`/tmp/mybot-sim.sock`、`/tmp/mybot-sim-sensor.sock`），
+  字节不变，旧客户端与单机器人链路完全无感。
+- `robot[i>0]` 在末尾 `.sock` 前插 `-<i>`：`/tmp/mybot-sim-1.sock`、
+  `/tmp/mybot-sim-sensor-1.sock`（无 `.sock` 后缀则直接追加）。
+- **拍照桥单条**：它抓的是整幅 GL 视口（一帧全景），与机器人数量无关。
+
+为什么是「每只一套」而非「一条 socket 多路复用」：`UnixLineServer` 是**单客户端、
+新顶旧**的骨架（见下节），多 agent 共用一条会互相顶掉连接；每只一套 socket 则天然
+隔离，多 agent 各把 `MYBOT_SIM_SOCK` / `MYBOT_SIM_SENSOR_SOCK` 指向自己那套即可，
+`Sim.lua` / `Camera.lua` **无需任何改动**（缺省路径本就来自 env）。
+
+引擎侧：`SimEngine` 持 `vector<RobotSlot>`，每个 slot = 一只 `Robot` + 它自己的持续型
+命令通道（command/speed/lastContinuous）。`applyContinuous` / `applyEvent` /
+`queryRange` / `robot` 都带一个默认 `kPrimaryRobot` 的 `idx` 尾参（单机器人旧调用方
+零改动），壳按 robot-id 把各自桥的状态喂进对应 slot；`step(dt)` 逐只按**本 slot 的
+命令**推进。相机跟随、标题栏取主机器人（idx 0），标题附机器人总数。由
+`testEngineMultiRobot`（两只各拾各的、朝相反方向各走各的）headless 守门。
+
 
 ## 架构分层
 
 ```
 simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
-├─ sim_engine.cpp  引擎：拥有 vector<Robot>+World+场景会话，├─ main.cpp  薄壳：主循环/输入/HUD
-│                  每帧逐只推进 + 指令派发（可 headless 测）  ├─ spider.cpp 四足外观步态
+├─ sim_engine.cpp  引擎：拥有 vector<RobotSlot>+World+场景，├─ main.cpp  薄壳：主循环/输入/HUD
+│                  每帧逐只推进 + 按 idx 派发指令（可 headless 测）├─ spider.cpp 四足外观步态
 ├─ robot.cpp    平面运动学+相对运动+各自搬运态  ├─ mesh/shader/camera
 ├─ world.cpp    障碍场景/碰撞/测距/拾放（无状态，按 Robot 参数化）└─ framegrab.cpp glReadPixels→JPEG
 ├─ action_table.cpp  动作分类学单一事实源
@@ -173,21 +206,21 @@ simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
 └─ sensor.cpp   测距桥（RequestResponseBridge 子类，只补文本响应帧化）
 ```
 
-**SimEngine**（`sim/src/sim_engine.cpp`）是仿真逻辑的落点：拥有 `vector<Robot>` + `World` +
-场景路径，暴露 `reloadScene/saveScene`、`applyContinuous(cmd,speed)`、`applyEvent(ev)`、
-`step(dt)`、`queryRange()`。此前这些是 `main.cpp` 里的自由函数与 lambda，困在 GLFW 壳中
-无法单测；抽进 simcore 后，fdist 到量、pick/place、save/reload 都能在 `sim/tests` 里
-headless 验证。壳只管窗口/输入/渲染/HUD，每帧把命令桥的持续型状态与一次性事件喂给
-引擎、调 `step(dt)`，再读 `robot()/world()` 渲染——蜘蛛外观步态（`Spider`）是可视化，
-仍留在壳里按 `robot().v()` 自己生成。
+**SimEngine**（`sim/src/sim_engine.cpp`）是仿真逻辑的落点：拥有 `vector<RobotSlot>` +
+`World` + 场景路径，暴露 `reloadScene/saveScene`、`applyContinuous(cmd,speed,idx)`、
+`applyEvent(ev,idx)`、`step(dt)`、`queryRange(idx)`、`robot(idx)`/`robotCount()`。此前
+这些是 `main.cpp` 里的自由函数与 lambda，困在 GLFW 壳中无法单测；抽进 simcore 后，
+fdist 到量、pick/place、save/reload、多机器人寻址都能在 `sim/tests` 里 headless 验证。
+壳只管窗口/输入/渲染/HUD，每帧把每只命令桥的持续型状态与一次性事件按 idx 喂给引擎、
+调 `step(dt)`，再逐只读 `robot(i)/world()` 渲染——蜘蛛外观步态（`Spider`）是可视化，
+仍留在壳里按各只 `robot(i).v()` 自己生成。
 
-**多机器人（C1 内部实体化）**：`step(dt)` 逐只推进 `robots_`，`World` 不持有任何单只
-机器人的状态、所有交互（碰撞/测距/拾放/背负跟随）都按传入的 `Robot` 参数化，**搬运状态
-下沉到每只 `Robot` 各自持有**（此前是 World 级单例，两只会互相覆盖）。因此同一 World
-可服务 N 只、各搬各的，由 `testMultiRobot` headless 守门。当前场景文件 v1 只表达一只、
-命令桥只有一条无寻址通道，故 **C1 容器恒为 1 只主机器人**（`kPrimaryRobot`），全部指令
-打到它、壳也只渲染它；上线多机器人（C2）= 场景填多只 + 给指令加可寻址（加法式扩展协议），
-核心物理无需再改。
+**多机器人**：`step(dt)` 逐只推进 `slots_`，每个 slot 各用自己的命令通道；`World`
+不持有任何单只机器人的状态、所有交互（碰撞/测距/拾放/背负跟随）都按传入的 `Robot`
+参数化，**搬运状态下沉到每只 `Robot` 各自持有**（此前是 World 级单例，两只会互相
+覆盖）。因此同一 World 可服务 N 只、各搬各的，由 `testMultiRobot`（核心层两只各搬各的）
+与 `testEngineMultiRobot`（引擎层按 idx 独立受控）headless 守门。机器人数量由场景
+robot 行数决定，壳按 `robotCount()` 建对应套数的命令桥/测距桥（见「多机器人」）。
 
 `Robot` 管运动学（`update(dt, input, maxSpeed)`）与**自己背着哪个障碍**（`carriedIndex/`
 `carriedMass`，`effectiveMaxSpeed()` 按自身负载折算上限）；「世界里有什么、撞了怎么解、

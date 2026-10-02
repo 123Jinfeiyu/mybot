@@ -10,8 +10,12 @@
 
 namespace {
 
-// 场景文件魔数
-constexpr char kSceneMagic[] = "mybot-sim scene v1";
+// 场景文件魔数：v1（单机器人）与 v2（多机器人）都收，写一律 v2。
+constexpr char kSceneMagicV1[] = "mybot-sim scene v1";
+constexpr char kSceneMagicV2[] = "mybot-sim scene v2";
+
+// 多机器人场景的机器人数上限（防滥用；每只一套 socket，太多也没意义）。
+constexpr std::size_t kMaxSceneRobots = 64;
 
 // 从 p 起连续解析至多 want 个浮点数，got 返回实际解析个数。
 // 遇到非数字即停（返回 false）；解析不足 want 个不算错——由调用方按各自
@@ -266,11 +270,12 @@ bool readScene(const std::string& path, SceneState& out) {
         }
 
         if (!magicSeen) {
-            if (std::strncmp(text, kSceneMagic, sizeof(kSceneMagic) - 1) == 0) {
+            if (std::strncmp(text, kSceneMagicV1, sizeof(kSceneMagicV1) - 1) == 0 ||
+                std::strncmp(text, kSceneMagicV2, sizeof(kSceneMagicV2) - 1) == 0) {
                 magicSeen = true;
             } else {
-                std::fprintf(stderr, "scene: 首个有效行不是魔数 '%s'，拒绝整个文件\n",
-                             kSceneMagic);
+                std::fprintf(stderr, "scene: 首个有效行不是魔数 '%s'/'%s'，拒绝整个文件\n",
+                             kSceneMagicV1, kSceneMagicV2);
                 ok = false;
                 break;
             }
@@ -312,10 +317,16 @@ bool readScene(const std::string& path, SceneState& out) {
                 std::fprintf(stderr, "scene: robot 行需要 3 或 4 个数（x z theta_deg [carried_idx]），跳过: %s", text);
                 continue;
             }
-            st.robotX = v[0];
-            st.robotZ = v[1];
-            st.robotTheta = glm::radians(v[2]);
-            st.carriedIdx = (got == 4) ? static_cast<int>(v[3]) : -1;
+            if (st.robots.size() >= kMaxSceneRobots) {
+                std::fprintf(stderr, "scene: 机器人数超过上限 %zu，多余忽略\n", kMaxSceneRobots);
+                continue;
+            }
+            RobotSpawn rs;
+            rs.x = v[0];
+            rs.z = v[1];
+            rs.theta = glm::radians(v[2]);
+            rs.carriedIdx = (got == 4) ? static_cast<int>(v[3]) : -1;
+            st.robots.push_back(rs);
         } else {
             std::fprintf(stderr, "scene: 未知行类型 '%s'（忽略）\n", word);
         }
@@ -325,10 +336,15 @@ bool readScene(const std::string& path, SceneState& out) {
     if (!ok || !magicSeen) {
         return false;
     }
-    if (st.carriedIdx >= (int)st.obstacles.size()) {
-        std::fprintf(stderr, "scene: carried_idx=%d 越界（共 %zu 个障碍），按无搬运处理\n",
-                     st.carriedIdx, st.obstacles.size());
-        st.carriedIdx = -1;
+    if (st.robots.empty()) {
+        st.robots.push_back(RobotSpawn{});  // 缺 robot 行：补一只原点默认
+    }
+    for (RobotSpawn& rs : st.robots) {
+        if (rs.carriedIdx >= (int)st.obstacles.size()) {
+            std::fprintf(stderr, "scene: carried_idx=%d 越界（共 %zu 个障碍），按无搬运处理\n",
+                         rs.carriedIdx, st.obstacles.size());
+            rs.carriedIdx = -1;
+        }
     }
     out = std::move(st);
     return true;
@@ -342,15 +358,16 @@ bool writeScene(const std::string& path, const SceneState& state) {
         return false;
     }
 
-    std::fprintf(f, "%s\n", kSceneMagic);
+    std::fprintf(f, "%s\n", kSceneMagicV2);
     std::fprintf(f, "# box cx cy cz hx hy hz r g b [mass（缺省=体积x800kg/m3）]\n");
-    std::fprintf(f, "# robot x z theta_deg [carried_idx]\n");
-    std::fprintf(f, "robot %.4f %.4f %.4f", state.robotX, state.robotZ,
-                 glm::degrees(state.robotTheta));
-    if (state.carriedIdx >= 0) {
-        std::fprintf(f, " %d", state.carriedIdx);
+    std::fprintf(f, "# robot x z theta_deg [carried_idx]（多机器人 = 多条 robot 行）\n");
+    for (const RobotSpawn& rs : state.robots) {
+        std::fprintf(f, "robot %.4f %.4f %.4f", rs.x, rs.z, glm::degrees(rs.theta));
+        if (rs.carriedIdx >= 0) {
+            std::fprintf(f, " %d", rs.carriedIdx);
+        }
+        std::fputc('\n', f);
     }
-    std::fputc('\n', f);
     for (const Obstacle& ob : state.obstacles) {
         std::fprintf(f, "box %.4f %.4f %.4f %.4f %.4f %.4f %.3f %.3f %.3f %.2f\n",
                      ob.center.x, ob.center.y, ob.center.z,

@@ -8,7 +8,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "bridge.h"
 #include "camera.h"
@@ -40,6 +42,23 @@ std::string resolveSocketPath(int argc, char** argv, int argvIndex, const char* 
         }
     }
     return fallback;
+}
+
+// 多机器人寻址（C2 选项 b）：每只机器人一套独立 socket，**行协议零改动**。
+// robot 0 沿用 argv/env/缺省解析出的原路径（字节不变，旧客户端无感）；robot i>0
+// 在末尾的 ".sock" 前插入 "-<i>"（无 .sock 后缀则直接追加），例如
+// /tmp/mybot-sim.sock → /tmp/mybot-sim-1.sock。多 agent 各自连自己的路径即可。
+std::string deriveRobotPath(const std::string& base, std::size_t idx) {
+    if (idx == 0) {
+        return base;
+    }
+    const std::string suffix = "-" + std::to_string(idx);
+    static const std::string kExt = ".sock";
+    if (base.size() >= kExt.size() &&
+        base.compare(base.size() - kExt.size(), kExt.size(), kExt) == 0) {
+        return base.substr(0, base.size() - kExt.size()) + suffix + kExt;
+    }
+    return base + suffix;
 }
 
 Camera g_camera;
@@ -80,10 +99,11 @@ void scrollCallback(GLFWwindow*, double, double yOffset) {
     g_camera.onScroll((float)yOffset);
 }
 
-// 窗口标题即仪表盘：动作/速度/位姿/测距/搬运/三桥状态一页看全
+// 窗口标题即仪表盘：动作/速度/位姿/测距/搬运/三桥状态一页看全。多机器人时展示
+// **主机器人**（idx 0）的命令/测距/搬运，末尾附机器人总数。
 void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureBridge& capture,
                  const SensorBridge& sensor, const Robot& robot, const World& world,
-                 const char* sceneName) {
+                 const char* sceneName, std::size_t robotCount) {
     char cmdBuf[48];
     if (bridge.command() == SimCommand::Stop) {
         std::snprintf(cmdBuf, sizeof(cmdBuf), "stop");
@@ -106,7 +126,7 @@ void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureB
 
     char title[512];
     std::snprintf(title, sizeof(title),
-                  "MyBot Spider | cmd %-16s last %-14s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg | range %.2fm | %s | scene %s | %s %s | cam %s sensor %s | C camera[%s]  R reset+reload  S save",
+                  "MyBot Spider | cmd %-16s last %-14s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg | range %.2fm | %s | scene %s | robots %zu | %s %s | cam %s sensor %s | C camera[%s]  R reset+reload  S save",
                   cmdBuf,
                   lastBuf,
                   robot.v(), robot.omega(),
@@ -114,6 +134,7 @@ void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureB
                   rangeM,
                   carryBuf,
                   sceneName,
+                  robotCount,
                   bridge.listening() ? "listening" : "NOT LISTENING",
                   bridge.path().c_str(),
                   capture.listening() ? "on" : "OFF",
@@ -164,15 +185,10 @@ int main(int argc, char** argv) {
 
     glEnable(GL_DEPTH_TEST);
 
+    // 拍照桥单条即可：它抓的是整个 GL 视口（一帧全景），与机器人数量无关。
+    // 命令桥/测距桥则**每只机器人一套**（见 deriveRobotPath），多 agent 各连各的。
     // 监听失败不退出：窗口照常开着，标题上标出 NOT LISTENING 让人去查路径，
-    // 比直接崩掉好定位（多半是路径太长或目录不可写）
-    CommandBridge bridge(socketPath);
-    if (bridge.listening()) {
-        std::fprintf(stderr, "listening for mybot commands on %s\n", bridge.path().c_str());
-        std::fprintf(stderr, "  try: socat - UNIX-CONNECT:%s   then type: forward\n",
-                     bridge.path().c_str());
-    }
-
+    // 比直接崩掉好定位（多半是路径太长或目录不可写）。
     CaptureBridge capture(capturePath);
     if (capture.listening()) {
         std::fprintf(stderr, "listening for capture requests on %s\n", capture.path().c_str());
@@ -180,27 +196,49 @@ int main(int argc, char** argv) {
                      capture.path().c_str());
     }
 
-    SensorBridge sensor(sensorPath);
-    if (sensor.listening()) {
-        std::fprintf(stderr, "listening for sensor requests on %s\n", sensor.path().c_str());
-        std::fprintf(stderr, "  try: printf 'range\\n' | socat - UNIX-CONNECT:%s\n",
-                     sensor.path().c_str());
-    }
-
     Shader phong(kPhongVs, kPhongFs);
     Shader lines(kLineVs, kLineFs);
     SceneMeshes meshes = buildSceneMeshes();
-    Spider spider;
 
     // 场景：argv[4] > MYBOT_SIM_SCENE > 内置默认（空串=内置）。环境与代码解耦
-    // 的落点：障碍布局来自文件。save 只写这个启动时定下的路径——socket 线上
-    // 不收路径参数，杜绝「连任意文件写」原语（与 Camera.lua 只认 env 的口径同源）。
+    // 的落点：障碍布局与机器人数量都来自文件。save 只写这个启动时定下的路径——
+    // socket 线上不收路径参数，杜绝「连任意文件写」原语（与 Camera.lua 同源）。
     const std::string scenePath = resolveSocketPath(argc, argv, 4, "MYBOT_SIM_SCENE", "");
 
     // 仿真逻辑（场景会话 + 每帧推进 + 指令派发）全在 GL 无关的 SimEngine 里，
     // 可 headless 单测；壳只负责窗口/输入/渲染/HUD，把语义动作喂引擎再 step()。
     SimEngine engine(scenePath);
     engine.reloadScene();
+
+    // 每只机器人一份壳侧资源：命令桥 + 测距桥 + 蜘蛛外观步态。robot 0 用原路径
+    // （字节不变），robot i>0 用派生路径。数量随场景 robot 行数，reload 后可变，
+    // 故抽成可按新数量重建的过程（R 键重载若机器人增减，这里同步重建 socket）。
+    std::vector<std::unique_ptr<CommandBridge>> cmdBridges;
+    std::vector<std::unique_ptr<SensorBridge>> sensorBridges;
+    std::vector<std::unique_ptr<Spider>> spiders;
+    auto buildPerRobot = [&](std::size_t n) {
+        cmdBridges.clear();
+        sensorBridges.clear();
+        spiders.clear();
+        for (std::size_t i = 0; i < n; ++i) {
+            cmdBridges.push_back(std::make_unique<CommandBridge>(deriveRobotPath(socketPath, i)));
+            sensorBridges.push_back(std::make_unique<SensorBridge>(deriveRobotPath(sensorPath, i)));
+            spiders.push_back(std::make_unique<Spider>());
+            if (cmdBridges.back()->listening()) {
+                std::fprintf(stderr, "listening for robot[%zu] commands on %s\n", i,
+                             cmdBridges.back()->path().c_str());
+                std::fprintf(stderr, "  try: socat - UNIX-CONNECT:%s   then type: forward\n",
+                             cmdBridges.back()->path().c_str());
+            }
+            if (sensorBridges.back()->listening()) {
+                std::fprintf(stderr, "listening for robot[%zu] sensor requests on %s\n", i,
+                             sensorBridges.back()->path().c_str());
+                std::fprintf(stderr, "  try: printf 'range\\n' | socat - UNIX-CONNECT:%s\n",
+                             sensorBridges.back()->path().c_str());
+            }
+        }
+    };
+    buildPerRobot(engine.robotCount());
 
     const glm::vec3 lightDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
     const glm::vec3 lightColor(1.0f, 0.98f, 0.92f);
@@ -211,16 +249,27 @@ int main(int argc, char** argv) {
         float dt = std::min(0.05f, (float)(now - last));
         last = now;
 
-        bridge.poll();
-        // 记下本帧是否有拍照请求；真正的抓帧要等这一帧画完、SwapBuffers 之前
-        // 再做（那时 GL_BACK 才是刚渲染好的画面），故此处只取标志不抓帧。
+        // 记下本帧各机器人是否有测距请求；真正算距离要等 step() 之后（拿到本帧
+        // 最终位姿），故此处只收标志。拍照同理：抓帧要等画完、SwapBuffers 之前。
         const bool wantCapture = capture.poll();
-        const bool wantRange = sensor.poll();
+        std::vector<char> wantRange(sensorBridges.size(), 0);
+        for (std::size_t i = 0; i < cmdBridges.size(); ++i) {
+            cmdBridges[i]->poll();
+            wantRange[i] = sensorBridges[i]->poll() ? 1 : 0;
+        }
 
         if (g_resetRequested) {
-            // 复位 = 场景连同机器人回到装载时状态（文件版重读文件、内置版回默认）
+            // 复位 = 场景连同所有机器人回到装载时状态（文件版重读文件、内置版回默认）
             engine.reloadScene();
-            spider.reset();
+            // 机器人数量可能随新场景变化：变了就重建 socket/蜘蛛，没变只复位步态。
+            if (engine.robotCount() != cmdBridges.size()) {
+                buildPerRobot(engine.robotCount());
+                wantRange.assign(sensorBridges.size(), 0);
+            } else {
+                for (auto& sp : spiders) {
+                    sp->reset();
+                }
+            }
             g_resetRequested = false;
         }
         if (g_saveRequested) {
@@ -232,26 +281,36 @@ int main(int argc, char** argv) {
             g_toggleCamera = false;
         }
 
-        // 语义动作喂引擎：持续型同步状态（新非-stop 指令打断相对运动在引擎内处理），
-        // 一次性事件 drain 到空——每条必触发一次（连续两次 fdist 不再互相吞）。
-        engine.applyContinuous(bridge.command(), bridge.speed());
-        SimEvent ev;
-        while (bridge.pollEvent(ev)) {
-            engine.applyEvent(ev);
-        }
-
-        engine.step(dt);
-        spider.update(dt, engine.robot().v());
-
-        // 测距响应：碰撞解算完成后算距离，保证拿到的是本帧最终位姿
-        if (wantRange) {
-            const float dist = engine.queryRange();
-            const int distMm = static_cast<int>(dist * 1000.0f + 0.5f);
-            if (!sensor.sendRange(distMm)) {
-                sensor.sendError("range send failed");
+        // 语义动作喂引擎：每只机器人从各自的命令桥取持续型状态（同步）+ drain 一次性
+        // 事件到空——每条必触发一次（连续两次 fdist 不再互相吞）。idx 寻址到对应 slot。
+        for (std::size_t i = 0; i < cmdBridges.size(); ++i) {
+            engine.applyContinuous(cmdBridges[i]->command(), cmdBridges[i]->speed(), i);
+            SimEvent ev;
+            while (cmdBridges[i]->pollEvent(ev)) {
+                engine.applyEvent(ev, i);
             }
         }
 
+        engine.step(dt);
+        // 每只蜘蛛按各自机器人的线速度生成步态（外观与物理分离）。
+        for (std::size_t i = 0; i < spiders.size(); ++i) {
+            spiders[i]->update(dt, engine.robot(i).v());
+        }
+
+        // 测距响应：碰撞解算完成后算距离，保证拿到的是本帧最终位姿。逐机器人应答
+        // 各自的测距桥。
+        for (std::size_t i = 0; i < sensorBridges.size(); ++i) {
+            if (!wantRange[i]) {
+                continue;
+            }
+            const float dist = engine.queryRange(i);
+            const int distMm = static_cast<int>(dist * 1000.0f + 0.5f);
+            if (!sensorBridges[i]->sendRange(distMm)) {
+                sensorBridges[i]->sendError("range send failed");
+            }
+        }
+
+        // 相机跟随主机器人（idx 0）。
         if (g_camera.follow) {
             glm::vec3 robotPos(engine.robot().x(), 0.2f, engine.robot().z());
             float k = std::min(1.0f, 5.0f * dt);
@@ -289,17 +348,19 @@ int main(int argc, char** argv) {
             meshes.cube.draw();
         }
 
-        // C1：壳只渲染主机器人（引擎容器当前恒 1 只）。多机器人的可视化（每只
-        // 一份 Spider 步态、相机跟随目标）随 C2 上线，属壳侧改动，不碰 simcore。
-        drawSpider(engine.robot(), spider, phong, meshes);
+        // 逐只渲染机器人：每只用自己的 Spider 步态实例（腿相位各自独立）。
+        for (std::size_t i = 0; i < engine.robotCount(); ++i) {
+            drawSpider(engine.robot(i), *spiders[i], phong, meshes);
+        }
 
         lines.use();
         lines.setMat4("mvp", projection * view);
         lines.setVec3("color", glm::vec3(0.18f, 0.22f, 0.18f));
         meshes.grid.draw();
 
-        updateTitle(window, bridge, capture, sensor, engine.robot(), engine.world(),
-                    engine.sceneName().c_str());
+        // 标题栏展示主机器人（idx 0）的状态 + 机器人总数。
+        updateTitle(window, *cmdBridges[0], capture, *sensorBridges[0], engine.robot(),
+                    engine.world(), engine.sceneName().c_str(), engine.robotCount());
 
         // 抓帧回传放在 SwapBuffers 之前：此刻 GL_BACK 是刚画好的这一帧。
         if (wantCapture) {
