@@ -117,7 +117,7 @@ void RobotStruct::active() {
 	 * deactivate 收拾已经 build 成功的那部分（deactivate 逐项容错，半成品可安全跑）。 */
 	state_ = LifecycleState::Active;
 	deactivated_ = false;
-	factory_.createHardVars(matrices_);
+	factory_.createHardVars(structures_.all());
 	/* F-05：$ 引用解析本是惰性的（首次 collect 时）——指向未定义变量会在
 	 * 驱动 build 的真机事务中途才报错；装配完成后、任何 build 之前统一
 	 * 校验存在性（此时全部变量已注册，前向引用合法）。 */
@@ -288,7 +288,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 	}
 
 	/* 阶段 1—3 只读：完整预检通过后才返回计划，以下才允许动活体。 */
-	HotSqlPlan plan = HotSqlPlanner(matrices_, registry_).build(sql);
+	HotSqlPlan plan = HotSqlPlanner(structures_.all(), registry_).build(sql);
 	const auto& muts = plan.mutations;
 	const auto& delPlan = plan.deletions;
 	auto& insPlan = plan.insertions;
@@ -383,19 +383,15 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 	try {
 		/* 4.1 既有表：先落行（矩阵是装配的输入），再按旧行数增量装配 */
 		for (const auto& [idx, rows] : insPlan.appends) {
-			mt::MatrixObject& live = matrices_[idx];
-			const std::int64_t from = static_cast<std::int64_t>(live.rows());
-			for (const auto& row : rows) {
-				live.appendRow(row, static_cast<std::int64_t>(live.rows()));
-			}
+			const std::int64_t from = structures_.appendRows(idx, rows);
 			appended.emplace_back(idx, rows.size());
-			factory_.createHardVarsFrom(live, from);
+			factory_.createHardVarsFrom(structures_.at(idx), from);
 		}
 		/* 4.2 新表：整表入列后按 fromRow=1 装配 */
 		for (auto& t : insPlan.newTables) {
-			matrices_.push_back(std::move(t));
+			structures_.append(std::move(t));
 			++addedTables;
-			factory_.createHardVarsFrom(matrices_.back(), 1);
+			factory_.createHardVarsFrom(structures_.back(), 1);
 		}
 		/* 4.3 $ 引用存在性：只查本批次新增的 MetaProvider（此时批内变量已全部注册，
 		 *     故批内前向引用合法；既有提供者启动期已校验） */
@@ -412,7 +408,7 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 			seq[i]->build();
 		}
 		/* 4.5 瞬态 Action：排在硬件之后执行（动作可引用本批次新建变量），
-		 *     执行完即丢弃——不入 matrices_、不注册。执行失败同样回滚本批次硬件
+		 *     执行完即丢弃——不入结构矩阵、不注册。执行失败同样回滚本批次硬件
 		 *     （结构回到批次前状态），但动作已下发的物理副作用不回退。 */
 		if (!insPlan.actionMats.empty()) { runner_.runAction(insPlan.actionMats); }
 	} catch (...) {
@@ -464,8 +460,8 @@ void RobotStruct::rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t met
 	registry_.rollbackTo(mark);
 	metaProviders_.resize(metaMark);
 	daemonHolders_.resize(daemonMark);
-	for (const auto& [idx, n] : appended) { matrices_[idx].popRows(n); }
-	matrices_.resize(matrices_.size() - addedTables);
+	for (const auto& [idx, n] : appended) { structures_.popRows(idx, n); }
+	structures_.truncate(structures_.size() - addedTables);
 }
 
 /* 先删后建批次插入段失败的重包装：本批次含 UPDATE 且已摘除过旧件时，活体
@@ -496,10 +492,10 @@ void RobotStruct::rethrowWithLostVars(const HotDeleteOutcome& alreadyDeleted) {
  * 再加一步摘表壳），故这里只剩**空表壳**要摘。
  *
  * 为什么表壳必须最后摘：4.6.4 用「矩阵地址 + 行号」定位被删行的 MetaProvider，
- * 而矩阵地址是 `&matrices_[mi]`——一旦先 erase 表壳，其后所有表的下标与地址
+ * 而矩阵地址取自 StructureStore::at(mi)——一旦先 erase 表壳，其后所有表的下标与地址
  * 都会变，4.6 的判据就全错位。故顺序是死的：先按行删（4.6），再摘壳（本节）。
  *
- * deque 中间 erase 的引用失效：MetaProvider::matrix_ 存的是指向 matrices_
+ * deque 中间 erase 的引用失效：MetaProvider::matrix_ 存的是指向结构矩阵
  * 元素的指针；erase 会让其后元素引用失效。**必须先把存活提供者的表名抓下来
  * 再 erase**（表名唯一且是稳定身份），erase 后按名把每个提供者重锚定回新地址
  * ——否则后续 readSample/collect 会踩悬垂指针。这也正是 matrix.hpp 把矩阵
@@ -513,19 +509,20 @@ RobotStruct::DropOutcome RobotStruct::dropTableShells(const ScriptLoader::Mutati
 	for (const auto& p : metaProviders_) {
 		provNames.emplace_back(p.get(), p->matrix().getName());
 	}
-	/* ② 定位要摘的表壳（本批次 DROP 的表名 ∩ 活体 matrices_）。DROP 本批次
+	/* ② 定位要摘的表壳（本批次 DROP 的表名 ∩ 活体结构表）。DROP 本批次
 	 *     新建的表不在活体里（readSQL 已把它从影子容器整表擦除），此处自然
 	 *     找不到——那不是错误，跳过即可。 */
 	std::vector<std::size_t> shellIdx;
-	for (std::size_t k = 0; k < matrices_.size(); ++k) {
-		if (muts.droppedTables.count(trim(matrices_[k].getName())) != 0) {
+	const auto& tables = structures_.all();
+	for (std::size_t k = 0; k < tables.size(); ++k) {
+		if (muts.droppedTables.count(trim(tables[k].getName())) != 0) {
 			shellIdx.push_back(k);
-			out.names.push_back(trim(matrices_[k].getName()));
+			out.names.push_back(trim(tables[k].getName()));
 		}
 	}
 	/* ③ 降序 erase（先删大下标，前面的下标不失效） */
 	for (auto it = shellIdx.rbegin(); it != shellIdx.rend(); ++it) {
-		matrices_.erase(matrices_.begin() + static_cast<std::ptrdiff_t>(*it));
+		structures_.eraseTable(*it);
 		++out.count;
 	}
 	/* ④ 重锚定存活提供者：按名字找同名的矩阵地址。只在**确实摘过表壳**时做
@@ -533,7 +530,7 @@ RobotStruct::DropOutcome RobotStruct::dropTableShells(const ScriptLoader::Mutati
 	 *    此时没有元素被搬移，重锚定是空转。 */
 	if (!shellIdx.empty()) {
 		for (auto& [prov, nm] : provNames) {
-			const mt::MatrixObject* m = mt::findByName(matrices_, nm);
+			const mt::MatrixObject* m = structures_.find(nm);
 			if (m != nullptr) { prov->rebase(*m); }
 		}
 	}
@@ -681,7 +678,7 @@ void RobotStruct::applyHotDeleteConsistency(
 	std::set<std::pair<const mt::MatrixObject*, std::int64_t>> deadProvider;
 	for (const auto& [mi, rs] : perTable) {
 		for (std::size_t r : rs) {
-			deadProvider.emplace(&matrices_[mi], static_cast<std::int64_t>(r));
+			deadProvider.emplace(&structures_.at(mi), static_cast<std::int64_t>(r));
 		}
 	}
 	auto isDeadProvider = [&](const std::shared_ptr<MetaProvider>& p) {
@@ -702,7 +699,7 @@ void RobotStruct::applyHotDeleteConsistency(
 	 * 本步骤一并收口。混批里追加行的 provider 已在 commitHotBatch 4.3
 	 * 急切 seed（缓存以追加时坐标取到的是正确内容），此处只修坐标。 */
 	for (const auto& [mi, rs] : perTable) {
-		const mt::MatrixObject* mat = &matrices_[mi];
+		const mt::MatrixObject* mat = &structures_.at(mi);
 		for (const auto& p : metaProviders_) {
 			if (p->matrixPtr() != mat) { continue; }
 			std::int64_t shift = 0;
@@ -714,7 +711,7 @@ void RobotStruct::applyHotDeleteConsistency(
 	}
 	/* ② 结构行（保序擦除，销毁序不变式不动） */
 	for (const auto& [mi, rs] : perTable) {
-		matrices_[mi].removeRows(rs);
+		structures_.removeRows(mi, rs);
 		out.deletedRows += rs.size();
 	}
 	/* ③ 守护登记表：按保留项重建（不做 resize——删中间项会让尾部前移，
@@ -733,7 +730,7 @@ void RobotStruct::applyHotDeleteConsistency(
 
 /* ---- agent 模式：变量存在性判定（active() 之前可判定）---- */
 bool RobotStruct::declaresVariable(const std::string& name) const {
-	for (const auto& matrix : matrices_) {
+	for (const auto& matrix : structures_.all()) {
 		std::int64_t idx = matrix.indexOfCol(0, "name");
 		if (idx < 0) { continue; }
 		for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
@@ -749,7 +746,7 @@ bool RobotStruct::declaresVariable(const std::string& name) const {
  * MtVars_Daemon::Factory 且装配期即读全行），其余表每个数据行一个提供者。 */
 bool RobotStruct::metaProvidersMatchLiveRows() const {
 	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> expect;
-	for (const auto& m : matrices_) {
+	for (const auto& m : structures_.all()) {
 		const std::string& t = m.getName();
 		if (t == "Alias" || t == "Vars" || t == "Action" || t == "Daemon") { continue; }
 		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
@@ -772,7 +769,7 @@ void RobotStruct::injectLuaDriver(const std::string& driverTable, const std::str
 			+ driverTable + "' / '" + varName + "'");
 	}
 
-	/* 顺序不变式（B0-5）：MetaProvider 持有的 matrix_ 是对 matrices_ **元素的
+	/* 顺序不变式（B0-5）：MetaProvider 持有的 matrix_ 是对结构矩阵 **元素的
 	 * 引用**。容器为 std::deque（2026-09-23 热插表），append 不再使元素引用失效
 	 * ——这正是热插表能在 active() 之后追加的构造基础。但**本函数**仍须早于
 	 * active()：它注入的是「LLM 协议驱动/摄像头驱动」，而 active() 之后的插入
@@ -789,7 +786,7 @@ void RobotStruct::injectLuaDriver(const std::string& driverTable, const std::str
 	MemoryReader reader(std::move(sql));
 	std::deque<mt::MatrixObject> extra;
 	ScriptLoader::readSQL(reader, extra);
-	for (auto& m : extra) { matrices_.push_back(std::move(m)); }
+	for (auto& m : extra) { structures_.append(std::move(m)); }
 }
 
 } // namespace bot

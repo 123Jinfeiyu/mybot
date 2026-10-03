@@ -28,6 +28,7 @@
 #include "matrix.hpp"
 #include "meta_provider.hpp"
 #include "script_loader.hpp"
+#include "structure_store.hpp"
 #include "util_cli.hpp"
 #include "util_except.hpp"
 
@@ -39,12 +40,9 @@ public:
 	enum class LifecycleState { Loaded, Active, Deactivating, Inactive };
 
 private:
-	/* 结构脚本解析的矩阵对象（声明序）。
-	 * 容器选型是**不变式**而非风格（2026-09-23 热插表）：MetaProvider 持
-	 * 指向此处元素的引用（matrix_），std::vector 在 append 扩容时会让全部
-	 * 旧引用悬垂；std::deque 的 push_back/push_front 只失效迭代器，**元素
-	 * 引用保持有效**，故热插表可以在 active() 之后安全追加。 */
-	std::deque<mt::MatrixObject> matrices_;
+	/* 结构矩阵域（2026-10-03 阶段 4）：matrix 表的所有权与读写入口。容器选型
+	 * （deque，元素引用稳定）是域内不变式，见 structure_store.hpp 头注释。 */
+	StructureStore structures_;
 	std::vector<std::shared_ptr<DaemonRunner>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
 	HwRegistry registry_;				/* 硬件变量：所有权 + 销毁序 + 名字索引（R-2） */
 	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
@@ -138,7 +136,7 @@ private:
 public:
 	explicit RobotStruct(bot::Reader& input)
 		: factory_(registry_, daemonHolders_, metaProviders_), runner_(registry_) {
-		ScriptLoader::readSQL(input, matrices_);
+		structures_.load(input);
 	}
 
 	/* 兜底断电：仍未 deactivate 就补一次（幂等）。存在的理由是物理安全——
@@ -203,7 +201,7 @@ public:
 
 	/* agent 模式：只读结构矩阵视图（声明序）。供 /sql 查询从原始矩阵取数渲染——
 	 * 与 registry()（装配后的硬件变量视图）互补：前者看结构脚本定义，后者看装配结果。 */
-	const std::deque<mt::MatrixObject>& matrices() const { return matrices_; }
+	const std::deque<mt::MatrixObject>& matrices() const { return structures_.all(); }
 
 	/* agent 模式：结构脚本是否已声明名为 name 的变量。
 	 * 必须在 active() **之前**可判定，故直接扫矩阵表的 name 列，
