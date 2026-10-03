@@ -1,5 +1,7 @@
 #include "world.h"
 
+#include <sys/stat.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -556,6 +558,9 @@ bool writeScene(const std::string& path, const SceneState& state) {
         std::fprintf(stderr, "scene: 写 %s 失败（磁盘满？）\n", tmp.c_str());
         return false;
     }
+    // 收窄权限到 0600：地图（与播种出来的那份同源）是用户数据，不该因 fopen 的
+    // 缺省 0666&~umask 变成组/他人可读。chmod 失败只影响权限，不阻断保存。
+    ::chmod(tmp.c_str(), 0600);
     if (std::rename(tmp.c_str(), path.c_str()) != 0) {
         std::fprintf(stderr, "scene: rename %s -> %s 失败\n", tmp.c_str(), path.c_str());
         return false;

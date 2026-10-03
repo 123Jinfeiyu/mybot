@@ -33,7 +33,7 @@ C++17 宿主（`mybot`，MCP 工具后端，硬件常驻）+ Rust agent（`mybot
 - **零硬件开发** —— 虚拟总线 + 仿真驱动，笔记本上就能跑通全流程
 - **工业级安全** —— 危险开关缺省全关、配置隔离、响亮拒绝不静默
 - **零 C++ 依赖** —— C++ 宿主仅需 LuaJIT + pthread + dl；模型调用的 HTTP 由 Rust（reqwest + rustls）承担
-- **会话持久化** —— `--session-file` 落盘、`--resume` 恢复，重启不丢上下文
+- **会话持久化** —— 对话历史与地图缺省落 `~/.mybot`（`MYBOT_HOME` 可覆盖）、按机器人归档并默认续接上一次；也可 `--session-file` 指定路径、`--resume` 恢复
 
 ## 快速开始
 
@@ -150,12 +150,26 @@ export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 ./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "让机器人站立然后左转"
 ```
 
-### 会话持久化（--session-file / --resume）
+### 会话持久化（缺省落 `~/.mybot`，或 `--session-file` / `--resume`）
 
-对话记忆默认只在进程内存里，重启即忘。`--session-file` 把每轮**完结的任务块**以
-JSON Lines 追加落盘（图片字节不落盘，只留占位说明；system 提示词不落盘，恢复时
-重建并核对指纹）。重启后加 `--resume` 接着上次的上下文继续——注意后端也要重启
-（硬件上电状态与会话记忆是两回事）：
+对话历史**缺省就落盘**：不给 `--session-file` 时，按机器人归档到
+`$MYBOT_HOME/robots/<机器人>/sessions/<UTC 时间戳>.jsonl`（`$MYBOT_HOME` 缺省
+`$HOME/.mybot`，可用环境变量覆盖），并**默认续接**该机器人上一次的对话——
+交互 REPL 与 `--task` 都如此。想每次从干净上下文开始就加 `--new-session`。
+启动时会把实际落点打印到 stderr。仿真器的地图同样落 `$MYBOT_HOME/maps/`。
+
+```bash
+# 缺省：跑完落 ~/.mybot/robots/<机器人>/sessions/<时间戳>.jsonl，下次自动接着上次
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "看看硬件"
+
+# 想每次新开一段
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --new-session --task "看看硬件"
+```
+
+也可以显式指定路径：`--session-file <路径>` 把每轮**完结的任务块**以 JSON Lines
+追加落盘（图片字节不落盘，只留占位说明；system 提示词不落盘，恢复时重建并核对
+指纹）。重启后加 `--resume` 接着上次的上下文继续——注意后端也要重启（硬件上电
+状态与会话记忆是两回事）：
 
 ```bash
 # 第一次会话：落盘
@@ -167,9 +181,11 @@ JSON Lines 追加落盘（图片字节不落盘，只留占位说明；system �
   --session-file mybot-session.jsonl --resume
 ```
 
-恢复前过三道判据（逐行解析、结构脚本/工具集/系统提示词指纹核对、工具调用协议
-自洽），任一不过即拒绝并退出 2；文件含完整对话内容，建议放私有目录并 `chmod 600`。
-详见 [docs/agent.md](docs/agent.md) 的「会话持久化」节。
+显式 `--resume` 恢复前过三道判据（逐行解析、结构脚本/工具集/系统提示词指纹核对、
+工具调用协议自洽），任一不过即拒绝并退出 2；缺省路径下同样的失败改为**告警一次并
+自动新开一段**（旧段保留、退 0），现场重启不被一份坏文件挡住。文件含完整对话内容，
+建议放私有目录并 `chmod 600`（缺省布局自动 `0600` / 目录 `0700`）。
+详见 [docs/agent.md](docs/agent.md) 的「会话持久化」与「缺省落点与自动续接」节。
 
 ### 分段帮助
 

@@ -985,7 +985,13 @@ fi
 #     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
 # ======================================================================
 if filter_matches "agent" "$filter_e2e"; then
-	run_one_agent_rust_e2e
+	# 状态目录双保险（2026-10-03 家目录持久化批次）：agent_e2e.sh 自身会把 MYBOT_HOME
+	# 指向它的临时目录，这里再兜一层——即便那层隔离将来失效，缺省落盘的对话历史/地图
+	# 也只会写进这个临时目录，绝不碰真实 $HOME/.mybot。
+	_e2e_home="$(mktemp -d "${TMPDIR:-/tmp}/mybot-e2e-home.XXXXXX")"
+	MYBOT_HOME="$_e2e_home" run_one_agent_rust_e2e
+	rm -rf "$_e2e_home"
+	unset _e2e_home
 fi
 
 # ======================================================================

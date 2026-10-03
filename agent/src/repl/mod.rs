@@ -883,8 +883,13 @@ mod tests {
             prompt_pack: String::new(),
             audit_log: String::new(),
             session_file: String::new(),
+            session_path_source: crate::config::SessionPathSource::Default,
             session_file_from_cli: false,
             resume: false,
+            new_session: false,
+            state_dir: String::new(),
+            state_dir_source: "",
+            state_dir_ok: false,
         }
     }
 

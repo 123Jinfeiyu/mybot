@@ -22,6 +22,8 @@ pub struct Cli {
     /// 读取；配置文件的 `session_file` 只能用于写入（见 [`super::build`] 的判据）。
     pub session_file: String,
     pub resume: bool,
+    /// `--new-session`：不走缺省布局的「续接上一次」，强制新开一段对话。
+    pub new_session: bool,
     pub task: String,
     pub check_config: bool,
     pub help: bool,
@@ -61,6 +63,7 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--audit-log" => cli.audit_log = take("--audit-log")?,
             "--session-file" => cli.session_file = take("--session-file")?,
             "--resume" => cli.resume = true,
+            "--new-session" => cli.new_session = true,
             "--task" => cli.task = take("--task")?,
             "--check-config" => cli.check_config = true,
             "--help" | "-h" => cli.help = true,
@@ -103,10 +106,16 @@ pub fn usage() -> String {
     s += "其它:\n";
     s += "  --prompt-file <路径>   提示词包（文件或目录；可重复；命令行给出即整体覆盖配置文件列表）\n";
     s += "  --audit-log <路径|->   审计轨迹（JSON Lines；\"-\" = stderr；缺省关闭）\n";
-    s += "  --session-file <路径>  会话持久化落盘（JSON Lines；缺省关闭；也可用配置文件\n";
+    s += "  --session-file <路径>  会话持久化落到这个文件（JSON Lines；也可用配置文件\n";
     s += "                         的 session_file 字段，但该来源只能写入，不能 --resume）\n";
     s += "  --resume               续写 --session-file 指向的既有会话（该路径必须来自命令行，\n";
     s += "                         且文件必须已存在；三道判据全过才恢复，见 docs/agent.md）\n";
+    s += "  --new-session          不续接上一次对话，强制新开一段（只影响缺省落点）\n";
+    s += "  会话缺省落点：         不给 --session-file 时，对话历史落在\n";
+    s += "                         $MYBOT_HOME/robots/<机器人>/sessions/<UTC 时间戳>.jsonl\n";
+    s += "                         （$MYBOT_HOME 缺省 $HOME/.mybot），并**默认续接**上一次\n";
+    s += "                         那一段；续接不上（提示词/工具集变了、文件损坏）时告警一次\n";
+    s += "                         并自动新开一段，旧段原样保留。\n";
     s += "  --task \"<任务>\"        一次性执行后退出（不给则进交互 REPL）\n";
     s += "  --check-config         只校验并打印配置摘要后退出（0 = 通过）\n";
     s += "  --help / --version\n";

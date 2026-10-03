@@ -43,6 +43,7 @@ add_library(simcore STATIC
     src/robot.cpp
     src/world.cpp
     src/sim_engine.cpp
+    src/sim_paths.cpp
     src/unix_line_server.cpp
     src/request_bridge.cpp
     src/action_table.cpp
@@ -52,6 +53,11 @@ add_library(simcore STATIC
 )
 target_include_directories(simcore PUBLIC src)
 target_link_libraries(simcore PUBLIC glm::glm Threads::Threads)
+
+# 仓库场景模板目录：编译期定死（源码树内），供 SimPaths::templateScene 播种地图用。
+# 与 sim_tests 的 MYBOT_MODULES_DIR 同款先例；PUBLIC 让 mybot-sim / sim_tests 都拿到。
+target_compile_definitions(simcore PUBLIC
+    MYBOT_SIM_SCENES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/scenes")
 
 # ---- 可视化壳 ----
 add_executable(mybot-sim

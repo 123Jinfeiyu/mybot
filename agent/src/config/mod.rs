@@ -173,12 +173,38 @@ pub struct Config {
     /// 提示词包成品文本（空 = 未使用）。
     pub prompt_pack: String,
     pub audit_log: String,
-    /// 会话持久化落盘路径（空 = 不开启）。
+    /// 会话持久化落盘路径。缺省来源（[`SessionPathSource::Default`]）下为空——
+    /// 具体路径要等后端给出机器人名后才能拼（见 `session_store`）。
     pub session_file: String,
+    /// `session_file` 的来源。
+    pub session_path_source: SessionPathSource,
     /// `session_file` 是否来自命令行（`--resume` 的判据：配置文件来源不能授权
     /// 恢复读取，只能收紧不能放宽，同 `camera_src_dir` / `read_vars` 口径）。
     pub session_file_from_cli: bool,
     pub resume: bool,
+    /// `--new-session`：缺省布局下强制新开一段。
+    pub new_session: bool,
+    /// 状态目录根：`$MYBOT_HOME` > `$HOME/.mybot`。
+    pub state_dir: String,
+    /// 状态目录来源（`"env"` = `MYBOT_HOME`，`"home"` = `$HOME/.mybot`）。
+    pub state_dir_source: &'static str,
+    /// 状态目录是否可用。false（既无 `MYBOT_HOME` 也无 `HOME`）时缺省持久化
+    /// **降级为关闭**并告警一次，不中止启动。
+    pub state_dir_ok: bool,
+}
+
+/// `session_file` 的三种来源。区别只在「读取权限」与「缺省续接」：
+/// 恢复是把磁盘内容读进模型上下文（输入通道），故只有命令行给出的路径能授权
+/// 一次读取（配置文件只能收紧不能放宽）；而缺省路径是本进程自造的（固定根 +
+/// 归一目录 + 白名单段名），不构成「读任意文件」原语，故可以默认续接。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPathSource {
+    /// 命令行 `--session-file`：可写可读。
+    Cli,
+    /// 配置文件 `session_file`：只写不可读。
+    Config,
+    /// 都没给：`$MYBOT_HOME/robots/<机器人>/sessions/`，默认续接上一次。
+    Default,
 }
 
 /// 是否「安全标识符」：字母/数字/下划线，且以字母或下划线开头
@@ -225,6 +251,30 @@ fn find_default_llm_config() -> Option<String> {
         }
     }
     None
+}
+
+/// 状态目录取值链（纯函数，便于单测）：`MYBOT_HOME` > `$HOME/.mybot` > 不可用。
+/// 返回 `(路径, 来源, 是否可用)`。
+///
+/// 为什么只认环境变量、不加 `--state-dir` 选项：状态目录是「本机数据放哪」的
+/// 一次性决定，`$MYBOT_HOME` 一个口足够（测试/多实例也靠它隔离）；多一个命令行
+/// 选项就多一处要跟配置文件合流、多一处能互相矛盾的地方。
+fn derive_state_dir(
+    mybot_home: Option<String>,
+    home: Option<String>,
+) -> (String, &'static str, bool) {
+    if let Some(v) = mybot_home {
+        return (v, "env", true);
+    }
+    if let Some(h) = home {
+        return (format!("{h}/.mybot"), "home", true);
+    }
+    (String::new(), "", false)
+}
+
+/// [`derive_state_dir`] 的取环境变量版本（env 只在这里读一次）。
+fn resolve_state_dir() -> (String, &'static str, bool) {
+    derive_state_dir(env_var("MYBOT_HOME"), env_var("HOME"))
 }
 
 /// 配置文件选择：命令行 > `BOT4CJ_LLM_CONFIG` > 缺省查找。
@@ -303,8 +353,13 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         prompt_pack: String::new(),
         audit_log: String::new(),
         session_file: String::new(),
+        session_path_source: SessionPathSource::Default,
         session_file_from_cli: false,
         resume: false,
+        new_session: cli.new_session,
+        state_dir: String::new(),
+        state_dir_source: "",
+        state_dir_ok: false,
     };
     if !cli.llm_max_turns.is_empty() {
         cfg.max_turns = parse_int_option(
@@ -353,21 +408,52 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         file.audit_log.clone().unwrap_or_default()
     };
 
-    // ---- 8) 会话持久化（批次 D）：命令行 > 配置文件；读取只认命令行来源 ----
+    // ---- 8) 会话持久化（批次 D）：命令行 > 配置文件 > 缺省按机器人 ----
     //
     // 恢复是把磁盘内容读进模型上下文（输入通道），配置文件里的 session_file 只用于
     // 写入，**不能**授权一次读取——与 camera_src_dir / read_vars 同判据
     // （配置文件只能收紧不能放宽）。故 --resume 而路径来自配置文件时直接报错。
-    cfg.session_file_from_cli = !cli.session_file.trim().is_empty();
-    cfg.session_file = if cfg.session_file_from_cli {
-        expand_home(cli.session_file.trim())
-    } else {
-        file.session_file
-            .as_deref()
-            .map(expand_home)
-            .unwrap_or_default()
-    };
+    //
+    // 缺省来源（都没给）走 $MYBOT_HOME/robots/<机器人>/sessions/ 并默认续接上一次：
+    // 那条路径本进程自造（固定根 + 归一目录 + 白名单段名），不是「读任意文件」，
+    // 故不触犯上面那条判据。**配置文件来源优先于缺省**——写了 session_file 就不再
+    // 走缺省续接，免得「只写不可读」的路径被缺省续接偷偷读。
+    let (state_dir, state_dir_source, state_dir_ok) = resolve_state_dir();
+    cfg.state_dir = state_dir;
+    cfg.state_dir_source = state_dir_source;
+    cfg.state_dir_ok = state_dir_ok;
     cfg.resume = cli.resume;
+    let cli_session_path = cli.session_file.trim();
+    cfg.session_file_from_cli = !cli_session_path.is_empty();
+    cfg.session_path_source = if cfg.session_file_from_cli {
+        SessionPathSource::Cli
+    } else if file.session_file.is_some() {
+        SessionPathSource::Config
+    } else {
+        SessionPathSource::Default
+    };
+    cfg.session_file = match cfg.session_path_source {
+        SessionPathSource::Cli => expand_home(cli_session_path),
+        SessionPathSource::Config => expand_home(file.session_file.as_deref().unwrap_or("")),
+        SessionPathSource::Default => String::new(),
+    };
+    if cfg.resume && cfg.new_session {
+        return Err(
+            "选项 --resume 与 --new-session 互斥：前者要求续接既有会话，后者要求新开一段"
+                .to_string(),
+        );
+    }
+    // 缺省来源 + 无家目录：不中止启动，降级为「本次不落盘」并告警一次
+    // （与「缺省路径出问题不阻止机器人跑起来」同口径）。
+    if cfg.session_path_source == SessionPathSource::Default && !cfg.state_dir_ok {
+        let w = "无家目录（MYBOT_HOME 与 HOME 都未设置），本次不落盘对话历史；\
+                 可用 MYBOT_HOME 指定状态目录";
+        cfg.config_warning = if cfg.config_warning.is_empty() {
+            w.to_string()
+        } else {
+            format!("{}；{w}", cfg.config_warning)
+        };
+    }
     if cfg.resume {
         if !cfg.session_file_from_cli {
             return Err(
@@ -879,6 +965,93 @@ mod tests {
         // 唯一取值口照常可用（provider.rs 装配请求头用）
         assert_eq!(cfg.api_key.expose(), "sk-DO-NOT-PRINT-9f8e7d");
         std::env::remove_var("BOT4CJ_LLM_KEY");
+    }
+
+    /// 状态目录取值链是纯函数：`MYBOT_HOME` > `$HOME/.mybot` > 不可用。
+    #[test]
+    fn state_dir_precedence_env_over_home_over_unavailable() {
+        assert_eq!(
+            derive_state_dir(Some("/x".into()), Some("/home/u".into())),
+            ("/x".to_string(), "env", true)
+        );
+        assert_eq!(
+            derive_state_dir(None, Some("/home/u".into())),
+            ("/home/u/.mybot".to_string(), "home", true)
+        );
+        assert_eq!(derive_state_dir(None, None), (String::new(), "", false));
+    }
+
+    /// 会话落点三来源与 `--resume` 的读取权限：配置文件来源只能写不能读。
+    #[test]
+    fn session_path_source_and_resume_authority() {
+        let _env = ENV_LOCK.lock().unwrap();
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_sess_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &str| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p.to_string_lossy().to_string()
+        };
+        let plain = write("plain.json", r#"{"api_key":"k"}"#);
+        let with_sf = write(
+            "sf.json",
+            r#"{"api_key":"k","session_file":"/tmp/x.jsonl"}"#,
+        );
+        let cli = |cfg: &str| Cli {
+            socket: "/tmp/x.sock".into(),
+            llm_config: cfg.to_string(),
+            llm_endpoint: "http://127.0.0.1:1/v1/chat/completions".into(),
+            llm_model: "m".into(),
+            ..Cli::default()
+        };
+
+        // 缺省来源：MYBOT_HOME 生效；session_file 留空（要等机器人名才能拼）
+        std::env::set_var("MYBOT_HOME", "/tmp/mybot-home-default");
+        let cfg = build(&cli(&plain)).unwrap();
+        assert_eq!(cfg.session_path_source, SessionPathSource::Default);
+        assert!(cfg.session_file.is_empty());
+        assert_eq!(cfg.state_dir, "/tmp/mybot-home-default");
+        assert_eq!(cfg.state_dir_source, "env");
+        assert!(cfg.state_dir_ok);
+        assert!(!cfg.config_warning.contains("无家目录"));
+
+        // 配置文件来源优先于缺省：只写不可读，--resume 缺命令行路径必须报错
+        let cfg = build(&cli(&with_sf)).unwrap();
+        assert_eq!(cfg.session_path_source, SessionPathSource::Config);
+        assert_eq!(cfg.session_file, "/tmp/x.jsonl");
+        let mut resume_cli = cli(&with_sf);
+        resume_cli.resume = true;
+        let err = build(&resume_cli).unwrap_err();
+        assert!(err.contains("命令行"), "实际: {err}");
+
+        std::env::remove_var("MYBOT_HOME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--resume` 与 `--new-session` 互斥（两种意图直接矛盾，不猜）。
+    #[test]
+    fn resume_and_new_session_are_mutually_exclusive() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_mutex_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("c.json");
+        std::fs::write(&p, r#"{"api_key":"k"}"#).unwrap();
+        let cli = Cli {
+            socket: "/tmp/x.sock".into(),
+            llm_config: p.to_string_lossy().to_string(),
+            llm_endpoint: "http://127.0.0.1:1/v1/chat/completions".into(),
+            llm_model: "m".into(),
+            resume: true,
+            new_session: true,
+            ..Cli::default()
+        };
+        let err = build(&cli).unwrap_err();
+        assert!(err.contains("互斥"), "实际: {err}");
+        assert!(
+            parse_args(&["--new-session".to_string()])
+                .unwrap()
+                .new_session
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 /* 配置摘要渲染（summarize，--check-config 用）已下沉到 summarize.rs

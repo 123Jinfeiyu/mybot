@@ -7,7 +7,8 @@
 //! 装配顺序（每一步失败都在**做任何事之前**退出，不给「看起来在跑」的假象）：
 //!   CLI → 配置（config）→ 提示词包（prompt）→ `--check-config` 提前返回
 //!   → 连后端 → `tool.list`（动态工具）→ `context.get`（提示词素材）
-//!   → 系统提示词 → 审计打开 + start 行 → rig 客户端装配 → 跑 REPL / --task。
+//!   → 系统提示词 → 会话落点（session_store，缺省按机器人续接）→ 审计打开 +
+//!   start 行 → rig 客户端装配 → 跑 REPL / --task。
 //!
 //! 退出码（与 C++ agent 模式同口径）：0 正常、1 运行期失败、2 配置/参数错误。
 //! stdout 只有模型输出与交互界面；日志、告警、重试一律 stderr。
@@ -29,6 +30,7 @@ mod protocol;
 mod provider;
 mod repl;
 mod session;
+mod session_store;
 mod signals;
 mod summary;
 mod toolspec;
@@ -40,12 +42,14 @@ use crate::audit::AuditLog;
 use crate::bridge::{Bridge, ConnParams};
 use crate::budget::TaskBudget;
 use crate::config::Config;
+use crate::config::SessionPathSource;
 use crate::frame::{BackendClient, HARD_READ_CEILING};
 use crate::hook::HookState;
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::repl::Session;
 use crate::session::{SessionFileWriter, SessionHead};
+use crate::session_store::{SessionMode, SessionPlan};
 use crate::signals::install_signal_handlers;
 use crate::toolspec::ToolSpec;
 
@@ -95,6 +99,61 @@ fn harden_against_inspection() {
     }
 }
 
+/// 本次会话的落点计划。
+///
+/// - `Cli` / `Config` 来源：就用 `session_file` 那个路径（批次 D 的行为逐字不变：
+///   不给 `--resume` 就是截断新建）。
+/// - `Default` 来源：`$MYBOT_HOME/robots/<机器人>/sessions/`，由当前段指针决定
+///   新建还是续写（见 [`session_store`]）。
+///
+/// 返回 `None` = 本次不落盘：只有「缺省来源 + 无家目录」这一种情形
+/// （显式路径来源总有落点）。
+fn plan_session(cfg: &Config, robot_name: &str) -> Result<Option<SessionPlan>, String> {
+    match cfg.session_path_source {
+        SessionPathSource::Cli | SessionPathSource::Config => Ok(Some(SessionPlan {
+            path: cfg.session_file.clone(),
+            mode: if cfg.resume {
+                SessionMode::Continue
+            } else {
+                SessionMode::New
+            },
+            append: cfg.resume,
+            layout: None,
+            warning: None,
+        })),
+        SessionPathSource::Default => {
+            if !cfg.state_dir_ok {
+                return Ok(None);
+            }
+            session_store::plan_default_session(
+                &cfg.state_dir,
+                robot_name,
+                cfg.new_session,
+                now_sec(),
+            )
+            .map(Some)
+        }
+    }
+}
+
+/// UTC 秒：段名的时间源。取不到系统时间就退 0——同秒冲突由
+/// `session_store::create_segment` 的 O_EXCL + 后缀兜住，不因此中止。
+fn now_sec() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// 状态目录来源的人话名（与 [`config::summarize`] 同口径）。
+fn state_dir_source_name(cfg: &Config) -> &'static str {
+    match cfg.state_dir_source {
+        "env" => "环境变量 MYBOT_HOME",
+        "home" => "家目录",
+        _ => "不可用",
+    }
+}
+
 /// `--resume` 恢复出来的会话三件套（历史消息 / 历史摘要 / 原 session id）。
 #[derive(Debug)]
 struct Resumed {
@@ -103,28 +162,20 @@ struct Resumed {
     session_id: String,
 }
 
-/// 会话持久化（批次 D）：`--resume` 的三道判据，放在系统提示词定稿之后、
-/// 任何审计写之前（早一步还没有 preamble 可比，晚一步就核不出「提示词
-/// 变没变」）——这条时序契约由调用点（run）持有，本函数只做判据本身：
+/// 会话恢复的接缝本体（2026-10-01 抽出、2026-10-03 去掉 `try_resume` 薄壳：
+/// 现在显式路径与缺省按机器人两条路都直接调它）：只依赖一个会话文件路径，
+/// 可离线单测——Bridge 对临时 listener 构造即得，无需真后端/真 LLM。
+///
+/// 三道判据，放在系统提示词定稿之后、任何审计写之前（早一步还没有 preamble
+/// 可比，晚一步就核不出「提示词变没变」）——这条时序契约由调用点（run）持有，
+/// 本函数只做判据本身：
 ///   ① 逐行解析（load_session_file 内部完成，坏行跳过并点名）；
 ///   ② 指纹核对（结构脚本名 / 工具集指纹 / 系统提示词指纹三者一致）；
 ///   ③ 协议自洽（tool_call_id 无孤儿/无重复/无漏答——服务端会 400 的序列
 ///      宁可当场拒绝）。
-/// 任一不过即 Err（人话原因，调用方退出 2）；ICA sidecar 恢复也在本函数
-/// （会话文件核对通过后才轮到它）。2026-09-29 B2 拆自 run()，报错文案
-/// 与退出语义逐字保持。
-async fn try_resume(
-    cfg: &Config,
-    bridge: &Bridge,
-    tool_names: &[String],
-    preamble: &str,
-    material: &PromptMaterial,
-) -> Result<Resumed, String> {
-    resume_from(&cfg.session_file, bridge, tool_names, preamble, material).await
-}
-
-/// 恢复判据的接缝本体（2026-10-01 抽出：只依赖 session_file 一个配置项，
-/// 可离线单测——Bridge 对临时 listener 构造即得，无需真后端/真 LLM）。
+/// 任一不过即 Err（人话原因）。调用方的分派：显式 `--resume` → 退出 2；
+/// 缺省按机器人续接 → 告警一次并新开一段（见 run）。
+/// ICA sidecar 恢复也在本函数（会话文件核对通过后才轮到它）。
 async fn resume_from(
     session_file: &str,
     bridge: &Bridge,
@@ -247,20 +298,72 @@ async fn run() -> i32 {
         preamble,
     } = assembly;
 
-    // ---- 会话恢复（--resume；判据与时序契约见 try_resume）----
-    let (resume_history, resume_summary, resume_session_id) = if cfg.resume {
-        match try_resume(&cfg, &bridge, &tool_names, &preamble, &material).await {
-            Ok(r) => (r.history, r.summary, r.session_id),
-            Err(e) => return config_error(&e),
-        }
-    } else {
-        (Vec::new(), None, String::new())
+    // ---- 会话落点：显式路径照旧，缺省走 $MYBOT_HOME/robots/<机器人>/sessions/ ----
+    // 机器人名（`material.robot_name`）到这里才有，故缺省路径只能此刻拼。
+    let mut plan = match plan_session(&cfg, &material.robot_name) {
+        Ok(p) => p,
+        Err(e) => return config_error(&e),
     };
-    if !cfg.session_file.is_empty() {
-        let w = session::perms_warning(&cfg.session_file);
+    if let Some(p) = plan.as_ref() {
+        let w = session::perms_warning(&p.path);
         if !w.is_empty() {
             errln!("[mybot-agent] {w}");
         }
+    }
+
+    // ---- 会话续接（判据与时序契约见 resume_from 的注释）----
+    // 两条路的分派：显式 `--resume` 失败即退 2；缺省按机器人续接失败则告警一次 +
+    // 新开一段（提示词/工具集变了、段文件损坏都不该拦住机器人跑起来）。
+    let (mut resume_history, mut resume_summary, mut resume_session_id) =
+        (Vec::new(), None, String::new());
+    let mut resumed = false;
+    if let Some(p) = plan.as_ref() {
+        if p.mode == SessionMode::Continue {
+            match resume_from(&p.path, &bridge, &tool_names, &preamble, &material).await {
+                Ok(r) => {
+                    resume_history = r.history;
+                    resume_summary = r.summary;
+                    resume_session_id = r.session_id;
+                    resumed = true;
+                }
+                Err(e) if cfg.resume => return config_error(&e),
+                Err(e) => {
+                    errln!(
+                        "[mybot-agent] 警告: 会话续接失败（{e}），已新开一段，旧段原样保留: {}",
+                        p.path
+                    );
+                    let old = plan.take().expect("上面刚判过 Some");
+                    match session_store::degrade_to_new_segment(&old, now_sec()) {
+                        Ok(np) => plan = Some(np),
+                        Err(de) => return config_error(&de),
+                    }
+                }
+            }
+        }
+    }
+    // 下游（repl 里 ICA 账本落盘、`/clear` 分界）都读 `cfg.session_file`——把解析
+    // 结果写回去，否则缺省来源下那些地方拿到的是空串（账本会静默不落盘）。
+    match plan.as_ref() {
+        Some(p) => {
+            cfg.session_file = p.path.clone();
+            if let Some(w) = p.warning.as_ref() {
+                errln!("[mybot-agent] 警告: {w}");
+            }
+            errln!(
+                "[mybot-agent] 会话落点: {}（{}；状态目录来源 {}）",
+                p.path,
+                if p.mode == SessionMode::Continue {
+                    "续接上一次"
+                } else {
+                    "新建"
+                },
+                state_dir_source_name(&cfg)
+            );
+        }
+        None => errln!(
+            "[mybot-agent] 会话持久化未开启（无家目录：MYBOT_HOME 与 HOME 都未设置；\
+             可用 MYBOT_HOME 指定状态目录）"
+        ),
     }
 
     // ---- 审计：在任何模型/工具调用**之前**打开（坏路径要在这里就失败：
@@ -282,29 +385,31 @@ async fn run() -> i32 {
         a.adopt_session_id(&resume_session_id);
     }
 
-    // ---- 会话文件写入器（批次 D）：开新会话截断并写头；恢复则续写不重写头 ----
-    let session_writer: Option<SessionFileWriter> = if cfg.session_file.is_empty() {
-        None
-    } else {
-        let mut w = SessionFileWriter::new();
-        if let Err(e) = w.open(&cfg.session_file, cfg.resume) {
-            errln!("错误: {e}");
-            return 2;
+    // ---- 会话文件写入器（批次 D）：新段写会话头；续接则尾随追加不重写头 ----
+    // 缺省布局的新段由 session_store 以 O_EXCL 建好，这里按 `append` 打开即可。
+    let session_writer: Option<SessionFileWriter> = match plan.as_ref() {
+        None => None,
+        Some(p) => {
+            let mut w = SessionFileWriter::new();
+            if let Err(e) = w.open(&p.path, p.append) {
+                errln!("错误: {e}");
+                return 2;
+            }
+            if p.mode == SessionMode::New {
+                let sid = audit
+                    .as_ref()
+                    .map(|a| a.session_id().to_string())
+                    .unwrap_or_default();
+                w.write_header(&SessionHead {
+                    version: session::SESSION_FILE_VERSION,
+                    session_id: sid,
+                    robot: material.robot_name.clone(),
+                    tools_fp: session::tools_fingerprint(&tool_names),
+                    system_fp: crate::audit::fingerprint64(&preamble),
+                });
+            }
+            Some(w)
         }
-        if !cfg.resume {
-            let sid = audit
-                .as_ref()
-                .map(|a| a.session_id().to_string())
-                .unwrap_or_default();
-            w.write_header(&SessionHead {
-                version: session::SESSION_FILE_VERSION,
-                session_id: sid,
-                robot: material.robot_name.clone(),
-                tools_fp: session::tools_fingerprint(&tool_names),
-                system_fp: crate::audit::fingerprint64(&preamble),
-            });
-        }
-        Some(w)
     };
 
     let backend = match provider::build(&cfg, specs, &bridge, Arc::clone(&state), &preamble) {
@@ -325,7 +430,6 @@ async fn run() -> i32 {
     );
 
     let task = cli.task.clone();
-    let resumed = cfg.resume;
     let mut session = Session::new(repl::SessionAssembly {
         cfg,
         backend,

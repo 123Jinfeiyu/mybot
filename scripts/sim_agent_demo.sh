@@ -20,16 +20,34 @@
 #   LLM_CFG=/path/other.json ROBOT=robots/spider_sim.sql bash scripts/sim_agent_demo.sh
 #
 # 环境可覆盖：SIM_BIN BOT_BIN AGENT_BIN LLM_CFG ROBOT PROMPTS_DIR TASK MYBOT_SIM_SOCK MYBOT_SIM_CAPTURE_SOCK MYBOT_SIM_SCENE
+#   MYBOT_HOME  —— 状态目录（对话历史 + 地图）；缺省 $HOME/.mybot
+#   DEMO_RESUME —— =1 时演示**续接**上一次对话（缺省每次 --new-session，避免历史灌上下文烧 token）
 # 退出：agent 跑完或 Ctrl-C，自动拆链路、清 socket；日志目录路径退出时打印（保留）。
 set -u
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root" || exit 1
 
+# 状态目录：MYBOT_HOME > $HOME/.mybot。agent 的对话历史与 sim 的地图都落这里，
+# 与两侧代码同一条取值链。首次自动建目录（0700）。
+MYBOT_HOME="${MYBOT_HOME:-${HOME:-}/.mybot}"
+if [ -z "$MYBOT_HOME" ] || [ "$MYBOT_HOME" = "/.mybot" ]; then
+	echo "无 HOME（且未给 MYBOT_HOME），无法定位状态目录" >&2
+	exit 1
+fi
+mkdir -p "$MYBOT_HOME" "$MYBOT_HOME/maps" || exit 1
+chmod 700 "$MYBOT_HOME" 2>/dev/null || true
+export MYBOT_HOME
+LAST_ROBOT="$MYBOT_HOME/last_robot"
+
 SIM_BIN="${SIM_BIN:-$root/sim/build/mybot-sim}"
 BOT_BIN="${BOT_BIN:-$root/build/mybot}"
 AGENT_BIN="${AGENT_BIN:-$root/agent/target/release/mybot-agent}"
 LLM_CFG="${LLM_CFG:-$root/mybot.llm.json}"
+# 机器人：命令行/环境 ROBOT > 上次用的（last_robot）> 缺省 spider_sim
+if [ -z "${ROBOT:-}" ]; then
+	ROBOT="$(cat "$LAST_ROBOT" 2>/dev/null || true)"
+fi
 ROBOT="${ROBOT:-robots/spider_sim.sql}"
 PROMPTS_DIR="${PROMPTS_DIR:-$root/prompts/sim_obstacle_nav}"
 # TASK 优先用环境变量；否则按序号拼接 PROMPTS_DIR 下所有 .md 文件
@@ -54,6 +72,15 @@ done
 [ -f "$ROBOT" ] || { echo "缺结构脚本: $ROBOT" >&2; miss=1; }
 [ "$miss" -eq 0 ] || exit 1
 command -v python3 >/dev/null 2>&1 || { echo "缺 python3（审计格式化器）" >&2; exit 1; }
+
+# preflight 全过：把本次用的结构脚本记进 last_robot（原子写，0600）。单写者是本
+# 脚本——agent 与后端都不碰它，下次不带 ROBOT 就续用同一只机器人。
+tmp="$LAST_ROBOT.tmp.$$"
+if printf '%s\n' "$ROBOT" >"$tmp" 2>/dev/null && chmod 600 "$tmp" 2>/dev/null; then
+	mv -f "$tmp" "$LAST_ROBOT" 2>/dev/null || rm -f "$tmp"
+else
+	rm -f "$tmp"
+fi
 
 RUN="$(mktemp -d /tmp/sim-agent-demo.XXXXXX)"
 chmod 700 "$RUN"
@@ -95,10 +122,16 @@ wait_sock() { # $1=socket $2= tries $3=名字 $4=日志
 rm -f "$SIM_SOCK" "$CAP_SOCK" "$SENSOR_SOCK"
 
 echo "=== 1/3 起仿真器 sim（窗口会出现；标题显示最近动作）==="
-# MYBOT_SIM_SCENE：场景文件。agent/人搬动过的环境**退出时自动写回**（sim 捕获本脚本
-# cleanup 的 SIGTERM 优雅退出并 saveScene；S 键 / save 指令仍可手动写回），下次跑
-# demo 从改过的场景继续。想让每次跑都从原始布局开始，请另指一个临时场景文件或先复位。
-MYBOT_SIM_SCENE="${MYBOT_SIM_SCENE:-$root/sim/scenes/default.scene}" "$SIM_BIN" >"$SIM_LOG" 2>&1 &
+# 场景：不给 MYBOT_SIM_SCENE 时由 sim 自己的缺省决定（$MYBOT_HOME/maps/default.scene，
+# 缺失则从仓库 sim/scenes 播种一份）。agent/人搬动过的环境**退出时自动写回**那份地图
+# （sim 捕获本脚本 cleanup 的 SIGTERM 优雅退出并 saveScene；S 键 / save 指令仍可手动
+# 写回），下次跑 demo 从改过的环境继续；仓库 sim/scenes/* 从此只读，不再被弄脏。
+# 想指定别的布局：MYBOT_SIM_SCENE=my_map（裸名 → maps/my_map.scene）或显式路径。
+if [ -n "${MYBOT_SIM_SCENE:-}" ]; then
+	MYBOT_SIM_SCENE="$MYBOT_SIM_SCENE" "$SIM_BIN" >"$SIM_LOG" 2>&1 &
+else
+	"$SIM_BIN" >"$SIM_LOG" 2>&1 &
+fi
 SIM_PID=$!
 wait_sock "$SIM_SOCK" 60 "sim 命令桥" "$SIM_LOG" || exit 1
 
@@ -143,8 +176,12 @@ for line in sys.stdin:
 FEED_PID=$!
 
 # agent 在前台：stdout(流式叙述)+stderr(就绪行/重试) 合流，经 tee 上屏并落盘。
+# 缺省 --new-session：演示是「每次新任务」，把上一次对话灌进上下文既干扰又烧 token。
+# 想验证「重启记得上次对话」，用 DEMO_RESUME=1 去掉该开关（stderr 会打印会话落点）。
+NEW_SESSION_FLAG="--new-session"
+[ "${DEMO_RESUME:-0}" = "1" ] && NEW_SESSION_FLAG=""
 BOT4CJ_LLM_KEY="${BOT4CJ_LLM_KEY:-}" "$AGENT_BIN" --socket "$MCP_SOCK" \
-	--llm-config "$LLM_CFG" --task "$TASK" 2>&1 | tee "$AOUT"
+	--llm-config "$LLM_CFG" $NEW_SESSION_FLAG --task "$TASK" 2>&1 | tee "$AOUT"
 rc=${PIPESTATUS[0]}
 
 echo

@@ -111,6 +111,9 @@ fi
 
 tmp="$(mktemp -d)"
 touch "$tmp/.t0"	# 时间基点：R16 用它反证管道面场景没写缺省历史文件
+# 会话持久化默认开启：把状态目录（对话历史 + 地图）隔离到临时目录，R1-R18 的缺省
+# 落盘全落这里，绝不碰真实 $HOME/.mybot（HOME 不动，R16 的 XDG 断言语义不变）。
+export MYBOT_HOME="$tmp/mybot-home"
 SRV=""
 BACKPID=""
 cleanup() {
@@ -1460,6 +1463,148 @@ else
 fi
 check_present "$R17B/err.txt" "auth required" "R17 反面：报错指明需要首帧认证"
 check_present "$R17B/backend.log" "首帧认证失败" "R17 反面：后端日志点名认证失败"
+
+# ---- R18：缺省家目录会话持久化（2026-10-03 家目录持久化批次）----
+# 不给 --session-file 时对话历史缺省落 $MYBOT_HOME/robots/<机器人>/sessions/：
+# 进程一新建一段；进程二同命令**默认续接**（首个请求带着进程一的收尾回答）；
+# 进程三 --new-session 另开一段、不带旧历史。负路径把当前段头改坏：缺省命令必须
+# 退 0（告警不中止）、自动开新段、旧段原样保留。R11 的显式路径语义不变（上面守）。
+echo "----- R18：缺省家目录会话持久化（新建/续接/--new-session/损坏降级）-----"
+R18="$tmp/rust18"
+mkdir -p "$R18"
+# R18 换一个干净的 MYBOT_HOME：缺省机器人就是 R1-R17 一直在用的 relay-test，共享目录
+# 里已留有若干段，会把下面的段数断言弄失真。独立状态目录只作用于 R18，对真实
+# $HOME/.mybot 的反证（段末）照旧成立。
+export MYBOT_HOME="$tmp/mybot-home-r18"
+mkdir -p "$MYBOT_HOME"
+# 段与指针都只在本次运行的机器人目录下。R1-R17 已在共享 MYBOT_HOME 里给别的机器人
+# 留了段，故**不能**沿 $MYBOT_HOME/robots/* 通配取目录——那会命中无关机器人。本段从
+# 进程一启动期打印的「会话落点」定位自己的目录（那条日志本就是本批需求的一部分）。
+SESS_DIR=""
+seg_count() { ls -1 "$SESS_DIR"/*.jsonl 2>/dev/null | wc -l | tr -d ' '; }
+latest_name() { cat "$SESS_DIR/latest" 2>/dev/null; }
+log_session_path() { # $1=agent stderr 日志 → 打印「会话落点」里的段路径
+	sed -n 's/.*会话落点: \([^（]*\.jsonl\).*/\1/p' "$1" | tail -1
+}
+
+# 进程一：全新会话（无 --session-file / --new-session），完整跑完工具循环
+PORT=$((25800 + RANDOM % 300))
+CAPR18A="$tmp/req-rust18a.json"
+start_server "$PORT" "$CAPR18A" ok || exit 1
+start_backend "$R18/p1" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R18/p1/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --task "$TASK" >"$R18/p1-out.txt" 2>"$R18/p1-err.txt"
+rcr18a=$?
+stop_backend
+stop_server
+if [ "$rcr18a" -eq 0 ]; then
+	echo "  [OK] R18 进程一：缺省落盘正常完成（退出码 0）"
+else
+	echo "  [FAIL] R18 进程一退出码 $rcr18a"; tail -5 "$R18/p1-err.txt" | sed 's/^/    /'; fail=1
+fi
+check_present "$R18/p1-err.txt" "会话落点" "启动期打印会话落点（家目录来源）"
+check_present "$R18/p1-out.txt" "AGENT-E2E-完成" "进程一完整跑完工具循环"
+
+SESS_DIR="$(dirname "$(log_session_path "$R18/p1-err.txt")")"
+SEG1="$(latest_name)"
+if [ -n "$SESS_DIR" ] && [ "$(seg_count)" = "1" ] && [ -n "$SEG1" ]; then
+	echo "  [OK] R18 进程一：家目录建出 1 个段且当前段指针有内容（$SESS_DIR）"
+else
+	echo "  [FAIL] R18 进程一：段文件/指针不对（dir=$SESS_DIR count=$(seg_count) latest=$SEG1）"; fail=1
+fi
+check_present "$SESS_DIR/$SEG1" '"type":"session_head"' "段首行是会话头"
+check_present "$SESS_DIR/$SEG1" '"role":"assistant"' "段落里写了 assistant 消息"
+if [ "$(stat -c '%a' "$SESS_DIR" 2>/dev/null)" = "700" ] &&
+	[ "$(stat -c '%a' "$SESS_DIR/$SEG1" 2>/dev/null)" = "600" ] &&
+	[ "$(stat -c '%a' "$SESS_DIR/latest" 2>/dev/null)" = "600" ]; then
+	echo "  [OK] R18：会话目录 0700 / 段与指针 0600"
+else
+	echo "  [FAIL] R18：权限不对（dir $(stat -c '%a' "$SESS_DIR" 2>/dev/null) 段 $(stat -c '%a' "$SESS_DIR/$SEG1" 2>/dev/null) 指针 $(stat -c '%a' "$SESS_DIR/latest" 2>/dev/null)）"; fail=1
+fi
+
+# 进程二：同命令（无 --new-session）→ 默认续接；relay 剧本只在看到旧历史时才答
+# 一句专属回答，故它既是「真的读回了历史」也是「重启不忘记」的决定性判据。
+PORT=$((26100 + RANDOM % 300))
+CAPR18B="$tmp/req-rust18b.json"
+start_server "$PORT" "$CAPR18B" relay || exit 1
+start_backend "$R18/p2" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R18/p2/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --task "接着上次说" >"$R18/p2-out.txt" 2>"$R18/p2-err.txt"
+rcr18b=$?
+stop_backend
+stop_server
+if [ "$rcr18b" -eq 0 ]; then
+	echo "  [OK] R18 进程二：缺省续接完成（退出码 0）"
+else
+	echo "  [FAIL] R18 进程二退出码 $rcr18b"; tail -5 "$R18/p2-err.txt" | sed 's/^/    /'; fail=1
+fi
+check_present "$R18/p2-err.txt" "已恢复会话" "进程二默认续接（stderr 报已恢复）"
+check_present "$R18/p2-out.txt" "AGENT-E2E-RELAY-完成" "进程二首个请求带旧历史（relay 一句专属回答）"
+check_json "$CAPR18B" "any(m.get('role')=='assistant' and 'AGENT-E2E-完成' in str(m.get('content','')) for m in d['messages'])" \
+	"进程二首个请求里带着进程一的收尾回答"
+if [ "$(seg_count)" = "1" ] && [ "$(latest_name)" = "$SEG1" ]; then
+	echo "  [OK] R18：续接写回同一段（段数 1、指针未变）"
+else
+	echo "  [FAIL] R18：续接却新开了段（count=$(seg_count) latest=$(latest_name)）"; fail=1
+fi
+
+# 进程三：--new-session → 新开一段；relay 剧本无历史即走完整工具循环（证明没带旧历史）
+PORT=$((26400 + RANDOM % 300))
+start_server "$PORT" "$tmp/req-rust18c.json" relay || exit 1
+start_backend "$R18/p3" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R18/p3/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --new-session --task "另起一段" >"$R18/p3-out.txt" 2>"$R18/p3-err.txt"
+rcr18c=$?
+stop_backend
+stop_server
+if [ "$rcr18c" -eq 0 ]; then
+	echo "  [OK] R18 进程三：--new-session 完成（退出码 0）"
+else
+	echo "  [FAIL] R18 进程三退出码 $rcr18c"; tail -5 "$R18/p3-err.txt" | sed 's/^/    /'; fail=1
+fi
+check_absent "$R18/p3-err.txt" "已恢复会话" "--new-session 不续接（stderr 无「已恢复会话」）"
+check_present "$R18/p3-out.txt" "AGENT-E2E-完成" "--new-session 首轮无旧历史，走完整工具循环"
+SEG3="$(latest_name)"
+if [ "$(seg_count)" = "2" ] && [ "$SEG3" != "$SEG1" ] && [ -f "$SESS_DIR/$SEG1" ]; then
+	echo "  [OK] R18：--new-session 新开一段、指针改指、旧段保留"
+else
+	echo "  [FAIL] R18：--new-session 段数/指针不对（count=$(seg_count) latest=$SEG3）"; fail=1
+fi
+
+# 负路径：改坏当前段头 → 缺省命令退 0、告警一次并自动开新段，旧段原样保留
+echo "----- R18 负路径：当前段损坏，告警并自动开新段 -----"
+printf '%s\n' '{"role":"user","content":"坏段"}' > "$SESS_DIR/$SEG3"
+PORT=$((26700 + RANDOM % 300))
+start_server "$PORT" "$tmp/req-rust18d.json" text || exit 1
+start_backend "$R18/p4" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R18/p4/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --task "坏段之后" >"$R18/p4-out.txt" 2>"$R18/p4-err.txt"
+rcr18d=$?
+stop_backend
+stop_server
+if [ "$rcr18d" -eq 0 ]; then
+	echo "  [OK] R18 负路径：段损坏时缺省命令退 0（告警不中止）"
+else
+	echo "  [FAIL] R18 负路径：应退 0，实际 $rcr18d"; tail -5 "$R18/p4-err.txt" | sed 's/^/    /'; fail=1
+fi
+check_present "$R18/p4-err.txt" "已新开一段" "告警点明已开新段"
+if [ "$(seg_count)" = "3" ] && [ "$(latest_name)" != "$SEG3" ] && [ -f "$SESS_DIR/$SEG3" ]; then
+	echo "  [OK] R18 负路径：旧（坏）段原样保留、指针改指新段"
+else
+	echo "  [FAIL] R18 负路径：段数/指针不对（count=$(seg_count) latest=$(latest_name)）"; fail=1
+fi
+
+# 反证：真实 $HOME/.mybot 未被本次运行触碰（MYBOT_HOME 隔离生效；照 R16 的 .t0 写法）
+DEF_MYBOT="$HOME/.mybot"
+if [ -e "$DEF_MYBOT" ] && [ "$DEF_MYBOT" -nt "$tmp/.t0" ]; then
+	echo "  [FAIL] R18：真实 \$HOME/.mybot 被触碰（MYBOT_HOME 隔离失效）"; fail=1
+else
+	echo "  [OK] R18：真实 \$HOME/.mybot 未被触碰"
+fi
 
 if [ "$fail" -eq 0 ]; then
 	echo "mybot-agent 端到端测试通过"

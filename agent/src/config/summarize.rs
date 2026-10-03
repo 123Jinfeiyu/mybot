@@ -3,7 +3,7 @@
 //! **只渲染、不判定**（校验单点在 mod.rs 的 build），密钥**只报来源不报值**
 //! （与 C++ `summarizeAgentConfig` 同契约）。
 
-use super::Config;
+use super::{Config, SessionPathSource};
 
 /// 配置摘要（`--check-config`）：**只渲染、不判定**（校验单点在 [`build`]），
 /// 密钥**只报来源不报值**（与 C++ `summarizeAgentConfig` 同契约）。
@@ -98,14 +98,34 @@ pub fn summarize(cfg: &Config) -> String {
         cfg.max_retries, cfg.retry_backoff_ms
     );
     s += &format!("  审计轨迹    : {}\n", or_none(&cfg.audit_log, "(未开启)"));
+    // 状态目录与落点：`--check-config` 在连后端之前返回，此刻还拿不到机器人名，
+    // 故只报**根与模式**，不臆造具体落点（具体落点由启动时的 stderr 行给出）。
+    let dir_source = match cfg.state_dir_source {
+        "env" => "环境变量 MYBOT_HOME",
+        "home" => "家目录",
+        _ => "不可用",
+    };
+    s += &format!(
+        "  状态目录    : {}{}\n",
+        or_none(&cfg.state_dir, "(不可用)"),
+        if cfg.state_dir_ok {
+            format!("（来源 {dir_source}）")
+        } else {
+            String::new()
+        }
+    );
     s += &format!(
         "  会话持久化  : {}\n",
-        if cfg.session_file.is_empty() {
-            "(未开启)".to_string()
-        } else if cfg.resume {
-            format!("{}（--resume）", cfg.session_file)
-        } else {
-            cfg.session_file.clone()
+        match cfg.session_path_source {
+            SessionPathSource::Cli if cfg.resume => format!("{}（--resume）", cfg.session_file),
+            SessionPathSource::Cli => cfg.session_file.clone(),
+            SessionPathSource::Config =>
+                format!("{}（配置文件来源，只写不可读）", cfg.session_file),
+            SessionPathSource::Default if !cfg.state_dir_ok =>
+                "(未开启：无家目录，可用 MYBOT_HOME 指定)".to_string(),
+            SessionPathSource::Default if cfg.new_session =>
+                format!("{}（--new-session：强制新开一段）", cfg.state_dir),
+            SessionPathSource::Default => format!("{}（缺省按机器人续接上一次）", cfg.state_dir),
         }
     );
     if !cfg.config_warning.is_empty() {

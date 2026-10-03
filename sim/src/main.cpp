@@ -24,6 +24,7 @@
 #include "shaders.h"
 #include "sim_config.h"
 #include "sim_engine.h"
+#include "sim_paths.h"
 #include "spider.h"
 #include "world.h"
 
@@ -152,6 +153,57 @@ void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureB
     glfwSetWindowTitle(window, title);
 }
 
+// 场景落点：argv[4] > MYBOT_SIM_SCENE > 缺省裸名 "default"（家目录地图目录）。
+// 裸名字解析为 `<home>/maps/<名字>.scene`，缺失则从仓库模板（`sim/scenes`）播种
+// 一份；含 '/' 的显式路径原样使用。返回空串 = 退回内置默认场景（无家目录 / 无模板 /
+// 建目录失败——绝不让 sim 起不来）。仓库 `sim/scenes/*` 从此只读。
+std::string resolveSceneForRun(int argc, char** argv) {
+    const std::string raw = resolveSocketPath(argc, argv, 4, "MYBOT_SIM_SCENE", "default");
+    if (raw.empty()) {
+        std::fprintf(stderr, "scene: 未指定场景，用内置默认场景\n");
+        return "";
+    }
+    const std::string home = SimPaths::mybotHome();
+    const std::string resolved = SimPaths::resolveScenePath(home, raw);
+    if (resolved.empty()) {
+        std::fprintf(stderr,
+                     "scene: 无状态目录（MYBOT_HOME 与 HOME 都未设置），无法解析 '%s'，"
+                     "退回内置默认场景\n",
+                     raw.c_str());
+        return "";
+    }
+    if (raw.find('/') != std::string::npos) {
+        std::fprintf(stderr, "scene: 场景文件 %s（来源 命令行/环境变量显式路径）\n",
+                     resolved.c_str());
+        return resolved;
+    }
+    const std::string maps = SimPaths::mapsDir(home);
+    std::string err;
+    if (!SimPaths::ensureDir0700(home, &err) || !SimPaths::ensureDir0700(maps, &err)) {
+        std::fprintf(stderr, "scene: 无法准备地图目录（%s），退回内置默认场景\n", err.c_str());
+        return "";
+    }
+    const std::size_t slash = resolved.rfind('/');
+    const std::string base = slash == std::string::npos ? resolved : resolved.substr(slash + 1);
+    const std::string tmpl = SimPaths::templateScene(base);
+    if (tmpl.empty()) {
+        std::fprintf(stderr,
+                     "scene: 未找到模板 %s（MYBOT_SIM_SCENES_DIR 未命中，且 exe 相对 scenes "
+                     "不存在），退回内置默认场景\n",
+                     base.c_str());
+        return "";
+    }
+    bool seeded = false;
+    if (!SimPaths::seedSceneIfMissing(resolved, tmpl, &seeded, &err)) {
+        std::fprintf(stderr, "scene: 播种 %s 失败（%s），退回内置默认场景\n", resolved.c_str(),
+                     err.c_str());
+        return "";
+    }
+    std::fprintf(stderr, "scene: 场景文件 %s（来源 %s）\n", resolved.c_str(),
+                 seeded ? "仓库模板播种" : "家目录已有");
+    return resolved;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -218,10 +270,11 @@ int main(int argc, char** argv) {
     Shader lines(kLineVs, kLineFs);
     SceneMeshes meshes = buildSceneMeshes();
 
-    // 场景：argv[4] > MYBOT_SIM_SCENE > 内置默认（空串=内置）。环境与代码解耦
-    // 的落点：障碍布局与机器人数量都来自文件。save 只写这个启动时定下的路径——
-    // socket 线上不收路径参数，杜绝「连任意文件写」原语（与 Camera.lua 同源）。
-    const std::string scenePath = resolveSocketPath(argc, argv, 4, "MYBOT_SIM_SCENE", "");
+    // 场景：argv[4] > MYBOT_SIM_SCENE > 缺省裸名 default，落家目录地图目录
+    // （见 resolveSceneForRun）。环境与代码解耦的落点：障碍布局与机器人数量都来自
+    // 文件。save 只写这个启动时定下的路径——socket 线上不收路径参数，杜绝「连任意
+    // 文件写」原语（与 Camera.lua 同源）。
+    const std::string scenePath = resolveSceneForRun(argc, argv);
 
     // 仿真逻辑（场景会话 + 每帧推进 + 指令派发）全在 GL 无关的 SimEngine 里，
     // 可 headless 单测；壳只负责窗口/输入/渲染/HUD，把语义动作喂引擎再 step()。

@@ -169,7 +169,8 @@ mybot 侧两个消费者：`Sim.lua` 的 `range()`（动作脚本可用）与 C+
 障碍布局与机器人数量都是**数据不是代码**：`sim/scenes/default.scene`（单机器人，
 行文本，与三桥协议同风格，可手编可 diff）、`sim/scenes/two_robots.scene`（双机器人
 v2 示例）。C++ 里的 `World::defaultScene()` 只是无场景文件时的内置回落，与
-default.scene 保持同值。
+default.scene 保持同值。**仓库里这两份现只作播种模板**：运行时缺省落点是家目录
+地图目录（见下「路径解析」），首次运行从模板拷一份过去，仓库文件不再被弄脏。
 
 ```
 mybot-sim scene v3            ← 首行魔数 v1/v2/v3，缺了整文件拒绝
@@ -189,15 +190,29 @@ robot 0  1.5 0
 `sim/tests` 有 v1/v2/v3 round-trip、多 robot 行、缺 robot 行补默认、朝向几何
 （测距/碰撞/拾取的 yaw 影响）与容错解析的守门。
 
-**路径解析**：`argv[4] > env MYBOT_SIM_SCENE > 内置默认`（空=内置）。文件读失败
-回落内置并告警，不开黑屏世界。
+**路径解析**：`argv[4] > env MYBOT_SIM_SCENE > 缺省裸名 "default"`，落点按名字形态分两种：
+
+- **含 `/` 的显式路径**原样使用（来源标「命令行/环境变量显式路径」）；
+- **裸名**（`default`、`my_map`…）解析为 **`$MYBOT_HOME/maps/<名字>.scene`**（`$MYBOT_HOME`
+  缺省 `$HOME/.mybot`）。首次缺失时从仓库模板 `sim/scenes/<名字>.scene` **播种**一份
+  （临时文件 + rename，`0600`；**已存在绝不覆盖**——那是用户/agent 改过的地图）；
+- **退回内置**：无状态目录（`MYBOT_HOME` 与 `HOME` 都空）/ 找不到模板 / 建目录或播种
+  失败 → 打印原因并退回内置默认场景，**绝不让 sim 起不来**。
+- 启动时把**实际落点**打到 stderr（`scene: 场景文件 <路径>（来源 家目录已有/仓库模板播种）`）。
+- 场景文件读失败同样回落内置并告警，不开黑屏世界。
+
+> 「配置只能收紧不能放宽」在这里的体现：模板目录由编译期定义
+> `MYBOT_SIM_SCENES_DIR`（照 `MYBOT_MODULES_DIR` 先例）+ `/proc/self/exe` 相对回退两级
+> 定位，运行期不接受任意模板路径；`MYBOT_SIM_SCENE` 仍只决定**写回哪一份**，线上协议
+> 从不收路径参数。
 
 **保存**：`S` 键、命令桥 `save` 指令（动作码 9）、**或退出时自动**把当前世界状态
-（障碍位置 + **全部机器人**位姿 + 各自搬运状态）**原子写回**（先落 `.tmp` 再 rename）
-启动时配置的场景文件。线上不接受路径参数——只写本进程启动时定下的那一个文件，与
-Camera.lua「杜绝连任意 socket」同源的安全口径。`sim_agent_demo.sh` 缺省把
-`sim/scenes/default.scene` 传给 sim，agent 搬动过的环境可以经 save 存下来、
-下次续用。
+（障碍位置 + **全部机器人**位姿 + 各自搬运状态）**原子写回**（先落 `.tmp`、`chmod 0600`、
+再 rename）启动时配置的场景文件——与播种出来的那份同为 `0600`，不会因 `fopen` 的缺省
+权限变成组/他人可读。线上不接受路径参数——只写本进程启动时定下的那一个文件，与
+Camera.lua「杜绝连任意 socket」同源的安全口径。`sim_agent_demo.sh` 缺省**不再显式传
+场景**：由 sim 自己落 `$MYBOT_HOME/maps/default.scene`（缺失则从仓库模板播种），agent
+搬动过的环境经 save 存回这里、下次续用；仓库 `sim/scenes/*` 从此只读。
 
 **退出即保存**：ESC、点窗口 X、Ctrl-C（SIGINT）、以及 demo 拆链路的 SIGTERM 都走
 同一条「保存再退」的路——`main.cpp` 把 SIGTERM/SIGINT 折成一个 async-signal-safe

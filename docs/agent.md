@@ -628,6 +628,36 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   --session-file /var/lib/mybot/s.jsonl --resume
 ```
 
+### 缺省落点与自动续接（`$MYBOT_HOME`，2026-10-03）
+
+不给 `--session-file` 时，对话历史**缺省就落盘**，按机器人归档并缺省续接上一次：
+
+- **状态目录**：环境变量 `MYBOT_HOME` > `$HOME/.mybot`。首次运行自动逐级建目录（`0700`）。
+  启动时把**实际落点**打印到 stderr（`会话落点: <路径>（新建 | 续接上一次；状态目录来源 …）`）。
+- **布局**：`$MYBOT_HOME/robots/<机器人>/sessions/<UTC 时间戳>.jsonl`，另有 `sessions/latest`
+  指针文件（`0600`）记「当前段」。`<机器人>` 取自结构脚本展示名，经安全归一（不安全字符
+  折叠、数字开头补 `_`、超长截断，仅改写时追加指纹短哈希）。段文件以 `O_EXCL` 原子创建，
+  同名冲突自动加 `-<pid>`／序号后缀。
+- **缺省续接**：交互 REPL 与 `--task` 都**默认续接**该机器人最近一段（等价于把 `--resume`
+  自动指向 `sessions/latest`）。要每次新开一段用 **`--new-session`**；它与 `--resume` 互斥，
+  同给退出 2。
+- **续接失败不中止**：缺省路径下，段头损坏 / 指纹不符 / 协议不自洽时**告警一次并自动新开
+  一段**，旧段原样保留、进程退 0（现场重启不该被一份坏文件挡住）。显式 `--resume` 仍按上面
+  「三道判据」报错退出 2——显式要求恢复却恢复不了，必须响亮失败。
+- 显式 `--session-file <路径>` 的语义完全不变：本机制只作用于「不给路径」的缺省情形，
+  且缺省布局没有显式路径的「已恢复/退出 2」概念（降级即新开段）。
+
+```bash
+# 缺省：跑完落 $MYBOT_HOME/robots/<机器人>/sessions/<时间戳>.jsonl，下次同机器人自动续接
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "看看硬件"
+
+# 想每次都从干净上下文开始
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --new-session --task "看看硬件"
+
+# 换状态目录（对话历史与 sim 地图都跟着走）
+MYBOT_HOME=/var/lib/mybot ./agent/target/release/mybot-agent --socket /tmp/mybot.sock
+```
+
 ## 远程对话（已评估，不做）
 
 > **决策（2026-09-25）**：agent over TCP 远程 REPL **不做**——随 C++ agent 移除后
@@ -1095,9 +1125,11 @@ bash test/run_all.sh agent-all
   以引用/流式形态穿过这条链），本版未做。小内存现场（树莓派 Zero 级）请留意：
   一次拍照的瞬时占用可达数十 MiB，而 OOM 会跳过 `deactivate()`。
 - ~~无记忆持久化（重启即忘）~~ → **已解决**（`--session-file` / `--resume`，
-  批次 D，Rust `mybot-agent` 实现，见「会话持久化」节）。
+  批次 D，Rust `mybot-agent` 实现，见「会话持久化」节）。2026-10-03 起更进一步：
+  **不给路径也缺省落盘**（`$MYBOT_HOME/robots/<机器人>/sessions/`）并默认续接上一次，
+  见「缺省落点与自动续接」小节。
   边界：图片不随会话恢复（以占位文本在列）；system 提示词/工具集/结构脚本变了会
-  拒绝恢复（指纹核对）。
+  拒绝恢复（指纹核对；缺省路径下改为告警并新开一段，显式 `--resume` 则退出 2）。
 - ~~只实现了两个 OpenAI 兼容协议驱动~~ → **已解决**（`LlmAnthropic` 协议族，批次 3，
   现与 OpenAI 兼容 / DeepSeek 三族一起内建于 Rust 侧 `agent/src/provider.rs`）。
   协议差异全部收敛在 rig 的 provider 实现里，接入非 OpenAI 形态的厂商在 Rust 侧

@@ -7,11 +7,13 @@
 // socket 用例的监听路径带 pid，与开发会话里可能开着的真仿真器互不干扰。
 
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -30,6 +32,7 @@
 #include "sensor.h"
 #include "sim_config.h"
 #include "sim_engine.h"
+#include "sim_paths.h"
 #include "world.h"
 
 namespace {
@@ -1409,6 +1412,97 @@ void testJump() {
     }
 }
 
+// ---- 状态目录路径（SimPaths）：家目录链、场景路径解析、建目录 0700、播种 ----
+
+void testSimPaths() {
+    const std::string tag = std::to_string(::getpid());
+    const std::string root = "/tmp/mybot-sim-tests-" + tag + "-paths";
+
+    // 本用例会改 HOME / MYBOT_HOME，用完原样还原，不给后续用例留环境副作用
+    const char* oldHome = std::getenv("HOME");
+    const std::string savedHome = oldHome ? oldHome : "";
+    const char* oldMh = std::getenv("MYBOT_HOME");
+    const std::string savedMh = oldMh ? oldMh : "";
+
+    // mybotHome：MYBOT_HOME > HOME/.mybot > 空（顺序执行，故 setenv 安全）
+    ::setenv("MYBOT_HOME", root.c_str(), 1);
+    check(SimPaths::mybotHome() == root, "mybotHome 取 MYBOT_HOME");
+    ::unsetenv("MYBOT_HOME");
+    ::setenv("HOME", "/home/testuser", 1);
+    check(SimPaths::mybotHome() == "/home/testuser/.mybot", "mybotHome 回落 $HOME/.mybot");
+    ::unsetenv("HOME");
+    check(SimPaths::mybotHome().empty(), "两处都没有 → 空家目录");
+
+    // mapsDir / resolveScenePath
+    check(SimPaths::mapsDir(root) == root + "/maps", "mapsDir 拼 /maps");
+    check(SimPaths::mapsDir("").empty(), "mapsDir 空家目录 → 空");
+    check(SimPaths::resolveScenePath(root, "").empty(), "空场景名 → 空");
+    check(SimPaths::resolveScenePath(root, "default") == root + "/maps/default.scene",
+          "裸名 → <maps>/<名>.scene");
+    check(SimPaths::resolveScenePath(root, "sim/scenes/x.scene") == "sim/scenes/x.scene",
+          "含 '/' 的显式路径原样");
+    check(SimPaths::resolveScenePath("", "default").empty(), "无家目录 + 裸名 → 空");
+    check(SimPaths::resolveScenePath("", "/abs/x.scene") == "/abs/x.scene",
+          "无家目录 + 绝对路径仍原样");
+
+    // ensureDir0700：逐级建出且只对新建层级设 0700
+    const std::string deep = root + "/a/b/c";
+    std::string err;
+    check(SimPaths::ensureDir0700(deep, &err), "ensureDir0700 成功");
+    for (const std::string& p : {root, root + "/a", root + "/a/b", deep}) {
+        struct stat st;
+        const bool ok = ::stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode);
+        check(ok, "目录建出");
+        check(ok && (st.st_mode & 0777) == 0700, "目录权限 0700");
+    }
+    check(SimPaths::ensureDir0700(deep, &err), "ensureDir0700 幂等（已存在不报错）");
+
+    // seedSceneIfMissing：缺 → 复制且 0600，无 .tmp 残留
+    const std::string tmpl = root + "/tmpl.scene";
+    writeTextFile(tmpl, "mybot-sim scene v3\nbox 1 0.2 0 0.2 0.2 0.2 1 0 0\n");
+    check(SimPaths::ensureDir0700(root + "/maps", &err), "先备好 maps 目录");
+    const std::string dest = root + "/maps/default.scene";
+    bool seeded = false;
+    check(SimPaths::seedSceneIfMissing(dest, tmpl, &seeded, &err), "播种成功");
+    check(seeded, "首次播种 seeded=true");
+    {
+        struct stat st;
+        check(::stat(dest.c_str(), &st) == 0 && S_ISREG(st.st_mode), "播种出目标文件");
+        check((st.st_mode & 0777) == 0600, "播种文件权限 0600");
+        std::ifstream in(dest);
+        std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        check(body.find("mybot-sim scene v3") == 0, "播种内容与模板一致");
+        check(::access((dest + ".tmp." + tag).c_str(), F_OK) != 0, "无 .tmp 残留");
+    }
+
+    // 已存在 → 绝不覆盖（seeded=false）
+    writeTextFile(dest, "已存在的内容\n");
+    seeded = true;
+    check(SimPaths::seedSceneIfMissing(dest, tmpl, &seeded, &err), "已存在时返回成功");
+    check(!seeded, "已存在不覆盖 seeded=false");
+    {
+        std::ifstream in(dest);
+        std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        check(body == "已存在的内容\n", "既有内容未被改写");
+    }
+
+    // templateScene：编译期先例指向源码树 sim/scenes，故缺省模板能命中
+    check(!SimPaths::templateScene("default.scene").empty(),
+          "templateScene 命中源码树 sim/scenes/default.scene");
+    check(SimPaths::templateScene("no-such-scene.scene").empty(), "不存在的模板 → 空");
+
+    if (oldHome) {
+        ::setenv("HOME", savedHome.c_str(), 1);
+    } else {
+        ::unsetenv("HOME");
+    }
+    if (oldMh) {
+        ::setenv("MYBOT_HOME", savedMh.c_str(), 1);
+    } else {
+        ::unsetenv("MYBOT_HOME");
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -1423,6 +1517,7 @@ int main() {
     testPlaceResolve();
     testStacking();
     testSceneIo();
+    testSimPaths();
     testActionTable();
     testSharedConstants();
     testCommandBridge();
