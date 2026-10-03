@@ -149,9 +149,12 @@ bool resolveSphereOBB2D(float& sx, float& sz, float radius,
     return true;
 }
 
-// 放置解算用常量：贴合判定留的缝隙、迭代放宽重推的最大轮数。
+// 放置解算用常量：贴合判定留的缝隙、迭代放宽重推的最大轮数、单次放置允许累计
+// 推出的总距离上限（防「深嵌 / 多堵墙连环顶」把箱子推到离机器人很远甚至身后——
+// 超限视为几何不可行，place() 直接失败而不是硬塞一个离谱的结果）。
 constexpr float kPlaceEps = 1e-3f;
 constexpr int kMaxPlaceIter = 8;
+constexpr float kMaxPlacePush = 3.0f;
 
 // OBB 在给定世界法向上的投影半径（SAT 用）：half.x*|uX·n| + half.z*|uZ·n|，
 // 其中局部 +X 世界方向 uX=(cos,-sin)、+Z 为 uZ=(sin,cos)（与 worldToLocal2D 一致）。
@@ -196,6 +199,15 @@ bool wallVerticalConflict(const Obstacle& oth, float releaseBottom, float suppor
 float nearSidePush(const Obstacle& ob, const Obstacle& oth, float fx, float fz) {
     const float s = (ob.center.x - oth.center.x) * fx + (ob.center.z - oth.center.z) * fz;
     return s + obbProjRadius(ob, fx, fz) + obbProjRadius(oth, fx, fz) + kPlaceEps;
+}
+
+// 两盒是否真正 3D 重叠：竖直区间相交 + XZ 投影重叠。place() 写回前用它做最终
+// 校验——不信任「墙/支撑」的预分类（那是基于释放高度的启发式），直接按放置后
+// 的最终位姿判一次事实，兜底仍不收敛时能被这里拦下而不是悄悄放行。
+bool overlaps3D(const Obstacle& a, const Obstacle& b) {
+    const bool vOverlap = (a.center.y - a.half.y) < (b.center.y + b.half.y) &&
+                          (b.center.y - b.half.y) < (a.center.y + a.half.y);
+    return vOverlap && obbOverlapXZ(a, b);
 }
 
 }  // namespace
@@ -280,6 +292,23 @@ float World::queryRange(const Robot& robot, float maxRange) const {
     return nearest;
 }
 
+bool World::isObstacleCovered(int idx) const {
+    const Obstacle& base = obstacles_[idx];
+    const float top = base.center.y + base.half.y;
+    for (int i = 0; i < (int)obstacles_.size(); ++i) {
+        if (i == idx) continue;
+        const Obstacle& other = obstacles_[i];
+        const float bottom = other.center.y - other.half.y;
+        // 贴合判定：other 的底面落在 base 顶面的 kGroundSnapTol 容差带内，
+        // 且两者 XZ 有重叠——即 other 搭在 base 上面（哪怕只搭一个边角，
+        // 偏保守：宁可多拒绝拾取，也不悄悄抽掉下层留个悬空的上层）。
+        if (std::abs(bottom - top) <= Robot::kGroundSnapTol && obbOverlapXZ(base, other)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool World::pick(Robot& robot) {
     if (robot.isCarrying()) {
         return false;  // 该机器人已搬运
@@ -317,6 +346,9 @@ bool World::pick(Robot& robot) {
     }
 
     if (bestIdx >= 0) {
+        if (isObstacleCovered(bestIdx)) {
+            return false;  // 上面贴着别的箱子，抽不出来
+        }
         robot.setCarried(bestIdx, obstacles_[bestIdx].mass);
         return true;
     }
@@ -329,11 +361,16 @@ bool World::place(Robot& robot) {
         return false;
     }
 
-    auto& ob = obstacles_[idx];
-    // f = 机器人前方，也恰是待放盒的局部 +X（下面 ob.yaw=robot.theta()），故是 SAT 候选轴。
+    // 在局部副本上做几何解算，只有最终校验通过才写回 obstacles_[idx]：
+    // 几何不可行（兜底仍重叠、或推出距离超限）时宁可响亮失败、物体留在搬运态，
+    // 也不要硬塞一个可能与别的箱子重叠的结果（与本仓「宁可报错不给假数据」同口径）。
+    Obstacle candidate = obstacles_[idx];
+
+    // f = 机器人前方，也恰是待放盒的局部 +X（下面 candidate.yaw=robot.theta()），
+    // 故是 SAT 候选轴。
     const float fx = std::cos(robot.theta());
     const float fz = -std::sin(robot.theta());
-    // 松手瞬间背着的物体底面所在高度。用机器人姿态推算，而不是读 ob.center.y——
+    // 松手瞬间背着的物体底面所在高度。用机器人姿态推算，而不是读 candidate.center.y——
     // pick 与 place 可能落在同一帧的事件批里，那时 updateCarried 还没跑过。
     const float releaseBottom = robot.y() + Robot::kBodyY + Robot::kBodyHeight + kCarryLift;
     // 「地板高度」＝机器人脚下（与 resolveCollisions/supportHeight 同口径）：顶面不高于
@@ -342,44 +379,60 @@ bool World::place(Robot& robot) {
     const float supportTop = robot.y() + Robot::kGroundSnapTol;
 
     // 先定 XZ 与朝向（y 留到 Phase B 按最终脚印的支撑面算）
-    ob.center.x = robot.x() + fx * (Robot::kBodyLength * 0.5f + kPlaceDist);
-    ob.center.z = robot.z() + fz * (Robot::kBodyLength * 0.5f + kPlaceDist);
-    ob.yaw = robot.theta();
+    candidate.center.x = robot.x() + fx * (Robot::kBodyLength * 0.5f + kPlaceDist);
+    candidate.center.z = robot.z() + fz * (Robot::kBodyLength * 0.5f + kPlaceDist);
+    candidate.yaw = robot.theta();
 
     // Phase A：把待放盒从「墙」（竖直冲突且 XZ 重叠的箱）里沿 -f 水平推开，只往机器人
     // 这一侧推、绝不穿到阻挡箱对面。每轮取最严格的一堵墙推，最多 kMaxPlaceIter 轮。
     // 墙集合只依赖 releaseBottom/supportTop（常量），不依赖落地高度，故无「推↔落地」震荡。
+    // 累计推出量超过 kMaxPlacePush 视为不可行（如被巨大/多堵墙连环顶），提前放弃。
     bool resolved = false;
+    bool pushExceeded = false;
+    float totalPush = 0.0f;
     for (int iter = 0; iter < kMaxPlaceIter; ++iter) {
         float push = 0.0f;
         for (int i = 0; i < (int)obstacles_.size(); ++i) {
             if (i == idx) continue;
             const Obstacle& oth = obstacles_[i];
             if (!wallVerticalConflict(oth, releaseBottom, supportTop)) continue;
-            if (!obbOverlapXZ(ob, oth)) continue;
-            push = std::max(push, nearSidePush(ob, oth, fx, fz));
+            if (!obbOverlapXZ(candidate, oth)) continue;
+            push = std::max(push, nearSidePush(candidate, oth, fx, fz));
         }
         if (push <= 0.0f) {
             resolved = true;
             break;
         }
-        ob.center.x -= fx * push;
-        ob.center.z -= fz * push;
+        totalPush += push;
+        if (totalPush > kMaxPlacePush) {
+            pushExceeded = true;
+            break;
+        }
+        candidate.center.x -= fx * push;
+        candidate.center.z -= fz * push;
     }
-    if (!resolved) {
+    if (!resolved && !pushExceeded) {
         // 兜底：迭代未收敛（如两侧都堆着墙）时去掉 overlap 过滤，对全部竖直冲突的墙取
-        // 最严格者再推一次，尽量保证不嵌墙。
+        // 最严格者再推一次，尽量保证不嵌墙；同样受累计推出上限约束。
         float push = 0.0f;
         for (int i = 0; i < (int)obstacles_.size(); ++i) {
             if (i == idx) continue;
             const Obstacle& oth = obstacles_[i];
             if (!wallVerticalConflict(oth, releaseBottom, supportTop)) continue;
-            push = std::max(push, nearSidePush(ob, oth, fx, fz));
+            push = std::max(push, nearSidePush(candidate, oth, fx, fz));
         }
         if (push > 0.0f) {
-            ob.center.x -= fx * push;
-            ob.center.z -= fz * push;
+            totalPush += push;
+            if (totalPush > kMaxPlacePush) {
+                pushExceeded = true;
+            } else {
+                candidate.center.x -= fx * push;
+                candidate.center.z -= fz * push;
+            }
         }
+    }
+    if (pushExceeded) {
+        return false;  // 推出距离超限：几何不可行，放弃本次放置（物体仍背着）
     }
 
     // Phase B：按最终脚印（XZ+yaw）定落地高度——取所有「顶面不高于脚下且脚印重叠」的箱
@@ -390,11 +443,22 @@ bool World::place(Robot& robot) {
         const Obstacle& oth = obstacles_[i];
         const float top = oth.center.y + oth.half.y;
         if (top > supportTop) continue;  // 比脚下高的是墙（Phase A 已处理），不是支撑
-        if (!obbOverlapXZ(ob, oth)) continue;
+        if (!obbOverlapXZ(candidate, oth)) continue;
         if (top > bottom) bottom = top;
     }
-    ob.center.y = bottom + ob.half.y;
+    candidate.center.y = bottom + candidate.half.y;
 
+    // 最终校验：不信任上面基于释放高度的「墙/支撑」启发式分类，直接按放置后的
+    // 最终位姿对全部障碍做一次事实性 3D 重叠检查。兜底仍未收敛的罕见情形会在
+    // 这里被拦下，而不是悄悄放行一个重叠结果。
+    for (int i = 0; i < (int)obstacles_.size(); ++i) {
+        if (i == idx) continue;
+        if (overlaps3D(candidate, obstacles_[i])) {
+            return false;  // 兜底仍无法消除重叠：几何不可行，放弃本次放置
+        }
+    }
+
+    obstacles_[idx] = candidate;
     robot.clearCarried();
     return true;
 }

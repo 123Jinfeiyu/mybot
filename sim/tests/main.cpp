@@ -470,6 +470,58 @@ void testPlaceResolve() {
     }
 }
 
+// ---- World：place 几何不可行时响亮失败（推出超限 / 兜底仍重叠），不留假结果 ----
+
+void testPlaceInfeasible() {
+    // 巨大的墙贴在落点上：单轮 nearSidePush 就远超 kMaxPlacePush(3m)——
+    // 几何上"推得开"但代价离谱，应判不可行而失败，而不是真把箱子推出几米远。
+    {
+        World world(std::vector<Obstacle>{
+            {{5.0f, 0.2f, 5.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},     // idx0 被搬盒
+            {{0.7f, 0.2f, 0.0f}, {10.0f, 0.2f, 10.0f}, {1, 1, 1}, 1.0f},  // idx1 巨墙，正挡在落点上
+        });
+        Robot r;
+        r.setCarried(0, 1.0f);
+        const Obstacle before = world.obstacles()[0];
+        check(!world.place(r), "巨墙挡路：推出距离超限，place 失败");
+        check(r.isCarrying(), "place 失败后物体仍背着");
+        check(r.carriedIndex() == 0, "place 失败后仍是原来那个物体");
+        const Obstacle& after = world.obstacles()[0];
+        check(near(after.center.x, before.center.x, 1e-6f) &&
+                  near(after.center.y, before.center.y, 1e-6f) &&
+                  near(after.center.z, before.center.z, 1e-6f),
+              "place 失败后被搬盒位置未被改动（场景不受污染）");
+    }
+
+    // 多堵薄墙沿 -f 链式排列（相邻间距 0.3m < 箱宽0.4+墙宽0.1，清开一道立刻撞进下一道），
+    // 12 道逼近/超出 Phase A 的 kMaxPlaceIter=8 轮与兜底的处理能力。不预判算法具体在哪
+    // 一轮收敛/放弃，只断言核心安全不变量：成功则真不重叠，失败则物体仍背着、原场景
+    // 不受污染——两者都不接受"返回成功但留下重叠"或"返回失败但场景已被改坏"。
+    {
+        std::vector<Obstacle> obs;
+        obs.push_back({{5.0f, 0.2f, 5.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f});  // idx0 被搬盒
+        for (int i = 0; i < 12; ++i) {
+            const float cx = 0.7f - 0.3f * static_cast<float>(i);
+            obs.push_back({{cx, 0.2f, 0.0f}, {0.05f, 0.2f, 5.0f}, {1, 1, 1}, 1.0f});
+        }
+        World world(obs);
+        Robot r;
+        r.setCarried(0, 1.0f);
+        const Obstacle before = world.obstacles()[0];
+        const bool ok = world.place(r);
+        if (ok) {
+            check(!r.isCarrying(), "连环墙：成功则不再搬运");
+            checkNoOverlapPairs(world);
+        } else {
+            check(r.isCarrying(), "连环墙：失败则物体仍背着");
+            const Obstacle& after = world.obstacles()[0];
+            check(near(after.center.x, before.center.x, 1e-6f) &&
+                      near(after.center.z, before.center.z, 1e-6f),
+                  "连环墙：失败后被搬盒位置未被改动");
+        }
+    }
+}
+
 // ---- World：叠放（机器人站上箱顶松手，物体落在下层箱顶） ----
 
 void testStacking() {
@@ -497,6 +549,37 @@ void testStacking() {
     probe.setPose(0.7f, 0.0f, 0.0f);
     probe.applySupport(0.8f);
     check(near(world.supportHeight(probe), 0.8f, 1e-3f), "叠放：supportHeight 看到新顶面 0.8");
+}
+
+// ---- World：pick 拒绝拿走被压住的下层箱 ----
+
+void testPickBlockedByStack() {
+    // idx0 下层箱（半0.2，顶面0.4）、idx1 贴着其顶面叠放（底面0.4=idx0顶面，
+    // 顶面0.8）。两者 XZ 位置相同，pick() 按 XZ 距离找最近目标时会先命中 idx0
+    // （先入遍历、严格 < 不覆盖），但 idx0 上方贴着 idx1，应拒绝拾取。
+    World world(std::vector<Obstacle>{
+        {{0.7f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 5.0f},  // idx0 下层
+        {{0.7f, 0.6f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // idx1 叠在idx0顶上
+    });
+    Robot r;  // 原点 theta=0 → 前方 +X，前端 x=0.2，距idx0近面 0.5 → 0.3m < 0.6m 可及
+    check(!world.pick(r), "下层箱上方贴着另一箱 → 拒绝拾取");
+    check(!r.isCarrying(), "拒绝拾取后仍未搬运");
+
+    // 拿走上层后，同样的下层箱单独存在时可以正常拾取（回归：不是永久锁死）。
+    Robot r2;
+    World worldAlone(std::vector<Obstacle>{
+        {{0.7f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 5.0f},
+    });
+    check(worldAlone.pick(r2), "移除上层箱后，下层箱可正常拾取");
+    check(r2.carriedIndex() == 0, "拾取到的是下层箱 idx=0");
+
+    // 只有部分 XZ 搭边也算被压住（偏保守：宁可多拒绝）。
+    World worldOverhang(std::vector<Obstacle>{
+        {{0.7f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 5.0f},   // idx0 下层
+        {{0.85f, 0.6f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // idx1 半搭边（中心偏移0.15 < 半宽和0.4）
+    });
+    Robot r3;
+    check(!worldOverhang.pick(r3), "只搭半边也算压住 → 仍拒绝拾取");
 }
 
 // ---- 场景文件：round-trip 与解析容错 ----
@@ -1515,7 +1598,9 @@ int main() {
     testYawCarry();
     testObbOverlap();
     testPlaceResolve();
+    testPlaceInfeasible();
     testStacking();
+    testPickBlockedByStack();
     testSceneIo();
     testSimPaths();
     testActionTable();
