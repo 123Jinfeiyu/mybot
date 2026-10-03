@@ -7,8 +7,8 @@
 //
 // 谁消费它：
 //   * bridge.cpp handleLine —— 按线上名查表分派，不再手写 if-else 字符串链；
-//   * sim/tests/main.cpp    —— 交叉校验 modules/Sim.lua 的 CODES / PARAM_CODES /
-//                              CODE_MAX 是否与本表一致，漏改 Lua 会被测试挡下。
+//   * sim/tests/test_contract.cpp —— 交叉校验 modules/Sim.lua 的 CODES / PARAM_CODES /
+//                                    CODE_MAX 是否与本表一致，漏改 Lua 会被测试挡下。
 //
 // 数字码是对外契约：.mt 动作脚本、robots/spider_sim.sql 注释、docs/sim.md 都用它。
 // 改码即破坏兼容——**只增不改**，新动作追加一行、分配未用过的码。

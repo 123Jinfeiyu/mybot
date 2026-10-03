@@ -78,7 +78,18 @@ target_include_directories(mybot-sim SYSTEM PRIVATE external/stb)
 target_link_libraries(mybot-sim PRIVATE simcore glfw glad)
 
 # ---- 核心层单测（无 GL；纯逻辑断言 + 本机 AF_UNIX 回环） ----
-add_executable(sim_tests tests/main.cpp)
+# 按域拆成多个 TU：入口/名册在 main.cpp，共享底座在 harness.{h,cpp}，套件声明在
+# suites.h，用例正文在 test_{robot,world,scene,bridges,contract,engine}.cpp。
+add_executable(sim_tests
+    tests/main.cpp
+    tests/harness.cpp
+    tests/test_robot.cpp
+    tests/test_world.cpp
+    tests/test_scene.cpp
+    tests/test_bridges.cpp
+    tests/test_contract.cpp
+    tests/test_engine.cpp
+)
 target_link_libraries(sim_tests PRIVATE simcore)
 # 一致性守门要读 modules/Sim.lua 交叉校验动作码，路径在编译期定死（源码树内）
 target_compile_definitions(sim_tests

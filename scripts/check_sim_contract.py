@@ -3,7 +3,7 @@
 
 两套构建系统（sim/ 的独立 CMake 与 mybot 的 Lua 驱动）之间刻意不做代码生成
 （见 docs/sim.md「跨构建系统不做代码生成」），于是同一份契约在两侧各手写一份。
-既有的交叉校验在 sim/tests/main.cpp（testActionTable / testSharedConstants），
+既有的交叉校验在 sim/tests/test_contract.cpp（testActionTable / testSharedConstants），
 但它只在开发者手动跑 `bash scripts/build_sim.sh` 时才会执行——sim/ 不在任何
 CI job 的构建范围内（见 sim/CMakeLists.txt 顶部注释），所以那道安全网实际上
 从未被强制执行过。
@@ -60,7 +60,7 @@ def rel(path):
 
 def brace_block(text: str, marker: str):
     """取 marker 之后第一个平衡的 { ... } 块内部内容；找不到返回 None。
-    与 sim/tests/main.cpp 的 braceBlock() 同一个算法，两边各自独立实现，
+    与 sim/tests/test_contract.cpp 的 braceBlock() 同一个算法，两边各自独立实现，
     用于交叉印证「脚本本身没写错」。
     """
     m = text.find(marker)

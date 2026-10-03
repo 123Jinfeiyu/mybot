@@ -21,7 +21,7 @@
   `rayHit` / `resolveSphere`。函数体逐字搬迁、算法未改；`world.cpp` 634 → 487 行。
   设计约定原样保留：绕 Y 旋转是等距变换，**只旋位移增量、不旋绝对坐标**。
 - **`World::boxesOverlapXZ` 删除**：它原本只是「供测试直调」而开的一扇后门（`place()`
-  内部另有一份 `obbOverlapXZ`）。几何模块公开后，`sim/tests/main.cpp` 的九处断言直接调
+  内部另有一份 `obbOverlapXZ`）。几何模块公开后，`sim/tests` 的九处断言直接调
   `Obb2D::overlapXZ`，同一函数不再有两扇门（两扇门 = 改了这边忘了那边）。
 - **场景文件读写析出 `sim/src/scene_io.cpp`**：`readScene` / `writeScene` 与只被它们
   用到的三个魔数、`kMaxSceneRobots`、`parseFloats` 整体搬走（`world.cpp` 487 → 303 行）。
@@ -31,6 +31,20 @@
   `scene_io.h`（拆出去会与 `world.h` 互相 include）。所有既有调用方（`sim_engine.h`、
   `main.cpp`、`sim/tests`）的 include 一行未改，行文本格式、告警文案、0600 权限与
   temp+rename 的原子写全部逐字保持。
+- **`sim/tests/main.cpp`（1621 行 / 25 个套件）按域拆成 8 个 TU**：`test_robot.cpp`
+  （运动学 + 相对运动）、`test_world.cpp`（测距/碰撞/搬运/OBB 几何/放置解算）、
+  `test_scene.cpp`（场景文件 IO + SimPaths）、`test_bridges.cpp`（三座桥 + 请求-应答
+  基类）、`test_contract.cpp`（动作表内部不变量 + 与 `modules/Sim.lua` 的跨语言一致性 +
+  逐码派发）、`test_engine.cpp`（引擎 headless：场景装卸、多机器人寻址、跳跃/支撑面），
+  加共享底座 `harness.{h,cpp}`（断言记账 + AF_UNIX 客户端助手 + `writeTextFile`）与
+  `suites.h`（套件声明）。`main.cpp` 只剩名册与汇总行。断言记账改成 `harness.cpp` 单点
+  持有并 `extern` 声明——拆成多 TU 后若各文件各留一份文件级全局，汇总行只会报最后链接
+  那个文件的账，「381 通过」会静默缩水而退出码照样是 0。
+- 拆分是搬迁不是重写，两处可核：① 断言总数与拆分前**逐条相同**（381 通过 / 0 失败）；
+  ② 原文件 1441 行非空内容里，1404 行按原顺序逐字出现在新文件中，余下 35 行是头部
+  注释/include/`namespace` 两行（按域重新分配），2 行是助手注释上提到 `harness.h`
+  的声明处（本仓惯例：契约写在声明处，实现处不重述）。`action_table.h` 与
+  `scripts/check_sim_contract.py` 里指向旧文件的三处路径注释同步更新。
 - 命名去掉 `obb` / `2D` 前缀，由 namespace 承载（与既有 `SimPaths` / `SimConfig` 同款），
   对照表写在 `obb2d.h` 顶部。`robot.cpp:17-18/31-32` 那两处同一条前向约定**刻意未并入**：
   它们在速度积分器里、乘的是 `v_*dt` 而非单位方向探测，为两行把 `Robot` 耦合到几何模块
