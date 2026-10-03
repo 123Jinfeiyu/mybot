@@ -24,9 +24,10 @@
 #include <utility>
 #include <vector>
 
-#include "actionsource.hpp"
 #include "matrix.hpp"
 #include "mtmerge_core.hpp"
+#include "scriptlimit.hpp"	/* kMaxScriptBytes / readAllLimited / ScriptTooLarge：离线工具
+				 * 只要限流原语，不引动作源与 CliOptions 那份域头 */
 #include "util_cli.hpp"
 #include "util_except.hpp"
 #include "util_num.hpp"
@@ -123,7 +124,7 @@ std::vector<mt::MatrixObject> mergeInputs(const std::vector<std::string>& inputs
 		std::ifstream f(path, std::ios::binary);
 		if (!f) { throw OpenFail{path}; }
 		/* 审计 M-2 防线：与动作 stdin 通道共用的整段受限读取（分块 +
-		 * 超限即抛 ScriptTooLarge，单点在 actionsource.hpp）——先整体
+		 * 超限即抛 ScriptTooLarge，单点在 scriptlimit.hpp）——先整体
 		 * 读入再判上限对超大文件形同虚设（限流之前就把全部字节吃进
 		 * 内存）。 */
 		std::string data = bot::readAllLimited(f, bot::kMaxScriptBytes, "action script");

@@ -36,8 +36,8 @@
 #include <set>
 #include <unistd.h>
 
-#include "actionsource.hpp"
 #include "mtmerge_core.hpp"
+#include "scriptlimit.hpp"	/* kMaxScriptBytes / ScriptTooLarge（限流原语叶子头） */
 #include "util_env.hpp"
 #include "util_except.hpp"
 #include "util_file.hpp"

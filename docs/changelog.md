@@ -17,6 +17,19 @@
   hardware 域的依赖也从整个 `hardware.hpp` 缩到只需 `json.hpp`（`readSample` 的返回类型）；
   `hw_factory.cpp` 不再为自己用不到的槽布局与线程机引 `daemonvar.hpp`。
   对使用者意味着什么：无（纯声明归属与包含关系调整）。
+- **脚本输入的字节上限四件套析出叶子头 `scriptlimit.hpp`**：`kMaxScriptBytes` / `ScriptTooLarge` /
+  `readAllLimited` / `LimitedReader` 原在 `actionsource.hpp`；离线矩阵工具（`mtmerge`/`mtinclude`）、
+  agent 工具层与它们的单测为了拿一个上限常量，被迫拉进整个 CLI/动作源域头（`CliOptions` 的四组
+  嵌套字段、TCP 读取器声明、`<sys/socket.h>`）。这四样本是同一个关注点（「输入多大、进程就吃多大
+  内存」这条护栏），现独立成叶子头，四个 TU 改引它；`CliOptions` 与三个读取器留守原头。
+- **`actionsource.hpp` 的包含清单收窄**：摘 `<sys/socket.h>`（头内只有注释提 `sockaddr_un.sun_path`
+  与 `SO_PEERCRED`，`actionsource.cpp` 自己已引）、`<map>`（头内一处未用）、`<istream>`（随
+  `readAllLimited` 搬走）。`<iostream>` **评估后维持**——`FileReader::read` 的 I/O 错误告警要
+  `std::cerr` 这个对象，`<ostream>` 只给类型不给对象。
+- 以上两条对使用者意味着什么：无（纯搬迁 + 包含关系调整）。核查：`-Werror` 全新构建、Release
+  全量、ASan+UBSan 全量三跑同绿（271 通过 / 0 失败 / 1 跳过，C++ 单测 620 条不变）；另用两个
+  负向编译探针确认「叶子头里已看不到 `CliOptions`」「`actionsource.hpp` 已不再提供 `sockaddr_un`」
+  ——收窄是真的，不是把 include 挪个位置。
 
 ### 2026-10-04 仿真器默认场景：内置回落与播种模板对齐，并接进零编译守门
 

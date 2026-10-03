@@ -21,7 +21,7 @@
 namespace bot {
 
 /* ---- 动作脚本字节上限（kMaxScriptBytes）----
- * 上限常量与理由见 actionsource.hpp（动作/结构脚本共用；RSS 实测见该处注释）。 */
+ * 上限常量与理由见 scriptlimit.hpp（动作/结构脚本共用；RSS 实测见该处注释）。 */
 
 /* ---- TCP 空闲超时缺省值（秒）：连上后不再发字节的对端不能永久挂住进程 ---- */
 static constexpr int kTcpIdleSecDefault = 30;

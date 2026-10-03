@@ -6,17 +6,18 @@
 #include <cstddef>
 #include <cstdio>
 #include <chrono>
-#include <iostream>
-#include <istream>
-#include <map>
+#include <iostream>		/* FileReader::read 的 I/O 错误告警走 std::cerr（评估后维持：
+			 * <ostream> 只给类型、不给 std::cerr 这个对象） */
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
-#include <sys/socket.h>
-#include <unistd.h>
+#include <unistd.h>		/* TcpStreamReader 析构里的 ::close */
 
-#include "util_except.hpp"
+#include "scriptlimit.hpp"	/* kMaxScriptBytes / ScriptTooLarge / readAllLimited /
+				 * LimitedReader：限流原语已析出叶子头（离线工具与 agent
+				 * 工具层只引那份，不必拉进本头的 CLI/动作源域） */
+#include "util_except.hpp"	/* Reader 基类（FileReader/TcpStreamReader 直接继承） */
 
 namespace bot {
 
@@ -170,45 +171,8 @@ struct CliOptions {
 	} mcp;
 };
 
-/* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。
- * run()/readSQL() 会把输入整体驻留后再装配（@Alias 必须先于 @Action 生效、
- * 矩阵一次性建表），不设上限即等于「输入多大、进程就吃多大内存」；
- * 实测 100MB 动作输入 → RSS 4.2GB。真实脚本为 KB 级，8MiB 已留三个数量级余量。 */
-inline constexpr std::size_t kMaxScriptBytes = 8u << 20;
-
-/* 脚本字节数超限。kind 指明输入类别（"action script" / "structure script"）。
- * 重构计划 2.5：直接继承单一根异常 bot::IllegalArgumentException——此前
- * 挂 mt::MatrixParseExcept 让纯 I/O 层倒挂依赖解析层。原文保留性质不变：
- * 抛出点（整段读取 / LimitedReader::read）都在 MatrixParser::parse() 的
- * try 之外，不经其「带行号包装」路径；即便未来 read() 移进 try，IAE 分支
- * 也是包装保留原文而非降级。 */
-class ScriptTooLarge : public bot::IllegalArgumentException {
-public:
-	explicit ScriptTooLarge(std::size_t cap, const std::string& kind = "action script")
-		: IllegalArgumentException(kind + " exceeds the byte limit of " + std::to_string(cap)
-			+ ". Real bot4cj scripts are KB-sized; a larger input almost certainly means a runaway"
-			+ " or malicious producer (the whole script is buffered before playback).") {}
-};
-
-/* 整段受限读取：分块累计，超过 cap 立即抛 ScriptTooLarge（inline：mtmerge
- * 目标不链接本 .cpp，只复用头内定义——与 kMaxScriptBytes/ScriptTooLarge
- * 同一惯例）。mtmerge 文件输入与动作 stdin 通道共用；此前两份手写循环
- * 且超限处理不一致（mtmerge 抛、stdin 打印后放弃）——同一上限不该有
- * 两种用户可见行为。先整读再判上限对超大输入形同虚设（限流之前就把
- * 全部字节吃进内存），故块读过程中即时拒绝。 */
-inline std::string readAllLimited(std::istream& in, std::size_t cap,
-		const std::string& kind = "action script") {
-	std::string data;
-	char buf[65536];
-	for (;;) {
-		in.read(buf, static_cast<std::streamsize>(sizeof buf));
-		std::streamsize got = in.gcount();
-		if (got <= 0) { break; }
-		data.append(buf, static_cast<std::size_t>(got));
-		if (data.size() > cap) { throw ScriptTooLarge(cap, kind); }
-	}
-	return data;
-}
+/* 脚本输入的字节上限四件套（kMaxScriptBytes / ScriptTooLarge / readAllLimited /
+ * LimitedReader）已迁 scriptlimit.hpp，经上面的包含仍在 bot:: 下同名可见。 */
 
 /* 以 EOF(-1) 表示输入结束的字符流 */
 class FileReader : public Reader {
@@ -262,25 +226,6 @@ public:
 	TcpStreamReader& operator=(const TcpStreamReader&) = delete;
 
 	int read() override;
-};
-
-/* 字节数上限包装器：所有脚本输入通道统一限流（见 openActionSource 与 main.cpp） */
-class LimitedReader : public Reader {
-	std::unique_ptr<Reader> inner_;
-	std::size_t cap_;
-	std::string kind_;
-	std::size_t seen_ = 0;
-
-public:
-	LimitedReader(std::unique_ptr<Reader> inner, std::size_t cap,
-			std::string kind = "action script")
-		: inner_(std::move(inner)), cap_(cap), kind_(std::move(kind)) {}
-
-	int read() override {
-		int c = inner_->read();
-		if (c >= 0 && ++seen_ > cap_) { throw ScriptTooLarge(cap_, kind_); }
-		return c;
-	}
 };
 
 /* ---- TCP 口令校验三态（2026-09-20 重构阶段 4.3）----

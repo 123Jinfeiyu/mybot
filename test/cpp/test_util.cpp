@@ -1,4 +1,4 @@
-/* test_util.cpp —— util.hpp / actionsource.hpp 全局助手的直接锚点（重构计划 1）
+/* test_util.cpp —— util_*.hpp 全局助手的直接锚点（重构计划 1）
  *
  * 此前 util.hpp 的函数只靠调用方间接覆盖。本轮重复收敛（阶段 1）落进来的
  * 几个助手是全局判据/防线，值得有直接单测钉住契约：

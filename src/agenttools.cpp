@@ -31,10 +31,10 @@
 #include <thread>
 #include <utility>
 
-#include "actionsource.hpp"
 #include "hardware.hpp"
 #include "luavar.hpp"	/* D：回显回收通道 MtVars_Lua::setCallEchoSink */
 #include "robot.hpp"
+#include "scriptlimit.hpp"	/* kMaxScriptBytes / LimitedReader：run_action_script 的脚本限流 */
 #include "util_env.hpp"
 #include "util_except.hpp"
 #include "util_num.hpp"
