@@ -30,6 +30,12 @@
   全量、ASan+UBSan 全量三跑同绿（271 通过 / 0 失败 / 1 跳过，C++ 单测 620 条不变）；另用两个
   负向编译探针确认「叶子头里已看不到 `CliOptions`」「`actionsource.hpp` 已不再提供 `sockaddr_un`」
   ——收窄是真的，不是把 include 挪个位置。
+- **`StructureStore` 门面补直接单测**（`test/cpp/test_structure_store.cpp`）：这个门面 2026-10-03
+  才从 `RobotStruct::matrices_` 析出，此前只经 `test_robot*` 的集成路径间接覆盖。它的头注释把
+  「容器是 `std::deque`」写成**不变式**（`MetaProvider` 终身持有指向表元素的裸指针，`std::vector`
+  扩容会让它们全部悬垂），现由一条比地址的用例钉成可判定事实，而不是靠「没崩」；其余用例钉
+  装载声明序、`appendRows` 交回的首个新行号、两条回滚路径、热删除的保序擦除、整表撤下、按名
+  查找与必须在 `active()` 之前可判定的 `declaresVariable`。对使用者意味着什么：无（纯新增测试）。
 
 ### 2026-10-04 仿真器默认场景：内置回落与播种模板对齐，并接进零编译守门
 

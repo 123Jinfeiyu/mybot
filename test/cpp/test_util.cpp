@@ -539,6 +539,7 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"sandbox", "驱动沙箱"},
 	{"session", "会话作用域"},
 	{"single", "单消费者判据"},
+	{"structure", "结构矩阵域（StructureStore 门面）"},
 	{"tcp", "TCP 输入源"},
 	{"the", "例句/杂项"},
 	{"token", "SQL token"},
