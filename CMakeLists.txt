@@ -96,6 +96,7 @@ set(MYBOT_CORE_SOURCES
   src/hardware.cpp
   src/luavar.cpp
   src/daemonvar.cpp
+  src/daemon_registry.cpp
   src/daemonconf.cpp
   src/hw_registry.cpp
   src/meta_provider.cpp
