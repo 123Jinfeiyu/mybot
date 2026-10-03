@@ -24,7 +24,9 @@ namespace bot {
 /* 脚本单次输入的字节上限：动作脚本（.mt）与结构脚本（.sql）统一适用。
  * run()/readSQL() 会把输入整体驻留后再装配（@Alias 必须先于 @Action 生效、
  * 矩阵一次性建表），不设上限即等于「输入多大、进程就吃多大内存」；
- * 实测 100MB 动作输入 → RSS 4.2GB。真实脚本为 KB 级，8MiB 已留三个数量级余量。 */
+ * 实测 100MB 动作输入 → RSS 4.2GB。真实脚本为 KB 级，8MiB 已留三个数量级余量。
+ * 与 jsonparse.hpp 的 kJsonMaxBytes 同值但**不可合并**——那个是跨进程契约的一环
+ * （理由与评估记录见该处注释）。 */
 inline constexpr std::size_t kMaxScriptBytes = 8u << 20;
 
 /* 脚本字节数超限。kind 指明输入类别（"action script" / "structure script"）。

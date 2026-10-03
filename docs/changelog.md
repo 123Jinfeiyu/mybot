@@ -58,6 +58,36 @@
   单判据、`shiftRowsAfter` 的 `<=`、回落文案改空串）逐个转红且**只**转红对应用例，还原后复绿。
   C++ 单测 620 → 649 通过 / 0 失败。
 
+### 2026-10-04 三项评估收口（判不改，理由留档）
+
+- **`kJsonMaxBytes` 与 `kMaxScriptBytes` 同为 `8u << 20`——判不合并**：形状确实一样
+  （一个上限常量 + 一条 "exceeds the byte limit of N" 的 `IllegalArgumentException`），
+  但两者的**约束来源**不同。`kJsonMaxBytes` 是一条跨进程契约的中间环节：
+  `mcpbackend_frame_limit_matches_rust_twin` 同时钉住 `kMcpMaxFrameBytes == kJsonMaxBytes`
+  与 `kMcpMaxFrameBytes == agent/src/frame.rs::MAX_FRAME_BYTES`（测试期直接读 Rust 源）。
+  `kMaxScriptBytes` 则是纯本地的内存护栏（整段驻留后再装配，实测 100MB 动作输入 → RSS 4.2GB）。
+  合成一个常量就等于让一个数伺候两个主人：哪天为受限主机把脚本护栏调到 2 MiB，MCP 帧上限
+  会跟着缩、与 `frame.rs` 脱钩，而孪生守门报出的位置指向错误的文件。`jsonparse.hpp` 的注释
+  本来也只承诺「与脚本输入上限**同量级**」，不是「同一个常量」。异常文案同理不该并：
+  `ScriptTooLarge` 点名的是「runaway or malicious producer + 整段缓冲后才播放」这套威胁模型，
+  对一段模型 JSON 响应并不成立。
+- **`hw_factory.cpp` 的 `SingleConsumerCheck`（135 行 TU 私有结构）——判不再拆**：它本身就是
+  2026-09-26 批次 5 的拆分产物（原 `checkSingleConsumer` 127 行把总线路径表、两个捕获状态的
+  lambda、Daemon 分支、常规硬件分支全内联在一处，拆完只剩「建状态 → 扫总线表 → 逐表分派」的
+  编排）。再往独立 TU 搬，就得把文件私有的 `declaresSingleConsumer` 与 `scCache` 的作用域策略
+  （**批内**缓存、跨批刻意不缓存，好让热插两批之间被替换的模块文件生效）一并导出——把一个
+  函数的私有状态升级成跨 TU 契约，换不到任何行为收益。守门侧也不缺：
+  7 条 `single_consumer_*` 直接用例 + 1 条热 SQL 复用预检的用例。
+- **`agenttools.cpp` 的 SQL/硬件工具三件套（`makeApplySqlTool` / `makeListHardwareTool` /
+  `makeQuerySqlTool`，共 92 行）——判不外移**：搬出去就得把三个 `make*Tool` 声明放进
+  `agenttools_internal.hpp`，而那个头自己的准入规则写着「加到这里的东西以 "多 TU 都要用" 为准，
+  别把单 TU 私有件挪进来」——它们只被 `makeAgentTools` 一个 TU 消费。对照 `agenttools_wait.cpp`
+  为什么**该**拆：那是 304 行的轮询状态机，有自己的生命周期；这三件套 92 行里绝大部分是模型
+  面向的工具描述文本，三处执行体各 9～13 行。顺带一条基线事实：`src/` 下最大的 .cpp 是 593 行
+  （`sqlparse.cpp`），`agenttools.cpp` 以 579 行居第二——上帝文件在 2026-10-01 那两轮已拆完，
+  剩下的长度差是内容差，不是没拆完。重新评估的触发条件：这三件套长出真正的逻辑（而不是更多
+  提示词文本）。
+
 ### 2026-10-04 仿真器默认场景：内置回落与播种模板对齐，并接进零编译守门
 
 - **改了什么**：`World::defaultScene()`（无场景文件时的内置回落）此前按 体积×`kDefaultDensity`(800)

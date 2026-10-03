@@ -145,7 +145,9 @@ std::string optCol(const mt::MatrixObject& m, std::int64_t row, const char* col)
  * （拆自 checkSingleConsumer，2026-09-26 批次 5）。原函数 127 行把「建总线路径表 /
  * 两个捕获状态的 lambda / Daemon 分支（含多器件 devices 解析）/ 常规硬件分支」全
  * 内联在一处；收进本结构后 checkSingleConsumer 只留「建状态 → 扫总线表 → 逐表分派」
- * 的编排。成员名与原局部量/lambda 逐字相同，故各分支体原样搬入、行为不变。 */
+ * 的编排。成员名与原局部量/lambda 逐字相同，故各分支体原样搬入、行为不变。
+ * 2026-10-04 评估后判不再拆独立 TU：再搬就得把 declaresSingleConsumer 与 scCache 的
+ * 批内作用域策略一并导出，把单函数私有状态升级成跨 TU 契约（记录见 docs/changelog.md）。 */
 struct SingleConsumerCheck {
 	std::map<std::string, std::string> busPath;	/* 总线名 → 设备路径（I2C/SPI/UART 表） */
 	std::map<std::string, std::string> owner;	/* 键 -> 首个消费者的定位串 */
