@@ -9,6 +9,16 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 守门自检：C++ 单测清单的第三份手抄表删掉
+
+- **改了什么**：`CMakeLists.txt` 的 C3 自检此前比的是「磁盘上的 `test/cpp/test_*.cpp`」与一份
+  手抄的 `MYBOT_CPP_TEST_REGISTERED` 裸名清单——而真正决定编不编的是
+  `add_executable(mybot_tests ...)`，等于三份表里有两份互不相干，且只校验单向。现改为直接读
+  target 的 `SOURCES` 属性，双向比对。
+- **对使用者意味着什么**：加 C++ 用例仍然只需在 `add_executable` 里补一行；忘了补，configure
+  期就 `FATAL_ERROR`（此前也红，但红的是手抄清单那一层）。清单里留着已删/改名的旧条目现在
+  也会红。少一份要人肉同步的表。
+
 ### 2026-10-04 跨源一致性：仿真器契约的零编译守门从「动作码表」扩到三组
 
 - **改了什么**：`scripts/check_sim_action_table.py` 更名为 `scripts/check_sim_contract.py`，

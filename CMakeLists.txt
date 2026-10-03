@@ -348,24 +348,32 @@ else()
 endif()
 
 # ======================================================================
-# C3（2026-09-20 审计 / 2026-09-21 落地）：C++ 单测清单一致性自检。
-# 新 test/cpp/test_*.cpp 若不进上方 mybot_tests 的 add_executable 显式清单，
-# 它会**永不编译**（静默) 且守门照绿。这里 glob 出实际 test_*.cpp，
-# 与 mybot_tests 清单比对，不一致即 FATAL_ERROR（新增用例忘登记立刻红）。
-# 判据：test/cpp/test_*.cpp 必须恰好全部被引用（main.cpp 是测试入口，单列）。
+# C3（2026-09-20 审计 / 2026-09-21 落地；2026-10-04 收敛掉第三份清单）：
+# C++ 单测清单一致性自检。新 test/cpp/test_*.cpp 若不进上方 mybot_tests 的
+# add_executable 显式清单，它会**永不编译**（静默）且守门照绿。
+# 判据：磁盘上的 test/cpp/test_*.cpp 集合 == mybot_tests 实际编进去的那部分
+# （双向；main.cpp 是测试入口，不在此列），不一致即 FATAL_ERROR。
+# 此前中间还手抄了一份 MYBOT_CPP_TEST_REGISTERED 裸名清单、只校验 glob ⊆ 它——
+# 那是第三份事实源，且方向单一（add_executable 漏写、清单里留旧名都不红）。
+# 现在直接问 target 要 SOURCES，两份清单合成一份。
 # ======================================================================
 file(GLOB MYBOT_CPP_TEST_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/cpp/test_*.cpp)
-set(MYBOT_CPP_TEST_REGISTERED
-  test_actionsource test_agentaudit test_agentpolicy test_agentproto test_agenttools test_agenttools_image test_agenttools_runcommand test_agenttools_sql test_agenttools_subproc test_agenttools_wait test_mcpbackend
-  test_cliargs test_daemon_concurrency test_daemon test_expr test_hardware
-  test_json test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
-  test_mcptransport test_mtmerge test_sqlparse_query test_robot test_robot_dispatch test_robot_hotdelete
-  test_robot_hotinsert test_robot_hotupdate test_robot_hotsql_plan test_robot_lifecycle
-  test_sqlparse test_util)
-set(_missing_registered)
+get_target_property(_mybot_tests_srcs mybot_tests SOURCES)
+set(_compiled_test_names)
+foreach(_s IN LISTS _mybot_tests_srcs)
+  if("${_s}" MATCHES "(^|/)test/cpp/test_[^/]+\\.cpp$")
+    get_filename_component(_n "${_s}" NAME_WE)
+    list(APPEND _compiled_test_names "${_n}")
+  endif()
+endforeach()
+set(_disk_test_names)
 foreach(_t IN LISTS MYBOT_CPP_TEST_SRCS)
   get_filename_component(_n "${_t}" NAME_WE)
-  if(NOT _n IN_LIST MYBOT_CPP_TEST_REGISTERED)
+  list(APPEND _disk_test_names "${_n}")
+endforeach()
+set(_missing_registered)
+foreach(_n IN LISTS _disk_test_names)
+  if(NOT _n IN_LIST _compiled_test_names)
     list(APPEND _missing_registered "${_n}")
   endif()
 endforeach()
@@ -373,6 +381,17 @@ if(_missing_registered)
   message(FATAL_ERROR
     "未登记的 C++ 测试（不会编译/守门将漏跑，须在 mybot_tests 的 add_executable 补上）："
     "${_missing_registered}")
+endif()
+set(_stale_registered)
+foreach(_n IN LISTS _compiled_test_names)
+  if(NOT _n IN_LIST _disk_test_names)
+    list(APPEND _stale_registered "${_n}")
+  endif()
+endforeach()
+if(_stale_registered)
+  message(FATAL_ERROR
+    "mybot_tests 的 add_executable 里有磁盘上不存在的 test/cpp/test_*.cpp"
+    "（删了或改名了没同步清单）：" "${_stale_registered}")
 endif()
 
 # ======================================================================
