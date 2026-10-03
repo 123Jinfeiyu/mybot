@@ -23,7 +23,7 @@
  * 配合 sht3x_virt.mt：300ms 预热等守护 setup（软复位真实睡眠仅 3ms），
  * 随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护 interval=50ms
  *（call 内含 16ms 转换真实等待，20ms 节拍会溢出）。
- * 用法：cat scripts/test/sht3x_virt.mt | bash _run.sh --robot=robots/test/sht3x_virt.sql
+ * 用法：cat scripts/test/sht3x_virt.mt | ./build/mybot --robot=robots/test/sht3x_virt.sql
  */
 CREATE TABLE Timer (
 	name String

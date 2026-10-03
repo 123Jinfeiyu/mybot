@@ -1,5 +1,17 @@
 -- VL53L0X ToF 激光测距 驱动模块（ST FlightSense 第一代，I2C 地址 0x29）
 -- bot4cj 仓颉语言机器人框架
+--
+-- 【单消费者声明】本器件是四个 ToF/光谱类驱动里状态最重的一个：**8 位指针 +
+-- 分页族**。0xFF 是页选择寄存器，start_stop_dance 要在页 1 / 页 0 之间来回切换
+-- 写 0x80 / 0x00 / 0x91；一次测距还要写 REG_SYSRANGE_START、轮询 REG_RESULT_INT
+-- 等 data-ready、再写 REG_INT_CLEAR 清中断。页相位与测距状态机都在**器件侧**、
+-- 跨多个事务，第二个消费者插进来会让两者同时错乱：轻则 wait_reg 超时，
+-- 重则对方在页 0 的写入落到页 1 的寄存器上（写坏配置且不报错）。
+-- 结果读虽然是 i2c_read_multi_bytes 的单事务原子读，但**原子单位是一个事务**，
+-- 覆盖不了整条 start→poll→clear→read 序列。
+-- 装配期判据见 src/hw_factory.cpp 的 checkSingleConsumer；正道是让 @Daemon 做
+-- 唯一采样者、主线程经 '$' 引用读快照。标记必须写在**行首**。
+SINGLE_CONSUMER = "分页族（0xFF 页选择）+ 测距状态机：页相位与就绪标志都在器件侧，跨多事务"
 -- 虚拟器件模型：内嵌本文件尾部 VL53L0X_VIRT（2026-09-15 自 modules/lib/virtbus/vl53l0x.lua
 -- 迁入，单文件驱动+模型实验第二十六个，8 位指针 + 分页族；无硬件单测与守护 E2E 共用；同协议独立实现，改协议两处同步）
 --
@@ -56,9 +68,8 @@
 --   4. 从机地址固定 0x29，一条总线挂多只要 XSHUT 时序重分配地址
 --      （写 0x8A），本驱动按单只支持；Linux i2c-dev 无时钟拉伸问题
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -134,14 +145,7 @@ local stop_variable					-- DataInit 舞步取出的关键单次测量参数
 
 -- ==================== 底层辅助 ====================
 -- 数值列 -> 钳到 [lo, hi] 的整数；非法/'-' 归缺省
-local function int_of(v, def, lo, hi)
-	local n = tonumber(v)
-	if n == nil then return def end
-	n = math.floor(n)
-	if n < lo then n = lo end
-	if n > hi then n = hi end
-	return n
-end
+-- （实现收敛至 drv_common.int_of，N-24）
 
 -- long 列 -> 布尔：数值非 0 / 常见真值串生效
 local function truthy_of(v)
@@ -209,11 +213,11 @@ end
 -- 【配置脚本】器件甄别 -> DataInit -> SPAD -> tuning -> 校准 -> 连续启动
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	-- 审计 #4：入口必须走 arg_table（含 proto=virt 的虚拟总线前置）——
+	-- 旧内联 type 检查会让非守护 @Device 场景静默回落真机总线
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -221,179 +225,164 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	local long_range = truthy_of(data.long)
 	local sig = tonumber(data.sig)
 	if sig == nil then sig = long_range and DEF_SIG_LONG or DEF_SIG end
 	if sig < 0 then sig = 0 end
 	if sig > 511.99 then sig = 511.99 end
-	local timeout = int_of(data.timeout, DEF_TIMEOUT, 1, 10000)
+	local timeout = int_or(data.timeout, DEF_TIMEOUT, 1, 10000)
 	poll_timeout = timeout
 
 	-----------------------------------------------------
 	-- 器件甄别（0xC0 = 0xEE）
 	local mid = i2c_read_reg(fd, REG_MODEL_ID)
 	if mid < 0 then
-		return {  result = "ERR", message = "Failed to read VL53L0X model ID"  }
+		return err("Failed to read VL53L0X model ID")
 	end
 	if mid ~= 0xEE then
-		return {
-			result = "ERR",
-			message = string.format("Device type = 0x%02X (expect 0xEE VL53L0X, not VL53L0X?)", mid)
-		}
+		return err(string.format("Device type = 0x%02X (expect 0xEE VL53L0X, not VL53L0X?)", mid))
 	end
 
 	-- VHV：SCL/SDA 焊盘高压供电（3.3V 主机侧，Pololu/ESPHome 同款置位）
 	local vhv = i2c_read_reg(fd, REG_VHV_EXTSUP_HV)
 	if vhv < 0 then
-		return {  result = "ERR", message = "Failed to read VL53L0X VHV config"  }
+		return err("Failed to read VL53L0X VHV config")
 	end
 	if not i2c_write_reg(fd, REG_VHV_EXTSUP_HV, bitc.bor(vhv % 256, 0x01)) then
-		return {  result = "ERR", message = "Failed to write VL53L0X VHV config"  }
+		return err("Failed to write VL53L0X VHV config")
 	end
 
 	-- "Set I2C standard mode"
 	if not i2c_write_reg(fd, 0x88, 0x00) then
-		return {  result = "ERR", message = "Failed to set VL53L0X I2C standard mode"  }
+		return err("Failed to set VL53L0X I2C standard mode")
 	end
 
 	-- DataInit 舞步（取出 stop_variable）
 	if start_stop_dance(fd, "read") == nil then
-		return {  result = "ERR", message = "Failed to run VL53L0X data-init sequence"  }
+		return err("Failed to run VL53L0X data-init sequence")
 	end
 
 	-- 关 MSRC(bit1)/预距(bit4) 信号率限值检查
 	local msrc = i2c_read_reg(fd, REG_MSRC_CONFIG)
 	if msrc < 0 then
-		return {  result = "ERR", message = "Failed to read VL53L0X MSRC config"  }
+		return err("Failed to read VL53L0X MSRC config")
 	end
 	if not i2c_write_reg(fd, REG_MSRC_CONFIG, bitc.bor(msrc % 256, 0x12)) then
-		return {  result = "ERR", message = "Failed to write VL53L0X MSRC config"  }
+		return err("Failed to write VL53L0X MSRC config")
 	end
 
 	-- 信号率门限（Q9.7 定点，16 位；截断与 Pololu float 语义一致）
 	local q = math.floor(sig * 128)
 	if i2c_write_multi(fd, REG_FINAL_MIN_RATE, math.floor(q / 256) % 256, q % 256) ~= 0 then
-		return {  result = "ERR", message = "Failed to write VL53L0X signal rate limit"  }
+		return err("Failed to write VL53L0X signal rate limit")
 	end
 
 	-- 使能全部时序步
 	if not i2c_write_reg(fd, REG_SEQ_CONFIG, 0xFF) then
-		return {  result = "ERR", message = "Failed to write VL53L0X sequence config"  }
+		return err("Failed to write VL53L0X sequence config")
 	end
 
 	-----------------------------------------------------
 	-- getSpadInfo：页 6/7 魔数序列 -> 0x83 轮询 -> 0x92 取 SPAD 数/类型
 	if not i2c_write_reg(fd, 0x80, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0x00, 0x00) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x06) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	local p83 = i2c_read_reg(fd, 0x83)		-- 0x83 读改写必须在 page 6 上
 	if p83 < 0 then
-		return {  result = "ERR", message = "Failed to read VL53L0X spad status"  }
+		return err("Failed to read VL53L0X spad status")
 	end
 	if not i2c_write_reg(fd, 0x83, bitc.bor(p83 % 256, 0x04)) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x07) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0x81, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0x80, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0x94, 0x6B) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0x83, 0x00) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	local r = wait_reg(fd, 0x83, function(v) return v ~= 0 end, timeout)
 	if r == nil then
-		return {  result = "ERR", message = "Failed to poll VL53L0X spad status"  }
+		return err("Failed to poll VL53L0X spad status")
 	end
 	if r == false then
-		return {  result = "ERR", message = string.format("VL53L0X spad info timeout (%dms)", timeout)  }
+		return err(string.format("VL53L0X spad info timeout (%dms)", timeout))
 	end
 	if not i2c_write_reg(fd, 0x83, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	local spad92 = i2c_read_reg(fd, 0x92)
 	if spad92 < 0 then
-		return {  result = "ERR", message = "Failed to read VL53L0X spad info"  }
+		return err("Failed to read VL53L0X spad info")
 	end
 	local spad_count = bitc.band(spad92 % 256, 0x7F)
 	local spad_aperture = bitc.band(spad92 % 256, 0x80) ~= 0
 	if not i2c_write_reg(fd, 0x81, 0x00) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x06) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	p83 = i2c_read_reg(fd, 0x83)
 	if p83 < 0 then
-		return {  result = "ERR", message = "Failed to read VL53L0X spad status"  }
+		return err("Failed to read VL53L0X spad status")
 	end
 	if not i2c_write_reg(fd, 0x83, bitc.band(p83 % 256, 0xFB)) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0x00, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x00) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 	if not i2c_write_reg(fd, 0x80, 0x00) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad info sequence"  }
+		return err("Failed to run VL53L0X spad info sequence")
 	end
 
 	-- 参考 SPAD 管理：读原使能图 -> 只保留前 spad_count 个（光圈型跳过前 12）
 	local map = i2c_read_multi_bytes(fd, REG_SPAD_ENABLES, 6)
 	if map == nil then
-		return {  result = "ERR", message = "Failed to read VL53L0X spad enable map"  }
+		return err("Failed to read VL53L0X spad enable map")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x01) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad setup"  }
+		return err("Failed to run VL53L0X spad setup")
 	end
 	if not i2c_write_reg(fd, 0x4F, 0x00) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad setup"  }
+		return err("Failed to run VL53L0X spad setup")
 	end
 	if not i2c_write_reg(fd, 0x4E, 0x2C) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad setup"  }
+		return err("Failed to run VL53L0X spad setup")
 	end
 	if not i2c_write_reg(fd, 0xFF, 0x00) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad setup"  }
+		return err("Failed to run VL53L0X spad setup")
 	end
 	if not i2c_write_reg(fd, 0xB6, 0xB4) then
-		return {  result = "ERR", message = "Failed to run VL53L0X spad setup"  }
+		return err("Failed to run VL53L0X spad setup")
 	end
 	local first_spad = spad_aperture and 12 or 0
 	local enabled = 0
@@ -413,72 +402,67 @@ function build(data)
 	for b = 1, 6 do newmap[b] = newmap[b] or map[b] or 0 end
 	if i2c_write_multi(fd, REG_SPAD_ENABLES,
 			newmap[1], newmap[2], newmap[3], newmap[4], newmap[5], newmap[6]) ~= 0 then
-		return {  result = "ERR", message = "Failed to write VL53L0X spad enable map"  }
+		return err("Failed to write VL53L0X spad enable map")
 	end
 
 	-----------------------------------------------------
 	-- 默认 tuning 表（整段连续写；结束后页已归 0）
 	for i = 1, #TUNING, 2 do
 		if not i2c_write_reg(fd, TUNING[i], TUNING[i + 1]) then
-			return {
-				result = "ERR",
-				message = string.format("Failed to write VL53L0X tuning 0x%02X", TUNING[i])
-			}
+			return err(string.format("Failed to write VL53L0X tuning 0x%02X", TUNING[i]))
 		end
 	end
 	if long_range then
 		for i = 1, #TUNING_LONG, 2 do
 			if not i2c_write_reg(fd, TUNING_LONG[i], TUNING_LONG[i + 1]) then
-				return {
-					result = "ERR",
-					message = string.format("Failed to write VL53L0X long-range tuning 0x%02X", TUNING_LONG[i])
-				}
+				return err(string.format("Failed to write VL53L0X long-range tuning 0x%02X", TUNING_LONG[i]))
 			end
 		end
 	end
 
 	-- GPIO 中断：新样本就绪 + 低有效 + 清挂起
 	if not i2c_write_reg(fd, REG_INT_CONFIG_GPIO, 0x04) then
-		return {  result = "ERR", message = "Failed to write VL53L0X GPIO config"  }
+		return err("Failed to write VL53L0X GPIO config")
 	end
 	local mux = i2c_read_reg(fd, REG_GPIO_HV_MUX)
 	if mux < 0 then
-		return {  result = "ERR", message = "Failed to read VL53L0X GPIO polarity"  }
+		return err("Failed to read VL53L0X GPIO polarity")
 	end
 	if not i2c_write_reg(fd, REG_GPIO_HV_MUX, bitc.band(mux % 256, 0xEF)) then
-		return {  result = "ERR", message = "Failed to write VL53L0X GPIO polarity"  }
+		return err("Failed to write VL53L0X GPIO polarity")
 	end
 	if not i2c_write_reg(fd, REG_INT_CLEAR, 0x01) then
-		return {  result = "ERR", message = "Failed to clear VL53L0X interrupt"  }
+		return err("Failed to clear VL53L0X interrupt")
 	end
 
 	-- 关 MSRC/TCC 时序步（Pololu/ESPHome 同款缺省）
 	if not i2c_write_reg(fd, REG_SEQ_CONFIG, 0xE8) then
-		return {  result = "ERR", message = "Failed to write VL53L0X sequence config"  }
+		return err("Failed to write VL53L0X sequence config")
 	end
 
 	-- 参考校准两轮（VHV 0x40 / phase 0x00）
 	if not i2c_write_reg(fd, REG_SEQ_CONFIG, 0x01) then
-		return {  result = "ERR", message = "Failed to write VL53L0X sequence config"  }
+		return err("Failed to write VL53L0X sequence config")
 	end
-	local ok, err = ref_calibration(fd, 0x40, timeout)
-	if ok == nil then return {  result = "ERR", message = err  } end
+	-- 局部名用 calib_err 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+	local ok, calib_err = ref_calibration(fd, 0x40, timeout)
+	if ok == nil then return err(calib_err) end
 	if not i2c_write_reg(fd, REG_SEQ_CONFIG, 0x02) then
-		return {  result = "ERR", message = "Failed to write VL53L0X sequence config"  }
+		return err("Failed to write VL53L0X sequence config")
 	end
-	ok, err = ref_calibration(fd, 0x00, timeout)
-	if ok == nil then return {  result = "ERR", message = err  } end
+	ok, calib_err = ref_calibration(fd, 0x00, timeout)
+	if ok == nil then return err(calib_err) end
 	if not i2c_write_reg(fd, REG_SEQ_CONFIG, 0xE8) then
-		return {  result = "ERR", message = "Failed to write VL53L0X sequence config"  }
+		return err("Failed to write VL53L0X sequence config")
 	end
 
 	-----------------------------------------------------
 	-- 启动背靠背连续测距：舞步重放（回写 stop_variable）+ 0x00=0x02
 	if start_stop_dance(fd, "write") == nil then
-		return {  result = "ERR", message = "Failed to run VL53L0X start sequence"  }
+		return err("Failed to run VL53L0X start sequence")
 	end
 	if not i2c_write_reg(fd, REG_SYSRANGE_START, 0x02) then
-		return {  result = "ERR", message = "Failed to start VL53L0X ranging"  }
+		return err("Failed to start VL53L0X ranging")
 	end
 
 	print(string.format(
@@ -511,11 +495,10 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	-- 审计 #4：与 build 同规，入口走 arg_table（含 proto=virt 前置）
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -523,21 +506,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 等 data-ready（背靠背连续模式自动开始下一帧）
@@ -545,16 +516,10 @@ function call(data)
 		return bitc.band(v, 0x07) ~= 0
 	end, poll_timeout or DEF_TIMEOUT)
 	if r == nil then
-		return {
-			result = "ERR",
-			message = "Failed to poll VL53L0X data-ready"
-		}
+		return err("Failed to poll VL53L0X data-ready")
 	end
 	if r == false then
-		return {
-			result = "ERR",
-			message = string.format("VL53L0X data-ready timeout (%dms)", poll_timeout or DEF_TIMEOUT)
-		}
+		return err(string.format("VL53L0X data-ready timeout (%dms)", poll_timeout or DEF_TIMEOUT))
 	end
 
 	-- 结果块 0x14~0x1F（ST GetRangingMeasurementData 同款 12 字节）：
@@ -562,18 +527,12 @@ function call(data)
 	-- [11..12]=毫米距离
 	local blk = i2c_read_multi_bytes(fd, REG_RESULT_RANGE, 12)
 	if blk == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read VL53L0X range results"
-		}
+		return err("Failed to read VL53L0X range results")
 	end
 
 	-- 清中断（读完再清，结果寄存器为锁存值；背靠背随即开下一帧）
 	if not i2c_write_reg(fd, REG_INT_CLEAR, 0x01) then
-		return {
-			result = "ERR",
-			message = "Failed to clear VL53L0X interrupt"
-		}
+		return err("Failed to clear VL53L0X interrupt")
 	end
 
 	-- 状态映射：内部码 = (b & 0x78)>>3，查 STATUS_RTN

@@ -39,10 +39,9 @@
 -- CO2eq 由 H2 信号等效换算：对呼吸类 VOC 响应快，对燃烧类 CO2 迟钝，
 --   适合做通风指示，不适合精确浓度测量
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 同时持有 HAL 表：基线文件读写走 HAL.sys 间接层（可离线 mock）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table 经 mpath 加载（modules/lib/）；同时持有 HAL 表：
+-- 基线文件读写走 HAL.sys 间接层（可离线 mock）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local HAL = dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -87,21 +86,10 @@ local last_save_s		-- 上次存盘时刻（os.time 秒）
 local last_ah_ticks		-- 上次下发的绝对湿度 ticks（nil = 尚未下发）
 
 -- ==================== CRC8（多项式 0x31，初值 0xFF） ====================
+-- CRC 判据单点在 bitcompat.crc8（D1 收敛，2026-09-25）：Sensirion 词 CRC
+-- = poly 0x31、init 0xFF、16 位词按 hi/lo 两字节展开——器件约定留在调用方。
 local function crc8(word)
-	local crc = 0xFF
-	local hi = math.floor(word / 256) % 256
-	local lo = word % 256
-	for _, b in ipairs({hi, lo}) do
-		crc = bitc.bxor(crc, b)
-		for _ = 1, 8 do
-			if bitc.band(crc, 0x80) ~= 0 then
-				crc = bitc.band(bitc.bxor(bitc.lshift(crc, 1), 0x31), 0xFF)
-			else
-				crc = bitc.band(bitc.lshift(crc, 1), 0xFF)
-			end
-		end
-	end
-	return crc
+	return bitc.crc8(0xFF, 0x31, { math.floor(word / 256) % 256, word % 256 })
 end
 
 -- 发送命令（可带数据字节，数据按 Sensirion 约定逐字附 CRC）
@@ -144,7 +132,7 @@ local function baseline_save(fd)
 	local b, w1, w2 = baseline_get_raw(fd)
 	if b == nil then dbg("SGP30 baseline: read failed, skip save") return end
 	if w1 == 0 and w2 == 0 then dbg("SGP30 baseline: all-zero, skip save") return end
-	local ffd = HAL.sys.open(baseline_path, O_WRONLY_CREAT_TRUNC, FILE_MODE)
+	local ffd = HAL.sys.open(baseline_path, O_WRONLY_CREAT_TRUNC + HAL.O_CLOEXEC, FILE_MODE)
 	if ffd < 0 then dbg("SGP30 baseline: open for write failed") return end
 	local buf = ffi.new("uint8_t[6]")
 	for i = 0, 5 do buf[i] = b[i + 1] end
@@ -160,7 +148,7 @@ end
 
 -- 恢复（build 调用）：文件不存在/短文件/CRC 不合法/全 0 都安全跳过
 local function baseline_restore(fd)
-	local ffd = HAL.sys.open(baseline_path, O_RDONLY)
+	local ffd = HAL.sys.open(baseline_path, O_RDONLY + HAL.O_CLOEXEC)
 	if ffd < 0 then return "no file" end
 	local buf = ffi.new("uint8_t[6]")
 	local n = HAL.sys.read(ffd, buf, 6)
@@ -192,8 +180,13 @@ end
 local function compensation_ticks(data)
 	local tk, rk = data.t_field, data.rh_field
 	if tk == nil or rk == nil then return nil end
-	local t = tonumber(data[tk])
-	local rh = tonumber(data[rk])
+	-- 审计 P3：finite_of 而非 tonumber。NaN 会让下面的区间检查恒假，
+	-- ah_ticks_of 里的 0..0xFFFF 钳位同样拦不住 NaN，一路走到 send_cmd
+	-- 才在 HAL 的 byte_of 处炸——末态是对的（不会写坏字节），但报错落在
+	-- 总线层、看不出是补偿输入非法。本函数的契约就是「输入异常返回 nil」，
+	-- 让它在正确的层返回（调用方跳过补偿，不影响主测量）。
+	local t = finite_of(data[tk])
+	local rh = finite_of(data[rk])
 	if t == nil or rh == nil or rh < 0 or rh > 100 then return nil end
 	return ah_ticks_of(t, rh)
 end
@@ -201,11 +194,9 @@ end
 -- 【配置脚本】自检 -> Init -> （可选）恢复基线
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -213,21 +204,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 基线持久化配置（'-' 占位符/缺省 = 关闭）
 	local bp = data.baseline
@@ -238,34 +217,22 @@ function build(data)
 	-----------------------------------------------------
 	-- 在位探测 + 完整性自检（0x2032 -> 0xD400，约 220ms）
 	if not send_cmd(fd, CMD_SELFTEST) then
-		return {
-			result = "ERR",
-			message = "SGP30 not responding (selftest write failed, check address 0x58 and wiring)"
-		}
+		return err("SGP30 not responding (selftest write failed, check address 0x58 and wiring)")
 	end
 	milli_sleep(T_SELFTEST_MS)
 	local st = read_bytes(fd, 3)
 	if st == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SGP30 selftest"
-		}
+		return err("Failed to read SGP30 selftest")
 	end
 	local st_word = st[1] * 256 + st[2]
 	if st_word ~= SELFTEST_MAGIC or crc8(st_word) ~= st[3] then
-		return {
-			result = "ERR",
-			message = string.format("SGP30 selftest failed: got 0x%04X (expect 0x%04X + valid CRC)",
-				st_word, SELFTEST_MAGIC)
-		}
+		return err(string.format("SGP30 selftest failed: got 0x%04X (expect 0x%04X + valid CRC)",
+				st_word, SELFTEST_MAGIC))
 	end
 
 	-- 进入持续测量模式
 	if not send_cmd(fd, CMD_INIT) then
-		return {
-			result = "ERR",
-			message = "Failed to send SGP30 Init_air_quality"
-		}
+		return err("Failed to send SGP30 Init_air_quality")
 	end
 	milli_sleep(T_INIT_MS)
 
@@ -309,11 +276,9 @@ end
 -- NOTE(20260902-qing): 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -321,21 +286,9 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 湿度补偿（可选）：输入变化才下发，省一次命令往返
@@ -349,20 +302,14 @@ function call(data)
 	end
 
 	if not send_cmd(fd, CMD_MEASURE) then
-		return {
-			result = "ERR",
-			message = "SGP30 not responding (measure write failed)"
-		}
+		return err("SGP30 not responding (measure write failed)")
 	end
 
 	milli_sleep(T_MEASURE_MS)	-- 等待测量完成（数据手册最大 12ms + 余量）
 
 	local b = read_bytes(fd, 6)	-- 纯读6字节（不写任何指针字节）
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SGP30"
-		}
+		return err("Failed to read SGP30")
 	end
 
 	-- 6 字节（大端）：CO2eq + CRC, TVOC + CRC

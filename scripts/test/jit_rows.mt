@@ -1,6 +1,6 @@
 # 70 行动作：触发嵌入式 LuaJIT 的 JIT 编译（阈值56），锁定变参 ABI 回归
 # 经 Servo→PCA9685 每行走 4 次 I2C_RDWR ioctl，0x40 无器件时 NACK 静默失败仍计次
-# 运行：cat scripts/test/jit_rows.mt | ./target/release/bin/main --robot=robots/test/jit_rows.sql
+# 运行：cat scripts/test/jit_rows.mt | ./build/mybot --robot=robots/test/jit_rows.sql
 @Action
 s1.A;
    0;

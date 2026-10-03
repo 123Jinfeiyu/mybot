@@ -429,7 +429,7 @@ dev:clear_faults()
 
 m = section()
 expect_err("call 缺 fd", function() return call({ percent = "50" }) end, "Invalid Argument: fd")
-expect_err("call 参数非表", function() return call("x") end, "Invalid Arguments: table")
+expect_err("call 参数非表", function() return call("x") end, "Invalid Arguments Type")
 check("call：参数校验零总线事务", #entries(m) == 0, #entries(m))
 
 m = section()

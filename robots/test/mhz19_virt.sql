@@ -21,7 +21,7 @@
  * 配合 mhz19_virt.mt：200ms 预热等守护 open+首发（真实驱动 build/call 均
  * 零睡眠），随后 16 拍 ×50ms pump Ema 并消费两个 Monitor。守护 interval=20ms。
  * virt_tick 为 32 拍一周爬坡（400 + m*128 ppm，一拍消费间隔内约推进 2~3 点）。
- * 用法：cat scripts/test/mhz19_virt.mt | bash _run.sh --robot=robots/test/mhz19_virt.sql
+ * 用法：cat scripts/test/mhz19_virt.mt | ./build/mybot --robot=robots/test/mhz19_virt.sql
  */
 CREATE TABLE Timer (
 	name String

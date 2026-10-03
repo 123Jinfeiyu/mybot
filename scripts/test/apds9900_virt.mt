@@ -6,7 +6,7 @@
 # ev 滤波后照度与阈值 level。守护 interval=20ms（call 零睡眠），
 # 一拍对应一次 virt_tick（CH0 6000~14000 同相正弦、32 拍周期，
 # build 前预武装；LUX 约 1354~3160 lux）。
-# 用法：cat scripts/test/apds9900_virt.mt | bash _run.sh --robot=robots/test/apds9900_virt.sql
+# 用法：cat scripts/test/apds9900_virt.mt | ./build/mybot --robot=robots/test/apds9900_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

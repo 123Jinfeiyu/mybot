@@ -531,6 +531,24 @@ r = expect_ok("call RH 越界 101 跳过补偿",
 		              rh_field = "v1", v1 = 101 })
 	end)
 if r then check("越界 RH 不下发 AH", not has_cmd(mark, 0x2061)) end
+-- 审计 P3：非有限补偿输入。NaN 会让 `rh < 0 or rh > 100` 恒假、
+-- ah_ticks_of 里的 0..0xFFFF 钳位同样拦不住，一路走到 send_cmd 才在 HAL 的
+-- byte_of 处炸——末态安全但层次错、报错落在总线层。现在按本函数契约
+-- 「输入异常返回 nil」在正确的层跳过补偿，主测量不受影响。
+mark = #vbus.txlog
+r = expect_ok("call RH=nan 跳过补偿",
+	function()
+		return call({ fd = fd, address = "0x58", t_field = "v0", v0 = 25.0,
+		              rh_field = "v1", v1 = "nan" })
+	end)
+if r then check("非有限 RH 不下发 AH", not has_cmd(mark, 0x2061)) end
+mark = #vbus.txlog
+r = expect_ok("call T=inf 跳过补偿",
+	function()
+		return call({ fd = fd, address = "0x58", t_field = "v0", v0 = "1e400",
+		              rh_field = "v1", v1 = 40.0 })
+	end)
+if r then check("非有限 T 不下发 AH", not has_cmd(mark, 0x2061)) end
 mark = #vbus.txlog
 r = expect_ok("call 缺快照键跳过补偿",
 	function()

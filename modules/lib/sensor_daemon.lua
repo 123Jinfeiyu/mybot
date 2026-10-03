@@ -26,14 +26,25 @@
 
 if jit then jit.off() end
 
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local P = dofile(mpath.resolve("lib/pthread.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))	-- i2c/spi/uart 采样
 
 -- 解析配置串
+-- 注：proto/fields/sign 的**语法**在结构脚本加载期已由宿主校验（src/daemonvar.cpp
+-- 的 checkDaemonProto/checkDaemonFields/checkDaemonSign，报错带守护名/列/表/行号）；
+-- 下面的解析对非法值仍保持宽容（打日志/透传），仅作为绕过框架直接注入
+-- DAEMON_CONFIG（如 test/test_h07_fd.lua）时的兜底，两处规则改动须同步。
+-- M6 修复（2026-09-23）：旧 gmatch "([^;=]+)=([^;]*)" 对含 = 的值静默截断
+-- （value 内第二个 = 被当新键分隔符，后段被当新键）。改按第一个 = 分割。
 local cfg = {}
-for k, v in string.gmatch(DAEMON_CONFIG or "", "([^;=]+)=([^;]*)") do
-	cfg[k] = v
+for pair in string.gmatch(DAEMON_CONFIG or "", "([^;]+)") do
+	local eq = string.find(pair, "=")
+	if eq then
+		local k = string.sub(pair, 1, eq - 1)
+		local v = string.sub(pair, eq + 1)
+		cfg[k] = v
+	end
 end
 
 local driver = cfg.driver
@@ -95,15 +106,18 @@ local function close_bus()
 	end
 end
 
--- setup 失败：打日志 → 关总线 fd → 发布错误标志一次 → daemon_tick 置空转
+-- setup 失败：打日志 → 关总线 fd → 写 status 失败码 → daemon_tick 置空转
 -- （daemon_body 仍会逐拍调用直到 stop）。
 -- 错误码：-9 缺 driver、-8 驱动加载失败、-1 开总线失败、-3 spi setup 失败、-2 build 失败。
--- 注意：错误码经 v0 发布（槽布局无独立 status 字段）——下游消费者若把 v0
--- 当实测值需自行甄别（特征：count 恒为 1 且 v0 为负整数）；诊断以日志行为准。
+-- N-27：失败码写进槽的独立 status 字段（P.set_status），**不再伪装成 v0 采样值**
+-- ——旧实现 `P.publish(slot, { code })` 会把 -2 发布成一个负样本，下游 $ 引用
+-- 没有甄别手段（配置错误会被当温度做闭环，只有 count 停滞这种间接迹象）。
+-- 现在宿主的读路径见 status ≠ 0 即按 ERR 报错，失败是响亮的。
 local function fail(code, msg)
 	log("[sensor_daemon] setup failed (" .. tostring(code) .. "): " .. tostring(msg))
 	close_bus()
-	P.publish(slot, { code })
+	P.set_status(slot, code)
+	P.publish(slot, {})	-- 只推进 count（nvals=0），不发布任何假样本
 	function daemon_tick() end
 end
 
@@ -148,28 +162,27 @@ if proto == "virt" then
 	if not vrok or type(vdev) ~= "table" then
 		fail(-8, "virt: model new() failed: " .. tostring(vdev)); return
 	end
-	-- SPI 模型（模块表 BUS="spi"，兼容实例自带 BUS）：路径即片选身份，
-	-- 走 attach_spi；UART 模型（BUS="uart"）按 tty 路径走 attach_uart
-	-- （应答环挂载）；I2C 模型维持 addr 挂载。
-	local is_spi = (vmod.BUS == "spi" or vdev.BUS == "spi")
-	local is_uart = (vmod.BUS == "uart" or vdev.BUS == "uart")
-	if is_spi then
-		bus_kind = "spi"
+	-- BUS 类型判定与 attach 分派收敛至 virtbus.attach_model（N-26）：
+	-- SPI 模型（模块表/实例 BUS="spi"）路径即片选身份，走 attach_spi；
+	-- UART 模型（BUS="uart"）按 tty 路径走 attach_uart（应答环挂载）；
+	-- I2C 模型维持 addr 挂载。
+	local kind = vbus.model_kind(vmod, vdev)
+	bus_kind = kind
+	if kind == "spi" then
 		-- 用户未显式给 path 时，proto=virt 上面默认成了 /dev/i2c-1，这里修正
 		if not cfg.path then path = "/dev/spidev0.0" end
-		vbus.attach_spi("VIRT:" .. tostring(driver) .. "@" .. path, path, vdev)
-	elseif is_uart then
-		bus_kind = "uart"
+	elseif kind == "uart" then
 		-- 同上：virt 的 uart 模型缺省挂 /dev/serial0（HAL 路径白名单内）
 		if not cfg.path then path = "/dev/serial0" end
-		vbus.attach_uart("VIRT:" .. tostring(driver) .. "@" .. path, path, vdev)
 	else
 		local addr_n = tonumber(addr)
 		if not addr_n then
 			fail(-8, "virt: missing/invalid 'addr' for virtual device: " .. tostring(addr)); return
 		end
-		vbus.attach("VIRT:" .. tostring(driver) .. "@" .. tostring(addr), addr_n, vdev)
 	end
+	vbus.attach_model("VIRT:" .. tostring(driver) .. "@"
+		.. (kind == "i2c" and tostring(addr) or path),
+		vdev, tonumber(addr), path, kind)
 	if drv_preloaded then
 		vbus._injected = false
 		vbus.inject()
@@ -184,8 +197,24 @@ if not ok_load then
 	fail(-8, "cannot load driver: " .. drvpath .. " (" .. tostring(load_err) .. ")"); return
 end
 
--- 高速采样中静默驱动的 print 刷屏（本状态机独立）
-print = function() end
+-- M6 修复（2026-09-23）：setup 成功后无条件 print=function()end 吞掉驱动 tick 期全部
+-- 诊断输出（驱动内仿真模型打的波形合成日志、异常条件等）。改为限频透传：
+-- 每秒最多打印 5 次，超出时静默（避免高速采样刷屏，同时保留关键诊断输出）。
+local print_count = 0
+local print_reset_time = os.time()
+local PRINT_LIMIT_PER_SEC = 5
+local original_print = print
+print = function(...)
+	local now = os.time()
+	if now ~= print_reset_time then
+		print_reset_time = now
+		print_count = 0
+	end
+	if print_count < PRINT_LIMIT_PER_SEC then
+		print_count = print_count + 1
+		original_print(...)
+	end
+end
 
 -- proto=virt 显著横幅：仿真数据绝不能被误当成真机采样（防生产环境误用）
 if proto == "virt" then
@@ -202,9 +231,13 @@ end
 --   "f"   原样透传（换算后的浮点物理量，如 MPU6050 TEMP °C、INA226 V/I/P、MLX90393 µT）
 --   "s16" 16 位二进制补码符号扩展（整型路径，先取整保证 % 65536 可用）
 --   ""    跟随全局 sign 列（sign=16 时补码，否则原样）
+local function effective_bits(mode)
+	return (mode == "s16") and 16 or (mode == "" and sign or nil)
+end
+
 local function conv(v, mode)
 	v = tonumber(v) or 0
-	local bits = (mode == "s16") and 16 or (mode == "" and sign or nil)
+	local bits = effective_bits(mode)
 	if bits == 16 then
 		v = math.floor(v) % 65536
 		if v >= 32768 then v = v - 65536 end
@@ -253,7 +286,15 @@ params.fd = fd
 if vdev ~= nil and type(vdev.virt_tick) == "function" then
 	pcall(function() vdev:virt_tick(0) end)
 end
-local r = build(params)
+-- 防线：build 抛 Lua error（典型：@Daemon 的 driver 列误配成无全局 build 的模块）
+-- 时，裸调用会跳过 fail() 里的 close_bus()；而 C++ 侧 chunk setup 失败是直接
+-- lua_close 返回，不会调用本文件末尾的 daemon_cleanup（此刻尚未定义）——HAL 没有
+-- ffi.gc，已 open 的总线 fd 就永久泄漏在进程里。故就地 pcall 并走同一条回滚路径。
+local okr, rb = pcall(build, params)
+if not okr then
+	fail(-2, "driver build() raised: " .. tostring(rb)); return
+end
+local r = rb
 if type(r) ~= "table" or r.result ~= "OK" then
 	local why = (type(r) == "table" and r.message) and tostring(r.message) or "driver build() not OK"
 	fail(-2, why); return
@@ -277,7 +318,41 @@ function daemon_tick()
 	-- halt-on-error 中断动作序列）；守护侧是数据流而非动作，坏样本不得发布给下游——
 	-- 按 tick 错误处理、本次不 publish（count 停滞即是诊断线索）
 	local crc_bad = (type(s) == "table" and s.result == "OK" and s.CRC_OK == 0)
-	if type(s) == "table" and s.result == "OK" and not crc_bad then
+	local ok_sample = (type(s) == "table" and s.result == "OK" and not crc_bad)
+	local why = "unknown"
+	if crc_bad then
+		why = "CRC check failed (CRC_OK=0)"
+	elseif ok_sample then
+		-- 防线：@Daemon 的 fields 列拼错字段名时，conv 的 `tonumber(v) or 0` 会
+		-- 把不存在的键静默发布成 0，走的是 result=OK 分支、零日志、count 正常自增
+		-- ——下游 Ema/Kalman/Monitor 于是拿假 0 做闭环决策（真 0 与配置错误不可区分）。
+		-- 配置类错误同样按 tick 错误处理：不发布、count 停滞，日志点名缺哪个字段。
+		local missing = nil
+		local float_s16 = nil
+		for i = 1, #fields do
+			local raw = tonumber(s[fields[i]])
+			if raw == nil then
+				missing = (missing and (missing .. ", ") or "") .. tostring(fields[i])
+			elseif raw % 1 ~= 0 and effective_bits(field_modes[i]) == 16 then
+				-- 防线：浮点物理量（SHT3X 的 T/RH、BME280 的 T/P/H 等已换算值）
+				-- 配 s16 补码会被 floor 截断成整数假值（23.56 → 23），tonumber
+				-- 照样通过、零日志静默发布错值——与字段拼错发 0 同族的数据破坏，
+				-- 拒绝发布，点名让配置改用 ':f' 或去掉 sign 后缀。
+				float_s16 = (float_s16 and (float_s16 .. ", ") or "") .. tostring(fields[i])
+			end
+		end
+		if missing ~= nil then
+			ok_sample = false
+			why = "field(s) absent or non-numeric in driver result: " .. missing
+		elseif float_s16 ~= nil then
+			ok_sample = false
+			why = "float value(s) with s16 mode would be truncated to integer: " .. float_s16
+				.. " (use ':f' suffix or drop sign=16 for these fields)"
+		end
+	elseif type(s) == "table" and s.message then
+		why = tostring(s.message)
+	end
+	if ok_sample then
 		local vals = {}
 		for i = 1, #fields do
 			vals[i] = conv(s[fields[i]], field_modes[i])
@@ -288,12 +363,6 @@ function daemon_tick()
 		tick_errors = tick_errors + 1
 		tick_total  = tick_total + 1
 		if tick_errors <= 3 or tick_total % 100 == 0 then
-			local why = "unknown"
-			if crc_bad then
-				why = "CRC check failed (CRC_OK=0)"
-			elseif type(s) == "table" and s.message then
-				why = tostring(s.message)
-			end
 			log(string.format("[sensor_daemon] tick error #%d (total %d): %s",
 				tick_errors, tick_total, why))
 		end
@@ -303,9 +372,23 @@ end
 -- H-07：守护退出（stop 后、Lua_free 前）由 daemon_body 调用，先调驱动 destroy()（若有）
 -- 让器件退出活跃态（VL53L0X 停止 ranging、ADS1x15 置单次态断电等），再关总线 fd。
 -- setup 失败路径不会到达此定义（fail 已 return），此时 fd 已由 close_bus 关闭。
+--
+-- 审计 2026-09-20（中）：destroy 此前是**裸调**——驱动 destroy 抛异常时本函数
+-- 直接中断，close_bus() 与 vbus.restore() 都不再执行，总线 fd（build 时
+-- open/ioctl 拿到的真内核句柄）泄漏到进程退出；反复启停守护会耗尽 fd。
+-- 宿主侧只 pcall 了 cleanup 本身（daemonvar.cpp）并随即 lua_close，HAL 也没有
+-- ffi.gc 兜底，所以这里必须自己保证「无论 destroy 成败都要释放」。
+-- 语义取舍：destroy 失败**不改变** daemon_cleanup 的返回（调用方只 pcall，
+-- 无返回值契约），失败原因按 stderr 注记——退出路径上的资源释放优先于
+-- 传播一个无人接收的错误。
 function daemon_cleanup()
 	if type(destroy) == "function" then
-		destroy(params)
+		local ok, err = pcall(destroy, params)
+		if not ok then
+			io.stderr:write(string.format(
+				"[sensor_daemon] driver destroy() failed during cleanup (bus will still be closed): %s\n",
+				tostring(err)))
+		end
 	end
 	close_bus()
 	-- virt：还原全局 i2c_*/spi_*/uart_*（独立守护 lua_State 随之销毁，主要为状态对称）

@@ -1,6 +1,6 @@
 # SGP30 空气质量测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/sgp30.sql（I2C + sgp30-0@0x58 + Timer + sgp-d0 守护）
-# 运行：cat scripts/test/sgp30.mt | ./target/release/bin/main --robot=robots/test/sgp30.sql
+# 运行：cat scripts/test/sgp30.mt | ./build/mybot --robot=robots/test/sgp30.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x58 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/SGP30 的 build 一旦返回 ERR

@@ -31,7 +31,7 @@
  * 配合 bmm150_virt.mt：首行 200ms 预热等守护 setup（容纳 build 的真实
  * STARTUP 睡眠 3ms，余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个
  * Monitor。守护 interval=20ms（tick 预武装后 call 零睡眠）。
- * 用法：cat scripts/test/bmm150_virt.mt | bash _run.sh --robot=robots/test/bmm150_virt.sql
+ * 用法：cat scripts/test/bmm150_virt.mt | ./build/mybot --robot=robots/test/bmm150_virt.sql
  */
 CREATE TABLE Timer (
 	name String

@@ -44,12 +44,12 @@
 --      bit[2:1]=工作模式（normal=0）；重复次数 0x51(REP_XY)/0x52(REP_Z)
 --   6. 无中断/FIFO 路径（守护周期采样不需要）；正常模式典型电流 170µA
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
+local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
 -- 调试开关：采样周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -102,16 +102,8 @@ local function idiv(a, b)
 end
 -- uint16/int16/int8 回绕（Bosch 公式中的显式窄化转换）
 local function u16(v) return v % 0x10000 end
-local function s16(v)
-	v = v % 0x10000
-	if v >= 0x8000 then v = v - 0x10000 end
-	return v
-end
-local function s8(v)
-	v = v % 0x100
-	if v >= 0x80 then v = v - 0x100 end
-	return v
-end
+local s16 = function(v) return bitc.s16(v % 0x10000) end
+local s8 = function(v) return bitc.s8(v % 0x100) end
 
 -- ==================== trim 寄存器解析 ====================
 -- 三段直读 0x5Dx2 / 0x62x4 / 0x68x10，拼装依 bmm150.c read_trim_registers
@@ -209,11 +201,9 @@ end
 -- 【配置脚本】上电（挂起态 -> 工作态）-> 验 ID -> trim -> preset + normal
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -221,87 +211,51 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 预设模式列（'-' 缺省 regular）
 	local pname = string.lower(tostring(data.preset or "regular"))
 	if pname == "-" or pname == "" then pname = "regular" end
 	local p = PRESETS[pname]
 	if p == nil then
-		return {
-			result = "ERR",
-			message = "Invalid preset: '" .. tostring(data.preset) ..
-				"' (expect lowpower/regular/enhanced/highaccuracy)"
-		}
+		return err("Invalid preset: '" .. tostring(data.preset) ..
+				"' (expect lowpower/regular/enhanced/highaccuracy)")
 	end
 
 	-----------------------------------------------------
 	-- 上电：芯片复位后处于 suspend 挂起态，先写 Power Control 再等 3ms，
 	-- 之后才允许读 CHIP_ID / trim
 	if not i2c_write_reg(fd, REG_POWER, POWER_ON) then
-		return {
-			result = "ERR",
-			message = "Failed to power on BMM150"
-		}
+		return err("Failed to power on BMM150")
 	end
 	milli_sleep(STARTUP_MS)
 
 	local id = i2c_read_reg(fd, REG_CHIP_ID)
 	if id < 0 then
-		return {
-			result = "ERR",
-			message = "Failed to read BMM150 CHIP_ID"
-		}
+		return err("Failed to read BMM150 CHIP_ID")
 	end
 	if id ~= CHIP_ID then
-		return {
-			result = "ERR",
-			message = string.format("CHIP_ID = 0x%02X (expect 0x32, not BMM150?)", id)
-		}
+		return err(string.format("CHIP_ID = 0x%02X (expect 0x32, not BMM150?)", id))
 	end
 
 	-- 工厂 trim 16 字节（补偿必需，无 trim 数据则输出无意义）
 	trim = read_trim(fd)
 	if trim == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMM150 trim registers"
-		}
+		return err("Failed to read BMM150 trim registers")
 	end
 
 	-- 预设：重复次数 + ODR，随后进 normal 模式（bit[2:1] = 0）
 	if not i2c_write_reg(fd, REG_REP_XY, p.rxy) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMM150 REP_XY"
-		}
+		return err("Failed to write BMM150 REP_XY")
 	end
 	if not i2c_write_reg(fd, REG_REP_Z, p.rz) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMM150 REP_Z"
-		}
+		return err("Failed to write BMM150 REP_Z")
 	end
 	local mode = p.odr * 8		-- ODR 置 bit[4:3] + normal 模式（bit[2:1]=0）
 	if not i2c_write_reg(fd, REG_OP_MODE, mode) then
-		return {
-			result = "ERR",
-			message = "Failed to write BMM150 OP_MODE"
-		}
+		return err("Failed to write BMM150 OP_MODE")
 	end
 
 	print(string.format("BMM150 init OK: addr=0x%02X, preset=%s (odr=%dHz)",
@@ -327,11 +281,9 @@ end
 -- NOTE: 8 字节一次原子读（字节表接口）；溢出轴返回 nil
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -339,36 +291,18 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	if trim == nil then
-		return {
-			result = "ERR",
-			message = "BMM150 not built (trim data missing)"
-		}
+		return err("BMM150 not built (trim data missing)")
 	end
 
 	local m = i2c_read_multi_bytes(fd, REG_DATA, 8)
 	if m == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read BMM150 data"
-		}
+		return err("Failed to read BMM150 data")
 	end
 
 	-- 13 位有符号拆装（MSB 寄存器存符号扩展位，Bosch 构造法）：
@@ -481,11 +415,6 @@ local TICK_FRAMES = {
 }
 
 -- ==================== 纯算术助手 ====================
-local function clampi(v, lo, hi)
-	v = math.floor(tonumber(v) or 0)
-	if v < lo then return lo elseif v > hi then return hi else return v end
-end
-
 -- X/Y 13 位：LSB=低 5 位<<3、MSB=floor(v/32) 字节（驱动 s8(msb)*32+lsb/8）
 local function encode_xy(v)
 	v = clampi(v, -4096, 4095)
@@ -502,11 +431,8 @@ local function encode_r(r)
 	return (r % 64) * 4, math.floor(r / 64) % 256
 end
 
-local function s8(v)
-	v = v % 256
-	if v >= 0x80 then v = v - 256 end
-	return v
-end
+-- （s8 统一走模块级 bitc 包装（第 106 行）。#30：此前此处另有一份独立
+-- 实现遮蔽 106 行 bitc 包装——实际运行时用的是这份独立拷贝，属重复造轮子）
 
 -- trim 表 → 16 字节 NVM 布局（拼装顺序严格同驱动 read_trim）
 local function trim_bytes(t)

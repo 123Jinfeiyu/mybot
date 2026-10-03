@@ -1,16 +1,9 @@
 -- kalman.lua 单元测试（lua5.4 与 luajit 均可运行）
 -- 用法（项目根目录）: lua5.4 test/test_kalman.lua
 
-local passed, failed = 0, 0
-local function check(label, cond, detail)
-	if cond then
-		passed = passed + 1
-		print("[PASS] " .. label)
-	else
-		failed = failed + 1
-		print("[FAIL] " .. label .. (detail ~= nil and ("  | " .. tostring(detail)) or ""))
-	end
-end
+-- F4/N-33：断言收敛到 test/lib/tester.lua（本地 check 曾与 tester.check 逐字重复）
+local tester = dofile("test/lib/tester.lua")
+local check = tester.check
 
 local Kalman = dofile("modules/lib/kalman.lua")
 
@@ -83,6 +76,24 @@ check("Kalman.new R<0 报错", pcall(Kalman.new, 1, -1) == false)
 check("Kalman.new Q=0 R>0 合法", pcall(Kalman.new, 0, 1) == true)
 check("filter 非数值报错", pcall(function() Kalman.new(1, 1):filter("xyz") end) == false)
 
-print(string.format("结果: %d 通过, %d 失败", passed, failed))
-print("[DONE] test_kalman.lua")	-- 完成标记：run_all.sh 假绿判定（P0-2）
-if failed > 0 then os.exit(1) end
+-- 非有限值防线（2026-09-20 评估）：`Q < 0` / `R <= 0` 对 NaN 全为假、旧实现放行
+check("Kalman.new Q=NaN 报错", pcall(Kalman.new, 0/0, 200) == false)
+check("Kalman.new Q='nan' 报错", pcall(Kalman.new, "nan", 200) == false)
+check("Kalman.new R=NaN 报错", pcall(Kalman.new, 20, 0/0) == false)
+check("filter NaN 报错", pcall(function() Kalman.new(20, 200):filter(0/0) end) == false)
+check("filter inf 报错", pcall(function() Kalman.new(20, 200):filter(math.huge) end) == false)
+check("Q=inf 仍合法（既有语义：只用测量值）", pcall(Kalman.new, math.huge, 200) == true)
+
+-- 用例8：Q=inf → kg 取极限 1（kg=inf/inf=NaN 的修复，2026-09-20）
+-- Q=-inf 被 new 的 Q>=0 拒绝；filter 内 -inf 分支纯属防御（P_mid 恒非负）。
+kf = Kalman.new(math.huge, 200)
+v = kf:filter(50)
+check("Q=inf 输出即测量值 50", v == 50, tostring(v))
+check("Q=inf 后 P 回落 R（有限）",
+	kf.P_last == 200 and kf.P_last == kf.P_last, tostring(kf.P_last))
+v = kf:filter(30)
+check("Q=inf 连续拍不产生 NaN", v == 30 and v == v, tostring(v))
+for i = 1, 100 do v = kf:filter(100 + i) end
+check("Q=inf 长跑保持有限", v == 200 and v == v, tostring(v))
+
+tester.summary("test_kalman.lua")

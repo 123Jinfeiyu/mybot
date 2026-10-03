@@ -1,6 +1,6 @@
 # ADS1115 功能测试（单端 + 守护连续采样）
 # 结构脚本：robots/test/ads1115.sql（I2C + adc0@0x48 + Timer + adc-d0 守护）
-# 运行：cat scripts/test/ads1115.mt | ./target/release/bin/main --robot=robots/test/ads1115.sql
+# 运行：cat scripts/test/ads1115.mt | ./build/mybot --robot=robots/test/ads1115.sql
 #
 # 注意：SQL 脚本不支持注释；且结构脚本 '-' 占位符经元数据归一为 "0"，
 # 所以 adc0 的 pga/dr 在 .sql 里显式写 '2'/'4'（±2.048V / 128SPS），

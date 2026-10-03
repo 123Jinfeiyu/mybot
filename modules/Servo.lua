@@ -8,15 +8,19 @@
 -- 输入参数：angle（支持浮点）
 -- 用法见 robots/spider1.sql 的 Servo 表与 scripts/*.mt 动作脚本
 
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：print_table 经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 
--- 占位符 "-" 或非法值按 0 处理
+-- 占位符 "-" 或非法值按 0 处理。
+-- 审计 2026-09-20（中）：必须过 finite_of —— 本地 `tonumber(v) or 0` 挡不住
+-- NaN（NaN 是 truthy 且非 nil），NaN 的 max/min/offset 会让第 89-93 行每一道
+-- 限幅比较恒假，保护钳位整体失效；而 drv_common 早已提供 finite_of 单点，
+-- 这里此前是自造的第二份判定（正是审计要收口的形态）。
 local function num_or_zero(v)
-	local n = tonumber(v)
+	local n = finite_of(v)
 	if n == nil then return 0 end
 	return n
 end
@@ -66,20 +70,18 @@ function call(data)
 	dbg_table("-------- Servo caller func get a table --------", data)
 
 	-----------------------------------------------------
-	local angle = tonumber(data.angle)
-	if angle == nil then	-- 检查angle参数是否存在且为数值
-		return {
-			result = "ERR",
-			message = "Invalid Argument: angle (missing or not a number)"
-		}
+	-- 审计 2026-09-20（中）：angle 必须过 finite_of。NaN 会让第 85-89 行的
+	-- 每一道限幅比较都为假（NaN 与任何数比较恒假），0–180 的执行器保护钳位
+	-- 形同不存在，NaN 一路作为指令角度转给 controller/舵机。
+	-- （max/min/offset 走 num_or_zero，已由 finite_of 兜底。）
+	local angle = finite_of(data.angle)
+	if angle == nil then	-- 检查angle参数是否存在且为有限数值
+		return err("Invalid Argument: angle (missing or not a finite number)")
 	end
 
 	local channel = tonumber(data.channel)
 	if channel == nil then	-- 检查channel参数是否存在且为数值
-		return {
-			result = "ERR",
-			message = "Invalid Argument: channel (missing or not a number)"
-		}
+		return err("Invalid Argument: channel (missing or not a number)")
 	end
 
 	local max    = num_or_zero(data.max)

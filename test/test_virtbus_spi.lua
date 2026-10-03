@@ -58,6 +58,7 @@ tester.check("spi_setup bits=17 拒绝", spi_setup(fd, 0, 17, 1e6) == -1)
 tester.check("spi_setup speed=0 拒绝", spi_setup(fd, 0, 8, 0) == -1)
 tester.check("spi_setup speed=小数 拒绝", spi_setup(fd, 0, 8, 999.5) == -1)
 tester.check("spi_setup mode=小数 拒绝", spi_setup(fd, 0.5, 8, 1e6) == -1)
+tester.check("spi_setup bits=小数 拒绝", spi_setup(fd, 0, 8.5, 1e6) == -1)
 tester.check("spi_setup 未打开 fd 拒绝", spi_setup(999, 0, 8, 1e6) == -1)
 -- 真机 setup 是控制器 ioctl，总线上无器件也成功；同路径此时尚未挂载模型
 tester.check("spi_setup 无挂载路径仍成功（控制器语义）", spi_setup(fd_b, 0, 8, 500000) == 0)
@@ -90,6 +91,9 @@ local before_bad = count_dir("x")
 tester.check("spi_write 256 返 -1 且不发帧", spi_write(fd, 256) == -1 and count_dir("x") == before_bad)
 tester.check("spi_write -1 返 -1 且不发帧", spi_write(fd, -1) == -1 and count_dir("x") == before_bad)
 tester.check("spi_write 非数值 返 -1", spi_write(fd, "z") == -1 and count_dir("x") == before_bad)
+-- 主评估 A：字节判据取严格口径（拒绝非整数）——HAL 侧此前静默 floor，两路径相反
+tester.check("spi_write 小数 返 -1 且不发帧", spi_write(fd, 1.9) == -1 and count_dir("x") == before_bad)
+tester.check("spi_write NaN 返 -1", spi_write(fd, 0 / 0) == -1 and count_dir("x") == before_bad)
 
 -- delay 随帧留痕，钳 65535
 spi_write(fd, 0x02, 100)
@@ -105,6 +109,11 @@ tester.check("spi_write3 返回 0", spi_write3(fd, 0x11, 0x22, 0x33) == 0)
 tester.check("write3 模型按序收三字节",
 	#last_tx == 3 and last_tx[1] == 0x11 and last_tx[2] == 0x22 and last_tx[3] == 0x33)
 tester.check("write3 单字节非法整帧不发", spi_write3(fd, 0x11, 0x100, 0x33) == -1)
+-- 主评估 A：write3 任一字节为非整数即整帧拒绝（严格口径，与 HAL 一致）
+tester.check("write3 小数字节整帧不发", spi_write3(fd, 0x11, 0.5, 0x33) == -1)
+-- 主评估 A：spi_xfer_full 逐字节严格整数（此前无人覆盖小数字节）
+tester.check("xfer_full 小数字节返 nil", spi_xfer_full(fd, { 0x30, 0.5 }) == nil)
+tester.check("xfer_full 合法字节返等长表", type(spi_xfer_full(fd, { 0x30, 0x03 })) == "table")
 
 -- write_multi：一次调用一个 CS 帧（不拆），1~64
 resp = {}
@@ -134,9 +143,15 @@ resp = { 0x0A, 0x0B, 0x0C, 0x0D }
 tester.check("spi_read_multi 4B 大端合并", spi_read_multi(fd, 4) == 0x0A0B0C0D)
 tester.check("read_multi 模型收 4 个 dummy 字节",
 	#last_x().tx == 4 and last_x().tx[1] == 0 and last_x().tx[4] == 0)
-tester.check("spi_read_multi n=9 越界 -1", spi_read_multi(fd, 9) == -1)
+resp = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06 }
+tester.check("spi_read_multi 6B 边界通过（2^53 精度上限）",
+	spi_read_multi(fd, 6) == 0x010203040506)
+tester.check("spi_read_multi n=7 越界 -1（HAL 上限 6）", spi_read_multi(fd, 7) == -1)
 tester.check("spi_read_multi n=0 非法 -1", spi_read_multi(fd, 0) == -1)
-tester.check("spi_read_multi n=小数 -1", spi_read_multi(fd, 2.5) == -1)
+-- F-07：HAL 的 spi_read_multi 用 uint_of 归一（小数向下取整后仍合法），
+-- 旧 virt 实现按整数严格拒绝——接受集比真机窄，改为逐字对齐 HAL。
+tester.check("spi_read_multi n=2.5 按 HAL uint_of 归一为 2（合并 0x0102）",
+	spi_read_multi(fd, 2.5) == 0x0102)
 
 -- 模型应答短于请求：补 0（不伪造器件数据，超出部分为 0 对调用方可见）
 resp = { 0xAB, 0xCD }
@@ -220,6 +235,30 @@ if rawget(_G, "jit") ~= nil then
 else
 	tester.check("（lua5.4：跳过真实 SPI chunk 集成段，需 ffi）", true)
 end
+
+-- ==================== C7：采纳 fd 必须按总线归表（2026-09-20 审计） ====================
+-- 旧实现把「除 uart 外的一切」都当 I2C 登记：adopt_fd(fd, path, addr, "spi")
+-- 只写 open_paths/fd_addr，spi_paths[fd] 永远为空 —— 该 fd 上每次 spi_* 调用
+-- 都在 `spi_paths[fd] == nil` 处返回 -1（"device absent"），而 txlog 已记下
+-- 一条成功的 "adopt"，故障现象与成因完全脱节。
+vbus.reset()
+vbus.inject()
+do
+	local afd_spi, afd_i2c = 77, 78
+	tester.check("adopt_fd(..., 'spi') 返回 true",
+		vbus.adopt_fd(afd_spi, "/dev/spidev2.0", nil, "spi") == true)
+	local rc = spi_setup(afd_spi, 1, 8, 1000000)
+	tester.check("C7：采纳的 SPI fd 可用（setup 返回 0；修复前恒 -1）", rc == 0, tostring(rc))
+	tester.check("C7：采纳的 SPI fd 未被误登记成 I2C（set_addr 拒绝）",
+		vbus.v_i2c_set_addr(afd_spi, 0x48) == false)
+
+	tester.check("adopt_fd(..., nil) 仍按 I2C 登记（既有语义不变）",
+		vbus.adopt_fd(afd_i2c, "/dev/i2c-9", nil, nil) == true
+		and vbus.v_i2c_set_addr(afd_i2c, 0x48) == true)
+	tester.check("C7：I2C 采纳的 fd 不被 SPI 认（互不串表）",
+		spi_setup(afd_i2c, 1, 8, 1000000) == -1)
+end
+vbus.reset()
 
 tester.summary("test_virtbus_spi")
 return 0

@@ -615,7 +615,7 @@ vbus.load_driver("modules/ADXL345.lua")
 
 -- call 负路径
 mark = #vbus.txlog
-expect_err("call 非 table", function() return call("x") end, "Invalid Arguments: table")
+expect_err("call 非 table", function() return call("x") end, "Invalid Arguments Type: table")
 expect_err("call 缺 fd", function() return call({ address = "0x53" }) end, "fd or address")
 expect_err("call 缺 address", function() return call({ fd = fd }) end, "fd or address")
 check("call 参数校验零总线事务", #entries(mark) == 0, tostring(#entries(mark)))

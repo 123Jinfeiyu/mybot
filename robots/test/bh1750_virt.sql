@@ -31,7 +31,7 @@
  * 配合 bh1750_virt.mt：首行 200ms 预热等守护 setup（build 真实睡眠 120ms，
  * 余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。守护
  * interval=20ms（连续模式 call 零睡眠，一拍对应一个 virt_tick）。
- * 用法：cat scripts/test/bh1750_virt.mt | bash _run.sh --robot=robots/test/bh1750_virt.sql
+ * 用法：cat scripts/test/bh1750_virt.mt | ./build/mybot --robot=robots/test/bh1750_virt.sql
  */
 CREATE TABLE Timer (
 	name String

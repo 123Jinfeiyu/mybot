@@ -7,7 +7,7 @@
 # 符号整数码）与 count，monf 输出 ei 滤波后 v0。守护 interval=50ms
 #（call 零睡眠），一拍即一个 virt_tick：32 拍周期六轴正弦（X 100~500、
 # Y -350~-50、Z 3996~4196 ≈1g；GYR ±500/±400/±300）。
-# 用法：cat scripts/test/bmi270_virt.mt | bash _run.sh --robot=robots/test/bmi270_virt.sql
+# 用法：cat scripts/test/bmi270_virt.mt | ./build/mybot --robot=robots/test/bmi270_virt.sql
 @Action
 t0.delay  ei.out  mon0.go  monf.go;
    200       -        -         -    ;

@@ -1,6 +1,6 @@
 # MCP4725 12 位 I2C DAC 测试（percent/volt 扫描 + EEPROM 持久化）
 # 结构脚本：robots/test/mcp4725.sql（I2C + dac0@0x62 + Timer + dac-d0 读回守护）
-# 运行：cat scripts/test/mcp4725.mt | ./target/release/bin/main --robot=robots/test/mcp4725.sql
+# 运行：cat scripts/test/mcp4725.mt | ./build/mybot --robot=robots/test/mcp4725.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x62 地址器件；万用表看 VOUT 引脚）。
 # dac0.percent 列 = 输出占满量程百分比（0~100），volt/level 亦可为列；

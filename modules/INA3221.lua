@@ -35,9 +35,8 @@
 --      校准寄存器在 INA3221 上已取消），换算全在驱动侧
 --   5. build 校验制造商/芯片 ID：0xFE=0x5449("TI")、0xFF=0x3220
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -121,11 +120,9 @@ end
 -- 【配置脚本】校验 ID -> 软复位 -> 写配置（连续模式/三通道/平均）-> 等待首拍就绪
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -133,21 +130,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 模块级配置：跨 call 保持
 	local avg_idx, avg_n = avg_code_of(data.avg)
@@ -160,24 +145,15 @@ function build(data)
 	local manuf = read_reg16(fd, REG_MANUF)
 	local die = read_reg16(fd, REG_DIE)
 	if manuf == nil or die == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA3221 IDs"
-		}
+		return err("Failed to read INA3221 IDs")
 	end
 	if manuf ~= ID_MANUF or die ~= ID_DIE then
-		return {
-			result = "ERR",
-			message = string.format("Unexpected IDs: manuf=0x%04X die=0x%04X (not INA3221?)", manuf, die)
-		}
+		return err(string.format("Unexpected IDs: manuf=0x%04X die=0x%04X (not INA3221?)", manuf, die))
 	end
 
 	-- 软复位，随后写入工作配置
 	if not write_reg16(fd, REG_CONFIG, CFG_RST) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA3221 reset"
-		}
+		return err("Failed to write INA3221 reset")
 	end
 	milli_sleep(10)
 
@@ -187,10 +163,7 @@ function build(data)
 		bitc.bor(bitc.lshift(CT_1100US, 6),
 		bitc.bor(bitc.lshift(CT_1100US, 3), CFG_MODE_CONT))))
 	if not write_reg16(fd, REG_CONFIG, config) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA3221 config"
-		}
+		return err("Failed to write INA3221 config")
 	end
 
 	-- 等待一个完整转换循环（3 通道 x (总线CT+分流CT) x 平均次数），首拍数据就绪
@@ -220,11 +193,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -232,29 +203,14 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- build 前置守卫：rshunt1..3 仅 build 赋值，未 build 先 call 会做 nil 除法
 	-- 裸 error（与 INA219 的守卫对齐）
 	if rshunt1 == nil or rshunt2 == nil or rshunt3 == nil then
-		return {
-			result = "ERR",
-			message = "INA3221 not built (build first)"
-		}
+		return err("INA3221 not built (build first)")
 	end
 
 	-----------------------------------------------------
@@ -263,10 +219,7 @@ function call(data)
 	for i, reg in ipairs(regs) do
 		raw[i] = read_reg16(fd, reg)
 		if raw[i] == nil then
-			return {
-				result = "ERR",
-				message = "Failed to read INA3221 register 0x" .. string.format("%02X", reg)
-			}
+			return err("Failed to read INA3221 register 0x" .. string.format("%02X", reg))
 		end
 	end
 
@@ -372,20 +325,12 @@ local function ina3221_s13(v)
 	return v
 end
 
-local function ina3221_clampi(v, lo, hi)
-	if v < lo then return lo end
-	if v > hi then return hi end
-	return v
-end
-
 function INA3221_VIRT.new(opts)
 	local ina3221 = INA3221_VIRT	-- 模型体沿用原模块表引用（零改动移植）
 
 	opts = opts or {}
 
 	local function s13(v) return ina3221_s13(v) end
-
-	local function clampi(v, lo, hi) return ina3221_clampi(v, lo, hi) end
 
 	local d = {}
 	local regs = {}				-- 字地址（0~255）→ 16 位值

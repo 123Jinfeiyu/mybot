@@ -27,7 +27,7 @@
  * 配合 amg8833_virt.mt：首行 200ms 预热等守护 setup（容纳 build 的真实
  * 睡眠 5+120=125ms），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=20ms（tick 预武装后 call 零睡眠）。
- * 用法：cat scripts/test/amg8833_virt.mt | bash _run.sh --robot=robots/test/amg8833_virt.sql
+ * 用法：cat scripts/test/amg8833_virt.mt | ./build/mybot --robot=robots/test/amg8833_virt.sql
  */
 CREATE TABLE Timer (
 	name String

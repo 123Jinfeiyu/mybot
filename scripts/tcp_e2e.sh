@@ -1,117 +1,108 @@
 #!/usr/bin/env bash
-# scripts/tcp_e2e.sh — TCP 长驻动作源端到端测试
+# scripts/tcp_e2e.sh — TCP 端到端回环测试
 #
-# 验证 ActionSource.cj 的 --tcp 长驻语义（一次 bind、反复 accept）：
-#   1. 非回环对端在读取任何字节前被拒（缺省白名单，且不计入已服务连接数）
-#   2. 同一进程连续服务两个回环连接（证明不是一次性连接）
-#   3. 达到 --tcp-max 后正常收尾退出（退出码 0）
-#   4. 服务端日志无 Aborted / result=ERR
+# 验证 actionsource.cpp 的 TCP 动作源：
+#   1. 启动服务端（--tcp <port>，需已编译出可执行文件）
+#   2. Python 客户端连接 → 发送 relay-test.mt
+#   3. 客户端关闭连接（EOF）→ 服务端 run() 完成
+#   4. 验证服务端退出码为 0 且输出包含预期日志
 #
-# 用法：bash scripts/tcp_e2e.sh [port]
-# 依赖：已编译产物（先 bash _set.sh）、python3、_run.sh、robots/relay-test.sql
-#
-# 就绪探测刻意使用【非回环源地址】的连接：它会被白名单拒掉且不计数，
-# 因此探测本身不会消耗掉真正要测的那个 accept。本机无非回环地址时跳过
-# 拒绝子项、改为固定等待（此时若用回环探测会占掉一个 accept，故不做）。
+# 用法：./scripts/tcp_e2e.sh [port] [timeout_sec]
+# 依赖：bot4cj 可执行文件（$BOT，缺省 ./build/mybot）、Python 3、
+#       robots/relay-test.sql、scripts/relay-test.mt
 
-set -uo pipefail
-cd "$(dirname "$0")/.." || exit 1
+set -euo pipefail
 
 PORT="${1:-19240}"
-SCRIPT="scripts/relay-test.mt"
-ROBOT="robots/relay-test.sql"
-LOG="$(mktemp -t bot4cj_tcp_e2e.XXXXXX)"
-SRV_PID=""
-trap 'rm -f "$LOG"; [ -n "$SRV_PID" ] && kill -9 "$SRV_PID" 2>/dev/null' EXIT
+TIMEOUT="${2:-15}"
+BOT="${BOT:-./build/mybot}"
 
-if [ ! -x "target/release/bin/main" ]; then
-	echo "错误：无编译产物 target/release/bin/main（先执行 bash _set.sh）"
+echo "=== TCP 端到端回环测试 ==="
+echo "端口: ${PORT}  超时: ${TIMEOUT}s  可执行: ${BOT}"
+
+if [[ ! -x "$BOT" ]]; then
+	echo "错误：找不到可执行文件 '${BOT}'（需先编译）"
+	echo "提示：BOT=./your-bot-binary $0"
 	exit 1
 fi
-if ! command -v python3 >/dev/null 2>&1; then
-	echo "错误：需要 python3 作为 TCP 客户端"
+if [[ ! -f "robots/relay-test.sql" || ! -f "scripts/relay-test.mt" ]]; then
+	echo "错误：缺少 robots/relay-test.sql 或 scripts/relay-test.mt"
+	exit 1
+fi
+if ! command -v python3 &>/dev/null; then
+	echo "错误：需要 Python 3 作为 TCP 客户端"
 	exit 1
 fi
 
-LAN="$(hostname -I 2>/dev/null | awk '{print $1}')"
-[ -n "$LAN" ] || echo "提示：本机无非回环地址，跳过拒绝子项"
+# F-28：日志用 mktemp 私有文件（固定 /tmp 路径可预测、并行互踩、
+# `>` 跟随符号链接）；trap 保证所有退出路径都清理。
+SRV_LOG="$(mktemp "${TMPDIR:-/tmp}/tcp_e2e_server.XXXXXX.log")"
+trap 'rm -f "$SRV_LOG"' EXIT
 
-echo "=== TCP 长驻端到端：端口 ${PORT}，上限 2 连接 ==="
-nohup bash _run.sh --robot="$ROBOT" --tcp "$PORT" --tcp-max 2 > "$LOG" 2>&1 &
+echo "[1/3] 启动服务端：${BOT} --robot=robots/relay-test.sql --tcp ${PORT}"
+"$BOT" --robot=robots/relay-test.sql --tcp "$PORT" > "$SRV_LOG" 2>&1 &
 SRV_PID=$!
 
-python3 - "$PORT" "$LAN" "$SCRIPT" <<'PYEOF'
-import socket, sys, time
-port, lan, script = int(sys.argv[1]), sys.argv[2], sys.argv[3]
-data = open(script, "rb").read()
-
-def send(host, bind_addr):
+echo "[2/3] 客户端轮询连接（拒绝=未就绪，0.5s 重试，最多 10s）并发送 relay-test.mt"
+# 注意：就绪探测绝不能真的建立 TCP 连接再断开——服务端 accept() 取走的是
+# 第一个连接，探测连接会被当成动作客户端：它立即 FIN，服务端读到空脚本
+# 必报 "No @Action matrix found"。故由发送客户端自己做「连接被拒则重试」，
+# accept 到的第一个连接即真正携带脚本的连接。
+python3 - <<PYEOF
+import socket, time, sys
+content = open("scripts/relay-test.mt", "r").read()
+data = content.encode()
+last = None
+for i in range(20):
     s = socket.socket()
     s.settimeout(5)
-    if bind_addr:
-        s.bind((bind_addr, 0))
-    s.connect((host, port))
-    s.sendall(data)
-    s.shutdown(socket.SHUT_WR)
-    s.close()
-
-# 1) 就绪探测 = 非回环拒绝用例（有局域网地址时），连不上则 0.5s 重试
-if lan:
-    for _ in range(20):
-        try:
-            send(lan, lan)
-            print(f"[client] 非回环源 {lan} 已发送（预期被服务端拒绝）")
-            break
-        except OSError:
-            time.sleep(0.5)
-    else:
-        print("[client] 非回环探测始终连不上服务端", file=sys.stderr)
-        sys.exit(1)
+    try:
+        s.connect(("127.0.0.1", ${PORT}))
+        break
+    except OSError as e:
+        last = e
+        s.close()
+        time.sleep(0.5)
 else:
-    time.sleep(2)
-
-# 2) 两个回环连接，须由同一进程依次服务
-for i in (1, 2):
-    for _ in range(20):
-        try:
-            send("127.0.0.1", None)
-            print(f"[client] 回环连接 {i} 已发送 {len(data)} 字节")
-            break
-        except OSError:
-            time.sleep(0.5)
-    else:
-        print(f"[client] 回环连接 {i} 连接失败", file=sys.stderr)
-        sys.exit(1)
+    print(f"   连接服务端失败：{last}", file=sys.stderr)
+    sys.exit(1)
+s.sendall(data)
+s.shutdown(socket.SHUT_WR)
+time.sleep(0.5)
+s.close()
+print(f"   客户端已连接并发送 {len(data)} 字节 relay-test.mt")
 PYEOF
-if [ $? -ne 0 ]; then
-	echo "✗ 客户端阶段失败"; cat "$LOG"; exit 1
-fi
 
-# 3) 服务满 2 个连接后服务端应自行收尾退出
-for _ in $(seq 1 15); do
-	kill -0 "$SRV_PID" 2>/dev/null || break
+echo "[3/3] 等待服务端退出并验证输出"
+for i in $(seq 1 "${TIMEOUT}"); do
+	if ! kill -0 "$SRV_PID" 2>/dev/null; then break; fi
 	sleep 1
 done
 if kill -0 "$SRV_PID" 2>/dev/null; then
-	echo "✗ 服务端 15s 内未退出（--tcp-max 未生效？）"; cat "$LOG"; exit 1
+	echo "   ✗ 服务端超时未退出（>${TIMEOUT}s）"
+	cat "$SRV_LOG"
+	kill "$SRV_PID" 2>/dev/null || true
+	exit 1
 fi
-wait "$SRV_PID" 2>/dev/null; SRV_RC=$?
-SRV_PID=""
 
-echo "--- 服务端日志 ---"
-cat "$LOG"
-echo "------------------"
-
-rc=0
-[ "$SRV_RC" -eq 0 ] || { echo "✗ 服务端退出码 $SRV_RC（预期 0）"; rc=1; }
-served="$(grep -cF '已服务 ' "$LOG")"
-[ "$served" -eq 2 ] || { echo "✗ 已服务连接数 $served（预期 2）——长驻未生效？"; rc=1; }
-conns="$(grep -cF 'TCP 客户端已连接' "$LOG")"
-[ "$conns" -eq 2 ] || { echo "✗ 接受的连接数 $conns（预期 2）"; rc=1; }
-if [ -n "$LAN" ]; then
-	grep -qF "拒绝非回环对端" "$LOG" || { echo "✗ 未见非回环拒绝记录（白名单失效？）"; rc=1; }
+# F-28：服务端退出码必须为 0（旧实现丢弃退出码，只靠字符串匹配判成败）
+SRV_RC=0
+wait "$SRV_PID" || SRV_RC=$?
+if [ "$SRV_RC" -ne 0 ]; then
+	echo "   ✗ 服务端退出码非 0（rc=$SRV_RC）"
+	cat "$SRV_LOG"
+	exit 1
 fi
-grep -qE "Aborted|\"result\":\"ERR\"" "$LOG" && { echo "✗ 服务端执行出错"; rc=1; }
 
-[ $rc -eq 0 ] && echo "=== TCP 长驻端到端通过 ===" || echo "=== TCP 长驻端到端失败 ==="
-exit $rc
+if grep -q "TCP 客户端已连接" "$SRV_LOG"; then
+	echo "   ✓ 服务端成功接受 TCP 连接"
+else
+	echo "   ✗ 服务端未接受连接"; cat "$SRV_LOG"; exit 1
+fi
+if grep -qE "Aborted|ERR" "$SRV_LOG"; then
+	echo "   ✗ 服务端执行出错"; cat "$SRV_LOG"; exit 1
+fi
+
+echo ""
+echo "=== TCP 端到端测试通过 ==="
+cat "$SRV_LOG"

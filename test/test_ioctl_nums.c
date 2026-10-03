@@ -1,42 +1,81 @@
-/* 实证 HAL.lua 硬编码的 ioctl 编号与结构尺寸同内核头文件一致。
+/* HAL.lua 硬编码 ioctl 编号与内核头文件的一致性自检（F-24）
+ * 全部为编译期断言：常量漂移（改 Lua / 换内核 / 换架构）在构建期即失败。
  *
- * 本程序只【打印事实】，断言放在 test_abi_consts.lua——那里才读得到 HAL.lua 的
- * 常量。原实现同样只打印、main 恒返回 0，属【假自检】：ioctl 编号漂移时它照样绿灯。
+ * A2（2026-09-20 审计）修复：本文件此前把 Lua 里的数字**在 C 里又手抄一遍**，
+ * 只与内核头比对，从不读 Lua 源——Lua 侧漂移完全不被发现（实测把
+ * HAL.SPI_IOC_WR_MODE 改成 0xDEADBEEF 本目标照绿）。现在期望值来自
+ * test/gen_const_check.cmake 在配置期从 modules/lib/HAL.lua **抽取**生成的
+ * const_lua.h，每项做**双边断言**：
+ *   HAL_CONST_X == <手抄预期值>   —— 抽取生效 + Lua 值未漂移（人写错会红）
+ *   <预期值>     == <内核符号>     —— 内核/架构未漂移（原判据，保留）
+ * 两侧都钉死，「声称比对 Lua」不再是一句空话。
  *
- * 输出约定：每行严格 `key = value`（十进制或 0x 十六进制），供 Lua 侧 gmatch 解析。
- * 编译：cc -Wall -o <out> test/test_ioctl_nums.c
- */
+ * 用 _Static_assert 而非 #if：_IOW/_IOWR 宏展开含 sizeof，#if 表达式不支持。 */
+/* O_CLOEXEC 属 POSIX 2008：本文件按 C11 严格模式编译（CMAKE_C_STANDARD 11），
+ * glibc 默认特性宏下不暴露它，故在任何头文件之前显式开 _GNU_SOURCE
+ * （与 src/agent_subprocess.cpp 同款兜底，重复定义会触发 -Wpedantic 告警）。 */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+
 #include <stdio.h>
-#include <pthread.h>
+#include <fcntl.h>
 #include <linux/spi/spidev.h>
-#include <linux/i2c.h>
-#include <linux/i2c-dev.h>
 #include <linux/gpio.h>
 
+#include "const_lua.h"		/* 配置期由 gen_const_check.cmake 生成 */
+
+/* ---- open 标志（HAL 全部器件句柄都带 O_CLOEXEC，见 HAL.lua 常量区注释）---- */
+_Static_assert(HAL_CONST_O_CLOEXEC == 0x80000,
+	"HAL.lua O_CLOEXEC drifted (expected 0x80000)");
+_Static_assert(O_CLOEXEC == 0x80000,
+	"O_CLOEXEC != 0x80000 (HAL.lua O_CLOEXEC)");
+
+/* ---- SPI ---- */
+_Static_assert(HAL_CONST_SPI_IOC_WR_MODE == 0x40016b01,
+	"HAL.lua SPI_IOC_WR_MODE drifted (expected 0x40016b01)");
+_Static_assert(SPI_IOC_WR_MODE == 0x40016b01,
+	"SPI_IOC_WR_MODE != 0x40016b01 (HAL.lua)");
+_Static_assert(HAL_CONST_SPI_IOC_WR_BITS_PER_WORD == 0x40016b03,
+	"HAL.lua SPI_IOC_WR_BITS_PER_WORD drifted (expected 0x40016b03)");
+_Static_assert(SPI_IOC_WR_BITS_PER_WORD == 0x40016b03,
+	"SPI_IOC_WR_BITS_PER_WORD != 0x40016b03 (HAL.lua)");
+_Static_assert(HAL_CONST_SPI_IOC_WR_MAX_SPEED_HZ == 0x40046b04,
+	"HAL.lua SPI_IOC_WR_MAX_SPEED_HZ drifted (expected 0x40046b04)");
+_Static_assert(SPI_IOC_WR_MAX_SPEED_HZ == 0x40046b04,
+	"SPI_IOC_WR_MAX_SPEED_HZ != 0x40046b04 (HAL.lua)");
+_Static_assert(HAL_CONST_SPI_IOC_MESSAGE_1 == 0x40206b00,
+	"HAL.lua SPI_IOC_MESSAGE_1 drifted (expected 0x40206b00)");
+_Static_assert(SPI_IOC_MESSAGE(1) == 0x40206b00,
+	"SPI_IOC_MESSAGE(1) != 0x40206b00 (HAL.lua)");
+
+/* ---- GPIO ---- */
+_Static_assert(HAL_CONST_GPIO_GET_LINEHANDLE == 0xC16CB403,
+	"HAL.lua GPIO_GET_LINEHANDLE drifted (expected 0xC16CB403)");
+_Static_assert(GPIO_GET_LINEHANDLE_IOCTL == 0xC16CB403,
+	"GPIO_GET_LINEHANDLE_IOCTL != 0xC16CB403 (HAL.lua)");
+_Static_assert(HAL_CONST_GPIOHANDLE_GET_LINE_VALUES == 0xC040B408,
+	"HAL.lua GPIOHANDLE_GET_LINE_VALUES drifted (expected 0xC040B408)");
+_Static_assert(GPIOHANDLE_GET_LINE_VALUES_IOCTL == 0xC040B408,
+	"GPIOHANDLE_GET_LINE_VALUES_IOCTL != 0xC040B408 (HAL.lua)");
+_Static_assert(HAL_CONST_GPIOHANDLE_SET_LINE_VALUES == 0xC040B409,
+	"HAL.lua GPIOHANDLE_SET_LINE_VALUES drifted (expected 0xC040B409)");
+_Static_assert(GPIOHANDLE_SET_LINE_VALUES_IOCTL == 0xC040B409,
+	"GPIOHANDLE_SET_LINE_VALUES_IOCTL != 0xC040B409 (HAL.lua)");
+
+/* ---- I2C（HAL.lua 字段，此前漏检）---- */
+_Static_assert(HAL_CONST_I2C_RDWR == 0x0707, "HAL.lua I2C_RDWR drifted (expected 0x0707)");
+_Static_assert(HAL_CONST_I2C_M_RD == 0x0001, "HAL.lua I2C_M_RD drifted (expected 0x0001)");
+
+/* ---- 结构尺寸：Lua ffi 断言值与内核头一致 ---- */
+_Static_assert(sizeof(struct spi_ioc_transfer) == 32,
+	"sizeof(spi_ioc_transfer) != 32 (HAL.lua ffi 断言)");
+_Static_assert(sizeof(struct gpiohandle_request) == 364,
+	"sizeof(gpiohandle_request) != 364 (HAL.lua ffi 断言)");
+_Static_assert(sizeof(struct gpiohandle_data) == 64,
+	"sizeof(gpiohandle_data) != 64 (HAL.lua ffi 断言)");
+
 int main(void) {
-	/* ---- I2C：HAL 走 I2C_RDWR 原子事务（I2C_SLAVE 已不用，留档备查）---- */
-	printf("I2C_RDWR = 0x%04lx\n", (unsigned long)I2C_RDWR);
-	printf("I2C_M_RD = 0x%04lx\n", (unsigned long)I2C_M_RD);
-	printf("I2C_SLAVE = 0x%04lx\n", (unsigned long)I2C_SLAVE);
-	printf("sizeof_i2c_msg = %zu\n", sizeof(struct i2c_msg));
-	printf("sizeof_i2c_rdwr_ioctl_data = %zu\n", sizeof(struct i2c_rdwr_ioctl_data));
-
-	/* ---- SPI ---- */
-	printf("SPI_IOC_WR_MODE = 0x%08x\n", (unsigned)SPI_IOC_WR_MODE);
-	printf("SPI_IOC_WR_BITS_PER_WORD = 0x%08x\n", (unsigned)SPI_IOC_WR_BITS_PER_WORD);
-	printf("SPI_IOC_WR_MAX_SPEED_HZ = 0x%08x\n", (unsigned)SPI_IOC_WR_MAX_SPEED_HZ);
-	printf("SPI_IOC_MESSAGE_1 = 0x%08x\n", (unsigned)SPI_IOC_MESSAGE(1));
-	printf("sizeof_spi_ioc_transfer = %zu\n", sizeof(struct spi_ioc_transfer));
-
-	/* ---- GPIO（gpiod v1 ioctl）---- */
-	printf("GPIO_GET_LINEHANDLE_IOCTL = 0x%08x\n", (unsigned)GPIO_GET_LINEHANDLE_IOCTL);
-	printf("GPIOHANDLE_GET_LINE_VALUES_IOCTL = 0x%08x\n", (unsigned)GPIOHANDLE_GET_LINE_VALUES_IOCTL);
-	printf("GPIOHANDLE_SET_LINE_VALUES_IOCTL = 0x%08x\n", (unsigned)GPIOHANDLE_SET_LINE_VALUES_IOCTL);
-	printf("sizeof_gpiohandle_request = %zu\n", sizeof(struct gpiohandle_request));
-	printf("sizeof_gpiohandle_data = %zu\n", sizeof(struct gpiohandle_data));
-	printf("sizeof_gpiochip_info = %zu\n", sizeof(struct gpiochip_info));
-
-	/* ---- 守护共享槽的 mutex 预留位（pthread.lua daemon_slot_t 预留 64B）---- */
-	printf("sizeof_pthread_mutex_t = %zu\n", sizeof(pthread_mutex_t));
+	printf("ioctl 常量自检通过：Lua 抽取值 == 预期值 == 内核头（SPI/GPIO/I2C + 结构尺寸）\n");
 	return 0;
 }

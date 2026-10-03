@@ -39,7 +39,7 @@
  * 配合 bme688_virt.mt：200ms 预热等守护 setup（build 真实睡 10ms，
  * 余量充裕），随后 16 拍 ×50ms pump 滤波并消费两个 Monitor。
  * 守护 interval=50ms（预武装一拍即就绪），32 拍码钉循环多轮。
- * 用法：cat scripts/test/bme688_virt.mt | bash _run.sh --robot=robots/test/bme688_virt.sql
+ * 用法：cat scripts/test/bme688_virt.mt | ./build/mybot --robot=robots/test/bme688_virt.sql
  */
 CREATE TABLE Timer (
 	name String

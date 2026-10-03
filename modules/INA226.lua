@@ -42,9 +42,8 @@
 --   6. Mask/Enable（0x04）标志位也与 INA219（0x06）不同：bit3=CVRF 转换就绪、
 --      bit2=OVF 溢出（本驱动连续模式直接读，不轮询标志）
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -88,10 +87,7 @@ local SHUNT_LSB_V = 2.5e-6			-- 分流寄存器 LSB：2.5µV（16 位有符号�
 local BUS_LSB_V   = 1.25e-3			-- 总线寄存器 LSB：1.25mV（16 位无符号）
 
 -- 16 位有符号还原（分流寄存器用）
-local function s16(v)
-	if v >= 0x8000 then v = v - 0x10000 end
-	return v
-end
+local s16 = bitc.s16
 
 -- 读 16 位寄存器原始值；失败（-1）返回 nil（2 字节合并恒为正且精确，无回绕）
 local function read_reg16(fd, reg)
@@ -140,11 +136,9 @@ end
 -- 【配置脚本】软复位 -> ID 寄存器甄别芯片 -> 写工作配置 -> 等待首拍就绪
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -152,21 +146,9 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- 模块级配置：跨 call 保持
 	local avg_code_v, avg_n = avg_code_of(data.avg)
@@ -176,54 +158,33 @@ function build(data)
 	-----------------------------------------------------
 	-- 软复位
 	if not write_reg16(fd, REG_CONFIG, CFG_RST) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA226 reset"
-		}
+		return err("Failed to write INA226 reset")
 	end
 	milli_sleep(10)
 
 	-- ID 寄存器甄别芯片（INA219 没有的手段，INA3221 同款）
 	local mfg = read_reg16(fd, REG_MFG)
 	if mfg == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 manufacturer ID"
-		}
+		return err("Failed to read INA226 manufacturer ID")
 	end
 	if mfg ~= 0x5449 then
-		return {
-			result = "ERR",
-			message = string.format("Manufacturer ID = 0x%04X (expect 0x5449 'TI', not INA226?)", mfg)
-		}
+		return err(string.format("Manufacturer ID = 0x%04X (expect 0x5449 'TI', not INA226?)", mfg))
 	end
 	local die = read_reg16(fd, REG_DIE)
 	if die == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 die ID"
-		}
+		return err("Failed to read INA226 die ID")
 	end
 	if die ~= 0x2260 then
-		return {
-			result = "ERR",
-			message = string.format("Die ID = 0x%04X (expect 0x2260, not INA226?)", die)
-		}
+		return err(string.format("Die ID = 0x%04X (expect 0x2260, not INA226?)", die))
 	end
 
 	-- 辅助校验：软复位后配置默认值
 	local cfg = read_reg16(fd, REG_CONFIG)
 	if cfg == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 config"
-		}
+		return err("Failed to read INA226 config")
 	end
 	if cfg ~= CFG_DEFAULT then
-		return {
-			result = "ERR",
-			message = string.format("Config after reset = 0x%04X (expect 0x%04X)", cfg, CFG_DEFAULT)
-		}
+		return err(string.format("Config after reset = 0x%04X (expect 0x%04X)", cfg, CFG_DEFAULT))
 	end
 
 	-- 写工作配置：保留位 + 平均 + 双通道转换时间 + 连续模式
@@ -232,10 +193,7 @@ function build(data)
 		bitc.bor(bitc.lshift(ct_code_v, 6),
 		bitc.bor(bitc.lshift(ct_code_v, 3), CFG_MODE_CONT))))
 	if not write_reg16(fd, REG_CONFIG, config) then
-		return {
-			result = "ERR",
-			message = "Failed to write INA226 config"
-		}
+		return err("Failed to write INA226 config")
 	end
 
 	-- 等待一个转换循环（总线 + 分流 各 ct x 平均次数），首拍数据就绪
@@ -264,11 +222,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -276,45 +232,24 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-- build 前置守卫：rshunt 仅 build 赋值，未 build 先 call 会做 nil 除法
 	-- 裸 error（与 INA219 的守卫对齐）
 	if rshunt == nil then
-		return {
-			result = "ERR",
-			message = "INA226 not built (build first)"
-		}
+		return err("INA226 not built (build first)")
 	end
 
 	-----------------------------------------------------
 	local s = read_reg16(fd, REG_SHUNT)
 	if s == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 shunt voltage"
-		}
+		return err("Failed to read INA226 shunt voltage")
 	end
 	local b = read_reg16(fd, REG_BUS)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read INA226 bus voltage"
-		}
+		return err("Failed to read INA226 bus voltage")
 	end
 
 	-----------------------------------------------------
@@ -417,13 +352,6 @@ function INA226_VIRT.new(opts)
 	local ina226 = INA226_VIRT	-- 模型体沿用原模块表引用（零改动移植）
 
 	opts = opts or {}
-
-	local function clampi(v, lo, hi)
-		if v < lo then return lo end
-		if v > hi then return hi end
-		return v
-	end
-
 
 	local d = {}
 	local regs = {}				-- 字地址（0~255）→ 16 位值

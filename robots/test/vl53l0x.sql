@@ -31,6 +31,12 @@ INSERT INTO Timer (name) VALUES ('t0');
 
 /* 万能采样守护：间隔 >= 单帧 33ms（此处 60ms）；数值字段直读，
  * 消费侧按 VALID=1 过滤无效样本 */
+/* proto=virt（审计 1.3）：本驱动在模块源里声明了 SINGLE_CONSUMER（一次访问跨多个
+ * 总线事务、器件侧留有相位或锁存），而上面的直连变量已经是一个真器件消费者；
+ * 守护再走 i2c 就是第二个，装配期判据（src/hw_factory.cpp 的 checkSingleConsumer）
+ * 会直接拒绝加载。改 virt 后守护走内嵌 *_VIRT 模型：双路径覆盖都保留、真器件只剩
+ * 一个消费者，且守护侧结果与主机有没有 /dev/i2c-1 无关（同 mpu_daemon.sql 的理由）。
+ * 负值契约见 robots/test/single_consumer.sql。 */
 CREATE TABLE Daemon (
 	name     String,
 	chunk    String,
@@ -42,4 +48,4 @@ CREATE TABLE Daemon (
 	fields   String
 );
 INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields)
-  VALUES ('tof-d0', 'lib/sensor_daemon.lua', 'VL53L0X', 'i2c', '/dev/i2c-1', '0x29', '60', 'DIST_MM|STATUS|VALID|SIGNAL_MCPS');
+  VALUES ('tof-d0', 'lib/sensor_daemon.lua', 'VL53L0X', 'virt', '/dev/i2c-1', '0x29', '60', 'DIST_MM|STATUS|VALID|SIGNAL_MCPS');

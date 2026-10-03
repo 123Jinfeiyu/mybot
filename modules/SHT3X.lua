@@ -28,9 +28,8 @@
 --      0xBEEF -> 0x92）。6 字节 = T_MSB T_LSB CRC | RH_MSB RH_LSB CRC
 --   5. 出厂校准无系数表；换算 T = -45 + 175*raw/65535，RH = 100*raw/65535
 
--- 加载纯 Lua 基层硬件抽象层（HAL，issue #14：不再依赖仓颉 cfunc）
--- 调试打印辅助 print_table（modules/lib/）
-local mpath = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")
+-- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/HAL.lua"))
 dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
@@ -57,21 +56,10 @@ local ST_CMD_STATUS = 0x0002		-- bit1：1=上一命令未处理或非法
 local ST_RESET_SEEN = 0x0010		-- bit4：1=发生过复位（软复位/硬复位/上电）
 
 -- CRC8校验字（多项式0x31，初值0xFF，与 SGP30.lua 一致）
+-- CRC 判据单点在 bitcompat.crc8（D1 收敛，2026-09-25）：Sensirion 词 CRC
+-- = poly 0x31、init 0xFF、16 位词按 hi/lo 两字节展开——器件约定留在调用方。
 local function crc8(word)
-	local crc = 0xFF
-	local hi = math.floor(word / 256) % 256
-	local lo = word % 256
-	for _, b in ipairs({hi, lo}) do
-		crc = bitc.bxor(crc, b)
-		for _ = 1, 8 do
-			if bitc.band(crc, 0x80) ~= 0 then
-				crc = bitc.band(bitc.bxor(bitc.lshift(crc, 1), 0x31), 0xFF)
-			else
-				crc = bitc.band(bitc.lshift(crc, 1), 0xFF)
-			end
-		end
-	end
-	return crc
+	return bitc.crc8(0xFF, 0x31, { math.floor(word / 256) % 256, word % 256 })
 end
 
 -- 纯读 n 字节 → n 字节表（0 基下标）。失败（-1）返回 nil；
@@ -90,11 +78,9 @@ end
 -- 【配置脚本】软复位 + 读状态寄存器验证响应
 function build(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments Type: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -102,60 +88,33 @@ function build(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then	-- 检查 fd/address 参数
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 软复位（HAL 的 i2c_write_reg 是 2 字节原子写，返回 true/false）
 	if not i2c_write_reg(fd, CMD_SOFT_RESET[1], CMD_SOFT_RESET[2]) then
-		return {
-			result = "ERR",
-			message = "Failed to write SHT3X soft reset"
-		}
+		return err("Failed to write SHT3X soft reset")
 	end
 	milli_sleep(2)			-- 复位就绪约 1.5ms
 
 	-- 读状态寄存器验证响应
 	if not i2c_write_reg(fd, CMD_READ_STATUS[1], CMD_READ_STATUS[2]) then
-		return {
-			result = "ERR",
-			message = "Failed to write SHT3X read status"
-		}
+		return err("Failed to write SHT3X read status")
 	end
 	milli_sleep(1)
 	local sb = read_bytes(fd, 3)
 	if sb == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SHT3X status"
-		}
+		return err("Failed to read SHT3X status")
 	end
 
 	local status = sb[0] * 256 + sb[1]
 	if crc8(status) ~= sb[2] then
-		return {
-			result = "ERR",
-			message = "SHT3X status CRC mismatch"
-		}
+		return err("SHT3X status CRC mismatch")
 	end
 	if bitc.band(status, ST_CMD_STATUS) ~= 0 then
-		return {
-			result = "ERR",
-			message = "SHT3X command status error (bit1: last command not processed)"
-		}
+		return err("SHT3X command status error (bit1: last command not processed)")
 	end
 	if bitc.band(status, ST_RESET_SEEN) == 0 then
 		print("SHT3X: reset flag (bit4) not set in status, continuing")
@@ -183,11 +142,9 @@ end
 -- NOTE: 接收一个参数（表），返回一个结果（表）
 function call(data)
 
-	if type(data) ~= "table" then	-- 检查该参数是否是一张表
-		return {
-			result = "ERR",
-			message = "Invalid Arguments: table"
-		}
+	local ok, ek = arg_table(data)
+	if not ok then
+		return ek
 	end
 
 	if DEBUG then
@@ -195,38 +152,20 @@ function call(data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd == nil or addr == nil then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address"
-		}
-	end
-
-	if not i2c_set_addr(fd, addr) then
-		return {
-			result = "ERR",
-			message = "Invalid Argument: fd or address (set_addr failed)"
-		}
-	end
+	-- 校验收敛至 drv_common.i2c_pair（报错口径不变）
+	local fd, addr, ek = i2c_pair(data)
+	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 单次测量（0x2400 轮询·高重复性），等待转换完成
 	if not i2c_write_reg(fd, CMD_MEAS_HIGH[1], CMD_MEAS_HIGH[2]) then
-		return {
-			result = "ERR",
-			message = "Failed to write SHT3X measure command"
-		}
+		return err("Failed to write SHT3X measure command")
 	end
 	milli_sleep(MEAS_WAIT_MS)
 
 	local b = read_bytes(fd, 6)
 	if b == nil then
-		return {
-			result = "ERR",
-			message = "Failed to read SHT3X measurement"
-		}
+		return err("Failed to read SHT3X measurement")
 	end
 
 	-----------------------------------------------------

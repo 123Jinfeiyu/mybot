@@ -6,7 +6,7 @@
 # XR/YR/ZR/TR/status 与 count），monf 输出 ev 滤波后 X 磁场与阈值
 # level。守护 interval=20ms（call 预武装下仅 1ms 睡眠），一拍对应一次
 # virt_tick（X ±30µT 正弦含负值、32 拍周期，build 前预武装）。
-# 用法：cat scripts/test/mlx90393_virt.mt | bash _run.sh --robot=robots/test/mlx90393_virt.sql
+# 用法：cat scripts/test/mlx90393_virt.mt | ./build/mybot --robot=robots/test/mlx90393_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
    200       -        -         -    ;

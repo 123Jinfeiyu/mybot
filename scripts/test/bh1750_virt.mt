@@ -6,7 +6,7 @@
 # virt_tick），模型 32 拍正弦 count 12002~18002 → LUX 10001.7~15001.7；少数拍
 # count 恰为 6 的倍数 ⇒ raw 成整数，加上 20ms/50ms 混叠（快照采到哪拍不固定），
 # 故 :f 浮点断言锚 monf 行 Ema 的 α 混合 out（恒带小数、未被 sign=16 取整补码）。
-# 用法：cat scripts/test/bh1750_virt.mt | bash _run.sh --robot=robots/test/bh1750_virt.sql
+# 用法：cat scripts/test/bh1750_virt.mt | ./build/mybot --robot=robots/test/bh1750_virt.sql
 @Action
 t0.delay  eavg.out  mon0.go  monf.go;
    200       -         -         -    ;

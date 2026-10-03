@@ -1,6 +1,6 @@
 # LSM6DSV16X 六轴 IMU 测试（直连单次 + 守护连续采样）
 # 结构脚本：robots/test/lsm6dsv.sql（I2C + imu0@0x6A + Timer + imu-d0 守护）
-# 运行：cat scripts/test/lsm6dsv.mt | ./target/release/bin/main --robot=robots/test/lsm6dsv.sql
+# 运行：cat scripts/test/lsm6dsv.mt | ./build/mybot --robot=robots/test/lsm6dsv.sql
 #
 # 实机测试（需 /dev/i2c-1 总线 + 0x6A 地址器件）。
 # halt-on-error 生效后无器件无法优雅跑完：I2C/LSM6DSV 的 build 一旦返回 ERR
