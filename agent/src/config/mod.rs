@@ -365,38 +365,35 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         state_dir_source: "",
         state_dir_ok: false,
     };
-    if !cli.llm_max_turns.is_empty() {
-        cfg.max_turns = parse_int_option(
-            &cli.llm_max_turns,
-            "llm-max-turns",
-            limits::MAX_TURNS_MIN,
-            limits::MAX_TURNS_MAX,
-        )?;
-    }
-    if !cli.llm_max_tokens.is_empty() {
-        cfg.max_tokens = parse_int_option(
-            &cli.llm_max_tokens,
-            "llm-max-tokens",
-            limits::MAX_TOKENS_MIN,
-            limits::MAX_TOKENS_MAX,
-        )?;
-    }
-    if !cli.llm_timeout.is_empty() {
-        cfg.timeout_sec = parse_int_option(
-            &cli.llm_timeout,
-            "llm-timeout",
-            limits::TIMEOUT_MIN_SEC,
-            limits::TIMEOUT_MAX_SEC,
-        )?;
-    }
-    if !cli.llm_task_timeout.is_empty() {
-        cfg.max_task_seconds = parse_int_option(
-            &cli.llm_task_timeout,
-            "llm-task-timeout",
-            limits::TASK_TIMEOUT_MIN_SEC,
-            limits::TASK_TIMEOUT_MAX_SEC,
-        )?;
-    }
+    // ---- 5b) 命令行数值覆盖（拆解见 override_number；区间与文案单点在 limits）----
+    override_number(
+        &cli.llm_max_turns,
+        "llm-max-turns",
+        limits::MAX_TURNS_MIN,
+        limits::MAX_TURNS_MAX,
+        &mut cfg.max_turns,
+    )?;
+    override_number(
+        &cli.llm_max_tokens,
+        "llm-max-tokens",
+        limits::MAX_TOKENS_MIN,
+        limits::MAX_TOKENS_MAX,
+        &mut cfg.max_tokens,
+    )?;
+    override_number(
+        &cli.llm_timeout,
+        "llm-timeout",
+        limits::TIMEOUT_MIN_SEC,
+        limits::TIMEOUT_MAX_SEC,
+        &mut cfg.timeout_sec,
+    )?;
+    override_number(
+        &cli.llm_task_timeout,
+        "llm-task-timeout",
+        limits::TASK_TIMEOUT_MIN_SEC,
+        limits::TASK_TIMEOUT_MAX_SEC,
+        &mut cfg.max_task_seconds,
+    )?;
 
     // ---- 6) 提示词包：命令行给过就整体覆盖配置文件列表（同 C++ 口径）----
     cfg.prompt_files = if !cli.prompt_files.is_empty() {
@@ -412,68 +409,8 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         file.audit_log.clone().unwrap_or_default()
     };
 
-    // ---- 8) 会话持久化（批次 D）：命令行 > 配置文件 > 缺省按机器人 ----
-    //
-    // 恢复是把磁盘内容读进模型上下文（输入通道），配置文件里的 session_file 只用于
-    // 写入，**不能**授权一次读取——与 camera_src_dir / read_vars 同判据
-    // （配置文件只能收紧不能放宽）。故 --resume 而路径来自配置文件时直接报错。
-    //
-    // 缺省来源（都没给）走 $MYBOT_HOME/robots/<机器人>/sessions/ 并默认续接上一次：
-    // 那条路径本进程自造（固定根 + 归一目录 + 白名单段名），不是「读任意文件」，
-    // 故不触犯上面那条判据。**配置文件来源优先于缺省**——写了 session_file 就不再
-    // 走缺省续接，免得「只写不可读」的路径被缺省续接偷偷读。
-    let (state_dir, state_dir_source, state_dir_ok) = resolve_state_dir();
-    cfg.state_dir = state_dir;
-    cfg.state_dir_source = state_dir_source;
-    cfg.state_dir_ok = state_dir_ok;
-    cfg.resume = cli.resume;
-    let cli_session_path = cli.session_file.trim();
-    cfg.session_file_from_cli = !cli_session_path.is_empty();
-    cfg.session_path_source = if cfg.session_file_from_cli {
-        SessionPathSource::Cli
-    } else if file.session_file.is_some() {
-        SessionPathSource::Config
-    } else {
-        SessionPathSource::Default
-    };
-    cfg.session_file = match cfg.session_path_source {
-        SessionPathSource::Cli => expand_home(cli_session_path),
-        SessionPathSource::Config => expand_home(file.session_file.as_deref().unwrap_or("")),
-        SessionPathSource::Default => String::new(),
-    };
-    if cfg.resume && cfg.new_session {
-        return Err(
-            "选项 --resume 与 --new-session 互斥：前者要求续接既有会话，后者要求新开一段"
-                .to_string(),
-        );
-    }
-    // 缺省来源 + 无家目录：不中止启动，降级为「本次不落盘」并告警一次
-    // （与「缺省路径出问题不阻止机器人跑起来」同口径）。
-    if cfg.session_path_source == SessionPathSource::Default && !cfg.state_dir_ok {
-        let w = "无家目录（MYBOT_HOME 与 HOME 都未设置），本次不落盘对话历史；\
-                 可用 MYBOT_HOME 指定状态目录";
-        cfg.config_warning = if cfg.config_warning.is_empty() {
-            w.to_string()
-        } else {
-            format!("{}；{w}", cfg.config_warning)
-        };
-    }
-    if cfg.resume {
-        if !cfg.session_file_from_cli {
-            return Err(
-                "选项 --resume 需要命令行显式给出 --session-file <路径>：恢复是把磁盘内容\
-                 读进模型上下文（输入通道），配置文件里的 session_file 字段只用于写入，\
-                 不能授权一次读取（配置文件只能收紧不能放宽）"
-                    .to_string(),
-            );
-        }
-        if !Path::new(&cfg.session_file).is_file() {
-            return Err(format!(
-                "会话文件不存在: {}（--resume 需要一个已存在的会话文件；路径来自命令行）",
-                cfg.session_file
-            ));
-        }
-    }
+    // ---- 8) 会话持久化（批次 D）：命令行 > 配置文件 > 缺省按机器人（拆解见 resolve_session）----
+    resolve_session(cli, &file, &mut cfg)?;
     Ok(cfg)
 }
 
@@ -581,6 +518,72 @@ fn resolve_api_key(
     Ok((api_key, api_key_source, config_warning))
 }
 
+/// §8 会话持久化（批次 D）：命令行 > 配置文件 > 缺省按机器人。
+///
+/// 恢复是把磁盘内容读进模型上下文（输入通道），配置文件里的 session_file 只用于
+/// 写入，**不能**授权一次读取——与 camera_src_dir / read_vars 同判据
+/// （配置文件只能收紧不能放宽）。故 --resume 而路径来自配置文件时直接报错。
+///
+/// 缺省来源（都没给）走 $MYBOT_HOME/robots/<机器人>/sessions/ 并默认续接上一次：
+/// 那条路径本进程自造（固定根 + 归一目录 + 白名单段名），不是「读任意文件」，
+/// 故不触犯上面那条判据。**配置文件来源优先于缺省**——写了 session_file 就不再
+/// 走缺省续接，免得「只写不可读」的路径被缺省续接偷偷读。
+fn resolve_session(cli: &Cli, file: &FileConfig, cfg: &mut Config) -> Result<(), String> {
+    let (state_dir, state_dir_source, state_dir_ok) = resolve_state_dir();
+    cfg.state_dir = state_dir;
+    cfg.state_dir_source = state_dir_source;
+    cfg.state_dir_ok = state_dir_ok;
+    cfg.resume = cli.resume;
+    let cli_session_path = cli.session_file.trim();
+    cfg.session_file_from_cli = !cli_session_path.is_empty();
+    cfg.session_path_source = if cfg.session_file_from_cli {
+        SessionPathSource::Cli
+    } else if file.session_file.is_some() {
+        SessionPathSource::Config
+    } else {
+        SessionPathSource::Default
+    };
+    cfg.session_file = match cfg.session_path_source {
+        SessionPathSource::Cli => expand_home(cli_session_path),
+        SessionPathSource::Config => expand_home(file.session_file.as_deref().unwrap_or("")),
+        SessionPathSource::Default => String::new(),
+    };
+    if cfg.resume && cfg.new_session {
+        return Err(
+            "选项 --resume 与 --new-session 互斥：前者要求续接既有会话，后者要求新开一段"
+                .to_string(),
+        );
+    }
+    // 缺省来源 + 无家目录：不中止启动，降级为「本次不落盘」并告警一次
+    // （与「缺省路径出问题不阻止机器人跑起来」同口径）。
+    if cfg.session_path_source == SessionPathSource::Default && !cfg.state_dir_ok {
+        let w = "无家目录（MYBOT_HOME 与 HOME 都未设置），本次不落盘对话历史；\
+                 可用 MYBOT_HOME 指定状态目录";
+        cfg.config_warning = if cfg.config_warning.is_empty() {
+            w.to_string()
+        } else {
+            format!("{}；{w}", cfg.config_warning)
+        };
+    }
+    if cfg.resume {
+        if !cfg.session_file_from_cli {
+            return Err(
+                "选项 --resume 需要命令行显式给出 --session-file <路径>：恢复是把磁盘内容\
+                 读进模型上下文（输入通道），配置文件里的 session_file 字段只用于写入，\
+                 不能授权一次读取（配置文件只能收紧不能放宽）"
+                    .to_string(),
+            );
+        }
+        if !Path::new(&cfg.session_file).is_file() {
+            return Err(format!(
+                "会话文件不存在: {}（--resume 需要一个已存在的会话文件；路径来自命令行）",
+                cfg.session_file
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// 解析 CLI 里的整数字符串选项；越界/非数字给出带选项名的人话报错。
 fn parse_int_option(raw: &str, key: &str, lo: i64, hi: i64) -> Result<i64, String> {
     let t = raw.trim();
@@ -593,6 +596,18 @@ fn parse_int_option(raw: &str, key: &str, lo: i64, hi: i64) -> Result<i64, Strin
         ));
     }
     Ok(v)
+}
+
+/// §5b 四个「命令行给出即覆盖」的数值项共用的形状：空串 = 没给（保持配置文件层
+/// 或缺省值），非空 = 走 [`parse_int_option`] 的区间校验与带选项名的报错。
+/// 四处覆盖的**先后顺序**就是四条报错的优先序（同时给错多个时报最靠前那个），
+/// 故调用点保持原样逐条列出，不折进循环。
+fn override_number(raw: &str, key: &str, lo: i64, hi: i64, slot: &mut i64) -> Result<(), String> {
+    if raw.is_empty() {
+        return Ok(());
+    }
+    *slot = parse_int_option(raw, key, lo, hi)?;
+    Ok(())
 }
 
 /// 环境变量是进程级全局，动它的用例必须彼此互斥——cargo 单测默认多线程并行
@@ -764,6 +779,53 @@ mod tests {
             parse_int_option("0", "llm-task-timeout", 0, 86_400).unwrap(),
             0
         );
+    }
+
+    /// 四个「命令行给出即覆盖」的数值项各自落到**自己那一个字段**、各自用**自己
+    /// 那一条区间**——`override_number` 把四处的形状收成了一个函数，代价是「串线」
+    /// （把 max_turns 的区间配给 max_tokens、或把值写进邻居字段）从编译期错误降级
+    /// 成运行期错误。`int_option_ranges_are_enforced` 只测那个函数本身，测不到接线。
+    /// 密钥经配置文件注入（不用环境变量：单测并行跑，env 会与其它用例竞争）。
+    #[test]
+    fn cli_number_overrides_land_in_their_own_field_and_range() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_num_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = dir.join("auth.json");
+        std::fs::write(&auth, r#"{"api_key":"k"}"#).unwrap();
+        let auth_str = auth.to_string_lossy().to_string();
+        let cli = |f: fn(&mut Cli)| -> Cli {
+            let mut c = Cli {
+                socket: "/tmp/x.sock".into(),
+                llm_config: auth_str.clone(),
+                llm_endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+                llm_model: "m".into(),
+                ..Cli::default()
+            };
+            f(&mut c);
+            c
+        };
+        let cfg = build(&cli(|c| {
+            c.llm_max_turns = "12".into();
+            c.llm_max_tokens = "4321".into();
+            c.llm_timeout = "77".into();
+            c.llm_task_timeout = "0".into();
+        }))
+        .unwrap();
+        assert_eq!(cfg.max_turns, 12);
+        assert_eq!(cfg.max_tokens, 4321);
+        assert_eq!(cfg.timeout_sec, 77);
+        assert_eq!(cfg.max_task_seconds, 0);
+        // 区间是各自的：101 对 max_turns 越界、对 max_tokens 合法
+        assert!(build(&cli(|c| c.llm_max_turns = "101".into())).is_err());
+        assert!(build(&cli(|c| c.llm_max_tokens = "101".into())).is_ok());
+        assert!(build(&cli(|c| c.llm_max_tokens = "200001".into())).is_err());
+        // 0 只对 max_task_seconds 合法（= 不限），对另两个是越界
+        assert!(build(&cli(|c| c.llm_task_timeout = "0".into())).is_ok());
+        assert!(build(&cli(|c| c.llm_max_turns = "0".into())).is_err());
+        assert!(build(&cli(|c| c.llm_timeout = "0".into())).is_err());
+        // 报错点名选项：接线串了这句就会指错名字
+        let err = build(&cli(|c| c.llm_max_turns = "101".into())).unwrap_err();
+        assert!(err.contains("--llm-max-turns"), "{err}");
     }
 
     /// ---- 会话持久化（批次 D）的组合校验：镜像 C++

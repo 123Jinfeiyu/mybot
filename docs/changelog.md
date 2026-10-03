@@ -37,10 +37,26 @@
   读源码扫描。同批钉住声明面自身的完整性：名字唯一、全部 `ica_` 前缀（`merge_specs` 靠这个
   前缀与后端工具名分域）、schema 顶层是 object、`required` 里的每一项都在 `properties` 里
   声明过。
-- 以上对使用者意味着什么：无（纯新增测试）。反向验证按「破坏实现侧、看对应用例转红」做，
+- 以上三条守门对使用者意味着什么：无（纯新增测试）。反向验证按「破坏实现侧、看对应用例转红」做，
   三处破坏（摘要改渲染 `api_key.expose()`、`usage()` 多写一个未实现的 `--llm-thinking`、
   删掉 `execute` 的 `ica_depend` 分支臂）逐个转红且报出的正是对应的名字，还原后复绿。
   `cargo test` 134 → 147 通过 / 0 失败，`clippy --all-targets -D warnings` 与 `fmt --check` 同绿。
+
+- **`config::build` 由 183 行收到 120 行**：两段各归其位。§8 会话持久化（62 行，含「配置文件
+  来源不能授权 `--resume` 读取」这条判据的全部论证）析出为 `resolve_session`，与同文件既有的
+  `resolve_driver_and_var` / `resolve_endpoint_and_model` / `resolve_api_key` 同形状（`§N` 文档
+  注释 + `Result`），`build` 里只剩一行调用。§5b 的四条命令行数值覆盖（32 行、四份复制粘贴的
+  `if !cli.xxx.is_empty() { cfg.yyy = parse_int_option(...) }`）析出为 `override_number`，
+  **重复被消掉而不是搬走**；四处的先后顺序就是四条报错的优先序，故调用点仍逐条列出、不折进循环。
+  剩下的 48 行是那张逐字段的 `Config { ... }` 合并表，它本身就是一张表，不再拆。
+- **代价当场补掉**：`override_number` 把四处形状收成一处之后，「串线」（把 `max_turns` 的区间
+  配给 `max_tokens`、或把值写进邻居字段）从编译期错误降级成了运行期错误，而既有的
+  `int_option_ranges_are_enforced` 只测 `parse_int_option` 本身、测不到接线。新增一条端到端
+  用例把「各自落到自己字段」与「各自用自己区间」一起钉住（含 `0` 只对 `--llm-task-timeout`
+  合法这条不对称，以及报错必须点名选项）。反向验证：把第一条覆盖的 `&mut cfg.max_turns`
+  改成 `&mut cfg.max_tokens`，该用例立刻转红并报出 `left: 8, right: 12`（默认值没被覆盖），
+  其余 147 条不受影响，还原复绿。
+- 以上对使用者意味着什么：无（纯拆解 + 一条新增测试，报错文案与优先序逐字保持）。
 
 ### 2026-10-04 C++ 残留结构治理（行为保持）
 
