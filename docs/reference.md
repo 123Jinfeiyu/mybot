@@ -158,5 +158,6 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_TEST_VIDEO` | 仅守门用：真机摄像头用例（`test_camera_v4l2.lua`）的设备路径，指定且存在时该用例不再按跳过计（见 [testing.md](testing.md)） |
 | `BOT4CJ_TRACE_FDS` | 仅守门用：`mybot_tests` 专用测试钩子（生产二进制不含），见 [testing.md](testing.md) |
 | `BOT4CJ_ICA` | Rust agent 侧设为 `1` 开启实验性 ICA 证据账本（8 个 `ica_*` 本地工具 + sidecar 落盘），边界见 [ica.md](ica.md) |
+| `MYBOT_HOME` | 状态目录根（本机持久数据：agent 的对话历史、sim 的地图）。取值链：`MYBOT_HOME` 非空 → 用它；否则 `$HOME/.mybot`；两者都取不到 → 状态目录不可用（agent 不落盘对话历史并如实说明，sim 拒绝解析相对场景名）。**本行是这条规则的单点**，它有三处实现（跨两套构建系统 + 一个 shell 脚本，刻意不做代码生成）：Rust `agent/src/config/mod.rs` 的 `derive_state_dir`、C++ `sim/src/sim_paths.cpp` 的 `mybotHome`、shell `scripts/sim_agent_demo.sh`；缺省目录名 `.mybot` 的三处一致由 `test/run_all_selftest.sh` 钉住。目录下的布局：会话历史见 [agent.md](agent.md)，地图播种见 [sim.md](sim.md) |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

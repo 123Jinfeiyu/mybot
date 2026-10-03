@@ -256,6 +256,10 @@ fn find_default_llm_config() -> Option<String> {
 /// 状态目录取值链（纯函数，便于单测）：`MYBOT_HOME` > `$HOME/.mybot` > 不可用。
 /// 返回 `(路径, 来源, 是否可用)`。
 ///
+/// 规则单点在 `docs/reference.md` 的 `MYBOT_HOME` 行；同一条链另有两份手写实现
+/// （`sim/src/sim_paths.cpp` 的 `mybotHome`、`scripts/sim_agent_demo.sh`），跨两套
+/// 构建系统刻意不做代码生成，缺省目录名的三处一致由 `test/run_all_selftest.sh` 钉住。
+///
 /// 为什么只认环境变量、不加 `--state-dir` 选项：状态目录是「本机数据放哪」的
 /// 一次性决定，`$MYBOT_HOME` 一个口足够（测试/多实例也靠它隔离）；多一个命令行
 /// 选项就多一处要跟配置文件合流、多一处能互相矛盾的地方。

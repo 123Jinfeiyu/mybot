@@ -118,8 +118,28 @@ else
 	note "缺 python3，无法跑 scripts/check_sim_contract.py（仿真器跨构建契约未受检查）"
 fi
 
+# 9) 状态目录取值链的三处实现（规则单点：docs/reference.md 的 MYBOT_HOME 行）。
+#    同一条「MYBOT_HOME 非空 > $HOME/.mybot > 不可用」在 Rust agent、sim 的 C++、
+#    demo 脚本里各手写一份（跨两套构建系统，刻意不做代码生成）。缺省目录名漂移
+#    两侧都不会报错——agent 的会话历史与 sim 的地图各落一棵树，互不可见。
+#    每处钉两件事：读 MYBOT_HOME 的形态还在（没被换成别的变量），且拼出的缺省
+#    后缀仍是 /.mybot。
+while read -r f pat; do
+	[ -n "$f" ] || continue
+	grep -qE "$pat" "$f" \
+		|| note "$f 找不到 '$pat'——状态目录不再按 MYBOT_HOME > \$HOME/.mybot 取？"
+	got="$(grep -oE '/\.mybot[A-Za-z0-9_.-]*' "$f" | sort -u | tr '\n' ' ')"
+	if [ "$got" != "/.mybot " ]; then
+		note "$f 的状态目录缺省后缀不是 /.mybot（实际：${got:-抽不到}）——三处须同拼法"
+	fi
+done <<'EOF'
+agent/src/config/mod.rs env_var\("MYBOT_HOME"\)
+sim/src/sim_paths.cpp getenv\("MYBOT_HOME"\)
+scripts/sim_agent_demo.sh \$\{MYBOT_HOME:-
+EOF
+
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名）"

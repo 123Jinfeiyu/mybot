@@ -29,7 +29,8 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root" || exit 1
 
 # 状态目录：MYBOT_HOME > $HOME/.mybot。agent 的对话历史与 sim 的地图都落这里，
-# 与两侧代码同一条取值链。首次自动建目录（0700）。
+# 与两侧代码同一条取值链（规则单点：docs/reference.md 的 MYBOT_HOME 行；三处拼法
+# 的一致由 test/run_all_selftest.sh 钉住）。首次自动建目录（0700）。
 MYBOT_HOME="${MYBOT_HOME:-${HOME:-}/.mybot}"
 if [ -z "$MYBOT_HOME" ] || [ "$MYBOT_HOME" = "/.mybot" ]; then
 	echo "无 HOME（且未给 MYBOT_HOME），无法定位状态目录" >&2

@@ -9,6 +9,16 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 跨源一致性：状态目录取值链有了规则单点与三处拼法守门
+
+- **改了什么**：`MYBOT_HOME` 非空 > `$HOME/.mybot` > 不可用——这条链在三处各手写一份
+  （Rust agent 的 `derive_state_dir`、sim 的 `SimPaths::mybotHome`、`scripts/sim_agent_demo.sh`），
+  此前没有任何一处被指认为准，也没有守门。现把规则单点写进 `docs/reference.md` 的环境变量表
+  （新增 `MYBOT_HOME` 行），三处注释各自指向它，并由 `run_all_selftest.sh` 钉住「三处都仍按
+  这条链取、缺省后缀都仍拼作 `/.mybot`」。
+- **对使用者意味着什么**：行为不变。此前某一处的缺省目录名漂移不会有任何一侧报错——agent 的
+  会话历史与 sim 的地图会各落一棵树、互不可见。
+
 ### 2026-10-04 守门自检：C++ 单测清单的第三份手抄表删掉
 
 - **改了什么**：`CMakeLists.txt` 的 C3 自检此前比的是「磁盘上的 `test/cpp/test_*.cpp`」与一份

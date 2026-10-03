@@ -41,6 +41,11 @@ std::string exeDir() {
 
 namespace SimPaths {
 
+// 状态目录取值链：MYBOT_HOME 非空 > $HOME/.mybot > 不可用（返回空）。
+// 规则单点在 docs/reference.md 的 MYBOT_HOME 行；同一条链在 Rust agent
+// （agent/src/config/mod.rs 的 derive_state_dir）与 scripts/sim_agent_demo.sh
+// 各手写一份——跨两套构建系统不做代码生成，缺省目录名的三处一致由
+// test/run_all_selftest.sh 钉住。
 std::string mybotHome() {
     if (const char* v = std::getenv("MYBOT_HOME")) {
         if (v[0] != '\0') {
