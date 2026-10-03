@@ -45,6 +45,22 @@
   注释/include/`namespace` 两行（按域重新分配），2 行是助手注释上提到 `harness.h`
   的声明处（本仓惯例：契约写在声明处，实现处不重述）。`action_table.h` 与
   `scripts/check_sim_contract.py` 里指向旧文件的三处路径注释同步更新。
+- **`sim/src/main.cpp` 的三条平行 vector 收成 `PerRobotRig`**：命令桥 / 测距桥 / 蜘蛛
+  步态按同一个下标一一对应，此前是三条 `vector<unique_ptr<...>>`，「同长同序」只靠
+  `buildPerRobot` 把三者建在同一个循环里维持——而主循环里 `wantRange` 按
+  `sensorBridges` 的长度分配、却用 `cmdBridges` 的下标去写，两者一旦不同长就是越界写。
+  收成一条 `vector<PerRobotRig>` 后这个状态写不出来，且旧名字全部消失、漏改的调用点
+  一律编译不过（这类重构的失败模式落在编译期而非运行期，才敢在没有单测的文件里动）。
+  日志文本、socket 派生规则、渲染顺序逐字未动。
+- **`main()` 抽 `renderFrame` 评估后不做**（计划里标为可砍项）：那段渲染 43 行要读
+  window / phong / lines / meshes / 两个光照常量 / engine / rigs 八样东西（`g_camera`
+  是文件级全局、不用传），抽出去就得传八个参数或再造一个上下文结构体，行数不减、
+  反多一层间接。更关键的是 `main.cpp` 是 `sim/` 里唯一碰 GL 的文件、**没有 headless
+  模式**：抽不抽都进不了 simcore 那张 387 条断言的网——本轮 obb2d / scene_io / 测试
+  拆分之所以划算，正因为它们把代码搬进了有网的地方，这里搬完仍在网外，验证手段还是
+  肉眼看窗口 + 冒烟脚本。而这段代码的价值恰恰在**顺序**（poll 在画之前、测距应答在
+  `step()` 之后、抓帧在 `SwapBuffers` 之前），拆成两个函数会把这三条约束从「顺着读
+  一遍就看见」变成「跨调用边界记在脑子里」。留着不改。
 - 命名去掉 `obb` / `2D` 前缀，由 namespace 承载（与既有 `SimPaths` / `SimConfig` 同款），
   对照表写在 `obb2d.h` 顶部。`robot.cpp:17-18/31-32` 那两处同一条前向约定**刻意未并入**：
   它们在速度积分器里、乘的是 `v_*dt` 而非单位方向探测，为两行把 `Robot` 耦合到几何模块

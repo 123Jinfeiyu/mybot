@@ -63,6 +63,16 @@ std::string deriveRobotPath(const std::string& base, std::size_t idx) {
     return base + suffix;
 }
 
+// 每只机器人一份壳侧装置。命令桥/测距桥/蜘蛛步态永远同生同灭、共用同一个下标，
+// 故收在一个 struct 里：原本是三条平行 vector，「同长同序」只靠 buildPerRobot 把三者
+// 建在同一个循环里维持（wantRange 就按 sensor 的长度分配、却用 cmd 的下标去写）。
+// 收成一条后，长度不一致这个状态根本写不出来。
+struct PerRobotRig {
+    std::unique_ptr<CommandBridge> cmd;
+    std::unique_ptr<SensorBridge> sensor;
+    std::unique_ptr<Spider> spider;
+};
+
 Camera g_camera;
 bool g_resetRequested = false;
 bool g_toggleCamera = false;
@@ -281,32 +291,29 @@ int main(int argc, char** argv) {
     SimEngine engine(scenePath);
     engine.reloadScene();
 
-    // 每只机器人一份壳侧资源：命令桥 + 测距桥 + 蜘蛛外观步态。robot 0 用原路径
-    // （字节不变），robot i>0 用派生路径。数量随场景 robot 行数，reload 后可变，
-    // 故抽成可按新数量重建的过程（R 键重载若机器人增减，这里同步重建 socket）。
-    std::vector<std::unique_ptr<CommandBridge>> cmdBridges;
-    std::vector<std::unique_ptr<SensorBridge>> sensorBridges;
-    std::vector<std::unique_ptr<Spider>> spiders;
+    // robot 0 用原路径（字节不变），robot i>0 用派生路径。数量随场景 robot 行数，
+    // reload 后可变，故抽成可按新数量重建的过程（R 键重载若机器人增减，这里同步重建 socket）。
+    std::vector<PerRobotRig> rigs;
     auto buildPerRobot = [&](std::size_t n) {
-        cmdBridges.clear();
-        sensorBridges.clear();
-        spiders.clear();
+        rigs.clear();
         for (std::size_t i = 0; i < n; ++i) {
-            cmdBridges.push_back(std::make_unique<CommandBridge>(deriveRobotPath(socketPath, i)));
-            sensorBridges.push_back(std::make_unique<SensorBridge>(deriveRobotPath(sensorPath, i)));
-            spiders.push_back(std::make_unique<Spider>());
-            if (cmdBridges.back()->listening()) {
+            PerRobotRig rig;
+            rig.cmd = std::make_unique<CommandBridge>(deriveRobotPath(socketPath, i));
+            rig.sensor = std::make_unique<SensorBridge>(deriveRobotPath(sensorPath, i));
+            rig.spider = std::make_unique<Spider>();
+            if (rig.cmd->listening()) {
                 std::fprintf(stderr, "listening for robot[%zu] commands on %s\n", i,
-                             cmdBridges.back()->path().c_str());
+                             rig.cmd->path().c_str());
                 std::fprintf(stderr, "  try: socat - UNIX-CONNECT:%s   then type: forward\n",
-                             cmdBridges.back()->path().c_str());
+                             rig.cmd->path().c_str());
             }
-            if (sensorBridges.back()->listening()) {
+            if (rig.sensor->listening()) {
                 std::fprintf(stderr, "listening for robot[%zu] sensor requests on %s\n", i,
-                             sensorBridges.back()->path().c_str());
+                             rig.sensor->path().c_str());
                 std::fprintf(stderr, "  try: printf 'range\\n' | socat - UNIX-CONNECT:%s\n",
-                             sensorBridges.back()->path().c_str());
+                             rig.sensor->path().c_str());
             }
+            rigs.push_back(std::move(rig));
         }
     };
     buildPerRobot(engine.robotCount());
@@ -329,22 +336,22 @@ int main(int argc, char** argv) {
         // 记下本帧各机器人是否有测距请求；真正算距离要等 step() 之后（拿到本帧
         // 最终位姿），故此处只收标志。拍照同理：抓帧要等画完、SwapBuffers 之前。
         const bool wantCapture = capture.poll();
-        std::vector<char> wantRange(sensorBridges.size(), 0);
-        for (std::size_t i = 0; i < cmdBridges.size(); ++i) {
-            cmdBridges[i]->poll();
-            wantRange[i] = sensorBridges[i]->poll() ? 1 : 0;
+        std::vector<char> wantRange(rigs.size(), 0);
+        for (std::size_t i = 0; i < rigs.size(); ++i) {
+            rigs[i].cmd->poll();
+            wantRange[i] = rigs[i].sensor->poll() ? 1 : 0;
         }
 
         if (g_resetRequested) {
             // 复位 = 场景连同所有机器人回到装载时状态（文件版重读文件、内置版回默认）
             engine.reloadScene();
             // 机器人数量可能随新场景变化：变了就重建 socket/蜘蛛，没变只复位步态。
-            if (engine.robotCount() != cmdBridges.size()) {
+            if (engine.robotCount() != rigs.size()) {
                 buildPerRobot(engine.robotCount());
-                wantRange.assign(sensorBridges.size(), 0);
+                wantRange.assign(rigs.size(), 0);
             } else {
-                for (auto& sp : spiders) {
-                    sp->reset();
+                for (PerRobotRig& rig : rigs) {
+                    rig.spider->reset();
                 }
             }
             g_resetRequested = false;
@@ -360,30 +367,30 @@ int main(int argc, char** argv) {
 
         // 语义动作喂引擎：每只机器人从各自的命令桥取持续型状态（同步）+ drain 一次性
         // 事件到空——每条必触发一次（连续两次 fdist 不再互相吞）。idx 寻址到对应 slot。
-        for (std::size_t i = 0; i < cmdBridges.size(); ++i) {
-            engine.applyContinuous(cmdBridges[i]->command(), cmdBridges[i]->speed(), i);
+        for (std::size_t i = 0; i < rigs.size(); ++i) {
+            engine.applyContinuous(rigs[i].cmd->command(), rigs[i].cmd->speed(), i);
             SimEvent ev;
-            while (cmdBridges[i]->pollEvent(ev)) {
+            while (rigs[i].cmd->pollEvent(ev)) {
                 engine.applyEvent(ev, i);
             }
         }
 
         engine.step(dt);
         // 每只蜘蛛按各自机器人的线速度生成步态（外观与物理分离）。
-        for (std::size_t i = 0; i < spiders.size(); ++i) {
-            spiders[i]->update(dt, engine.robot(i).v());
+        for (std::size_t i = 0; i < rigs.size(); ++i) {
+            rigs[i].spider->update(dt, engine.robot(i).v());
         }
 
         // 测距响应：碰撞解算完成后算距离，保证拿到的是本帧最终位姿。逐机器人应答
         // 各自的测距桥。
-        for (std::size_t i = 0; i < sensorBridges.size(); ++i) {
+        for (std::size_t i = 0; i < rigs.size(); ++i) {
             if (!wantRange[i]) {
                 continue;
             }
             const float dist = engine.queryRange(i);
             const int distMm = static_cast<int>(dist * 1000.0f + 0.5f);
-            if (!sensorBridges[i]->sendRange(distMm)) {
-                sensorBridges[i]->sendError("range send failed");
+            if (!rigs[i].sensor->sendRange(distMm)) {
+                rigs[i].sensor->sendError("range send failed");
             }
         }
 
@@ -430,7 +437,7 @@ int main(int argc, char** argv) {
 
         // 逐只渲染机器人：每只用自己的 Spider 步态实例（腿相位各自独立）。
         for (std::size_t i = 0; i < engine.robotCount(); ++i) {
-            drawSpider(engine.robot(i), *spiders[i], phong, meshes);
+            drawSpider(engine.robot(i), *rigs[i].spider, phong, meshes);
         }
 
         lines.use();
@@ -439,7 +446,7 @@ int main(int argc, char** argv) {
         meshes.grid.draw();
 
         // 标题栏展示主机器人（idx 0）的状态 + 机器人总数。
-        updateTitle(window, *cmdBridges[0], capture, *sensorBridges[0], engine.robot(),
+        updateTitle(window, *rigs[0].cmd, capture, *rigs[0].sensor, engine.robot(),
                     engine.world(), engine.sceneName().c_str(), engine.robotCount());
 
         // 抓帧回传放在 SwapBuffers 之前：此刻 GL_BACK 是刚画好的这一帧。
