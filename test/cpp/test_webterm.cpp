@@ -84,3 +84,19 @@ TH_TEST(webterm_drain_returns_bytes_only_when_present) {
 	s.drain(chunk, 4096);
 	TH_CHECK(true);
 }
+
+/* 回归（复活复查 2026-10-03）：alive() 收尸后 master fd 必须同时关闭。
+ * 此前「收尸置 closed_ → closeSession() 提前返回」会让 pty master fd 永不
+ * 释放——shell 大输出后立即退出时稳定复现（每会话泄漏 1 fd + 1 /dev/pts）。 */
+TH_TEST(webterm_alive_reap_closes_master_fd) {
+	bot::webterm::Session s;
+	if (s.masterFd() < 0) { TH_SKIP("forkpty 不可用"); return; }
+	s.write("exit\n");
+	bool died = false;
+	for (int i = 0; i < 3000; ++i) {
+		if (!s.alive()) { died = true; break; }
+		usleep(1000);
+	}
+	TH_CHECK(died);
+	TH_CHECK(s.masterFd() == -1);
+}

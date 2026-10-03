@@ -231,3 +231,26 @@ TH_TEST(webshell_resize_frame_accepted) {
 	t.join();
 	close(sv[0]);
 }
+
+/* 回归（复活复查 2026-10-03）：带 ?token=… 打开首页必须 200。
+ * 此前路由未剥离 query，/ 落 404——非回环部署（强制 token）下页面打不开。 */
+TH_TEST(webshell_serves_index_with_query_string) {
+	int sv[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) { TH_SKIP("socketpair 不可用"); return; }
+	std::thread t([](int s) { bot::webshell::handleConnection(s, ""); }, sv[0]);
+	const char* req = "GET /?token=abc123 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	send(sv[1], req, strlen(req), 0);
+	std::string resp;
+	char buf[2048];
+	ssize_t n;
+	while ((n = recv(sv[1], buf, sizeof(buf), 0)) > 0) {
+		resp.append(buf, (size_t)n);
+		if (resp.size() > 65536) break;
+	}
+	TH_CHECK(resp.find("HTTP/1.1 200") == 0);
+	TH_CHECK(resp.find("xterm") != std::string::npos);
+	TH_CHECK(resp.find("/ws/term") != std::string::npos);
+	close(sv[1]);
+	t.join();
+	close(sv[0]);
+}
