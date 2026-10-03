@@ -25,6 +25,7 @@ mod model;
 mod out;
 mod placeholder;
 mod prompt;
+mod protocol;
 mod provider;
 mod repl;
 mod session;

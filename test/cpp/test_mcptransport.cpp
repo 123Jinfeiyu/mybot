@@ -307,7 +307,7 @@ std::string rustConstRhs(const std::string& src, const std::string& decl) {
 
 /* 块内逐行抽取「行首 \tstd::string / \tbool 开头的成员名」——agenttools.hpp 的
  * AgentToolResult 数据成员形态（构造函数行与初始化列表行不匹配该形态） */
-std::vector<std::string> cppMemberNames(const std::string& src,
+[[maybe_unused]] std::vector<std::string> cppMemberNames(const std::string& src,
 		std::size_t begin, std::size_t end) {
 	std::vector<std::string> names;
 	std::size_t pos = begin;
@@ -331,7 +331,7 @@ std::vector<std::string> cppMemberNames(const std::string& src,
 }
 
 /* 块内逐行抽取 data.put("KEY" 的键名——mcpbackend.cpp 序列化点的形态 */
-std::vector<std::string> jsonPutKeys(const std::string& src,
+[[maybe_unused]] std::vector<std::string> jsonPutKeys(const std::string& src,
 		std::size_t begin, std::size_t end) {
 	std::vector<std::string> keys;
 	const std::string pat = "data.put(\"";
@@ -347,7 +347,7 @@ std::vector<std::string> jsonPutKeys(const std::string& src,
 
 /* 块内逐行抽取 "pub <name>:" 的字段名——bridge.rs 的 Rust struct 形态
  * （字段行带缩进，先跳行首空白再匹配） */
-std::vector<std::string> rustFieldNames(const std::string& src,
+[[maybe_unused]] std::vector<std::string> rustFieldNames(const std::string& src,
 		std::size_t begin, std::size_t end) {
 	std::vector<std::string> names;
 	std::size_t pos = begin;
@@ -372,7 +372,7 @@ std::vector<std::string> rustFieldNames(const std::string& src,
 }
 
 /* 集合相等（名单顺序不是线格式的一部分；数量与名字是） */
-bool sameNameSet(const std::vector<std::string>& a, const std::vector<std::string>& b) {
+[[maybe_unused]] bool sameNameSet(const std::vector<std::string>& a, const std::vector<std::string>& b) {
 	if (a.size() != b.size()) { return false; }
 	std::multiset<std::string> sa(a.begin(), a.end()), sb(b.begin(), b.end());
 	return sa == sb;
@@ -406,48 +406,26 @@ TH_TEST(mcpbackend_frame_limit_matches_rust_twin) {
 		+ "）应与 kMcpHeaderSize（" + std::to_string(kMcpHeaderSize) + "）相等");
 }
 
-/* ---- ToolResult 七字段：agenttools.hpp ↔ mcpbackend.cpp ↔ bridge.rs 三处同源 ---- */
+/* ---- ToolResult 七字段：C++ 后端与 Rust protocol.rs 的行为契约 ---- */
 TH_TEST(mcpbackend_toolresult_schema_matches_rust_outcome) {
-	/* 规约本体：camelCase（C++ 成员/JSON 键）↔ snake_case（Rust 字段） */
-	const std::vector<std::string> camel = {
+	/* 不再读取生产源码猜测序列化实现；直接验证线上响应的字段集合。
+	 * Rust protocol.rs 的 serde 测试验证同一组 camelCase wire names。 */
+	AgentToolRegistry reg;
+	reg.add(mfx::echoTool());
+	McpBackend b = mfx::makeBackend(std::move(reg));
+	const Json r = parseJson(b.handleFrame(
+		R"({"_route":"tool.call","name":"echo","arguments":{}})"));
+	TH_CHECK(mfx::respOk(r));
+	const Json* data = mfx::respData(r);
+	TH_CHECK(data != nullptr);
+	const std::set<std::string> expected = {
 		"text", "imageDataUrl", "ok", "error", "executed", "paramError", "summary",
 	};
-	const std::vector<std::string> snake = {
-		"text", "image_data_url", "ok", "error", "executed", "param_error", "summary",
-	};
-
-	/* ① 结构体成员（数据成员形态；漂移 = 加了字段没序列化 / 删了字段没清理） */
-	const std::string hpp = readRepoSource("src/agenttools.hpp");
-	const std::size_t stBegin = hpp.find("struct AgentToolResult {");
-	TH_CHECK_MSG(stBegin != std::string::npos, "agenttools.hpp 找不到 struct AgentToolResult");
-	const std::size_t stEnd = hpp.find("\n};", stBegin);
-	TH_CHECK_MSG(stEnd != std::string::npos, "agenttools.hpp 找不到 AgentToolResult 的结束 };");
-	const std::vector<std::string> members = cppMemberNames(hpp, stBegin, stEnd);
-	TH_CHECK_MSG(sameNameSet(members, camel),
-		"AgentToolResult 成员（" + joinNames(members) + "）应与七字段契约（"
-		+ joinNames(camel) + "）一致——加字段必须同步 mcpbackend.cpp 序列化与 bridge.rs");
-
-	/* ② JSON 序列化键（锚点：gate_.run 的回执组装段到 okReply） */
-	const std::string cpp = readRepoSource("src/mcpbackend.cpp");
-	const std::size_t gateAt = cpp.find("const AgentToolResult res = gate_.run(call, turn_++)");
-	TH_CHECK_MSG(gateAt != std::string::npos, "mcpbackend.cpp 找不到序列化段锚点（gate_.run）");
-	const std::size_t replyAt = cpp.find("return okReply", gateAt);
-	TH_CHECK_MSG(replyAt != std::string::npos, "mcpbackend.cpp 找不到序列化段锚点（okReply）");
-	const std::vector<std::string> keys = jsonPutKeys(cpp, gateAt, replyAt);
-	TH_CHECK_MSG(sameNameSet(keys, camel),
-		"routeToolCall 序列化键（" + joinNames(keys) + "）应与七字段契约（"
-		+ joinNames(camel) + "）一致");
-
-	/* ③ Rust 侧 ToolOutcome 字段 */
-	const std::string rs = readRepoSource("agent/src/bridge.rs");
-	const std::size_t rsBegin = rs.find("pub struct ToolOutcome {");
-	TH_CHECK_MSG(rsBegin != std::string::npos, "bridge.rs 找不到 pub struct ToolOutcome");
-	const std::size_t rsEnd = rs.find("\n}", rsBegin);
-	TH_CHECK_MSG(rsEnd != std::string::npos, "bridge.rs 找不到 ToolOutcome 的结束 }");
-	const std::vector<std::string> fields = rustFieldNames(rs, rsBegin, rsEnd);
-	TH_CHECK_MSG(sameNameSet(fields, snake),
-		"ToolOutcome 字段（" + joinNames(fields) + "）应与七字段契约（"
-		+ joinNames(snake) + "）一致——Rust 侧漏字段会在回执处理时静默丢失");
+	std::set<std::string> actual;
+	if (data != nullptr) {
+		for (const auto& item : data->items()) { actual.insert(item.first); }
+	}
+	TH_CHECK_MSG(actual == expected, "tool.call 回执字段集合与跨进程协议不一致");
 }
 
 /* ---- 首帧共享密钥（MCP-1，2026-09-29 审计 P2-1）----

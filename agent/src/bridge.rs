@@ -35,13 +35,10 @@ use crate::frame::BackendClient;
 use crate::hook::HookState;
 use crate::ica::IcaSession;
 use crate::out::errln;
+use crate::protocol::{self, ToolCallResult};
 use crate::toolspec::ToolSpec;
 
-/// 一条工具回执的七个字段（后端 `data`）。
-/// 与后端 `AgentToolResult`（src/agenttools.hpp，JSON 键序列化在
-/// src/mcpbackend.cpp 的 routeToolCall）逐字段对应 camel↔snake：加/删/改字段
-/// 必须双侧同步——C++ 侧 test_mcpbackend 的
-/// mcpbackend_toolresult_schema_matches_rust_outcome 读本文件比对钉住。
+/// 一条工具回执的运行时载体，协议序列化由 `protocol::ToolCallResult` 负责。
 #[derive(Debug, Clone, Default)]
 pub struct ToolOutcome {
     pub text: String,
@@ -202,25 +199,22 @@ impl Bridge {
 
     /// 拉工具表（`tool.list`）。
     pub async fn list_tools(&self) -> Result<Vec<ToolSpec>, String> {
-        let resp = self.request("tool.list", Map::new()).await?;
-        let arr = resp
-            .pointer("/data/tools")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "后端 data.tools 不是数组".to_string())?;
+        let resp = self.request(protocol::ROUTE_TOOL_LIST, Map::new()).await?;
+        let envelope: protocol::Response<protocol::ToolList> = serde_json::from_value(resp)
+            .map_err(|e| format!("后端 tool.list 响应格式错误: {e}"))?;
+        let arr = envelope
+            .data
+            .ok_or_else(|| "后端 tool.list 缺少 data".to_string())?
+            .tools;
         let mut specs = Vec::with_capacity(arr.len());
         for t in arr {
-            let name = t.get("name").and_then(Value::as_str).unwrap_or("");
-            if name.is_empty() {
+            if t.name.is_empty() {
                 continue; // 无名工具跳过（不谎报）
             }
             specs.push(ToolSpec {
-                name: name.to_string(),
-                description: t
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_string(),
-                parameters: to_input_schema(t.get("inputSchema")),
+                name: t.name,
+                description: t.description,
+                parameters: to_input_schema(Some(&t.input_schema)),
             });
         }
         self.ica.merge_specs(&mut specs)?;
@@ -229,8 +223,12 @@ impl Bridge {
 
     /// 取系统提示词素材（`context.get`）。字段校验交给 `prompt::PromptMaterial`。
     pub async fn context_get(&self) -> Result<Value, String> {
-        let resp = self.request("context.get", Map::new()).await?;
-        Ok(resp.get("data").cloned().unwrap_or(Value::Null))
+        let resp = self
+            .request(protocol::ROUTE_CONTEXT_GET, Map::new())
+            .await?;
+        let envelope: protocol::Response<Value> = serde_json::from_value(resp)
+            .map_err(|e| format!("后端 context.get 响应格式错误: {e}"))?;
+        Ok(envelope.data.unwrap_or(Value::Null))
     }
 
     /// 调一个工具（`tool.call`）。`Err` = 传输失败或后端整体拒绝；`Ok(ok=false)`
@@ -257,30 +255,25 @@ impl Bridge {
             None => String::new(),
         };
         let mut extra = Map::new();
-        extra.insert("name".to_string(), Value::String(name.to_string()));
-        extra.insert("arguments".to_string(), arguments);
-        let resp = self.request("tool.call", extra).await?;
-        let data = resp.get("data").cloned().unwrap_or(Value::Null);
-        let get_str = |k: &str| {
-            data.get(k)
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string()
-        };
+        let request = serde_json::json!({
+            "name": name,
+            "arguments": arguments,
+        });
+        extra.extend(request.as_object().cloned().unwrap_or_default());
+        let resp = self.request(protocol::ROUTE_TOOL_CALL, extra).await?;
+        let envelope: protocol::Response<ToolCallResult> = serde_json::from_value(resp)
+            .map_err(|e| format!("后端 tool.call 响应格式错误: {e}"))?;
+        let data = envelope
+            .data
+            .ok_or_else(|| "后端 tool.call 缺少 data".to_string())?;
         let mut outcome = ToolOutcome {
-            text: get_str("text"),
-            image_data_url: get_str("imageDataUrl"),
-            ok: data.get("ok").and_then(Value::as_bool).unwrap_or(true),
-            error: get_str("error"),
-            executed: data
-                .get("executed")
-                .and_then(Value::as_bool)
-                .unwrap_or(true),
-            param_error: data
-                .get("paramError")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            summary: get_str("summary"),
+            text: data.text,
+            image_data_url: data.image_data_url,
+            ok: data.ok,
+            error: data.error,
+            executed: data.executed,
+            param_error: data.param_error,
+            summary: data.summary,
         };
         if let Some(ica) = self.ica.ledger() {
             let source = if outcome.ok && outcome.executed {

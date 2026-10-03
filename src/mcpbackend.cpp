@@ -8,6 +8,7 @@
  */
 #include "agentview.hpp"
 #include "mcpbackend.hpp"
+#include "mcp_protocol.hpp"
 
 #include <cerrno>
 #include <cctype>
@@ -120,10 +121,10 @@ Json McpBackend::routeToolList() {
 	Json arr = JsonArray();
 	for (const ToolSpec& t : tools_.specs()) {
 		Json o = JsonObject();
-		o.put("name", JsonString(t.name));
-		o.put("description", JsonString(t.description));
+		o.put(mcp_protocol::kName, JsonString(t.name));
+		o.put(mcp_protocol::kDescription, JsonString(t.description));
 		/* parameters 本就是 JSON Schema object，直接当 MCP 的 inputSchema。 */
-		o.put("inputSchema", t.parameters);
+		o.put(mcp_protocol::kInputSchema, t.parameters);
 		arr.add(o);
 	}
 	Json data = JsonObject();
@@ -136,12 +137,12 @@ Json McpBackend::routeToolCall(const Json& req) {
 	std::string reason;
 	if (budgetExceeded(reason)) { return errReply(reason); }
 
-	const Json* nameJ = req.find("name");
+	const Json* nameJ = req.find(mcp_protocol::kName);
 	if (nameJ == nullptr || !nameJ->isStr()) {
 		return errReply("tool.call 需要字符串字段 name");
 	}
 	std::string argsStr = "{}";
-	if (const Json* argsJ = req.find("arguments"); argsJ != nullptr) {
+	if (const Json* argsJ = req.find(mcp_protocol::kArguments); argsJ != nullptr) {
 		if (!argsJ->isObj()) { return errReply("tool.call 的 arguments 必须是 JSON 对象"); }
 		argsStr = argsJ->toString();
 	}
@@ -154,19 +155,17 @@ Json McpBackend::routeToolCall(const Json& req) {
 	++calls_;
 	/* 唯一漏斗：策略确认 → 执行 → 审计。未知工具/参数错/异常都由 gate 折成
 	 * 文本回执并记审计（评估 §3.4「所有 MCP 调用必穿 DispatchGate::run」）。 */
-	/* 七字段回执的 JSON 序列化点：字段清单钉在 AgentToolResult（agenttools.hpp），
-	 * Rust 侧对应 ToolOutcome（agent/src/bridge.rs）——三处一致性由 test_mcpbackend
-	 * 的 mcpbackend_toolresult_schema_matches_rust_outcome 读源比对钉住。 */
+	/* tool.call 回执按跨进程协议字段表序列化。 */
 	const AgentToolResult res = gate_.run(call, turn_++);
 
 	Json data = JsonObject();
-	data.put("text", JsonString(res.text));
-	data.put("imageDataUrl", JsonString(res.imageDataUrl));
-	data.put("ok", JsonBool(res.ok));
-	data.put("error", JsonString(res.error));
-	data.put("executed", JsonBool(res.executed));
-	data.put("paramError", JsonBool(res.paramError));
-	data.put("summary", JsonString(res.summary));
+	data.put(mcp_protocol::kText, JsonString(res.text));
+	data.put(mcp_protocol::kImageDataUrl, JsonString(res.imageDataUrl));
+	data.put(mcp_protocol::kOk, JsonBool(res.ok));
+	data.put(mcp_protocol::kError, JsonString(res.error));
+	data.put(mcp_protocol::kExecuted, JsonBool(res.executed));
+	data.put(mcp_protocol::kParamError, JsonBool(res.paramError));
+	data.put(mcp_protocol::kSummary, JsonString(res.summary));
 	return okReply(std::move(data));
 }
 
@@ -183,25 +182,25 @@ Json McpBackend::routeContextGet() {
 	const std::string scripts = describeActionScripts(cfg_->scriptsDir);
 
 	Json data = JsonObject();
-	data.put("robotName", JsonString(structureDisplayName(cfg_->structurePath)));
-	data.put("structurePath", JsonString(cfg_->structurePath));
-	data.put("scriptsDir", JsonString(cfg_->scriptsDir));
+	data.put(mcp_protocol::kRobotName, JsonString(structureDisplayName(cfg_->structurePath)));
+	data.put(mcp_protocol::kStructurePath, JsonString(cfg_->structurePath));
+	data.put(mcp_protocol::kScriptsDir, JsonString(cfg_->scriptsDir));
 	/* 工作方式段的条件开关：Rust agent 按这两个旗标拼条件句（与
 	 * 原 buildAgentSystemPrompt 的 allowShell/allowHotSql 分支同判据）。 */
-	data.put("allowShell", JsonBool(cfg_->allowShell));
-	data.put("allowHotSql", JsonBool(cfg_->allowHotSql));
+	data.put(mcp_protocol::kAllowShell, JsonBool(cfg_->allowShell));
+	data.put(mcp_protocol::kAllowHotSql, JsonBool(cfg_->allowHotSql));
 	/* REPL 横幅与 /status 的硬件计数（实时取：热插拔后不漂移）。 */
-	data.put("hardwareCount",
+	data.put(mcp_protocol::kHardwareCount,
 		JsonInt(static_cast<std::int64_t>(robot_->registry().byName().size())));
-	data.put("structureExcerpt", JsonString(sql.empty()
+	data.put(mcp_protocol::kStructureExcerpt, JsonString(sql.empty()
 			? std::string("(结构脚本不可读)\n")
 			: quoteUntrusted("结构脚本 " + cfg_->structurePath + " 摘录：\n", sql)));
-	data.put("hardwareList",
+	data.put(mcp_protocol::kHardwareList,
 		JsonString(quoteUntrusted("硬件变量清单：\n", describeHardware(*robot_))));
-	data.put("scriptsList", JsonString(quoteUntrusted(
+	data.put(mcp_protocol::kScriptsList, JsonString(quoteUntrusted(
 			"动作脚本清单（相对路径 + 首行注释）：\n", scripts)));
 	/* 可读变量是内联短清单（进工作方式条目，非引用块），空 = 一个字段都不给。 */
-	data.put("readableVars", JsonString(describeReadableVars(cfg_->readVars, *robot_)));
+	data.put(mcp_protocol::kReadableVars, JsonString(describeReadableVars(cfg_->readVars, *robot_)));
 	return okReply(std::move(data));
 }
 
@@ -212,18 +211,18 @@ Json McpBackend::handleRequest(const Json& req) {
 			 * 且**绝不回显输入**（评估 §7.4）。 */
 			return errReply("invalid JSON request");
 		}
-		const Json* route = req.find("_route");
+		const Json* route = req.find(mcp_protocol::kRoute);
 		if (route == nullptr) { return errReply("missing _route"); }
 		if (!route->isStr()) { return errReply("_route must be a string"); }
 		const std::string r = route->getValue();
-		if (r == "ping") {
+		if (r == mcp_protocol::kPing) {
 			Json d = JsonObject();
 			d.put("pong", JsonBool(true));
 			return okReply(std::move(d));
 		}
-		if (r == "tool.list") { return routeToolList(); }
-		if (r == "tool.call") { return routeToolCall(req); }
-		if (r == "context.get") { return routeContextGet(); }
+		if (r == mcp_protocol::kToolList) { return routeToolList(); }
+		if (r == mcp_protocol::kToolCall) { return routeToolCall(req); }
+		if (r == mcp_protocol::kContextGet) { return routeContextGet(); }
 		return errReply("unknown route: " + r);
 	} catch (const std::exception& e) {
 		return errReply(sanitizeError(e.what()));

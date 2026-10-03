@@ -12,6 +12,7 @@
 use std::time::Duration;
 
 use crate::out::errln;
+use crate::protocol::{ROUTE_AUTH, ROUTE_FIELD};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -155,7 +156,7 @@ impl BackendClient {
     /// 指向版本不匹配的人话，其余失败原样上抛。
     pub async fn authenticate(&mut self, token: &str) -> Result<()> {
         let resp = self
-            .call(&serde_json::json!({"_route": "auth", "token": token}))
+            .call(&serde_json::json!({ROUTE_FIELD: ROUTE_AUTH, "token": token}))
             .await
             .context("发送首帧认证")?;
         if resp
