@@ -28,6 +28,7 @@
 #include "json.hpp"
 #include "matrix.hpp"
 #include "meta_provider.hpp"
+#include "meta_registry.hpp"
 #include "script_loader.hpp"
 #include "structure_store.hpp"
 #include "util_cli.hpp"
@@ -48,9 +49,10 @@ private:
 	 * shared_ptr 供守护线程持 self 保生命周期（详见 daemon_registry.hpp）。 */
 	DaemonRegistry daemons_;
 	HwRegistry registry_;				/* 硬件变量：所有权 + 销毁序 + 名字索引（R-2） */
-	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
-	 * $ 引用存在性（shared_ptr 与变量同生命周期，防悬垂） */
-	std::vector<std::shared_ptr<MetaProvider>> metaProviders_;
+	/* 元数据域（2026-10-03 阶段 4）：Lua 变量的元数据提供者登记表。active() 在
+	 * build 前统一校验 $ 引用存在性；热删除/整表撤下期摘除与重锚定
+	 * （详见 meta_registry.hpp）。 */
+	MetaRegistry metas_;
 	HwFactory factory_;	/* 依赖上面的容器，声明序保证先构造 */
 	ActionRunner runner_;
 	/* @Include 基准目录（mtinclude::expandIncludes 的相对路径根，缺省 "."）。
@@ -138,7 +140,7 @@ private:
 
 public:
 	explicit RobotStruct(bot::Reader& input)
-		: factory_(registry_, daemons_, metaProviders_), runner_(registry_) {
+		: factory_(registry_, daemons_, metas_), runner_(registry_) {
 		structures_.load(input);
 	}
 
@@ -211,7 +213,7 @@ public:
 	 * 而不是查注册表（注册表要 active() 里 createHardVars 才装配）。 */
 	bool declaresVariable(const std::string& name) const;
 
-	/* 测试自检（2026-09-25 审计 A-4）：metaProviders_ 与活体结构一一对应——
+	/* 测试自检（2026-09-25 审计 A-4）：元数据登记表与活体结构一一对应——
 	 * 每个会装配 Lua 变量的数据行恰有一个提供者、每个提供者锚定一个范围内
 	 * 的真实数据行（multiset 比对，行号错位/摘错/漏摘都会失衡）。生产路径
 	 * 不调用；热删除 4.6.4 的 deadProvider 判据所声称的「精确」以此为准。 */

@@ -13,6 +13,7 @@
 #include "hw_registry.hpp"
 #include "matrix.hpp"
 #include "meta_provider.hpp"
+#include "meta_registry.hpp"
 #include "util_except.hpp"
 
 namespace bot {
@@ -26,7 +27,7 @@ namespace bot {
 class HwFactory {
 	HwRegistry& registry_;
 	DaemonRegistry& daemons_;
-	std::vector<std::shared_ptr<MetaProvider>>& metaProviders_;
+	MetaRegistry& metas_;
 
 	/* 重名前置判重（资源泄漏防线：Lua 状态机/共享槽先申请，此处先确认可注册） */
 	void precheckDuplicate(const std::string& name, const std::string& mtName) {
@@ -82,8 +83,8 @@ public:
 
 	HwFactory(HwRegistry& registry,
 			DaemonRegistry& daemons,
-			std::vector<std::shared_ptr<MetaProvider>>& metaProviders)
-		: registry_(registry), daemons_(daemons), metaProviders_(metaProviders) {}
+			MetaRegistry& metas)
+		: registry_(registry), daemons_(daemons), metas_(metas) {}
 
 	/* 全部硬变量创建：声明序，Alias/Vars/Lua/Daemon 分派 */
 	void createHardVars(const std::deque<mt::MatrixObject>& matrices);

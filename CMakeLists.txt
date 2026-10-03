@@ -99,6 +99,7 @@ set(MYBOT_CORE_SOURCES
   src/daemonconf.cpp
   src/hw_registry.cpp
   src/meta_provider.cpp
+  src/meta_registry.cpp
   src/hw_factory.cpp
   src/action_runner.cpp
   src/luaexec.cpp

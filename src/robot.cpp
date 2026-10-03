@@ -121,7 +121,7 @@ void RobotStruct::active() {
 	/* F-05：$ 引用解析本是惰性的（首次 collect 时）——指向未定义变量会在
 	 * 驱动 build 的真机事务中途才报错；装配完成后、任何 build 之前统一
 	 * 校验存在性（此时全部变量已注册，前向引用合法）。 */
-	for (const auto& p : metaProviders_) { p->validate(); }
+	metas_.validateAll();
 	for (MatrixVars_Hardware* item : registry_.sequence()) {
 		/* build 期同样要看停止标志（2026-09-21 第七轮审计）：多驱动上电时每个
 		 * build 内部都有真机延时，整段可能跑很久，而信号处理器在 active() 之前
@@ -375,7 +375,7 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 		HotSqlPlan::Insertions& insPlan, const HotDeleteOutcome& alreadyDeleted) {
 	CommitOutcome out;
 	const HwRegistry::Mark mark = registry_.mark();
-	const std::size_t metaMark = metaProviders_.size();
+	const std::size_t metaMark = metas_.size();
 	const std::size_t daemonMark = daemons_.size();
 	std::vector<std::pair<std::size_t, std::size_t>> appended;	/* (矩阵下标, 追加行数) */
 	std::size_t addedTables = 0;
@@ -395,9 +395,7 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 		}
 		/* 4.3 $ 引用存在性：只查本批次新增的 MetaProvider（此时批内变量已全部注册，
 		 *     故批内前向引用合法；既有提供者启动期已校验） */
-		for (std::size_t i = metaMark; i < metaProviders_.size(); ++i) {
-			metaProviders_[i]->validate();
-		}
+		metas_.validateFrom(metaMark);
 		/* 4.4 上电：只 build 本批次新增的（声明序），与 active() 同查停止标志
 		 *     ——多驱动逐个 build 期间可能有真机延时，Ctrl-C 必须能中止并回滚。 */
 		const auto& seq = registry_.sequence();
@@ -458,7 +456,7 @@ void RobotStruct::rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t met
 		}
 	}
 	registry_.rollbackTo(mark);
-	metaProviders_.resize(metaMark);
+	metas_.truncate(metaMark);
 	daemons_.truncate(daemonMark);
 	for (const auto& [idx, n] : appended) { structures_.popRows(idx, n); }
 	structures_.truncate(structures_.size() - addedTables);
@@ -504,11 +502,7 @@ RobotStruct::DropOutcome RobotStruct::dropTableShells(const ScriptLoader::Mutati
 	DropOutcome out;
 	if (muts.droppedTables.empty()) { return out; }
 	/* ① 抓名字（erase 之前，此时 matrix_ 仍有效） */
-	std::vector<std::pair<MetaProvider*, std::string>> provNames;
-	provNames.reserve(metaProviders_.size());
-	for (const auto& p : metaProviders_) {
-		provNames.emplace_back(p.get(), p->matrix().getName());
-	}
+	const MetaRegistry::TableNameSnapshot provNames = metas_.captureTableNames();
 	/* ② 定位要摘的表壳（本批次 DROP 的表名 ∩ 活体结构表）。DROP 本批次
 	 *     新建的表不在活体里（readSQL 已把它从影子容器整表擦除），此处自然
 	 *     找不到——那不是错误，跳过即可。 */
@@ -529,10 +523,8 @@ RobotStruct::DropOutcome RobotStruct::dropTableShells(const ScriptLoader::Mutati
 	 *    ——「本批次 CREATE 后又 DROP」的新表不在活体里（shellIdx 为空），
 	 *    此时没有元素被搬移，重锚定是空转。 */
 	if (!shellIdx.empty()) {
-		for (auto& [prov, nm] : provNames) {
-			const mt::MatrixObject* m = structures_.find(nm);
-			if (m != nullptr) { prov->rebase(*m); }
-		}
+		metas_.rebaseByName(provNames,
+			[this](const std::string& nm) { return structures_.find(nm); });
 	}
 	return out;
 }
@@ -681,13 +673,7 @@ void RobotStruct::applyHotDeleteConsistency(
 			deadProvider.emplace(&structures_.at(mi), static_cast<std::int64_t>(r));
 		}
 	}
-	auto isDeadProvider = [&](const std::shared_ptr<MetaProvider>& p) {
-		/* emplace 的显式构造：count({a, b}) 的括号初始化列表无法推导
-		 * 到 set 的 value_type（pair 的转换构造函数不参与该重载）。 */
-		return deadProvider.count(std::make_pair(&p->matrix(), p->row())) != 0;
-	};
-	metaProviders_.erase(std::remove_if(metaProviders_.begin(), metaProviders_.end(),
-		isDeadProvider), metaProviders_.end());
+	metas_.dropRows(deadProvider);
 	/* ①′ 存活提供者行号重锚定（2026-09-25 审计 A-4 收口）：② 的 removeRows
 	 * 是保序擦除——同矩阵内行号大于被删行的行全部前移。提供者的 row()
 	 * 是**后续批次** deadProvider 判据的坐标（上一步刚用过）与任何未来
@@ -699,15 +685,7 @@ void RobotStruct::applyHotDeleteConsistency(
 	 * 本步骤一并收口。混批里追加行的 provider 已在 commitHotBatch 4.3
 	 * 急切 seed（缓存以追加时坐标取到的是正确内容），此处只修坐标。 */
 	for (const auto& [mi, rs] : perTable) {
-		const mt::MatrixObject* mat = &structures_.at(mi);
-		for (const auto& p : metaProviders_) {
-			if (p->matrixPtr() != mat) { continue; }
-			std::int64_t shift = 0;
-			for (std::size_t r : rs) {
-				if (static_cast<std::int64_t>(r) < p->row()) { ++shift; }
-			}
-			if (shift > 0) { p->shiftRow(-shift); }
-		}
+		metas_.shiftRowsAfter(&structures_.at(mi), rs);
 	}
 	/* ② 结构行（保序擦除，销毁序不变式不动） */
 	for (const auto& [mi, rs] : perTable) {
@@ -735,7 +713,7 @@ bool RobotStruct::declaresVariable(const std::string& name) const {
 	return false;
 }
 
-/* ---- metaProviders_ 与活体结构的一致性自检（测试用，见 robot.hpp 契约）----
+/* ---- 元数据登记表与活体结构的一致性自检（测试用，见 robot.hpp 契约）----
  * 期望集的表分派与 HwFactory::createHardVarsFrom 同集合：Alias/Vars/Action/
  * Daemon 表不产生 MetaProvider（标量走 registerScalarMatrix、守护走
  * MtVars_Daemon::Factory 且装配期即读全行），其余表每个数据行一个提供者。 */
@@ -749,7 +727,7 @@ bool RobotStruct::metaProvidersMatchLiveRows() const {
 		}
 	}
 	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> got;
-	for (const auto& p : metaProviders_) { got.emplace(p->matrixPtr(), p->row()); }
+	for (const auto& p : metas_.all()) { got.emplace(p->matrixPtr(), p->row()); }
 	return expect == got;
 }
 
@@ -771,7 +749,7 @@ void RobotStruct::injectLuaDriver(const std::string& driverTable, const std::str
 	 * 属于热插表事务（RobotStruct::applySql），走的是另一条带全量校验与回滚的
 	 * 路径（驱动模块存在性、重名、单消费者判据、$ 引用校验都在那里做）。此处
 	 * 保留断言：绕过事务直接 append 会跳过那些校验，装配出半成品。 */
-	if (!metaProviders_.empty()) {
+	if (!metas_.empty()) {
 		throw IllegalArgumentException("injectLuaDriver must be called before active():"
 			" use the hot-SQL path (applySql) to add tables to a running robot");
 	}

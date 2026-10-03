@@ -493,7 +493,7 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 		precheckDuplicate(name, mtName);
 		FlowRowRefs flow = parseFlowRow(matrix, i, name, mtName, registry_);
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, &registry_);
-		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
+		metas_.add(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
 		registry_.add(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv](bool forDestroy) {
 				return forDestroy ? metaProv->collectForDestroy() : metaProv->collect();
