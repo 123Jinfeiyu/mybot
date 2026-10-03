@@ -93,6 +93,12 @@ save                # 把当前场景写回配置的场景文件（见「场景�
 与表一致——加动作只需在表里追加一行，漏改 Lua 会被测试挡下（数字码是对外契约，
 `.mt`/`.sql`/本文都用它，**只增不改**）。
 
+这道校验**同时**由 `scripts/check_sim_action_table.py`（零编译依赖的独立实现，
+同一套比对逻辑）接入 `test/run_all_selftest.sh`（主干守门，push 前必跑）强制执行：
+`sim/` 不在任何 CI job 的构建范围内（见 `sim/CMakeLists.txt` 顶部注释），单靠
+`sim/tests` 的那份只有开发者手动跑 `bash scripts/build_sim.sh` 才会触发，不能
+指望每次改动都被自动挡下；两份校验各自独立实现（C++/Python），互为印证。
+
 漏改还有第二道、且是编译期的防线：新增一个 `SimCommand` / `SimEvent::Type` 枚举值后，
 若忘了在 `sim_engine.cpp` 的 `commandToInput` / `applyEvent` 里补对应 case，动作会静默
 no-op。这两处 switch 刻意不写 `default`，配合 CMake 对本地三 target 开的

@@ -106,8 +106,19 @@ for k in TEST_TIMEOUT SAN_DIR; do
 		|| note "params 单点缺 ${k} 条目或格式漂移（CMake 正则提取会失败）：test/lib/params.sh"
 done
 
+# 8) 仿真器动作表双事实源一致性（sim/src/action_table.cpp vs modules/Sim.lua）：
+#    sim/ 不在任何 CI job 的构建范围内（见 sim/CMakeLists.txt 顶部注释），
+#    sim/tests 里的同款校验（testActionTable）因此只在开发者手动跑
+#    `bash scripts/build_sim.sh` 时才会触发——这里用零编译依赖的独立实现
+#    把它下沉进主干守门，让漏改一侧在 push 前就被挡下。
+if command -v python3 >/dev/null 2>&1; then
+	python3 scripts/check_sim_action_table.py || note "scripts/check_sim_action_table.py 发现动作表不一致（详见上方输出）"
+else
+	note "缺 python3，无法跑 scripts/check_sim_action_table.py（动作表一致性未受检查）"
+fi
+
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器动作表一致性）"

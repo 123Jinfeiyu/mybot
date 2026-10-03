@@ -58,8 +58,9 @@ cd build && ctest --output-on-failure -R cpp_unit
 1. **提交信息校验**（快、先跑）：对 `@{push}..HEAD` 的每个非 merge 提交检查 subject
    非空、长度 ≥ 10、带类型前缀（规范见上节）。远端分支无 `@{push}` 时（如推送新分支）跳过校验
 2. **守门自检**（`bash test/run_all_selftest.sh`，快）：`bash -n` 守门脚本语法、核对每个
-   `test/cpp/*.cpp` 已登记进 `CMakeLists.txt`、核对 `test/*.lua` 命名匹配 `test_*.lua`——
-   这三类是「用例静默消失」（不收集/不编译）的唯一机械防线；它**不进入** `run_all.sh`
+   `test/cpp/*.cpp` 已登记进 `CMakeLists.txt`、核对 `test/*.lua` 命名匹配 `test_*.lua`、
+   核对仿真器动作表 `sim/src/action_table.cpp` 与 `modules/Sim.lua` 一致——
+   这些是「用例静默消失 / 双事实源漏改」的唯一机械防线；它**不进入** `run_all.sh`
    的记账，守门汇总口径不变
 3. **离线守门**：`bash test/run_all.sh`
 
