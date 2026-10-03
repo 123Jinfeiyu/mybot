@@ -10,7 +10,7 @@
 # 用法：cat scripts/test/lsm6dsv_virt.mt | ./build/mybot --robot=robots/test/lsm6dsv_virt.sql
 @Action
 t0.delay  ei.out  mon0.go  monf.go;
-   200       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

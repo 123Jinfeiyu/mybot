@@ -9,7 +9,7 @@
 # 用法：cat scripts/test/vl53l4cd_virt.mt | ./build/mybot --robot=robots/test/vl53l4cd_virt.sql
 @Action
 t0.delay  ed.out  mon0.go  monf.go;
-   300       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

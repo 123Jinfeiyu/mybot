@@ -8,7 +8,7 @@
 # 用法：cat scripts/test/sht3x_virt.mt | ./build/mybot --robot=robots/test/sht3x_virt.sql
 @Action
 t0.delay  et.out  mon0.go  monf.go;
-   300       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

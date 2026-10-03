@@ -9,7 +9,7 @@
 # 用法：cat scripts/test/pcf8574_virt.mt | ./build/mybot --robot=robots/test/pcf8574_virt.sql
 @Action
 t0.delay  eavg.out  mon0.go  monf.go;
-   200       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

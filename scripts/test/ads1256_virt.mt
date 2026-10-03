@@ -8,7 +8,7 @@
 # 用法：cat scripts/test/ads1256_virt.mt | ./build/mybot --robot=robots/test/ads1256_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
-   300       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

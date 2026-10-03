@@ -8,7 +8,7 @@
 # 用法：cat scripts/test/daemon_multi.mt | ./build/mybot --robot=robots/test/daemon_multi.sql
 @Action
 t0.delay  mon0.go;
-   800       -   ;
+   2000       -   ;
     50       -   ;
     50       -   ;
     50       -   ;

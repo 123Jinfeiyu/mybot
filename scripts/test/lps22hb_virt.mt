@@ -9,7 +9,7 @@
 # 用法：cat scripts/test/lps22hb_virt.mt | ./build/mybot --robot=robots/test/lps22hb_virt.sql
 @Action
 t0.delay  ebp.out  mon0.go  monf.go;
-   200       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
