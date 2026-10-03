@@ -3,6 +3,12 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
+# 产物路径可由调用方覆盖（守门分段 run_one_ica_e2e 会把它指向自己认的那份），
+# 与 scripts/agent_e2e.sh 的 BOT 同口径。
+BOT="${BOT:-build/mybot}"
+AGENT_BIN="${AGENT_BIN:-agent/target/release/mybot-agent}"
+[ -x "$AGENT_BIN" ] || { echo "缺 $AGENT_BIN（先 bash scripts/build_agent.sh --release）"; exit 1; }
+[ -x "$BOT" ] || { echo "缺后端 $BOT（先 cmake --build build）"; exit 1; }
 tmp=$(mktemp -d)
 backend_pid=''
 server_pid=''
@@ -15,6 +21,9 @@ cleanup() {
 }
 trap cleanup EXIT
 mkdir -m 700 "$tmp/run"
+# 会话持久化缺省开启：状态目录隔离到临时目录，别让这段离线校验往真实 ~/.mybot 写历史
+# （与 scripts/agent_e2e.sh 同口径，那里也是无条件 export 覆盖外部值）。
+export MYBOT_HOME="$tmp/mybot-home"
 port=$(python3 - <<'PY'
 import socket
 s = socket.socket()
@@ -25,7 +34,7 @@ PY
 )
 python3 scripts/fake_llm_server.py "$port" "$tmp/request.json" ica-flow >"$tmp/server.log" 2>&1 &
 server_pid=$!
-build/mybot --robot=robots/relay-test.sql --mcp-backend \
+"$BOT" --robot=robots/relay-test.sql --mcp-backend \
   --mcp-socket "$tmp/run/mcp.sock" --scripts-dir scripts \
   --audit-log "$tmp/backend-audit.jsonl" >"$tmp/backend.log" 2>&1 &
 backend_pid=$!
@@ -43,7 +52,7 @@ PY
   sleep .1
 done
 BOT4CJ_ICA=1 BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 \
-  agent/target/release/mybot-agent --socket "$tmp/run/mcp.sock" \
+  "$AGENT_BIN" --socket "$tmp/run/mcp.sock" \
   --llm-endpoint "http://127.0.0.1:$port/v1/chat/completions" \
   --llm-model e2e-model --llm-config none \
   --task '检查虚拟继电器并执行一次动作' >"$tmp/out" 2>"$tmp/err" || {

@@ -127,6 +127,11 @@ run_one_agent_rust_e2e() {
 			return 2
 		fi
 	fi
+	# 与 CI（.gitlab-ci.yml 的 agent job）的口径差异是**刻意的**，别只改一边：
+	#   * 环境隔离的单点在 agent_e2e.sh 自己（脚本内 export BOT4CJ_LLM_CONFIG=none、
+	#     MYBOT_HOME 指向它的临时目录），CI 命令前那个 BOT4CJ_LLM_CONFIG=none 只是冗余保险；
+	#   * 外层 timeout 本地 90 / CI 180——CI 机器慢，本地 90 实测够用（脚本内部每次
+	#     调用另有 timeout 60/20 兜底）。
 	local out rc
 	out="$(BOT="$bin" timeout 90 bash scripts/agent_e2e.sh --rust 2>&1)"
 	rc=$?
@@ -135,6 +140,47 @@ run_one_agent_rust_e2e() {
 		record_skip "agent-rust-e2e(缺python3)"
 	elif [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mybot-agent 端到端测试通过"; then
 		record_fail "agent-rust-e2e(mybot-agent)"
+	else
+		record_pass
+	fi
+}
+
+# ICA 证据账本两进程离线校验（scripts/ica_e2e.sh，BOT4CJ_ICA=1 的实验特性）。
+# 此前该脚本只有 docs/ica.md 提到、没有任何守门调用它——离线脚本没人跑就会静默腐烂
+# （改坏了也没人知道），故接进 agent 段。产物依赖与 agent-rust-e2e 完全相同
+# （build/mybot 必需 → 缺则失败；mybot-agent 可选 → 缺/陈旧则 SKIP），判据同口径。
+# 脚本自身无条件把 MYBOT_HOME 指向它的临时目录，故这里不需要再包一层。
+run_one_ica_e2e() {
+	echo "----- ica-e2e (ICA 证据账本两进程) -----"
+	if [ ! -x "$bin" ]; then
+		artifact_missing "ICA 两进程" "该段（scripts/ica_e2e.sh）" "$bin" "$bot_explicit"
+		return 2
+	fi
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（假模型服务），跳过本段"
+		record_skip "ica-e2e(缺python3)"
+		return 2
+	fi
+	local agent_bin="agent/target/release/mybot-agent"
+	if [ ! -x "$agent_bin" ]; then
+		echo "[SKIP] 无 mybot-agent 产物 $agent_bin（先 bash scripts/build_agent.sh --release），跳过本段"
+		record_skip "ica-e2e(缺mybot-agent产物)"
+		return 2
+	fi
+	# 陈旧守卫同 S17 口径：跑旧产物会得到一批与真因无关的 FAIL，响亮提示 + 跳过比一片误导红更稳
+	if [ -z "${BOT_ALLOW_STALE:-}" ] && [ -n "$(find agent/src agent/Cargo.toml agent/Cargo.lock \
+			-type f -newer "$agent_bin" -print -quit 2>/dev/null)" ]; then
+		echo "[SKIP] mybot-agent 产物早于 Rust 源码，请先重建： bash scripts/build_agent.sh --release"
+		echo "       确实要跑旧产物： BOT_ALLOW_STALE=1 bash test/run_all.sh"
+		record_skip "ica-e2e(mybot-agent产物陈旧)"
+		return 2
+	fi
+	local out rc
+	out="$(BOT="$bin" AGENT_BIN="$agent_bin" timeout 90 bash scripts/ica_e2e.sh 2>&1)"
+	rc=$?
+	echo "$out"
+	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "ICA two-process flow passed"; then
+		record_fail "ica-e2e(ICA 两进程)"
 	else
 		record_pass
 	fi

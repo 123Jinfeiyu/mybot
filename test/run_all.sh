@@ -990,6 +990,9 @@ if filter_matches "agent" "$filter_e2e"; then
 	# 也只会写进这个临时目录，绝不碰真实 $HOME/.mybot。
 	_e2e_home="$(mktemp -d "${TMPDIR:-/tmp}/mybot-e2e-home.XXXXXX")"
 	MYBOT_HOME="$_e2e_home" run_one_agent_rust_e2e
+	# ICA 证据账本两进程（scripts/ica_e2e.sh，BOT4CJ_ICA=1 实验特性）：此前无人调用，
+	# 接进同一段。产物依赖与上面那段相同，脚本自身也无条件沙箱 MYBOT_HOME，共用这层双保险。
+	MYBOT_HOME="$_e2e_home" run_one_ica_e2e
 	rm -rf "$_e2e_home"
 	unset _e2e_home
 fi
