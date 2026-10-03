@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "obb2d.h"
 #include "sim_config.h"
 
 namespace {
@@ -43,146 +44,12 @@ bool parseFloats(const char* p, float* vals, int want, int& got) {
     return true;
 }
 
-// 朝向盒（OBB）的局部系约定：盒局部 +X 轴在世界系的方向是 (cos yaw, -sin yaw)，
-// 与 Robot::theta 同号。解算 OBB 的思路——绕 Y 旋转是等距变换（保长度、保点积），
-// 所以把点/方向**旋进盒局部系**后就能复用轴对齐数学，再把结果旋回世界系。
-// 下面两个辅助互逆。仅对「点相对盒心」的位移增量做旋回，避免把盒心也旋了。
-inline void worldToLocal2D(float dx, float dz, float yaw, float& lx, float& lz) {
-    const float c = std::cos(yaw), s = std::sin(yaw);
-    lx = dx * c - dz * s;
-    lz = dx * s + dz * c;
-}
-inline void localToWorld2D(float lx, float lz, float yaw, float& dx, float& dz) {
-    const float c = std::cos(yaw), s = std::sin(yaw);
-    dx = lx * c + lz * s;
-    dz = -lx * s + lz * c;
-}
-
-// 2D 射线 vs OBB（XZ 平面）求交：把射线旋进盒局部系转为轴对齐 slab 法。
-// 射线从世界系 (ox,oz) 沿世界系 (dx,dz) 方向；旋转保距，故局部系里算出的 tHit
-// 直接可用。无命中返回 false。
-bool rayOBB2D(float ox, float oz, float dx, float dz,
-              const Obstacle& ob, float& tHit) {
-    const float yaw = ob.yaw;
-    float lox, loz, ldx, ldz;
-    worldToLocal2D(ox - ob.center.x, oz - ob.center.z, yaw, lox, loz);
-    worldToLocal2D(dx, dz, yaw, ldx, ldz);
-
-    const float hx = ob.half.x, hz = ob.half.z;
-    float tmin = -1e30f, tmax = 1e30f;
-
-    if (std::abs(ldx) < 1e-8f) {
-        if (lox < -hx || lox > hx) return false;
-    } else {
-        float t1 = (-hx - lox) / ldx;
-        float t2 = (hx - lox) / ldx;
-        if (t1 > t2) std::swap(t1, t2);
-        tmin = std::max(tmin, t1);
-        tmax = std::min(tmax, t2);
-        if (tmin > tmax) return false;
-    }
-
-    if (std::abs(ldz) < 1e-8f) {
-        if (loz < -hz || loz > hz) return false;
-    } else {
-        float t1 = (-hz - loz) / ldz;
-        float t2 = (hz - loz) / ldz;
-        if (t1 > t2) std::swap(t1, t2);
-        tmin = std::max(tmin, t1);
-        tmax = std::min(tmax, t2);
-        if (tmin > tmax) return false;
-    }
-
-    if (tmin < 0.0f) return false;
-    tHit = tmin;
-    return true;
-}
-
-// 球（XZ 平面）vs OBB（XZ 截面）碰撞解算：旋进盒局部系按原点盒解算，再把位移
-// 增量旋回世界系叠加。返回 true 表示发生了碰撞（位置被修正）。
-bool resolveSphereOBB2D(float& sx, float& sz, float radius,
-                        const Obstacle& ob) {
-    const float yaw = ob.yaw;
-    float lx, lz;
-    worldToLocal2D(sx - ob.center.x, sz - ob.center.z, yaw, lx, lz);
-    const float hx = ob.half.x, hz = ob.half.z;
-
-    // 盒（局部系里以原点为中心，半尺寸 ±half）面上离球心最近的点
-    const float cx = std::clamp(lx, -hx, hx);
-    const float cz = std::clamp(lz, -hz, hz);
-    const float dx = lx - cx, dz = lz - cz;
-    const float distSq = dx * dx + dz * dz;
-    if (distSq >= radius * radius) {
-        return false;  // 无碰撞
-    }
-
-    float nlx = lx, nlz = lz;
-    const float dist = std::sqrt(distSq);
-    if (dist < 1e-5f) {
-        // 球心在盒内：沿最短轴推出
-        const float penXp = hx - lx, penXn = lx + hx;
-        const float penZp = hz - lz, penZn = lz + hz;
-        float minPen = penXp;
-        int axis = 0;  // 0=x, 1=z
-        float sign = 1.0f;
-        if (penXn < minPen) { minPen = penXn; axis = 0; sign = -1.0f; }
-        if (penZp < minPen) { minPen = penZp; axis = 1; sign = 1.0f; }
-        if (penZn < minPen) { minPen = penZn; axis = 1; sign = -1.0f; }
-        const float push = radius + minPen;
-        if (axis == 0) {
-            nlx += sign * push;
-        } else {
-            nlz += sign * push;
-        }
-    } else {
-        // 球心在盒外但距离 < radius：沿 dx,dz 方向推出
-        const float push = radius - dist;
-        nlx += (dx / dist) * push;
-        nlz += (dz / dist) * push;
-    }
-
-    // 只把位移增量旋回世界系叠加
-    float wdx, wdz;
-    localToWorld2D(nlx - lx, nlz - lz, yaw, wdx, wdz);
-    sx += wdx;
-    sz += wdz;
-    return true;
-}
-
 // 放置解算用常量：贴合判定留的缝隙、迭代放宽重推的最大轮数、单次放置允许累计
 // 推出的总距离上限（防「深嵌 / 多堵墙连环顶」把箱子推到离机器人很远甚至身后——
 // 超限视为几何不可行，place() 直接失败而不是硬塞一个离谱的结果）。
 constexpr float kPlaceEps = 1e-3f;
 constexpr int kMaxPlaceIter = 8;
 constexpr float kMaxPlacePush = 3.0f;
-
-// OBB 在给定世界法向上的投影半径（SAT 用）：half.x*|uX·n| + half.z*|uZ·n|，
-// 其中局部 +X 世界方向 uX=(cos,-sin)、+Z 为 uZ=(sin,cos)（与 worldToLocal2D 一致）。
-float obbProjRadius(const Obstacle& ob, float nx, float nz) {
-    const float c = std::cos(ob.yaw), s = std::sin(ob.yaw);
-    return ob.half.x * std::abs(c * nx - s * nz) + ob.half.z * std::abs(s * nx + c * nz);
-}
-
-// 两个 OBB 在 XZ 平面是否重叠：2D SAT，候选轴 = 两盒各自局部 X/Z（4 条）。
-// 任一轴上投影距离 >= 半径和即分离；用 >=（非 >）使「贴合」不算重叠——放置刚推到
-// 相切时不应再触发推出。
-bool obbOverlapXZ(const Obstacle& a, const Obstacle& b) {
-    const float ca = std::cos(a.yaw), sa = std::sin(a.yaw);
-    const float cb = std::cos(b.yaw), sb = std::sin(b.yaw);
-    const float axes[4][2] = {
-        {ca, -sa}, {sa, ca},  // a 的局部 +X / +Z 世界方向
-        {cb, -sb}, {sb, cb},  // b 的局部 +X / +Z 世界方向
-    };
-    const float dx = b.center.x - a.center.x;
-    const float dz = b.center.z - a.center.z;
-    for (const auto& ax : axes) {
-        if (std::abs(dx * ax[0] + dz * ax[1]) >=
-            obbProjRadius(a, ax[0], ax[1]) + obbProjRadius(b, ax[0], ax[1])) {
-            return false;
-        }
-    }
-    return true;
-}
 
 // 「墙」判定：待放盒从释放高度 releaseBottom 下落到脚下高度 supportTop 附近，途中若
 // oth 伸进这条竖直带（bottom < releaseBottom）又不是可踩的「地板」（top > supportTop），
@@ -198,7 +65,7 @@ bool wallVerticalConflict(const Obstacle& oth, float releaseBottom, float suppor
 // d<=0 表示无需推。
 float nearSidePush(const Obstacle& ob, const Obstacle& oth, float fx, float fz) {
     const float s = (ob.center.x - oth.center.x) * fx + (ob.center.z - oth.center.z) * fz;
-    return s + obbProjRadius(ob, fx, fz) + obbProjRadius(oth, fx, fz) + kPlaceEps;
+    return s + Obb2D::projRadius(ob, fx, fz) + Obb2D::projRadius(oth, fx, fz) + kPlaceEps;
 }
 
 // 两盒是否真正 3D 重叠：竖直区间相交 + XZ 投影重叠。place() 写回前用它做最终
@@ -207,7 +74,7 @@ float nearSidePush(const Obstacle& ob, const Obstacle& oth, float fx, float fz) 
 bool overlaps3D(const Obstacle& a, const Obstacle& b) {
     const bool vOverlap = (a.center.y - a.half.y) < (b.center.y + b.half.y) &&
                           (b.center.y - b.half.y) < (a.center.y + a.half.y);
-    return vOverlap && obbOverlapXZ(a, b);
+    return vOverlap && Obb2D::overlapXZ(a, b);
 }
 
 }  // namespace
@@ -244,7 +111,7 @@ void World::resolveCollisions(Robot& robot) {
         // 只有比脚高的「墙」才把机器人推出 XZ。跳够高越过矮箱即源于此。
         if (obstacles_[i].center.y + obstacles_[i].half.y <= footY) continue;
         float rx = robot.x(), rz = robot.z();
-        if (resolveSphereOBB2D(rx, rz, SimConfig::kRobotRadius, obstacles_[i])) {
+        if (Obb2D::resolveSphere(rx, rz, SimConfig::kRobotRadius, obstacles_[i])) {
             robot.setX(rx);
             robot.setZ(rz);
         }
@@ -261,13 +128,8 @@ float World::supportHeight(const Robot& robot) const {
         const Obstacle& ob = obstacles_[i];
         const float top = ob.center.y + ob.half.y;
         if (top > footY) continue;  // 比脚高的是墙，不是可站的地板
-        // 脚下 XZ 圆与盒截面是否重叠（与碰撞同用最近点判定，先旋进盒局部系）
-        float lx, lz;
-        worldToLocal2D(robot.x() - ob.center.x, robot.z() - ob.center.z, ob.yaw, lx, lz);
-        const float cx = std::clamp(lx, -ob.half.x, ob.half.x);
-        const float cz = std::clamp(lz, -ob.half.z, ob.half.z);
-        const float dx = lx - cx, dz = lz - cz;
-        if (dx * dx + dz * dz <= r2 && top > support) {
+        // 脚下 XZ 圆与盒截面是否重叠（与碰撞同用最近点判定，见 Obb2D::distanceSqXZ）
+        if (Obb2D::distanceSqXZ(ob, robot.x(), robot.z()) <= r2 && top > support) {
             support = top;
         }
     }
@@ -276,8 +138,8 @@ float World::supportHeight(const Robot& robot) const {
 
 
 float World::queryRange(const Robot& robot, float maxRange) const {
-    const float forwardX = std::cos(robot.theta());
-    const float forwardZ = -std::sin(robot.theta());
+    float forwardX, forwardZ;
+    Obb2D::forwardOf(robot.theta(), forwardX, forwardZ);
     // 射线从身体前端中心出发
     const float ox = robot.x() + forwardX * (Robot::kBodyLength * 0.5f);
     const float oz = robot.z() + forwardZ * (Robot::kBodyLength * 0.5f);
@@ -286,7 +148,7 @@ float World::queryRange(const Robot& robot, float maxRange) const {
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
         if (i == robot.carriedIndex()) continue;  // 跳过该机器人搬运的物体
         float t;
-        if (rayOBB2D(ox, oz, forwardX, forwardZ, obstacles_[i], t) && t < nearest) {
+        if (Obb2D::rayHit(ox, oz, forwardX, forwardZ, obstacles_[i], t) && t < nearest) {
             nearest = t;
         }
     }
@@ -303,7 +165,7 @@ bool World::isObstacleCovered(int idx) const {
         // 贴合判定：other 的底面落在 base 顶面的 kGroundSnapTol 容差带内，
         // 且两者 XZ 有重叠——即 other 搭在 base 上面（哪怕只搭一个边角，
         // 偏保守：宁可多拒绝拾取，也不悄悄抽掉下层留个悬空的上层）。
-        if (std::abs(bottom - top) <= Robot::kGroundSnapTol && obbOverlapXZ(base, other)) {
+        if (std::abs(bottom - top) <= Robot::kGroundSnapTol && Obb2D::overlapXZ(base, other)) {
             return true;
         }
     }
@@ -315,8 +177,8 @@ bool World::pick(Robot& robot) {
         return false;  // 该机器人已搬运
     }
 
-    const float forwardX = std::cos(robot.theta());
-    const float forwardZ = -std::sin(robot.theta());
+    float forwardX, forwardZ;
+    Obb2D::forwardOf(robot.theta(), forwardX, forwardZ);
     const float ox = robot.x() + forwardX * (Robot::kBodyLength * 0.5f);
     const float oz = robot.z() + forwardZ * (Robot::kBodyLength * 0.5f);
 
@@ -325,15 +187,8 @@ bool World::pick(Robot& robot) {
     float bestDist = kPickRange;
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
         const auto& ob = obstacles_[i];
-        // 计算 OBB 表面最近点到机器人前端的距离：旋进盒局部系按轴对齐解算，
-        // 旋转保距故局部系里算出的距离即世界系距离。
-        float lox, loz;
-        worldToLocal2D(ox - ob.center.x, oz - ob.center.z, ob.yaw, lox, loz);
-        const float closestX = std::clamp(lox, -ob.half.x, ob.half.x);
-        const float closestZ = std::clamp(loz, -ob.half.z, ob.half.z);
-        const float dx = closestX - lox;
-        const float dz = closestZ - loz;
-        const float dist = std::sqrt(dx * dx + dz * dz);
+        // 机器人前端到 OBB 表面最近点的距离（解算见 Obb2D::distanceSqXZ）
+        const float dist = std::sqrt(Obb2D::distanceSqXZ(ob, ox, oz));
         if (dist < bestDist) {
             // 还要判断在前方（点积 > 0）
             const float toCenterX = ob.center.x - ox;
@@ -369,8 +224,8 @@ bool World::place(Robot& robot) {
 
     // f = 机器人前方，也恰是待放盒的局部 +X（下面 candidate.yaw=robot.theta()），
     // 故是 SAT 候选轴。
-    const float fx = std::cos(robot.theta());
-    const float fz = -std::sin(robot.theta());
+    float fx, fz;
+    Obb2D::forwardOf(robot.theta(), fx, fz);
     // 松手瞬间背着的物体底面所在高度。用机器人姿态推算，而不是读 candidate.center.y——
     // pick 与 place 可能落在同一帧的事件批里，那时 updateCarried 还没跑过。
     const float releaseBottom = robot.y() + Robot::kBodyY + Robot::kBodyHeight + kCarryLift;
@@ -397,7 +252,7 @@ bool World::place(Robot& robot) {
             if (i == idx) continue;
             const Obstacle& oth = obstacles_[i];
             if (!wallVerticalConflict(oth, releaseBottom, supportTop)) continue;
-            if (!obbOverlapXZ(candidate, oth)) continue;
+            if (!Obb2D::overlapXZ(candidate, oth)) continue;
             push = std::max(push, nearSidePush(candidate, oth, fx, fz));
         }
         if (push <= 0.0f) {
@@ -444,7 +299,7 @@ bool World::place(Robot& robot) {
         const Obstacle& oth = obstacles_[i];
         const float top = oth.center.y + oth.half.y;
         if (top > supportTop) continue;  // 比脚下高的是墙（Phase A 已处理），不是支撑
-        if (!obbOverlapXZ(candidate, oth)) continue;
+        if (!Obb2D::overlapXZ(candidate, oth)) continue;
         if (top > bottom) bottom = top;
     }
     candidate.center.y = bottom + candidate.half.y;
@@ -478,8 +333,6 @@ void World::updateCarried(const Robot& robot) {
     // 朝向跟随机体：机器人转向时背着的箱子一起转（可见 + 放置后保留）。
     ob.yaw = robot.theta();
 }
-
-bool World::boxesOverlapXZ(const Obstacle& a, const Obstacle& b) { return obbOverlapXZ(a, b); }
 
 void World::applyScene(const SceneState& scene) {
     obstacles_ = scene.obstacles;

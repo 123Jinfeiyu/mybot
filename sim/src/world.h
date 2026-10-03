@@ -12,7 +12,7 @@
 // mass 用于搬运时的减速计算：由场景文件给定，缺 mass 的行按体积×密度补
 // （SimConfig::kDefaultDensity）。
 // 带 yaw 后盒是有向盒（OBB）：碰撞/测距/拾取/支撑面都先在盒局部系里按轴对齐
-// 解算、再旋回世界系（见 world.cpp 的 worldToLocal2D/localToWorld2D）。
+// 解算、再旋回世界系（见 obb2d.h 的 Obb2D::worldToLocal/localToWorld）。
 struct Obstacle {
     glm::vec3 center;
     glm::vec3 half;
@@ -96,10 +96,6 @@ public:
     // 背负物体底面相对身体顶部再抬高的量（米）：避免挡住摄像机，同时是释放高度
     // releaseBottom 的组成部分（place 与 updateCarried 共用，单一事实源）。
     static constexpr float kCarryLift = 0.10f;
-
-    // 两个 OBB 在 XZ 平面是否重叠（2D SAT，贴合不算重叠）。纯几何、无状态，供测试
-    // 直调；place() 的放置解算内部也用它。
-    static bool boxesOverlapXZ(const Obstacle& a, const Obstacle& b);
 
     // 默认障碍场景：蜘蛛从原点出发沿 +X 前进，障碍散布在前进路线两侧。
     // 与 sim/scenes/default.scene 逐字段同值（含每箱手调的质量，非统一 体积×密度），

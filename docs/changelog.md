@@ -9,6 +9,26 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 仿真器内部结构治理（行为保持）
+
+- **2D 有向盒几何抽成 `sim/src/obb2d.{h,cpp}`（入 simcore，可 headless 单测）**：原先
+  「旋进盒局部系 → 钳制最近点 → 算距离」在 `resolveSphereOBB2D` / `supportHeight` /
+  `pick` 三处各抄一遍，「`(cos θ, -sin θ)` 前方向量」在 `queryRange` / `pick` / `place`
+  三处各抄一遍——六份手抄同一条朝向约定（盒局部 +X 在世界系的方向与 `Robot::theta`
+  同号），任一处符号写错都不会报错，只会表现为「测距偏一点」「拾取够不到」这类难查的
+  几何偏差。现在这条约定只有一个定义点：`Obb2D::forwardOf` / `worldToLocal` /
+  `localToWorld` / `clampToBox` / `distanceSqXZ` / `projRadius` / `overlapXZ` /
+  `rayHit` / `resolveSphere`。函数体逐字搬迁、算法未改；`world.cpp` 634 → 487 行。
+  设计约定原样保留：绕 Y 旋转是等距变换，**只旋位移增量、不旋绝对坐标**。
+- **`World::boxesOverlapXZ` 删除**：它原本只是「供测试直调」而开的一扇后门（`place()`
+  内部另有一份 `obbOverlapXZ`）。几何模块公开后，`sim/tests/main.cpp` 的九处断言直接调
+  `Obb2D::overlapXZ`，同一函数不再有两扇门（两扇门 = 改了这边忘了那边）。
+- 命名去掉 `obb` / `2D` 前缀，由 namespace 承载（与既有 `SimPaths` / `SimConfig` 同款），
+  对照表写在 `obb2d.h` 顶部。对使用者意味着什么：无（`sim/` 内部结构，线上协议、三条
+  socket 缺省路径、动作码表均未动）。`robot.cpp:17-18/31-32` 那两处同一条前向约定
+  **刻意未并入**：它们在速度积分器里、乘的是 `v_*dt` 而非单位方向探测，为两行把
+  `Robot` 耦合到几何模块不划算——记下这处出界，便于日后判断是否要收。
+
 ### 2026-10-04 Rust agent 残留结构治理（行为保持）
 
 - **`config/summarize.rs` 补密钥泄漏守门与分支单测**：`--check-config` 的摘要此前只被

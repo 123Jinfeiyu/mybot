@@ -41,6 +41,7 @@ target_include_directories(glad PUBLIC external/glad/include)
 # ---- 核心层：不 include 任何 GL 头，只依赖 glm 头与 POSIX socket ----
 add_library(simcore STATIC
     src/robot.cpp
+    src/obb2d.cpp
     src/world.cpp
     src/sim_engine.cpp
     src/sim_paths.cpp

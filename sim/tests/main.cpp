@@ -27,6 +27,7 @@
 #include "action_table.h"
 #include "bridge.h"
 #include "capture.h"
+#include "obb2d.h"
 #include "request_bridge.h"
 #include "robot.h"
 #include "sensor.h"
@@ -378,7 +379,7 @@ void testYawCarry() {
     check(near(world.obstacles()[0].yaw, r.theta(), 1e-6f), "place 后保留放置瞬间的朝向");
 }
 
-// ---- World：盒-盒 OBB 重叠（2D SAT） ----
+// ---- Obb2D：盒-盒 OBB 重叠（2D SAT） ----
 
 void testObbOverlap() {
     // 两个轴对齐方盒：中心距 0.5 < 半宽和 0.8 → 重叠
@@ -386,21 +387,21 @@ void testObbOverlap() {
     const Obstacle bFar{{0.9f, 0.2f, 0.0f}, {0.4f, 0.2f, 0.4f}, {1, 1, 1}, 1.0f, 0.0f};
     const Obstacle bHit{{0.5f, 0.2f, 0.0f}, {0.4f, 0.2f, 0.4f}, {1, 1, 1}, 1.0f, 0.0f};
     const Obstacle bTouch{{0.8f, 0.2f, 0.0f}, {0.4f, 0.2f, 0.4f}, {1, 1, 1}, 1.0f, 0.0f};
-    check(World::boxesOverlapXZ(a, bHit), "轴对齐：相交 → 重叠");
-    check(!World::boxesOverlapXZ(a, bTouch), "轴对齐：恰好贴合（距离=半径和）→ 不算重叠");
-    check(!World::boxesOverlapXZ(a, bFar), "轴对齐：分离 → 不重叠");
+    check(Obb2D::overlapXZ(a, bHit), "轴对齐：相交 → 重叠");
+    check(!Obb2D::overlapXZ(a, bTouch), "轴对齐：恰好贴合（距离=半径和）→ 不算重叠");
+    check(!Obb2D::overlapXZ(a, bFar), "轴对齐：分离 → 不重叠");
 
     // 45° 斜置判别：两盒的**轴对齐包围盒**相交，但 OBB 实际分离（SAT 能分辨）
     const Obstacle sqA{{0.0f, 0.2f, 0.0f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f, 0.0f};
     const Obstacle sqB{{0.2f, 0.2f, -0.2f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f,
                        glm::radians(45.0f)};
-    check(!World::boxesOverlapXZ(sqA, sqB), "45° 斜置：AABB 相交但 OBB 实际分离");
+    check(!Obb2D::overlapXZ(sqA, sqB), "45° 斜置：AABB 相交但 OBB 实际分离");
 
     // 同两盒改成 0° 摆放：中心距 0.2 < 半径和 0.2？——相等即贴合，不算重叠
     const Obstacle sqB0{{0.2f, 0.2f, -0.2f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f, 0.0f};
-    check(!World::boxesOverlapXZ(sqA, sqB0), "轴对齐 0°：投影恰好贴合不算重叠");
+    check(!Obb2D::overlapXZ(sqA, sqB0), "轴对齐 0°：投影恰好贴合不算重叠");
     const Obstacle sqB0in{{0.15f, 0.2f, -0.15f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f, 0.0f};
-    check(World::boxesOverlapXZ(sqA, sqB0in), "轴对齐 0°：投影相交 → 重叠");
+    check(Obb2D::overlapXZ(sqA, sqB0in), "轴对齐 0°：投影相交 → 重叠");
 }
 
 // ---- World：place 放置解算（水平推开 + 落地/叠放） ----
@@ -414,7 +415,7 @@ void checkNoOverlapPairs(const World& w) {
             const bool vOverlap = (a.center.y - a.half.y) < (b.center.y + b.half.y) &&
                                   (b.center.y - b.half.y) < (a.center.y + a.half.y);
             if (vOverlap) {
-                check(!World::boxesOverlapXZ(a, b), "不变量：竖直相交的盒对 XZ 不重叠");
+                check(!Obb2D::overlapXZ(a, b), "不变量：竖直相交的盒对 XZ 不重叠");
             }
         }
     }
@@ -448,7 +449,7 @@ void testPlaceResolve() {
         const Obstacle& wall = world.obstacles()[1];
         check(ob.center.x < wall.center.x, "占位推出：只往机器人近侧推（不穿到阻挡箱对面）");
         check(near(ob.center.x, 0.3f, 2e-3f), "占位推出：贴合（0.7 − 半径和 0.4 − eps）");
-        check(!World::boxesOverlapXZ(ob, wall), "占位推出：推后两盒不重叠");
+        check(!Obb2D::overlapXZ(ob, wall), "占位推出：推后两盒不重叠");
         check(near(ob.center.y, 0.2f, 1e-6f), "占位推出：仍落地（下方无支撑）");
         checkNoOverlapPairs(world);
     }
@@ -465,7 +466,7 @@ void testPlaceResolve() {
         const Obstacle& ob = world.obstacles()[0];
         const Obstacle& wall = world.obstacles()[1];
         check(ob.center.x < wall.center.x, "深嵌：仍推回近侧");
-        check(!World::boxesOverlapXZ(ob, wall), "深嵌：推后不重叠");
+        check(!Obb2D::overlapXZ(ob, wall), "深嵌：推后不重叠");
         checkNoOverlapPairs(world);
     }
 }
