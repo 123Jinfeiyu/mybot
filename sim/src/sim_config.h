@@ -48,7 +48,9 @@ constexpr std::size_t kMaxSceneLine = 512;
 // Lua 侧（modules/Sim.lua 的 kDefaultSock / kSensorDefaultSock）也硬编码了同样
 // 的缺省路径——两套构建系统之间不做代码生成（跨 build 生成脆弱，同阶段1 的取舍），
 // 改由 sim_tests 的 testSharedConstants 运行期读 Sim.lua 交叉校验字面量一致，
-// 任一侧漏改即红。Camera.lua 的拍照路径只取自 env、无硬编码缺省，故不参与校验。
+// 任一侧漏改即红；同一套比对另有零编译依赖的 scripts/check_sim_contract.py
+// 挂在主干守门上（sim/ 不在 CI 构建范围内，光靠 sim_tests 那份挡不住）。
+// Camera.lua 的拍照路径只取自 env、无硬编码缺省，故不参与跨语言比对。
 inline constexpr const char* kDefaultSocketPath = "/tmp/mybot-sim.sock";
 inline constexpr const char* kDefaultCaptureSocketPath = "/tmp/mybot-sim-capture.sock";
 inline constexpr const char* kDefaultSensorSocketPath = "/tmp/mybot-sim-sensor.sock";

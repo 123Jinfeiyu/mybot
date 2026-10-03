@@ -38,8 +38,9 @@ bash scripts/build_sim.sh        # 构建 + 自动跑 simcore 单测（ctest）
 侧的单一事实源，两侧同读。缺省路径的 C++ 侧单一事实源是 `sim/src/sim_config.h`
 的 `kDefault*SocketPath`（main.cpp 不再各写字面量）；Lua 侧 `Sim.lua` 也硬编码了
 命令/测距两条缺省路径——两套构建系统间不做代码生成，改由 `sim_tests` 的
-`testSharedConstants` 运行期读 `Sim.lua` 交叉校验字面量一致，任一侧漏改即红
-（拍照路径 Camera.lua 只取自 env、无硬编码缺省，不参与校验）。
+`testSharedConstants` 与主干守门的 `scripts/check_sim_contract.py`（零编译依赖的
+同款比对）交叉校验字面量一致，任一侧漏改即红
+（拍照路径 Camera.lua 只取自 env、无硬编码缺省，不参与比对）。
 
 | 桥 | 环境变量 | 缺省路径 | 语义 |
 | --- | --- | --- | --- |
@@ -93,11 +94,15 @@ save                # 把当前场景写回配置的场景文件（见「场景�
 与表一致——加动作只需在表里追加一行，漏改 Lua 会被测试挡下（数字码是对外契约，
 `.mt`/`.sql`/本文都用它，**只增不改**）。
 
-这道校验**同时**由 `scripts/check_sim_action_table.py`（零编译依赖的独立实现，
+这道校验**同时**由 `scripts/check_sim_contract.py`（零编译依赖的独立实现，
 同一套比对逻辑）接入 `test/run_all_selftest.sh`（主干守门，push 前必跑）强制执行：
 `sim/` 不在任何 CI job 的构建范围内（见 `sim/CMakeLists.txt` 顶部注释），单靠
 `sim/tests` 的那份只有开发者手动跑 `bash scripts/build_sim.sh` 才会触发，不能
 指望每次改动都被自动挡下；两份校验各自独立实现（C++/Python），互为印证。
+同一个脚本还钉住另外两组手写双份的契约：三条缺省 socket 路径（见「三条 socket」）
+与一问一答桥的请求关键字（`sensor.cpp` 的 `range` / `capture.cpp` 的 `capture`
+↔ `Sim.lua` 的 `range()`、`src/agentimage.cpp`、`Camera.lua` 的 `capture_live()`
+各自硬编码的 `"<word>\n"`）。
 
 漏改还有第二道、且是编译期的防线：新增一个 `SimCommand` / `SimEvent::Type` 枚举值后，
 若忘了在 `sim_engine.cpp` 的 `commandToInput` / `applyEvent` 里补对应 case，动作会静默

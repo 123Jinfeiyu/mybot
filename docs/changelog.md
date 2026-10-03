@@ -9,6 +9,18 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 跨源一致性：仿真器契约的零编译守门从「动作码表」扩到三组
+
+- **改了什么**：`scripts/check_sim_action_table.py` 更名为 `scripts/check_sim_contract.py`，
+  在原有的动作码表之外再钉住两组手写双份的契约：① 三条 AF_UNIX 缺省 socket 路径
+  （`sim/src/sim_config.h` ↔ `modules/Sim.lua`，含「三条互不相同」「均为 /tmp 下绝对路径」
+  两条自检）；② 一问一答桥的请求关键字（`sensor.cpp` 的 `range`、`capture.cpp` 的
+  `capture` ↔ `Sim.lua` 的 `range()`、`src/agentimage.cpp`、`Camera.lua` 的 `capture_live()`）。
+- **为什么下沉到零编译脚本**：这三组在 `sim/tests/main.cpp` 里本来就有运行期交叉校验，但
+  `sim/` 不在任何 CI job 的构建范围内，那份只有开发者手动 `build_sim.sh` 时才会触发。
+- **对使用者意味着什么**：线协议字节、三条缺省路径、动作码 0–10 全不变（纯守门扩容）；
+  此后漏改一侧在 push 前就红，而不是等到仿真器起来才发现驱动连不上或请求被拒。
+
 ### 2026-10-04 跨源一致性：MCP 线协议字段名收敛到单点 + 孪生守门
 
 - **改了什么**：C++ 侧 `mcpbackend.cpp`/`mcptransport.cpp` 散着的 `"success"`/`"data"`/
