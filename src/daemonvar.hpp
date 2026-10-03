@@ -1,5 +1,8 @@
 #pragma once
 /* daemonvar.hpp —— 守护线程硬件变量（移植 bot4cj/src/HV/Daemon.cj）
+ * 本头的范围是**共享槽布局 + 停机协议位 + 线程机 + 守护运行器**（实现见
+ * daemonvar.cpp）。守护硬件变量 MtVars_Daemon 的声明在 daemonconf.hpp——它的
+ * 四个成员函数实现全在 daemonconf.cpp，声明跟着实现走。
  * 共享槽 daemon_slot_t 布局（aarch64/x86_64 与 modules/lib/pthread.lua 严格一致）：
  *   offset 0   char   mutex[64]      pthread_mutex_t（aarch64=48B / x86_64=40B，预留 64）
  *   offset 64  int32  count          已 publish 次数
@@ -42,13 +45,10 @@
 #include <string>
 #include <vector>
 
-#include "hardware.hpp"
+#include "json.hpp"		/* DaemonRunner::readSample 的返回类型（不再需要整个
+				 * hardware 域：MtVars_Daemon 已迁 daemonconf.hpp） */
 
 namespace bot {
-
-/* 守护域门面（daemon_registry.hpp）：Factory 经它登记新守护线程，故此处只需
- * 前向声明（形参为引用，无需完整类型）。 */
-class DaemonRegistry;
 
 constexpr int32_t SLOT_COUNT_OFF = 64;
 constexpr int32_t SLOT_NVALS_OFF = 68;
@@ -200,31 +200,6 @@ public:
 	/* 槽是否仍在位（2.4：原裸指针 slot() 入口收窄为布尔，避免调用方
 	 * 拿到绕过所有权模型的裸指针） */
 	bool slotAlive() const { return std::atomic_load(&slot_) != nullptr; }
-};
-
-/* ---- 守护硬件变量（R-3：真实子类，持 runner 的 shared_ptr）----
- * build/destroy 的参数（chunk 路径/配置串/interval）在 Factory 时定型为成员。 */
-class MtVars_Daemon : public MatrixVars_Hardware {
-	std::shared_ptr<DaemonRunner> runner_;
-	std::string name_;
-	std::string chunkPath_;
-	std::string configStr_;
-	int64_t intervalMs_;
-
-	explicit MtVars_Daemon(std::shared_ptr<DaemonRunner> runner, std::string name,
-			std::string chunkPath, std::string configStr, int64_t intervalMs)
-		: runner_(std::move(runner)), name_(std::move(name)),
-		  chunkPath_(std::move(chunkPath)), configStr_(std::move(configStr)),
-		  intervalMs_(intervalMs) {}
-
-public:
-	Json play(const Json&) override;
-	const char* kindName() const override { return "daemon"; }
-	void build() override;
-	void destroy() override;
-
-	static std::unique_ptr<MtVars_Daemon> Factory(const mt::MatrixObject& defs, std::int64_t i,
-			DaemonRegistry& registry);
 };
 
 } // namespace bot

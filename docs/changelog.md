@@ -9,6 +9,15 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 C++ 残留结构治理（行为保持）
+
+- **`MtVars_Daemon` 的类声明迁到 `daemonconf.hpp`**：它的 `Factory`/`play`/`build`/`destroy`
+  四个成员函数实现本就全在 `daemonconf.cpp`，声明却留在 `daemonvar.hpp`。迁移后
+  `daemonvar.hpp` 的范围收窄成「共享槽布局 + 停机协议位 + 线程机 + 守护运行器」，对
+  hardware 域的依赖也从整个 `hardware.hpp` 缩到只需 `json.hpp`（`readSample` 的返回类型）；
+  `hw_factory.cpp` 不再为自己用不到的槽布局与线程机引 `daemonvar.hpp`。
+  对使用者意味着什么：无（纯声明归属与包含关系调整）。
+
 ### 2026-10-04 仿真器默认场景：内置回落与播种模板对齐，并接进零编译守门
 
 - **改了什么**：`World::defaultScene()`（无场景文件时的内置回落）此前按 体积×`kDefaultDensity`(800)

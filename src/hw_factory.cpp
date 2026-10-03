@@ -6,8 +6,8 @@
 #include "daemonconf.hpp"
 #include "hw_factory.hpp"
 
-/* 装配 Daemon/Lua/标量变量，显式引入对应实现头 */
-#include "daemonvar.hpp"
+/* 装配 Lua/标量变量，显式引入对应实现头（Daemon 的 MtVars_Daemon 声明已在
+ * daemonconf.hpp，本 TU 不再直接点名 daemonvar.hpp 里的任何东西） */
 #include "luavar.hpp"
 
 #include "flowcolumn.hpp"
