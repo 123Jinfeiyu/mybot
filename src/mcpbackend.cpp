@@ -86,15 +86,15 @@ Clock::time_point McpBackend::idleDeadline(int idleTimeoutSec) const {
 
 Json McpBackend::okReply(Json data) const {
 	Json o = JsonObject();
-	o.put("success", JsonBool(true));
-	o.put("data", std::move(data));
+	o.put(mcp_protocol::kSuccess, JsonBool(true));
+	o.put(mcp_protocol::kData, std::move(data));
 	return o;
 }
 
 Json McpBackend::errReply(const std::string& msg) const {
 	Json o = JsonObject();
-	o.put("success", JsonBool(false));
-	o.put("error", JsonString(msg));
+	o.put(mcp_protocol::kSuccess, JsonBool(false));
+	o.put(mcp_protocol::kError, JsonString(msg));
 	return o;
 }
 
@@ -128,7 +128,7 @@ Json McpBackend::routeToolList() {
 		arr.add(o);
 	}
 	Json data = JsonObject();
-	data.put("tools", arr);
+	data.put(mcp_protocol::kTools, arr);
 	return okReply(std::move(data));
 }
 

@@ -256,8 +256,8 @@ impl Bridge {
         };
         let mut extra = Map::new();
         let request = serde_json::json!({
-            "name": name,
-            "arguments": arguments,
+            protocol::NAME_FIELD: name,
+            protocol::ARGUMENTS_FIELD: arguments,
         });
         extra.extend(request.as_object().cloned().unwrap_or_default());
         let resp = self.request(protocol::ROUTE_TOOL_CALL, extra).await?;
@@ -361,13 +361,13 @@ pub fn dynamic_tool(spec: ToolSpec, bridge: &Arc<Bridge>) -> DynamicTool {
 
 /// 从 `{"success":..,"data":..,"error":..}` 里取判定与字段。
 pub fn resp_ok(resp: &Value) -> bool {
-    resp.get("success")
+    resp.get(protocol::SUCCESS_FIELD)
         .and_then(Value::as_bool)
         .unwrap_or(false)
 }
 
 pub fn resp_error(resp: &Value) -> String {
-    resp.get("error")
+    resp.get(protocol::ERROR_FIELD)
         .and_then(Value::as_str)
         .unwrap_or("后端返回未知错误")
         .to_string()

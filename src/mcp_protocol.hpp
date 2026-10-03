@@ -1,7 +1,9 @@
 #pragma once
 /* mcp_protocol.hpp —— 跨进程 MCP JSON 协议字段的 C++ 单一命名表。
  * 线帧仍由 mcptransport 负责；本文件只定义路由与业务载荷字段，避免路由实现
- * 和工具结果序列化各自散落字符串。Rust 对应 agent/src/protocol.rs。
+ * 和工具结果序列化各自散落字符串。Rust 对应 agent/src/protocol.rs，两侧名单由
+ * test/cpp/test_mcptransport.cpp 的 mcpbackend_protocol_wire_names_match_rust_twin
+ * 互钉（含「生产 TU 不得退回裸字面量」），改一侧必须同步另一侧。
  */
 
 namespace bot::agent::mcp_protocol {
@@ -11,6 +13,7 @@ inline constexpr const char* kToolList = "tool.list";
 inline constexpr const char* kToolCall = "tool.call";
 inline constexpr const char* kContextGet = "context.get";
 inline constexpr const char* kAuth = "auth";
+inline constexpr const char* kToken = "token";
 
 inline constexpr const char* kSuccess = "success";
 inline constexpr const char* kData = "data";

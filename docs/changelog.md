@@ -9,6 +9,19 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 跨源一致性：MCP 线协议字段名收敛到单点 + 孪生守门
+
+- **改了什么**：C++ 侧 `mcpbackend.cpp`/`mcptransport.cpp` 散着的 `"success"`/`"data"`/
+  `"error"`/`"tools"`/`"_route"`/`"auth"`/`"token"` 收进 `src/mcp_protocol.hpp`（补 `kToken`）；
+  Rust 侧 `frame.rs`/`bridge.rs` 散着的 `"token"`/`"name"`/`"arguments"`/`"success"`/`"error"`
+  收进 `agent/src/protocol.rs`（补 5 个常量）。
+- **新守门**：一条跨语言孪生用例比对两侧的字段**名单**，并反向禁止三个生产 TU 再出现裸协议
+  字面量——否则常量表只是并存的第二轨。唯一合法的单侧名是 `ping`（只有后端应答，agent 不发）。
+- **对使用者意味着什么**：线协议字节不变（纯命名收敛）。此前字段名漂移**两侧都不报错**：serde
+  对多余键静默忽略、对缺失键取 default，回执会整块退化成空值而全绿。
+- **附带清理**：删掉测试里三个上一轮写了却没接上的 `[[maybe_unused]]` 抽取助手（已被行为版的
+  七字段用例取代）。
+
 ### 2026-10-04 修复：连不上仿真 socket 时段错误打死宿主进程
 
 - **改了什么**：`modules/Sim.lua` 与 `modules/lib/unix_socket_ffi.lua` 原先把 glibc 的 `errno`

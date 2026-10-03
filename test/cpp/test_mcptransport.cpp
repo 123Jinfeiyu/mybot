@@ -226,13 +226,13 @@ TH_TEST(mcpbackend_idle_deadline_composes_wall_clock_and_idle_budget) {
 }
 
 /* ==================== 跨语言契约钉子（2026-09-25）====================
- * 帧上限/帧头与 ToolResult 七字段是 C++ 后端与 Rust agent 各持一份的「同一契约
- * 的孪生」（两侧注释各自声明"改动必须双侧同步"），但同步此前只靠人记——漂移
- * 没有本侧运行期症状（Rust 发一个自认合法的 9 MiB 帧会被后端拒收；新增字段在
- * Rust 侧静默丢失），只能像 daemon_defaults_match_lua_source（test_robot.cpp）
- * 那样读源比对钉死。七字段的真相链：结构体成员（agenttools.hpp）→ JSON 键
- * （mcpbackend.cpp 的序列化点）→ Rust 字段（bridge.rs），camel↔snake 逐字段
- * 对应——下面手写的清单就是**规约本体**，任何一侧漂移都以它为基准红。 */
+ * 帧上限/帧头、ToolResult 七字段与线协议字段名表是 C++ 后端与 Rust agent 各持
+ * 一份的「同一契约的孪生」（两侧注释各自声明"改动必须双侧同步"），但同步此前
+ * 只靠人记——漂移没有本侧运行期症状（Rust 发一个自认合法的 9 MiB 帧会被后端
+ * 拒收；字段改名后 serde 静默取 default），只能像 daemon_defaults_match_lua_source
+ * （test_robot.cpp）那样读源比对钉死。三条钉子各管一段：帧常量读 frame.rs 的
+ * 声明求值、七字段跑真的回执比字段集、字段名表比对 mcp_protocol.hpp 与
+ * protocol.rs 的**名单**（并反过来禁止生产 TU 退回裸字面量）。 */
 
 namespace {
 
@@ -305,77 +305,65 @@ std::string rustConstRhs(const std::string& src, const std::string& decl) {
 	return src.substr(eq + 1, semi - eq - 1);
 }
 
-/* 块内逐行抽取「行首 \tstd::string / \tbool 开头的成员名」——agenttools.hpp 的
- * AgentToolResult 数据成员形态（构造函数行与初始化列表行不匹配该形态） */
-[[maybe_unused]] std::vector<std::string> cppMemberNames(const std::string& src,
-		std::size_t begin, std::size_t end) {
-	std::vector<std::string> names;
-	std::size_t pos = begin;
-	while (pos < end) {
-		const std::size_t eol = src.find('\n', pos);
-		const std::size_t lineEnd = (eol == std::string::npos || eol > end) ? end : eol;
-		const std::string line = src.substr(pos, lineEnd - pos);
-		for (const char* type : {"std::string ", "bool "}) {
-			const std::string prefix = std::string("\t") + type;
-			if (line.compare(0, prefix.size(), prefix) == 0) {
-				std::size_t n = prefix.size();
-				while (n < line.size() && (isalnum(static_cast<unsigned char>(line[n]))
-						|| line[n] == '_')) { ++n; }
-				names.push_back(line.substr(prefix.size(), n - prefix.size()));
-			}
-		}
-		if (eol == std::string::npos) { break; }
-		pos = eol + 1;
+/* 抽取 src/mcp_protocol.hpp 的全部线名——形态是
+ * `inline constexpr const char* kFoo = "bar";`，取右值字符串。 */
+std::set<std::string> cppWireNames(const std::string& src) {
+	std::set<std::string> names;
+	const std::string decl = "inline constexpr const char* ";
+	std::size_t at = 0;
+	while ((at = src.find(decl, at)) != std::string::npos) {
+		const std::size_t eq = src.find('=', at + decl.size());
+		if (eq == std::string::npos) { break; }
+		const std::size_t q1 = src.find('"', eq);
+		if (q1 == std::string::npos) { break; }
+		const std::size_t q2 = src.find('"', q1 + 1);
+		if (q2 == std::string::npos) { break; }
+		names.insert(src.substr(q1 + 1, q2 - q1 - 1));
+		at = q2;
 	}
 	return names;
 }
 
-/* 块内逐行抽取 data.put("KEY" 的键名——mcpbackend.cpp 序列化点的形态 */
-[[maybe_unused]] std::vector<std::string> jsonPutKeys(const std::string& src,
-		std::size_t begin, std::size_t end) {
-	std::vector<std::string> keys;
-	const std::string pat = "data.put(\"";
-	std::size_t at = begin;
-	while ((at = src.find(pat, at)) != std::string::npos && at < end) {
-		const std::size_t close = src.find('"', at + pat.size());
-		if (close == std::string::npos || close > end) { break; }
-		keys.push_back(src.substr(at + pat.size(), close - at - pat.size()));
-		at = close;
-	}
-	return keys;
-}
-
-/* 块内逐行抽取 "pub <name>:" 的字段名——bridge.rs 的 Rust struct 形态
- * （字段行带缩进，先跳行首空白再匹配） */
-[[maybe_unused]] std::vector<std::string> rustFieldNames(const std::string& src,
-		std::size_t begin, std::size_t end) {
-	std::vector<std::string> names;
-	std::size_t pos = begin;
-	while (pos < end) {
+/* 抽取 agent/src/protocol.rs 的全部线名：`pub const X: &str = "v";` 的字面值，
+ * 加上每个 struct 字段的**线上名**——有 `#[serde(rename = "v")]` 取 v，否则取
+ * 字段名本身（serde 缺省不改名）。逐行状态机：属性行（`#[`）保留待定 rename，
+ * 其它非字段行清空它，故 `#[serde(default)]` 之类不会串味。 */
+std::set<std::string> rustWireNames(const std::string& src) {
+	std::set<std::string> names;
+	const std::string renameAttr = "#[serde(rename = \"";
+	std::string pending;
+	std::size_t pos = 0;
+	while (pos < src.size()) {
 		const std::size_t eol = src.find('\n', pos);
-		const std::size_t lineEnd = (eol == std::string::npos || eol > end) ? end : eol;
-		const std::string line = src.substr(pos, lineEnd - pos);
-		const std::string prefix = "pub ";
-		const std::size_t first = line.find_first_not_of(" \t");
-		if (first != std::string::npos
-				&& line.compare(first, prefix.size(), prefix) == 0) {
-			const std::size_t colon = line.find(':', first + prefix.size());
+		const std::string raw = src.substr(pos,
+			(eol == std::string::npos ? src.size() : eol) - pos);
+		const std::size_t first = raw.find_first_not_of(" \t");
+		const std::string line = (first == std::string::npos) ? std::string() : raw.substr(first);
+		const std::size_t rn = line.find(renameAttr);
+		if (rn != std::string::npos) {
+			const std::size_t q = rn + renameAttr.size();
+			const std::size_t close = line.find('"', q);
+			if (close != std::string::npos) { pending = line.substr(q, close - q); }
+		} else if (line.compare(0, 10, "pub const ") == 0) {
+			const std::size_t q1 = line.find('"');
+			const std::size_t q2 = (q1 == std::string::npos) ? q1 : line.find('"', q1 + 1);
+			if (q1 != std::string::npos && q2 != std::string::npos) {
+				names.insert(line.substr(q1 + 1, q2 - q1 - 1));
+			}
+			pending.clear();
+		} else if (line.compare(0, 4, "pub ") == 0) {
+			const std::size_t colon = line.find(':', 4);
 			if (colon != std::string::npos) {
-				names.push_back(line.substr(first + prefix.size(),
-					colon - first - prefix.size()));
+				names.insert(pending.empty() ? line.substr(4, colon - 4) : pending);
 			}
+			pending.clear();
+		} else if (!line.empty() && line.compare(0, 2, "#[") != 0) {
+			pending.clear();
 		}
 		if (eol == std::string::npos) { break; }
 		pos = eol + 1;
 	}
 	return names;
-}
-
-/* 集合相等（名单顺序不是线格式的一部分；数量与名字是） */
-[[maybe_unused]] bool sameNameSet(const std::vector<std::string>& a, const std::vector<std::string>& b) {
-	if (a.size() != b.size()) { return false; }
-	std::multiset<std::string> sa(a.begin(), a.end()), sb(b.begin(), b.end());
-	return sa == sb;
 }
 
 /* joinNames 不再本地手写：直接用生产单点 bot::joinNames（util_str.hpp，
@@ -426,6 +414,57 @@ TH_TEST(mcpbackend_toolresult_schema_matches_rust_outcome) {
 		for (const auto& item : data->items()) { actual.insert(item.first); }
 	}
 	TH_CHECK_MSG(actual == expected, "tool.call 回执字段集合与跨进程协议不一致");
+}
+
+/* ---- 线协议字段名单点：src/mcp_protocol.hpp ↔ agent/src/protocol.rs ----
+ * 两侧头注互相指认（"Rust 对应 agent/src/protocol.rs"），但字段名此前各写各的：
+ * C++ 侧散着 "success"/"data"/"error"/"tools"/"_route"/"auth"/"token"，Rust 侧散着
+ * "token"/"name"/"arguments"/"success"/"error"（2026-10-04 双双收敛进常量表）。
+ * 字段名漂移**两侧都不报错**——serde 对多余键静默忽略、缺失键取 default，于是
+ * 回执整块退化成空值而全绿。帧上限三常量由上一个用例钉住，这里管字段名。 */
+TH_TEST(mcpbackend_protocol_wire_names_match_rust_twin) {
+	const std::set<std::string> cpp = cppWireNames(readRepoSource("src/mcp_protocol.hpp"));
+	const std::set<std::string> rust = rustWireNames(readRepoSource("agent/src/protocol.rs"));
+
+	/* 抽取自证：形态假设失效（例如改成宏生成）会抽空集合，而「两边都空」照样
+	 * 相等——用横跨三组的名字钉住抽取确实在工作。 */
+	for (const char* probe : {"tool.call", "imageDataUrl", "robotName"}) {
+		TH_CHECK_MSG(cpp.count(probe) == 1,
+			std::string("mcp_protocol.hpp 抽不到 ") + probe + "——抽取形态假设已失效");
+		TH_CHECK_MSG(rust.count(probe) == 1,
+			std::string("protocol.rs 抽不到 ") + probe + "——抽取形态假设已失效");
+	}
+
+	/* 唯一合法的单侧名：ping 只有 C++ 后端应答，Rust agent 从不发它——探活走
+	 * frame.rs 的连接重试，不进线协议。 */
+	static const std::set<std::string> kCppOnly = {"ping"};
+
+	std::vector<std::string> onlyCpp;
+	std::vector<std::string> onlyRust;
+	for (const std::string& n : cpp) {
+		if (rust.count(n) == 0 && kCppOnly.count(n) == 0) { onlyCpp.push_back(n); }
+	}
+	for (const std::string& n : rust) {
+		if (cpp.count(n) == 0) { onlyRust.push_back(n); }
+	}
+	TH_CHECK_MSG(onlyCpp.empty(), "只在 C++ 常量表、Rust protocol.rs 没有的线名："
+		+ bot::joinNames(onlyCpp) + "——改名/删除须两侧同步；新增字段两侧都要声明");
+	TH_CHECK_MSG(onlyRust.empty(), "只在 Rust protocol.rs、C++ 常量表没有的线名："
+		+ bot::joinNames(onlyRust));
+
+	/* 单点自证：三个消费 TU 不得再出现这些字段名的裸字面量，否则常量表成了
+	 * 第二轨（比对绿而线上仍各写各的）。审计行的 "error" 属 agentaudit.cpp 的
+	 * 落盘 schema，不在扫描范围。 */
+	for (const char* tu : {"src/mcpbackend.cpp", "src/context_service.cpp",
+			"src/mcptransport.cpp"}) {
+		const std::string src = readRepoSource(tu);
+		std::vector<std::string> bare;
+		for (const std::string& n : cpp) {
+			if (src.find("\"" + n + "\"") != std::string::npos) { bare.push_back(n); }
+		}
+		TH_CHECK_MSG(bare.empty(), std::string(tu) + " 仍有裸协议字面量："
+			+ bot::joinNames(bare) + "——应改用 mcp_protocol:: 常量");
+	}
 }
 
 /* ---- 首帧共享密钥（MCP-1，2026-09-29 审计 P2-1）----

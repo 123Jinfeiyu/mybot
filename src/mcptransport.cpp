@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "jsonparse.hpp"	/* parseJson */
+#include "mcp_protocol.hpp"	/* kRoute / kAuth / kToken（跨进程字段名单点） */
 #include "util_env.hpp"		/* stopRequested / errnoText */
 #include "util_file.hpp"	/* FdGuard */
 #include "util_str.hpp"		/* safeEquals（凭据比对安全单点） */
@@ -219,11 +220,12 @@ McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string&
 		return McpAuthOutcome::Failed;
 	}
 	if (!req.isObj()) { return McpAuthOutcome::Failed; }
-	const Json* route = req.find("_route");
-	if (route == nullptr || !route->isStr() || route->getValue() != "auth") {
+	const Json* route = req.find(mcp_protocol::kRoute);
+	if (route == nullptr || !route->isStr()
+			|| route->getValue() != mcp_protocol::kAuth) {
 		return McpAuthOutcome::NotAuthFrame;
 	}
-	const Json* token = req.find("token");
+	const Json* token = req.find(mcp_protocol::kToken);
 	if (token == nullptr || !token->isStr()) { return McpAuthOutcome::Failed; }
 	return safeEquals(expected, token->getValue())
 		? McpAuthOutcome::Ok : McpAuthOutcome::Failed;
