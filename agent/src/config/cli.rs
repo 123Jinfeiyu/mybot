@@ -121,3 +121,141 @@ pub fn usage() -> String {
     s += "  --help / --version\n";
     s
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **测试侧独立登记的一份选项名册**：与 `parse_args` 的 match 臂、与 `usage()`
+    /// 的文本是三处事实源。任一处增删而另两处没跟上，下面两条守门就会红——
+    /// 这正是「加了选项忘了写文档」和「文档写了选项却没实现」两类漂移的落点。
+    const VALUE_OPTIONS: &[&str] = &[
+        "--socket",
+        "--llm-config",
+        "--llm-driver",
+        "--llm-var",
+        "--llm-endpoint",
+        "--llm-model",
+        "--llm-timeout",
+        "--llm-max-tokens",
+        "--llm-max-turns",
+        "--llm-task-timeout",
+        "--prompt-file",
+        "--audit-log",
+        "--session-file",
+        "--task",
+    ];
+    const FLAG_OPTIONS: &[&str] = &[
+        "--llm-no-stream",
+        "--resume",
+        "--new-session",
+        "--check-config",
+        "--help",
+        "--version",
+    ];
+    /// 短别名（`--help` / `--version` 的同义写法）。
+    const SHORT_ALIASES: &[&str] = &["-h", "-V"];
+
+    fn all_options() -> Vec<&'static str> {
+        VALUE_OPTIONS
+            .iter()
+            .chain(FLAG_OPTIONS.iter())
+            .copied()
+            .collect()
+    }
+
+    /// 每个带值选项都把值落到**自己那一个字段**上：给每个选项喂一个由选项名
+    /// 派生的独特值，再逐字段核对。这样「`--llm-max-turn` 的臂写成了
+    /// `cli.llm_max_tokens`」这类复制粘贴串线会立刻暴露（两个字段各拿到对方的值）。
+    #[test]
+    fn every_option_lands_in_its_own_field() {
+        let mut argv: Vec<String> = Vec::new();
+        for o in VALUE_OPTIONS {
+            argv.push((*o).to_string());
+            argv.push(o.trim_start_matches('-').to_string());
+        }
+        // 可重复选项再来一次，验证累积而非覆盖
+        argv.push("--prompt-file".into());
+        argv.push("second.md".into());
+        for f in FLAG_OPTIONS {
+            argv.push((*f).to_string());
+        }
+        let cli = parse_args(&argv).unwrap();
+        assert_eq!(cli.socket, "socket");
+        assert_eq!(cli.llm_config, "llm-config");
+        assert_eq!(cli.llm_driver, "llm-driver");
+        assert_eq!(cli.llm_var, "llm-var");
+        assert_eq!(cli.llm_endpoint, "llm-endpoint");
+        assert_eq!(cli.llm_model, "llm-model");
+        assert_eq!(cli.llm_timeout, "llm-timeout");
+        assert_eq!(cli.llm_max_tokens, "llm-max-tokens");
+        assert_eq!(cli.llm_max_turns, "llm-max-turns");
+        assert_eq!(cli.llm_task_timeout, "llm-task-timeout");
+        assert_eq!(cli.prompt_files, vec!["prompt-file", "second.md"]);
+        assert_eq!(cli.audit_log, "audit-log");
+        assert_eq!(cli.session_file, "session-file");
+        assert_eq!(cli.task, "task");
+        assert!(cli.llm_no_stream && cli.resume && cli.new_session && cli.check_config);
+        assert!(cli.help && cli.version);
+    }
+
+    /// 短别名与长选项等价（只置标志、不吃值）。
+    #[test]
+    fn short_aliases_set_the_same_flags() {
+        let h = parse_args(&["-h".to_string()]).unwrap();
+        assert!(h.help && !h.version);
+        let v = parse_args(&["-V".to_string()]).unwrap();
+        assert!(v.version && !v.help);
+        assert_eq!(SHORT_ALIASES.len(), 2);
+    }
+
+    /// 双向守门：名册里的每个选项都要在 `--help` 里出现（漏文档 = 用户发现不了）；
+    /// `--help` 里出现的每个 `--xxx` 也都要被 `parse_args` 认得（文档承诺了却没
+    /// 实现 = 用户照着抄就吃「未知选项」退出码 2）。
+    #[test]
+    fn usage_and_parse_args_agree_on_the_option_set() {
+        let text = usage();
+        let known = all_options();
+        for o in &known {
+            assert!(
+                text.contains(*o),
+                "--help 未记录选项 {o}（补文档，或从名册里删掉）"
+            );
+        }
+        // 用法文本里合法出现、但**不是本进程选项**的三个串：
+        //   --mcp-backend / --mcp-socket 是后端 mybot 自己的命令行（解释 --socket 时引用）；
+        //   --llm-key    是**刻意不存在**的选项——文本明说「没有 --llm-key」，
+        //                因为 argv 对同用户进程可读，密钥不给命令行入口。
+        const NOT_OUR_OPTIONS: &[&str] = &["--mcp-backend", "--mcp-socket", "--llm-key"];
+        for tok in text
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .filter(|t| t.starts_with("--"))
+        {
+            if known.contains(&tok) || NOT_OUR_OPTIONS.contains(&tok) {
+                continue;
+            }
+            panic!("--help 记录了 parse_args 不认的选项 {tok}（实现它，或从用法文本里去掉）");
+        }
+    }
+
+    /// 缺值报错必须**点名是哪个选项**：用户面对一长串 argv，只说「需要一个值」
+    /// 等于没说。逐个带值选项验证。
+    #[test]
+    fn a_missing_value_names_the_option() {
+        for o in VALUE_OPTIONS {
+            let err = parse_args(&[(*o).to_string()]).unwrap_err();
+            assert!(err.contains(*o), "{o} 缺值时报错没点名: {err}");
+            assert!(err.contains("需要一个值"), "{o}: {err}");
+        }
+    }
+
+    /// 未知选项与拼错字段名同罪：报错要把「用 --help」和「配置文件拼错字段名
+    /// 同样会被拒绝」都说到（后者是这条报错最容易漏读的一半）。
+    #[test]
+    fn unknown_option_points_at_help_and_at_config_typos() {
+        let err = parse_args(&["--llm-max-turn".to_string()]).unwrap_err();
+        assert!(err.contains("未知选项 '--llm-max-turn'"), "{err}");
+        assert!(err.contains("--help"), "{err}");
+        assert!(err.contains("配置文件拼错字段名"), "{err}");
+    }
+}

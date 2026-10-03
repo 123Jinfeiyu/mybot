@@ -9,6 +9,39 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 Rust agent 残留结构治理（行为保持）
+
+- **`config/summarize.rs` 补密钥泄漏守门与分支单测**：`--check-config` 的摘要此前只被
+  `config_debug_and_display_never_leak_the_api_key` 间接管住——那条钉的是 `Config` 的
+  `Debug`/`Display`（2026-09-30 审计 P1 之后由 `Secret` 包装在类型层面封死），而 `summarize`
+  是**另一条独立的渲染面**：它自己拼字符串，`Secret` 帮不上忙，只要有人把那一句的
+  `key_source` 换成 `cfg.api_key.expose()`，密钥就直接进了 stdout。现由一条用例对四种来源
+  逐个断言「摘要里不出现密钥、且写明『值不显示』」。同批钉住会话持久化栏的六个分支
+  （来源 × `--resume` × `state_dir_ok` × `--new-session`）、四处 `0 → 不限` 的哨兵渲染、
+  历史摘要开/关两态，以及「`配置告警` 栏只在有告警时出现」。
+- **`config/cli.rs` 补选项名册的双向漂移守门**：`parse_args` 的 match 臂与 `usage()` 的文本
+  是两处各自维护的事实源，此前只有 `--prompt-file` 累积与两条报错路径被测过。现在测试侧
+  独立登记一份名册（14 个带值选项 + 6 个开关 + 2 个短别名），两条方向都钉：名册里的每个
+  选项必须出现在 `--help` 里（漏文档 = 用户发现不了），`--help` 里出现的每个 `--xxx` 必须被
+  `parse_args` 认得（文档承诺了却没实现 = 用户照着抄就吃「未知选项」退出码 2）。
+  三个合法例外写死在用例里并注明理由：`--mcp-backend` / `--mcp-socket` 是后端 `mybot`
+  自己的命令行（解释 `--socket` 时引用），`--llm-key` 是**刻意不存在**的选项（argv 对同
+  用户进程可读，密钥不给命令行入口）。另补一条「每个带值选项都把值落到自己那一个字段」的
+  用例——给每个选项喂一个由选项名派生的独特值再逐字段核对，专打复制粘贴串线
+  （`--llm-max-turn` 的臂写成 `cli.llm_max_tokens` 这类）。
+- **`ica/specs.rs` 补规格面 → 派发面的跨文件一致性守门**：`specs()` 的八条 schema 声明与
+  `IcaLedger::execute` 的八个分支臂自 2026-09-29 B1 拆成两个文件后，「声明了但没人派发」
+  这条缝没有任何东西看着——症状是模型拿到一条工具描述、照着调用、只吃「未知 ICA 工具」。
+  现由一条用例逐个真调 `execute` 并只盯这一种错误（缺必填字段的参数校验错误放过）。
+  反向（有分支无声明）不会让模型出错、只是死代码，由 `len() == 8` 与评审兜住，不在测试里
+  读源码扫描。同批钉住声明面自身的完整性：名字唯一、全部 `ica_` 前缀（`merge_specs` 靠这个
+  前缀与后端工具名分域）、schema 顶层是 object、`required` 里的每一项都在 `properties` 里
+  声明过。
+- 以上对使用者意味着什么：无（纯新增测试）。反向验证按「破坏实现侧、看对应用例转红」做，
+  三处破坏（摘要改渲染 `api_key.expose()`、`usage()` 多写一个未实现的 `--llm-thinking`、
+  删掉 `execute` 的 `ica_depend` 分支臂）逐个转红且报出的正是对应的名字，还原后复绿。
+  `cargo test` 134 → 147 通过 / 0 失败，`clippy --all-targets -D warnings` 与 `fmt --check` 同绿。
+
 ### 2026-10-04 C++ 残留结构治理（行为保持）
 
 - **`MtVars_Daemon` 的类声明迁到 `daemonconf.hpp`**：它的 `Factory`/`play`/`build`/`destroy`

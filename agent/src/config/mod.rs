@@ -595,15 +595,20 @@ fn parse_int_option(raw: &str, key: &str, lo: i64, hi: i64) -> Result<i64, Strin
     Ok(v)
 }
 
+/// 环境变量是进程级全局，动它的用例必须彼此互斥——cargo 单测默认多线程并行
+/// （502 行旧注释「测试串行由 cargo 保证」是错的），2026-10-01 基线曾在
+/// build_is_fail_closed… 与 config_debug_and_display… 之间竞出「缺少 API key」
+/// 假红（一方 remove_var 恰落在另一方 set_var 与 build 之间）。
+///
+/// 2026-10-04 由 `mod tests` 内上提到本层：兄弟测试模块（[`summarize`] 的用例
+/// 也要调 [`build`]，而 build 读密钥链与 `MYBOT_HOME`）必须共用同一把锁，
+/// 各留一把等于没锁。
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// 环境变量是进程级全局，动它的用例必须彼此互斥——cargo 单测默认多线程
-    /// 并行（502 行旧注释「测试串行由 cargo 保证」是错的），2026-10-01 基线
-    /// 曾在 build_is_fail_closed… 与 config_debug_and_display… 之间竞出
-    /// 「缺少 API key」假红（一方 remove_var 恰落在另一方 set_var 与 build 之间）。
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn safe_ident_matches_cpp_rule() {
