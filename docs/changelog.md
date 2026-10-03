@@ -58,6 +58,54 @@
   其余 147 条不受影响，还原复绿。
 - 以上对使用者意味着什么：无（纯拆解 + 一条新增测试，报错文案与优先序逐字保持）。
 
+### 2026-10-04 Rust 侧三项评估收口（判不改，理由留档）
+
+- **`Config` 的 37 个 pub 字段（Phase 15 遗留项「收 `pub(crate)` / 按域分组」）——判两者都不做**：
+  先说可见性。`mybot-agent` 是**纯 bin crate**（`Cargo.toml` 只有 `[[bin]]`，没有 `src/lib.rs`），
+  crate 外没有任何东西能命名 `config::Config`——对所有可能的消费者而言 `pub` 与 `pub(crate)`
+  **不可区分**。把 37 个字段改窄是一份 37 行、零可观测效果的 diff，而且会反向误导：
+  `pub(crate)` 读起来像「这对某个人藏着」，事实是「没有那个人」。真要加 `lib.rs` 的那天，
+  正是该**有意**决定公开面的时候，不是现在预先收窄。
+  再说按域分组（`cfg.budgets.max_tokens` 这类）：它会改动 5 个文件里 **139 处生产读点**
+  （实测 `cfg.` 计数，不含测试）、行为零变化，代价却是破坏本文件头注声明的那条纪律——
+  `Config` 的字段**逐条镜像** C++ 侧的 `AgentModeConfig`（两侧常常吃同一份 `mybot.llm.json`）。
+  扁平形状正是「C++ 与 Rust 逐字段对账」能一眼做完的原因；分组之后每次对账都要先解开一层嵌套。
+  另外，字段多也不等于「内部状态被外面乱改」：实测全仓对 `cfg.<字段>` 的**写入**只有两处，
+  且都在启动装配的延长线上——`main.rs` 的 `prepare_session` 把解析出的会话落点写回
+  `cfg.session_file`（不写回则缺省来源下下游 ICA 账本落盘与 `/clear` 分界拿到空串、账本静默
+  不落盘），`load_prompt_pack` 填 `cfg.prompt_pack`。其余全是读，且读得很散（生产段计数：
+  `cfg.session_file` 13 处，`cfg.resume` / `cfg.model` / `cfg.max_task_seconds` /
+  `cfg.config_warning` 各 7 处，横跨 `repl/mod.rs`、`provider.rs`、`main.rs`、`config::build`、
+  `config::summarize` 5 个文件）。
+  加 37 个 getter 只是把 `cfg.x` 换成 `cfg.x()`——名义上的封装，反而把两处**有意为之**的写回
+  藏进 setter。真正需要保护的那一个字段（`api_key`）2026-09-30 起已由 `Secret` 在类型层面封死
+  （Debug/Display 一律 redacted，唯一取值口 `expose()`），本轮又补上了 `summarize()` 这条独立
+  渲染面的守门。重新评估的触发条件：加了 `lib.rs`，或出现第三处启动期之外的写入。
+- **`session.rs`（1289 行）——判不拆 codec/IO**：行数是全仓 `.rs` 之首，但拆开看是
+  **前 727 行生产代码（非空 688）+ 后 562 行测试（非空 523）**，生产侧已由五条 `// ----`
+  分节标出（落盘 / 载入 / 协议自洽 / 读 / 写），而五节都伺候同一份东西：**会话文件的行格式**。
+  那条格式是对外契约（与已删除的
+  C++ `agenthistory.cpp` 逐字节兼容，存量文件要能被 `--resume` 读回），而 `encode_message` 与
+  `decode_message` 是这份契约的两半——把它们分到两个文件，正是格式漂移最容易藏身的地方
+  （现在盯着它们的是同文件里的 `roundtrip_messages`）。代价也是实的：拆 codec/IO 要把 8 个
+  私有件（`encode_user` / `encode_assistant` / `reasoning_text` / `tool_result_text` /
+  `DecodeState` / `decode_message` / `decode_assistant` / `parse_head`）升成 `pub(crate)`，
+  与本轮 C++ 侧判 `SingleConsumerCheck`「不再拆」同一条理由：把私有状态升级成跨模块契约，
+  换不到行为收益。688 行、五条分节、单一契约，不是上帝文件。
+- **`signals.rs`——判不补单测（但把「已覆盖到哪」说清）**：这个文件 74 行里没有近纯函数面
+  ——通篇是 tokio 的信号流、`libc::signal` 的 `unsafe` 还原缺省处置，以及第二次信号时的
+  `std::process::exit(130)`。单测要碰它就得在测试进程里真发信号，而升级路径**会把测试进程
+  自己打死**。如实说清覆盖面：**第一次信号**的语义（置停止标志、在飞模型调用立即被放弃、
+  本轮以「请求被中断」收场、不再受理新任务、REPL 优雅退出 0 而不是被信号打死）已由
+  `scripts/agent_e2e.sh` 的 **R8b**（`sleep 2` 后 `kill -INT`，断言 stderr 有「收到停止信号」
+  与「请求被中断」、0 条慢响应、用时 < 5s、退出码 0）与 **R16**（终端 raw 模式下 Ctrl-C
+  走同一条路、退出码 0）从**外部**钉住——这也正是它唯一能被诚实钉住的位置。
+  **第二次信号的升级路径目前没有守门**：`state.stop.swap(true)` 返回旧值即升级，是个两行
+  原子操作、与 C++ `onStopSignal` 同款；要在 e2e 里摆出这个局面，就得让第二个信号恰好落在
+  「标志已置」与「优雅退出完成」之间，那是一条竞时的 flaky 红——不做。若哪天这段长出真正的
+  逻辑（比如按信号种类分级、或升级前先落一条审计），再补。
+- 以上对使用者意味着什么：无（三条都是判不改）。
+
 ### 2026-10-04 C++ 残留结构治理（行为保持）
 
 - **`MtVars_Daemon` 的类声明迁到 `daemonconf.hpp`**：它的 `Factory`/`play`/`build`/`destroy`
