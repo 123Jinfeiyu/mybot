@@ -5,6 +5,24 @@
 #include <cstdio>
 #include <cstring>
 
+namespace {
+
+// place 失败原因的日志文案。不写 default：新增 PlaceFail 取值而漏了 case 会被
+// -Werror=switch 挡在编译期（与 bridge.cpp 的 commandName 同款写法）。
+const char* placeFailText(World::PlaceFail why) {
+    switch (why) {
+        case World::PlaceFail::NotCarrying:
+            return "未持有物体，放置失败";
+        case World::PlaceFail::PushExceeded:
+            return "推出距离超限 (被墙连环顶死)，放置失败";
+        case World::PlaceFail::Overlap:
+            return "落点仍与障碍 3D 重叠，放置失败";
+    }
+    return "放置失败";
+}
+
+}  // namespace
+
 SimEngine::SimEngine(std::string scenePath) : scenePath_(std::move(scenePath)) {
     if (!scenePath_.empty()) {
         const char* slash = std::strrchr(scenePath_.c_str(), '/');
@@ -132,13 +150,15 @@ void SimEngine::applyEvent(const SimEvent& ev, std::size_t idx) {
                              World::kPickRange);
             }
             break;
-        case SimEvent::Type::Place:
-            if (world_.place(r)) {
+        case SimEvent::Type::Place: {
+            World::PlaceFail why = World::PlaceFail::NotCarrying;
+            if (world_.place(r, &why)) {
                 std::fprintf(stderr, "place[%zu]: 放置成功\n", idx);
             } else {
-                std::fprintf(stderr, "place[%zu]: 未持有物体，放置失败\n", idx);
+                std::fprintf(stderr, "place[%zu]: %s\n", idx, placeFailText(why));
             }
             break;
+        }
         case SimEvent::Type::Save:
             saveScene();
             break;

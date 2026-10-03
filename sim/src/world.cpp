@@ -175,9 +175,10 @@ bool World::pick(Robot& robot) {
     return false;
 }
 
-bool World::place(Robot& robot) {
+bool World::place(Robot& robot, PlaceFail* why) {
     const int idx = robot.carriedIndex();
     if (idx < 0 || idx >= (int)obstacles_.size()) {
+        if (why) *why = PlaceFail::NotCarrying;
         return false;
     }
 
@@ -252,6 +253,7 @@ bool World::place(Robot& robot) {
         }
     }
     if (pushExceeded) {
+        if (why) *why = PlaceFail::PushExceeded;
         return false;  // 推出距离超限：几何不可行，放弃本次放置（物体仍背着）
     }
 
@@ -274,6 +276,7 @@ bool World::place(Robot& robot) {
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
         if (i == idx) continue;
         if (overlaps3D(candidate, obstacles_[i])) {
+            if (why) *why = PlaceFail::Overlap;
             return false;  // 兜底仍无法消除重叠：几何不可行，放弃本次放置
         }
     }

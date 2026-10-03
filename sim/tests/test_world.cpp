@@ -100,7 +100,10 @@ void testPickPlace() {
           "物体落在前方 placeDist 处");
     check(near(world.obstacles()[0].center.y, world.obstacles()[0].half.y, 1e-3f),
           "place 后物体落回地面（center.y=half.y，不悬空）");
-    check(!world.place(r), "未持有物体时 place 失败");
+    // why 先填一个**错的**取值：若 place 忘了写它，下面这条会红，不会假绿。
+    World::PlaceFail why = World::PlaceFail::Overlap;
+    check(!world.place(r, &why), "未持有物体时 place 失败");
+    check(why == World::PlaceFail::NotCarrying, "失败原因报「未持有物体」");
 
     // 拾不到的两种情形：太远 / 在身后
     Robot far;
@@ -280,7 +283,9 @@ void testPlaceInfeasible() {
         Robot r;
         r.setCarried(0, 1.0f);
         const Obstacle before = world.obstacles()[0];
-        check(!world.place(r), "巨墙挡路：推出距离超限，place 失败");
+        World::PlaceFail why = World::PlaceFail::NotCarrying;
+        check(!world.place(r, &why), "巨墙挡路：推出距离超限，place 失败");
+        check(why == World::PlaceFail::PushExceeded, "巨墙挡路：失败原因报推出超限");
         check(r.isCarrying(), "place 失败后物体仍背着");
         check(r.carriedIndex() == 0, "place 失败后仍是原来那个物体");
         const Obstacle& after = world.obstacles()[0];
@@ -316,6 +321,29 @@ void testPlaceInfeasible() {
                       near(after.center.z, before.center.z, 1e-6f),
                   "连环墙：失败后被搬盒位置未被改动");
         }
+    }
+
+    // 悬空横梁：底面 0.60 高过释放底面 releaseBottom = kBodyY+kBodyHeight+kCarryLift = 0.50，
+    // 按 wallVerticalConflict 的定义它不是「墙」，Phase A 不推它；它顶面 0.80 > supportTop，
+    // 也不构成支撑，Phase B 照样把箱子落到地面——落定后箱顶 0.90 撞进横梁的竖直带。这正是
+    // 写回前那次事实性 3D 校验存在的理由：启发式的「墙/支撑」二分漏掉的情形要被它拦下。
+    {
+        World world(std::vector<Obstacle>{
+            {{5.0f, 0.45f, 5.0f}, {0.2f, 0.45f, 0.2f}, {1, 1, 1}, 1.0f},  // idx0 被搬盒（高箱）
+            {{0.7f, 0.70f, 0.0f}, {0.3f, 0.10f, 0.3f}, {1, 1, 1}, 1.0f},  // idx1 横梁，悬在落点正上方
+        });
+        Robot r;
+        r.setCarried(0, 1.0f);
+        const Obstacle before = world.obstacles()[0];
+        World::PlaceFail why = World::PlaceFail::NotCarrying;
+        check(!world.place(r, &why), "悬空横梁：兜底仍重叠，place 失败");
+        check(why == World::PlaceFail::Overlap, "悬空横梁：失败原因报仍重叠");
+        check(r.isCarrying(), "重叠失败后物体仍背着");
+        const Obstacle& after = world.obstacles()[0];
+        check(near(after.center.x, before.center.x, 1e-6f) &&
+                  near(after.center.y, before.center.y, 1e-6f) &&
+                  near(after.center.z, before.center.z, 1e-6f),
+              "重叠失败后被搬盒位置未被改动（场景不受污染）");
     }
 }
 

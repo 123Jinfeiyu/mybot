@@ -67,6 +67,14 @@ public:
     // 射线从身体前端中心出发、沿 heading 方向；该机器人搬运的物体不计入。
     float queryRange(const Robot& robot, float maxRange = Robot::kRangeMax) const;
 
+    // place() 失败的原因（成功时不写）。与下方 place 契约里的 ①② 一一对应，另加
+    // 「根本没背东西」——三者处置不同，故不让调用方只能看到一个 false。
+    enum class PlaceFail {
+        NotCarrying,   // 未搬运物体，或搬运下标越界
+        PushExceeded,  // ① 累计推出距离超过 kMaxPlacePush
+        Overlap,       // ② 兜底后仍与某障碍 3D 重叠
+    };
+
     // 搬运设备：拾取/放置前方物体。搬运状态写回**传入的这只 Robot**（各背各的）。
     // pick: 尝试拾取前方最近的可搬运物体（距离 < kPickRange 且在前方），成功
     // 返回 true；该机器人已持有物体时直接失败；目标上方贴着另一个障碍（同一套
@@ -80,8 +88,9 @@ public:
     // ① 累计推出距离超过 kMaxPlacePush（如被巨大/多堵墙连环顶）；
     // ② 兜底后仍与某个障碍 3D 重叠（基于释放高度的「墙/支撑」分类属启发式，写回前
     //    总会再做一次事实性的重叠校验兜底）。
+    // 失败原因写进 *why（可为 nullptr＝不关心），取值见上面的 PlaceFail。
     bool pick(Robot& robot);
-    bool place(Robot& robot);
+    bool place(Robot& robot, PlaceFail* why = nullptr);
 
     // 该机器人搬运中的物体跟随它移动：钉在身体正上方（抬高避免挡住摄像机）
     void updateCarried(const Robot& robot);
