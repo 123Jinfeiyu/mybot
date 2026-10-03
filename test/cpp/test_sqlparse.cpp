@@ -17,7 +17,7 @@
 #include "fixtures.hpp"
 #include "harness.hpp"
 #include "sqlparse.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using sql4cj::Event;
 using sql4cj::EventType;

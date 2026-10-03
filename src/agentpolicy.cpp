@@ -6,8 +6,7 @@
 
 #include "agent_subprocess.hpp"
 #include "agentaudit.hpp"
-#include "jsonparse.hpp"
-#include "util.hpp"
+#include "jsonconfig.hpp"
 
 namespace bot {
 namespace agent {
@@ -21,8 +20,12 @@ constexpr std::size_t kPolicyFileMaxBytes = 64u * 1024;
 constexpr int kConfirmTimeoutMin = 1;
 constexpr int kConfirmTimeoutMax = 86400;
 
+/* 本类文件的读取口径：报错名词/动词逐字沿用旧文案；空文件**不**独立报错，
+ * 落到「不是合法 JSON」（与 llm 配置的空文件口径不同，属旧有的既定行为）。 */
+const jsonconfig::ConfigKind kPolicyKind = {"策略文件", "应为", false, kPolicyFileMaxBytes};
+
 std::string typeError(const std::string& path, const std::string& key, const char* want) {
-	return "策略文件 " + path + " 的字段 '" + key + "' 应为" + want;
+	return jsonconfig::typeError(kPolicyKind, path, key, want);
 }
 
 /* 外部确认程序的一次运行结果 */
@@ -104,29 +107,14 @@ Json maskToolArgs(const std::string& tool, const Json& args) {
 
 std::shared_ptr<const AgentPolicy> AgentPolicy::load(const std::string& path,
 		std::string& err) {
-	std::string text;
-	if (!readWholeFileLimited(path, kPolicyFileMaxBytes, text, err, "策略文件")) {
-		return nullptr;
-	}
-	Json root;
-	try {
-		root = parseJson(text);
-	} catch (const std::exception& e) {
-		err = "策略文件 " + path + " 不是合法 JSON: " + e.what();
-		return nullptr;
-	}
-	if (!root.isObj()) {
-		err = "策略文件 " + path + " 的顶层必须是 JSON 对象";
-		return nullptr;
-	}
+	/* 读取/解析/顶层形态/未知字段拒绝的骨架与 llm 配置共用 jsonconfig 单点，
+	 * 差异（名词、空文件口径）经 kPolicyKind 表达。 */
 	static const std::set<std::string> kKnown = {
 		"require_confirm", "confirm_command", "confirm_timeout_sec", "on_timeout",
 	};
-	for (const auto& kv : root.items()) {
-		if (kKnown.count(kv.first) == 0) {
-			err = "策略文件 " + path + " 含未知字段 '" + kv.first + "'（拼写错误？）";
-			return nullptr;
-		}
+	Json root;
+	if (!jsonconfig::loadRoot(kPolicyKind, path, kKnown, root, err)) {
+		return nullptr;
 	}
 
 	auto policy = std::make_shared<AgentPolicy>();

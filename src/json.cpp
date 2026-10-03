@@ -6,7 +6,7 @@
 #include <limits>
 #include <stdexcept>
 
-#include "util.hpp"
+#include "util_except.hpp"
 
 namespace bot {
 

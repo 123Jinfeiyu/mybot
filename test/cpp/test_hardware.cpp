@@ -26,7 +26,7 @@
 #include "json.hpp"
 #include "matrix.hpp"
 #include "robot.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using bot::Json;
 using bot::JsonArray;

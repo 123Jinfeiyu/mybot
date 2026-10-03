@@ -30,7 +30,8 @@
 #include "matrix.hpp"
 #include "mtinclude.hpp"
 #include "mtmerge_core.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
+#include "util_str.hpp"
 
 namespace {
 

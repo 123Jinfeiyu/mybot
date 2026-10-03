@@ -14,7 +14,9 @@
 #include <string>
 #include <vector>
 
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_num.hpp"
 #include "hardware.hpp"
 
 namespace bot {

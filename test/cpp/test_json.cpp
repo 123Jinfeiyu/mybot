@@ -14,7 +14,7 @@
 
 #include "harness.hpp"
 #include "json.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using bot::Json;
 using bot::JsonArray;

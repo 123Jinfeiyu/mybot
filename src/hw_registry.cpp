@@ -2,7 +2,7 @@
  * 所有权（pool_）+ 销毁序（seq_）+ 名字索引（byName_）+ 流引用（flowRefs_）
  * 的单一来源，与解析/装配/派发解耦。 */
 
-#include "robot.hpp"
+#include "hw_registry.hpp"
 
 /* 本 TU 只装配标量变量（@Vars），显式引入 */
 #include "luavar.hpp"

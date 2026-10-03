@@ -111,6 +111,42 @@ impl BackendClient {
         let value: Value = serde_json::from_str(&text).context("解析响应 JSON")?;
         Ok(value)
     }
+
+    /// 首帧共享密钥认证（MCP-1，审计 P2-1；与 C++ 侧 `mcpCheckAuthFrame` 配对）。
+    ///
+    /// `BOT4CJ_MCP_TOKEN` 非空时，连接建立后的第一帧必须是
+    /// `{"_route":"auth","token":...}`，通过后才能进入正常帧循环。只在
+    /// `connect_timeout` 成功后、任何业务调用之前调一次。
+    /// 两侧配对要求：新后端 + 旧 agent（不发 auth 帧）会被后端拒绝；旧后端 +
+    /// 新 agent（发了 auth 帧）会收到 `unknown route: auth`——此函数把它翻译成
+    /// 指向版本不匹配的人话，其余失败原样上抛。
+    pub async fn authenticate(&mut self, token: &str) -> Result<()> {
+        let resp = self
+            .call(&serde_json::json!({"_route": "auth", "token": token}))
+            .await
+            .context("发送首帧认证")?;
+        if resp
+            .get("success")
+            .and_then(|s| s.as_bool())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+        let err = resp
+            .get("error")
+            .and_then(|e| e.as_str())
+            .unwrap_or("（后端未给出原因）");
+        if err.contains("unknown route") {
+            bail!(
+                "后端拒绝了首帧认证（{err}）——对端是不支持 BOT4CJ_MCP_TOKEN 的旧版 \
+                 mybot；两侧必须同时升级或同时不设该环境变量"
+            );
+        }
+        bail!(
+            "后端拒绝了首帧认证（{err}）：共享密钥不匹配，检查两侧的 \
+              BOT4CJ_MCP_TOKEN 是否一致"
+        )
+    }
 }
 
 #[cfg(test)]
@@ -191,6 +227,81 @@ mod tests {
         });
         let err = client.call(&json!({"_route": "ping"})).await.unwrap_err();
         assert!(err.to_string().contains("UTF-8"), "实际: {err}");
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn authenticate_ok_on_matching_token() {
+        // 假后端：校验第一帧确是 auth 帧，回 success
+        let (client_io, mut server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        let server = tokio::spawn(async move {
+            let mut hdr = [0u8; 4];
+            server_io.read_exact(&mut hdr).await.unwrap();
+            let n = u32::from_be_bytes(hdr) as usize;
+            let mut buf = vec![0u8; n];
+            server_io.read_exact(&mut buf).await.unwrap();
+            let req: Value = serde_json::from_slice(&buf).unwrap();
+            assert_eq!(req["_route"], "auth");
+            assert_eq!(req["token"], "secret-1");
+            let resp =
+                serde_json::to_vec(&json!({"success": true, "data": {"auth": true}})).unwrap();
+            server_io
+                .write_all(&encode_frame(&resp).unwrap())
+                .await
+                .unwrap();
+        });
+        client.authenticate("secret-1").await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn authenticate_err_on_token_mismatch() {
+        let (client_io, mut server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        let server = tokio::spawn(async move {
+            let mut hdr = [0u8; 4];
+            server_io.read_exact(&mut hdr).await.unwrap();
+            let n = u32::from_be_bytes(hdr) as usize;
+            let mut buf = vec![0u8; n];
+            server_io.read_exact(&mut buf).await.unwrap();
+            // C++ 后端拒绝口径：不区分错密钥/没带密钥
+            let resp = serde_json::to_vec(&json!({
+                "success": false,
+                "error": "auth required: first frame must be {\"_route\":\"auth\",\"token\":...}"
+            }))
+            .unwrap();
+            server_io
+                .write_all(&encode_frame(&resp).unwrap())
+                .await
+                .unwrap();
+        });
+        let err = client.authenticate("wrong").await.unwrap_err();
+        assert!(err.to_string().contains("共享密钥"), "实际: {err}");
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn authenticate_err_hints_old_backend_on_unknown_route() {
+        let (client_io, mut server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        let server = tokio::spawn(async move {
+            let mut hdr = [0u8; 4];
+            server_io.read_exact(&mut hdr).await.unwrap();
+            let n = u32::from_be_bytes(hdr) as usize;
+            let mut buf = vec![0u8; n];
+            server_io.read_exact(&mut buf).await.unwrap();
+            // 旧后端（不认识 auth 路由）的回执形态
+            let resp =
+                serde_json::to_vec(&json!({"success": false, "error": "unknown route: auth"}))
+                    .unwrap();
+            server_io
+                .write_all(&encode_frame(&resp).unwrap())
+                .await
+                .unwrap();
+        });
+        let err = client.authenticate("secret-1").await.unwrap_err();
+        assert!(err.to_string().contains("旧版"), "实际: {err}");
         let _ = server.await;
     }
 }

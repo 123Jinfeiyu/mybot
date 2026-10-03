@@ -1,5 +1,10 @@
 #include "actionsource.hpp"
-#include "util.hpp"	/* getEnvVar / errnoText */
+#include "util_cli.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_file.hpp"
+#include "util_num.hpp"
+#include "util_str.hpp"	/* getEnvVar / errnoText */
 
 #include <arpa/inet.h>
 #include <poll.h>
@@ -268,90 +273,102 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 	return reader;
 }
 
+/* ---- openActionSource 的通道拆分（2026-09-29 A3）：TCP 与文件各成函数，
+ * 校验失败打印并返回 nullptr；stdin 分支三行留在原地。 ---- */
+
+/* TCP 通道：五个选项的校验（端口/监听地址/空闲超时/口令/失败上限/总时长
+ * 预算）与 openTcpActionSource 的装配。各校验的报错文案逐字保持。 */
+static std::unique_ptr<Reader> openTcpSource(const CliOptions& options) {
+	/* 审计中-3：裸 --tcp（漏写端口号）在此明确报错，而非静默按端口 1
+	 * 走到 bind 特权端口失败、给出与用户意图相去甚远的错误 */
+	if (options.tcpPort.empty()) {
+		std::cerr << "--tcp 需要端口号，例如 --tcp 9000（合法范围 1-65535）" << std::endl;
+		return nullptr;
+	}
+	const auto port = parseBoundedLong(options.tcpPort, 1, 65535);
+	if (!port) {
+		std::cerr << "--tcp 端口号无效：" << options.tcpPort
+			<< "（合法范围 1-65535）" << std::endl;
+		return nullptr;
+	}
+	std::string host = options.tcpHost;
+	if (host.empty()) { host = "127.0.0.1"; }	/* 缺省只监听回环，对外暴露需显式指定 */
+
+	int idleSec = kTcpIdleSecDefault;
+	const std::string& idleStr = options.tcpIdle;
+	if (!idleStr.empty()) {
+		const auto idle = parseBoundedLong(idleStr, 1, 86400);
+		if (!idle) {
+			std::cerr << "--tcp-idle 无效：" << idleStr << "（合法范围 1-86400 秒）" << std::endl;
+			return nullptr;
+		}
+		idleSec = static_cast<int>(*idle);
+	}
+
+	/* C-L4：口令可经环境变量传递——--tcp-token 出现在 /proc/<pid>/cmdline，
+	 * 多用户机器上凭据对同机其他用户可见；环境变量只在进程环境里。 */
+	std::string token = options.tcpToken;
+	if (token.empty()) {
+		if (auto envToken = getEnvVar("BOT4CJ_TCP_TOKEN")) { token = *envToken; }
+	}
+
+	/* F-1：口令连续失败上限（缺省 tcp_limits::kAuthMaxFailsDefault=5） */
+	int authMaxFails = tcp_limits::kAuthMaxFailsDefault;
+	const std::string& authStr = options.tcpMaxAuthAttempts;
+	if (!authStr.empty()) {
+		const auto auth = parseBoundedLong(authStr,
+			tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax);
+		if (!auth) {
+			std::cerr << rangeErrorText("--tcp-max-auth-attempts",
+				tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax, authStr)
+				<< std::endl;
+			return nullptr;
+		}
+		authMaxFails = static_cast<int>(*auth);
+	}
+
+	/* F-3：连接总时长预算下限（缺省 tcp_limits::kTotalTimeoutDefault=600） */
+	int totalTimeoutFloorSec = tcp_limits::kTotalTimeoutDefault;
+	const std::string& totalStr = options.tcpTotalTimeout;
+	if (!totalStr.empty()) {
+		const auto total = parseBoundedLong(totalStr,
+			tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax);
+		if (!total) {
+			std::cerr << rangeErrorText("--tcp-total-timeout",
+				tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax, totalStr)
+				<< std::endl;
+			return nullptr;
+		}
+		totalTimeoutFloorSec = static_cast<int>(*total);
+	}
+
+	return openTcpActionSource(*port, host, token, idleSec,
+		authMaxFails, totalTimeoutFloorSec);
+}
+
+/* 文件通道：--input 指定的 .mt 文件，打不开打印并返回 nullptr。 */
+static std::unique_ptr<Reader> openFileSource(const CliOptions& options) {
+	const std::string& path = *options.input;
+	auto f = std::make_unique<FileReader>(path);
+	if (!f->good()) {
+		std::cerr << "无法打开动作脚本文件 '" << path << "'" << std::endl;
+		return nullptr;
+	}
+	std::cerr << "从文件读取动作脚本：" << path << std::endl;
+	return f;
+}
+
 /* ---- 打开动作输入源：tcp 优先 > 文件 > 标准输入 ---- */
 std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 	std::unique_ptr<Reader> raw;
 
-	/* 1) TCP 通道 */
+	/* 1) TCP 通道（校验与装配在 openTcpSource） */
 	if (options.tcp) {
-		/* 审计中-3：裸 --tcp（漏写端口号）在此明确报错，而非静默按端口 1
-		 * 走到 bind 特权端口失败、给出与用户意图相去甚远的错误 */
-		if (options.tcpPort.empty()) {
-			std::cerr << "--tcp 需要端口号，例如 --tcp 9000（合法范围 1-65535）" << std::endl;
-			return nullptr;
-		}
-		auto portParsed = parseLongStrict(options.tcpPort);
-		if (portParsed.first != IntParse::OK || portParsed.second < 1 || portParsed.second > 65535) {
-			std::cerr << "--tcp 端口号无效：" << options.tcpPort
-				<< "（合法范围 1-65535）" << std::endl;
-			return nullptr;
-		}
-		std::string host = options.tcpHost;
-		if (host.empty()) { host = "127.0.0.1"; }	/* 缺省只监听回环，对外暴露需显式指定 */
-
-		int idleSec = kTcpIdleSecDefault;
-		const std::string& idleStr = options.tcpIdle;
-		if (!idleStr.empty()) {
-			auto idleParsed = parseLongStrict(idleStr);
-			if (idleParsed.first != IntParse::OK || idleParsed.second < 1 || idleParsed.second > 86400) {
-				std::cerr << "--tcp-idle 无效：" << idleStr << "（合法范围 1-86400 秒）" << std::endl;
-				return nullptr;
-			}
-			idleSec = static_cast<int>(idleParsed.second);
-		}
-
-		/* C-L4：口令可经环境变量传递——--tcp-token 出现在 /proc/<pid>/cmdline，
-		 * 多用户机器上凭据对同机其他用户可见；环境变量只在进程环境里。 */
-		std::string token = options.tcpToken;
-		if (token.empty()) {
-			if (auto envToken = getEnvVar("BOT4CJ_TCP_TOKEN")) { token = *envToken; }
-		}
-
-		/* F-1：口令连续失败上限（缺省 tcp_limits::kAuthMaxFailsDefault=5） */
-		int authMaxFails = tcp_limits::kAuthMaxFailsDefault;
-		const std::string& authStr = options.tcpMaxAuthAttempts;
-		if (!authStr.empty()) {
-			auto authParsed = parseLongStrict(authStr);
-			if (authParsed.first != IntParse::OK
-					|| authParsed.second < tcp_limits::kAuthMaxFailsMin
-					|| authParsed.second > tcp_limits::kAuthMaxFailsMax) {
-				std::cerr << rangeErrorText("--tcp-max-auth-attempts",
-					tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax, authStr)
-					<< std::endl;
-				return nullptr;
-			}
-			authMaxFails = static_cast<int>(authParsed.second);
-		}
-
-		/* F-3：连接总时长预算下限（缺省 tcp_limits::kTotalTimeoutDefault=600） */
-		int totalTimeoutFloorSec = tcp_limits::kTotalTimeoutDefault;
-		const std::string& totalStr = options.tcpTotalTimeout;
-		if (!totalStr.empty()) {
-			auto totalParsed = parseLongStrict(totalStr);
-			if (totalParsed.first != IntParse::OK
-					|| totalParsed.second < tcp_limits::kTotalTimeoutMin
-					|| totalParsed.second > tcp_limits::kTotalTimeoutMax) {
-				std::cerr << rangeErrorText("--tcp-total-timeout",
-					tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax, totalStr)
-					<< std::endl;
-				return nullptr;
-			}
-			totalTimeoutFloorSec = static_cast<int>(totalParsed.second);
-		}
-
-		raw = openTcpActionSource(portParsed.second, host, token, idleSec,
-			authMaxFails, totalTimeoutFloorSec);
+		raw = openTcpSource(options);
 	}
-	/* 2) 文件通道 */
+	/* 2) 文件通道（openFileSource） */
 	else if (options.input) {
-		const std::string& path = *options.input;
-		auto f = std::make_unique<FileReader>(path);
-		if (!f->good()) {
-			std::cerr << "无法打开动作脚本文件 '" << path << "'" << std::endl;
-			return nullptr;
-		}
-		std::cerr << "从文件读取动作脚本：" << path << std::endl;
-		raw = std::move(f);
+		raw = openFileSource(options);
 	}
 	/* 3) 标准输入（管道 cat scripts/xxx.mt | ./build/mybot）
 	 * 分块读 + 超限即抛（readAllLimited 单点，与 mtmerge 文件输入共用）：

@@ -11,7 +11,7 @@
 
 #include "expr.hpp"
 #include "harness.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using bot::Expression;
 using bot::exprBody;

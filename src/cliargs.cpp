@@ -9,7 +9,9 @@
 #include <algorithm>
 #include <iostream>
 
-#include "util.hpp"
+#include "util_cli.hpp"
+#include "util_num.hpp"
+#include "util_str.hpp"
 
 namespace bot {
 
@@ -69,6 +71,160 @@ constexpr OptionSpec kValueOptions[] = {
 	{"llm-timeout", [](CliOptions& o, const std::string& v) { o.llmTimeout = v; }, true},
 	{"llm-task-timeout", [](CliOptions& o, const std::string& v) { o.llmTaskTimeout = v; }, true},
 };
+
+/* ---- validateOptions 的校验块（2026-09-29 A3 拆分）----
+ * 各块违规即打印并返回 2，通过返回 0；判定与文案逐字保持原样，
+ * 块间顺序是既有契约（见 validateOptions 编排处的顺序说明）。 */
+
+/* F-20：未知/拼错的 --key 一律拒绝（退出码 2）。
+ * 旧行为是静默忽略：`--robott=foo` 打印帮助后 exit 0（CI 里的假成功），
+ * `--robot` 拼错还会让程序在「没给结构脚本」的路径上看似正常退出。 */
+int rejectUnknownKeys(ParsedArgs& args) {
+	if (args.unknown.empty()) { return 0; }
+	std::sort(args.unknown.begin(), args.unknown.end());
+	for (const auto& key : args.unknown) {
+		std::cerr << "未知参数：--" << key << "；用 --help 查看支持的参数" << std::endl;
+	}
+	return 2;
+}
+
+/* N-4：带值键裸写（漏值）在解析层即拒绝，退出码与 unknown 一致 */
+int rejectMissingValues(const ParsedArgs& args) {
+	for (const auto& key : args.missingValue) {
+		std::cerr << "选项 --" << key << " 缺少值；用法：--" << key << " <值>"
+			<< "，用 --help 查看说明" << std::endl;
+	}
+	return args.missingValue.empty() ? 0 : 2;
+}
+
+/* --agent 已移除（agent 循环迁 Rust）：在此快速失败。
+ * 旧路径会先做 LLM 驱动注入、取消哨兵装配、agent-over-TCP 甚至 accept 一条
+ * 连接，才在 main 的「已移除」桩上报错。F-20 同族口径：显式拒绝并退出 2，
+ * 文案给出替代用法（新拓扑：mybot --mcp-backend 提供工具后端，
+ * mybot-agent 跑模型循环，两者经 --mcp-socket 互联）。 */
+int rejectRemovedAgent(const CliOptions& options) {
+	if (!options.agent) { return 0; }
+	std::cerr << "参数错误：--agent 已移除（agent 循环已迁 Rust）。替代用法：\n"
+		"  1) 启动工具后端：./build/mybot --robot <结构脚本> --mcp-backend "
+		"--mcp-socket /tmp/mybot.sock\n"
+		"  2) 启动 agent：./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n"
+		"（构建 agent：bash scripts/build_agent.sh；详见 docs/agent.md）"
+		<< std::endl;
+	return 2;
+}
+
+/* 模型循环类选项：属于 Rust agent（mybot-agent），本程序一律拒绝。
+ * 这些是 mybot-agent 自己的选项面（它另有 --help）；本程序（C++ 宿主）不跑
+ * 模型循环。保留解析表条目是为了给出指路的报错，而不是「未知参数」。 */
+int rejectLoopOnlyOptions(const CliOptions& options) {
+	const char* loopOnly = nullptr;
+	if (!options.agentTask.empty()) { loopOnly = "--task"; }
+	else if (options.resume) { loopOnly = "--resume"; }
+	else if (!options.sessionFile.empty()) { loopOnly = "--session-file"; }
+	else if (!options.promptFiles.empty()) { loopOnly = "--prompt-file"; }
+	else if (!options.llmEndpoint.empty()) { loopOnly = "--llm-endpoint"; }
+	else if (!options.llmModel.empty()) { loopOnly = "--llm-model"; }
+	else if (!options.llmConfig.empty()) { loopOnly = "--llm-config"; }
+	else if (!options.llmDriver.empty()) { loopOnly = "--llm-driver"; }
+	else if (!options.llmVar.empty()) { loopOnly = "--llm-var"; }
+	else if (!options.llmMaxTurns.empty()) { loopOnly = "--llm-max-turns"; }
+	else if (!options.llmMaxTokens.empty()) { loopOnly = "--llm-max-tokens"; }
+	else if (!options.llmTimeout.empty()) { loopOnly = "--llm-timeout"; }
+	else if (!options.llmTaskTimeout.empty()) { loopOnly = "--llm-task-timeout"; }
+	if (loopOnly == nullptr) { return 0; }
+	std::cerr << "参数错误：" << loopOnly << " 属于 Rust agent（mybot-agent，"
+		"经 --socket 连接本程序的工具后端）；C++ 宿主侧请用 --mcp-backend"
+		<< std::endl;
+	return 2;
+}
+
+/* 工具门控类选项：只在 --mcp-backend 模式下有效
+ * （先于结构脚本装载与任何硬件上电；F-20 同族口径：显式拒绝退出 2，
+ * 不静默忽略。） */
+int rejectAgentOptionsOutsideBackend(const CliOptions& options) {
+	if (options.mcpBackend || !options.agentOptionsUsed) { return 0; }
+	/* PL-5（2026-09-22）：选项名单与 docs 的选项表保持一致——用户敲了
+	 * --no-camera 却被报「选项无效」，而文案里没有他刚敲的那一个，
+	 * 看起来像撞上了另一个错误。 */
+	std::cerr << "参数错误：--agent-shell "
+		"/ --agent-hot-sql / --agent-policy / --read-var / --scripts-dir "
+		"/ --camera-var / --camera-device / --camera-src / --camera-src-dir "
+		"/ --no-camera / --audit-log / --check-config 只在 --mcp-backend 模式下有效；"
+		"用 --help 查看说明"
+		<< std::endl;
+	return 2;
+}
+
+/* MCP 后端选项在非 backend 模式下出现：拒绝（与 F-20 同口径，组合错
+ * 显式拒绝退出 2，不静默忽略。后端复用 agent 的工具上下文选项（能力门控），
+ * 但**不跑 loop、不发模型调用**，故 loop/LLM 专属选项一律拒绝
+ * （silently ignored 会误导使用者）。 */
+int rejectMcpOptionsOutsideBackend(const CliOptions& options) {
+	if (options.mcpBackend) { return 0; }
+	if (!options.mcpSocket.empty()) {
+		std::cerr << "参数错误：--mcp-socket 只在 --mcp-backend 模式下有效" << std::endl;
+		return 2;
+	}
+	if (!options.mcpCallBudget.empty() || !options.mcpWallClock.empty()
+			|| !options.mcpIdleTimeout.empty()) {
+		std::cerr << "参数错误：--mcp-call-budget / --mcp-wall-clock / --mcp-idle-timeout"
+			" 只在 --mcp-backend 模式下有效" << std::endl;
+		return 2;
+	}
+	if (!options.onDisconnect.empty()) {
+		std::cerr << "参数错误：--on-disconnect 只在 --mcp-backend 模式下有效"
+			"（它是后端连接结束后的安全动作）" << std::endl;
+		return 2;
+	}
+	return 0;
+}
+
+/* --mcp-backend 模式内的组合校验（方案 F / 拓扑 F3）：互斥项、必备项与
+ * 每连接预算数值。空 = 不限；配置错误不碰真机，故在此单点拒；
+ * 数值上限只是防呆（跑飞护栏本就不该设成天文数字）。 */
+int validateMcpBackendCombos(const CliOptions& options) {
+	if (!options.mcpBackend) { return 0; }
+	if (options.tcp) {
+		std::cerr << "参数错误：--mcp-backend 与 --tcp 互斥"
+			"（后端经 AF_UNIX socket 服务，不监听 TCP 端口）" << std::endl;
+		return 2;
+	}
+	if (options.input) {
+		std::cerr << "参数错误：--mcp-backend 与 --input 互斥"
+			"（后端不接受一次性动作输入源）" << std::endl;
+		return 2;
+	}
+	if (!options.robot) {
+		std::cerr << "参数错误：--mcp-backend 需要同时提供 --robot <结构脚本>" << std::endl;
+		return 2;
+	}
+	if (options.mcpSocket.empty() && !options.checkConfig) {
+		std::cerr << "参数错误：--mcp-backend 需要 --mcp-socket <AF_UNIX 路径>"
+			"（mybot-agent 经此路径连接后端）" << std::endl;
+		return 2;
+	}
+	if (!options.mcpCallBudget.empty()
+			&& !parseBoundedLong(options.mcpCallBudget, 0, 1000000)) {
+		std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
+			options.mcpCallBudget) << std::endl;
+		return 2;
+	}
+	if (!options.mcpWallClock.empty()
+			&& !parseBoundedLong(options.mcpWallClock, 0, 86400)) {
+		std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
+			options.mcpWallClock) << std::endl;
+		return 2;
+	}
+	/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
+	 * 0 = 不限（缺省），与既有预算选项同口径。 */
+	if (!options.mcpIdleTimeout.empty()
+			&& !parseBoundedLong(options.mcpIdleTimeout, 0, 86400)) {
+		std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
+			options.mcpIdleTimeout) << std::endl;
+		return 2;
+	}
+	return 0;
+}
 
 } // namespace
 
@@ -149,155 +305,18 @@ Preflight preflightCli(ParsedArgs& args) {
 	return validateOptions(args) == 0 ? Preflight::Proceed : Preflight::ConfigError;
 }
 
-/* F-20/N-4/agent 选项组合校验：违规即打印并返回退出码 2，通过返回 0 */
+/* F-20/N-4/agent 选项组合校验：违规即打印并返回退出码 2，通过返回 0。
+ * 149 行单函数拆成七个具名校验块（2026-09-29 A3），本函数只留顺序敏感的
+ * 编排——块序是既有契约：解析层问题（未知/漏值）先于入口形态（--agent/
+ * loop 类）先于工具门控先于 backend 组合；报错文案逐字不变。 */
 int validateOptions(ParsedArgs& args) {
-	const CliOptions& options = args.opts;
-
-	/* ---- F-20：未知/拼错的 --key 一律拒绝（退出码 2）----
-	 * 旧行为是静默忽略：`--robott=foo` 打印帮助后 exit 0（CI 里的假成功），
-	 * `--robot` 拼错还会让程序在「没给结构脚本」的路径上看似正常退出。 */
-	if (!args.unknown.empty()) {
-		std::sort(args.unknown.begin(), args.unknown.end());
-		for (const auto& key : args.unknown) {
-			std::cerr << "未知参数：--" << key << "；用 --help 查看支持的参数" << std::endl;
-		}
-		return 2;
-	}
-
-	/* N-4：带值键裸写（漏值）在解析层即拒绝，退出码与 unknown 一致 */
-	if (!args.missingValue.empty()) {
-		for (const auto& key : args.missingValue) {
-			std::cerr << "选项 --" << key << " 缺少值；用法：--" << key << " <值>"
-				<< "，用 --help 查看说明" << std::endl;
-		}
-		return 2;
-	}
-
-	/* ---- --agent 已移除（agent 循环迁 Rust）：在此快速失败 ----
-	 * 旧路径会先做 LLM 驱动注入、取消哨兵装配、agent-over-TCP 甚至 accept 一条
-	 * 连接，才在 main 的「已移除」桩上报错。F-20 同族口径：显式拒绝并退出 2，
-	 * 文案给出替代用法（新拓扑：mybot --mcp-backend 提供工具后端，
-	 * mybot-agent 跑模型循环，两者经 --mcp-socket 互联）。 */
-	if (options.agent) {
-		std::cerr << "参数错误：--agent 已移除（agent 循环已迁 Rust）。替代用法：\n"
-			"  1) 启动工具后端：./build/mybot --robot <结构脚本> --mcp-backend "
-			"--mcp-socket /tmp/mybot.sock\n"
-			"  2) 启动 agent：./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n"
-			"（构建 agent：bash scripts/build_agent.sh；详见 docs/agent.md）"
-			<< std::endl;
-		return 2;
-	}
-
-	/* ---- 模型循环类选项：属于 Rust agent（mybot-agent），本程序一律拒绝 ----
-	 * 这些是 mybot-agent 自己的选项面（它另有 --help）；本程序（C++ 宿主）不跑
-	 * 模型循环。保留解析表条目是为了给出指路的报错，而不是「未知参数」。 */
-	const char* loopOnly = nullptr;
-	if (!options.agentTask.empty()) { loopOnly = "--task"; }
-	else if (options.resume) { loopOnly = "--resume"; }
-	else if (!options.sessionFile.empty()) { loopOnly = "--session-file"; }
-	else if (!options.promptFiles.empty()) { loopOnly = "--prompt-file"; }
-	else if (!options.llmEndpoint.empty()) { loopOnly = "--llm-endpoint"; }
-	else if (!options.llmModel.empty()) { loopOnly = "--llm-model"; }
-	else if (!options.llmConfig.empty()) { loopOnly = "--llm-config"; }
-	else if (!options.llmDriver.empty()) { loopOnly = "--llm-driver"; }
-	else if (!options.llmVar.empty()) { loopOnly = "--llm-var"; }
-	else if (!options.llmMaxTurns.empty()) { loopOnly = "--llm-max-turns"; }
-	else if (!options.llmMaxTokens.empty()) { loopOnly = "--llm-max-tokens"; }
-	else if (!options.llmTimeout.empty()) { loopOnly = "--llm-timeout"; }
-	else if (!options.llmTaskTimeout.empty()) { loopOnly = "--llm-task-timeout"; }
-	if (loopOnly != nullptr) {
-		std::cerr << "参数错误：" << loopOnly << " 属于 Rust agent（mybot-agent，"
-			"经 --socket 连接本程序的工具后端）；C++ 宿主侧请用 --mcp-backend"
-			<< std::endl;
-		return 2;
-	}
-
-	/* ---- 工具门控类选项：只在 --mcp-backend 模式下有效 ----
-	 * （先于结构脚本装载与任何硬件上电；F-20 同族口径：显式拒绝退出 2，
-	 * 不静默忽略。） */
-	if (!options.mcpBackend && options.agentOptionsUsed) {
-		/* PL-5（2026-09-22）：选项名单与 docs 的选项表保持一致——用户敲了
-		 * --no-camera 却被报「选项无效」，而文案里没有他刚敲的那一个，
-		 * 看起来像撞上了另一个错误。 */
-		std::cerr << "参数错误：--agent-shell "
-			"/ --agent-hot-sql / --agent-policy / --read-var / --scripts-dir "
-			"/ --camera-var / --camera-device / --camera-src / --camera-src-dir "
-			"/ --no-camera / --audit-log / --check-config 只在 --mcp-backend 模式下有效；"
-			"用 --help 查看说明"
-			<< std::endl;
-		return 2;
-	}
-
-	/* ---- MCP 后端模式（--mcp-backend）组合校验（方案 F / 拓扑 F3）----
-	 * 与 F-20 同口径：组合错显式拒绝退出 2，不静默忽略。后端复用 agent 的工具
-	 * 上下文选项（能力门控），但**不跑 loop、不发模型调用**，故 loop/LLM 专属
-	 * 选项一律拒绝（silently ignored 会误导使用者）。 */
-	if (!options.mcpBackend && !options.mcpSocket.empty()) {
-		std::cerr << "参数错误：--mcp-socket 只在 --mcp-backend 模式下有效" << std::endl;
-		return 2;
-	}
-	if (!options.mcpBackend
-		&& (!options.mcpCallBudget.empty() || !options.mcpWallClock.empty()
-			|| !options.mcpIdleTimeout.empty())) {
-		std::cerr << "参数错误：--mcp-call-budget / --mcp-wall-clock / --mcp-idle-timeout"
-			" 只在 --mcp-backend 模式下有效" << std::endl;
-		return 2;
-	}
-	if (!options.mcpBackend && !options.onDisconnect.empty()) {
-		std::cerr << "参数错误：--on-disconnect 只在 --mcp-backend 模式下有效"
-			"（它是后端连接结束后的安全动作）" << std::endl;
-		return 2;
-	}
-	if (options.mcpBackend) {
-		if (options.tcp) {
-			std::cerr << "参数错误：--mcp-backend 与 --tcp 互斥"
-				"（后端经 AF_UNIX socket 服务，不监听 TCP 端口）" << std::endl;
-			return 2;
-		}
-		if (options.input) {
-			std::cerr << "参数错误：--mcp-backend 与 --input 互斥"
-				"（后端不接受一次性动作输入源）" << std::endl;
-			return 2;
-		}
-		if (!options.robot) {
-			std::cerr << "参数错误：--mcp-backend 需要同时提供 --robot <结构脚本>" << std::endl;
-			return 2;
-		}
-		if (options.mcpSocket.empty() && !options.checkConfig) {
-			std::cerr << "参数错误：--mcp-backend 需要 --mcp-socket <AF_UNIX 路径>"
-				"（mybot-agent 经此路径连接后端）" << std::endl;
-			return 2;
-		}
-		/* 每连接预算数值校验（空 = 不限；配置错误不碰真机，故在此单点拒）。
-		 * 上限只是防呆（跑飞护栏本就不该设成天文数字）。 */
-		if (!options.mcpCallBudget.empty()) {
-			auto [st, v] = parseLongStrict(options.mcpCallBudget);
-			if (st != IntParse::OK || v < 0 || v > 1000000) {
-				std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
-					options.mcpCallBudget) << std::endl;
-				return 2;
-			}
-		}
-		if (!options.mcpWallClock.empty()) {
-			auto [st, v] = parseLongStrict(options.mcpWallClock);
-			if (st != IntParse::OK || v < 0 || v > 86400) {
-				std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
-					options.mcpWallClock) << std::endl;
-				return 2;
-			}
-		}
-		/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
-		 * 0 = 不限（缺省），与既有预算选项同口径。 */
-		if (!options.mcpIdleTimeout.empty()) {
-			auto [st, v] = parseLongStrict(options.mcpIdleTimeout);
-			if (st != IntParse::OK || v < 0 || v > 86400) {
-				std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
-					options.mcpIdleTimeout) << std::endl;
-				return 2;
-			}
-		}
-	}
-	return 0;
+	if (int rc = rejectUnknownKeys(args)) { return rc; }
+	if (int rc = rejectMissingValues(args)) { return rc; }
+	if (int rc = rejectRemovedAgent(args.opts)) { return rc; }
+	if (int rc = rejectLoopOnlyOptions(args.opts)) { return rc; }
+	if (int rc = rejectAgentOptionsOutsideBackend(args.opts)) { return rc; }
+	if (int rc = rejectMcpOptionsOutsideBackend(args.opts)) { return rc; }
+	return validateMcpBackendCombos(args.opts);
 }
 
 /* TCP 选项块（全文帮助与 --help tcp 共用单点，2026-09-25 D3）：两处此前逐行
@@ -422,102 +441,132 @@ std::string helpText() {
 	return s;
 }
 
-/* 分段帮助文本（2026-09-22 可用性改进）：支持快速查看特定主题 */
+namespace {
+
+/* ---- 分段帮助的每主题文本（2026-09-29 A3 拆自 helpText(topic) 的 if-else
+ * 链）：五个主题各成函数，文本逐字保持。 */
+std::string topicTcpHelp() {
+	std::string s;
+	s += "TCP 模式（动作输入源）：\n\n";
+	s += tcpOptionsHelp();
+	s += "\n示例：\n";
+	s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080\n";
+	s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080 --tcp-host 0.0.0.0 --tcp-token mysecret\n";
+	return s;
+}
+
+std::string topicAgentHelp() {
+	std::string s;
+	s += "agent 体系（模型循环已迁 Rust mybot-agent）：\n\n";
+	s += "拓扑：mybot --mcp-backend 提供工具后端（硬件上电常驻，经 AF_UNIX\n";
+	s += "socket 服务工具调用）；mybot-agent 跑模型循环（REPL/--task/预算/历史\n";
+	s += "裁剪），直连 provider，经 --socket 调用后端。构建 agent：\n";
+	s += "bash scripts/build_agent.sh；其选项见 mybot-agent --help 与 docs/agent.md。\n\n";
+	s += "本程序的 agent 面选项（都在 --mcp-backend 下有效）：\n";
+	s += "  --agent-shell         显式开启 run_command（任意 shell 执行）；后端下开它\n";
+	s += "                       强制要 --agent-policy 且 require_confirm 含 run_command\n";
+	s += "  --agent-hot-sql       显式开启 apply_sql（结构 SQL 带电生效）；后端下开它\n";
+	s += "                       强制要策略确认（apply_sql）。配置文件不能开\n";
+	s += "  --read-var <变量名>    声明可读硬件变量（可重复；注册 read_variables 与\n";
+	s += "                       wait_variable 工具）。\n";
+	s += "                       缺省不提供；配置文件不能给\n";
+	s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
+	s += "                       确认程序（退出 0 = 放行；超时按 on_timeout，缺省 deny）\n";
+	s += "  --scripts-dir <目录>  动作脚本根目录（run_action_script 的沙箱边界）\n";
+	s += "  --camera-* / --no-camera  摄像头（见 --help camera）\n";
+	s += "  --audit-log <路径>    审计轨迹（JSON Lines；\"-\"=stderr；缺省不记录）\n";
+	s += "  --check-config        只校验配置并打印摘要后退出 0（离线，不碰硬件）\n\n";
+	s += "示例：\n";
+	s += "  ./build/mybot --robot=robots/relay-test.sql --mcp-backend \\\n";
+	s += "      --mcp-socket /tmp/mybot.sock --agent-shell --agent-policy policy.json\n";
+	s += "  ./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n";
+	return s;
+}
+
+std::string topicLlmHelp() {
+	std::string s;
+	s += "LLM/模型配置（已迁 Rust mybot-agent）：\n\n";
+	s += "模型接入点、密钥、采样与循环参数（--llm-endpoint / --llm-model /\n";
+	s += "--llm-config / --llm-timeout 等、--task、--prompt-file、--session-file、\n";
+	s += "--resume）都是 mybot-agent 的选项——本程序会显式拒绝并指引。\n\n";
+	s += "  mybot-agent --help\n";
+	s += "  ./agent/target/release/mybot-agent --socket /tmp/mybot.sock --llm-model gpt-4\n\n";
+	s += "环境变量 BOT4CJ_LLM_KEY（兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）\n";
+	s += "由 mybot-agent 进程读取（优先级：命令行 > 环境变量 > 配置文件 > 内置缺省）。\n";
+	s += "详见 docs/agent.md。\n";
+	return s;
+}
+
+std::string topicCameraHelp() {
+	std::string s;
+	s += "摄像头配置选项（--mcp-backend 下有效）：\n\n";
+	s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）\n";
+	s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
+	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
+	s += "  --camera-src-dir <目录> 模拟图片白名单根目录（只能命令行给）\n";
+	s += "  --no-camera           不向智能体提供 capture_image 工具\n";
+	s += "  --check-config        只校验配置并打印摘要后退出 0（不装结构、不上电、不联网）\n";
+	s += "  --audit-log <路径>    审计轨迹（JSON Lines 追加写；\"-\"=stderr；缺省不记录）\n";
+	s += "                        也可用配置文件 audit_log 字段\n\n";
+	s += "示例：\n";
+	s += "  ./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/s.sock \\\n";
+	s += "      --camera-device /dev/video1\n";
+	return s;
+}
+
+std::string topicMcpHelp() {
+	std::string s;
+	s += "MCP 后端模式（--mcp-backend）：\n\n";
+	s += "  --mcp-backend       把 agent 工具层经本地 AF_UNIX socket 暴露给 Rust agent\n";
+	s += "                      （mybot-agent，经 --socket 连接；它对上跑 REPL/--task，\n";
+	s += "                      对下经帧协议调用这里的工具）。独立模式：不跑模型循环、\n";
+	s += "                      不发起任何模型调用——每次工具调用都走既有的\n";
+	s += "                      「策略确认 → 执行 → 审计」漏斗（DispatchGate::run）。\n";
+	s += "                      与 --tcp / --input 互斥；需要 --robot 与 --mcp-socket。\n";
+	s += "  --mcp-socket <路径>  AF_UNIX socket 路径（必填）。父目录建议 0700、socket 文件\n";
+	s += "                      0600；对端经内核 SO_PEERCRED 校验 uid/gid（不可伪造）。\n";
+	s += "  --mcp-call-budget <N>   每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限）。\n";
+	s += "                      后端不假设调用方是 agent 循环，故自行再强制一层预算。\n";
+	s += "  --mcp-wall-clock <秒>   每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。\n";
+	s += "                      注：单次物理调用的 script/command 超时始终在工具层生效。\n";
+	s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
+	s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽；\n";
+	s += "                      墙钟预算同样在空闲期收口（到点断连，对端可重连）。\n";
+	s += "  --on-disconnect <脚本>  连接结束（任何原因）后由后端自行执行的安全动作脚本\n";
+	s += "                      （scripts-dir 之下的相对路径，如 zero.mt）。缺省不执行，\n";
+	s += "                      硬件停在最后一个姿态。上电前校验；不经策略确认；失败\n";
+	s += "                      只记日志/审计（kind=session, status=disconnect_action）。\n";
+	s += "                      SIGINT/SIGTERM 停机不触发（走断电清理链）。\n\n";
+	s += "安全：后端开 --agent-shell / --agent-hot-sql 时**强制**要 --agent-policy，且其\n";
+	s += "      require_confirm 必须分别包含 run_command / apply_sql（无人值守暴露危险能力\n";
+	s += "      必须有外部确认闸门）；纯只读/查询/动作脚本后端不受此约束。\n\n";
+	s += "复用 agent 的工具上下文/能力门控选项（决定对外宣告哪些工具）：\n";
+	s += "  --agent-shell / --agent-hot-sql / --read-var / --camera-* / --no-camera /\n";
+	s += "  --scripts-dir / --agent-policy / --audit-log\n";
+	s += "（--task / --llm-* / --prompt-file / --session-file / --resume 属于 mybot-agent）\n\n";
+	s += "示例：\n";
+	s += "  ./build/mybot --robot=robots/relay-test.sql --mcp-backend \\\n";
+	s += "      --mcp-socket /run/user/1000/bot4cj/mcp.sock --audit-log -\n";
+	return s;
+}
+
+} // namespace
+
+/* 分段帮助文本（2026-09-22 可用性改进）：支持快速查看特定主题。
+ * 每主题文本在上方具名函数（2026-09-29 A3 拆分），这里只留分发。 */
 std::string helpText(const std::string& topic) {
 	if (topic.empty()) { return helpText(); }
-	std::string t = toLowerAscii(trim(topic));
+	const std::string t = toLowerAscii(trim(topic));
 
+	if (t == "tcp") { return topicTcpHelp(); }
+	if (t == "agent") { return topicAgentHelp(); }
+	if (t == "llm") { return topicLlmHelp(); }
+	if (t == "camera") { return topicCameraHelp(); }
+	if (t == "mcp") { return topicMcpHelp(); }
 	std::string s;
-	if (t == "tcp") {
-		s += "TCP 模式（动作输入源）：\n\n";
-		s += tcpOptionsHelp();
-		s += "\n示例：\n";
-		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080\n";
-		s += "  ./build/mybot --robot=robots/spider1.sql --tcp 8080 --tcp-host 0.0.0.0 --tcp-token mysecret\n";
-	} else if (t == "agent") {
-		s += "agent 体系（模型循环已迁 Rust mybot-agent）：\n\n";
-		s += "拓扑：mybot --mcp-backend 提供工具后端（硬件上电常驻，经 AF_UNIX\n";
-		s += "socket 服务工具调用）；mybot-agent 跑模型循环（REPL/--task/预算/历史\n";
-		s += "裁剪），直连 provider，经 --socket 调用后端。构建 agent：\n";
-		s += "bash scripts/build_agent.sh；其选项见 mybot-agent --help 与 docs/agent.md。\n\n";
-		s += "本程序的 agent 面选项（都在 --mcp-backend 下有效）：\n";
-		s += "  --agent-shell         显式开启 run_command（任意 shell 执行）；后端下开它\n";
-		s += "                       强制要 --agent-policy 且 require_confirm 含 run_command\n";
-		s += "  --agent-hot-sql       显式开启 apply_sql（结构 SQL 带电生效）；后端下开它\n";
-		s += "                       强制要策略确认（apply_sql）。配置文件不能开\n";
-		s += "  --read-var <变量名>    声明可读硬件变量（可重复；注册 read_variables 与\n";
-		s += "                       wait_variable 工具）。\n";
-		s += "                       缺省不提供；配置文件不能给\n";
-		s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
-		s += "                       确认程序（退出 0 = 放行；超时按 on_timeout，缺省 deny）\n";
-		s += "  --scripts-dir <目录>  动作脚本根目录（run_action_script 的沙箱边界）\n";
-		s += "  --camera-* / --no-camera  摄像头（见 --help camera）\n";
-		s += "  --audit-log <路径>    审计轨迹（JSON Lines；\"-\"=stderr；缺省不记录）\n";
-		s += "  --check-config        只校验配置并打印摘要后退出 0（离线，不碰硬件）\n\n";
-		s += "示例：\n";
-		s += "  ./build/mybot --robot=robots/relay-test.sql --mcp-backend \\\n";
-		s += "      --mcp-socket /tmp/mybot.sock --agent-shell --agent-policy policy.json\n";
-		s += "  ./agent/target/release/mybot-agent --socket /tmp/mybot.sock\n";
-	} else if (t == "llm") {
-		s += "LLM/模型配置（已迁 Rust mybot-agent）：\n\n";
-		s += "模型接入点、密钥、采样与循环参数（--llm-endpoint / --llm-model /\n";
-		s += "--llm-config / --llm-timeout 等、--task、--prompt-file、--session-file、\n";
-		s += "--resume）都是 mybot-agent 的选项——本程序会显式拒绝并指引。\n\n";
-		s += "  mybot-agent --help\n";
-		s += "  ./agent/target/release/mybot-agent --socket /tmp/mybot.sock --llm-model gpt-4\n\n";
-		s += "环境变量 BOT4CJ_LLM_KEY（兼容 ROBOT_AGENT_API_KEY / DEEPSEEK_API_KEY）\n";
-		s += "由 mybot-agent 进程读取（优先级：命令行 > 环境变量 > 配置文件 > 内置缺省）。\n";
-		s += "详见 docs/agent.md。\n";
-	} else if (t == "camera") {
-		s += "摄像头配置选项（--mcp-backend 下有效）：\n\n";
-		s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）\n";
-		s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
-		s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
-		s += "  --camera-src-dir <目录> 模拟图片白名单根目录（只能命令行给）\n";
-		s += "  --no-camera           不向智能体提供 capture_image 工具\n";
-		s += "  --check-config        只校验配置并打印摘要后退出 0（不装结构、不上电、不联网）\n";
-		s += "  --audit-log <路径>    审计轨迹（JSON Lines 追加写；\"-\"=stderr；缺省不记录）\n";
-		s += "                        也可用配置文件 audit_log 字段\n\n";
-		s += "示例：\n";
-		s += "  ./build/mybot --robot=robots/spider1.sql --mcp-backend --mcp-socket /tmp/s.sock \\\n";
-		s += "      --camera-device /dev/video1\n";
-	} else if (t == "mcp") {
-		s += "MCP 后端模式（--mcp-backend）：\n\n";
-		s += "  --mcp-backend       把 agent 工具层经本地 AF_UNIX socket 暴露给 Rust agent\n";
-		s += "                      （mybot-agent，经 --socket 连接；它对上跑 REPL/--task，\n";
-		s += "                      对下经帧协议调用这里的工具）。独立模式：不跑模型循环、\n";
-		s += "                      不发起任何模型调用——每次工具调用都走既有的\n";
-		s += "                      「策略确认 → 执行 → 审计」漏斗（DispatchGate::run）。\n";
-		s += "                      与 --tcp / --input 互斥；需要 --robot 与 --mcp-socket。\n";
-		s += "  --mcp-socket <路径>  AF_UNIX socket 路径（必填）。父目录建议 0700、socket 文件\n";
-		s += "                      0600；对端经内核 SO_PEERCRED 校验 uid/gid（不可伪造）。\n";
-		s += "  --mcp-call-budget <N>   每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限）。\n";
-		s += "                      后端不假设调用方是 agent 循环，故自行再强制一层预算。\n";
-		s += "  --mcp-wall-clock <秒>   每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。\n";
-		s += "                      注：单次物理调用的 script/command 超时始终在工具层生效。\n";
-		s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
-		s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽；\n";
-		s += "                      墙钟预算同样在空闲期收口（到点断连，对端可重连）。\n";
-		s += "  --on-disconnect <脚本>  连接结束（任何原因）后由后端自行执行的安全动作脚本\n";
-		s += "                      （scripts-dir 之下的相对路径，如 zero.mt）。缺省不执行，\n";
-		s += "                      硬件停在最后一个姿态。上电前校验；不经策略确认；失败\n";
-		s += "                      只记日志/审计（kind=session, status=disconnect_action）。\n";
-		s += "                      SIGINT/SIGTERM 停机不触发（走断电清理链）。\n\n";
-		s += "安全：后端开 --agent-shell / --agent-hot-sql 时**强制**要 --agent-policy，且其\n";
-		s += "      require_confirm 必须分别包含 run_command / apply_sql（无人值守暴露危险能力\n";
-		s += "      必须有外部确认闸门）；纯只读/查询/动作脚本后端不受此约束。\n\n";
-		s += "复用 agent 的工具上下文/能力门控选项（决定对外宣告哪些工具）：\n";
-		s += "  --agent-shell / --agent-hot-sql / --read-var / --camera-* / --no-camera /\n";
-		s += "  --scripts-dir / --agent-policy / --audit-log\n";
-		s += "（--task / --llm-* / --prompt-file / --session-file / --resume 属于 mybot-agent）\n\n";
-		s += "示例：\n";
-		s += "  ./build/mybot --robot=robots/relay-test.sql --mcp-backend \\\n";
-		s += "      --mcp-socket /run/user/1000/bot4cj/mcp.sock --audit-log -\n";
-	} else {
-		s += "未知主题: " + topic + "\n\n";
-		s += "支持的主题：tcp, agent, llm, camera, mcp\n";
-		s += "使用 --help 查看完整帮助\n";
-	}
+	s += "未知主题: " + topic + "\n\n";
+	s += "支持的主题：tcp, agent, llm, camera, mcp\n";
+	s += "使用 --help 查看完整帮助\n";
 	return s;
 }
 

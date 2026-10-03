@@ -13,7 +13,6 @@
 #include "json.hpp"
 #include "luaexec.hpp"
 #include "matrix.hpp"
-#include "util.hpp"
 
 namespace bot {
 

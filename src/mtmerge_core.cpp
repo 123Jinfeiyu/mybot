@@ -9,7 +9,8 @@
 #include <set>
 #include <utility>
 
-#include "util.hpp"
+#include "util_except.hpp"
+#include "util_str.hpp"
 
 namespace mtmerge {
 

@@ -21,7 +21,7 @@
 #include "fixtures.hpp"
 #include "harness.hpp"
 #include "robot.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using bot::DaemonRunner;
 using bot::MtVars_Daemon;
@@ -47,6 +47,18 @@ void writeNoTickChunk() {
 	std::ofstream out(std::string(".tmp/") + kNoTickRel, std::ios::binary | std::ios::trunc);
 	out << "-- daemon_tick intentionally undefined\n"
 	    << "return\n";
+}
+
+/* BQ-2：忽略 stop 的「卡死守护」——tick 在有界长窗内忙等（60s >> 测试生命期，
+ * 进程退出时线程随之消亡；不做无限 spin，避免拖慢同批后续用例的调度） */
+const char* const kStuckTickRel = "test_daemon_stuck_tick.lua";
+void writeStuckTickChunk() {
+	std::ofstream out(std::string(".tmp/") + kStuckTickRel, std::ios::binary | std::ios::trunc);
+	out << "function daemon_tick()\n"
+	    << "  local deadline = os.time() + 60\n"
+	    << "  while os.time() < deadline do end\n"
+	    << "  return 1\n"
+	    << "end\n";
 }
 
 mt::MatrixObject daemonDefs(const std::string& chunk) {
@@ -148,30 +160,57 @@ TH_TEST(daemon_slow_tick_abandons_slot_and_thread_releases_it) {
 	TH_CHECK(!registry[0]->slotAlive());
 }
 
-/* 审计 P1 修复（2026-09-21）：awaitExit——弃管后的第二等待窗口。
- * 弃管（waitUntil 超时）只交出槽所有权、不改变任何既有观测量（槽保持已
- * 交出、读按 ERR 契约返回），但 awaitExit 必须能在宽限内等到线程真正退场
- * ——RobotStruct::deactivate 的二段屏障据此在硬件销毁前收窄
- * 「daemon 活着 + 总线已销毁」的竞态窗口。幂等：future 已消费后再等直接
- * 返回 true，不重复消费。 */
-TH_TEST(daemon_await_exit_waits_thread_exit_after_abandon) {
+/* BQ-2（2026-09-29，审计 P2-3 收口）：停机序列两段——requestStopAndWait 不弃管
+ * （槽保持在手），finishTeardown 宽限内退场即收尾。
+ * 旧 waitUntil/awaitExit 对（弃管后再宽限）重排为「宽限 → 仍未退场才灭火弃管」，
+ * 动机：宽限内退场的守护还要跑 daemon_cleanup 做去初始化传输，灭火位若设在
+ * 宽限之前会误伤它们（器件滞留采样态）。 */
+TH_TEST(daemon_finish_teardown_grace_path_returns_true) {
 	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
 	writeSlowTickChunk();
 	mt::MatrixObject defs = daemonDefs(kSlowTickRel);
 	std::vector<std::shared_ptr<DaemonRunner>> registry;
 	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
 	var->build();
-	/* 先让线程进入慢拍（3s），再主动走弃管：500ms << 剩余慢拍 */
+	/* 先让线程进入慢拍（3s），再主动走停机序列：500ms << 剩余慢拍 */
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
-	TH_CHECK(!registry[0]->waitUntil(
-		std::chrono::steady_clock::now() + std::chrono::milliseconds(500)));
+	const auto t0 = std::chrono::steady_clock::now();
+	/* ① 等待段不弃管：miss 后槽仍在手（这是灭火位能先于弃管置上的前提）。
+	 * 此刻 play 返回的是**正常采样**（槽未交出，ERR 契约只在弃管后生效）。 */
+	TH_CHECK(!registry[0]->requestStopAndWait(
+		t0 + std::chrono::milliseconds(500)));
+	TH_CHECK(registry[0]->slotAlive());
+	/* ② 宽限段：累计已等 ~0.7s，慢拍 ~3s 结束，宽限 5s 覆盖余量 → 退场收尾 */
+	TH_CHECK(registry[0]->finishTeardown(5000, t0));
 	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry[0]->quiesced());
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
-	/* 二段等待：累计已等 ~0.7s，慢拍 ~3s 结束，宽限 5s 覆盖余量 */
-	TH_CHECK(registry[0]->awaitExit(5000));
-	/* 幂等：线程已退场（future 已消费），再等立即返回 true */
-	TH_CHECK(registry[0]->awaitExit(0));
+	/* 幂等：线程已退场（future 已消费），再收尾直接 true */
+	TH_CHECK(registry[0]->finishTeardown(0, t0));
+}
+
+/* BQ-2：宽限耗尽 → 灭火 + 弃管（quiesce 先于 slot 交出置上）。
+ * 卡死守护（tick 无视 stop 忙等 60s）走到 finishTeardown 的失败路径：
+ * 槽交出、quiesced() 为真——此后其 HAL 传输会被拒绝（Lua 侧行为由
+ * test/test_hal_quiesce.lua 钉住，两侧各自守己侧契约）。 */
+TH_TEST(daemon_finish_teardown_quiesces_stuck_thread) {
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	writeStuckTickChunk();
+	mt::MatrixObject defs = daemonDefs(kStuckTickRel);
+	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
+	var->build();
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	const auto t0 = std::chrono::steady_clock::now();
+	TH_CHECK(!registry[0]->requestStopAndWait(
+		t0 + std::chrono::milliseconds(300)));
+	/* 零宽限（单守护 destroy 路径形态）→ 立即灭火弃管 */
+	TH_CHECK(!registry[0]->finishTeardown(0, t0));
+	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(registry[0]->quiesced());
+	bot::Json err = var->play(bot::JsonObject());
+	TH_CHECK(err.get("result")->getValue() == "ERR");
 }
 
 /* C-L2 尾：错误退避最长 interval×256，退避睡眠若一次性睡满会吞掉 stop 请求

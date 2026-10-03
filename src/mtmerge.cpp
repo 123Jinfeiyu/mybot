@@ -27,7 +27,9 @@
 #include "actionsource.hpp"
 #include "matrix.hpp"
 #include "mtmerge_core.hpp"
-#include "util.hpp"
+#include "util_cli.hpp"
+#include "util_except.hpp"
+#include "util_num.hpp"
 
 namespace {
 
@@ -45,15 +47,24 @@ void printHelp() {
 	std::cout << "          @Alias / @Vars 按行叠加，同名行（name 列）即报错退出 2。" << std::endl;
 }
 
-} // namespace
+/* ---- main 的三段拆分（2026-09-29 A3）：参数解析 / 逐文件归并 / 产物落盘 ----
+ * 退出码契约不变：--help 与无参数打印帮助返回 0；非法参数/语义错误 2；
+ * 文件打不开/写不进 1（OpenFail 从归并段抛回 main 折成 1，与其它
+ * std::exception 的 2 区分）。 */
 
-/* 审计 M-1 防线：--phase 合法范围（±10 万行）——常量单点在 mtmerge_core.hpp
- * （与 @Include 的 phase 列共用），此处只引用。 */
-
-int main(int argc, char** argv) {
+struct Options {
 	std::int64_t phase = 0;
 	std::string outPath;
 	std::vector<std::string> inputs;
+};
+
+/* 文件打不开：mergeInputs 抛回 main 折成退出码 1（其余异常一律 2）。 */
+struct OpenFail {
+	std::string path;
+};
+
+/* 参数解析：--help/-h 打印帮助返回 0；非法/缺值打印报错返回 2；成功返回 0。 */
+int parseOptions(int argc, char** argv, Options& out) {
 	for (int k = 1; k < argc; ++k) {
 		std::string a = argv[k];
 		if (a == "--help" || a == "-h") { printHelp(); return 0; }
@@ -81,101 +92,122 @@ int main(int argc, char** argv) {
 				std::cerr << "mtmerge: --phase 超出范围 ±" << mtmerge::kMaxPhase << " '" << v << "'" << std::endl;
 				return 2;
 			}
-			phase = num;
+			out.phase = num;
 		} else if (a == "--out" || a.rfind("--out=", 0) == 0) {
 			bot::cli::OptionToken tok = bot::cli::parseKeyValue(k, argc, argv, false);
 			if (!tok.hasValue) {
 				std::cerr << "mtmerge: --out 缺少值" << std::endl;
 				return 2;	/* 同上：不跳过局部对象析构 */
 			}
-			outPath = tok.value;
+			out.outPath = tok.value;
 		} else if (a.rfind("--", 0) == 0) {
 			std::cerr << "mtmerge: 未知参数 '" << a << "'" << std::endl;
 			return 2;
 		} else {
-			inputs.push_back(a);
+			out.inputs.push_back(a);
+		}
+	}
+	return 0;
+}
+
+/* 逐个读入 .mt 并两两归并（字节上限与 mybot 动作脚本一致）：
+ *   @Action 按序两两归并（每个输入带同一个 phase）；
+ *   @Alias / @Vars 按行叠加，同名即报错。
+ * 累积器先吃第 1 个输入，之后两两归并。产物顺序：@Alias、@Vars（若存在）、
+ * 最后 @Action。语义/解析失败抛异常（调用方折成 2），打不开抛 OpenFail。 */
+std::vector<mt::MatrixObject> mergeInputs(const std::vector<std::string>& inputs,
+		std::int64_t phase) {
+	std::optional<mt::MatrixObject> accAction, accAlias, accVars;
+	std::string accActionPath, accAliasPath, accVarsPath;
+	for (const auto& path : inputs) {
+		std::ifstream f(path, std::ios::binary);
+		if (!f) { throw OpenFail{path}; }
+		/* 审计 M-2 防线：与动作 stdin 通道共用的整段受限读取（分块 +
+		 * 超限即抛 ScriptTooLarge，单点在 actionsource.hpp）——先整体
+		 * 读入再判上限对超大文件形同虚设（限流之前就把全部字节吃进
+		 * 内存）。 */
+		std::string data = bot::readAllLimited(f, bot::kMaxScriptBytes, "action script");
+		bot::MemoryReader in(std::move(data));
+		std::vector<mt::MatrixObject> parsed;
+		mt::readMatrix(in, parsed);
+		if (parsed.empty()) {
+			throw bot::IllegalArgumentException("'" + path + "': no matrix found");
+		}
+		const mt::MatrixObject& act = mtmerge::requireAction(parsed, path);
+		std::optional<mt::MatrixObject> alias = mtmerge::foldNamed(parsed, "Alias", path);
+		std::optional<mt::MatrixObject> vars = mtmerge::foldNamed(parsed, "Vars", path);
+
+		if (!accAction) {
+			accAction = act;	/* 拷贝：parsed 出作用域后仍需持有 */
+			accActionPath = path;
+		} else {
+			accAction = mtmerge::mergeTwo(*accAction, act, phase, accActionPath, path);
+			accActionPath += "+" + path;
+		}
+		if (alias) {
+			if (!accAlias) {
+				accAlias = std::move(*alias);
+				accAliasPath = path;
+			} else {
+				accAlias = mtmerge::mergeScalarRows(*accAlias, *alias, "Alias", accAliasPath, path);
+				accAliasPath += "+" + path;
+			}
+		}
+		if (vars) {
+			if (!accVars) {
+				accVars = std::move(*vars);
+				accVarsPath = path;
+			} else {
+				accVars = mtmerge::mergeScalarRows(*accVars, *vars, "Vars", accVarsPath, path);
+				accVarsPath += "+" + path;
+			}
 		}
 	}
 
-	if (inputs.size() < 2) {
+	std::vector<mt::MatrixObject> outMats;
+	if (accAlias) { outMats.push_back(std::move(*accAlias)); }
+	if (accVars) { outMats.push_back(std::move(*accVars)); }
+	outMats.push_back(std::move(*accAction));
+	return outMats;
+}
+
+/* 产物落盘：outPath 空 = 打印 stdout（可管道给 mybot）。返回退出码 0/1。 */
+int writeOutput(const std::vector<mt::MatrixObject>& mats, const std::string& outPath) {
+	if (outPath.empty()) {
+		mt::MatrixSaver::save(mats, std::cout);
+		return 0;
+	}
+	std::ofstream out(outPath, std::ios::binary);
+	if (!out) {
+		std::cerr << "mtmerge: 无法写入 '" << outPath << "'" << std::endl;
+		return 1;
+	}
+	mt::MatrixSaver::save(mats, out);
+	return 0;
+}
+
+} // namespace
+
+/* 审计 M-1 防线：--phase 合法范围（±10 万行）——常量单点在 mtmerge_core.hpp
+ * （与 @Include 的 phase 列共用），此处只引用。 */
+
+int main(int argc, char** argv) {
+	Options opt;
+	if (int rc = parseOptions(argc, argv, opt)) { return rc; }
+
+	if (opt.inputs.size() < 2) {
 		printHelp();
-		return inputs.empty() ? 0 : 2;
+		return opt.inputs.empty() ? 0 : 2;
 	}
 
 	try {
-		/* 逐个读入 .mt（字节上限与 mybot 动作脚本一致）：
-		 *   @Action 按序两两归并（每个输入带同一个 phase）；
-		 *   @Alias / @Vars 按行叠加，同名即报错。
-		 * 累积器先吃第 1 个输入，之后两两归并。 */
-		std::optional<mt::MatrixObject> accAction, accAlias, accVars;
-		std::string accActionPath, accAliasPath, accVarsPath;
-		for (const auto& path : inputs) {
-			std::ifstream f(path, std::ios::binary);
-			if (!f) {
-				std::cerr << "mtmerge: 无法打开 '" << path << "'" << std::endl;
-				return 1;
-			}
-			/* 审计 M-2 防线：与动作 stdin 通道共用的整段受限读取（分块 +
-			 * 超限即抛 ScriptTooLarge，单点在 actionsource.hpp）——先整体
-			 * 读入再判上限对超大文件形同虚设（限流之前就把全部字节吃进
-			 * 内存）。 */
-			std::string data = bot::readAllLimited(f, bot::kMaxScriptBytes, "action script");
-			bot::MemoryReader in(std::move(data));
-			std::vector<mt::MatrixObject> parsed;
-			mt::readMatrix(in, parsed);
-			if (parsed.empty()) {
-				throw bot::IllegalArgumentException("'" + path + "': no matrix found");
-			}
-			const mt::MatrixObject& act = mtmerge::requireAction(parsed, path);
-			std::optional<mt::MatrixObject> alias = mtmerge::foldNamed(parsed, "Alias", path);
-			std::optional<mt::MatrixObject> vars = mtmerge::foldNamed(parsed, "Vars", path);
-
-			if (!accAction) {
-				accAction = act;	/* 拷贝：parsed 出作用域后仍需持有 */
-				accActionPath = path;
-			} else {
-				accAction = mtmerge::mergeTwo(*accAction, act, phase, accActionPath, path);
-				accActionPath += "+" + path;
-			}
-			if (alias) {
-				if (!accAlias) {
-					accAlias = std::move(*alias);
-					accAliasPath = path;
-				} else {
-					accAlias = mtmerge::mergeScalarRows(*accAlias, *alias, "Alias", accAliasPath, path);
-					accAliasPath += "+" + path;
-				}
-			}
-			if (vars) {
-				if (!accVars) {
-					accVars = std::move(*vars);
-					accVarsPath = path;
-				} else {
-					accVars = mtmerge::mergeScalarRows(*accVars, *vars, "Vars", accVarsPath, path);
-					accVarsPath += "+" + path;
-				}
-			}
-		}
-
-		/* 产物顺序：@Alias、@Vars（若存在），最后 @Action。 */
-		std::vector<mt::MatrixObject> outMats;
-		if (accAlias) { outMats.push_back(std::move(*accAlias)); }
-		if (accVars) { outMats.push_back(std::move(*accVars)); }
-		outMats.push_back(std::move(*accAction));
-
-		if (outPath.empty()) {
-			mt::MatrixSaver::save(outMats, std::cout);
-		} else {
-			std::ofstream out(outPath, std::ios::binary);
-			if (!out) {
-				std::cerr << "mtmerge: 无法写入 '" << outPath << "'" << std::endl;
-				return 1;
-			}
-			mt::MatrixSaver::save(outMats, out);
-		}
+		std::vector<mt::MatrixObject> outMats = mergeInputs(opt.inputs, opt.phase);
+		return writeOutput(outMats, opt.outPath);
+	} catch (const OpenFail& e) {
+		std::cerr << "mtmerge: 无法打开 '" << e.path << "'" << std::endl;
+		return 1;
 	} catch (const std::exception& e) {
 		std::cerr << "mtmerge: " << e.what() << std::endl;
 		return 2;
 	}
-	return 0;
 }

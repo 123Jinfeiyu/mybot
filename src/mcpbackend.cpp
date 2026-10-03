@@ -40,7 +40,9 @@
 #include "agentprompt.hpp"	/* structureScriptHead / quoteUntrusted（context.get 素材） */
 #include "jsonparse.hpp"	/* parseJson */
 #include "robot.hpp"		/* RobotStruct 完整定义（context.get 的 registry()） */
-#include "util.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
+#include "util_env.hpp"
+#include "util_file.hpp"
+#include "util_utf8.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
 
 namespace fs = std::filesystem;
 
@@ -196,9 +198,48 @@ bool sendFrame(int fd, const std::string& payload) {
 
 /* 服务单条连接：帧循环直到对端关闭 / 协议违规 / 空闲超时 / 停止信号。
  * 空闲 deadline 逐帧重取（--mcp-idle-timeout 是「从现在起再等这么久」，
- * 墙钟预算是从连接起的绝对终点——两者由 idleDeadline 合成）。 */
+ * 墙钟预算是从连接起的绝对终点——两者由 idleDeadline 合成）。
+ * MCP-1（审计 P2-1）：authToken 非空时第一帧是认证帧——通过才进入正常循环，
+ * 不通过回执后断连（对端可修正重连）。失败的认证要落审计（kind=session，
+ * status=auth_failed）：它是「有进程在试探这条 socket」的信号，事后复盘
+ * 必须看得见；token 本身绝不进日志/审计/回执。 */
 void serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
 		std::ostream& log) {
+	if (!opts.authToken.empty()) {
+		std::string payload;
+		const FrameResult fr = readFrame(fd, payload, opts.recvTimeoutSec,
+			backend.idleDeadline(opts.idleTimeoutSec), log);
+		if (fr != FrameResult::Ok) {
+			/* 对端连上后连认证帧都没发就消失/超时——按违规口径断连即可，
+			 * 空闲超时的既有文案已覆盖「哑对端让位」的语义。 */
+			if (fr == FrameResult::IdleTimeout) {
+				log << "MCP 后端：认证帧未到，空闲超时/墙钟预算耗尽，断开连接\n";
+			} else if (fr == FrameResult::Violation) {
+				log << "MCP 后端：认证帧违规，断开连接\n";
+			}
+			return;
+		}
+		const McpAuthOutcome a = mcpCheckAuthFrame(opts.authToken, payload);
+		if (a == McpAuthOutcome::Ok) {
+			/* lock-step：认证帧也要回执（Rust 侧 authenticate 在等这一帧） */
+			if (!sendFrame(fd, "{\"success\":true,\"data\":{\"auth\":true}}")) {
+				log << "MCP 后端：认证回帧发送失败，断开连接\n";
+				return;
+			}
+			log << "MCP 后端：首帧认证通过\n";
+		} else {
+			/* 回执不回显 token、不区分「错密钥」与「没带密钥」——对试探者
+			 * 两者给同一句话，信息量最小化。 */
+			(void)sendFrame(fd, "{\"success\":false,\"error\":\"auth required:"
+				" first frame must be {\\\"_route\\\":\\\"auth\\\","
+				"\\\"token\\\":...}\"}");
+			log << "MCP 后端：首帧认证失败（" << (a == McpAuthOutcome::NotAuthFrame
+				? "第一帧不是 auth 帧" : "共享密钥不匹配")
+				<< "），断开连接\n";
+			backend.recordAuthRejected();
+			return;
+		}
+	}
 	while (!stopRequested()) {
 		std::string payload;
 		const FrameResult fr = readFrame(fd, payload, opts.recvTimeoutSec,
@@ -231,6 +272,43 @@ std::string mcpEncodeFrame(const std::string& payload) {
 		std::memcpy(&frame[kMcpHeaderSize], payload.data(), payload.size());
 	}
 	return frame;
+}
+
+/* ---- 首帧共享密钥校验（MCP-1，审计 P2-1）----
+ * 常数时间比对：长度差异折叠进累计差（先给 diff 喂长度差，再逐位异或累计），
+ * 全长走完才判——回应时间不泄露已匹配前缀的信息。 */
+namespace {
+
+bool constantTimeEqual(const std::string& a, const std::string& b) {
+	/* 上限对齐：token 上限 256（captureMcpAuthToken），两个短串不会溢出 */
+	const std::size_t n = std::max(a.size(), b.size());
+	unsigned diff = static_cast<unsigned>(a.size() ^ b.size());
+	for (std::size_t i = 0; i < n; ++i) {
+		const unsigned ca = i < a.size() ? static_cast<unsigned char>(a[i]) : 0u;
+		const unsigned cb = i < b.size() ? static_cast<unsigned char>(b[i]) : 0u;
+		diff |= ca ^ cb;
+	}
+	return diff == 0;
+}
+
+} // namespace
+
+McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string& payload) {
+	Json req;
+	try {
+		req = parseJson(payload);
+	} catch (const std::exception&) {
+		return McpAuthOutcome::Failed;
+	}
+	if (!req.isObj()) { return McpAuthOutcome::Failed; }
+	const Json* route = req.find("_route");
+	if (route == nullptr || !route->isStr() || route->getValue() != "auth") {
+		return McpAuthOutcome::NotAuthFrame;
+	}
+	const Json* token = req.find("token");
+	if (token == nullptr || !token->isStr()) { return McpAuthOutcome::Failed; }
+	return constantTimeEqual(expected, token->getValue())
+		? McpAuthOutcome::Ok : McpAuthOutcome::Failed;
 }
 
 bool mcpCheckPeerCred(int fd, std::ostream& log) {
@@ -531,6 +609,16 @@ void McpBackend::writeSessionRecord(const char* status) const {
 	audit_->write(e);
 }
 
+/* MCP-1（审计 P2-1）：认证失败落审计——「有进程在试探这条 socket」是事后复盘
+ * 必须看得见的信号；token 与失败详情都不进审计（信息量最小化，日志侧已有）。 */
+void McpBackend::recordAuthRejected() const {
+	if (!audit_ || !audit_->enabled()) { return; }
+	AuditEntry e;
+	e.kind = "session";
+	e.status = "auth_failed";
+	audit_->write(e);
+}
+
 /* ---- socket 服务 ---- */
 
 /* ---- 断连安全动作（2026-09-25，--on-disconnect）----
@@ -731,7 +819,11 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 
 	backend.writeSessionRecord("start");
 	log << "MCP 后端监听 " << opts.socketPath
-		<< "（单连接串行；SO_PEERCRED 校验 uid/gid；等待 sidecar 连接）\n";
+		<< "（单连接串行；SO_PEERCRED 校验 uid/gid"
+		<< (opts.authToken.empty()
+			? "；未设 BOT4CJ_MCP_TOKEN，同 UID 直连仅靠 loop 预算兜底"
+			: "；首帧共享密钥已启用（BOT4CJ_MCP_TOKEN）")
+		<< "；等待 sidecar 连接）\n";
 
 	const int rc = acceptLoop(ls.fd, backend, tctx, cfg, opts, log);
 

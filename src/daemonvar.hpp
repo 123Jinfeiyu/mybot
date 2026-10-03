@@ -7,10 +7,20 @@
  *   offset 72  double values[64]     采样值（TD-3：32 → 64，支持高通道数传感器）
  *   offset 584 uint8  stop           停止标志
  *   offset 588 int32  status         守护 setup 状态（N-27：0=正常；负=失败码）
+ *   offset 592 int32  quiesce        总线灭火位（BQ-1：仅弃管守护会被置位，见下）
  *
  * status 与 stop 之间那 3 字节是 stop 之后的既有对齐填充——status 落在这里
  * **不改变字段布局语义**，保持 count/nvals/values/stop 相对顺序；
  * 具名 reserved_ 只为显式占位，避免将来插字段时把 status 挤进隐式填充区。
+ *
+ * quiesce（2026-09-29，审计 P2-3 收口）：「停机灭火」协议位。宽限耗尽仍存活
+ * 的守护线程在弃管**之前**由主线程置位；此后该守护 lua_State 里经 HAL.lua 走的
+ * 一切真实总线传输（i2c/spi/uart）在进内核前被拒绝（modules/lib/HAL.lua 的
+ * bus_quiesced 检查，持同一把槽锁读）。语义与 stop 分开：stop 是「请退出」
+ * （宽限内退场的守护还要跑 daemon_cleanup 做去初始化，传输必须放行），
+ * quiesce 是「物理隔离」——只给确定要与硬件销毁并发的那批线程（弃管者）。
+ * 只置位、永不清零：deactivate 是进程终态；热删除的弃管者对应的器件已被
+ * 摘除，其槽随引用计数消亡，没有「复位再用」的场景。
  *
  * TD-3 变更记录（2026-09-22）：
  * - values 从 32 增至 64 个 double（256B → 512B）
@@ -18,6 +28,10 @@
  * - stop 偏移从 328 → 584
  * - status 偏移从 332 → 588
  * - 向后兼容：旧代码使用 ≤32 值的槽仍然正常工作
+ * BQ-1 变更记录（2026-09-29）：
+ * - 追加 quiesce（offset 592），槽总大小 592 → 600（values 的 8 字节对齐
+ *   使 struct 尾部填充到 600；旧 HAL.lua（无 quiesce 检查）在新槽上照常
+ *   工作：它只读既有偏移）
  */
 #include <atomic>
 #include <chrono>
@@ -38,7 +52,8 @@ constexpr int32_t SLOT_NVALS_OFF = 68;
 constexpr int32_t SLOT_VALUES_OFF = 72;
 constexpr int32_t SLOT_STOP_OFF = 584;   /* TD-3: 328 → 584 (64 values × 8 bytes = 512B) */
 constexpr int32_t SLOT_STATUS_OFF = 588; /* TD-3: 332 → 588 */
-constexpr int32_t SLOT_SIZE = 592;       /* TD-3: 336 → 592 */
+constexpr int32_t SLOT_QUIESCE_OFF = 592;/* BQ-1: 592（status 之后原样追加） */
+constexpr int32_t SLOT_SIZE = 600;       /* BQ-1: 592 → 600（quiesce 后 4B 尾部对齐填充） */
 constexpr int32_t SLOT_MAXVALS = 64;     /* TD-3: 32 → 64 */
 
 struct DaemonSlot {
@@ -49,6 +64,7 @@ struct DaemonSlot {
 	std::uint8_t stop;
 	std::uint8_t reserved_[3];	/* stop 之后的既有填充，显式具名 */
 	std::int32_t status;
+	std::int32_t quiesce;
 };
 static_assert(sizeof(DaemonSlot) == SLOT_SIZE, "DaemonSlot size must match SLOT_SIZE");
 static_assert(offsetof(DaemonSlot, count) == SLOT_COUNT_OFF, "count offset");
@@ -56,12 +72,16 @@ static_assert(offsetof(DaemonSlot, nvals) == SLOT_NVALS_OFF, "nvals offset");
 static_assert(offsetof(DaemonSlot, values) == SLOT_VALUES_OFF, "values offset");
 static_assert(offsetof(DaemonSlot, stop) == SLOT_STOP_OFF, "stop offset");
 static_assert(offsetof(DaemonSlot, status) == SLOT_STATUS_OFF, "status offset");
+static_assert(offsetof(DaemonSlot, quiesce) == SLOT_QUIESCE_OFF, "quiesce offset");
 
 /* stop 标志读写统一经槽内 mutex 临界区（P2 数据竞争防线）。
  * Lua 侧 pthread.lua 的 should_stop/signal_stop 同样持锁——两侧契约一致，
- * TSan 视角无裸读写竞态。status 同理（get/set_status 持锁）。 */
+ * TSan 视角无裸读写竞态。status 同理（get/set_status 持锁）。
+ * quiesce 同一纪律（daemon_quiesce / HAL.lua 的 bus_quiesced 均持锁）。 */
 void daemon_request_stop(DaemonSlot* slot);
 bool daemon_stop_requested(DaemonSlot* slot);
+void daemon_quiesce(DaemonSlot* slot);
+bool daemon_quiesced(DaemonSlot* slot);
 
 /* D/C4：解析 Daemon 的 interval 列（毫秒）。非法值（非整数/溢出/负/0/超 1h）
  * 抛 IllegalArgumentException 并点名表名与行号；成功返回毫秒数。
@@ -102,6 +122,9 @@ class DaemonRunner {
 	 * 不变式：置位必须先于守护线程构造（start 实现），否则线程已读写槽而本
 	 * 标志仍为 false 的窗口内，waitForExit 会误判「未 spawn」提前释放槽。 */
 	std::atomic<bool> spawned_{false};
+	/* BQ-1：finishTeardown 是否已对本守护执行过 daemon_quiesce——弃管后槽
+	 * 引用已移交线程，外部无从再读槽内位，此镜像供日志断言与单测观测。 */
+	std::atomic<bool> quiesced_{false};
 	/* 弱自引用（Factory 经 bindSelf 置位）：start 经 lock() 取回 shared_ptr
 	 * 交给守护线程保生命周期。必须是 weak_ptr——shared_ptr 自引用会让引用
 	 * 计数永不归零，每个守护固定泄漏 208B/4 次分配，LeakSanitizer 下所有
@@ -134,30 +157,36 @@ public:
 	/* 置停止标志（槽已交出/已释放则无事可做） */
 	void requestStop();
 
-	/* 停机等待核心：置停止 + 等到 deadline + 交出引用。
-	 * 返回 true = 线程已退场；false = 超时弃管。
-	 * deadline 由调用方给：单个守护停机（destroy）传 now+joinTimeoutMs_；
-	 * 断电屏障（RobotStruct::deactivate）传**全体共享**的同一个 deadline——
-	 * 逐个累加会让 N 个守护的最坏退出延迟变成 N×joinTimeout（审计 P2）。 */
-	bool waitUntil(const std::chrono::steady_clock::time_point& deadline);
+	/* ---- 停机序列两段（BQ-2，2026-09-29 审计 P2-3 收口）----
+	 * 原 waitUntil（等待即可能弃管）+ awaitExit（弃管后再宽限）合并重排为：
+	 *   ① requestStopAndWait(deadline)：置 stop + 等退场，**不弃管**——
+	 *      deadline 内未退场也保持槽在手（返回 false），灭火与弃管都还来得及；
+	 *   ② finishTeardown(graceMs, waitStart)：给宽限（graceMs<=0 跳过），
+	 *      宽限内退场 → true；仍未退场 → **先置 quiesce（灭火）再弃管**。
+	 * 重排的动机：旧序在等待超时点立即弃管、之后才给宽限，灭火位若要在弃管
+	 * 前置上就只能设在宽限之前——那会误伤「宽限内退场」的守护：它们的
+	 * daemon_cleanup 还要做去初始化传输，被拒即器件滞留采样态。新序把
+	 * quiesce 收敛到「宽限也耗尽」的最后一刻，只命中确定要与硬件销毁并发
+	 * 的线程（审计 P2-3：弃管守护触总线的竞态窗口从「无界」收敛到「灭火
+	 * 置位时刻的在途单次传输」）。
+	 * deadline/宽限语义与旧 waitUntil/awaitExit 一致：单守护 destroy 传
+	 * joinTimeout + 零宽限；断电屏障传全体共享 deadline（逐个累加会让 N 个
+	 * 守护的最坏退出延迟变成 N×joinTimeout）+ 封顶宽限。waitStart 仅用于
+	 * 弃管告警里的真实耗时统计。 */
+	bool requestStopAndWait(const std::chrono::steady_clock::time_point& deadline);
+	bool finishTeardown(int64_t graceMs,
+			const std::chrono::steady_clock::time_point& waitStart);
 
-	/* 带自身超时等待线程退出并释放槽；超时则弃管——主线程交出自己的引用，
-	 * 槽由守护线程副本兜底到最后（2.4：所有权移交即引用计数自然交接）。
+	/* 带自身超时等待线程退出并释放槽；超时则灭火 + 弃管——主线程交出自己的
+	 * 引用，槽由守护线程副本兜底到最后（2.4：所有权移交即引用计数自然交接）。
 	 * 幂等：槽已交出（含被断电屏障先等到/先弃管）即无事可做。 */
 	void waitForExit();
 
-	/* 弃管后的第二等待窗口（审计 P1 修复，2026-09-21）：
-	 * waitUntil 超时弃管只交出所有权、不会让线程停下——detached 线程可能
-	 * 仍在 tick/cleanup 中触碰总线。本方法**不改变弃管语义**（槽仍保持
-	 * 已交出，readSample 照旧按 ERR 契约返回），只是让调用方在动硬件之前
-	 * 再等一段宽限，给「慢拍/长阻塞但终会返回」的守护一次真正退场的机会，
-	 * 把「daemon 活着 + 总线已销毁」的竞态窗口收敛到确实卡死的线程。
-	 * 返回 true = 线程已确认退场（或从未 spawn / future 已消费）；false =
-	 * 宽限耗尽仍未退场。幂等：已 joined（future 已消费）直接返回 true。 */
-	bool awaitExit(int64_t graceMs);
-
 	/* 断电屏障用：算全体共享预算时要取各守护 joinTimeout 的最大值 */
 	int64_t joinTimeoutMs() const { return joinTimeoutMs_; }
+
+	/* BQ-1：本守护是否已被灭火（finishTeardown 的宽限耗尽路径置位） */
+	bool quiesced() const { return quiesced_.load(); }
 
 	/* 守护名（start 时定型），停机日志用 */
 	const std::string& name() const { return name_; }

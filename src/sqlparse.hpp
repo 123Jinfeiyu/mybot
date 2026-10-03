@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-#include "util.hpp"
+#include "util_except.hpp"
 
 namespace sql4cj {
 
@@ -152,11 +152,11 @@ struct Event {
 
 /* ------------- 词法分析器 ------------- */
 class Lexer {
-	bool flag_ = false;		/* 读到分号结尾 */
-	bool comma_ = false;		/* 逗号 */
-	bool rght_ = false;		/* 右括号 */
-	bool left_ = false;		/* 左括号（紧随一个已提交的 token 时挂起） */
-	bool eq_ = false;		/* 等号（同上：WHERE col=value 紧贴写法靠它切分） */
+	/* 挂起分隔符（2026-09-29 A3：五个独立布尔合并为单槽——挂起只在「产出
+	 * 一个词元」时发生，故任一时刻至多一个分隔符挂起，五个布尔里四个恒
+	 * false；单槽语义与原五布尔逐字等价）。取值 END/COMMA/LEFT/RGHT/EQ，
+	 * 配套落点见 pendLine_/pendCol_ 注释。 */
+	std::optional<TokenType> pendSep_;
 	/* 双写转义（#33）预读缓存：引号态内遇同种引号时预读下一字符，若非双写
 	 * 转义则本引号闭合、预读字符缓存于此，由 next() 主循环按常规处理。
 	 * -1 = 无缓存。 */
@@ -171,6 +171,11 @@ class Lexer {
 	int col_ = 1;
 	int pendLine_ = 0;
 	int pendCol_ = 0;
+
+	/* 2026-09-29 A3 拆分：引号态内单字符处理（'' 双写转义预读与闭合，语义
+	 * 逐字保持，见实现处）。仅在 inQuote 为真时由 next() 调用。 */
+	void appendQuoted(bot::Reader& sr, char c, bool& inQuote, char quoteChar,
+		std::string& s);
 
 public:
 	Token next(bot::Reader& sr);

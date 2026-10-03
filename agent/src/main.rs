@@ -19,6 +19,7 @@ mod config;
 mod frame;
 mod history;
 mod hook;
+mod ica;
 mod linein;
 mod model;
 mod out;
@@ -26,9 +27,9 @@ mod prompt;
 mod provider;
 mod repl;
 mod session;
+mod signals;
 mod summary;
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -42,6 +43,7 @@ use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::repl::Session;
 use crate::session::{SessionFileWriter, SessionHead};
+use crate::signals::install_signal_handlers;
 
 /// 连接后端的预算：后端上电 + 装结构脚本可能耗时（与 MCP sidecar 时代同值）。
 const CONNECT_TIMEOUT_SEC: u64 = 120;
@@ -64,7 +66,7 @@ async fn main() {
 /// 放在 tokio 运行时**之前**、`run()` 之前：密钥在 `config::build` 里读入，之后再设
 /// 已经晚了。`BOT4CJ_ALLOW_PTRACE=1` 是给 gdb attach / strace -p 的显式逃生口，
 /// stderr 明写「已放开」；prctl 失败只告警不退出（操作者必须知道防线缺位，但不该
-/// 让 agent 因此起不来）。与 C++ 宿主 `src/main.cpp` 的 `hardenAgainstInspection`
+/// 让 agent 因此起不起来）。与 C++ 宿主 `src/main.cpp` 的 `hardenAgainstInspection`
 /// 同口径。
 fn harden_against_inspection() {
     if std::env::var("BOT4CJ_ALLOW_PTRACE").is_ok_and(|v| v == "1") {
@@ -83,6 +85,77 @@ fn harden_against_inspection() {
             std::io::Error::last_os_error()
         );
     }
+}
+
+/// `--resume` 恢复出来的会话三件套（历史消息 / 历史摘要 / 原 session id）。
+struct Resumed {
+    history: Vec<rig_agent::completion::Message>,
+    summary: Option<String>,
+    session_id: String,
+}
+
+/// 会话持久化（批次 D）：`--resume` 的三道判据，放在系统提示词定稿之后、
+/// 任何审计写之前（早一步还没有 preamble 可比，晚一步就核不出「提示词
+/// 变没变」）——这条时序契约由调用点（run）持有，本函数只做判据本身：
+///   ① 逐行解析（load_session_file 内部完成，坏行跳过并点名）；
+///   ② 指纹核对（结构脚本名 / 工具集指纹 / 系统提示词指纹三者一致）；
+///   ③ 协议自洽（tool_call_id 无孤儿/无重复/无漏答——服务端会 400 的序列
+///      宁可当场拒绝）。
+/// 任一不过即 Err（人话原因，调用方退出 2）；ICA sidecar 恢复也在本函数
+/// （会话文件核对通过后才轮到它）。2026-09-29 B2 拆自 run()，报错文案
+/// 与退出语义逐字保持。
+async fn try_resume(
+    cfg: &Config,
+    bridge: &Bridge,
+    tool_names: &[String],
+    preamble: &str,
+    material: &PromptMaterial,
+) -> Result<Resumed, String> {
+    let mut loaded = session::LoadedSession::default();
+    let mut warnings = Vec::new();
+    match session::load_session_file(&cfg.session_file, &mut loaded, &mut warnings) {
+        Ok(()) => {
+            for w in &warnings {
+                errln!("[mybot-agent] {w}");
+            }
+            let expected = SessionHead {
+                version: session::SESSION_FILE_VERSION,
+                session_id: String::new(),
+                robot: material.robot_name.clone(),
+                tools_fp: session::tools_fingerprint(tool_names),
+                system_fp: crate::audit::fingerprint64(preamble),
+            };
+            if let Some(reason) = session::head_mismatch(&expected, &loaded.head) {
+                return Err(format!("会话恢复失败: {reason}"));
+            }
+            if let Some(reason) = session::protocol_violation(&loaded.messages) {
+                return Err(format!(
+                    "会话文件 '{}' 的历史不满足工具调用协议自洽（{reason}），\
+                     拒绝恢复（这份历史送去模型服务端会被 400）",
+                    cfg.session_file
+                ));
+            }
+            errln!(
+                "[mybot-agent] 已恢复会话：{} 条历史消息{}（来自 {}）",
+                loaded.messages.len(),
+                loaded
+                    .summary
+                    .as_ref()
+                    .map(|s| format!("，含历史摘要 {} 字节", s.len()))
+                    .unwrap_or_default(),
+                cfg.session_file
+            );
+        }
+        Err(e) => return Err(e),
+    }
+    bridge
+        .ica_restore(&cfg.session_file)
+        .map_err(|e| format!("ICA 会话恢复失败: {e}"))?;
+    Ok(Resumed {
+        history: loaded.messages,
+        summary: loaded.summary,
+        session_id: loaded.head.session_id,
+    })
 }
 
 async fn run() -> i32 {
@@ -136,8 +209,8 @@ async fn run() -> i32 {
     ));
     install_signal_handlers(Arc::clone(&state));
 
-    // ---- 后端：连接 → 工具表 → 提示词素材 ----
-    let client =
+    // ---- 后端：连接 → 首帧认证（可选） → 工具表 → 提示词素材 ----
+    let mut client =
         match BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
             .await
         {
@@ -147,6 +220,17 @@ async fn run() -> i32 {
                 return 1;
             }
         };
+    // MCP-1（审计 P2-1）：后端设了 BOT4CJ_MCP_TOKEN 时，第一条帧必须是共享密钥
+    // 认证。与 C++ 宿主读取同一个环境变量名（宿主在抹零前捕获，本进程在
+    // prctl 收窄 /proc 下读取之后、此处第一次也是唯一一次读）。
+    if let Ok(token) = std::env::var("BOT4CJ_MCP_TOKEN") {
+        if !token.is_empty() {
+            if let Err(e) = client.authenticate(&token).await {
+                errln!("错误: {e}");
+                return 1;
+            }
+        }
+    }
     let bridge = Arc::new(Bridge::new(client, Arc::clone(&state)));
     let specs = match bridge.list_tools().await {
         Ok(s) => s,
@@ -172,7 +256,7 @@ async fn run() -> i32 {
             return 2;
         }
     };
-    let preamble =
+    let mut preamble =
         match prompt::build_system_prompt(&cfg.driver, &cfg.llm_var, &cfg.prompt_pack, &material) {
             Ok(p) => p,
             Err(e) => {
@@ -180,65 +264,23 @@ async fn run() -> i32 {
                 return 2;
             }
         };
-
-    // ---- 会话持久化（批次 D）：--resume 的三道判据，放在系统提示词定稿之后、
-    //      任何审计写之前（早一步还没有 preamble 可比，晚一步就核不出「提示词
-    //      变没变」）----
-    //   ① 逐行解析（load_session_file 内部完成，坏行跳过并点名）；
-    //   ② 指纹核对（结构脚本名 / 工具集指纹 / 系统提示词指纹三者一致）；
-    //   ③ 协议自洽（tool_call_id 无孤儿/无重复/无漏答——服务端会 400 的序列
-    //      宁可当场拒绝）。
-    // 任一不过即拒绝并退出 2；不是 `--resume` 时这一段整体跳过（零行为变更）。
-    let mut resume_history: Vec<rig_agent::completion::Message> = Vec::new();
-    let mut resume_summary: Option<String> = None;
-    let mut resume_session_id = String::new();
-    if cfg.resume {
-        let mut loaded = session::LoadedSession::default();
-        let mut warnings = Vec::new();
-        match session::load_session_file(&cfg.session_file, &mut loaded, &mut warnings) {
-            Ok(()) => {
-                for w in &warnings {
-                    errln!("[mybot-agent] {w}");
-                }
-                let expected = SessionHead {
-                    version: session::SESSION_FILE_VERSION,
-                    session_id: String::new(),
-                    robot: material.robot_name.clone(),
-                    tools_fp: session::tools_fingerprint(&tool_names),
-                    system_fp: crate::audit::fingerprint64(&preamble),
-                };
-                if let Some(reason) = session::head_mismatch(&expected, &loaded.head) {
-                    errln!("错误: 会话恢复失败: {reason}");
-                    return 2;
-                }
-                if let Some(reason) = session::protocol_violation(&loaded.messages) {
-                    errln!(
-                        "错误: 会话文件 '{}' 的历史不满足工具调用协议自洽（{reason}），\
-                         拒绝恢复（这份历史送去模型服务端会被 400）",
-                        cfg.session_file
-                    );
-                    return 2;
-                }
-                errln!(
-                    "[mybot-agent] 已恢复会话：{} 条历史消息{}（来自 {}）",
-                    loaded.messages.len(),
-                    loaded
-                        .summary
-                        .as_ref()
-                        .map(|s| format!("，含历史摘要 {} 字节", s.len()))
-                        .unwrap_or_default(),
-                    cfg.session_file
-                );
-                resume_session_id = loaded.head.session_id;
-                resume_history = loaded.messages;
-                resume_summary = loaded.summary;
-            }
-            Err(e) => {
-                errln!("错误: {e}");
-                return 2;
-            }
+    if bridge.ica_enabled() {
+        preamble.push_str(ica::preamble_section());
+        if preamble.len() > 65_536 {
+            errln!("错误: 开启 ICA 后系统提示词超过 65536 字节上限");
+            return 2;
         }
     }
+
+    // ---- 会话恢复（--resume；判据与时序契约见 try_resume）----
+    let (resume_history, resume_summary, resume_session_id) = if cfg.resume {
+        match try_resume(&cfg, &bridge, &tool_names, &preamble, &material).await {
+            Ok(r) => (r.history, r.summary, r.session_id),
+            Err(e) => return config_error(&e),
+        }
+    } else {
+        (Vec::new(), None, String::new())
+    };
     if !cfg.session_file.is_empty() {
         let w = session::perms_warning(&cfg.session_file);
         if !w.is_empty() {
@@ -346,72 +388,6 @@ async fn run() -> i32 {
 fn config_error(msg: &str) -> i32 {
     errln!("错误: {msg}");
     2
-}
-
-/// D4：SIGINT/SIGTERM 处理器——首次只置停止标志（钩子在轮循环开头与逐条派发之前
-/// 都会看它），让在飞的模型调用与后续派发停下来、会话走正常收尾；
-/// **第二次升级为强杀**（还原缺省处置并重新触发信号——与 C++ `onStopSignal` 同款，
-/// 连退出码都交给信号本身），因为优雅路径本身也可能被卡住（驱动阻塞在不可中断的
-/// 系统调用里等）。
-///
-/// 在飞请求的处置：`model.rs` 的 `guard`（阻塞面与流式首帧）和 `Observed`（流式余流）
-/// 都对停止标志定时轮询，Ctrl-C 之后在途请求**立即被丢弃**、本轮以「请求被中断」
-/// 收场——与旧 C++ agent 用取消哨兵掐断 libcurl 请求的效果同款（延迟 ≤ 一个轮询周期）。
-fn install_signal_handlers(state: Arc<HookState>) {
-    tokio::spawn(async move {
-        let mut sigint = signal_stream(libc::SIGINT);
-        let mut sigterm = signal_stream(libc::SIGTERM);
-        loop {
-            tokio::select! {
-                r = recv(&mut sigint) => if !r { break },
-                r = recv(&mut sigterm) => if !r { break },
-            }
-            if state.stop.swap(true, Ordering::SeqCst) {
-                errln!("[mybot-agent] 再次收到停止信号，立即退出（跳过清理）");
-                // SAFETY: signal/raise 都是 async-signal-safe 且此处不在信号处理器内；
-                // 还原缺省处置后重新触发，让进程按信号语义终止（与 C++ 同款）。
-                unsafe {
-                    libc::signal(libc::SIGINT, libc::SIG_DFL);
-                    libc::signal(libc::SIGTERM, libc::SIG_DFL);
-                }
-                std::process::exit(130);
-            }
-            errln!(
-                "[mybot-agent] 收到停止信号：不再发起新的模型调用与工具下发，本轮以「执行被中断」收场\
-                 （再按一次立即退出）"
-            );
-        }
-    });
-}
-
-type SignalStream = Option<tokio::signal::unix::Signal>;
-
-fn signal_stream(sig: libc::c_int) -> SignalStream {
-    use tokio::signal::unix::{signal, SignalKind};
-    let kind = if sig == libc::SIGINT {
-        SignalKind::interrupt()
-    } else {
-        SignalKind::terminate()
-    };
-    match signal(kind) {
-        Ok(s) => Some(s),
-        Err(e) => {
-            // 装不上不是致命的：取消仍可由二次信号（默认处置）或 stdin EOF 收场
-            errln!("[mybot-agent] 警告: 无法安装信号处理器（{e}）；Ctrl-C 将沿用缺省处置");
-            None
-        }
-    }
-}
-
-async fn recv(s: &mut SignalStream) -> bool {
-    match s {
-        Some(s) => s.recv().await.is_some(),
-        // 装不上处理器时这一路永不就绪（另一路仍然有效）
-        None => {
-            std::future::pending::<()>().await;
-            false
-        }
-    }
 }
 
 /// 提示词包：加载 + H2 根约束。

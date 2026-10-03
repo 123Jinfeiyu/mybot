@@ -13,6 +13,8 @@
 --   offset 72  double  values[64]   采样值（TD-3: 32 → 64，支持高通道数传感器）
 --   offset 584 uint8   stop         停止标志（TD-3: 328 → 584）
 --   offset 588 int32   status       守护 setup 状态（TD-3: 332 → 588）
+--   offset 592 int32   quiesce      总线灭火位（BQ-1：仅弃管守护被置位；HAL 的
+--                                   bus_quiesced 持锁读，置位后传输一律拒绝）
 --
 -- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 HAL.lua 已定义的
 -- open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，重复 cdef 会报错）。
@@ -67,14 +69,17 @@ typedef struct {
 	uint8_t  stop;
 	uint8_t  reserved[3];
 	int32_t  status;
+	int32_t  quiesce;
 } daemon_slot_t;
 ]]
 
 -- 2.7：布局常量的单一事实源在宿主（daemonvar.hpp struct + 静态断言），
 -- 守护启动时经 DAEMON_SLOT_LAYOUT 注入；此处手写值仅为无宿主注入环境兜底。
 -- TD-3（2026-09-22）：values 从 32 增至 64，槽大小从 336B 增至 592B
+-- BQ-1（2026-09-29）：追加 quiesce（offset 592），8 字节对齐使槽大小 592B → 600B
 local base_layout = DAEMON_SLOT_LAYOUT or
-	{ count = 64, nvals = 68, values = 72, stop = 584, status = 588, size = 592, maxvals = 64 }
+	{ count = 64, nvals = 68, values = 72, stop = 584, status = 588,
+	  quiesce = 592, size = 600, maxvals = 64 }
 
 P.SLOT_MAXVALS = base_layout.maxvals
 

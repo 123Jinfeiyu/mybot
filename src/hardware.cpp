@@ -5,6 +5,9 @@
 #include <iostream>
 #include <stdexcept>
 
+#include "util_env.hpp"
+#include "util_num.hpp"
+
 namespace bot {
 
 double MatrixVars_Hardware::parseMtDouble(const mt::MatrixObject& obj, std::int64_t row, std::int64_t col) {

@@ -15,6 +15,9 @@
  *
  * 认证（评估 §3.1，用户定为「仅 SO_PEERCRED」）：socket 落 0700 目录、文件 0600，
  * accept 后用内核 SO_PEERCRED 校验对端 uid/gid == 本进程，不匹配即断连。
+ * 2026-09-29 起叠加**首帧共享密钥**（审计 P2-1 落地，MCP-1）：BOT4CJ_MCP_TOKEN
+ * 非空时每条连接的第一帧必须是 {"_route":"auth","token":...}，常数时间比对，
+ * 失败即断连 + 审计（见 mcpCheckAuthFrame / serveConnection）。
  *
  * ⚠ 残留风险（评估 §3.2 的尖锐推论，必须**响亮**告知、不得藏）：
  *   SO_PEERCRED 只挡**别的用户**，挡不住**同 uid** 的进程——而模型驱动的
@@ -25,11 +28,15 @@
  *        run_command 子进程**不继承**它（但仍可自己 connect 到路径——CLOEXEC 挡不住）；
  *     ② 0700 目录 + 不可预测路径提高发现成本；
  *     ③ 每连接预算再强制（--mcp-call-budget/--mcp-wall-clock）限制跑飞；
- *     ④ 后端开 run_command/apply_sql 时**强制** --agent-policy 逐次外部确认（buildAgentConfig 11b）。
- *   诚实建议：后端模式下**尽量不要开 --agent-shell**；若必须开，把后端跑在专用
- *   用户 / 容器里（真正的隔离），或将来加回首帧共享密钥 BOT4CJ_MCP_TOKEN——该名字
- *   含 token，会被 isSensitiveEnvName 自动从 run_command 子进程环境剔除并抹零，
- *   模型驱动的 shell 拿不到它（评估 §3.1 的「免费隔离」协同点）。
+ *     ④ 后端开 run_command/apply_sql 时**强制** --agent-policy 逐次外部确认（buildAgentConfig 11b）；
+ *     ⑤ 首帧共享密钥 BOT4CJ_MCP_TOKEN（MCP-1 已实现，本注释下方「认证」段）：不设
+ *        密钥的连接一律拒绝。密钥只进宿主内存与 Rust agent 进程——名字含
+ *        token，被 isSensitiveEnvName 自动从 run_command 子进程环境剔除并抹零，
+ *        且宿主的 PR_SET_DUMPABLE=0 收窄 /proc/<pid>/environ 的同 UID 读取
+ *        （评估 §3.1 的「免费隔离」协同点，原为「将来加回」的建议）。
+ *   未设 BOT4CJ_MCP_TOKEN 时回到「仅 SO_PEERCRED」的旧行为——残留风险同前，
+ *   操作者应自行权衡（后端模式下**尽量不要开 --agent-shell**；若必须开，把后端
+ *   跑在专用用户 / 容器里，或设置 BOT4CJ_MCP_TOKEN）。
  */
 
 #include <chrono>
@@ -80,6 +87,11 @@ struct McpBackendOptions {
 	int idleTimeoutSec = 0;
 	bool requirePeerCred = true;	/* accept 后 SO_PEERCRED 校验 uid/gid（单测可关） */
 	int recvTimeoutSec = 10;	/* deadline recv 空闲超时（防 Slowloris，评估 §7.1） */
+	/* 首帧共享密钥（MCP-1，审计 P2-1）：非空 = 每条连接必须先过 {"_route":"auth",
+	 * "token":...} 才进入正常帧循环；空 = 不启用（仅 SO_PEERCRED 的旧行为）。
+	 * 由 agentmode.cpp 的 captureMcpAuthToken 从 BOT4CJ_MCP_TOKEN 捕获后经
+	 * main.cpp 的 runMcpBackendPipeline 填入（env 在宿主抹零前捕获）。 */
+	std::string authToken;
 };
 
 /* ---- 纯协议件（不碰 socket，可离线单测）---- */
@@ -108,6 +120,18 @@ bool mcpCheckPeerCred(int fd, std::ostream& log);
  * （临时目录里造 listening/stale/非 socket 三态），与 mcpCheckPeerCred 同惯例。 */
 enum class McpSocketProbe { PathFree, PathBusy, PathUnusable };
 McpSocketProbe mcpProbeSocketPath(const std::string& path, std::string& why);
+
+/* ---- 首帧共享密钥校验（MCP-1，审计 P2-1，纯协议件可离线单测）----
+ * payload 是连接的第一帧载荷。三态：
+ *   Ok          —— 是 auth 帧（{"_route":"auth","token":...}）且 token 匹配；
+ *   Failed      —— 是 auth 帧但 token 不匹配 / token 字段缺失或非字符串 /
+ *                  载荷不是合法 JSON / 顶层不是对象；
+ *   NotAuthFrame—— 合法 JSON 对象但 _route 不是 "auth"（旧客户端直接发
+ *                  tool.list 之类的首个请求，需要与「密钥错了」区分开报错）。
+ * 比对常数时间（长度差异折叠进累计差，不短路）：本地同 UID 攻击者逐字节
+ * 测回应时间的侧信道在此威胁模型下不算近路，但常数时间是免费的，做了。 */
+enum class McpAuthOutcome { Ok, Failed, NotAuthFrame };
+McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string& payload);
 
 /* 后端会话状态 + 路由。持有工具注册表、派发漏斗（DispatchGate）与每连接预算。
  * handleRequest / handleFrame 是纯逻辑（Json/文本 → Json/文本），不碰 socket，
@@ -156,6 +180,9 @@ public:
 	/* 整服务端**一** session（用户定）：在 accept 循环外写 start，停机时写 end。
 	 * driver/model/endpoint 留空（后端不调模型）；audit 未开启时 no-op。 */
 	void writeSessionRecord(const char* status) const;
+
+	/* MCP-1：首帧认证失败落审计（kind=session, status=auth_failed；无 token 泄漏）。 */
+	void recordAuthRejected() const;
 
 	const AgentToolRegistry& tools() const { return tools_; }
 

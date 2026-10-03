@@ -73,6 +73,15 @@ struct AgentModeConfig {
 	 * （runActionScriptFile），但**不经 DispatchGate/策略确认**：这是操作者
 	 * 预先配置的安全动作，不是模型的请求，等外部闸门反而违背它的目的。 */
 	std::string onDisconnectScript;
+	/* MCP 首帧共享密钥（2026-09-29，审计 P2-1 落地；mcpbackend.hpp 残留风险
+	 * 清单里自陈的设计）。**只从环境变量 BOT4CJ_MCP_TOKEN 读**（命令行传密钥
+	 * 会进 /proc/<pid>/cmdline 全局可读；配置文件是模型路径的低信任层）。
+	 * 空串 = 不启用（现状语义）；设置但为空 / 超长 = 配置错误，上电前失败。
+	 * 时序要点：必须在 prepareAgentConfig 的 scrubEnvSecrets **之前**捕获成
+	 * std::string——该名字含 "token"，会被 isSensitiveEnvName 从宿主环境抹零
+	 * （这正是设计的一环：模型驱动的 run_command 子进程拿不到它，
+	 * /proc/<宿主>/environ 也读不到）。 */
+	std::string mcpAuthToken;
 	bool verbose = true;
 
 	/* ---- 上下文字节预算（B1）----

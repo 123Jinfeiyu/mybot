@@ -17,7 +17,6 @@
 #include <set>
 #include <string>
 
-#include "util.hpp"
 
 namespace bot {
 

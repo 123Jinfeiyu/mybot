@@ -83,6 +83,7 @@ endif()
 set(MYBOT_CORE_SOURCES
   src/json.cpp
   src/jsonparse.cpp
+  src/jsonconfig.cpp
   src/llmconfig.cpp
   src/matrix.cpp
   src/expr.cpp

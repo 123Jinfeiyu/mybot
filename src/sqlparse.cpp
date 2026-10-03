@@ -3,6 +3,7 @@
 #include <stdexcept>
 
 #include "expr.hpp"
+#include "util_num.hpp"
 
 namespace sql4cj {
 
@@ -135,12 +136,32 @@ Token positionedToken(TokenType type, int line, int col) {
 
 } // namespace
 
+/* F-02/#33：引号态内单字符处理（2026-09-29 A3 拆自 next，语义逐字保持）。
+ * 同种引号再现时预读下一字符：仍是同种引号 → '' 双写转义，追加一个字面
+ * 引号并保持引号态；否则本引号闭合，预读字符缓存到 pendingChar_ 交由
+ * next() 主循环按常规处理（注释/分隔符/新 token）。其余字符按字面追加。
+ * 位置推进（含预读字符）与原实现一致。 */
+void Lexer::appendQuoted(bot::Reader& sr, char c, bool& inQuote, char quoteChar,
+		std::string& s) {
+	if (c == quoteChar) {
+		int ci2 = sr.read();
+		if (ci2 >= 0) {
+			char c2 = static_cast<char>(ci2);
+			if (c2 == '\n') { line_ += 1; col_ = 1; } else { col_ += 1; }
+			if (c2 == quoteChar) { s += quoteChar; return; }
+			pendingChar_ = ci2;
+		}
+	}
+	s += c;
+	if (c == quoteChar) { inQuote = false; }
+}
+
 Token Lexer::next(bot::Reader& sr) {
-	if (flag_) { flag_ = false; return positionedToken(TokenType::END, pendLine_, pendCol_); }
-	if (comma_) { comma_ = false; return positionedToken(TokenType::COMMA, pendLine_, pendCol_); }
-	if (rght_) { rght_ = false; return positionedToken(TokenType::RGHT, pendLine_, pendCol_); }
-	if (left_) { left_ = false; return positionedToken(TokenType::LEFT, pendLine_, pendCol_); }
-	if (eq_) { eq_ = false; return positionedToken(TokenType::EQ, pendLine_, pendCol_); }
+	if (pendSep_) {
+		const TokenType t = *pendSep_;
+		pendSep_.reset();
+		return positionedToken(t, pendLine_, pendCol_);
+	}
 
 	std::string s;
 	int tokLine = 0, tokCol = 0;	/* 当前 token 首字符落点（1 起） */
@@ -175,17 +196,7 @@ Token Lexer::next(bot::Reader& sr) {
 		 * 引号 → 追加一个字面引号并**保持引号态**；否则本引号闭合，预读字符
 		 * 缓存到 pendingChar_ 交由主循环按常规处理（注释/分隔符/新 token）。 */
 		if (inQuote) {
-			if (c == quoteChar) {
-				int ci2 = sr.read();
-				if (ci2 >= 0) {
-					char c2 = static_cast<char>(ci2);
-					if (c2 == '\n') { line_ += 1; col_ = 1; } else { col_ += 1; }
-					if (c2 == quoteChar) { s += quoteChar; continue; }
-					pendingChar_ = ci2;
-				}
-			}
-			s += c;
-			if (c == quoteChar) { inQuote = false; }
+			appendQuoted(sr, c, inQuote, quoteChar, s);
 			continue;
 		}
 		if (s.empty() && (c == '\'' || c == '"')) {
@@ -212,27 +223,27 @@ Token Lexer::next(bot::Reader& sr) {
 		 * 零行为变化。 */
 		else if (s.empty() && c == ';') { return positionedToken(TokenType::END, curLine, curCol); }
 		else if (!s.empty() && c == ';') {
-			flag_ = true; pendLine_ = curLine; pendCol_ = curCol;
+			pendSep_ = TokenType::END; pendLine_ = curLine; pendCol_ = curCol;
 			return finishToken(s, tokLine, tokCol);
 		}
 		else if (s.empty() && c == ',') { return positionedToken(TokenType::COMMA, curLine, curCol); }
 		else if (!s.empty() && c == ',') {
-			comma_ = true; pendLine_ = curLine; pendCol_ = curCol;
+			pendSep_ = TokenType::COMMA; pendLine_ = curLine; pendCol_ = curCol;
 			return finishToken(s, tokLine, tokCol);
 		}
 		else if (s.empty() && c == '(') { return positionedToken(TokenType::LEFT, curLine, curCol); }
 		else if (!s.empty() && c == '(') {
-			left_ = true; pendLine_ = curLine; pendCol_ = curCol;
+			pendSep_ = TokenType::LEFT; pendLine_ = curLine; pendCol_ = curCol;
 			return finishToken(s, tokLine, tokCol);
 		}
 			else if (s.empty() && c == ')') { return positionedToken(TokenType::RGHT, curLine, curCol); }
 			else if (!s.empty() && c == ')') {
-				rght_ = true; pendLine_ = curLine; pendCol_ = curCol;
+				pendSep_ = TokenType::RGHT; pendLine_ = curLine; pendCol_ = curCol;
 				return finishToken(s, tokLine, tokCol);
 			}
 			else if (s.empty() && c == '=') { return positionedToken(TokenType::EQ, curLine, curCol); }
 			else if (!s.empty() && c == '=') {
-				eq_ = true; pendLine_ = curLine; pendCol_ = curCol;
+				pendSep_ = TokenType::EQ; pendLine_ = curLine; pendCol_ = curCol;
 				return finishToken(s, tokLine, tokCol);
 			}
 		else {

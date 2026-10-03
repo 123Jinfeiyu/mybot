@@ -32,7 +32,10 @@
 #include "hardware.hpp"
 #include "luavar.hpp"	/* D：回显回收通道 MtVars_Lua::setCallEchoSink */
 #include "robot.hpp"
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_num.hpp"
+#include "util_str.hpp"
 
 namespace fs = std::filesystem;
 

@@ -24,6 +24,7 @@
 //! 如实写明「已执行」）。语义单点在 budget.rs。
 
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use rig_agent::tool::DynamicTool;
 use rig_core::tool::{PortableDynamicTool, ToolExecutionError, ToolOutput};
@@ -32,6 +33,7 @@ use tokio::sync::Mutex;
 
 use crate::frame::BackendClient;
 use crate::hook::HookState;
+use crate::ica::IcaLedger;
 use crate::out::errln;
 
 /// 一条工具描述（后端 `tool.list` 的一条）。
@@ -102,6 +104,7 @@ pub struct Bridge {
     client: Arc<Mutex<BackendClient>>,
     /// 循环层共享状态：任务内预算（admit）与待注入图片队列
     state: Arc<HookState>,
+    ica: Option<Arc<StdMutex<IcaLedger>>>,
 }
 
 impl Bridge {
@@ -109,7 +112,54 @@ impl Bridge {
         Self {
             client: Arc::new(Mutex::new(client)),
             state,
+            ica: (std::env::var("BOT4CJ_ICA").as_deref() == Ok("1"))
+                .then(|| Arc::new(StdMutex::new(IcaLedger::default()))),
         }
+    }
+
+    pub fn ica_enabled(&self) -> bool {
+        self.ica.is_some()
+    }
+
+    pub fn observe_user(&self, task: &str) {
+        if let Some(ica) = &self.ica {
+            let mut ledger = ica.lock().unwrap_or_else(|e| e.into_inner());
+            ledger.begin_task(task);
+        }
+    }
+
+    pub fn ica_note(&self) -> Option<String> {
+        self.ica
+            .as_ref()
+            .map(|ica| ica.lock().unwrap_or_else(|e| e.into_inner()).final_note())
+    }
+
+    pub fn ica_summary(&self) -> Option<String> {
+        self.ica
+            .as_ref()
+            .map(|ica| ica.lock().unwrap_or_else(|e| e.into_inner()).summary())
+    }
+
+    pub fn ica_clear(&self) {
+        if let Some(ica) = &self.ica {
+            *ica.lock().unwrap_or_else(|e| e.into_inner()) = IcaLedger::default();
+        }
+    }
+
+    pub fn ica_save(&self, session_file: &str) -> Result<(), String> {
+        if let Some(ica) = &self.ica {
+            ica.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .save(session_file)?;
+        }
+        Ok(())
+    }
+
+    pub fn ica_restore(&self, session_file: &str) -> Result<(), String> {
+        if let Some(ica) = &self.ica {
+            *ica.lock().unwrap_or_else(|e| e.into_inner()) = IcaLedger::load(session_file)?;
+        }
+        Ok(())
     }
 
     /// 发一个 `_route` 请求。传输失败与后端 `success:false` 都折成 `Err(文本)`——
@@ -154,6 +204,15 @@ impl Bridge {
                 parameters: to_input_schema(t.get("inputSchema")),
             });
         }
+        if self.ica.is_some() {
+            if crate::ica::specs()
+                .iter()
+                .any(|i| specs.iter().any(|s| s.name == i.name))
+            {
+                return Err("后端工具名与 ICA 工具名冲突".into());
+            }
+            specs.extend(crate::ica::specs());
+        }
         Ok(specs)
     }
 
@@ -166,6 +225,25 @@ impl Bridge {
     /// 调一个工具（`tool.call`）。`Err` = 传输失败或后端整体拒绝；`Ok(ok=false)`
     /// = 工具级失败（回执文本照样给模型看）。
     pub async fn call(&self, name: &str, arguments: Value) -> Result<ToolOutcome, String> {
+        if name.starts_with("ica_") {
+            let ica = self.ica.as_ref().ok_or("ICA 未启用")?;
+            let text = ica
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .execute(name, &arguments)?;
+            return Ok(ToolOutcome {
+                text,
+                ok: true,
+                executed: true,
+                ..Default::default()
+            });
+        }
+        let action_future = if let Some(ica) = &self.ica {
+            let ledger = ica.lock().unwrap_or_else(|e| e.into_inner());
+            ledger.authorize_action(name, &arguments)?
+        } else {
+            String::new()
+        };
         let mut extra = Map::new();
         extra.insert("name".to_string(), Value::String(name.to_string()));
         extra.insert("arguments".to_string(), arguments);
@@ -177,7 +255,7 @@ impl Bridge {
                 .unwrap_or("")
                 .to_string()
         };
-        Ok(ToolOutcome {
+        let mut outcome = ToolOutcome {
             text: get_str("text"),
             image_data_url: get_str("imageDataUrl"),
             ok: data.get("ok").and_then(Value::as_bool).unwrap_or(true),
@@ -191,7 +269,33 @@ impl Bridge {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             summary: get_str("summary"),
-        })
+        };
+        if let Some(ica) = &self.ica {
+            let source = if outcome.ok && outcome.executed {
+                "tool"
+            } else {
+                "tool_error"
+            };
+            let id = ica.lock().unwrap_or_else(|e| e.into_inner()).observe(
+                source,
+                name,
+                &outcome.model_text(),
+            );
+            if !action_future.is_empty() {
+                ica.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .action_result(&action_future, &id);
+            }
+            outcome.text.push_str(&format!(
+                "\n[ICA observation {id}; source={name}; this is not verified fact]"
+            ));
+            if !action_future.is_empty() {
+                outcome.text.push_str(&format!(
+                    "\n[ICA {action_future}] 行动回执已经到达；请用 ica_compare_future 对照预测与观察 {id}，不要把执行成功等同于目标达成。"
+                ));
+            }
+        }
+        Ok(outcome)
     }
 
     /// 任务内预算判定与图片收集（语义见 budget.rs / 模块头）。

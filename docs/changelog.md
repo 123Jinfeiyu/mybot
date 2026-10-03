@@ -9,6 +9,27 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-09-29 三项安全收口：MCP 首帧共享密钥 / 停机灭火 / 信任前提体检
+
+- **MCP 首帧共享密钥 `BOT4CJ_MCP_TOKEN`（审计 P2-1）**：设了它，`SO_PEERCRED` 之上每条连接
+  还须先过 `{"_route":"auth","token":...}` 认证帧（常数时间比对，失败断连 + 审计
+  `auth_failed`）。此前 `mcpbackend.hpp` 自陈的同 UID 直连绕过 agent 预算的残留风险从此
+  有了可选项：密钥名含 token，被 `run_command` 的环境清洗自动剔除，模型驱动的 shell 拿不到。
+  设置但为空/超 256 字节拒绝启动（不静默退回无认证）。C++ 与 Rust 两侧读同一环境变量，
+  旧版不配对会在报错里点名（unknown route ↔ auth required）。
+  回归：`test_mcpbackend` 三态单测、`mcp_e2e.sh` M6、`agent_e2e.sh` R17（两进程正反面）。
+- **停机灭火协议（审计 P2-3）**：守护共享槽新增 `quiesce` 位（offset 592，槽 592→600B），
+  `DaemonRunner` 停机序列重排为「等待（不弃管）→ 宽限 → 仍未退场才**先灭火再弃管**」。
+  灭火后该守护经 HAL 的一切真实总线传输（i2c/spi/uart）在进内核前被拒——「弃管守护触
+  总线」的竞态窗口从无界收敛到在途单次传输。与 `stop` 分离是刻意的：宽限内退场的守护
+  还要跑 `daemon_cleanup` 去初始化，传输必须放行。回归：`test_hal_quiesce.lua`、
+  `test_daemon.cpp` finishTeardown 两态、既有 `daemon_grace_ms` 文案锚点不变。
+- **信任前提体检（审计 P2-2）**：驱动/守护 chunk/白名单 dofile 三个加载点在加载前体检
+  文件权限，**组或其他人可写即响亮告警**（`auditTrustedFilePath`，每路径一次）——ffi 全
+  能力文件的「可信域」前提被削弱时操作者必须看得见。`os.getenv`/`io.read` 有意保留不动：
+  ffi 面前 Lua 级白名单是化装。另：`__mpath` 注入失败（找不到/加载坏）从静默 fail-open
+  改为响亮告警（多段路径时），单段场景保持安静（测试夹具常态）。
+
 ### 2026-09-25 删除 Lua 协议驱动轨道（#8）
 
 - **对使用者意味着什么**：`modules/LlmOpenAI.lua` / `LlmDeepSeek.lua` / `LlmAnthropic.lua`

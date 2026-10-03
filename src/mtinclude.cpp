@@ -38,7 +38,12 @@
 
 #include "actionsource.hpp"
 #include "mtmerge_core.hpp"
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_file.hpp"
+#include "util_num.hpp"
+#include "util_path.hpp"
+#include "util_str.hpp"
 
 namespace mtinclude {
 

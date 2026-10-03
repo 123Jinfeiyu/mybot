@@ -5,8 +5,12 @@
 #include <array>
 #include <cerrno>
 #include <cstddef>
+#include <cstdio>
 #include <fcntl.h>
+#include <mutex>
+#include <set>
 #include <string>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -192,6 +196,29 @@ auto retryEintr(Fn&& fn) -> decltype(fn()) {
 		if (r == -1 && errno == EINTR) { continue; }
 		return r;
 	}
+}
+
+/* ---- 信任前提体检（BQ-2，2026-09-29 审计 P2-2 收口）----
+ * Lua 沙箱因 ffi 保留而不是安全边界（luasandbox.cpp 的自陈）：驱动 chunk 经
+ * ffi.C 拥有全进程能力，「驱动文件属操作者可信域」是唯一前提。权限位是这个
+ * 前提最便宜的可观测代理——组/其他可写的驱动文件意味着任何本机用户都能改写
+ * 「等效于宿主进程本身」的代码。按 socket 父目录 0700 体检的先例
+ * （mcpbackend prepareListenSocket），响亮告警不阻断：umask 022 下自写的文件
+ * 正常是 0644 不触发；共享组开发的 002 umask 属操作者自担，但必须看见。
+ * stat 失败/非普通文件不告警（加载方自会以「文件不存在」响亮报错，这里
+ * 不抢报错权）；跨线程去重（守护 chunk 的加载发生在守护线程），每路径一次。 */
+inline void auditTrustedFilePath(const std::string& path, const char* what) {
+	struct stat st{};
+	if (::stat(path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) { return; }
+	if ((st.st_mode & 0022) == 0) { return; }
+	static std::mutex warnMu;
+	static std::set<std::string> warned;
+	std::lock_guard<std::mutex> lock(warnMu);
+	if (!warned.insert(path).second) { return; }
+	std::fprintf(stderr,
+		"警告: %s '%s' 组或其他人可写（%04o）——驱动经 ffi 拥有全进程能力，"
+		"此权限削弱了沙箱的信任前提；建议 chmod g-w,o-w\n",
+		what, path.c_str(), static_cast<unsigned>(st.st_mode & 0777));
 }
 
 } // namespace bot

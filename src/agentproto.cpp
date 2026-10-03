@@ -4,7 +4,8 @@
 #include <utility>
 
 #include "jsonparse.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
+#include "util_str.hpp"
 
 namespace bot {
 namespace agent {

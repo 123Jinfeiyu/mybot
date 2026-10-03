@@ -3,7 +3,7 @@
  * 矩阵表 → 硬件变量（Alias/Vars/Lua/Daemon 分派 + controller/trigger 流引用
  * 装配校验）+ 单消费者/共享串口判据）。 */
 
-#include "robot.hpp"
+#include "hw_factory.hpp"
 
 /* 装配 Daemon/Lua/标量变量，显式引入对应实现头 */
 #include "daemonvar.hpp"
@@ -17,6 +17,9 @@
 #include <map>
 #include <set>
 #include <utility>
+
+#include "util_file.hpp"
+#include "util_path.hpp"
 
 namespace bot {
 

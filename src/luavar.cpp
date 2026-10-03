@@ -3,7 +3,10 @@
 #include <iostream>
 #include <stdexcept>
 
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_except.hpp"
+#include "util_file.hpp"
+#include "util_str.hpp"
 
 namespace bot {
 
@@ -44,6 +47,8 @@ std::unique_ptr<MtVars_Lua> MtVars_Lua::Factory(const std::string& luapath, cons
 /* ---- 加载 chunk 并执行一次（loadfile + pcall）----
  * 标准库与沙箱由 openSandboxedState 在创建状态时装好。 */
 bool MtVars_Lua::build_lua(lua_State* L, const std::string& luapath) {
+	/* BQ-2：ffi 全能力文件的信任前提体检（组/他可写 → 响亮告警，见 util_file） */
+	auditTrustedFilePath(luapath, "驱动文件");
 	int status = luaL_loadfile(L, luapath.c_str());
 	if (status == LUA_OK) {
 		int pcStatus = lua_pcall(L, 0, LUA_MULTRET, 0);

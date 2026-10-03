@@ -19,6 +19,9 @@
 #include <iostream>
 #include <utility>
 
+#include "util_env.hpp"
+#include "util_path.hpp"
+
 namespace bot {
 
 namespace {
@@ -26,8 +29,8 @@ namespace {
 /* ---- 守护退场屏障：deactivate（断电前）与热删除（摘件前）共用的同一套安全序列 ----
  * 原先在两处各手抄一份，属安全序列的分叉温床（2026-09-25 去重），机械步骤：
  * requestStop 全体 → 全体共享一个 deadline 等待（取各守护 joinTimeout 的最大值；
- * 逐个累加会让最坏退出延迟随守护数量线性增长）→ 超时弃管者给二段宽限（封顶
- * graceCapMs）→ 宽限耗尽仍存活者如实点名。审计出处与理由：
+ * 逐个累加会让最坏退出延迟随守护数量线性增长）→ 超时者给二段宽限（封顶
+ * graceCapMs）→ 宽限耗尽仍存活者灭火（quiesce）+ 弃管，如实点名。审计出处与理由：
  *  屏障本体（审计 P2）：原实现把 join 延后到各守护自己的 destroy，于是执行器
  *  可能已经断电、而某个守护正在跑的那一拍又写它一次——最后一次写随机胜出，
  *  进程退出时器件可能重新带电。等过之后 destroy 里的 waitForExit 幂等直返。
@@ -36,7 +39,8 @@ namespace {
  *  tick/cleanup 的线程构成硬件竞态。这里在动硬件之前给弃管守护一次真正退场的
  *  机会（宽限 = 共享预算，封顶 graceCapMs：无法在 join 超时内退场的守护多半
  *  卡死在不可中断的调用里，更长的等待只是把停机挂死换掉竞态）。宽限内退场的
- *  线程不再与 destroy 并发；耗尽仍活着的才真正带着竞态进入 destroy。
+ *  线程不再与 destroy 并发；耗尽仍活着的经 finishTeardown 灭火后弃管——此后
+ *  其 HAL 传输在进内核前被拒（BQ-1），竞态窗口收敛到灭火时刻的在途单次传输。
  * 调用点契约：屏障返回后才许动硬件。stillNote 承载两处的后果差异（断电后
  * 器件可被重新写亮 vs 采样对象即将被摘除），由调用点如实描述。
  * 文案单点（同 agent_subprocess 的 reapGiveUpWarning 先例）：Deactivate 一侧
@@ -50,25 +54,25 @@ void daemonStopBarrier(const std::vector<std::shared_ptr<DaemonRunner>>& holders
 	for (const auto& h : holders) {
 		budgetMs = std::max(budgetMs, h->joinTimeoutMs());
 	}
-	const auto deadline = std::chrono::steady_clock::now()
-		+ std::chrono::milliseconds(budgetMs);
-	std::vector<DaemonRunner*> abandoned;
+	const auto waitStart = std::chrono::steady_clock::now();
+	const auto deadline = waitStart + std::chrono::milliseconds(budgetMs);
+	std::vector<DaemonRunner*> missed;
 	for (const auto& h : holders) {
-		if (!h->waitUntil(deadline)) { abandoned.push_back(h.get()); }
+		if (!h->requestStopAndWait(deadline)) { missed.push_back(h.get()); }
 	}
-	if (abandoned.empty()) { return; }
+	if (missed.empty()) { return; }
 	const int64_t graceMs = std::min<int64_t>(budgetMs, graceCapMs);
-	std::cerr << label << ": " << abandoned.size()
+	std::cerr << label << ": " << missed.size()
 		<< " daemon(s) outlived the stop barrier, granting " << graceMs
 		<< "ms grace before hardware de-init" << std::endl;
 	std::size_t stillRunning = 0;
-	for (auto* d : abandoned) {
-		if (!d->awaitExit(graceMs)) { ++stillRunning; }
+	for (auto* d : missed) {
+		if (!d->finishTeardown(graceMs, waitStart)) { ++stillRunning; }
 	}
 	if (stillRunning > 0) {
 		std::cerr << label << ": " << stillRunning
 			<< " daemon(s) STILL running after grace window — " << stillNote
-			<< std::endl;
+			<< " (their bus access has been quiesced)" << std::endl;
 	}
 }
 
@@ -112,6 +116,99 @@ std::string hotDeleteFailureMessage(std::size_t orderSize, std::size_t deletedVa
 		"（destroy 是物理断电，已断电的器件不会因报错而复电——修好成因后"
 		"对剩余项重发 DELETE 即可。）";
 	return msg;
+}
+
+/* ---- 阶段 2 的两个只读校验块（拆自 planHotInsertions，2026-09-29 A3）----
+ * 判定与报错文案逐字保持；抽出后 planHotInsertions 只留区间计算与建计划。 */
+
+/* 本批次新建表（staged[si]，si ≥ liveCount）的表级校验：批内/结构内重名、
+ * 表名与列名的安全标识符、驱动模块存在性。 */
+void validateNewTableDecl(const std::deque<mt::MatrixObject>& staged, std::size_t si) {
+	const mt::MatrixObject& st = staged[si];
+	const std::string tname = trim(st.getName());
+	const bool isAction = (tname == "Action");
+
+	for (std::size_t sj = 0; sj < si; ++sj) {
+		if (trim(staged[sj].getName()) == tname) {
+			throw IllegalArgumentException("热插表：表 '" + tname + "' 已存在"
+				"（结构里既有同名表，或本批次内重复 CREATE）");
+		}
+	}
+	/* 表名决定 modules/<表名>.lua 的解析路径（createLuaVars 的唯一分派依据），
+	 * 而热插语句来自不可信输入（REPL / 模型）——含 '/' 或 ".." 的表名会把
+	 * 模块查找指到任意文件。启动期脚本是可信文件，故只在热插这条路上拦。 */
+	if (!isSafeIdent(tname)) {
+		throw IllegalArgumentException("热插表：表名 '" + tname + "' 不是安全标识符"
+			"（字母/数字/下划线，且以字母或下划线开头）");
+	}
+	if (!isAction) {
+		/* 列名进 Daemon 配置串（`列名=值;`）与元数据键：含 ';'/'=' 的列名
+		 * 能在配置串里造出额外字段（等价于改写守护的 driver/proto）。
+		 * Action 表列名是 <设备>.<参数>，天然含 '.'，不在此列。 */
+		for (std::size_t c = 0; c < st.cols(); ++c) {
+			if (!isSafeIdent(st(0, c))) {
+				throw IllegalArgumentException("热插表：表 '" + tname + "' 的列名 '"
+					+ st(0, c) + "' 不是安全标识符");
+			}
+		}
+	}
+	/* 驱动模块存在性：启动期这条缺失要到 build 才以 loadfile 失败暴露，
+	 * 热插路径提前折成一句点名表名的人话（判据与 createLuaVars 同一来源）。 */
+	if (!isAction && tname != "Alias" && tname != "Vars" && tname != "Daemon") {
+		if (!findExistingModule(modulePaths(), tname + ".lua")) {
+			throw IllegalArgumentException(concatMsg("热插表：表 '", tname,
+				"' 需要驱动模块 modules/", tname, ".lua，模块路径下找不到它"));
+		}
+	}
+}
+
+/* 单条新增数据行的校验：name 列存在/非空、重名（含 doomed 豁免）、Daemon 行的
+ * chunk 相对路径存在性。idxName 由调用方按表算好传入。 */
+void validateHotNewRow(const HwLookup& registry, const mt::MatrixObject& st,
+		const std::string& tname, bool isAction, std::size_t r, std::int64_t idxName,
+		const HotSqlPlan::Deletes& delPlan, std::set<std::string>& batchNames) {
+	if (!isAction) {
+		if (idxName < 0) {
+			throw IllegalArgumentException("热插表：表 '" + tname
+				+ "' 没有 'name' 列，无法为新增行命名硬件变量");
+		}
+		const std::string v = trim(st(r, static_cast<std::size_t>(idxName)));
+		if (v.empty()) {
+			throw IllegalArgumentException("热插表：表 '" + tname + "' 第 "
+				+ std::to_string(r) + " 行的 name 列为空");
+		}
+		/* 重名判据的 doomed 豁免（先删后建模式）：UPDATE 同名重建的行
+		 * 复用旧名，而旧名此刻仍挂在注册表上（本批次的物理摘除排在
+		 * 插入之前执行）——不豁免会把「改写」误判成「重名」。豁免只在
+		 * deleteFirst 下给：普通批次（先插入后删除）里「删 A 再插 A」
+		 * 仍然拒绝，保持既有行为与报错位置逐字不变。改名（SET name）
+		 * 到仍存活的名字不豁免，照常拒绝。 */
+		if ((registry.contains(v)
+					&& !(delPlan.deleteFirst && delPlan.doomedNames.count(v) != 0))
+				|| !batchNames.insert(v).second) {
+			throw IllegalArgumentException("热插表：硬件变量名 '" + v + "' 重复"
+				"（结构里已有同名变量，或本批次内重复）");
+		}
+	}
+	if (tname == "Daemon") {
+		const std::int64_t idxChunk = st.indexOfCol(0, "chunk");
+		if (idxChunk < 0) {
+			throw IllegalArgumentException("热插表：Daemon 表没有 'chunk' 列");
+		}
+		const std::string chunk = trim(st(r, static_cast<std::size_t>(idxChunk)));
+		/* '-' = 继承上一行的 chunk（来自可信的既有行或本批次已校验的行），跳过。
+		 * 真实值必须是模块根下存在的相对路径：resolveDaemonChunk 允许绝对路径
+		 * （启动期脚本可信，不拦），而热插的语句不可信——放行即等于让模型
+		 * 指定任意 Lua 文件当守护 chunk 加载。 */
+		if (chunk != "-") {
+			if (checkRelPath(chunk) != RelPathCheck::OK
+					|| !findExistingModule(modulePaths(), chunk)) {
+				throw IllegalArgumentException(concatMsg("热插表：Daemon 表 '", tname,
+					"' 第 ", std::to_string(r), " 行的 chunk '", chunk,
+					"' 必须是模块路径下存在的相对路径（热插不允许绝对路径/目录穿越）"));
+			}
+		}
+	}
 }
 
 } // namespace
@@ -461,7 +558,9 @@ HotSqlPlan::Deletes HotSqlPlanner::planHotDeletes(const ScriptLoader::Mutations&
 }
 
 /* ---- 阶段 2：建计划 + 只读全量校验（不触碰活体、不申请任何资源）----
- * 影子下标 [0, liveCount) 与 matrices_ 一一对应（影子就是按它顺序填的）。 */
+ * 影子下标 [0, liveCount) 与 matrices_ 一一对应（影子就是按它顺序填的）。
+ * 表级与逐行校验在 validateNewTableDecl / validateHotNewRow（2026-09-29 A3
+ * 拆出），本函数只留区间计算与三路建计划。 */
 HotSqlPlan::Insertions HotSqlPlanner::planHotInsertions(
 		const std::deque<mt::MatrixObject>& staged, std::size_t liveCount,
 		const ScriptLoader::Mutations& muts, const HotSqlPlan::Deletes& delPlan) const {
@@ -480,40 +579,7 @@ HotSqlPlan::Insertions HotSqlPlanner::planHotInsertions(
 		const std::string tname = trim(st.getName());
 		const bool isAction = (tname == "Action");
 
-		if (!isShadow) {
-			for (std::size_t sj = 0; sj < si; ++sj) {
-				if (trim(staged[sj].getName()) == tname) {
-					throw IllegalArgumentException("热插表：表 '" + tname + "' 已存在"
-						"（结构里既有同名表，或本批次内重复 CREATE）");
-				}
-			}
-			/* 表名决定 modules/<表名>.lua 的解析路径（createLuaVars 的唯一分派依据），
-			 * 而热插语句来自不可信输入（REPL / 模型）——含 '/' 或 ".." 的表名会把
-			 * 模块查找指到任意文件。启动期脚本是可信文件，故只在热插这条路上拦。 */
-			if (!isSafeIdent(tname)) {
-				throw IllegalArgumentException("热插表：表名 '" + tname + "' 不是安全标识符"
-					"（字母/数字/下划线，且以字母或下划线开头）");
-			}
-			if (!isAction) {
-				/* 列名进 Daemon 配置串（`列名=值;`）与元数据键：含 ';'/'=' 的列名
-				 * 能在配置串里造出额外字段（等价于改写守护的 driver/proto）。
-				 * Action 表列名是 <设备>.<参数>，天然含 '.'，不在此列。 */
-				for (std::size_t c = 0; c < st.cols(); ++c) {
-					if (!isSafeIdent(st(0, c))) {
-						throw IllegalArgumentException("热插表：表 '" + tname + "' 的列名 '"
-							+ st(0, c) + "' 不是安全标识符");
-					}
-				}
-			}
-			/* 驱动模块存在性：启动期这条缺失要到 build 才以 loadfile 失败暴露，
-			 * 热插路径提前折成一句点名表名的人话（判据与 createLuaVars 同一来源）。 */
-			if (!isAction && tname != "Alias" && tname != "Vars" && tname != "Daemon") {
-				if (!findExistingModule(modulePaths(), tname + ".lua")) {
-					throw IllegalArgumentException(concatMsg("热插表：表 '", tname,
-						"' 需要驱动模块 modules/", tname, ".lua，模块路径下找不到它"));
-				}
-			}
-		}
+		if (!isShadow) { validateNewTableDecl(staged, si); }
 
 		/* insCount = 本批次插入到这张表的行数（readSQL 回报的权威计数）。 */
 		const std::size_t insCount = [&]() {
@@ -535,48 +601,8 @@ HotSqlPlan::Insertions HotSqlPlanner::planHotInsertions(
 
 		const std::int64_t idxName = st.indexOfCol(0, "name");
 		for (std::size_t r = newFrom; r < newTo; ++r) {
-			if (!isAction) {
-				if (idxName < 0) {
-					throw IllegalArgumentException("热插表：表 '" + tname
-						+ "' 没有 'name' 列，无法为新增行命名硬件变量");
-				}
-				const std::string v = trim(st(r, static_cast<std::size_t>(idxName)));
-				if (v.empty()) {
-					throw IllegalArgumentException("热插表：表 '" + tname + "' 第 "
-						+ std::to_string(r) + " 行的 name 列为空");
-				}
-					/* 重名判据的 doomed 豁免（先删后建模式）：UPDATE 同名重建的行
-					 * 复用旧名，而旧名此刻仍挂在注册表上（本批次的物理摘除排在
-					 * 插入之前执行）——不豁免会把「改写」误判成「重名」。豁免只在
-					 * deleteFirst 下给：普通批次（先插入后删除）里「删 A 再插 A」
-					 * 仍然拒绝，保持既有行为与报错位置逐字不变。改名（SET name）
-					 * 到仍存活的名字不豁免，照常拒绝。 */
-					if ((registry_.contains(v)
-								&& !(delPlan.deleteFirst && delPlan.doomedNames.count(v) != 0))
-							|| !batchNames.insert(v).second) {
-						throw IllegalArgumentException("热插表：硬件变量名 '" + v + "' 重复"
-							"（结构里已有同名变量，或本批次内重复）");
-					}
-			}
-			if (tname == "Daemon") {
-				const std::int64_t idxChunk = st.indexOfCol(0, "chunk");
-				if (idxChunk < 0) {
-					throw IllegalArgumentException("热插表：Daemon 表没有 'chunk' 列");
-				}
-				const std::string chunk = trim(st(r, static_cast<std::size_t>(idxChunk)));
-				/* '-' = 继承上一行的 chunk（来自可信的既有行或本批次已校验的行），跳过。
-				 * 真实值必须是模块根下存在的相对路径：resolveDaemonChunk 允许绝对路径
-				 * （启动期脚本可信，不拦），而热插的语句不可信——放行即等于让模型
-				 * 指定任意 Lua 文件当守护 chunk 加载。 */
-				if (chunk != "-") {
-					if (checkRelPath(chunk) != RelPathCheck::OK
-							|| !findExistingModule(modulePaths(), chunk)) {
-						throw IllegalArgumentException(concatMsg("热插表：Daemon 表 '", tname,
-							"' 第 ", std::to_string(r), " 行的 chunk '", chunk,
-							"' 必须是模块路径下存在的相对路径（热插不允许绝对路径/目录穿越）"));
-					}
-				}
-			}
+			validateHotNewRow(registry_, st, tname, isAction, r, idxName, delPlan,
+				batchNames);
 		}
 
 		if (isAction) {
@@ -731,25 +757,6 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 	std::vector<std::pair<std::size_t, std::size_t>> appended;	/* (矩阵下标, 追加行数) */
 	std::size_t addedTables = 0;
 
-	auto rollback = [&]() {
-		/* ① 逆序断电：destroy 逐项容错（半装配/未 build 的项也要能安全 destroy，
-		 *    与 deactivate 同口径），单个失败不能中断整轮回滚。 */
-		const auto& seq = registry_.sequence();
-		for (std::size_t i = seq.size(); i > mark.seq; --i) {
-			try {
-				seq[i - 1]->destroy();
-			} catch (const std::exception& e) {
-				std::cerr << "Hot SQL rollback warning: " << e.what() << std::endl;
-			}
-		}
-		/* ② 撤注册（含流引用快照还原）→ ③ 弹登记表 → ④ 恢复矩阵 */
-		registry_.rollbackTo(mark);
-		metaProviders_.resize(metaMark);
-		daemonHolders_.resize(daemonMark);
-		for (const auto& [idx, n] : appended) { matrices_[idx].popRows(n); }
-		matrices_.resize(matrices_.size() - addedTables);
-	};
-
 	try {
 		/* 4.1 既有表：先落行（矩阵是装配的输入），再按旧行数增量装配 */
 		for (const auto& [idx, rows] : insPlan.appends) {
@@ -787,7 +794,7 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 		if (!insPlan.actionMats.empty()) { runner_.runAction(insPlan.actionMats); }
 	} catch (...) {
 		try {
-			rollback();
+			rollbackHotBatch(mark, metaMark, daemonMark, appended, addedTables);
 		} catch (const std::exception& e) {
 			/* 回滚本身失败已超出手头能修的范畴：如实留痕，但不掩盖原错误
 			 * （原错误才是调用方要看的成因）。 */
@@ -795,29 +802,9 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 		}
 		/* 先删后建的失败口径（区别于既有批次的「原样上抛」）：本批次含 UPDATE
 		 * 且已摘除过旧件时，活体**已经动过**——插入段失败只是「新件未建成」，
-		 * 旧件不会回来。这里把成因包装成 runtime_error 并点名丢失的变量：
-		 *  - 不谎报：模型/操作者必须知道「哪些变量已经没了」；
-		 *  - 类型必须是 runtime_error 而非原样上抛——若成因本身是
-		 *    IllegalArgumentException（如装配期重名），apply_sql 的派发漏斗
-		 *    会按异常类型把它归类成「校验拒绝、活体一字未动」（paramError /
-		 *    executed=false），对本口径是谎报：删旧件是真实发生过的副作用。 */
+		 * 旧件不会回来（重包装的理由见 rethrowWithLostVars 注释）。 */
 		if (delPlan.deleteFirst && alreadyDeleted.deletedVars > 0) {
-			std::string names;
-			for (const std::string& n : alreadyDeleted.deletedNames) {
-				if (!names.empty()) { names += ", "; }
-				names += n;
-			}
-			const std::string tail =
-				"；注意：本批次含 UPDATE，其命中旧行已断电摘除且未能重建（"
-				+ names + "）——硬件不会自动复原，请核对状态后按需要的值重新 INSERT";
-			try {
-				throw;
-			} catch (const std::exception& e) {
-				throw std::runtime_error(std::string(e.what()) + tail);
-			} catch (...) {
-				throw std::runtime_error(
-					std::string(kNonStdExceptionNote) + tail);
-			}
+			rethrowWithLostVars(alreadyDeleted);
 		}
 		throw;
 	}
@@ -832,6 +819,56 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 	for (const auto& [idx, n] : appended) { (void)idx; out.addedRows += n; }
 	out.addedTables = addedTables;
 	return out;
+}
+
+/* 插入段失败的回滚（原 commitHotBatch 内 45 行 rollback lambda，2026-09-29
+ * A3 拆出；四步语义逐字保持）：
+ * ① 逆序断电：destroy 逐项容错（半装配/未 build 的项也要能安全 destroy，
+ *    与 deactivate 同口径），单个失败不能中断整轮回滚。
+ * ② 撤注册（含流引用快照还原）→ ③ 弹登记表 → ④ 恢复矩阵。 */
+void RobotStruct::rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t metaMark,
+		std::size_t daemonMark,
+		const std::vector<std::pair<std::size_t, std::size_t>>& appended,
+		std::size_t addedTables) {
+	const auto& seq = registry_.sequence();
+	for (std::size_t i = seq.size(); i > mark.seq; --i) {
+		try {
+			seq[i - 1]->destroy();
+		} catch (const std::exception& e) {
+			std::cerr << "Hot SQL rollback warning: " << e.what() << std::endl;
+		}
+	}
+	registry_.rollbackTo(mark);
+	metaProviders_.resize(metaMark);
+	daemonHolders_.resize(daemonMark);
+	for (const auto& [idx, n] : appended) { matrices_[idx].popRows(n); }
+	matrices_.resize(matrices_.size() - addedTables);
+}
+
+/* 先删后建批次插入段失败的重包装：本批次含 UPDATE 且已摘除过旧件时，活体
+ * **已经动过**——插入段失败只是「新件未建成」，旧件不会回来。把成因包装成
+ * runtime_error 并点名丢失的变量：
+ *  - 不谎报：模型/操作者必须知道「哪些变量已经没了」；
+ *  - 类型必须是 runtime_error 而非原样上抛——若成因本身是
+ *    IllegalArgumentException（如装配期重名），apply_sql 的派发漏斗
+ *    会按异常类型把它归类成「校验拒绝、活体一字未动」（paramError /
+ *    executed=false），对本口径是谎报：删旧件是真实发生过的副作用。 */
+void RobotStruct::rethrowWithLostVars(const HotDeleteOutcome& alreadyDeleted) {
+	std::string names;
+	for (const std::string& n : alreadyDeleted.deletedNames) {
+		if (!names.empty()) { names += ", "; }
+		names += n;
+	}
+	const std::string tail =
+		"；注意：本批次含 UPDATE，其命中旧行已断电摘除且未能重建（"
+		+ names + "）——硬件不会自动复原，请核对状态后按需要的值重新 INSERT";
+	try {
+		throw;
+	} catch (const std::exception& e) {
+		throw std::runtime_error(std::string(e.what()) + tail);
+	} catch (...) {
+		throw std::runtime_error(std::string(kNonStdExceptionNote) + tail);
+	}
 }
 
 /* ==================== 阶段 4.7：整表撤下（DROP TABLE，不可逆）====================

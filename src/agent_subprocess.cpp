@@ -29,7 +29,10 @@
 #include <utility>
 #include <vector>
 
-#include "util.hpp"
+#include "util_env.hpp"
+#include "util_file.hpp"
+#include "util_str.hpp"
+#include "util_utf8.hpp"
 
 /* 进程环境块。glibc 不在 <unistd.h> 里声明它，必须在**全局作用域**声明：
  * 放进匿名命名空间会变成另一个符号（bot::agent::{anon}::environ），链接期
@@ -429,35 +432,46 @@ void finalizeChild(pid_t pid, const ChildSpec& spec, int outFd, int errFd, bool 
 	r.err = sanitizeUtf8(r.err);
 }
 
-/* 骨架单点：pipe → fork → setpgid →（写 stdin）→ 轮询 → 超时整组终止 →
- * 有界回收。两个调用点（run_command / 策略确认程序）的差异全部经 ChildSpec
- * 显式声明，这里不再有「只有一侧有」的防线。 */
-ChildOutcome runChild(const ChildSpec& spec) {
-	const bool capture = spec.captureOutput;
+/* ---- runChild 的阶段拆分（2026-09-29 A3）：管道束 + 起子 + 轮询 ----
+ * 原函数 113 行三段同住（管道准备 / fork 与非阻塞设置 / 轮询收尾）；拆成
+ * PipeBundle（吸收原函数内每次调用重建的 closeFd/closeAll/pipeFailed 三个
+ * lambda）+ spawnChild + pumpChildLoop，runChild 只留装配。失败路径的清理
+ * 与语义逐字保持。 */
+
+struct PipeBundle {
 	int po[2] = {-1, -1};	/* stdout 管道 */
 	int pe[2] = {-1, -1};	/* stderr 管道 */
 	int pi[2] = {-1, -1};	/* stdin 管道（仅 pipeStdin） */
-	/* 关一个 fd 并置 -1：所有失败路径都走它，重复调用安全（不会误关刚被复用的编号）。 */
-	auto closeFd = [](int& fd) {
+
+	/* 关一个 fd 并置 -1：所有失败路径都走它，重复调用安全（不会误关刚被
+	 * 复用的编号）。 */
+	void closeFd(int& fd) {
 		if (fd >= 0) { ::close(fd); fd = -1; }
-	};
-	auto closeAll = [&] {
+	}
+	void closeAll() {
 		closeFd(po[0]); closeFd(po[1]);
 		closeFd(pe[0]); closeFd(pe[1]);
 		closeFd(pi[0]); closeFd(pi[1]);
-	};
-	auto pipeFailed = [] {
+	}
+	static std::runtime_error pipeFail() {
 		const int saved = errno;
 		return std::runtime_error("pipe 失败（errno=" + std::to_string(saved) + "）");
-	};
+	}
+};
+
+/* 管道 → fork → 子进程 exec → setpgid → 父侧关写端 → 读端置非阻塞。
+ * 任何失败都清理管道后抛（fcntl 失败路径还整组终止并回收已 fork 的子进程）；
+ * 成功返回 pid，读端留在 p 里供轮询。 */
+static pid_t spawnChild(const ChildSpec& spec, PipeBundle& p) {
+	const bool capture = spec.captureOutput;
 	/* O_CLOEXEC 用 pipe2 原子设置（无 pipe→fork 之间的窗口）：本进程有守护线程
 	 * 会并发 fork/exec，未标 CLOEXEC 的读端会被无关子进程继承，写端迟迟不 EOF
 	 * ——只能靠硬上限兜底（且被继承的 fd 本身即泄漏）。 */
 	if (capture) {
-		if (pipe2(po, O_CLOEXEC) != 0) { throw pipeFailed(); }
-		if (pipe2(pe, O_CLOEXEC) != 0) { closeAll(); throw pipeFailed(); }
+		if (pipe2(p.po, O_CLOEXEC) != 0) { throw PipeBundle::pipeFail(); }
+		if (pipe2(p.pe, O_CLOEXEC) != 0) { p.closeAll(); throw PipeBundle::pipeFail(); }
 	}
-	if (spec.pipeStdin && pipe2(pi, O_CLOEXEC) != 0) { closeAll(); throw pipeFailed(); }
+	if (spec.pipeStdin && pipe2(p.pi, O_CLOEXEC) != 0) { p.closeAll(); throw PipeBundle::pipeFail(); }
 	/* 环境在 fork 前备好（buildCleanEnvp 会分配堆内存，子进程里不能碰）：
 	 * cleanEnv 是模型可驱动命令的口径，inherit 原样传 environ（确认程序口径）。 */
 	std::vector<char*> envp;
@@ -470,21 +484,21 @@ ChildOutcome runChild(const ChildSpec& spec) {
 	pid_t pid = fork();
 	if (pid < 0) {
 		const int saved = errno;
-		closeAll();
+		p.closeAll();
 		throw std::runtime_error(std::string("fork 失败: ") + errnoText(saved));
 	}
-	if (pid == 0) { execChild(spec, pi[0], po[0], po[1], pe[0], pe[1], envpPtr); }
+	if (pid == 0) { execChild(spec, p.pi[0], p.po[0], p.po[1], p.pe[0], p.pe[1], envpPtr); }
 	setpgid(pid, pid);	/* 与子进程竞争设置，谁先成功效果一致 */
-	closeFd(po[1]);
-	closeFd(pe[1]);
-	closeFd(pi[0]);
+	p.closeFd(p.po[1]);
+	p.closeFd(p.pe[1]);
+	p.closeFd(p.pi[0]);
 	if (capture) {
 		/* fix-plan 3-1：fcntl 失败即 fatal（对齐 SO_RCVTIMEO 在 actionsource 的
-		 * fail-closed 口径）——O_NONBLOCK 设置失败会让下方 read 循环在无数据时
+		 * fail-closed 口径）——O_NONBLOCK 设置失败会让轮询 read 在无数据时
 		 * 阻塞挂死整个 agent 会话，绝不能静默跳过。 */
-		if (fcntl(po[0], F_SETFL, O_NONBLOCK) != 0 || fcntl(pe[0], F_SETFL, O_NONBLOCK) != 0) {
+		if (fcntl(p.po[0], F_SETFL, O_NONBLOCK) != 0 || fcntl(p.pe[0], F_SETFL, O_NONBLOCK) != 0) {
 			const int savedErrno = errno;
-			closeAll();
+			p.closeAll();
 			/* 子进程已 fork 且在跑：抛错前必须整组终止并回收，否则留下孤儿/僵尸，
 			 * 且它仍持着管道写端（阶段 4.2 补）。宽限取短：本条路径本身已是
 			 * 「参数/资源异常」，不该再让调用方多等。 */
@@ -494,23 +508,28 @@ ChildOutcome runChild(const ChildSpec& spec) {
 			throw std::runtime_error(std::string("fcntl 失败: ") + errnoText(savedErrno));
 		}
 	}
+	return pid;
+}
 
-	ChildOutcome r;
+/* 轮询收尾：（写 stdin →）排水两路输出 → WNOHANG 收尸 → 超时/停止整组终止 →
+ * 有界回收（finalizeChild）。结果写进 r。 */
+static void pumpChildLoop(const ChildSpec& spec, pid_t pid, PipeBundle& p, ChildOutcome& r) {
+	const bool capture = spec.captureOutput;
 	int status = 0;
 	bool exited = false, killed = false;
 	bool outEof = !capture, errEof = !capture;	/* 非捕获模式没有流要等 */
 	auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(spec.timeoutSec);
-	if (spec.pipeStdin) { writeStdinPayload(pi[1], spec.stdinPayload, deadline); }
+	if (spec.pipeStdin) { writeStdinPayload(p.pi[1], spec.stdinPayload, deadline); }
 	auto hardDeadline = deadline + std::chrono::seconds(kHardStopGraceSec);
 
 	while (!(exited && outEof && errEof)) {
 		if (capture) {
 			struct pollfd fds[2] = {
-				{outEof ? -1 : po[0], POLLIN, 0},
-				{errEof ? -1 : pe[0], POLLIN, 0},
+				{outEof ? -1 : p.po[0], POLLIN, 0},
+				{errEof ? -1 : p.pe[0], POLLIN, 0},
 			};
 			if (poll(fds, 2, 100) > 0) {
-				pumpReadyStreams(fds, po[0], r, outEof, errEof);
+				pumpReadyStreams(fds, p.po[0], r, outEof, errEof);
 			}
 		} else {
 			/* 非捕获模式（确认程序）没有管道要排空：短睡等退出（沿用原 20ms 节拍） */
@@ -542,7 +561,17 @@ ChildOutcome runChild(const ChildSpec& spec) {
 		}
 	}
 
-	finalizeChild(pid, spec, po[0], pe[0], outEof, errEof, exited, status, r);
+	finalizeChild(pid, spec, p.po[0], p.pe[0], outEof, errEof, exited, status, r);
+}
+
+/* 骨架单点：pipe → fork → setpgid →（写 stdin）→ 轮询 → 超时整组终止 →
+ * 有界回收。两个调用点（run_command / 策略确认程序）的差异全部经 ChildSpec
+ * 显式声明，这里不再有「只有一侧有」的防线。 */
+ChildOutcome runChild(const ChildSpec& spec) {
+	PipeBundle p;
+	const pid_t pid = spawnChild(spec, p);
+	ChildOutcome r;
+	pumpChildLoop(spec, pid, p, r);
 	return r;
 }
 

@@ -8,7 +8,7 @@ extern "C" {
 #include <luajit.h>
 }
 
-#include "util.hpp"
+#include "util_env.hpp"
 
 namespace bot {
 

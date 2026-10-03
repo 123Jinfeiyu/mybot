@@ -2,7 +2,7 @@
  * ActionPlan：列头解析 + 撞设备查重 + 相位设备判定的纯计算产物；
  * runAction：行循环派发（stop 检查 + 单元格解析 + 按 order play）。 */
 
-#include "robot.hpp"
+#include "action_runner.hpp"
 
 #include <algorithm>
 #include <iostream>
@@ -10,6 +10,8 @@
 #include <set>
 #include <sstream>
 #include <utility>
+
+#include "util_env.hpp"
 
 namespace bot {
 
@@ -209,6 +211,68 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
  * MtVars_Alias 注册进会话覆盖层（子作用域）——动作行里的 $(k) 经
  * makeActionExprResolver 命中临时别名；dispatchMatrix 派发；无论成败
  * 撤销绑定（不污染后续触发）。无 @Trigger 时反射惰性（不执行不校验）。 */
+namespace {
+
+/* ---- runReflex 的触发行解析（2026-09-29 A3 拆出，纯函数）----
+ * 解析 `reflexName(k=v, k=v)`：无括号 = 无参数触发；k=v 两侧 trim、k 须为
+ * 安全标识符、重复绑定拒绝、名字为空拒绝。报错文案与行号口径逐字保持
+ * （row = Trigger 矩阵数据行号）。 */
+struct TriggerCall {
+	std::string name;
+	std::vector<std::pair<std::string, std::string>> args;
+};
+
+TriggerCall parseTriggerLine(const std::string& line, std::int64_t row) {
+	TriggerCall out;
+	const std::size_t lp = line.find('(');
+	if (lp == std::string::npos) {
+		out.name = bot::trim(line);
+	} else {
+		const std::size_t rp = line.rfind(')');
+		if (rp == std::string::npos || rp != line.size() - 1) {
+			throw IllegalArgumentException("Trigger 行（row " + std::to_string(row)
+				+ "）必须以闭合 ')' 结尾：'" + line + "'");
+		}
+		out.name = bot::trim(line.substr(0, lp));
+		std::string rest = bot::trim(line.substr(lp + 1, rp - lp - 1));
+		if (!rest.empty()) {
+			std::stringstream ss(rest);
+			std::string seg;
+			while (std::getline(ss, seg, ',')) {
+				const std::string a = bot::trim(seg);
+				if (a.empty()) { continue; }
+				const std::size_t eq = a.find('=');
+				if (eq == std::string::npos || eq == 0 || eq + 1 >= a.size()) {
+					throw IllegalArgumentException("Trigger 参数（row " + std::to_string(row)
+						+ "）须为 k=v 形式：'" + a + "'");
+				}
+				const std::string k = bot::trim(a.substr(0, eq));
+				const std::string v = bot::trim(a.substr(eq + 1));
+				if (!bot::isSafeIdent(k)) {
+					throw IllegalArgumentException("Trigger 参数名（row " + std::to_string(row)
+						+ "）不是安全标识符：'" + k + "'");
+				}
+				out.args.emplace_back(k, v);
+			}
+		}
+	}
+	if (out.name.empty()) {
+		throw IllegalArgumentException("Trigger 行（row " + std::to_string(row)
+			+ "）缺少反射名");
+	}
+	for (std::size_t a = 0; a < out.args.size(); ++a) {
+		for (std::size_t b = a + 1; b < out.args.size(); ++b) {
+			if (out.args[a].first == out.args[b].first) {
+				throw IllegalArgumentException("Trigger（row " + std::to_string(row)
+					+ "）重复绑定参数 '" + out.args[a].first + "'");
+			}
+		}
+	}
+	return out;
+}
+
+} // namespace
+
 void ActionRunner::runReflex(std::vector<mt::MatrixObject>& actionMatrices) {
 	const mt::MatrixObject* trig = mt::findByName(actionMatrices, "Trigger");
 	if (trig == nullptr) { return; }	/* 无触发：反射惰性 */
@@ -237,58 +301,13 @@ void ActionRunner::runReflex(std::vector<mt::MatrixObject>& actionMatrices) {
 	for (std::int64_t i = 1; i < static_cast<std::int64_t>(trig->rows()); ++i) {
 		const std::string line = bot::trim(trig->inherited(i, idxTrig));
 		if (line.empty()) { continue; }	/* 空行跳过（宽松） */
+		const TriggerCall call = parseTriggerLine(line, i);
 
-		/* 解析 reflexName(k=v, ...) */
-		std::string name;
-		std::vector<std::pair<std::string, std::string>> args;
-		const std::size_t lp = line.find('(');
-		if (lp == std::string::npos) {
-			name = bot::trim(line);
-		} else {
-			const std::size_t rp = line.rfind(')');
-			if (rp == std::string::npos || rp != line.size() - 1) {
-				throw IllegalArgumentException("Trigger 行（row " + std::to_string(i)
-					+ "）必须以闭合 ')' 结尾：'" + line + "'");
-			}
-			name = bot::trim(line.substr(0, lp));
-			std::string rest = bot::trim(line.substr(lp + 1, rp - lp - 1));
-			if (!rest.empty()) {
-				std::stringstream ss(rest);
-				std::string seg;
-				while (std::getline(ss, seg, ',')) {
-					const std::string a = bot::trim(seg);
-					if (a.empty()) { continue; }
-					const std::size_t eq = a.find('=');
-					if (eq == std::string::npos || eq == 0 || eq + 1 >= a.size()) {
-						throw IllegalArgumentException("Trigger 参数（row " + std::to_string(i)
-							+ "）须为 k=v 形式：'" + a + "'");
-					}
-					const std::string k = bot::trim(a.substr(0, eq));
-					const std::string v = bot::trim(a.substr(eq + 1));
-					if (!bot::isSafeIdent(k)) {
-						throw IllegalArgumentException("Trigger 参数名（row " + std::to_string(i)
-							+ "）不是安全标识符：'" + k + "'");
-					}
-					args.emplace_back(k, v);
-				}
-			}
-		}
-		if (name.empty()) {
-			throw IllegalArgumentException("Trigger 行（row " + std::to_string(i) + "）缺少反射名");
-		}
-		for (std::size_t a = 0; a < args.size(); ++a) {
-			for (std::size_t b = a + 1; b < args.size(); ++b) {
-				if (args[a].first == args[b].first) {
-					throw IllegalArgumentException("Trigger（row " + std::to_string(i)
-						+ "）重复绑定参数 '" + args[a].first + "'");
-				}
-			}
-		}
-		const auto git = groups.find(name);
+		const auto git = groups.find(call.name);
 		if (git == groups.end()) {
 			std::string all;
 			for (const auto& n : order) { all += (all.empty() ? "" : ", ") + n; }
-			throw IllegalArgumentException("Trigger 引用了未定义的反射 '" + name
+			throw IllegalArgumentException("Trigger 引用了未定义的反射 '" + call.name
 				+ "'（row " + std::to_string(i) + "），@Reflex 定义："
 				+ (all.empty() ? "（无）" : all));
 		}
@@ -308,7 +327,7 @@ void ActionRunner::runReflex(std::vector<mt::MatrixObject>& actionMatrices) {
 		/* 子作用域：绑定临时别名 → 执行 → 撤销（异常路径同样撤销） */
 		std::vector<std::string> bound;
 		try {
-			for (const auto& kv : args) {
+			for (const auto& kv : call.args) {
 				registry_.override(kv.first, MtVars_Alias::Make(kv.second));
 				bound.push_back(kv.first);
 			}

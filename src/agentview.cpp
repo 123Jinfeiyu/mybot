@@ -15,6 +15,10 @@
 
 #include "agentprompt.hpp"	/* quoteUntrusted（C2：回显/读数包装与系统提示词同一定界单点） */
 #include "robot.hpp"
+#include "sqlparse.hpp"
+#include "util_file.hpp"
+#include "util_path.hpp"
+#include "util_utf8.hpp"
 
 namespace bot {
 namespace agent {
@@ -260,10 +264,89 @@ std::string renderShowTables(const RobotStruct& robot) {
 	return s;
 }
 
-/* 解析一条结构 SQL 并渲染成文本（agent 工具 query_sql 的实现，
- * 契约见 agenttools.hpp）。SELECT 的取数源是 robot.matrices()——原始结构
+namespace {
+
+/* ---- runSqlStatement 的每事件渲染（2026-09-29 A3 拆分，与 structure.cpp
+ * readSQL 的拆法同款）：事件体逐字照搬，runSqlStatement 只留词法/语法
+ * 漏斗与分发。三个变更语句（DELETE/DROP/UPDATE）的拒绝文案短，留在
+ * switch 原地。 */
+
+/* CREATE TABLE 回显：表名 + 列清单（类型按 Number/String 显示）。 */
+SqlOutcome renderCreateEcho(const sql4cj::CreateTableEvent& ev) {
+	std::string s = "CREATE TABLE " + ev.tableName + " (";
+	for (std::size_t i = 0; i < ev.tableColumns.size(); ++i) {
+		if (i > 0) { s += ", "; }
+		const auto& c = ev.tableColumns[i];
+		s += c.name + " " + (c.type_ == sql4cj::VarType::Number ? "Number" : "String");
+	}
+	s += ")";
+	return {true, s};
+}
+
+/* INSERT 回显：每行一条 `INSERT INTO t (列 = '值', …)`。 */
+SqlOutcome renderInsertEcho(const sql4cj::InsertTableEvent& ev) {
+	std::string s;
+	for (const auto& row : ev.tableRows) {
+		s += "INSERT INTO " + ev.targetTabName + " (";
+		for (std::size_t i = 0; i < row.size(); ++i) {
+			if (i > 0) { s += ", "; }
+			s += row[i].columnName + " = '" + row[i].value + "'";
+		}
+		s += ")";
+	}
+	return {true, s};
+}
+
+/* SELECT 渲染（含 WHERE 等值过滤）。取数源是 robot.matrices()——原始结构
  * 矩阵（声明序），与 registry()（装配后的硬件变量视图）互补；可选 WHERE
  * 等值条件按 inherited 显示值过滤（mt::matchRows 单点，值精确文本比较）。 */
+SqlOutcome runSelect(const sql4cj::SelectTableEvent& ev, const RobotStruct& robot) {
+	const std::string& tbl = ev.sourceTableName;
+	const mt::MatrixObject* m = mt::findByName(robot.matrices(), tbl);
+	if (m == nullptr) {
+		return {false, "表 '" + tbl + "' 未定义（当前结构脚本里没有这个表）"};
+	}
+	/* WHERE 等值过滤（2026-09-23）：命中行号来自 mt::matchAll 单点，与
+	 * 渲染同源（inherited 显示值精确比较，多条件 AND）。列不存在折成
+	 * SqlOutcome 失败，与调用方词法/语法错误同一漏斗——模型收到的
+	 * 是一次普通失败。无条件时枚举全部数据行。 */
+	std::vector<std::size_t> hits;
+	if (ev.where) {
+		std::vector<std::pair<std::string, std::string>> conds;
+		conds.reserve(ev.where->conds.size());
+		for (const auto& c : ev.where->conds) { conds.emplace_back(c.column, c.value); }
+		try {
+			hits = mt::matchAll(*m, conds);
+		} catch (const std::exception& e) {
+			return {false, e.what()};
+		}
+	} else {
+		hits.reserve(m->rows() > 1 ? m->rows() - 1 : 0);
+		for (std::size_t r = 1; r < m->rows(); ++r) { hits.push_back(r); }
+	}
+	/* 渲染：首行列头（values_[0] 即列头行），其后各行用 inherited
+	 * （"-" 占位继承已前向填充，见 matrix.hpp）。 */
+	std::string s = "SELECT * FROM " + m->getName() + ":";
+	const std::size_t ncol = m->cols();
+	if (m->rows() == 0) { s += " (空)"; return {true, s}; }
+	for (std::size_t c = 0; c < ncol; ++c) {
+		s += (c > 0 ? " | " : "\n  ") + (*m)(0, c);
+	}
+	for (std::size_t r : hits) {
+		for (std::size_t c = 0; c < ncol; ++c) {
+			s += (c > 0 ? " | " : "\n  ") + m->inherited(r, c);
+		}
+	}
+	/* 空结果显式说破：列头 + 0 行，模型不会把「没有行」误读成渲染故障 */
+	if (ev.where && hits.empty()) { s += "\n  （0 行匹配）"; }
+	return {true, s};
+}
+
+} // namespace
+
+/* 解析一条结构 SQL 并渲染成文本（agent 工具 query_sql 的实现，
+ * 契约见 agenttools.hpp）。事件体在上方每事件一函数（2026-09-29 A3 拆分），
+ * 本函数只留词法/语法漏斗与分发。 */
 SqlOutcome runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 	/* 词法：字符串 → token 流（跨语句/引号/注释，见 sqlparse.cpp）。 */
 	bot::MemoryReader sr(sql);
@@ -290,69 +373,12 @@ SqlOutcome runSqlStatement(const std::string& sql, const RobotStruct& robot) {
 	}
 
 	switch (ev.type) {
-	case sql4cj::EventType::CREATE_TABLE: {
-		std::string s = "CREATE TABLE " + ev.create.tableName + " (";
-		for (std::size_t i = 0; i < ev.create.tableColumns.size(); ++i) {
-			if (i > 0) { s += ", "; }
-			const auto& c = ev.create.tableColumns[i];
-			s += c.name + " " + (c.type_ == sql4cj::VarType::Number ? "Number" : "String");
-		}
-		s += ")";
-		return {true, s};
-	}
-	case sql4cj::EventType::INSERT_TABLE: {
-		std::string s;
-		for (const auto& row : ev.insert.tableRows) {
-			s += "INSERT INTO " + ev.insert.targetTabName + " (";
-			for (std::size_t i = 0; i < row.size(); ++i) {
-				if (i > 0) { s += ", "; }
-				s += row[i].columnName + " = '" + row[i].value + "'";
-			}
-			s += ")";
-		}
-		return {true, s};
-	}
-	case sql4cj::EventType::SELECT_TABLE: {
-		const std::string& tbl = ev.select.sourceTableName;
-		const mt::MatrixObject* m = mt::findByName(robot.matrices(), tbl);
-		if (m == nullptr) {
-			return {false, "表 '" + tbl + "' 未定义（当前结构脚本里没有这个表）"};
-		}
-		/* WHERE 等值过滤（2026-09-23）：命中行号来自 mt::matchAll 单点，与
-		 * 渲染同源（inherited 显示值精确比较，多条件 AND）。列不存在折成
-		 * SqlOutcome 失败，与本函数顶部词法/语法错误同一漏斗——模型收到的
-		 * 是一次普通失败。无条件时枚举全部数据行。 */
-		std::vector<std::size_t> hits;
-		if (ev.select.where) {
-			std::vector<std::pair<std::string, std::string>> conds;
-			conds.reserve(ev.select.where->conds.size());
-			for (const auto& c : ev.select.where->conds) { conds.emplace_back(c.column, c.value); }
-			try {
-				hits = mt::matchAll(*m, conds);
-			} catch (const std::exception& e) {
-				return {false, e.what()};
-			}
-		} else {
-			hits.reserve(m->rows() > 1 ? m->rows() - 1 : 0);
-			for (std::size_t r = 1; r < m->rows(); ++r) { hits.push_back(r); }
-		}
-		/* 渲染：首行列头（values_[0] 即列头行），其后各行用 inherited
-		 * （"-" 占位继承已前向填充，见 matrix.hpp）。 */
-		std::string s = "SELECT * FROM " + m->getName() + ":";
-		const std::size_t ncol = m->cols();
-		if (m->rows() == 0) { s += " (空)"; return {true, s}; }
-		for (std::size_t c = 0; c < ncol; ++c) {
-			s += (c > 0 ? " | " : "\n  ") + (*m)(0, c);
-		}
-		for (std::size_t r : hits) {
-			for (std::size_t c = 0; c < ncol; ++c) {
-				s += (c > 0 ? " | " : "\n  ") + m->inherited(r, c);
-			}
-		}
-		/* 空结果显式说破：列头 + 0 行，模型不会把「没有行」误读成渲染故障 */
-		if (ev.select.where && hits.empty()) { s += "\n  （0 行匹配）"; }
-		return {true, s};
-	}
+	case sql4cj::EventType::CREATE_TABLE:
+		return renderCreateEcho(ev.create);
+	case sql4cj::EventType::INSERT_TABLE:
+		return renderInsertEcho(ev.insert);
+	case sql4cj::EventType::SELECT_TABLE:
+		return runSelect(ev.select, robot);
 	case sql4cj::EventType::SHOW_TABLES:
 		/* 只读：列出当前结构的全部表名与数据行数（query_sql 单点） */
 		return {true, renderShowTables(robot)};

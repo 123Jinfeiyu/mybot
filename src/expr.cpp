@@ -3,6 +3,10 @@
 #include <cmath>
 #include <cstdlib>
 
+#include "util_except.hpp"
+#include "util_num.hpp"
+#include "util_str.hpp"
+
 namespace bot {
 
 /* ==================== 值语义 ==================== */

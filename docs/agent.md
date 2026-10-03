@@ -724,7 +724,8 @@ agent 就是 `mybot-agent`。
 ### 安全模型
 
 - **传输与认证**：socket 父目录 0700、文件 0600；accept 后用内核 **`SO_PEERCRED`** 校验对端
-  uid/gid == 本进程，不匹配即断连（不可伪造）。mybot-agent 与后端同 uid，由操作者启动。
+  uid/gid == 本进程，不匹配即断连（不可伪造）。`BOT4CJ_MCP_TOKEN` 非空时叠加**首帧共享密钥**
+  （见下方「首帧共享密钥」节）。mybot-agent 与后端同 uid，由操作者启动。
 - **线程归属**：后端在**主线程同步**服务、**单连接串行**（lock-step）——于是工具执行依赖的
   `thread_local`（`callEchoSink`/`topDepth`/`luaExecBudget`）天然正确，硬件调用自动串行。
 - **审计/策略连续性**：所有 MCP 调用**必穿** `DispatchGate::run`，故审计与能力门控与 agent
@@ -772,10 +773,22 @@ agent 就是 `mybot-agent`。
 shell）恰恰同 uid。理论上它若发现 socket 路径，就能直连后端、**绕过 mybot-agent 循环层的
 物理安全上限**（单轮调用数、任务预算等在循环里强制，直打 socket 就跳过了）。已就位的缓解：
 listening fd 是 CLOEXEC
-（`run_command` 子进程不继承）、0700 目录 + 不可预测路径、每连接预算、危险能力强制 policy 确认。
+（`run_command` 子进程不继承）、0700 目录 + 不可预测路径、每连接预算、危险能力强制 policy 确认、
+**首帧共享密钥 `BOT4CJ_MCP_TOKEN`（2026-09-29 起实现，见下）**。
 **诚实建议**：后端模式下**尽量不要开 `--agent-shell`**；若必须开，把后端跑在**专用用户 / 容器**里
-（真正的隔离），或将来加回首帧共享密钥 `BOT4CJ_MCP_TOKEN`（该名含 token，会被自动从 `run_command`
-子进程环境剔除并抹零，模型驱动的 shell 拿不到）。详见 `src/mcpbackend.hpp` 顶部注释。
+（真正的隔离），或设置 `BOT4CJ_MCP_TOKEN`。详见 `src/mcpbackend.hpp` 顶部注释。
+
+### 首帧共享密钥（BOT4CJ_MCP_TOKEN，2026-09-29）
+
+环境变量 `BOT4CJ_MCP_TOKEN` 非空时，两个进程**读同一个变量**：后端在宿主环境抹零前捕获
+（`captureMcpAuthToken`，设置但为空/超 256 字节 = 配置错误退出 2），agent 连接后的第一帧发
+`{"_route":"auth","token":...}`（`frame.rs` 的 `authenticate`），常数时间比对，失败即断连并落
+审计 `auth_failed`。未设置则退回「仅 SO_PEERCRED」的旧行为（残留风险同上一节）。密钥只进两个
+进程的内存：名字含 `token`，被 `run_command` 的环境清洗自动剔除；宿主与 agent 各自
+`prctl(PR_SET_DUMPABLE, 0)` 后 `/proc/<pid>/environ` 对同 uid 不可读。**版本配对**：不支持
+auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提示两侧须同升/同不设），带
+密钥的新后端对不先认证的旧 agent 同样拒绝。回归：`test_mcpbackend` 三态单测、`mcp_e2e.sh`
+M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进程正反两面）。
 
 ## 安全说明（请务必读）
 

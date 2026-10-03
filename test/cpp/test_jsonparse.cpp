@@ -5,7 +5,7 @@
 #include <string>
 
 #include "jsonparse.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
 
 using namespace bot;
 

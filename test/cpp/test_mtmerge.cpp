@@ -20,7 +20,8 @@
 #include "harness.hpp"
 #include "matrix.hpp"
 #include "mtmerge_core.hpp"
-#include "util.hpp"
+#include "util_except.hpp"
+#include "util_str.hpp"
 
 /* @Action 片段：两列 a.* / b.*，n 个数据行（值 = 行号） */
 static mt::MatrixObject actionA(int n, const std::string& dev = "a") {
