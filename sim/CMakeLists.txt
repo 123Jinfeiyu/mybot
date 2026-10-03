@@ -43,6 +43,7 @@ add_library(simcore STATIC
     src/robot.cpp
     src/obb2d.cpp
     src/world.cpp
+    src/scene_io.cpp
     src/sim_engine.cpp
     src/sim_paths.cpp
     src/unix_line_server.cpp

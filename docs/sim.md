@@ -281,7 +281,9 @@ simcore（GL 无关，可单测/可上 CI）        mybot-sim 壳
 ├─ sim_engine.cpp  引擎：拥有 vector<RobotSlot>+World+场景，├─ main.cpp  薄壳：主循环/输入/HUD
 │                  每帧逐只推进 + 按 idx 派发指令（可 headless 测）├─ spider.cpp 四足外观步态
 ├─ robot.cpp    平面运动学+相对运动+各自搬运态  ├─ mesh/shader/camera
+├─ obb2d.cpp    XZ 平面有向盒几何：局部系旋转/盒面最近点/前向量/射线/SAT（纯函数）
 ├─ world.cpp    障碍场景/碰撞/测距/拾放（无状态，按 Robot 参数化）└─ framegrab.cpp glReadPixels→JPEG
+├─ scene_io.cpp 场景文件读写（行文本，魔数 v1/v2/v3，原子写 + 0600）
 ├─ action_table.cpp  动作分类学单一事实源
 ├─ sim_config.h   全局可调常量 + 缺省 socket 路径（C++ 侧 SSOT）
 ├─ unix_line_server.cpp  三桥公共骨架

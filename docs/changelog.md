@@ -23,11 +23,19 @@
 - **`World::boxesOverlapXZ` 删除**：它原本只是「供测试直调」而开的一扇后门（`place()`
   内部另有一份 `obbOverlapXZ`）。几何模块公开后，`sim/tests/main.cpp` 的九处断言直接调
   `Obb2D::overlapXZ`，同一函数不再有两扇门（两扇门 = 改了这边忘了那边）。
+- **场景文件读写析出 `sim/src/scene_io.cpp`**：`readScene` / `writeScene` 与只被它们
+  用到的三个魔数、`kMaxSceneRobots`、`parseFloats` 整体搬走（`world.cpp` 487 → 303 行）。
+  `world.cpp` 讲的是「世界里的物体怎么相互作用」（碰撞推出、测距、拾放），场景 IO 讲的是
+  「这些物体怎么落盘、怎么读回来」，两件事只在数据类型上相交。声明仍留在 `world.h` 尾部——
+  `SceneState` / `Obstacle` / `RobotSpawn` 三个类型都在那儿，声明跟着类型走，故没有配套的
+  `scene_io.h`（拆出去会与 `world.h` 互相 include）。所有既有调用方（`sim_engine.h`、
+  `main.cpp`、`sim/tests`）的 include 一行未改，行文本格式、告警文案、0600 权限与
+  temp+rename 的原子写全部逐字保持。
 - 命名去掉 `obb` / `2D` 前缀，由 namespace 承载（与既有 `SimPaths` / `SimConfig` 同款），
-  对照表写在 `obb2d.h` 顶部。对使用者意味着什么：无（`sim/` 内部结构，线上协议、三条
-  socket 缺省路径、动作码表均未动）。`robot.cpp:17-18/31-32` 那两处同一条前向约定
-  **刻意未并入**：它们在速度积分器里、乘的是 `v_*dt` 而非单位方向探测，为两行把
-  `Robot` 耦合到几何模块不划算——记下这处出界，便于日后判断是否要收。
+  对照表写在 `obb2d.h` 顶部。`robot.cpp:17-18/31-32` 那两处同一条前向约定**刻意未并入**：
+  它们在速度积分器里、乘的是 `v_*dt` 而非单位方向探测，为两行把 `Robot` 耦合到几何模块
+  不划算——记下这处出界，便于日后判断是否要收。对使用者意味着什么：无（`sim/` 内部结构，
+  线上协议、三条 socket 缺省路径、动作码表、场景文件格式均未动）。
 
 ### 2026-10-04 Rust agent 残留结构治理（行为保持）
 

@@ -113,7 +113,7 @@ private:
     bool isObstacleCovered(int idx) const;
 };
 
-// ---- 场景文件读写（行文本，与三桥协议同风格，可手编可 diff） ----
+// ---- 场景文件读写（行文本，与三桥协议同风格，可手编可 diff；实现在 scene_io.cpp） ----
 //
 // 首行必须是魔数 "mybot-sim scene v1"/"v2"/"v3"，之后每行一条——
 //   box <cx> <cy> <cz> <hx> <hy> <hz> <r> <g> <b> [<mass> [<yaw_deg>]]
