@@ -37,6 +37,14 @@ public:
 	const char* kindName() const override { return "test-lambda"; }
 };
 
+/* 什么都不做的硬件变量（play 回 JsonNull）：注册表与派发用例里最常见的填充物。
+ * 原为 test_robot_dispatch.cpp 的局部 helper，2026-10-04 随 HwRegistry 门面单测
+ * 拆出 test_hw_registry.cpp 后上收——两个文件共用一份，避免各留一个同名包装。 */
+inline std::unique_ptr<bot::MatrixVars_Hardware> dummyHw() {
+	return std::unique_ptr<bot::MatrixVars_Hardware>(new LambdaHw(
+		[](const bot::Json&) { return bot::JsonNull(); }));
+}
+
 /* 解析出恰好一个矩阵对象；解析失败或多解都视为用例前置条件不成立 */
 inline mt::MatrixObject oneMatrix(const std::string& text) {
 	bot::MemoryReader reader(text);

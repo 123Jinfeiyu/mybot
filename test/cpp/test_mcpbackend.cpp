@@ -288,6 +288,30 @@ TH_TEST(mcpbackend_context_get_returns_quoted_material) {
 	TH_CHECK(d->find("readableVars")->isStr());
 }
 
+TH_TEST(mcpbackend_context_get_reports_an_unreadable_structure_script) {
+	/* 结构脚本读不出来时走显式回落文案，而不是交一个空的 structureExcerpt：
+	 * 提示词素材里「这段读不到」与「这个机器人没有结构脚本」必须可区分，
+	 * 否则模型会把空摘录当成后一种事实。回落只影响那一段——机器人名来自
+	 * 路径本身、硬件清单来自注册表，各有事实源，照常给出。 */
+	auto robot = makeRelayRobot();
+	AgentModeConfig cfg;
+	cfg.structurePath = "robots/does-not-exist.sql";
+	cfg.scriptsDir = "scripts";
+	AgentToolContext ctx;
+	ctx.robot = robot.get();
+	ctx.scriptsDir = "scripts";
+	McpBackend b(makeAgentTools(ctx), nullptr, nullptr, 0, 0, &cfg, robot.get());
+
+	const Json r = parseJson(b.handleFrame(R"({"_route":"context.get"})"));
+	TH_CHECK(respOk(r));
+	const Json* d = respData(r);
+	TH_CHECK(d != nullptr);
+	TH_CHECK(d->find("structureExcerpt")->getValue() == "(结构脚本不可读)\n");
+	TH_CHECK(d->find("robotName")->getValue() == "does-not-exist");
+	TH_CHECK(d->find("hardwareCount")->getInt() > 0);
+	TH_CHECK(d->find("hardwareList")->getValue().find("硬件变量清单") != std::string::npos);
+}
+
 TH_TEST(mcpbackend_context_get_ignores_call_budget) {
 	/* 只读路由不占预算：预算耗尽后 tool.call 被拒，context.get 照常成功 */
 	auto robot = makeRelayRobot();

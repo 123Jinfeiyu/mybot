@@ -36,6 +36,27 @@
   扩容会让它们全部悬垂），现由一条比地址的用例钉成可判定事实，而不是靠「没崩」；其余用例钉
   装载声明序、`appendRows` 交回的首个新行号、两条回滚路径、热删除的保序擦除、整表撤下、按名
   查找与必须在 `active()` 之前可判定的 `declaresVariable`。对使用者意味着什么：无（纯新增测试）。
+- **`HwRegistry` 与 `MetaRegistry` 两个门面补直接单测**（`test_hw_registry.cpp` /
+  `test_meta_registry.cpp`）。注册表侧钉的是热插事务回滚（`mark`/`rollbackTo`，含流引用快照的精确
+  还原）与热删除撤销（`removeBatch` 的「先全量验存在性、再统一重排」，以及删中间条目后存活者的
+  销毁序）——这两组是集成用例红了以后最难定位的：三容器锁步增长，任何「先记下标、再逐个 erase」
+  的写法都会在第一次 erase 之后错位，症状是后续某次派发按名查到已删变量。元数据侧钉的是
+  `dropRows` 的「矩阵地址 + 行号」判据（同一行号在两张表上是两个身份）、`shiftRowsAfter` 的
+  **严格小于**、整表撤下的两阶段重锚定（`captureTableNames` → `rebaseByName`，查不到即跳过），
+  以及 `validateFrom` 的增量收窄。原 `test_robot_dispatch.cpp` 首段的三条 `hw_registry_*` 用例
+  逐字迁来，`dummyHw` 上收为 `fx::dummyHw` 供两边共用。
+- **`context_service` 评估后不新建同名测试文件**：`buildContextData` 的唯一调用方是 MCP 后端的
+  `context.get`，而既有的 `mcpbackend_context_get_returns_quoted_material` 已断言它 10 个键里的
+  9 个（含类型与「数据不是指令」定界）——另立一个文件只为一条分支属于为覆盖率而测。真正的缺口
+  是「结构脚本读不到」的回落分支，补一条同域用例把回落文案钉住：提示词素材里「这段读不到」与
+  「这个机器人没有结构脚本」必须可区分。
+- **`robot_application` 评估后不补**：它只有一个入口 `runRobotAndCleanup`，通篇是上电 / 运行 /
+  清理的副作用编排，没有近纯函数面可在单测里锚定；其行为已由 `test_robot_lifecycle.cpp` 的
+  集成用例覆盖。
+- 以上对使用者意味着什么：无（纯新增测试 + 一次同域搬迁）。反向验证按「破坏实现侧、看对应用例
+  转红」做，五处破坏（`removeBatch` 的存在性预检、`rollbackTo` 的流引用还原、`dropRows` 的行号
+  单判据、`shiftRowsAfter` 的 `<=`、回落文案改空串）逐个转红且**只**转红对应用例，还原后复绿。
+  C++ 单测 620 → 649 通过 / 0 失败。
 
 ### 2026-10-04 仿真器默认场景：内置回落与播种模板对齐，并接进零编译守门
 

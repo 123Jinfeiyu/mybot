@@ -521,6 +521,7 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"lua", "Lua 桥/沙箱"},
 	{"matrix", "矩阵解析"},
 	{"metaprovider", "元数据提供者"},
+	{"metaregistry", "元数据域（MetaRegistry 门面）"},
 	{"mtinclude", "@Include 内联"},
 	{"mtmerge", "mtmerge 归并"},
 	{"nested", "嵌套表边界"},

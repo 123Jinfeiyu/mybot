@@ -2,7 +2,9 @@
  *
  * 自 test_robot.cpp 拆出（2026-10-01，行为保持）：HwRegistry 单一注册表、
  * @Action 设备列别名解析、$(...) 类型分派、@Reflex 条件反射四段；
- * 同域局部 helper（dummyHw/aliasHw/varsHw/captureHw/runSwallow/runCapture）随迁。
+ * 同域局部 helper（aliasHw/varsHw/captureHw/runSwallow/runCapture）随迁。
+ * 2026-10-04：注册表那一段（三条 hw_registry_* 用例）迁至 test_hw_registry.cpp，
+ * 与热插事务/热删除撤销/会话覆盖层的直接单测同住；dummyHw 上收为 fx::dummyHw。
  */
 #include <chrono>
 #include <cstdlib>
@@ -30,49 +32,10 @@ using rfx::cell;
 using rfx::kBasicSql;
 using rfx::probeSql;
 using rfx::runTexts;
-/* ---------------- HwRegistry（R-2：单一注册表） ---------------- */
 
-namespace {
-
-std::unique_ptr<bot::MatrixVars_Hardware> dummyHw() {
-	return std::unique_ptr<bot::MatrixVars_Hardware>(new fx::LambdaHw(
-		[](const bot::Json&) { return bot::JsonNull(); }));
-}
-
-} // namespace
-
-TH_TEST(hw_registry_add_and_find) {
-	bot::HwRegistry reg;
-	reg.add("a", dummyHw(), " (in table 'T')");
-	reg.add("b", dummyHw());
-	TH_CHECK(reg.contains("a"));
-	TH_CHECK(reg.find("a") != nullptr);
-	TH_CHECK(reg.find("missing") == nullptr);
-	/* 销毁序 = 声明序，会话别名不进入 */
-	TH_CHECK(reg.sequence().size() == 2);
-}
-
-TH_TEST(hw_registry_rejects_duplicate_name) {
-	bot::HwRegistry reg;
-	reg.add("a", dummyHw(), " (in table 'T')");
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "Duplicate hardware variable name: 'a'",
-		reg.add("a", dummyHw(), " (in table 'U')"));
-	/* 失败不破坏既有注册 */
-	TH_CHECK(reg.sequence().size() == 1);
-	TH_CHECK(reg.find("a") != nullptr);
-}
-
-TH_TEST(hw_registry_session_override_shadows_but_keeps_destroy_order) {
-	bot::HwRegistry reg;
-	reg.add("a", dummyHw());
-	bot::MatrixVars_Hardware* structureVar = reg.find("a");
-	reg.override("a", dummyHw());
-	/* 名字索引指向别名，但结构变量仍在销毁序中 */
-	TH_CHECK(reg.find("a") != nullptr);
-	TH_CHECK(reg.find("a") != structureVar);
-	TH_CHECK(reg.sequence().size() == 1);
-	TH_CHECK(reg.sequence()[0] == structureVar);
-}
+/* HwRegistry 单一注册表的用例（原在本文件首段）已于 2026-10-04 迁至
+ * test/cpp/test_hw_registry.cpp——注册表门面在那边与热插事务/热删除撤销的
+ * 直接单测同住一处；dummyHw 随之上收为 fx::dummyHw。 */
 
 /* ---- @Action 设备列别名解析（2026-09-19 设计评估；解析单点白盒锚定）---- */
 
@@ -85,7 +48,7 @@ static std::unique_ptr<bot::MtVars_Alias> aliasHw(const std::string& name,
 
 TH_TEST(action_device_alias_resolves_to_driver) {
 	bot::HwRegistry reg;
-	reg.add("dev1", dummyHw(), "");
+	reg.add("dev1", fx::dummyHw(), "");
 	reg.add("leg", aliasHw("leg", "dev1"), "");
 	/* 别名 → 目标名；非标量真名原样；未知名原样（派发期保留行号上下文报错） */
 	TH_CHECK(bot::ActionRunner::resolveActionDevice(reg, "leg") == "dev1");
@@ -167,7 +130,7 @@ TH_TEST(action_dispatch_rejects_duplicate_resolved_param) {
 	/* 撞设备第二层防线：不同列头（别名 + 真名）解析出同一 (设备, 参数)
 	 * ——归并期文本查重不可见，派发前必须显式报错，不得逐行静默覆盖 */
 	bot::HwRegistry reg;
-	reg.add("dev1", dummyHw(), "");
+	reg.add("dev1", fx::dummyHw(), "");
 	reg.add("leg", aliasHw("leg", "dev1"), "");
 	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
 		"@Action\nleg.test  dev1.test;\n  200      300;\n@\n");
@@ -216,7 +179,7 @@ TH_TEST(action_device_expr_product_resolves_like_bare_name) {
 	/* $(p) ≡ p：产物命中别名走与裸名相同的解析（一层为止规则的对称面）；
 	 * 产物是别名名 → 再解一层到驱动（eval 已解引用一次，产物按裸名规则） */
 	bot::HwRegistry reg;
-	reg.add("dev1", dummyHw(), "");
+	reg.add("dev1", fx::dummyHw(), "");
 	reg.add("p", aliasHw("p", "dev1"), "");
 	TH_CHECK(bot::ActionRunner::resolveActionDevice(reg, "$(p)") == "dev1");
 	reg.add("x", aliasHw("x", "leg"), "");
@@ -237,7 +200,7 @@ TH_TEST(action_device_expr_rejects_driver_and_undefined_reference) {
 	/* 表达式里引用驱动/守护名：名字是拿来做算术/拼接的，不是拿来做播放的；
 	 * 未定义名沿用既有文案 */
 	bot::HwRegistry reg;
-	reg.add("dev1", dummyHw(), "");
+	reg.add("dev1", fx::dummyHw(), "");
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "driver/daemon variable; only @Alias/@Vars may appear in an expression",
 		(void)bot::ActionRunner::resolveActionDevice(reg, "$(dev1)"));
 	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "not a defined hardware variable",
@@ -289,7 +252,7 @@ TH_TEST(action_dispatch_rejects_expr_param_colliding_with_bare) {
 	/* 查重键是解析后 (设备, 参数)：$(...) 拼出的参数名与裸名同键也必须抓
 	 * （归并期文本查重不可见，不得逐行静默覆盖） */
 	bot::HwRegistry reg;
-	reg.add("dev1", dummyHw(), "");
+	reg.add("dev1", fx::dummyHw(), "");
 	reg.add("p", aliasHw("p", "note"), "");
 	std::vector<mt::MatrixObject> mats = fx::manyMatrices(
 		"@Action\ndev1.$(p)  dev1.note;\n  200      300;\n@\n");

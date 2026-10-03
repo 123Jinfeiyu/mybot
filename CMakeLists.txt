@@ -196,6 +196,8 @@ add_executable(mybot_tests
   test/cpp/test_util.cpp
   test/cpp/test_cliargs.cpp
   test/cpp/test_hardware.cpp
+  test/cpp/test_hw_registry.cpp
+  test/cpp/test_meta_registry.cpp
   test/cpp/test_structure_store.cpp
   test/cpp/test_robot.cpp
   test/cpp/test_robot_dispatch.cpp
