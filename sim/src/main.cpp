@@ -363,9 +363,12 @@ int main(int argc, char** argv) {
         phong.setVec3("objectColor", glm::vec3(0.38f, 0.46f, 0.36f));
         meshes.cube.draw();
 
-        // 障碍盒：unit cube 经 translate(center)*scale(2*half) 摆到位
+        // 障碍盒：unit cube 经 translate(center)*rotate(yaw,+Y)*scale(2*half) 摆到位。
+        // 绕 +Y 旋转 yaw 把局部 +X 映到世界 (cos yaw, -sin yaw)，与 world.cpp 的
+        // OBB 局部系约定同号。
         for (const Obstacle& ob : engine.world().obstacles()) {
             glm::mat4 m = glm::translate(glm::mat4(1.0f), ob.center) *
+                          glm::rotate(glm::mat4(1.0f), ob.yaw, glm::vec3(0.0f, 1.0f, 0.0f)) *
                           glm::scale(glm::mat4(1.0f), ob.half * 2.0f);
             phong.setMat4("model", m);
             phong.setVec3("objectColor", ob.color);

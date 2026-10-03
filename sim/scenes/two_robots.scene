@@ -10,7 +10,7 @@ mybot-sim scene v2
 # 多 agent 各自把 MYBOT_SIM_SOCK / MYBOT_SIM_SENSOR_SOCK 指向自己的那套即可。
 #
 # 运行：MYBOT_SIM_SCENE=sim/scenes/two_robots.scene ./sim/build/mybot-sim
-# box: cx cy cz hx hy hz r g b mass
+# box: cx cy cz hx hy hz r g b mass [yaw_deg（绕Y朝向，0=轴对齐，缺省 0）]
 # robot: x z theta_deg carried_idx
 robot 0 -1.5 0
 robot 0 1.5 0

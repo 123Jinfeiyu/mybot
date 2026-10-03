@@ -310,6 +310,192 @@ void testPickPlace() {
     check(!behindWorld.pick(far), "身后的盒拾取失败");
 }
 
+// ---- World：朝向盒（OBB）几何 ----
+
+void testYawGeometry() {
+    // 细长盒：局部 X 半长 0.1、局部 Z 半长 0.6。yaw=0 时薄边朝前（在 +X 上，
+    // 近面 x=1.9），yaw=90° 时把长边转到 +X 上（近面 x=1.4）。
+    const glm::vec3 c{2.0f, 0.2f, 0.0f};
+    const glm::vec3 h{0.1f, 0.2f, 0.6f};
+    Robot r;  // 原点 theta=0，射线/前端起点 x=+0.2
+
+    // 测距：yaw=0 薄边正对 → 命中 1.9-0.2=1.7；yaw=90° 长边正对 → 命中 1.4-0.2=1.2
+    World flat(std::vector<Obstacle>{{c, h, {1, 1, 1}, 1.0f, 0.0f}});
+    check(near(flat.queryRange(r), 1.7f, 1e-3f), "yaw=0 测距命中薄边近面");
+    World turned(std::vector<Obstacle>{{c, h, {1, 1, 1}, 1.0f, glm::radians(90.0f)}});
+    check(near(turned.queryRange(r), 1.2f, 1e-3f), "yaw=90° 测距命中长边近面");
+
+    // 碰撞：同上，yaw=90° 时碰撞面更近（车被挡在 x≈1.2 而非 1.7）
+    Robot cf;
+    for (int i = 0; i < 300; ++i) {
+        cf.update(1.0f / 60.0f, {1.0f, 0.0f}, Robot::kMaxSpeed);
+        flat.resolveCollisions(cf);
+    }
+    check(cf.x() > 1.6f && cf.x() <= 1.701f, "yaw=0 车贴到薄边近面");
+    Robot ct;
+    for (int i = 0; i < 300; ++i) {
+        ct.update(1.0f / 60.0f, {1.0f, 0.0f}, Robot::kMaxSpeed);
+        turned.resolveCollisions(ct);
+    }
+    check(ct.x() <= 1.201f, "yaw=90° 车被挡在更近的长边近面");
+
+    // 拾取：同样细长盒放在中心 1.0 处。yaw=0 薄边正对 → 近面 x=0.9，距前端 0.7 > 0.6
+    // 拾不到；yaw=90° 长边正对 → 近面 x=0.4，距前端 0.2 < 0.6 可拾。
+    World pickFlat(std::vector<Obstacle>{{{1.0f, 0.2f, 0.0f}, {0.1f, 0.2f, 0.6f}, {1, 1, 1}, 1.0f, 0.0f}});
+    Robot pf;
+    check(!pickFlat.pick(pf), "yaw=0 细长盒横放够不到（距前端 0.7 > 0.6）");
+    World pickTurned(std::vector<Obstacle>{{{1.0f, 0.2f, 0.0f}, {0.1f, 0.2f, 0.6f}, {1, 1, 1}, 1.0f, glm::radians(90.0f)}});
+    Robot pt;
+    check(pickTurned.pick(pt), "yaw=90° 细长盒转正后可拾取（距前端 0.2 < 0.6）");
+    check(pt.carriedIndex() == 0, "yaw=90° 拾取到该盒");
+}
+
+// ---- World：搬运物朝向跟随机体 + 放置保留朝向 ----
+
+void testYawCarry() {
+    World world(std::vector<Obstacle>{
+        {{0.7f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 5.0f, 0.0f},
+    });
+    Robot r;
+    check(world.pick(r), "朝向用例：拾取成功");
+
+    // 转身 90°
+    r.setRelativeTurn(glm::radians(90.0f));
+    RobotInput in;
+    int guard = 0;
+    while (r.tickRelative(1.0f / 60.0f, in) && guard++ < 600) {
+        r.update(1.0f / 60.0f, in, r.effectiveMaxSpeed());
+    }
+    check(near(r.theta(), glm::radians(90.0f), glm::radians(1.5f)), "朝向用例：转向 90° 完成");
+
+    world.updateCarried(r);
+    check(near(world.obstacles()[0].yaw, r.theta(), 1e-6f), "updateCarried 让搬运物 yaw 跟随机体朝向");
+
+    check(world.place(r), "朝向用例：放置成功");
+    check(near(world.obstacles()[0].yaw, r.theta(), 1e-6f), "place 后保留放置瞬间的朝向");
+}
+
+// ---- World：盒-盒 OBB 重叠（2D SAT） ----
+
+void testObbOverlap() {
+    // 两个轴对齐方盒：中心距 0.5 < 半宽和 0.8 → 重叠
+    const Obstacle a{{0.0f, 0.2f, 0.0f}, {0.4f, 0.2f, 0.4f}, {1, 1, 1}, 1.0f, 0.0f};
+    const Obstacle bFar{{0.9f, 0.2f, 0.0f}, {0.4f, 0.2f, 0.4f}, {1, 1, 1}, 1.0f, 0.0f};
+    const Obstacle bHit{{0.5f, 0.2f, 0.0f}, {0.4f, 0.2f, 0.4f}, {1, 1, 1}, 1.0f, 0.0f};
+    const Obstacle bTouch{{0.8f, 0.2f, 0.0f}, {0.4f, 0.2f, 0.4f}, {1, 1, 1}, 1.0f, 0.0f};
+    check(World::boxesOverlapXZ(a, bHit), "轴对齐：相交 → 重叠");
+    check(!World::boxesOverlapXZ(a, bTouch), "轴对齐：恰好贴合（距离=半径和）→ 不算重叠");
+    check(!World::boxesOverlapXZ(a, bFar), "轴对齐：分离 → 不重叠");
+
+    // 45° 斜置判别：两盒的**轴对齐包围盒**相交，但 OBB 实际分离（SAT 能分辨）
+    const Obstacle sqA{{0.0f, 0.2f, 0.0f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f, 0.0f};
+    const Obstacle sqB{{0.2f, 0.2f, -0.2f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f,
+                       glm::radians(45.0f)};
+    check(!World::boxesOverlapXZ(sqA, sqB), "45° 斜置：AABB 相交但 OBB 实际分离");
+
+    // 同两盒改成 0° 摆放：中心距 0.2 < 半径和 0.2？——相等即贴合，不算重叠
+    const Obstacle sqB0{{0.2f, 0.2f, -0.2f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f, 0.0f};
+    check(!World::boxesOverlapXZ(sqA, sqB0), "轴对齐 0°：投影恰好贴合不算重叠");
+    const Obstacle sqB0in{{0.15f, 0.2f, -0.15f}, {0.1f, 0.15f, 0.1f}, {1, 1, 1}, 1.0f, 0.0f};
+    check(World::boxesOverlapXZ(sqA, sqB0in), "轴对齐 0°：投影相交 → 重叠");
+}
+
+// ---- World：place 放置解算（水平推开 + 落地/叠放） ----
+
+// 不变量：world 中任意竖直相交的盒对，必须 XZ 不重叠（place 后应成立）。
+void checkNoOverlapPairs(const World& w) {
+    for (int i = 0; i < (int)w.obstacles().size(); ++i) {
+        for (int j = i + 1; j < (int)w.obstacles().size(); ++j) {
+            const Obstacle& a = w.obstacles()[i];
+            const Obstacle& b = w.obstacles()[j];
+            const bool vOverlap = (a.center.y - a.half.y) < (b.center.y + b.half.y) &&
+                                  (b.center.y - b.half.y) < (a.center.y + a.half.y);
+            if (vOverlap) {
+                check(!World::boxesOverlapXZ(a, b), "不变量：竖直相交的盒对 XZ 不重叠");
+            }
+        }
+    }
+}
+
+void testPlaceResolve() {
+    // 空地对齐（旧行为回归）：无其他箱 → 精确落在前方 0.7、贴地 center.y=half.y
+    {
+        World world(std::vector<Obstacle>{
+            {{5.0f, 0.2f, 5.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // idx0 被搬盒
+        });
+        Robot r;  // 原点 theta=0 → 前方 +X
+        r.setCarried(0, 1.0f);
+        check(world.place(r), "空地对齐：place 成功");
+        const Obstacle& ob = world.obstacles()[0];
+        check(near(ob.center.x, 0.7f, 1e-6f), "空地对齐：落点 x=0.7（车身半长 0.2 + placeDist 0.5）");
+        check(near(ob.center.z, 0.0f, 1e-6f), "空地对齐：落点 z=0");
+        check(near(ob.center.y, 0.2f, 1e-6f), "空地对齐：center.y=half.y 精确落地");
+    }
+
+    // 落点被「墙」占住（顶面 0.4 高于脚下）→ 沿机器人前方近侧推开
+    {
+        World world(std::vector<Obstacle>{
+            {{5.0f, 0.2f, 5.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // idx0 被搬盒
+            {{0.7f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // idx1 挡在落点上
+        });
+        Robot r;
+        r.setCarried(0, 1.0f);
+        check(world.place(r), "占位推出：place 成功");
+        const Obstacle& ob = world.obstacles()[0];
+        const Obstacle& wall = world.obstacles()[1];
+        check(ob.center.x < wall.center.x, "占位推出：只往机器人近侧推（不穿到阻挡箱对面）");
+        check(near(ob.center.x, 0.3f, 2e-3f), "占位推出：贴合（0.7 − 半径和 0.4 − eps）");
+        check(!World::boxesOverlapXZ(ob, wall), "占位推出：推后两盒不重叠");
+        check(near(ob.center.y, 0.2f, 1e-6f), "占位推出：仍落地（下方无支撑）");
+        checkNoOverlapPairs(world);
+    }
+
+    // 深嵌（释放点已越过阻挡箱中心）→ 仍推回近侧
+    {
+        World world(std::vector<Obstacle>{
+            {{5.0f, 0.2f, 5.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},
+            {{0.5f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // 阻挡箱更近（s>0）
+        });
+        Robot r;
+        r.setCarried(0, 1.0f);
+        check(world.place(r), "深嵌：place 成功");
+        const Obstacle& ob = world.obstacles()[0];
+        const Obstacle& wall = world.obstacles()[1];
+        check(ob.center.x < wall.center.x, "深嵌：仍推回近侧");
+        check(!World::boxesOverlapXZ(ob, wall), "深嵌：推后不重叠");
+        checkNoOverlapPairs(world);
+    }
+}
+
+// ---- World：叠放（机器人站上箱顶松手，物体落在下层箱顶） ----
+
+void testStacking() {
+    // 地面大板（顶面 0.4）供机器人站上去；被搬盒 idx1
+    World world(std::vector<Obstacle>{
+        {{0.7f, 0.2f, 0.0f}, {0.6f, 0.2f, 0.6f}, {1, 1, 1}, 100.0f},  // idx0 大板
+        {{5.0f, 0.2f, 5.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},    // idx1 被搬盒
+    });
+    Robot r;
+    r.setPose(0.0f, 0.0f, 0.0f);
+    r.applySupport(0.4f);  // 站上大板顶
+    check(near(r.y(), 0.4f, 1e-6f), "叠放：机器人站上大板顶（y=0.4）");
+    r.setCarried(1, 1.0f);
+    check(world.place(r), "叠放：place 成功");
+
+    const Obstacle& ob = world.obstacles()[1];
+    const Obstacle& board = world.obstacles()[0];
+    check(near(ob.center.x, 0.7f, 1e-3f), "叠放：水平未被推开（下方是支撑不是墙）");
+    check(near(ob.center.y, 0.6f, 1e-3f), "叠放：落在下层箱顶（bottom 0.4 + half 0.2）");
+    check(near(ob.center.y - ob.half.y, board.center.y + board.half.y, 1e-3f),
+          "叠放：被搬盒底面贴合大板顶面");
+
+    // 放置后 supportHeight 能看到新顶面（0.8）
+    Robot probe;
+    probe.setPose(0.7f, 0.0f, 0.0f);
+    probe.applySupport(0.8f);
+    check(near(world.supportHeight(probe), 0.8f, 1e-3f), "叠放：supportHeight 看到新顶面 0.8");
+}
+
 // ---- 场景文件：round-trip 与解析容错 ----
 
 void writeTextFile(const std::string& path, const char* content) {
@@ -323,11 +509,11 @@ void writeTextFile(const std::string& path, const char* content) {
 void testSceneIo() {
     const std::string path = "/tmp/mybot-sim-tests-" + std::to_string(::getpid()) + "-scene.scene";
 
-    // round-trip：障碍 + 多机器人位姿/搬运（writeScene 一律写 v2）
+    // round-trip：障碍 + 多机器人位姿/搬运（writeScene 一律写 v3）
     SceneState st;
     st.obstacles = {
-        {{1.0f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 0.0f, 0.0f}, 7.5f},
-        {{3.0f, 0.2f, 1.0f}, {0.3f, 0.3f, 0.3f}, {0.0f, 1.0f, 0.0f}, 2.0f},
+        {{1.0f, 0.2f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1.0f, 0.0f, 0.0f}, 7.5f, 0.0f},
+        {{3.0f, 0.2f, 1.0f}, {0.3f, 0.3f, 0.3f}, {0.0f, 1.0f, 0.0f}, 2.0f, glm::radians(30.0f)},
     };
     st.robots = {
         {1.5f, -0.25f, 0.7f, 1},   // robot0：位姿 + 搬运 idx1
@@ -342,6 +528,7 @@ void testSceneIo() {
               near(back.obstacles[1].half.z, 0.3f, 1e-4f) &&
               near(back.obstacles[0].color.g, 0.0f, 1e-4f),
           "盒字段 round-trip");
+    check(near(back.obstacles[1].yaw, glm::radians(30.0f), 1e-4f), "盒朝向 round-trip");
     check(back.robots.size() == 2, "机器人数 round-trip（v2 多 robot 行）");
     check(near(back.robots[0].x, 1.5f, 1e-4f) && near(back.robots[0].z, -0.25f, 1e-4f) &&
               near(back.robots[0].theta, 0.7f, 1e-4f),
@@ -351,12 +538,12 @@ void testSceneIo() {
               back.robots[1].carriedIdx == -1,
           "robot1 位姿/空载 round-trip");
 
-    // writeScene 一律写 v2 魔数（v2 是 v1 超集，单机器人也写 v2）
+    // writeScene 一律写 v3 魔数（v3 是 v1/v2 超集，box 行带朝向）
     {
         std::ifstream mf(path);
         std::string magic;
         std::getline(mf, magic);
-        check(magic.rfind("mybot-sim scene v2", 0) == 0, "writeScene 落 v2 魔数");
+        check(magic.rfind("mybot-sim scene v3", 0) == 0, "writeScene 落 v3 魔数");
     }
 
     // applyScene：只整体替换障碍集合（搬运状态属于每只 Robot，不由场景承载）
@@ -385,6 +572,7 @@ void testSceneIo() {
     check(readScene(path, st2), "v1 容错解析成功");
     check(st2.obstacles.size() == 1, "坏行/未知行被跳过");
     check(near(st2.obstacles[0].mass, 51.2f, 0.1f), "缺省质量按体积×800");
+    check(near(st2.obstacles[0].yaw, 0.0f, 1e-6f), "v1 box 无朝向字段读成 yaw=0");
     check(st2.robots.size() == 1, "v1 单 robot 行读成 1 只");
     check(near(st2.robots[0].theta, glm::radians(90.0f), 1e-4f), "theta 度→弧度换算");
     check(st2.robots[0].carriedIdx == -1, "robot 行无 carried 即无搬运");
@@ -407,6 +595,18 @@ void testSceneIo() {
               near(st2.robots[1].theta, glm::radians(90.0f), 1e-4f),
           "第二只位姿/朝向正确");
     check(st2.robots[2].carriedIdx == -1, "carried 越界按无搬运处理");
+
+    // v3：box 行追加第 11 个数 yaw_deg（度→弧度）；v2 文件无该字段读成 yaw=0
+    writeTextFile(path,
+                  "mybot-sim scene v3\n"
+                  "box 1 0.2 0 0.2 0.2 0.2 1 0 0 5 30\n"
+                  "box 2 0.2 0 0.2 0.2 0.2 1 0 0 5\n"
+                  "robot 0 0 0\n");
+    SceneState st3;
+    check(readScene(path, st3) && st3.obstacles.size() == 2, "v3 box 行解析成功");
+    check(near(st3.obstacles[0].mass, 5.0f, 1e-4f), "v3 box mass 解析");
+    check(near(st3.obstacles[0].yaw, glm::radians(30.0f), 1e-4f), "v3 box yaw_deg→弧度");
+    check(near(st3.obstacles[1].yaw, 0.0f, 1e-6f), "v3 box 缺 yaw_deg 读成 0");
 
     // 缺魔数：整文件拒绝
     writeTextFile(path, "# 只有注释\nbox 1 2 3 4 5 6 7 8 9\n");
@@ -1217,6 +1417,11 @@ int main() {
     testQueryRange();
     testCollisions();
     testPickPlace();
+    testYawGeometry();
+    testYawCarry();
+    testObbOverlap();
+    testPlaceResolve();
+    testStacking();
     testSceneIo();
     testActionTable();
     testSharedConstants();

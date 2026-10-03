@@ -7,13 +7,17 @@
 
 #include "robot.h"
 
-// 场景障碍物：盒体（center=中心, half=半尺寸, color=漫反射色, mass=质量kg）。
+// 场景障碍物：盒体（center=中心, half=半尺寸, color=漫反射色, mass=质量kg,
+// yaw=绕 Y 轴朝向（弧度，0=轴对齐，符号与 Robot::theta 一致））。
 // mass 用于搬运时的减速计算，defaultScene() 按体积×密度填充。
+// 带 yaw 后盒是有向盒（OBB）：碰撞/测距/拾取/支撑面都先在盒局部系里按轴对齐
+// 解算、再旋回世界系（见 world.cpp 的 worldToLocal2D/localToWorld2D）。
 struct Obstacle {
     glm::vec3 center;
     glm::vec3 half;
     glm::vec3 color;
     float mass = 1.0f;
+    float yaw = 0.0f;
 };
 
 // 场景里一只机器人的初始状态。theta 用弧度（文件里是度，读写边界换算）。
@@ -33,7 +37,9 @@ struct SceneState {
 
 // 仿真场景：障碍物集合 + 机器人与场景的相互作用（碰撞推出、射线测距、
 // 拾取/放置/背负跟随）。Robot 管运动学与**自己背着哪个障碍**；「世界里有什么、
-// 撞了怎么解、能不能搬」都在这里。所有交互都按传入的 Robot 参数化、World 自身
+// 撞了怎么解、能不能搬」都在这里。盒-盒之间**不做逐帧碰撞解算**，只在 place() 里做
+// 一次放置解算（被占则近侧水平推开 + 按脚下支撑面落地/叠放）——静态箱只在那儿移动。
+// 所有交互都按传入的 Robot 参数化、World 自身
 // 不持有任何单只机器人的状态——因此同一 World 可服务 N 只机器人，各搬各的。
 // GL 无关，归 simcore。
 class World {
@@ -64,6 +70,9 @@ public:
     // pick: 尝试拾取前方最近的可搬运物体（距离 < kPickRange 且在前方），成功
     // 返回 true；该机器人已持有物体时直接失败。
     // place: 把该机器人当前搬运的物体放到前方 kPlaceDist 处，成功返回 true。
+    // 放置时做一次几何解算：与「墙」（顶面高于脚下的箱，且压在落点的竖直带上）XZ 重叠
+    // 则沿机器人前方把盒子水平推开、只推近侧（不穿到阻挡箱对面）；落地高度取脚印下最高
+    // 的支撑面（顶面不高于脚下的箱顶），无则地面——机器人自己站上箱顶松手即可叠放。
     bool pick(Robot& robot);
     bool place(Robot& robot);
 
@@ -77,6 +86,13 @@ public:
 
     static constexpr float kPickRange = 0.6f;  // 拾取半径（米）
     static constexpr float kPlaceDist = 0.5f;  // 放置距离（米）
+    // 背负物体底面相对身体顶部再抬高的量（米）：避免挡住摄像机，同时是释放高度
+    // releaseBottom 的组成部分（place 与 updateCarried 共用，单一事实源）。
+    static constexpr float kCarryLift = 0.10f;
+
+    // 两个 OBB 在 XZ 平面是否重叠（2D SAT，贴合不算重叠）。纯几何、无状态，供测试
+    // 直调；place() 的放置解算内部也用它。
+    static bool boxesOverlapXZ(const Obstacle& a, const Obstacle& b);
 
     // 默认障碍场景：蜘蛛从原点出发沿 +X 前进，障碍散布在前进路线两侧，
     // 质量按体积×密度（近似木材）填充。
@@ -88,12 +104,13 @@ private:
 
 // ---- 场景文件读写（行文本，与三桥协议同风格，可手编可 diff） ----
 //
-// 首行必须是魔数 "mybot-sim scene v1" 或 "mybot-sim scene v2"，之后每行一条——
-//   box <cx> <cy> <cz> <hx> <hy> <hz> <r> <g> <b> [<mass>]
+// 首行必须是魔数 "mybot-sim scene v1"/"v2"/"v3"，之后每行一条——
+//   box <cx> <cy> <cz> <hx> <hy> <hz> <r> <g> <b> [<mass> [<yaw_deg>]]
 //   robot <x> <z> <theta_deg> [<carried_idx>]
 // v1 与 v2 的差别只在 robot 行数：v1 恒 1 只，v2 允许**多条 robot 行**（多机器人）。
-// readScene 两者都收，按出现顺序读进 SceneState.robots；writeScene 一律写 v2
-// （v2 是 v1 的超集，单机器人也写 v2）。# 开头的注释与空行忽略；行内 '#' 起视为
+// v3 在 box 行追加可选 <yaw_deg>（绕 Y 朝向，度；0=轴对齐）——v1/v2 的盒读成 yaw=0。
+// readScene 三者都收，按出现顺序读进 SceneState.robots；writeScene 一律写 v3
+// （v3 是 v1/v2 的超集）。# 开头的注释与空行忽略；行内 '#' 起视为
 // 注释。未知/坏行告警后跳过（与命令桥「垃圾不打断当前状态」同口径）；mass 缺省按
 // 体积×800kg/m³；无 robot 行补一只原点默认。
 //
