@@ -41,6 +41,44 @@ using rfx::probeSql;
  * 循环此前**不查标志**。后果是：多驱动上电（每个 build 内含真机延时）期间
  * 第一次 Ctrl-C 毫无可见效果，运维必然再按一次，而第二次是 `SIG_DFL + raise`
  * 强杀 ⇒ 已 build 成功的器件原地带电、deactivate 一行不执行。 */
+TH_TEST(robot_lifecycle_state_tracks_load_active_and_inactive) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("lifecycle-state");
+	bot::MemoryReader sr(probeSql(tmp.path() / "destroyed"));
+	bot::RobotStruct robot(sr);
+	TH_CHECK(robot.lifecycleState() == bot::RobotStruct::LifecycleState::Loaded);
+	robot.active();
+	TH_CHECK(robot.lifecycleState() == bot::RobotStruct::LifecycleState::Active);
+	robot.deactivate();
+	TH_CHECK(robot.lifecycleState() == bot::RobotStruct::LifecycleState::Inactive);
+	robot.deactivate();
+	TH_CHECK(robot.lifecycleState() == bot::RobotStruct::LifecycleState::Inactive);
+}
+
+/* run() 的生命周期判据（阶段 3）：
+ *   Loaded 放行——此时注册表为空，run() 只做解析与派发前校验，任何真机派发
+ *   都报到「not defined in your hardware declaration section」（离线预演，非缺陷）；
+ *   Active 放行——探针已注册，p0.probe 派发真实走完（不抛）；
+ *   Inactive 拒绝——器件对象已 destroy，派发会落到死亡句柄。 */
+TH_TEST(robot_run_allowed_before_activation_but_rejected_after_teardown) {
+	ModulePathGuard guard("modules:test/cpp");
+	TempDir tmp("lifecycle-run");
+	bot::MemoryReader sr(probeSql(tmp.path() / "destroyed"));
+	bot::RobotStruct robot(sr);
+
+	bot::MemoryReader before("@Action\np0.probe;\n  1;\n@\n");
+	TH_CHECK_THROWS_MSG(std::exception, "not defined in your hardware declaration section",
+		robot.run(before));
+
+	robot.active();
+	bot::MemoryReader during("@Action\np0.probe;\n  1;\n@\n");
+	robot.run(during);	/* Active：探针已注册，派发成功则此处不抛 */
+
+	robot.deactivate();
+	bot::MemoryReader after("@Action\np0.probe;\n  1;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "已断电", robot.run(after));
+}
+
 TH_TEST(robot_active_aborts_when_stop_requested_before_build) {
 	ModulePathGuard guard("modules:test/cpp");
 	TempDir tmp("stop-build");

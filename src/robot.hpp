@@ -35,6 +35,10 @@ namespace bot {
 
 /* ---- 机器人编排门面：装配流程 + 生命周期（R-1 后只剩这些）---- */
 class RobotStruct {
+public:
+	enum class LifecycleState { Loaded, Active, Deactivating, Inactive };
+
+private:
 	/* 结构脚本解析的矩阵对象（声明序）。
 	 * 容器选型是**不变式**而非风格（2026-09-23 热插表）：MetaProvider 持
 	 * 指向此处元素的引用（matrix_），std::vector 在 append 扩容时会让全部
@@ -56,6 +60,7 @@ class RobotStruct {
 	/* 是否已处于「断电」状态：active() 置 false，deactivate() 置 true。
 	 * 析构据此判断要不要补一次断电——断电是生命周期不变式，不是调用点义务
 	 * （见 ~RobotStruct 注释）。缺省 true：只解析结构、从未上电时无事可做。 */
+	LifecycleState state_ = LifecycleState::Loaded;
 	bool deactivated_ = true;
 	/* --daemon-grace-ms（2026-09-22 F-2）：deactivate() 二段屏障宽限上限，
 	 * 缺省 daemon_limits::kGraceMsDefault（原写死 kMaxGraceMs=30000）。
@@ -190,6 +195,8 @@ public:
 	void armExecBudget(const LuaExecBudget* budget) {
 		for (MatrixVars_Hardware* hv : registry_.sequence()) { hv->armExecBudget(budget); }
 	}
+
+	LifecycleState lifecycleState() const { return state_; }
 
 	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
 	const HwRegistry& registry() const { return registry_; }

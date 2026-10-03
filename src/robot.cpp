@@ -107,8 +107,15 @@ std::string hotDeleteFailureMessage(std::size_t orderSize, std::size_t deletedVa
 
 /* ---- 构建硬件：两阶段（build 失败上抛，active 由 finally 清理）---- */
 void RobotStruct::active() {
+	/* 状态机判据：只有 Loaded（尚未上电）/ Inactive（已干净断电）可以上电。
+	 * Active 重复上电会让 registry_ 里既有变量二次 build（真机事务重放），
+	 * Deactivating 只存在于 deactivate 调用栈内，都拒绝。 */
+	if (state_ == LifecycleState::Active || state_ == LifecycleState::Deactivating) {
+		throw IllegalArgumentException("机器人生命周期状态不允许 active()：当前状态非 Loaded/Inactive");
+	}
 	/* 先标「已上电」再装配：createHardVars / build 中途抛出时，析构仍会补一次
 	 * deactivate 收拾已经 build 成功的那部分（deactivate 逐项容错，半成品可安全跑）。 */
+	state_ = LifecycleState::Active;
 	deactivated_ = false;
 	factory_.createHardVars(matrices_);
 	/* F-05：$ 引用解析本是惰性的（首次 collect 时）——指向未定义变量会在
@@ -138,6 +145,11 @@ void RobotStruct::active() {
  * 该顺序的源头是 build 期约束：器件 build 要经 `$` 引用拿 fd，就必须让总线先 build，
  * 即总线必须先声明（总线前向引用在 build 期失败，见 robots/test/ref_bus_forward.sql）。 */
 void RobotStruct::deactivate() {
+	/* 状态机判据：Loaded（从未上电，无事可做）与 Inactive（已断电）直接返回，
+	 * deactivate 因此天然幂等——显式重复调用与析构兜底都不会二次 destroy
+	 * （对真器件不是无害的：已关断的器件再写寄存器可能落到无效状态机上）。 */
+	if (state_ == LifecycleState::Loaded || state_ == LifecycleState::Inactive) { return; }
+	state_ = LifecycleState::Deactivating;
 	/* ---- 断电屏障 ----统一等到守护线程退场，然后才动硬件；序列理由、二段
 	 * 宽限与告警文案都在单点 daemonStopBarrier（本文件顶部）。 */
 	daemonStopBarrier(daemonHolders_, deactivateGraceMs_, "Deactivate",
@@ -165,6 +177,7 @@ void RobotStruct::deactivate() {
 			<< " hardware variable(s) failed to destroy (see warnings above)" << std::endl;
 	}
 	deactivated_ = true;
+	state_ = LifecycleState::Inactive;
 }
 
 /* ---- 兜底断电：让「不漏断电」成为类型保证而不是调用点纪律 ----
@@ -184,6 +197,16 @@ RobotStruct::~RobotStruct() {
 
 /* ---- 执行 @Action 矩阵 + 内联 @Alias ---- */
 void RobotStruct::run(bot::Reader& input, const std::map<std::string, std::string>& injectVars) {
+	/* 生命周期判据（2026-10-03 阶段 3）：只拒绝**曾上电后又断电**的 Inactive
+	 * ——此时注册表里的器件对象已 destroy，派发会落到死亡句柄。
+	 * Loaded（尚未上电）刻意放行：run() 的前半段（动作矩阵解析、@Alias/@Vars
+	 * 注册、派发前的列名/设备名校验）本就不申请真机资源，是既有的「离线预演」
+	 * 能力（见 test_robot.cpp 顶注）；把整段锁在 Active 之后会改变这一可测契约。
+	 * Deactivating 是本进程内不可观测的瞬态（只存在于 deactivate 调用栈内），
+	 * 不在此判据之列。 */
+	if (state_ == LifecycleState::Inactive) {
+		throw IllegalArgumentException("机器人已断电，不能再执行动作：请先重新 active()");
+	}
 	std::vector<mt::MatrixObject> actionMatrices;
 	mt::readMatrix(input, actionMatrices);
 	/* @Include 展开（无 @Include 时逐字不动）：先于 @Alias/@Vars 注册与
@@ -259,7 +282,7 @@ std::string RobotStruct::applySql(const std::string& sql) {
 	 *  4.6 热删除物理执行（executeHotDeletes，两个执行序按 deleteFirst 分派）；
 	 *  4.7 整表撤下（dropTableShells）；
 	 *  尾  生效摘要（REPL /sql 与 agent apply_sql 共用同一句话）。 */
-	if (deactivated_) {
+	if (state_ != LifecycleState::Active) {
 		throw IllegalArgumentException("热插表需要机器人已上电常驻（active() 之后）；"
 			"未上电时请把语句写进结构脚本");
 	}
