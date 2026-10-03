@@ -124,6 +124,7 @@ set(MYBOT_CORE_SOURCES
   src/mcplisten.cpp
   src/mcptransport.cpp
   src/context_service.cpp
+  src/robot_application.cpp
 )
 
 # 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，

@@ -11,8 +11,8 @@
 
 #include "agentmode.hpp"
 #include "agent_subprocess.hpp"
-#include "mcpbackend.hpp"
 #include "cliargs.hpp"
+#include "robot_application.hpp"
 #include "robot.hpp"
 #include "daemonvar.hpp"	/* abandonedDaemonCount（2.2 后不再经 robot.hpp 传导） */
 #include "util_cli.hpp"
@@ -142,37 +142,6 @@ std::unique_ptr<RobotStruct> loadStructure(const std::string& rpath) {
 	}
 }
 
-/* 动作流水线与 MCP 后端流水线保持在入口编排层：两者共享 RobotStruct 生命周期，
- * 具体工具服务与协议实现分别位于 mcpbackend/mcplisten。 */
-int runActionPipeline(RobotStruct& robot, const CliOptions& options) {
-	std::unique_ptr<Reader> input = openActionSource(options);
-	if (!input) {
-		std::cerr << "动作输入源打开失败，退出" << std::endl;
-		return 1;
-	}
-	robot.active();
-	robot.run(*input);
-	return 0;
-}
-
-int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
-		const CliOptions& options) {
-	robot.active();
-	agent::McpBackendOptions bopts;
-	bopts.socketPath = options.mcp.mcpSocket;
-	bopts.authToken = agentCfg.mcpAuthToken;
-	if (!options.mcp.mcpCallBudget.empty()) {
-		bopts.callBudget = static_cast<long>(parseLongStrict(options.mcp.mcpCallBudget).second);
-	}
-	if (!options.mcp.mcpWallClock.empty()) {
-		bopts.wallClockBudgetSec =
-			static_cast<long>(parseLongStrict(options.mcp.mcpWallClock).second);
-	}
-	if (!options.mcp.mcpIdleTimeout.empty()) {
-		bopts.idleTimeoutSec = static_cast<int>(parseLongStrict(options.mcp.mcpIdleTimeout).second);
-	}
-	return agent::runMcpBackend(robot, agentCfg, bopts, std::cerr);
-}
 /* 未声明则注入摄像头驱动变量（capture_image 工具需要；LLM 驱动已随 C++ REPL
  * 迁 Rust 删除——模型调用在 Rust 进程直连 provider，宿主不再注入 LLM 驱动）。
  * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的；
@@ -222,45 +191,7 @@ void installStopSignalHandlers() {
 	::sigaction(SIGTERM, &sa, nullptr);
 }
 
-/* 跑流水线 + 无论成败都清理 + 退出前让弃管守护可见。
- * 异常两类都要接住：std::exception 与「非标准异常」——本机 LuaJIT 用 C++ 异常
- * 实现 luaD_throw（导入 _Unwind_RaiseException 而无 setjmp/longjmp），从没有
- * Lua CFRAME 的 C++ 帧抛出的 Lua 错误不是 std::exception——漏了它就直接
- * std::terminate，下面的 deactivate 被跳过，执行器停在最后指令位置。
- * 判据锚点与五处边界清单：util.hpp 的 kNonStdExceptionNote 注释块。 */
-int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
-		const agent::AgentModeConfig& agentCfg) {
-	int rc = 0;
-	try {
-		if (options.mcp.enabled) {
-			/* MCP 后端（方案 F / 拓扑 F3）：独立模式，不争 stdin、不跑 agent loop。
-			 * 同步服务阻塞主线程正是正确行为（评估 §2.3）；deactivate 照常在其后。 */
-			rc = runMcpBackendPipeline(robot, agentCfg, options);
-		} else {
-			/* 动作管线（--tcp/--input/stdin）。--agent 已在 cliargs 校验阶段拒绝
-			 * （agent 循环迁 Rust：mybot-agent --socket …，见 docs/agent.md），
-			 * 这里不会再见到它。 */
-			rc = runActionPipeline(robot, options);
-		}
-	} catch (const std::exception& e) {
-		std::cerr << "Aborted: " << e.what() << std::endl;
-		rc = 1;
-	} catch (...) {
-		std::cerr << "Aborted: non-standard exception (Lua error or foreign throw)"
-			<< std::endl;
-		rc = 1;
-	}
-
-	/* 无论有没有成功激活，都进行清理（对应 Cangjie finally） */
-	robot.deactivate();
-	/* N-7：弃管守护的 lua_State 在 exit 路径不可回收——退出前让泄漏可见 */
-	if (int abandoned = abandonedDaemonCount(); abandoned > 0) {
-		std::cerr << "Warning: " << abandoned << " daemon thread(s) abandoned at shutdown"
-			<< " (join timeout); their Lua states are released by process exit only"
-			<< std::endl;
-	}
-	return rc;
-}
+/* 跑流水线与无论成败都清理的编排已迁到 robot_application.cpp。 */
 
 } // namespace bot
 
