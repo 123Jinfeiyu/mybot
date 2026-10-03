@@ -162,6 +162,13 @@ struct Resumed {
     session_id: String,
 }
 
+/// run() 中段的会话装配产物（[`prepare_session`] 的返回值）：落点计划 + 恢复出来的
+/// 会话三件套（未续接则 `resume` 为 `None`）。`plan` 为 `None` = 本次不落盘。
+struct SessionPrep {
+    plan: Option<SessionPlan>,
+    resume: Option<Resumed>,
+}
+
 /// 会话恢复的接缝本体（2026-10-01 抽出、2026-10-03 去掉 `try_resume` 薄壳：
 /// 现在显式路径与缺省按机器人两条路都直接调它）：只依赖一个会话文件路径，
 /// 可离线单测——Bridge 对临时 listener 构造即得，无需真后端/真 LLM。
@@ -231,6 +238,80 @@ async fn resume_from(
     })
 }
 
+/// 会话落点解析 + 续接（run() 的中段，2026-10-04 拆出；与 [`assemble_backend`]
+/// 同款「收敛出口」手法）。原 run() 这一段有 3 个 `return config_error(&e)`，全是
+/// 退出码 2 的配置类错误，拆出后统一成 `Err(消息)`，由 run() 一条出口报 2。
+///
+/// 机器人名（`material.robot_name`）到这里才有，故缺省落点只能此刻拼（见
+/// [`plan_session`]）——这也是这一段并不到 `config::build` 里的原因。
+///
+/// **副作用**：把解析出的落点写回 `cfg.session_file`——下游（repl 里 ICA 账本落盘、
+/// `/clear` 分界）都读它，缺省来源下不写回就是空串（账本会静默不落盘），故 cfg 取
+/// `&mut`。stderr 的告警行与落点行逐字保持、时序不变（先权限告警，续接失败再告警
+/// 一次，最后落点行）。
+async fn prepare_session(
+    cfg: &mut Config,
+    bridge: &Bridge,
+    tool_names: &[String],
+    preamble: &str,
+    material: &PromptMaterial,
+) -> Result<SessionPrep, String> {
+    // ---- 会话落点：显式路径照旧，缺省走 $MYBOT_HOME/robots/<机器人>/sessions/ ----
+    let mut plan = plan_session(cfg, &material.robot_name)?;
+    if let Some(p) = plan.as_ref() {
+        let w = session::perms_warning(&p.path);
+        if !w.is_empty() {
+            errln!("[mybot-agent] {w}");
+        }
+    }
+
+    // ---- 会话续接（判据与时序契约见 resume_from 的注释）----
+    // 两条路的分派：显式 `--resume` 失败即 Err（run 报退出码 2）；缺省按机器人续接
+    // 失败则告警一次 + 新开一段（提示词/工具集变了、段文件损坏都不该拦住机器人跑起来）。
+    let mut resume = None;
+    if let Some(p) = plan.as_ref() {
+        if p.mode == SessionMode::Continue {
+            match resume_from(&p.path, bridge, tool_names, preamble, material).await {
+                Ok(r) => resume = Some(r),
+                Err(e) if cfg.resume => return Err(e),
+                Err(e) => {
+                    errln!(
+                        "[mybot-agent] 警告: 会话续接失败（{e}），已新开一段，旧段原样保留: {}",
+                        p.path
+                    );
+                    let old = plan.take().expect("上面刚判过 Some");
+                    plan = Some(session_store::degrade_to_new_segment(&old, now_sec())?);
+                }
+            }
+        }
+    }
+    // 下游（repl 里 ICA 账本落盘、`/clear` 分界）都读 `cfg.session_file`——把解析
+    // 结果写回去，否则缺省来源下那些地方拿到的是空串（账本会静默不落盘）。
+    match plan.as_ref() {
+        Some(p) => {
+            cfg.session_file = p.path.clone();
+            if let Some(w) = p.warning.as_ref() {
+                errln!("[mybot-agent] 警告: {w}");
+            }
+            errln!(
+                "[mybot-agent] 会话落点: {}（{}；状态目录来源 {}）",
+                p.path,
+                if p.mode == SessionMode::Continue {
+                    "续接上一次"
+                } else {
+                    "新建"
+                },
+                state_dir_source_name(cfg)
+            );
+        }
+        None => errln!(
+            "[mybot-agent] 会话持久化未开启（无家目录：MYBOT_HOME 与 HOME 都未设置；\
+             可用 MYBOT_HOME 指定状态目录）"
+        ),
+    }
+    Ok(SessionPrep { plan, resume })
+}
+
 async fn run() -> i32 {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let cli = match config::parse_args(&args) {
@@ -298,73 +379,16 @@ async fn run() -> i32 {
         preamble,
     } = assembly;
 
-    // ---- 会话落点：显式路径照旧，缺省走 $MYBOT_HOME/robots/<机器人>/sessions/ ----
-    // 机器人名（`material.robot_name`）到这里才有，故缺省路径只能此刻拼。
-    let mut plan = match plan_session(&cfg, &material.robot_name) {
+    // ---- 会话落点 + 续接（拆解见 prepare_session；错误统一走退出码 2）----
+    let prep = match prepare_session(&mut cfg, &bridge, &tool_names, &preamble, &material).await {
         Ok(p) => p,
         Err(e) => return config_error(&e),
     };
-    if let Some(p) = plan.as_ref() {
-        let w = session::perms_warning(&p.path);
-        if !w.is_empty() {
-            errln!("[mybot-agent] {w}");
-        }
-    }
-
-    // ---- 会话续接（判据与时序契约见 resume_from 的注释）----
-    // 两条路的分派：显式 `--resume` 失败即退 2；缺省按机器人续接失败则告警一次 +
-    // 新开一段（提示词/工具集变了、段文件损坏都不该拦住机器人跑起来）。
-    let (mut resume_history, mut resume_summary, mut resume_session_id) =
-        (Vec::new(), None, String::new());
-    let mut resumed = false;
-    if let Some(p) = plan.as_ref() {
-        if p.mode == SessionMode::Continue {
-            match resume_from(&p.path, &bridge, &tool_names, &preamble, &material).await {
-                Ok(r) => {
-                    resume_history = r.history;
-                    resume_summary = r.summary;
-                    resume_session_id = r.session_id;
-                    resumed = true;
-                }
-                Err(e) if cfg.resume => return config_error(&e),
-                Err(e) => {
-                    errln!(
-                        "[mybot-agent] 警告: 会话续接失败（{e}），已新开一段，旧段原样保留: {}",
-                        p.path
-                    );
-                    let old = plan.take().expect("上面刚判过 Some");
-                    match session_store::degrade_to_new_segment(&old, now_sec()) {
-                        Ok(np) => plan = Some(np),
-                        Err(de) => return config_error(&de),
-                    }
-                }
-            }
-        }
-    }
-    // 下游（repl 里 ICA 账本落盘、`/clear` 分界）都读 `cfg.session_file`——把解析
-    // 结果写回去，否则缺省来源下那些地方拿到的是空串（账本会静默不落盘）。
-    match plan.as_ref() {
-        Some(p) => {
-            cfg.session_file = p.path.clone();
-            if let Some(w) = p.warning.as_ref() {
-                errln!("[mybot-agent] 警告: {w}");
-            }
-            errln!(
-                "[mybot-agent] 会话落点: {}（{}；状态目录来源 {}）",
-                p.path,
-                if p.mode == SessionMode::Continue {
-                    "续接上一次"
-                } else {
-                    "新建"
-                },
-                state_dir_source_name(&cfg)
-            );
-        }
-        None => errln!(
-            "[mybot-agent] 会话持久化未开启（无家目录：MYBOT_HOME 与 HOME 都未设置；\
-             可用 MYBOT_HOME 指定状态目录）"
-        ),
-    }
+    let SessionPrep { plan, resume } = prep;
+    let (resume_history, resume_summary, resume_session_id, resumed) = match resume {
+        Some(r) => (r.history, r.summary, r.session_id, true),
+        None => (Vec::new(), None, String::new(), false),
+    };
 
     // ---- 审计：在任何模型/工具调用**之前**打开（坏路径要在这里就失败：
     //      「看起来在记、其实没记」比没有审计更糟）----
