@@ -9,7 +9,7 @@
 # 用法：cat scripts/test/mt6826s_virt.mt | ./build/mybot --robot=robots/test/mt6826s_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
-   200       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

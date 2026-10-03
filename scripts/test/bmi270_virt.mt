@@ -10,7 +10,7 @@
 # 用法：cat scripts/test/bmi270_virt.mt | ./build/mybot --robot=robots/test/bmi270_virt.sql
 @Action
 t0.delay  ei.out  mon0.go  monf.go;
-   200       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

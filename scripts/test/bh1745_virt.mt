@@ -10,7 +10,7 @@
 # 用法：cat scripts/test/bh1745_virt.mt | ./build/mybot --robot=robots/test/bh1745_virt.sql
 @Action
 t0.delay  ev.out  mon0.go  monf.go;
-   500       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
