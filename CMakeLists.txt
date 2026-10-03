@@ -106,6 +106,7 @@ set(MYBOT_CORE_SOURCES
   src/luaexec.cpp
   src/robot.cpp
   src/hotsql_plan.cpp
+  src/hotsql_service.cpp
   src/actionsource.cpp
   src/cliargs.cpp
   src/cliargs_help.cpp

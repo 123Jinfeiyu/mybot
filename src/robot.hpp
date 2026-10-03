@@ -23,6 +23,7 @@
 #include "action_runner.hpp"
 #include "daemon_registry.hpp"
 #include "hotsql_plan.hpp"
+#include "hotsql_service.hpp"
 #include "hw_factory.hpp"
 #include "hw_registry.hpp"
 #include "json.hpp"
@@ -55,6 +56,10 @@ private:
 	MetaRegistry metas_;
 	HwFactory factory_;	/* 依赖上面的容器，声明序保证先构造 */
 	ActionRunner runner_;
+	/* 热插提交服务（2026-10-03 阶段 4）：applySql 的阶段机（提交/热删除/整表
+	 * 撤下/生效摘要）整体住在这里，跨域只经门面。依赖上面六个域门面与执行器，
+	 * 声明序保证先构造。 */
+	HotSqlService hotSql_;
 	/* @Include 基准目录（mtinclude::expandIncludes 的相对路径根，缺省 "."）。
 	 * 三个调用面按「脚本集合的根」取值：--input 文件通道=脚本所在目录、
 	 * agent run_action_script=--scripts-dir、stdin/TCP 无脚本位置=缺省 CWD。
@@ -71,76 +76,13 @@ private:
 	 * 晚调用也不构成 UB——只是当次 deactivate 用旧值。 */
 	int64_t deactivateGraceMs_ = daemon_limits::kGraceMsDefault;
 
-	/* ---- 热删除的物理执行（原 applySql 阶段 4.6，2026-09-23 热更新抽出）----
-	 * 抽成函数供两个执行序共用：「先插入后删除」（既有批次——插入失败时删除
-	 * 未执行，整批可回滚）与「先删后建」（含 UPDATE 的批次——改写行同名重建，
-	 * 注册表重名即抛，必须先摘旧件再装新件）。计划必须由 applySql 在任何
-	 * 插入/上电**之前**构建（hw 指针计划期取好；先建后拆下按名 find 会命中
-	 * 新注册的同名变量、摘错对象）。语义与失败口径见 robot.cpp 实现处注释。 */
-	struct HotDeleteOutcome {
-		std::size_t deletedVars = 0;
-		std::size_t deletedRows = 0;
-		std::vector<std::string> deletedNames;
-	};
-	HotDeleteOutcome executeHotDeletes(const std::vector<HotSqlPlan::Deletion>& plans,
-		const std::map<std::string, std::size_t>& daemonNameIndex);
-
-	/* ---- 热删除的一致性收尾（原 executeHotDeletes 阶段 4.6.4，2026-09-26 批次 5 拆出）----
-	 * 只对**已成功断电**的部分落实：① 摘除指向被删行的 MetaProvider → ①′ 重锚定
-	 * 存活提供者的行号（removeRows 保序擦除会让其后行前移）→ ② 擦结构行 →
-	 * ③ 按保留项重建守护登记表 → ④ registry_.removeBatch 撤注册。perTable 是
-	 * 「矩阵下标 → 被删行号（原始坐标，升序）」、removed 是已断电变量指针集，二者
-	 * 由调用方从销毁序清单算好传入——本方法不认 Doomed，只认这两个派生视图与
-	 * dyingHolders。deletedRows 累加进 out。语义与顺序理由见 robot.cpp 实现处。 */
-	void applyHotDeleteConsistency(
-		const std::vector<std::pair<std::size_t, std::vector<std::size_t>>>& perTable,
-		const std::set<MatrixVars_Hardware*>& removed,
-		const std::vector<std::shared_ptr<DaemonRunner>>& dyingHolders,
-		HotDeleteOutcome& out);
-
-	/* ---- applySql 的阶段机（2026-09-25 拆分）----
-	 * applySql 原本约 600 行单函数，阶段编号（0/1/1.5/2/2.4/3/4/4.6/4.7）早已
-	 * 写在注释里；拆分就是把每段注释与代码一起搬进具名函数，applySql 留阶段
-	 * 地图与生效摘要。产物包结构（PlanSet/Outcome）让阶段间只传数据不传旗标。
-	 * 判据与理由的完整注释都在 robot.cpp 实现处。 */
-
-	/* 阶段 4 产物包：提交段的回执计数。mark.seq 不出函数——addedVars 在提交段
-	 * 内部定值（「新增」必须在动手删之前记数，理由在实现处）。 */
-	struct CommitOutcome {
-		std::size_t addedVars = 0;
-		std::size_t addedTables = 0;
-		std::size_t addedRows = 0;
-	};
-
-	/* 阶段 4.7 产物包：整表撤下（DROP TABLE 空壳）的回执计数。 */
-	struct DropOutcome {
-		std::size_t count = 0;
-		std::vector<std::string> names;
-	};
-
-	CommitOutcome commitHotBatch(const HotSqlPlan::Deletes& delPlan,
-		HotSqlPlan::Insertions& insPlan, const HotDeleteOutcome& alreadyDeleted);
-	DropOutcome dropTableShells(const ScriptLoader::Mutations& muts);
-
-	/* 生效摘要（applySql 尾段，2026-10-01 拆出为纯拼装）：REPL /sql 与 agent
-	 * apply_sql 共用同一句话，各计数口径见 robot.cpp 实现处。 */
-	std::string summarizeHotOutcome(const CommitOutcome& committed,
-		const ScriptLoader::Mutations& muts, const HotDeleteOutcome& delOutcome,
-		const HotSqlPlan::Insertions& insPlan, const DropOutcome& dropped) const;
-
-	/* ---- commitHotBatch 的两块拆出（2026-09-29 A3）----
-	 * rollbackHotBatch：插入段失败的逆序断电 + 撤注册 + 恢复矩阵（原 45 行
-	 * rollback lambda，语义逐字保持）；rethrowWithLostVars：先删后建批次的
-	 * 失败重包装（点名已摘除且未重建的变量，理由见实现处注释）。 */
-	void rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t metaMark,
-		std::size_t daemonMark,
-		const std::vector<std::pair<std::size_t, std::size_t>>& appended,
-		std::size_t addedTables);
-	[[noreturn]] void rethrowWithLostVars(const HotDeleteOutcome& alreadyDeleted);
+	/* applySql 的阶段机（提交/热删除/整表撤下/生效摘要）已整体迁至热插提交服务
+	 * （hotsql_service.hpp，2026-10-03 阶段 4）——本类只剩生命周期与门面装配。 */
 
 public:
 	explicit RobotStruct(bot::Reader& input)
-		: factory_(registry_, daemons_, metas_), runner_(registry_) {
+		: factory_(registry_, daemons_, metas_), runner_(registry_),
+		  hotSql_(structures_, registry_, metas_, daemons_, factory_, runner_) {
 		structures_.load(input);
 	}
 
