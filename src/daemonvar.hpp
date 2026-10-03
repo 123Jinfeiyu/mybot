@@ -46,6 +46,10 @@
 
 namespace bot {
 
+/* 守护域门面（daemon_registry.hpp）：Factory 经它登记新守护线程，故此处只需
+ * 前向声明（形参为引用，无需完整类型）。 */
+class DaemonRegistry;
+
 constexpr int32_t SLOT_COUNT_OFF = 64;
 constexpr int32_t SLOT_NVALS_OFF = 68;
 constexpr int32_t SLOT_VALUES_OFF = 72;
@@ -220,7 +224,7 @@ public:
 	void destroy() override;
 
 	static std::unique_ptr<MtVars_Daemon> Factory(const mt::MatrixObject& defs, std::int64_t i,
-			std::vector<std::shared_ptr<DaemonRunner>>& registry);
+			DaemonRegistry& registry);
 };
 
 } // namespace bot

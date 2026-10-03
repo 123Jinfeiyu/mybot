@@ -25,6 +25,7 @@
 #include <thread>
 #include <vector>
 
+#include "daemon_registry.hpp"
 #include "daemonconf.hpp"
 #include "daemonvar.hpp"
 #include "fixtures.hpp"
@@ -53,14 +54,14 @@ mt::MatrixObject daemonDefs(const std::string& chunk, const std::string& name, i
 }
 
 /* 快拍守护夹具：daemon_probe 在默认 ./modules 下，interval=2ms 高频发布 */
-std::unique_ptr<MtVars_Daemon> makeFastDaemon(std::vector<std::shared_ptr<DaemonRunner>>& registry,
+std::unique_ptr<MtVars_Daemon> makeFastDaemon(bot::DaemonRegistry& registry,
 		const std::string& name) {
 	mt::MatrixObject defs = daemonDefs("lib/daemon_probe.lua", name, 2);
 	return MtVars_Daemon::Factory(defs, 1, registry);
 }
 
 /* 慢拍守护夹具：chunk 在 .tmp（BOT4CJ_MODULE_PATH 需含 .tmp），abandon 必现 */
-std::unique_ptr<MtVars_Daemon> makeSlowDaemon(std::vector<std::shared_ptr<DaemonRunner>>& registry,
+std::unique_ptr<MtVars_Daemon> makeSlowDaemon(bot::DaemonRegistry& registry,
 		const std::string& name) {
 	writeSlowConcChunk();
 	mt::MatrixObject defs = daemonDefs(kSlowConcChunk, name, 10);
@@ -70,7 +71,7 @@ std::unique_ptr<MtVars_Daemon> makeSlowDaemon(std::vector<std::shared_ptr<Daemon
 } // namespace
 
 TH_TEST(daemon_concurrent_readers_during_publish) {
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = makeFastDaemon(registry, "c0");
 	var->build();
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -103,7 +104,7 @@ TH_TEST(daemon_concurrent_readers_during_publish) {
 
 	/* 停机走正常 joined 路径，槽释放后读者再触碰按 ERR 契约返回 */
 	var->destroy();
-	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry.at(0)->slotAlive());
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
 }
@@ -113,7 +114,7 @@ TH_TEST(daemon_multi_runner_staggered_teardown) {
 	 * 注意 ./modules 必须在首位：chunk 内部的 lib 样板（mpath/pthread）只按
 	 * 首段加载，后续段仅供 firstExistingModule 找 chunk/driver 文件。 */
 	setenv("BOT4CJ_MODULE_PATH", "./modules:.tmp", 1);
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::vector<std::unique_ptr<MtVars_Daemon>> vars;
 	for (int k = 0; k < 6; ++k) {
 		vars.push_back(makeFastDaemon(registry, "fast" + std::to_string(k)));
@@ -137,12 +138,12 @@ TH_TEST(daemon_multi_runner_staggered_teardown) {
 	 * 与 test_daemon.cpp 的 abandoned 等待同款放宽）。 */
 	std::this_thread::sleep_for(std::chrono::milliseconds(3500));
 	for (std::size_t k = 0; k < registry.size(); ++k) {
-		TH_CHECK(!registry[k]->slotAlive());
+		TH_CHECK(!registry.at(k)->slotAlive());
 	}
 }
 
 TH_TEST(daemon_stop_and_exit_reentry) {
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = makeFastDaemon(registry, "r0");
 	var->build();
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -155,7 +156,7 @@ TH_TEST(daemon_stop_and_exit_reentry) {
 	std::atomic<bool> no_crash{true};
 	std::thread stopper([&] {
 		for (int i = 0; i < 50; ++i) {
-			registry[0]->requestStop();
+			registry.at(0)->requestStop();
 		}
 	});
 	std::thread toucher([&] {
@@ -174,11 +175,11 @@ TH_TEST(daemon_stop_and_exit_reentry) {
 
 	/* 停机走正常 joined 路径（daemon_probe 快拍，join 不超时） */
 	var->destroy();
-	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry.at(0)->slotAlive());
 	TH_CHECK(no_crash.load());
 
 	/* 退出后再触碰：requestStop / waitForExit / play 全部按契约无事发生 */
-	registry[0]->requestStop();
+	registry.at(0)->requestStop();
 	var->destroy();
-	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry.at(0)->slotAlive());
 }

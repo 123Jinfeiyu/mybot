@@ -6,6 +6,7 @@
  * 见 daemonvar.hpp。 */
 
 #include "daemonconf.hpp"
+#include "daemon_registry.hpp"
 #include "daemonvar.hpp"
 
 #include <cstdlib>
@@ -257,7 +258,7 @@ static std::shared_ptr<DaemonSlot> allocateSlot(const std::string& name) {
 
 /* ---- 守护硬件变量工厂 ---- */
 std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
-		std::vector<std::shared_ptr<DaemonRunner>>& registry) {
+		DaemonRegistry& registry) {
 	int64_t idxName = defs.requireCol(0, "name", "Table");
 	int64_t idxChunk = defs.requireCol(0, "chunk", "Table");
 	std::string name = defs(i, idxName);
@@ -276,7 +277,7 @@ std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& de
 
 	auto runner = std::make_shared<DaemonRunner>(allocateSlot(name), joinTimeoutMs);
 	runner->bindSelf(runner);	/* 线程捕获 self 保生命周期 */
-	registry.push_back(runner);
+	registry.hold(runner);
 
 	return std::unique_ptr<MtVars_Daemon>(new MtVars_Daemon(
 		std::move(runner), name, chunkPath, parts.configStr, parts.intervalMs));

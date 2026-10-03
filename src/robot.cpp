@@ -152,7 +152,7 @@ void RobotStruct::deactivate() {
 	state_ = LifecycleState::Deactivating;
 	/* ---- 断电屏障 ----统一等到守护线程退场，然后才动硬件；序列理由、二段
 	 * 宽限与告警文案都在单点 daemonStopBarrier（本文件顶部）。 */
-	daemonStopBarrier(daemonHolders_, deactivateGraceMs_, "Deactivate",
+	daemonStopBarrier(daemons_.all(), deactivateGraceMs_, "Deactivate",
 		"hardware de-init will race with them (they may touch the"
 		" bus after de-init)");
 	std::string lastWarn;
@@ -376,7 +376,7 @@ RobotStruct::CommitOutcome RobotStruct::commitHotBatch(const HotSqlPlan::Deletes
 	CommitOutcome out;
 	const HwRegistry::Mark mark = registry_.mark();
 	const std::size_t metaMark = metaProviders_.size();
-	const std::size_t daemonMark = daemonHolders_.size();
+	const std::size_t daemonMark = daemons_.size();
 	std::vector<std::pair<std::size_t, std::size_t>> appended;	/* (矩阵下标, 追加行数) */
 	std::size_t addedTables = 0;
 
@@ -459,7 +459,7 @@ void RobotStruct::rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t met
 	}
 	registry_.rollbackTo(mark);
 	metaProviders_.resize(metaMark);
-	daemonHolders_.resize(daemonMark);
+	daemons_.truncate(daemonMark);
 	for (const auto& [idx, n] : appended) { structures_.popRows(idx, n); }
 	structures_.truncate(structures_.size() - addedTables);
 }
@@ -597,11 +597,11 @@ RobotStruct::HotDeleteOutcome RobotStruct::executeHotDeletes(
 		if (p.table != "Daemon") { continue; }
 		for (std::size_t k = 0; k < p.names.size(); ++k) {
 			auto slot = daemonNameIndex.find(p.names[k]);
-			if (slot == daemonNameIndex.end() || slot->second >= daemonHolders_.size()) {
+			if (slot == daemonNameIndex.end() || slot->second >= daemons_.size()) {
 				throw IllegalArgumentException("热删除：守护 '" + p.names[k]
 					+ "' 找不到对应的守护线程登记槽（内部不一致）");
 			}
-			dyingHolders.push_back(daemonHolders_[slot->second]);
+			dyingHolders.push_back(daemons_.at(slot->second));
 		}
 	}
 	/* 4.6.2 守护退场屏障：与 deactivate() 同一套安全序列，单点在
@@ -718,12 +718,7 @@ void RobotStruct::applyHotDeleteConsistency(
 	 * resize 只能表达「砍掉尾巴」）。 */
 	std::set<const DaemonRunner*> deadRunners;
 	for (const auto& h : dyingHolders) { deadRunners.insert(h.get()); }
-	std::vector<std::shared_ptr<DaemonRunner>> kept;
-	kept.reserve(daemonHolders_.size());
-	for (const auto& h : daemonHolders_) {
-		if (deadRunners.count(h.get()) == 0) { kept.push_back(h); }
-	}
-	daemonHolders_ = std::move(kept);
+	daemons_.remove(deadRunners);
 	/* ④ 撤注册（所有权 + 名字索引 + 流引用） */
 	registry_.removeBatch(removed);
 }

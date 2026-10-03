@@ -396,7 +396,7 @@ void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::stri
 	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		const std::string& name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
-		registry_.add(name, MtVars_Daemon::Factory(matrix, i, daemonHolders_),
+		registry_.add(name, MtVars_Daemon::Factory(matrix, i, daemons_),
 			" (in table '" + mtName + "')");
 	}
 }

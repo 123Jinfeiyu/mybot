@@ -255,9 +255,9 @@ std::string assembleSql(const std::string& sql) {
 		bot::MemoryReader sr(sql);
 		bot::ScriptLoader::readSQL(sr, matrices);
 		bot::HwRegistry registry;
-		std::vector<std::shared_ptr<bot::DaemonRunner>> daemonHolders;
+		bot::DaemonRegistry daemons;
 		std::vector<std::shared_ptr<bot::MetaProvider>> metaProviders;
-		bot::HwFactory factory(registry, daemonHolders, metaProviders);
+		bot::HwFactory factory(registry, daemons, metaProviders);
 		factory.createHardVars(matrices);
 	} catch (const std::exception& e) {
 		return std::string(e.what());

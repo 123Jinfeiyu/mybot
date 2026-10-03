@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "action_runner.hpp"
+#include "daemon_registry.hpp"
 #include "hotsql_plan.hpp"
 #include "hw_factory.hpp"
 #include "hw_registry.hpp"
@@ -43,7 +44,9 @@ private:
 	/* 结构矩阵域（2026-10-03 阶段 4）：matrix 表的所有权与读写入口。容器选型
 	 * （deque，元素引用稳定）是域内不变式，见 structure_store.hpp 头注释。 */
 	StructureStore structures_;
-	std::vector<std::shared_ptr<DaemonRunner>> daemonHolders_;	/* 守护注册表：deactivate 先统一置 stop；shared_ptr 供守护线程持 self 保生命周期 */
+	/* 守护域（2026-10-03 阶段 4）：守护线程登记表。deactivate 先统一置 stop；
+	 * shared_ptr 供守护线程持 self 保生命周期（详见 daemon_registry.hpp）。 */
+	DaemonRegistry daemons_;
 	HwRegistry registry_;				/* 硬件变量：所有权 + 销毁序 + 名字索引（R-2） */
 	/* F-05：Lua 变量的元数据提供者登记表——active() 在 build 前统一校验
 	 * $ 引用存在性（shared_ptr 与变量同生命周期，防悬垂） */
@@ -135,7 +138,7 @@ private:
 
 public:
 	explicit RobotStruct(bot::Reader& input)
-		: factory_(registry_, daemonHolders_, metaProviders_), runner_(registry_) {
+		: factory_(registry_, daemons_, metaProviders_), runner_(registry_) {
 		structures_.load(input);
 	}
 

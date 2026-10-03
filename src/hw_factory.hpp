@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "daemon_registry.hpp"
 #include "hardware.hpp"
 #include "hw_registry.hpp"
 #include "matrix.hpp"
@@ -17,15 +18,14 @@
 namespace bot {
 
 /* 重构计划 2.2：本头文件不再传导 LuaJIT 头（luaend.hpp 经 daemonvar/luavar
- * 拉入 lua.h，所有 include robot.hpp 的 TU 都被迫解析 Lua 头）。DaemonRunner
- * 只以 shared_ptr 成员出现——shared_ptr 对不完整类型安全（类型擦除删除器），
- * 前向声明即可；具体头由 robot.cpp 与真正用到的 TU 自行引入。 */
-class DaemonRunner;
+ * 拉入 lua.h，所有 include robot.hpp 的 TU 都被迫解析 Lua 头）。守护域改经
+ * DaemonRegistry 门面引用，该门面自身以 shared_ptr 持有 DaemonRunner 且对
+ * 不完整类型安全——本头无须见到 DaemonRunner。 */
 
 /* ---- 硬件装配：矩阵表 → 硬件变量（R-1 拆自 RobotStruct）---- */
 class HwFactory {
 	HwRegistry& registry_;
-	std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders_;
+	DaemonRegistry& daemons_;
 	std::vector<std::shared_ptr<MetaProvider>>& metaProviders_;
 
 	/* 重名前置判重（资源泄漏防线：Lua 状态机/共享槽先申请，此处先确认可注册） */
@@ -81,9 +81,9 @@ public:
 	static constexpr const char* kDaemonDefaultPathSpi = "/dev/spidev0.0";
 
 	HwFactory(HwRegistry& registry,
-			std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders,
+			DaemonRegistry& daemons,
 			std::vector<std::shared_ptr<MetaProvider>>& metaProviders)
-		: registry_(registry), daemonHolders_(daemonHolders), metaProviders_(metaProviders) {}
+		: registry_(registry), daemons_(daemons), metaProviders_(metaProviders) {}
 
 	/* 全部硬变量创建：声明序，Alias/Vars/Lua/Daemon 分派 */
 	void createHardVars(const std::deque<mt::MatrixObject>& matrices);
