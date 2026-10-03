@@ -6,7 +6,7 @@
  * 连接服务/断连安全动作/accept 主循环 → mcplisten.cpp（本文件头注的 socket
  * 服务与审计加固说明随之迁移，见 mcplisten.cpp / mcptransport.cpp 头注）。
  */
-#include "agentview.hpp"
+#include "context_service.hpp"
 #include "mcpbackend.hpp"
 #include "mcp_protocol.hpp"
 
@@ -173,35 +173,7 @@ Json McpBackend::routeContextGet() {
 	if (cfg_ == nullptr || robot_ == nullptr) {
 		return errReply("context.get 不可用：后端未绑定配置与机器人上下文");
 	}
-	/* 磁盘内容三段的读法/消毒/定界与原 buildAgentSystemPrompt 完全一致（单一
-	 * 事实源；提示词最终拼装在 Rust 侧 agent/src/prompt.rs，语义与之逐字对齐）：
-	 * 后端不拼系统提示词、无配置组装期缓存，故每次 context.get 实时读。
-	 * 区别只在呈现：这里返回**已定界的块**，由 Rust agent 拼进它自己的系统
-	 * 提示词——「同一份磁盘内容，两条进上下文的通道必须有同一定界强度」。 */
-	const std::string sql = structureScriptHead(cfg_->structurePath, kStructureHeadBytes);
-	const std::string scripts = describeActionScripts(cfg_->scriptsDir);
-
-	Json data = JsonObject();
-	data.put(mcp_protocol::kRobotName, JsonString(structureDisplayName(cfg_->structurePath)));
-	data.put(mcp_protocol::kStructurePath, JsonString(cfg_->structurePath));
-	data.put(mcp_protocol::kScriptsDir, JsonString(cfg_->scriptsDir));
-	/* 工作方式段的条件开关：Rust agent 按这两个旗标拼条件句（与
-	 * 原 buildAgentSystemPrompt 的 allowShell/allowHotSql 分支同判据）。 */
-	data.put(mcp_protocol::kAllowShell, JsonBool(cfg_->allowShell));
-	data.put(mcp_protocol::kAllowHotSql, JsonBool(cfg_->allowHotSql));
-	/* REPL 横幅与 /status 的硬件计数（实时取：热插拔后不漂移）。 */
-	data.put(mcp_protocol::kHardwareCount,
-		JsonInt(static_cast<std::int64_t>(robot_->registry().byName().size())));
-	data.put(mcp_protocol::kStructureExcerpt, JsonString(sql.empty()
-			? std::string("(结构脚本不可读)\n")
-			: quoteUntrusted("结构脚本 " + cfg_->structurePath + " 摘录：\n", sql)));
-	data.put(mcp_protocol::kHardwareList,
-		JsonString(quoteUntrusted("硬件变量清单：\n", describeHardware(*robot_))));
-	data.put(mcp_protocol::kScriptsList, JsonString(quoteUntrusted(
-			"动作脚本清单（相对路径 + 首行注释）：\n", scripts)));
-	/* 可读变量是内联短清单（进工作方式条目，非引用块），空 = 一个字段都不给。 */
-	data.put(mcp_protocol::kReadableVars, JsonString(describeReadableVars(cfg_->readVars, *robot_)));
-	return okReply(std::move(data));
+	return okReply(buildContextData(*cfg_, *robot_));
 }
 
 Json McpBackend::handleRequest(const Json& req) {
