@@ -49,6 +49,12 @@ ws.onclose = () => { term.write("\r\n\x1b[31m[connection closed]\x1b[0m\r\n"); }
 
 constexpr size_t kMaxHandshakeBytes = 16 * 1024;        /* 握手请求头上限 */
 
+/* 握手阶段读超时秒数（issue #41）：每连接一线程且无连接上限，无超时的
+ * 半截请求（slow-loris 变体）可按 N 条连接钉死 N 线程 + fd。10s 对正常
+ * 客户端完成 TLS 后的明文小头余量充足；升级成功后立即清除——WS 泵的
+ * 空闲是合法状态（终端挂机数小时不发送），不能波及。 */
+constexpr int kHandshakeTimeoutSec = 10;
+
 /* 读取直到 \r\n\r\n（或达到上限）。返回 0 成功 / -1 失败 */
 int readHeaders(int sock, std::string& out) {
         char buf[1024];
@@ -100,9 +106,27 @@ bool tryResize(const std::string& msg, unsigned& rows, unsigned& cols) {
 } /* namespace */
 
 void handleConnection(int sock, const std::string& token) {
+        /* ---- 0. 握手读超时（issue #41）----
+         * 只作用于头部读取阶段：半截请求 10s 后 recv 返回 -1/EAGAIN，
+         * readHeaders 的 n<=0 分支即关闭连接。头部读完立刻清除——
+         * 之后 WS 会话的空闲（终端挂机）不是异常。 */
+        {
+                struct timeval tv{};
+                tv.tv_sec = kHandshakeTimeoutSec;
+                ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        }
+
         /* ---- 1. 读握手 ---- */
         std::string headers;
         if (readHeaders(sock, headers) != 0) { close(sock); return; }
+
+        /* 头部已完整：解除握手读超时，后续 WS 泵/页面响应不再受它约束 */
+        {
+                struct timeval tv{};
+                tv.tv_sec = 0;
+                tv.tv_usec = 0;
+                ::setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        }
 
         /* ---- 2. 普通 GET / → 单页前端（不升级） ----
          * 判定：请求行是 GET 且**完全没有** Upgrade 头（两种大小写都查）。
@@ -253,7 +277,13 @@ int run(const std::string& host, const std::string& portStr, const std::string& 
         while (true) {
                 int cfd = accept(fd, nullptr, nullptr);
                 if (cfd < 0) {
-                        if (errno == EINTR) break;              /* 信号终止 */
+                        /* 一切 accept 失败（含 EINTR）都不构成退场条件
+                         * （issue #42）：本模式未装任何信号处理器
+                         * （installStopSignalHandlers 仅 robot 分支调用），
+                         * 今日 EINTR 不可达；未来谁给本进程装了 handler，
+                         * 也不该让一次无害信号静默带走整个服务。优雅停机
+                         * 若将来需要，应显式设计（停收新连 + 排空现存会话），
+                         * 而不是蹭 EINTR break（旧行为：服务静默 return 0）。 */
                         continue;
                 }
                 std::thread([cfd, token]() { handleConnection(cfd, token); }).detach();
