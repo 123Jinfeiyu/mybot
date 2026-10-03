@@ -12,5 +12,11 @@
 # Lua/C++ 单测超时秒数（run_all.sh 的 timeout 前缀；ctest TIMEOUT 同源）
 : "${TEST_TIMEOUT:=60}"
 
+# SIGTERM 到 SIGKILL 的击杀宽限秒数（run_all.sh 的 timeout -k；issue #40）。
+# timeout 到点只发 SIGTERM 并无限等待——子进程忽略/屏蔽 TERM（卡在不可中断
+# 调用、或引入了信号处理）时整条守门流水线永久挂死（实测：卡死的 mybot_tests
+# 让 timeout 60 存活 4 分 05 秒不收尸）。-k 提供 SIGKILL 逃生口，预算本身不动。
+: "${TEST_KILL_GRACE:=15}"
+
 # sanitizer 构建目录（run_san.sh 第二跑产物路径；gate:sanitizer 构建路径同源）
 : "${SAN_DIR:=build-asan}"
