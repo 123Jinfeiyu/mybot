@@ -187,7 +187,9 @@ mybot 侧两个消费者：`Sim.lua` 的 `range()`（动作脚本可用）与 C+
 障碍布局与机器人数量都是**数据不是代码**：`sim/scenes/default.scene`（单机器人，
 行文本，与三桥协议同风格，可手编可 diff）、`sim/scenes/two_robots.scene`（双机器人
 v2 示例）。C++ 里的 `World::defaultScene()` 只是无场景文件时的内置回落，与
-default.scene 保持同值。**仓库里这两份现只作播种模板**：运行时缺省落点是家目录
+default.scene 的 box 十字段（位置/半尺寸/颜色/质量）逐字段同值——由
+`scripts/check_sim_contract.py` 零编译比对（见 [testing.md](testing.md)）。
+**仓库里这两份现只作播种模板**：运行时缺省落点是家目录
 地图目录（见下「路径解析」），首次运行从模板拷一份过去，仓库文件不再被弄脏。
 
 ```

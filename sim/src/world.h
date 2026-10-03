@@ -9,7 +9,8 @@
 
 // 场景障碍物：盒体（center=中心, half=半尺寸, color=漫反射色, mass=质量kg,
 // yaw=绕 Y 轴朝向（弧度，0=轴对齐，符号与 Robot::theta 一致））。
-// mass 用于搬运时的减速计算，defaultScene() 按体积×密度填充。
+// mass 用于搬运时的减速计算：由场景文件给定，缺 mass 的行按体积×密度补
+// （SimConfig::kDefaultDensity）。
 // 带 yaw 后盒是有向盒（OBB）：碰撞/测距/拾取/支撑面都先在盒局部系里按轴对齐
 // 解算、再旋回世界系（见 world.cpp 的 worldToLocal2D/localToWorld2D）。
 struct Obstacle {
@@ -100,8 +101,10 @@ public:
     // 直调；place() 的放置解算内部也用它。
     static bool boxesOverlapXZ(const Obstacle& a, const Obstacle& b);
 
-    // 默认障碍场景：蜘蛛从原点出发沿 +X 前进，障碍散布在前进路线两侧，
-    // 质量按体积×密度（近似木材）填充。
+    // 默认障碍场景：蜘蛛从原点出发沿 +X 前进，障碍散布在前进路线两侧。
+    // 与 sim/scenes/default.scene 逐字段同值（含每箱手调的质量，非统一 体积×密度），
+    // 两边由 scripts/check_sim_contract.py 钉住——它是无场景文件时的内置回落，
+    // 漂移就等于「跑没跑场景文件」静默变成两个世界。
     static std::vector<Obstacle> defaultScene();
 
 private:

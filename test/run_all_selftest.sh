@@ -107,7 +107,8 @@ for k in TEST_TIMEOUT SAN_DIR; do
 done
 
 # 8) 仿真器跨构建系统契约（sim/ vs 宿主 C++/Lua 的手写双份）：动作码表、三条
-#    缺省 socket 路径、一问一答桥的请求关键字。sim/ 不在任何 CI job 的构建范围内
+#    缺省 socket 路径、一问一答桥的请求关键字、默认场景（world.cpp 的内置回落 vs
+#    sim/scenes/default.scene 模板）。sim/ 不在任何 CI job 的构建范围内
 #    （见 sim/CMakeLists.txt 顶部注释），sim/tests 里的同款校验（testActionTable /
 #    testSharedConstants）因此只在开发者手动跑 `bash scripts/build_sim.sh` 时才会
 #    触发——这里用零编译依赖的独立实现把它下沉进主干守门，让漏改一侧在 push 前

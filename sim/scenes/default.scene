@@ -1,6 +1,7 @@
 mybot-sim scene v1
 # 默认障碍场景：蜘蛛从原点出发沿 +X 前进，障碍散布在前进路线两侧。
-# 与 sim/src/world.cpp 的 World::defaultScene() 保持同值（那是无文件时的内置回落）。
+# 与 sim/src/world.cpp 的 World::defaultScene() 逐字段同值（那是无文件时的内置回落）。
+# 两边的 box 十字段由 scripts/check_sim_contract.py 零编译比对：改一处必须同步另一处。
 # box: cx cy cz hx hy hz r g b mass
 # robot: x z theta_deg carried_idx
 robot 0 0 0

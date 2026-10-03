@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""检查 sim/ 与宿主侧（C++ / Lua）之间三组手写双份的契约是否一致。
+"""检查 sim/ 与宿主侧（C++ / Lua）之间四组手写双份的契约是否一致。
 
 两套构建系统（sim/ 的独立 CMake 与 mybot 的 Lua 驱动）之间刻意不做代码生成
 （见 docs/sim.md「跨构建系统不做代码生成」），于是同一份契约在两侧各手写一份。
@@ -8,9 +8,9 @@
 CI job 的构建范围内（见 sim/CMakeLists.txt 顶部注释），所以那道安全网实际上
 从未被强制执行过。
 
-本脚本是同一批校验的独立实现（纯文本解析，零编译依赖），接入
-test/run_all_selftest.sh，让「漏改一侧」在主干守门（push 前）就被挡下，
-而不必依赖人记得去构建 sim/。三组契约：
+本脚本把这些校验用纯文本解析重做一遍（零编译依赖），并补上 sim/tests 里也没有
+的两组（3 请求关键字、4 默认场景），接入 test/run_all_selftest.sh，让「漏改一侧」
+在主干守门（push 前）就被挡下，而不必依赖人记得去构建 sim/。四组契约：
 
   1. 动作码表（testActionTable）
      * C++ 侧单一事实源：sim/src/action_table.cpp 的 kActions[]
@@ -23,11 +23,16 @@ test/run_all_selftest.sh，让「漏改一侧」在主干守门（push 前）就
      * sim 侧：sim/src/{sensor,capture}.cpp 传给 RequestResponseBridge 的 keyword
      * 宿主侧：modules/Sim.lua 的 range()、src/agentimage.cpp、
        modules/Camera.lua 的 capture_live() 里发出的 "<word>\\n"
+  4. 默认场景（内置回落 vs 播种模板）
+     * C++ 侧：sim/src/world.cpp 的 World::defaultScene()
+     * 数据侧：sim/scenes/default.scene 的 box 行
+     （这组两侧同属 sim/，但一份是代码、一份是数据，同样是手写双份）
 
 用法：python3 scripts/check_sim_contract.py
 退出码：0=一致，1=发现不一致或解析失败（原因打到 stderr）。
 """
 
+import math
 import re
 import sys
 from pathlib import Path
@@ -36,6 +41,8 @@ ROOT = Path(__file__).resolve().parent.parent
 CPP_PATH = ROOT / "sim/src/action_table.cpp"
 LUA_PATH = ROOT / "modules/Sim.lua"
 SIM_CONFIG_PATH = ROOT / "sim/src/sim_config.h"
+WORLD_CPP_PATH = ROOT / "sim/src/world.cpp"
+SCENE_PATH = ROOT / "sim/scenes/default.scene"
 
 PREFIX = "check_sim_contract"
 
@@ -282,11 +289,78 @@ def check_request_words(errors):
     return checked
 
 
+# ── 4) 默认场景（内置回落 vs 播种模板文件）──────────────────────────────
+
+# World::defaultScene() 是**无场景文件时**的内置回落；sim/scenes/default.scene
+# 是有文件时用户实际拿到的世界（首次运行从模板拷一份到家目录地图目录）。两者必须
+# 逐字段同值，否则「跑没跑场景文件」会静默变成一次行为分叉。质量尤其要紧：
+# Robot::kLoadSlowdownPerKg 直接吃 mass，最轻的红箱若按 体积×kDefaultDensity(800)
+# 算是 409.6kg 而非模板的 61.44kg，搬起来慢 6.7 倍。
+# 只比 box 行：内置回落不含机器人出生点，而 readScene 对缺 robot 行的文件本来就补
+# 一只原点默认，与模板里的 `robot 0 0 0` 同值，没有第二份可漂移的手写数据。
+SCENE_BOX_FIELDS = ("cx", "cy", "cz", "hx", "hy", "hz", "r", "g", "b", "mass")
+
+# C++ 侧一行：{{cx, cy, cz}, {hx, hy, hz}, {r, g, b}, mass}，浮点都带 f 后缀。
+# 质量写成必选（不是 `(?:...)?`）：某行漏掉 mass 就整行不匹配，由下面的条数自检
+# 响亮报出，而不是拿 Obstacle 的默认 mass=1.0 悄悄比过去。
+_VEC3 = r"\{\s*(-?[0-9.]+)f\s*,\s*(-?[0-9.]+)f\s*,\s*(-?[0-9.]+)f\s*\}"
+CPP_BOX_RE = re.compile(
+    r"\{\s*" + _VEC3 + r"\s*,\s*" + _VEC3 + r"\s*,\s*" + _VEC3 + r"\s*,\s*(-?[0-9.]+)f\s*\}"
+)
+
+# 数据侧一行：`box` + 10 个数 + 可选尾注释。
+_NUM = r"(-?[0-9]+(?:\.[0-9]+)?)"
+SCENE_BOX_RE = re.compile(r"^box\s+" + r"\s+".join([_NUM] * 10) + r"\s*(?:#.*)?$", re.M)
+
+
+def check_default_scene(errors):
+    cpp_text = read(WORLD_CPP_PATH)
+    fn_body = brace_block(cpp_text, "World::defaultScene()")
+    if fn_body is None:
+        sys.exit(f"{PREFIX}: 在 {rel(WORLD_CPP_PATH)} 里没找到 World::defaultScene()")
+    decl = brace_block(fn_body, "std::vector<Obstacle> obs = {")
+    if decl is None:
+        sys.exit(
+            f"{PREFIX}: World::defaultScene() 里没找到 std::vector<Obstacle> obs = {{ ... }}；"
+            "写法变了请同步本脚本的 CPP_BOX_RE"
+        )
+    cpp_rows = [[float(g) for g in m.groups()] for m in CPP_BOX_RE.finditer(decl)]
+    if not cpp_rows:
+        sys.exit(
+            f"{PREFIX}: World::defaultScene() 一个箱都没解析到，正则是不是跟表的格式脱节了？"
+        )
+
+    scene_text = read(SCENE_PATH)
+    scene_rows = [[float(g) for g in m.groups()] for m in SCENE_BOX_RE.finditer(scene_text)]
+    n_box_lines = len(re.findall(r"^box\b", scene_text, re.M))
+    if n_box_lines != len(scene_rows):
+        sys.exit(
+            f"{PREFIX}: {rel(SCENE_PATH)} 有 {n_box_lines} 行 box，只解析出 {len(scene_rows)} 行"
+            "（box 行不再是 10 个数？请同步本脚本的 SCENE_BOX_RE）"
+        )
+
+    if len(cpp_rows) != len(scene_rows):
+        errors.append(
+            f"默认场景箱数不一致：World::defaultScene() 有 {len(cpp_rows)} 个，"
+            f"{rel(SCENE_PATH)} 有 {len(scene_rows)} 个"
+        )
+        return len(scene_rows)  # 条数都对不上时逐箱配对没有意义，别刷屏假差异
+    for i, (cpp_row, scene_row) in enumerate(zip(cpp_rows, scene_rows)):
+        for name, cv, sv in zip(SCENE_BOX_FIELDS, cpp_row, scene_row):
+            if not math.isclose(cv, sv, rel_tol=1e-6, abs_tol=1e-6):
+                errors.append(
+                    f"默认场景第 {i} 个箱的 {name} 不一致："
+                    f"World::defaultScene()={cv}，{rel(SCENE_PATH)}={sv}"
+                )
+    return len(scene_rows)
+
+
 def main():
     errors = []
     n_actions = check_action_table(errors)
     n_paths = check_socket_paths(errors)
     n_senders = check_request_words(errors)
+    n_boxes = check_default_scene(errors)
 
     if errors:
         print(f"{PREFIX}: 跨构建系统契约不一致：", file=sys.stderr)
@@ -296,7 +370,7 @@ def main():
 
     print(
         f"{PREFIX}: 一致（{n_actions} 个动作码 / {n_paths} 条缺省 socket 路径"
-        f" / {n_senders} 个请求关键字发送点）"
+        f" / {n_senders} 个请求关键字发送点 / {n_boxes} 个默认场景箱）"
     )
 
 

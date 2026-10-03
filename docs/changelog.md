@@ -9,6 +9,21 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 仿真器默认场景：内置回落与播种模板对齐，并接进零编译守门
+
+- **改了什么**：`World::defaultScene()`（无场景文件时的内置回落）此前按 体积×`kDefaultDensity`(800)
+  统一算质量，而 `sim/scenes/default.scene`（有文件时用户实际拿到的世界，也是首次运行拷进家目录
+  地图目录的播种模板）是每箱手调的质量——两边几何与颜色一致、质量却差 2～6.7 倍，而模板顶部
+  一直写着「与 `defaultScene()` 保持同值」。现让 `defaultScene()` 直接带上模板那 11 个显式质量，
+  两份真的同值；`scripts/check_sim_contract.py` 增第 4 组，零编译比对两边 box 的十个字段。
+- **对使用者意味着什么**：有场景文件的正常路径**行为不变**。只有「地图目录里没有 default.scene、
+  又不给 `--scene`」这条回落路径变了：搬最轻的红箱从 409.6kg 变 61.44kg，按
+  `Robot::kLoadSlowdownPerKg` 折算的最高速度从 0.31 m/s 回到 0.99 m/s——回落不再是「同一个世界
+  的困难模式」。
+- **为什么是 C++ 向模板靠、不是反过来**：模板的轻质量才是用户实际体验到的那份；把模板统一改成
+  800 kg/m³ 会让 11 个箱子全重 2～6.7 倍，搬运基本推不动。场景文件里 `mass` 缺省仍按 体积×800 补
+  （`world.cpp` 的解析回落，`sim/tests` 有钉子），未改。
+
 ### 2026-10-04 跨源一致性：状态目录取值链有了规则单点与三处拼法守门
 
 - **改了什么**：`MYBOT_HOME` 非空 > `$HOME/.mybot` > 不可用——这条链在三处各手写一份
@@ -36,8 +51,9 @@
   （`sim/src/sim_config.h` ↔ `modules/Sim.lua`，含「三条互不相同」「均为 /tmp 下绝对路径」
   两条自检）；② 一问一答桥的请求关键字（`sensor.cpp` 的 `range`、`capture.cpp` 的
   `capture` ↔ `Sim.lua` 的 `range()`、`src/agentimage.cpp`、`Camera.lua` 的 `capture_live()`）。
-- **为什么下沉到零编译脚本**：这三组在 `sim/tests/main.cpp` 里本来就有运行期交叉校验，但
-  `sim/` 不在任何 CI job 的构建范围内，那份只有开发者手动 `build_sim.sh` 时才会触发。
+- **为什么下沉到零编译脚本**：动作码表与 socket 路径在 `sim/tests/main.cpp` 里本来就有运行期
+  交叉校验（`testActionTable` / `testSharedConstants`），但 `sim/` 不在任何 CI job 的构建范围内，
+  那份只有开发者手动 `build_sim.sh` 时才会触发；请求关键字那一组此前两侧都没有任何校验。
 - **对使用者意味着什么**：线协议字节、三条缺省路径、动作码 0–10 全不变（纯守门扩容）；
   此后漏改一侧在 push 前就红，而不是等到仿真器起来才发现驱动连不上或请求被拒。
 
