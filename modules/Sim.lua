@@ -45,10 +45,11 @@ local usock = dofile(mpath.resolve("lib/unix_socket_ffi.lua"))
 local ffi = require("ffi")
 
 -- poll 结构单独声明：公共模块不包含 poll（各驱动的 pollfd 结构名不同）
+-- errno 同理不在此声明：见 lib/unix_socket_ffi.lua 头注（数据符号当函数调会 SIGSEGV），
+-- 统一用 LuaJIT 内建 ffi.errno()。
 ffi.cdef[[
 struct cj_pollfd { int fd; short events; short revents; };
 int poll(struct cj_pollfd *fds, unsigned long nfds, int timeout);
-int errno(void);
 ]]
 
 local kDefaultSock = "/tmp/mybot-sim.sock"
@@ -278,7 +279,7 @@ local function sensorRecvLine()
 		fds[0].events = 1  -- POLLIN
 		local pr = ffi.C.poll(fds, 1, kSensorPollMs)
 		if pr < 0 then
-			local e = ffi.C.errno()
+			local e = ffi.errno()
 			if e ~= 4 then  -- EINTR
 				return nil, "poll sensor failed (errno=" .. tostring(e) .. ")"
 			end

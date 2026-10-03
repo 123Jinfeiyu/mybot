@@ -9,6 +9,19 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 修复：连不上仿真 socket 时段错误打死宿主进程
+
+- **改了什么**：`modules/Sim.lua` 与 `modules/lib/unix_socket_ffi.lua` 原先把 glibc 的 `errno`
+  声明成函数 `int errno(void)` 再调；`errno` 实为数据符号，按函数调等于跳到一个 int 值当代码
+  执行，稳定 SIGSEGV。改用 LuaJIT 内建 `ffi.errno()`（与 HAL 的 glibc 后端同口径），删掉两处
+  伪声明。
+- **对使用者意味着什么**：仿真器没起来（或 socket 路径不对）时，`Sim` / `Camera` 的仿真链路
+  从「整个 mybot 进程段错误」变回如实返回一句 ERR。错误文案、线上协议、三条 socket 缺省路径、
+  动作码 0–10 全不变。
+- **附带**：`test/test_sim.lua` 自该声明引入起在本机零输出即崩（此前被记为「LuaJIT FFI 环境
+  问题」），整条 Sim 驱动守门等于没在跑；`test_camera.lua` 的「无监听端 → 响亮 ERR」用例同因
+  崩溃。修复后两条守门恢复，全量守门回到全绿。
+
 ### 2026-10-03 家目录持久化：对话历史与地图缺省落 `~/.mybot`
 
 - **状态目录**：`MYBOT_HOME` > `$HOME/.mybot`（首次自动逐级建目录 `0700`）。agent 的

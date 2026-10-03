@@ -32,8 +32,11 @@ int connect(int fd, const struct usock_sockaddr_un *addr, unsigned int addrlen);
 long send(int fd, const void *buf, unsigned long len, int flags);
 long recv(int fd, void *buf, unsigned long len, int flags);
 int close(int fd);
-int errno(void);
 		]]
+	-- errno 刻意**不在这里 cdef**：glibc 的 errno 是数据符号（宏 (*__errno_location())），
+	-- 声明成 `int errno(void)` 再调 ffi.C.errno() 会把一个 int 当函数指针跳过去执行，
+	-- 稳定 SIGSEGV——而且只在 socket 失败分支触发（仿真器没起来时打死整个宿主进程）。
+	-- 用 LuaJIT 内建的 ffi.errno()，与 modules/lib/hal_backend_glibc.lua 同口径。
 	end)
 	
 	if not ok then
@@ -78,7 +81,7 @@ local function connect(path)
 	
 	local s = ffi.C.socket(AF_UNIX, SOCK_STREAM, 0)
 	if s < 0 then
-		return nil, "socket() 失败 (errno=" .. tostring(ffi.C.errno()) .. ")"
+		return nil, "socket() 失败 (errno=" .. tostring(ffi.errno()) .. ")"
 	end
 	
 	local addr = ffi.new("struct usock_sockaddr_un")
@@ -88,7 +91,7 @@ local function connect(path)
 	local addrlen = 2 + #path + 1
 	
 	if ffi.C.connect(s, addr, addrlen) ~= 0 then
-		local e = ffi.C.errno()
+		local e = ffi.errno()
 		ffi.C.close(s)
 		return nil, "connect 失败 (errno=" .. tostring(e) .. "，路径 " .. path .. ")"
 	end
@@ -108,7 +111,7 @@ local function poll_ready(fd, timeout_ms, pollfd_ptr)
 	while true do
 		local pr = ffi.C.poll(fds, 1, timeout_ms)
 		if pr < 0 then
-			local e = ffi.C.errno()
+			local e = ffi.errno()
 			if e == 4 then	-- EINTR：被信号打断，重试
 				-- 继续循环
 			else
@@ -130,7 +133,7 @@ local function send_all(fd, data)
 	while sent < total do
 		local n = ffi.C.send(fd, data:sub(sent + 1), total - sent, MSG_NOSIGNAL)
 		if n < 0 then
-			local e = ffi.C.errno()
+			local e = ffi.errno()
 			if e == 32 then	-- EPIPE：对端已关闭
 				return nil, "broken pipe"
 			end
