@@ -64,11 +64,11 @@ TH_TEST(robot_hot_update_rewrites_a_row_by_power_cycle) {
 	TH_CHECK_MSG(msg.find("已删除硬件变量 1 个（p0）") != std::string::npos, "实际: " + msg);
 	/* 同名重建：变量仍可寻址，注册表/销毁序规模不变 */
 	TH_CHECK(robot.registry().contains("p0"));
-	TH_CHECK(robot.declaresVariable("p0"));
+	TH_CHECK(robot.structures().declaresVariable("p0"));
 	TH_CHECK(robot.registry().byName().size() == namesBefore);
 	TH_CHECK(robot.registry().sequence().size() == namesBefore);
 	/* 矩阵行数不变（1 删 1 增），改后行的 path 已是新值 */
-	const mt::MatrixObject* m = mt::findByName(robot.matrices(), "LifetimeProbe");
+	const mt::MatrixObject* m = robot.structures().find( "LifetimeProbe");
 	TH_CHECK(m != nullptr && m->rows() == 2);
 	TH_CHECK(fx::cell(*m, 1, 1) == newM.string());
 	/* 先删后建的物理证据：旧件在更新**当场**断电（旧路径立即落痕），
@@ -101,7 +101,7 @@ TH_TEST(robot_hot_update_where_selects_rows_and_no_where_rewrites_all) {
 	/* 只有 p1 被断电重建：p1 旧件当场断电（mB 落痕），p0 的 mA 无痕 */
 	TH_CHECK(markerOf(mB) == "D");
 	TH_CHECK(markerOf(mA).empty());
-	const mt::MatrixObject* m = mt::findByName(robot.matrices(), "LifetimeProbe");
+	const mt::MatrixObject* m = robot.structures().find( "LifetimeProbe");
 	TH_CHECK(m != nullptr && m->rows() == 3);	/* 列头 + p0 + 改后 p1 */
 	TH_CHECK(fx::cell(*m, 1, 1) == mA.string());	/* 未命中行原样 */
 	TH_CHECK(fx::cell(*m, 2, 1) == mC.string());	/* 命中行已是新值 */
@@ -131,9 +131,9 @@ TH_TEST(robot_hot_update_renames_a_row_via_set_name) {
 		"UPDATE LifetimeProbe SET name = 'p9' WHERE name = 'p0';\n");
 	TH_CHECK_MSG(msg.find("已热更新 1 行") != std::string::npos, "实际: " + msg);
 	TH_CHECK(!robot.registry().contains("p0"));
-	TH_CHECK(!robot.declaresVariable("p0"));
+	TH_CHECK(!robot.structures().declaresVariable("p0"));
 	TH_CHECK(robot.registry().contains("p9"));
-	const mt::MatrixObject* mm = mt::findByName(robot.matrices(), "LifetimeProbe");
+	const mt::MatrixObject* mm = robot.structures().find( "LifetimeProbe");
 	TH_CHECK(mm != nullptr && fx::cell(*mm, 1, 0) == "p9");
 	/* 改名不改 path：旧件断电落痕仍在原路径 */
 	TH_CHECK(markerOf(m) == "D");
@@ -158,7 +158,7 @@ TH_TEST(robot_hot_update_no_match_is_a_loud_error) {
 		"实际: " + err);
 	/* 活体一字未动 */
 	TH_CHECK(robot.registry().byName().size() == namesBefore);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 2);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == 2);
 	TH_CHECK(markerOf(m).empty());
 	robot.deactivate();
 }
@@ -185,7 +185,7 @@ TH_TEST(robot_hot_update_refuses_a_row_still_referenced_by_a_controller) {
 	/* 活体一字未动 */
 	TH_CHECK(robot.registry().contains("p0"));
 	TH_CHECK(markerOf(mp).empty());
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 2);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == 2);
 	robot.deactivate();
 }
 
@@ -223,7 +223,7 @@ TH_TEST(robot_hot_update_batch_exclusivity_guards) {
 	bot::RobotStruct robot(sr);
 	robot.active();
 	const std::size_t namesBefore = robot.registry().byName().size();
-	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "LifetimeProbe")->rows();
+	const std::size_t rowsBefore = robot.structures().find( "LifetimeProbe")->rows();
 
 	/* ① 同表先 INSERT 后 UPDATE：分解的尾块区间算式会被打乱 */
 	const std::string e1 = hotSqlError(robot,
@@ -252,9 +252,9 @@ TH_TEST(robot_hot_update_batch_exclusivity_guards) {
 		"实际: " + e4);
 	/* 活体一字未动：四批全部在预检被拒 */
 	TH_CHECK(robot.registry().byName().size() == namesBefore);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == rowsBefore);
-	TH_CHECK(!robot.declaresVariable("p9"));
-	TH_CHECK(!robot.declaresVariable("t0"));
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == rowsBefore);
+	TH_CHECK(!robot.structures().declaresVariable("p9"));
+	TH_CHECK(!robot.structures().declaresVariable("t0"));
 	TH_CHECK(markerOf(m).empty());
 	robot.deactivate();
 	TH_CHECK(markerOf(m) == "D");
@@ -313,7 +313,7 @@ TH_TEST(robot_hot_update_delete_first_failure_names_lost_variables) {
 	TH_CHECK(!robot.registry().contains("p0"));
 	TH_CHECK(robot.registry().byName().size() == namesBefore - 1);
 	/* 矩阵行也回到删后状态（改后行已随回滚弹出） */
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 1);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == 1);
 	robot.deactivate();
 }
 

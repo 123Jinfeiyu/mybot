@@ -151,7 +151,7 @@ std::string describeHardware(RobotStruct& robot);
 
 /* ---- SQL 只读渲染（query_sql 工具的单一事实源）----
  * 解析一条结构 SQL 并渲染成文本。只读、无副作用：不装配硬件、不改结构矩阵。
- *   * SELECT * FROM t —— 从运行时结构矩阵（robot.matrices()）取数渲染；
+ *   * SELECT * FROM t —— 从运行时结构矩阵（robot.structures().all()）取数渲染；
  *   * CREATE/INSERT —— 只解析回显（语法验证），不落任何状态。
  * 失败经 SqlOutcome::ok=false 显式传递（此前以「错误: 」字符串前缀当错误码、
  * 调用方再 rfind 前缀翻回异常——文案改动即断链）；text 为**不带前缀**的人话

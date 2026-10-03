@@ -251,11 +251,11 @@ std::string describeHardware(RobotStruct& robot) {
 }
 
 /* SHOW TABLES 的只读渲染（runSqlStatement 的 SELECT/SHOW 分支共用，单点）：
- * 枚举运行时结构矩阵（robot.matrices()，与 SELECT 同源取数），列出每张表的名字
- * 与**数据行数**（rows()-1，第 0 行是列头）。表名 trim 后显示，与 mt::findByName
- * 的比较口径一致。空结构显式说破「（无表）」，不被误读成渲染故障。 */
+ * 枚举运行时结构矩阵（robot.structures().all()，与 SELECT 同源取数），列出每张表
+ * 的名字与**数据行数**（rows()-1，第 0 行是列头）。表名 trim 后显示，与
+ * StructureStore::find 的比较口径一致。空结构显式说破「（无表）」，不被误读成渲染故障。 */
 std::string renderShowTables(const RobotStruct& robot) {
-	const auto& mats = robot.matrices();
+	const auto& mats = robot.structures().all();
 	std::string s = "SHOW TABLES (" + std::to_string(mats.size()) + "):";
 	if (mats.empty()) { return s + "\n  （无表）"; }
 	for (const auto& m : mats) {
@@ -298,12 +298,12 @@ SqlOutcome renderInsertEcho(const sql4cj::InsertTableEvent& ev) {
 	return {true, s};
 }
 
-/* SELECT 渲染（含 WHERE 等值过滤）。取数源是 robot.matrices()——原始结构
- * 矩阵（声明序），与 registry()（装配后的硬件变量视图）互补；可选 WHERE
+/* SELECT 渲染（含 WHERE 等值过滤）。取数源是 robot.structures().all()——原始
+ * 结构矩阵（声明序），与 registry()（装配后的硬件变量视图）互补；可选 WHERE
  * 等值条件按 inherited 显示值过滤（mt::matchRows 单点，值精确文本比较）。 */
 SqlOutcome runSelect(const sql4cj::SelectTableEvent& ev, const RobotStruct& robot) {
 	const std::string& tbl = ev.sourceTableName;
-	const mt::MatrixObject* m = mt::findByName(robot.matrices(), tbl);
+	const mt::MatrixObject* m = robot.structures().find(tbl);
 	if (m == nullptr) {
 		return {false, "表 '" + tbl + "' 未定义（当前结构脚本里没有这个表）"};
 	}

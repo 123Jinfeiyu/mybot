@@ -263,8 +263,8 @@ TH_TEST(agenttools_apply_sql_is_gated_and_hot_sql_dispatches) {
 	TH_CHECK(toolDrop.ok);
 	TH_CHECK_MSG(toolDrop.summary.find("已撤下表 1 张") != std::string::npos,
 		"实际 summary: " + toolDrop.summary);
-	TH_CHECK(!robot->declaresVariable("relay10"));
-	TH_CHECK(mt::findByName(robot->matrices(), "Relay") == nullptr);
+	TH_CHECK(!robot->structures().declaresVariable("relay10"));
+	TH_CHECK(robot->structures().find( "Relay") == nullptr);
 
 	robot->deactivate();
 }
@@ -309,7 +309,7 @@ TH_TEST(agenttools_hot_delete_dispatch_and_summary) {
 		"实际回执: " + del.text);
 	TH_CHECK_MSG(del.summary == del.text, "summary 须与回执同源（G2 对账口径）");
 	TH_CHECK(!robot->registry().contains("relay9"));
-	TH_CHECK(!robot->declaresVariable("relay9"));
+	TH_CHECK(!robot->structures().declaresVariable("relay9"));
 
 	/* 引用完整性：relay0 的 controller 指着 timer-0，删 timer-0 必须被拒。
 	 * 分类是**参数类失败**（executed=false 口径）：applySql 的预检用

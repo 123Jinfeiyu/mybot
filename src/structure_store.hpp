@@ -59,6 +59,7 @@ public:
 	}
 
 	std::size_t size() const { return tables_.size(); }
+	bool empty() const { return tables_.empty(); }
 
 	mt::MatrixObject& at(std::size_t idx) { return tables_[idx]; }
 	const mt::MatrixObject& at(std::size_t idx) const { return tables_[idx]; }
@@ -67,6 +68,21 @@ public:
 	mt::MatrixObject* find(const std::string& name) { return mt::findByName(tables_, name); }
 	const mt::MatrixObject* find(const std::string& name) const {
 		return mt::findByName(tables_, name);
+	}
+
+	/* 结构脚本是否已声明名为 name 的变量（原 RobotStruct::declaresVariable，
+	 * 2026-10-03 阶段 4 随公开访问面门面化迁入本域）。必须在 active() **之前**
+	 * 可判定，故直接扫矩阵表的 name 列，而不是查注册表（注册表要 active() 里
+	 * createHardVars 才装配）。agent 模式的摄像头/协议驱动存在性判据。 */
+	bool declaresVariable(const std::string& name) const {
+		for (const auto& table : tables_) {
+			const std::int64_t idx = table.indexOfCol(0, "name");
+			if (idx < 0) { continue; }
+			for (std::int64_t i = 1; i < static_cast<std::int64_t>(table.rows()); ++i) {
+				if (trim(table(i, idx)) == name) { return true; }
+			}
+		}
+		return false;
 	}
 
 	/* 声明序只读视图：agent 视图取数（/sql 查询）与一致性自检遍历共用。

@@ -150,7 +150,7 @@ std::unique_ptr<RobotStruct> loadStructure(const std::string& rpath) {
 bool injectCameraDriver(RobotStruct& robot, const agent::AgentModeConfig& agentCfg) {
 	/* 摄像头是可选外设：驱动 build 打不开设备也只记原因、不阻断上电，
 	 * 抓拍时才如实报错。 */
-	if (agentCfg.allowCamera && !robot.declaresVariable(agentCfg.cameraVar)) {
+	if (agentCfg.allowCamera && !robot.structures().declaresVariable(agentCfg.cameraVar)) {
 		try {
 			robot.injectLuaDriver("Camera", agentCfg.cameraVar);
 		} catch (const std::exception& e) {

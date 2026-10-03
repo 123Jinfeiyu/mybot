@@ -192,36 +192,6 @@ std::string RobotStruct::applySql(const std::string& sql) {
 	return hotSql_.apply(sql, deactivateGraceMs_);
 }
 
-/* ---- agent 模式：变量存在性判定（active() 之前可判定）---- */
-bool RobotStruct::declaresVariable(const std::string& name) const {
-	for (const auto& matrix : structures_.all()) {
-		std::int64_t idx = matrix.indexOfCol(0, "name");
-		if (idx < 0) { continue; }
-		for (std::int64_t i = 1; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
-			if (trim(matrix(i, idx)) == name) { return true; }
-		}
-	}
-	return false;
-}
-
-/* ---- 元数据登记表与活体结构的一致性自检（测试用，见 robot.hpp 契约）----
- * 期望集的表分派与 HwFactory::createHardVarsFrom 同集合：Alias/Vars/Action/
- * Daemon 表不产生 MetaProvider（标量走 registerScalarMatrix、守护走
- * MtVars_Daemon::Factory 且装配期即读全行），其余表每个数据行一个提供者。 */
-bool RobotStruct::metaProvidersMatchLiveRows() const {
-	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> expect;
-	for (const auto& m : structures_.all()) {
-		const std::string& t = m.getName();
-		if (t == "Alias" || t == "Vars" || t == "Action" || t == "Daemon") { continue; }
-		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
-			expect.emplace(&m, r);
-		}
-	}
-	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> got;
-	for (const auto& p : metas_.all()) { got.emplace(p->matrixPtr(), p->row()); }
-	return expect == got;
-}
-
 /* ---- agent 模式：注入 Lua 驱动变量（LLM / 摄像头共用）---- */
 void RobotStruct::injectLuaDriver(const std::string& driverTable, const std::string& varName) {
 	/* 只接受安全标识符：这两个名字会被拼进合成 SQL，且 driverTable 还会被

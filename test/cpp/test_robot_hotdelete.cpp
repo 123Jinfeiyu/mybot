@@ -8,9 +8,11 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "fixtures.hpp"
@@ -30,6 +32,31 @@ using rfx::cell;
 using rfx::hotSqlError;
 using rfx::markerOf;
 using rfx::probeSql;
+
+namespace {
+
+/* 元数据登记表与活体结构的一致性自检（原 RobotStruct::metaProvidersMatchLiveRows，
+ * 2026-10-03 阶段 4 随公开访问面门面化移出生产类，改经 structures()/metas() 两个
+ * 域门面在测试侧组装）。期望集的表分派与 HwFactory::createHardVarsFrom 同集合：
+ * Alias/Vars/Action/Daemon 表不产生 MetaProvider（标量走 registerScalarMatrix、守护
+ * 走 MtVars_Daemon::Factory 且装配期即读全行），其余表每个数据行一个提供者。
+ * multiset 比对——行号错位/摘错/漏摘都会失衡。 */
+bool metaProvidersMatchLiveRows(const bot::RobotStruct& robot) {
+	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> expect;
+	for (const auto& m : robot.structures().all()) {
+		const std::string& t = m.getName();
+		if (t == "Alias" || t == "Vars" || t == "Action" || t == "Daemon") { continue; }
+		for (std::int64_t r = 1; r < static_cast<std::int64_t>(m.rows()); ++r) {
+			expect.emplace(&m, r);
+		}
+	}
+	std::multiset<std::pair<const mt::MatrixObject*, std::int64_t>> got;
+	for (const auto& p : robot.metas().all()) { got.emplace(p->matrixPtr(), p->row()); }
+	return expect == got;
+}
+
+} // namespace
+
 /* ==================== 热删除：DELETE FROM t [WHERE ... AND ...] ====================
  * （2026-09-23）三条判据贯穿本组，与热插表组同构：
  *   ① 删除 = 真的逆序 destroy（LifetimeProbe 的 'D' 落痕是物理证据）；
@@ -49,19 +76,19 @@ TH_TEST(robot_hot_delete_removes_an_existing_row_and_powers_it_off) {
 	bot::RobotStruct robot(sr);
 	robot.active();
 	TH_CHECK(robot.registry().contains("p0"));
-	const std::size_t tablesBefore = robot.matrices().size();
+	const std::size_t tablesBefore = robot.structures().size();
 
 	const std::string msg = robot.applySql("DELETE FROM LifetimeProbe WHERE name = 'p0';\n");
 
 	/* 删除当场断电：'D' 已落下，而不是等到 deactivate */
 	TH_CHECK_MSG(markerOf(marker) == "D", "实际落痕: " + markerOf(marker));
 	TH_CHECK(!robot.registry().contains("p0"));
-	TH_CHECK(!robot.declaresVariable("p0"));
+	TH_CHECK(!robot.structures().declaresVariable("p0"));
 	TH_CHECK(robot.registry().byName().empty());
 	TH_CHECK(robot.registry().sequence().empty());
 	/* 表还在（删的是行不是表），只剩列头 */
-	TH_CHECK(robot.matrices().size() == tablesBefore);
-	const mt::MatrixObject* m = mt::findByName(robot.matrices(), "LifetimeProbe");
+	TH_CHECK(robot.structures().size() == tablesBefore);
+	const mt::MatrixObject* m = robot.structures().find( "LifetimeProbe");
 	TH_CHECK(m != nullptr && m->rows() == 1);
 	/* 摘要如实报出删了谁 */
 	TH_CHECK_MSG(msg.find("已删除硬件变量 1 个") != std::string::npos, "实际: " + msg);
@@ -124,7 +151,7 @@ TH_TEST(robot_hot_delete_without_where_removes_every_row) {
 	TH_CHECK_MSG(msg.find("已删除硬件变量 2 个") != std::string::npos, "实际: " + msg);
 	TH_CHECK(robot.registry().byName().empty());
 	TH_CHECK(markerOf(m1) == "D" && markerOf(m2) == "D");
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 1);	/* 只剩列头 */
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == 1);	/* 只剩列头 */
 
 	/* 空表的无条件删除：没有可删的行 → 报错而不是静默成功 */
 	const std::string err = hotSqlError(robot, "DELETE FROM LifetimeProbe;\n");
@@ -146,7 +173,7 @@ TH_TEST(robot_hot_delete_can_remove_a_row_inserted_in_the_same_batch) {
 		"INSERT INTO Timer (name) VALUES ('t0');\n");
 	bot::RobotStruct robot(sr);
 	robot.active();
-	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "Timer")->rows();
+	const std::size_t rowsBefore = robot.structures().find( "Timer")->rows();
 
 	const std::string msg = robot.applySql(
 		"CREATE TABLE LifetimeProbe (name String, path String);\n"
@@ -157,12 +184,12 @@ TH_TEST(robot_hot_delete_can_remove_a_row_inserted_in_the_same_batch) {
 	TH_CHECK_MSG(msg.find("新增表 1 张") != std::string::npos, "实际: " + msg);
 	TH_CHECK_MSG(msg.find("新增硬件变量 0 个") != std::string::npos, "实际: " + msg);
 	TH_CHECK(!robot.registry().contains("p9"));
-	const mt::MatrixObject* m = mt::findByName(robot.matrices(), "LifetimeProbe");
+	const mt::MatrixObject* m = robot.structures().find( "LifetimeProbe");
 	TH_CHECK_MSG(m != nullptr && m->rows() == 1, "新表应只剩列头（行被删干净）");
 	/* 该表的行在装配之前就被删掉了 → 从未 build → 不留断电落痕 */
 	TH_CHECK_MSG(markerOf(marker).empty(), "未装配的行不该有断电落痕: " + markerOf(marker));
 	/* 无关的表一字不动 */
-	TH_CHECK(mt::findByName(robot.matrices(), "Timer")->rows() == rowsBefore);
+	TH_CHECK(robot.structures().find( "Timer")->rows() == rowsBefore);
 	TH_CHECK(robot.registry().contains("t0"));
 
 	robot.deactivate();
@@ -172,8 +199,8 @@ TH_TEST(robot_hot_delete_can_remove_a_row_inserted_in_the_same_batch) {
  * 原实现的已知边界：removeRows 保序擦除让同矩阵后续行前移，而提供者的 row()
  * 是**后续批次** deadProvider 判据的坐标——不止混批（先插入后删除）新追加行，
  * 任何同表删行（含 UPDATE 批次里未改写的既有行）都会让坐标过期，下一批删除
- * 随即摘错/漏摘 metaProviders_ 条目。判据用 RobotStruct::metaProvidersMatchLiveRows
- * （提供者 ↔ 数据行一一对应；行号错位/摘错/漏摘都会失衡），三批连删覆盖：
+ * 随即摘错/漏摘 MetaProvider 条目。判据用本文件顶部的 metaProvidersMatchLiveRows
+ * 自检（提供者 ↔ 数据行一一对应；行号错位/摘错/漏摘都会失衡），三批连删覆盖：
  *   批 1 删中间行（纯删，存活行前移）；批 2 混批先插后删（新行坐标以追加时
  *   值创建、随后被同批删行打乱——正是原注释点名的场景）；批 3 再删一行
  *   （若批 1/2 未重锚定，本批判据必错）。 */
@@ -192,11 +219,11 @@ TH_TEST(robot_hot_delete_rebases_surviving_provider_rows) {
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p2', '" + m3.string() + "');\n");
 	bot::RobotStruct robot(sr);
 	robot.active();
-	TH_CHECK(robot.metaProvidersMatchLiveRows());
+	TH_CHECK(metaProvidersMatchLiveRows(robot));
 
 	/* 批 1：删中间行 p1 → p0/p2 的提供者行号必须各前移一位 */
 	robot.applySql("DELETE FROM LifetimeProbe WHERE name = 'p1';\n");
-	TH_CHECK_MSG(robot.metaProvidersMatchLiveRows(), "批 1 后提供者与数据行失配");
+	TH_CHECK_MSG(metaProvidersMatchLiveRows(robot), "批 1 后提供者与数据行失配");
 	TH_CHECK(markerOf(m2) == "D" && markerOf(m1).empty() && markerOf(m3).empty());
 	TH_CHECK(robot.registry().contains("p0") && robot.registry().contains("p2"));
 
@@ -204,16 +231,16 @@ TH_TEST(robot_hot_delete_rebases_surviving_provider_rows) {
 	robot.applySql(
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p3', '" + m4.string() + "');\n"
 		"DELETE FROM LifetimeProbe WHERE name = 'p0';\n");
-	TH_CHECK_MSG(robot.metaProvidersMatchLiveRows(), "批 2 后提供者与数据行失配");
+	TH_CHECK_MSG(metaProvidersMatchLiveRows(robot), "批 2 后提供者与数据行失配");
 	TH_CHECK(markerOf(m1) == "D" && markerOf(m4).empty());
 	TH_CHECK(robot.registry().contains("p2") && robot.registry().contains("p3"));
 
 	/* 批 3：再删 p2——坐标链再走一步；结尾只剩 p3，收尾断电恰好一次 */
 	robot.applySql("DELETE FROM LifetimeProbe WHERE name = 'p2';\n");
-	TH_CHECK_MSG(robot.metaProvidersMatchLiveRows(), "批 3 后提供者与数据行失配");
+	TH_CHECK_MSG(metaProvidersMatchLiveRows(robot), "批 3 后提供者与数据行失配");
 	TH_CHECK(markerOf(m3) == "D");
 	TH_CHECK(robot.registry().contains("p3"));
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 2);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == 2);
 
 	robot.deactivate();
 	TH_CHECK(markerOf(m4) == "D");
@@ -250,7 +277,7 @@ TH_TEST(robot_hot_delete_rejects_a_variable_still_referenced_by_a_controller) {
 	/* 活体一字未动 */
 	TH_CHECK(robot.registry().contains("p0"));
 	TH_CHECK(markerOf(mp).empty());
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 2);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == 2);
 	robot.deactivate();
 }
 
@@ -381,7 +408,7 @@ TH_TEST(robot_hot_delete_removes_a_daemon_row_and_stops_its_thread) {
 	TH_CHECK_MSG(msg.find("已删除硬件变量 1 个（d0）") != std::string::npos, "实际: " + msg);
 	TH_CHECK(!robot.registry().contains("d0"));
 	/* 守护行没了，但同表的其它行（若有）与别的表一字不动 */
-	TH_CHECK(mt::findByName(robot.matrices(), "Daemon")->rows() == 1);
+	TH_CHECK(robot.structures().find( "Daemon")->rows() == 1);
 	TH_CHECK(robot.registry().contains("p0"));
 	/* 守护退场后 `deactivate` 不得因已摘除的守护出错，也不重复断电 */
 	robot.deactivate();
@@ -453,7 +480,7 @@ TH_TEST(robot_hot_delete_mixes_with_insert_in_one_batch) {
 	TH_CHECK(markerOf(oldM) == "D");	/* 删掉的当场断电 */
 	TH_CHECK(markerOf(newM).empty());	/* 新增的带电常驻，不落痕 */
 	/* 表内净行数不变（删 1 插 1），且 p1 补在被删的 p0 之后 */
-	const mt::MatrixObject* m = mt::findByName(robot.matrices(), "LifetimeProbe");
+	const mt::MatrixObject* m = robot.structures().find( "LifetimeProbe");
 	TH_CHECK(m != nullptr && m->rows() == 2);
 	TH_CHECK(fx::cell(*m, 1, 0) == "p1");
 	robot.deactivate();
@@ -482,7 +509,7 @@ TH_TEST(robot_hot_drop_removes_the_whole_table_and_powers_off_all_rows) {
 		"INSERT INTO Timer (name) VALUES ('t0');\n");
 	bot::RobotStruct robot(sr);
 	robot.active();
-	const std::size_t tablesBefore = robot.matrices().size();
+	const std::size_t tablesBefore = robot.structures().size();
 
 	const std::string msg = robot.applySql("DROP TABLE LifetimeProbe;\n");
 
@@ -490,12 +517,12 @@ TH_TEST(robot_hot_drop_removes_the_whole_table_and_powers_off_all_rows) {
 	TH_CHECK_MSG(markerOf(m1) == "D" && markerOf(m2) == "D",
 		"实际 m1=" + markerOf(m1) + " m2=" + markerOf(m2));
 	/* 表壳消失、变量与名字索引清空；无关的表与变量一字不动 */
-	TH_CHECK(robot.matrices().size() == tablesBefore - 1);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") == nullptr);
+	TH_CHECK(robot.structures().size() == tablesBefore - 1);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") == nullptr);
 	TH_CHECK(!robot.registry().contains("p0") && !robot.registry().contains("p1"));
-	TH_CHECK(!robot.declaresVariable("p0"));
+	TH_CHECK(!robot.structures().declaresVariable("p0"));
 	TH_CHECK(robot.registry().contains("t0"));
-	TH_CHECK(mt::findByName(robot.matrices(), "Timer") != nullptr);
+	TH_CHECK(robot.structures().find( "Timer") != nullptr);
 	/* 摘要如实报出撤下的表名 */
 	TH_CHECK_MSG(msg.find("已撤下表 1 张") != std::string::npos, "实际: " + msg);
 	TH_CHECK_MSG(msg.find("LifetimeProbe") != std::string::npos, "实际: " + msg);
@@ -525,12 +552,12 @@ TH_TEST(robot_hot_drop_is_unconditional_and_allows_an_empty_table) {
 	/* 空表：无条件撤下成功（不是 "no row matches" 之列） */
 	const std::string emptyMsg = robot.applySql("DROP TABLE Timer;\n");
 	TH_CHECK_MSG(emptyMsg.find("已撤下表 1 张") != std::string::npos, "实际: " + emptyMsg);
-	TH_CHECK(mt::findByName(robot.matrices(), "Timer") == nullptr);
+	TH_CHECK(robot.structures().find( "Timer") == nullptr);
 
 	/* 有数据的表：整表两行都当场断电 */
 	const std::string msg = robot.applySql("DROP TABLE LifetimeProbe;\n");
 	TH_CHECK_MSG(msg.find("已撤下表 1 张") != std::string::npos, "实际: " + msg);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") == nullptr);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") == nullptr);
 	TH_CHECK(robot.registry().byName().empty());
 	TH_CHECK(markerOf(m1) == "D" && markerOf(m2) == "D");
 
@@ -550,7 +577,7 @@ TH_TEST(robot_hot_drop_rejects_a_where_clause) {
 
 	const std::string err = hotSqlError(robot, "DROP TABLE LifetimeProbe WHERE name = 'p0';\n");
 	TH_CHECK_MSG(err.find("Token WHERE") != std::string::npos, "实际: " + err);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") != nullptr);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") != nullptr);
 	TH_CHECK(robot.registry().contains("p0"));
 	TH_CHECK(markerOf(marker).empty());
 
@@ -575,7 +602,7 @@ TH_TEST(robot_hot_drop_rejects_a_variable_still_referenced_by_another_table) {
 	const std::string err = hotSqlError(robot, "DROP TABLE LifetimeProbe;\n");
 	TH_CHECK_MSG(err.find("热删除被拒绝") != std::string::npos, "实际: " + err);
 	/* 活体一字未动：表在、变量在、器件未断电 */
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") != nullptr);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") != nullptr);
 	TH_CHECK(robot.registry().contains("p0"));
 	TH_CHECK(markerOf(mp).empty());
 
@@ -602,7 +629,7 @@ TH_TEST(robot_hot_drop_rebases_meta_providers_of_surviving_tables) {
 	robot.active();
 
 	robot.applySql("DROP TABLE dummy;\n");
-	TH_CHECK(mt::findByName(robot.matrices(), "dummy") == nullptr);
+	TH_CHECK(robot.structures().find( "dummy") == nullptr);
 	TH_CHECK(robot.registry().contains("p0"));
 
 	/* 读存活变量的元数据：走存活表（已被 rebase）的 MetaProvider */
@@ -641,7 +668,7 @@ TH_TEST(robot_hot_drop_of_a_table_created_in_the_same_batch_leaves_nothing) {
 	TH_CHECK_MSG(msg.find("新增硬件变量 0 个") != std::string::npos, "实际: " + msg);
 	TH_CHECK_MSG(msg.find("新增表") == std::string::npos, "实际: " + msg);
 	TH_CHECK(!robot.registry().contains("p9"));
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") == nullptr);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") == nullptr);
 	/* 从未装配 → 从未 build → 不留断电落痕 */
 	TH_CHECK_MSG(markerOf(marker).empty(), "未装配的表不该有断电落痕: " + markerOf(marker));
 	TH_CHECK(robot.registry().contains("t0"));
@@ -709,7 +736,7 @@ TH_TEST(robot_hot_drop_allows_recreating_a_table_with_the_same_name) {
 		"CREATE TABLE LifetimeProbe (name String, path String);\n"
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p1', '" + m2.string() + "');\n");
 	TH_CHECK_MSG(msg.find("新增表 1 张") != std::string::npos, "实际: " + msg);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") != nullptr);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") != nullptr);
 	TH_CHECK(robot.registry().contains("p1"));
 	TH_CHECK(markerOf(m2).empty());	/* 新器件带电常驻 */
 

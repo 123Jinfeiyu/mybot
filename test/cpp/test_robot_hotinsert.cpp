@@ -50,15 +50,15 @@ TH_TEST(robot_hot_sql_insert_into_an_existing_table_goes_live) {
 	bot::RobotStruct robot(sr);
 	robot.active();
 	TH_CHECK(robot.registry().contains("p0"));
-	const std::size_t tablesBefore = robot.matrices().size();
+	const std::size_t tablesBefore = robot.structures().size();
 	const std::size_t namesBefore = robot.registry().byName().size();
 
 	const std::string msg = robot.applySql(
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p1', '" + marker.string() + "');\n");
 
 	TH_CHECK(robot.registry().contains("p1"));
-	TH_CHECK(robot.declaresVariable("p1"));
-	TH_CHECK(robot.matrices().size() == tablesBefore);	/* 插行不新增表 */
+	TH_CHECK(robot.structures().declaresVariable("p1"));
+	TH_CHECK(robot.structures().size() == tablesBefore);	/* 插行不新增表 */
 	TH_CHECK(robot.registry().byName().size() == namesBefore + 1);
 	TH_CHECK(robot.registry().sequence().size() == namesBefore + 1);
 	TH_CHECK(msg.find("已生效：新增硬件变量 1 个") != std::string::npos);
@@ -81,15 +81,15 @@ TH_TEST(robot_hot_sql_create_table_assembles_a_new_hardware_variable) {
 		"INSERT INTO Timer (name) VALUES ('timer-0');\n");
 	bot::RobotStruct robot(sr);
 	robot.active();
-	const std::size_t tablesBefore = robot.matrices().size();
+	const std::size_t tablesBefore = robot.structures().size();
 
 	const std::string msg = robot.applySql(
 		"CREATE TABLE LifetimeProbe (name String, path String);\n"
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + marker.string() + "');\n");
 
-	TH_CHECK(robot.matrices().size() == tablesBefore + 1);
+	TH_CHECK(robot.structures().size() == tablesBefore + 1);
 	TH_CHECK(robot.registry().contains("p0"));
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") != nullptr);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") != nullptr);
 	TH_CHECK(msg.find("新增表 1 张") != std::string::npos);
 
 	robot.deactivate();
@@ -121,7 +121,7 @@ TH_TEST(robot_hot_sql_stages_tables_across_deque_chunk_boundary) {
 		"INSERT INTO Ema (name) VALUES ('ema0');\n");
 	bot::RobotStruct robot(sr);
 	robot.active();
-	TH_CHECK(robot.matrices().size() == 5);
+	TH_CHECK(robot.structures().size() == 5);
 	TH_CHECK(robot.registry().contains("timer-0"));
 	TH_CHECK(robot.registry().contains("ema0"));
 
@@ -129,26 +129,26 @@ TH_TEST(robot_hot_sql_stages_tables_across_deque_chunk_boundary) {
 	const std::string msg1 = robot.applySql(
 		"CREATE TABLE LifetimeProbe (name String, path String);\n"
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + marker.string() + "');\n");
-	TH_CHECK(robot.matrices().size() == 6);
+	TH_CHECK(robot.structures().size() == 6);
 	TH_CHECK(robot.registry().contains("p0"));
 	TH_CHECK(msg1.find("新增表 1 张") != std::string::npos);
 	TH_CHECK(markerOf(marker).empty());	/* 已 build、未 destroy */
 
 	/* 批 2：DROP 既存表——removeRowsOf 擦全部数据行（走表下标定位）+ 表壳摘除 */
 	const std::string msg2 = robot.applySql("DROP TABLE LifetimeProbe;\n");
-	TH_CHECK(robot.matrices().size() == 5);
+	TH_CHECK(robot.structures().size() == 5);
 	TH_CHECK(!robot.registry().contains("p0"));
 	TH_CHECK(msg2.find("已撤下表 1 张") != std::string::npos);
 	TH_CHECK(markerOf(marker) == "D");	/* p0 真的被断电 */
 
 	/* 批 3：本批 CREATE 后再 DROP——createdHere 整表擦除路径（第三处下标定位）。
 	 * 该表从未入活体，摘要不报「已撤下表」（那是活体表壳摘除的计数），但擦除
-	 * 必须精确——旧垃圾下标会 erase 错表，这里 matrices().size() == 5 即守门。 */
+	 * 必须精确——旧垃圾下标会 erase 错表，这里 structures().size() == 5 即守门。 */
 	const std::string msg3 = robot.applySql(
 		"CREATE TABLE LifetimeProbe (name String, path String);\n"
 		"DROP TABLE LifetimeProbe;\n");
-	TH_CHECK(robot.matrices().size() == 5);
-	TH_CHECK(!robot.declaresVariable("p1"));
+	TH_CHECK(robot.structures().size() == 5);
+	TH_CHECK(!robot.structures().declaresVariable("p1"));
 	TH_CHECK(msg3.find("新增硬件变量 0 个") != std::string::npos);
 
 	robot.deactivate();
@@ -164,9 +164,9 @@ TH_TEST(robot_hot_sql_rolls_back_when_power_on_is_interrupted) {
 	bot::MemoryReader sr(probeSql(marker));
 	bot::RobotStruct robot(sr);
 	robot.active();
-	const std::size_t tablesBefore = robot.matrices().size();
+	const std::size_t tablesBefore = robot.structures().size();
 	const std::size_t namesBefore = robot.registry().byName().size();
-	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "LifetimeProbe")->rows();
+	const std::size_t rowsBefore = robot.structures().find( "LifetimeProbe")->rows();
 
 	bot::stopRequested().store(true);
 	const std::string msg = hotSqlError(robot,
@@ -177,9 +177,9 @@ TH_TEST(robot_hot_sql_rolls_back_when_power_on_is_interrupted) {
 	TH_CHECK(!robot.registry().contains("p1"));
 	TH_CHECK(robot.registry().byName().size() == namesBefore);
 	TH_CHECK(robot.registry().sequence().size() == namesBefore);
-	TH_CHECK(robot.matrices().size() == tablesBefore);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == rowsBefore);
-	TH_CHECK(!robot.declaresVariable("p1"));
+	TH_CHECK(robot.structures().size() == tablesBefore);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == rowsBefore);
+	TH_CHECK(!robot.structures().declaresVariable("p1"));
 	TH_CHECK(markerOf(marker).empty());	/* 未 build 即中止：没有器件真的带电 */
 	robot.deactivate();
 }
@@ -194,8 +194,8 @@ TH_TEST(robot_hot_sql_rolls_back_and_disconnects_when_the_action_fails) {
 	bot::MemoryReader sr(probeSql(marker));
 	bot::RobotStruct robot(sr);
 	robot.active();
-	const std::size_t tablesBefore = robot.matrices().size();
-	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "LifetimeProbe")->rows();
+	const std::size_t tablesBefore = robot.structures().size();
+	const std::size_t rowsBefore = robot.structures().find( "LifetimeProbe")->rows();
 
 	/* 硬件全部上电之后才轮到 Action 派发：未声明的设备在这里才炸 */
 	const std::string msg = hotSqlError(robot,
@@ -206,9 +206,9 @@ TH_TEST(robot_hot_sql_rolls_back_and_disconnects_when_the_action_fails) {
 	TH_CHECK(msg.find("not defined in your hardware declaration section") != std::string::npos);
 	TH_CHECK(markerOf(marker) == "D");	/* 回滚断电：p1 已 build，destroy 落痕 */
 	TH_CHECK(!robot.registry().contains("p1"));
-	TH_CHECK(robot.matrices().size() == tablesBefore);	/* 瞬态 Action 表也不入列 */
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == rowsBefore);
-	TH_CHECK(!robot.declaresVariable("p1"));
+	TH_CHECK(robot.structures().size() == tablesBefore);	/* 瞬态 Action 表也不入列 */
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == rowsBefore);
+	TH_CHECK(!robot.structures().declaresVariable("p1"));
 	/* 活体未受损：既有 p0 照常断电（落痕与回滚那次各一次） */
 	robot.deactivate();
 	TH_CHECK(markerOf(marker) == "DD");
@@ -233,9 +233,9 @@ TH_TEST(robot_hot_sql_action_rows_run_once_and_are_discarded) {
 
 	TH_CHECK(robot.registry().contains("p0"));
 	TH_CHECK(!robot.registry().contains("Action"));
-	TH_CHECK(robot.matrices().size() == 1);		/* 只有 LifetimeProbe，没有 Action 表 */
-	TH_CHECK(mt::findByName(robot.matrices(), "Action") == nullptr);
-	TH_CHECK(!robot.declaresVariable("Action"));
+	TH_CHECK(robot.structures().size() == 1);		/* 只有 LifetimeProbe，没有 Action 表 */
+	TH_CHECK(robot.structures().find( "Action") == nullptr);
+	TH_CHECK(!robot.structures().declaresVariable("Action"));
 	TH_CHECK(msg.find("瞬态动作已执行 1 行（未注册，已丢弃）") != std::string::npos);
 
 	robot.deactivate();
@@ -252,13 +252,13 @@ TH_TEST(robot_hot_sql_rejects_a_duplicate_variable_name) {
 	bot::RobotStruct robot(sr);
 	robot.active();
 	const std::size_t namesBefore = robot.registry().byName().size();
-	const std::size_t rowsBefore = mt::findByName(robot.matrices(), "LifetimeProbe")->rows();
+	const std::size_t rowsBefore = robot.structures().find( "LifetimeProbe")->rows();
 
 	const std::string msg = hotSqlError(robot,
 		"INSERT INTO LifetimeProbe (name, path) VALUES ('p0', '" + marker.string() + "');\n");
 	TH_CHECK(msg.find("硬件变量名 'p0' 重复") != std::string::npos);
 	TH_CHECK(robot.registry().byName().size() == namesBefore);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == rowsBefore);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == rowsBefore);
 	TH_CHECK(markerOf(marker).empty());
 
 	/* 批内重名同样早报（两条 INSERT 抢同一个名字） */
@@ -292,7 +292,7 @@ TH_TEST(robot_hot_sql_rejects_unsafe_table_and_column_names) {
 	TH_CHECK(badCol.find("列名") != std::string::npos);
 	TH_CHECK(badCol.find("不是安全标识符") != std::string::npos);
 
-	TH_CHECK(robot.matrices().empty());	/* 两次都在活体之外被拒 */
+	TH_CHECK(robot.structures().empty());	/* 两次都在活体之外被拒 */
 	robot.deactivate();
 }
 
@@ -311,7 +311,7 @@ TH_TEST(robot_hot_sql_rejects_a_table_without_a_driver_module) {
 		"INSERT INTO NoSuchDriver9 (name) VALUES ('x0');\n");
 	TH_CHECK(msg.find("模块路径下找不到它") != std::string::npos);
 	TH_CHECK(msg.find("NoSuchDriver9") != std::string::npos);
-	TH_CHECK(robot.matrices().empty());
+	TH_CHECK(robot.structures().empty());
 	robot.deactivate();
 }
 
@@ -330,7 +330,7 @@ TH_TEST(robot_hot_sql_rejects_a_daemon_chunk_outside_the_module_path) {
 		"INSERT INTO Daemon (name, chunk, interval) VALUES ('d9', '/tmp/evil.lua', '10');\n");
 	TH_CHECK(msg.find("相对路径") != std::string::npos);
 	TH_CHECK(msg.find("/tmp/evil.lua") != std::string::npos);
-	TH_CHECK(robot.matrices().empty());
+	TH_CHECK(robot.structures().empty());
 	robot.deactivate();
 }
 
@@ -348,12 +348,12 @@ TH_TEST(robot_hot_sql_rejects_an_empty_batch_and_an_inactive_robot) {
 	const std::string notActive =
 		hotSqlError(robot, "INSERT INTO LifetimeProbe (name, path) VALUES ('p1', 'x');\n");
 	TH_CHECK(notActive.find("需要机器人已上电常驻") != std::string::npos);
-	TH_CHECK(!robot.declaresVariable("p1"));
+	TH_CHECK(!robot.structures().declaresVariable("p1"));
 
 	robot.active();
 	const std::string readOnly = hotSqlError(robot, "SELECT * FROM LifetimeProbe;\n");
 	TH_CHECK(readOnly.find("没有任何 CREATE/INSERT/DELETE/DROP/UPDATE 变更") != std::string::npos);
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe")->rows() == 2);
+	TH_CHECK(robot.structures().find( "LifetimeProbe")->rows() == 2);
 	robot.deactivate();
 }
 
@@ -369,14 +369,14 @@ TH_TEST(robot_hot_sql_keeps_element_references_stable_across_appends) {
 	bot::RobotStruct robot(sr);
 	robot.active();
 
-	const mt::MatrixObject* probe = mt::findByName(robot.matrices(), "LifetimeProbe");
+	const mt::MatrixObject* probe = robot.structures().find( "LifetimeProbe");
 	TH_CHECK(probe != nullptr && probe->rows() == 2);
 	const std::string* header = &(*probe)(std::size_t(0), std::size_t(0));
 
 	robot.applySql("CREATE TABLE Timer (name String);\n"
 		"INSERT INTO Timer (name) VALUES ('timer-0');\n");
 
-	TH_CHECK(mt::findByName(robot.matrices(), "LifetimeProbe") == probe);
+	TH_CHECK(robot.structures().find( "LifetimeProbe") == probe);
 	TH_CHECK(probe->rows() == 2);
 	TH_CHECK(&(*probe)(std::size_t(0), std::size_t(0)) == header);
 	TH_CHECK(*header == "name");

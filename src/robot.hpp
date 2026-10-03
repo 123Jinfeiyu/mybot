@@ -146,20 +146,14 @@ public:
 	/* agent 模式：只读硬件注册表视图（清单/种类），供工具输出与提示词使用 */
 	const HwRegistry& registry() const { return registry_; }
 
-	/* agent 模式：只读结构矩阵视图（声明序）。供 /sql 查询从原始矩阵取数渲染——
-	 * 与 registry()（装配后的硬件变量视图）互补：前者看结构脚本定义，后者看装配结果。 */
-	const std::deque<mt::MatrixObject>& matrices() const { return structures_.all(); }
-
-	/* agent 模式：结构脚本是否已声明名为 name 的变量。
-	 * 必须在 active() **之前**可判定，故直接扫矩阵表的 name 列，
-	 * 而不是查注册表（注册表要 active() 里 createHardVars 才装配）。 */
-	bool declaresVariable(const std::string& name) const;
-
-	/* 测试自检（2026-09-25 审计 A-4）：元数据登记表与活体结构一一对应——
-	 * 每个会装配 Lua 变量的数据行恰有一个提供者、每个提供者锚定一个范围内
-	 * 的真实数据行（multiset 比对，行号错位/摘错/漏摘都会失衡）。生产路径
-	 * 不调用；热删除 4.6.4 的 deadProvider 判据所声称的「精确」以此为准。 */
-	bool metaProvidersMatchLiveRows() const;
+	/* ---- 域门面只读访问器（2026-10-03 阶段 4）----
+	 * 跨域消费者一律经此处拿结构/元数据/守护三个域，不再穿透私有容器。结构与
+	 * 元数据两条视图互补——structures() 看结构脚本定义（声明序），registry()
+	 * 看装配结果；agent 的 /sql 查询从前者取数。写操作仍须经对应域的方法
+	 * （各域门面自持不变式），此处只读。 */
+	const StructureStore& structures() const { return structures_; }
+	const MetaRegistry& metas() const { return metas_; }
+	const DaemonRegistry& daemons() const { return daemons_; }
 
 	/* agent 模式：结构脚本未声明某个 Lua 驱动变量时注入一个（须在 active() 之前调用）。
 	 * LLM 协议驱动与摄像头驱动都走这里。
