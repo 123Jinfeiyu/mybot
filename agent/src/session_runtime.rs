@@ -5,14 +5,35 @@ use std::sync::Arc;
 use crate::bridge::Bridge;
 use crate::config::Config;
 use crate::hook::HookState;
+use crate::out::errln;
 use crate::prompt::PromptMaterial;
 use crate::provider;
-use crate::repl::{ResumeContext, SessionAssembly};
+use crate::repl::{self, ResumeContext, Session, SessionAssembly};
 use crate::session::SessionFileWriter;
 use crate::toolspec::ToolSpec;
 
 pub struct SessionParts {
     pub assembly: SessionAssembly,
+}
+
+pub async fn run_session(session: &mut Session, task: &str) -> i32 {
+    if task.is_empty() {
+        let rc = repl::run_repl(session).await;
+        session.write_session_end("end", "");
+        rc
+    } else {
+        match repl::run_task_once(session, task).await {
+            Ok(()) => {
+                session.write_session_end("end", "");
+                0
+            }
+            Err(e) => {
+                errln!("错误: {e}");
+                session.write_session_end("error", &e);
+                1
+            }
+        }
+    }
 }
 
 pub struct SessionRuntimeInput {

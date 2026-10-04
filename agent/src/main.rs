@@ -437,24 +437,7 @@ async fn run() -> i32 {
 
     let task = cli.task.clone();
     let mut session = Session::new(session_parts.assembly);
-    if task.is_empty() {
-        let rc = repl::run_repl(&mut session).await;
-        session.write_session_end("end", "");
-        rc
-    } else {
-        match repl::run_task_once(&mut session, &task).await {
-            Ok(()) => {
-                session.write_session_end("end", "");
-                0
-            }
-            Err(e) => {
-                errln!("错误: {e}");
-                // 失败也要留一条会话结束记录——「这次会话怎么结束的」是复盘的第一句话
-                session.write_session_end("error", &e);
-                1
-            }
-        }
-    }
+    session_runtime::run_session(&mut session, &task).await
 }
 
 /// 参数/配置错误的统一出口：stderr 报告 + 退出码 2（与 C++ agent 模式同口径）。
