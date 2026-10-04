@@ -29,6 +29,7 @@ mod prompt;
 mod protocol;
 mod provider;
 mod repl;
+mod runtime;
 mod session;
 mod session_store;
 mod signals;
@@ -38,7 +39,6 @@ mod toolspec;
 
 use std::sync::Arc;
 
-use crate::audit::AuditLog;
 use crate::bridge::Bridge;
 use crate::budget::TaskBudget;
 use crate::config::Config;
@@ -47,7 +47,7 @@ use crate::hook::HookState;
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::repl::Session;
-use crate::session::{SessionFileWriter, SessionHead};
+use crate::session::SessionHead;
 use crate::session_store::{SessionMode, SessionPlan};
 use crate::signals::install_signal_handlers;
 
@@ -381,49 +381,25 @@ async fn run() -> i32 {
         None => (Vec::new(), None, String::new(), false),
     };
 
-    // ---- 审计：在任何模型/工具调用**之前**打开（坏路径要在这里就失败：
-    //      「看起来在记、其实没记」比没有审计更糟）----
-    let mut audit = if cfg.audit_log.is_empty() {
-        None
-    } else {
-        match AuditLog::open(&cfg.audit_log) {
-            Ok(a) => Some(a),
-            Err(e) => {
-                errln!("错误: {e}");
-                return 2;
-            }
+    let audit = match runtime::open_audit(&cfg.audit_log, &resume_session_id) {
+        Ok(a) => a,
+        Err(e) => {
+            errln!("错误: {e}");
+            return 2;
         }
     };
-    // 采纳被恢复会话的原 session id（恢复前后的行能对上同一段对话），必须在
-    // 首行 start 写出前生效——此刻 `audit` 还没写过任何东西。
-    if let Some(a) = audit.as_mut() {
-        a.adopt_session_id(&resume_session_id);
-    }
 
-    // ---- 会话文件写入器（批次 D）：新段写会话头；续接则尾随追加不重写头 ----
-    // 缺省布局的新段由 session_store 以 O_EXCL 建好，这里按 `append` 打开即可。
-    let session_writer: Option<SessionFileWriter> = match plan.as_ref() {
-        None => None,
-        Some(p) => {
-            let mut w = SessionFileWriter::new();
-            if let Err(e) = w.open(&p.path, p.append) {
-                errln!("错误: {e}");
-                return 2;
-            }
-            if p.mode == SessionMode::New {
-                let sid = audit
-                    .as_ref()
-                    .map(|a| a.session_id().to_string())
-                    .unwrap_or_default();
-                w.write_header(&SessionHead {
-                    version: session::SESSION_FILE_VERSION,
-                    session_id: sid,
-                    robot: material.robot_name.clone(),
-                    tools_fp: session::tools_fingerprint(&tool_names),
-                    system_fp: crate::audit::fingerprint64(&preamble),
-                });
-            }
-            Some(w)
+    let session_writer = match runtime::open_session_writer(
+        plan.as_ref(),
+        audit.as_ref(),
+        &material,
+        &tool_names,
+        &preamble,
+    ) {
+        Ok(w) => w,
+        Err(e) => {
+            errln!("错误: {e}");
+            return 2;
         }
     };
 
