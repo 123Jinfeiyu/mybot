@@ -62,21 +62,19 @@ URL_PREFIXES = ("http://", "https://", "mailto:", "#")
 
 # 已知不存在、且**故意**不存在的引用。键是引用串，值是理由。
 # 分两类：
-#   * 历史记录：docs/changelog.md 是冻结的变更账本，它按定义要提到后来被删/改名的
-#     文件——把它们改成现名等于篡改历史；
+#   * 历史记录：正文明写「历史上」提到后来被删/改名的文件——把它们改成现名等于
+#     篡改历史；
 #   * 占位/示例：教程与查找顺序里写的假名（`modules/X.lua`），本来就不该存在。
 # 登记在这里的条目若**又存在了**（比如文件被加回来），本脚本也判失败：那时它不再是
 # 豁免，而说明这份名单过期了。
+# 2026-10-04：docs/changelog.md（冻结变更账本）整篇删除后，本表原「历史记录」类
+# 下七条——仅由该账本提及、仓内再无第二处引用的条目（LlmOpenAI.lua/
+# check_sim_action_table.py/src/lib.rs/test_sessionfile.cpp/dump_consts.lua/
+# test_llm_wire_contract.lua/robot.cpp）——随之失去唯一引用来源，按本脚本自身的
+# 「过期即删」判据一并清掉；不等价于重建 changelog。
 KNOWN_ABSENT = {
-    # —— 历史记录（changelog 冻结账本 + 明写「历史上」的正文）——
-    "modules/LlmOpenAI.lua": "历史：Lua 协议驱动轨道 2026-09-25 #8 删除，changelog 记录当时事实",
-    "scripts/check_sim_action_table.py": "历史：已更名 scripts/check_sim_contract.py，changelog 记录更名本身",
-    "src/lib.rs": "历史：反例引用（agent 是 bin-only crate，没有 src/lib.rs）",
-    "test/cpp/test_sessionfile.cpp": "历史：会话持久化用例已并入他处，changelog 记录当时文件名",
-    "test/dump_consts.lua": "历史：常量抽取改由 test/gen_const_check.cmake 在配置期做，该脚本已删",
-    "test/test_llm_wire_contract.lua": "历史：随 Lua 协议驱动轨道一并删除",
+    # —— 历史记录（正文明写「历史上」）——
     "src/luaend.cpp": "历史：development.md 明写「历史上」，N-17 拆成 luasandbox.cpp 等",
-    "src/robot.cpp": "历史：RobotStruct 门面 TU 已按职责拆成 robot_lifecycle/actions/driver/hotsql 四个 TU 并删除，changelog 记录当时的行数",
     # —— 占位 / 示例 ——
     "./mybot.llm.conf.json": "占位：agent.md 列的是配置文件**查找顺序**候选名，不是仓内文件",
     "modules/X.lua": "占位：development.md「新增驱动」教程里的假名",

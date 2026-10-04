@@ -440,7 +440,6 @@ bash test/run_all.sh agent-all
 | [测试手册](docs/testing.md) | 守门分段、ctest、sanitizer、覆盖率 |
 | [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
 | [FAQ](docs/faq.md) | 已知限制、排障问答 |
-| [更新日志](docs/changelog.md) | 版本演进与变更记录 |
 | [ICA 证据账本原型](docs/ica.md) | Rust agent 实验特性（BOT4CJ_ICA=1）的事实边界 |
 | [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图（**2026-09-25 快照，已冻结**：不含 sim/ 迁入、多机器人、`~/.mybot` 持久化、领域门面拆分） |
 | [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用（同上，2026-09-25 快照） |
@@ -570,7 +569,7 @@ cmake --build build-asan
 - 构建系统：`cjpm` → `cmake`
 - 修复原版问题：作用域收敛、SQL 校验加强
 
-> 「用法不变」≠「逐字节兼容」：移植时修复了若干旧版问题（详见 [docs/faq.md](docs/faq.md) 和 [docs/changelog.md](docs/changelog.md)）
+> 「用法不变」≠「逐字节兼容」：移植时修复了若干旧版问题（详见 [docs/faq.md](docs/faq.md)）
 
 ### 技术规格
 

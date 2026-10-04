@@ -167,7 +167,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
    - **R15 流式输出**（2026-09-25）：假服务按 `FAKE_LLM_FRAME_DELAY_MS=150` 逐帧发 SSE，stdout 经计时读端（记录首末字节间隔与 `read` 次数）证明缺省面逐 delta 到达（间隔 ≥ 0.5s、≥ 3 次 read）、思维链不进 stdout、请求体带 `stream:true`；`--llm-no-stream` 整段一次到齐（间隔 < 0.1s）且请求体不带 `stream:true`；两面 stdout 正文 `cmp` 逐字节一致；配置文件 `stream:false` 与缺省流式都在 `--check-config` 摘要「输出模式」行如实呈现。
    - **R14 无硬件闭环**：复用 `robots/test/mcp4725_virt.sql` 与 `scripts/test/mcp4725_virt.mt`，实际执行 `read_variables → run_action_script → read_variables`；假模型解析 DAC 回读，确认 `0 → 2048` 才给完成回答。反例改为写 25%（1024）：三次工具都执行成功，但回读不符必须让任务失败，不能凭调用次数谎报闭环完成。无需 shell 或真实 I2C。
    - **R16 终端面行编辑**（2026-09-25，rustyline）：其余场景都是管道面，本场景用 Python `pty` 把 stdin/stdout 都变成终端——`/he` Tab 补成 `/help`、提示符处 Ctrl-C 清行不退出、↑ 召回上一条、历史落到 `BOT4CJ_AGENT_HISTORY` 指定路径且文件 0600 / 目录 0700；模型轮进行中 Ctrl-C 仍走 SIGINT 取消路径（slow 剧本，优雅退出 0）；反证本次运行的管道面场景没有写缺省历史文件。
-   - 以上只验证本地协议与虚拟器件，不代表真实云端模型或真实硬件验收；协议族差异（OpenAI 兼容 / DeepSeek / Anthropic）由 R12/R13 在 Rust 侧收口。agent over TCP 远程 REPL 已评估**不做**（2026-09-25，见 `docs/changelog.md`）。
+   - 以上只验证本地协议与虚拟器件，不代表真实云端模型或真实硬件验收；协议族差异（OpenAI 兼容 / DeepSeek / Anthropic）由 R12/R13 在 Rust 侧收口。agent over TCP 远程 REPL 已评估**不做**（2026-09-25）。
 9. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 10. **输入边界加固**，覆盖：
    - `--tcp-host` 非法地址退出码 1、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限
