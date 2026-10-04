@@ -32,18 +32,17 @@ mod repl;
 mod session;
 mod session_store;
 mod signals;
+mod startup;
 mod summary;
 mod toolspec;
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::audit::AuditLog;
-use crate::bridge::{Bridge, ConnParams};
+use crate::bridge::Bridge;
 use crate::budget::TaskBudget;
 use crate::config::Config;
 use crate::config::SessionPathSource;
-use crate::frame::{BackendClient, HARD_READ_CEILING};
 use crate::hook::HookState;
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
@@ -51,14 +50,6 @@ use crate::repl::Session;
 use crate::session::{SessionFileWriter, SessionHead};
 use crate::session_store::{SessionMode, SessionPlan};
 use crate::signals::install_signal_handlers;
-use crate::toolspec::ToolSpec;
-
-/// 连接后端的预算：后端上电 + 装结构脚本可能耗时（与 MCP sidecar 时代同值）。
-const CONNECT_TIMEOUT_SEC: u64 = 120;
-
-/// **重连**预算（区别于启动期）：后端中途重启一般在秒级完成；重连快失败、
-/// 失败留给下一次调用再试，不长时间阻塞当次调用。
-const RECONNECT_TIMEOUT_SEC: u64 = 30;
 
 #[tokio::main]
 async fn main() {
@@ -330,7 +321,7 @@ async fn run() -> i32 {
         Ok(c) => c,
         Err(e) => return config_error(&e),
     };
-    if let Err(e) = load_prompt_pack(&mut cfg, &cli) {
+    if let Err(e) = startup::load_prompt_pack(&mut cfg, &cli) {
         return config_error(&e);
     }
     if cli.check_config {
@@ -364,14 +355,14 @@ async fn run() -> i32 {
     install_signal_handlers(Arc::clone(&state));
 
     // ---- 后端：连接 → 读超时装配 → 首帧认证（可选） → 工具表 → 提示词素材 ----
-    let assembly = match assemble_backend(&cfg, &state).await {
+    let assembly = match startup::assemble_backend(&cfg, &state).await {
         Ok(a) => a,
         Err((msg, code)) => {
             errln!("错误: {msg}");
             return code;
         }
     };
-    let BackendAssembly {
+    let startup::BackendAssembly {
         bridge,
         specs,
         tool_names,
@@ -493,105 +484,6 @@ async fn run() -> i32 {
 fn config_error(msg: &str) -> i32 {
     errln!("错误: {msg}");
     2
-}
-
-/// 后端连接 + 提示词素材装配的产物（`assemble_backend` 的返回值）。
-struct BackendAssembly {
-    bridge: Arc<Bridge>,
-    specs: Vec<ToolSpec>,
-    tool_names: Vec<String>,
-    material: PromptMaterial,
-    preamble: String,
-}
-
-/// 后端连接与提示词素材装配（run() 的中段，2026-10-01 拆出）。原 run() 这一段
-/// 有 9 个「errln! + return 1|2」出口，与开头的配置出口交织成 12 处——
-/// 收敛为 `Err((消息, 退出码))` 后 run() 只剩一条出口。退出码口径逐字保持：
-/// 连接与传输失败 = 1；提示词素材/系统提示词超限等配置类 = 2。
-async fn assemble_backend(
-    cfg: &Config,
-    state: &Arc<HookState>,
-) -> Result<BackendAssembly, (String, i32)> {
-    let mut client =
-        BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
-            .await
-            .map_err(|e| (format!("无法连接后端 socket: {e}"), 1))?;
-    // 读侧 deadline = 轮墙钟预算（--llm-task-timeout / max_task_seconds）：预算由此
-    // 贯穿到工具调用内部（此前只判模型调用边界，后端活着但不回帧时无限挂起，
-    // 2026-09-30 审计 P1）。0 = 不限 → 用 frame 的兜底上限。
-    let read_timeout = if cfg.max_task_seconds > 0 {
-        Duration::from_secs(cfg.max_task_seconds as u64)
-    } else {
-        HARD_READ_CEILING
-    };
-    client.set_read_timeout(read_timeout);
-    // MCP-1（审计 P2-1）：后端设了 BOT4CJ_MCP_TOKEN 时，第一条帧必须是共享密钥
-    // 认证。与 C++ 宿主读取同一个环境变量名（宿主在抹零前捕获，本进程在
-    // prctl 收窄 /proc 下读取之后、此处第一次也是唯一一次读）。
-    let mcp_token = std::env::var("BOT4CJ_MCP_TOKEN")
-        .ok()
-        .filter(|t| !t.is_empty());
-    if let Some(token) = &mcp_token {
-        client
-            .authenticate(token)
-            .await
-            .map_err(|e| (e.to_string(), 1))?;
-    }
-    // 重连参数（连接判死后的下一次调用透明重连，见 bridge::Conn）：
-    let conn_params = ConnParams {
-        path: cfg.socket.clone(),
-        token: mcp_token,
-        connect_timeout: Duration::from_secs(RECONNECT_TIMEOUT_SEC),
-        read_timeout,
-    };
-    let bridge = Arc::new(Bridge::new(client, conn_params, Arc::clone(state)));
-    let specs = bridge
-        .list_tools()
-        .await
-        .map_err(|e| (format!("取后端工具表失败: {e}"), 1))?;
-    let tool_names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
-    let data = bridge
-        .context_get()
-        .await
-        .map_err(|e| (format!("取后端上下文失败: {e}"), 1))?;
-    let material = PromptMaterial::from_context(&data)
-        // 退出码 2：与下方 build_system_prompt 的超限同属「提示词素材不
-        // 合格」一类（口径：配置/素材错误 = 2；连接与传输失败 = 1）
-        .map_err(|e| (e.to_string(), 2))?;
-    let mut preamble =
-        prompt::build_system_prompt(&cfg.driver, &cfg.llm_var, &cfg.prompt_pack, &material)
-            .map_err(|e| (e.to_string(), 2))?;
-    if bridge.ica.enabled() {
-        preamble.push_str(ica::preamble_section());
-        if preamble.len() > 65_536 {
-            return Err(("开启 ICA 后系统提示词超过 65536 字节上限".to_string(), 2));
-        }
-    }
-    Ok(BackendAssembly {
-        bridge,
-        specs,
-        tool_names,
-        material,
-        preamble,
-    })
-}
-
-/// 提示词包：加载 + H2 根约束。
-///
-/// 根约束**只对配置文件来源的路径**生效（命令行 `--prompt-file` 是操作者本人授意，
-/// 不受限）——理由见 prompt.rs：配置文件来源的路径若不受限，一份落在工作目录的
-/// 配置文件就成了一条「读任意文件并外发」的链路。
-fn load_prompt_pack(cfg: &mut Config, cli: &config::Cli) -> Result<(), String> {
-    if cfg.prompt_files.is_empty() {
-        return Ok(());
-    }
-    if cli.prompt_files.is_empty() {
-        let mut roots = vec![".".to_string()];
-        roots.extend(prompt::prompt_roots_from_env());
-        prompt::prompt_paths_within_roots(&cfg.prompt_files, &roots)?;
-    }
-    cfg.prompt_pack = prompt::load_prompt_pack(&cfg.prompt_files)?;
-    Ok(())
 }
 
 #[cfg(test)]
