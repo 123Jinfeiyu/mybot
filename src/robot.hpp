@@ -14,11 +14,8 @@
  * 只需局部类型的 TU 改包含对应窄头；RobotStruct 的消费者仍只包含本头。 */
 
 #include <cstdint>
-#include <deque>
 #include <map>
-#include <memory>
 #include <string>
-#include <vector>
 
 #include "action_runner.hpp"
 #include "daemon_registry.hpp"
