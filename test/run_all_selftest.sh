@@ -10,8 +10,9 @@
 # 排在全量守门之前。两类，按段号分：
 #   1–7  守门自身的可信度（脚本语法、用例是否真被 glob/编译收集、计数文案是否有出处、
 #        用例表条数检查点、TSan 名单与 params 常量单点）；
-#   8–11 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
-#        文档引用与计数、模型配置字段白名单）——全部零编译，理由见第 8 段。
+#   8–12 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
+#        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据）——全部零编译，
+#        理由见第 8 段。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -157,17 +158,26 @@ EOF
 #     KNOWN_UNPARSED_FIELDS。两端读同一份 mybot.llm.json，任一侧漏登记一个字段，
 #     那一侧就把操作者的合法配置判成「未知字段」拒读——两侧单测各验自己那份，
 #     谁也发现不了对侧漏改，故在此零编译比对。
+# 12) 有状态 LLM 协议判据的双端同集合：Rust `agent/src/session.rs` 的
+#     `protocol_violation`（`--resume` 恢复会话前的最后一道判据）vs Python
+#     `scripts/fake_llm_server.py` 的 `protocol_error`（假模型服务与真网关一样严）。
+#     两份各有一套单测，却没有一道守门比对**判据集本身**：夹具少一条判据时，产线会
+#     拒的历史在离线守门里照常全绿——正是夹具文档点名的「溜到真机才暴露」。脚本另钉
+#     产线判据条数与判据锚点（产线加/删判据必须同步用例表），并逐条断言拒因归属。
+#     C++ 侧不参与（不解析模型历史，如实差异见脚本头）。
 if command -v python3 >/dev/null 2>&1; then
 	python3 scripts/check_doc_paths.py \
 		|| note "scripts/check_doc_paths.py 发现文档与仓库实况不一致（详见上方输出）"
 	python3 scripts/check_llm_field_whitelist.py \
 		|| note "scripts/check_llm_field_whitelist.py 发现配置字段白名单双端不一致（详见上方输出）"
+	python3 scripts/check_stateful_protocol.py \
+		|| note "scripts/check_stateful_protocol.py 发现有状态协议判据双端不一致（详见上方输出）"
 else
-	note "缺 python3，无法跑 scripts/check_doc_paths.py 与 scripts/check_llm_field_whitelist.py（文档一致性与配置白名单未受检查）"
+	note "缺 python3，无法跑 scripts/check_doc_paths.py、scripts/check_llm_field_whitelist.py 与 scripts/check_stateful_protocol.py（文档一致性/配置白名单/有状态协议判据未受检查）"
 fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端）"

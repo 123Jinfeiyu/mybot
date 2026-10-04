@@ -9,6 +9,26 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 跨源守门第 12 段：有状态 LLM 协议判据双端互钉
+
+- **新增第 12 段**（`scripts/check_stateful_protocol.py`，零编译）：模型服务端对**会话
+  历史**的状态性要求（工具调用 id 必须在 assistant 声明与 tool 回执之间一一配对、
+  DeepSeek 思考模式下带 `tool_calls` 的历史必须带 `reasoning_content`）在仓里手写两份
+  ——Rust `agent/src/session.rs::protocol_violation`（`--resume` 恢复会话前最后一道判据）
+  与 Python `scripts/fake_llm_server.py::protocol_error`（让假模型服务与真网关一样严）。
+  两份各有一套单测，却**没有任何守门比对两份判据集**：夹具少一条判据时，产线会拒的
+  历史在离线守门里照常全绿。脚本钉产线判据点条数与判据锚点（产线加/删判据必须同步
+  用例表；反向验证过：临时插一条 `return Some(format!(...))` 即失败），并用 8 条用例
+  （报文为 wire 形态）逐条验夹具的拒因归属。守门自检 **11 段 → 12 段**，仍不进
+  `run_all.sh` 的记账，故「守门用例」汇总数不变。
+- **夹具对齐产线**（`scripts/fake_llm_server.py`）：`protocol_error` 此前接受**空字符串**
+  的 `tool_call_id`（assistant 声明侧与 tool 回执侧都放行），而 Rust 产线判据拒空 id
+  ——新守门第一次运行就把这条差异报了出来（夹具比真机宽松，正是它文档里点名的
+  「溜到真机才暴露」）。夹具现按真机口径拒空 id，两侧拒因各自可辨。
+- **C++ 侧不参与**（如实差异）：宿主不解析模型历史，这套判据由 agent 一侧承担；两条
+  夹具独有规则（DeepSeek 的 `reasoning_content`、`tool_call_id` 非字符串）在脚本的
+  `FIXTURE_ONLY_RULES` 里逐条登记理由——差异是记录在案的，不是沉默的。
+
 ### 2026-10-04 第三轮结构重构收官：本轮前后对照
 
 - **范围与账**：Phase 16–22（基线核查 / 守门可信度 / 跨源一致性守门 / C++ 残留结构 /

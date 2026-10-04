@@ -11,7 +11,7 @@
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
 | `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
-| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 11 段：用例是否真被收集/编译 + 四组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
+| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 12 段：用例是否真被收集/编译 + 五组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
 | `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
 | `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh`，缺产物/依赖或超时即失败，`agent-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响 |
 | `gate:tsan` | 硬 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
@@ -228,10 +228,10 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
 时才会触发；主干这几道是**独立实现**、不共享代码——共享实现等于共享同一个错误，两侧
 一起改错就一起绿。
 
-`run_all_selftest.sh` 现有 11 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
+`run_all_selftest.sh` 现有 12 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
 是否登记进 `CMakeLists.txt`、`test/*.lua` 是否匹配两侧 glob、`count_calls` 的「N 条用例」
 文案是否真数得到调用点、两张用例表的条数检查点、TSan 名单单点、`test/lib/params.sh`
-常量单点），8–11 是跨源比对：
+常量单点），8–12 是跨源比对：
 
 8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
    （`sim/src/action_table.cpp` 的 `kActions[]` vs `modules/Sim.lua` 的
@@ -258,6 +258,17 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
     「未知字段」拒读；两侧单测各验自己那份，谁也发现不了对侧漏改。脚本另钉三条：两份
     Rust 名单互不重叠、各名单内部无重复、抽取自检（块里任何形状的字符串字面量数 ==
     抽到的名字数，防「两侧都读空 → 相等」的假绿）。
+12. **有状态 LLM 协议判据双端同集合**（`scripts/check_stateful_protocol.py`）：Rust
+    `agent/src/session.rs` 的 `protocol_violation`（`--resume` 恢复会话前最后一道判据）
+    vs Python `scripts/fake_llm_server.py` 的 `protocol_error`（让假模型服务与真网关
+    一样严）。两份各有一套单测——Rust 的 `protocol_violation_flags_orphans_duplicates_and_missing`、
+    `agent_e2e.sh` 末尾对真实请求的变异——但没有一道守门比对**判据集本身**：夹具少一条
+    判据时，产线会拒的历史在离线守门里照常全绿。脚本钉四件事：产线判据点条数 == 登记
+    规则数（加/删判据必须同步用例表，反向验证过：临时加一条 `return Some(format!(...))`
+    即失败）、每条规则的判据锚点仍在、用例表逐条喂给 `protocol_error`（`runpy` 加载，
+    不起服务）且拒因必须含该规则的特征片段、产线每条规则都至少有一条用例。**C++ 侧不
+    参与**（宿主不解析模型历史，判据由 agent 一侧守）；两条夹具独有规则（DeepSeek 的
+    `reasoning_content`、`tool_call_id` 类型）在表里逐条登记理由，差异是记录在案的。
 
 ### 四处套件的计数口径
 

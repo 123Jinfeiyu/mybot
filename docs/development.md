@@ -57,12 +57,13 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 1. **提交信息校验**（快、先跑）：对 `@{push}..HEAD` 的每个非 merge 提交检查 subject
    非空、长度 ≥ 10、带类型前缀（规范见上节）。远端分支无 `@{push}` 时（如推送新分支）跳过校验
-2. **守门自检**（`bash test/run_all_selftest.sh`，快，11 段）：两类机械判定——
+2. **守门自检**（`bash test/run_all_selftest.sh`，快，12 段）：两类机械判定——
    ① 守门自身的可信度（`bash -n` 语法、每个 `test/cpp/*.cpp` 是否登记进 `CMakeLists.txt`、
    `test/*.lua` 命名是否匹配两侧 glob、`count_calls` 的「N 条用例」文案是否真数得到调用点、
    两张用例表的条数检查点、TSan 名单与 `test/lib/params.sh` 的常量单点）；
-   ② 四组**零编译跨源一致性**校验（仿真器契约、状态目录缺省名、文档引用与计数、
-   模型配置字段白名单双端同集合；明细见 [testing.md](testing.md)「跨源一致性校验」）——
+   ② 五组**零编译跨源一致性**校验（仿真器契约、状态目录缺省名、文档引用与计数、
+   模型配置字段白名单双端同集合、有状态 LLM 协议判据双端同集合；明细见
+   [testing.md](testing.md)「跨源一致性校验」）——
    这些是「用例静默消失 / 双事实源漏改」的唯一机械防线；它**不进入** `run_all.sh`
    的记账，守门汇总口径不变
 3. **离线守门**：`bash test/run_all.sh`

@@ -74,6 +74,7 @@ KNOWN_ABSENT = {
     "test/dump_consts.lua": "历史：常量抽取改由 test/gen_const_check.cmake 在配置期做，该脚本已删",
     "test/test_llm_wire_contract.lua": "历史：随 Lua 协议驱动轨道一并删除",
     "src/luaend.cpp": "历史：development.md 明写「历史上」，N-17 拆成 luasandbox.cpp 等",
+    "src/robot.cpp": "历史：RobotStruct 门面 TU 已按职责拆成 robot_lifecycle/actions/driver/hotsql 四个 TU 并删除，changelog 记录当时的行数",
     # —— 占位 / 示例 ——
     "./mybot.llm.conf.json": "占位：agent.md 列的是配置文件**查找顺序**候选名，不是仓内文件",
     "modules/X.lua": "占位：development.md「新增驱动」教程里的假名",

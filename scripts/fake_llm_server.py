@@ -231,7 +231,10 @@ def protocol_error(request):
          用「请求中出现过」作开关而不是无条件要求：OpenAI 兼容驱动压根不认识这个
          字段，无条件要求会把合法请求判死。
       ③ tool_call_id 必须与 assistant.tool_calls 一一配对 —— 孤儿 tool 消息、
-         重复回传、或漏回传某个 tool_call，真机都是 400。
+         重复回传、或漏回传某个 tool_call，真机都是 400。**id 还得非空**：
+         空 id 配不上任何声明，真机同样 400（Rust 产线判据
+         `agent/src/session.rs::protocol_violation` 也拒空 id；两侧规则集由
+         `scripts/check_stateful_protocol.py` 零编译互钉）。
     """
     messages = request.get("messages")
     if not isinstance(messages, list):
@@ -271,6 +274,8 @@ def protocol_error(request):
         for tc in tcs:
             if not isinstance(tc, dict) or not isinstance(tc.get("id"), str):
                 return "assistant.tool_calls[].id must be a string"
+            if not tc["id"]:
+                return "assistant.tool_calls[].id must be a non-empty string"
             declared.append(tc["id"])
 
     answered = []
@@ -280,6 +285,8 @@ def protocol_error(request):
         tcid = m.get("tool_call_id")
         if not isinstance(tcid, str):
             return "messages[%d]: tool message requires a string tool_call_id" % i
+        if not tcid:
+            return "messages[%d]: tool message has an empty tool_call_id" % i
         if tcid not in declared:
             return ("messages[%d]: tool_call_id %r does not match any assistant "
                     "tool_call" % (i, tcid))
