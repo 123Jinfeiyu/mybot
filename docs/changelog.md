@@ -9,6 +9,95 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 第三轮结构重构收官：本轮前后对照
+
+- **范围与账**：Phase 16–22（基线核查 / 守门可信度 / 跨源一致性守门 / C++ 残留结构 /
+  Rust 残留结构 / sim 内部结构 / 文档与计数校准）。基线 `b442c6c`（2026-10-03）到本轮
+  末尾共 **24 个提交、77 个文件、+5713/−2639**。全程行为保持：sim 线上协议、三条 socket
+  缺省路径、动作码 0–10、场景文件格式、MCP 线协议字节、SQL 语法与退出码均未动。
+- **守门段数**：`test/run_all_selftest.sh` **8 段 → 11 段**（新增第 9 段状态目录取值链的
+  三处拼法、第 10 段文档与仓库实况、第 11 段配置字段白名单双端）。该脚本在 `gate:release`
+  里跑在 `run_all.sh` **之前**、且不进它的记账，故「271 道守门用例」这个口径本轮未变。
+- **跨源零编译校验**：**1 个脚本 1 组契约 → 3 个脚本 9 组**，加第 9 段的内联核对共 10 组。
+  `check_sim_contract.py` 4 组（动作码表 / 三条 socket 缺省路径 / 一问一答桥请求关键字 /
+  默认场景的内置回落↔播种模板）、`check_doc_paths.py` 4 组（路径引用逐个实测 / `drivers.md`
+  模块清单与 `ls modules/*.lua` 双向相等 / 计数口径算术自洽 / 文档全部挂上索引）、
+  `check_llm_field_whitelist.py` 1 组（C++ `kKnown` ≡ Rust 解析 25 + 只登记 14）。
+  选零编译而不是给 `sim/` 挂一个 CI 构建 job 的理由见 `docs/testing.md`「跨源一致性校验」。
+- **最大文件排行**（本轮唯一有大文件的地方是 `sim/`）：`sim/src/world.cpp` **633 → 306 行**
+  （2D 有向盒几何抽 `obb2d.cpp`、场景读写抽 `scene_io.cpp`）；`sim/tests/main.cpp` 拆分前
+  **1621 行 / 25 个套件 → 51 行名册 + 按域 8 个 TU**（最大的 `test_world.cpp` 410 行）。
+  `src/` 与 `agent/src/` 的最大文件本轮**未变**（`src/sqlparse.cpp` 593、
+  `agent/src/session.rs` 1289）——上一轮已拆过，本轮在这两处做的是包含面收窄
+  （`scriptlimit.hpp` / `daemonconf.hpp`）与补测，不是再拆。
+- **构建墙钟**：同机 `-j20` 全新配置 + 构建（Release、无缓存，不含 Rust agent 与 `sim/`）
+  基线 **17s** → 本轮 **20s**（两次全新构建分别 23s / 20s，取较快那次）。涨幅来自构建出的
+  目标文件数 **140 → 143**（`test/cpp` 多了三个门面单测 TU），不是生产代码变大。
+- **用例计数**（三处独立套件，口径与复算式见 `docs/testing.md`「四处套件的计数口径」）：
+  C++ `mybot_tests` **619 → 649**（`test/cpp` 里 `TH_TEST(` 的静态计数 633 → 663，减去
+  1 处宏定义与 `harness_selftest.cpp` 的 13 条）；Rust `cargo test` **134 → 148**（`#[test]`/
+  `#[tokio::test]` 的静态计数与实跑数一致）；`sim_tests` **381 → 387**（按域拆分前后逐条相同，
+  增量来自 `place` 失败原因三态）。`test/cpp/test_*.cpp` 文件数 35 → 38。
+- **本轮出界与冻结**：孪生驱动收敛（`ADS1015`/`ADS1115` 一类同族器件的重复实现）按用户
+  判定继续出界，`docs/drivers.md` 的「收敛豁免清单」维持原状；`docs/architecture_analysis.html`
+  与两张 SVG 冻结为 2026-09-25 快照（只加声明、不重写），权威口径一律以 `docs/*.md` 为准。
+
+### 2026-10-04 文档计数校准到实测值，架构网页与两张图冻结为快照
+
+- **改了什么**：README 与 `docs/` 里的手写计数全部按实测更新（模块 58→59、`modules/lib`
+  21→23、机器人 8→9、动作脚本 35→50、Lua 测试 86→87、docs 12→14、C++ 单测文件 25→38，
+  「600+ 个 C++ 单测」这个模糊数改成实测 649），并在结构树后补一段**派生口径**：每个数字
+  都给出可复算的 `ls | wc -l` 命令，下一轮改完文件用命令复核，而不是再猜一遍。项目结构树
+  此前完全没有 `sim/`，现补上整棵子树与 `modules/Sim.lua`；文档索引补 `docs/sim.md`。
+- **架构页冻结**：`docs/architecture_analysis.html` 与 `architecture_layers.svg` /
+  `architecture_dataflow.svg` 是 2026-09-25 的快照，此后 sim/ 迁入、多机器人、`~/.mybot`
+  持久化、领域门面拆分四件事都没反映。**只加声明、不重写**：网页顶部加冻结声明（HTML 注释
+  + 可见横幅，写明快照日期与这四项）、两张 SVG 各加一行快照日期文字。
+- **为什么不顺手改数字**：那页的正文叙述与两图的框、箭头都是按当时的形态画的，只改 hero 区
+  的数字会让页面自相矛盾（数字说 59 个模块、图里没有 sim 那一块）。冻结 + 指向权威文档，
+  比半改一遍诚实。
+- **`docs/reference.md` 环境变量表补 4 行**：`MYBOT_SIM_SOCK` / `MYBOT_SIM_CAPTURE_SOCK` /
+  `MYBOT_SIM_SENSOR_SOCK` / `MYBOT_SIM_SCENE`。此前只有 `docs/sim.md` 讲过，而 sim 的取值链
+  （`argv[i]` > env > 缺省）与多机器人的 socket 派生规则（robot 0 字节不变、robot i>0 在
+  `.sock` 前插 `-i`）在 reference 里查不到。`MYBOT_SIM_SCENE` 那行同时写明「裸名需要模板，
+  取不到模板会静默退回内置场景且场景路径为空，于是 `S`/`save`/退出保存全部 no-op」——这条
+  此前只存在于 sim 的日志文案里。
+- **`docs/agent.md` 三处旧路径**：`KNOWN_FIELDS` → `agent/src/config/file.rs` 的
+  `PARSED_FIELD_NAMES`（由 `parsed_fields!` 宏表展开）+ `KNOWN_UNPARSED_FIELDS`；
+  `config.rs` → `agent/src/config/`（环境变量链在 `mod.rs`，文件内联与 `api_key*` 在
+  `file.rs`）；`repl.rs` → `repl/mod.rs`，并给出 `find agent/src -name '*.rs' | wc -l` 口径。
+- **`docs/drivers.md` 计数口径修正 + 补一个漏登记的驱动**：58 未含 `modules/Sim.lua`，改为
+  59 = 48 器件 + 3 总线 + 8 框架/工具；`modules/lib` 21 → 23（含 `virtbus/regmap.lua`）。
+  `Sim` 驱动的表行此前**从未存在**——它是由同日新增守门的「双向相等」检查抓出来的（见下条）。
+
+### 2026-10-04 跨源一致性：文档与仓库实况、配置字段白名单各加一组零编译守门
+
+- **`scripts/check_doc_paths.py`（新）**：计数与路径改完只是「今天对」，没有任何东西阻止它们
+  明天再过期。新脚本零编译核对四组：① 全部 docs 里的路径引用逐个实测存在（342 条）；
+  ② `docs/drivers.md` 各节点名的模块集合与 `ls modules/*.lua` **双向**相等；③ 计数口径那串
+  算式自洽（59 = 48+3+8、lib 23）；④ 每篇 `docs/*.md` 都挂在 README 或 `docs/README.md`
+  的索引上。
+- **路径解析规则是踩出来的**：markdown 链接按**文档所在目录**解析、反引号代码段按**仓库根**
+  解析。两种混着解析会产生数百条假阳性（首轮原型报 241–756 条），分成两套规则后只剩 12 条
+  真缺失，且全部可归类：7 条历史引用（已删的 Lua 协议驱动、已改名或合并的脚本与测试）+
+  5 条占位示例（`modules/X.lua`、`robots/xxx.sql` 这类）。12 条各带**写明理由**的豁免登记在
+  脚本里，脚本还会反向报告「豁免已失效」（对应路径又出现了）——豁免表不会静默烂成死名单。
+  这条审计因此从一次性核对变成了常设守门。
+- **`scripts/check_llm_field_whitelist.py`（新）**：模型配置字段的白名单在 C++
+  `src/llmconfig.cpp`（`kKnown`）与 Rust `agent/src/config/file.rs`（`parsed_fields!` 宏表
+  展开的 `PARSED_FIELD_NAMES` + `KNOWN_UNPARSED_FIELDS`）各手写一份，`docs/agent.md` 声称
+  两者同集合却没有任何测试钉住。现按纯文本解析双侧、断言**双向**相等，并自检「两个 Rust
+  名单不重叠、无重复」；另加一道抽取自检（用宽松的字符串字面量正则数一遍、与识别到的字段数
+  比对），防止正则写窄之后「两侧都抽到 0 个、于是相等」这种自证式绿。
+- **接进守门**：两个脚本挂在 `test/run_all_selftest.sh` 第 10、11 段（`gate:release` 与
+  pre-push 都跑），缺 `python3` 时**判失败**而不是跳过——跳过会让这两组静默失效。反向验证
+  逐个做过：删掉一条模块表行、把一个计数改错、从两处索引同时摘掉一篇文档、在 C++ 侧加一个
+  Rust 没有的字段、在 Rust 侧加一个怪键，五种破坏各自让对应脚本变红并指出具体位置，还原后
+  复绿。
+- **对使用者意味着什么**：行为零变化（纯守门）。此前「文档说 58 个模块、目录里其实 59 个」
+  与「配置字段白名单两端漂移」都不会有任何一侧报错——前者只是读文档的人被误导，后者会让
+  一个字段在其中一端被静默忽略。
+
 ### 2026-10-04 仿真器内部结构治理（行为保持）
 
 - **2D 有向盒几何抽成 `sim/src/obb2d.{h,cpp}`（入 simcore，可 headless 单测）**：原先
@@ -371,6 +460,35 @@
   CI 机器慢，本地 90 实测够用）；环境隔离的单点在脚本自身，CI 命令前那个
   `BOT4CJ_LLM_CONFIG=none` 只是冗余保险。两处都补了注释，免得后来者「顺手统一」改错一边。
 
+### 2026-10-03 守门可信度：仿真器动作码表的一致性不再需要构建 sim/ 才检查
+
+- **改了什么**：新增 `scripts/check_sim_action_table.py`——纯文本解析 `sim/src/action_table.cpp`
+  的 `kActions[]` 与 `modules/Sim.lua` 的 `CODES`/`PARAM_CODES`/`PARAM2_CODES`/`CODE_MAX`，
+  比对两侧动作码表，接进 `test/run_all_selftest.sh`（pre-push 与 CI `gate:release` 都跑）。
+- **为什么**：`sim/tests` 里本来就有 `testActionTable` 做同一件事的运行期交叉校验，但 `sim/`
+  不在任何 CI job 的构建范围内（CI 镜像无 GL/X11、musl 也建不了 GLFW，见 `sim/CMakeLists.txt`
+  顶部注释），那份校验只在开发者**手动**跑 `build_sim.sh` 时才触发——等于一张从未被强制执行过
+  的安全网。下沉成零编译脚本后，「加了动作只改 C++ 表、忘了改 Lua」在 push 前就红。
+- **两套实现刻意不共享代码**：脚本与 `sim/tests/test_contract.cpp` 各写一份解析（连「取平衡
+  花括号块」的算法都各自独立实现一遍）——共享实现等于共享同一个错误，两份独立实现才能互相
+  印证。用故意制造的漂移样本验证过脚本确实检得出。
+- **对使用者意味着什么**：线协议、动作码 0–10、三条 socket 路径全不变（纯守门）。该脚本
+  次日更名为 `check_sim_contract.py` 并从 1 组契约扩到 4 组。
+
+### 2026-10-03 仿真器拾放：不安全的状态改判失败，不再静默把场景改坏
+
+- **`pick()` 拒绝抽取被压住的下层**：目标箱上方若贴着另一只箱子（`kGroundSnapTol` 容差 +
+  XZ 重叠，只搭边角也算），拾取直接失败。此前会把下层抽走、上层留在原地——静态箱没有重力，
+  画面上就是一只箱子凭空悬着。
+- **`place()` 先在局部副本上解算，写回前做一次事实性 3D 重叠校验**：几何不可行（累计推出
+  距离超过新增的 `kMaxPlacePush` 上限、或兜底后仍重叠）时返回 `false`，**物体保留搬运状态、
+  场景一字不改**，而不是硬塞一个可能重叠的结果。
+- **回归验证抓到一个真 bug**：12 道链式薄墙的场景在旧实现下会悄悄产生一个真实的几何重叠却
+  返回成功——新增的最终校验修的是这个潜伏问题，不只是加固。
+- **对使用者意味着什么**：`.mt` 动作码、线上语法、场景文件格式不变。行为变化只有一处：
+  以前「报成功但世界坏了」的两种情形现在如实报失败，机器人仍背着箱子（可换个落点再试）。
+  新增 `testPickBlockedByStack` / `testPlaceInfeasible` 两条守门。
+
 ### 2026-10-03 家目录持久化：对话历史与地图缺省落 `~/.mybot`
 
 - **状态目录**：`MYBOT_HOME` > `$HOME/.mybot`（首次自动逐级建目录 `0700`）。agent 的
@@ -392,6 +510,81 @@
   把状态目录隔离到临时目录（R18 守「缺省新建 / 续接 / `--new-session` / 损坏降级」）。
 - **不影响**：REPL 行历史仍走既有 XDG 位置；MCP 协议、工具门控与安全语义零改动。
 
+### 2026-10-03 仿真器场景 v3：盒子可转向，落点做几何解算因而能叠放
+
+- **场景 v3：`box` 行追加可选 `yaw`**，盒按 OBB（有向包围盒）参与碰撞、测距、拾取与支撑面
+  解算；被搬运的物体跟随机器人朝向（旋进盒局部系复用轴对齐数学、再旋回世界系）。v1/v2 场景
+  照读，`yaw` 缺省为 0。
+- **`World::place` 从「放到前方 0.5m」升级为一次几何解算**：落点与「墙」在 XZ 上重叠时，沿
+  机器人前方**只向近侧**水平推开；落地高度取脚印下最高支撑面。于是「机器人站上箱顶松手」
+  就能把箱子叠上去，平地上则一律贴地并推开被占的箱子，**箱与箱永不重合**。
+- **已知限制（记入 `docs/sim.md`）**：静态箱无重力——取走堆叠的下层后，上层会悬空留着。
+  同日的下一条把「抽取被压住的下层」改判失败，正是为了不让这个限制以穿帮画面的形式出现。
+- **提示词同步收紧**（`prompts/sim_carry_task.md`）：前进任务改为只用 `sim_fwd` 小步走
+  （每次 ≤1m、累计约 ≤5m，测距连续两次 10m 即停），禁用 `sim_forward`；补「拾取只看朝向与
+  <0.6m 距离、无体积/质量上限」；说明相机是固定第三人称视角、方向判断以拍照回执里的测距
+  读数为准。此前蜘蛛会一路冲出障碍区。
+
+### 2026-10-03 C++ 宿主领域门面化：十个提交把 `RobotStruct` 从上帝类拆成可单测的门面（行为保持）
+
+- **`src/robot.cpp` 772 → 225 行、`src/main.cpp` 348 → 261 行**，`src/` 新增 12 个文件
+  （90 → 102），整批 35 个文件 +1654/−1062。`RobotStruct` 此前一个人扛着四件事：生命周期、
+  结构矩阵容器、元注册表、守护线程注册表 + 停机栅栏，外加热插表的整套提交状态机——每个域
+  都没有可单独实例化的入口，想测就得把整个机器人连真机资源一起建起来。
+- **五个域各自成门面**：`StructureStore`（结构矩阵 + `deque` 引用稳定性契约）、`MetaRegistry`、
+  `DaemonRegistry`（含从 `robot.cpp` 搬过来的守护停机栅栏）、`HotSqlService`（热插表的提交 /
+  增量装配 / 上电 / 热删除 / 整表撤下 / 生效摘要；`applySql` 退化为「判生命周期 + 转交」）、
+  `ContextService`（`context.get` 的材料装配，把动作与后端管线的细节从 MCP 路由里摘掉）。
+- **生命周期状态显式化**：`bool deactivated_` → `LifecycleState{Loaded, Active, Deactivating,
+  Inactive}`，转移收进门面：`active()` 拒绝在 Active/Deactivating 上重复上电（防既有变量二次
+  build）、`deactivate()` 天然幂等（显式重复调用与析构兜底都不会二次 destroy）、`run()` 只拒绝
+  Inactive。**`Loaded` 刻意放行**——`run()` 的解析/注册/派发前校验本就不申请真机资源，那是
+  `test_robot.cpp` 顶注写明的「离线预演」可测契约，锁进 Active 会改掉它。
+- **入口与协议层**：`RobotApplication` 把动作管线与 MCP 管线的执行 + 统一清理搬出 `main.cpp`，
+  入口只剩启动准备与模式选择；`src/mcp_protocol.hpp` 收拢 C++ 侧跨进程字段名，Rust 侧新增
+  `agent/src/protocol.rs` 承载类型化载荷（帧格式与字节不变），并把「读源码文本比对 schema」的
+  测试换成运行期的响应契约用例。
+- **测试专用的后门关掉**：`RobotStruct` 新增 `structures()`/`metas()`/`daemons()` 三个只读门面
+  访问器，下线 `matrices()` 与 `declaresVariable()`（后者逻辑迁入 `StructureStore`）；只为测试
+  而活的 `metaProvidersMatchLiveRows()` 移出生产类，改由测试经两个门面在本地组装。全部调用点
+  （`agentview`/`main` 与四个测试文件）改经门面。
+- **对使用者意味着什么**：无。SQL 语法、MCP 线协议字节、工具集、配置字段、退出码全部逐字
+  保持，十个提交各自独立全绿（当时 619 通过 / 0 失败）。这批门面在次日各补了直接单测
+  （`test_structure_store.cpp` / `test_hw_registry.cpp` / `test_meta_registry.cpp`）——**先拆出
+  可实例化的入口，才谈得上给单个域写测试**，这是本轮 C++ 侧的主要收益。
+
+### 2026-10-03 仿真器退出即保存：ESC / 关窗 / Ctrl-C / SIGTERM 走同一条路
+
+- **改了什么**：四种退出方式（ESC、点窗口 X、Ctrl-C、demo 拆链路时发的 SIGTERM）现在统一
+  「先 `saveScene()` 再退」。`main.cpp` 把 SIGTERM/SIGINT 折成一个 async-signal-safe 的关窗
+  标志（信号处理器里不碰 GLFW/IO），主循环轮询到即退出。未配置场景路径时 `saveScene` 自行
+  no-op；SIGKILL 不可捕获，故那种情况下不保存。
+- **顺带修一个被掩盖的退出段错误**：`Shader`/`Mesh`/`Spider` 的析构里是 `glDelete*`，必须早于
+  `glfwTerminate`。此前 `main` 末尾显式 terminate、而它们是更早声明的局部量（析构序在 terminate
+  之后）——只因 demo 一直用 SIGTERM 瞬杀、析构根本没跑才没暴露；改成优雅退出立刻崩（rc=139）。
+  修法是早声明一个 RAII 守卫、由它在最后 terminate（析构序 = 声明序逆序），先释放全部 GL 再关
+  GLFW。
+- **对使用者意味着什么**：agent 搬动过的环境从此在 demo 正常收尾后存续（此前 SIGTERM 一杀就
+  丢）。**副作用要知道**：每次跑 demo 会续用上次保存的场景，想从原始布局开始得另指一个临时
+  场景文件或先复位。验证：SIGTERM 退出 rc=0，`fdist 1.0` 后场景里 robot 行 0 → 1.0049。
+
+### 2026-10-03 `run_action_script` 加 `vars`：调用时注入会话别名（像函数传参）
+
+- **改了什么**：`run_action_script` 新增可选 `vars` 对象，键值在本次 `run()` 的 `SessionScope`
+  内绑成临时别名，脚本里 `$(键)` 就地取值、**出口即撤销，绝不跨 run 残留**。绑定发生在内联
+  `@Alias`/`@Vars` 之后，故调用方实参覆盖脚本内默认值。键过 `isSafeIdent` 并受既有 override
+  守护；`vars` 参数错误按「工具参数错误」回传（`executed=false`），不谎报「停在半途」。
+- **动机**：sim agent 转向抖动的根因是旧脚本按**时长**转、角度不可控。有了 `vars`，一个
+  参数化脚本就能精确转任意角度——`sim_turn.mt`（`turn $(deg)`）配 `vars={"deg":35}`、
+  `sim_fwd.mt`（`fdist $(dist)`）配 `vars={"dist":0.5}`，替代一堆写死角度的脚本。
+- **配套**：`robots/spider_sim.sql` 补 `P→param` 别名（精确 turn/fdist 的参数列才有着落）；
+  新增 `scripts/sim_turn.mt` / `sim_fwd.mt` / `relay-test-var.mt`；`prompts/sim_carry_task.md`
+  与 `docs/agent.md` 同步。
+- **对使用者意味着什么**：纯加法。不传 `vars` 时行为与之前逐字相同；sim 线上协议、三条 socket
+  路径、动作码全未动——参数化发生在宿主侧的 `.mt` 求值，线上仍只发「动作 + 数值」。守门：
+  `run()` 级 5 例 + 工具级传值/参数错误各 1 例，并用 socat 抓包确认 `P→param→Sim.lua` 真的
+  发出了 turn/fdist。
+
 ### 2026-10-03 仿真蜘蛛跳跃：竖直动力学 + 支撑面 + 高度感知碰撞
 
 - **新动作码 10=jump**（`jump <米> <高度>`，两个数值参数）：向前弹道跳，可跳过矮
@@ -409,6 +602,72 @@
 - **不影响**：射线测距仍是 XZ 平面读数；搬运物 y 随机体升降；相机跟随带上机体 y。
 - `.mt` 侧 `scripts/sim_jump.mt`（第二参数列 `sim.Q`）配
   `run_action_script(vars={"dist":..,"height":..})` 注入。
+
+### 2026-10-02 仿真器多机器人：搬运状态下沉到每只 Robot（C1）+ 每只一套 socket（C2）
+
+- **C1（核心内部实体化）**：搬运状态（`carriedIdx`/`carriedMass`/`effectiveMaxSpeed`）此前是
+  `World` 级单例，两只机器人会互相覆盖——核心里最后一处写死单机器人的地方。现下沉到每只
+  `Robot` 各自持有；`World` 去掉这几个成员与 `isCarrying`/`carriedIndex`/`carriedMass`/
+  `effectiveMaxSpeed`，碰撞、测距、拾放、背负跟随全改为按传入的 `Robot` 参数化的**无状态**
+  交互（`pick`/`place` 由 `const Robot&` 改 `Robot&` 以写回各自的搬运态）。`SimEngine` 改持
+  `vector<Robot>`、`step()` 逐只推进。
+- **C2（上线）**：场景 v2 允许多条 `robot` 行决定机器人数量（`readScene` 兼容 v1、`writeScene`
+  一律写 v2）；壳按 `robotCount()` 建对应套数的命令桥与测距桥——**robot 0 沿用原缺省路径
+  （字节不变、旧客户端无感），robot i>0 在 `.sock` 前插 `-i`**；拍照桥仍单条。新增
+  `sim/scenes/two_robots.scene` 示例，`docs/sim.md` 补「多机器人」节。
+- **对使用者意味着什么**：线协议、三条缺省路径、动作码全部不变，`modules/Sim.lua` 与
+  `Camera.lua` 一行未改——多机器人是**加法式**扩展（场景填多只 + socket 路径派生），不是协议
+  改版。要驱动第 2 只，把它的 `MYBOT_SIM_SOCK` 指到 `/tmp/mybot-sim-1.sock` 即可。
+- **守门**：`testMultiRobot`（两只在同一 `World` 各自拾取/背负/按自身质量减速/跟随/放置，
+  互不覆盖）、`testEngineMultiRobot`（两只各拾各的、朝相反方向各走各的，验证 idx 隔离）、
+  `testSceneIo` 重写（v2 多 robot round-trip、v1 兼容、缺 robot 行补默认、carried 越界归一、
+  v2 魔数）。
+
+### 2026-10-02 修复：搬运放下后方块悬在空中
+
+- `place()` 只改了落点的 x/z、没还原 `center.y`——物体被 `updateCarried` 抬到身体上方后，
+  放下时那个抬高的 y 留着不动，方块就悬在空中。现把 `center.y` 还原到静置高度 `half.y`
+  （底面贴地 y=0，与场景 `box` 行的约定一致）。`testPickPlace`/`testSimEngine` 各加一条
+  落回地面断言。
+
+### 2026-10-02 仿真器面向扩展性重构：动作表、请求-应答桥、引擎化、共享常量、编译期派发守门（行为保持）
+
+- **动作单一事实源**：新增 `sim/src/action_table.{h,cpp}`，把每个动作的 `{码, 线上名, 别名,
+  持续型/一次性, 是否带参}` 集中成一张表；命令桥 `handleLine` 改为查表分派，删掉 11 分支的
+  if-else 字符串链。加一个动作从「改枚举 + 改字符串链 + 改派发」收敛为「表里加一行」。
+- **请求-应答桥抽基类**：新增 `RequestResponseBridge`，封装拍照/测距两桥的共性（请求标志、
+  关键字匹配、poll 口径、EOF/断开复位、ERR 帧），`CaptureBridge`/`SensorBridge` 收敛为只补
+  各自 OK 帧化的薄子类。新增一个同步传感器 = 派生 + 一个 `sendXxx`（由 `PingBridge` 最小
+  示例守门）。
+- **引擎化（核心脱开 GL）**：新增 simcore 的 `SimEngine`，把散在 `main.cpp`（GLFW 壳）里的
+  `commandToInput`、场景装卸与每帧物理（相对运动、位姿更新、碰撞解算、搬运跟随）收拢进来；
+  `main.cpp` 441 → 322 行，只剩窗口/输入/渲染/抓帧的薄壳。于是 fdist 到点、turn 转角、新持续
+  指令打断相对运动、pick/place、save→挪动→reload 往返都能在**无窗口**下断言（`testSimEngine`）。
+- **共享常量单一事实源**：三条缺省 socket 路径落成 `sim_config.h` 里的 `inline constexpr`
+  （原先是 `main.cpp` 里各写一遍的字面量，头文件里只有一条注释掉的 TODO），可调参数一并集中。
+  Lua 侧仍各写一份——两套构建系统之间**刻意不做代码生成**（跨 build 生成脆弱），改由
+  `sim/tests` 的 `testSharedConstants` 运行期读 `modules/Sim.lua` 交叉校验字面量一致。拍照
+  路径 `Camera.lua` 只取自 env、无硬编码缺省，按设计不参与校验。
+- **编译期派发守门**：`SimCommand` / `SimEvent::Type` 加枚举值后若忘了在 `commandToInput` /
+  `applyEvent` 补 case，动作会**静默 no-op**，而既有测试测不出（表驱动派发只验命令桥入队/置态、
+  不验引擎行为）。这两处 switch 刻意不写 `default`，并对本地三个 target 单挑 `-Werror=switch`
+  升级为错误——漏 case 直接编译不过。第三方头不受影响（`external/stb` 改标 SYSTEM include 压掉
+  它自带的噪声告警，glfw/glm/glad 是独立 target、不继承这些选项）。
+- **对使用者意味着什么**：无。线上协议、三条 socket、数字码、场景文件 v1 全不变；这批重构的
+  意义在于「加一个动作 / 加一个传感器」的成本与漏改的可见性。次日那条零编译守门正是接着这里
+  做的——`sim/tests` 不在 CI 的构建范围内，运行期交叉校验等于没人跑。
+
+### 2026-10-02 Lua 侧 AF_UNIX 连接样板收成公共模块
+
+- `modules/Sim.lua` 与 `modules/Camera.lua` 各自 `ffi.cdef` 了一份 socket 系统调用
+  （`socket`/`connect`/`send`/`recv`/`close`/`errno`），两份声明与两段连接样板并行维护。现抽出
+  `modules/lib/unix_socket_ffi.lua`（新增 160 行）承载 cdef 与 `connect/send/recv/close`，两个
+  驱动改为调用它（`Camera.lua` +22/−53、`Sim.lua` +18/−47）。
+- **对使用者意味着什么**：行为不变（同样的系统调用、同样的 `MSG_NOSIGNAL`、同样的 errno 口径）。
+- **收敛没覆盖到的部分，记在这里备查**：`poll` 没进公共模块（各驱动的 `pollfd` 结构名不同），
+  `Sim.lua` 因此仍留着自己的一段 cdef——而 `int errno(void)` 这条伪声明在**公共模块与那段里
+  各有一份**，2026-10-04 那条段错误修复因此要改两处。glibc 的 `errno` 是数据符号（宏
+  `(*__errno_location())`），按函数调等于跳到一个 int 值当代码执行。
 
 ### 2026-10-02 相对运动精度：到量刹车 + fdist/turn 顺序执行
 
