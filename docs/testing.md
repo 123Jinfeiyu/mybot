@@ -11,7 +11,7 @@
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
 | `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
-| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检：用例是否真被收集/编译）→ `bash test/run_all.sh`（Release 全量守门） |
+| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 11 段：用例是否真被收集/编译 + 四组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
 | `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
 | `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh`，缺产物/依赖或超时即失败，`agent-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响 |
 | `gate:tsan` | 硬 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
@@ -217,6 +217,66 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 
 - 只想跑 Lua 段：`ALLOW_SKIP=1 bash test/run_all.sh`
 - 显式指定的 `BOT=` / `BOT_TESTS=` 指向不存在的文件时一律判失败，`ALLOW_SKIP` 也不放行
+
+## 跨源一致性校验（零编译）
+
+同一条事实在仓里手写两份以上的地方，各配一道**不依赖任何构建产物**的校验，全部由
+`test/run_all_selftest.sh` 执行——CI 的 `gate:release` 把它排在 `run_all.sh` **之前**，
+pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工程、**不在任何 CI job 的
+构建范围内**（理由见 `sim/CMakeLists.txt` 顶部注释），所以 `sim/tests` 里的同款校验
+（`testActionTable` / `testSharedConstants`）只有开发者手动 `bash scripts/build_sim.sh`
+时才会触发；主干这几道是**独立实现**、不共享代码——共享实现等于共享同一个错误，两侧
+一起改错就一起绿。
+
+`run_all_selftest.sh` 现有 11 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
+是否登记进 `CMakeLists.txt`、`test/*.lua` 是否匹配两侧 glob、`count_calls` 的「N 条用例」
+文案是否真数得到调用点、两张用例表的条数检查点、TSan 名单单点、`test/lib/params.sh`
+常量单点），8–11 是跨源比对：
+
+8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
+   （`sim/src/action_table.cpp` 的 `kActions[]` vs `modules/Sim.lua` 的
+   `CODES`/`PARAM_CODES`/`PARAM2_CODES`/`CODE_MAX`）、三条缺省 socket 路径（`sim_config.h`
+   vs `modules/Sim.lua`）、一问一答桥的请求关键字（`sim/src/{sensor,capture}.cpp` vs
+   `modules/Sim.lua` 的 `range()`、`src/agentimage.cpp`、`modules/Camera.lua` 的
+   `capture_live()`）、默认场景的 11 个箱（`world.cpp` 的内置回落 vs
+   `sim/scenes/default.scene`）。缺 `python3` 时**判失败**而非跳过——这段没有别的兜底。
+9. **状态目录缺省名**：「`MYBOT_HOME` 非空 → `$HOME/.mybot` → 不可用」有三处实现
+   （Rust `agent/src/config/mod.rs`、C++ `sim/src/sim_paths.cpp`、shell
+   `scripts/sim_agent_demo.sh`），跨两套构建系统、刻意不做代码生成。逐处钉两件事：读
+   `MYBOT_HOME` 的形态还在，且拼出的缺省后缀仍是 `/.mybot`。规则单点是
+   [reference.md](reference.md) 的 `MYBOT_HOME` 行。
+10. **文档与仓库实况**（`scripts/check_doc_paths.py`）四组：README 与 `docs/*.md` 里的
+    仓内路径引用逐个实测存在（markdown 链接按文档目录解析、反引号跨度按仓库根解析；
+    历史记录与教程占位名在脚本的 `KNOWN_ABSENT` 里逐条登记理由，登记过又存在的条目
+    同样判失败）；`docs/drivers.md` 各节点名的模块集合与 `ls modules/*.lua` **双向**
+    相等；drivers.md 开头「计数口径」那行的分项（48+3+8=59、lib 23）与各节实际条目数、
+    与磁盘文件数三者自洽；每篇 `docs/*.md` 都被 README 或 `docs/README.md` 链到。
+11. **模型配置字段白名单双端同集合**（`scripts/check_llm_field_whitelist.py`）：C++
+    `src/llmconfig.cpp` 的 `kKnown` vs Rust `agent/src/config/file.rs` 的
+    `PARSED_FIELD_NAMES`（`parsed_fields!` 宏表展开）+ `KNOWN_UNPARSED_FIELDS`。两端读
+    **同一份** `mybot.llm.json`，任一侧漏登记一个字段，那一侧就把操作者的合法配置判成
+    「未知字段」拒读；两侧单测各验自己那份，谁也发现不了对侧漏改。脚本另钉三条：两份
+    Rust 名单互不重叠、各名单内部无重复、抽取自检（块里任何形状的字符串字面量数 ==
+    抽到的名字数，防「两侧都读空 → 相等」的假绿）。
+
+### 四处套件的计数口径
+
+| 套件 | 怎么跑 | 2026-10-04 快照 |
+| --- | --- | --- |
+| `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 649 通过 / 0 失败 |
+| `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
+| `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过 / 0 失败（8 个 TU） |
+| Rust agent | `cd agent && cargo test --release` | 148 passed |
+
+两个容易对不上的数字，出处写在这里省得每次重推：
+
+- `mybot_tests` 的 649 **不等于** `test/cpp/` 里 `TH_TEST(` 的出现次数（663）。差值有
+  出处：663 − 1 处宏定义（`test/cpp/harness.hpp`）− 13 个属于 `harness_selftest`
+  （独立可执行文件）= 649。拿这个式子复核，别把两个数字硬对齐。
+- `harness_selftest` 那个文件里有 13 个 `TH_TEST`，二进制只报 8 通过：另外 5 个 `meta_*`
+  是**故意含失败形态的例句**，只作被测对象（由自证用例内部的 `judge(filter)` →
+  `runAllOutcome(filter, quiet=true)` 调到），不进缺省全量跑——否则主输出里会混进一串
+  预期失败的 `[FAIL]` 行。
 
 ## sanitizer 与单测二进制
 

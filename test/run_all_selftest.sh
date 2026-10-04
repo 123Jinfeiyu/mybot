@@ -5,8 +5,13 @@
 #   - 用例不叫 test_*.lua，run_all.sh 的 glob 与 CMake 的 glob 都不会收集它；
 #   - 新加的 test/cpp/*.cpp 不写进 CMakeLists.txt 就永不编译；
 #   - 脚本自身的语法错误要到推送那一刻才暴露。
-# 本自检只做三件**便宜且能机械判定**的事，且**不进入 run_all.sh 的记账**
-# （守门汇总口径保持不变），由 pre-push 在守门之前调用。
+# 本自检只做**便宜且能机械判定**的事，且**不进入 run_all.sh 的记账**
+# （守门汇总口径保持不变），由 pre-push 在守门之前调用、CI 的 gate:release 也把它
+# 排在全量守门之前。两类，按段号分：
+#   1–7  守门自身的可信度（脚本语法、用例是否真被 glob/编译收集、计数文案是否有出处、
+#        用例表条数检查点、TSan 名单与 params 常量单点）；
+#   8–11 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
+#        文档引用与计数、模型配置字段白名单）——全部零编译，理由见第 8 段。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -139,8 +144,30 @@ sim/src/sim_paths.cpp getenv\("MYBOT_HOME"\)
 scripts/sim_agent_demo.sh \$\{MYBOT_HOME:-
 EOF
 
+# 10) 文档与仓库实况的一致性（零编译）：路径引用逐个实测存在、drivers.md 的模块清单
+#     与 modules/*.lua **双向**相等、drivers.md 开头「计数口径」那行的分项与各节实际
+#     条目数和磁盘文件数三者自洽、每篇 docs/*.md 都挂在索引上。
+#     文档不会编译、不会失败，改名/删除/新增之后只会静静地指向不存在的东西；同一条
+#     计数还手写三份（README、docs/README.md、drivers.md），各漂一点就没人知道哪个真。
+#     历史与占位引用（changelog 是冻结账本、教程里的 modules/X.lua）在脚本的
+#     KNOWN_ABSENT 里逐条登记并写明理由；登记过的条目若又存在了，脚本同样判失败
+#     （名单过期也是一份不一致）。
+# 11) 模型配置字段白名单的双端同集合：C++ src/llmconfig.cpp 的 kKnown vs Rust
+#     agent/src/config/file.rs 的 PARSED_FIELD_NAMES（parsed_fields! 宏表）+
+#     KNOWN_UNPARSED_FIELDS。两端读同一份 mybot.llm.json，任一侧漏登记一个字段，
+#     那一侧就把操作者的合法配置判成「未知字段」拒读——两侧单测各验自己那份，
+#     谁也发现不了对侧漏改，故在此零编译比对。
+if command -v python3 >/dev/null 2>&1; then
+	python3 scripts/check_doc_paths.py \
+		|| note "scripts/check_doc_paths.py 发现文档与仓库实况不一致（详见上方输出）"
+	python3 scripts/check_llm_field_whitelist.py \
+		|| note "scripts/check_llm_field_whitelist.py 发现配置字段白名单双端不一致（详见上方输出）"
+else
+	note "缺 python3，无法跑 scripts/check_doc_paths.py 与 scripts/check_llm_field_whitelist.py（文档一致性与配置白名单未受检查）"
+fi
+
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端）"
