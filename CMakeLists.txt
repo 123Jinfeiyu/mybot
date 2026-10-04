@@ -209,6 +209,8 @@ add_executable(mybot_tests
   test/cpp/test_json.cpp
   test/cpp/test_jsonparse.cpp
   test/cpp/test_llmconfig.cpp
+  test/cpp/test_llmconfig_assembly.cpp
+  test/cpp/test_llmconfig_surface.cpp
   test/cpp/test_matrix.cpp
   test/cpp/test_expr.cpp
   test/cpp/test_sqlparse.cpp
