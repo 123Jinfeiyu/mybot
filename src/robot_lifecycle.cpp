@@ -1,14 +1,23 @@
 /* robot_lifecycle.cpp —— RobotStruct 生命周期与资源安全边界 */
 
 #include "robot.hpp"
+#include "robot_internals.hpp"
 
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <string>
 
 #include "util_env.hpp"
 
 namespace bot {
+
+/* 装配机械的定义见 robot_internals.hpp；本处只负责「先四域、后机械、再装载」
+ * 的次序（注释在头文件构造函数声明处）。 */
+RobotStruct::RobotStruct(bot::Reader& input)
+	: internals_(std::make_unique<Internals>(structures_, registry_, metas_, daemons_)) {
+	structures_.load(input);
+}
 
 void RobotStruct::active() {
 	if (state_ == LifecycleState::Active || state_ == LifecycleState::Deactivating) {
@@ -18,7 +27,7 @@ void RobotStruct::active() {
 	/* 先标记为 Active：中途失败时析构仍会进入统一清理路径。 */
 	state_ = LifecycleState::Active;
 	deactivated_ = false;
-	factory_.createHardVars(structures_.all());
+	internals_->factory.createHardVars(structures_.all());
 	metas_.validateAll();
 
 	for (MatrixVars_Hardware* item : registry_.sequence()) {

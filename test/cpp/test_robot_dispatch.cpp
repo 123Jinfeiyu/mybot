@@ -17,6 +17,7 @@
 
 #include "fixtures.hpp"
 #include "harness.hpp"
+#include "action_runner.hpp"
 #include "daemonvar.hpp"
 #include "matrix.hpp"
 #include "robot.hpp"

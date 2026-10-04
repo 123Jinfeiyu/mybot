@@ -1,6 +1,7 @@
 /* robot_actions.cpp —— RobotStruct 动作矩阵执行与会话变量作用域 */
 
 #include "robot.hpp"
+#include "robot_internals.hpp"
 
 #include "mtinclude.hpp"
 
@@ -26,8 +27,8 @@ void RobotStruct::run(bot::Reader& input, const std::map<std::string, std::strin
 	std::set<std::string> session;
 	for (auto& matrix : actionMatrices) {
 		std::string mtName = trim(matrix.getName());
-		if (mtName == "Alias") { factory_.registerAliasMatrix(matrix, &session); }
-		else if (mtName == "Vars") { factory_.registerVarsMatrix(matrix, &session); }
+		if (mtName == "Alias") { internals_->factory.registerAliasMatrix(matrix, &session); }
+		else if (mtName == "Vars") { internals_->factory.registerVarsMatrix(matrix, &session); }
 	}
 
 	/* 调用方注入的变量覆盖脚本内默认值，并受安全标识符与引用覆盖规则约束。 */
@@ -38,8 +39,8 @@ void RobotStruct::run(bot::Reader& input, const std::map<std::string, std::strin
 		registry_.override(kv.first, MtVars_Alias::Make(kv.second));
 	}
 
-	runner_.runAction(actionMatrices);
-	runner_.runReflex(actionMatrices);
+	internals_->runner.runAction(actionMatrices);
+	internals_->runner.runReflex(actionMatrices);
 }
 
 } // namespace bot

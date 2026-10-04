@@ -15,6 +15,7 @@
 #include "fixtures.hpp"
 #include "harness.hpp"
 #include "daemonvar.hpp"
+#include "hotsql_plan.hpp"
 #include "matrix.hpp"
 #include "robot.hpp"
 #include "util_env.hpp"

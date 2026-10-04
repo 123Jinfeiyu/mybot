@@ -11,17 +11,19 @@
  *   hw_factory.hpp      HwFactory（矩阵表 → 硬件变量装配）
  *   action_runner.hpp   ActionPlan / ActionRunner（@Action 派发与重放）
  *   hotsql_plan.hpp     HotSqlPlan / HotSqlPlanner（热 SQL 只读计划层）
- * 只需局部类型的 TU 改包含对应窄头；RobotStruct 的消费者仍只包含本头。 */
+ * 只需局部类型的 TU 改包含对应窄头；RobotStruct 的消费者仍只包含本头。
+ *
+ * 2026-10-04 再收窄：装配机械（HwFactory / ActionRunner / HotSqlService）收进
+ * 私有装配体 RobotStruct::Internals（robot_internals.hpp，只被实现单元包含），
+ * 本头不再直接包含 action_runner.hpp / hw_factory.hpp / hotsql_service.hpp。 */
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <string>
 
-#include "action_runner.hpp"
 #include "daemon_registry.hpp"
 #include "hardware.hpp"
-#include "hotsql_service.hpp"
-#include "hw_factory.hpp"
 #include "hw_registry.hpp"
 #include "meta_registry.hpp"
 #include "structure_store.hpp"
@@ -30,7 +32,7 @@
 namespace bot {
 
 /* 结构脚本/动作脚本统一按字节流消费；本头只以引用接收它（构造与 run 的形参），
- * 连同内联构造体的转交都不需要完整类型——直接前置声明，不背 util_except.hpp。 */
+ * 连构造转发都不查其内容——直接前置声明，不背 util_except.hpp。 */
 class Reader;
 
 /* ---- 机器人编排门面：装配流程 + 生命周期（R-1 后只剩这些）---- */
@@ -50,12 +52,12 @@ private:
 	 * build 前统一校验 $ 引用存在性；热删除/整表撤下期摘除与重锚定
 	 * （详见 meta_registry.hpp）。 */
 	MetaRegistry metas_;
-	HwFactory factory_;	/* 依赖上面的容器，声明序保证先构造 */
-	ActionRunner runner_;
-	/* 热插提交服务（2026-10-03 阶段 4）：applySql 的阶段机（提交/热删除/整表
-	 * 撤下/生效摘要）整体住在这里，跨域只经门面。依赖上面六个域门面与执行器，
-	 * 声明序保证先构造。 */
-	HotSqlService hotSql_;
+	/* 装配机械（HwFactory / ActionRunner / HotSqlService）整体住进私有装配体
+	 * （Internals，定义在 robot_internals.hpp）；三个执行器是门面的实现细节，
+	 * 不占公开头。声明在四个域门面之后——Internals 持它们的引用，构造序与
+	 * 拆分前逐字同序（见其定义处注释）。 */
+	struct Internals;
+	std::unique_ptr<Internals> internals_;
 	/* @Include 基准目录（mtinclude::expandIncludes 的相对路径根，缺省 "."）。
 	 * 三个调用面按「脚本集合的根」取值：--input 文件通道=脚本所在目录、
 	 * agent run_action_script=--scripts-dir、stdin/TCP 无脚本位置=缺省 CWD。
@@ -76,11 +78,10 @@ private:
 	 * （hotsql_service.hpp，2026-10-03 阶段 4）——本类只剩生命周期与门面装配。 */
 
 public:
-	explicit RobotStruct(bot::Reader& input)
-		: factory_(registry_, daemons_, metas_), runner_(registry_),
-		  hotSql_(structures_, registry_, metas_, daemons_, factory_, runner_) {
-		structures_.load(input);
-	}
+	/* 装配序与拆分前逐字同序：四个域门面（成员声明序）→ 装配机械（Internals 内部
+	 * 依 factory/runner/hotSql 序构造）→ 结构脚本装载。定义在 robot_lifecycle.cpp
+	 * ——那里能见到 Internals 的完整定义。 */
+	explicit RobotStruct(bot::Reader& input);
 
 	/* 兜底断电：仍未 deactivate 就补一次（幂等）。存在的理由是物理安全——
 	 * 漏掉断电的代价是执行器停在最后指令位置、I2C 从设备滞留中间态。 */
