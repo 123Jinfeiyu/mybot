@@ -134,6 +134,10 @@ echo "=== 1/3 起仿真器 sim（窗口会出现；标题显示最近动作）==
 # （sim 捕获本脚本 cleanup 的 SIGTERM 优雅退出并 saveScene；S 键 / save 指令仍可手动
 # 写回），下次跑 demo 从改过的环境继续；仓库 sim/scenes/* 从此只读，不再被弄脏。
 # 想指定别的布局：MYBOT_SIM_SCENE=my_map（裸名 → maps/my_map.scene）或显式路径。
+# 裸名有个**额外的**前提：sim 还要能找到同名模板（编译期 MYBOT_SIM_SCENES_DIR，即源码树
+# sim/scenes；未命中回退 exe 相对 ../scenes/）用于首次播种，找不到就打一行「未找到模板 …」
+# 并**静默退回内置默认场景**——只在 $MYBOT_HOME/maps/ 放一个 my_map.scene 是不够的。
+# 要跑一个不在 sim/scenes 里的布局，传绝对路径（含 / 即绕开模板查找）。
 if [ -n "${MYBOT_SIM_SCENE:-}" ]; then
 	MYBOT_SIM_SCENE="$MYBOT_SIM_SCENE" "$SIM_BIN" >"$SIM_LOG" 2>&1 &
 else

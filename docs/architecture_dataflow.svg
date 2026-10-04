@@ -15,6 +15,10 @@
   </defs>
 
   <rect x="0" y="0" width="1400" height="1010" fill="#f8fafc"/>
+  <!-- 快照日期标注（2026-10-04 冻结）：本图随 architecture_analysis.html 一并冻结，
+       描述 2026-09-25 的形态，不含 sim/ 迁入、多机器人、~/.mybot 持久化、领域门面拆分。
+       重绘需同步改 analysis 页正文，故不单独更新——权威口径见 docs/ 下各 md。 -->
+  <text x="20" y="22" font-size="12" fill="#94a3b8">2026-09-25 快照（已冻结）· 权威口径见 docs/</text>
   <text x="700" y="36" text-anchor="middle" font-size="24" font-weight="700" fill="#0f172a">bot4cj.cpp（C++17）· 一次 play 动作的数据流 / 时序展开</text>
   <text x="700" y="58" text-anchor="middle" font-size="13.5" fill="#64748b">从「管道输入 .mt 一帧」到「内核设备文件落盘」的完整调用链（左→右为阶段，纵向为调用深度）</text>
 

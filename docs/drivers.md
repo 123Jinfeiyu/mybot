@@ -2,7 +2,7 @@
 
 > **清单与计数以 `modules/` 目录为准**（本页是速查索引，可能滞后于代码；`ls modules/*.lua` 即权威清单）。结构脚本里每张 `CREATE TABLE <矩阵名>` 对应加载 `modules/<矩阵名>.lua`。各驱动的协议细节与其内嵌 `<矩阵名>_VIRT` 仿真模型见 [virtbus.md](virtbus.md)。
 >
-> **计数口径**（README 与架构页引用的数字按此推导，可复算）：`ls modules/*.lua` = 58 = **48 款器件/执行器/系统接口驱动**（本页前六节：舵机/输出 12 + IMU 6 + 气压/环境/光 11 + 测距/闪电 3 + ADC/电源 11 + 气体/医疗/其他 5）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **7 个框架/工具驱动**（`Relay`/`dummy`/`Monitor`/`Kalman`/`Ema`/`bitcompat`/`Camera`，即最后一节；2026-09-25 #8 起 Lua 协议驱动轨道已删，`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic` 不再有对应 `.lua` 文件）。注意 `GPIO`/`PWM`/`Speaker` 是**系统接口/执行器驱动**、归在 48 里（不是总线）；`bitcompat` 是纯 Lua 兼容库、不在 `lib/` 下。`modules/lib/` 另有 21 个共享库（含 `asound`），不计入 58。
+> **计数口径**（README 与架构页引用的数字按此推导，可复算）：`ls modules/*.lua` = 59 = **48 款器件/执行器/系统接口驱动**（本页前六节：舵机/输出 12 + IMU 6 + 气压/环境/光 11 + 测距/闪电 3 + ADC/电源 11 + 气体/医疗/其他 5）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **8 个框架/工具驱动**（`Relay`/`dummy`/`Monitor`/`Kalman`/`Ema`/`bitcompat`/`Camera`/`Sim`，即最后一节；2026-09-25 #8 起 Lua 协议驱动轨道已删，`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic` 不再有对应 `.lua` 文件）。注意 `GPIO`/`PWM`/`Speaker` 是**系统接口/执行器驱动**、归在 48 里（不是总线）；`bitcompat` 是纯 Lua 兼容库、不在 `lib/` 下。`modules/lib/` 另有 23 个共享库（`find modules/lib -name '*.lua' | wc -l`，含 `asound` 与 `virtbus/regmap.lua`），不计入 59。
 
 ## 舵机 / 输出执行器
 
@@ -94,6 +94,7 @@
 | `Monitor` | 消费 `$` 引用快照的观察/决策变量 |
 | `bitcompat` | Lua 5.1/5.3 位运算兼容库（非驱动） |
 | `Camera` | **摄像头驱动**：V4L2 mmap 取帧、只取硬件编码的 MJPEG（ffi，无第三方库）；`src=<图片>` 为仿真模式。agent 模式的 `capture_image` 工具用它。调用参数可带 `width`/`height`（正整数，须同给同缺）：与上次请求不同即重开设备重协商 `VIDIOC_S_FMT`，返回表报**实际协商尺寸**（设备可能就近调档） |
+| `Sim` | **仿真器桥接驱动**：把语义动作以行文本发到 `mybot-sim`（`sim/` 下的 GLFW 蜘蛛仿真器）的 AF_UNIX socket，只传「动作 + 速度」不传关节角。`range` 走独立 sensor socket；**仿真器缺席＝静默成功**（可视化从端不该打断动作脚本），感知侧相反。协议、动作码 0–10 与场景持久化见 [sim.md](sim.md) |
 
 > 不依赖 HAL 的模块（如滤波器、virtbus 底座）可用 `luajit`/`lua5.4` 独立调试。
 > 模型协议族（OpenAI 兼容 / DeepSeek / Anthropic）由 Rust agent 内建（`agent/src/provider.rs`），

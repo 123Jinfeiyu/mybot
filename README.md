@@ -363,24 +363,35 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（58个模块 + 21个共享库）
+├── modules/       # Lua驱动生态（59个模块 + 23个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
 │   ├── Speaker.lua      # 音频输出（ALSA）
+│   ├── Sim.lua          # 仿真器客户端（三条 AF_UNIX socket）
 │   └── lib/             # HAL、virtbus、JSON、滤波器、asound 等共享库
-├── robots/        # 结构脚本（8个机器人定义）
+├── robots/        # 结构脚本（9个机器人定义）
 │   ├── spider1.sql      # 14路舵机蜘蛛
 │   ├── relay-test.sql   # 虚拟继电器（无硬件）
 │   └── test.sql         # 测试夹具
-├── scripts/       # 动作脚本库（35个动作脚本）
+├── scripts/       # 动作脚本库（50个动作脚本）
 │   ├── std.mt           # 站立
 │   ├── left-turn.mt     # 左转
 │   └── jump.mt          # 跳跃
+├── sim/           # C++17/OpenGL 仿真器（独立 CMake 工程，不在主构建里）
+│   ├── src/             # 引擎、命令/测距/请求三桥、渲染、场景读写
+│   ├── scenes/          # 模板场景（播种到 $MYBOT_HOME/maps/）
+│   └── tests/           # sim_tests（8 个 TU，387 条断言）
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（86 Lua + 25 C++ + E2E）
-└── docs/          # 深入文档（12篇Markdown + 架构分析网页与两张全景图）
+├── test/          # 三层测试（87 Lua + 38 C++ + E2E）
+└── docs/          # 深入文档（14篇Markdown + 架构分析网页与两张全景图）
 ```
+
+上面括号内的计数是 2026-10-04 快照，派生口径（改完文件用这几条复核，别手改数字）：
+`ls modules/*.lua | wc -l`、`find modules/lib -name '*.lua' | wc -l`、
+`ls robots/*.sql | wc -l`、`ls scripts/*.mt | wc -l`、`ls test/*.lua | wc -l`、
+`ls test/cpp/test_*.cpp | wc -l`、`ls docs/*.md | wc -l`（含 `docs/README.md`）。
+`sim/` 侧同理：`ls sim/tests/*.cpp | wc -l`、`./sim/build/sim_tests` 末行的通过数。
 
 ## 测试与 CI
 
@@ -397,11 +408,16 @@ bash test/run_san.sh
 bash test/run_all.sh agent-all
 ```
 
-测试规模（2026-09 快照，权威口径以 `bash test/run_all.sh` 与 `./build/mybot_tests` 实时输出为准）：
+测试规模（2026-10-04 快照，权威口径以 `bash test/run_all.sh`、`./build/mybot_tests`、
+`./build/harness_selftest`、`./sim/build/sim_tests`、`cargo test` 的实时输出为准）：
 
-- 600+ 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 86 个 Lua 测试文件 + 25 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
-- 260+ 道 Lua/e2e 守门
+- 649 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 87 个 Lua 测试文件 + 38 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 271 道守门用例（`bash test/run_all.sh` 汇总行的通过数：Lua 单测 + C++ 段 + 各 e2e 脚本；
+  1 跳过——`test_jit_warmup.lua` 是真机 ABI 回归，需 `/dev/i2c-*`）
+- 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
+  同文件里另有 5 个 `meta_*` 例句只作被测对象、不进缺省全量跑）、`./sim/build/sim_tests`
+  387 条（`sim/` 是独立 CMake 工程）、Rust agent `cargo test --release` 148 条
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 
@@ -416,18 +432,19 @@ bash test/run_all.sh agent-all
 | [Agent 模式完整指南](docs/agent.md) | CLI 选项、工具系统、安全边界、提示词包、会话持久化 |
 | [命令行与环境变量参考](docs/reference.md) | 所有 CLI 参数、`BOT4CJ_*` 环境变量、安全约束 |
 | [DSL 语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
-| [驱动清单](docs/drivers.md) | 58 个模块分类速查、驱动契约 |
+| [驱动清单](docs/drivers.md) | 59 个模块分类速查、驱动契约 |
 | [HAL 硬件抽象层](docs/hal.md) | FFI 直调 glibc、I2C 原子事务、沙箱 |
 | [@Daemon 守护线程](docs/daemon.md) | 后台采样、滤波器链路 |
 | [虚拟总线](docs/virtbus.md) | 无硬件验证驱动链路、器件模型库 |
+| [仿真器](docs/sim.md) | `sim/` 三条桥的协议、场景与地图持久化、放置解算口径 |
 | [测试手册](docs/testing.md) | 守门分段、ctest、sanitizer、覆盖率 |
 | [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
 | [FAQ](docs/faq.md) | 已知限制、排障问答 |
 | [更新日志](docs/changelog.md) | 版本演进与变更记录 |
 | [ICA 证据账本原型](docs/ica.md) | Rust agent 实验特性（BOT4CJ_ICA=1）的事实边界 |
-| [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图 |
-| [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用 |
-| [play 数据流时序图（SVG）](docs/architecture_dataflow.svg) | 四阶段调用链 + @Daemon 并发分支 |
+| [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图（**2026-09-25 快照，已冻结**：不含 sim/ 迁入、多机器人、`~/.mybot` 持久化、领域门面拆分） |
+| [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用（同上，2026-09-25 快照） |
+| [play 数据流时序图（SVG）](docs/architecture_dataflow.svg) | 四阶段调用链 + @Daemon 并发分支（同上，2026-09-25 快照） |
 
 完整索引与按角色选读见 [docs/README.md](docs/README.md)。
 

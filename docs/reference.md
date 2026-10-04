@@ -143,7 +143,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 
 | 变量 | 说明 |
 | --- | --- |
-| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 58 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
+| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 59 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
 | `BOT4CJ_TCP_TOKEN` | TCP 口令（等价 `--tcp-token`，优先级低于命令行）。argv 会出现在 `/proc/<pid>/cmdline`，多用户机器上推荐用本变量传口令 |
 | `BOT4CJ_MCP_TOKEN` | MCP 后端首帧共享密钥（2026-09-29，审计 P2-1）。**两个进程读同一个变量**：后端（`mybot --mcp-backend`）在宿主环境抹零前捕获，agent（`mybot-agent`）连接后第一帧发 `{"_route":"auth","token":...}`。非空时密钥不匹配/不发认证帧的连接一律拒绝并断连（审计记 `auth_failed`）；未设置则退回「仅 SO_PEERCRED」的旧行为——同 UID 进程（含模型驱动的 `run_command` 子进程）可直连 socket 绕过 agent 侧预算，建议开后端模式时设置。设置但为空/超 256 字节 = 配置错误拒绝启动。名字含 `token`，被 `run_command` 的环境清洗自动剔除——子进程拿不到它 |
@@ -159,5 +159,9 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_TRACE_FDS` | 仅守门用：`mybot_tests` 专用测试钩子（生产二进制不含），见 [testing.md](testing.md) |
 | `BOT4CJ_ICA` | Rust agent 侧设为 `1` 开启实验性 ICA 证据账本（8 个 `ica_*` 本地工具 + sidecar 落盘），边界见 [ica.md](ica.md) |
 | `MYBOT_HOME` | 状态目录根（本机持久数据：agent 的对话历史、sim 的地图）。取值链：`MYBOT_HOME` 非空 → 用它；否则 `$HOME/.mybot`；两者都取不到 → 状态目录不可用（agent 不落盘对话历史并如实说明，sim 拒绝解析相对场景名）。**本行是这条规则的单点**，它有三处实现（跨两套构建系统 + 一个 shell 脚本，刻意不做代码生成）：Rust `agent/src/config/mod.rs` 的 `derive_state_dir`、C++ `sim/src/sim_paths.cpp` 的 `mybotHome`、shell `scripts/sim_agent_demo.sh`；缺省目录名 `.mybot` 的三处一致由 `test/run_all_selftest.sh` 钉住。目录下的布局：会话历史见 [agent.md](agent.md)，地图播种见 [sim.md](sim.md) |
+| `MYBOT_SIM_SOCK` | 仿真器**命令桥**的 AF_UNIX 路径（缺省 `/tmp/mybot-sim.sock`）。sim 侧取值序 argv[1] > 本变量 > 缺省（`sim/src/main.cpp`），驱动侧 `modules/Sim.lua` 读同一个变量——两端不用各自配置。**多机器人**时每只一套：robot 0 用原路径逐字不变，robot i>0 在 `.sock` 前插 `-<i>`（`deriveRobotPath`）。线上协议与动作码 0–10 见 [sim.md](sim.md) |
+| `MYBOT_SIM_CAPTURE_SOCK` | 仿真器**拍照桥**路径（缺省 `/tmp/mybot-sim-capture.sock`），sim 侧 argv[2] > 本变量 > 缺省。`modules/Camera.lua` 只在本变量**非空**且本次调用没给文件 `src` 时才向仿真器取帧（未设＝不启用这条来源） |
+| `MYBOT_SIM_SENSOR_SOCK` | 仿真器**测距桥**路径（缺省 `/tmp/mybot-sim-sensor.sock`），sim 侧 argv[3] > 本变量 > 缺省；`modules/Sim.lua` 的 `range` 函数走它一问一答（发 `range\n`，收 `OK <mm>` 或 `ERR <reason>`） |
+| `MYBOT_SIM_SCENE` | sim 启动时的场景落点：argv[4] > 本变量 > 缺省裸名 `default`。**含 `/` 的值当显式路径直接用**；裸名解析为 `$MYBOT_HOME/maps/<名>.scene`，且**还须能找到同名模板**做首次播种——模板目录是编译期宏 `MYBOT_SIM_SCENES_DIR`（`sim/CMakeLists.txt` 指到源码树 `sim/scenes`），未命中再回退 exe 相对 `../scenes/`。两处都没有该模板时 sim 打一行 `未找到模板 …` 并**静默退回内置默认场景**，此时场景路径为空、退出即保存不写盘；要绕开模板查找就传绝对路径。三条 socket 与本变量的组合跑法见 [sim.md](sim.md) |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

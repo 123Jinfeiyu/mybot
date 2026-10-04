@@ -95,6 +95,24 @@
 </head>
 <body>
 
+<!-- 冻结声明（2026-10-04）：本页自此是**历史快照**，不再随代码更新。它描述的是
+     2026-09-25 复核时的形态；此后四项变更均未反映在正文与两张配套 SVG 里：
+     sim/ 仿真器迁入（三条 AF_UNIX 桥、场景/地图文件）、多机器人（每只一套 socket）、
+     ~/.mybot 下的会话与地图持久化、2026-10-03 的领域门面拆分（src/ 按域重组）。
+     页内计数（58 模块 / lib 21 / 守门 260+ / C++ 单测 634）同为该日快照值，**不要**
+     单独改数字——那只会让页面自相矛盾。权威口径见 docs/ 下各 md：README.md 的计数
+     派生口径、docs/drivers.md 的模块口径、docs/sim.md、docs/testing.md、docs/changelog.md。
+     刻意不重写正文：378 行分析网页没有任何守门能验证它，重写只会再产出一份
+     「看起来很新、其实无人复核」的文档；标注过期比伪造新鲜更诚实。 -->
+<div style="background:#fefce8;border:1px solid #fcd34d;color:#854d0e;padding:12px 20px;font-size:14px">
+  &#9888;&#65039; <strong>本页已冻结：2026-09-25 快照，不再随代码更新。</strong>
+  不含此后的 <code>sim/</code> 仿真器迁入、多机器人（每只一套 socket）、<code>~/.mybot</code> 会话与地图持久化、
+  2026-10-03 领域门面拆分；页内模块数与守门/单测计数同为该日快照值。
+  权威口径见 <a href="README.md" style="color:#854d0e">docs/README.md</a> 与
+  <a href="sim.md" style="color:#854d0e">docs/sim.md</a>、<a href="testing.md" style="color:#854d0e">docs/testing.md</a>、
+  <a href="changelog.md" style="color:#854d0e">docs/changelog.md</a>。下面这条蓝色说明描述的是当时的「现行架构」。
+</div>
+
 <!-- 版本标注（2026-09-25 复核更新）：本页正文与两张配套 SVG（architecture_layers.svg /
      architecture_dataflow.svg）均已更新为现行两进程架构：C++ 宿主唯一形态为
      mybot --mcp-backend（AF_UNIX 工具后端），模型循环在独立 Rust 进程 mybot-agent

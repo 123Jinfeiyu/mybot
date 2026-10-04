@@ -297,8 +297,9 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
 - **别提交密钥**：仓库 `.gitignore` 已忽略 `mybot.llm.json` / `*.llm.json`；
   模板见仓库根的 `mybot.llm.json.example`。
 - **厂商特有字段**（如 DeepSeek 的 `thinking` / `reasoning_effort`）与 `driver`/`endpoint`/`model`
-  一样，都是 Rust agent 配置里的**已承认字段**（`agent/src/config.rs` 的 `KNOWN_FIELDS`
-  与 C++ `kKnown` 同集合，双端同判据拒绝未知字段）；C++ 后端不消费模型侧字段
+  一样，都是 Rust agent 配置里的**已承认字段**（`agent/src/config/file.rs` 的
+  `PARSED_FIELD_NAMES`（由 `parsed_fields!` 宏表展开）+ `KNOWN_UNPARSED_FIELDS` 两个清单，
+  与 C++ `src/llmconfig.cpp` 的 `kKnown` 同集合，双端同判据拒绝未知字段）；C++ 后端不消费模型侧字段
   （`mergeLlmLayer` 的有意早退）。协议差异全部属于 Rust 侧的 provider 实现。
 
 为什么是 JSON 而不是 Lua：配置文件是**数据**，不是代码。Lua 配置要由宿主内嵌状态机去执行，
@@ -857,8 +858,8 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
    注意这仍是**文本级**防线（把值 base64/编码后打印即可绕过），与上面两道同档——真要对抗恶意 shell，
    仍须把 agent 放进专用用户 / 容器（见本节第 3 条末）。
 
-3. **模型 API key 由 Rust 直接读取**：`agent/src/config.rs` 从环境变量或配置文件
-   （`api_key`/`api_key_file`）取密钥，`provider.rs` 用于请求头；不经后端工具参数、Lua 驱动或
+3. **模型 API key 由 Rust 直接读取**：`agent/src/config/`（环境变量链在 `mod.rs`，
+   文件内联与 `api_key`/`api_key_file` 在 `file.rs`）取密钥，`provider.rs` 用于请求头；不经后端工具参数、Lua 驱动或
    `BOT4CJ_DEBUG` 转储，两端均无命令行传密钥的入口。
    - 环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`，再回退到 Rust 配置文件的 `api_key` / `api_key_file`。
    - **两进程都不可 dump**（2026-09-25）：`mybot` 与 `mybot-agent` 进入 `main` 的第一件事是
@@ -986,7 +987,7 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl.rs` 等 16 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
+| `agent/src/repl/mod.rs` 等 28 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 

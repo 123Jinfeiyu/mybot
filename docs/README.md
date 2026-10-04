@@ -17,7 +17,7 @@
 
 - [命令行与环境变量参考](reference.md)——动作输入源（TCP/文件/stdin）、CLI 参数、安全约束、`BOT4CJ_*` 环境变量
 - [DSL 参考：结构脚本与动作脚本](dsl.md)——占位符、引号字面量、`@Alias`/`@Vars`、`$(...)` 表达式、controller/trigger 与 `$` 引用完整语义
-- [硬件变量（驱动）清单](drivers.md)——`modules/` 下 **58 个模块**（48 款器件/执行器/系统接口驱动 + 3 条总线 + 7 个框架/工具驱动）按类别速查；
+- [硬件变量（驱动）清单](drivers.md)——`modules/` 下 **59 个模块**（48 款器件/执行器/系统接口驱动 + 3 条总线 + 8 个框架/工具驱动）按类别速查；
   含驱动契约（入口函数集 / 返回值 / 校验顺序 / destroy）、`SINGLE_CONSUMER` 名单与收敛豁免清单——
   **计数口径与推导写在 drivers.md 开头**，权威清单是 `ls modules/*.lua`
 - [已知限制与常见问题](faq.md)——平台/运行时边界与排障问答
@@ -32,9 +32,11 @@
 
 ## 架构与路线图
 
-- [架构分析与扩展开发路线图](architecture_analysis.html)——C++17 版全景分析（正文与配套两图按现行两进程架构重绘：`mybot --mcp-backend` + Rust `mybot-agent`，2026-09-25 逐条复核更新）
-- [分层架构全景图](architecture_layers.svg)——L1–L7 分层 + 主数据流 + 守护并发引用
-- [一次 play 的数据流 / 时序展开](architecture_dataflow.svg)——四阶段调用链 + @Daemon 并发分支（600B 共享槽 IPC）
+- [架构分析与扩展开发路线图](architecture_analysis.html)——C++17 版全景分析（正文与配套两图按 2026-09-25 的两进程架构重绘：`mybot --mcp-backend` + Rust `mybot-agent`）。
+  **该页与两张图已于 2026-10-04 冻结为历史快照**，不含此后的 `sim/` 迁入、多机器人、`~/.mybot` 持久化与领域门面拆分，页内计数亦为该日快照；
+  现行口径以下面各篇 md 为准（页首有同样的冻结声明）
+- [分层架构全景图](architecture_layers.svg)——L1–L7 分层 + 主数据流 + 守护并发引用（同上，2026-09-25 快照）
+- [一次 play 的数据流 / 时序展开](architecture_dataflow.svg)——四阶段调用链 + @Daemon 并发分支（600B 共享槽 IPC；同上，2026-09-25 快照）
 
 ## 测试与贡献
 
