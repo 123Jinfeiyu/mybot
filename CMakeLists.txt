@@ -108,6 +108,7 @@ set(MYBOT_CORE_SOURCES
   src/robot_lifecycle.cpp
   src/robot_actions.cpp
   src/robot_driver.cpp
+  src/robot_hotsql.cpp
   src/hotsql_plan.cpp
   src/hotsql_service.cpp
   src/actionsource.cpp
