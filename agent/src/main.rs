@@ -31,6 +31,7 @@ mod provider;
 mod repl;
 mod runtime;
 mod session;
+mod session_runtime;
 mod session_store;
 mod signals;
 mod startup;
@@ -403,39 +404,39 @@ async fn run() -> i32 {
         }
     };
 
-    let backend = match provider::build(&cfg, specs, &bridge, Arc::clone(&state), &preamble) {
-        Ok(b) => b,
-        Err(e) => {
-            errln!("错误: {e:#}");
-            return 2;
-        }
-    };
-    // 就绪信息走 stderr：stdout 留给模型输出与交互界面。
-    errln!(
-        "[mybot-agent] 驱动 {} / 模型 {} / 接入点 {} / 工具 {} 个 / 后端 {}",
-        backend.driver.as_str(),
-        cfg.model,
-        backend.effective_url,
-        tool_names.len(),
-        cfg.socket
-    );
-
-    let task = cli.task.clone();
-    let mut session = Session::new(repl::SessionAssembly {
-        cfg,
-        backend,
-        bridge,
-        state,
-        tool_names,
-        material,
-        audit,
-        writer: session_writer,
-        resume: repl::ResumeContext {
+    let session_parts =
+        match session_runtime::build_session_parts(session_runtime::SessionRuntimeInput {
+            cfg,
+            specs,
+            bridge,
+            state,
+            preamble,
+            tool_names,
+            material,
+            audit,
+            writer: session_writer,
             history: resume_history,
             summary: resume_summary,
             resumed,
-        },
-    });
+        }) {
+            Ok(parts) => parts,
+            Err(e) => {
+                errln!("错误: {e:#}");
+                return 2;
+            }
+        };
+    let backend = &session_parts.assembly.backend;
+    errln!(
+        "[mybot-agent] 驱动 {} / 模型 {} / 接入点 {} / 工具 {} 个 / 后端 {}",
+        backend.driver.as_str(),
+        session_parts.assembly.cfg.model,
+        backend.effective_url,
+        session_parts.assembly.tool_names.len(),
+        session_parts.assembly.cfg.socket
+    );
+
+    let task = cli.task.clone();
+    let mut session = Session::new(session_parts.assembly);
     if task.is_empty() {
         let rc = repl::run_repl(&mut session).await;
         session.write_session_end("end", "");
