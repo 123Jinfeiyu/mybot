@@ -11,7 +11,7 @@
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
 | `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
-| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 12 段：用例是否真被收集/编译 + 五组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
+| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 13 段：用例是否真被收集/编译 + 六组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
 | `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
 | `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh`，缺产物/依赖或超时即失败，`agent-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响 |
 | `gate:tsan` | 硬 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
@@ -235,10 +235,10 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
 > **判据与比对逻辑**仍留在各自文件里、不下沉——底座改动只可能影响「怎么读源码」，不会
 > 让两侧一起改错。此次接入是纯重构，四个检查器的输出与接入前逐字节一致。
 
-`run_all_selftest.sh` 现有 12 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
+`run_all_selftest.sh` 现有 13 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
 是否登记进 `CMakeLists.txt`、`test/*.lua` 是否匹配两侧 glob、`count_calls` 的「N 条用例」
 文案是否真数得到调用点、两张用例表的条数检查点、TSan 名单单点、`test/lib/params.sh`
-常量单点），8–12 是跨源比对：
+常量单点），8–13 是跨源比对：
 
 8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
    （`sim/src/action_table.cpp` 的 `kActions[]` vs `modules/Sim.lua` 的
@@ -276,6 +276,25 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
     不起服务）且拒因必须含该规则的特征片段、产线每条规则都至少有一条用例。**C++ 侧不
     参与**（宿主不解析模型历史，判据由 agent 一侧守）；两条夹具独有规则（DeepSeek 的
     `reasoning_content`、`tool_call_id` 类型）在表里逐条登记理由，差异是记录在案的。
+13. **LLM wire 契约里本仓手写的那部分**（`scripts/check_llm_wire.py`）：模型调用自
+    2026-09-25 起是 **Rust 直连**（C++ 宿主与 Lua 沙箱都不参与网络，`modules/Llm*.lua`
+    已不存在），故只钉 **Rust provider ↔ Python 夹具 ↔ E2E 脚本**这条链。报文字段本身
+    大多**不在本仓**——请求体（`top_p`/`reasoning_effort`/`temperature`/`max_tokens`/
+    `stream`）、SSE 帧名（`chat.completion.chunk`/`[DONE]`/`message_start`/`content_block_*`/
+    `message_delta`/`message_stop`）、响应字段（`choices`/`tool_calls`/`usage.prompt_tokens`…）、
+    鉴权头名（`Authorization`/`x-api-key`/`anthropic-version`）都由 vendored 的 **rig**
+    crate 拥有，`agent/src` 里搜不到这些字面量，对它们做「从本仓源码文本互钉」在本仓
+    不可能；唯一本仓手写的响应字段是 `reasoning_content`（已由第 12 段钉住）。于是脚本
+    只钉本仓确实手写了两份以上的两件事：**协议族 → 请求路径**（`agent/src/provider.rs`
+    的 `Driver::request_path()` 必须能解释夹具两条 `self.path != "..."` 断言，且各 E2E
+    脚本的 `--llm-endpoint` 路径都以某条 `request_path` 结尾）、**协议族表名**
+    （`Driver::from_table` 与 `Driver::as_str` 同集合，且脚本里每个 `--llm-driver` 都是
+    已知表名——写错族名如 `LlmDeepseek` 在 Rust 侧要等第一次调用才报错）；另有成对断言：
+    同一命令里 `--llm-driver X --llm-endpoint Y` 并存时，Y 的路径必须以 X 的
+    `request_path` 结尾（族名与路径不许错配）。反向验证过三条：改坏 provider 表名 /
+    改坏夹具 path 断言 / 制造族名-路径错配，均 `exit 1`。**C++/Lua 不参与**（不再实现
+    LLM 网络）、**rig 独占字段**（请求体/SSE 帧名/响应字段/鉴权头名）在脚本头逐条登记为
+    如实差异。
 
 ### 四处套件的计数口径
 

@@ -56,6 +56,12 @@ RUST_CONFIG_FILE_RS = "agent/src/config/file.rs"
 RUST_SESSION_RS = "agent/src/session.rs"
 FAKE_LLM_SERVER_PY = "scripts/fake_llm_server.py"
 
+# 第 13 段：LLM wire 可钉部分（check_llm_wire.py）——协议族表名与请求路径
+# 在 Rust provider / Python 夹具 / E2E 脚本三处的同集合（报文其余字段归 rig，见该脚本头）
+RUST_PROVIDER_RS = "agent/src/provider.rs"
+E2E_AGENT_SH = "scripts/agent_e2e.sh"
+E2E_ICA_SH = "scripts/ica_e2e.sh"
+
 
 def resolve(ref):
     """把协议出处（仓内相对路径字符串或 Path）解析成仓库根下的绝对 Path。

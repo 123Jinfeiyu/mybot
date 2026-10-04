@@ -10,9 +10,9 @@
 # 排在全量守门之前。两类，按段号分：
 #   1–7  守门自身的可信度（脚本语法、用例是否真被 glob/编译收集、计数文案是否有出处、
 #        用例表条数检查点、TSan 名单与 params 常量单点）；
-#   8–12 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
-#        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据）——全部零编译，
-#        理由见第 8 段。
+#   8–13 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
+#        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据、LLM wire 可钉部分）
+#        ——全部零编译，理由见第 8 段。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -165,6 +165,13 @@ EOF
 #     拒的历史在离线守门里照常全绿——正是夹具文档点名的「溜到真机才暴露」。脚本另钉
 #     产线判据条数与判据锚点（产线加/删判据必须同步用例表），并逐条断言拒因归属。
 #     C++ 侧不参与（不解析模型历史，如实差异见脚本头）。
+# 13) LLM wire 契约里本仓自己手写的那部分：`agent/src/provider.rs` 的协议族表名
+#     （`from_table`/`as_str` 同集合）与 `request_path`，必须能解释 Python 夹具
+#     `scripts/fake_llm_server.py` 的 path 断言，且两个 E2E 脚本里出现的每个
+#     `--llm-driver` 都是已知表名、每个 `--llm-endpoint` 路径都以某条 request_path
+#     结尾（成对的族名/路径不许错配）。报文字段、SSE 帧名、鉴权头名归 vendored rig
+#     crate，本仓无字面量可钉——如实差异逐条登记在脚本头；C++/Lua 自 2026-09-25 起
+#     不参与网络（无 modules/Llm*.lua），故不涉及。
 if command -v python3 >/dev/null 2>&1; then
 	python3 scripts/check_doc_paths.py \
 		|| note "scripts/check_doc_paths.py 发现文档与仓库实况不一致（详见上方输出）"
@@ -172,12 +179,14 @@ if command -v python3 >/dev/null 2>&1; then
 		|| note "scripts/check_llm_field_whitelist.py 发现配置字段白名单双端不一致（详见上方输出）"
 	python3 scripts/check_stateful_protocol.py \
 		|| note "scripts/check_stateful_protocol.py 发现有状态协议判据双端不一致（详见上方输出）"
+	python3 scripts/check_llm_wire.py \
+		|| note "scripts/check_llm_wire.py 发现 LLM wire 契约不一致（详见上方输出）"
 else
-	note "缺 python3，无法跑 scripts/check_doc_paths.py、scripts/check_llm_field_whitelist.py 与 scripts/check_stateful_protocol.py（文档一致性/配置白名单/有状态协议判据未受检查）"
+	note "缺 python3，无法跑 scripts/check_doc_paths.py、scripts/check_llm_field_whitelist.py、scripts/check_stateful_protocol.py 与 scripts/check_llm_wire.py（文档一致性/配置白名单/有状态协议判据/LLM wire 契约未受检查）"
 fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约）"

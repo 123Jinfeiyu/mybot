@@ -9,6 +9,27 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 跨源守门第 13 段：LLM wire 契约（可钉部分）
+
+- **新增第 13 段**（`scripts/check_llm_wire.py`，零编译）：模型调用自 2026-09-25 起是
+  **Rust 直连**（C++ 宿主与 Lua 驱动沙箱都不参与网络，`modules/Llm*.lua` 已不存在），
+  故只钉 **Rust provider ↔ Python 夹具 ↔ E2E 脚本**这条链，不涉及 C++。报文字段本身
+  大多**不在本仓**——请求体（`top_p`/`reasoning_effort`/`temperature`/`max_tokens`/
+  `stream`）、SSE 帧名、响应字段、鉴权头名都由 vendored 的 **rig** crate 拥有，`agent/src`
+  里搜不到这些字面量，对它们做「从本仓源码文本互钉」在本仓不可能（唯一本仓手写的响应
+  字段 `reasoning_content` 已由第 12 段钉住）。于是脚本只钉本仓确实手写了两份以上的
+  两件事：**协议族 → 请求路径**（`agent/src/provider.rs` 的 `Driver::request_path()`
+  要能解释夹具 `scripts/fake_llm_server.py` 的 path 断言，且各 E2E 脚本的 `--llm-endpoint`
+  路径都以某条 `request_path` 结尾）与**协议族表名**（`Driver::from_table` 与
+  `Driver::as_str` 同集合，脚本里每个 `--llm-driver` 都是已知表名）；另加成对断言：
+  `--llm-driver X --llm-endpoint Y` 并存时 Y 的路径必须以 X 的 `request_path` 结尾。
+  守门自检 **12 段 → 13 段**，仍不进 `run_all.sh` 的记账，故「守门用例」汇总数不变。
+- **范围被调研收窄（如实）**：原计划的「C++/Rust/Python 三方互钉」前提被证伪——C++ 侧
+  已无 LLM 网络实现、报文其余字段归 rig。故范围改定为「钉可钉部分」，rig 独占字段与
+  C++/Lua 不参与两项在脚本头逐条登记为如实差异，避免读者误以为漏检。
+- **反向验证过三条**：改坏 provider 表名 / 改坏夹具 path 断言 / 制造族名-路径错配，
+  均 `exit 1`（变异副本放仓内已 gitignore 的 `.tmp/`，跑完即清）。
+
 ### 2026-10-04 守门脚本共用底座：抽取原语与协议出处路径收敛一处
 
 - **新增共用底座** `scripts/lib/protocol_sources.py`（零编译）：把四道零编译守门脚本
