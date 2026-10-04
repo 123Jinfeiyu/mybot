@@ -19,18 +19,19 @@
 
 #include "action_runner.hpp"
 #include "daemon_registry.hpp"
-#include "hotsql_plan.hpp"
+#include "hardware.hpp"
 #include "hotsql_service.hpp"
 #include "hw_factory.hpp"
 #include "hw_registry.hpp"
-#include "matrix.hpp"
 #include "meta_registry.hpp"
-#include "script_loader.hpp"
 #include "structure_store.hpp"
 #include "util_cli.hpp"
-#include "util_except.hpp"
 
 namespace bot {
+
+/* 结构脚本/动作脚本统一按字节流消费；本头只以引用接收它（构造与 run 的形参），
+ * 连同内联构造体的转交都不需要完整类型——直接前置声明，不背 util_except.hpp。 */
+class Reader;
 
 /* ---- 机器人编排门面：装配流程 + 生命周期（R-1 后只剩这些）---- */
 class RobotStruct {
