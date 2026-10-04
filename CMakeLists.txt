@@ -104,7 +104,6 @@ set(MYBOT_CORE_SOURCES
   src/hw_factory.cpp
   src/action_runner.cpp
   src/luaexec.cpp
-  src/robot.cpp
   src/robot_lifecycle.cpp
   src/robot_actions.cpp
   src/robot_driver.cpp
