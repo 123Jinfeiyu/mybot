@@ -9,6 +9,24 @@
 
 ## v1.x（C++ 移植版）
 
+### 2026-10-04 守门脚本共用底座：抽取原语与协议出处路径收敛一处
+
+- **新增共用底座** `scripts/lib/protocol_sources.py`（零编译）：把四道零编译守门脚本
+  （第 8 段 `scripts/check_sim_contract.py`、第 10 段 `scripts/check_doc_paths.py`、
+  第 11 段 `scripts/check_llm_field_whitelist.py`、第 12 段 `scripts/check_stateful_protocol.py`）
+  里各自复制的文本抽取原语（`strip_comments` 去注释、`balanced_block` 取平衡括号块、
+  `rel` 转仓内相对路径、`read` 读数与「找不到」文案）与协议出处路径常量清单收敛到一处；
+  各脚本改为 import 并各留两行 `read` 包装，以沿用「脚本名: 找不到 <路径>」的失败文案，
+  调用点零改动。
+- **判据仍各写各的**：底座只放**机械部分**（怎么读源码）——什么算不一致、两侧该同集合
+  还是该有差集、报错文案怎么写，仍留在各脚本里。这**不违反** `docs/testing.md` 那条
+  「主干这几道独立实现、不共享代码」，因为那条说的是 **Python 守门与 `sim/tests/` 的
+  C++ 同款校验不得共享**（共享实现等于共享同一个错误）：C++ 侧仍是另一套独立实现，两侧
+  照旧交叉印证。判据逻辑不下沉，故底座改动只可能影响「怎么读」，不会让两侧一起改错。
+- **纯重构、行为不变**：接入前先把四个检查器的 stdout 存为基线，接入后逐文件 `diff`
+  **逐字节一致**（`strip_comments` / `balanced_block` 亦与旧实现做过逐字节等价核对）；
+  `bash test/run_all_selftest.sh` 12 段全绿。守门段数与 `run_all.sh` 记账口径均未变。
+
 ### 2026-10-04 跨源守门第 12 段：有状态 LLM 协议判据双端互钉
 
 - **新增第 12 段**（`scripts/check_stateful_protocol.py`，零编译）：模型服务端对**会话

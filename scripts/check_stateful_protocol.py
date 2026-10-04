@@ -41,13 +41,20 @@ import copy
 import re
 import runpy
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from lib.protocol_sources import (
+    FAKE_LLM_SERVER_PY,
+    RUST_SESSION_RS,
+    balanced_block,
+    resolve,
+    strip_comments,
+)
+from lib.protocol_sources import read as _read
+
 PREFIX = "check_stateful_protocol"
 
-RS_PATH = ROOT / "agent/src/session.rs"
-PY_PATH = ROOT / "scripts/fake_llm_server.py"
+RS_PATH = resolve(RUST_SESSION_RS)
+PY_PATH = resolve(FAKE_LLM_SERVER_PY)
 
 # Rust 产线判据登记表：规则名 → 判据文本里的稳定片段（锚点）。
 # 锚点是给「判据还在不在」用的：改了措辞就必须改这里，改这里就会重新走一遍用例表。
@@ -74,41 +81,15 @@ FIXTURE_ONLY_RULES = {
 
 
 def read(path):
-    if not path.is_file():
-        sys.exit(f"{PREFIX}: 找不到 {path}")
-    return path.read_text(encoding="utf-8")
-
-
-def strip_comments(text):
-    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-    text = re.sub(r"//[^\n]*", " ", text)
-    return re.sub(r"///[^\n]*", " ", text)
-
-
-def brace_block(text, marker):
-    """取 marker 之后第一个平衡的 { ... } 块内部内容；找不到返回 None。"""
-    m = text.find(marker)
-    if m == -1:
-        return None
-    start = text.find("{", m)
-    if start == -1:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[start + 1 : i]
-    return None
+    """本脚本的读取包装：失败文案带脚本名前缀。"""
+    return _read(path, PREFIX)
 
 
 # ── 1) + 2) Rust 产线判据：条数与锚点 ────────────────────────────────────
 
 
 def check_rust(errors):
-    body = brace_block(strip_comments(read(RS_PATH)), "pub fn protocol_violation(")
+    body = balanced_block(strip_comments(read(RS_PATH)), "pub fn protocol_violation(")
     if body is None:
         sys.exit(
             f"{PREFIX}: 在 {RS_PATH} 里没找到 `pub fn protocol_violation(...)` 的函数体；"

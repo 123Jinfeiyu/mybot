@@ -9,6 +9,9 @@ target/
 # Trae 本地工作区元数据，不入库
 .trae/
 
+# Python 字节码缓存（scripts/lib 共用底座被 import 时生成），不入库
+__pycache__/
+
 # agent 模式的 LLM 配置：内含 API key，别提交（示例见 mybot.llm.json.example）
 mybot.llm.json
 mybot.llm.conf.json

@@ -35,49 +35,35 @@ CI job 的构建范围内（见 sim/CMakeLists.txt 顶部注释），所以那�
 import math
 import re
 import sys
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-CPP_PATH = ROOT / "sim/src/action_table.cpp"
-LUA_PATH = ROOT / "modules/Sim.lua"
-SIM_CONFIG_PATH = ROOT / "sim/src/sim_config.h"
-WORLD_CPP_PATH = ROOT / "sim/src/world.cpp"
-SCENE_PATH = ROOT / "sim/scenes/default.scene"
+from lib.protocol_sources import (
+    AGENT_IMAGE_CPP,
+    LUA_CAMERA,
+    LUA_SIM,
+    SIM_ACTION_TABLE_CPP,
+    SIM_CAPTURE_CPP,
+    SIM_CONFIG_H,
+    SIM_SCENE,
+    SIM_SENSOR_CPP,
+    SIM_WORLD_CPP,
+    balanced_block,
+    rel,
+    resolve,
+)
+from lib.protocol_sources import read as _read
 
 PREFIX = "check_sim_contract"
 
-
-def read(rel_or_path):
-    p = Path(rel_or_path) if isinstance(rel_or_path, Path) else ROOT / rel_or_path
-    if not p.is_file():
-        sys.exit(f"{PREFIX}: 找不到 {p}")
-    return p.read_text(encoding="utf-8")
-
-
-def rel(path):
-    return Path(path).relative_to(ROOT) if Path(path).is_absolute() else Path(path)
+CPP_PATH = resolve(SIM_ACTION_TABLE_CPP)
+LUA_PATH = resolve(LUA_SIM)
+SIM_CONFIG_PATH = resolve(SIM_CONFIG_H)
+WORLD_CPP_PATH = resolve(SIM_WORLD_CPP)
+SCENE_PATH = resolve(SIM_SCENE)
 
 
-def brace_block(text: str, marker: str):
-    """取 marker 之后第一个平衡的 { ... } 块内部内容；找不到返回 None。
-    与 sim/tests/test_contract.cpp 的 braceBlock() 同一个算法，两边各自独立实现，
-    用于交叉印证「脚本本身没写错」。
-    """
-    m = text.find(marker)
-    if m == -1:
-        return None
-    open_idx = text.find("{", m)
-    if open_idx == -1:
-        return None
-    depth = 0
-    for i in range(open_idx, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return text[open_idx + 1 : i]
-    return None
+def read(path):
+    """本脚本的读取包装：失败文案带脚本名前缀。"""
+    return _read(path, PREFIX)
 
 
 # ── 1) 动作码表 ────────────────────────────────────────────────────────
@@ -86,7 +72,7 @@ def brace_block(text: str, marker: str):
 def parse_cpp_actions():
     text = read(CPP_PATH)
 
-    body = brace_block(text, "kActions[] = {")
+    body = balanced_block(text, "kActions[] = {")
     if body is None:
         sys.exit(f"{PREFIX}: 在 {rel(CPP_PATH)} 里没找到 kActions[] = {{ ... }}")
 
@@ -122,17 +108,17 @@ def parse_cpp_actions():
 def parse_lua_table():
     text = read(LUA_PATH)
 
-    codes_block = brace_block(text, "local CODES =")
+    codes_block = balanced_block(text, "local CODES =")
     if codes_block is None:
         sys.exit(f"{PREFIX}: 在 {rel(LUA_PATH)} 里没找到 local CODES = {{ ... }}")
     codes = {}
     for m in re.finditer(r"\[(\d+)\]\s*=\s*\"([^\"]+)\"", codes_block):
         codes[int(m.group(1))] = m.group(2)
 
-    params_block = brace_block(text, "local PARAM_CODES =") or ""
+    params_block = balanced_block(text, "local PARAM_CODES =") or ""
     params = {int(m.group(1)) for m in re.finditer(r"\[(\d+)\]\s*=\s*true", params_block)}
 
-    params2_block = brace_block(text, "local PARAM2_CODES =") or ""
+    params2_block = balanced_block(text, "local PARAM2_CODES =") or ""
     params2 = {int(m.group(1)) for m in re.finditer(r"\[(\d+)\]\s*=\s*true", params2_block)}
 
     cm = re.search(r"CODE_MAX\s*=\s*(\d+)", text)
@@ -237,15 +223,15 @@ def check_socket_paths(errors):
 # 锚为 None 表示全文件只允许出现一处。
 REQUEST_BRIDGES = [
     {
-        "bridge": "sim/src/sensor.cpp",
+        "bridge": SIM_SENSOR_CPP,
         "senders": [
-            ("modules/Sim.lua", "function range("),
-            ("src/agentimage.cpp", None),
+            (LUA_SIM, "function range("),
+            (AGENT_IMAGE_CPP, None),
         ],
     },
     {
-        "bridge": "sim/src/capture.cpp",
-        "senders": [("modules/Camera.lua", "local function capture_live(")],
+        "bridge": SIM_CAPTURE_CPP,
+        "senders": [(LUA_CAMERA, "local function capture_live(")],
     },
 ]
 
@@ -315,10 +301,10 @@ SCENE_BOX_RE = re.compile(r"^box\s+" + r"\s+".join([_NUM] * 10) + r"\s*(?:#.*)?$
 
 def check_default_scene(errors):
     cpp_text = read(WORLD_CPP_PATH)
-    fn_body = brace_block(cpp_text, "World::defaultScene()")
+    fn_body = balanced_block(cpp_text, "World::defaultScene()")
     if fn_body is None:
         sys.exit(f"{PREFIX}: 在 {rel(WORLD_CPP_PATH)} 里没找到 World::defaultScene()")
-    decl = brace_block(fn_body, "std::vector<Obstacle> obs = {")
+    decl = balanced_block(fn_body, "std::vector<Obstacle> obs = {")
     if decl is None:
         sys.exit(
             f"{PREFIX}: World::defaultScene() 里没找到 std::vector<Obstacle> obs = {{ ... }}；"

@@ -30,7 +30,9 @@ import re
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from lib.protocol_sources import ROOT, rel
+from lib.protocol_sources import read as _read
+
 PREFIX = "check_doc_paths"
 
 DOCS_DIR = ROOT / "docs"
@@ -102,13 +104,8 @@ NAME_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]*)`")
 
 
 def read(path):
-    if not path.is_file():
-        sys.exit(f"{PREFIX}: 找不到 {path}")
-    return path.read_text(encoding="utf-8")
-
-
-def rel(path):
-    return path.relative_to(ROOT)
+    """本脚本的读取包装：失败文案带脚本名前缀。"""
+    return _read(path, PREFIX)
 
 
 def doc_files():

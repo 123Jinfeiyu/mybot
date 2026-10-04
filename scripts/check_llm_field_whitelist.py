@@ -31,13 +31,21 @@
 import re
 import sys
 from collections import Counter
-from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+from lib.protocol_sources import (
+    LLM_CONFIG_CPP,
+    RUST_CONFIG_FILE_RS,
+    balanced_block,
+    rel,
+    resolve,
+    strip_comments,
+)
+from lib.protocol_sources import read as _read
+
 PREFIX = "check_llm_field_whitelist"
 
-CPP_PATH = ROOT / "src/llmconfig.cpp"
-RS_PATH = ROOT / "agent/src/config/file.rs"
+CPP_PATH = resolve(LLM_CONFIG_CPP)
+RS_PATH = resolve(RUST_CONFIG_FILE_RS)
 
 STRING_RE = re.compile(r'"([A-Za-z_][A-Za-z0-9_]*)"')
 # 任何形状的字符串字面量：与 STRING_RE 的差集就是「白名单里有、但本脚本的标识符
@@ -49,37 +57,8 @@ MACRO_ROW_RE = re.compile(r'\(\s*(\w+)\s*,\s*"([A-Za-z_][A-Za-z0-9_]*)"')
 
 
 def read(path):
-    if not path.is_file():
-        sys.exit(f"{PREFIX}: 找不到 {path}")
-    return path.read_text(encoding="utf-8")
-
-
-def rel(path):
-    return path.relative_to(ROOT)
-
-
-def strip_comments(text):
-    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-    return re.sub(r"//[^\n]*", " ", text)
-
-
-def balanced_block(text, marker, open_ch="{", close_ch="}"):
-    """取 marker 之后第一个平衡的 open_ch...close_ch 内部内容；找不到返回 None。"""
-    m = text.find(marker)
-    if m == -1:
-        return None
-    start = text.find(open_ch, m)
-    if start == -1:
-        return None
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == open_ch:
-            depth += 1
-        elif text[i] == close_ch:
-            depth -= 1
-            if depth == 0:
-                return text[start + 1 : i]
-    return None
+    """本脚本的读取包装：失败文案带脚本名前缀。"""
+    return _read(path, PREFIX)
 
 
 def cpp_known(errors):
