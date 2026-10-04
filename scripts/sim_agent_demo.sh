@@ -94,7 +94,13 @@ BOT_LOG="$RUN/backend.log"
 SIM_PID=""; BOT_PID=""; FEED_PID=""
 cleanup() {
 	trap - EXIT INT TERM
-	[ -n "$FEED_PID" ] && kill "$FEED_PID" 2>/dev/null
+	# FEED_PID 是那个子壳的 PID，而 tail 与 python3 是它的**子进程**：只 kill 子壳，两者会被
+	# reparent 到 init 接着跑——每次 demo 泄漏两个进程，且它们握着 stdout 管道不放，脚本早已
+	# 退出、读管道的一方却等不到 EOF。故先杀子进程、再杀子壳。
+	if [ -n "$FEED_PID" ]; then
+		pkill -P "$FEED_PID" 2>/dev/null
+		kill "$FEED_PID" 2>/dev/null
+	fi
 	[ -n "$BOT_PID" ] && kill -TERM "$BOT_PID" 2>/dev/null
 	[ -n "$SIM_PID" ] && kill -TERM "$SIM_PID" 2>/dev/null
 	[ -n "$BOT_PID" ] && wait "$BOT_PID" 2>/dev/null

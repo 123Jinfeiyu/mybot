@@ -91,6 +91,20 @@
   落地，落定后箱顶 0.90 撞进它的竖直带——正是写回前那次事实性 3D 校验存在的理由。
   sim_tests 381 → 387 通过 / 0 失败。
 
+### 2026-10-04 演示脚本 `sim_agent_demo.sh` 退出后泄漏两个进程（修复）
+
+- **cleanup 杀错了对象**：实时工具流是 `( tail -n +1 -F 审计 | python3 格式化 ) &`，
+  `FEED_PID=$!` 拿到的是**那个子壳**的 PID，而 `tail` 与 `python3` 是子壳的子进程。
+  cleanup 只 `kill "$FEED_PID"`：子壳死了，两个子进程被 reparent 到 init 接着跑。
+  对使用者意味着什么：① 每跑一次 demo 永久泄漏两个进程（`tail -F` 还一直握着审计文件）；
+  ② 它们同时握着 demo 的 stdout 管道不放，**脚本早已退出、读管道的一方却永远等不到
+  EOF**——把 demo 输出接进 `| tail`、`| tee` 或任何采集器的用法都会挂死在那儿。
+  交互式终端下看不出来（进程静默留在后台），正是它一直没被发现的原因。
+- 改为先 `pkill -P "$FEED_PID"` 杀子进程、再杀子壳。验证不起 LLM：`AGENT_BIN=/bin/false`
+  跑通「起 sim + 起后端 + 起 feed + 立刻拆链路」整条 cleanup 路径，改后管道立刻读到 EOF、
+  `pgrep` 查无残留；反向验证用 `git show HEAD:` 取回改前脚本副本同样跑一遍，`tail`
+  与 `python3` 两个孤儿如期出现（实测 PID 1013661/1013662），确认修的就是这个。
+
 ### 2026-10-04 Rust agent 残留结构治理（行为保持）
 
 - **`config/summarize.rs` 补密钥泄漏守门与分支单测**：`--check-config` 的摘要此前只被
