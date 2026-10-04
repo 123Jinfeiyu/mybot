@@ -80,19 +80,30 @@ endif()
 
 # 被测主体（不含入口 main.cpp）：mybot 与 mybot_tests 共用同一份，
 # 保证单测编译的正是发布二进制里的那套实现，而不是第二份拷贝。
+#
+# 2026-10-04 分组：此前 50 个文件平铺，领域边界只存在于文件名里。现按编译单元
+# 所属领域分段——**只重排、不增删**（下方 B8 自检判据因此一字不变，段内亦保持
+# 原相对次序）。段序自下而上：语言/序列化基元（JSON/配置/矩阵/Lua）→ 领域层
+# （硬件/装配执行/机器人门面/热插）→ 装配面（通道与 CLI/agent/MCP）→ 应用编排。
 set(MYBOT_CORE_SOURCES
+  # ---- JSON 层：词法/语法解析、序列化、配置文件读取 ----
   src/json.cpp
   src/jsonparse.cpp
   src/jsonconfig.cpp
+  # ---- 配置层：模型接入参数（CLI 与配置文件两路归一） ----
   src/llmconfig.cpp
+  # ---- 矩阵/表达式/脚本语法层：.mt 与结构 SQL 的解析基元 ----
   src/matrix.cpp
   src/expr.cpp
   src/sqlparse.cpp
-  src/structure.cpp
-  src/mtmerge_core.cpp
-  src/mtinclude.cpp
+  src/structure.cpp          # ScriptLoader：SQL 事件 → MatrixObject
+  src/mtmerge_core.cpp       # .mt 归并核心（mybot_tests / mtmerge 共用）
+  src/mtinclude.cpp          # @Include 展开
+  # ---- Lua 层：桥接、沙箱与执行预算 ----
   src/luabridge.cpp
   src/luasandbox.cpp
+  src/luaexec.cpp
+  # ---- 硬件域：变量基类、Lua/Daemon 变量、注册表与元数据 ----
   src/hardware.cpp
   src/luavar.cpp
   src/daemonvar.cpp
@@ -101,18 +112,22 @@ set(MYBOT_CORE_SOURCES
   src/hw_registry.cpp
   src/meta_provider.cpp
   src/meta_registry.cpp
+  # ---- 硬件装配与动作执行：矩阵表 → 变量，@Action 派发与重放 ----
   src/hw_factory.cpp
   src/action_runner.cpp
-  src/luaexec.cpp
+  # ---- 机器人门面：生命周期/动作/驱动注入/热 SQL 四个 TU（robot.hpp 门面） ----
   src/robot_lifecycle.cpp
   src/robot_actions.cpp
   src/robot_driver.cpp
   src/robot_hotsql.cpp
+  # ---- 热插域：只读计划层与提交服务 ----
   src/hotsql_plan.cpp
   src/hotsql_service.cpp
+  # ---- 输入通道与 CLI 解析（--input/stdin/TCP 与选项表） ----
   src/actionsource.cpp
   src/cliargs.cpp
   src/cliargs_help.cpp
+  # ---- agent 域：进程自护、帧协议、工具、视图、提示词、审计、策略与模式 ----
   src/agent_subprocess.cpp
   src/agent_envscrub.cpp
   src/agent_fdguard.cpp
@@ -126,10 +141,12 @@ set(MYBOT_CORE_SOURCES
   src/agentmode.cpp
   src/agentaudit.cpp
   src/agentpolicy.cpp
+  # ---- MCP 后端：帧通道、监听、工具后端与 context.get 素材 ----
   src/mcpbackend.cpp
   src/mcplisten.cpp
   src/mcptransport.cpp
   src/context_service.cpp
+  # ---- 应用编排：把上面各域串成 --input/stdin/TCP/agent 四条运行路径 ----
   src/robot_application.cpp
 )
 
