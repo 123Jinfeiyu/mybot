@@ -133,8 +133,9 @@ run_cpp_unit() {
 # ======================================================================
 run_harness_selftest() {
 	echo "----- harness-selftest (测试骨架自证) -----"
-	local binp
-	binp="$(dirname "$tests_bin")/harness_selftest"
+	# 路径单点在 run_all.sh 顶部的 selftest_bin：产物陈旧判据也拿同一个变量，
+	# 两处各派生一次的话，改了 BOT_TESTS 就会出现「判的是 A、跑的是 B」。
+	local binp="$selftest_bin"
 	if [ ! -x "$binp" ]; then
 		artifact_missing "测试骨架自证" "harness_selftest" "$binp" "$tests_explicit"
 		return 2

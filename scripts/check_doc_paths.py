@@ -6,7 +6,7 @@
 共享库数）还常在手写多份（README、docs/README.md、docs/drivers.md 的口径行），
 于是三处各漂一点、彼此不一致，读者无从判断哪个是真的。
 
-本脚本零编译、零第三方依赖，做五组检查（接入 test/run_all_selftest.sh）：
+本脚本零编译、零第三方依赖，做六组检查（接入 test/run_all_selftest.sh）：
 
   1. 路径存在性：README.md 与 docs/*.md 里的仓内路径引用逐个实测存在。
      * markdown 链接 `[文字](目标)` 的目标按**文档所在目录**解析（docs/x.md 里
@@ -25,6 +25,13 @@
      链接形态 `x.md` 都算）在全仓任何文本文件里再出现即判失败。取材面比检查 1 宽
      （源码注释 / 脚本 / CI / 冻结 html 都算），因为死引用的成因恰恰是「引用它的
      地方不在任何守门的取材面里」；名单里的文件若又存在了同样判失败（名单过期）。
+  6. 套件计数口径：docs/testing.md「四处套件的计数口径」那张表（mybot_tests /
+     harness_selftest / sim_tests / Rust agent）与表下两条式子里的每个数字，都从仓库
+     实况派生后比对——加/删用例而忘了改表，这里判红，不再依赖人回头更新快照。
+     唯一派生不出来的是 sim_tests 的通过数（sim 侧记账单位是**断言**不是用例，
+     check() 调用点 309 处而实跑 387 条，差额来自循环与条件分支），故只钉它的
+     「N 个 TU」（sim/CMakeLists.txt 的 add_executable 源清单），并要求表里明写
+     「运行时数」以免被误当成受检数字。
 
 用法：python3 scripts/check_doc_paths.py
 退出码：0=一致，1=发现不一致或解析失败（原因打到 stderr）。
@@ -387,6 +394,188 @@ def check_deleted(errors):
     return n_files
 
 
+# ── 6) 四处套件的计数口径（docs/testing.md 的快照表 vs 仓库实况派生）──
+
+TESTING_MD = DOCS_DIR / "testing.md"
+TEST_CPP_DIR = ROOT / "test" / "cpp"
+SIM_CMAKE = ROOT / "sim" / "CMakeLists.txt"
+AGENT_SRC = ROOT / "agent" / "src"
+
+TH_TEST_RE = re.compile(r"\bTH_TEST\(")
+TH_META_RE = re.compile(r"\bTH_TEST\(meta_")
+RUST_TEST_RE = re.compile(r"(?m)^[ \t]*#\[(tokio::)?test\]")
+SIM_TESTS_TU_RE = re.compile(r"add_executable\(sim_tests\b(.*?)\)", re.S)
+
+
+def _count_in(pat, paths):
+    n = 0
+    for p in paths:
+        n += len(pat.findall(p.read_text(encoding="utf-8")))
+    return n
+
+
+def _stated(text, pat, what):
+    """从 testing.md 里按锚点正则抠出一个整数；抠不到就 exit（不是「跳过」）。
+
+    与 check_counts 对 drivers.md「计数口径」那行同一取向：锚点消失说明措辞被改过，
+    那时静默少比一个数比报错危险得多——这张表本来就是「没人会回头看」的那类数字。
+    """
+    m = re.search(pat, text)
+    if m is None:
+        sys.exit(
+            f"{PREFIX}: {rel(TESTING_MD)}「四处套件的计数口径」里找不到{what}，"
+            "措辞变了？（改措辞请同步本脚本的锚点正则）"
+        )
+    return int(m.group(1))
+
+
+def check_suite_counts(errors):
+    """把 testing.md 那张套件计数表与仓库实况派生值逐个比对。
+
+    这张表原本只是「某天的快照」，没有任何守门看着它：加一条用例、拆一个 TU，表里的
+    数字就悄悄过期，而读者拿它当基线核对守门输出（「271 通过对不对？」）。三个数能
+    从源码静态派生（见下），第四个不能——sim 侧记账单位是**断言**不是用例，
+    check() 调用点 309 处而实跑 387 条，差额来自循环与条件分支，跑一遍才知道；
+    加上 sim/ 不在任何 CI job 的构建范围，那个数只能人工回填，故这里只钉它的
+    「N 个 TU」部分，并要求表里明写「运行时数」以免被误当成受检数字。
+    """
+    text = read(TESTING_MD)
+
+    cpp_sources = sorted(TEST_CPP_DIR.glob("*.cpp")) + sorted(TEST_CPP_DIR.glob("*.hpp"))
+    if not cpp_sources:
+        sys.exit(f"{PREFIX}: {rel(TEST_CPP_DIR)} 下一个 .cpp/.hpp 都没有，取材面变了？")
+    harness_hpp = TEST_CPP_DIR / "harness.hpp"
+    selftest_cpp = TEST_CPP_DIR / "harness_selftest.cpp"
+    for p in (harness_hpp, selftest_cpp):
+        if not p.is_file():
+            sys.exit(f"{PREFIX}: 派生口径依赖的 {rel(p)} 不在了")
+
+    th_total = _count_in(TH_TEST_RE, cpp_sources)
+    th_define = _count_in(TH_TEST_RE, [harness_hpp])
+    th_selftest = _count_in(TH_TEST_RE, [selftest_cpp])
+    th_meta = _count_in(TH_META_RE, [selftest_cpp])
+    if th_define != 1:
+        errors.append(
+            f"{rel(harness_hpp)} 里 `TH_TEST(` 出现 {th_define} 次，不是 1 次"
+            "——testing.md 那条式子写的是「− 1 处宏定义」，多出来的会被算成用例"
+        )
+    mybot_derived = th_total - th_define - th_selftest
+    harness_derived = th_selftest - th_meta
+
+    rs_sources = sorted(AGENT_SRC.rglob("*.rs"))
+    rust_derived = _count_in(RUST_TEST_RE, rs_sources)
+
+    sim_cmake = read(SIM_CMAKE)
+    m = SIM_TESTS_TU_RE.search(sim_cmake)
+    if m is None:
+        sys.exit(f"{PREFIX}: {rel(SIM_CMAKE)} 里找不到 add_executable(sim_tests …)")
+    sim_tu_derived = len(
+        [ln for ln in m.group(1).splitlines() if ln.strip().endswith(".cpp")]
+    )
+
+    # 表格四行
+    row_mybot = _stated(
+        text, r"\|\s*`mybot_tests`\s*\|[^\n|]*\|\s*(\d+)\s*通过", "`mybot_tests` 那行的通过数"
+    )
+    row_harness = _stated(
+        text,
+        r"\|\s*`harness_selftest`\s*\|[^\n|]*\|\s*(\d+)\s*通过",
+        "`harness_selftest` 那行的通过数",
+    )
+    m_sim = re.search(
+        r"\|\s*`sim_tests`\s*\|[^\n|]*\|\s*(\d+)\s*通过[^\n|]*（(\d+)\s*个\s*TU）", text
+    )
+    if m_sim is None:
+        sys.exit(f"{PREFIX}: {rel(TESTING_MD)} 里找不到 `sim_tests` 那行（通过数 + N 个 TU）")
+    row_sim_tu = int(m_sim.group(2))
+    row_rust = _stated(
+        text, r"\|\s*Rust agent\s*\|[^\n|]*\|\s*(\d+)\s*passed", "Rust agent 那行的 passed 数"
+    )
+
+    if row_mybot != mybot_derived:
+        errors.append(
+            f"testing.md 写 `mybot_tests` {row_mybot} 通过，按仓库实况派生是 {mybot_derived}"
+            f"（`test/cpp/` 里 `TH_TEST(` {th_total} 次 − 宏定义 {th_define}"
+            f" − harness_selftest {th_selftest}）"
+        )
+    if row_harness != harness_derived:
+        errors.append(
+            f"testing.md 写 `harness_selftest` {row_harness} 通过，按仓库实况派生是 "
+            f"{harness_derived}（该文件 {th_selftest} 个 TH_TEST − {th_meta} 个 meta_ 例句）"
+        )
+    if row_sim_tu != sim_tu_derived:
+        errors.append(
+            f"testing.md 写 `sim_tests` {row_sim_tu} 个 TU，"
+            f"{rel(SIM_CMAKE)} 的 add_executable(sim_tests …) 实际列了 {sim_tu_derived} 个"
+        )
+    if row_rust != rust_derived:
+        errors.append(
+            f"testing.md 写 Rust agent {row_rust} passed，按仓库实况派生是 {rust_derived}"
+            f"（{rel(AGENT_SRC)} 下 #[test] + #[tokio::test]）"
+        )
+
+    # 表下两条式子里的数：与表格、与派生值三方自洽
+    bullet_total = _stated(
+        text, r"`TH_TEST\(`\s*的出现次数（(\d+)）", "第一条式子里 `TH_TEST(` 的出现次数"
+    )
+    if bullet_total != th_total:
+        errors.append(
+            f"testing.md 的式子写 `TH_TEST(` 出现 {bullet_total} 次，实际 {th_total} 次"
+        )
+    bullet_selftest = _stated(
+        text, r"−\s*(\d+)\s*个属于\s*`harness_selftest`", "第一条式子里减掉的 harness_selftest 数"
+    )
+    if bullet_selftest != th_selftest:
+        errors.append(
+            f"testing.md 的式子减掉 {bullet_selftest} 个 harness_selftest 用例，"
+            f"{rel(selftest_cpp)} 实际有 {th_selftest} 个"
+        )
+    bullet_result = _stated(text, r"=\s*(\d+)。拿这个式子复核", "第一条式子的结果")
+    if bullet_result != mybot_derived:
+        errors.append(
+            f"testing.md 第一条式子的结果写 {bullet_result}，派生值是 {mybot_derived}"
+        )
+    if bullet_result != row_mybot:
+        errors.append(
+            f"testing.md 第一条式子的结果 {bullet_result} 与表格里 `mybot_tests` 的 "
+            f"{row_mybot} 不一致（同一页两个数）"
+        )
+    bullet_meta_file = _stated(
+        text, r"有\s*(\d+)\s*个\s*`TH_TEST`", "第二条式子里 harness_selftest 的 TH_TEST 数"
+    )
+    if bullet_meta_file != th_selftest:
+        errors.append(
+            f"testing.md 第二条式子写 harness_selftest 有 {bullet_meta_file} 个 TH_TEST，"
+            f"实际 {th_selftest} 个"
+        )
+    bullet_meta_run = _stated(text, r"只报\s*(\d+)\s*通过", "第二条式子里二进制报的通过数")
+    if bullet_meta_run != harness_derived:
+        errors.append(
+            f"testing.md 第二条式子写二进制只报 {bullet_meta_run} 通过，派生值是 "
+            f"{harness_derived}"
+        )
+    bullet_meta_n = _stated(text, r"另外\s*(\d+)\s*个\s*`meta_\*`", "第二条式子里的 meta_ 例句数")
+    if bullet_meta_n != th_meta:
+        errors.append(
+            f"testing.md 第二条式子写 {bullet_meta_n} 个 meta_ 例句，"
+            f"{rel(selftest_cpp)} 实际有 {th_meta} 个"
+        )
+
+    # 387 那一格必须自带「不可派生」的标记，否则读者会以为它也受检
+    if "运行时数" not in m_sim.group(0):
+        errors.append(
+            "testing.md 的 `sim_tests` 行没写「运行时数」标记：那个通过数是断言计数，"
+            "本脚本派生不出来（只能钉 TU 数），不标注会被误当成受检数字"
+        )
+
+    return {
+        "mybot": mybot_derived,
+        "harness": harness_derived,
+        "sim_tu": sim_tu_derived,
+        "rust": rust_derived,
+    }
+
+
 def main():
     errors = []
     n_paths = check_paths(errors)
@@ -396,6 +585,7 @@ def main():
     stated = check_counts(errors, roster, on_disk)
     n_docs = check_index(errors)
     n_scanned = check_deleted(errors)
+    suites = check_suite_counts(errors)
 
     if errors:
         print(f"{PREFIX}: 文档与仓库实况不一致：", file=sys.stderr)
@@ -408,6 +598,8 @@ def main():
         f" / 计数口径 {stated['total']}={stated['device']}+{stated['bus']}+{stated['tool']}"
         f"、lib {stated['lib']} / {n_docs} 篇文档全部挂上索引"
         f" / {n_scanned} 个文件里零处引用 {len(DELETED_FILES)} 个已删文件"
+        f" / 套件计数派生 mybot_tests {suites['mybot']}、harness_selftest "
+        f"{suites['harness']}、sim_tests {suites['sim_tu']} 个 TU、Rust {suites['rust']}"
         f" / {len(KNOWN_ABSENT)} 条历史与占位豁免仍生效）"
     )
 

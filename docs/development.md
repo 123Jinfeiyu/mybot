@@ -61,11 +61,12 @@ cd build && ctest --output-on-failure -R cpp_unit
    ① 守门自身的可信度（`bash -n` 语法、每个 `test/cpp/*.cpp` 是否登记进 `CMakeLists.txt`、
    `test/*.lua` 命名是否匹配两侧 glob、`count_calls` 的「N 条用例」文案是否真数得到调用点、
    两张用例表的结构与两套计数互证（条数**派生**、不再手写；tokenizer 见
-   `test/lib/case_table.awk`）、TSan 名单与 `test/lib/` 的两个单点：`params.sh` 的守门常量、
-   `agent_stale.sh` 的 mybot-agent 新鲜度取材面）；
-   ② 六组**零编译跨源一致性**校验（仿真器契约、状态目录缺省名、文档引用/计数/已删文件、
-   模型配置字段白名单双端同集合、有状态 LLM 协议判据双端同集合、LLM wire 契约；明细见
-   [testing.md](testing.md)「跨源一致性校验」）——
+   `test/lib/case_table.awk`）、TSan 名单**双向**核对，与三个守门单点：`params.sh` 的
+   守门常量、`agent_stale.sh` 的 mybot-agent 新鲜度取材面、`run_all.sh` 里
+   `harness_selftest` 的路径派生与产物陈旧判据的循环覆盖）；
+   ② 六组**零编译跨源一致性**校验（仿真器契约、状态目录缺省名、文档引用/计数/已删文件/
+   套件计数口径、模型配置字段白名单双端同集合、有状态 LLM 协议判据双端同集合、
+   LLM wire 契约；明细见 [testing.md](testing.md)「跨源一致性校验」）——
    这些是「用例静默消失 / 双事实源漏改」的唯一机械防线；它**不进入** `run_all.sh`
    的记账，守门汇总口径不变
 3. **mybot-agent 产物新鲜度**（判**红**，2026-10-06 加）：`agent/target/release/mybot-agent`

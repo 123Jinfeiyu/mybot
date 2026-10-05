@@ -199,11 +199,13 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 
 ## 守门完整性
 
-编译产物（`mybot` / `mybot_tests`）缺失时，对应分段**判失败**而不是静默跳过——否则「不构建」也能报出「0 失败」，而实际只有 Lua 段在跑。仅三类环境软依赖按跳过处理：
+编译产物（`mybot` / `mybot_tests` / `harness_selftest`）缺失时，对应分段**判失败**而不是静默跳过——否则「不构建」也能报出「0 失败」，而实际只有 Lua 段在跑。仅三类环境软依赖按跳过处理：
 
 - 真机用例（本机无 `/dev/i2c-*` / `/dev/video*` 等）：统一经 `test/lib/device_gate.sh` 读文件内 `-- requires: <dev>` 标记判定，`run_all.sh` 与 ctest 共用同一实现；`video` 类用例可用 `BOT4CJ_TEST_VIDEO=<设备路径>` 指向别的设备（跳过门与测试体都认这个变量，路径不存在则按跳过计）
 - TCP / agent 端到端缺 `python3`
 - `run_all.sh` 的 Rust agent 段缺 `agent/target/release/mybot-agent`（独立可选产物）；专门的 `gate:agent-e2e` 不允许此跳过。Rust agent 全程 reqwest + rustls（静态链接），本机 libcurl 有无都不影响该段——2026-09-25 #8 起仓库已无 libcurl 依赖
+
+产物**陈旧**在起跑前就拒绝（`run_all.sh` 比 mtime，旧于编译期输入即 `exit 2`；逃生口 `BOT_ALLOW_STALE=1`）。取材面**按产物分配**：`mybot` 只吃 `src/`，`mybot_tests` 吃 `src/` + `test/cpp/`，`harness_selftest` 只吃 `test/cpp/harness_selftest.cpp` 与 `harness.hpp`（`CMakeLists.txt` 三者都算）。共用一份最大集合会有两种坏法：给 `mybot` 算上 `test/cpp/`，则「只改一条用例」会让它永远判陈旧，而 cmake 根本不会为此重链 `mybot`——重建也修不好，唯一出路是 `BOT_ALLOW_STALE=1`，一道天天狼来了的门教会大家的正是怎么绕过它（2026-10-06 实测踩到）；反过来漏掉 `harness_selftest`（同日之前的状态）则让骨架自证拿旧二进制报「8 通过」，正是这道判据要堵的无痕假绿。`mtmerge` 与三个 `test_*_consts` 未纳入（它们的 bin 变量在 `run_all.sh` 更后面才定义）。Rust 侧的同族判据是 `test/lib/agent_stale.sh`，取材面与处置分层见 [development.md](development.md)「守门钩子（pre-push）」第 3 条。
 
 反过来，有三个脚本**没有任何自动调用点**（`run_all.sh` / 十条 CI job / pre-push 都不执行它们），它们坏了不会有任何守门变红，只能靠人跑：
 
@@ -249,8 +251,11 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
 `run_all_selftest.sh` 现有 13 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
 是否登记进 `CMakeLists.txt`、`test/*.lua` 是否匹配两侧 glob、`count_calls` 的「N 条用例」
 文案是否真数得到调用点、两张用例表的结构与两套计数互证（条数**派生**、不再手写）、
-TSan 名单单点、`test/lib/` 的两个单点
-——`params.sh` 的守门常量、`agent_stale.sh` 的 mybot-agent 新鲜度取材面），8–13 是跨源比对：
+TSan 名单单点（**双向**核对：名单里每条都在用例文件里命中，且用例文件里每条 `TH_TEST`
+都被名单覆盖——「零匹配返回 1」只堵住名单写错名字，堵不住名单少一条）、
+三个守门单点——`test/lib/params.sh` 的守门常量、`test/lib/agent_stale.sh` 的
+mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径派生与产物陈旧
+判据的循环覆盖），8–13 是跨源比对：
 
 8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
    （`sim/src/action_table.cpp` 的 `kActions[]` vs `modules/Sim.lua` 的
@@ -264,7 +269,7 @@ TSan 名单单点、`test/lib/` 的两个单点
    `scripts/sim_agent_demo.sh`），跨两套构建系统、刻意不做代码生成。逐处钉两件事：读
    `MYBOT_HOME` 的形态还在，且拼出的缺省后缀仍是 `/.mybot`。规则单点是
    [reference.md](reference.md) 的 `MYBOT_HOME` 行。
-10. **文档与仓库实况**（`scripts/check_doc_paths.py`）五组：README 与 `docs/*.md` 里的
+10. **文档与仓库实况**（`scripts/check_doc_paths.py`）六组：README 与 `docs/*.md` 里的
     仓内路径引用逐个实测存在（markdown 链接按文档目录解析、反引号跨度按仓库根解析；
     历史记录与教程占位名在脚本的 `KNOWN_ABSENT` 里逐条登记理由，登记过又存在的条目
     同样判失败）；`docs/drivers.md` 各节点名的模块集合与 `ls modules/*.lua` **双向**
@@ -272,10 +277,14 @@ TSan 名单单点、`test/lib/` 的两个单点
     与磁盘文件数三者自洽；每篇 `docs/*.md` 都被 README 或 `docs/README.md` 链到；
     `DELETED_FILES` 里登记的**已删且刻意不重建**的文件名，在全仓任何文本文件里再出现
     即判失败（取材面比第一组宽得多：源码注释、脚本、CI、冻结 html 都扫，按带扩展名的
-    字面量匹配；名单里的文件若又存在了同样判失败）。第五组是一次真实漏网的产物：
-    2026-10-04 删掉冻结变更账本后，仓内还留着 11 处指向它的引用，第一组一处都看不见
-    ——8 处不在它的取材面，3 处虽在 `docs/*.md` 里但是裸词而非链接或路径跨度；明细与
-    「为什么不把第一组扩到 html」记在脚本头注。
+    字面量匹配；名单里的文件若又存在了同样判失败）；本页「四处套件的计数口径」那张表
+    与表下两条式子里的每个数字都**从仓库实况派生后比对**（口径见该节）。
+    第五组是一次真实漏网的产物：2026-10-04 删掉冻结变更账本后，仓内还留着 11 处指向它的
+    引用，第一组一处都看不见——8 处不在它的取材面，3 处虽在 `docs/*.md` 里但是裸词而非
+    链接或路径跨度；明细与「为什么不把第一组扩到 html」记在脚本头注。第六组的存在理由
+    是同一类：那张表原本只是「某天的快照」，没人回头看，加一条用例它就悄悄过期，而读者
+    拿它当基线核对守门输出。两组的锚点若被改得找不到，脚本 **exit 而非跳过**——静默少比
+    一个数比报错危险。
 11. **模型配置字段白名单双端同集合**（`scripts/check_llm_field_whitelist.py`）：C++
     `src/llmconfig.cpp` 的 `kKnown` vs Rust `agent/src/config/file.rs` 的
     `PARSED_FIELD_NAMES`（`parsed_fields!` 宏表展开）+ `KNOWN_UNPARSED_FIELDS`。两端读
@@ -316,12 +325,16 @@ TSan 名单单点、`test/lib/` 的两个单点
 
 ### 四处套件的计数口径
 
-| 套件 | 怎么跑 | 2026-10-04 快照 |
+| 套件 | 怎么跑 | 计数（2026-10-04 快照） |
 | --- | --- | --- |
 | `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 649 通过 / 0 失败 |
 | `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
-| `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过 / 0 失败（8 个 TU） |
+| `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过（**运行时数**）/ 0 失败（8 个 TU） |
 | Rust agent | `cd agent && cargo test --release` | 148 passed |
+
+除 `sim_tests` 的 387 外，表里每个数字都由 `scripts/check_doc_paths.py` 的第六组
+**从仓库实况派生后比对**（进 `test/run_all_selftest.sh`）——加/删用例而忘了改这张表，
+守门会红，不再依赖人记得回来更新快照。派生口径就是下面两条式子。
 
 两个容易对不上的数字，出处写在这里省得每次重推：
 
@@ -332,6 +345,13 @@ TSan 名单单点、`test/lib/` 的两个单点
   是**故意含失败形态的例句**，只作被测对象（由自证用例内部的 `judge(filter)` →
   `runAllOutcome(filter, quiet=true)` 调到），不进缺省全量跑——否则主输出里会混进一串
   预期失败的 `[FAIL]` 行。
+
+`sim_tests` 的 387 是这张表里**唯一没有静态派生**的数：sim 侧的记账单位是**断言**而不是
+用例（`sim/tests/harness.h` 的 `g_total` 只由 `check()` 写），而 `check(` 的调用点只有
+309 处——差额来自循环与条件分支里的多次断言，跑一遍才知道确切数。加上 `sim/` 不在任何
+CI job 的构建范围（见上「没有任何自动调用点」），这个数只能靠人手动跑
+`./sim/build/sim_tests` 后回填。同一行里的「8 个 TU」**是**派生的
+（`sim/CMakeLists.txt` 的 `add_executable(sim_tests …)` 源文件清单）。
 
 ## sanitizer 与单测二进制
 

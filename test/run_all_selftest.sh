@@ -133,8 +133,9 @@ for t in e2e_cases parse_cases; do
 done
 
 # 6) TSan 用例名单单点（F3-5）：名单唯一来源 test/lib/tsan_cases.txt，CI 逐条跑。
-#    这里机械核对每个名字在 test_daemon_concurrency.cpp 里至少命中一条 TH_TEST——
-#    改过用例名而没改名单（或反之）会静默少跑并发回归。
+#    这里**双向**机械核对：正向——名单里每个名字在 test_daemon_concurrency.cpp 里至少
+#    命中一条 TH_TEST（改过用例名而没改名单会静默少跑）；反向——文件里每条 TH_TEST 都
+#    被名单某条覆盖（加了并发用例而没往名单里加前缀，同样静默少跑，见下面那段注释）。
 tsan_file=test/lib/tsan_cases.txt
 if [ ! -s "$tsan_file" ]; then
 	note "缺 TSan 名单或为空：$tsan_file"
@@ -144,6 +145,31 @@ else
 		grep -qE "^TH_TEST\(${c}[A-Za-z0-9_]*\)" test/cpp/test_daemon_concurrency.cpp \
 			|| note "TSan 名单里的 '$c' 在 test_daemon_concurrency.cpp 里没有对应用例（改过名？）"
 	done < "$tsan_file"
+
+	# 反向核对（2026-10-06 补）：文件里每条 TH_TEST 都必须被名单里某条覆盖。
+	# 正向只保证「名单里的名字都还存在」，反过来不成立——新增一条并发用例而它的名字
+	# 不含任何名单条目时，正向检查全绿，而 CI 的 gate:tsan 逐条跑的是名单，那条新用例
+	# 永远不会在 TSan 下跑过：并发回归静默少一条，且少的那条恰好是新写的、最可能带
+	# 数据竞争的那条。
+	# 判据用**子串**而不是前缀，与真实过滤语义对齐：harness.hpp 的 runAllOutcome 是
+	# `c.name.find(needle) == npos → continue`（gate:tsan 传的正是名单条目）。用前缀会
+	# 把「名字中段含条目」的合法覆盖误报成漏网。
+	tsan_src=test/cpp/test_daemon_concurrency.cpp
+	tsan_names="$(grep -oE '^TH_TEST\([A-Za-z0-9_]+\)' "$tsan_src" | sed 's/^TH_TEST(//; s/)$//')"
+	tsan_n="$(printf '%s\n' "$tsan_names" | grep -c .)"
+	[ "$tsan_n" -gt 0 ] || note "$tsan_src 里一条 TH_TEST 都抽不到——用例改名换了形态，还是文件被挪了？"
+	tsan_roster="$(grep -vE '^[[:space:]]*(#|$)' "$tsan_file")"
+	tsan_uncovered=""
+	while read -r n; do
+		[ -n "$n" ] || continue
+		tsan_hit=0
+		while read -r c; do
+			[ -n "$c" ] || continue
+			case "$n" in *"$c"*) tsan_hit=1; break ;; esac
+		done <<< "$tsan_roster"
+		[ "$tsan_hit" -eq 1 ] || tsan_uncovered="$tsan_uncovered $n"
+	done <<< "$tsan_names"
+	[ -z "$tsan_uncovered" ] || note "并发用例不在 TSan 名单任何条目覆盖下（gate:tsan 不会跑它们，请往 $tsan_file 加一条前缀）：$tsan_uncovered"
 fi
 
 # 7) 守门单点（F3-5 余部）：常量与判据取材面各自只有一份。
@@ -174,6 +200,22 @@ for f in $(grep -rlE 'find agent/src' --include='*.sh' test scripts 2>/dev/null 
 		grep -vE '^(test/lib/agent_stale\.sh|test/run_all_selftest\.sh)$'); do
 	note "$f 自己手抄了 agent 取材面（应调用 test/lib/agent_stale.sh 的 agent_stale_file）"
 done
+#    同族第三个单点：harness_selftest 二进制的**路径**。两个消费方——run_all.sh 顶部的
+#    产物陈旧判据、tail_checks.sh 的 run_harness_selftest 段。2026-10-06 之前是两处各写
+#    一遍 dirname 派生：只要有一处没跟着 BOT_TESTS 走，就成了「陈旧判据判的是 A、实际
+#    跑的是 B」，判据形同不存在。顺带钉住同一轮修的守卫取材面：三个产物各配自己那份
+#    编译期输入（mybot 只吃 src/，骨架自证只吃它那两个文件），此前共用一份最大集合，
+#    后果是「只改一条用例」时 mybot 永远判陈旧而 cmake 重链不了它——门一直狼来了，
+#    教会大家的正是 BOT_ALLOW_STALE=1 怎么绕。
+derive_hits="$(grep -rn 'dirname "\$tests_bin")/harness_selftest' --include='*.sh' test 2>/dev/null)"
+n_derive="$(printf '%s\n' "$derive_hits" | grep -c .)"
+derive_file="$(printf '%s\n' "$derive_hits" | cut -d: -f1 | sort -u | tr '\n' ' ')"
+[ "$n_derive" -eq 1 ] || note "harness_selftest 路径的派生式出现 $n_derive 次（应为 1 次单点）"
+[ "$derive_file" = "test/run_all.sh " ] || note "harness_selftest 路径的派生式不在单点上（应只在 test/run_all.sh，实际：${derive_file:-抽不到}）"
+grep -q 'binp="\$selftest_bin"' test/lib/sections/tail_checks.sh \
+	|| note "run_harness_selftest 不再用单点变量 selftest_bin（自己派生路径会与陈旧判据各判各的）"
+grep -q 'for _b in "\$bin" "\$tests_bin" "\$selftest_bin"' test/run_all.sh \
+	|| note "产物陈旧判据的循环不再覆盖 harness_selftest（骨架自证会拿旧二进制报「8 通过」）"
 
 # 8) 仿真器跨构建系统契约（sim/ vs 宿主 C++/Lua 的手写双份）：动作码表、三条
 #    缺省 socket 路径、一问一答桥的请求关键字、默认场景（world.cpp 的内置回落 vs
@@ -215,7 +257,8 @@ EOF
 # 10) 文档与仓库实况的一致性（零编译）：路径引用逐个实测存在、drivers.md 的模块清单
 #     与 modules/*.lua **双向**相等、drivers.md 开头「计数口径」那行的分项与各节实际
 #     条目数和磁盘文件数三者自洽、每篇 docs/*.md 都挂在索引上、DELETED_FILES 里登记的
-#     已删文件名在全仓任何文本文件里不再出现。
+#     已删文件名在全仓任何文本文件里不再出现、docs/testing.md「四处套件的计数口径」那张
+#     表与表下两条式子里的每个数字都与仓库实况派生值相等。
 #     文档不会编译、不会失败，改名/删除/新增之后只会静静地指向不存在的东西；同一条
 #     计数还手写三份（README、docs/README.md、drivers.md），各漂一点就没人知道哪个真。
 #     历史与占位引用（正文明写「历史上」的旧文件名、教程里的 modules/X.lua）在脚本的
@@ -232,6 +275,15 @@ EOF
 #     ⚠ 本段注释**故意不写出那个文件名**：写了就会被第五组自己扫到（.sh 在取材面里），
 #     于是得把本文件也加进脚本的 DELETED_SCAN_SKIP——自排除名单每多一条，守门就少扫
 #     一个文件。名字与完整清点记在 scripts/check_doc_paths.py 的 DELETED_FILES 表上。
+#     第六组把那张「某天快照」表变成派生值：mybot_tests = test/cpp/ 里 `TH_TEST(` 的出现
+#     次数 − harness.hpp 的 1 处宏定义 − harness_selftest.cpp 的 13 个（独立二进制）；
+#     harness_selftest = 那 13 个 − 5 个 meta_ 例句；Rust = agent/src 下 `#[test]` +
+#     `#[tokio::test]`；sim_tests 的「N 个 TU」= sim/CMakeLists.txt 的 add_executable 源
+#     清单。四个数逐个实测与表相符（649 / 8 / 148 / 8），加一条用例而不改表即判红。
+#     唯一派生不出的是 sim_tests 的通过数：sim 侧记账单位是**断言**不是用例，`check(`
+#     调用点 309 处而实跑 387 条，差额在循环与条件分支里，跑一遍才知道；加上 sim/ 不在
+#     任何 CI job 的构建范围，那个数只能人工回填。故表里那一格必须明写「运行时数」，
+#     脚本也钉这个标记在——豁免要显式，否则读者会以为它同样受检。
 # 11) 模型配置字段白名单的双端同集合：C++ src/llmconfig.cpp 的 kKnown vs Rust
 #     agent/src/config/file.rs 的 PARSED_FIELD_NAMES（parsed_fields! 宏表）+
 #     KNOWN_UNPARSED_FIELDS。两端读同一份 mybot.llm.json，任一侧漏登记一个字段，

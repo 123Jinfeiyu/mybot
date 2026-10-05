@@ -180,6 +180,9 @@ trap 'echo "守门被中断：汇总未产生（中途态，非失败）" >&2; e
 # 缺省路径可被 BOT / BOT_TESTS 覆盖；是否「显式指定」决定下面的降级策略。
 bin="${BOT:-./build/mybot}"
 tests_bin="${BOT_TESTS:-./build/mybot_tests}"
+# 与 mybot_tests 同目录、由 test/cpp/harness_selftest.cpp 单独编出来的骨架自证二进制。
+# 路径只在这里派生一次（tail_checks.sh 的 run_harness_selftest 直接用它）。
+selftest_bin="$(dirname "$tests_bin")/harness_selftest"
 bot_explicit=0
 [ -n "${BOT:-}" ] && bot_explicit=1
 tests_explicit=0
@@ -191,13 +194,29 @@ tests_explicit=0
 # /1 失败，而 445+1 恰好等于改动前的用例数——那条失败还是"旧二进制 + 新 docs"的
 # 组合产物）。这类假绿比缺产物更危险：缺产物有 artifact_missing 兜住并计入失败，
 # 陈旧产物则不留任何痕迹。
-# 判据只看**编译期输入**（src/、test/cpp/、CMakeLists.txt）：docs/、modules/、
-# robots/ 是运行期读取的，改了它们不需要重编，纳入只会造成误报。
+# 判据只看**编译期输入**，且每个产物配**自己那份**：mybot 只由 src/ 编出来，
+# mybot_tests 与 harness_selftest 才吃 test/cpp/。此前三个产物共用一份最大集合
+# （src/ + test/cpp/ + CMakeLists.txt），后果是「只改了一条用例」时这道门永远过不去
+# ——cmake 不会为 test/cpp/ 的改动重链 mybot，`cmake --build` 修不好它，唯一出路是
+# BOT_ALLOW_STALE=1。一道天天狼来了的门，教会大家的正是怎么绕过它（2026-10-06 实测
+# 踩到：反向验证动过 test/cpp 后，重建到 100% 仍被拒）。
+# docs/、modules/、robots/ 是运行期读取的，改了它们不需要重编，纳入只会造成误报。
+# harness_selftest 一并纳入：harness-selftest 段跑的就是它，此前不在循环里，陈旧了
+# 照样报「8 通过」——正是本判据要堵的那类无痕假绿。
+# 未纳入 mtmerge 与 test_*_consts：它们的 bin 变量在本文件更后面才定义。
 # 逃生口 BOT_ALLOW_STALE=1：**明确知道**要跑旧产物（如复现历史结果）时显式声明。
 if [ -z "${BOT_ALLOW_STALE:-}" ]; then
-	for _b in "$bin" "$tests_bin"; do
+	for _b in "$bin" "$tests_bin" "$selftest_bin"; do
 		[ -x "$_b" ] || continue	# 缺产物由 artifact_missing 判失败，这里不重复
-		_stale="$(find src test/cpp CMakeLists.txt -type f \
+		case "$_b" in
+			"$bin") _in=(src CMakeLists.txt) ;;
+			# 骨架自证只由这两个文件编出来（CMakeLists.txt 的
+			# add_executable(harness_selftest test/cpp/harness_selftest.cpp)）；
+			# 给它套整个 test/cpp/ 就又是上面那个「重建也修不好」的误报。
+			"$selftest_bin") _in=(test/cpp/harness_selftest.cpp test/cpp/harness.hpp CMakeLists.txt) ;;
+			*) _in=(src test/cpp CMakeLists.txt) ;;
+		esac
+		_stale="$(find "${_in[@]}" -type f \
 			\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name 'CMakeLists.txt' \) \
 			-newer "$_b" -print -quit 2>/dev/null)"
 		if [ -n "$_stale" ]; then
@@ -208,7 +227,7 @@ if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 			exit 2
 		fi
 	done
-	unset _b _stale
+	unset _b _stale _in
 fi
 
 # ---- 分段 runner 定义（F3-1 抽自本文件；只含函数定义，见各文件头注）----
