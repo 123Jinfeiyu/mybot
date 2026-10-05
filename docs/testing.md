@@ -264,12 +264,18 @@ TSan 名单单点、`test/lib/` 的两个单点
    `scripts/sim_agent_demo.sh`），跨两套构建系统、刻意不做代码生成。逐处钉两件事：读
    `MYBOT_HOME` 的形态还在，且拼出的缺省后缀仍是 `/.mybot`。规则单点是
    [reference.md](reference.md) 的 `MYBOT_HOME` 行。
-10. **文档与仓库实况**（`scripts/check_doc_paths.py`）四组：README 与 `docs/*.md` 里的
+10. **文档与仓库实况**（`scripts/check_doc_paths.py`）五组：README 与 `docs/*.md` 里的
     仓内路径引用逐个实测存在（markdown 链接按文档目录解析、反引号跨度按仓库根解析；
     历史记录与教程占位名在脚本的 `KNOWN_ABSENT` 里逐条登记理由，登记过又存在的条目
     同样判失败）；`docs/drivers.md` 各节点名的模块集合与 `ls modules/*.lua` **双向**
     相等；drivers.md 开头「计数口径」那行的分项（48+3+8=59、lib 23）与各节实际条目数、
-    与磁盘文件数三者自洽；每篇 `docs/*.md` 都被 README 或 `docs/README.md` 链到。
+    与磁盘文件数三者自洽；每篇 `docs/*.md` 都被 README 或 `docs/README.md` 链到；
+    `DELETED_FILES` 里登记的**已删且刻意不重建**的文件名，在全仓任何文本文件里再出现
+    即判失败（取材面比第一组宽得多：源码注释、脚本、CI、冻结 html 都扫，按带扩展名的
+    字面量匹配；名单里的文件若又存在了同样判失败）。第五组是一次真实漏网的产物：
+    2026-10-04 删掉冻结变更账本后，仓内还留着 11 处指向它的引用，第一组一处都看不见
+    ——8 处不在它的取材面，3 处虽在 `docs/*.md` 里但是裸词而非链接或路径跨度；明细与
+    「为什么不把第一组扩到 html」记在脚本头注。
 11. **模型配置字段白名单双端同集合**（`scripts/check_llm_field_whitelist.py`）：C++
     `src/llmconfig.cpp` 的 `kKnown` vs Rust `agent/src/config/file.rs` 的
     `PARSED_FIELD_NAMES`（`parsed_fields!` 宏表展开）+ `KNOWN_UNPARSED_FIELDS`。两端读

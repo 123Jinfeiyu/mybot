@@ -6,7 +6,7 @@
 共享库数）还常在手写多份（README、docs/README.md、docs/drivers.md 的口径行），
 于是三处各漂一点、彼此不一致，读者无从判断哪个是真的。
 
-本脚本零编译、零第三方依赖，做四组检查（接入 test/run_all_selftest.sh）：
+本脚本零编译、零第三方依赖，做五组检查（接入 test/run_all_selftest.sh）：
 
   1. 路径存在性：README.md 与 docs/*.md 里的仓内路径引用逐个实测存在。
      * markdown 链接 `[文字](目标)` 的目标按**文档所在目录**解析（docs/x.md 里
@@ -21,11 +21,16 @@
      共享库数）与本页各节的实际条目数、与磁盘上的实际文件数三者一致。
   4. 文档索引覆盖：每个 docs/*.md 都被 README.md 或 docs/README.md 链到——
      新增一篇文档而忘了挂索引，等于它对读者不存在。
+  5. 已删文件的引用：DELETED_FILES 里登记的名字（按基名匹配，故 `docs/x.md` 与
+     链接形态 `x.md` 都算）在全仓任何文本文件里再出现即判失败。取材面比检查 1 宽
+     （源码注释 / 脚本 / CI / 冻结 html 都算），因为死引用的成因恰恰是「引用它的
+     地方不在任何守门的取材面里」；名单里的文件若又存在了同样判失败（名单过期）。
 
 用法：python3 scripts/check_doc_paths.py
 退出码：0=一致，1=发现不一致或解析失败（原因打到 stderr）。
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -82,6 +87,36 @@ KNOWN_ABSENT = {
     "scripts/xxx.mt": "占位：同上，动作脚本示例名",
     "test/test_xxx.lua": "占位：同上，回归用例示例名",
 }
+
+# 已删除且**刻意不重建**的文件：任何取材面里再出现指向它的引用即判失败（检查 5）。
+# 与 KNOWN_ABSENT 方向相反——那张表登记「文档提到的历史名，允许不存在」，这张表登记
+# 「这个名字不许再被当成现存出处引用」。为什么需要它，是一次真实的漏网：9480de3 删掉
+# docs/changelog.md 后，d7ca619 只清掉了 docs/*.md 里**路径形态**的死引用。检查 1 的
+# 取材面就是 README + docs/*.md，且只认 markdown 链接与反引号跨度，于是三类全都漏网：
+# ① 冻结 html 横幅里的 `<a href="changelog.md">`（html 不在取材面）；② src/ scripts/
+# test/ .gitlab-ci.yml 注释里的「见 docs/changelog.md」（同上）；③ docs/*.md 正文里的
+# 裸词「changelog」（在取材面里，但不是链接也不是路径形态的跨度）。
+# 2026-10-06 清点共 11 处，已全部改成提交号或中性说法。检查 1 的取材面**不该**扩到 html：
+# 那是 2026-09-25 的冻结快照，逐条实测其中路径只会产出一堆刻意不修的差异。
+# 匹配用**基名**：`docs/x.md` 与 markdown 链接里的相对形态 `x.md` 一并覆盖。
+# 已知残留（刻意不追）：无扩展名的裸词不匹配。上面那 11 处里另有 4 处原文就是裸词
+# 「changelog」（.gitlab-ci.yml、docs/agent.md 两处、docs/development.md），一并改成了
+# 提交号或中性说法；仓内还剩 docs/architecture_analysis.html:386 一处裸词——那是
+# 2026-09-25 冻结快照的正文，改它等于篡改快照。要连裸词一起禁，代价是冻结快照与日常
+# 散文里的普通词都会误报，不值。
+DELETED_FILES = {
+    "docs/changelog.md": "变更账本自 2026-10-04 起就是提交信息（9480de3 删除）；出处请写提交号，如「见提交 fc1c66f」",
+}
+# 自排除：本脚本的表与头注必须能写出这个名字（与 KNOWN_ABSENT 的注释同理）。
+DELETED_SCAN_SKIP = ("scripts/check_doc_paths.py",)
+DELETED_SCAN_SUFFIXES = frozenset((
+    ".md", ".html", ".sh", ".py", ".cpp", ".hpp", ".h", ".c", ".rs", ".lua",
+    ".yml", ".yaml", ".txt", ".cmake", ".awk", ".mt", ".sql", ".scene",
+))
+DELETED_SCAN_PRUNE = frozenset((
+    ".git", ".zcode", ".trae", ".tmp", "build", "target", "node_modules",
+))
+
 
 # drivers.md 里不参与「模块清单」的两节：前者讲入口函数契约、后者讲刻意保留的重复，
 # 表格首列不是模块名。
@@ -308,6 +343,50 @@ def check_index(errors):
     return len(on_disk)
 
 
+# ── 5) 已删文件的引用（全仓取材面）────────────────────────────────────
+
+
+def check_deleted(errors):
+    """扫全仓，找出仍把 DELETED_FILES 里的名字当现存出处引用的地方。
+
+    取材面比检查 1 宽得多（源码注释、脚本、CI、冻结 html 都算）：死引用的成因正是
+    「引用它的地方不在任何守门的取材面里」。反过来，名单里的文件若又存在了，说明名单
+    过期——与 KNOWN_ABSENT 的「过期即失败」同一取向。
+    """
+    for name in DELETED_FILES:
+        if (ROOT / name).exists():
+            errors.append(f"DELETED_FILES 名单过期：{name} 又存在了（该条目不再是豁免）")
+    pats = {n: re.compile(re.escape(Path(n).name)) for n in DELETED_FILES}
+    skip = {ROOT / s for s in DELETED_SCAN_SKIP}
+    n_files = 0
+    for dirpath, dirnames, filenames in os.walk(ROOT):
+        dirnames[:] = [
+            d for d in dirnames
+            if d not in DELETED_SCAN_PRUNE and not d.startswith("build-")
+        ]
+        for fn in sorted(filenames):
+            p = Path(dirpath) / fn
+            if p in skip:
+                continue
+            if p.suffix not in DELETED_SCAN_SUFFIXES:
+                continue
+            try:
+                lines = p.read_text(encoding="utf-8").splitlines()
+            except (UnicodeDecodeError, OSError):
+                continue
+            n_files += 1
+            for name, pat in pats.items():
+                for i, line in enumerate(lines, 1):
+                    if pat.search(line):
+                        errors.append(
+                            f"{rel(p)}:{i} 仍引用已删除的 {name}"
+                            f"——{DELETED_FILES[name]}"
+                        )
+    if not n_files:
+        sys.exit(f"{PREFIX}: 已删文件扫描一个文件都没读到，取材面是不是变了？")
+    return n_files
+
+
 def main():
     errors = []
     n_paths = check_paths(errors)
@@ -316,6 +395,7 @@ def main():
     n_modules = check_roster(errors, roster, on_disk)
     stated = check_counts(errors, roster, on_disk)
     n_docs = check_index(errors)
+    n_scanned = check_deleted(errors)
 
     if errors:
         print(f"{PREFIX}: 文档与仓库实况不一致：", file=sys.stderr)
@@ -327,6 +407,7 @@ def main():
         f"{PREFIX}: 一致（{n_paths} 条路径引用 / {n_modules} 个模块双向对齐"
         f" / 计数口径 {stated['total']}={stated['device']}+{stated['bus']}+{stated['tool']}"
         f"、lib {stated['lib']} / {n_docs} 篇文档全部挂上索引"
+        f" / {n_scanned} 个文件里零处引用 {len(DELETED_FILES)} 个已删文件"
         f" / {len(KNOWN_ABSENT)} 条历史与占位豁免仍生效）"
     )
 

@@ -214,12 +214,24 @@ EOF
 
 # 10) 文档与仓库实况的一致性（零编译）：路径引用逐个实测存在、drivers.md 的模块清单
 #     与 modules/*.lua **双向**相等、drivers.md 开头「计数口径」那行的分项与各节实际
-#     条目数和磁盘文件数三者自洽、每篇 docs/*.md 都挂在索引上。
+#     条目数和磁盘文件数三者自洽、每篇 docs/*.md 都挂在索引上、DELETED_FILES 里登记的
+#     已删文件名在全仓任何文本文件里不再出现。
 #     文档不会编译、不会失败，改名/删除/新增之后只会静静地指向不存在的东西；同一条
 #     计数还手写三份（README、docs/README.md、drivers.md），各漂一点就没人知道哪个真。
 #     历史与占位引用（正文明写「历史上」的旧文件名、教程里的 modules/X.lua）在脚本的
 #     KNOWN_ABSENT 里逐条登记并写明理由；登记过的条目若又存在了，脚本同样判失败
 #     （名单过期也是一份不一致）。
+#     第五组的取材面刻意比第一组宽（源码注释 / 脚本 / CI / 冻结 html 都扫），判据是
+#     **带扩展名的字面量**（故 `docs/` 前缀形态与 markdown 链接里的相对形态一并覆盖）。
+#     2026-10-06 实测：那本冻结变更账本被 9480de3 删除后仓内还留着 11 处引用，第一组
+#     一处都看不见——8 处不在它的取材面（src/ scripts/ test/ CI / 冻结 html），3 处在
+#     docs/*.md 里但是裸词而非链接或路径跨度。死引用的成因恰恰是「引用它的地方不在任何
+#     守门的取材面里」。
+#     已知残留：无扩展名的裸词不匹配，冻结快照 docs/architecture_analysis.html:386 就是
+#     一个裸词——那是 2026-09-25 快照的正文，改它等于篡改快照，刻意不动。
+#     ⚠ 本段注释**故意不写出那个文件名**：写了就会被第五组自己扫到（.sh 在取材面里），
+#     于是得把本文件也加进脚本的 DELETED_SCAN_SKIP——自排除名单每多一条，守门就少扫
+#     一个文件。名字与完整清点记在 scripts/check_doc_paths.py 的 DELETED_FILES 表上。
 # 11) 模型配置字段白名单的双端同集合：C++ src/llmconfig.cpp 的 kKnown vs Rust
 #     agent/src/config/file.rs 的 PARSED_FIELD_NAMES（parsed_fields! 宏表）+
 #     KNOWN_UNPARSED_FIELDS。两端读同一份 mybot.llm.json，任一侧漏登记一个字段，

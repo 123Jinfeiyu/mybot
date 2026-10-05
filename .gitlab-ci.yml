@@ -128,7 +128,8 @@ gate:clang:
 # 命中一律以 `error:` 打印，只数 `warning:` 会在 job 已红时报「告警总数：0」误导读者。
 # 2026-09-25 转硬：本地 clang-tidy 14.0.6（与 bookworm 同版本）全量归零——存量 85 条
 # 当日清障后，预跑又揪出后续功能新引入的 3 条（getenv/strerror 未走 util.hpp 单点、
-# 一处 string 链式拼接），已修。后续新增告警即 job 红，处置方式同 changelog 记档。
+# 一处 string 链式拼接），已修。后续新增告警即 job 红，处置方式同存量告警：修掉再推，
+# 理由记进提交信息（变更账本自 2026-10-04 起就是提交信息，见提交 9480de3）。
 gate:clang-tidy:
   stage: gate
   image: debian:bookworm

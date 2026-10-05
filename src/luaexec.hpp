@@ -11,7 +11,7 @@
  * 该错误经既有管道（call_lua 的 pcall → ERR 契约 → ensureOk 抛 →
  * run_action_script 的 catch）变成一段给模型的失败文案，不需要新错误通道。
  *
- * ⚠️ **必须先关 JIT，钩子才会触发**（2026-09-22 实测，见 docs/changelog.md）：
+ * ⚠️ **必须先关 JIT，钩子才会触发**（2026-09-22 实测，见提交 f46e5fc）：
  * LuaJIT 的 count 钩子只在解释器派发路径上跑，热点循环在约 56 次迭代后就被编译
  * 成 trace，此后不再有指令派发——N=100000 的钩子实测触发 0 次。故 arm 时一并
  * `luaJIT_setmode(...ENGINE|OFF)`，disarm 时恢复。

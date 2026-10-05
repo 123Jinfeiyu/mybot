@@ -315,7 +315,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
 > Lua 协议驱动轨道（`modules/Llm*.lua` + `modules/lib/llm_*.lua` + 两个离线用例 +
 > `test_curl_consts`）整条删除——agent 会话自 2026-09-24 批次 B 起就走 Rust 直连，
 > 那条轨道的唯一潜在用途是「结构脚本声明成普通硬件变量供 `.mt`/`@Daemon` 直调」，
-> 而仓库内外零处这么用（完整评估见 changelog 当日条目）。现役含义：C++ 宿主
+> 而仓库内外零处这么用（完整评估见提交 c1e25f1）。现役含义：C++ 宿主
 > **不加载任何 LLM 驱动**，只把协议族名透传给 agent（配置文件的 `driver` 字段
 > 在双端 `--check-config` 镜像里仍可见）；`--llm-driver`/`--llm-var` 属于
 > Rust agent，C++ 后端照旧拒绝（退出 2）。
@@ -1052,7 +1052,7 @@ bash test/run_all.sh agent-all
   驱动若阻塞在 ffi 系统调用里（`read()` / `ioctl()` / `usleep()` 不返回），VM 不派发
   指令、钩子没有执行机会——这一条无解。本仓库唯一能兜住「阻塞的 C 调用」的机制是
   子进程 + deadline + SIGKILL（`agent_subprocess`），但动作脚本必须在宿主进程内操作
-  已上电的硬件状态，走不了那条路。详见 `src/luaexec.hpp` 与 changelog。
+  已上电的硬件状态，走不了那条路。详见 `src/luaexec.hpp`（机制与 JIT 实测记录，出处提交 f46e5fc）。
 - 三个上下文字节预算（会话历史 `max_history_bytes`、任务内文本 `max_task_tool_result_bytes`、
   任务内图片 `max_task_image_bytes`）现可由**配置文件**覆盖（B1，2026-09-22，见上文
   「配置文件」字段表；缺省分别是 4 / 2 / 4 MiB）。`capture_image` 的单图 base64 硬上限 2 MiB

@@ -986,7 +986,7 @@ fi
 #   * 循环层的（工具循环、超时、重试、取消、图片后注、stdout 纯净/写失败、
 #     会话持久化两进程接力）→ R 段（R11 = --session-file/--resume，批次 D）；
 #   * DeepSeek/Anthropic 协议差异与恢复 → R12/R13；虚拟 DAC 读写闭环 → R14。
-#     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
+#     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见提交 c38928f）。
 # ======================================================================
 if filter_matches "agent" "$filter_e2e"; then
 	# 状态目录双保险（2026-10-03 家目录持久化批次）：agent_e2e.sh 自身会把 MYBOT_HOME

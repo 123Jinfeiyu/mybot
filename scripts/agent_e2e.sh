@@ -71,7 +71,7 @@
 #   跑——不经模型，判据更硬；属循环层的（工具循环、超时、重试、取消、图片后注、
 #   stdout 纯净/写失败不 panic）由下面 R 段守，R 段与 C++ 场景**同判据**。
 #   会话持久化（--session-file/--resume）由 R11 覆盖（2026-09-25 批次 D 落地）；
-#   agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
+#   agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见提交 c38928f）。
 # 退出码: 0 通过 / 1 失败 / 2 参数用法错 / 125 缺 python3（守门按 SKIP 计）
 set -u
 

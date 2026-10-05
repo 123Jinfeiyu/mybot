@@ -35,8 +35,8 @@ namespace bot {
  * 「同量级」不等于「同一个常量」，别与 scriptlimit.hpp 的 kMaxScriptBytes 合并：
  * 本常量经 kMcpMaxFrameBytes 与 agent/src/frame.rs 的 MAX_FRAME_BYTES 钉成跨进程契约
  * （守门见 test_mcptransport.cpp 的 mcpbackend_frame_limit_matches_rust_twin），
- * 那个是纯本地内存护栏——合成一个数会让调整一侧静默改掉另一侧。评估记录见
- * docs/changelog.md 的 2026-10-04「三项评估收口」。 */
+ * 那个是纯本地内存护栏——合成一个数会让调整一侧静默改掉另一侧。评估记录见提交
+ * fc1c66f（2026-10-04「三项评估收口」）。 */
 inline constexpr std::size_t kJsonMaxBytes = 8u << 20;
 inline constexpr int kJsonMaxDepth = 64;
 
