@@ -29,11 +29,14 @@ class HwFactory {
 	DaemonRegistry& daemons_;
 	MetaRegistry& metas_;
 
-	/* 重名前置判重（资源泄漏防线：Lua 状态机/共享槽先申请，此处先确认可注册） */
+	/* 重名前置判重（资源泄漏防线：Lua 状态机/共享槽先申请，此处先确认可注册）。
+	 * 文案走 duplicateHwNameMsg 单点：本检查是 HwRegistry::add 的**提前版**，同一次
+	 * 重名先命中哪个都要报得一样（理由见 hw_registry.hpp 的声明处）；source 后缀
+	 * 与 hw_factory.cpp 里 createDaemonVars / createLuaVars 两处 add 调用同款。 */
 	void precheckDuplicate(const std::string& name, const std::string& mtName) {
 		if (registry_.contains(name)) {
-			throw IllegalArgumentException("Duplicate hardware variable name: '" + name
-				+ "' (in table '" + mtName + "')");
+			throw IllegalArgumentException(
+				duplicateHwNameMsg(name, " (in table '" + mtName + "')"));
 		}
 	}
 

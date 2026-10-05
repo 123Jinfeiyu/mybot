@@ -197,22 +197,28 @@ int validateMcpBackendCombos(const CliOptions& options) {
 		return 2;
 	}
 	if (!options.mcp.mcpCallBudget.empty()
-			&& !parseBoundedLong(options.mcp.mcpCallBudget, 0, 1000000)) {
-		std::cerr << rangeErrorText("选项 --mcp-call-budget", 0, 1000000,
+			&& !parseBoundedLong(options.mcp.mcpCallBudget,
+				mcp_limits::kCallBudgetMin, mcp_limits::kCallBudgetMax)) {
+		std::cerr << rangeErrorText("选项 --mcp-call-budget",
+			mcp_limits::kCallBudgetMin, mcp_limits::kCallBudgetMax,
 			options.mcp.mcpCallBudget) << std::endl;
 		return 2;
 	}
 	if (!options.mcp.mcpWallClock.empty()
-			&& !parseBoundedLong(options.mcp.mcpWallClock, 0, 86400)) {
-		std::cerr << rangeErrorText("选项 --mcp-wall-clock", 0, 86400,
+			&& !parseBoundedLong(options.mcp.mcpWallClock,
+				mcp_limits::kBudgetSecMin, mcp_limits::kBudgetSecMax)) {
+		std::cerr << rangeErrorText("选项 --mcp-wall-clock",
+			mcp_limits::kBudgetSecMin, mcp_limits::kBudgetSecMax,
 			options.mcp.mcpWallClock) << std::endl;
 		return 2;
 	}
 	/* 空闲超时（A-2）：区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）。
 	 * 0 = 不限（缺省），与既有预算选项同口径。 */
 	if (!options.mcp.mcpIdleTimeout.empty()
-			&& !parseBoundedLong(options.mcp.mcpIdleTimeout, 0, 86400)) {
-		std::cerr << rangeErrorText("选项 --mcp-idle-timeout", 0, 86400,
+			&& !parseBoundedLong(options.mcp.mcpIdleTimeout,
+				mcp_limits::kBudgetSecMin, mcp_limits::kBudgetSecMax)) {
+		std::cerr << rangeErrorText("选项 --mcp-idle-timeout",
+			mcp_limits::kBudgetSecMin, mcp_limits::kBudgetSecMax,
 			options.mcp.mcpIdleTimeout) << std::endl;
 		return 2;
 	}

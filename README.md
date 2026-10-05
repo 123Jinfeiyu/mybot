@@ -411,7 +411,7 @@ bash test/run_all.sh agent-all
 测试规模（2026-10-04 快照，权威口径以 `bash test/run_all.sh`、`./build/mybot_tests`、
 `./build/harness_selftest`、`./sim/build/sim_tests`、`cargo test` 的实时输出为准）：
 
-- 649 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 650 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
 - 87 个 Lua 测试文件 + 38 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
 - 271 道守门用例（`bash test/run_all.sh` 汇总行的通过数：Lua 单测 + C++ 段 + 各 e2e 脚本；
   1 跳过——`test_jit_warmup.lua` 是真机 ABI 回归，需 `/dev/i2c-*`）

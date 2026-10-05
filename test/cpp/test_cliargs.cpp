@@ -86,6 +86,33 @@ std::string firstMissing(const std::set<std::string>& from,
 	return std::string();
 }
 
+/* 从某个帮助面里取出指定选项定义行上宣称的「上限 N」。
+ * -1 = 该行没有带数值的上限文案，或该选项不在这一面里。
+ * 取材面是帮助**文本**而不是 mcp_limits 常量：拿文本去问 validateOptions 的实际
+ * 行为，两边同源才绿——常量被单独改动时文本跟着走（仍绿），文本被改回手抄的
+ * 字面值而常量另走一边就红。用例里复述常量等于自证，故不复述。 */
+long long advertisedCap(const std::string& help, const std::string& option) {
+	const std::string kCap = "上限 ";
+	std::size_t pos = 0;
+	while (pos < help.size()) {
+		std::size_t eol = help.find('\n', pos);
+		if (eol == std::string::npos) { eol = help.size(); }
+		const std::string line = help.substr(pos, eol - pos);
+		if (line.find(option + " ") != std::string::npos) {
+			const std::size_t c = line.find(kCap);
+			/* 要求「上限 」后紧跟数字：--mcp-call-budget 那行写的是「调用上限（」，
+			 * 没有数值，不能被误当成宣称了上限。 */
+			if (c != std::string::npos && c + kCap.size() < line.size()
+					&& std::isdigit(static_cast<unsigned char>(line[c + kCap.size()])) != 0) {
+				return std::stoll(line.substr(c + kCap.size()));
+			}
+			return -1;
+		}
+		pos = eol + 1;
+	}
+	return -1;
+}
+
 } // namespace
 
 /* ---- 1) 未知键 / 缺值：退出码 2（F-20 / N-4）---- */
@@ -406,6 +433,38 @@ TH_TEST(cliargs_help_text_covers_key_sections) {
 	TH_CHECK(h.find("示例：") != std::string::npos);
 	TH_CHECK(h.find("安全约束：动作脚本只能引入新的参数键") != std::string::npos);
 	TH_CHECK(h.find("结构脚本与动作脚本单次输入上限均为 8 MiB。") != std::string::npos);
+}
+
+/* 帮助宣称的上限 == 校验实际上限（2026-10-06 25.3）。
+ * --mcp-wall-clock / --mcp-idle-timeout 的上限此前在 C++ 侧手抄 8 份：cliargs.cpp
+ * 每个选项两遍（parseBoundedLong 与紧随的 rangeErrorText），cliargs_help.cpp 再
+ * 两行（全文帮助 + --help mcp）。已收进 util_cli.hpp 的 mcp_limits——本文件头注
+ * 与 cliargs_help.cpp 头注早就声明了「区间常量单点，--help / 校验共用」这条惯例，
+ * tcp_limits / daemon_limits 照办了，mcp 三个选项是漏网的。
+ * 判据不复述常量：从帮助文本里把宣称的上限读出来，再用 validateOptions 验它
+ * ——宣称值本身放行、+1 被拒（退出码 2）。两个帮助面都验，因为主题帮助此前
+ * 不在任何守门的取材面里（cliargs_help_option_set_matches_docs 只取 helpText()）。 */
+TH_TEST(cliargs_help_advertised_cap_matches_validation) {
+	for (const char* topic : {"", "mcp"}) {
+		const std::string h = bot::helpText(topic);
+		for (const char* opt : {"--mcp-wall-clock", "--mcp-idle-timeout"}) {
+			const long long cap = advertisedCap(h, opt);
+			TH_CHECK(cap > 0);
+			if (cap <= 0) { continue; }
+			{	/* 宣称的上限本身放行 */
+				Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s",
+					opt, std::to_string(cap)});
+				bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+				TH_CHECK(bot::validateOptions(p) == 0);
+			}
+			{	/* 上限 +1 被拒：帮助没撒谎 */
+				Argv a({"mybot", "--robot=r.sql", "--mcp-backend", "--mcp-socket", "/tmp/s",
+					opt, std::to_string(cap + 1)});
+				bot::ParsedArgs p = bot::parseArgs(a.argc(), a.argv());
+				TH_CHECK(bot::validateOptions(p) == 2);
+			}
+		}
+	}
 }
 
 TH_TEST(cliargs_help_option_set_matches_docs) {

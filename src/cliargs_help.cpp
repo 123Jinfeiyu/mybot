@@ -23,6 +23,48 @@ std::string rangeText(int lo, int hi) {
 	return "范围 " + std::to_string(lo) + "-" + std::to_string(hi);
 }
 
+/* 上限文案（--mcp-wall-clock / --mcp-idle-timeout）：与 rangeText 同理，数取自
+ * util_cli.hpp 的 mcp_limits，与 cliargs.cpp 的校验同源。措辞是「上限 N」而不是
+ * rangeText 的「范围 0-N」——0 在这两个选项里的语义是「不限」而非「下界」，写成
+ * 范围会读成「必须给一个 0 到 N 的值」。文本逐字沿用收单点之前的帮助原文：
+ * docs/reference.md 的选项表用的是同一个措辞，而现有守门只比对选项**名集合**
+ * （cliargs_help_option_set_matches_docs），不比对文案，改字不会红——所以这里
+ * 不自作主张顺手统一。 */
+std::string capText(int hi) {
+	return "上限 " + std::to_string(hi);
+}
+
+/* ---- 全文帮助与主题帮助逐字共用的条目首行（2026-10-06 25.3 收单点）----
+ * 五个选项的**首行**此前在两处各手抄一份（--mcp-call-budget / --mcp-wall-clock /
+ * --mcp-idle-timeout 见全文帮助与 --help mcp，--camera-device / --no-camera 见
+ * 全文帮助与 --help camera），字节相同。没有任何守门比对这两个帮助面：
+ * cliargs_help_option_set_matches_docs 只取 bot::helpText()，主题帮助不在它的
+ * 取材面里，于是抄漏一边不会红，只会让 --help 与 --help mcp 对同一个选项各说
+ * 各话（其中两条还带着 mcp_limits 的上限——那就是「帮助写一个数、校验用另一个
+ * 数」的第三种抄法）。手法同 tcpOptionsHelp（2026-09-25 D3），只是这里两处
+ * 首行**不相邻**（各自后面跟着措辞不同的缩进续行：主题帮助是精简版），故一行
+ * 一个函数而不是抽成整块。续行不在单点范围内——它们本就是有意不同的两份文案。 */
+std::string mcpCallBudgetLine() {
+	return "  --mcp-call-budget <N>   每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限）。\n";
+}
+std::string mcpWallClockLine() {
+	return "  --mcp-wall-clock <秒>   每连接墙钟预算（0/空 = 不限，缺省不限；"
+		+ capText(mcp_limits::kBudgetSecMax) + "）。\n";
+}
+std::string mcpIdleTimeoutLine() {
+	return "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；"
+		+ capText(mcp_limits::kBudgetSecMax) + "）。\n";
+}
+/* 缺省设备 /dev/video0 的权威出处在 modules/Camera.lua:161 的 DEFAULT_DEVICE，
+ * 跨构建取不到（本仓禁「构建期代码生成」），故这里的字面值是有意的手抄，
+ * 与 src/agentmode.cpp:72 的 --check-config 摘要同源同性质，不在本次收单点范围。 */
+std::string cameraDeviceLine() {
+	return "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
+}
+std::string noCameraLine() {
+	return "  --no-camera           不向智能体提供 capture_image 工具\n";
+}
+
 } // namespace
 
 /* TCP 选项块（全文帮助与 --help tcp 共用单点，2026-09-25 D3）：两处此前逐行
@@ -74,11 +116,11 @@ std::string helpText() {
 	s += "  --mcp-socket <路径>  AF_UNIX socket 路径（mybot-agent 的 --socket 连这里）。\n";
 	s += "                      父目录建议 0700、socket 文件 0600；对端经内核\n";
 	s += "                      SO_PEERCRED 校验 uid/gid（不可伪造）\n";
-	s += "  --mcp-call-budget <N>   每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限）。\n";
+	s += mcpCallBudgetLine();
 	s += "                      后端不假设调用方是谁，故自行再强制一层预算\n";
-	s += "  --mcp-wall-clock <秒>   每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。\n";
+	s += mcpWallClockLine();
 	s += "                      注：单次物理调用的 script/command 超时始终在工具层生效\n";
-	s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
+	s += mcpIdleTimeoutLine();
 	s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽\n";
 	s += "  --on-disconnect <脚本>  连接结束（对端关闭/崩溃/超时/协议违规，任何原因）后，\n";
 	s += "                      后端自行执行的安全动作脚本（scripts-dir 之下的相对路径，\n";
@@ -111,14 +153,14 @@ std::string helpText() {
 	s += "                       退出 0 = 放行）；超时按 on_timeout（缺省 deny）处理；\n";
 	s += "                       缺省不启用。也可用配置文件 agent_policy 字段\n";
 	s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）；结构脚本已声明则直接用\n";
-	s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
+	s += cameraDeviceLine();
 	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」。\n";
 	s += "                       命令行给的 src 以其**所在目录**为白名单根；配置文件里的\n";
 	s += "                       camera_src 不推导根（防止一份落地配置把任意文件读进上下文），\n";
 	s += "                       需配 --camera-src-dir 或 BOT4CJ_CAMERA_SRC_DIR，否则驱动默认拒绝\n";
 	s += "  --camera-src-dir <目录> capture_image 模拟图片的白名单根目录（**只能命令行给**：\n";
 	s += "                       它放宽读权限，配置文件写 camera_src_dir 会被拒绝加载）\n";
-	s += "  --no-camera           不向智能体提供 capture_image 工具\n";
+	s += noCameraLine();
 	s += "  --check-config        只校验配置并打印摘要后退出 0（与 --mcp-backend 联用）：\n";
 	s += "                       不装载结构脚本、不上电、不发起任何网络请求（配置文件\n";
 	s += "                       拼错时无需真起后端）。会**打开但不写入**审计日志文件。\n";
@@ -207,10 +249,10 @@ std::string topicCameraHelp() {
 	std::string s;
 	s += "摄像头配置选项（--mcp-backend 下有效）：\n\n";
 	s += "  --camera-var <变量名> 承载摄像头驱动的变量名（缺省 cam0）\n";
-	s += "  --camera-device <路径> 摄像头设备（缺省 /dev/video0；需支持 MJPEG）\n";
+	s += cameraDeviceLine();
 	s += "  --camera-src <图片>   模拟图片来源：不接摄像头也能跑通「拍照→进上下文」\n";
 	s += "  --camera-src-dir <目录> 模拟图片白名单根目录（只能命令行给）\n";
-	s += "  --no-camera           不向智能体提供 capture_image 工具\n";
+	s += noCameraLine();
 	s += "  --check-config        只校验配置并打印摘要后退出 0（不装结构、不上电、不联网）\n";
 	s += "  --audit-log <路径>    审计轨迹（JSON Lines 追加写；\"-\"=stderr；缺省不记录）\n";
 	s += "                        也可用配置文件 audit_log 字段\n\n";
@@ -231,11 +273,11 @@ std::string topicMcpHelp() {
 	s += "                      与 --tcp / --input 互斥；需要 --robot 与 --mcp-socket。\n";
 	s += "  --mcp-socket <路径>  AF_UNIX socket 路径（必填）。父目录建议 0700、socket 文件\n";
 	s += "                      0600；对端经内核 SO_PEERCRED 校验 uid/gid（不可伪造）。\n";
-	s += "  --mcp-call-budget <N>   每连接工具调用上限（跑飞护栏；0/空 = 不限，缺省不限）。\n";
+	s += mcpCallBudgetLine();
 	s += "                      后端不假设调用方是 agent 循环，故自行再强制一层预算。\n";
-	s += "  --mcp-wall-clock <秒>   每连接墙钟预算（0/空 = 不限，缺省不限；上限 86400）。\n";
+	s += mcpWallClockLine();
 	s += "                      注：单次物理调用的 script/command 超时始终在工具层生效。\n";
-	s += "  --mcp-idle-timeout <秒> 每连接空闲（无帧）超时（0/空 = 不限，缺省不限；上限 86400）。\n";
+	s += mcpIdleTimeoutLine();
 	s += "                      让「连上后一声不吭」的哑连接按时让出唯一的 accept 槽；\n";
 	s += "                      墙钟预算同样在空闲期收口（到点断连，对端可重连）。\n";
 	s += "  --on-disconnect <脚本>  连接结束（任何原因）后由后端自行执行的安全动作脚本\n";

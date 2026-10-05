@@ -338,7 +338,11 @@ EOF
 #     次数 − harness.hpp 的 1 处宏定义 − harness_selftest.cpp 的 13 个（独立二进制）；
 #     harness_selftest = 那 13 个 − 5 个 meta_ 例句；Rust = agent/src 下 `#[test]` +
 #     `#[tokio::test]`；sim_tests 的「N 个 TU」= sim/CMakeLists.txt 的 add_executable 源
-#     清单。四个数逐个实测与表相符（649 / 8 / 148 / 8），加一条用例而不改表即判红。
+#     清单。四个数逐个与表比对，加一条用例而不改表即判红。
+#     ⚠ 本行**故意不写出那四个数**：写出就是把派生值再手抄一份，而手抄的那份会随
+#     用例增删烂掉——2026-10-06 加一条 C++ 用例后本注释仍写着旧的 mybot_tests 计数，
+#     正是这段要消灭的东西在自己身上复发。要看当前值就读 docs/testing.md 那张表，
+#     或直接跑 scripts/check_doc_paths.py（它的收尾行会打印派生结果）。
 #     唯一派生不出的是 sim_tests 的通过数：sim 侧记账单位是**断言**不是用例，`check(`
 #     调用点 309 处而实跑 387 条，差额在循环与条件分支里，跑一遍才知道；加上 sim/ 不在
 #     任何 CI job 的构建范围，那个数只能人工回填。故表里那一格必须明写「运行时数」，
