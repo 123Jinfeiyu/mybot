@@ -31,6 +31,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <iostream>	/* std::cerr：此前靠 util_env.hpp 传导 */
 #include <map>
 #include <optional>
 #include <set>

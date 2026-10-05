@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>	/* std::cerr 重定向：此前靠 util_env.hpp 传导 */
 #include <stdexcept>
 #include <string>
 #include <thread>

@@ -3,7 +3,7 @@
 #include <iostream>
 #include <stdexcept>
 
-#include "util_env.hpp"
+#include "debug_log.hpp"	/* logD */
 #include "util_except.hpp"
 #include "util_file.hpp"
 #include "util_str.hpp"

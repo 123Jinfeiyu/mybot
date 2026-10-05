@@ -23,6 +23,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <ostream>	/* std::ostream& 形参：此前靠 util_env.hpp 传导 */
 #include <string>
 #include <utility>
 #include <vector>

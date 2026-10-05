@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "util_env.hpp"
+#include "debug_log.hpp"	/* logD */
 #include "util_except.hpp"
 #include "util_num.hpp"
 #include "hardware.hpp"

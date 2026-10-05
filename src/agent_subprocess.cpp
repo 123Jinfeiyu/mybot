@@ -20,6 +20,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>	/* std::cerr（reapGiveUpWarning 的落点）：此前靠 util_env.hpp 传导 */
 #include <poll.h>
 #include <stdexcept>
 #include <sys/wait.h>

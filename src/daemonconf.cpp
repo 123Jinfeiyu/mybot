@@ -15,9 +15,9 @@
 #include <string>
 #include <vector>
 
-#include "util_env.hpp"		/* logD / modulePaths */
+#include "debug_log.hpp"	/* logD */
 #include "util_num.hpp"		/* parseLongStrict / IntParse */
-#include "util_path.hpp"	/* findExistingModule / splitModulePaths */
+#include "util_path.hpp"	/* modulePaths / findExistingModule / splitModulePaths */
 #include "util_str.hpp"		/* concatMsg */
 
 namespace bot {
