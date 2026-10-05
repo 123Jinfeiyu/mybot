@@ -205,6 +205,12 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 - TCP / agent 端到端缺 `python3`
 - `run_all.sh` 的 Rust agent 段缺 `agent/target/release/mybot-agent`（独立可选产物）；专门的 `gate:agent-e2e` 不允许此跳过。Rust agent 全程 reqwest + rustls（静态链接），本机 libcurl 有无都不影响该段——2026-09-25 #8 起仓库已无 libcurl 依赖
 
+反过来，有三个脚本**没有任何自动调用点**（`run_all.sh` / 十条 CI job / pre-push 都不执行它们），它们坏了不会有任何守门变红，只能靠人跑：
+
+- `scripts/build_sim.sh` —— `sim/` 是独立 CMake 工程，不在任何 CI job 的构建范围内；它产出的 `sim_tests`（387 例）也因此只在开发者手动跑时执行（计数见下「四处套件的计数口径」）
+- `scripts/sim_agent_demo.sh` —— sim + backend + agent 三层链路的**手动冒烟**：要显示器（GLFW/OpenGL）、要真模型凭据 `mybot.llm.json`、要先 `build_sim.sh`。这意味着 **GL 可视化壳没有自动覆盖**，改完请自己跑一次并把结果写进提交信息（详见 [sim.md](sim.md)「端到端链路」）
+- `scripts/build_agent.sh` —— CI 的 `gate:agent` / `gate:agent-e2e` 各自 `cargo build`，本机则靠它产出 `mybot-agent`；产物陈旧/缺失的后果见 [development.md](development.md)「守门钩子（pre-push）」第 3 条
+
 四条反假绿约束（2026-09-20 审计 C8–C10 补齐三条，2026-09-21 AG-5 补第四条）：
 
 - **过滤器拼错必须失败**：任何分段都受 `$filter` 守卫；全部未命中时末尾的空匹配防线以退出码 1 拒绝（C8：controller/trigger 观察面此前缺守卫，`run_all.sh zzz_typo` 会以「3 通过, 0 失败」退出 0）

@@ -325,3 +325,14 @@ robot 行数决定，壳按 `robotCount()` 建对应套数的命令桥/测距桥
 任务提示词从 `prompts/sim_obstacle_nav/`（避障探索）或 `PROMPTS_DIR` 指定目录
 按序号拼接；搬运任务提示词见 `prompts/sim_carry_task.md`（配
 `scripts/sim_pick.mt` / `sim_place.mt`）。退出时自动拆链路清 socket，日志保留。
+
+**这条链路是手动冒烟，不是守门**：`test/run_all.sh`、`.gitlab-ci.yml` 的十条 job、
+`scripts/git-hooks/pre-push` 都不调用它（仓内对它的唯一机械检查是
+`test/run_all_selftest.sh` 静态比对其中 `MYBOT_HOME` 的拼法，属「状态目录缺省名」那段，
+并不执行脚本）。它跑一次要三样东西，任一缺失都使它进不了自动守门：显示器（GLFW/OpenGL
+窗口）、真模型凭据（缺省读 `mybot.llm.json`，该文件按 `*.llm.json` 被 gitignore）、
+以及先 `bash scripts/build_sim.sh`（`sim/` 是独立 CMake 工程，同样不在任何 CI job 的
+构建范围内）。所以**GL 可视化壳没有任何自动覆盖**：改坏了要靠人跑一次 demo 才会发现，
+提交前请自行跑一遍并在提交信息里写明结果。核心逻辑（运动学/碰撞/搬运/场景 IO/三桥线上
+协议/动作码表）另由 `sim_tests` 与主干守门的零编译跨源校验覆盖，见
+[testing.md](testing.md)。

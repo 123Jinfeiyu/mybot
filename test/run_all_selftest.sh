@@ -153,6 +153,10 @@ fi
 #    两侧都不会报错——agent 的会话历史与 sim 的地图各落一棵树，互不可见。
 #    每处钉两件事：读 MYBOT_HOME 的形态还在（没被换成别的变量），且拼出的缺省
 #    后缀仍是 /.mybot。
+#    ⚠ 第三行（scripts/sim_agent_demo.sh）是**静态文本**比对，不是执行：本自检从头到尾
+#    没跑过那个脚本，别的守门也没跑过——它要显示器、真模型凭据 mybot.llm.json、
+#    以及先 bash scripts/build_sim.sh，三条都进不了自动守门，只能手动冒烟（详见
+#    docs/sim.md「端到端链路」）。别把这一行读成「三层链路受守门覆盖」。
 while read -r f pat; do
 	[ -n "$f" ] || continue
 	grep -qE "$pat" "$f" \
