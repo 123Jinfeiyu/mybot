@@ -249,17 +249,23 @@ build = function(ctx, data)
 	C = parse_calib(coeff)
 
 	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+	-- 加热器三列经 num_or 而非 `tonumber(x) or 缺省`：'nan' 过 tonumber 出的是
+	-- number（Lua 里 truthy），or 兜不住，而 NaN 与任何数比较都为假，下面四条
+	-- 区间判定一律放行（amb_temp 更是完全没有区间判定）。NaN/inf 会一路传到
+	-- calc_res_heat/calc_gas_wait，最后被 HAL 的 byte_of 挡成 nil 而报成
+	-- "not responding (RES_HEAT0 write failed)"，把配置笔误误报成器件掉线。
+	-- 下一行 wait 列早已是 finite_of，同一函数里两种口径正是防护漂移（审计 P3）。
 	local emsg
-	local heatr_temp = math.floor(tonumber(data.heatr_temp) or 320)
+	local heatr_temp = math.floor(num_or(data.heatr_temp, 320))
 	if heatr_temp < 100 or heatr_temp > 400 then
 		emsg = "Invalid Argument: heatr_temp '" .. tostring(data.heatr_temp) .. "' (range 100~400)"
 	end
 	if emsg then return err(emsg) end
-	local heatr_dur = math.floor(tonumber(data.heatr_dur) or 150)
+	local heatr_dur = math.floor(num_or(data.heatr_dur, 150))
 	if heatr_dur < 1 or heatr_dur > 4032 then
 		return err("Invalid Argument: heatr_dur '" .. tostring(data.heatr_dur) .. "' (range 1~4032)")
 	end
-	local amb_temp = tonumber(data.amb_temp) or 25
+	local amb_temp = num_or(data.amb_temp, 25)
 	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = 300 end
 
@@ -301,7 +307,12 @@ call = function(ctx, data)
 		dbg_table("-------- BME688 caller func get a table --------", data)
 	end
 
-	local wait_ms = tonumber(data.wait) or cfg_wait or 300
+	-- 经 num_or：'nan' 过 tonumber 出的是 number（Lua 里 truthy），两个 or 都
+	-- 兜不住，而 `wait_ms < 0` 对 NaN 又为假，于是 NaN 会一路带到下面轮询循环的
+	-- `if waited >= wait_ms then return err(...)`——NaN 与任何数比较都为假，
+	-- **超时分支永不触发**：器件不就绪时循环永不退出，后端进程整个挂死。
+	-- build 侧的 wait 列早已是 finite_of，call 侧漏了（防护漂移，审计 P3）。
+	local wait_ms = num_or(data.wait, cfg_wait or 300)
 	if wait_ms < 0 then wait_ms = 0 end
 
 	-- 触发强制模式：先置睡眠再写模式位（Bosch set_op_mode 时序）

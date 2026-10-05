@@ -199,7 +199,11 @@ build = function(ctx, data)
 		mode = string.format("LUT(%d 项)", #entries)
 	else
 		-- 手动模式：禁 LUT + 写初始占空比（缺省 0 = 停转）
-		local duty = tonumber(data.duty) or 0
+		-- 经 num_or：'nan' 过 tonumber 出的是 number（Lua 里 truthy），`or 0`
+		-- 兜不住，而 `< 0`/`> 100` 两条钳位对 NaN 恒假放行，duty_to_lsb(NaN)
+		-- 仍是 NaN，最后被 HAL 的 byte_of 挡成 nil 而报「Failed to write
+		-- EMC2101 fan setting」——把配置笔误误报成 I2C 故障（审计 P3 口径）。
+		local duty = num_or(data.duty, 0)
 		if duty < 0 then duty = 0 end
 		if duty > 100 then duty = 100 end
 		if not lut_disable(fd) then
@@ -226,7 +230,7 @@ call = function(ctx, data)
 
 	-----------------------------------------------------
 	-- 带 duty：切手动模式（禁 LUT）+ 设占空比
-	local duty = tonumber(data.duty)
+	local duty = finite_of(data.duty)	-- NaN 同 build 侧口径，见上注
 	if duty ~= nil then
 		if duty < 0 then duty = 0 end
 		if duty > 100 then duty = 100 end

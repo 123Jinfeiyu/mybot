@@ -533,6 +533,37 @@ if r then
 		and byte(0x64) == 0x65 and byte(0x70) == 0x00 and byte(0x71) == 0x20)
 end
 
+-- NaN 反例（26.1）：heatr_temp/heatr_dur/amb_temp 三列的 `tonumber(x) or 缺省`
+-- 兜不住 NaN（'nan' 过 tonumber 出的是 number、Lua 里 truthy），而 `< 100`/
+-- `> 400`/`< 1`/`> 4032` 四条区间判定对 NaN 恒假放行；amb_temp 更是完全没有
+-- 区间判定。NaN/inf 一路传到 calc_res_heat/calc_gas_wait，最后被 HAL 的
+-- byte_of 挡成 nil，报成 "BME688 not responding (RES_HEAT0 write failed)"
+-- ——把配置笔误误报成器件掉线。三列应与 'abc' 同归缺省（320C/150ms/25C）。
+mark = section()
+r = expect_ok("build heatr_temp/heatr_dur/amb_temp='nan' 同归缺省",
+	function() return build({ fd = fd, address = "0x76",
+		heatr_temp = "nan", heatr_dur = "nan", amb_temp = "nan" }) end)
+if r then
+	local fs = frames(mark)
+	check("NaN 三列的 RES_HEAT0/GAS_WAIT0 与缺省逐位同值",
+		fs[5] and fs[5][1] == 0x5A and fs[5][2] == res_heat_default
+		and fs[6] and fs[6][1] == 0x64 and fs[6][2] == 101,
+		table.concat((function()
+			local t = {} for _, x in ipairs(fs) do
+				t[#t + 1] = string.format("%02X%02X", x[1], x[2])
+			end
+			return t
+		end)(), ","))
+end
+mark = section()
+r = expect_ok("build amb_temp='inf' 同归缺省 25C（该列无区间判定）",
+	function() return build({ fd = fd, address = "0x76", amb_temp = "inf" }) end)
+if r then
+	local fs = frames(mark)
+	check("amb_temp inf → RES_HEAT0 仍为 25C 反算值",
+		fs[5] and fs[5][2] == res_heat_default, tostring(fs[5] and fs[5][2]))
+end
+
 -- 参数档边界 + RES_HEAT 随 amb/temp 变化
 mark = section()
 r = expect_ok("build 边界档 100C/4032ms",
@@ -788,6 +819,25 @@ build({ fd = fd, address = "0x76" })
 dev:set_never_ready(true)
 expect_err("call wait=25ms 提前超时",
 	function() return call({ fd = fd, address = "0x76", wait = "25" }) end, "not ready")
+dev:clear_faults()
+
+-- NaN 反例（26.1，本组后果最重）：`tonumber(data.wait) or cfg_wait or 300` 的
+-- or 兜不住 NaN，而 `wait_ms < 0` 对 NaN 为假，于是 wait_ms = NaN 一路带到轮询
+-- 循环的 `if waited >= wait_ms then return err(...)`——NaN 与任何数比较都为假，
+-- **超时分支永不触发**：器件不就绪时循环永不退出（挂死，不是错值）。同一驱动
+-- build 侧的 wait 列早已改用 finite_of，call 侧漏了，正是「防护漂移」的实证。
+-- 本用例修复前不会失败而是**挂住**，故红基线用 timeout 取（见提交信息）。
+section()
+build({ fd = fd, address = "0x76" })
+dev:set_never_ready(true)
+mark = #vbus.txlog
+sleep_base = sleep_total
+expect_err("call wait='nan' 回落缺省 300ms 超时（非挂死）",
+	function() return call({ fd = fd, address = "0x76", wait = "nan" }) end, "not ready")
+check("wait NaN 回落缺省：实睡 300ms、轮询 61 次",
+	sleep_total - sleep_base == 300 and count_reads(mark, 0x1D, 1) == 61,
+	string.format("sleep=%d reads=%d", sleep_total - sleep_base,
+		count_reads(mark, 0x1D, 1)))
 dev:clear_faults()
 
 section()

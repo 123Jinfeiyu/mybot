@@ -105,9 +105,15 @@ build = function(ctx, data)
 		dbg_table("-------- MT6826S builder func get a table --------", data)
 	end
 
-	dev_delay = tonumber(data.delay) or 0
+	-- 两列经 num_or/finite_of 而非裸 tonumber：'nan' 过 tonumber 出的是 number
+	-- （Lua 里 truthy），`or 0` 兜不住，下面 and/or 链里的 `z ~= nil`、`z ~= 0`
+	-- 与末尾的 `NaN or 0` 也全都兜不住。cfg_zero/dev_delay 都是模块级状态：
+	-- cfg_zero=NaN 会让每次 call 的 `cfg_zero ~= 0` 恒真，ANGLE 被 (deg - NaN)
+	-- % 360 永久污染成 nan；dev_delay=NaN 则流进 read_reg 的延时参数，并被横幅
+	-- 的 %d 打成 -9223372036854775808（string.format 对 NaN 不报错，只出垃圾）。
+	dev_delay = num_or(data.delay, 0)
 
-	local z = tonumber(data.zero)
+	local z = finite_of(data.zero)
 	cfg_zero = (z ~= nil and z ~= 0) and z % 360 or 0
 
 	-- 在位自检：读固定值寄存器（0x005 高 5 位恒 0；0x004 bit0 恒 0）
