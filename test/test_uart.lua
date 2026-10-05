@@ -1,4 +1,5 @@
--- HAL.lua uart 段 离线测试（mock HAL.sys 系统调用，不触碰真实串口）
+-- HAL 的 uart 段（modules/lib/hal/uart.lua，经 HAL.lua 聚合加载）离线测试
+-- （mock HAL.sys 系统调用，不触碰真实串口）
 -- 覆盖：open 路径/波特率白名单、raw 8N1 配置、read/write/flush、
 -- close 恢复 open 前 termios（销毁重置）及恢复失败/无快照等分支
 -- 用法: luajit test_uart.lua（HAL 依赖 ffi，需 LuaJIT）
@@ -12,8 +13,8 @@ local ffi = require("ffi")
 local bit = require("bit")
 local HAL = dofile("modules/lib/HAL.lua")
 
--- 波特率期望编码随 glibc 版本分叉（glibc 2.42 起 B* 即字面 Hz，见 HAL.lua
--- uart 段首注释与 test_uart_baud.lua）：此处独立推导期望值，避免与 HAL 的
+-- 波特率期望编码随 glibc 版本分叉（glibc 2.42 起 B* 即字面 Hz，见 hal/uart.lua
+-- 段首注释与 test_uart_baud.lua）：此处独立推导期望值，避免与 HAL 的
 -- 探测逻辑同义反复。旧版 B9600=13，2.42+ B9600=9600（余档同形）。
 -- 非 glibc（musl）没有该符号：取符号那步用 pcall 包住，按旧编号表处理
 -- （musl 的 B* 就是 Linux ABI 旧编号，test_uart_consts 在 alpine 下已实证）。
@@ -22,7 +23,7 @@ local ok_v, vstr_p = pcall(function() return ffi.C.gnu_get_libc_version() end)
 local v_major, v_minor = string.match((ok_v and vstr_p ~= nil) and ffi.string(vstr_p) or "", "(%d+)%.(%d+)")
 local glibc_hz_baud = v_major ~= nil
 	and (tonumber(v_major) * 1000 + tonumber(v_minor)) >= 2042
--- 旧 ABI 编码表（glibc < 2.42；与 HAL.lua UART_B_CONST_LEGACY 同源）
+-- 旧 ABI 编码表（glibc < 2.42；与 hal/uart.lua 的 UART_B_CONST_LEGACY 同源）
 local LEGACY_BCONST = {
 	[1200] = 9, [2400] = 11, [4800] = 12, [9600] = 13, [19200] = 14, [38400] = 15,
 	[57600] = 0x1001, [115200] = 0x1002, [230400] = 0x1003, [460800] = 0x1004,

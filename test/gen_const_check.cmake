@@ -17,7 +17,7 @@
 # 的 consts 表改**执行期求值**（luajit 加载后端 → test/lib/dump_consts.lua 倒出
 # M.consts 表），抽取契约从「正则模式 ↔ 书写风格」收窄为「后端导出 M.consts 表」
 # 这一条既有接口契约——方案 A 下沉搬走常量时不再有隐式的书写风格耦合可断。
-# Camera.lua 的 V4L2 常量与 ABI 尺寸表、HAL.lua 的波特率表保持纯文本抽取：
+# Camera.lua 的 V4L2 常量与 ABI 尺寸表、hal/uart.lua 的波特率表保持纯文本抽取：
 # Camera.lua 顶层会执行整套 HAL 加载（mpath 解析 + 运行期 glibc 调用），把
 # 配置期耦合到宿主运行环境得不偿失；且它们的表是函数内局部量、无导出接口。
 # 抽取仍对**任何一方**失效响亮失败（FATAL_ERROR），不静默降级。
@@ -173,8 +173,11 @@ function(read_baud_table path varname out_var)
   set(${out_var} "${acc}" PARENT_SCOPE)
 endfunction()
 
-read_baud_table("${SRC_MODULES}/lib/HAL.lua" "LEGACY" BAUD_LEGACY)
-read_baud_table("${SRC_MODULES}/lib/HAL.lua" "HZ" BAUD_HZ)
+# 26.2 按域拆分：波特率表随 UART 段搬到 lib/hal/uart.lua（原在 HAL.lua）。
+# 本脚本的抽取路径与被抽文件的落点是同一份契约，搬迁必须连这里一起改——
+# 正是上面 2026-10-01 P0 记下的那条教训（抽取失效会 FATAL_ERROR，不静默）。
+read_baud_table("${SRC_MODULES}/lib/hal/uart.lua" "LEGACY" BAUD_LEGACY)
+read_baud_table("${SRC_MODULES}/lib/hal/uart.lua" "HZ" BAUD_HZ)
 
 # ---- 生成头文件 ----
 set(hdr "/* 本文件由 test/gen_const_check.cmake 在 cmake 配置期生成，请勿手工编辑。\n")

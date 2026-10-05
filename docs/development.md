@@ -206,7 +206,7 @@ require_driver("i2c", {
 要点：
 - **前导简化**：旧模式 5 行（HAL + print_table + drv_common + arg_table + i2c_pair）→ 新模式 1 行（`drv_common.lua`），`arg_table` + `i2c_pair` 样板由框架收敛；
 - **`ctx.fd`/`ctx.addr`**：框架按总线类型自动校验并注入，驱动直接使用，无需手动提取；
-- HAL 总线 API（modules/lib/HAL.lua）：`i2c_open(path)` / `i2c_close(fd)` / `i2c_write_reg(fd, reg, val)` / `i2c_read_multi_bytes(fd, reg, n)` / `i2c_read_bytes(fd, n)` / `i2c_write_reg16(fd, reg16, ...)`；
+- HAL 总线 API（`modules/lib/HAL.lua` 聚合门面，各总线域实现见 `modules/lib/hal/*.lua`）：`i2c_open(path)` / `i2c_close(fd)` / `i2c_write_reg(fd, reg, val)` / `i2c_read_multi_bytes(fd, reg, n)` / `i2c_read_bytes(fd, n)` / `i2c_write_reg16(fd, reg16, ...)`；
 - 需要 set_addr 前额外校验的驱动在 build 闭包里用 `i2c_check(data)`（MS5611 OSR 档位、PCF8574 地址族），否则框架的 `i2c_pair` 已覆盖；
 - 符号扩展一律走 `bitcompat.lua` 单点（`M.u16le/M.s16le/M.s16/M.s12/M.s8`，LuaJIT 内建 bit / 纯 Lua 双兼容）；不要手写补码拷贝（审计 #30 已清掉 3 处同文件遮蔽）；
 - **虚拟硬件**：框架在调用驱动闭包前自动完成 `arg_table` → `virt_prepare`，测试不碰真总线。

@@ -197,7 +197,7 @@ local consts = {
 ------------------------------------------------------------------
 -- glibc 版本探测：gnu_get_libc_version 是 glibc 专有符号（musl 没有），
 -- 非 glibc 平台 version() 返 nil，上层波特率编码探测按旧 ABI 编码处理
--- （HAL.lua UART 段与 test_uart_consts.c 三重把关）。
+-- （hal/uart.lua 与 test_uart_consts.c 三重把关）。
 -- 2026-09-25 musl 实证修正：cdef 只是声明、永远成功，符号缺失是在 **ffi.C 取值时**
 -- 抛「Symbol not found」——此前 pcall 只包住 cdef，musl 下 version() 直接崩，
 -- 与本文件顶部契约「不可知返回 nil」相悖。故解析符号的那一步也放进 pcall。
@@ -231,7 +231,7 @@ local function spi_setup(fd, mode, bits, speed)
 end
 
 -- SPI 传输：组装 spi_ioc_transfer 结构 + ioctl(SPI_IOC_MESSAGE_1)
--- delay_us 已由 HAL.lua 校验并钳制到 0~65535（__u16 上限）
+-- delay_us 已由 hal/spi.lua 校验并钳制到 0~65535（__u16 上限）
 local function spi_xfer(fd, tx, rx, len, delay_us)
 	local msg = ffi.new("spi_ioc_transfer[1]")	-- ffi.new 零初始化
 	msg[0].len = len

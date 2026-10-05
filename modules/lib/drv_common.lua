@@ -290,7 +290,7 @@ end
 
 -- 读 reg 起 n 字节，返回 1-based 大端字节表（[1] 为最高位）；任一读失败返回 nil。
 -- 必须分块：HAL 的合并读把整块拼成一个 double，超过 6 字节即超 2^53 精度
--- （见 lib/HAL.lua 的 i2c_read_multi 注释），故 chunk 缺省 6；需要更小事务
+-- （见 lib/hal/i2c.lua 的 i2c_read_multi 注释），故 chunk 缺省 6；需要更小事务
 -- 的驱动显式传参（BME280 校准块传 4）。尾部不足一块时按剩余长度读。
 -- 原 BME688 / BME280 各自的 read_block 局部量（骨架相同，仅 chunk 不同）
 function read_block_bytes(fd, reg, n, chunk)

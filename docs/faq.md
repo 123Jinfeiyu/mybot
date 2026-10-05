@@ -44,7 +44,7 @@
   （直连变量走真器件、守护走内嵌 `*_VIRT` 模型，双路径覆盖都保留）。
 - **同一物理串口无跨变量引用计数（UART）**：HAL 的 fd 为进程级，但每个硬件变量
   一个独立 `lua_State`，各自 open 时快照 termios、destroy 时按自己 open 时的配置
-  恢复——**后关闭者以自己 open 时看到的配置为准**（`modules/lib/HAL.lua` 自述，
+  恢复——**后关闭者以自己 open 时看到的配置为准**（`modules/lib/hal/uart.lua` 自述，
   跨变量协调在 Lua 层不可能）。安全的共享形态只有一个：多个器件行经 `'$uart-x'`
   引用**同一个** UART 总线变量（fd 只有一个、termios 只设一次）。危险形态是
   两个消费者**各自 open** 同一 `path`（重复声明 UART 总线变量、或 UART 变量 +

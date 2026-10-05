@@ -179,9 +179,10 @@ do
 		#s)
 end
 
--- 平台差异单点（主评估 C）：HAL.lua:960 曾用字面量把 HAL.PWM_SYSFS_ROOT 重置回
--- /sys/class/pwm，而 pwm_chip_path/pwm_attr_path 读的正是该快照 —— 改
--- HAL.platform.pwm_sysfs_root 做移植/桩时静默失效（旧实现前缀恒为 /sys/class/pwm）。
+-- 平台差异单点（主评估 C）：pwm 段（26.2 起在 lib/hal/pwm.lua）曾用字面量把
+-- HAL.PWM_SYSFS_ROOT 重置回 /sys/class/pwm，而 pwm_chip_path/pwm_attr_path 读的
+-- 正是该快照 —— 改 HAL.platform.pwm_sysfs_root 做移植/桩时静默失效（旧实现
+-- 前缀恒为 /sys/class/pwm）。
 -- 修复后两路径函数直接取平台表值，本组断言据此跟随；结束前还原被改的字段。
 do
 	local saved_root = HAL.platform.pwm_sysfs_root

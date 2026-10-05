@@ -283,7 +283,8 @@ set_tests_properties(cpp_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 # 从不读 Lua 源，于是「Lua 侧漂移」这一半完全不被发现（实测改
 # HAL.SPI_IOC_WR_MODE 后全部目标仍绿）。现在配置期先用
 # test/gen_const_check.cmake 从 modules/lib/hal_backend_glibc.lua（consts 表，
-# 2026-09-30 方案 A 下沉后的唯一事实源）、modules/Camera.lua 抽取真实值生成
+# 2026-09-30 方案 A 下沉后的唯一事实源）、modules/lib/hal/uart.lua（两套波特率
+# 映射表，26.2 按域拆分前在 HAL.lua 的 uart 段）、modules/Camera.lua 抽取真实值生成
 # const_lua.h，断言对**两侧**各钉一次：
 # Lua 抽取值 == 手抄预期值（抽取生效 + Lua 未漂移）+ 预期值 == 系统头。
 # consts 表走**执行期求值**（luajit + test/lib/dump_consts.lua，2026-10-01 加固：

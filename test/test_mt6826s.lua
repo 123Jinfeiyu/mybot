@@ -6,7 +6,7 @@
 -- 手写桩」迁移到「真实驱动 + virtbus 注入层 + 内嵌模型（modules/MT6826S.lua
 -- 尾部 MT6826S_VIRT，2026-09-15 自 virtbus/mt6826s.lua 迁入）」。
 -- 迁移同时消除 HAL 缺口：驱动原本绕过全局 spi_* 自组全双工帧，现新增全局
--- 原语 spi_xfer_full（1 基表进/等长表出，HAL.lua + virtbus 双侧复刻），
+-- 原语 spi_xfer_full（1 基表进/等长表出，hal/spi.lua + virtbus 双侧复刻），
 -- 驱动只调全局——真机走 ioctl、无真机走内存模型，协议帧可经 txlog 断言。
 --
 -- 协议事实（数据手册 Rev1.1 第 8.6/11 章，三份独立实现交叉）：

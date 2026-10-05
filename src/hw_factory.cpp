@@ -74,7 +74,7 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 
 /* ==================== 单消费者判据（审计 1.3）====================
  * HAL 的每次 I2C 访问都是**单次 I2C_RDWR ioctl**（寄存器指针写 + 数据读合并成
- * 一个内核事务，见 HAL.lua 的 i2c_read_reg / i2c_read_multi_bytes），内核在
+ * 一个内核事务，见 modules/lib/hal/i2c.lua 的 i2c_read_reg / i2c_read_multi_bytes），内核在
  * adapter 层串行化，两个 fd 也插不进对方的指针相位。所以「主线程驱动 + 守护
  * 同址采样」对绝大多数器件是安全的——robots/test/ 下 20 个夹具正是刻意这么写的
  * （.mt 里同时点名设备与守护，注释写明"给守护留采样窗口"）。
@@ -312,7 +312,7 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
  * 共享形态只有一种是危险的：两个消费者**各自 open** 同一 path（UART 总线
  * 变量重复声明同一路径、或 UART 变量 + 真机守护各开一个 fd）。此时每个
  * lua_State 独立快照/恢复 termios，后关闭者以自己 open 时的配置为准
- * （modules/lib/HAL.lua:869 自述「不做跨变量引用计数」），混用波特率还会
+ * （modules/lib/hal/uart.lua 自述「不做跨变量引用计数」），混用波特率还会
  * 互相改线速。而多个器件行引用**同一个** UART 总线变量（'$uart-0'）是
  * 安全形态：fd 只有一个、termios 只设一次，器件行不持有句柄——不告警。
  * virt 侧（总线 proto=virt、守护 proto=virt）走内存仿真不碰真串口，跳过

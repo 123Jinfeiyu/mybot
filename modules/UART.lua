@@ -8,7 +8,7 @@ dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 -- 文件句柄（H-06：local upvalue 共享于本文件 build/call/destroy，不污染全局）
--- 哨兵值必须是 -1 而非 0：HAL 约定 open 成功返回 fd >= 0（见 HAL.lua 的 i2c_open 注释），
+-- 哨兵值必须是 -1 而非 0：HAL 约定 open 成功返回 fd >= 0（见 lib/hal/i2c.lua 的 i2c_open 注释），
 -- 而 stdin 被关闭时（systemd StandardInput=null、--input 配合 0<&-）open 真实返回 0。
 -- 用 0 当「未打开」哨兵会让 build 成功（build 里按 uart_open 返回 < 0 判失败）
 -- 而 call/destroy 拒绝同一个合法句柄。
