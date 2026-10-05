@@ -88,6 +88,12 @@ std::string tcpOptionsHelp() {
 	return s;
 }
 
+/* 25.4 评估后判不改（100 行）：本函数是**文本表**不是控制流——通篇 s += "…"，
+ * 零分支。真正可复用的那一段（TCP 选项块）2026-09-25 D3 已经抽成
+ * tcpOptionsHelp，五条跨帮助面逐字相同的首行 25.3 也已收成单点；剩下的按主题
+ * 再切只会把一份连续的帮助正文拆成要按顺序拼回来的碎片，而它是
+ * cliargs_help_text_covers_key_sections 与 cliargs_help_option_set_matches_docs
+ * 两条黄金用例的锚定对象，切碎无收益、有漂移面。 */
 std::string helpText() {
 	std::string s;
 	s += "这是一个机器人动作脚本解析器。\n";

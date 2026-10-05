@@ -360,7 +360,15 @@ HotSqlService::DropOutcome HotSqlService::dropTableShells(const ScriptLoader::Mu
  *
  * hw 指针来自计划（plans）而非按名 find：先删后建模式下执行点在插入之后，
  * 按名 find 会命中新注册的同名变量、摘错对象——计划期取好指针是正确性前提
- * （见 apply 阶段 1.5 的注释）。 */
+ * （见 apply 阶段 1.5 的注释）。
+ *
+ * 25.4 评估后判不改（90 行）：函数体已经按设计文档的 4.6.0–4.6.4 分成五段编号
+ * 编排，三段真有复杂度的部分**已经**委托给具名单点（DaemonRegistry::stopBarrier
+ * 的清单入口、applyHotDeleteConsistency、hotDeleteFailureMessage），剩下的长度
+ * 就是编排顺序本身——而顺序正是这里的安全性质（屏障必须在断电之前、断电必须
+ * 逆序、一致性收尾只对**已成功断电**的部分落实）。唯一像样的接缝是把 4.6.0 的
+ * 展平+排序（约 17 行）抽出去，代价是把局部 struct Doomed 提成文件级类型、并让
+ * 排序比较器那两条「表倒序 / 表内行号倒序」的注释与消费它的循环分家，净 LOC ≈ 0。 */
 HotSqlService::HotDeleteOutcome HotSqlService::executeHotDeletes(
 		const std::vector<HotSqlPlan::Deletion>& plans,
 		const std::map<std::string, std::size_t>& daemonNameIndex,

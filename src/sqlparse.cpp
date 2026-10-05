@@ -175,6 +175,12 @@ static bool separatorType(char c, TokenType& out) {
 	}
 }
 
+/* 25.4 评估后判不改（90 行）：单遍逐字符扫描，函数体**就是**那台状态机——
+ * inQuote / quoteChar / pendingChar_ / pendSep_ / pendLine_ / pendCol_ /
+ * tokLine / tokCol 八份可变扫描态在循环里逐字符增量维护（F-02 的 O(n) 就是靠
+ * 这个增量，取代旧实现每字符重扫 token 的 O(n²)）。抽任何一段出去都得把这八份
+ * 状态整体进出参数表，接缝比循环体还宽；而 switch 分派式的字符分类拆开反而更
+ * 难读（计划里的预判，实测成立）。 */
 Token Lexer::next(bot::Reader& sr) {
 	if (pendSep_) {
 		const TokenType t = *pendSep_;

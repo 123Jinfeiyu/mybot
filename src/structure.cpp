@@ -351,6 +351,13 @@ struct ReadSqlState {
 	}
 
 	/* ---- UPDATE … SET … [WHERE …] ---- */
+	/* 25.4 评估后判不改（106 行）：六段直线流水，有复用语义的部分**已经**各自
+	 * 委托给具名单点（mt::findByName / mt::matchAll / removeRowsOf /
+	 * appendRowTracked），剩下的长度是六条互不相同的用户可见报错加其决策注释。
+	 * 唯二能抽的接缝是「赋值列解析→setIdx」与「物化改后行→modified」，各约 18 行，
+	 * 抽出去要连注释一起搬、回来是各约 20 行的私有 helper，净 LOC ≈ 0；而末尾
+	 * touchedHere/updatedHere 的**双向独占**不变量会被拆到两个函数里，读的人得
+	 * 跨函数拼。要动先给这两段各留钉子用例。 */
 	void onUpdate(const sql4cj::Event& eve) {
 		/* 热更新（2026-09-23）：UPDATE 在影子上分解为「DELETE 命中行 +
 		 * INSERT 改后行」两条既有路径——语义是**断电重建**，不是原地改值。

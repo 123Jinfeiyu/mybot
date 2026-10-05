@@ -8,6 +8,13 @@
 namespace bot {
 namespace agent {
 
+/* 25.4 评估后判不改（93 行）：派发漏斗是**安全判据的直线流程**，不是复杂控制流
+ * ——解析参数 → 策略确认 → 执行 → 归一 paramError → 两层 catch → 计时 → 审计，
+ * 一段接一段没有回边。判据锚点（SAN-8②、SAN-4、A5、M1）就地贴在各自那段上，
+ * 拆开只会让它们分散到不同函数里。关键约束是 argsOk：它存在的唯一理由就是让
+ * catch(...) 能区分「抛出发生在参数解析阶段（副作用必然未发生）」与「抛出来自
+ * 确认程序或工具本体（Lua 可能已经驱动了硬件）」，从而给出正确的 executed——
+ * 把 try 体抽成 helper 就得把这个标志再穿回来，比现在更难读。 */
 AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 	AgentToolResult result;
 	Json parsedArgs;
