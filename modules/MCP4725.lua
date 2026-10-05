@@ -92,7 +92,10 @@ require_driver("i2c", {
 
 		-----------------------------------------------------
 		-- 参考电压列（'-' 缺省 5.0；非正数同缺省，防除零）
-		local v = tonumber(data.vref)
+		-- 经 finite_of：'nan'/'inf' 过 tonumber 出的是 number（Lua 里 truthy），
+		-- `v <= 0` 对 NaN 恒假、对 +inf 也假，非有限值会原样存进 vref 这个模块级
+		-- upvalue，污染此后每一次 call 的电压换算（审计 P3 口径）。
+		local v = finite_of(data.vref)
 		if v == nil or v <= 0 then v = 5.0 end
 		vref = v
 
@@ -123,10 +126,17 @@ require_driver("i2c", {
 
 		-----------------------------------------------------
 		-- 无参：读回
-		local level = tonumber(data.level)
-		local volt = tonumber(data.volt)
-		local percent = tonumber(data.percent)
-		local eep = (tonumber(data.eep) or 0) ~= 0
+		-- 三列改经 finite_of、eep 列改经 num_or：'nan' 过 tonumber 出的是 number
+		-- （Lua 里 truthy），只判 `== nil` 挡不住——NaN 会绕过读回分支，
+		-- code = math.floor(NaN) 仍是 NaN，两条钳位对 NaN 恒假放行，最后被 HAL
+		-- 的 byte_of 挡成 nil 而报 "Failed to write MCP4725 DAC"，把配置笔误误报
+		-- 成总线故障。eep 列后果更重：`(tonumber(x) or 0) ~= 0` 对 NaN 为真，
+		-- 会在调用方从未要求持久化时走**有擦写寿命上限**的 EEPROM 写路径。
+		-- 非有限值一律与同列的非数字串（'abc'/'-'）同结论（审计 P3 口径）。
+		local level = finite_of(data.level)
+		local volt = finite_of(data.volt)
+		local percent = finite_of(data.percent)
+		local eep = num_or(data.eep, 0) ~= 0
 
 		if level == nil and volt == nil and percent == nil then
 			local r = i2c_read(fd, 5)
