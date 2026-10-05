@@ -255,6 +255,11 @@ gate:agent:
     - cargo fmt --check
 
 # 与 build:release 同为 bookworm，避免跨 glibc 版本复用后端产物。
+# 本 job 是 CI 里唯一带 Rust 工具链的一道，故两条 Rust 侧端到端脚本都归它：
+# scripts/agent_e2e.sh（工具循环 R1–R18）与 scripts/ica_e2e.sh（ICA 证据账本两进程）。
+# 后者此前只有守门入口的 ica-e2e 段调用（net_agent.sh），而那段在 mybot-agent
+# 产物缺失/陈旧时按 [SKIP] 计——gate:release / gate:musl 的镜像里没有 cargo，
+# 补不上这个洞，所以「ica 链路坏了」在 CI 上可以一直没人发现（2026-10-06 补）。
 gate:agent-e2e:
   stage: gate
   image: rust:1-slim-bookworm
@@ -265,16 +270,19 @@ gate:agent-e2e:
   script:
     - cargo build --release --locked --manifest-path agent/Cargo.toml
     - test -x build/mybot && test -x agent/target/release/mybot-agent
+    # 两条都跑完再判红：先跑的那条一失败就 exit，后一条便永不执行，一个红掩盖另一个红
+    # （守门入口里两段也是各记各的账）。timeout 180 与守门本地的 90 是刻意差异，
+    # 理由见 test/lib/sections/net_agent.sh 的口径注释（CI 机器慢）。
     - |
-      if BOT4CJ_LLM_CONFIG=none timeout 180 bash scripts/agent_e2e.sh > agent-e2e.log 2>&1; then
-        rc=0
-      else
-        rc=$?
-      fi
+      rc=0
+      if BOT4CJ_LLM_CONFIG=none timeout 180 bash scripts/agent_e2e.sh > agent-e2e.log 2>&1; then :; else rc=$?; fi
       cat agent-e2e.log
+      if timeout 180 bash scripts/ica_e2e.sh > ica-e2e.log 2>&1; then :; else rc=$?; fi
+      cat ica-e2e.log
       test "$rc" -eq 0
   artifacts:
     when: always
     expire_in: 4 weeks
     paths:
       - agent-e2e.log
+      - ica-e2e.log

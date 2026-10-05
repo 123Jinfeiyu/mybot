@@ -13,7 +13,7 @@
 | `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
 | `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 13 段：用例是否真被收集/编译 + 六组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
 | `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
-| `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh`，缺产物/依赖或超时即失败，`agent-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响 |
+| `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh` 与 `scripts/ica_e2e.sh`（两条都跑完再判红，一个红不掩盖另一个红），缺产物/依赖或超时即失败，`agent-e2e.log`/`ica-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响。CI 里唯一带 Rust 工具链的一道，故两条 Rust 侧端到端都归它 |
 | `gate:tsan` | 硬 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
 | `gate:clang` | 硬 | clang 构建 + C++ 单测烟雾 |
 | `gate:clang-tidy` | 硬 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
@@ -161,7 +161,12 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 8. **agent 端到端三段**（本地假模型服务 `scripts/fake_llm_server.py`，均无需硬件与真实 key）：
    - `scripts/agent_e2e.sh`——拓扑是**两个进程**：`mybot-agent`（Rust，rig 驱动）↔ `mybot --mcp-backend`（AF_UNIX 帧）。R1 工具循环（三条回执真的从后端回来、动作脚本在**常驻**机器人上被执行、后端侧 Lua 驱动见证）、R2 提示词包进系统提示词、R3 审计轨迹（agent 落 session/model 行、工具行归后端）、R4 REPL + 能力门控（缺 `--agent-shell` 时 `run_command` 不在工具表）、R5 `--check-config` 正负路径、R5m 配置镜像（同一份 `mybot.llm.json` 经两侧现役同名 env `BOT4CJ_LLM_CONFIG` 喂双端 `--check-config` 互钉共享面：配置通道、审计落点、`--audit-log` 的 CLI>file 层序、未知字段的双端拒绝与 audit_log 类型错的双端拒绝；批次 A（2026-10-01）后 C++ 后端对模型侧字段只经白名单不解析——字节预算摘要行随 R5m 互钉一并退役，类型错镜像改用 audit_log 这类双消费字段，模型侧坏值在 C++ 侧正确放行、由 Rust 独占校验）、R6 单轮调用上限截断（SAN-1）、R7/R7b 限流 429 重试与恒 503 如实失败（SAN-3）、R8/R8b 单次超时与 SIGINT 取消（R8b：在飞请求被即时丢弃、进程在信号后 5s 内优雅退出 0、0 条慢响应）、R9 图片后注（工具回执进 tool 消息、图片走紧随的 user 消息）、R10 stdout 写失败不 panic 且审计收尾不丢（H2）、**R11 `--session-file`/`--resume` 两进程接力**（批次 D，2026-09-25 落地：进程一落盘 + 完整跑完工具循环，重启假模型服务后进程二 `--resume` 启动，首个请求带着进程一的完整历史，审计 `start` 行 `resumed:true` 且沿用同一 session id；两条免服务负路径——换 `--robot` 令指纹不符退出 2、缺命令行 `--session-file` 的 `--resume` 退出 2）、R11b 历史整块裁剪后的落盘与恢复（`history_summary=false`，兼作摘要的反向判据：无摘要请求、无 `session_summary` 记录、系统提示词无摘要一节）、**R11c 历史摘要**（2026-09-25：`max_history_bytes=1` 下三个任务，任务 3 前裁掉块 1 → 夹具 `summarize` 模式识别「会话历史压缩器」请求（不得带工具、必须有定界转录，否则 400）并答出被裁任务名 → 主请求 system 末尾带摘要且只覆盖被裁任务；审计恰一条 `status=summary` 不带 `turn` 的 model 行；会话文件落 `session_summary(keep_blocks=1)`；进程二 `--resume` 收口成 6 条消息并带回摘要，任务 4 前再裁再摘要，新摘要承接旧摘要）。在 `test/run_all.sh` 中缺 `mybot-agent` 产物按 **SKIP** 计（Rust 是可选产物）；直接运行本脚本或 `gate:agent-e2e` 时，两侧产物缺任何一个均判失败。
    - `scripts/mcp_e2e.sh`——C++ 后端 + **纯标准库 Python 帧客户端**直连 socket，独立第三实现对齐线协议字节；socket 父目录 0700 / 文件 0600、能力门控（`run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`，正反两趟）、未知工具回执点名且 `executed=false`、`apply_sql` 带电生效与热删除真的摘掉变量、`read_variables` 带回驱动返回表的键、`wait_variable` 同门控进出工具表 + 首采样满足 + 非法条件 `paramError`、策略拒绝时 `run_command` 零副作用、fd 卫生（子 shell 不继承后端 socket fd）、审计含失败工具、SIGTERM 优雅停机。
-   - `scripts/ica_e2e.sh`——ICA 证据账本（`BOT4CJ_ICA=1` 的实验特性，见 [ica.md](ica.md)）的两进程离线校验：未准备的动作被拒 → 先只读观察 → 登记行动候选 → 执行一次 → 比较回执，并断言后端审计里 `run_action_script` 恰好一条。2026-10-04 起接进本段（此前只有 ica.md 提到、无任何守门调用它，改坏了不会有人知道）；产物依赖与 SKIP 口径同 `agent_e2e.sh`。脚本自身无条件把 `MYBOT_HOME` 指向它的临时目录，故不会往真实 `~/.mybot` 写会话历史。
+   - `scripts/ica_e2e.sh`——ICA 证据账本（`BOT4CJ_ICA=1` 的实验特性，见 [ica.md](ica.md)）的两进程离线校验：未准备的动作被拒 → 先只读观察 → 登记行动候选 → 执行一次 → 比较回执，并断言后端审计里 `run_action_script` 恰好一条。2026-10-04 起接进本段（此前只有 ica.md 提到、无任何守门调用它，改坏了不会有人知道）；产物依赖与 SKIP 口径同 `agent_e2e.sh`。2026-10-06 起 CI 的
+`gate:agent-e2e` 也直接跑它：本段在产物缺失/陈旧时按 **SKIP** 计而汇总仍是 rc=0，
+`gate:release`/`gate:musl` 的镜像里又没有 cargo，那条洞只有 CI 这道唯一带 Rust
+工具链的 job 能补（本机侧由 pre-push 的新鲜度硬门挡，见 [development.md](development.md)
+「守门钩子（pre-push）」第 3 条）。
+脚本自身无条件把 `MYBOT_HOME` 指向它的临时目录，故不会往真实 `~/.mybot` 写会话历史。
    - **R12 DeepSeek**：标准非流式工具响应、Bearer 鉴权、逐轮 `reasoning_content` 原样回传，重启 agent 后首个请求保留完整工具与推理历史。按现役 Rust 语义验证，不承诺配置 `thinking` 生效。
    - **R13 Anthropic**：`/v1/messages` 与 `x-api-key`/`anthropic-version`、顶层 system、`input_schema`、成对的 `tool_use`/`tool_result`、图片按原始 JPEG 字节发送 base64 source、usage 进入审计；恢复后保留工具历史但图片只留占位，不重发旧画面。假服务会拒绝串错协议或不配对的工具块。
    - **R15 流式输出**（2026-09-25）：假服务按 `FAKE_LLM_FRAME_DELAY_MS=150` 逐帧发 SSE，stdout 经计时读端（记录首末字节间隔与 `read` 次数）证明缺省面逐 delta 到达（间隔 ≥ 0.5s、≥ 3 次 read）、思维链不进 stdout、请求体带 `stream:true`；`--llm-no-stream` 整段一次到齐（间隔 < 0.1s）且请求体不带 `stream:true`；两面 stdout 正文 `cmp` 逐字节一致；配置文件 `stream:false` 与缺省流式都在 `--check-config` 摘要「输出模式」行如实呈现。
@@ -237,8 +242,8 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
 
 `run_all_selftest.sh` 现有 13 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
 是否登记进 `CMakeLists.txt`、`test/*.lua` 是否匹配两侧 glob、`count_calls` 的「N 条用例」
-文案是否真数得到调用点、两张用例表的条数检查点、TSan 名单单点、`test/lib/params.sh`
-常量单点），8–13 是跨源比对：
+文案是否真数得到调用点、两张用例表的条数检查点、TSan 名单单点、`test/lib/` 的两个单点
+——`params.sh` 的守门常量、`agent_stale.sh` 的 mybot-agent 新鲜度取材面），8–13 是跨源比对：
 
 8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
    （`sim/src/action_table.cpp` 的 `kActions[]` vs `modules/Sim.lua` 的
