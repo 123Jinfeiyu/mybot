@@ -244,6 +244,27 @@ check("build 参数校验失败零发字", #xframes(b) == 0)
 expect_err("build 缺 fd", function() return build({}) end, "Invalid Argument: fd")
 expect_err("build 入参非 table", function() return build(7) end, "Invalid Arguments Type")
 
+-- 2.4b NaN 反例（26.1）：'nan' 经 tonumber 出的是 **number**（Lua 里 truthy），
+-- 故 build 侧 `tonumber(x) or 缺省` 的 or 分支永不触发，而 NaN 与任何数比较都
+-- 为假，`f <= 0`/`f > WAVE_MAX_F`/`d < 0`/`d >= 360` 四条区间判定一律放行
+-- （±inf 会被上/下界接住，只有 NaN 穿得过去）。后果两级：freq_hz/phase_deg
+-- 是模块级状态，NaN 先落进去再发字——直接违反源码写的「全部校验通过后才落
+-- 模块状态（失败半途不得污染跨 call 状态）」；随后 tuning_word(NaN) 的字节被
+-- HAL 挡成 nil，报 "Failed to send AD9833 freq LSBs"，把配置笔误误报成 SPI
+-- 总线故障。同列写 '-'/'abc' 走的是归缺省。
+b = section()
+expect_ok("build freq='nan' 同归缺省 1kHz", function()
+	return build({ fd = fd, freq = "nan" })
+end)
+seq_is("build freq NaN 仍发缺省五字序列（频率字按 1000Hz）", b,
+	{ 0x2100, 0x4000 + tw(1000), 0x4000, 0xC000, 0x2000 })
+b = section()
+expect_ok("build phase='nan' 同归缺省 0°", function()
+	return build({ fd = fd, phase = "nan" })
+end)
+seq_is("build phase NaN 仍发缺省五字序列（相位字 0xC000）", b,
+	{ 0x2100, 0x4000 + tw(1000), 0x4000, 0xC000, 0x2000 })
+
 -- 2.5 build 逐字失败负路径（5 个字各失败一次）
 local function fail_frame(label, hi, lo, msgpat)
 	local m = section()
@@ -339,6 +360,41 @@ expect_err("call phase=360", function() return call({ fd = fd, phase = "360" }) 
 check("call 参数校验失败零发字", #xframes(c) == 0)
 expect_err("call 缺 fd", function() return call({ freq = "1000" }) end, "Invalid Argument: fd")
 expect_err("call 入参非 table", function() return call("x") end, "Invalid Arguments")
+
+-- 3.7b NaN 反例（26.1）：call 侧三列只判 `== nil` 或裸 `tonumber`，NaN 一律
+-- 穿透。freq/phase 的后果同 2.4b（先污染模块状态、再误报成 SPI 故障）；mute
+-- 列最重——`mute_v ~= nil` 且 `NaN ~= 0` 皆为真，于是 mute="nan" 会**静默把
+-- DDS 静音**，而调用方从未要求静音；同列写 "abc" 走的是「整块跳过、零发字」。
+-- mute 用例排在本组最后（置位 muted 会影响后续控制字，3.8 自带前置 build）。
+section()
+expect_ok("NaN 组前置 build", function() return build({ fd = fd }) end)
+c = #vbus.txlog
+expect_err("call freq='nan' 报 Invalid freq（非 SPI 故障）",
+	function() return call({ fd = fd, freq = "nan" }) end, "Invalid freq")
+expect_err("call phase='nan' 报 Invalid phase",
+	function() return call({ fd = fd, phase = "nan" }) end, "Invalid phase")
+check("freq/phase NaN 零发字", #xframes(c) == 0, #xframes(c))
+do
+	-- 无键回显读的是驱动的模块级 freq_hz/phase_deg，正是源码注释「全部校验
+	-- 通过后才落模块状态（失败半途不得污染跨 call 状态）」要护的那个状态
+	local e = expect_ok("freq/phase NaN 后无键回显",
+		function() return call({ fd = fd }) end)
+	check("freq/phase NaN 未污染跨 call 状态（回显仍 1000Hz/0°）",
+		e and math.abs(e.freq - 1000) < 0.05 and e.phase == 0,
+		string.format("%s/%s", tostring(e and e.freq), tostring(e and e.phase)))
+end
+
+c = #vbus.txlog
+expect_ok("call mute='abc' 视同未给（跳过、零发字）",
+	function() return call({ fd = fd, mute = "abc" }) end)
+check("mute 非法串零发字、模型非静音",
+	#xframes(c) == 0 and dev:muted() == false, #xframes(c))
+c = #vbus.txlog
+expect_ok("call mute='nan' 同视未给",
+	function() return call({ fd = fd, mute = "nan" }) end)
+check("mute NaN 零发字、模型仍非静音（未被静默静音）",
+	#xframes(c) == 0 and dev:muted() == false,
+	"xframes=" .. #xframes(c) .. " muted=" .. tostring(dev:muted()))
 
 -- 3.8 call 逐字失败负路径
 section()

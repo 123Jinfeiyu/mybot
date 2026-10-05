@@ -144,7 +144,14 @@ require_driver("i2c", {
 		-----------------------------------------------------
 		-- 解析配置
 		-- atime 为连续量：2.73~696 ms -> 周期数 1~256（每周期 87/32 ms）
-		local atime_ms = tonumber(data.atime)
+		-- 数值列经 finite_of/num_or 而非裸 tonumber：'nan' 过 tonumber 出的是
+		-- number（Lua 里 truthy），`or 缺省` 兜不住，而 NaN 与任何数比较都为假，
+		-- 下面六条区间判定一律放行（±inf 被上/下界接住，只有 NaN 穿得过去）。
+		-- df/ga 后果最重：它们不落寄存器而落**模块级 cfg_* 状态**，call 侧的
+		-- `cfg_df or 52` 同样兜不住 NaN，于是此后每一次 call 的 LUX 都是 nan。
+		-- 判据取「与该列既有的非数字串同结论」：ppcount/df/ga 的 'abc' 本就静默
+		-- 归缺省（num_or），atime 的越界本就报 ERR（finite_of）。审计 P3 口径。
+		local atime_ms = finite_of(data.atime)
 		if data.atime == nil or data.atime == "-" or data.atime == "" then atime_ms = 50 end
 		-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
 		local emsg
@@ -163,13 +170,13 @@ require_driver("i2c", {
 			return err(e2 or e3 or e4)
 		end
 
-		local ppcount = math.floor(tonumber(data.ppcount) or 8)
+		local ppcount = math.floor(num_or(data.ppcount, 8))
 		if ppcount < 1 or ppcount > 255 then
 			return err("Invalid Argument: ppcount '" .. tostring(data.ppcount) .. "' (range 1~255)")
 		end
 
-		local df = tonumber(data.df) or 52
-		local ga = tonumber(data.ga) or 0.48
+		local df = num_or(data.df, 52)
+		local ga = num_or(data.ga, 0.48)
 		if df <= 0 or ga <= 0 or ga > 1 then
 			return err("Invalid Argument: df/ga (df>0, 0<ga<=1)")
 		end

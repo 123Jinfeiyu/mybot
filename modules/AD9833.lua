@@ -123,7 +123,12 @@ build = function(ctx, data)
 
 	-- 列配置（缺省 1kHz / sine / 0°，MD_AD9833 同款缺省频率）；
 	-- 全部校验通过后才落模块状态（失败半途不得污染跨 call 状态）
-	local f = tonumber(data.freq) or 1000
+	-- 数值列经 num_or 而非 `tonumber(x) or 缺省`：'nan' 过 tonumber 出的是
+	-- number（Lua 里 truthy），or 兜不住，而 NaN 与任何数比较都为假，下面两条
+	-- 区间判定一律放行——freq_hz/phase_deg 会先被落成 NaN（正好违反上一行的
+	-- 不变式），再因 tuning_word(NaN) 的字节被 HAL 挡成 nil 而报 SPI 发送失败，
+	-- 把配置笔误误报成总线故障（审计 P3 的 finite_of 口径）。
+	local f = num_or(data.freq, 1000)
 	if f <= 0 or f > WAVE_MAX_F then
 		return err(string.format("Invalid freq: %s (expect 0 < f <= %d Hz)",
 				tostring(data.freq), WAVE_MAX_F))
@@ -132,7 +137,7 @@ build = function(ctx, data)
 	if wbits == nil then
 		return err("Invalid wave: '" .. tostring(data.wave) .. "' (expect sine/triangle/square)")
 	end
-	local d = tonumber(data.phase) or 0
+	local d = num_or(data.phase, 0)
 	if d < 0 or d >= 360 then
 		return err("Invalid phase: " .. tostring(data.phase) .. " (expect 0 ~ 360)")
 	end
@@ -182,7 +187,10 @@ call = function(ctx, data)
 
 	-----------------------------------------------------
 	-- mute：静音/放行（置/清 RESET 位）——立即下发控制字才生效
-	local mute_v = tonumber(data.mute)
+	-- 经 finite_of：'nan' 过 tonumber 出的是 number（Lua 里 truthy），`~= nil`
+	-- 挡不住，而 NaN ~= 0 又为真，于是 mute='nan' 会**静默把 DDS 静音**——调用方
+	-- 从未要求静音。同列写 'abc' 走的是整块跳过、零发字（审计 P3 口径）。
+	local mute_v = finite_of(data.mute)
 	if mute_v ~= nil then
 		muted = (mute_v ~= 0)
 		if not send16(fd, run_ctrl(WAVE_BITS[wave_str])) then
@@ -204,7 +212,9 @@ call = function(ctx, data)
 
 	-- freq：B28 + 两段频率字（不静音原子加载；静音态保持 RESET）
 	if data.freq ~= nil then
-		local f = tonumber(data.freq)
+		-- 经 finite_of：NaN 会让 `f == nil` 与两条区间判定同时失效，freq_hz 先被
+		-- 落成 NaN 再报 SPI 发送失败（同 build 侧的口径）
+		local f = finite_of(data.freq)
 		if f == nil or f <= 0 or f > WAVE_MAX_F then
 			return err(string.format("Invalid freq: %s (expect 0 < f <= %d Hz)",
 					tostring(data.freq), WAVE_MAX_F))
@@ -225,7 +235,7 @@ call = function(ctx, data)
 
 	-- phase：相位字（12 位）
 	if data.phase ~= nil then
-		local d = tonumber(data.phase)
+		local d = finite_of(data.phase)	-- NaN 同理，见上 freq 列
 		if d == nil or d < 0 or d >= 360 then
 			return err("Invalid phase: " .. tostring(data.phase) .. " (expect 0 ~ 360)")
 		end
