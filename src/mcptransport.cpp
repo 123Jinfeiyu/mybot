@@ -53,7 +53,31 @@ std::uint32_t readBe32(const char* in) {
 }
 
 /* deadline 模式收满 n 字节：帧头与载荷共享同一绝对 deadline（防 Slowloris）。
- * 返回 true=收满；false=超时/错误/对端关闭（关闭时置 eof）。 */
+ * 返回 true=收满；false=超时/错误/对端关闭（关闭时置 eof）。
+ *
+ * 25.2 评估后**判不改**：本函数与 readFrame 的空闲等首字节、mcplisten.cpp
+ * acceptLoop 的等连接，三处都是「pollfd + POLLIN + ::poll + r<0/EINTR + r==0 +
+ * POLLERR|POLLNVAL」的同型六行，看着像三胞胎，实测是三套不同策略，抽一个
+ * `pollReadable(fd, timeoutMs)`（EINTR 在 helper 内 continue、不外泄）会同时砸掉
+ * 两条已有防线：
+ *   ① 本函数的超时是**绝对 deadline 推导**的 remainMs，每轮重算；helper 吞掉
+ *      EINTR 后拿同一个 timeoutMs 再 poll 一遍，总等待可越过 deadline（EINTR 来
+ *      得越早越界），Slowloris 的预算就从「一条帧一个 deadline」松成「一次中断
+ *      翻一倍」。另两处用的是固定 tick（kMcpPollIntervalMs），没有 deadline 可传
+ *      ——要兼容就得两种签名，那已经不是单点了。
+ *   ② 另两处的 EINTR → continue 会**回到循环顶重查 stopRequested()**，这正是
+ *      main.cpp 的 installStopSignalHandlers 明确不装 SA_RESTART 的目的（「让
+ *      accept 等阻塞点被 EINTR 打断以便检查标志」）；helper 把 EINTR 吞在里面，
+ *      等于把停止响应从「信号到达即返回」拖回「等满 200ms tick」，no-SA_RESTART
+ *      那半个设计白做。同型事故本仓已有留档：agentpolicy.cpp 头注记的审计 F1
+ *      ——无超时 waitpid 被 retryEintr 包着，「连 Ctrl-C 都打断不了」，kill 未
+ *      生效时 agent 会话永久挂死。util_file.hpp 的 retryEintr 是「EINTR 可以安全
+ *      吞掉」那些调用点的单点，poll 这三处恰恰不在其列。
+ *   ③ POLLERR|POLLNVAL 三处处置不同（本函数与 readFrame 判失败，acceptLoop
+ *      根本不查、径直落到 accept4 由它报错），helper 要如实上报就得再多一个
+ *      状态，调用方的映射代码把省下的行数原样吃回去（实测净 LOC ≈ 0）。
+ * 结论：这三处的共性只是六行 POSIX 样板，差异全在语义上；样板不值得为它引入
+ * 一个必须编码三套映射的状态机。要动先给三条策略各自留钉子用例。 */
 bool recvAllDeadline(int fd, char* buf, std::size_t n, Clock::time_point deadline, bool& eof) {
 	std::size_t got = 0;
 	while (got < n) {
@@ -163,6 +187,10 @@ FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec,
 	for (;;) {
 		if (stopRequested()) { return FrameResult::PeerClosed; }
 		if (Clock::now() >= idleDeadline) { return FrameResult::IdleTimeout; }
+		/* 这段 poll 与 recvAllDeadline、mcplisten.cpp acceptLoop 同型而策略不同，
+		 * 25.2 评估后判不抽公共 helper，理由见 recvAllDeadline 的头注。此处
+		 * EINTR → continue 会回到循环顶重查 stopRequested()，正是 main.cpp 的 installStopSignalHandlers
+		 * 不装 SA_RESTART 的用意，不要「顺手」包 util_file.hpp 的 retryEintr。 */
 		struct pollfd p{};
 		p.fd = fd;
 		p.events = POLLIN;

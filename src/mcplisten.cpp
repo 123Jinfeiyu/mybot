@@ -284,6 +284,14 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 	 * 停机断电链），操作者重启后端恢复。 */
 	AuthFailGate authGate;
 	while (!stopRequested()) {
+		/* 这段 poll 与 mcptransport.cpp 的 recvAllDeadline / readFrame 同型而策略
+		 * 不同，25.2 评估后判不抽公共 helper，理由见 recvAllDeadline 的头注。
+		 * 本处两条差异是刻意的，别「顺手统一」：
+		 *   - EINTR → continue 回到 while 条件重查 stopRequested()，这是
+		 *     installStopSignalHandlers 不装 SA_RESTART 的用意，不要包 retryEintr；
+		 *   - **不查** POLLERR|POLLNVAL（另两处查）：监听 fd 上真出了这两样，
+		 *     紧随的 accept4 会失败并走同一条 log + rc=1 + break，处置等价、只是
+		 *     文案报在 accept 而不是 poll 上；补一道检查只多一份要同步的分支。 */
 		struct pollfd p{};
 		p.fd = listenFd.get();
 		p.events = POLLIN;
