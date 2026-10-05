@@ -60,7 +60,8 @@ cd build && ctest --output-on-failure -R cpp_unit
 2. **守门自检**（`bash test/run_all_selftest.sh`，快，13 段）：两类机械判定——
    ① 守门自身的可信度（`bash -n` 语法、每个 `test/cpp/*.cpp` 是否登记进 `CMakeLists.txt`、
    `test/*.lua` 命名是否匹配两侧 glob、`count_calls` 的「N 条用例」文案是否真数得到调用点、
-   两张用例表的条数检查点、TSan 名单与 `test/lib/` 的两个单点：`params.sh` 的守门常量、
+   两张用例表的结构与两套计数互证（条数**派生**、不再手写；tokenizer 见
+   `test/lib/case_table.awk`）、TSan 名单与 `test/lib/` 的两个单点：`params.sh` 的守门常量、
    `agent_stale.sh` 的 mybot-agent 新鲜度取材面）；
    ② 六组**零编译跨源一致性**校验（仿真器契约、状态目录缺省名、文档引用与计数、
    模型配置字段白名单双端同集合、有状态 LLM 协议判据双端同集合、LLM wire 契约；明细见

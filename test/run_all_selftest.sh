@@ -9,7 +9,8 @@
 # （守门汇总口径保持不变），由 pre-push 在守门之前调用、CI 的 gate:release 也把它
 # 排在全量守门之前。两类，按段号分：
 #   1–7  守门自身的可信度（脚本语法、用例是否真被 glob/编译收集、计数文案是否有出处、
-#        用例表条数检查点、TSan 名单与 test/lib 的两个单点）；
+#        用例表结构与两套计数互证（条数派生，tokenizer 在 test/lib/case_table.awk）、
+#        TSan 名单与 test/lib 的两个单点）；
 #   8–13 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
 #        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据、LLM wire 可钉部分）
 #        ——全部零编译，理由见第 8 段。
@@ -68,28 +69,68 @@ for r in $(grep -oE 'count_calls [a-zA-Z0-9_]+' test/run_all.sh | awk '{print $2
 	fi
 done
 
-# 5) 两张用例表的结构与条数（F3-2）：条数是**显式检查点**——加/删用例必须同时
-#    改这里（以及文档），否则「守门到底跑多少条」只能靠人记；字段数错（少一个
-#    分隔符）会让消费循环把模式当成条数用，静默错判而不报错。
-e2e_rows="$(sed -n '/^e2e_cases=(/,/^)/p' test/run_all.sh | grep -E "^[[:space:]]*'")"
-parse_rows="$(sed -n '/^parse_cases=(/,/^)/p' test/run_all.sh | grep -E "^[[:space:]]*'")"
-e2e_n="$(printf '%s\n' "$e2e_rows" | grep -c .)"
-parse_n="$(printf '%s\n' "$parse_rows" | grep -c .)"
-e2e_bad="$(printf '%s\n' "$e2e_rows" | grep -vcE "^[[:space:]]*'[^'|]*\|[^|']*\|[^|']*'$")"
-# parse 行至少三段（sql|mt|期望退出码），其余字段可选，故不锚行尾
-parse_bad="$(printf '%s\n' "$parse_rows" | grep -vcE "^[[:space:]]*'[^'|]*\|[^'|]*\|[^'|]*")"
-e2e_unterm="$(printf '%s\n' "$e2e_rows" | grep -vcE "'$")"
-parse_unterm="$(printf '%s\n' "$parse_rows" | grep -vcE "'$")"
-[ "$e2e_n" -eq 37 ] || note "e2e_cases 条数变了（$e2e_n != 37）：加/删用例后请同步本检查点"
-[ "$parse_n" -eq 96 ] || note "parse_cases 条数变了（$parse_n != 96）：加/删用例后请同步本检查点"
-[ "$e2e_bad" -eq 0 ] || note "e2e_cases 有 $e2e_bad 条字段数不符（应为 name|浮点模式|最小条数）"
-[ "$parse_bad" -eq 0 ] || note "parse_cases 有 $parse_bad 条字段数不符（应为 sql|mt|期望退出码[|expect[|forbid[|via]]]）"
-[ "$e2e_unterm" -eq 0 ] || note "e2e_cases 有 $e2e_unterm 条未以引号收尾（漏了 ' 会吞掉后续行）"
-[ "$parse_unterm" -eq 0 ] || note "parse_cases 有 $parse_unterm 条未以引号收尾（漏了 ' 会吞掉后续行）"
-dup_e2e="$(printf '%s\n' "$e2e_rows" | sed "s/^[[:space:]]*'//; s/|.*//" | sort | uniq -d | tr '\n' ' ')"
-[ -z "$dup_e2e" ] || note "e2e_cases 名字重复：$dup_e2e"
-dup_parse="$(printf '%s\n' "$parse_rows" | sed "s/^[[:space:]]*'//; s/|/ /; s/|.*//" | sort | uniq -d | tr '\n' ' ')"
-[ -z "$dup_parse" ] || note "parse_cases 的 (sql, mt) 组合重复：$dup_parse"
+# 5) 两张用例表的结构与条数（F3-2；2026-10-06 重写：条数改**派生**、判据改 quote-aware）
+#    旧写法有两个毛病，第二个是真 bug：
+#      * 条数是硬编码检查点（e2e 37 / parse 96），全仓唯一一份手维护的重复数字——文档
+#        刻意不写这两个总数（口径见 docs/virtbus.md「用例条数以单一事实源为准」），于是
+#        加/删用例就得人记着改它，已经漂过一次（提交 9ebcf4a「同步 parse_cases 条数
+#        检查点至 96」）；
+#      * 抽取用 grep "^[[:space:]]*'"，**只认单引号**。而表里 expect 字段含单引号的条目
+#        按约定整条改用双引号书写（parse_cases 的 vars_bad 行；同一约定在 fixture 孤儿
+#        检测那边 2026-09-20 就踩过并修好，注释见 run_all.sh「fixture 孤儿检测」段，
+#        这边一直没跟上）。实测：bash 展开 parse_cases 得 97 条，旧抽取只看见 96 条，
+#        而检查点写的正是 96——那条用例的字段数 / 引号收尾 / (sql,mt) 重复三项检查全部
+#        落空，且检查点反过来把盲区钉成「正确值」：修好抽取器会让自检转红。
+#    现改两套独立实现互证（本文件第 4 段 count_calls 的同一手法）：
+#      A 行计数：quote-agnostic 地数「以引号开头的行」；
+#      B 元素计数：test/lib/case_table.awk 按 bash 引号语义逐字符 tokenize，数出真实
+#        元素并吐出去掉外层引号的正文（引号未收尾、双引号内含展开语法在它那里判失败）。
+#      A != B ⇒ 有写法逃过了行计数（一行两条 / 非常规缩进 / 新引号形态）。
+#    结构判据全部吃 B 的输出，不再对原始文本猜。parse 的段数下界是 **4 不是 3**（旧注释
+#    写的「至少三段，其余字段可选」正是这个坑）：消费循环 run_parse_cases
+#    （test/lib/sections/lua_e2e.sh）连做四次 ${rest#*|}，三段行走到第四次时 rest 里
+#    没有 '|'，bash 原样返回，于是 expect 静默变成期望退出码本身（"0"/"1"），
+#    grep -qF 几乎必然命中——用例照跑、照记通过，却一条输出断言都没有。现表里没有
+#    三段行，这条是把坑封死。
+tok_file=test/lib/case_table.awk
+[ -f "$tok_file" ] || note "缺用例表 tokenizer：$tok_file（第 5 段的 B 侧实现）"
+q="['\"]"
+for t in e2e_cases parse_cases; do
+	block="$(sed -n "/^${t}=(/,/^)/p" test/run_all.sh)"
+	if [ -z "$block" ]; then
+		note "test/run_all.sh 里抽不到用例表 ${t}=( …… )（表名改了？sed 的块抽法失效？）"
+		continue
+	fi
+	n_a="$(printf '%s\n' "$block" | grep -cE "^[[:space:]]*${q}")"
+	if ! elems="$(printf '%s\n' "$block" | awk -v SQ="'" -v DQ='"' -f "$tok_file")"; then
+		note "${t} 的条目引号有问题（详见上方 case_table.awk 的输出）"
+	fi
+	n_b="$(printf '%s\n' "$elems" | grep -c .)"
+	[ "$n_b" -gt 0 ] || note "${t} 一条都没 tokenize 出来（表被删空？）"
+	[ "$n_a" -eq "$n_b" ] || note "${t} 两套计数不一致：行计数 $n_a != tokenize 元素数 $n_b（有写法逃过了行计数：一行两条？缩进或引号形态变了？）"
+	# 结构判据：按消费循环（run_one_e2e / run_one_parse）的实际字段语义逐条核。
+	# awk 吐 "判据\t命中条数\t首条正文"，用 here-string 喂 while（管道会开子 shell，
+	# note 的计数就丢了）。
+	while IFS="$(printf '\t')" read -r msg cnt sample; do
+		[ -n "$msg" ] || continue
+		note "${t} 有 ${cnt} 条${msg}；首条：${sample}"
+	done <<< "$(printf '%s\n' "$elems" | awk -F'|' -v T="$t" '
+		function bad(m) { n[m]++; if (!(m in first)) first[m] = $0 }
+		NF && T == "e2e_cases" {
+			if (NF != 3) bad("段数 != 3（应为 name|浮点模式|最小条数）")
+			else if ($3 !~ /^[0-9]+$/) bad("第 3 段（最小条数）不是非负整数")
+			if (seen[$1]++) bad("名字重复")
+		}
+		NF && T == "parse_cases" {
+			if (NF < 4 || NF > 6) bad("段数不在 4~6（sql|mt|期望退出码|expect[|forbid[|via]]；三段行会让 expect 静默退化成退出码）")
+			else if ($3 !~ /^[0-9]+$/) bad("第 3 段（期望退出码）不是非负整数")
+			if (NF >= 6 && $6 != "I") bad("第 6 段（via）不是 I（--input 文件通道）也不是空")
+			k = $1 "|" $2
+			if (seen[k]++) bad("(sql,mt) 组合重复")
+		}
+		END { for (m in n) printf "%s\t%d\t%s\n", m, n[m], first[m] }
+	')"
+done
 
 # 6) TSan 用例名单单点（F3-5）：名单唯一来源 test/lib/tsan_cases.txt，CI 逐条跑。
 #    这里机械核对每个名字在 test_daemon_concurrency.cpp 里至少命中一条 TH_TEST——

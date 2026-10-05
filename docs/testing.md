@@ -248,7 +248,8 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
 
 `run_all_selftest.sh` 现有 13 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
 是否登记进 `CMakeLists.txt`、`test/*.lua` 是否匹配两侧 glob、`count_calls` 的「N 条用例」
-文案是否真数得到调用点、两张用例表的条数检查点、TSan 名单单点、`test/lib/` 的两个单点
+文案是否真数得到调用点、两张用例表的结构与两套计数互证（条数**派生**、不再手写）、
+TSan 名单单点、`test/lib/` 的两个单点
 ——`params.sh` 的守门常量、`agent_stale.sh` 的 mybot-agent 新鲜度取材面），8–13 是跨源比对：
 
 8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
