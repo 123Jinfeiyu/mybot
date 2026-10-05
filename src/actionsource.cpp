@@ -88,6 +88,11 @@ int TcpStreamReader::read() {
 	}
 }
 
+/* 25.6 评估后判不把本函数与 MCP 侧的 mcpCheckAuthFrame / mcpCheckPeerCred 收进
+ * 同一个 auth 叶子：两条通道真正共享的判据——恒时比对 safeEquals、爆破计数
+ * AuthFailGate——第三轮已各自单点化，三个函数体内不再有一行可收敛的重复逻辑；
+ * 三态枚举也与 MCP 侧不同构（NoCredential **不**计数 / NotAuthFrame 计数），
+ * 合并即改行为。四条实测理由见 mcptransport.cpp 里 mcpCheckAuthFrame 的头注。 */
 /* ---- 可选口令校验：对端必须先送一行 "<token>\n" 才允许下发动作脚本 ----
  * 口令为空时跳过（不破坏既有单连接直发脚本的用法）。
  * 比较走 util.hpp 的 safeEquals 恒时实现（审计 M1）。

@@ -236,6 +236,32 @@ bool sendFrame(int fd, const std::string& payload, int sendTimeoutSec) {
 	return sendAllDeadline(fd, frame.data(), frame.size(), deadline);
 }
 
+/* ---- 25.6 评估后**判不抽鉴权叶子**（计划的可砍项：把本文件的 mcpCheckAuthFrame /
+ * mcpCheckPeerCred 与 actionsource.cpp 的 checkTcpToken 收进一个 auth 叶子）。计划要求
+ * 「先确认不与第三轮『安全判据单点化』的既有单点冲突」；实测结论要更正这句措辞——
+ * 不是冲突，是**已被既有单点覆盖**，第四层叶子是冗余的：
+ * ① 两条通道真正共享的判据只有两条，第三轮都已单点化：恒时比对 safeEquals
+ *    （util_str.hpp；本函数与 actionsource.cpp 的 checkTcpToken 共用）与爆破计数
+ *    AuthFailGate（util_cli.hpp；mcplisten.cpp 的 acceptLoop 与 actionsource.cpp
+ *    的 acceptAuthenticatedClient 共用）。三个待析函数体内不再有一行相同逻辑：
+ *    这里是 JSON 路由字段解析，checkTcpToken 是逐字节 recv 到 '\n' 的 errno
+ *    三态，mcpCheckPeerCred 是 getsockopt(SO_PEERCRED) 的 uid/gid 比对（根本
+ *    不是口令）。放进同一个文件只是按话题同居，删不掉任何重复行。
+ * ② 可测性收益早已到手：三者都是公开声明 + socketpair 白盒单测
+ *    （test_mcptransport.cpp / test_actionsource.cpp），mcptransport.hpp 里就
+ *    写着「暴露为公开函数便于白盒单测」。析叶子买不到新的可测性。
+ * ③ 两个三态枚举不同构，合并即改行为：McpAuthOutcome::NotAuthFrame 在
+ *    serveConnection 里**计入** recordAuthRejected()/ConnAuth::Failed（对端发了
+ *    合法帧、只是不是 auth 帧），而 TcpAuthStatus::NoCredential **不计**（对端
+ *    没给凭据）。这条不对称正是 AuthFailGate 头注写的口径，不是待收敛的漂移。
+ * ④ 耦合面本已收窄：mcptransport.hpp 只有 2 个 includer（本文件、
+ *    mcpbackend.hpp），消费者 mcplisten.cpp 同时要传输件（readFrame/sendFrame/
+ *    kMcpMaxFrameBytes）与鉴权件，另立一个鉴权叶子头后它两个都得 include。本文件
+ *    头注的 charter「帧传输与纯协议件」下的四个子话题（传输 / 鉴权 / 路径探测 /
+ *    回执脱敏）共享 errnoText、log 与帧常量，2026-10-01 那次拆分已把它做成叶子；
+ *    把叶子再按子话题切三刀只增头文件与 CMakeLists 条目，不减依赖。
+ * actionsource.cpp 侧同判（短指针在 checkTcpToken 的头注）。 */
+
 /* ---- 首帧共享密钥校验（MCP-1，审计 P2-1）----
  * 恒时比对收敛到 util_str.hpp 的 safeEquals 单点（2026-10-01）：此处取
  * 严格版语义——长度差异折叠进累计差，全长走完才判，回应时间不泄露已
