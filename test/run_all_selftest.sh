@@ -9,7 +9,7 @@
 # （守门汇总口径保持不变），由 pre-push 在守门之前调用、CI 的 gate:release 也把它
 # 排在全量守门之前。两类，按段号分：
 #   1–7  守门自身的可信度（脚本语法、用例是否真被 glob/编译收集、计数文案是否有出处、
-#        用例表条数检查点、TSan 名单与 params 常量单点）；
+#        用例表条数检查点、TSan 名单与 test/lib 的两个单点）；
 #   8–13 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
 #        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据、LLM wire 可钉部分）
 #        ——全部零编译，理由见第 8 段。
@@ -20,7 +20,9 @@ fail=0
 note() { echo "[FAIL] selftest: $*" >&2; fail=$((fail + 1)); }
 
 # 1) 守门相关脚本的语法（bash -n 不执行，纯解析）
-for f in test/run_all.sh test/run_san.sh test/lib/device_gate.sh \
+#    test/lib/ 下用 glob 而非逐个列名：本自检存在的理由就是「新文件忘了登记 ⇒ 静默
+#    不受检」，列名清单自己也会犯这个错（2026-10-06 加 agent_stale.sh 时改成 glob）。
+for f in test/run_all.sh test/run_san.sh test/lib/*.sh \
 		test/lib/sections/*.sh scripts/git-hooks/pre-push; do
 	if [ ! -f "$f" ]; then
 		note "缺文件：$f"
@@ -103,13 +105,33 @@ else
 	done < "$tsan_file"
 fi
 
-# 7) 守门常量单点（F3-5 余部）：TEST_TIMEOUT/SAN_DIR 默认值唯一来源
+# 7) 守门单点（F3-5 余部）：常量与判据取材面各自只有一份。
+#    TEST_TIMEOUT/SAN_DIR 默认值唯一来源
 #    test/lib/params.sh（bash 直接 source、CMake 正则提取、CI 同源）。格式
 #    漂移（如 CMake 侧正则依赖的 `: "${KEY:=v}"` 形态被改）会让 ctest TIMEOUT
 #    在 configure 期 FATAL——这里再钉一层，让漂移在 selftest 就显形。
 for k in TEST_TIMEOUT SAN_DIR; do
 	grep -qE "^: \"\\\$\{${k}:=[0-9a-zA-Z._/-]+\}\"$" test/lib/params.sh \
 		|| note "params 单点缺 ${k} 条目或格式漂移（CMake 正则提取会失败）：test/lib/params.sh"
+done
+#    同族第二个单点：test/lib/agent_stale.sh（mybot-agent 产物新鲜度的取材面），
+#    消费方三处——net_agent.sh 的 agent-rust-e2e 段与 ica-e2e 段、git-hooks/pre-push。
+#    钉四件事：①函数还定义着（改名 ⇒ 三处调用一起变哑，守门只会静默判「新鲜」）；
+#    ②③两个消费方各自还在调用、且调用点数目对（ica 段那道守卫是 agent 段的同胞副本，
+#    最容易被当成重复代码删掉一条）；④没人绕开单点自己手抄 `find agent/src`
+#    （2026-10-06 之前正是两份手抄，取材面各漂各的，第三处又要再抄一遍）。
+#    两个文件自排除：agent_stale.sh 是单点本身；本自检的 grep 模式里字面引用了
+#    `find agent/src`，不排除就会判自己手抄（2026-10-06 首跑即中招，与
+#    scripts/check_doc_paths.py 排除自己同一处置）。
+grep -qE '^agent_stale_file\(\)' test/lib/agent_stale.sh \
+	|| note "agent 新鲜度判据单点缺 agent_stale_file() 定义：test/lib/agent_stale.sh"
+n_agent="$(grep -c 'agent_stale_file "' test/lib/sections/net_agent.sh)"
+n_push="$(grep -c 'agent_stale_file "' scripts/git-hooks/pre-push)"
+[ "$n_agent" -eq 2 ] || note "net_agent.sh 的 agent_stale_file 调用点 $n_agent != 2（agent-rust-e2e 与 ica-e2e 各一道陈旧守卫）"
+[ "$n_push" -eq 1 ] || note "pre-push 的 agent_stale_file 调用点 $n_push != 1（新鲜度硬门被摘了？）"
+for f in $(grep -rlE 'find agent/src' --include='*.sh' test scripts 2>/dev/null |
+		grep -vE '^(test/lib/agent_stale\.sh|test/run_all_selftest\.sh)$'); do
+	note "$f 自己手抄了 agent 取材面（应调用 test/lib/agent_stale.sh 的 agent_stale_file）"
 done
 
 # 8) 仿真器跨构建系统契约（sim/ vs 宿主 C++/Lua 的手写双份）：动作码表、三条
@@ -189,4 +211,4 @@ if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / params 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / test/lib 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约）"

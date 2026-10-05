@@ -115,10 +115,12 @@ run_one_agent_rust_e2e() {
 	# 极易被误判为产品回归。与 C++ 守卫不同——那里判失败（核心产物必重建），这里判
 	# **SKIP**：mybot-agent 是可选产物，且本机可能没装 cargo 无法自动重建，响亮提示 +
 	# 跳过比一片误导红更稳。逃生口 BOT_ALLOW_STALE=1 与 C++ 守卫共用同一语义。
+	# 取材面（哪些路径算 Rust 侧编译期输入）单点在 test/lib/agent_stale.sh，
+	# 与 ica-e2e 段、scripts/git-hooks/pre-push 共用；pre-push 那边判**红**（本机能装
+	# cargo 就不该让两段静默消失），SKIP 语义只属于本守门入口，两处差异是刻意的。
 	if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 		local _agent_stale
-		_agent_stale="$(find agent/src agent/Cargo.toml agent/Cargo.lock -type f \
-			-newer "$agent_bin" -print -quit 2>/dev/null)"
+		_agent_stale="$(agent_stale_file "$agent_bin")"
 		if [ -n "$_agent_stale" ]; then
 			echo "[SKIP] mybot-agent 产物早于 Rust 源码（例如 $_agent_stale），跑旧产物会得到一批与真因无关的 FAIL。"
 			echo "       请先重建： bash scripts/build_agent.sh --release"
@@ -168,8 +170,8 @@ run_one_ica_e2e() {
 		return 2
 	fi
 	# 陈旧守卫同 S17 口径：跑旧产物会得到一批与真因无关的 FAIL，响亮提示 + 跳过比一片误导红更稳
-	if [ -z "${BOT_ALLOW_STALE:-}" ] && [ -n "$(find agent/src agent/Cargo.toml agent/Cargo.lock \
-			-type f -newer "$agent_bin" -print -quit 2>/dev/null)" ]; then
+	# （判据取材面单点 test/lib/agent_stale.sh，与 agent-rust-e2e 段共用）
+	if [ -z "${BOT_ALLOW_STALE:-}" ] && [ -n "$(agent_stale_file "$agent_bin")" ]; then
 		echo "[SKIP] mybot-agent 产物早于 Rust 源码，请先重建： bash scripts/build_agent.sh --release"
 		echo "       确实要跑旧产物： BOT_ALLOW_STALE=1 bash test/run_all.sh"
 		record_skip "ica-e2e(mybot-agent产物陈旧)"

@@ -50,6 +50,10 @@ if command -v timeout >/dev/null 2>&1; then
 	timeout_cmd="timeout $TEST_TIMEOUT"
 fi
 
+# mybot-agent 产物新鲜度判据单点（取材面见该文件头注）：守门的 agent-rust-e2e /
+# ica-e2e 两段与 scripts/git-hooks/pre-push 共用同一份，别在调用处再手抄一遍 find。
+. test/lib/agent_stale.sh || { echo "判据单点缺失：test/lib/agent_stale.sh" >&2; exit 1; }
+
 filter="${1:-}"
 # ---- 分段过滤器（AG-23，2026-09-21 第三轮审计）----
 # 一个 raw 过滤器要在四类分段上用**不同形态**匹配，此前没做区分，于是
