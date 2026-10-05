@@ -10,7 +10,8 @@
 # 排在全量守门之前。两类，按段号分：
 #   1–7  守门自身的可信度（脚本语法、用例是否真被 glob/编译收集、计数文案是否有出处、
 #        用例表结构与两套计数互证（条数派生，tokenizer 在 test/lib/case_table.awk）、
-#        TSan 名单与 test/lib 的两个单点）；
+#        TSan 名单**双向**核对、三个守门单点，以及末尾**实跑**一次拼错过滤器核对空匹配
+#        防线——那是本自检唯一执行 run_all.sh 的地方，0.1s 级，见第 7 段）；
 #   8–13 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
 #        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据、LLM wire 可钉部分）
 #        ——全部零编译，理由见第 8 段。
@@ -172,7 +173,8 @@ else
 	[ -z "$tsan_uncovered" ] || note "并发用例不在 TSan 名单任何条目覆盖下（gate:tsan 不会跑它们，请往 $tsan_file 加一条前缀）：$tsan_uncovered"
 fi
 
-# 7) 守门单点（F3-5 余部）：常量与判据取材面各自只有一份。
+# 7) 守门单点与防线自证（F3-5 余部）：常量与判据取材面各自只有一份；末尾再**实跑**
+#    一次拼错过滤器，核对空匹配防线（C8）真的会红。
 #    TEST_TIMEOUT/SAN_DIR 默认值唯一来源
 #    test/lib/params.sh（bash 直接 source、CMake 正则提取、CI 同源）。格式
 #    漂移（如 CMake 侧正则依赖的 `: "${KEY:=v}"` 形态被改）会让 ctest TIMEOUT
@@ -216,6 +218,21 @@ grep -q 'binp="\$selftest_bin"' test/lib/sections/tail_checks.sh \
 	|| note "run_harness_selftest 不再用单点变量 selftest_bin（自己派生路径会与陈旧判据各判各的）"
 grep -q 'for _b in "\$bin" "\$tests_bin" "\$selftest_bin"' test/run_all.sh \
 	|| note "产物陈旧判据的循环不再覆盖 harness_selftest（骨架自证会拿旧二进制报「8 通过」）"
+#    另一类可信度：**空匹配防线（C8）真的会红**。run_all.sh 末尾那条
+#    `pass + fail == 0 → exit 1` 只在「每个分段都受过滤器管辖」时才成立。
+#    2026-09-21 AG-5 后加的 harness-selftest 段无条件跑完记 1 通过，于是
+#    `run_all.sh zzz_typo` 以「1 通过, 0 失败」退出 0（2026-10-06 实测）——文档里
+#    写着「过滤器拼错必须失败」，实际已失效。段门补回后这里钉两件事：
+#    ① 段门还在（静态）；② 拿一个不可能命中的过滤器**实跑**一次，退出码必须非 0。
+#    ②是执行而非比对：将来任何分段再变成无条件 record_pass，②照样抓得到，①抓不到。
+#    产物陈旧时 run_all.sh 以 2 退出，②仍成立（拼错过滤器没报绿），只是那一轮没真正
+#    走到 C8 那行——故①不可省，两条互补。
+grep -q 'filter_matches "harness-selftest"' test/lib/sections/tail_checks.sh \
+	|| note "harness-selftest 段的过滤器段门被摘了（它记的 1 通过会让空匹配防线永不成立）"
+typo_rc=0
+bash test/run_all.sh zzz_selftest_typo_probe >/dev/null 2>&1 || typo_rc=$?
+[ "$typo_rc" -ne 0 ] \
+	|| note "拼错过滤器仍以 0 退出：空匹配防线（C8）失效，有分段在无条件记通过"
 
 # 8) 仿真器跨构建系统契约（sim/ vs 宿主 C++/Lua 的手写双份）：动作码表、三条
 #    缺省 socket 路径、一问一答桥的请求关键字、默认场景（world.cpp 的内置回落 vs
@@ -320,4 +337,4 @@ if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / test/lib 单点 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / 守门单点与空匹配防线 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约）"

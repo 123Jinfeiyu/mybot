@@ -1489,7 +1489,7 @@ run_harness_selftest
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E、agent E2E、输入边界加固或 C++ 单测，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E、agent E2E、输入边界加固、C++ 单测或测试骨架自证，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败, $skip 跳过"

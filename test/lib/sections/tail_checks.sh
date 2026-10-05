@@ -140,6 +140,18 @@ run_harness_selftest() {
 		artifact_missing "测试骨架自证" "harness_selftest" "$binp" "$tests_explicit"
 		return 2
 	fi
+	# 段门（2026-10-06 补）：本段此前**不受过滤器管辖**，无条件跑完记 1 通过，于是
+	# 末尾「pass + fail == 0」的空匹配防线（C8）永远不成立——`run_all.sh zzz_typo`
+	# 会以「1 通过, 0 失败」退出 0。这与上面 run_const_checks / run_fixture_orphans
+	# 被 `[ -z "$filter" ]` 圈住是同一个理由（run_all.sh 那段注释写的就是「不能让
+	# 『拼错过滤器』的空匹配防线失效」），只是本段是 2026-09-21 AG-5 后加的，漏了。
+	# 用段门而不是塞进 `[ -z "$filter" ]`：`run_all.sh harness` 是合法用法，应当放行。
+	# 不往下传过滤器给二进制——本段的 8 条自证用例是一个整体，按名字挑没有意义。
+	if [ -n "$filter" ] && ! filter_matches "harness-selftest" "$filter"; then
+		echo "[SKIP] 过滤器 '${filter}' 未命中 harness-selftest 分段"
+		record_skip "harness-selftest(过滤器未命中)"
+		return 2
+	fi
 	local out rc pass_n
 	if [ -n "$timeout_cmd" ]; then
 		out="$($timeout_cmd "$binp" 2>&1)"
