@@ -376,6 +376,38 @@ else
 fi
 
 # ======================================================================
+# NaN 兜底 lint（26.1 收尾防线）：驱动的配置列不得写 `tonumber(data.X) or 缺省`。
+# LuaJIT 下 tonumber("nan")/tonumber("inf") 出的是 **number**（Lua 里 truthy），
+# or 的右支永不触发；而 NaN 与任何数比较都为假，后续的区间判定一律放行。
+# 已实测到的后果不是错值而是行为改变：MCP4725 的 eep='nan' 会走**有擦写寿命
+# 上限**的 EEPROM 写路径、AD9833 的 mute='nan' 会静默把 DDS 静音、MT6826S 的
+# zero='nan' 会把每次 call 的 ANGLE 永久污染成 nan、BME688 的 wait='nan' 会让
+# 轮询循环的超时分支永不触发（后端进程挂死）。这四处是后果最重的样本，连同
+# AS3935/APDS9900/EMC2101/GPIO 共 8 个驱动的同类站点均已修（前后行为对照记在
+# 各自提交信息里），本 lint 钉住不回退。
+# 正确写法是 drv_common 的 num_or(v, def)（回落缺省）或 finite_of(v)（返 nil，
+# 判据取「与该列既有的非数字串同结论」）；两者都经 bus_contract.finite_of 单点。
+# 只盯 `data.` 这一种形态：`data` 是 arg_table 强制的配置表名，而 `opts.` 是
+# *_VIRT 内嵌模型构造器的参数名（TPL0501/BME280/AD9833 的三处 opts 站点全在
+# 模型块内，生产路径零执行），不属本防线范围。
+# Camera 有意豁免（在不碰清单：冻结边界，width/height 两列不改写）。
+# ======================================================================
+echo "----- lint (配置列 NaN 兜底断言) -----"
+bad="$(grep -rnE 'tonumber\(data\.[A-Za-z_]+\) or ' modules/*.lua \
+	| grep -v '^modules/Camera.lua:' || true)"
+if [ -n "$filter" ]; then
+	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+elif [ -n "$bad" ]; then
+	echo "[FAIL] 以下配置列仍用 \`tonumber(data.X) or 缺省\`（NaN 是 truthy，or 兜不住）："
+	echo "$bad"
+	echo "       改用 drv_common 的 num_or(v, def) 或 finite_of(v)。"
+	record_fail "lint-driver-nan-fallback"
+else
+	echo "[PASS] modules/*.lua 配置列均经 num_or/finite_of 归一化（Camera 豁免）"
+	record_pass
+fi
+
+# ======================================================================
 # 器件常量机械对照 lint（fix-plan F5-5①）：test/test_bh1750.lua 内手抄了
 # 一份「与驱动一致」的命令常量表——两边同错不报警，真机回归会拿错误常量
 # 验证错误驱动。这里从两份源各抽 `local CMD_* = 0x..` 逐条比对，并断言

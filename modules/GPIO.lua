@@ -93,7 +93,11 @@ local function build_impl(data)
 	end
 
 	local active_low = (data.active == "low")
-	local init = tonumber(data.init) or 0
+	-- init 列经 num_or 而非 `tonumber(x) or 0`：'nan' 过 tonumber 出的是 number
+	-- （Lua 里 truthy），`or` 兜不住，会原样下发。后果被 HAL.gpio_request_line 的
+	-- byte_of 兜底中和成 0（安全侧），故这是形态一致性修复而非行为修复——但同文件
+	-- value 列（见 call 段的 finite_of）早已归一，两处口径不一即防护漂移。
+	local init = num_or(data.init, 0)
 
 	-----------------------------------------------------
 	-- 重复 build 先释放旧句柄再请求（防御：不依赖调用方保证 build 恰一次）

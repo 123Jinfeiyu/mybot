@@ -99,6 +99,18 @@ local c = find("ioctl", "req", HAL.GPIO_GET_LINEHANDLE)
 check("default_value 非 0 归一为 1", c ~= nil and c.default_value == 1,
 	c and c.default_value)
 check("OUTPUT|ACTIVE_LOW（2+4=6）", c ~= nil and c.flags == 6, c and c.flags)
+-- C2 同族（2026-09-20 评估）：上电初值经 byte_of 归一，非有限值回落 0（安全侧）。
+-- 这是 HAL 层的兜底，驱动层 init 列的 26.1 修复与之同值，故那条修复零行为变更。
+reset()
+gpio_request_line("/dev/gpiochip0", 3, "out", 0/0, false)
+c = find("ioctl", "req", HAL.GPIO_GET_LINEHANDLE)
+check("default_value NaN 回落 0（不驱动到高电平）",
+	c ~= nil and c.default_value == 0, c and c.default_value)
+reset()
+gpio_request_line("/dev/gpiochip0", 3, "out", "nan", false)
+c = find("ioctl", "req", HAL.GPIO_GET_LINEHANDLE)
+check("default_value 字符串 'nan' 回落 0",
+	c ~= nil and c.default_value == 0, c and c.default_value)
 reset()
 gpio_request_line("/dev/gpiochip0", 3, "in", 1, true)
 c = find("ioctl", "req", HAL.GPIO_GET_LINEHANDLE)
@@ -254,6 +266,22 @@ do
 	check("build: in 模式参数缺省",
 		q ~= nil and q.direction == "in" and q.init == 0 and q.active_low == false)
 end
+
+-- 26.1：init 列与同文件 value 列（finite_of）口径一致。旧的 `tonumber(x) or 0`
+-- 兜不住 'nan'（tonumber 出的是 number，Lua 里 truthy），NaN 会原样下发；
+-- 后果被 HAL 的 byte_of 兜底中和成 0，故本用例是形态一致性而非行为修复。
+reload()
+r = build({ chip = "/dev/gpiochip0", offset = "17", direction = "out", init = "nan" })
+check("build: init=nan 成功（同缺省）", r.result == "OK", r.message)
+do
+	local q = last("request")
+	check("build: init=nan 归一为 0", q ~= nil and q.init == 0,
+		q and tostring(q.init))
+end
+reload()
+r = build({ chip = "/dev/gpiochip0", offset = "17", direction = "out", init = "1e400" })
+check("build: init=inf 归一为 0", r.result == "OK" and last("request").init == 0,
+	r.result .. "/" .. tostring(last("request") and last("request").init))
 
 -- 重复 build 先释放旧句柄再请求
 reload()
