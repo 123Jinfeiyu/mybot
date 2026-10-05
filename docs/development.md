@@ -278,8 +278,9 @@ cmake -S . -B build -DMYBOT_WERROR=ON && cmake --build build
   同路径：全量输出落 `clang-tidy.log`，其非零退出码经「重定向落文件 → 记 rc → 末尾
   `[ $rc -eq 0 ]`」直接决定 job 结果（不再被管道末尾的 `tail` 吞掉；不用 `pipefail` 以求
   在 dash 下也成立），该日志同时声明为 artifacts（`when: always`）留档。存量告警已归零
-  （clang-tidy 14.0.6），新增告警即 job 红：处置方式是走 `util.hpp` 单点（`getEnvVar` /
-  `errnoText` / `concatMsg`）、定点 `NOLINT` 注明理由，或按先例写入 `.clang-tidy` 豁免。
+  （clang-tidy 14.0.6），新增告警即 job 红：处置方式是走 `src/util_env.hpp` /
+  `src/util_str.hpp` 单点（`getEnvVar` / `errnoText` / `concatMsg`）、定点 `NOLINT`
+  注明理由，或按先例写入 `.clang-tidy` 豁免。
 
 - **报错文案分语言**（有意分区，非漂移）：结构脚本装配/解析期的报错（`robot`/`sqlparse`/
   `hardware`/`daemonvar` 等，读者是 `.sql`/`.mt` 脚本作者）用**英文**——这类报错常被

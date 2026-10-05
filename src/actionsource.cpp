@@ -95,7 +95,7 @@ int TcpStreamReader::read() {
  * 合并即改行为。四条实测理由见 mcptransport.cpp 里 mcpCheckAuthFrame 的头注。 */
 /* ---- 可选口令校验：对端必须先送一行 "<token>\n" 才允许下发动作脚本 ----
  * 口令为空时跳过（不破坏既有单连接直发脚本的用法）。
- * 比较走 util.hpp 的 safeEquals 恒时实现（审计 M1）。
+ * 比较走 util_str.hpp 的 safeEquals 恒时实现（审计 M1）。
  * 三态契约见 actionsource.hpp（阶段 4.3：NoCredential 不得计为鉴权失败）。 */
 TcpAuthStatus checkTcpToken(int client, const std::string& token) {
 	std::string line;

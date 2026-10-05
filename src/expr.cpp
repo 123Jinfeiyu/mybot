@@ -121,7 +121,7 @@ bool isIdentChar(char c) { return isIdentStart(c) || isDigit(c); }
  * 旧实现把整条表达式原样拼进报错，而表达式长度只受动作脚本 8 MiB 上限约束
  * ——一条语法错误即可把用户可控的兆级字节灌进 stderr（实测 10k 层括号 → 20KB），
  * 且原文可携带 ANSI 控制序列直写操作者终端。
- * 现统一走 util.hpp 的 echoSource（转义不可打印字节 + 截断到 kMaxEchoChars +
+ * 现统一走 util_str.hpp 的 echoSource（转义不可打印字节 + 截断到 kMaxEchoChars +
  * 省略标记）：矩阵单元格报错（hardware.cpp）与表达式报错共用同一判据，
  * 不再出现「同类缺陷只修了一条路径」。 */
 

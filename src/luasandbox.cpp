@@ -16,7 +16,7 @@
 
 namespace bot {
 
-/* '..' 判定单点（M2/B2-1）：util.hpp 的 hasDotDotComponent（按 '/'-段精确比较，
+/* '..' 判定单点（M2/B2-1）：util_path.hpp 的 hasDotDotComponent（按 '/'-段精确比较，
  * 不误伤含 '..' 子串的合法模块名，见审计 #8 注记）。 */
 
 /* ---- 受限 dofile/loadfile 的路径校验（M3 收口）----

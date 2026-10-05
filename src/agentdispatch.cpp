@@ -52,7 +52,7 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 	} catch (...) {
 		/* A5：本机 LuaJIT 用 C++ 异常实现 luaD_throw，从没有 Lua CFRAME 的 C++
 		 * 帧抛出的 Lua 错误**不是** std::exception（判据锚点与四处边界清单：
-		 * util.hpp 的 kNonStdExceptionNote 注释块——跨站点行号引用会腐烂，
+		 * util_except.hpp 的 kNonStdExceptionNote 注释块——跨站点行号引用会腐烂，
 		 * 按名指锚）。
 		 * 只接 std::exception 的话这类抛出会穿透到上层的 catch(...)，把
 		 * 整个会话结束掉——而「REPL 单轮失败不结束会话」是循环层的承诺
