@@ -9,7 +9,7 @@ local check = tester.check
 
 local ffi = require("ffi")
 local HAL = dofile("modules/lib/HAL.lua")
--- cj_pthread_mutex_t 已由 HAL.lua 声明（与 pthread.lua 逐字一致），
+-- cj_pthread_mutex_t 已由 hal_backend_glibc.lua 声明（与 pthread.lua 逐字一致），
 -- 直接复用不再重复 cdef：LuaJIT 对同名重声明以首次为准
 
 ------------------------------------------------------------------

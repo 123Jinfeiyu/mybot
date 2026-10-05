@@ -17,17 +17,17 @@
 
 /* A2：先钉住「Lua 源里的值」——此前 C 里手抄一遍、从不读 Lua，Lua 漂移不可见。 */
 _Static_assert(HAL_CONST_UART_O_FLAGS == 526594,
-	"HAL.lua UART_O_FLAGS drifted (expected 526594 = RDWR|NOCTTY|NONBLOCK|CLOEXEC)");
+	"hal_backend_glibc.lua UART_O_FLAGS drifted (expected 526594 = RDWR|NOCTTY|NONBLOCK|CLOEXEC)");
 _Static_assert(HAL_CONST_UART_TCSANOW == 0,
-	"HAL.lua UART_TCSANOW drifted (expected 0)");
+	"hal_backend_glibc.lua UART_TCSANOW drifted (expected 0)");
 _Static_assert(HAL_CONST_UART_TCIFLUSH == 0,
-	"HAL.lua UART_TCIFLUSH drifted (expected 0)");
+	"hal_backend_glibc.lua UART_TCIFLUSH drifted (expected 0)");
 _Static_assert(HAL_CONST_UART_VMIN_IDX == 6,
-	"HAL.lua UART_VMIN_IDX drifted (expected 6)");
+	"hal_backend_glibc.lua UART_VMIN_IDX drifted (expected 6)");
 _Static_assert(HAL_CONST_UART_VTIME_IDX == 5,
-	"HAL.lua UART_VTIME_IDX drifted (expected 5)");
+	"hal_backend_glibc.lua UART_VTIME_IDX drifted (expected 5)");
 _Static_assert(HAL_CONST_UART_CREAD_CLOCAL == 2176,
-	"HAL.lua UART_CREAD_CLOCAL drifted (expected 2176)");
+	"hal_backend_glibc.lua UART_CREAD_CLOCAL drifted (expected 2176)");
 
 _Static_assert(sizeof(struct termios) == 60,
 	"sizeof(struct termios) != 60 (hal_backend_glibc.lua cj_termios 断言)");

@@ -84,7 +84,8 @@ set(SRC_MODULES "${SRC}/modules")
 
 # 平台常量（ioctl 编号/termios/errno）的唯一事实源是后端 consts 表
 # （hal_backend_glibc.lua 的 `local consts = { NAME = <值>, ... }`）；HAL.lua 自
-# 方案 A 起只做 `HAL.X = _c.X` 重导出，无字面量可抽。执行期求值（2026-10-01）：
+# 方案 A 起只做 `HAL.X = _c.X` 重导出（26.2 按域拆分后 UART_* 那几项的重导出落在
+# lib/hal/uart.lua，同样只是重导出），无字面量可抽。执行期求值（2026-10-01）：
 # luajit 加载后端，dump_consts.lua 倒出 M.consts——抽取契约只剩「后端导出
 # M.consts 表」，不再依赖表项书写风格。luajit 可执行文件是既有测试期依赖
 # （test/lib/params.sh 的 LUACMD），CI 各 job 均已安装；README 依赖行同步。

@@ -186,7 +186,7 @@ gate:coverage:
       - build-cov/coverage/
 
 # musl（非 glibc）实证门禁（fix-plan 2026-09-20）：docs/faq.md 曾如实声明
-# 「非 glibc libc 未验证」——HAL.lua 经 ffi 直调 libc，termios 布局断言、
+# 「非 glibc libc 未验证」——hal_backend_glibc.lua 经 ffi 直调 libc，termios 布局断言、
 # 波特率编码、ioctl 常量此前只在 glibc 头文件下实证过。本 job 在 alpine/musl
 # 下：① 三个常量自检目标（_Static_assert/编译期比对，跑起来即证明常量在 musl
 # 头文件下成立）；② mybot_tests 全量；③ 整段守门 test/run_all.sh（Lua 层 HAL
