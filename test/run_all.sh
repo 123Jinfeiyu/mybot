@@ -200,25 +200,53 @@ tests_explicit=0
 # ——cmake 不会为 test/cpp/ 的改动重链 mybot，`cmake --build` 修不好它，唯一出路是
 # BOT_ALLOW_STALE=1。一道天天狼来了的门，教会大家的正是怎么绕过它（2026-10-06 实测
 # 踩到：反向验证动过 test/cpp 后，重建到 100% 仍被拒）。
+# CMakeLists.txt 也已移出取材面（同日第二次踩到，同一类误报）：它不是产物的编译期
+# 输入，而是**构建描述**——描述变了要不要重链，cmake/make 自己会算。把它当输入就等于
+# 要求「产物比构建描述新」，而 make 对一个输入未变的目标只回一句「Built target」不重链，
+# 于是这道门**重建也修不好**。实测：build-asan/harness_selftest 停在 2026-10-01、
+# CMakeLists.txt 已走到 2026-10-04，`cmake --build build-asan` 报「[1%] Built target
+# harness_selftest」而不重链 → gate 恒以 2 拒绝，run_san.sh 的第二跑整条进不去。
+# 移出后少挡的那类（改了 CMakeLists 却从没跑过 cmake）仍被挡住：新增源文件本身就在
+# src/ 或 test/cpp/ 里、比产物新；纯改编译开关则由 `cmake --build` 的自动 reconfigure
+# 兜住，不该由本判据冒充。
 # docs/、modules/、robots/ 是运行期读取的，改了它们不需要重编，纳入只会造成误报。
 # harness_selftest 一并纳入：harness-selftest 段跑的就是它，此前不在循环里，陈旧了
 # 照样报「8 通过」——正是本判据要堵的那类无痕假绿。
+# 目录级取材面还要**减去属于别的目标的文件**，否则同一类误报换个入口再犯一次：
+# touch src/mtmerge.cpp 后 `cmake --build` 只重链 mtmerge，mybot 永远比它旧；
+# touch test/cpp/harness_selftest.cpp 后只重链 harness_selftest，mybot_tests 永远比它旧。
+# 归属的权威出处是构建系统自己的记账（build/compile_commands.json 的
+# `-o CMakeFiles/<target>.dir/<src>.o`），2026-10-06 实测：
+#   mybot            ← src/            − src/mtmerge.cpp（只进 mtmerge 目标）
+#   mybot_tests      ← src/ + test/cpp − src/main.cpp（它用 test/cpp/main.cpp 当入口）
+#                                       − src/mtmerge.cpp
+#                                       − test/cpp/harness_selftest.cpp（独立二进制）
+#   harness_selftest ← test/cpp/harness_selftest.cpp + test/cpp/harness.hpp
+# 这三条排除与 CMakeLists 的 C3/B8 两处自检是同一份事实，故 selftest 第 7 段钉住
+# 「被排除的文件确实不在该目标的 add_executable 清单里」——归属一变，排除名单就得跟着变。
 # 未纳入 mtmerge 与 test_*_consts：它们的 bin 变量在本文件更后面才定义。
 # 逃生口 BOT_ALLOW_STALE=1：**明确知道**要跑旧产物（如复现历史结果）时显式声明。
 if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 	for _b in "$bin" "$tests_bin" "$selftest_bin"; do
 		[ -x "$_b" ] || continue	# 缺产物由 artifact_missing 判失败，这里不重复
+		_ex=()
 		case "$_b" in
-			"$bin") _in=(src CMakeLists.txt) ;;
-			# 骨架自证只由这两个文件编出来（CMakeLists.txt 的
+			"$bin")
+				_in=(src)
+				_ex=(-not -path 'src/mtmerge.cpp') ;;
+			# 骨架自证只由这两个文件编出来（CMakeLists.txt:268 的
 			# add_executable(harness_selftest test/cpp/harness_selftest.cpp)）；
 			# 给它套整个 test/cpp/ 就又是上面那个「重建也修不好」的误报。
-			"$selftest_bin") _in=(test/cpp/harness_selftest.cpp test/cpp/harness.hpp CMakeLists.txt) ;;
-			*) _in=(src test/cpp CMakeLists.txt) ;;
+			"$selftest_bin")
+				_in=(test/cpp/harness_selftest.cpp test/cpp/harness.hpp) ;;
+			*)
+				_in=(src test/cpp)
+				_ex=(-not -path 'src/main.cpp' -not -path 'src/mtmerge.cpp'
+					-not -path 'test/cpp/harness_selftest.cpp') ;;
 		esac
 		_stale="$(find "${_in[@]}" -type f \
-			\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name 'CMakeLists.txt' \) \
-			-newer "$_b" -print -quit 2>/dev/null)"
+			\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
+			"${_ex[@]}" -newer "$_b" -print -quit 2>/dev/null)"
 		if [ -n "$_stale" ]; then
 			echo "守门拒绝执行：产物 $_b 比编译期输入旧（例如 $_stale）。" >&2
 			echo "  继续跑等于用**上一轮的二进制**做整套 C++ 守门，汇总仍会显示通过。" >&2
@@ -227,7 +255,7 @@ if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 			exit 2
 		fi
 	done
-	unset _b _stale _in
+	unset _b _stale _in _ex
 fi
 
 # ---- 分段 runner 定义（F3-1 抽自本文件；只含函数定义，见各文件头注）----

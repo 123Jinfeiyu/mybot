@@ -205,7 +205,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 - TCP / agent 端到端缺 `python3`
 - `run_all.sh` 的 Rust agent 段缺 `agent/target/release/mybot-agent`（独立可选产物）；专门的 `gate:agent-e2e` 不允许此跳过。Rust agent 全程 reqwest + rustls（静态链接），本机 libcurl 有无都不影响该段——2026-09-25 #8 起仓库已无 libcurl 依赖
 
-产物**陈旧**在起跑前就拒绝（`run_all.sh` 比 mtime，旧于编译期输入即 `exit 2`；逃生口 `BOT_ALLOW_STALE=1`）。取材面**按产物分配**：`mybot` 只吃 `src/`，`mybot_tests` 吃 `src/` + `test/cpp/`，`harness_selftest` 只吃 `test/cpp/harness_selftest.cpp` 与 `harness.hpp`（`CMakeLists.txt` 三者都算）。共用一份最大集合会有两种坏法：给 `mybot` 算上 `test/cpp/`，则「只改一条用例」会让它永远判陈旧，而 cmake 根本不会为此重链 `mybot`——重建也修不好，唯一出路是 `BOT_ALLOW_STALE=1`，一道天天狼来了的门教会大家的正是怎么绕过它（2026-10-06 实测踩到）；反过来漏掉 `harness_selftest`（同日之前的状态）则让骨架自证拿旧二进制报「8 通过」，正是这道判据要堵的无痕假绿。`mtmerge` 与三个 `test_*_consts` 未纳入（它们的 bin 变量在 `run_all.sh` 更后面才定义）。Rust 侧的同族判据是 `test/lib/agent_stale.sh`，取材面与处置分层见 [development.md](development.md)「守门钩子（pre-push）」第 3 条。
+产物**陈旧**在起跑前就拒绝（`run_all.sh` 比 mtime，旧于编译期输入即 `exit 2`；逃生口 `BOT_ALLOW_STALE=1`）。取材面**按产物分配**，且每条都要**减去属于别的目标的文件**：`mybot` 吃 `src/` 减 `src/mtmerge.cpp`；`mybot_tests` 吃 `src/` + `test/cpp/` 减 `src/main.cpp`（它的入口是 `test/cpp/main.cpp`）、`src/mtmerge.cpp`、`test/cpp/harness_selftest.cpp`；`harness_selftest` 只吃 `test/cpp/harness_selftest.cpp` 与 `harness.hpp`。归属的权威出处是构建系统自己的记账（`build/compile_commands.json` 里 `-o CMakeFiles/<target>.dir/<src>.o`）。`CMakeLists.txt` **不在任何一份取材面里**：它是构建描述而不是编译期输入，「描述变了要不要重链」由 cmake/make 自己算——把它当输入就等于要求「产物比构建描述新」，而 make 对输入未变的目标只回一句 `Built target` 不重链，于是门恒红。共用一份最大集合、或不减归属，都会犯同一个错，两种坏法：给 `mybot` 算上 `test/cpp/`，则「只改一条用例」会让它永远判陈旧，而 cmake 根本不会为此重链 `mybot`——**重建也修不好**，唯一出路是 `BOT_ALLOW_STALE=1`，一道天天狼来了的门教会大家的正是怎么绕过它（2026-10-06 实测踩到三回：先是 `test/cpp/`，修掉后 `CMakeLists.txt` 挡掉了 `run_san.sh` 的整个第二跑，再修又暴露出 `mtmerge.cpp` 与 `harness_selftest.cpp` 两条同类）；反过来漏掉 `harness_selftest`（同日之前的状态）则让骨架自证拿旧二进制报「8 通过」，正是这道判据要堵的无痕假绿。排除名单与 CMakeLists 的目标归属是同一份事实，故 `run_all_selftest.sh` 第 7 段双向钉住：归属变了（`mtmerge.cpp` 进了 `MYBOT_CORE_SOURCES`、`harness_selftest.cpp` 进了 `mybot_tests`）要红，名单单独漂（多一条 = 漏判真陈旧、少一条 = 门恒红）也要红——次数一并钉，因为同一条排除在两个分支里各写一次是有讲究的（`src/main.cpp` 对 `mybot` 恰恰是入口源，排了就漏判）。`mtmerge` 与三个 `test_*_consts` 未纳入（它们的 bin 变量在 `run_all.sh` 更后面才定义）。Rust 侧的同族判据是 `test/lib/agent_stale.sh`，取材面与处置分层见 [development.md](development.md)「守门钩子（pre-push）」第 3 条。
 
 反过来，有三个脚本**没有任何自动调用点**（`run_all.sh` / 十条 CI job / pre-push 都不执行它们），它们坏了不会有任何守门变红，只能靠人跑：
 
@@ -253,9 +253,10 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
 文案是否真数得到调用点、两张用例表的结构与两套计数互证（条数**派生**、不再手写）、
 TSan 名单单点（**双向**核对：名单里每条都在用例文件里命中，且用例文件里每条 `TH_TEST`
 都被名单覆盖——「零匹配返回 1」只堵住名单写错名字，堵不住名单少一条）、
-三个守门单点——`test/lib/params.sh` 的守门常量、`test/lib/agent_stale.sh` 的
+四个守门单点——`test/lib/params.sh` 的守门常量、`test/lib/agent_stale.sh` 的
 mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径派生与产物陈旧
-判据的循环覆盖，外加**实跑**一次拼错过滤器核对空匹配防线（C8）真的会红——那是本自检
+判据的循环覆盖、以及该判据**排除名单**与 `CMakeLists.txt` 目标归属的双向核对，
+外加**实跑**一次拼错过滤器核对空匹配防线（C8）真的会红——那是本自检
 唯一执行 `run_all.sh` 的地方，0.1s 级，理由见上「四条反假绿约束」第一条），
 8–13 是跨源比对：
 
