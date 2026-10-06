@@ -587,9 +587,8 @@ impl Session {
     /// 每轮重取硬件数（`context.get` 的 `hardwareCount`）。取不到 → `None`
     /// （提示符里显示 `?`，不编数字）。
     async fn hardware_count(&self) -> Option<u64> {
-        let data = self.bridge.context_get().await.ok()?;
-        data.get("hardwareCount")
-            .and_then(serde_json::Value::as_u64)
+        let ctx = self.bridge.context_get().await.ok()?;
+        Some(ctx.hardware_count)
     }
 
     /// `/status` 一览（只渲染、不判定；缺的数字给 `?`，不给假值）。

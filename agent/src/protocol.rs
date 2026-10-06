@@ -58,7 +58,6 @@ pub struct ToolCallResult {
     pub summary: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Context {
     #[serde(rename = "robotName")]

@@ -14,7 +14,6 @@
 
 use std::path::{Path, PathBuf};
 
-use serde_json::Value;
 
 /// 单个提示词文件上限（与 C++ `kMaxPromptFileBytes` 逐值对齐）。
 pub const K_MAX_PROMPT_FILE_BYTES: u64 = 1 << 20;
@@ -300,35 +299,19 @@ pub struct PromptMaterial {
 }
 
 impl PromptMaterial {
-    /// 从 `context.get` 的 `data` 解析。字段缺失/类型不符一律报错——提示词素材
-    /// 静默缺一段，模型会拿到一份「看起来正常但少了约束」的提示词。
-    pub fn from_context(data: &Value) -> Result<Self, String> {
-        let s = |k: &str| -> Result<String, String> {
-            data.get(k)
-                .and_then(Value::as_str)
-                .map(|v| v.to_string())
-                .ok_or_else(|| format!("context.get 缺少字符串字段 '{k}'"))
-        };
-        let b = |k: &str| -> Result<bool, String> {
-            data.get(k)
-                .and_then(Value::as_bool)
-                .ok_or_else(|| format!("context.get 缺少布尔字段 '{k}'"))
-        };
-        // 硬件数**只校验不存**：会话里每轮经 `context.get` 重取（后端的 /sql 热插
-        // 会长出新硬件，存一份首轮值只会诱使有人去用它，正是「提示符少报」的成因）。
-        data.get("hardwareCount")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "context.get 缺少整数字段 'hardwareCount'".to_string())?;
+    /// 从 `context.get` 的 `Context` 解析。字段类型由 `protocol::Context` 的 serde 定义保证，
+    /// 此处只做结构转换。
+    pub fn from_context(ctx: &crate::protocol::Context) -> Result<Self, String> {
         Ok(Self {
-            robot_name: s("robotName")?,
-            structure_path: s("structurePath")?,
-            scripts_dir: s("scriptsDir")?,
-            allow_shell: b("allowShell")?,
-            allow_hot_sql: b("allowHotSql")?,
-            structure_excerpt: s("structureExcerpt")?,
-            hardware_list: s("hardwareList")?,
-            scripts_list: s("scriptsList")?,
-            readable_vars: s("readableVars")?,
+            robot_name: ctx.robot_name.clone(),
+            structure_path: ctx.structure_path.clone(),
+            scripts_dir: ctx.scripts_dir.clone(),
+            allow_shell: ctx.allow_shell,
+            allow_hot_sql: ctx.allow_hot_sql,
+            structure_excerpt: ctx.structure_excerpt.clone(),
+            hardware_list: ctx.hardware_list.clone(),
+            scripts_list: ctx.scripts_list.clone(),
+            readable_vars: ctx.readable_vars.clone(),
         })
     }
 }
@@ -519,16 +502,21 @@ mod tests {
 
     #[test]
     fn context_material_requires_all_fields() {
-        let ok = serde_json::json!({
+        let ok_json = serde_json::json!({
             "robotName": "r", "structurePath": "p", "scriptsDir": "s",
             "allowShell": false, "allowHotSql": false, "hardwareCount": 2,
             "structureExcerpt": "a", "hardwareList": "b", "scriptsList": "c",
             "readableVars": ""
         });
+        let ok: crate::protocol::Context = serde_json::from_value(ok_json).unwrap();
         assert!(PromptMaterial::from_context(&ok).is_ok());
-        let mut bad = ok.clone();
-        bad.as_object_mut().unwrap().remove("hardwareList");
-        let err = PromptMaterial::from_context(&bad).unwrap_err();
-        assert!(err.contains("hardwareList"), "实际: {err}");
+        
+        let bad_json = serde_json::json!({
+            "robotName": "r", "structurePath": "p", "scriptsDir": "s",
+            "allowShell": false, "allowHotSql": false, "hardwareCount": 2,
+            "structureExcerpt": "a", "scriptsList": "c", "readableVars": ""
+        });
+        let err = serde_json::from_value::<crate::protocol::Context>(bad_json).unwrap_err();
+        assert!(err.to_string().contains("hardwareList"), "实际: {err}");
     }
 }

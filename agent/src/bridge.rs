@@ -221,14 +221,15 @@ impl Bridge {
         Ok(specs)
     }
 
-    /// 取系统提示词素材（`context.get`）。字段校验交给 `prompt::PromptMaterial`。
-    pub async fn context_get(&self) -> Result<Value, String> {
+    /// 取系统提示词素材（`context.get`）。字段由 `protocol::Context` 的 serde 定义校验，
+    /// 再经 `prompt::PromptMaterial` 转成提示词组装所需的扁平结构。
+    pub async fn context_get(&self) -> Result<protocol::Context, String> {
         let resp = self
             .request(protocol::ROUTE_CONTEXT_GET, Map::new())
             .await?;
-        let envelope: protocol::Response<Value> = serde_json::from_value(resp)
+        let envelope: protocol::Response<protocol::Context> = serde_json::from_value(resp)
             .map_err(|e| format!("后端 context.get 响应格式错误: {e}"))?;
-        Ok(envelope.data.unwrap_or(Value::Null))
+        envelope.data.ok_or_else(|| "后端 context.get 缺少 data".to_string())
     }
 
     /// 调一个工具（`tool.call`）。`Err` = 传输失败或后端整体拒绝；`Ok(ok=false)`
