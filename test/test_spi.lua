@@ -211,6 +211,23 @@ res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = 8, speed = 1000000, 
 tester.check("ioctl 失败 build 返回 ERR", tostring(res.result) == "ERR", res.message)
 mock_setup_ret = 0	-- 恢复
 
+-- ==================== 26.3b NaN 配置列拒绝 ====================
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = "nan", bits = 8, speed = 1000000, delay = 0 })
+tester.check("spi_mode='nan' 拒绝", tostring(res.result) == "ERR", res.message)
+
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = "nan", speed = 1000000, delay = 0 })
+tester.check("bits='nan' 拒绝", tostring(res.result) == "ERR", res.message)
+
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = 8, speed = "nan", delay = 0 })
+tester.check("speed='nan' 拒绝", tostring(res.result) == "ERR", res.message)
+
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = 8, speed = 1000000, delay = "nan" })
+tester.check("delay='nan' 拒绝", tostring(res.result) == "ERR", res.message)
+
 -- ==================== summary ====================
 tester.summary("test_spi")
 return 0

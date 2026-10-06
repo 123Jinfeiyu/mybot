@@ -81,20 +81,20 @@ require_driver("spi", {
 		-- 三选一换算（优先级 level > percent > ohms）
 		local level
 		if data.level ~= nil then
-			level = tonumber(data.level)
+			level = finite_of(data.level)
 			if level == nil then
-				return err("Invalid Argument: level (not a number)")
+				return err("Invalid Argument: level (not a finite number)")
 			end
 		elseif data.percent ~= nil then
-			local pct = tonumber(data.percent)
+			local pct = finite_of(data.percent)
 			if pct == nil then
-				return err("Invalid Argument: percent (not a number)")
+				return err("Invalid Argument: percent (not a finite number)")
 			end
 			level = math.floor(pct / 100.0 * WIPER_MAX + 0.5)
 		elseif data.ohms ~= nil then
-			local ohms = tonumber(data.ohms)
+			local ohms = finite_of(data.ohms)
 			if ohms == nil then
-				return err("Invalid Argument: ohms (not a number)")
+				return err("Invalid Argument: ohms (not a finite number)")
 			end
 			level = math.floor(ohms / (rtotal or DEF_RTOTAL) * WIPER_MAX + 0.5)
 		else
@@ -107,7 +107,7 @@ require_driver("spi", {
 		level = math.floor(level)
 
 		-- 写抽头：一个 SPI 字节即完整操作；delay 经元数据从 @SPI 流入
-		if spi_write(ctx.fd, level, tonumber(data.delay)) ~= 0 then
+		if spi_write(ctx.fd, level, finite_of(data.delay)) ~= 0 then
 			return err("Failed to write TPL0501 wiper")
 		end
 

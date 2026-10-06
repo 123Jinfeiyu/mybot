@@ -72,7 +72,7 @@ require_driver("i2c", {
 		end
 
 		-- 初始输出锁存（缺省 0xFF：POR 默认全弱上拉，显式写以对齐状态）
-		local out = tonumber(data.out)
+		local out = finite_of(data.out)
 		if out == nil or data.out == "-" or data.out == "" then out = 0xFF end
 		out = math.floor(out)
 		if out < 0 or out > 255 then
@@ -102,7 +102,7 @@ require_driver("i2c", {
 		end
 
 		-----------------------------------------------------
-		local out = tonumber(data.out)
+		local out = finite_of(data.out)
 		if out ~= nil then
 			out = math.floor(out)
 			if out < 0 or out > 255 then

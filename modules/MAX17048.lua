@@ -114,8 +114,8 @@ build = function(ctx, data)
 	-- VALRT 过压/欠压阈值（20mV/LSB，读改写保留另一侧）
 	-- datasheet Figure 11：地址 0x14 = VALRT.MIN（16 位字的高字节）、
 	-- 地址 0x15 = VALRT.MAX（低字节），POR 0x00FF（MIN=0/0V、MAX=255/5.1V）
-	local vmax = tonumber(data.valrt_max)
-	local vmin = tonumber(data.valrt_min)
+	local vmax = finite_of(data.valrt_max)
+	local vmin = finite_of(data.valrt_min)
 	if vmax ~= nil or vmin ~= nil then
 		local cur = i2c_read_multi(fd, REG_VALRT, 2)
 		if cur < 0 then
@@ -143,7 +143,7 @@ build = function(ctx, data)
 	end
 
 	-- ATHD SOC 低电告警阈值（CONFIG 低 5 位，读改写保留 RCOMP）
-	local athd = tonumber(data.athd)
+	local athd = finite_of(data.athd)
 	if athd ~= nil then
 		if athd < 1 or athd > 32 then
 			return err("Invalid Argument: athd '" .. tostring(data.athd) .. "' (range 1~32%)")

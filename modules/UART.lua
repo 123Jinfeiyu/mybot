@@ -46,7 +46,7 @@ local function build_impl(data)
 		return err("Invalid Arguments: path")
 	end
 
-	local uart_baud = tonumber(data.baud)
+	local uart_baud = finite_of(data.baud)
 	if uart_baud == nil or uart_baud <= 0 then
 		return err("Invalid Arguments: baud (positive number)")
 	end

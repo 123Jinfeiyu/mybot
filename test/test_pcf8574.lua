@@ -532,4 +532,17 @@ section()
 expect_err("destroy 非表", function() return destroy(nil) end, "Invalid Arguments Type")
 check("destroy 非表零事务", #entries(section()) == 0)
 
+-- 26.3b NaN 配置列拒绝（out 走 finite_of）
+section()
+expect_ok("build out='nan' 归缺省 0xFF（finite_of 返回 nil → 走缺省分支）",
+          function() return build({ fd = fd, address = "0x20", out = "nan" }) end)
+
+section()
+build_ok()
+expect_ok("call out='nan' 跳过写（finite_of 返回 nil → 条件不满足）",
+          function() return call({ fd = fd, address = "0x20", out = "nan" }) end)
+local ck = window()
+check("call out='nan' 零写事务（仅读引脚）",
+      #writes(ck) == 0, tostring(#writes(ck)))
+
 tester.summary("test_pcf8574")

@@ -123,7 +123,7 @@ build = function(ctx, data)
 	end
 
 
-	local timeout = tonumber(data.timeout)
+	local timeout = finite_of(data.timeout)
 	if timeout == nil or timeout < 0 then timeout = READ_TIMEOUT_MS end
 	cfg_timeout = math.floor(timeout)
 
