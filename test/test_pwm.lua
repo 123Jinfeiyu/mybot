@@ -242,6 +242,34 @@ check("build: 缺 channel 报错", build({ chip = "0" }).result == "ERR")
 check("build: 频率非法报错", build({ chip = "0", channel = "1", frequency = "0" }).result == "ERR")
 check("build: duty 越界报错", build({ chip = "0", channel = "1", duty = "150" }).result == "ERR")
 
+-- 26.3：chip/channel 与同一 build 函数里的 frequency/duty（均 finite_of）口径一致。
+-- 旧的 tonumber 放行 'nan'/'1e400'（出的是 number，`== nil` 为假），于是非有限值一路
+-- 走到 pwm_export；真机上被 hal/pwm.lua 的 pwm_id 兜住（`n ~= math.floor(n)` 命中
+-- NaN、65535 上界命中 inf）返回 false，报的是「Failed to export PWM pwmchipnan
+-- pwmnan」——听着像 sysfs/内核出了问题，实际是配置列写了非数值。提前拦下让错误
+-- 指名 chip/channel 列。
+for _, bad in ipairs({ "nan", "1e400", "-1e400" }) do
+	reload()
+	r = build({ chip = bad, channel = "1", frequency = "20000" })
+	check("build: chip=" .. bad .. " 报 ERR", r.result == "ERR", r.message)
+	check("build: chip=" .. bad .. " 错误指名 chip 列而非导出失败",
+		(r.message or ""):find("Invalid Argument: chip", 1, true) ~= nil, r.message)
+	check("build: chip=" .. bad .. " 不触碰 sysfs", count("export") == 0,
+		tostring(count("export")))
+
+	reload()
+	r = build({ chip = "0", channel = bad, frequency = "20000" })
+	check("build: channel=" .. bad .. " 报 ERR", r.result == "ERR", r.message)
+	check("build: channel=" .. bad .. " 错误指名 channel 列",
+		(r.message or ""):find("Invalid Argument: channel", 1, true) ~= nil, r.message)
+	check("build: channel=" .. bad .. " 不触碰 sysfs", count("export") == 0,
+		tostring(count("export")))
+end
+reload()
+r = build({ chip = "0", channel = "0", frequency = "20000" })
+check("build: chip=0/channel=0 未被误伤（0 是合法值，不作哨兵）",
+	r.result == "OK", r.message)
+
 -- 正常 build：给了 duty 才使能
 reload()
 r = build({ chip = "0", channel = "1", frequency = "20000", duty = "0" })
@@ -257,6 +285,24 @@ r = build({ chip = "0", channel = "1", frequency = "20000" })
 check("build: 无 duty 也成功", r.result == "OK", r.message)
 check("build: 无 duty 不使能", count("enable") == 0)
 check("build: 无 duty 时占空比为 0", (last("config") or {}).d == 0)
+
+-- 26.3：duty='nan' —— 同一文件对这一列存在两种口径。build 取值处与 call 取值处
+-- 都用 finite_of（NaN → 归 0），而判「用户是否给了 duty」的那一行用的是
+-- `tonumber(data.duty) ~= nil`：NaN 是 number，故该判据为**真**，于是 pwm_enable
+-- 被调用、输出被主动驱动，与紧邻上方注释写明的契约（「未给 duty 时不会意外驱动
+-- 负载」）相反。0% 占空比仍在主动拉低输出，与「不使能」的高阻态不是一回事。
+-- 判据取「与不写 duty 列同结论」，即本文件既有口径。
+reload()
+r = build({ chip = "0", channel = "1", frequency = "20000", duty = "nan" })
+check("build: duty=nan 成功（归 0，同缺省）", r.result == "OK", r.message)
+check("build: duty=nan 不使能输出（不得意外驱动负载）", count("enable") == 0,
+	tostring(count("enable")))
+check("build: duty=nan 时占空比为 0", (last("config") or {}).d == 0)
+reload()
+r = build({ chip = "0", channel = "1", frequency = "20000", duty = "1e400" })
+check("build: duty=inf 成功且不使能输出",
+	r.result == "OK" and count("enable") == 0,
+	r.result .. "/" .. tostring(count("enable")))
 
 -- invert
 reload()

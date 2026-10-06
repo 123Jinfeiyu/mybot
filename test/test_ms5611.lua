@@ -563,6 +563,37 @@ if res then
 		tostring(res.ALT_M))
 end
 
+-- p0 非有限（26.3）：驱动该处注释写的契约是「非法/非正归缺省」，但 tonumber
+-- 放行 'nan'（出的是 number，Lua 里 truthy），`p0 == nil` 与 `p0 <= 0` 对 NaN
+-- 均为假，于是 NaN 被存进**模块级** p0_hpa；此后每一次 call 的
+-- ALT_M = 44330*(1-(P_HPA/NaN)^0.19) 都是 NaN，却仍报 result="OK"——即
+-- MT6826S 的 ANGLE 那类「一次污染、永久输出」形态，且 NaN 进 JSON 变 null，
+-- 下游 sensor_daemon 的 fields=ALT_M 消费者拿到的是空值而非报错。
+section()
+expect_ok("rebuild p0='nan'（归缺省，不得污染模块级 p0_hpa）", function()
+	return build({ fd = fd, address = "0x77", p0 = "nan" })
+end)
+res = expect_ok("call p0='nan' 后仍出有限海拔", function()
+	return call({ fd = fd, address = "0x77" })
+end)
+if res then
+	check("p0=nan 回落缺省 1013.25（ALT_M 与压高公式一致，非 NaN）",
+		near(res.ALT_M, 44330 * (1 - (res.P_HPA / 1013.25) ^ 0.1902949), 1e-6),
+		tostring(res.ALT_M))
+end
+section()
+expect_ok("rebuild p0='1e400'（inf 同样归缺省）", function()
+	return build({ fd = fd, address = "0x77", p0 = "1e400" })
+end)
+res = expect_ok("call p0=inf 后仍出有限海拔", function()
+	return call({ fd = fd, address = "0x77" })
+end)
+if res then
+	check("p0=inf 回落缺省（ALT_M 不是 inf；旧行为为 44330 定值）",
+		near(res.ALT_M, 44330 * (1 - (res.P_HPA / 1013.25) ^ 0.1902949), 1e-6),
+		tostring(res.ALT_M))
+end
+
 -- virt_tick 守护式两拍：armed 零等待
 section()
 expect_ok("rebuild OSR4096（守护场景）", function()

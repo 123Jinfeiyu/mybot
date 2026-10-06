@@ -134,6 +134,12 @@ check("拒绝小数 offset（17.9）", gpio_request_line("/dev/gpiochip0", 17.9,
 check("拒绝负 offset", gpio_request_line("/dev/gpiochip0", -1, "out", 0) == -1)
 check("拒绝超 uint32 offset", gpio_request_line("/dev/gpiochip0", 0x100000000, "out", 0) == -1)
 check("拒绝非数值 offset", gpio_request_line("/dev/gpiochip0", "x", "out", 0) == -1)
+-- 26.3：NaN/inf 同样在此层被拒——NaN 由 `offset ~= math.floor(offset)` 命中
+-- （math.floor(NaN) 仍是 NaN，自反不等为真），inf 由 uint32 上界命中。据此，
+-- 驱动层 GPIO.lua 的 offset 列改走 finite_of 是「形态一致性 + 错误归属」修复
+-- 而非安全修复：真机上非有限 offset 本来就打不到硬件。
+check("拒绝 NaN offset", gpio_request_line("/dev/gpiochip0", 0 / 0, "out", 0) == -1)
+check("拒绝 inf offset", gpio_request_line("/dev/gpiochip0", 1e400, "out", 0) == -1)
 check("非法 offset 不触碰硬件", count("open") == 0)
 reset()
 check("字符串整数 offset 接受", gpio_request_line("/dev/gpiochip0", "17", "out", 0) == 42)
@@ -282,6 +288,32 @@ reload()
 r = build({ chip = "/dev/gpiochip0", offset = "17", direction = "out", init = "1e400" })
 check("build: init=inf 归一为 0", r.result == "OK" and last("request").init == 0,
 	r.result .. "/" .. tostring(last("request") and last("request").init))
+
+-- 26.3：offset 列改走 finite_of。旧的 tonumber 放行 'nan'/'1e400'（出的是 number，
+-- `== nil` 为假），驱动层这道判据对非有限值形同虚设，NaN 会原样下发给
+-- gpio_request_line（上面的桩不校验，故本组用例能看到「下发」这一形态）。真机上
+-- 后果被 hal/gpio.lua 的 offset 归一化兜住（返回 -1），于是报的是
+-- 「Failed to request GPIO line nan on /dev/gpiochip0」——读起来像芯片坏了，
+-- 实际是配置列写了非数值。归一到 finite_of 后错误直接指名 offset 列，
+-- 与同文件 value 列（finite_of）、init 列（num_or）口径一致。
+for _, bad in ipairs({ { v = "nan", t = "'nan'" }, { v = "1e400", t = "inf 字面串" },
+	{ v = "-1e400", t = "-inf 字面串" }, { v = 0 / 0, t = "数值 NaN" },
+	{ v = math.huge, t = "数值 inf" } }) do
+	reload()
+	r = build({ chip = "/dev/gpiochip0", offset = bad.v, direction = "out" })
+	check(string.format("build: offset=%s 报 ERR", bad.t), r.result == "ERR", r.message)
+	check(string.format("build: offset=%s 错误指名 offset 列而非硬件失败", bad.t),
+		(r.message or ""):find("Failed to request", 1, true) == nil
+			and (r.message or ""):find("offset", 1, true) ~= nil,
+		r.message)
+	check(string.format("build: offset=%s 不下发请求", bad.t), count2("request") == 0,
+		tostring(count2("request")))
+end
+reload()
+r = build({ chip = "/dev/gpiochip0", offset = "17", direction = "out" })
+check("build: 有限 offset 不受误伤",
+	r.result == "OK" and last("request").offset == 17,
+	r.result .. "/" .. tostring(last("request") and last("request").offset))
 
 -- 重复 build 先释放旧句柄再请求
 reload()

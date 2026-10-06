@@ -140,6 +140,13 @@ require_driver("i2c", {
 	    -- 差分 / 单端模式选择
 	    local mux
 	    if data.pos ~= nil and data.neg ~= nil then
+	        -- 26.3 盘点：**评估后不改**。与 ADS1256 的 pos/neg（那边用 bitc.lshift
+	        -- 合成 mux，NaN 会抛 Lua error，已于 26.3 改 finite_of）后果不同：本处
+	        -- 把两值拼成字符串查 diff_map，NaN 拼出 "nan,nan"、inf 拼出 "inf,1"
+	        -- 之类命中不到任何键（实测不抛，LuaJIT 的数值拼串对非有限值给
+	        -- "nan"/"inf"）→ 落到下面那条 ERR，且文案还给出了合法集
+	        -- 0-1/0-3/1-3/2-3。已是 fail-closed 且可操作，换判据只会换掉一句
+	        -- 更好的错误文案。本文件与 ADS1015 为机械孪生，此注两侧逐字相同。
 	        local pos, neg = tonumber(data.pos), tonumber(data.neg)
 	        if pos == nil or neg == nil then
 	            return err("Invalid diff pair: pos/neg not a number")

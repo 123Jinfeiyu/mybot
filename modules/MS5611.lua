@@ -185,8 +185,15 @@ require_driver("i2c", {
 		wait_ms = WAIT_TAB[oi]
 
 		-- 参考海平面气压（非法/非正归缺省）
-		local p0 = tonumber(data.p0)
-		if p0 == nil or p0 <= 0 then p0 = DEF_P0 end
+		-- 26.3：num_or 而非 tonumber——'nan'/'1e400' 过 tonumber 出的是 number
+		-- （Lua 里 truthy），`p0 == nil` 与 `p0 <= 0` 对 NaN 均为假，于是 NaN 被存进
+		-- **模块级** p0_hpa：此后每一次 call 的 ALT_M = 44330*(1-(P/NaN)^0.19) 都是
+		-- NaN，却仍报 result="OK"——一次污染、永久输出，且 NaN 进 JSON 变 null，
+		-- 下游 fields=ALT_M 的消费者拿到空值而非报错；inf 则让 ALT_M 恒为 44330 定值。
+		-- 本处契约写的是「归缺省」，故用 num_or（与 26.1 的判据同规：or dflt 站点
+		-- 用 num_or，== nil → err 站点用 finite_of）。
+		local p0 = num_or(data.p0, DEF_P0)
+		if p0 <= 0 then p0 = DEF_P0 end
 		p0_hpa = p0
 
 		-----------------------------------------------------

@@ -220,6 +220,12 @@ call = function(ctx, data)
 		return err("Invalid Argument: id (1~253)")
 	end
 
+	-- 26.3 盘点：**评估后不改**。这三处 `tonumber(...) ~= nil` 形似 PWM.lua 的
+	-- has_duty（26.3 已修：那里 NaN 会触发「主动使能输出」这个动作），但本处只是
+	-- **在场探针**——它只决定「要不要进校验块」，真正的取值在校验块内重走一遍
+	-- finite_of/opt_finite（见下面 position 段的 `local p = finite_of(data.position)`），
+	-- NaN 在那里被拒成 ERR。set_id 的 `> 0` 与 allow_burn 的 `~= 1` 对 NaN 均为
+	-- 假/真，分别落「不烧号」与「拒绝烧号」，都在安全侧。
 	local has_pos = tonumber(data.position) ~= nil
 	local torque = tonumber(data.torque)
 	local set_id = tonumber(data.set_id)

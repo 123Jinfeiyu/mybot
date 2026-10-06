@@ -36,6 +36,16 @@ end
 
 -- 设置从设备地址：仅记录到 per-fd 地址表。
 -- I2C_RDWR 每条消息自带地址，无需 I2C_SLAVE ioctl，也就没有 EBUSY/地址被占用问题。
+--
+-- 【26.3 盘点留档：下面 `fd < 0` 这道守卫是九个驱动 destroy 回调的唯一防线】
+-- ADS1015/APDS9900/BME688/MAX30102/MCP3421/PCA9685/SGP30/VL53L0X/VL53L4CD 的
+-- destroy 写的是 `fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr)`，而
+-- BME280 的 destroy 多写一道 `fd >= 0`。评估后**不给那九处补校验**：destroy 的
+-- data.fd / data.address 来自宿主的引用列快照（src/luavar.cpp 的 getMetadata_(true)，
+-- 取自 `$i2c-N` 总线变量），恒为 open() 返回的整数，'nan'/'-' 之类非有限值到不了
+-- 这里；唯一可达的坏值 -1（open 失败）由本守卫挡下，两种写法结论逐字相同。
+-- 给不可达分支加校验只会模糊「真防线在哪一层」。
+-- 反向约束：改动本守卫前先读这段——那九处的安全性以它为前提。
 function i2c_set_addr(fd, addr)
 	fd = tonumber(fd)
 	addr = uint_of(addr)

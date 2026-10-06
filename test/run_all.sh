@@ -408,6 +408,48 @@ else
 fi
 
 # ======================================================================
+# 生命周期形态一致性 lint（26.3 收尾防线）：走 require_driver 的驱动**不得**
+# 再自己定义单参的 build/call/destroy 全局。require_driver 会按 spec 里的
+# build/call/destroy 回调**安装**同名全局包装（内含 arg_table 校验与
+# proto=virt 注入钩子），驱动若在 require_driver 之后再写 `function build(data)`
+# 就把包装整个覆盖掉——绕过 arg_table 的后果与上面那条驱动入口 lint 同源
+# （@Action 直写路径绕开仿真打到真实总线），且覆盖是静默的：spec 回调照常
+# 被定义、只是再没人调它。
+# 判据取**元数**而非缩进：spec 回调一律是 `(ctx, data)` 两参（各驱动的 spec 表
+# 有零缩进也有四空格缩进，缩进不可作判据），裸全局一律是单参 `(data)`。
+# `read` 有意豁免：require_driver 只认 spec.build/call/destroy/state/name/
+# i2c_addr_default，**没有 spec.read**，而宿主是直接探测全局
+# `luaGlobalType(L_, "read")`（src/luavar.cpp）——想暴露 read 就只能写裸全局，
+# SCSCL.lua 正是这一形态，属框架缺口而非驱动写错。
+# lib/ 不在检查范围：drv_common.lua 自身就定义这四个单参全局（它就是安装方）。
+# ======================================================================
+echo "----- lint (require_driver 驱动的生命周期形态断言) -----"
+# 单参生命周期全局：`function build(data)` 或 `build = function(data)`
+lc_re='^[[:space:]]*(function[[:space:]]+(build|call|destroy)|(build|call|destroy)[[:space:]]*=[[:space:]]*function)[[:space:]]*\([[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\)'
+rd_files="$(grep -l 'require_driver(' modules/*.lua || true)"
+rd_n="$(printf '%s\n' "$rd_files" | grep -c . || true)"
+bad="$(printf '%s\n' "$rd_files" | grep . \
+	| while read -r f; do grep -HnE "$lc_re" "$f"; done \
+	| grep -vE ':[0-9]+:[[:space:]]*local ' || true)"
+if [ -n "$filter" ]; then
+	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+elif [ "$rd_n" -eq 0 ]; then
+	# 抽取判据失效防线：一个 require_driver 用户都没扫到，说明上面的 grep 判据
+	# 已经对不上源码形态（改名/改调用方式），此时「0 命中」是空集自证而非通过。
+	echo "[FAIL] 未扫到任何 require_driver 用户（抽取判据失效，0 命中不可信）"
+	record_fail "lint-driver-lifecycle-shape"
+elif [ -n "$bad" ]; then
+	echo "[FAIL] 以下 require_driver 驱动另定义了单参 build/call/destroy 全局"
+	echo "       （会覆盖 require_driver 安装的包装，静默丢掉 arg_table 与 proto=virt 钩子）："
+	echo "$bad"
+	echo "       改成 spec 回调 \`build = function(ctx, data)\`；确需 read 则豁免。"
+	record_fail "lint-driver-lifecycle-shape"
+else
+	echo "[PASS] $rd_n 个 require_driver 驱动均只用 spec 回调（read 因无 spec.read 豁免）"
+	record_pass
+fi
+
+# ======================================================================
 # 器件常量机械对照 lint（fix-plan F5-5①）：test/test_bh1750.lua 内手抄了
 # 一份「与驱动一致」的命令常量表——两边同错不报警，真机回归会拿错误常量
 # 验证错误驱动。这里从两份源各抽 `local CMD_* = 0x..` 逐条比对，并断言

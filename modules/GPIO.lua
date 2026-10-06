@@ -82,7 +82,13 @@ local function build_impl(data)
 		return err("Invalid Argument: chip (missing; also note offset must not be '-')")
 	end
 
-	local offset = tonumber(data.offset)
+	-- 26.3：finite_of 而非 tonumber——与同文件 init 列（下面 num_or）、value 列
+	-- （call 段 finite_of）同口径，这是 GPIO 里最后一处裸 tonumber 数值列。
+	-- 行为上非有限值本来也打不到硬件（hal/gpio.lua 的 offset 归一化对 NaN 由
+	-- `offset ~= math.floor(offset)` 命中、对 inf 由 uint32 上界命中，均返回 -1），
+	-- 但那条路径报的是「Failed to request GPIO line nan on /dev/gpiochipN」——
+	-- 读起来像芯片坏了，而实际是配置列写了非数值。提前拦下让错误指名 offset 列。
+	local offset = finite_of(data.offset)
 	if offset == nil then
 		return err("Invalid Argument: offset (must not be '-')")
 	end

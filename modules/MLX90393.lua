@@ -229,15 +229,22 @@ require_driver("i2c", {
 		local fd = ctx.fd
 
 		-- gain 列 -> GAIN_SEL：取整后钳到 0~7（非法/'-' 归缺省 0）
-		local gain = tonumber(data.gain)
-		if gain == nil then gain = DEF_GAIN end
+		-- 26.3：num_or 而非 tonumber——'nan' 过 tonumber 出的是 number，`gain == nil`
+		-- 为假；math.floor(NaN) 仍是 NaN，而下面 `gain < 0` / `gain > 7` 两道钳位对
+		-- NaN 恒假也放行，于是 GAIN_TAB[NaN + 1] 读出 nil，灵敏度换算对 nil 做算术，
+		-- build 抛的是 Lua error 而非 ERR 表——操作者拿到「attempt to perform
+		-- arithmetic on a nil value」而不是一句配置错误。本处契约是「归缺省」。
+		local gain = num_or(data.gain, DEF_GAIN)
 		gain = math.floor(gain)
 		if gain < 0 then gain = 0 end
 		if gain > 7 then gain = 7 end
 
 		-- timeout 列 -> 轮询超时 ms（非法/非正数归缺省）
-		local to = tonumber(data.timeout)
-		if to == nil or to < 1 then to = DEF_TIMEOUT end
+		-- 26.3：同 gain——'nan' 使 `to == nil` 与 `to < 1` 均为假，poll_timeout_ms
+		-- 落成 NaN，轮询的 `while left > 0` 一拍都不进，于是**每次**测量都立刻判超时，
+		-- 而超时文案用 %d 格式化 NaN 出 -9223372036854775808ms。
+		local to = num_or(data.timeout, DEF_TIMEOUT)
+		if to < 1 then to = DEF_TIMEOUT end
 		poll_timeout_ms = math.floor(to)
 
 		-- 灵敏度：µT/LSB 随增益倍数正比（SEL=0 基准 × tab/5）

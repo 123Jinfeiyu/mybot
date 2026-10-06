@@ -547,6 +547,24 @@ expect_ok("build gain='abc' 缺省 0", function()
 end)
 check("gain 非数值写 0x000C", dev:reg(0x00) == 0x000C)
 
+-- 26.3：'nan' 与 'abc' 同属「非法归缺省」，但走的是另一条路——tonumber("nan")
+-- 出的是 **number**（Lua 里 truthy），`gain == nil` 判据放行；随后 math.floor(NaN)
+-- 仍是 NaN，`gain < 0` / `gain > 7` 两道钳位对 NaN 恒假也放行，于是
+-- GAIN_TAB[NaN + 1] 读出 nil，灵敏度换算对 nil 做算术，build 抛的是 Lua error
+-- 而非 ERR 表——操作者拿到「attempt to perform arithmetic on a nil value」，
+-- 而不是一句配置错误。上面 'abc' 用例为绿恰恰掩盖了这一支。
+mark = section()
+local oknan, resnan, bannernan = capture(function()
+	return build({ fd = fd, address = "0x0C", gain = "nan" })
+end)
+check("build gain=nan 不抛 Lua error（归缺省 0）",
+	oknan and type(resnan) == "table" and resnan.result == "OK",
+	oknan and tostring(resnan and resnan.result) or tostring(resnan))
+check("gain=nan 写 0x000C（与 'abc' 同结论）", dev:reg(0x00) == 0x000C,
+	string.format("0x%04X", dev:reg(0x00)))
+check("gain=nan 横幅 sens_xy=0.7510（未对 nil 做算术）",
+	bannernan:find("sens_xy=0.7510", 1, true) ~= nil, bannernan)
+
 mark = section()
 expect_ok("build timeout=100", function()
 	return build({ fd = fd, address = "0x0C", timeout = "100" })
@@ -563,6 +581,19 @@ end)
 expect_ok("build timeout='-' 归缺省", function()
 	return build({ fd = fd, address = "0x0C", timeout = "-" })
 end)
+
+-- 26.3：timeout='nan' 同上——`to == nil` 与 `to < 1` 对 NaN 均为假，于是
+-- poll_timeout_ms = math.floor(NaN) = NaN；轮询 `while left > 0` 一拍都不进，
+-- **每次**测量都立刻判超时，而超时文案用 %d 格式化 NaN 出 -9223372036854775808ms。
+-- 判据取「与 '-' / '0' 同结论：归缺省 50ms」，即本文件既有口径。
+mark = section()
+local oktn, _, bannertn = capture(function()
+	return build({ fd = fd, address = "0x0C", timeout = "nan" })
+end)
+check("build timeout=nan 归缺省 50ms",
+	oktn and bannertn:find("timeout=50ms", 1, true) ~= nil, bannertn)
+check("timeout=nan 横幅不含 %d 格式化 NaN 的哨兵值",
+	bannertn:find("9223372036854775808", 1, true) == nil, bannertn)
 
 -- =====================================================================
 -- 组 4：真实 build 错误路径

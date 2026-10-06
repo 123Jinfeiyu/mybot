@@ -86,7 +86,14 @@ require_driver("i2c", {
 		if channel == nil then
 			return err("Invalid Argument: channel")
 		end
-		channel = tonumber(channel)
+		-- 26.3：finite_of 而非 tonumber——与下面 angle 列（同函数，早已 finite_of）
+		-- 口径一致。非有限值过 tonumber 出的是 number（`== nil` 为假），而紧接的
+		-- `channel < 0 or channel > 15` 对 NaN 恒假也一并放行（inf 由上界命中，
+		-- 只有 NaN 逃得过），于是 reg = LED0_ON_L + 4*NaN 是 NaN 却仍返回
+		-- result="OK"——越界通道「一个寄存器都不写」的既有契约在驱动层被破。
+		-- 真机上后果被 hal/i2c.lua 的 byte_of 兜住（i2c_write_multi 返 -1），
+		-- 故这是驱动契约/错误归属修复而非安全修复。
+		channel = finite_of(channel)
 		if channel == nil then
 			return err("Invalid Argument: channel (not a number)")
 		end

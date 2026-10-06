@@ -169,7 +169,13 @@ require_driver("spi", {
 	    -- 差分 / 单端模式选择
 	    local mux
 	    if data.pos ~= nil and data.neg ~= nil then
-	        local pos, neg = tonumber(data.pos), tonumber(data.neg)
+	        -- 26.3：本文件唯一没走归一化器的数值列（delay/drate/pga/channel 全经
+	        -- 上面 `local tonum = num_or`）。判据取「拒绝」而非「归缺省」——与紧邻
+	        -- 下方既有的 pos/neg 非数值处理同结论：差分通道对选错是测到另一对通道，
+	        -- 静默归 0 比报错更坏。finite_of 让 'nan' 落到既有的那条 ERR 上，而不是
+	        -- 穿过 `pos < 0 or pos > 7`（对 NaN 恒假）一路走到 bitc.lshift 抛
+	        -- bitcompat 内部文案。
+	        local pos, neg = finite_of(data.pos), finite_of(data.neg)
 	        if pos == nil or neg == nil then
 	            return err("Invalid diff channel: pos/neg not a number")
 	        end

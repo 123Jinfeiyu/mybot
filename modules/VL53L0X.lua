@@ -222,6 +222,13 @@ require_driver("i2c", {
 		local fd = ctx.fd
 
 		local long_range = truthy_of(data.long)
+		-- 26.3 盘点：**评估后不改**。本列契约是「钳制」（sig='-5' 钳 0、越上界钳
+		-- 511.99，既有单测钉住），而钳制对 inf 是**正确**的——inf > 511.99 为真，
+		-- 归到 511.99 正是「门限放到最宽」的合理读法。改用 num_or 会把这条能用的
+		-- 路径一起打成缺省值，是退步。只有 NaN 逃得过两道钳位（比较恒假），而它
+		-- 在下一层被兜住：q = math.floor(NaN*128) 仍是 NaN，i2c_write_multi 的
+		-- byte_of 返 nil → 返 -1 → 报 ERR "Failed to write ... signal rate limit"，
+		-- fail-closed 且不触硬件。同列的 timeout 走 int_or（钳制语义，同上）。
 		local sig = tonumber(data.sig)
 		if sig == nil then sig = long_range and DEF_SIG_LONG or DEF_SIG end
 		if sig < 0 then sig = 0 end
