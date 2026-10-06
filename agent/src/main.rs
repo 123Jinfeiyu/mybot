@@ -12,6 +12,19 @@
 //!
 //! 退出码（与 C++ agent 模式同口径）：0 正常、1 运行期失败、2 配置/参数错误。
 //! stdout 只有模型输出与交互界面；日志、告警、重试一律 stderr。
+//!
+//! ## 错误习语四轨（27.5 评估留档）
+//!
+//! 仓内同时存在四种错误表示：`anyhow::Result`、`Result<_, String>`（~73 处）、
+//! rig `CompletionError`、`(String, i32)`（`startup.rs:29-50`）。评估后判**不改**：
+//!
+//! • 统一成单一习语是大 churn（48+ 处改动），语义零收益——四种都能正确传递错误信息，
+//!   选择哪种取决于上下文（`anyhow` 适合带堆栈的应用错误、`String` 适合 FFI 边界、
+//!   `CompletionError` 是 rig 框架契约、`(String, i32)` 是退出码配对）。
+//! • 生产路径已核实无 `unwrap()`/`panic!`/`unreachable!`，仅 `bridge.rs:132`、
+//!   `main.rs:274` 两处守卫不变量 `expect()`——这是刻意设计（不变量破裂时必须立即终止，
+//!   不是可恢复错误）。
+//! • 未来若新增模块，按上下文选习语即可，不必强求统一。
 
 mod audit;
 mod bridge;
