@@ -1,5 +1,8 @@
 -- I2C 硬件
-
+--
+-- 26.5 单测覆盖：无单元/端到端测试；仅出现在 robots/qs_rpi.sql + spider{1,2,3}.sql
+-- （真机配置，非测试夹具）。HAL 层 i2c_open/read/write/close 由 test_uart.lua
+-- 间接覆盖（termios 同族），但 I2C 驱动层 build/call/destroy 逻辑无守门。
 --
 -- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
