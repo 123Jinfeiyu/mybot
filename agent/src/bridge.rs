@@ -229,7 +229,9 @@ impl Bridge {
             .await?;
         let envelope: protocol::Response<protocol::Context> = serde_json::from_value(resp)
             .map_err(|e| format!("后端 context.get 响应格式错误: {e}"))?;
-        envelope.data.ok_or_else(|| "后端 context.get 缺少 data".to_string())
+        envelope
+            .data
+            .ok_or_else(|| "后端 context.get 缺少 data".to_string())
     }
 
     /// 调一个工具（`tool.call`）。`Err` = 传输失败或后端整体拒绝；`Ok(ok=false)`

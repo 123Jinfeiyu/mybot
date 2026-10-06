@@ -502,7 +502,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("cfg.json");
         let p = path.to_string_lossy().to_string();
-        
+
         let valid_json = r#"{
             "driver": "openai",
             "var": "OPENAI_API_KEY",
@@ -520,10 +520,10 @@ mod tests {
             "audit_log": "/tmp/audit.jsonl",
             "session_file": "/tmp/session.jsonl"
         }"#;
-        
+
         std::fs::write(&path, valid_json).unwrap();
         let cfg = load_config_file(&p).expect("正路径应成功");
-        
+
         assert_eq!(cfg.driver, Some("openai".to_string()));
         assert_eq!(cfg.var, Some("OPENAI_API_KEY".to_string()));
         assert_eq!(cfg.endpoint, Some("https://api.openai.com/v1".to_string()));
@@ -539,7 +539,7 @@ mod tests {
         assert_eq!(cfg.stream, Some(true));
         assert_eq!(cfg.audit_log, Some("/tmp/audit.jsonl".to_string()));
         assert_eq!(cfg.session_file, Some("/tmp/session.jsonl".to_string()));
-        
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

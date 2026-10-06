@@ -14,7 +14,6 @@
 
 use std::path::{Path, PathBuf};
 
-
 /// 单个提示词文件上限（与 C++ `kMaxPromptFileBytes` 逐值对齐）。
 pub const K_MAX_PROMPT_FILE_BYTES: u64 = 1 << 20;
 /// 系统提示词总量上限（与 C++ `kMaxSystemPromptBytes` 逐值对齐）。
@@ -510,7 +509,7 @@ mod tests {
         });
         let ok: crate::protocol::Context = serde_json::from_value(ok_json).unwrap();
         assert!(PromptMaterial::from_context(&ok).is_ok());
-        
+
         let bad_json = serde_json::json!({
             "robotName": "r", "structurePath": "p", "scriptsDir": "s",
             "allowShell": false, "allowHotSql": false, "hardwareCount": 2,
