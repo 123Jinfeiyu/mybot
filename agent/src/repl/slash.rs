@@ -1,16 +1,15 @@
 //! repl/slash.rs —— REPL 斜杠命令域（/help /clear /status /hardware /scripts /sql）
 //!
 //! 2026-10-01 自 repl.rs 拆出（行为保持）：命令分派、SQL 变更语句甄别
-//! （batch_has_write_ops，判据与 C++ `SqlStatementBatch.hasWriteOps` 同集合）
-//! 与用法/帮助文案。作为 repl 的子模块，经 `super::Session` 调会话方法，
-//! 不引入跨模块环。
+//! （`batch_has_write_ops`，Rust 唯一实现）与用法/帮助文案。作为 repl 的子模块，
+//! 经 `super::Session` 调会话方法，不引入跨模块环。
 
 use crate::out::outln;
 
 use super::Session;
 
-/// 判据与 C++ `SqlStatementBatch.hasWriteOps` 同集合；「整批都是只读」才走
-/// `query_sql`，混排批次里的写语句必须被看见（否则 `SELECT…; DELETE…` 会静默丢后半句）。
+/// SQL 变更语句甄别（Rust 唯一实现）：「整批都是只读」才走 `query_sql`，
+/// 混排批次里的写语句必须被看见（否则 `SELECT…; DELETE…` 会静默丢后半句）。
 pub(super) fn batch_has_write_ops(sql: &str) -> bool {
     for stmt in sql.split(';') {
         let first = stmt.split_whitespace().next().unwrap_or("");
@@ -24,7 +23,7 @@ pub(super) fn batch_has_write_ops(sql: &str) -> bool {
     false
 }
 
-/// `/sql` 的用法串（空语句时打印；与 C++ `runAgentRepl` 同文本）。
+/// `/sql` 的用法串（空语句时打印）。
 const SQL_USAGE: &str = "用法: /sql <语句>（以 ; 结尾），例如 /sql SELECT * FROM Vars;\n\
      可加等值条件（AND 连接），例如 /sql SELECT * FROM Servo WHERE name = 's1';\n\
      SHOW TABLES 列出当前结构的全部表名与数据行数，例如 /sql SHOW TABLES;\n\
@@ -140,7 +139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sql_batch_write_op_detection_matches_cpp_set() {
+    fn sql_batch_write_op_detection() {
         // 全只读 → query_sql 通道
         assert!(!batch_has_write_ops("SELECT * FROM Servo;"));
         assert!(!batch_has_write_ops(
