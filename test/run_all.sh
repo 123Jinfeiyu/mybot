@@ -318,7 +318,7 @@ for t in test/test_*.lua; do
 			*" $t "*) ;;
 			*) continue ;;
 		esac
-	elif [ -n "$filter_lua" ] && [[ "$name" != *"$filter_lua"* ]]; then
+	elif ! filter_matches "$name" "$filter_lua"; then
 		continue
 	fi
 	echo "----- $name -----"
@@ -343,18 +343,16 @@ for t in test/test_*.lua; do
 		continue
 	fi
 	echo "$out"
-	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
 	# 兼容三种失败约定：退出码非零、打印 [FAIL] 行（124 = timeout 超时）、
 	# 或假绿形态（P0-2）：早退/守卫短路导致未见 summary 的 [DONE] 完成标记，
 	# 或一条断言都没跑（[PASS] 计数为 0）——「安静退出」不再视同通过
 	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
 		echo "[FAIL] 用例超时（>${TEST_TIMEOUT}s，疑似死循环）"
 		record_fail "$name"
-	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]"; then
+	elif echo "$out" | grep -qF "[FAIL]"; then
 		record_fail "$name"
-	elif [ "$pass_n" -eq 0 ] || ! echo "$out" | grep -qF "[DONE]"; then
-		echo "[FAIL] 假绿嫌疑：未见 [DONE] 完成标记或 [PASS] 计数为 0（早退/守卫短路/零断言）"
-		record_fail "$name"
+	elif ! check_green "$out" "$rc" "$name"; then
+		: # check_green 已 record_fail
 	else
 		record_pass
 	fi
@@ -850,9 +848,9 @@ fi
 # F3-5 余部①：三条观察面抽成同型 runner，条数由 count_calls 数调用点推导。
 # （函数定义已移至 test/lib/sections/lua_e2e.sh）
 
-if [ -z "$filter" ] || [[ "trig_basic" == *"$filter"* ]] || [[ "trig2_basic" == *"$filter"* ]] \
-	|| [[ "ctrl2_basic" == *"$filter"* ]] || [[ "trigger" == *"$filter"* ]] \
-	|| [[ "controller" == *"$filter"* ]]; then
+if filter_matches "trig_basic" "$filter" || filter_matches "trig2_basic" "$filter" \
+	|| filter_matches "ctrl2_basic" "$filter" || filter_matches "trigger" "$filter" \
+	|| filter_matches "controller" "$filter"; then
 if [ ! -x "$bin" ]; then
 	artifact_missing "controller/trigger 多列观察面" "$(( $(count_calls run_one_trig_obs) )) 条用例" "$bin" "$bot_explicit"
 else
@@ -874,7 +872,7 @@ mtmerge_reported=""
 # 本节用例数 = run_one_mtmerge 调用点 + 1 条「产物回喂 mybot」E2E（下方内联）。
 # 数调用点而非写死数字：加用例忘改文案的漂移在此消除（N-31）。
 mtmerge_cases_n=$(( $(count_calls run_one_mtmerge) + 1 ))
-if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
+if filter_matches "mtmerge" "$filter"; then
 	setup_mtmerge_fixtures
 
 	# 正值：Alias/Vars 两侧行都并入，@Action 设备集不相交照常归并
@@ -923,7 +921,7 @@ fi
 # ======================================================================
 # F3-5 余部①：条数由 count_calls 数调用点推导（runner 定义在分段文件，
 # 调用点仍留在本文件——count_calls 数的就是它）。
-if [ -z "$filter" ] || [[ "include" == *"$filter"* ]]; then
+if filter_matches "include" "$filter"; then
 if [ ! -x "$bin" ]; then
 	artifact_missing "@Include 归并观察面" "$(( $(count_calls run_include_case) )) 条用例" "$bin" "$bot_explicit"
 else
@@ -939,7 +937,7 @@ fi
 # 缺 python3 仍按 README 声明的软依赖跳过并计入汇总。
 # 随机高位端口（19000-19999）规避默认 19240 被占/串扰。
 # ======================================================================
-if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
+if filter_matches "tcp" "$filter"; then
 	run_one_tcp
 fi
 
@@ -950,7 +948,7 @@ fi
 # 本身是被断言的故障形态。缺 python3 按 SKIP 计（与 TCP 段同约定）。
 # 场景数从该脚本的 run_scenario 调用点数出来（本文件不做第二份计数）。
 # ======================================================================
-if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
+if filter_matches "tcp" "$filter"; then
 	run_one_tcp_adv
 fi
 
@@ -1009,7 +1007,7 @@ fi
 # 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
 # 与上面的逐条 mtmerge 用例互补：这里只盯相位边界，缺产物判失败。
 # ======================================================================
-if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
+if filter_matches "mtmerge" "$filter"; then
 	run_one_mtmerge_phase
 fi
 
@@ -1033,29 +1031,29 @@ fi
 # 夹具写在 .tmp/（已 gitignore），经 BOT4CJ_MODULE_PATH 多路径注入。
 # ======================================================================
 
-if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$filter"* ]]; then
+if filter_matches "hardening" "$filter" || filter_matches "tcp_host" "$filter"; then
 	run_one_hardening 'tcp_host_bad' 1 '--tcp-host 地址无效' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19301 --tcp-host 'not-an-ip'
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --tcp 19301 --tcp-host 'not-an-ip'
 
 	# 审计 H-2：非回环监听必须设 --tcp-token，缺省即拒绝启动（不再仅告警）
 	run_one_hardening 'tcp_noloop_requires_token' 1 '非回环且未设 --tcp-token' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19302 --tcp-host 0.0.0.0
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --tcp 19302 --tcp-host 0.0.0.0
 
 	# 审计中-3：裸 --tcp（漏写端口号）明确报错，不再静默回落端口 1 走到 bind 失败
 	run_one_hardening 'tcp_no_port' 1 '--tcp 需要端口号' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --tcp
 
 	# B1（2026-09-20 计划 M0）：--help 此前零守门（全仓 grep 无命中）。CLI 帮助
 	# 文本是用户可见契约：退出码 0 与关键区块在此钉住；选项集合与 docs/ 选项表
 	# 的双向一致性由 C++ 单测 cliargs_help_option_set_matches_docs 比对。
 	run_one_hardening 'help_exit_and_sections' 0 '安全约束：动作脚本只能引入新的参数键' \
-		timeout 20 "$bin" --help
+		timeout $HARDENING_TIMEOUT "$bin" --help
 
 	mkdir -p .tmp
 	# 9MiB 合法动作脚本：超过 8MiB 上限，必须在读取阶段就被拒绝
 	{ echo '@Action'; echo 'relay0.test;'; yes '    200;'; } 2>/dev/null | head -c 9000000 > .tmp/toolarge.mt
 	run_one_hardening 'action_toolarge' 1 'exceeds the byte limit' \
-		timeout 30 "$bin" --robot=robots/relay-test.sql --input .tmp/toolarge.mt
+		timeout $HEAVY_TIMEOUT "$bin" --robot=robots/relay-test.sql --input .tmp/toolarge.mt
 	rm -f .tmp/toolarge.mt
 
 	# F-02：结构脚本（.sql）与动作脚本统一 8 MiB 上限——旧实现只有 .mt 限流，
@@ -1064,12 +1062,12 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	pad="$(printf 'x%.0s' $(seq 1 100))"
 	{ echo 'CREATE TABLE T ( name String );'; yes "INSERT INTO T ( name ) VALUES ('$pad');"; } 2>/dev/null | head -c 9000000 > .tmp/sql_toolarge.sql
 	run_one_hardening 'sql_toolarge' 1 'exceeds the byte limit' \
-		timeout 30 "$bin" --robot=.tmp/sql_toolarge.sql --input /dev/null
+		timeout $HEAVY_TIMEOUT "$bin" --robot=.tmp/sql_toolarge.sql --input /dev/null
 	rm -f .tmp/sql_toolarge.sql
 
 	# F-20：未知/拼错的 --key 不再「打印帮助 + exit 0」——CI 里的假成功出口
 	run_one_hardening 'unknown_arg' 2 '未知参数：--robott' \
-		timeout 20 "$bin" --robott=robots/relay-test.sql
+		timeout $HARDENING_TIMEOUT "$bin" --robott=robots/relay-test.sql
 
 	# 多路径模块根（2026-09-20 重构阶段 2）：docs/reference.md 承诺
 	# BOT4CJ_MODULE_PATH 支持 ':' 分隔多路径按序查找，但驱动侧引导只取首段
@@ -1077,11 +1075,11 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# 判别性要求：首段必须不存在，否则测不出问题。
 	run_one_hardening 'multipath_module_path' 0 'Relay: test=200 note=hello-relay -> delay=200' \
 		env BOT4CJ_MODULE_PATH=".tmp/no-such-module-root:./modules" \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --input scripts/relay-test.mt
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --input scripts/relay-test.mt
 
 	setup_hardening_daemon_build_fixture
 	run_one_hardening 'daemon_build_raise' 0 'driver build() raised' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod.sql --input=.tmp/fixmod.mt
 
 	# N2 回归：上游驱动的返回表里混进 mode 键（controller payload 会原样带着它），
@@ -1089,21 +1087,21 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# 下游驱动的 call() 完全不执行且退出码仍为 0。锚点取下游自己写出的键。
 	setup_hardening_mode_override_fixture
 	run_one_hardening 'mode_key_cannot_override_dispatch' 0 'down_served' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_hij.sql --input=.tmp/fixmod_hij.mt
 
 	# N3 回归：call() 漏写 return（返回 0 个值）曾被折成空表、被 ensureOk 当成
 	# 成功——硬件没动却报绿。现在必须清晰报错并以非 0 退出。
 	setup_hardening_no_return_fixture
 	run_one_hardening 'driver_returns_nothing' 1 "returned no value" \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_noret.sql --input=.tmp/fixmod_noret.mt
 
 	# C-9 回归：驱动返回自引用表（t.self = t，最常见的笔误形态）曾是宿主栈溢出
 	# 裸 SIGSEGV（退出码 139，且跳过 deactivate 清理链）——必须变成清晰契约报错。
 	setup_hardening_cyclic_fixture
 	run_one_hardening 'driver_returns_cyclic_table' 1 'nests deeper than' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
 
 	# F5-4/P1-3：同一物理串口被两个「各自 open 独立 fd」的 UART 总线变量声明
@@ -1113,7 +1111,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# （不进 robots/test/：孤儿检测要求静态夹具必须接进用例表）。
 	setup_hardening_uart_shared_fixture
 	run_one_hardening 'uart_shared_path_rejected' 1 'is opened independently by 2 consumers' \
-		env BOT4CJ_MODULE_PATH="./modules" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/uart_two_vars.sql --input /dev/null
 
 	# F5-2：C-API 无保护帧回归——驱动给 _G 装上带报错 __index 的元表后，宿主
@@ -1126,7 +1124,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# 不定义 call：结构期 build 正常，动作派发的 call 触发 __index。
 	setup_hardening_getglobal_fixture
 	run_one_hardening 'lua_getglobal_unprotected_frame' 1 'boom from __index' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_gmt.sql --input=.tmp/fixmod_gmt.mt
 fi
 
@@ -1138,14 +1136,14 @@ fi
 # AG-23（第三轮审计）：这些用例独立设门——裸 `hardening` 仍进（向后兼容）、
 # `agent-all` 也进（那是覆盖全表面的入口）、单条名字前缀 `agent_` 也进。
 # ======================================================================
-if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-all" ] \
+if filter_matches "hardening" "$filter" || [ "$filter" = "agent-all" ] \
 	|| [[ "$filter" == agent_* ]]; then
 
 	# 1) 模型循环类选项属于 mybot-agent：显式拒绝退出 2 并指路（不静默忽略、
 	#    也不报「未知参数」——那是 mybot-agent 的选项面，本程序只是不跑模型循环）
 	if case_matches 'agent_opt_outside_agent'; then
 	run_one_hardening 'agent_opt_outside_agent' 2 '属于 Rust agent' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
 	fi
 
 	# 2) --agent 已移除（agent 循环迁 Rust）：校验层快速失败退出 2 + 两进程替代
@@ -1153,16 +1151,16 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	#    死工作序列（原三条 --agent --tcp 组合互斥用例随之改写为等价负路径）
 	if case_matches 'agent_tcp_input_mutex'; then
 	run_one_hardening 'agent_tcp_input_mutex' 2 '--agent 已移除' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --input=/dev/null
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --input=/dev/null
 	fi
 	if case_matches 'agent_tcp_task_mutex'; then
 	run_one_hardening 'agent_tcp_task_mutex' 2 '--mcp-backend 与 --tcp 互斥' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql \
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql \
 		--mcp-backend --mcp-socket /tmp/hard-mcp.sock --tcp 19399
 	fi
 	if case_matches 'agent_tcp_crossmachine_needs_token'; then
 	run_one_hardening 'agent_tcp_crossmachine_needs_token' 2 '需要 --mcp-socket' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --mcp-backend
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --mcp-backend
 	fi
 
 	# 3) 后端 + 危险能力 ⇒ 强制外部确认（评估 §3.2）：开 --agent-shell 必须配
@@ -1172,7 +1170,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	#    mybot-agent（agent_e2e.sh R5 的 --check-config 场景）
 	if case_matches 'agent_missing_key'; then
 	run_one_hardening 'agent_missing_key' 2 '必须用 --agent-policy' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql \
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql \
 		--mcp-backend --mcp-socket /tmp/hard-mcp.sock --agent-shell
 	fi
 
@@ -1184,7 +1182,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	awk 'BEGIN { for (i = 0; i < 3000; i++) print "padding line for the system prompt cap test" }' \
 		> .tmp/bigprompt.md
 	run_one_hardening 'agent_prompt_over_cap' 2 '属于 Rust agent' \
-		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
+		env BOT4CJ_LLM_KEY=dummy timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --prompt-file .tmp/bigprompt.md
 	fi
 
@@ -1210,11 +1208,11 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	printf 'THIS IS NOT SQL AT ALL;\n' > .tmp/checkcfg_badstruct.sql
 
 	run_one_hardening 'agent_check_config_ok' 0 '配置校验通过' \
-		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --mcp-backend --check-config
 
 	echo "----- agent_check_config_no_network (agent) -----"
-	out="$(env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+	out="$(env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --mcp-backend --check-config 2>&1)"
 	if echo "$out" | grep -qiE 'curl|连接|connection|refused|网络错误'; then
 		record_fail "agent_check_config_no_network(输出含网络错误字样)"
@@ -1225,11 +1223,11 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 
 	echo "----- agent_check_config_only_reads_structure_head (agent) -----"
 	cfg_rc=0
-	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/checkcfg_badstruct.sql --mcp-backend --check-config \
 		>/dev/null 2>&1 || cfg_rc=$?
 	run_rc=0
-	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/checkcfg_badstruct.sql \
 		--mcp-backend --mcp-socket /tmp/hard-mcp.sock >/dev/null 2>&1 || run_rc=$?
 	if [ "$cfg_rc" -eq 0 ] && [ "$run_rc" -ne 0 ]; then
@@ -1239,7 +1237,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	fi
 
 	run_one_hardening 'agent_check_config_bad_field' 2 '未知字段' \
-		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_bad.json timeout 30 "$bin" \
+		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_bad.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --mcp-backend --check-config
 	fi
 fi
@@ -1256,7 +1254,7 @@ fi
 # （setup 预武装 virt_tick(0) 后，拍 0~7 共 8 次发布）、count 有多个取值
 # （证明前 8 拍确实在发布，而非从头就没发布）、joined 行在位。
 # ======================================================================
-if [ -z "$filter" ] || [[ "nack" == *"$filter"* ]]; then
+if filter_matches "nack" "$filter"; then
 	run_one_daemon_nack
 fi
 
@@ -1268,7 +1266,7 @@ fi
 # TCP listen/accept、stdin、LuaJIT 内部管道等；Lua 层的精细生命周期
 # 由 test_virtbus_fdleak.lua（virtbus.fd_count）补齐。
 # ======================================================================
-if [ -z "$filter" ] || [[ "fd" == *"$filter"* ]]; then
+if filter_matches "fd" "$filter"; then
 	run_one_fd_probe
 fi
 
@@ -1282,7 +1280,7 @@ fi
 #                 被 EINTR 打断并检查停止标志的路径）
 # 夹具写在 .tmp/（gitignore）：Timer 长动作 + 无硬件守护（lib/daemon_probe.lua）。
 # ======================================================================
-if [ -z "$filter" ] || [[ "signal" == *"$filter"* ]]; then
+if filter_matches "signal" "$filter"; then
 	setup_hardening_signal_fixture
 	{ echo '@Action'; echo 't0.delay;'; for _ in $(seq 1 60); do echo '   200;'; done; echo '@'; } > .tmp/signal_long.mt
 	run_one_signal 'signal_halt' 0 'Stop requested, halting action dispatch' 'joined, total publishes=' \

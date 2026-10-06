@@ -113,12 +113,10 @@ run_cpp_unit() {
 		record_fail "cpp-unit(零用例)"
 		return
 	fi
-	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
-	if [ "$pass_n" -eq 0 ]; then
-		echo "[FAIL] 假绿嫌疑：[PASS] 计数为 0（早退/零断言）"
+	if echo "$out" | grep -qF "[FAIL]"; then
 		record_fail "cpp-unit(C++)"
-	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
-		record_fail "cpp-unit(C++)"
+	elif ! check_green "$out" "$rc" "cpp-unit(C++)"; then
+		: # check_green 已 record_fail
 	else
 		record_pass
 	fi
@@ -165,13 +163,11 @@ run_harness_selftest() {
 		record_fail "harness-selftest"
 		return
 	fi
-	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
-	if [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
+	if echo "$out" | grep -qF "[FAIL]"; then
 		echo "[FAIL] 测试骨架行为与预期不符：零断言/跳过/失败的判定被改动过？"
 		record_fail "harness-selftest"
-	elif [ "$pass_n" -eq 0 ]; then
-		echo "[FAIL] 假绿嫌疑：骨架自证一条断言都没跑（[PASS] 计数为 0）"
-		record_fail "harness-selftest"
+	elif ! check_green "$out" "$rc" "harness-selftest"; then
+		: # check_green 已 record_fail
 	else
 		record_pass
 	fi

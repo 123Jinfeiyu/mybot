@@ -32,7 +32,7 @@ count_e2e_declared() {
 	local n=0 spec name
 	for spec in "${e2e_cases[@]}"; do
 		name="${spec%%|*}"
-		if [ -z "$filter" ] || [[ "$name" == *"$filter"* ]]; then n=$((n + 1)); fi
+		if filter_matches "$name" "$filter"; then n=$((n + 1)); fi
 	done
 	echo "$n"
 }
@@ -43,10 +43,40 @@ count_parse_declared() {
 		sql="${spec%%|*}"
 		rest="${spec#*|}"
 		mt="${rest%%|*}"
-		if [ -z "$filter" ] || [[ "$sql" == *"$filter"* ]] || [[ "$mt" == *"$filter"* ]]; then
+		if filter_matches "$sql" "$filter" || filter_matches "$mt" "$filter"; then
 			n=$((n + 1))
 		fi
 	done
 	echo "$n"
+}
+
+# 假绿判定：检查输出是否满足「退出码 0 + [DONE] 完成标记 + [PASS] 计数非零」三件套。
+# 三者缺一即判失败，防「用例没跑起来却报绿」。三处同形态（Lua 段、C++ 单测、骨架自证）
+# 收成本函数，判据单点。
+# 参数：$1=输出内容 $2=退出码 $3=分段名（记账用）
+# 返回：0=通过（已 record_pass） 1=失败（已 record_fail）
+check_green() {
+	local out="$1" rc="$2" section="$3"
+	local pass_n
+	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
+	if [ "$rc" -ne 0 ] || [ "$pass_n" -eq 0 ] || ! printf '%s\n' "$out" | grep -qF "[DONE]"; then
+		echo "[FAIL] 假绿嫌疑：$section —— 退出码非零、[PASS] 计数为 0 或缺 [DONE] 完成标记（早退/守卫短路/零断言）"
+		record_fail "$section"
+		return 1
+	fi
+	return 0
+}
+
+# python3 依赖检查：README 声明的可选软依赖，缺则本段自动跳过。
+# 参数：$1=分段名（记账用）
+# 返回：0=存在 1=缺失（已 record_skip 并返回 2）
+require_python3() {
+	local section="$1"
+	if ! command -v python3 >/dev/null 2>&1; then
+		echo "[SKIP] 无 python3（$section），跳过本段"
+		record_skip "$section(缺python3)"
+		return 2
+	fi
+	return 0
 }
 

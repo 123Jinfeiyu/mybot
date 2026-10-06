@@ -13,11 +13,7 @@ run_one_tcp() {
 		return 2
 	fi
 	# python3 是 README 声明的可选软依赖（缺则本段自动跳过），仍计入 skip 供汇总可见
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
-		record_skip "tcp-action-source(缺python3)"
-		return 2
-	fi
+	require_python3 "TCP 客户端" || return 2
 	local port tcp_rc tcp_out
 	port=$((19000 + (RANDOM % 1000)))
 	tcp_out="$(BOT="$bin" timeout 40 bash scripts/tcp_e2e.sh "$port" 20 2>&1)"
@@ -38,11 +34,7 @@ run_one_tcp_adv() {
 			"$bin" "$bot_explicit"
 		return 2
 	fi
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（TCP 客户端），跳过本段"
-		record_skip "tcp-adversarial(缺python3)"
-		return 2
-	fi
+	require_python3 "TCP 客户端" || return 2
 	local out rc
 	out="$(BOT="$bin" timeout 120 bash scripts/tcp_adversarial.sh 2>&1)"
 	rc=$?
@@ -69,11 +61,7 @@ run_one_mcp_e2e() {
 		artifact_missing "MCP 端到端" "该段（scripts/mcp_e2e.sh）" "$bin" "$bot_explicit"
 		return 2
 	fi
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（帧客户端），跳过本段"
-		record_skip "mcp-e2e(缺python3)"
-		return 2
-	fi
+	require_python3 "帧客户端" || return 2
 	local out rc
 	out="$(BOT="$bin" timeout 150 bash scripts/mcp_e2e.sh 2>&1)"
 	rc=$?
@@ -97,11 +85,7 @@ run_one_agent_rust_e2e() {
 		artifact_missing "Rust agent 端到端" "该段（scripts/agent_e2e.sh --rust）" "$bin" "$bot_explicit"
 		return 2
 	fi
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（假模型服务），跳过本段"
-		record_skip "agent-rust-e2e(缺python3)"
-		return 2
-	fi
+	require_python3 "假模型服务" || return 2
 	local agent_bin="agent/target/release/mybot-agent"
 	if [ ! -x "$agent_bin" ]; then
 		echo "[SKIP] 无 mybot-agent 产物 $agent_bin（先 bash scripts/build_agent.sh --release；Rust 段是可选 CI job），跳过本段"
@@ -158,11 +142,7 @@ run_one_ica_e2e() {
 		artifact_missing "ICA 两进程" "该段（scripts/ica_e2e.sh）" "$bin" "$bot_explicit"
 		return 2
 	fi
-	if ! command -v python3 >/dev/null 2>&1; then
-		echo "[SKIP] 无 python3（假模型服务），跳过本段"
-		record_skip "ica-e2e(缺python3)"
-		return 2
-	fi
+	require_python3 "假模型服务" || return 2
 	local agent_bin="agent/target/release/mybot-agent"
 	if [ ! -x "$agent_bin" ]; then
 		echo "[SKIP] 无 mybot-agent 产物 $agent_bin（先 bash scripts/build_agent.sh --release），跳过本段"
