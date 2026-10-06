@@ -18,6 +18,9 @@
 --   - float → double；printf+exit → error
 --   - 纯算术实现，lua5.4 与 luajit 双兼容
 --
+-- 【26.4 库能力面断言】截至 2026-10-06 全仓 grep 仅 test/test_fft.lua 加载本库，
+-- 无生产消费者。由 test_fft.lua 单测守算术与 C 版对齐面。
+--
 -- 用法：
 --   local FFT = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/fft.lua")
 --   local re, im = FFT.fft(xre)            -- 复数 FFT（im 可省略，视为全 0）

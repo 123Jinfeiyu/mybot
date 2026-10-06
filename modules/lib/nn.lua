@@ -19,6 +19,10 @@
 -- 激活函数：
 --   leaky_relu(x, slope)  默认 slope=0.2；sigmoid(x) 用于输出层（舵机位置 ∈[0,1]）
 --
+-- 【26.4 库能力面断言】截至 2026-10-06 全仓 grep 仅 test/test_nn.lua 加载本库，
+-- 无生产消费者（docs/architecture_analysis.html 提及是阶段 5 路线图，属冻结快照，
+-- 不是加载点）。由 test_nn.lua 单测守前向推理与梯度对齐面。
+--
 -- 用法：
 --   local Nn = dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules") .. "/lib/nn.lua")
 --   local net = Nn.new({41,80,80,40,17})
