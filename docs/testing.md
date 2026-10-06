@@ -333,7 +333,7 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 | `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 650 通过 / 0 失败 |
 | `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
 | `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过（**运行时数**）/ 0 失败（8 个 TU） |
-| Rust agent | `cd agent && cargo test --release` | 148 passed |
+| Rust agent | `cd agent && cargo test --release` | 153 passed |
 
 除 `sim_tests` 的 387 外，表里每个数字都由 `scripts/check_doc_paths.py` 的第六组
 **从仓库实况派生后比对**（进 `test/run_all_selftest.sh`）——加/删用例而忘了改这张表，
@@ -394,6 +394,74 @@ BOT=./build-asan/mybot BOT_TESTS=./build-asan/mybot_tests bash test/run_all.sh _
 ```bash
 ./build/mybot_tests [用例名过滤]
 ```
+
+## 第四轮重构守门增强（2026-10-06/10-07）
+
+第四轮重构（Phase 23–29）在守门侧补了一批机械防线，防止「用例静默消失 / 数字悄悄漂移」：
+
+### pre-push 的 mybot-agent 新鲜度硬门
+
+pre-push 钩子在守门**之前**新增第 3 道关：`agent/target/release/mybot-agent` 缺失、或早于
+`agent/src`/`agent/Cargo.toml`/`agent/Cargo.lock` 里的任一文件 ⇒ 中止推送并打印重建命令
+`bash scripts/build_agent.sh --release`。
+
+**为什么判红而不是 SKIP**：守门入口（`run_all.sh`）对同一状况判 SKIP（mybot-agent 是可选产物、
+本机可能没装 cargo），而 SKIP 计入汇总后 rc 仍是 0：`agent-rust-e2e` 与 `ica-e2e` 两段整段
+消失，汇总与真绿无法区分。CI 也补不上（`gate:release`/`gate:musl` 镜像里没有 cargo）。分层口径：
+**本机装了 cargo 就能自己修，故判红**；没装 cargo 时不拦，只提示交 `gate:agent-e2e` 兜底。
+逃生口 `BOT_ALLOW_STALE=1` 与守门入口共用同一语义（明确知道要跑旧产物时显式声明）。
+
+取材面按产物分配，判据单点 `test/lib/agent_stale.sh`（与 `run_all.sh` 的 `agent-rust-e2e` 段
+共用）：`mybot-agent` 吃 `agent/src` + `agent/Cargo.toml` + `agent/Cargo.lock`。与守门入口的
+陈旧判据**同实现**——两处都调 `agent_stale_file` 函数，返回第一个比产物新的源文件路径（空串
+表示产物新鲜）。
+
+### CI 的 `gate:agent-e2e` 直接跑 `ica_e2e.sh`
+
+2026-10-04 起 `ica_e2e.sh` 接进 `run_all.sh` 的 `ica-e2e` 段（此前只有 `ica.md` 提到、无任何
+守门调用它，改坏了不会有人知道）。2026-10-06 起 CI 的 `gate:agent-e2e` 也直接跑它：本段在产物
+缺失/陈旧时按 **SKIP** 计而汇总仍是 rc=0，`gate:release`/`gate:musl` 的镜像里又没有 cargo，
+那条洞只有 CI 这道唯一带 Rust 工具链的 job 能补。
+
+### `parse_cases` 的双引号约定
+
+`test/run_all.sh` 的 `parse_cases` 函数（无硬件契约回归段）读入的用例表里，文件名一律用**双引号**
+包裹（`"robots/test/xxx.sql" "scripts/test/xxx.mt"`），不用单引号也不裸写。理由：守门自检
+（`run_all_selftest.sh` 第 4 段）按双引号正则抽取文件名后与磁盘实测比对，单引号或裸写会绕过抽取
+而悄悄漏检。新增用例时照抄既有格式即可。
+
+### 已删文件黑名单（`DELETED_FILES`）
+
+`scripts/check_doc_paths.py` 的检查 5 维护一张「已删除且**刻意不重建**的文件」名单（当前只有
+一份冻结的变更账本）：任何取材面里再出现指向它的引用即判失败。取材面比检查 1 宽（源码注释 /
+脚本 / CI / 冻结 html 都算），因为死引用的成因恰恰是「引用它的地方不在任何守门的取材面里」。
+匹配用**基名**：带扩展名的路径与 markdown 链接里的相对形态一并覆盖。
+
+2026-10-04 冻结变更账本（提交 9480de3）后，仓内残留 11 处死引用已全部改成
+提交号或中性说法。已知残留（刻意不追）：无扩展名的裸词不匹配；`docs/architecture_analysis.html:386`
+一处裸词是 2026-09-25 冻结快照正文，改它等于篡改快照。
+
+### TSan 名单的反向验证
+
+`test/lib/tsan_cases.txt` 列出 `gate:tsan` 跑的三条守护并发用例。`run_all_selftest.sh` 第 5 段
+**双向**核对：① 名单里的每个文件必须存在于 `test/cpp/` 且登记进 `CMakeLists.txt` 的 `mybot_tests`
+源清单；② `CMakeLists.txt` 里带 `tsan` 标签的用例（`TH_TEST` 名字含 `tsan`）必须全部出现在名单里
+——漏登记或名单过期都判红。防止「加了一条 TSan 用例但忘了接进名单」或「名单里留着已删用例」两种
+静默漂移。
+
+### 套件计数的派生公式
+
+`docs/testing.md` 的「四处套件的计数口径」表里，除 `sim_tests` 的 387（运行时数）外，每个数字都由
+`scripts/check_doc_paths.py` 的第六组从仓库实况派生后比对：
+
+- `mybot_tests` = `test/cpp/` 里 `TH_TEST(` 出现次数 − 1 处宏定义（`test/cpp/harness.hpp`）−
+  `harness_selftest` 的 `TH_TEST` 数
+- `harness_selftest` = 该文件的 `TH_TEST` 数 − `meta_*` 例句数（故意含失败形态，不进缺省全量跑）
+- `sim_tests` 的 TU 数 = `sim/CMakeLists.txt` 的 `add_executable(sim_tests …)` 源文件清单里
+  `.cpp` 文件的个数
+- Rust agent = `agent/src/` 下 `#[test]` + `#[tokio::test]` 的出现次数
+
+加/删用例而忘了改这张表，守门会红，不再依赖人记得回来更新快照。
 
 ## 新增回归
 
