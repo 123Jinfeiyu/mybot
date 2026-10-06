@@ -130,6 +130,105 @@ run_one_mtmerge() {
 	fi
 }
 
+# mtmerge 段夹具：创建 .tmp/mtm/ 下的 .mt 与 .sql 文件，供 run_one_mtmerge 调用。
+# 夹具与 run_all.sh 的调用点紧耦合（文件名由测试用例决定），故与 runner 同文件。
+setup_mtmerge_fixtures() {
+	mkdir -p .tmp/mtm
+	cat > .tmp/mtm/a.mt <<'MTEOF'
+@Alias
+name alias;
+  A  angle;
+@
+
+@Vars
+name value;
+  K  1;
+@
+
+@Action
+s1.A;
+  45;
+@
+MTEOF
+	cat > .tmp/mtm/b.mt <<'MTEOF'
+@Alias
+name alias;
+  B  delay;
+@
+
+@Vars
+name value;
+  L  2;
+@
+
+@Action
+spk.B;
+  200;
+@
+MTEOF
+	cat > .tmp/mtm/dup_alias.mt <<'MTEOF'
+@Alias
+name alias;
+  A  other;
+@
+
+@Action
+s2.A;
+  10;
+@
+MTEOF
+	cat > .tmp/mtm/dup_vars.mt <<'MTEOF'
+@Vars
+name value;
+  K  3;
+@
+
+@Action
+s2.K;
+  10;
+@
+MTEOF
+	cat > .tmp/mtm/multiblock.mt <<'MTEOF'
+@Alias
+name alias;
+  C  freq;
+@
+
+@Alias
+name alias;
+  D  speed;
+@
+
+@Action
+s3.C;
+  1;
+@
+MTEOF
+	cat > .tmp/mtm/robot.sql <<'SQLEOF'
+CREATE TABLE dummy (
+	name String
+);
+INSERT INTO dummy (name) VALUES ('dummy-0');
+
+CREATE TABLE Servo (
+	name       String,
+	max        String,
+	min        String,
+	offset     String,
+	controller String,
+	channel    String
+);
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s1', '90', '-', '0', 'dummy-0', '6');
+INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s2', '90', '-', '0', '-', '5');
+
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('spk');
+SQLEOF
+}
+
+
 # F3-5 余部①：原 run_include_observation 拆成按用例调用的 runner——
 # 条数由 run_all.sh 侧 count_calls run_include_case 数调用点推导（调用点必须
 # 留在 run_all.sh：count_calls 数的就是它）。断言体零行为变化，只是按名分派。
@@ -183,3 +282,49 @@ run_one_mtmerge_phase() {
 	fi
 }
 
+# F3-5 余部①：三条观察面抽成同型 runner，条数由 count_calls 数调用点推导。
+run_one_trig_obs() {
+	local name="$1" label="$2"
+	echo "----- $name ($label 观察面) -----"
+	local out rc ok
+	out="$(cat "scripts/test/$name.mt" | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot="robots/test/$name.sql" 2>&1)"
+	rc=$?
+	echo "$out"
+	ok=true
+	[ "$rc" -ne 0 ] && ok=false
+	if [ "$name" = "trig_basic" ]; then
+		local src_line sink_line
+		src_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=src' | head -1 | cut -d: -f1)"
+		sink_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=sink' | head -1 | cut -d: -f1)"
+		if [ -z "$src_line" ] || [ -z "$sink_line" ]; then
+			ok=false
+		elif [ "$src_line" -ge "$sink_line" ]; then
+			ok=false
+		fi
+		echo "$out" | grep -qF '"relay-src":{"delay":300}' || ok=false
+		echo "$out" | grep -F 'Forward to controller:' | grep -qF '"relay-src"' && ok=false
+	elif [ "$name" = "trig2_basic" ]; then
+		local s1_line s2_line sk_line
+		s1_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=s1' | head -1 | cut -d: -f1)"
+		s2_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=s2' | head -1 | cut -d: -f1)"
+		sk_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=sink' | head -1 | cut -d: -f1)"
+		if [ -z "$s1_line" ] || [ -z "$s2_line" ] || [ -z "$sk_line" ]; then
+			ok=false
+		elif [ "$s1_line" -ge "$s2_line" ] || [ "$s2_line" -ge "$sk_line" ]; then
+			ok=false
+		fi
+		echo "$out" | grep -qF '"relay-src1":{"delay":300}' || ok=false
+		echo "$out" | grep -qF '"relay-src2":{"delay":301}' || ok=false
+	else
+		# ctrl2_basic：两个 controller 都被转发（各自的 Controller result dump 带名字）
+		echo "$out" | grep -qF 'Controller result (dummy-0)' || ok=false
+		echo "$out" | grep -qF 'Controller result (timer-b)' || ok=false
+		# 扇出广播：payload 只构建一次（同一份数据发给每个 controller）
+		[ "$(printf '%s\n' "$out" | grep -cF 'Forward to controller:')" = "1" ] || ok=false
+	fi
+	if $ok; then
+		record_pass
+	else
+		record_fail "$name($label 观察面)"
+	fi
+}

@@ -848,51 +848,7 @@ fi
 # 「3 通过, 0 失败」退出 0，把末尾那条 `pass + fail == 0` 的空匹配防线整条废掉
 # （该防线正是为「过滤器拼错不得假绿」而设）。守卫后语义与其它段落一致。
 # F3-5 余部①：三条观察面抽成同型 runner，条数由 count_calls 数调用点推导。
-run_one_trig_obs() {
-	local name="$1" label="$2"
-	echo "----- $name ($label 观察面) -----"
-	local out rc ok
-	out="$(cat "scripts/test/$name.mt" | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot="robots/test/$name.sql" 2>&1)"
-	rc=$?
-	echo "$out"
-	ok=true
-	[ "$rc" -ne 0 ] && ok=false
-	if [ "$name" = "trig_basic" ]; then
-		local src_line sink_line
-		src_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=src' | head -1 | cut -d: -f1)"
-		sink_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=sink' | head -1 | cut -d: -f1)"
-		if [ -z "$src_line" ] || [ -z "$sink_line" ]; then
-			ok=false
-		elif [ "$src_line" -ge "$sink_line" ]; then
-			ok=false
-		fi
-		echo "$out" | grep -qF '"relay-src":{"delay":300}' || ok=false
-		echo "$out" | grep -F 'Forward to controller:' | grep -qF '"relay-src"' && ok=false
-	elif [ "$name" = "trig2_basic" ]; then
-		local s1_line s2_line sk_line
-		s1_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=s1' | head -1 | cut -d: -f1)"
-		s2_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=s2' | head -1 | cut -d: -f1)"
-		sk_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=sink' | head -1 | cut -d: -f1)"
-		if [ -z "$s1_line" ] || [ -z "$s2_line" ] || [ -z "$sk_line" ]; then
-			ok=false
-		elif [ "$s1_line" -ge "$s2_line" ] || [ "$s2_line" -ge "$sk_line" ]; then
-			ok=false
-		fi
-		echo "$out" | grep -qF '"relay-src1":{"delay":300}' || ok=false
-		echo "$out" | grep -qF '"relay-src2":{"delay":301}' || ok=false
-	else
-		# ctrl2_basic：两个 controller 都被转发（各自的 Controller result dump 带名字）
-		echo "$out" | grep -qF 'Controller result (dummy-0)' || ok=false
-		echo "$out" | grep -qF 'Controller result (timer-b)' || ok=false
-		# 扇出广播：payload 只构建一次（同一份数据发给每个 controller）
-		[ "$(printf '%s\n' "$out" | grep -cF 'Forward to controller:')" = "1" ] || ok=false
-	fi
-	if $ok; then
-		record_pass
-	else
-		record_fail "$name($label 观察面)"
-	fi
-}
+# （函数定义已移至 test/lib/sections/lua_e2e.sh）
 
 if [ -z "$filter" ] || [[ "trig_basic" == *"$filter"* ]] || [[ "trig2_basic" == *"$filter"* ]] \
 	|| [[ "ctrl2_basic" == *"$filter"* ]] || [[ "trigger" == *"$filter"* ]] \
@@ -919,99 +875,7 @@ mtmerge_reported=""
 # 数调用点而非写死数字：加用例忘改文案的漂移在此消除（N-31）。
 mtmerge_cases_n=$(( $(count_calls run_one_mtmerge) + 1 ))
 if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
-	mkdir -p .tmp/mtm
-	cat > .tmp/mtm/a.mt <<'MTEOF'
-@Alias
-name alias;
-  A  angle;
-@
-
-@Vars
-name value;
-  K  1;
-@
-
-@Action
-s1.A;
-  45;
-@
-MTEOF
-	cat > .tmp/mtm/b.mt <<'MTEOF'
-@Alias
-name alias;
-  B  delay;
-@
-
-@Vars
-name value;
-  L  2;
-@
-
-@Action
-spk.B;
-  200;
-@
-MTEOF
-	cat > .tmp/mtm/dup_alias.mt <<'MTEOF'
-@Alias
-name alias;
-  A  other;
-@
-
-@Action
-s2.A;
-  10;
-@
-MTEOF
-	cat > .tmp/mtm/dup_vars.mt <<'MTEOF'
-@Vars
-name value;
-  K  3;
-@
-
-@Action
-s2.K;
-  10;
-@
-MTEOF
-	cat > .tmp/mtm/multiblock.mt <<'MTEOF'
-@Alias
-name alias;
-  C  freq;
-@
-
-@Alias
-name alias;
-  D  speed;
-@
-
-@Action
-s3.C;
-  1;
-@
-MTEOF
-	cat > .tmp/mtm/robot.sql <<'SQLEOF'
-CREATE TABLE dummy (
-	name String
-);
-INSERT INTO dummy (name) VALUES ('dummy-0');
-
-CREATE TABLE Servo (
-	name       String,
-	max        String,
-	min        String,
-	offset     String,
-	controller String,
-	channel    String
-);
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s1', '90', '-', '0', 'dummy-0', '6');
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s2', '90', '-', '0', '-', '5');
-
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('spk');
-SQLEOF
+	setup_mtmerge_fixtures
 
 	# 正值：Alias/Vars 两侧行都并入，@Action 设备集不相交照常归并
 	run_one_mtmerge 'mtmerge_merge' 0 \
@@ -1215,31 +1079,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 		env BOT4CJ_MODULE_PATH=".tmp/no-such-module-root:./modules" \
 		timeout 20 "$bin" --robot=robots/relay-test.sql --input scripts/relay-test.mt
 
-	mkdir -p .tmp/fixmod
-	cat > .tmp/fixmod/leakdrv.lua <<'LUAEOF'
--- 审计 #4 回归夹具：只提供 virt 器件模型，故意不定义全局 build/call/destroy，
--- 复现 @Daemon 的 driver 列误配成「加载成功但没有 build」的模块这一真实坑。
-leakdrv_VIRT = { new = function() return {} end }
-LUAEOF
-	cat > .tmp/fixmod.sql <<'SQLEOF'
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('t0');
-
-CREATE TABLE Daemon (
-	name     String,
-	chunk    String,
-	driver   String,
-	proto    String,
-	addr     String,
-	interval String,
-	fields   String
-);
-INSERT INTO Daemon (name, chunk, driver, proto, addr, interval, fields)
-  VALUES ('ld0', 'lib/sensor_daemon.lua', 'leakdrv', 'virt', '0x68', '10', 'v0');
-SQLEOF
-	printf '@Action\nt0.delay;\n   200;\n    50;\n    50;\n@\n' > .tmp/fixmod.mt
+	setup_hardening_daemon_build_fixture
 	run_one_hardening 'daemon_build_raise' 0 'driver build() raised' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod.sql --input=.tmp/fixmod.mt
@@ -1247,79 +1087,21 @@ SQLEOF
 	# N2 回归：上游驱动的返回表里混进 mode 键（controller payload 会原样带着它），
 	# mode 必须由框架独占、下游派发目标必须仍是 call——否则上游一句话就能让
 	# 下游驱动的 call() 完全不执行且退出码仍为 0。锚点取下游自己写出的键。
-	cat > .tmp/fixmod/HijUp.lua <<'LUAEOF'
--- 审计 N2 回归夹具：故意在返回值里塞 mode，模拟被带进 controller payload 的键
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data) return { result = "OK", mode = "print", from_up = "yes" } end
-LUAEOF
-	cat > .tmp/fixmod/HijDown.lua <<'LUAEOF'
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data)
-	if data.mode ~= "call" then
-		return { result = "ERR", message = "controller dispatch target was overridden: " .. tostring(data.mode) }
-	end
-	return { result = "OK", down_served = "yes" }
-end
-LUAEOF
-	cat > .tmp/fixmod_hij.sql <<'SQLEOF'
-CREATE TABLE HijDown (
-	name String
-);
-INSERT INTO HijDown (name) VALUES ('d0');
-
-CREATE TABLE HijUp (
-	name       String,
-	controller String
-);
-INSERT INTO HijUp (name, controller) VALUES ('u0', 'd0');
-SQLEOF
-	printf '@Action\nu0.x;\n   1;\n@\n' > .tmp/fixmod_hij.mt
+	setup_hardening_mode_override_fixture
 	run_one_hardening 'mode_key_cannot_override_dispatch' 0 'down_served' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_hij.sql --input=.tmp/fixmod_hij.mt
 
 	# N3 回归：call() 漏写 return（返回 0 个值）曾被折成空表、被 ensureOk 当成
 	# 成功——硬件没动却报绿。现在必须清晰报错并以非 0 退出。
-	cat > .tmp/fixmod/NoRet.lua <<'LUAEOF'
--- 审计 N3 回归夹具：call 少写一行 return，等价于返回「无值」
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data)
-	local ignored = data.x
-end
-LUAEOF
-	cat > .tmp/fixmod_noret.sql <<'SQLEOF'
-CREATE TABLE NoRet (
-	name String
-);
-INSERT INTO NoRet (name) VALUES ('n0');
-SQLEOF
-	printf '@Action\nn0.x;\n   1;\n@\n' > .tmp/fixmod_noret.mt
+	setup_hardening_no_return_fixture
 	run_one_hardening 'driver_returns_nothing' 1 "returned no value" \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_noret.sql --input=.tmp/fixmod_noret.mt
 
 	# C-9 回归：驱动返回自引用表（t.self = t，最常见的笔误形态）曾是宿主栈溢出
 	# 裸 SIGSEGV（退出码 139，且跳过 deactivate 清理链）——必须变成清晰契约报错。
-	cat > .tmp/fixmod/CycRet.lua <<'LUAEOF'
--- 审计 C-9 回归夹具：call 返回一张引用自己的表
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data)
-	local t = { result = "OK", v0 = 1.5 }
-	t.self = t
-	return t
-end
-LUAEOF
-	cat > .tmp/fixmod_cyc.sql <<'SQLEOF'
-CREATE TABLE CycRet (
-	name String
-);
-INSERT INTO CycRet (name) VALUES ('c0');
-SQLEOF
-	printf '@Action\nc0.x;\n   1;\n@\n' > .tmp/fixmod_cyc.mt
+	setup_hardening_cyclic_fixture
 	run_one_hardening 'driver_returns_cyclic_table' 1 'nests deeper than' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
@@ -1329,15 +1111,7 @@ SQLEOF
 	# 折成 ERR 输出，rc=1）——此前只告警，P1-3 起升级为硬门禁。
 	# 取向声明见 docs/faq.md。夹具按 hardening 段惯例运行期生成进 .tmp/
 	# （不进 robots/test/：孤儿检测要求静态夹具必须接进用例表）。
-	cat > .tmp/uart_two_vars.sql <<'SQLEOF'
-CREATE TABLE UART (
-	name String,
-	path String,
-	baud String
-);
-INSERT INTO UART (name, path, baud) VALUES ('uart-0', '/dev/null', '9600');
-INSERT INTO UART (name, path, baud) VALUES ('uart-1', '/dev/null', '115200');
-SQLEOF
+	setup_hardening_uart_shared_fixture
 	run_one_hardening 'uart_shared_path_rejected' 1 'is opened independently by 2 consumers' \
 		env BOT4CJ_MODULE_PATH="./modules" timeout 30 "$bin" \
 		--robot=.tmp/uart_two_vars.sql --input /dev/null
@@ -1350,23 +1124,7 @@ SQLEOF
 	# 文本全丢。现「取全局 + 造参数表 + 填参」整段进受保护帧，两种构建下
 	# 都折成既有 ERR 契约（rc=1 + 带上下文的报错文本）。夹具只定义 build
 	# 不定义 call：结构期 build 正常，动作派发的 call 触发 __index。
-	cat > .tmp/fixmod/GmtDrv.lua <<'LUAEOF'
--- F5-2 回归夹具：_G 元表 __index 报错。宿主对缺失全局的 getglobal 必须在
--- 受保护帧内（否则裸崩且跳过清理链）。故意只定义 build 不定义 call。
-setmetatable(_G, { __index = function(_, k)
-	error("boom from __index: " .. tostring(k))
-end })
-
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-LUAEOF
-	cat > .tmp/fixmod_gmt.sql <<'SQLEOF'
-CREATE TABLE GmtDrv (
-	name String
-);
-INSERT INTO GmtDrv (name) VALUES ('h0');
-SQLEOF
-	printf '@Action\nh0.x;\n   1;\n@\n' > .tmp/fixmod_gmt.mt
+	setup_hardening_getglobal_fixture
 	run_one_hardening 'lua_getglobal_unprotected_frame' 1 'boom from __index' \
 		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
 		--robot=.tmp/fixmod_gmt.sql --input=.tmp/fixmod_gmt.mt
@@ -1525,19 +1283,7 @@ fi
 # 夹具写在 .tmp/（gitignore）：Timer 长动作 + 无硬件守护（lib/daemon_probe.lua）。
 # ======================================================================
 if [ -z "$filter" ] || [[ "signal" == *"$filter"* ]]; then
-	mkdir -p .tmp
-	cat > .tmp/signal_robot.sql <<'SQLEOF'
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('t0');
-
-CREATE TABLE Daemon (
-	name  String,
-	chunk String
-);
-INSERT INTO Daemon (name, chunk) VALUES ('d0', 'lib/daemon_probe.lua');
-SQLEOF
+	setup_hardening_signal_fixture
 	{ echo '@Action'; echo 't0.delay;'; for _ in $(seq 1 60); do echo '   200;'; done; echo '@'; } > .tmp/signal_long.mt
 	run_one_signal 'signal_halt' 0 'Stop requested, halting action dispatch' 'joined, total publishes=' \
 		"$bin" --robot=.tmp/signal_robot.sql --input=.tmp/signal_long.mt
