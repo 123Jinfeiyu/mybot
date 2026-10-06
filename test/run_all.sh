@@ -258,6 +258,35 @@ if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 	unset _b _stale _in _ex
 fi
 
+# ---- 参数化 lint runner（27.8 抽自三处同形态内联 lint）----
+# 三处 lint（arg_table/__mpath/nan-fallback）共享同一形态：grep 找坏形态 → 有 filter 跳过
+# → 找到即失败 → 否则通过。BH1750 那条额外有计数自检（抽取判据失效时显式红），
+# arg_table/__mpath 补上同款防线后也收进本函数。
+# 参数：$1=lint 名（记账用） $2=标题 $3=grep 命令（输出坏文件列表） $4=期望最小命中数
+#       （可选，缺省 0 = 不检查；>0 时实际命中 < 期望即判「抽取判据失效」）
+run_one_inline_lint() {
+	local name="$1" title="$2" grep_cmd="$3" min_hits="${4:-0}"
+	echo "----- lint ($title) -----"
+	if [ -n "$filter" ]; then
+		echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+		return
+	fi
+	local bad hits_n
+	bad="$(eval "$grep_cmd" || true)"
+	hits_n="$(printf '%s\n' "$bad" | grep -c . || true)"
+	if [ "$min_hits" -gt 0 ] && [ "$hits_n" -lt "$min_hits" ]; then
+		echo "[FAIL] 抽取判据只命中 $hits_n 处（期望 ≥ $min_hits）——判据可能已对不上源码形态"
+		record_fail "$name"
+	elif [ -n "$bad" ]; then
+		echo "[FAIL] 以下文件仍存在问题形态："
+		echo "$bad"
+		record_fail "$name"
+	else
+		echo "[PASS] $title"
+		record_pass
+	fi
+}
+
 # ---- 分段 runner 定义（F3-1 抽自本文件；只含函数定义，见各文件头注）----
 # 用 $SELF 推导目录：run_all.sh 启动时已 cd 到仓库根，但 $SELF 在 cd 之前取，
 # 对「从别处调用」也成立。
@@ -340,18 +369,12 @@ echo "==============================================="
 # Camera 有意豁免（头注声明：全仓唯一不挂 arg_table 样板的驱动，build
 # 不碰设备、入参走内联类型守卫）。lib/ 内部实现自用，不在检查范围。
 # ======================================================================
-echo "----- lint (驱动入口 arg_table 断言) -----"
-bad="$(grep -l 'type(data) ~= "table"' modules/*.lua | grep -v '^modules/Camera.lua$' || true)"
-if [ -n "$filter" ]; then
-	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
-elif [ -n "$bad" ]; then
-	echo "[FAIL] 以下驱动仍存在绕过 arg_table 的内联类型检查："
-	echo "$bad"
-	record_fail "lint-driver-entry-arg_table"
-else
-	echo "[PASS] modules/*.lua 器件驱动入口均走 arg_table（Camera 豁免）"
-	record_pass
-fi
+# 计数自检：modules/*.lua 至少 50 个驱动文件，grep 命中 < 40 说明判据已失效
+# （改名/改调用方式），此时「0 命中」是空集自证而非通过。
+run_one_inline_lint "lint-driver-entry-arg_table" \
+	"驱动入口 arg_table 断言" \
+	"grep -l 'type(data) ~= \"table\"' modules/*.lua | grep -v '^modules/Camera.lua$'" \
+	40
 
 # ======================================================================
 # 模块路径引导 lint（2026-09-20 重构阶段 2 收尾防线）：
@@ -362,18 +385,11 @@ fi
 # multipath_module_path）。只盯这一种**已知坏形态**——lib/ 里用
 # `:gmatch("[^:]+")` 逐段探测的既有实现是对的，不能误伤。
 # ======================================================================
-echo "----- lint (模块路径引导 __mpath 断言) -----"
-bad="$(grep -rn ':match("\[^:\]+")' modules/ | grep -v '__mpath' || true)"
-if [ -n "$filter" ]; then
-	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
-elif [ -n "$bad" ]; then
-	echo "[FAIL] 以下模块仍只取首段定位 lib/mpath.lua（未经 __mpath 注入）："
-	echo "$bad"
-	record_fail "lint-module-path-bootstrap"
-else
-	echo "[PASS] modules/ 的模块路径引导均走 __mpath（宿主逐段探测）"
-	record_pass
-fi
+# 计数自检：modules/ 至少 60 个文件，grep 命中 < 50 说明判据已失效。
+run_one_inline_lint "lint-module-path-bootstrap" \
+	"模块路径引导 __mpath 断言" \
+	"grep -rn ':match(\"[^:\]+\")' modules/ | grep -v '__mpath'" \
+	50
 
 # ======================================================================
 # NaN 兜底 lint（26.1 收尾防线）：驱动的配置列不得写 `tonumber(data.X) or 缺省`。
@@ -392,20 +408,9 @@ fi
 # 模型块内，生产路径零执行），不属本防线范围。
 # Camera 有意豁免（在不碰清单：冻结边界，width/height 两列不改写）。
 # ======================================================================
-echo "----- lint (配置列 NaN 兜底断言) -----"
-bad="$(grep -rnE 'tonumber\(data\.[A-Za-z_]+\) or ' modules/*.lua \
-	| grep -v '^modules/Camera.lua:' || true)"
-if [ -n "$filter" ]; then
-	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
-elif [ -n "$bad" ]; then
-	echo "[FAIL] 以下配置列仍用 \`tonumber(data.X) or 缺省\`（NaN 是 truthy，or 兜不住）："
-	echo "$bad"
-	echo "       改用 drv_common 的 num_or(v, def) 或 finite_of(v)。"
-	record_fail "lint-driver-nan-fallback"
-else
-	echo "[PASS] modules/*.lua 配置列均经 num_or/finite_of 归一化（Camera 豁免）"
-	record_pass
-fi
+run_one_inline_lint "lint-driver-nan-fallback" \
+	"配置列 NaN 兜底断言" \
+	"grep -rnE 'tonumber\(data\.[A-Za-z_]+\) or ' modules/*.lua | grep -v '^modules/Camera.lua:'"
 
 # ======================================================================
 # 生命周期形态一致性 lint（26.3 收尾防线）：走 require_driver 的驱动**不得**
