@@ -252,14 +252,24 @@ AgentTool makeReadFileTool(const AgentToolContext& ctx) {
  *     原语，模型单次工具调用参数体积本就受限。
  *   - 含 NUL 的内容拒绝（与 read_file 对称：本工具只处理文本，不是字节管道）。
  *     不做 UTF-8 校验：内容来自模型参数，已经是 JSON 字符串（合法 Unicode），
- *     没有必要重复校验（NUL 已由上面那条拒绝）。 */
+ *     没有必要重复校验（NUL 已由上面那条拒绝）。
+ *   - 落地文件权限 **0600**（writeFileAtomic 的 open 模式，不随 umask 放宽）：与审计
+ *     日志、会话文件、REPL 历史同规。代价是别的用户/进程读不到写出来的文件——已写进
+ *     工具描述告知模型，免得它写一个指望被外部读取的文件还以为成功了。
+ *
+ * 评估后**不做**的一项（.tmp/phase5-write_file-plan.md §4 曾列为「实现时二选一」）：
+ * 「allowWriteFile=true 但 fsRoot 为空」这个非法组合的工具层防御性回归。理由是它到不了
+ * 工具层——buildAgentConfig 的跨字段依赖校验已在上电前判成配置错误退出 2，且有
+ * test_llmconfig_assembly 与 mcp_e2e 各一条反面用例钉住。为构造不出来的状态补工具层
+ * 断言，只会让读代码的人以为这个组合真的可能出现。 */
 AgentTool makeWriteFileTool(const AgentToolContext& ctx) {
-	const std::string desc = "在机器人主机上创建或覆盖一个文本文件（原子写入：临时文件 + "
-		"rename，不会留下半截内容）。path 是相对于本会话根目录（--fs-root）的相对路径。"
+	const std::string desc = "在机器人主机上创建或覆盖一个文本文件（原子写入：先写同目录的"
+		"临时文件再落地，不会留下半截内容）。path 是相对于本会话根目录（--fs-root）的相对路径。"
 		"目标已存在时**默认拒绝**，必须显式传 overwrite=true 才会覆盖——覆盖是不可逆"
 		"操作，旧内容不会保留。内容为文本，大小上限 "
 		+ std::to_string(kMaxReadFileBytes / 1024) + " KiB；不接受含 NUL 的内容。"
-		"父目录必须已存在（本工具不自动建目录）。";
+		"父目录必须已存在（本工具不自动建目录）。落地后的文件权限是 0600"
+		"（仅属主可读写，不随 umask 放宽）——需要别的用户/进程读它时本工具不适用。";
 	return AgentTool{
 		"write_file", desc,
 		toolSchema({

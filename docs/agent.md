@@ -164,7 +164,7 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 | `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序**；也可由后端配置的 `agent_policy` 指定 | 未开危险能力时可不启用（见「策略钩子」节） |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量，**可重复**；注册 `read_variables` 与 `wait_variable` 工具（缺省**不提供**这两个工具）。只有已注册且种类为 `lua`（驱动）或 `daemon`（守护快照）的名字生效——执行器与传感器同属 `kind=lua`，靠种类分不出，故必须由人列名（见「工具」表与安全说明第 12 条） | 不提供（即无回读能力；声明了名字但一个都不可读时也不提供） |
 | `--fs-root <目录>` | **list_dir / read_file 的只读根目录**（Phase 4）；注册这两个只读文件工具（与硬件/shell 无关）。路径沙箱见 `agent_sandbox.hpp`（见「工具」表与安全说明第 13 条） | 不提供（即无这两个工具）；**只能命令行给**，配置文件写 `fs_root` 会被拒绝加载 |
-| `--agent-write-file` | **显式开启** `write_file`（Phase 5）：在 `--fs-root` 根之内创建/覆盖文本文件（临时文件 + `rename` 原子写；符号链接目标拒绝；已存在须显式 `overwrite:true`）。**依赖 `--fs-root`**（只给本开关会在上电前报错退出 2）；须有 policy 且 `require_confirm` 包含 `write_file`（见「工具」表与安全说明第 14 条） | 不提供（即无写文件能力）；**只能命令行给**，配置文件写 `allow_write_file` 会被拒绝加载 |
+| `--agent-write-file` | **显式开启** `write_file`（Phase 5）：在 `--fs-root` 根之内创建/覆盖文本文件（先写同目录临时文件再原子落地：新建用 `link`、覆盖用 `rename`；符号链接目标拒绝；已存在须显式 `overwrite:true`；落地权限 0600）。**依赖 `--fs-root`**（只给本开关会在上电前报错退出 2）；须有 policy 且 `require_confirm` 包含 `write_file`（见「工具」表与安全说明第 14 条） | 不提供（即无写文件能力）；**只能命令行给**，配置文件写 `allow_write_file` 会被拒绝加载 |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」。**命令行**给的 src 以其所在目录为白名单根；配置文件给的 `camera_src` **不**推导根（见安全说明第 9 条），需配 `--camera-src-dir` 或 `BOT4CJ_CAMERA_SRC_DIR` | — |
@@ -392,7 +392,7 @@ provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
 | `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗、继承 fd 全部 CLOEXEC、**回执进模型上下文前遮蔽敏感值**（G1）；**缺省不注册**，须命令行 `--agent-shell` 显式开启（配置文件的 `allow_shell` 只能关不能开，写 `true` 会拒绝加载） |
 | `list_dir` | 列出机器人主机上一个目录下的条目（文件名 + 类型 + 大小；只读、不递归；`path` 缺省为只读根目录本身） | 符号链接条目不列；条目数上限 1000（超限截断并标注）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（配置文件的 `fs_root` 一律拒绝加载，见安全说明第 13 条） |
 | `read_file` | 读取机器人主机上一个文本文件的全部内容（只读） | 路径必须落在 `--fs-root` 根目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）；大小上限 64 KiB（超限响亮拒绝，不截断）；二进制（含 NUL 或非法 UTF-8）拒绝返回；回执经 `maskSecretsInText` 遮蔽敏感值（与 `run_command` 同单点）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（与 `list_dir` 同门控，配置文件不能开） |
-| `write_file` | 在机器人主机上创建或覆盖一个文本文件（原子写入：临时文件 + `rename`，不留半截内容） | 路径同 `read_file` 的沙箱判据；目标是符号链接一律拒绝（无论 `overwrite`）；目标已存在时**默认拒绝覆盖**，须显式 `overwrite:true`（覆盖不可逆）；大小上限 64 KiB、不接受含 NUL 的内容；父目录须已存在（不自动创建）。**缺省不注册**，须命令行 `--agent-write-file` 显式开启且依赖 `--fs-root`（配置文件的 `allow_write_file` 只能关不能开）；危险性与 `run_command`/`apply_sql` 同级，`--mcp-backend` 下**强制**要求 policy 且 `require_confirm` 包含 `write_file` |
+| `write_file` | 在机器人主机上创建或覆盖一个文本文件（原子写入：先写同目录临时文件再落地，不留半截内容） | 路径同 `read_file` 的沙箱判据；目标是符号链接一律拒绝（无论 `overwrite`）；目标已存在时**默认拒绝覆盖**，须显式 `overwrite:true`（覆盖不可逆）；大小上限 64 KiB、不接受含 NUL 的内容；父目录须已存在（不自动创建）；落地文件权限 **0600**（别的用户/进程读不到，需跨用户共享时不适用）。落地按 `overwrite` 分两路：新建 `link`（目标已被抢先创建则 `EEXIST` 拒绝，堵 TOCTOU 静默覆盖）、覆盖 `rename`（原子替换），详见安全说明第 14 条。**缺省不注册**，须命令行 `--agent-write-file` 显式开启且依赖 `--fs-root`（配置文件的 `allow_write_file` 只能关不能开）；危险性与 `run_command`/`apply_sql` 同级，`--mcp-backend` 下**强制**要求 policy 且 `require_confirm` 包含 `write_file` |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -1027,13 +1027,22 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     ② **后端下强制策略确认**：`--mcp-backend` 开 `--agent-write-file` 时，**强制**要有
     `--agent-policy` 且其 `require_confirm` 包含 `write_file`（无人值守暴露改写主机文件的
     能力必须有外部确认闸门，见第 11b 条同款机制；`list_dir`/`read_file` 只读、无此强制）。
-    写入走 `agent_sandbox.hpp` 的 `writeFileAtomic`（临时文件 + `rename` 原子替换，不留
-    半截内容）：目标是符号链接**一律拒绝**（不跟随写入——跟随等于让根目录里的一条软链把
+    写入走 `agent_sandbox.hpp` 的 `writeFileAtomic`（先写同目录临时文件，再落地；不留
+    半截内容）。**落地这一步按 `overwrite` 分成两条路**：`overwrite:true` 用 `rename`
+    （POSIX 原子替换）；`overwrite` 缺省或为 `false` 用 **`link` 而不是 `rename`**——
+    `rename` 对已存在目标是**无条件**原子替换，若在前置 `lstat` 之后、落地之前有另一个
+    写者抢先创建了目标，`rename` 会静默覆盖它（TOCTOU），彻底违反"不覆盖"的承诺；
+    `link` 的 POSIX 语义是"目标已存在则失败并置 `EEXIST`，否则原子创建"，才是"不存在才
+    创建"的正确原子判据（`rename` 没有对应的"仅当不存在才替换"变体）。
+    目标是符号链接**一律拒绝**（不跟随写入——跟随等于让根目录里的一条软链把
     写操作重定向到根外，这比读泄漏更危险）；目标已存在时**默认拒绝覆盖**，须显式
     `overwrite:true`（覆盖不可逆，旧内容不保留，与 `apply_sql` 的 `DELETE` 同一类风险，
     故同样要求显式意图——`overwrite` 之于 `write_file` 相当于 `WHERE` 之于 `DELETE`）；
-    大小上限 64 KiB、内容含 NUL 拒绝、父目录不自动创建（`path` 的父目录必须已存在）。
-    **已知限制**：不做 `fsync`（断电场景下"刚写完就断电"可能丢失这次写入，但 `rename`
+    大小上限 64 KiB、内容含 NUL 拒绝、父目录不自动创建（`path` 的父目录必须已存在）；
+    落地文件权限 **0600**（不随 umask 放宽，与审计日志 / 会话文件 / REPL 历史同规）——
+    代价是别的用户或进程读不到写出来的文件，需要跨用户/跨进程共享时本工具不适用，
+    这一点也写进了模型可见的工具描述。
+    **已知限制**：不做 `fsync`（断电场景下"刚写完就断电"可能丢失这次写入，但落地
     本身的原子性仍成立——不会出现"目标内容新旧混合"的半写状态）；不做版本历史/回滚
     （覆盖前的旧内容不保留，如需回溯请在受版本控制的目录里使用 `--fs-root`）。
 
