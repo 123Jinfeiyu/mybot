@@ -154,6 +154,9 @@ std::string helpText() {
 	s += "                       只有列进来的变量可读——执行器（Servo/Relay 等）也是 Lua\n";
 	s += "                       驱动，靠种类分不出传感器与执行器，故由操作者显式声明；\n";
 	s += "                       配置文件写 read_vars 会被拒绝加载（与 --agent-shell 同判据）\n";
+	s += "  --fs-root <目录>      list_dir / read_file 的只读根目录（可读机器人主机上的\n";
+	s += "                       普通文件，与硬件/shell 无关）。**缺省不提供**这两个工具；\n";
+	s += "                       配置文件写 fs_root 会被拒绝加载（与 --read-var 同判据）\n";
 	s += "  --agent-policy <路径> 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过\n";
 	s += "                       外部确认程序（stdin 收工具名与遮蔽后的参数 JSON，\n";
 	s += "                       退出 0 = 放行）；超时按 on_timeout（缺省 deny）处理；\n";
@@ -224,6 +227,8 @@ std::string topicAgentHelp() {
 	s += "  --read-var <变量名>    声明可读硬件变量（可重复；注册 read_variables 与\n";
 	s += "                       wait_variable 工具）。\n";
 	s += "                       缺省不提供；配置文件不能给\n";
+	s += "  --fs-root <目录>      list_dir / read_file 的只读根目录（主机文件，与硬件\n";
+	s += "                       无关）。缺省不提供；配置文件不能给\n";
 	s += "  --agent-policy <路径> 策略钩子：命中 require_confirm 的工具调用先过外部\n";
 	s += "                       确认程序（退出 0 = 放行；超时按 on_timeout，缺省 deny）\n";
 	s += "  --scripts-dir <目录>  动作脚本根目录（run_action_script 的沙箱边界）\n";
@@ -295,8 +300,8 @@ std::string topicMcpHelp() {
 	s += "      require_confirm 必须分别包含 run_command / apply_sql（无人值守暴露危险能力\n";
 	s += "      必须有外部确认闸门）；纯只读/查询/动作脚本后端不受此约束。\n\n";
 	s += "复用 agent 的工具上下文/能力门控选项（决定对外宣告哪些工具）：\n";
-	s += "  --agent-shell / --agent-hot-sql / --read-var / --camera-* / --no-camera /\n";
-	s += "  --scripts-dir / --agent-policy / --audit-log\n";
+	s += "  --agent-shell / --agent-hot-sql / --read-var / --fs-root / --camera-* /\n";
+	s += "  --no-camera / --scripts-dir / --agent-policy / --audit-log\n";
 	s += "（--task / --llm-* / --prompt-file / --session-file / --resume 属于 mybot-agent）\n\n";
 	s += "示例：\n";
 	s += "  ./build/mybot --robot=robots/relay-test.sql --mcp-backend \\\n";

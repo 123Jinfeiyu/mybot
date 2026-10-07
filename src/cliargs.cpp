@@ -49,6 +49,9 @@ constexpr OptionSpec kValueOptions[] = {
 	{"agent-policy", [](CliOptions& o, const std::string& v) { o.agent.agentPolicy = v; }, true},
 	{"session-file", [](CliOptions& o, const std::string& v) { o.agent.sessionFile = v; }, true},
 	{"camera-src-dir", [](CliOptions& o, const std::string& v) { o.agent.cameraSrcDir = v; }, true},
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录，命令行独占
+	 * （同 camera-src-dir/read-var 一族，见 actionsource.hpp 的字段注释）。 */
+	{"fs-root", [](CliOptions& o, const std::string& v) { o.agent.fsRoot = v; }, true},
 	{"task", [](CliOptions& o, const std::string& v) { o.agent.agentTask = v; }, true},
 	/* 可重复：每项一个可读变量名（发现 2 的 A 步，命令行独占） */
 	{"read-var", [](CliOptions& o, const std::string& v) { o.agent.readVars.push_back(v); }, true},
@@ -142,7 +145,7 @@ int rejectAgentOptionsOutsideBackend(const CliOptions& options) {
 	std::cerr << "参数错误：--agent-shell "
 		"/ --agent-hot-sql / --agent-policy / --read-var / --scripts-dir "
 		"/ --camera-var / --camera-device / --camera-src / --camera-src-dir "
-		"/ --no-camera / --audit-log / --check-config 只在 --mcp-backend 模式下有效；"
+		"/ --no-camera / --audit-log / --check-config / --fs-root 只在 --mcp-backend 模式下有效；"
 		"用 --help 查看说明"
 		<< std::endl;
 	return 2;

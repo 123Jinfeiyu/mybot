@@ -135,7 +135,7 @@ bool loadConfigRoot(const std::string& path, Json& root, std::string& err) {
 		"reasoning_effort", "thinking", "max_turns", "scripts_dir", "allow_shell",
 		"allow_hot_sql",
 		"prompt_files", "camera_var", "camera_device", "camera_src", "camera_src_dir",
-		"allow_camera", "audit_log", "agent_policy", "read_vars",
+		"allow_camera", "audit_log", "agent_policy", "read_vars", "fs_root",
 		"session_file",
 		"max_history_bytes", "max_task_tool_result_bytes", "max_task_image_bytes",
 		"max_calls_per_round", "max_retries", "retry_backoff_ms",
@@ -162,6 +162,9 @@ bool parseConfigStrings(const std::string& path, const Json& root, LlmFileConfig
 	 * buildAgentConfig）——若不在这里解析，它会落到「未知字段」分支，
 	 * 报错会让人以为是拼写错误。 */
 	if (!wantString(path, root, "camera_src_dir", out.cameraSrcDir, err)) { return false; }
+	/* Phase 4：同 camera_src_dir 的 H1 理由——解析出来只为了指名拒绝 fs_root，
+	 * 不让它落进「未知字段」分支被误读成拼写错误。 */
+	if (!wantString(path, root, "fs_root", out.fsRoot, err)) { return false; }
 	return true;
 }
 

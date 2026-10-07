@@ -163,6 +163,7 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 | `--agent-hot-sql` | **显式开启** `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配、上电，失败整批回滚）；须有 policy 且 `require_confirm` 包含 `apply_sql` | **不提供**（见「安全」节第 10 条）；只能由后端命令行授权，配置文件不能自行开启 |
 | `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序**；也可由后端配置的 `agent_policy` 指定 | 未开危险能力时可不启用（见「策略钩子」节） |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量，**可重复**；注册 `read_variables` 与 `wait_variable` 工具（缺省**不提供**这两个工具）。只有已注册且种类为 `lua`（驱动）或 `daemon`（守护快照）的名字生效——执行器与传感器同属 `kind=lua`，靠种类分不出，故必须由人列名（见「工具」表与安全说明第 12 条） | 不提供（即无回读能力；声明了名字但一个都不可读时也不提供） |
+| `--fs-root <目录>` | **list_dir / read_file 的只读根目录**（Phase 4）；注册这两个只读文件工具（与硬件/shell 无关）。路径沙箱见 `agent_sandbox.hpp`（见「工具」表与安全说明第 13 条） | 不提供（即无这两个工具）；**只能命令行给**，配置文件写 `fs_root` 会被拒绝加载 |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」。**命令行**给的 src 以其所在目录为白名单根；配置文件给的 `camera_src` **不**推导根（见安全说明第 9 条），需配 `--camera-src-dir` 或 `BOT4CJ_CAMERA_SRC_DIR` | — |
@@ -232,7 +233,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `stream` `max_turns` `max_task_seconds` `scripts_dir`
   `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
-  `agent_policy` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
+  `agent_policy` `read_vars` `fs_root` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec` `action_script_timeout_sec` `history_summary` `max_summary_bytes`。
   配置文件字段均可省略；Rust 必需的 endpoint、model、密钥须由其他入口补齐。
@@ -248,6 +249,8 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   `camera_src_dir` 与 `read_vars` 则**一律拒绝**（写了就退出 2，无论命令行给不给）：
   它们分别决定"能读哪个目录"与"能读哪些硬件变量"，属**放宽读权限**的字段，
   只能由命令行 `--camera-src-dir` / `--read-var` 提供（理由见第 9、12 条）。
+  `fs_root` 同判据（理由见第 13 条）：只能由命令行 `--fs-root` 提供，写进配置文件
+  同样一律拒绝加载并退出 2。
   三个 `max_*_bytes` 字段是**上下文字节预算**（单位字节，`0` = 不限，上限 64 MiB）：
   `max_history_bytes` 会话历史（缺省 4 MiB）、`max_task_tool_result_bytes` 单任务内
   文本（缺省 2 MiB）、`max_task_image_bytes` 单任务内图片（缺省 4 MiB）。原为编译期
@@ -384,6 +387,8 @@ provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
 | `apply_sql` | 结构 SQL **带电生效**：`CREATE TABLE` 建新表（装配驱动模块、真机上电、注册变量）、`INSERT INTO` 往既有表追加行、**`DELETE FROM ... [WHERE ...]` 当场逆序断电并摘除匹配行**（无条件写法删全表）、**`DROP TABLE ...` 当场撤下整张表**（行 + 表壳；**不带 `WHERE`**——它是 DDL、作用于整张表）、**`UPDATE ... SET ... [WHERE ...]` 按断电重建改写命中行**（先摘旧件再装新件；无条件写法改全表数据行；与该表其它行级语句不得同批，拆两次调用即可）；同批次的 `Action` 行执行一次即丢弃（瞬态，不注册） | **缺省不注册**，须命令行 `--agent-hot-sql` 显式开启（配置文件的 `allow_hot_sql` 只能关不能开）；表名/列名须为安全标识符、驱动模块须已在模块路径下、`@Daemon` 行的 `chunk` 须为相对路径；校验全部只读，**任一步失败整批回滚**（逆序断电 + 注册表回退），但已下发的物理动作不回退。**`DELETE`/`DROP` 是不可逆的物理断电，没有回滚**：全部校验（含引用完整性）在动第一个器件之前跑完，中途物理失败则如实报「已删 N 个（名单）、M 个未删」；被 `controller`/`trigger`/`$`/`$(...)` 引用着的变量拒绝删除/改写并点名引用方。**`UPDATE` 批次是先删后建**：新件装配失败时已摘旧件不复原，错误点名丢失的变量（按需要的值重新 INSERT 即可恢复）。对照/查询请用 `query_sql` |
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节）。可请求采集尺寸：`width`/`height`（像素 16..8192，须同时给出，缺省 640x480）——换尺寸重开设备、代价高于同尺寸连拍；设备就近调档时回执报**实际**尺寸；仿真来源不缩放、请求尺寸无效并明说 |
 | `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗、继承 fd 全部 CLOEXEC、**回执进模型上下文前遮蔽敏感值**（G1）；**缺省不注册**，须命令行 `--agent-shell` 显式开启（配置文件的 `allow_shell` 只能关不能开，写 `true` 会拒绝加载） |
+| `list_dir` | 列出机器人主机上一个目录下的条目（文件名 + 类型 + 大小；只读、不递归；`path` 缺省为只读根目录本身） | 符号链接条目不列；条目数上限 1000（超限截断并标注）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（配置文件的 `fs_root` 一律拒绝加载，见安全说明第 13 条） |
+| `read_file` | 读取机器人主机上一个文本文件的全部内容（只读） | 路径必须落在 `--fs-root` 根目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）；大小上限 64 KiB（超限响亮拒绝，不截断）；二进制（含 NUL 或非法 UTF-8）拒绝返回；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（与 `list_dir` 同门控，配置文件不能开） |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -972,6 +977,27 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     理由）；一个都不可读时该工具不注册。
     边界如实声明：**读传感器也可能有副作用**——部分器件的 `call` 会先写触发寄存器再读，
     所以这是一次**派发**（照走任务预算与审计），不是"绝对不改状态"的承诺。
+
+13. **`list_dir` / `read_file` 的只读根目录只能由操作者显式指定**（Phase 4，2026-10-07）。
+    这两个工具让模型访问机器人主机上的**普通文件系统**（与硬件/shell 无关），故与
+    `read_variables`（第 12 条）同一族判据：
+    ① 只读根目录由命令行 `--fs-root <目录>` 声明，**缺省不提供这两个工具**；
+    ② 配置文件写 `fs_root` 会被**拒绝加载并退出 2**（配置只能收紧不能放宽，与
+    `allow_shell` / `camera_src_dir` / `read_vars` 同判据，理由同第 1 条）；
+    ③ 根目录在上电前预检（必须 `canonical` 存在且是目录，判据与 `--on-disconnect`
+    同口径），拼错目录名在配置期就失败，不必等到模型第一次调 `list_dir` 才发现。
+    路径沙箱是独立于 `resolveActionScriptPath`（动作脚本的词法校验）与
+    `capture_image` 白名单（Lua 侧 `realpath` + 前缀比较）的**第三套实现**
+    （`agent_sandbox.hpp` 的 `resolveUnderRoot`）：词法层拒绝绝对路径/`..`/空段/NUL，
+    语义层沿路径回退到**已存在的最长前缀**做 `canonical` 包含性判定——即使目标文件本身
+    尚不存在（`read_file` 读一个刚创建的路径），其已存在的祖先目录若是指向根外的符号链接
+    仍会被拦下，不必等到 `open()`。`read_file` 另在 `O_NOFOLLOW` 读取层拒绝目标文件本身是
+    符号链接的情形（两层防线职责不同、缺一不可，见该头文件头注）；只读文本，二进制内容
+    （含 NUL 或非法 UTF-8）一律拒绝返回，不 base64 静默塞进上下文。`list_dir` 的目录条目
+    里软链同样不列出（与 `list_action_scripts` 对脚本目录软链的既有判据一致）。
+    与 `run_command`（第 1 条）的关系：对一个已经开了 `--agent-shell` 的部署，这两个工具
+    并不额外扩大能力上限（`run_command` 本就能读文件），但它们是结构化、单文件、可审计的
+    窄接口，适合"只是想看某个文件"这个具体动作，而不必派发一条任意 shell 命令。
 
 ## 源码分层
 

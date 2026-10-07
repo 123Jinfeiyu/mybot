@@ -66,6 +66,12 @@ struct AgentModeConfig {
 	 * （--read-var，可重复）。**命令行独占**：配置文件写 read_vars 会被拒绝加载
 	 * （与 allow_shell / camera_src_dir 同判据）。空 = 不注册 read_variables。 */
 	std::vector<std::string> readVars;
+	/* list_dir / read_file 的只读根目录（Phase 4，2026-10-07，--fs-root）。
+	 * **命令行独占**（配置文件写 fs_root 会被拒绝加载，与 readVars 同判据）。
+	 * 空 = 不注册这两个工具。buildAgentConfig 在上电前校验其 canonical 存在
+	 * 且是目录（配置错误不碰真机）——走到 makeToolContext 时要么是空串，
+	 * 要么已经是校验通过的路径。 */
+	std::string fsRoot;
 	/* 断连安全动作（2026-09-25，--on-disconnect）：连接结束后由后端自行执行的
 	 * 动作脚本（scriptsDir 之下的相对路径）。命令行独占（配置文件不能给）；
 	 * buildAgentConfig 在上电前经 loadActionScriptFile 预检（越界/不存在/为空

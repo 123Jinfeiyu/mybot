@@ -12,9 +12,9 @@
 #        用例表结构与两套计数互证（条数派生，tokenizer 在 test/lib/case_table.awk）、
 #        TSan 名单**双向**核对、四个守门单点，以及末尾**实跑**一次拼错过滤器核对空匹配
 #        防线——那是本自检唯一执行 run_all.sh 的地方，0.1s 级，见第 7 段）；
-#   8–13 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
-#        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据、LLM wire 可钉部分）
-#        ——全部零编译，理由见第 8 段。
+#   8–14 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
+#        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据、LLM wire 可钉部分、
+#        后端工具注册表与 docs/agent.md 工具表）——全部零编译，理由见第 8 段。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -375,12 +375,14 @@ if command -v python3 >/dev/null 2>&1; then
 		|| note "scripts/check_stateful_protocol.py 发现有状态协议判据双端不一致（详见上方输出）"
 	python3 scripts/check_llm_wire.py \
 		|| note "scripts/check_llm_wire.py 发现 LLM wire 契约不一致（详见上方输出）"
+	python3 scripts/check_agent_tool_table.py \
+		|| note "scripts/check_agent_tool_table.py 发现后端工具注册表与 docs/agent.md 工具表不一致（详见上方输出）"
 else
-	note "缺 python3，无法跑 scripts/check_doc_paths.py、scripts/check_llm_field_whitelist.py、scripts/check_stateful_protocol.py 与 scripts/check_llm_wire.py（文档一致性/配置白名单/有状态协议判据/LLM wire 契约未受检查）"
+	note "缺 python3，无法跑 scripts/check_doc_paths.py、scripts/check_llm_field_whitelist.py、scripts/check_stateful_protocol.py、scripts/check_llm_wire.py 与 scripts/check_agent_tool_table.py（文档一致性/配置白名单/有状态协议判据/LLM wire 契约/工具表一致性未受检查）"
 fi
 
 if [ "$fail" -ne 0 ]; then
 	echo "run_all_selftest: $fail 项不合格" >&2
 	exit 1
 fi
-echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / 守门单点与空匹配防线 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约）"
+echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / 守门单点与空匹配防线 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约 / 后端工具表一致性）"

@@ -82,7 +82,8 @@ chmod 600 "$POLICY_DENY"
 # 用法: frame_client.py <sock> <expect_run_command:true|false> [<scenario> [<marker>]]
 #   scenario 缺省 base（只跑公共断言）；其余取值是从 scripts/agent_e2e.sh 迁来的
 #   C++ 工具层场景（hotsql / hotsqloff / hotdelete / readvar / readvaroff /
-#   policydeny）——这些性质属于后端工具面，不经模型就能定死判据，
+#   policydeny）以及本仓新增的 fsroot / fsrootoff（Phase 4 只读文件工具）——这些
+#   性质属于后端工具面，不经模型就能定死判据，
 #   比走一趟假模型更可复现。marker 只给 policydeny 用（被拒命令本该写的那个文件）。
 cat > "$TMP/frame_client.py" <<'PY'
 import socket, struct, json, sys
@@ -243,6 +244,32 @@ try:
 		d = tool_text("read_variables", {})
 		chk(d.get("ok") is False and "未知工具" in d.get("text", ""),
 			"缺 --read-var 时调用 read_variables → 未知工具")
+	elif scenario == "fsroot":
+		# 场景 16（Phase 4，2026-10-07）：--fs-root 注册 list_dir/read_file，
+		# 打通「工具派发 → 沙箱解析 → 真读到根目录下的文件」。根目录由后端 argv
+		# 传入（$FSROOT），里面预置 hello.txt 与子目录。
+		chk("list_dir" in tools, "--fs-root 时 list_dir 在工具表内")
+		chk("read_file" in tools, "--fs-root 时 read_file 在工具表内")
+		d = tool_text("list_dir", {})
+		chk(d.get("ok") is True and "hello.txt" in d.get("text", ""),
+			"list_dir 列出根目录下的文件；片段: " + repr(d.get("text", "")[:160]))
+		d = tool_text("read_file", {"path": "hello.txt"})
+		chk(d.get("ok") is True and "mcp-e2e-fsroot-content" in d.get("text", ""),
+			"read_file 读回文件内容；片段: " + repr(d.get("text", "")[:160]))
+		# 沙箱：越界路径（绝对/..）一律拒绝，且按参数错误口径回执。
+		d = tool_text("read_file", {"path": "../etc/passwd"})
+		chk(d.get("ok") is False and d.get("paramError") is True and d.get("executed") is False,
+			"read_file 越界路径 → paramError（没执行）")
+		d = tool_text("read_file", {"path": "/etc/passwd"})
+		chk(d.get("ok") is False and d.get("paramError") is True,
+			"read_file 绝对路径 → paramError")
+	elif scenario == "fsrootoff":
+		# 场景 16b 对照：缺 --fs-root ⇒ 两个工具都不在表内（缺省即无此能力）。
+		chk("list_dir" not in tools, "缺 --fs-root 时 list_dir 不在工具表内")
+		chk("read_file" not in tools, "缺 --fs-root 时 read_file 不在工具表内")
+		d = tool_text("read_file", {"path": "hello.txt"})
+		chk(d.get("ok") is False and "未知工具" in d.get("text", ""),
+			"缺 --fs-root 时调用 read_file → 未知工具")
 	elif scenario == "policydeny":
 		# 场景 9（拒绝版）：确认程序恒退 1 ⇒ 策略拦截发生在执行**之前**，
 		# 被拒的调用一个副作用都不能有。marker 路径由 argv[4] 传入，跑完必须不存在。
@@ -335,6 +362,14 @@ phase "--agent-hot-sql 热删除（INSERT → DELETE → 清单消失）" false 
 	--agent-hot-sql --agent-policy "$POLICY"
 phase "--read-var relay0（回读带驱动返回表的键）" false "$TMP/p6" readvar --read-var relay0
 phase "缺 --read-var（工具不在表内）" false "$TMP/p7" readvaroff
+
+# ---- 只读文件工具（Phase 4，2026-10-07，--fs-root）：沙箱根 + 正反两趟 ----
+# 根目录在 phase 之前建好（含 hello.txt），--fs-root 独占给根、文件工具随之外露。
+FSROOT="$TMP/fsroot-home"
+mkdir -p "$FSROOT"
+printf 'mcp-e2e-fsroot-content\n' > "$FSROOT/hello.txt"
+phase "--fs-root（list_dir + read_file，根目录沙箱）" false "$TMP/pf1" fsroot --fs-root "$FSROOT"
+phase "缺 --fs-root（两个文件工具都不在表内）" false "$TMP/pf2" fsrootoff
 
 # 策略拒绝版（迁自 agent_e2e.sh 场景 9）：确认程序退 1 ⇒ run_command 零副作用。
 phase "--agent-policy 拒绝 ⇒ run_command 零副作用" true "$TMP/p8" policydeny \

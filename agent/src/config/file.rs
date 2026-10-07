@@ -117,6 +117,7 @@ const KNOWN_UNPARSED_FIELDS: &[&str] = &[
     "allow_camera",
     "agent_policy",
     "read_vars",
+    "fs_root",
     "run_command_timeout_sec",
     "run_command_max_timeout_sec",
     "action_script_timeout_sec",

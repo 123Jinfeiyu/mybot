@@ -572,6 +572,12 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 	if (ctx.allowHotSql) { reg.add(makeApplySqlTool(ctx)); }
 	if (ctx.camera != nullptr) { reg.add(makeCaptureImageTool(ctx)); }
 	if (ctx.allowShell) { reg.add(makeRunCommandTool(ctx)); }
+	/* Phase 4（2026-10-07）：只读文件工具。--fs-root 是唯一门控（命令行独占，
+	 * 已在 buildAgentConfig 校验为存在的目录）——给了才注册，空串即无此能力。 */
+	if (!ctx.fsRoot.empty()) {
+		reg.add(makeListDirTool(ctx));
+		reg.add(makeReadFileTool(ctx));
+	}
 	return reg;
 }
 

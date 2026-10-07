@@ -79,6 +79,9 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 	s += "  read/wait_variable: " + (cfg.readVars.empty()
 			? std::string("未提供（缺省关；用 --read-var <变量名> 指定可读变量）")
 			: "已声明 " + std::to_string(cfg.readVars.size()) + " 项") + "\n";
+	s += "  list_dir/read_file: " + (cfg.fsRoot.empty()
+			? std::string("未提供（缺省关；用 --fs-root <目录> 指定只读根目录）")
+			: "已开启（根目录 " + cfg.fsRoot + "）") + "\n";
 	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
 	s += "  策略钩子    : " + orNone(cfg.policyPath, "(未启用)") + "\n";
 	s += "  断连安全动作: " + orNone(cfg.onDisconnectScript, "(未配置；断连后硬件停在最后姿态)") + "\n";
@@ -214,6 +217,28 @@ bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
 		err = relaxingFieldError(cfgPath, "read_vars",
 			"它决定模型能主动读哪些硬件变量（等同于给模型一条读通道）", "--read-var");
 		return false;
+	}
+
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录。同上四个字段：
+	 * 只能命令行给——它决定"能读哪个目录"，等价于放宽读权限。 */
+	out.fsRoot = opts.agent.fsRoot;
+	if (file.fsRoot) {
+		err = relaxingFieldError(cfgPath, "fs_root",
+			"它决定 list_dir/read_file 能读哪个目录（等同于给模型一条主机文件读通道）",
+			"--fs-root");
+		return false;
+	}
+	/* 给了根就校验它是真实存在的目录——与 --on-disconnect 的上电前预检同口径：
+	 * 配置错误在结构装载与上电之前失败，而不是等模型第一次调 list_dir 才发现。
+	 * 这里**不**做 canonical 化后替换 out.fsRoot（保持操作者原样传入，判据单点
+	 * 仍是工具层的 resolveUnderRoot）；只做一次可读性/类型体检。 */
+	if (!out.fsRoot.empty()) {
+		std::error_code ec;
+		const fs::path p = fs::canonical(out.fsRoot, ec);
+		if (ec || !fs::is_directory(p, ec)) {
+			err = "--fs-root 只读根目录不可用（不存在或不是目录）: " + out.fsRoot;
+			return false;
+		}
 	}
 	return true;
 }
@@ -368,6 +393,7 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 	tctx.maxCommandTimeoutSec = cfg.maxCommandTimeoutSec;
 	tctx.scriptTimeoutSec = cfg.scriptTimeoutSec;	/* PL-2：动作脚本执行预算 */
 	tctx.readVars = cfg.readVars;			/* 发现 2 的 A 步：声明原文（注册时解析） */
+	tctx.fsRoot = cfg.fsRoot;	/* Phase 4：已在 buildAgentConfig 校验存在且是目录 */
 	/* 声明的可读变量里被跳过的那些（未注册 / 种类不是 lua·daemon）如实告知：
 	 * 静默丢能力正是本项目反复要避免的形态——`--read-var` 敲错一个字，
 	 * 操作者必须能从启动输出里看出来，而不是等到模型说"我读不到"。 */

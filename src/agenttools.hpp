@@ -132,6 +132,14 @@ struct AgentToolContext {
 	 *                     两者都没有即驱动侧"未放行"拒绝。不推导、不猜、不回落 "."。 */
 	bool cameraSrcFromCli = false;
 	std::string cameraSrcRoot;
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录（--fs-root）。
+	 * 空 = 不注册这两个工具（安全缺省）。**命令行独占**：它决定"能读哪个目录"，
+	 * 等价于放宽读权限，判据与 cameraSrcRoot/readVars 同族——配置文件写 fs_root
+	 * 会被 buildAgentConfig 拒绝加载。buildAgentConfig 已校验其 canonical 存在
+	 * 且是目录（配置错误不碰真机），这里收到的要么是空串要么是已验证的路径。
+	 * 路径沙箱判据单点在 agent_sandbox.hpp 的 resolveUnderRoot，不在本结构体内
+	 * 重复判定。 */
+	std::string fsRoot;
 };
 
 /* 构造标准工具集：list_action_scripts / run_action_script / list_hardware / query_sql，

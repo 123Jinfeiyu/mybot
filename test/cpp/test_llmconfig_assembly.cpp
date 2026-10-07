@@ -398,3 +398,80 @@ TH_TEST(agentconfig_read_vars_from_config_is_rejected) {
 	TH_CHECK(!buildAgentConfig(o, out2, err2));
 	TH_CHECK(err2.find("read_vars") != std::string::npos);
 }
+
+/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录——命令行独占，同
+ * read_vars/camera_src_dir 判据：配置文件写 fs_root 一律拒绝加载并指名入口。 */
+TH_TEST(agentconfig_fs_root_from_config_is_rejected) {
+	NoKeyEnv nokey;
+	TempDir tmp("fsroot-config");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({"fs_root":"/tmp"})", fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
+	TH_CHECK(err.find("fs_root") != std::string::npos);
+	TH_CHECK(err.find("--fs-root") != std::string::npos);
+
+	/* 即使命令行也给了 --fs-root，配置里的 fs_root 仍被拒（只能收紧不能放宽） */
+	CliOptions o = baseOptions(cfg.string());
+	o.agent.fsRoot = tmp.path().string();
+	AgentModeConfig out2;
+	std::string err2;
+	TH_CHECK(!buildAgentConfig(o, out2, err2));
+	TH_CHECK(err2.find("fs_root") != std::string::npos);
+}
+
+/* --fs-root 在上电前预检存在性（同 --on-disconnect 口径）：拼错目录名要在配置期
+ * 就失败，而不是等模型第一次调 list_dir 才发现。 */
+TH_TEST(agentconfig_fs_root_requires_existing_directory) {
+	NoKeyEnv nokey;
+	TempDir tmp("fsroot-missing");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({})", fs::perms::owner_all);
+
+	CliOptions o = baseOptions(cfg.string());
+	o.agent.fsRoot = (tmp.path() / "no-such-dir").string();
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(!buildAgentConfig(o, out, err));
+	TH_CHECK_MSG(err.find("--fs-root") != std::string::npos, err);
+
+	/* 存在但不是目录（是个文件）同样拒绝 */
+	fs::path notADir = tmp.path() / "plain.txt";
+	writeFile(notADir, "x", fs::perms::owner_all);
+	CliOptions o2 = baseOptions(cfg.string());
+	o2.agent.fsRoot = notADir.string();
+	AgentModeConfig out2;
+	std::string err2;
+	TH_CHECK(!buildAgentConfig(o2, out2, err2));
+	TH_CHECK_MSG(err2.find("--fs-root") != std::string::npos, err2);
+}
+
+/* 合法根目录：buildAgentConfig 通过、makeToolContext 把它原样传进 AgentToolContext
+ * （沙箱判据单点在 resolveUnderRoot，这里只钉"配置层把值传到了工具层"）。 */
+TH_TEST(agentconfig_fs_root_valid_directory_reaches_tool_context) {
+	NoKeyEnv nokey;
+	TempDir tmp("fsroot-ok");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({})", fs::perms::owner_all);
+
+	CliOptions o = baseOptions(cfg.string());
+	o.agent.fsRoot = tmp.path().string();
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+	TH_CHECK(out.fsRoot == tmp.path().string());
+
+	MemoryReader input("");
+	RobotStruct robot(input);
+	std::ostringstream log;
+	const auto ctx = makeToolContext(out, robot, log);
+	TH_CHECK(ctx.fsRoot == tmp.path().string());
+
+	/* 缺省（未给 --fs-root）：fsRoot 为空 */
+	AgentModeConfig out2;
+	std::string err2;
+	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out2, err2), err2);
+	TH_CHECK(out2.fsRoot.empty());
+}

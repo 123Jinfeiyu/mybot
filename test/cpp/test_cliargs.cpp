@@ -483,6 +483,9 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	TH_CHECK(defs.count("--on-disconnect") == 1);
 	/* H1：capture_image 白名单根目录（命令行独占，配置文件写它会被拒绝加载） */
 	TH_CHECK(defs.count("--camera-src-dir") == 1);
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录（命令行独占，
+	 * 配置文件写 fs_root 会被拒绝加载，与 --camera-src-dir 同判据） */
+	TH_CHECK(defs.count("--fs-root") == 1);
 	/* 已移除的选项不得在帮助里复活（2026-09-20 评估：--llm-key 明文 argv；
 	 * --agent-shell 顶掉 --agent-no-shell；2026-09-24：--agent 与模型循环类
 	 * 选项（--task、九个 --llm- 前缀、--prompt-file、--session-file、--resume）
@@ -500,8 +503,9 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	 * 35（2026-09-23）→ 25（2026-09-24：-14 = --agent/--task/--llm-*×9/
 	 * --prompt-file/--session-file/--resume 迁 mybot-agent；+4 = --mcp-*）
 	 * → 26（2026-09-25：+1 = --mcp-idle-timeout，A-2 空闲连接收口）
-	 * → 27（2026-09-25：+1 = --on-disconnect，断连安全动作）。 */
-	TH_CHECK(defs.size() == 27);
+	 * → 27（2026-09-25：+1 = --on-disconnect，断连安全动作）
+	 * → 28（2026-10-07：+1 = --fs-root，list_dir/read_file 只读根目录）。 */
+	TH_CHECK(defs.size() == 28);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);

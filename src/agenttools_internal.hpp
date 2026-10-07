@@ -43,5 +43,10 @@ AgentTool makeCaptureImageTool(const AgentToolContext& ctx);
  * makeAgentTools 按「至少一个可读变量」挂载） */
 AgentTool makeWaitVariableTool(const AgentToolContext& ctx);
 
+/* list_dir / read_file 工具的装配（agenttools_fs.cpp；makeAgentTools 按
+ * `!ctx.fsRoot.empty()`（--fs-root）挂载，两者同一门控）。 */
+AgentTool makeListDirTool(const AgentToolContext& ctx);
+AgentTool makeReadFileTool(const AgentToolContext& ctx);
+
 } // namespace agent
 } // namespace bot

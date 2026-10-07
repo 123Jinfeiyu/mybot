@@ -64,6 +64,10 @@ struct LlmFileConfig {
 	 * 仍列进已知字段而不是靠"未知字段"报错，是为了给出指名道姓的原因。 */
 	std::optional<std::vector<std::string>> readVars;
 	std::optional<bool> allowCamera;
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录——解析出来**只为了
+	 * 拒绝它**（同 cameraSrcDir/readVars 的判据）：只能命令行 --fs-root 提供，
+	 * 配置文件不能给模型开放"读主机文件"的能力。 */
+	std::optional<std::string> fsRoot;
 	/* 审计轨迹落点（JSON Lines；"-" = stderr）。空/未配置 = 不记录。
 	 * 与 --audit-log 同义；命令行优先。 */
 	std::optional<std::string> auditLog;

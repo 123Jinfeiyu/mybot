@@ -136,6 +136,7 @@ set(MYBOT_CORE_SOURCES
   src/agenttools_wait.cpp
   src/agentview.cpp
   src/agentimage.cpp
+  src/agenttools_fs.cpp
   src/agentdispatch.cpp
   src/agentprompt.cpp
   src/agentmode.cpp
@@ -242,10 +243,12 @@ add_executable(mybot_tests
   test/cpp/test_agenttools_image.cpp
   test/cpp/test_agenttools_runcommand.cpp
   test/cpp/test_agenttools_subproc.cpp
+  test/cpp/test_agenttools_fs.cpp
   test/cpp/test_agentaudit.cpp
   test/cpp/test_agentpolicy.cpp
   test/cpp/test_mcpbackend.cpp
   test/cpp/test_mcptransport.cpp
+  test/cpp/test_agenttools_sandbox.cpp
   src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
 )

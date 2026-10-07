@@ -62,6 +62,12 @@ RUST_PROVIDER_RS = "agent/src/provider.rs"
 E2E_AGENT_SH = "scripts/agent_e2e.sh"
 E2E_ICA_SH = "scripts/ica_e2e.sh"
 
+# 第 14 段：后端工具注册表 ↔ docs/agent.md 工具表同集合（check_agent_tool_table.py）
+AGENTTOOLS_CPP = "src/agenttools.cpp"
+AGENTTOOLS_WAIT_CPP = "src/agenttools_wait.cpp"
+AGENTTOOLS_FS_CPP = "src/agenttools_fs.cpp"
+DOCS_AGENT_MD = "docs/agent.md"
+
 
 def resolve(ref):
     """把协议出处（仓内相对路径字符串或 Path）解析成仓库根下的绝对 Path。

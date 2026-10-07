@@ -325,12 +325,22 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
     改坏夹具 path 断言 / 制造族名-路径错配，均 `exit 1`。**C++/Lua 不参与**（不再实现
     LLM 网络）、**rig 独占字段**（请求体/SSE 帧名/响应字段/鉴权头名）在脚本头逐条登记为
     如实差异。
+14. **后端工具注册表 ↔ docs/agent.md 工具表同集合**（`scripts/check_agent_tool_table.py`）：
+    代码侧四个 TU（`src/agenttools.cpp`/`src/agenttools_wait.cpp`/`src/agenttools_fs.cpp`/
+    `src/agentimage.cpp`）里
+    每个 `return AgentTool{"<name>", ...}` 的工具名，必须与
+    [agent.md](agent.md)「给智能体的工具」一节表格第一列**双向**同集合。工具表是手工
+    维护的（无自动生成，与 docs/sim.md「跨构建系统不做代码生成」同一取舍），此前只有
+    ICA 本地工具那一半有自钉（`agent/src/ica/specs.rs` 的 `all.len() == 8`），后端工具
+    这一半一直是空的——加/删/改名一个工具只要忘了同步文档表，只能靠评审发现。比对的是
+    「代码里一共定义了哪些工具」而非「某次运行实际门控放行了哪些」（与表格第三列各写
+    门控条件的既有体例一致）。
 
 ### 四处套件的计数口径
 
-| 套件 | 怎么跑 | 计数（2026-10-06 快照） |
+| 套件 | 怎么跑 | 计数（2026-10-07 快照） |
 | --- | --- | --- |
-| `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 650 通过 / 0 失败 |
+| `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 672 通过 / 0 失败 |
 | `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
 | `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过（**运行时数**）/ 0 失败（8 个 TU） |
 | Rust agent | `cd agent && cargo test --release` | 153 passed |
@@ -341,9 +351,9 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 
 两个容易对不上的数字，出处写在这里省得每次重推：
 
-- `mybot_tests` 的 650 **不等于** `test/cpp/` 里 `TH_TEST(` 的出现次数（664）。差值有
-  出处：664 − 1 处宏定义（`test/cpp/harness.hpp`）− 13 个属于 `harness_selftest`
-  （独立可执行文件）= 650。拿这个式子复核，别把两个数字硬对齐。
+- `mybot_tests` 的 672 **不等于** `test/cpp/` 里 `TH_TEST(` 的出现次数（686）。差值有
+  出处：686 − 1 处宏定义（`test/cpp/harness.hpp`）− 13 个属于 `harness_selftest`
+  （独立可执行文件）= 672。拿这个式子复核，别把两个数字硬对齐。
 - `harness_selftest` 那个文件里有 13 个 `TH_TEST`，二进制只报 8 通过：另外 5 个 `meta_*`
   是**故意含失败形态的例句**，只作被测对象（由自证用例内部的 `judge(filter)` →
   `runAllOutcome(filter, quiet=true)` 调到），不进缺省全量跑——否则主输出里会混进一串

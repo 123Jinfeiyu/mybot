@@ -111,6 +111,12 @@ struct CliOptions {
 		 * 用其所在目录当根，配置文件来源的 camera_src 则不推导（驱动侧默认拒绝）。 */
 		std::string cameraSrcDir;
 		bool noCamera = false;		/* --no-camera：不提供拍照工具 */
+		/* --fs-root <目录>：list_dir / read_file 的**只读根目录**（Phase 4，2026-10-07）。
+		 * 命令行独占：它决定"能读哪个目录"，等价于放宽读权限，判据与 --camera-src-dir /
+		 * --read-var 同族——配置文件写 fs_root 会被拒绝加载。空 = 不注册这两个工具
+		 * （安全缺省）。是否可用（canonical 存在且是目录）在 buildAgentConfig 于上电前
+		 * 校验（配置错误不碰真机）。 */
+		std::string fsRoot;
 		/* --audit-log：审计轨迹落点（JSON Lines 追加；"-" = stderr）。
 		 * 缺省空 = 不记录（保持既有语义）。打开失败的报错与退出在
 		 * agent::buildAgentConfig（配置错误不碰真机）。 */
