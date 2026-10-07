@@ -504,8 +504,9 @@ TH_TEST(cliargs_help_option_set_matches_docs) {
 	 * --prompt-file/--session-file/--resume 迁 mybot-agent；+4 = --mcp-*）
 	 * → 26（2026-09-25：+1 = --mcp-idle-timeout，A-2 空闲连接收口）
 	 * → 27（2026-09-25：+1 = --on-disconnect，断连安全动作）
-	 * → 28（2026-10-07：+1 = --fs-root，list_dir/read_file 只读根目录）。 */
-	TH_CHECK(defs.size() == 28);
+	 * → 28（2026-10-07：+1 = --fs-root，list_dir/read_file 只读根目录）
+	 * → 29（2026-10-08：+1 = --agent-write-file，Phase 5 write_file 工具）。 */
+	TH_CHECK(defs.size() == 29);
 	TH_CHECK(defs.count("--help") == 1);
 	TH_CHECK(defs.count("--audit-log") == 1);
 	TH_CHECK(defs.count("--agent-policy") == 1);

@@ -82,6 +82,8 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 	s += "  list_dir/read_file: " + (cfg.fsRoot.empty()
 			? std::string("未提供（缺省关；用 --fs-root <目录> 指定只读根目录）")
 			: "已开启（根目录 " + cfg.fsRoot + "）") + "\n";
+	s += "  write_file  : " + std::string(cfg.allowWriteFile
+			? "已开启（--agent-write-file，根目录同 --fs-root）" : "未提供（缺省关）") + "\n";
 	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
 	s += "  策略钩子    : " + orNone(cfg.policyPath, "(未启用)") + "\n";
 	s += "  断连安全动作: " + orNone(cfg.onDisconnectScript, "(未配置；断连后硬件停在最后姿态)") + "\n";
@@ -240,6 +242,24 @@ bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
 			return false;
 		}
 	}
+
+	/* Phase 5（2026-10-08）：write_file 的独立开关。与 allow_shell/allow_hot_sql
+	 * 同判据——写权限（能覆盖/改写主机文件）只能命令行 --agent-write-file 给，
+	 * 配置文件写 true 拒绝加载。 */
+	out.allowWriteFile = opts.agent.agentWriteFile;
+	if (!opts.agent.agentWriteFile && file.allowWriteFile.value_or(false)) {
+		err = relaxingFieldError(cfgPath, "allow_write_file",
+			"write_file 能覆盖/改写主机文件（覆盖不可逆）", "--agent-write-file");
+		return false;
+	}
+	/* 跨字段依赖：write_file 复用 --fs-root 作为写根，故给了 --agent-write-file
+	 * 却没给 --fs-root 是配置错误（写权限天然应 ⊆ 读权限，没有"只能写不能读"
+	 * 的正当场景）。在结构装载与上电之前失败（配置错误不碰真机）。 */
+	if (out.allowWriteFile && out.fsRoot.empty()) {
+		err = "--agent-write-file 需要同时提供 --fs-root <目录>"
+			"（write_file 在其中创建/覆盖文件，写根复用只读根，不能只写不读）";
+		return false;
+	}
 	return true;
 }
 
@@ -280,6 +300,7 @@ bool loadPolicyHook(const CliOptions& opts, const LlmFileConfig& file,
  * fail-closed）：
  *   --agent-shell   （run_command）→ 策略必须 require_confirm "run_command"
  *   --agent-hot-sql （apply_sql）  → 策略必须 require_confirm "apply_sql"
+ *   --agent-write-file（write_file）→ 策略必须 require_confirm "write_file"
  * 折中：纯只读 / 查询 / 动作脚本后端（未开上述危险能力）不受此约束。
  * 注意 agentpolicy 仍**不是**隔离边界（同 uid 进程可绕过，见 docs/agent.md
  * 与 mcpbackend.hpp 的残留风险说明）——它是「每次调用先过人/审批」的确认闸门。 */
@@ -298,6 +319,13 @@ bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& 
 		err = "--mcp-backend 开了 --agent-hot-sql（apply_sql）：后端对外暴露且硬件带电，"
 			"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"apply_sql\""
 			"（热插表会立即给新硬件上电，必须有外部确认闸门）";
+		return false;
+	}
+	if (out.allowWriteFile
+		&& (out.policy == nullptr || !out.policy->requiresConfirm("write_file"))) {
+		err = "--mcp-backend 开了 --agent-write-file（write_file）：后端对外暴露，"
+			"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"write_file\""
+			"（无人值守暴露改写主机文件的能力必须有外部确认闸门，覆盖又是不可逆操作）";
 		return false;
 	}
 	return true;
@@ -394,6 +422,7 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 	tctx.scriptTimeoutSec = cfg.scriptTimeoutSec;	/* PL-2：动作脚本执行预算 */
 	tctx.readVars = cfg.readVars;			/* 发现 2 的 A 步：声明原文（注册时解析） */
 	tctx.fsRoot = cfg.fsRoot;	/* Phase 4：已在 buildAgentConfig 校验存在且是目录 */
+	tctx.allowWriteFile = cfg.allowWriteFile;	/* Phase 5：已在 buildAgentConfig 校验依赖 fsRoot */
 	/* 声明的可读变量里被跳过的那些（未注册 / 种类不是 lua·daemon）如实告知：
 	 * 静默丢能力正是本项目反复要避免的形态——`--read-var` 敲错一个字，
 	 * 操作者必须能从启动输出里看出来，而不是等到模型说"我读不到"。 */

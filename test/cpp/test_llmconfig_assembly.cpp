@@ -475,3 +475,148 @@ TH_TEST(agentconfig_fs_root_valid_directory_reaches_tool_context) {
 	TH_CHECK_MSG(buildAgentConfig(baseOptions(cfg.string()), out2, err2), err2);
 	TH_CHECK(out2.fsRoot.empty());
 }
+
+/* ================= Phase 5（2026-10-08）：write_file ================= */
+
+/* 配置文件写 allow_write_file：未给命令行开关时一律拒绝加载（只能收紧不能放宽，
+ * 与 allow_shell 同判据）。命令行已授权时配置里同向写 true 不报错（授权来自
+ * 命令行）——与 agentconfig_shell_... 的 case ④ 逐字同款。 */
+TH_TEST(agentconfig_write_file_from_config_is_rejected) {
+	NoKeyEnv nokey;
+	TempDir tmp("writefile-config");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({"allow_write_file":true})", fs::perms::owner_all);
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(!buildAgentConfig(baseOptions(cfg.string()), out, err));
+	TH_CHECK(err.find("allow_write_file") != std::string::npos);
+	TH_CHECK(err.find("--agent-write-file") != std::string::npos);
+
+	/* 命令行已授权（--agent-write-file + --fs-root）时，配置里同向写 true 放行 */
+	CliOptions o = baseOptions(cfg.string());
+	o.agent.agentWriteFile = true;
+	o.agent.fsRoot = tmp.path().string();
+	AgentModeConfig out2;
+	std::string err2;
+	TH_CHECK_MSG(buildAgentConfig(o, out2, err2), err2);
+	TH_CHECK(out2.allowWriteFile == true);
+}
+
+/* 跨字段依赖：--agent-write-file 没有 --fs-root → 配置错误，上电前拒绝，
+ * 错误点名这条依赖关系（不是某个孤立字段非法）。 */
+TH_TEST(agentconfig_write_file_requires_fs_root) {
+	NoKeyEnv nokey;
+	TempDir tmp("writefile-nofsroot");
+	fs::path cfg = tmp.path() / "llm.json";
+	writeFile(cfg, R"({})", fs::perms::owner_all);
+
+	CliOptions o = baseOptions(cfg.string());
+	o.agent.agentWriteFile = true;	/* 故意不给 --fs-root */
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK(!buildAgentConfig(o, out, err));
+	TH_CHECK_MSG(err.find("--agent-write-file") != std::string::npos
+		&& err.find("--fs-root") != std::string::npos, err);
+}
+
+/* --mcp-backend 下的策略强制（M5 同族，第三个危险能力）：
+ * ① 开 --agent-write-file 却无策略 → 拒，点名 write_file；
+ * ② 策略覆盖 write_file → 放行；
+ * ③ 策略只覆盖 run_command（漏 write_file）→ 仍拒，点名 write_file。 */
+TH_TEST(agentconfig_write_file_backend_requires_policy) {
+	TempDir tmp("writefile-policy");
+	fs::path root = tmp.path() / "root";
+	fs::create_directories(root);
+	fs::path gateWrite = tmp.path() / "write.json";
+	writeFile(gateWrite,
+		R"({"require_confirm":["write_file"],"confirm_command":"/bin/true"})",
+		fs::perms::owner_all);
+	fs::path gateShellOnly = tmp.path() / "shellonly.json";
+	writeFile(gateShellOnly,
+		R"({"require_confirm":["run_command"],"confirm_command":"/bin/true"})",
+		fs::perms::owner_all);
+
+	auto backendOpts = [&]() {
+		CliOptions o;
+		o.mcp.enabled = true;
+		o.robot = std::string("./robots/relay-test.sql");
+		o.agent.llmConfig = "none";
+		o.mcp.mcpSocket = "/tmp/mcp-backend-writefile-test.sock";
+		o.agent.fsRoot = root.string();
+		o.agent.agentWriteFile = true;
+		return o;
+	};
+
+	/* ① 无策略 → 拒，点名 write_file */
+	{
+		CliOptions o = backendOpts();
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK(err.find("write_file") != std::string::npos);
+	}
+	/* ② 策略命中 write_file → 放行 */
+	{
+		CliOptions o = backendOpts();
+		o.agent.agentPolicy = gateWrite.string();
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+	}
+	/* ③ 策略漏了 write_file（只覆盖 run_command）→ 仍拒 */
+	{
+		CliOptions o = backendOpts();
+		o.agent.agentPolicy = gateShellOnly.string();
+		AgentModeConfig out;
+		std::string err;
+		TH_CHECK(!buildAgentConfig(o, out, err));
+		TH_CHECK(err.find("write_file") != std::string::npos);
+	}
+}
+
+/* 合法组合：--fs-root + --agent-write-file + 命中的策略 → 通过，makeToolContext
+ * 正确传递 allowWriteFile，且 write_file 真的出现在工具表里。 */
+TH_TEST(agentconfig_write_file_valid_combo_reaches_tool_context) {
+	TempDir tmp("writefile-ok");
+	fs::path root = tmp.path() / "root";
+	fs::create_directories(root);
+	fs::path gate = tmp.path() / "policy.json";
+	writeFile(gate,
+		R"({"require_confirm":["write_file"],"confirm_command":"/bin/true"})",
+		fs::perms::owner_all);
+
+	CliOptions o;
+	o.mcp.enabled = true;
+	o.robot = std::string("./robots/relay-test.sql");
+	o.agent.llmConfig = "none";
+	o.mcp.mcpSocket = "/tmp/mcp-backend-writefile-ok.sock";
+	o.agent.fsRoot = root.string();
+	o.agent.agentWriteFile = true;
+	o.agent.agentPolicy = gate.string();
+
+	AgentModeConfig out;
+	std::string err;
+	TH_CHECK_MSG(buildAgentConfig(o, out, err), err);
+	TH_CHECK(out.allowWriteFile == true);
+
+	MemoryReader input("");
+	RobotStruct robot(input);
+	std::ostringstream log;
+	const auto ctx = makeToolContext(out, robot, log);
+	TH_CHECK(ctx.allowWriteFile == true);
+	AgentToolRegistry tools = makeAgentTools(ctx);
+	TH_CHECK(tools.contains("write_file"));
+
+	/* 对照：不给 --agent-write-file 时（即使给了 --fs-root），allowWriteFile 为假 */
+	CliOptions o2;
+	o2.mcp.enabled = true;
+	o2.robot = std::string("./robots/relay-test.sql");
+	o2.agent.llmConfig = "none";
+	o2.mcp.mcpSocket = "/tmp/mcp-backend-writefile-off.sock";
+	o2.agent.fsRoot = root.string();
+	AgentModeConfig out2;
+	std::string err2;
+	TH_CHECK_MSG(buildAgentConfig(o2, out2, err2), err2);
+	TH_CHECK(out2.allowWriteFile == false);
+}

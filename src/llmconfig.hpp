@@ -68,6 +68,10 @@ struct LlmFileConfig {
 	 * 拒绝它**（同 cameraSrcDir/readVars 的判据）：只能命令行 --fs-root 提供，
 	 * 配置文件不能给模型开放"读主机文件"的能力。 */
 	std::optional<std::string> fsRoot;
+	/* Phase 5（2026-10-08）：write_file 的独立开关——解析出来**只为了拒绝它**
+	 * （同 allow_shell/allow_hot_sql/fsRoot 的判据）：只能命令行 --agent-write-file
+	 * 提供，配置文件不能给模型开放"改写主机文件"的能力（写比读更危险）。 */
+	std::optional<bool> allowWriteFile;
 	/* 审计轨迹落点（JSON Lines；"-" = stderr）。空/未配置 = 不记录。
 	 * 与 --audit-log 同义；命令行优先。 */
 	std::optional<std::string> auditLog;

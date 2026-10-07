@@ -72,6 +72,12 @@ struct AgentModeConfig {
 	 * 且是目录（配置错误不碰真机）——走到 makeToolContext 时要么是空串，
 	 * 要么已经是校验通过的路径。 */
 	std::string fsRoot;
+	/* write_file 的独立开关（Phase 5，2026-10-08，--agent-write-file）。
+	 * **独立于 fsRoot**：开了只读根不等于给了写权，必须再显式开一道
+	 * （写能覆盖/改写，危险性与 allowShell/allowHotSql 同级）。buildAgentConfig
+	 * 校验它依赖 fsRoot 非空（给了这个开关却没给 --fs-root 是配置错误）；
+	 * --mcp-backend 下还强制要求策略确认（见 enforceBackendConfirmPolicy）。 */
+	bool allowWriteFile = false;
 	/* 断连安全动作（2026-09-25，--on-disconnect）：连接结束后由后端自行执行的
 	 * 动作脚本（scriptsDir 之下的相对路径）。命令行独占（配置文件不能给）；
 	 * buildAgentConfig 在上电前经 loadActionScriptFile 预检（越界/不存在/为空

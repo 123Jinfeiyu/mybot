@@ -143,7 +143,7 @@ int rejectAgentOptionsOutsideBackend(const CliOptions& options) {
 	 * --no-camera 却被报「选项无效」，而文案里没有他刚敲的那一个，
 	 * 看起来像撞上了另一个错误。 */
 	std::cerr << "参数错误：--agent-shell "
-		"/ --agent-hot-sql / --agent-policy / --read-var / --scripts-dir "
+		"/ --agent-hot-sql / --agent-write-file / --agent-policy / --read-var / --scripts-dir "
 		"/ --camera-var / --camera-device / --camera-src / --camera-src-dir "
 		"/ --no-camera / --audit-log / --check-config / --fs-root 只在 --mcp-backend 模式下有效；"
 		"用 --help 查看说明"
@@ -261,6 +261,14 @@ ParsedArgs parseArgs(int argc, char** argv) {
 		}
 		else if (key == "agent-hot-sql") {
 			out.opts.agent.agentHotSql = true;
+			out.opts.agent.agentOptionsUsed = true;
+		}
+		else if (key == "agent-write-file") {
+			/* Phase 5（2026-10-08）：与 --agent-shell/--agent-hot-sql 同形态——
+			 * 表外布尔 flag（kValueOptions 只收「带值」选项）。依赖 --fs-root
+			 * 非空的跨字段校验在 agentmode.cpp 的 applyGatingLayer（这里只负责
+			 * 记录"给了这个开关"，不做字段间关系判断）。 */
+			out.opts.agent.agentWriteFile = true;
 			out.opts.agent.agentOptionsUsed = true;
 		}
 		else if (key == "no-camera") {

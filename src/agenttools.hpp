@@ -140,11 +140,20 @@ struct AgentToolContext {
 	 * 路径沙箱判据单点在 agent_sandbox.hpp 的 resolveUnderRoot，不在本结构体内
 	 * 重复判定。 */
 	std::string fsRoot;
+	/* write_file 的独立开关（Phase 5，2026-10-08，--agent-write-file）。
+	 * **独立于 fsRoot**（不是 `!ctx.fsRoot.empty()` 的派生判据）：写权限不该
+	 * 因为开了读根就静默获得，必须操作者再显式开一道。buildAgentConfig 已
+	 * 校验它依赖 fsRoot 非空（见 agentmode.hpp），这里收到的要么两者都为真，
+	 * 要么本字段为 false——工具注册判据仍按本字段本身判断（不按其蕴含的
+	 * 前置条件），与 read_variables 用 resolvableReadVars(...).empty() 做
+	 * 注册判据而不是"猜它应该蕴含什么"同一原则。 */
+	bool allowWriteFile = false;
 };
 
 /* 构造标准工具集：list_action_scripts / run_action_script / list_hardware / query_sql，
  * （camera 非空时）capture_image，（allowHotSql 时）apply_sql，
- * 以及（allowShell 时）run_command。 */
+ * （allowShell 时）run_command，（fsRoot 非空时）list_dir / read_file，
+ * 以及（allowWriteFile 时）write_file。 */
 AgentToolRegistry makeAgentTools(const AgentToolContext& ctx);
 
 /* ---- 供工具与系统提示词共用的描述函数 ---- */

@@ -106,6 +106,24 @@ Json intParam(const std::string& desc) {
 	return p;
 }
 
+/* Phase 5（2026-10-08）：布尔参数 schema（write_file 的 overwrite） */
+Json boolParam(const std::string& desc) {
+	Json p = JsonObject();
+	p.put("type", JsonString("boolean"));
+	p.put("description", JsonString(desc));
+	return p;
+}
+
+/* Phase 5（2026-10-08）：可选布尔参数，与 optionalInt 同款严格——类型不符一律抛，
+ * 不静默回落到 fallback（模型会把"参数被忽略"误读成"已生效"，对 overwrite
+ * 这种决定"是否覆盖已有文件"的参数，误读的后果比报错更危险）。 */
+bool optionalBool(const Json& args, const std::string& key, bool fallback) {
+	auto v = args.get(key);
+	if (!v || v->isNull()) { return fallback; }
+	if (v->isBool()) { return v->getBool(); }
+	throw IllegalArgumentException("参数 " + key + " 类型不符：需要布尔值");
+}
+
 /* ---- JSON Schema 小工具 ---- */
 Json stringParam(const std::string& desc) {
 	Json p = JsonObject();
@@ -578,6 +596,11 @@ AgentToolRegistry makeAgentTools(const AgentToolContext& ctx) {
 		reg.add(makeListDirTool(ctx));
 		reg.add(makeReadFileTool(ctx));
 	}
+	/* Phase 5（2026-10-08）：write_file。门控判据是本字段本身（--agent-write-file），
+	 * **不是** `!ctx.fsRoot.empty()`——写权限不随读根静默获得，必须再显式开一道。
+	 * buildAgentConfig 已保证本字段为真时 fsRoot 必非空（给了开关却没给根是配置
+	 * 错误，到不了这里）。 */
+	if (ctx.allowWriteFile) { reg.add(makeWriteFileTool(ctx)); }
 	return reg;
 }
 

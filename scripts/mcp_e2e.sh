@@ -67,10 +67,10 @@ cleanup(){
 }
 trap cleanup EXIT
 
-# M5：后端开危险能力（--agent-shell/--agent-hot-sql）时**强制**要 --agent-policy 且
-# require_confirm 命中相应工具。故 --agent-shell 那趟必须带一个合法策略文件。
+# M5：后端开危险能力（--agent-shell/--agent-hot-sql/--agent-write-file）时**强制**要
+# --agent-policy 且 require_confirm 命中相应工具。故这些趟必须带一个合法策略文件。
 POLICY="$TMP/policy.json"
-printf '%s' '{"require_confirm":["run_command","apply_sql"],"confirm_command":"/bin/true","on_timeout":"deny"}' > "$POLICY"
+printf '%s' '{"require_confirm":["run_command","apply_sql","write_file"],"confirm_command":"/bin/true","on_timeout":"deny"}' > "$POLICY"
 chmod 600 "$POLICY"
 
 # 迁自 agent_e2e.sh 场景 9（策略拒绝版）：确认程序恒退出 1 ⇒ run_command 一个副作用都不能有。
@@ -82,7 +82,8 @@ chmod 600 "$POLICY_DENY"
 # 用法: frame_client.py <sock> <expect_run_command:true|false> [<scenario> [<marker>]]
 #   scenario 缺省 base（只跑公共断言）；其余取值是从 scripts/agent_e2e.sh 迁来的
 #   C++ 工具层场景（hotsql / hotsqloff / hotdelete / readvar / readvaroff /
-#   policydeny）以及本仓新增的 fsroot / fsrootoff（Phase 4 只读文件工具）——这些
+#   policydeny）以及本仓新增的 fsroot / fsrootoff（Phase 4 只读文件工具）与
+#   writefile / writefileoff（Phase 5 写文件工具）——这些
 #   性质属于后端工具面，不经模型就能定死判据，
 #   比走一趟假模型更可复现。marker 只给 policydeny 用（被拒命令本该写的那个文件）。
 cat > "$TMP/frame_client.py" <<'PY'
@@ -270,6 +271,43 @@ try:
 		d = tool_text("read_file", {"path": "hello.txt"})
 		chk(d.get("ok") is False and "未知工具" in d.get("text", ""),
 			"缺 --fs-root 时调用 read_file → 未知工具")
+	elif scenario == "writefile":
+		# 场景 17（Phase 5，2026-10-08）：--fs-root + --agent-write-file（带策略）
+		# 注册 write_file，打通「工具派发 → 原子写 → 真落盘」。
+		chk("write_file" in tools, "--agent-write-file 时 write_file 在工具表内")
+		d = tool_text("write_file", {"path": "new.txt", "content": "mcp-e2e-write-content"})
+		chk(d.get("ok") is True and "已写入" in d.get("text", ""),
+			"write_file 创建新文件；片段: " + repr(d.get("text", "")[:160]))
+		d = tool_text("read_file", {"path": "new.txt"})
+		chk(d.get("ok") is True and "mcp-e2e-write-content" in d.get("text", ""),
+			"读回刚写入的内容，证明真的落盘")
+		# 覆盖拒绝：未传 overwrite → 拒绝，原内容不变
+		d = tool_text("write_file", {"path": "new.txt", "content": "clobbered"})
+		chk(d.get("ok") is False and "已存在" in d.get("text", ""),
+			"覆盖未传 overwrite → 拒绝；片段: " + repr(d.get("text", "")[:160]))
+		d = tool_text("read_file", {"path": "new.txt"})
+		chk("mcp-e2e-write-content" in d.get("text", "") and "clobbered" not in d.get("text", ""),
+			"拒绝覆盖后原内容不变")
+		# 覆盖成功：overwrite=true → 新内容替换旧内容
+		d = tool_text("write_file",
+			{"path": "new.txt", "content": "clobbered", "overwrite": True})
+		chk(d.get("ok") is True and "覆盖已有内容" in d.get("text", ""),
+			"overwrite=true → 覆盖成功")
+		d = tool_text("read_file", {"path": "new.txt"})
+		chk(d.get("text", "").find("clobbered") != -1,
+			"读回确认内容已被覆盖")
+		# 沙箱：越界路径一律拒绝，按参数错误口径回执（与 read_file 同判据）
+		d = tool_text("write_file", {"path": "../etc/escape.txt", "content": "x"})
+		chk(d.get("ok") is False and d.get("paramError") is True and d.get("executed") is False,
+			"write_file 越界路径 → paramError（没执行）")
+	elif scenario == "writefileoff":
+		# 场景 17b 对照：有 --fs-root 但缺 --agent-write-file ⇒ write_file 不在表内
+		# （写权限不随读根静默获得，必须独立开关；list_dir/read_file 不受影响）。
+		chk("list_dir" in tools, "缺 --agent-write-file 时 list_dir 仍在工具表内（不受影响）")
+		chk("write_file" not in tools, "缺 --agent-write-file 时 write_file 不在工具表内")
+		d = tool_text("write_file", {"path": "x.txt", "content": "x"})
+		chk(d.get("ok") is False and "未知工具" in d.get("text", ""),
+			"缺 --agent-write-file 时调用 write_file → 未知工具")
 	elif scenario == "policydeny":
 		# 场景 9（拒绝版）：确认程序恒退 1 ⇒ 策略拦截发生在执行**之前**，
 		# 被拒的调用一个副作用都不能有。marker 路径由 argv[4] 传入，跑完必须不存在。
@@ -370,6 +408,42 @@ mkdir -p "$FSROOT"
 printf 'mcp-e2e-fsroot-content\n' > "$FSROOT/hello.txt"
 phase "--fs-root（list_dir + read_file，根目录沙箱）" false "$TMP/pf1" fsroot --fs-root "$FSROOT"
 phase "缺 --fs-root（两个文件工具都不在表内）" false "$TMP/pf2" fsrootoff
+
+# ---- 写文件工具（Phase 5，2026-10-08，--fs-root + --agent-write-file）：正反两趟 ----
+# 独立开关：单给 --fs-root 不给 --agent-write-file 时 write_file 不在表内（对照趟）。
+# 正向趟开它必须带 $POLICY（M5 同族：backend 下危险能力强制策略确认，且 POLICY
+# 的 require_confirm 已含 write_file）。
+WFSROOT="$TMP/writefs-home"
+mkdir -p "$WFSROOT"
+printf 'preexisting\n' > "$WFSROOT/keep.txt"
+phase "--agent-write-file（write_file，原子写 + 覆盖需显式）" false "$TMP/pw1" writefile \
+	--fs-root "$WFSROOT" --agent-write-file --agent-policy "$POLICY"
+phase "缺 --agent-write-file（有 --fs-root 也不给写权）" false "$TMP/pw2" writefileoff \
+	--fs-root "$WFSROOT"
+
+# ---- 反面（M5 强制 policy）：--agent-write-file 无 --agent-policy 必须拒启（退出 2）----
+echo "----- 反面：--agent-write-file 无 policy 必须拒启 -----"
+REJW="$TMP/reject-write"; mkdir -p "$REJW"
+"$MYBOT" --robot=robots/relay-test.sql --mcp-backend --mcp-socket "$REJW/run/mcp.sock" \
+	--scripts-dir scripts --fs-root "$WFSROOT" --agent-write-file >"$REJW/log" 2>&1 &
+rwpid=$!; PIDS="$PIDS $rwpid"
+for _ in $(seq 1 40); do kill -0 "$rwpid" 2>/dev/null || break; sleep 0.1; done
+wait "$rwpid"; rwrc=$?
+chk "反面（write_file）：退出码 2（配置错误不碰真机）" "$rwrc" "2"
+if [ -S "$REJW/run/mcp.sock" ]; then ng "反面（write_file）：socket 不应被创建"; else ok "反面（write_file）：socket 未创建"; fi
+grep -q 'write_file' "$REJW/log" && ok "反面（write_file）：报错点名 write_file" || ng "反面（write_file）：报错未点名 write_file"
+
+# ---- 反面（跨字段依赖）：--agent-write-file 无 --fs-root 必须拒启（退出 2）----
+echo "----- 反面：--agent-write-file 无 --fs-root 必须拒启 -----"
+REJWF="$TMP/reject-write-nofs"; mkdir -p "$REJWF"
+"$MYBOT" --robot=robots/relay-test.sql --mcp-backend --mcp-socket "$REJWF/run/mcp.sock" \
+	--scripts-dir scripts --agent-write-file --agent-policy "$POLICY" >"$REJWF/log" 2>&1 &
+rwfpid=$!; PIDS="$PIDS $rwfpid"
+for _ in $(seq 1 40); do kill -0 "$rwfpid" 2>/dev/null || break; sleep 0.1; done
+wait "$rwfpid"; rwfrc=$?
+chk "反面（write_file 缺 fs-root）：退出码 2" "$rwfrc" "2"
+if [ -S "$REJWF/run/mcp.sock" ]; then ng "反面（write_file 缺 fs-root）：socket 不应被创建"; else ok "反面（write_file 缺 fs-root）：socket 未创建"; fi
+grep -q '\-\-fs-root' "$REJWF/log" && ok "反面（write_file 缺 fs-root）：报错点名 --fs-root" || ng "反面（write_file 缺 fs-root）：报错未点名 --fs-root"
 
 # 策略拒绝版（迁自 agent_e2e.sh 场景 9）：确认程序退 1 ⇒ run_command 零副作用。
 phase "--agent-policy 拒绝 ⇒ run_command 零副作用" true "$TMP/p8" policydeny \

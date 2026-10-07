@@ -17,10 +17,17 @@ Json toolSchema(const std::vector<std::pair<std::string, Json>>& props,
 	const std::vector<std::string>& required);
 Json intParam(const std::string& desc);
 Json stringParam(const std::string& desc);
+/* Phase 5（2026-10-08）：布尔参数 schema（write_file 的 overwrite）。 */
+Json boolParam(const std::string& desc);
 
 /* 可选整数参数：缺失/null 取 fallback；类型不符、越界、非有限一律抛
  * IllegalArgumentException（不静默回落——模型会把「被忽略」误读成「已生效」） */
 int optionalInt(const Json& args, const std::string& key, int fallback);
+
+/* Phase 5（2026-10-08）：可选布尔参数。缺失/null 取 fallback；类型不符抛
+ * （与 optionalInt 同款严格，不静默回落——「overwrite 被忽略」比报错更危险：
+ * 模型以为覆盖了、实际文件没动，或反之）。 */
+bool optionalBool(const Json& args, const std::string& key, bool fallback);
 
 /* 必选字符串参数：缺失/空串/非字符串/内嵌 NUL 一律抛（NUL 判据的理由见
  * agenttools.cpp 实现处——run_command 的静默截断防线） */
@@ -47,6 +54,12 @@ AgentTool makeWaitVariableTool(const AgentToolContext& ctx);
  * `!ctx.fsRoot.empty()`（--fs-root）挂载，两者同一门控）。 */
 AgentTool makeListDirTool(const AgentToolContext& ctx);
 AgentTool makeReadFileTool(const AgentToolContext& ctx);
+
+/* write_file 工具的装配（Phase 5，2026-10-08，agenttools_fs.cpp；makeAgentTools
+ * 按 `ctx.allowWriteFile`（--agent-write-file，依赖已校验的 --fs-root）挂载。
+ * 门控判据是独立开关而非 `!ctx.fsRoot.empty()`——写权限不应随读根目录静默
+ * 获得，必须显式再开一道）。 */
+AgentTool makeWriteFileTool(const AgentToolContext& ctx);
 
 } // namespace agent
 } // namespace bot

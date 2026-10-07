@@ -164,6 +164,7 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 | `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序**；也可由后端配置的 `agent_policy` 指定 | 未开危险能力时可不启用（见「策略钩子」节） |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量，**可重复**；注册 `read_variables` 与 `wait_variable` 工具（缺省**不提供**这两个工具）。只有已注册且种类为 `lua`（驱动）或 `daemon`（守护快照）的名字生效——执行器与传感器同属 `kind=lua`，靠种类分不出，故必须由人列名（见「工具」表与安全说明第 12 条） | 不提供（即无回读能力；声明了名字但一个都不可读时也不提供） |
 | `--fs-root <目录>` | **list_dir / read_file 的只读根目录**（Phase 4）；注册这两个只读文件工具（与硬件/shell 无关）。路径沙箱见 `agent_sandbox.hpp`（见「工具」表与安全说明第 13 条） | 不提供（即无这两个工具）；**只能命令行给**，配置文件写 `fs_root` 会被拒绝加载 |
+| `--agent-write-file` | **显式开启** `write_file`（Phase 5）：在 `--fs-root` 根之内创建/覆盖文本文件（临时文件 + `rename` 原子写；符号链接目标拒绝；已存在须显式 `overwrite:true`）。**依赖 `--fs-root`**（只给本开关会在上电前报错退出 2）；须有 policy 且 `require_confirm` 包含 `write_file`（见「工具」表与安全说明第 14 条） | 不提供（即无写文件能力）；**只能命令行给**，配置文件写 `allow_write_file` 会被拒绝加载 |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」。**命令行**给的 src 以其所在目录为白名单根；配置文件给的 `camera_src` **不**推导根（见安全说明第 9 条），需配 `--camera-src-dir` 或 `BOT4CJ_CAMERA_SRC_DIR` | — |
@@ -250,7 +251,9 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   它们分别决定"能读哪个目录"与"能读哪些硬件变量"，属**放宽读权限**的字段，
   只能由命令行 `--camera-src-dir` / `--read-var` 提供（理由见第 9、12 条）。
   `fs_root` 同判据（理由见第 13 条）：只能由命令行 `--fs-root` 提供，写进配置文件
-  同样一律拒绝加载并退出 2。
+  同样一律拒绝加载并退出 2。`allow_write_file` 同判据（理由见第 14 条）：只能由命令行
+  `--agent-write-file` 授权，未给该命令行开关时配置文件写 `true` 会拒绝加载并退出 2；
+  命令行已授权时配置里的同向 `true` 不报错（授权来自命令行，与 `allow_shell` 同款）。
   三个 `max_*_bytes` 字段是**上下文字节预算**（单位字节，`0` = 不限，上限 64 MiB）：
   `max_history_bytes` 会话历史（缺省 4 MiB）、`max_task_tool_result_bytes` 单任务内
   文本（缺省 2 MiB）、`max_task_image_bytes` 单任务内图片（缺省 4 MiB）。原为编译期
@@ -388,7 +391,8 @@ provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节）。可请求采集尺寸：`width`/`height`（像素 16..8192，须同时给出，缺省 640x480）——换尺寸重开设备、代价高于同尺寸连拍；设备就近调档时回执报**实际**尺寸；仿真来源不缩放、请求尺寸无效并明说 |
 | `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗、继承 fd 全部 CLOEXEC、**回执进模型上下文前遮蔽敏感值**（G1）；**缺省不注册**，须命令行 `--agent-shell` 显式开启（配置文件的 `allow_shell` 只能关不能开，写 `true` 会拒绝加载） |
 | `list_dir` | 列出机器人主机上一个目录下的条目（文件名 + 类型 + 大小；只读、不递归；`path` 缺省为只读根目录本身） | 符号链接条目不列；条目数上限 1000（超限截断并标注）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（配置文件的 `fs_root` 一律拒绝加载，见安全说明第 13 条） |
-| `read_file` | 读取机器人主机上一个文本文件的全部内容（只读） | 路径必须落在 `--fs-root` 根目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）；大小上限 64 KiB（超限响亮拒绝，不截断）；二进制（含 NUL 或非法 UTF-8）拒绝返回；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（与 `list_dir` 同门控，配置文件不能开） |
+| `read_file` | 读取机器人主机上一个文本文件的全部内容（只读） | 路径必须落在 `--fs-root` 根目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）；大小上限 64 KiB（超限响亮拒绝，不截断）；二进制（含 NUL 或非法 UTF-8）拒绝返回；回执经 `maskSecretsInText` 遮蔽敏感值（与 `run_command` 同单点）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（与 `list_dir` 同门控，配置文件不能开） |
+| `write_file` | 在机器人主机上创建或覆盖一个文本文件（原子写入：临时文件 + `rename`，不留半截内容） | 路径同 `read_file` 的沙箱判据；目标是符号链接一律拒绝（无论 `overwrite`）；目标已存在时**默认拒绝覆盖**，须显式 `overwrite:true`（覆盖不可逆）；大小上限 64 KiB、不接受含 NUL 的内容；父目录须已存在（不自动创建）。**缺省不注册**，须命令行 `--agent-write-file` 显式开启且依赖 `--fs-root`（配置文件的 `allow_write_file` 只能关不能开）；危险性与 `run_command`/`apply_sql` 同级，`--mcp-backend` 下**强制**要求 policy 且 `require_confirm` 包含 `write_file` |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -1009,6 +1013,29 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     的工具反而比 `run_command` 更容易泄漏。**使用约束**：即便有遮蔽兜底，`--fs-root` 也
     **不应**指向含密钥/会话文件的目录（遮蔽是防线、不是许可证——文本级判据存在被编码绕过
     的理论可能，参见第 1 条③末的同款免责声明）。
+
+14. **`write_file` 的写权限是独立开关，且后端下强制策略确认**（Phase 5，2026-10-08）。
+    第 13 条的两个工具是**只读**的，`write_file` 不是——它能创建和**覆盖**主机文件，是
+    与 `run_command`（第 1 条）/ `apply_sql`（第 10 条）同级的危险能力，故比第 13 条多两道
+    约束：
+    ① **独立开关**：写权限由命令行 `--agent-write-file` 单独授予，**不随 `--fs-root` 静默
+    获得**——"能读哪个目录"与"能往哪个目录写"是两件事，开了读根不等于给了写权。它复用
+    同一个根（`--fs-root`）：写权限天然应 ⊆ 读权限（你总得先看清往哪写），两个独立根会
+    制造"读根与写根不一致时权限到底算谁的"这种无意义的交叉态；只给 `--agent-write-file`
+    而不给 `--fs-root` 是配置错误，上电前退出 2。配置文件写 `allow_write_file` 一律拒绝
+    加载（只能命令行给，与第 1 条的 `allow_shell` 同判据）。
+    ② **后端下强制策略确认**：`--mcp-backend` 开 `--agent-write-file` 时，**强制**要有
+    `--agent-policy` 且其 `require_confirm` 包含 `write_file`（无人值守暴露改写主机文件的
+    能力必须有外部确认闸门，见第 11b 条同款机制；`list_dir`/`read_file` 只读、无此强制）。
+    写入走 `agent_sandbox.hpp` 的 `writeFileAtomic`（临时文件 + `rename` 原子替换，不留
+    半截内容）：目标是符号链接**一律拒绝**（不跟随写入——跟随等于让根目录里的一条软链把
+    写操作重定向到根外，这比读泄漏更危险）；目标已存在时**默认拒绝覆盖**，须显式
+    `overwrite:true`（覆盖不可逆，旧内容不保留，与 `apply_sql` 的 `DELETE` 同一类风险，
+    故同样要求显式意图——`overwrite` 之于 `write_file` 相当于 `WHERE` 之于 `DELETE`）；
+    大小上限 64 KiB、内容含 NUL 拒绝、父目录不自动创建（`path` 的父目录必须已存在）。
+    **已知限制**：不做 `fsync`（断电场景下"刚写完就断电"可能丢失这次写入，但 `rename`
+    本身的原子性仍成立——不会出现"目标内容新旧混合"的半写状态）；不做版本历史/回滚
+    （覆盖前的旧内容不保留，如需回溯请在受版本控制的目录里使用 `--fs-root`）。
 
 ## 源码分层
 

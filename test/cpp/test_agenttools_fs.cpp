@@ -44,6 +44,13 @@ AgentToolContext fsContext(RobotStruct* robot, const std::string& root) {
 	return ctx;
 }
 
+/* Phase 5：同上，但额外开 write_file（--agent-write-file + --fs-root 组合）。 */
+AgentToolContext fsWriteContext(RobotStruct* robot, const std::string& root) {
+	AgentToolContext ctx = fsContext(robot, root);
+	ctx.allowWriteFile = true;
+	return ctx;
+}
+
 } // namespace
 
 /* 门控（安全缺省）：缺 --fs-root（fsRoot 空）⇒ 两个工具都不注册。 */
@@ -270,5 +277,191 @@ TH_TEST(agenttools_fs_read_file_requires_path) {
 
 	AgentToolResult r = tools.execute("read_file", parseJson("{}"));
 	TH_CHECK(r.ok == false);
+	robot->deactivate();
+}
+
+/* ---- Phase 5（2026-10-08）：write_file ---- */
+
+/* 门控：write_file 只随 --agent-write-file（allowWriteFile）注册——**独立于**
+ * --fs-root。只给读根不给写开关，write_file 不该出现（否则写权随读权静默获得）。 */
+TH_TEST(agenttools_fs_write_file_gated_by_own_flag) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-gate");
+	/* 只给 --fs-root（allowWriteFile=false）：list_dir/read_file 在，write_file 不在 */
+	AgentToolContext ro = fsContext(robot.get(), root.path().string());
+	AgentToolRegistry t1 = makeAgentTools(ro);
+	TH_CHECK(t1.contains("list_dir"));
+	TH_CHECK(t1.contains("read_file"));
+	TH_CHECK(!t1.contains("write_file"));
+	/* 开 write_file：出现在表内 */
+	AgentToolContext rw = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry t2 = makeAgentTools(rw);
+	TH_CHECK(t2.contains("write_file"));
+	robot->deactivate();
+}
+
+/* 新建文件：内容与大小正确；原子路径（正常路径）。 */
+TH_TEST(agenttools_fs_write_file_creates_new_file) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-create");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string out = execText(tools, "write_file",
+		parseJson("{\"path\":\"new.txt\",\"content\":\"hello world\"}"));
+	TH_CHECK_MSG(out.find("已写入") != std::string::npos, out);
+	TH_CHECK(out.find("新建") != std::string::npos);
+	/* 读回验证内容真的落盘 */
+	std::string back = execText(tools, "read_file", parseJson("{\"path\":\"new.txt\"}"));
+	TH_CHECK(back.find("hello world") != std::string::npos);
+	/* 临时文件不应残留 */
+	std::size_t leftovers = 0;
+	for (const auto& e : fs::directory_iterator(root.path())) {
+		if (e.path().filename().string().find(".mybot-tmp-") != std::string::npos) { ++leftovers; }
+	}
+	TH_CHECK(leftovers == 0);
+	robot->deactivate();
+}
+
+/* 覆盖拒绝：目标已存在、未传 overwrite → 拒绝，原内容不变（不静默覆盖）。 */
+TH_TEST(agenttools_fs_write_file_rejects_overwrite_without_flag) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-noover");
+	writeFile(root.path() / "existing.txt", "original");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string out = execText(tools, "write_file",
+		parseJson("{\"path\":\"existing.txt\",\"content\":\"replaced\"}"));
+	TH_CHECK_MSG(out.find("已存在") != std::string::npos, out);
+	TH_CHECK(out.find("overwrite=true") != std::string::npos);
+	/* 原内容必须原封不动 */
+	std::string back = execText(tools, "read_file", parseJson("{\"path\":\"existing.txt\"}"));
+	TH_CHECK(back.find("original") != std::string::npos);
+	TH_CHECK(back.find("replaced") == std::string::npos);
+	robot->deactivate();
+}
+
+/* 覆盖成功：overwrite=true → 新内容替换旧内容。 */
+TH_TEST(agenttools_fs_write_file_overwrites_with_flag) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-over");
+	writeFile(root.path() / "existing.txt", "original");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string out = execText(tools, "write_file",
+		parseJson("{\"path\":\"existing.txt\",\"content\":\"replaced\",\"overwrite\":true}"));
+	TH_CHECK_MSG(out.find("覆盖已有内容") != std::string::npos, out);
+	std::string back = execText(tools, "read_file", parseJson("{\"path\":\"existing.txt\"}"));
+	TH_CHECK(back.find("replaced") != std::string::npos);
+	TH_CHECK(back.find("original") == std::string::npos);
+	robot->deactivate();
+}
+
+/* 沙箱负例：绝对路径 / .. 一律按**参数错误**回传（与 read_file 同判据）。 */
+TH_TEST(agenttools_fs_write_file_sandbox_violations_are_param_errors) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-sandbox");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	for (const char* p : {"/etc/passwd", "../escape.txt", "a/../../escape.txt"}) {
+		std::string args = std::string("{\"path\":\"") + p + "\",\"content\":\"x\"}";
+		AgentToolResult r = tools.execute("write_file", parseJson(args));
+		TH_CHECK_MSG(r.ok == false && r.paramError == true, std::string("path=") + p);
+	}
+	robot->deactivate();
+}
+
+/* 符号链接目标拒绝（writeFileAtomic 自己的判据，而非沙箱层）：链接**指向根内**
+ * 另一个真实文件（resolveUnderRoot 对此判 OK——canonical 后仍落在根内，不是
+ * "目录级逃逸"），但目标本身是符号链接这件事必须在 writeFileAtomic 内被单独
+ * 拦下，不跟随写入。与"链接指向根外"（沙箱层 ESCAPES_ROOT 已经拦，见
+ * test_agenttools_sandbox.cpp）是两层不同的防线，这里只钉后一层。 */
+TH_TEST(agenttools_fs_write_file_rejects_symlink_target) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-symlink");
+	writeFile(root.path() / "real.txt", "victim-original");
+	TH_CHECK(::symlink((root.path() / "real.txt").c_str(),
+		(root.path() / "link.txt").c_str()) == 0);
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 先确认这条路径真的走到了"参数合法、写入层拒绝"（不是 paramError，
+	 * 证明确实是 writeFileAtomic 自己的判据在起作用，不是沙箱层）。 */
+	AgentToolResult r = tools.execute("write_file",
+		parseJson("{\"path\":\"link.txt\",\"content\":\"pwned\",\"overwrite\":true}"));
+	TH_CHECK_MSG(r.ok == false && r.paramError == false, r.error);
+	TH_CHECK_MSG(r.error.find("符号链接") != std::string::npos, r.error);
+	/* 链接指向的文件内容必须不变（没跟随写入） */
+	std::ifstream f(root.path() / "real.txt");
+	std::string content((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+	TH_CHECK(content == "victim-original");
+	robot->deactivate();
+}
+
+/* 大小超限：超过上限 → 参数错误（不创建任何文件）。 */
+TH_TEST(agenttools_fs_write_file_rejects_oversized_content) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-big");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string big(64 * 1024 + 1, 'a');
+	Json args = parseJson("{\"path\":\"big.txt\"}");
+	args.put("content", JsonString(big));
+	AgentToolResult r = tools.execute("write_file", args);
+	TH_CHECK_MSG(r.ok == false && r.paramError == true, r.error);
+	TH_CHECK(!fs::exists(root.path() / "big.txt"));
+	robot->deactivate();
+}
+
+/* 二进制内容（含 NUL）拒绝。 */
+TH_TEST(agenttools_fs_write_file_rejects_nul_content) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-nul");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	Json args = parseJson("{\"path\":\"bin.dat\"}");
+	args.put("content", JsonString(std::string("a\0b", 3)));
+	AgentToolResult r = tools.execute("write_file", args);
+	TH_CHECK(r.ok == false && r.paramError == true);
+	TH_CHECK(!fs::exists(root.path() / "bin.dat"));
+	robot->deactivate();
+}
+
+/* 缺 path / content 参数（以及 overwrite 类型不符）→ 参数错误。 */
+TH_TEST(agenttools_fs_write_file_param_errors) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-params");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	TH_CHECK(tools.execute("write_file", parseJson("{}")).paramError);
+	TH_CHECK(tools.execute("write_file", parseJson("{\"path\":\"x\"}")).paramError);
+	/* overwrite 类型不符（给字符串）不静默回落 */
+	AgentToolResult r = tools.execute("write_file",
+		parseJson("{\"path\":\"x\",\"content\":\"c\",\"overwrite\":\"yes\"}"));
+	TH_CHECK(r.ok == false && r.paramError == true);
+	robot->deactivate();
+}
+
+/* 审计 summary：单位/覆盖标记（G2 机器可读回执）。 */
+TH_TEST(agenttools_fs_write_file_summary_format) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-write-summary");
+	AgentToolContext ctx = fsWriteContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	AgentToolResult r = tools.execute("write_file",
+		parseJson("{\"path\":\"s.txt\",\"content\":\"12345\"}"));
+	TH_CHECK(r.ok == true);
+	TH_CHECK_MSG(r.summary == "bytes=5 overwrite=false", r.summary);
+	AgentToolResult r2 = tools.execute("write_file",
+		parseJson("{\"path\":\"s.txt\",\"content\":\"xy\",\"overwrite\":true}"));
+	TH_CHECK(r2.ok == true);
+	TH_CHECK_MSG(r2.summary == "bytes=2 overwrite=true", r2.summary);
 	robot->deactivate();
 }

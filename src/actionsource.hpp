@@ -117,6 +117,13 @@ struct CliOptions {
 		 * （安全缺省）。是否可用（canonical 存在且是目录）在 buildAgentConfig 于上电前
 		 * 校验（配置错误不碰真机）。 */
 		std::string fsRoot;
+		/* --agent-write-file（Phase 5，2026-10-08）：显式开启 write_file 工具
+		 * （在 --fs-root 根之内创建/覆盖文本文件）。**独立于 --fs-root**：
+		 * 开了读根不等于给了写权，写权限必须再显式开一道（写能覆盖/改写，
+		 * 危险性与 run_command / apply_sql 同级）。依赖 --fs-root 非空——
+		 * 给了本开关却没给 --fs-root 是配置错误（buildAgentConfig 上电前拒绝）。
+		 * 配置文件写 allow_write_file 会被拒绝加载（同 allow_shell 判据）。 */
+		bool agentWriteFile = false;	/* --agent-write-file：显式开启 write_file */
 		/* --audit-log：审计轨迹落点（JSON Lines 追加；"-" = stderr）。
 		 * 缺省空 = 不记录（保持既有语义）。打开失败的报错与退出在
 		 * agent::buildAgentConfig（配置错误不碰真机）。 */
