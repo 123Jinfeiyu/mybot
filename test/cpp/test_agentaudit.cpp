@@ -47,6 +47,43 @@ TH_TEST(agentaudit_mask_shadows_sensitive_assignment) {
 	TH_CHECK(out3.find("sk-tok") == std::string::npos);
 }
 
+/* 形态四：JSON 引号键 `"name": value`（2026-10-08 审计 P1 续发现）。
+ * 本仓真实密钥落盘形态（mybot.llm.json、会话 JSONL）恰恰是这种带引号的键名，
+ * 旧实现的标识符扫描在遇到键名前导的 `"` 时根本进不了识别分支——意味着
+ * `run_command "cat mybot.llm.json"` 从 2026-09-23 G1 起就从未真正遮蔽过这类
+ * 密钥，只是没人拿真实 JSON 内容去测过。这里直接钉住真实配置文件的形态。 */
+TH_TEST(agentaudit_mask_covers_json_quoted_keys) {
+	/* 无空格、紧凑 JSON（真实落盘形态之一） */
+	const std::string out = bot::agent::maskSecretsInText(
+		"{\"api_key\":\"sk-realsecret123\"}");
+	TH_CHECK(out.find("sk-realsecret123") == std::string::npos);
+	TH_CHECK(out.find("\"api_key\":***") != std::string::npos);
+
+	/* 带空格（mybot.llm.json.example 的实际排版：`"api_key": "sk-...",`） */
+	const std::string out2 = bot::agent::maskSecretsInText(
+		"  \"api_key\": \"sk-ThisIsARealSecretKey123\",\n");
+	TH_CHECK(out2.find("sk-ThisIsARealSecretKey123") == std::string::npos);
+	TH_CHECK(out2.find("\"api_key\": ***") != std::string::npos);
+	/* 键名本身原样保留（模型要知道"是哪个字段被遮了"，不是整行消失） */
+	TH_CHECK(out2.find("\"api_key\"") != std::string::npos);
+
+	/* 连字符键名（api-key）与整词切词同判据，同样命中 */
+	TH_CHECK(bot::agent::maskSecretsInText("\"api-key\": \"hyphen-secret\"")
+		.find("hyphen-secret") == std::string::npos);
+
+	/* 冒号前带空格（`"token" : "x"`）也要认得 */
+	TH_CHECK(bot::agent::maskSecretsInText("\"token\" : \"spaced\"")
+		.find("spaced") == std::string::npos);
+
+	/* 非敏感键名不受牵连：model/note 等普通字段逐字保留 */
+	const std::string plain = "\"model\": \"gpt-4\", \"note\": \"just text\"";
+	TH_CHECK(bot::agent::maskSecretsInText(plain) == plain);
+
+	/* 引号键但不跟冒号（不是键值对，是普通带引号的词）不触发遮蔽 */
+	TH_CHECK(bot::agent::maskSecretsInText("the \"api_key\" field")
+		== "the \"api_key\" field");
+}
+
 TH_TEST(agentaudit_mask_spares_unrelated_names_and_plain_text) {
 	/* KEYSTONE/MONKEY 不含敏感整词，不得误伤（与环境清洗同一判据） */
 	TH_CHECK(bot::agent::maskSecretsInText("KEYSTONE=abc MONKEY=x echo hi")

@@ -108,6 +108,24 @@ TH_TEST(agenttools_run_command_receipt_masks_secrets) {
 	TH_CHECK(clean.find("已替换") == std::string::npos);
 }
 
+/* 2026-10-08 审计 P1 续：回执里的 **JSON 引号键**形态密钥也必须遮蔽。
+ * 这是 G1 自 2026-09-23 起的既有盲区——maskSecretsInText 的标识符扫描在遇到
+ * 键名前导的 `"` 时进不了识别分支，于是 `cat mybot.llm.json` 这类**最典型的
+ * 读密钥命令**从未被真正遮蔽（过去只用 shell `KEY=val` 形态测过）。 */
+TH_TEST(agenttools_run_command_receipt_masks_json_quoted_secrets) {
+	AgentToolContext ctx;
+	ctx.allowShell = true;
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	/* 命令打印 JSON 形态的配置：`"api_key": "sk-..."`（真实文件排版） */
+	std::string out = execText(tools, "run_command",
+		parseJson("{\"command\":\"printf '{\\\"api_key\\\": \\\"sk-jsonleak\\\"}'\""
+			",\"timeout_seconds\":10}"));
+	TH_CHECK(out.find("sk-jsonleak") == std::string::npos);
+	TH_CHECK(out.find("\"api_key\": ***") != std::string::npos);
+	TH_CHECK(out.find("疑似敏感内容") != std::string::npos);
+}
+
 TH_TEST(agenttools_run_command_cleans_env) {
 	AgentToolContext ctx;
 	ctx.allowShell = true;

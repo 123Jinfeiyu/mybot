@@ -93,9 +93,12 @@ private:
 	void* file_ = nullptr;		/* FILE*（避免在头里拖 <cstdio>） */
 };
 
-/* 把文本里「敏感名=值」形态的值遮蔽成 ***（run_command 的命令原文进日志前调用）。
+/* 把文本里「敏感名=值」等形态的值遮蔽成 ***（run_command 的命令原文进日志前调用）。
  * 名字判据与 agent_subprocess 的环境清洗同源（isSensitiveEnvName），另加
- * authorization/bearer 两个只对文本遮蔽有意义的词。值边界：空白或引号。 */
+ * authorization/bearer 两个只对文本遮蔽有意义的词。值边界：空白或引号。
+ * 覆盖四种形态：`KEY=VALUE`、`Name: value`（含 `Authorization: Bearer <tok>`）、
+ * 裸 `Bearer <tok>`、以及 JSON 引号键 `"name": value`（2026-10-08 补，见实现处
+ * 注释——本仓真实密钥落盘形态恰是最后一种）。 */
 std::string maskSecretsInText(const std::string& text);
 
 /* 从 run_command 的回执文本解析退出码（"exit_code=N" 前缀）；非该形态返回空 */

@@ -229,6 +229,37 @@ TH_TEST(agenttools_fs_read_file_missing_file_is_execution_failure_not_param_erro
 	robot->deactivate();
 }
 
+/* read_file 的回执过 maskSecretsInText（2026-10-08 审计 P1）：与 run_command 的
+ * agenttools_run_command_receipt_masks_secrets 同一防线，钉的是同一条泄漏面——
+ * `--fs-root .`/`--fs-root ~` 这类自然写法会读到含 API key 的文件（仓库根的
+ * mybot.llm.json、会话 JSONL），内容必须在进模型上下文前被同等强度遮蔽，
+ * 不能让这两个"更窄"的工具反而比 run_command 更弱。 */
+TH_TEST(agenttools_fs_read_file_receipt_masks_secrets) {
+	auto robot = makeRelayRobot();
+	TempDir root("fsroot-readfile-mask");
+	/* 真实威胁场景：`--fs-root .` 读到仓库根的 mybot.llm.json 那种排版
+	 * （带引号键 + 冒号后空格），不是人为凑的 shell KEY=val 形态。 */
+	writeFile(root.path() / "secret.json",
+		"{\n  \"api_key\": \"sk-leakthis\",\n  \"model\": \"gpt-4\"\n}\n");
+	writeFile(root.path() / "plain.txt", "harmless content\n");
+
+	AgentToolContext ctx = fsContext(robot.get(), root.path().string());
+	AgentToolRegistry tools = makeAgentTools(ctx);
+
+	std::string out = execText(tools, "read_file", parseJson("{\"path\":\"secret.json\"}"));
+	TH_CHECK(out.find("sk-leakthis") == std::string::npos);
+	TH_CHECK(out.find("\"api_key\": ***") != std::string::npos);
+	/* 非敏感字段不受牵连 */
+	TH_CHECK(out.find("\"model\": \"gpt-4\"") != std::string::npos);
+	TH_CHECK(out.find("疑似敏感内容") != std::string::npos);
+
+	/* 无敏感值时内容不被改写（普通文件不产生噪音） */
+	std::string clean = execText(tools, "read_file", parseJson("{\"path\":\"plain.txt\"}"));
+	TH_CHECK(clean.find("harmless content") != std::string::npos);
+	TH_CHECK(clean.find("已被净化") == std::string::npos);
+	robot->deactivate();
+}
+
 /* read_file 缺 path 参数：缺字符串参数，派发漏斗统一归为"工具参数错误"
  * （本测试直接钉工具层异常，不经 DispatchGate）。 */
 TH_TEST(agenttools_fs_read_file_requires_path) {

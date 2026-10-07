@@ -554,7 +554,7 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 
 - **位置在宿主派发漏斗**（`src/agentdispatch.cpp` 的 `DispatchGate::run`）：后端帧协议与 `.mt` 脚本都绕不过；参数解析失败、未知工具、工具异常同样各记一条（「模型想做什么但没做成」也是审计信息）。
 - **图片不进日志**：`capture_image` 只记 `image_bytes` 与 16 位指纹（`image_fp`，FNV-1a 64，非密码学摘要）——否则每次拍照数百 KB 灌进磁盘，且画面可能含隐私。
-- **密钥遮蔽**：`run_command` 的命令原文记进 `args.command` 前先遮蔽敏感值——`KEY=VALUE`、`Authorization: Bearer <tok>`、裸 `Bearer <tok>` 三种形态的值替换为 `***`；判据与 `run_command` 的环境清洗同源（整词切词，`KEYSTONE`/`MONKEY` 不误伤）。**同一个 `maskSecretsInText` 单点也用于回执**（G1）：命令自己打印到 stdout/stderr 的敏感值，在回传模型前同样被遮蔽。
+- **密钥遮蔽**：`run_command` 的命令原文记进 `args.command` 前先遮蔽敏感值——`KEY=VALUE`、`Authorization: Bearer <tok>`、裸 `Bearer <tok>`、JSON 引号键 `"name": value`（2026-10-08 补，见下）四种形态的值替换为 `***`；判据与 `run_command` 的环境清洗同源（整词切词，`KEYSTONE`/`MONKEY` 不误伤）。**同一个 `maskSecretsInText` 单点也用于回执**（G1）：命令自己打印到 stdout/stderr 的敏感值，在回传模型前同样被遮蔽；`list_dir`/`read_file`（第 13 条）的文件内容回执同样经这个单点（2026-10-08 补，此前只有 `run_command` 接了，是审计 P1 发现的缺口）。
 - **生效摘要（G2）**：`apply_sql` 等工具行的 `summary` 字段记工具自报的结构化生效信息（新增几张表/几个变量/几行……），供复盘对账「这次热插到底改了什么」；只做加法，不带 `summary` 的老工具行不出现该键。
 - **失败响亮**：日志流写入失败（磁盘满等）向 stderr 告警一次，不打断机器人动作；路径打不开则**上电前**报错退出 2（「配置错误不碰真机」）。
 - 默认**关闭**（不传 = 不写任何东西）；开启即 append-only，不做轮转（交给外部工具收集）。会话开始时把实际落点打印到 stderr。
@@ -858,7 +858,11 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
    stdout/stderr」——模型让命令执行 `env`、`cat` 配置文件、或任何打印 `KEY=value` 的输出，都会经
    回执带回模型上下文，再由同一配置可控的 `endpoint` 外发。因此 `run_command` 的**回执文本**在回传
    模型**之前**也会过一次敏感值遮蔽（与审计日志的 `args.command` 是同一个 `maskSecretsInText` 单点：
-   `KEY=VALUE` / `Authorization: Bearer <tok>` / 裸 `Bearer <tok>` 三种形态）。遮蔽是**有损**的：
+   `KEY=VALUE` / `Authorization: Bearer <tok>` / 裸 `Bearer <tok>` / JSON 引号键 `"name": value` 四种形态）。
+   最后一种是 2026-10-08 审计 P1 续发现并补上的：本仓真实密钥的落盘形态（`mybot.llm.json`、会话 JSONL）
+   恰恰是带引号的键名，旧的三种形态判据在遇到键名前导的 `"` 时根本进不了识别分支——意味着 `cat
+   mybot.llm.json` 这个最直觉的读密钥命令，从 2026-09-23 G1 落地起就从未被真正遮蔽过，只是没人拿
+   真实 JSON 内容去测过。遮蔽是**有损**的：
    一旦发生替换，回执末尾会追加一句「已净化」提示，让模型知道结果被改过、不要据此假定原值。
    注意这仍是**文本级**防线（把值 base64/编码后打印即可绕过），与上面两道同档——真要对抗恶意 shell，
    仍须把 agent 放进专用用户 / 容器（见本节第 3 条末）。
@@ -998,6 +1002,13 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     与 `run_command`（第 1 条）的关系：对一个已经开了 `--agent-shell` 的部署，这两个工具
     并不额外扩大能力上限（`run_command` 本就能读文件），但它们是结构化、单文件、可审计的
     窄接口，适合"只是想看某个文件"这个具体动作，而不必派发一条任意 shell 命令。
+    **密钥遮蔽**（2026-10-08 审计 P1 补）：`read_file` 的文件内容在"数据非指令"定界前另过
+    `maskSecretsInText`——与 `run_command` 回执同一单点（第 1 条）。动机：`--fs-root .`
+    （最自然的写法）会让仓库根的 `mybot.llm.json` 可读，`--fs-root ~` 会让 `~/.mybot` 下的
+    会话历史、`~/.config/mybot` 的模型配置可读，这些文件里的 `api_key` 不能因为走了"更窄"
+    的工具反而比 `run_command` 更容易泄漏。**使用约束**：即便有遮蔽兜底，`--fs-root` 也
+    **不应**指向含密钥/会话文件的目录（遮蔽是防线、不是许可证——文本级判据存在被编码绕过
+    的理论可能，参见第 1 条③末的同款免责声明）。
 
 ## 源码分层
 

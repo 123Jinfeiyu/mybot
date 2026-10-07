@@ -194,6 +194,39 @@ std::string maskSecretsInText(const std::string& text) {
 	const std::size_t n = text.size();
 	while (i < n) {
 		const char c = text[i];
+		/* 形态四：JSON 引号键 `"name": value`（2026-10-08 审计 P1 续——`read_file`
+		 * 接上本单点后实测发现：本仓真实密钥落盘形态（`mybot.llm.json`/会话
+		 * JSONL）恰恰是这种被双引号包住的键名，形态三的裸标识符扫描在遇到键名
+		 * 前导的 `"` 时就不是字母/下划线，根本进不了标识符分支，`"api_key": "x"`
+		 * 因此被判定为"无赋值形态的普通文本"原样放行——这是 run_command 从
+		 * 2026-09-23 G1 起就存在的盲区，cat 一份 JSON 格式的密钥文件从未被真正
+		 * 遮蔽过，只是过去没人拿真实 JSON 内容去测过 maskSecretsInText。
+		 * 判据：引号、敏感整词、引号收尾、可选空白、冒号——键名本身原样保留
+		 * （便于模型看出"这是哪个字段"），值整体替换为 ***（与形态一/三同口径）。 */
+		if (c == '"') {
+			std::size_t q = i + 1;
+			while (q < n && (std::isalnum(static_cast<unsigned char>(text[q]))
+				|| text[q] == '_' || text[q] == '-')) { ++q; }
+			if (q > i + 1 && q < n && text[q] == '"') {
+				std::size_t afterQuote = q + 1;
+				std::size_t k = afterQuote;
+				while (k < n && std::isspace(static_cast<unsigned char>(text[k]))) { ++k; }
+				if (k < n && text[k] == ':' && isMaskedName(toLowerAscii(text.substr(i + 1, q - i - 1)))) {
+					out += text.substr(i, afterQuote - i);	/* "api_key" 原样保留 */
+					out += text.substr(afterQuote, k - afterQuote);	/* 键后空白 */
+					out += ':';
+					++k;
+					while (k < n && std::isspace(static_cast<unsigned char>(text[k]))) {
+						out += text[k];
+						++k;
+					}
+					out += "***";
+					i = maskedValueEnd(text, k);
+					continue;
+				}
+			}
+			/* 不是"敏感引号键"：不消耗任何字符，落到下面按普通字符逐个拷贝。 */
+		}
 		if (!(std::isalpha(static_cast<unsigned char>(c)) || c == '_')) {
 			out += c;
 			++i;
