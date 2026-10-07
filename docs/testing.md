@@ -11,7 +11,7 @@
 | job | 类型 | 内容 |
 | --- | ---- | ---- |
 | `build:release` | 硬 | `-DMYBOT_WERROR=ON` 构建（零告警即门禁） |
-| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 13 段：用例是否真被收集/编译 + 六组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
+| `gate:release` | 硬 | `bash test/run_all_selftest.sh`（守门自检 14 段：用例是否真被收集/编译 + 七组零编译跨源一致性校验，见下「跨源一致性校验」）→ `bash test/run_all.sh`（Release 全量守门） |
 | `gate:sanitizer` | 硬 | ASan/UBSan 构建 + `bash test/run_san.sh --asan-only`；UBSan 以 `-fno-sanitize-recover=undefined` 编译（**检出即终止**，见下） |
 | `gate:agent-e2e` | 硬 | `rust:1-slim-bookworm` 继承 `build:release` 后端产物并构建 Rust release；直接运行 `scripts/agent_e2e.sh` 与 `scripts/ica_e2e.sh`（两条都跑完再判红，一个红不掩盖另一个红），缺产物/依赖或超时即失败，`agent-e2e.log`/`ica-e2e.log` 始终留档；不受其它 jobs 的 Rust 可选跳过影响。CI 里唯一带 Rust 工具链的一道，故两条 Rust 侧端到端都归它 |
 | `gate:tsan` | 硬 | TSan 构建 + 三条守护并发 C++ 用例，`halt_on_error=1`（TSan 报告即影响退出码） |
@@ -272,7 +272,7 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
    `scripts/sim_agent_demo.sh`），跨两套构建系统、刻意不做代码生成。逐处钉两件事：读
    `MYBOT_HOME` 的形态还在，且拼出的缺省后缀仍是 `/.mybot`。规则单点是
    [reference.md](reference.md) 的 `MYBOT_HOME` 行。
-10. **文档与仓库实况**（`scripts/check_doc_paths.py`）六组：README 与 `docs/*.md` 里的
+10. **文档与仓库实况**（`scripts/check_doc_paths.py`）七组：README 与 `docs/*.md` 里的
     仓内路径引用逐个实测存在（markdown 链接按文档目录解析、反引号跨度按仓库根解析；
     历史记录与教程占位名在脚本的 `KNOWN_ABSENT` 里逐条登记理由，登记过又存在的条目
     同样判失败）；`docs/drivers.md` 各节点名的模块集合与 `ls modules/*.lua` **双向**
@@ -281,13 +281,21 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
     `DELETED_FILES` 里登记的**已删且刻意不重建**的文件名，在全仓任何文本文件里再出现
     即判失败（取材面比第一组宽得多：源码注释、脚本、CI、冻结 html 都扫，按带扩展名的
     字面量匹配；名单里的文件若又存在了同样判失败）；本页「四处套件的计数口径」那张表
-    与表下两条式子里的每个数字都**从仓库实况派生后比对**（口径见该节）。
+    与表下两条式子里的每个数字都**从仓库实况派生后比对**（口径见该节）；第七组把同一套
+    判据扩到 **README**（「项目结构」与「测试规模」两节里 14 处计数逐个派生比对）。
     第五组是一次真实漏网的产物：2026-10-04 删掉冻结变更账本后，仓内还留着 11 处指向它的
     引用，第一组一处都看不见——8 处不在它的取材面，3 处虽在 `docs/*.md` 里但是裸词而非
     链接或路径跨度；明细与「为什么不把第一组扩到 html」记在脚本头注。第六组的存在理由
     是同一类：那张表原本只是「某天的快照」，没人回头看，加一条用例它就悄悄过期，而读者
-    拿它当基线核对守门输出。两组的锚点若被改得找不到，脚本 **exit 而非跳过**——静默少比
-    一个数比报错危险。
+    拿它当基线核对守门输出。**第七组是一次真实漂移的产物**（2026-10-08 审计 P2）：README
+    的数字自称「快照，改完用这几条命令复核，别手改数字」，纯人工无门，结果八处一起烂
+    （87/38 实为 88/42、650 实为 689、148 实为 153、23 个共享库实为 28、14 篇文档实为
+    13、工具表 9 行实为 12）——而 README 是新人第一入口，误导面比深入文档更大。
+    第七组另有**一条反向判据**：`run_all.sh` 汇总行的守门用例数与 `sim_tests` 的断言数
+    是「跑一遍才知道」的运行时数，静态派生不出来，故 README 里**不许写死**它们，命中
+    裸数字即判红并提示改成指针（与第六组对 `sim_tests` 387 只钉「N 个 TU」+ 要求标
+    「运行时数」是同一取舍，README 这侧更严：直接不写）。三组的锚点若被改得找不到，
+    脚本 **exit 而非跳过**——静默少比一个数比报错危险。
 11. **模型配置字段白名单双端同集合**（`scripts/check_llm_field_whitelist.py`）：C++
     `src/llmconfig.cpp` 的 `kKnown` vs Rust `agent/src/config/file.rs` 的
     `PARSED_FIELD_NAMES`（`parsed_fields!` 宏表展开）+ `KNOWN_UNPARSED_FIELDS`。两端读
@@ -325,16 +333,21 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
     改坏夹具 path 断言 / 制造族名-路径错配，均 `exit 1`。**C++/Lua 不参与**（不再实现
     LLM 网络）、**rig 独占字段**（请求体/SSE 帧名/响应字段/鉴权头名）在脚本头逐条登记为
     如实差异。
-14. **后端工具注册表 ↔ docs/agent.md 工具表同集合**（`scripts/check_agent_tool_table.py`）：
+14. **后端工具注册表 ↔ 两张文档工具表同集合**（`scripts/check_agent_tool_table.py`）：
     代码侧四个 TU（`src/agenttools.cpp`/`src/agenttools_wait.cpp`/`src/agenttools_fs.cpp`/
     `src/agentimage.cpp`）里
-    每个 `return AgentTool{"<name>", ...}` 的工具名，必须与
-    [agent.md](agent.md)「给智能体的工具」一节表格第一列**双向**同集合。工具表是手工
+    每个 `return AgentTool{"<name>", ...}` 的工具名，必须与 [agent.md](agent.md)
+    「给智能体的工具」一节表格第一列、**以及 `README.md`「Agent 工具系统」一节**的表格
+    第一列，各自**双向**同集合。工具表是手工
     维护的（无自动生成，与 docs/sim.md「跨构建系统不做代码生成」同一取舍），此前只有
     ICA 本地工具那一半有自钉（`agent/src/ica/specs.rs` 的 `all.len() == 8`），后端工具
     这一半一直是空的——加/删/改名一个工具只要忘了同步文档表，只能靠评审发现。比对的是
     「代码里一共定义了哪些工具」而非「某次运行实际门控放行了哪些」（与表格第三列各写
     门控条件的既有体例一致）。
+    **为什么两张表都要比**（2026-10-08 审计 P2）：本段最初只钉 agent.md，于是 README 的
+    工具表可以静默少三行（`list_dir`/`read_file`/`write_file`）而全线绿灯——README 是新人
+    第一入口，少三个工具的误导面比深入文档更大。两张表用同一个抽取式与小节锚点，
+    加第三张表只要在 `DOC_SOURCES` 里添一行。
 
 ### 四处套件的计数口径
 

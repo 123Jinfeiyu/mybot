@@ -6,7 +6,7 @@
 共享库数）还常在手写多份（README、docs/README.md、docs/drivers.md 的口径行），
 于是三处各漂一点、彼此不一致，读者无从判断哪个是真的。
 
-本脚本零编译、零第三方依赖，做六组检查（接入 test/run_all_selftest.sh）：
+本脚本零编译、零第三方依赖，做七组检查（接入 test/run_all_selftest.sh）：
 
   1. 路径存在性：README.md 与 docs/*.md 里的仓内路径引用逐个实测存在。
      * markdown 链接 `[文字](目标)` 的目标按**文档所在目录**解析（docs/x.md 里
@@ -32,6 +32,11 @@
      check() 调用点 309 处而实跑 387 条，差额来自循环与条件分支），故只钉它的
      「N 个 TU」（sim/CMakeLists.txt 的 add_executable 源清单），并要求表里明写
      「运行时数」以免被误当成受检数字。
+  7. README 计数：README「项目结构」与「测试规模」两节里的每个计数都按第 6 组同款
+     判据从仓库实况派生后比对。此前这些数字自称「快照，改完用这几条命令复核，
+     别手改数字」——纯人工、无门，于是六处一起漂（2026-10-08 审计 P2）。
+     派生不出来的两个运行时数（run_all.sh 汇总行的守门用例数、sim_tests 的断言数）
+     **不许写死**，命中即判红并提示改成指针，理由见 README_UNPINNED 的注释。
 
 用法：python3 scripts/check_doc_paths.py
 退出码：0=一致，1=发现不一致或解析失败（原因打到 stderr）。
@@ -573,7 +578,99 @@ def check_suite_counts(errors):
         "harness": harness_derived,
         "sim_tu": sim_tu_derived,
         "rust": rust_derived,
+        "meta": th_meta,
     }
+
+
+# ── 7) README 的计数（与第 6 组同判据：从仓库实况派生后比对）──────────
+
+ROBOTS_DIR = ROOT / "robots"
+SCRIPTS_DIR = ROOT / "scripts"
+TEST_DIR = ROOT / "test"
+
+# README 里每个计数 → (锚点正则, 人话说明)。锚点消失即 exit，与 _stated 同取向：
+# 这些数字属于「没人会回头看」那一类，静默少比一个比报错危险得多。
+# 同一个数在 README 里出现两次的（Lua/C++ 测试文件数在「项目结构」与「测试规模」
+# 两节各写一遍），两条锚点都要登记——只钉一处会让另一处继续漂。
+README_COUNT_ANCHORS = [
+    ("modules", r"Lua驱动生态（(\d+)个模块", "项目结构里 modules/ 那行的模块数"),
+    ("lib", r"个模块 \+ (\d+)个共享库）", "项目结构里 modules/ 那行的共享库数"),
+    ("robots", r"结构脚本（(\d+)个机器人定义）", "项目结构里 robots/ 那行的机器人定义数"),
+    ("scripts", r"动作脚本库（(\d+)个动作脚本）", "项目结构里 scripts/ 那行的动作脚本数"),
+    ("sim_tu", r"sim_tests（(\d+) 个 TU", "项目结构里 sim/tests/ 那行的 TU 数"),
+    ("lua_tests", r"三层测试（(\d+) Lua", "项目结构里 test/ 那行的 Lua 测试文件数"),
+    ("cpp_test_files", r"三层测试（\d+ Lua \+ (\d+) C\+\+", "项目结构里 test/ 那行的 C++ 单测文件数"),
+    ("docs_md", r"深入文档（(\d+)篇Markdown", "项目结构里 docs/ 那行的 Markdown 篇数"),
+    ("mybot", r"\n- (\d+) 个 C\+\+ 单测（", "测试规模里的 C++ 单测条数"),
+    ("lua_tests", r"\n- (\d+) 个 Lua 测试文件", "测试规模里的 Lua 测试文件数"),
+    ("cpp_test_files", r"个 Lua 测试文件 \+ (\d+) 个 C\+\+ 单测文件",
+     "测试规模里的 C++ 单测文件数"),
+    ("harness", r"harness_selftest` (\d+) 条", "测试规模里的 harness_selftest 条数"),
+    ("meta", r"另有 (\d+) 个 `meta_\*` 例句", "测试规模里的 meta_ 例句数"),
+    ("rust", r"`cargo test --release` (\d+) 条", "测试规模里的 Rust 用例数"),
+]
+
+# 派生不出来的运行时数**不许在 README 里写死**。命中即判红，并说明该改成指针。
+# 由来：README 曾写「271 道守门用例」「387 条断言」，两者都要跑一遍才知道，
+# 静态门钉不住，于是烂成了 274 / 实况不符——与第 6 组对 sim 387 只钉「N 个 TU」
+# 并要求标「运行时数」是同一个取舍，只是 README 这侧直接不写数字（门面要的是量级感，
+# 而量级感由那 14 个受检数字已经给足，多两个必漂的数字不值）。
+README_UNPINNED = [
+    (re.compile(r"\d+\s*道守门用例"), "`bash test/run_all.sh` 汇总行的守门用例数"),
+    (re.compile(r"\d+\s*条断言"), "`sim_tests` 的断言数"),
+    (re.compile(r"sim_tests`\s*\d+\s*条"), "`sim_tests` 的通过数"),
+]
+
+
+def _readme_int(text, pat, what):
+    m = re.search(pat, text)
+    if m is None:
+        sys.exit(
+            f"{PREFIX}: {rel(README)} 里找不到{what}，措辞变了？"
+            "（改措辞请同步 README_COUNT_ANCHORS 的锚点正则）"
+        )
+    return int(m.group(1))
+
+
+def check_readme_counts(errors, suites):
+    """把 README 的每个计数与仓库实况派生值比对（第 6 组的同款判据，换个文档）。
+
+    此前 README 的数字自称「快照，改完文件用这几条命令复核，别手改数字」——纯人工、
+    无门，于是六处一起漂（2026-10-08 审计 P2：87/38 实为 88/42、650 实为 689、
+    148 实为 153、23 个共享库实为 28、工具表 9 行实为 12）。第 6 组已经证明
+    「从源码派生」这条路对 testing.md 有效，这里照搬同一套。
+    """
+    text = read(README)
+
+    derived = dict(suites)
+    derived.update({
+        "modules": len(list(MODULES_DIR.glob("*.lua"))),
+        "lib": len(list((MODULES_DIR / "lib").rglob("*.lua"))),
+        "robots": len(list(ROBOTS_DIR.glob("*.sql"))),
+        "scripts": len(list(SCRIPTS_DIR.glob("*.mt"))),
+        "lua_tests": len(list(TEST_DIR.glob("*.lua"))),
+        "cpp_test_files": len(list((TEST_DIR / "cpp").glob("test_*.cpp"))),
+        "docs_md": len(list(DOCS_DIR.glob("*.md"))),
+    })
+
+    for key, pat, what in README_COUNT_ANCHORS:
+        stated = _readme_int(text, pat, what)
+        if stated != derived[key]:
+            errors.append(
+                f"README 写{what}为 {stated}，按仓库实况派生是 {derived[key]}"
+                "（派生命令见 README「项目结构」节末与第 6 组同源的口径）"
+            )
+
+    for pat, what in README_UNPINNED:
+        m = pat.search(text)
+        if m is not None:
+            errors.append(
+                f"README 写死了{what}（`{m.group(0)}`）：这是运行时数，本脚本静态派生"
+                "不出来，写死必漂移——改成指向实时输出（`bash test/run_all.sh` 汇总行 / "
+                f"{rel(TESTING_MD)}），别抄数字"
+            )
+
+    return derived
 
 
 def main():
@@ -586,6 +683,7 @@ def main():
     n_docs = check_index(errors)
     n_scanned = check_deleted(errors)
     suites = check_suite_counts(errors)
+    readme = check_readme_counts(errors, suites)
 
     if errors:
         print(f"{PREFIX}: 文档与仓库实况不一致：", file=sys.stderr)
@@ -600,6 +698,9 @@ def main():
         f" / {n_scanned} 个文件里零处引用 {len(DELETED_FILES)} 个已删文件"
         f" / 套件计数派生 mybot_tests {suites['mybot']}、harness_selftest "
         f"{suites['harness']}、sim_tests {suites['sim_tu']} 个 TU、Rust {suites['rust']}"
+        f" / README {len(README_COUNT_ANCHORS)} 处计数派生比对"
+        f"（模块 {readme['modules']}、lib {readme['lib']}、Lua 测试 {readme['lua_tests']}"
+        f"、C++ 测试文件 {readme['cpp_test_files']}、docs {readme['docs_md']} 篇）"
         f" / {len(KNOWN_ABSENT)} 条历史与占位豁免仍生效）"
     )
 

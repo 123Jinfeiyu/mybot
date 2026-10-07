@@ -14,7 +14,7 @@
 #        防线——那是本自检唯一执行 run_all.sh 的地方，0.1s 级，见第 7 段）；
 #   8–14 跨源一致性（同一条事实在两套构建系统里手写多份：仿真器契约、状态目录缺省名、
 #        文档引用与计数、模型配置字段白名单、有状态 LLM 协议判据、LLM wire 可钉部分、
-#        后端工具注册表与 docs/agent.md 工具表）——全部零编译，理由见第 8 段。
+#        后端工具注册表与两张文档工具表）——全部零编译，理由见第 8 段。
 set -u
 cd "$(dirname "$0")/.." || exit 1
 
@@ -386,6 +386,14 @@ EOF
 #     调用点 309 处而实跑 387 条，差额在循环与条件分支里，跑一遍才知道；加上 sim/ 不在
 #     任何 CI job 的构建范围，那个数只能人工回填。故表里那一格必须明写「运行时数」，
 #     脚本也钉这个标记在——豁免要显式，否则读者会以为它同样受检。
+#     第七组把同一套判据扩到 README（2026-10-08 审计 P2）：「项目结构」与「测试规模」
+#     两节里的每处计数都按锚点正则抠出来与派生值比对。此前 README 自称「快照，改完用
+#     这几条命令复核，别手改数字」——纯人工无门，结果八处一起烂（含工具表少三行，那一半
+#     归第 14 段管）。README 是新人第一入口，误导面比深入文档更大。
+#     ⚠ 与上面同款纪律：本注释**不写出任何派生值**，要看当前值就跑脚本读收尾行。
+#     第七组另有一条**反向判据**：run_all.sh 汇总行的守门用例数与 sim_tests 的断言数
+#     派生不出来，故 README 里**不许写死**它们，命中裸数字即判红并提示改成指针——
+#     比第六组的「标了运行时数就放行」更严，因为门面页不需要靠这两个数给量级感。
 # 11) 模型配置字段白名单的双端同集合：C++ src/llmconfig.cpp 的 kKnown vs Rust
 #     agent/src/config/file.rs 的 PARSED_FIELD_NAMES（parsed_fields! 宏表）+
 #     KNOWN_UNPARSED_FIELDS。两端读同一份 mybot.llm.json，任一侧漏登记一个字段，
@@ -405,6 +413,10 @@ EOF
 #     结尾（成对的族名/路径不许错配）。报文字段、SSE 帧名、鉴权头名归 vendored rig
 #     crate，本仓无字面量可钉——如实差异逐条登记在脚本头；C++/Lua 自 2026-09-25 起
 #     不参与网络（无 modules/Llm*.lua），故不涉及。
+# 14) 后端工具注册表 ↔ **两张**文档工具表同集合：代码侧四个 TU 里每个
+#     `return AgentTool{"<name>", ...}` 的名字，必须与 docs/agent.md「给智能体的工具」
+#     和 README「Agent 工具系统」两张表的第一列各自双向相等。两张都比是 2026-10-08
+#     审计 P2 的产物：只钉前者时 README 少了三个工具也全线绿灯，而 README 是新人第一入口。
 if command -v python3 >/dev/null 2>&1; then
 	python3 scripts/check_doc_paths.py \
 		|| note "scripts/check_doc_paths.py 发现文档与仓库实况不一致（详见上方输出）"
@@ -415,7 +427,7 @@ if command -v python3 >/dev/null 2>&1; then
 	python3 scripts/check_llm_wire.py \
 		|| note "scripts/check_llm_wire.py 发现 LLM wire 契约不一致（详见上方输出）"
 	python3 scripts/check_agent_tool_table.py \
-		|| note "scripts/check_agent_tool_table.py 发现后端工具注册表与 docs/agent.md 工具表不一致（详见上方输出）"
+		|| note "scripts/check_agent_tool_table.py 发现后端工具注册表与文档工具表（docs/agent.md + README）不一致（详见上方输出）"
 else
 	note "缺 python3，无法跑 scripts/check_doc_paths.py、scripts/check_llm_field_whitelist.py、scripts/check_stateful_protocol.py、scripts/check_llm_wire.py 与 scripts/check_agent_tool_table.py（文档一致性/配置白名单/有状态协议判据/LLM wire 契约/工具表一致性未受检查）"
 fi

@@ -62,11 +62,15 @@ RUST_PROVIDER_RS = "agent/src/provider.rs"
 E2E_AGENT_SH = "scripts/agent_e2e.sh"
 E2E_ICA_SH = "scripts/ica_e2e.sh"
 
-# 第 14 段：后端工具注册表 ↔ docs/agent.md 工具表同集合（check_agent_tool_table.py）
+# 第 14 段：后端工具注册表 ↔ 文档工具表同集合（check_agent_tool_table.py）
+# 文档侧是**两张**表：docs/agent.md「给智能体的工具」（权威总表，第三列写门控）与
+# README.md「Agent 工具系统」（门面摘要）。两张都要比对——只钉前者时 README 少了
+# 三个工具（list_dir/read_file/write_file）也不会变红，而 README 是新人第一入口。
 AGENTTOOLS_CPP = "src/agenttools.cpp"
 AGENTTOOLS_WAIT_CPP = "src/agenttools_wait.cpp"
 AGENTTOOLS_FS_CPP = "src/agenttools_fs.cpp"
 DOCS_AGENT_MD = "docs/agent.md"
+README_MD = "README.md"
 
 
 def resolve(ref):

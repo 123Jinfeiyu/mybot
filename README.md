@@ -245,11 +245,14 @@ MYBOT 采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全�
 | `list_action_scripts` | 列出可用动作脚本 | ✅ 只读 |
 | `list_hardware` | 显示硬件清单（不读值、无副作用） | ✅ 只读 |
 | `query_sql` | 结构 SQL 只读查询/语法校验（`SELECT ... [WHERE 列 = 值 [AND ...]]`、`SHOW TABLES`） | ✅ 只读 |
+| `list_dir` | 列出根目录内的目录条目（名字/类型/大小；软链条目不列，上限 1000 条） | ✅ 只读，**需 `--fs-root`** |
+| `read_file` | 读取根目录内的一个文本文件（≤64 KiB 超限拒绝不截断；二进制/非法 UTF-8 拒绝；回执过密钥遮蔽） | ✅ 只读，**需 `--fs-root`** |
 | `run_action_script` | 执行动作脚本（**回执带驱动返回的读数**） | ⚠️ 写入 |
 | `capture_image` | 拍照并送入上下文 | ⚠️ 隐私 |
 | `read_variables` | 主动读硬件变量当前值 | ✅ 只读，**需 `--read-var` 声明可读变量** |
 | `wait_variable` | 轮询等某个读数满足条件（阈值/变化），超时是结果 | ✅ 只读，与 `read_variables` 同门控 |
 | `apply_sql` | 结构 SQL **带电生效**（建表/插行；`DELETE FROM` 当场断电摘行、`DROP TABLE` 撤整张表，**不可逆**；`UPDATE ... SET ...` 按断电重建改写命中行） | 🔴 危险，**需 `--agent-hot-sql`** |
+| `write_file` | 在根目录内创建/覆盖一个文本文件（原子写：临时文件落地，不留半截内容；目标是符号链接一律拒绝）。已存在时**默认拒绝**，须显式传 `overwrite:true`（覆盖**不可逆**，旧内容不保留）；≤64 KiB、不接受含 NUL 的内容、父目录须已存在 | 🔴 危险，**需 `--agent-write-file`（依赖 `--fs-root`）**；`--mcp-backend` 下**强制**要 policy 且 `require_confirm` 含 `write_file` |
 | `run_command` | 执行 shell 命令 | 🔴 危险，**需 `--agent-shell`** |
 
 ## 安全设计
@@ -363,7 +366,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（59个模块 + 23个共享库）
+├── modules/       # Lua驱动生态（59个模块 + 28个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
@@ -381,17 +384,21 @@ mybot/
 ├── sim/           # C++17/OpenGL 仿真器（独立 CMake 工程，不在主构建里）
 │   ├── src/             # 引擎、命令/测距/请求三桥、渲染、场景读写
 │   ├── scenes/          # 模板场景（播种到 $MYBOT_HOME/maps/）
-│   └── tests/           # sim_tests（8 个 TU，387 条断言）
+│   └── tests/           # sim_tests（8 个 TU；断言计数见 docs/testing.md）
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（87 Lua + 38 C++ + E2E）
-└── docs/          # 深入文档（14篇Markdown + 架构分析网页与两张全景图）
+├── test/          # 三层测试（88 Lua + 42 C++ + E2E）
+└── docs/          # 深入文档（13篇Markdown + 架构分析网页与两张全景图）
 ```
 
-上面括号内的计数是 2026-10-04 快照，派生口径（改完文件用这几条复核，别手改数字）：
+上面括号内的计数**受守门钉住**：`scripts/check_doc_paths.py` 第 7 组从仓库实况派生后
+逐个比对，加/删文件却忘了改这里会判红（`bash test/run_all_selftest.sh`）。派生口径就是
+这几条命令：
 `ls modules/*.lua | wc -l`、`find modules/lib -name '*.lua' | wc -l`、
 `ls robots/*.sql | wc -l`、`ls scripts/*.mt | wc -l`、`ls test/*.lua | wc -l`、
 `ls test/cpp/test_*.cpp | wc -l`、`ls docs/*.md | wc -l`（含 `docs/README.md`）。
-`sim/` 侧同理：`ls sim/tests/*.cpp | wc -l`、`./sim/build/sim_tests` 末行的通过数。
+`sim/` 侧的 **TU 数**同样受检（派生自 `sim/CMakeLists.txt` 的 `add_executable(sim_tests …)`
+源清单）；但 `./sim/build/sim_tests` 末行的**通过数**是运行时数，静态派生不出来（sim 侧
+记账单位是断言不是用例，差额来自循环与条件分支），故本页不写死它——见 `docs/testing.md`。
 
 ## 测试与 CI
 
@@ -408,16 +415,19 @@ bash test/run_san.sh
 bash test/run_all.sh agent-all
 ```
 
-测试规模（2026-10-04 快照，权威口径以 `bash test/run_all.sh`、`./build/mybot_tests`、
-`./build/harness_selftest`、`./sim/build/sim_tests`、`cargo test` 的实时输出为准）：
+测试规模（下列数字**受守门钉住**：`scripts/check_doc_paths.py` 第 6/7 组从源码派生后
+比对，加/删用例却忘了改这里会判红。两个「跑一遍才知道」的运行时数——`run_all.sh`
+汇总行的守门用例数、`sim_tests` 的断言数——**故意不写死在本页**，只给指针，因为
+静态门派生不出来、写死必漂移）：
 
-- 650 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 87 个 Lua 测试文件 + 38 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
-- 271 道守门用例（`bash test/run_all.sh` 汇总行的通过数：Lua 单测 + C++ 段 + 各 e2e 脚本；
-  1 跳过——`test_jit_warmup.lua` 是真机 ABI 回归，需 `/dev/i2c-*`）
+- 689 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 88 个 Lua 测试文件 + 42 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 守门用例数以 `bash test/run_all.sh` 末尾的汇总行为准（Lua 单测 + C++ 段 + 各 e2e 脚本）；
+  跳过项只应剩 `test_jit_warmup.lua`——真机 ABI 回归，需 `/dev/i2c-*`
 - 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
   同文件里另有 5 个 `meta_*` 例句只作被测对象、不进缺省全量跑）、`./sim/build/sim_tests`
-  387 条（`sim/` 是独立 CMake 工程）、Rust agent `cargo test --release` 148 条
+  （`sim/` 是独立 CMake 工程，TU 数见上、断言计数见 `docs/testing.md`）、Rust agent
+  `cargo test --release` 153 条
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 
