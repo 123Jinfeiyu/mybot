@@ -367,12 +367,14 @@ echo "==============================================="
 # Camera 有意豁免（头注声明：全仓唯一不挂 arg_table 样板的驱动，build
 # 不碰设备、入参走内联类型守卫）。lib/ 内部实现自用，不在检查范围。
 # ======================================================================
-# 计数自检：modules/*.lua 至少 50 个驱动文件，grep 命中 < 40 说明判据已失效
-# （改名/改调用方式），此时「0 命中」是空集自证而非通过。
+# 本 lint 搜的是「坏形态」，PASS 的条件天然是 0 命中——不能再给 min_hits（那是
+# 给「正向抽取」用的参数，语义是「命中数应 ≥ N，低于则判抽取判据失效」，套在
+# 坏形态搜索上会导致 PASS 结构上不可达，2026-10-08 审计发现并修正，详见
+# .tmp/audit-2026-10-08.md P0）。抽取判据是否还对得上源码形态，交给
+# test/run_all_selftest.sh 的合成坏样本正向对照去管，不在这里用活树命中数假装自检。
 run_one_inline_lint "lint-driver-entry-arg_table" \
 	"驱动入口 arg_table 断言" \
-	"grep -l 'type(data) ~= \"table\"' modules/*.lua | grep -v '^modules/Camera.lua$'" \
-	40
+	"grep -l 'type(data) ~= \"table\"' modules/*.lua | grep -v '^modules/Camera.lua$'"
 
 # ======================================================================
 # 模块路径引导 lint（2026-09-20 重构阶段 2 收尾防线）：
@@ -383,11 +385,12 @@ run_one_inline_lint "lint-driver-entry-arg_table" \
 # multipath_module_path）。只盯这一种**已知坏形态**——lib/ 里用
 # `:gmatch("[^:]+")` 逐段探测的既有实现是对的，不能误伤。
 # ======================================================================
-# 计数自检：modules/ 至少 60 个文件，grep 命中 < 50 说明判据已失效。
+# 同上（见上条 lint 的新注释）：坏形态搜索不配 min_hits。另修一处独立 bug：
+# 原判据 `:match("[^:\]+")` 在被双引号参数吃掉转义后，`[^:\]` 变成未闭合字符
+# 类，恒 0 命中——改用 grep -F 字面量匹配 `:match("[^:]+")`，不再过引号层。
 run_one_inline_lint "lint-module-path-bootstrap" \
 	"模块路径引导 __mpath 断言" \
-	"grep -rn ':match(\"[^:\]+\")' modules/ | grep -v '__mpath'" \
-	50
+	"grep -rnF ':match(\"[^:]+\")' modules/ | grep -v '__mpath'"
 
 # ======================================================================
 # NaN 兜底 lint（26.1 收尾防线）：驱动的配置列不得写 `tonumber(data.X) or 缺省`。

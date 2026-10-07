@@ -275,6 +275,45 @@ typo_rc=0
 bash test/run_all.sh zzz_selftest_typo_probe >/dev/null 2>&1 || typo_rc=$?
 [ "$typo_rc" -ne 0 ] \
 	|| note "拼错过滤器仍以 0 退出：空匹配防线（C8）失效，有分段在无条件记通过"
+#    第三类可信度：**坏形态 lint 的抽取判据对合成坏样本正向对照**（2026-10-08 审计
+#    P0 续）。run_one_inline_lint 搜的是「坏形态」，PASS 天然要求 0 命中——这意味着
+#    活树里的命中数永远不能当「判据还有效」的自证（0 命中既可能是「代码干净」也可能
+#    是「判据已经认不出这种坏形态」，两者在活树上无法区分）。正确做法是喂一个**已知
+#    含坏形态**的合成样本，断言判据真的抓得到；之前 9c5933c 给的 min_hits 阈值企图
+#    拿活树命中数当自证，但 PASS 要求 bad 为空、自检要求 hits_n≥min_hits>0，两者
+#    结构上互斥——min_hits>0 时 PASS 永不可达，这正是 P0 的根因，已在 run_all.sh 里
+#    删掉（见该文件 lint-driver-entry-arg_table / lint-module-path-bootstrap 附近
+#    的新注释）。这里补的是「删阈值之后不留空白」：grep_cmd 原文从 run_all.sh 里
+#    原样抽出（不是在这里重写一遍判据，重写会与 run_all.sh 各漂各的），只换目标路径
+#    到合成坏样本目录，断言命中 > 0。
+_extract_lint_cmd() {	# $1=lint 名 → stdout 吐 run_one_inline_lint 第 3 个参数的真实值
+	local name="$1" block cmd_line cmd_val
+	block="$(sed -n "/run_one_inline_lint \"${name}\"/,/^\$/p" test/run_all.sh)"
+	cmd_line="$(printf '%s\n' "$block" | sed -n '3p' | sed -E 's/^[[:space:]]*//')"
+	[ -n "$cmd_line" ] || return 1
+	eval "cmd_val=$cmd_line" 2>/dev/null || return 1
+	printf '%s' "$cmd_val"
+}
+_lint_tmp="$(mktemp -d)"
+mkdir -p "$_lint_tmp/modules"
+# A 的合成坏样本：真实违规驱动会写的那种内联 `type(data) ~= "table"` 守卫
+# （不叫 Camera.lua，否则会被判据自己的豁免过滤器挡掉——那是在测豁免，不是测判据）。
+printf 'local function build(ctx, data)\n  if type(data) ~= "table" then error("x") end\nend\n' \
+	> "$_lint_tmp/modules/Fixture.lua"
+# B 的合成坏样本：真实违规会写的那种裸 `:match("[^:]+")` 首段提取，且不含 __mpath
+# （含了 __mpath 会被判据自己的白名单过滤器挡掉——同上，不是在测判据本身）。
+printf 'local p = BOT4CJ_MODULE_PATH:match("[^:]+")\n' > "$_lint_tmp/modules/FixtureMpath.lua"
+for _ln in "lint-driver-entry-arg_table" "lint-module-path-bootstrap"; do
+	if ! _cmd="$(_extract_lint_cmd "$_ln")"; then
+		note "抽不到 $_ln 的 grep_cmd 原文（run_one_inline_lint 的调用形态变了？正向对照失去取材面）"
+		continue
+	fi
+	_hit="$(cd "$_lint_tmp" && eval "$_cmd" 2>/dev/null | grep -c .)"
+	[ "$_hit" -gt 0 ] \
+		|| note "$_ln 的判据对合成坏样本命中 0 条——抽取判据已失效（正向对照落空，见 .tmp/audit-2026-10-08.md P0）"
+done
+rm -rf "$_lint_tmp"
+unset _lint_tmp _ln _cmd _hit
 
 # 8) 仿真器跨构建系统契约（sim/ vs 宿主 C++/Lua 的手写双份）：动作码表、三条
 #    缺省 socket 路径、一问一答桥的请求关键字、默认场景（world.cpp 的内置回落 vs
