@@ -257,7 +257,7 @@ AgentTool makeReadFileTool(const AgentToolContext& ctx) {
  *     日志、会话文件、REPL 历史同规。代价是别的用户/进程读不到写出来的文件——已写进
  *     工具描述告知模型，免得它写一个指望被外部读取的文件还以为成功了。
  *
- * 评估后**不做**的一项（.tmp/phase5-write_file-plan.md §4 曾列为「实现时二选一」）：
+ * 评估后**不做**的一项（Phase 5 计划的测试清单曾列为「实现时二选一」）：
  * 「allowWriteFile=true 但 fsRoot 为空」这个非法组合的工具层防御性回归。理由是它到不了
  * 工具层——buildAgentConfig 的跨字段依赖校验已在上电前判成配置错误退出 2，且有
  * test_llmconfig_assembly 与 mcp_e2e 各一条反面用例钉住。为构造不出来的状态补工具层

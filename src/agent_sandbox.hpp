@@ -120,8 +120,8 @@ inline SandboxResult resolveUnderRoot(const std::string& root, const std::string
  * fullPath 必须已经过 resolveUnderRoot 校验（本函数不重复判沙箱，只管"怎么
  * 把内容安全地落到这一个已核准的路径上"）。
  *
- * 语义（与 .tmp/phase5-write_file-plan.md 设计决策②③对应，落地时对③做了一处
- * 比计划更严的修正，见实现要点 5）：
+ * 语义（对外承诺见 docs/agent.md 安全说明第 14 条；落地时比原计划更严的一处修正
+ * 见实现要点 5）：
  *   - 目标不存在 → 创建；目标存在且 overwrite=false → 拒绝（不静默覆盖）；
  *     目标存在且 overwrite=true → 覆盖，但走"临时文件 + rename"而不是
  *     O_TRUNC 原地改写——半写失败时不留半截文件。
