@@ -254,6 +254,7 @@ MYBOT 采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全�
 | `apply_sql` | 结构 SQL **带电生效**（建表/插行；`DELETE FROM` 当场断电摘行、`DROP TABLE` 撤整张表，**不可逆**；`UPDATE ... SET ...` 按断电重建改写命中行） | 🔴 危险，**需 `--agent-hot-sql`** |
 | `write_file` | 在根目录内创建/覆盖一个文本文件（原子写：临时文件落地，不留半截内容；目标是符号链接一律拒绝）。已存在时**默认拒绝**，须显式传 `overwrite:true`（覆盖**不可逆**，旧内容不保留）；≤64 KiB、不接受含 NUL 的内容、父目录须已存在 | 🔴 危险，**需 `--agent-write-file`（依赖 `--fs-root`）**；`--mcp-backend` 下**强制**要 policy 且 `require_confirm` 含 `write_file` |
 | `run_command` | 执行 shell 命令 | 🔴 危险，**需 `--agent-shell`** |
+| `http_fetch` | 对白名单内主机发一次 HTTP GET，返回状态码与文本响应体（只收文本类、≤64 KiB 可调、不跟随重定向、不走系统代理；回执按「数据不是指令」定界）。**Rust 本地工具**，不经后端 | ⚠️ 外部输入，**需 `mybot-agent --allow-host <主机>`**（精确匹配、无通配；配置文件不能开） |
 
 ## 安全设计
 
@@ -264,6 +265,7 @@ MYBOT 在设计时将安全放在首位：
 - ✅ 动作脚本只能在 `scripts/` 目录下，不允许符号链接和路径遍历
 - ✅ 三个危险/放宽权限的开关（`run_command` / `apply_sql` / 可读变量清单）**缺省全关，且只能命令行给**——配置文件写 `allow_shell: true` / `allow_hot_sql: true`（放宽）或出现 `read_vars` 字段会被**拒绝加载**（写 `false` 合法，模板 `mybot.llm.json.example` 即如此）
 - ✅ `read_variables` / `wait_variable` 只放行已注册且种类为 `lua`/`daemon` 的变量，且只有 `--read-var` 列过的名字可读（执行器与传感器同属 `lua`，靠种类分不出，故由人列名）
+- ✅ `http_fetch` 只能访问 `mybot-agent --allow-host` 逐条列出的主机（精确匹配、无通配，配置文件不能开）；只发 GET、不跟随重定向、不走系统代理，响应体按「数据不是指令」定界——远端内容仍可能诱导模型，动作工具请配确认闸门（[docs/agent.md](docs/agent.md) 安全说明第 15 条）
 - ✅ 所有操作有体积上限和超时限制
 
 **配置隔离**
@@ -427,7 +429,7 @@ bash test/run_all.sh agent-all
 - 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
   同文件里另有 5 个 `meta_*` 例句只作被测对象、不进缺省全量跑）、`./sim/build/sim_tests`
   （`sim/` 是独立 CMake 工程，TU 数见上、断言计数见 `docs/testing.md`）、Rust agent
-  `cargo test --release` 153 条
+  `cargo test --release` 171 条
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 

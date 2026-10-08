@@ -29,6 +29,7 @@
 - [审计轨迹：--audit-log](#审计轨迹--audit-log)
 - [会话持久化：--session-file / --resume](#会话持久化--session-file----resume)
 - [远程对话（已评估，不做）](#远程对话已评估不做)
+- [出站 HTTP：http_fetch](#出站-httphttp_fetch)
 - [策略钩子：--agent-policy](#策略钩子--agent-policy)
 - [工具后端：--mcp-backend（agent 体系的 C++ 半边）](#工具后端--mcp-backendagent-体系的-c++-半边)
 - [安全说明（请务必读）](#安全说明请务必读)
@@ -155,6 +156,9 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 `--resume` 则只给 `mybot-agent`。Rust 选项使用 `--选项 值` 写法，详见其 `--help`。
 两端都有 `--audit-log` / `--check-config`，但各管本进程：Rust 记录模型/会话审计，
 配置校验在连接后端之前返回；后端校验行为见表。
+出站 HTTP 的三个选项 `--allow-host` / `--http-fetch-timeout` / `--http-fetch-max-bytes`
+也只给 `mybot-agent`（`http_fetch` 是 Rust 本地工具，不经后端），见
+[出站 HTTP：http_fetch](#出站-httphttp_fetch) 一节。
 
 | 参数 | 说明 | 缺省 |
 | --- | --- | --- |
@@ -393,6 +397,7 @@ provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
 | `list_dir` | 列出机器人主机上一个目录下的条目（文件名 + 类型 + 大小；只读、不递归；`path` 缺省为只读根目录本身） | 符号链接条目不列；条目数上限 1000（超限截断并标注）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（配置文件的 `fs_root` 一律拒绝加载，见安全说明第 13 条） |
 | `read_file` | 读取机器人主机上一个文本文件的全部内容（只读） | 路径必须落在 `--fs-root` 根目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）；大小上限 64 KiB（超限响亮拒绝，不截断）；二进制（含 NUL 或非法 UTF-8）拒绝返回；回执经 `maskSecretsInText` 遮蔽敏感值（与 `run_command` 同单点）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（与 `list_dir` 同门控，配置文件不能开） |
 | `write_file` | 在机器人主机上创建或覆盖一个文本文件（原子写入：先写同目录临时文件再落地，不留半截内容） | 路径同 `read_file` 的沙箱判据；目标是符号链接一律拒绝（无论 `overwrite`）；目标已存在时**默认拒绝覆盖**，须显式 `overwrite:true`（覆盖不可逆）；大小上限 64 KiB、不接受含 NUL 的内容；父目录须已存在（不自动创建）；落地文件权限 **0600**（别的用户/进程读不到，需跨用户共享时不适用）。落地按 `overwrite` 分两路：新建 `link`（目标已被抢先创建则 `EEXIST` 拒绝，堵 TOCTOU 静默覆盖）、覆盖 `rename`（原子替换），详见安全说明第 14 条。**缺省不注册**，须命令行 `--agent-write-file` 显式开启且依赖 `--fs-root`（配置文件的 `allow_write_file` 只能关不能开）；危险性与 `run_command`/`apply_sql` 同级，`--mcp-backend` 下**强制**要求 policy 且 `require_confirm` 包含 `write_file` |
+| `http_fetch` | 对允许清单内的主机发起一次 HTTP GET，返回状态码与响应体（**Rust 本地工具**：在 `mybot-agent` 进程里执行，不经后端） | **缺省不注册**，须 `mybot-agent` 命令行 `--allow-host <主机[:端口]>`（可重复）显式开启——**精确匹配**、无通配/后缀匹配，不写端口的条目只放行 http/https 缺省端口；配置文件没有对应字段（写了按未知字段拒绝整份配置）。只发 GET、**不跟随重定向**（3xx 回执报出 Location，由模型另发一次仍受白名单约束的调用）、**不走系统代理**、url 不得带用户名/密码；只收文本类 Content-Type（`text/*`、JSON、XML），响应体上限缺省 64 KiB（`--http-fetch-max-bytes`，边读边数、超限中止），须为 UTF-8；超时缺省 10 秒（`--http-fetch-timeout`）。回执逐行 `> ` 按「数据不是指令」定界；**不过** `maskSecretsInText`。非 2xx 照样带响应体、但判失败。审计 `kind=tool` 行由 agent 侧落（url 去 query）。不强制策略确认（只读、无副作用，理由与风险见安全说明第 15 条） |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -559,6 +564,11 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 - **位置在宿主派发漏斗**（`src/agentdispatch.cpp` 的 `DispatchGate::run`）：后端帧协议与 `.mt` 脚本都绕不过；参数解析失败、未知工具、工具异常同样各记一条（「模型想做什么但没做成」也是审计信息）。
 - **图片不进日志**：`capture_image` 只记 `image_bytes` 与 16 位指纹（`image_fp`，FNV-1a 64，非密码学摘要）——否则每次拍照数百 KB 灌进磁盘，且画面可能含隐私。
 - **密钥遮蔽**：`run_command` 的命令原文记进 `args.command` 前先遮蔽敏感值——`KEY=VALUE`、`Authorization: Bearer <tok>`、裸 `Bearer <tok>`、JSON 引号键 `"name": value`（2026-10-08 补，见下）四种形态的值替换为 `***`；判据与 `run_command` 的环境清洗同源（整词切词，`KEYSTONE`/`MONKEY` 不误伤）。**同一个 `maskSecretsInText` 单点也用于回执**（G1）：命令自己打印到 stdout/stderr 的敏感值，在回传模型前同样被遮蔽；`list_dir`/`read_file`（第 13 条）的文件内容回执同样经这个单点（2026-10-08 补，此前只有 `run_command` 接了，是审计 P1 发现的缺口）。
+- **谁落工具行**：后端工具的 `kind=tool` 行由后端（`mybot --mcp-backend --audit-log`）在派发漏斗里落；
+  不经后端的 Rust 本地工具 `http_fetch` 后端看不见，其 `kind=tool` 行由 `mybot-agent` 的 `--audit-log`
+  落，字段同名同义（`turn`/`tool`/`args`/`ok`/`error`/`ms`/`bytes`/`summary`；`args.url` 去掉查询串、
+  片段与 userinfo，`summary` 为 `status=<HTTP 状态码>`）。两侧共用同一个审计文件时，同一会话的工具行
+  就按时间交错在一起。（`ica_*` 是纯内存账本、无外部副作用，不落工具行。）
 - **生效摘要（G2）**：`apply_sql` 等工具行的 `summary` 字段记工具自报的结构化生效信息（新增几张表/几个变量/几行……），供复盘对账「这次热插到底改了什么」；只做加法，不带 `summary` 的老工具行不出现该键。
 - **失败响亮**：日志流写入失败（磁盘满等）向 stderr 告警一次，不打断机器人动作；路径打不开则**上电前**报错退出 2（「配置错误不碰真机」）。
 - 默认**关闭**（不传 = 不写任何东西）；开启即 append-only，不做轮转（交给外部工具收集）。会话开始时把实际落点打印到 stderr。
@@ -616,7 +626,7 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
      失败**（报「工具集不同（会话头的工具集指纹 X，当前 Y）；工具调用历史对当前会话
      不再适用」，退出 2）。工具扩展计划曾把这列为开工前必须决定的议题——「接受换新段」
      还是「设计只增不减的向后兼容指纹」——实际按**接受换新段**落地（`list_dir`/
-     `read_file` 加进来断过一次，`write_file` 又断过一次），但当时没写进任何被跟踪的
+     `read_file` 加进来断过一次，`write_file` 又断过一次；开/关 `http_fetch`（给不给 `--allow-host`）同理），但当时没写进任何被跟踪的
      文档，这里补上。理由：兼容指纹要么放过「工具集变了、可历史里还留着对已删工具的
      调用」这种服务端会 400 的序列（正是判据 3 要挡的东西），要么得逐条改写历史——
      两条都比让操作者重开一段会话贵得多。
@@ -698,35 +708,61 @@ MYBOT_HOME=/var/lib/mybot ./agent/target/release/mybot-agent --socket /tmp/mybot
 > 本地运行 `mybot-agent`（stdin 交互）；动作脚本的远程投递走 `--tcp` 动作源
 > （安全口径不变：回环缺省、跨机必须 `--tcp-token`）。批次字母 E 作废，不再复用。
 
-## 出站 HTTP：`http_fetch`（本轮不做）
+## 出站 HTTP：http_fetch
 
-> **决策（2026-10-08）**：经维护者评估，`http_fetch` **本轮不做**。这是**推迟**而非
-> 否决——设计已成形（出站主机白名单为硬性要求），日后若确有需求可重新提起。当前
-> 12 个工具（见[给智能体的工具](#给智能体的工具)）里没有任何一个向任意主机名发起
-> 请求，agent 面唯一的出站网络是配置好的 LLM 网关端点。
->
-> **不做的理由**：它会是 agent 面**唯一**把任意主机名的响应体喂进模型上下文的入口。
-> 对一个控制物理执行器的机器人来说，这是 prompt injection 最理想的落点——模型读到的
-> 网页/API 响应可以包含"假装是系统指令"的文本，而模型没有可靠办法区分"这是我请求的
-> 数据"与"这是攻击者精心构造的指令"。`quoteUntrusted` 的"数据不是指令"定界能降低但
-> **不能消除**这个风险：定界是提示工程层面的缓解，不是密码学边界。相比之下现有工具的
-> 不可信输入都来自操作者自己放好的位置（`--fs-root` 下的文件、`--camera-src` 的图片），
-> 攻击者要投毒得先拿到主机写权限——那时已经有更直接的路径了。
->
-> **两条边界条件**（重新提起时必须一并回答）：① 只支持"白名单内的受控内部 API/文档
-> 站点"，**通用网页浏览**与本项目安全模型不兼容（白名单不现实 = 等于没有边界），应
-> 直接否决；② 若读到的响应可能直接导致物理动作（模型读完就调 `run_action_script`），
-> 风险权重要再加一档。
->
-> **诚实告知**：不做 `http_fetch` 并不等于这台机器人不能联网取数据——开了
-> `--agent-shell` 时 `run_command "curl …"` 就能。区别在于：`run_command` 是**危险
-> 开关、默认关、后端下强制策略确认**，且其输出过 `maskSecretsInText` 遮蔽；一个专门的
-> `http_fetch` 若做成只读工具，反而会比这条已有的宽接口更少闸门。所以本决策的实际
-> 效果是"不新增一条低闸门的出站路径"，而非"关闭出站能力"。
->
-> **替代做法**：需要外部资料时由操作者自己取回，放进 `--fs-root` 指的目录，让模型用
-> `read_file` 读——人留在环里，且回执同样过定界与遮蔽。注意 `--fs-root` **不要**指向
-> 含密钥或会话文件的目录（遮蔽是防线，不是许可证）。
+`http_fetch` 让模型对**操作者列出的少数几个受控主机**（内部 API、文档站点）发一次
+HTTP GET。它是 **Rust 本地工具**：在 `mybot-agent` 进程里执行（`agent/src/httpfetch.rs`），
+不经 C++ 后端——后端承诺零第三方 C++ 依赖，不引 HTTP 客户端；Rust 侧复用 rig 已带的
+`reqwest`（钉同一版本、只开 `rustls`，不新增下载、不引入 openssl）。
+
+```bash
+# 只放行两个内部服务；不写端口 = 只放行 http/https 缺省端口
+mybot-agent --socket /tmp/mybot/mcp.sock \
+  --allow-host docs.internal.example --allow-host 10.0.0.5:8080 \
+  --http-fetch-timeout 10 --http-fetch-max-bytes 65536 --task "查一下传感器手册里的量程"
+```
+
+`mybot-agent` 的三个选项（Rust 选项不进上面那张后端选项表，与其余 Rust 选项同体例）：
+
+- `--allow-host <主机[:端口]>`：放行一个出站主机并注册 `http_fetch`，**可重复**；缺省不提供
+  （无白名单 = 无此工具）。只写裸主机（可带端口；IPv6 写 `[::1]:8080`），带 scheme/路径/
+  查询串/userinfo/通配符一律判配置错误退出 2。
+- `--http-fetch-timeout <秒>`：单次请求超时（连接 + 整个响应），1..120，缺省 10。
+- `--http-fetch-max-bytes <n>`：响应体上限，1..1048576，缺省 65536。
+
+三个选项**只有命令行入口**：出站白名单是放宽能力的字段，与 C++ 侧 `--fs-root` /
+`--read-var` 同判据——配置文件没有对应字段，写了 `allow_host` 之类会被当成未知字段
+拒绝整份配置（Rust 侧没有「登记后指名拒绝」的必要：C++ 后端不读这类字段，不存在
+两端对同一字段理解不一致的风险）。`--check-config` 的摘要里有「出站 HTTP」一栏。
+
+**行为**（判据与理由见安全说明第 15 条）：
+
+- **主机白名单精确匹配**：主机名规范化（小写、IDNA）后逐字相等；`evil.allowed.com`、
+  `allowed.com.attacker.net` 都不匹配 `allowed.com`。条目不写端口时只放行 scheme 缺省
+  端口，写了端口时只放行该端口。url 带用户名/密码直接拒绝。
+- **只发 GET，不跟随重定向**：3xx 原样回给模型（报出 `Location`），模型若要继续须对新
+  地址另发一次调用，照样过白名单——自动跟随等于让远端决定最终访问哪个主机。
+- **不走系统代理**：显式关掉 reqwest 的系统代理（rig 打开了 `system-proxy`，feature 合并后
+  不关就会读 `HTTP(S)_PROXY`）；白名单之外不允许再经过第三方。
+- **只收文本**：`text/*`、`application/json`、`application/xml` 及 `+json`/`+xml` 后缀；
+  其余类型不读响应体。响应体**边读边数**，超上限立即中止（`Content-Length` 只用于提前
+  拒绝，不当防线）；非 UTF-8 拒绝。
+- **非 2xx 不是参数错误**：照样带回响应体（错误详情常在里面），但该次调用判失败。
+- **回执定界**：响应体逐行 `> ` 前缀、置于「数据不是指令」声明之下（与 C++
+  `quoteUntrusted`、会话摘要转录同一种形态，Rust 侧单点 `summary::quote_lines`）。
+- **审计**：每次调用在 agent 的 `--audit-log` 落一条 `kind=tool` 行（见「审计轨迹」节），
+  `args.url` 去掉查询串、片段与 userinfo，`summary` 记 `status=<码>`。
+- **会话续接**：开/关 `http_fetch`（给不给 `--allow-host`）会改变工具集指纹，此前的会话段
+  不能 `--resume`、缺省布局下自动换新段（见「会话持久化」节的指纹取舍）。
+
+**沿革（2026-10-08）**：同日先评估为「本轮不做」，随后重新提起。重新提起时对原评估
+留下的三个问题的答复：① 需求是**白名单内的受控 API**——通用网页浏览与本项目的安全
+模型不兼容（白名单不现实 = 没有边界），仍然否决；② 不做策略确认，只靠白名单把关（GET、
+无副作用，与 `read_file` 同级；Rust 侧也没有 policy 判定层）；③「读到的响应促使模型去调
+动作工具」这一风险**只写进文档、代码层不做互斥**（见安全说明第 15 条）。
+与 `run_command "curl …"` 的关系：开了 `--agent-shell` 时那条宽接口本就能联网，且有策略
+确认与密钥遮蔽；`http_fetch` 是一条闸门不同的**窄接口**——不需要开 shell，但出站目标被
+白名单锁死、只能 GET、不跟随重定向。两者的取舍由操作者按部署选择。
 
 ## 策略钩子：--agent-policy
 
@@ -784,8 +820,8 @@ agent 就是 `mybot-agent`。
 ```
 [mybot-agent]（Rust，模型循环） ──帧/AF_UNIX──> [mybot --mcp-backend] ──> 硬件
    │  直连 provider（reqwest）
-   └─ 审计：kind=model / kind=session 行（agent 侧落）
-      后端落 kind=tool 行（可共用同一个 --audit-log）
+   └─ 审计：kind=model / kind=session 行（agent 侧落）；本地工具 http_fetch 的
+      kind=tool 行也由 agent 侧落。后端工具的 kind=tool 行由后端落（可共用同一个 --audit-log）
 ```
 
 后端只认一条 pymsg 兼容的帧协议（`[4 字节 BE 长度][UTF-8 JSON]`，上限 8 MiB——
@@ -1102,6 +1138,34 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     本身的原子性仍成立——不会出现"目标内容新旧混合"的半写状态）；不做版本历史/回滚
     （覆盖前的旧内容不保留，如需回溯请在受版本控制的目录里使用 `--fs-root`）。
 
+15. **`http_fetch` 把外部网络主体引进模型上下文——白名单是唯一的门**（Phase 6，2026-10-08）。
+    此前所有工具的不可信输入都来自操作者自己放好的位置（`--fs-root` 下的文件、
+    `--camera-src` 的图片），攻击者要投毒得先拿到主机写权限；`http_fetch` 是**第一个**
+    把别的主机的响应体喂进上下文的工具。远端内容可以包含「假装是系统指令」的文本，
+    而 `> ` 定界加「数据不是指令」声明能**降低但不能消除**这个风险——定界是提示工程层面
+    的缓解，不是密码学边界。故：
+    ① **出站白名单是唯一的安全边界**，只能命令行 `--allow-host` 逐条给，精确匹配、无通配
+    （`*.example.com` 这类后缀匹配历史上反复被 `evil-example.com.attacker.net` 一类构造绕过，
+    宁可让操作者多敲几条）；配置文件不能开。**只放行你能为其内容负责的主机**——白名单里的
+    每个主机，等于获得了向这台机器人的模型说话的通道。
+    ② 只发 GET、不跟随重定向、不走系统代理、只收文本、体积边读边封顶（见「出站 HTTP」节）。
+    ③ **不强制策略确认**（维护者决定）：GET 无副作用，与 `read_file` 同级；把关全在白名单。
+    ④ **物理动作风险加一档**：模型读完响应、随后调 `run_action_script` / `apply_sql` /
+    `run_command` 的路径是开放的——代码层**不做**「本任务调过 `http_fetch` 就禁用动作工具」
+    的互斥（维护者决定）。在白名单主机的内容可能被他人影响（共享 wiki、第三方 API）的部署里，
+    请把动作工具的确认闸门（`--agent-policy` 的 `require_confirm`，见第 1 条与「策略钩子」节）
+    当作必需而不是可选；开 `BOT4CJ_ICA=1` 时，动作工具还须先过现实检查（本任务先读过机器人
+    状态、登记过预测），也能挡住「读完响应直接动作」的一步到位。
+    **已知限制**（如实声明）：
+    - **不过密钥遮蔽**：`maskSecretsInText`（第 1、13 条）只在 C++ 侧，Rust 侧没有镜像；
+      若白名单主机的响应里带凭据（例如某个调试接口回显了请求头），会原文进入上下文与
+      会话文件。只放行不会回显敏感数据的接口。
+    - **不防 DNS rebinding**：主机名白名单挡不住「白名单域名被改解析到内网地址」。若部署
+      网络里有不该被访问的内网服务，白名单里只放 IP 或受你控制解析的域名。
+    - **无专属限流**：同一任务里反复调 `http_fetch` 只受 `max_calls_per_round` 与任务墙钟
+      预算约束。
+    - 审计行的 `args.url` 去掉了查询串——要按查询参数复盘时只能看会话文件里的原始调用。
+
 ## 源码分层
 
 | 文件 | 职责 | 依赖 |
@@ -1116,7 +1180,7 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl/mod.rs` 等 28 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42 |
+| `agent/src/repl/mod.rs` 等 32 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行（及本地工具的 tool 行）、帧客户端、本地工具 `http_fetch`（`agent/src/httpfetch.rs`，reqwest）、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42、reqwest 0.13 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 

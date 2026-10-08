@@ -40,11 +40,11 @@ use rig_core::streaming::StreamedAssistantContent;
 
 mod slash;
 
-use crate::audit::{AuditLog, ModelEntry, SessionEntry};
+use crate::audit::{AuditLog, ModelEntry, SessionEntry, ToolEntry};
 use crate::bridge::{Bridge, ToolOutcome};
 use crate::config::Config;
 use crate::history::ConversationHistory;
-use crate::hook::{self, CallRecord, HookState};
+use crate::hook::{self, CallRecord, HookState, LocalToolRecord};
 use crate::linein::{LineInput, LineRead};
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
@@ -221,6 +221,23 @@ impl SessionAudit {
             if let Some(a) = self.audit.as_mut() {
                 a.write_model(&entry);
             }
+        }
+    }
+
+    /// 本侧本地工具的审计 tool 行（turn 减一，口径同 [`Self::record_calls`] 的普通轮）。
+    pub fn record_local_tools(&mut self, recs: &[LocalToolRecord]) {
+        let Some(a) = self.audit.as_mut() else { return };
+        for r in recs {
+            a.write_tool(&ToolEntry {
+                turn: r.turn.saturating_sub(1) as i64,
+                tool: r.tool.clone(),
+                args: r.args.clone(),
+                ok: r.ok,
+                error: r.error.clone(),
+                ms: r.ms,
+                bytes: r.bytes,
+                summary: r.summary.clone(),
+            });
         }
     }
 
@@ -425,6 +442,7 @@ impl Session {
         // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次。流式面的
         // 观测值由模型层的流适配器在流结束/被丢弃时落——drive_* 返回前流已释放。
         let calls = self.state.drain_calls();
+        let local_tools = self.state.drain_local_tools();
         let injections = self.state.take_injections();
 
         match result {
@@ -448,6 +466,7 @@ impl Session {
                     errln!("[ICA] 保存账本失败: {e}");
                 }
                 self.record_calls(&calls);
+                self.audit.record_local_tools(&local_tools);
                 if let Some(note) = self.bridge.ica.note() {
                     outln!("\n{note}");
                 }
@@ -460,6 +479,7 @@ impl Session {
                 let base = self.state.rollback_boundary().unwrap_or(snapshot);
                 self.history.replace(hook::materialize(base, &injections));
                 self.record_calls(&calls);
+                self.audit.record_local_tools(&local_tools);
                 Err(e)
             }
         }
@@ -889,6 +909,9 @@ mod tests {
             state_dir: String::new(),
             state_dir_source: "",
             state_dir_ok: false,
+            allow_hosts: Vec::new(),
+            http_fetch_timeout_sec: crate::config::DEFAULT_HTTP_FETCH_TIMEOUT_SEC,
+            http_fetch_max_bytes: crate::config::DEFAULT_HTTP_FETCH_MAX_BYTES,
         }
     }
 
@@ -924,6 +947,41 @@ mod tests {
             Some(10)
         );
         assert_eq!(models[1].get("prompt_tokens"), None);
+    }
+
+    #[test]
+    fn audit_face_writes_local_tool_rows_in_backend_shape() {
+        let dir = tmpdir("localtool");
+        let path = dir.join("audit.jsonl");
+        let log = AuditLog::open(path.to_str().unwrap()).unwrap();
+        let cfg = test_config();
+        let mut face = SessionAudit::new(&cfg, Some(log), false);
+        face.record_local_tools(&[LocalToolRecord {
+            turn: 3,
+            tool: "http_fetch".to_string(),
+            args: serde_json::json!({"url": "https://api.example.com/v1"}),
+            ok: false,
+            error: "HTTP 404 Not Found".to_string(),
+            ms: 12,
+            bytes: 34,
+            summary: "status=404".to_string(),
+        }]);
+        let lines = audit_log_lines(&path);
+        let tools: Vec<_> = lines
+            .iter()
+            .filter(|l| l.get("kind").and_then(|v| v.as_str()) == Some("tool"))
+            .collect();
+        assert_eq!(tools.len(), 1);
+        let t = tools[0];
+        // turn 同 model 行口径：rig 1-based 3 → 2
+        assert_eq!(t["turn"], 2);
+        assert_eq!(t["tool"], "http_fetch");
+        assert_eq!(t["args"]["url"], "https://api.example.com/v1");
+        assert_eq!(t["ok"], false);
+        assert_eq!(t["error"], "HTTP 404 Not Found");
+        assert_eq!(t["ms"], 12);
+        assert_eq!(t["bytes"], 34);
+        assert_eq!(t["summary"], "status=404");
     }
 
     #[test]

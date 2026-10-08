@@ -20,6 +20,8 @@
               真的把变量摘掉了；与 hotsql 同门控）
             | readvars（先要求 read_variables 读回可读变量——验证回读通道真的
               把驱动返回表带进回执；缺 --read-var 时同一条剧本只剩「未知工具」）
+            | httpfetch（按环境变量 FAKE_LLM_FETCH_URLS 逗号分隔的 URL 逐轮下发
+              http_fetch，发完给最终回答——Phase 6 Rust 本地工具的端到端）
             | manycalls[:N]（首轮返回 N 条工具调用，缺省 3；配合
               max_calls_per_round=2 触发宿主的单轮截断分支——SAN-1）
             | 429x2ok（前两次 429 + Retry-After: 1，第三次正常回答——SAN-3：
@@ -752,6 +754,17 @@ class Handler(BaseHTTPRequestHandler):
         if MODE == "readvars":
             if tool_results == 0:
                 self._reply(tool_call("read_variables", {}))
+            else:
+                self._reply(final_answer())
+            return
+        # ---- http_fetch（Phase 6，Rust 本地工具）：按环境变量 FAKE_LLM_FETCH_URLS
+        # （逗号分隔）逐个下发 http_fetch，每轮一条，全部发完给最终回答。URL 走环境
+        # 变量而不是 mode 参数：URL 里的冒号会和 mode 的 "名:参数" 写法打架。 ----
+        if MODE == "httpfetch":
+            urls = [u for u in os.environ.get("FAKE_LLM_FETCH_URLS", "").split(",") if u]
+            if tool_results < len(urls):
+                self._reply(tool_call("http_fetch", {"url": urls[tool_results]},
+                                      "call_fetch_%d" % tool_results))
             else:
                 self._reply(final_answer())
             return

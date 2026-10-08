@@ -71,6 +71,11 @@ pub mod limits {
     /// 「压缩」的意义（它是从 max_history_bytes 里扣出来的）。
     pub const SUMMARY_BYTES_MIN: i64 = 256;
     pub const SUMMARY_BYTES_MAX: i64 = 1 << 20;
+    /// http_fetch 单次请求超时与响应体上限（只有命令行入口）
+    pub const HTTP_FETCH_TIMEOUT_MIN_SEC: i64 = 1;
+    pub const HTTP_FETCH_TIMEOUT_MAX_SEC: i64 = 120;
+    pub const HTTP_FETCH_MAX_BYTES_MIN: i64 = 1;
+    pub const HTTP_FETCH_MAX_BYTES_MAX: i64 = 1 << 20;
 }
 
 /// 内置缺省（与 C++ `AgentModeConfig` 的成员初值逐值对齐）。
@@ -94,6 +99,9 @@ pub const DEFAULT_MAX_CALLS_PER_ROUND: i64 = 16;
 /// 网络重试：尝试次数含首次（= 实际最多重试 n-1 次）与退避基础时长
 pub const DEFAULT_MAX_RETRIES: i64 = 3;
 pub const DEFAULT_RETRY_BACKOFF_MS: i64 = 1000;
+/// http_fetch 缺省超时与响应体上限（64 KiB，同 C++ read_file 的量级）
+pub const DEFAULT_HTTP_FETCH_TIMEOUT_SEC: i64 = 10;
+pub const DEFAULT_HTTP_FETCH_MAX_BYTES: i64 = 64 << 10;
 
 /// 密钥包装（2026-09-30 审计 P1）：`Config` 曾派生 Debug 且含明文 `api_key`——
 /// 当时没有任何 `{:?}` 打印它，但距离「一条 `errln!("{cfg:?}")` 把密钥写进
@@ -191,6 +199,10 @@ pub struct Config {
     /// 状态目录是否可用。false（既无 `MYBOT_HOME` 也无 `HOME`）时缺省持久化
     /// **降级为关闭**并告警一次，不中止启动。
     pub state_dir_ok: bool,
+    /// http_fetch 出站白名单（已规范化去重；空 = 不提供该工具）。只有命令行入口。
+    pub allow_hosts: Vec<crate::httpfetch::AllowedHost>,
+    pub http_fetch_timeout_sec: i64,
+    pub http_fetch_max_bytes: i64,
 }
 
 /// `session_file` 的三种来源。区别只在「读取权限」与「缺省续接」：
@@ -364,6 +376,9 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         state_dir: String::new(),
         state_dir_source: "",
         state_dir_ok: false,
+        allow_hosts: Vec::new(),
+        http_fetch_timeout_sec: DEFAULT_HTTP_FETCH_TIMEOUT_SEC,
+        http_fetch_max_bytes: DEFAULT_HTTP_FETCH_MAX_BYTES,
     };
     // ---- 5b) 命令行数值覆盖（拆解见 override_number；区间与文案单点在 limits）----
     override_number(
@@ -408,6 +423,25 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
     } else {
         file.audit_log.clone().unwrap_or_default()
     };
+
+    // ---- 7b) http_fetch：命令行独占（放宽能力的字段，配置文件没有对应字段——
+    //          写了按未知字段拒绝整份配置）。只给超时/上限不给白名单不算错：两者
+    //          只是参数，没有白名单时工具本就不注册。----
+    cfg.allow_hosts = crate::httpfetch::parse_allowed_hosts(&cli.allow_hosts)?;
+    override_number(
+        &cli.http_fetch_timeout,
+        "http-fetch-timeout",
+        limits::HTTP_FETCH_TIMEOUT_MIN_SEC,
+        limits::HTTP_FETCH_TIMEOUT_MAX_SEC,
+        &mut cfg.http_fetch_timeout_sec,
+    )?;
+    override_number(
+        &cli.http_fetch_max_bytes,
+        "http-fetch-max-bytes",
+        limits::HTTP_FETCH_MAX_BYTES_MIN,
+        limits::HTTP_FETCH_MAX_BYTES_MAX,
+        &mut cfg.http_fetch_max_bytes,
+    )?;
 
     // ---- 8) 会话持久化（批次 D）：命令行 > 配置文件 > 缺省按机器人（拆解见 resolve_session）----
     resolve_session(cli, &file, &mut cfg)?;
@@ -598,9 +632,9 @@ fn parse_int_option(raw: &str, key: &str, lo: i64, hi: i64) -> Result<i64, Strin
     Ok(v)
 }
 
-/// §5b 四个「命令行给出即覆盖」的数值项共用的形状：空串 = 没给（保持配置文件层
+/// §5b 四个与 §7b 两个「命令行给出即覆盖」的数值项共用的形状：空串 = 没给（保持配置文件层
 /// 或缺省值），非空 = 走 [`parse_int_option`] 的区间校验与带选项名的报错。
-/// 四处覆盖的**先后顺序**就是四条报错的优先序（同时给错多个时报最靠前那个），
+/// 各处覆盖的**先后顺序**就是报错的优先序（同时给错多个时报最靠前那个），
 /// 故调用点保持原样逐条列出，不折进循环。
 fn override_number(raw: &str, key: &str, lo: i64, hi: i64, slot: &mut i64) -> Result<(), String> {
     if raw.is_empty() {
@@ -826,6 +860,63 @@ mod tests {
         // 报错点名选项：接线串了这句就会指错名字
         let err = build(&cli(|c| c.llm_max_turns = "101".into())).unwrap_err();
         assert!(err.contains("--llm-max-turns"), "{err}");
+    }
+
+    /// http_fetch 的三个选项：白名单解析接线 + 两个数值项各自的区间与缺省；
+    /// 配置文件里写同名字段按未知字段拒绝（放宽能力只有命令行入口）。
+    #[test]
+    fn http_fetch_options_are_cli_only_and_range_checked() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_http_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = dir.join("auth.json");
+        std::fs::write(&auth, r#"{"api_key":"k"}"#).unwrap();
+        let auth_str = auth.to_string_lossy().to_string();
+        let cli = |f: &dyn Fn(&mut Cli)| -> Cli {
+            let mut c = Cli {
+                socket: "/tmp/x.sock".into(),
+                llm_config: auth_str.clone(),
+                llm_endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+                llm_model: "m".into(),
+                ..Cli::default()
+            };
+            f(&mut c);
+            c
+        };
+        let cfg = build(&cli(&|_| {})).unwrap();
+        assert!(cfg.allow_hosts.is_empty());
+        assert_eq!(cfg.http_fetch_timeout_sec, DEFAULT_HTTP_FETCH_TIMEOUT_SEC);
+        assert_eq!(cfg.http_fetch_max_bytes, DEFAULT_HTTP_FETCH_MAX_BYTES);
+        let cfg = build(&cli(&|c| {
+            c.allow_hosts = vec![
+                "API.example.com".into(),
+                "api.example.com".into(),
+                "10.0.0.5:8080".into(),
+            ];
+            c.http_fetch_timeout = "30".into();
+            c.http_fetch_max_bytes = "1024".into();
+        }))
+        .unwrap();
+        let shown: Vec<String> = cfg.allow_hosts.iter().map(ToString::to_string).collect();
+        assert_eq!(shown, vec!["api.example.com", "10.0.0.5:8080"]);
+        assert_eq!(cfg.http_fetch_timeout_sec, 30);
+        assert_eq!(cfg.http_fetch_max_bytes, 1024);
+        let err = build(&cli(&|c| c.allow_hosts = vec!["*.example.com".into()])).unwrap_err();
+        assert!(
+            err.contains("--allow-host") && err.contains("通配符"),
+            "{err}"
+        );
+        let err = build(&cli(&|c| c.http_fetch_timeout = "121".into())).unwrap_err();
+        assert!(err.contains("--http-fetch-timeout"), "{err}");
+        let err = build(&cli(&|c| c.http_fetch_max_bytes = "0".into())).unwrap_err();
+        assert!(err.contains("--http-fetch-max-bytes"), "{err}");
+        // 配置文件不能开这个能力：任何疑似字段都是未知字段
+        for field in ["allow_host", "allow_hosts", "http_fetch"] {
+            let p = dir.join(format!("{field}.json"));
+            std::fs::write(&p, format!(r#"{{"api_key":"k","{field}":["a.example"]}}"#)).unwrap();
+            let p = p.to_string_lossy().to_string();
+            let err = build(&cli(&|c| c.llm_config = p.clone())).unwrap_err();
+            assert!(err.contains(field), "{field}: {err}");
+        }
     }
 
     /// ---- 会话持久化（批次 D）的组合校验：镜像 C++

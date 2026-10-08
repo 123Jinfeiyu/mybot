@@ -98,6 +98,23 @@ pub fn summarize(cfg: &Config) -> String {
         cfg.max_retries, cfg.retry_backoff_ms
     );
     s += &format!("  审计轨迹    : {}\n", or_none(&cfg.audit_log, "(未开启)"));
+    s += &format!(
+        "  出站 HTTP   : {}\n",
+        if cfg.allow_hosts.is_empty() {
+            "(未开启：无 http_fetch 工具)".to_string()
+        } else {
+            format!(
+                "http_fetch 放行 {}（超时 {}s，响应体上限 {} 字节）",
+                cfg.allow_hosts
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                cfg.http_fetch_timeout_sec,
+                cfg.http_fetch_max_bytes
+            )
+        }
+    );
     // 状态目录与落点：`--check-config` 在连后端之前返回，此刻还拿不到机器人名，
     // 故只报**根与模式**，不臆造具体落点（具体落点由启动时的 stderr 行给出）。
     let dir_source = match cfg.state_dir_source {

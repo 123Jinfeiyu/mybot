@@ -946,12 +946,14 @@ dependencies = [
  "futures",
  "http",
  "libc",
+ "reqwest",
  "rig-agent",
  "rig-core",
  "rustyline",
  "serde",
  "serde_json",
  "tokio",
+ "url",
 ]
 
 [[package]]

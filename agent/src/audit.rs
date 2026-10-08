@@ -4,10 +4,13 @@
 //! 按 `kind` 分派：`session`（会话边界：用哪个驱动/模型/接入点跑的、怎么结束的）
 //! 与 `model`（模型轮次：耗时/token 用量/尝试次数）。
 //!
-//! **工具行（kind=tool）不在这里写**：本侧的工具调用全经后端帧往返，后端
+//! **工具行（kind=tool）基本不在这里写**：后端工具的调用全经后端帧往返，后端
 //! `mybot --mcp-backend` 自己就落工具行（含 exit_code / image_fp / summary）。
 //! 两侧共用一个 AF_UNIX socket，会话行/模型行由本侧写、工具行由后端写——
-//! 分工与方案 F3 的拓扑一致（`docs/agent.md` 的审计小节）。
+//! 分工与方案 F3 的拓扑一致（`docs/agent.md` 的审计小节）。**例外**：不经后端的
+//! 本侧本地工具（Phase 6 的 `http_fetch`）后端看不见，其工具行由本侧
+//! [`AuditLog::write_tool`] 落，字段与后端工具行同名同义。（`ica_*` 是纯内存账本、
+//! 无外部副作用，沿用既有做法不落工具行。）
 //!
 //! **绝不写密钥**：会话行只写 `api_key_source` 枚举名（与 `--check-config`
 //! 摘要同口径：只报来源不报值）；接入点先经 `sanitize_endpoint` 去掉 query 与
@@ -65,6 +68,19 @@ pub struct ModelEntry {
     /// provider 给的用量：**只记不推算**（缺则无字段）
     pub prompt_tokens: Option<i64>,
     pub completion_tokens: Option<i64>,
+}
+
+/// `kind="tool"` 行（**仅本侧本地工具**；后端工具的工具行由后端落，见模块头）。
+#[derive(Default)]
+pub struct ToolEntry {
+    pub turn: i64,
+    pub tool: String,
+    pub args: Value,
+    pub ok: bool,
+    pub error: String,
+    pub ms: i64,
+    pub bytes: u64,
+    pub summary: String,
 }
 
 impl AuditLog {
@@ -202,6 +218,34 @@ impl AuditLog {
         }
         if let Some(v) = e.completion_tokens {
             line.insert("completion_tokens".into(), json!(v));
+        }
+        self.emit(line);
+    }
+
+    /// 本侧本地工具（http_fetch）的 `kind=tool` 行。字段名与次序对齐 C++
+    /// `writeToolFields`（turn/tool/args/ok/error/ms/bytes/summary），消费方无需区分
+    /// 是哪一侧写的。args 由调用方先脱敏（这里不碰内容）。
+    pub fn write_tool(&mut self, e: &ToolEntry) {
+        if !self.start_written {
+            self.write_session(&SessionEntry {
+                status: "start".to_string(),
+                ..Default::default()
+            });
+        }
+        let mut line = base_line(&self.session_id, "tool");
+        line.insert("turn".into(), json!(e.turn));
+        line.insert("tool".into(), json!(e.tool));
+        if e.args.is_object() {
+            line.insert("args".into(), e.args.clone());
+        }
+        line.insert("ok".into(), json!(e.ok));
+        if !e.error.is_empty() {
+            line.insert("error".into(), json!(e.error));
+        }
+        line.insert("ms".into(), json!(e.ms));
+        line.insert("bytes".into(), json!(e.bytes));
+        if !e.summary.is_empty() {
+            line.insert("summary".into(), json!(e.summary));
         }
         self.emit(line);
     }

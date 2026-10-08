@@ -33,6 +33,7 @@ mod config;
 mod frame;
 mod history;
 mod hook;
+mod httpfetch;
 mod ica;
 mod linein;
 mod model;

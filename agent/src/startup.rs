@@ -7,6 +7,7 @@ use crate::bridge::{Bridge, ConnParams};
 use crate::config::{self, Config};
 use crate::frame::{BackendClient, HARD_READ_CEILING};
 use crate::hook::HookState;
+use crate::httpfetch::HttpFetchTool;
 use crate::ica;
 use crate::prompt::PromptMaterial;
 use crate::toolspec::ToolSpec;
@@ -29,6 +30,13 @@ pub async fn assemble_backend(
     cfg: &Config,
     state: &Arc<HookState>,
 ) -> Result<BackendAssembly, (String, i32)> {
+    // 先于连后端构造：本地工具的装配失败属配置/环境错误，不该先碰后端再退出。
+    let http_fetch = HttpFetchTool::new(
+        cfg.allow_hosts.clone(),
+        Duration::from_secs(cfg.http_fetch_timeout_sec as u64),
+        cfg.http_fetch_max_bytes as usize,
+    )
+    .map_err(|e| (e, 2))?;
     let mut client =
         BackendClient::connect_timeout(&cfg.socket, Duration::from_secs(CONNECT_TIMEOUT_SEC))
             .await
@@ -57,7 +65,8 @@ pub async fn assemble_backend(
         connect_timeout: Duration::from_secs(RECONNECT_TIMEOUT_SEC),
         read_timeout,
     };
-    let bridge = Arc::new(Bridge::new(client, conn_params, Arc::clone(state)));
+    let bridge =
+        Arc::new(Bridge::new(client, conn_params, Arc::clone(state)).with_http_fetch(http_fetch));
     let specs = bridge
         .list_tools()
         .await

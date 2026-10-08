@@ -71,6 +71,8 @@ AGENTTOOLS_WAIT_CPP = "src/agenttools_wait.cpp"
 AGENTTOOLS_FS_CPP = "src/agenttools_fs.cpp"
 DOCS_AGENT_MD = "docs/agent.md"
 README_MD = "README.md"
+# Rust 侧本地工具（不经后端注册表）：http_fetch 的名字常量 `pub const TOOL_NAME`
+RUST_HTTPFETCH_RS = "agent/src/httpfetch.rs"
 
 
 def resolve(ref):

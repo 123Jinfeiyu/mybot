@@ -138,7 +138,8 @@ fn render_items(m: &Message) -> Vec<String> {
 }
 
 /// 把每行加 `> ` 前缀（多行正文逐行加，保证没有一行「裸露」在定界之外）。
-fn quote_lines(s: &str, out: &mut String) {
+/// httpfetch.rs 的回执定界也走这里（Rust 侧唯一一份）。
+pub(crate) fn quote_lines(s: &str, out: &mut String) {
     for line in s.split('\n') {
         out.push_str("> ");
         out.push_str(line);

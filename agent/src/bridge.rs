@@ -3,6 +3,8 @@
 //! 工具是**动态**的：运行期从后端 `tool.list` 拉（随后端启动开关
 //! `--agent-shell` / `--agent-hot-sql` / `--read-var` / camera 变化），schema 原样
 //! 透传给 rig，不做编译期注册——这正是换成 rig 动态工具的理由。
+//! 例外是两类**本侧本地工具**：`ica_*`（BOT4CJ_ICA）与 `http_fetch`（`--allow-host`），
+//! 在 `list_tools` 里并入、在 `call` 里按名字分流，不经后端。
 //!
 //! 帧协议（与 `routeToolList` / `routeContextGet` / `routeToolCall` 逐字段对齐）：
 //!   `tool.list`    → `data.tools[]{name,description,inputSchema}`
@@ -23,6 +25,7 @@
 //! 判定在**执行之后**——体积要拿到结果才知道，而副作用已经发生，降级说明必须
 //! 如实写明「已执行」）。语义单点在 budget.rs。
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,7 +35,8 @@ use serde_json::{Map, Value};
 use tokio::sync::Mutex;
 
 use crate::frame::BackendClient;
-use crate::hook::HookState;
+use crate::hook::{HookState, LocalToolRecord};
+use crate::httpfetch::{self, HttpFetchTool};
 use crate::ica::IcaSession;
 use crate::out::errln;
 use crate::protocol::{self, ToolCallResult};
@@ -146,6 +150,8 @@ pub struct Bridge {
     /// ICA 会话门面（BOT4CJ_ICA 开关/账本/落盘恢复；2026-10-01 收边至 ica 模块，
     /// 本结构只留桥接与预算降级）
     pub ica: IcaSession,
+    /// http_fetch 本地工具（Phase 6；缺省禁用，`--allow-host` 给出白名单才启用）
+    http_fetch: HttpFetchTool,
 }
 
 impl Bridge {
@@ -157,7 +163,14 @@ impl Bridge {
             })),
             state,
             ica: IcaSession::from_env(),
+            http_fetch: HttpFetchTool::disabled(),
         }
+    }
+
+    /// 挂上 http_fetch（builder：在包进 `Arc` 之前装配，免得构造后再改字段）。
+    pub fn with_http_fetch(mut self, tool: HttpFetchTool) -> Self {
+        self.http_fetch = tool;
+        self
     }
 
     /// 任务起点观察（ICA 账本记 begin_task；未启用时零行为）
@@ -218,6 +231,12 @@ impl Bridge {
             });
         }
         self.ica.merge_specs(&mut specs)?;
+        if let Some(spec) = self.http_fetch.spec() {
+            if specs.iter().any(|s| s.name == spec.name) {
+                return Err(format!("后端工具名与本地工具 {} 冲突", spec.name));
+            }
+            specs.push(spec);
+        }
         Ok(specs)
     }
 
@@ -257,26 +276,10 @@ impl Bridge {
             }
             None => String::new(),
         };
-        let mut extra = Map::new();
-        let request = serde_json::json!({
-            protocol::NAME_FIELD: name,
-            protocol::ARGUMENTS_FIELD: arguments,
-        });
-        extra.extend(request.as_object().cloned().unwrap_or_default());
-        let resp = self.request(protocol::ROUTE_TOOL_CALL, extra).await?;
-        let envelope: protocol::Response<ToolCallResult> = serde_json::from_value(resp)
-            .map_err(|e| format!("后端 tool.call 响应格式错误: {e}"))?;
-        let data = envelope
-            .data
-            .ok_or_else(|| "后端 tool.call 缺少 data".to_string())?;
-        let mut outcome = ToolOutcome {
-            text: data.text,
-            image_data_url: data.image_data_url,
-            ok: data.ok,
-            error: data.error,
-            executed: data.executed,
-            param_error: data.param_error,
-            summary: data.summary,
+        let mut outcome = if name == httpfetch::TOOL_NAME && self.http_fetch.enabled() {
+            self.call_http_fetch(&arguments).await
+        } else {
+            self.call_backend(name, arguments).await?
         };
         if let Some(ica) = self.ica.ledger() {
             let source = if outcome.ok && outcome.executed {
@@ -304,6 +307,48 @@ impl Bridge {
             }
         }
         Ok(outcome)
+    }
+
+    /// 后端工具（`tool.call` 帧往返）。
+    async fn call_backend(&self, name: &str, arguments: Value) -> Result<ToolOutcome, String> {
+        let mut extra = Map::new();
+        let request = serde_json::json!({
+            protocol::NAME_FIELD: name,
+            protocol::ARGUMENTS_FIELD: arguments,
+        });
+        extra.extend(request.as_object().cloned().unwrap_or_default());
+        let resp = self.request(protocol::ROUTE_TOOL_CALL, extra).await?;
+        let envelope: protocol::Response<ToolCallResult> = serde_json::from_value(resp)
+            .map_err(|e| format!("后端 tool.call 响应格式错误: {e}"))?;
+        let data = envelope
+            .data
+            .ok_or_else(|| "后端 tool.call 缺少 data".to_string())?;
+        Ok(ToolOutcome {
+            text: data.text,
+            image_data_url: data.image_data_url,
+            ok: data.ok,
+            error: data.error,
+            executed: data.executed,
+            param_error: data.param_error,
+            summary: data.summary,
+        })
+    }
+
+    /// 本地工具 http_fetch：不经后端，故审计 tool 行也由本侧记（交给 HookState，
+    /// REPL 任务结束时落行；见 audit.rs 模块头）。
+    async fn call_http_fetch(&self, arguments: &Value) -> ToolOutcome {
+        let (outcome, rec) = self.http_fetch.call(arguments).await;
+        self.state.record_local_tool(LocalToolRecord {
+            turn: self.state.current_turn.load(Ordering::Relaxed),
+            tool: httpfetch::TOOL_NAME.to_string(),
+            args: serde_json::json!({ "url": rec.url }),
+            ok: rec.ok,
+            error: rec.error,
+            ms: rec.ms,
+            bytes: rec.bytes,
+            summary: outcome.summary.clone(),
+        });
+        outcome
     }
 
     /// 任务内预算判定与图片收集（语义见 budget.rs / 模块头）。

@@ -53,6 +53,22 @@ pub struct CallRecord {
     pub completion_tokens: Option<i64>,
 }
 
+/// 一次本侧本地工具调用的观测值（供 REPL 落审计的 tool 行，字段对齐 C++ 工具行）。
+#[derive(Debug, Clone, Default)]
+pub struct LocalToolRecord {
+    /// rig 的 1-based 模型调用序号（写审计时减一，同 [`CallRecord::turn`]）
+    pub turn: usize,
+    pub tool: String,
+    /// 已脱敏的参数（http_fetch：url 去 query/fragment/userinfo）
+    pub args: serde_json::Value,
+    pub ok: bool,
+    pub error: String,
+    pub ms: i64,
+    pub bytes: u64,
+    /// 工具自报的生效摘要（G2 同字段；http_fetch：`status=200`）
+    pub summary: String,
+}
+
 /// 一批待注入的图片，以及它应当落在哪条工具结果消息之后。
 ///
 /// `ordinal` 是「本次请求里第几条带工具结果的 user 消息」（1-based，从头数）。
@@ -94,6 +110,9 @@ pub struct HookState {
     /// 失败回滚边界（rig 的 CompletionError 不带历史，必须自记）
     rollback: Mutex<Option<Vec<Message>>>,
     calls: Mutex<Vec<CallRecord>>,
+    /// 本侧本地工具（http_fetch）的审计观测值：后端工具的工具行由后端自己落，
+    /// 本地工具不经后端，只能由本侧落（REPL 任务结束时 drain）
+    local_tools: Mutex<Vec<LocalToolRecord>>,
     /// 桥收集到的、尚未注入的图片（data URL）
     pending_images: Mutex<Vec<String>>,
     /// 已注入的批次（供 REPL 在任务结束时物化进会话历史）
@@ -112,6 +131,7 @@ impl HookState {
             round_capped: AtomicBool::new(false),
             rollback: Mutex::new(None),
             calls: Mutex::new(Vec::new()),
+            local_tools: Mutex::new(Vec::new()),
             pending_images: Mutex::new(Vec::new()),
             injections: Mutex::new(Vec::new()),
         }
@@ -125,6 +145,7 @@ impl HookState {
         self.round_capped.store(false, Ordering::Relaxed);
         *self.rollback.lock().unwrap_or_else(poisoned) = None;
         self.calls.lock().unwrap_or_else(poisoned).clear();
+        self.local_tools.lock().unwrap_or_else(poisoned).clear();
         self.pending_images.lock().unwrap_or_else(poisoned).clear();
         self.injections.lock().unwrap_or_else(poisoned).clear();
     }
@@ -136,6 +157,15 @@ impl HookState {
 
     pub fn record_call(&self, rec: CallRecord) {
         self.calls.lock().unwrap_or_else(poisoned).push(rec);
+    }
+
+    /// 取走本轮全部本地工具调用记录（审计 tool 行用）。
+    pub fn drain_local_tools(&self) -> Vec<LocalToolRecord> {
+        std::mem::take(&mut *self.local_tools.lock().unwrap_or_else(poisoned))
+    }
+
+    pub fn record_local_tool(&self, rec: LocalToolRecord) {
+        self.local_tools.lock().unwrap_or_else(poisoned).push(rec);
     }
 
     /// 失败的**回滚边界**：已经完整跑完的轮（含 tool_calls 与其工具回执）。
@@ -490,11 +520,20 @@ mod tests {
             ordinal: 1,
             content: vec![],
         });
+        st.record_local_tool(LocalToolRecord {
+            turn: 1,
+            ..Default::default()
+        });
         assert_eq!(st.drain_calls().len(), 1);
+        assert_eq!(st.drain_local_tools().len(), 1);
         assert_eq!(st.take_pending_images().len(), 1);
         assert_eq!(st.take_injections().len(), 1);
         // 再填一遍：begin_task 后应全空（回滚边界回到「任务开始前」= None）
         st.record_call(CallRecord {
+            turn: 2,
+            ..Default::default()
+        });
+        st.record_local_tool(LocalToolRecord {
             turn: 2,
             ..Default::default()
         });
@@ -505,6 +544,7 @@ mod tests {
         });
         st.begin_task();
         assert!(st.drain_calls().is_empty());
+        assert!(st.drain_local_tools().is_empty());
         assert!(st.take_pending_images().is_empty());
         assert!(st.take_injections().is_empty());
         assert!(st.rollback_boundary().is_none());

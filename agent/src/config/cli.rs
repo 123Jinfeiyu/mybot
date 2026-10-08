@@ -25,6 +25,11 @@ pub struct Cli {
     /// `--new-session`：不走缺省布局的「续接上一次」，强制新开一段对话。
     pub new_session: bool,
     pub task: String,
+    /// `--allow-host`（可重复）：http_fetch 的出站白名单；空 = 不提供该工具。
+    /// **只有命令行入口**——放宽能力的字段，配置文件不能给（同 C++ `--fs-root`）。
+    pub allow_hosts: Vec<String>,
+    pub http_fetch_timeout: String,
+    pub http_fetch_max_bytes: String,
     pub check_config: bool,
     pub help: bool,
     pub version: bool,
@@ -65,6 +70,12 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--resume" => cli.resume = true,
             "--new-session" => cli.new_session = true,
             "--task" => cli.task = take("--task")?,
+            "--allow-host" => {
+                let v = take("--allow-host")?;
+                cli.allow_hosts.push(v);
+            }
+            "--http-fetch-timeout" => cli.http_fetch_timeout = take("--http-fetch-timeout")?,
+            "--http-fetch-max-bytes" => cli.http_fetch_max_bytes = take("--http-fetch-max-bytes")?,
             "--check-config" => cli.check_config = true,
             "--help" | "-h" => cli.help = true,
             "--version" | "-V" => cli.version = true,
@@ -103,6 +114,12 @@ pub fn usage() -> String {
     s += "  --llm-task-timeout <秒>   单任务墙钟预算（0..86400，0 = 不限，缺省 900）\n";
     s += "  --llm-no-stream           模型输出退回整段阻塞模式（缺省流式：逐 delta 打到 stdout；\n";
     s += "                            也可用配置文件的 stream 字段，布尔）\n\n";
+    s += "出站 HTTP（http_fetch 工具，缺省不提供；只有命令行入口，配置文件不能开）:\n";
+    s += "  --allow-host <主机[:端口]>  放行一个出站主机并注册 http_fetch（可重复；精确匹配，\n";
+    s += "                            无通配；不写端口只放行 http/https 缺省端口；只发 GET、\n";
+    s += "                            不跟随重定向、不走系统代理）\n";
+    s += "  --http-fetch-timeout <秒>    单次请求超时（1..120，缺省 10）\n";
+    s += "  --http-fetch-max-bytes <n>   响应体上限（1..1048576，缺省 65536）\n\n";
     s += "其它:\n";
     s += "  --prompt-file <路径>   提示词包（文件或目录；可重复；命令行给出即整体覆盖配置文件列表）\n";
     s += "  --audit-log <路径|->   审计轨迹（JSON Lines；\"-\" = stderr；缺省关闭）\n";
@@ -144,6 +161,9 @@ mod tests {
         "--audit-log",
         "--session-file",
         "--task",
+        "--allow-host",
+        "--http-fetch-timeout",
+        "--http-fetch-max-bytes",
     ];
     const FLAG_OPTIONS: &[&str] = &[
         "--llm-no-stream",
@@ -177,6 +197,8 @@ mod tests {
         // 可重复选项再来一次，验证累积而非覆盖
         argv.push("--prompt-file".into());
         argv.push("second.md".into());
+        argv.push("--allow-host".into());
+        argv.push("b.example".into());
         for f in FLAG_OPTIONS {
             argv.push((*f).to_string());
         }
@@ -195,6 +217,9 @@ mod tests {
         assert_eq!(cli.audit_log, "audit-log");
         assert_eq!(cli.session_file, "session-file");
         assert_eq!(cli.task, "task");
+        assert_eq!(cli.allow_hosts, vec!["allow-host", "b.example"]);
+        assert_eq!(cli.http_fetch_timeout, "http-fetch-timeout");
+        assert_eq!(cli.http_fetch_max_bytes, "http-fetch-max-bytes");
         assert!(cli.llm_no_stream && cli.resume && cli.new_session && cli.check_config);
         assert!(cli.help && cli.version);
     }

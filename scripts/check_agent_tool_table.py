@@ -6,7 +6,9 @@
 一节是同一份名单的门面摘要（少一列门控细节）。工具本身的权威定义是四个
 `make*Tool` 所在 TU 里 `return AgentTool{"<name>", ...}` 的第一个字段
 （`src/agenttools.cpp` / `src/agenttools_wait.cpp` / `src/agenttools_fs.cpp` /
-`src/agentimage.cpp`，见 `src/agenttools.cpp:560 makeAgentTools` 的装配序）。此前没有任何守门比对
+`src/agentimage.cpp`，见 `src/agenttools.cpp:560 makeAgentTools` 的装配序），外加 Rust 侧
+**本地工具** `agent/src/httpfetch.rs` 的 `pub const TOOL_NAME: &str = "http_fetch"`
+（Phase 6；不经后端注册表，但同样列在两张文档表里）。此前没有任何守门比对
 这些名单：加一个工具（或改名/删除）只要忘了同步文档表，就只能靠人工评审
 发现——而 ICA 侧的姊妹风险已经有 `agent/src/ica/specs.rs` 的 `all.len() == 8`
 自钉（见该文件测试注释），后端工具这一半一直是空的。
@@ -44,6 +46,7 @@ from lib.protocol_sources import (
     AGENTTOOLS_WAIT_CPP,
     DOCS_AGENT_MD,
     README_MD,
+    RUST_HTTPFETCH_RS,
     rel,
     resolve,
     strip_comments,
@@ -57,6 +60,12 @@ CODE_PATHS = [
     resolve(AGENTTOOLS_WAIT_CPP),
     resolve(AGENTTOOLS_FS_CPP),
     resolve(AGENT_IMAGE_CPP),
+]
+# Rust 本地工具：(路径, 名字常量正则)。ICA 的 ica_* 工具不在文档工具表里（另有专节，
+# 且 agent/src/ica/specs.rs 自钉数量），故不列。
+RUST_LOCAL_SOURCES = [
+    (resolve(RUST_HTTPFETCH_RS),
+     re.compile(r'pub const TOOL_NAME: &str = "([a-zA-Z_][a-zA-Z0-9_]*)";')),
 ]
 # 文档侧：(路径, 小节标题, 人话标签)。小节标题用于把抽取范围限定在工具表那一节，
 # 否则页面别处的 `| \`name\` |` 形态表格（如配置字段表）会被误抽成工具名。
@@ -86,6 +95,12 @@ def code_tool_names(errors):
         if not found:
             errors.append(f"{rel(path)} 里一个 `AgentTool{{\"...\"}}` 都没抽到——"
                 "本脚本的抽取式跟写法脱节了，还是该文件确实不再定义工具？")
+        names.extend(found)
+    for path, pattern in RUST_LOCAL_SOURCES:
+        found = pattern.findall(strip_comments(read(path)))
+        if len(found) != 1:
+            errors.append(f"{rel(path)} 里应恰好抽到 1 个 `pub const TOOL_NAME`，实际 {len(found)} 个"
+                "——本脚本的抽取式跟写法脱节了？")
         names.extend(found)
     for name, n in Counter(names).items():
         if n > 1:
@@ -124,17 +139,18 @@ def main():
         for name in sorted(code_set - set(names)):
             errors.append(
                 f"工具 `{name}` 在代码里定义了"
-                f"（{', '.join(str(rel(p)) for p in CODE_PATHS)}），"
+                f"（{', '.join(str(rel(p)) for p in CODE_PATHS + [q for q, _ in RUST_LOCAL_SOURCES])}），"
                 f"但{label}没有这一行——用户看文档会漏掉这个工具"
             )
         for name in sorted(set(names) - code_set):
             errors.append(
                 f"{label}里有 `{name}` 这一行，但代码里找不到同名 "
-                f"`AgentTool{{\"...\"}}`——文档在说一个不存在（或已改名/已删除）的工具"
+                f"`AgentTool{{\"...\"}}` 或 Rust 本地工具 `TOOL_NAME`——文档在说一个不存在"
+                f"（或已改名/已删除）的工具"
             )
 
     if errors:
-        print(f"{PREFIX}: 后端工具注册表与文档工具表不一致：", file=sys.stderr)
+        print(f"{PREFIX}: 工具注册表（后端 + Rust 本地）与文档工具表不一致：", file=sys.stderr)
         for e in errors:
             print(f"  - {e}", file=sys.stderr)
         sys.exit(1)
