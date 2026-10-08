@@ -21,6 +21,8 @@
   "max_task_seconds": 900,
   "scripts_dir": "scripts",
   "allow_shell": false,
+  "allow_hot_sql": false,
+  "allow_write_file": false,
 
   "prompt_files": [],
   "camera_var": "cam0",

@@ -233,7 +233,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
 - **字段归属**：Rust 消费模型、提示词、会话、模型重试及上下文预算字段；摄像头、脚本目录、工具超时、能力门控与策略由后端消费。两侧对对方的专属字段都只登记为已知字段、不解析或授权（Rust 对后端专属字段如此；2026-10-01 批次 A 后 C++ 后端对模型侧字段同样只经白名单不解析——模型侧的类型/值域校验是 mybot-agent 的独占职责）；以下能力字段的拒绝规则由后端执行。`audit_log` 两端各自生效。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `stream` `max_turns` `max_task_seconds` `scripts_dir`
-  `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
+  `allow_shell` `allow_hot_sql` `allow_write_file` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
   `agent_policy` `read_vars` `fs_root` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec` `action_script_timeout_sec` `history_summary` `max_summary_bytes`。
@@ -741,6 +741,10 @@ MYBOT_HOME=/var/lib/mybot ./agent/target/release/mybot-agent --socket /tmp/mybot
   "on_timeout": "deny"
 }
 ```
+
+仓库根的 [mybot.policy.json.example](../mybot.policy.json.example) 是可直接复制的起点模板：
+`require_confirm` 已列全三件危险工具（多列无副作用——工具未开启时根本不存在），
+`confirm_command` 是占位符，未换成本机确认程序前，命中确认的调用一律放不出去（fail-closed）。
 
 - **确认协议**：命中 `require_confirm` 的工具在**执行之前**，宿主把
   `{"tool": "<工具名>", "args": {…}}` 写给确认程序的 stdin，按其**退出码**裁决——`0` = 放行，
