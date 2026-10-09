@@ -46,6 +46,9 @@ rustyline = { version = "18", default-features = false, features = ["with-file-h
 #   httpfetch.rs 构造时显式 no_proxy()，出站白名单之外不允许再经过第三方。
 reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "stream"] }
 url = "2"
+# base64：录制模式（--record）把上下文里的 data URL 图片解码成二进制文件落盘。
+# 已是 rig-core 的传递依赖（Cargo.lock 已解析 0.22.1），钉同版本不新增下载。
+base64 = "0.22"
 
 [dev-dependencies]
 # 单测要构造 429/5xx 的 provider 响应错误（rig 的 provider_response_status() 给的是

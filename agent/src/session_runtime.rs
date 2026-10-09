@@ -46,6 +46,8 @@ pub struct SessionRuntimeInput {
     pub material: PromptMaterial,
     pub audit: Option<crate::audit::AuditLog>,
     pub writer: Option<SessionFileWriter>,
+    /// 录制模式（`--record` / `--record-dir`；`None` = 未开启）
+    pub record: Option<crate::record::RecordStore>,
     pub history: Vec<rig_agent::completion::Message>,
     pub summary: Option<String>,
     pub resumed: bool,
@@ -68,6 +70,7 @@ pub fn build_session_parts(input: SessionRuntimeInput) -> Result<SessionParts, a
         material: input.material,
         audit: input.audit,
         writer: input.writer,
+        record: input.record,
         resume: ResumeContext {
             history: input.history,
             summary: input.summary,

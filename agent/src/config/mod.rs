@@ -76,6 +76,10 @@ pub mod limits {
     pub const HTTP_FETCH_TIMEOUT_MAX_SEC: i64 = 120;
     pub const HTTP_FETCH_MAX_BYTES_MIN: i64 = 1;
     pub const HTTP_FETCH_MAX_BYTES_MAX: i64 = 1 << 20;
+    /// 录制图片仓总量上限（--record-max-bytes；0 = 不限，缺省 0——采集跑批的
+    /// 磁盘由人盯着，上限留给「现场顺手开录制」的部署手动设置）
+    pub const RECORD_MAX_BYTES_MIN: i64 = 0;
+    pub const RECORD_MAX_BYTES_MAX: i64 = 64 << 30;
 }
 
 /// 内置缺省（与 C++ `AgentModeConfig` 的成员初值逐值对齐）。
@@ -102,6 +106,7 @@ pub const DEFAULT_RETRY_BACKOFF_MS: i64 = 1000;
 /// http_fetch 缺省超时与响应体上限（64 KiB，同 C++ read_file 的量级）
 pub const DEFAULT_HTTP_FETCH_TIMEOUT_SEC: i64 = 10;
 pub const DEFAULT_HTTP_FETCH_MAX_BYTES: i64 = 64 << 10;
+/// 录制图片仓缺省上限：0 = 不限（微调数据采集里图片就是 payload，见 limits 注）
 
 /// 密钥包装（2026-09-30 审计 P1）：`Config` 曾派生 Debug 且含明文 `api_key`——
 /// 当时没有任何 `{:?}` 打印它，但距离「一条 `errln!("{cfg:?}")` 把密钥写进
@@ -203,6 +208,16 @@ pub struct Config {
     pub allow_hosts: Vec<crate::httpfetch::AllowedHost>,
     pub http_fetch_timeout_sec: i64,
     pub http_fetch_max_bytes: i64,
+    /// 录制模式是否开启（--record 或 --record-dir）。**只有命令行入口**：录制把
+    /// 完整上下文（含图片本体）写到磁盘，敏感面比会话文件更大，只认操作者亲手
+    /// 给的命令行（与 --allow-host 同判据；配置文件没有对应字段，写了按未知字段
+    /// 拒绝整份配置）。
+    pub record_enabled: bool,
+    /// 显式录制根（--record-dir；空 = 缺省布局 `$MYBOT_HOME/robots/<机器人>/recordings`，
+    /// 具体路径要等后端给出机器人名后才拼得出，见 record::open_from_config）。
+    pub record_dir: String,
+    /// 录制图片仓总量上限（字节，0 = 不限；超限响亮降级为仅元数据）。
+    pub record_max_image_bytes: i64,
 }
 
 /// `session_file` 的三种来源。区别只在「读取权限」与「缺省续接」：
@@ -379,6 +394,9 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
         allow_hosts: Vec::new(),
         http_fetch_timeout_sec: DEFAULT_HTTP_FETCH_TIMEOUT_SEC,
         http_fetch_max_bytes: DEFAULT_HTTP_FETCH_MAX_BYTES,
+        record_enabled: false,
+        record_dir: String::new(),
+        record_max_image_bytes: 0,
     };
     // ---- 5b) 命令行数值覆盖（拆解见 override_number；区间与文案单点在 limits）----
     override_number(
@@ -445,6 +463,35 @@ pub fn build(cli: &Cli) -> Result<Config, String> {
 
     // ---- 8) 会话持久化（批次 D）：命令行 > 配置文件 > 缺省按机器人（拆解见 resolve_session）----
     resolve_session(cli, &file, &mut cfg)?;
+
+    // ---- 9) 录制模式：命令行独占（--record / --record-dir / --record-max-bytes）。
+    //          配置文件没有对应字段，写了按未知字段拒绝整份配置——录制把完整上下文
+    //          与图片写到磁盘，敏感面扩大只认操作者亲手给的命令行（同 --allow-host 判据）。----
+    if cli.record && !cli.record_dir.is_empty() {
+        return Err(
+            "选项 --record 与 --record-dir 互斥：前者用缺省布局（$MYBOT_HOME/robots/<机器人>/recordings），\
+             后者显式给录制根"
+                .to_string(),
+        );
+    }
+    cfg.record_enabled = cli.record || !cli.record_dir.is_empty();
+    cfg.record_dir = cli.record_dir.trim().to_string();
+    override_number(
+        &cli.record_max_bytes,
+        "record-max-bytes",
+        limits::RECORD_MAX_BYTES_MIN,
+        limits::RECORD_MAX_BYTES_MAX,
+        &mut cfg.record_max_image_bytes,
+    )?;
+    // --record 走缺省布局，而缺省布局要状态目录：无家目录时在建上电前就报出来
+    //（--record-dir 显式路径不依赖状态目录，不受此判据约束）。
+    if cfg.record_enabled && cfg.record_dir.is_empty() && !cfg.state_dir_ok {
+        return Err(
+            "--record 需要状态目录（MYBOT_HOME 与 HOME 都未设置）；可用 MYBOT_HOME 指定，\
+             或改用 --record-dir <目录> 显式给录制根"
+                .to_string(),
+        );
+    }
     Ok(cfg)
 }
 
@@ -1187,6 +1234,97 @@ mod tests {
         assert!(err.contains("命令行"), "实际: {err}");
 
         std::env::remove_var("MYBOT_HOME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 录制三选项：互斥判据、缺省关、上限区间、--record 对状态目录的依赖、
+    /// 配置文件不能开（同 http_fetch 的判据形态）。
+    #[test]
+    fn record_options_are_cli_only_and_range_checked() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_rec_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let auth = dir.join("auth.json");
+        std::fs::write(&auth, r#"{"api_key":"k"}"#).unwrap();
+        let auth_str = auth.to_string_lossy().to_string();
+        let cli = |f: &dyn Fn(&mut Cli)| {
+            let mut c = Cli {
+                socket: "/tmp/x.sock".into(),
+                llm_config: auth_str.clone(),
+                llm_endpoint: "http://127.0.0.1:9/v1/chat/completions".into(),
+                llm_model: "m".into(),
+                ..Cli::default()
+            };
+            f(&mut c);
+            c
+        };
+        let _env = ENV_LOCK.lock().unwrap();
+        let had_mybot = std::env::var("MYBOT_HOME").ok();
+        let had_home = std::env::var("HOME").ok();
+        std::env::remove_var("MYBOT_HOME");
+        std::env::set_var("HOME", "/home/u");
+
+        // 缺省关
+        let cfg = build(&cli(&|_| {})).unwrap();
+        assert!(!cfg.record_enabled);
+        assert_eq!(cfg.record_max_image_bytes, 0, "缺省不限");
+        // 显式根：不依赖状态目录
+        let cfg = build(&cli(&|c| c.record_dir = "/var/lib/mybot/rec".into())).unwrap();
+        assert!(cfg.record_enabled);
+        assert_eq!(cfg.record_dir, "/var/lib/mybot/rec");
+        // --record 有家目录：开、用缺省布局（record_dir 留空，root 在 main 拼装）
+        let cfg = build(&cli(&|c| c.record = true)).unwrap();
+        assert!(cfg.record_enabled && cfg.record_dir.is_empty());
+        // 上限区间与接线
+        let cfg = build(&cli(&|c| {
+            c.record = true;
+            c.record_max_bytes = "1073741824".into();
+        }))
+        .unwrap();
+        assert_eq!(cfg.record_max_image_bytes, 1 << 30);
+        let err = build(&cli(&|c| {
+            c.record = true;
+            // 64 GiB + 1（写成十进制：68 << 30 会被推断成 i32 溢出为 0）
+            c.record_max_bytes = "68719476737".into();
+        }))
+        .unwrap_err();
+        assert!(err.contains("--record-max-bytes"), "{err}");
+
+        // 互斥
+        let err = build(&cli(&|c| {
+            c.record = true;
+            c.record_dir = "/x".into();
+        }))
+        .unwrap_err();
+        assert!(err.contains("互斥"), "{err}");
+
+        // --record 且无家目录：建上电前报错并给出两个出路
+        std::env::remove_var("HOME");
+        let err = build(&cli(&|c| c.record = true)).unwrap_err();
+        assert!(err.contains("--record-dir"), "{err}");
+        // --record-dir 不受此判据约束
+        assert!(build(&cli(&|c| c.record_dir = "/x".into())).is_ok());
+
+        // 配置文件不能开：疑似字段都是未知字段
+        for field in ["record", "record_dir", "record_max_bytes"] {
+            let p = dir.join(format!("{field}.json"));
+            std::fs::write(&p, format!(r#"{{"api_key":"k","{field}":"x"}}"#)).unwrap();
+            let mut c = cli(&|_| {});
+            c.llm_config = p.to_string_lossy().to_string();
+            let err = build(&c).unwrap_err();
+            assert!(err.contains(field), "{field}: {err}");
+        }
+
+        // 还原环境（两条都还原——中途 panic 会经 unwinding 丢掉锁，但本用例
+        // 此后不再断言，还原写在最后一条路径上足够）
+        std::env::remove_var("HOME");
+        match had_mybot {
+            Some(v) => std::env::set_var("MYBOT_HOME", v),
+            None => std::env::remove_var("MYBOT_HOME"),
+        }
+        match had_home {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

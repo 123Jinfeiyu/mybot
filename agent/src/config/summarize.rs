@@ -99,6 +99,25 @@ pub fn summarize(cfg: &Config) -> String {
     );
     s += &format!("  审计轨迹    : {}\n", or_none(&cfg.audit_log, "(未开启)"));
     s += &format!(
+        "  录制        : {}\n",
+        if !cfg.record_enabled {
+            "(未开启：--record / --record-dir)".to_string()
+        } else {
+            let cap = if cfg.record_max_image_bytes == 0 {
+                "图片不限量".to_string()
+            } else {
+                format!("图片上限 {} 字节", cfg.record_max_image_bytes)
+            };
+            if !cfg.record_dir.is_empty() {
+                format!("{}（显式根；{cap}）", cfg.record_dir)
+            } else {
+                format!(
+                    "$MYBOT_HOME/robots/<机器人>/recordings/（缺省布局；{cap}）"
+                )
+            }
+        }
+    );
+    s += &format!(
         "  出站 HTTP   : {}\n",
         if cfg.allow_hosts.is_empty() {
             "(未开启：无 http_fetch 工具)".to_string()

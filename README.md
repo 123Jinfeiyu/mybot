@@ -34,6 +34,7 @@ C++17 宿主（`mybot`，MCP 工具后端，硬件常驻）+ Rust agent（`mybot
 - **工业级安全** —— 危险开关缺省全关、配置隔离、响亮拒绝不静默
 - **零 C++ 依赖** —— C++ 宿主仅需 LuaJIT + pthread + dl；模型调用的 HTTP 由 Rust（reqwest + rustls）承担
 - **会话持久化** —— 对话历史与地图缺省落 `~/.mybot`（`MYBOT_HOME` 可覆盖）、按机器人归档并默认续接上一次；也可 `--session-file` 指定路径、`--resume` 恢复
+- **录制模式（微调数据采集）** —— `--record` 把每段会话的完整详细上下文留档（含图片本体、工具调用与回执全文），`scripts/record_export.py` 导出成 openai/sharegpt 训练集；缺省关闭
 
 ## 快速开始
 

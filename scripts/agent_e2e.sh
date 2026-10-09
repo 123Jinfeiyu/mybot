@@ -1,5 +1,5 @@
 #!/bin/bash
-# Rust agent 端到端：本地假模型 + C++ 后端，无硬件运行 R1–R17。
+# Rust agent 端到端：本地假模型 + C++ 后端，无硬件运行 R1–R20。
 #
 # 以下是已移除 C++ agent 的历史场景索引，现役覆盖见下方 R 段：
 #   1) 默认协议驱动（LlmOpenAI，OpenAI 兼容）——工具循环迭代 + 动作脚本在**常驻**
@@ -55,7 +55,7 @@
 # 自动发现，让「默认驱动」变成别的驱动 —— 守门必须与开发者个人配置无关。
 #
 #   用法: BOT=./build/mybot bash scripts/agent_e2e.sh [--rust]
-#   本文件**只有 Rust 一种模式**：跑 R1-R17（mybot-agent；R1-R5 批次 B 骨架、
+#   本文件**只有 Rust 一种模式**：跑 R1-R20（mybot-agent；R1-R5 批次 B 骨架、
 #   R6-R9 批次 C 循环层、R10 审计 H2 修复、R11 会话持久化（R11b 纯裁剪、
 #   R11c 裁剪→摘要→跨会话恢复）、R12/R13 多协议与恢复、
 #   R14 MCP4725 虚拟读写闭环及错误读数反例；R19 http_fetch 出站白名单（Phase 6，
@@ -1711,6 +1711,264 @@ if [ "$rcr19c" -eq 2 ] && grep -qF -- "--allow-host 'https://api.example.com/v1'
 	echo "  [OK] R19c：--allow-host 带 scheme/路径即配置错误（退出 2，点名该值）"
 else
 	echo "  [FAIL] R19c：rc=$rcr19c，输出: $(head -3 "$R19/bad.txt")"; fail=1
+fi
+
+# ---- R20：录制模式 --record / --record-dir（微调数据采集，2026-10-09）----
+# 主场：--record-dir 显式根 + camera 剧本（拍照进上下文）→ 断言录制段布局
+# （meta/system/events/images、权限、密钥纪律、事件时序、图片本体逐字节一致），
+# 再跑 scripts/record_export.py 三种方言断言**导出回路**（训练数据保真）。
+# R20b：--record 缺省布局 + 两进程续接 → resumed_from 链 + session 粒度导出
+# （含会话文件前缀联结）。R20c：--record-max-bytes 超限响亮降级。R20d：负路径。
+echo "----- R20：录制模式（--record-dir 显式根 + 导出回路） -----"
+export MYBOT_HOME="$tmp/mybot-home-r20"
+R20="$tmp/rust20"
+mkdir -p "$R20"
+PICR20="$tmp/pic-r20.jpg"
+cp "$PICR9" "$PICR20"  # R9 的 1x1 真 JPEG（160 字节）——图片本体逐字节比对用
+PORT=$((26800 + RANDOM % 300))
+CAPR20="$tmp/req-rust20.json"
+start_server "$PORT" "$CAPR20" camera || exit 1
+start_backend "$R20/p1" --camera-src "$PICR20" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R20/p1/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --record-dir "$R20/rec" --task "拍张照片看看周围有什么" >"$R20/out.txt" 2>"$R20/err.txt"
+rcr20=$?
+stop_backend
+stop_server
+echo "===== stdout ====="; cat "$R20/out.txt"
+if [ "$rcr20" -eq 0 ]; then
+	echo "  [OK] R20：开录制后任务照常完成（退出码 0）"
+else
+	echo "  [FAIL] R20：mybot-agent 退出码 $rcr20"; tail -5 "$R20/err.txt" | sed 's/^/    /'; fail=1
+fi
+check_present "$R20/out.txt" "AGENT-E2E-完成" "拍照任务完整跑完（录制不影响循环）"
+check_present "$R20/err.txt" "录制落点" "启动期打印录制落点"
+SEG20="$(ls -1 "$R20/rec" 2>/dev/null | grep -v '^latest' | head -1)"
+RECDIR="$R20/rec/$SEG20"
+if [ -n "$SEG20" ] && [ -f "$RECDIR/meta.json" ] && [ -f "$RECDIR/system.txt" ] &&
+	[ -f "$RECDIR/events.jsonl" ] && [ -d "$RECDIR/images" ]; then
+	echo "  [OK] R20：录制段四件套齐备（$SEG20）"
+else
+	echo "  [FAIL] R20：录制段布局不对（root 内容: $(ls "$R20/rec" 2>/dev/null)）"; fail=1
+fi
+if [ "$(stat -c '%a' "$R20/rec/$SEG20" 2>/dev/null)" = "700" ] &&
+	[ "$(stat -c '%a' "$RECDIR/meta.json" 2>/dev/null)" = "600" ] &&
+	[ "$(stat -c '%a' "$RECDIR/events.jsonl" 2>/dev/null)" = "600" ]; then
+	echo "  [OK] R20：录制段目录 0700 / 文件 0600"
+else
+	echo "  [FAIL] R20：录制权限不对（段 $(stat -c '%a' "$RECDIR" 2>/dev/null)）"; fail=1
+fi
+# 事件时序：session_start 打头；task_begin → model_call → msg（含图片引用）→ task_end → session_end
+audit_expr "$RECDIR/events.jsonl" "[l['event'] for l in lines][0] == 'session_start'" \
+	"R20 事件流以 session_start 打头"
+audit_expr "$RECDIR/events.jsonl" "any(l['event']=='task_begin' and '拍张照片' in l['task'] for l in lines)" \
+	"R20 task_begin 记录任务原文"
+audit_expr "$RECDIR/events.jsonl" "any(l['event']=='model_call' and l.get('ok') and l.get('turn')==0 for l in lines)" \
+	"R20 model_call 元数据（turn 0-based，同审计口径）"
+audit_expr "$RECDIR/events.jsonl" "any(l['event']=='msg' and any(p.get('type')=='image' and p.get('stored') for p in l['msg'].get('parts',[])) for l in lines)" \
+	"R20 图片以文件引用入事件（base64 不进 JSONL）"
+audit_expr "$RECDIR/events.jsonl" "any(l['event']=='task_end' and l.get('ok') for l in lines) and [l['event'] for l in lines][-1]=='session_end'" \
+	"R20 task_end(ok) 收口、session_end 收尾"
+grep -qF 'base64,' "$RECDIR/events.jsonl" && { echo "  [FAIL] R20：事件流里出现 base64"; fail=1; } ||
+	echo "  [OK] R20：事件流无 base64（图片只落本体文件）"
+audit_expr "$RECDIR/meta.json" "'api_key_source' in lines[0] and not any('e2e-rust-key' in json.dumps(v) for v in lines[0].values())" \
+	"R20 meta：密钥只记来源不记值"
+audit_expr "$RECDIR/meta.json" "'127.0.0.1:$PORT' in lines[0].get('endpoint','') and any(t.get('name')=='capture_image' for t in lines[0].get('tool_specs',[]))" \
+	"R20 meta：接入点与工具 schema 快照（capture_image 在列）"
+# 图片本体：解码后与源 JPEG 逐字节一致
+if python3 - "$RECDIR" "$PICR20" <<'PY'
+import base64, glob, json, os, sys
+seg, src = sys.argv[1], sys.argv[2]
+imgs = glob.glob(os.path.join(seg, "images", "*"))
+if len(imgs) != 1:
+	print(f"图片仓应有 1 张，实际 {len(imgs)}"); sys.exit(1)
+raw = open(imgs[0], "rb").read()
+want = open(src, "rb").read()
+if raw != want:
+	print(f"图片字节不一致: {len(raw)} vs {len(want)}"); sys.exit(1)
+# 引用与本体对得上
+ev = [json.loads(l) for l in open(os.path.join(seg, "events.jsonl"), encoding="utf-8")]
+ref = [p for l in ev if l.get("event") == "msg" for p in l["msg"].get("parts", [])
+       if p.get("type") == "image"][0]
+if not ref.get("file") or open(os.path.join(seg, ref["file"]), "rb").read() != want:
+	print("事件引用与图片本体对不上"); sys.exit(1)
+sys.exit(0)
+PY
+then
+	echo "  [OK] R20：图片本体与源图逐字节一致（指纹引用闭合）"
+else
+	echo "  [FAIL] R20：图片本体比对失败"; fail=1
+fi
+# 导出回路：raw（canonical）/ openai（data URL 内联）/ sharegpt（图片复制 + 约定标记）
+python3 scripts/record_export.py --to raw --out "$R20/ds-raw" "$RECDIR" >/dev/null 2>"$R20/exp-raw.err" ||
+	{ echo "  [FAIL] R20 raw 导出失败: $(cat "$R20/exp-raw.err")"; fail=1; }
+if python3 - "$R20/ds-raw" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1] + "/dataset.jsonl", encoding="utf-8")]
+assert len(rows) == 1, f"应 1 条样本，实际 {len(rows)}"
+s = rows[0]
+assert s["task_meta"]["ok"] and s["task_meta"]["turns"] >= 1
+assert s["messages"][0]["role"] == "system"
+assert any(t["function"]["name"] == "capture_image" for t in s["tools"]), "tools 快照应含 capture_image"
+texts = [p.get("text") for m in s["messages"] if m["role"] == "user" for p in m.get("parts", []) if p.get("type") == "text"]
+assert any("拍张照片看看周围有什么" in t for t in texts), "user 任务原文在样本里"
+assert any(m["role"] == "assistant" and m.get("tool_calls") for m in s["messages"]), "assistant 带 tool_calls"
+assert any(p.get("type") == "tool_result" and p.get("name") == "capture_image"
+           for m in s["messages"] if m["role"] == "user" for p in m.get("parts", [])), "工具回执配对（name 回查）"
+assert any(p.get("type") == "image" and p.get("stored")
+           for m in s["messages"] if m["role"] == "user" for p in m.get("parts", [])), "图片引用在样本里"
+sys.exit(0)
+PY
+then
+	echo "  [OK] R20 导出（raw）：样本结构、任务原文、工具配对、图片引用齐备"
+else
+	echo "  [FAIL] R20 导出（raw）断言失败"; fail=1
+fi
+python3 scripts/record_export.py --to openai --out "$R20/ds-oai" "$RECDIR" >/dev/null 2>&1 ||
+	{ echo "  [FAIL] R20 openai 导出失败"; fail=1; }
+if python3 - "$R20/ds-oai" "$PICR20" <<'PY'
+import base64, json, sys
+rows = [json.loads(l) for l in open(sys.argv[1] + "/dataset.jsonl", encoding="utf-8")]
+ms = rows[0]["messages"]
+want = base64.b64encode(open(sys.argv[2], "rb").read()).decode()
+urls = [p["image_url"]["url"] for m in ms if isinstance(m.get("content"), list)
+        for p in m["content"] if p.get("type") == "image_url"]
+assert urls and urls[0] == f"data:image/jpeg;base64,{want}", "图片应内联为源图 data URL"
+ti = [i for i, m in enumerate(ms) if m.get("role") == "tool"]
+ii = [i for i, m in enumerate(ms) if isinstance(m.get("content"), list)]
+assert ti and ii and min(ii) > max(ti), "图片 user 消息在 tool 消息之后（provider 同序）"
+assert ms[0]["role"] == "system"
+sys.exit(0)
+PY
+then
+	echo "  [OK] R20 导出（openai）：data URL 与源图逐字节一致、消息次序同线上"
+else
+	echo "  [FAIL] R20 导出（openai）断言失败"; fail=1
+fi
+python3 scripts/record_export.py --to sharegpt --out "$R20/ds-sg" "$RECDIR" >/dev/null 2>&1 ||
+	{ echo "  [FAIL] R20 sharegpt 导出失败"; fail=1; }
+if python3 - "$R20/ds-sg" <<'PY'
+import json, os, sys
+rows = [json.loads(l) for l in open(sys.argv[1] + "/dataset.jsonl", encoding="utf-8")]
+s = rows[0]
+conv = "".join(c["value"] for c in s["conversations"])
+assert "<tool_call>" in conv and "capture_image" in conv, "Qwen 工具调用约定"
+assert "<tool_response>" in conv, "工具回执约定"
+assert "<image>" in conv and len(s.get("images", [])) == 1, "LLaVA 图片标记与清单"
+rel = s["images"][0]
+assert os.path.isfile(os.path.join(sys.argv[1], rel)), f"图片应复制到 {rel}"
+assert json.load(open(sys.argv[1] + "/stats.json"))["samples"] == 1
+sys.exit(0)
+PY
+then
+	echo "  [OK] R20 导出（sharegpt）：<tool_call>/<tool_response>/<image> 约定齐备、stats 落盘"
+else
+	echo "  [FAIL] R20 导出（sharegpt）断言失败"; fail=1
+fi
+
+# R20b：--record 缺省布局 + 两进程续接 → resumed_from 链 + session 粒度导出（含会话前缀联结）
+echo "----- R20b：--record 缺省布局（续接链 + session 粒度导出） -----"
+PORT=$((27100 + RANDOM % 300))
+start_server "$PORT" "$tmp/req-rust20b1.json" ok || exit 1
+start_backend "$R20/p2" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R20/p2/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --record --new-session --task "$TASK" >"$R20/b1-out.txt" 2>"$R20/b1-err.txt"
+rc20b1=$?
+stop_backend
+stop_server
+# 机器人目录名经安全归一（relay-test → relay-test_<指纹>），不能硬拼：从启动期
+# 打印的「录制落点」定位录制根与首段名（R18 定位会话落点同款手法）。
+LAND20B1="$(sed -n 's/.*录制落点: \([^（]*\).*/\1/p' "$R20/b1-err.txt" | tail -1)"
+RECB="$(dirname "$LAND20B1")"
+SEG20B1="$(basename "$LAND20B1")"
+check_present "$R20/b1-err.txt" "录制落点" "R20b：启动期打印录制落点（缺省布局）"
+PORT=$((27400 + RANDOM % 300))
+start_server "$PORT" "$tmp/req-rust20b2.json" relay || exit 1
+start_backend "$R20/p3" --agent-shell --agent-policy "$RUST_POLICY" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R20/p3/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --record --task "接着上次说" >"$R20/b2-out.txt" 2>"$R20/b2-err.txt"
+rc20b2=$?
+stop_backend
+stop_server
+if [ "$rc20b1" -eq 0 ] && [ "$rc20b2" -eq 0 ]; then
+	echo "  [OK] R20b：两进程都跑完（缺省布局录制）"
+else
+	echo "  [FAIL] R20b：rc=$rc20b1/$rc20b2"; fail=1
+fi
+check_present "$R20/b2-out.txt" "AGENT-E2E-RELAY-完成" "R20b 进程二默认续接（会话未忘）"
+check_present "$R20/b2-err.txt" "已恢复会话" "R20b 进程二默认续接（stderr 报已恢复）"
+NSEG="$(ls -1 "$RECB" 2>/dev/null | grep -v '^latest' | wc -l | tr -d ' ')"
+SEG20B2="$(cat "$RECB/latest" 2>/dev/null)"
+if [ "$NSEG" = "2" ] && [ -n "$SEG20B2" ] && [ "$SEG20B2" != "$SEG20B1" ]; then
+	echo "  [OK] R20b：缺省布局两个录制段、指针指向第二段（$SEG20B1 → $SEG20B2）"
+else
+	echo "  [FAIL] R20b：录制根内容不对（$RECB: $(ls "$RECB" 2>/dev/null)）"; fail=1
+fi
+audit_expr "$RECB/$SEG20B2/meta.json" "lines[0].get('resumed') is True and lines[0].get('resumed_from') == '$SEG20B1'" \
+	"R20b meta：resumed_from 链回第一段"
+audit_expr "$RECB/$SEG20B2/events.jsonl" "any(l['event']=='resume' and l.get('messages',0) > 0 for l in lines)" \
+	"R20b 第二段 resume 事件（前缀不重复落，由会话文件承载）"
+if python3 scripts/record_export.py --granularity session --to raw --out "$R20/ds-sess" "$RECB" >/dev/null 2>&1 &&
+	python3 - "$R20/ds-sess" <<'PY'
+import json, sys
+rows = [json.loads(l) for l in open(sys.argv[1] + "/dataset.jsonl", encoding="utf-8")]
+assert len(rows) == 1, f"session 粒度应 1 条，实际 {len(rows)}"
+s = rows[0]
+assert s["task_meta"]["tasks"] == 2, "两个任务串成一条轨迹"
+texts = json.dumps(s["messages"], ensure_ascii=False)
+assert "先看硬件，再让继电器动作一次" in texts, "会话文件前缀联结：第一任务原文在轨迹里"
+assert "接着上次说" in texts, "第二任务原文在轨迹里"
+sys.exit(0)
+PY
+then
+	echo "  [OK] R20b 导出（session 粒度）：两段按链拼接、会话前缀联结进轨迹"
+else
+	echo "  [FAIL] R20b 导出（session 粒度）断言失败"; fail=1
+fi
+
+# R20c：--record-max-bytes 超限 → 图片降级为仅元数据，任务照常
+echo "----- R20c：--record-max-bytes 图片仓降级 -----"
+PORT=$((27700 + RANDOM % 300))
+start_server "$PORT" "$tmp/req-rust20c.json" camera || exit 1
+start_backend "$R20/p4" --camera-src "$PICR20" || exit 1
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 60 "$AGENT_BIN" --socket "$R20/p4/mcp.sock" \
+	--llm-endpoint "http://127.0.0.1:$PORT/v1/chat/completions" --llm-model e2e-model \
+	--llm-config none --record-dir "$R20/rec3" --record-max-bytes 1 \
+	--task "拍张照片看看周围有什么" >"$R20/c-out.txt" 2>"$R20/c-err.txt"
+rc20c=$?
+stop_backend
+stop_server
+check_present "$R20/c-out.txt" "AGENT-E2E-完成" "R20c：图片降级不影响任务完成"
+check_present "$R20/c-err.txt" "录制图片仓已达" "R20c：降级对操作者响亮可见"
+SEG20C="$(ls -1 "$R20/rec3" 2>/dev/null | grep -v '^latest' | head -1)"
+if [ -n "$SEG20C" ] && [ "$(ls -1 "$R20/rec3/$SEG20C/images" 2>/dev/null | wc -l | tr -d ' ')" = "0" ]; then
+	echo "  [OK] R20c：图片仓空（只记元数据）"
+else
+	echo "  [FAIL] R20c：图片仓应为空"; fail=1
+fi
+audit_expr "$R20/rec3/$SEG20C/events.jsonl" "any(l['event']=='msg' and any(p.get('type')=='image' and not p.get('stored') and p.get('reason')=='cap' for p in l['msg'].get('parts',[])) for l in lines)" \
+	"R20c：图片事件降级为元数据（stored:false, reason=cap），文本事件不受限"
+
+# R20d：负路径——互斥与 --check-config 摘要
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 10 "$AGENT_BIN" --socket "$tmp/no-such.sock" \
+	--llm-endpoint "http://127.0.0.1:1/v1/chat/completions" --llm-model m --llm-config none \
+	--record --record-dir /x --check-config >"$R20/d-bad.txt" 2>&1
+rc20d1=$?
+if [ "$rc20d1" -eq 2 ] && grep -qF -- "--record 与 --record-dir 互斥" "$R20/d-bad.txt"; then
+	echo "  [OK] R20d：--record 与 --record-dir 同给即配置错误（退出 2）"
+else
+	echo "  [FAIL] R20d：rc=$rc20d1，输出: $(head -3 "$R20/d-bad.txt")"; fail=1
+fi
+BOT4CJ_LLM_KEY=e2e-rust-key timeout 10 "$AGENT_BIN" --socket "$tmp/no-such.sock" \
+	--llm-endpoint "http://127.0.0.1:1/v1/chat/completions" --llm-model m --llm-config none \
+	--record --check-config >"$R20/d-ok.txt" 2>&1
+rc20d2=$?
+if [ "$rc20d2" -eq 0 ] && grep -qF "录制        : " "$R20/d-ok.txt" && grep -qF "recordings/" "$R20/d-ok.txt"; then
+	echo "  [OK] R20d：--check-config 摘要含录制栏（缺省布局，不臆造段名）"
+else
+	echo "  [FAIL] R20d：rc=$rc20d2，输出: $(head -5 "$R20/d-ok.txt")"; fail=1
 fi
 
 if [ "$fail" -eq 0 ]; then

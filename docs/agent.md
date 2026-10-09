@@ -27,6 +27,7 @@
 - [摄像头：capture_image](#摄像头capture_image)
 - [提示词包：绑定机器人身份](#提示词包绑定机器人身份)
 - [审计轨迹：--audit-log](#审计轨迹--audit-log)
+- [录制模式与训练集导出：--record](#录制模式与训练集导出--record)
 - [会话持久化：--session-file / --resume](#会话持久化--session-file----resume)
 - [远程对话（已评估，不做）](#远程对话已评估不做)
 - [出站 HTTP：http_fetch](#出站-httphttp_fetch)
@@ -158,7 +159,9 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 配置校验在连接后端之前返回；后端校验行为见表。
 出站 HTTP 的三个选项 `--allow-host` / `--http-fetch-timeout` / `--http-fetch-max-bytes`
 也只给 `mybot-agent`（`http_fetch` 是 Rust 本地工具，不经后端），见
-[出站 HTTP：http_fetch](#出站-httphttp_fetch) 一节。
+[出站 HTTP：http_fetch](#出站-httphttp_fetch) 一节。录制的三个选项
+`--record` / `--record-dir` / `--record-max-bytes` 同理只给 `mybot-agent`
+（同样只有命令行入口），见[录制模式](#录制模式与训练集导出--record)一节。
 
 | 参数 | 说明 | 缺省 |
 | --- | --- | --- |
@@ -573,6 +576,90 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 - **失败响亮**：日志流写入失败（磁盘满等）向 stderr 告警一次，不打断机器人动作；路径打不开则**上电前**报错退出 2（「配置错误不碰真机」）。
 - 默认**关闭**（不传 = 不写任何东西）；开启即 append-only，不做轮转（交给外部工具收集）。会话开始时把实际落点打印到 stderr。
 - 审计是**记录**不是防线：它不审批、不拦截；配合 `--agent-shell` 使用时请把它当「事后追责」证据，而非「事前阻止」闸门。
+
+## 录制模式与训练集导出：--record
+
+> **定位（2026-10-09）**：审计轨迹记「计时与次数」，会话文件记「可恢复的历史文本」
+> （图片刻意不落盘，见上文），录制是**第三条通道**——把每段会话的**完整详细上下文**
+> （含图片本体）留档。主要用途是**微调小模型的训练数据采集**（`scripts/record_export.py`
+> 导出），顺带供事后复盘「模型当时实际看到了什么（含照片）、说了什么」。缺省关闭；
+> 会话文件 v1 行格式与审计语义**都不改**（录制是独立旁路，不是它们的扩展）。
+
+`mybot-agent` 的三个选项**只有命令行入口**（配置文件没有对应字段，写了按未知字段
+拒绝整份配置）：录制把完整上下文与图片写到磁盘，敏感面比会话文件更大，只认操作者
+亲手给的命令行——与 `--allow-host` 同判据。
+
+- `--record`：开启录制，段落落在 `$MYBOT_HOME/robots/<机器人>/recordings/`
+  （`$MYBOT_HOME` 缺省 `$HOME/.mybot`；无状态目录时上电前报错退出 2）。
+- `--record-dir <目录>`：显式录制根（与 `--record` 互斥；不依赖状态目录）。
+- `--record-max-bytes <n>`：图片仓总量上限（0..68719476736，缺省 0 = **不限**——采集
+  跑批的磁盘由人盯着，上限留给「机器人现场顺手开录制」的部署手动设置；超限**响亮
+  降级**为仅元数据，文本事件不受限）。
+
+**布局**（一个录制段 = 一个目录，append-only 不轮转；目录 0700、文件 0600，
+与会话文件同规）：
+
+```text
+<录制根>/latest                     指针（0600）：当前段目录名，续接时链回前段
+<录制根>/<UTC 段名>/                段目录（O_EXCL 占位，同名退 -<pid>）
+    meta.json                       会话元信息（模型/脱敏接入点/工具 schema 快照/
+                                     各指纹/会话文件路径），写一次
+    system.txt                      系统提示词全文（重放需要；会话文件刻意不落它）
+    events.jsonl                    事件流（0600，逐行 flush，追加写）
+    images/<序号>-<指纹>.<ext>       图片本体（base64 解码后的二进制，指纹去重）
+```
+
+**事件流**：每行 `{ts, seq, event, …}`，`event` 决定其余字段。消息按**增量**记录
+（水位之后的新消息才落，`R20` 守门）：`task_begin` → `model_call`（口径同审计
+model 行：turn 0-based、attempts、token 只记 provider 给的数；摘要轮不带 turn）→
+`msg`（本轮新消息，含 tool_calls/回执全文/图片引用）→ `task_end{ok}`。
+`history_evict`/`history_summary`/`clear`/`resume` 维持水位一致性——**任意轮次
+的有效上下文可由事件重放重建**（被裁块换成挂在系统提示词末尾的摘要节），不需要
+每轮整份快照。消息编码保持内容块次序：一条 user 消息可能是
+`[tool_result, text(图片说明), image]`，正是图片注入后的线上形态；图片块只落引用
+`{file, bytes, fp, mime}`，**base64 永不进 JSONL**。工具调用不单独记事件——参数在
+assistant 消息的 tool_calls 里、回执全文在 tool_result 里，消息流本身就是训练数据
+要的形态；计时与 exit_code 由审计轨迹承担（分工）。
+
+**续接关联**：会话续接（默认续接/`--resume`）时**新开一个录制段**（不向旧段追加，
+append-only 不可变），`meta.json` 的 `resumed_from` 链回前段；恢复进来的历史前缀
+**不重复落事件**（由会话文件承载，meta 记了路径，导出器做联结）。
+
+**失败语义**（对齐会话文件）：段建不起来 → 启动期退出 2（配置错误不碰真机）；
+中途写失败 → stderr 告警一次并停用录制，对话照常（不静默丢，也不打断机器人）。
+
+**密钥纪律**：`meta.json` 只记 `api_key_source` 枚举与脱敏接入点（复用审计的
+`sanitize_endpoint`），**密钥值绝不出现**；工具回执按「进入上下文的原样」记录
+（后端工具已过 `maskSecretsInText`，`http_fetch` 本就不遮蔽——见已知限制）。
+
+**训练集导出**：`scripts/record_export.py`（纯标准库 Python，与 mcp_e2e 的帧客户端
+同规）：
+
+```bash
+# 先只读检视：时间线 + 每个任务的成败/轮数/图片数
+python3 scripts/record_export.py --inspect <段目录或录制根>
+
+# 缺省：任务块粒度、effective 上下文（模型当时实际看到的，含摘要节）、openai 方言
+python3 scripts/record_export.py --out /tmp/ds <段目录>
+
+# sharegpt 方言（Qwen <tool_call>/<tool_response> 约定 + LLaVA <image> 标记与图片复制）
+python3 scripts/record_export.py --to sharegpt --keep-reasoning --out /tmp/ds <段目录>
+
+# 整段轨迹：多个段按 resumed_from 链拼接成一条（system_fp 不同的段拒绝串）
+python3 scripts/record_export.py --granularity session --to raw <录制根>
+```
+
+样本形如 `{task_meta:{ok,turns,prompt_tokens,…}, tools:[当时的 schema 快照],
+messages:[system(+摘要节), 上下文前缀, 本任务全部新消息]}`；`--context full` 用
+未裁剪的完整对话（会话文件联结）；`--filter ok|all`（缺省只导成功任务）、
+`--split 0.95`（切 train/val）、`stats.json` 恒产（样本/轮数/token/图片去重率/按
+工具的调用频次）。`openai` 方言把 user 消息的 tool_result parts 先出 tool 角色消息、
+其余 parts 出 user 消息（与线上 provider 转换同序），图片内联 data URL（自包含）。
+
+`/status` 有「录制」一行（落点与事件/图片计数）；`--check-config` 摘要有录制栏
+（缺省布局只报根与模式，不臆造段名）。回归：`scripts/agent_e2e.sh` 的 R20/R20b/
+R20c/R20d（段布局与权限、事件时序、图片本体与源图逐字节一致、三种方言导出回路、
+续接链、超限降级、互斥负路径）+ `record.rs` 单测（水位/去重/降级/权限）。
 
 ## 会话持久化：--session-file / --resume
 
@@ -1180,7 +1267,7 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl/mod.rs` 等 32 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行（及本地工具的 tool 行）、帧客户端、本地工具 `http_fetch`（`agent/src/httpfetch.rs`，reqwest）、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42、reqwest 0.13 |
+| `agent/src/repl/mod.rs` 等 33 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行（及本地工具的 tool 行）、帧客户端、本地工具 `http_fetch`（`agent/src/httpfetch.rs`，reqwest）、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）、**录制模式**（`agent/src/record.rs`：完整上下文采集含图片本体，微调数据用）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42、reqwest 0.13 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 
@@ -1221,7 +1308,8 @@ bash test/run_all.sh agent-all
     （AF_UNIX 帧）。覆盖工具循环、提示词包、审计轨迹、REPL 与能力门控、`--check-config`、
     单轮调用上限、限流重试、单次超时与 SIGINT 取消、图片后注、stdout 写失败不 panic、
     `--session-file`/`--resume` 两进程接力（批次 D）、流式逐 delta 到达与 `--llm-no-stream`
-    回退（R15：假服务按 150ms 帧间隔发 SSE，读端计时证明不是攒齐再打）；
+    回退（R15：假服务按 150ms 帧间隔发 SSE，读端计时证明不是攒齐再打）、录制模式与
+    训练集导出回路（R20：段布局/权限/事件时序/图片本体逐字节/三种方言/续接链/超限降级）；
   * `scripts/mcp_e2e.sh`——C++ 后端 + 纯标准库 Python 帧客户端直连 socket，守工具面与安全属性：
     `run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`（正反两趟）、`apply_sql`
     带电生效与热删除、策略拒绝时零副作用、fd 卫生、socket 权限、审计与优雅停机。
@@ -1233,6 +1321,18 @@ bash test/run_all.sh agent-all
 
 ## 已知限制
 
+- **录制模式的数据面如实声明**（2026-10-09，微调数据采集视角）：
+  ① **遮蔽痕迹会进数据集**——`run_command`/`read_file` 回执在进上下文前已被
+  `maskSecretsInText` 遮蔽（`***`），微调数据里就是遮蔽后的形态，模型会学到
+  「看到 `***` 是正常现象」；不想要这类样本请在导出后自行剔除。
+  ② **`http_fetch` 回执不遮蔽**（同审计已知限制），采集含外站内容的语料时注意。
+  ③ **分布偏差**：录制的是「这个提示词包 + 这套工具 + 这台机器人」下的轨迹；
+  导出器按 `system_fp` 拒绝串接提示词不同的段，手工混拼同样不被支持。
+  ④ **图片隐私**：录制段含真实画面（家里、人脸）与完整对话，敏感级高于会话
+  文件；0700/0600 + 命令行独占开启是全部防线，轮转/归档交给外部工具（append-only）。
+  ⑤ **磁盘占用**：图片仓缺省不限量（`--record-max-bytes` 兜底），小卡机器人请留意。
+  ⑥ **半截轮不入录制**：失败任务里被回滚的半截 tool_calls 序列不进事件流（与
+  会话文件同判据），其元数据在 `model_call`/`task_end` 事件里如实可见。
 - **流式面的边界**（2026-09-25）：见「流式与阻塞的如实偏差」——中途断流不重试、已打出的
   文本不撤回；思维链 delta 不打印；流式下 429 拿不到 `Retry-After`。`--llm-no-stream`
   退回阻塞面时长回答要等整轮生成完，帧间超时与整段超时都用 `--llm-timeout` 调整。

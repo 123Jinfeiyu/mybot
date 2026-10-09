@@ -30,6 +30,13 @@ pub struct Cli {
     pub allow_hosts: Vec<String>,
     pub http_fetch_timeout: String,
     pub http_fetch_max_bytes: String,
+    /// `--record`：开启录制（缺省布局 `$MYBOT_HOME/robots/<机器人>/recordings`）。
+    /// **只有命令行入口**——录制把完整上下文与图片写到磁盘，敏感面扩大只认
+    /// 操作者亲手给的命令行（判据同 `--allow-host`）。
+    pub record: bool,
+    /// `--record-dir <目录>`：显式录制根（与 `--record` 互斥）。
+    pub record_dir: String,
+    pub record_max_bytes: String,
     pub check_config: bool,
     pub help: bool,
     pub version: bool,
@@ -76,6 +83,9 @@ pub fn parse_args(args: &[String]) -> Result<Cli, String> {
             }
             "--http-fetch-timeout" => cli.http_fetch_timeout = take("--http-fetch-timeout")?,
             "--http-fetch-max-bytes" => cli.http_fetch_max_bytes = take("--http-fetch-max-bytes")?,
+            "--record" => cli.record = true,
+            "--record-dir" => cli.record_dir = take("--record-dir")?,
+            "--record-max-bytes" => cli.record_max_bytes = take("--record-max-bytes")?,
             "--check-config" => cli.check_config = true,
             "--help" | "-h" => cli.help = true,
             "--version" | "-V" => cli.version = true,
@@ -120,6 +130,14 @@ pub fn usage() -> String {
     s += "                            不跟随重定向、不走系统代理）\n";
     s += "  --http-fetch-timeout <秒>    单次请求超时（1..120，缺省 10）\n";
     s += "  --http-fetch-max-bytes <n>   响应体上限（1..1048576，缺省 65536）\n\n";
+    s += "录制（完整上下文采集，微调数据用 scripts/record_export.py 导出；缺省关闭；\n";
+    s += "只有命令行入口，配置文件不能开）:\n";
+    s += "  --record                 开启录制，段落在 $MYBOT_HOME/robots/<机器人>/recordings/\n";
+    s += "                           （$MYBOT_HOME 缺省 $HOME/.mybot）；每个录制段一个目录：\n";
+    s += "                           meta.json + system.txt + events.jsonl + images/（图片本体）\n";
+    s += "  --record-dir <目录>       显式录制根（与 --record 互斥；不依赖状态目录）\n";
+    s += "  --record-max-bytes <n>    录制图片仓总量上限（0..68719476736，0 = 不限，缺省 0）；\n";
+    s += "                           超限响亮降级为仅元数据（文本事件不受限）\n\n";
     s += "其它:\n";
     s += "  --prompt-file <路径>   提示词包（文件或目录；可重复；命令行给出即整体覆盖配置文件列表）\n";
     s += "  --audit-log <路径|->   审计轨迹（JSON Lines；\"-\" = stderr；缺省关闭）\n";
@@ -164,11 +182,14 @@ mod tests {
         "--allow-host",
         "--http-fetch-timeout",
         "--http-fetch-max-bytes",
+        "--record-dir",
+        "--record-max-bytes",
     ];
     const FLAG_OPTIONS: &[&str] = &[
         "--llm-no-stream",
         "--resume",
         "--new-session",
+        "--record",
         "--check-config",
         "--help",
         "--version",
@@ -220,7 +241,10 @@ mod tests {
         assert_eq!(cli.allow_hosts, vec!["allow-host", "b.example"]);
         assert_eq!(cli.http_fetch_timeout, "http-fetch-timeout");
         assert_eq!(cli.http_fetch_max_bytes, "http-fetch-max-bytes");
-        assert!(cli.llm_no_stream && cli.resume && cli.new_session && cli.check_config);
+        assert_eq!(cli.record_dir, "record-dir");
+        assert_eq!(cli.record_max_bytes, "record-max-bytes");
+        assert!(cli.llm_no_stream && cli.resume && cli.new_session && cli.record);
+        assert!(cli.check_config);
         assert!(cli.help && cli.version);
     }
 

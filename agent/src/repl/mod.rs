@@ -49,6 +49,7 @@ use crate::linein::{LineInput, LineRead};
 use crate::out::{errln, out, outln};
 use crate::prompt::PromptMaterial;
 use crate::provider::Backend;
+use crate::record::RecordStore;
 use crate::session::SessionFileWriter;
 use crate::summary;
 
@@ -280,6 +281,9 @@ pub struct SessionAssembly {
     pub audit: Option<AuditLog>,
     /// 会话持久化写入器（批次 D；`None` = 未开启 `--session-file`）。
     pub writer: Option<SessionFileWriter>,
+    /// 录制模式（`--record` / `--record-dir`；`None` = 未开启）。完整上下文采集
+    /// （含图片本体），微调数据用 scripts/record_export.py 导出，见 record.rs 模块头。
+    pub record: Option<RecordStore>,
     pub resume: ResumeContext,
 }
 
@@ -299,6 +303,8 @@ pub struct Session {
     history: ConversationHistory,
     /// 会话持久化写入器（批次 D；`None` = 未开启 `--session-file`）。
     writer: Option<SessionFileWriter>,
+    /// 录制模式（`None` = 未开启）。事件面见 record.rs；所有挂钩都只转发不判定。
+    record: Option<RecordStore>,
     /// 「思考中…」动画只在交互 REPL 开（`run_repl` 入口置位）；`--task` 一次性
     /// 模式的输出常被管道消费，逐格动画只会污染 stderr。
     show_progress: bool,
@@ -316,6 +322,7 @@ impl Session {
             material,
             audit,
             writer,
+            record,
             resume,
         } = parts;
         let audit = SessionAudit::new(&cfg, audit, resume.resumed);
@@ -329,8 +336,14 @@ impl Session {
             tool_names,
             history: ConversationHistory::resumed(resume.history, resume.summary),
             writer,
+            record,
             show_progress: false,
         }
+    }
+
+    /// 录制事件面的快捷口（`None` = 未开启；调用点只转发，语义在 record.rs）。
+    fn rec(&mut self) -> Option<&mut RecordStore> {
+        self.record.as_mut()
     }
 
     /// `/clear`：只裁会话历史（硬件保持上电，系统提示词不变——rig 的 preamble 在
@@ -339,6 +352,9 @@ impl Session {
     pub fn clear_history(&mut self) {
         self.history.clear();
         self.bridge.ica.clear();
+        if let Some(r) = self.rec() {
+            r.reset_after_clear();
+        }
         if let Some(w) = self.writer.as_mut() {
             w.write_clear_marker();
         }
@@ -351,6 +367,9 @@ impl Session {
     /// 必须留一条——「这次会话怎么结束的」是复盘的第一句话。
     pub fn write_session_end(&mut self, status: &str, error: &str) {
         self.audit.write_session_end(status, error);
+        if let Some(r) = self.rec() {
+            r.session_end(status, error);
+        }
     }
 
     /// 历史压缩（改进项 #7）：整块裁剪 + 把被裁块压进摘要。
@@ -374,6 +393,11 @@ impl Session {
             .evict(budget.saturating_sub(reserve).max(1), &mut |t| {
                 errln!("{t}")
             });
+        // 录制：被裁块已经作为消息事件在盘上（录制是全量留档），只落裁剪标记并
+        // 回退水位——导出器据此知道「有效上下文」从此少了一截。
+        if let Some(r) = self.rec() {
+            r.note_evicted(evicted.len());
+        }
         if evicted.is_empty() || !self.cfg.history_summary {
             return;
         }
@@ -398,6 +422,9 @@ impl Session {
             |rec| if rec.ok { "summary" } else { "summary_error" }.to_string(),
             false,
         );
+        if let Some(r) = self.rec() {
+            r.model_calls(&calls, "summary");
+        }
         match result {
             Ok(text) => {
                 errln!(
@@ -408,9 +435,17 @@ impl Session {
                 if let Some(w) = self.writer.as_mut() {
                     w.write_summary(&text, self.history.persisted_blocks());
                 }
+                if let Some(r) = self.rec() {
+                    r.history_summary(true, &text, "");
+                }
                 self.history.set_summary(text);
             }
-            Err(e) => errln!("[历史] 摘要失败（{e}），本次裁掉的上下文未进摘要，仅整块裁剪"),
+            Err(e) => {
+                errln!("[历史] 摘要失败（{e}），本次裁掉的上下文未进摘要，仅整块裁剪");
+                if let Some(r) = self.rec() {
+                    r.history_summary(false, "", &e.to_string());
+                }
+            }
         }
     }
 
@@ -421,6 +456,9 @@ impl Session {
         // 摘要请求走同一个 BudgetModel，上一轮残留的图片后注不能混进它。
         self.state.begin_task();
         self.bridge.observe_user(task);
+        if let Some(r) = self.rec() {
+            r.task_begin(task);
+        }
         // 任务开始前：按字节预算**整块**裁掉最早的旧任务块（最新块无条件保留；
         // 0 = 不裁剪），被裁的块交给摘要器。裁剪日志走 stderr：更早的任务上下文
         // 不再可见（或只剩摘要）是必须告知的事实。
@@ -444,6 +482,10 @@ impl Session {
         let calls = self.state.drain_calls();
         let local_tools = self.state.drain_local_tools();
         let injections = self.state.take_injections();
+        // 录制：模型调用元数据先落（时间线上它们发生在各轮），消息增量随后补
+        if let Some(r) = self.rec() {
+            r.model_calls(&calls, "task");
+        }
 
         match result {
             Ok(resp) => {
@@ -458,7 +500,11 @@ impl Session {
                 // 「tool 消息之后的图片消息」插回会话历史（与 C++ 同序）。
                 let mut full = snapshot;
                 full.extend(new);
-                self.history.replace(hook::materialize(full, &injections));
+                let materialized = hook::materialize(full, &injections);
+                if let Some(r) = self.rec() {
+                    r.record_history(&materialized);
+                }
+                self.history.replace(materialized);
                 if let Some(w) = self.writer.as_mut() {
                     self.history.persist(|m| w.append_message(m));
                 }
@@ -467,6 +513,9 @@ impl Session {
                 }
                 self.record_calls(&calls);
                 self.audit.record_local_tools(&local_tools);
+                if let Some(r) = self.rec() {
+                    r.task_end(true, "");
+                }
                 if let Some(note) = self.bridge.ica.note() {
                     outln!("\n{note}");
                 }
@@ -477,9 +526,16 @@ impl Session {
                 // 半截的 tool_calls 序列不留在历史里。边界缺失（本轮连一次模型调用
                 // 都没发生）时回滚到任务开始的历史。
                 let base = self.state.rollback_boundary().unwrap_or(snapshot);
-                self.history.replace(hook::materialize(base, &injections));
+                let materialized = hook::materialize(base, &injections);
+                if let Some(r) = self.rec() {
+                    r.record_history(&materialized);
+                }
+                self.history.replace(materialized);
                 self.record_calls(&calls);
                 self.audit.record_local_tools(&local_tools);
+                if let Some(r) = self.rec() {
+                    r.task_end(false, &e);
+                }
                 Err(e)
             }
         }
@@ -656,6 +712,16 @@ impl Session {
                     self.cfg.session_file,
                     self.history.written_prefix()
                 ),
+                None => "(未开启)".to_string(),
+            }
+        );
+        s += &format!(
+            "  录制        : {}\n",
+            match self.record.as_ref() {
+                Some(r) => {
+                    let (ev, img) = r.stats();
+                    format!("{}（事件 {} 条，图片 {} 张）", r.dir(), ev, img)
+                }
                 None => "(未开启)".to_string(),
             }
         );
@@ -912,6 +978,9 @@ mod tests {
             allow_hosts: Vec::new(),
             http_fetch_timeout_sec: crate::config::DEFAULT_HTTP_FETCH_TIMEOUT_SEC,
             http_fetch_max_bytes: crate::config::DEFAULT_HTTP_FETCH_MAX_BYTES,
+            record_enabled: false,
+            record_dir: String::new(),
+            record_max_image_bytes: 0,
         }
     }
 

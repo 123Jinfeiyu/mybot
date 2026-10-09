@@ -42,6 +42,7 @@ mod placeholder;
 mod prompt;
 mod protocol;
 mod provider;
+mod record;
 mod repl;
 mod runtime;
 mod session;
@@ -418,6 +419,36 @@ async fn run() -> i32 {
         }
     };
 
+    // ---- 录制模式（--record / --record-dir）：完整上下文采集（含图片本体），
+    //      微调数据用 scripts/record_export.py 导出。此刻机器人名/会话落点/审计
+    //      session id 都已就位，是装配链上最早能开的点。----
+    let resume_len = resume_history.len();
+    let mut recorder = match record::open_from_config(
+        &cfg,
+        &material,
+        &tool_names,
+        &specs,
+        &preamble,
+        audit.as_ref().map(|a| a.session_id()).unwrap_or(""),
+        resumed,
+        now_sec(),
+    ) {
+        Ok(r) => r,
+        Err(e) => return config_error(&e),
+    };
+    if resumed {
+        // 续接：恢复进来的前缀不重复落事件（由会话文件承载，meta 记了路径）
+        if let Some(r) = recorder.as_mut() {
+            r.note_resumed(resume_len, &cfg.session_file);
+        }
+    }
+    if let Some(r) = recorder.as_ref() {
+        errln!(
+            "[mybot-agent] 录制落点: {}（含完整上下文与图片；训练集导出: scripts/record_export.py）",
+            r.dir()
+        );
+    }
+
     let session_parts =
         match session_runtime::build_session_parts(session_runtime::SessionRuntimeInput {
             cfg,
@@ -429,6 +460,7 @@ async fn run() -> i32 {
             material,
             audit,
             writer: session_writer,
+            record: recorder,
             history: resume_history,
             summary: resume_summary,
             resumed,
