@@ -190,7 +190,7 @@ gate:coverage:
 # 波特率编码、ioctl 常量此前只在 glibc 头文件下实证过。本 job 在 alpine/musl
 # 下：① 三个常量自检目标（_Static_assert/编译期比对，跑起来即证明常量在 musl
 # 头文件下成立）；② mybot_tests 全量；③ 整段守门 test/run_all.sh（Lua 层 HAL
-# 运行时 + mtmerge + TCP + MCP 后端 e2e）——Rust agent 段因 alpine 镜像无 Rust
+# 运行时 + TCP + MCP 后端 e2e）——Rust agent 段因 alpine 镜像无 Rust
 # 产物，由 net_agent.sh 按 SKIP 计（不是假绿，汇总里可见）；C++ 产物一律显式指定
 # 到 build-musl，缺任一个都判失败（不加 ALLOW_SKIP）。
 # 2026-09-25 转硬：本地 proot + alpine 3.20 minirootfs（与 alpine:3.20 镜像同源同版本）
@@ -215,9 +215,9 @@ gate:musl:
     - ./build-musl/test_ioctl_nums
     - ./build-musl/test_uart_consts
     - ./build-musl/test_v4l2_consts
-    - cmake --build build-musl -j2 --target mybot mybot_tests mtmerge harness_selftest
+    - cmake --build build-musl -j2 --target mybot mybot_tests harness_selftest
     - ./build-musl/mybot_tests
-    - BOT=./build-musl/mybot BOT_TESTS=./build-musl/mybot_tests MTMERGE=./build-musl/mtmerge bash test/run_all.sh
+    - BOT=./build-musl/mybot BOT_TESTS=./build-musl/mybot_tests bash test/run_all.sh
 
 # ======================================================================
 # Rust agent（agent/，包名 mybot-agent；原 MCP sidecar，rig 迁移批次 B 更名）：

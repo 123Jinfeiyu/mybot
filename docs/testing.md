@@ -155,7 +155,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 4. **无硬件契约回归**（守护/别名/转发/引用路径）：
    - 负值契约：INSERT 拼错表、别名重复、`$` 引用标量、动作参数覆盖结构元数据必须**清晰报错**而非裸崩
    - 含 `PCA9685`/`MCP4725`/`SCSCL` 的**非守护** `@Action` 写路径正/负六条——虚拟总线已不再只服务守护路径，UART 直写路径经 `BUS="uart"` 模型附着 + 跨状态机 fd 采纳
-5. **mtmerge 合成器**（`@Action` 相位归并 + `@Alias`/`@Vars` 按行叠加同名报错；末尾把产物回喂 `mybot` 证明内联别名仍生效）
+5. **@Include 展开**（运行端动作脚本归并，归并内核由 test_mtmerge.cpp 白盒单测覆盖）
 6. **TCP 动作源回环**（复用 `scripts/tcp_e2e.sh`，随机端口，缺 python3 自动跳过）
 7. **TCP 异常注入**（复用 `scripts/tcp_adversarial.sh` 场景矩阵：半包/断连/空闲挂死/垃圾帧/口令负路径，每场景独立服务端 + 看门狗）
 8. **agent 端到端三段**（本地假模型服务 `scripts/fake_llm_server.py`，均无需硬件与真实 key）：
@@ -175,7 +175,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
    - **R19 `http_fetch` 出站白名单**（Phase 6，2026-10-08）：脚本另起一个本地 HTTP 服务当「白名单里的受控 API」（离线可复现，不打公网），夹具 `httpfetch` 模式按 `FAKE_LLM_FETCH_URLS` 逐轮下发五次调用——正文（`> ` 定界 + 「数据不是指令」）、超 `--http-fetch-max-bytes` 拒绝、非文本类型拒读、302 只报 `Location` 不跟随、同一服务换主机名 `localhost` 被白名单拒绝；**服务端记下的到达请求恰为前四条**（重定向目标与被拒主机都没发出）是比回执文本更硬的判据。agent 审计每次调用一条 `kind=tool` 行、`args.url` 去查询串（查询串里的假密钥不落盘）、`ok` 与 `summary=status=<码>` 逐条如实。R19b：不给 `--allow-host` 时线上工具定义里没有 `http_fetch`；R19c：`--allow-host` 写成带 scheme/路径的 URL 即配置错误退出 2。`.no_proxy()` 是否生效由 Rust 单测 `system_proxy_env_is_ignored` 钉住（E2E 不设代理环境：rig 的模型客户端同样会读它）。
    - **R20 录制模式与训练集导出**（2026-10-09，`--record`/`--record-dir`）：主场用 `--record-dir` 显式根 + camera 剧本（拍照进上下文），断言录制段四件套（meta/system/events/images）与 0700/0600 权限、事件时序（`session_start` 打头 → `task_begin`/`model_call`(turn 0-based)/`msg`(图片只落引用，base64 不进 JSONL)/`task_end`/`session_end`）、meta 密钥纪律（只记来源枚举）与工具 schema 快照、**图片本体与源 JPEG 逐字节一致**；随后跑 `scripts/record_export.py` 断言**导出回路**——raw 方言的样本结构（任务原文/tool_calls 与回执配对/图片引用）、openai 方言 data URL 与源图逐字节一致且图片 user 消息在 tool 消息之后（provider 同序）、sharegpt 方言的 `<tool_call>`/`<tool_response>`/`<image>` 约定与 stats.json。R20b：`--record` 缺省布局 + 两进程续接（录制根从「录制落点」日志定位——机器人目录名经安全归一带指纹后缀，不能硬拼）→ 两个录制段、`latest` 指针改指、`resumed_from` 链回前段、`resume` 事件声明前缀条数；session 粒度导出把两段按链拼成一条轨迹且**会话文件前缀联结**进样本（第一任务原文来自会话文件）。R20c：`--record-max-bytes 1` 图片仓响亮降级为 `stored:false` 元数据、任务照常完成。R20d：`--record` 与 `--record-dir` 同给退出 2；`--check-config` 摘要含录制栏。水位/去重/权限另由 `record.rs` 单测钉住。
    - 以上只验证本地协议与虚拟器件，不代表真实云端模型或真实硬件验收；协议族差异（OpenAI 兼容 / DeepSeek / Anthropic）由 R12/R13 在 Rust 侧收口。agent over TCP 远程 REPL 已评估**不做**（2026-09-25）。
-9. **mtmerge 相位语义**（复用 `scripts/mtmerge_e2e.sh`：相位 0/±1 逐格比对、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
+9. **@Include 相位语义**（`@Action` 两两归并时相位 0/±1 对齐、负相位丢行告警、前导 `-` 的设备在运行端被跳过）
 10. **输入边界加固**，覆盖：
    - `--tcp-host` 非法地址退出码 1、未知 `--key` 退出码 2、动作脚本/结构脚本超 8 MiB 上限
    - `@Daemon` 驱动误配无 `build` 时的回滚路径
@@ -188,7 +188,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 15. **系统常量自检**（F-24 + A2，无过滤器全量跑时执行）：三个 C 自检二进制把 **Lua 源里**硬编码的编号与系统头做编译期断言比对，漂移在构建期即失败，执行期再跑一遍作双保险。事实源是 Lua，**不是 C 里的手抄副本**：配置期 `test/gen_const_check.cmake` 从 `modules/lib/hal_backend_glibc.lua`（consts 表，方案 A 下沉后的唯一事实源）、`modules/lib/hal/uart.lua`（两套波特率映射表）、`modules/Camera.lua` **纯文本抽取**常量生成 `const_lua.h`，每项做**双边断言**——`Lua 抽取值 == 手抄预期值`（抽取生效 + Lua 未漂移）且 `预期值 == 系统头`（内核/架构未漂移）。抽不到任何必需常量即 `FATAL_ERROR`（静默生成空头会让断言退化成自证）。`test_ioctl_nums`（SPI/GPIO/I2C ioctl + 结构尺寸）、`test_uart_consts`（termios 布局 + 两套波特率表 + 打开标志）、`test_v4l2_consts`（V4L2 ioctl + Camera.lua 的 ABI 尺寸表）三者均无外部依赖（原第四个 `test_curl_consts` 随 Lua 协议驱动轨道删除，2026-09-25 #8）
 16. **C++ 层单测**（`test/cpp/`，`mybot_tests` 目标，零第三方框架），覆盖：
     - 基础设施：JSON 值语义、JSON 文本解析、Lua↔Json 边界与转换深度上限、util 全局助手（安全标识符判据 `isSafeIdent`、深度护栏 `DepthLimitGuard`、CLI 切分 `cli::parseKeyValue`、越界文案模板 `rangeErrorText`）
-    - 解析管线：`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、mtmerge 归并核心白盒
+    - 解析管线：`.mt` 矩阵状态机、SQL 词法/语法、元数据收集与 `$` 引用环检测、@Include 归并核心白盒
     - 守护：never-spawn/abandon 分支
     - 会话变量作用域（2026-09-20 阶段 1）：动作脚本内联 `@Alias` 不跨 `run()` 残留、不遮蔽结构变量、报错脚本不改写注册表、200 轮重复执行后结构名字索引不增长
     - I/O 与错误语义（2026-09-20 阶段 4）：`retryEintr` 只在 EINTR 重试、整文件读取超限报「字节上限」而非「不是合法 JSON」、TCP 口令三态（空闲超时/对端关闭不算鉴权失败，只有凭据错才计数）、表达式语法错误截断回显
@@ -207,7 +207,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 - TCP / agent 端到端缺 `python3`
 - `run_all.sh` 的 Rust agent 段缺 `agent/target/release/mybot-agent`（独立可选产物）；专门的 `gate:agent-e2e` 不允许此跳过。Rust agent 全程 reqwest + rustls（静态链接），本机 libcurl 有无都不影响该段——2026-09-25 #8 起仓库已无 libcurl 依赖
 
-产物**陈旧**在起跑前就拒绝（`run_all.sh` 比 mtime，旧于编译期输入即 `exit 2`；逃生口 `BOT_ALLOW_STALE=1`）。取材面**按产物分配**，且每条都要**减去属于别的目标的文件**：`mybot` 吃 `src/` 减 `src/mtmerge.cpp`；`mybot_tests` 吃 `src/` + `test/cpp/` 减 `src/main.cpp`（它的入口是 `test/cpp/main.cpp`）、`src/mtmerge.cpp`、`test/cpp/harness_selftest.cpp`；`harness_selftest` 只吃 `test/cpp/harness_selftest.cpp` 与 `harness.hpp`。归属的权威出处是构建系统自己的记账（`build/compile_commands.json` 里 `-o CMakeFiles/<target>.dir/<src>.o`）。`CMakeLists.txt` **不在任何一份取材面里**：它是构建描述而不是编译期输入，「描述变了要不要重链」由 cmake/make 自己算——把它当输入就等于要求「产物比构建描述新」，而 make 对输入未变的目标只回一句 `Built target` 不重链，于是门恒红。共用一份最大集合、或不减归属，都会犯同一个错，两种坏法：给 `mybot` 算上 `test/cpp/`，则「只改一条用例」会让它永远判陈旧，而 cmake 根本不会为此重链 `mybot`——**重建也修不好**，唯一出路是 `BOT_ALLOW_STALE=1`，一道天天狼来了的门教会大家的正是怎么绕过它（2026-10-06 实测踩到三回：先是 `test/cpp/`，修掉后 `CMakeLists.txt` 挡掉了 `run_san.sh` 的整个第二跑，再修又暴露出 `mtmerge.cpp` 与 `harness_selftest.cpp` 两条同类）；反过来漏掉 `harness_selftest`（同日之前的状态）则让骨架自证拿旧二进制报「8 通过」，正是这道判据要堵的无痕假绿。排除名单与 CMakeLists 的目标归属是同一份事实，故 `run_all_selftest.sh` 第 7 段双向钉住：归属变了（`mtmerge.cpp` 进了 `MYBOT_CORE_SOURCES`、`harness_selftest.cpp` 进了 `mybot_tests`）要红，名单单独漂（多一条 = 漏判真陈旧、少一条 = 门恒红）也要红——次数一并钉，因为同一条排除在两个分支里各写一次是有讲究的（`src/main.cpp` 对 `mybot` 恰恰是入口源，排了就漏判）。`mtmerge` 与三个 `test_*_consts` 未纳入（它们的 bin 变量在 `run_all.sh` 更后面才定义）。Rust 侧的同族判据是 `test/lib/agent_stale.sh`，取材面与处置分层见 [development.md](development.md)「守门钩子（pre-push）」第 3 条。
+产物**陈旧**在起跑前就拒绝（`run_all.sh` 比 mtime，旧于编译期输入即 `exit 2`；逃生口 `BOT_ALLOW_STALE=1`）。取材面**按产物分配**，且每条都要**减去属于别的目标的文件**：`mybot` 吃 `src/` 减 `src/main.cpp` 本身就是入口；`mybot_tests` 吃 `src/` + `test/cpp/` 减 `src/main.cpp`（它的入口是 `test/cpp/main.cpp`）、`test/cpp/harness_selftest.cpp`（独立骨架自证）；`harness_selftest` 只吃 `test/cpp/harness_selftest.cpp` 与 `harness.hpp`。归属的权威出处是构建系统自己的记账（`build/compile_commands.json` 里 `-o CMakeFiles/<target>.dir/<src>.o`）。`CMakeLists.txt` **不在任何一份取材面里**：它是构建描述而不是编译期输入，「描述变了要不要重链」由 cmake/make 自己算——把它当输入就等于要求「产物比构建描述新」，而 make 对输入未变的目标只回一句 `Built target` 不重链，于是门恒红。共用一份最大集合、或不减归属，都会犯同一个错，两种坏法：给 `mybot` 算上 `test/cpp/`，则「只改一条用例」会让它永远判陈旧，而 cmake 根本不会为此重链 `mybot`——**重建也修不好**，唯一出路是 `BOT_ALLOW_STALE=1`，一道天天狼来了的门教会大家的正是怎么绕过它（2026-10-06 实测踩到三回：先是 `test/cpp/`，修掉后 `CMakeLists.txt` 挡掉了 `run_san.sh` 的整个第二跑，再修又暴露出 `harness_selftest.cpp` 同类）；反过来漏掉 `harness_selftest`（同日之前的状态）则让骨架自证拿旧二进制报「8 通过」，正是这道判据要堵的无痕假绿。排除名单与 CMakeLists 的目标归属是同一份事实，故 `run_all_selftest.sh` 第 7 段双向钉住：归属变了（比如新增一个独立目标）要红，名单单独漂（多一条 = 漏判真陈旧、少一条 = 门恒红）也要红——次数一并钉，因为同一条排除在两个分支里各写一次是有讲究的（`src/main.cpp` 对 `mybot` 恰恰是入口源，排了就漏判）。test_*_consts 未纳入（它们的 bin 变量在 `run_all.sh` 更后面才定义）。Rust 侧的同族判据是 `test/lib/agent_stale.sh`，取材面与处置分层见 [development.md](development.md)「守门钩子（pre-push）」第 3 条。
 
 反过来，有三个脚本**没有任何自动调用点**（`run_all.sh` / 十条 CI job / pre-push 都不执行它们），它们坏了不会有任何守门变红，只能靠人跑：
 

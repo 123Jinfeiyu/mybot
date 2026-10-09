@@ -213,18 +213,17 @@ tests_explicit=0
 # harness_selftest 一并纳入：harness-selftest 段跑的就是它，此前不在循环里，陈旧了
 # 照样报「8 通过」——正是本判据要堵的那类无痕假绿。
 # 目录级取材面还要**减去属于别的目标的文件**，否则同一类误报换个入口再犯一次：
-# touch src/mtmerge.cpp 后 `cmake --build` 只重链 mtmerge，mybot 永远比它旧；
+# touch src/main.cpp 后 `cmake --build` 只重链 mybot，mybot_tests 永远比它旧；
 # touch test/cpp/harness_selftest.cpp 后只重链 harness_selftest，mybot_tests 永远比它旧。
 # 归属的权威出处是构建系统自己的记账（build/compile_commands.json 的
 # `-o CMakeFiles/<target>.dir/<src>.o`），2026-10-06 实测：
-#   mybot            ← src/            − src/mtmerge.cpp（只进 mtmerge 目标）
+#   mybot            ← src/            − src/main.cpp 本身就是入口
 #   mybot_tests      ← src/ + test/cpp − src/main.cpp（它用 test/cpp/main.cpp 当入口）
-#                                       − src/mtmerge.cpp
 #                                       − test/cpp/harness_selftest.cpp（独立二进制）
 #   harness_selftest ← test/cpp/harness_selftest.cpp + test/cpp/harness.hpp
-# 这三条排除与 CMakeLists 的 C3/B8 两处自检是同一份事实，故 selftest 第 7 段钉住
+# 这两条排除与 CMakeLists 的 C3/B8 两处自检是同一份事实，故 selftest 第 7 段钉住
 # 「被排除的文件确实不在该目标的 add_executable 清单里」——归属一变，排除名单就得跟着变。
-# 未纳入 mtmerge 与 test_*_consts：它们的 bin 变量在本文件更后面才定义。
+# 未纳入 test_*_consts：它们的 bin 变量在本文件更后面才定义。
 # 逃生口 BOT_ALLOW_STALE=1：**明确知道**要跑旧产物（如复现历史结果）时显式声明。
 if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 	for _b in "$bin" "$tests_bin" "$selftest_bin"; do
@@ -233,15 +232,15 @@ if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 		case "$_b" in
 			"$bin")
 				_in=(src)
-				_ex=(-not -path 'src/mtmerge.cpp') ;;
-			# 骨架自证只由这两个文件编出来（CMakeLists.txt:268 的
+				_ex=(-not -path 'src/main.cpp') ;;
+			# 骨架自证只由这两个文件编出来（CMakeLists.txt:271 的
 			# add_executable(harness_selftest test/cpp/harness_selftest.cpp)）；
 			# 给它套整个 test/cpp/ 就又是上面那个「重建也修不好」的误报。
 			"$selftest_bin")
 				_in=(test/cpp/harness_selftest.cpp test/cpp/harness.hpp) ;;
 			*)
 				_in=(src test/cpp)
-				_ex=(-not -path 'src/main.cpp' -not -path 'src/mtmerge.cpp'
+				_ex=(-not -path 'src/main.cpp'
 					-not -path 'test/cpp/harness_selftest.cpp') ;;
 		esac
 		_stale="$(find "${_in[@]}" -type f \
@@ -864,53 +863,9 @@ fi
 fi	# C8：$filter 守卫（与邻居段落同语义）
 
 # ======================================================================
-# mtmerge 合成器：@Action 相位归并 + @Alias/@Vars 按行叠加（同名报错）。
-# 纯离线；最后一条把产物回喂 mybot，证明内联 Alias/Vars 在合并产物里仍生效。
-# 缺 ./build/mtmerge 判失败（本段是 mtmerge 的唯一覆盖）。
+# mtmerge 离线合成器已移除（2026-10-10）：运行端 @Include 展开仍保留，归并内核
+# mtmerge_core 由 test_mtmerge.cpp 白盒单测覆盖。此段落原有的 5 条用例已删除。
 # ======================================================================
-mtmerge_bin="${MTMERGE:-./build/mtmerge}"
-mtmerge_explicit=0
-[ -n "${MTMERGE:-}" ] && mtmerge_explicit=1
-mtmerge_reported=""
-# 本节用例数 = run_one_mtmerge 调用点 + 1 条「产物回喂 mybot」E2E（下方内联）。
-# 数调用点而非写死数字：加用例忘改文案的漂移在此消除（N-31）。
-mtmerge_cases_n=$(( $(count_calls run_one_mtmerge) + 1 ))
-if filter_matches "mtmerge" "$filter"; then
-	setup_mtmerge_fixtures
-
-	# 正值：Alias/Vars 两侧行都并入，@Action 设备集不相交照常归并
-	run_one_mtmerge 'mtmerge_merge' 0 \
-		'A angle|B delay|K 1|L 2|s1.A spk.B' \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt
-
-	# 同一输入内多个 @Alias 块都要并入（不得只看第一个而静默丢弃其余块）
-	run_one_mtmerge 'mtmerge_multiblock' 0 \
-		'C freq|D speed|s1.A s3.C' \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/multiblock.mt
-
-	# 负值：同名 Alias / Vars 行（跨输入）必须报错退出 2
-	run_one_mtmerge 'mtmerge_alias_dup' 2 "duplicate Alias name 'A'" \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/dup_alias.mt
-	run_one_mtmerge 'mtmerge_vars_dup' 2 "duplicate Vars name 'K'" \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/dup_vars.mt
-
-	# 端到端：合并产物回喂 mybot，内联 Alias(A->angle, B->delay) 生效
-	echo "----- mtmerge_e2e (mtmerge) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		[ -z "$mtmerge_reported" ] && { mtmerge_reported=1; artifact_missing "mtmerge 合成器" "$mtmerge_cases_n 条用例" "$mtmerge_bin" "$mtmerge_explicit"; }
-	elif [ ! -x "$bin" ]; then
-		artifact_missing "mtmerge 回喂 mybot" "该用例（回喂 E2E）" "$bin" "$bot_explicit"
-	else
-		out="$( ("$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt | "$bin" --robot=.tmp/mtm/robot.sql) 2>&1 )"
-		rc=$?
-		echo "$out" | tail -4
-		if [ "$rc" -eq 0 ] && echo "$out" | grep -qF 'Dummy served 1 call(s)'; then
-			record_pass
-		else
-			record_fail "mtmerge_e2e(mtmerge)"
-		fi
-	fi
-fi
 
 # ======================================================================
 # @Include 归并观察面（parse_cases 只能钉单点断言，这里做多值/计数断言）：
@@ -1005,14 +960,9 @@ if filter_matches "mcp" "$filter_e2e"; then
 fi
 
 # ======================================================================
-# mtmerge 相位语义回归（scripts/mtmerge_e2e.sh）：相位 0/±1 逐格比对、
-# 设备集相交报错、三输入链式、负相位丢行告警、合并产物回喂 mybot 时
-# 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
-# 与上面的逐条 mtmerge 用例互补：这里只盯相位边界，缺产物判失败。
+# mtmerge 离线合成器相位语义回归已移除（2026-10-10，随独立 mtmerge 目标一起删除）。
+# 运行端 @Include 展开的相位语义由 test_mtinclude.cpp 覆盖。
 # ======================================================================
-if filter_matches "mtmerge" "$filter"; then
-	run_one_mtmerge_phase
-fi
 
 # ======================================================================
 # 审计加固回归（#1/#2/#4）：输入源信任边界与守护 setup 失败回滚。

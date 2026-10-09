@@ -220,10 +220,10 @@ grep -q 'binp="\$selftest_bin"' test/lib/sections/tail_checks.sh \
 grep -q 'for _b in "\$bin" "\$tests_bin" "\$selftest_bin"' test/run_all.sh \
 	|| note "产物陈旧判据的循环不再覆盖 harness_selftest（骨架自证会拿旧二进制报「8 通过」）"
 #    同族第四个单点：陈旧判据的**排除名单**。目录级取材面必须减去属于别的目标的文件，
-#    否则「touch src/mtmerge.cpp → cmake 只重链 mtmerge → mybot 恒被判陈旧」这类
+#    否则「touch src/main.cpp → cmake 只重链 mybot → mybot_tests 恒被判陈旧」这类
 #    **重建也修不好**的误报会换个入口再犯一次（2026-10-06 实测两回：先是被
-#    CMakeLists.txt 挡掉 run_san.sh 的整个第二跑，修掉后又暴露出 harness_selftest.cpp
-#    与 mtmerge.cpp 两条同类）。归属的权威出处是 CMakeLists 的 add_executable 清单，
+#    CMakeLists.txt 挡掉 run_san.sh 的整个第二跑，修掉后又暴露出 harness_selftest.cpp）。
+#    归属的权威出处是 CMakeLists 的 add_executable 清单，
 #    故这里从 CMakeLists **现算**、与 run_all.sh 的名单双向核对：归属变了名单就得跟着
 #    变，任一侧单独漂都红（名单多一条 = 漏判真陈旧，少一条 = 门恒红教人绕过它）。
 cmake_block() {	# $1=块首整行（列 0 起）；打印到该块收口的 ")" 之前
@@ -232,34 +232,31 @@ cmake_block() {	# $1=块首整行（列 0 起）；打印到该块收口的 ")" 
 _blk_core="$(cmake_block 'set(MYBOT_CORE_SOURCES')"
 _blk_mybot="$(cmake_block 'add_executable(mybot')"
 _blk_tests="$(cmake_block 'add_executable(mybot_tests')"
-_blk_mtmerge="$(cmake_block 'add_executable(mtmerge')"
-[ -n "$_blk_core" ] && [ -n "$_blk_mybot" ] && [ -n "$_blk_tests" ] && [ -n "$_blk_mtmerge" ] \
+[ -n "$_blk_core" ] && [ -n "$_blk_mybot" ] && [ -n "$_blk_tests" ] \
 	|| note "CMakeLists.txt 的 add_executable/set 块抽不到（块首行不再是列 0 起的整行？）——本段的归属核对已失效"
-grep -q 'src/mtmerge\.cpp' <<<"$_blk_mtmerge" \
-	|| note "src/mtmerge.cpp 不在 mtmerge 的 add_executable 里（陈旧判据排除它的依据没了）"
 grep -q 'src/main\.cpp' <<<"$_blk_mybot" \
 	|| note "src/main.cpp 不在 mybot 的 add_executable 里（陈旧判据排除它的依据没了）"
 for _owned in "$_blk_core" "$_blk_tests"; do
-	grep -qE 'src/(mtmerge|main)\.cpp' <<<"$_owned" \
-		&& note "src/mtmerge.cpp 或 src/main.cpp 进了 MYBOT_CORE_SOURCES / mybot_tests 清单——它们已成为这两个产物的编译期输入，陈旧判据再排除就是漏判真陈旧"
+	grep -qE 'src/main\.cpp' <<<"$_owned" \
+		&& note "src/main.cpp 进了 MYBOT_CORE_SOURCES / mybot_tests 清单——它已成为这两个产物的编译期输入，陈旧判据再排除就是漏判真陈旧"
 done
 unset _owned
 grep -q 'harness_selftest\.cpp' <<<"$_blk_tests" \
 	&& note "test/cpp/harness_selftest.cpp 进了 mybot_tests 清单——它已成为 mybot_tests 的编译期输入，陈旧判据再排除就是漏判真陈旧"
 _excl="$(grep -o "not -path '[^']*'" test/run_all.sh | sed "s/not -path '//; s/'\$//" | sort -u | tr '\n' ' ')"
-[ "$_excl" = "src/main.cpp src/mtmerge.cpp test/cpp/harness_selftest.cpp " ] \
+[ "$_excl" = "src/main.cpp test/cpp/harness_selftest.cpp " ] \
 	|| note "陈旧判据的排除名单变了（实际：${_excl:-抽不到}）——归属若真变了，请同步 run_all.sh 的注释与本段"
 #    名单是**集合**还不够：同一条排除要在几个分支里各写一次是有讲究的
-#    （src/mtmerge.cpp 对 mybot 与 mybot_tests 都要排，src/main.cpp 只对 mybot_tests 排
-#    ——它对 mybot 恰恰是入口源，排了就漏判真陈旧）。故再按**出现次数**钉一遍，
-#    摘掉一处副本或挪错分支都红（只用 sort -u 的话，摘掉两处副本里的一处不报）。
-for _e in 'src/main.cpp:1' 'src/mtmerge.cpp:2' 'test/cpp/harness_selftest.cpp:1'; do
+#    （src/main.cpp 对 mybot_tests 排——它对 mybot 恰恰是入口源，排了就漏判真陈旧）。
+#    故再按**出现次数**钉一遍，摘掉一处副本或挪错分支都红（只用 sort -u 的话，
+#    摘掉两处副本里的一处不报）。
+for _e in 'src/main.cpp:1' 'test/cpp/harness_selftest.cpp:1'; do
 	_p="${_e%:*}"
 	_n="$(grep -o "not -path '$_p'" test/run_all.sh | grep -c .)"
 	[ "$_n" -eq "${_e##*:}" ] \
 		|| note "陈旧判据里 -not -path '$_p' 出现 $_n 次（应 ${_e##*:} 次）——排错了分支：多排 = 漏判真陈旧，少排 = 门恒红"
 done
-unset _p _n _e _excl _blk_core _blk_mybot _blk_tests _blk_mtmerge
+unset _p _n _e _excl _blk_core _blk_mybot _blk_tests
 #    另一类可信度：**空匹配防线（C8）真的会红**。run_all.sh 末尾那条
 #    `pass + fail == 0 → exit 1` 只在「每个分段都受过滤器管辖」时才成立。
 #    2026-09-21 AG-5 后加的 harness-selftest 段无条件跑完记 1 通过，于是

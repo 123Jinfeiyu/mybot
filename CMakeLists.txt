@@ -169,7 +169,7 @@ if(MYBOT_WERROR)
 endif()
 target_include_directories(mybot_warnings INTERFACE src ${LUAJIT_INCLUDE_DIRS})
 
-# Lua 运行时链接（仅 mybot / mybot_tests；mtmerge 是纯离线矩阵工具）
+# Lua 运行时链接（仅 mybot / mybot_tests）
 add_library(mybot_common INTERFACE)
 target_link_libraries(mybot_common INTERFACE
   mybot_warnings
@@ -183,19 +183,6 @@ add_executable(mybot
   src/main.cpp
   ${MYBOT_CORE_SOURCES}
 )
-
-# mtmerge：.mt 动作脚本合成器（离线编译目标，不依赖 LuaJIT 运行时）。
-# N-11：矩阵解析入口（mt::readMatrix）下沉 matrix 层后，它只需
-# matrix/sqlparse 一层 + actionsource 的头文件常量，不再链接整份 core。
-# F1/N-30：归并核心抽到 mtmerge_core（与 mybot_tests 共用，白盒单测可覆盖）。
-add_executable(mtmerge
-  src/mtmerge.cpp
-  src/mtmerge_core.cpp
-  src/matrix.cpp
-  src/expr.cpp
-  src/sqlparse.cpp
-)
-target_link_libraries(mtmerge PRIVATE mybot_warnings)
 
 # README 声称的零告警基线由此处强制执行（此前构建未启用任何告警标志，
 # 基线只能靠人工手工传标志核查）。不加 -Werror：避免在未测试的编译器版本上直接构建失败。

@@ -104,129 +104,8 @@ run_parse_cases() {
 	done
 }
 
-run_one_mtmerge() {
-	local name="$1" want_rc="$2" expects="$3"; shift 3
-	echo "----- $name (mtmerge) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		if [ -z "$mtmerge_reported" ]; then
-			mtmerge_reported=1
-			artifact_missing "mtmerge 合成器" "$mtmerge_cases_n 条用例" "$mtmerge_bin" "$mtmerge_explicit"
-		fi
-		return 2
-	fi
-	local out rc ok=true e
-	out="$("$@" 2>&1)"
-	rc=$?
-	echo "$out"
-	[ "$rc" -ne "$want_rc" ] && ok=false
-	local IFS='|'
-	for e in $expects; do
-		echo "$out" | grep -qF -- "$e" || ok=false
-	done
-	if $ok; then
-		record_pass
-	else
-		record_fail "$name(mtmerge)"
-	fi
-}
-
-# mtmerge 段夹具：创建 .tmp/mtm/ 下的 .mt 与 .sql 文件，供 run_one_mtmerge 调用。
-# 夹具与 run_all.sh 的调用点紧耦合（文件名由测试用例决定），故与 runner 同文件。
-setup_mtmerge_fixtures() {
-	mkdir -p .tmp/mtm
-	cat > .tmp/mtm/a.mt <<'MTEOF'
-@Alias
-name alias;
-  A  angle;
-@
-
-@Vars
-name value;
-  K  1;
-@
-
-@Action
-s1.A;
-  45;
-@
-MTEOF
-	cat > .tmp/mtm/b.mt <<'MTEOF'
-@Alias
-name alias;
-  B  delay;
-@
-
-@Vars
-name value;
-  L  2;
-@
-
-@Action
-spk.B;
-  200;
-@
-MTEOF
-	cat > .tmp/mtm/dup_alias.mt <<'MTEOF'
-@Alias
-name alias;
-  A  other;
-@
-
-@Action
-s2.A;
-  10;
-@
-MTEOF
-	cat > .tmp/mtm/dup_vars.mt <<'MTEOF'
-@Vars
-name value;
-  K  3;
-@
-
-@Action
-s2.K;
-  10;
-@
-MTEOF
-	cat > .tmp/mtm/multiblock.mt <<'MTEOF'
-@Alias
-name alias;
-  C  freq;
-@
-
-@Alias
-name alias;
-  D  speed;
-@
-
-@Action
-s3.C;
-  1;
-@
-MTEOF
-	cat > .tmp/mtm/robot.sql <<'SQLEOF'
-CREATE TABLE dummy (
-	name String
-);
-INSERT INTO dummy (name) VALUES ('dummy-0');
-
-CREATE TABLE Servo (
-	name       String,
-	max        String,
-	min        String,
-	offset     String,
-	controller String,
-	channel    String
-);
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s1', '90', '-', '0', 'dummy-0', '6');
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s2', '90', '-', '0', '-', '5');
-
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('spk');
-SQLEOF
-}
+# mtmerge 离线合成器已移除（2026-10-10）：相关 runner 与 fixture 函数已不再使用。
+# 运行端 @Include 展开的测试由 test/run_all.sh 的 include 段覆盖。
 
 
 # F3-5 余部①：原 run_include_observation 拆成按用例调用的 runner——
@@ -265,22 +144,7 @@ run_include_case() {
 	fi
 }
 
-run_one_mtmerge_phase() {
-	echo "----- mtmerge-phase (相位语义) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		artifact_missing "mtmerge 相位回归" "该段（scripts/mtmerge_e2e.sh）" "$mtmerge_bin" "$mtmerge_explicit"
-		return 2
-	fi
-	local out rc
-	out="$(MTMERGE="$mtmerge_bin" BOT="$bin" timeout 60 bash scripts/mtmerge_e2e.sh 2>&1)"
-	rc=$?
-	echo "$out"
-	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mtmerge 端到端测试通过"; then
-		record_fail "mtmerge-phase(相位语义)"
-	else
-		record_pass
-	fi
-}
+# mtmerge 离线合成器已移除（2026-10-10）：run_one_mtmerge_phase 不再使用。
 
 # F3-5 余部①：三条观察面抽成同型 runner，条数由 count_calls 数调用点推导。
 run_one_trig_obs() {
