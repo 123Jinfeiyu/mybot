@@ -15,6 +15,9 @@
      * 只认「以已知顶层目录开头 / 带已知扩展名 / 不含通配与占位符」的跨度，
        否则 `set_word/get_sword` 这类函数名清单会被当成路径，全是假差异。
      * 历史与占位引用在 KNOWN_ABSENT 里逐条登记并写明理由（见该表）。
+     * 环境态路径（build/ 生成物、用户本地的 mybot.llm.json）跳过不断言：
+       它们的存在与否看机器，登记豁免也不行——文件存在时豁免表反而判过期
+       （见 ENV_STATE_* 的注释）。
   2. 驱动清单双向对齐：docs/drivers.md 各节表格里点名的模块集合，与
      `ls modules/*.lua` **双向**相等——漏登记一个新驱动、或留着一个已删驱动都判失败。
   3. 计数口径自洽：drivers.md 开头「计数口径」那行的分项（器件 / 总线 / 框架工具、
@@ -72,6 +75,21 @@ KNOWN_EXTENSIONS = (
 )
 # 通配符、占位符、shell 展开、空白：出现即不是「一个具体路径」
 PLACEHOLDER_RE = re.compile(r"[*<>{}$\s]|\.\.\.")
+
+# 环境态路径：存在与否取决于本机构建/用户配置，不是仓库事实——对它们做存在性
+# 断言只会产出「看机器脸色」的门（新检出没有；构建过、或按 README 快速开始
+# cp 过模板就有）。登记进 KNOWN_ABSENT 也救不了：文件存在时该表「过期即删」
+# 判据反而判红——CI 的 gate:release 恰带着 build:release 的 build/ 产物跑本
+# 脚本（needs + artifacts: [build]）。build/、build-*/ 与 DELETED_SCAN_PRUNE
+# 的剪枝约定同源（生成目录）；mybot.llm.json 被 .gitignore 挡住、由用户从
+# mybot.llm.json.example 复制（裸名与 ./ 前缀两种写法都认，example 不受影响）。
+ENV_STATE_EXACT = frozenset(("mybot.llm.json", "./mybot.llm.json"))
+ENV_STATE_PREFIXES = ("build/", "build-")
+
+
+def env_state(ref):
+    """ref 是否环境态路径（生成物/用户本地配置）：是则不做存在性断言。"""
+    return ref in ENV_STATE_EXACT or ref.startswith(ENV_STATE_PREFIXES)
 
 LINK_RE = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
 CODE_RE = re.compile(r"`([^`\n]+)`")
@@ -169,11 +187,13 @@ def path_candidates(doc):
     out = set()
     for m in LINK_RE.finditer(text):
         target = m.group(1)
-        if not target.startswith(URL_PREFIXES):
+        if not target.startswith(URL_PREFIXES) and not env_state(target):
             out.add(("link", target))
     for m in CODE_RE.finditer(text):
         ref = m.group(1)
         if not ref.startswith(TOP_PREFIXES):
+            continue
+        if env_state(ref):
             continue
         if PLACEHOLDER_RE.search(ref):
             continue

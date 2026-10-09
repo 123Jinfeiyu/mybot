@@ -99,6 +99,9 @@ C++ 后端不参与模型请求。
 下文「流式与阻塞的如实偏差」。
 
 REPL 内置命令：`/hardware` 打印硬件清单，`/scripts` 打印动作脚本清单，
+`/sql <语句>` 直接执行结构 SQL——只读语句（`SELECT` / `SHOW TABLES`）路由到
+`query_sql`、含变更语句（`CREATE` / `INSERT` / `DELETE` / `DROP` / `UPDATE`）
+路由到 `apply_sql`（仍受 `--agent-hot-sql` 门控；方言与安全边界见 [dsl.md](dsl.md)），
 `/status` 打印**会话状态一览**（历史大小与任务块数、是否裁过、任务内预算用量、
 本会话模型/工具轮数与失败数、最近一次 token 用量、超时与轮次上限、审计落点与
 session id、硬件变量数；只读，**不触发任何模型调用**——SAN-10，2026-09-22），

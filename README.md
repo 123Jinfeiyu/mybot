@@ -85,14 +85,24 @@ export BOT4CJ_LLM_MODEL=gpt-4o
 
 ```text
 mybot[relay-test|llm0|2hw]> 让继电器动作一次
-已执行动作脚本 relay-test.mt（42 字节）
+已执行动作脚本 relay-test.mt（293 字节）
 
 mybot[relay-test|llm0|2hw]> /help
 内置命令:
-  /hardware  - 显示硬件清单
-  /scripts   - 显示可用动作脚本清单
+  /hardware  - 显示硬件清单（只读，不触发任何动作）
+  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）
+  /sql <语句> - 执行结构 SQL：SELECT * FROM t [WHERE 列 = 值 [AND ...]] / SHOW TABLES 只读查询运行时矩阵（SHOW TABLES 列出全部表名与数据行数）；
+               CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）；
+               DELETE FROM t [WHERE 列 = 值 [AND ...]] 当场断电摘除匹配行（不可逆）；
+               UPDATE t SET 列 = 值 [, ...] [WHERE ...] 按断电重建改写命中行（删旧件 + 装新件）
+  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）
+  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）
   /help      - 显示此帮助
-  /exit      - 退出
+  /exit      - 退出 agent 模式
+  /quit      - 同 /exit
+直接输入任务描述即可让智能体执行，例如：
+  让机器人站立
+  拍照并描述看到的内容
 
 mybot[relay-test|llm0|2hw]> /exit
 ```
@@ -468,14 +478,14 @@ bash test/run_all.sh agent-all
 mybot[spider1|llm0|14hw]> 让机器人做一个站立动作
 [工具] run_action_script
   script_name: std.mt
-[结果] 已执行动作脚本 std.mt（126 字节）
+[结果] 已执行动作脚本 std.mt（231 字节）
 
 机器人已完成站立动作，14个舵机已就位。
 
 mybot[spider1|llm0|14hw]> 现在左转
 [工具] run_action_script
   script_name: left-turn.mt
-[结果] 已执行动作脚本 left-turn.mt（204 字节）
+[结果] 已执行动作脚本 left-turn.mt（1025 字节）
 
 已执行左转动作。
 
