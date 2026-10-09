@@ -86,22 +86,89 @@ else
 	(
 		cd "$repo_root/$report_dir" || exit 1
 		# 每个 src/*.cpp 会同时出现在多个 target 的对象目录里（mybot 与
-		# mybot_tests），.gcno 与源码同名。早先脚本只构建 mybot_tests，所以
-		# 「按 .gcno 全扫一遍」恰好只扫到一份；两个 target 都插桩之后，同一源
-		# 文件有 2 份 .gcno——逐个调用时后一次会**覆盖**前一次的 .gcov，且可能
-		# 覆盖成「没有 .gcda」的那一份（实测：报告退化成 0.00%，Data:- 说明
-		# 根本没读到计数数据）。
+		# mybot_tests），.gcno 与源码同名。两个 target 都插桩之后，同一源文件
+		# 有 2 份 .gcno + 2 份 .gcda——逐个调用 gcov 时后一次会**覆盖**前一次的
+		# .gcov（实测：mybot_tests 的 0% 覆盖掉 mybot 的 e2e 覆盖，mcplisten.cpp
+		# 从 28% 退化成 0%）。
+		#
+		# gcov 不会跨 -o 目录累加（旧注释「gcov 会累加」是错的）：每次调用只读
+		# 指定 -o 目录里的 .gcda，写出的 .gcov 覆盖 CWD 的同名文件。正确合并方式
+		# 是每个 target 各跑 gcov 到独立临时目录，再按行累加执行计数合并成一份。
 		#
 		# 两个必须知道的 gcov 行为：
 		#   ① 要喂**完整 .gcno 路径**。只给 -o 目录 + 源码路径时，gcov 会去找
 		#      去掉扩展名的 <base>.gcno，报 "cannot open notes file"。
-		#   ② 同一源文件、多个 .gcda（不同 target 各跑各的）时，gcov 会**累加**
-		#      计数并重写同名 .gcov——这正是我们要的合并。故按 .gcda 逐个调用，
-		#      每个源文件被处理多次、结果自然累积成并集。
+		#   ② 同一源文件、多个 .gcda（不同 target 各跑各的）时，必须分目录输出
+		#      后手动合并——gcov 自身不做跨目录合并。
 		shopt -s nullglob
+		merge_tmp="$(mktemp -d)"
+		# 第一步：每个 target 的 .gcda 各跑 gcov 到独立子目录
+		# 目录结构：CMakeFiles/<target>.dir/src/<file>.gcda —— 取 target.dir 作子目录名
 		for gcda in "$build_abs"/CMakeFiles/*.dir/src/*.gcda; do
-			gcov -b -o "$(dirname "$gcda")" "${gcda%.gcda}.gcno" >/dev/null 2>&1 || true
+			target_dir="$(basename "$(dirname "$(dirname "$gcda")")")"  # e.g. mybot.dir
+			out_sub="$merge_tmp/$target_dir"
+			mkdir -p "$out_sub"
+			(cd "$out_sub" && gcov -b -o "$(dirname "$gcda")" "${gcda%.gcda}.gcno" >/dev/null 2>&1) || true
 		done
+		# 第二步：按源文件名合并各 target 的 .gcov（行计数累加）
+		# .gcov 格式：每行 `COUNT:LINENO:TEXT`，COUNT 是 `-`（不可执行）/`#####`（未执行）/数字
+		# 合并规则：`-` 保持 `-`；`#####`+`#####`=`#####`；数字+任何=求和（##### 当 0）
+		for gcov_file in "$merge_tmp"/*/*.gcov; do
+			[ -f "$gcov_file" ] || continue
+			base="$(basename "$gcov_file")"
+			# 只合并 src/ 的 .gcov（过滤掉 libstdc++ 等系统头）
+			src_line="$(sed -n 's/.*:Source://p' "$gcov_file" | head -1)"
+			case "$src_line" in
+				*/src/*) ;;
+				*) continue ;;
+			esac
+			# 找到所有 target 里同名 .gcov
+			all_for_base=("$merge_tmp"/*/"$base")
+			if [ "${#all_for_base[@]}" -le 1 ]; then
+				cp "$gcov_file" "$base"
+			else
+				# 多文件合并：逐行读取，按 lineno 为键累加计数
+				# header 行（行号 0 或缺失）取第一份的原文
+				awk '
+					BEGIN { FS = ":"; n = 0 }
+					{
+						cnt = $1; lineno = $2; src = ""
+						for (i = 3; i <= NF; i++) src = src (i > 3 ? ":" : "") $i
+						gsub(/^[ \t]+|[ \t]+$/, "", cnt)
+						gsub(/^[ \t]+|[ \t]+$/, "", lineno)
+						ln = lineno + 0
+						# header 行（行号为 0）：只取第一份
+						if (ln == 0) {
+							if (!(0 in header_seen)) { header[++hn] = $0; header_seen[0] = 1 }
+							next
+						}
+						if (!(ln in counts)) {
+							counts[ln] = cnt
+							sources[ln] = src
+							order[++n] = ln
+						} else {
+							old = counts[ln]
+							gsub(/^[ \t]+|[ \t]+$/, "", old)
+							if (old == "-" || cnt == "-") counts[ln] = "-"
+							else if (old == "#####" && cnt == "#####") counts[ln] = "#####"
+							else {
+								vo = (old ~ /^[0-9]+$/) ? old + 0 : 0
+								vn = (cnt ~ /^[0-9]+$/) ? cnt + 0 : 0
+								counts[ln] = (vo + vn)
+							}
+						}
+					}
+					END {
+						for (i = 1; i <= hn; i++) print header[i]
+						for (i = 1; i <= n; i++) {
+							ln = order[i]
+							printf "%8s:%5s:%s\n", counts[ln], ln, sources[ln]
+						}
+					}
+				' "${all_for_base[@]}" > "$base"
+			fi
+		done
+		rm -rf "$merge_tmp"
 		shopt -u nullglob
 	)
 	# 聚合 .gcov：只统计 Source 落在 src/ 的文件（一个 .gcno 会连带生成 libstdc++
