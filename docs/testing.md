@@ -358,7 +358,7 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 | `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 689 通过 / 0 失败 |
 | `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
 | `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过（**运行时数**）/ 0 失败（8 个 TU） |
-| Rust agent | `cd agent && cargo test --release` | 171 passed |
+| Rust agent | `cd agent && cargo test --release` | 182 passed |
 
 除 `sim_tests` 的 387 外，表里每个数字都由 `scripts/check_doc_paths.py` 的第六组
 **从仓库实况派生后比对**（进 `test/run_all_selftest.sh`）——加/删用例而忘了改这张表，

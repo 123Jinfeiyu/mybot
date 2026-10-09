@@ -430,7 +430,7 @@ bash test/run_all.sh agent-all
 - 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
   同文件里另有 5 个 `meta_*` 例句只作被测对象、不进缺省全量跑）、`./sim/build/sim_tests`
   （`sim/` 是独立 CMake 工程，TU 数见上、断言计数见 `docs/testing.md`）、Rust agent
-  `cargo test --release` 171 条
+  `cargo test --release` 182 条
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 
