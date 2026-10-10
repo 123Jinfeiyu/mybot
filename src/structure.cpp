@@ -157,14 +157,51 @@ struct ReadSqlState {
 		if (mutations != nullptr) { ++mutations->insertedRows[target]; }
 	}
 
+	/* WHERE → 等值条件列表（DELETE 与 UPDATE 共用的同一段转化，单点）：交给
+	 * mt::matchAll 做当前坐标匹配；列不存在/漏写的报错在 matchAll。 */
+	static std::vector<std::pair<std::string, std::string>> condsOf(
+			const sql4cj::WhereClause& where) {
+		std::vector<std::pair<std::string, std::string>> conds;
+		conds.reserve(where.conds.size());
+		for (const auto& c : where.conds) { conds.emplace_back(c.column, c.value); }
+		return conds;
+	}
+
+	/* ---- 批次守门文案单点（三族，2026-10-10 收敛）----
+	 * 「表已被 DROP / 被 UPDATE 改写 / 被行级触碰」的拒绝文案各自在 2-3 个
+	 * 事件里逐字同构，此前各写一份、只在语句名前缀与指路动词上不同——漂移
+	 * 一处即三种语句报错不一致。stmt = 语句名前缀（"INSERT INTO" /
+	 * "DELETE FROM" / "UPDATE" / "DROP TABLE"），verb = 指路动词（"INSERT" /
+	 * "DELETE" / "UPDATE" / "DROP"）。onCreate 的 DROP 文案（带 recreate
+	 * 指路）与 onDrop 的「dropped more than once」语义不同，留在原处。 */
+	[[noreturn]] void rejectDroppedHere(const std::string& stmt, const std::string& target) {
+		throw IllegalArgumentException(concatMsg(
+			stmt, " '", target, "': the table was dropped earlier in this batch"));
+	}
+	[[noreturn]] void rejectUpdatedHere(const std::string& stmt, const std::string& verb,
+			const std::string& target) {
+		throw IllegalArgumentException(concatMsg(
+			stmt, " '", target, "': the table was rewritten by UPDATE earlier in this batch;"
+			" run ", verb,
+			" in a separate statement batch"));
+	}
+	[[noreturn]] void rejectTouchedHere(const std::string& stmt, const std::string& verb,
+			const std::string& target) {
+		throw IllegalArgumentException(concatMsg(
+			stmt, " '", target, "': the table was already modified by INSERT/DELETE/UPDATE in this"
+			" batch; run ",
+			verb, " in a separate statement batch"));
+	}
+
 	/* ---- CREATE TABLE ---- */
 	void onCreate(const sql4cj::Event& eve) {
 		/* R-4：SQL 事件里的 token 本就完整，直接灌入构建器，
 		 * 不再逐字符 addRune 重放（仓颉流 API 的残留）。 */
 		if (droppedHere.count(eve.create.tableName)) {
-			throw IllegalArgumentException("CREATE TABLE '" + eve.create.tableName
-				+ "': the table was dropped earlier in this batch; recreate it in a"
-				" separate statement batch (DROP is physically irreversible)");
+			throw IllegalArgumentException(concatMsg(
+				"CREATE TABLE '", eve.create.tableName,
+				"': the table was dropped earlier in this batch; recreate it in a"
+				" separate statement batch (DROP is physically irreversible)"));
 		}
 		mt::MatrixBuilder b;
 		b.name(eve.create.tableName);
@@ -178,24 +215,21 @@ struct ReadSqlState {
 	void onInsert(const sql4cj::Event& eve) {
 		if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
 		if (droppedHere.count(eve.insert.targetTabName)) {
-			throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
-				+ "': the table was dropped earlier in this batch");
+			rejectDroppedHere("INSERT INTO", eve.insert.targetTabName);
 		}
 		/* 双向独占（updatedHere 注释）：改后行追加在尾部、被改写的原始行已从
 		 * 中间消失，之后再 INSERT 同表会让 applySql 的「新增行 = 尾部连续块」
 		 * 区间算式失真。拆成两批即可。 */
 		if (updatedHere.count(eve.insert.targetTabName)) {
-			throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
-				+ "': the table was rewritten by UPDATE earlier in this batch;"
-				" run INSERT in a separate statement batch");
+			rejectUpdatedHere("INSERT INTO", "INSERT", eve.insert.targetTabName);
 		}
 		/* INSERT 目标表必须已创建：按名定位，拼错/未定义即解析期报错
 		 * （对照 robots/test/insert_typo.sql 的负值契约；N-10：查找
 		 * 收敛到 mt::findByName 单点） */
 		mt::MatrixObject* root = mt::findByName(out, eve.insert.targetTabName);
 		if (root == nullptr) {
-			throw IllegalArgumentException(
-				"INSERT INTO '" + eve.insert.targetTabName + "': table is not defined");
+			throw IllegalArgumentException(concatMsg(
+				"INSERT INTO '", eve.insert.targetTabName, "': table is not defined"));
 		}
 		/* C3 防线（2026-09-20 审计）：INSERT 的值必须按**列名**落位到建表
 		 * 声明序，不能按 INSERT 自带的列序顺序 append。
@@ -216,21 +250,21 @@ struct ReadSqlState {
 			for (const auto& p : row) {
 				const std::int64_t idx = root->indexOfCol(0, p.columnName);
 				if (idx < 0) {
-					throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
-						+ "': no such column '" + p.columnName + "'");
+					throw IllegalArgumentException(concatMsg(
+						"INSERT INTO '", eve.insert.targetTabName, "': no such column '", p.columnName, "'"));
 				}
 				if (filled[static_cast<std::size_t>(idx)] != 0) {
-					throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
-						+ "': column '" + p.columnName + "' listed twice");
+					throw IllegalArgumentException(concatMsg(
+						"INSERT INTO '", eve.insert.targetTabName, "': column '", p.columnName, "' listed twice"));
 				}
 				values[static_cast<std::size_t>(idx)] = p.value;
 				filled[static_cast<std::size_t>(idx)] = 1;
 			}
 			for (std::int64_t j = 0; j < ncols; ++j) {
 				if (filled[static_cast<std::size_t>(j)] == 0) {
-					throw IllegalArgumentException("INSERT INTO '" + eve.insert.targetTabName
-						+ "': missing value for column '" + (*root)(0, j)
-						+ "' (every column must be given a value; use '-' to inherit)");
+					throw IllegalArgumentException(concatMsg(
+						"INSERT INTO '", eve.insert.targetTabName, "': missing value for column '", (*root)(0, j),
+						"' (every column must be given a value; use '-' to inherit)"));
 				}
 			}
 			appendRowTracked(root, eve.insert.targetTabName, std::move(values));
@@ -246,36 +280,31 @@ struct ReadSqlState {
 	void onDelete(const sql4cj::Event& eve) {
 		/* 启动期（结构脚本）一律关闭：机器人尚未上电，没有可变的结构。 */
 		if (!allowDelete) {
-			throw IllegalArgumentException("DELETE FROM '" + eve.del.targetTabName
-				+ "': DELETE is a live-structure statement and cannot appear in a"
+			throw IllegalArgumentException(concatMsg(
+				"DELETE FROM '", eve.del.targetTabName,
+				"': DELETE is a live-structure statement and cannot appear in a"
 				" structure script (the robot is not powered on yet). Edit the"
-				" script, or run DELETE on a live robot via /sql or apply_sql.");
+				" script, or run DELETE on a live robot via /sql or apply_sql."));
 		}
 		if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
 		const std::string& target = eve.del.targetTabName;
 		if (droppedHere.count(target)) {
-			throw IllegalArgumentException("DELETE FROM '" + target
-				+ "': the table was dropped earlier in this batch");
+			rejectDroppedHere("DELETE FROM", target);
 		}
 		/* 双向独占（同 INSERT 分支的 updatedHere 守门，理由见其注释） */
 		if (updatedHere.count(target)) {
-			throw IllegalArgumentException("DELETE FROM '" + target
-				+ "': the table was rewritten by UPDATE earlier in this batch;"
-				" run DELETE in a separate statement batch");
+			rejectUpdatedHere("DELETE FROM", "DELETE", target);
 		}
 		mt::MatrixObject* root = mt::findByName(out, target);
 		if (root == nullptr) {
-			throw IllegalArgumentException(
-				"DELETE FROM '" + target + "': table is not defined");
+			throw IllegalArgumentException(concatMsg(
+				"DELETE FROM '", target, "': table is not defined"));
 		}
 		/* 无条件 = 全部数据行（与 SQL 语义一致：DELETE FROM t 删空该表） */
 		std::vector<std::size_t> hits;
 		if (eve.del.where) {
-			std::vector<std::pair<std::string, std::string>> conds;
-			conds.reserve(eve.del.where->conds.size());
-			for (const auto& c : eve.del.where->conds) { conds.emplace_back(c.column, c.value); }
 			/* 列不存在/漏写的报错沿用 requireCol 与谓词解析的既有文案 */
-			hits = mt::matchAll(*root, conds);
+			hits = mt::matchAll(*root, condsOf(*eve.del.where));
 		} else {
 			for (std::size_t r = 1; r < root->rows(); ++r) { hits.push_back(r); }
 		}
@@ -287,9 +316,9 @@ struct ReadSqlState {
 		 * 「本批次没有任何变更」判据混淆成因（但即便如此，下面的变更计数
 		 * 仍以防万一保留）。 */
 		if (hits.empty()) {
-			throw IllegalArgumentException("DELETE FROM '" + target
-				+ "': no row matches, nothing was deleted"
-				+ (eve.del.where ? " (check the WHERE values)" : " (the table has no data row)"));
+			throw IllegalArgumentException(concatMsg(
+				"DELETE FROM '", target, "': no row matches, nothing was deleted",
+				(eve.del.where ? " (check the WHERE values)" : " (the table has no data row)")));
 		}
 		removeRowsOf(root, target, hits);
 		if (!createdHere.count(target)) { touchedHere.insert(target); }
@@ -299,24 +328,23 @@ struct ReadSqlState {
 	void onDrop(const sql4cj::Event& eve) {
 		/* 与 DELETE 同为带电变更：结构脚本里出现同样拒绝（机器人尚未上电）。 */
 		if (!allowDelete) {
-			throw IllegalArgumentException("DROP TABLE '" + eve.drop.targetTabName
-				+ "': DROP is a live-structure statement and cannot appear in a"
+			throw IllegalArgumentException(concatMsg(
+				"DROP TABLE '", eve.drop.targetTabName,
+				"': DROP is a live-structure statement and cannot appear in a"
 				" structure script (the robot is not powered on yet). Edit the"
-				" script, or run DROP on a live robot via /sql or apply_sql.");
+				" script, or run DROP on a live robot via /sql or apply_sql."));
 		}
 		const std::string& target = eve.drop.targetTabName;
 		if (droppedHere.count(target)) {
-			throw IllegalArgumentException("DROP TABLE '" + target
-				+ "': the table is dropped more than once in this batch");
+			throw IllegalArgumentException(concatMsg(
+				"DROP TABLE '", target, "': the table is dropped more than once in this batch"));
 		}
 		/* 本批次已对这张**既存**表做过 INSERT/DELETE/UPDATE → 拒绝 DROP：
 		 * applySql 靠 insertedRows 划「新增行区间（尾部连续块）」，而行级改动
 		 * 之后该区间算法不再成立（被删掉的新增行不在尾部连续块里）；且「先加行
 		 * 再整表撤下」本就没有意义。拆成两批（先改行、再 DROP）即可。 */
 		if (touchedHere.count(target)) {
-			throw IllegalArgumentException("DROP TABLE '" + target
-				+ "': the table was already modified by INSERT/DELETE/UPDATE in this"
-				" batch; run DROP in a separate statement batch");
+			rejectTouchedHere("DROP TABLE", "DROP", target);
 		}
 		if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
 
@@ -333,7 +361,8 @@ struct ReadSqlState {
 		/* 无条件整表撤下（无 WHERE，见 DropTableEvent 注释）。 */
 		mt::MatrixObject* root = mt::findByName(out, target);
 		if (root == nullptr) {
-			throw IllegalArgumentException("DROP TABLE '" + target + "': table is not defined");
+			throw IllegalArgumentException(concatMsg(
+				"DROP TABLE '", target, "': table is not defined"));
 		}
 
 		if (createdHere.count(target)) {
@@ -378,37 +407,36 @@ struct ReadSqlState {
 		 * 调用方（applySql）据 Mutations.updatedRows 切换先删后建执行序。 */
 		/* 启动期（结构脚本）一律关闭：与 DELETE/DROP 同判据（机器人尚未上电） */
 		if (!allowDelete) {
-			throw IllegalArgumentException("UPDATE '" + eve.update.targetTabName
-				+ "': UPDATE is a live-structure statement and cannot appear in a"
+			throw IllegalArgumentException(concatMsg(
+				"UPDATE '", eve.update.targetTabName,
+				"': UPDATE is a live-structure statement and cannot appear in a"
 				" structure script (the robot is not powered on yet). Edit the"
-				" script, or run UPDATE on a live robot via /sql or apply_sql.");
+				" script, or run UPDATE on a live robot via /sql or apply_sql."));
 		}
 		if (out.empty()) { throw IllegalArgumentException("No table created yet."); }
 		const std::string& target = eve.update.targetTabName;
 		if (droppedHere.count(target)) {
-			throw IllegalArgumentException("UPDATE '" + target
-				+ "': the table was dropped earlier in this batch");
+			rejectDroppedHere("UPDATE", target);
 		}
 		/* 本批次新建的表：直接拒——它的行从未装配、从未上电，「改写」无从谈起，
 		 * 且分解出的「擦原行 + 尾部追加」会打乱 applySql 对新表影子的
 		 * popRows 对账（那条路径假设删除只落在尾部追加块上）。想要什么
 		 * 行，直接把 INSERT 写成想要的样子即可。 */
 		if (createdHere.count(target)) {
-			throw IllegalArgumentException("UPDATE '" + target
-				+ "': the table was created earlier in this batch; write the"
-				" INSERT you actually want, or run UPDATE in the next batch");
+			throw IllegalArgumentException(concatMsg(
+				"UPDATE '", target,
+				"': the table was created earlier in this batch; write the"
+				" INSERT you actually want, or run UPDATE in the next batch"));
 		}
 		/* 批内独占（前置半边，见 touchedHere 注释）：本批次已对该表做过任何
 		 * 行级改动 → 拒绝。拆成两批即可。 */
 		if (touchedHere.count(target)) {
-			throw IllegalArgumentException("UPDATE '" + target
-				+ "': the table was already modified by INSERT/DELETE/UPDATE in"
-				" this batch; run UPDATE in a separate statement batch");
+			rejectTouchedHere("UPDATE", "UPDATE", target);
 		}
 		mt::MatrixObject* root = mt::findByName(out, target);
 		if (root == nullptr) {
-			throw IllegalArgumentException(
-				"UPDATE '" + target + "': table is not defined");
+			throw IllegalArgumentException(concatMsg(
+				"UPDATE '", target, "': table is not defined"));
 		}
 		/* 赋值列解析到列下标（对照表结构）：未知列/重复列报错——判据与文案
 		 * 镜像 INSERT 的 C3 防线（列是结构事实，读的人要能一眼定位）。 */
@@ -417,13 +445,13 @@ struct ReadSqlState {
 		for (const auto& a : eve.update.assignments) {
 			const std::int64_t idx = root->indexOfCol(0, a.columnName);
 			if (idx < 0) {
-				throw IllegalArgumentException("UPDATE '" + target
-					+ "': no such column '" + a.columnName + "'");
+				throw IllegalArgumentException(concatMsg(
+					"UPDATE '", target, "': no such column '", a.columnName, "'"));
 			}
 			for (std::size_t k : setIdx) {
 				if (k == static_cast<std::size_t>(idx)) {
-					throw IllegalArgumentException("UPDATE '" + target
-						+ "': column '" + a.columnName + "' listed twice");
+					throw IllegalArgumentException(concatMsg(
+						"UPDATE '", target, "': column '", a.columnName, "' listed twice"));
 				}
 			}
 			setIdx.push_back(static_cast<std::size_t>(idx));
@@ -431,12 +459,7 @@ struct ReadSqlState {
 		/* 命中行（WHERE 等值 AND 过滤；无条件 = 全部数据行，与 DELETE 同口径） */
 		std::vector<std::size_t> hits;
 		if (eve.update.where) {
-			std::vector<std::pair<std::string, std::string>> conds;
-			conds.reserve(eve.update.where->conds.size());
-			for (const auto& c : eve.update.where->conds) {
-				conds.emplace_back(c.column, c.value);
-			}
-			hits = mt::matchAll(*root, conds);
+			hits = mt::matchAll(*root, condsOf(*eve.update.where));
 		} else {
 			hits.reserve(root->rows() > 1 ? root->rows() - 1 : 0);
 			for (std::size_t r = 1; r < root->rows(); ++r) { hits.push_back(r); }
@@ -445,10 +468,10 @@ struct ReadSqlState {
 		 * 断电重建命中行，拿到「已生效」却什么都没发生时，操作者无从判断是
 		 * 条件写错了还是器件本就不在。 */
 		if (hits.empty()) {
-			throw IllegalArgumentException("UPDATE '" + target
-				+ "': no row matches, nothing was updated"
-				+ (eve.update.where ? " (check the WHERE values)"
-						   : " (the table has no data row)"));
+			throw IllegalArgumentException(concatMsg(
+				"UPDATE '", target, "': no row matches, nothing was updated",
+				(eve.update.where ? " (check the WHERE values)"
+						   : " (the table has no data row)")));
 		}
 		/* 先物化改后行，再擦原行（顺序是死的：擦行会让后续行号前移）。
 		 * 取值用 inherited()（'-' 继承解析后的显示值）而不是原格子——改后行
