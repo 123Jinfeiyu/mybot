@@ -43,6 +43,13 @@ std::string requireString(const Json& args, const std::string& key);
 AgentToolResult toolFailure(const std::string& heading, const std::string& why,
 		const std::string& error = "");
 
+/* G1 同单点的「遮蔽 + 不谎报」收口（AG-4）：maskSecretsInText 检测到替换时
+ * 追加提示，让模型意识到所见非原文。what/source 是文案里的名词（如
+ * "输出"/"命令"、"内容"/"文件"）——两条通道（run_command / read_file）的
+ * 提示此前各写一份，只有名词不同，收单点防漂移。未检测到替换时原样返回。 */
+std::string maskedForModel(const std::string& text, const std::string& what,
+		const std::string& source);
+
 /* 动作脚本读取（M2/B2-3 单点）：底层 FD 骨架是 util::readFdNoFollowLimited，
  * 中文报错文案被 grep 守门锚定；agentview.cpp（describeActionScripts 取首注释）
  * 与 agenttools.cpp（run_action_script 读脚本）两侧共用。 */
