@@ -314,11 +314,17 @@ fn wide_perms_warning(path: &str) -> String {
 
 /// FNV-1a 64 位 → 16 位小写 hex（算法标准参数）。
 pub fn fingerprint64(s: &str) -> String {
+    fingerprint64_bytes(s.as_bytes())
+}
+
+/// FNV-1a 64 位字节版（算法参数与 [`fingerprint64`] 相同，输入是任意字节——
+/// 图片二进制不保证是合法 UTF-8，不能走 str 版；record.rs 的图片指纹用它）。
+pub fn fingerprint64_bytes(b: &[u8]) -> String {
     const FNV_PRIME: u64 = 1_099_511_628_211;
     const FNV_BASIS: u64 = 14_695_981_039_346_656_037;
     let mut h = FNV_BASIS;
-    for b in s.bytes() {
-        h ^= b as u64;
+    for x in b {
+        h ^= *x as u64;
         h = h.wrapping_mul(FNV_PRIME);
     }
     format!("{h:016x}")

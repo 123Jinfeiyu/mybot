@@ -67,7 +67,7 @@ use rig_agent::completion::message::{
 use rig_agent::completion::{AssistantContent, Message};
 use serde_json::{json, Map, Value};
 
-use crate::audit::{audit_timestamp, fingerprint64, sanitize_endpoint};
+use crate::audit::{audit_timestamp, fingerprint64, fingerprint64_bytes, sanitize_endpoint};
 use crate::hook::CallRecord;
 use crate::out::errln;
 use crate::session::reasoning_text;
@@ -531,7 +531,7 @@ impl RecordStore {
                 });
             }
         };
-        let fp = fp64_bytes(&raw);
+        let fp = fingerprint64_bytes(&raw);
         let bytes = raw.len() as u64;
         // 去重命中：同一画面（指纹相同）不重复落盘，引用已有文件
         if let Some(file) = self.index.get(&fp) {
@@ -638,19 +638,6 @@ fn media_ext(m: &ImageMediaType) -> &'static str {
         ImageMediaType::HEIF => "heif",
         ImageMediaType::SVG => "svg",
     }
-}
-
-/// FNV-1a 64 位（字节版；算法参数与 audit::fingerprint64 相同，输入是任意字节——
-/// 图片二进制不保证是合法 UTF-8，不能走 str 版）。
-fn fp64_bytes(b: &[u8]) -> String {
-    const FNV_PRIME: u64 = 1_099_511_628_211;
-    const FNV_BASIS: u64 = 14_695_981_039_346_656_037;
-    let mut h = FNV_BASIS;
-    for x in b {
-        h ^= *x as u64;
-        h = h.wrapping_mul(FNV_PRIME);
-    }
-    format!("{h:016x}")
 }
 
 /// O_EXCL 占一个段目录；同名退 `-<pid>`、`-<pid>-<n>`（同 session_store::create_segment
@@ -908,7 +895,7 @@ mod tests {
         assert_eq!(first["stored"], true);
         assert_eq!(first["bytes"], 5);
         assert_eq!(first["mime"], "image/png");
-        assert_eq!(first["fp"], fp64_bytes(b"hello"));
+        assert_eq!(first["fp"], fingerprint64_bytes(b"hello"));
         let file = first["file"].as_str().unwrap();
         assert!(file.starts_with("images/0000-") && file.ends_with(".png"), "{file}");
         assert_eq!(img_parts[1]["dedup"], true, "重复图引用已有文件");
