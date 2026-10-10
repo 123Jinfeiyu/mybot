@@ -386,7 +386,7 @@ mybot/
 │   ├── Speaker.lua      # 音频输出（ALSA）
 │   ├── Sim.lua          # 仿真器客户端（三条 AF_UNIX socket）
 │   └── lib/             # HAL、virtbus、JSON、滤波器、asound 等共享库
-├── robots/        # 结构脚本（9个机器人定义）
+├── robots/        # 结构脚本（10个机器人定义）
 │   ├── spider1.sql      # 14路舵机蜘蛛
 │   ├── relay-test.sql   # 虚拟继电器（无硬件）
 │   └── test.sql         # 测试夹具
