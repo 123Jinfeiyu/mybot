@@ -62,7 +62,7 @@ use std::path::PathBuf;
 
 use base64::Engine as _;
 use rig_agent::completion::message::{
-    DocumentSourceKind, ImageMediaType, MimeType, ReasoningContent, ToolResultContent, UserContent,
+    DocumentSourceKind, ImageMediaType, MimeType, ToolResultContent, UserContent,
 };
 use rig_agent::completion::{AssistantContent, Message};
 use serde_json::{json, Map, Value};
@@ -70,6 +70,7 @@ use serde_json::{json, Map, Value};
 use crate::audit::{audit_timestamp, fingerprint64, sanitize_endpoint};
 use crate::hook::CallRecord;
 use crate::out::errln;
+use crate::session::reasoning_text;
 use crate::session_store::{ensure_dir_0700, robot_dir_name, segment_name};
 
 /// 录制格式版本（meta 的 `version`；升格格式时递增，导出器按版本分派）。
@@ -625,16 +626,6 @@ fn store_dir_name(store: &RecordStore) -> String {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default()
-}
-
-fn reasoning_text(c: &ReasoningContent) -> Option<String> {
-    // 与 session.rs 的 reasoning_text 同判据（不可还原的加密块不落）
-    match c {
-        ReasoningContent::Text { text, .. } => Some(text.clone()),
-        ReasoningContent::Summary(s) => Some(s.clone()),
-        ReasoningContent::Redacted { data } => Some(data.clone()),
-        ReasoningContent::Encrypted(_) => None,
-    }
 }
 
 fn media_ext(m: &ImageMediaType) -> &'static str {

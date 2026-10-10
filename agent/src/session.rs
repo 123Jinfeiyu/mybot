@@ -189,7 +189,9 @@ fn encode_assistant(id: Option<&str>, content: &[AssistantContent]) -> Value {
 /// 但有两个键是本实现的私有元数据，读回时要摘出来：
 ///   * `reasoning_content` → 还原成 `AssistantContent::Reasoning` 块；
 ///   * `__rig_id` → rig 的 assistant 消息 id（C++ 无此概念）。
-fn reasoning_text(c: &ReasoningContent) -> Option<String> {
+///
+/// record.rs 录制事件流共用同一判据（不可还原的加密块不落）。
+pub(crate) fn reasoning_text(c: &ReasoningContent) -> Option<String> {
     match c {
         ReasoningContent::Text { text, .. } => Some(text.clone()),
         ReasoningContent::Summary(s) => Some(s.clone()),
