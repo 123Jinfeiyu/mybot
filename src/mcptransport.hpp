@@ -12,9 +12,16 @@
 #include <cstddef>
 #include <ostream>
 #include <string>
+#include <string_view>
 
 namespace bot {
 namespace agent {
+
+/* 运行期日志前缀单点（2026-10-10 收敛）：mcplisten/mcptransport 两 TU 的
+ * 24 处日志此前各写一份「MCP 后端：」字面量——前缀漂移会破坏按它 grep 的
+ * 运维习惯。读者是后端操作者，中文与运行期报错同区（docs/development.md
+ * 的报错语言分区）。 */
+inline constexpr std::string_view kMcpLogPrefix = "MCP 后端：";
 
 /* 帧上限：**收紧到 8 MiB**，对齐 bot4cj 自己的 JSON 解析器（jsonparse.hpp 的
  * kJsonMaxBytes）。libmsg 的上限是 64 MiB，但一个 64 MiB 的合法帧会被我们的

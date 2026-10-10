@@ -72,9 +72,9 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 			/* 对端连上后连认证帧都没发就消失/超时——按违规口径断连即可，
 			 * 空闲超时的既有文案已覆盖「哑对端让位」的语义。 */
 			if (fr == FrameResult::IdleTimeout) {
-				log << "MCP 后端：认证帧未到，空闲超时/墙钟预算耗尽，断开连接\n";
+				log << kMcpLogPrefix << "认证帧未到，空闲超时/墙钟预算耗尽，断开连接\n";
 			} else if (fr == FrameResult::Violation) {
-				log << "MCP 后端：认证帧违规，断开连接\n";
+				log << kMcpLogPrefix << "认证帧违规，断开连接\n";
 			}
 			return ConnOutcome{ConnAuth::Neutral, false};
 		}
@@ -83,16 +83,16 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 			/* lock-step：认证帧也要回执（Rust 侧 authenticate 在等这一帧）；
 			 * 回帧构造单点在 mcptransport（与判据 mcpCheckAuthFrame 同族） */
 			if (!sendFrame(fd, mcpAuthOkFrame(), kMcpSendTimeoutSec)) {
-				log << "MCP 后端：认证回帧发送失败，断开连接\n";
+				log << kMcpLogPrefix << "认证回帧发送失败，断开连接\n";
 				return ConnOutcome{ConnAuth::Neutral, false};
 			}
-			log << "MCP 后端：首帧认证通过\n";
+			log << kMcpLogPrefix << "首帧认证通过\n";
 			admitted = true;
 		} else {
 			/* 回执不回显 token、不区分「错密钥」与「没带密钥」——对试探者
 			 * 两者给同一句话，信息量最小化（文案单点在 mcpAuthRejectFrame）。 */
 			(void)sendFrame(fd, mcpAuthRejectFrame(), kMcpSendTimeoutSec);
-			log << "MCP 后端：首帧认证失败（" << (a == McpAuthOutcome::NotAuthFrame
+			log << kMcpLogPrefix << "首帧认证失败（" << (a == McpAuthOutcome::NotAuthFrame
 				? "第一帧不是 auth 帧" : "共享密钥不匹配")
 				<< "），断开连接\n";
 			backend.recordAuthRejected();
@@ -106,16 +106,16 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 			backend.idleDeadline(opts.idleTimeoutSec), log);
 		if (fr == FrameResult::PeerClosed) { return ConnOutcome{result, admitted}; }
 		if (fr == FrameResult::IdleTimeout) {
-			log << "MCP 后端：空闲超时/每连接墙钟预算耗尽，断开连接（对端可重连）\n";
+			log << kMcpLogPrefix << "空闲超时/每连接墙钟预算耗尽，断开连接（对端可重连）\n";
 			return ConnOutcome{result, admitted};
 		}
 		if (fr == FrameResult::Violation) {
-			log << "MCP 后端：协议违规，断开连接\n";
+			log << kMcpLogPrefix << "协议违规，断开连接\n";
 			return ConnOutcome{result, admitted};
 		}
 		const std::string resp = backend.handleFrame(payload);
 		if (!sendFrame(fd, resp, kMcpSendTimeoutSec)) {
-			log << "MCP 后端：回帧发送失败，断开连接\n";
+			log << kMcpLogPrefix << "回帧发送失败，断开连接\n";
 			return ConnOutcome{result, admitted};
 		}
 	}
@@ -139,7 +139,7 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 static void runDisconnectAction(const AgentToolContext& tctx, const std::string& script,
 		const std::shared_ptr<AuditLog>& audit, std::ostream& log) {
 	if (script.empty() || stopRequested()) { return; }
-	log << "MCP 后端：连接结束，执行断连安全动作 " << script << "\n";
+	log << kMcpLogPrefix << "连接结束，执行断连安全动作 " << script << "\n";
 	AuditEntry e;
 	e.kind = "session";
 	e.status = "disconnect_action";
@@ -148,13 +148,13 @@ static void runDisconnectAction(const AgentToolContext& tctx, const std::string&
 	try {
 		std::string echo;
 		const std::size_t bytes = runActionScriptFile(tctx, script, echo);
-		log << "MCP 后端：断连安全动作完成（" << bytes << " 字节）\n";
+		log << kMcpLogPrefix << "断连安全动作完成（" << bytes << " 字节）\n";
 	} catch (const std::exception& ex) {
 		e.error = ex.what();
-		log << "MCP 后端：断连安全动作失败: " << ex.what() << "（后端继续服务）\n";
+		log << kMcpLogPrefix << "断连安全动作失败: " << ex.what() << "（后端继续服务）\n";
 	} catch (...) {
 		e.error = "unknown exception";
-		log << "MCP 后端：断连安全动作失败: 未知异常（后端继续服务）\n";
+		log << kMcpLogPrefix << "断连安全动作失败: 未知异常（后端继续服务）\n";
 	}
 	e.ms = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0).count();
 	if (e.ms <= 0) { e.ms = 1; }	/* ms>0 才落字段；0 会让"跑过"这件事在审计里消失 */
@@ -290,7 +290,7 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 		const int r = ::poll(&p, 1, kMcpPollIntervalMs);
 		if (r < 0) {
 			if (errno == EINTR) { continue; }
-			log << "MCP 后端：poll 失败: " << errnoText(errno) << "\n";
+			log << kMcpLogPrefix << "poll 失败: " << errnoText(errno) << "\n";
 			rc = 1;
 			break;
 		}
@@ -298,7 +298,7 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 		const int client = ::accept4(listenFd.get(), nullptr, nullptr, SOCK_CLOEXEC);
 		if (client < 0) {
 			if (errno == EINTR) { continue; }
-			log << "MCP 后端：accept 失败: " << errnoText(errno) << "\n";
+			log << kMcpLogPrefix << "accept 失败: " << errnoText(errno) << "\n";
 			rc = 1;
 			break;
 		}
@@ -308,7 +308,7 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 		}
 
 		backend.beginConnection();
-		log << "MCP 后端：sidecar 已连接，开始服务\n";
+		log << kMcpLogPrefix << "sidecar 已连接，开始服务\n";
 		const ConnOutcome oc = serveConnection(clientFd.get(), backend, opts, log);
 		/* 先关连接再跑安全动作：对端若还挂着（半关闭），不该看见动作期间的
 		 * 任何回帧；且动作脚本可能跑几秒，不占着 fd。 */
@@ -321,7 +321,7 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 			runDisconnectAction(tctx, cfg.onDisconnectScript, cfg.audit, log);
 			break;
 		case DisconnectAction::SkipNotAdmitted:
-			log << "MCP 后端：连接未通过认证，跳过断连安全动作 " << cfg.onDisconnectScript
+			log << kMcpLogPrefix << "连接未通过认证，跳过断连安全动作 " << cfg.onDisconnectScript
 				<< "\n";
 			break;
 		case DisconnectAction::NotConfigured:
@@ -331,17 +331,17 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 			authGate.recordPassed();
 		} else if (oc.auth == ConnAuth::Failed) {
 			if (authGate.recordRejected()) {
-				log << "MCP 后端：首帧认证连续 " << authGate.max
+				log << kMcpLogPrefix << "首帧认证连续 " << authGate.max
 					<< " 次失败，停止服务（可能为爆破；重启后端恢复，"
 					"必要时更换 BOT4CJ_MCP_TOKEN）\n";
 				rc = 1;
 				break;
 			}
-			log << "MCP 后端：认证失败（连续 " << authGate.fails << "/"
+			log << kMcpLogPrefix << "认证失败（连续 " << authGate.fails << "/"
 				<< authGate.max << "），回到 accept 等待\n";
 			continue;
 		}
-		log << "MCP 后端：连接结束，回到 accept 等待\n";
+		log << kMcpLogPrefix << "连接结束，回到 accept 等待\n";
 	}
 	return rc;
 }
@@ -395,7 +395,7 @@ int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
 
 	backend.writeSessionRecord("end");
 	::unlink(opts.socketPath.c_str());
-	log << "MCP 后端：已停机\n";
+	log << kMcpLogPrefix << "已停机\n";
 	return rc;
 }
 

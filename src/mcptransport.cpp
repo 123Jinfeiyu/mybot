@@ -213,7 +213,7 @@ FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec,
 	const std::uint32_t len = readBe32(hdr);
 	/* 上限在**分配载荷缓冲之前**检查（评估 §7.1）；u32 直接比较，无溢出暴露面。 */
 	if (static_cast<std::size_t>(len) > kMcpMaxFrameBytes) {
-		log << "MCP 后端：帧载荷 " << len << " 字节超过上限 " << kMcpMaxFrameBytes
+		log << kMcpLogPrefix << "帧载荷 " << len << " 字节超过上限 " << kMcpMaxFrameBytes
 			<< "，断开连接\n";
 		return FrameResult::Violation;
 	}
@@ -223,7 +223,7 @@ FrameResult readFrame(int fd, std::string& payload, int recvTimeoutSec,
 		return eof ? FrameResult::PeerClosed : FrameResult::Violation;
 	}
 	if (!isValidUtf8(payload)) {
-		log << "MCP 后端：帧载荷不是合法 UTF-8，断开连接\n";
+		log << kMcpLogPrefix << "帧载荷不是合法 UTF-8，断开连接\n";
 		return FrameResult::Violation;
 	}
 	return FrameResult::Ok;
@@ -313,14 +313,14 @@ bool mcpCheckPeerCred(int fd, std::ostream& log) {
 	struct ucred cred{};
 	socklen_t len = sizeof(cred);
 	if (::getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cred, &len) != 0) {
-		log << "MCP 后端：SO_PEERCRED 读取失败（" << errnoText(errno)
+		log << kMcpLogPrefix << "SO_PEERCRED 读取失败（" << errnoText(errno)
 			<< "），拒绝连接\n";
 		return false;
 	}
 	const uid_t uid = ::getuid();
 	const gid_t gid = ::getgid();
 	if (cred.uid != uid || cred.gid != gid) {
-		log << "MCP 后端：对端 uid/gid(" << cred.uid << "/" << cred.gid
+		log << kMcpLogPrefix << "对端 uid/gid(" << cred.uid << "/" << cred.gid
 			<< ") 与本进程(" << uid << "/" << gid << ") 不符，拒绝连接\n";
 		return false;
 	}
