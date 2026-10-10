@@ -290,44 +290,6 @@ std::string maskSecretsInText(const std::string& text) {
 	return out;
 }
 
-std::optional<long long> extractExitCode(const std::string& text) {
-	/* 2026-09-24 修正：run_command 回执自 M2/1aab7b2 起整体经 quoteUntrusted 定界
-	 * （防提示注入），exit_code 行带上了 "> " 前缀且不再位于文本开头——旧实现的
-	 * 「必须是前缀」假设随之失效，审计里的 exit_code 字段静默消失（agent-e2e 的
-	 * 「run_command 记录带 exit_code」抓个正着；此前被 curl 顺序回归挡在更早处，
-	 * 没跑到这条）。现改为逐行扫描：剥去可选的 "> " 定界前缀后以 "exit_code="
-	 * 开头的**首行**即回执自己的那行（stdout 里的同形文本必在其后，不会抢先）。
-	 * 裸前缀形态（旧回执 / 单测直喂）仍兼容；数值约束不变：可选负号、8 位回绕域
-	 * （>255 拒）。 */
-	static const char kPrefix[] = "exit_code=";
-	const std::size_t n = sizeof kPrefix - 1;
-	std::size_t pos = 0;
-	while (pos <= text.size()) {
-		std::size_t eol = text.find('\n', pos);
-		if (eol == std::string::npos) { eol = text.size(); }
-		std::size_t b = pos;
-		if (eol - b >= 2 && text.compare(b, 2, "> ") == 0) { b += 2; }
-		if (eol - b >= n && text.compare(b, n, kPrefix) == 0) {
-			std::size_t i = b + n;
-			bool neg = false;
-			if (i < eol && text[i] == '-') { neg = true; ++i; }
-			if (i < eol && std::isdigit(static_cast<unsigned char>(text[i]))) {
-				long long v = 0;
-				while (i < eol && std::isdigit(static_cast<unsigned char>(text[i]))) {
-					v = v * 10 + (text[i] - '0');
-					++i;
-				}
-				/* 退出码只有 8 位回绕域，越界值说明这不是 run_command 的回执形态 */
-				if (v > 255) { return std::nullopt; }
-				return neg ? -v : v;
-			}
-		}
-		if (eol == text.size()) { break; }
-		pos = eol + 1;
-	}
-	return std::nullopt;
-}
-
 std::string fingerprint64(const std::string& s) {
 	std::uint64_t h = kFnvBasis;
 	for (char c : s) {

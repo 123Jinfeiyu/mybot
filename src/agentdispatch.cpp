@@ -101,7 +101,9 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 		e.bytes = result.text.size();
 		e.imageBytes = result.imageDataUrl.size();
 		if (!result.imageDataUrl.empty()) { e.imageFp = fingerprint64(result.imageDataUrl); }
-		if (call.name == "run_command") { e.exitCode = extractExitCode(result.text); }
+		/* G2 结构化直传（2026-10-10）：此前只对 run_command 从回执文本反解
+		 * exit_code=——现在工具里给了 exitCode 就记谁的（恒只有 run_command）。 */
+		e.exitCode = result.exitCode;
 		/* G2：工具自报的生效摘要（apply_sql 等）原样进审计，供复盘对账 */
 		e.summary = result.summary;
 		audit_->write(e);

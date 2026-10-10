@@ -53,7 +53,7 @@ struct AuditEntry {
 	std::size_t bytes = 0;		/* 回传模型的文本字节数 */
 	std::size_t imageBytes = 0;	/* 图片 data URL 字节数（0 = 无图） */
 	std::string imageFp;		/* 图片指纹（FNV-1a 64 hex，非密码学摘要） */
-	std::optional<long long> exitCode;	/* run_command 专属（自回执文本解析） */
+	std::optional<long long> exitCode;	/* run_command 专属（结构化直传，见 AgentToolResult::exitCode） */
 	/* G2（2026-09-23）：工具自报的**生效摘要**（apply_sql 等热插/高危工具）。
 	 * 只做加法：老工具不给，工具行的既有字段与顺序不动。 */
 	std::string summary;
@@ -100,9 +100,6 @@ private:
  * 裸 `Bearer <tok>`、以及 JSON 引号键 `"name": value`（2026-10-08 补，见实现处
  * 注释——本仓真实密钥落盘形态恰是最后一种）。 */
 std::string maskSecretsInText(const std::string& text);
-
-/* 从 run_command 的回执文本解析退出码（"exit_code=N" 前缀）；非该形态返回空 */
-std::optional<long long> extractExitCode(const std::string& text);
 
 /* FNV-1a 64 位指纹的 hex 文本（16 字符）。用途是把图片在日志里对上号，
  * 不是防篡改——审计日志的完整性靠文件系统权限与外部收集，不靠摘要。 */

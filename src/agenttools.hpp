@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <functional>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,12 @@ struct AgentToolResult {
 	 * 新增几张表/几个变量/几行、瞬态动作几行）。只做**加法**：老工具留空，
 	 * 既有审计 schema 逐字节不变。 */
 	std::string summary;
+	/* G2 结构化出口（2026-10-10）：run_command 的退出码自结构化来源（RunResult）
+	 * 直入审计，替代「审计从回执文本反解 exit_code=」的文本协议（extractExitCode
+	 * 随该协议删除）——结构化值在 formatRunResult 处存在，此前被丢进文本、下一跳
+	 * 再反解回来，自产自销的解析是多余的脆弱面。只被审计消费，不进 MCP 线协议；
+	 * 给模型看的回执文本（含 exit_code= 行）逐字节不变。其余工具恒 nullopt。 */
+	std::optional<long long> exitCode;
 	/* 带构造函数（非聚合）：存量代码大量使用两字段初始化 {text, img}，聚合
 	 * 形态下它们会触发 -Wmissing-field-initializers（本仓库 -Wall -Wextra
 	 * 零告警基线）；构造函数让两字段形态显式表示「ok=true 缺省」。 */

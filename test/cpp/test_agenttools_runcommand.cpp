@@ -81,6 +81,15 @@ TH_TEST(agenttools_run_command_basic) {
 		parseJson("{\"command\":\"exit 3\"}"));
 	TH_CHECK(fails.find("exit_code=3") != std::string::npos);
 
+	/* G2 结构化直传（2026-10-10）：exitCode 不再从回执文本反解——成功与
+	 * 非零退出各自如实（给模型的文本回执与此前逐字节相同）。 */
+	const AgentToolResult r0 = tools.execute("run_command",
+		parseJson("{\"command\":\"echo hello-agent\"}"));
+	TH_CHECK(r0.exitCode == std::optional<long long>(0));
+	const AgentToolResult r3 = tools.execute("run_command",
+		parseJson("{\"command\":\"exit 3\"}"));
+	TH_CHECK(r3.exitCode == std::optional<long long>(3));
+
 	std::string noCmd = execText(tools, "run_command", parseJson("{}"));
 	TH_CHECK(noCmd.find("失败") != std::string::npos);
 }
