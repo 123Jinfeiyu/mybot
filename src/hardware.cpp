@@ -183,4 +183,15 @@ std::unique_ptr<MtVars_Vars> MtVars_Vars::Factory(const mt::MatrixObject& defs, 
 		new MtVars_Vars(std::move(value), std::nullopt, std::move(resolve)));
 }
 
+std::unique_ptr<MtVars_Vars> MtVars_Vars::Make(double value) {
+	/* L2 同源：非有限值不得流入 @Vars（数值常量语义），捕获出口显式拒绝。 */
+	if (!std::isfinite(value)) {
+		throw IllegalArgumentException("captured @Vars value is not a finite Float64");
+	}
+	std::string literal = formatNumber(value);
+	logD([&] { return "Capture a Vars: " + literal; });
+	return std::unique_ptr<MtVars_Vars>(
+		new MtVars_Vars(std::move(literal), std::nullopt, {}));
+}
+
 } // namespace bot

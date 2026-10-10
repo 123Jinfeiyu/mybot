@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -17,6 +18,17 @@
 #include "matrix.hpp"
 
 namespace bot {
+
+/* ---- @Action 单元格捕获指令（.mt 数据格 `$var=field.path`）----
+ * 把「本格所在列设备」本帧 play 返回值里的某个字段，赋给 @Vars/@Alias 变量。
+ * 捕获格**不向设备传参**（列头 param 位对此格无意义），只在该设备 play 之后
+ * 落地赋值：var = 目标变量名（安全标识符）；path = 点号分隔的字段路径；
+ * colHead = 原始列头文本，仅供报错归因。 */
+struct Capture {
+	std::string var;
+	std::string path;
+	std::string colHead;
+};
 
 /* ---- @Action 派发计划（拆自 runAction 的纯计算前段）----
  * 列头只解析一次（C-M3）：原实现在 order/相位检测/每行每格三处
@@ -61,7 +73,16 @@ class ActionRunner {
 	void parseActionCell(Json& set, const mt::MatrixObject& actionDefs,
 			std::int64_t i, std::int64_t j, const std::set<std::string>& phaseDevices,
 			const std::string& resolvedParam,
-			const std::string& resolvedDev, ColExprCache& exprCache);
+			const std::string& resolvedDev, ColExprCache& exprCache,
+			std::map<std::string, std::vector<Capture>>& captures);
+
+	/* ---- 捕获赋值（play 之后落地）----
+	 * applyCapture：从返回值 res 按 cap.path（点号路径）取字段，赋给 cap.var。
+	 * 目标已存在按其种类校验（@Vars 收数值 / @Alias 收文本 / 非标量拒绝）；
+	 * 未声明则按字段类型自动新建（数值→@Vars、文本→@Alias，其余拒绝）。
+	 * 赋值经 registry_.override 写进会话覆盖层（遮蔽同名结构定义，run() 结束
+	 * 回滚）；被引用为 controller/trigger 的名字由 override 拒绝（安全不变式）。 */
+	void applyCapture(const Json& res, const Capture& cap, std::int64_t row);
 
 public:
 	explicit ActionRunner(HwRegistry& registry) : registry_(registry) {}
@@ -96,6 +117,16 @@ public:
 	 * 块头内不能有空格（与 $(...) 同约束：MatrixParser 名字态遇空白即止，
 	 * "@if(a > b)" 会被切成名字 "if(a" + 数据行）——报错文案要带此提示。 */
 	static std::optional<std::string> parseIfBlockName(const std::string& rawName);
+
+	/* ---- @Action 数据格捕获形态解析单点（公开静态：白盒单测直接锚定）----
+	 * 输入是一个数据格原文（已解析 "-" 继承）：
+	 *   非 '$' 开头 / "$(" 开头（表达式）→ nullopt（不是捕获，交回既有路径）；
+	 *   其余 "$..." → 必须是 `$<var>=<field.path>`，解析成 Capture 返回。
+	 * 坏形态响亮报错（IllegalArgumentException）：缺 '='、var 为空或非安全
+	 * 标识符、path 为空或含空段。var/path 两侧不做 trim（矩阵按空白切格，
+	 * 数据格内本就无空白）。 */
+	static std::optional<Capture> parseCaptureCell(const std::string& raw,
+			const std::string& colHead);
 
 	/* 单矩阵动作派发核心：@Action 与 #34 @Reflex 共用同一派发逻辑 */
 	void dispatchMatrix(const mt::MatrixObject& actionDefs);

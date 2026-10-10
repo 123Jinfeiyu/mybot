@@ -176,6 +176,11 @@ public:
 	/* resolve：表达式标识符求值回调；纯字面量 Vars 可省略，表达式 Vars 必须提供。 */
 	static std::unique_ptr<MtVars_Vars> Factory(const mt::MatrixObject& defs, std::int64_t i,
 			std::function<double(const std::string&)> resolve = {});
+
+	/* 运行期单值构造（.mt 单元格 `$var=field` 捕获赋值）：直接以数值真值驻留
+	 * 字面量（formatNumber），无 expr/resolve——与 Factory 的字面量分支同构，
+	 * 只是不经矩阵行。value 必须有限（非有限值在此拒绝，与 @Vars 数值语义一致）。 */
+	static std::unique_ptr<MtVars_Vars> Make(double value);
 };
 
 } // namespace bot

@@ -212,6 +212,7 @@ add_executable(mybot_tests
   test/cpp/test_robot.cpp
   test/cpp/test_robot_dispatch.cpp
   test/cpp/test_action_if.cpp
+  test/cpp/test_action_capture.cpp
   test/cpp/test_robot_lifecycle.cpp
   test/cpp/test_robot_hotsql_plan.cpp
   test/cpp/test_robot_hotinsert.cpp
