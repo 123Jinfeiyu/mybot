@@ -10,10 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub(crate) fn tmpdir(prefix: &str, tag: &str) -> PathBuf {
     static N: AtomicUsize = AtomicUsize::new(0);
     let n = N.fetch_add(1, Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!(
-        "{prefix}_{tag}_{}_{n}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("{prefix}_{tag}_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir

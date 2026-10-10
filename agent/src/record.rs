@@ -78,7 +78,10 @@ pub const RECORD_VERSION: i64 = 1;
 
 /// 缺省布局的录制根：`$MYBOT_HOME/robots/<机器人>/recordings`。
 pub fn default_record_root(state_dir: &str, robot_name: &str) -> String {
-    format!("{state_dir}/robots/{}/recordings", robot_dir_name(robot_name))
+    format!(
+        "{state_dir}/robots/{}/recordings",
+        robot_dir_name(robot_name)
+    )
 }
 
 /// main 的装配口：未开启返回 `Ok(None)`；开启则解析录制根（显式 `--record-dir`
@@ -514,17 +517,17 @@ impl RecordStore {
         // 取二进制：本项目链路里恒为 Base64（后端 data URL → model.rs 拆开）；
         // Raw 是调用方直接给字节的形态；其余来源拿不到字节，如实标注。
         let raw: Vec<u8> = match data {
-            DocumentSourceKind::Base64(s) => match base64::engine::general_purpose::STANDARD
-                .decode(s.as_bytes())
-            {
-                Ok(b) => b,
-                Err(e) => {
-                    return json!({
-                        "type": "image", "mime": mime, "stored": false,
-                        "reason": format!("base64 解码失败: {e}"),
-                    });
+            DocumentSourceKind::Base64(s) => {
+                match base64::engine::general_purpose::STANDARD.decode(s.as_bytes()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        return json!({
+                            "type": "image", "mime": mime, "stored": false,
+                            "reason": format!("base64 解码失败: {e}"),
+                        });
+                    }
                 }
-            },
+            }
             DocumentSourceKind::Raw(b) => b.clone(),
             other => {
                 return json!({
@@ -600,7 +603,9 @@ impl RecordStore {
     /// 落一行事件：公共字段 ts/seq，写失败告警一次并停用（水位等纯内存记账不受影响）。
     fn emit(&mut self, event: &str, fill: impl FnOnce(&mut Map<String, Value>)) {
         self.stats_events += 1;
-        let Some(f) = self.events.as_mut() else { return };
+        let Some(f) = self.events.as_mut() else {
+            return;
+        };
         let mut line = Map::new();
         line.insert("ts".into(), json!(audit_timestamp()));
         line.insert("seq".into(), json!(self.seq));
@@ -660,7 +665,9 @@ fn create_segment_dir(root: &str, now_sec: i64) -> Result<String, String> {
             Err(e) => return Err(format!("无法创建录制段 {path}（{e}）")),
         }
     }
-    Err(format!("无法在同秒内为 {base} 找到可用录制段名（同名冲突过多）"))
+    Err(format!(
+        "无法在同秒内为 {base} 找到可用录制段名（同名冲突过多）"
+    ))
 }
 
 fn write_file_0600(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
@@ -780,10 +787,9 @@ mod tests {
         let root = tmpdir("layout");
         let store = open_store(&root, 0);
         // meta：版本/指纹/脱敏接入点；密钥与凭据不出现
-        let meta: Value = serde_json::from_str(
-            &std::fs::read_to_string(store.dir.join("meta.json")).unwrap(),
-        )
-        .unwrap();
+        let meta: Value =
+            serde_json::from_str(&std::fs::read_to_string(store.dir.join("meta.json")).unwrap())
+                .unwrap();
         assert_eq!(meta["version"], RECORD_VERSION);
         assert_eq!(meta["robot"], "relay-test");
         assert_eq!(meta["endpoint"], "https://host/v1/chat");
@@ -791,7 +797,10 @@ mod tests {
         assert_eq!(meta["tools"].as_array().unwrap().len(), 2);
         assert_eq!(meta["system_fp"], fingerprint64("你是测试机器人"));
         let all = std::fs::read_to_string(store.dir.join("meta.json")).unwrap();
-        assert!(!all.contains("SECRET") && !all.contains("user:tok"), "{all}");
+        assert!(
+            !all.contains("SECRET") && !all.contains("user:tok"),
+            "{all}"
+        );
         assert!(
             all.contains("\"tool_specs\"") && all.contains("capture_image"),
             "工具 schema 快照应在 meta: {all}"
@@ -862,7 +871,10 @@ mod tests {
         assert_eq!(first["mime"], "image/png");
         assert_eq!(first["fp"], fingerprint64_bytes(b"hello"));
         let file = first["file"].as_str().unwrap();
-        assert!(file.starts_with("images/0000-") && file.ends_with(".png"), "{file}");
+        assert!(
+            file.starts_with("images/0000-") && file.ends_with(".png"),
+            "{file}"
+        );
         assert_eq!(img_parts[1]["dedup"], true, "重复图引用已有文件");
         assert_eq!(
             img_parts[1]["file"].as_str().unwrap(),
@@ -923,7 +935,9 @@ mod tests {
         let msgs: Vec<&Value> = evs.iter().filter(|e| e["event"] == "msg").collect();
         assert_eq!(msgs.len(), 3, "a1/r1/b1 各一条（录制是全量留档）");
         assert_eq!(msgs[2]["msg"]["parts"][0]["text"], "b1");
-        assert!(evs.iter().any(|e| e["event"] == "history_evict" && e["messages"] == 1));
+        assert!(evs
+            .iter()
+            .any(|e| e["event"] == "history_evict" && e["messages"] == 1));
         // /clear：水位归零，其后整段重录
         store.reset_after_clear();
         store.record_history(&[mk("c1")]);
@@ -936,7 +950,9 @@ mod tests {
         let hist: Vec<Message> = (0..9).map(|i| mk(&format!("h{i}"))).collect();
         store.record_history(&hist);
         let evs = events(&store);
-        assert!(evs.iter().any(|e| e["event"] == "resume" && e["messages"] == 9));
+        assert!(evs
+            .iter()
+            .any(|e| e["event"] == "resume" && e["messages"] == 9));
         let msgs: Vec<&Value> = evs.iter().filter(|e| e["event"] == "msg").collect();
         assert_eq!(msgs.len(), 4, "恢复前缀不重复落事件");
     }

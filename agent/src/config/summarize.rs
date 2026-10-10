@@ -111,9 +111,7 @@ pub fn summarize(cfg: &Config) -> String {
             if !cfg.record_dir.is_empty() {
                 format!("{}（显式根；{cap}）", cfg.record_dir)
             } else {
-                format!(
-                    "$MYBOT_HOME/robots/<机器人>/recordings/（缺省布局；{cap}）"
-                )
+                format!("$MYBOT_HOME/robots/<机器人>/recordings/（缺省布局；{cap}）")
             }
         }
     );
