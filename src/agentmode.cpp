@@ -408,7 +408,14 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 /* 组装工具上下文（AgentToolContext）：agent REPL 与 MCP 后端（--mcp-backend）
  * 共用这一个函数——「对外提供哪些工具、能读哪些变量、摄像头怎么解析」的判据
  * 只在这里发生一次，两条路径不会漂移（后端暴露的工具集与 agent 模式逐字节一致）。
- * 只读配置 + robot，不发起模型调用、不上电（调用方负责 active() 在先）。 */
+ * 只读配置 + robot，不发起模型调用、不上电（调用方负责 active() 在先）。
+ *
+ * 2026-10-10 评估后判不改（两结构同构的镜像）：AgentModeConfig 是 CLI/配置
+ * 入口（还带 mcpAuthToken / onDisconnectScript / audit / policy / verbose 等
+ * 永远不进工具上下文的字段），AgentToolContext 是工具运行期视图（robot 指针、
+ * 已解析的摄像头指针）——分层不同、非同构，逐字段拷贝是适配器本身而不是
+ * 待消除的重复；抽成转换构造只是搬位置。真正的漂移风险（配置加了字段却忘了
+ * 传导）由 test_llmconfig_assembly 的 fsRoot/allowWriteFile/camera 传导钉覆盖。 */
 AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 		std::ostream& log) {
 	AgentToolContext tctx;

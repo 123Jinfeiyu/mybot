@@ -259,7 +259,15 @@ static std::string buildImageDescription(const Json& res, int reqW, int reqH) {
 
 /* 查询仿真器测距仪（如果可用）。连接 MYBOT_SIM_SENSOR_SOCK，发 "range\n"，
  * 收 "OK <mm>\n" 或 "ERR <reason>\n"。返回空串表示测距仪不可用（仿真器没开或
- * 没设环境变量），调用方据此决定是否附加距离信息。 */
+ * 没设环境变量），调用方据此决定是否附加距离信息。
+ *
+ * 2026-10-10 评估后判不改（两问）：① 独立 I/O 域但不拆 TU——55 行、单调用方、
+ * 文件静态，拆出去要为一个内部函数新增头与 CMake 条目，耦合不降；② 不补
+ * quoteUntrusted 定界——输出经 "OK " 前缀 + strtol 全串解析 + %.2f 渲染，
+ * 进模型的是严格数值文本，无注入面；desc 的其余输入是驱动返回值（操作者
+ * 代码，与 describeHardware 同信任级）与白名单内模拟图（内容走 imageDataUrl
+ * 不进文本）。quoteUntrusted 的适用对象是第三方可控数据（文件/网页/命令
+ * 输出），这里没有那一层，补定界只给稳定回执加噪音。 */
 static std::string querySimRange() {
 	const char* envSock = std::getenv("MYBOT_SIM_SENSOR_SOCK");
 	if (!envSock || !*envSock) { return ""; }
