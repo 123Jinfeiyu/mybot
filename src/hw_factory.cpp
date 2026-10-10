@@ -47,8 +47,8 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 		}
 		if (session) {
 			if (session->count(name)) {
-				throw IllegalArgumentException("Duplicate " + std::string(dupLabel) + " name '"
-					+ name + "' within the action script");
+				throw IllegalArgumentException(concatMsg(
+					"Duplicate ", std::string(dupLabel), " name '", name, "' within the action script"));
 			}
 			session->insert(name);
 			if (kind == ScalarKind::Vars && registry_.contains(name)) {
@@ -58,8 +58,9 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 				 * @Alias 覆盖仅做键名替换、替换后仍过 rejectReservedKeys 元数据
 				 * 防线，保留覆盖语义；@Vars 一律拒绝覆盖，参数化请使用新名字
 				 * （引用结构 Vars 读取不受影响）。 */
-				throw IllegalArgumentException("action script @Vars must not override the "
-					"structure-defined variable '" + name + "' (use a fresh name)");
+				throw IllegalArgumentException(concatMsg(
+					"action script @Vars must not override the "
+					"structure-defined variable '", name, "' (use a fresh name)"));
 			}
 			if (registry_.contains(name)) {
 				std::cerr << label << " '" << name
@@ -164,12 +165,12 @@ struct SingleConsumerCheck {
 		if (key.empty()) { return; }
 		const auto it = owner.find(key);
 		if (it != owner.end()) {
-			throw IllegalArgumentException(
-				"Device '" + key + "' would have two concurrent consumers: "
-				+ it->second + " and " + who + ". This driver declares SINGLE_CONSUMER"
+			throw IllegalArgumentException(concatMsg(
+				"Device '", key, "' would have two concurrent consumers: ", it->second, " and ", who,
+				". This driver declares SINGLE_CONSUMER"
 				" (its register access spans multiple bus transactions, so a second"
 				" consumer corrupts the device-side address phase). Drop one of them,"
-				" or sample it from the daemon only and consume via '$' reference.");
+				" or sample it from the daemon only and consume via '$' reference."));
 		}
 		owner.emplace(key, who);
 	}
@@ -358,8 +359,7 @@ void HwFactory::rejectSharedUartPaths(const std::deque<mt::MatrixObject>& matric
 		std::string names;
 		for (const auto& w : who) { names += (names.empty() ? "" : ", ") + w; }
 		throw IllegalArgumentException(concatMsg(
-			"UART path '", path, "' is opened independently by ",
-			std::to_string(who.size()), " consumers: ", names,
+			"UART path '", path, "' is opened independently by ", std::to_string(who.size()), " consumers: ", names,
 			". HAL does not do cross-variable reference counting; the last close",
 			" wins and mixing baud rates corrupts the serial line config.",
 			" Share one UART bus variable via '$' reference, or sample via daemon only."));

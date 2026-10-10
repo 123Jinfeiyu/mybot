@@ -18,7 +18,8 @@ const mt::MatrixObject& requireAction(const std::vector<mt::MatrixObject>& parse
 		const std::string& path) {
 	const mt::MatrixObject* act = mt::findByName(parsed, "Action");
 	if (act == nullptr) {
-		throw bot::IllegalArgumentException("'" + path + "': no @Action matrix found");
+		throw bot::IllegalArgumentException(bot::concatMsg(
+			"'", path, "': no @Action matrix found"));
 	}
 	return *act;
 }
@@ -26,9 +27,9 @@ const mt::MatrixObject& requireAction(const std::vector<mt::MatrixObject>& parse
 mt::MatrixObject mergeScalarRows(const mt::MatrixObject& acc, const mt::MatrixObject& next,
 		const std::string& label, const std::string& pa, const std::string& pb) {
 	if (acc.cols() != next.cols()) {
-		throw bot::IllegalArgumentException(label + " matrix column count differs: '" + pa
-			+ "' has " + std::to_string(acc.cols()) + ", '" + pb + "' has "
-			+ std::to_string(next.cols()));
+		throw bot::IllegalArgumentException(bot::concatMsg(
+			label, " matrix column count differs: '", pa, "' has ", std::to_string(acc.cols()), ", '", pb, "' has ",
+			std::to_string(next.cols())));
 	}
 	for (std::size_t j = 0; j < acc.cols(); ++j) {
 		if (acc(0, j) != next(0, j)) {
@@ -39,7 +40,8 @@ mt::MatrixObject mergeScalarRows(const mt::MatrixObject& acc, const mt::MatrixOb
 	}
 	std::int64_t idxName = acc.indexOfCol(0, "name");
 	if (idxName < 0) {
-		throw bot::IllegalArgumentException(label + " matrix has no 'name' column");
+		throw bot::IllegalArgumentException(bot::concatMsg(
+			label, " matrix has no 'name' column"));
 	}
 
 	mt::MatrixBuilder b;
@@ -122,10 +124,9 @@ mt::MatrixObject mergeTwo(const mt::MatrixObject& acc, const mt::MatrixObject& n
 	if (phase < 0) {
 		const std::int64_t dropped = std::min(-phase, rowsNext);
 		if (dropped == rowsNext && rowsNext > 0) {
-			throw bot::IllegalArgumentException("phase " + std::to_string(phase)
-				+ " drops all " + std::to_string(rowsNext) + " row(s) of '" + pb
-				+ "' (the merged output would contain no action from this input);"
-				+ " use a smaller negative phase");
+			throw bot::IllegalArgumentException(bot::concatMsg(
+				"phase ", std::to_string(phase), " drops all ", std::to_string(rowsNext), " row(s) of '", pb,
+				"' (the merged output would contain no action from this input);", " use a smaller negative phase"));
 		}
 		if (dropped > 0) {
 			std::cerr << "mtmerge: 警告：相位 " << phase << " 使 '" << pb << "' 的前 "
@@ -140,19 +141,17 @@ mt::MatrixObject mergeTwo(const mt::MatrixObject& acc, const mt::MatrixObject& n
 	 * （total 已被夹住），也让报错指向真正的成因（相位过大 vs 列太宽）。 */
 	const std::int64_t outCols = static_cast<std::int64_t>(acc.cols() + next.cols());
 	if (total > kMaxMergedRows) {
-		throw bot::IllegalArgumentException("merged output of '" + pa + "' + '" + pb
-			+ "' would have " + std::to_string(total) + " row(s), exceeding the limit of "
-			+ std::to_string(kMaxMergedRows) + " (phase " + std::to_string(phase)
-			+ " alone contributes " + std::to_string(rowsNext + phase)
-			+ "); reduce the phase or split the action script");
+		throw bot::IllegalArgumentException(bot::concatMsg(
+			"merged output of '", pa, "' + '", pb, "' would have ", std::to_string(total),
+			" row(s), exceeding the limit of ", std::to_string(kMaxMergedRows), " (phase ", std::to_string(phase),
+			" alone contributes ", std::to_string(rowsNext + phase), "); reduce the phase or split the action script"));
 	}
 	const std::int64_t cells = total * outCols;
 	if (cells > kMaxMergedCells) {
-		throw bot::IllegalArgumentException("merged output of '" + pa + "' + '" + pb
-			+ "' would have " + std::to_string(cells) + " cell(s) ("
-			+ std::to_string(total) + " rows x " + std::to_string(outCols)
-			+ " cols), exceeding the limit of " + std::to_string(kMaxMergedCells)
-			+ "; split the action script or reduce the number of @Include fragments");
+		throw bot::IllegalArgumentException(bot::concatMsg(
+			"merged output of '", pa, "' + '", pb, "' would have ", std::to_string(cells), " cell(s) (",
+			std::to_string(total), " rows x ", std::to_string(outCols), " cols), exceeding the limit of ",
+			std::to_string(kMaxMergedCells), "; split the action script or reduce the number of @Include fragments"));
 	}
 	for (std::int64_t r = 1; r <= total; ++r) {
 		/* acc 侧：r 恒在 [1, rowsAcc] 内当 r<=rowsAcc，否则补 "-" */

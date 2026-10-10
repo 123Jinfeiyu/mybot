@@ -52,16 +52,18 @@ void validateNewTableDecl(const std::deque<mt::MatrixObject>& staged, std::size_
 
 	for (std::size_t sj = 0; sj < si; ++sj) {
 		if (trim(staged[sj].getName()) == tname) {
-			throw IllegalArgumentException("热插表：表 '" + tname + "' 已存在"
-				"（结构里既有同名表，或本批次内重复 CREATE）");
+			throw IllegalArgumentException(concatMsg(
+				"热插表：表 '", tname, "' 已存在"
+				"（结构里既有同名表，或本批次内重复 CREATE）"));
 		}
 	}
 	/* 表名决定 modules/<表名>.lua 的解析路径（createLuaVars 的唯一分派依据），
 	 * 而热插语句来自不可信输入（REPL / 模型）——含 '/' 或 ".." 的表名会把
 	 * 模块查找指到任意文件。启动期脚本是可信文件，故只在热插这条路上拦。 */
 	if (!isSafeIdent(tname)) {
-		throw IllegalArgumentException("热插表：表名 '" + tname + "' 不是安全标识符"
-			"（字母/数字/下划线，且以字母或下划线开头）");
+		throw IllegalArgumentException(concatMsg(
+			"热插表：表名 '", tname, "' 不是安全标识符"
+			"（字母/数字/下划线，且以字母或下划线开头）"));
 	}
 	if (!isAction) {
 		/* 列名进 Daemon 配置串（`列名=值;`）与元数据键：含 ';'/'=' 的列名
@@ -69,8 +71,8 @@ void validateNewTableDecl(const std::deque<mt::MatrixObject>& staged, std::size_
 		 * Action 表列名是 <设备>.<参数>，天然含 '.'，不在此列。 */
 		for (std::size_t c = 0; c < st.cols(); ++c) {
 			if (!isSafeIdent(st(0, c))) {
-				throw IllegalArgumentException("热插表：表 '" + tname + "' 的列名 '"
-					+ st(0, c) + "' 不是安全标识符");
+				throw IllegalArgumentException(concatMsg(
+					"热插表：表 '", tname, "' 的列名 '", st(0, c), "' 不是安全标识符"));
 			}
 		}
 	}
@@ -91,13 +93,13 @@ void validateHotNewRow(const HwLookup& registry, const mt::MatrixObject& st,
 		const HotSqlPlan::Deletes& delPlan, std::set<std::string>& batchNames) {
 	if (!isAction) {
 		if (idxName < 0) {
-			throw IllegalArgumentException("热插表：表 '" + tname
-				+ "' 没有 'name' 列，无法为新增行命名硬件变量");
+			throw IllegalArgumentException(concatMsg(
+				"热插表：表 '", tname, "' 没有 'name' 列，无法为新增行命名硬件变量"));
 		}
 		const std::string v = trim(st(r, static_cast<std::size_t>(idxName)));
 		if (v.empty()) {
-			throw IllegalArgumentException("热插表：表 '" + tname + "' 第 "
-				+ std::to_string(r) + " 行的 name 列为空");
+			throw IllegalArgumentException(concatMsg(
+				"热插表：表 '", tname, "' 第 ", std::to_string(r), " 行的 name 列为空"));
 		}
 		/* 重名判据的 doomed 豁免（先删后建模式）：UPDATE 同名重建的行
 		 * 复用旧名，而旧名此刻仍挂在注册表上（本批次的物理摘除排在
@@ -108,8 +110,9 @@ void validateHotNewRow(const HwLookup& registry, const mt::MatrixObject& st,
 		if ((registry.contains(v)
 					&& !(delPlan.deleteFirst && delPlan.doomedNames.count(v) != 0))
 				|| !batchNames.insert(v).second) {
-			throw IllegalArgumentException("热插表：硬件变量名 '" + v + "' 重复"
-				"（结构里已有同名变量，或本批次内重复）");
+			throw IllegalArgumentException(concatMsg(
+				"热插表：硬件变量名 '", v, "' 重复"
+				"（结构里已有同名变量，或本批次内重复）"));
 		}
 	}
 	if (tname == "Daemon") {
@@ -224,13 +227,14 @@ HotSqlPlan::Deletes HotSqlPlanner::planHotDeletes(const ScriptLoader::Mutations&
 		p.rows = rows;
 		const std::int64_t idxName = matrices_[si].indexOfCol(0, "name");
 		if (idxName < 0) {
-			throw IllegalArgumentException("热删除：表 '" + tname + "' 没有 'name' 列，"
-				"无法定位要摘除的硬件变量");
+			throw IllegalArgumentException(concatMsg(
+				"热删除：表 '", tname, "' 没有 'name' 列，"
+				"无法定位要摘除的硬件变量"));
 		}
 		for (std::size_t r : rows) {
 			if (r >= matrices_[si].rows()) {
-				throw IllegalArgumentException("热删除：表 '" + tname + "' 的第 "
-					+ std::to_string(r) + " 行不存在（结构可能已被改动）");
+				throw IllegalArgumentException(concatMsg(
+					"热删除：表 '", tname, "' 的第 ", std::to_string(r), " 行不存在（结构可能已被改动）"));
 			}
 			const std::string v = trim(matrices_[si](r, static_cast<std::size_t>(idxName)));
 			p.names.push_back(v);

@@ -274,15 +274,17 @@ void HotSqlService::rollbackHotBatch(const HwRegistry::Mark& mark, std::size_t m
  *    executed=false），对本口径是谎报：删旧件是真实发生过的副作用。 */
 void HotSqlService::rethrowWithLostVars(const HotDeleteOutcome& alreadyDeleted) {
 	const std::string names = joinNames(alreadyDeleted.deletedNames);
-	const std::string tail =
-		"；注意：本批次含 UPDATE，其命中旧行已断电摘除且未能重建（"
-		+ names + "）——硬件不会自动复原，请核对状态后按需要的值重新 INSERT";
+	const std::string tail = concatMsg(
+		"；注意：本批次含 UPDATE，其命中旧行已断电摘除且未能重建（",
+		names, "）——硬件不会自动复原，请核对状态后按需要的值重新 INSERT");
 	try {
 		throw;
 	} catch (const std::exception& e) {
-		throw std::runtime_error(std::string(e.what()) + tail);
+		throw std::runtime_error(concatMsg(
+			std::string(e.what()), tail));
 	} catch (...) {
-		throw std::runtime_error(std::string(kNonStdExceptionNote) + tail);
+		throw std::runtime_error(concatMsg(
+			std::string(kNonStdExceptionNote), tail));
 	}
 }
 
@@ -401,8 +403,8 @@ HotSqlService::HotDeleteOutcome HotSqlService::executeHotDeletes(
 		for (std::size_t k = 0; k < p.names.size(); ++k) {
 			auto slot = daemonNameIndex.find(p.names[k]);
 			if (slot == daemonNameIndex.end() || slot->second >= daemons_.size()) {
-				throw IllegalArgumentException("热删除：守护 '" + p.names[k]
-					+ "' 找不到对应的守护线程登记槽（内部不一致）");
+				throw IllegalArgumentException(concatMsg(
+					"热删除：守护 '", p.names[k], "' 找不到对应的守护线程登记槽（内部不一致）"));
 			}
 			dyingHolders.push_back(daemons_.at(slot->second));
 		}
