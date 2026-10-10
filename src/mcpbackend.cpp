@@ -22,7 +22,7 @@
 #include "util_env.hpp"
 #include "util_file.hpp"
 #include "util_str.hpp"		/* safeEquals 恒时比较（凭据比对安全单点） */
-#include "util_utf8.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
+#include "util_utf8.hpp"		/* stopRequested / isValidUtf8 */
 
 namespace bot {
 namespace agent {

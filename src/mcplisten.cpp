@@ -36,15 +36,12 @@
 #include <sys/un.h>
 #include <unistd.h>
 
-#include "agentmode.hpp"	/* AgentModeConfig / makeToolContext / structureDisplayName */
-#include "agentprompt.hpp"	/* structureScriptHead / quoteUntrusted（context.get 素材） */
-#include "jsonparse.hpp"	/* parseJson */
-#include "robot.hpp"		/* RobotStruct 完整定义（context.get 的 registry()） */
+#include "agentmode.hpp"	/* AgentModeConfig / makeToolContext（工具层与 agent 模式同源装配） */
+#include "robot.hpp"		/* RobotStruct 完整定义（runMcpBackend 入参，生命周期由 main 持有） */
 #include "util_cli.hpp"		/* AuthFailGate（认证爆破失败门单点） */
-#include "util_env.hpp"
-#include "util_file.hpp"
-#include "util_str.hpp"		/* safeEquals 恒时比较（凭据比对安全单点） */
-#include "util_utf8.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
+#include "util_env.hpp"		/* errnoText（bind/listen/poll 失败文案） */
+#include "util_file.hpp"		/* FdGuard（监听/连接 fd 的 RAII 收管） */
+#include "util_utf8.hpp"		/* stopRequested */
 
 namespace fs = std::filesystem;
 
