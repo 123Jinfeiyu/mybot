@@ -46,6 +46,12 @@ const HELP_TEXT: &str = "内置命令:\n\
   让机器人站立\n\
   拍照并描述看到的内容";
 
+/// 「后端没开工具」的报错文案单点（/hardware 与 /scripts 共用；/sql 那份不并——
+/// 它带 flag 与「配置文件不能放宽，只能收紧」子句，结构不同）。
+fn missing_tool_error(tool: &str) -> String {
+    format!("错误: 后端没有提供 {tool} 工具（检查 mybot --mcp-backend 那一侧的开关）")
+}
+
 /// 斜杠命令分派（B4 拆自 run_repl 循环体）：命中并处理完毕返回 true
 /// （调用方 continue，不进模型）；不是斜杠命令返回 false（当任务发给模型）。
 /// hw 是当轮提示符已取好的硬件数（/status 复用，避免二次往返）。
@@ -70,9 +76,7 @@ pub(super) async fn handle_slash_command(
     }
     if task == "/hardware" {
         if !session.has_tool("list_hardware") {
-            outln!(
-                "错误: 后端没有提供 list_hardware 工具（检查 mybot --mcp-backend 那一侧的开关）"
-            );
+            outln!("{}", missing_tool_error("list_hardware"));
             return true;
         }
         outln!(
@@ -85,9 +89,7 @@ pub(super) async fn handle_slash_command(
     }
     if task == "/scripts" {
         if !session.has_tool("list_action_scripts") {
-            outln!(
-                "错误: 后端没有提供 list_action_scripts 工具（检查 mybot --mcp-backend 那一侧的开关）"
-            );
+            outln!("{}", missing_tool_error("list_action_scripts"));
             return true;
         }
         outln!(
