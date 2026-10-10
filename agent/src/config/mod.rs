@@ -76,8 +76,9 @@ pub mod limits {
     pub const HTTP_FETCH_TIMEOUT_MAX_SEC: i64 = 120;
     pub const HTTP_FETCH_MAX_BYTES_MIN: i64 = 1;
     pub const HTTP_FETCH_MAX_BYTES_MAX: i64 = 1 << 20;
-    /// 录制图片仓总量上限（--record-max-bytes；0 = 不限，缺省 0——采集跑批的
-    /// 磁盘由人盯着，上限留给「现场顺手开录制」的部署手动设置）
+    /// 录制图片仓总量上限（--record-max-bytes；0 = 不限，缺省 0——微调数据采集里
+    /// 图片就是 payload；采集跑批的磁盘由人盯着，上限留给「现场顺手开录制」的
+    /// 部署手动设置）
     pub const RECORD_MAX_BYTES_MIN: i64 = 0;
     pub const RECORD_MAX_BYTES_MAX: i64 = 64 << 30;
 }
@@ -106,7 +107,6 @@ pub const DEFAULT_RETRY_BACKOFF_MS: i64 = 1000;
 /// http_fetch 缺省超时与响应体上限（64 KiB，同 C++ read_file 的量级）
 pub const DEFAULT_HTTP_FETCH_TIMEOUT_SEC: i64 = 10;
 pub const DEFAULT_HTTP_FETCH_MAX_BYTES: i64 = 64 << 10;
-/// 录制图片仓缺省上限：0 = 不限（微调数据采集里图片就是 payload，见 limits 注）
 
 /// 密钥包装（2026-09-30 审计 P1）：`Config` 曾派生 Debug 且含明文 `api_key`——
 /// 当时没有任何 `{:?}` 打印它，但距离「一条 `errln!("{cfg:?}")` 把密钥写进

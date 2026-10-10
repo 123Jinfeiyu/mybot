@@ -84,6 +84,9 @@ pub fn default_record_root(state_dir: &str, robot_name: &str) -> String {
 /// main 的装配口：未开启返回 `Ok(None)`；开启则解析录制根（显式 `--record-dir`
 /// 优先，否则缺省布局——缺省根要等后端给出机器人名，只能在 main 这一层拼）。
 /// `--record` 无状态目录的判据已在 `config::build` 报过，这里到不了。
+/// 参数多是门面本色：全数展开进 [`RecordOpen`] 字段，为凑数再包一层分组结构
+/// 只增加转发，故显式放行该 lint（先例：audit.rs now_timespec）。
+#[allow(clippy::too_many_arguments)]
 pub fn open_from_config(
     cfg: &crate::config::Config,
     material: &crate::prompt::PromptMaterial,
@@ -881,8 +884,8 @@ mod tests {
         let b64_hello = base64::engine::general_purpose::STANDARD.encode(b"hello");
         let b64_world = base64::engine::general_purpose::STANDARD.encode(b"world!");
         // 水位语义：第二次调用要带全量历史（调用方 REPL 正是这么传的）
-        store.record_history(&vec![image_msg(&b64_hello)]);
-        store.record_history(&vec![image_msg(&b64_hello), image_msg(&b64_world)]);
+        store.record_history(&[image_msg(&b64_hello)]);
+        store.record_history(&[image_msg(&b64_hello), image_msg(&b64_world)]);
         let evs = events(&store);
         let imgs: Vec<&Value> = evs
             .iter()
@@ -911,11 +914,11 @@ mod tests {
         let mut store = open_store(&root, 0);
         let mk = |t: &str| Message::user(t);
         // 任务一：2 条
-        store.record_history(&vec![mk("a1"), Message::assistant("r1")]);
+        store.record_history(&[mk("a1"), Message::assistant("r1")]);
         // 裁掉最老 1 条：内存历史变 [r1]，水位回退到 1（r1 已录过）
         store.note_evicted(1);
         // 新任务补 1 条：调用方传裁剪后的全量历史 [r1, b1]
-        store.record_history(&vec![Message::assistant("r1"), mk("b1")]);
+        store.record_history(&[Message::assistant("r1"), mk("b1")]);
         let evs = events(&store);
         let msgs: Vec<&Value> = evs.iter().filter(|e| e["event"] == "msg").collect();
         assert_eq!(msgs.len(), 3, "a1/r1/b1 各一条（录制是全量留档）");
@@ -923,7 +926,7 @@ mod tests {
         assert!(evs.iter().any(|e| e["event"] == "history_evict" && e["messages"] == 1));
         // /clear：水位归零，其后整段重录
         store.reset_after_clear();
-        store.record_history(&vec![mk("c1")]);
+        store.record_history(&[mk("c1")]);
         let evs = events(&store);
         assert!(evs.iter().any(|e| e["event"] == "clear"));
         let msgs: Vec<&Value> = evs.iter().filter(|e| e["event"] == "msg").collect();
@@ -960,7 +963,7 @@ mod tests {
                 }),
             ],
         };
-        store.record_history(&vec![msg]);
+        store.record_history(&[msg]);
         let evs = events(&store);
         let m = &evs[1]["msg"];
         assert_eq!(m["role"], "assistant");
@@ -989,7 +992,7 @@ mod tests {
                 UserContent::image_base64(b64.as_str(), Some(ImageMediaType::JPEG), None),
             ],
         };
-        store.record_history(&vec![msg]);
+        store.record_history(&[msg]);
         let evs = events(&store);
         let parts = evs[1]["msg"]["parts"].as_array().unwrap();
         assert_eq!(parts.len(), 3);
