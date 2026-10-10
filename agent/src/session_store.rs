@@ -195,11 +195,7 @@ pub fn write_pointer(dir: &str, name: &str) -> Result<(), String> {
     let tmp = format!("{dir}/.{POINTER_NAME}.{}.tmp", std::process::id());
     let mut opts = OpenOptions::new();
     opts.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
+    crate::fssec::opts_0600(&mut opts);
     let mut f = opts
         .open(&tmp)
         .map_err(|e| format!("无法写当前段指针 {tmp}（{e}）"))?;
@@ -230,20 +226,8 @@ pub fn ensure_dir_0700(path: &str) -> Result<(), String> {
             continue;
         }
         fs::create_dir(&cur).map_err(|e| format!("无法创建目录 {}（{e}）", cur.display()))?;
-        set_mode_0700(&cur)?;
+        crate::fssec::set_dir_0700(&cur, "目录")?;
     }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_mode_0700(p: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(p, fs::Permissions::from_mode(0o700))
-        .map_err(|e| format!("无法设置目录权限 {}（{e}）", p.display()))
-}
-
-#[cfg(not(unix))]
-fn set_mode_0700(_p: &Path) -> Result<(), String> {
     Ok(())
 }
 
@@ -260,11 +244,7 @@ fn create_segment(dir: &str, now_sec: i64) -> Result<(String, String), String> {
         let path = format!("{dir}/{name}");
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
+        crate::fssec::opts_0600(&mut opts);
         match opts.open(&path) {
             Ok(_) => return Ok((path, name)),
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

@@ -101,11 +101,7 @@ impl AuditLog {
             let wide = wide_perms_warning(path);
             let mut opts = OpenOptions::new();
             opts.create(true).append(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt;
-                opts.mode(0o600);
-            }
+            crate::fssec::opts_0600(&mut opts);
             let f = opts.open(path).map_err(|e| {
                 format!(
                     "无法打开审计日志文件 '{path}'（{e}）；请检查目录是否存在、\
@@ -294,16 +290,12 @@ fn new_session_id() -> String {
     fingerprint64(&seed.to_string())[..8].to_string()
 }
 
-/// 既有审计日志文件权限宽于 0600 时的告警文本（判据与 `session::perms_warning`
-/// 同口径：mode & 0o077 != 0）。不存在/取不到权限/非 unix → 空串（新建路径由
+/// 既有审计日志文件权限宽于 0600 时的告警文本（判据单点在 [`crate::fssec::wide_perms`]，
+/// 与 `session::perms_warning` 同口径）。不存在/取不到权限/非 unix → 空串（新建路径由
 /// `open` 的 `mode(0o600)` 兜住，不会走到这里）。
 #[cfg(unix)]
 fn wide_perms_warning(path: &str) -> String {
-    use std::os::unix::fs::MetadataExt;
-    let Ok(st) = std::fs::metadata(path) else {
-        return String::new();
-    };
-    if !st.is_file() || st.mode() & 0o077 == 0 {
+    if !crate::fssec::wide_perms(path, crate::fssec::PermKind::File) {
         return String::new();
     }
     format!(

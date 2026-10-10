@@ -197,7 +197,7 @@ impl RecordStore {
         let dir = PathBuf::from(format!("{}/{}", o.root, segment));
         fs::create_dir_all(dir.join("images"))
             .map_err(|e| format!("无法创建录制图片目录 {}（{e}）", dir.display()))?;
-        set_dir_0700(&dir.join("images"))?;
+        crate::fssec::set_dir_0700(&dir.join("images"), "录制目录")?;
 
         // 续接链：resumed 时读指针找前一段（读不到就 None，不阻断——链是尽力而为）
         let resumed_from = if o.resumed {
@@ -560,11 +560,7 @@ impl RecordStore {
         let path = self.dir.join("images").join(&name);
         let mut opts = OpenOptions::new();
         opts.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
+        crate::fssec::opts_0600(&mut opts);
         match opts.open(&path).and_then(|mut f| {
             f.write_all(&raw)?;
             f.flush()
@@ -641,7 +637,8 @@ fn media_ext(m: &ImageMediaType) -> &'static str {
 }
 
 /// O_EXCL 占一个段目录；同名退 `-<pid>`、`-<pid>-<n>`（同 session_store::create_segment
-/// 的判据，目录版）。返回段目录名。
+/// 的判据，目录版；第五轮 Phase 4 评估过不合并两者——占文件 vs 占目录、报错文案不同，
+/// 抽象面大于复制面）。返回段目录名。
 fn create_segment_dir(root: &str, now_sec: i64) -> Result<String, String> {
     let base = segment_name(now_sec);
     for attempt in 0..16u32 {
@@ -653,7 +650,7 @@ fn create_segment_dir(root: &str, now_sec: i64) -> Result<String, String> {
         let path = format!("{root}/{name}");
         match fs::create_dir(&path) {
             Ok(()) => {
-                set_dir_0700(PathBuf::from(&path).as_path())?;
+                crate::fssec::set_dir_0700(std::path::Path::new(&path), "录制目录")?;
                 return Ok(name);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -663,28 +660,10 @@ fn create_segment_dir(root: &str, now_sec: i64) -> Result<String, String> {
     Err(format!("无法在同秒内为 {base} 找到可用录制段名（同名冲突过多）"))
 }
 
-fn set_dir_0700(p: &std::path::Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(p, std::fs::Permissions::from_mode(0o700))
-            .map_err(|e| format!("无法设置录制目录权限 {}（{e}）", p.display()))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = p;
-        Ok(())
-    }
-}
-
 fn write_file_0600(path: &std::path::Path, bytes: &[u8]) -> Result<(), String> {
     let mut opts = OpenOptions::new();
     opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
+    crate::fssec::opts_0600(&mut opts);
     let mut f = opts
         .open(path)
         .map_err(|e| format!("无法创建 {}（{e}）", path.display()))?;
@@ -707,7 +686,8 @@ fn set_file_0600(path: &std::path::Path) {
 
 /// 段目录指针（`<root>/latest`，0600，tmp+rename 原子落）：内容是段目录名。
 /// 只在名字「像段名」（`[A-Za-z0-9_-]{1,64}`）时采纳——指针是磁盘上的可变内容，
-/// 按不可信输入对待，不把它原样拼进路径。
+/// 按不可信输入对待，不把它原样拼进路径。第五轮 Phase 4 评估过不与
+/// session_store::write_pointer 合并——那边带 fsync、指针名/文案不同，语义差异是实的。
 fn write_pointer(root: &str, segment: &str) -> Result<(), String> {
     let ptr = format!("{root}/latest");
     let tmp = format!("{ptr}.{}.tmp", std::process::id());
@@ -730,26 +710,15 @@ fn read_pointer_best_effort(root: &str) -> Option<String> {
     ok.then_some(name)
 }
 
-/// 录制根目录已存在且权限宽于 0700 时的告警（判据同 audit 的 wide_perms_warning；
-/// 新建目录由 ensure_dir_0700 兜住，不会走到这里）。
+/// 录制根目录已存在且权限宽于 0700 时的告警（判据单点在 [`crate::fssec::wide_perms`]，
+/// 与 audit 的 wide_perms_warning 同源；新建目录由 ensure_dir_0700 兜住，不会走到这里）。
 fn dir_perms_warning(root: &str) -> Option<String> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let st = fs::metadata(root).ok()?;
-        if !st.is_dir() || st.mode() & 0o077 == 0 {
-            return None;
-        }
-        Some(format!(
+    crate::fssec::wide_perms(root, crate::fssec::PermKind::Dir).then(|| {
+        format!(
             "警告: 录制根目录 '{root}' 权限宽于 700（录制含完整对话与图片，同等敏感），\
              建议 chmod 700 {root}"
-        ))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = root;
-        None
-    }
+        )
+    })
 }
 
 #[cfg(test)]

@@ -580,24 +580,13 @@ fn parse_head(parsed: &Value, path: &str) -> Result<Option<SessionHead>, String>
 }
 
 /// 文件存在且权限宽于 0600 时返回告警文本（与 `mybot.llm.json` 既有判据同口径：
-/// 会话文件含完整对话内容，同等敏感）。不存在/取不到权限 = 空串。
+/// 会话文件含完整对话内容，同等敏感；判据单点在 [`crate::fssec::wide_perms`]）。
+/// 不存在/取不到权限 = 空串。
 pub fn perms_warning(path: &str) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let Ok(st) = std::fs::metadata(path) else {
-            return String::new();
-        };
-        if !st.is_file() || st.mode() & 0o077 == 0 {
-            return String::new();
-        }
-        format!("会话文件 '{path}' 权限宽于 600（含完整对话内容，同等敏感），建议 chmod 600 {path}")
+    if !crate::fssec::wide_perms(path, crate::fssec::PermKind::File) {
+        return String::new();
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        String::new()
-    }
+    format!("会话文件 '{path}' 权限宽于 600（含完整对话内容，同等敏感），建议 chmod 600 {path}")
 }
 
 // ---------------- 写 ----------------
@@ -638,13 +627,8 @@ impl SessionFileWriter {
         } else {
             opts.write(true).truncate(true);
         }
-        /* mode() 只在**创建新文件**时生效（打开既有文件时被忽略），故无条件
-         * 设置即可；umask 只能进一步收紧，不会放宽。 */
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            opts.mode(0o600);
-        }
+        /* mode 脚手架与「无条件设置即可」的理由收在 fssec::opts_0600 单点。 */
+        crate::fssec::opts_0600(&mut opts);
         let f = opts.open(path).map_err(|e| {
             format!("无法打开会话文件 '{path}'（{e}）；请检查目录是否存在、是否有写权限")
         })?;

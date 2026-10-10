@@ -31,6 +31,7 @@ mod bridge;
 mod budget;
 mod config;
 mod frame;
+mod fssec;
 mod history;
 mod hook;
 mod httpfetch;

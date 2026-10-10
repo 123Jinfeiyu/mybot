@@ -444,28 +444,17 @@ pub(super) fn validate_api_key_chars(key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 组内/其他用户可读时给出提示（C++ `secretFilePermissionWarning` 同口径）。
+/// 组内/其他用户可读时给出提示（C++ `secretFilePermissionWarning` 同口径；
+/// 判据单点在 [`crate::fssec::wide_perms`]，`Any` 保住本站历史上不做 is_file
+/// 检查的行为）。
 pub(super) fn secret_file_permission_warning(path: &str) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let Ok(st) = fs::metadata(expand_home(path)) {
-            // S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH = 0o077
-            if st.mode() & 0o077 == 0 {
-                return String::new();
-            }
-            return format!(
-                "提示: {} 对同组/其他用户可读（建议 chmod 600），它保存着 API key",
-                expand_home(path)
-            );
-        }
-        String::new()
+    if crate::fssec::wide_perms(&expand_home(path), crate::fssec::PermKind::Any) {
+        return format!(
+            "提示: {} 对同组/其他用户可读（建议 chmod 600），它保存着 API key",
+            expand_home(path)
+        );
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        String::new()
-    }
+    String::new()
 }
 
 #[cfg(test)]
