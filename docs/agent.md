@@ -1352,7 +1352,7 @@ bash test/run_all.sh agent-all
 - 三个上下文字节预算（会话历史 `max_history_bytes`、任务内文本 `max_task_tool_result_bytes`、
   任务内图片 `max_task_image_bytes`）现可由**配置文件**覆盖（B1，2026-09-22，见上文
   「配置文件」字段表；缺省分别是 4 / 2 / 4 MiB）。`capture_image` 的单图 base64 硬上限 2 MiB
-  仍在 `src/agenttools.hpp`（编译期常量）。需要调优内存/上下文时先确认它们是不是你要找的那个数。
+  仍在 `src/agenttools_internal.hpp`（编译期常量）。需要调优内存/上下文时先确认它们是不是你要找的那个数。
 - 五个**运行期数值**（单轮调用数 `max_calls_per_round`、重试 `max_retries` / `retry_backoff_ms`、
   `run_command` 的 `run_command_timeout_sec` / `run_command_max_timeout_sec`）同样只在
   **配置文件**里可调（B4，2026-09-22）：它们刻意为**没有命令行选项**（选项面已 20+，

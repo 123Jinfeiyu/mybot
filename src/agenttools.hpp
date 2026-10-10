@@ -24,13 +24,6 @@ class MatrixVars_Hardware;
 
 namespace agent {
 
-/* 单张图的 base64 上限（宿主侧封顶，与驱动侧 MAX_SIM_BYTES 各管一段）。
- * 会话历史的字节预算刻意「不封顶单块」，只按任务块整块裁（Rust 侧
- * agent/src/history.rs 的 trim，C++ 的 HistoryManager 孪生已随 REPL 迁 Rust
- * 删除），而一张照片正是单块的主项：驱动仿真图允许 16MiB 原始字节
- * （base64 后约 21MB），一次拍照就能击穿 4MiB 历史预算、把请求体顶到常见网关限额
- * 之外。故在工具入口先拒一次。 */
-
 /* 运行时工具执行结果。跨进程 JSON 字段由 mcp_protocol.hpp 约束。 */
 struct AgentToolResult {
 	std::string text;
@@ -156,38 +149,9 @@ struct AgentToolContext {
  * 以及（allowWriteFile 时）write_file。 */
 AgentToolRegistry makeAgentTools(const AgentToolContext& ctx);
 
-/* ---- 供工具与系统提示词共用的描述函数 ---- */
-
-/* 动作脚本清单：递归收集 scriptsDir 下的 *.mt，输出「相对路径 — 首行注释」。
- * 目录不存在时返回一行说明而非抛（提示词里如实告知模型即可）。 */
-std::string describeActionScripts(const std::string& scriptsDir);
-
-/* 已注册硬件变量清单。只读名字与种类，绝不调用 read()/play()
- * （对舵机等执行器，play({}) 会真的下发指令）。 */
-std::string describeHardware(RobotStruct& robot);
-
-/* ---- SQL 只读渲染（query_sql 工具的单一事实源）----
- * 解析一条结构 SQL 并渲染成文本。只读、无副作用：不装配硬件、不改结构矩阵。
- *   * SELECT * FROM t —— 从运行时结构矩阵（robot.structures().all()）取数渲染；
- *   * CREATE/INSERT —— 只解析回显（语法验证），不落任何状态。
- * 失败经 SqlOutcome::ok=false 显式传递（此前以「错误: 」字符串前缀当错误码、
- * 调用方再 rfind 前缀翻回异常——文案改动即断链）；text 为**不带前缀**的人话
- * 原因（解析器带行列定位），前缀由调用方按自己的口径渲染。
- * 沿革：REPL /sql（runSqlCommand，全 SELECT 走本函数、含写语句转 applySql
- * 带电生效）与它身边的 SqlStatementBatch 已随 C++ REPL 迁 Rust 删除——
- * 操作者侧的 SQL 通道由 Rust REPL 的 /sql 经 tool.call 直接复用本函数所在
- * 的 query_sql 工具（只读）；带电生效仍是 apply_sql 工具 + applySql 的事。 */
-struct SqlOutcome {
-	bool ok = true;
-	std::string text;
-};
-
-SqlOutcome runSqlStatement(const std::string& sql, const RobotStruct& robot);
-
-/* 动作脚本路径解析：请求必须是 scriptsDir 之下的相对路径。
- * 拒绝绝对路径、空段、"."/".."、以及含 NUL 的名字（NUL 会让
- * fopen 截断路径，是「校验的路径 ≠ 打开的路径」经典绕过）。 */
-std::string resolveActionScriptPath(const std::string& scriptsDir, const std::string& requested);
+/* ---- 只读视图族（describeActionScripts / describeHardware / runSqlStatement /
+ * resolveActionScriptPath / appendActionEcho）2026-10-10 归位 agentview.hpp
+ * ——声明跟着实现 TU 走（robot.hpp A2「声明各归各位」同一原则）。 ---- */
 
 /* 动作脚本装载（沙箱解析 + 体积上限读取 + 非空校验），失败抛 std::exception。
  * runActionScriptFile 的前半段；--on-disconnect 的上电前预检也走它——
@@ -204,19 +168,6 @@ std::string loadActionScriptFile(const std::string& scriptsDir, const std::strin
  * robot.hpp）——脚本里的 $(键) 就地解析，作用域限本次 run()。缺省空 = 不注入。 */
 std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& requested,
 		std::string& echo, const std::map<std::string, std::string>& vars = {});
-
-/* ---- D（2026-09-23）：动作脚本执行期间的驱动返回表回收 ----
- * `run_action_script` 此前只回一句「已执行动作脚本 X（N 字节）」——**模型看不到
- * 任何读数**，而器件读到的值事实上早已产生：`play()` 的顶层回显（luavar 的
- * res / ctrl_res 表，如 BH1750 的 `{result="OK", LUX=…}`）此前只写 stderr，
- * 操作者看得见、模型看不见。现在执行窗口内挂一条回收通道，把回显经本函数追加
- * 进工具回执（见 `kMaxActionEchoBytes`）。 */
-inline constexpr std::size_t kMaxActionEchoBytes = 8u << 10;
-
-/* 把回收到的回显追加进回执文本。单点职责：截断 + UTF-8 消毒 + 「数据非指令」
- * 定界（`quoteUntrusted`），便于离线断言。@p echo 为空时**逐字节不改** out——
- * 无回显的脚本（旧式无参设备、`playQuiet` 路径）回执形态与改动前完全一致。 */
-void appendActionEcho(std::string& out, const std::string& echo);
 
 
 } // namespace agent

@@ -9,6 +9,8 @@
 #include "fixtures.hpp"
 #include "harness.hpp"
 
+#include "agentview.hpp"	/* resolveActionScriptPath 归位后经此引用（2026-10-10） */
+
 using fx::TempDir;
 
 #include <filesystem>

@@ -24,6 +24,7 @@
 #include "agentdispatch.hpp"
 #include "agentproto.hpp"
 #include "agenttools.hpp"
+#include "agentview.hpp"	/* describeActionScripts 归位后经此引用（2026-10-10） */
 #include "jsonparse.hpp"
 #include "luaend.hpp"
 #include "luaexec.hpp"

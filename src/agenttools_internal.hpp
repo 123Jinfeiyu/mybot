@@ -2,9 +2,11 @@
 /* agenttools_internal.hpp —— agent 工具层的**模块内**接缝（2026-09-25 B3 拆分）
  *
  * agenttools.cpp（工具装配）/ agentview.cpp（只读视图族）/ agentimage.cpp
- * （摄像头簇）/ agenttools_wait.cpp（wait_variable 轮询机器，2026-10-01）四个
- * TU 共享、但不属于对外契约的件。对外契约（AgentToolRegistry/makeAgentTools/
- * runSqlStatement/describe* 等，供 mcpbackend/agentmode 消费）在 agenttools.hpp；
+ * （摄像头簇）/ agenttools_wait.cpp（wait_variable 轮询机器，2026-10-01）
+ * / agenttools_fs.cpp（fs 工具族）五个 TU 共享、但不属于对外契约的件。
+ * 对外契约：工具装配面（AgentToolRegistry/makeAgentTools/loadActionScriptFile
+ * 等，供 mcpbackend/agentmode 消费）在 agenttools.hpp；只读视图面
+ * （runSqlStatement/describe*，2026-10-10 归位）在 agentview.hpp。
  * 加到这里的东西以「多 TU 都要用」为准，别把单 TU 私有件挪进来。 */
 
 #include "agenttools.hpp"
@@ -41,10 +43,18 @@ std::string readFileLimited(const std::string& path, std::size_t cap);
 /* SHOW TABLES 的只读渲染（runSqlStatement 的 SHOW 分支单点，agentview.cpp） */
 std::string renderShowTables(const RobotStruct& robot);
 
-/* capture_image 工具的装配（agentimage.cpp；makeAgentTools 按能力门控挂载）。
- * 体积上限：base64 后的图像字节预算（8 MiB 帧上限的孪生判据，见 mcptransport.hpp）。 */
-inline constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
+/* capture_image 工具的装配（agentimage.cpp；makeAgentTools 按能力门控挂载）。 */
 AgentTool makeCaptureImageTool(const AgentToolContext& ctx);
+
+/* 单张图的 base64 上限（宿主侧封顶，与驱动侧 MAX_SIM_BYTES 各管一段；
+ * 8 MiB 帧上限的孪生判据，见 mcptransport.hpp）。
+ * 会话历史的字节预算刻意「不封顶单块」，只按任务块整块裁（Rust 侧
+ * agent/src/history.rs 的 trim；C++ 的 HistoryManager 孪生已随 REPL 迁 Rust
+ * 删除），而一张照片正是单块的主项：驱动仿真图允许 16MiB 原始字节
+ * （base64 后约 21MB），一次拍照就能击穿 4MiB 历史预算、把请求体顶到常见
+ * 网关限额之外。故在工具入口先拒一次。（2026-10-10 自 agenttools.hpp 归位：
+ * 设计理由跟着常量本体走，不再悬在工具契约头里。） */
+inline constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
 
 /* wait_variable 工具的装配（agenttools_wait.cpp；与 read_variables 同门控，
  * makeAgentTools 按「至少一个可读变量」挂载） */
