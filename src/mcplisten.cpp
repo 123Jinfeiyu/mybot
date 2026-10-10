@@ -13,6 +13,7 @@
 #define _GNU_SOURCE	/* struct ucred / SO_PEERCRED / accept4 / SOCK_CLOEXEC */
 #endif
 
+#include "mcplisten.hpp"
 #include "mcpbackend.hpp"
 
 #include <cerrno>
@@ -56,32 +57,10 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+} // namespace
 
-/* serveConnection 的认证记账结果（AuthFailGate 的输入，2026-09-30 审计 P1）：
- *   Failed——给出了首帧但认证不通过（连续失败计数 +1）；
- *   Passed——认证通过（业务循环无论怎么结束都算，连续失败计数归零）；
- *   Neutral——没走到认证判定（哑对端/无 token 模式），计数不动。 */
-enum class ConnAuth { Neutral, Passed, Failed };
-
-/* serveConnection 的连接结局（2026-10-01 审计 P2 前只有 ConnAuth，断连安全动作
- * 无条件执行——语义缺口见 acceptLoop 的门）。两个判据服务两件事，必须分开记：
- *   auth——AuthFailGate 爆破计数口径（见上）；
- *   admitted——是否真正进入过业务循环：无 token 模式恒 true；token 模式认证
- *     通过才 true。断连安全动作只对 admitted 连接执行——探连（连上就断/
- *     认证帧未到）与认证失败从未被服务，不该拥有触发硬件动作的通道。 */
-struct ConnOutcome {
-	ConnAuth auth = ConnAuth::Neutral;
-	bool admitted = false;
-};
-
-/* 服务单条连接：帧循环直到对端关闭 / 协议违规 / 空闲超时 / 停止信号。
- * 空闲 deadline 逐帧重取（--mcp-idle-timeout 是「从现在起再等这么久」，
- * 墙钟预算是从连接起的绝对终点——两者由 idleDeadline 合成）。
- * MCP-1（审计 P2-1）：authToken 非空时第一帧是认证帧——通过才进入正常循环，
- * 不通过回执后断连（对端可修正重连）。失败的认证要落审计（kind=session，
- * status=auth_failed）：它是「有进程在试探这条 socket」的信号，事后复盘
- * 必须看得见；token 本身绝不进日志/审计/回执。返回 ConnOutcome：auth 供
- * acceptLoop 记账连续失败（见 AuthFailGate），admitted 供断连安全动作门控。 */
+/* ---- 连接服务（ConnAuth/ConnOutcome/serveConnection 的契约与可测接缝在
+ * mcplisten.hpp，2026-10-10 析出；此处实现）---- */
 ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions& opts,
 		std::ostream& log) {
 	bool admitted = opts.authToken.empty();
@@ -143,8 +122,6 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 	return ConnOutcome{result, admitted};
 }
 
-} // namespace
-
 /* ---- socket 服务 ---- */
 
 /* ---- 断连安全动作（2026-09-25，--on-disconnect）----
@@ -184,6 +161,41 @@ static void runDisconnectAction(const AgentToolContext& tctx, const std::string&
 	if (audit && audit->enabled()) { audit->write(e); }
 }
 
+/* ---- 断连安全动作的门（契约见 mcplisten.hpp；2026-10-10 自 acceptLoop
+ * 内联析出供白盒锚定）----
+ * 此前无条件执行——同 UID 对端反复 connect+close（或反复发错密钥）可以反复
+ * 驱动执行器到"安全姿态"，连败 5 次还会借停机断电链把后端打停；认证门
+ * （MCP-1/AuthFailGate）只盖住了工具派发路径，没盖住断连路径。 */
+DisconnectAction disconnectActionGate(bool admitted, const std::string& onDisconnectScript) {
+	if (onDisconnectScript.empty()) { return DisconnectAction::NotConfigured; }
+	return admitted ? DisconnectAction::Run : DisconnectAction::SkipNotAdmitted;
+}
+
+/* ---- 监听 socket 的父目录备置（契约见 mcplisten.hpp；2026-10-10 自
+ * prepareListenSocket 首段析出供白盒锚定）----
+ * 父目录是 SO_PEERCRED 之外的第二道同机隔离：缺失则以 0700 建（单级）；
+ * 已存在但权限过松则告警（不静默）——0700 建议写进日志而非替操作者收紧。 */
+bool prepareSocketParentDir(const std::string& socketPath, std::ostream& log) {
+	const fs::path sp(socketPath);
+	fs::path parent = sp.parent_path();
+	if (parent.empty()) { parent = "."; }
+	std::error_code ec;
+	if (!fs::exists(parent, ec)) {
+		if (::mkdir(parent.c_str(), 0700) != 0 && errno != EEXIST) {
+			log << "错误: 无法创建 socket 父目录 '" << parent.string() << "': "
+				<< errnoText(errno) << "\n";
+			return false;
+		}
+	} else {
+		struct stat st{};
+		if (::stat(parent.c_str(), &st) == 0 && (st.st_mode & 0077) != 0) {
+			log << "警告: socket 父目录 '" << parent.string()
+				<< "' 权限过松（建议 0700）；同机其他用户可能连上后端\n";
+		}
+	}
+	return true;
+}
+
 namespace {
 
 /* AF_UNIX 监听套接字的准备结果（拆自 runMcpBackend，2026-09-26 批次 5）：
@@ -194,27 +206,12 @@ struct ListenSocket {
 	int rc = 0;
 };
 
-/* 准备 AF_UNIX 监听套接字：父目录创建/权限体检 → 启动前探测（A-1）→
- * socket/bind/chmod 0600/listen。成功返回已监听的 fd（rc=0）；失败把原因写进
- * log 并返回相应退出码，fd 为空。 */
+/* 准备 AF_UNIX 监听套接字：父目录创建/权限体检（单点 prepareSocketParentDir）→
+ * 启动前探测（A-1）→ socket/bind/chmod 0600/listen。成功返回已监听的 fd（rc=0）；
+ * 失败把原因写进 log 并返回相应退出码，fd 为空。 */
 ListenSocket prepareListenSocket(const std::string& socketPath, std::ostream& log) {
-	/* 父目录：缺失则以 0700 建（单级）；已存在但权限过松则告警（不静默）。 */
-	const fs::path sp(socketPath);
-	fs::path parent = sp.parent_path();
-	if (parent.empty()) { parent = "."; }
-	std::error_code ec;
-	if (!fs::exists(parent, ec)) {
-		if (::mkdir(parent.c_str(), 0700) != 0 && errno != EEXIST) {
-			log << "错误: 无法创建 socket 父目录 '" << parent.string() << "': "
-				<< errnoText(errno) << "\n";
-			return ListenSocket{FdGuard(), 2};
-		}
-	} else {
-		struct stat st{};
-		if (::stat(parent.c_str(), &st) == 0 && (st.st_mode & 0077) != 0) {
-			log << "警告: socket 父目录 '" << parent.string()
-				<< "' 权限过松（建议 0700）；同机其他用户可能连上后端\n";
-		}
+	if (!prepareSocketParentDir(socketPath, log)) {
+		return ListenSocket{FdGuard(), 2};
 	}
 
 	/* 启动前探测（A-1，2026-09-25 审计）：不再无条件 unlink——误配同一路径的
@@ -316,17 +313,19 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 		/* 先关连接再跑安全动作：对端若还挂着（半关闭），不该看见动作期间的
 		 * 任何回帧；且动作脚本可能跑几秒，不占着 fd。 */
 		clientFd.close();
-		/* 断连安全动作的门（2026-10-01 审计 P2）：只对「进入过业务循环」的连接
-		 * 执行。此前无条件执行——同 UID 对端反复 connect+close（或反复发错
-		 * 密钥）可以反复驱动执行器到"安全姿态"，连败 5 次还会借停机断电链把
-		 * 后端打停；认证门（MCP-1/AuthFailGate）只盖住了工具派发路径，没盖住
-		 * 断连路径。admitted 语义见 ConnOutcome。跳过要留痕：这是安全相关的
-		 * 可观测行为，不该静默。 */
-		if (oc.admitted) {
+		/* 断连安全动作的门（disconnectActionGate，2026-10-01 审计 P2）：只对
+		 * 「进入过业务循环」的连接执行，跳过要留痕——这是安全相关的可观测
+		 * 行为，不该静默。admitted 语义见 ConnOutcome。 */
+		switch (disconnectActionGate(oc.admitted, cfg.onDisconnectScript)) {
+		case DisconnectAction::Run:
 			runDisconnectAction(tctx, cfg.onDisconnectScript, cfg.audit, log);
-		} else if (!cfg.onDisconnectScript.empty()) {
+			break;
+		case DisconnectAction::SkipNotAdmitted:
 			log << "MCP 后端：连接未通过认证，跳过断连安全动作 " << cfg.onDisconnectScript
 				<< "\n";
+			break;
+		case DisconnectAction::NotConfigured:
+			break;
 		}
 		if (oc.auth == ConnAuth::Passed) {
 			authGate.recordPassed();
@@ -349,16 +348,26 @@ int acceptLoop(FdGuard& listenFd, McpBackend& backend, const AgentToolContext& t
 
 } // namespace
 
-int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
-		const McpBackendOptions& opts, std::ostream& log) {
-	if (opts.socketPath.empty()) {
+/* ---- runMcpBackend 的路径预检（契约见 mcplisten.hpp；2026-10-10 自
+ * runMcpBackend 首两道判据析出供白盒锚定）----
+ * 放在一切装配之前：配置类错误不必等到 bind 才发现。 */
+std::optional<int> preflightSocketPath(const std::string& socketPath, std::ostream& log) {
+	if (socketPath.empty()) {
 		log << "错误: --mcp-backend 需要 --mcp-socket <AF_UNIX 路径>\n";
 		return 2;
 	}
-	if (opts.socketPath.size() >= sizeof(sockaddr_un::sun_path)) {
-		log << "错误: --mcp-socket 路径过长（" << opts.socketPath.size() << " 字节，上限 "
+	if (socketPath.size() >= sizeof(sockaddr_un::sun_path)) {
+		log << "错误: --mcp-socket 路径过长（" << socketPath.size() << " 字节，上限 "
 			<< (sizeof(sockaddr_un::sun_path) - 1) << "）\n";
 		return 2;
+	}
+	return std::nullopt;
+}
+
+int runMcpBackend(RobotStruct& robot, const AgentModeConfig& cfg,
+		const McpBackendOptions& opts, std::ostream& log) {
+	if (const std::optional<int> rc = preflightSocketPath(opts.socketPath, log)) {
+		return *rc;
 	}
 
 	/* 工具层：与 agent 模式共用 makeToolContext + makeAgentTools，能力门控

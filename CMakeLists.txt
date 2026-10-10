@@ -237,6 +237,7 @@ add_executable(mybot_tests
   test/cpp/test_agentpolicy.cpp
   test/cpp/test_mcpbackend.cpp
   test/cpp/test_mcptransport.cpp
+  test/cpp/test_mcplisten.cpp
   test/cpp/test_agenttools_sandbox.cpp
   ${MYBOT_CORE_SOURCES}
 )
