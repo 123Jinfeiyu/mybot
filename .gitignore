@@ -6,6 +6,8 @@ tmp/
 target/
 # 会话/计划目录（.zcode/plans 等为本地临时产物，不入库）
 .zcode/
+.trae/
+.workbuddy/
 
 # Trae 本地工作区元数据，不入库
 .trae/
