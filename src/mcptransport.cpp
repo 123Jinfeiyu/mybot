@@ -285,6 +285,30 @@ McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string&
 		? McpAuthOutcome::Ok : McpAuthOutcome::Failed;
 }
 
+/* ---- 首帧认证回执（契约见 mcptransport.hpp 声明处）----
+ * Json 对象按插入序序列化、无空白，产物与既有字面量逐字节相同（此前
+ * mcplisten.cpp 手写的两条串，2026-10-10 收敛单点）。 */
+std::string mcpAuthOkFrame() {
+	Json d = JsonObject();
+	d.put(mcp_protocol::kAuth, JsonBool(true));
+	Json o = JsonObject();
+	o.put(mcp_protocol::kSuccess, JsonBool(true));
+	o.put(mcp_protocol::kData, std::move(d));
+	return o.toString();
+}
+
+std::string mcpAuthRejectFrame() {
+	/* 报错文案内嵌 auth 帧的形态示例（_route/token 是字段名展示，不是回执字段）：
+	 * 经 escapeString 转义后与原字面量逐字节一致。 */
+	const std::string hint = std::string("auth required: first frame must be {\"")
+		+ mcp_protocol::kRoute + "\":\"" + mcp_protocol::kAuth + "\",\""
+		+ mcp_protocol::kToken + "\":...}";
+	Json o = JsonObject();
+	o.put(mcp_protocol::kSuccess, JsonBool(false));
+	o.put(mcp_protocol::kError, JsonString(hint));
+	return o.toString();
+}
+
 bool mcpCheckPeerCred(int fd, std::ostream& log) {
 	struct ucred cred{};
 	socklen_t len = sizeof(cred);

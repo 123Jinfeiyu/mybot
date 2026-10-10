@@ -104,9 +104,9 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 		}
 		const McpAuthOutcome a = mcpCheckAuthFrame(opts.authToken, payload);
 		if (a == McpAuthOutcome::Ok) {
-			/* lock-step：认证帧也要回执（Rust 侧 authenticate 在等这一帧） */
-			if (!sendFrame(fd, "{\"success\":true,\"data\":{\"auth\":true}}",
-					kMcpSendTimeoutSec)) {
+			/* lock-step：认证帧也要回执（Rust 侧 authenticate 在等这一帧）；
+			 * 回帧构造单点在 mcptransport（与判据 mcpCheckAuthFrame 同族） */
+			if (!sendFrame(fd, mcpAuthOkFrame(), kMcpSendTimeoutSec)) {
 				log << "MCP 后端：认证回帧发送失败，断开连接\n";
 				return ConnOutcome{ConnAuth::Neutral, false};
 			}
@@ -114,10 +114,8 @@ ConnOutcome serveConnection(int fd, McpBackend& backend, const McpBackendOptions
 			admitted = true;
 		} else {
 			/* 回执不回显 token、不区分「错密钥」与「没带密钥」——对试探者
-			 * 两者给同一句话，信息量最小化。 */
-			(void)sendFrame(fd, "{\"success\":false,\"error\":\"auth required:"
-				" first frame must be {\\\"_route\\\":\\\"auth\\\","
-				"\\\"token\\\":...}\"}", kMcpSendTimeoutSec);
+			 * 两者给同一句话，信息量最小化（文案单点在 mcpAuthRejectFrame）。 */
+			(void)sendFrame(fd, mcpAuthRejectFrame(), kMcpSendTimeoutSec);
 			log << "MCP 后端：首帧认证失败（" << (a == McpAuthOutcome::NotAuthFrame
 				? "第一帧不是 auth 帧" : "共享密钥不匹配")
 				<< "），断开连接\n";

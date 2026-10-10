@@ -64,6 +64,17 @@ McpSocketProbe mcpProbeSocketPath(const std::string& path, std::string& why);
 enum class McpAuthOutcome { Ok, Failed, NotAuthFrame };
 McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string& payload);
 
+/* ---- 首帧认证回执（MCP-1；mcpCheckAuthFrame 的对偶回帧）----
+ * serveConnection 认证判定后的两条固定回帧：通过 → {"success":true,"data":
+ * {"auth":true}}（lock-step，Rust 侧 authenticate 在等这一帧）；不通过 →
+ * {"success":false,"error":...}——文案单点在此：不回显 token、不区分「错密钥」
+ * 与「没带密钥」（信息量最小化）。经 Json + mcp_protocol 常量构造（wire 测试
+ * 禁生产 TU 退回裸字面量），字节形态由 test_mcptransport 的字节锚定用例钉住
+ * ——回帧是对端 authenticate 的判据，字节漂移（哪怕语义等价）也该显式过一道
+ * 测试而非静默发生。 */
+std::string mcpAuthOkFrame();
+std::string mcpAuthRejectFrame();
+
 /* ---- 帧传输接缝（实现在 mcptransport.cpp，2026-10-01 TU 拆分；
  * serveConnection / acceptLoop 在 mcpbackend.cpp 消费）----
  * readFrame 两段式（空闲等首字节 + 帧开始后共享绝对 deadline 防 Slowloris）

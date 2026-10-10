@@ -452,11 +452,13 @@ TH_TEST(mcpbackend_protocol_wire_names_match_rust_twin) {
 	TH_CHECK_MSG(onlyRust.empty(), "只在 Rust protocol.rs、C++ 常量表没有的线名："
 		+ bot::joinNames(onlyRust));
 
-	/* 单点自证：三个消费 TU 不得再出现这些字段名的裸字面量，否则常量表成了
+	/* 单点自证：消费 TU 不得再出现这些字段名的裸字面量，否则常量表成了
 	 * 第二轨（比对绿而线上仍各写各的）。审计行的 "error" 属 agentaudit.cpp 的
-	 * 落盘 schema，不在扫描范围。 */
+	 * 落盘 schema，不在扫描范围。mcplisten.cpp 2026-10-10 补进名单：认证回帧
+	 * 此前在该 TU 手写字面量，正是名单缺口让它存活（转义引号 \\\"success\\\"
+	 * 本就躲过子串匹配，名单是纵深防御不是充分防线）。 */
 	for (const char* tu : {"src/mcpbackend.cpp", "src/context_service.cpp",
-			"src/mcptransport.cpp"}) {
+			"src/mcptransport.cpp", "src/mcplisten.cpp"}) {
 		const std::string src = readRepoSource(tu);
 		std::vector<std::string> bare;
 		for (const std::string& n : cpp) {
@@ -512,6 +514,22 @@ TH_TEST(mcpbackend_auth_frame_distinguishes_non_auth_first_frame) {
 	/* _route 缺失或非字符串同样落 NotAuthFrame（有 _route 判据才有区分意义） */
 	TH_CHECK(bot::agent::mcpCheckAuthFrame("secret-1", "{}")
 		== McpAuthOutcome::NotAuthFrame);
+}
+
+/* ---- 首帧认证回帧的字节锚定（2026-10-10 收敛：mcplisten 手写字面量 →
+ * mcpAuthOkFrame/mcpAuthRejectFrame 单点）----
+ * 回帧是 Rust 侧 authenticate 的判据（success 布尔 / error 文案），serde 按键
+ * 取值、键序与空白无关——但字节形态仍逐字钉住：改动（哪怕语义等价）应显式
+ * 过这道测试，而不是静默发生。期望值即收敛前的原始字面量。 */
+TH_TEST(mcpbackend_auth_reply_frames_byte_stable) {
+	TH_CHECK(bot::agent::mcpAuthOkFrame()
+		== R"({"success":true,"data":{"auth":true}})");
+	TH_CHECK(bot::agent::mcpAuthRejectFrame()
+		== R"({"success":false,"error":"auth required: first frame must be {\"_route\":\"auth\",\"token\":...}"})");
+	/* 与判据同族：回执经 parseJson 可再解析（合法 JSON 的最小自证） */
+	const Json back = parseJson(bot::agent::mcpAuthRejectFrame());
+	TH_CHECK(back.get("success") != std::nullopt
+		&& back.get("success")->isBool() && !back.get("success")->getBool());
 }
 
 /* ---- 首帧认证失败门（2026-09-30 审计 P1：与 TCP 口令 authMaxFails=5 同口径）----
