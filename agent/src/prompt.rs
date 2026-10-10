@@ -14,9 +14,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// 单个提示词文件上限（与 C++ `kMaxPromptFileBytes` 逐值对齐）。
+/// 单个提示词文件上限（1 MiB）。提示词组装迁 Rust 前的 C++ `kMaxPromptFileBytes`
+/// 迁入值；C++ 侧已无此常量，权威在此。
 pub const K_MAX_PROMPT_FILE_BYTES: u64 = 1 << 20;
-/// 系统提示词总量上限（与 C++ `kMaxSystemPromptBytes` 逐值对齐）。
+/// 系统提示词总量上限（F2-9，fail-closed：超限拒绝启动 agent 会话）。原 C++
+/// `kMaxSystemPromptBytes` 的迁入值；C++ 侧镜像常量已删（2026-10-10），权威在此。
 pub const K_MAX_SYSTEM_PROMPT_BYTES: usize = 64 << 10;
 /// C++ `kInvalidUtf8Marker` 的同文本（消毒时点名被折叠掉的非法字节数）。
 const INVALID_UTF8_MARKER: &str = "[! invalid UTF-8 bytes omitted";
