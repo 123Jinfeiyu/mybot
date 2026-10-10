@@ -97,7 +97,7 @@ set(MYBOT_CORE_SOURCES
   src/expr.cpp
   src/sqlparse.cpp
   src/structure.cpp          # ScriptLoader：SQL 事件 → MatrixObject
-  src/mtmerge_core.cpp       # .mt 归并核心（mybot_tests / mtmerge 共用）
+  src/mtmerge_core.cpp       # .mt 归并核心（mtinclude 运行端展开 + test_mtmerge 白盒）
   src/mtinclude.cpp          # @Include 展开
   # ---- Lua 层：桥接、沙箱与执行预算 ----
   src/luabridge.cpp
@@ -238,7 +238,6 @@ add_executable(mybot_tests
   test/cpp/test_mcpbackend.cpp
   test/cpp/test_mcptransport.cpp
   test/cpp/test_agenttools_sandbox.cpp
-  src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
 )
 
@@ -417,10 +416,10 @@ endif()
 # 与上面的 test/cpp 自检同族：src/ 下新增一个 .cpp 却忘了写进任何 target，
 # 它就永不编译——若该文件只被 include 或被误当成"已经在编"，构建与守门照绿。
 # 判据：src/*.cpp 必须恰好被「MYBOT_CORE_SOURCES ∪ 各 target 的入口源」覆盖
-# （main.cpp 属 mybot、mtmerge.cpp 属离线合成器，两者都不在 core 清单里）。
+# （main.cpp 属 mybot，不在 core 清单里）。
 # ======================================================================
 file(GLOB MYBOT_ALL_SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.cpp)
-set(MYBOT_REGISTERED_SRC ${MYBOT_CORE_SOURCES} src/main.cpp src/mtmerge.cpp)
+set(MYBOT_REGISTERED_SRC ${MYBOT_CORE_SOURCES} src/main.cpp)
 set(_reg_names)
 foreach(_r IN LISTS MYBOT_REGISTERED_SRC)
   get_filename_component(_rn "${_r}" NAME)

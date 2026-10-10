@@ -775,7 +775,7 @@ parse_cases=(
 	'flow_scalar2.sql|flow_scalar2.mt|1|cannot be controller targets'
 	'trig_scalar2.sql|trig_scalar2.mt|1|cannot be trigger targets'
 	'ctrl2_err.sql|ctrl2_err.mt|1|Invalid Argument: delay|note=witness'
-	# @Include 展开（运行端动作脚本归并，归并内核与 mtmerge 共用）：
+	# @Include 展开（运行端动作脚本归并，内核 mtmerge_core）：
 	#   include_a/include_b    两个被包含脚本单独跑也合法（正值，登记夹具防孤儿）
 	#   include_inner          主脚本无 @Action：首个 include 顶替累加器
 	#   include_nested         嵌套正值：主脚本 → 组合片段（无自有 @Action）→ 两叶
