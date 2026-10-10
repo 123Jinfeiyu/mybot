@@ -12,23 +12,12 @@
 #include "agentaudit.hpp"	/* maskSecretsInText（G1：run_command 回执进模型上下文前遮蔽） */
 #include "agentprompt.hpp"	/* quoteUntrusted（C2：工具结果与系统提示词同一定界单点） */
 
-#include <algorithm>
-#include <array>
-#include <cctype>
 #include <chrono>
 #include <cerrno>
-#include <cmath>
-#include <cstdlib>
 #include <cstring>
-#include <fcntl.h>
-#include <filesystem>
 #include <limits>
 #include <memory>
-#include <optional>
-#include <sstream>
 #include <stdexcept>
-#include <string_view>
-#include <thread>
 #include <utility>
 
 #include "hardware.hpp"
@@ -39,8 +28,6 @@
 #include "util_except.hpp"
 #include "util_num.hpp"
 #include "util_str.hpp"
-
-namespace fs = std::filesystem;
 
 namespace bot {
 namespace agent {

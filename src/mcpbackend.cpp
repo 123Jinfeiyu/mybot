@@ -10,25 +10,9 @@
 #include "mcpbackend.hpp"
 #include "mcp_protocol.hpp"
 
-#include <cerrno>
-#include <cctype>
-#include <cstdint>
-#include <cstdio>
-#include <cstring>
-
 #include <chrono>
-#include <filesystem>
 #include <string>
 #include <utility>
-#include <vector>
-
-#include <poll.h>
-#include <fcntl.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/un.h>
-#include <unistd.h>
 
 #include "agentmode.hpp"	/* AgentModeConfig / makeToolContext / structureDisplayName */
 #include "agentprompt.hpp"	/* structureScriptHead / quoteUntrusted（context.get 素材） */
@@ -39,8 +23,6 @@
 #include "util_file.hpp"
 #include "util_str.hpp"		/* safeEquals 恒时比较（凭据比对安全单点） */
 #include "util_utf8.hpp"		/* stopRequested / isValidUtf8 / FdGuard */
-
-namespace fs = std::filesystem;
 
 namespace bot {
 namespace agent {
