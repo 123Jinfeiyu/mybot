@@ -232,7 +232,7 @@ if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 		case "$_b" in
 			"$bin")
 				_in=(src)
-				_ex=(-not -path 'src/main.cpp') ;;
+				_ex=() ;;
 			# 骨架自证只由这两个文件编出来（CMakeLists.txt:271 的
 			# add_executable(harness_selftest test/cpp/harness_selftest.cpp)）；
 			# 给它套整个 test/cpp/ 就又是上面那个「重建也修不好」的误报。
