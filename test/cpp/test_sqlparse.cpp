@@ -481,3 +481,38 @@ TH_TEST(parser_deep_param_list_is_iterative) {
 	TH_CHECK(eves[1].insert.tableRows[0][n - 1].value == "v" + std::to_string(n - 1));
 }
 
+
+/* ---- 关键字单表的往返钉（2026-10-10：Token::parse 的 if 链与 serialize 的
+ * switch 收敛为 kKeywords 一张表）----
+ * 逐项钉 parse(规范名).type 与 serialize(type)==规范名：双表漂移（同键两处维护，
+ * 加关键字漏改一处即「能解析但回显错名」或反向）在此变红。规范名 = serialize
+ * 的回显名（大写）；parse 的大小写不敏感另以混合大小写抽查一条。 */
+TH_TEST(token_keyword_table_roundtrip) {
+	static const struct {
+		const char* text;
+		TokenType type;
+	} kWords[] = {
+		{"SELECT", TokenType::SELECT}, {"FROM", TokenType::FROM},
+		{"CREATE", TokenType::CREATE}, {"TABLE", TokenType::TABLE},
+		{"STRING", TokenType::STRING}, {"NUMBER", TokenType::NUMBER},
+		{"INSERT", TokenType::INSERT}, {"INTO", TokenType::INTO},
+		{"VALUES", TokenType::VALUES}, {"WHERE", TokenType::WHERE},
+		{"DELETE", TokenType::DELETE}, {"DROP", TokenType::DROP},
+		{"UPDATE", TokenType::UPDATE}, {"SET", TokenType::SET},
+		{"AND", TokenType::AND}, {"SHOW", TokenType::SHOW},
+		{"TABLES", TokenType::TABLES},
+	};
+	for (const auto& w : kWords) {
+		Token t = Token::parse(w.text);
+		TH_CHECK_MSG(t.type == w.type,
+			std::string("parse(\"") + w.text + "\") 落错种类");
+		TH_CHECK_MSG(t.serialize() == w.text,
+			std::string("serialize 回显漂移: ") + w.text);
+	}
+	/* 大小写不敏感抽查（equalWithoutCase 判据，不逐项展开） */
+	TH_CHECK(Token::parse("SeLeCt").type == TokenType::SELECT);
+	TH_CHECK(Token::parse("select").type == TokenType::SELECT);
+	/* 表外的词元（标点/NAME）不查关键字表，行为不变 */
+	TH_CHECK(Token::parse(";").type == TokenType::END);
+	TH_CHECK(Token::parse("name_x").type == TokenType::NAME);
+}
