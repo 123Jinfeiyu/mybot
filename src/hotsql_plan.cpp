@@ -1,9 +1,8 @@
 /* hotsql_plan.cpp —— HotSqlPlanner 只读热 SQL 计划层（拆自 robot.cpp，2026-10-01）
  * 解析 → 备删/插入计划 → 对账 → 合并预检，全部只读（活体一字未动）；提交段
- * （commitHotBatch / executeHotDeletes / dropTableShells）留在 robot.cpp。计划层
- * 与提交层各自成 TU 后，robot.cpp 只剩 RobotStruct 的生命周期编排与热插提交，
- * 本 TU 不再与门面共用注释面。阶段编号（1/1.5/2/2.4/3）的语义与理由见各
- * 函数实现处注释。 */
+ * （commitHotBatch / executeHotDeletes / dropTableShells）在 hotsql_service.cpp
+ * （2026-10-03 阶段 4 自 robot.cpp 迁出，robot 门面只剩生命周期与装配）。
+ * 阶段编号（1/1.5/2/2.4/3）的语义与理由见各函数实现处注释。 */
 
 #include "daemonconf.hpp"
 #include "hotsql_plan.hpp"
@@ -190,7 +189,7 @@ HotSqlPlan::Deletes HotSqlPlanner::planHotDeletes(const ScriptLoader::Mutations&
 	HotSqlPlan::Deletes out;
 	out.deleteFirst = !muts.updatedRows.empty();
 	const std::size_t liveCount = matrices_.size();
-	/* 守护名 → 声明序下标：见（robot.cpp 的）executeHotDeletes 的守护退场屏障。 */
+	/* 守护名 → 声明序下标：见（hotsql_service.cpp 的）executeHotDeletes 的守护退场屏障。 */
 	for (std::size_t k = 0; k < matrices_.size(); ++k) {
 		if (trim(matrices_[k].getName()) != "Daemon") { continue; }
 		const std::int64_t idxN = matrices_[k].indexOfCol(0, "name");
