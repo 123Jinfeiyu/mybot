@@ -344,10 +344,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("mybot-store-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&p);
-        fs::create_dir_all(&p).unwrap();
-        p
+        crate::testutil::tmpdir("mybot-store", tag)
     }
 
     #[test]

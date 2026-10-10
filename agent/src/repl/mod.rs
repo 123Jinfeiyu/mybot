@@ -899,17 +899,7 @@ mod tests {
     // ---- SessionAudit（审计/统计面拆分的核心语义，2026-10-01 补测）----
 
     fn tmpdir(tag: &str) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "mybot_auditface_{}_{}_{}",
-            std::process::id(),
-            tag,
-            n
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::testutil::tmpdir("mybot_auditface", tag)
     }
 
     fn call(ms: i64, tokens: Option<(i64, i64)>) -> CallRecord {

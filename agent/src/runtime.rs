@@ -49,10 +49,7 @@ mod tests {
     use crate::session::LoadedSession;
 
     fn tmpdir(tag: &str) -> std::path::PathBuf {
-        let p = std::env::temp_dir().join(format!("mybot_runtime_{tag}_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        p
+        crate::testutil::tmpdir("mybot_runtime", tag)
     }
 
     fn test_material() -> PromptMaterial {

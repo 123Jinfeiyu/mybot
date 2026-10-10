@@ -760,14 +760,7 @@ mod tests {
     };
 
     fn tmpdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "mybot_record_{}_{}",
-            std::process::id(),
-            tag
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::testutil::tmpdir("mybot_record", tag)
     }
 
     fn open_store(root: &std::path::Path, max_image_bytes: u64) -> RecordStore {

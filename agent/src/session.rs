@@ -735,17 +735,7 @@ mod tests {
 
     /// 每个用例一个独立临时目录（进程内唯一名 + 计数，避免并行测试相互踩）。
     fn tmpdir(tag: &str) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "mybot_session_{}_{}_{}",
-            std::process::id(),
-            tag,
-            n
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::testutil::tmpdir("mybot_session", tag)
     }
 
     /// 简易对话序列：任务 → assistant(tool_calls) → tool → 图片消息 → 最终回答。

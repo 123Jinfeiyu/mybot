@@ -51,6 +51,8 @@ mod session_store;
 mod signals;
 mod startup;
 mod summary;
+#[cfg(test)]
+mod testutil;
 mod toolspec;
 
 use std::sync::Arc;
