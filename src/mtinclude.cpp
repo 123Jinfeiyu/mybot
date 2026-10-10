@@ -235,6 +235,20 @@ mt::MatrixObject dropOwnedRows(const mt::MatrixObject& m, const std::set<std::st
 }
 
 /* 展开器：一次 expandIncludes 调用的全部跨层状态（visited 表/预算）。 */
+
+/* 片段层「疑似 @if 块」的判据（宽松版，与 action_runner 的 parseIfBlockName
+ * 精确版**故意不同**）：trim 后等于 "if" 或以 "if(" 开头即拒——凡是看起来
+ * 想写 @if 的都拒下（含未闭合等非法形态），主脚本侧才做精确解析分派。
+ * 宽松版永不比精确版窄，两份判据不构成漂移。拒绝的理由：片段的 @Action
+ * 按相位**归并**进主脚本 @Action，没有独立的执行位置，@if 放进片段只能
+ * 静默丢弃（@Reflex 已是这个坑——本仓不再重蹈）。 */
+namespace {
+bool looksLikeIfBlock(const std::string& rawName) {
+	const std::string n = bot::trim(rawName);
+	return n == "if" || n.compare(0, 3, "if(") == 0;
+}
+} // namespace
+
 class Expander {
 public:
 	explicit Expander(const std::string& mainBase) : mainBase_(mainBase) {}
@@ -251,15 +265,34 @@ public:
 		LevelOwned owned = ownedNamesOf(acc);	/* 快照：仅本层自有定义 */
 		runLevel(parsed, mainBase_, acc, owned);
 
-		/* 产物：@Alias、@Vars、@Action（若存在）+ 主脚本的未知矩阵原样透传
-		 * （mybot 的消费端按名字取用，顺序无关；规范序只为可读与可测） */
+		/* 产物：@Alias、@Vars、其余主脚本块按**原书写顺序**透传。
+		 * 2026-10-10 @if 特性起顺序不再是「无关」：runAction 按书写顺序
+		 * 交错执行 "Action" 与 "if(...)" 名块，合并 @Action 锚在主脚本
+		 * **第一个** @Action 块的位置（其余主脚本多余 Action 块维持既有
+		 * 丢弃语义——只有第一个进合并）；主脚本自己没有 @Action（动作全
+		 * 靠片段供给）时合并块退回旧位置（紧随 Vars、透传块之前）。 */
 		std::vector<mt::MatrixObject> out;
 		if (acc.alias) { out.push_back(std::move(*acc.alias)); }
 		if (acc.vars) { out.push_back(std::move(*acc.vars)); }
-		if (acc.action) { out.push_back(std::move(*acc.action)); }
+		bool mainHasAction = false;
+		for (const auto& m : parsed) {
+			if (bot::trim(m.getName()) == "Action") { mainHasAction = true; break; }
+		}
+		bool actionPlaced = false;
+		if (acc.action && !mainHasAction) {
+			out.push_back(std::move(*acc.action));
+			actionPlaced = true;
+		}
 		for (auto& m : parsed) {
 			std::string n = bot::trim(m.getName());
-			if (n == "Alias" || n == "Vars" || n == "Action" || n == "Include") { continue; }
+			if (n == "Alias" || n == "Vars" || n == "Include") { continue; }
+			if (n == "Action") {
+				if (!actionPlaced && acc.action) {
+					out.push_back(std::move(*acc.action));
+					actionPlaced = true;
+				}
+				continue;
+			}
 			out.push_back(std::move(m));
 		}
 		parsed = std::move(out);
@@ -317,6 +350,17 @@ private:
 		mt::readMatrix(in, incParsed);
 		if (incParsed.empty()) {
 			throw bot::IllegalArgumentException("'" + resolved + "': no matrix found");
+		}
+
+		/* 片段层「疑似 @if 块」先行拒绝（判据与理由见 looksLikeIfBlock）：
+		 * 响亮报错优于静默丢弃——放进片段的 @if 永远不会执行。嵌套的
+		 * 子片段由各自递归的 expandFile 用同一判据检查。 */
+		for (const auto& m : incParsed) {
+			if (looksLikeIfBlock(m.getName())) {
+				throw bot::IllegalArgumentException("@if 块不支持出现在 @Include 片段 '"
+					+ resolved + "' 中：片段的 @Action 按相位归并进主脚本 @Action，"
+					"没有独立的执行位置；请把该 @if 块挪到主脚本");
+			}
 		}
 
 		/* 片段自成一层：自己的标量/动作是累加器初值，自己的 @Include 行

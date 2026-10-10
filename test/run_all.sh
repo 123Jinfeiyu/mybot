@@ -821,7 +821,7 @@ parse_cases=(
 	'dev_expr.sql|dev_expr_head.mt|0|note=from-2|note=from-1'
 	'dev_expr.sql|dev_expr_param.mt|0|test=200'
 	'dev_expr.sql|dev_expr_cell.mt|0|"echo":"hello-2"'
-	'dev_expr.sql|dev_expr_minus.mt|1|cannot be applied to a text result'
+	'dev_expr.sql|dev_expr_minus.mt|1|cannot be applied to a text operand'
 	'dev_expr.sql|dev_expr_undefined.mt|1|not a defined hardware variable'
 )
 # parse_cases 的切分与过滤循环（原先内联在顶层——bash 的 local 只能在函数内

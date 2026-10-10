@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -86,10 +87,30 @@ public:
 	 * （参数名不是名字绑定）。派发期内别名/变量不变，每列解析一次。 */
 	static std::string resolveActionParam(const HwLookup& registry, const std::string& param);
 
+	/* ---- @if(条件) 块头解析单点（公开静态：白盒单测直接锚定）----
+	 * 块名形态（MatrixParser 的名字态把整串收进 name，括号是普通字符）：
+	 *   "if(cond)" → cond（trim 后）；"if" 裸名 / "if(" 未闭合 / 条件为空
+	 *   → IllegalArgumentException（意图明显的坏形态响亮救红，不静默当
+	 *   未知块透传——透传即永不执行，等于把条件块静默丢弃）；
+	 *   其余（含 "ifx(a)" 这类前缀不同名）→ nullopt（不是 if 块）。
+	 * 块头内不能有空格（与 $(...) 同约束：MatrixParser 名字态遇空白即止，
+	 * "@if(a > b)" 会被切成名字 "if(a" + 数据行）——报错文案要带此提示。 */
+	static std::optional<std::string> parseIfBlockName(const std::string& rawName);
+
 	/* 单矩阵动作派发核心：@Action 与 #34 @Reflex 共用同一派发逻辑 */
 	void dispatchMatrix(const mt::MatrixObject& actionDefs);
 
-	/* @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error） */
+	/* @if(...) 条件求值（块级，轮到该块执行时）：复用 makeActionExprResolver
+	 * （标识符只认 @Vars 数值/@Alias 文本——条件引用实时传感器值走「守护
+	 * 采样 + 消费驱动」的既定链路，不在表达式面开取数通道）。结果必须是
+	 * Bool：数值/文本条件（如 @if(threshold)）不是「非零即真」——类型
+	 * 严格，显式比较（threshold>0）才可判定。 */
+	bool evalIfCondition(const std::string& cond) const;
+
+	/* @Action/@if 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）：
+	 * 顶层矩阵序列按**书写顺序**交错执行——"Action" 名块与 "if(...)" 名块
+	 * 轮到谁派发谁（展开层把合并 @Action 锚在主脚本首个 @Action 的书写
+	 * 位置，见 mtinclude）；if 条件不成立跳过该块（stderr 注记）并继续。 */
 	void runAction(std::vector<mt::MatrixObject>& actionMatrices);
 
 	/* #34 条件反射：@Trigger 逐行触发 @Reflex 动作序列，触发参数以临时

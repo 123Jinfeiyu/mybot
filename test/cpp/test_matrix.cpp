@@ -289,3 +289,27 @@ TH_TEST(matrix_read_save_roundtrip_preserves_cells) {
 	}
 }
 
+
+TH_TEST(matrix_if_block_name_roundtrip) {
+	/* @if(cond) 块名（2026-10-10 特性）：MatrixParser 名字态把 "if(x>0)"
+	 * 整串收进 name（括号/比较符都是普通字符，块头内无空格），save()
+	 * 文本 round-trip 不丢——消费端（ActionRunner::parseIfBlockName）按
+	 * 名字前缀分派，解析层零改动。 */
+	const std::string src = "@if(x>0)\nleg.angle;\n 90;\n@\n";
+	std::vector<mt::MatrixObject> mats1;
+	bot::MemoryReader in1(src);
+	mt::readMatrix(in1, mats1);
+	TH_CHECK(mats1.size() == 1);
+	TH_CHECK(mats1[0].getName() == "if(x>0)");
+	TH_CHECK(mats1[0].rows() == 2);
+	TH_CHECK(fx::cell(mats1[0], 0, 0) == "leg.angle");
+
+	std::ostringstream saved;
+	mt::MatrixSaver::save(mats1, saved);
+	std::vector<mt::MatrixObject> mats2;
+	bot::MemoryReader in2(saved.str());
+	mt::readMatrix(in2, mats2);
+	TH_CHECK(mats2.size() == 1);
+	TH_CHECK(mats2[0].getName() == "if(x>0)");
+	TH_CHECK(mats2[0].rows() == 2);
+}

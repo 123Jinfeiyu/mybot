@@ -492,3 +492,52 @@ TH_TEST(mtinclude_fragment_relative_base) {
 	TH_CHECK(act.cols() == 3);	/* a.x ∪ g.x ∪ h.x（h 经片段相对基准解析成功） */
 	TH_CHECK(fx::cell(act, 1, 2) == "9");
 }
+
+/* ---------------- @if 保序与片段拒绝（2026-10-10 @if 特性） ---------------- */
+
+TH_TEST(mtinclude_action_anchor_preserves_written_order) {
+	/* 主脚本 @Action 与 @if/未知块混排：合并 @Action 锚在主脚本第一个
+	 * @Action 块的书写位置，其余块按原序透传——runAction 按书写顺序
+	 * 交错执行 "Action"/"if(...)" 名块，顺序在这里保不住就没有块级
+	 * 条件语义。 */
+	auto mats = parseMain(
+		"@Vars\nname value;\n k 1;\n@\n"
+		"@if(k>0)\nleg.angle;\n 90;\n@\n"
+		"@Action\nleg.angle;\n 45;\n@\n"
+		"@Unknown\nx;\n 1;\n@\n");
+	mtinclude::expandIncludes(mats, ".");
+	std::vector<std::string> names;
+	for (const auto& m : mats) { names.push_back(bot::trim(m.getName())); }
+	/* Vars 在前（注册先于执行），if 锚回其书写位（Action 之前），未知块殿后 */
+	TH_CHECK((names == std::vector<std::string>{"Vars", "if(k>0)", "Action", "Unknown"}));
+}
+
+TH_TEST(mtinclude_action_anchor_when_no_main_action) {
+	/* 主脚本没有 @Action（动作全靠片段供给）：合并 @Action 维持旧位置
+	 * （紧随 Vars、透传块之前）——书写上 if 块与「看不见的合并 Action」
+	 * 无顺序直觉可言，维持现状位即可。 */
+	fx::TempDir dir("inc_anchor");
+	writeFile(dir, "b.mt", "@Action\nb.p;\n100;\n@\n");
+	auto mats = parseMain(
+		"@Include\npath;\n b.mt;\n@\n"
+		"@if(k>0)\nleg.angle;\n 90;\n@\n");
+	mtinclude::expandIncludes(mats, dir.path().string());
+	std::vector<std::string> names;
+	for (const auto& m : mats) { names.push_back(bot::trim(m.getName())); }
+	TH_CHECK((names == std::vector<std::string>{"Action", "if(k>0)"}));
+}
+
+TH_TEST(mtinclude_fragment_rejects_if_block) {
+	/* 片段里的 @if 响亮拒绝：片段的 @Action 按相位归并进主脚本，@if
+	 * 没有自然执行位置——静默丢弃是 @Reflex 已踩过的坑，新块不重蹈。 */
+	fx::TempDir dir("inc_reject_if");
+	writeFile(dir, "frag.mt", "@if(k>0)\nb.p;\n 100;\n@\n");
+	auto mats = parseMain("@Include\npath;\n frag.mt;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "@if 块不支持出现在 @Include 片段",
+		mtinclude::expandIncludes(mats, dir.path().string()));
+	/* 非法形态（未闭合）同样拒下——宽松判据宁拒勿丢 */
+	writeFile(dir, "bad.mt", "@if(k>0\nb.p;\n 100;\n@\n");
+	auto mats2 = parseMain("@Include\npath;\n bad.mt;\n@\n");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "@if 块不支持出现在 @Include 片段",
+		mtinclude::expandIncludes(mats2, dir.path().string()));
+}

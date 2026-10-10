@@ -23,6 +23,10 @@ std::string ActionRunner::resolveActionDevice(const HwLookup& registry, const st
 	std::string name = dev;
 	if (auto body = exprBody(dev)) {
 		ExprValue v = Expression::parse(*body).eval(registry.makeActionExprResolver());
+		if (v.isBool()) {
+			throw IllegalArgumentException("@Action 设备列的 $(...) 不能产出布尔结果"
+				"（比较/逻辑表达式属于 @if(...) 条件）；设备位需要设备名（文本）");
+		}
 		name = v.rendered();
 	}
 	MatrixVars_Hardware* hv = registry.find(name);
@@ -54,6 +58,10 @@ std::string ActionRunner::resolveActionDevice(const HwLookup& registry, const st
 std::string ActionRunner::resolveActionParam(const HwLookup& registry, const std::string& param) {
 	if (auto body = exprBody(param)) {
 		ExprValue v = Expression::parse(*body).eval(registry.makeActionExprResolver());
+		if (v.isBool()) {
+			throw IllegalArgumentException("@Action 参数位的 $(...) 不能产出布尔结果"
+				"（比较/逻辑表达式属于 @if(...) 条件）；参数位需要参数名（文本）");
+		}
 		return v.rendered();
 	}
 	MatrixVars_Hardware* hv = registry.find(param);
@@ -140,16 +148,79 @@ void ActionRunner::dispatchMatrix(const mt::MatrixObject& actionDefs) {
 	}
 }
 
-/* ---- @Action 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）---- */
+/* ---- @if(条件) 块头解析（契约见 action_runner.hpp 声明处）----
+ * 与 parseTriggerLine 同型的「名字 + 括号参数」文本协议：trim、rfind(')')
+ * 必须行尾闭合、参数体 trim。块名来自 MatrixParser 名字态（无空格），
+ * 但白盒单测可直接喂任意串，形态校验按文本自洽做。 */
+std::optional<std::string> ActionRunner::parseIfBlockName(const std::string& rawName) {
+	const std::string name = bot::trim(rawName);
+	const std::size_t lp = name.find('(');
+	if (lp == std::string::npos) {
+		if (name == "if") {
+			throw IllegalArgumentException("@if 块缺条件表达式，写法 @if(<条件>)"
+				"（条件如 @if(threshold>0)）");
+		}
+		return std::nullopt;
+	}
+	if (name.compare(0, lp, "if") != 0) { return std::nullopt; }
+	const std::size_t rp = name.rfind(')');
+	if (rp == std::string::npos || rp != name.size() - 1) {
+		throw IllegalArgumentException("@if 块头未在块头内闭合：'" + name
+			+ "'。注意块头内不能有空格（矩阵解析把空白当分隔，@if(a > b) 会被"
+			"切成块名 \"if(a\" 和数据行），请写成 @if(a>b)");
+	}
+	const std::string cond = bot::trim(name.substr(lp + 1, rp - lp - 1));
+	if (cond.empty()) {
+		throw IllegalArgumentException("@if() 的条件为空；写法 @if(<条件>)，"
+			"如 @if(threshold>0)");
+	}
+	return cond;
+}
+
+/* ---- @if 条件求值（块级，轮到该块执行时）---- */
+bool ActionRunner::evalIfCondition(const std::string& cond) const {
+	ExprValue v = Expression::parse(cond).eval(registry_.makeActionExprResolver());
+	if (!v.isBool()) {
+		throw IllegalArgumentException("@if(...) 的条件必须是逻辑表达式"
+			"（比较/逻辑运算，如 @if(threshold>0)），当前结果类型是 "
+			+ std::string(exprTypeName(v))
+			+ "；数值/文本没有隐式真值语义，请写出显式比较");
+	}
+	return v.flag;
+}
+
+/* ---- @Action/@if 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）----
+ * 顶层按书写顺序交错执行（展开层保序契约见 mtinclude 的重组段）：
+ * 名 "Action" 的块与名 "if(...)" 的块轮到谁派发谁；if 条件不成立跳过
+ * 该块（stderr 注记，条件原文过 echoSource 截断）并继续后续块。
+ * 展开后序列至多一个 "Action"（展开层透传名单丢弃多余主脚本 Action 块，
+ * 片段 Action 已归并），遍历不会重复派发。#34：无 @Action 也无 @if 但
+ * 有 @Trigger 时反射独立成立（此处直接返回，runReflex 接手）。 */
 void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
-	const mt::MatrixObject* actionDefsPtr = mt::findByName(actionMatrices, "Action");
-	if (actionDefsPtr == nullptr) {
-		/* #34：脚本动作源可以是 @Reflex/@Trigger（无 @Action 时反射独立成立）；
-		 * 两者都没有时才维持既有报错。 */
+	bool sawActionable = false;
+	for (mt::MatrixObject& m : actionMatrices) {
+		const std::string name = bot::trim(m.getName());
+		if (name == "Action") {
+			dispatchMatrix(m);
+			sawActionable = true;
+			continue;
+		}
+		if (auto cond = parseIfBlockName(m.getName())) {
+			if (evalIfCondition(*cond)) {
+				dispatchMatrix(m);
+			} else {
+				const auto rows = m.rows();
+				std::cerr << "[if] condition not met: '" << echoSource(*cond)
+					<< "', skipping " << (rows > 1 ? rows - 1 : 0)
+					<< " action row(s)" << std::endl;
+			}
+			sawActionable = true;
+		}
+	}
+	if (!sawActionable) {
 		if (mt::findByName(actionMatrices, "Trigger") != nullptr) { return; }
 		throw IllegalArgumentException("No @Action matrix found in the script. Please define @Action in your .mt file.");
 	}
-	dispatchMatrix(*actionDefsPtr);
 }
 
 /* ---- @Action 单元格解析（数值/文本求值 + 分组）----
@@ -181,6 +252,10 @@ void ActionRunner::parseActionCell(Json& set, const mt::MatrixObject& actionDefs
 			exprCache.ast = Expression::parse(*body);
 		}
 		ExprValue v = exprCache.ast.eval(registry_.makeActionExprResolver());
+		if (v.isBool()) {
+			throw IllegalArgumentException("@Action 单元格的 $(...) 不能产出布尔结果"
+				"（比较/逻辑表达式属于 @if(...) 条件）；单元格接受数值或文本参数");
+		}
 		paramVal = v.isText() ? JsonString(v.text) : JsonFloat(v.num);
 	} else {
 		paramVal = JsonFloat(MatrixVars_Hardware::parseMtDouble(actionDefs, i, j));
