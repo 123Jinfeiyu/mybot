@@ -399,7 +399,7 @@ mybot/
 │   ├── scenes/          # 模板场景（播种到 $MYBOT_HOME/maps/）
 │   └── tests/           # sim_tests（8 个 TU；断言计数见 docs/testing.md）
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（88 Lua + 44 C++ + E2E）
+├── test/          # 三层测试（88 Lua + 45 C++ + E2E）
 └── docs/          # 深入文档（13篇Markdown + 架构分析网页与两张全景图）
 ```
 
@@ -433,8 +433,8 @@ bash test/run_all.sh agent-all
 汇总行的守门用例数、`sim_tests` 的断言数——**故意不写死在本页**，只给指针，因为
 静态门派生不出来、写死必漂移）：
 
-- 722 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 88 个 Lua 测试文件 + 44 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 731 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 88 个 Lua 测试文件 + 45 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
 - 守门用例数以 `bash test/run_all.sh` 末尾的汇总行为准（Lua 单测 + C++ 段 + 各 e2e 脚本）；
   跳过项只应剩 `test_jit_warmup.lua`——真机 ABI 回归，需 `/dev/i2c-*`
 - 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
