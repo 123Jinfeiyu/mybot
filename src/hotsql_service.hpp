@@ -17,22 +17,33 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "action_runner.hpp"
-#include "daemon_registry.hpp"
-#include "hardware.hpp"
+/* 门面头收窄（2026-10-10）：六个「只以引用出现」的域门面/类型改前置声明——
+ * 本服务契约「跨域一律只经门面」，头里本就只该**命名**它们、不碰其定义。
+ * 三个保留的实头是被**嵌套类型**钉住的（前向声明撑不起嵌套名）：
+ *   hotsql_plan.hpp   HotSqlPlan::Deletes/Insertions/Deletion（签名按值/引用）
+ *   hw_registry.hpp   HwRegistry::Mark（rollbackHotBatch 的标记形参）
+ *   script_loader.hpp ScriptLoader::Mutations（各签名按引用）
+ * 实现单元（hotsql_service.cpp）自行包含所需定义头。 */
+
 #include "hotsql_plan.hpp"
-#include "hw_factory.hpp"
 #include "hw_registry.hpp"
-#include "meta_registry.hpp"
 #include "script_loader.hpp"
-#include "structure_store.hpp"
 
 namespace bot {
+
+class StructureStore;
+class MetaRegistry;
+class DaemonRegistry;
+class HwFactory;
+class ActionRunner;
+class DaemonRunner;
+class MatrixVars_Hardware;
 
 class HotSqlService {
 	StructureStore& structures_;

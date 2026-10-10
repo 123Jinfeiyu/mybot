@@ -10,6 +10,14 @@
 
 #include "hotsql_service.hpp"
 
+/* 门面定义头（2026-10-10 起由实现侧显式引入：头收窄后不再经传递依赖获得） */
+#include "action_runner.hpp"
+#include "daemon_registry.hpp"
+#include "hardware.hpp"
+#include "hw_factory.hpp"
+#include "meta_registry.hpp"
+#include "structure_store.hpp"
+
 /* DaemonRunner 完整类型：skills 里本 TU 只做 shared_ptr 转手与 .get()，但
  * 保留显式引入以免将来加成员访问时踩到不完整类型。 */
 #include "daemonvar.hpp"
