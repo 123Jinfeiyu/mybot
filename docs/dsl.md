@@ -21,7 +21,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 
 要点：
 
-- `-` 是占位符，继承上一行同列的值
+- `-` 是占位符，继承上一行同列的值（**首个数据行例外**：没有上一行可继承，`-` 原样保留为字面值、不填充，含义由消费方决定）
 - `I2C` 列以 `$i2c-1` 引用上方定义的总线（引用列必须 `$` 前缀，裸名一律按字面值）
 - 注释整行 INSERT 即可下线一个硬件实例；报错会指明是哪张表、哪一行、哪一列
 - **INSERT 的列名清单决定「哪个值属于哪一列」，值按列名落到建表声明序**（2026-09-20 审计 C3）。`INSERT INTO Timer (delay, name) VALUES (50, 'timer-0')` 与 `(name, delay)` 写法等价，列序写反不会错列。三条硬约束（违规在解析期报错，不再静默错位）：列名必须在建表声明里存在（`no such column`）、同一列不得写两次（`listed twice`）、每列都必须给值（`missing value for column`，要继承上一行就显式写 `-`）
@@ -169,6 +169,7 @@ s1.A;
 @Vars
 name  value;
    threshold  30;
+@
 
 @if(threshold>0)
 s1.A;
@@ -194,15 +195,18 @@ s1.A;
 某个硬件收到指令后先干一份活，再把结果转交给另一个硬件：
 
 1. 先运行自己的 Lua 驱动 `call`
-2. 框架把「该行元数据（跳过 `name`/`controller` 列）∪ 自己 Lua 返回表」发给 `controller` 指定的硬件变量
+2. 框架把「该行元数据（跳过 `name` 与全部流引用列 `controller*`/`trigger*`）∪ 自己 Lua 返回表」发给 `controller` 指定的硬件变量
 3. `controller` 支持 `-` 继承上一行；被引用方必须在结构脚本中先定义
 
 两点框架级行为需要知道：
 
 - **派发目标 `mode` 由框架独占**（在合并参数之后才写入）：转发 payload 里混着上游返回表的键，
   上游驱动返回 `{mode="print"}` 之类的键不会改写下游的派发目标
-- **驱动的 `build`/`call`/`destroy` 必须返回带 `result` 键的表**（`"OK"` 或 `"ERR"`）：
-  返回非表或漏写 `return` 会被判契约违反并中断，不会被静默当成成功。
+- **驱动的 `build`/`call`/`destroy` 必须返回非空表**：返回非表或空表 `{}`（含漏写
+  `return`）会被判契约违反并中断，不会被静默当成成功。表里**若带** `result` 键，值必须
+  是 `"OK"` 或 `"ERR"`（`"ERR"` 连同 `message` 触发 halt）；controller 转发语义的驱动
+  （如 `Relay`/`Servo`）刻意返回**无 `result` 键**的数据表，同样合法（判据见
+  [drivers.md](drivers.md) 的「返回值契约」节）。
   `result`/`message`/`mode` 三个键名另由框架保留，`.mt` 动作脚本不得用它们作参数列
   （`MtVars_Lua::rejectReservedKeys`，即 `--help` 里「安全约束」一条的代码正身）。
 

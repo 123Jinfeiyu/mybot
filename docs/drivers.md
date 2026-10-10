@@ -110,7 +110,7 @@
 可机器核对的部分由 `luajit test/test_driver_contract.lua`（驱动入口契约 sweep）
 逐模块断言：能加载、三入口齐全、非表入参返回 ERR 契约表而非抛 Lua error——
 豁免只有 `bitcompat`（纯 Lua 库）与 `Camera`（头注声明不挂 `arg_table`）。
-`run_all.sh` 另有两道 grep lint（`arg_table` 首调用、模块路径 `__mpath` 引导）。
+`run_all.sh` 另有三道 grep lint（`arg_table` 首调用、模块路径 `__mpath` 引导、`data.` 裸读的 nan 回落）。
 
 ### 入口函数集
 
@@ -165,9 +165,10 @@ require_driver("i2c", {
 - 若驱动的**额外**校验须先于 `set_addr`（约定「非法配置值不碰总线」，如
   `MS5611` 的 OSR 档位、`PCF8574` 的地址族），在 build 闭包里用 `i2c_check`
   （仅存在性）自行把 `set_addr` 留到校验通过之后
-- 器件地址硬件固定、`address` 列可省者（`AMG8833` 0x69、`MCP4725` 0x62）
+- 器件地址硬件固定、`address` 列可省者（当前仅 `AMG8833` 0x69）
   可用 `require_driver` 的 `i2c_addr_default` 字段指定固定地址——
   `i2c_pair` 视 `address` 为必填，语义不等价，框架对此类器件有特殊处理
+  （`MCP4725` 地址虽也硬件固定，但未走 `i2c_addr_default`，`address` 列仍必填）
 
 ### drv_common 公共原语
 
@@ -204,7 +205,7 @@ require_driver("i2c", {
 ### 单消费者声明（`SINGLE_CONSUMER`）
 
 如果本驱动的**一次访问跨多个总线事务、且器件侧留有地址或握手相位**，就在模块源里
-**行首**声明一行（宿主是纯文本扫描、不执行 Lua，所以缩进或写在注释里都不算）：
+**行首**声明一行（宿主是纯文本扫描、不执行 Lua；允许前导空白，但写在注释里不算）：
 
 ```lua
 SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访问跨多个 I2C 事务"
@@ -225,7 +226,7 @@ SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访�
 | `driver`/`addr` | 多器件守护没有这两列，改从 `devices` 列逐个 spec 解析：`driver@addr@f1,f2[:模式][@k=v]`，spec 之间以 `\|` 分隔；报错会点名 `devices[N]` 与驱动名 |
 
 C++ 侧那三个缺省值以 `HwFactory::kDaemonDefault*` 为单点，与 `sensor_daemon.lua`
-的缺省表达式由 `test/cpp/test_robot.cpp` 的 `daemon_defaults_match_lua_source`
+的缺省表达式由 `test/cpp/test_robot_lifecycle.cpp` 的 `daemon_defaults_match_lua_source`
 **读 Lua 源两侧比对**（这类漂移没有运行期症状，只会让判据静默漏判）。
 
 当前声明者：`AS3935` / `AS7262` / `MS5611` / `VL53L0X` / `VL53L4CD`
@@ -254,7 +255,9 @@ C++ 侧那三个缺省值以 `HwFactory::kDaemonDefault*` 为单点，与 `senso
 
 ```lua
 destroy = function(ctx, data)
-    local fd = ctx.fd
+    -- 注意：destroy 包装只透传 {state, name}，不含 fd/addr——收尾要用的
+    -- 总线句柄/地址从 data 里取（与 PCA9685/ADS1115 等实驱动一致）
+    local fd = tonumber(data.fd)
     if fd ~= nil then
         ...与器件状态有关的收尾动作...
     end
@@ -272,7 +275,6 @@ end
 | --- | --- | --- |
 | `ADS1115` | 缺 `fd`/`address`，或 `set_addr` 失败 | 被回归用例固定（`test/test_ads1115.lua`），不改范 |
 | `ADS1256` | 缺 `fd`；停止连续读模式失败 | 器件需先停流再释放总线 |
-| `PCA9685` | MODE1 重启写失败 | 器件状态收尾结果如实上报 |
 | `PWM` | unexport 失败（成功时带 `released` 标志） | sysfs 收尾结果如实上报 |
 | `SCSCL` | 扭矩关闭短写 | 舵机需确认已卸力，短写即未确认 |
 
@@ -310,7 +312,6 @@ end
 | 模型侧符号扩展与位运算 | 各驱动 `*_VIRT` 声明之后 | 模型刻意不共用驱动局部量（部分刻意「纯算术无 bitcompat」），与驱动实现互证寄存器语义 |
 | CRC 计算双实现 | 驱动侧 vs 模型侧（如 `SHT3X` CRC-8、`MS5611` CRC-4、`SGP30` CRC-8） | 同上：一处算错时另一处会暴露，收敛后单点错误即失效 |
 | 24 位符号扩展（`0x800000`/`0x1000000`） | `LPS22HB`、`ADS1256` 等 | `bitcompat` 无 `s24` 原语，保持内联 |
-| 器件固定缺省地址的内联校验 | `AMG8833`、`MCP4725` | `address` 列可省，`i2c_pair` 语义不等价（见上） |
 | `ADS1115` destroy 的显式 ERR | `modules/ADS1115.lua` | 有回归用例固定的既有契约 |
 
 ## 孪生驱动相似度实测（26.6 留档）

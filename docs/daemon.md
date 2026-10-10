@@ -23,8 +23,9 @@ INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/daemon_probe.lua');
   之后才逆序 `destroy()` 硬件。防的是「执行器已断电、某个在途 tick 又写它一次」——
   最后一次写随机胜出，进程退出时器件可能重新带电。
   `stop` 只在两拍之间被看见，所以屏障最坏要等一整拍。
-  超时弃管的守护仍可能碰总线（它卡在某一拍里出不来），弃管告警会如实说明：
-  `not exited within <N>ms, abandoning slot (… may still touch the bus after hardware de-init)`，
+  超时弃管的守护在弃管前被置总线灭火位（quiesce）：其后的总线传输在进内核前被 HAL
+  拒绝，只有弃管瞬间已在途的一次调用可能再碰一下总线。弃管告警会如实说明：
+  `not exited within <N>ms, abandoning slot and quiescing its bus access (HAL will refuse further transfers; an in-flight call may still touch the bus once)`，
   退出前另有统一计数告警（`abandonedDaemonCount`）。
 
 ## 万能采样 chunk（零 per-sensor 代码）
@@ -73,14 +74,14 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 
 ## 配置 schema 加载期校验
 
-`@Daemon` 的框架列在**结构脚本加载期**（`src/daemonvar.cpp` 的工厂，与 `interval` 校验同处）即校验，非法值当场报错并点名守护名/列/表/行号——不等守护线程 setup 才失败，也不静默降级：
+`@Daemon` 的框架列在**结构脚本加载期**（`src/daemonconf.cpp` 的工厂，与 `interval` 校验同处）即校验，非法值当场报错并点名守护名/列/表/行号——不等守护线程 setup 才失败，也不静默降级：
 
 - `proto`：只接受 `i2c`（缺省）/ `spi` / `uart` / `virt`。拼错（如 `i2`）此前会静默落进 i2c 分支去开总线；
 - `fields`：`<名>[:<模式>]`，模式 ∈ 缺省（跟随 `sign`）/ `f` / `float` / `s16`；空项（`A||B`、首尾分隔符）与未知模式（`TEMP:xyz`）此前分别被静默丢弃、静默当浮点透传；
 - `sign`：必须是整数（如 `16`）；非数值此前被 `tonumber` 折成 nil，符号扩展静默失效。
 - **任意列的字符集**：值里不得含 `NUL` 或 `;`（审计 P4）。`DAEMON_CONFIG` 是
-  `k=v;k=v` 串、经 `lua_pushstring` 注入（C 字符串语义），Lua 侧按
-  `gmatch("([^;=]+)=([^;]*)")` 解析——NUL 会把它**其后所有列**（含 `proto`/`sign`）
+  `k=v;k=v` 串、经 `lua_pushstring` 注入（C 字符串语义），Lua 侧按 `;` 切列、
+  每列再按**第一个** `=` 分割键值（`sensor_daemon.lua`）——NUL 会把它**其后所有列**（含 `proto`/`sign`）
   在 Lua 侧静默抹掉，而上面几条 schema 校验跑在逐列原始串上全部通过，
   即「校验看到的」与「守护拿到的」不是同一份配置；`;` 则截断该值，且若其后片段
   形如 `key=` 还会**注入/覆盖**守护理解的键。放过之后运行期只剩

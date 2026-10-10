@@ -243,7 +243,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
 - **字段归属**：Rust 消费模型、提示词、会话、模型重试及上下文预算字段；摄像头、脚本目录、工具超时、能力门控与策略由后端消费。两侧对对方的专属字段都只登记为已知字段、不解析或授权（Rust 对后端专属字段如此；2026-10-01 批次 A 后 C++ 后端对模型侧字段同样只经白名单不解析——模型侧的类型/值域校验是 mybot-agent 的独占职责）；以下能力字段的拒绝规则由后端执行。`audit_log` 两端各自生效。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `stream` `max_turns` `max_task_seconds` `scripts_dir`
-  `allow_shell` `allow_hot_sql` `allow_write_file` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
+  `allow_shell` `allow_hot_sql` `allow_write_file` `prompt_files` `camera_var` `camera_device` `camera_src` `camera_src_dir` `allow_camera` `audit_log`
   `agent_policy` `read_vars` `fs_root` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec` `action_script_timeout_sec` `history_summary` `max_summary_bytes`。
@@ -280,7 +280,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   | 字段 | 区间 | 含义与缺省 |
   | --- | --- | --- |
   | `max_calls_per_round` | 1-1024（**拒绝 0**） | 单轮向物理机器人下发动作数的上限，缺省 16。`0` 在下游是「不限」的旧语义，对机器人没有正当用法，配置文件不得放宽（与 `allow_shell` 同源口径）。超限时**只派发前 N 条**，其余折叠成一句说明**追加进该轮 assistant 的文本**（不额外产生 `tool` 消息——`tool_call_id` 必须与 assistant 声明的调用一一对应），同时往日志打一行 `[上限] …已丢弃 K 条未派发`：模型与操作者都必须知道被截断了（SAN-1/SAN-8） |
-  | `max_retries` | 0-6 | 模型调用失败（**网络类与限流**）的**尝试次数（含首次）**，缺省 3。`0` = 只发一次不重试——离线/内网直连想立刻失败时用。可重试的判据由驱动给出的结构化字段决定（`http_status` / `curl_rc` / `retriable`）：429 与 5xx 可重试、其余 4xx 不可（重试不会改变结果，只烧配额），连接类 curl 错误码（6/7/28/35/52/55/56）可重试（SAN-3，2026-09-22） |
+  | `max_retries` | 0-6 | 模型调用失败（**网络类与限流**）的**尝试次数（含首次）**，缺省 3。`0` = 只发一次不重试——离线/内网直连想立刻失败时用。可重试判据在 Rust 侧按 rig 的 `CompletionError` 分类（`agent/src/model.rs` 的 `classify`）：429（限流，退避尊重 `Retry-After`）与 5xx 可重试、其余 4xx 不可（重试不会改变结果，只烧配额）；无 HTTP 状态时，连接/传输类错误与单次调用超时（`ModelTimeout`）可重试（SAN-3，2026-09-22） |
   | `retry_backoff_ms` | 0-10000 | 重试退避基础时长（指数增长），缺省 1000；单次退避另有 60s 上限，防止放宽区间后算出小时级等待。**被限流时（429）改用服务端 `Retry-After`**，与本地指数退避取较大值，日志点名来源；该值钳到 1s-5min（SAN-3） |
   | `run_command_timeout_sec` | 1-600 | `run_command` 的缺省超时，缺省 10 |
   | `run_command_max_timeout_sec` | 1-3600，且 **≥ 上一个** | 模型经 `timeout_seconds` 能请求的上限，缺省 60 |
@@ -1019,7 +1019,7 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
 密钥的新后端对不先认证的旧 agent 同样拒绝。**连续失败门（2026-09-30，审计 P1）**：首帧认证
 连续 5 次失败后端即停止服务（`AuthFailGate`，与 TCP 口令的 `authMaxFails=5` 同口径；哑对端
 「连上不发帧」不动计数、认证通过才归零——试探者无法用「连了就断」刷新失败窗口）。到顶走正常
-停机断电链（fail-closed），操作者重启后端恢复、必要时更换密钥。回归：`test_mcpbackend` 的
+停机断电链（fail-closed），操作者重启后端恢复、必要时更换密钥。回归：`test_mcptransport` 的
 `mcpbackend_auth_fail_gate_counts_consecutive_rejections`。其余回归：`test_mcpbackend` 三态单测、
 `mcp_e2e.sh` M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进程正反两面）。
 
@@ -1270,7 +1270,7 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl/mod.rs` 等 33 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行（及本地工具的 tool 行）、帧客户端、本地工具 `http_fetch`（`agent/src/httpfetch.rs`，reqwest）、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）、**录制模式**（`agent/src/record.rs`：完整上下文采集含图片本体，微调数据用）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42、reqwest 0.13 |
+| `agent/src/repl/mod.rs` 等 35 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行（及本地工具的 tool 行）、帧客户端、本地工具 `http_fetch`（`agent/src/httpfetch.rs`，reqwest）、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）、**录制模式**（`agent/src/record.rs`：完整上下文采集含图片本体，微调数据用）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42、reqwest 0.13 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 
