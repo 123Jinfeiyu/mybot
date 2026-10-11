@@ -12,12 +12,12 @@
 
 | 日期 | 要点 |
 |------|------|
-| 09-20 | 审计收口四阶段：安全缺省翻转（`run_command` 默认关闭、`--llm-key` 移除）、NaN 防线、门禁硬化（UBSan 硬门禁、常量自检 Lua 源生成） |
-| 09-21 | 七轮审计修复（AG-1~AG-27）：UTF-8 消毒、图像内存降副本（219→163 MiB）、HTTP 连接池化、覆盖率口径修正、零断言即失败 |
-| 09-22 | agent 重构 A1~C7 + SAN 系列：会话作用域收敛、子进程单点化、图片游标降副本、`--check-config`、审计补会话边界与模型轮次、重试认识真实错误 |
+| 09-20 | 审计收口四阶段 + 安全缺省翻转（`run_command` 默认关闭、`--llm-key` 移除）+ 破坏性：动作脚本内联 `@Alias`/`@Vars` 作用域收敛到本次执行；NaN 防线、门禁硬化（UBSan 硬门禁、常量自检 Lua 源生成） |
+| 09-21 | agent 子系统第二/三/七轮审计修复（AG-1~AG-27 系列）：UTF-8 消毒、图像内存降副本（219→163 MiB）、HTTP 连接池化、覆盖率口径修正、零断言即失败 |
+| 09-22 | agent 重构 A1~C7 + SAN 系列：子进程单点化、图片游标降副本、`--check-config`、审计补会话边界与模型轮次、重试认识真实错误 |
 | 09-23 | SQL 方言扩展（WHERE / DELETE / DROP / UPDATE / SHOW TABLES）、回读通道（`--read-var` + `read_variables`）、会话持久化（`--session-file` / `--resume`）、三协议驱动（OpenAI / DeepSeek / Anthropic） |
-| 09-24 | agent 迁移 Rust（`mybot-agent`）：批次 A~D 落地，C++ 侧死代码清退 -2331 行；H1 掩蔽绕过 + H2 stdout panic 修复；决策 agent over TCP 不做 |
-| 09-25 | 删除 Lua 协议驱动轨道（11 文件）；CI 六条软门禁全转硬；流式输出缺省；REPL 行编辑（rustyline）；`PR_SET_DUMPABLE=0`；`--on-disconnect` 停机安全动作；会话历史压缩（摘要挂系统提示词）；`wait_variable` 工具 |
+| 09-24 | agent 迁移 Rust（`mybot-agent`）：批次 A/B/C 落地（context.get 路由、骨架、循环语义对齐），C++ 侧死代码清退 -2331 行；H1 掩蔽引号绕过 + H2 Rust stdout panic 修复 |
+| 09-25 | 批次 D 落地（Rust 会话持久化 `--session-file`/`--resume`，C++ 参考清退）+ 决策 agent over TCP 不做；删除 Lua 协议驱动轨道（11 文件）；CI 六条软门禁全转硬；流式输出缺省；REPL 行编辑（rustyline）；`PR_SET_DUMPABLE=0`；`--on-disconnect` 停机安全动作；会话历史压缩（摘要挂系统提示词）；`wait_variable` 工具 |
 | 09-29 | MCP 首帧共享密钥 `BOT4CJ_MCP_TOKEN`；停机灭火协议（`quiesce` 位）；信任前提体检（文件权限告警） |
 
 ### 主题概览
