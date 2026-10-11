@@ -346,7 +346,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（58个模块 + 21个共享库）
+├── modules/       # Lua驱动生态（58个模块 + 20个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
@@ -362,7 +362,7 @@ mybot/
 │   └── jump.mt          # 跳跃
 ├── prompts/       # Agent提示词包
 ├── test/          # 三层测试（85 Lua + 25 C++ + E2E）
-└── docs/          # 深入文档（12篇Markdown + 架构分析网页与两张全景图）
+└── docs/          # 深入文档（13篇Markdown + 架构分析网页与两张全景图）
 ```
 
 ## 测试与 CI
@@ -406,6 +406,8 @@ bash test/run_all.sh agent-all
 | [测试手册](docs/testing.md) | 守门分段、ctest、sanitizer、覆盖率 |
 | [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
 | [FAQ](docs/faq.md) | 已知限制、排障问答 |
+| [ICA 原型说明](docs/ica.md) | 证据账本实验分支 |
+| [Web SSH 语义契约](docs/webssh.md) | wsproto / webterm / webshell 行为不变式 |
 | [更新日志](docs/changelog.md) | 版本演进与变更记录 |
 | [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图 |
 | [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用 |
