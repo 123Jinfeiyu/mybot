@@ -362,7 +362,7 @@ mybot/
 │   └── jump.mt          # 跳跃
 ├── prompts/       # Agent提示词包
 ├── test/          # 三层测试（85 Lua + 25 C++ + E2E）
-└── docs/          # 深入文档（13篇Markdown + 架构分析网页与两张全景图）
+└── docs/          # 深入文档（Markdown 文档 + design/ 设计论证 + 架构分析网页与两张全景图，清单以 docs/README.md 为准）
 ```
 
 ## 测试与 CI
@@ -397,6 +397,7 @@ bash test/run_all.sh agent-all
 | 文档 | 内容 |
 |------|------|
 | [Agent 模式完整指南](docs/agent.md) | CLI 选项、工具系统、安全边界、提示词包、会话持久化 |
+| [安全设计论证](docs/design/security-rationale.md) | 安全设计的完整论证、攻击场景与防线推导 |
 | [命令行与环境变量参考](docs/reference.md) | 所有 CLI 参数、`BOT4CJ_*` 环境变量、安全约束 |
 | [DSL 语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
 | [驱动清单](docs/drivers.md) | 58 个模块分类速查、驱动契约 |

