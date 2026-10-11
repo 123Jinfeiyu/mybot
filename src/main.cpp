@@ -237,11 +237,11 @@ int main(int argc, char** argv) {
 		if (!robot) { return 1; }
 
 		/* --daemon-grace-ms：配置错误不碰真机——在 active() 之前校验并设置，
-		 * 与 @Include 基准目录同一批「上电前收尾」步骤。 */
+		 * 与 @Merge/@Include 基准目录同一批「上电前收尾」步骤。 */
 		if (!applyDaemonGraceMs(options.daemonGraceMs, *robot)) { return 2; }
 
-		/* @Include 基准目录：--input 文件通道取脚本所在目录（相对路径直觉，
-		 * 且与「include 名不得越出基准树」的词法规则自洽）；stdin/TCP 无脚本
+		/* @Merge/@Include 基准目录：--input 文件通道取脚本所在目录（相对路径直觉，
+		 * 且与「include/merge 名不得越出基准树」的词法规则自洽）；stdin/TCP 无脚本
 		 * 位置，保持缺省 CWD。agent 模式的基准由 run_action_script 工具设为
 		 * --scripts-dir（与该工具的相对路径语义一致），不在此处设置。 */
 		if (options.input) {

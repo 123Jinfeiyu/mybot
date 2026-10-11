@@ -326,8 +326,8 @@ std::string loadActionScriptFile(const std::string& scriptsDir, const std::strin
 std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& requested,
 		std::string& echo, const std::map<std::string, std::string>& vars) {
 	std::string content = loadActionScriptFile(ctx.scriptsDir, requested);
-	/* @Include 基准目录 = scripts-dir 根：与工具的相对路径语义一致
-	 * （include 名同样不得越出该树），多轮执行重复设置幂等 */
+	/* @Merge/@Include 基准目录 = scripts-dir 根：与工具的相对路径语义一致
+	 * （include/merge 名同样不得越出该树），多轮执行重复设置幂等 */
 	ctx.robot->setActionIncludeBaseDir(ctx.scriptsDir);
 	const std::size_t bytes = content.size();
 	auto reader = std::make_unique<LimitedReader>(

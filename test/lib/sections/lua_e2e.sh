@@ -105,7 +105,7 @@ run_parse_cases() {
 }
 
 # mtmerge 离线合成器已移除（2026-10-10）：相关 runner 与 fixture 函数已不再使用。
-# 运行端 @Include 展开的测试由 test/run_all.sh 的 include 段覆盖。
+# 运行端 @Merge 展开的测试由 test/run_all.sh 的 include 段覆盖。
 
 
 # F3-5 余部①：原 run_include_observation 拆成按用例调用的 runner——

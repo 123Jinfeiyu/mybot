@@ -219,8 +219,9 @@ TH_TEST(matrix_crlf_line_endings_parse_identically) {
 		"@Timer\r\nname;\r\nt0;\r\n@\r\n@Action\r\ntimer0.delay;\r\n  50;\r\n@\r\n");
 	TH_CHECK(all.size() == 2);
 	/* 单元格以 ';' 收尾，'\r' 落在行首空白位被吞掉，因此数据格不含 \r；
-	 * 但 @Name 行没有 ';'，'\r' 会留在名字里——消费方（findMt）一律 trim，
-	 * 这里按同一口径断言，而不是要求解析器自己 trim。 */
+	 * @Name 行没有 ';'，但 '\r' 同样是块头名字 token 的终止符（@块嵌套起），
+	 * 故名字干净不带 \r（裸 "@\r" 也因此判定为闭合而非嵌套）。消费方一律 trim，
+	 * 这里仍按 trim 口径断言。 */
 	TH_CHECK(bot::trim(all[0].getName()) == "Timer");
 	TH_CHECK(bot::trim(all[1].getName()) == "Action");
 	TH_CHECK(bot::trim(fx::cell(all[1], 0, 0)) == "timer0.delay");
@@ -238,16 +239,13 @@ TH_TEST(matrix_blank_input_yields_no_object) {
 	TH_CHECK(!p2.parse().has_value());
 }
 
-TH_TEST(matrix_unclosed_object_still_returns_when_named) {
-	/* 缺闭合 '@' 但已到 EOF：已解析出的行仍可用（脚本尾部截断时的实际形态） */
+TH_TEST(matrix_unclosed_block_at_eof_reports_loudly) {
+	/* @块嵌套（2026-10-12）：缺闭合 '@' 直到 EOF——不再静默返回半成品对象，
+	 * 而是响亮报错。旧行为（截断脚本仍返回已解析行）正是「内层 @ 被当外层闭合符
+	 * → 后续脚本静默截断」的根源，帧栈解析器改为在 EOF 时栈非空即抛。 */
 	bot::MemoryReader r("@Timer\nname;\nt0;\n");
 	mt::MatrixParser p(r);
-	auto m = p.parse();
-	TH_CHECK(m.has_value());
-	if (m) {
-		TH_CHECK(m->getName() == "Timer");
-		TH_CHECK(m->rows() == 2);
-	}
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "未闭合", p.parse());
 }
 
 TH_TEST(matrix_does_not_sync_survives_parser_rethrow) {
@@ -291,18 +289,23 @@ TH_TEST(matrix_read_save_roundtrip_preserves_cells) {
 
 
 TH_TEST(matrix_if_block_name_roundtrip) {
-	/* @if(cond) 块名（2026-10-10 特性）：MatrixParser 名字态把 "if(x>0)"
-	 * 整串收进 name（括号/比较符都是普通字符，块头内无空格），save()
-	 * 文本 round-trip 不丢——消费端（ActionRunner::parseIfBlockName）按
-	 * 名字前缀分派，解析层零改动。 */
+	/* @if(cond) 块名（2026-10-10 特性）+ @块嵌套（2026-10-12）：名字态把
+	 * "if(x>0)" 整串收进 name（括号/比较符都是普通字符，块头内无空格）。控制块
+	 * 自身网格为空、体在 children——块内直接行合成为一个隐式 @Action 子块。
+	 * save() 递归写出 children 后文本 round-trip 不丢；消费端
+	 * （ActionRunner::execSequence）递归进入 children 派发。 */
 	const std::string src = "@if(x>0)\nleg.angle;\n 90;\n@\n";
 	std::vector<mt::MatrixObject> mats1;
 	bot::MemoryReader in1(src);
 	mt::readMatrix(in1, mats1);
 	TH_CHECK(mats1.size() == 1);
 	TH_CHECK(mats1[0].getName() == "if(x>0)");
-	TH_CHECK(mats1[0].rows() == 2);
-	TH_CHECK(fx::cell(mats1[0], 0, 0) == "leg.angle");
+	TH_CHECK(mats1[0].rows() == 0);	/* 控制块自身无网格 */
+	TH_CHECK(mats1[0].hasChildren());
+	TH_CHECK(mats1[0].children().size() == 1);
+	TH_CHECK(mats1[0].children()[0].getName() == "Action");	/* 隐式 @Action 子块 */
+	TH_CHECK(mats1[0].children()[0].rows() == 2);
+	TH_CHECK(fx::cell(mats1[0].children()[0], 0, 0) == "leg.angle");
 
 	std::ostringstream saved;
 	mt::MatrixSaver::save(mats1, saved);
@@ -311,5 +314,72 @@ TH_TEST(matrix_if_block_name_roundtrip) {
 	mt::readMatrix(in2, mats2);
 	TH_CHECK(mats2.size() == 1);
 	TH_CHECK(mats2[0].getName() == "if(x>0)");
-	TH_CHECK(mats2[0].rows() == 2);
+	TH_CHECK(mats2[0].rows() == 0);
+	TH_CHECK(mats2[0].children().size() == 1);
+	TH_CHECK(mats2[0].children()[0].rows() == 2);
+}
+
+/* ---------------- @块嵌套（2026-10-12）：帧栈解析白盒 ---------------- */
+
+TH_TEST(matrix_nested_control_blocks_build_children_tree) {
+	/* @while 内含 @if：控制块自身网格为空，体在 children——while.children=[if]，
+	 * if.children=[隐式 @Action(dev.p;1)]。裸 '@' 逐层闭合最内层。 */
+	mt::MatrixObject m = fx::oneMatrix(
+		"@while(c>0)\n@if(k>0)\ndev.p;\n 1;\n@\n@\n");
+	TH_CHECK(m.getName() == "while(c>0)");
+	TH_CHECK(m.rows() == 0);
+	TH_CHECK(m.children().size() == 1);
+	const mt::MatrixObject& inner = m.children()[0];
+	TH_CHECK(inner.getName() == "if(k>0)");
+	TH_CHECK(inner.children().size() == 1);
+	TH_CHECK(inner.children()[0].getName() == "Action");
+	TH_CHECK(inner.children()[0].rows() == 2);
+	TH_CHECK(fx::cell(inner.children()[0], 0, 0) == "dev.p");
+}
+
+TH_TEST(matrix_control_block_interleaves_rows_and_child_blocks) {
+	/* 控制块体：连续直接行合成隐式 @Action，遇显式子块打断、其后的直接行再合成
+	 * 下一个隐式 @Action——书写顺序如实入列（隐式Action / 显式Action / 隐式Action）。 */
+	mt::MatrixObject m = fx::oneMatrix(
+		"@if(a>0)\nx.p;\n 1;\n@Action\ny.q;\n 2;\n@\nz.r;\n 3;\n@\n");
+	TH_CHECK(m.children().size() == 3);
+	TH_CHECK(fx::cell(m.children()[0], 0, 0) == "x.p");
+	TH_CHECK(fx::cell(m.children()[1], 0, 0) == "y.q");
+	TH_CHECK(fx::cell(m.children()[2], 0, 0) == "z.r");
+	for (const auto& c : m.children()) { TH_CHECK(c.getName() == "Action"); }
+}
+
+TH_TEST(matrix_leaf_block_cannot_nest) {
+	/* 叶子块（@Action/@Alias/@Vars…）的体只能是数据行：内含 @if 响亮拒绝。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "不能嵌套",
+		fx::manyMatrices("@Action\nx.p;\n 1;\n@if(k>0)\ny.q;\n 2;\n@\n@\n"));
+}
+
+TH_TEST(matrix_extra_bare_at_rejected) {
+	/* 栈空时的裸 '@' = 多余闭合符：响亮拒绝（旧机静默忽略，正是内层 @ 被当外层
+	 * 闭合符 → 后续静默截断的根源）。 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "多余的 '@'",
+		fx::manyMatrices("@\n"));
+}
+
+TH_TEST(matrix_block_depth_capped) {
+	/* 嵌套深度硬上限 kMaxBlockDepth=32：第 33 层开块响亮拒绝（--tcp 远端脚本
+	 * 不能靠深嵌套撑爆帧栈/调用栈）。恰好 32 层仍合法。 */
+	auto nest = [](std::size_t n) {
+		std::string s;
+		for (std::size_t i = 0; i < n; ++i) { s += "@if(a>0)\n"; }
+		for (std::size_t i = 0; i < n; ++i) { s += "@\n"; }
+		return s;
+	};
+	TH_CHECK(fx::oneMatrix(nest(mt::kMaxBlockDepth)).getName() == "if(a>0)");
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "嵌套深度超过上限",
+		fx::manyMatrices(nest(mt::kMaxBlockDepth + 1)));
+}
+
+TH_TEST(matrix_final_bare_at_without_newline_still_closes) {
+	/* 脚本以裸 '@' 收尾且无尾随换行：EOF 前落定挂起的块头 token，块正常闭合，
+	 * 不误报「未闭合」。 */
+	mt::MatrixObject m = fx::oneMatrix("@Action\nx.p;\n 1;\n@");
+	TH_CHECK(m.getName() == "Action");
+	TH_CHECK(m.rows() == 2);
 }

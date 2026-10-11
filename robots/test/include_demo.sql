@@ -1,6 +1,6 @@
 /*
- * @Include 展开夹具：两路 Relay + Timer。
- * include 归并要求设备集不相交：r1 只由 include_a.mt 驱动、r2 只由
+ * @Merge 展开夹具（旧名 @Include，2026-10-12 改名）：两路 Relay + Timer。
+ * @Merge 归并要求设备集不相交：r1 只由 include_a.mt 驱动、r2 只由
  * include_b.mt 驱动，timer-0 只出现在主脚本（include_main.mt）的 @Action——
  * 谁越界谁触发 "appears in both scripts"（include_overlap.mt 的负值契约）。
  */

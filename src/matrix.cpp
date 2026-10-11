@@ -47,6 +47,11 @@ void MatrixObject::save(std::ostream& out) const {
 		}
 		out << ";\n";
 	}
+	/* @块嵌套：控制块（@if/@while）自身网格为空、体在 children——递归写出子块，
+	 * 再以裸 '@' 收口。叶子块 children 恒空，行为与旧版逐字一致。 */
+	for (const auto& child : children_) {
+		child.save(out);
+	}
 	out << "@\n";
 }
 
@@ -97,34 +102,47 @@ void MatrixObject::removeRows(const std::vector<std::size_t>& rows) {
 
 /* 解析器主体：一个 _next 消费一个字符，返回更新后的行号。
  *
- * N-18 状态转移表（三状态位组合驱动，全部 8 分支罗列如下）：
+ * 2026-10-12 @块嵌套：从「单块 + flag_」升级为帧栈（stack_）。状态位仍是
+ * nl_（行首）/cm_（注释）/nm_（正在读块头名字 token），但「@ 是开还是闭」不再
+ * 靠 hasName 区分，而是**读完 '@' 后的名字 token 再决策**（Reader 无 peek）：
+ * 空名（裸 @）= 闭合最内层帧；if(/while( = 开控制帧；其余 = 开叶子帧（commitHeader）。
+ * 数据行路由到栈顶帧的构建器（dataBuilder）：叶子 → self 网格；控制 → pendingAction
+ * （连续直接行，遇子块或闭合时冲刷成隐式 @Action 子块）；栈空 → scratch_（游离数据，
+ * 永不具名 → parse 返 nullopt，与旧行为一致）。
+ *
+ * 状态转移表（全部并列分支）：
  *   输入            │ 条件                      │ 动作
  *   ────────────────┼───────────────────────────┼──────────────────────────────
- *   '#'             │ 非注释态                  │ 进注释态；名字态提交名字，
+ *   '#'             │ 非注释态                  │ 进注释态；名字态 commitHeader，
  *                   │                           │ 数据态提交挂起单元（C-M）
  *   '\n'            │ 注释态                    │ 退注释态，行号 +1
  *   其他            │ 注释态                    │ 忽略
- *   空白/'\r''\n'   │ 行首态（nl_）             │ 忽略
- *   '@'             │ 行首态且无矩阵名          │ 进名字态（开新矩阵）
- *   '@'             │ 行首态且已有矩阵名        │ 置结束标志（闭矩阵）
- *   其他            │ 行首态                    │ 退行首态，字符起头新单元
- *   空白/换行       │ 名字态（nm_）             │ 提交名字，回行首态
- *   空白/换行       │ 数据态                    │ 提交单元
- *   ';'             │ 非行首                    │ 提交单元并收口一行
- *   其他            │ 非行首                    │ 追加进当前单元
- */
+ *   空白/'\r'       │ 行首态（nl_）             │ 忽略
+ *   '\n'            │ 行首态                    │ 行号 +1
+ *   '@'             │ 行首态                    │ 进名字态、清 hdr_（开/闭延后到 token 结束）
+ *   其他            │ 行首态                    │ 退行首态，字符起头新单元（dataBuilder）
+ *   空白/换行       │ 名字态（nm_）             │ commitHeader(hdr_)，回行首态
+ *   其他            │ 名字态                    │ 追加进 hdr_（含 ';'：块头不以 ';' 收口）
+ *   空白/换行       │ 数据态                    │ 提交单元（dataBuilder）
+ *   ';'             │ 数据态                    │ 提交单元并收口一行；控制帧置 pendingHasRows
+ *   其他            │ 数据态                    │ 追加进当前单元（dataBuilder）
+ *
+ * 与旧机的唯一可见偏差都落在畸形输入上（旧机把 "@Name;" 的名字当父块数据格、
+ * 把块前游离数据混进后续块）——新机分别按「';' 属块头名字」「游离数据进 scratch_」
+ * 处理，更自洽；良构脚本（每块 @名字…@ 成对、行以 ';' 收口）逐字不变。 */
 std::int64_t MatrixParser::next_(char c, std::int64_t count) {
 	/* ------------ COMMENTS ------------ */
 	if (!cm_ && c == '#') {
 		cm_ = true;
 		/* C-M：注释起始须先提交挂起内容，否则注释结束后文本拼回同一单元
-		 * （"50#c\n60" → "5060"），动作数值被静默篡改。名字态提交名字并退出
-		 * 名字行；数据态仅提交挂起单元，行继续由 ';' 收口。 */
+		 * （"50#c\n60" → "5060"），动作数值被静默篡改。名字态先落定块头
+		 * （开块/闭合）；数据态仅提交挂起单元，行继续由 ';' 收口。 */
 		if (nm_) {
-			builder_.submitName();
+			commitHeader(hdr_);
+			hdr_.clear();
 			nm_ = false;
 		} else {
-			builder_.submitItem();
+			dataBuilder().submitItem();
 		}
 	}
 	else if (cm_ && c == '\n') {
@@ -136,59 +154,166 @@ std::int64_t MatrixParser::next_(char c, std::int64_t count) {
 	 * 主体同为空），避免条件链出现克隆分支 */
 	else if ((cm_ && c != '\n') || (nl_ && (c == ' ' || c == '\t' || c == '\r'))) { ; }
 	else if (nl_ && c == '\n') { count += 1; }
-	else if (nl_ && c == '@' && !builder_.hasName()) {
+	else if (nl_ && c == '@') {
+		/* 进名字态、清 hdr_：开块还是闭合，等名字 token 读完（空白/换行/注释/EOF）
+		 * 由 commitHeader 按 hdr_ 空否决策。 */
 		nl_ = false;
 		nm_ = true;
-	}
-	else if (nl_ && c == '@' && builder_.hasName()) {
-		flag_ = true;
-		nl_ = false;
-		nm_ = true;
+		hdr_.clear();
 	}
 	else if (nl_ && c != '@') {
 		nl_ = false;
-		builder_.addRune(c);
+		dataBuilder().addRune(c);
 	}
 	/* ------------- not nl ------------- */
-	else if (!nl_ && nm_ && (c == ' ' || c == '\t' || c == '\n')) {
-		builder_.submitName();
-		if (c == '\n') { count += 1; }	/* @Name 行末的换行同样计数，否则后续行号全部少 1 */
-		nl_ = true;
+	else if (!nl_ && nm_ && (c == ' ' || c == '\t' || c == '\r' || c == '\n')) {
+		/* '\r' 也算块头名字的终止符：CRLF 脚本里 "@Timer\r\n" 的名字 token 到 '\r'
+		 * 即收口（名字干净、不带 '\r'），且裸 "@\r\n" 因此得到空 hdr → 判定为闭合。
+		 * 少了 '\r'，裸闭合符会被读成 hdr="\r"（非空）→ 误判为在叶子块内嵌套而报错。 */
+		commitHeader(hdr_);
+		hdr_.clear();
 		nm_ = false;
+		nl_ = true;
+		if (c == '\n') { count += 1; }	/* @Name 行末的换行同样计数，否则后续行号全部少 1 */
 	}
-	else if (!nl_ && !nm_ && (c == ' ' || c == '\t' || c == '\n')) {
-		builder_.submitItem();
+	else if (!nl_ && nm_) {
+		hdr_ += c;	/* 块头名字字符（含 ';'：块头不以 ';' 收口，与数据态区分） */
+	}
+	else if (!nl_ && (c == ' ' || c == '\t' || c == '\n')) {
+		dataBuilder().submitItem();
 		if (c == '\n') { count += 1; }
 	}
 	else if (!nl_ && c == ';') {
-		builder_.submitItem();
-		builder_.submitLine(count);
+		dataBuilder().submitItem();
+		dataBuilder().submitLine(count);
+		/* 控制帧的直接行落进 pendingAction：标记有行，供 flushPending 合成隐式 @Action */
+		if (!stack_.empty() && stack_.back().isControl) { stack_.back().pendingHasRows = true; }
 		nl_ = true;
 	}
 	else if (!nl_) {
-		builder_.addRune(c);
+		dataBuilder().addRune(c);
 	}
 	return count;
 }
 
-/* 一次只解析一个对象；无新的矩阵式对象（意外终止）返回空 */
+/* 当前接收数据行的构建器：控制帧 → pendingAction（隐式 @Action 行run），
+ * 叶子帧 → self（网格），栈空 → scratch_（顶层游离数据，永不具名）。 */
+MatrixBuilder& MatrixParser::dataBuilder() {
+	if (stack_.empty()) { return scratch_; }
+	Frame& f = stack_.back();
+	return f.isControl ? f.pendingAction : f.self;
+}
+
+/* 控制帧：把当前直接行run冲刷成一个隐式 @Action 子块（名字已在开帧时置 "Action"），
+ * 并复位 pendingAction 以接收下一段行run（子块之后的直接行 → 下一个隐式 @Action）。 */
+void MatrixParser::flushPending(Frame& f) {
+	if (f.isControl && f.pendingHasRows) {
+		f.children.push_back(f.pendingAction.take());
+		f.pendingAction = MatrixBuilder();
+		f.pendingAction.name("Action");
+		f.pendingHasRows = false;
+	}
+}
+
+/* 块头名字 token 读完：空名（裸 @）= 闭合最内层；非空 = 开块（控制/叶子）。 */
+void MatrixParser::commitHeader(const std::string& hdr) {
+	if (hdr.empty()) {
+		/* 裸 @：闭合最内层帧。栈空即多余的闭合符——响亮拒绝（旧机静默忽略，
+		 * 但那正是「内层 @ 被当外层闭合符 → 后续静默截断」的根源，不再容忍）。 */
+		if (stack_.empty()) {
+			throw bot::IllegalArgumentException("多余的 '@'：此处没有待闭合的块"
+				"（每个 @名字 … @ 必须成对）");
+		}
+		closeFrame();
+		return;
+	}
+	/* 开块 */
+	if (!stack_.empty()) {
+		if (!stack_.back().isControl) {
+			throw bot::IllegalArgumentException("叶子块 @" + stack_.back().name
+				+ " 内不能嵌套 @" + hdr + "：只有 @if/@while 能含子块，"
+				+ "@Action/@Alias/@Vars 等叶子块的体只能是数据行");
+		}
+		if (stack_.size() + 1 > kMaxBlockDepth) {
+			throw bot::IllegalArgumentException("@块嵌套深度超过上限 "
+				+ std::to_string(kMaxBlockDepth) + "（在 @" + hdr + "）");
+		}
+		flushPending(stack_.back());	/* 子块打断父控制帧当前的直接行run */
+	}
+	Frame f;
+	f.name = hdr;
+	f.isControl = isControlBlockName(hdr);
+	if (f.isControl) { f.pendingAction.name("Action"); }
+	else { f.self.name(hdr); }
+	stack_.push_back(std::move(f));
+}
+
+/* 闭合最内层帧：叶子取自身网格；控制先冲刷尾部行run，再组装成「名字 + children、
+ * 网格为空」的 MatrixObject。产物挂到父控制帧的 children，或在栈空时成为 parse() 结果。 */
+void MatrixParser::closeFrame() {
+	Frame f = std::move(stack_.back());
+	stack_.pop_back();
+	MatrixObject m;
+	if (f.isControl) {
+		flushPending(f);	/* 收尾：尾部直接行run → 最后一个隐式 @Action 子块 */
+		MatrixBuilder b;
+		b.name(f.name);
+		for (auto& ch : f.children) { b.addChild(std::move(ch)); }
+		m = b.take();
+	} else {
+		m = f.self.take();
+	}
+	if (stack_.empty()) {
+		result_ = std::move(m);
+		done_ = true;
+	} else {
+		/* 父帧必为控制帧：叶子父帧在 commitHeader 开子块时已响亮拒绝 */
+		stack_.back().children.push_back(std::move(m));
+	}
+}
+
+/* 一次只解析一个顶层块（可能带 children）；无新的矩阵式对象（意外终止）返回空 */
 std::optional<MatrixObject> MatrixParser::parse() {
 	std::int64_t count = 1;
-	/* 每个矩阵独立解析：全部状态复位。只复位 flag_/builder_ 会让残留的 nl_/nm_
-	 * 把下一个矩阵的起始 '@' 当作数据吞进名字，矩阵名变成 "@Action" 而静默失配。 */
-	flag_ = false;
+	/* 每个顶层块独立解析：全部状态复位。栈/scratch_/hdr_/done_/result_ 与三个
+	 * 状态位一起清——残留会把下一个块的起始 '@' 当数据吞进名字（旧机同一理由）。 */
+	stack_.clear();
+	scratch_ = MatrixBuilder();
+	hdr_.clear();
+	done_ = false;
+	result_.reset();
 	nl_ = true;
 	cm_ = false;
 	nm_ = false;
-	builder_ = MatrixBuilder();
 
-	/* 读取初始状态，循环直到 flag 或 EOF。flag_ 必须在 read() 之前检查：
-	 * 闭合 '@' 置位 flag_ 后若再读一个字符，该字符被丢弃，紧随其后的下一个
-	 * 矩阵就少了一个前导字符（单换行分隔时恰好少掉换行，触发上面的名字污染）。 */
+	/* 读取初始状态，循环直到 done_（顶层帧闭合）或 EOF。done_ 必须在 read() 之前
+	 * 检查：闭合 '@' 的名字 token 结束即置 done_，若再读一个字符会丢掉下一个块的
+	 * 前导字符（单换行分隔时恰好少掉换行，触发名字污染）。 */
 	for (;;) {
-		if (flag_) { break; }	/* 对应 Cangjie while(!flag && hasValue(so)) 的终止检查 */
+		if (done_) { break; }
 		int c = input_.read();
-		if (c < 0) { break; }
+		if (c < 0) {
+			/* EOF 前若正读块头名字 token（nm_），先落定它——脚本以裸 '@' 收尾
+			 * 且无尾随换行时，闭合符否则永远等不到终止空白而被误判「未闭合」。 */
+			if (nm_) {
+				try {
+					commitHeader(hdr_);
+				} catch (const bot::IllegalArgumentException& e) {
+					throw bot::IllegalArgumentException("Parse failed at line "
+						+ std::to_string(count) + ": " + e.what());
+				}
+				hdr_.clear();
+				nm_ = false;
+			}
+			/* EOF 时栈非空 = 有块未闭合：响亮报错，根治旧机「内层 @ 当外层闭合符
+			 * → 后续脚本静默截断」。 */
+			if (!stack_.empty()) {
+				throw bot::IllegalArgumentException("脚本结束（EOF，第 "
+					+ std::to_string(count) + " 行）但块 @" + stack_.back().name
+					+ " 未闭合：每个 @名字 … @ 必须成对（缺一个闭合的 '@'）");
+			}
+			break;
+		}
 		try {
 			count = next_(static_cast<char>(c), count);
 		} catch (const MatrixParseExcept&) {
@@ -204,8 +329,8 @@ std::optional<MatrixObject> MatrixParser::parse() {
 		 * 掩盖真实成因；按 fail-fast 原则原样上抛。 */
 	}
 
-	if (!builder_.hasName()) { return std::nullopt; }
-	return builder_.take();
+	if (done_ && result_) { return std::move(*result_); }
+	return std::nullopt;
 }
 
 /* 逐个解析矩阵外表直到 EOF（N-11：自 ScriptLoader::readMatrix 下沉，

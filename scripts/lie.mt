@@ -7,7 +7,7 @@ POS_S1      0;
 INT_S1     10;
 BEAT_T0    80;
 @
-@Include
+@Merge
 phase path;
     - scripts/map_spider.mt;
     - scripts/move-fl.mt;

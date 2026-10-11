@@ -4,7 +4,7 @@ r1.test;
   5;
 @
 
-@Include
+@Merge
 path;
   scripts/test/include_a.mt;
 @

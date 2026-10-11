@@ -139,6 +139,13 @@ public:
 	/* 单矩阵动作派发核心：@Action 与 #34 @Reflex 共用同一派发逻辑 */
 	void dispatchMatrix(const mt::MatrixObject& actionDefs);
 
+	/* 递归执行一段块序列（顶层序列，或某控制块的 children）：按书写顺序，
+	 * "Action" 叶子块直接 dispatchMatrix；@if/@while 控制块求值后**递归进入其
+	 * children**（2026-10-12 @块嵌套：控制块自身网格为空，体在 children 里）。
+	 * 每块前查 stopRequested（Ctrl-C 逐层及时跳出）。返回值 = 本层是否遇到可执行
+	 * 块（Action/if/while）——仅顶层 runAction 用于 "No @Action" 判定。 */
+	bool execSequence(const std::vector<mt::MatrixObject>& seq);
+
 	/* @if(...) 条件求值（块级，轮到该块执行时）：复用 makeActionExprResolver
 	 * （标识符只认 @Vars 数值/@Alias 文本——条件引用实时传感器值走「守护
 	 * 采样 + 消费驱动」的既定链路，不在表达式面开取数通道）。结果必须是

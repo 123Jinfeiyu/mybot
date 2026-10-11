@@ -6,7 +6,7 @@ name  alias;
    leg  relay-b;
 @
 
-@Include
+@Merge
 path;
   dev_alias_leg.once.mt;
 @

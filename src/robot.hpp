@@ -58,7 +58,7 @@ private:
 	 * 拆分前逐字同序（见其定义处注释）。 */
 	struct Internals;
 	std::unique_ptr<Internals> internals_;
-	/* @Include 基准目录（mtinclude::expandIncludes 的相对路径根，缺省 "."）。
+	/* @Merge/@Include 基准目录（mtinclude::expandIncludes 的相对路径根，缺省 "."）。
 	 * 三个调用面按「脚本集合的根」取值：--input 文件通道=脚本所在目录、
 	 * agent run_action_script=--scripts-dir、stdin/TCP 无脚本位置=缺省 CWD。
 	 * run() 前设置即可，多轮执行（agent 工具）每次设置均生效。 */
@@ -123,7 +123,7 @@ public:
 	 *  5) 返回一句人读的生效摘要（REPL /sql 与 agent apply_sql 共用）。 */
 	std::string applySql(const std::string& sql);
 
-	/* 设置 @Include 的相对路径基准目录（语义见成员注释） */
+	/* 设置 @Merge/@Include 的相对路径基准目录（语义见成员注释） */
 	void setActionIncludeBaseDir(std::string dir) { actionIncludeBaseDir_ = std::move(dir); }
 
 	/* 设置 deactivate() 二段屏障的宽限上限（--daemon-grace-ms，语义见成员注释） */

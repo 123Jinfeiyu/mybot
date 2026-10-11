@@ -331,16 +331,38 @@ void ActionRunner::applyCapture(const Json& res, const Capture& cap, std::int64_
 	registry_.override(cap.var, std::move(nv));
 }
 
-/* ---- @Action/@if 逐行重放（play 直通事件发生器；ERR 即 halt-on-error）----
- * 顶层按书写顺序交错执行（展开层保序契约见 mtinclude 的重组段）：
- * 名 "Action" 的块与名 "if(...)" 的块轮到谁派发谁；if 条件不成立跳过
- * 该块（stderr 注记，条件原文过 echoSource 截断）并继续后续块。
- * 展开后序列至多一个 "Action"（展开层透传名单丢弃多余主脚本 Action 块，
- * 片段 Action 已归并），遍历不会重复派发。#34：无 @Action 也无 @if 但
- * 有 @Trigger 时反射独立成立（此处直接返回，runReflex 接手）。 */
-void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
+namespace {
+
+/* @if 跳过注记的行数：统计一段 children 里所有 @Action 后代块的数据行（去表头）
+ * 合计。@块嵌套后控制块自身网格为空、体在 children，故须下钻——扁平场景下与旧
+ * 「@if 自身网格行数」等值。递归深度受解析期 kMaxBlockDepth 界定。 */
+std::size_t countActionRows(const std::vector<mt::MatrixObject>& seq) {
+	std::size_t n = 0;
+	for (const auto& m : seq) {
+		if (bot::trim(m.getName()) == "Action" && m.rows() > 1) { n += m.rows() - 1; }
+		n += countActionRows(m.children());
+	}
+	return n;
+}
+
+} // namespace
+
+/* ---- 递归执行一段块序列（@块嵌套，2026-10-12）----
+ * seq 是顶层矩阵序列、或某控制块的 children。按书写顺序遍历：
+ *   - "Action" 叶子块：dispatchMatrix 直接派发；
+ *   - @if(cond)：条件成立则**递归进入 m.children()**（控制块自身网格为空，
+ *     体在 children 里——隐式 @Action 行run 与显式子块按书写顺序并列），
+ *     不成立则 stderr 注记跳过（跳过行数 = children 里 @Action 后代的数据行合计）；
+ *   - @while(cond)：每轮先查 stopRequested（Ctrl-C 及时跳出）、再判条件
+ *     （成立才递归 children，故是 while 而非 do-while）、递归后回到判条件。
+ *     条件每轮经 makeActionExprResolver 重求值，读得到块体内捕获格写进会话
+ *     覆盖层的新值——「捕获改 @Vars → 条件转假」是收敛的 idiomatic 手段。
+ *     无迭代上限（仅 Ctrl-C 终止）：静态真条件且块体不推进即热循环。
+ * 返回本层是否遇到可执行块（Action/if/while）——仅顶层用于 "No @Action" 判定。 */
+bool ActionRunner::execSequence(const std::vector<mt::MatrixObject>& seq) {
 	bool sawActionable = false;
-	for (mt::MatrixObject& m : actionMatrices) {
+	for (const mt::MatrixObject& m : seq) {
+		if (stopRequested()) { break; }	/* Ctrl-C：逐层及时跳出，不再进后续块 */
 		const std::string name = bot::trim(m.getName());
 		if (name == "Action") {
 			dispatchMatrix(m);
@@ -348,31 +370,24 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 			continue;
 		}
 		if (auto cond = parseIfBlockName(m.getName())) {
+			sawActionable = true;
 			if (evalIfCondition(*cond)) {
-				dispatchMatrix(m);
+				execSequence(m.children());
 			} else {
-				const auto rows = m.rows();
 				std::cerr << "[if] condition not met: '" << echoSource(*cond)
-					<< "', skipping " << (rows > 1 ? rows - 1 : 0)
+					<< "', skipping " << countActionRows(m.children())
 					<< " action row(s)" << std::endl;
 			}
-			sawActionable = true;
 			continue;
 		}
-		/* @while(条件)：当前线程内反复执行块体——每轮先查 stopRequested（Ctrl-C
-		 * 及时跳出外层，dispatchMatrix 的逐行 stop 检查只中断本轮行循环）、再判
-		 * 条件（成立才派发，故是 while 而非 do-while）、派发后回到判条件。条件每轮
-		 * 经 makeActionExprResolver 重求值，读得到块体内捕获格写进会话覆盖层的新值
-		 * ——「捕获改 @Vars → 条件转假」是收敛的 idiomatic 手段。无迭代上限（仅
-		 * Ctrl-C 终止）：静态真条件且块体不推进即热循环，stopRequested 每轮可见。
-		 * 每轮重建 ActionPlan（dispatchMatrix 内）——捕获改绑设备列别名后仍正确。 */
 		if (auto cond = parseWhileBlockName(m.getName())) {
+			sawActionable = true;
 			std::int64_t iters = 0;
 			bool stopped = false;
 			for (;;) {
 				if (stopRequested()) { stopped = true; break; }
 				if (!evalIfCondition(*cond)) { break; }
-				dispatchMatrix(m);
+				execSequence(m.children());
 				++iters;
 			}
 			if (stopped) {
@@ -385,10 +400,18 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 				std::cerr << "[while] condition became false, exited after "
 					<< iters << " iteration(s)" << std::endl;
 			}
-			sawActionable = true;
 			continue;
 		}
 	}
+	return sawActionable;
+}
+
+/* ---- @Action/@if/@while 执行入口（顶层）----
+ * 递归展开见 execSequence；本函数只负责顶层 "No @Action matrix found" 判定：
+ * 整棵顶层序列没有任何可执行块（Action/if/while）时，若有 @Trigger 则反射
+ * 独立成立（直接返回，runReflex 接手），否则响亮报错。 */
+void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
+	bool sawActionable = execSequence(actionMatrices);
 	if (!sawActionable) {
 		if (mt::findByName(actionMatrices, "Trigger") != nullptr) { return; }
 		throw IllegalArgumentException("No @Action matrix found in the script. Please define @Action in your .mt file.");

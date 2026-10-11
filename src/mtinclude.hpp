@@ -1,5 +1,5 @@
 #pragma once
-/* mtinclude.hpp —— .mt 动作脚本 @Include 展开（运行端动作脚本合并，v2：嵌套与复用）
+/* mtinclude.hpp —— .mt 动作脚本 @Merge 展开（运行端动作脚本合并，v2：嵌套与复用）
  *
  * 归并内核复用 mtmerge_core（设备集相交/相位补 "-"/同名行报错与离线合成器
  * mtmerge 同源不漂移）。本模块在其上叠加三件运行端语义：
@@ -18,7 +18,7 @@
  * agent=--scripts-dir、stdin/TCP=CWD）；片段以**自身所在目录**为基准
  * （库片段可整体搬移，不硬编码自己相对根的位置）。
  *
- * 预算与防线：@Include 行数 ≤ kMaxIncludes（全树累计，同时界定递归深度）、
+ * 预算与防线：@Merge 行数 ≤ kMaxIncludes（全树累计，同时界定递归深度）、
  * 字节总量 ≤ 8 MiB（kMaxScriptBytes）、单文件 ≤ 8 MiB；行级词法校验先于
  * 该行 IO；O_NOFOLLOW 拒绝软链。被包含文件可以没有 @Action（纯标量/纯组合
  * 片段合法）；整体没有 @Action 时由派发期报错（"No @Action matrix found"）。
@@ -34,14 +34,14 @@
 
 namespace mtinclude {
 
-/* @Include 数据行数上限（全树累计）：每行触发一次本地文件读取，无界行数
+/* @Merge 数据行数上限（全树累计）：每行触发一次本地文件读取，无界行数
  * 等价于「远端下发的脚本扇出读盘」（--tcp 通道的信任边界，见 docs/dsl.md）。
  * 该上限同时界定展开次数与递归深度——每层嵌套消耗一行，故无需独立的
  * 深度护栏（visited 集保证终止，行数上限保证栈有界）。 */
 inline constexpr std::size_t kMaxIncludes = 32;
 
-/* 展开主脚本矩阵中的全部 @Include（原地替换 parsed）：
- *   - 无 @Include 时逐字不动（fast path，既有脚本行为零变化）；
+/* 展开主脚本矩阵中的全部 @Merge（原地替换 parsed）：
+ *   - 无 @Merge 时逐字不动（fast path，既有脚本行为零变化）；
  *   - @Action 按设备集不相交两两归并（相位、负相位契约同 mtmerge）；
  *   - @Alias/@Vars 同名行按主从覆盖（见上），片段间同名报错；
  *   - 普通文件重复包含报错，*.once.mt 重复包含跳过。

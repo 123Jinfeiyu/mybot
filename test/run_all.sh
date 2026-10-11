@@ -775,7 +775,7 @@ parse_cases=(
 	'flow_scalar2.sql|flow_scalar2.mt|1|cannot be controller targets'
 	'trig_scalar2.sql|trig_scalar2.mt|1|cannot be trigger targets'
 	'ctrl2_err.sql|ctrl2_err.mt|1|Invalid Argument: delay|note=witness'
-	# @Include 展开（运行端动作脚本归并，内核 mtmerge_core）：
+	# @Merge 展开（运行端动作脚本归并，内核 mtmerge_core；旧名 @Include，2026-10-12 改名）：
 	#   include_a/include_b    两个被包含脚本单独跑也合法（正值，登记夹具防孤儿）
 	#   include_inner          主脚本无 @Action：首个 include 顶替累加器
 	#   include_nested         嵌套正值：主脚本 → 组合片段（无自有 @Action）→ 两叶
@@ -863,12 +863,12 @@ fi
 fi	# C8：$filter 守卫（与邻居段落同语义）
 
 # ======================================================================
-# mtmerge 离线合成器已移除（2026-10-10）：运行端 @Include 展开仍保留，归并内核
+# mtmerge 离线合成器已移除（2026-10-10）：运行端 @Merge 展开仍保留，归并内核
 # mtmerge_core 由 test_mtmerge.cpp 白盒单测覆盖。此段落原有的 5 条用例已删除。
 # ======================================================================
 
 # ======================================================================
-# @Include 归并观察面（parse_cases 只能钉单点断言，这里做多值/计数断言）：
+# @Merge 归并观察面（parse_cases 只能钉单点断言，这里做多值/计数断言）：
 #   include_main   三路设备合并到单时间轴——r1 滞后 1 拍、r2 滞后 2 拍；
 #                  两个 include 的全部动作（100/110 与 200/210/220）都在输出里；
 #                  相位前导行未起拍的设备不得以 0.0 误发（test=0 禁止出现）；
@@ -881,9 +881,9 @@ fi	# C8：$filter 守卫（与邻居段落同语义）
 # 调用点仍留在本文件——count_calls 数的就是它）。
 if filter_matches "include" "$filter"; then
 if [ ! -x "$bin" ]; then
-	artifact_missing "@Include 归并观察面" "$(( $(count_calls run_include_case) )) 条用例" "$bin" "$bot_explicit"
+	artifact_missing "@Merge 归并观察面" "$(( $(count_calls run_include_case) )) 条用例" "$bin" "$bot_explicit"
 else
-	run_include_case 'include_main' 'include-main' '@Include 归并'
+	run_include_case 'include_main' 'include-main' '@Merge 归并'
 	run_include_case 'include_diamond' 'include-diamond' 'include-once'
 fi
 fi
@@ -961,7 +961,7 @@ fi
 
 # ======================================================================
 # mtmerge 离线合成器相位语义回归已移除（2026-10-10，随独立 mtmerge 目标一起删除）。
-# 运行端 @Include 展开的相位语义由 test_mtinclude.cpp 覆盖。
+# 运行端 @Merge 展开的相位语义由 test_mtinclude.cpp 覆盖。
 # ======================================================================
 
 # ======================================================================

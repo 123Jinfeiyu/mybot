@@ -104,6 +104,17 @@ void checkDisjoint(const mt::MatrixObject& a, const mt::MatrixObject& b,
 
 mt::MatrixObject mergeTwo(const mt::MatrixObject& acc, const mt::MatrixObject& next,
 		std::int64_t phase, const std::string& pa, const std::string& pb) {
+	/* 归并 ⟂ 嵌套（2026-10-12 @块嵌套）：归并操作数必须是纯矩阵叶子表。控制块
+	 * （@if/@while）自身网格为空、体在 children——把它当归并操作数没有意义
+	 * （相位补 "-" 按网格行走，空网格会被静默合并、children 被丢弃）。响亮拒绝，
+	 * 与「设备集相交报错」同一严格风格：归并与嵌套是两条正交的能力，不得混用。 */
+	if (acc.hasChildren() || next.hasChildren()) {
+		throw bot::IllegalArgumentException(bot::concatMsg(
+			"cannot merge a control block (@if/@while) as a matrix operand: '",
+			acc.hasChildren() ? pa : pb,
+			"' carries nested sub-blocks; @Merge operands must be plain .mt matrix"
+			" tables (nesting and merging are orthogonal)"));
+	}
 	checkDisjoint(acc, next, pa, pb);
 
 	mt::MatrixObject out;
@@ -151,7 +162,7 @@ mt::MatrixObject mergeTwo(const mt::MatrixObject& acc, const mt::MatrixObject& n
 		throw bot::IllegalArgumentException(bot::concatMsg(
 			"merged output of '", pa, "' + '", pb, "' would have ", std::to_string(cells), " cell(s) (",
 			std::to_string(total), " rows x ", std::to_string(outCols), " cols), exceeding the limit of ",
-			std::to_string(kMaxMergedCells), "; split the action script or reduce the number of @Include fragments"));
+			std::to_string(kMaxMergedCells), "; split the action script or reduce the number of @Merge fragments"));
 	}
 	for (std::int64_t r = 1; r <= total; ++r) {
 		/* acc 侧：r 恒在 [1, rowsAcc] 内当 r<=rowsAcc，否则补 "-" */
