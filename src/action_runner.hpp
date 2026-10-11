@@ -118,6 +118,14 @@ public:
 	 * "@if(a > b)" 会被切成名字 "if(a" + 数据行）——报错文案要带此提示。 */
 	static std::optional<std::string> parseIfBlockName(const std::string& rawName);
 
+	/* ---- @while(条件) 块头解析单点（公开静态：白盒单测直接锚定）----
+	 * 与 parseIfBlockName 同型的「关键字 + 括号条件」文本协议，关键字换成
+	 * "while"：命中返回 trim 后的条件体；裸 "while" / 未闭合 / 条件为空 →
+	 * IllegalArgumentException（响亮救红）；其余（含 "whilex(a)"）→ nullopt。
+	 * 两者共用一个文件内 helper（parseCondBlockName），报错文案按关键字参数化，
+	 * "if" 分支逐字复现既有 @if 文案（白盒单测锚定的子串不变）。 */
+	static std::optional<std::string> parseWhileBlockName(const std::string& rawName);
+
 	/* ---- @Action 数据格捕获形态解析单点（公开静态：白盒单测直接锚定）----
 	 * 输入是一个数据格原文（已解析 "-" 继承）：
 	 *   非 '$' 开头 / "$(" 开头（表达式）→ nullopt（不是捕获，交回既有路径）；

@@ -247,6 +247,12 @@ bool looksLikeIfBlock(const std::string& rawName) {
 	const std::string n = bot::trim(rawName);
 	return n == "if" || n.compare(0, 3, "if(") == 0;
 }
+/* @while 同型判据（与 looksLikeIfBlock 同一理由：片段的 @Action 按相位归并，
+ * @while 放进片段没有独立执行位置，只能静默丢弃——响亮拒绝）。 */
+bool looksLikeWhileBlock(const std::string& rawName) {
+	const std::string n = bot::trim(rawName);
+	return n == "while" || n.compare(0, 6, "while(") == 0;
+}
 } // namespace
 
 class Expander {
@@ -360,6 +366,11 @@ private:
 				throw bot::IllegalArgumentException("@if 块不支持出现在 @Include 片段 '"
 					+ resolved + "' 中：片段的 @Action 按相位归并进主脚本 @Action，"
 					"没有独立的执行位置；请把该 @if 块挪到主脚本");
+			}
+			if (looksLikeWhileBlock(m.getName())) {
+				throw bot::IllegalArgumentException("@while 块不支持出现在 @Include 片段 '"
+					+ resolved + "' 中：片段的 @Action 按相位归并进主脚本 @Action，"
+					"没有独立的执行位置；请把该 @while 块挪到主脚本");
 			}
 		}
 

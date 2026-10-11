@@ -161,33 +161,45 @@ void ActionRunner::dispatchMatrix(const mt::MatrixObject& actionDefs) {
 	}
 }
 
-/* ---- @if(条件) 块头解析（契约见 action_runner.hpp 声明处）----
- * 与 parseTriggerLine 同型的「名字 + 括号参数」文本协议：trim、rfind(')')
- * 必须行尾闭合、参数体 trim。块名来自 MatrixParser 名字态（无空格），
- * 但白盒单测可直接喂任意串，形态校验按文本自洽做。 */
-std::optional<std::string> ActionRunner::parseIfBlockName(const std::string& rawName) {
+/* ---- @if(条件)/@while(条件) 块头解析共用 helper ----
+ * 「关键字 + 括号参数」文本协议：trim、rfind(')') 必须行尾闭合、参数体 trim。
+ * 块名来自 MatrixParser 名字态（无空格），但白盒单测可直接喂任意串，形态校验
+ * 按文本自洽做。kw = 关键字（"if"/"while"），报错文案按它参数化——"if" 分支
+ * 逐字复现既有 @if 文案（test_action_if.cpp 锚定的子串不变）。 */
+static std::optional<std::string> parseCondBlockName(const std::string& rawName,
+		const char* kw) {
 	const std::string name = bot::trim(rawName);
+	const std::string at = std::string("@") + kw;
 	const std::size_t lp = name.find('(');
 	if (lp == std::string::npos) {
-		if (name == "if") {
-			throw IllegalArgumentException("@if 块缺条件表达式，写法 @if(<条件>)"
-				"（条件如 @if(threshold>0)）");
+		if (name == kw) {
+			throw IllegalArgumentException(at + " 块缺条件表达式，写法 " + at
+				+ "(<条件>)（条件如 " + at + "(threshold>0)）");
 		}
 		return std::nullopt;
 	}
-	if (name.compare(0, lp, "if") != 0) { return std::nullopt; }
+	if (name.compare(0, lp, kw) != 0) { return std::nullopt; }
 	const std::size_t rp = name.rfind(')');
 	if (rp == std::string::npos || rp != name.size() - 1) {
-		throw IllegalArgumentException("@if 块头未在块头内闭合：'" + name
-			+ "'。注意块头内不能有空格（矩阵解析把空白当分隔，@if(a > b) 会被"
-			"切成块名 \"if(a\" 和数据行），请写成 @if(a>b)");
+		throw IllegalArgumentException(at + " 块头未在块头内闭合：'" + name
+			+ "'。注意块头内不能有空格（矩阵解析把空白当分隔，" + at
+			+ "(a > b) 会被切成块名 \"" + kw + "(a\" 和数据行），请写成 "
+			+ at + "(a>b)");
 	}
 	const std::string cond = bot::trim(name.substr(lp + 1, rp - lp - 1));
 	if (cond.empty()) {
-		throw IllegalArgumentException("@if() 的条件为空；写法 @if(<条件>)，"
-			"如 @if(threshold>0)");
+		throw IllegalArgumentException(at + "() 的条件为空；写法 " + at
+			+ "(<条件>)，如 " + at + "(threshold>0)");
 	}
 	return cond;
+}
+
+std::optional<std::string> ActionRunner::parseIfBlockName(const std::string& rawName) {
+	return parseCondBlockName(rawName, "if");
+}
+
+std::optional<std::string> ActionRunner::parseWhileBlockName(const std::string& rawName) {
+	return parseCondBlockName(rawName, "while");
 }
 
 /* ---- @if 条件求值（块级，轮到该块执行时）---- */
@@ -345,6 +357,36 @@ void ActionRunner::runAction(std::vector<mt::MatrixObject>& actionMatrices) {
 					<< " action row(s)" << std::endl;
 			}
 			sawActionable = true;
+			continue;
+		}
+		/* @while(条件)：当前线程内反复执行块体——每轮先查 stopRequested（Ctrl-C
+		 * 及时跳出外层，dispatchMatrix 的逐行 stop 检查只中断本轮行循环）、再判
+		 * 条件（成立才派发，故是 while 而非 do-while）、派发后回到判条件。条件每轮
+		 * 经 makeActionExprResolver 重求值，读得到块体内捕获格写进会话覆盖层的新值
+		 * ——「捕获改 @Vars → 条件转假」是收敛的 idiomatic 手段。无迭代上限（仅
+		 * Ctrl-C 终止）：静态真条件且块体不推进即热循环，stopRequested 每轮可见。
+		 * 每轮重建 ActionPlan（dispatchMatrix 内）——捕获改绑设备列别名后仍正确。 */
+		if (auto cond = parseWhileBlockName(m.getName())) {
+			std::int64_t iters = 0;
+			bool stopped = false;
+			for (;;) {
+				if (stopRequested()) { stopped = true; break; }
+				if (!evalIfCondition(*cond)) { break; }
+				dispatchMatrix(m);
+				++iters;
+			}
+			if (stopped) {
+				std::cerr << "[while] stop requested, exiting after " << iters
+					<< " iteration(s)" << std::endl;
+			} else if (iters == 0) {
+				std::cerr << "[while] condition not met: '" << echoSource(*cond)
+					<< "', 0 iterations" << std::endl;
+			} else {
+				std::cerr << "[while] condition became false, exited after "
+					<< iters << " iteration(s)" << std::endl;
+			}
+			sawActionable = true;
+			continue;
 		}
 	}
 	if (!sawActionable) {

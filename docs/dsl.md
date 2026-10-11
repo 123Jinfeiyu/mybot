@@ -190,6 +190,33 @@ s1.A;
 - **@Include 片段里不支持**：片段的 `@Action` 按相位归并进主脚本，`@if` 没有独立执行位置——出现在片段里**响亮拒绝**（不是静默丢弃），把该块挪到主脚本
 - `@Reflex` 反射矩阵与热 SQL 的瞬态 `Action` 表不带条件语义（`@if` 只在主脚本顶层生效）
 
+## `@while` 循环块
+
+`@while(<条件>)` 是 `@if` 的循环同胞：块体与 `@Action`/`@if` 完全同构（列头 `<设备>.<参数>` + 数据行），**在当前线程内反复执行**——每轮先判条件、成立才把块体当 `@Action` 逐行派发、派发后回到判条件（是 `while` 而非 `do-while`：首次即假则零派发）；条件转假即退出，继续执行后续块：
+
+```mt
+@Vars
+name  value;
+   count  0;
+@
+
+@while(count<3)
+sensor.reading;
+  $count=reading;    # 捕获格每轮把读数写进 @Vars count，推进循环收敛
+@
+```
+
+- **不开新线程**：与 `@Action`/`@if` 一样同步跑在调用线程，复用同一套派发（`dispatchMatrix`）与条件求值（`@Vars` 数值 / `@Alias` 文本）机制
+- **条件每轮重求值**，读得到块体内**捕获格** `$var=field` 写进会话覆盖层的新值——「捕获改 `@Vars` → 条件转假」是收敛的 idiomatic 手段（捕获值跨迭代留存，作用域仍是本次 `run()`，结束整体回滚）
+- **条件语法与 `@if` 完全一致**：比较 `> < >= <= == !=` 与逻辑 `&& || !`，类型严格无隐式真值——`@while(count)` 不是「非零即真」，要写 `@while(count>0)`；只引用 `@Vars`/`@Alias`，实时传感器值走守护采样链路（[docs/daemon.md](daemon.md)）
+- **块头内不能有空格**（与 `@if` 同约束：矩阵解析把空白当分隔）——写成 `@while(count>0)`，不是 `@while(count > 0)`
+- **终止只靠条件转假或 Ctrl-C**：每轮循环顶部查一次停止标志，`SIGINT`/`SIGTERM` 及时跳出（stderr 注记 `[while] stop requested, exiting after N iteration(s)`）。**不设迭代上限**——静态真条件（如 `@while(1==1)`）且块体不含改变条件的捕获格即热循环，只能 Ctrl-C 中断，写这样的条件前请想清楚
+- 退出注记：条件转假 `[while] condition became false, exited after N iteration(s)`；首次即假 `[while] condition not met: '<条件>', 0 iterations`
+- **与 `@Action`/`@if` 按书写顺序交错执行**（同 `@if`）
+- **@Include 片段里不支持**：与 `@if` 同理（片段无独立执行位置），出现在片段里**响亮拒绝**
+- **不支持块嵌套**：`.mt` 块是扁平的 `@名字 … @`，块体是二维矩阵而非语句序列，`@while` 里不能再写 `@if`/`@while`（内层 `@` 会被当外层闭合符，导致后续脚本被静默截断）。组合意图用**条件折叠**表达：「若 X 则循环 Y」写成 `@while(X&&Y)`；「每轮按条件取不同值」用块体内 `$(...)` 单元格
+- 回归：`action_while_*`（`test/cpp/test_action_while.cpp`）覆盖块头解析、捕获推进收敛、零迭代、书写顺序交错、Ctrl-C 跳出、报错契约与 `@Reflex` 共存
+
 ## controller 引用（转交任务）
 
 某个硬件收到指令后先干一份活，再把结果转交给另一个硬件：
