@@ -54,5 +54,16 @@ CREATE TABLE ADS1115 (
 );
 
 /* 土壤湿度采样：adc0 挂 i2c-1 @0x48，AIN0 单端，±6.144V / 8SPS */
-INSERT INTO ADS1115 (name, I2C, address, pga, dr, channel)
-  VALUES ('adc0', '$i2c-1', '0x48', '0', '0', '0');
+--INSERT INTO ADS1115 (name, I2C, address, pga, dr, channel)
+ -- VALUES ('adc0', '$i2c-1', '0x48', '0', '0', '0');
+
+CREATE TABLE LCD1206 (
+    name    String,
+    I2C     String,
+    address String,
+    cols    String,   -- 缺省 16
+    rows    String    -- 缺省 2
+);
+
+/* 用于显示的LCD屏幕 */
+INSERT INTO LCD1206 (name, I2C, address, cols, rows) VALUES ('lcd0', '$i2c-1', '0x27', "16", "2");
