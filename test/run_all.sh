@@ -1262,11 +1262,11 @@ fi
 # 与「用例表引用的文件必须存在」互补：这里管漏登记，那里管空引用。
 # 只在无过滤器的全量跑里执行（与常量自检同理由）。
 # ======================================================================
-# 前 9 个为既有登记；后半 25 个是审计 C11 修正判据后如实暴露的真机夹具
+# 前 9 个为既有登记；后半 26 个是审计 C11 修正判据后如实暴露的真机夹具
 # （文件头均注明「实机测试」）：ads1115 adxl345 amg8833 as3935 as7262 bh1745
-# bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944
-# max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd
-orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501 ads1115 adxl345 amg8833 as3935 as7262 bh1745 bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd"
+# bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lcd1206 lsm6dsv
+# ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd
+orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501 ads1115 adxl345 amg8833 as3935 as7262 bh1745 bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lcd1206 lsm6dsv ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd"
 
 # ======================================================================
 # 系统常量自检（F-24）：Lua 侧硬编码 ioctl/termios 编号（hal_backend_glibc.lua）

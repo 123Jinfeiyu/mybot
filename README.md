@@ -379,7 +379,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（59个模块 + 28个共享库）
+├── modules/       # Lua驱动生态（60个模块 + 28个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
@@ -390,7 +390,7 @@ mybot/
 │   ├── spider1.sql      # 14路舵机蜘蛛
 │   ├── relay-test.sql   # 虚拟继电器（无硬件）
 │   └── test.sql         # 测试夹具
-├── scripts/       # 动作脚本库（50个动作脚本）
+├── scripts/       # 动作脚本库（51个动作脚本）
 │   ├── std.mt           # 站立
 │   ├── left-turn.mt     # 左转
 │   └── jump.mt          # 跳跃
