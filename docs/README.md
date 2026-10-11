@@ -40,4 +40,4 @@
 
 - [回归测试手册](testing.md)——守门分段明细、守门完整性规则、ctest 逐用例入口、sanitizer 与 CI 跑法
 - [开发与贡献](development.md)——pre-push 钩子、提交信息规范、新增驱动/回归/单测流程、代码规范
-- [更新日志](changelog.md)——按主题分组的版本演进记录
+- [更新日志](changelog.md)——精简版版本要点（完整版见 [changelog-detail.md](changelog-detail.md)）
