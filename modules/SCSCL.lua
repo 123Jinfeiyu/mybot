@@ -46,10 +46,10 @@
 -- destroy：扭矩关闭（0x28=0，自由状态）——与 PWM 舵机失信号即松开的语义一致，
 -- 避免进程退出后舵机持续顶住负载。
 
--- 标准前导：HAL/print_table/drv_common 经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 -- ==================== 协议常量 ====================
@@ -182,17 +182,17 @@ local function limited_position(pos, data)
 end
 
 -- 【配置脚本】校验 fd/id，PING 探测舵机在位（不应答/错误状态即失败）
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("uart", {
+name = "SCSCL",
+build = function(ctx, data)
+	local fd = ctx.fd
 
 	dbg_table("-------- SCSCL builder func get a table --------", data)
 
-	local fd, id, e = resolve_common(data)
-	if fd == nil then return e end
+	local id = tonumber(data.id)
+	if id == nil or id < 1 or id > 253 or id ~= math.floor(id) then
+		return err("Invalid Argument: id (1~253)")
+	end
 
 	uart_flush(fd)	-- 丢弃上电/上一次会话残留字节
 	local ping = build_frame(id, INST_PING, {})
@@ -211,47 +211,21 @@ function build(data)
 	print(string.format("SCSCL init OK: id=%d fd=%d", id, fd))
 	return {  result = "OK"  }
 
-end
+end,
+call = function(ctx, data)
+	local fd = ctx.fd
 
--- 【销毁SCSCL】安全停机：扭矩关闭（0x28=0，自由状态）
--- build 未成功（fd/id 非法）时跳过写：不向未打开的句柄发帧
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	local fd = tonumber(data.fd)
 	local id = tonumber(data.id)
-	if fd ~= nil and fd >= 0 and id ~= nil and id >= 1 and id <= 253 then
-		local f = build_frame(id, INST_WRITE, { REG_TORQUE_ENABLE, 0 })
-		local wn = uart_write(fd, f)
-		if wn ~= #f then
-			return err("Failed to write torque-off (" .. tostring(wn) .. ")")
-		end
+	if id == nil or id < 1 or id > 253 or id ~= math.floor(id) then
+		return err("Invalid Argument: id (1~253)")
 	end
 
-	return {  result = "OK"  }
-
-end
-
--- 【调用SCSCL】目标位置/运行时间/运行速度（0x2A 起 6 字节整段写），可带扭矩开关
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	-- 审计 #4：入口必须走 arg_table（含 proto=virt 的虚拟总线前置），
-	-- 与 build/destroy 同规
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	dbg_table("-------- SCSCL caller func get a table --------", data)
-
-	local fd, id, e = resolve_common(data)
-	if fd == nil then return e end
-
+	-- 26.3 盘点：**评估后不改**。这三处 `tonumber(...) ~= nil` 形似 PWM.lua 的
+	-- has_duty（26.3 已修：那里 NaN 会触发「主动使能输出」这个动作），但本处只是
+	-- **在场探针**——它只决定「要不要进校验块」，真正的取值在校验块内重走一遍
+	-- finite_of/opt_finite（见下面 position 段的 `local p = finite_of(data.position)`），
+	-- NaN 在那里被拒成 ERR。set_id 的 `> 0` 与 allow_burn 的 `~= 1` 对 NaN 均为
+	-- 假/真，分别落「不烧号」与「拒绝烧号」，都在安全侧。
 	local has_pos = tonumber(data.position) ~= nil
 	local torque = tonumber(data.torque)
 	local set_id = tonumber(data.set_id)
@@ -369,7 +343,20 @@ function call(data)
 
 	return res
 
-end
+end,
+destroy = function(ctx, data)
+	local fd = tonumber(data.fd)
+	local id = tonumber(data.id)
+	if fd ~= nil and fd >= 0 and id ~= nil and id >= 1 and id <= 253 then
+		local f = build_frame(id, INST_WRITE, { REG_TORQUE_ENABLE, 0 })
+		local wn = uart_write(fd, f)
+		if wn ~= #f then
+			return err("Failed to write torque-off (" .. tostring(wn) .. ")")
+		end
+	end
+	return {  result = "OK"  }
+end,
+})
 
 -- 【读SCSCL】反馈块（0x38 起 11 字节），无副作用——可被 $ 引用/Monitor 消费
 -- 负载/电压按内存表原样返回（负载 0.1% 单位 BIT10 方向位；电压 0.1V 单位）

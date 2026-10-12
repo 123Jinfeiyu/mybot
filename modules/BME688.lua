@@ -32,10 +32,10 @@
 --   CTRL_GAS_1 的 RUN_GAS：0x10=BME680 低量程 / 0x20=BME688 高量程。
 --   过采样固定 x1（T/P/H），IIR 滤波 ×3，可按需调。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -208,20 +208,14 @@ local cfg_variant		-- VARIANT_680 / VARIANT_688
 local cfg_wait			-- call 转换超时 ms
 
 -- ==================== 配置脚本 ====================
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "BME688",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- BME688 builder func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
 	end
 
 	-- 软复位 -> Chip ID -> 变体甄别
@@ -255,17 +249,23 @@ function build(data)
 	C = parse_calib(coeff)
 
 	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
+	-- 加热器三列经 num_or 而非 `tonumber(x) or 缺省`：'nan' 过 tonumber 出的是
+	-- number（Lua 里 truthy），or 兜不住，而 NaN 与任何数比较都为假，下面四条
+	-- 区间判定一律放行（amb_temp 更是完全没有区间判定）。NaN/inf 会一路传到
+	-- calc_res_heat/calc_gas_wait，最后被 HAL 的 byte_of 挡成 nil 而报成
+	-- "not responding (RES_HEAT0 write failed)"，把配置笔误误报成器件掉线。
+	-- 下一行 wait 列早已是 finite_of，同一函数里两种口径正是防护漂移（审计 P3）。
 	local emsg
-	local heatr_temp = math.floor(tonumber(data.heatr_temp) or 320)
+	local heatr_temp = math.floor(num_or(data.heatr_temp, 320))
 	if heatr_temp < 100 or heatr_temp > 400 then
 		emsg = "Invalid Argument: heatr_temp '" .. tostring(data.heatr_temp) .. "' (range 100~400)"
 	end
 	if emsg then return err(emsg) end
-	local heatr_dur = math.floor(tonumber(data.heatr_dur) or 150)
+	local heatr_dur = math.floor(num_or(data.heatr_dur, 150))
 	if heatr_dur < 1 or heatr_dur > 4032 then
 		return err("Invalid Argument: heatr_dur '" .. tostring(data.heatr_dur) .. "' (range 1~4032)")
 	end
-	local amb_temp = tonumber(data.amb_temp) or 25
+	local amb_temp = num_or(data.amb_temp, 25)
 	local wait = finite_of(data.wait)
 	if wait == nil or wait < 0 then wait = 300 end
 
@@ -296,27 +296,23 @@ function build(data)
 		addr, variant == VARIANT_688 and "BME688" or "BME680", heatr_temp, heatr_dur, C.t1, C.p1, C.h1))
 	return {  result = "OK"  }
 
-end
+	end,
 
 -- ==================== 调用 ====================
 -- 触发一次强制模式转换（T+P+H+气体），等待完成后读场数据并补偿。
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- BME688 caller func get a table --------", data)
 	end
 
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
-
-	local wait_ms = tonumber(data.wait) or cfg_wait or 300
+	-- 经 num_or：'nan' 过 tonumber 出的是 number（Lua 里 truthy），两个 or 都
+	-- 兜不住，而 `wait_ms < 0` 对 NaN 又为假，于是 NaN 会一路带到下面轮询循环的
+	-- `if waited >= wait_ms then return err(...)`——NaN 与任何数比较都为假，
+	-- **超时分支永不触发**：器件不就绪时循环永不退出，后端进程整个挂死。
+	-- build 侧的 wait 列早已是 finite_of，call 侧漏了（防护漂移，审计 P3）。
+	local wait_ms = num_or(data.wait, cfg_wait or 300)
 	if wait_ms < 0 then wait_ms = 0 end
 
 	-- 触发强制模式：先置睡眠再写模式位（Bosch set_op_mode 时序）
@@ -389,21 +385,8 @@ function call(data)
 		GAS_OK = gas_ok and 1 or 0
 	}
 
-end
-
--- ==================== 销毁 ====================
--- 置睡眠模式（清 CTRL_MEAS 模式位），加热器停止；fd 归 I2C 硬件变量所有
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- BME688 ender func get a table --------", data)
-	end
-
+end,
+destroy = function(ctx, data)
 	local fd = tonumber(data.fd)
 	local addr = tonumber(data.address)
 	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
@@ -412,10 +395,9 @@ function destroy(data)
 			i2c_write_reg(fd, REG_CTRL_MEAS, ctrl - (ctrl % 4))
 		end
 	end
-
 	return {  result = "OK"  }
-
-end
+end,
+})
 
 
 

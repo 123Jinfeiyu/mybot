@@ -33,10 +33,10 @@
 --     07 固件版本（读）
 --   前导噪声容忍：应答帧做 AA C5 扫描 + 校验和兜底（同 MHZ19 的帧头扫描）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 -- 调试开关：采样周期读取，默认关闭逐次打印
@@ -113,23 +113,17 @@ local cfg_timeout
 
 -- ==================== 配置脚本 ====================
 -- 切被动查询模式 + 读固件版本（顺带在位探测）
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("uart", {
+name = "SDS011",
+build = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- SDS011 builder func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return err("Invalid Argument: fd (does the UART column reference an @UART variable?)")
-	end
 
-	local timeout = tonumber(data.timeout)
+	local timeout = finite_of(data.timeout)
 	if timeout == nil or timeout < 0 then timeout = READ_TIMEOUT_MS end
 	cfg_timeout = math.floor(timeout)
 
@@ -155,24 +149,12 @@ function build(data)
 	print(string.format("SDS011 init OK: fd=%d firmware=%s (passive mode)", fd, fw))
 	return {  result = "OK"  }
 
-end
-
--- ==================== 调用 ====================
--- 默认查询一次读数；power="sleep"/"work" 控制风扇
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+end,
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- SDS011 caller func get a table --------", data)
-	end
-
-	local fd = tonumber(data.fd)
-	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return err("Invalid Argument: fd")
 	end
 
 	-----------------------------------------------------
@@ -211,20 +193,8 @@ function call(data)
 		PM10 = pm10
 	}
 
-end
-
--- ==================== 销毁 ====================
--- 无资源需要释放（串口归 @UART 硬件变量所有；保持被动模式）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+	end,
+})
 
 
 -- =====================================================================

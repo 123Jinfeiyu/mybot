@@ -405,6 +405,21 @@ check("call 非表 ERR", call("x").result == "ERR")
 check("call pos='-' 非数字 ERR", call({ fd = fd, pos = "-", neg = "1" }).result == "ERR")
 check("call pos=8 越界 ERR", call({ fd = fd, pos = 8, neg = 0 }).result == "ERR")
 check("call neg=9 越界 ERR", call({ fd = fd, pos = 0, neg = 9 }).result == "ERR")
+
+-- 26.3：pos/neg 是本文件唯一没走归一化器的数值列（delay/drate/pga/channel 全经
+-- 驱动 :75 的 `local tonum = num_or`）。'nan' 过 tonumber 出的是 **number**，
+-- `pos == nil` 判据放行；`pos < 0 or pos > 7` 对 NaN 又恒假，于是一路走到
+-- bitc.lshift，由 bitcompat 抛「argument #1 is not finite」。终态是安全的
+-- （此时尚未产生任何总线事务），但操作者拿到的是 bitcompat 的内部文案，而不是
+-- 上面那三条同族用例一致的 "Invalid diff channel"。判据取「与 pos='-' 同结论」。
+for _, bad in ipairs({ { pos = "nan", neg = "1" }, { pos = "0", neg = "1e400" },
+	{ pos = "-1e400", neg = "2" } }) do
+	local okc, rc = pcall(call, { fd = fd, pos = bad.pos, neg = bad.neg })
+	check(string.format("call pos=%s/neg=%s 走 ERR 而非在 bitcompat 内抛",
+		bad.pos, bad.neg),
+		okc and type(rc) == "table" and rc.result == "ERR",
+		okc and tostring(rc and (rc.message or rc.result)) or tostring(rc))
+end
 check("call channel=9 越界 ERR", call({ fd = fd, channel = 9 }).result == "ERR")
 
 -- 3.10 多拍连读（守护行为预演）：virt_tick 逐拍造数，读数随拍变化且自洽

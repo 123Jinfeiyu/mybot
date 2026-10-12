@@ -3,7 +3,7 @@
 -- 这一层只做「打开 PCM 设备、按 S16_LE 单声道写样本、收尾」，不认识任何
 -- 波形语义；波形形状/音调/时长在驱动（modules/Speaker.lua）里。
 --
--- 【为什么用 ffi 而不是 shell-out】（与 HAL.lua 的 ffi 直驱同一论证）
+-- 【为什么用 ffi 而不是 shell-out】（与 hal_backend_glibc.lua 的 ffi 直驱同一论证）
 --   * 驱动沙箱已中和 os.execute/io.popen（luasandbox.cpp），aplay 管道路线不可用；
 --   * ffi 直调 libasound 无需头文件、无编译期依赖，只要求运行期有 libasound.so；
 --   * ALSA C API（snd_pcm_open/set_params/writei/drain/close）签名稳定、全为

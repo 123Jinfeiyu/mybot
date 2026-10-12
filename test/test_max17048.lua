@@ -955,4 +955,23 @@ expect_ok("destroy 带 fd 也 OK", function()
 end)
 expect_err("destroy 非 table", function() return destroy("x") end, "Invalid Arguments Type")
 
+-- =====================================================================
+-- 组 5:26.3b NaN 配置列拒绝（valrt_max/valrt_min/athd 走 finite_of）
+-- =====================================================================
+local mark_vmax = section()
+expect_ok("valrt_max='nan' 跳过 VALRT 写（finite_of 返回 nil → 条件不满足）",
+          function() return build({ fd = fd, address = "0x36", valrt_max = "nan" }) end)
+-- VALRT 写路径会先读 REG_VALRT（1 次 r）再写 REG_VALRT（1 次 w）；
+-- 跳过该路径意味着相比正常 build（含 VALRT 写）少 1r+1w。
+-- 正常 build 有 3r+2w（VERSION+STATUS+VALRT read, VALRT+CONFIG write 视条件）；
+-- NaN 路径应只有 2r+1w（VERSION+STATUS read, 无 VALRT/CONFIG write）。
+check("valrt_max='nan' 无 VALRT 读事务",
+      #reads(mark_vmax) == 2, tostring(#reads(mark_vmax)))
+
+local mark_athd = section()
+expect_ok("athd='nan' 跳过 ATHD 写",
+          function() return build({ fd = fd, address = "0x36", athd = "nan" }) end)
+check("athd='nan' 无 CONFIG 读事务",
+      #reads(mark_athd) == 2, tostring(#reads(mark_athd)))
+
 tester.summary("test_max17048")

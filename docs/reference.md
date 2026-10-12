@@ -46,6 +46,8 @@
 | `--agent-shell` | **显式开启**智能体的 `run_command`（任意 shell 执行）；**缺省不提供**，开启须有覆盖该工具的 policy。命令**回执**（stdout/stderr）在回传模型前遮蔽 `KEY=VALUE` 等敏感值（G1，与审计同一单点）；遮蔽不构成同 uid 进程间的密钥隔离 |
 | `--agent-hot-sql` | **显式开启**智能体的 `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配并上电，失败整批回滚；**`DELETE FROM` 当场断电摘除匹配行——物理不可逆**，故被引用着的变量会被拒绝，详见 [dsl.md](dsl.md)）；**缺省不提供**该工具。只能由后端命令行授权，且须有覆盖 `apply_sql` 的 policy；配置文件不能自行开启。只读的 `query_sql` 不受影响 |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量（可重复；注册 `read_variables` 与 `wait_variable` 工具，让智能体主动读器件当前值、或轮询等某个读数满足条件）。**缺省不提供**这两个工具：执行器（`Servo`/`Relay` 等）与传感器同属 `kind=lua`，靠种类分不出，故由操作者显式列名；只有已注册且种类为 `lua`/`daemon` 的名字生效（`daemon` 读的是已发布的采样快照，无 I2C 流量）。**只能命令行给**：配置文件写 `read_vars` 会被拒绝加载并退出 2（与 `allow_shell` 同判据） |
+| `--fs-root <目录>` | **list_dir / read_file 的只读根目录**（Phase 4，2026-10-07）：注册这两个只读文件工具，访问范围限定在该目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）。与机器人硬件/shell 无关——单纯是"给模型看某几个文件"的窄接口。**缺省不提供**这两个工具。**只能命令行给**：它决定"能读哪个目录"，配置文件写 `fs_root` 会被拒绝加载并退出 2（与 `read_vars` 同判据）；启动时校验该目录必须真实存在，否则退出 2（配置错误不碰真机） |
+| `--agent-write-file` | **显式开启** `write_file`（Phase 5，2026-10-08）：在 `--fs-root` 根之内创建/覆盖一个文本文件（先写同目录临时文件再原子落地——新建用 `link`、覆盖用 `rename`，均不留半截内容；目标是符号链接一律拒绝）。目标已存在时**默认拒绝覆盖**，须显式传 `overwrite:true`（覆盖不可逆）；大小上限 64 KiB、不接受含 NUL 的内容；父目录须已存在（不自动创建）；落地文件权限 **0600**（不随 umask 放宽，别的用户/进程读不到）。**依赖 `--fs-root`**：给了本开关却没给 `--fs-root` 在上电前即报错退出 2。危险性与 `run_command`/`apply_sql` 同级：**只能命令行给**，配置文件写 `allow_write_file` 会被拒绝加载；`--mcp-backend` 下开它**强制**要求 policy 且 `require_confirm` 包含 `write_file` |
 | `--agent-policy <路径>` | 策略钩子（严格 JSON）：声明哪些工具的每次调用要先过**外部确认程序**（stdin 收工具名与遮蔽后的参数 JSON，退出 0 = 放行；超时按 `on_timeout`，缺省 `deny`）；缺省**不启用**。也可用配置文件 `agent_policy` 字段（详见 [agent.md](agent.md)） |
 | `--camera-var <变量名>` | 承载摄像头驱动（`modules/Camera.lua`）的变量名（缺省 `cam0`）；结构脚本已声明则直接用 |
 | `--camera-device <路径>` | 摄像头设备（缺省 `/dev/video0`，需支持 MJPEG；驱动只放行 `/dev/videoN`） |
@@ -55,14 +57,14 @@
 | `--check-config` | （与 `--mcp-backend` 联用）只校验配置并打印摘要，随后以 **0** 退出：**不装载结构脚本、不上电、不发起任何网络请求**。用于「配置文件写错了但不想真起后端」（接了硬件也不必反复上下电）。配置本身仍由 `buildAgentConfig` 单点校验，失败退出 **2**；会**打开但不写入**审计日志文件（顺带验证其可写）。agent 侧的配置校验用 `mybot-agent --check-config` |
 | `--audit-log <路径>` | 审计轨迹（JSON Lines 追加写）：每次工具调用一条记录（时间戳/轮次/工具/参数/成败/耗时/退出码）；图片只记体积与指纹，命令原文里的 `KEY=VALUE` 敏感值先遮蔽，`apply_sql` 等工具另记结构化生效摘要（`summary`）；`-` 表示写 stderr；缺省**不记录**。也可用配置文件 `audit_log` 字段（详见 [agent.md](agent.md)） |
 
-**选项归属与拒绝规则**：脚本目录、摄像头、`--read-var`、危险开关和 `--agent-policy`
+**选项归属与拒绝规则**：脚本目录、摄像头、`--read-var`、`--fs-root`、`--agent-write-file`、危险开关和 `--agent-policy`
 属于 C++ 后端；上述后端选项不带 `--mcp-backend` 会退出 **2**，后端与 `--tcp` / `--input` 互斥。
 `--agent` 已移除；`--task` / `--prompt-file` / `--llm-*`（包括 `--llm-config`）/
 `--session-file` / `--resume` 只属于 Rust，C++ 中即使带 `--mcp-backend` 也拒绝并退出 **2**。
 Rust 不接受后端能力开关；两端同名的 `--audit-log` / `--check-config` 各自作用于本进程，
 不能替代另一端的配置或校验。C++ 显式配置文件入口仅 `BOT4CJ_LLM_CONFIG`。
-后端开 `--agent-shell` / `--agent-hot-sql` 时强制有 policy，且 `require_confirm`
-分别包含 `run_command` / `apply_sql`，否则上电前拒绝启动。
+后端开 `--agent-shell` / `--agent-hot-sql` / `--agent-write-file` 时强制有 policy，且 `require_confirm`
+分别包含 `run_command` / `apply_sql` / `write_file`，否则上电前拒绝启动。
 
 **TCP 模式的安全设计**（上面几条参数背后的原因）：
 
@@ -143,7 +145,7 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 
 | 变量 | 说明 |
 | --- | --- |
-| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 58 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
+| `BOT4CJ_MODULE_PATH` | 驱动模块目录（默认 `./modules`），`<矩阵名>.lua`、`lib/`、`@Daemon` 的 chunk 都按它解析；支持 `:` 分隔多路径按序查找。宿主建沙箱时按该列表**逐段探测 `lib/mpath.lua`** 并注入 `__mpath`，驱动与 `lib/` 的后续解析都走它——多路径对全部 59 个模块成立（2026-09-20 重构阶段 2 之前只有宿主侧成立，驱动侧 `:match("[^:]+")` 只取首段）。边界：**脱离宿主**直跑（`luajit test/*.lua`、`scripts/scscl_scan.lua`）没有 `__mpath`，此时回退单根语义，请把含 `lib/` 的根放首位 |
 | `BOT4CJ_DEBUG` | 设为 `1` 开启 call/build/destroy 的参数表、结果表、逐键值转储；缺省静默 |
 | `BOT4CJ_TCP_TOKEN` | TCP 口令（等价 `--tcp-token`，优先级低于命令行）。argv 会出现在 `/proc/<pid>/cmdline`，多用户机器上推荐用本变量传口令 |
 | `BOT4CJ_MCP_TOKEN` | MCP 后端首帧共享密钥（2026-09-29，审计 P2-1）。**两个进程读同一个变量**：后端（`mybot --mcp-backend`）在宿主环境抹零前捕获，agent（`mybot-agent`）连接后第一帧发 `{"_route":"auth","token":...}`。非空时密钥不匹配/不发认证帧的连接一律拒绝并断连（审计记 `auth_failed`）；未设置则退回「仅 SO_PEERCRED」的旧行为——同 UID 进程（含模型驱动的 `run_command` 子进程）可直连 socket 绕过 agent 侧预算，建议开后端模式时设置。设置但为空/超 256 字节 = 配置错误拒绝启动。名字含 `token`，被 `run_command` 的环境清洗自动剔除——子进程拿不到它 |
@@ -156,5 +158,12 @@ cat scripts/relay-test.mt | ./build/mybot --robot=robots/relay-test.sql
 | `BOT4CJ_CAMERA_SRC_DIR` | 摄像头仿真来源的**放行目录**（冒号分隔）：`--camera-src` 之外的路径必须落在这里面，否则驱动拒绝读该文件（缺省禁用任何目录外读取） |
 | `BOT4CJ_PROMPT_DIR` | 提示词包的**放行目录**（冒号分隔，H2）：**配置文件** `prompt_files` 里的路径必须落在当前工作目录或这里列出的目录之内（命令行 `--prompt-file` 不受限）。配置文件写不了本变量，故它只能由启动者设——现场把提示词包放在工作目录之外时用它显式放行 |
 | `BOT4CJ_TEST_VIDEO` | 仅守门用：真机摄像头用例（`test_camera_v4l2.lua`）的设备路径，指定且存在时该用例不再按跳过计（见 [testing.md](testing.md)） |
+| `BOT4CJ_TRACE_FDS` | 仅守门用：`mybot_tests` 专用测试钩子（生产二进制不含），见 [testing.md](testing.md) |
+| `BOT4CJ_ICA` | Rust agent 侧设为 `1` 开启实验性 ICA 证据账本（8 个 `ica_*` 本地工具 + sidecar 落盘），边界见 [ica.md](ica.md) |
+| `MYBOT_HOME` | 状态目录根（本机持久数据：agent 的对话历史、sim 的地图）。取值链：`MYBOT_HOME` 非空 → 用它；否则 `$HOME/.mybot`；两者都取不到 → 状态目录不可用（agent 不落盘对话历史并如实说明，sim 拒绝解析相对场景名）。**本行是这条规则的单点**，它有三处实现（跨两套构建系统 + 一个 shell 脚本，刻意不做代码生成）：Rust `agent/src/config/mod.rs` 的 `derive_state_dir`、C++ `sim/src/sim_paths.cpp` 的 `mybotHome`、shell `scripts/sim_agent_demo.sh`；缺省目录名 `.mybot` 的三处一致由 `test/run_all_selftest.sh` 钉住。目录下的布局：会话历史见 [agent.md](agent.md)，地图播种见 [sim.md](sim.md) |
+| `MYBOT_SIM_SOCK` | 仿真器**命令桥**的 AF_UNIX 路径（缺省 `/tmp/mybot-sim.sock`）。sim 侧取值序 argv[1] > 本变量 > 缺省（`sim/src/main.cpp`），驱动侧 `modules/Sim.lua` 读同一个变量——两端不用各自配置。**多机器人**时每只一套：robot 0 用原路径逐字不变，robot i>0 在 `.sock` 前插 `-<i>`（`deriveRobotPath`）。线上协议与动作码 0–10 见 [sim.md](sim.md) |
+| `MYBOT_SIM_CAPTURE_SOCK` | 仿真器**拍照桥**路径（缺省 `/tmp/mybot-sim-capture.sock`），sim 侧 argv[2] > 本变量 > 缺省。`modules/Camera.lua` 只在本变量**非空**且本次调用没给文件 `src` 时才向仿真器取帧（未设＝不启用这条来源） |
+| `MYBOT_SIM_SENSOR_SOCK` | 仿真器**测距桥**路径（缺省 `/tmp/mybot-sim-sensor.sock`），sim 侧 argv[3] > 本变量 > 缺省；`modules/Sim.lua` 的 `range` 函数走它一问一答（发 `range\n`，收 `OK <mm>` 或 `ERR <reason>`） |
+| `MYBOT_SIM_SCENE` | sim 启动时的场景落点：argv[4] > 本变量 > 缺省裸名 `default`。**含 `/` 的值当显式路径直接用**；裸名解析为 `$MYBOT_HOME/maps/<名>.scene`，且**还须能找到同名模板**做首次播种——模板目录是编译期宏 `MYBOT_SIM_SCENES_DIR`（`sim/CMakeLists.txt` 指到源码树 `sim/scenes`），未命中再回退 exe 相对 `../scenes/`。两处都没有该模板时 sim 打一行 `未找到模板 …` 并**静默退回内置默认场景**，此时场景路径为空、退出即保存不写盘；要绕开模板查找就传绝对路径。三条 socket 与本变量的组合跑法见 [sim.md](sim.md) |
 
 （仓颉原版另有 `BOT4CJ_NO_GC` 长脚本开关，用于规避仓颉运行时并发 GC 缺陷——本 C++ 移植版无仓颉运行时、不存在该缺陷，未实现此变量。）

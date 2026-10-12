@@ -23,6 +23,9 @@ local HAL = dofile("modules/lib/HAL.lua")
 HAL.sys.open = function() return 3 end
 HAL.sys.close = function() end
 HAL.sys.ioctl_p = function() return 0 end	-- setup 三 ioctl 与传输 ioctl 全成功
+-- 2026-09-30 方案 A 重构：新增总线传输原语 mock
+HAL.sys.spi_setup = function() return 0 end
+HAL.sys.spi_xfer = function() return 0 end
 
 local hfd = spi_open("/dev/spidev0.0")
 check("HAL：spi_open 成功", hfd == 3, tostring(hfd))

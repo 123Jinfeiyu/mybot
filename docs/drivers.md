@@ -2,7 +2,7 @@
 
 > **清单与计数以 `modules/` 目录为准**（本页是速查索引，可能滞后于代码；`ls modules/*.lua` 即权威清单）。结构脚本里每张 `CREATE TABLE <矩阵名>` 对应加载 `modules/<矩阵名>.lua`。各驱动的协议细节与其内嵌 `<矩阵名>_VIRT` 仿真模型见 [virtbus.md](virtbus.md)。
 >
-> **计数口径**（README 与架构页引用的数字按此推导，可复算）：`ls modules/*.lua` = 58 = **48 款器件/执行器/系统接口驱动**（本页前六节：舵机/输出 12 + IMU 6 + 气压/环境/光 11 + 测距/闪电 3 + ADC/电源 11 + 气体/医疗/其他 5）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **7 个框架/工具驱动**（`Relay`/`dummy`/`Monitor`/`Kalman`/`Ema`/`bitcompat`/`Camera`，即最后一节；2026-09-25 #8 起 Lua 协议驱动轨道已删，`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic` 不再有对应 `.lua` 文件）。注意 `GPIO`/`PWM`/`Speaker` 是**系统接口/执行器驱动**、归在 48 里（不是总线）；`bitcompat` 是纯 Lua 兼容库、不在 `lib/` 下。`modules/lib/` 另有 21 个共享库（含 `asound`），不计入 58。
+> **计数口径**（README 与架构页引用的数字按此推导，可复算）：`ls modules/*.lua` = 60 = **49 款器件/执行器/系统接口驱动**（本页前六节：舵机/输出 13 + IMU 6 + 气压/环境/光 11 + 测距/闪电 3 + ADC/电源 11 + 气体/医疗/其他 5）+ **3 条总线**（`I2C`/`SPI`/`UART`）+ **8 个框架/工具驱动**（`Relay`/`dummy`/`Monitor`/`Kalman`/`Ema`/`bitcompat`/`Camera`/`Sim`，即最后一节；2026-09-25 #8 起 Lua 协议驱动轨道已删，`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic` 不再有对应 `.lua` 文件）。注意 `GPIO`/`PWM`/`Speaker` 是**系统接口/执行器驱动**、归在 49 里（不是总线）；`bitcompat` 是纯 Lua 兼容库、不在 `lib/` 下。`modules/lib/` 另有 28 个共享库（`find modules/lib -name '*.lua' | wc -l`，含 `asound`、`virtbus/regmap.lua` 与 `hal/` 下 5 个总线域分块），不计入 60。本页各节点名的模块集合与 `ls modules/*.lua` **双向**相等、以及上面这串分项数字，都由 `scripts/check_doc_paths.py` 逐次核对（漏登记一个新驱动、留着一个已删驱动、或分项加起来对不上总数，都判失败；见 [testing.md](testing.md)「跨源一致性校验」）。
 
 ## 舵机 / 输出执行器
 
@@ -16,6 +16,7 @@
 | `AD9833` | DDS 波形发生器（SPI，写-only） |
 | `TPL0501` | 256 抽头数字电位器（SPI，写-only） |
 | `PCF8574` | 8 位准双向 IO 扩展器（I2C） |
+| `LCD1206` | 16x2 字符液晶（HD44780 + PCF8574 I2C 背包，4 位模式）：清屏 / 背光 / 分行文本 |
 | `GPIO` | Linux GPIO |
 | `PWM` | Linux PWM |
 | `H03ARR` | H03A 电机驱动 |
@@ -94,6 +95,7 @@
 | `Monitor` | 消费 `$` 引用快照的观察/决策变量 |
 | `bitcompat` | Lua 5.1/5.3 位运算兼容库（非驱动） |
 | `Camera` | **摄像头驱动**：V4L2 mmap 取帧、只取硬件编码的 MJPEG（ffi，无第三方库）；`src=<图片>` 为仿真模式。agent 模式的 `capture_image` 工具用它。调用参数可带 `width`/`height`（正整数，须同给同缺）：与上次请求不同即重开设备重协商 `VIDIOC_S_FMT`，返回表报**实际协商尺寸**（设备可能就近调档） |
+| `Sim` | **仿真器桥接驱动**：把语义动作以行文本发到 `mybot-sim`（`sim/` 下的 GLFW 蜘蛛仿真器）的 AF_UNIX socket，只传「动作 + 速度」不传关节角。`range` 走独立 sensor socket；**仿真器缺席＝静默成功**（可视化从端不该打断动作脚本），感知侧相反。协议、动作码 0–10 与场景持久化见 [sim.md](sim.md) |
 
 > 不依赖 HAL 的模块（如滤波器、virtbus 底座）可用 `luajit`/`lua5.4` 独立调试。
 > 模型协议族（OpenAI 兼容 / DeepSeek / Anthropic）由 Rust agent 内建（`agent/src/provider.rs`），
@@ -101,13 +103,20 @@
 
 ## 驱动契约
 
-新增驱动照此实现，评审按此核对。公共样板在 `modules/lib/drv_common.lua`。
+硬件/总线驱动现使用 `require_driver` 声明式框架（见下 `drv_common` 公共原语表），
+框架自动处理 `arg_table` 入参校验与总线校验（`i2c_pair` / `fd≥0` 等），驱动只写
+业务闭包（`build`/`call` 接收 `ctx.fd`/`ctx.addr`）。非驱动模块（`Relay`/`dummy`/
+`Camera`/`GPIO`/`PWM` 等）仍用独立 `function build(data)` 模式，未经 `require_driver`
+迁移。公共样板在 `modules/lib/drv_common.lua`。
 可机器核对的部分由 `luajit test/test_driver_contract.lua`（驱动入口契约 sweep）
 逐模块断言：能加载、三入口齐全、非表入参返回 ERR 契约表而非抛 Lua error——
 豁免只有 `bitcompat`（纯 Lua 库）与 `Camera`（头注声明不挂 `arg_table`）。
-`run_all.sh` 另有两道 grep lint（`arg_table` 首调用、模块路径 `__mpath` 引导）。
+`run_all.sh` 另有三道 grep lint（`arg_table` 首调用、模块路径 `__mpath` 引导、`data.` 裸读的 nan 回落）。
 
 ### 入口函数集
+
+已迁移的硬件驱动通过 `require_driver` spec 表声明以下入口（框架自动生成全局
+`build`/`call`/`destroy`）；非驱动模块（`Relay`/`dummy` 等）仍定义独立全局函数。
 
 | 函数 | 调用时机 | 约定 |
 | --- | --- | --- |
@@ -135,35 +144,47 @@
 
 ### 参数校验顺序
 
-```lua
-local ok, ek = arg_table(data)      -- ① 必须是表；并完成 proto=virt 前置
-if not ok then return ek end
+已迁移驱动使用 `require_driver` 框架，`arg_table` + 总线校验由框架包装层自动完成，
+驱动闭包直接接收 `ctx.fd`/`ctx.addr`：
 
-local fd, addr, ek2 = i2c_pair(data) -- ② fd/address 存在性 + i2c_set_addr
-if fd == nil then return ek2 end
+```lua
+require_driver("i2c", {
+    name = "EMC2101",
+    build = function(ctx, data)
+        local fd = ctx.fd   -- 框架已完成 arg_table + i2c_pair
+        -- 业务逻辑
+    end,
+    call = function(ctx, data)
+        local fd = ctx.fd
+        -- 业务逻辑
+    end,
+})
 ```
 
-- `i2c_pair` = `i2c_check` + `i2c_set_addr`；报错口径固定为
-  `Invalid Argument: fd or address` / `… (set_addr failed)`
+- 框架按总线类型分派校验器：`"i2c"` → `i2c_pair`（`fd`/`address` 存在性 + `set_addr`），
+  `"spi"`/`"uart"` → `fd≥0`；报错口径与旧内联版本逐字对齐
 - 若驱动的**额外**校验须先于 `set_addr`（约定「非法配置值不碰总线」，如
-  `MS5611` 的 OSR 档位、`PCF8574` 的地址族），用 `i2c_check`（仅存在性）
-  自行把 `set_addr` 留到校验通过之后
-- 器件地址硬件固定、`address` 列可省者（`AMG8833` 0x69、`MCP4725` 0x62）
-  保持内联校验——`i2c_pair` 视 `address` 为必填，语义不等价
+  `MS5611` 的 OSR 档位、`PCF8574` 的地址族），在 build 闭包里用 `i2c_check`
+  （仅存在性）自行把 `set_addr` 留到校验通过之后
+- 器件地址硬件固定、`address` 列可省者（当前仅 `AMG8833` 0x69）
+  可用 `require_driver` 的 `i2c_addr_default` 字段指定固定地址——
+  `i2c_pair` 视 `address` 为必填，语义不等价，框架对此类器件有特殊处理
+  （`MCP4725` 地址虽也硬件固定，但未走 `i2c_addr_default`，`address` 列仍必填）
 
 ### drv_common 公共原语
 
 | 原语 | 语义 | 越界/失败语义 |
 | --- | --- | --- |
 | `err(msg)` | 构造 `{result="ERR", message=msg}` | — |
-| `arg_table(data)` | 入参必须是表；附带 `proto=virt` 前置 | 返 `(false, err表)` |
+| `arg_table(data)` | 入参必须是表；附带 `proto=virt` 前置（现主要由 `require_driver` 框架内部调用，驱动通常不直接调） | 返 `(false, err表)` |
 | `virt_prepare(data)` | 独立入口：加载 virtbus → 发现并挂载 `*_VIRT` 模型 → inject（`arg_table` 只是它的调用方） | 返 `nil` 或原因串 |
 | `i2c_check(data)` | `fd`/`address` 存在性（不碰总线） | 返 `(nil, -1, err表)` |
-| `i2c_pair(data)` | `i2c_check` + `i2c_set_addr` | 同上 |
+| `i2c_pair(data)` | `i2c_check` + `i2c_set_addr`（现主要由 `require_driver` 框架内部调用） | 同上 |
 | `int_or(v, def, lo, hi)` | 数值列 → 取整并**钳到** `[lo, hi]`；非法/`-` 归 `def` | 钳制（非报错） |
 | `num_or(v, def)` | 数值列 → `tonumber`；缺省/非法回落 `def` | 回落（不钳制、不取整） |
 | `read_block_bytes(fd, reg, n, chunk)` | 从 `reg` 起读 `n` 字节，返 1 基大端字节表；`chunk` 缺省 6 | 任一读失败返 `nil` |
 | `guard_build(rollback, fn, data)` | build 全程 pcall + 失败时回滚句柄 | 抛错折成 ERR 表 |
+| `require_driver(bus, spec)` | 声明式驱动框架入口；`bus` ∈ `"i2c"`/`"spi"`/`"uart"`，`spec` 含 `name`/`build`/`call`/`destroy`（可选）；自动生成全局 `build`/`call`/`destroy`，驱动只写业务 delta（`ctx.fd`/`ctx.addr`） | 校验失败返 ERR 表（口径与旧内联对齐） |
 
 `guard_build` 的适用范围是**持有 OS 句柄的 4 个总线驱动**（`GPIO`/`I2C`/`SPI`/`UART`）——
 只有它们自己 `open`/申请句柄，所以只有它们需要「半途抛错时回滚」。器件驱动的句柄由
@@ -185,7 +206,7 @@ if fd == nil then return ek2 end
 ### 单消费者声明（`SINGLE_CONSUMER`）
 
 如果本驱动的**一次访问跨多个总线事务、且器件侧留有地址或握手相位**，就在模块源里
-**行首**声明一行（宿主是纯文本扫描、不执行 Lua，所以缩进或写在注释里都不算）：
+**行首**声明一行（宿主是纯文本扫描、不执行 Lua；允许前导空白，但写在注释里不算）：
 
 ```lua
 SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访问跨多个 I2C 事务"
@@ -206,7 +227,7 @@ SINGLE_CONSUMER = "间接窗口 + 握手：地址相位在器件侧，一次访�
 | `driver`/`addr` | 多器件守护没有这两列，改从 `devices` 列逐个 spec 解析：`driver@addr@f1,f2[:模式][@k=v]`，spec 之间以 `\|` 分隔；报错会点名 `devices[N]` 与驱动名 |
 
 C++ 侧那三个缺省值以 `HwFactory::kDaemonDefault*` 为单点，与 `sensor_daemon.lua`
-的缺省表达式由 `test/cpp/test_robot.cpp` 的 `daemon_defaults_match_lua_source`
+的缺省表达式由 `test/cpp/test_robot_lifecycle.cpp` 的 `daemon_defaults_match_lua_source`
 **读 Lua 源两侧比对**（这类漂移没有运行期症状，只会让判据静默漏判）。
 
 当前声明者：`AS3935` / `AS7262` / `MS5611` / `VL53L0X` / `VL53L4CD`
@@ -221,19 +242,28 @@ C++ 侧那三个缺省值以 `HwFactory::kDaemonDefault*` 为单点，与 `senso
 [faq.md](faq.md) 的「一器件一消费者」条。
 
 `chunk` 必须 ≤6：HAL 的合并读把整块拼成一个 `double`，超过 6 字节即超
-2^53 精度（见 `lib/HAL.lua` 的 `i2c_read_multi` 注释）。
+2^53 精度（见 `lib/hal/i2c.lua` 的 `i2c_read_multi` 注释）。
 
 > 未收 `poll_reg`（寄存器轮询）：唯一候选是 `VL53L0X` 的 `wait_reg`，
 > `VL53L4CD` 的 `wait_ready` 轮询的是函数而非寄存器——单点抽象不值得。
 
 ### destroy 契约：资源不可用即静默成功
 
+框架为绝大多数驱动提供缺省 `destroy`（仅 `return { result = "OK" }`）——省略
+`destroy` 字段即走此默认路径，无需手写 `arg_table` + 返回 OK 的样板。需要真正器件
+收尾的驱动（停连续读、复位硬件状态、关扭矩等）仍在 `require_driver` spec 里提供
+自定义 `destroy` 闭包：
+
 ```lua
-local fd, addr = tonumber(data.fd), tonumber(data.address)
-if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-    ...与器件状态有关的收尾动作...
+destroy = function(ctx, data)
+    -- 注意：destroy 包装只透传 {state, name}，不含 fd/addr——收尾要用的
+    -- 总线句柄/地址从 data 里取（与 PCA9685/ADS1115 等实驱动一致）
+    local fd = tonumber(data.fd)
+    if fd ~= nil then
+        ...与器件状态有关的收尾动作...
+    end
+    return { result = "OK" }
 end
-return { result = "OK" }
 ```
 
 收尾不是校验：器件可能因 build 失败或总线先行释放而拿不到 `fd`，此时报 ERR
@@ -246,7 +276,6 @@ return { result = "OK" }
 | --- | --- | --- |
 | `ADS1115` | 缺 `fd`/`address`，或 `set_addr` 失败 | 被回归用例固定（`test/test_ads1115.lua`），不改范 |
 | `ADS1256` | 缺 `fd`；停止连续读模式失败 | 器件需先停流再释放总线 |
-| `PCA9685` | MODE1 重启写失败 | 器件状态收尾结果如实上报 |
 | `PWM` | unexport 失败（成功时带 `released` 标志） | sysfs 收尾结果如实上报 |
 | `SCSCL` | 扭矩关闭短写 | 舵机需确认已卸力，短写即未确认 |
 
@@ -284,5 +313,21 @@ return { result = "OK" }
 | 模型侧符号扩展与位运算 | 各驱动 `*_VIRT` 声明之后 | 模型刻意不共用驱动局部量（部分刻意「纯算术无 bitcompat」），与驱动实现互证寄存器语义 |
 | CRC 计算双实现 | 驱动侧 vs 模型侧（如 `SHT3X` CRC-8、`MS5611` CRC-4、`SGP30` CRC-8） | 同上：一处算错时另一处会暴露，收敛后单点错误即失效 |
 | 24 位符号扩展（`0x800000`/`0x1000000`） | `LPS22HB`、`ADS1256` 等 | `bitcompat` 无 `s24` 原语，保持内联 |
-| 器件固定缺省地址的内联校验 | `AMG8833`、`MCP4725` | `address` 列可省，`i2c_pair` 语义不等价（见上） |
 | `ADS1115` destroy 的显式 ERR | `modules/ADS1115.lua` | 有回归用例固定的既有契约 |
+
+## 孪生驱动相似度实测（26.6 留档）
+
+四对「名字相近」的驱动于 2026-10-06 实测（`diff -w` + 芯片改名归一后的代码面相似度）：
+
+| 对 | 行数 | diff -w | 整文件相同 | 归一后代码面 | 性质 |
+|---|---|---|---|---|---|
+| ADS1015/ADS1115 | 529/520 | 253 | 76% | **87%** | **机械孪生** |
+| INA219/INA226 | 469/562 | 417 | 59% | 67% | 语义 |
+| MAX17043/MAX17048 | 433/623 | 544 | 48% | 62% | 语义（超集） |
+| BMI270/LSM6DSV | 753/650 | 767 | 45% | 46% | 语义（归一无收益） |
+
+**结论：** 仅 ADS1015/ADS1115 是机械孪生（真差异只有数据速率表与 12 位左对齐抽取 `raw12_of`），
+其余三对承担等量或更大的语义差异（INA 的 LSB 数学不同、MAX17048 是功能超集、BMI270 需 config blob
+上传而 LSM6DSV 走软复位 + 双小端窗口）。孪生驱动收敛整项判为**出界**（2026-10-06 用户确认）。
+
+**无更多孪生对：** BH1745/BH1750 20%、SHT3X/CHT8305 28%、VL53L0X/VL53L4CD 24%、INA226/INA3221 53%。

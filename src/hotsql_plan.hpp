@@ -1,7 +1,7 @@
 #pragma once
 /* hotsql_plan.hpp —— 热 SQL 只读计划层（拆自 robot.hpp，2026-09-29 A2；
- * 实现在 robot.cpp——HotSqlPlanner 与 RobotStruct 的提交段共用 robot.cpp 的
- * 注释面，计划数据结构在此独立成头供两边引用）。 */
+ * 2026-10-01 起实现独立成 TU：hotsql_plan.cpp——计划层与 RobotStruct 的
+ * 提交段不再共用 robot.cpp 的注释面，计划数据结构在此独立成头供两边引用）。 */
 
 #include <cstddef>
 #include <deque>

@@ -27,6 +27,10 @@ function M.normalize(payload)
 	local tail = payload:sub(-TAIL_WINDOW)
 	local prefix = tail:match(".*\xff\xd9")
 	if prefix == nil then return nil end	-- 尾部无 EOI = 熵编码截断
+	-- EOI 恰在帧尾（prefix 覆盖整个 tail）→ 无需截断，直接返回原串：
+	-- `payload:sub(1, #payload)` 仍会分配一份等大的新串（Lua 字符串不可变），
+	-- 对 1.2MB 帧就是白拷一次。常见路径（UVC 设备多数帧其实是完整的）由此省掉。
+	if #prefix == #tail then return payload end
 	return payload:sub(1, #payload - #tail + #prefix)
 end
 

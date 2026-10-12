@@ -1,3 +1,7 @@
+/*
+ * LAPTAP：基于笔记本电脑的测试机器人，其实主要就是带扬声器就行
+ */
+
 CREATE TABLE Speaker (
     name     String,   -- 实例名
     device   String,   -- ALSA 设备名（'-' = "default"；真机直配可写 'hw:0,0'、'plughw:0,0'）

@@ -39,11 +39,11 @@
 -- CO2eq 由 H2 信号等效换算：对呼吸类 VOC 响应快，对燃烧类 CO2 迟钝，
 --   适合做通风指示，不适合精确浓度测量
 
--- 标准前导：HAL/print_table 经 mpath 加载（modules/lib/）；同时持有 HAL 表：
--- 基线文件读写走 HAL.sys 间接层（可离线 mock）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 local HAL = dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 local ffi = require("ffi")		-- 基线文件缓冲区（HAL 已完成 cdef）
@@ -191,151 +191,128 @@ local function compensation_ticks(data)
 	return ah_ticks_of(t, rh)
 end
 
--- 【配置脚本】自检 -> Init -> （可选）恢复基线
-function build(data)
+require_driver("i2c", {
+	name = "SGP30",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】自检 -> Init -> （可选）恢复基线
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- SGP30 builder func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-- 基线持久化配置（'-' 占位符/缺省 = 关闭）
-	local bp = data.baseline
-	baseline_path = (bp ~= nil and bp ~= "-" and bp ~= "") and bp or nil
-	last_save_s = nil
-	last_ah_ticks = nil
-
-	-----------------------------------------------------
-	-- 在位探测 + 完整性自检（0x2032 -> 0xD400，约 220ms）
-	if not send_cmd(fd, CMD_SELFTEST) then
-		return err("SGP30 not responding (selftest write failed, check address 0x58 and wiring)")
-	end
-	milli_sleep(T_SELFTEST_MS)
-	local st = read_bytes(fd, 3)
-	if st == nil then
-		return err("Failed to read SGP30 selftest")
-	end
-	local st_word = st[1] * 256 + st[2]
-	if st_word ~= SELFTEST_MAGIC or crc8(st_word) ~= st[3] then
-		return err(string.format("SGP30 selftest failed: got 0x%04X (expect 0x%04X + valid CRC)",
-				st_word, SELFTEST_MAGIC))
-	end
-
-	-- 进入持续测量模式
-	if not send_cmd(fd, CMD_INIT) then
-		return err("Failed to send SGP30 Init_air_quality")
-	end
-	milli_sleep(T_INIT_MS)
-
-	-- 恢复基线（可选）：免约 12h 重学习
-	local base_state = "off"
-	if baseline_path then
-		base_state = baseline_restore(fd)
-	end
-
-	print(string.format("SGP30 init OK: addr=0x%02X, selftest=OK, baseline=%s",
-		addr, base_state))
-	return {  result = "OK"  }
-
-end
-
--- 【销毁SGP30】存一次基线后交还总线（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- SGP30 ender func get a table --------", data)
-	end
-
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-		baseline_save(fd)		-- 退出前存一次最新基线
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用SGP30】测量一次空气质量
--- 返回CO2eq(ppm)与TVOC(ppb)，命令式协议：写命令 -> 等待 -> 纯读
--- NOTE(20260902-qing): 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- SGP30 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	-- 湿度补偿（可选）：输入变化才下发，省一次命令往返
-	local ah = compensation_ticks(data)
-	if ah ~= nil and ah ~= last_ah_ticks then
-		if send_cmd(fd, CMD_SET_AH, { math.floor(ah / 256) % 256, ah % 256, crc8(ah) }) then
-			milli_sleep(T_BASE_MS)
-			last_ah_ticks = ah
-			dbg(string.format("SGP30 absolute humidity set: %d ticks", ah))
+		if DEBUG then
+			dbg_table("-------- SGP30 builder func get a table --------", data)
 		end
-	end
 
-	if not send_cmd(fd, CMD_MEASURE) then
-		return err("SGP30 not responding (measure write failed)")
-	end
+		-- 基线持久化配置（'-' 占位符/缺省 = 关闭）
+		local bp = data.baseline
+		baseline_path = (bp ~= nil and bp ~= "-" and bp ~= "") and bp or nil
+		last_save_s = nil
+		last_ah_ticks = nil
 
-	milli_sleep(T_MEASURE_MS)	-- 等待测量完成（数据手册最大 12ms + 余量）
-
-	local b = read_bytes(fd, 6)	-- 纯读6字节（不写任何指针字节）
-	if b == nil then
-		return err("Failed to read SGP30")
-	end
-
-	-- 6 字节（大端）：CO2eq + CRC, TVOC + CRC
-	local co2  = bitc.bor(bitc.lshift(b[1], 8), b[2])
-	local tvoc = bitc.bor(bitc.lshift(b[4], 8), b[5])
-
-	-- CRC校验（不合法不报 ERR，返回标志交消费者决策，兼容旧契约）
-	local crc_ok = (crc8(co2) == b[3]) and (crc8(tvoc) == b[6])
-
-	-- 周期性基线存盘（Sensirion 建议 >= 每小时）
-	if baseline_path then
-		local now = os.time()
-		if last_save_s == nil or now - last_save_s >= SAVE_PERIOD_S then
-			baseline_save(fd)
+		-----------------------------------------------------
+		-- 在位探测 + 完整性自检（0x2032 -> 0xD400，约 220ms）
+		if not send_cmd(fd, CMD_SELFTEST) then
+			return err("SGP30 not responding (selftest write failed, check address 0x58 and wiring)")
 		end
-	end
+		milli_sleep(T_SELFTEST_MS)
+		local st = read_bytes(fd, 3)
+		if st == nil then
+			return err("Failed to read SGP30 selftest")
+		end
+		local st_word = st[1] * 256 + st[2]
+		if st_word ~= SELFTEST_MAGIC or crc8(st_word) ~= st[3] then
+			return err(string.format("SGP30 selftest failed: got 0x%04X (expect 0x%04X + valid CRC)",
+					st_word, SELFTEST_MAGIC))
+		end
 
-	-- 返回字典
- 	return {
-		result = "OK",
-		CO2EQ  = co2,
-		TVOC   = tvoc,
-		CRC_OK = crc_ok and 1 or 0
-	}
+		-- 进入持续测量模式
+		if not send_cmd(fd, CMD_INIT) then
+			return err("Failed to send SGP30 Init_air_quality")
+		end
+		milli_sleep(T_INIT_MS)
 
-end
+		-- 恢复基线（可选）：免约 12h 重学习
+		local base_state = "off"
+		if baseline_path then
+			base_state = baseline_restore(fd)
+		end
+
+		print(string.format("SGP30 init OK: addr=0x%02X, selftest=OK, baseline=%s",
+			addr, base_state))
+		return {  result = "OK"  }
+	end,
+
+	-- 【调用SGP30】测量一次空气质量
+	-- 返回CO2eq(ppm)与TVOC(ppb)，命令式协议：写命令 -> 等待 -> 纯读
+	-- NOTE(20260902-qing): 接收一个参数（表），返回一个结果（表）
+	call = function(ctx, data)
+		local fd = ctx.fd
+
+		if DEBUG then
+			dbg_table("-------- SGP30 caller func get a table --------", data)
+		end
+
+		-----------------------------------------------------
+		-- 湿度补偿（可选）：输入变化才下发，省一次命令往返
+		local ah = compensation_ticks(data)
+		if ah ~= nil and ah ~= last_ah_ticks then
+			if send_cmd(fd, CMD_SET_AH, { math.floor(ah / 256) % 256, ah % 256, crc8(ah) }) then
+				milli_sleep(T_BASE_MS)
+				last_ah_ticks = ah
+				dbg(string.format("SGP30 absolute humidity set: %d ticks", ah))
+			end
+		end
+
+		if not send_cmd(fd, CMD_MEASURE) then
+			return err("SGP30 not responding (measure write failed)")
+		end
+
+		milli_sleep(T_MEASURE_MS)	-- 等待测量完成（数据手册最大 12ms + 余量）
+
+		local b = read_bytes(fd, 6)	-- 纯读6字节（不写任何指针字节）
+		if b == nil then
+			return err("Failed to read SGP30")
+		end
+
+		-- 6 字节（大端）：CO2eq + CRC, TVOC + CRC
+		local co2  = bitc.bor(bitc.lshift(b[1], 8), b[2])
+		local tvoc = bitc.bor(bitc.lshift(b[4], 8), b[5])
+
+		-- CRC校验（不合法不报 ERR，返回标志交消费者决策，兼容旧契约）
+		local crc_ok = (crc8(co2) == b[3]) and (crc8(tvoc) == b[6])
+
+		-- 周期性基线存盘（Sensirion 建议 >= 每小时）
+		if baseline_path then
+			local now = os.time()
+			if last_save_s == nil or now - last_save_s >= SAVE_PERIOD_S then
+				baseline_save(fd)
+			end
+		end
+
+		-- 返回字典
+	 	return {
+			result = "OK",
+			CO2EQ  = co2,
+			TVOC   = tvoc,
+			CRC_OK = crc_ok and 1 or 0
+		}
+	end,
+
+	-- 【销毁SGP30】存一次基线后交还总线（总线归 I2C 硬件变量所有）
+	destroy = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- SGP30 ender func get a table --------", data)
+		end
+
+		local fd = tonumber(data.fd)
+		local addr = tonumber(data.address)
+		if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+			baseline_save(fd)		-- 退出前存一次最新基线
+		end
+
+		return {  result = "OK"  }
+	end,
+})
 
 
 -- =====================================================================

@@ -5,7 +5,7 @@ timer-0.delay;
   100;
 @
 
-@Include
+@Merge
 path;
   scripts/test/include_scene.once.mt;
 @

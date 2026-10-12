@@ -12,6 +12,7 @@
 use std::time::Duration;
 
 use crate::out::errln;
+use crate::protocol::{ERROR_FIELD, ROUTE_AUTH, ROUTE_FIELD, SUCCESS_FIELD, TOKEN_FIELD};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -26,6 +27,16 @@ pub const HEADER_LEN: usize = 4;
 /// 跨语言一致由 C++ 侧 test_mcpbackend 的 mcpbackend_frame_limit_matches_rust_twin
 /// 读本文件比对钉住（改本常量会红那条用例）。
 pub const MAX_FRAME_BYTES: u32 = 8 * 1024 * 1024;
+
+/// 读侧的**兜底** deadline（2026-09-30 审计 P1）。后端工具执行的最长合法等待 =
+/// `--script-timeout` / `action_script_timeout_sec`（上限 3600s，见
+/// src/agenttools.cpp 与 docs/agent.md 字段表）+ 组帧/认证余量。缺省用本值；
+/// `--llm-task-timeout`（max_task_seconds）非零时 main.rs 会把读超时设成它——
+/// 一轮任务的墙钟预算由此贯穿到工具调用**内部**（此前预算只判模型调用边界，
+/// 后端进程活着但永不回帧时这条 await 无限挂起，模型侧超时与 Ctrl-C 都够
+/// 不到它）。「不限」（max_task_seconds=0）也用本兜底：不限的是任务时长，
+/// 不是「后端死了也要陪它挂到永远」。
+pub const HARD_READ_CEILING: Duration = Duration::from_secs(3700);
 
 /// 把载荷封成一帧：4 字节 BE 长度前缀 + 载荷。纯函数，便于单测。
 pub fn encode_frame(payload: &[u8]) -> Result<Vec<u8>> {
@@ -47,6 +58,10 @@ pub fn decode_len(hdr: &[u8; HEADER_LEN]) -> u32 {
 /// 到 mybot 后端的单连接客户端。
 pub struct BackendClient {
     stream: UnixStream,
+    /// 单次调用 deadline：读侧 [`HARD_READ_CEILING`] 语义来源见其文档；写侧与
+    /// 读侧共用（语义见 [`BackendClient::call`] 的写侧注释）。超时与 I/O 错误
+    /// 同级：连接判死——lock-step 语义下超时后对端可能补收/补发，不可恢复。
+    read_timeout: Duration,
 }
 
 impl BackendClient {
@@ -57,7 +72,12 @@ impl BackendClient {
         let mut delay = Duration::from_millis(250);
         loop {
             match UnixStream::connect(path).await {
-                Ok(stream) => return Ok(Self { stream }),
+                Ok(stream) => {
+                    return Ok(Self {
+                        stream,
+                        read_timeout: HARD_READ_CEILING,
+                    })
+                }
                 Err(e) => {
                     if Instant::now() >= deadline {
                         return Err(anyhow!(
@@ -78,35 +98,49 @@ impl BackendClient {
         }
     }
 
+    /// 设置读侧 deadline（main.rs 按 `--llm-task-timeout` 装配；0/不限时保留
+    /// [`HARD_READ_CEILING`] 兜底）。锁零散值不合法，≤0 一律回落兜底。
+    pub fn set_read_timeout(&mut self, d: Duration) {
+        self.read_timeout = d;
+        if self.read_timeout.is_zero() {
+            self.read_timeout = HARD_READ_CEILING;
+        }
+    }
+
     /// 从已建立的流构造（**测试缝**：单测用 `UnixStream::pair()` 注入假后端）。
     #[cfg(test)]
     pub fn from_stream(stream: UnixStream) -> Self {
-        Self { stream }
+        Self {
+            stream,
+            read_timeout: HARD_READ_CEILING,
+        }
     }
 
     /// 发一个请求帧、收一个响应帧（lock-step）。任何协议违规（超限、非法 UTF-8、
-    /// I/O 错误）都返回 Err——上层据此把连接判死（断连即 resync，评估 §7.1）。
+    /// I/O 错误、读/写超时）都返回 Err——上层据此把连接判死，**下一次调用前**重连
+    /// （见 bridge.rs 的 Conn::ensure）。在途调用本身不重试：回执丢失的
+    /// `tool.call` 可能已在后端执行，重发即重复物理动作。
     pub async fn call(&mut self, req: &Value) -> Result<Value> {
         let payload = serde_json::to_vec(req).context("序列化请求")?;
         let frame = encode_frame(&payload)?;
-        self.stream.write_all(&frame).await.context("写请求帧")?;
-        self.stream.flush().await.context("flush 请求帧")?;
+        // 写侧 deadline（2026-10-01 审计 P2）：读侧修了（2026-09-30 P1）、写侧
+        // 漏了——后端活着但不读 socket 时，超过内核 socket 缓冲（~200 KiB）的
+        // write_all 会无限挂起，帧上限 8 MiB 下模型可控的大参数（长 SQL 等）可
+        // 必现；--llm-task-timeout / HARD_READ_CEILING / Ctrl-C 轮询全都够不到
+        // 这段 await。与读侧共用同一预算：单次调用的墙钟预算应覆盖整个一发一收。
+        write_with_deadline(&mut self.stream, &frame, self.read_timeout, "写请求帧").await?;
 
         let mut hdr = [0u8; HEADER_LEN];
-        self.stream
-            .read_exact(&mut hdr)
-            .await
-            .context("读响应帧头")?;
+        read_exact_with_deadline(&mut self.stream, &mut hdr, self.read_timeout, "读响应帧头")
+            .await?;
         let rlen = decode_len(&hdr);
         // 上限在**分配之前**检查（评估 §7.1）：u32 直接比较，无溢出暴露面。
         if rlen > MAX_FRAME_BYTES {
             bail!("响应帧 {rlen} 字节超过上限 {MAX_FRAME_BYTES}");
         }
         let mut buf = vec![0u8; rlen as usize];
-        self.stream
-            .read_exact(&mut buf)
-            .await
-            .context("读响应载荷")?;
+        read_exact_with_deadline(&mut self.stream, &mut buf, self.read_timeout, "读响应载荷")
+            .await?;
         let text = String::from_utf8(buf).map_err(|_| anyhow!("响应帧不是合法 UTF-8"))?;
         let value: Value = serde_json::from_str(&text).context("解析响应 JSON")?;
         Ok(value)
@@ -122,18 +156,18 @@ impl BackendClient {
     /// 指向版本不匹配的人话，其余失败原样上抛。
     pub async fn authenticate(&mut self, token: &str) -> Result<()> {
         let resp = self
-            .call(&serde_json::json!({"_route": "auth", "token": token}))
+            .call(&serde_json::json!({ROUTE_FIELD: ROUTE_AUTH, TOKEN_FIELD: token}))
             .await
             .context("发送首帧认证")?;
         if resp
-            .get("success")
+            .get(SUCCESS_FIELD)
             .and_then(|s| s.as_bool())
             .unwrap_or(false)
         {
             return Ok(());
         }
         let err = resp
-            .get("error")
+            .get(ERROR_FIELD)
             .and_then(|e| e.as_str())
             .unwrap_or("（后端未给出原因）");
         if err.contains("unknown route") {
@@ -146,6 +180,48 @@ impl BackendClient {
             "后端拒绝了首帧认证（{err}）：共享密钥不匹配，检查两侧的 \
               BOT4CJ_MCP_TOKEN 是否一致"
         )
+    }
+}
+
+/// 带整体 deadline 的 read_exact：超时与 I/O 错误同级返回 Err（连接判死）。
+/// deadline 覆盖「读满整个缓冲」而不是每个字节——慢速滴流（Slowloris 形态）
+/// 同样会被截断在预算内。
+async fn read_exact_with_deadline(
+    stream: &mut UnixStream,
+    buf: &mut [u8],
+    timeout: Duration,
+    what: &str,
+) -> Result<()> {
+    match tokio::time::timeout(timeout, stream.read_exact(buf)).await {
+        Ok(r) => r.context(what.to_string()).map(|_| ()),
+        Err(_) => bail!(
+            "{what}超时（{}s）：后端在预算内未回帧——进程可能在但不响应，\
+             或工具执行超出 --llm-task-timeout 预算；连接按死处理，可重启 agent 重试",
+            timeout.as_secs()
+        ),
+    }
+}
+
+/// 带整体 deadline 的写侧（2026-10-01 审计 P2，与上方读侧对称）：deadline 覆盖
+/// 「整帧写完 + flush」。对端停止读 socket 时内核缓冲（~200 KiB）填满后
+/// write_all 永久挂起——帧上限 8 MiB，模型可控的大参数帧可必现。
+async fn write_with_deadline(
+    stream: &mut UnixStream,
+    frame: &[u8],
+    timeout: Duration,
+    what: &str,
+) -> Result<()> {
+    let written = async {
+        stream.write_all(frame).await?;
+        stream.flush().await
+    };
+    match tokio::time::timeout(timeout, written).await {
+        Ok(r) => r.context(what.to_string()).map(|_| ()),
+        Err(_) => bail!(
+            "{what}超时（{}s）：后端在预算内没有收下请求帧——进程可能在但不读 \
+             socket；连接按死处理，可重启 agent 重试",
+            timeout.as_secs()
+        ),
     }
 }
 
@@ -170,6 +246,62 @@ mod tests {
     fn decode_len_roundtrips() {
         assert_eq!(decode_len(&[0, 0, 0x01, 0x2C]), 300);
         assert_eq!(decode_len(&[0xFF, 0xFF, 0xFF, 0xFF]), u32::MAX);
+    }
+
+    #[tokio::test]
+    async fn call_times_out_when_backend_goes_silent() {
+        // 2026-09-30 审计 P1：后端进程活着但不回帧（工具层卡死）时，此前的
+        // read_exact 会无限挂起——模型侧超时与 Ctrl-C 的取消都够不到它。
+        let (client_io, mut server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        client.set_read_timeout(Duration::from_millis(150));
+        let server = tokio::spawn(async move {
+            // 收下请求但永不回帧（卡死后端）
+            let mut hdr = [0u8; 4];
+            server_io.read_exact(&mut hdr).await.unwrap();
+            let n = u32::from_be_bytes(hdr) as usize;
+            let mut buf = vec![0u8; n];
+            server_io.read_exact(&mut buf).await.unwrap();
+            sleep(Duration::from_secs(30)).await;
+        });
+        let err = client.call(&json!({"_route": "ping"})).await.unwrap_err();
+        assert!(err.to_string().contains("超时"), "实际: {err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn call_write_times_out_when_backend_stops_reading() {
+        // 2026-10-01 审计 P2：读侧修了（上一用例）、写侧漏了——后端活着但停止
+        // 读 socket（同一 wedged 形态）时，超过内核 socket 缓冲（~200 KiB）的
+        // write_all 无限挂起，--llm-task-timeout / HARD_READ_CEILING / Ctrl-C
+        // 全都够不到这段 await。4 MiB 请求帧（< 8 MiB 上限，模型可控大参数
+        // 形态）+ 假后端只收帧头就睡死 → 必然写不进去。
+        let (client_io, mut server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        client.set_read_timeout(Duration::from_millis(150));
+        let blob = String::from_utf8(vec![b'x'; 4 * 1024 * 1024]).unwrap();
+        let req = json!({"_route": "tool.call", "arguments": blob});
+        let server = tokio::spawn(async move {
+            let mut hdr = [0u8; 4];
+            server_io.read_exact(&mut hdr).await.unwrap();
+            // 不读载荷、不回帧：客户端的 4 MiB 写必然撑爆缓冲后挂起
+            sleep(Duration::from_secs(30)).await;
+        });
+        let err = client.call(&req).await.unwrap_err();
+        assert!(err.to_string().contains("写请求帧"), "实际: {err}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn set_read_timeout_rejects_zero_and_falls_back_to_ceiling() {
+        let (client_io, _server_io) = UnixStream::pair().unwrap();
+        let mut client = BackendClient::from_stream(client_io);
+        assert_eq!(client.read_timeout, HARD_READ_CEILING);
+        // 0 = 不限任务时长 ≠ 陪后端挂到永远：回落兜底上限
+        client.set_read_timeout(Duration::ZERO);
+        assert_eq!(client.read_timeout, HARD_READ_CEILING);
+        client.set_read_timeout(Duration::from_secs(1));
+        assert_eq!(client.read_timeout, Duration::from_secs(1));
     }
 
     #[tokio::test]

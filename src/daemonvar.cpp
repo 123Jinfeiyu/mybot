@@ -1,4 +1,6 @@
 #include "daemonvar.hpp"
+#include "luaend.hpp"	/* 线程体直接调 Lua C API（hpp 已摘传导） */
+#include "daemonconf.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -10,7 +12,7 @@
 #include <stdexcept>
 #include <thread>
 
-#include "util_env.hpp"
+#include "debug_log.hpp"	/* logD */
 #include "util_except.hpp"
 #include "util_file.hpp"
 #include "util_num.hpp"
@@ -31,7 +33,7 @@ int abandonedDaemonCount() { return g_abandonedDaemons.load(); }
 static_assert(sizeof(pthread_mutex_t) <= 64,
 	"DaemonSlot reserves 64 bytes for pthread_mutex_t; this libc's pthread_mutex_t is larger");
 
-static pthread_mutex_t* mutexOf(DaemonSlot* slot) {
+pthread_mutex_t* mutexOf(DaemonSlot* slot) {
 	return reinterpret_cast<pthread_mutex_t*>(slot->mutex);
 }
 
@@ -65,7 +67,7 @@ bool daemon_quiesced(DaemonSlot* slot) {
 
 /* ---- 共享槽释放（2.4）：作为 shared_ptr 删除器，由「最后一个持有者」
  * 调用——引用计数保证此刻无任何线程仍在临界区内。 ---- */
-static void releaseSlot(DaemonSlot* slot) {
+void releaseSlot(DaemonSlot* slot) {
 	pthread_mutex_destroy(mutexOf(slot));
 	std::free(slot);
 }
@@ -183,34 +185,57 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	lua_State* L = openSandboxedState();
 	if (L == nullptr) { return -1; }
 
-	/* 注入共享槽地址（lightuserdata）+ 配置串 + 布局表为 Lua 全局 */
-	injectDaemonGlobals(L, slot.get(), config);
+	/* 第五个「异常不得穿出」边界（2026-10-01 审计 P2，判据锚点见 util_except.hpp）：
+	 * 本线程是 detached，异常穿出线程函数即 std::terminate，主线程的停机清理链
+	 * （deactivate 断电）整条被跳过——执行器带电滞留，正是本项目自评最严重的
+	 * 失效形态。主线程同型风险此前已由 luabridge 的 F5-2（pcall 包裹 getglobal）
+	 * 修复，daemon 线程是被漏掉的边界。裸露点：body 内多处 Lua C API 调用不经
+	 * pcall——injectDaemonGlobals 的 push 系列（OOM 即 luaD_throw）、tick 循环与
+	 * cleanup 段的 getglobal（chunk 可给 _G 装带报错 __index 的元表）。异常折成
+	 * -1（中途计数不可信）+ 响亮日志；promise 照常 set，join 路径正常走完。 */
+	int64_t n = -1;
+	try {
+		/* 注入共享槽地址（lightuserdata）+ 配置串 + 布局表为 Lua 全局 */
+		injectDaemonGlobals(L, slot.get(), config);
 
-	if (!setupDaemonChunk(L, chunk)) {
-		lua_close(L);
-		return -1;
-	}
-	lua_settop(L, 0);
+		if (setupDaemonChunk(L, chunk)) {
+			lua_settop(L, 0);
 
-	runTickLoop(L, slot.get(), intervalMs);
+			runTickLoop(L, slot.get(), intervalMs);
 
-	/* H-07：stop 后、lua_close 前调用 chunk 定义的 daemon_cleanup()（若存在） */
-	lua_getglobal(L, "daemon_cleanup");
-	if (lua_type(L, -1) == LUA_TFUNCTION) {
-		int st3 = lua_pcall(L, 0, LUA_MULTRET, 0);
-		if (st3 != LUA_OK) {
-			std::cerr << "[daemon] cleanup error: " << luaErrorString(L) << std::endl;
+			/* H-07：stop 后、lua_close 前调用 chunk 定义的 daemon_cleanup()（若存在） */
+			lua_getglobal(L, "daemon_cleanup");
+			if (lua_type(L, -1) == LUA_TFUNCTION) {
+				int st3 = lua_pcall(L, 0, LUA_MULTRET, 0);
+				if (st3 != LUA_OK) {
+					std::cerr << "[daemon] cleanup error: " << luaErrorString(L) << std::endl;
+				}
+			}
+			lua_settop(L, 0);
+
+			/* F-01：count 与 stop 同规——都在槽内 mutex 临界区读取（此前锁外裸读，
+			 * 与 daemonvar.hpp 的 stop 纪律不对称） */
+			pthread_mutex_lock(mutexOf(slot.get()));
+			n = slot->count;
+			pthread_mutex_unlock(mutexOf(slot.get()));
 		}
+	} catch (const std::exception& e) {
+		std::cerr << "[daemon] body aborted by exception: " << e.what()
+			<< " — closing state, publish count unreliable, returning -1" << std::endl;
+		n = -1;
+	} catch (...) {
+		std::cerr << "[daemon] body aborted by " << kNonStdExceptionNote
+			<< " — closing state, publish count unreliable, returning -1" << std::endl;
+		n = -1;
 	}
-	lua_settop(L, 0);
-
-	/* F-01：count 与 stop 同规——都在槽内 mutex 临界区读取（此前锁外裸读，
-	 * 与 daemonvar.hpp 的 stop 纪律不对称） */
-	int64_t n;
-	pthread_mutex_lock(mutexOf(slot.get()));
-	n = slot->count;
-	pthread_mutex_unlock(mutexOf(slot.get()));
-	lua_close(L);
+	try {
+		lua_close(L);
+	} catch (...) {
+		/* lua_close 跑 ffi __gc 收尾同样可能抛（判据同上）。吞掉但留痕：此刻
+		 * 状态机已半释放，进程续命让停机断电链可达，比 terminate 重要。 */
+		std::cerr << "[daemon] lua_close threw (" << kNonStdExceptionNote
+			<< ") — state partially freed, continuing" << std::endl;
+	}
 	/* 2.4：返回即交还本线程的引用副本。弃管路径下这里是最后所有者，
 	 * 删除器（mutex_destroy + free）在本线程执行——与旧协议「线程自行
 	 * 释放」语义一致，仲裁交给引用计数。 */
@@ -415,278 +440,9 @@ Json DaemonRunner::readSample() {
 	return ret;
 }
 
-/* ---- issue #19：多模块路径按序查找第一个存在的文件 ----
- * 全部不存在返回最后一个路径拼接（保持原有"文件不存在"加载报错语义）。
- * N-19：':' 分段/去空/剥尾斜杠统一走 util 的 splitModulePaths。
- * 阶段 2：逐段探测本身上收到 util::findExistingModule（与 hw_factory、
- * Lua 侧 mpath.resolve 共用一条规则）。 */
-std::string firstExistingModule(const std::string& paths, const std::string& rel) {
-	if (auto found = findExistingModule(paths, rel)) { return *found; }
-	const std::vector<std::string> ps = splitModulePaths(paths);
-	return (ps.empty() ? paths : ps.back()) + "/" + rel;
-}
-
-std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath) {
-	if (chunk.rfind('/', 0) == 0) { return chunk; }
-	if (chunk.rfind(modulePath + "/", 0) == 0) { return chunk; }
-	/* 阶段 5：旧写法（"modules/..."，不带 "./"）兼容分支经全仓 robots/、
-	 * docs/ 核查无依赖，已删除——这类 chunk 现走 firstExistingModule，
-	 * 按普通相对 chunk 在模块路径下解析。 */
-	return firstExistingModule(modulePath, chunk);
-}
-
-/* ---- interval 解析与校验（≤0 会空转占满 CPU，显式报错）----
- * C9：解析经 util 的 parseLongStrict（NOT_INT/OVERFLOW 分型），并钳制合理上限——
- * join 超时按 interval*5 计算，钳制后乘法不溢出。 */
-int64_t parseInterval(const std::string& iv, const std::string& name,
-		const std::string& tabName, int64_t row) {
-	auto parsed_ = parseLongStrict(iv);
-	if (parsed_.first == IntParse::NOT_INT) {
-		throw IllegalArgumentException(
-			"Daemon '" + name + "': column 'interval' value '" + iv +
-			"' is not a valid integer (in table '" + tabName + "', row " + std::to_string(row) + ").");
-	}
-	if (parsed_.first == IntParse::OVERFLOW || parsed_.second < 0) {
-		throw IllegalArgumentException(
-			"Daemon '" + name + "': column 'interval' value '" + iv +
-			"' is out of range (in table '" + tabName + "', row " + std::to_string(row) + ").");
-	}
-	long long parsed = parsed_.second;
-	if (parsed == 0) {
-		throw IllegalArgumentException(
-			"Daemon '" + name + "': column 'interval' must be > 0 ms, got " + std::to_string(parsed) +
-			" (in table '" + tabName + "', row " + std::to_string(row) +
-			"). interval <= 0 causes a busy-loop that pins a CPU core.");
-	}
-	constexpr int64_t kMaxIntervalMs = 3600000;	/* 1 小时：合理上限，保证 joinTimeout=interval*5 不溢出 */
-	if (parsed > kMaxIntervalMs) {
-		throw IllegalArgumentException(
-			"Daemon '" + name + "': column 'interval' " + std::to_string(parsed) +
-			"ms exceeds the maximum " + std::to_string(kMaxIntervalMs) +
-			"ms (in table '" + tabName + "', row " + std::to_string(row) + ").");
-	}
-	return parsed;
-}
-
-/* ---- DAEMON_CONFIG schema 校验（E2 / N-27 尾）----
- * DAEMON_CONFIG 最终由 chunk 解释，但**非法值必须在结构脚本加载期就报错**：
- * 等到守护线程 setup 才失败，调用方只拿得到「守护启动失败 + status 码」，
- * 不知道是哪张表、哪一行、哪个键；而拼错的 proto 此前会静默按 i2c 走、
- * 非法的 fields 模式会静默当浮点透传——都是「跑起来了但结果不对」的隐蔽故障。
- * 只校验框架列（proto/fields/sign，语义见 docs/daemon.md）；其余任意键是驱动
- * 的 build 参数（channel/pga/rshunt/osr…），框架不得拦截。
- * 语法以 modules/lib/sensor_daemon.lua 的解析为准，两处规则改动须同步。
- * 矩阵空占位符 "-" 在 assembleDaemonConfig 里**拼串之前**就被跳过（既不进
- * DAEMON_CONFIG、也不进这里的校验）——否则 Lua 侧会拿到字面值 "-"（truthy），
- * `or 缺省` 分支不生效，校验通过而语义走样。空串不在此列：它照旧进校验，
- * interval 为空串仍按「需要整数」报错，不静默落回缺省。 */
-/* proto 白名单：i2c（缺省）/ spi / uart / virt（virt=无硬件仿真）。
- * 未知值旧实现静默落进 i2c 分支——拼错 "i2" 会真去开 I2C 总线。 */
-static void checkDaemonProto(const std::string& v, const std::string& name,
-		const std::string& tabName, int64_t row) {
-	if (v == "i2c" || v == "spi" || v == "uart" || v == "virt") { return; }
-	throw IllegalArgumentException(
-		"Daemon '" + name + "': column 'proto' value '" + v +
-		"' is not a supported bus (expected i2c|spi|uart|virt) (in table '" + tabName +
-		"', row " + std::to_string(row) + ").");
-}
-
-/* sign：符号扩展位宽（16 = 16 位补码）。非数值此前被 tonumber 折成 nil，
- * 于是 sign=16x 这类拼错会让符号扩展静默失效（读数全是无符号大数）。 */
-static void checkDaemonSign(const std::string& v, const std::string& name,
-		const std::string& tabName, int64_t row) {
-	if (parseLongStrict(v).first == IntParse::OK) { return; }
-	throw IllegalArgumentException(
-		"Daemon '" + name + "': column 'sign' value '" + v +
-		"' is not a valid integer (expected a bit width such as 16) (in table '" + tabName +
-		"', row " + std::to_string(row) + ").");
-}
-
-static bool daemonFieldModeChar(char c) {
-	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-}
-
-/* fields 语法：<名>[:<模式>]，分隔符 ',' 或 '|'，模式 ∈ 缺省（跟随全局 sign）/
- * f / float / s16。空项（重复或首尾分隔符）与未知模式都在此报错——旧实现把
- * 空项 print 后丢弃、把未知模式当浮点透传（语义被悄悄改写，且只落在守护日志里）。
- *
- * 审计 2026-09-20（中）：字段数必须 ≤ SLOT_MAXVALS。共享槽只有 values[SLOT_MAXVALS]，
- * Lua 侧 P.publish 超出即**静默钳制**（pthread.lua），C++ 侧 readSample 也按
- * 32 截断——于是 33+ 字段的 @Daemon 能通过全部加载期校验、正常启动、count
- * 照常自增，而多余字段**永远拿不到值**，事后只表现为下游「某字段缺失」
- * （Monitor 只会说 no daemon value (v0 missing)）这类间接症状。既然槽宽是
- * 编译期常量、字段数在加载期就已知，就在这里响亮拒绝，而不是让它跑起来再
- * 静默丢数据。 */
-static void checkDaemonFields(const std::string& v, const std::string& name,
-		const std::string& tabName, int64_t row) {
-	auto bad = [&](const std::string& why, const std::string& tok) {
-		throw IllegalArgumentException(
-			"Daemon '" + name + "': column 'fields' " + why + ": '" + tok + "' (in table '" +
-			tabName + "', row " + std::to_string(row) + ").");
-	};
-	std::size_t pos = 0;
-	int fieldCount = 0;
-	while (pos <= v.size()) {
-		std::size_t sep = v.find_first_of(",|", pos);
-		std::string tok = v.substr(pos, (sep == std::string::npos ? v.size() : sep) - pos);
-		if (tok.empty()) {
-			bad("has an empty field name (check for doubled or leading/trailing separators)", v);
-		}
-		std::size_t colon = tok.find(':');
-		std::string fname = (colon == std::string::npos) ? tok : tok.substr(0, colon);
-		std::string mode = (colon == std::string::npos) ? std::string() : tok.substr(colon + 1);
-		if (fname.empty()) { bad("has an empty field name", tok); }
-		for (char c : mode) {
-			if (!daemonFieldModeChar(c)) { bad("has a malformed field mode", tok); }
-		}
-		if (!(mode.empty() || mode == "f" || mode == "float" || mode == "s16")) {
-			bad("has an unknown field mode ':" + mode + "' (expected :f, :float or :s16)", tok);
-		}
-		if (++fieldCount > SLOT_MAXVALS) {
-			throw IllegalArgumentException(
-				concatMsg("Daemon '", name, "': column 'fields' declares ",
-				std::to_string(fieldCount),
-				" fields, which exceeds the shared-slot capacity of ",
-				std::to_string(SLOT_MAXVALS), " (values[", std::to_string(SLOT_MAXVALS),
-				"] in daemonvar.hpp / pthread.lua) (in table '", tabName, "', row ",
-				std::to_string(row), "). Extra fields would never be published —",
-				" split the daemon or expose fewer fields."));
-		}
-		if (sep == std::string::npos) { break; }
-		pos = sep + 1;
-	}
-}
-
-/* ---- 配置串字符校验（审计 P4）----
- * DAEMON_CONFIG 是 "k=v;k=v" 串：Lua 侧按 gmatch("([^;=]+)=([^;]*)") 解析
- * （modules/lib/sensor_daemon.lua），注入用 lua_pushstring（C 字符串语义）。
- * 两种字符会让「加载期校验看到的」与「Lua 实际拿到的」不一致，必须拒：
- *   '\0'  pushstring 在此截断，其后**所有列**（含 proto/sign）静默消失，
- *         而 checkDaemonProto/Fields/Sign 跑在逐列原始串上，全部通过。
- *         NUL 能进到列值里：sqlparse 的引号态一律字面追加（'\0' 只在
- *         token 之外被当空白，见 src/sqlparse.cpp 的 blank 判据）。
- *   ';'   该值被提前截断；更糟的是若其后片段形如 `key=`，就会**注入/覆盖**
- *         守护真正理解的键（proto/path/addr/fields/sign…），而 schema 校验
- *         看的是原始列值，看不到这次注入。
- * '=' 不拒：键的模式是 [^;=]+（不含 '='）、值的模式是 [^;]*（可含 '='），
- * 故 "extra=a=b" 能原样往返，拒它会白伤合法驱动参数。
- * .sql 属可信域（会话期只允许 @Alias/@Vars），故定性为**静默误配置**而非
- * 远程边界失守；但必须早报——放过之后运行期的症状只有 "no daemon value"
- * 这类间接报错，看不出是配置串被截断了。
- * 注：robots/test/sqlquote.sql 是词法器契约夹具（引号值内的 ; 是字面数据），
- * 它的 ';' 字面值放在普通硬件表里而非 @Daemon 列——词法路径与表名无关，
- * 覆盖不减，而这里的语义约束得以保持严格。 */
-static void checkDaemonValueChars(const std::string& colName, const std::string& v,
-		const std::string& name, const std::string& tabName, int64_t row) {
-	for (char c : v) {
-		if (c != '\0' && c != ';') { continue; }
-		throw IllegalArgumentException(
-			concatMsg("Daemon '", name, "': column '", colName, "' value contains '",
-			(c == '\0' ? std::string("\\0") : std::string(1, c)),
-			"' which would corrupt the DAEMON_CONFIG (k=v;k=v) string",
-			" (in table '", tabName, "', row ", std::to_string(row), ")."));
-	}
-}
-
-/* ---- Factory 拆分（阶段 3）：配置串组装 + 加载期 schema 校验 ----
- * 单遍列扫描：name/chunk 之外收集为配置串 "k=v;k=v"，提取 interval（缺省 5ms），
- * 并对框架列做加载期 schema 校验（E2：非法 proto/fields/sign 在此早报） */
-struct DaemonConfigParts {
-	std::string configStr;
-	int64_t intervalMs;
-};
-
-static DaemonConfigParts assembleDaemonConfig(const mt::MatrixObject& defs, int64_t i,
-		const std::string& name) {
-	std::string cfgAcc;
-	int64_t ivAcc = 5;
-	for (int64_t j = 0; j < static_cast<int64_t>(defs.cols()); ++j) {
-		const std::string& colName = defs(0, j);
-		if (colName == "name" || colName == "chunk") { continue; }
-		const std::string& v = defs.inherited(i, j);
-		/* 先校验字符再拼串：配置串一旦拼好，NUL 之后的内容在 Lua 侧就不存在了，
-		 * 那时再校验也看不出被截断（审计 P4）。 */
-		checkDaemonValueChars(colName, v, name, defs.getName(), i);
-		/* 空占位符 '-' **不下发**（2026-09-21 第七轮审计）：'-' 在本仓语义里就是
-		 * "未提供"（docs/daemon.md 与下面几条 daemonConfigMissing 判据同一口径），
-		 * 而原样拼进配置串会让 Lua 侧拿到字面值 "-"——它是 truthy，于是
-		 * `cfg.sign or 缺省` 的 or 分支**不生效**：sign='-' 让符号扩展静默失效，
-		 * 驱动 build 参数（pga/range 之类）'-' 经 tonumber 得 nil 后静默改用驱动
-		 * 自身缺省。校验看到的与守护拿到的必须是同一份配置，否则"加载期校验通过"
-		 * 这句话对 '-' 那一列根本不成立。 */
-		if (v == "-") { continue; }
-		cfgAcc += colName;
-		cfgAcc += '=';
-		cfgAcc += v;
-		cfgAcc += ';';
-		if (colName == "interval") {
-			ivAcc = parseInterval(v, name, defs.getName(), i);
-		} else if (colName == "proto") {
-			checkDaemonProto(v, name, defs.getName(), i);
-		} else if (colName == "fields") {
-			checkDaemonFields(v, name, defs.getName(), i);
-		} else if (colName == "sign") {
-			checkDaemonSign(v, name, defs.getName(), i);
-		}
-	}
-	return {cfgAcc, ivAcc};
-}
-
-/* ---- Factory 拆分（阶段 3）：槽分配 ----
- * 分配并清零共享槽，初始化 mutex（malloc 失败立即抛错拒绝空指针解引用）。
- * 2.4：槽所有权入 shared_ptr，删除器 = releaseSlot（mutex_destroy + free）——
- * 最后一个持有者（主线程 / 守护线程）退场时释放。 */
-static std::shared_ptr<DaemonSlot> allocateSlot(const std::string& name) {
-	DaemonSlot* raw = static_cast<DaemonSlot*>(std::calloc(1, SLOT_SIZE));
-	if (raw == nullptr) {
-		throw std::runtime_error("Daemon '" + name + "' failed to allocate shared slot ("
-			+ std::to_string(SLOT_SIZE) + " bytes)");
-	}
-	if (pthread_mutex_init(mutexOf(raw), nullptr) != 0) {
-		std::free(raw);
-		throw std::runtime_error("Daemon '" + name + "' failed to initialize slot mutex");
-	}
-	return std::shared_ptr<DaemonSlot>(raw, releaseSlot);
-}
-
-/* ---- 守护硬件变量工厂 ---- */
-std::unique_ptr<MtVars_Daemon> MtVars_Daemon::Factory(const mt::MatrixObject& defs, int64_t i,
-		std::vector<std::shared_ptr<DaemonRunner>>& registry) {
-	int64_t idxName = defs.requireCol(0, "name", "Table");
-	int64_t idxChunk = defs.requireCol(0, "chunk", "Table");
-	std::string name = defs(i, idxName);
-	const std::string& chunkRaw = defs.inherited(i, idxChunk);
-
-	/* N-19：模块根目录统一走 util::modulePaths（空串也归一为缺省） */
-	std::string modulePath = modulePaths();
-	std::string chunkPath = resolveDaemonChunk(chunkRaw, modulePath);
-	/* N-12：装配期进度走 logD（spawn/join 是运行期生命周期事件，保留 stderr） */
-	logD([&] { return "Create a Daemon hard-Var: " + name + ", chunk: " + chunkPath; });
-
-	auto parts = assembleDaemonConfig(defs, i, name);
-
-	/* join 超时：interval 5 倍并保底 2000ms */
-	int64_t joinTimeoutMs = (parts.intervalMs * 5 > 2000) ? parts.intervalMs * 5 : 2000;
-
-	auto runner = std::make_shared<DaemonRunner>(allocateSlot(name), joinTimeoutMs);
-	runner->bindSelf(runner);	/* 线程捕获 self 保生命周期 */
-	registry.push_back(runner);
-
-	return std::unique_ptr<MtVars_Daemon>(new MtVars_Daemon(
-		std::move(runner), name, chunkPath, parts.configStr, parts.intervalMs));
-}
-
-/* ---- 守护硬件变量：play/build/destroy 直通守护事件（R-3）---- */
-Json MtVars_Daemon::play(const Json&) {
-	return runner_->readSample();
-}
-
-void MtVars_Daemon::build() {
-	runner_->start(name_, chunkPath_, configStr_, intervalMs_);
-}
-
-void MtVars_Daemon::destroy() {
-	runner_->waitForExit();	/* 幂等：断电屏障已等到/已弃管则直接返回 */
-}
+/* ---- 配置校验与装配（parseInterval / resolveDaemonChunk / firstExistingModule /
+ * checkDaemon* / assembleDaemonConfig / allocateSlot / MtVars_Daemon::Factory 及
+ * play/build/destroy）已整体迁至 daemonconf.cpp（2026-10-01 TU 拆分）：
+ * 本 TU 只剩共享槽原语与 DaemonRunner 线程机。 */
 
 } // namespace bot

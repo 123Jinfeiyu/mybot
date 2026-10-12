@@ -4,6 +4,9 @@
 -- （build 元数据传递、call 参数合并、destroy 释放）以及返回值回传
 -- 用法：在机器人结构脚本 .mt 中添加 @Dummy 矩阵并定义 name 列，
 --       然后在 @Action 中以 dummy.echo 之类的列名调用
+--
+-- 26.5 单测覆盖：由 run_all.sh 的 servo_virt / ctrl2_basic / dev_expr e2e 覆盖
+-- （scripts/test/servo.mt + ctrl2_basic.mt + dev_expr_cell.mt）
 
 
 -- 标准前导：print_table/drv_common 经 mpath 加载（modules/lib/）

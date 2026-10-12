@@ -159,15 +159,16 @@ struct ScopeEntry {
 
 inline const ScopeEntry* scopeTable(std::size_t& n) {
 	static const ScopeEntry kTable[] = {
-		/* agent 模式全表面：协议、工具、配置、提示词包、CLI 选项面。
-		 * （agentdriver_ 已随 C++ 传输层迁 Rust 删除。）
+		/* agent 模式全表面：协议、工具、配置、CLI 选项面。
+		 * （agentdriver_ 已随 C++ 传输层迁 Rust 删除；promptpack_ 已随提示词
+		 * 拼装迁 Rust（agent/src/prompt.rs）删除，2026-10-01 批次 A。）
 		 * 增删成员后必须让 test_util.cpp 的 roster 用例继续绿——它按**用例名前缀**
 		 * 反查表的完备性：漏登记一整族用例（第三轮审计 AG-22 实测漏了 15 条
 		 * agentconfig_/agentmode_）会立刻红，而不是静默少跑。 */
 		{"agent", "agentproto_"}, {"agent", "agenttools_"},
 		{"agent", "agentconfig_"},
 		{"agent", "agentmode_"}, {"agent", "agentaudit_"}, {"agent", "agentpolicy_"},
-		{"agent", "llmconfig_"}, {"agent", "promptpack_"}, {"agent", "cliargs_"},
+		{"agent", "llmconfig_"}, {"agent", "cliargs_"},
 		/* PL-2（2026-09-22）：动作脚本执行预算（luaexec 的 arm/disarm 与 JIT 复原）。
 		 * 归 agent 面：这套机制只服务 run_action_script 一个调用点，
 		 * 改坏了 agent-all 必须能红。 */

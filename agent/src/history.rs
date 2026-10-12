@@ -24,11 +24,12 @@
 //! 同样不是块起点（判据由 session.rs 与占位文本同源维护）。
 
 use rig_agent::completion::message::{
-    AdditionalParams, DocumentSourceKind, Image, ReasoningContent, ToolResultContent, UserContent,
+    AdditionalParams, Image, ReasoningContent, ToolResultContent, UserContent,
 };
 use rig_agent::completion::{AssistantContent, Message};
 
-use crate::session::is_image_placeholder_notice;
+use crate::placeholder::is_image_placeholder_notice;
+use crate::placeholder::source_len;
 
 #[derive(Default)]
 pub struct ConversationHistory {
@@ -186,17 +187,6 @@ fn user_content_weight(c: &UserContent) -> usize {
 /// 图片体积：base64/data URL 是历史体积的主项（C++ 的 images 数组同口径）。
 fn image_weight(i: &Image) -> usize {
     source_len(&i.data) + params_len(&i.additional_params)
-}
-
-fn source_len(kind: &DocumentSourceKind) -> usize {
-    match kind {
-        DocumentSourceKind::Url(s)
-        | DocumentSourceKind::Base64(s)
-        | DocumentSourceKind::FileId(s)
-        | DocumentSourceKind::String(s) => s.len(),
-        DocumentSourceKind::Raw(b) => b.len(),
-        DocumentSourceKind::Unknown => 0,
-    }
 }
 
 fn params_len(p: &Option<AdditionalParams>) -> usize {
@@ -500,7 +490,7 @@ mod tests {
         h.extend(task_block_with_id("任务二", "call_b", 0));
         h.push(Message::user(format!(
             "以上工具返回的图片如下，请结合画面内容继续。{}",
-            crate::session::image_placeholder(4096)
+            crate::placeholder::image_placeholder(4096)
         )));
         h.push(Message::assistant("任务二完成"));
         // 块三：以工具回执结尾、没有最终回答（失败任务留下的完整轮）

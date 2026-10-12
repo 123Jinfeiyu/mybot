@@ -4,6 +4,7 @@
 
 #include "expr.hpp"
 #include "util_num.hpp"
+#include "util_str.hpp"	/* concatMsg（报错文案构造单点） */
 
 namespace sql4cj {
 
@@ -23,8 +24,11 @@ static bool equalWithoutCase(const std::string& s1, const std::string& s2) {
  * 首字符为引号且未闭合 → 内部字符一律按字面处理；"--" 与块注释起始符在引号内
  * 是数据而非注释。状态由 Lexer::next 以 (inQuote, quoteChar) 增量维护：旧实现
  * 每追加一个字符就重扫整个 token（O(n²)，100 KB 引号值实测 4.84 s 纯 CPU）。
- * 注意：SQL 标准的 '' 双写转义仍不实现——每个同种引号字符都翻转引号态，
- * 与旧 insideQuotes 语义逐字相同（值内含奇数引号的状态错乱属已知边界）。 ---- */
+ * SQL 标准 '' 双写转义**已实现**（#33，appendQuoted）：同种引号再现时预读下一
+ * 字符，仍是同种引号 → 折叠成一个字面引号、引号态不变；否则闭合引号并把预读
+ * 字符挂回单槽 pendingChar_。值内字面引号的剥壳见下方 parseName 的「只剥首尾
+ * 各一个」注释。（本注释曾长期声称「双写转义仍不实现」——与 #33 之后的实现
+ * 矛盾，2026-09-30 审计 P1 订正：安全判据的注释漂移比代码漂移更危险。） ---- */
 
 /* ---- 去掉首尾空白与引号（对应 parseName）----
  * 只剥**首尾各一个**引号字符（且仅当该处是引号）：#33 双写转义后值内可含
@@ -39,24 +43,34 @@ static std::string parseName(const std::string& s) {
 	return s.substr(b, e - b);
 }
 
+/* ---- SQL 关键字单表（2026-10-10 收敛）----
+ * Token::parse 的 if 链与 Token::serialize 的 switch 此前各自维护一份 17 项
+ * 双表——加关键字漏改一处即「能解析但回显错名」（serialize 旧键）或反向
+ * （parse 旧键）。现在两处都查这一张表：新增关键字只改这里。text = 规范大写
+ * （serialize 的回显名；parse 的大小写不敏感判据经 equalWithoutCase 比对）。
+ * 标点（END/COMMA/LEFT/RGHT/EQ）不是单词，留在两处的字面判据里。
+ * 往返钉：test_sqlparse.cpp 的 token_keyword_table_roundtrip 逐项钉
+ * parse(text).type 与 serialize(type)==text，双表漂移即红。 */
+struct Keyword {
+	const char* text;
+	TokenType type;
+};
+constexpr Keyword kKeywords[] = {
+	{"SELECT", TokenType::SELECT}, {"FROM", TokenType::FROM},
+	{"CREATE", TokenType::CREATE}, {"TABLE", TokenType::TABLE},
+	{"STRING", TokenType::STRING}, {"NUMBER", TokenType::NUMBER},
+	{"INSERT", TokenType::INSERT}, {"INTO", TokenType::INTO},
+	{"VALUES", TokenType::VALUES}, {"WHERE", TokenType::WHERE},
+	{"DELETE", TokenType::DELETE}, {"DROP", TokenType::DROP},
+	{"UPDATE", TokenType::UPDATE}, {"SET", TokenType::SET},
+	{"AND", TokenType::AND}, {"SHOW", TokenType::SHOW},
+	{"TABLES", TokenType::TABLES},
+};
+
 Token Token::parse(const std::string& s) {
-	if (equalWithoutCase(s, "select")) { return {TokenType::SELECT, s}; }
-	if (equalWithoutCase(s, "from")) { return {TokenType::FROM, s}; }
-	if (equalWithoutCase(s, "create")) { return {TokenType::CREATE, s}; }
-	if (equalWithoutCase(s, "table")) { return {TokenType::TABLE, s}; }
-	if (equalWithoutCase(s, "string")) { return {TokenType::STRING, s}; }
-	if (equalWithoutCase(s, "number")) { return {TokenType::NUMBER, s}; }
-	if (equalWithoutCase(s, "insert")) { return {TokenType::INSERT, s}; }
-	if (equalWithoutCase(s, "into")) { return {TokenType::INTO, s}; }
-	if (equalWithoutCase(s, "values")) { return {TokenType::VALUES, s}; }
-	if (equalWithoutCase(s, "where")) { return {TokenType::WHERE, s}; }
-	if (equalWithoutCase(s, "delete")) { return {TokenType::DELETE, s}; }
-	if (equalWithoutCase(s, "drop")) { return {TokenType::DROP, s}; }
-	if (equalWithoutCase(s, "update")) { return {TokenType::UPDATE, s}; }
-	if (equalWithoutCase(s, "set")) { return {TokenType::SET, s}; }
-	if (equalWithoutCase(s, "and")) { return {TokenType::AND, s}; }
-	if (equalWithoutCase(s, "show")) { return {TokenType::SHOW, s}; }
-	if (equalWithoutCase(s, "tables")) { return {TokenType::TABLES, s}; }
+	for (const Keyword& kw : kKeywords) {
+		if (equalWithoutCase(s, kw.text)) { return {kw.type, s}; }
+	}
 	if (s == ";") { return {TokenType::END, s}; }
 	if (s == ",") { return {TokenType::COMMA, s}; }
 	if (s == "(") { return {TokenType::LEFT, s}; }
@@ -68,24 +82,10 @@ Token Token::parse(const std::string& s) {
 }
 
 std::string Token::serialize() const {
+	for (const Keyword& kw : kKeywords) {
+		if (kw.type == type) { return kw.text; }
+	}
 	switch (type) {
-		case TokenType::SELECT: return "SELECT";
-		case TokenType::FROM: return "FROM";
-		case TokenType::CREATE: return "CREATE";
-		case TokenType::TABLE: return "TABLE";
-		case TokenType::STRING: return "STRING";
-		case TokenType::NUMBER: return "NUMBER";
-		case TokenType::INSERT: return "INSERT";
-		case TokenType::INTO: return "INTO";
-		case TokenType::VALUES: return "VALUES";
-		case TokenType::WHERE: return "WHERE";
-		case TokenType::DELETE: return "DELETE";
-		case TokenType::DROP: return "DROP";
-		case TokenType::UPDATE: return "UPDATE";
-		case TokenType::SET: return "SET";
-		case TokenType::AND: return "AND";
-		case TokenType::SHOW: return "SHOW";
-		case TokenType::TABLES: return "TABLES";
 		case TokenType::END: return ";";
 		case TokenType::COMMA: return ",";
 		case TokenType::LEFT: return "(";
@@ -94,8 +94,8 @@ std::string Token::serialize() const {
 		case TokenType::UNEXPECTED_END: return "";
 		case TokenType::UNKNOWN: return "?";
 		case TokenType::NAME: return "name '" + name + "'";
+		default: return "?";
 	}
-	return "?";
 }
 
 /* 注释态机（阶段 3 拆分）：单行 `--` 与块注释的状态转移，字符被注释
@@ -156,6 +156,28 @@ void Lexer::appendQuoted(bot::Reader& sr, char c, bool& inQuote, char quoteChar,
 	if (c == quoteChar) { inQuote = false; }
 }
 
+/* ---- 单字符分隔符 → 词元类型（C2 防线的判据表，2026-10-01 表驱动收敛）----
+ * ';'/','/'('/')'/'=' 五个分隔符在 Lexer::next 里一律「空 token 直返对应
+ * 词元 / 非空 token 挂 pending 标志后交出当前 token」——此前是十段同构
+ * else-if（')' 与 '=' 两段还带着历史追加痕迹的多余缩进）。判据收进本表，
+ * 行为逐字保持；新增分隔符只改这里。 */
+static bool separatorType(char c, TokenType& out) {
+	switch (c) {
+	case ';': out = TokenType::END; return true;
+	case ',': out = TokenType::COMMA; return true;
+	case '(': out = TokenType::LEFT; return true;
+	case ')': out = TokenType::RGHT; return true;
+	case '=': out = TokenType::EQ; return true;
+	default: return false;
+	}
+}
+
+/* 25.4 评估后判不改（90 行）：单遍逐字符扫描，函数体**就是**那台状态机——
+ * inQuote / quoteChar / pendingChar_ / pendSep_ / pendLine_ / pendCol_ /
+ * tokLine / tokCol 八份可变扫描态在循环里逐字符增量维护（F-02 的 O(n) 就是靠
+ * 这个增量，取代旧实现每字符重扫 token 的 O(n²)）。抽任何一段出去都得把这八份
+ * 状态整体进出参数表，接缝比循环体还宽；而 switch 分派式的字符分类拆开反而更
+ * 难读（计划里的预判，实测成立）。 */
 Token Lexer::next(bot::Reader& sr) {
 	if (pendSep_) {
 		const TokenType t = *pendSep_;
@@ -177,8 +199,11 @@ Token Lexer::next(bot::Reader& sr) {
 				/* F5-1：引号态跨越 EOF——旧实现把半截串剥引号后当名字
 				 * 静默放行（'abc 结尾 → 名字 abc），这里改为报错并给出
 				 * 开引号落点。注意只在真 EOF 抛：闭合引号已在下方处理。 */
-				throw bot::IllegalArgumentException("Unterminated string starting at line "
-					+ std::to_string(tokLine) + ", column " + std::to_string(tokCol));
+				throw bot::IllegalArgumentException(bot::concatMsg(
+	"Unterminated string starting at line ",
+	std::to_string(tokLine),
+	", column ",
+	std::to_string(tokCol)));
 			}
 			if (s.empty()) { return {TokenType::UNEXPECTED_END, ""}; }
 			return finishToken(s, tokLine, tokCol);
@@ -220,32 +245,13 @@ Token Lexer::next(bot::Reader& sr) {
 		 * '=' 加入（2026-09-23 WHERE）：同模式第五个分隔符——`WHERE col=value`
 		 * 紧贴写法靠 pending 切分。仓内 robots/ 全部 .sql 的 '=' 都在引号
 		 * 值或注释里（144 个文件逐一扫描），引号态在分隔符判定之前消费，
-		 * 零行为变化。 */
-		else if (s.empty() && c == ';') { return positionedToken(TokenType::END, curLine, curCol); }
-		else if (!s.empty() && c == ';') {
-			pendSep_ = TokenType::END; pendLine_ = curLine; pendCol_ = curCol;
+		 * 零行为变化。分隔符集合单点在 separatorType（上方）。 */
+		TokenType sep;
+		if (separatorType(c, sep)) {
+			if (s.empty()) { return positionedToken(sep, curLine, curCol); }
+			pendSep_ = sep; pendLine_ = curLine; pendCol_ = curCol;
 			return finishToken(s, tokLine, tokCol);
 		}
-		else if (s.empty() && c == ',') { return positionedToken(TokenType::COMMA, curLine, curCol); }
-		else if (!s.empty() && c == ',') {
-			pendSep_ = TokenType::COMMA; pendLine_ = curLine; pendCol_ = curCol;
-			return finishToken(s, tokLine, tokCol);
-		}
-		else if (s.empty() && c == '(') { return positionedToken(TokenType::LEFT, curLine, curCol); }
-		else if (!s.empty() && c == '(') {
-			pendSep_ = TokenType::LEFT; pendLine_ = curLine; pendCol_ = curCol;
-			return finishToken(s, tokLine, tokCol);
-		}
-			else if (s.empty() && c == ')') { return positionedToken(TokenType::RGHT, curLine, curCol); }
-			else if (!s.empty() && c == ')') {
-				pendSep_ = TokenType::RGHT; pendLine_ = curLine; pendCol_ = curCol;
-				return finishToken(s, tokLine, tokCol);
-			}
-			else if (s.empty() && c == '=') { return positionedToken(TokenType::EQ, curLine, curCol); }
-			else if (!s.empty() && c == '=') {
-				pendSep_ = TokenType::EQ; pendLine_ = curLine; pendCol_ = curCol;
-				return finishToken(s, tokLine, tokCol);
-			}
 		else {
 			if (s.empty()) { tokLine = curLine; tokCol = curCol; }
 			s += c;
@@ -357,7 +363,10 @@ Event Parser::next() {
 void Parser::nextCreateTable(CreateTableEvent& eve) {
 	Token t = expect();
 	if (t.type != TokenType::NAME) {
-		throw bot::IllegalArgumentException("Token " + t.serialize());
+		/* F5-1 单点：t 来自 expect()，带真实行列——此处是链路里唯一一处绕过
+		 * tokenMsg 手拼 "Token …" 的报错，落点段被静默丢掉。子串锚点
+		 * （"Token …"）不受影响，追加的定位段与其余报错对齐。 */
+		throw bot::IllegalArgumentException(tokenMsg(t));
 	}
 	eve.tableName = t.name;
 
@@ -432,9 +441,14 @@ void Parser::nextInsertInto(InsertTableEvent& eve) {
 
 	if (paramNames.size() != paramValues.size()) {
 		/* fix-plan 3-4：报错带表名与两侧列数，定位质量对齐同文件 Number 列报错 */
-		throw bot::IllegalArgumentException("Insert into table '" + eve.targetTabName
-			+ "' has " + std::to_string(paramNames.size()) + " column(s) but "
-			+ std::to_string(paramValues.size()) + " value(s).");
+		throw bot::IllegalArgumentException(bot::concatMsg(
+	"Insert into table '",
+	eve.targetTabName,
+	"' has ",
+	std::to_string(paramNames.size()),
+	" column(s) but ",
+	std::to_string(paramValues.size()),
+	" value(s)."));
 	}
 	std::vector<VarRaw> arr;
 	for (std::size_t i = 0; i < paramNames.size(); ++i) {
@@ -463,9 +477,14 @@ void Parser::validateNumberValues(const std::string& tableName,
 			continue;
 		}
 		if (!bot::isNumericLiteral(p.value)) {
-			throw bot::IllegalArgumentException("Column '" + p.columnName + "' of table '"
-				+ tableName + "' is declared Number, but value '" + p.value
-				+ "' is not numeric.");
+			throw bot::IllegalArgumentException(bot::concatMsg(
+	"Column '",
+	p.columnName,
+	"' of table '",
+	tableName,
+	"' is declared Number, but value '",
+	p.value,
+	"' is not numeric."));
 		}
 	}
 }
@@ -476,9 +495,10 @@ void Parser::validateNumberValues(const std::string& tableName,
 void Parser::nextSelect(SelectTableEvent& eve) {
 	Token star = expect();
 	if (star.type != TokenType::NAME || star.name != "*") {
-		throw bot::IllegalArgumentException(
-			"SELECT supports only 'SELECT * FROM <table>' (got "
-			+ tokenMsg(star) + ")");
+		throw bot::IllegalArgumentException(bot::concatMsg(
+	"SELECT supports only 'SELECT * FROM <table>' (got ",
+	tokenMsg(star),
+	")"));
 	}
 	Token from = expectType(TokenType::FROM);
 	(void)from;
@@ -540,8 +560,11 @@ void Parser::nextUpdate(UpdateTableEvent& eve) {
 	eve.targetTabName = name.name;
 	expectType(TokenType::SET);
 	auto setErr = [](const Token& t) {
-		return bot::IllegalArgumentException("SET supports only '<column> = <value>'"
-			" assignments joined by ',' (got " + tokenMsg(t) + ")");
+		return bot::IllegalArgumentException(bot::concatMsg(
+	"SET supports only '<column> = <value>'"
+			" assignments joined by ',' (got ",
+	tokenMsg(t),
+	")"));
 	};
 	for (;;) {
 		Token col = expect();
@@ -575,8 +598,11 @@ void Parser::nextUpdate(UpdateTableEvent& eve) {
  * 报错自带行列，比在本函数里猜「用户还想写什么」更准确。 */
 void Parser::nextConditionList(WhereClause& eve) {
 	auto whereErr = [](const Token& t) {
-		return bot::IllegalArgumentException("WHERE supports only '<column> = <value>'"
-			" conditions joined by AND (got " + tokenMsg(t) + ")");
+		return bot::IllegalArgumentException(bot::concatMsg(
+	"WHERE supports only '<column> = <value>'"
+			" conditions joined by AND (got ",
+	tokenMsg(t),
+	")"));
 	};
 	for (;;) {
 		Token col = expect();

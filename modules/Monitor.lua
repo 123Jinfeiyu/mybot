@@ -40,8 +40,13 @@ function call(data)
 	end
 
 	-- data.v0.. / count 来自被引用的守护（经引用机制合并进元数据）
-	local v0 = tonumber(data.v0)
-	local count = tonumber(data.count)
+	-- 26.3：finite_of 而非 tonumber——v0/count 来自被引用守护发布的快照，NaN 不来自
+	-- 用户笔误而是「上游驱动已把 NaN 当合法采样发布」的二次传播。旧的 `v0 == nil`
+	-- 判据放行 NaN（tonumber 出的是 number），于是 level 静默判 "LOW"（NaN > 1.0
+	-- 恒假）、out = NaN 且 result = "OK"——拿着无效值做出决策并宣称成功，而本驱动
+	-- 的输出会经 controller 列转发给执行器。判据取「与 v0 缺失同结论」：拒绝并报 ERR。
+	local v0 = finite_of(data.v0)
+	local count = finite_of(data.count)
 	if v0 == nil then
 		-- 守护尚未发布任何采样（启动瞬间）或被引用列缺失
 		return err("no daemon value (v0 missing)")
@@ -55,7 +60,10 @@ function call(data)
 	-- values 数组与 vN 重复，nvals/status 为框架内部字段，均不透传。
 	local res_tbl = { result = "OK", level = level, out = v0 }
 	for k, v in pairs(data) do
-		if type(k) == "string" and string.match(k, "^v%d+$") and type(v) == "number" then
+		-- type(v)=="number" 保留：字符串型的 vN 从来不透传，这一口径不因 26.3 放宽；
+		-- 追加 finite_of 只为挡数值 NaN，否则 v0 拦住了、v1..vN 仍把 NaN 带进结果表。
+		if type(k) == "string" and string.match(k, "^v%d+$") and type(v) == "number"
+			and finite_of(v) ~= nil then
 			res_tbl[k] = v
 		end
 	end

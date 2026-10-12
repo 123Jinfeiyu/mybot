@@ -35,10 +35,10 @@
 --      build 后等一个转换循环（总线+分流 各 532µs x 平均次数）再返回
 --   5. BRNG=1（32V 档）+ PGA=/8，器件额定测量范围仍为 0~26V
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -113,125 +113,97 @@ local function rshunt_of(v)
 	return r
 end
 
--- 【配置脚本】软复位 -> 配置默认值甄别芯片 -> 写工作配置 -> 等待首拍就绪
-function build(data)
+require_driver("i2c", {
+	name = "INA219",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】软复位 -> 配置默认值甄别芯片 -> 写工作配置 -> 等待首拍就绪
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- INA219 builder func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- INA219 builder func get a table --------", data)
-	end
+		local fd = ctx.fd
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- 模块级配置：跨 call 保持
+		local avg_code_v, avg_n = avg_code_of(data.avg)
+		rshunt = rshunt_of(data.rshunt)
 
-	-- 模块级配置：跨 call 保持
-	local avg_code_v, avg_n = avg_code_of(data.avg)
-	rshunt = rshunt_of(data.rshunt)
+		-----------------------------------------------------
+		-- 软复位
+		if not write_reg16(fd, REG_CONFIG, CFG_RST) then
+			return err("Failed to write INA219 reset")
+		end
+		milli_sleep(10)
 
-	-----------------------------------------------------
-	-- 软复位
-	if not write_reg16(fd, REG_CONFIG, CFG_RST) then
-		return err("Failed to write INA219 reset")
-	end
-	milli_sleep(10)
+		-- 无 ID 寄存器：读回配置默认值甄别芯片（INA3221 的 0xFE/0xFF 手段在此不存在）
+		local cfg = read_reg16(fd, REG_CONFIG)
+		if cfg == nil then
+			return err("Failed to read INA219 config")
+		end
+		if cfg ~= CFG_DEFAULT then
+			return err(string.format("Config after reset = 0x%04X (expect 0x%04X, not INA219?)", cfg, CFG_DEFAULT))
+		end
 
-	-- 无 ID 寄存器：读回配置默认值甄别芯片（INA3221 的 0xFE/0xFF 手段在此不存在）
-	local cfg = read_reg16(fd, REG_CONFIG)
-	if cfg == nil then
-		return err("Failed to read INA219 config")
-	end
-	if cfg ~= CFG_DEFAULT then
-		return err(string.format("Config after reset = 0x%04X (expect 0x%04X, not INA219?)", cfg, CFG_DEFAULT))
-	end
+		-- 写工作配置：32V 档 + PGA /8 + 平均 + 连续模式
+		local config = bitc.bor(CFG_BRNG_32V,
+			bitc.bor(CFG_PGA_DIV8,
+			bitc.bor(bitc.lshift(avg_code_v, 7),
+			bitc.bor(bitc.lshift(avg_code_v, 3), CFG_MODE_CONT))))
+		if not write_reg16(fd, REG_CONFIG, config) then
+			return err("Failed to write INA219 config")
+		end
 
-	-- 写工作配置：32V 档 + PGA /8 + 平均 + 连续模式
-	local config = bitc.bor(CFG_BRNG_32V,
-		bitc.bor(CFG_PGA_DIV8,
-		bitc.bor(bitc.lshift(avg_code_v, 7),
-		bitc.bor(bitc.lshift(avg_code_v, 3), CFG_MODE_CONT))))
-	if not write_reg16(fd, REG_CONFIG, config) then
-		return err("Failed to write INA219 config")
-	end
+		-- 等待一个转换循环（总线 + 分流 各 532µs x 平均次数），首拍数据就绪
+		local loop_ms = math.ceil(2 * IT_532US_US * avg_n / 1000) + 2
+		milli_sleep(loop_ms)
 
-	-- 等待一个转换循环（总线 + 分流 各 532µs x 平均次数），首拍数据就绪
-	local loop_ms = math.ceil(2 * IT_532US_US * avg_n / 1000) + 2
-	milli_sleep(loop_ms)
+		print(string.format("INA219 init OK: addr=0x%02X, avg=%d, rshunt=%.4f Ω", ctx.addr, avg_n, rshunt))
+		return {  result = "OK"  }
+	end,
 
-	print(string.format("INA219 init OK: addr=0x%02X, avg=%d, rshunt=%.4f Ω", addr, avg_n, rshunt))
-	return {  result = "OK"  }
+	-- 【调用INA219】读单通道：总线电压（V）、电流（A，反流为负）、功率（W）
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- INA219 caller func get a table --------", data)
+		end
 
-end
+		-- build 前调用时 rshunt 为 nil，除法会抛裸 Lua error（pcall 兜底信息难看）
+		if rshunt == nil then
+			return err("INA219 not built (build first)")
+		end
 
--- 【销毁INA219】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
+		local fd = ctx.fd
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		-----------------------------------------------------
+		local s = read_reg16(fd, REG_SHUNT)
+		if s == nil then
+			return err("Failed to read INA219 shunt voltage")
+		end
+		local b = read_reg16(fd, REG_BUS)
+		if b == nil then
+			return err("Failed to read INA219 bus voltage")
+		end
 
-	return {  result = "OK"  }
+		-----------------------------------------------------
+		local shunt_v = s16(s) * SHUNT_LSB_V			-- 分流压降（V，有符号）
+		local bus_v = bitc.rshift(b, 3) * BUS_LSB_V	-- 总线电压（V）
 
-end
+		local ret = {
+			result = "OK",
+			V = bus_v,						-- 总线电压（V）
+			I = shunt_v / rshunt,				-- 电流（A，可负）
+			P = bus_v * shunt_v / rshunt		-- 功率（W，软件计算）
+		}
 
+		if DEBUG then
+			print(string.format("INA219: V=%.3fV I=%.3fA P=%.3fW", ret.V, ret.I, ret.P))
+		end
 
--- 【调用INA219】读单通道：总线电压（V）、电流（A，反流为负）、功率（W）
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
+		return ret
+	end,
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- INA219 caller func get a table --------", data)
-	end
-
-	-- build 前调用时 rshunt 为 nil，除法会抛裸 Lua error（pcall 兜底信息难看）
-	if rshunt == nil then
-		return err("INA219 not built (build first)")
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	local s = read_reg16(fd, REG_SHUNT)
-	if s == nil then
-		return err("Failed to read INA219 shunt voltage")
-	end
-	local b = read_reg16(fd, REG_BUS)
-	if b == nil then
-		return err("Failed to read INA219 bus voltage")
-	end
-
-	-----------------------------------------------------
-	local shunt_v = s16(s) * SHUNT_LSB_V			-- 分流压降（V，有符号）
-	local bus_v = bitc.rshift(b, 3) * BUS_LSB_V	-- 总线电压（V）
-
-	local ret = {
-		result = "OK",
-		V = bus_v,						-- 总线电压（V）
-		I = shunt_v / rshunt,				-- 电流（A，可负）
-		P = bus_v * shunt_v / rshunt		-- 功率（W，软件计算）
-	}
-
-	if DEBUG then
-		print(string.format("INA219: V=%.3fV I=%.3fA P=%.3fW", ret.V, ret.I, ret.P))
-	end
-
-	return ret
-
-end
+	-- destroy 缺省 = 空操作（原 INA219 destroy 仅 arg_table + return OK，等价）
+})
 
 
 -- =====================================================================

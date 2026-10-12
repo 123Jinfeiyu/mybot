@@ -73,12 +73,18 @@ function build(data)
 
 	-----------------------------------------------------
 	-- chip：0 是合法值，故只判缺失/非数值，不能像 GPIO 那样用 "0" 当哨兵
-	local c = tonumber(data.chip)
+	-- 26.3：finite_of 而非 tonumber——与同一 build 函数里的 frequency/duty（下面
+	-- 两处均 finite_of）口径一致，这是本函数仅剩的两列裸 tonumber。非有限值过
+	-- tonumber 出的是 number（`== nil` 为假），会一路走到 pwm_export；真机上被
+	-- hal/pwm.lua 的 pwm_id 兜住（`n ~= math.floor(n)` 命中 NaN、65535 上界命中
+	-- inf）返回 false，于是报「Failed to export PWM pwmchipnan pwmnan」——听着像
+	-- sysfs/内核出了问题，实际是配置列写了非数值。提前拦下让错误指名本列。
+	local c = finite_of(data.chip)
 	if c == nil then
 		return err("Invalid Argument: chip (pwmchip number, e.g. 0)")
 	end
 	-- channel：必填，勿写 '-'（占位符会被跳过或继承上一行，静默用错通道）
-	local h = tonumber(data.channel)
+	local h = finite_of(data.channel)
 	if h == nil then
 		return err("Invalid Argument: channel (must not be '-')")
 	end
@@ -134,7 +140,12 @@ function build(data)
 
 	-- 仅当显式给了 duty 才在 build 期使能——与 GPIO 的 init 语义一致，
 	-- 未给 duty 时不会意外驱动负载
-	local has_duty = (tonumber(data.duty) ~= nil)
+	-- 26.3：判据用 finite_of 而非 tonumber——'nan'/'1e400' 过 tonumber 出的是
+	-- number（Lua 里 truthy），`~= nil` 恒真，于是上面取值处刚把非有限值归成 0、
+	-- 这里却又认定「用户给了 duty」而主动使能输出，同文件对同一列两种口径。
+	-- 与本文件 build/call 两处取值（均 finite_of）对齐后，非有限值一律按
+	-- 「未给 duty」处理：只配频率、不上电输出。
+	local has_duty = (finite_of(data.duty) ~= nil)
 	if has_duty and not pwm_enable(c, h, true) then
 		pwm_unexport(c, h)
 		exported = false

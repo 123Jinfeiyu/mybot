@@ -16,8 +16,9 @@
 --   offset 592 int32   quiesce      总线灭火位（BQ-1：仅弃管守护被置位；HAL 的
 --                                   bus_quiesced 持锁读，置位后传输一律拒绝）
 --
--- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 HAL.lua 已定义的
--- open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，重复 cdef 会报错）。
+-- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 hal_backend_glibc.lua 已
+-- 定义的 open/ioctl/read/write/usleep（守护 chunk 会同时加载 HAL，其后端已 cdef
+-- 过这些符号，重复 cdef 会报错）。
 --
 -- 【地址注入契约】（2026-09-20 起：宿主经 lua_pushlightuserdata 注入）
 -- 宿主把槽地址以 lightuserdata 全局注入（daemonvar.cpp injectDaemonGlobals）。

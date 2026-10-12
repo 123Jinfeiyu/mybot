@@ -1,5 +1,5 @@
 # 菱形左臂：自身动作 + 共享片段（片段相对基准：同目录裸文件名）
-@Include
+@Merge
 path;
   shared.once.mt;
 @

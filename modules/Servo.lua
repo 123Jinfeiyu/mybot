@@ -79,9 +79,14 @@ function call(data)
 		return err("Invalid Argument: angle (missing or not a finite number)")
 	end
 
-	local channel = tonumber(data.channel)
-	if channel == nil then	-- 检查channel参数是否存在且为数值
-		return err("Invalid Argument: channel (missing or not a number)")
+	-- 26.3：与同函数 angle（上面）及 max/min/offset（num_or_zero → finite_of）
+	-- 同口径。旧的 tonumber 放行 'nan'/'1e400'（出的是 number，`== nil` 为假），
+	-- 于是 { channel = NaN } 以**成功形状**返回（本驱动的正常返回没有 result 键），
+	-- 由框架合并进元数据后转发给 controller/PCA9685——NaN 通道号进 JSON 变 null，
+	-- 下游拿到空值而非报错。
+	local channel = finite_of(data.channel)
+	if channel == nil then	-- 检查channel参数是否存在且为有限数值
+		return err("Invalid Argument: channel (missing or not a finite number)")
 	end
 
 	local max    = num_or_zero(data.max)

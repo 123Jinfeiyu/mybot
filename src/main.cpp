@@ -9,11 +9,10 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 
-#include "actionsource.hpp"
 #include "agentmode.hpp"
-#include "mcpbackend.hpp"
 #include "agent_subprocess.hpp"
 #include "cliargs.hpp"
+#include "robot_application.hpp"
 #include "robot.hpp"
 #include "daemonvar.hpp"	/* abandonedDaemonCount（2.2 后不再经 robot.hpp 传导） */
 #include "util_cli.hpp"
@@ -143,54 +142,6 @@ std::unique_ptr<RobotStruct> loadStructure(const std::string& rpath) {
 	}
 }
 
-/* 动作流水线：先取动作脚本、后上电。返回退出码，异常上抛。 */
-int runActionPipeline(RobotStruct& robot, const CliOptions& options) {
-	/* 审计 H-2 防线：先取动作脚本、后上电。TCP 模式下 accept/口令/
-	 * 读取阶段任何失败（无客户端连接、口令错、停止信号）都发生在
-	 * 硬件 build 之前——不再出现「硬件已 build、带电空等客户端」；
-	 * 三种输入源本就一次性读全，open 失败时 deactivate 也不会执行
-	 * 任何 destroy 之外的驱动副作用。 */
-	std::unique_ptr<Reader> input = openActionSource(options);
-	if (!input) {
-		std::cerr << "动作输入源打开失败，退出" << std::endl;
-		return 1;
-	}
-	robot.active();
-	robot.run(*input);
-	return 0;
-}
-
-/* MCP 后端流水线（--mcp-backend，方案 F / 拓扑 F3）：上电 → 在主线程同步服务
- * 工具调用（阻塞直到停止信号 stopRequested）。**不注入 LLM 驱动、不发起任何
- * 模型调用**——工具集与能力门控由 runMcpBackend 内部的 makeToolContext +
- * makeAgentTools 决定（与 agent 模式同源，逐字节一致）。返回退出码，异常上抛
- * 由 runRobotAndCleanup 统一折成 1（并照常 deactivate）。 */
-int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agentCfg,
-		const CliOptions& options) {
-	robot.active();
-	agent::McpBackendOptions bopts;
-	bopts.socketPath = options.mcpSocket;
-	/* 首帧共享密钥（MCP-1，审计 P2-1）：buildAgentConfig 在宿主环境抹零前
-	 * 捕获的 BOT4CJ_MCP_TOKEN。空 = 不启用。 */
-	bopts.authToken = agentCfg.mcpAuthToken;
-	/* 每连接预算（评估 §3.2「预算再强制」）：cliargs 已校验为 [0,上限] 的整数，
-	 * 空 = 不限（保持 0）。这里只做转换。注意这与**单次**物理调用的
-	 * scriptTimeoutSec / commandTimeoutSec 是不同维度——后者始终在工具层生效。 */
-	if (!options.mcpCallBudget.empty()) {
-		bopts.callBudget = static_cast<long>(parseLongStrict(options.mcpCallBudget).second);
-	}
-	if (!options.mcpWallClock.empty()) {
-		bopts.wallClockBudgetSec =
-			static_cast<long>(parseLongStrict(options.mcpWallClock).second);
-	}
-	/* 空闲超时（A-2，2026-09-25 审计）：同一单点口径——cliargs 校验区间，
-	 * 这里只做转换；空 = 不限（保持 0）。 */
-	if (!options.mcpIdleTimeout.empty()) {
-		bopts.idleTimeoutSec = static_cast<int>(parseLongStrict(options.mcpIdleTimeout).second);
-	}
-	return agent::runMcpBackend(robot, agentCfg, bopts, std::cerr);
-}
-
 /* 未声明则注入摄像头驱动变量（capture_image 工具需要；LLM 驱动已随 C++ REPL
  * 迁 Rust 删除——模型调用在 Rust 进程直连 provider，宿主不再注入 LLM 驱动）。
  * 必须在 active() 之前——变量是在 active() 里 createHardVars 装配的；
@@ -199,7 +150,7 @@ int runMcpBackendPipeline(RobotStruct& robot, const agent::AgentModeConfig& agen
 bool injectCameraDriver(RobotStruct& robot, const agent::AgentModeConfig& agentCfg) {
 	/* 摄像头是可选外设：驱动 build 打不开设备也只记原因、不阻断上电，
 	 * 抓拍时才如实报错。 */
-	if (agentCfg.allowCamera && !robot.declaresVariable(agentCfg.cameraVar)) {
+	if (agentCfg.allowCamera && !robot.structures().declaresVariable(agentCfg.cameraVar)) {
 		try {
 			robot.injectLuaDriver("Camera", agentCfg.cameraVar);
 		} catch (const std::exception& e) {
@@ -240,45 +191,7 @@ void installStopSignalHandlers() {
 	::sigaction(SIGTERM, &sa, nullptr);
 }
 
-/* 跑流水线 + 无论成败都清理 + 退出前让弃管守护可见。
- * 异常两类都要接住：std::exception 与「非标准异常」——本机 LuaJIT 用 C++ 异常
- * 实现 luaD_throw（导入 _Unwind_RaiseException 而无 setjmp/longjmp），从没有
- * Lua CFRAME 的 C++ 帧抛出的 Lua 错误不是 std::exception——漏了它就直接
- * std::terminate，下面的 deactivate 被跳过，执行器停在最后指令位置。
- * 判据锚点与四处边界清单：util.hpp 的 kNonStdExceptionNote 注释块。 */
-int runRobotAndCleanup(RobotStruct& robot, const CliOptions& options,
-		const agent::AgentModeConfig& agentCfg) {
-	int rc = 0;
-	try {
-		if (options.mcpBackend) {
-			/* MCP 后端（方案 F / 拓扑 F3）：独立模式，不争 stdin、不跑 agent loop。
-			 * 同步服务阻塞主线程正是正确行为（评估 §2.3）；deactivate 照常在其后。 */
-			rc = runMcpBackendPipeline(robot, agentCfg, options);
-		} else {
-			/* 动作管线（--tcp/--input/stdin）。--agent 已在 cliargs 校验阶段拒绝
-			 * （agent 循环迁 Rust：mybot-agent --socket …，见 docs/agent.md），
-			 * 这里不会再见到它。 */
-			rc = runActionPipeline(robot, options);
-		}
-	} catch (const std::exception& e) {
-		std::cerr << "Aborted: " << e.what() << std::endl;
-		rc = 1;
-	} catch (...) {
-		std::cerr << "Aborted: non-standard exception (Lua error or foreign throw)"
-			<< std::endl;
-		rc = 1;
-	}
-
-	/* 无论有没有成功激活，都进行清理（对应 Cangjie finally） */
-	robot.deactivate();
-	/* N-7：弃管守护的 lua_State 在 exit 路径不可回收——退出前让泄漏可见 */
-	if (int abandoned = abandonedDaemonCount(); abandoned > 0) {
-		std::cerr << "Warning: " << abandoned << " daemon thread(s) abandoned at shutdown"
-			<< " (join timeout); their Lua states are released by process exit only"
-			<< std::endl;
-	}
-	return rc;
-}
+/* 跑流水线与无论成败都清理的编排已迁到 robot_application.cpp。 */
 
 } // namespace bot
 
@@ -310,12 +223,12 @@ int main(int argc, char** argv) {
 		/* agent 配置先组装并校验（含配置文件读取与优先级合并）：
 		 * 结构装载与上电都在其后，配置错误不碰真机 */
 		agent::AgentModeConfig agentCfg;
-		if (options.mcpBackend && !prepareAgentConfig(options, agentCfg)) { return 2; }
+		if (options.mcp.enabled && !prepareAgentConfig(options, agentCfg)) { return 2; }
 
 		/* PL-1：--check-config —— 配置此时已校验完毕（错误路径上面已 return 2）。
 		 * 这里只打印摘要后退出 0：**不装载结构脚本、不上电、不发起任何网络请求**。
 		 * 放在 loadStructure 之前是有意的——校验模式连结构都不装。 */
-		if (options.checkConfig) {
+		if (options.agent.checkConfig) {
 			std::cout << agent::summarizeAgentConfig(agentCfg);
 			return 0;
 		}
@@ -324,11 +237,11 @@ int main(int argc, char** argv) {
 		if (!robot) { return 1; }
 
 		/* --daemon-grace-ms：配置错误不碰真机——在 active() 之前校验并设置，
-		 * 与 @Include 基准目录同一批「上电前收尾」步骤。 */
+		 * 与 @Merge/@Include 基准目录同一批「上电前收尾」步骤。 */
 		if (!applyDaemonGraceMs(options.daemonGraceMs, *robot)) { return 2; }
 
-		/* @Include 基准目录：--input 文件通道取脚本所在目录（相对路径直觉，
-		 * 且与「include 名不得越出基准树」的词法规则自洽）；stdin/TCP 无脚本
+		/* @Merge/@Include 基准目录：--input 文件通道取脚本所在目录（相对路径直觉，
+		 * 且与「include/merge 名不得越出基准树」的词法规则自洽）；stdin/TCP 无脚本
 		 * 位置，保持缺省 CWD。agent 模式的基准由 run_action_script 工具设为
 		 * --scripts-dir（与该工具的相对路径语义一致），不在此处设置。 */
 		if (options.input) {
@@ -336,7 +249,7 @@ int main(int argc, char** argv) {
 			robot->setActionIncludeBaseDir(parent.empty() ? "." : parent);
 		}
 
-		if (options.mcpBackend && !injectCameraDriver(*robot, agentCfg)) { return 2; }
+		if (options.mcp.enabled && !injectCameraDriver(*robot, agentCfg)) { return 2; }
 
 		installStopSignalHandlers();
 		return runRobotAndCleanup(*robot, options, agentCfg);

@@ -44,10 +44,10 @@
 --      bit[2:1]=工作模式（normal=0）；重复次数 0x51(REP_XY)/0x52(REP_Z)
 --   6. 无中断/FIFO 路径（守护周期采样不需要）；正常模式典型电流 170µA
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -199,21 +199,15 @@ local function compensate_z(mag_z, rhall, t)
 end
 
 -- 【配置脚本】上电（挂起态 -> 工作态）-> 验 ID -> trim -> preset + normal
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "BMM150",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- BMM150 builder func get a table --------", data)
 	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-- 预设模式列（'-' 缺省 regular）
 	local pname = string.lower(tostring(data.preset or "regular"))
@@ -262,38 +256,16 @@ function build(data)
 		addr, pname, PRESET_ODR_HZ[p.odr] or 10))
 	return {  result = "OK"  }
 
-end
-
--- 【销毁BMM150】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
+end,
 
 -- 【调用BMM150】读三轴，补偿换算微特斯拉
 -- NOTE: 8 字节一次原子读（字节表接口）；溢出轴返回 nil
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- BMM150 caller func get a table --------", data)
 	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	if trim == nil then
@@ -338,7 +310,8 @@ function call(data)
 
 	return ret
 
-end
+end,
+})
 
 
 

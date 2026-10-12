@@ -117,6 +117,8 @@ const KNOWN_UNPARSED_FIELDS: &[&str] = &[
     "allow_camera",
     "agent_policy",
     "read_vars",
+    "fs_root",
+    "allow_write_file",
     "run_command_timeout_sec",
     "run_command_max_timeout_sec",
     "action_script_timeout_sec",
@@ -442,28 +444,17 @@ pub(super) fn validate_api_key_chars(key: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 组内/其他用户可读时给出提示（C++ `secretFilePermissionWarning` 同口径）。
+/// 组内/其他用户可读时给出提示（C++ `secretFilePermissionWarning` 同口径；
+/// 判据单点在 [`crate::fssec::wide_perms`]，`Any` 保住本站历史上不做 is_file
+/// 检查的行为）。
 pub(super) fn secret_file_permission_warning(path: &str) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        if let Ok(st) = fs::metadata(expand_home(path)) {
-            // S_IRGRP|S_IWGRP|S_IROTH|S_IWOTH = 0o077
-            if st.mode() & 0o077 == 0 {
-                return String::new();
-            }
-            return format!(
-                "提示: {} 对同组/其他用户可读（建议 chmod 600），它保存着 API key",
-                expand_home(path)
-            );
-        }
-        String::new()
+    if crate::fssec::wide_perms(&expand_home(path), crate::fssec::PermKind::Any) {
+        return format!(
+            "提示: {} 对同组/其他用户可读（建议 chmod 600），它保存着 API key",
+            expand_home(path)
+        );
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        String::new()
-    }
+    String::new()
 }
 
 #[cfg(test)]
@@ -491,6 +482,55 @@ mod tests {
                 "字段 {name} 的错类型值 {bad} 应被解析层点名，实际: {e}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 正路径：各字段真的被读进 FileConfig（与 parsed_field_table_matches_want_sequence
+    /// 的错路径互补——那边验证「错值被点名」，这边验证「对值被采纳」）。
+    #[test]
+    fn load_config_file_positive_path_reads_all_fields() {
+        let dir = std::env::temp_dir().join(format!("mybot_cfg_pos_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cfg.json");
+        let p = path.to_string_lossy().to_string();
+
+        let valid_json = r#"{
+            "driver": "openai",
+            "var": "OPENAI_API_KEY",
+            "endpoint": "https://api.openai.com/v1",
+            "model": "gpt-4",
+            "api_key": "sk-test",
+            "api_key_file": "/tmp/key",
+            "timeout": 30,
+            "max_tokens": 4096,
+            "max_turns": 10,
+            "temperature": 0.7,
+            "top_p": 0.9,
+            "thinking": "adaptive",
+            "stream": true,
+            "audit_log": "/tmp/audit.jsonl",
+            "session_file": "/tmp/session.jsonl"
+        }"#;
+
+        std::fs::write(&path, valid_json).unwrap();
+        let cfg = load_config_file(&p).expect("正路径应成功");
+
+        assert_eq!(cfg.driver, Some("openai".to_string()));
+        assert_eq!(cfg.var, Some("OPENAI_API_KEY".to_string()));
+        assert_eq!(cfg.endpoint, Some("https://api.openai.com/v1".to_string()));
+        assert_eq!(cfg.model, Some("gpt-4".to_string()));
+        assert_eq!(cfg.api_key, Some("sk-test".to_string()));
+        assert_eq!(cfg.api_key_file, Some("/tmp/key".to_string()));
+        assert_eq!(cfg.timeout_sec, Some(30));
+        assert_eq!(cfg.max_tokens, Some(4096));
+        assert_eq!(cfg.max_turns, Some(10));
+        assert_eq!(cfg.temperature, Some(0.7));
+        assert_eq!(cfg.top_p, Some(0.9));
+        assert_eq!(cfg.thinking, Some("adaptive".to_string()));
+        assert_eq!(cfg.stream, Some(true));
+        assert_eq!(cfg.audit_log, Some("/tmp/audit.jsonl".to_string()));
+        assert_eq!(cfg.session_file, Some("/tmp/session.jsonl".to_string()));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

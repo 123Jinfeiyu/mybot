@@ -23,10 +23,10 @@
 -- 数据率事实来源：Linux 内核 ti-ads1015 IIO 驱动（DR 表 {128,250,490,920,
 -- 1600,2400,3300,3300}，数据提取 sign_extend32(raw>>4, 11)）。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -70,170 +70,163 @@ local function raw12_of(raw16)
     return math.floor(v / 16)
 end
 
--- 【配置脚本】初始化 ADS1015
-function build(data)
-    local ok, ek = arg_table(data)
-    if not ok then
-    	return ek
-    end
+require_driver("i2c", {
+    name = "ADS1015",
 
-    if DEBUG then
-        dbg_table("-------- ADS1015 builder func get a table --------", data)
-    end
+    -- 【配置脚本】初始化 ADS1015
+    build = function(ctx, data)
+        local fd = ctx.fd
+        local addr = ctx.addr
 
-    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径统一）
-    local fd, addr, ek = i2c_pair(data)
-    if fd == nil then return ek end
-
-    -- 可配置项（缺省：AIN0 单端 / ±2.048V / 1600SPS / 单次 / 禁比较器）
-    local pga_idx = tonum(data.pga, 2)
-    local dr_idx  = tonum(data.dr, 4)
-    local channel = tonum(data.channel, 0)
-    if pga_idx < 0 or pga_idx > 5 then pga_idx = 2 end
-    if dr_idx  < 0 or dr_idx  > 7 then dr_idx  = 4 end
-    if channel < 0 or channel > 3 then channel = 0 end
-
-    local config = MUX_SINGLE_AIN0
-    config = bitc.bor(config, bitc.lshift(channel, 12))   -- 输入通道
-    config = bitc.bor(config, bitc.lshift(pga_idx, 9))    -- PGA 增益
-    config = bitc.bor(config, MODE_SINGLE)                -- 单次模式
-    config = bitc.bor(config, bitc.lshift(dr_idx, 5))     -- 数据速率
-    config = bitc.bor(config, COMP_QUE_DISABLE)           -- 禁用比较器
-
-    -- 写 16 位配置寄存器（burst 写：reg + 高字节 + 低字节）
-    local hi = math.floor(config / 256) % 256
-    local lo = config % 256
-    if i2c_write_multi(fd, REG_CONFIG, hi, lo) ~= 0 then
-        return err("Failed to write ADS1015 config")
-    end
-
-    -- 读回比对自检（无 ID 寄存器，兼在位探测与配置确认）。
-    -- 比对须掩掉 OS 位（bit15）：其读语义为转换状态（空闲恒读 1），
-    -- 与写入值（OS=0）必然不同，全 16 位比对在真实器件上永远 mismatch。
-    local rd = i2c_read_multi(fd, REG_CONFIG, 2)
-    if rd < 0 then
-        return err("Failed to read back ADS1015 config")
-    end
-    if bitc.band(rd, 0x7FFF) ~= bitc.band(config, 0x7FFF) then
-        return err(string.format("ADS1015 config echo mismatch: got 0x%04X (expect 0x%04X)", rd, config))
-    end
-
-    print(string.format("ADS1015 init OK: addr=0x%02X, channel=AIN%d, PGA=%s, DR=%s SPS",
-        addr, channel, pga_names[pga_idx + 1], dr_names[dr_idx + 1]))
-    return { result = "OK" }
-end
-
--- 【销毁脚本】置单次模式进入转换间隙断电态（保留 PGA/DR/MUX 配置）
-function destroy(data)
-    local ok, ek = arg_table(data)
-    if not ok then
-    	return ek
-    end
-
-    local fd = tonumber(data.fd)
-    local addr = tonumber(data.address)
-    if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-        -- 读改写：仅确保 MODE=1（单次态下不启动转换即断电），不破坏其余配置。
-        -- 须清掉读回的 OS 位（空闲恒读 1）：原样写回 OS=1 会误启动一次多余转换。
-        local config = i2c_read_multi(fd, REG_CONFIG, 2)
-        if config >= 0 then
-            local new_config = bitc.band(bitc.bor(config, MODE_SINGLE), 0x7FFF)
-            i2c_write_multi(fd, REG_CONFIG,
-                math.floor(new_config / 256) % 256, new_config % 256)
+        if DEBUG then
+            dbg_table("-------- ADS1015 builder func get a table --------", data)
         end
-    end
 
-    return { result = "OK" }
-end
-
--- 【调用脚本】读取一个通道的电压
--- 参数：channel（0~3 单端）或 pos/neg（差分）
-function call(data)
-    local ok, ek = arg_table(data)
-    if not ok then
-    	return ek
-    end
-
-    if DEBUG then
-        dbg_table("-------- ADS1015 caller func get a table --------", data)
-    end
-
-    -- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径统一）
-    local fd, addr, ek = i2c_pair(data)
-    if fd == nil then return ek end
-
-    -- 差分 / 单端模式选择
-    local mux
-    if data.pos ~= nil and data.neg ~= nil then
-        -- 先判 tonumber 结果：占位符 "-" 或非法串转出 nil，直接拼串会触发
-        -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
-        local pos, neg = tonumber(data.pos), tonumber(data.neg)
-        if pos == nil or neg == nil then
-            return err("Invalid diff pair: pos/neg not a number")
-        end
-        local diff_map = { ["0,1"] = MUX_DIFF_AIN0_AIN1, ["0,3"] = MUX_DIFF_AIN0_AIN3,
-                           ["1,3"] = MUX_DIFF_AIN1_AIN3, ["2,3"] = MUX_DIFF_AIN2_AIN3 }
-        mux = diff_map[pos .. "," .. neg]
-        if mux == nil then
-            return err("Unsupported diff pair, use 0-1/0-3/1-3/2-3")
-        end
-    else
+        -- 可配置项（缺省：AIN0 单端 / ±2.048V / 1600SPS / 单次 / 禁比较器）
+        local pga_idx = tonum(data.pga, 2)
+        local dr_idx  = tonum(data.dr, 4)
         local channel = tonum(data.channel, 0)
-        if channel < 0 or channel > 3 then
-            return err("Invalid channel: 0~3")
+        if pga_idx < 0 or pga_idx > 5 then pga_idx = 2 end
+        if dr_idx  < 0 or dr_idx  > 7 then dr_idx  = 4 end
+        if channel < 0 or channel > 3 then channel = 0 end
+
+        local config = MUX_SINGLE_AIN0
+        config = bitc.bor(config, bitc.lshift(channel, 12))   -- 输入通道
+        config = bitc.bor(config, bitc.lshift(pga_idx, 9))    -- PGA 增益
+        config = bitc.bor(config, MODE_SINGLE)                -- 单次模式
+        config = bitc.bor(config, bitc.lshift(dr_idx, 5))     -- 数据速率
+        config = bitc.bor(config, COMP_QUE_DISABLE)           -- 禁用比较器
+
+        -- 写 16 位配置寄存器（burst 写：reg + 高字节 + 低字节）
+        local hi = math.floor(config / 256) % 256
+        local lo = config % 256
+        if i2c_write_multi(fd, REG_CONFIG, hi, lo) ~= 0 then
+            return err("Failed to write ADS1015 config")
         end
-        mux = bitc.bor(MUX_SINGLE_AIN0, bitc.lshift(channel, 12))
-    end
 
-    -- 读回当前配置，保留 PGA/DR，只改 MUX 并启动单次转换
-    local config = i2c_read_multi(fd, REG_CONFIG, 2)
-    if config < 0 then
-        return err("Failed to read config")
-    end
-    local new_config = bitc.bor(bitc.bor(bitc.band(config, 0x8FFF), mux), OS_START)   -- 清 MUX 位，设通道，启动转换
-
-    if i2c_write_multi(fd, REG_CONFIG,
-        math.floor(new_config / 256) % 256, new_config % 256) ~= 0 then
-        return err("Failed to start conversion")
-    end
-
-    -- 轮询 OS 位：读到 0 表示正在转换，读到 1 表示转换完成/空闲
-    -- （1600SPS 约 0.6ms，最多等 100ms）。注意与写语义相反——若误等 0，
-    -- 启动转换后首轮即满足，读到的是上一次的陈旧值。
-    local ready = false
-    for _ = 1, 100 do
-        local cfg = i2c_read_multi(fd, REG_CONFIG, 2)
-        if cfg >= 0 and bitc.band(cfg, OS_START) ~= 0 then
-            ready = true
-            break
+        -- 读回比对自检（无 ID 寄存器，兼在位探测与配置确认）。
+        -- 比对须掩掉 OS 位（bit15）：其读语义为转换状态（空闲恒读 1），
+        -- 与写入值（OS=0）必然不同，全 16 位比对在真实器件上永远 mismatch。
+        local rd = i2c_read_multi(fd, REG_CONFIG, 2)
+        if rd < 0 then
+            return err("Failed to read back ADS1015 config")
         end
-        milli_sleep(1)
-    end
-    if not ready then
-        return err("Conversion timeout")
-    end
+        if bitc.band(rd, 0x7FFF) ~= bitc.band(config, 0x7FFF) then
+            return err(string.format("ADS1015 config echo mismatch: got 0x%04X (expect 0x%04X)", rd, config))
+        end
 
-    -- 读转换结果（12 位左对齐于 16 位，低 4 位恒 0）
-    local raw16 = i2c_read_multi(fd, REG_CONVERSION, 2)
-    if raw16 < 0 then
-        return err("Failed to read conversion")
-    end
+        print(string.format("ADS1015 init OK: addr=0x%02X, channel=AIN%d, PGA=%s, DR=%s SPS",
+            addr, channel, pga_names[pga_idx + 1], dr_names[dr_idx + 1]))
+        return { result = "OK" }
+    end,
 
-    -- pga 缺省时回读芯片配置的 PGA 字段（3 位，0~7）：6/7 与 5 同为 ±0.256V
-    -- （datasheet 冗余编码），须映射到 5——原实现重置为 2（±2.048V）换算错 8 倍
-    local pga_idx = tonum(data.pga, bitc.band(bitc.rshift(config, 9), 0x07))
-    if pga_idx > 5 then pga_idx = 5 end
-    if pga_idx < 0 then pga_idx = 2 end
-    local fs = pga_fs[pga_idx + 1]
-    local raw = raw12_of(raw16)
-    local voltage = raw * fs / 2048.0
+    -- 【销毁脚本】置单次模式进入转换间隙断电态（保留 PGA/DR/MUX 配置）
+    destroy = function(ctx, data)
+        -- 自定义 destroy：ctx 无 fd/addr，须从 data 直接取
+        local fd = tonumber(data.fd)
+        local addr = tonumber(data.address)
+        if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+            -- 读改写：仅确保 MODE=1（单次态下不启动转换即断电），不破坏其余配置。
+            -- 须清掉读回的 OS 位（空闲恒读 1）：原样写回 OS=1 会误启动一次多余转换。
+            local config = i2c_read_multi(fd, REG_CONFIG, 2)
+            if config >= 0 then
+                local new_config = bitc.band(bitc.bor(config, MODE_SINGLE), 0x7FFF)
+                i2c_write_multi(fd, REG_CONFIG,
+                    math.floor(new_config / 256) % 256, new_config % 256)
+            end
+        end
 
-    return {
-        result = "OK",
-        raw = raw,
-        voltage = voltage
-    }
-end
+        return { result = "OK" }
+    end,
+
+    -- 【调用脚本】读取一个通道的电压
+    call = function(ctx, data)
+        local fd = ctx.fd
+
+        if DEBUG then
+            dbg_table("-------- ADS1015 caller func get a table --------", data)
+        end
+
+        -- 差分 / 单端模式选择
+        local mux
+        if data.pos ~= nil and data.neg ~= nil then
+            -- 先判 tonumber 结果：占位符 "-" 或非法串转出 nil，直接拼串会触发
+            -- 裸 Lua error（被宿主 pcall 吞成通用错误），应按契约返回 ERR
+            -- 26.3 盘点：**评估后不改**。与 ADS1256 的 pos/neg（那边用 bitc.lshift
+            -- 合成 mux，NaN 会抛 Lua error，已于 26.3 改 finite_of）后果不同：本处
+            -- 把两值拼成字符串查 diff_map，NaN 拼出 "nan,nan"、inf 拼出 "inf,1"
+            -- 之类命中不到任何键（实测不抛，LuaJIT 的数值拼串对非有限值给
+            -- "nan"/"inf"）→ 落到下面那条 ERR，且文案还给出了合法集
+            -- 0-1/0-3/1-3/2-3。已是 fail-closed 且可操作，换判据只会换掉一句
+            -- 更好的错误文案。本文件与 ADS1115 为机械孪生，此注两侧逐字相同。
+            local pos, neg = tonumber(data.pos), tonumber(data.neg)
+            if pos == nil or neg == nil then
+                return err("Invalid diff pair: pos/neg not a number")
+            end
+            local diff_map = { ["0,1"] = MUX_DIFF_AIN0_AIN1, ["0,3"] = MUX_DIFF_AIN0_AIN3,
+                               ["1,3"] = MUX_DIFF_AIN1_AIN3, ["2,3"] = MUX_DIFF_AIN2_AIN3 }
+            mux = diff_map[pos .. "," .. neg]
+            if mux == nil then
+                return err("Unsupported diff pair, use 0-1/0-3/1-3/2-3")
+            end
+        else
+            local channel = tonum(data.channel, 0)
+            if channel < 0 or channel > 3 then
+                return err("Invalid channel: 0~3")
+            end
+            mux = bitc.bor(MUX_SINGLE_AIN0, bitc.lshift(channel, 12))
+        end
+
+        -- 读回当前配置，保留 PGA/DR，只改 MUX 并启动单次转换
+        local config = i2c_read_multi(fd, REG_CONFIG, 2)
+        if config < 0 then
+            return err("Failed to read config")
+        end
+        local new_config = bitc.bor(bitc.bor(bitc.band(config, 0x8FFF), mux), OS_START)   -- 清 MUX 位，设通道，启动转换
+
+        if i2c_write_multi(fd, REG_CONFIG,
+            math.floor(new_config / 256) % 256, new_config % 256) ~= 0 then
+            return err("Failed to start conversion")
+        end
+
+        -- 轮询 OS 位：读到 0 表示正在转换，读到 1 表示转换完成/空闲
+        -- （1600SPS 约 0.6ms，最多等 100ms）。注意与写语义相反——若误等 0，
+        -- 启动转换后首轮即满足，读到的是上一次的陈旧值。
+        local ready = false
+        for _ = 1, 100 do
+            local cfg = i2c_read_multi(fd, REG_CONFIG, 2)
+            if cfg >= 0 and bitc.band(cfg, OS_START) ~= 0 then
+                ready = true
+                break
+            end
+            milli_sleep(1)
+        end
+        if not ready then
+            return err("Conversion timeout")
+        end
+
+        -- 读转换结果（12 位左对齐于 16 位，低 4 位恒 0）
+        local raw16 = i2c_read_multi(fd, REG_CONVERSION, 2)
+        if raw16 < 0 then
+            return err("Failed to read conversion")
+        end
+
+        -- pga 缺省时回读芯片配置的 PGA 字段（3 位，0~7）：6/7 与 5 同为 ±0.256V
+        -- （datasheet 冗余编码），须映射到 5——原实现重置为 2（±2.048V）换算错 8 倍
+        local pga_idx = tonum(data.pga, bitc.band(bitc.rshift(config, 9), 0x07))
+        if pga_idx > 5 then pga_idx = 5 end
+        if pga_idx < 0 then pga_idx = 2 end
+        local fs = pga_fs[pga_idx + 1]
+        local raw = raw12_of(raw16)
+        local voltage = raw * fs / 2048.0
+
+        return {
+            result = "OK",
+            raw = raw,
+            voltage = voltage
+        }
+    end,
+})
 
 
 

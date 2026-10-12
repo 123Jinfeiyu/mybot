@@ -8,6 +8,13 @@
 namespace bot {
 namespace agent {
 
+/* 25.4 评估后判不改（93 行）：派发漏斗是**安全判据的直线流程**，不是复杂控制流
+ * ——解析参数 → 策略确认 → 执行 → 归一 paramError → 两层 catch → 计时 → 审计，
+ * 一段接一段没有回边。判据锚点（SAN-8②、SAN-4、A5、M1）就地贴在各自那段上，
+ * 拆开只会让它们分散到不同函数里。关键约束是 argsOk：它存在的唯一理由就是让
+ * catch(...) 能区分「抛出发生在参数解析阶段（副作用必然未发生）」与「抛出来自
+ * 确认程序或工具本体（Lua 可能已经驱动了硬件）」，从而给出正确的 executed——
+ * 把 try 体抽成 helper 就得把这个标志再穿回来，比现在更难读。 */
 AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 	AgentToolResult result;
 	Json parsedArgs;
@@ -45,7 +52,7 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 	} catch (...) {
 		/* A5：本机 LuaJIT 用 C++ 异常实现 luaD_throw，从没有 Lua CFRAME 的 C++
 		 * 帧抛出的 Lua 错误**不是** std::exception（判据锚点与四处边界清单：
-		 * util.hpp 的 kNonStdExceptionNote 注释块——跨站点行号引用会腐烂，
+		 * util_except.hpp 的 kNonStdExceptionNote 注释块——跨站点行号引用会腐烂，
 		 * 按名指锚）。
 		 * 只接 std::exception 的话这类抛出会穿透到上层的 catch(...)，把
 		 * 整个会话结束掉——而「REPL 单轮失败不结束会话」是循环层的承诺
@@ -94,7 +101,9 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 		e.bytes = result.text.size();
 		e.imageBytes = result.imageDataUrl.size();
 		if (!result.imageDataUrl.empty()) { e.imageFp = fingerprint64(result.imageDataUrl); }
-		if (call.name == "run_command") { e.exitCode = extractExitCode(result.text); }
+		/* G2 结构化直传（2026-10-10）：此前只对 run_command 从回执文本反解
+		 * exit_code=——现在工具里给了 exitCode 就记谁的（恒只有 run_command）。 */
+		e.exitCode = result.exitCode;
 		/* G2：工具自报的生效摘要（apply_sql 等）原样进审计，供复盘对账 */
 		e.summary = result.summary;
 		audit_->write(e);

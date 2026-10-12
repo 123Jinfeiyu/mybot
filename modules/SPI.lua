@@ -39,26 +39,26 @@ local function build_impl(data)
 	end
 
 	-- 模式（0~3：CPOL/CPHA 组合，与 Linux spidev 一致）
-	local spi_mode = tonumber(data.spi_mode)
+	local spi_mode = finite_of(data.spi_mode)
 	if spi_mode == nil or spi_mode < 0 or spi_mode > 3 then
 		return err("Invalid Arguments: spi_mode (0~3)")
 	end
 
 	-- 比特（每字位数，7~16）
-	local bits = tonumber(data.bits)
+	local bits = finite_of(data.bits)
 	if bits == nil or bits < 7 or bits > 16 then
 		return err("Invalid Arguments: bits (7~16)")
 	end
 
 
 	-- 速率（Hz，必须为正）
-	local speed = tonumber(data.speed)
+	local speed = finite_of(data.speed)
 	if speed == nil or speed <= 0 then
 		return err("Invalid Arguments: speed (>0)")
 	end
 
 	-- 延时（单次传输后 CS 拉高前等待，us，非负）
-	local delay = tonumber(data.delay)
+	local delay = finite_of(data.delay)
 	if delay == nil or delay < 0 then
 		return err("Invalid Arguments: delay (>=0)")
 	end

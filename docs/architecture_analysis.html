@@ -95,12 +95,31 @@
 </head>
 <body>
 
+<!-- 冻结声明（2026-10-04）：本页自此是**历史快照**，不再随代码更新。它描述的是
+     2026-09-25 复核时的形态；此后四项变更均未反映在正文与两张配套 SVG 里：
+     sim/ 仿真器迁入（三条 AF_UNIX 桥、场景/地图文件）、多机器人（每只一套 socket）、
+     ~/.mybot 下的会话与地图持久化、2026-10-03 的领域门面拆分（src/ 按域重组）。
+     页内计数（58 模块 / lib 21 / 守门 260+ / C++ 单测 634）同为该日快照值，**不要**
+     单独改数字——那只会让页面自相矛盾。权威口径见 docs/ 下各 md：README.md 的计数
+     派生口径、docs/drivers.md 的模块口径、docs/sim.md、docs/testing.md；变更账本
+     自 2026-10-04 起改为提交信息（原账本已删除，见提交 9480de3）。
+     刻意不重写正文：378 行分析网页没有任何守门能验证它，重写只会再产出一份
+     「看起来很新、其实无人复核」的文档；标注过期比伪造新鲜更诚实。 -->
+<div style="background:#fefce8;border:1px solid #fcd34d;color:#854d0e;padding:12px 20px;font-size:14px">
+  &#9888;&#65039; <strong>本页已冻结：2026-09-25 快照，不再随代码更新。</strong>
+  不含此后的 <code>sim/</code> 仿真器迁入、多机器人（每只一套 socket）、<code>~/.mybot</code> 会话与地图持久化、
+  2026-10-03 领域门面拆分；页内模块数与守门/单测计数同为该日快照值。
+  权威口径见 <a href="README.md" style="color:#854d0e">docs/README.md</a> 与
+  <a href="sim.md" style="color:#854d0e">docs/sim.md</a>、<a href="testing.md" style="color:#854d0e">docs/testing.md</a>、
+  变更账本见提交信息（原账本已删除，见提交 9480de3）。下面这条蓝色说明描述的是当时的「现行架构」。
+</div>
+
 <!-- 版本标注（2026-09-25 复核更新）：本页正文与两张配套 SVG（architecture_layers.svg /
      architecture_dataflow.svg）均已更新为现行两进程架构：C++ 宿主唯一形态为
      mybot --mcp-backend（AF_UNIX 工具后端），模型循环在独立 Rust 进程 mybot-agent
      （agent/，rig 0.42 直连 provider）；--agent/agentloop/agentdriver 已删除。
      核心层名与 src/*.cpp 逐字对应（RobotStruct/HwFactory/ActionRunner/mcpbackend 等）；
-     守护共享槽为 336B（values[32]@72 / stop@328 / status@332）。 -->
+     守护共享槽为 600B（values[64]@72 / stop@584 / status@588 / quiesce@592，TD-3 扩容 + BQ-1 灭火位）。 -->
 <div style="background:#eff6ff;border:1px solid #93c5fd;color:#1e3a8a;padding:12px 20px;font-size:14px">
   &#8505;&#65039; 本页正文与配套两张 SVG 图均为<strong>现行两进程架构（本地目录 bot4cj.cpp）</strong>描述（2026-09-25 重绘复核）：
   C++ 宿主 = <code>mybot --mcp-backend</code> 工具后端，模型循环在独立 Rust 进程 <code>mybot-agent</code>，
@@ -112,7 +131,7 @@
     <h1>bot4cj 架构分析与扩展开发路线图<span style="display:block;font-size:16px;font-weight:500;color:#cbd5e1;margin-top:8px">C++17 移植版（本地目录 bot4cj.cpp）</span></h1>
     <p>bot4cj（仓颉版）的 C++17 全量移植 · 三脚本分治（结构 .sql / 驱动 .lua / 动作 .mt）+ LuaJIT 驱动层 + Linux HAL。不接任何硬件即可跑通「解析 → 构建 → 播放 → 落盘」全链路。</p>
     <div class="meta">
-      <span>C++17（零第三方 C++ 依赖：LuaJIT + pthread + dl）+ Rust agent（rig 0.42）</span><span>仓库 qingss0/bot4cj（本地目录名 bot4cj.cpp）</span><span>58 模块（48 器件/执行器/系统接口 + 3 总线 + 7 框架/工具）· lib 21</span><span>守门 260+ · C++ 单测 600+（2026-09 快照，以实时守门输出为准）</span>
+      <span>C++17（零第三方 C++ 依赖：LuaJIT + pthread + dl）+ Rust agent（rig 0.42）</span><span>仓库 qingss0/bot4cj（本地目录名 bot4cj.cpp）</span><span>58 模块（48 器件/执行器/系统接口 + 3 总线 + 7 框架/工具）· lib 21</span><span>守门 260+ · C++ 单测 634（2026-09 快照，以实时守门输出为准）</span>
     </div>
   </div>
 </header>
@@ -197,7 +216,7 @@
 <!-- ============ S3 ============ -->
 <section id="s3">
   <h2 class="sec"><span class="no">03</span>数据流 / 时序展开（一次 play 动作）</h2>
-  <p>把"管道输入一帧 .mt"到"内核设备文件落盘"的完整调用链展开成四个纵向阶段，并把 <code>@Daemon</code> 并发旁路（经 336B 共享槽）画在同一张图上。</p>
+  <p>把"管道输入一帧 .mt"到"内核设备文件落盘"的完整调用链展开成四个纵向阶段，并把 <code>@Daemon</code> 并发旁路（经 600B 共享槽）画在同一张图上。</p>
 
   <div class="figure">
     <figure style="text-align:center">
@@ -237,7 +256,7 @@
     </div>
     <div class="card">
       <h4><span class="tag t-amber">M3</span>@Daemon 守护线程</h4>
-      <p><code>std::thread</code> 原生线程 + 独立 lua_State（jit.off），逐拍采样后写入 <strong>336B 共享内存槽</strong>（values[32]@72 / stop@328 / status@332）。主线程 <code>play()</code> 加锁读槽。join 超时走「弃管 + 槽位由线程自释放」的安全取舍，退出时如实告警弃管数量。</p>
+      <p><code>std::thread</code> 原生线程 + 独立 lua_State（jit.off），逐拍采样后写入 <strong>600B 共享内存槽</strong>（values[64]@72 / stop@584 / status@588 / quiesce@592）。主线程 <code>play()</code> 加锁读槽。join 超时走「弃管 + 槽位由线程自释放」的安全取舍，退出时如实告警弃管数量。</p>
     </div>
     <div class="card">
       <h4><span class="tag t-indigo">M4</span><code>$</code> 引用列 + controller</h4>
@@ -255,7 +274,7 @@
 
   <h3>可测试性资产（三层守门体系）</h3>
   <p>测试约定：<code>test/test_&lt;driver&gt;.lua</code> 先 <code>dofile("modules/X.lua")</code> 加载真实 HAL，<strong>再</strong>覆盖全局 <code>i2c_*</code>/<code>spi_*</code>/<code>milli_sleep</code>；位运算/CRC 走 <code>modules/bitcompat.lua</code>（别名 <code>bitc</code>）。C++ 层单测与被测程序共用同一套源文件（<code>test/cpp/</code>，零第三方框架）。</p>
-  <p>当前守门规模：<strong>Lua/e2e 回归 260+ 通过（真机用例 i2c 与 video 按需跳过）+ C++ 单测 600+ 通过</strong>；CI 另有 ASan/UBSan 硬门禁，TSan / clang / clang-tidy / 覆盖率 / musl 五条软门禁，以及 ioctl/termios/V4L2/CURL 常量编译期自检（F-24 同族）。本页数字是<strong>2026-09 约数快照</strong>：权威口径一律以 <code>bash test/run_all.sh</code> 与 <code>./build/mybot_tests</code> 的实时输出为准。</p>
+  <p>当前守门规模：<strong>Lua/e2e 回归 260+ 通过（真机用例 i2c 与 video 按需跳过）+ C++ 单测 634 通过</strong>；CI 另有 ASan/UBSan 硬门禁，TSan / clang / clang-tidy / 覆盖率 / musl 五条亦为硬门禁（2026-09-25 起全部转硬），以及 ioctl/termios/V4L2 常量编译期自检（F-24 同族）。本页数字是<strong>2026-09 约数快照</strong>：权威口径一律以 <code>bash test/run_all.sh</code> 与 <code>./build/mybot_tests</code> 的实时输出为准。</p>
 </section>
 
 <!-- ============ S5 ============ -->
@@ -280,17 +299,17 @@
         <li>• 仅 Linux + LuaJIT（HAL 依赖 glibc ffi 与 /dev 设备文件），无跨 OS 抽象</li>
         <li>• 守护线程一线程一 Lua 状态，多守护场景内存与启动开销线性上涨</li>
         <li>• 模型在线动作生成（DRL/CNN）尚未接入主流程（nn.lua 提供基础算子）</li>
-        <li>• 共享槽固定 32 值（values[32]），复杂多路并发有上限</li>
+        <li>• 共享槽固定 64 值（values[64]），复杂多路并发有上限</li>
         <li>• 安全沙箱是"护栏非安全边界"（中和 os.execute 等，非强隔离）</li>
         <li>• 驱动生态依赖人工逐器件编写，缺自动 codegen / 统一描述语言</li>
-        <li>• 三条软门禁（TSan / clang / clang-tidy）尚未转硬，覆盖率与 musl 两条亦为观察期</li>
+        <li>• 全部十条 CI job 均为硬门禁（2026-09-25 起）；后续关注跨 OS HAL 后端与驱动自动 codegen</li>
       </ul>
     </div>
   </div>
 
   <div class="callout warn">
-    <h4>关键风险：共享槽 32 值上限 &amp; join 超时弃管</h4>
-    <p style="margin:0"><code>daemon_slot_t</code> 的 <code>values[32]</code> 意味着单个守护最多并发暴露 32 个数值通道；join 超时会<strong>放弃 join、槽位由守护线程退出时自释放</strong>以防 UAF —— 这是有意的安全取舍，退出路径会如实告警弃管数量。扩展时若做多路传感器聚合，需要把该上限参数化或改为定长数组 + 索引引用。</p>
+    <h4>关键风险：共享槽 64 值上限 &amp; join 超时弃管</h4>
+    <p style="margin:0"><code>daemon_slot_t</code> 的 <code>values[64]</code> 意味着单个守护最多并发暴露 64 个数值通道；join 超时会<strong>放弃 join、槽位由守护线程退出时自释放</strong>以防 UAF —— 这是有意的安全取舍，退出路径会如实告警弃管数量。扩展时若做多路传感器聚合，需要把该上限参数化或改为定长数组 + 索引引用。</p>
   </div>
 </section>
 
@@ -313,7 +332,7 @@
     <div class="num" style="background:var(--green)">2</div>
     <div style="flex:1">
       <h4>并发 / 多路传感器聚合 <span class="pri t-green">中成本 · 高收益</span></h4>
-      <p><code>@Daemon</code> 现有 <strong>32</strong> 值上限（<code>SLOT_MAXVALS=32</code>，见 <code>src/daemonvar.hpp</code>；33+ 字段在加载期即被拒）。扩展动作：把 <code>SLOT_MAXVALS</code> 参数化（定长数组 + 索引引用，或链表），<code>sensor_daemon.lua</code> 已支持任意 build/call/destroy 驱动的"万能采样 chunk"，可加<strong>多守护聚合器</strong>（一路守护聚合多路 sensor 输出到同一槽位组），支撑"多 IMU + 多气感 + 里程计"复杂流水线。</p>
+      <p><code>@Daemon</code> 现有 <strong>64</strong> 值上限（<code>SLOT_MAXVALS=64</code>，见 <code>src/daemonvar.hpp</code>；65+ 字段在加载期即被拒）。扩展动作：把 <code>SLOT_MAXVALS</code> 参数化（定长数组 + 索引引用，或链表），<code>sensor_daemon.lua</code> 已支持任意 build/call/destroy 驱动的"万能采样 chunk"，可加<strong>多守护聚合器</strong>（一路守护聚合多路 sensor 输出到同一槽位组），支撑"多 IMU + 多气感 + 里程计"复杂流水线。</p>
     </div>
   </div>
 
@@ -356,7 +375,7 @@
   <table class="tbl">
     <tr><th>阶段</th><th>关键改动点（文件）</th><th>验证方式</th><th>回归基线</th></tr>
     <tr><td><strong>1</strong> 驱动生态</td><td><code>modules/X.lua</code> + <code>robots/*.sql</code> 新表 + <code>test/test_X.lua</code></td><td><code>bash test/run_all.sh</code> 离线桩</td><td>260+ 守门 → 增 N 例 0 fail</td></tr>
-    <tr><td><strong>2</strong> 并发聚合</td><td><code>src/daemonvar.cpp</code> values[32] 参数化 + <code>modules/lib/sensor_daemon.lua</code></td><td>多守护聚合桩测试（test_daemon_concurrency）</td><td>C++ 单测 + TSan 用例保持绿</td></tr>
+    <tr><td><strong>2</strong> 并发聚合</td><td><code>src/daemonvar.cpp</code> values[64] 参数化 + <code>modules/lib/sensor_daemon.lua</code></td><td>多守护聚合桩测试（test_daemon_concurrency）</td><td>C++ 单测 + TSan 用例保持绿</td></tr>
     <tr><td><strong>3</strong> 网络传输</td><td><strong>已落地</strong>（<code>actionsource.cpp</code> 三输入源）；增强方向：多连接 / WS</td><td>管道/TCP/文件三源等价 e2e（tcp_e2e.sh）</td><td>relay-test 无硬件自校验</td></tr>
     <tr><td><strong>4</strong> 跨 OS</td><td><code>modules/lib/HAL.lua</code> 已后端接口化；<strong>新增非 glibc 后端</strong> + 各后端路径白名单规则表</td><td>仿真桩（virtbus）跨后端一致性</td><td>ffi 布局断言全平台</td></tr>
     <tr><td><strong>5</strong> NN 动作</td><td>C++ 核心层新增 NN 变量类 + 接活 <code>modules/lib/nn.lua</code> 推理</td><td>模型输出 → controller 转发桩</td><td>与阶段 2/3 组合闭环</td></tr>
@@ -364,7 +383,7 @@
 
   <div class="callout">
     <h4>提交约定</h4>
-    <p style="margin:0">推送前走 pre-push 守门钩子（<code>bash test/run_all.sh</code>），CI（.gitlab-ci.yml）自动跑三条硬门禁「<code>-DMYBOT_WERROR=ON</code> 构建 → Release 全量守门（含守门自检）→ ASan/UBSan 单跑（<code>run_san.sh --asan-only</code>）」，另设 TSan / clang / clang-tidy / 覆盖率 / musl 五条软门禁（均 <code>allow_failure</code>，转硬条件与最迟日期见各 job 注释）。每个特性独立提交，附守门结果与 changelog 更新。</p>
+    <p style="margin:0">推送前走 pre-push 守门钩子（<code>bash test/run_all.sh</code>），CI（.gitlab-ci.yml）全部十条 job 均为硬门禁（2026-09-25 起；此前 TSan / clang / clang-tidy / 覆盖率 / musl 六条为 <code>allow_failure</code> 软门禁，已全数转硬）。每个特性独立提交，附守门结果与 changelog 更新。</p>
   </div>
 </section>
 

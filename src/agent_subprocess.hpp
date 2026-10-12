@@ -19,7 +19,8 @@ constexpr std::size_t kMaxCommandOutput = 64u * 1024;
 std::vector<char*> collectEnvSecrets();
 
 /* 敏感环境名判据（整词切词后查表）。环境清洗（本文件）与审计日志的
- * 命令遮蔽（agentaudit）共用同一份，防两份名单各自漂移。
+ * 命令遮蔽（agentaudit，经 maskedWord 复用本判据再加 authorization/bearer
+ * 两个仅遮蔽词）共用同一份，防两份名单各自漂移。
  * 入参必须是**已转小写**的名字。 */
 bool isSensitiveEnvName(const std::string& lowerName);
 

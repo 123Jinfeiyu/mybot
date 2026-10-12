@@ -14,6 +14,18 @@
 
 namespace bot {
 
+/* 重名报错文案单点（2026-10-06 25.3）：HwRegistry::add 与 HwFactory::
+ * precheckDuplicate 此前各拼一份同样的 "Duplicate hardware variable name: '<名>'"。
+ * precheckDuplicate 的全部意义就是**提前**给出 add 将会给出的同一条错（在申请
+ * Lua 状态机/共享槽之前先判重，见 hw_factory.hpp 的「资源泄漏防线」注释），于是
+ * 同一次重名报哪份文案取决于哪个检查先命中——两份一漂，同一种用户错误就有了
+ * 两种报错。守门只锚了 add 那份（test_hw_registry.cpp:72 断言
+ * "Duplicate hardware variable name: 'a'"），factory 那份零覆盖，漂了不会红。
+ * source 是调用方自带的声明来源后缀（如 " (in table 'X')"，见 add 的声明注释），
+ * 形态各家本就不同（表名 / 表名+行号 / " (in @Label matrix)"），故只单点前缀、
+ * 不做 source 的统一构造器。 */
+std::string duplicateHwNameMsg(const std::string& name, const std::string& source = "");
+
 /* R-2：硬件变量注册表——所有权、销毁序、名字索引的单一来源。
  * 旧实现三个并行容器（hardwareVars_/hwPool_/hwSeq_）靠 addHardwareVar
  * 手工同步；会话期别名覆盖直接改写 map，不变式被打破。

@@ -11,10 +11,16 @@
 
 #include "expr.hpp"
 #include "json.hpp"
-#include "luaexec.hpp"
 #include "matrix.hpp"
 
 namespace bot {
+
+/* 执行预算结构体（luaexec.hpp）——本头只用指针形态（armExecBudget 挂接点），
+ * 前置声明即可：luaexec.hpp 会带进 lua.h/lauxlib/lualib（luaend.hpp），本头
+ * 被半个仓库包含，把它留在链上等于让所有 TU 都编译 LuaJIT 头（2026-10-01
+ * 编译扇出收窄）。真正构造预算或挂/摘钩子的 TU（agenttools/luavar）自引
+ * luaexec.hpp。 */
+struct LuaExecBudget;
 
 class MatrixVars_Hardware {
 public:
@@ -170,6 +176,11 @@ public:
 	/* resolve：表达式标识符求值回调；纯字面量 Vars 可省略，表达式 Vars 必须提供。 */
 	static std::unique_ptr<MtVars_Vars> Factory(const mt::MatrixObject& defs, std::int64_t i,
 			std::function<double(const std::string&)> resolve = {});
+
+	/* 运行期单值构造（.mt 单元格 `$var=field` 捕获赋值）：直接以数值真值驻留
+	 * 字面量（formatNumber），无 expr/resolve——与 Factory 的字面量分支同构，
+	 * 只是不经矩阵行。value 必须有限（非有限值在此拒绝，与 @Vars 数值语义一致）。 */
+	static std::unique_ptr<MtVars_Vars> Make(double value);
 };
 
 } // namespace bot

@@ -20,6 +20,8 @@
               真的把变量摘掉了；与 hotsql 同门控）
             | readvars（先要求 read_variables 读回可读变量——验证回读通道真的
               把驱动返回表带进回执；缺 --read-var 时同一条剧本只剩「未知工具」）
+            | httpfetch（按环境变量 FAKE_LLM_FETCH_URLS 逗号分隔的 URL 逐轮下发
+              http_fetch，发完给最终回答——Phase 6 Rust 本地工具的端到端）
             | manycalls[:N]（首轮返回 N 条工具调用，缺省 3；配合
               max_calls_per_round=2 触发宿主的单轮截断分支——SAN-1）
             | 429x2ok（前两次 429 + Retry-After: 1，第三次正常回答——SAN-3：
@@ -231,7 +233,10 @@ def protocol_error(request):
          用「请求中出现过」作开关而不是无条件要求：OpenAI 兼容驱动压根不认识这个
          字段，无条件要求会把合法请求判死。
       ③ tool_call_id 必须与 assistant.tool_calls 一一配对 —— 孤儿 tool 消息、
-         重复回传、或漏回传某个 tool_call，真机都是 400。
+         重复回传、或漏回传某个 tool_call，真机都是 400。**id 还得非空**：
+         空 id 配不上任何声明，真机同样 400（Rust 产线判据
+         `agent/src/session.rs::protocol_violation` 也拒空 id；两侧规则集由
+         `scripts/check_stateful_protocol.py` 零编译互钉）。
     """
     messages = request.get("messages")
     if not isinstance(messages, list):
@@ -271,6 +276,8 @@ def protocol_error(request):
         for tc in tcs:
             if not isinstance(tc, dict) or not isinstance(tc.get("id"), str):
                 return "assistant.tool_calls[].id must be a string"
+            if not tc["id"]:
+                return "assistant.tool_calls[].id must be a non-empty string"
             declared.append(tc["id"])
 
     answered = []
@@ -280,6 +287,8 @@ def protocol_error(request):
         tcid = m.get("tool_call_id")
         if not isinstance(tcid, str):
             return "messages[%d]: tool message requires a string tool_call_id" % i
+        if not tcid:
+            return "messages[%d]: tool message has an empty tool_call_id" % i
         if tcid not in declared:
             return ("messages[%d]: tool_call_id %r does not match any assistant "
                     "tool_call" % (i, tcid))
@@ -745,6 +754,17 @@ class Handler(BaseHTTPRequestHandler):
         if MODE == "readvars":
             if tool_results == 0:
                 self._reply(tool_call("read_variables", {}))
+            else:
+                self._reply(final_answer())
+            return
+        # ---- http_fetch（Phase 6，Rust 本地工具）：按环境变量 FAKE_LLM_FETCH_URLS
+        # （逗号分隔）逐个下发 http_fetch，每轮一条，全部发完给最终回答。URL 走环境
+        # 变量而不是 mode 参数：URL 里的冒号会和 mode 的 "名:参数" 写法打架。 ----
+        if MODE == "httpfetch":
+            urls = [u for u in os.environ.get("FAKE_LLM_FETCH_URLS", "").split(",") if u]
+            if tool_results < len(urls):
+                self._reply(tool_call("http_fetch", {"url": urls[tool_results]},
+                                      "call_fetch_%d" % tool_results))
             else:
                 self._reply(final_answer())
             return

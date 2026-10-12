@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-#include "util_env.hpp"
+#include "debug_log.hpp"	/* logD */
 #include "util_except.hpp"
 #include "util_num.hpp"
 #include "hardware.hpp"
@@ -285,7 +285,16 @@ static int prepareCallClosure(lua_State* L) {
 }
 
 /* ---- 调用 Lua 脚本的全局 mode 函数（build/call/destroy/read）----
- * 每次调用后重置栈指针（恢复调用前栈深）。pcall 失败显式带 ERR 契约。 */
+ * 每次调用后重置栈指针（恢复调用前栈深）。pcall 失败显式带 ERR 契约。
+ *
+ * 25.4 评估后判不改（102 行）：本函数的长度是**栈深记账**，不是控制流复杂度
+ * ——进入时取 top，两条出口（准备段 pcall 失败的早退、末尾正常返回）都必须各自
+ * lua_settop(L, top) 复原，中间全是相对栈下标（-nret / -1 / -2），其含义取决于
+ * 此前压了几层。唯一像样的接缝是把契约表遍历那段（约 27 行）抽成 helper，
+ * 但那正是 C1 防线记录过的出错面：
+ * 旧实现就是因为 lua_pushnil 抬高栈顶后 -2 不再指向首个返回值，末值是标量时
+ * lua_next 对非表调用直接 SIGSEGV（实测 Release exit 139）。把这段搬到调用边界
+ * 另一边，等于让「栈上此刻有什么」这个编译器管不了的不变量跨函数传递。 */
 Json call_lua(lua_State* L, const Json& json) {
 	const Json& obj = json.asObject();
 	Json ret = JsonObject();

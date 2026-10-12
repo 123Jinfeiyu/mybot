@@ -50,6 +50,10 @@ if command -v timeout >/dev/null 2>&1; then
 	timeout_cmd="timeout $TEST_TIMEOUT"
 fi
 
+# mybot-agent 产物新鲜度判据单点（取材面见该文件头注）：守门的 agent-rust-e2e /
+# ica-e2e 两段与 scripts/git-hooks/pre-push 共用同一份，别在调用处再手抄一遍 find。
+. test/lib/agent_stale.sh || { echo "判据单点缺失：test/lib/agent_stale.sh" >&2; exit 1; }
+
 filter="${1:-}"
 # ---- 分段过滤器（AG-23，2026-09-21 第三轮审计）----
 # 一个 raw 过滤器要在四类分段上用**不同形态**匹配，此前没做区分，于是
@@ -76,10 +80,10 @@ if [ "$filter" = "agent-all" ]; then
 	# 也就是 SAN-3 改动的那三个文件所在的那一层。
 	# 2026-09-25 #8：Lua 协议驱动轨道整条删除（模块 + 库 + 两个 test_llm_*.lua），
 	# agent 的协议面现由 Rust mybot-agent 直连承担，报文的假模型回归在 e2e 段
-	# （R12/R13 多协议），Lua 段对 agent-all 的贡献由此**有意为空**（不是 SAN-2
-	# 那种"指向不存在文件"的退化）。自证机制保留：将来若新增 test_llm_*.lua
-	# 而漏登记 roster，反向检查（下方第 ② 步）仍会红。
-	filter_lua="llm"	# test_llm_*.lua：已删尽；保留过滤器以备将来回归
+	# （R12/R13 多协议）。2026-10-01：Lua 段对 agent-all 的贡献不再是空表——
+	# 摄像头协议面 test_camera.lua 经 agent_lua_roster 精确清单纳入（子串过滤器
+	# 会连带真机的 test_camera_v4l2.lua，故改走 roster，见 Lua 段循环处注释）。
+	filter_lua="llm"	# test_llm_*.lua：已删尽；Lua 段实际由 roster 驱动
 	filter_e2e="agent"
 	filter_hardening="agent_"
 	filter_cpp="agent:"
@@ -110,7 +114,10 @@ case_matches() {
 # 2026-09-25 #8：Lua 协议驱动轨道整条删除，agent 协议面不再有 test_llm_*.lua，
 # roster 因此为空——第 ② 步反向检查（test_llm_*.lua 必须全部登记）对空 glob
 # 自然通过，将来若新增协议面 Lua 用例而漏登记，这一步仍会红（机制保留不拆）。
-agent_lua_roster=""
+agent_lua_roster="test/test_camera.lua"
+# 2026-10-01：agent 表面的摄像头协议面（capture_image 依赖的仿真取帧/base64/
+# 错误路径）经 roster 精确清单纳入 agent-all——真机的 test_camera_v4l2.lua 因
+# 同名子串刻意**不在**清单里（理由见 Lua 段循环处的 roster 注释）。
 if [ "$filter" = "agent-all" ]; then
 	_agentall_bad=""
 	[ -n "$filter_lua" ] || _agentall_bad="$_agentall_bad lua(空值=跑全部文件)"
@@ -118,14 +125,9 @@ if [ "$filter" = "agent-all" ]; then
 	filter_matches "agent:" "$filter_cpp" || _agentall_bad="$_agentall_bad cpp"
 	# ① roster 里的文件必须存在，且在 agent-all 下会被跑到
 	for _f in $agent_lua_roster; do
-		if [ ! -f "$_f" ]; then
-			_agentall_bad="$_agentall_bad $_f(roster 声明的文件不存在)"
-			continue
-		fi
-		case "$(basename "$_f")" in
-			*"$filter_lua"*) ;;
-			*) _agentall_bad="$_agentall_bad $_f(不在过滤器 '$filter_lua' 的命中范围内)" ;;
-		esac
+		# Lua 段对 agent-all 走 roster 精确清单（见循环处），故只查存在性，
+		# 不再与子串过滤器对账（子串判据已不是 agent-all 的执行依据）。
+		[ -f "$_f" ] || _agentall_bad="$_agentall_bad $_f(roster 声明的文件不存在)"
 	done
 	# ② 反向：agent 协议面的用例文件必须全部登记（漏登记即红）——
 	#    与 C++ 侧 test_util.cpp 的「非 agent 面 roster 带理由登记」同一条纪律。
@@ -137,6 +139,14 @@ if [ "$filter" = "agent-all" ]; then
 			*) _agentall_bad="$_agentall_bad $_f(未登记进 agent_lua_roster)" ;;
 		esac
 	done
+	# 摄像头协议面（仿真）已入 agent 表面：文件在而漏登记即红（与 test_llm_*
+	# 同一条「agent 面用例必须登记」纪律）。真机 v4l2 用例不在此列。
+	if [ -f "test/test_camera.lua" ]; then
+		case " $agent_lua_roster " in
+			*" test/test_camera.lua "*) ;;
+			*) _agentall_bad="$_agentall_bad test/test_camera.lua(未登记进 agent_lua_roster)" ;;
+		esac
+	fi
 	if [ -n "$_agentall_bad" ]; then
 		echo "错误：agent-all 的分段过滤器映射失效，以下分段/文件不会执行：$_agentall_bad" >&2
 		echo "（见 test/run_all.sh 顶部的 filter_* 映射与 agent_lua_roster。本自证防的就是" >&2
@@ -170,6 +180,9 @@ trap 'echo "守门被中断：汇总未产生（中途态，非失败）" >&2; e
 # 缺省路径可被 BOT / BOT_TESTS 覆盖；是否「显式指定」决定下面的降级策略。
 bin="${BOT:-./build/mybot}"
 tests_bin="${BOT_TESTS:-./build/mybot_tests}"
+# 与 mybot_tests 同目录、由 test/cpp/harness_selftest.cpp 单独编出来的骨架自证二进制。
+# 路径只在这里派生一次（tail_checks.sh 的 run_harness_selftest 直接用它）。
+selftest_bin="$(dirname "$tests_bin")/harness_selftest"
 bot_explicit=0
 [ -n "${BOT:-}" ] && bot_explicit=1
 tests_explicit=0
@@ -181,15 +194,58 @@ tests_explicit=0
 # /1 失败，而 445+1 恰好等于改动前的用例数——那条失败还是"旧二进制 + 新 docs"的
 # 组合产物）。这类假绿比缺产物更危险：缺产物有 artifact_missing 兜住并计入失败，
 # 陈旧产物则不留任何痕迹。
-# 判据只看**编译期输入**（src/、test/cpp/、CMakeLists.txt）：docs/、modules/、
-# robots/ 是运行期读取的，改了它们不需要重编，纳入只会造成误报。
+# 判据只看**编译期输入**，且每个产物配**自己那份**：mybot 只由 src/ 编出来，
+# mybot_tests 与 harness_selftest 才吃 test/cpp/。此前三个产物共用一份最大集合
+# （src/ + test/cpp/ + CMakeLists.txt），后果是「只改了一条用例」时这道门永远过不去
+# ——cmake 不会为 test/cpp/ 的改动重链 mybot，`cmake --build` 修不好它，唯一出路是
+# BOT_ALLOW_STALE=1。一道天天狼来了的门，教会大家的正是怎么绕过它（2026-10-06 实测
+# 踩到：反向验证动过 test/cpp 后，重建到 100% 仍被拒）。
+# CMakeLists.txt 也已移出取材面（同日第二次踩到，同一类误报）：它不是产物的编译期
+# 输入，而是**构建描述**——描述变了要不要重链，cmake/make 自己会算。把它当输入就等于
+# 要求「产物比构建描述新」，而 make 对一个输入未变的目标只回一句「Built target」不重链，
+# 于是这道门**重建也修不好**。实测：build-asan/harness_selftest 停在 2026-10-01、
+# CMakeLists.txt 已走到 2026-10-04，`cmake --build build-asan` 报「[1%] Built target
+# harness_selftest」而不重链 → gate 恒以 2 拒绝，run_san.sh 的第二跑整条进不去。
+# 移出后少挡的那类（改了 CMakeLists 却从没跑过 cmake）仍被挡住：新增源文件本身就在
+# src/ 或 test/cpp/ 里、比产物新；纯改编译开关则由 `cmake --build` 的自动 reconfigure
+# 兜住，不该由本判据冒充。
+# docs/、modules/、robots/ 是运行期读取的，改了它们不需要重编，纳入只会造成误报。
+# harness_selftest 一并纳入：harness-selftest 段跑的就是它，此前不在循环里，陈旧了
+# 照样报「8 通过」——正是本判据要堵的那类无痕假绿。
+# 目录级取材面还要**减去属于别的目标的文件**，否则同一类误报换个入口再犯一次：
+# touch src/main.cpp 后 `cmake --build` 只重链 mybot，mybot_tests 永远比它旧；
+# touch test/cpp/harness_selftest.cpp 后只重链 harness_selftest，mybot_tests 永远比它旧。
+# 归属的权威出处是构建系统自己的记账（build/compile_commands.json 的
+# `-o CMakeFiles/<target>.dir/<src>.o`），2026-10-06 实测：
+#   mybot            ← src/            − src/main.cpp 本身就是入口
+#   mybot_tests      ← src/ + test/cpp − src/main.cpp（它用 test/cpp/main.cpp 当入口）
+#                                       − test/cpp/harness_selftest.cpp（独立二进制）
+#   harness_selftest ← test/cpp/harness_selftest.cpp + test/cpp/harness.hpp
+# 这两条排除与 CMakeLists 的 C3/B8 两处自检是同一份事实，故 selftest 第 7 段钉住
+# 「被排除的文件确实不在该目标的 add_executable 清单里」——归属一变，排除名单就得跟着变。
+# 未纳入 test_*_consts：它们的 bin 变量在本文件更后面才定义。
 # 逃生口 BOT_ALLOW_STALE=1：**明确知道**要跑旧产物（如复现历史结果）时显式声明。
 if [ -z "${BOT_ALLOW_STALE:-}" ]; then
-	for _b in "$bin" "$tests_bin"; do
+	for _b in "$bin" "$tests_bin" "$selftest_bin"; do
 		[ -x "$_b" ] || continue	# 缺产物由 artifact_missing 判失败，这里不重复
-		_stale="$(find src test/cpp CMakeLists.txt -type f \
-			\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' -o -name 'CMakeLists.txt' \) \
-			-newer "$_b" -print -quit 2>/dev/null)"
+		_ex=()
+		case "$_b" in
+			"$bin")
+				_in=(src)
+				_ex=() ;;
+			# 骨架自证只由这两个文件编出来（CMakeLists.txt:271 的
+			# add_executable(harness_selftest test/cpp/harness_selftest.cpp)）；
+			# 给它套整个 test/cpp/ 就又是上面那个「重建也修不好」的误报。
+			"$selftest_bin")
+				_in=(test/cpp/harness_selftest.cpp test/cpp/harness.hpp) ;;
+			*)
+				_in=(src test/cpp)
+				_ex=(-not -path 'src/main.cpp'
+					-not -path 'test/cpp/harness_selftest.cpp') ;;
+		esac
+		_stale="$(find "${_in[@]}" -type f \
+			\( -name '*.cpp' -o -name '*.hpp' -o -name '*.h' \) \
+			"${_ex[@]}" -newer "$_b" -print -quit 2>/dev/null)"
 		if [ -n "$_stale" ]; then
 			echo "守门拒绝执行：产物 $_b 比编译期输入旧（例如 $_stale）。" >&2
 			echo "  继续跑等于用**上一轮的二进制**做整套 C++ 守门，汇总仍会显示通过。" >&2
@@ -198,8 +254,37 @@ if [ -z "${BOT_ALLOW_STALE:-}" ]; then
 			exit 2
 		fi
 	done
-	unset _b _stale
+	unset _b _stale _in _ex
 fi
+
+# ---- 参数化 lint runner（27.8 抽自三处同形态内联 lint）----
+# 三处 lint（arg_table/__mpath/nan-fallback）共享同一形态：grep 找坏形态 → 有 filter 跳过
+# → 找到即失败 → 否则通过。BH1750 那条额外有计数自检（抽取判据失效时显式红），
+# arg_table/__mpath 补上同款防线后也收进本函数。
+# 参数：$1=lint 名（记账用） $2=标题 $3=grep 命令（输出坏文件列表） $4=期望最小命中数
+#       （可选，缺省 0 = 不检查；>0 时实际命中 < 期望即判「抽取判据失效」）
+run_one_inline_lint() {
+	local name="$1" title="$2" grep_cmd="$3" min_hits="${4:-0}"
+	echo "----- lint ($title) -----"
+	if [ -n "$filter" ]; then
+		echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+		return
+	fi
+	local bad hits_n
+	bad="$(eval "$grep_cmd" || true)"
+	hits_n="$(printf '%s\n' "$bad" | grep -c . || true)"
+	if [ "$min_hits" -gt 0 ] && [ "$hits_n" -lt "$min_hits" ]; then
+		echo "[FAIL] 抽取判据只命中 $hits_n 处（期望 ≥ $min_hits）——判据可能已对不上源码形态"
+		record_fail "$name"
+	elif [ -n "$bad" ]; then
+		echo "[FAIL] 以下文件仍存在问题形态："
+		echo "$bad"
+		record_fail "$name"
+	else
+		echo "[PASS] $title"
+		record_pass
+	fi
+}
 
 # ---- 分段 runner 定义（F3-1 抽自本文件；只含函数定义，见各文件头注）----
 # 用 $SELF 推导目录：run_all.sh 启动时已 cd 到仓库根，但 $SELF 在 cd 之前取，
@@ -223,7 +308,16 @@ for t in test/test_*.lua; do
 	name="$(basename "$t")"
 	# AG-23：分段过滤器。旧入口在这条判断上用 raw filter，于是
 	# `bash test/run_all.sh agent` 匹配到 0 个 Lua 文件而汇总照绿。
-	if [ -n "$filter_lua" ] && [[ "$name" != *"$filter_lua"* ]]; then
+	if [ "$filter" = "agent-all" ]; then
+		# agent-all 的 Lua 段走 roster **精确清单**（2026-10-01）：子串过滤器
+		# 分不开 test_camera.lua（仿真协议面，应入 agent 表面）与
+		# test_camera_v4l2.lua（真机 ABI 回归，只该由全量/显式过滤器跑）——
+		# "camera" 子串会把真机用例一起卷进来。
+		case " $agent_lua_roster " in
+			*" $t "*) ;;
+			*) continue ;;
+		esac
+	elif ! filter_matches "$name" "$filter_lua"; then
 		continue
 	fi
 	echo "----- $name -----"
@@ -248,18 +342,16 @@ for t in test/test_*.lua; do
 		continue
 	fi
 	echo "$out"
-	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
 	# 兼容三种失败约定：退出码非零、打印 [FAIL] 行（124 = timeout 超时）、
 	# 或假绿形态（P0-2）：早退/守卫短路导致未见 summary 的 [DONE] 完成标记，
 	# 或一条断言都没跑（[PASS] 计数为 0）——「安静退出」不再视同通过
 	if [ $rc -eq 124 ] && [ -n "$timeout_cmd" ]; then
 		echo "[FAIL] 用例超时（>${TEST_TIMEOUT}s，疑似死循环）"
 		record_fail "$name"
-	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]"; then
+	elif echo "$out" | grep -qF "[FAIL]"; then
 		record_fail "$name"
-	elif [ "$pass_n" -eq 0 ] || ! echo "$out" | grep -qF "[DONE]"; then
-		echo "[FAIL] 假绿嫌疑：未见 [DONE] 完成标记或 [PASS] 计数为 0（早退/守卫短路/零断言）"
-		record_fail "$name"
+	elif ! check_green "$out" "$rc" "$name"; then
+		: # check_green 已 record_fail
 	else
 		record_pass
 	fi
@@ -274,18 +366,14 @@ echo "==============================================="
 # Camera 有意豁免（头注声明：全仓唯一不挂 arg_table 样板的驱动，build
 # 不碰设备、入参走内联类型守卫）。lib/ 内部实现自用，不在检查范围。
 # ======================================================================
-echo "----- lint (驱动入口 arg_table 断言) -----"
-bad="$(grep -l 'type(data) ~= "table"' modules/*.lua | grep -v '^modules/Camera.lua$' || true)"
-if [ -n "$filter" ]; then
-	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
-elif [ -n "$bad" ]; then
-	echo "[FAIL] 以下驱动仍存在绕过 arg_table 的内联类型检查："
-	echo "$bad"
-	record_fail "lint-driver-entry-arg_table"
-else
-	echo "[PASS] modules/*.lua 器件驱动入口均走 arg_table（Camera 豁免）"
-	record_pass
-fi
+# 本 lint 搜的是「坏形态」，PASS 的条件天然是 0 命中——不能再给 min_hits（那是
+# 给「正向抽取」用的参数，语义是「命中数应 ≥ N，低于则判抽取判据失效」，套在
+# 坏形态搜索上会导致 PASS 结构上不可达，2026-10-08 审计发现并修正，详见
+# .tmp/audit-2026-10-08.md P0）。抽取判据是否还对得上源码形态，交给
+# test/run_all_selftest.sh 的合成坏样本正向对照去管，不在这里用活树命中数假装自检。
+run_one_inline_lint "lint-driver-entry-arg_table" \
+	"驱动入口 arg_table 断言" \
+	"grep -l 'type(data) ~= \"table\"' modules/*.lua | grep -v '^modules/Camera.lua$'"
 
 # ======================================================================
 # 模块路径引导 lint（2026-09-20 重构阶段 2 收尾防线）：
@@ -296,16 +384,73 @@ fi
 # multipath_module_path）。只盯这一种**已知坏形态**——lib/ 里用
 # `:gmatch("[^:]+")` 逐段探测的既有实现是对的，不能误伤。
 # ======================================================================
-echo "----- lint (模块路径引导 __mpath 断言) -----"
-bad="$(grep -rn ':match("\[^:\]+")' modules/ | grep -v '__mpath' || true)"
+# 同上（见上条 lint 的新注释）：坏形态搜索不配 min_hits。另修一处独立 bug：
+# 原判据 `:match("[^:\]+")` 在被双引号参数吃掉转义后，`[^:\]` 变成未闭合字符
+# 类，恒 0 命中——改用 grep -F 字面量匹配 `:match("[^:]+")`，不再过引号层。
+run_one_inline_lint "lint-module-path-bootstrap" \
+	"模块路径引导 __mpath 断言" \
+	"grep -rnF ':match(\"[^:]+\")' modules/ | grep -v '__mpath'"
+
+# ======================================================================
+# NaN 兜底 lint（26.1 收尾防线）：驱动的配置列不得写 `tonumber(data.X) or 缺省`。
+# LuaJIT 下 tonumber("nan")/tonumber("inf") 出的是 **number**（Lua 里 truthy），
+# or 的右支永不触发；而 NaN 与任何数比较都为假，后续的区间判定一律放行。
+# 已实测到的后果不是错值而是行为改变：MCP4725 的 eep='nan' 会走**有擦写寿命
+# 上限**的 EEPROM 写路径、AD9833 的 mute='nan' 会静默把 DDS 静音、MT6826S 的
+# zero='nan' 会把每次 call 的 ANGLE 永久污染成 nan、BME688 的 wait='nan' 会让
+# 轮询循环的超时分支永不触发（后端进程挂死）。这四处是后果最重的样本，连同
+# AS3935/APDS9900/EMC2101/GPIO 共 8 个驱动的同类站点均已修（前后行为对照记在
+# 各自提交信息里），本 lint 钉住不回退。
+# 正确写法是 drv_common 的 num_or(v, def)（回落缺省）或 finite_of(v)（返 nil，
+# 判据取「与该列既有的非数字串同结论」）；两者都经 bus_contract.finite_of 单点。
+# 只盯 `data.` 这一种形态：`data` 是 arg_table 强制的配置表名，而 `opts.` 是
+# *_VIRT 内嵌模型构造器的参数名（TPL0501/BME280/AD9833 的三处 opts 站点全在
+# 模型块内，生产路径零执行），不属本防线范围。
+# Camera 有意豁免（在不碰清单：冻结边界，width/height 两列不改写）。
+# ======================================================================
+run_one_inline_lint "lint-driver-nan-fallback" \
+	"配置列 NaN 兜底断言" \
+	"grep -rnE 'tonumber\(data\.[A-Za-z_]+\) or ' modules/*.lua | grep -v '^modules/Camera.lua:'"
+
+# ======================================================================
+# 生命周期形态一致性 lint（26.3 收尾防线）：走 require_driver 的驱动**不得**
+# 再自己定义单参的 build/call/destroy 全局。require_driver 会按 spec 里的
+# build/call/destroy 回调**安装**同名全局包装（内含 arg_table 校验与
+# proto=virt 注入钩子），驱动若在 require_driver 之后再写 `function build(data)`
+# 就把包装整个覆盖掉——绕过 arg_table 的后果与上面那条驱动入口 lint 同源
+# （@Action 直写路径绕开仿真打到真实总线），且覆盖是静默的：spec 回调照常
+# 被定义、只是再没人调它。
+# 判据取**元数**而非缩进：spec 回调一律是 `(ctx, data)` 两参（各驱动的 spec 表
+# 有零缩进也有四空格缩进，缩进不可作判据），裸全局一律是单参 `(data)`。
+# `read` 有意豁免：require_driver 只认 spec.build/call/destroy/state/name/
+# i2c_addr_default，**没有 spec.read**，而宿主是直接探测全局
+# `luaGlobalType(L_, "read")`（src/luavar.cpp）——想暴露 read 就只能写裸全局，
+# SCSCL.lua 正是这一形态，属框架缺口而非驱动写错。
+# lib/ 不在检查范围：drv_common.lua 自身就定义这四个单参全局（它就是安装方）。
+# ======================================================================
+echo "----- lint (require_driver 驱动的生命周期形态断言) -----"
+# 单参生命周期全局：`function build(data)` 或 `build = function(data)`
+lc_re='^[[:space:]]*(function[[:space:]]+(build|call|destroy)|(build|call|destroy)[[:space:]]*=[[:space:]]*function)[[:space:]]*\([[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\)'
+rd_files="$(grep -l 'require_driver(' modules/*.lua || true)"
+rd_n="$(printf '%s\n' "$rd_files" | grep -c . || true)"
+bad="$(printf '%s\n' "$rd_files" | grep . \
+	| while read -r f; do grep -HnE "$lc_re" "$f"; done \
+	| grep -vE ':[0-9]+:[[:space:]]*local ' || true)"
 if [ -n "$filter" ]; then
 	echo "[SKIP] 指定过滤器 '$filter' 时 lint 不在过滤范围内，跳过"
+elif [ "$rd_n" -eq 0 ]; then
+	# 抽取判据失效防线：一个 require_driver 用户都没扫到，说明上面的 grep 判据
+	# 已经对不上源码形态（改名/改调用方式），此时「0 命中」是空集自证而非通过。
+	echo "[FAIL] 未扫到任何 require_driver 用户（抽取判据失效，0 命中不可信）"
+	record_fail "lint-driver-lifecycle-shape"
 elif [ -n "$bad" ]; then
-	echo "[FAIL] 以下模块仍只取首段定位 lib/mpath.lua（未经 __mpath 注入）："
+	echo "[FAIL] 以下 require_driver 驱动另定义了单参 build/call/destroy 全局"
+	echo "       （会覆盖 require_driver 安装的包装，静默丢掉 arg_table 与 proto=virt 钩子）："
 	echo "$bad"
-	record_fail "lint-module-path-bootstrap"
+	echo "       改成 spec 回调 \`build = function(ctx, data)\`；确需 read 则豁免。"
+	record_fail "lint-driver-lifecycle-shape"
 else
-	echo "[PASS] modules/ 的模块路径引导均走 __mpath（宿主逐段探测）"
+	echo "[PASS] $rd_n 个 require_driver 驱动均只用 spec 回调（read 因无 spec.read 豁免）"
 	record_pass
 fi
 
@@ -630,7 +775,7 @@ parse_cases=(
 	'flow_scalar2.sql|flow_scalar2.mt|1|cannot be controller targets'
 	'trig_scalar2.sql|trig_scalar2.mt|1|cannot be trigger targets'
 	'ctrl2_err.sql|ctrl2_err.mt|1|Invalid Argument: delay|note=witness'
-	# @Include 展开（运行端动作脚本归并，归并内核与 mtmerge 共用）：
+	# @Merge 展开（运行端动作脚本归并，内核 mtmerge_core；旧名 @Include，2026-10-12 改名）：
 	#   include_a/include_b    两个被包含脚本单独跑也合法（正值，登记夹具防孤儿）
 	#   include_inner          主脚本无 @Action：首个 include 顶替累加器
 	#   include_nested         嵌套正值：主脚本 → 组合片段（无自有 @Action）→ 两叶
@@ -676,7 +821,7 @@ parse_cases=(
 	'dev_expr.sql|dev_expr_head.mt|0|note=from-2|note=from-1'
 	'dev_expr.sql|dev_expr_param.mt|0|test=200'
 	'dev_expr.sql|dev_expr_cell.mt|0|"echo":"hello-2"'
-	'dev_expr.sql|dev_expr_minus.mt|1|cannot be applied to a text result'
+	'dev_expr.sql|dev_expr_minus.mt|1|cannot be applied to a text operand'
 	'dev_expr.sql|dev_expr_undefined.mt|1|not a defined hardware variable'
 )
 # parse_cases 的切分与过滤循环（原先内联在顶层——bash 的 local 只能在函数内
@@ -703,55 +848,11 @@ fi
 # 「3 通过, 0 失败」退出 0，把末尾那条 `pass + fail == 0` 的空匹配防线整条废掉
 # （该防线正是为「过滤器拼错不得假绿」而设）。守卫后语义与其它段落一致。
 # F3-5 余部①：三条观察面抽成同型 runner，条数由 count_calls 数调用点推导。
-run_one_trig_obs() {
-	local name="$1" label="$2"
-	echo "----- $name ($label 观察面) -----"
-	local out rc ok
-	out="$(cat "scripts/test/$name.mt" | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot="robots/test/$name.sql" 2>&1)"
-	rc=$?
-	echo "$out"
-	ok=true
-	[ "$rc" -ne 0 ] && ok=false
-	if [ "$name" = "trig_basic" ]; then
-		local src_line sink_line
-		src_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=src' | head -1 | cut -d: -f1)"
-		sink_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=sink' | head -1 | cut -d: -f1)"
-		if [ -z "$src_line" ] || [ -z "$sink_line" ]; then
-			ok=false
-		elif [ "$src_line" -ge "$sink_line" ]; then
-			ok=false
-		fi
-		echo "$out" | grep -qF '"relay-src":{"delay":300}' || ok=false
-		echo "$out" | grep -F 'Forward to controller:' | grep -qF '"relay-src"' && ok=false
-	elif [ "$name" = "trig2_basic" ]; then
-		local s1_line s2_line sk_line
-		s1_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=s1' | head -1 | cut -d: -f1)"
-		s2_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=s2' | head -1 | cut -d: -f1)"
-		sk_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=sink' | head -1 | cut -d: -f1)"
-		if [ -z "$s1_line" ] || [ -z "$s2_line" ] || [ -z "$sk_line" ]; then
-			ok=false
-		elif [ "$s1_line" -ge "$s2_line" ] || [ "$s2_line" -ge "$sk_line" ]; then
-			ok=false
-		fi
-		echo "$out" | grep -qF '"relay-src1":{"delay":300}' || ok=false
-		echo "$out" | grep -qF '"relay-src2":{"delay":301}' || ok=false
-	else
-		# ctrl2_basic：两个 controller 都被转发（各自的 Controller result dump 带名字）
-		echo "$out" | grep -qF 'Controller result (dummy-0)' || ok=false
-		echo "$out" | grep -qF 'Controller result (timer-b)' || ok=false
-		# 扇出广播：payload 只构建一次（同一份数据发给每个 controller）
-		[ "$(printf '%s\n' "$out" | grep -cF 'Forward to controller:')" = "1" ] || ok=false
-	fi
-	if $ok; then
-		record_pass
-	else
-		record_fail "$name($label 观察面)"
-	fi
-}
+# （函数定义已移至 test/lib/sections/lua_e2e.sh）
 
-if [ -z "$filter" ] || [[ "trig_basic" == *"$filter"* ]] || [[ "trig2_basic" == *"$filter"* ]] \
-	|| [[ "ctrl2_basic" == *"$filter"* ]] || [[ "trigger" == *"$filter"* ]] \
-	|| [[ "controller" == *"$filter"* ]]; then
+if filter_matches "trig_basic" "$filter" || filter_matches "trig2_basic" "$filter" \
+	|| filter_matches "ctrl2_basic" "$filter" || filter_matches "trigger" "$filter" \
+	|| filter_matches "controller" "$filter"; then
 if [ ! -x "$bin" ]; then
 	artifact_missing "controller/trigger 多列观察面" "$(( $(count_calls run_one_trig_obs) )) 条用例" "$bin" "$bot_explicit"
 else
@@ -762,148 +863,12 @@ fi
 fi	# C8：$filter 守卫（与邻居段落同语义）
 
 # ======================================================================
-# mtmerge 合成器：@Action 相位归并 + @Alias/@Vars 按行叠加（同名报错）。
-# 纯离线；最后一条把产物回喂 mybot，证明内联 Alias/Vars 在合并产物里仍生效。
-# 缺 ./build/mtmerge 判失败（本段是 mtmerge 的唯一覆盖）。
+# mtmerge 离线合成器已移除（2026-10-10）：运行端 @Merge 展开仍保留，归并内核
+# mtmerge_core 由 test_mtmerge.cpp 白盒单测覆盖。此段落原有的 5 条用例已删除。
 # ======================================================================
-mtmerge_bin="${MTMERGE:-./build/mtmerge}"
-mtmerge_explicit=0
-[ -n "${MTMERGE:-}" ] && mtmerge_explicit=1
-mtmerge_reported=""
-# 本节用例数 = run_one_mtmerge 调用点 + 1 条「产物回喂 mybot」E2E（下方内联）。
-# 数调用点而非写死数字：加用例忘改文案的漂移在此消除（N-31）。
-mtmerge_cases_n=$(( $(count_calls run_one_mtmerge) + 1 ))
-if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
-	mkdir -p .tmp/mtm
-	cat > .tmp/mtm/a.mt <<'MTEOF'
-@Alias
-name alias;
-  A  angle;
-@
-
-@Vars
-name value;
-  K  1;
-@
-
-@Action
-s1.A;
-  45;
-@
-MTEOF
-	cat > .tmp/mtm/b.mt <<'MTEOF'
-@Alias
-name alias;
-  B  delay;
-@
-
-@Vars
-name value;
-  L  2;
-@
-
-@Action
-spk.B;
-  200;
-@
-MTEOF
-	cat > .tmp/mtm/dup_alias.mt <<'MTEOF'
-@Alias
-name alias;
-  A  other;
-@
-
-@Action
-s2.A;
-  10;
-@
-MTEOF
-	cat > .tmp/mtm/dup_vars.mt <<'MTEOF'
-@Vars
-name value;
-  K  3;
-@
-
-@Action
-s2.K;
-  10;
-@
-MTEOF
-	cat > .tmp/mtm/multiblock.mt <<'MTEOF'
-@Alias
-name alias;
-  C  freq;
-@
-
-@Alias
-name alias;
-  D  speed;
-@
-
-@Action
-s3.C;
-  1;
-@
-MTEOF
-	cat > .tmp/mtm/robot.sql <<'SQLEOF'
-CREATE TABLE dummy (
-	name String
-);
-INSERT INTO dummy (name) VALUES ('dummy-0');
-
-CREATE TABLE Servo (
-	name       String,
-	max        String,
-	min        String,
-	offset     String,
-	controller String,
-	channel    String
-);
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s1', '90', '-', '0', 'dummy-0', '6');
-INSERT INTO Servo (name, max, min, offset, controller, channel) VALUES ('s2', '90', '-', '0', '-', '5');
-
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('spk');
-SQLEOF
-
-	# 正值：Alias/Vars 两侧行都并入，@Action 设备集不相交照常归并
-	run_one_mtmerge 'mtmerge_merge' 0 \
-		'A angle|B delay|K 1|L 2|s1.A spk.B' \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt
-
-	# 同一输入内多个 @Alias 块都要并入（不得只看第一个而静默丢弃其余块）
-	run_one_mtmerge 'mtmerge_multiblock' 0 \
-		'C freq|D speed|s1.A s3.C' \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/multiblock.mt
-
-	# 负值：同名 Alias / Vars 行（跨输入）必须报错退出 2
-	run_one_mtmerge 'mtmerge_alias_dup' 2 "duplicate Alias name 'A'" \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/dup_alias.mt
-	run_one_mtmerge 'mtmerge_vars_dup' 2 "duplicate Vars name 'K'" \
-		"$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/dup_vars.mt
-
-	# 端到端：合并产物回喂 mybot，内联 Alias(A->angle, B->delay) 生效
-	echo "----- mtmerge_e2e (mtmerge) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		[ -z "$mtmerge_reported" ] && { mtmerge_reported=1; artifact_missing "mtmerge 合成器" "$mtmerge_cases_n 条用例" "$mtmerge_bin" "$mtmerge_explicit"; }
-	elif [ ! -x "$bin" ]; then
-		artifact_missing "mtmerge 回喂 mybot" "该用例（回喂 E2E）" "$bin" "$bot_explicit"
-	else
-		out="$( ("$mtmerge_bin" .tmp/mtm/a.mt .tmp/mtm/b.mt | "$bin" --robot=.tmp/mtm/robot.sql) 2>&1 )"
-		rc=$?
-		echo "$out" | tail -4
-		if [ "$rc" -eq 0 ] && echo "$out" | grep -qF 'Dummy served 1 call(s)'; then
-			record_pass
-		else
-			record_fail "mtmerge_e2e(mtmerge)"
-		fi
-	fi
-fi
 
 # ======================================================================
-# @Include 归并观察面（parse_cases 只能钉单点断言，这里做多值/计数断言）：
+# @Merge 归并观察面（parse_cases 只能钉单点断言，这里做多值/计数断言）：
 #   include_main   三路设备合并到单时间轴——r1 滞后 1 拍、r2 滞后 2 拍；
 #                  两个 include 的全部动作（100/110 与 200/210/220）都在输出里；
 #                  相位前导行未起拍的设备不得以 0.0 误发（test=0 禁止出现）；
@@ -914,11 +879,11 @@ fi
 # ======================================================================
 # F3-5 余部①：条数由 count_calls 数调用点推导（runner 定义在分段文件，
 # 调用点仍留在本文件——count_calls 数的就是它）。
-if [ -z "$filter" ] || [[ "include" == *"$filter"* ]]; then
+if filter_matches "include" "$filter"; then
 if [ ! -x "$bin" ]; then
-	artifact_missing "@Include 归并观察面" "$(( $(count_calls run_include_case) )) 条用例" "$bin" "$bot_explicit"
+	artifact_missing "@Merge 归并观察面" "$(( $(count_calls run_include_case) )) 条用例" "$bin" "$bot_explicit"
 else
-	run_include_case 'include_main' 'include-main' '@Include 归并'
+	run_include_case 'include_main' 'include-main' '@Merge 归并'
 	run_include_case 'include_diamond' 'include-diamond' 'include-once'
 fi
 fi
@@ -930,7 +895,7 @@ fi
 # 缺 python3 仍按 README 声明的软依赖跳过并计入汇总。
 # 随机高位端口（19000-19999）规避默认 19240 被占/串扰。
 # ======================================================================
-if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
+if filter_matches "tcp" "$filter"; then
 	run_one_tcp
 fi
 
@@ -941,7 +906,7 @@ fi
 # 本身是被断言的故障形态。缺 python3 按 SKIP 计（与 TCP 段同约定）。
 # 场景数从该脚本的 run_scenario 调用点数出来（本文件不做第二份计数）。
 # ======================================================================
-if [ -z "$filter" ] || [[ "tcp" == *"$filter"* ]]; then
+if filter_matches "tcp" "$filter"; then
 	run_one_tcp_adv
 fi
 
@@ -967,10 +932,19 @@ fi
 #   * 循环层的（工具循环、超时、重试、取消、图片后注、stdout 纯净/写失败、
 #     会话持久化两进程接力）→ R 段（R11 = --session-file/--resume，批次 D）；
 #   * DeepSeek/Anthropic 协议差异与恢复 → R12/R13；虚拟 DAC 读写闭环 → R14。
-#     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见 docs/changelog.md）。
+#     agent over TCP 远程 REPL 已评估不做（2026-09-25，决策记录见提交 c38928f）。
 # ======================================================================
 if filter_matches "agent" "$filter_e2e"; then
-	run_one_agent_rust_e2e
+	# 状态目录双保险（2026-10-03 家目录持久化批次）：agent_e2e.sh 自身会把 MYBOT_HOME
+	# 指向它的临时目录，这里再兜一层——即便那层隔离将来失效，缺省落盘的对话历史/地图
+	# 也只会写进这个临时目录，绝不碰真实 $HOME/.mybot。
+	_e2e_home="$(mktemp -d "${TMPDIR:-/tmp}/mybot-e2e-home.XXXXXX")"
+	MYBOT_HOME="$_e2e_home" run_one_agent_rust_e2e
+	# ICA 证据账本两进程（scripts/ica_e2e.sh，BOT4CJ_ICA=1 实验特性）：此前无人调用，
+	# 接进同一段。产物依赖与上面那段相同，脚本自身也无条件沙箱 MYBOT_HOME，共用这层双保险。
+	MYBOT_HOME="$_e2e_home" run_one_ica_e2e
+	rm -rf "$_e2e_home"
+	unset _e2e_home
 fi
 
 # ======================================================================
@@ -986,14 +960,9 @@ if filter_matches "mcp" "$filter_e2e"; then
 fi
 
 # ======================================================================
-# mtmerge 相位语义回归（scripts/mtmerge_e2e.sh）：相位 0/±1 逐格比对、
-# 设备集相交报错、三输入链式、负相位丢行告警、合并产物回喂 mybot 时
-# 相位前导 "-" 的设备必须被跳过而非 play(0.0)（未起拍语义）。
-# 与上面的逐条 mtmerge 用例互补：这里只盯相位边界，缺产物判失败。
+# mtmerge 离线合成器相位语义回归已移除（2026-10-10，随独立 mtmerge 目标一起删除）。
+# 运行端 @Merge 展开的相位语义由 test_mtinclude.cpp 覆盖。
 # ======================================================================
-if [ -z "$filter" ] || [[ "mtmerge" == *"$filter"* ]]; then
-	run_one_mtmerge_phase
-fi
 
 # ======================================================================
 # 审计加固回归（#1/#2/#4）：输入源信任边界与守护 setup 失败回滚。
@@ -1015,29 +984,29 @@ fi
 # 夹具写在 .tmp/（已 gitignore），经 BOT4CJ_MODULE_PATH 多路径注入。
 # ======================================================================
 
-if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$filter"* ]]; then
+if filter_matches "hardening" "$filter" || filter_matches "tcp_host" "$filter"; then
 	run_one_hardening 'tcp_host_bad' 1 '--tcp-host 地址无效' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19301 --tcp-host 'not-an-ip'
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --tcp 19301 --tcp-host 'not-an-ip'
 
 	# 审计 H-2：非回环监听必须设 --tcp-token，缺省即拒绝启动（不再仅告警）
 	run_one_hardening 'tcp_noloop_requires_token' 1 '非回环且未设 --tcp-token' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp 19302 --tcp-host 0.0.0.0
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --tcp 19302 --tcp-host 0.0.0.0
 
 	# 审计中-3：裸 --tcp（漏写端口号）明确报错，不再静默回落端口 1 走到 bind 失败
 	run_one_hardening 'tcp_no_port' 1 '--tcp 需要端口号' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --tcp
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --tcp
 
 	# B1（2026-09-20 计划 M0）：--help 此前零守门（全仓 grep 无命中）。CLI 帮助
 	# 文本是用户可见契约：退出码 0 与关键区块在此钉住；选项集合与 docs/ 选项表
 	# 的双向一致性由 C++ 单测 cliargs_help_option_set_matches_docs 比对。
 	run_one_hardening 'help_exit_and_sections' 0 '安全约束：动作脚本只能引入新的参数键' \
-		timeout 20 "$bin" --help
+		timeout $HARDENING_TIMEOUT "$bin" --help
 
 	mkdir -p .tmp
 	# 9MiB 合法动作脚本：超过 8MiB 上限，必须在读取阶段就被拒绝
 	{ echo '@Action'; echo 'relay0.test;'; yes '    200;'; } 2>/dev/null | head -c 9000000 > .tmp/toolarge.mt
 	run_one_hardening 'action_toolarge' 1 'exceeds the byte limit' \
-		timeout 30 "$bin" --robot=robots/relay-test.sql --input .tmp/toolarge.mt
+		timeout $HEAVY_TIMEOUT "$bin" --robot=robots/relay-test.sql --input .tmp/toolarge.mt
 	rm -f .tmp/toolarge.mt
 
 	# F-02：结构脚本（.sql）与动作脚本统一 8 MiB 上限——旧实现只有 .mt 限流，
@@ -1046,12 +1015,12 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	pad="$(printf 'x%.0s' $(seq 1 100))"
 	{ echo 'CREATE TABLE T ( name String );'; yes "INSERT INTO T ( name ) VALUES ('$pad');"; } 2>/dev/null | head -c 9000000 > .tmp/sql_toolarge.sql
 	run_one_hardening 'sql_toolarge' 1 'exceeds the byte limit' \
-		timeout 30 "$bin" --robot=.tmp/sql_toolarge.sql --input /dev/null
+		timeout $HEAVY_TIMEOUT "$bin" --robot=.tmp/sql_toolarge.sql --input /dev/null
 	rm -f .tmp/sql_toolarge.sql
 
 	# F-20：未知/拼错的 --key 不再「打印帮助 + exit 0」——CI 里的假成功出口
 	run_one_hardening 'unknown_arg' 2 '未知参数：--robott' \
-		timeout 20 "$bin" --robott=robots/relay-test.sql
+		timeout $HARDENING_TIMEOUT "$bin" --robott=robots/relay-test.sql
 
 	# 多路径模块根（2026-09-20 重构阶段 2）：docs/reference.md 承诺
 	# BOT4CJ_MODULE_PATH 支持 ':' 分隔多路径按序查找，但驱动侧引导只取首段
@@ -1059,135 +1028,43 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [[ "tcp_host" == *"$f
 	# 判别性要求：首段必须不存在，否则测不出问题。
 	run_one_hardening 'multipath_module_path' 0 'Relay: test=200 note=hello-relay -> delay=200' \
 		env BOT4CJ_MODULE_PATH=".tmp/no-such-module-root:./modules" \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --input scripts/relay-test.mt
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --input scripts/relay-test.mt
 
-	mkdir -p .tmp/fixmod
-	cat > .tmp/fixmod/leakdrv.lua <<'LUAEOF'
--- 审计 #4 回归夹具：只提供 virt 器件模型，故意不定义全局 build/call/destroy，
--- 复现 @Daemon 的 driver 列误配成「加载成功但没有 build」的模块这一真实坑。
-leakdrv_VIRT = { new = function() return {} end }
-LUAEOF
-	cat > .tmp/fixmod.sql <<'SQLEOF'
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('t0');
-
-CREATE TABLE Daemon (
-	name     String,
-	chunk    String,
-	driver   String,
-	proto    String,
-	addr     String,
-	interval String,
-	fields   String
-);
-INSERT INTO Daemon (name, chunk, driver, proto, addr, interval, fields)
-  VALUES ('ld0', 'lib/sensor_daemon.lua', 'leakdrv', 'virt', '0x68', '10', 'v0');
-SQLEOF
-	printf '@Action\nt0.delay;\n   200;\n    50;\n    50;\n@\n' > .tmp/fixmod.mt
+	setup_hardening_daemon_build_fixture
 	run_one_hardening 'daemon_build_raise' 0 'driver build() raised' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod.sql --input=.tmp/fixmod.mt
 
 	# N2 回归：上游驱动的返回表里混进 mode 键（controller payload 会原样带着它），
 	# mode 必须由框架独占、下游派发目标必须仍是 call——否则上游一句话就能让
 	# 下游驱动的 call() 完全不执行且退出码仍为 0。锚点取下游自己写出的键。
-	cat > .tmp/fixmod/HijUp.lua <<'LUAEOF'
--- 审计 N2 回归夹具：故意在返回值里塞 mode，模拟被带进 controller payload 的键
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data) return { result = "OK", mode = "print", from_up = "yes" } end
-LUAEOF
-	cat > .tmp/fixmod/HijDown.lua <<'LUAEOF'
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data)
-	if data.mode ~= "call" then
-		return { result = "ERR", message = "controller dispatch target was overridden: " .. tostring(data.mode) }
-	end
-	return { result = "OK", down_served = "yes" }
-end
-LUAEOF
-	cat > .tmp/fixmod_hij.sql <<'SQLEOF'
-CREATE TABLE HijDown (
-	name String
-);
-INSERT INTO HijDown (name) VALUES ('d0');
-
-CREATE TABLE HijUp (
-	name       String,
-	controller String
-);
-INSERT INTO HijUp (name, controller) VALUES ('u0', 'd0');
-SQLEOF
-	printf '@Action\nu0.x;\n   1;\n@\n' > .tmp/fixmod_hij.mt
+	setup_hardening_mode_override_fixture
 	run_one_hardening 'mode_key_cannot_override_dispatch' 0 'down_served' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_hij.sql --input=.tmp/fixmod_hij.mt
 
 	# N3 回归：call() 漏写 return（返回 0 个值）曾被折成空表、被 ensureOk 当成
 	# 成功——硬件没动却报绿。现在必须清晰报错并以非 0 退出。
-	cat > .tmp/fixmod/NoRet.lua <<'LUAEOF'
--- 审计 N3 回归夹具：call 少写一行 return，等价于返回「无值」
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data)
-	local ignored = data.x
-end
-LUAEOF
-	cat > .tmp/fixmod_noret.sql <<'SQLEOF'
-CREATE TABLE NoRet (
-	name String
-);
-INSERT INTO NoRet (name) VALUES ('n0');
-SQLEOF
-	printf '@Action\nn0.x;\n   1;\n@\n' > .tmp/fixmod_noret.mt
+	setup_hardening_no_return_fixture
 	run_one_hardening 'driver_returns_nothing' 1 "returned no value" \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_noret.sql --input=.tmp/fixmod_noret.mt
 
 	# C-9 回归：驱动返回自引用表（t.self = t，最常见的笔误形态）曾是宿主栈溢出
 	# 裸 SIGSEGV（退出码 139，且跳过 deactivate 清理链）——必须变成清晰契约报错。
-	cat > .tmp/fixmod/CycRet.lua <<'LUAEOF'
--- 审计 C-9 回归夹具：call 返回一张引用自己的表
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-function call(data)
-	local t = { result = "OK", v0 = 1.5 }
-	t.self = t
-	return t
-end
-LUAEOF
-	cat > .tmp/fixmod_cyc.sql <<'SQLEOF'
-CREATE TABLE CycRet (
-	name String
-);
-INSERT INTO CycRet (name) VALUES ('c0');
-SQLEOF
-	printf '@Action\nc0.x;\n   1;\n@\n' > .tmp/fixmod_cyc.mt
+	setup_hardening_cyclic_fixture
 	run_one_hardening 'driver_returns_cyclic_table' 1 'nests deeper than' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_cyc.sql --input=.tmp/fixmod_cyc.mt
 
-	# F5-4：同一物理串口被两个「各自 open 独立 fd」的 UART 总线变量声明
-	# （不同波特率，危险形态最小样本）。断言：结构装配期打印告警（先于上电、
-	# 点名双方）且装配不因此失败——进程继续走到上电，以 UART open 失败结束
-	# （path=/dev/null 在 HAL uart 路径白名单外，任何机器都确定性 rc=1，
-	# 不受本机是否接串口影响）。取向声明见 docs/faq.md。夹具按 hardening
-	# 段惯例运行期生成进 .tmp/（不进 robots/test/：孤儿检测要求静态夹具
-	# 必须接进用例表，而 hardening 是命令行调用形态）。
-	cat > .tmp/uart_two_vars.sql <<'SQLEOF'
-CREATE TABLE UART (
-	name String,
-	path String,
-	baud String
-);
-INSERT INTO UART (name, path, baud) VALUES ('uart-0', '/dev/null', '9600');
-INSERT INTO UART (name, path, baud) VALUES ('uart-1', '/dev/null', '115200');
-SQLEOF
-	run_one_hardening 'uart_shared_path_warning' 1 'Warning: UART path' \
-		env BOT4CJ_MODULE_PATH="./modules" timeout 30 "$bin" \
+	# F5-4/P1-3：同一物理串口被两个「各自 open 独立 fd」的 UART 总线变量声明
+	# （不同波特率，危险形态最小样本）。断言：结构装配期硬拒绝（ IllegalArgumentException
+	# 折成 ERR 输出，rc=1）——此前只告警，P1-3 起升级为硬门禁。
+	# 取向声明见 docs/faq.md。夹具按 hardening 段惯例运行期生成进 .tmp/
+	# （不进 robots/test/：孤儿检测要求静态夹具必须接进用例表）。
+	setup_hardening_uart_shared_fixture
+	run_one_hardening 'uart_shared_path_rejected' 1 'is opened independently by 2 consumers' \
+		env BOT4CJ_MODULE_PATH="./modules" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/uart_two_vars.sql --input /dev/null
 
 	# F5-2：C-API 无保护帧回归——驱动给 _G 装上带报错 __index 的元表后，宿主
@@ -1198,25 +1075,9 @@ SQLEOF
 	# 文本全丢。现「取全局 + 造参数表 + 填参」整段进受保护帧，两种构建下
 	# 都折成既有 ERR 契约（rc=1 + 带上下文的报错文本）。夹具只定义 build
 	# 不定义 call：结构期 build 正常，动作派发的 call 触发 __index。
-	cat > .tmp/fixmod/GmtDrv.lua <<'LUAEOF'
--- F5-2 回归夹具：_G 元表 __index 报错。宿主对缺失全局的 getglobal 必须在
--- 受保护帧内（否则裸崩且跳过清理链）。故意只定义 build 不定义 call。
-setmetatable(_G, { __index = function(_, k)
-	error("boom from __index: " .. tostring(k))
-end })
-
-function build(data) return { result = "OK" } end
-function destroy(data) return { result = "OK" } end
-LUAEOF
-	cat > .tmp/fixmod_gmt.sql <<'SQLEOF'
-CREATE TABLE GmtDrv (
-	name String
-);
-INSERT INTO GmtDrv (name) VALUES ('h0');
-SQLEOF
-	printf '@Action\nh0.x;\n   1;\n@\n' > .tmp/fixmod_gmt.mt
+	setup_hardening_getglobal_fixture
 	run_one_hardening 'lua_getglobal_unprotected_frame' 1 'boom from __index' \
-		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout 30 "$bin" \
+		env BOT4CJ_MODULE_PATH="./modules:.tmp/fixmod" timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/fixmod_gmt.sql --input=.tmp/fixmod_gmt.mt
 fi
 
@@ -1228,14 +1089,14 @@ fi
 # AG-23（第三轮审计）：这些用例独立设门——裸 `hardening` 仍进（向后兼容）、
 # `agent-all` 也进（那是覆盖全表面的入口）、单条名字前缀 `agent_` 也进。
 # ======================================================================
-if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-all" ] \
+if filter_matches "hardening" "$filter" || [ "$filter" = "agent-all" ] \
 	|| [[ "$filter" == agent_* ]]; then
 
 	# 1) 模型循环类选项属于 mybot-agent：显式拒绝退出 2 并指路（不静默忽略、
 	#    也不报「未知参数」——那是 mybot-agent 的选项面，本程序只是不跑模型循环）
 	if case_matches 'agent_opt_outside_agent'; then
 	run_one_hardening 'agent_opt_outside_agent' 2 '属于 Rust agent' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --task '让继电器动作一次'
 	fi
 
 	# 2) --agent 已移除（agent 循环迁 Rust）：校验层快速失败退出 2 + 两进程替代
@@ -1243,16 +1104,16 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	#    死工作序列（原三条 --agent --tcp 组合互斥用例随之改写为等价负路径）
 	if case_matches 'agent_tcp_input_mutex'; then
 	run_one_hardening 'agent_tcp_input_mutex' 2 '--agent 已移除' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --input=/dev/null
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --agent --tcp 19399 --input=/dev/null
 	fi
 	if case_matches 'agent_tcp_task_mutex'; then
 	run_one_hardening 'agent_tcp_task_mutex' 2 '--mcp-backend 与 --tcp 互斥' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql \
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql \
 		--mcp-backend --mcp-socket /tmp/hard-mcp.sock --tcp 19399
 	fi
 	if case_matches 'agent_tcp_crossmachine_needs_token'; then
 	run_one_hardening 'agent_tcp_crossmachine_needs_token' 2 '需要 --mcp-socket' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql --mcp-backend
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql --mcp-backend
 	fi
 
 	# 3) 后端 + 危险能力 ⇒ 强制外部确认（评估 §3.2）：开 --agent-shell 必须配
@@ -1262,7 +1123,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	#    mybot-agent（agent_e2e.sh R5 的 --check-config 场景）
 	if case_matches 'agent_missing_key'; then
 	run_one_hardening 'agent_missing_key' 2 '必须用 --agent-policy' \
-		timeout 20 "$bin" --robot=robots/relay-test.sql \
+		timeout $HARDENING_TIMEOUT "$bin" --robot=robots/relay-test.sql \
 		--mcp-backend --mcp-socket /tmp/hard-mcp.sock --agent-shell
 	fi
 
@@ -1274,7 +1135,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	awk 'BEGIN { for (i = 0; i < 3000; i++) print "padding line for the system prompt cap test" }' \
 		> .tmp/bigprompt.md
 	run_one_hardening 'agent_prompt_over_cap' 2 '属于 Rust agent' \
-		env BOT4CJ_LLM_KEY=dummy timeout 30 "$bin" \
+		env BOT4CJ_LLM_KEY=dummy timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --prompt-file .tmp/bigprompt.md
 	fi
 
@@ -1300,11 +1161,11 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	printf 'THIS IS NOT SQL AT ALL;\n' > .tmp/checkcfg_badstruct.sql
 
 	run_one_hardening 'agent_check_config_ok' 0 '配置校验通过' \
-		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --mcp-backend --check-config
 
 	echo "----- agent_check_config_no_network (agent) -----"
-	out="$(env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+	out="$(env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --mcp-backend --check-config 2>&1)"
 	if echo "$out" | grep -qiE 'curl|连接|connection|refused|网络错误'; then
 		record_fail "agent_check_config_no_network(输出含网络错误字样)"
@@ -1315,11 +1176,11 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 
 	echo "----- agent_check_config_only_reads_structure_head (agent) -----"
 	cfg_rc=0
-	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/checkcfg_badstruct.sql --mcp-backend --check-config \
 		>/dev/null 2>&1 || cfg_rc=$?
 	run_rc=0
-	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout 30 "$bin" \
+	env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_ok.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=.tmp/checkcfg_badstruct.sql \
 		--mcp-backend --mcp-socket /tmp/hard-mcp.sock >/dev/null 2>&1 || run_rc=$?
 	if [ "$cfg_rc" -eq 0 ] && [ "$run_rc" -ne 0 ]; then
@@ -1329,7 +1190,7 @@ if [ -z "$filter" ] || [[ "hardening" == *"$filter"* ]] || [ "$filter" = "agent-
 	fi
 
 	run_one_hardening 'agent_check_config_bad_field' 2 '未知字段' \
-		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_bad.json timeout 30 "$bin" \
+		env BOT4CJ_LLM_KEY=dummy BOT4CJ_LLM_CONFIG=.tmp/checkcfg_bad.json timeout $HEAVY_TIMEOUT "$bin" \
 		--robot=robots/relay-test.sql --mcp-backend --check-config
 	fi
 fi
@@ -1346,7 +1207,7 @@ fi
 # （setup 预武装 virt_tick(0) 后，拍 0~7 共 8 次发布）、count 有多个取值
 # （证明前 8 拍确实在发布，而非从头就没发布）、joined 行在位。
 # ======================================================================
-if [ -z "$filter" ] || [[ "nack" == *"$filter"* ]]; then
+if filter_matches "nack" "$filter"; then
 	run_one_daemon_nack
 fi
 
@@ -1358,7 +1219,7 @@ fi
 # TCP listen/accept、stdin、LuaJIT 内部管道等；Lua 层的精细生命周期
 # 由 test_virtbus_fdleak.lua（virtbus.fd_count）补齐。
 # ======================================================================
-if [ -z "$filter" ] || [[ "fd" == *"$filter"* ]]; then
+if filter_matches "fd" "$filter"; then
 	run_one_fd_probe
 fi
 
@@ -1372,20 +1233,8 @@ fi
 #                 被 EINTR 打断并检查停止标志的路径）
 # 夹具写在 .tmp/（gitignore）：Timer 长动作 + 无硬件守护（lib/daemon_probe.lua）。
 # ======================================================================
-if [ -z "$filter" ] || [[ "signal" == *"$filter"* ]]; then
-	mkdir -p .tmp
-	cat > .tmp/signal_robot.sql <<'SQLEOF'
-CREATE TABLE Timer (
-	name String
-);
-INSERT INTO Timer (name) VALUES ('t0');
-
-CREATE TABLE Daemon (
-	name  String,
-	chunk String
-);
-INSERT INTO Daemon (name, chunk) VALUES ('d0', 'lib/daemon_probe.lua');
-SQLEOF
+if filter_matches "signal" "$filter"; then
+	setup_hardening_signal_fixture
 	{ echo '@Action'; echo 't0.delay;'; for _ in $(seq 1 60); do echo '   200;'; done; echo '@'; } > .tmp/signal_long.mt
 	run_one_signal 'signal_halt' 0 'Stop requested, halting action dispatch' 'joined, total publishes=' \
 		"$bin" --robot=.tmp/signal_robot.sql --input=.tmp/signal_long.mt
@@ -1413,18 +1262,19 @@ fi
 # 与「用例表引用的文件必须存在」互补：这里管漏登记，那里管空引用。
 # 只在无过滤器的全量跑里执行（与常量自检同理由）。
 # ======================================================================
-# 前 9 个为既有登记；后半 25 个是审计 C11 修正判据后如实暴露的真机夹具
+# 前 9 个为既有登记；后半 26 个是审计 C11 修正判据后如实暴露的真机夹具
 # （文件头均注明「实机测试」）：ads1115 adxl345 amg8833 as3935 as7262 bh1745
-# bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944
-# max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd
-orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501 ads1115 adxl345 amg8833 as3935 as7262 bh1745 bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lsm6dsv ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd"
+# bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lcd1206 lsm6dsv
+# ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd
+orphan_whitelist="ad9833 ads1115_diff gpio hal_i2c jit_rows mcp4725 mpu_filter pwm tpl0501 ads1115 adxl345 amg8833 as3935 as7262 bh1745 bh1750 bme280 bmi270 bmm150 emc2101 ina219 ina226 ina3221 lcd1206 lsm6dsv ltc2944 max17043 mhz19 mlx90393 ms5611 sgp30 sht3x uart vl53l0x vl53l4cd"
 
 # ======================================================================
-# 系统常量自检（F-24）：HAL.lua 硬编码 ioctl/termios 编号与系统头的
-# 一致性已在编译期断言（构建失败即漂移）；此处执行期再跑一遍作为
-# 双保险。二进制与 mybot_tests 同目录构建（BOT_TESTS 指向 sanitizer
-# 构建时同样适用）。只在无过滤器的全量跑里执行——过滤器只匹配用例名，
-# 常量自检不受过滤语义管辖，且不能让「拼错过滤器」的空匹配防线失效。
+# 系统常量自检（F-24）：Lua 侧硬编码 ioctl/termios 编号（hal_backend_glibc.lua）
+# 与波特率映射表（lib/hal/uart.lua）跟系统头的一致性已在编译期断言（构建失败
+# 即漂移）；此处执行期再跑一遍作为双保险。二进制与 mybot_tests 同目录构建
+# （BOT_TESTS 指向 sanitizer 构建时同样适用）。只在无过滤器的全量跑里执行——
+# 过滤器只匹配用例名，常量自检不受过滤语义管辖，且不能让「拼错过滤器」的空
+# 匹配防线失效。
 # ======================================================================
 
 # ======================================================================
@@ -1444,7 +1294,7 @@ run_harness_selftest
 
 # 空匹配防线：过滤器拼错时 0 通过 0 失败不得假绿
 if [ $((pass + fail)) -eq 0 ]; then
-	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E、agent E2E、输入边界加固或 C++ 单测，请检查拼写）"
+	echo "汇总: 无匹配用例（过滤器 '${filter}' 未命中任何 test/test_*.lua、mybot E2E、无硬件契约回归、TCP E2E、agent E2E、输入边界加固、C++ 单测或测试骨架自证，请检查拼写）"
 	exit 1
 fi
 echo "汇总: $pass 通过, $fail 失败, $skip 跳过"

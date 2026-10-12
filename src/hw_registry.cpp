@@ -13,11 +13,16 @@
 
 namespace bot {
 
+/* 文案单点的定义处（声明与理由见 hw_registry.hpp） */
+std::string duplicateHwNameMsg(const std::string& name, const std::string& source) {
+	return "Duplicate hardware variable name: '" + name + "'" + source;
+}
+
 /* ---- HwRegistry：结构期注册（重名即抛）---- */
 void HwRegistry::add(const std::string& name, std::unique_ptr<MatrixVars_Hardware> hw,
 		const std::string& source) {
 	if (byName_.count(name)) {
-		throw IllegalArgumentException("Duplicate hardware variable name: '" + name + "'" + source);
+		throw IllegalArgumentException(duplicateHwNameMsg(name, source));
 	}
 	/* R-2 遗留缺口：三个容器的写入顺序原为 byName_ → seq_ → pool_，一旦后两次
 	 * push_back 抛 bad_alloc，byName_ 已指向 hw 持有的对象，而 hw 随栈展开析构

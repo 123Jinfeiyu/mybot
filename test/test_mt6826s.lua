@@ -6,7 +6,7 @@
 -- 手写桩」迁移到「真实驱动 + virtbus 注入层 + 内嵌模型（modules/MT6826S.lua
 -- 尾部 MT6826S_VIRT，2026-09-15 自 virtbus/mt6826s.lua 迁入）」。
 -- 迁移同时消除 HAL 缺口：驱动原本绕过全局 spi_* 自组全双工帧，现新增全局
--- 原语 spi_xfer_full（1 基表进/等长表出，HAL.lua + virtbus 双侧复刻），
+-- 原语 spi_xfer_full（1 基表进/等长表出，hal/spi.lua + virtbus 双侧复刻），
 -- 驱动只调全局——真机走 ioctl、无真机走内存模型，协议帧可经 txlog 断言。
 --
 -- 协议事实（数据手册 Rev1.1 第 8.6/11 章，三份独立实现交叉）：
@@ -478,6 +478,24 @@ do
 	dev:set_angle_raw(0)
 	r = call({ fd = fd })
 	check("zero=90 回绕：0°-90°=270", near(r.ANGLE, 270.0), tostring(r.ANGLE))
+
+	-- NaN 反例（26.1）：`(z ~= nil and z ~= 0) and z % 360 or 0` 兜不住 NaN——
+	-- 'nan' 过 tonumber 出的是 number（Lua 里 truthy），`z ~= nil` 与 `z ~= 0`
+	-- 皆为真，`NaN % 360` 仍是 NaN，末尾 `NaN or 0` 又因 NaN 是 truthy 而取 NaN。
+	-- cfg_zero 是模块级状态，于是驱动里 `cfg_zero ~= 0` 恒真、**每一次 call 的
+	-- ANGLE 都变成 nan**：一次配置笔误把角度读数永久污染。delay 列的
+	-- `tonumber(x) or 0` 同病——NaN 会流进 read_reg 的延时参数，并被横幅的 %d
+	-- 打成 -9223372036854775808（string.format 对 NaN 不报错，只出垃圾）。
+	section()
+	build({ fd = fd, delay = "nan", zero = "nan" })
+	dev:set_angle_raw(8192)
+	r = call({ fd = fd })
+	check("zero='nan' 归缺省：ANGLE=90°（未被污染成 nan）",
+		near(r.ANGLE, 90.0) and r.RAW == 8192, tostring(r.ANGLE))
+	cap_start(); build({ fd = fd, delay = "nan", zero = "nan" }); cap_stop()
+	check("delay/zero='nan' 横幅回落缺省 delay=0us/zero=0.0deg",
+		banner("delay=0us") ~= nil and banner("zero=0.0deg") ~= nil,
+		tostring(banner("init OK")))
 
 	-- virt_tick 32 拍经真实驱动闭环
 	section()

@@ -2,7 +2,7 @@
 -- bot4cj 仓颉语言机器人框架
 --
 -- 任何 Linux（内核 >= 4.8，CONFIG_GPIO_CDEV 开启）通用：树莓派/瑞芯微/
--- 全志等仅芯片路径与线号不同，皆走 /dev/gpiochipN ioctl（见 HAL.lua GPIO 段）
+-- 全志等仅芯片路径与线号不同，皆走 /dev/gpiochipN ioctl（见 lib/hal/gpio.lua）
 --
 -- 【为何不直接用 libgpiod（决策记录，#32）】
 -- libgpiod 是 Linux GPIO 的推荐用户态封装，但本项目经 LuaJIT FFI 直调
@@ -12,7 +12,7 @@
 --   2) 零运行期依赖：FFI 直调只需 glibc，libgpiod 需额外安装 libgpiod2 且
 --      C API（gpiod_line_request 等）需逐函数 FFI 声明并处理版本差异
 --      （v1 chip 句柄 vs v2 line 句柄 API 不兼容）；
---   3) 本项目另有 I2C/SPI/UART 同为直调 ioctl（HAL.lua），GPIO 保持一致，
+--   3) 本项目另有 I2C/SPI/UART 同为直调 ioctl（lib/hal/*.lua），GPIO 保持一致，
 --      避免"一种总线一个封装库"的依赖碎片。
 -- 若未来需要边沿事件（GPIO_GET_LINEEVENT）或更复杂配置，再评估 libgpiod v2。
 --
@@ -82,7 +82,13 @@ local function build_impl(data)
 		return err("Invalid Argument: chip (missing; also note offset must not be '-')")
 	end
 
-	local offset = tonumber(data.offset)
+	-- 26.3：finite_of 而非 tonumber——与同文件 init 列（下面 num_or）、value 列
+	-- （call 段 finite_of）同口径，这是 GPIO 里最后一处裸 tonumber 数值列。
+	-- 行为上非有限值本来也打不到硬件（hal/gpio.lua 的 offset 归一化对 NaN 由
+	-- `offset ~= math.floor(offset)` 命中、对 inf 由 uint32 上界命中，均返回 -1），
+	-- 但那条路径报的是「Failed to request GPIO line nan on /dev/gpiochipN」——
+	-- 读起来像芯片坏了，而实际是配置列写了非数值。提前拦下让错误指名 offset 列。
+	local offset = finite_of(data.offset)
 	if offset == nil then
 		return err("Invalid Argument: offset (must not be '-')")
 	end
@@ -93,7 +99,11 @@ local function build_impl(data)
 	end
 
 	local active_low = (data.active == "low")
-	local init = tonumber(data.init) or 0
+	-- init 列经 num_or 而非 `tonumber(x) or 0`：'nan' 过 tonumber 出的是 number
+	-- （Lua 里 truthy），`or` 兜不住，会原样下发。后果被 HAL.gpio_request_line 的
+	-- byte_of 兜底中和成 0（安全侧），故这是形态一致性修复而非行为修复——但同文件
+	-- value 列（见 call 段的 finite_of）早已归一，两处口径不一即防护漂移。
+	local init = num_or(data.init, 0)
 
 	-----------------------------------------------------
 	-- 重复 build 先释放旧句柄再请求（防御：不依赖调用方保证 build 恰一次）

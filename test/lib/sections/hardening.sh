@@ -242,3 +242,160 @@ run_one_signal() {
 	fi
 }
 
+# 审计 C-9 回归夹具：call 返回一张引用自己的表（自引用表转换深度上限）
+setup_hardening_cyclic_fixture() {
+	mkdir -p .tmp/fixmod
+	cat > .tmp/fixmod/CycRet.lua <<'LUAEOF'
+-- 审计 C-9 回归夹具：call 返回一张引用自己的表
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data)
+	local t = { result = "OK", v0 = 1.5 }
+	t.self = t
+	return t
+end
+LUAEOF
+	cat > .tmp/fixmod_cyc.sql <<'SQLEOF'
+CREATE TABLE CycRet (
+	name String
+);
+INSERT INTO CycRet (name) VALUES ('c0');
+SQLEOF
+	printf '@Action\nc0.x;\n   1;\n@\n' > .tmp/fixmod_cyc.mt
+}
+
+# F5-2 回归夹具：_G 元表 __index 报错（C-API 无保护帧）
+setup_hardening_getglobal_fixture() {
+	mkdir -p .tmp/fixmod
+	cat > .tmp/fixmod/GmtDrv.lua <<'LUAEOF'
+-- F5-2 回归夹具：_G 元表 __index 报错。宿主对缺失全局的 getglobal 必须在
+-- 受保护帧内（否则裸崩且跳过清理链）。故意只定义 build 不定义 call。
+setmetatable(_G, { __index = function(_, k)
+	error("boom from __index: " .. tostring(k))
+end })
+
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+LUAEOF
+	cat > .tmp/fixmod_gmt.sql <<'SQLEOF'
+CREATE TABLE GmtDrv (
+	name String
+);
+INSERT INTO GmtDrv (name) VALUES ('h0');
+SQLEOF
+	printf '@Action\nh0.x;\n   1;\n@\n' > .tmp/fixmod_gmt.mt
+}
+
+# N2 回归夹具：上游驱动返回值里混进 mode 键（controller payload 会被带进该键）
+setup_hardening_mode_override_fixture() {
+	mkdir -p .tmp/fixmod
+	cat > .tmp/fixmod/HijUp.lua <<'LUAEOF'
+-- 审计 N2 回归夹具：故意在返回值里塞 mode，模拟被带进 controller payload 的键
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data) return { result = "OK", mode = "print", from_up = "yes" } end
+LUAEOF
+	cat > .tmp/fixmod/HijDown.lua <<'LUAEOF'
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data)
+	if data.mode ~= "call" then
+		return { result = "ERR", message = "controller dispatch target was overridden: " .. tostring(data.mode) }
+	end
+	return { result = "OK", down_served = "yes" }
+end
+LUAEOF
+	cat > .tmp/fixmod_hij.sql <<'SQLEOF'
+CREATE TABLE HijDown (
+	name String
+);
+INSERT INTO HijDown (name) VALUES ('d0');
+
+CREATE TABLE HijUp (
+	name       String,
+	controller String
+);
+INSERT INTO HijUp (name, controller) VALUES ('u0', 'd0');
+SQLEOF
+	printf '@Action\nu0.x;\n   1;\n@\n' > .tmp/fixmod_hij.mt
+}
+
+# N3 回归夹具：call() 漏写 return（返回 0 个值）
+setup_hardening_no_return_fixture() {
+	mkdir -p .tmp/fixmod
+	cat > .tmp/fixmod/NoRet.lua <<'LUAEOF'
+-- 审计 N3 回归夹具：call 少写一行 return，等价于返回「无值」
+function build(data) return { result = "OK" } end
+function destroy(data) return { result = "OK" } end
+function call(data)
+	local ignored = data.x
+end
+LUAEOF
+	cat > .tmp/fixmod_noret.sql <<'SQLEOF'
+CREATE TABLE NoRet (
+	name String
+);
+INSERT INTO NoRet (name) VALUES ('n0');
+SQLEOF
+	printf '@Action\nn0.x;\n   1;\n@\n' > .tmp/fixmod_noret.mt
+}
+
+# F5-4/P1-3 回归夹具：同一物理串口被两个 UART 总线变量独立 open
+setup_hardening_uart_shared_fixture() {
+	cat > .tmp/uart_two_vars.sql <<'SQLEOF'
+CREATE TABLE UART (
+	name String,
+	path String,
+	baud String
+);
+INSERT INTO UART (name, path, baud) VALUES ('uart-0', '/dev/null', '9600');
+INSERT INTO UART (name, path, baud) VALUES ('uart-1', '/dev/null', '115200');
+SQLEOF
+}
+
+# 审计 #4 回归夹具：只提供 virt 器件模型，故意不定义全局 build/call/destroy
+setup_hardening_daemon_build_fixture() {
+	mkdir -p .tmp/fixmod
+	cat > .tmp/fixmod/leakdrv.lua <<'LUAEOF'
+-- 审计 #4 回归夹具：只提供 virt 器件模型，故意不定义全局 build/call/destroy，
+-- 复现 @Daemon 的 driver 列误配成「加载成功但没有 build」的模块这一真实坑。
+leakdrv_VIRT = { new = function() return {} end }
+LUAEOF
+	cat > .tmp/fixmod.sql <<'SQLEOF'
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
+CREATE TABLE Daemon (
+	name     String,
+	chunk    String,
+	driver   String,
+	proto    String,
+	addr     String,
+	interval String,
+	fields   String
+);
+INSERT INTO Daemon (name, chunk, driver, proto, addr, interval, fields)
+  VALUES ('ld0', 'lib/sensor_daemon.lua', 'leakdrv', 'virt', '0x68', '10', 'v0');
+SQLEOF
+	printf '@Action\nt0.delay;\n   200;\n    50;\n    50;\n@\n' > .tmp/fixmod.mt
+}
+
+# signal 段夹具：Timer + Daemon 最小结构
+setup_hardening_signal_fixture() {
+	mkdir -p .tmp
+	cat > .tmp/signal_robot.sql <<'SQLEOF'
+CREATE TABLE Timer (
+	name String
+);
+INSERT INTO Timer (name) VALUES ('t0');
+
+CREATE TABLE Daemon (
+	name  String,
+	chunk String
+);
+INSERT INTO Daemon (name, chunk) VALUES ('d0', 'lib/daemon_probe.lua');
+SQLEOF
+}
+

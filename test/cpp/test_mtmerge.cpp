@@ -281,7 +281,7 @@ TH_TEST(mtmerge_commutativity_intentionally_not_held) {
 	/* 判别性否定：相位 +1 时 next 侧滞后——merge(A,B,1) 里 B 的首个动作在第
 	 * 2 数据行，merge(B,A,1) 里 A 的首个动作在第 2 数据行，逐设备序列不同。
 	 * 若未来实现「对称化」相位或排序列，本用例即红——那是语义变更，须过
-	 * docs/dsl.md 与 @Include 语义重审，不得静默发生。 */
+	 * docs/dsl.md 与 @Merge 语义重审，不得静默发生。 */
 	mt::MatrixObject l = mtmerge::mergeTwo(actionA(3), actionB(2), 1, "a.mt", "b.mt");
 	mt::MatrixObject r = mtmerge::mergeTwo(actionB(2), actionA(3), 1, "b.mt", "a.mt");
 	TH_CHECK(!sameMatrix(l, r));
@@ -294,10 +294,10 @@ TH_TEST(mtmerge_commutativity_intentionally_not_held) {
 }
 
 /* ================= 产物预算（2026-09-21 第七轮审计） =================
- * 输入侧的三道限（@Include 行数 ≤32、字节 ≤8 MiB、|phase| ≤100000）都在，
- * 而产物侧此前一条都没有：几十字节的脚本写一行 `@Include path=..., phase=100000`
+ * 输入侧的三道限（@Merge 行数 ≤32、字节 ≤8 MiB、|phase| ≤100000）都在，
+ * 而产物侧此前一条都没有：几十字节的脚本写一行 `@Merge path=..., phase=100000`
  * 就能把终态撑到 ~1e5 行 × 数十列（数百 MB），树莓派上 OOM——而 OOM 是 SIGKILL
- * 语义，deactivate() 整体被跳过。判据在 mergeTwo 这个单点，mtmerge 与 @Include 共用。 */
+ * 语义，deactivate() 整体被跳过。判据在 mergeTwo 这个单点，mtmerge 与 @Merge 共用。 */
 
 /* 行列可控的 @Action 夹具：c 列 × r 数据行（值一律填 1，避免文本体积干扰） */
 static mt::MatrixObject actionGrid(int r, int c, const std::string& dev) {
@@ -362,4 +362,18 @@ TH_TEST(mtmerge_product_budget_boundary_is_inclusive) {
 		actionGrid(static_cast<int>(mtmerge::kMaxMergedRows), 1, "a"), actionGrid(1, 1, "b"),
 		0, "a.mt", "b.mt");
 	TH_CHECK(static_cast<std::int64_t>(out.rows()) - 1 == mtmerge::kMaxMergedRows);
+}
+
+/* ---------------- 归并 ⟂ 嵌套（2026-10-12 @块嵌套）---------------- */
+
+TH_TEST(mtmerge_merge_two_rejects_control_block_operand) {
+	/* 归并操作数必须是纯矩阵叶子表：控制块（@if/@while）自身网格为空、体在
+	 * children，当归并操作数会被静默丢弃——mergeTwo 单点响亮拒绝。 */
+	mt::MatrixObject ctrl = fx::oneMatrix("@if(a>0)\nx.p;\n 1;\n@\n");
+	TH_CHECK(ctrl.hasChildren());	/* 前置：确是控制块 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "nested sub-blocks",
+		mtmerge::mergeTwo(ctrl, actionB(1), 0, "ctrl.mt", "b.mt"));
+	/* 另一侧含 children 同样拒绝 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "nested sub-blocks",
+		mtmerge::mergeTwo(actionA(1), ctrl, 0, "a.mt", "ctrl.mt"));
 }

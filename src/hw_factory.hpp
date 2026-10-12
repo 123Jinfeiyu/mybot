@@ -8,31 +8,35 @@
 #include <string>
 #include <vector>
 
+#include "daemon_registry.hpp"
 #include "hardware.hpp"
 #include "hw_registry.hpp"
 #include "matrix.hpp"
 #include "meta_provider.hpp"
+#include "meta_registry.hpp"
 #include "util_except.hpp"
 
 namespace bot {
 
 /* 重构计划 2.2：本头文件不再传导 LuaJIT 头（luaend.hpp 经 daemonvar/luavar
- * 拉入 lua.h，所有 include robot.hpp 的 TU 都被迫解析 Lua 头）。DaemonRunner
- * 只以 shared_ptr 成员出现——shared_ptr 对不完整类型安全（类型擦除删除器），
- * 前向声明即可；具体头由 robot.cpp 与真正用到的 TU 自行引入。 */
-class DaemonRunner;
+ * 拉入 lua.h，所有 include robot.hpp 的 TU 都被迫解析 Lua 头）。守护域改经
+ * DaemonRegistry 门面引用，该门面自身以 shared_ptr 持有 DaemonRunner 且对
+ * 不完整类型安全——本头无须见到 DaemonRunner。 */
 
 /* ---- 硬件装配：矩阵表 → 硬件变量（R-1 拆自 RobotStruct）---- */
 class HwFactory {
 	HwRegistry& registry_;
-	std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders_;
-	std::vector<std::shared_ptr<MetaProvider>>& metaProviders_;
+	DaemonRegistry& daemons_;
+	MetaRegistry& metas_;
 
-	/* 重名前置判重（资源泄漏防线：Lua 状态机/共享槽先申请，此处先确认可注册） */
+	/* 重名前置判重（资源泄漏防线：Lua 状态机/共享槽先申请，此处先确认可注册）。
+	 * 文案走 duplicateHwNameMsg 单点：本检查是 HwRegistry::add 的**提前版**，同一次
+	 * 重名先命中哪个都要报得一样（理由见 hw_registry.hpp 的声明处）；source 后缀
+	 * 与 hw_factory.cpp 里 createDaemonVars / createLuaVars 两处 add 调用同款。 */
 	void precheckDuplicate(const std::string& name, const std::string& mtName) {
 		if (registry_.contains(name)) {
-			throw IllegalArgumentException("Duplicate hardware variable name: '" + name
-				+ "' (in table '" + mtName + "')");
+			throw IllegalArgumentException(
+				duplicateHwNameMsg(name, " (in table '" + mtName + "')"));
 		}
 	}
 
@@ -48,11 +52,13 @@ class HwFactory {
 	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
 	static void checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices);
 
-	/* F5-4：同一物理串口被 2+ 个「各自 open 独立 fd」的消费者（UART 总线变量 /
-	 * 真机守护）声明时的加载期告警——HAL 不做跨变量引用计数，后关闭者以自己
-	 * open 时的配置为准。只告警不拒绝（同配置轮询下实际可用；是否收紧属
-	 * 破坏性决策）。实现与理由见 hw_factory.cpp 的同名函数注释。 */
-	static void warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices);
+	/* F5-4 → P1-3：同一物理串口被 2+ 个「各自 open 独立 fd」的消费者（UART 总线
+	 * 变量 / 真机守护）声明时硬拒绝——HAL 不做跨变量引用计数，后关闭者以自己
+	 * open 时的配置为准，混用波特率会互相改线速。此前只告警（同配置轮询下实际
+	 * 可用），但告警容易被日志淹没、配置漂移无人感知；升级为加载期硬门禁，
+	 * 强制使用者显式共享一个 UART 总线变量（'$uart-x' 引用）或走守护采样。
+	 * 实现与理由见 hw_factory.cpp 的同名函数注释。 */
+	static void rejectSharedUartPaths(const std::deque<mt::MatrixObject>& matrices);
 
 	/* 标量文本矩阵种类：@Alias(参数别名的目标) / @Vars(命名数值) */
 	enum class ScalarKind { Alias, Vars };
@@ -79,9 +85,9 @@ public:
 	static constexpr const char* kDaemonDefaultPathSpi = "/dev/spidev0.0";
 
 	HwFactory(HwRegistry& registry,
-			std::vector<std::shared_ptr<DaemonRunner>>& daemonHolders,
-			std::vector<std::shared_ptr<MetaProvider>>& metaProviders)
-		: registry_(registry), daemonHolders_(daemonHolders), metaProviders_(metaProviders) {}
+			DaemonRegistry& daemons,
+			MetaRegistry& metas)
+		: registry_(registry), daemons_(daemons), metas_(metas) {}
 
 	/* 全部硬变量创建：声明序，Alias/Vars/Lua/Daemon 分派 */
 	void createHardVars(const std::deque<mt::MatrixObject>& matrices);

@@ -14,6 +14,7 @@
 
 #include "hardware.hpp"
 #include "luaend.hpp"
+#include "luaexec.hpp"	/* armLuaExecState/disarmLuaExecState（armExecBudget 覆写用） */
 
 namespace bot {
 

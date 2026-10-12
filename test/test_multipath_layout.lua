@@ -2,11 +2,12 @@
 -- 背景：HAL.lua / virtbus.lua / drv_common.lua 定位 lib/bus_contract.lua、
 -- lib/virtbus.lua 原先只取 BOT4CJ_MODULE_PATH 首段——多路径布局下首段没有
 -- 对应文件时，HAL 引导直接失败、virt_prepare 误报 cannot load。现逐段探测。
--- 本用例以「首段不存在、次段为仓库 modules」的布局验证三处收敛：
+-- 本用例以「首段不存在、次段为仓库 modules」的布局验证四处收敛：
 --   1) virtbus.lua 可加载且带 bus_contract；
 --   2) drv_common.virt_prepare 不再误报 cannot load（旧实现在此布局必失败，
 --      是本次修复的判别性用例）；
---   3) 全部路径段都不存在时仍按原契约报 cannot load（fail 可诊断）。
+--   3) 全部路径段都不存在时仍按原契约报 cannot load（fail 可诊断）；
+--   4) HAL 聚合门面加载五个总线域后全局齐全（26.2 按域拆分的回归面）。
 --
 -- 【边界：驱动侧多路径由宿主保证（阶段 2）】驱动文件的第一行要找到
 -- lib/mpath.lua 才能解析其它 lib——那一跳现在由宿主 sandbox_lua 完成
@@ -57,6 +58,29 @@ with_env("test/mpath_p1:test/mpath_p2", function()
 	dofile("modules/lib/drv_common.lua")
 	local why = virt_prepare({ proto = "virt", name = "smoke" })
 	tester.check("全段无 virtbus 报 cannot load", why == "cannot load lib/virtbus.lua")
+end)
+
+-- 4) 26.2 按域拆分后：HAL 变成聚合门面，五个总线域各一文件、由门面按
+--    BOT4CJ_MODULE_PATH 逐段探测 lib/hal/*.lua 加载。本例钉的是**拆分本身的
+--    回归面**：门面漏列某个域、或 ctx 少传一个共享上下文，都会让对应的总线
+--    全局缺失——在非缺省路径布局下也要照常齐全。
+--    上面 1)~3) 都不加载 HAL，故这里是本进程内 HAL 的首次真实加载。
+--    注：逐段探测那一跳的判别性用例不在这里——门面带 `./modules` 兜底，
+--    只取首段的坏形态会被兜底掩盖；真正的判据是 run_all.sh hardening 段的
+--    multipath_module_path（跑真二进制 + 真沙箱，首段为不存在的路径），
+--    与本文件 1)~3) 对 bus_contract/virtbus 的分工同理。
+with_env("test/mpath_p2:./modules", function()
+	local HAL = dofile("modules/lib/HAL.lua")
+	tester.check("多路径布局 HAL 门面可加载", type(HAL) == "table")
+	local missing = {}
+	for _, n in ipairs({ "i2c_open", "i2c_read_reg16", "spi_open", "spi_xfer_full",
+		"gpio_request_line", "uart_open", "uart_read", "pwm_config", "milli_sleep" }) do
+		if type(_G[n]) ~= "function" then missing[#missing + 1] = n end
+	end
+	tester.check("五个总线域全局齐全（含 i2c 的 16 位指针段）",
+		#missing == 0, table.concat(missing, ","))
+	tester.check("uart 域的加载期探测已跑（UART_B_CONST 导出）",
+		type(HAL.UART_B_CONST) == "table")
 end)
 
 tester.summary("test_multipath_layout")

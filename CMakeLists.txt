@@ -80,42 +80,75 @@ endif()
 
 # 被测主体（不含入口 main.cpp）：mybot 与 mybot_tests 共用同一份，
 # 保证单测编译的正是发布二进制里的那套实现，而不是第二份拷贝。
+#
+# 2026-10-04 分组：此前 50 个文件平铺，领域边界只存在于文件名里。现按编译单元
+# 所属领域分段——**只重排、不增删**（下方 B8 自检判据因此一字不变，段内亦保持
+# 原相对次序）。段序自下而上：语言/序列化基元（JSON/配置/矩阵/Lua）→ 领域层
+# （硬件/装配执行/机器人门面/热插）→ 装配面（通道与 CLI/agent/MCP）→ 应用编排。
 set(MYBOT_CORE_SOURCES
+  # ---- JSON 层：词法/语法解析、序列化、配置文件读取 ----
   src/json.cpp
   src/jsonparse.cpp
   src/jsonconfig.cpp
+  # ---- 配置层：模型接入参数（CLI 与配置文件两路归一） ----
   src/llmconfig.cpp
+  # ---- 矩阵/表达式/脚本语法层：.mt 与结构 SQL 的解析基元 ----
   src/matrix.cpp
   src/expr.cpp
   src/sqlparse.cpp
-  src/structure.cpp
-  src/mtmerge_core.cpp
-  src/mtinclude.cpp
+  src/structure.cpp          # ScriptLoader：SQL 事件 → MatrixObject
+  src/mtmerge_core.cpp       # .mt 归并核心（mtinclude 运行端展开 + test_mtmerge 白盒）
+  src/mtinclude.cpp          # @Include 展开
+  # ---- Lua 层：桥接、沙箱与执行预算 ----
   src/luabridge.cpp
   src/luasandbox.cpp
+  src/luaexec.cpp
+  # ---- 硬件域：变量基类、Lua/Daemon 变量、注册表与元数据 ----
   src/hardware.cpp
   src/luavar.cpp
   src/daemonvar.cpp
+  src/daemon_registry.cpp
+  src/daemonconf.cpp
   src/hw_registry.cpp
   src/meta_provider.cpp
+  src/meta_registry.cpp
+  # ---- 硬件装配与动作执行：矩阵表 → 变量，@Action 派发与重放 ----
   src/hw_factory.cpp
   src/action_runner.cpp
-  src/luaexec.cpp
-  src/robot.cpp
+  # ---- 机器人门面：生命周期/动作/驱动注入/热 SQL 四个 TU（robot.hpp 门面） ----
+  src/robot_lifecycle.cpp
+  src/robot_actions.cpp
+  src/robot_driver.cpp
+  src/robot_hotsql.cpp
+  # ---- 热插域：只读计划层与提交服务 ----
+  src/hotsql_plan.cpp
+  src/hotsql_service.cpp
+  # ---- 输入通道与 CLI 解析（--input/stdin/TCP 与选项表） ----
   src/actionsource.cpp
   src/cliargs.cpp
+  src/cliargs_help.cpp
+  # ---- agent 域：进程自护、帧协议、工具、视图、提示词、审计、策略与模式 ----
   src/agent_subprocess.cpp
+  src/agent_envscrub.cpp
+  src/agent_fdguard.cpp
   src/agentproto.cpp
   src/agenttools.cpp
+  src/agenttools_wait.cpp
   src/agentview.cpp
   src/agentimage.cpp
+  src/agenttools_fs.cpp
   src/agentdispatch.cpp
   src/agentprompt.cpp
   src/agentmode.cpp
   src/agentaudit.cpp
   src/agentpolicy.cpp
+  # ---- MCP 后端：帧通道、监听、工具后端与 context.get 素材 ----
   src/mcpbackend.cpp
-  src/promptpack.cpp
+  src/mcplisten.cpp
+  src/mcptransport.cpp
+  src/context_service.cpp
+  # ---- 应用编排：把上面各域串成 --input/stdin/TCP/agent 四条运行路径 ----
+  src/robot_application.cpp
 )
 
 # 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，
@@ -136,7 +169,7 @@ if(MYBOT_WERROR)
 endif()
 target_include_directories(mybot_warnings INTERFACE src ${LUAJIT_INCLUDE_DIRS})
 
-# Lua 运行时链接（仅 mybot / mybot_tests；mtmerge 是纯离线矩阵工具）
+# Lua 运行时链接（仅 mybot / mybot_tests）
 add_library(mybot_common INTERFACE)
 target_link_libraries(mybot_common INTERFACE
   mybot_warnings
@@ -151,19 +184,6 @@ add_executable(mybot
   ${MYBOT_CORE_SOURCES}
 )
 
-# mtmerge：.mt 动作脚本合成器（离线编译目标，不依赖 LuaJIT 运行时）。
-# N-11：矩阵解析入口（mt::readMatrix）下沉 matrix 层后，它只需
-# matrix/sqlparse 一层 + actionsource 的头文件常量，不再链接整份 core。
-# F1/N-30：归并核心抽到 mtmerge_core（与 mybot_tests 共用，白盒单测可覆盖）。
-add_executable(mtmerge
-  src/mtmerge.cpp
-  src/mtmerge_core.cpp
-  src/matrix.cpp
-  src/expr.cpp
-  src/sqlparse.cpp
-)
-target_link_libraries(mtmerge PRIVATE mybot_warnings)
-
 # README 声称的零告警基线由此处强制执行（此前构建未启用任何告警标志，
 # 基线只能靠人工手工传标志核查）。不加 -Werror：避免在未测试的编译器版本上直接构建失败。
 target_link_libraries(mybot PRIVATE mybot_common)
@@ -177,13 +197,29 @@ add_executable(mybot_tests
   test/cpp/test_json.cpp
   test/cpp/test_jsonparse.cpp
   test/cpp/test_llmconfig.cpp
+  test/cpp/test_llmconfig_assembly.cpp
+  test/cpp/test_llmconfig_surface.cpp
   test/cpp/test_matrix.cpp
   test/cpp/test_expr.cpp
   test/cpp/test_sqlparse.cpp
+  test/cpp/test_sqlparse_query.cpp
   test/cpp/test_util.cpp
   test/cpp/test_cliargs.cpp
   test/cpp/test_hardware.cpp
+  test/cpp/test_hw_registry.cpp
+  test/cpp/test_meta_registry.cpp
+  test/cpp/test_structure_store.cpp
   test/cpp/test_robot.cpp
+  test/cpp/test_robot_dispatch.cpp
+  test/cpp/test_action_if.cpp
+  test/cpp/test_action_while.cpp
+  test/cpp/test_action_nesting.cpp
+  test/cpp/test_action_capture.cpp
+  test/cpp/test_robot_lifecycle.cpp
+  test/cpp/test_robot_hotsql_plan.cpp
+  test/cpp/test_robot_hotinsert.cpp
+  test/cpp/test_robot_hotdelete.cpp
+  test/cpp/test_robot_hotupdate.cpp
   test/cpp/test_luaend.cpp
   test/cpp/test_luavar.cpp
   test/cpp/test_actionsource.cpp
@@ -193,11 +229,18 @@ add_executable(mybot_tests
   test/cpp/test_mtinclude.cpp
   test/cpp/test_agentproto.cpp
   test/cpp/test_agenttools.cpp
+  test/cpp/test_agenttools_wait.cpp
+  test/cpp/test_agenttools_sql.cpp
+  test/cpp/test_agenttools_image.cpp
+  test/cpp/test_agenttools_runcommand.cpp
+  test/cpp/test_agenttools_subproc.cpp
+  test/cpp/test_agenttools_fs.cpp
   test/cpp/test_agentaudit.cpp
   test/cpp/test_agentpolicy.cpp
-  test/cpp/test_promptpack.cpp
   test/cpp/test_mcpbackend.cpp
-  src/mtmerge_core.cpp
+  test/cpp/test_mcptransport.cpp
+  test/cpp/test_mcplisten.cpp
+  test/cpp/test_agenttools_sandbox.cpp
   ${MYBOT_CORE_SOURCES}
 )
 
@@ -233,11 +276,16 @@ set_tests_properties(cpp_unit PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 # A2（2026-09-20 审计）：此前自检把 Lua 里的数字**在 C 里又手抄一遍**，
 # 从不读 Lua 源，于是「Lua 侧漂移」这一半完全不被发现（实测改
 # HAL.SPI_IOC_WR_MODE 后全部目标仍绿）。现在配置期先用
-# test/gen_const_check.cmake 从 modules/lib/HAL.lua、modules/Camera.lua
-# 抽取真实值生成 const_lua.h，断言对**两侧**各钉一次：
+# test/gen_const_check.cmake 从 modules/lib/hal_backend_glibc.lua（consts 表，
+# 2026-09-30 方案 A 下沉后的唯一事实源）、modules/lib/hal/uart.lua（两套波特率
+# 映射表，26.2 按域拆分前在 HAL.lua 的 uart 段）、modules/Camera.lua 抽取真实值生成
+# const_lua.h，断言对**两侧**各钉一次：
 # Lua 抽取值 == 手抄预期值（抽取生效 + Lua 未漂移）+ 预期值 == 系统头。
-# 抽取是纯文本匹配、不执行 Lua，故不引入构建期 luajit 依赖；抽不到即
-# FATAL_ERROR（静默生成空头会让断言退化成自证，正是 A2 的原始缺陷形态）。
+# consts 表走**执行期求值**（luajit + test/lib/dump_consts.lua，2026-10-01 加固：
+# 2026-10-01 P0 的教训「抽取模式与被抽文件的书写风格是同一份契约」由此收口——
+# 契约只剩「后端导出 M.consts 表」）；Camera.lua 仍为纯文本抽取（其顶层会执行
+# 整套 HAL 加载，不宜在配置期跑）。抽不到/执行失败即 FATAL_ERROR（静默生成
+# 空头会让断言退化成自证，正是 A2 的原始缺陷形态）。
 # 2026-09-25 #8：llm_http.lua 的 CURLOPT 抽取与 test_curl_consts 随 Lua 协议
 # 驱动轨道整条删除——libcurl 已无任何代码使用，该自检无对象。
 # ======================================================================
@@ -320,22 +368,32 @@ else()
 endif()
 
 # ======================================================================
-# C3（2026-09-20 审计 / 2026-09-21 落地）：C++ 单测清单一致性自检。
-# 新 test/cpp/test_*.cpp 若不进上方 mybot_tests 的 add_executable 显式清单，
-# 它会**永不编译**（静默) 且守门照绿。这里 glob 出实际 test_*.cpp，
-# 与 mybot_tests 清单比对，不一致即 FATAL_ERROR（新增用例忘登记立刻红）。
-# 判据：test/cpp/test_*.cpp 必须恰好全部被引用（main.cpp 是测试入口，单列）。
+# C3（2026-09-20 审计 / 2026-09-21 落地；2026-10-04 收敛掉第三份清单）：
+# C++ 单测清单一致性自检。新 test/cpp/test_*.cpp 若不进上方 mybot_tests 的
+# add_executable 显式清单，它会**永不编译**（静默）且守门照绿。
+# 判据：磁盘上的 test/cpp/test_*.cpp 集合 == mybot_tests 实际编进去的那部分
+# （双向；main.cpp 是测试入口，不在此列），不一致即 FATAL_ERROR。
+# 此前中间还手抄了一份 MYBOT_CPP_TEST_REGISTERED 裸名清单、只校验 glob ⊆ 它——
+# 那是第三份事实源，且方向单一（add_executable 漏写、清单里留旧名都不红）。
+# 现在直接问 target 要 SOURCES，两份清单合成一份。
 # ======================================================================
 file(GLOB MYBOT_CPP_TEST_SRCS CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/test/cpp/test_*.cpp)
-set(MYBOT_CPP_TEST_REGISTERED
-  test_actionsource test_agentaudit test_agentpolicy test_agentproto test_agenttools test_mcpbackend
-  test_cliargs test_daemon_concurrency test_daemon test_expr test_hardware test_json
-  test_jsonparse test_llmconfig test_luaend test_luavar test_matrix test_mtinclude
-  test_mtmerge test_promptpack test_robot test_sqlparse test_util)
-set(_missing_registered)
+get_target_property(_mybot_tests_srcs mybot_tests SOURCES)
+set(_compiled_test_names)
+foreach(_s IN LISTS _mybot_tests_srcs)
+  if("${_s}" MATCHES "(^|/)test/cpp/test_[^/]+\\.cpp$")
+    get_filename_component(_n "${_s}" NAME_WE)
+    list(APPEND _compiled_test_names "${_n}")
+  endif()
+endforeach()
+set(_disk_test_names)
 foreach(_t IN LISTS MYBOT_CPP_TEST_SRCS)
   get_filename_component(_n "${_t}" NAME_WE)
-  if(NOT _n IN_LIST MYBOT_CPP_TEST_REGISTERED)
+  list(APPEND _disk_test_names "${_n}")
+endforeach()
+set(_missing_registered)
+foreach(_n IN LISTS _disk_test_names)
+  if(NOT _n IN_LIST _compiled_test_names)
     list(APPEND _missing_registered "${_n}")
   endif()
 endforeach()
@@ -344,16 +402,27 @@ if(_missing_registered)
     "未登记的 C++ 测试（不会编译/守门将漏跑，须在 mybot_tests 的 add_executable 补上）："
     "${_missing_registered}")
 endif()
+set(_stale_registered)
+foreach(_n IN LISTS _compiled_test_names)
+  if(NOT _n IN_LIST _disk_test_names)
+    list(APPEND _stale_registered "${_n}")
+  endif()
+endforeach()
+if(_stale_registered)
+  message(FATAL_ERROR
+    "mybot_tests 的 add_executable 里有磁盘上不存在的 test/cpp/test_*.cpp"
+    "（删了或改名了没同步清单）：" "${_stale_registered}")
+endif()
 
 # ======================================================================
 # B8（2026-09-21 落地）：src/*.cpp 与 target 源集合一致性自检。
 # 与上面的 test/cpp 自检同族：src/ 下新增一个 .cpp 却忘了写进任何 target，
 # 它就永不编译——若该文件只被 include 或被误当成"已经在编"，构建与守门照绿。
 # 判据：src/*.cpp 必须恰好被「MYBOT_CORE_SOURCES ∪ 各 target 的入口源」覆盖
-# （main.cpp 属 mybot、mtmerge.cpp 属离线合成器，两者都不在 core 清单里）。
+# （main.cpp 属 mybot，不在 core 清单里）。
 # ======================================================================
 file(GLOB MYBOT_ALL_SRC CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/*.cpp)
-set(MYBOT_REGISTERED_SRC ${MYBOT_CORE_SOURCES} src/main.cpp src/mtmerge.cpp)
+set(MYBOT_REGISTERED_SRC ${MYBOT_CORE_SOURCES} src/main.cpp)
 set(_reg_names)
 foreach(_r IN LISTS MYBOT_REGISTERED_SRC)
   get_filename_component(_rn "${_r}" NAME)

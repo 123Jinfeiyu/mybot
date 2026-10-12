@@ -2,7 +2,7 @@
 
 use serde_json::{json, Value};
 
-use crate::bridge::ToolSpec;
+use crate::toolspec::ToolSpec;
 
 pub fn specs() -> Vec<ToolSpec> {
     fn spec(name: &str, description: &str, schema: Value) -> ToolSpec {
@@ -54,4 +54,80 @@ pub fn specs() -> Vec<ToolSpec> {
             json!({"type":"object","properties":{}}),
         ),
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ica::IcaLedger;
+    use std::collections::BTreeSet;
+
+    /// 声明面自身的完整性：名字唯一、全部 `ica_` 前缀（`merge_specs` 靠这个前缀
+    /// 与后端工具名分域）、每条 schema 都是 `type: object`、`required` 里的每一项
+    /// 都在 `properties` 里声明过（否则模型被要求填一个 schema 没描述的字段）。
+    #[test]
+    fn specs_are_well_formed_and_uniquely_named() {
+        let all = specs();
+        assert_eq!(all.len(), 8, "ICA 工具数变了？改动请同步 docs/agent.md");
+        let names: BTreeSet<&str> = all.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names.len(), all.len(), "工具名有重复");
+        for s in &all {
+            assert!(s.name.starts_with("ica_"), "{}: 前缀不是 ica_", s.name);
+            assert!(!s.description.trim().is_empty(), "{}: 描述为空", s.name);
+            let p = &s.parameters;
+            assert_eq!(
+                p.get("type").and_then(Value::as_str),
+                Some("object"),
+                "{}: schema 顶层不是 object",
+                s.name
+            );
+            let props = p.get("properties").and_then(Value::as_object);
+            assert!(props.is_some(), "{}: 缺 properties", s.name);
+            if let Some(req) = p.get("required").and_then(Value::as_array) {
+                for r in req {
+                    let key = r.as_str().unwrap_or_default();
+                    assert!(
+                        props.unwrap().contains_key(key),
+                        "{}: required 里的 {key} 没有在 properties 里声明",
+                        s.name
+                    );
+                }
+            }
+        }
+    }
+
+    /// **规格面 → 派发面的跨文件一致性守门**：`specs()` 声明的每个名字都必须被
+    /// `IcaLedger::execute` 认得。否则模型拿到一条工具描述、照着调用，只会吃
+    /// 「未知 ICA 工具」——这是本模块与 `ica/mod.rs` 分家（2026-09-29 B1）之后
+    /// 最容易悄悄裂开的一条缝。
+    ///
+    /// 反向（有派发分支、无规格声明）不会让模型出错，只是死代码：由上面的
+    /// `all.len() == 8` 与评审兜住，不在这里读源码扫描。
+    ///
+    /// 反向验证（2026-10-04）：把 `ica/mod.rs` 的 `"ica_depend"` 分支臂删掉后
+    /// 本用例转红（报「未知 ICA 工具: ica_depend」），还原复绿。
+    #[test]
+    fn every_declared_spec_name_is_dispatchable() {
+        let mut ledger = IcaLedger::default();
+        for s in specs() {
+            // 用空参数调用：多数分支会因缺必填字段而 Err，那是**参数校验**的错误，
+            // 与「名字没人认」是两回事——只盯后者。
+            if let Err(e) = ledger.execute(&s.name, &json!({})) {
+                assert!(
+                    !e.contains("未知 ICA 工具"),
+                    "规格声明了 {} 但 execute 没有对应分支: {e}",
+                    s.name
+                );
+            }
+        }
+    }
+
+    /// 派发面对未声明的名字必须**明确拒绝**（回落分支存在且报错点名），
+    /// 免得一个拼错的工具名被静默当成 no-op。
+    #[test]
+    fn execute_rejects_an_undeclared_tool_name() {
+        let mut ledger = IcaLedger::default();
+        let err = ledger.execute("ica_nonexistent", &json!({})).unwrap_err();
+        assert!(err.contains("未知 ICA 工具: ica_nonexistent"), "{err}");
+    }
 }

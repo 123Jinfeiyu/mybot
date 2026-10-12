@@ -37,6 +37,11 @@
  *   未设 BOT4CJ_MCP_TOKEN 时回到「仅 SO_PEERCRED」的旧行为——残留风险同前，
  *   操作者应自行权衡（后端模式下**尽量不要开 --agent-shell**；若必须开，把后端
  *   跑在专用用户 / 容器里，或设置 BOT4CJ_MCP_TOKEN）。
+ *
+ * 2026-10-01 声明析出（行为保持）：帧传输与纯协议件（帧常量/编解码/deadline
+ * 收发/SO_PEERCRED/占用探测/首帧认证/回执脱敏）→ mcptransport.hpp；socket
+ * 服务域实现（serveConnection/断连安全动作/acceptLoop）→ mcplisten.cpp；
+ * 本头只剩路由类 McpBackend、服务选项与服务入口。
  */
 
 #include <chrono>
@@ -45,6 +50,7 @@
 #include <ostream>
 #include <string>
 
+#include "mcptransport.hpp"
 #include "agentaudit.hpp"
 #include "agentdispatch.hpp"
 #include "agentpolicy.hpp"
@@ -58,18 +64,6 @@ class RobotStruct;
 namespace agent {
 
 struct AgentModeConfig;	/* 定义在 agentmode.hpp；此处只按引用/常量引用用 */
-
-/* 帧上限：**收紧到 8 MiB**，对齐 bot4cj 自己的 JSON 解析器（jsonparse.hpp 的
- * kJsonMaxBytes）。libmsg 的上限是 64 MiB，但一个 64 MiB 的合法帧会被我们的
- * 解析器以一个离真实成因很远的错误拒掉（评估 §2.3 缺点 4），故在帧层就先收紧。
- * 跨进程契约：Rust 侧 agent/src/frame.rs 的 MAX_FRAME_BYTES 是同一常量的孪生，
- * 改动必须双侧同步（agent_e2e 的越界用例与两侧单测各自锚住己侧；
- * test_mcpbackend 的 mcpbackend_frame_limit_matches_rust_twin 读源比对钉住）。 */
-inline constexpr std::size_t kMcpMaxFrameBytes = 8u << 20;
-
-/* 帧头长度：4 字节 big-endian uint32 载荷字节长（与 pymsg/gomsg/libmsg 字节兼容，
- * 无 magic / 无版本 / 无 flags / 无校验和）。 */
-inline constexpr std::size_t kMcpHeaderSize = 4;
 
 struct McpBackendOptions {
 	std::string socketPath;		/* AF_UNIX 路径（必填；长度受 sun_path 限制） */
@@ -94,44 +88,16 @@ struct McpBackendOptions {
 	std::string authToken;
 };
 
-/* ---- 纯协议件（不碰 socket，可离线单测）---- */
-
-/* 把载荷封成一帧：4 字节 BE 长度前缀 + 载荷字节。 */
-std::string mcpEncodeFrame(const std::string& payload);
-
-
-/* accept 后校验对端身份：内核 SO_PEERCRED 给出的 uid/gid 必须与本进程一致
- * （不可伪造，评估 §3.1）。匹配返回 true；不匹配或 getsockopt 失败返回 false
- * 并把原因写进 log。暴露为公开函数便于白盒单测（socketpair 造对端），与
- * actionsource.hpp 的 TcpAuthStatus 同惯例。 */
-bool mcpCheckPeerCred(int fd, std::ostream& log);
-
-/* ---- 启动前的 socket 路径占用探测（A-1，2026-09-25 审计）----
- * 原实现无条件 ::unlink 已存在的路径：两个 mybot 误配同一条 --mcp-socket 时，
- * 后启动者会静默偷走 socket 文件、先启动者继续监听但永远不可达（双实例静默
- * 劫持）。探测三态：
- *   PathFree    —— 路径不存在，或存在且是**无人监听**的陈旧 socket（可安全
- *                  unlink 后绑定；上一次实例没来得及清理的残留正是这一类）；
- *   PathBusy    —— 路径上已有活着的监听者（connect 即成功，或对端积压满/
- *                  探测超时——fail-closed 一律按「有人在用」拒绝启动）；
- *   PathUnusable —— 路径存在但不是 socket 文件（不能替操作者删掉一个陌生
- *                  文件），或探测自身出错（权限/异常 errno）。
- * why 非空时给人话成因（启动失败的报错文案用）。暴露为公开函数便于白盒单测
- * （临时目录里造 listening/stale/非 socket 三态），与 mcpCheckPeerCred 同惯例。 */
-enum class McpSocketProbe { PathFree, PathBusy, PathUnusable };
-McpSocketProbe mcpProbeSocketPath(const std::string& path, std::string& why);
-
-/* ---- 首帧共享密钥校验（MCP-1，审计 P2-1，纯协议件可离线单测）----
- * payload 是连接的第一帧载荷。三态：
- *   Ok          —— 是 auth 帧（{"_route":"auth","token":...}）且 token 匹配；
- *   Failed      —— 是 auth 帧但 token 不匹配 / token 字段缺失或非字符串 /
- *                  载荷不是合法 JSON / 顶层不是对象；
- *   NotAuthFrame—— 合法 JSON 对象但 _route 不是 "auth"（旧客户端直接发
- *                  tool.list 之类的首个请求，需要与「密钥错了」区分开报错）。
- * 比对常数时间（长度差异折叠进累计差，不短路）：本地同 UID 攻击者逐字节
- * 测回应时间的侧信道在此威胁模型下不算近路，但常数时间是免费的，做了。 */
-enum class McpAuthOutcome { Ok, Failed, NotAuthFrame };
-McpAuthOutcome mcpCheckAuthFrame(const std::string& expected, const std::string& payload);
+/* ---- 首帧认证失败门（2026-09-30 审计 P1）----
+ * 此前同 UID 对端可无限次重连试探 token，每次成本仅一个连接周期，与 TCP
+ * 通道的 5 次爆破上限不对称。判据结构与 TCP 口令共用单点 AuthFailGate
+ * （util_cli.hpp，2026-10-01 收敛），本侧固定缺省上限 5：
+ *   - 只数「连上并给出首帧但认证不通过」的失败（mismatch 与 NotAuthFrame 都算
+ *     ——试探者不能靠改发业务帧绕开计数）；
+ *   - 认证**通过**才归零：哑对端（连上不发帧/超时/违规断连）不动计数——
+ *     「连了就断」刷不掉别人的失败窗口，也刷不出自己的清白；
+ *   - 连续到上限 recordRejected() 返回 true：acceptLoop 停止服务（fail-closed，
+ *     走正常停机断电链），操作者重启后端恢复、必要时换 token。 */
 
 /* 后端会话状态 + 路由。持有工具注册表、派发漏斗（DispatchGate）与每连接预算。
  * handleRequest / handleFrame 是纯逻辑（Json/文本 → Json/文本），不碰 socket，
@@ -178,7 +144,7 @@ public:
 	std::string handleFrame(const std::string& payload);
 
 	/* 整服务端**一** session（用户定）：在 accept 循环外写 start，停机时写 end。
-	 * driver/model/endpoint 留空（后端不调模型）；audit 未开启时 no-op。 */
+	 * 会话行只带 status（模型侧字段已迁 Rust 退场，后端不调模型）；audit 未开启时 no-op。 */
 	void writeSessionRecord(const char* status) const;
 
 	/* MCP-1：首帧认证失败落审计（kind=session, status=auth_failed；无 token 泄漏）。 */
@@ -202,7 +168,7 @@ private:
 	std::shared_ptr<AuditLog> audit_;
 	DispatchGate gate_;
 	const AgentModeConfig* cfg_ = nullptr;	/* context.get 素材（可空，见构造器注） */
-	RobotStruct* robot_ = nullptr;		/* 同上；非 const：describeHardware 取可变引用 */
+	RobotStruct* robot_ = nullptr;	/* 同上；非 const：describeHardware 取可变引用 */
 	long callBudget_;
 	long wallClockBudgetSec_;
 	long calls_ = 0;		/* 本连接已派发的 tool.call 数 */

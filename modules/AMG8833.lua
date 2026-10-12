@@ -36,10 +36,10 @@
 --      魔术序列，本核实源未实现）v1 不接，守护轮询路径不需要
 --   5. HAL 字节表读上限 16 字节，128 字节像素区拆 8 块正好对齐行边界
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -70,32 +70,18 @@ local fps_1hz = false
 local s12 = function(v) return bitc.s12(v % 0x1000) end
 
 -- 【配置脚本】normal -> 初始复位 -> 关中断 -> 帧率 -> 等首拍
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "AMG8833",
+i2c_addr_default = 0x69,
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- AMG8833 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- 豁免 i2c_pair：本器件地址硬件固定（AD_SELECT 拉低 = 0x69），address 列可省，
-	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
-
-	-- 地址列 '-'/缺省按器件缺省 0x69（AD_SELECT 拉低）
-	local addr = tonumber(data.address) or 0x69
-	if not i2c_set_addr(fd, addr) then
-		return err("Invalid Argument: fd or address (set_addr failed)")
-	end
-
-	-- 帧率列：1 -> 1Hz，其余/'-' 缺省 10Hz
 	fps_1hz = (tonumber(data.fps) == 1)
 
 	-----------------------------------------------------
@@ -122,46 +108,16 @@ function build(data)
 		addr, fps_1hz and 1 or 10))
 	return {  result = "OK"  }
 
-end
-
--- 【销毁AMG8833】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用AMG8833】读 64 像素聚合 + 基板温度
--- NOTE: 12 位补码小端拆字；输出聚合标量（MAXT/MINT/AVGT/MAXR/MAXC/THERM）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+end,
+call = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- AMG8833 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address) or 0x69	-- 与 build 同款缺省（AD_SELECT 拉低）
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
-
-	-- 共享总线 fd 的从地址是 per-fd 状态：每次 call 显式 set_addr，
-	-- 否则两次 call 之间别的器件寻址会把本器件读数打到错误从地址
-	if not i2c_set_addr(fd, addr) then
-		return err("Invalid Argument: fd or address (set_addr failed)")
-	end
 
 	-----------------------------------------------------
 	-- 基板热敏电阻（12 位补码，0.0625°C/LSB）
@@ -208,7 +164,8 @@ function call(data)
 
 	return ret
 
-end
+	end,
+})
 
 
 

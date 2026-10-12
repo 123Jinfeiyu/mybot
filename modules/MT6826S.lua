@@ -39,11 +39,10 @@
 --   5. 逐寄存器读（0x003~0x006 各一帧）：锁存语义下快照跨 CSN 保持，CRC
 --      校验兜底一致性；不匹配自动重读一轮
 
--- 标准前导：HAL 经 mpath 加载（modules/lib/）；dofile 副作用定义 spi_* 全局，
--- virtbus 注入后 spi_xfer_full 走内存总线
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -97,24 +96,24 @@ end
 
 -- ==================== 配置脚本 ====================
 -- 无运行时配置寄存器可写（EEPROM 项零位/线数等按手册用编程流程），仅做在位自检
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("spi", {
+name = "MT6826S",
+build = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- MT6826S builder func get a table --------", data)
 	end
 
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
-	dev_delay = tonumber(data.delay) or 0
+	-- 两列经 num_or/finite_of 而非裸 tonumber：'nan' 过 tonumber 出的是 number
+	-- （Lua 里 truthy），`or 0` 兜不住，下面 and/or 链里的 `z ~= nil`、`z ~= 0`
+	-- 与末尾的 `NaN or 0` 也全都兜不住。cfg_zero/dev_delay 都是模块级状态：
+	-- cfg_zero=NaN 会让每次 call 的 `cfg_zero ~= 0` 恒真，ANGLE 被 (deg - NaN)
+	-- % 360 永久污染成 nan；dev_delay=NaN 则流进 read_reg 的延时参数，并被横幅
+	-- 的 %d 打成 -9223372036854775808（string.format 对 NaN 不报错，只出垃圾）。
+	dev_delay = num_or(data.delay, 0)
 
-	local z = tonumber(data.zero)
+	local z = finite_of(data.zero)
 	cfg_zero = (z ~= nil and z ~= 0) and z % 360 or 0
 
 	-- 在位自检：读固定值寄存器（0x005 高 5 位恒 0；0x004 bit0 恒 0）
@@ -127,24 +126,15 @@ function build(data)
 		fd, dev_delay, cfg_zero, st, tostring(ok)))
 	return {  result = "OK"  }
 
-end
+	end,
 
 -- ==================== 调用 ====================
 -- 读一次角度快照；CRC 失败自动重读一轮，仍失败置 CRC_OK=0
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- MT6826S caller func get a table --------", data)
-	end
-
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
 	end
 
 	local raw, st, ok = read_snapshot(fd)
@@ -169,20 +159,8 @@ function call(data)
 		CRC_OK = ok and 1 or 0
 	}
 
-end
-
--- ==================== 销毁 ====================
--- 只读器件无关断寄存器；总线 fd 归 SPI 硬件变量所有
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+end,
+})
 
 
 -- =====================================================================

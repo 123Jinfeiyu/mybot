@@ -1,4 +1,4 @@
-/* test_util.cpp —— util.hpp / actionsource.hpp 全局助手的直接锚点（重构计划 1）
+/* test_util.cpp —— util_*.hpp 全局助手的直接锚点（重构计划 1）
  *
  * 此前 util.hpp 的函数只靠调用方间接覆盖。本轮重复收敛（阶段 1）落进来的
  * 几个助手是全局判据/防线，值得有直接单测钉住契约：
@@ -359,7 +359,7 @@ TH_TEST(utf8_sanitize_folds_consecutive_illegal_runs) {
 	for (int i = 0; i < 5; ++i) { run.push_back(static_cast<char>(0xff)); }
 	const std::string fixed = bot::sanitizeUtf8(bytes({0x41}) + run + bytes({0x42}));
 	TH_CHECK(bot::isValidUtf8(fixed));
-	TH_CHECK(fixed.find("[! 非法 UTF-8 字节已省略5 字节]") != std::string::npos);
+	TH_CHECK(fixed.find("[! invalid UTF-8 bytes omitted5 bytes]") != std::string::npos);
 	/* 折叠后仍以 A/B 收尾，坏字节只占一个替换符 */
 	TH_CHECK(fixed.compare(0, 1, "A") == 0);
 	TH_CHECK(fixed.back() == 'B');
@@ -497,7 +497,10 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"action", "动作输入源/动作重放（管道模式）"},
 	{"alias", "结构期 @Alias 语义"},
 	{"call", "驱动 call 契约（硬件层）"},
+	{"capture", "@Action 单元格捕获 `$var=field`（动作重放层，非 agent 专属）"},
 	{"controller", "结构脚本 controller 引用"},
+	/* cross_（跨语言常量互钉 test_cross_lang_limits）已随 2026-10-01 批次 A
+	 * （P1-5）删除：C++ 不再镜像任何 Rust 常量，唯一事实源是 Rust config.rs。 */
 	{"daemon", "守护线程"},
 	{"deactivate", "硬件生命周期（非 agent 专属）"},
 	{"destructor", "硬件析构语义"},
@@ -519,7 +522,8 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"lua", "Lua 桥/沙箱"},
 	{"matrix", "矩阵解析"},
 	{"metaprovider", "元数据提供者"},
-	{"mtinclude", "@Include 内联"},
+	{"metaregistry", "元数据域（MetaRegistry 门面）"},
+	{"mtinclude", "@Merge 归并 / @Include 拷贝"},
 	{"mtmerge", "mtmerge 归并"},
 	{"nested", "嵌套表边界"},
 	{"open", "输入源打开路径"},
@@ -537,6 +541,7 @@ constexpr NonAgentPrefix kNonAgentPrefixes[] = {
 	{"sandbox", "驱动沙箱"},
 	{"session", "会话作用域"},
 	{"single", "单消费者判据"},
+	{"structure", "结构矩阵域（StructureStore 门面）"},
 	{"tcp", "TCP 输入源"},
 	{"the", "例句/杂项"},
 	{"token", "SQL token"},

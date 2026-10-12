@@ -48,10 +48,10 @@
 --   6. RPM = 5,400,000 / TACH 计数（数据手册 §6.14，常数已含每转脉冲数；
 --      计数 0 = 停转/未接，返回 RPM=0 而非除零）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 local unpack = unpack or table.unpack		-- LuaJIT 5.1 / Lua 5.4 双兼容
@@ -136,21 +136,17 @@ local function parse_lut(s)
 end
 
 -- 【配置脚本】甄别 -> 现算 full_lsb -> LUT 编程 或 手动占空比
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "EMC2101",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- EMC2101 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-----------------------------------------------------
 	-- 身份甄别：双 Part ID + SMSC 厂商 ID
@@ -203,7 +199,11 @@ function build(data)
 		mode = string.format("LUT(%d 项)", #entries)
 	else
 		-- 手动模式：禁 LUT + 写初始占空比（缺省 0 = 停转）
-		local duty = tonumber(data.duty) or 0
+		-- 经 num_or：'nan' 过 tonumber 出的是 number（Lua 里 truthy），`or 0`
+		-- 兜不住，而 `< 0`/`> 100` 两条钳位对 NaN 恒假放行，duty_to_lsb(NaN)
+		-- 仍是 NaN，最后被 HAL 的 byte_of 挡成 nil 而报「Failed to write
+		-- EMC2101 fan setting」——把配置笔误误报成 I2C 故障（审计 P3 口径）。
+		local duty = num_or(data.duty, 0)
 		if duty < 0 then duty = 0 end
 		if duty > 100 then duty = 100 end
 		if not lut_disable(fd) then
@@ -220,42 +220,17 @@ function build(data)
 		addr, PART_IDS[part], mode))
 	return {  result = "OK"  }
 
-end
-
--- 【销毁EMC2101】无资源需要释放（风扇状态维持，总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用EMC2101】两用：带 duty 参数 = 设手动占空比；否则 = 采样
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+end,
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- EMC2101 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
 	-- 带 duty：切手动模式（禁 LUT）+ 设占空比
-	local duty = tonumber(data.duty)
+	local duty = finite_of(data.duty)	-- NaN 同 build 侧口径，见上注
 	if duty ~= nil then
 		if duty < 0 then duty = 0 end
 		if duty > 100 then duty = 100 end
@@ -331,9 +306,8 @@ function call(data)
 		STATUS   = status
 	}
 
-end
-
-
+	end,
+})
 
 -- =====================================================================
 -- 【内嵌虚拟器件模型】EMC2101_VIRT —— 2026-09-15 自 modules/lib/virtbus/emc2101.lua
