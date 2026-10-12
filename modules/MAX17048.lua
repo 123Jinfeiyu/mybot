@@ -41,10 +41,10 @@
 --   7. ATHD：CONFIG（0x0C）低 5 位，值 = 32 - 阈值%（00000=32%）
 --   8. QuickStart：MODE（0x06）写 0x4000（本驱动仅在 build 配置时发一次）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -78,21 +78,16 @@ local cfg_lsb_v		-- VCELL 每 LSB 伏特（17048: 78.125uV / 17049: 156.25uV）
 local cfg_variant	-- 器件名（横幅/报错用）
 
 -- ==================== 配置脚本 ====================
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "MAX17048",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- MAX17048 builder func get a table --------", data)
 	end
 
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
 
 	-- VERSION 自检（家族地址相同，插错芯片在这里拦下）
 	local ver = i2c_read_multi(fd, REG_VER, 2)
@@ -119,8 +114,8 @@ function build(data)
 	-- VALRT 过压/欠压阈值（20mV/LSB，读改写保留另一侧）
 	-- datasheet Figure 11：地址 0x14 = VALRT.MIN（16 位字的高字节）、
 	-- 地址 0x15 = VALRT.MAX（低字节），POR 0x00FF（MIN=0/0V、MAX=255/5.1V）
-	local vmax = tonumber(data.valrt_max)
-	local vmin = tonumber(data.valrt_min)
+	local vmax = finite_of(data.valrt_max)
+	local vmin = finite_of(data.valrt_min)
 	if vmax ~= nil or vmin ~= nil then
 		local cur = i2c_read_multi(fd, REG_VALRT, 2)
 		if cur < 0 then
@@ -148,7 +143,7 @@ function build(data)
 	end
 
 	-- ATHD SOC 低电告警阈值（CONFIG 低 5 位，读改写保留 RCOMP）
-	local athd = tonumber(data.athd)
+	local athd = finite_of(data.athd)
 	if athd ~= nil then
 		if athd < 1 or athd > 32 then
 			return err("Invalid Argument: athd '" .. tostring(data.athd) .. "' (range 1~32%)")
@@ -173,24 +168,15 @@ function build(data)
 		cfg_variant, addr, ver, flags, cfg_lsb_v * 1e6))
 	return {  result = "OK"  }
 
-end
+end,
 
 -- ==================== 调用 ====================
 -- 读电压/SOC/速率/告警标志；clear=1 时读取后清除告警位
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- MAX17048 caller func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
 	end
 
 	-----------------------------------------------------
@@ -227,20 +213,8 @@ function call(data)
 		STATUS = math.floor(straw / 256) % 64
 	}
 
-end
-
--- ==================== 销毁 ====================
--- 无关断寄存器（休眠经 HIBRT 自行配置，本驱动不触碰）；fd 归 I2C 硬件变量所有
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+end,
+})
 
 
 

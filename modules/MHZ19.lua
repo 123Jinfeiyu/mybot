@@ -36,11 +36,11 @@
 --   4. 字节流可能分片到达，uart_read 轮询聚合由 HAL 承担
 --   5. 校验和错误/短读/写失败均报 ERR（halt-on-error 链路可用）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
-local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
-dofile(mpath.resolve("lib/drv_common.lua"))
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + fd ≥ 0 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
+dofile((__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+	.resolve("lib/drv_common.lua"))
 
 -- 调试开关：采样周期读取，默认关闭逐次打印
 local DEBUG = false
@@ -85,95 +85,63 @@ local function read_frame(fd, timeout_ms)
 	return nil, "no valid frame (head FF 86 + checksum)"
 end
 
--- 【配置脚本】校验句柄，清输入缓冲（无寄存器可校验器件）
-function build(data)
+require_driver("uart", {
+	name = "MHZ19",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】校验句柄，清输入缓冲（无寄存器可校验器件）
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- MHZ19 builder func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- MHZ19 builder func get a table --------", data)
-	end
+		-- 丢弃上电以来的陈旧字节
+		uart_flush(ctx.fd)
 
-	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return err("Invalid Argument: fd (does the UART column reference an @UART variable?)")
-	end
+		print(string.format("MHZ19 init OK: fd=%d (9600 8N1，预热约 3 分钟后读数稳定)", ctx.fd))
+		return {  result = "OK"  }
+	end,
 
-	-- 丢弃上电以来的陈旧字节
-	uart_flush(fd)
+	-- 【调用MHZ19】请求-应答读 CO₂ 浓度
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- MHZ19 caller func get a table --------", data)
+		end
 
-	print(string.format("MHZ19 init OK: fd=%d (9600 8N1，预热约 3 分钟后读数稳定)", fd))
-	return {  result = "OK"  }
+		local fd = ctx.fd
 
-end
+		-----------------------------------------------------
+		-- 请求帧：FF 01 86 00 00 00 00 00 79
+		local req = { 0xFF, 0x01, CMD_READ_CO2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
+		req[FRAME_LEN] = checksum(req, 2, 8)
 
--- 【销毁MHZ19】无资源需要释放（串口归 @UART 硬件变量所有）
-function destroy(data)
+		uart_flush(fd)		-- 丢弃陈旧字节，防止旧应答错位
+		local wn = uart_write(fd, req)
+		if wn ~= FRAME_LEN then
+			return err("Failed to write MHZ19 request (" .. tostring(wn) .. ")")
+		end
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		-- 多轮累积聚合读：容忍前导噪声与跨轮分片（校验和在 read_frame 内兜底）
+		local f, ferr = read_frame(fd, READ_TIMEOUT_MS)
+		if f == nil then
+			return err("MHZ19 no valid response: " .. tostring(ferr))
+		end
 
-	return {  result = "OK"  }
+		local co2 = f[3] * 256 + f[4]
 
-end
+		if DEBUG then
+			print(string.format("MHZ19: CO2=%dppm TEMP=%d S=%d", co2, f[5] - 40, f[6]))
+		end
 
+		return {
+			result = "OK",
+			CO2    = co2,
+			TEMP   = f[5] - 40,		-- 近似内部温度（非计量值）
+			S      = f[6]
+		}
+	end,
 
--- 【调用MHZ19】请求-应答读 CO₂ 浓度
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- MHZ19 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	local fd = tonumber(data.fd)
-	if fd == nil or fd < 0 then	-- fd 0 合法（HAL 约定 >= 0 即成功）
-		return err("Invalid Argument: fd")
-	end
-
-	-----------------------------------------------------
-	-- 请求帧：FF 01 86 00 00 00 00 00 79
-	local req = { 0xFF, 0x01, CMD_READ_CO2, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
-	req[FRAME_LEN] = checksum(req, 2, 8)
-
-	uart_flush(fd)		-- 丢弃陈旧字节，防止旧应答错位
-	local wn = uart_write(fd, req)
-	if wn ~= FRAME_LEN then
-		return err("Failed to write MHZ19 request (" .. tostring(wn) .. ")")
-	end
-
-	-- 多轮累积聚合读：容忍前导噪声与跨轮分片（校验和在 read_frame 内兜底）
-	local f, ferr = read_frame(fd, READ_TIMEOUT_MS)
-	if f == nil then
-		return err("MHZ19 no valid response: " .. tostring(ferr))
-	end
-
-	local co2 = f[3] * 256 + f[4]
-
-	if DEBUG then
-		print(string.format("MHZ19: CO2=%dppm TEMP=%d S=%d", co2, f[5] - 40, f[6]))
-	end
-
-	return {
-		result = "OK",
-		CO2    = co2,
-		TEMP   = f[5] - 40,		-- 近似内部温度（非计量值）
-		S      = f[6]
-	}
-
-end
+	-- destroy 缺省 = 空操作（原 MHZ19 destroy 仅 arg_table + return OK，等价）
+})
 
 
 -- =====================================================================

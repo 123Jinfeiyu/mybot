@@ -485,6 +485,12 @@ for _, spec in ipairs({
 	{ 50, 23, "50%→23" }, { 75, 35, "75%→35" }, { 20, 9, "20%→9" },
 	{ 30, 14, "30%→14（四舍五入）" }, { 100, 46, "100%→46（满码非 63）" },
 	{ -5, 0, "负 duty 钳 0" }, { 150, 46, ">100 钳 100→46" },
+	-- NaN 反例（26.1）：'nan' 过 tonumber 出的是 number（Lua 里 truthy），
+	-- `tonumber(x) or 0` 的 or 兜不住，而 `< 0`/`> 100` 两条钳位对 NaN 恒假
+	-- 放行，duty_to_lsb(NaN) 仍是 NaN，最后被 HAL 的 byte_of 挡成 nil → 报
+	-- "Failed to write EMC2101 fan setting"，把配置笔误误报成 I2C 故障。
+	-- 应与同列的 'abc' 同结论：归缺省 0（停转）。
+	{ "nan", 0, "'nan' 归缺省 0（非报 I2C 故障）" },
 }) do
 	mark = section()
 	ok, res, banner = capture(function()
@@ -782,6 +788,19 @@ if out then
 		and dev:reg(0x4C) == 0x17,
 		string.format("%d/%d", out.duty, out.lsb))
 end
+
+-- NaN 反例（26.1）：call 侧只判 `duty ~= nil`，NaN 穿透后两条钳位恒假放行，
+-- 报 "Failed to write EMC2101 fan setting"；同列写 'abc' 走的是整块跳过。
+mark = #vbus.txlog
+out = expect_ok("call duty='abc' 视同未给（对照组）",
+	function() return call({ fd = fd, address = "0x4C", duty = "abc" }) end)
+check("对照组：'abc' 后芯片 4C 仍=0x17", dev:reg(0x4C) == 0x17,
+	string.format("0x%02X", dev:reg(0x4C)))
+mark = #vbus.txlog
+out = expect_ok("call duty='nan' 同视未给（非报 I2C 故障）",
+	function() return call({ fd = fd, address = "0x4C", duty = "nan" }) end)
+check("duty NaN 与 'abc' 同结论：4C 仍=0x17", dev:reg(0x4C) == 0x17,
+	string.format("0x%02X", dev:reg(0x4C)))
 
 -- LUT build（4A=00 激活态）后切 duty：RMW 读 00 置位成 20
 mark = section()

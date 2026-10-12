@@ -8,8 +8,10 @@
 -- 要么引入 libjpeg，两条路都比「直接取 MJPEG」贵得多，而 USB 摄像头普遍支持 MJPEG。
 -- 树莓派 CSI 摄像头走 libcamera，不经 V4L2 这条路径，也不在本驱动范围内。
 --
--- 【仿真】data.src 指向一个图片文件时直接读它并 base64 返回——无摄像头也能把
--- 「拍照 → 进上下文 → 多模态模型看图」全链路跑通，与 robot_agent 的模拟模式同语义。
+-- 【仿真】两条离线来源：① data.src 指向图片文件时直接读它并 base64 返回——无
+-- 摄像头也能把「拍照 → 进上下文 → 多模态模型看图」全链路跑通，与 robot_agent
+-- 的模拟模式同语义；② 设了环境变量 MYBOT_SIM_CAPTURE_SOCK 时，从 mybot-sim 的
+-- 取帧 socket 抓 3D 仿真器的**实时**画面（见下方 sim-live 段与 sim/src/capture.cpp）。
 --
 -- 【ABI 自检】ffi 声明一旦与内核头不符（尺寸小了），ioctl 就会越界读写内存。
 -- 加载期 assert 尺寸、构建期 test/test_v4l2_consts.c 再与 <linux/videodev2.h> 比对
@@ -23,6 +25,9 @@ local mjpeg = dofile(mpath.resolve("lib/mjpeg_frame.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))	-- 帧完整性校验（截断帧重取，见库头注释）
 local ffi = require("ffi")
 local bit = require("bit")
+
+-- AF_UNIX socket 公共模块：FFI 声明 + 连接工具（与 Sim.lua 共用，避免重复 cdef）
+local usock = dofile(mpath.resolve("lib/unix_socket_ffi.lua"))
 
 ffi.cdef[[
 /* V4L2 结构（与内核 ABI 对齐；尺寸见文件末尾 assert）。
@@ -530,6 +535,119 @@ local function load_sim(real)
 	return { path = real, bytes = bytes, format = fmt }
 end
 
+------------------------------------------------------------------
+-- sim-live：从 mybot-sim 的拍照 socket 抓一帧（第三来源）
+------------------------------------------------------------------
+-- 触发：环境变量 MYBOT_SIM_CAPTURE_SOCK 非空，且本次调用没有文件 src。
+-- 与 mybot-sim 的取帧端点（sim/src/capture.cpp）逐字对应：发一行 "capture\n"，
+-- 收 "OK jpeg <len> <w> <h>\n" + <len> 字节 JPEG，或 "ERR <reason>\n"。
+--
+-- 安全：socket 路径**只**取自 env（操作者控制），绝不接受 data 传入——否则就
+-- 等于给出一条「连任意 AF_UNIX」的原语，与文件 src 的白名单是同一顾虑。
+--
+-- 成败口径与 Sim.lua **相反**：拍照是模型的显式动作，抓不到就响亮 ERR。仿真器
+-- 缺席时静默返回空图，会让模型以为自己「看到了」一片虚无，比报错危险得多。
+-- （Sim.lua 的动作下发可以静默成功，是因为可视化从端缺席不该打断动作脚本。）
+local CAPTURE_ENV = "MYBOT_SIM_CAPTURE_SOCK"
+local CAPTURE_POLL_MS = 5000			-- 等响应上限：覆盖仿真器一帧的渲染节拍绰绰有余
+
+local function capture_sock_path()
+	local p = os.getenv(CAPTURE_ENV)
+	if p == nil or p == "" then return nil end
+	return p
+end
+
+-- 带超时收满 want 字节：用 cam_pollfd 做 poll 超时
+local function capture_recv_exact(fd, want)
+	local buf = ffi.new("unsigned char[?]", want)
+	local got = 0
+	while got < want do
+		local fds = ffi.new("cam_pollfd[1]")
+		fds[0].fd = fd
+		fds[0].events = POLLIN
+		local pr = tonumber(ffi.C.poll(fds, 1, CAPTURE_POLL_MS))
+		if pr < 0 then
+			local e = HAL.sys.errno()
+			if e ~= HAL.EINTR then
+				return nil, "poll 拍照 socket 失败（errno=" .. tostring(e) .. "）"
+			end
+			-- EINTR：被信号打断，重试
+		elseif pr == 0 then
+			return nil, "等待拍照响应超时（" .. CAPTURE_POLL_MS .. "ms）"
+		else
+			local n = tonumber(ffi.C.recv(fd, buf + got, want - got, 0))
+			if n == nil or n < 0 then
+				return nil, "recv 拍照响应失败"
+			elseif n == 0 then
+				return nil, "拍照响应被对端提前关闭"
+			else
+				got = got + n
+			end
+		end
+	end
+	return ffi.string(buf, want)
+end
+
+-- 收一行（到 \n 为止，不含 \n）：逐字节 recv，响应头就几十字节
+local function capture_recv_line(fd)
+	local chars = {}
+	while true do
+		local c, e = capture_recv_exact(fd, 1)
+		if c == nil then return nil, e end
+		if c == "\n" then break end
+		chars[#chars + 1] = c
+		if #chars > 256 then
+			return nil, "拍照响应头过长（>256 字节，疑似协议不符）"
+		end
+	end
+	return table.concat(chars)
+end
+
+-- 一次完整拍照：连接→发请求→读响应→关闭（一问一答，不跨调用持连接）。
+-- 成功返 { bytes, format, width, height }，失败返 nil + 原因。
+local function capture_live(path)
+	-- 连接：复用公共模块的 usock.connect
+	local fd, cerr = usock.connect(path)
+	if fd == nil then return nil, "connect 拍照 socket 失败（" .. (cerr or "未知错误") .. "）" end
+
+	local req = "capture\n"
+	local sok, serr = usock.send_all(fd, req)
+	if not sok then
+		ffi.C.close(fd)
+		return nil, "发送 capture 请求失败（" .. (serr or "未知错误") .. "）"
+	end
+
+	-- 读响应头：一行文本，到 \n 为止
+	local header, herr = capture_recv_line(fd)
+	if header == nil then
+		ffi.C.close(fd)
+		return nil, "拍照响应头读取失败（" .. (herr or "未知错误") .. "）"
+	end
+	if header:sub(1, 3) == "ERR" then
+		ffi.C.close(fd)
+		return nil, "仿真器取帧失败：" .. (header:sub(5):gsub("^%s+", ""))
+	end
+
+	-- 解析头部：OK jpeg <len> <w> <h>
+	local fmt, len, w, h = header:match("^OK%s+(%S+)%s+(%d+)%s+(%d+)%s+(%d+)%s*$")
+	if fmt == nil then
+		ffi.C.close(fd)
+		return nil, "拍照响应头无法解析：" .. header
+	end
+	len = tonumber(len)
+	if len == nil or len <= 0 or len > MAX_SIM_BYTES then
+		ffi.C.close(fd)
+		return nil, string.format("拍照响应长度非法（%s 字节，上限 %d）", tostring(len), MAX_SIM_BYTES)
+	end
+
+	-- 读响应体：精确 len 字节的二进制数据
+	local body, berr = capture_recv_exact(fd, len)
+	ffi.C.close(fd)
+	if body == nil then return nil, "拍照响应体读取失败（" .. (berr or "未知错误") .. "）" end
+
+	return { bytes = body, format = fmt, width = tonumber(w), height = tonumber(h) }
+end
+
 function build(data)
 	if err_missing() then return ERR_NO_CTOR end
 	if type(data) ~= "table" then
@@ -580,6 +698,24 @@ function call(data)
 		}
 	end
 	state.sim = nil
+
+	-- sim-live：env 显式启用时，从仿真器抓实时帧（第三来源，介于文件仿真与真机
+	-- 之间）。文件 src 已在上面优先处理过；到这里没有 src，才轮到 sim-live。
+	local capPath = capture_sock_path()
+	if capPath ~= nil then
+		local shot, lerr = capture_live(capPath)
+		if shot == nil then return err(lerr) end
+		return {
+			result = "OK",
+			source = "sim",
+			format = shot.format,
+			width = shot.width,
+			height = shot.height,
+			bytes = #shot.bytes,
+			b64 = base64(shot.bytes),
+			note = "仿真器实时帧（" .. capPath .. "）",
+		}
+	end
 
 	-- 真机：路径以本次调用参数为准（空则用缺省）；换设备/热插拔都靠这句重开
 	local path = data.path

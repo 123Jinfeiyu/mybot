@@ -1,6 +1,6 @@
 -- 总线驱动 fd 0 契约测试（无硬件：桩替换 HAL 的 open/close，不触碰任何真机总线）
 --
--- HAL 约定 open 成功返回 fd >= 0、失败返回 -1（见 modules/lib/HAL.lua 的 i2c_open 注释），
+-- HAL 约定 open 成功返回 fd >= 0、失败返回 -1（见 modules/lib/hal/i2c.lua 的 i2c_open 注释），
 -- GPIO.lua 也按 >= 0 / < 0 判定。但 I2C/SPI/UART 曾按 fd > 0 / fd <= 0 判定，
 -- 把合法句柄 0 当成打开失败。
 --

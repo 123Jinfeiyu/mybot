@@ -15,6 +15,10 @@
   </defs>
 
   <rect x="0" y="0" width="1500" height="940" fill="#f8fafc"/>
+  <!-- 快照日期标注（2026-10-04 冻结）：本图随 architecture_analysis.html 一并冻结，
+       描述 2026-09-25 的形态，不含 sim/ 迁入、多机器人、~/.mybot 持久化、领域门面拆分。
+       重绘需同步改 analysis 页正文，故不单独更新——权威口径见 docs/ 下各 md。 -->
+  <text x="20" y="26" font-size="12" fill="#94a3b8">2026-09-25 快照（已冻结）· 权威口径见 docs/</text>
   <text x="750" y="40" text-anchor="middle" font-size="26" font-weight="700" fill="#0f172a">bot4cj.cpp 机器人控制框架 · 架构全景图</text>
   <text x="750" y="64" text-anchor="middle" font-size="14" fill="#64748b">C++17 宿主（std::thread + LuaJIT C API，mybot --mcp-backend 工具后端）+ Rust agent 进程（mybot-agent，模型循环）+ Lua 驱动层 + Linux HAL · 结构(.sql) / 驱动(.lua) / 动作(.mt) 三脚本分治</text>
 

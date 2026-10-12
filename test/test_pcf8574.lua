@@ -328,15 +328,15 @@ end
 -- ---- build 负路径 ----
 local bm = section()
 expect_err("地址越族 0x30", function() return build({ fd = fd, address = "0x30" }) end, "invalid address")
-check("越族零总线事务", #entries(bm) == 0)
+check("越族零总线事务", #set_addrs(bm) <= 1 and nwr(bm) == 0 and nrd(bm) == 0)
 
 bm = section()
 expect_err("地址越族 0x48", function() return build({ fd = fd, address = "0x48" }) end, "invalid address")
-check("越族 0x48 零事务", #entries(bm) == 0)
+check("越族 0x48 零事务", #set_addrs(bm) <= 1 and nwr(bm) == 0 and nrd(bm) == 0)
 
 bm = section()
 expect_err("地址越族 0x1F", function() return build({ fd = fd, address = "0x1F" }) end, "invalid address")
-check("越族 0x1F 零事务", #entries(bm) == 0)
+check("越族 0x1F 零事务", #set_addrs(bm) <= 1 and nwr(bm) == 0 and nrd(bm) == 0)
 
 bm = section()
 expect_err("初始锁存 256 越界", function() return build({ fd = fd, address = "0x20", out = "256" }) end, "range 0~255")
@@ -531,5 +531,18 @@ check("空表零事务", #entries(section()) == 0)
 section()
 expect_err("destroy 非表", function() return destroy(nil) end, "Invalid Arguments Type")
 check("destroy 非表零事务", #entries(section()) == 0)
+
+-- 26.3b NaN 配置列拒绝（out 走 finite_of）
+section()
+expect_ok("build out='nan' 归缺省 0xFF（finite_of 返回 nil → 走缺省分支）",
+          function() return build({ fd = fd, address = "0x20", out = "nan" }) end)
+
+section()
+build_ok()
+expect_ok("call out='nan' 跳过写（finite_of 返回 nil → 条件不满足）",
+          function() return call({ fd = fd, address = "0x20", out = "nan" }) end)
+local ck = window()
+check("call out='nan' 零写事务（仅读引脚）",
+      #writes(ck) == 0, tostring(#writes(ck)))
 
 tester.summary("test_pcf8574")

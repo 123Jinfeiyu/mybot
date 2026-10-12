@@ -20,17 +20,17 @@ namespace mtmerge {
 /* 相位合法范围（±10 万行）：相位参与输出行数计算（rowsNext + phase，曾有
  * 有符号溢出 UB）与逐行循环，无界值会把产物撑到无界内存；语义上相位是
  * 「滞后/提前行数」，10 万行已是极端值。mtmerge 的 --phase 与动作脚本
- * @Include 的 phase 列共用本界（单一事实源，两入口不得漂移）。 */
+ * @Merge 的 phase 列共用本界（单一事实源，两入口不得漂移）。 */
 inline constexpr std::int64_t kMaxPhase = 100000;
 
 /* ---- 产物预算（2026-09-21 第七轮审计）----
- * @Include / mtmerge 的**输入侧**已有三道限（@Include 行数 ≤ kMaxIncludes=32、
+ * @Merge / mtmerge 的**输入侧**已有三道限（@Merge/@Include 行数 ≤ kMaxIncludes=32、
  * 字节总量 ≤ 8 MiB、|phase| ≤ kMaxPhase），但**产物侧一条都没有**：
  * 产物行数 = max(rowsAcc, rowsNext + phase)、列数随包含数线性增长，于是几十字节的
- * 动作脚本写一行 `@Include path=..., phase=100000` 就能把终态撑到 ~1e5 行 × 数十列
+ * 动作脚本写一行 `@Merge path=..., phase=100000` 就能把终态撑到 ~1e5 行 × 数十列
  * ≈ 数百万单元格（数百 MB 量级）——树莓派上直接 OOM，而 OOM 是 SIGKILL 语义，
  * `deactivate()` 整体被跳过，正是「断电是生命周期不变式」要防的那个后果。
- * 判据放在 mergeTwo（两两归并的单点），mtmerge 工具与 mybot 的 @Include 展开
+ * 判据放在 mergeTwo（两两归并的单点），mtmerge 工具与 mybot 的 @Merge 展开
  * 共用，因此累积放大在**第一次越限的那次归并**上就被拦住，不会先吃掉内存再报错。
  * 取值给真实用量留了两个数量级以上的余量：仓库内 195 个 .mt 实测最多 200 数据行、
  * 20 列、760 单元格。 */

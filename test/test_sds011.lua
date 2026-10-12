@@ -643,4 +643,13 @@ do
 		"Invalid Arguments Type: table")
 end
 
+-- ==================== 组 7:26.3b NaN 配置列拒绝 ====================
+do
+	local mark = section()
+	expect_ok("timeout='nan' 归缺省 300ms（finite_of 返回 nil → 走缺省分支）",
+	          function() return build({ fd = fd, timeout = "nan" }) end)
+	check("timeout='nan' 使用缺省超时（仍有事务）",
+	      #entries(mark) > 0, tostring(#entries(mark)))
+end
+
 tester.summary("SDS011")

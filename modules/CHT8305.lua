@@ -32,10 +32,10 @@
 --   3. 转换等待：14 位双通道约 13ms，取 14ms 余量（RobTillaart 同值）
 --   4. 告警限（HLIMIT/TLIMIT，0x03）编程流程未实现，按手册另行操作
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 
 -- 调试开关：传感器周期读取，默认关闭逐次打印
@@ -68,117 +68,87 @@ local function read_reg16(fd)
 	return v % 65536
 end
 
--- ==================== 配置脚本 ====================
--- 软复位 -> 厂商/器件 ID 自检
-function build(data)
+-- ==================== 配置脚本 + 调用 + 销毁 ====================
+require_driver("i2c", {
+	name = "CHT8305",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 软复位 -> 厂商/器件 ID 自检
+	build = function(ctx, data)
+		local fd = ctx.fd
 
-	if DEBUG then
-		dbg_table("-------- CHT8305 builder func get a table --------", data)
-	end
+		if DEBUG then
+			dbg_table("-------- CHT8305 builder func get a table --------", data)
+		end
 
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
+		-- 软复位（bit15 自清零，恢复 POR 默认配置）：
+		-- 写寄存器必须单事务 [指针, 数据]——两段式会把数据字节当指针发（双源实现均同）
+		if i2c_write_multi(fd, REG_CONF, 0x80) ~= 0 then
+			return err("CHT8305 not responding (soft reset failed, check address 0x40 and wiring)")
+		end
+		milli_sleep(10)
 
-	-- 软复位（bit15 自清零，恢复 POR 默认配置）：
-	-- 写寄存器必须单事务 [指针, 数据]——两段式会把数据字节当指针发（双源实现均同）
-	if i2c_write_multi(fd, REG_CONF, 0x80) ~= 0 then
-		return err("CHT8305 not responding (soft reset failed, check address 0x40 and wiring)")
-	end
-	milli_sleep(10)
+		-- 厂商/器件 ID 自检
+		if not set_pointer(fd, REG_MID) then
+			return err("CHT8305 not responding (pointer write failed)")
+		end
+		local mid = read_reg16(fd)
+		if mid == nil then
+			return err("CHT8305 not responding (read manufacturer id failed)")
+		end
+		if mid ~= MID_MAGIC then
+			return err(string.format("CHT8305 unexpected manufacturer id 0x%04X (expect 0x%04X)", mid, MID_MAGIC))
+		end
+		if not set_pointer(fd, REG_DID) then
+			return err("CHT8305 not responding (pointer write failed)")
+		end
+		local did = read_reg16(fd)
+		if did == nil then
+			return err("CHT8305 not responding (read device id failed)")
+		end
+		if did ~= DID_MAGIC then
+			return err(string.format("CHT8305 unexpected device id 0x%04X (expect 0x%04X)", did, DID_MAGIC))
+		end
 
-	-- 厂商/器件 ID 自检
-	if not set_pointer(fd, REG_MID) then
-		return err("CHT8305 not responding (pointer write failed)")
-	end
-	local mid = read_reg16(fd)
-	if mid == nil then
-		return err("CHT8305 not responding (read manufacturer id failed)")
-	end
-	if mid ~= MID_MAGIC then
-		return err(string.format("CHT8305 unexpected manufacturer id 0x%04X (expect 0x%04X)", mid, MID_MAGIC))
-	end
-	if not set_pointer(fd, REG_DID) then
-		return err("CHT8305 not responding (pointer write failed)")
-	end
-	local did = read_reg16(fd)
-	if did == nil then
-		return err("CHT8305 not responding (read device id failed)")
-	end
-	if did ~= DID_MAGIC then
-		return err(string.format("CHT8305 unexpected device id 0x%04X (expect 0x%04X)", did, DID_MAGIC))
-	end
+		cfg_addr = ctx.addr
+		print(string.format("CHT8305 init OK: addr=0x%02X mid=0x%04X did=0x%04X", ctx.addr, mid, did))
+		return {  result = "OK"  }
+	end,
 
-	cfg_addr = addr
-	print(string.format("CHT8305 init OK: addr=0x%02X mid=0x%04X did=0x%04X", addr, mid, did))
-	return {  result = "OK"  }
+	-- 触发并读取温度 + 湿度（各一次指针写 + 14ms 转换等待 + 2 字节读）
+	call = function(ctx, data)
+		local fd = ctx.fd
 
-end
+		if DEBUG then
+			dbg_table("-------- CHT8305 caller func get a table --------", data)
+		end
 
--- ==================== 调用 ====================
--- 触发并读取温度 + 湿度（各一次指针写 + 14ms 转换等待 + 2 字节读）
-function call(data)
+		-----------------------------------------------------
+		-- 温度
+		if not set_pointer(fd, REG_TEMP) then
+			return err("CHT8305 not responding (temp pointer write failed)")
+		end
+		milli_sleep(T_CONV_MS)
+		local t_raw = read_reg16(fd)
+		if t_raw == nil then
+			return err("CHT8305 not responding (read temperature failed)")
+		end
+		-- 湿度
+		if not set_pointer(fd, REG_HUMI) then
+			return err("CHT8305 not responding (humi pointer write failed)")
+		end
+		milli_sleep(T_CONV_MS)
+		local h_raw = read_reg16(fd)
+		if h_raw == nil then
+			return err("CHT8305 not responding (read humidity failed)")
+		end
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- CHT8305 caller func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
-
-	-----------------------------------------------------
-	-- 温度
-	if not set_pointer(fd, REG_TEMP) then
-		return err("CHT8305 not responding (temp pointer write failed)")
-	end
-	milli_sleep(T_CONV_MS)
-	local t_raw = read_reg16(fd)
-	if t_raw == nil then
-		return err("CHT8305 not responding (read temperature failed)")
-	end
-	-- 湿度
-	if not set_pointer(fd, REG_HUMI) then
-		return err("CHT8305 not responding (humi pointer write failed)")
-	end
-	milli_sleep(T_CONV_MS)
-	local h_raw = read_reg16(fd)
-	if h_raw == nil then
-		return err("CHT8305 not responding (read humidity failed)")
-	end
-
-	return {
-		result = "OK",
-		T = t_raw * 165.0 / 65535.0 - 40.0,
-		H = h_raw * 100.0 / 65535.0
-	}
-
-end
-
--- ==================== 销毁 ====================
--- 无关断寄存器（低功耗由配置位另行操作，本驱动不触碰）；fd 归 I2C 硬件变量所有
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
+		return {
+			result = "OK",
+			T = t_raw * 165.0 / 65535.0 - 40.0,
+			H = h_raw * 100.0 / 65535.0
+		}
+	end,
+})
 
 
 

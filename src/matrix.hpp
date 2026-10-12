@@ -14,6 +14,13 @@
 
 namespace mt {
 
+/* @块嵌套深度上限（2026-10-12 @块嵌套）：控制块（@if/@while）可含子块、子块可
+ * 再含——深度无界会让解析器帧栈与执行器 execSequence 的调用栈随嵌套线性增长。
+ * --tcp 下发的远端脚本能构造深嵌套，故设硬上限、超限在解析期响亮拒绝（与
+ * @Merge/@Include 的 kMaxIncludes=32、表达式深度上限同一护栏取向）。32 层远超真实脚本
+ * 所需；Stage 1 先立常量，判据在 Stage 2 解析器落地。 */
+inline constexpr std::size_t kMaxBlockDepth = 32;
+
 /* 重构计划 2.5：单一根异常——解析家族并入 bot::IllegalArgumentException。
  * 此前上层要「域错误全捕」必须双 catch（本族 + IAE）；归一后 catch(IAE)
  * 一处即可。matrix.cpp 的两段 catch 语义不变：本族原样上抛（自带行号）、
@@ -38,36 +45,35 @@ class MatrixObject {
 	std::string name_;
 	std::vector<std::vector<std::string>> values_;	/* 原始矩阵 */
 
+	/* 嵌套子块（2026-10-12 @块嵌套）：仅控制块（@if/@while）使用——其体内的
+	 * 连续直接行合成为隐式 @Action 子块、显式 @名字 子块按书写顺序并入此列。
+	 * 叶子块（@Action/@Alias/@Vars…）恒为空。std::vector 支持不完整值类型
+	 * （C++17），故可作 MatrixObject 自身的成员。Stage 1 惰性加入：解析器尚未
+	 * 填充，行为零变化；填充与消费见 Stage 2/3。 */
+	std::vector<MatrixObject> children_;
+
 	/* "-" 占位符继承的解析结果，惰性前向填充（见 inherited()）。
 	 * 按值存储而非存指针：MatrixObject 是可拷贝值类型（parse/take 均按值
 	 * 交付），指向 values_ 内部字符串的指针在副本里会悬垂。 */
 	mutable std::vector<std::string> inherited_;
 	mutable bool inheritedReady_ = false;
 
-	void buildInherited() const {
-		inherited_.clear();
-		inheritedReady_ = false;
-		const std::size_t nrow = values_.size();
-		const std::size_t ncol = cols();
-		inherited_.reserve(nrow * ncol);
-		for (std::size_t r = 0; r < nrow; ++r) {
-			for (std::size_t c = 0; c < ncol; ++c) {
-				/* 语义与旧的逐格递归完全一致：row<=1 的 "-" 不继承，
-				 * 原样保留字面值，由调用方决定含义（inherited 返 "-"、parseMtDouble 返 0.0；
-				 * 动作派发另把「首数据行即 '-'」判为未起拍、不投递该参数，见 robot.cpp）。 */
-				if (r > 1 && values_[r][c] == "-") {
-					inherited_.push_back(inherited_[(r - 1) * ncol + c]);
-				} else {
-					inherited_.push_back(values_[r][c]);
-				}
-			}
-		}
-		inheritedReady_ = true;
-	}
+	/* 冷路径实现下放 matrix.cpp（2026-10-01 编译扇出收窄：本头被 11 个 TU
+	 * 包含，大段 inline 只在各 TU 里膨胀二进制与编译时间）——operator()/
+	 * inherited/indexOfCol 是逐格热路径，留 inline。 */
+	void buildInherited() const;
 
 public:
 	bool hasName() const { return !name_.empty(); }
 	const std::string& getName() const { return name_; }
+
+	/* 嵌套子块只读视图（仅控制块 @if/@while 非空；叶子块恒空）。执行器
+	 * execSequence 递归消费（Stage 3）；Stage 1 惰性加入，尚无填充方。 */
+	const std::vector<MatrixObject>& children() const { return children_; }
+	/* 可变视图：@Merge 展开的嵌套归并 pass 需就地重写 children 序列
+	 * （消费子块内的 @Merge 块、把目标纯矩阵并入其下紧邻的表）。 */
+	std::vector<MatrixObject>& children() { return children_; }
+	bool hasChildren() const { return !children_.empty(); }
 
 	std::size_t rows() const { return values_.size(); }
 	std::size_t cols() const {
@@ -132,49 +138,20 @@ public:
 	 * 本方法把「缺列」的判定提到定位点、报错主语带表名，指向性更强。
 	 * 容许缺列的场景（如把 name 列当跳过标记的元数据收集）仍用 indexOfCol。 */
 	std::int64_t requireCol(std::size_t row, const std::string& key,
-			const std::string& what) const {
-		std::int64_t idx = indexOfCol(row, key);
-		if (idx < 0) {
-			throw bot::IllegalArgumentException(what + " '" + name_ + "' has no '"
-				+ key + "' column.");
-		}
-		return idx;
-	}
+			const std::string& what) const;
 
 	/* 储存对象 */
-	void save(std::ostream& out) const {
-		out << "@" << getName() << "\n";
-		for (const auto& vec : values_) {
-			for (const auto& item : vec) {
-				out << item << " ";
-			}
-			out << ";\n";
-		}
-		out << "@\n";
-	}
+	void save(std::ostream& out) const;
 
 	/* 解析期追加一行（R-4）：宽度一致性校验 + 继承缓存作废。
 	 * 头行与 INSERT 行都经此入口，保证校验只此一处。 */
-	void appendRow(std::vector<std::string> row, std::int64_t count) {
-		if (!values_.empty() && row.size() != values_.back().size()) {
-			throw DoesNotSync(count, values_.back().size(), row.size());
-		}
-		values_.push_back(std::move(row));
-		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
-	}
+	void appendRow(std::vector<std::string> row, std::int64_t count);
 
 	/* 丢弃尾部 count 行（2026-09-23 热插表）：**只给回滚路径用**。
 	 * 结构表在装配期是只增的（顺序不变式见 RobotStruct::applySql），
 	 * 唯一的删除需求是「热插批次失败 ⇒ 撤销刚追加的 INSERT 行」。
 	 * count 超出行数即调用方算错（回滚记录与提交记录不匹配），响亮报错。 */
-	void popRows(std::size_t count) {
-		if (count > values_.size()) {
-			throw bot::IllegalArgumentException("MatrixObject::popRows(" + std::to_string(count)
-				+ ") exceeds " + std::to_string(values_.size()) + " row(s)");
-		}
-		values_.resize(values_.size() - count);
-		inheritedReady_ = false;
-	}
+	void popRows(std::size_t count);
 
 	/* 按行号删除任意行（2026-09-23 热删除）：**存活行相对顺序逐字不变**。
 	 * 这不是实现细节而是不变式——行序就是声明序，而销毁序 = 声明序倒序
@@ -187,33 +164,7 @@ public:
 	 * 越界同样报错——两者都是调用方算错，静默容忍只会让「删了几行」与
 	 * 生效摘要对不上。删除在单趟内完成（按行号集合过滤一次重排），故传入
 	 * 的行号无需有序、也无需倒序，调用方不必替本方法做排序。 */
-	void removeRows(const std::vector<std::size_t>& rows) {
-		if (rows.empty()) { return; }
-		std::vector<char> doomed(values_.size(), 0);
-		for (std::size_t r : rows) {
-			if (r == 0) {
-				throw bot::IllegalArgumentException(
-					"MatrixObject::removeRows: row 0 is the column header and cannot be removed");
-			}
-			if (r >= values_.size()) {
-				throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
-					+ std::to_string(r) + " is out of range (" + std::to_string(values_.size())
-					+ " row(s))");
-			}
-			if (doomed[r] != 0) {
-				throw bot::IllegalArgumentException("MatrixObject::removeRows: row "
-					+ std::to_string(r) + " listed twice");
-			}
-			doomed[r] = 1;
-		}
-		std::vector<std::vector<std::string>> kept;
-		kept.reserve(values_.size() - rows.size());
-		for (std::size_t r = 0; r < values_.size(); ++r) {
-			if (doomed[r] == 0) { kept.push_back(std::move(values_[r])); }
-		}
-		values_ = std::move(kept);
-		inheritedReady_ = false;	/* 行数变了，继承缓存作废 */
-	}
+	void removeRows(const std::vector<std::size_t>& rows);
 };
 
 /* ------------- 解析期增量构建器（R-4）-------------
@@ -253,17 +204,59 @@ public:
 	void item(const std::string& s) { grp_.push_back(s); }
 	void line(std::int64_t count) { submitLine(count); }
 
+	/* 追加一个嵌套子块（Stage 2 解析器用：控制块体内合成的隐式 @Action 与
+	 * 显式子块按书写顺序入列）。Stage 1 惰性加入，尚无调用方。 */
+	void addChild(MatrixObject child) { obj_.children_.push_back(std::move(child)); }
+
 	MatrixObject take() { return std::move(obj_); }
 };
 
-/* ------------- 矩阵式解析器 ------------- */
+/* ------------- 矩阵式解析器 -------------
+ * 2026-10-12 @块嵌套：从「单块 + flag_」升级为帧栈。行首 '@' 后读完名字 token
+ * 再决策（Reader 无 peek）：空名（裸 @）= 闭合最内层帧；if(/while( = 开控制帧；
+ * 其余 = 开叶子帧。控制帧体内连续直接行合成一个隐式 @Action 子块，遇 @名字 先
+ * 冲刷再开子块——直接行与嵌套块按书写顺序交错入 children。叶子帧只吃行、不可含
+ * 子块。裸 @ 闭合最内层对非嵌套脚本语义逐字不变（向后兼容）。 */
+
+/* 控制块名判定（宽松形态，下沉 matrix 层供解析器与 mtinclude 共用，避免与
+ * action_runner 的精确版 parseIfBlockName/parseWhileBlockName 漂移，也不让
+ * matrix 反向依赖 action_runner）。凡「看起来想写 @if/@while」的都算控制块
+ * （含裸 "if"/"while" 与未闭合等非法形态）——它们进控制帧，精确校验与响亮
+ * 报错仍在执行期由 ActionRunner 的 parseCondBlockName 兜（报错文案不变）。 */
+inline bool isControlBlockName(const std::string& rawName) {
+	const std::string n = bot::trim(rawName);
+	return n == "if" || n.compare(0, 3, "if(") == 0
+		|| n == "while" || n.compare(0, 6, "while(") == 0;
+}
+
 class MatrixParser {
 	bot::Reader& input_;
-	MatrixBuilder builder_;
-	bool flag_ = false;	/* 结束标志 */
-	bool nl_ = true;	/* new line */
+
+	/* 一个开着的块帧。叶子帧只用 self（网格）；控制帧用 children + pendingAction
+	 * （当前隐式 @Action 行run），self 不用。 */
+	struct Frame {
+		std::string name;		/* 块名（"Action" / "if(x>0)" / "while(c<3)"） */
+		bool isControl = false;
+		MatrixBuilder self;		/* 叶子：网格（名字已置） */
+		std::vector<MatrixObject> children;	/* 控制：按书写顺序的子块 */
+		MatrixBuilder pendingAction;	/* 控制：当前隐式 @Action（名字已置 "Action"） */
+		bool pendingHasRows = false;
+	};
+	std::vector<Frame> stack_;
+	MatrixBuilder scratch_;		/* 栈空时的顶层游离数据（永不具名 → parse 返 nullopt，与旧行为一致） */
+	std::string hdr_;		/* 行首 '@' 后正在读的块头名字 token */
+	bool done_ = false;		/* 顶层帧已闭合，parse() 该返回 */
+	std::optional<MatrixObject> result_;
+
+	bool nl_ = true;	/* new line（行首态） */
 	bool cm_ = false;	/* comment */
-	bool nm_ = false;	/* name-line */
+	bool nm_ = false;	/* 正在读块头名字 token */
+
+	/* 当前接收数据行的构建器：控制帧 → pendingAction，叶子帧 → self，栈空 → scratch_ */
+	MatrixBuilder& dataBuilder();
+	void commitHeader(const std::string& hdr);	/* 块头名字读完：开块或闭合 */
+	void flushPending(Frame& f);			/* 控制帧：把当前行run冲刷成隐式 @Action 子块 */
+	void closeFrame();				/* 闭合最内层帧，产物挂到父帧或成为 parse 结果 */
 
 	std::int64_t next_(char c, std::int64_t count);
 

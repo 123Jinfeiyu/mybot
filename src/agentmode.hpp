@@ -66,6 +66,18 @@ struct AgentModeConfig {
 	 * （--read-var，可重复）。**命令行独占**：配置文件写 read_vars 会被拒绝加载
 	 * （与 allow_shell / camera_src_dir 同判据）。空 = 不注册 read_variables。 */
 	std::vector<std::string> readVars;
+	/* list_dir / read_file 的只读根目录（Phase 4，2026-10-07，--fs-root）。
+	 * **命令行独占**（配置文件写 fs_root 会被拒绝加载，与 readVars 同判据）。
+	 * 空 = 不注册这两个工具。buildAgentConfig 在上电前校验其 canonical 存在
+	 * 且是目录（配置错误不碰真机）——走到 makeToolContext 时要么是空串，
+	 * 要么已经是校验通过的路径。 */
+	std::string fsRoot;
+	/* write_file 的独立开关（Phase 5，2026-10-08，--agent-write-file）。
+	 * **独立于 fsRoot**：开了只读根不等于给了写权，必须再显式开一道
+	 * （写能覆盖/改写，危险性与 allowShell/allowHotSql 同级）。buildAgentConfig
+	 * 校验它依赖 fsRoot 非空（给了这个开关却没给 --fs-root 是配置错误）；
+	 * --mcp-backend 下还强制要求策略确认（见 enforceBackendConfirmPolicy）。 */
+	bool allowWriteFile = false;
 	/* 断连安全动作（2026-09-25，--on-disconnect）：连接结束后由后端自行执行的
 	 * 动作脚本（scriptsDir 之下的相对路径）。命令行独占（配置文件不能给）；
 	 * buildAgentConfig 在上电前经 loadActionScriptFile 预检（越界/不存在/为空
@@ -84,21 +96,11 @@ struct AgentModeConfig {
 	std::string mcpAuthToken;
 	bool verbose = true;
 
-	/* ---- 上下文字节预算（B1）----
-	 * 0 = 不限；可由配置文件覆盖。后端**不消费**这三个值（实际预算由 Rust agent
-	 * 强制）；保留它们只为 --check-config 摘要把它们摆出来，供 agent_e2e.sh R5m
-	 * 「双端 --check-config 互钉」校验 C++ 与 Rust 对同一份 mybot.llm.json 的解析
-	 * 一致（两侧都全量 parse 模型侧字段，只有 Rust 消费）。批次 2（配置单一事实源）
-	 * 将连同 C++ 侧解析与该互钉一并退役。 */
-	std::size_t maxHistoryBytes = 4 * 1024 * 1024;
-	std::size_t maxTaskToolResultBytes = 2 * 1024 * 1024;
-	std::size_t maxTaskImageBytes = 4 * 1024 * 1024;
-
 	/* ---- 工具层超时（后端真实消费：makeToolContext → AgentToolContext）----
 	 * 配置文件同名字段（run_command_timeout_sec 等）的落点；区间单点见 llm_limits。
 	 * 与已迁 Rust 的模型循环预算（max_calls_per_round / 重试次数 / 退避时长）不同：
-	 * 那三类是 agent 侧的事，后端不再镜像，已于 2026-09-26 删除（上下文字节预算
-	 * 三字段的去留理由见其自身注释）。 */
+	 * 那三类是 agent 侧的事，后端不再镜像，已于 2026-09-26 删除。上下文字节预算
+	 * 三字段随 2026-10-01 批次 A（P1-5）一并退役（见 llmconfig.hpp 头注）。 */
 	int commandTimeoutSec = 10;	/* run_command 缺省超时 → AgentToolContext */
 	int maxCommandTimeoutSec = 60;	/* run_command 超时上限 → AgentToolContext */
 	/* PL-2：动作脚本执行预算（秒）→ AgentToolContext。0 = 显式关闭预算。 */

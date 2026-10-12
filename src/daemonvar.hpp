@@ -1,5 +1,8 @@
 #pragma once
 /* daemonvar.hpp —— 守护线程硬件变量（移植 bot4cj/src/HV/Daemon.cj）
+ * 本头的范围是**共享槽布局 + 停机协议位 + 线程机 + 守护运行器**（实现见
+ * daemonvar.cpp）。守护硬件变量 MtVars_Daemon 的声明在 daemonconf.hpp——它的
+ * 四个成员函数实现全在 daemonconf.cpp，声明跟着实现走。
  * 共享槽 daemon_slot_t 布局（aarch64/x86_64 与 modules/lib/pthread.lua 严格一致）：
  *   offset 0   char   mutex[64]      pthread_mutex_t（aarch64=48B / x86_64=40B，预留 64）
  *   offset 64  int32  count          已 publish 次数
@@ -42,8 +45,8 @@
 #include <string>
 #include <vector>
 
-#include "hardware.hpp"
-#include "luaend.hpp"
+#include "json.hpp"		/* DaemonRunner::readSample 的返回类型（不再需要整个
+				 * hardware 域：MtVars_Daemon 已迁 daemonconf.hpp） */
 
 namespace bot {
 
@@ -83,15 +86,10 @@ bool daemon_stop_requested(DaemonSlot* slot);
 void daemon_quiesce(DaemonSlot* slot);
 bool daemon_quiesced(DaemonSlot* slot);
 
-/* D/C4：解析 Daemon 的 interval 列（毫秒）。非法值（非整数/溢出/负/0/超 1h）
- * 抛 IllegalArgumentException 并点名表名与行号；成功返回毫秒数。
- * 从 daemonvar.cpp 的 static 提为暴露，供独立表驱动单测（test_daemon.cpp）。 */
-int64_t parseInterval(const std::string& iv, const std::string& name,
-	const std::string& tabName, int64_t row);
-
-/* ---- chunk 路径寻址（issue #19 多路径）---- */
-std::string firstExistingModule(const std::string& paths, const std::string& rel);
-std::string resolveDaemonChunk(const std::string& chunk, const std::string& modulePath);
+/* ---- 共享槽的模块内接缝（定义在 daemonvar.cpp 线程机 TU；daemonconf.cpp
+ * 的 allocateSlot 装配时要用同一份 mutex 定位与释放例程）---- */
+pthread_mutex_t* mutexOf(DaemonSlot* slot);
+void releaseSlot(DaemonSlot* slot);
 
 /* N-7：本次进程内被弃管（join 超时 abandoned）的守护线程数——
  * 供 main 退出前统一告警（弃管线程的 lua_State 在 exit 路径上不可回收） */
@@ -202,31 +200,6 @@ public:
 	/* 槽是否仍在位（2.4：原裸指针 slot() 入口收窄为布尔，避免调用方
 	 * 拿到绕过所有权模型的裸指针） */
 	bool slotAlive() const { return std::atomic_load(&slot_) != nullptr; }
-};
-
-/* ---- 守护硬件变量（R-3：真实子类，持 runner 的 shared_ptr）----
- * build/destroy 的参数（chunk 路径/配置串/interval）在 Factory 时定型为成员。 */
-class MtVars_Daemon : public MatrixVars_Hardware {
-	std::shared_ptr<DaemonRunner> runner_;
-	std::string name_;
-	std::string chunkPath_;
-	std::string configStr_;
-	int64_t intervalMs_;
-
-	explicit MtVars_Daemon(std::shared_ptr<DaemonRunner> runner, std::string name,
-			std::string chunkPath, std::string configStr, int64_t intervalMs)
-		: runner_(std::move(runner)), name_(std::move(name)),
-		  chunkPath_(std::move(chunkPath)), configStr_(std::move(configStr)),
-		  intervalMs_(intervalMs) {}
-
-public:
-	Json play(const Json&) override;
-	const char* kindName() const override { return "daemon"; }
-	void build() override;
-	void destroy() override;
-
-	static std::unique_ptr<MtVars_Daemon> Factory(const mt::MatrixObject& defs, std::int64_t i,
-			std::vector<std::shared_ptr<DaemonRunner>>& registry);
 };
 
 } // namespace bot

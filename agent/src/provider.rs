@@ -23,10 +23,11 @@ use rig_core::providers::openai::completion::OpenAICompatibleProvider;
 use rig_core::providers::{anthropic, deepseek, openai};
 use serde_json::json;
 
-use crate::bridge::{self, Bridge, ToolSpec};
+use crate::bridge::{self, Bridge};
 use crate::config::Config;
 use crate::hook::{HookState, SessionHook};
 use crate::model::{BudgetModel, RawStream};
+use crate::toolspec::ToolSpec;
 
 #[derive(Debug, Clone, Copy)]
 struct DeepSeekChat;
@@ -141,7 +142,7 @@ pub fn build(
     let agent = match driver {
         Driver::OpenAi => {
             let client = openai::CompletionsClient::builder()
-                .api_key(cfg.api_key.clone())
+                .api_key(cfg.api_key.expose().to_string())
                 .base_url(&base)
                 .build()
                 .context("装配 OpenAI 兼容客户端（LlmOpenAI）")?;
@@ -155,7 +156,7 @@ pub fn build(
         }
         Driver::DeepSeek => {
             let client = deepseek::Client::builder()
-                .api_key(cfg.api_key.clone())
+                .api_key(cfg.api_key.expose().to_string())
                 .base_url(&base)
                 .build()
                 .context("装配 DeepSeek 客户端（LlmDeepSeek）")?;
@@ -172,7 +173,7 @@ pub fn build(
         }
         Driver::Anthropic => {
             let client = anthropic::Client::builder()
-                .api_key(cfg.api_key.clone())
+                .api_key(cfg.api_key.expose().to_string())
                 .base_url(&cfg.endpoint)
                 .build()
                 .context("装配 Anthropic 客户端（LlmAnthropic）")?;

@@ -75,7 +75,7 @@ do
 	local run = string.rep(bytes(0xff), 5)
 	local fixed = utf8.sanitize(bytes(0x41) .. run .. bytes(0x42))
 	check("sanitize：连续坏字节折叠且计数", utf8.valid(fixed)
-		and fixed:find("[! 非法 UTF-8 字节已省略5 字节]", 1, true) ~= nil, fixed)
+		and fixed:find("[! invalid UTF-8 bytes omitted5 bytes]", 1, true) ~= nil, fixed)
 	check("sanitize：折叠后首尾仍是原来的 ASCII",
 		fixed:sub(1, 1) == "A" and fixed:sub(-1) == "B")
 	check("sanitize：单个坏字节不加计数说明（避免噪音）",

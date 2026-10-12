@@ -148,18 +148,18 @@ TH_TEST(open_action_source_rejects_bad_tcp_port) {
 	bot::CliOptions opts;
 	for (const char* bad : {"0", "-1", "65536", "abc", ""}) {
 		opts = bot::CliOptions{};
-		opts.tcp = true;
-		opts.tcpPort = bad;
+		opts.tcp.enabled = true;
+		opts.tcp.tcpPort = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
 
 TH_TEST(open_action_source_rejects_bad_tcp_host) {
 	bot::CliOptions opts;
-	opts.tcp = true;
-	opts.tcpPort = "19999";
+	opts.tcp.enabled = true;
+	opts.tcp.tcpPort = "19999";
 	for (const char* bad : {"not-an-ip", "localhost", "999.1.1.1", "127.0.0.1:80"}) {
-		opts.tcpHost = bad;
+		opts.tcp.tcpHost = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
@@ -167,11 +167,11 @@ TH_TEST(open_action_source_rejects_bad_tcp_host) {
 TH_TEST(open_action_source_rejects_bad_tcp_idle) {
 	/* 空闲超时非法即拒绝：缺省 30s 的兜底不能被 "0" 变成「永不超时」 */
 	bot::CliOptions opts;
-	opts.tcp = true;
-	opts.tcpPort = "19999";
-	opts.tcpHost = "127.0.0.1";
+	opts.tcp.enabled = true;
+	opts.tcp.tcpPort = "19999";
+	opts.tcp.tcpHost = "127.0.0.1";
 	for (const char* bad : {"0", "-5", "86401", "soon"}) {
-		opts.tcpIdle = bad;
+		opts.tcp.tcpIdle = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
@@ -182,11 +182,11 @@ TH_TEST(open_action_source_rejects_bad_tcp_max_auth_attempts) {
 	/* 下限 1、上限 1000（util::tcp_limits）：0/负/越界/非数字均拒绝，
 	 * 与既有 tcpIdle/tcpPort 校验同一 nullptr 契约。 */
 	bot::CliOptions opts;
-	opts.tcp = true;
-	opts.tcpPort = "19999";
-	opts.tcpHost = "127.0.0.1";
+	opts.tcp.enabled = true;
+	opts.tcp.tcpPort = "19999";
+	opts.tcp.tcpHost = "127.0.0.1";
 	for (const char* bad : {"0", "-1", "1001", "five"}) {
-		opts.tcpMaxAuthAttempts = bad;
+		opts.tcp.tcpMaxAuthAttempts = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
@@ -194,11 +194,11 @@ TH_TEST(open_action_source_rejects_bad_tcp_max_auth_attempts) {
 TH_TEST(open_action_source_rejects_bad_tcp_total_timeout) {
 	/* 下限 1、上限 86400（util::tcp_limits），与 --tcp-idle 上限同数量级 */
 	bot::CliOptions opts;
-	opts.tcp = true;
-	opts.tcpPort = "19999";
-	opts.tcpHost = "127.0.0.1";
+	opts.tcp.enabled = true;
+	opts.tcp.tcpPort = "19999";
+	opts.tcp.tcpHost = "127.0.0.1";
 	for (const char* bad : {"0", "-1", "86401", "long"}) {
-		opts.tcpTotalTimeout = bad;
+		opts.tcp.tcpTotalTimeout = bad;
 		TH_CHECK(bot::openActionSource(opts) == nullptr);
 	}
 }
@@ -220,12 +220,12 @@ std::size_t openFdCount() {
 /* 必然走到「bind 失败」抛异常的一组 TCP 选项 */
 bot::CliOptions tcpBindFailOptions() {
 	bot::CliOptions opts;
-	opts.tcp = true;
-	opts.tcpHost = "192.0.2.1";	/* TEST-NET-1：文档保留段，不会是本机地址 */
-	opts.tcpPort = "9000";
+	opts.tcp.enabled = true;
+	opts.tcp.tcpHost = "192.0.2.1";	/* TEST-NET-1：文档保留段，不会是本机地址 */
+	opts.tcp.tcpPort = "9000";
 	/* 显式非空 token：绕开「非回环必须设口令」的前置拒绝（H-2），
 	 * 也不受 BOT4CJ_TCP_TOKEN 环境影响 */
-	opts.tcpToken = "s3cret";
+	opts.tcp.tcpToken = "s3cret";
 	return opts;
 }
 

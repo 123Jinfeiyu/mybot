@@ -61,7 +61,7 @@ inline std::optional<long long> parseBoundedLong(const std::string& text,
  * strtod 全串消费 + 拒绝非有限值：four 处此前是同一判据的四份拷贝——
  *   hardware.cpp::parseMtDouble（矩阵单元格）、hardware.cpp Vars 字面量分支、
  *   expr.cpp::parseNumber、jsonparse.cpp 的 Float 分支；
- * 外加 util.hpp::isNumericLiteral（trim 后同判据）。醒目二分：strtod 静默
+ * 外加本文件下方的 isNumericLiteral（trim 后同判据）。醒目二分：strtod 静默
  * 返 0 + end 全消费是「没吃到数」与「读到 nan/inf 却当成功」的含糊——
  * 判据漂移意味着同一语义下 4 处消息口径各表其是，收敛到此。
  * 返回三态：INVALID=没消费干净/空串；NONFINITE=消费了但 nan/inf。

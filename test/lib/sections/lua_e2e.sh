@@ -104,31 +104,9 @@ run_parse_cases() {
 	done
 }
 
-run_one_mtmerge() {
-	local name="$1" want_rc="$2" expects="$3"; shift 3
-	echo "----- $name (mtmerge) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		if [ -z "$mtmerge_reported" ]; then
-			mtmerge_reported=1
-			artifact_missing "mtmerge 合成器" "$mtmerge_cases_n 条用例" "$mtmerge_bin" "$mtmerge_explicit"
-		fi
-		return 2
-	fi
-	local out rc ok=true e
-	out="$("$@" 2>&1)"
-	rc=$?
-	echo "$out"
-	[ "$rc" -ne "$want_rc" ] && ok=false
-	local IFS='|'
-	for e in $expects; do
-		echo "$out" | grep -qF -- "$e" || ok=false
-	done
-	if $ok; then
-		record_pass
-	else
-		record_fail "$name(mtmerge)"
-	fi
-}
+# mtmerge 离线合成器已移除（2026-10-10）：相关 runner 与 fixture 函数已不再使用。
+# 运行端 @Merge 展开的测试由 test/run_all.sh 的 include 段覆盖。
+
 
 # F3-5 余部①：原 run_include_observation 拆成按用例调用的 runner——
 # 条数由 run_all.sh 侧 count_calls run_include_case 数调用点推导（调用点必须
@@ -166,20 +144,51 @@ run_include_case() {
 	fi
 }
 
-run_one_mtmerge_phase() {
-	echo "----- mtmerge-phase (相位语义) -----"
-	if [ ! -x "$mtmerge_bin" ]; then
-		artifact_missing "mtmerge 相位回归" "该段（scripts/mtmerge_e2e.sh）" "$mtmerge_bin" "$mtmerge_explicit"
-		return 2
-	fi
-	local out rc
-	out="$(MTMERGE="$mtmerge_bin" BOT="$bin" timeout 60 bash scripts/mtmerge_e2e.sh 2>&1)"
+# mtmerge 离线合成器已移除（2026-10-10）：run_one_mtmerge_phase 不再使用。
+
+# F3-5 余部①：三条观察面抽成同型 runner，条数由 count_calls 数调用点推导。
+run_one_trig_obs() {
+	local name="$1" label="$2"
+	echo "----- $name ($label 观察面) -----"
+	local out rc ok
+	out="$(cat "scripts/test/$name.mt" | BOT4CJ_DEBUG=1 $timeout_cmd "$bin" --robot="robots/test/$name.sql" 2>&1)"
 	rc=$?
 	echo "$out"
-	if [ $rc -ne 0 ] || ! echo "$out" | grep -qF "mtmerge 端到端测试通过"; then
-		record_fail "mtmerge-phase(相位语义)"
+	ok=true
+	[ "$rc" -ne 0 ] && ok=false
+	if [ "$name" = "trig_basic" ]; then
+		local src_line sink_line
+		src_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=src' | head -1 | cut -d: -f1)"
+		sink_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=sink' | head -1 | cut -d: -f1)"
+		if [ -z "$src_line" ] || [ -z "$sink_line" ]; then
+			ok=false
+		elif [ "$src_line" -ge "$sink_line" ]; then
+			ok=false
+		fi
+		echo "$out" | grep -qF '"relay-src":{"delay":300}' || ok=false
+		echo "$out" | grep -F 'Forward to controller:' | grep -qF '"relay-src"' && ok=false
+	elif [ "$name" = "trig2_basic" ]; then
+		local s1_line s2_line sk_line
+		s1_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=300 note=s1' | head -1 | cut -d: -f1)"
+		s2_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=s2' | head -1 | cut -d: -f1)"
+		sk_line="$(printf '%s\n' "$out" | grep -nF 'Relay: test=301 note=sink' | head -1 | cut -d: -f1)"
+		if [ -z "$s1_line" ] || [ -z "$s2_line" ] || [ -z "$sk_line" ]; then
+			ok=false
+		elif [ "$s1_line" -ge "$s2_line" ] || [ "$s2_line" -ge "$sk_line" ]; then
+			ok=false
+		fi
+		echo "$out" | grep -qF '"relay-src1":{"delay":300}' || ok=false
+		echo "$out" | grep -qF '"relay-src2":{"delay":301}' || ok=false
 	else
+		# ctrl2_basic：两个 controller 都被转发（各自的 Controller result dump 带名字）
+		echo "$out" | grep -qF 'Controller result (dummy-0)' || ok=false
+		echo "$out" | grep -qF 'Controller result (timer-b)' || ok=false
+		# 扇出广播：payload 只构建一次（同一份数据发给每个 controller）
+		[ "$(printf '%s\n' "$out" | grep -cF 'Forward to controller:')" = "1" ] || ok=false
+	fi
+	if $ok; then
 		record_pass
+	else
+		record_fail "$name($label 观察面)"
 	fi
 }
-

@@ -57,10 +57,10 @@ SINGLE_CONSUMER = "测距状态机：SYSTEM_START + 就绪标志在器件侧，�
 --   4. 从机地址固定 0x29，一条总线挂多只要 XSHUT 时序重分配地址，
 --      本驱动按单只支持
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local unpack = unpack or table.unpack		-- LuaJIT 5.1 / Lua 5.4 双兼容
 
@@ -234,206 +234,174 @@ local function set_range_timing(fd, budget_ms, inter_ms)
 	return true
 end
 
--- 【配置脚本】软复位 -> 等固件 -> 默认配置流 -> VHV 预热 -> 时序 -> 启动
-function build(data)
+require_driver("i2c", {
+	name = "VL53L4CD",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- VL53L4CD builder func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	local budget = int_or(data.budget, DEF_BUDGET, 10, 200)
-	local inter = int_or(data.inter, DEF_INTER, 0, 2147483647)
-	local timeout = int_or(data.timeout, DEF_TIMEOUT, 1, 10000)
-	poll_timeout = timeout
-
-	-----------------------------------------------------
-	-- 软复位（0x00 保持 / 0x01 释放）
-	if i2c_write_reg16(fd, REG_SOFT_RESET, 0x00) ~= 0 then
-		return err("Failed to reset VL53L4CD")
-	end
-	milli_sleep(1)
-	if i2c_write_reg16(fd, REG_SOFT_RESET, 0x01) ~= 0 then
-		return err("Failed to release VL53L4CD reset")
-	end
-	milli_sleep(5)
-
-	-- 等固件启动（0x00E5 == 3）
-	local left = timeout
-	while true do
-		local boot = i2c_read_reg16(fd, REG_FIRMWARE_SYSTEM_STATUS, 1)
-		if boot < 0 then
-			return err("Failed to read firmware boot status")
+	-- 【配置脚本】软复位 -> 等固件 -> 默认配置流 -> VHV 预热 -> 时序 -> 启动
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- VL53L4CD builder func get a table --------", data)
 		end
-		if boot == 3 then break end
-		if left <= 0 then
-			return err(string.format("VL53L4CD firmware boot timeout (%dms, status=%d)", timeout, boot))
+
+		local fd = ctx.fd
+
+		local budget = int_or(data.budget, DEF_BUDGET, 10, 200)
+		local inter = int_or(data.inter, DEF_INTER, 0, 2147483647)
+		local timeout = int_or(data.timeout, DEF_TIMEOUT, 1, 10000)
+		poll_timeout = timeout
+
+		-----------------------------------------------------
+		-- 软复位
+		if i2c_write_reg16(fd, REG_SOFT_RESET, 0x00) ~= 0 then
+			return err("Failed to reset VL53L4CD")
 		end
 		milli_sleep(1)
-		left = left - 1
-	end
+		if i2c_write_reg16(fd, REG_SOFT_RESET, 0x01) ~= 0 then
+			return err("Failed to release VL53L4CD reset")
+		end
+		milli_sleep(5)
 
-	-- 默认配置流（0x2D~0x87，91 字节单事务流写，器件指针自增）
-	if i2c_write_reg16(fd, 0x002D, unpack(CONFIG_TABLE)) ~= 0 then
-		return err("Failed to write default config")
-	end
+		-- 等固件启动
+		local left = timeout
+		while true do
+			local boot = i2c_read_reg16(fd, REG_FIRMWARE_SYSTEM_STATUS, 1)
+			if boot < 0 then
+				return err("Failed to read firmware boot status")
+			end
+			if boot == 3 then break end
+			if left <= 0 then
+				return err(string.format("VL53L4CD firmware boot timeout (%dms, status=%d)", timeout, boot))
+			end
+			milli_sleep(1)
+			left = left - 1
+		end
 
-	-- VHV 预热测量：启动 -> 等 ready -> 清中断 -> 停
-	if i2c_write_reg16(fd, REG_SYSTEM_START, 0x40) ~= 0 then
-		return err("Failed to start VL53L4CD VHV")
-	end
-	local r = wait_ready(fd, timeout)
-	if r == nil then
-		return err("Failed to poll VL53L4CD data-ready")
-	end
-	if r == false then
-		return err(string.format("VL53L4CD VHV measurement ready timeout (%dms)", timeout))
-	end
-	if i2c_write_reg16(fd, REG_SYSTEM_INTERRUPT_CLEAR, 0x01) ~= 0 then
-		return err("Failed to clear VL53L4CD interrupt")
-	end
-	if i2c_write_reg16(fd, REG_SYSTEM_START, 0x00) ~= 0 then
-		return err("Failed to stop VL53L4CD VHV")
-	end
+		-- 默认配置流
+		if i2c_write_reg16(fd, 0x002D, unpack(CONFIG_TABLE)) ~= 0 then
+			return err("Failed to write default config")
+		end
 
-	-- VHV/OSC 配置收尾（ST SensorInit 尾部三写）
-	if i2c_write_reg16(fd, REG_VHV_LOOP_BOUND, 0x09) ~= 0 then
-		return err("Failed to write VL53L4CD VHV config")
-	end
-	if i2c_write_reg16(fd, 0x000B, 0x00) ~= 0 then
-		return err("Failed to write VL53L4CD 0x000B")
-	end
-	if i2c_write_reg16(fd, 0x0024, 0x05, 0x00) ~= 0 then
-		return err("Failed to write VL53L4CD 0x0024")
-	end
+		-- VHV 预热测量
+		if i2c_write_reg16(fd, REG_SYSTEM_START, 0x40) ~= 0 then
+			return err("Failed to start VL53L4CD VHV")
+		end
+		local r = wait_ready(fd, timeout)
+		if r == nil then
+			return err("Failed to poll VL53L4CD data-ready")
+		end
+		if r == false then
+			return err(string.format("VL53L4CD VHV measurement ready timeout (%dms)", timeout))
+		end
+		if i2c_write_reg16(fd, REG_SYSTEM_INTERRUPT_CLEAR, 0x01) ~= 0 then
+			return err("Failed to clear VL53L4CD interrupt")
+		end
+		if i2c_write_reg16(fd, REG_SYSTEM_START, 0x00) ~= 0 then
+			return err("Failed to stop VL53L4CD VHV")
+		end
 
-	-- 测量时序（budget/inter）
-	-- 局部名用 emsg 而非 err：局部 err 会遮蔽 drv_common 的全局 err() 构造器
-	local ok, emsg = set_range_timing(fd, budget, inter)
-	if not ok then
-		return err(emsg)
-	end
+		-- VHV/OSC 配置收尾
+		if i2c_write_reg16(fd, REG_VHV_LOOP_BOUND, 0x09) ~= 0 then
+			return err("Failed to write VL53L4CD VHV config")
+		end
+		if i2c_write_reg16(fd, 0x000B, 0x00) ~= 0 then
+			return err("Failed to write VL53L4CD 0x000B")
+		end
+		if i2c_write_reg16(fd, 0x0024, 0x05, 0x00) ~= 0 then
+			return err("Failed to write VL53L4CD 0x0024")
+		end
 
-	-- 启动测距（连续 0x21 / 自主 0x40）+ 等首个测量就绪（全链路自检）
-	local startv = (inter == 0) and 0x21 or 0x40
-	if i2c_write_reg16(fd, REG_SYSTEM_START, startv) ~= 0 then
-		return err("Failed to start VL53L4CD ranging")
-	end
-	r = wait_ready(fd, timeout)
-	if r == nil then
-		return err("Failed to poll VL53L4CD data-ready")
-	end
-	if r == false then
-		return err(string.format("VL53L4CD first measurement timeout (%dms)", timeout))
-	end
-	if i2c_write_reg16(fd, REG_SYSTEM_INTERRUPT_CLEAR, 0x01) ~= 0 then
-		return err("Failed to clear VL53L4CD interrupt")
-	end
+		-- 测量时序
+		local ok, emsg = set_range_timing(fd, budget, inter)
+		if not ok then
+			return err(emsg)
+		end
 
-	print(string.format("VL53L4CD init OK: addr=0x%02X, budget=%dms, %s",
-		addr, budget, inter == 0 and "continuous" or ("autonomous, inter=" .. inter .. "ms")))
-	return {  result = "OK"  }
+		-- 启动测距
+		local startv = (inter == 0) and 0x21 or 0x40
+		if i2c_write_reg16(fd, REG_SYSTEM_START, startv) ~= 0 then
+			return err("Failed to start VL53L4CD ranging")
+		end
+		r = wait_ready(fd, timeout)
+		if r == nil then
+			return err("Failed to poll VL53L4CD data-ready")
+		end
+		if r == false then
+			return err(string.format("VL53L4CD first measurement timeout (%dms)", timeout))
+		end
+		if i2c_write_reg16(fd, REG_SYSTEM_INTERRUPT_CLEAR, 0x01) ~= 0 then
+			return err("Failed to clear VL53L4CD interrupt")
+		end
 
-end
+		print(string.format("VL53L4CD init OK: addr=0x%02X, budget=%dms, %s",
+			ctx.addr, budget, inter == 0 and "continuous" or ("autonomous, inter=" .. inter .. "ms")))
+		return {  result = "OK"  }
+	end,
 
--- 【销毁VL53L4CD】停止测距（总线归 I2C 硬件变量所有）
-function destroy(data)
+	-- 【销毁VL53L4CD】停止测距（缺 fd/addr 安全跳过）
+	destroy = function(ctx, data)
+		local fd = tonumber(data.fd)
+		local addr = tonumber(data.address)
+		if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
+			i2c_write_reg16(fd, REG_SYSTEM_START, 0x00)
+		end
+		return {  result = "OK"  }
+	end,
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【调用VL53L4CD】等待本次测量就绪 -> 读结果 -> 清中断
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- VL53L4CD caller func get a table --------", data)
+		end
 
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address)
-	if fd ~= nil and addr ~= nil and i2c_set_addr(fd, addr) then
-		i2c_write_reg16(fd, REG_SYSTEM_START, 0x00)
-	end
+		local fd = ctx.fd
 
-	return {  result = "OK"  }
+		local r = wait_ready(fd, poll_timeout or DEF_TIMEOUT)
+		if r == nil then
+			return err("Failed to poll VL53L4CD data-ready")
+		end
+		if r == false then
+			return err(string.format("VL53L4CD data-ready timeout (%dms)", poll_timeout or DEF_TIMEOUT))
+		end
 
-end
+		local status_raw = i2c_read_reg16(fd, REG_RESULT_RANGE_STATUS, 1)
+		local spad = i2c_read_reg16(fd, REG_RESULT_SPAD_NB, 2)
+		local signal = i2c_read_reg16(fd, REG_RESULT_SIGNAL_RATE, 2)
+		local ambient = i2c_read_reg16(fd, REG_RESULT_AMBIENT_RATE, 2)
+		local sigma = i2c_read_reg16(fd, REG_RESULT_SIGMA, 2)
+		local dist = i2c_read_reg16(fd, REG_RESULT_DISTANCE, 2)
+		if status_raw < 0 or spad < 0 or signal < 0 or ambient < 0 or sigma < 0 or dist < 0 then
+			return err("Failed to read VL53L4CD range results")
+		end
 
+		if i2c_write_reg16(fd, REG_SYSTEM_INTERRUPT_CLEAR, 0x01) ~= 0 then
+			return err("Failed to clear VL53L4CD interrupt")
+		end
 
--- 【调用VL53L4CD】等待本次测量就绪 -> 读结果 -> 清中断
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
+		local st = status_raw % 32
+		local mapped = 255
+		if st < 24 then mapped = STATUS_RTN[st + 1] end
+		local spad_nb = math.floor(spad / 256)
+		if spad_nb == 0 then mapped = 255 end
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		local ret = {
+			result = "OK",
+			DIST_MM = dist,
+			STATUS = mapped,
+			VALID = (mapped == 0) and 1 or 0,
+			SPAD_NB = spad_nb,
+			SIGNAL_KCPS = signal * 8,
+			AMBIENT_KCPS = ambient * 8,
+			SIGMA_MM = sigma / 4
+		}
 
-	if DEBUG then
-		dbg_table("-------- VL53L4CD caller func get a table --------", data)
-	end
+		if DEBUG then
+			print(string.format("VL53L4CD: dist=%dmm status=%d signal=%dkcps ambient=%dkcps sigma=%.2fmm",
+				ret.DIST_MM, ret.STATUS, ret.SIGNAL_KCPS, ret.AMBIENT_KCPS, ret.SIGMA_MM))
+		end
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	-- 等本次测量就绪
-	local r = wait_ready(fd, poll_timeout or DEF_TIMEOUT)
-	if r == nil then
-		return err("Failed to poll VL53L4CD data-ready")
-	end
-	if r == false then
-		return err(string.format("VL53L4CD data-ready timeout (%dms)", poll_timeout or DEF_TIMEOUT))
-	end
-
-	-- 读结果块（各寄存器独立原子读）
-	local status_raw = i2c_read_reg16(fd, REG_RESULT_RANGE_STATUS, 1)
-	local spad = i2c_read_reg16(fd, REG_RESULT_SPAD_NB, 2)
-	local signal = i2c_read_reg16(fd, REG_RESULT_SIGNAL_RATE, 2)
-	local ambient = i2c_read_reg16(fd, REG_RESULT_AMBIENT_RATE, 2)
-	local sigma = i2c_read_reg16(fd, REG_RESULT_SIGMA, 2)
-	local dist = i2c_read_reg16(fd, REG_RESULT_DISTANCE, 2)
-	if status_raw < 0 or spad < 0 or signal < 0 or ambient < 0 or sigma < 0 or dist < 0 then
-		return err("Failed to read VL53L4CD range results")
-	end
-
-	-- 清中断（读完再清，结果寄存器为锁存值）
-	if i2c_write_reg16(fd, REG_SYSTEM_INTERRUPT_CLEAR, 0x01) ~= 0 then
-		return err("Failed to clear VL53L4CD interrupt")
-	end
-
-	-- 状态映射：原始值 &0x1F 查表；有效 SPAD 为 0 视为无效（ST 同款守卫）
-	local st = status_raw % 32
-	local mapped = 255
-	if st < 24 then mapped = STATUS_RTN[st + 1] end
-	local spad_nb = math.floor(spad / 256)
-	if spad_nb == 0 then mapped = 255 end
-
-	local ret = {
-		result = "OK",
-		DIST_MM = dist,
-		STATUS = mapped,
-		VALID = (mapped == 0) and 1 or 0,
-		SPAD_NB = spad_nb,
-		SIGNAL_KCPS = signal * 8,
-		AMBIENT_KCPS = ambient * 8,
-		SIGMA_MM = sigma / 4
-	}
-
-	if DEBUG then
-		print(string.format("VL53L4CD: dist=%dmm status=%d signal=%dkcps ambient=%dkcps sigma=%.2fmm",
-			ret.DIST_MM, ret.STATUS, ret.SIGNAL_KCPS, ret.AMBIENT_KCPS, ret.SIGMA_MM))
-	end
-
-	return ret
-
-end
+		return ret
+	end,
+})
 
 
 -- =====================================================================

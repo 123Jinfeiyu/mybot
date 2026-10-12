@@ -56,6 +56,23 @@ HAL.sys.ioctl_i = function(fd, req, val)
 	return mock_ioctl_ret
 end
 
+-- 2026-09-30 方案 A 重构：新增总线传输原语 mock
+HAL.sys.spi_setup = function(fd, mode, bits, speed)
+	calls[#calls + 1] = { op = "spi_setup", fd = fd, mode = mode, bits = bits, speed = speed }
+	return mock_setup_ret
+end
+HAL.sys.spi_xfer = function(fd, tx, rx, len, delay_us)
+	local rec = { op = "spi_xfer", fd = fd, len = tonumber(len), delay = tonumber(delay_us) or 0 }
+	if tx ~= nil then
+		rec.tx = ffi.string(ffi.cast("const char *", ffi.cast("const uint8_t *", tx)), len)
+	end
+	if rx ~= nil then
+		rec.rx_filled = true
+	end
+	calls[#calls + 1] = rec
+	return mock_ioctl_ret
+end
+
 local function reset()
 	calls = {}
 	mock_ioctl_ret = 0
@@ -126,14 +143,14 @@ res = build({ path = "/dev/spidev0.0", spi_mode = 1, bits = 8, speed = 1920000, 
 tester.check("build 正常参数返回 OK", tostring(res.result) == "OK")
 tester.check("build 返回 fd", res.fd ~= nil and res.fd >= 0)
 tester.check("build 打开 /dev/spidev0.0", calls[1].op == "open" and calls[1].path == "/dev/spidev0.0")
--- spi_setup 应发出 MODE/BITS/SPEED 三个 ioctl
-local setup_reqs = {}
+-- 2026-09-30 方案 A 重构：spi_setup 现在是单次后端原语调用（不再 3 次 ioctl_p）
+local setup_calls = {}
 for _, c in ipairs(calls) do
-	if c.op == "ioctl_p" and c.req ~= HAL.SPI_IOC_MESSAGE_1 then
-		setup_reqs[#setup_reqs + 1] = c.req
+	if c.op == "spi_setup" then
+		setup_calls[#setup_calls + 1] = c
 	end
 end
-tester.check("build 发出 3 个 spi_setup ioctl", #setup_reqs == 3)
+tester.check("build 发出 1 次 spi_setup 原语调用", #setup_calls == 1)
 
 -- 13. 正常 build：mode=0, bits=16, speed=500000
 reset()
@@ -189,10 +206,27 @@ mock_open_fd = 7	-- 恢复
 
 -- ==================== 负路径：ioctl 失败 ====================
 reset()
-mock_ioctl_ret = -1
+mock_setup_ret = -1	-- 2026-09-30 方案 A 重构：spi_setup 现在是独立原语
 res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = 8, speed = 1000000, delay = 0 })
 tester.check("ioctl 失败 build 返回 ERR", tostring(res.result) == "ERR", res.message)
-mock_ioctl_ret = 0	-- 恢复
+mock_setup_ret = 0	-- 恢复
+
+-- ==================== 26.3b NaN 配置列拒绝 ====================
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = "nan", bits = 8, speed = 1000000, delay = 0 })
+tester.check("spi_mode='nan' 拒绝", tostring(res.result) == "ERR", res.message)
+
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = "nan", speed = 1000000, delay = 0 })
+tester.check("bits='nan' 拒绝", tostring(res.result) == "ERR", res.message)
+
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = 8, speed = "nan", delay = 0 })
+tester.check("speed='nan' 拒绝", tostring(res.result) == "ERR", res.message)
+
+reset()
+res = build({ path = "/dev/spidev0.0", spi_mode = 0, bits = 8, speed = 1000000, delay = "nan" })
+tester.check("delay='nan' 拒绝", tostring(res.result) == "ERR", res.message)
 
 -- ==================== summary ====================
 tester.summary("test_spi")

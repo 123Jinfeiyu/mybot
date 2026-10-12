@@ -551,6 +551,28 @@ check("缺省落 0x22/0x02/0x00/0x00",
 	dev:reg(0x01) == 0x22 and dev:reg(0x02) == 0x02
 	and dev:reg(0x03) == 0x00 and dev:reg(0x08) == 0x00)
 
+-- NaN 与上面那组**同契约**：'nan'/'inf'/'-inf' 经 tonumber 出的都是 number
+-- （Lua 里 truthy），`(tonumber(x) or 缺省) ~= 0` 的 `or` 兜不住，于是 NaN
+-- 走「非零即真」这一档——mask_dist 会把 REG_INT 的 MASK_DIST 置成 0x20，
+-- 而上一条已钉死「非法列归缺省」= 0x00。数值列（nf/wdth/srej/min_lig/
+-- tun_cap）走 int_or -> finite_of，本来就把 NaN 挡在缺省，此处一并覆盖防回退。
+mark = section()
+ok, res, banner = capture(function()
+	return build({ fd = fd, address = "0x03",
+		nf = "nan", wdth = "inf", srej = "-inf", min_lig = "nan",
+		mask_dist = "nan", tun_cap = "inf", indoor = "nan" })
+end)
+check("build 非有限列 OK", ok and res.result == "OK", tostring(res and res.result))
+check("非有限列同归缺省 0x22/0x02/0x00/0x00",
+	dev:reg(0x01) == 0x22 and dev:reg(0x02) == 0x02
+	and dev:reg(0x03) == 0x00 and dev:reg(0x08) == 0x00,
+	string.format("0x%02X/0x%02X/0x%02X/0x%02X", dev:reg(0x01),
+		dev:reg(0x02), dev:reg(0x03), dev:reg(0x08)))
+check("非有限列横幅仍是缺省 indoor/mask_dist=false",
+	banner:find("indoor", 1, true) ~= nil
+	and banner:find("mask_dist=false", 1, true) ~= nil
+	and banner:find("nf=2", 1, true) ~= nil, banner)
+
 -- =====================================================================
 -- 组 4：真实 build 错误路径
 -- =====================================================================

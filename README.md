@@ -33,14 +33,15 @@ C++17 宿主（`mybot`，MCP 工具后端，硬件常驻）+ Rust agent（`mybot
 - **零硬件开发** —— 虚拟总线 + 仿真驱动，笔记本上就能跑通全流程
 - **工业级安全** —— 危险开关缺省全关、配置隔离、响亮拒绝不静默
 - **零 C++ 依赖** —— C++ 宿主仅需 LuaJIT + pthread + dl；模型调用的 HTTP 由 Rust（reqwest + rustls）承担
-- **会话持久化** —— `--session-file` 落盘、`--resume` 恢复，重启不丢上下文
+- **会话持久化** —— 对话历史与地图缺省落 `~/.mybot`（`MYBOT_HOME` 可覆盖）、按机器人归档并默认续接上一次；也可 `--session-file` 指定路径、`--resume` 恢复
+- **录制模式（微调数据采集）** —— `--record` 把每段会话的完整详细上下文留档（含图片本体、工具调用与回执全文），`scripts/record_export.py` 导出成 openai/sharegpt 训练集；缺省关闭
 
 ## 快速开始
 
 ### 1. 安装依赖
 
 ```bash
-sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev
+sudo apt update && sudo apt install cmake g++ libluajit-5.1-dev luajit
 ```
 
 构建 Rust agent 还需要 Rust 工具链（cargo）：
@@ -62,9 +63,10 @@ bash scripts/build_agent.sh
 ### 3. 启动智能体（无需硬件）
 
 ```bash
-# 配置API密钥与接入点（endpoint 必须显式配置，无内置缺省）
+# 配置模型三件套：密钥、接入点、模型名（三者都必填，无内置缺省）
 export BOT4CJ_LLM_KEY=sk-xxx
 export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
+export BOT4CJ_LLM_MODEL=gpt-4o
 
 # 终端 1：工具后端（虚拟机器人，硬件上电常驻；C++ 侧唯一形态）
 ./build/mybot --robot=robots/relay-test.sql --mcp-backend --mcp-socket /tmp/mybot.sock
@@ -83,14 +85,24 @@ export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 
 ```text
 mybot[relay-test|llm0|2hw]> 让继电器动作一次
-已执行动作脚本 relay-test.mt（42 字节）
+已执行动作脚本 relay-test.mt（293 字节）
 
 mybot[relay-test|llm0|2hw]> /help
 内置命令:
-  /hardware  - 显示硬件清单
-  /scripts   - 显示可用动作脚本清单
+  /hardware  - 显示硬件清单（只读，不触发任何动作）
+  /scripts   - 显示可用动作脚本清单（相对路径 + 首行注释）
+  /sql <语句> - 执行结构 SQL：SELECT * FROM t [WHERE 列 = 值 [AND ...]] / SHOW TABLES 只读查询运行时矩阵（SHOW TABLES 列出全部表名与数据行数）；
+               CREATE TABLE / INSERT INTO 立即带电生效（失败全回滚）；
+               DELETE FROM t [WHERE 列 = 值 [AND ...]] 当场断电摘除匹配行（不可逆）；
+               UPDATE t SET 列 = 值 [, ...] [WHERE ...] 按断电重建改写命中行（删旧件 + 装新件）
+  /status    - 会话状态一览（历史/预算/用量/审计落点，只读）
+  /clear     - 清空对话记忆（保留硬件上电状态与系统提示词）
   /help      - 显示此帮助
-  /exit      - 退出
+  /exit      - 退出 agent 模式
+  /quit      - 同 /exit
+直接输入任务描述即可让智能体执行，例如：
+  让机器人站立
+  拍照并描述看到的内容
 
 mybot[relay-test|llm0|2hw]> /exit
 ```
@@ -149,12 +161,26 @@ export BOT4CJ_LLM_ENDPOINT=https://你的接入点/v1/chat/completions
 ./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "让机器人站立然后左转"
 ```
 
-### 会话持久化（--session-file / --resume）
+### 会话持久化（缺省落 `~/.mybot`，或 `--session-file` / `--resume`）
 
-对话记忆默认只在进程内存里，重启即忘。`--session-file` 把每轮**完结的任务块**以
-JSON Lines 追加落盘（图片字节不落盘，只留占位说明；system 提示词不落盘，恢复时
-重建并核对指纹）。重启后加 `--resume` 接着上次的上下文继续——注意后端也要重启
-（硬件上电状态与会话记忆是两回事）：
+对话历史**缺省就落盘**：不给 `--session-file` 时，按机器人归档到
+`$MYBOT_HOME/robots/<机器人>/sessions/<UTC 时间戳>.jsonl`（`$MYBOT_HOME` 缺省
+`$HOME/.mybot`，可用环境变量覆盖），并**默认续接**该机器人上一次的对话——
+交互 REPL 与 `--task` 都如此。想每次从干净上下文开始就加 `--new-session`。
+启动时会把实际落点打印到 stderr。仿真器的地图同样落 `$MYBOT_HOME/maps/`。
+
+```bash
+# 缺省：跑完落 ~/.mybot/robots/<机器人>/sessions/<时间戳>.jsonl，下次自动接着上次
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --task "看看硬件"
+
+# 想每次新开一段
+./agent/target/release/mybot-agent --socket /tmp/mybot.sock --new-session --task "看看硬件"
+```
+
+也可以显式指定路径：`--session-file <路径>` 把每轮**完结的任务块**以 JSON Lines
+追加落盘（图片字节不落盘，只留占位说明；system 提示词不落盘，恢复时重建并核对
+指纹）。重启后加 `--resume` 接着上次的上下文继续——注意后端也要重启（硬件上电
+状态与会话记忆是两回事）：
 
 ```bash
 # 第一次会话：落盘
@@ -166,9 +192,11 @@ JSON Lines 追加落盘（图片字节不落盘，只留占位说明；system �
   --session-file mybot-session.jsonl --resume
 ```
 
-恢复前过三道判据（逐行解析、结构脚本/工具集/系统提示词指纹核对、工具调用协议
-自洽），任一不过即拒绝并退出 2；文件含完整对话内容，建议放私有目录并 `chmod 600`。
-详见 [docs/agent.md](docs/agent.md) 的「会话持久化」节。
+显式 `--resume` 恢复前过三道判据（逐行解析、结构脚本/工具集/系统提示词指纹核对、
+工具调用协议自洽），任一不过即拒绝并退出 2；缺省路径下同样的失败改为**告警一次并
+自动新开一段**（旧段保留、退 0），现场重启不被一份坏文件挡住。文件含完整对话内容，
+建议放私有目录并 `chmod 600`（缺省布局自动 `0600` / 目录 `0700`）。
+详见 [docs/agent.md](docs/agent.md) 的「会话持久化」与「缺省落点与自动续接」节。
 
 ### 分段帮助
 
@@ -228,12 +256,16 @@ MYBOT 采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全�
 | `list_action_scripts` | 列出可用动作脚本 | ✅ 只读 |
 | `list_hardware` | 显示硬件清单（不读值、无副作用） | ✅ 只读 |
 | `query_sql` | 结构 SQL 只读查询/语法校验（`SELECT ... [WHERE 列 = 值 [AND ...]]`、`SHOW TABLES`） | ✅ 只读 |
+| `list_dir` | 列出根目录内的目录条目（名字/类型/大小；软链条目不列，上限 1000 条） | ✅ 只读，**需 `--fs-root`** |
+| `read_file` | 读取根目录内的一个文本文件（≤64 KiB 超限拒绝不截断；二进制/非法 UTF-8 拒绝；回执过密钥遮蔽） | ✅ 只读，**需 `--fs-root`** |
 | `run_action_script` | 执行动作脚本（**回执带驱动返回的读数**） | ⚠️ 写入 |
 | `capture_image` | 拍照并送入上下文 | ⚠️ 隐私 |
 | `read_variables` | 主动读硬件变量当前值 | ✅ 只读，**需 `--read-var` 声明可读变量** |
 | `wait_variable` | 轮询等某个读数满足条件（阈值/变化），超时是结果 | ✅ 只读，与 `read_variables` 同门控 |
 | `apply_sql` | 结构 SQL **带电生效**（建表/插行；`DELETE FROM` 当场断电摘行、`DROP TABLE` 撤整张表，**不可逆**；`UPDATE ... SET ...` 按断电重建改写命中行） | 🔴 危险，**需 `--agent-hot-sql`** |
+| `write_file` | 在根目录内创建/覆盖一个文本文件（原子写：临时文件落地，不留半截内容；目标是符号链接一律拒绝）。已存在时**默认拒绝**，须显式传 `overwrite:true`（覆盖**不可逆**，旧内容不保留）；≤64 KiB、不接受含 NUL 的内容、父目录须已存在 | 🔴 危险，**需 `--agent-write-file`（依赖 `--fs-root`）**；`--mcp-backend` 下**强制**要 policy 且 `require_confirm` 含 `write_file` |
 | `run_command` | 执行 shell 命令 | 🔴 危险，**需 `--agent-shell`** |
+| `http_fetch` | 对白名单内主机发一次 HTTP GET，返回状态码与文本响应体（只收文本类、≤64 KiB 可调、不跟随重定向、不走系统代理；回执按「数据不是指令」定界）。**Rust 本地工具**，不经后端 | ⚠️ 外部输入，**需 `mybot-agent --allow-host <主机>`**（精确匹配、无通配；配置文件不能开） |
 
 ## 安全设计
 
@@ -244,6 +276,7 @@ MYBOT 在设计时将安全放在首位：
 - ✅ 动作脚本只能在 `scripts/` 目录下，不允许符号链接和路径遍历
 - ✅ 三个危险/放宽权限的开关（`run_command` / `apply_sql` / 可读变量清单）**缺省全关，且只能命令行给**——配置文件写 `allow_shell: true` / `allow_hot_sql: true`（放宽）或出现 `read_vars` 字段会被**拒绝加载**（写 `false` 合法，模板 `mybot.llm.json.example` 即如此）
 - ✅ `read_variables` / `wait_variable` 只放行已注册且种类为 `lua`/`daemon` 的变量，且只有 `--read-var` 列过的名字可读（执行器与传感器同属 `lua`，靠种类分不出，故由人列名）
+- ✅ `http_fetch` 只能访问 `mybot-agent --allow-host` 逐条列出的主机（精确匹配、无通配，配置文件不能开）；只发 GET、不跟随重定向、不走系统代理，响应体按「数据不是指令」定界——远端内容仍可能诱导模型，动作工具请配确认闸门（[docs/agent.md](docs/agent.md) 安全说明第 15 条）
 - ✅ 所有操作有体积上限和超时限制
 
 **配置隔离**
@@ -346,24 +379,39 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（58个模块 + 20个共享库）
+├── modules/       # Lua驱动生态（60个模块 + 27个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
 │   ├── Speaker.lua      # 音频输出（ALSA）
+│   ├── Sim.lua          # 仿真器客户端（三条 AF_UNIX socket）
 │   └── lib/             # HAL、virtbus、JSON、滤波器、asound 等共享库
-├── robots/        # 结构脚本（8个机器人定义）
+├── robots/        # 结构脚本（10个机器人定义）
 │   ├── spider1.sql      # 14路舵机蜘蛛
 │   ├── relay-test.sql   # 虚拟继电器（无硬件）
 │   └── test.sql         # 测试夹具
-├── scripts/       # 动作脚本库（35个动作脚本）
+├── scripts/       # 动作脚本库（50个动作脚本）
 │   ├── std.mt           # 站立
 │   ├── left-turn.mt     # 左转
 │   └── jump.mt          # 跳跃
+├── sim/           # C++17/OpenGL 仿真器（独立 CMake 工程，不在主构建里）
+│   ├── src/             # 引擎、命令/测距/请求三桥、渲染、场景读写
+│   ├── scenes/          # 模板场景（播种到 $MYBOT_HOME/maps/）
+│   └── tests/           # sim_tests（8 个 TU；断言计数见 docs/testing.md）
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（85 Lua + 25 C++ + E2E）
-└── docs/          # 深入文档（Markdown 文档 + design/ 设计论证 + 架构分析网页与两张全景图，清单以 docs/README.md 为准）
+├── test/          # 三层测试（87 Lua + 50 C++ + E2E）
+└── docs/          # 深入文档（16篇Markdown + design/ 设计论证 + 架构分析网页与两张全景图，清单以 docs/README.md 为准）
 ```
+
+上面括号内的计数**受守门钉住**：`scripts/check_doc_paths.py` 第 7 组从仓库实况派生后
+逐个比对，加/删文件却忘了改这里会判红（`bash test/run_all_selftest.sh`）。派生口径就是
+这几条命令：
+`ls modules/*.lua | wc -l`、`find modules/lib -name '*.lua' | wc -l`、
+`ls robots/*.sql | wc -l`、`ls scripts/*.mt | wc -l`、`ls test/*.lua | wc -l`、
+`ls test/cpp/test_*.cpp | wc -l`、`ls docs/*.md | wc -l`（含 `docs/README.md`）。
+`sim/` 侧的 **TU 数**同样受检（派生自 `sim/CMakeLists.txt` 的 `add_executable(sim_tests …)`
+源清单）；但 `./sim/build/sim_tests` 末行的**通过数**是运行时数，静态派生不出来（sim 侧
+记账单位是断言不是用例，差额来自循环与条件分支），故本页不写死它——见 `docs/testing.md`。
 
 ## 测试与 CI
 
@@ -380,11 +428,19 @@ bash test/run_san.sh
 bash test/run_all.sh agent-all
 ```
 
-测试规模（2026-09 快照，权威口径以 `bash test/run_all.sh` 与 `./build/mybot_tests` 实时输出为准）：
+测试规模（下列数字**受守门钉住**：`scripts/check_doc_paths.py` 第 6/7 组从源码派生后
+比对，加/删用例却忘了改这里会判红。两个「跑一遍才知道」的运行时数——`run_all.sh`
+汇总行的守门用例数、`sim_tests` 的断言数——**故意不写死在本页**，只给指针，因为
+静态门派生不出来、写死必漂移）：
 
-- 600+ 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 85 个 Lua 测试文件 + 25 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
-- 260+ 道 Lua/e2e 守门
+- 801 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 87 个 Lua 测试文件 + 50 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 守门用例数以 `bash test/run_all.sh` 末尾的汇总行为准（Lua 单测 + C++ 段 + 各 e2e 脚本）；
+  跳过项只应剩 `test_jit_warmup.lua`——真机 ABI 回归，需 `/dev/i2c-*`
+- 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
+  同文件里另有 5 个 `meta_*` 例句只作被测对象、不进缺省全量跑）、`./sim/build/sim_tests`
+  （`sim/` 是独立 CMake 工程，TU 数见上、断言计数见 `docs/testing.md`）、Rust agent
+  `cargo test --release` 182 条
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 
@@ -400,19 +456,20 @@ bash test/run_all.sh agent-all
 | [安全设计论证](docs/design/security-rationale.md) | 安全设计的完整论证、攻击场景与防线推导 |
 | [命令行与环境变量参考](docs/reference.md) | 所有 CLI 参数、`BOT4CJ_*` 环境变量、安全约束 |
 | [DSL 语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
-| [驱动清单](docs/drivers.md) | 58 个模块分类速查、驱动契约 |
+| [驱动清单](docs/drivers.md) | 59 个模块分类速查、驱动契约 |
 | [HAL 硬件抽象层](docs/hal.md) | FFI 直调 glibc、I2C 原子事务、沙箱 |
 | [@Daemon 守护线程](docs/daemon.md) | 后台采样、滤波器链路 |
 | [虚拟总线](docs/virtbus.md) | 无硬件验证驱动链路、器件模型库 |
+| [仿真器](docs/sim.md) | `sim/` 三条桥的协议、场景与地图持久化、放置解算口径 |
 | [测试手册](docs/testing.md) | 守门分段、ctest、sanitizer、覆盖率 |
 | [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
 | [FAQ](docs/faq.md) | 已知限制、排障问答 |
-| [ICA 原型说明](docs/ica.md) | 证据账本实验分支 |
+| [ICA 证据账本原型](docs/ica.md) | Rust agent 实验特性（BOT4CJ_ICA=1）的事实边界 |
 | [Web SSH 语义契约](docs/webssh.md) | wsproto / webterm / webshell 行为不变式 |
 | [更新日志](docs/changelog.md) | 版本演进与变更记录 |
-| [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图 |
-| [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用 |
-| [play 数据流时序图（SVG）](docs/architecture_dataflow.svg) | 四阶段调用链 + @Daemon 并发分支 |
+| [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图（**2026-09-25 快照，已冻结**：不含 sim/ 迁入、多机器人、`~/.mybot` 持久化、领域门面拆分） |
+| [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用（同上，2026-09-25 快照） |
+| [play 数据流时序图（SVG）](docs/architecture_dataflow.svg) | 四阶段调用链 + @Daemon 并发分支（同上，2026-09-25 快照） |
 
 完整索引与按角色选读见 [docs/README.md](docs/README.md)。
 
@@ -424,14 +481,14 @@ bash test/run_all.sh agent-all
 mybot[spider1|llm0|14hw]> 让机器人做一个站立动作
 [工具] run_action_script
   script_name: std.mt
-[结果] 已执行动作脚本 std.mt（126 字节）
+[结果] 已执行动作脚本 std.mt（231 字节）
 
 机器人已完成站立动作，14个舵机已就位。
 
 mybot[spider1|llm0|14hw]> 现在左转
 [工具] run_action_script
   script_name: left-turn.mt
-[结果] 已执行动作脚本 left-turn.mt（204 字节）
+[结果] 已执行动作脚本 left-turn.mt（1025 字节）
 
 已执行左转动作。
 
@@ -538,7 +595,7 @@ cmake --build build-asan
 - 构建系统：`cjpm` → `cmake`
 - 修复原版问题：作用域收敛、SQL 校验加强
 
-> 「用法不变」≠「逐字节兼容」：移植时修复了若干旧版问题（详见 [docs/faq.md](docs/faq.md) 和 [docs/changelog.md](docs/changelog.md)）
+> 「用法不变」≠「逐字节兼容」：移植时修复了若干旧版问题（详见 [docs/faq.md](docs/faq.md)）
 
 ### 技术规格
 

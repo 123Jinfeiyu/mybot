@@ -10,6 +10,8 @@
 
 #include <cstddef>
 #include <functional>
+#include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,23 +25,7 @@ class MatrixVars_Hardware;
 
 namespace agent {
 
-/* 单张图的 base64 上限（宿主侧封顶，与驱动侧 MAX_SIM_BYTES 各管一段）。
- * 会话历史的字节预算刻意「不封顶单块」，只按任务块整块裁（Rust 侧
- * agent/src/history.rs 的 trim，C++ 的 HistoryManager 孪生已随 REPL 迁 Rust
- * 删除），而一张照片正是单块的主项：驱动仿真图允许 16MiB 原始字节
- * （base64 后约 21MB），一次拍照就能击穿 4MiB 历史预算、把请求体顶到常见网关限额
- * 之外。故在工具入口先拒一次。 */
-constexpr std::size_t kMaxImageBase64Bytes = 2u << 20;
-
-/* 工具执行结果。图片走**独立通道**：OpenAI 协议的 tool 消息只允许文本，
- * 图片必须由工具循环另起一条 user 消息注入（C++ 侧原先在 agentloop，随 REPL
- * 移除后由 Rust agent 承担：agent/src/model.rs 的 inject_images），
- * 这也是 robot_agent 的既有做法。
- * ok/error 供审计轨迹用（agentaudit）：工具异常/未知工具/脚本执行失败置
- * ok=false，文本回传给模型的内容不变——审计只是旁观记账，不改变回执。
- * 七字段是跨语言契约（mcpbackend.cpp 序列化 ↔ agent/src/bridge.rs 的
- * ToolOutcome）：加/删/改字段必须双侧同步，test_mcpbackend 的
- * mcpbackend_toolresult_schema_matches_rust_outcome 读源比对钉住。 */
+/* 运行时工具执行结果。跨进程 JSON 字段由 mcp_protocol.hpp 约束。 */
 struct AgentToolResult {
 	std::string text;
 	std::string imageDataUrl;	/* 非空 = "data:image/jpeg;base64,..." */
@@ -65,6 +51,12 @@ struct AgentToolResult {
 	 * 新增几张表/几个变量/几行、瞬态动作几行）。只做**加法**：老工具留空，
 	 * 既有审计 schema 逐字节不变。 */
 	std::string summary;
+	/* G2 结构化出口（2026-10-10）：run_command 的退出码自结构化来源（RunResult）
+	 * 直入审计，替代「审计从回执文本反解 exit_code=」的文本协议（extractExitCode
+	 * 随该协议删除）——结构化值在 formatRunResult 处存在，此前被丢进文本、下一跳
+	 * 再反解回来，自产自销的解析是多余的脆弱面。只被审计消费，不进 MCP 线协议；
+	 * 给模型看的回执文本（含 exit_code= 行）逐字节不变。其余工具恒 nullopt。 */
+	std::optional<long long> exitCode;
 	/* 带构造函数（非聚合）：存量代码大量使用两字段初始化 {text, img}，聚合
 	 * 形态下它们会触发 -Wmissing-field-initializers（本仓库 -Wall -Wextra
 	 * 零告警基线）；构造函数让两字段形态显式表示「ok=true 缺省」。 */
@@ -140,45 +132,33 @@ struct AgentToolContext {
 	 *                     两者都没有即驱动侧"未放行"拒绝。不推导、不猜、不回落 "."。 */
 	bool cameraSrcFromCli = false;
 	std::string cameraSrcRoot;
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录（--fs-root）。
+	 * 空 = 不注册这两个工具（安全缺省）。**命令行独占**：它决定"能读哪个目录"，
+	 * 等价于放宽读权限，判据与 cameraSrcRoot/readVars 同族——配置文件写 fs_root
+	 * 会被 buildAgentConfig 拒绝加载。buildAgentConfig 已校验其 canonical 存在
+	 * 且是目录（配置错误不碰真机），这里收到的要么是空串要么是已验证的路径。
+	 * 路径沙箱判据单点在 agent_sandbox.hpp 的 resolveUnderRoot，不在本结构体内
+	 * 重复判定。 */
+	std::string fsRoot;
+	/* write_file 的独立开关（Phase 5，2026-10-08，--agent-write-file）。
+	 * **独立于 fsRoot**（不是 `!ctx.fsRoot.empty()` 的派生判据）：写权限不该
+	 * 因为开了读根就静默获得，必须操作者再显式开一道。buildAgentConfig 已
+	 * 校验它依赖 fsRoot 非空（见 agentmode.hpp），这里收到的要么两者都为真，
+	 * 要么本字段为 false——工具注册判据仍按本字段本身判断（不按其蕴含的
+	 * 前置条件），与 read_variables 用 resolvableReadVars(...).empty() 做
+	 * 注册判据而不是"猜它应该蕴含什么"同一原则。 */
+	bool allowWriteFile = false;
 };
 
 /* 构造标准工具集：list_action_scripts / run_action_script / list_hardware / query_sql，
  * （camera 非空时）capture_image，（allowHotSql 时）apply_sql，
- * 以及（allowShell 时）run_command。 */
+ * （allowShell 时）run_command，（fsRoot 非空时）list_dir / read_file，
+ * 以及（allowWriteFile 时）write_file。 */
 AgentToolRegistry makeAgentTools(const AgentToolContext& ctx);
 
-/* ---- 供工具与系统提示词共用的描述函数 ---- */
-
-/* 动作脚本清单：递归收集 scriptsDir 下的 *.mt，输出「相对路径 — 首行注释」。
- * 目录不存在时返回一行说明而非抛（提示词里如实告知模型即可）。 */
-std::string describeActionScripts(const std::string& scriptsDir);
-
-/* 已注册硬件变量清单。只读名字与种类，绝不调用 read()/play()
- * （对舵机等执行器，play({}) 会真的下发指令）。 */
-std::string describeHardware(RobotStruct& robot);
-
-/* ---- SQL 只读渲染（query_sql 工具的单一事实源）----
- * 解析一条结构 SQL 并渲染成文本。只读、无副作用：不装配硬件、不改结构矩阵。
- *   * SELECT * FROM t —— 从运行时结构矩阵（robot.matrices()）取数渲染；
- *   * CREATE/INSERT —— 只解析回显（语法验证），不落任何状态。
- * 失败经 SqlOutcome::ok=false 显式传递（此前以「错误: 」字符串前缀当错误码、
- * 调用方再 rfind 前缀翻回异常——文案改动即断链）；text 为**不带前缀**的人话
- * 原因（解析器带行列定位），前缀由调用方按自己的口径渲染。
- * 沿革：REPL /sql（runSqlCommand，全 SELECT 走本函数、含写语句转 applySql
- * 带电生效）与它身边的 SqlStatementBatch 已随 C++ REPL 迁 Rust 删除——
- * 操作者侧的 SQL 通道由 Rust REPL 的 /sql 经 tool.call 直接复用本函数所在
- * 的 query_sql 工具（只读）；带电生效仍是 apply_sql 工具 + applySql 的事。 */
-struct SqlOutcome {
-	bool ok = true;
-	std::string text;
-};
-
-SqlOutcome runSqlStatement(const std::string& sql, const RobotStruct& robot);
-
-/* 动作脚本路径解析：请求必须是 scriptsDir 之下的相对路径。
- * 拒绝绝对路径、空段、"."/".."、以及含 NUL 的名字（NUL 会让
- * fopen 截断路径，是「校验的路径 ≠ 打开的路径」经典绕过）。 */
-std::string resolveActionScriptPath(const std::string& scriptsDir, const std::string& requested);
+/* ---- 只读视图族（describeActionScripts / describeHardware / runSqlStatement /
+ * resolveActionScriptPath / appendActionEcho）2026-10-10 归位 agentview.hpp
+ * ——声明跟着实现 TU 走（robot.hpp A2「声明各归各位」同一原则）。 ---- */
 
 /* 动作脚本装载（沙箱解析 + 体积上限读取 + 非空校验），失败抛 std::exception。
  * runActionScriptFile 的前半段；--on-disconnect 的上电前预检也走它——
@@ -190,48 +170,12 @@ std::string loadActionScriptFile(const std::string& scriptsDir, const std::strin
  * 工具与后端断连安全动作（mcpbackend）共用这一份，于是"哪些路径能跑、跑多久、
  * 回显怎么收"只有一处判据。requested 是 scriptsDir 之下的相对路径；返回脚本
  * 字节数；失败抛 std::exception（脚本不存在/为空/越界/执行失败），由调用方
- * 决定折成工具回执还是日志。@p echo 接收驱动 play() 的顶层回显文本。 */
+ * 决定折成工具回执还是日志。@p echo 接收驱动 play() 的顶层回显文本。
+ * @p vars：调用方临时注入的会话别名（透传给 robot->run 的 injectVars，见
+ * robot.hpp）——脚本里的 $(键) 就地解析，作用域限本次 run()。缺省空 = 不注入。 */
 std::size_t runActionScriptFile(const AgentToolContext& ctx, const std::string& requested,
-		std::string& echo);
+		std::string& echo, const std::map<std::string, std::string>& vars = {});
 
-/* ---- D（2026-09-23）：动作脚本执行期间的驱动返回表回收 ----
- * `run_action_script` 此前只回一句「已执行动作脚本 X（N 字节）」——**模型看不到
- * 任何读数**，而器件读到的值事实上早已产生：`play()` 的顶层回显（luavar 的
- * res / ctrl_res 表，如 BH1750 的 `{result="OK", LUX=…}`）此前只写 stderr，
- * 操作者看得见、模型看不见。现在执行窗口内挂一条回收通道，把回显经本函数追加
- * 进工具回执（见 `kMaxActionEchoBytes`）。 */
-inline constexpr std::size_t kMaxActionEchoBytes = 8u << 10;
-
-/* 把回收到的回显追加进回执文本。单点职责：截断 + UTF-8 消毒 + 「数据非指令」
- * 定界（`quoteUntrusted`），便于离线断言。@p echo 为空时**逐字节不改** out——
- * 无回显的脚本（旧式无参设备、`playQuiet` 路径）回执形态与改动前完全一致。 */
-void appendActionEcho(std::string& out, const std::string& echo);
-
-/* ---- 发现 2 的 A 步（2026-09-23）：可读变量清单与回读工具 ----
- * 动机：D 步只让模型看见"动作脚本顺带读到的值"，它仍无法**主动**读。而 agent
- * 无法靠"种类"区分传感器与执行器——`Servo.lua` / `Relay.lua` 同样是 `kind=lua`，
- * 对它们调 `play()` 会真驱动硬件（Relay 的 `call({})` 会把 delay 转发给 controller）。
- * 故可读集合由**操作者显式声明**（`--read-var`，可重复，命令行独占；配置文件写
- * `read_vars` 会被拒绝加载，与 `--agent-shell` / `camera_src_dir` 同判据）。
- * 清单为空 = **不注册** `read_variables`（缺省即无此能力）。 */
-inline constexpr std::size_t kMaxReadResultBytes = 8u << 10;
-
-/* 解析声明清单 → 当前机器人上**真正可读**的变量：必须已注册，且种类为 `lua`
- * （驱动）或 `daemon`（守护快照——读的是已发布的采样，无 I2C 流量、无副作用）。
- * 其余（别名 / 数值变量 / 名字不存在）一律跳过：既不因一个拼错的名字让整条能力
- * 失效，也不放行"种类不对"的变量（`playQuiet` 对非 lua/daemon 会退化成 `play()`，
- * 与 `capture_image` 的种类防线同一理由）。@p skipped 非空时收集被跳过的名字，
- * 供启动时如实告知（不静默降级）。 */
-std::vector<std::string> resolvableReadVars(const std::vector<std::string>& requested,
-		RobotStruct& robot, std::vector<std::string>* skipped = nullptr);
-
-/* 渲染回读工具的回执：截断（`kMaxReadResultBytes`）+ UTF-8 消毒 +
- * 「数据非指令」定界（单点，便于离线断言）。 */
-std::string formatReadResult(const std::string& body);
-
-/* 系统提示词里的可读变量清单（已解析；空 = 不列）。与工具注册同一解析函数，
- * 两处不会漂移。 */
-std::string describeReadableVars(const std::vector<std::string>& requested, RobotStruct& robot);
 
 } // namespace agent
 } // namespace bot

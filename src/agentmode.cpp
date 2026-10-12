@@ -10,6 +10,7 @@
 
 #include "llmconfig.hpp"
 #include "agenttools.hpp"
+#include "agentview.hpp"
 #include "hardware.hpp"
 #include "robot.hpp"
 #include "util_env.hpp"
@@ -34,8 +35,8 @@ bool isConfigDisabled(const std::string& s) {
  * （配置文件是可选的）；显式给了路径却读不到由 loadLlmConfigFile 报错——不能
  * 静默回落到缺省，否则用户会以为配置生效了。 */
 std::string pickConfigPath(const CliOptions& opts) {
-	if (!opts.llmConfig.empty()) {
-		return isConfigDisabled(opts.llmConfig) ? std::string() : opts.llmConfig;
+	if (!opts.agent.llmConfig.empty()) {
+		return isConfigDisabled(opts.agent.llmConfig) ? std::string() : opts.agent.llmConfig;
 	}
 	if (auto env = getEnvVar("BOT4CJ_LLM_CONFIG"); env && !env->empty()) {
 		return isConfigDisabled(*env) ? std::string() : *env;
@@ -66,10 +67,6 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 	s += "  工具超时    : run_command=" + std::to_string(cfg.commandTimeoutSec)
 		+ "s，上限=" + std::to_string(cfg.maxCommandTimeoutSec)
 		+ "s，action_script=" + std::to_string(cfg.scriptTimeoutSec) + "s\n";
-	/* 上下文字节预算：后端不消费，只为 R5m 双端互钉摆出来（详见 agentmode.hpp 字段注） */
-	s += "  历史/任务预算: 历史 " + std::to_string(cfg.maxHistoryBytes)
-		+ " 字节，单任务文本 " + std::to_string(cfg.maxTaskToolResultBytes)
-		+ " 字节，单任务图片 " + std::to_string(cfg.maxTaskImageBytes) + " 字节\n";
 	s += "  摄像头      : " + std::string(cfg.allowCamera
 			? (cfg.cameraSrc.empty() ? "启用（变量 " + cfg.cameraVar + "，设备 "
 					+ orNone(cfg.cameraDevice, "/dev/video0（驱动缺省）") + "）"
@@ -82,6 +79,11 @@ std::string summarizeAgentConfig(const AgentModeConfig& cfg) {
 	s += "  read/wait_variable: " + (cfg.readVars.empty()
 			? std::string("未提供（缺省关；用 --read-var <变量名> 指定可读变量）")
 			: "已声明 " + std::to_string(cfg.readVars.size()) + " 项") + "\n";
+	s += "  list_dir/read_file: " + (cfg.fsRoot.empty()
+			? std::string("未提供（缺省关；用 --fs-root <目录> 指定只读根目录）")
+			: "已开启（根目录 " + cfg.fsRoot + "）") + "\n";
+	s += "  write_file  : " + std::string(cfg.allowWriteFile
+			? "已开启（--agent-write-file，根目录同 --fs-root）" : "未提供（缺省关）") + "\n";
 	s += "  审计轨迹    : " + orNone(cfg.auditLogPath, "(未开启)") + "\n";
 	s += "  策略钩子    : " + orNone(cfg.policyPath, "(未启用)") + "\n";
 	s += "  断连安全动作: " + orNone(cfg.onDisconnectScript, "(未配置；断连后硬件停在最后姿态)") + "\n";
@@ -135,22 +137,22 @@ bool mergeToolBudgets(const LlmFileConfig& file, AgentModeConfig& out, std::stri
 /* ---- 6) 摄像头（capture_image） ---- */
 bool pickCamera(const CliOptions& opts, const LlmFileConfig& file,
 		AgentModeConfig& out, std::string& err) {
-	out.allowCamera = opts.noCamera ? false : file.allowCamera.value_or(true);
-	out.cameraVar = pickString(opts.cameraVar, nullptr, file.cameraVar);
+	out.allowCamera = opts.agent.noCamera ? false : file.allowCamera.value_or(true);
+	out.cameraVar = pickString(opts.agent.cameraVar, nullptr, file.cameraVar);
 	if (out.cameraVar.empty()) { out.cameraVar = "cam0"; }
 	if (!isSafeIdent(out.cameraVar)) {
 		err = "摄像头变量名必须是安全标识符（字母/数字/下划线），实际是 '"
 			+ out.cameraVar + "'（来自 --camera-var 或配置文件的 camera_var 字段）";
 		return false;
 	}
-	out.cameraDevice = pickString(opts.cameraDevice, nullptr, file.cameraDevice);
-	out.cameraSrc = pickString(opts.cameraSrc, nullptr, file.cameraSrc);
+	out.cameraDevice = pickString(opts.agent.cameraDevice, nullptr, file.cameraDevice);
+	out.cameraSrc = pickString(opts.agent.cameraSrc, nullptr, file.cameraSrc);
 	/* H1：来源决定「能不能用 src 自己推导白名单根」（判据见 agenttools.hpp 的
 	 * AgentToolContext）。pickString 里命令行优先，故命令行非空即等于采用了它。 */
-	out.cameraSrcFromCli = !opts.cameraSrc.empty();
+	out.cameraSrcFromCli = !opts.agent.cameraSrc.empty();
 	/* H1：白名单根目录**只从命令行**取；配置文件写 camera_src_dir 由
 	 * buildAgentConfig 拒绝加载（与 allow_shell 同判据，见那里）。 */
-	out.cameraSrcDir = opts.cameraSrcDir;
+	out.cameraSrcDir = opts.agent.cameraSrcDir;
 	return true;
 }
 
@@ -192,16 +194,16 @@ bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	 * 且只能命令行开（安全缺省：评估 C12 翻转 + 审计 4.1 收紧；
 	 * 热插表 2026-09-23 与 run_command 同判据——apply_sql 会长出新硬件并
 	 * **立即上电**，「模型回复直接改变带电的硬件结构」）。 */
-	out.scriptsDir = opts.scriptsDir.empty() ? "scripts" : opts.scriptsDir;
-	if (opts.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
-	out.allowShell = opts.agentShell;
-	if (!opts.agentShell && file.allowShell.value_or(false)) {
+	out.scriptsDir = opts.agent.scriptsDir.empty() ? "scripts" : opts.agent.scriptsDir;
+	if (opts.agent.scriptsDir.empty() && file.scriptsDir) { out.scriptsDir = *file.scriptsDir; }
+	out.allowShell = opts.agent.agentShell;
+	if (!opts.agent.agentShell && file.allowShell.value_or(false)) {
 		err = relaxingFieldError(cfgPath, "allow_shell",
 			"run_command 等于把主机 shell 交给模型", "--agent-shell");
 		return false;
 	}
-	out.allowHotSql = opts.agentHotSql;
-	if (!opts.agentHotSql && file.allowHotSql.value_or(false)) {
+	out.allowHotSql = opts.agent.agentHotSql;
+	if (!opts.agent.agentHotSql && file.allowHotSql.value_or(false)) {
 		err = relaxingFieldError(cfgPath, "allow_hot_sql",
 			"apply_sql 会按模型给的 SQL 立即装配并给新硬件上电（开 fd、进断电清理链）",
 			"--agent-hot-sql");
@@ -212,30 +214,60 @@ bool applyGatingLayer(const CliOptions& opts, const LlmFileConfig& file,
 	/* 7b) 回读清单（发现 2 的 A 步，2026-09-23）：「能读哪些变量」是由操作者
 	 * 授予的能力（执行器与传感器靠种类分不开，Servo/Relay 也是 lua 驱动，
 	 * 清单必须由人列），同上四个字段：只能命令行给。 */
-	out.readVars = opts.readVars;
+	out.readVars = opts.agent.readVars;
 	if (file.readVars) {
 		err = relaxingFieldError(cfgPath, "read_vars",
 			"它决定模型能主动读哪些硬件变量（等同于给模型一条读通道）", "--read-var");
 		return false;
 	}
-	return true;
-}
 
-/* 8a) 上下文字节预算（B1）：配置文件覆盖编译期缺省；0 = 不限。
- * 严格解析（类型/区间/未知字段）已在 llmconfig 完成，这里只做搬运。后端**不消费**
- * 这三个值（实际预算由 Rust agent 强制）；搬运它们只为 --check-config 摘要摆出来，
- * 供 agent_e2e.sh R5m 双端互钉（详见 agentmode.hpp 字段注）。 */
-void applyContextBudgets(const LlmFileConfig& file, AgentModeConfig& out) {
-	if (file.maxHistoryBytes) { out.maxHistoryBytes = *file.maxHistoryBytes; }
-	if (file.maxTaskToolResultBytes) { out.maxTaskToolResultBytes = *file.maxTaskToolResultBytes; }
-	if (file.maxTaskImageBytes) { out.maxTaskImageBytes = *file.maxTaskImageBytes; }
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录。同上四个字段：
+	 * 只能命令行给——它决定"能读哪个目录"，等价于放宽读权限。 */
+	out.fsRoot = opts.agent.fsRoot;
+	if (file.fsRoot) {
+		err = relaxingFieldError(cfgPath, "fs_root",
+			"它决定 list_dir/read_file 能读哪个目录（等同于给模型一条主机文件读通道）",
+			"--fs-root");
+		return false;
+	}
+	/* 给了根就校验它是真实存在的目录——与 --on-disconnect 的上电前预检同口径：
+	 * 配置错误在结构装载与上电之前失败，而不是等模型第一次调 list_dir 才发现。
+	 * 这里**不**做 canonical 化后替换 out.fsRoot（保持操作者原样传入，判据单点
+	 * 仍是工具层的 resolveUnderRoot）；只做一次可读性/类型体检。 */
+	if (!out.fsRoot.empty()) {
+		std::error_code ec;
+		const fs::path p = fs::canonical(out.fsRoot, ec);
+		if (ec || !fs::is_directory(p, ec)) {
+			err = "--fs-root 只读根目录不可用（不存在或不是目录）: " + out.fsRoot;
+			return false;
+		}
+	}
+
+	/* Phase 5（2026-10-08）：write_file 的独立开关。与 allow_shell/allow_hot_sql
+	 * 同判据——写权限（能覆盖/改写主机文件）只能命令行 --agent-write-file 给，
+	 * 配置文件写 true 拒绝加载。 */
+	out.allowWriteFile = opts.agent.agentWriteFile;
+	if (!opts.agent.agentWriteFile && file.allowWriteFile.value_or(false)) {
+		err = relaxingFieldError(cfgPath, "allow_write_file",
+			"write_file 能覆盖/改写主机文件（覆盖不可逆）", "--agent-write-file");
+		return false;
+	}
+	/* 跨字段依赖：write_file 复用 --fs-root 作为写根，故给了 --agent-write-file
+	 * 却没给 --fs-root 是配置错误（写权限天然应 ⊆ 读权限，没有"只能写不能读"
+	 * 的正当场景）。在结构装载与上电之前失败（配置错误不碰真机）。 */
+	if (out.allowWriteFile && out.fsRoot.empty()) {
+		err = "--agent-write-file 需要同时提供 --fs-root <目录>"
+			"（write_file 在其中创建/覆盖文件，写根复用只读根，不能只写不读）";
+		return false;
+	}
+	return true;
 }
 
 /* 10) 审计轨迹：在这里就打开——路径打不开属于配置错误，必须在结构装载与
  * 上电之前失败（「配置错误不碰真机」），而不是等到第一次工具调用才炸。 */
 bool openAuditLog(const CliOptions& opts, const LlmFileConfig& file,
 		AgentModeConfig& out, std::string& err) {
-	out.auditLogPath = pickString(opts.auditLog, nullptr, file.auditLog);
+	out.auditLogPath = pickString(opts.agent.auditLog, nullptr, file.auditLog);
 	if (!out.auditLogPath.empty()) {
 		out.audit = std::make_shared<AuditLog>();
 		if (std::string auditErr; !out.audit->open(out.auditLogPath, auditErr)) {
@@ -251,7 +283,7 @@ bool openAuditLog(const CliOptions& opts, const LlmFileConfig& file,
  * 隔离仍是专用用户 / 容器（docs/agent.md 安全一节的既有口径不变）。 */
 bool loadPolicyHook(const CliOptions& opts, const LlmFileConfig& file,
 		AgentModeConfig& out, std::string& err) {
-	out.policyPath = pickString(opts.agentPolicy, nullptr, file.agentPolicy);
+	out.policyPath = pickString(opts.agent.agentPolicy, nullptr, file.agentPolicy);
 	if (!out.policyPath.empty()) {
 		if (std::string policyErr; !(out.policy = AgentPolicy::load(out.policyPath, policyErr))) {
 			err = policyErr;
@@ -268,12 +300,13 @@ bool loadPolicyHook(const CliOptions& opts, const LlmFileConfig& file,
  * fail-closed）：
  *   --agent-shell   （run_command）→ 策略必须 require_confirm "run_command"
  *   --agent-hot-sql （apply_sql）  → 策略必须 require_confirm "apply_sql"
+ *   --agent-write-file（write_file）→ 策略必须 require_confirm "write_file"
  * 折中：纯只读 / 查询 / 动作脚本后端（未开上述危险能力）不受此约束。
  * 注意 agentpolicy 仍**不是**隔离边界（同 uid 进程可绕过，见 docs/agent.md
  * 与 mcpbackend.hpp 的残留风险说明）——它是「每次调用先过人/审批」的确认闸门。 */
 bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& out,
 		std::string& err) {
-	if (!opts.mcpBackend) { return true; }
+	if (!opts.mcp.enabled) { return true; }
 	if (out.allowShell
 		&& (out.policy == nullptr || !out.policy->requiresConfirm("run_command"))) {
 		err = "--mcp-backend 开了 --agent-shell（run_command）：后端对外暴露且硬件带电，"
@@ -288,6 +321,13 @@ bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& 
 			"（热插表会立即给新硬件上电，必须有外部确认闸门）";
 		return false;
 	}
+	if (out.allowWriteFile
+		&& (out.policy == nullptr || !out.policy->requiresConfirm("write_file"))) {
+		err = "--mcp-backend 开了 --agent-write-file（write_file）：后端对外暴露，"
+			"必须用 --agent-policy 提供策略钩子，且其 require_confirm 必须包含 \"write_file\""
+			"（无人值守暴露改写主机文件的能力必须有外部确认闸门，覆盖又是不可逆操作）";
+		return false;
+	}
 	return true;
 }
 
@@ -296,7 +336,7 @@ bool enforceBackendConfirmPolicy(const CliOptions& opts, const AgentModeConfig& 
  * 最需要它的那一刻才发现脚本名拼错，硬件照旧停在最后一个姿态。判据与
  * run_action_script 同源（loadActionScriptFile），不另写一份。 */
 bool precheckDisconnectScript(const CliOptions& opts, AgentModeConfig& out, std::string& err) {
-	out.onDisconnectScript = opts.onDisconnect;
+	out.onDisconnectScript = opts.mcp.onDisconnect;
 	if (out.onDisconnectScript.empty()) { return true; }
 	try {
 		(void)loadActionScriptFile(out.scriptsDir, out.onDisconnectScript);
@@ -343,9 +383,9 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 	 * 任何一步失败都发生在结构装载与上电之前（「配置错误不碰真机」）。
 	 * 2026-09-26：agent 循环迁 Rust 后，LLM 层（endpoint/model/key/采样）、
 	 * 提示词包装载、体积预检与会话恢复组合校验都已删除——它们在 --mcp-backend
-	 * 下永不生效（详见 agentmode.hpp 的 AgentModeConfig 收缩说明）。上下文字节
-	 * 预算（applyContextBudgets）保留：后端不消费，但 --check-config 摘要要摆
-	 * 出来供 R5m 双端互钉。 */
+	 * 下永不生效（详见 agentmode.hpp 的 AgentModeConfig 收缩说明）。
+	 * 2026-10-01 批次 A（P1-5）：上下文字节预算的搬运与摘要行（applyContextBudgets）
+	 * 连同 R5m 互钉一并退役——后端从不消费这三个值，单一事实源是 Rust config.rs。 */
 
 	/* 1) 配置文件（最低优先级的一层，命令行/环境变量随后覆盖） */
 	LlmFileConfig file;
@@ -357,7 +397,6 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 
 	if (!mergeToolBudgets(file, out, err)) { return false; }			/* 工具层超时 */
 	if (!applyGatingLayer(opts, file, cfgPath, out, err)) { return false; }	/* 6/7/7b) 门控 */
-	applyContextBudgets(file, out);						/* 8a) 上下文预算（R5m 互钉用） */
 	if (!openAuditLog(opts, file, out, err)) { return false; }		/* 10) 审计 */
 	if (!loadPolicyHook(opts, file, out, err)) { return false; }		/* 11) 策略钩子 */
 	if (!enforceBackendConfirmPolicy(opts, out, err)) { return false; }	/* 11b) 后端强制确认 */
@@ -369,7 +408,14 @@ bool buildAgentConfig(const CliOptions& opts, AgentModeConfig& out, std::string&
 /* 组装工具上下文（AgentToolContext）：agent REPL 与 MCP 后端（--mcp-backend）
  * 共用这一个函数——「对外提供哪些工具、能读哪些变量、摄像头怎么解析」的判据
  * 只在这里发生一次，两条路径不会漂移（后端暴露的工具集与 agent 模式逐字节一致）。
- * 只读配置 + robot，不发起模型调用、不上电（调用方负责 active() 在先）。 */
+ * 只读配置 + robot，不发起模型调用、不上电（调用方负责 active() 在先）。
+ *
+ * 2026-10-10 评估后判不改（两结构同构的镜像）：AgentModeConfig 是 CLI/配置
+ * 入口（还带 mcpAuthToken / onDisconnectScript / audit / policy / verbose 等
+ * 永远不进工具上下文的字段），AgentToolContext 是工具运行期视图（robot 指针、
+ * 已解析的摄像头指针）——分层不同、非同构，逐字段拷贝是适配器本身而不是
+ * 待消除的重复；抽成转换构造只是搬位置。真正的漂移风险（配置加了字段却忘了
+ * 传导）由 test_llmconfig_assembly 的 fsRoot/allowWriteFile/camera 传导钉覆盖。 */
 AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 		std::ostream& log) {
 	AgentToolContext tctx;
@@ -382,6 +428,8 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 	tctx.maxCommandTimeoutSec = cfg.maxCommandTimeoutSec;
 	tctx.scriptTimeoutSec = cfg.scriptTimeoutSec;	/* PL-2：动作脚本执行预算 */
 	tctx.readVars = cfg.readVars;			/* 发现 2 的 A 步：声明原文（注册时解析） */
+	tctx.fsRoot = cfg.fsRoot;	/* Phase 4：已在 buildAgentConfig 校验存在且是目录 */
+	tctx.allowWriteFile = cfg.allowWriteFile;	/* Phase 5：已在 buildAgentConfig 校验依赖 fsRoot */
 	/* 声明的可读变量里被跳过的那些（未注册 / 种类不是 lua·daemon）如实告知：
 	 * 静默丢能力正是本项目反复要避免的形态——`--read-var` 敲错一个字，
 	 * 操作者必须能从启动输出里看出来，而不是等到模型说"我读不到"。 */
@@ -393,11 +441,8 @@ AgentToolContext makeToolContext(const AgentModeConfig& cfg, RobotStruct& robot,
 				"本次不提供 read_variables / wait_variable 工具\n";
 		}
 		if (!skipped.empty()) {
-			log << "提示: 以下 --read-var 声明被跳过（未注册，或种类不是 lua/daemon）: ";
-			for (std::size_t i = 0; i < skipped.size(); ++i) {
-				log << (i > 0 ? ", " : "") << skipped[i];
-			}
-			log << "\n";
+			log << "提示: 以下 --read-var 声明被跳过（未注册，或种类不是 lua/daemon）: "
+				<< joinNames(skipped) << "\n";
 		}
 	}
 	if (cfg.allowCamera) {

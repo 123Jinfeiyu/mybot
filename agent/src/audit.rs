@@ -4,10 +4,13 @@
 //! 按 `kind` 分派：`session`（会话边界：用哪个驱动/模型/接入点跑的、怎么结束的）
 //! 与 `model`（模型轮次：耗时/token 用量/尝试次数）。
 //!
-//! **工具行（kind=tool）不在这里写**：本侧的工具调用全经后端帧往返，后端
+//! **工具行（kind=tool）基本不在这里写**：后端工具的调用全经后端帧往返，后端
 //! `mybot --mcp-backend` 自己就落工具行（含 exit_code / image_fp / summary）。
 //! 两侧共用一个 AF_UNIX socket，会话行/模型行由本侧写、工具行由后端写——
-//! 分工与方案 F3 的拓扑一致（`docs/agent.md` 的审计小节）。
+//! 分工与方案 F3 的拓扑一致（`docs/agent.md` 的审计小节）。**例外**：不经后端的
+//! 本侧本地工具（Phase 6 的 `http_fetch`）后端看不见，其工具行由本侧
+//! [`AuditLog::write_tool`] 落，字段与后端工具行同名同义。（`ica_*` 是纯内存账本、
+//! 无外部副作用，沿用既有做法不落工具行。）
 //!
 //! **绝不写密钥**：会话行只写 `api_key_source` 枚举名（与 `--check-config`
 //! 摘要同口径：只报来源不报值）；接入点先经 `sanitize_endpoint` 去掉 query 与
@@ -67,6 +70,19 @@ pub struct ModelEntry {
     pub completion_tokens: Option<i64>,
 }
 
+/// `kind="tool"` 行（**仅本侧本地工具**；后端工具的工具行由后端落，见模块头）。
+#[derive(Default)]
+pub struct ToolEntry {
+    pub turn: i64,
+    pub tool: String,
+    pub args: Value,
+    pub ok: bool,
+    pub error: String,
+    pub ms: i64,
+    pub bytes: u64,
+    pub summary: String,
+}
+
 impl AuditLog {
     /// 打开审计日志。`path == "-"` → 写 stderr（前台调试用；与 C++ 同口径）。
     pub fn open(path: &str) -> Result<Self, String> {
@@ -77,16 +93,25 @@ impl AuditLog {
         let (to_stderr, file) = if path == "-" {
             (true, None)
         } else {
-            let f = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map_err(|e| {
-                    format!(
-                        "无法打开审计日志文件 '{path}'（{e}）；请检查目录是否存在、\
+            // 新建以 0600 建立（与 REPL 历史 / ICA sidecar / 会话文件同规）；
+            // 既有文件权限宽于 0600 时响亮提醒一次（打开只发生一次，不会刷屏）。
+            // 2026-10-01 审计批次 A（P1-1）：此前随 umask 常落 0644——model 行的
+            // error 字段可能带回显片段，日志本身按敏感文件对待。
+            #[cfg(unix)]
+            let wide = wide_perms_warning(path);
+            let mut opts = OpenOptions::new();
+            opts.create(true).append(true);
+            crate::fssec::opts_0600(&mut opts);
+            let f = opts.open(path).map_err(|e| {
+                format!(
+                    "无法打开审计日志文件 '{path}'（{e}）；请检查目录是否存在、\
                          是否有写权限，或在配置错误阶段先修正路径"
-                    )
-                })?;
+                )
+            })?;
+            #[cfg(unix)]
+            if !wide.is_empty() {
+                errln!("{wide}");
+            }
             (false, Some(f))
         };
         Ok(Self {
@@ -193,6 +218,34 @@ impl AuditLog {
         self.emit(line);
     }
 
+    /// 本侧本地工具（http_fetch）的 `kind=tool` 行。字段名与次序对齐 C++
+    /// `writeToolFields`（turn/tool/args/ok/error/ms/bytes/summary），消费方无需区分
+    /// 是哪一侧写的。args 由调用方先脱敏（这里不碰内容）。
+    pub fn write_tool(&mut self, e: &ToolEntry) {
+        if !self.start_written {
+            self.write_session(&SessionEntry {
+                status: "start".to_string(),
+                ..Default::default()
+            });
+        }
+        let mut line = base_line(&self.session_id, "tool");
+        line.insert("turn".into(), json!(e.turn));
+        line.insert("tool".into(), json!(e.tool));
+        if e.args.is_object() {
+            line.insert("args".into(), e.args.clone());
+        }
+        line.insert("ok".into(), json!(e.ok));
+        if !e.error.is_empty() {
+            line.insert("error".into(), json!(e.error));
+        }
+        line.insert("ms".into(), json!(e.ms));
+        line.insert("bytes".into(), json!(e.bytes));
+        if !e.summary.is_empty() {
+            line.insert("summary".into(), json!(e.summary));
+        }
+        self.emit(line);
+    }
+
     /// 落一行。写失败**只响亮告警一次**（审计「看起来在记、其实没记」比没有更糟），
     /// 不返回错——审计失败不该打断机器人正在执行的动作。
     fn emit(&mut self, line: Map<String, Value>) {
@@ -237,13 +290,33 @@ fn new_session_id() -> String {
     fingerprint64(&seed.to_string())[..8].to_string()
 }
 
+/// 既有审计日志文件权限宽于 0600 时的告警文本（判据单点在 [`crate::fssec::wide_perms`]，
+/// 与 `session::perms_warning` 同口径）。不存在/取不到权限/非 unix → 空串（新建路径由
+/// `open` 的 `mode(0o600)` 兜住，不会走到这里）。
+#[cfg(unix)]
+fn wide_perms_warning(path: &str) -> String {
+    if !crate::fssec::wide_perms(path, crate::fssec::PermKind::File) {
+        return String::new();
+    }
+    format!(
+        "警告: 审计日志文件 '{path}' 权限宽于 600（model 行的 error 字段可能带回显片段，\
+         同等敏感），建议 chmod 600 {path}"
+    )
+}
+
 /// FNV-1a 64 位 → 16 位小写 hex（算法标准参数）。
 pub fn fingerprint64(s: &str) -> String {
+    fingerprint64_bytes(s.as_bytes())
+}
+
+/// FNV-1a 64 位字节版（算法参数与 [`fingerprint64`] 相同，输入是任意字节——
+/// 图片二进制不保证是合法 UTF-8，不能走 str 版；record.rs 的图片指纹用它）。
+pub fn fingerprint64_bytes(b: &[u8]) -> String {
     const FNV_PRIME: u64 = 1_099_511_628_211;
     const FNV_BASIS: u64 = 14_695_981_039_346_656_037;
     let mut h = FNV_BASIS;
-    for b in s.bytes() {
-        h ^= b as u64;
+    for x in b {
+        h ^= *x as u64;
         h = h.wrapping_mul(FNV_PRIME);
     }
     format!("{h:016x}")
@@ -479,6 +552,37 @@ mod tests {
         let before = log2.session_id().to_string();
         log2.adopt_session_id("");
         assert_eq!(log2.session_id(), before);
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir(&dir);
+    }
+
+    /// 批次 A（P1-1）：新建审计文件以 0600 建立（不随 umask 落 0644），
+    /// 既有宽权限文件由 `wide_perms_warning` 提醒（判据与 session::perms_warning 同口径）。
+    #[test]
+    fn audit_file_is_created_0600_and_wide_perms_flagged() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mybot_audit_perm_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("audit.jsonl");
+        let p = path.to_string_lossy().to_string();
+        let _ = std::fs::remove_file(&path);
+
+        // 新建：0600（mode() 只对创建生效，umask 只能进一步收紧）
+        let log = AuditLog::open(&p).unwrap();
+        drop(log);
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "审计日志应以 0600 建立");
+
+        // 既有 0600 文件：不告警
+        assert!(wide_perms_warning(&p).is_empty());
+        // 既有宽权限文件：告警点名路径与修法
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let w = wide_perms_warning(&p);
+        assert!(w.contains("chmod 600") && w.contains(&p), "实际: {w}");
+        // 不存在 / 非文件：不告警（新建路径由 mode(0o600) 兜住）
+        let missing = dir.join("nope.jsonl").to_string_lossy().to_string();
+        assert!(wide_perms_warning(&missing).is_empty());
 
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_dir(&dir);

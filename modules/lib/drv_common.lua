@@ -156,7 +156,7 @@ function virt_prepare(data)
 			if type(data.path) ~= "string" then
 				virt_state = "error:" .. tostring(driver)
 					.. " is a BUS=\"uart\" model but metadata has no tty path"
-					.. " (缺 @UART 引用列或 UART call 未下发 path?)"
+					.. " (missing @UART reference column or UART call did not send path?)"
 				return virt_state:sub(7)
 			end
 			vbus.attach_model("VIRT:" .. tostring(driver) .. "@" .. data.path,
@@ -290,7 +290,7 @@ end
 
 -- 读 reg 起 n 字节，返回 1-based 大端字节表（[1] 为最高位）；任一读失败返回 nil。
 -- 必须分块：HAL 的合并读把整块拼成一个 double，超过 6 字节即超 2^53 精度
--- （见 lib/HAL.lua 的 i2c_read_multi 注释），故 chunk 缺省 6；需要更小事务
+-- （见 lib/hal/i2c.lua 的 i2c_read_multi 注释），故 chunk 缺省 6；需要更小事务
 -- 的驱动显式传参（BME280 校准块传 4）。尾部不足一块时按剩余长度读。
 -- 原 BME688 / BME280 各自的 read_block 局部量（骨架相同，仅 chunk 不同）
 function read_block_bytes(fd, reg, n, chunk)
@@ -307,4 +307,156 @@ function read_block_bytes(fd, reg, n, chunk)
 		done = done + len
 	end
 	return out
+end
+
+-- ---- 声明式驱动框架（P2 驱动代码生成·方案 A，2026-09-30）-----------------
+-- 收敛 57 份驱动文件里重复的四段样板：
+--   ① 标准前导（mpath 解析 + HAL/print_table/drv_common dofile）~5 行 × 57
+--   ② arg_table 守卫（build/call/destroy 各一份，3 行 × 3 × 57）
+--   ③ 总线校验（i2c_pair / tonumber(fd)×2 / fd+uart 三族，2~4 行 × 2 × 57）
+--   ④ 空 destroy（~40 份驱动 5 行 return {result="OK"}）
+-- 驱动文件现在只需：
+--   local require_driver = require_driver   -- 已随 drv_common 注入全局
+--   require_driver("i2c", {
+--       name = "BME280",
+--       build = function(ctx, data) ... end,
+--       call  = function(ctx, data) ... end,
+--       -- destroy 缺省 = 空操作（覆盖多数驱动）；需要收尾动作的驱动显式给
+--   })
+--   -- 虚拟器件模型（*_VIRT）照常写在文件尾部，框架不动它
+--
+-- 契约（与旧手写驱动逐字等价，保证测试零改动）：
+--   · 包装 build/call 先 arg_table → 再总线校验 → 再调用户函数
+--   · 用户函数接收 ctx 表：{fd, addr(仅 i2c), state, name}
+--     —— ctx.state 是 spec.state 透传（模块级跨 call 状态的容器）
+--   · 错误文案与旧内联版本一致（"Invalid Argument: fd or address" 等），
+--     旧测试断言文案不变
+--   · 用户函数返回值即驱动返回值（{result="OK",...} 或 err(...)）
+--   · 用户函数内可继续用 i2c_read_reg/spi_write/uart_read 等 HAL 全局，
+--     以及驱动文件内的 local（bitc/模块级状态/辅助函数）—— 闭包链不变
+--
+-- 为什么 dofile 前导放框架内：驱动文件不再写 5 行前导，省下的不止是键击
+-- ——新驱动作者漏 dofile drv_common 是过去半年的高频新手坑（err() 找不到、
+-- i2c_pair 找不到），把前导收进框架后此坑从根上消失。dofile 在 lua 里天然
+-- 幂等（HAL/print_table/drv_common 都带 __..._LOADED 守卫），多次加载安全。
+function require_driver(bus, spec)
+	if type(spec) ~= "table" then
+		error("require_driver: spec must be a table", 2)
+	end
+
+	-- ① 标准前导剩余部分（dofile 幂等，多驱动状态机内重复加载安全）
+	-- 驱动文件调 require_driver 之前须先 dofile drv_common（1 行 prelude，
+	-- 本库自带 require_driver 定义，无法绕过——函数不存在时无从调用）。
+	-- HAL + print_table 由这里代劳；新驱动作者漏加载是过去高频新手坑，
+	-- 5 行前导 → 1 行，且漏加载的后果从「静默崩溃」变成「require_driver
+	-- 未定义」的明确报错。
+	-- 2026-10-01 审计收口：mpath 引导从「只取首段的单段 match」改为与
+	-- virt_prepare（fix-plan 3-3）/HAL.lua 同规的逐段探测——首段没有
+	-- mpath.lua 的多路径布局下加载必失败；旧形态正是 run_all.sh 的
+	-- lint-module-path-bootstrap 门要拦的已知坏形态。
+	local mp = __mpath
+	if mp == nil then
+		local probed
+		for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+			local ok, m = pcall(dofile, p .. "/lib/mpath.lua")
+			if ok and type(m) == "table" then probed = m break end
+		end
+		mp = probed or dofile("./modules/lib/mpath.lua")
+	end
+	dofile(mp.resolve("lib/HAL.lua"))
+	dofile(mp.resolve("lib/print_table.lua"))
+
+	-- ② 总线校验分派（三族文案与旧驱动内联版本逐字对齐）
+	-- 统一返回 (fd, addr, err)：成功 = (fd, addr_or_nil, nil)；失败 = (nil, nil, err表)
+	-- addr 仅 i2c 非 nil；spi/uart 失败路径也返回三值，避免调用方解包错位
+	local i2c_default_addr = spec.i2c_addr_default
+	local validators = {
+		i2c = function(d)
+			-- 缺省地址器件（如 AMG8833 硬件固定 0x69）：address 列可省
+			if i2c_default_addr ~= nil and tonumber(d.address) == nil then
+				local fd = tonumber(d.fd)
+				if fd == nil then
+					return nil, nil, err("Invalid Argument: fd or address")
+				end
+				if not i2c_set_addr(fd, i2c_default_addr) then
+					return nil, nil, err("Invalid Argument: fd or address (set_addr failed)")
+				end
+				return fd, i2c_default_addr, nil
+			end
+			local fd, addr, ek = i2c_pair(d)
+			if fd == nil then return nil, nil, ek end
+			return fd, addr, nil
+		end,
+		spi = function(d)
+			local fd = tonumber(d.fd)
+			if fd == nil then
+				return nil, nil, err("Invalid Argument: fd")
+			end
+			return fd, nil, nil
+		end,
+		uart = function(d)
+			-- fd 0 合法（HAL 约定 >= 0 即成功）；与 MHZ19/SCSCL 旧口径一致
+			local fd = tonumber(d.fd)
+			if fd == nil or fd < 0 then
+				return nil, nil, err("Invalid Argument: fd (does the UART column reference an @UART variable?)")
+			end
+			return fd, nil, nil
+		end,
+	}
+	local validate = validators[bus]
+	if validate == nil then
+		error("require_driver: unknown bus type: " .. tostring(bus), 2)
+	end
+
+	-- ③ 用户必须提供 build/call（destroy 可缺省 = 空操作）
+	if type(spec.build) ~= "function" or type(spec.call) ~= "function" then
+		error("require_driver: spec.build and spec.call are required", 2)
+	end
+
+	local user_build  = spec.build
+	local user_call   = spec.call
+	local user_destroy = spec.destroy
+	local state = spec.state or {}
+	local name  = spec.name or "unknown"
+
+	-- ④ 包装 build：arg_table → 总线校验 → 用户 build(ctx, data)
+	function build(data)
+		local ok, ek = arg_table(data)
+		if not ok then return ek end
+		local fd, addr, ek2 = validate(data)
+		if fd == nil then return ek2 end
+		return user_build({
+			fd = fd, addr = addr, state = state, name = name,
+		}, data)
+	end
+
+	-- ⑤ 包装 call：同上
+	function call(data)
+		local ok, ek = arg_table(data)
+		if not ok then return ek end
+		local fd, addr, ek2 = validate(data)
+		if fd == nil then return ek2 end
+		return user_call({
+			fd = fd, addr = addr, state = state, name = name,
+		}, data)
+	end
+
+	-- ⑥ 包装 destroy：缺省即空操作（覆盖 ~40 份驱动）；自定义版本仍走 arg_table
+	if user_destroy then
+		function destroy(data)
+			local ok, ek = arg_table(data)
+			if not ok then return ek end
+			return user_destroy({
+				state = state, name = name,
+			}, data)
+		end
+	else
+		function destroy(data)
+			local ok, ek = arg_table(data)
+			if not ok then return ek end
+			return { result = "OK" }
+		end
+	end
+
+	return spec
 end

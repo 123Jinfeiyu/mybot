@@ -21,11 +21,13 @@ public:
  * setjmp/longjmp），从没有 Lua CFRAME 的 C++ 帧抛出的 Lua 错误**不是**
  * std::exception——只接 std::exception 的层会让它一路穿透到 std::terminate，
  * 或把「单轮失败」升级成「整个会话结束」。因此凡「异常不得穿出」的边界都
- * 必须补一层 catch(...)，按各自口径折成回执/日志。现役四个边界：
+ * 必须补一层 catch(...)，按各自口径折成回执/日志。现役五个边界：
  *   main 的 runRobotAndCleanup（顶层；rc=1，deactivate 必达）
  *   DispatchGate::run（executed 按 argsOk 分口径，见其站点注释）
  *   AgentToolRegistry::execute（折成工具回执，ok=false）
  *   McpBackend::handleRequest（对外经 sanitize 定容，刻意不回显成因）
+ *   DaemonRunner::body（2026-10-01 审计 P2：detached 线程穿出即 terminate，
+ *     折成 -1 + 响亮日志，promise 照常 set 让 join 路径走完）
  * 另 robot.cpp 的 commitHotBatch catch（先删后建失败口径）把下述词根拼进
  * 回执——那是第五个接住点，语义同源。
  * 文案词根单点 kNonStdExceptionNote：用户可见文本以它为词根（main 顶层是

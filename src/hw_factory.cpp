@@ -3,10 +3,11 @@
  * 矩阵表 → 硬件变量（Alias/Vars/Lua/Daemon 分派 + controller/trigger 流引用
  * 装配校验）+ 单消费者/共享串口判据）。 */
 
+#include "daemonconf.hpp"
 #include "hw_factory.hpp"
 
-/* 装配 Daemon/Lua/标量变量，显式引入对应实现头 */
-#include "daemonvar.hpp"
+/* 装配 Lua/标量变量，显式引入对应实现头（Daemon 的 MtVars_Daemon 声明已在
+ * daemonconf.hpp，本 TU 不再直接点名 daemonvar.hpp 里的任何东西） */
 #include "luavar.hpp"
 
 #include "flowcolumn.hpp"
@@ -46,8 +47,8 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 		}
 		if (session) {
 			if (session->count(name)) {
-				throw IllegalArgumentException("Duplicate " + std::string(dupLabel) + " name '"
-					+ name + "' within the action script");
+				throw IllegalArgumentException(concatMsg(
+					"Duplicate ", std::string(dupLabel), " name '", name, "' within the action script"));
 			}
 			session->insert(name);
 			if (kind == ScalarKind::Vars && registry_.contains(name)) {
@@ -57,8 +58,9 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 				 * @Alias 覆盖仅做键名替换、替换后仍过 rejectReservedKeys 元数据
 				 * 防线，保留覆盖语义；@Vars 一律拒绝覆盖，参数化请使用新名字
 				 * （引用结构 Vars 读取不受影响）。 */
-				throw IllegalArgumentException("action script @Vars must not override the "
-					"structure-defined variable '" + name + "' (use a fresh name)");
+				throw IllegalArgumentException(concatMsg(
+					"action script @Vars must not override the "
+					"structure-defined variable '", name, "' (use a fresh name)"));
 			}
 			if (registry_.contains(name)) {
 				std::cerr << label << " '" << name
@@ -73,7 +75,7 @@ void HwFactory::registerScalarMatrix(const mt::MatrixObject& matrix, std::set<st
 
 /* ==================== 单消费者判据（审计 1.3）====================
  * HAL 的每次 I2C 访问都是**单次 I2C_RDWR ioctl**（寄存器指针写 + 数据读合并成
- * 一个内核事务，见 HAL.lua 的 i2c_read_reg / i2c_read_multi_bytes），内核在
+ * 一个内核事务，见 modules/lib/hal/i2c.lua 的 i2c_read_reg / i2c_read_multi_bytes），内核在
  * adapter 层串行化，两个 fd 也插不进对方的指针相位。所以「主线程驱动 + 守护
  * 同址采样」对绝大多数器件是安全的——robots/test/ 下 20 个夹具正是刻意这么写的
  * （.mt 里同时点名设备与守护，注释写明"给守护留采样窗口"）。
@@ -144,7 +146,9 @@ std::string optCol(const mt::MatrixObject& m, std::int64_t row, const char* col)
  * （拆自 checkSingleConsumer，2026-09-26 批次 5）。原函数 127 行把「建总线路径表 /
  * 两个捕获状态的 lambda / Daemon 分支（含多器件 devices 解析）/ 常规硬件分支」全
  * 内联在一处；收进本结构后 checkSingleConsumer 只留「建状态 → 扫总线表 → 逐表分派」
- * 的编排。成员名与原局部量/lambda 逐字相同，故各分支体原样搬入、行为不变。 */
+ * 的编排。成员名与原局部量/lambda 逐字相同，故各分支体原样搬入、行为不变。
+ * 2026-10-04 评估后判不再拆独立 TU：再搬就得把 declaresSingleConsumer 与 scCache 的
+ * 批内作用域策略一并导出，把单函数私有状态升级成跨 TU 契约（记录见提交 fc1c66f）。 */
 struct SingleConsumerCheck {
 	std::map<std::string, std::string> busPath;	/* 总线名 → 设备路径（I2C/SPI/UART 表） */
 	std::map<std::string, std::string> owner;	/* 键 -> 首个消费者的定位串 */
@@ -161,12 +165,12 @@ struct SingleConsumerCheck {
 		if (key.empty()) { return; }
 		const auto it = owner.find(key);
 		if (it != owner.end()) {
-			throw IllegalArgumentException(
-				"Device '" + key + "' would have two concurrent consumers: "
-				+ it->second + " and " + who + ". This driver declares SINGLE_CONSUMER"
+			throw IllegalArgumentException(concatMsg(
+				"Device '", key, "' would have two concurrent consumers: ", it->second, " and ", who,
+				". This driver declares SINGLE_CONSUMER"
 				" (its register access spans multiple bus transactions, so a second"
 				" consumer corrupts the device-side address phase). Drop one of them,"
-				" or sample it from the daemon only and consume via '$' reference.");
+				" or sample it from the daemon only and consume via '$' reference."));
 		}
 		owner.emplace(key, who);
 	}
@@ -309,15 +313,16 @@ void HwFactory::checkSingleConsumer(const std::deque<mt::MatrixObject>& matrices
  * 共享形态只有一种是危险的：两个消费者**各自 open** 同一 path（UART 总线
  * 变量重复声明同一路径、或 UART 变量 + 真机守护各开一个 fd）。此时每个
  * lua_State 独立快照/恢复 termios，后关闭者以自己 open 时的配置为准
- * （modules/lib/HAL.lua:869 自述「不做跨变量引用计数」），混用波特率还会
+ * （modules/lib/hal/uart.lua 自述「不做跨变量引用计数」），混用波特率还会
  * 互相改线速。而多个器件行引用**同一个** UART 总线变量（'$uart-0'）是
  * 安全形态：fd 只有一个、termios 只设一次，器件行不持有句柄——不告警。
  * virt 侧（总线 proto=virt、守护 proto=virt）走内存仿真不碰真串口，跳过
  * （否则无硬件夹具全线误报）。路径按字符串精确比对：/dev/serial0 与
- * /dev/ttyS0 这类符号链接别名无法在结构期归一，宁可漏告（与
- * normalizeAddress「宁漏不误」同取向）。只告警不拒绝——同配置轮询下
- * 实际可用，引用计数/共享 fd 属破坏性决策（fix-plan F6）。 */
-void HwFactory::warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices) {
+ * /dev/ttyS0 这类符号链接别名无法在结构期归一，宁可漏报（与
+ * normalizeAddress「宁漏不误」同取向）。P1-3 起升级为硬拒绝——此前只告警
+ * 容易被日志淹没、配置漂移无人感知；强制使用者显式共享一个 UART 总线变量
+ * （'$uart-x' 引用）或走守护采样。 */
+void HwFactory::rejectSharedUartPaths(const std::deque<mt::MatrixObject>& matrices) {
 	std::map<std::string, std::vector<std::string>> users;	/* path -> 消费者定位串 */
 	for (const auto& m : matrices) {
 		const std::string& t = m.getName();
@@ -353,12 +358,11 @@ void HwFactory::warnSharedUartPaths(const std::deque<mt::MatrixObject>& matrices
 		if (who.size() < 2) { continue; }
 		std::string names;
 		for (const auto& w : who) { names += (names.empty() ? "" : ", ") + w; }
-		std::cerr << "Warning: UART path '" << path << "' is opened independently by "
-			<< who.size() << " consumers: " << names << ". Each keeps its own termios"
-			" snapshot and the last one to close wins (no cross-variable reference"
-			" counting); mixing baud rates or interleaved use may corrupt the serial"
-			" line config. Share one UART bus variable via '$' reference, or sample"
-			" via the daemon only." << std::endl;
+		throw IllegalArgumentException(concatMsg(
+			"UART path '", path, "' is opened independently by ", std::to_string(who.size()), " consumers: ", names,
+			". HAL does not do cross-variable reference counting; the last close",
+			" wins and mixing baud rates corrupts the serial line config.",
+			" Share one UART bus variable via '$' reference, or sample via daemon only."));
 	}
 }
 
@@ -367,7 +371,7 @@ void HwFactory::createHardVars(const std::deque<mt::MatrixObject>& matrices) {
 	/* 装配前先做单消费者判据：此时还没申请任何资源（Lua 状态/共享槽/总线句柄），
 	 * 报错即干净退出，不会留下半装配的机器人。 */
 	checkSingleConsumer(matrices);
-	warnSharedUartPaths(matrices);	/* F5-4：同物理串口多独立 fd 告警（不改变行为） */
+	rejectSharedUartPaths(matrices);	/* F5-4/P1-3：同物理串口多独立 fd 硬拒绝 */
 	for (const auto& matrix : matrices) { createHardVarsFrom(matrix, 1); }
 }
 
@@ -375,7 +379,7 @@ void HwFactory::createHardVars(const std::deque<mt::MatrixObject>& matrices) {
  * 热插表事务在提交前对「提交之后的结构视图」调用它——见头文件契约。 */
 void HwFactory::precheckStructure(const std::deque<mt::MatrixObject>& matrices) {
 	checkSingleConsumer(matrices);
-	warnSharedUartPaths(matrices);
+	rejectSharedUartPaths(matrices);
 }
 
 /* 单矩阵增量装配：全量装配的唯一下沉点（见头文件契约）。 */
@@ -394,7 +398,7 @@ void HwFactory::createDaemonVars(const mt::MatrixObject& matrix, const std::stri
 	for (std::int64_t i = fromRow; i < static_cast<std::int64_t>(matrix.rows()); ++i) {
 		const std::string& name = matrix(i, idxName);
 		precheckDuplicate(name, mtName);
-		registry_.add(name, MtVars_Daemon::Factory(matrix, i, daemonHolders_),
+		registry_.add(name, MtVars_Daemon::Factory(matrix, i, daemons_),
 			" (in table '" + mtName + "')");
 	}
 }
@@ -491,7 +495,7 @@ void HwFactory::createLuaVars(const mt::MatrixObject& matrix, const std::string&
 		precheckDuplicate(name, mtName);
 		FlowRowRefs flow = parseFlowRow(matrix, i, name, mtName, registry_);
 		auto metaProv = std::make_shared<MetaProvider>(matrix, i, &registry_);
-		metaProviders_.push_back(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
+		metas_.add(metaProv);	/* F-05：供 active() 在 build 前统一校验 $ 引用 */
 		registry_.add(name, MtVars_Lua::Factory(scriptPath, name,
 			[metaProv](bool forDestroy) {
 				return forDestroy ? metaProv->collectForDestroy() : metaProv->collect();

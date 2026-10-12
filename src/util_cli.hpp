@@ -1,6 +1,6 @@
 #pragma once
 /* util_cli.hpp —— 命令行基础设施：--key=value/--key value/裸 --key 的切分单点，
- * 与 daemon/TCP 选项的参数化区间常量（自 util.hpp 拆出，2026-09-26 批次 3）。 */
+ * 与 daemon/TCP/MCP 选项的参数化区间常量（自 util.hpp 拆出，2026-09-26 批次 3）。 */
 
 #include <string>
 
@@ -40,6 +40,42 @@ inline constexpr int kTotalTimeoutMin = 1;
 inline constexpr int kTotalTimeoutMax = 86400;
 inline constexpr int kTotalTimeoutDefault = 600;
 } // namespace tcp_limits
+
+namespace mcp_limits {
+/* --mcp-backend 的三个每连接预算（2026-10-06 25.3 收单点）。此前上下限写死在
+ * cliargs.cpp 的校验里，且每个数**各写两遍**（parseBoundedLong 与紧随其后的
+ * rangeErrorText），帮助文本再手抄一遍「上限 86400」——同一个 86400 在 C++ 侧
+ * 共 8 份（cliargs.cpp 4 + cliargs_help.cpp 4）。这正是本文件头注与
+ * cliargs_help.cpp 头注都声明要防的「帮助写一个数、校验用另一个数」：tcp_limits
+ * 与 daemon_limits 已按惯例把区间常量单点化并由 --help 与校验共用，mcp 这三个
+ * 选项是漏网的（且没有任何守门比对两个帮助面，抄漏一边只会各说各话）。
+ * 下限一律 0 = 不限（缺省不传即不限），与既有预算选项同口径。 */
+inline constexpr int kCallBudgetMin = 0;
+inline constexpr int kCallBudgetMax = 1000000;
+/* --mcp-wall-clock 与 --mcp-idle-timeout 共用同一区间：cliargs.cpp 原注释
+ * 「区间与墙钟同族（最长一天——空闲期不该比墙钟更宽松）」。上限与
+ * tcp_limits::kTotalTimeoutMax 同为 86400（24 小时）。 */
+inline constexpr int kBudgetSecMin = 0;
+inline constexpr int kBudgetSecMax = 86400;
+} // namespace mcp_limits
+
+/* ---- 认证爆破失败门（安全判据单点；2026-09-30 审计 P1，2026-10-01 跨通道共用）----
+ * 「连上并给出凭据但认证不通过」连续 N 次即停止服务的记账器。MCP 首帧
+ * 认证（mcpbackend 的 acceptLoop）与 TCP 口令（actionsource 的
+ * acceptAuthenticatedClient）共用同一结构与同一语义：
+ *   - 只数「给出凭据但认证不通过」的失败（TCP 侧 NoCredential / MCP 侧
+ *     哑对端——连上不发帧/超时/断连——都不计数）；
+ *   - 认证**通过**才归零：「连了就断」刷不掉别人的失败窗口；
+ *   - 连续到上限 recordRejected() 返回 true：调用方停止服务（fail-closed）。
+ * 上限缺省同 tcp_limits::kAuthMaxFailsDefault；TCP 侧可经
+ * --tcp-max-auth-attempts 覆盖（构造参数），MCP 侧固定用缺省。 */
+struct AuthFailGate {
+	explicit AuthFailGate(int maxIn = tcp_limits::kAuthMaxFailsDefault) : max(maxIn) {}
+	int max;
+	int fails = 0;
+	bool recordRejected() { return ++fails >= max; }
+	void recordPassed() { fails = 0; }
+};
 
 namespace cli {
 

@@ -434,6 +434,64 @@ expect_ok("build ppcount 非数值静默缺省 8", function()
 end)
 check("PPCOUNT=8（缺省）", dev:ppcount() == 8, tostring(dev:ppcount()))
 
+-- NaN 反例（26.1）：'nan' 经 tonumber 出的是 **number**（Lua 里 truthy），故
+-- `tonumber(x) or 缺省` 的 or 分支永不触发，而 NaN 与任何数比较都为假，
+-- `< 2.73`/`> 696`/`< 1`/`> 255`/`<= 0`/`> 1` 六条区间判定一律放行（±inf 会
+-- 被上/下界接住，只有 NaN 穿得过去）。后果分两级：
+--   · ppcount 落寄存器，NaN 字节被 HAL 的 byte_of 挡成 nil → 报「APDS9900 not
+--     responding (PPCOUNT write failed)」，把配置笔误误报成器件掉线；
+--   · atime/df/ga 更重——df/ga 不落寄存器而落**模块级 cfg_\* 状态**，call 侧
+--     的 `cfg_df or 52` 同样兜不住 NaN，于是此后每一次 call 的 LUX 都是 nan；
+--     atime 的 NaN 经 cycles 钳位后照样穿过，污染 cfg_atime_ms 这个除数。
+-- 判据取「与该列既有的非数字串同结论」：ppcount/df/ga 的 'abc' 本就静默归
+-- 缺省，atime 的越界本就报 ERR（审计 P3 的 finite_of 口径）。
+mark = section()
+expect_ok("build ppcount='nan' 同静默缺省 8", function()
+	return build({ fd = fd, address = "0x39", ppcount = "nan" })
+end)
+check("ppcount NaN → PPCOUNT=8（缺省，非 not responding）",
+	dev:ppcount() == 8, tostring(dev:ppcount()))
+
+mark = section()
+expect_err("build atime='nan' 同越界报 ERR", function()
+	return build({ fd = fd, address = "0x39", atime = "nan" })
+end, "atime")
+
+mark = section()
+ok, res, banner = capture(function()
+	return build({ fd = fd, address = "0x39", df = "nan", ga = "nan" })
+end)
+check("build df/ga='nan' OK（归缺省）", ok and res.result == "OK",
+	tostring(res and res.result))
+check("df/ga NaN 横幅回落缺省 df=52 ga=0.48",
+	banner:find("df=52", 1, true) ~= nil and banner:find("ga=0.48", 1, true) ~= nil,
+	banner)
+do
+	dev:set_counts(10000, 2500, 517)
+	local r = expect_ok("df/ga NaN 后 call 读数", function()
+		return call({ fd = fd, address = "0x39" })
+	end)
+	check("LUX 未被 NaN 污染（≈2256.83，与缺省 build 同值）",
+		r and near(r.LUX, lux_ref(10000, 2500, 1, 18, 52, 0.48), 1e-6),
+		tostring(r and r.LUX))
+end
+
+mark = section()
+ok, res, banner = capture(function()
+	return build({ fd = fd, address = "0x39", df = "inf" })
+end)
+check("build df='inf' OK（归缺省）", ok and res.result == "OK",
+	tostring(res and res.result))
+check("df inf 横幅回落缺省 df=52", banner:find("df=52", 1, true) ~= nil, banner)
+do
+	dev:set_counts(10000, 2500, 517)
+	local r = expect_ok("df=inf 后 call 读数", function()
+		return call({ fd = fd, address = "0x39" })
+	end)
+	check("LUX 未被 inf 污染", r and near(r.LUX,
+		lux_ref(10000, 2500, 1, 18, 52, 0.48), 1e-6), tostring(r and r.LUX))
+end
+
 -- =====================================================================
 -- 组 4：真实 build 错误路径
 -- =====================================================================

@@ -1,12 +1,15 @@
 #pragma once
-/* util_env.hpp —— 进程环境与运行期状态：环境变量读取、errno 文案、调试开关/惰性
- * 日志、信号停止标志（自 util.hpp 拆出，2026-09-26 批次 3）。 */
+/* util_env.hpp —— 进程环境与运行期状态：环境变量读取、errno 文案、信号停止标志
+ * （自 util.hpp 拆出，2026-09-26 批次 3）。
+ *
+ * 调试开关 DebugSwitch 与惰性日志 logD 已析出到 debug_log.hpp（2026-10-06，纯搬迁）：
+ * logD 往 std::cerr 写，它让本头的**每个** includer 都裹挟 <iostream>，而真正调 logD
+ * 的只有 6 个 TU。析出理由与实测数据见 debug_log.hpp 的头注。
+ * 需要 logD 的 TU 请**直接** #include "debug_log.hpp"，不要再靠本头传导。 */
 
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
-#include <iostream>
 #include <optional>
 #include <string>
 
@@ -35,23 +38,6 @@ inline std::string errnoText(int err) {
 	}
 	return std::string(buf);
 #endif
-}
-
-/* BOT4CJ_DEBUG = 1 时开启 call/build/destroy 详细信息转储 */
-class DebugSwitch {
-public:
-	static bool enabled() {
-		static bool en = [] {
-			auto v = getEnvVar("BOT4CJ_DEBUG");
-			return v.has_value() && *v == "1";
-		}();
-		return en;
-	}
-};
-
-/* 惰性调试日志：仅 debug 模式才求值消息体（对应 Cangjie logD(() -> String)） */
-inline void logD(const std::function<std::string()>& msg) {
-	if (DebugSwitch::enabled()) { std::cerr << msg() << std::endl; }
 }
 
 /* D4：信号停止标志——SIGINT/SIGTERM 处理器置位，主流程与阻塞点（TCP accept）

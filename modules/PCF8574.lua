@@ -26,11 +26,11 @@
 --   （约百 uA）——输出高靠外部上拉，勿用它直接供电；INT 引脚本驱动未用（轮询）。
 -- 在位探测：I2C ACK 即存在性证据（器件无 ID 寄存器），build 读一次确认。
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
-local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
-dofile(mpath.resolve("lib/drv_common.lua"))
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
+dofile((__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+	.resolve("lib/drv_common.lua"))
 
 -- 调试开关：IO 扩展器逐拍读取，默认关闭逐次打印
 local DEBUG = false
@@ -45,78 +45,35 @@ local function read_pins(fd)
 	return v % 256
 end
 
--- ==================== 配置脚本 ====================
-function build(data)
+require_driver("i2c", {
+	name = "PCF8574",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- ==================== 配置脚本 ====================
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- PCF8574 builder func get a table --------", data)
-	end
+		if DEBUG then
+			dbg_table("-------- PCF8574 builder func get a table --------", data)
+		end
 
-	-- fd/address 存在性收敛至 drv_common.i2c_check（报错口径不变）；set_addr
-	-- 刻意留到地址族校验之后——非法地址不碰总线
-	local fd, addr, ek = i2c_check(data)
-	if fd == nil then return ek end
-	-- 地址族校验：8574 = 0x20~0x27，8574A = 0x38~0x3F
-	local in_family = (addr >= 0x20 and addr <= 0x27) or (addr >= 0x38 and addr <= 0x3F)
-	if not in_family then
-		return err(string.format("PCF8574 invalid address 0x%02X (expect 0x20~0x27 or 0x38~0x3F for PCF8574A)", addr))
-	end
-	if not i2c_set_addr(fd, addr) then
-		return err("Invalid Argument: fd or address (set_addr failed)")
-	end
+		-- fd/address 存在性 + set_addr 由框架 i2c_pair 代劳；
+		-- 地址族校验在 set_addr 之后（set_addr 仅配置 fd 不碰总线，无害）
+		-- 地址族校验：8574 = 0x20~0x27，8574A = 0x38~0x3F
+		local in_family = (addr >= 0x20 and addr <= 0x27) or (addr >= 0x38 and addr <= 0x3F)
+		if not in_family then
+			return err(string.format("PCF8574 invalid address 0x%02X (expect 0x20~0x27 or 0x38~0x3F for PCF8574A)", addr))
+		end
 
-	-- 在位探测：读一次引脚（ACK 即存在性证据）
-	local pins = read_pins(fd)
-	if pins == nil then
-		return err("PCF8574 not responding (read failed, check address and wiring)")
-	end
+		-- 在位探测：读一次引脚（ACK 即存在性证据）
+		local pins = read_pins(fd)
+		if pins == nil then
+			return err("PCF8574 not responding (read failed, check address and wiring)")
+		end
 
-	-- 初始输出锁存（缺省 0xFF：POR 默认全弱上拉，显式写以对齐状态）
-	local out = tonumber(data.out)
-	if out == nil or data.out == "-" or data.out == "" then out = 0xFF end
-	out = math.floor(out)
-	if out < 0 or out > 255 then
-		return err("Invalid Argument: out '" .. tostring(data.out) .. "' (range 0~255)")
-	end
-	if i2c_write_multi(fd, out) ~= 0 then
-		return err("PCF8574 not responding (latch write failed)")
-	end
-	cfg_latch = out
-
-	if os.getenv("BOT4CJ_DEBUG") == "1" then
-		print(string.format("PCF8574 init OK: addr=0x%02X latch=0x%02X pins=0x%02X",
-			addr, out, pins))
-	end
-	return {  result = "OK"  }
-
-end
-
--- ==================== 调用 ====================
--- out=0~255 写输出锁存；不传则纯读引脚。两种情况都回读引脚即时状态。
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- PCF8574 caller func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
-
-	-----------------------------------------------------
-	local out = tonumber(data.out)
-	if out ~= nil then
+		-- 初始输出锁存（缺省 0xFF：POR 默认全弱上拉，显式写以对齐状态）
+		local out = finite_of(data.out)
+		if out == nil or data.out == "-" or data.out == "" then out = 0xFF end
 		out = math.floor(out)
 		if out < 0 or out > 255 then
 			return err("Invalid Argument: out '" .. tostring(data.out) .. "' (range 0~255)")
@@ -125,33 +82,50 @@ function call(data)
 			return err("PCF8574 not responding (latch write failed)")
 		end
 		cfg_latch = out
-	end
 
-	local pins = read_pins(fd)
-	if pins == nil then
-		return err("PCF8574 not responding (read failed)")
-	end
+		if os.getenv("BOT4CJ_DEBUG") == "1" then
+			print(string.format("PCF8574 init OK: addr=0x%02X latch=0x%02X pins=0x%02X",
+				addr, out, pins))
+		end
+		return {  result = "OK"  }
+	end,
 
-	return {
-		result = "OK",
-		PINS = pins,
-		OUT = cfg_latch or 0xFF
-	}
+	-- destroy 缺省 = 空操作（原 PCF8574 destroy 仅 arg_table + return OK，等价）
 
-end
+	-- ==================== 调用 ====================
+	-- out=0~255 写输出锁存；不传则纯读引脚。两种情况都回读引脚即时状态。
+	call = function(ctx, data)
+		local fd = ctx.fd
 
--- ==================== 销毁 ====================
--- 无关断寄存器；锁存保持到断电；fd 归 I2C 硬件变量所有
-function destroy(data)
+		if DEBUG then
+			dbg_table("-------- PCF8574 caller func get a table --------", data)
+		end
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		-----------------------------------------------------
+		local out = finite_of(data.out)
+		if out ~= nil then
+			out = math.floor(out)
+			if out < 0 or out > 255 then
+				return err("Invalid Argument: out '" .. tostring(data.out) .. "' (range 0~255)")
+			end
+			if i2c_write_multi(fd, out) ~= 0 then
+				return err("PCF8574 not responding (latch write failed)")
+			end
+			cfg_latch = out
+		end
 
-	return {  result = "OK"  }
+		local pins = read_pins(fd)
+		if pins == nil then
+			return err("PCF8574 not responding (read failed)")
+		end
 
-end
+		return {
+			result = "OK",
+			PINS = pins,
+			OUT = cfg_latch or 0xFF
+		}
+	end,
+})
 
 
 -- =====================================================================

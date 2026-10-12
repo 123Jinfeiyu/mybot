@@ -128,7 +128,8 @@ gate:clang:
 # 命中一律以 `error:` 打印，只数 `warning:` 会在 job 已红时报「告警总数：0」误导读者。
 # 2026-09-25 转硬：本地 clang-tidy 14.0.6（与 bookworm 同版本）全量归零——存量 85 条
 # 当日清障后，预跑又揪出后续功能新引入的 3 条（getenv/strerror 未走 util.hpp 单点、
-# 一处 string 链式拼接），已修。后续新增告警即 job 红，处置方式同 changelog 记档。
+# 一处 string 链式拼接），已修。后续新增告警即 job 红，处置方式同存量告警：修掉再推，
+# 理由记进提交信息（变更账本自 2026-10-04 起就是提交信息，见提交 9480de3）。
 gate:clang-tidy:
   stage: gate
   image: debian:bookworm
@@ -185,11 +186,11 @@ gate:coverage:
       - build-cov/coverage/
 
 # musl（非 glibc）实证门禁（fix-plan 2026-09-20）：docs/faq.md 曾如实声明
-# 「非 glibc libc 未验证」——HAL.lua 经 ffi 直调 libc，termios 布局断言、
+# 「非 glibc libc 未验证」——hal_backend_glibc.lua 经 ffi 直调 libc，termios 布局断言、
 # 波特率编码、ioctl 常量此前只在 glibc 头文件下实证过。本 job 在 alpine/musl
 # 下：① 三个常量自检目标（_Static_assert/编译期比对，跑起来即证明常量在 musl
 # 头文件下成立）；② mybot_tests 全量；③ 整段守门 test/run_all.sh（Lua 层 HAL
-# 运行时 + mtmerge + TCP + MCP 后端 e2e）——Rust agent 段因 alpine 镜像无 Rust
+# 运行时 + TCP + MCP 后端 e2e）——Rust agent 段因 alpine 镜像无 Rust
 # 产物，由 net_agent.sh 按 SKIP 计（不是假绿，汇总里可见）；C++ 产物一律显式指定
 # 到 build-musl，缺任一个都判失败（不加 ALLOW_SKIP）。
 # 2026-09-25 转硬：本地 proot + alpine 3.20 minirootfs（与 alpine:3.20 镜像同源同版本）
@@ -214,9 +215,9 @@ gate:musl:
     - ./build-musl/test_ioctl_nums
     - ./build-musl/test_uart_consts
     - ./build-musl/test_v4l2_consts
-    - cmake --build build-musl -j2 --target mybot mybot_tests mtmerge harness_selftest
+    - cmake --build build-musl -j2 --target mybot mybot_tests harness_selftest
     - ./build-musl/mybot_tests
-    - BOT=./build-musl/mybot BOT_TESTS=./build-musl/mybot_tests MTMERGE=./build-musl/mtmerge bash test/run_all.sh
+    - BOT=./build-musl/mybot BOT_TESTS=./build-musl/mybot_tests bash test/run_all.sh
 
 # ======================================================================
 # Rust agent（agent/，包名 mybot-agent；原 MCP sidecar，rig 迁移批次 B 更名）：
@@ -255,6 +256,11 @@ gate:agent:
     - cargo fmt --check
 
 # 与 build:release 同为 bookworm，避免跨 glibc 版本复用后端产物。
+# 本 job 是 CI 里唯一带 Rust 工具链的一道，故两条 Rust 侧端到端脚本都归它：
+# scripts/agent_e2e.sh（工具循环 R1–R18）与 scripts/ica_e2e.sh（ICA 证据账本两进程）。
+# 后者此前只有守门入口的 ica-e2e 段调用（net_agent.sh），而那段在 mybot-agent
+# 产物缺失/陈旧时按 [SKIP] 计——gate:release / gate:musl 的镜像里没有 cargo，
+# 补不上这个洞，所以「ica 链路坏了」在 CI 上可以一直没人发现（2026-10-06 补）。
 gate:agent-e2e:
   stage: gate
   image: rust:1-slim-bookworm
@@ -265,16 +271,19 @@ gate:agent-e2e:
   script:
     - cargo build --release --locked --manifest-path agent/Cargo.toml
     - test -x build/mybot && test -x agent/target/release/mybot-agent
+    # 两条都跑完再判红：先跑的那条一失败就 exit，后一条便永不执行，一个红掩盖另一个红
+    # （守门入口里两段也是各记各的账）。timeout 180 与守门本地的 90 是刻意差异，
+    # 理由见 test/lib/sections/net_agent.sh 的口径注释（CI 机器慢）。
     - |
-      if BOT4CJ_LLM_CONFIG=none timeout 180 bash scripts/agent_e2e.sh > agent-e2e.log 2>&1; then
-        rc=0
-      else
-        rc=$?
-      fi
+      rc=0
+      if BOT4CJ_LLM_CONFIG=none timeout 180 bash scripts/agent_e2e.sh > agent-e2e.log 2>&1; then :; else rc=$?; fi
       cat agent-e2e.log
+      if timeout 180 bash scripts/ica_e2e.sh > ica-e2e.log 2>&1; then :; else rc=$?; fi
+      cat ica-e2e.log
       test "$rc" -eq 0
   artifacts:
     when: always
     expire_in: 4 weeks
     paths:
       - agent-e2e.log
+      - ica-e2e.log

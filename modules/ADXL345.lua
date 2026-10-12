@@ -39,10 +39,10 @@
 --   6. 敲击/自由落体/活动检测引擎（0x1D~0x30 中断组）本驱动未接——
 --      框架为守护轮询路径，中断型事件驱动待框架支持后再扩展
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -111,119 +111,93 @@ local function read_bytes6(fd, reg)
 	return b
 end
 
--- 【配置脚本】DEVID 甄别 -> FULL_RES+量程 -> 速率 -> 测量模式
-function build(data)
+require_driver("i2c", {
+	name = "ADXL345",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】DEVID 甄别 -> FULL_RES+量程 -> 速率 -> 测量模式
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- ADXL345 builder func get a table --------", data)
-	end
+		if DEBUG then
+			dbg_table("-------- ADXL345 builder func get a table --------", data)
+		end
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- 列配置
+		local range_v, range_g = range_code_of(data.range)
+		local odr_code_v, odr_hz = odr_code_of(data.odr)
 
-	-- 列配置
-	local range_v, range_g = range_code_of(data.range)
-	local odr_code_v, odr_hz = odr_code_of(data.odr)
+		-----------------------------------------------------
+		-- 芯片甄别
+		local id = i2c_read_reg(fd, REG_DEVID)
+		if id < 0 then
+			return err("Failed to read ADXL345 DEVID")
+		end
+		if id ~= DEVID then
+			return err(string.format("DEVID = 0x%02X (expect 0xE5, not ADXL345?)", id))
+		end
 
-	-----------------------------------------------------
-	-- 芯片甄别
-	local id = i2c_read_reg(fd, REG_DEVID)
-	if id < 0 then
-		return err("Failed to read ADXL345 DEVID")
-	end
-	if id ~= DEVID then
-		return err(string.format("DEVID = 0x%02X (expect 0xE5, not ADXL345?)", id))
-	end
+		-- 数据格式：保留高位、置 FULL_RES + 量程
+		local df = i2c_read_reg(fd, REG_DATA_FORMAT)
+		if df < 0 then
+			return err("Failed to read ADXL345 DATA_FORMAT")
+		end
+		if not i2c_write_reg(fd, REG_DATA_FORMAT,
+			bitc.bor(bitc.band(df, 0xF0), bitc.bor(FULL_RES, range_v))) then
+			return err("Failed to write ADXL345 DATA_FORMAT")
+		end
 
-	-- 数据格式：保留高位、置 FULL_RES + 量程
-	local df = i2c_read_reg(fd, REG_DATA_FORMAT)
-	if df < 0 then
-		return err("Failed to read ADXL345 DATA_FORMAT")
-	end
-	if not i2c_write_reg(fd, REG_DATA_FORMAT,
-		bitc.bor(bitc.band(df, 0xF0), bitc.bor(FULL_RES, range_v))) then
-		return err("Failed to write ADXL345 DATA_FORMAT")
-	end
+		-- 数据率（高性能档，清低功耗位）
+		if not i2c_write_reg(fd, REG_BW_RATE, odr_code_v) then
+			return err("Failed to write ADXL345 BW_RATE")
+		end
 
-	-- 数据率（高性能档，清低功耗位）
-	if not i2c_write_reg(fd, REG_BW_RATE, odr_code_v) then
-		return err("Failed to write ADXL345 BW_RATE")
-	end
+		-- 进入测量模式（清 Sleep/Link 位，同 Adafruit 参考）
+		if not i2c_write_reg(fd, REG_POWER_CTL, MEASURE) then
+			return err("Failed to write ADXL345 POWER_CTL")
+		end
 
-	-- 进入测量模式（清 Sleep/Link 位，同 Adafruit 参考）
-	if not i2c_write_reg(fd, REG_POWER_CTL, MEASURE) then
-		return err("Failed to write ADXL345 POWER_CTL")
-	end
+		-- 等两个测量周期，首拍数据就绪
+		local wait_ms = math.ceil(2 * 1000 / odr_hz) + 2
+		milli_sleep(wait_ms)
 
-	-- 等两个测量周期，首拍数据就绪
-	local wait_ms = math.ceil(2 * 1000 / odr_hz) + 2
-	milli_sleep(wait_ms)
+		print(string.format("ADXL345 init OK: addr=0x%02X, ±%dg, odr=%gHz (FULL_RES 3.9mg/LSB)",
+			addr, range_g, odr_hz))
+		return {  result = "OK"  }
 
-	print(string.format("ADXL345 init OK: addr=0x%02X, ±%dg, odr=%gHz (FULL_RES 3.9mg/LSB)",
-		addr, range_g, odr_hz))
-	return {  result = "OK"  }
+	end,
 
-end
+	-- destroy 缺省 = 空操作（原 ADXL345 destroy 仅 arg_table + return OK，等价）
 
--- 【销毁ADXL345】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
+	-- 【调用ADXL345】读三轴原始码
+	call = function(ctx, data)
+		local fd = ctx.fd
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		if DEBUG then
+			dbg_table("-------- ADXL345 caller func get a table --------", data)
+		end
 
-	return {  result = "OK"  }
+		-----------------------------------------------------
+		local b = read_bytes6(fd, REG_DATAX0)
+		if b == nil then
+			return err("Failed to read ADXL345 accel data")
+		end
 
-end
+		local ret = {
+			result  = "OK",
+			ACCEL_X = bitc.bor(bitc.lshift(b[2], 8), b[1]),
+			ACCEL_Y = bitc.bor(bitc.lshift(b[4], 8), b[3]),
+			ACCEL_Z = bitc.bor(bitc.lshift(b[6], 8), b[5])
+		}
 
+		if DEBUG then
+			print(string.format("ADXL345: X=%d Y=%d Z=%d", ret.ACCEL_X, ret.ACCEL_Y, ret.ACCEL_Z))
+		end
 
--- 【调用ADXL345】读三轴原始码
--- NOTE: 数据寄存器小端（LSB 在前）；返回 16 位补码语义的无符号原始码
--- （负值由守护 sign='16' 展开；FULL_RES 下 256 LSB/g 恒定）
-function call(data)
+		return ret
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- ADXL345 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	local b = read_bytes6(fd, REG_DATAX0)
-	if b == nil then
-		return err("Failed to read ADXL345 accel data")
-	end
-
-	local ret = {
-		result  = "OK",
-		ACCEL_X = bitc.bor(bitc.lshift(b[2], 8), b[1]),
-		ACCEL_Y = bitc.bor(bitc.lshift(b[4], 8), b[3]),
-		ACCEL_Z = bitc.bor(bitc.lshift(b[6], 8), b[5])
-	}
-
-	if DEBUG then
-		print(string.format("ADXL345: X=%d Y=%d Z=%d", ret.ACCEL_X, ret.ACCEL_Y, ret.ACCEL_Z))
-	end
-
-	return ret
-
-end
+	end,
+})
 
 
 -- =====================================================================

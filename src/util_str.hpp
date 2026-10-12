@@ -2,10 +2,12 @@
 /* util_str.hpp —— 字符串工具单点：拼接、恒时比较、安全标识符判定、ASCII 小写、
  * 整词切词、trim、报错回显转义、日志标记转义（自 util.hpp 拆出，2026-09-26 批次 3）。 */
 
+#include <algorithm>
 #include <cctype>
 #include <cstddef>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace bot {
 
@@ -20,16 +22,23 @@ inline std::string concatMsg(Parts&&... parts) {
 	return s;
 }
 
-/* ---- 恒时字符串比较（审计 M1）----
+/* ---- 恒时字符串比较（安全判据单点；审计 M1 + MCP-1/P2-1）----
  * std::string 的 == / != 短路：首个不匹配字节即返回，比较耗时与「匹配到
- * 哪一位」相关，--tcp 0.0.0.0 暴露场景下可被计时侧信道逐字节猜令牌。
- * 异或累积全部字节：耗时只取决于长度，与匹配位置无关。
- * 长度不等提前返回：凭据行的长度本就暴露给网络观察者，不是秘密。 */
+ * 哪一位」相关——暴露在外的凭据比对（--tcp 0.0.0.0 口令、MCP 首帧共享
+ * 密钥）可被计时侧信道逐字节猜令牌。此前 TCP 口令与 MCP token 各有一份
+ * 实现、强度不同（前者长度不等早退，后者长度差折叠进累计差）——安全
+ * 判据必须单点且取严格者（2026-10-01 收敛）：
+ * 长度差异折叠进累计差（先给 diff 喂长度差，再按较长一方的全长逐位异或
+ * 累计），全长走完才判——回应时间既不泄露已匹配前缀，也不泄露长度比对
+ * 结果。调用方注释若提「长度不等提前返回」，以此处为准。 */
 inline bool safeEquals(const std::string& a, const std::string& b) {
-	if (a.size() != b.size()) { return false; }
-	unsigned char diff = 0;
-	for (std::size_t i = 0; i < a.size(); ++i) {
-		diff |= static_cast<unsigned char>(a[i]) ^ static_cast<unsigned char>(b[i]);
+	/* 上限对齐：token 上限 256（captureMcpAuthToken），短串不会溢出 */
+	const std::size_t n = std::max(a.size(), b.size());
+	unsigned diff = static_cast<unsigned>(a.size() ^ b.size());
+	for (std::size_t i = 0; i < n; ++i) {
+		const unsigned ca = i < a.size() ? static_cast<unsigned char>(a[i]) : 0u;
+		const unsigned cb = i < b.size() ? static_cast<unsigned char>(b[i]) : 0u;
+		diff |= ca ^ cb;
 	}
 	return diff == 0;
 }
@@ -84,6 +93,19 @@ inline std::string trim(const std::string& s) {
 	while (b < e && (s[b] == ' ' || s[b] == '\t' || s[b] == '\r' || s[b] == '\n')) ++b;
 	while (e > b && (s[e-1] == ' ' || s[e-1] == '\t' || s[e-1] == '\r' || s[e-1] == '\n')) --e;
 	return s.substr(b, e - b);
+}
+
+/* ---- 名字列表拼接（单点，2026-10-01）----
+ * 「（a, b, c）」式点名在热插摘要 / 热删除失败成因 / --read-var 跳过提示
+ * 等多处手写同构循环（for + i>0 补分隔符）——分隔符口径漂移就是文案
+ * 不一致。默认 ", "；热删除成因列表用 "; "。 */
+inline std::string joinNames(const std::vector<std::string>& names, const char* sep = ", ") {
+	std::string out;
+	for (std::size_t i = 0; i < names.size(); ++i) {
+		if (i > 0) { out += sep; }
+		out += names[i];
+	}
+	return out;
 }
 
 /* ---- 报错回显：用户可控原文的转义 + 截断（单点）----

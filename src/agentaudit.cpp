@@ -104,78 +104,23 @@ bool AuditLog::open(const std::string& path, std::string& err) {
 	return true;
 }
 
-/* 批次 1（会话恢复）：见头文件注释。只生效一次。 */
-void AuditLog::adoptSessionId(const std::string& id) {
-	if (!opened_ || id.empty() || sessionIdAdopted_) { return; }
-	sessionId_ = id;
-	sessionIdAdopted_ = true;
-}
-
-/* SAN-9：接入点进审计前去掉 query 与 userinfo。
- * 有些网关把凭据放在 URL 里（`https://user:tok@host/v1/...?key=...`），
- * 而审计是 append-only 的落盘文件——把整条 URL 抄进去等于把密钥写进日志。
- * 只保留 scheme://host/path 这部分（口径与 maskSecretsInText 同源：
- * "不该出门的东西不进日志"）。 */
-std::string sanitizeEndpoint(const std::string& url) {
-	std::string out = url;
-	/* 去掉 query / fragment */
-	if (std::size_t q = out.find_first_of("?#"); q != std::string::npos) { out.resize(q); }
-	/* 去掉 userinfo（scheme:// 与第一个 '/' 之间的 '@' 之前那段） */
-	const std::size_t scheme = out.find("://");
-	if (scheme != std::string::npos) {
-		const std::size_t hostStart = scheme + 3;
-		const std::size_t slash = out.find('/', hostStart);
-		const std::size_t end = (slash == std::string::npos) ? out.size() : slash;
-		if (std::size_t at = out.rfind('@', end); at != std::string::npos && at >= hostStart) {
-			out.erase(hostStart, at - hostStart + 1);
-		}
-	}
-	return out;
-}
-
 /* ---- AuditLog::write 的每 kind 字段段（2026-09-29 A3 拆分）----
- * 三个函数只往 line 里放各自 kind 的字段；公共头（ts/session/kind）与
- * 输出尾（stderr/文件落盘）留在 write()。字段与顺序逐字保持。 */
+ * 两个函数只往 line 里放各自 kind 的字段；公共头（ts/session/kind）与
+ * 输出尾（stderr/文件落盘）留在 write()。字段与顺序逐字保持。
+ * 2026-10-01 批次 A（P1-6）：writeModelFields 已随 agent 循环迁 Rust 删除
+ * （C++ 后端不发起模型调用，model 行零写入者；模型轮次记进 agent 侧审计
+ * 文件，见 agent/src/audit.rs）。 */
 
-/* 会话边界记录（SAN-9）：只记"这次会话是用什么配置跑的"，供事后复盘时定位
- * "这一轮到底连的是哪、用的哪个模型"。**绝不写密钥**：只写 api_key_source
- * 枚举名（与 --check-config 的摘要同口径：只报来源不报值）。 */
+/* 会话边界记录（SAN-9）：C++ 侧只记会话生命周期事件（start/end/error/
+ * disconnect_action/auth_failed）。**绝不写密钥**。模型侧配置字段
+ * （driver/model/endpoint/api_key_source）已随迁 Rust 退场。 */
 static void writeSessionFields(const AuditEntry& e, Json& line) {
 	line.put("status", JsonString(e.status.empty() ? "start" : e.status));
-	if (!e.driver.empty()) { line.put("driver", JsonString(e.driver)); }
-	if (!e.model.empty()) { line.put("model", JsonString(e.model)); }
-	if (!e.endpoint.empty()) {
-		line.put("endpoint", JsonString(sanitizeEndpoint(e.endpoint)));
-	}
-	if (!e.apiKeySource.empty()) {
-		line.put("api_key_source", JsonString(e.apiKeySource));
-	}
-	/* 批次 1：恢复的会话（加法字段，既有字段与顺序不动） */
-	if (e.resumed) { line.put("resumed", JsonBool(true)); }
 	if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
 	if (e.ms > 0) { line.put("ms", JsonInt(e.ms)); }
 	/* 2026-09-25：断连安全动作（status=disconnect_action）自报"跑了哪个脚本"。
 	 * 加法字段，既有 start/end 记录不给、不出现。 */
 	if (!e.summary.empty()) { line.put("summary", JsonString(e.summary)); }
-}
-
-/* 模型轮次记录（SAN-9）：为什么需要它——工具行只能回答"调了什么工具"，
- * 回答不了"模型说了什么、花了多久、这一轮有没有发出请求"。一次在模型
- * 调用阶段失败的会话此前在日志里**一条都没有**。 */
-static void writeModelFields(const AuditEntry& e, Json& line) {
-	if (e.turn >= 0) { line.put("turn", JsonInt(e.turn)); }
-	line.put("ok", JsonBool(e.ok));
-	if (!e.status.empty()) { line.put("status", JsonString(e.status)); }
-	if (!e.error.empty()) { line.put("error", JsonString(e.error)); }
-	line.put("ms", JsonInt(e.ms));
-	if (e.reqBytes > 0) { line.put("req_bytes", JsonInt(static_cast<std::int64_t>(e.reqBytes))); }
-	if (e.respBytes > 0) { line.put("resp_bytes", JsonInt(static_cast<std::int64_t>(e.respBytes))); }
-	if (e.attempts > 0) { line.put("attempts", JsonInt(e.attempts)); }
-	/* token 用量：**只记 provider 给的数**，不做任何推算/计费估算 */
-	if (e.promptTokens.has_value()) { line.put("prompt_tokens", JsonInt(*e.promptTokens)); }
-	if (e.completionTokens.has_value()) {
-		line.put("completion_tokens", JsonInt(*e.completionTokens));
-	}
 }
 
 /* 既有工具行：字段与顺序**一个不动**（兼容性硬约束） */
@@ -219,8 +164,6 @@ void AuditLog::write(const AuditEntry& e) {
 
 	if (e.kind == "session") {
 		writeSessionFields(e, line);
-	} else if (e.kind == "model") {
-		writeModelFields(e, line);
 	} else {
 		writeToolFields(e, line);
 	}
@@ -251,6 +194,39 @@ std::string maskSecretsInText(const std::string& text) {
 	const std::size_t n = text.size();
 	while (i < n) {
 		const char c = text[i];
+		/* 形态四：JSON 引号键 `"name": value`（2026-10-08 审计 P1 续——`read_file`
+		 * 接上本单点后实测发现：本仓真实密钥落盘形态（`mybot.llm.json`/会话
+		 * JSONL）恰恰是这种被双引号包住的键名，形态三的裸标识符扫描在遇到键名
+		 * 前导的 `"` 时就不是字母/下划线，根本进不了标识符分支，`"api_key": "x"`
+		 * 因此被判定为"无赋值形态的普通文本"原样放行——这是 run_command 从
+		 * 2026-09-23 G1 起就存在的盲区，cat 一份 JSON 格式的密钥文件从未被真正
+		 * 遮蔽过，只是过去没人拿真实 JSON 内容去测过 maskSecretsInText。
+		 * 判据：引号、敏感整词、引号收尾、可选空白、冒号——键名本身原样保留
+		 * （便于模型看出"这是哪个字段"），值整体替换为 ***（与形态一/三同口径）。 */
+		if (c == '"') {
+			std::size_t q = i + 1;
+			while (q < n && (std::isalnum(static_cast<unsigned char>(text[q]))
+				|| text[q] == '_' || text[q] == '-')) { ++q; }
+			if (q > i + 1 && q < n && text[q] == '"') {
+				std::size_t afterQuote = q + 1;
+				std::size_t k = afterQuote;
+				while (k < n && std::isspace(static_cast<unsigned char>(text[k]))) { ++k; }
+				if (k < n && text[k] == ':' && isMaskedName(toLowerAscii(text.substr(i + 1, q - i - 1)))) {
+					out += text.substr(i, afterQuote - i);	/* "api_key" 原样保留 */
+					out += text.substr(afterQuote, k - afterQuote);	/* 键后空白 */
+					out += ':';
+					++k;
+					while (k < n && std::isspace(static_cast<unsigned char>(text[k]))) {
+						out += text[k];
+						++k;
+					}
+					out += "***";
+					i = maskedValueEnd(text, k);
+					continue;
+				}
+			}
+			/* 不是"敏感引号键"：不消耗任何字符，落到下面按普通字符逐个拷贝。 */
+		}
 		if (!(std::isalpha(static_cast<unsigned char>(c)) || c == '_')) {
 			out += c;
 			++i;
@@ -312,44 +288,6 @@ std::string maskSecretsInText(const std::string& text) {
 		i = j;
 	}
 	return out;
-}
-
-std::optional<long long> extractExitCode(const std::string& text) {
-	/* 2026-09-24 修正：run_command 回执自 M2/1aab7b2 起整体经 quoteUntrusted 定界
-	 * （防提示注入），exit_code 行带上了 "> " 前缀且不再位于文本开头——旧实现的
-	 * 「必须是前缀」假设随之失效，审计里的 exit_code 字段静默消失（agent-e2e 的
-	 * 「run_command 记录带 exit_code」抓个正着；此前被 curl 顺序回归挡在更早处，
-	 * 没跑到这条）。现改为逐行扫描：剥去可选的 "> " 定界前缀后以 "exit_code="
-	 * 开头的**首行**即回执自己的那行（stdout 里的同形文本必在其后，不会抢先）。
-	 * 裸前缀形态（旧回执 / 单测直喂）仍兼容；数值约束不变：可选负号、8 位回绕域
-	 * （>255 拒）。 */
-	static const char kPrefix[] = "exit_code=";
-	const std::size_t n = sizeof kPrefix - 1;
-	std::size_t pos = 0;
-	while (pos <= text.size()) {
-		std::size_t eol = text.find('\n', pos);
-		if (eol == std::string::npos) { eol = text.size(); }
-		std::size_t b = pos;
-		if (eol - b >= 2 && text.compare(b, 2, "> ") == 0) { b += 2; }
-		if (eol - b >= n && text.compare(b, n, kPrefix) == 0) {
-			std::size_t i = b + n;
-			bool neg = false;
-			if (i < eol && text[i] == '-') { neg = true; ++i; }
-			if (i < eol && std::isdigit(static_cast<unsigned char>(text[i]))) {
-				long long v = 0;
-				while (i < eol && std::isdigit(static_cast<unsigned char>(text[i]))) {
-					v = v * 10 + (text[i] - '0');
-					++i;
-				}
-				/* 退出码只有 8 位回绕域，越界值说明这不是 run_command 的回执形态 */
-				if (v > 255) { return std::nullopt; }
-				return neg ? -v : v;
-			}
-		}
-		if (eol == text.size()) { break; }
-		pos = eol + 1;
-	}
-	return std::nullopt;
 }
 
 std::string fingerprint64(const std::string& s) {

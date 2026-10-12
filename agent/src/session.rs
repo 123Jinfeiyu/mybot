@@ -38,6 +38,7 @@ use serde_json::{json, Map, Value};
 
 use crate::audit::{audit_timestamp, fingerprint64};
 use crate::out::errln;
+use crate::placeholder::{image_placeholder, source_len};
 
 /// 会话文件版本（本程序只认 v=1；v 之外整份拒绝，口径同 C++ 参考）。
 pub const SESSION_FILE_VERSION: i64 = 1;
@@ -56,18 +57,9 @@ pub struct SessionHead {
     pub system_fp: String,
 }
 
-/// 图片占位文本（写入期排除后的落盘形态；恢复后模型可见，据此知道图片不在）。
-/// 与 C++ `sessionImagePlaceholder` 逐字同文本。
-pub fn image_placeholder(total_image_bytes: usize) -> String {
-    format!("[图片 {total_image_bytes} 字节，未随会话恢复]")
-}
-
-/// 一段 user 文本是否是恢复期的图片后注（encode_user 把占位追加在 caption 之后，
-/// 所以判据是「以占位文本收尾」）。history.rs 用它把这种消息排除在块起点之外——
-/// 判据与 `image_placeholder` 同源维护。
-pub fn is_image_placeholder_notice(text: &str) -> bool {
-    text.ends_with("字节，未随会话恢复]") && text.contains("[图片 ")
-}
+/* 图片占位文本与图片后注判据（image_placeholder / is_image_placeholder_notice）
+ * 已下沉到叶子模块 placeholder.rs（2026-10-01，解 session ↔ history 环）；
+ * 本模块经下方 use 继续使用。 */
 
 /// 工具集指纹：按注册序拼接工具名后取 fingerprint64（与 C++
 /// `sessionToolsFingerprint` 同式；名字串撞车概率与既有 image_fp 同量级，可接受）。
@@ -197,7 +189,9 @@ fn encode_assistant(id: Option<&str>, content: &[AssistantContent]) -> Value {
 /// 但有两个键是本实现的私有元数据，读回时要摘出来：
 ///   * `reasoning_content` → 还原成 `AssistantContent::Reasoning` 块；
 ///   * `__rig_id` → rig 的 assistant 消息 id（C++ 无此概念）。
-fn reasoning_text(c: &ReasoningContent) -> Option<String> {
+///
+/// record.rs 录制事件流共用同一判据（不可还原的加密块不落）。
+pub(crate) fn reasoning_text(c: &ReasoningContent) -> Option<String> {
     match c {
         ReasoningContent::Text { text, .. } => Some(text.clone()),
         ReasoningContent::Summary(s) => Some(s.clone()),
@@ -219,15 +213,6 @@ fn tool_result_text(content: &[ToolResultContent]) -> String {
         }
     }
     out
-}
-
-fn source_len(kind: &rig_agent::completion::message::DocumentSourceKind) -> usize {
-    use rig_agent::completion::message::DocumentSourceKind as K;
-    match kind {
-        K::Url(s) | K::Base64(s) | K::FileId(s) | K::String(s) => s.len(),
-        K::Raw(b) => b.len(),
-        K::Unknown => 0,
-    }
 }
 
 // ---------------- 载入：行 JSON → rig Message ----------------
@@ -440,6 +425,20 @@ pub fn load_session_file(
     out: &mut LoadedSession,
     warnings: &mut Vec<String>,
 ) -> Result<(), String> {
+    // 读前设限（2026-10-01 批次 A / P1-2）：与配置 64 KiB、提示词 1 MiB、密钥
+    // 64 KiB 的处处设限同纪律——误把大文件（如视频）当会话文件时，不该整份
+    // 读进内存。上限与上下文预算同源（`limits::BUDGET_BYTES_MAX`）：会话内容
+    // 本就受该预算约束，超过它就不像会话文件。
+    let cap = crate::config::limits::BUDGET_BYTES_MAX as u64;
+    let len = std::fs::metadata(path)
+        .map_err(|_| format!("无法读取会话文件 '{path}'（不存在或没有读权限）"))?
+        .len();
+    if len > cap {
+        return Err(format!(
+            "会话文件 '{path}' 大小 {len} 字节，超过上限 {cap} 字节（与上下文预算同源）——\
+             不像会话文件，可能指向了别的大文件；拒绝读入"
+        ));
+    }
     let text = std::fs::read_to_string(path)
         .map_err(|_| format!("无法读取会话文件 '{path}'（不存在或没有读权限）"))?;
 
@@ -451,6 +450,14 @@ pub fn load_session_file(
 
     for (idx, line) in text.lines().enumerate() {
         let line_no = idx + 1;
+        /* 跳行告警的单点（2026-10-01 收敛）：此前 8 处手拼「会话文件 '{path}'
+         * 第 {line_no} 行…，已跳过该行」——前置/尾缀样板漂移会让告警文案在
+         * 恢复日志里长短不一。只改落形，文案逐字保持。 */
+        let mut skip = |why: &str| {
+            warnings.push(format!(
+                "会话文件 '{path}' 第 {line_no} 行{why}，已跳过该行"
+            ));
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -458,24 +465,18 @@ pub fn load_session_file(
             Ok(v) => v,
             Err(e) => {
                 // 崩溃可能留下最后一行残缺：跳过并点名，不整份作废
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行不是合法 JSON（{e}），已跳过该行"
-                ));
+                skip(&format!("不是合法 JSON（{e}）"));
                 continue;
             }
         };
         let Some(obj) = parsed.as_object() else {
-            warnings.push(format!(
-                "会话文件 '{path}' 第 {line_no} 行不是 JSON 对象，已跳过该行"
-            ));
+            skip("不是 JSON 对象");
             continue;
         };
         // /clear 分界标记：丢弃此前累积的消息
         if obj.get("type").and_then(Value::as_str) == Some("session_clear") {
             if !head_seen {
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行的 session_clear 出现在会话头之前，已跳过该行"
-                ));
+                skip("的 session_clear 出现在会话头之前");
                 continue;
             }
             messages.clear();
@@ -485,18 +486,14 @@ pub fn load_session_file(
         }
         if obj.get("type").and_then(Value::as_str) == Some("session_summary") {
             if !head_seen {
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行的 session_summary 出现在会话头之前，已跳过该行"
-                ));
+                skip("的 session_summary 出现在会话头之前");
                 continue;
             }
             let (Some(content), Some(keep)) = (
                 obj.get("content").and_then(Value::as_str),
                 obj.get("keep_blocks").and_then(Value::as_u64),
             ) else {
-                warnings.push(format!(
-                    "会话文件 '{path}' 第 {line_no} 行的 session_summary 缺 content/keep_blocks，已跳过该行"
-                ));
+                skip("的 session_summary 缺 content/keep_blocks");
                 continue;
             };
             let starts = crate::history::block_starts(&messages);
@@ -516,9 +513,7 @@ pub fn load_session_file(
             head = match parse_head(&parsed, path)? {
                 Some(h) => h,
                 None => {
-                    warnings.push(format!(
-                        "会话文件 '{path}' 第 {line_no} 行不是合法消息行（首行必须是会话头），已跳过该行"
-                    ));
+                    skip("不是合法消息行（首行必须是会话头）");
                     continue;
                 }
             };
@@ -527,9 +522,7 @@ pub fn load_session_file(
         }
         match decode_message(&parsed, &mut st) {
             Ok(m) => messages.push(m),
-            Err(e) => warnings.push(format!(
-                "会话文件 '{path}' 第 {line_no} 行不是合法消息行（{e}），已跳过该行"
-            )),
+            Err(e) => skip(&format!("不是合法消息行（{e}）")),
         }
     }
 
@@ -587,24 +580,13 @@ fn parse_head(parsed: &Value, path: &str) -> Result<Option<SessionHead>, String>
 }
 
 /// 文件存在且权限宽于 0600 时返回告警文本（与 `mybot.llm.json` 既有判据同口径：
-/// 会话文件含完整对话内容，同等敏感）。不存在/取不到权限 = 空串。
+/// 会话文件含完整对话内容，同等敏感；判据单点在 [`crate::fssec::wide_perms`]）。
+/// 不存在/取不到权限 = 空串。
 pub fn perms_warning(path: &str) -> String {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let Ok(st) = std::fs::metadata(path) else {
-            return String::new();
-        };
-        if !st.is_file() || st.mode() & 0o077 == 0 {
-            return String::new();
-        }
-        format!("会话文件 '{path}' 权限宽于 600（含完整对话内容，同等敏感），建议 chmod 600 {path}")
+    if !crate::fssec::wide_perms(path, crate::fssec::PermKind::File) {
+        return String::new();
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        String::new()
-    }
+    format!("会话文件 '{path}' 权限宽于 600（含完整对话内容，同等敏感），建议 chmod 600 {path}")
 }
 
 // ---------------- 写 ----------------
@@ -629,6 +611,11 @@ impl SessionFileWriter {
     }
 
     /// 打开会话文件。`append=true` 只在恢复路径用（文件已被调用方确认存在）。
+    /// 新建（含截断重建）以 0600 创建——与 REPL 历史 / ICA sidecar / 审计同规，
+    /// 会话文件含完整对话内容，同等敏感（2026-09-30 审计 P1：此前按 umask
+    /// 落盘，常见 0644，且 `perms_warning` 只对已存在文件生效，首次会话
+    /// 全程无告警）。既有文件的权限不在此改动：恢复路径的宽权限提醒由
+    /// [`perms_warning`] 负责。
     pub fn open(&mut self, path: &str, append: bool) -> Result<(), String> {
         if self.file.is_some() {
             return Err(format!("会话文件已打开: {path}"));
@@ -640,6 +627,8 @@ impl SessionFileWriter {
         } else {
             opts.write(true).truncate(true);
         }
+        /* mode 脚手架与「无条件设置即可」的理由收在 fssec::opts_0600 单点。 */
+        crate::fssec::opts_0600(&mut opts);
         let f = opts.open(path).map_err(|e| {
             format!("无法打开会话文件 '{path}'（{e}）；请检查目录是否存在、是否有写权限")
         })?;
@@ -725,21 +714,12 @@ impl Default for SessionFileWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placeholder::is_image_placeholder_notice;
     use rig_agent::completion::message::ToolResultContent;
 
     /// 每个用例一个独立临时目录（进程内唯一名 + 计数，避免并行测试相互踩）。
     fn tmpdir(tag: &str) -> std::path::PathBuf {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let dir = std::env::temp_dir().join(format!(
-            "mybot_session_{}_{}_{}",
-            std::process::id(),
-            tag,
-            n
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+        crate::testutil::tmpdir("mybot_session", tag)
     }
 
     /// 简易对话序列：任务 → assistant(tool_calls) → tool → 图片消息 → 最终回答。
@@ -994,6 +974,31 @@ mod tests {
     }
 
     #[test]
+    fn writer_creates_session_file_with_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        // 新会话文件与 REPL 历史 / ICA sidecar 同规：0600 创建，不随 umask 放宽
+        // （2026-09-30 审计 P1；此前常见 0644 且 perms_warning 只查已存在文件）。
+        let dir = tmpdir("create0600");
+        let path = (dir.join("s.jsonl")).to_string_lossy().to_string();
+        let mut w = SessionFileWriter::new();
+        w.open(&path, false).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "新会话文件应以 0600 创建（实际 {:o}）",
+            mode
+        );
+        // 截断重建（同一 open(false) 路径）不放宽既有 0600 文件的权限
+        drop(w);
+        let mut w2 = SessionFileWriter::new();
+        w2.open(&path, false).unwrap();
+        let mode2 = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode2 & 0o777, 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn perms_warning_flags_wide_perms_and_600_is_quiet() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tmpdir("perms");
@@ -1227,6 +1232,34 @@ mod tests {
             panic!()
         };
         assert_eq!(r.name, "tool_a");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 批次 A（P1-2）：读取面设限——超过 `BUDGET_BYTES_MAX` 的文件在 read 之前
+    /// 拒绝（稀疏文件构造，不真写盘）；不存在的文件维持既有文案。
+    #[test]
+    fn load_rejects_oversized_file_before_reading() {
+        let dir = tmpdir("toolarge");
+        let path = (dir.join("huge.jsonl")).to_string_lossy().to_string();
+        let cap = crate::config::limits::BUDGET_BYTES_MAX as u64;
+        let f = std::fs::File::create(&path).unwrap();
+        f.set_len(cap + 1).unwrap(); // sparse：只在 metadata 上超限
+        drop(f);
+
+        let mut loaded = LoadedSession::default();
+        let mut warns = Vec::new();
+        let err = match load_session_file(&path, &mut loaded, &mut warns) {
+            Ok(()) => panic!("超限文件必须被拒绝"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("超过上限") && err.contains(&path),
+            "实际: {err}"
+        );
+
+        let missing = (dir.join("nope.jsonl")).to_string_lossy().to_string();
+        let err2 = load_session_file(&missing, &mut loaded, &mut warns).unwrap_err();
+        assert!(err2.contains("无法读取会话文件"), "实际: {err2}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

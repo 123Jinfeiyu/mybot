@@ -184,15 +184,16 @@ TH_TEST(expr_plus_text_operand_concatenates) {
 }
 
 TH_TEST(expr_numeric_operators_reject_text) {
-	/* 除 '+' 外的运算符对文本无定义——报错文案单点（throwTextOperand） */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '-' cannot be applied to a text result",
+	/* 除 '+' 外的运算符对文本无定义——报错文案单点（throwNonNumOperand，
+	 * 2026-10-10 @if 特性起文案同时覆盖布尔操作数，断言取公共段） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'-' cannot be applied to a text operand",
 		evalMixed("a-n", {{"n", 2.0}}, {{"a", "x"}}));
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '*' cannot be applied to a text result",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'*' cannot be applied to a text operand",
 		evalMixed("a*n", {{"n", 2.0}}, {{"a", "x"}}));
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '/' cannot be applied to a text result",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'/' cannot be applied to a text operand",
 		evalMixed("n/a", {{"n", 2.0}}, {{"a", "x"}}));
 	/* 一元负号同样拒绝文本 */
-	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "operator '-' cannot be applied to a text result",
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'-' cannot be applied to a text operand",
 		evalMixed("-a", {}, {{"a", "x"}}));
 }
 
@@ -231,4 +232,103 @@ TH_TEST(expr_parse_error_does_not_echo_the_whole_source) {
 	TH_CHECK(msg.size() < 512);
 	TH_CHECK(msg.size() < huge.size() / 10);
 	TH_CHECK(msg.find("...") != std::string::npos || msg.find("…") != std::string::npos);
+}
+
+/* ==================== 比较/逻辑运算（2026-10-10 @if 特性） ====================
+ * ExprValue 第三态 Bool：仅由比较/逻辑产生（无 true/false 字面量）；
+ * 类型严格无隐式转换——数值真值、文本相等、跨类比较各有明确报错，
+ * 拼错的条件不许以错误理由成立。 */
+
+TH_TEST(expr_comparison_produces_bool) {
+	TH_CHECK(evalMixed("1>0", {}, {}).isBool());
+	TH_CHECK(evalMixed("1>0", {}, {}).flag);
+	TH_CHECK(!evalMixed("1<0", {}, {}).flag);
+	TH_CHECK(evalMixed("2>=2", {}, {}).flag);
+	TH_CHECK(evalMixed("2<=1", {}, {}).flag == false);
+	TH_CHECK(evalMixed("3>2", {}, {}).flag);
+	TH_CHECK(evalMixed("2>3", {}, {}).flag == false);
+	/* 算术优先级高于比较（先算再比） */
+	TH_CHECK(evalMixed("1+1>=2", {}, {}).flag);
+	TH_CHECK(evalMixed("2*3<5", {}, {}).flag == false);
+	/* 比较操作数必须数值：文本（@Alias）拒绝 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'>' cannot be applied to a text operand",
+		evalMixed("a>0", {}, {{"a", "x"}}));
+	/* 链式 a<b<c 语法可解析（左结合），Bool 参与数值比较在求值期拒绝 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'<' cannot be applied to a boolean operand",
+		evalMixed("1<2<3", {}, {}));
+}
+
+TH_TEST(expr_equality_same_type_only) {
+	/* == / != 同类可比：数值、文本（@Alias）、布尔 */
+	TH_CHECK(evalMixed("1==1", {}, {}).flag);
+	TH_CHECK(evalMixed("1!=2", {}, {}).flag);
+	TH_CHECK(evalMixed("a==\"x\"", {}, {{"a", "x"}}).flag);
+	TH_CHECK(evalMixed("a!=\"x\"", {}, {{"a", "x"}}).flag == false);
+	TH_CHECK(evalMixed("\"x\"==\"x\"", {}, {}).flag);
+	TH_CHECK(evalMixed("(1>0)==(2>1)", {}, {}).flag);
+	/* 跨类报错——静默的恒不等与隐式转换同样危险 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "cannot compare a number with a text",
+		evalMixed("1==\"1\"", {}, {}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "cannot compare a boolean with a number",
+		evalMixed("(1>0)!=0", {}, {}));
+	/* 单 '=' 不是运算符（无赋值语法） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "single '=' is not an operator",
+		evalMixed("1=1", {}, {}));
+	/* 字符串字面量：未闭合即语法错；与 @Alias 同语义（'+' 拼接） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unterminated string literal",
+		evalMixed("a==\"x", {}, {{"a", "x"}}));
+	TH_CHECK(evalMixed("\"p\"+n", {}, {{"n", "2"}}).text == "p2");
+}
+
+TH_TEST(expr_logical_operands_and_precedence) {
+	TH_CHECK(evalMixed("(1>0)&&(2>0)", {}, {}).flag);
+	TH_CHECK(evalMixed("(1>0)&&(2<0)", {}, {}).flag == false);
+	TH_CHECK(evalMixed("(1<0)||(2>0)", {}, {}).flag);
+	TH_CHECK(evalMixed("(1<0)||(2<0)", {}, {}).flag == false);
+	TH_CHECK(evalMixed("!(1>0)", {}, {}).flag == false);
+	TH_CHECK(evalMixed("!!(1>0)", {}, {}).flag);
+	/* && 高于 ||：a||(b&&c) 整体为真即使最后一段假 */
+	TH_CHECK(evalMixed("(1>0)||(2<0)&&(3<0)", {}, {}).flag);
+	/* 操作数必须 Bool：数值/文本没有隐式真值 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'&&' requires logical operands",
+		evalMixed("1&&2", {}, {}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'||' requires logical operands",
+		evalMixed("a||1>0", {}, {{"a", "x"}}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'!' cannot be applied to a number operand",
+		evalMixed("!1", {}, {}));
+}
+
+TH_TEST(expr_short_circuit_skips_right_operands) {
+	/* 短路：左操作数定局即不 eval 右子树——右枝的未定义标识符/除零
+	 * 不构成错误（C 语义同型）；存在性校验仍由 collectVars 覆盖 */
+	TH_CHECK(evalMixed("(1<0)&&boom", {}, {}).flag == false);
+	TH_CHECK(evalMixed("(1>0)||boom", {}, {}).flag);
+	TH_CHECK(evalMixed("(1<0)&&(1/0>0)", {}, {}).flag == false);
+	/* 反向不短路：左真必 eval 右枝，除零照常报错 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "division by zero",
+		evalMixed("(1>0)&&(1/0>0)", {}, {}));
+	/* collectVars 是结构遍历：短路右枝的标识符仍被收集（存在性校验视角） */
+	std::set<std::string> vars;
+	Expression::parse("(a>0)&&boom").collectVars(vars);
+	TH_CHECK(vars.count("a") == 1);
+	TH_CHECK(vars.count("boom") == 1);
+}
+
+TH_TEST(expr_bool_rejected_in_numeric_contexts) {
+	/* Bool 不入算术：加、一元负、取模全部拒绝 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'+' cannot be applied to a boolean operand",
+		evalMixed("1+(1>0)", {}, {}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'-' cannot be applied to a boolean operand",
+		evalMixed("-(1>0)", {}, {}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'%' cannot be applied to a boolean operand",
+		evalMixed("(1>0)%2", {}, {}));
+	/* '+' 的文本拼接不收布尔操作数（不产生 "true…" 型参数） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "'+' cannot be applied to a boolean operand",
+		evalMixed("(1>0)+\"x\"", {}, {}));
+	/* requireNum（@Vars 值/SQL 元数据列出口）拒绝 Bool */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "produced a boolean result",
+		bot::requireNum(evalMixed("1>0", {}, {})));
+	/* rendered 的 Bool 出口：通用字符串化（"true"/"false"） */
+	TH_CHECK(evalMixed("1>0", {}, {}).rendered() == "true");
+	TH_CHECK(evalMixed("1<0", {}, {}).rendered() == "false");
 }

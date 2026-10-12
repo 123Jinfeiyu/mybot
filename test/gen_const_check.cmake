@@ -13,9 +13,23 @@
 #
 # 用法：cmake -DOUT=<生成的头文件> -DSRC=<仓库根> -P test/gen_const_check.cmake
 #
+# 2026-10-01 加固（P0 复发预防，2026-10-01 P0 的教训收口）：hal_backend_glibc.lua
+# 的 consts 表改**执行期求值**（luajit 加载后端 → test/lib/dump_consts.lua 倒出
+# M.consts 表），抽取契约从「正则模式 ↔ 书写风格」收窄为「后端导出 M.consts 表」
+# 这一条既有接口契约——方案 A 下沉搬走常量时不再有隐式的书写风格耦合可断。
+# Camera.lua 的 V4L2 常量与 ABI 尺寸表、hal/uart.lua 的波特率表保持纯文本抽取：
+# Camera.lua 顶层会执行整套 HAL 加载（mpath 解析 + 运行期 glibc 调用），把
+# 配置期耦合到宿主运行环境得不偿失；且它们的表是函数内局部量、无导出接口。
+# 抽取仍对**任何一方**失效响亮失败（FATAL_ERROR），不静默降级。
+#
 # 抽取是**纯文本模式匹配**，不执行 Lua（不依赖 luajit、不受 CWD 影响）：每个常量
-# 的行格式在本仓库内是稳定的（`HAL.NAME<spaces>=<spaces>值`）。抽不到即
+# 的行格式在本仓库内是稳定的（`NAME<spaces>=<spaces>值`）。抽不到即
 # FATAL_ERROR —— 「抽取失效」必须响亮失败，而不是静默生成空头让断言退化成自证。
+# 2026-10-01 P0 修复：方案 A 下沉（955a2c3，2026-09-30）把 HAL.lua 的
+# `HAL.X = <字面量>` 改成了 `HAL.X = _c.X` 重导出（真值移入 hal_backend_glibc.lua
+# 的 consts 表），本脚本仍按旧模式从 HAL.lua 抽取 → 全新检出配置必败。旧 build
+# 目录缓存不触发重新配置，把断裂掩盖到了推送之后。教训：**抽取模式与被抽文件的
+# 书写风格是同一份契约**，重构搬走常量时必须连本脚本一起改。
 
 if(NOT DEFINED OUT OR NOT DEFINED SRC)
   message(FATAL_ERROR "gen_const_check.cmake: 需要 -DOUT=<头文件> -DSRC=<仓库根>")
@@ -41,6 +55,8 @@ function(read_const path prefix out_var)
       set(val "${CMAKE_MATCH_2}")
       # 去掉值尾部的空白
       string(STRIP "${val}" val)
+      # 表项形如 `NAME = 0x80000,`（consts 表内一员）——剥掉尾逗号再过字面量过滤
+      string(REGEX REPLACE ",[ \t]*$" "" val "${val}")
       # 只收「纯字面量或字面量算术」——含标识符的值（如 bus.UART_READ_MAX_MS、
       # UART_B_CONST_HZ）不是常量表项，跳过：本检查的定位是编号/布局常量。
       if(val MATCHES "^[0-9A-Fa-fxX|+() \t]+$")
@@ -66,8 +82,35 @@ endfunction()
 
 set(SRC_MODULES "${SRC}/modules")
 
-read_const("${SRC_MODULES}/lib/HAL.lua" "HAL\\." HAL_ALL)
-# Camera.lua 的 V4L2 ioctl 编号也是 `local NAME = <值>`（同名声明），同法抽取。
+# 平台常量（ioctl 编号/termios/errno）的唯一事实源是后端 consts 表
+# （hal_backend_glibc.lua 的 `local consts = { NAME = <值>, ... }`）；HAL.lua 自
+# 方案 A 起只做 `HAL.X = _c.X` 重导出（26.2 按域拆分后 UART_* 那几项的重导出落在
+# lib/hal/uart.lua，同样只是重导出），无字面量可抽。执行期求值（2026-10-01）：
+# luajit 加载后端，dump_consts.lua 倒出 M.consts——抽取契约只剩「后端导出
+# M.consts 表」，不再依赖表项书写风格。luajit 可执行文件是既有测试期依赖
+# （test/lib/params.sh 的 LUACMD），CI 各 job 均已安装；README 依赖行同步。
+find_program(MYBOT_LUAJIT_EXECUTABLE luajit PATHS ENV PATH)
+if(NOT MYBOT_LUAJIT_EXECUTABLE)
+  message(FATAL_ERROR
+    "gen_const_check.cmake: 找不到 luajit 可执行文件——consts 表执行期抽取需要它"
+    "（apt 侧为 'luajit' 包，与 libluajit-5.1-dev 分开装）。抽取失效必须失败："
+    "静默生成空头会让常量自检退化为自证（A2 的原始缺陷形态）。")
+endif()
+execute_process(
+  COMMAND "${MYBOT_LUAJIT_EXECUTABLE}" "${SRC}/test/lib/dump_consts.lua"
+          "${SRC_MODULES}/lib/hal_backend_glibc.lua"
+  RESULT_VARIABLE _const_dump_rc
+  OUTPUT_VARIABLE _const_dump_out
+  ERROR_VARIABLE _const_dump_err)
+if(NOT _const_dump_rc EQUAL 0)
+  message(FATAL_ERROR
+    "gen_const_check.cmake: 执行期抽取 consts 表失败（rc=${_const_dump_rc}）：${_const_dump_err}"
+    "——后端加载出错（语法/依赖/断言）或未导出 M.consts 表。")
+endif()
+# dump 输出形如「NAME=值」逐行——与 require_const/emit_defs 的列表格式同构。
+string(REPLACE "\n" ";" HAL_ALL "${_const_dump_out}")
+# Camera.lua 的 V4L2 ioctl 编号也是 `local NAME = <值>`（同名声明），纯文本抽取
+# （理由见文件头：Camera 顶层会执行整套 HAL 加载，不宜在配置期跑）。
 read_const("${SRC_MODULES}/Camera.lua" "local[ \t]+" CAM_ALL)
 
 # 必须存在的常量（少一个就失败）——覆盖三个自检文件当前使用的全部编号/布局常量。
@@ -131,12 +174,15 @@ function(read_baud_table path varname out_var)
   set(${out_var} "${acc}" PARENT_SCOPE)
 endfunction()
 
-read_baud_table("${SRC_MODULES}/lib/HAL.lua" "LEGACY" BAUD_LEGACY)
-read_baud_table("${SRC_MODULES}/lib/HAL.lua" "HZ" BAUD_HZ)
+# 26.2 按域拆分：波特率表随 UART 段搬到 lib/hal/uart.lua（原在 HAL.lua）。
+# 本脚本的抽取路径与被抽文件的落点是同一份契约，搬迁必须连这里一起改——
+# 正是上面 2026-10-01 P0 记下的那条教训（抽取失效会 FATAL_ERROR，不静默）。
+read_baud_table("${SRC_MODULES}/lib/hal/uart.lua" "LEGACY" BAUD_LEGACY)
+read_baud_table("${SRC_MODULES}/lib/hal/uart.lua" "HZ" BAUD_HZ)
 
 # ---- 生成头文件 ----
 set(hdr "/* 本文件由 test/gen_const_check.cmake 在 cmake 配置期生成，请勿手工编辑。\n")
-string(APPEND hdr " * 事实源：modules/lib/HAL.lua 与 modules/Camera.lua（纯文本抽取）。\n")
+string(APPEND hdr " * 事实源：modules/lib/hal_backend_glibc.lua（consts 表，执行期求值）与 modules/Camera.lua（纯文本抽取）。\n")
 string(APPEND hdr " * 常量自检（test_ioctl_nums.c / test_uart_consts.c / test_v4l2_consts.c）\n")
 string(APPEND hdr " * 用它把 Lua 值钉进 C 断言——A2：此前 C 里手抄数字，Lua 漂移无人发现。 */\n")
 string(APPEND hdr "#pragma once\n\n")

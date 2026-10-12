@@ -40,11 +40,11 @@
 --   6. 通用呼叫复位（地址 0x00 + 0x06，模拟上电重载 EEPROM）本驱动未用；
 --      掉电模式（PD1:0）亦未暴露
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
-local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
-dofile(mpath.resolve("lib/drv_common.lua"))
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
+dofile((__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
+	.resolve("lib/drv_common.lua"))
 
 -- 调试开关：DAC 一般配置后长跑，默认关闭逐次打印
 local DEBUG = false
@@ -78,164 +78,139 @@ local function decode_readback(v)
 	}
 end
 
--- 【配置脚本】读回一次作为在位验证（无寄存器可校验器件，读通即在）
-function build(data)
+require_driver("i2c", {
+	name = "MCP4725",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】读回一次作为在位验证（无寄存器可校验器件，读通即在）
+	build = function(ctx, data)
+		local fd = ctx.fd
+		local addr = ctx.addr
 
-	if DEBUG then
-		dbg_table("-------- MCP4725 builder func get a table --------", data)
-	end
+		if DEBUG then
+			dbg_table("-------- MCP4725 builder func get a table --------", data)
+		end
 
-	-----------------------------------------------------
-	-- 豁免 i2c_pair：本器件地址硬件固定（A0 接地 = 0x62），address 列可省，
-	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
-	local fd = tonumber(data.fd)
-	local addr = tonumber(data.address) or 0x62
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
+		-----------------------------------------------------
+		-- 参考电压列（'-' 缺省 5.0；非正数同缺省，防除零）
+		-- 经 finite_of：'nan'/'inf' 过 tonumber 出的是 number（Lua 里 truthy），
+		-- `v <= 0` 对 NaN 恒假、对 +inf 也假，非有限值会原样存进 vref 这个模块级
+		-- upvalue，污染此后每一次 call 的电压换算（审计 P3 口径）。
+		local v = finite_of(data.vref)
+		if v == nil or v <= 0 then v = 5.0 end
+		vref = v
 
-	if not i2c_set_addr(fd, addr) then
-		return err("Invalid Argument: fd or address (set_addr failed)")
-	end
-
-	-- 参考电压列（'-' 缺省 5.0；非正数同缺省，防除零）
-	local v = tonumber(data.vref)
-	if v == nil or v <= 0 then v = 5.0 end
-	vref = v
-
-	-----------------------------------------------------
-	local r = i2c_read(fd, 5)
-	if r < 0 then
-		return err("Failed to read MCP4725 (device presence check)")
-	end
-	local rb = decode_readback(r)
-
-	print(string.format("MCP4725 init OK: addr=0x%02X, vref=%.2fV, DAC=%d, EEPROM=%d",
-		addr, vref, rb.level, rb.eeprom))
-	return {  result = "OK"  }
-
-end
-
--- 【销毁MCP4725】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用MCP4725】双用：带参设置输出（level/volt/percent，eep 持久化），
--- 无参读回当前 DAC/EEPROM 码
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- MCP4725 caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- 豁免 i2c_pair：本器件地址硬件固定（A0 接地 = 0x62），address 列可省，
-	-- 而 i2c_pair 把 address 视为必填（缺即 ERR），语义不等价，故保留内联
-	local fd = tonumber(data.fd)
-	if fd == nil then
-		return err("Invalid Argument: fd")
-	end
-
-	-----------------------------------------------------
-	-- 无参：读回
-	local level = tonumber(data.level)
-	local volt = tonumber(data.volt)
-	local percent = tonumber(data.percent)
-	local eep = (tonumber(data.eep) or 0) ~= 0
-
-	if level == nil and volt == nil and percent == nil then
+		-----------------------------------------------------
 		local r = i2c_read(fd, 5)
 		if r < 0 then
-			return err("Failed to read MCP4725")
+			return err("Failed to read MCP4725 (device presence check)")
 		end
 		local rb = decode_readback(r)
+
+		print(string.format("MCP4725 init OK: addr=0x%02X, vref=%.2fV, DAC=%d, EEPROM=%d",
+			addr, vref, rb.level, rb.eeprom))
+		return {  result = "OK"  }
+	end,
+
+	-- destroy 缺省 = 空操作（原 MCP4725 destroy 仅 arg_table + return OK，等价）
+
+
+	-- 【调用MCP4725】双用：带参设置输出（level/volt/percent，eep 持久化），
+	-- 无参读回当前 DAC/EEPROM 码
+	-- NOTE: 接收一个参数（表），返回一个结果（表）
+	call = function(ctx, data)
+		local fd = ctx.fd
+
+		if DEBUG then
+			dbg_table("-------- MCP4725 caller func get a table --------", data)
+		end
+
+		-----------------------------------------------------
+		-- 无参：读回
+		-- 三列改经 finite_of、eep 列改经 num_or：'nan' 过 tonumber 出的是 number
+		-- （Lua 里 truthy），只判 `== nil` 挡不住——NaN 会绕过读回分支，
+		-- code = math.floor(NaN) 仍是 NaN，两条钳位对 NaN 恒假放行，最后被 HAL
+		-- 的 byte_of 挡成 nil 而报 "Failed to write MCP4725 DAC"，把配置笔误误报
+		-- 成总线故障。eep 列后果更重：`(tonumber(x) or 0) ~= 0` 对 NaN 为真，
+		-- 会在调用方从未要求持久化时走**有擦写寿命上限**的 EEPROM 写路径。
+		-- 非有限值一律与同列的非数字串（'abc'/'-'）同结论（审计 P3 口径）。
+		local level = finite_of(data.level)
+		local volt = finite_of(data.volt)
+		local percent = finite_of(data.percent)
+		local eep = num_or(data.eep, 0) ~= 0
+
+		if level == nil and volt == nil and percent == nil then
+			local r = i2c_read(fd, 5)
+			if r < 0 then
+				return err("Failed to read MCP4725")
+			end
+			local rb = decode_readback(r)
+			return {
+				result  = "OK",
+				level   = rb.level,
+				eeprom  = rb.eeprom,
+				pd      = rb.pd,
+				volt    = rb.level * vref / 4096,
+				rdy     = rb.rdy and 1 or 0
+			}
+		end
+
+		-----------------------------------------------------
+		-- 带参：按优先级 level > volt > percent 换算目标码
+		local code
+		if level ~= nil then
+			code = math.floor(level)
+		elseif volt ~= nil then
+			code = math.floor(volt * 4096 / vref + 0.5)
+		else
+			code = math.floor(percent * 4095 / 100 + 0.5)
+		end
+		if code < 0 then code = 0 end
+		if code > 4095 then code = 4095 end
+
+		if eep then
+			-- 写 DAC+EEPROM（3 字节，C2..C0=011）
+			if i2c_write_multi(fd, CMD_DAC_EEPROM,
+				math.floor(code / 16) % 256, (code * 16) % 256) ~= 0 then
+				return err("Failed to write MCP4725 DAC+EEPROM")
+			end
+			-- 轮询 RDY（50ms 步进 500ms 超时；1 字节读的合并值即 byte0）
+			for _ = 1, 10 do
+				milli_sleep(EEPROM_POLL_MS)
+				local r = i2c_read(fd, 1)
+				-- 总线读失败（-1）必须与"未就绪"区分：断线误报成
+				-- "EEPROM 写超时"会把排障引向错误方向（2026-09 审计）
+				if r < 0 then
+					return err("MCP4725 EEPROM write: bus read failed while polling RDY")
+				end
+				if r >= RDY_MASK then
+					dbg(string.format("MCP4725 EEPROM write done: code=%d", code))
+					return {
+						result  = "OK",
+						level   = code,
+						volt    = code * vref / 4096,
+						percent = code * 100 / 4095,
+						eeprom  = 1
+					}
+				end
+			end
+			return err("MCP4725 EEPROM write timeout (RDY not set in 500ms)")
+		end
+
+		-- 快速写（2 字节，仅 DAC，适合高频更新）
+		if i2c_write_multi(fd, CMD_FAST + math.floor(code / 256) % 256, code % 256) ~= 0 then
+			return err("Failed to write MCP4725 DAC")
+		end
+
+		dbg(string.format("MCP4725 set: code=%d", code))
 		return {
 			result  = "OK",
-			level   = rb.level,
-			eeprom  = rb.eeprom,
-			pd      = rb.pd,
-			volt    = rb.level * vref / 4096,
-			rdy     = rb.rdy and 1 or 0
+			level   = code,
+			volt    = code * vref / 4096,
+			percent = code * 100 / 4095,
+			eeprom  = 0
 		}
-	end
-
-	-----------------------------------------------------
-	-- 带参：按优先级 level > volt > percent 换算目标码
-	local code
-	if level ~= nil then
-		code = math.floor(level)
-	elseif volt ~= nil then
-		code = math.floor(volt * 4096 / vref + 0.5)
-	else
-		code = math.floor(percent * 4095 / 100 + 0.5)
-	end
-	if code < 0 then code = 0 end
-	if code > 4095 then code = 4095 end
-
-	if eep then
-		-- 写 DAC+EEPROM（3 字节，C2..C0=011）
-		if i2c_write_multi(fd, CMD_DAC_EEPROM,
-			math.floor(code / 16) % 256, (code * 16) % 256) ~= 0 then
-			return err("Failed to write MCP4725 DAC+EEPROM")
-		end
-		-- 轮询 RDY（50ms 步进 500ms 超时；1 字节读的合并值即 byte0）
-		for _ = 1, 10 do
-			milli_sleep(EEPROM_POLL_MS)
-			local r = i2c_read(fd, 1)
-			-- 总线读失败（-1）必须与"未就绪"区分：断线误报成
-			-- "EEPROM 写超时"会把排障引向错误方向（2026-09 审计）
-			if r < 0 then
-				return err("MCP4725 EEPROM write: bus read failed while polling RDY")
-			end
-			if r >= RDY_MASK then
-				dbg(string.format("MCP4725 EEPROM write done: code=%d", code))
-				return {
-					result  = "OK",
-					level   = code,
-					volt    = code * vref / 4096,
-					percent = code * 100 / 4095,
-					eeprom  = 1
-				}
-			end
-		end
-		return err("MCP4725 EEPROM write timeout (RDY not set in 500ms)")
-	end
-
-	-- 快速写（2 字节，仅 DAC，适合高频更新）
-	if i2c_write_multi(fd, CMD_FAST + math.floor(code / 256) % 256, code % 256) ~= 0 then
-		return err("Failed to write MCP4725 DAC")
-	end
-
-	dbg(string.format("MCP4725 set: code=%d", code))
-	return {
-		result  = "OK",
-		level   = code,
-		volt    = code * vref / 4096,
-		percent = code * 100 / 4095,
-		eeprom  = 0
-	}
-
-end
+	end,
+})
 
 
 -- =====================================================================

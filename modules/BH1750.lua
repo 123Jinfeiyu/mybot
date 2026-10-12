@@ -37,10 +37,10 @@
 --      （先高比特再低比特；MTreg 增大测量时间与灵敏度均按比例提升）
 --   3. 返回值最大 65535 counts；H2 档约 27306 lx、H 档约 54612 lx 封顶
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -96,123 +96,98 @@ local function mode_cmd()
 	return once and mode_t.once or mode_t.cont
 end
 
--- ==================== 配置脚本 ====================
--- 上电 +（可选）MTreg + 测量模式；连续/单次模式均等待一帧让首发有效
-function build(data)
+require_driver("i2c", {
+	name = "BH1750",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- BH1750 builder func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
-
-	-- 列参数：mode（H/H2/L）、once（1/0）、mtreg（31~254）
-	local m = tostring(data.mode or MODE_DEFAULT):upper()
-	if MODE_T[m] == nil then
-		return err("Invalid mode '" .. tostring(data.mode) .. "' (H|H2|L)")
-	end
-	mode_t = MODE_T[m]
-	once   = (tostring(data.once) == "1" or tostring(data.once) == "true")
-
-	-- mtreg 非有限回落缺省（drv_common 单点）：`tonumber(..) or MTREG_DEFAULT`
-	-- 挡不住 NaN（NaN 是 truthy），两条钳制对 NaN 也全为假 → mtreg=NaN 会让
-	-- LUX 换算与等待时长双双变 NaN 且仍返回 result="OK"（2026-09-20 评估）
-	mtreg = num_or(data.mtreg, MTREG_DEFAULT)
-	if mtreg < MTREG_MIN then mtreg = MTREG_MIN end
-	if mtreg > MTREG_MAX then mtreg = MTREG_MAX end
-
-	-- 在位判定：Power On + 模式命令写成功（器件无 ID 寄存器可读）
-	if not send_cmd(fd, CMD_POWER_ON) then
-		return err("BH1750 not responding (power on failed, check address 0x23/0x5C and wiring)")
-	end
-	if not set_mtreg(fd) then
-		return err("BH1750 not responding (MTreg write failed)")
-	end
-	if not send_cmd(fd, mode_cmd()) then
-		return err("BH1750 not responding (mode command failed)")
-	end
-
-	-- 等待一帧（连续模式让首发即时有效；单次模式该命令即本帧）
-	milli_sleep(mode_t.frame * mtreg / MTREG_DEFAULT)
-
-	print(string.format("BH1750 init OK: addr=0x%02X mode=%s once=%s mtreg=%d",
-		addr, m, tostring(once), mtreg))
-	return {  result = "OK"  }
-
-end
-
--- ==================== 调用 ====================
--- 读当前光照（连续模式读最新帧；单次模式发命令 + 等一帧再读）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- BH1750 caller func get a table --------", data)
-	end
-
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
-
-	if once then
-		if not send_cmd(fd, mode_cmd()) then
-			return err("BH1750 not responding (one-shot command failed)")
+	-- ==================== 配置脚本 ====================
+	-- 上电 +（可选）MTreg + 测量模式；连续/单次模式均等待一帧让首发有效
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- BH1750 builder func get a table --------", data)
 		end
+
+		local fd = ctx.fd
+
+		-- 列参数：mode（H/H2/L）、once（1/0）、mtreg（31~254）
+		local m = tostring(data.mode or MODE_DEFAULT):upper()
+		if MODE_T[m] == nil then
+			return err("Invalid mode '" .. tostring(data.mode) .. "' (H|H2|L)")
+		end
+		mode_t = MODE_T[m]
+		once   = (tostring(data.once) == "1" or tostring(data.once) == "true")
+
+		-- mtreg 非有限回落缺省（drv_common 单点）：`tonumber(..) or MTREG_DEFAULT`
+		-- 挡不住 NaN（NaN 是 truthy），两条钳制对 NaN 也全为假 → mtreg=NaN 会让
+		-- LUX 换算与等待时长双双变 NaN 且仍返回 result="OK"（2026-09-20 评估）
+		mtreg = num_or(data.mtreg, MTREG_DEFAULT)
+		if mtreg < MTREG_MIN then mtreg = MTREG_MIN end
+		if mtreg > MTREG_MAX then mtreg = MTREG_MAX end
+
+		-- 在位判定：Power On + 模式命令写成功（器件无 ID 寄存器可读）
+		if not send_cmd(fd, CMD_POWER_ON) then
+			return err("BH1750 not responding (power on failed, check address 0x23/0x5C and wiring)")
+		end
+		if not set_mtreg(fd) then
+			return err("BH1750 not responding (MTreg write failed)")
+		end
+		if not send_cmd(fd, mode_cmd()) then
+			return err("BH1750 not responding (mode command failed)")
+		end
+
+		-- 等待一帧（连续模式让首发即时有效；单次模式该命令即本帧）
 		milli_sleep(mode_t.frame * mtreg / MTREG_DEFAULT)
-	end
 
-	-- 纯读 2 字节（不能用 i2c_read_multi_bytes：写指针 0x00 = Power Down 命令）
-	local raw = i2c_read(fd, 2)
-	if raw < 0 then
-		return err("BH1750 not responding (read measurement failed)")
-	end
-	local count = raw % 65536
+		print(string.format("BH1750 init OK: addr=0x%02X mode=%s once=%s mtreg=%d",
+			ctx.addr, m, tostring(once), mtreg))
+		return {  result = "OK"  }
+	end,
 
-	-- LUX = count x LSB x 69 / (1.2 x mtreg)
-	local lux = count * mode_t.lsb * MTREG_DEFAULT / (1.2 * mtreg)
+	-- ==================== 调用 ====================
+	-- 读当前光照（连续模式读最新帧；单次模式发命令 + 等一帧再读）
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- BH1750 caller func get a table --------", data)
+		end
 
-	return {  result = "OK",  LUX = lux  }
+		local fd = ctx.fd
 
-end
+		if once then
+			if not send_cmd(fd, mode_cmd()) then
+				return err("BH1750 not responding (one-shot command failed)")
+			end
+			milli_sleep(mode_t.frame * mtreg / MTREG_DEFAULT)
+		end
 
--- ==================== 销毁 ====================
--- 发 Power Down 进入最低功耗；失败不致命（返回 OK）
-function destroy(data)
+		-- 纯读 2 字节（不能用 i2c_read_multi_bytes：写指针 0x00 = Power Down 命令）
+		local raw = i2c_read(fd, 2)
+		if raw < 0 then
+			return err("BH1750 not responding (read measurement failed)")
+		end
+		local count = raw % 65536
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		-- LUX = count x LSB x 69 / (1.2 x mtreg)
+		local lux = count * mode_t.lsb * MTREG_DEFAULT / (1.2 * mtreg)
 
-	if DEBUG then
-		dbg_table("-------- BH1750 ender func get a table --------", data)
-	end
+		return {  result = "OK",  LUX = lux  }
+	end,
 
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then
-		return ek
-	end
+	-- ==================== 销毁 ====================
+	-- 发 Power Down 进入最低功耗；失败不致命（返回 OK）
+	destroy = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- BH1750 ender func get a table --------", data)
+		end
 
-	if not send_cmd(fd, CMD_POWER_DOWN) then
-		print("BH1750 destroy: power down write failed (ignored)")
-	end
+		local fd, addr, ek = i2c_pair(data)
+		if fd == nil then return ek end
 
-	return {  result = "OK"  }
+		if not send_cmd(fd, CMD_POWER_DOWN) then
+			print("BH1750 destroy: power down write failed (ignored)")
+		end
 
-end
+		return {  result = "OK"  }
+	end,
+})
 
 -- =====================================================================
 -- 【内嵌虚拟器件模型】BH1750_VIRT —— 2026-09-15 自 modules/lib/virtbus/bh1750.lua

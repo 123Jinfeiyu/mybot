@@ -15,6 +15,10 @@
   </defs>
 
   <rect x="0" y="0" width="1400" height="1010" fill="#f8fafc"/>
+  <!-- 快照日期标注（2026-10-04 冻结）：本图随 architecture_analysis.html 一并冻结，
+       描述 2026-09-25 的形态，不含 sim/ 迁入、多机器人、~/.mybot 持久化、领域门面拆分。
+       重绘需同步改 analysis 页正文，故不单独更新——权威口径见 docs/ 下各 md。 -->
+  <text x="20" y="22" font-size="12" fill="#94a3b8">2026-09-25 快照（已冻结）· 权威口径见 docs/</text>
   <text x="700" y="36" text-anchor="middle" font-size="24" font-weight="700" fill="#0f172a">bot4cj.cpp（C++17）· 一次 play 动作的数据流 / 时序展开</text>
   <text x="700" y="58" text-anchor="middle" font-size="13.5" fill="#64748b">从「管道输入 .mt 一帧」到「内核设备文件落盘」的完整调用链（左→右为阶段，纵向为调用深度）</text>
 
@@ -177,7 +181,7 @@
     <!-- 共享槽 -->
     <g>
       <rect x="420" y="748" width="300" height="154" rx="8" fill="#fff" stroke="#ca8a04" stroke-width="1.8"/>
-      <text x="570" y="774" text-anchor="middle" font-size="14" font-weight="700" fill="#854d0e">DaemonSlot（336B 共享内存槽）</text>
+      <text x="570" y="774" text-anchor="middle" font-size="14" font-weight="700" fill="#854d0e">DaemonSlot（600B 共享内存槽）</text>
       <text x="445" y="802" font-size="12.5" fill="#475569">mutex @ 0（槽内 pthread_mutex）</text>
       <text x="445" y="824" font-size="12.5" fill="#475569">count / nvals · values[32] @ 72（double）</text>
       <text x="445" y="846" font-size="12.5" fill="#475569">stop @ 328 · status @ 332</text>
@@ -221,5 +225,5 @@
   </g>
 
   <!-- 底部说明 -->
-  <text x="700" y="1004" text-anchor="middle" font-size="11.8" fill="#94a3b8">主路径（串行）：stdin/TCP/文件 → sqlparse/matrix 解析 → RobotStruct.play → ensureOk → Lua call → HAL.sys → glibc → /dev → 内核 → 硬件；返回逆向校验；@Daemon 为并行旁路（std::thread），经 336B 共享槽与主线程解耦</text>
+  <text x="700" y="1004" text-anchor="middle" font-size="11.8" fill="#94a3b8">主路径（串行）：stdin/TCP/文件 → sqlparse/matrix 解析 → RobotStruct.play → ensureOk → Lua call → HAL.sys → glibc → /dev → 内核 → 硬件；返回逆向校验；@Daemon 为并行旁路（std::thread），经 600B 共享槽与主线程解耦</text>
 </svg>

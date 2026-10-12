@@ -8,7 +8,15 @@
  *
  * 字段全部可选：缺省即交给下一层（命令行 > 环境变量 > 本文件 > 驱动内置缺省）。
  * 未知字段一律拒绝——与「未知 --key 退出 2」同一口径，防拼错后静默失效。
- */
+ *
+ * 2026-10-01 批次 A（P1-5，agentmode.hpp「批次 2」自计划落地）：模型侧字段
+ * （driver/var/endpoint/model/api_key/采样/预算/重试/提示词包/会话）的解析随
+ * agent 循环迁 Rust 一并退役——本侧解析后无消费者，徒增「改了 C++ 忘了 Rust」
+ * 的双端维护与漂移面。这些键**仍在白名单**（kKnown）：两端共用一份
+ * mybot.llm.json，它们是 mybot-agent 的合法键，C++ 若当未知字段拒绝会让后端
+ * 读不了同一份配置；其类型/区间校验由 Rust 侧 config.rs 独立负责。本结构只
+ * 保留后端真实消费的面：能力门控、摄像头、审计/策略、scripts_dir 与工具层
+ * 超时。 */
 
 #include <optional>
 #include <string>
@@ -16,82 +24,25 @@
 
 namespace bot {
 
-/* ---- LLM 选项/配置字段取值区间（B2-4 单点，2026-09-21）----
- * 同一组上下界此前在 llmconfig.cpp（配置文件字段）、agentmode.cpp（命令行选项）
- * 与 docs/reference.md 各写一遍：改一处忘一处就出现「配置文件接受、命令行拒绝」
- * 这类判据漂移。Rust 侧 config.rs 镜像同一组上下界（R5m 双端 --check-config
- * 互钉）——宿主接受什么，agent 就照发什么，不做「先接受再悄悄改写」。 */
+/* ---- 工具层字段取值区间（B2-4 单点，2026-09-21）----
+ * 模型侧区间（timeout/max_tokens/max_turns/字节预算/重试……）已随批次 2 退役：
+ * 唯一事实源是 Rust 侧 config.rs 的 limits 模块（跨语言互钉测试
+ * test_cross_lang_limits 与这些常量一并退役——C++ 侧不再镜像任何 Rust 常量）。
+ * 这里只剩后端**真实消费**的工具层超时区间。 */
 namespace llm_limits {
-inline constexpr int kTimeoutMinSec = 1;
-inline constexpr int kTimeoutMaxSec = 600;
-inline constexpr int kMaxTokensMin = 1;
-inline constexpr int kMaxTokensMax = 200000;
-inline constexpr int kMaxTurnsMin = 1;
-inline constexpr int kMaxTurnsMax = 100;
-/* 上下文字节预算（B1，2026-09-22）。原先这三个量只写死在 AgentOptions 编译期
- * 缺省（docs/agent.md 已知限制时此地自认「只能改源码缺省」），现场调不了。
- * 现在经配置文件可覆盖；0 = 不限（与 AgentOptions 的既有语义一致）。
- * 上限取「能接受的最大合理值」：历史 4 MiB 缺省、图片单张 2 MiB base64，给
- * 64 MiB 让重度视觉会话也有余量，同时仍挡掉明显打错的数量级（GB 级会把
- * 请求体直接顶穿任何网关）。 */
-inline constexpr long kMaxHistoryBytesLimit = 64u << 20;
-inline constexpr long kMaxTaskToolResultBytesLimit = 64u << 20;
-inline constexpr long kMaxTaskImageBytesLimit = 64u << 20;
-/* 单任务墙钟预算（A4）。下界 0 = 不限（逃生口，保留旧行为）；上界取一天，
- * 防"为了保险配大一点"把带电时长写成事实上的无界。 */
-inline constexpr int kTaskTimeoutMinSec = 0;
-inline constexpr int kTaskTimeoutMaxSec = 86400;
-
-/* ---- 运行期数值（B4，2026-09-22）----
- * 这五个量原先只写死在 AgentOptions / AgentDriverConfig / AgentToolContext 的
- * 编译期缺省里，现场调不了（与 B1 的三个字节预算同款问题）。现经配置文件可覆盖，
- * 仍**不加 CLI 选项**：选项面已 20+，而它们都是「一次定好、长期不变」的部署参数。
- * 区间取「能接受的最大合理值」，逐条理由：
- *   * max_calls_per_round 下限 1：0 在 AgentOptions 里是「不限」的旧语义，但对
- *     物理机器人「一轮不限量下发动作」没有正当用法，故配置文件**拒绝 0**
- *     （与 allow_shell 同源的「能力只能命令行开、配置只能收紧」口径）；1024
- *     远超任何现实场景；
- *   * max_retries 0 合法 = 只发一次不重试（离线/内网直连想立刻失败时用），
- *     6 已远超任何网关抖动所需；
- *   * retry_backoff_ms 上界 10000，此外驱动侧单次退避再钳到 kRetryBackoffCapMs
- *     ——`backoff << attempt` 在放宽区间后会算出小时级等待，等待比失败更糟；
- *   * run_command 两个超时沿用「缺省 ≤ 上限」的既有形态：缺省上限 600（10 分钟），
- *     请求上限 3600（1 小时）已覆盖现场长任务，再长得先想想是不是该用
- *     run_action_script（脚本执行有硬件侧语义，而不是宿主任意命令）。 */
-inline constexpr int kMaxCallsPerRoundMin = 1;
-inline constexpr int kMaxCallsPerRoundMax = 1024;
-inline constexpr int kMaxRetriesMin = 0;
-inline constexpr int kMaxRetriesMax = 6;
-inline constexpr int kRetryBackoffMsMin = 0;
-inline constexpr int kRetryBackoffMsMax = 10000;
-inline constexpr int kRetryBackoffCapMs = 60000;
+/* run_command 两个超时沿用「缺省 ≤ 上限」的既有形态：缺省上限 600（10 分钟），
+ * 请求上限 3600（1 小时）已覆盖现场长任务，再长得先想想是不是该用
+ * run_action_script（脚本执行有硬件侧语义，而不是宿主任意命令）。 */
 inline constexpr int kRunCommandTimeoutMinSec = 1;
 inline constexpr int kRunCommandTimeoutMaxSec = 600;
 inline constexpr int kRunCommandMaxTimeoutMinSec = 1;
 inline constexpr int kRunCommandMaxTimeoutMaxSec = 3600;
 /* PL-2（2026-09-22）：动作脚本执行预算。0 = 显式关闭（退化为此前无预算行为）；
- * 上限 3600 与 run_command 的长任务量级对齐；缺省 180 与单次模型调用缺省
- * （agentdriver.hpp 的 timeoutSec）取齐——两者都是「agent 面向的单次阻塞
- * 操作」的上界，同一个数字便于操作者记忆。 */
+ * 上限 3600 与 run_command 的长任务量级对齐。 */
 inline constexpr int kActionScriptTimeoutMinSec = 0;
 inline constexpr int kActionScriptTimeoutMaxSec = 3600;
 } // namespace llm_limits
 struct LlmFileConfig {
-	std::optional<std::string> driver;	/* 协议驱动表名 = modules/<名>.lua */
-	std::optional<std::string> var;		/* 承载驱动的变量名 */
-	std::optional<std::string> endpoint;
-	std::optional<std::string> model;
-	std::optional<std::string> apiKey;
-	std::optional<std::string> apiKeyFile;	/* 从文件读密钥（支持 ~ 展开、去空白） */
-	std::optional<long> timeoutSec;
-	/* 单任务墙钟预算（秒）。配置文件键名 max_task_seconds；0 = 不限。 */
-	std::optional<int> maxTaskSeconds;
-	std::optional<int> maxTokens;
-	std::optional<double> temperature;
-	std::optional<double> topP;
-	std::optional<std::string> reasoningEffort;	/* 驱动特有：透传给驱动 */
-	std::optional<std::string> thinking;		/* "enabled"/"disabled"，也接受 true/false */
-	std::optional<int> maxTurns;
 	std::optional<std::string> scriptsDir;
 	std::optional<bool> allowShell;
 	/* 热插表（2026-09-23）：apply_sql 会立刻给新硬件上电，与 allow_shell 同判据
@@ -99,9 +50,6 @@ struct LlmFileConfig {
 	 * 仍列进已知字段，是为了给出指名道姓的原因，而不是让人以为是拼写错误
 	 * （与下面的 camera_src_dir 同一处理）。 */
 	std::optional<bool> allowHotSql;
-	/* 提示词包输入清单（每项为文件或目录，语义同 --prompt-file）。空数组按
-	 * 未配置；类型不符（非数组/元素非字符串）报错——拼错形态不能静默失效。 */
-	std::optional<std::vector<std::string>> promptFiles;
 	std::optional<std::string> cameraVar;
 	std::optional<std::string> cameraDevice;
 	std::optional<std::string> cameraSrc;
@@ -116,26 +64,23 @@ struct LlmFileConfig {
 	 * 仍列进已知字段而不是靠"未知字段"报错，是为了给出指名道姓的原因。 */
 	std::optional<std::vector<std::string>> readVars;
 	std::optional<bool> allowCamera;
+	/* Phase 4（2026-10-07）：list_dir / read_file 的只读根目录——解析出来**只为了
+	 * 拒绝它**（同 cameraSrcDir/readVars 的判据）：只能命令行 --fs-root 提供，
+	 * 配置文件不能给模型开放"读主机文件"的能力。 */
+	std::optional<std::string> fsRoot;
+	/* Phase 5（2026-10-08）：write_file 的独立开关——解析出来**只为了拒绝它**
+	 * （同 allow_shell/allow_hot_sql/fsRoot 的判据）：只能命令行 --agent-write-file
+	 * 提供，配置文件不能给模型开放"改写主机文件"的能力（写比读更危险）。 */
+	std::optional<bool> allowWriteFile;
 	/* 审计轨迹落点（JSON Lines；"-" = stderr）。空/未配置 = 不记录。
 	 * 与 --audit-log 同义；命令行优先。 */
 	std::optional<std::string> auditLog;
 	/* 策略钩子文件（--agent-policy 同义；命令行优先）。空/未配置 = 不启用。 */
 	std::optional<std::string> agentPolicy;
-	/* 会话文件（批次 1，--session-file 同义）。**只用于写入**：恢复是输入
-	 * 通道，--resume 只认命令行给的路径（判据见 AgentModeConfig 注释）。 */
-	std::optional<std::string> sessionFile;
-	/* 上下文字节预算（B1）：会话历史 / 任务内文本 / 任务内图片，单位字节。
-	 * 0 = 不限；未配置 = 用 AgentModeConfig 的编译期缺省（见 agentmode.hpp）。 */
-	std::optional<long> maxHistoryBytes;
-	std::optional<long> maxTaskToolResultBytes;
-	std::optional<long> maxTaskImageBytes;
-	/* 运行期数值（B4）：单轮工具调用数上限 / 网络重试（尝试次数与退避基础时长）/
-	 * run_command 的缺省与最大超时。未配置 = 用各结构体的编译期缺省；
-	 * 区间与决策理由见 llm_limits。跨字段关系（上限 ≥ 缺省）在 agentmode 按
-	 * **生效值**判定——只配一个字段时也要挡住「上限低于缺省」。 */
-	std::optional<int> maxCallsPerRound;
-	std::optional<int> maxRetries;
-	std::optional<int> retryBackoffMs;
+	/* 运行期数值（B4）：run_command 的缺省与最大超时、动作脚本执行预算。
+	 * 未配置 = 用各结构体的编译期缺省；区间与决策理由见 llm_limits。
+	 * 跨字段关系（上限 ≥ 缺省）在 agentmode 按**生效值**判定——只配一个
+	 * 字段时也要挡住「上限低于缺省」。 */
 	std::optional<int> runCommandTimeoutSec;
 	std::optional<int> runCommandMaxTimeoutSec;
 	/* PL-2：动作脚本执行预算（秒）。0 = 显式关闭预算。 */
@@ -143,7 +88,8 @@ struct LlmFileConfig {
 };
 
 /* 解析配置文件。失败返回 false 并把「带字段名的人话报错」写进 err：
- * 文件不可读、不是合法 JSON、字段类型/范围不符、未知字段全部拒绝。 */
+ * 文件不可读、不是合法 JSON、**本侧消费字段的**类型/范围不符、未知字段全部
+ * 拒绝（模型侧字段只经白名单，不校验——那是 mybot-agent 的职责）。 */
 bool loadLlmConfigFile(const std::string& path, LlmFileConfig& out, std::string& err);
 
 /* 缺省配置文件查找：./mybot.llm.json → ./mybot.llm.conf.json →

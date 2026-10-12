@@ -42,10 +42,10 @@
 --   6. Mask/Enable（0x04）标志位也与 INA219（0x06）不同：bit3=CVRF 转换就绪、
 --      bit2=OVF 溢出（本驱动连续模式直接读，不轮询标志）
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -134,21 +134,17 @@ local function rshunt_of(v)
 end
 
 -- 【配置脚本】软复位 -> ID 寄存器甄别芯片 -> 写工作配置 -> 等待首拍就绪
-function build(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+require_driver("i2c", {
+name = "INA226",
+build = function(ctx, data)
+	local fd = ctx.fd
+	local addr = ctx.addr
 
 	if DEBUG then
 		dbg_table("-------- INA226 builder func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-- 模块级配置：跨 call 保持
 	local avg_code_v, avg_n = avg_code_of(data.avg)
@@ -203,38 +199,15 @@ function build(data)
 	print(string.format("INA226 init OK: addr=0x%02X, avg=%d, ct=%dµs, rshunt=%.4f Ω", addr, avg_n, ct_us, rshunt))
 	return {  result = "OK"  }
 
-end
-
--- 【销毁INA226】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用INA226】读单通道：总线电压（V）、电流（A，反流为负）、功率（W）
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+end,
+call = function(ctx, data)
+	local fd = ctx.fd
 
 	if DEBUG then
 		dbg_table("-------- INA226 caller func get a table --------", data)
 	end
 
 	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
 
 	-- build 前置守卫：rshunt 仅 build 赋值，未 build 先 call 会做 nil 除法
 	-- 裸 error（与 INA219 的守卫对齐）
@@ -269,7 +242,8 @@ function call(data)
 
 	return ret
 
-end
+	end,
+})
 
 
 

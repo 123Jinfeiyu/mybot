@@ -55,4 +55,16 @@ expect_err("channel=-1",         {fd = 3, address = "0x40", channel = -1,   angl
 expect_err("channel=255",        {fd = 3, address = "0x40", channel = 255,  angle = 45})
 expect_err("string channel='20'",{fd = 3, address = "0x40", channel = "20", angle = 45})
 
+-- 26.3：非有限值同样必须落在「写任何寄存器之前」。旧的 `tonumber(channel)` 放行
+-- 'nan'/'1e400'（出的是 number，`== nil` 为假），而下面 `channel < 0 or channel > 15`
+-- 对 NaN 恒假也一并放行，于是 reg = LED0_ON_L + 4*NaN 是 NaN 却仍返回 result="OK"
+-- ——本文件既有契约（越界即 0 次写）在驱动层被破。真机上后果被 hal/i2c.lua 的
+-- byte_of 兜住（i2c_write_multi 返 -1 → 报 write failed），故本组是驱动契约修复
+-- 而非安全修复；但同函数 angle 列早已用 finite_of，两处口径不一即防护漂移。
+-- 本处桩替身不模拟 byte_of，故修复前的形态恰是「OK + 4 次写」，断言能看见。
+expect_err("channel=NaN",          {fd = 3, address = "0x40", channel = 0 / 0,   angle = 45})
+expect_err("channel=inf",          {fd = 3, address = "0x40", channel = 1e400,   angle = 45})
+expect_err("string channel='nan'", {fd = 3, address = "0x40", channel = "nan",   angle = 45})
+expect_err("string channel='1e400'", {fd = 3, address = "0x40", channel = "1e400", angle = 45})
+
 tester.summary("pca9685_channel")

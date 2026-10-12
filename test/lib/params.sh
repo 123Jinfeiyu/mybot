@@ -12,6 +12,12 @@
 # Lua/C++ 单测超时秒数（run_all.sh 的 timeout 前缀；ctest TIMEOUT 同源）
 : "${TEST_TIMEOUT:=60}"
 
+# 加固段用例超时秒数（hardening 段各用例的 timeout 前缀）
+: "${HARDENING_TIMEOUT:=20}"
+
+# 大文件/长动用例超时秒数（action_toolarge/sql_toolarge/daemon 等）
+: "${HEAVY_TIMEOUT:=30}"
+
 # SIGTERM 到 SIGKILL 的击杀宽限秒数（run_all.sh 的 timeout -k；issue #40）。
 # timeout 到点只发 SIGTERM 并无限等待——子进程忽略/屏蔽 TERM（卡在不可中断
 # 调用、或引入了信号处理）时整条守门流水线永久挂死（实测：卡死的 mybot_tests

@@ -21,7 +21,7 @@
 namespace bot {
 
 /* ---- 动作脚本字节上限（kMaxScriptBytes）----
- * 上限常量与理由见 actionsource.hpp（动作/结构脚本共用；RSS 实测见该处注释）。 */
+ * 上限常量与理由见 scriptlimit.hpp（动作/结构脚本共用；RSS 实测见该处注释）。 */
 
 /* ---- TCP 空闲超时缺省值（秒）：连上后不再发字节的对端不能永久挂住进程 ---- */
 static constexpr int kTcpIdleSecDefault = 30;
@@ -88,9 +88,14 @@ int TcpStreamReader::read() {
 	}
 }
 
+/* 25.6 评估后判不把本函数与 MCP 侧的 mcpCheckAuthFrame / mcpCheckPeerCred 收进
+ * 同一个 auth 叶子：两条通道真正共享的判据——恒时比对 safeEquals、爆破计数
+ * AuthFailGate——第三轮已各自单点化，三个函数体内不再有一行可收敛的重复逻辑；
+ * 三态枚举也与 MCP 侧不同构（NoCredential **不**计数 / NotAuthFrame 计数），
+ * 合并即改行为。四条实测理由见 mcptransport.cpp 里 mcpCheckAuthFrame 的头注。 */
 /* ---- 可选口令校验：对端必须先送一行 "<token>\n" 才允许下发动作脚本 ----
  * 口令为空时跳过（不破坏既有单连接直发脚本的用法）。
- * 比较走 util.hpp 的 safeEquals 恒时实现（审计 M1）。
+ * 比较走 util_str.hpp 的 safeEquals 恒时实现（审计 M1）。
  * 三态契约见 actionsource.hpp（阶段 4.3：NoCredential 不得计为鉴权失败）。 */
 TcpAuthStatus checkTcpToken(int client, const std::string& token) {
 	std::string line;
@@ -185,11 +190,12 @@ static FdGuard setupListenSocket(long long port, const std::string& host,
 /* accept 循环：EINTR/停止信号响应（D5/D4）+ 对端日志 + 空闲超时（审计 #9）
  * + 口令失败预算（C-M1：关连接回 accept，连续失败才放弃）。
  * authMaxFails：连续失败上限的生效值（2026-09-22 F-1，缺省
- * tcp_limits::kAuthMaxFailsDefault，可经 --tcp-max-auth-attempts 覆盖）。 */
+ * tcp_limits::kAuthMaxFailsDefault，可经 --tcp-max-auth-attempts 覆盖）。
+ * 记账走 AuthFailGate（util_cli.hpp 单点，与 MCP 首帧认证同一判据结构）。 */
 static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token, int idleSec,
 		int authMaxFails) {
 	FdGuard clientFd;		/* 每轮重置；本轮失败时由 close() 关闭 */
-	int authFails = 0;
+	AuthFailGate gate(authMaxFails);
 	while (true) {
 		int client = ::accept(listenFd, nullptr, nullptr);
 		if (client < 0) {
@@ -233,13 +239,12 @@ static FdGuard acceptAuthenticatedClient(int listenFd, const std::string& token,
 						<< std::endl;
 					continue;
 				}
-				++authFails;
-				if (authFails >= authMaxFails) {
-					throw std::runtime_error("TCP 口令连续 " + std::to_string(authFails)
+				if (gate.recordRejected()) {
+					throw std::runtime_error("TCP 口令连续 " + std::to_string(gate.fails)
 						+ " 次校验失败，停止等待（可能为扫描/爆破）");
 				}
 				std::cerr << "关闭该连接，继续等待下一个客户端（剩余尝试 "
-					<< (authMaxFails - authFails) << " 次）" << std::endl;
+					<< (gate.max - gate.fails) << " 次）" << std::endl;
 				continue;
 			}
 		}
@@ -281,21 +286,21 @@ static std::unique_ptr<Reader> openTcpActionSource(long long port, const std::st
 static std::unique_ptr<Reader> openTcpSource(const CliOptions& options) {
 	/* 审计中-3：裸 --tcp（漏写端口号）在此明确报错，而非静默按端口 1
 	 * 走到 bind 特权端口失败、给出与用户意图相去甚远的错误 */
-	if (options.tcpPort.empty()) {
+	if (options.tcp.tcpPort.empty()) {
 		std::cerr << "--tcp 需要端口号，例如 --tcp 9000（合法范围 1-65535）" << std::endl;
 		return nullptr;
 	}
-	const auto port = parseBoundedLong(options.tcpPort, 1, 65535);
+	const auto port = parseBoundedLong(options.tcp.tcpPort, 1, 65535);
 	if (!port) {
-		std::cerr << "--tcp 端口号无效：" << options.tcpPort
+		std::cerr << "--tcp 端口号无效：" << options.tcp.tcpPort
 			<< "（合法范围 1-65535）" << std::endl;
 		return nullptr;
 	}
-	std::string host = options.tcpHost;
+	std::string host = options.tcp.tcpHost;
 	if (host.empty()) { host = "127.0.0.1"; }	/* 缺省只监听回环，对外暴露需显式指定 */
 
 	int idleSec = kTcpIdleSecDefault;
-	const std::string& idleStr = options.tcpIdle;
+	const std::string& idleStr = options.tcp.tcpIdle;
 	if (!idleStr.empty()) {
 		const auto idle = parseBoundedLong(idleStr, 1, 86400);
 		if (!idle) {
@@ -307,14 +312,14 @@ static std::unique_ptr<Reader> openTcpSource(const CliOptions& options) {
 
 	/* C-L4：口令可经环境变量传递——--tcp-token 出现在 /proc/<pid>/cmdline，
 	 * 多用户机器上凭据对同机其他用户可见；环境变量只在进程环境里。 */
-	std::string token = options.tcpToken;
+	std::string token = options.tcp.tcpToken;
 	if (token.empty()) {
 		if (auto envToken = getEnvVar("BOT4CJ_TCP_TOKEN")) { token = *envToken; }
 	}
 
 	/* F-1：口令连续失败上限（缺省 tcp_limits::kAuthMaxFailsDefault=5） */
 	int authMaxFails = tcp_limits::kAuthMaxFailsDefault;
-	const std::string& authStr = options.tcpMaxAuthAttempts;
+	const std::string& authStr = options.tcp.tcpMaxAuthAttempts;
 	if (!authStr.empty()) {
 		const auto auth = parseBoundedLong(authStr,
 			tcp_limits::kAuthMaxFailsMin, tcp_limits::kAuthMaxFailsMax);
@@ -329,7 +334,7 @@ static std::unique_ptr<Reader> openTcpSource(const CliOptions& options) {
 
 	/* F-3：连接总时长预算下限（缺省 tcp_limits::kTotalTimeoutDefault=600） */
 	int totalTimeoutFloorSec = tcp_limits::kTotalTimeoutDefault;
-	const std::string& totalStr = options.tcpTotalTimeout;
+	const std::string& totalStr = options.tcp.tcpTotalTimeout;
 	if (!totalStr.empty()) {
 		const auto total = parseBoundedLong(totalStr,
 			tcp_limits::kTotalTimeoutMin, tcp_limits::kTotalTimeoutMax);
@@ -363,7 +368,7 @@ std::unique_ptr<Reader> openActionSource(const CliOptions& options) {
 	std::unique_ptr<Reader> raw;
 
 	/* 1) TCP 通道（校验与装配在 openTcpSource） */
-	if (options.tcp) {
+	if (options.tcp.enabled) {
 		raw = openTcpSource(options);
 	}
 	/* 2) 文件通道（openFileSource） */

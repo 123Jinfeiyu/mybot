@@ -57,6 +57,21 @@ r = servo_call({ angle = "90", channel = "3", max = "1e400", min = "0" })
 check("Servo: max=inf 回落 0（角度不变成 inf/NaN）",
 	r.message == nil and r.angle == 0, tostring(r.angle))
 
+-- Servo：channel 非有限（26.3）。本文件上面四组钉的是 angle/max/min/offset，
+-- channel 是同一函数里唯一漏网的配置列：`tonumber(data.channel)` 对 'nan' 出的
+-- 是 number，`channel == nil` 判据放行，于是 { channel = NaN, angle = a } 以
+-- **成功形状**返回（本驱动的正常返回没有 result 键，见上方注），由框架合并进
+-- 元数据后转发给 controller/PCA9685——NaN 通道号进 JSON 变 null，下游拿到的是
+-- 空值而不是报错。angle 那一路已有 finite_of，故判据取「与 angle=nan 同结论」。
+r = servo_call({ angle = "90", channel = "nan", max = "180", min = "0" })
+check("Servo: channel=nan 拒绝（不得以成功形状转发 NaN 通道号）",
+	r.result == "ERR", tostring(r.channel))
+r = servo_call({ angle = "90", channel = "1e400", max = "180", min = "0" })
+check("Servo: channel=inf 拒绝", r.result == "ERR", tostring(r.channel))
+r = servo_call({ angle = "90", channel = "3", max = "180", min = "0" })
+check("Servo: channel=3 正常（判据未误伤有限值）",
+	r.message == nil and r.channel == 3, tostring(r.channel))
+
 ------------------------------------------------------------------
 -- Timer：delay 非有限
 ------------------------------------------------------------------

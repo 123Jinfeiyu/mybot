@@ -184,7 +184,7 @@ check("模型：set_dac 钳 4095", dev:level() == 4095)
 -- 2.1 在位读回：真板 EEPROM 已写过 2048
 local m = section()
 dev:set_dac(2048):set_eeprom(2048)
-expect_ok("build 默认地址 0x62 读回在位", function() return build({ fd = fd }) end)
+expect_ok("build 默认地址 0x62 读回在位", function() return build({ fd = fd, address = "0x62" }) end)
 do
 	local es = entries(m)
 	local nset, nread, nwrite = 0, 0, 0
@@ -211,16 +211,38 @@ check("build：set_addr 留痕 98", set_addrs(m)[1] == 98)
 
 -- 2.3 vref 列（影响后续 call 换算，此节先验接受与缺省回退）
 section()
-expect_ok("build vref='3.3'", function() return build({ fd = fd, vref = "3.3" }) end)
+expect_ok("build vref='3.3'", function() return build({ fd = fd, address = "0x62", vref = "3.3" }) end)
 section()
 expect_ok("build vref 非法回退 5.0",
-	function() return build({ fd = fd, vref = "-" }) end)
+	function() return build({ fd = fd, address = "0x62", vref = "-" }) end)
+
+-- NaN 反例（26.1）：'nan'/'inf' 经 tonumber 出的是 number（Lua 里 truthy），
+-- 而 `v <= 0` 对 NaN 恒假、对 +inf 也假，于是非有限值会原样存进 vref——它是
+-- 模块级 upvalue，此后每一次 call 的电压换算都被污染。缺省语义（源码注释写的
+-- 「非正数同缺省，防除零」）要求它落 5.0。判据同 docs/development.md 的
+-- finite_of（审计 P3）。percent 列换算不经 vref，故 level 恒等，判别量是 volt。
+do
+	section()
+	expect_ok("build vref='nan' 同缺省回退",
+		function() return build({ fd = fd, address = "0x62", vref = "nan" }) end)
+	local r = expect_ok("vref='nan' 后 call percent='50'",
+		function() return call({ fd = fd, address = "0x62", percent = "50" }) end)
+	check("vref NaN 回退 5.0：volt≈2.5（非 nan）",
+		r and near(r.volt, 2.5), tostring(r and r.volt))
+	section()
+	expect_ok("build vref='inf' 同缺省回退",
+		function() return build({ fd = fd, address = "0x62", vref = "inf" }) end)
+	r = expect_ok("vref='inf' 后 call percent='50'",
+		function() return call({ fd = fd, address = "0x62", percent = "50" }) end)
+	check("vref inf 回退 5.0：volt≈2.5（非 inf）",
+		r and near(r.volt, 2.5), tostring(r and r.volt))
+end
 
 -- 2.4 build 错误通道
 section()
 dev.nack_read = true
 expect_err("build 读回失败（器件不在位）",
-	function() return build({ fd = fd }) end, "Failed to read MCP4725")
+	function() return build({ fd = fd, address = "0x62" }) end, "Failed to read MCP4725")
 
 section()
 expect_err("build set_addr 失败（addr>0x7F）",
@@ -234,11 +256,11 @@ check("build：参数校验失败零总线事务", #entries(m) == 0, #entries(m)
 -- ==================== 3) call 快速写（真实驱动） ====================
 
 section()
-expect_ok("快速写段前置 build（vref=5.0）", function() return build({ fd = fd }) end)
+expect_ok("快速写段前置 build（vref=5.0）", function() return build({ fd = fd, address = "0x62" }) end)
 
 m = #vbus.txlog
 local res = expect_ok("call percent='50'（快速写）",
-	function() return call({ fd = fd, percent = "50" }) end)
+	function() return call({ fd = fd, address = "0x62", percent = "50" }) end)
 check("call：code=floor(2047.5+0.5)=2048/eeprom 回显 0",
 	res and res.level == 2048 and res.eeprom == 0, tostring(res and res.level))
 check("call：返回 volt=2.5/percent 反算 2048*100/4095≈50.01",
@@ -254,21 +276,21 @@ check("模型：快速写不产生读事务", #reads(m) == 0, #reads(m))
 
 m = #vbus.txlog
 res = expect_ok("call volt='2.5'（vref=5）",
-	function() return call({ fd = fd, volt = "2.5" }) end)
+	function() return call({ fd = fd, address = "0x62", volt = "2.5" }) end)
 check("call：volt 换算 2048", res and res.level == 2048, tostring(res and res.level))
 local ok = bytes_is(writes(m), { 0x08, 0x00 })
 check("call：帧 [0x08,0x00]", ok)
 
 m = #vbus.txlog
 res = expect_ok("call volt='5.0'（钳满码）",
-	function() return call({ fd = fd, volt = "5.0" }) end)
+	function() return call({ fd = fd, address = "0x62", volt = "5.0" }) end)
 check("call：volt=vref 钳 4095", res and res.level == 4095, tostring(res and res.level))
 ok = bytes_is(writes(m), { 0x0F, 0xFF })
 check("call：满码帧 [0x0F,0xFF]", ok)
 
 m = #vbus.txlog
 res = expect_ok("call level='-100'（负值钳 0）",
-	function() return call({ fd = fd, level = "-100" }) end)
+	function() return call({ fd = fd, address = "0x62", level = "-100" }) end)
 check("call：level 钳 0", res and res.level == 0, tostring(res and res.level))
 ok = bytes_is(writes(m), { 0x00, 0x00 })
 check("call：零码帧 [0x00,0x00]", ok)
@@ -276,50 +298,50 @@ check("call：零码帧 [0x00,0x00]", ok)
 -- level 超上限
 m = #vbus.txlog
 res = expect_ok("call level='99999'（超上限钳 4095）",
-	function() return call({ fd = fd, level = "99999" }) end)
+	function() return call({ fd = fd, address = "0x62", level = "99999" }) end)
 ok = bytes_is(writes(m), { 0x0F, 0xFF })
 check("call：超上限钳满码", res and res.level == 4095 and ok)
 
 -- 优先级 level > volt > percent
 m = #vbus.txlog
 res = expect_ok("call 三参同给，level 优先",
-	function() return call({ fd = fd, level = "100", volt = "2.5", percent = "50" }) end)
+	function() return call({ fd = fd, address = "0x62", level = "100", volt = "2.5", percent = "50" }) end)
 ok = bytes_is(writes(m), { 0x00, 0x64 })
 check("call：优先级 level（100=0x0064）", res and res.level == 100 and ok,
 	tostring(res and res.level))
 m = #vbus.txlog
 res = expect_ok("call volt+percent，volt 优先",
-	function() return call({ fd = fd, volt = "0.0", percent = "50" }) end)
+	function() return call({ fd = fd, address = "0x62", volt = "0.0", percent = "50" }) end)
 ok = bytes_is(writes(m), { 0x00, 0x00 })
 check("call：volt=0 压过 percent", res and res.level == 0 and ok)
 
 -- percent=100 满码
 m = #vbus.txlog
 res = expect_ok("call percent='100'（满码）",
-	function() return call({ fd = fd, percent = "100" }) end)
+	function() return call({ fd = fd, address = "0x62", percent = "100" }) end)
 ok = bytes_is(writes(m), { 0x0F, 0xFF })
 check("call：100% = 4095", res and res.level == 4095 and ok)
 
 -- vref=3.3 换算
 section()
-expect_ok("前置 build vref=3.3", function() return build({ fd = fd, vref = "3.3" }) end)
+expect_ok("前置 build vref=3.3", function() return build({ fd = fd, address = "0x62", vref = "3.3" }) end)
 m = #vbus.txlog
 res = expect_ok("call volt='3.3' vref=3.3 钳满码",
-	function() return call({ fd = fd, volt = "3.3" }) end)
+	function() return call({ fd = fd, address = "0x62", volt = "3.3" }) end)
 check("call：3.3V 档满码", res and res.level == 4095, tostring(res and res.level))
 m = #vbus.txlog
 res = expect_ok("call volt='1.65' vref=3.3 半码",
-	function() return call({ fd = fd, volt = "1.65" }) end)
+	function() return call({ fd = fd, address = "0x62", volt = "1.65" }) end)
 check("call：半幅=2048（floor(2048+0.5)）", res and res.level == 2048,
 	tostring(res and res.level))
 
 -- 快速写失败
 section()
-expect_ok("错误通道前置 build", function() return build({ fd = fd }) end)
+expect_ok("错误通道前置 build", function() return build({ fd = fd, address = "0x62" }) end)
 m = #vbus.txlog
 dev.nack_write = true
 expect_err("call 快速写 NACK",
-	function() return call({ fd = fd, percent = "50" }) end, "Failed to write MCP4725 DAC")
+	function() return call({ fd = fd, address = "0x62", percent = "50" }) end, "Failed to write MCP4725 DAC")
 check("call：失败帧仍入 txlog", #writes(m) == 1, #writes(m))
 check("模型：NACK 帧不更新状态", dev:level() == 0)
 dev:clear_faults()
@@ -327,11 +349,11 @@ dev:clear_faults()
 -- ==================== 4) call EEPROM 写 + RDY 轮询 ====================
 
 section()
-expect_ok("EEP 段前置 build", function() return build({ fd = fd }) end)
+expect_ok("EEP 段前置 build", function() return build({ fd = fd, address = "0x62" }) end)
 
 m = #vbus.txlog
 res = expect_ok("call percent='50' eep='1'（50ms 后首次轮询即完成）",
-	function() return call({ fd = fd, percent = "50", eep = "1" }) end)
+	function() return call({ fd = fd, address = "0x62", percent = "50", eep = "1" }) end)
 check("call：eep 成功回显 eeprom=1/level=2048",
 	res and res.eeprom == 1 and res.level == 2048,
 	tostring(res and res.eeprom))
@@ -352,19 +374,41 @@ check("模型：DAC+EEPROM 双码=2048、当前不忙",
 -- 满码 EEP 写
 m = #vbus.txlog
 res = expect_ok("call level='4095' eep='1'",
-	function() return call({ fd = fd, level = "4095", eep = "1" }) end)
+	function() return call({ fd = fd, address = "0x62", level = "4095", eep = "1" }) end)
 do
 	local ok = bytes_is(writes(m), { 0x60, 0xFF, 0xF0 })
 	check("call：满码 EEP 帧 [0x60,0xFF,0xF0]", ok)
 end
 
+-- NaN 反例（26.1，本组后果最重）：eep 列的 `(tonumber(x) or 0) ~= 0` 兜不住
+-- NaN——'nan' 经 tonumber 出的是 number（Lua 里 truthy），NaN ~= 0 又为真，
+-- 于是 eep='nan' 会走**有擦写寿命上限**的 EEPROM 路径，而调用方从未要求持久化。
+-- 同列写 'x' 走的是快速写（上面 3) 节已钉死），两者必须同结论。
+do
+	local fw0, ew0 = #dev:fast_writes(), #dev:eep_writes()
+	m = #vbus.txlog
+	res = expect_ok("call level='2048' eep='nan' 视同未给",
+		function() return call({ fd = fd, address = "0x62", level = "2048", eep = "nan" }) end)
+	local ok, detail = bytes_is(writes(m), { 0x08, 0x00 })
+	check("eep NaN：快速写帧 [0x08,0x00]", ok, detail)
+	check("eep NaN：EEPROM 零新增写、码仍 4095",
+		#dev:fast_writes() == fw0 + 1 and #dev:eep_writes() == ew0
+		and dev:eeprom_code() == 4095 and dev:level() == 2048,
+		string.format("fast+%d eep+%d dac=%d eepcode=%d",
+			#dev:fast_writes() - fw0, #dev:eep_writes() - ew0,
+			dev:level(), dev:eeprom_code()))
+	check("eep NaN：回显 eeprom=0、零 RDY 轮询读",
+		res and res.eeprom == 0 and #reads(m) == 0,
+		tostring(res and res.eeprom) .. " reads=" .. #reads(m))
+end
+
 -- 超时：RDY 永不就绪
 section()
-expect_ok("超时前置 build", function() return build({ fd = fd }) end)
+expect_ok("超时前置 build", function() return build({ fd = fd, address = "0x62" }) end)
 dev:set_eep_stuck(true)
 m = #vbus.txlog
 expect_err("call EEPROM 写超时（10×50ms）",
-	function() return call({ fd = fd, percent = "50", eep = "1" }) end,
+	function() return call({ fd = fd, address = "0x62", percent = "50", eep = "1" }) end,
 	"EEPROM write timeout")
 check("call：超时共轮询 10 次、累计睡 500ms",
 	#reads(m) == 10 and sleep_total == 500,
@@ -374,20 +418,20 @@ dev:clear_faults()
 
 -- 轮询途中总线失败（必须与超时区分，2026-09 审计点）
 section()
-expect_ok("轮询失败前置 build", function() return build({ fd = fd }) end)
+expect_ok("轮询失败前置 build", function() return build({ fd = fd, address = "0x62" }) end)
 dev:fail_read(function(n) return n == 1 end)
 expect_err("call RDY 轮询总线失败",
-	function() return call({ fd = fd, percent = "50", eep = "1" }) end,
+	function() return call({ fd = fd, address = "0x62", percent = "50", eep = "1" }) end,
 	"bus read failed while polling RDY")
 dev:clear_faults()
 
 -- EEP 写本身失败
 section()
-expect_ok("写失败前置 build", function() return build({ fd = fd }) end)
+expect_ok("写失败前置 build", function() return build({ fd = fd, address = "0x62" }) end)
 dev:fail_write(function(b) return b[1] == 0x60 end)
 m = #vbus.txlog
 expect_err("call EEP 写帧 NACK",
-	function() return call({ fd = fd, percent = "50", eep = "1" }) end,
+	function() return call({ fd = fd, address = "0x62", percent = "50", eep = "1" }) end,
 	"Failed to write MCP4725 DAC+EEPROM")
 check("call：写失败后无轮询读/无睡眠",
 	#reads(m) == 0 and sleep_total == 0,
@@ -397,14 +441,14 @@ dev:clear_faults()
 -- ==================== 5) call 无参读回 ====================
 
 section()
-expect_ok("读回段前置 build（默认状态）", function() return build({ fd = fd }) end)
+expect_ok("读回段前置 build（默认状态）", function() return build({ fd = fd, address = "0x62" }) end)
 -- 先写 2048 进 EEPROM，再快速写 4095：读回应 DAC=4095/EEPROM=2048
 expect_ok("预置：先 EEP 2048",
-	function() return call({ fd = fd, level = "2048", eep = "1" }) end)
+	function() return call({ fd = fd, address = "0x62", level = "2048", eep = "1" }) end)
 expect_ok("预置：再快速写 4095",
-	function() return call({ fd = fd, level = "4095" }) end)
+	function() return call({ fd = fd, address = "0x62", level = "4095" }) end)
 m = #vbus.txlog
-res = expect_ok("call 无参读回", function() return call({ fd = fd }) end)
+res = expect_ok("call 无参读回", function() return call({ fd = fd, address = "0x62" }) end)
 if res then
 	check("读回：DAC=4095（易失码与 EEPROM 独立）", res.level == 4095,
 		tostring(res.level))
@@ -421,7 +465,7 @@ check("读回：窗口内纯读 n=5 ×1、零写",
 m = #vbus.txlog
 dev.nack_read = true
 expect_err("call 无参读回失败",
-	function() return call({ fd = fd }) end, "Failed to read MCP4725")
+	function() return call({ fd = fd, address = "0x62" }) end, "Failed to read MCP4725")
 check("读失败窗口零写", #writes(m) == 0)
 dev:clear_faults()
 
@@ -431,6 +475,37 @@ m = section()
 expect_err("call 缺 fd", function() return call({ percent = "50" }) end, "Invalid Argument: fd")
 expect_err("call 参数非表", function() return call("x") end, "Invalid Arguments Type")
 check("call：参数校验零总线事务", #entries(m) == 0, #entries(m))
+
+-- NaN 反例（26.1）：level/volt/percent 三列只判 `== nil`。'abc' 经 tonumber 得
+-- nil，落进「无参读回」；'nan' 得的却是 number（Lua 里 truthy），于是绕过读回
+-- 分支，code = math.floor(NaN) 仍是 NaN，两条钳位（`< 0` / `> 4095`）对 NaN
+-- 恒假放行，最后 NaN 字节被 HAL 的 byte_of 挡成 nil → 报 "Failed to write
+-- MCP4725 DAC"。同一列的配置笔误被误报成总线故障，正是审计 P3 要堵的口径：
+-- 三列改经 finite_of 后，NaN 与 'abc' 同结论（读回）。
+m = section()
+-- 上一节收尾的 clear_faults 会把模型状态归零，此处显式预置使读回值可断言
+dev:set_dac(4095):set_eeprom(2048)
+res = expect_ok("call level='abc' 视同无参读回",
+	function() return call({ fd = fd, address = "0x62", level = "abc" }) end)
+check("level 非法串：读回 DAC=4095/EEPROM=2048",
+	res and res.level == 4095 and res.eeprom == 2048,
+	tostring(res and res.level) .. "/" .. tostring(res and res.eeprom))
+res = expect_ok("call level='nan' 同走读回（非总线写失败）",
+	function() return call({ fd = fd, address = "0x62", level = "nan" }) end)
+check("level NaN：与 'abc' 同结论",
+	res and res.level == 4095 and res.eeprom == 2048,
+	tostring(res and res.level) .. "/" .. tostring(res and res.eeprom))
+res = expect_ok("call volt='nan' 同走读回",
+	function() return call({ fd = fd, address = "0x62", volt = "nan" }) end)
+check("volt NaN：与非法串同结论",
+	res and res.level == 4095, tostring(res and res.level))
+res = expect_ok("call percent='nan' 同走读回",
+	function() return call({ fd = fd, address = "0x62", percent = "nan" }) end)
+check("percent NaN：与非法串同结论",
+	res and res.level == 4095, tostring(res and res.level))
+check("NaN 三列窗口：4 次纯读 n=5、零写",
+	#reads(m) == 4 and #writes(m) == 0,
+	"reads=" .. #reads(m) .. " writes=" .. #writes(m))
 
 m = section()
 expect_ok("destroy 无资源需释放", function() return destroy({}) end)

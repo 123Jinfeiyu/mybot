@@ -113,12 +113,10 @@ run_cpp_unit() {
 		record_fail "cpp-unit(零用例)"
 		return
 	fi
-	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
-	if [ "$pass_n" -eq 0 ]; then
-		echo "[FAIL] 假绿嫌疑：[PASS] 计数为 0（早退/零断言）"
+	if echo "$out" | grep -qF "[FAIL]"; then
 		record_fail "cpp-unit(C++)"
-	elif [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
-		record_fail "cpp-unit(C++)"
+	elif ! check_green "$out" "$rc" "cpp-unit(C++)"; then
+		: # check_green 已 record_fail
 	else
 		record_pass
 	fi
@@ -133,10 +131,23 @@ run_cpp_unit() {
 # ======================================================================
 run_harness_selftest() {
 	echo "----- harness-selftest (测试骨架自证) -----"
-	local binp
-	binp="$(dirname "$tests_bin")/harness_selftest"
+	# 路径单点在 run_all.sh 顶部的 selftest_bin：产物陈旧判据也拿同一个变量，
+	# 两处各派生一次的话，改了 BOT_TESTS 就会出现「判的是 A、跑的是 B」。
+	local binp="$selftest_bin"
 	if [ ! -x "$binp" ]; then
 		artifact_missing "测试骨架自证" "harness_selftest" "$binp" "$tests_explicit"
+		return 2
+	fi
+	# 段门（2026-10-06 补）：本段此前**不受过滤器管辖**，无条件跑完记 1 通过，于是
+	# 末尾「pass + fail == 0」的空匹配防线（C8）永远不成立——`run_all.sh zzz_typo`
+	# 会以「1 通过, 0 失败」退出 0。这与上面 run_const_checks / run_fixture_orphans
+	# 被 `[ -z "$filter" ]` 圈住是同一个理由（run_all.sh 那段注释写的就是「不能让
+	# 『拼错过滤器』的空匹配防线失效」），只是本段是 2026-09-21 AG-5 后加的，漏了。
+	# 用段门而不是塞进 `[ -z "$filter" ]`：`run_all.sh harness` 是合法用法，应当放行。
+	# 不往下传过滤器给二进制——本段的 8 条自证用例是一个整体，按名字挑没有意义。
+	if [ -n "$filter" ] && ! filter_matches "harness-selftest" "$filter"; then
+		echo "[SKIP] 过滤器 '${filter}' 未命中 harness-selftest 分段"
+		record_skip "harness-selftest(过滤器未命中)"
 		return 2
 	fi
 	local out rc pass_n
@@ -152,13 +163,11 @@ run_harness_selftest() {
 		record_fail "harness-selftest"
 		return
 	fi
-	pass_n="$(printf '%s\n' "$out" | grep -cF '[PASS]')"
-	if [ $rc -ne 0 ] || echo "$out" | grep -qF "[FAIL]" || ! echo "$out" | grep -qF "[DONE]"; then
+	if echo "$out" | grep -qF "[FAIL]"; then
 		echo "[FAIL] 测试骨架行为与预期不符：零断言/跳过/失败的判定被改动过？"
 		record_fail "harness-selftest"
-	elif [ "$pass_n" -eq 0 ]; then
-		echo "[FAIL] 假绿嫌疑：骨架自证一条断言都没跑（[PASS] 计数为 0）"
-		record_fail "harness-selftest"
+	elif ! check_green "$out" "$rc" "harness-selftest"; then
+		: # check_green 已 record_fail
 	else
 		record_pass
 	fi

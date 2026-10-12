@@ -37,6 +37,14 @@ public:
 	const char* kindName() const override { return "test-lambda"; }
 };
 
+/* 什么都不做的硬件变量（play 回 JsonNull）：注册表与派发用例里最常见的填充物。
+ * 原为 test_robot_dispatch.cpp 的局部 helper，2026-10-04 随 HwRegistry 门面单测
+ * 拆出 test_hw_registry.cpp 后上收——两个文件共用一份，避免各留一个同名包装。 */
+inline std::unique_ptr<bot::MatrixVars_Hardware> dummyHw() {
+	return std::unique_ptr<bot::MatrixVars_Hardware>(new LambdaHw(
+		[](const bot::Json&) { return bot::JsonNull(); }));
+}
+
 /* 解析出恰好一个矩阵对象；解析失败或多解都视为用例前置条件不成立 */
 inline mt::MatrixObject oneMatrix(const std::string& text) {
 	bot::MemoryReader reader(text);
@@ -70,6 +78,20 @@ inline std::string fingerprint(const std::vector<sql4cj::Token>& ts) {
 	for (const auto& t : ts) {
 		if (!out.empty()) { out += ' '; }
 		out += t.serialize();
+	}
+	return out;
+}
+
+/* 语法分析器事件流（Parser::next 的完整序列，词法→语法两段测试共用；
+ * 2026-10-01 自 test_sqlparse.cpp 上收，fx::tokens 的姊妹件） */
+inline std::vector<sql4cj::Event> events(const std::string& text) {
+	std::vector<sql4cj::Token> ts = fx::tokens(text);
+	sql4cj::Parser parser(ts);
+	std::vector<sql4cj::Event> out;
+	for (;;) {
+		sql4cj::Event e = parser.next();
+		if (e.type == sql4cj::EventType::END) { break; }
+		out.push_back(std::move(e));
 	}
 	return out;
 }
@@ -132,6 +154,29 @@ public:
 	}
 	EnvVar(const EnvVar&) = delete;
 	EnvVar& operator=(const EnvVar&) = delete;
+};
+
+/* 模块路径守卫：让驱动解析路径同时看到真模块树与测试夹具目录
+ * （modules 在前，与生产语义一致：同名以 modules 为准）。退出时还原，
+ * 避免影响其它用例。2026-10-01 自 test_agenttools 上收（test_robot 系
+ * 原有一份 const char* 构造的同名类，robot_fixtures.hpp 侧同步改用本类）。 */
+class ModulePathGuard {
+	std::string old_;
+	bool had_ = false;
+
+public:
+	explicit ModulePathGuard(const std::string& path) {
+		const char* v = std::getenv("BOT4CJ_MODULE_PATH");
+		had_ = v != nullptr;
+		if (had_) { old_ = v; }
+		::setenv("BOT4CJ_MODULE_PATH", path.c_str(), 1);
+	}
+	~ModulePathGuard() {
+		if (had_) { ::setenv("BOT4CJ_MODULE_PATH", old_.c_str(), 1); }
+		else { ::unsetenv("BOT4CJ_MODULE_PATH"); }
+	}
+	ModulePathGuard(const ModulePathGuard&) = delete;
+	ModulePathGuard& operator=(const ModulePathGuard&) = delete;
 };
 
 } // namespace fx

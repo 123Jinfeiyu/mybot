@@ -10,9 +10,14 @@ mod specs;
 pub use specs::specs;
 
 use std::collections::HashSet;
+use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::hook::poisoned;
+use crate::toolspec::ToolSpec;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Event {
@@ -66,6 +71,87 @@ struct Comparison {
     event_id: String,
     possible_match: bool,
     active: bool,
+}
+
+/// ICA 会话门面：BOT4CJ_ICA 开关读取、账本持有与观察/落盘/恢复。
+/// 2026-10-01 自 bridge.rs 收边（行为保持）——启停判据与账本生命周期归本模块
+/// 单点，bridge 只在工具清单合并与 ica_* 派发处取用；repl/main 经
+/// `bridge.ica` 使用。锁中毒统一走 hook::poisoned（带 warn 留痕）。
+pub struct IcaSession {
+    ledger: Option<Arc<StdMutex<IcaLedger>>>,
+}
+
+impl IcaSession {
+    /// BOT4CJ_ICA=1 时启用（缺省不启用）。
+    pub fn from_env() -> Self {
+        Self {
+            ledger: (std::env::var("BOT4CJ_ICA").as_deref() == Ok("1"))
+                .then(|| Arc::new(StdMutex::new(IcaLedger::default()))),
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.ledger.is_some()
+    }
+
+    /// 账本句柄（ica_* 工具派发用）；未启用时 None。
+    pub fn ledger(&self) -> Option<&Arc<StdMutex<IcaLedger>>> {
+        self.ledger.as_ref()
+    }
+
+    pub fn observe_user(&self, task: &str) {
+        if let Some(ica) = &self.ledger {
+            let mut ledger = ica.lock().unwrap_or_else(poisoned);
+            ledger.begin_task(task);
+        }
+    }
+
+    pub fn note(&self) -> Option<String> {
+        self.ledger
+            .as_ref()
+            .map(|ica| ica.lock().unwrap_or_else(poisoned).final_note())
+    }
+
+    pub fn summary(&self) -> Option<String> {
+        self.ledger
+            .as_ref()
+            .map(|ica| ica.lock().unwrap_or_else(poisoned).summary())
+    }
+
+    pub fn clear(&self) {
+        if let Some(ica) = &self.ledger {
+            *ica.lock().unwrap_or_else(poisoned) = IcaLedger::default();
+        }
+    }
+
+    pub fn save(&self, session_file: &str) -> Result<(), String> {
+        if let Some(ica) = &self.ledger {
+            ica.lock().unwrap_or_else(poisoned).save(session_file)?;
+        }
+        Ok(())
+    }
+
+    pub fn restore(&self, session_file: &str) -> Result<(), String> {
+        if let Some(ica) = &self.ledger {
+            *ica.lock().unwrap_or_else(poisoned) = IcaLedger::load(session_file)?;
+        }
+        Ok(())
+    }
+
+    /// 工具清单合并：启用时把 ica_* 的 schema 并进 specs，与后端工具名冲突即报错。
+    pub fn merge_specs(&self, specs: &mut Vec<ToolSpec>) -> Result<(), String> {
+        if self.ledger.is_some() {
+            let ica_specs = crate::ica::specs();
+            if ica_specs
+                .iter()
+                .any(|i| specs.iter().any(|s| s.name == i.name))
+            {
+                return Err("后端工具名与 ICA 工具名冲突".into());
+            }
+            specs.extend(ica_specs);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default, Serialize, Deserialize)]

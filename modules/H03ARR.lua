@@ -2,6 +2,10 @@
 -- 经 src 引用列，data.values 是守护 arr_src 的 values(JsonArray) 快照。
 -- 修复前：入参 JsonArray 被 call_lua 静默丢弃（data.values 为 nil）；
 --         出参 Lua 表（list）被 LUA_TTABLE 跳过。修复后应双向贯通。
+--
+-- 26.5 单测覆盖：无单元/端到端测试；仅用于 H-03 修复验证，未接入 run_all.sh 守门。
+--
+-- 标准前导：drv_common 经 mpath 加载（modules/lib/）
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 

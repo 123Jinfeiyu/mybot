@@ -17,6 +17,8 @@
 #include <thread>
 #include <vector>
 
+#include "daemon_registry.hpp"
+#include "daemonconf.hpp"
 #include "daemonvar.hpp"
 #include "fixtures.hpp"
 #include "harness.hpp"
@@ -59,6 +61,19 @@ void writeStuckTickChunk() {
 	    << "  while os.time() < deadline do end\n"
 	    << "  return 1\n"
 	    << "end\n";
+}
+
+/* 2026-10-01 审计 P2（第五个异常边界）：chunk 给 _G 装报错 __index 且故意不
+ * 定义 daemon_tick——body 的 tick 循环里裸 lua_getglobal("daemon_tick") 查询
+ * 命中 __index 元方法 → luaD_throw 从无 Lua CFRAME 的 C++ 帧抛出**非标准
+ * 异常**。daemon_tick 不定义意味着首拍即触发，无需等 stop。 */
+const char* const kHostileIndexRel = "test_daemon_hostile_index.lua";
+void writeHostileIndexChunk() {
+	std::ofstream out(std::string(".tmp/") + kHostileIndexRel, std::ios::binary | std::ios::trunc);
+	out << "-- hostile __index: first bare getglobal in body() must throw\n"
+	    << "setmetatable(_G, { __index = function() error(\"hostile __index\") end })\n"
+	    << "-- daemon_tick intentionally undefined\n"
+	    << "return\n";
 }
 
 mt::MatrixObject daemonDefs(const std::string& chunk) {
@@ -122,12 +137,12 @@ TH_TEST(parse_interval_error_carries_table_and_row) {
 TH_TEST(daemon_never_spawned_releases_slot_directly) {
 	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
 	mt::MatrixObject defs = daemonDefs(kSlowTickRel);
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
 	TH_CHECK(registry.size() == 1);
-	TH_CHECK(registry[0]->slotAlive());
+	TH_CHECK(registry.at(0)->slotAlive());
 	var->destroy();	/* 未 spawn：直接释放槽，不白等 join 超时 */
-	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry.at(0)->slotAlive());
 	/* 槽已释放后的读按 ERR 契约返回，不碰悬垂指针 */
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
@@ -137,7 +152,7 @@ TH_TEST(daemon_slow_tick_abandons_slot_and_thread_releases_it) {
 	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
 	writeSlowTickChunk();
 	mt::MatrixObject defs = daemonDefs(kSlowTickRel);
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
 	var->build();
 	/* 先让守护线程进入慢拍（3s），stop 只能在下拍之间被看见——
@@ -148,7 +163,7 @@ TH_TEST(daemon_slow_tick_abandons_slot_and_thread_releases_it) {
 	/* 2.4：弃管 = 主线程原子交出自己的引用，成员随即置空——「槽由线程副本
 	 * 持有、尚未释放」的中间态不再有外部可观测量（旧模型的槽指针非空断言
 	 * 随所有权模型一同退役）。弃管后的读按 ERR 契约返回，不触碰已移交的槽。 */
-	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry.at(0)->slotAlive());
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
 	/* 守护线程完成当前拍（~3s）后作为最后所有者触发删除器（2.4）。
@@ -157,7 +172,7 @@ TH_TEST(daemon_slow_tick_abandons_slot_and_thread_releases_it) {
 	 * 余量取 4s：3s 慢拍 + 调度延迟——负载高（并行跑测试）时 2.5s 的旧余量
 	 * 曾被吃穿导致偶发失败（审计 L1）。 */
 	std::this_thread::sleep_for(std::chrono::milliseconds(4000));
-	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry.at(0)->slotAlive());
 }
 
 /* BQ-2（2026-09-29，审计 P2-3 收口）：停机序列两段——requestStopAndWait 不弃管
@@ -169,7 +184,7 @@ TH_TEST(daemon_finish_teardown_grace_path_returns_true) {
 	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
 	writeSlowTickChunk();
 	mt::MatrixObject defs = daemonDefs(kSlowTickRel);
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
 	var->build();
 	/* 先让线程进入慢拍（3s），再主动走停机序列：500ms << 剩余慢拍 */
@@ -177,17 +192,17 @@ TH_TEST(daemon_finish_teardown_grace_path_returns_true) {
 	const auto t0 = std::chrono::steady_clock::now();
 	/* ① 等待段不弃管：miss 后槽仍在手（这是灭火位能先于弃管置上的前提）。
 	 * 此刻 play 返回的是**正常采样**（槽未交出，ERR 契约只在弃管后生效）。 */
-	TH_CHECK(!registry[0]->requestStopAndWait(
+	TH_CHECK(!registry.at(0)->requestStopAndWait(
 		t0 + std::chrono::milliseconds(500)));
-	TH_CHECK(registry[0]->slotAlive());
+	TH_CHECK(registry.at(0)->slotAlive());
 	/* ② 宽限段：累计已等 ~0.7s，慢拍 ~3s 结束，宽限 5s 覆盖余量 → 退场收尾 */
-	TH_CHECK(registry[0]->finishTeardown(5000, t0));
-	TH_CHECK(!registry[0]->slotAlive());
-	TH_CHECK(!registry[0]->quiesced());
+	TH_CHECK(registry.at(0)->finishTeardown(5000, t0));
+	TH_CHECK(!registry.at(0)->slotAlive());
+	TH_CHECK(!registry.at(0)->quiesced());
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
 	/* 幂等：线程已退场（future 已消费），再收尾直接 true */
-	TH_CHECK(registry[0]->finishTeardown(0, t0));
+	TH_CHECK(registry.at(0)->finishTeardown(0, t0));
 }
 
 /* BQ-2：宽限耗尽 → 灭火 + 弃管（quiesce 先于 slot 交出置上）。
@@ -198,17 +213,40 @@ TH_TEST(daemon_finish_teardown_quiesces_stuck_thread) {
 	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
 	writeStuckTickChunk();
 	mt::MatrixObject defs = daemonDefs(kStuckTickRel);
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
 	var->build();
 	std::this_thread::sleep_for(std::chrono::milliseconds(200));
 	const auto t0 = std::chrono::steady_clock::now();
-	TH_CHECK(!registry[0]->requestStopAndWait(
+	TH_CHECK(!registry.at(0)->requestStopAndWait(
 		t0 + std::chrono::milliseconds(300)));
 	/* 零宽限（单守护 destroy 路径形态）→ 立即灭火弃管 */
-	TH_CHECK(!registry[0]->finishTeardown(0, t0));
-	TH_CHECK(!registry[0]->slotAlive());
-	TH_CHECK(registry[0]->quiesced());
+	TH_CHECK(!registry.at(0)->finishTeardown(0, t0));
+	TH_CHECK(!registry.at(0)->slotAlive());
+	TH_CHECK(registry.at(0)->quiesced());
+	bot::Json err = var->play(bot::JsonObject());
+	TH_CHECK(err.get("result")->getValue() == "ERR");
+}
+
+/* 2026-10-01 审计 P2（第五个异常边界）：detached 守护线程的 body() 抛非标准
+ * 异常不得穿出线程函数。旧行为：异常逃出线程 lambda 即 std::terminate，测试
+ * 进程当场消亡（非零退出码，不是普通断言失败），停机断电链整条被跳过——
+ * 正是本项目自评最严重的失效形态。修复后：异常折成 -1 + stderr 留痕，
+ * promise 照常 set，destroy 的 join 路径正常收尾。
+ * 触发：见 writeHostileIndexChunk——首拍裸 getglobal 即抛。 */
+TH_TEST(daemon_body_exception_folds_to_error_not_terminate) {
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	writeHostileIndexChunk();
+	mt::MatrixObject defs = daemonDefs(kHostileIndexRel);
+	bot::DaemonRegistry registry;
+	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
+	var->build();
+	/* 守护线程在首拍（interval=10ms）即触发异常路径；给 200ms 让它完成
+	 * 退场与 promise set。进程活到 destroy 之后本身就是修复的证明。 */
+	std::this_thread::sleep_for(std::chrono::milliseconds(200));
+	var->destroy();
+	TH_CHECK(!registry.at(0)->slotAlive());
+	/* 弃管后的读按 ERR 契约返回，不碰悬垂指针 */
 	bot::Json err = var->play(bot::JsonObject());
 	TH_CHECK(err.get("result")->getValue() == "ERR");
 }
@@ -225,14 +263,14 @@ TH_TEST(daemon_backoff_sleep_interruptible_by_stop) {
 	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
 	writeNoTickChunk();
 	mt::MatrixObject defs = daemonDefs(kNoTickRel);
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
 	var->build();
 	/* 等到线程已进入单次超过 join 超时的深退避（第 8 错的 2560ms 睡眠中段） */
 	std::this_thread::sleep_for(std::chrono::milliseconds(2800));
 	int abandonedBefore = bot::abandonedDaemonCount();
 	var->destroy();
-	TH_CHECK(!registry[0]->slotAlive());
+	TH_CHECK(!registry.at(0)->slotAlive());
 	/* 必须走 joined 路径：弃管计数不增长（旧行为此处 +1） */
 	TH_CHECK(bot::abandonedDaemonCount() == abandonedBefore);
 }
@@ -284,7 +322,7 @@ TH_TEST(daemon_config_allows_equals_in_column_value) {
 	writeNoTickChunk();
 	mt::MatrixObject defs = fx::oneMatrix(
 		"@Daemon\nname chunk extra;\nd1 " + std::string(kNoTickRel) + " a=b;\n@\n");
-	std::vector<std::shared_ptr<DaemonRunner>> registry;
+	bot::DaemonRegistry registry;
 	std::unique_ptr<MtVars_Daemon> var = MtVars_Daemon::Factory(defs, 1, registry);
 	TH_CHECK(var != nullptr);
 	TH_CHECK(registry.size() == 1);

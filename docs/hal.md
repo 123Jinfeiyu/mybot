@@ -15,6 +15,27 @@
 - 参数先归一化（字节 0~255、非负整数）再进 ioctl/缓冲区，设备路径走白名单正则；非法参数打印诊断并显式失败，不静默钳制
 - 结构体尺寸与 ioctl 常量经 `test_ioctl_nums.c` / `test_uart_consts.c` 与系统头文件实证；尺寸断言在加载期执行（spi_ioc_transfer=32、i2c_msg=16、gpiohandle_request=364、termios=60），ABI 漂移立即失败
 
+**文件布局（26.2 按域拆分）**：`modules/lib/HAL.lua` 是**聚合门面**——只留加载期接线
+（LuaJIT/ffi 环境检查、重入口守卫、后端派发、常量重导出、`bus_contract` 接线、
+`milli_sleep`、停机灭火判定 `bus_quiesced`），五个总线域各一文件：
+
+| 文件 | 域 | 段内私有 helper |
+| ---- | -- | -------------- |
+| `modules/lib/hal/i2c.lua` | I2C（含 16 位寄存器指针器件） | `i2c_rdwr`、`be_merge` |
+| `modules/lib/hal/spi.lua` | SPI（spidev ioctl） | `spi_xfer` |
+| `modules/lib/hal/gpio.lua` | GPIO（gpiod uAPI v1） | — |
+| `modules/lib/hal/uart.lua` | UART（termios raw 8N1） | `UART_B_CONST*`、`glibc_uses_hz_baud` |
+| `modules/lib/hal/pwm.lua` | PWM（Linux sysfs） | `pwm_id`、`pwm_chip_path`、`pwm_attr_path`、`sysfs_write`、`errno_hint` |
+
+域文件是门面的**分块**、不是可独立加载的模块（单独 `dofile` 会 assert 报错）：
+`loadfile` 出来的子块看不到门面文件的 `local`，故共享上下文（`HAL` 表、`ffi`、
+`bus`、后端常量表 `_c`、三个归一化器、`bus_quiesced`、`O_RDWR`）由门面经 `ctx`
+表显式传入，域文件正文因此得以逐字搬迁。域之间零相互引用，加载顺序只要求在
+门面接线之后。定位方式与 `bus_contract` / 后端加载段同规（`BOT4CJ_MODULE_PATH`
+各段逐段探测 + 仓库缺省布局兜底），故多路径布局下的行为与拆分前一致。
+对驱动而言**接口零变化**：仍是 `dofile(mpath.resolve("lib/HAL.lua"))`，
+38 个总线全局函数与 `HAL.*` 全部字段照旧由该门面导出。
+
 ## 各总线要点
 
 | 总线 | 关键实现 |
@@ -43,7 +64,7 @@ UART 的易踩坑约束：
 | 表 / `nil` | `i2c_read_multi_bytes`、`i2c_read_bytes`、`spi_xfer_full`、`uart_read`（空表 = 超时无数据；`nil` = 读错误或参数非法） |
 | 无返回值 | `i2c_close`、`spi_close`、`gpio_free_line`、`milli_sleep`；`uart_write` 返回写入字节数或 `-1` |
 
-完整语义以 `modules/lib/HAL.lua` 各函数注释为准。`virtbus.lua` 逐函数复刻上述契约（含失败返回值），供无硬件 E2E 使用。
+完整语义以 `modules/lib/HAL.lua` 与 `modules/lib/hal/*.lua` 各函数注释为准。`virtbus.lua` 逐函数复刻上述契约（含失败返回值），供无硬件 E2E 使用。
 
 ## 驱动沙箱
 

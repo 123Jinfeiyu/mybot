@@ -16,6 +16,11 @@
 -- 结论：保持自研（安全契约 + 双端语义对齐 + 零依赖三方权衡）。若项目方
 -- 决策接受 cjson，需先完成 test_json_lua.lua 全量语义核对再替换。
 --
+-- 【26.4 库能力面断言】截至 2026-10-06 全仓 grep 仅 test/test_json_lua.lua 加载本库，
+-- 无生产消费者（src/util_utf8.hpp:12 提及本库是注释里命名 Lua 侧对等编码器，不是
+-- 加载点；docs/agent.md:991 是能力表登记）。上方「供 agent 模式的 LLM 协议驱动
+-- 使用」是设计意图，尚未落地。由 test_json_lua.lua 单测守语法与语义对齐面。
+--
 -- 用法：
 --   local json = dofile(mpath.resolve("lib/json.lua"))
 --   json.encode({ a = 1 })                    --> '{"a":1}'

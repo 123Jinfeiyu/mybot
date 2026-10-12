@@ -1,6 +1,6 @@
 -- test_uart_baud.lua —— UART 波特率编码适配回归（审计 P0-3）
 -- glibc 2.42 起 B* 常量从旧 ABI 编号（B9600=13）改为字面 Hz（B9600=9600），
--- HAL.lua 运行时探测 glibc 版本后二选一。本用例核对：
+-- hal/uart.lua 运行时探测 glibc 版本后二选一。本用例核对：
 --   ① 探测结果与 gnu_get_libc_version 一致（本机 glibc 下选表正确）；
 --   ② 生效映射表键集与 UART_BAUDS 白名单一致（防两表漂移）；
 --   ③ 生效表的值域形态（全 Hz 或全旧编号）与所选表吻合。
@@ -27,7 +27,7 @@ else
 end
 tester.check("HAL.UART_B_CONST 已导出", type(HAL.UART_B_CONST) == "table")
 
--- UART_BAUDS 白名单（与 HAL.lua 同步维护）
+-- UART_BAUDS 白名单（与 hal/uart.lua 同步维护）
 local BAUDS = { 1200, 2400, 4800, 9600, 19200, 38400, 57600, 115200,
 	230400, 460800, 500000, 921600, 1000000 }
 

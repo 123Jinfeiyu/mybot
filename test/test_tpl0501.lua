@@ -223,11 +223,11 @@ m = section()
 expect_err("call 缺 level/percent/ohms",
 	function() return call({ fd = fd }) end, "need level")
 expect_err("call level 非数字",
-	function() return call({ fd = fd, level = "abc" }) end, "not a number")
+	function() return call({ fd = fd, level = "abc" }) end, "not a finite number")
 expect_err("call percent 非数字",
-	function() return call({ fd = fd, percent = "abc" }) end, "not a number")
+	function() return call({ fd = fd, percent = "abc" }) end, "not a finite number")
 expect_err("call ohms 非数字",
-	function() return call({ fd = fd, ohms = "abc" }) end, "not a number")
+	function() return call({ fd = fd, ohms = "abc" }) end, "not a finite number")
 expect_err("call 缺 fd", function() return call({ level = "10" }) end, "fd")
 expect_err("call 入参非 table", function() return call("x") end, "table")
 check("call 参数校验失败零发字", #xframes(m) == 0, #xframes(m))
@@ -263,5 +263,22 @@ check("未打开 fd 不改变模型抽头（仍 127）", dev:wiper() == 127, tos
 m = section()
 expect_ok("destroy OK（无总线操作）", function() return destroy({}) end)
 check("destroy 零发字", #xframes(m) == 0)
+
+-- ==================== 5) 26.3b NaN 配置列拒绝 ====================
+
+m = section()
+expect_err("call level='nan' 拒绝（finite_of 返回 nil）",
+           function() return call({ fd = fd, level = "nan" }) end, "not a finite number")
+check("level='nan' 零发字", #xframes(m) == 0)
+
+m = section()
+expect_err("call percent='nan' 拒绝",
+           function() return call({ fd = fd, percent = "nan" }) end, "not a finite number")
+check("percent='nan' 零发字", #xframes(m) == 0)
+
+m = section()
+expect_err("call ohms='nan' 拒绝",
+           function() return call({ fd = fd, ohms = "nan" }) end, "not a finite number")
+check("ohms='nan' 零发字", #xframes(m) == 0)
 
 tester.summary("test_tpl0501")

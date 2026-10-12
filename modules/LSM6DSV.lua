@@ -47,10 +47,10 @@
 --      4.375/8.75/17.5/35/70/140 mdps/LSB
 --   7. 仅支持 LSM6DSV16X（WHO_AM_I 0x70）；V32X 等其他家族 ID 明确报错
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -142,149 +142,119 @@ local function read_reg8(fd, reg)
 	return v
 end
 
--- 【配置脚本】WHO_AM_I 甄别 -> 软复位（自清轮询）-> BDU -> ODR/量程 -> 等启动
-function build(data)
+require_driver("i2c", {
+	name = "LSM6DSV",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】WHO_AM_I 甄别 -> 软复位（自清轮询）-> BDU -> ODR/量程 -> 等启动
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- LSM6DSV builder func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- LSM6DSV builder func get a table --------", data)
-	end
+		local fd = ctx.fd
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-- 列配置
+		local fs_xl_v, acc_g = acc_code_of(data.range)
+		local fs_g_v, gyr_dps = gyr_code_of(data.gyro_range)
+		local odr_xl_v, odr_hz = odr_code_of(data.odr)
 
-	-- 列配置
-	local fs_xl_v, acc_g = acc_code_of(data.range)
-	local fs_g_v, gyr_dps = gyr_code_of(data.gyro_range)
-	local odr_xl_v, odr_hz = odr_code_of(data.odr)
+		-----------------------------------------------------
+		-- 芯片甄别
+		local id = i2c_read_reg(fd, REG_WHO_AM_I)
+		if id < 0 then
+			return err("Failed to read LSM6DSV16X WHO_AM_I")
+		end
+		if id ~= CHIP_ID then
+			return err(string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO family, V32X and other families also differ)", id))
+		end
 
-	-----------------------------------------------------
-	-- 芯片甄别
-	local id = i2c_read_reg(fd, REG_WHO_AM_I)
-	if id < 0 then
-		return err("Failed to read LSM6DSV16X WHO_AM_I")
-	end
-	if id ~= CHIP_ID then
-		return err(string.format("WHO_AM_I = 0x%02X (expect 0x70 LSM6DSV16X; 0x6C = LSM6DSO family, V32X and other families also differ)", id))
-	end
+		-- 软复位：读改写置 bit0（保留 IF_INC），轮询自清（10ms 步进 10 次）
+		local c3 = read_reg8(fd, REG_CTRL3)
+		if c3 == nil then
+			return err("Failed to read LSM6DSV16X CTRL3")
+		end
+		if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(c3, SW_RESET)) then
+			return err("Failed to write LSM6DSV16X soft reset")
+		end
+		local settled = false
+		for _ = 1, 10 do
+			milli_sleep(10)
+			local s = i2c_read_reg(fd, REG_CTRL3)
+			if s < 0 then break end
+			if bitc.band(s, SW_RESET) == 0 then settled = true; break end
+		end
+		if not settled then
+			return err("LSM6DSV16X soft reset not completed (sw_reset bit stuck)")
+		end
 
-	-- 软复位：读改写置 bit0（保留 IF_INC），轮询自清（10ms 步进 10 次）
-	local c3 = read_reg8(fd, REG_CTRL3)
-	if c3 == nil then
-		return err("Failed to read LSM6DSV16X CTRL3")
-	end
-	if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(c3, SW_RESET)) then
-		return err("Failed to write LSM6DSV16X soft reset")
-	end
-	local settled = false
-	for _ = 1, 10 do
-		milli_sleep(10)
-		local s = i2c_read_reg(fd, REG_CTRL3)
-		if s < 0 then break end
-		if bitc.band(s, SW_RESET) == 0 then settled = true; break end
-	end
-	if not settled then
-		return err("LSM6DSV16X soft reset not completed (sw_reset bit stuck)")
-	end
+		-- 置 BDU（输出寄存器不被读撕裂），保 IF_INC（地址自增，突发读前提）；
+		-- bitcompat 无 bnot，清 bit0 用字面掩码 0xFE（此时复位已完成 bit0 必为 0）
+		c3 = read_reg8(fd, REG_CTRL3)
+		if c3 == nil then
+			return err("Failed to read LSM6DSV16X CTRL3")
+		end
+		if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(bitc.band(c3, 0xFE), bitc.bor(BDU_MASK, IF_INC_MASK))) then
+			return err("Failed to write LSM6DSV16X CTRL3 (BDU)")
+		end
 
-	-- 置 BDU（输出寄存器不被读撕裂），保 IF_INC（地址自增，突发读前提）；
-	-- bitcompat 无 bnot，清 bit0 用字面掩码 0xFE（此时复位已完成 bit0 必为 0）
-	c3 = read_reg8(fd, REG_CTRL3)
-	if c3 == nil then
-		return err("Failed to read LSM6DSV16X CTRL3")
-	end
-	if not i2c_write_reg(fd, REG_CTRL3, bitc.bor(bitc.band(c3, 0xFE), bitc.bor(BDU_MASK, IF_INC_MASK))) then
-		return err("Failed to write LSM6DSV16X CTRL3 (BDU)")
-	end
+		-- ODR（op_mode=0 高性能模式）+ 量程（CTRL6/CTRL8 读改写保留滤波域）
+		if not i2c_write_reg(fd, REG_CTRL1, odr_xl_v) then
+			return err("Failed to write LSM6DSV16X CTRL1 (accel ODR)")
+		end
+		if not i2c_write_reg(fd, REG_CTRL2, odr_xl_v) then
+			return err("Failed to write LSM6DSV16X CTRL2 (gyro ODR)")
+		end
+		local c6 = read_reg8(fd, REG_CTRL6)
+		local c8 = read_reg8(fd, REG_CTRL8)
+		if c6 == nil or c8 == nil then
+			return err("Failed to read LSM6DSV16X CTRL6/CTRL8")
+		end
+		if not i2c_write_reg(fd, REG_CTRL6, bitc.bor(bitc.band(c6, 0xF0), fs_g_v)) then
+			return err("Failed to write LSM6DSV16X CTRL6 (gyro FS)")
+		end
+		if not i2c_write_reg(fd, REG_CTRL8, bitc.bor(bitc.band(c8, 0xFC), fs_xl_v)) then
+			return err("Failed to write LSM6DSV16X CTRL8 (accel FS)")
+		end
 
-	-- ODR（op_mode=0 高性能模式）+ 量程（CTRL6/CTRL8 读改写保留滤波域）
-	if not i2c_write_reg(fd, REG_CTRL1, odr_xl_v) then
-		return err("Failed to write LSM6DSV16X CTRL1 (accel ODR)")
-	end
-	if not i2c_write_reg(fd, REG_CTRL2, odr_xl_v) then
-		return err("Failed to write LSM6DSV16X CTRL2 (gyro ODR)")
-	end
-	local c6 = read_reg8(fd, REG_CTRL6)
-	local c8 = read_reg8(fd, REG_CTRL8)
-	if c6 == nil or c8 == nil then
-		return err("Failed to read LSM6DSV16X CTRL6/CTRL8")
-	end
-	if not i2c_write_reg(fd, REG_CTRL6, bitc.bor(bitc.band(c6, 0xF0), fs_g_v)) then
-		return err("Failed to write LSM6DSV16X CTRL6 (gyro FS)")
-	end
-	if not i2c_write_reg(fd, REG_CTRL8, bitc.bor(bitc.band(c8, 0xFC), fs_xl_v)) then
-		return err("Failed to write LSM6DSV16X CTRL8 (accel FS)")
-	end
+		-- 陀螺仪启动等待（ST 惯例 ~70-80ms，取 100ms 余量，首拍数据就绪）
+		milli_sleep(100)
 
-	-- 陀螺仪启动等待（ST 惯例 ~70-80ms，取 100ms 余量，首拍数据就绪）
-	milli_sleep(100)
+		print(string.format("LSM6DSV16X init OK: addr=0x%02X, ±%dg/±%ddps, odr=%gHz",
+			ctx.addr, acc_g, gyr_dps, odr_hz))
+		return {  result = "OK"  }
+	end,
 
-	print(string.format("LSM6DSV16X init OK: addr=0x%02X, ±%dg/±%ddps, odr=%gHz",
-		addr, acc_g, gyr_dps, odr_hz))
-	return {  result = "OK"  }
+	-- destroy 缺省 = 空操作（原 LSM6DSV destroy 仅 arg_table + return OK，等价）
 
-end
+	-- 【调用LSM6DSV】读六轴原始码
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- LSM6DSV caller func get a table --------", data)
+		end
 
--- 【销毁LSM6DSV】无资源需要释放（总线归 I2C 硬件变量所有）
-function destroy(data)
+		local fd = ctx.fd
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		local g = read_bytes6(fd, REG_OUT_G)
+		if g == nil then
+			return err("Failed to read LSM6DSV16X gyro data")
+		end
+		local a = read_bytes6(fd, REG_OUT_A)
+		if a == nil then
+			return err("Failed to read LSM6DSV16X accel data")
+		end
 
-	return {  result = "OK"  }
-
-end
-
-
--- 【调用LSM6DSV】读六轴原始码
--- NOTE: 数据寄存器小端（LSB 在前）；返回 16 位补码语义的无符号原始码
--- （与 MPU6050/BMI270 驱动同约定，负值由守护 sign='16' 展开）
-function call(data)
-
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- LSM6DSV caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	local g = read_bytes6(fd, REG_OUT_G)
-	if g == nil then
-		return err("Failed to read LSM6DSV16X gyro data")
-	end
-	local a = read_bytes6(fd, REG_OUT_A)
-	if a == nil then
-		return err("Failed to read LSM6DSV16X accel data")
-	end
-
-	-- 返回字典（小端拼字：值 = MSB<<8 | LSB）
- 	return {
-		result  = "OK",
-		ACCEL_X = bitc.bor(bitc.lshift(a[2], 8), a[1]),
-		ACCEL_Y = bitc.bor(bitc.lshift(a[4], 8), a[3]),
-		ACCEL_Z = bitc.bor(bitc.lshift(a[6], 8), a[5]),
-		GYRO_X  = bitc.bor(bitc.lshift(g[2], 8), g[1]),
-		GYRO_Y  = bitc.bor(bitc.lshift(g[4], 8), g[3]),
-		GYRO_Z  = bitc.bor(bitc.lshift(g[6], 8), g[5])
-	}
-
-end
+		-- 返回字典（小端拼字：值 = MSB<<8 | LSB）
+	 	return {
+			result  = "OK",
+			ACCEL_X = bitc.bor(bitc.lshift(a[2], 8), a[1]),
+			ACCEL_Y = bitc.bor(bitc.lshift(a[4], 8), a[3]),
+			ACCEL_Z = bitc.bor(bitc.lshift(a[6], 8), a[5]),
+			GYRO_X  = bitc.bor(bitc.lshift(g[2], 8), g[1]),
+			GYRO_Y  = bitc.bor(bitc.lshift(g[4], 8), g[3]),
+			GYRO_Z  = bitc.bor(bitc.lshift(g[6], 8), g[5])
+		}
+	end,
+})
 
 
 

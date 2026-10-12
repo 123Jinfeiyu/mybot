@@ -28,10 +28,10 @@
 --      0xBEEF -> 0x92）。6 字节 = T_MSB T_LSB CRC | RH_MSB RH_LSB CRC
 --   5. 出厂校准无系数表；换算 T = -45 + 175*raw/65535，RH = 100*raw/65535
 
--- 标准前导：HAL/print_table（部分驱动含 drv_common）经 mpath 加载（modules/lib/）
+-- 声明式驱动框架（P2 方案 A，2026-09-30）：arg_table + i2c_pair 校验 + 空
+-- destroy 样板统一由 require_driver 承担，驱动只写业务 delta。VIRT 模型仍
+-- 在文件尾部。1 行 prelude 加载 drv_common；HAL/print_table 由框架代劳。
 local mpath = (__mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua"))
-dofile(mpath.resolve("lib/HAL.lua"))
-dofile(mpath.resolve("lib/print_table.lua"))
 dofile(mpath.resolve("lib/drv_common.lua"))
 local bitc = dofile(mpath.resolve("bitcompat.lua"))
 
@@ -75,121 +75,93 @@ local function read_bytes(fd, n)
 	return b
 end
 
--- 【配置脚本】软复位 + 读状态寄存器验证响应
-function build(data)
+require_driver("i2c", {
+	name = "SHT3X",
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+	-- 【配置脚本】软复位 + 读状态寄存器验证响应
+	build = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- SHT3X builder func get a table --------", data)
+		end
 
-	if DEBUG then
-		dbg_table("-------- SHT3X builder func get a table --------", data)
-	end
+		local fd = ctx.fd
 
-	-----------------------------------------------------
-	-- fd/address 存在性 + set_addr 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
+		-----------------------------------------------------
+		-- 软复位（HAL 的 i2c_write_reg 是 2 字节原子写，返回 true/false）
+		if not i2c_write_reg(fd, CMD_SOFT_RESET[1], CMD_SOFT_RESET[2]) then
+			return err("Failed to write SHT3X soft reset")
+		end
+		milli_sleep(2)			-- 复位就绪约 1.5ms
 
-	-----------------------------------------------------
-	-- 软复位（HAL 的 i2c_write_reg 是 2 字节原子写，返回 true/false）
-	if not i2c_write_reg(fd, CMD_SOFT_RESET[1], CMD_SOFT_RESET[2]) then
-		return err("Failed to write SHT3X soft reset")
-	end
-	milli_sleep(2)			-- 复位就绪约 1.5ms
+		-- 读状态寄存器验证响应
+		if not i2c_write_reg(fd, CMD_READ_STATUS[1], CMD_READ_STATUS[2]) then
+			return err("Failed to write SHT3X read status")
+		end
+		milli_sleep(1)
+		local sb = read_bytes(fd, 3)
+		if sb == nil then
+			return err("Failed to read SHT3X status")
+		end
 
-	-- 读状态寄存器验证响应
-	if not i2c_write_reg(fd, CMD_READ_STATUS[1], CMD_READ_STATUS[2]) then
-		return err("Failed to write SHT3X read status")
-	end
-	milli_sleep(1)
-	local sb = read_bytes(fd, 3)
-	if sb == nil then
-		return err("Failed to read SHT3X status")
-	end
+		local status = sb[0] * 256 + sb[1]
+		if crc8(status) ~= sb[2] then
+			return err("SHT3X status CRC mismatch")
+		end
+		if bitc.band(status, ST_CMD_STATUS) ~= 0 then
+			return err("SHT3X command status error (bit1: last command not processed)")
+		end
+		if bitc.band(status, ST_RESET_SEEN) == 0 then
+			print("SHT3X: reset flag (bit4) not set in status, continuing")
+		end
 
-	local status = sb[0] * 256 + sb[1]
-	if crc8(status) ~= sb[2] then
-		return err("SHT3X status CRC mismatch")
-	end
-	if bitc.band(status, ST_CMD_STATUS) ~= 0 then
-		return err("SHT3X command status error (bit1: last command not processed)")
-	end
-	if bitc.band(status, ST_RESET_SEEN) == 0 then
-		print("SHT3X: reset flag (bit4) not set in status, continuing")
-	end
+		print(string.format("SHT3X init OK: addr=0x%02X, status=0x%04X", ctx.addr, status))
+		return {  result = "OK"  }
+	end,
 
-	print(string.format("SHT3X init OK: addr=0x%02X, status=0x%04X", addr, status))
-	return {  result = "OK"  }
+	-- 【调用SHT3X】单次测量（轮询模式）：写命令 -> 等待 -> 纯读 6 字节
+	call = function(ctx, data)
+		if DEBUG then
+			dbg_table("-------- SHT3X caller func get a table --------", data)
+		end
 
-end
+		local fd = ctx.fd
 
--- 【销毁SHT3X】没有需要释放的资源（总线归 I2C 硬件变量所有）
-function destroy(data)
+		-----------------------------------------------------
+		-- 单次测量（0x2400 轮询·高重复性），等待转换完成
+		if not i2c_write_reg(fd, CMD_MEAS_HIGH[1], CMD_MEAS_HIGH[2]) then
+			return err("Failed to write SHT3X measure command")
+		end
+		milli_sleep(MEAS_WAIT_MS)
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
+		local b = read_bytes(fd, 6)
+		if b == nil then
+			return err("Failed to read SHT3X measurement")
+		end
 
-	return {  result = "OK"  }
+		-----------------------------------------------------
+		local st  = b[0] * 256 + b[1]		-- 温度原始值（16 位无符号）
+		local srh = b[3] * 256 + b[4]		-- 湿度原始值（16 位无符号）
+		local crc_ok = (crc8(st) == b[2]) and (crc8(srh) == b[5])
 
-end
+		local T  = -45.0 + 175.0 * st / 65535.0
+		local RH = 100.0 * srh / 65535.0
 
+		if DEBUG then
+			print(string.format("SHT3X: T=%.2f C, RH=%.2f %%RH, CRC %s",
+				T, RH, crc_ok and "OK" or "FAIL"))
+		end
 
--- 【调用SHT3X】单次测量（轮询模式）：写命令 -> 等待 -> 纯读 6 字节
--- NOTE: 接收一个参数（表），返回一个结果（表）
-function call(data)
+		-- 返回字典（CRC_OK：0/1，参照 SGP30 的约定不因 CRC 失败而中断）
+	 	return {
+			result = "OK",
+			T      = T,
+			RH     = RH,
+			CRC_OK = crc_ok and 1 or 0
+		}
+	end,
 
-	local ok, ek = arg_table(data)
-	if not ok then
-		return ek
-	end
-
-	if DEBUG then
-		dbg_table("-------- SHT3X caller func get a table --------", data)
-	end
-
-	-----------------------------------------------------
-	-- 校验收敛至 drv_common.i2c_pair（报错口径不变）
-	local fd, addr, ek = i2c_pair(data)
-	if fd == nil then return ek end
-
-	-----------------------------------------------------
-	-- 单次测量（0x2400 轮询·高重复性），等待转换完成
-	if not i2c_write_reg(fd, CMD_MEAS_HIGH[1], CMD_MEAS_HIGH[2]) then
-		return err("Failed to write SHT3X measure command")
-	end
-	milli_sleep(MEAS_WAIT_MS)
-
-	local b = read_bytes(fd, 6)
-	if b == nil then
-		return err("Failed to read SHT3X measurement")
-	end
-
-	-----------------------------------------------------
-	local st  = b[0] * 256 + b[1]		-- 温度原始值（16 位无符号）
-	local srh = b[3] * 256 + b[4]		-- 湿度原始值（16 位无符号）
-	local crc_ok = (crc8(st) == b[2]) and (crc8(srh) == b[5])
-
-	local T  = -45.0 + 175.0 * st / 65535.0
-	local RH = 100.0 * srh / 65535.0
-
-	if DEBUG then
-		print(string.format("SHT3X: T=%.2f C, RH=%.2f %%RH, CRC %s",
-			T, RH, crc_ok and "OK" or "FAIL"))
-	end
-
-	-- 返回字典（CRC_OK：0/1，参照 SGP30 的约定不因 CRC 失败而中断）
- 	return {
-		result = "OK",
-		T      = T,
-		RH     = RH,
-		CRC_OK = crc_ok and 1 or 0
-	}
-
-end
+	-- destroy 缺省 = 空操作（原 SHT3X destroy 仅 arg_table + return OK，等价）
+})
 
 
 -- =====================================================================
