@@ -104,6 +104,13 @@ std::string helpText() {
 	s += tcpOptionsHelp();
 	s += "  --input <path>     从文件读取动作脚本\n";
 	s += "  （缺省）           从 stdin 管道读取\n";
+	s += "  --webshell-port <port>   Web SSH 终端服务（#24）：浏览器 xterm.js →\n";
+	s += "                     WebSocket(/ws/term) → forkpty 交互 shell。独立于上述输入源，\n";
+	s += "                     给端口即启用；GET / 提供单页前端。缺省监听 127.0.0.1\n";
+	s += "  --webshell-host <addr>  Web SSH 监听地址（缺省 127.0.0.1）；跨机监听必须\n";
+	s += "                     同时提供 --webshell-token，否则拒绝启动\n";
+	s += "  --webshell-token <tok>  Web SSH 口令：客户端以 ?token=<tok> 附在连接 URL 上；\n";
+	s += "                     非回环监听必填\n";
 	s += "  --daemon-grace-ms <ms>  守护线程弃管后的二段停机宽限上限（缺省 30000，"
 		+ rangeText(daemon_limits::kGraceMsMin, daemon_limits::kGraceMsMax)
 		+ "）；仅结构脚本含 @Daemon 时生效，与 --tcp/--input 等输入模式无关\n";

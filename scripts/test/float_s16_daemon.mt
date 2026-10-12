@@ -2,7 +2,7 @@
 # 期望锚点在守护日志："would be truncated to integer"
 @Action
 t0.delay  mon0.go;
-   200        -;
+   2000        -;
     50        -;
     50        -;
     50        -;

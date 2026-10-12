@@ -11,7 +11,7 @@
 > 一颗 Lua 驱动）已移除：`mybot --agent` 会被显式拒绝（退出 2）并给出指引；
 > 模型侧参数（`--task` / `--llm-*` / `--prompt-file` / `--session-file` /
 > `--resume`）是 `mybot-agent` 自己的选项（见 `mybot-agent --help`）。
-> 预算、审计、图片后注与提示词定界由两端分工实现；沿革段保留旧实现说明，
+> 预算、审计、图片后注与提示词定界由两端分工实现；设计决策与沿革存档见 [design/decisions.md](design/decisions.md)，
 > 不代表现役调用链。当前模型侧行为以 `agent/src/` 为准。
 
 ## 目录
@@ -318,9 +318,6 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   与 C++ `src/llmconfig.cpp` 的 `kKnown` 同集合，双端同判据拒绝未知字段）；C++ 后端不消费模型侧字段
   （`mergeLlmLayer` 的有意早退）。协议差异全部属于 Rust 侧的 provider 实现。
 
-为什么是 JSON 而不是 Lua：配置文件是**数据**，不是代码。Lua 配置要由宿主内嵌状态机去执行，
-等于让一份常被复制/分发的文件获得任意代码执行能力；而仓库已有严格 JSON 解析器，复用它零成本。
-
 ## 模型调用（Rust 直连；Lua 协议驱动轨道已删）
 
 `mybot-agent`（Rust，rig 0.42）直连 provider，不经任何 Lua 驱动：
@@ -361,31 +358,6 @@ mybot-agent（Rust）     模型循环（provider.rs 直连 provider：reqwest +
 `reasoning_content` 逐轮回传、Anthropic 的 `tool_use`/`tool_result` 成对与
 `x-api-key` 头），回归由 `scripts/agent_e2e.sh` 的假模型服务守（R12/R13，
 见 [testing.md](testing.md)）。C++ 宿主对 provider 报文字段**一无所知**。
-
-### 沿革存档：为什么当初不把 HTTP 写进 C++ 宿主
-
-当初（C++ agent 时代）的决策记录，解释这条链为什么曾经存在：
-
-- 换模型/换厂商 = **换一个 Lua 文件**，宿主不重编、不链接任何 HTTP 库；
-- 项目「零第三方 C++ 依赖（仅 LuaJIT + pthread + dl）」的承诺在这条路径上依然成立；
-- 驱动生态的一切照旧适用：`build/call/destroy` 契约、`guard_build` 回滚、
-  `test/test_*.lua` 离线用例；模型驱动也能被 `.mt` 动作脚本或 `@Daemon` 调用；
-- 协议差异（如 DeepSeek 的思考模式）**只能**由驱动承担——它有状态，宿主一无所知。
-
-```
-【沿革存档：C++ --agent 时代的调用链（已全删；2026-09-25 #8 删最后一段）】
-  agentloop（C++）      工具循环（已删）
-  └─ agentproto         规范化消息/工具 ⇄ Json（传输层部分已删）
-       └─ agentdriver   ChatTransport：把请求交给驱动变量（已删）
-            └─ llm0 = modules/LlmOpenAI.lua      ← 普通硬件变量（#8 已删）
-                 └─ lib/llm_wire_openai.lua      ← 协议整形（#8 已删）
-                      └─ lib/llm_http.lua        ← ffi 直驱 libcurl（#8 已删）
-```
-
-规范化请求/响应契约、A1b 出站一致性自检、响应形变矩阵（SAN-6/PL-3/PL-6）等
-协议文档随轨道删除。它们的现役对应物在 Rust 侧：出站形状由写入不变量保证
-（`agent/src/history.rs` + SAN-12 的 id 唯一性三条来源），响应形变由 rig 的
-provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
 
 ## 给智能体的工具
 
@@ -798,6 +770,8 @@ MYBOT_HOME=/var/lib/mybot ./agent/target/release/mybot-agent --socket /tmp/mybot
 > 本地运行 `mybot-agent`（stdin 交互）；动作脚本的远程投递走 `--tcp` 动作源
 > （安全口径不变：回环缺省、跨机必须 `--tcp-token`）。批次字母 E 作废，不再复用。
 
+决策存档（main 侧沿革记录）另见 [design/decisions.md](design/decisions.md)。
+
 ## 出站 HTTP：http_fetch
 
 `http_fetch` 让模型对**操作者列出的少数几个受控主机**（内部 API、文档站点）发一次
@@ -1167,6 +1141,10 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     理由）；一个都不可读时该工具不注册。
     边界如实声明：**读传感器也可能有副作用**——部分器件的 `call` 会先写触发寄存器再读，
     所以这是一次**派发**（照走任务预算与审计），不是"绝对不改状态"的承诺。
+
+危险能力（`run_command` 任意 shell、`apply_sql` 带电变更、可读变量清单）**缺省全关**，须由后端命令行 `--agent-shell` / `--agent-hot-sql` / `--read-var` 显式开启，且必须配合 `--agent-policy` 确认程序。密钥只走环境变量或配置文件，不经 argv。配置错误（含未知字段、区间越界、权限放宽）一律退出 2，不碰真机。
+
+完整安全设计论证（含攻击场景、防线推导与历史审计记录）见 [design/security-rationale.md](design/security-rationale.md)。
 
 13. **`list_dir` / `read_file` 的只读根目录只能由操作者显式指定**（Phase 4，2026-10-07）。
     这两个工具让模型访问机器人主机上的**普通文件系统**（与硬件/shell 无关），故与

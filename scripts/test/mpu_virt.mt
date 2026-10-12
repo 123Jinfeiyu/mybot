@@ -6,7 +6,7 @@
 # 用法：cat scripts/test/mpu_virt.mt | ./build/mybot --robot=robots/test/mpu_virt.sql
 @Action
 t0.delay  eax.out  eay.out  eaz.out  egx.out  egy.out  egz.out  etmp.out  mon0.go  monf.go;
-   200       -        -        -        -        -        -        -         -         -    ;
+   2000       -        -        -        -        -        -        -         -         -    ;
     50       -        -        -        -        -        -        -         -         -    ;
     50       -        -        -        -        -        -        -         -         -    ;
     50       -        -        -        -        -        -        -         -         -    ;

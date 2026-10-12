@@ -35,21 +35,21 @@ done
 
 # 2) 每个 test/cpp/*.cpp 都必须登记进 CMakeLists.txt（显式源清单，漏登记即永不编译）
 for f in test/cpp/*.cpp; do
-	[ -e "$f" ] || continue
-	base="$(basename "$f")"
-	grep -qF "test/cpp/$base" CMakeLists.txt \
-		|| note "C++ 用例未登记进 CMakeLists.txt（不会参与编译）：$f"
+        [ -e "$f" ] || continue
+        base="$(basename "$f")"
+        grep -qF "test/cpp/$base" CMakeLists.txt \
+                || note "C++ 用例未登记进 CMakeLists.txt（不会参与编译）：$f"
 done
 
 # 3) test/*.lua 必须匹配 test_*.lua——run_all.sh 与 CMakeLists 两侧的 glob 同此前缀，
 #    改名即被两边同时静默漏掉。
 for f in test/*.lua; do
-	[ -e "$f" ] || continue
-	base="$(basename "$f")"
-	case "$base" in
-		test_*) ;;
-		*) note "Lua 用例不匹配 test_*.lua 命名（守门与 ctest 都不会收集）：$f" ;;
-	esac
+        [ -e "$f" ] || continue
+        base="$(basename "$f")"
+        case "$base" in
+                test_*) ;;
+                *) note "Lua 用例不匹配 test_*.lua 命名（守门与 ctest 都不会收集）：$f" ;;
+        esac
 done
 
 # 4) count_calls（「N 条用例」文案的唯一来源）必须真的数得到调用点。
@@ -57,17 +57,17 @@ done
 #    变 0，文案与真跑条数就一起漂移。这里用**独立实现**交叉核对（宽松计数不看引号）：
 #    两者不等即说明 count_calls 的判据漏了某种写法。F3-4（2026-09-21）。
 for r in $(grep -oE 'count_calls [a-zA-Z0-9_]+' test/run_all.sh | awk '{print $2}' | sort -u); do
-	# 定义可能在 run_all.sh，也可能在 F3-1 抽出的分段文件里；调用点则必须仍在
-	# run_all.sh（count_calls 数的就是它）。
-	grep -qE "^[[:space:]]*${r}\(\)" test/run_all.sh test/lib/sections/*.sh \
-		|| note "count_calls 的参数不是已定义的 runner（run_all.sh 与分段文件里都没有）：$r"
-	strict="$(grep -cE "^[[:space:]]*${r} ['\"]" test/run_all.sh)"
-	loose="$(grep -cE "^[[:space:]]*${r}[[:space:]]" test/run_all.sh)"
-	if [ "$strict" -eq 0 ]; then
-		note "runner $r 的调用点计数为 0（写法变了？引号/缩进/改名）"
-	elif [ "$strict" -ne "$loose" ]; then
-		note "runner $r 计数不一致：count_calls 判据 $strict != 宽松计数 $loose（有写法没被认出来）"
-	fi
+        # 定义可能在 run_all.sh，也可能在 F3-1 抽出的分段文件里；调用点则必须仍在
+        # run_all.sh（count_calls 数的就是它）。
+        grep -qE "^[[:space:]]*${r}\(\)" test/run_all.sh test/lib/sections/*.sh \
+                || note "count_calls 的参数不是已定义的 runner（run_all.sh 与分段文件里都没有）：$r"
+        strict="$(grep -cE "^[[:space:]]*${r} ['\"]" test/run_all.sh)"
+        loose="$(grep -cE "^[[:space:]]*${r}[[:space:]]" test/run_all.sh)"
+        if [ "$strict" -eq 0 ]; then
+                note "runner $r 的调用点计数为 0（写法变了？引号/缩进/改名）"
+        elif [ "$strict" -ne "$loose" ]; then
+                note "runner $r 计数不一致：count_calls 判据 $strict != 宽松计数 $loose（有写法没被认出来）"
+        fi
 done
 
 # 5) 两张用例表的结构与条数（F3-2；2026-10-06 重写：条数改**派生**、判据改 quote-aware）
@@ -139,7 +139,7 @@ done
 #    被名单某条覆盖（加了并发用例而没往名单里加前缀，同样静默少跑，见下面那段注释）。
 tsan_file=test/lib/tsan_cases.txt
 if [ ! -s "$tsan_file" ]; then
-	note "缺 TSan 名单或为空：$tsan_file"
+        note "缺 TSan 名单或为空：$tsan_file"
 else
 	while read -r c; do
 		case "$c" in ''|\#*) continue ;; esac
@@ -179,9 +179,9 @@ fi
 #    test/lib/params.sh（bash 直接 source、CMake 正则提取、CI 同源）。格式
 #    漂移（如 CMake 侧正则依赖的 `: "${KEY:=v}"` 形态被改）会让 ctest TIMEOUT
 #    在 configure 期 FATAL——这里再钉一层，让漂移在 selftest 就显形。
-for k in TEST_TIMEOUT SAN_DIR; do
-	grep -qE "^: \"\\\$\{${k}:=[0-9a-zA-Z._/-]+\}\"$" test/lib/params.sh \
-		|| note "params 单点缺 ${k} 条目或格式漂移（CMake 正则提取会失败）：test/lib/params.sh"
+for k in TEST_TIMEOUT TEST_KILL_GRACE SAN_DIR; do
+        grep -qE "^: \"\\\$\{${k}:=[0-9a-zA-Z._/-]+\}\"$" test/lib/params.sh \
+                || note "params 单点缺 ${k} 条目或格式漂移（CMake 正则提取会失败）：test/lib/params.sh"
 done
 #    同族第二个单点：test/lib/agent_stale.sh（mybot-agent 产物新鲜度的取材面），
 #    消费方三处——net_agent.sh 的 agent-rust-e2e 段与 ica-e2e 段、git-hooks/pre-push。
@@ -430,7 +430,7 @@ else
 fi
 
 if [ "$fail" -ne 0 ]; then
-	echo "run_all_selftest: $fail 项不合格" >&2
-	exit 1
+        echo "run_all_selftest: $fail 项不合格" >&2
+        exit 1
 fi
 echo "run_all_selftest: 通过（语法 / C++ 用例登记 / Lua 命名 / count_calls / 用例表结构 / TSan 名单 / 守门单点与空匹配防线 / 仿真器跨构建契约 / 状态目录缺省名 / 文档与仓库实况 / 配置字段白名单双端 / 有状态协议判据双端 / LLM wire 契约 / 后端工具表一致性）"

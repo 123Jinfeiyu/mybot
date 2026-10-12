@@ -149,6 +149,9 @@ set(MYBOT_CORE_SOURCES
   src/context_service.cpp
   # ---- 应用编排：把上面各域串成 --input/stdin/TCP/agent 四条运行路径 ----
   src/robot_application.cpp
+  src/wsproto.cpp
+  src/webterm.cpp
+  src/webshell.cpp
 )
 
 # 两个目标的公共配置：零告警基线 + 头文件路径，一处声明一致套用，
@@ -177,6 +180,7 @@ target_link_libraries(mybot_common INTERFACE
   pthread
   dl
   m
+  util
 )
 
 add_executable(mybot
@@ -241,6 +245,10 @@ add_executable(mybot_tests
   test/cpp/test_mcptransport.cpp
   test/cpp/test_mcplisten.cpp
   test/cpp/test_agenttools_sandbox.cpp
+  test/cpp/test_wsproto.cpp
+  test/cpp/test_webterm.cpp
+  test/cpp/test_webshell.cpp
+  src/mtmerge_core.cpp
   ${MYBOT_CORE_SOURCES}
 )
 

@@ -33,6 +33,9 @@ constexpr OptionSpec kValueOptions[] = {
 	{"tcp-idle", [](CliOptions& o, const std::string& v) { o.tcp.tcpIdle = v; }, false},
 	{"tcp-max-auth-attempts", [](CliOptions& o, const std::string& v) { o.tcp.tcpMaxAuthAttempts = v; }, false},
 	{"tcp-total-timeout", [](CliOptions& o, const std::string& v) { o.tcp.tcpTotalTimeout = v; }, false},
+	{"webshell-port", [](CliOptions& o, const std::string& v) { o.webshell = true; o.webshellPort = v; }, false},
+	{"webshell-host", [](CliOptions& o, const std::string& v) { o.webshellHost = v; }, false},
+	{"webshell-token", [](CliOptions& o, const std::string& v) { o.webshellToken = v; }, false},
 	{"daemon-grace-ms", [](CliOptions& o, const std::string& v) { o.daemonGraceMs = v; }, false},
 	{"input", [](CliOptions& o, const std::string& v) { o.input = v; }, false},
 	/* --mcp-socket：MCP 后端的 AF_UNIX 路径。非 agentOnly（它属 --mcp-backend
@@ -178,6 +181,31 @@ int rejectMcpOptionsOutsideBackend(const CliOptions& options) {
 /* --mcp-backend 模式内的组合校验（方案 F / 拓扑 F3）：互斥项、必备项与
  * 每连接预算数值。空 = 不限；配置错误不碰真机，故在此单点拒；
  * 数值上限只是防呆（跑飞护栏本就不该设成天文数字）。 */
+/* ---- Web SSH（--webshell-port，#24）：端口数字 + 跨机监听必须带 token ----
+ * 校验前置（配置错误不碰真机/不监听）：端口非数字或越界即拒；监听地址非
+ * 回环（127.0.0.1/localhost）且没给 --webshell-token 时拒绝启动——空口令
+ * 暴露交互 shell 的风险比 --tcp 更大（那是单向动作流，这是终端）。 */
+int rejectWebshellOptions(const CliOptions& options) {
+	if (!options.webshell) { return 0; }
+	bool portOk = false;
+	try {
+		long p = std::stol(options.webshellPort);
+		portOk = p >= 1 && p <= 65535;
+	} catch (...) { portOk = false; }
+	if (!portOk) {
+		std::cerr << "参数错误：--webshell-port 需要一个 1~65535 的整数，"
+			"实际是 '" << options.webshellPort << "'" << std::endl;
+		return 2;
+	}
+	bool loopback = options.webshellHost == "127.0.0.1" || options.webshellHost == "localhost";
+	if (!loopback && options.webshellToken.empty()) {
+		std::cerr << "参数错误：--webshell-host 为非回环地址（" << options.webshellHost
+			<< "）时必须提供 --webshell-token，否则拒绝启动（交互 shell 暴露公网）" << std::endl;
+		return 2;
+	}
+	return 0;
+}
+
 int validateMcpBackendCombos(const CliOptions& options) {
 	if (!options.mcp.enabled) { return 0; }
 	if (options.tcp.enabled) {
@@ -326,6 +354,7 @@ int validateOptions(ParsedArgs& args) {
 	if (int rc = rejectLoopOnlyOptions(args.opts)) { return rc; }
 	if (int rc = rejectAgentOptionsOutsideBackend(args.opts)) { return rc; }
 	if (int rc = rejectMcpOptionsOutsideBackend(args.opts)) { return rc; }
+	if (int rc = rejectWebshellOptions(args.opts)) { return rc; }
 	return validateMcpBackendCombos(args.opts);
 }
 /* 帮助文本（helpText / helpText(topic) / printHelp / tcpOptionsHelp / rangeText

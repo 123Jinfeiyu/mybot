@@ -9,6 +9,8 @@
 #include <sys/prctl.h>
 #include <unistd.h>
 
+#include "actionsource.hpp"
+#include "webshell.hpp"
 #include "agentmode.hpp"
 #include "agent_subprocess.hpp"
 #include "cliargs.hpp"
@@ -214,6 +216,19 @@ int main(int argc, char** argv) {
 		return 2;	/* 具体错误 validateOptions 已打印 */
 	case Preflight::Proceed:
 		break;
+	}
+
+	/* ---- Web SSH 独立服务（--webshell-port，#24 feat/web-ssh MVP）----
+	 * 不依赖结构脚本/动作输入源：纯粹远程终端（浏览器 → WS → forkpty → shell）。
+	 * 端口/跨机 token 校验已在 cliargs::validateOptions 收口（配置错误不碰真机）。
+	 * 与机器人模式互斥：同给即拒，避免「终端里又起一台机器人」的歧义。 */
+	if (options.webshell) {
+		if (options.robot || options.agent.enabled || options.mcp.enabled) {
+			std::cerr << "参数错误：--webshell-port 与 --robot/--agent/--mcp-backend 互斥"
+				"（Web SSH 是独立终端服务，不加载机器人结构脚本）" << std::endl;
+			return 2;
+		}
+		return webshell::run(options.webshellHost, options.webshellPort, options.webshellToken);
 	}
 
 	/* ---- 结构脚本 + 动作输入源分支 ---- */

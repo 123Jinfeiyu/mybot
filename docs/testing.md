@@ -355,7 +355,7 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 
 | 套件 | 怎么跑 | 计数（2026-10-12 快照） |
 | --- | --- | --- |
-| `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 764 通过 / 0 失败 |
+| `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 801 通过 / 0 失败 |
 | `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
 | `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过（**运行时数**）/ 0 失败（8 个 TU） |
 | Rust agent | `cd agent && cargo test --release` | 182 passed |
@@ -366,9 +366,9 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 
 两个容易对不上的数字，出处写在这里省得每次重推：
 
-- `mybot_tests` 的 764 **不等于** `test/cpp/` 里 `TH_TEST(` 的出现次数（778）。差值有
-  出处：778 − 1 处宏定义（`test/cpp/harness.hpp`）− 13 个属于 `harness_selftest`
-  （独立可执行文件）= 764。拿这个式子复核，别把两个数字硬对齐。
+- `mybot_tests` 的 801 **不等于** `test/cpp/` 里 `TH_TEST(` 的出现次数（815）。差值有
+  出处：815 − 1 处宏定义（`test/cpp/harness.hpp`）− 13 个属于 `harness_selftest`
+  （独立可执行文件）= 801。拿这个式子复核，别把两个数字硬对齐。
 - `harness_selftest` 那个文件里有 13 个 `TH_TEST`，二进制只报 8 通过：另外 5 个 `meta_*`
   是**故意含失败形态的例句**，只作被测对象（由自证用例内部的 `judge(filter)` →
   `runAllOutcome(filter, quiet=true)` 调到），不进缺省全量跑——否则主输出里会混进一串

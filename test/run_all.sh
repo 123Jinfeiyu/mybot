@@ -45,9 +45,16 @@ if ! [ "${TEST_TIMEOUT:-}" -gt 0 ] 2>/dev/null; then
 	echo "params 单点失效：TEST_TIMEOUT 非正整数（test/lib/params.sh）" >&2
 	exit 1
 fi
+if ! [ "${TEST_KILL_GRACE:-}" -gt 0 ] 2>/dev/null; then
+	echo "params 单点失效：TEST_KILL_GRACE 非正整数（test/lib/params.sh）" >&2
+	exit 1
+fi
 timeout_cmd=""
 if command -v timeout >/dev/null 2>&1; then
-	timeout_cmd="timeout $TEST_TIMEOUT"
+	# -k（宽限见 params.sh TEST_KILL_GRACE，issue #40）：到点 TERM 之后
+	# 子进程若无视（屏蔽/卡死），SIGKILL 兜底——否则 timeout 自身会无限
+	# 等待，整条守门流水线挂死（实测复现过）。
+	timeout_cmd="timeout -k $TEST_KILL_GRACE $TEST_TIMEOUT"
 fi
 
 # mybot-agent 产物新鲜度判据单点（取材面见该文件头注）：守门的 agent-rust-e2e /

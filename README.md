@@ -379,7 +379,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（60个模块 + 28个共享库）
+├── modules/       # Lua驱动生态（60个模块 + 27个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
@@ -390,7 +390,7 @@ mybot/
 │   ├── spider1.sql      # 14路舵机蜘蛛
 │   ├── relay-test.sql   # 虚拟继电器（无硬件）
 │   └── test.sql         # 测试夹具
-├── scripts/       # 动作脚本库（51个动作脚本）
+├── scripts/       # 动作脚本库（50个动作脚本）
 │   ├── std.mt           # 站立
 │   ├── left-turn.mt     # 左转
 │   └── jump.mt          # 跳跃
@@ -399,8 +399,8 @@ mybot/
 │   ├── scenes/          # 模板场景（播种到 $MYBOT_HOME/maps/）
 │   └── tests/           # sim_tests（8 个 TU；断言计数见 docs/testing.md）
 ├── prompts/       # Agent提示词包
-├── test/          # 三层测试（88 Lua + 47 C++ + E2E）
-└── docs/          # 深入文档（13篇Markdown + 架构分析网页与两张全景图）
+├── test/          # 三层测试（87 Lua + 50 C++ + E2E）
+└── docs/          # 深入文档（16篇Markdown + design/ 设计论证 + 架构分析网页与两张全景图，清单以 docs/README.md 为准）
 ```
 
 上面括号内的计数**受守门钉住**：`scripts/check_doc_paths.py` 第 7 组从仓库实况派生后
@@ -433,8 +433,8 @@ bash test/run_all.sh agent-all
 汇总行的守门用例数、`sim_tests` 的断言数——**故意不写死在本页**，只给指针，因为
 静态门派生不出来、写死必漂移）：
 
-- 764 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 88 个 Lua 测试文件 + 47 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 801 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 87 个 Lua 测试文件 + 50 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
 - 守门用例数以 `bash test/run_all.sh` 末尾的汇总行为准（Lua 单测 + C++ 段 + 各 e2e 脚本）；
   跳过项只应剩 `test_jit_warmup.lua`——真机 ABI 回归，需 `/dev/i2c-*`
 - 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
@@ -453,6 +453,7 @@ bash test/run_all.sh agent-all
 | 文档 | 内容 |
 |------|------|
 | [Agent 模式完整指南](docs/agent.md) | CLI 选项、工具系统、安全边界、提示词包、会话持久化 |
+| [安全设计论证](docs/design/security-rationale.md) | 安全设计的完整论证、攻击场景与防线推导 |
 | [命令行与环境变量参考](docs/reference.md) | 所有 CLI 参数、`BOT4CJ_*` 环境变量、安全约束 |
 | [DSL 语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
 | [驱动清单](docs/drivers.md) | 59 个模块分类速查、驱动契约 |
@@ -464,6 +465,8 @@ bash test/run_all.sh agent-all
 | [开发指南](docs/development.md) | 贡献流程、新增驱动、单测 |
 | [FAQ](docs/faq.md) | 已知限制、排障问答 |
 | [ICA 证据账本原型](docs/ica.md) | Rust agent 实验特性（BOT4CJ_ICA=1）的事实边界 |
+| [Web SSH 语义契约](docs/webssh.md) | wsproto / webterm / webshell 行为不变式 |
+| [更新日志](docs/changelog.md) | 版本演进与变更记录 |
 | [架构分析与路线图（网页）](docs/architecture_analysis.html) | C++17 版全景分析，配两张架构图（**2026-09-25 快照，已冻结**：不含 sim/ 迁入、多机器人、`~/.mybot` 持久化、领域门面拆分） |
 | [分层架构全景图（SVG）](docs/architecture_layers.svg) | L1–L7 分层 + 主数据流 + 守护并发引用（同上，2026-09-25 快照） |
 | [play 数据流时序图（SVG）](docs/architecture_dataflow.svg) | 四阶段调用链 + @Daemon 并发分支（同上，2026-09-25 快照） |

@@ -103,13 +103,17 @@ URL_PREFIXES = ("http://", "https://", "mailto:", "#")
 # 登记在这里的条目若**又存在了**（比如文件被加回来），本脚本也判失败：那时它不再是
 # 豁免，而说明这份名单过期了。
 # 2026-10-04：docs/changelog.md（冻结变更账本）整篇删除后，本表原「历史记录」类
-# 下七条——仅由该账本提及、仓内再无第二处引用的条目（LlmOpenAI.lua/
-# check_sim_action_table.py/src/lib.rs/test_sessionfile.cpp/dump_consts.lua/
-# test_llm_wire_contract.lua/robot.cpp）——随之失去唯一引用来源，按本脚本自身的
-# 「过期即删」判据一并清掉；不等价于重建 changelog。
+# 下七条——仅由该账本提及、仓内再无第二处引用的条目——随之失去唯一引用来源，按本
+# 脚本自身的「过期即删」判据一并清掉。2026-10-12 合并 main 时 changelog 以精简版
+# （changelog.md + changelog-detail.md，main 侧 cf860ff 起持续维护）复活，账本正文
+# 重新提到其中三条历史名，按「历史记录」语义登记回来。
 KNOWN_ABSENT = {
     # —— 历史记录（正文明写「历史上」）——
     "src/luaend.cpp": "历史：development.md 明写「历史上」，N-17 拆成 luasandbox.cpp 等",
+    # —— 历史记录（仅 changelog-detail.md 的历史条目提到）——
+    "modules/LlmOpenAI.lua": "历史：changelog-detail.md 记录的已删 Lua 协议驱动（2026-09-25 #8）",
+    "test/cpp/test_sessionfile.cpp": "历史：changelog-detail.md 记录的已删参考实现（Rust 侧承接）",
+    "test/test_llm_wire_contract.lua": "历史：changelog-detail.md 记录的已删用例（随 Lua 协议轨道退场）",
     # —— 占位 / 示例 ——
     "./mybot.llm.conf.json": "占位：agent.md 列的是配置文件**查找顺序**候选名，不是仓内文件",
     "modules/X.lua": "占位：development.md「新增驱动」教程里的假名",
@@ -121,21 +125,12 @@ KNOWN_ABSENT = {
 # 已删除且**刻意不重建**的文件：任何取材面里再出现指向它的引用即判失败（检查 5）。
 # 与 KNOWN_ABSENT 方向相反——那张表登记「文档提到的历史名，允许不存在」，这张表登记
 # 「这个名字不许再被当成现存出处引用」。为什么需要它，是一次真实的漏网：9480de3 删掉
-# docs/changelog.md 后，d7ca619 只清掉了 docs/*.md 里**路径形态**的死引用。检查 1 的
-# 取材面就是 README + docs/*.md，且只认 markdown 链接与反引号跨度，于是三类全都漏网：
-# ① 冻结 html 横幅里的 `<a href="changelog.md">`（html 不在取材面）；② src/ scripts/
-# test/ .gitlab-ci.yml 注释里的「见 docs/changelog.md」（同上）；③ docs/*.md 正文里的
-# 裸词「changelog」（在取材面里，但不是链接也不是路径形态的跨度）。
-# 2026-10-06 清点共 11 处，已全部改成提交号或中性说法。检查 1 的取材面**不该**扩到 html：
-# 那是 2026-09-25 的冻结快照，逐条实测其中路径只会产出一堆刻意不修的差异。
+# docs/changelog.md 后，d7ca619 只清掉了 docs/*.md 里**路径形态**的死引用。
+# 2026-10-12 合并 main：main 侧以「精简版 changelog（52 行）+ changelog-detail.md 归档」
+# 的决策（cf860ff）取代本分支 9480de3 的整篇删除，docs/changelog.md 随合并复活、
+# 条目从名单移除；「出处写提交号」的口径保留给 changelog 之外的正文。
 # 匹配用**基名**：`docs/x.md` 与 markdown 链接里的相对形态 `x.md` 一并覆盖。
-# 已知残留（刻意不追）：无扩展名的裸词不匹配。上面那 11 处里另有 4 处原文就是裸词
-# 「changelog」（.gitlab-ci.yml、docs/agent.md 两处、docs/development.md），一并改成了
-# 提交号或中性说法；仓内还剩 docs/architecture_analysis.html:386 一处裸词——那是
-# 2026-09-25 冻结快照的正文，改它等于篡改快照。要连裸词一起禁，代价是冻结快照与日常
-# 散文里的普通词都会误报，不值。
 DELETED_FILES = {
-    "docs/changelog.md": "变更账本自 2026-10-04 起就是提交信息（9480de3 删除）；出处请写提交号，如「见提交 fc1c66f」",
 }
 # 自排除：本脚本的表与头注必须能写出这个名字（与 KNOWN_ABSENT 的注释同理）。
 DELETED_SCAN_SKIP = ("scripts/check_doc_paths.py",)

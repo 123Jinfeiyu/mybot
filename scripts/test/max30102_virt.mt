@@ -10,7 +10,7 @@
 # 用法：cat scripts/test/max30102_virt.mt | ./build/mybot --robot=robots/test/max30102_virt.sql
 @Action
 t0.delay  eir.out  mon0.go  monf.go;
-   200       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;

@@ -10,7 +10,7 @@
 # 用法：cat scripts/test/ms5611_virt.mt | ./build/mybot --robot=robots/test/ms5611_virt.sql
 @Action
 t0.delay  ep.out  mon0.go  monf.go;
-   300       -        -         -    ;
+   2000       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
     50       -        -         -    ;
