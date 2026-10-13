@@ -34,6 +34,8 @@ use crate::placeholder::source_len;
 #[derive(Default)]
 pub struct ConversationHistory {
     messages: Vec<Message>,
+    /// 与 messages 对齐的增量权重，避免每次任务裁剪都重复序列化工具参数。
+    weights: Vec<usize>,
     written_prefix: usize,
     /// 更早已裁出的任务块的模型摘要（正文，不含定界外壳）；`None` = 尚无。
     summary: Option<String>,
@@ -41,9 +43,11 @@ pub struct ConversationHistory {
 
 impl ConversationHistory {
     pub fn resumed(messages: Vec<Message>, summary: Option<String>) -> Self {
+        let weights = messages.iter().map(message_weight).collect();
         Self {
             written_prefix: messages.len(),
             messages,
+            weights,
             summary,
         }
     }
@@ -70,9 +74,13 @@ impl ConversationHistory {
 
     /// 整块裁剪；返回被裁掉的消息（按原序，只含完整任务块；空 = 没裁）。
     pub fn evict(&mut self, budget: usize, log: &mut dyn FnMut(&str)) -> Vec<Message> {
-        let evicted = evict(&mut self.messages, budget, log);
-        self.written_prefix = self.written_prefix.saturating_sub(evicted.len());
-        evicted
+        let dropped = evict_with_weights(&mut self.messages, &mut self.weights, budget, log);
+        if dropped == 0 {
+            return Vec::new();
+        }
+        self.written_prefix = self.written_prefix.saturating_sub(dropped);
+        self.weights.drain(0..dropped);
+        self.messages.drain(0..dropped).collect()
     }
 
     /// 已落盘消息里的任务块数——会话文件 `session_summary` 记录的 `keep_blocks`：
@@ -83,6 +91,7 @@ impl ConversationHistory {
     }
 
     pub fn replace(&mut self, messages: Vec<Message>) {
+        self.weights = messages.iter().map(message_weight).collect();
         self.messages = messages;
     }
 
@@ -97,6 +106,7 @@ impl ConversationHistory {
 
     pub fn clear(&mut self) {
         self.messages.clear();
+        self.weights.clear();
         self.written_prefix = 0;
         self.summary = None;
     }
@@ -204,40 +214,48 @@ fn params_len(p: &Option<AdditionalParams>) -> usize {
 /// 切口只落在块起点：一对 tool_call/tool_result、一问一答永远不会只剩一半——被裁
 /// 部分整块交给摘要器，留下部分整块送给模型。
 pub fn evict(history: &mut Vec<Message>, budget: usize, log: &mut dyn FnMut(&str)) -> Vec<Message> {
+    let mut weights: Vec<usize> = history.iter().map(message_weight).collect();
+    let dropped = evict_with_weights(history, &mut weights, budget, log);
+    history.drain(0..dropped).collect()
+}
+
+/// 仅计算并返回应裁掉的消息数；调用方负责同步裁剪消息与权重。
+fn evict_with_weights(
+    history: &[Message],
+    weights: &mut Vec<usize>,
+    budget: usize,
+    log: &mut dyn FnMut(&str),
+) -> usize {
     if budget == 0 || history.is_empty() {
-        return Vec::new();
+        return 0;
     }
+    debug_assert_eq!(history.len(), weights.len());
     let starts = block_starts(history);
     if starts.is_empty() {
         // 防御：历史理应至少含一次任务（一条不带图片的 user 消息）
-        return Vec::new();
+        return 0;
     }
-
-    let block_weight: Vec<usize> = starts
-        .iter()
-        .enumerate()
-        .map(|(j, &start)| {
-            let end = starts.get(j + 1).copied().unwrap_or(history.len());
-            history[start..end].iter().map(message_weight).sum()
-        })
-        .collect();
 
     let mut keep = starts.len() - 1;
-    let mut acc = block_weight[keep];
-    while keep > 0 && acc + block_weight[keep - 1] <= budget {
+    let block_weight = |j: usize| {
+        let start = starts[j];
+        let end = starts.get(j + 1).copied().unwrap_or(history.len());
+        weights[start..end].iter().sum::<usize>()
+    };
+    let mut acc = block_weight(keep);
+    while keep > 0 && acc + block_weight(keep - 1) <= budget {
         keep -= 1;
-        acc += block_weight[keep];
+        acc += block_weight(keep);
     }
     if keep == 0 {
-        return Vec::new(); // 全部塞得下，无事可做
+        return 0; // 全部塞得下，无事可做
     }
     let dropped = starts[keep];
-    let evicted: Vec<Message> = history.drain(0..dropped).collect();
     log(&format!(
         "[历史] 超出字节预算，已裁掉最早的 {dropped} 条消息（含其中的图片）；\
          更早的任务上下文不再可见"
     ));
-    evicted
+    dropped
 }
 
 #[cfg(test)]
@@ -275,6 +293,22 @@ mod tests {
             });
         }
         msgs
+    }
+
+    #[test]
+    fn repeated_eviction_keeps_incremental_weights_aligned() {
+        let mut history = ConversationHistory::resumed(
+            [
+                task_block("旧任务 1", "结果", 0),
+                task_block("旧任务 2", "结果", 0),
+                task_block("最新任务", "结果", 0),
+            ]
+            .concat(),
+            None,
+        );
+        assert!(!history.evict(1, &mut |_| {}).is_empty());
+        assert!(history.evict(1, &mut |_| {}).is_empty());
+        assert_eq!(history.len(), history.snapshot().len());
     }
 
     #[test]

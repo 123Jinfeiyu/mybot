@@ -86,6 +86,7 @@ AgentToolResult DispatchGate::run(const ToolCall& call, int turn) {
 	if (audit_) {
 		AuditEntry e;
 		e.turn = turn;
+		e.requestId = call.requestId;
 		e.tool = call.name;
 		if (argsOk && parsedArgs.isObj()) {
 			e.args = maskToolArgs(call.name, parsedArgs);

@@ -23,6 +23,7 @@ inline constexpr const char* kName = "name";
 inline constexpr const char* kDescription = "description";
 inline constexpr const char* kInputSchema = "inputSchema";
 inline constexpr const char* kArguments = "arguments";
+inline constexpr const char* kRequestId = "requestId";
 
 inline constexpr const char* kText = "text";
 inline constexpr const char* kImageDataUrl = "imageDataUrl";

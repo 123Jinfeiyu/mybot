@@ -126,6 +126,7 @@ static void writeSessionFields(const AuditEntry& e, Json& line) {
 /* 既有工具行：字段与顺序**一个不动**（兼容性硬约束） */
 static void writeToolFields(const AuditEntry& e, Json& line) {
 	line.put("turn", JsonInt(e.turn));
+	if (!e.requestId.empty()) { line.put("requestId", JsonString(e.requestId)); }
 	line.put("tool", JsonString(e.tool));
 	if (e.args.isObj()) {
 		line.put("args", e.args);

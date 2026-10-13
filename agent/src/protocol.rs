@@ -13,6 +13,7 @@ pub const TOKEN_FIELD: &str = "token";
 /* `tool.call` 请求体的两个键（bridge.rs 的调用构造点）。 */
 pub const NAME_FIELD: &str = "name";
 pub const ARGUMENTS_FIELD: &str = "arguments";
+pub const REQUEST_ID_FIELD: &str = "requestId";
 /* 信封字段的**手读**入口（frame.rs 的 authenticate、bridge.rs 的 resp_ok/resp_error）；
  * 结构化路径走下面的 `Response<T>` serde，不经这两个常量。C++ 侧同名常量在
  * src/mcp_protocol.hpp，两边由 test/cpp/test_mcptransport.cpp 的孪生用例互钉。 */
@@ -86,6 +87,11 @@ pub struct Context {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn request_id_wire_name_is_stable() {
+        assert_eq!(REQUEST_ID_FIELD, "requestId");
+    }
 
     #[test]
     fn tool_result_uses_wire_field_names_and_roundtrips() {

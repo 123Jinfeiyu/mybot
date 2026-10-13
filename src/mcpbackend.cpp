@@ -131,6 +131,9 @@ Json McpBackend::routeToolCall(const Json& req) {
 
 	ToolCall call;
 	call.id.clear();		/* MCP call_tool 无需 id；DispatchGate 不消费它 */
+	if (const Json* id = req.find(mcp_protocol::kRequestId); id != nullptr && id->isStr()) {
+		call.requestId = id->getValue();
+	}
 	call.name = nameJ->getValue();
 	call.arguments = std::move(argsStr);
 
@@ -195,7 +198,16 @@ std::string McpBackend::handleFrame(const std::string& payload) {
 	} catch (const std::exception&) {
 		return errReply("invalid JSON request").toString();
 	}
-	return handleRequest(req).toString();
+	Json response = handleRequest(req);
+	/* 请求 ID 只作为跨进程关联元数据回显，不参与业务路由与预算判定。
+	 * 缺失或非字符串时不回显，保持旧客户端的响应形状。 */
+	if (req.isObj()) {
+		const Json* requestId = req.find(mcp_protocol::kRequestId);
+		if (requestId != nullptr && requestId->isStr()) {
+			response.put(mcp_protocol::kRequestId, JsonString(requestId->getValue()));
+		}
+	}
+	return response.toString();
 }
 
 void McpBackend::writeSessionRecord(const char* status) const {

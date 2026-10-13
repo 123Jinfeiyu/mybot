@@ -118,6 +118,19 @@ TH_TEST(mcpbackend_tool_list_reflects_registry) {
 	TH_CHECK(schema != nullptr && schema->isObj());
 }
 
+/* 请求关联 ID 由后端逐字回显，旧客户端未携带时响应形状不变。 */
+TH_TEST(mcpbackend_echoes_request_id) {
+	McpBackend b = makeBackend(AgentToolRegistry{});
+	const Json withId = parseJson(b.handleFrame(
+		R"({"_route":"ping","requestId":"mcp-42"})"));
+	const auto echoed = withId.get("requestId");
+	TH_CHECK(echoed.has_value());
+	if (echoed) { TH_CHECK(echoed->getValue() == "mcp-42"); }
+
+	const Json withoutId = parseJson(b.handleFrame(R"({"_route":"ping"})"));
+	TH_CHECK(!withoutId.get("requestId").has_value());
+}
+
 /* ---- tool.call 穿过 DispatchGate 派发 ---- */
 TH_TEST(mcpbackend_tool_call_dispatches_through_gate) {
 	AgentToolRegistry reg;

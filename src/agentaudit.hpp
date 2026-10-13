@@ -44,6 +44,7 @@ struct AuditEntry {
 	 * 写进 agent 侧审计文件，两端文件互不混合。 */
 	std::string kind = "tool";
 	int turn = -1;			/* 任务内的模型轮次（未知为 -1） */
+	std::string requestId;		/* MCP 请求关联 ID（缺省不写） */
 	std::string tool;		/* 工具名（kind="tool"）/ 事件名（kind="session"） */
 	Json args;			/* 解析成功的参数对象（否则空） */
 	std::string argsRaw;		/* 原始参数文本（截断到 kMaxAuditArgsRaw） */

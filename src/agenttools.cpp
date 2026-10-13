@@ -205,15 +205,13 @@ Json toolSchema(const std::vector<std::pair<std::string, Json>>& props,
 }
 
 bool AgentToolRegistry::contains(const std::string& name) const {
-	for (const auto& t : tools_) {
-		if (t.name == name) { return true; }
-	}
-	return false;
+	return index_.find(name) != index_.end();
 }
 
 AgentToolResult AgentToolRegistry::execute(const std::string& name, const Json& args) const {
-	for (const auto& t : tools_) {
-		if (t.name != name) { continue; }
+	auto it = index_.find(name);
+	if (it != index_.end()) {
+		const AgentTool& t = tools_[it->second];
 		try {
 			return t.execute(args);
 		} catch (const IllegalArgumentException& e) {

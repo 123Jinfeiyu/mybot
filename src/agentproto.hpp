@@ -13,6 +13,7 @@
  * agent/src/session.rs 是唯一实现，不再有 C++ 孪生。 */
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "json.hpp"
@@ -24,8 +25,16 @@ namespace agent {
  * 解析失败要作为「工具参数错误」回传给模型，而不是在协议层打断整轮对话）。 */
 struct ToolCall {
 	std::string id;
+	std::string requestId;
 	std::string name;
 	std::string arguments;
+
+	ToolCall() = default;
+	ToolCall(std::string i, std::string n, std::string a)
+		: id(std::move(i)), name(std::move(n)), arguments(std::move(a)) {}
+	ToolCall(std::string i, std::string request, std::string n, std::string a)
+		: id(std::move(i)), requestId(std::move(request)), name(std::move(n)),
+		  arguments(std::move(a)) {}
 };
 
 /* 暴露给模型的工具声明（parameters 为 JSON Schema object）。

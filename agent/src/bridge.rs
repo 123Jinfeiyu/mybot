@@ -25,7 +25,7 @@
 //! 判定在**执行之后**——体积要拿到结果才知道，而副作用已经发生，降级说明必须
 //! 如实写明「已执行」）。语义单点在 budget.rs。
 
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -145,6 +145,8 @@ impl Conn {
 /// 到后端工具层的桥。
 pub struct Bridge {
     conn: Arc<Mutex<Conn>>,
+    /// 本进程内单调递增的 MCP 请求序号；随请求回显，便于跨进程审计对账。
+    request_seq: AtomicU64,
     /// 循环层共享状态：任务内预算（admit）与待注入图片队列
     state: Arc<HookState>,
     /// ICA 会话门面（BOT4CJ_ICA 开关/账本/落盘恢复；2026-10-01 收边至 ica 模块，
@@ -161,6 +163,7 @@ impl Bridge {
                 params,
                 client: Some(client),
             })),
+            request_seq: AtomicU64::new(1),
             state,
             ica: IcaSession::from_env(),
             http_fetch: HttpFetchTool::disabled(),
@@ -189,6 +192,11 @@ impl Bridge {
     async fn request(&self, route: &str, extra: Map<String, Value>) -> Result<Value, String> {
         let mut req = Map::new();
         req.insert("_route".to_string(), Value::String(route.to_string()));
+        let request_id = self.request_seq.fetch_add(1, Ordering::Relaxed);
+        req.insert(
+            protocol::REQUEST_ID_FIELD.to_string(),
+            Value::String(format!("mcp-{request_id}")),
+        );
         for (k, v) in extra {
             req.insert(k, v);
         }

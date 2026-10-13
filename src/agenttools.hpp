@@ -13,6 +13,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "agentproto.hpp"
@@ -78,9 +79,17 @@ struct AgentTool {
 
 class AgentToolRegistry {
 	std::vector<AgentTool> tools_;
+	/* 保留 vector 的注册顺序，同时用名称索引加速 contains/execute。
+	 * 重名工具维持原有语义：第一个注册的工具优先。 */
+	std::unordered_map<std::string, std::size_t> index_;
 
 public:
-	void add(AgentTool t) { tools_.push_back(std::move(t)); }
+	void add(AgentTool t) {
+		const std::size_t index = tools_.size();
+		const std::string name = t.name;
+		tools_.push_back(std::move(t));
+		index_.try_emplace(name, index);
+	}
 	bool contains(const std::string& name) const;
 
 	/* 派发一次工具调用。未知工具与工具内部异常都折成文本返回

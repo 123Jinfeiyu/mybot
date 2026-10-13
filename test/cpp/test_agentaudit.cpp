@@ -362,6 +362,41 @@ TH_TEST(agentaudit_legacy_tool_filter_still_selects_only_tool_rows) {
 	TH_CHECK_MSG(matched == 1, "老过滤表达式只应命中那一条工具行，实际 " + std::to_string(matched));
 }
 
+TH_TEST(agentaudit_tool_request_id_is_additive_opt_in) {
+	using namespace bot;
+	using namespace bot::agent;
+	fx::TempDir tmp("audit-request-id");
+	const std::string path = (tmp.path() / "audit.jsonl").string();
+	AuditLog log;
+	std::string err;
+	TH_CHECK(log.open(path, err));
+
+	AuditEntry withId;
+	withId.tool = "list_hardware";
+	withId.requestId = "mcp-42";
+	log.write(withId);
+	AuditEntry without;
+	without.tool = "query_sql";
+	log.write(without);
+
+	std::istringstream ss(slurp(path));
+	std::string line;
+	int idx = 0;
+	while (std::getline(ss, line)) {
+		if (line.empty()) { continue; }
+		Json d = parseJson(line);
+		if (idx == 0) {
+			const Json* id = d.find("requestId");
+			TH_CHECK(id != nullptr && id->isStr());
+			if (id != nullptr) { TH_CHECK(id->getValue() == "mcp-42"); }
+		} else {
+			TH_CHECK(d.find("requestId") == nullptr);
+		}
+		++idx;
+	}
+	TH_CHECK(idx == 2);
+}
+
 /* G2（2026-09-23）：工具自报的生效摘要落进工具行的 summary 字段（apply_sql 等
  * 热插/高危操作靠它对账"这次到底改了什么"）。只做加法：不给 summary 的老工具
  * 行不出现该键，既有消费方逐字节不变。 */
