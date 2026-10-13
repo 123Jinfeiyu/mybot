@@ -519,7 +519,8 @@ impl Session {
                 // 图片后注物化：注入只作用于发出去的请求，这里按记录的位置把
                 // 「tool 消息之后的图片消息」插回会话历史（与 C++ 同序）。只物化本轮
                 // 新增的尾段再增量并入，不为收尾把整份历史（含 base64 图片）克隆一遍。
-                let materialized = hook::materialize_appended(new, &injections, prefix_tool_results);
+                let materialized =
+                    hook::materialize_appended(new, &injections, prefix_tool_results);
                 self.history.append(materialized);
                 self.record_full_history();
                 if let Some(w) = self.writer.as_mut() {

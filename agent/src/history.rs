@@ -74,7 +74,7 @@ impl ConversationHistory {
 
     /// 整块裁剪；返回被裁掉的消息（按原序，只含完整任务块；空 = 没裁）。
     pub fn evict(&mut self, budget: usize, log: &mut dyn FnMut(&str)) -> Vec<Message> {
-        let dropped = evict_with_weights(&mut self.messages, &mut self.weights, budget, log);
+        let dropped = evict_with_weights(&self.messages, &mut self.weights, budget, log);
         if dropped == 0 {
             return Vec::new();
         }
@@ -226,6 +226,11 @@ fn params_len(p: &Option<AdditionalParams>) -> usize {
 /// 一律走 stderr——裁剪意味着更早的任务上下文不再可见，这种事实不该静默）。
 /// 切口只落在块起点：一对 tool_call/tool_result、一问一答永远不会只剩一半——被裁
 /// 部分整块交给摘要器，留下部分整块送给模型。
+///
+/// `#[cfg(test)]`：生产路径走 `ConversationHistory::evict`（增量权重，不经全量重算），
+/// 这份对裸 `Vec<Message>` 的入口只有测试直用——留着它是为了白盒核对整块不变量
+/// （裁掉 + 留下 = 原历史、切口落块起点）；编进二进制就是 dead code。
+#[cfg(test)]
 pub fn evict(history: &mut Vec<Message>, budget: usize, log: &mut dyn FnMut(&str)) -> Vec<Message> {
     let mut weights: Vec<usize> = history.iter().map(message_weight).collect();
     let dropped = evict_with_weights(history, &mut weights, budget, log);
@@ -235,7 +240,7 @@ pub fn evict(history: &mut Vec<Message>, budget: usize, log: &mut dyn FnMut(&str
 /// 仅计算并返回应裁掉的消息数；调用方负责同步裁剪消息与权重。
 fn evict_with_weights(
     history: &[Message],
-    weights: &mut Vec<usize>,
+    weights: &mut [usize],
     budget: usize,
     log: &mut dyn FnMut(&str),
 ) -> usize {
