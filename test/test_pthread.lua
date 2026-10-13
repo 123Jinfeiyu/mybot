@@ -43,19 +43,25 @@ do
 	for i = 1, P.SLOT_MAXVALS + 5 do big[i] = i end
 	P.publish(slot, big)
 	local vals = P.latest(slot)
-	check("超 MAXVALS 截断到 32", #vals == P.SLOT_MAXVALS, #vals)
+	check("超 MAXVALS 截断到上限", #vals == P.SLOT_MAXVALS, #vals)
 end
 
--- 满额 32 通道往返（P：values[32]，支撑单守护聚合多路传感器）
+-- 满额通道往返（values[SLOT_MAXVALS]，TD-3 起 64；支撑单守护聚合多路传感器）。
+-- 逐通道核对而非只看首尾：扩容后若只断言 vals[32]，33..上限那段槽位
+-- 回读错了也照样绿。
 do
 	local slot = P.slot_new()
 	local full = {}
 	for i = 1, P.SLOT_MAXVALS do full[i] = i * 0.5 end
 	P.publish(slot, full)
 	local vals, count = P.latest(slot)
-	check("满 32 通道值往返", #vals == P.SLOT_MAXVALS and vals[1] == 0.5
-		and vals[32] == 32 * 0.5 and count == 1,
-		string.format("n=%s last=%s", tostring(#vals), tostring(vals[32])))
+	local all_match = #vals == P.SLOT_MAXVALS and count == 1
+	local bad = nil
+	for i = 1, P.SLOT_MAXVALS do
+		if vals[i] ~= i * 0.5 then all_match = false; bad = i; break end
+	end
+	check("满额通道值往返", all_match,
+		string.format("n=%s bad=%s", tostring(#vals), tostring(bad)))
 end
 
 -- 停止标志
