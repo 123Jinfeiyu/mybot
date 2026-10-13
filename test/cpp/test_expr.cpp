@@ -280,6 +280,29 @@ TH_TEST(expr_equality_same_type_only) {
 	TH_CHECK(evalMixed("\"p\"+n", {}, {{"n", "2"}}).text == "p2");
 }
 
+TH_TEST(expr_string_literal_escapes) {
+	/* 转义解码：\n \t \r \\ \" 成对应字节——.mt 单元格内字面换行会截格，
+	 * 转义是写出换行/引号的唯一通道 */
+	TH_CHECK(evalMixed("\"a\\nb\"", {}, {}).text == "a\nb");
+	TH_CHECK(evalMixed("\"a\\tb\"", {}, {}).text == "a\tb");
+	TH_CHECK(evalMixed("\"a\\rb\"", {}, {}).text == "a\rb");
+	TH_CHECK(evalMixed("\"a\\\\b\"", {}, {}).text == "a\\b");
+	TH_CHECK(evalMixed("\"a\\\"b\"", {}, {}).text == "a\"b");
+	/* 转义与拼接共存；末尾转义引号不提前收口 */
+	TH_CHECK(evalMixed("\"x\\n\"+a", {}, {{"a", "y"}}).text == "x\ny");
+	TH_CHECK(evalMixed("\"\\\"\"+a", {}, {{"a", "\""}}).text == "\"\"");
+	/* 文本比较面同样解码 */
+	TH_CHECK(evalMixed("a==\"x\\ny\"", {}, {{"a", "x\ny"}}).flag);
+	/* 未知转义响亮报错（不静默吞反斜杠） */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unknown escape sequence '\\q'",
+		evalMixed("\"a\\qb\"", {}, {}));
+	/* 反斜杠吃掉闭引号 / 悬在末尾 → 未闭合 */
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unterminated string literal",
+		evalMixed("\"a\\\"", {}, {}));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "unterminated string literal",
+		evalMixed("\"a\\", {}, {}));
+}
+
 TH_TEST(expr_logical_operands_and_precedence) {
 	TH_CHECK(evalMixed("(1>0)&&(2>0)", {}, {}).flag);
 	TH_CHECK(evalMixed("(1>0)&&(2<0)", {}, {}).flag == false);

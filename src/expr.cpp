@@ -116,7 +116,8 @@ struct NumNode : Expression::Impl {
 
 /* 字符串字面量（"x"，2026-10-10 @if 特性）：文本比较（@if(mode=="auto")）
  * 的必要面——此前文本只能来自标识符（@Alias），与常量比对写不出来。
- * 不支持转义（值内不含 '"'；含空格受上层切格/块头约束，不在此重复禁），
+ * 转义 \n \t \r \\ \" 在解析期解码成对应字节，未知转义响亮报错（值内可含
+ * '"' 与控制字符；含空格受上层切格/块头约束，不在此重复禁），
  * 未闭合在解析期报错。除比较外与 @Alias 值同语义（'+' 拼接、rendered 原样）。 */
 struct StrNode : Expression::Impl {
 	std::string v;
@@ -417,14 +418,32 @@ class ExprParser {
 		fail(std::string("unexpected character '") + c + "'");
 	}
 
-	/* 字符串字面量："..."，无转义；未闭合即语法错（见 StrNode 的语义注释） */
+	/* 字符串字面量："..."，转义 \n \t \r \\ \" 解码成对应字节，未知转义响亮
+	 * 报错（不静默吞反斜杠——"C:\tmp" 悄悄变 "C:tmp" 是以错误理由成立）；
+	 * 未闭合即语法错（见 StrNode 的语义注释）。转义是唯一能在 .mt 单元格里
+	 * 写出换行/引号的通道（切格/';' 约束在矩阵层，字面换行会截格，故 $(...)
+	 * 与 @if(...) 里的控制字符一律写转义形态）。 */
 	Node parseString() {
 		++pos_;	/* 吃开引号 */
-		std::size_t start = pos_;
-		while (pos_ < s_.size() && s_[pos_] != '"') { ++pos_; }
-		if (pos_ >= s_.size()) { fail("unterminated string literal (missing closing '\"')"); }
-		std::string v = s_.substr(start, pos_ - start);
-		++pos_;	/* 吃闭引号 */
+		std::string v;
+		for (;;) {
+			if (pos_ >= s_.size()) { fail("unterminated string literal (missing closing '\"')"); }
+			char c = s_[pos_++];
+			if (c == '"') { break; }	/* 吃闭引号 */
+			if (c != '\\') { v += c; continue; }
+			if (pos_ >= s_.size()) { fail("unterminated string literal (missing closing '\"')"); }
+			char e = s_[pos_++];
+			switch (e) {
+			case 'n': v += '\n'; break;
+			case 't': v += '\t'; break;
+			case 'r': v += '\r'; break;
+			case '\\': v += '\\'; break;
+			case '"': v += '"'; break;
+			default:
+				fail(std::string("unknown escape sequence '\\") + e
+					+ "' (supported escapes: \\n \\t \\r \\\\ \\\")");
+			}
+		}
 		return std::make_shared<StrNode>(std::move(v));
 	}
 
