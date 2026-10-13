@@ -126,7 +126,7 @@ Ctrl-C 照常走下段的取消路径。历史跨会话保留在 `$XDG_STATE_HOM
 第二次信号立即退出 130（跳过清理）。停止 Rust 进程**不会自动停止后端**：需另向后端
 发送 SIGINT/SIGTERM，待服务循环退出并执行 `deactivate()` 才断电；阻塞的硬件调用可能延迟清理。
 原 C++ 侧的「取消哨兵文件」（libcurl 进度回调轮询，P2a/AG-27）已随旧模型调用路径移除。
-现役回归见 `scripts/agent_e2e.sh`（R8b：信号后 2s 内进程退出、0 条慢响应）/ `scripts/mcp_e2e.sh`。
+现役回归见 `scripts/agent_e2e.sh`（R8b：信号后 **5s 内**进程退出的守门上限、0 条慢响应）/ `scripts/mcp_e2e.sh`。
 
 ## 流式与阻塞的如实偏差
 
@@ -1149,7 +1149,7 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     边界如实声明：**读传感器也可能有副作用**——部分器件的 `call` 会先写触发寄存器再读，
     所以这是一次**派发**（照走任务预算与审计），不是"绝对不改状态"的承诺。
 
-危险能力（`run_command` 任意 shell、`apply_sql` 带电变更、可读变量清单）**缺省全关**，须由后端命令行 `--agent-shell` / `--agent-hot-sql` / `--read-var` 显式开启，且必须配合 `--agent-policy` 确认程序。密钥只走环境变量或配置文件，不经 argv。配置错误（含未知字段、区间越界、权限放宽）一律退出 2，不碰真机。
+受限能力（`run_command` 任意 shell、`apply_sql` 带电变更、可读变量清单）**缺省关闭**，须由后端命令行 `--agent-shell` / `--agent-hot-sql` / `--read-var` 显式开启；在 `--mcp-backend` 下，启用相应放宽能力时，`run_command` / `apply_sql` / `write_file` 各自强制策略包含对应工具名；`read-var` 则由显式列名启用，不要求 policy。非 MCP agent 模式不因此适用该 policy 约束。密钥只走环境变量或配置文件，不经 argv。配置错误（含未知字段、区间越界、权限放宽）一律退出 2，不碰真机。
 
 完整安全设计论证（含攻击场景、防线推导与历史审计记录）见 [design/security-rationale.md](design/security-rationale.md)。
 

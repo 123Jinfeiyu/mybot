@@ -4,7 +4,7 @@
 
 ## 已知限制
 
-- **仅支持 Linux**：HAL 经 ffi 直调 glibc，Windows/macOS 未支持
+- **仅支持 Linux**：缺省 HAL 后端经 ffi 直调 glibc，Windows/macOS 未支持；musl 等非缺省后端的验证范围见下文与 [hal.md](hal.md)
 - **非 glibc libc：musl（alpine 3.20，x86_64）已实证，其它未验证**：HAL.sys 已后端
   接口化（`BOT4CJ_HAL_BACKEND`，缺省 glibc，接口契约见 `modules/lib/hal_backend_glibc.lua`
   头注）。CI 的 `gate:musl`（硬门禁）在 alpine/musl 下跑三个常量自检、`mybot_tests`

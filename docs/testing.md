@@ -1,6 +1,7 @@
 # 回归测试手册
 
-> 本文是 `test/run_all.sh` 守门脚本的完整说明。[README](../README.md) 中只保留命令入口。
+> 本文是 `test/run_all.sh` 全量回归编排脚本的说明。[README](../README.md) 中只保留命令入口。
+> 完整门禁还覆盖 `test/run_all_selftest.sh`、构建配置和 CI job。
 > CI（`.gitlab-ci.yml`，F-22）在每次推送后自动跑 Release 全量守门 + ASan/UBSan 单跑
 > （`run_san.sh --asan-only`：Release 全量已由 `gate:release` 跑过，不重复），
 > 构建步带 `-DMYBOT_WERROR=ON`（README 声称的「零告警」由此成为门禁而非约定）；

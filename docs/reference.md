@@ -6,7 +6,7 @@
 
 | 组件 | 说明 | 状态 |
 | --- | --- | --- |
-| Linux | HAL 经 ffi 直调 glibc（open/ioctl/read/write/usleep） | ✅ 必需 |
+| Linux | 缺省 glibc HAL 后端经 ffi 直调 glibc（open/ioctl/read/write/usleep）；musl 验证范围见 [faq.md](faq.md) 与 [hal.md](hal.md) | ✅ 必需 |
 | CMake ≥ 3.16、C++17 编译器 | g++ / clang++ | ✅ 必需 |
 | LuaJIT 2.1（`libluajit-5.1-dev`） | 驱动与 HAL 全部在 LuaJIT 上 | ✅ 必需 |
 | Python 3 | `scripts/tcp_e2e.sh` 的 TCP 客户端与假模型服务需要（缺则守门自动跳过） | ⭕ 可选 |
