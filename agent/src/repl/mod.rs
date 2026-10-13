@@ -346,6 +346,14 @@ impl Session {
         self.record.as_mut()
     }
 
+    /// 录制当前完整历史（任务收尾观察点；`None` = 未开启零行为）。直接借
+    /// `record`/`history` 两个字段做不相交借用，免掉 `snapshot` 式整份克隆。
+    fn record_full_history(&mut self) {
+        if let Some(r) = self.record.as_mut() {
+            r.record_history(self.history.messages());
+        }
+    }
+
     /// `/clear`：只裁会话历史（硬件保持上电，系统提示词不变——rig 的 preamble 在
     /// agent 上，不在历史里）。落一行 `session_clear` 分界标记：恢复时该标记
     /// 丢弃此前的全部消息，否则「忘掉对话」会在下次恢复时复活。
@@ -463,6 +471,14 @@ impl Session {
         // 0 = 不裁剪），被裁的块交给摘要器。裁剪日志走 stderr：更早的任务上下文
         // 不再可见（或只剩摘要）是必须告知的事实。
         self.compact_history().await;
+        // 前缀历史里的工具结果条数：图片批次按「整份请求历史从头数」编号
+        // （model.rs::inject_images），收尾增量物化尾段时要把它扣掉。
+        let prefix_tool_results = self
+            .history
+            .messages()
+            .iter()
+            .filter(|m| hook::has_tool_result(m))
+            .count();
         let snapshot = self.history.snapshot();
         let preamble = self
             .history
@@ -471,10 +487,14 @@ impl Session {
 
         // 借用只活在块内：`result` 是拥有所有权的值，块一结束 `self.backend` 的
         // 不可变借用就结束，后面才能改 `self.history`。
+        //
+        // snapshot 只此一份搬进 runner（整份历史含 base64 图片，clone 一份是实打实
+        // 的峰值内存）：成功路径收尾走 history.append 增量并入、失败路径的回滚边界
+        // 自带基线，都不再需要拿回这份快照。
         let result = if self.backend.stream {
-            self.drive_stream(task, snapshot.clone(), preamble).await
+            self.drive_stream(task, snapshot, preamble).await
         } else {
-            self.drive_blocking(task, snapshot.clone(), preamble).await
+            self.drive_blocking(task, snapshot, preamble).await
         };
 
         // 逐次模型调用的观测值（含重试与失败那一次）与图片注入批次。流式面的
@@ -491,20 +511,17 @@ impl Session {
             Ok(resp) => {
                 // 新消息（含 tool_calls / tool 结果）并进历史。空则退回「user + 最终
                 // 文本」，宁可少记也不留空洞（历史里出现过半截序列是查不出来的坑）。
-                let mut new = resp.messages.clone().unwrap_or_default();
+                let mut new = resp.messages.unwrap_or_default();
                 if new.is_empty() {
                     new.push(Message::user(task.to_string()));
-                    new.push(Message::assistant(resp.output.clone()));
+                    new.push(Message::assistant(resp.output));
                 }
                 // 图片后注物化：注入只作用于发出去的请求，这里按记录的位置把
-                // 「tool 消息之后的图片消息」插回会话历史（与 C++ 同序）。
-                let mut full = snapshot;
-                full.extend(new);
-                let materialized = hook::materialize(full, &injections);
-                if let Some(r) = self.rec() {
-                    r.record_history(&materialized);
-                }
-                self.history.replace(materialized);
+                // 「tool 消息之后的图片消息」插回会话历史（与 C++ 同序）。只物化本轮
+                // 新增的尾段再增量并入，不为收尾把整份历史（含 base64 图片）克隆一遍。
+                let materialized = hook::materialize_appended(new, &injections, prefix_tool_results);
+                self.history.append(materialized);
+                self.record_full_history();
                 if let Some(w) = self.writer.as_mut() {
                     self.history.persist(|m| w.append_message(m));
                 }
@@ -523,14 +540,22 @@ impl Session {
             }
             Err(e) => {
                 // 回滚：钩子记下的边界 = 已完整跑完的轮（含工具回执与其中的图片），
-                // 半截的 tool_calls 序列不留在历史里。边界缺失（本轮连一次模型调用
-                // 都没发生）时回滚到任务开始的历史。
-                let base = self.state.rollback_boundary().unwrap_or(snapshot);
-                let materialized = hook::materialize(base, &injections);
-                if let Some(r) = self.rec() {
-                    r.record_history(&materialized);
+                // 半截的 tool_calls 序列不留在历史里。边界缺失 = 本轮连一次模型调用
+                // 都没发生——历史没动过，也不该有图片批次（注入只在模型调用里产生，
+                // model.rs::inject_images），无需回写；违例出现时响亮告警，绝不静默丢图。
+                match self.state.rollback_boundary() {
+                    Some(base) => self.history.replace(hook::materialize(base, &injections)),
+                    None => {
+                        if !injections.is_empty() {
+                            errln!(
+                                "[mybot-agent] 警告: 本轮无模型调用却收到 {} 个图片批次，\
+                                 未并入会话历史",
+                                injections.len()
+                            );
+                        }
+                    }
                 }
-                self.history.replace(materialized);
+                self.record_full_history();
                 self.record_calls(&calls);
                 self.audit.record_local_tools(&local_tools);
                 if let Some(r) = self.rec() {

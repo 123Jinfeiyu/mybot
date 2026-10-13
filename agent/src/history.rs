@@ -95,6 +95,19 @@ impl ConversationHistory {
         self.messages = messages;
     }
 
+    /// 借出全部消息（只读）——收尾观察点（录制等）用，避免 `snapshot` 的整份克隆。
+    pub fn messages(&self) -> &[Message] {
+        &self.messages
+    }
+
+    /// 追加一段新消息（任务正常收尾路径）：权重只算新增的，不重算已有历史。
+    /// `replace` 的全量重算在带图片的长会话里是每任务一次 O(历史) 的 JSON
+    /// 序列化（工具调用参数要过 `serde_json` 量长度），正常路径不该付。
+    pub fn append(&mut self, messages: Vec<Message>) {
+        self.weights.extend(messages.iter().map(message_weight));
+        self.messages.extend(messages);
+    }
+
     pub fn persist(&mut self, mut append: impl FnMut(&Message) -> bool) {
         for message in &self.messages[self.written_prefix..] {
             if !append(message) {
@@ -306,6 +319,18 @@ mod tests {
             .concat(),
             None,
         );
+        assert!(!history.evict(1, &mut |_| {}).is_empty());
+        assert!(history.evict(1, &mut |_| {}).is_empty());
+        assert_eq!(history.len(), history.snapshot().len());
+    }
+
+    #[test]
+    fn appended_blocks_keep_weights_aligned_for_eviction() {
+        let mut history = ConversationHistory::default();
+        history.append(task_block("旧任务 1", "结果", 0));
+        history.append(task_block("旧任务 2", "结果", 0));
+        history.append(task_block("最新任务", "结果", 0));
+        // 与 resumed 形态同口径：权重增量维护不错位，两次裁剪后收敛
         assert!(!history.evict(1, &mut |_| {}).is_empty());
         assert!(history.evict(1, &mut |_| {}).is_empty());
         assert_eq!(history.len(), history.snapshot().len());

@@ -279,11 +279,25 @@ pub fn has_tool_result(m: &Message) -> bool {
 
 /// 把已注入的图片批次物化进一段历史（任务结束后调用）：每个批次插到它对应的
 /// 工具结果消息**之后**，与 C++「tool 消息之后另起一条 user 图片消息」逐位同序。
-pub fn materialize(mut msgs: Vec<Message>, injections: &[Injection]) -> Vec<Message> {
+/// `msgs` 是整份历史（序号从头数，`prefix_tool_results = 0`）。
+pub fn materialize(msgs: Vec<Message>, injections: &[Injection]) -> Vec<Message> {
+    materialize_appended(msgs, injections, 0)
+}
+
+/// materialize 的增量形态：`msgs` 只是历史的**尾段**（本轮新增），落点定位要把
+/// 前缀扣掉——`Injection::ordinal` 按「整份请求历史从头数」编号（model.rs 的
+/// `apply_injections` 同口径），`prefix_tool_results` 是前缀历史里的工具结果条数。
+/// 供追加收尾路径用，避免为物化把整份历史（含 base64 图片）搬进搬出；序号落不进
+/// 尾段时照旧响亮告警，绝不静默丢图。
+pub fn materialize_appended(
+    mut msgs: Vec<Message>,
+    injections: &[Injection],
+    prefix_tool_results: usize,
+) -> Vec<Message> {
     let mut ordered: Vec<&Injection> = injections.iter().collect();
     ordered.sort_by_key(|i| i.ordinal);
     for inj in ordered {
-        let mut count = 0usize;
+        let mut count = prefix_tool_results;
         let mut at = None;
         for (idx, m) in msgs.iter().enumerate() {
             if has_tool_result(m) {
@@ -427,6 +441,39 @@ mod tests {
         assert_eq!(out[3], Message::assistant("一做完"));
         assert_eq!(out[6], Message::user("批二"));
         assert_eq!(out[7], Message::assistant("二做完"));
+    }
+
+    #[test]
+    fn materialize_appended_offsets_ordinals_past_prefix() {
+        // 前缀历史已有 2 条工具结果；尾段（本轮新增）里的工具结果是全局第 3 条。
+        let injections = vec![Injection {
+            ordinal: 3,
+            content: vec![UserContent::text("批三")],
+        }];
+        let out = materialize_appended(tail_with_one_tool_result(), &injections, 2);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[2], Message::user("批三")); // 跟在 call_2 之后
+        assert_eq!(out[3], Message::assistant("二做完"));
+    }
+
+    #[test]
+    fn materialize_appended_never_lands_on_a_prefix_result() {
+        // 序号指向前缀里的工具结果（全局第 2 条）时尾段里找不到落点：原样返回、
+        // 响亮告警（告警文本不进断言），绝不插错位。
+        let injections = vec![Injection {
+            ordinal: 2,
+            content: vec![UserContent::text("批二")],
+        }];
+        let out = materialize_appended(tail_with_one_tool_result(), &injections, 2);
+        assert_eq!(out.len(), 3);
+    }
+
+    fn tail_with_one_tool_result() -> Vec<Message> {
+        vec![
+            Message::user("任务二"),
+            tool_result_msg("call_2"),
+            Message::assistant("二做完"),
+        ]
     }
 
     #[test]
