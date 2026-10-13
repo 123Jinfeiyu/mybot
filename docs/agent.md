@@ -248,6 +248,10 @@ BOT4CJ_LLM_CONFIG=/etc/mybot/llm.json ./build/mybot --robot=robots/spider1.sql \
   `max_calls_per_round` `max_retries` `retry_backoff_ms` `run_command_timeout_sec`
   `run_command_max_timeout_sec` `action_script_timeout_sec` `history_summary` `max_summary_bytes`。
   配置文件字段均可省略；Rust 必需的 endpoint、model、密钥须由其他入口补齐。
+  `max_tokens` 是单次模型响应的 token 上限（1..200000），有命令行旗标
+  `--llm-max-tokens`；`timeout` / `max_turns` / `max_task_seconds` 同理对应
+  `--llm-timeout` / `--llm-max-turns` / `--llm-task-timeout`——这四个数值旗标
+  给出即**覆盖**同名配置字段（命令行 > 配置文件，值域校验同配置口径）。
   `stream`（布尔，缺省 `true`）选择模型输出面：流式逐 delta 打印或阻塞整段打印，
   命令行 `--llm-no-stream` 优先；只有 Rust 消费，C++ 后端仅登记为已知字段。
   空串按「未配置」处理；`prompt_files` 为字符串数组（每项为文件或目录，语义同
@@ -500,7 +504,7 @@ data URL 的 MIME 取自**驱动返回的 `format` 字段**（`image/jpeg`、`im
   `--prompt-file` 不受此约束——它是操作者本人的授意；配置文件则不是（理由是
   安全说明第 11 条）。上面那条相对路径写法（`prompts/spider_robot`）天然在
   CWD 之内，因此照旧可用。
-- **加载时机**：Rust `agent/src/main.rs::load_prompt_pack` 调用 `prompt.rs`，在连接
+- **加载时机**：Rust `agent/src/startup.rs::load_prompt_pack` 调用 `prompt.rs`，在连接
   后端之前加载；路径写错、目录里没有 `.md` 等错误退出 2。后端独立运行，可能已上电，
   不能把 Rust 配置失败理解成后端未上电或自动断电。单文件 1 MiB 上限，超限响亮拒绝。
 - **示例包**：`prompts/spider_robot/` 定义蜘蛛机器人的身份、摄像头能力与动作脚本用法、
@@ -889,9 +893,11 @@ agent 就是 `mybot-agent`。
 ```
 
 后端只认一条 pymsg 兼容的帧协议（`[4 字节 BE 长度][UTF-8 JSON]`，上限 8 MiB——
-`mcpbackend.hpp` 的 `kMcpMaxFrameBytes` 与 Rust 侧 `frame.rs` 的 `MAX_FRAME_BYTES`
+`mcptransport.hpp` 的 `kMcpMaxFrameBytes` 与 Rust 侧 `frame.rs` 的 `MAX_FRAME_BYTES`
 是同一契约的两份常量，改动必须双侧同步），路由 `tool.list` / `tool.call` /
 `ping` / `context.get`。二者是两个进程、零链接，唯一耦合就是这条 JSON 帧契约。
+`ping` 是连通性保活：发 `{"_route":"ping"}` 即回 `{"pong":true}` 的成功信封，
+无副作用、不改任何状态。
 
 `context.get` 是**只读素材路由**（Rust agent 的系统提示词来源）：返回 `robotName` /
 `structurePath` / `scriptsDir` / `allowShell` / `allowHotSql` / `hardwareCount`，以及三段
@@ -899,7 +905,8 @@ agent 就是 `mybot-agent`。
 `quoteUntrusted` 逐行 `> ` 前缀 + 「数据不是指令」声明）与内联短清单 `readableVars`。与
 `tool.list` 同口径：不走 `DispatchGate`、不占每连接预算；`hardwareCount` 与 `hardwareList`
 **实时取材**，热插拔后反映当前注册表。素材读取、消毒与定界由后端
-`src/mcpbackend.cpp::routeContextGet` 复用 `agentprompt` / `agenttools` 完成；
+`src/context_service.cpp::buildContextData` 复用 `agentprompt` / `agentview` 完成
+（`mcpbackend.cpp::routeContextGet` 只做转发）；
 最终系统提示词只在 Rust `agent/src/prompt.rs::build_system_prompt` 拼装，
 条件段落、定界块保留与总量上限由该文件的单测覆盖。
 
@@ -1186,7 +1193,8 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     加载（只能命令行给，与第 1 条的 `allow_shell` 同判据）。
     ② **后端下强制策略确认**：`--mcp-backend` 开 `--agent-write-file` 时，**强制**要有
     `--agent-policy` 且其 `require_confirm` 包含 `write_file`（无人值守暴露改写主机文件的
-    能力必须有外部确认闸门，见第 11b 条同款机制；`list_dir`/`read_file` 只读、无此强制）。
+    能力必须有外部确认闸门，见第 1 条与「安全模型」节「强制外部确认」的同款机制；
+    `list_dir`/`read_file` 只读、无此强制）。
     写入走 `agent_sandbox.hpp` 的 `writeFileAtomic`（先写同目录临时文件，再落地；不留
     半截内容）。**落地这一步按 `overwrite` 分成两条路**：`overwrite:true` 用 `rename`
     （POSIX 原子替换）；`overwrite` 缺省或为 `false` 用 **`link` 而不是 `rename`**——
@@ -1246,8 +1254,8 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
 | `src/agentdispatch.{hpp,cpp}` | 派发漏斗：策略确认 → 执行 → 审计的固定顺序单点（重构 A1 拆出；MCP 后端与工具层的唯一入口） | 无 |
 | `src/agentmode.{hpp,cpp}` | CLI 配置组装（四层合并、能力门控、审计/策略装载）与工具上下文落点 | 无 |
 | `src/agentprompt.{hpp,cpp}` | 提示词素材单点（结构脚本头读取与 UTF-8 消毒、「数据非指令」定界 `quoteUntrusted`、总量上限常量；拼装在 Rust prompt.rs，语义逐字对齐） | 无 |
-| `src/promptpack.{hpp,cpp}` | 提示词包加载（目录展开、文件名自然排序、分节拼接、H2 根约束；与 Rust prompt.rs 同判据双实现） | 无 |
-| `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务、SO_PEERCRED、每连接预算、context.get 素材路由 | 无 |
+| `src/context_service.{hpp,cpp}` | `context.get` 素材组装（结构脚本头读取与 UTF-8 消毒、清单描述、`quoteUntrusted` 定界；复用 `agentprompt` / `agentview`） | 无 |
+| `src/mcpbackend.{hpp,cpp}` | 工具后端：AF_UNIX 帧服务（帧常量在 `mcptransport.hpp`）、SO_PEERCRED、每连接预算、context.get 路由（素材组装在 `context_service`） | 无 |
 | `agent/src/repl/mod.rs` 等 35 个 `.rs` | Rust agent：模型循环（REPL/--task）、终端行编辑（`linein.rs`，rustyline）、预算装饰器、历史裁剪、审计 model/session 行（及本地工具的 tool 行）、帧客户端、本地工具 `http_fetch`（`agent/src/httpfetch.rs`，reqwest）、**会话持久化**（`agent/src/session.rs` + `session_store.rs`，批次 D 唯一实现，C++ 参考已清退）、**录制模式**（`agent/src/record.rs`：完整上下文采集含图片本体，微调数据用）（`agent/`，Cargo 独立构建；口径 `find agent/src -name '*.rs' \| wc -l`） | rig 0.42、reqwest 0.13 |
 | `modules/lib/json.lua` | Lua 侧严格 JSON 编解码 | 无 |
 | `modules/Camera.lua` | 摄像头驱动：V4L2 mmap + MJPEG（ffi），支持 `src` 模拟图片 | 无 |

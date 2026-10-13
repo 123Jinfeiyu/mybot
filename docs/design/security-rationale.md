@@ -29,7 +29,7 @@
    注意这仍是**文本级**防线（把值 base64/编码后打印即可绕过），与上面两道同档——真要对抗恶意 shell，
    仍须把 agent 放进专用用户 / 容器（见本节第 3 条末）。
 
-3. **模型 API key 由 Rust 直接读取**：`agent/src/config.rs` 从环境变量或配置文件
+3. **模型 API key 由 Rust 直接读取**：`agent/src/config/mod.rs` 从环境变量或配置文件
    （`api_key`/`api_key_file`）取密钥，`provider.rs` 用于请求头；不经后端工具参数、Lua 驱动或
    `BOT4CJ_DEBUG` 转储，两端均无命令行传密钥的入口。
    - 环境变量链：`BOT4CJ_LLM_KEY` → `ROBOT_AGENT_API_KEY` → `DEEPSEEK_API_KEY`，再回退到 Rust 配置文件的 `api_key` / `api_key_file`。
@@ -53,7 +53,7 @@
 6. **模型调用由 Rust agent 进程出网，不经 Lua 驱动**：`mybot-agent`（reqwest + rustls）直连
    配置的接入点；C++ 宿主与 Lua 驱动沙箱都不参与网络（2026-09-25 #8 起 Lua 协议驱动轨道已删，
    `modules/Llm*.lua` 不再存在）。威胁模型口径不变：`modules/**/*.lua` 本就是「任意原生代码
-   执行入口，信任级等同 mybot 用户」（见 [reference.md](reference.md) 的沙箱威胁模型），
+   执行入口，信任级等同 mybot 用户」（见 [reference.md](../reference.md) 的沙箱威胁模型），
    接外部接入点时请自行确认其可信度。
 7. **上电时机分属两进程**：后端配置与 policy 在自身 `active()` 前校验；Rust 的基础配置格式、
    参数范围、缺 key 与提示词包装载错误在连接后端前报错（rc=2）。系统提示词总量须取得

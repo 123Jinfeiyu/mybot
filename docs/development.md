@@ -27,7 +27,7 @@ cd build && ctest --output-on-failure -R cpp_unit
 | ---- | ------ | ---- |
 | `src/` | C++17 宿主（解析、注册、派发、守护、agent） | 全量 `-Wall -Wextra -Wpedantic` 零告警 |
 | `modules/` | 驱动 `<矩阵名>.lua` 与库 `lib/` | 驱动契约见 [drivers.md](drivers.md) |
-| `modules/lib/` | HAL、virtbus、mpath、JSON、滤波、模型协议等共享库 | 纯算法库不依赖 HAL，可被 lua5.4 复用 |
+| `modules/lib/` | HAL、virtbus、mpath、JSON、滤波等共享库 | 纯算法库不依赖 HAL，可被 lua5.4 复用 |
 | `robots/`、`scripts/` | 结构脚本与动作脚本；`test/` 子目录为回归夹具 | 夹具必须登记进用例表，否则被孤儿检测判失败 |
 | `test/` | Lua 单测、`cpp/` C++ 单测、`run_all.sh` 总编排 | 编译产物缺失时对应分段判失败 |
 | `docs/` | 深入文档，入口 [docs/README.md](README.md) | 改动后同步索引与链接 |
@@ -59,7 +59,7 @@ cd build && ctest --output-on-failure -R cpp_unit
 
 1. **提交信息校验**（快、先跑）：对 `@{push}..HEAD` 的每个非 merge 提交检查 subject
    非空、长度 ≥ 10、带类型前缀（规范见上节）。远端分支无 `@{push}` 时（如推送新分支）跳过校验
-2. **守门自检**（`bash test/run_all_selftest.sh`，快，13 段）：两类机械判定——
+2. **守门自检**（`bash test/run_all_selftest.sh`，快，14 段）：两类机械判定——
    ① 守门自身的可信度（`bash -n` 语法、每个 `test/cpp/*.cpp` 是否登记进 `CMakeLists.txt`、
    `test/*.lua` 命名是否匹配两侧 glob、`count_calls` 的「N 条用例」文案是否真数得到调用点、
    两张用例表的结构与两套计数互证（条数**派生**、不再手写；tokenizer 见
@@ -68,9 +68,9 @@ cd build && ctest --output-on-failure -R cpp_unit
    `harness_selftest` 的路径派生与产物陈旧判据的循环覆盖、以及该判据排除名单与
    `CMakeLists.txt` 目标归属的双向核对；末尾再**实跑**一次拼错
    过滤器，核对空匹配防线（C8）真的会红）；
-   ② 六组**零编译跨源一致性**校验（仿真器契约、状态目录缺省名、文档引用/计数/已删文件/
+   ② 七组**零编译跨源一致性**校验（仿真器契约、状态目录缺省名、文档引用/计数/已删文件/
    套件计数口径、模型配置字段白名单双端同集合、有状态 LLM 协议判据双端同集合、
-   LLM wire 契约；明细见 [testing.md](testing.md)「跨源一致性校验」）——
+   LLM wire 契约、后端工具注册表与两张文档工具表；明细见 [testing.md](testing.md)「跨源一致性校验」）——
    这些是「用例静默消失 / 双事实源漏改」的唯一机械防线；它**不进入** `run_all.sh`
    的记账，守门汇总口径不变
 3. **mybot-agent 产物新鲜度**（判**红**，2026-10-06 加）：`agent/target/release/mybot-agent`
@@ -107,7 +107,7 @@ cd build && ctest --output-on-failure -R cpp_unit
 总线类型与业务闭包（见下）；非驱动模块（`Relay`/`dummy` 等）仍用独立 `function`
 定义。契约要点：
 
-- `build`/`call`/`destroy` 必须返回带 `result` 键的表（`"OK"` 或 `"ERR"`）；返回非表或漏写 `return` 会被判契约违反并中断。协议型驱动（如 `Llm*`）同样适用——`call(nil)` 必须返 ERR 契约表而非抛 Lua error
+- `build`/`call`/`destroy` 必须返回带 `result` 键的表（`"OK"` 或 `"ERR"`）；返回非表或漏写 `return` 会被判契约违反并中断。非硬件的协议型模块同样适用——`call(nil)` 必须返 ERR 契约表而非抛 Lua error
 - 硬件驱动使用 `require_driver("i2c"|"spi"|"uart", { name=, build=, call=, destroy= })`，框架自动处理 `arg_table` 入参校验与总线校验（`i2c_pair` / `fd≥0`）、`proto=virt` 虚拟总线注入前置，驱动闭包接收 `ctx.fd`/`ctx.addr` 直接写业务逻辑
 - 非驱动模块（`Relay`/`dummy` 等）入口第一行仍需 `local ok, ek = arg_table(data)` + `if not ok then return ek end`（`drv_common`）——它同时承担入参类型校验与 `proto=virt` 虚拟总线注入前置，手写 `type(data) ~= "table"` 内联检查会绕过注入钩子（`run_all.sh` 的 lint 段会拦；Camera 是唯一豁免，见其头注）
 - **模块路径引导固定写法**（多路径加载的前提）：`local mpath = __mpath or dofile((os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):match("[^:]+") .. "/lib/mpath.lua")`，后续 lib 一律 `dofile(mpath.resolve("lib/xxx.lua"))`。`__mpath` 由宿主建沙箱时注入（逐段探测），直接写 `(env):match("[^:]+")` 只取首段、多路径布局下会失败；`run_all.sh` 的 lint 段会拦
@@ -306,4 +306,4 @@ cmake -S . -B build -DMYBOT_WERROR=ON && cmake --build build
 - **代码路径要跟着重构走**：文件被拆分/改名时同步更新引用（历史上 `src/luaend.cpp`
   拆成 `luabridge.cpp` + `luasandbox.cpp`，文档因此滞后过）。
 - **命令要能直接跑**：文档里的命令按仓库根为 CWD 书写，且必须是当前真实可用的形式
-  （如 `--llm-config none`、`LSAN_OPTIONS` 抑制）。改脚本时回头核对文档。
+  （如 `--llm-config none`）。改脚本时回头核对文档。

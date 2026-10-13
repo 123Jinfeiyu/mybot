@@ -1,6 +1,7 @@
 # 更新日志
 
-> 本文件是精简版，只保留版本级要点。完整每日记录见 [changelog-detail.md](changelog-detail.md)。
+> 本文件是精简版，只保留版本级要点。2026-09-29 及以前的完整每日记录见
+> [changelog-detail.md](changelog-detail.md)；此后的变更以 `git log` 与 docs/ 各现行文档为准。
 > 设计论证、守门明细（用例名单、反向验证过程、测试计数快照）不在此复述，以 docs/ 各文档、
 > `bash test/run_all.sh` 与 `./build/mybot_tests` 的实时输出为准。
 
@@ -24,12 +25,12 @@
 
 #### agent 模式
 
-两进程拓扑：`mybot --mcp-backend`（C++，管硬件与工具执行）+ `mybot-agent`（Rust，管模型循环与会话记忆）。工具集由 C++ 后端承载（`list_action_scripts` / `run_action_script` / `capture_image` / `query_sql` / `apply_sql` / `read_variables` / `wait_variable` / `run_command`），模型调用唯一路径是 Rust agent（rig 直连，reqwest + rustls）。Lua 协议驱动轨道已删除（2026-09-25），`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic` 现为协议族名。
+两进程拓扑：`mybot --mcp-backend`（C++，管硬件与工具执行）+ `mybot-agent`（Rust，管模型循环与会话记忆）。工具集由 C++ 后端承载（`list_action_scripts` / `run_action_script` / `capture_image` / `query_sql` / `apply_sql` / `read_variables` / `wait_variable` / `run_command` / `list_dir` / `read_file` / `write_file`，后三个为文件通道 Phase 4/5 新增），模型调用唯一路径是 Rust agent（rig 直连，reqwest + rustls）。Lua 协议驱动轨道已删除（2026-09-25），`LlmOpenAI`/`LlmDeepSeek`/`LlmAnthropic` 现为协议族名。
 
 #### 语言与 DSL
 
 - `$(...)` 表达式（四则 + 括号，双上限）；`@Action` 设备列 `@Alias` 模板复用
-- `@Include` v2（嵌套 + `*.once.mt` + 主从覆盖）；controller/trigger 多列扇出
+- `@Merge` 归并（嵌套 + `*.once.mt` + 主从覆盖）与 `@Include` 内容拷贝（2026-10-12 由旧 `@Include` v2 拆分）；controller/trigger 多列扇出
 - `@Vars` 命名数值变量；词法器引号内字面量与 8 MiB 上限
 
 #### 执行引擎与安全
@@ -48,5 +49,5 @@
 #### 工程化与守门
 
 - 大文件拆分（`robot.cpp` 拆四 TU、`agent_subprocess.*` 独立）；结构重构（`CliOptions` 类型化、`HwRegistry` 三容器、守护状态机收敛）
-- 守门基建：HAL 常量编译期自检、CI 十硬门禁、`test_curl_consts`、agent CLI 负路径守门
+- 守门基建：HAL 常量编译期自检、CI 十硬门禁、agent CLI 负路径守门
 - 重复代码九类收敛单点；覆盖补齐（守护并发压测 + TSan、TCP 异常注入七场景、fd 泄漏检测）

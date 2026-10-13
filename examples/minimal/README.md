@@ -22,12 +22,16 @@ cat examples/minimal/hello.mt | ./build/mybot --robot=examples/minimal/robot.sql
 预期输出（退出码 0）：
 
 ```text
+从文件读取动作脚本：examples/minimal/hello.mt
 ----------
-{"echo":"你好，三层架构","count":1,"result":"OK"}
+{"count":1,"result":"OK","echo":"你好，三层架构"}
 Dummy served 1 call(s) in its meaningless life
 ```
 
-第三行是驱动 `destroy` 打的：上电 → 播一帧 → `call` 回显 → 断电，完整生命周期走了一遍。
+（若 `modules/` 下驱动/库文件组或其他人可写，前面还会多几行权限警告，见
+[HAL](../../docs/hal.md) 沙箱加载的权限前提。）
+
+末行是驱动 `destroy` 打的：上电 → 播一帧 → `call` 回显 → 断电，完整生命周期走了一遍。
 
 ## 发生了什么
 

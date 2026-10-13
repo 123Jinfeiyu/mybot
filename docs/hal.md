@@ -12,6 +12,10 @@
   `glibc`，模块 `modules/lib/hal_backend_<名>.lua`），接口契约（函数集与返回码语义）
   见该文件头注，缺函数加载期 fail-fast；`test_hal_backend_swap.lua` 以整表替换
   stub 跑通完整 i2c 事务锚定契约完备性。换后端 = 新增一个文件，总线函数与驱动零改动
+- **平台差异单点** `HAL.platform`（`modules/lib/HAL.lua`）：设备根路径常量集中一处——
+  `pwm_sysfs_root` = `/sys/class/pwm`、`gpio_prefix` = `/dev/gpiochip`；GPIO / PWM
+  各节只取表值、不散落字面量，移植或上仿真桩改这一处（总线设备路径白名单同为单点，
+  在 `bus_contract.lua`）
 - 参数先归一化（字节 0~255、非负整数）再进 ioctl/缓冲区，设备路径走白名单正则；非法参数打印诊断并显式失败，不静默钳制
 - 结构体尺寸与 ioctl 常量经 `test_ioctl_nums.c` / `test_uart_consts.c` 与系统头文件实证；尺寸断言在加载期执行（spi_ioc_transfer=32、i2c_msg=16、gpiohandle_request=364、termios=60），ABI 漂移立即失败
 

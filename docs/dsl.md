@@ -189,7 +189,7 @@ s1.A;
 - **求值时机是「轮到该块时」**：前面的块执行完后条件才求值（`@Vars`/`@Alias` 是静态值，此时机主要保证语义直白）；条件求值失败（未定义标识符、类型错、非有限值）按 halt-on-error 中止整个脚本
 - **@Merge 片段里不支持**：片段的 `@Action` 按相位归并进主脚本，`@if` 没有独立执行位置——出现在片段里**响亮拒绝**（不是静默丢弃），把该块挪到主脚本
 - **可嵌套**：`@if` 里能再写 `@if`/`@while`/`@Action`，裸 `@` 关闭最内层块——详见 [`@while` 循环块](#while-循环块)的「块嵌套」条与 [块嵌套与 @Include/@Merge](#块嵌套与-includemerge2026-10-12)
-- `@Reflex` 反射矩阵与热 SQL 的瞬态 `Action` 表不带条件语义（`@if` 只在主脚本顶层生效）
+- `@Reflex` 反射矩阵与热 SQL 的瞬态 `Action` 表不带条件语义（`@if` 只在主脚本顶层生效）；`@Trigger`/`@Reflex` 条件反射的完整语义见下文专节
 
 ## `@while` 循环块
 
@@ -220,6 +220,35 @@ sensor.reading;
   - **深度上限 32**（`mt::kMaxBlockDepth`）：超限解析期拒绝；脚本结束（EOF）时仍有未闭合的块**响亮报错**（不再静默返回半截脚本），多余的裸 `@`（无待闭合块）同样报错。
   - **归并 ⟂ 嵌套**：`@Merge`/`@Include` 的归并操作数必须是**纯矩阵叶子表**，控制块（有 children）当归并操作数会被 `mergeTwo` 拒绝——归并与嵌套是两条正交能力，不得混用。子块内的 `@Merge` 走**位置局部归并**（见 [@Merge 内联归并](#merge-内联归并运行端动作脚本合并)）。
 - 回归：`action_while_*`（`test/cpp/test_action_while.cpp`）覆盖块头解析、捕获推进收敛、零迭代、书写顺序交错、Ctrl-C 跳出、报错契约与 `@Reflex` 共存；`action_nesting_*`（`test/cpp/test_action_nesting.cpp`）覆盖 if⊂while、while⊂if、外层假跳过整棵子树、交错子块按书写序执行、内层假只跳内层、停止标志穿透各层；`matrix_*`（`test/cpp/test_matrix.cpp`）覆盖解析器的 children 树构建、交错、叶子不可嵌套、多余裸 `@`、深度上限、EOF 未闭合响亮报错
+
+## `@Trigger` / `@Reflex` 条件反射（#34，2026-09-29）
+
+> 与 [trigger 引用（前置调用）](#trigger-引用前置调用) 的 `trigger` **列**是两回事：
+> 那是结构脚本里的流引用列（前置调用入边），本节是 `.mt` 里的两个矩阵块。
+
+把「动作序列」与「何时触发」拆成两张表：`@Reflex` 定义反射（可参数化的动作序列），
+`@Trigger` 逐行触发它们——相当于给脚本加一层「像函数调用传实参」的入口：
+
+```
+@Reflex
+name   relay0.deg;
+blink  $(bright);
+blink  0;
+@
+
+@Trigger
+trigger;
+blink(bright=1);
+@
+```
+
+- **`@Reflex`**：列 0 = `name`（反射名），列 1.. = 动作列（`<设备>.<参数>`，与 `@Action` 列头同构）；**同 name 多行 = 同一反射的多拍**，按行序执行。单元格语义与 `@Action` 是**同一份派发内核**：`$(...)` 表达式、`$var=field` 捕获格、`-` 继承照常可用。
+- **`@Trigger`**：列 0 = `trigger`；每行一个触发行 `reflexName(k=v, k=v)`，`v` 是实参文本（`k=v` 两侧 trim），**无括号 = 无参数触发**，空行跳过（宽松）。实参以**临时别名**注入会话覆盖层（子作用域）——反射动作行里的 `$(k)` 即取实参值，**无论成败出口撤销**、不污染后续触发。这与 `run_action_script` 工具的 `vars` 是同一套机制（[agent.md](agent.md) 工具表 `run_action_script` 行的「调用时临时注入会话别名」）。
+- **惰性**：没有 `@Trigger` 时 `@Reflex` 只是定义——不执行也不校验（反射行引用了未绑定变量也不报错）。
+- **顶层豁免**：整棵顶层序列没有任何可执行块（`@Action`/`@if`/`@while`）时，有 `@Trigger` 则脚本仍合法（反射独立成立），否则照常报 `No @Action matrix found`。
+- **只写主脚本**：`@Merge` 归并只从片段累加 `@Alias`/`@Vars`/`@Action`（见 [`@Merge` 内联归并](#merge-内联归并运行端动作脚本合并)），片段里的 `@Trigger`/`@Reflex` **不会进主脚本**；`@Include` 是内容拷贝，写在被拷贝文件里等效于写在原地。
+- **报错契约**（halt-on-error，行号 = 矩阵数据行号）：`@Trigger` 存在但没有任何 `@Reflex` 定义；`@Reflex` 表没有定义行；触发行不以 `)` 结尾；参数非 `k=v` 形式；参数名不是安全标识符；同名参数重复绑定；触发引用了未定义的反射（报错点名已定义清单）。
+- 回归：`test/cpp/test_robot_dispatch.cpp` 的 #34 段（惰性定义、实参绑定/撤销、未定义反射报错、多拍顺序）。
 
 ## controller 引用（转交任务）
 

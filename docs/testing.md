@@ -18,7 +18,7 @@
 | `gate:clang` | 硬 | clang 构建 + C++ 单测烟雾 |
 | `gate:clang-tidy` | 硬 | `src/` 静态分析；退出码取 clang-tidy 自身，`clang-tidy.log` 随 artifacts（`when: always`）留档 |
 | `gate:coverage` | 硬 | `bash test/run_coverage.sh`（`--coverage` 构建 + 跑 `mybot_tests`；`COV_WITH_GATE=1` 时另跑一遍全套守门），报告随 artifacts 留档。「硬」判的是采集链路本身，**不设行覆盖阈值**（理由见下节） |
-| `gate:musl` | 硬 | alpine 3.20/musl 下：三个常量自检 → `mybot_tests` → 整段 `test/run_all.sh`（`BOT`/`BOT_TESTS`/`MTMERGE` 指到 `build-musl/`；Rust agent 段因镜像无 Rust 产物按 SKIP 计，汇总可见） |
+| `gate:musl` | 硬 | alpine 3.20/musl 下：三个常量自检 → `mybot_tests` → 整段 `test/run_all.sh`（`BOT`/`BOT_TESTS` 指到 `build-musl/`；Rust agent 段因镜像无 Rust 产物按 SKIP 计，汇总可见） |
 | `gate:agent` | 硬 | Rust agent（`agent/`，包名 `mybot-agent`；原 MCP sidecar，rig 迁移批次 B 更名）：`cargo build --release`/`test`/`clippy -D warnings`/`fmt --check`（均 `--locked`，`rust:1-slim`）。与 `gate:agent-e2e` 独立，不给既有 C++ jobs 加 Rust。⚠ ASan/UBSan/TSan 只插桩 C++，**对 agent 是盲的**——agent 安全靠 Rust 所有权 + clippy/test，不是 sanitizer |
 
 ### 覆盖率数字的口径与已知盲区（2026-09-21 AG-11 实测）
@@ -250,7 +250,7 @@ pre-push 钩子也调它。为什么必须零编译：`sim/` 是独立 CMake 工
 > **判据与比对逻辑**仍留在各自文件里、不下沉——底座改动只可能影响「怎么读源码」，不会
 > 让两侧一起改错。此次接入是纯重构，四个检查器的输出与接入前逐字节一致。
 
-`run_all_selftest.sh` 现有 13 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
+`run_all_selftest.sh` 现有 14 段：1–7 是守门自身的可信度（脚本语法、`test/cpp/*.cpp`
 是否登记进 `CMakeLists.txt`、`test/*.lua` 是否匹配两侧 glob、`count_calls` 的「N 条用例」
 文案是否真数得到调用点、两张用例表的结构与两套计数互证（条数**派生**、不再手写）、
 TSan 名单单点（**双向**核对：名单里每条都在用例文件里命中，且用例文件里每条 `TH_TEST`
@@ -260,7 +260,7 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 判据的循环覆盖、以及该判据**排除名单**与 `CMakeLists.txt` 目标归属的双向核对，
 外加**实跑**一次拼错过滤器核对空匹配防线（C8）真的会红——那是本自检
 唯一执行 `run_all.sh` 的地方，0.1s 级，理由见上「四条反假绿约束」第一条），
-8–13 是跨源比对：
+8–14 是跨源比对：
 
 8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
    （`sim/src/action_table.cpp` 的 `kActions[]` vs `modules/Sim.lua` 的
@@ -353,12 +353,12 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 
 ### 四处套件的计数口径
 
-| 套件 | 怎么跑 | 计数（2026-10-12 快照） |
+| 套件 | 怎么跑 | 计数（2026-10-13 快照） |
 | --- | --- | --- |
-| `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 801 通过 / 0 失败 |
+| `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 804 通过 / 0 失败 |
 | `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
 | `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 387 通过（**运行时数**）/ 0 失败（8 个 TU） |
-| Rust agent | `cd agent && cargo test --release` | 182 passed |
+| Rust agent | `cd agent && cargo test --release` | 187 passed |
 
 除 `sim_tests` 的 387 外，表里每个数字都由 `scripts/check_doc_paths.py` 的第六组
 **从仓库实况派生后比对**（进 `test/run_all_selftest.sh`）——加/删用例而忘了改这张表，
@@ -366,9 +366,9 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 
 两个容易对不上的数字，出处写在这里省得每次重推：
 
-- `mybot_tests` 的 801 **不等于** `test/cpp/` 里 `TH_TEST(` 的出现次数（815）。差值有
-  出处：815 − 1 处宏定义（`test/cpp/harness.hpp`）− 13 个属于 `harness_selftest`
-  （独立可执行文件）= 801。拿这个式子复核，别把两个数字硬对齐。
+- `mybot_tests` 的 804 **不等于** `test/cpp/` 里 `TH_TEST(` 的出现次数（818）。差值有
+  出处：818 − 1 处宏定义（`test/cpp/harness.hpp`）− 13 个属于 `harness_selftest`
+  （独立可执行文件）= 804。拿这个式子复核，别把两个数字硬对齐。
 - `harness_selftest` 那个文件里有 13 个 `TH_TEST`，二进制只报 8 通过：另外 5 个 `meta_*`
   是**故意含失败形态的例句**，只作被测对象（由自证用例内部的 `judge(filter)` →
   `runAllOutcome(filter, quiet=true)` 调到），不进缺省全量跑——否则主输出里会混进一串

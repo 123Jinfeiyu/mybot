@@ -34,7 +34,7 @@
 规范化请求/响应契约、A1b 出站一致性自检、响应形变矩阵（SAN-6/PL-3/PL-6）等
 协议文档随轨道删除。它们的现役对应物在 Rust 侧：出站形状由写入不变量保证
 （`agent/src/history.rs` + SAN-12 的 id 唯一性三条来源），响应形变由 rig 的
-provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R16）。
+provider 解析承担，回归在 Rust 单测与 agent E2E（R1–R20）。
 
 
 为什么是 JSON 而不是 Lua：配置文件是**数据**，不是代码。Lua 配置要由宿主内嵌状态机去执行，

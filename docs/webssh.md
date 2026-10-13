@@ -4,9 +4,8 @@
 > 整理稿。定位：无论该功能继续以 C++ 单二进制演进、还是按维护者意见迁到
 > Rust 重写，**行为不变式都以本文为准**——每一节给出「契约」与「对照实现时的
 > 测试锚点」。权威实现是 `src/wsproto.{hpp,cpp}`、`src/webterm.{hpp,cpp}`、
-> `src/webshell.{hpp,cpp}` 及 `test/cpp/test_wsproto.cpp`、`test_webterm.cpp`、
-> `test_webshell.cpp`（667 基线全量含 233+86+247 条 Web SSH 用例，20 万轮
-> Decoder 模糊测试零崩溃）。
+> `src/webshell.{hpp,cpp}` 及 `test/cpp/test_wsproto.cpp`、`test/cpp/test_webterm.cpp`、
+> `test/cpp/test_webshell.cpp`（共 37 个用例：22+7+8，`TH_TEST` 计数口径）。
 
 ## 拓扑总览
 
@@ -63,11 +62,10 @@ opcode: 0=cont 1=text 2=binary 8=close 9=ping 10=pong
 
 - 服务端 → 客户端帧**不掩码**（§5.1 仅客户端须掩码）：`encodeFrame(opcode, payload, fin)`
 
-### 测试锚点（test_wsproto.cpp，247 条）
+### 测试锚点（test_wsproto.cpp，22 个用例）
 
 - 握手：合法 key → 101 + Accept 值正确；缺头/错方法/错 Upgrade → 400
 - 帧：未掩码、RSV、非法 opcode、控制帧 >125、分片控制、孤儿 continuation、超 64 KiB → 各错误码
-- 20 万轮 Decoder 模糊测试零崩溃（任意字节序列喂入）
 
 ## 2. webterm：PTY 会话桥
 
@@ -93,7 +91,7 @@ opcode: 0=cont 1=text 2=binary 8=close 9=ping 10=pong
 环境变量之外的任何 Web SSH 专用状态。**exec 前关闭全部非 stdio fd**——子进程
 继承 socket 会阻止对端 close 的 EOF 到达（实测复现连接泄漏）。
 
-### 测试锚点（test_webterm.cpp，86 条）
+### 测试锚点（test_webterm.cpp，7 个用例）
 
 - socketpair 直测泵：文本双向、resize 生效（TIOCSWINSZ）、alive 观察 shell 退出
 
@@ -119,11 +117,11 @@ opcode: 0=cont 1=text 2=binary 8=close 9=ping 10=pong
 | 方向 | 消息 | 语义 |
 | --- | --- | --- |
 | 客户端 → 服务端 | 文本帧 | 原样写入 shell |
-| 客户端 → 服务端 | `{"op":"resize","rows":N,"cols":M}` | 调整窗口 |
+| 客户端 → 服务端 | `{"op":"resize","rows":N,"cols":M}` | 调整窗口（TIOCSWINSZ）；`rows`/`cols` 须为 1~200 的纯数字整数，缺字段 / 越界 / 非法 JSON **不生效**——该帧按普通文本原样写入 shell（严格解析、拒绝而非容错） |
 | 服务端 → 客户端 | 文本帧 | pty 原始输出（不做 UTF-8/终端转义，交由 xterm.js） |
 | 双向 | ping / pong | 保活 |
 
-### 测试锚点（test_webshell.cpp，233 条）
+### 测试锚点（test_webshell.cpp，8 个用例）
 
 - socketpair 伪客户端完整走通：握手 + 双向泵 + resize + token 401 + 未掩码帧 1002
 
@@ -144,4 +142,4 @@ opcode: 0=cont 1=text 2=binary 8=close 9=ping 10=pong
 11. 机器人模式与 Web SSH 模式互斥（CLI 校验）
 12. 输出原样字节流（不做终端转义），前端 xterm.js 负责渲染
 
-C++ 侧现有 566 条 Web SSH 用例 + 20 万轮模糊测试就是 Rust 侧的回归基线。
+C++ 侧现有 37 个 Web SSH 用例（test_wsproto / test_webterm / test_webshell 共 22+7+8）就是 Rust 侧的回归基线。

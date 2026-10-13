@@ -249,7 +249,7 @@ MYBOT 采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全�
 
 ## Agent 工具系统
 
-智能体自带下列安全工具（**缺省 5 个**；带「显式开启」的按启动开关增减）：
+智能体自带下列安全工具（**缺省 4 个**：`list_action_scripts` / `list_hardware` / `query_sql` / `run_action_script`；`capture_image` 还需结构脚本含摄像头驱动变量才注册；其余按启动开关增减）：
 
 | 工具 | 功能 | 安全级别 |
 |------|------|---------|
@@ -259,7 +259,7 @@ MYBOT 采用**演员-剧本-舞台**模型，将硬件、驱动、动作完全�
 | `list_dir` | 列出根目录内的目录条目（名字/类型/大小；软链条目不列，上限 1000 条） | ✅ 只读，**需 `--fs-root`** |
 | `read_file` | 读取根目录内的一个文本文件（≤64 KiB 超限拒绝不截断；二进制/非法 UTF-8 拒绝；回执过密钥遮蔽） | ✅ 只读，**需 `--fs-root`** |
 | `run_action_script` | 执行动作脚本（**回执带驱动返回的读数**） | ⚠️ 写入 |
-| `capture_image` | 拍照并送入上下文 | ⚠️ 隐私 |
+| `capture_image` | 拍照并送入上下文 | ⚠️ 隐私，**需结构脚本含摄像头驱动变量**（缺省 `cam0`，缺失则不注册） |
 | `read_variables` | 主动读硬件变量当前值 | ✅ 只读，**需 `--read-var` 声明可读变量** |
 | `wait_variable` | 轮询等某个读数满足条件（阈值/变化），超时是结果 | ✅ 只读，与 `read_variables` 同门控 |
 | `apply_sql` | 结构 SQL **带电生效**（建表/插行；`DELETE FROM` 当场断电摘行、`DROP TABLE` 撤整张表，**不可逆**；`UPDATE ... SET ...` 按断电重建改写命中行） | 🔴 危险，**需 `--agent-hot-sql`** |
@@ -274,7 +274,7 @@ MYBOT 在设计时将安全放在首位：
 **工具与权限**
 
 - ✅ 动作脚本只能在 `scripts/` 目录下，不允许符号链接和路径遍历
-- ✅ 三个危险/放宽权限的开关（`run_command` / `apply_sql` / 可读变量清单）**缺省全关，且只能命令行给**——配置文件写 `allow_shell: true` / `allow_hot_sql: true`（放宽）或出现 `read_vars` 字段会被**拒绝加载**（写 `false` 合法，模板 `mybot.llm.json.example` 即如此）
+- ✅ 六个放宽权限的字段**缺省全关/不给，且只能命令行给**：`--agent-shell`（`run_command`）、`--agent-hot-sql`（`apply_sql`）、`--agent-write-file`（`write_file`）、`--read-var`（可读变量清单）、`--fs-root`（`list_dir`/`read_file`/`write_file` 根目录）、`--camera-src-dir`——配置文件写 `allow_shell: true` / `allow_hot_sql: true` / `allow_write_file: true`（放宽）或出现 `read_vars` / `fs_root` / `camera_src_dir` 字段会被**拒绝加载**（写 `false` 合法，模板 `mybot.llm.json.example` 即如此）
 - ✅ `read_variables` / `wait_variable` 只放行已注册且种类为 `lua`/`daemon` 的变量，且只有 `--read-var` 列过的名字可读（执行器与传感器同属 `lua`，靠种类分不出，故由人列名）
 - ✅ `http_fetch` 只能访问 `mybot-agent --allow-host` 逐条列出的主机（精确匹配、无通配，配置文件不能开）；只发 GET、不跟随重定向、不走系统代理，响应体按「数据不是指令」定界——远端内容仍可能诱导模型，动作工具请配确认闸门（[docs/agent.md](docs/agent.md) 安全说明第 15 条）
 - ✅ 所有操作有体积上限和超时限制
@@ -324,7 +324,7 @@ servo-rb-hip  angle=90
 
 ## 硬件支持
 
-### 支持的器件（48 款）
+### 支持的器件（49 款）
 
 **舵机与电机**：PCA9685（16路PWM舵机控制）、SCSCL飞特总线舵机、普通舵机、H03ARR电机驱动
 **传感器**：IMU与磁力计（MPU6050、BMI270、LSM6DSV、ADXL345、MLX90393、BMM150）、气压与环境（MS5611、LPS22HB、BME280、BME688）、测距（VL53L0X/L4CD）、闪电检测（AS3935）
@@ -384,7 +384,7 @@ mybot/
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
 │   ├── Speaker.lua      # 音频输出（ALSA）
-│   ├── Sim.lua          # 仿真器客户端（三条 AF_UNIX socket）
+│   ├── Sim.lua          # 仿真器客户端（命令/测距两条 AF_UNIX socket；拍照桥在 Camera.lua）
 │   └── lib/             # HAL、virtbus、JSON、滤波器、asound 等共享库
 ├── robots/        # 结构脚本（10个机器人定义）
 │   ├── spider1.sql      # 14路舵机蜘蛛
@@ -395,10 +395,11 @@ mybot/
 │   ├── left-turn.mt     # 左转
 │   └── jump.mt          # 跳跃
 ├── sim/           # C++17/OpenGL 仿真器（独立 CMake 工程，不在主构建里）
-│   ├── src/             # 引擎、命令/测距/请求三桥、渲染、场景读写
+│   ├── src/             # 引擎、命令/拍照/测距三桥、渲染、场景读写
 │   ├── scenes/          # 模板场景（播种到 $MYBOT_HOME/maps/）
 │   └── tests/           # sim_tests（8 个 TU；断言计数见 docs/testing.md）
 ├── prompts/       # Agent提示词包
+├── examples/      # 最小可跑示例（examples/minimal：结构脚本 + 动作脚本 + dummy 驱动）
 ├── test/          # 三层测试（87 Lua + 50 C++ + E2E）
 └── docs/          # 深入文档（16篇Markdown + design/ 设计论证 + 架构分析网页与两张全景图，清单以 docs/README.md 为准）
 ```
@@ -433,14 +434,14 @@ bash test/run_all.sh agent-all
 汇总行的守门用例数、`sim_tests` 的断言数——**故意不写死在本页**，只给指针，因为
 静态门派生不出来、写死必漂移）：
 
-- 801 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 804 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
 - 87 个 Lua 测试文件 + 50 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
 - 守门用例数以 `bash test/run_all.sh` 末尾的汇总行为准（Lua 单测 + C++ 段 + 各 e2e 脚本）；
   跳过项只应剩 `test_jit_warmup.lua`——真机 ABI 回归，需 `/dev/i2c-*`
 - 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
   同文件里另有 5 个 `meta_*` 例句只作被测对象、不进缺省全量跑）、`./sim/build/sim_tests`
   （`sim/` 是独立 CMake 工程，TU 数见上、断言计数见 `docs/testing.md`）、Rust agent
-  `cargo test --release` 182 条
+  `cargo test --release` 187 条
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 
@@ -456,7 +457,7 @@ bash test/run_all.sh agent-all
 | [安全设计论证](docs/design/security-rationale.md) | 安全设计的完整论证、攻击场景与防线推导 |
 | [命令行与环境变量参考](docs/reference.md) | 所有 CLI 参数、`BOT4CJ_*` 环境变量、安全约束 |
 | [DSL 语言参考](docs/dsl.md) | 结构脚本、动作脚本完整语法 |
-| [驱动清单](docs/drivers.md) | 59 个模块分类速查、驱动契约 |
+| [驱动清单](docs/drivers.md) | 60 个模块分类速查、驱动契约 |
 | [HAL 硬件抽象层](docs/hal.md) | FFI 直调 glibc、I2C 原子事务、沙箱 |
 | [@Daemon 守护线程](docs/daemon.md) | 后台采样、滤波器链路 |
 | [虚拟总线](docs/virtbus.md) | 无硬件验证驱动链路、器件模型库 |

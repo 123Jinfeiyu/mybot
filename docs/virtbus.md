@@ -110,6 +110,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 | --- | --- | --- | --- |
 | `"open"` | 打开虚拟总线 | nil | `{ raw = 路径 }` |
 | `"set"` | `i2c_set_addr` 绑定地址 | 地址 | `{}` |
+| `"adopt"` | `adopt_fd` 采纳「别的 lua_State 创建的虚拟 fd」（多状态机拓扑登记） | 地址（I2C 采纳时）/ nil | `{ raw = 路径 }` |
 | `"w"` | 写事务（含读操作的寄存器指针写） | 地址 | 1 基字节表，如 `{0x3B}`、`{0x6B, 0x00}` |
 | `"r"` | 读事务 | 地址 | `{ n = 请求字节数 }`（实际数据由模型 read 返回，不入日志） |
 
@@ -125,7 +126,7 @@ vbus.attach("自定义@0x68", 0x68, dev)
 - `spi_setup` 复刻 HAL 校验（mode 0~3、bits 7~16、speed 正整数）并留痕；它面向**控制器**，真机上总线无器件也成功——虚拟层同此语义（与 I2C「无地址 NACK」刻意不同）。
   - 传输族的字节/帧长校验同 HAL：非字节不发帧直接 -1；`write_multi` 1~64 字节；`read_multi` n 1~6（2^53 精度上限，同 HAL）越界显式 -1。
   - `delay_us` 钳到 65535 随帧留痕。
-  - 无挂载路径/未打开 fd 的传输一律 -1（虚拟层约定的「设备不在」负路径）。
+  - 无挂载路径/未打开 fd 的传输一律 -1（虚拟层约定的「设备不在」负路径；`spi_xfer_full` 例外——任何失败返回 `nil`，与其「失败不返 -1」的 HAL 契约一致）。
 - SPI txlog 条目（失败帧 `rx=nil, ok=false` 同样记录）：
 
   | dir | 含义 | 字段 |
@@ -171,8 +172,8 @@ UART 事务与 I2C/SPI **共用同一条 `txlog`**，条目 dir 为：
 > - 模型与驱动保持**独立实现**（自带寄存器表/灵敏度常量、不引用驱动局部量），互证防假绿性质不变
 > - `lib/virtbus/` 目录现仅保留通用底座 `regmap.lua`；下述各模型的 API 与行为描述在迁入后完全不变
 
-`modules/` 下共有 **42 个内嵌 `*_VIRT` 模型**（`grep -l '_VIRT *=' modules/*.lua`——
-`bitcompat.lua` 的注释里也提到 `*_VIRT`，命令不带 ` =` 会数出 43）；下面先给「尚未单独成节」的一批速览，其后是逐个展开的协议细节。速览批次的协议事实以对应驱动文件尾部注释为准。
+`modules/` 下共有 **43 个内嵌 `*_VIRT` 模型**（`grep -l '_VIRT *=' modules/*.lua`——
+`bitcompat.lua` 的注释里也提到 `*_VIRT`，命令不带 ` =` 会数出 44）；下面先给「尚未单独成节」的一批速览，其后是逐个展开的协议细节。速览批次的协议事实以对应驱动文件尾部注释为准。
 
 ### 其余内嵌模型（速览）
 
@@ -182,6 +183,7 @@ UART 事务与 I2C/SPI **共用同一条 `txlog`**，条目 dir 为：
 | `APDS9900_VIRT`（`modules/APDS9900.lua`） | 命令字节 `COMMAND`+`TYPE` 四态寻址族（重复字节/自增/重复字/自增字），**不是朴素寄存器指针** |
 | `AS3935_VIRT`（`modules/AS3935.lua`） | 8 位字节指针 + 事件型中断锁存（INT 读后清）+ 两条直接命令（0x3C 软复位 / 0x3D RCO 校准）+ 21 位能量三字节小端 |
 | `BH1745_VIRT`（`modules/BH1745.lua`） | ROHM 四通道颜色传感器：稀疏字节寄存器 + 指针（1B 写=纯指针、≥2B 流首址起自增 mod 256），坏帧整笔 NACK 且指针不动 |
+| `LCD1206_VIRT`（`modules/LCD1206.lua`） | HD44780 16x2 字符液晶经 PCF8574 I2C 背包的 4 位模式总线级模型：指令/数据 nibble 重组、DDRAM 内容可注入（`set_ddram`）、行文本可读出（`line_text`/`display_text`）、`nack` 故障注入 |
 | `BME688_VIRT`（`modules/BME688.lua`） | Bosch 四合一（温/压/湿/气）：3 块 42 字节 NVM 校准 burst + `0xF0` 变体选路 + TPH OSR/GAS_WAIT 门 |
 | `BMI270_VIRT`（`modules/BMI270.lua`） | Bosch 六轴 IMU：配置 blob 三段握手（INIT_CTRL 清零 → INIT_ADDR 双字节寻址 → INIT_DATA 8 字节突发） |
 | `BMM150_VIRT`（`modules/BMM150.lua`） | Bosch 三轴磁力计：上电挂起电源门 + 三段工厂 trim NVM + XY/Z 异构 13/15 位数据块 |
