@@ -52,8 +52,8 @@
 //!
 //! meta 只记 `api_key_source` 枚举与脱敏后的接入点（复用 audit 的
 //! `sanitize_endpoint`，剥 query/userinfo）；**密钥值绝不出现**。工具回执按
-//! 「进入上下文的原样」记录——后端工具已过 maskSecretsInText，`http_fetch` 本就
-//! 不遮蔽（既有已知限制，文档如实声明）。
+//! 「进入上下文的原样」记录——后端工具已过 maskSecretsInText，`http_fetch`
+//! 在定界前过同一套形态的 `mask_secrets`。不在那套形态里的凭据仍会进录制段。
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};

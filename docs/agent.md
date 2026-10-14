@@ -379,7 +379,7 @@ mybot-agent（Rust）     模型循环（provider.rs 直连 provider：reqwest +
 | `list_dir` | 列出机器人主机上一个目录下的条目（文件名 + 类型 + 大小；只读、不递归；`path` 缺省为只读根目录本身） | 符号链接条目不列；条目数上限 1000（超限截断并标注）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（配置文件的 `fs_root` 一律拒绝加载，见安全说明第 13 条） |
 | `read_file` | 读取机器人主机上一个文本文件的全部内容（只读） | 路径必须落在 `--fs-root` 根目录之下（`agent_sandbox.hpp` 的 `resolveUnderRoot`：词法 + canonical 根包含性，符号链接逃逸一律拒绝）；大小上限 64 KiB（超限响亮拒绝，不截断）；二进制（含 NUL 或非法 UTF-8）拒绝返回；回执经 `maskSecretsInText` 遮蔽敏感值（与 `run_command` 同单点）；**缺省不注册**，须命令行 `--fs-root <目录>` 显式开启（与 `list_dir` 同门控，配置文件不能开） |
 | `write_file` | 在机器人主机上创建或覆盖一个文本文件（原子写入：先写同目录临时文件再落地，不留半截内容） | 路径同 `read_file` 的沙箱判据；目标是符号链接一律拒绝（无论 `overwrite`）；目标已存在时**默认拒绝覆盖**，须显式 `overwrite:true`（覆盖不可逆）；大小上限 64 KiB、不接受含 NUL 的内容；父目录须已存在（不自动创建）；落地文件权限 **0600**（别的用户/进程读不到，需跨用户共享时不适用）。落地按 `overwrite` 分两路：新建 `link`（目标已被抢先创建则 `EEXIST` 拒绝，堵 TOCTOU 静默覆盖）、覆盖 `rename`（原子替换），详见安全说明第 14 条。**缺省不注册**，须命令行 `--agent-write-file` 显式开启且依赖 `--fs-root`（配置文件的 `allow_write_file` 只能关不能开）；危险性与 `run_command`/`apply_sql` 同级，`--mcp-backend` 下**强制**要求 policy 且 `require_confirm` 包含 `write_file` |
-| `http_fetch` | 对允许清单内的主机发起一次 HTTP GET，返回状态码与响应体（**Rust 本地工具**：在 `mybot-agent` 进程里执行，不经后端） | **缺省不注册**，须 `mybot-agent` 命令行 `--allow-host <主机[:端口]>`（可重复）显式开启——**精确匹配**、无通配/后缀匹配，不写端口的条目只放行 http/https 缺省端口；配置文件没有对应字段（写了按未知字段拒绝整份配置）。只发 GET、**不跟随重定向**（3xx 回执报出 Location，由模型另发一次仍受白名单约束的调用）、**不走系统代理**、url 不得带用户名/密码；只收文本类 Content-Type（`text/*`、JSON、XML），响应体上限缺省 64 KiB（`--http-fetch-max-bytes`，边读边数、超限中止），须为 UTF-8；超时缺省 10 秒（`--http-fetch-timeout`）。回执逐行 `> ` 按「数据不是指令」定界；**不过** `maskSecretsInText`。非 2xx 照样带响应体、但判失败。审计 `kind=tool` 行由 agent 侧落（url 去 query）。不强制策略确认（只读、无副作用，理由与风险见安全说明第 15 条） |
+| `http_fetch` | 对允许清单内的主机发起一次 HTTP GET，返回状态码与响应体（**Rust 本地工具**：在 `mybot-agent` 进程里执行，不经后端） | **缺省不注册**，须 `mybot-agent` 命令行 `--allow-host <主机[:端口]>`（可重复）显式开启——**精确匹配**、无通配/后缀匹配，不写端口的条目只放行 http/https 缺省端口；配置文件没有对应字段（写了按未知字段拒绝整份配置）。只发 GET、**不跟随重定向**（3xx 回执报出 Location，由模型另发一次仍受白名单约束的调用）、**不走系统代理**、url 不得带用户名/密码；只收文本类 Content-Type（`text/*`、JSON、XML），响应体上限缺省 64 KiB（`--http-fetch-max-bytes`，边读边数、超限中止），须为 UTF-8；超时缺省 10 秒（`--http-fetch-timeout`）。回执逐行 `> ` 按「数据不是指令」定界，定界前按与 `maskSecretsInText` 同一套名字与值边界遮蔽敏感值（Rust 侧 `mask_secrets`，不经 C++）。非 2xx 照样带响应体、但判失败。审计 `kind=tool` 行由 agent 侧落（url 去 query）。不强制策略确认（只读、无副作用，理由与风险见安全说明第 15 条） |
 
 `run_action_script` 执行失败（脚本名错、硬件未接、解析错误）不会中断会话：报错文本作为工具结果回传模型，由模型决定换个做法还是如实汇报。
 
@@ -609,7 +609,8 @@ append-only 不可变），`meta.json` 的 `resumed_from` 链回前段；恢复�
 
 **密钥纪律**：`meta.json` 只记 `api_key_source` 枚举与脱敏接入点（复用审计的
 `sanitize_endpoint`），**密钥值绝不出现**；工具回执按「进入上下文的原样」记录
-（后端工具已过 `maskSecretsInText`，`http_fetch` 本就不遮蔽——见已知限制）。
+（后端工具已过 `maskSecretsInText`，`http_fetch` 在定界前过 Rust 侧同一套形态的
+`mask_secrets`——见已知限制）。
 
 **训练集导出**：`scripts/record_export.py`（纯标准库 Python，与 mcp_e2e 的帧客户端
 同规）：
@@ -1233,9 +1234,9 @@ auth 的旧后端会把 auth 帧当 `unknown route` 拒绝（agent 报错并提�
     当作必需而不是可选；开 `BOT4CJ_ICA=1` 时，动作工具还须先过现实检查（本任务先读过机器人
     状态、登记过预测），也能挡住「读完响应直接动作」的一步到位。
     **已知限制**（如实声明）：
-    - **不过密钥遮蔽**：`maskSecretsInText`（第 1、13 条）只在 C++ 侧，Rust 侧没有镜像；
-      若白名单主机的响应里带凭据（例如某个调试接口回显了请求头），会原文进入上下文与
-      会话文件。只放行不会回显敏感数据的接口。
+    - **遮蔽是文本形态，不是语义**：定界前按与 C++ `maskSecretsInText` 同一套名字与值边界
+      （`KEY=val`、`Authorization:`/`Bearer`、JSON 引号键）把值换成 `***`。不在这些形态里的
+      凭据（自由散文、自定义字段名）仍会进上下文与会话文件。只放行不会回显敏感数据的接口。
     - **不防 DNS rebinding**：主机名白名单挡不住「白名单域名被改解析到内网地址」。若部署
       网络里有不该被访问的内网服务，白名单里只放 IP 或受你控制解析的域名。
     - **无专属限流**：同一任务里反复调 `http_fetch` 只受 `max_calls_per_round` 与任务墙钟
@@ -1311,10 +1312,10 @@ bash test/run_all.sh agent-all
 ## 已知限制
 
 - **录制模式的数据面如实声明**（2026-10-09，微调数据采集视角）：
-  ① **遮蔽痕迹会进数据集**——`run_command`/`read_file` 回执在进上下文前已被
-  `maskSecretsInText` 遮蔽（`***`），微调数据里就是遮蔽后的形态，模型会学到
+  ① **遮蔽痕迹会进数据集**——`run_command`/`read_file`/`http_fetch` 回执在进上下文前已遮蔽
+  （`***`；后两者分别走 C++ `maskSecretsInText` 与 Rust `mask_secrets`，同一套形态），微调数据里就是遮蔽后的形态，模型会学到
   「看到 `***` 是正常现象」；不想要这类样本请在导出后自行剔除。
-  ② **`http_fetch` 回执不遮蔽**（同审计已知限制），采集含外站内容的语料时注意。
+  ② **不在那套形态里的凭据仍会进数据集**——自由散文或自定义字段名不会被当成密钥。
   ③ **分布偏差**：录制的是「这个提示词包 + 这套工具 + 这台机器人」下的轨迹；
   导出器按 `system_fp` 拒绝串接提示词不同的段，手工混拼同样不被支持。
   ④ **图片隐私**：录制段含真实画面（家里、人脸）与完整对话，敏感级高于会话
