@@ -365,20 +365,23 @@ impl Bridge {
     /// 排进待注入队列。失败的回执同样收图片：C++ 侧的派发漏斗不因 ok=false 丢弃
     /// 图片，模型看到的是一句失败说明加一张画面。
     fn admit_and_collect(&self, outcome: &mut ToolOutcome) {
-        let mut text = outcome.text.clone();
-        let mut image = outcome.image_data_url.clone();
+        // 原地改写，不再把整张 data URL clone 进预算再 clone 进队列。
+        // 工具消息只带文本（into_tool_output），图片只活在待注入队列里。
         {
             let mut budget = self
                 .state
                 .budget
                 .lock()
                 .unwrap_or_else(crate::hook::poisoned);
-            budget.admit(&mut text, &mut image, outcome.executed);
+            budget.admit(
+                &mut outcome.text,
+                &mut outcome.image_data_url,
+                outcome.executed,
+            );
         }
-        outcome.text = text;
-        outcome.image_data_url = image;
         if !outcome.image_data_url.is_empty() {
-            self.state.push_image(outcome.image_data_url.clone());
+            self.state
+                .push_image(std::mem::take(&mut outcome.image_data_url));
         }
     }
 }

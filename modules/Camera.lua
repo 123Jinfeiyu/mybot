@@ -683,18 +683,25 @@ function call(data)
 		real = state.sim.path
 	end
 	if real ~= nil then
-		if state.sim == nil or state.sim.path ~= real then
+		-- bytes == nil：上一拍已经释放原始缓冲，同一路径也要重读。
+		if state.sim == nil or state.sim.path ~= real or state.sim.bytes == nil then
 			local sim, lerr = load_sim(real)
 			if sim == nil then return err(lerr) end
 			state.sim = sim
 		end
+		-- 拍完即释放原始缓冲：会话级缓存只留路径与格式。
+		-- 否则一张图在「文件缓冲 + base64 + 宿主 Json」上同时在场。
+		local raw = state.sim.bytes
+		local fmt = state.sim.format
+		local path = state.sim.path
+		state.sim.bytes = nil
 		return {
 			result = "OK",
 			source = "file",
-			format = state.sim.format,
-			bytes = #state.sim.bytes,
-			b64 = base64(state.sim.bytes),
-			note = "模拟图片（src=" .. state.sim.path .. "）",
+			format = fmt,
+			bytes = #raw,
+			b64 = base64(raw),
+			note = "模拟图片（src=" .. path .. "）",
 		}
 	end
 	state.sim = nil

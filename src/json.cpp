@@ -94,7 +94,24 @@ void jsonMergeInto(Json& dst, const Json& src) {
 	}
 }
 
+/* 控制字符、引号、反斜杠才需要逐字节转义。base64（拍照回执的大头）全是
+ * JSON 安全字符：逐字节 `out += c` 会把一次序列化变成数百万次小追加。
+ * 先扫一遍，安全串整段 append。输出与慢路径逐字节相同。 */
+static bool needsJsonEscape(const std::string& s) {
+	for (unsigned char c : s) {
+		if (c < 0x20 || c == '"' || c == '\\') { return true; }
+	}
+	return false;
+}
+
 static void escapeString(std::string& out, const std::string& s) {
+	if (!needsJsonEscape(s)) {
+		out.reserve(out.size() + s.size() + 2);
+		out.push_back('"');
+		out.append(s);
+		out.push_back('"');
+		return;
+	}
 	out += '"';
 	for (unsigned char c : s) {
 		switch (c) {

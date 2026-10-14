@@ -363,14 +363,14 @@ AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 			Json res = ctx.camera->playQuiet(params);	/* ERR 契约在此抛出 */
 
 			/* 借用而非拷贝（AG-19）：Json::getValue() 按值返回，一次拍照原本要
-			 * 为同一串 base64 拷 6 次（本函数 5 处 + 体积判据 1 处）。 */
-			const Json* b64Node = res.find("b64");
+			 * 为同一串 base64 拷 6 次（本函数 5 处 + 体积判据 1 处）。拼完 data URL
+			 * 后把节点里的 base64 挪走：回执只带 url，留着 b64 等于再占一份等大缓冲。 */
+			Json* b64Node = res.getPtr("b64");
 			if (b64Node == nullptr || !b64Node->isStr() || b64Node->s.empty()) {
 				throw std::runtime_error("摄像头驱动没有返回图像数据（b64 为空）");
 			}
-			const std::string& b64 = b64Node->s;
 
-			validateImageSize(res, b64.size());
+			validateImageSize(res, b64Node->s.size());
 
 			std::string desc = buildImageDescription(res, reqW, reqH);
 
@@ -378,15 +378,17 @@ AgentTool makeCaptureImageTool(const AgentToolContext& ctx) {
 			 * image/jpeg：仿真来源可以是 PNG/GIF/WebP，硬编码会把「JPEG 标签 +
 			 * PNG 字节」发给网关，严格解析器直接 400。驱动侧已按魔数判定并对
 			 * 不认识的格式响亮拒绝，这里只需原样采用并做一次自洽交叉校验。 */
-			std::string mime = dataUrlMimeFor(res, b64);
+			std::string mime = dataUrlMimeFor(res, b64Node->s);
 			/* 单次 reserve 构造 data URL：链式 `+` 每步都分配新串并拷贝已有内容，
 			 * 2MB base64 会产生三次分配、约 4MB 拷贝。reserve 一次到位后 append
-			 * 只做一次 memcpy（前缀小、b64 是连续块，编译器能展开成单次调用）。 */
+			 * 只做一次 memcpy（前缀小、b64 是连续块）。拼完即清空节点，避免
+			 * res 析构前与 url 同时持有同一份画面。 */
 			const std::string prefix = "data:" + mime + ";base64,";
 			std::string url;
-			url.reserve(prefix.size() + b64.size());
+			url.reserve(prefix.size() + b64Node->s.size());
 			url.append(prefix);
-			url.append(b64);
+			url.append(std::move(b64Node->s));
+			b64Node->s.clear();
 
 			/* 同时查询测距仪（仿真环境）。如果可用，把距离信息附加到描述里 */
 			std::string range = querySimRange();

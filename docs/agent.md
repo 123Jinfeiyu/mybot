@@ -1400,13 +1400,17 @@ bash test/run_all.sh agent-all
   都会被严格网关 400，而那块历史已被 `runTurn` 认作「可原样发送」、`HistoryManager::trim`
   又不裁最新块 ⇒ REPL 从此每条任务都以同一个请求体失败（与 AG-4 同一失效形态）。
   截断同时写 stderr 与审计（SAN-8①）——这是安全相关事实，不能只到达模型。`0` = 不限。
-- **单张图的峰值内存仍是图像体积的数十倍**（第三轮审计 AG-19 实测：786 KB JPEG →
-  40 MiB、1.5 MB JPEG → 55 MiB、10 MB（超限被拒）→ 163 MiB）。同一条 payload 在
-  「驱动缓冲 → Lua 字符串 → base64 → Json 节点 → data URL → 会话历史 → 请求体」
-  上各有副本，其中「用的时候不拷贝」这一半（`Json::getValue()` 的 6 次整串拷贝、
-  超限图先编码等）已在 AG-19 收口；剩下的是传输层架构问题（要真正压下来得让图片
-  以引用/流式形态穿过这条链），本版未做。小内存现场（树莓派 Zero 级）请留意：
-  一次拍照的瞬时占用可达数十 MiB，而 OOM 会跳过 `deactivate()`。
+- **单张图的峰值内存仍是图像体积的数倍**（第三轮审计 AG-19 实测：786 KB JPEG →
+  40 MiB、1.5 MB JPEG → 55 MiB、10 MB（超限被拒）→ 163 MiB；那组数字是当时的测量，
+  下面几处收口后**未重测**）。同一条 payload 在「驱动缓冲 → Lua 字符串 → base64 →
+  Json 节点 → data URL → 会话历史 → 请求体」上各有副本。已收口的：`Json::getValue()`
+  的整串拷贝与超限图先编码（AG-19）；仿真图源拍完即释放原始缓冲；拼 data URL 后清空
+  驱动返回的 `b64` 节点；MCP 回执把 `imageDataUrl` 挪进响应而不是再拷一份；Json
+  序列化对无转义串整段 append（base64 不再逐字节追加）；agent 侧图片只 move 进待注入
+  队列。**仍在**：data URL 必须独立持有（OpenAI 要 base64，工具消息不能带图），帧
+  序列化与请求体各留一份。要再压得让图片以引用/流式穿过 socket，本版未做。小内存
+  现场（树莓派 Zero 级）请留意：一次拍照的瞬时占用仍是图体积的数倍，而 OOM 会跳过
+  `deactivate()`。
 - ~~无记忆持久化（重启即忘）~~ → **已解决**（`--session-file` / `--resume`，
   批次 D，Rust `mybot-agent` 实现，见「会话持久化」节）。2026-10-03 起更进一步：
   **不给路径也缺省落盘**（`$MYBOT_HOME/robots/<机器人>/sessions/`）并默认续接上一次，

@@ -141,11 +141,12 @@ Json McpBackend::routeToolCall(const Json& req) {
 	/* 唯一漏斗：策略确认 → 执行 → 审计。未知工具/参数错/异常都由 gate 折成
 	 * 文本回执并记审计（评估 §3.4「所有 MCP 调用必穿 DispatchGate::run」）。 */
 	/* tool.call 回执按跨进程协议字段表序列化。 */
-	const AgentToolResult res = gate_.run(call, turn_++);
+	AgentToolResult res = gate_.run(call, turn_++);
 
 	Json data = JsonObject();
 	data.put(mcp_protocol::kText, JsonString(res.text));
-	data.put(mcp_protocol::kImageDataUrl, JsonString(res.imageDataUrl));
+	/* 挪走而不是再拷：imageDataUrl 可达 2MiB，回执帧序列化时节点里还要留一份。 */
+	data.put(mcp_protocol::kImageDataUrl, JsonString(std::move(res.imageDataUrl)));
 	data.put(mcp_protocol::kOk, JsonBool(res.ok));
 	data.put(mcp_protocol::kError, JsonString(res.error));
 	data.put(mcp_protocol::kExecuted, JsonBool(res.executed));
