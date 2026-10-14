@@ -1,0 +1,27 @@
+[package]
+  cjc-version = "1.2.0"
+  name = "bot4cj"
+  organization = ""
+  description = "robots controller projects based on cangjie"
+  version = "0.4.0"
+  target-dir = ""
+  script-dir = ""
+  output-type = "executable"
+  compile-option = ""
+  override-compile-option = ""
+  link-option = ""
+  package-configuration = {}
+
+[dependencies]
+  "xxisp" = "0.1.2"
+
+# 这种x86机器人开发板感觉不经常使用，我没用过，不知道里面的i2c调用是不是参数是一样的
+[target.x86_64-unknown-linux-gnu]
+  [target.x86_64-unknown-linux-gnu.dependencies]
+  [target.x86_64-unknown-linux-gnu.bin-dependencies]
+    path-option = ["${CANGJIE_STDX_PATH}/linux_x86_64_cjnative/static/stdx"]
+
+[target.aarch64-unknown-linux-gnu]
+  [target.aarch64-unknown-linux-gnu.dependencies]
+  [target.aarch64-unknown-linux-gnu.bin-dependencies]
+    path-option = ["${CANGJIE_STDX_PATH}/linux_aarch64_cjnative/static/stdx"]
