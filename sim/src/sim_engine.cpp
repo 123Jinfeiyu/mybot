@@ -184,4 +184,16 @@ void SimEngine::step(float dt) {
         r.applySupport(world_.supportHeight(r));
         world_.updateCarried(r);
     }
+    // 离散落体：失去支撑的静态箱落到下一支撑面。各机器人背着的箱子一起跳过
+    // （跟着机体走）。一层落稳后，原来压在它上面的才看得到新支撑，故重复直到
+    // 不再有箱子落下；轮数以障碍数为上限，避免互相穿插时死循环。
+    std::vector<int> carried;
+    carried.reserve(slots_.size());
+    for (const RobotSlot& s : slots_) {
+        if (s.robot.isCarrying()) carried.push_back(s.robot.carriedIndex());
+    }
+    const int n = static_cast<int>(world_.obstacles().size());
+    for (int pass = 0; pass < n; ++pass) {
+        if (world_.settleUnsupported(carried) == 0) break;
+    }
 }

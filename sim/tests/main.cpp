@@ -35,6 +35,7 @@ int main() {
     testPlaceInfeasible();
     testStacking();
     testPickBlockedByStack();
+    testSettleUnsupported();
     testSceneIo();
     testSimPaths();
     testActionTable();

@@ -71,6 +71,12 @@ bool overlapXZ(const Obstacle& a, const Obstacle& b);
 // 直接可用。无命中返回 false。
 bool rayHit(float ox, float oz, float dx, float dz, const Obstacle& ob, float& tHit);
 
+// 水平射线 vs 有限高度的盒：XZ 命中点处射线高度 rayY 必须落在盒的竖直区间内。
+// 射线水平（不按 y 衰减），故「站在箱顶上看过去」会穿过错过脚下的地板，只打到
+// 比射线高的墙。rayY 低于盒底或高于盒顶都算未命中。
+bool rayHitAtHeight(float ox, float oz, float dx, float dz, float rayY,
+                    const Obstacle& ob, float& tHit);
+
 // 球（XZ 平面）vs OBB（XZ 截面）碰撞解算：旋进盒局部系按原点盒解算，再把位移
 // 增量旋回世界系叠加。返回 true 表示发生了碰撞（位置被修正）。
 bool resolveSphere(float& sx, float& sz, float radius, const Obstacle& ob);

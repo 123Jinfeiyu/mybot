@@ -49,7 +49,8 @@ public:
 
     // 每帧推进：逐只机器人按**本 slot 的命令**生成输入 → tickRelative（相对运动接管
     // 则覆盖输入；空中跳过）→ update（地面平面滞后 / 空中弹道）→ resolveCollisions
-    // （高度感知）→ applySupport（脚下支撑面：落地吸附或走下箱沿转坠落）→ updateCarried。
+    // （高度感知）→ applySupport（脚下支撑面：落地吸附或走下箱沿转坠落）→ updateCarried
+    // → 全部推进完后 settleUnsupported（失去支撑的静态箱落到下一支撑面；背着的跳过）。
     void step(float dt);
 
     // 感知：指定机器人身体前端中心沿 heading 的射线测距（米）。

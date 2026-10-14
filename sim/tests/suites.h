@@ -24,6 +24,7 @@ void testPlaceResolve();
 void testPlaceInfeasible();
 void testStacking();
 void testPickBlockedByStack();
+void testSettleUnsupported();
 
 // ---- 场景文件 IO 与状态目录路径（test_scene.cpp）----
 void testSceneIo();

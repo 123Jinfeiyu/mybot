@@ -104,19 +104,69 @@ float World::supportHeight(const Robot& robot) const {
 float World::queryRange(const Robot& robot, float maxRange) const {
     float forwardX, forwardZ;
     Obb2D::forwardOf(robot.theta(), forwardX, forwardZ);
-    // 射线从身体前端中心出发
+    // 射线从身体前端、身体中心高度水平发出。高度不随俯仰变化（仿真器没有俯仰）。
     const float ox = robot.x() + forwardX * (Robot::kBodyLength * 0.5f);
     const float oz = robot.z() + forwardZ * (Robot::kBodyLength * 0.5f);
+    const float rayY = robot.y() + Robot::kBodyY + Robot::kBodyHeight * 0.5f;
+    // 与碰撞同一条「地板」线：顶面不高于脚下的障碍射线从上方穿过，不当墙。
+    const float footY = robot.y() + Robot::kGroundSnapTol;
 
     float nearest = maxRange;
     for (int i = 0; i < (int)obstacles_.size(); ++i) {
         if (i == robot.carriedIndex()) continue;  // 跳过该机器人搬运的物体
+        const Obstacle& ob = obstacles_[i];
+        if (ob.center.y + ob.half.y <= footY) continue;  // 脚下的地板
         float t;
-        if (Obb2D::rayHit(ox, oz, forwardX, forwardZ, obstacles_[i], t) && t < nearest) {
+        if (Obb2D::rayHitAtHeight(ox, oz, forwardX, forwardZ, rayY, ob, t) && t < nearest) {
             nearest = t;
         }
     }
     return nearest;
+}
+
+int World::settleUnsupported(const std::vector<int>& carriedIdxs) {
+    auto carried = [&](int idx) {
+        return std::find(carriedIdxs.begin(), carriedIdxs.end(), idx) != carriedIdxs.end();
+    };
+    // 先按**本轮开始时**的几何决定谁落、落到哪，再一起写回。同轮里先处理的
+    // 下层不能立刻变成上层的新支撑——否则结果依赖遍历顺序（下层下标更小就
+    // 一层落完、更大就留下悬空）。一层落稳后由调用方再调一轮。
+    struct Drop {
+        int idx;
+        float y;
+    };
+    std::vector<Drop> drops;
+    for (int i = 0; i < (int)obstacles_.size(); ++i) {
+        if (carried(i)) continue;  // 背着的箱子跟着机体，不参与落体
+        const Obstacle& ob = obstacles_[i];
+        const float bottom = ob.center.y - ob.half.y;
+        // 已经贴地（含浮点噪声）的不处理。贴地判定用 kGroundSnapTol，与「地板」同容差。
+        if (bottom <= Robot::kGroundSnapTol) continue;
+
+        float support = 0.0f;  // 缺省地面
+        bool found = false;
+        for (int j = 0; j < (int)obstacles_.size(); ++j) {
+            if (j == i || carried(j)) continue;
+            const Obstacle& oth = obstacles_[j];
+            const float top = oth.center.y + oth.half.y;
+            // 支撑必须在自己底面之下（含贴合容差）。顶面高于自己底面的是穿插或
+            // 旁边的墙，不能当落点——否则会把已经叠好的箱子再往上抬。
+            if (top > bottom + Robot::kGroundSnapTol) continue;
+            if (!Obb2D::overlapXZ(ob, oth)) continue;
+            if (!found || top > support) {
+                support = top;
+                found = true;
+            }
+        }
+        // 贴着当前支撑面（另一箱顶或地面）就不落。悬空量必须大于容差，避免
+        // 每帧把「刚好叠上」的箱子来回抖动。
+        if (bottom <= support + Robot::kGroundSnapTol) continue;
+        drops.push_back({i, support + ob.half.y});
+    }
+    for (const Drop& d : drops) {
+        obstacles_[d.idx].center.y = d.y;
+    }
+    return static_cast<int>(drops.size());
 }
 
 bool World::isObstacleCovered(int idx) const {

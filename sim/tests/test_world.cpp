@@ -46,6 +46,32 @@ void testQueryRange() {
     }
     World sideBox(oneBox(side.x(), -3.0f));
     check(near(sideBox.queryRange(side), 2.4f, 0.15f), "转 90° 后命中侧方障碍");
+
+    // 高度感知：射线在身体中心高度（y=0 时约 0.33m）。矮箱顶面 0.10 < 射线，
+    // 从上方穿过去，不当墙；同位置的高墙顶面 0.8、底面 0 挡住射线。
+    World low(std::vector<Obstacle>{
+        {{3.0f, 0.05f, 0.0f}, {0.4f, 0.05f, 0.4f}, {1, 1, 1}, 1.0f},
+    });
+    check(near(low.queryRange(r), Robot::kRangeMax, 1e-6f), "矮于射线的箱子不当墙");
+    World tall(std::vector<Obstacle>{
+        {{3.0f, 0.4f, 0.0f}, {0.4f, 0.4f, 0.4f}, {1, 1, 1}, 1.0f},
+    });
+    check(near(tall.queryRange(r), 2.4f, 1e-3f), "高过射线的墙仍命中近面");
+
+    // 站上箱顶（y=0.8）后，脚下这块箱子的近面不再被当成前方障碍；更远处、
+    // 顶面高于脚下的墙才计入。射线高度 = 0.8+0.26+0.07 = 1.13，墙必须够到它。
+    Robot atop;
+    atop.applySupport(0.8f);
+    World onBox(std::vector<Obstacle>{
+        {{0.0f, 0.4f, 0.0f}, {0.5f, 0.4f, 0.5f}, {1, 1, 1}, 1.0f},     // 脚下，顶面 0.8
+        {{3.0f, 1.2f, 0.0f}, {0.4f, 0.5f, 0.4f}, {1, 1, 1}, 1.0f},     // 墙：底 0.7 顶 1.7
+    });
+    check(near(onBox.queryRange(atop), 2.4f, 1e-3f), "站箱上测距穿过脚下、命中前方墙");
+    World onlyFloor(std::vector<Obstacle>{
+        {{0.0f, 0.4f, 0.0f}, {0.5f, 0.4f, 0.5f}, {1, 1, 1}, 1.0f},
+    });
+    check(near(onlyFloor.queryRange(atop), Robot::kRangeMax, 1e-6f),
+          "站箱上前方没有墙时返回 maxRange");
 }
 
 // ---- World：碰撞 ----
@@ -405,6 +431,54 @@ void testPickBlockedByStack() {
     });
     Robot r3;
     check(!worldOverhang.pick(r3), "只搭半边也算压住 → 仍拒绝拾取");
+}
+
+// ---- World：失去支撑的静态箱落到下一支撑面 ----
+
+void testSettleUnsupported() {
+    // 下层顶面 0.4、上层底面 0.4 贴合：已经叠稳，settle 不动。
+    World stacked(std::vector<Obstacle>{
+        {{0.0f, 0.2f, 0.0f}, {0.3f, 0.2f, 0.3f}, {1, 1, 1}, 1.0f},
+        {{0.0f, 0.6f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},
+    });
+    check(stacked.settleUnsupported() == 0, "贴合叠放：没有箱子落下");
+    check(near(stacked.obstacles()[1].center.y, 0.6f, 1e-6f), "贴合叠放：上层高度不变");
+
+    // 抽走下层后上层悬空（底面 0.4、脚下是地面）→ 落到地面。
+    World gap(std::vector<Obstacle>{
+        {{0.0f, 0.6f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},
+    });
+    check(gap.settleUnsupported() == 1, "悬空箱落到地面");
+    check(near(gap.obstacles()[0].center.y, 0.2f, 1e-6f), "落地后 center.y = half.y");
+    check(gap.settleUnsupported() == 0, "落地后再 settle 是空操作");
+
+    // 三层叠放、抽走最下层：中层先落到地面，上层再落到中层顶。一轮只落「直接悬空」
+    // 的那一层，故调用方要重复直到返回 0。
+    World tower(std::vector<Obstacle>{
+        {{1.0f, 0.5f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // 原中层，底 0.3（悬空）
+        {{1.0f, 0.9f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // 原上层，底贴着中层顶 0.7
+    });
+    check(tower.settleUnsupported() == 1, "抽下层：先落直接悬空的中层");
+    check(near(tower.obstacles()[0].center.y, 0.2f, 1e-6f), "中层落到地面");
+    check(near(tower.obstacles()[1].center.y, 0.9f, 1e-6f), "第一轮上层还悬着（支撑面尚未更新）");
+    check(tower.settleUnsupported() == 1, "第二轮上层落到中层新顶面");
+    check(near(tower.obstacles()[1].center.y, 0.6f, 1e-6f), "上层底面贴合中层顶面 0.4");
+
+    // 旁边不重叠的矮箱不能当支撑：悬空箱落到地面，而不是被拉到旁边那只的顶上。
+    World aside(std::vector<Obstacle>{
+        {{0.0f, 0.8f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},  // 悬空
+        {{2.0f, 0.15f, 0.0f}, {0.2f, 0.15f, 0.2f}, {1, 1, 1}, 1.0f},  // 旁边，XZ 不重叠
+    });
+    check(aside.settleUnsupported() == 1, "旁边不重叠的箱子不当支撑");
+    check(near(aside.obstacles()[0].center.y, 0.2f, 1e-6f), "悬空箱落到地面而非旁边的顶");
+    check(near(aside.obstacles()[1].center.y, 0.15f, 1e-6f), "旁边的箱子自己没被挪");
+
+    // 正被搬运的下标不参与落体，即使它的几何位置悬空。
+    World carried(std::vector<Obstacle>{
+        {{0.0f, 1.0f, 0.0f}, {0.2f, 0.2f, 0.2f}, {1, 1, 1}, 1.0f},
+    });
+    check(carried.settleUnsupported({0}) == 0, "背着的箱子不落下");
+    check(near(carried.obstacles()[0].center.y, 1.0f, 1e-6f), "背着的箱子高度保持");
 }
 
 }  // namespace SimTests

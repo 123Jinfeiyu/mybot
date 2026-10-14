@@ -56,6 +56,19 @@ bool rayHit(float ox, float oz, float dx, float dz,
     return true;
 }
 
+bool rayHitAtHeight(float ox, float oz, float dx, float dz, float rayY,
+                    const Obstacle& ob, float& tHit) {
+    float t;
+    if (!rayHit(ox, oz, dx, dz, ob, t)) return false;
+    const float bottom = ob.center.y - ob.half.y;
+    const float top = ob.center.y + ob.half.y;
+    // 射线水平：命中点高度就是 rayY。贴在顶面或底面上算命中（闭区间），
+    // 否则站在恰好与射线齐平的箱顶边缘会被当成「没有墙」。
+    if (rayY < bottom || rayY > top) return false;
+    tHit = t;
+    return true;
+}
+
 bool resolveSphere(float& sx, float& sz, float radius,
                    const Obstacle& ob) {
     const float yaw = ob.yaw;
