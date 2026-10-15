@@ -2,4 +2,6 @@ version = 0
 
 [requires]
   "ystyle::xisp" = {version = "0.5.0"}
+  SQL4cj = {version = "1.0.4"}
   xxisp = {version = "0.1.2"}
+  mt2 = {version = "1.0.1"}
