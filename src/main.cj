@@ -88,35 +88,24 @@ func insertMtViaEv(handler: LinkedList<MatrixObject>, ev: InsertTableEvent): Uni
 	}
 }
 
+/* 按表头列名重排写入：INSERT行的列顺序可任意，缺失表头列抛异常，重复列取后值 */
 func insertToMtViaEv(mt: MatrixObject, ev: InsertTableEvent): Unit {
 	var rowNo = 0
 	for (row in ev.tableRows) {
 		rowNo += 1
-		for (i in 0..mt.col) {
-			var matched = 0
-			for (col in row) {
-				if (col.columnName == mt[0, i]) {
-					matched += 1
-					if (matched > 1) {
-						throw IllegalArgumentException("INSERT INTO ${ev.targetTabName} row ${rowNo}: duplicate column '${col.columnName}'")
-					}
-					for (ch in col.value) {
-						mt.addRune(Rune(ch))
-					}
-					mt.submitItem()
-				}
-			}
-			if (matched == 0) {
-				throw IllegalArgumentException("INSERT INTO ${ev.targetTabName} row ${rowNo}: column '${mt[0, i]}' is missing")
-			}
-		}
+		let byName = HashMap<String, String>()
 		for (col in row) {
-			var known = false
-			for (i in 0..mt.col) {
-				if (col.columnName == mt[0, i]) { known = true; break }
-			}
-			if (!known) {
-				throw IllegalArgumentException("INSERT INTO ${ev.targetTabName} row ${rowNo}: unknown column '${col.columnName}'")
+			byName.add(col.columnName, col.value)
+		}
+		for (i in 0..mt.col) {
+			let name = mt[0, i]
+			if (let Some(value) <- byName.get(name)) {
+				for (ch in value) {
+					mt.addRune(Rune(ch))
+				}
+				mt.submitItem()
+			} else {
+				throw IllegalArgumentException("INSERT INTO ${ev.targetTabName} row ${rowNo}: column '${name}' is missing")
 			}
 		}
 		mt.submitLine(0)
