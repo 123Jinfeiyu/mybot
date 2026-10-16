@@ -169,13 +169,23 @@ void testSharedConstants() {
           "Lua 命令 socket 缺省路径与 SimConfig 一致");
     check(quotedAfter(lua, "local kSensorDefaultSock =") == SimConfig::kDefaultSensorSocketPath,
           "Lua sensor socket 缺省路径与 SimConfig 一致");
+    // IMU/里程计桥（2026-10-16）：同一比对口径
+    check(quotedAfter(lua, "local kImuDefaultSock =") == SimConfig::kDefaultImuSocketPath,
+          "Lua imu socket 缺省路径与 SimConfig 一致");
+    check(quotedAfter(lua, "local kOdomDefaultSock =") == SimConfig::kDefaultOdomSocketPath,
+          "Lua odom socket 缺省路径与 SimConfig 一致");
 
-    // 三条缺省路径互不相同（防复制粘贴串台），且都是 /tmp 下绝对路径
+    // 五条缺省路径互不相同（防复制粘贴串台），且都是 /tmp 下绝对路径
     const std::string cmd = SimConfig::kDefaultSocketPath;
     const std::string cap = SimConfig::kDefaultCaptureSocketPath;
     const std::string sen = SimConfig::kDefaultSensorSocketPath;
-    check(cmd != cap && cmd != sen && cap != sen, "三条缺省 socket 路径互不相同");
-    check(cmd.rfind("/tmp/", 0) == 0 && cap.rfind("/tmp/", 0) == 0 && sen.rfind("/tmp/", 0) == 0,
+    const std::string imu = SimConfig::kDefaultImuSocketPath;
+    const std::string odo = SimConfig::kDefaultOdomSocketPath;
+    check(cmd != cap && cmd != sen && cmd != imu && cmd != odo && cap != sen && cap != imu &&
+              cap != odo && sen != imu && sen != odo && imu != odo,
+          "五条缺省 socket 路径互不相同");
+    check(cmd.rfind("/tmp/", 0) == 0 && cap.rfind("/tmp/", 0) == 0 && sen.rfind("/tmp/", 0) == 0 &&
+              imu.rfind("/tmp/", 0) == 0 && odo.rfind("/tmp/", 0) == 0,
           "缺省路径均为 /tmp 下绝对路径");
 }
 

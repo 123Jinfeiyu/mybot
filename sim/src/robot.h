@@ -80,6 +80,11 @@ public:
     float y() const { return y_; }
     float vy() const { return vy_; }
     bool isAirborne() const { return airborne_; }
+    // 里程计/IMU 桥的数据源（2026-10-16）：odo_=累计路径长度（米，绝对值口径，
+    // 前进/后退都计，跳跃的水平位移也计）；accel_=机体系前向加速度（m/s²，
+    // update 的帧差分实导数——空中水平速度守恒故为 0）。reset() 一并清零。
+    float odo() const { return odo_; }
+    float accel() const { return accel_; }
 
     void setX(float x) { x_ = x; }
     void setZ(float z) { z_ = z; }
@@ -125,6 +130,10 @@ private:
     float y_ = 0.0f;               // 身体离地高度（米）
     float vy_ = 0.0f;              // 竖直速度（米/秒，正=上升）
     bool airborne_ = false;        // 是否离地（update 走弹道分支）
+
+    // 里程计/IMU 累计量（2026-10-16，见 odo()/accel() 注释）。
+    float odo_ = 0.0f;             // 累计路径长度（米）
+    float accel_ = 0.0f;           // 机体系前向加速度（m/s²，update 内差分）
 
     // 相对运动剩余量；<=0 表示无待执行的相对运动。
     float remainingDist_ = 0.0f;   // 米（正=前进，负=后退）

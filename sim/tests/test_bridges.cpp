@@ -1,4 +1,4 @@
-// 三座 AF_UNIX 桥的线上协议（命令桥的持续型状态 + 一次性事件，拍照桥的二进制
+// 五座 AF_UNIX 桥的线上协议（命令桥的持续型状态 + 一次性事件，拍照桥的二进制
 // 体帧化，测距桥的文本响应），以及请求-应答基类的扩展成本。
 // 拆分约定与共享工具（断言记账、socket 客户端助手）见 harness.h；套件名册见
 // suites.h。本文件的用例正文自拆分前的单文件 sim/tests/main.cpp 逐字搬迁
@@ -16,6 +16,8 @@
 #include "capture.h"
 #include "harness.h"
 #include "request_bridge.h"
+#include "imu.h"
+#include "odom.h"
 #include "sensor.h"
 #include "suites.h"
 
@@ -160,6 +162,64 @@ void testSensorBridge() {
     check(sensor.poll(), "半关写端后 range 请求仍被检出（延迟断开）");
     check(sensor.sendRange(4321), "半关连接上答复仍可发送");
     check(recvLine(fd) == "OK 4321", "半关连接答复 = 'OK 4321'");
+
+    ::close(fd);
+}
+
+// ---- ImuBridge：请求-响应（2026-10-16，帧 = 5 域浮点/整数） ----
+
+void testImuBridge() {
+    const std::string path = testSockPath("imu");
+    ImuBridge imu(path);
+    check(imu.listening(), "IMU 桥监听成功");
+
+    const int fd = connectTo(path);
+    check(fd >= 0, "客户端连上 IMU 桥");
+
+    say(fd, "imu\n");
+    check(imu.poll(), "imu 请求被检出");
+    check(imu.sendImu(-12.5f, 0.75f, 1.25f, -0.5f, false), "sendImu 成功");
+    check(recvLine(fd) == "OK -12.5000 0.7500 1.2500 -0.5000 0", "IMU 帧逐域一致");
+
+    say(fd, "bogus\n");
+    check(!imu.poll(), "未知请求不置位");
+    say(fd, "imu\n");
+    check(imu.poll(), "再次 imu 仍可检出");
+    check(imu.sendError("boom"), "sendError 成功");
+    check(recvLine(fd) == "ERR boom", "错误响应行 = 'ERR boom'");
+
+    // 半关写端（socat 手测模式）：请求不能被 EOF 连带清掉
+    say(fd, "imu\n");
+    ::shutdown(fd, SHUT_WR);
+    check(imu.poll(), "半关写端后 imu 请求仍被检出（延迟断开）");
+    check(imu.sendImu(0.0f, 0.0f, 0.0f, 2.5f, true), "半关连接上答复仍可发送");
+    check(recvLine(fd) == "OK 0.0000 0.0000 0.0000 2.5000 1", "半关连接答复一致");
+
+    ::close(fd);
+}
+
+// ---- OdomBridge：请求-响应（2026-10-16，帧 = 5 域浮点） ----
+
+void testOdomBridge() {
+    const std::string path = testSockPath("odom");
+    OdomBridge odom(path);
+    check(odom.listening(), "里程计桥监听成功");
+
+    const int fd = connectTo(path);
+    check(fd >= 0, "客户端连上里程计桥");
+
+    say(fd, "odom\n");
+    check(odom.poll(), "odom 请求被检出");
+    check(odom.sendOdom(1.5f, -2.25f, 90.0f, -0.8f, 12.75f), "sendOdom 成功");
+    check(recvLine(fd) == "OK 1.5000 -2.2500 90.0000 -0.8000 12.7500", "里程计帧逐域一致");
+
+    say(fd, "imu\n");  // 认错关键字的请求不置位（imu 是邻居桥的词）
+    check(!odom.poll(), "邻居关键字（imu）不置位 odom 请求");
+
+    say(fd, "odom\n");
+    check(odom.poll(), "再次 odom 仍可检出");
+    check(odom.sendError("boom"), "sendError 成功");
+    check(recvLine(fd) == "ERR boom", "错误响应行 = 'ERR boom'");
 
     ::close(fd);
 }

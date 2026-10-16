@@ -729,6 +729,8 @@ parse_cases=(
 	#   ok      65 字段（> 缺省 64）+ maxvals=128 → 放行并完整跑一轮守护生命周期
 	'daemon_fieldcount_maxvals_narrow.sql|daemon_schema.mt|1|exceeds the shared-slot capacity of 32'
 	"daemon_maxvals_range.sql|daemon_schema.mt|1|column 'maxvals' value '99999'"
+	# kind 列（sim_sensor_daemon 框架列，2026-10-16）：拼错加载期拒绝
+	"daemon_kind_bad.sql|daemon_schema.mt|1|column 'kind' value 'immu'"
 	'daemon_fieldcount_maxvals_ok.sql|daemon_maxvals_ok.mt|0|joined, total publishes='
 	'single_consumer.sql|daemon_schema.mt|1|two concurrent consumers'
 	'float_s16_daemon.sql|float_s16_daemon.mt|1|would be truncated to integer'
@@ -850,6 +852,15 @@ if [ ! -x "$bin" ]; then
 else
 	run_parse_cases
 fi
+
+# ======================================================================
+# 仿真器 IMU/里程计守护采样 e2e（2026-10-16）：真二进制 + 两路守护 + sources
+# 聚合 + Monitor 消费，详见 run_one_sim_nav_e2e（test/lib/sections/lua_e2e.sh）。
+# ======================================================================
+if filter_matches "sim_nav" "$filter"; then
+	run_one_sim_nav_e2e
+fi
+
 
 # ======================================================================
 # controller/trigger 多列：顺序与数据到位（BOT4CJ_DEBUG=1）。

@@ -119,6 +119,18 @@ static int32_t checkDaemonMaxvals(const std::string& v, const std::string& name,
 	return static_cast<int32_t>(parsed_.second);
 }
 
+/* kind：sim_sensor_daemon 的采样种类白名单（imu|odom，2026-10-16）。加载期
+ * 校验——拼错（如 "immu"）落进 chunk 的 setup 失败码要等守护线程起拍才看到，
+ * 且报错只有 status -2 一个间接症状，与 proto/fields 的加载期校验同一动机。 */
+static void checkDaemonKind(const std::string& v, const std::string& name,
+		const std::string& tabName, int64_t row) {
+	if (v == "imu" || v == "odom") { return; }
+	throw IllegalArgumentException(
+		"Daemon '" + name + "': column 'kind' value '" + v +
+		"' is not supported (expected imu|odom) (in table '" + tabName +
+		"', row " + std::to_string(row) + ").");
+}
+
 static void checkDaemonSign(const std::string& v, const std::string& name,
 		const std::string& tabName, int64_t row) {
 	if (parseLongStrict(v).first == IntParse::OK) { return; }
@@ -276,6 +288,8 @@ static DaemonConfigParts assembleDaemonConfig(const mt::MatrixObject& defs, int6
 			checkDaemonFields(v, name, defs.getName(), i, capAcc);
 		} else if (colName == "sign") {
 			checkDaemonSign(v, name, defs.getName(), i);
+		} else if (colName == "kind") {
+			checkDaemonKind(v, name, defs.getName(), i);
 		} else if (colName == "maxvals" || colName == "sources") {
 			/* 第一遍已校验 / 收集；此处不重复（同一值二次校验只会复制报错） */
 		}

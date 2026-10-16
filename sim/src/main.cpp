@@ -19,6 +19,8 @@
 #include "framegrab.h"
 #include "mesh.h"
 #include "robot.h"
+#include "imu.h"
+#include "odom.h"
 #include "sensor.h"
 #include "shader.h"
 #include "shaders.h"
@@ -30,7 +32,7 @@
 
 namespace {
 
-// 三条 socket 同一规矩：argv > 环境变量 > 缺省。缺省路径的单一事实源是
+// 各桥 socket 同一规矩：argv > 环境变量 > 缺省。缺省路径的单一事实源是
 // SimConfig::kDefault*SocketPath（sim_config.h），环境变量名是运行期的单一事实
 // 源，mybot 侧 Sim.lua / Camera.lua 与这里同读。sim_tests 交叉校验两侧缺省一致。
 std::string resolveSocketPath(int argc, char** argv, int argvIndex, const char* envName,
@@ -64,12 +66,14 @@ std::string deriveRobotPath(const std::string& base, std::size_t idx) {
 }
 
 // 每只机器人一份壳侧装置。命令桥/测距桥/蜘蛛步态永远同生同灭、共用同一个下标，
-// 故收在一个 struct 里：原本是三条平行 vector，「同长同序」只靠 buildPerRobot 把三者
+// 故收在一个 struct 里：原本是数条平行 vector，「同长同序」只靠 buildPerRobot 把各桥
 // 建在同一个循环里维持（wantRange 就按 sensor 的长度分配、却用 cmd 的下标去写）。
 // 收成一条后，长度不一致这个状态根本写不出来。
 struct PerRobotRig {
     std::unique_ptr<CommandBridge> cmd;
     std::unique_ptr<SensorBridge> sensor;
+    std::unique_ptr<ImuBridge> imu;      // IMU 桥（2026-10-16）：yaw/角速度/前向加速度/竖直
+    std::unique_ptr<OdomBridge> odom;    // 里程计桥（2026-10-16）：地面真值位姿/速度/里程
     std::unique_ptr<Spider> spider;
 };
 
@@ -122,7 +126,8 @@ void scrollCallback(GLFWwindow*, double, double yOffset) {
 // 窗口标题即仪表盘：动作/速度/位姿/测距/搬运/三桥状态一页看全。多机器人时展示
 // **主机器人**（idx 0）的命令/测距/搬运，末尾附机器人总数。
 void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureBridge& capture,
-                 const SensorBridge& sensor, const Robot& robot, const World& world,
+                 const SensorBridge& sensor, const ImuBridge& imu, const OdomBridge& odom,
+                 const Robot& robot, const World& world,
                  const char* sceneName, std::size_t robotCount) {
     char cmdBuf[48];
     if (bridge.command() == SimCommand::Stop) {
@@ -146,11 +151,11 @@ void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureB
 
     char title[512];
     std::snprintf(title, sizeof(title),
-                  "MyBot Spider | cmd %-16s last %-14s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg | range %.2fm | %s | scene %s | robots %zu | %s %s | cam %s sensor %s | C camera[%s]  R reset+reload  S save",
+                  "MyBot Spider | cmd %-16s last %-14s v %+.2f m/s  w %+.2f rad/s | pose (%.1f, %.1f) th %.0f deg odo %.1fm | range %.2fm | %s | scene %s | robots %zu | %s %s | cam %s sensor %s imu %s odom %s | C camera[%s]  R reset+reload  S save",
                   cmdBuf,
                   lastBuf,
                   robot.v(), robot.omega(),
-                  robot.x(), robot.z(), glm::degrees(robot.theta()),
+                  robot.x(), robot.z(), glm::degrees(robot.theta()), robot.odo(),
                   rangeM,
                   carryBuf,
                   sceneName,
@@ -159,6 +164,8 @@ void updateTitle(GLFWwindow* window, const CommandBridge& bridge, const CaptureB
                   bridge.path().c_str(),
                   capture.listening() ? "on" : "OFF",
                   sensor.listening() ? "on" : "OFF",
+                  imu.listening() ? "on" : "OFF",
+                  odom.listening() ? "on" : "OFF",
                   g_camera.follow ? "follow" : "free");
     glfwSetWindowTitle(window, title);
 }
@@ -217,7 +224,8 @@ std::string resolveSceneForRun(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
-    // 三条 socket：命令（持续型即发即忘）、拍照（一问一答带二进制体）、测距
+    // 五条 socket：命令（持续型即发即忘）、拍照（一问一答带二进制体）、测距、
+    // IMU/里程计（一问一答浮点帧）；argv 位：1 命令 2 拍照 3 测距 4 场景 5 IMU 6 里程计
     // （同步查询）。mybot 侧 Sim.lua 与 Camera.lua 是独立驱动实例，无法共用连接。
     const std::string socketPath =
         resolveSocketPath(argc, argv, 1, "MYBOT_SIM_SOCK", SimConfig::kDefaultSocketPath);
@@ -225,6 +233,10 @@ int main(int argc, char** argv) {
         resolveSocketPath(argc, argv, 2, "MYBOT_SIM_CAPTURE_SOCK", SimConfig::kDefaultCaptureSocketPath);
     const std::string sensorPath =
         resolveSocketPath(argc, argv, 3, "MYBOT_SIM_SENSOR_SOCK", SimConfig::kDefaultSensorSocketPath);
+    const std::string imuPath =
+        resolveSocketPath(argc, argv, 5, "MYBOT_SIM_IMU_SOCK", SimConfig::kDefaultImuSocketPath);
+    const std::string odomPath =
+        resolveSocketPath(argc, argv, 6, "MYBOT_SIM_ODOM_SOCK", SimConfig::kDefaultOdomSocketPath);
 
     if (!glfwInit()) {
         std::fprintf(stderr, "failed to initialize GLFW\n");
@@ -300,6 +312,8 @@ int main(int argc, char** argv) {
             PerRobotRig rig;
             rig.cmd = std::make_unique<CommandBridge>(deriveRobotPath(socketPath, i));
             rig.sensor = std::make_unique<SensorBridge>(deriveRobotPath(sensorPath, i));
+            rig.imu = std::make_unique<ImuBridge>(deriveRobotPath(imuPath, i));
+            rig.odom = std::make_unique<OdomBridge>(deriveRobotPath(odomPath, i));
             rig.spider = std::make_unique<Spider>();
             if (rig.cmd->listening()) {
                 std::fprintf(stderr, "listening for robot[%zu] commands on %s\n", i,
@@ -312,6 +326,18 @@ int main(int argc, char** argv) {
                              rig.sensor->path().c_str());
                 std::fprintf(stderr, "  try: printf 'range\\n' | socat - UNIX-CONNECT:%s\n",
                              rig.sensor->path().c_str());
+            }
+            if (rig.imu->listening()) {
+                std::fprintf(stderr, "listening for robot[%zu] imu requests on %s\n", i,
+                             rig.imu->path().c_str());
+                std::fprintf(stderr, "  try: printf 'imu\\n' | socat - UNIX-CONNECT:%s\n",
+                             rig.imu->path().c_str());
+            }
+            if (rig.odom->listening()) {
+                std::fprintf(stderr, "listening for robot[%zu] odom requests on %s\n", i,
+                             rig.odom->path().c_str());
+                std::fprintf(stderr, "  try: printf 'odom\\n' | socat - UNIX-CONNECT:%s\n",
+                             rig.odom->path().c_str());
             }
             rigs.push_back(std::move(rig));
         }
@@ -337,9 +363,13 @@ int main(int argc, char** argv) {
         // 最终位姿），故此处只收标志。拍照同理：抓帧要等画完、SwapBuffers 之前。
         const bool wantCapture = capture.poll();
         std::vector<char> wantRange(rigs.size(), 0);
+        std::vector<char> wantImu(rigs.size(), 0);
+        std::vector<char> wantOdom(rigs.size(), 0);
         for (std::size_t i = 0; i < rigs.size(); ++i) {
             rigs[i].cmd->poll();
             wantRange[i] = rigs[i].sensor->poll() ? 1 : 0;
+            wantImu[i] = rigs[i].imu->poll() ? 1 : 0;
+            wantOdom[i] = rigs[i].odom->poll() ? 1 : 0;
         }
 
         if (g_resetRequested) {
@@ -349,6 +379,8 @@ int main(int argc, char** argv) {
             if (engine.robotCount() != rigs.size()) {
                 buildPerRobot(engine.robotCount());
                 wantRange.assign(rigs.size(), 0);
+                wantImu.assign(rigs.size(), 0);
+                wantOdom.assign(rigs.size(), 0);
             } else {
                 for (PerRobotRig& rig : rigs) {
                     rig.spider->reset();
@@ -391,6 +423,19 @@ int main(int argc, char** argv) {
             const int distMm = static_cast<int>(dist * 1000.0f + 0.5f);
             if (!rigs[i].sensor->sendRange(distMm)) {
                 rigs[i].sensor->sendError("range send failed");
+            }
+        }
+        // IMU/里程计响应：与测距同一口径——碰撞解算后应答，快照即本帧最终状态。
+        for (std::size_t i = 0; i < rigs.size(); ++i) {
+            const Robot& r = engine.robot(i);
+            if (wantImu[i] &&
+                !rigs[i].imu->sendImu(glm::degrees(r.theta()), r.omega(), r.accel(), r.vy(),
+                                       r.isAirborne())) {
+                rigs[i].imu->sendError("imu send failed");
+            }
+            if (wantOdom[i] &&
+                !rigs[i].odom->sendOdom(r.x(), r.z(), glm::degrees(r.theta()), r.v(), r.odo())) {
+                rigs[i].odom->sendError("odom send failed");
             }
         }
 
@@ -446,7 +491,8 @@ int main(int argc, char** argv) {
         meshes.grid.draw();
 
         // 标题栏展示主机器人（idx 0）的状态 + 机器人总数。
-        updateTitle(window, *rigs[0].cmd, capture, *rigs[0].sensor, engine.robot(),
+        updateTitle(window, *rigs[0].cmd, capture, *rigs[0].sensor, *rigs[0].imu,
+                    *rigs[0].odom, engine.robot(),
                     engine.world(), engine.sceneName().c_str(), engine.robotCount());
 
         // 抓帧回传放在 SwapBuffers 之前：此刻 GL_BACK 是刚画好的这一帧。

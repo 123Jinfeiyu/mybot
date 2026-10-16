@@ -127,4 +127,65 @@ void testRelativeMotion() {
     check(!idle.tickRelative(dt, in), "无相对运动返回 false");
 }
 
+// ---- Robot：里程累计与前向加速度（2026-10-16，IMU/里程计桥的数据源） ----
+
+void testOdomAccel() {
+    const float dt = 1.0f / 60.0f;
+
+    // 静止：里程与加速度都是 0
+    Robot still;
+    still.update(dt, {0.0f, 0.0f}, Robot::kMaxSpeed);
+    check(still.odo() == 0.0f && still.accel() == 0.0f, "静止时 odo/accel 均为 0");
+
+    // 满油门起步：加速度为正（一阶滞后折算的实导数），里程沿路径累计
+    Robot go;
+    for (int i = 0; i < 30; ++i) {
+        go.update(dt, {1.0f, 0.0f}, Robot::kMaxSpeed);
+    }
+    check(go.accel() > 0.1f, "起步期前向加速度为正");
+    check(go.odo() > 0.1f, "里程随位移累计");
+    // 里程 = 位移路径长度：theta=0 直线时与 x 位移一致（1e-2 容差吸收离散积分）
+    check(near(go.odo(), go.x(), 1e-2f), "直线行驶 odo ≈ |Δx|");
+
+    // 稳态（v 收敛后）：加速度趋 0，里程继续线性累计
+    Robot cruise;
+    for (int i = 0; i < 600; ++i) {
+        cruise.update(dt, {1.0f, 0.0f}, Robot::kMaxSpeed);
+    }
+    check(std::abs(cruise.accel()) < 0.01f, "稳态加速度趋 0");
+    check(cruise.odo() > 5.0f, "长驶里程可观");
+
+    // 松油门减速：加速度为负
+    Robot brake;
+    for (int i = 0; i < 120; ++i) {
+        brake.update(dt, {1.0f, 0.0f}, Robot::kMaxSpeed);
+    }
+    brake.update(dt, {0.0f, 0.0f}, Robot::kMaxSpeed);
+    check(brake.accel() < -0.1f, "松油门后前向加速度为负");
+
+    // 后退：里程按绝对值口径照计（v<0 但 odo 递增）
+    Robot back;
+    for (int i = 0; i < 60; ++i) {
+        back.update(dt, {-1.0f, 0.0f}, Robot::kMaxSpeed);
+    }
+    check(back.v() < -0.5f, "倒车 v 为负");
+    check(back.odo() > 0.1f && near(back.odo(), -back.x(), 1e-2f), "后退里程按绝对值累计");
+
+    // 空中弹道：水平速度守恒 → accel=0，但弹道位移计入里程
+    Robot jump;
+    jump.launch(1.0f, 0.2f);
+    float odoBefore = 0.0f;
+    for (int i = 0; i < 6; ++i) {  // 起跳前几帧仍在空中（apex 0.2m ≈ 0.4s 滞空）
+        jump.update(dt, {0.0f, 0.0f}, Robot::kMaxSpeed);
+        odoBefore = jump.odo();
+    }
+    check(jump.isAirborne(), "跳跃初期离地");
+    check(jump.accel() == 0.0f, "空中水平速度守恒 → accel=0");
+    check(odoBefore > 0.0f, "空中弹道位移计入里程");
+
+    // reset 一并清零
+    jump.reset();
+    check(jump.odo() == 0.0f && jump.accel() == 0.0f, "reset 清零 odo/accel");
+}
+
 }  // namespace SimTests

@@ -15,12 +15,12 @@ CI job 的构建范围内（见 sim/CMakeLists.txt 顶部注释），所以那�
   1. 动作码表（testActionTable）
      * C++ 侧单一事实源：sim/src/action_table.cpp 的 kActions[]
      * Lua 侧：modules/Sim.lua 的 CODES / PARAM_CODES / PARAM2_CODES / CODE_MAX
-  2. 三条 AF_UNIX 缺省 socket 路径（testSharedConstants）
+  2. 五条 AF_UNIX 缺省 socket 路径（testSharedConstants）
      * C++ 侧：sim/src/sim_config.h 的 kDefault*SocketPath
      * Lua 侧：modules/Sim.lua 的 kDefaultSock / kSensorDefaultSock
        （Camera.lua 的拍照路径只取自 env、无硬编码缺省，故不参与比对）
   3. 一问一答桥的请求关键字
-     * sim 侧：sim/src/{sensor,capture}.cpp 传给 RequestResponseBridge 的 keyword
+     * sim 侧：sim/src/{sensor,capture,imu,odom}.cpp 传给 RequestResponseBridge 的 keyword
      * 宿主侧：modules/Sim.lua 的 range()、src/agentimage.cpp、
        modules/Camera.lua 的 capture_live() 里发出的 "<word>\\n"
   4. 默认场景（内置回落 vs 播种模板）
@@ -43,6 +43,8 @@ from lib.protocol_sources import (
     SIM_ACTION_TABLE_CPP,
     SIM_CAPTURE_CPP,
     SIM_CONFIG_H,
+    SIM_IMU_CPP,
+    SIM_ODOM_CPP,
     SIM_SCENE,
     SIM_SENSOR_CPP,
     SIM_WORLD_CPP,
@@ -168,7 +170,7 @@ def check_action_table(errors):
     return len(actions)
 
 
-# ── 2) 三条缺省 socket 路径 ────────────────────────────────────────────
+# ── 2) 五条缺省 socket 路径 ────────────────────────────────────────────
 
 # C++ 侧常量名 → (Lua 侧变量名或 None)。拍照路径在 Lua 侧无硬编码缺省
 # （Camera.lua 只从 MYBOT_SIM_CAPTURE_SOCK 取），故只参与「互不相同 / 均为
@@ -177,6 +179,9 @@ SOCKET_PATHS = [
     ("kDefaultSocketPath", "kDefaultSock"),
     ("kDefaultSensorSocketPath", "kSensorDefaultSock"),
     ("kDefaultCaptureSocketPath", None),
+    # IMU/里程计桥（2026-10-16）：同一比对口径
+    ("kDefaultImuSocketPath", "kImuDefaultSock"),
+    ("kDefaultOdomSocketPath", "kOdomDefaultSock"),
 ]
 
 
@@ -207,7 +212,7 @@ def check_socket_paths(errors):
 
     vals = list(paths.values())
     if len(set(vals)) != len(vals):
-        errors.append(f"三条缺省 socket 路径有重复（复制粘贴串台）：{paths}")
+        errors.append(f"缺省 socket 路径有重复（复制粘贴串台）：{paths}")
     for name, v in paths.items():
         if not v.startswith("/tmp/"):
             errors.append(f"{name} 不是 /tmp 下的绝对路径：'{v}'")
@@ -232,6 +237,16 @@ REQUEST_BRIDGES = [
     {
         "bridge": SIM_CAPTURE_CPP,
         "senders": [(LUA_CAMERA, "local function capture_live(")],
+    },
+    # IMU/里程计桥（2026-10-16）：发送点在 Sim.lua 的 imu()/odom() 里
+    # （`local req = "imu\n"` 形态，锚定各自函数头）
+    {
+        "bridge": SIM_IMU_CPP,
+        "senders": [(LUA_SIM, "function imu(")],
+    },
+    {
+        "bridge": SIM_ODOM_CPP,
+        "senders": [(LUA_SIM, "function odom(")],
     },
 ]
 

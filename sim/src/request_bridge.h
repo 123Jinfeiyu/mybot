@@ -12,7 +12,7 @@
 // capture/sensor。
 //
 // 与 CommandBridge 刻意分开：命令是持续型即发即忘（无回执），这里是一问一答。
-// 三条 socket 各自独立的理由见 docs/sim.md。
+// 各桥 socket 各自独立的理由见 docs/sim.md。
 class RequestResponseBridge : public UnixLineServer {
 public:
     // logTag：stderr 前缀（如 "capture"/"sensor"）；keyword：唯一被接受的请求行

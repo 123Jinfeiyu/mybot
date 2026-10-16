@@ -12,6 +12,7 @@ namespace SimTests {
 // ---- Robot：平面运动学 + 相对运动（test_robot.cpp）----
 void testKinematics();
 void testRelativeMotion();
+void testOdomAccel();
 
 // ---- World：测距/碰撞/搬运/OBB 几何/放置解算（test_world.cpp）----
 void testQueryRange();
@@ -35,9 +36,11 @@ void testActionTable();
 void testSharedConstants();
 void testActionTableDispatch();
 
-// ---- 三座 AF_UNIX 桥 + 请求-应答基类（test_bridges.cpp）----
+// ---- 五座 AF_UNIX 桥 + 请求-应答基类（test_bridges.cpp）----
 void testCommandBridge();
 void testSensorBridge();
+void testImuBridge();
+void testOdomBridge();
 void testCaptureBridge();
 void testRequestResponseBase();
 

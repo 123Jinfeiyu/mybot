@@ -1,7 +1,7 @@
 # 仿真器（sim/）
 
-> 3D 蜘蛛机器人仿真器：GLFW/OpenGL 可视化从端，经三条 AF_UNIX 行文本 socket
-> 接入 mybot 链路。本文是三条桥的协议、成败口径与架构约定的单一事实源；
+> 3D 蜘蛛机器人仿真器：GLFW/OpenGL 可视化从端，经五条 AF_UNIX 行文本 socket
+> 接入 mybot 链路。本文是五条桥的协议、成败口径与架构约定的单一事实源；
 > 逐字实现见 `sim/src/`（C++ 侧）与 `modules/Sim.lua` / `modules/Camera.lua`（驱动侧）。
 
 ## 是什么、不是什么
@@ -21,23 +21,23 @@
 
 ```bash
 bash scripts/build_sim.sh        # 构建 + 自动跑 simcore 单测（ctest）
-./sim/build/mybot-sim            # 监听三条缺省路径的 socket
+./sim/build/mybot-sim            # 监听五条缺省路径的 socket
 ```
 
 独立 CMake 工程，刻意不被根 CMakeLists 引用（CI 五条 job 全 target 构建，
 镜像无 GL/X11、musl 编不过 GLFW）。依赖经 FetchContent 拉 glfw 3.4 + glm 1.0.1，
 仓库自带 glad 与 stb。
 
-目标分两层：**simcore**（GL 无关：运动学/场景交互/三桥，可单测）与
+目标分两层：**simcore**（GL 无关：运动学/场景交互/五桥，可单测）与
 **mybot-sim**（GLFW/OpenGL 壳）。`sim/tests/` 是 simcore 的单元测试（无 GL），
 `test/test_sim.lua` 从 mybot 侧守门 Sim 驱动的 ERR 契约与线上协议。
 
-## 三条 socket
+## 五条 socket
 
-路径解析三桥同规矩：**argv > 环境变量 > 缺省**；环境变量名是 mybot 侧与仿真器
+路径解析各桥同规矩：**argv > 环境变量 > 缺省**；环境变量名是 mybot 侧与仿真器
 侧的单一事实源，两侧同读。缺省路径的 C++ 侧单一事实源是 `sim/src/sim_config.h`
 的 `kDefault*SocketPath`（main.cpp 不再各写字面量）；Lua 侧 `Sim.lua` 也硬编码了
-命令/测距两条缺省路径——两套构建系统间不做代码生成，改由 `sim_tests` 的
+命令/测距/IMU/里程计四条缺省路径——两套构建系统间不做代码生成，改由 `sim_tests` 的
 `testSharedConstants` 与主干守门的 `scripts/check_sim_contract.py`（零编译依赖的
 同款比对）交叉校验字面量一致，任一侧漏改即红
 （拍照路径 Camera.lua 只取自 env、无硬编码缺省，不参与比对）。
@@ -47,12 +47,17 @@ bash scripts/build_sim.sh        # 构建 + 自动跑 simcore 单测（ctest）
 | 命令 | `MYBOT_SIM_SOCK` | `/tmp/mybot-sim.sock` | 持续型即发即忘 + 一次性事件 |
 | 拍照 | `MYBOT_SIM_CAPTURE_SOCK` | `/tmp/mybot-sim-capture.sock` | 一问一答，回 JPEG 二进制体 |
 | 测距 | `MYBOT_SIM_SENSOR_SOCK` | `/tmp/mybot-sim-sensor.sock` | 一问一答，回毫米整数 |
+| IMU | `MYBOT_SIM_IMU_SOCK` | `/tmp/mybot-sim-imu.sock` | 一问一答，回姿态/角速度/加速度帧 |
+| 里程计 | `MYBOT_SIM_ODOM_SOCK` | `/tmp/mybot-sim-odom.sock` | 一问一答，回地面真值位姿帧 |
 
-分三条的原因：Sim.lua 与 Camera.lua 是各自独立的驱动实例（各自的 lua_State /
+分五条的原因：Sim.lua 与 Camera.lua 是各自独立的驱动实例（各自的 lua_State /
 各自的 fd），物理上无法共用一条连接；语义上持续型命令与请求-应答也不同构。
+IMU/里程计虽同为一问一答，但与测距的响应帧形态不同（浮点五域 vs 整数毫米），
+各自独立成桥保持「一座桥一种帧」的清晰度（桥的扩展成本就是派生
+`RequestResponseBridge` + 一个关键字 + 一个 sendXxx，见 `request_bridge.h`）。
 
-多机器人时命令桥/测距桥**每只一套**（robot[0] 用上表原缺省路径，robot[i>0] 在
-`.sock` 前插 `-<i>`），拍照桥仍单条——详见「多机器人（C2）」。
+多机器人时命令桥/测距桥/IMU 桥/里程计桥**每只一套**（robot[0] 用上表原缺省
+路径，robot[i>0] 在 `.sock` 前插 `-<i>`），拍照桥仍单条——详见「多机器人（C2）」。
 
 ### 命令桥（`sim/src/bridge.cpp`）
 
@@ -99,10 +104,10 @@ save                # 把当前场景写回配置的场景文件（见「场景�
 `sim/` 不在任何 CI job 的构建范围内（见 `sim/CMakeLists.txt` 顶部注释），单靠
 `sim/tests` 的那份只有开发者手动跑 `bash scripts/build_sim.sh` 才会触发，不能
 指望每次改动都被自动挡下；两份校验各自独立实现（C++/Python），互为印证。
-同一个脚本还钉住另外两组手写双份的契约：三条缺省 socket 路径（见「三条 socket」）
-与一问一答桥的请求关键字（`sensor.cpp` 的 `range` / `capture.cpp` 的 `capture`
-↔ `Sim.lua` 的 `range()`、`src/agentimage.cpp`、`Camera.lua` 的 `capture_live()`
-各自硬编码的 `"<word>\n"`）。
+同一个脚本还钉住另外两组手写双份的契约：五条缺省 socket 路径（见「五条 socket」）
+与一问一答桥的请求关键字（`sensor.cpp` 的 `range` / `capture.cpp` 的 `capture` /
+`imu.cpp` 的 `imu` / `odom.cpp` 的 `odom` ↔ `Sim.lua` 的 `range()`/`imu()`/`odom()`、
+`src/agentimage.cpp`、`Camera.lua` 的 `capture_live()` 各自硬编码的 `"<word>\n"`）。
 
 漏改还有第二道、且是编译期的防线：新增一个 `SimCommand` / `SimEvent::Type` 枚举值后，
 若忘了在 `sim_engine.cpp` 的 `commandToInput` / `applyEvent` 里补对应 case，动作会静默
@@ -175,6 +180,41 @@ mybot 侧归 `modules/Camera.lua` 的 sim-live 图源（`capture_image` 工具�
 mybot 侧两个消费者：`Sim.lua` 的 `range()`（动作脚本可用）与 C++ 侧
 `querySimRange()`（`capture_image` 时把距离附进照片描述）。
 手测：`printf 'range\n' | socat - UNIX-CONNECT:/tmp/mybot-sim-sensor.sock`。
+
+### IMU 桥（`sim/src/imu.cpp`，2026-10-16）
+
+请求 `imu
+`；响应 `OK <yaw_deg> <gyro_z> <acc_fwd> <vy> <airborne>
+` 或
+`ERR <reason>
+`，五域都是本帧最终状态（碰撞解算后）：
+
+- `yaw_deg` 航向角（度，+左）；`gyro_z` 角速度（rad/s，即 d(yaw)/dt，+左转）
+- `acc_fwd` 机体系前向加速度（m/s²，`Robot::update` 的帧差分实导数——起步/刹车
+  时非零、稳态趋 0）
+- `vy` 竖直速度（m/s，+上升）；`airborne` 0/1 是否离地
+
+仿真器是**运动学模型**（非刚体动力学），这台虚拟 IMU 的域集合如实反映它测得到
+什么：没有横摆加速度计、没有磁力计，不编造物理量。mybot 侧两个消费者：
+`Sim.lua` 的 `imu()`（动作脚本可用）与 `lib/sim_sensor_daemon.lua` 守护采样
+（`kind=imu`）。手测：`printf 'imu\n' | socat - UNIX-CONNECT:/tmp/mybot-sim-imu.sock`。
+
+### 里程计桥（`sim/src/odom.cpp`，2026-10-16）
+
+请求 `odom
+`；响应 `OK <x> <z> <theta_deg> <v> <odo>
+` 或 `ERR <reason>
+`：
+
+- `x`/`z` 世界坐标位置（米，+x 前、+z 右；theta=0 时朝 +x）
+- `theta_deg` 航向角（度，+左）；`v` 机体前向速度（m/s，带符号：负=后退）
+- `odo` 累计路径长度（米，**绝对值口径**：前进/后退/跳跃的水平位移都计，
+  `Robot::update` 逐帧累计，reset/场景重载清零）
+
+这是**地面真值**（仿真器的权威状态），不是轮速积分的估计值——仿真里没有轮子
+打滑模型，两者的差为零，如实标注口径即可。mybot 侧两个消费者：`Sim.lua` 的
+`odom()`（动作脚本可用）与 `lib/sim_sensor_daemon.lua` 守护采样（`kind=odom`）。
+手测：`printf 'odom\n' | socat - UNIX-CONNECT:/tmp/mybot-sim-odom.sock`。
 
 ## 三桥共同的行为约定（`sim/src/unix_line_server.cpp`）
 

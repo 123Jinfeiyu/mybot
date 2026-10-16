@@ -22,7 +22,12 @@ int bind(int fd, const struct t_sockaddr_un *addr, unsigned int addrlen);
 int listen(int fd, int backlog);
 int accept(int fd, struct t_sockaddr_un *addr, unsigned int *addrlen);
 long recv(int fd, void *buf, unsigned long len, int flags);
+long send(int fd, const void *buf, unsigned long len, int flags);
 int fcntl(int fd, int cmd, ...);
+int fork(void);
+void _exit(int status);
+int waitpid(int pid, int *status, int options);
+int usleep(unsigned int usec);
 ]]
 
 local TEST_SOCK = "/tmp/mybot-test-sim.sock"
@@ -187,5 +192,143 @@ end
 
 ffi.C.close(lfd)
 ffi.C.unlink(TEST_SOCK)
+
+-- ==================== 5. IMU / 里程计桥（2026-10-16） ====================
+-- imu()/odom() 是同步一问一答（阻塞等应答），单进程假监听端没法「边等边答」
+-- （应答必须先于 imu() 返回，而 accept 又只能发生在 imu() 连上来之后）。用
+-- fork 起一个应答子进程：父进程先 bind+listen（消除子进程 bind 的时序竞态），
+-- 子进程 accept → 读请求行（留档供断言）→ 回一帧 → 退出；子进程 poll 兜底
+-- 3s 超时（imu() 连不上来时不会永远挂住父进程的 waitpid）。每个用例
+-- dropImuOdom() 强制重连，用例之间无连接状态串扰。
+local TEST_IMU_SOCK = "/tmp/mybot-test-sim-imu.sock"
+local TEST_ODOM_SOCK = "/tmp/mybot-test-sim-odom.sock"
+local IMU_REQLOG = "/tmp/mybot-test-sim-imu-req.log"
+local ODOM_REQLOG = "/tmp/mybot-test-sim-odom-req.log"
+ffi.C.setenv("MYBOT_SIM_IMU_SOCK", TEST_IMU_SOCK, 1)
+ffi.C.setenv("MYBOT_SIM_ODOM_SOCK", TEST_ODOM_SOCK, 1)
+ffi.C.unlink(TEST_IMU_SOCK)
+ffi.C.unlink(TEST_ODOM_SOCK)
+
+local function spawn_responder(sock, resp, reqlog)
+	local l = ffi.C.socket(AF_UNIX, SOCK_STREAM, 0)
+	local a = ffi.new("struct t_sockaddr_un")
+	a.sun_family = AF_UNIX
+	ffi.copy(a.sun_path, sock)
+	ffi.C.unlink(sock)  -- 上一用例残留的 socket 文件会让 bind EADDRINUSE
+	if ffi.C.bind(l, a, 2 + #sock + 1) ~= 0 or ffi.C.listen(l, 2) ~= 0 then
+		ffi.C.close(l)
+		return -1
+	end
+	local pid = ffi.C.fork()
+	if pid == 0 then
+		-- 子进程：等连接（非阻塞 accept 轮询，3s 兜底）→ 收请求 → 留档 →
+		-- 应答 → 退出。不 cdef poll：cj_pollfd/poll 已被 Sim.lua 声明，
+		-- 结构体重复声明在 LuaJIT 是硬错误；usleep 无冲突。
+		local fl = ffi.C.fcntl(l, F_GETFL)
+		ffi.C.fcntl(l, F_SETFL, bit.bor(fl, O_NONBLOCK))
+		local c = -1
+		for _ = 1, 300 do
+			c = ffi.C.accept(l, nil, nil)
+			if c >= 0 then break end
+			ffi.C.usleep(10000)
+		end
+		if c < 0 then ffi.C._exit(1) end
+		local buf = ffi.new("char[64]")
+		local n = ffi.C.recv(c, buf, 63, 0)
+		if reqlog then
+			local f = io.open(reqlog, "w")
+			if f then f:write(ffi.string(buf, n)); f:close() end
+		end
+		if n > 0 then ffi.C.send(c, resp, #resp, 0) end
+		ffi.C.close(c)
+		ffi.C._exit(0)
+	end
+	ffi.C.close(l)  -- 父进程不再持有监听端
+	return pid
+end
+
+local function reap(pid)
+	if pid >= 0 then ffi.C.waitpid(pid, nil, 0) end
+end
+
+-- dropImuOdom/dropSensor 在 Sim.lua 里是模块局部（文件头的前向声明），测试侧
+-- 不可见；关连接走既有生命周期 destroy()（关全部 fd，下一拍自动重连）。
+local function reset_conns()
+	pcall(destroy, {})
+end
+
+local function read_reqlog(path)
+	local f = io.open(path, "r")
+	local body = f and f:read("*a") or nil
+	if f then f:close() end
+	return body
+end
+
+-- 缺席 = ERR（与 call 的静默成功刻意不同）
+reset_conns()
+local okI0, rI0 = pcall(imu)
+tester.check("无监听端时 imu 返 ERR（感知动作不静默造假）", okI0 and is_err(rI0),
+	tostring(rI0 and rI0.result))
+
+-- 正常帧解析 + 请求行核对
+reset_conns()
+ffi.C.unlink(IMU_REQLOG)
+local pidI1 = spawn_responder(TEST_IMU_SOCK, "OK -12.5000 0.7500 1.2500 -0.5000 0\n", IMU_REQLOG)
+tester.check("imu 应答子进程 fork", pidI1 >= 0, tostring(pidI1))
+local okI1, rI1 = pcall(imu)
+tester.check("有监听端时 imu 成功", okI1 and type(rI1) == "table" and rI1.result == "OK",
+	tostring(rI1 and rI1.result))
+tester.check("imu 帧解析（yaw/gyro/acc/vy/airborne）",
+	type(rI1) == "table" and rI1.result == "OK" and rI1.yaw_deg == -12.5
+		and rI1.gyro_z == 0.75 and rI1.acc_fwd == 1.25 and rI1.vy == -0.5
+		and rI1.airborne == 0,
+	tostring(rI1 and rI1.result))
+reap(pidI1)
+tester.check("imu 请求行 = 'imu\n'", read_reqlog(IMU_REQLOG) == "imu\n",
+	tostring(read_reqlog(IMU_REQLOG)))
+
+-- ERR 行透传
+reset_conns()
+local pidI2 = spawn_responder(TEST_IMU_SOCK, "ERR imu busy\n", nil)
+reap_placeholder = nil
+local _, fr2 = pcall(imu)
+tester.check("imu 的 ERR 行透传为 ERR 契约",
+	type(fr2) == "table" and fr2.result == "ERR" and fr2.message == "imu busy",
+	tostring(fr2 and fr2.message))
+reap(pidI2)
+
+-- 畸形 OK 行
+reset_conns()
+local pidI3 = spawn_responder(TEST_IMU_SOCK, "OK justwords\n", nil)
+local _, fr3 = pcall(imu)
+tester.check("imu 畸形 OK 行 → ERR", type(fr3) == "table" and fr3.result == "ERR",
+	tostring(fr3 and fr3.result))
+reap(pidI3)
+ffi.C.unlink(TEST_IMU_SOCK)
+
+-- 里程计：正常帧 + 请求行 + ERR 透传
+reset_conns()
+ffi.C.unlink(ODOM_REQLOG)
+local pidO1 = spawn_responder(TEST_ODOM_SOCK, "OK 1.5000 -2.2500 90.0000 -0.8000 12.7500\n", ODOM_REQLOG)
+tester.check("odom 应答子进程 fork", pidO1 >= 0, tostring(pidO1))
+local okO1, rO1 = pcall(odom)
+tester.check("有监听端时 odom 成功", okO1 and type(rO1) == "table" and rO1.result == "OK",
+	tostring(rO1 and rO1.result))
+tester.check("odom 帧解析（x/z/theta/v/odo）",
+	type(rO1) == "table" and rO1.result == "OK" and rO1.x == 1.5 and rO1.z == -2.25
+		and rO1.theta_deg == 90.0 and rO1.v == -0.8 and rO1.odo == 12.75,
+	tostring(rO1 and rO1.result))
+reap(pidO1)
+tester.check("odom 请求行 = 'odom\n'", read_reqlog(ODOM_REQLOG) == "odom\n",
+	tostring(read_reqlog(ODOM_REQLOG)))
+
+reset_conns()
+local pidO2 = spawn_responder(TEST_ODOM_SOCK, "ERR odom offline\n", nil)
+local _, frO2 = pcall(odom)
+tester.check("odom 的 ERR 行透传为 ERR 契约",
+	type(frO2) == "table" and frO2.result == "ERR" and frO2.message == "odom offline",
+	tostring(frO2 and frO2.message))
+reap(pidO2)
+ffi.C.unlink(TEST_ODOM_SOCK)
 
 tester.summary("Sim 仿真桥接驱动")

@@ -23,6 +23,13 @@
 -- 测距（range 函数）走独立的 sensor socket（MYBOT_SIM_SENSOR_SOCK），
 -- 协议：发 "range\n"，收 "OK <mm>\n" 或 "ERR <reason>\n"。
 --
+-- IMU / 里程计（imu / odom 函数，2026-10-16）各走独立 socket
+-- （MYBOT_SIM_IMU_SOCK / MYBOT_SIM_ODOM_SOCK），同为一问一答：
+--   发 "imu\n"  收 "OK <yaw_deg> <gyro_z> <acc_fwd> <vy> <airborne>\n"
+--   发 "odom\n" 收 "OK <x> <z> <theta_deg> <v> <odo>\n"
+-- 口径见 docs/sim.md：仿真器是运动学模型，IMU 域集合如实反映它测得到什么
+-- （无磁力计/横摆加速度）；里程计是地面真值（无轮子打滑模型）。
+--
 -- socket 路径取环境变量 MYBOT_SIM_SOCK，缺省 /tmp/mybot-sim.sock——与
 -- sim/src/main.cpp 的取值同源，两侧不用各自配置。
 --
@@ -47,10 +54,21 @@ local ffi = require("ffi")
 -- poll 结构单独声明：公共模块不包含 poll（各驱动的 pollfd 结构名不同）
 -- errno 同理不在此声明：见 lib/unix_socket_ffi.lua 头注（数据符号当函数调会 SIGSEGV），
 -- 统一用 LuaJIT 内建 ffi.errno()。
-ffi.cdef[[
+-- poll 结构体 cdef 一次性（与 lib/unix_socket_ffi.lua、HAL 的守卫同口径）：
+-- 同一个 lua_State 里重复加载（测试热重载、守护 chunk 与主线程驱动共状态等）
+-- 时 struct 重复声明是硬错误。_G 旗标跨 dofile 存活，第二次起静默跳过。
+if not rawget(_G, "__BOT4CJ_SIM_POLL_CDEF") then
+	_G.__BOT4CJ_SIM_POLL_CDEF = true
+	local cok, cerr = pcall(function()
+		ffi.cdef[[
 struct cj_pollfd { int fd; short events; short revents; };
 int poll(struct cj_pollfd *fds, unsigned long nfds, int timeout);
 ]]
+	end)
+	if not cok then
+		print("Sim.lua: poll cdef 失败（可能已声明过）: " .. tostring(cerr))
+	end
+end
 
 local kDefaultSock = "/tmp/mybot-sim.sock"
 
@@ -81,9 +99,10 @@ local PARAM2_CODES = { [10] = true }
 local fd = nil
 local sock_path = nil
 
--- 前向声明：destroy 在文件前段就要关 sensor 连接，而它的定义在文件后段
--- sensor 区——Lua 局部函数只对定义点之前已声明的名字可见
+-- 前向声明：destroy 在文件前段就要关 sensor/imu/odom 连接，而它们的定义在
+-- 文件后段——Lua 局部函数只对定义点之前已声明的名字可见
 local dropSensor
+local dropImuOdom
 
 local function sockPath()
 	if sock_path == nil then
@@ -140,6 +159,7 @@ function destroy(data)
 
 	dropConnection()
 	dropSensor()
+	dropImuOdom()
 
 	return {  result = "OK"  }
 
@@ -269,37 +289,38 @@ local function ensureSensor()
 	return true
 end
 
--- 带超时收一行（到 \n 为止）：用 cj_pollfd 做 poll 超时
-local function sensorRecvLine()
+-- 带超时收一行（到 \n 为止）：用 cj_pollfd 做 poll 超时。
+-- fd 显式传入：sensor/imu/odom 三条一问一答 socket 共用同一收行实现。
+local function recvLineOn(fd)
 	local buf = ffi.new("unsigned char[256]")
 	local got = 0
 	local fds = ffi.new("struct cj_pollfd[1]")
 	for _ = 1, 256 do
-		fds[0].fd = sensorFd
+		fds[0].fd = fd
 		fds[0].events = 1  -- POLLIN
 		local pr = ffi.C.poll(fds, 1, kSensorPollMs)
 		if pr < 0 then
 			local e = ffi.errno()
 			if e ~= 4 then  -- EINTR
-				return nil, "poll sensor failed (errno=" .. tostring(e) .. ")"
+				return nil, "poll failed (errno=" .. tostring(e) .. ")"
 			end
 		elseif pr == 0 then
-			return nil, "sensor response timeout"
+			return nil, "response timeout"
 		else
-			local n = ffi.C.recv(sensorFd, buf + got, 1, 0)
+			local n = ffi.C.recv(fd, buf + got, 1, 0)
 			if n <= 0 then
-				return nil, "sensor recv failed"
+				return nil, "recv failed"
 			end
 			if buf[got] == 10 then  -- '\n'
 				return ffi.string(buf, got)
 			end
 			got = got + 1
 			if got >= 255 then
-				return nil, "sensor response too long"
+				return nil, "response too long"
 			end
 		end
 	end
-	return nil, "sensor recv loop error"
+	return nil, "recv loop error"
 end
 
 -- 【测距】查询前方障碍距离
@@ -323,7 +344,7 @@ function range(data)
 		return err("sensor send failed (对端断开？)")
 	end
 
-	local line, rerr = sensorRecvLine()
+	local line, rerr = recvLineOn(sensorFd)
 	if line == nil then
 		dropSensor()
 		return err(rerr or "sensor recv failed")
@@ -344,4 +365,140 @@ function range(data)
 		distance = mm / 1000.0,  -- 毫米 → 米
 		distance_mm = mm,
 	}
+end
+
+------------------------------------------------------------------
+-- IMU / 里程计（2026-10-16）：各走独立的一问一答 socket
+------------------------------------------------------------------
+-- 与 sensor 同型的三件套：路径（env > 缺省）、惰性连接、收行（recvLineOn）。
+-- 成败口径与 range() 一致：仿真器缺席/断开 = 响亮 ERR（感知动作不该静默造假）。
+local kImuDefaultSock = "/tmp/mybot-sim-imu.sock"
+local kOdomDefaultSock = "/tmp/mybot-sim-odom.sock"
+
+local imuFd, odomFd = nil, nil
+local imuSockPath, odomSockPath = nil, nil
+
+local function imuPath()
+	if imuSockPath == nil then
+		local p = os.getenv("MYBOT_SIM_IMU_SOCK")
+		if p == nil or p == "" then
+			p = kImuDefaultSock
+		end
+		imuSockPath = p
+	end
+	return imuSockPath
+end
+
+local function odomPath()
+	if odomSockPath == nil then
+		local p = os.getenv("MYBOT_SIM_ODOM_SOCK")
+		if p == nil or p == "" then
+			p = kOdomDefaultSock
+		end
+		odomSockPath = p
+	end
+	return odomSockPath
+end
+
+function dropImuOdom()
+	if imuFd ~= nil then
+		ffi.C.close(imuFd)
+		imuFd = nil
+	end
+	if odomFd ~= nil then
+		ffi.C.close(odomFd)
+		odomFd = nil
+	end
+end
+
+-- 一问一答公共骨架：发请求行 → 收 OK 行 → 交给 parse 拆数值域。
+-- 任一步失败都关连接（下次重连）并按 ERR 契约报错。
+local function queryBridge(fdtbl, path, request, parse)
+	local fd = fdtbl[1]
+	if fd == nil then
+		local s, _ = usock.connect(path)
+		if s == nil then
+			return err("socket not available (仿真器没开？路径 " .. path .. ")")
+		end
+		fdtbl[1] = s
+		fd = s
+	end
+	local n = ffi.C.send(fd, request, #request, usock.MSG_NOSIGNAL)
+	if n < 0 then
+		ffi.C.close(fd)
+		fdtbl[1] = nil
+		return err("send failed (对端断开？)")
+	end
+	local line, rerr = recvLineOn(fd)
+	if line == nil then
+		ffi.C.close(fd)
+		fdtbl[1] = nil
+		return err(rerr or "recv failed")
+	end
+	if line:sub(1, 3) == "ERR" then
+		return err(line:sub(5):gsub("^%s+", ""))
+	end
+	local okFrame = line:match("^OK%s")
+	if okFrame == nil then
+		return err("response malformed: " .. line)
+	end
+	return parse(line:sub(3))
+end
+
+-- 【IMU】一帧机体姿态/角速度/前向加速度/竖直速度/离地标志。
+-- 返回 { result="OK", yaw_deg, gyro_z, acc_fwd, vy, airborne } 或 ERR。
+function imu(data)
+	if data ~= nil then
+		local ok, ek = arg_table(data)
+		if not ok then
+			return ek
+		end
+	end
+	local req = "imu\n"
+	local holder = { imuFd }
+	local r = queryBridge(holder, imuPath(), req, function(body)
+		local a, b, c, d, e = body:match("^%s+([%-%d%.]+)%s+([%-%d%.]+)%s+([%-%d%.]+)%s+([%-%d%.]+)%s+(%d+)$")
+		if a == nil then
+			return err("imu frame malformed:" .. body)
+		end
+		return {
+			result = "OK",
+			yaw_deg = tonumber(a),
+			gyro_z = tonumber(b),
+			acc_fwd = tonumber(c),
+			vy = tonumber(d),
+			airborne = tonumber(e),
+		}
+	end)
+	imuFd = holder[1]
+	return r
+end
+
+-- 【里程计】一帧地面真值位姿/速度/累计里程。
+-- 返回 { result="OK", x, z, theta_deg, v, odo } 或 ERR。
+function odom(data)
+	if data ~= nil then
+		local ok, ek = arg_table(data)
+		if not ok then
+			return ek
+		end
+	end
+	local req = "odom\n"
+	local holder = { odomFd }
+	local r = queryBridge(holder, odomPath(), req, function(body)
+		local a, b, c, d, e = body:match("^%s+([%-%d%.]+)%s+([%-%d%.]+)%s+([%-%d%.]+)%s+([%-%d%.]+)%s+([%-%d%.]+)$")
+		if a == nil then
+			return err("odom frame malformed:" .. body)
+		end
+		return {
+			result = "OK",
+			x = tonumber(a),
+			z = tonumber(b),
+			theta_deg = tonumber(c),
+			v = tonumber(d),
+			odo = tonumber(e),
+		}
+	end)
+	odomFd = holder[1]
+	return r
 end

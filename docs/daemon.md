@@ -63,6 +63,21 @@ INSERT INTO Daemon (name, chunk, sources, interval, maxvals)
 - peer 槽由聚合守护以强引用保活：peer 被热删除后其槽不会提前释放（无 use-after-free），但聚合器检测到 peer 的 `stop` 位即**永久失败**（status=-11）——绝不静默发布陈旧快照或缺一段后悄悄移位的 v 序；peer setup 失败同理（status=-10）。拼接总数超本槽 `maxvals` 也在首拍判为配置错误（status=-2）
 - 「任一 peer 尚未首发」是瞬时状态：整拍不发布、限频日志点名 peer，与单守护「等首帧」语义一致
 
+## 仿真器采样 chunk（`lib/sim_sensor_daemon.lua`）
+
+把 mybot-sim 的 IMU/里程计桥（[sim.md](sim.md)）采样进共享槽：`kind=imu` 发布
+`yaw_deg|gyro_z|acc_fwd|vy|airborne` 5 字段，`kind=odom` 发布 `x|z|theta_deg|v|odo`
+5 字段。复用 `modules/Sim.lua` 的 `imu()`/`odom()` 客户端，协议单点不在 chunk 里。
+
+- **不碰硬件总线**：数据源是仿真器进程，没有 fd 要开；槽协议仍走 `lib/pthread.lua`。
+- **仿真器缺席不是永久失败**：客户端每次 call 惰性重连（仿真器后起即接上），缺席按
+  **逐拍错误**处理（count 停滞 + 限频日志），不写 status 失败码——与「驱动加载失败」
+  这类永不自愈的失败区分。唯一永久失败是 `kind` 配置错误（status=-2）。
+- 与 `sources` 聚合连用即「仿真多路观测拼进一个槽」：`imu0|odom0` 聚合 10 值一个
+  `$agg` 引用拿全（全栈示例 [robots/spider_sim_nav.sql](../robots/spider_sim_nav.sql)；
+  守门 e2e 见 `test/run_all.sh` 的 sim_nav 段，仿真器由 `test/lib/sim_responder.lua`
+  应答桩顶替——GL 壳在 CI/无显示环境不可构建）。
+
 ## 滤波器硬件变量（虚拟传感器）
 
 每个滤波器 = `lib/<filter>.lua` 库（`.new()` + `:filter(x)`）+ `<Filter>.lua` 驱动：
@@ -101,6 +116,8 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 - `maxvals`：本行槽容量，整数 1..1024（缺省 64；`fields` 数量按它校验）。
 - `sources`：peer 守护名清单（`|` 或 `,` 分隔）；空令牌、自引用、重名、未知名（含
   声明在自己之后的）都在加载期拒绝，见上文「多守护聚合器」。
+- `kind`：`lib/sim_sensor_daemon.lua` 的采样种类（`imu` | `odom`，2026-10-16）；
+  拼错在加载期拒绝（放行只有守护 setup 的 status -2 一个间接症状）。
 - **任意列的字符集**：值里不得含 `NUL` 或 `;`（审计 P4）。`DAEMON_CONFIG` 是
   `k=v;k=v` 串、经 `lua_pushstring` 注入（C 字符串语义），Lua 侧按 `;` 切列、
   每列再按**第一个** `=` 分割键值（`sensor_daemon.lua`）——NUL 会把它**其后所有列**（含 `proto`/`sign`）

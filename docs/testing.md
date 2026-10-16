@@ -212,7 +212,7 @@ cd build && ctest -R 'lua_|cpp_unit'         # 只跑 Lua 段 + C++ 单测
 
 反过来，有三个脚本**没有任何自动调用点**（`run_all.sh` / 十条 CI job / pre-push 都不执行它们），它们坏了不会有任何守门变红，只能靠人跑：
 
-- `scripts/build_sim.sh` —— `sim/` 是独立 CMake 工程，不在任何 CI job 的构建范围内；它产出的 `sim_tests`（406 例）也因此只在开发者手动跑时执行（计数见下「四处套件的计数口径」）
+- `scripts/build_sim.sh` —— `sim/` 是独立 CMake 工程，不在任何 CI job 的构建范围内；它产出的 `sim_tests`（442 例）也因此只在开发者手动跑时执行（计数见下「四处套件的计数口径」）
 - `scripts/sim_agent_demo.sh` —— sim + backend + agent 三层链路的**手动冒烟**：要显示器（GLFW/OpenGL）、要真模型凭据 `mybot.llm.json`、要先 `build_sim.sh`。这意味着 **GL 可视化壳没有自动覆盖**，改完请自己跑一次并把结果写进提交信息（详见 [sim.md](sim.md)「端到端链路」）
 - `scripts/build_agent.sh` —— CI 的 `gate:agent` / `gate:agent-e2e` 各自 `cargo build`，本机则靠它产出 `mybot-agent`；产物陈旧/缺失的后果见 [development.md](development.md)「守门钩子（pre-push）」第 3 条
 
@@ -265,10 +265,10 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 
 8. **仿真器跨构建契约**（`scripts/check_sim_contract.py`）四组：`.mt` 数字动作码表
    （`sim/src/action_table.cpp` 的 `kActions[]` vs `modules/Sim.lua` 的
-   `CODES`/`PARAM_CODES`/`PARAM2_CODES`/`CODE_MAX`）、三条缺省 socket 路径（`sim_config.h`
-   vs `modules/Sim.lua`）、一问一答桥的请求关键字（`sim/src/{sensor,capture}.cpp` vs
-   `modules/Sim.lua` 的 `range()`、`src/agentimage.cpp`、`modules/Camera.lua` 的
-   `capture_live()`）、默认场景的 11 个箱（`world.cpp` 的内置回落 vs
+   `CODES`/`PARAM_CODES`/`PARAM2_CODES`/`CODE_MAX`）、五条缺省 socket 路径（`sim_config.h`
+   vs `modules/Sim.lua`）、一问一答桥的请求关键字（`sim/src/{sensor,capture,imu,odom}.cpp` vs
+   `modules/Sim.lua` 的 `range()`/`imu()`/`odom()`、`src/agentimage.cpp`、
+   `modules/Camera.lua` 的 `capture_live()`）、默认场景的 11 个箱（`world.cpp` 的内置回落 vs
    `sim/scenes/default.scene`）。缺 `python3` 时**判失败**而非跳过——这段没有别的兜底。
 9. **状态目录缺省名**：「`MYBOT_HOME` 非空 → `$HOME/.mybot` → 不可用」有三处实现
    （Rust `agent/src/config/mod.rs`、C++ `sim/src/sim_paths.cpp`、shell
@@ -358,10 +358,10 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
 | --- | --- | --- |
 | `mybot_tests` | `bash test/run_all.sh` 的 cpp-unit 段 | 808 通过 / 0 失败 |
 | `harness_selftest` | `bash test/run_all.sh` 的 harness-selftest 段 | 8 通过 / 0 失败 |
-| `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 406 通过（**运行时数**）/ 0 失败（8 个 TU） |
+| `sim_tests` | `bash scripts/build_sim.sh` 后 `./sim/build/sim_tests`（**不在 CI**） | 442 通过（**运行时数**）/ 0 失败（8 个 TU） |
 | Rust agent | `cd agent && cargo test --release` | 188 passed |
 
-除 `sim_tests` 的 406 外，表里每个数字都由 `scripts/check_doc_paths.py` 的第六组
+除 `sim_tests` 的 442 外，表里每个数字都由 `scripts/check_doc_paths.py` 的第六组
 **从仓库实况派生后比对**（进 `test/run_all_selftest.sh`）——加/删用例而忘了改这张表，
 守门会红，不再依赖人记得回来更新快照。派生口径就是下面两条式子。
 
@@ -375,7 +375,7 @@ mybot-agent 新鲜度取材面、`run_all.sh` 里 `harness_selftest` 的路径�
   `runAllOutcome(filter, quiet=true)` 调到），不进缺省全量跑——否则主输出里会混进一串
   预期失败的 `[FAIL]` 行。
 
-`sim_tests` 的 406 是这张表里**唯一没有静态派生**的数：sim 侧的记账单位是**断言**而不是
+`sim_tests` 的 442 是这张表里**唯一没有静态派生**的数：sim 侧的记账单位是**断言**而不是
 用例（`sim/tests/harness.h` 的 `g_total` 只由 `check()` 写），而 `check(` 的调用点只有
 328 处——差额来自循环与条件分支里的多次断言，跑一遍才知道确切数。加上 `sim/` 不在任何
 CI job 的构建范围（见上「没有任何自动调用点」），这个数只能靠人手动跑

@@ -104,6 +104,48 @@ run_parse_cases() {
 	done
 }
 
+# 仿真器 IMU/里程计守护采样 e2e（2026-10-16，第一档 sim 桥）：真二进制
+# mybot + 两路守护（sim_sensor_daemon）+ sources 聚合 + Monitor 消费。
+# GL 壳（mybot-sim）在 CI/无显示环境不可构建，imu/odom 桥由
+# test/lib/sim_responder.lua 应答桩顶替（帧格式与 sim/src/{imu,odom}.cpp 一致）。
+# 断言：消费 JSON 出现 "v9"（10 值拼接 = imu 5 + odom 5，序 = sources 声明序）。
+run_one_sim_nav_e2e() {
+	local imu_sock="/tmp/mybot-test-nav-imu-$$.sock"
+	local odom_sock="/tmp/mybot-test-nav-odom-$$.sock"
+	echo "----- spider_sim_nav (sim imu/odom daemon e2e) -----"
+	# 应答桩：imu 两帧（含 airborne=1 帧）、odom 一帧；逐连接循环应答
+	"$LUACMD" test/lib/sim_responder.lua "$imu_sock" \
+		"OK 1.5 0.75 1.25 -0.5 0" "OK 30 -1.5 0 0 1" 2>/dev/null &
+	local rpid1=$!
+	"$LUACMD" test/lib/sim_responder.lua "$odom_sock" \
+		"OK 1.5 -2.25 90 -0.8 12.75" 2>/dev/null &
+	local rpid2=$!
+	# 等两个桩 bind 完成（socket 文件出现，最多 2.5s）
+	local i
+	for i in $(seq 1 50); do
+		[ -S "$imu_sock" ] && [ -S "$odom_sock" ] && break
+		sleep 0.05
+	done
+	local out rc
+	out="$(cat scripts/spider_sim_nav.mt | \
+		MYBOT_SIM_IMU_SOCK="$imu_sock" MYBOT_SIM_ODOM_SOCK="$odom_sock" \
+		timeout 30 "$bin" --robot=robots/spider_sim_nav.sql 2>&1)"
+	rc=$?
+	echo "$out"
+	kill "$rpid1" "$rpid2" 2>/dev/null
+	wait "$rpid1" "$rpid2" 2>/dev/null
+	rm -f "$imu_sock" "$odom_sock"
+	local p_ok=true
+	[ "$rc" -ne 0 ] && p_ok=false
+	echo "$out" | grep -qF '"v9":' || p_ok=false
+	echo "$out" | grep -qF 'joined, total publishes=' || p_ok=false
+	if $p_ok; then
+		record_pass
+	else
+		record_fail
+	fi
+}
+
 # mtmerge 离线合成器已移除（2026-10-10）：相关 runner 与 fixture 函数已不再使用。
 # 运行端 @Merge 展开的测试由 test/run_all.sh 的 include 段覆盖。
 

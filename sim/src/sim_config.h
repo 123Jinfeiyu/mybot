@@ -41,7 +41,7 @@ constexpr std::size_t kMaxSceneObstacles = 512;
 constexpr std::size_t kMaxSceneLine = 512;
 
 // ── 默认 socket 路径（与 Lua 侧共享的对外契约）─────────────────────────
-// 三条 AF_UNIX 缺省路径。运行期实际路径的优先级是 argv > 环境变量 > 这里的
+// 各 AF_UNIX 桥的缺省路径。运行期实际路径的优先级是 argv > 环境变量 > 这里的
 // 缺省（见 main.cpp resolveSocketPath）。这是 C++ 侧的单一事实源：main.cpp
 // 不再各写一份字面量。
 //
@@ -54,5 +54,7 @@ constexpr std::size_t kMaxSceneLine = 512;
 inline constexpr const char* kDefaultSocketPath = "/tmp/mybot-sim.sock";
 inline constexpr const char* kDefaultCaptureSocketPath = "/tmp/mybot-sim-capture.sock";
 inline constexpr const char* kDefaultSensorSocketPath = "/tmp/mybot-sim-sensor.sock";
+inline constexpr const char* kDefaultImuSocketPath = "/tmp/mybot-sim-imu.sock";
+inline constexpr const char* kDefaultOdomSocketPath = "/tmp/mybot-sim-odom.sock";
 
 }  // namespace SimConfig

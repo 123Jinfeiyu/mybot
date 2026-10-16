@@ -6,7 +6,7 @@
 # （Rust）的模式：自带工程 + scripts/build_sim.sh 独立构建。
 #
 # 目标分两层：
-#   simcore   —— GL 无关的核心逻辑（运动学 + 三座 AF_UNIX 桥），可单测、可上 CI
+#   simcore   —— GL 无关的核心逻辑（运动学 + 五座 AF_UNIX 桥），可单测、可上 CI
 #   mybot-sim —— GLFW/OpenGL 可视化壳，链接 simcore
 #   sim_tests —— simcore 单元测试（无 GL 依赖，纯逻辑 + 本机 socket 回环）
 #
@@ -52,6 +52,8 @@ add_library(simcore STATIC
     src/bridge.cpp
     src/capture.cpp
     src/sensor.cpp
+    src/imu.cpp
+    src/odom.cpp
 )
 target_include_directories(simcore PUBLIC src)
 target_link_libraries(simcore PUBLIC glm::glm Threads::Threads)

@@ -9,6 +9,7 @@ using glm::mat4;
 using glm::vec3;
 
 void Robot::update(float dt, const RobotInput& input, float maxSpeed) {
+    const float vPrev = v_;
     if (airborne_) {
         // 空中弹道：忽略 input（无油门/舵），水平速度守恒，竖直受重力。theta_ 冻结。
         // 落地由 SimEngine 调 applySupport() 收住——这里只管把抛物线积分下去。
@@ -16,6 +17,9 @@ void Robot::update(float dt, const RobotInput& input, float maxSpeed) {
         y_ += vy_ * dt;
         x_ += v_ * std::cos(theta_) * dt;
         z_ += v_ * -std::sin(theta_) * dt;
+        // 里程与加速度照常累计：空中水平速度守恒（加速度≈0），但弹道位移计入里程。
+        odo_ += std::abs(v_) * dt;
+        accel_ = 0.0f;
         return;
     }
 
@@ -32,6 +36,11 @@ void Robot::update(float dt, const RobotInput& input, float maxSpeed) {
     z_ += v_ * -std::sin(theta_) * dt;
     // 地面：y_ 贴住支撑面（由 applySupport 钳制），此处不积分重力——走下箱沿时
     // 支撑面高度会突降，applySupport 发现 y_>support 即转 airborne，下一帧起弹道。
+
+    // 里程计累计（绝对路径长度，前进/后退都计）与机体系前向加速度（帧差分）。
+    // 这两个是 IMU/里程计桥的数据源：加速度是一阶滞后折算的实导数，不是编造。
+    odo_ += std::abs(v_) * dt;
+    accel_ = dt > 0.0f ? (v_ - vPrev) / dt : 0.0f;
 }
 
 void Robot::reset() {

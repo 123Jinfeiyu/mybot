@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <string>
 
-// 三座 AF_UNIX 行文本桥（命令/拍照/测距）的公共骨架：路径校验、摘残留 inode、
+// 各 AF_UNIX 行文本桥（命令/拍照/测距/IMU/里程计）的公共骨架：路径校验、摘残留 inode、
 // bind/listen/非阻塞、「新连接顶掉旧连接」的 accept、recv 循环 + 无换行超限断开、
 // 按行切分派发、带 deadline 的整段发送。
 //
