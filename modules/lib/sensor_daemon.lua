@@ -249,6 +249,8 @@ end
 local known = {
 	driver = 1, proto = 1, path = 1, addr = 1, interval = 1,
 	fields = 1, sign = 1, mode = 1, bits = 1, speed = 1, delay = 1, baud = 1,
+	maxvals = 1,	-- 框架列：槽容量（宿主消费，不下发驱动）
+	sources = 1,	-- 框架列：聚合 peer 清单（宿主解析注入，与本 chunk 无关）
 }
 local params = {}
 -- SPI 器件（含 virt SPI 模型）没有地址概念；只有 I2C 才传 address

@@ -15,7 +15,7 @@ INSERT INTO Daemon (name, chunk) VALUES ('imu0', 'lib/daemon_probe.lua');
 
 - 每个守护 = 独立线程 + **独立 Lua 状态**，规避 LuaJIT VM 非线程安全
 - 共享内存槽 + pthread 互斥锁：守护侧 `P.publish(slot,{...})` 写，主线程侧 `play()` 加锁读
-- 共享槽 600B：`mutex[64]` / `count` / `nvals` / `values[64]`（TD-3，2026-09-22 扩容） / `stop@584` / `status@588` / `quiesce@592`（BQ-1 停机灭火位，2026-09-29）（C++ 侧 `src/daemonvar.hpp` 的 `static_assert` 与 Lua 侧 `pthread.lua` 的 `assert_layout` 双侧互锁，布局漂移在守护启动时即暴露）
+- 共享槽（ABI v2，2026-10-16）：96B 头 `mutex[64]` / `count` / `nvals` / `values`（**指针**，指向随槽分配的采样数组）/ `capacity`（本槽容量，分配后不可变）/ `stop@84` / `status@88` / `quiesce@92`（BQ-1 停机灭火位，2026-09-29）；采样数组按 @Daemon 的 `maxvals` 列分配（缺省 64）——65+ 字段不再是架构上限，一行配置放行（C++ 侧 `src/daemonvar.hpp` 的 `static_assert` 与 Lua 侧 `pthread.lua` 的 `assert_layout` 双侧互锁，布局漂移在守护启动时即暴露）
 - chunk 先跑一次完成 setup 并定义全局 `daemon_tick`，之后逐拍 `pcall`；**拍间用线程 sleep 让出**，切忌在 chunk 内 ffi `usleep` 自旋（阻塞调度不放）
 - `@Daemon` 除 `name`/`chunk` 外的列序列化为 `DAEMON_CONFIG` 串注入 chunk
 - **停机顺序（断电屏障）**：`deactivate()` 先对全体守护置 `stop`，再**统一等到退场**
@@ -43,6 +43,25 @@ INSERT INTO Daemon (name, chunk, driver, proto, path, addr, interval, fields, si
 ```
 
 `fields` 用 `|` 分隔以避开 SQL 逗号；`sign=16` 表示 16 位补码符号扩展；逐字段后缀可覆盖（`:f` 原样透传浮点，`:s16` 强制补码）。
+
+## 槽容量（maxvals 列）与多守护聚合器（sources 列）
+
+两项都属路线图阶段 2「多传感器聚合」（2026-10-16）：
+
+**`maxvals` 列** —— 每守护声明槽容量，整数 1..1024（缺省 64）。`fields` 的数量校验按**本行** `maxvals` 判（加载期拒绝，报错点名行内值与硬上限）；采样数组按它分配。多路传感器拼进一个槽从此是一行配置，不再是编译期上限。
+
+**`sources` 列 + `lib/sensor_aggregate.lua`** —— 一路守护聚合多路 peer 守护的最新快照到**同一个槽**：
+
+```sql
+CREATE TABLE Daemon (name String, chunk String, sources String, interval String, maxvals String);
+INSERT INTO Daemon (name, chunk, sources, interval, maxvals)
+  VALUES ('agg0', 'lib/sensor_aggregate.lua', 'imu0|baro0', '20', '16');
+```
+
+- peer 必须在**更早的行**声明（与 `$` 引用 / controller 的先声明后引用同族；于是环在结构上不可能，链式聚合 `agg1(agg0(x))` 合法）。引用自己、重名、空令牌、未知名都在**结构脚本加载期**拒绝（`src/daemonconf.cpp` 的 `resolveDaemonSources`）
+- 宿主把各 peer 槽以 `DAEMON_PEER_SLOTS` 表注入聚合守护的 Lua 状态；聚合器不碰任何总线，逐拍读 peer 最新快照、按 `sources` 声明序拼接成**一次 publish**——消费方（`@Ema`/`@Monitor`）一个 `$agg0` 引用拿到统一视图（v 下标 = sources 序 × 各 peer 字段序），跨源时差收敛到聚合 interval
+- peer 槽由聚合守护以强引用保活：peer 被热删除后其槽不会提前释放（无 use-after-free），但聚合器检测到 peer 的 `stop` 位即**永久失败**（status=-11）——绝不静默发布陈旧快照或缺一段后悄悄移位的 v 序；peer setup 失败同理（status=-10）。拼接总数超本槽 `maxvals` 也在首拍判为配置错误（status=-2）
+- 「任一 peer 尚未首发」是瞬时状态：整拍不发布、限频日志点名 peer，与单守护「等首帧」语义一致
 
 ## 滤波器硬件变量（虚拟传感器）
 
@@ -79,6 +98,9 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 - `proto`：只接受 `i2c`（缺省）/ `spi` / `uart` / `virt`。拼错（如 `i2`）此前会静默落进 i2c 分支去开总线；
 - `fields`：`<名>[:<模式>]`，模式 ∈ 缺省（跟随 `sign`）/ `f` / `float` / `s16`；空项（`A||B`、首尾分隔符）与未知模式（`TEMP:xyz`）此前分别被静默丢弃、静默当浮点透传；
 - `sign`：必须是整数（如 `16`）；非数值此前被 `tonumber` 折成 nil，符号扩展静默失效。
+- `maxvals`：本行槽容量，整数 1..1024（缺省 64；`fields` 数量按它校验）。
+- `sources`：peer 守护名清单（`|` 或 `,` 分隔）；空令牌、自引用、重名、未知名（含
+  声明在自己之后的）都在加载期拒绝，见上文「多守护聚合器」。
 - **任意列的字符集**：值里不得含 `NUL` 或 `;`（审计 P4）。`DAEMON_CONFIG` 是
   `k=v;k=v` 串、经 `lua_pushstring` 注入（C 字符串语义），Lua 侧按 `;` 切列、
   每列再按**第一个** `=` 分割键值（`sensor_daemon.lua`）——NUL 会把它**其后所有列**（含 `proto`/`sign`）
@@ -96,7 +118,7 @@ INSERT INTO Monitor (name, src) VALUES ('mon0', '$kf0');   -- 消费滤波值
 
 守护 setup 失败（驱动缺失/加载失败、开总线失败等）是**永久性**失败，**绝不伪装成采样值**：
 
-- 失败码（-9 缺 driver、-8 驱动加载失败、-1 开总线失败、-3 spi setup 失败、-2 build 失败）写进槽的 `status` 字段（`P.set_status`），不是发进 v0 的一个负样本——否则下游 `$` 引用无从甄别，配置错误会被当温度做闭环，只有 `count` 停滞这种间接迹象；
+- 失败码（-9 缺 driver、-8 驱动加载失败、-1 开总线失败、-3 spi setup 失败、-2 build 失败；聚合 chunk 另有 -10 peer setup 失败、-11 peer 已停止、-12 sources 未注入）写进槽的 `status` 字段（`P.set_status`），不是发进 v0 的一个负样本——否则下游 `$` 引用无从甄别，配置错误会被当温度做闭环，只有 `count` 停滞这种间接迹象；
 - 宿主侧读路径见 `status ≠ 0` 即抛错（`daemon setup failed (slot status -8); no samples are published`），动作链响亮中止；失败码与原因以守护日志为准；
 - 与「尚未出首帧」区分：那是**瞬时**状态，由消费方（`@Monitor`/`@Ema`/`@Kalman`）按 ERR 契约自行表达，不在读路径抛。
 

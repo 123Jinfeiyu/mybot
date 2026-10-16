@@ -4,17 +4,15 @@
  * daemonvar.cpp）。守护硬件变量 MtVars_Daemon 的声明在 daemonconf.hpp——它的
  * 四个成员函数实现全在 daemonconf.cpp，声明跟着实现走。
  * 共享槽 daemon_slot_t 布局（aarch64/x86_64 与 modules/lib/pthread.lua 严格一致）：
- *   offset 0   char   mutex[64]      pthread_mutex_t（aarch64=48B / x86_64=40B，预留 64）
- *   offset 64  int32  count          已 publish 次数
- *   offset 68  int32  nvals          本次值个数
- *   offset 72  double values[64]     采样值（TD-3：32 → 64，支持高通道数传感器）
- *   offset 584 uint8  stop           停止标志
- *   offset 588 int32  status         守护 setup 状态（N-27：0=正常；负=失败码）
- *   offset 592 int32  quiesce        总线灭火位（BQ-1：仅弃管守护会被置位，见下）
- *
- * status 与 stop 之间那 3 字节是 stop 之后的既有对齐填充——status 落在这里
- * **不改变字段布局语义**，保持 count/nvals/values/stop 相对顺序；
- * 具名 reserved_ 只为显式占位，避免将来插字段时把 status 挤进隐式填充区。
+ *   offset 0   char    mutex[64]     pthread_mutex_t（aarch64=48B / x86_64=40B，预留 64）
+ *   offset 64  int32   count         已 publish 次数
+ *   offset 68  int32   nvals         本次值个数
+ *   offset 72  double* values        指向 capacity 个 double 的堆数组（随槽分配）
+ *   offset 80  int32   capacity      本槽容量（分配后不可变；maxvals 列指定）
+ *   offset 84  uint8   stop          停止标志
+ *   offset 85  uint8   reserved[3]   stop 之后的对齐填充，显式具名
+ *   offset 88  int32   status        守护 setup 状态（N-27：0=正常；负=失败码）
+ *   offset 92  int32   quiesce       总线灭火位（BQ-1：仅弃管守护会被置位，见下）
  *
  * quiesce（2026-09-29，审计 P2-3 收口）：「停机灭火」协议位。宽限耗尽仍存活
  * 的守护线程在弃管**之前**由主线程置位；此后该守护 lua_State 里经 HAL.lua 走的
@@ -25,16 +23,22 @@
  * 只置位、永不清零：deactivate 是进程终态；热删除的弃管者对应的器件已被
  * 摘除，其槽随引用计数消亡，没有「复位再用」的场景。
  *
- * TD-3 变更记录（2026-09-22）：
- * - values 从 32 增至 64 个 double（256B → 512B）
- * - 槽总大小从 336B 增至 592B
- * - stop 偏移从 328 → 584
- * - status 偏移从 332 → 588
- * - 向后兼容：旧代码使用 ≤32 值的槽仍然正常工作
- * BQ-1 变更记录（2026-09-29）：
- * - 追加 quiesce（offset 592），槽总大小 592 → 600（values 的 8 字节对齐
- *   使 struct 尾部填充到 600；旧 HAL.lua（无 quiesce 检查）在新槽上照常
- *   工作：它只读既有偏移）
+ * TD-3 变更记录（2026-09-22）：values 从 32 增至 64 个 double。
+ * BQ-1 变更记录（2026-09-29）：追加 quiesce（offset 592），槽 592 → 600。
+ * ABI v2 变更记录（2026-10-16，路线图阶段 2「SLOT_MAXVALS 参数化」）：
+ * - values[64] 定长数组改为 double* 指针 + capacity 字段：容量随槽按需分配
+ *   （@Daemon 的 maxvals 列，1..SLOT_CAPACITY_LIMIT，缺省 SLOT_MAXVALS=64），
+ *   65+ 字段不再在加载期被拒——把「多路传感器拼进一个槽」从架构上限变成
+ *   一行配置。头布局（mutex/count/nvals/values 指针/capacity/stop/status/
+ *   quiesce）自此**永久稳定**：此后增减容量不动任何字段偏移。
+ * - 槽头从 600B 收缩到 96B；采样数组单独分配（capacity × 8B），由槽的
+ *   shared_ptr 删除器（releaseSlot：mutex_destroy → free values → free slot）
+ *   与槽同生共死。两侧（daemonvar.hpp / pthread.lua cdef）同步原子更新，
+ *   assert_layout + DAEMON_SLOT_LAYOUT 注入继续互锁漂移；槽不跨进程持久，
+ *   无迁移问题。
+ * - 读写经指针间接一层，仍在槽内 mutex 临界区内进行（TSan 语义不变）；
+ *   capacity 在分配后不可变，锁外读它不是数据竞争（分配先于槽地址注入，
+ *   释放后于最后一个引用交出——happens-before 由 shared_ptr 所有权保证）。
  */
 #include <atomic>
 #include <chrono>
@@ -52,18 +56,21 @@ namespace bot {
 
 constexpr int32_t SLOT_COUNT_OFF = 64;
 constexpr int32_t SLOT_NVALS_OFF = 68;
-constexpr int32_t SLOT_VALUES_OFF = 72;
-constexpr int32_t SLOT_STOP_OFF = 584;   /* TD-3: 328 → 584 (64 values × 8 bytes = 512B) */
-constexpr int32_t SLOT_STATUS_OFF = 588; /* TD-3: 332 → 588 */
-constexpr int32_t SLOT_QUIESCE_OFF = 592;/* BQ-1: 592（status 之后原样追加） */
-constexpr int32_t SLOT_SIZE = 600;       /* BQ-1: 592 → 600（quiesce 后 4B 尾部对齐填充） */
-constexpr int32_t SLOT_MAXVALS = 64;     /* TD-3: 32 → 64 */
+constexpr int32_t SLOT_VALUES_OFF = 72;   /* ABI v2: double* 指针（原 values[64] 首址不变） */
+constexpr int32_t SLOT_CAPACITY_OFF = 80; /* ABI v2: 本槽容量（分配后不可变） */
+constexpr int32_t SLOT_STOP_OFF = 84;     /* ABI v2: 584 → 84（头布局收缩） */
+constexpr int32_t SLOT_STATUS_OFF = 88;   /* ABI v2: 588 → 88 */
+constexpr int32_t SLOT_QUIESCE_OFF = 92;  /* ABI v2: 592 → 92 */
+constexpr int32_t SLOT_SIZE = 96;         /* ABI v2: 600 → 96（采样数组另配） */
+constexpr int32_t SLOT_MAXVALS = 64;      /* 缺省槽容量（@Daemon 未给 maxvals 列时） */
+constexpr int32_t SLOT_CAPACITY_LIMIT = 1024;	/* maxvals 列硬上限（8KiB 采样数组封顶） */
 
 struct DaemonSlot {
 	char mutex[64];
 	std::int32_t count;
 	std::int32_t nvals;
-	double values[SLOT_MAXVALS];
+	double* values;			/* ABI v2: capacity 个 double 的堆数组，随槽分配/释放 */
+	std::int32_t capacity;		/* ABI v2: 分配后不可变；锁外读合法（见头注释） */
 	std::uint8_t stop;
 	std::uint8_t reserved_[3];	/* stop 之后的既有填充，显式具名 */
 	std::int32_t status;
@@ -73,6 +80,7 @@ static_assert(sizeof(DaemonSlot) == SLOT_SIZE, "DaemonSlot size must match SLOT_
 static_assert(offsetof(DaemonSlot, count) == SLOT_COUNT_OFF, "count offset");
 static_assert(offsetof(DaemonSlot, nvals) == SLOT_NVALS_OFF, "nvals offset");
 static_assert(offsetof(DaemonSlot, values) == SLOT_VALUES_OFF, "values offset");
+static_assert(offsetof(DaemonSlot, capacity) == SLOT_CAPACITY_OFF, "capacity offset");
 static_assert(offsetof(DaemonSlot, stop) == SLOT_STOP_OFF, "stop offset");
 static_assert(offsetof(DaemonSlot, status) == SLOT_STATUS_OFF, "status offset");
 static_assert(offsetof(DaemonSlot, quiesce) == SLOT_QUIESCE_OFF, "quiesce offset");
@@ -110,11 +118,20 @@ class DaemonRunner {
 	 * 无需仲裁。 */
 	std::shared_ptr<DaemonSlot> slot_;
 	int64_t joinTimeoutMs_;
-	/* 守护名：start() 定型。停机日志要用它，而断电屏障是在 RobotStruct 里
-	 * 逐个等待（那时拿不到 MtVars_Daemon::name_），故名字归 runner 自己持有。 */
+	/* 守护名：构造期定型。原由 start() 传入——聚合守护（sources 列）在装配期
+	 * 就要按名在登记表里找 peer（彼时 peer 尚未 start），名字必须更早可用。 */
 	std::string name_;
 	std::shared_ptr<std::promise<int64_t>> result_;
 	std::future<int64_t> fut_;
+	/* ---- 多守护聚合（sources 列，2026-10-16 路线图阶段 2）----
+	 * peer 槽的强引用副本：聚合守护的线程体只拿到裸指针（DAEMON_PEER_SLOTS
+	 * 注入 lightuserdata），生命周期由本成员保证——peer 被热删除时其 runner
+	 * 销毁、槽引用交出，但聚合器持有的副本让槽（mutex + 数据）活到聚合器
+	 * 自身退场，线程不会读到已释放内存。peer 死亡由槽内 stop 位在带告知
+	 * （只置不清，见上），聚合 chunk 检测到即永久失败，不发布陈旧快照。
+	 * 引用在本对象（runner）里，而 runner 由线程捕获的 self 强引用保活——
+	 * 弃管路径下 peer 槽的生命期仍覆盖线程全程。 */
+	std::vector<std::pair<std::string, std::shared_ptr<DaemonSlot>>> peers_;
 	/* D1：线程是否已 spawn——未 spawn（build 中途失败路径）promise 永不 set，
 	 * 停机时不能白等 join 超时，直接释放槽。
 	 * 不变式：置位必须先于守护线程构造（start 实现），否则线程已读写槽而本
@@ -134,8 +151,8 @@ class DaemonRunner {
 	int64_t body(const std::string& chunk, const std::string& config, int64_t intervalMs);
 
 public:
-	explicit DaemonRunner(std::shared_ptr<DaemonSlot> s, int64_t timeout)
-		: slot_(std::move(s)), joinTimeoutMs_(timeout),
+	explicit DaemonRunner(std::shared_ptr<DaemonSlot> s, int64_t timeout, std::string name = {})
+		: slot_(std::move(s)), joinTimeoutMs_(timeout), name_(std::move(name)),
 		  result_(std::make_shared<std::promise<int64_t>>()),
 		  fut_(result_->get_future()) {}
 
@@ -148,8 +165,18 @@ public:
 	 * operator= 只有 const shared_ptr& 重载，按值接参 + std::move 不产生移动 */
 	void bindSelf(const std::shared_ptr<DaemonRunner>& self) { self_ = self; }
 
+	/* 聚合守护的 peer 槽登记（sources 列解析结果，Factory 在 start 前调用；
+	 * 生命周期语义见 peers_ 成员注释）。线程体经 DAEMON_PEER_SLOTS 注入
+	 * 裸指针给 chunk。 */
+	void setPeers(std::vector<std::pair<std::string, std::shared_ptr<DaemonSlot>>> peers) {
+		peers_ = std::move(peers);
+	}
+
+	/* 本守护槽的强引用副本（聚合 sources 解析时取 peer 槽用；只增引用不转移） */
+	std::shared_ptr<DaemonSlot> slotShare() const { return std::atomic_load(&slot_); }
+
 	/* spawn 守护线程（槽已释放/自引用缺失时显式报错） */
-	void start(const std::string& name, const std::string& chunk,
+	void start(const std::string& chunk,
 			const std::string& config, int64_t intervalMs);
 
 	/* 置停止标志（槽已交出/已释放则无事可做） */

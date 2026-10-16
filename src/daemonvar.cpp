@@ -66,9 +66,11 @@ bool daemon_quiesced(DaemonSlot* slot) {
 }
 
 /* ---- 共享槽释放（2.4）：作为 shared_ptr 删除器，由「最后一个持有者」
- * 调用——引用计数保证此刻无任何线程仍在临界区内。 ---- */
+ * 调用——引用计数保证此刻无任何线程仍在临界区内。
+ * ABI v2：values 是随槽分配的独立堆数组，先于槽本体释放。 ---- */
 void releaseSlot(DaemonSlot* slot) {
 	pthread_mutex_destroy(mutexOf(slot));
+	std::free(slot->values);
 	std::free(slot);
 }
 
@@ -86,7 +88,8 @@ DaemonRunner::~DaemonRunner() {
  * 见 pthread.lua slot_attach）。
  * 配置串 + 布局表：布局常量单一事实源 = daemonvar.hpp 的 struct + 静态断言
  * （2.7），pthread.lua 手抄常量降为无宿主注入环境兜底。 */
-static void injectDaemonGlobals(lua_State* L, DaemonSlot* slot, const std::string& config) {
+static void injectDaemonGlobals(lua_State* L, DaemonSlot* slot, const std::string& config,
+		const std::vector<std::pair<std::string, std::shared_ptr<DaemonSlot>>>& peers) {
 	/* LUA_GLOBALSINDEX 是 Lua 5.1/LuaJIT 的伪索引宏（Lua 5.2+ 已移除，改用
 	 * lua_pushglobaltable）。本工程锁 LuaJIT 5.1 ABI，故直接可用；若将来换宿主
 	 * Lua 版本，这里是必须同步改动的点（pthread.lua 侧的槽协议另需同步）。 */
@@ -95,7 +98,7 @@ static void injectDaemonGlobals(lua_State* L, DaemonSlot* slot, const std::strin
 	lua_pushstring(L, config.c_str());
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_CONFIG");
 
-	lua_createtable(L, 0, 8);
+	lua_createtable(L, 0, 9);
 	auto setOff = [&L](const char* k, int32_t v) {
 		lua_pushinteger(L, v);
 		lua_setfield(L, -2, k);
@@ -103,12 +106,30 @@ static void injectDaemonGlobals(lua_State* L, DaemonSlot* slot, const std::strin
 	setOff("count", SLOT_COUNT_OFF);
 	setOff("nvals", SLOT_NVALS_OFF);
 	setOff("values", SLOT_VALUES_OFF);
+	setOff("capacity", SLOT_CAPACITY_OFF);
 	setOff("stop", SLOT_STOP_OFF);
 	setOff("status", SLOT_STATUS_OFF);
 	setOff("quiesce", SLOT_QUIESCE_OFF);
 	setOff("size", SLOT_SIZE);
-	setOff("maxvals", SLOT_MAXVALS);
+	/* ABI v2：maxvals 语义从「全局编译期常量」变为「本槽容量」——消费方
+	 * （sensor_daemon_multi 的字段预算）据此自动按行感知容量，无需改代码。
+	 * 无宿主注入时 pthread.lua 回落 64（slot_new 的缺省容量）。 */
+	setOff("maxvals", slot->capacity);
 	lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_SLOT_LAYOUT");
+
+	/* 多守护聚合（sources 列）：peer 槽以 lightuserdata 注入（与 DAEMON_SLOT_ADDR
+	 * 同一风险类别消除口径：Lua 域无算术、无 tonumber）。裸指针的生命期由
+	 * runner 的 peers_ 强引用覆盖（见 daemonvar.hpp 成员注释）。非聚合守护
+	 * （peers_ 空）不注入该全局——chunk 侧据此区分「无 peer 配置」与「配置了
+	 * 但 peer 丢失」（后者是装配期错误，宿主已在加载期拒绝）。 */
+	if (!peers.empty()) {
+		lua_createtable(L, 0, static_cast<int>(peers.size()));
+		for (const auto& [peerName, peerSlot] : peers) {
+			lua_pushlightuserdata(L, peerSlot.get());
+			lua_setfield(L, -2, peerName.c_str());
+		}
+		lua_setfield(L, LUA_GLOBALSINDEX, "DAEMON_PEER_SLOTS");
+	}
 }
 
 /* ---- setup：跑 chunk 一次定义 daemon_tick ----
@@ -195,8 +216,8 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 	 * -1（中途计数不可信）+ 响亮日志；promise 照常 set，join 路径正常走完。 */
 	int64_t n = -1;
 	try {
-		/* 注入共享槽地址（lightuserdata）+ 配置串 + 布局表为 Lua 全局 */
-		injectDaemonGlobals(L, slot.get(), config);
+		/* 注入共享槽地址（lightuserdata）+ 配置串 + 布局表（+ 聚合 peer 槽）为 Lua 全局 */
+		injectDaemonGlobals(L, slot.get(), config, peers_);
 
 		if (setupDaemonChunk(L, chunk)) {
 			lua_settop(L, 0);
@@ -243,18 +264,17 @@ int64_t DaemonRunner::body(const std::string& chunk, const std::string& config, 
 }
 
 /* ---- start：spawn 守护线程 ---- */
-void DaemonRunner::start(const std::string& name, const std::string& chunk,
+void DaemonRunner::start(const std::string& chunk,
 		const std::string& config, int64_t intervalMs) {
 	if (std::atomic_load(&slot_) == nullptr) {
-		throw std::runtime_error("Daemon '" + name + "' slot already released, cannot spawn");
+		throw std::runtime_error("Daemon '" + name_ + "' slot already released, cannot spawn");
 	}
-	name_ = name;	/* 停机日志用：断电屏障逐个等待时只有 runner 在手 */
 	/* self_ 是 weak_ptr（打破自引用环防泄漏）：此处取回强引用交给线程保生命周期。
 	 * build 期 registry 必持有强引用，lock() 不会失败；万一取空则显式报错，
 	 * 不把空 shared_ptr 交给线程去解引用。 */
 	std::shared_ptr<DaemonRunner> keep = self_.lock();
 	if (!keep) {
-		throw std::runtime_error("Daemon '" + name + "' runner was released before spawn");
+		throw std::runtime_error("Daemon '" + name_ + "' runner was released before spawn");
 	}
 	/* D1 + 审计：spawned_ 必须在守护线程可能开始执行**之前**置位。
 	 * std::thread 构造即已启动线程，故不能只把 store 挪到 detach() 之前——
@@ -273,7 +293,7 @@ void DaemonRunner::start(const std::string& name, const std::string& chunk,
 		spawned_.store(false, std::memory_order_release);
 		throw;
 	}
-	std::cerr << "Daemon '" << name << "' spawned, config: " << config << std::endl;
+	std::cerr << "Daemon '" << name_ << "' spawned, config: " << config << std::endl;
 }
 
 /* ---- requestStop：置停止标志（槽已交出/已释放则无事可做）----
@@ -413,7 +433,7 @@ Json DaemonRunner::readSample() {
 	int32_t count = slot->count;
 	int32_t slotStatus = slot->status;
 	int32_t nv = nvals;
-	if (nv > SLOT_MAXVALS) { nv = SLOT_MAXVALS; }
+	if (nv > slot->capacity) { nv = slot->capacity; }	/* ABI v2：按本槽容量截断 */
 	for (int32_t k = 0; k < nv; ++k) {
 		double v = slot->values[k];
 		arr.add(JsonFloat(v));

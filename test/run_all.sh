@@ -723,12 +723,22 @@ parse_cases=(
 	'daemon_fieldmode.sql|daemon_schema.mt|1|unknown field mode'
 	'daemon_fieldempty.sql|daemon_schema.mt|1|empty field name'
 	'daemon_fieldcount.sql|daemon_schema.mt|1|exceeds the shared-slot capacity'
+	# maxvals 列（ABI v2，2026-10-16）：fields 数量按本行 maxvals 校验——
+	#   narrow  maxvals=32 + 40 字段 → 拒（证明判据取行内值而非编译期缺省 64）
+	#   range   maxvals=99999 → 拒（硬上限 1024，槽分配输入不许静默回落）
+	#   ok      65 字段（> 缺省 64）+ maxvals=128 → 放行并完整跑一轮守护生命周期
+	'daemon_fieldcount_maxvals_narrow.sql|daemon_schema.mt|1|exceeds the shared-slot capacity of 32'
+	"daemon_maxvals_range.sql|daemon_schema.mt|1|column 'maxvals' value '99999'"
+	'daemon_fieldcount_maxvals_ok.sql|daemon_maxvals_ok.mt|0|joined, total publishes='
 	'single_consumer.sql|daemon_schema.mt|1|two concurrent consumers'
 	'float_s16_daemon.sql|float_s16_daemon.mt|1|would be truncated to integer'
 	'multidaemon.sql|multidaemon.mt|0|joined, total publishes='
 	# 注意：第 5 字段是 forbid（禁止出现）不是追加锚点；合并快照锚点放 expect，
 	# forbid 留空。首个 VIRTUAL HARDWARE 横幅由 chunk 自身保证，无需断言。
 	'daemon_multi.sql|daemon_multi.mt|0|joined, total publishes='
+	# 多守护聚合（sources 列，2026-10-16）：两路异型 virt 传感器拼进一个槽——
+	# v9 存在即证明 7+3 拼接到位（imu0 单路最多 7 值）；序 = sources 声明序
+	'daemon_aggregate.sql|daemon_aggregate.mt|0|"v9":'
 	'robots/relay-test.sql|scripts/relay-test.mt|0|note=hello-relay'
 	'ref_prefix.sql|ref_prefix.mt|0|Relay: test=200 note=timer-0'
 	'alias_inline.sql|alias_inline.mt|0|served 1 call(s)'

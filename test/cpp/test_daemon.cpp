@@ -327,3 +327,109 @@ TH_TEST(daemon_config_allows_equals_in_column_value) {
 	TH_CHECK(var != nullptr);
 	TH_CHECK(registry.size() == 1);
 }
+
+/* ---------------- 多守护聚合（sources 列，2026-10-16 路线图阶段 2）----------------
+ * 覆盖两块：① sources 的加载期校验（未知名/自引用/重名/空令牌——Factory 在
+ * chunk 加载前拒绝，chunk 路径写不存在的文件也能精确命中判据）；
+ * ② DAEMON_PEER_SLOTS 注入——两个 probe 守护 + 一个计数 chunk，运行期从
+ * readSample 验证注入的名字集合与槽存活。peer 槽强引用保活的语义由
+ * ASan/TSan 守门（run_san.sh / gate:tsan）兜底。 */
+
+namespace {
+
+/* 聚合注入观测 chunk：数 DAEMON_PEER_SLOTS 条目、点名 pa/pb 是否在册，
+ * 每拍发布 {n, hasA, hasB}。setup 即首发一帧（daemon_probe 同款），测试不必
+ * 等 interval。 */
+const char* const kPeerInjectRel = "test_daemon_peer_inject.lua";
+void writePeerInjectChunk() {
+	std::ofstream out(std::string(".tmp/") + kPeerInjectRel, std::ios::binary | std::ios::trunc);
+	out << "local mpath = (__mpath or dofile((os.getenv(\"BOT4CJ_MODULE_PATH\") or \"./modules\")"
+	       ":match(\"[^:]+\") .. \"/lib/mpath.lua\"))\n"
+	    << "local P = dofile(mpath.resolve(\"lib/pthread.lua\"))\n"
+	    << "local slot = P.slot_attach(DAEMON_SLOT_ADDR)\n"
+	    << "local peers = rawget(_G, \"DAEMON_PEER_SLOTS\") or {}\n"
+	    << "local n, hasA, hasB = 0, 0, 0\n"
+	    << "for k in pairs(peers) do\n"
+	    << "  n = n + 1\n"
+	    << "  if k == \"pa\" then hasA = 1 end\n"
+	    << "  if k == \"pb\" then hasB = 1 end\n"
+	    << "end\n"
+	    << "function daemon_tick() P.publish(slot, { n, hasA, hasB }) end\n"
+	    << "daemon_tick()\n";
+}
+
+mt::MatrixObject daemonDefsNamed(const std::string& name, const std::string& cols,
+		const std::string& row) {
+	return fx::oneMatrix("@Daemon\nname chunk" + cols + ";\n" + name + " " + row + ";\n@\n");
+}
+
+} // namespace
+
+TH_TEST(daemon_sources_rejects_unknown_peer) {
+	/* 未先装配任何守护：sources 的每个名字都是未知名（含「声明在自己之后」） */
+	mt::MatrixObject defs = fx::oneMatrix(
+		"@Daemon\nname chunk sources;\nd1 x.lua imu0|baro0;\n@\n");
+	bot::DaemonRegistry registry;
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "references unknown daemon 'imu0'",
+		MtVars_Daemon::Factory(defs, 1, registry));
+}
+
+TH_TEST(daemon_sources_rejects_self_reference) {
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	mt::MatrixObject defs = fx::oneMatrix(
+		"@Daemon\nname chunk sources;\nagg0 x.lua agg0;\n@\n");
+	bot::DaemonRegistry registry;
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "references itself",
+		MtVars_Daemon::Factory(defs, 1, registry));
+}
+
+TH_TEST(daemon_sources_rejects_duplicate_and_empty_tokens) {
+	setenv("BOT4CJ_MODULE_PATH", ".tmp", 1);
+	bot::DaemonRegistry registry;
+	auto pa = MtVars_Daemon::Factory(daemonDefsNamed("pa", " interval", "lib/daemon_probe.lua 10"),
+		1, registry);
+	(void)pa;
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "more than once",
+		MtVars_Daemon::Factory(daemonDefsNamed("agg0", " sources", "x.lua pa|pa"),
+			1, registry));
+	TH_CHECK_THROWS_MSG(bot::IllegalArgumentException, "empty daemon name",
+		MtVars_Daemon::Factory(daemonDefsNamed("agg0", " sources", "x.lua pa||pa"),
+			1, registry));
+}
+
+TH_TEST(daemon_sources_injects_peer_slots) {
+	setenv("BOT4CJ_MODULE_PATH", "./modules:.tmp", 1);
+	writePeerInjectChunk();
+	bot::DaemonRegistry registry;
+	/* 两个 peer（声明序在前）+ 一个聚合观测守护（引用二者） */
+	auto pa = MtVars_Daemon::Factory(daemonDefsNamed("pa", " interval", "lib/daemon_probe.lua 10"),
+		1, registry);
+	auto pb = MtVars_Daemon::Factory(daemonDefsNamed("pb", " interval", "lib/daemon_probe.lua 10"),
+		1, registry);
+	auto agg = MtVars_Daemon::Factory(
+		daemonDefsNamed("agg0", " interval sources", std::string(kPeerInjectRel) + " 10 pa|pb"),
+		1, registry);
+	(void)pa; (void)pb;
+	TH_CHECK(registry.size() == 3);
+	agg->build();
+	/* chunk setup 即首发：轮询等首帧（最多 2s），验证注入集合恰为 {pa,pb} */
+	int64_t n = -1, hasA = -1, hasB = -1;
+	for (int i = 0; i < 100; ++i) {
+		bot::Json snap = agg->play(bot::JsonObject());
+		auto st = snap.get("status");
+		auto vn = snap.get("v0");
+		if (st && st->getValue() == "OK" && vn) {
+			/* readSample 的 v0..vN 恒为 JsonFloat（采样值是 double） */
+			n = static_cast<int64_t>(vn->getFloat());
+			hasA = static_cast<int64_t>(snap.get("v1")->getFloat());
+			hasB = static_cast<int64_t>(snap.get("v2")->getFloat());
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	TH_CHECK(n == 2);
+	TH_CHECK(hasA == 1);
+	TH_CHECK(hasB == 1);
+	agg->destroy();
+	TH_CHECK(!registry.at(2)->slotAlive());
+}

@@ -6,14 +6,17 @@
 -- 宿主侧（HV/Daemon.cj 经 Cangjie spawn），本库只负责跨状态机的共享内存 + 互斥，
 -- 全部经 ffi 直调 libc，无仓颉 cfunc（守住 issue #14 的纯 Lua 数据通路）。
 --
--- 【共享槽布局】必须与 Daemon.cj 的 @C struct DaemonSlot 严格一致（同一 C ABI）：
+-- 【共享槽布局】必须与 src/daemonvar.hpp 的 DaemonSlot 严格一致（同一 C ABI）。
+-- ABI v2（2026-10-16，SLOT_MAXVALS 参数化）：values 由定长数组改为堆指针 +
+-- capacity 字段，头布局自此永久稳定（96B）；容量按槽分配（maxvals 列）。
 --   offset 0   char    mutex[64]    pthread_mutex_t（aarch64=48B/x86_64=40B，预留 64）
 --   offset 64  int32   count        已 publish 次数
 --   offset 68  int32   nvals        本次值个数
---   offset 72  double  values[64]   采样值（TD-3: 32 → 64，支持高通道数传感器）
---   offset 584 uint8   stop         停止标志（TD-3: 328 → 584）
---   offset 588 int32   status       守护 setup 状态（TD-3: 332 → 588）
---   offset 592 int32   quiesce      总线灭火位（BQ-1：仅弃管守护被置位；HAL 的
+--   offset 72  double  *values      指向 capacity 个 double 的堆数组
+--   offset 80  int32   capacity     本槽容量（分配后不可变；锁外读合法）
+--   offset 84  uint8   stop         停止标志
+--   offset 88  int32   status       守护 setup 状态（0=正常；负=失败码）
+--   offset 92  int32   quiesce      总线灭火位（BQ-1：仅弃管守护被置位；HAL 的
 --                                   bus_quiesced 持锁读，置位后传输一律拒绝）
 --
 -- 【cdef 约定】只声明 mutex/slot 专有类型，不重复声明 hal_backend_glibc.lua 已
@@ -66,7 +69,8 @@ typedef struct {
 	char     mutex[64];
 	int32_t  count;
 	int32_t  nvals;
-	double   values[64];
+	double   *values;
+	int32_t  capacity;
 	uint8_t  stop;
 	uint8_t  reserved[3];
 	int32_t  status;
@@ -76,11 +80,11 @@ typedef struct {
 
 -- 2.7：布局常量的单一事实源在宿主（daemonvar.hpp struct + 静态断言），
 -- 守护启动时经 DAEMON_SLOT_LAYOUT 注入；此处手写值仅为无宿主注入环境兜底。
--- TD-3（2026-09-22）：values 从 32 增至 64，槽大小从 336B 增至 592B
--- BQ-1（2026-09-29）：追加 quiesce（offset 592），8 字节对齐使槽大小 592B → 600B
+-- ABI v2（2026-10-16）：values 指针化 + capacity；头 96B；maxvals 注入语义
+-- 变为「本槽容量」（宿主按 maxvals 列分配），兜底值 = slot_new 的缺省容量。
 local base_layout = DAEMON_SLOT_LAYOUT or
-	{ count = 64, nvals = 68, values = 72, stop = 584, status = 588,
-	  quiesce = 592, size = 600, maxvals = 64 }
+	{ count = 64, nvals = 68, values = 72, capacity = 80, stop = 84,
+	  status = 88, quiesce = 92, size = 96, maxvals = 64 }
 
 P.SLOT_MAXVALS = base_layout.maxvals
 
@@ -127,14 +131,31 @@ function P.slot_attach(addr)
 	return ffi.cast("daemon_slot_t *", ffi.cast("uint64_t", addr))
 end
 
--- 本库自行分配一个槽（仅供 Lua 侧测试/纯 Lua 场景；生产中由宿主 malloc 并注入地址）
-function P.slot_new()
+-- 本库自行分配一个槽（仅供 Lua 侧测试/纯 Lua 场景；生产中由宿主 malloc 并注入地址）。
+-- ABI v2：capacity 可指定（缺省 P.SLOT_MAXVALS=64）；采样数组与槽由锚表共同存活
+-- —— ffi 结构体的指针字段**不**给目标 cdata 建立 GC 引用，不锚定的话数组会在
+-- 槽仍被使用时被回收（悬垂指针）。弱键锚表：槽本身被收集时锚随条目消失。
+local slot_anchors = setmetatable({}, { __mode = "k" })
+function P.slot_new(capacity)
+	local cap = capacity or P.SLOT_MAXVALS
+	if type(cap) ~= "number" or cap < 1 or cap % 1 ~= 0 then
+		error("slot_new: capacity must be a positive integer, got " .. tostring(capacity))
+	end
 	local slot = ffi.new("daemon_slot_t[1]")
+	local vals = ffi.new("double[?]", cap)
+	slot_anchors[slot] = vals
 	slot[0].count = 0
 	slot[0].nvals = 0
 	slot[0].stop = 0
+	slot[0].values = vals
+	slot[0].capacity = cap
 	P.mutex_init(slot)
 	return slot
+end
+
+-- 本槽容量（ABI v2）：分配后不可变，锁外读合法（非数据竞争——见 daemonvar.hpp）
+function P.capacity(slot)
+	return slot[0].capacity
 end
 
 -- 取槽内 mutex 指针（slot 可能是数组[1]或指针，[0] 对两者都成立）
@@ -171,7 +192,8 @@ function P.publish(slot, vals)
 		error("publish: vals must be a table, got " .. type(vals))
 	end
 	local n = #vals
-	if n > P.SLOT_MAXVALS then n = P.SLOT_MAXVALS end
+	local cap = slot[0].capacity
+	if n > cap then n = cap end
 	for i = 1, n do
 		if type(vals[i]) ~= "number" then
 			error("publish: vals[" .. i .. "] must be a number, got " .. type(vals[i]))
@@ -195,7 +217,8 @@ function P.latest(slot)
 	mutex_call("lock", m)
 	local n = slot[0].nvals
 	if n < 0 then n = 0 end
-	if n > P.SLOT_MAXVALS then n = P.SLOT_MAXVALS end
+	local cap = slot[0].capacity
+	if n > cap then n = cap end
 	local t = {}
 	for i = 0, n - 1 do
 		t[i + 1] = slot[0].values[i]
@@ -250,16 +273,16 @@ end
 -- 把「C++ 定义 vs Lua cdef」的漂移在每次守护启动时自动暴露。
 -- 基准 = 宿主注入的 DAEMON_SLOT_LAYOUT（来自 daemonvar.hpp 的 SLOT_* 常量，
 -- 2.7 起不再手抄：C++ struct 漂移会在守护启动时经注入值与 cdef 比对暴露）。
--- 无宿主注入时回退手写基准（TD-3 起 SLOT_SIZE=592、values[64]；本表须与
--- src/daemonvar.hpp 的 SLOT_* 常量逐项一致）：
+-- 无宿主注入时回退手写基准（ABI v2 起头 96B、values 为指针 + capacity；
+-- 本表须与 src/daemonvar.hpp 的 SLOT_* 常量逐项一致）：
 --   offset  0   char    mutex[64]     (pthread_mutex_t, 预留 64)
 --   offset 64  int32   count
 --   offset 68  int32   nvals
---   offset 72  double  values[64]
---   offset 584 uint8   stop
---   offset 588 int32   status         (N-27：0=正常，负=setup 失败码)
--- status 落在 stop 之后的既有对齐填充里（stop 后 3 字节 reserved_），
--- 故槽尺寸仍为 592B。
+--   offset 72  double  *values        (capacity 个 double 的堆数组)
+--   offset 80  int32   capacity
+--   offset 84  uint8   stop
+--   offset 88  int32   status         (N-27：0=正常，负=setup 失败码)
+--   offset 92  int32   quiesce        (BQ-1 停机灭火位)
 -- ffi.offsetof/sizeof 并非所有 arch 都可用——不可用时跳过断言（回退旧行为）。
 -- ffi 命名空间内未声明原生 pthread_mutex_t（HAL 只声明大小截断的别名），
 -- 故真实 mutex 尺寸无法直接 sizeof；仅在可解析时做 ≤64B 预留校验。
@@ -276,12 +299,14 @@ local function assert_layout()
 			error("pthread_mutex_t size " .. tostring(msz) .. " > 64B slot mutex reserve")
 		end
 		local checks = {
-			{ "count",   base_layout.count,  ffi.offsetof("daemon_slot_t", "count") },
-			{ "nvals",   base_layout.nvals,  ffi.offsetof("daemon_slot_t", "nvals") },
-			{ "values",  base_layout.values, ffi.offsetof("daemon_slot_t", "values") },
-			{ "stop",    base_layout.stop,   ffi.offsetof("daemon_slot_t", "stop") },
-			{ "status",  base_layout.status, ffi.offsetof("daemon_slot_t", "status") },
-			{ "size",    base_layout.size,   ffi.sizeof("daemon_slot_t") },
+			{ "count",    base_layout.count,    ffi.offsetof("daemon_slot_t", "count") },
+			{ "nvals",    base_layout.nvals,    ffi.offsetof("daemon_slot_t", "nvals") },
+			{ "values",   base_layout.values,   ffi.offsetof("daemon_slot_t", "values") },
+			{ "capacity", base_layout.capacity, ffi.offsetof("daemon_slot_t", "capacity") },
+			{ "stop",     base_layout.stop,     ffi.offsetof("daemon_slot_t", "stop") },
+			{ "status",   base_layout.status,   ffi.offsetof("daemon_slot_t", "status") },
+			{ "quiesce",  base_layout.quiesce,  ffi.offsetof("daemon_slot_t", "quiesce") },
+			{ "size",     base_layout.size,     ffi.sizeof("daemon_slot_t") },
 		}
 		for _, c in ipairs(checks) do
 			if c[3] ~= c[2] then

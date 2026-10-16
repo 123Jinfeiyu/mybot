@@ -60,12 +60,12 @@ P.assert_layout()	-- 跨语言槽布局漂移在守护启动期显式暴露（da
 
 local log = print	-- 保留真实 print（下文会静默驱动 print 刷屏）
 
--- 一次 publish 的总字段数上限 = 共享槽 values[] 的容量。
--- **不在此处硬编码**（2026-09-21 第七轮审计）：唯一事实源是 src/daemonvar.hpp 的
--- SLOT_MAXVALS，经 DAEMON_SLOT_LAYOUT 注入为 P.SLOT_MAXVALS（缺省回落 pthread.lua
--- 的 base_layout）。写死 32 的后果是两侧各自漂移：C++ 侧改窄 ⇒ 本文件的预算检查
--- 放行、pthread.lua:167 再静默钳制 ⇒ 尾部字段**永不出值**且无任何报错；
--- 改宽 ⇒ 本文件误拒合法配置。
+-- 一次 publish 的总字段数上限 = 本守护槽容量。
+-- **不在此处硬编码**（2026-09-21 第七轮审计）：唯一事实源是宿主按 @Daemon 的
+-- maxvals 列分配的槽容量（ABI v2），经 DAEMON_SLOT_LAYOUT 注入为 P.SLOT_MAXVALS
+-- （缺省回落 pthread.lua 的 base_layout=64）。写死数的后果是两侧各自漂移：
+-- C++ 侧改窄 ⇒ 本文件的预算检查放行、pthread.lua 的 publish 再静默钳制 ⇒
+-- 尾部字段**永不出值**且无任何报错；改宽 ⇒ 本文件误拒合法配置。
 local MAX_VALUES = P.SLOT_MAXVALS
 
 -- 总线 fd 提前声明：fail 需在任何失败点关闭已打开的总线
@@ -309,7 +309,7 @@ for _, dev in ipairs(devs) do
 		-- 框架键不透传（与单器件版 known 表同口径，minus driver/addr/fields）
 		if k ~= "devices" and k ~= "proto" and k ~= "path" and k ~= "interval"
 				and k ~= "sign" and k ~= "mode" and k ~= "bits" and k ~= "speed"
-				and k ~= "delay" and k ~= "baud" then
+				and k ~= "delay" and k ~= "baud" and k ~= "maxvals" then
 			params[k] = v
 		end
 	end

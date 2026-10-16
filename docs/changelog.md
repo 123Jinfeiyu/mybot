@@ -20,6 +20,7 @@
 | 09-24 | agent 迁移 Rust（`mybot-agent`）：批次 A/B/C 落地（context.get 路由、骨架、循环语义对齐），C++ 侧死代码清退 -2331 行；H1 掩蔽引号绕过 + H2 Rust stdout panic 修复 |
 | 09-25 | 批次 D 落地（Rust 会话持久化 `--session-file`/`--resume`，C++ 参考清退）+ 决策 agent over TCP 不做；删除 Lua 协议驱动轨道（11 文件）；CI 六条软门禁全转硬；流式输出缺省；REPL 行编辑（rustyline）；`PR_SET_DUMPABLE=0`；`--on-disconnect` 停机安全动作；会话历史压缩（摘要挂系统提示词）；`wait_variable` 工具 |
 | 09-29 | MCP 首帧共享密钥 `BOT4CJ_MCP_TOKEN`；停机灭火协议（`quiesce` 位）；信任前提体检（文件权限告警） |
+| 10-16 | 多传感器聚合（路线图阶段 2）：共享槽 ABI v2（`values` 指针化 + `capacity` 字段，头 96B 永久稳定）、`@Daemon` `maxvals` 列（每守护槽容量 1..1024，缺省 64，65+ 字段不再是架构上限）、`sources` 列 + `lib/sensor_aggregate.lua` 多守护聚合器（peer 槽强引用保活 + `DAEMON_PEER_SLOTS` 注入；peer 停止/失败即响亮永久失败，不发布陈旧快照） |
 
 ### 主题概览
 

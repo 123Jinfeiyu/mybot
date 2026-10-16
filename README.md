@@ -379,7 +379,7 @@ INSERT INTO Servo (name, max, min, offset, controller, channel)
 mybot/
 ├── src/           # C++17核心：SQL解析、硬件派发、工具后端（--mcp-backend）
 ├── agent/         # Rust agent（mybot-agent）：模型循环（REPL/--task）、预算、会话持久化
-├── modules/       # Lua驱动生态（60个模块 + 27个共享库）
+├── modules/       # Lua驱动生态（60个模块 + 28个共享库）
 │   ├── Servo.lua        # 舵机驱动
 │   ├── PCA9685.lua      # 16路PWM驱动板
 │   ├── Camera.lua       # 摄像头（V4L2）
@@ -400,7 +400,7 @@ mybot/
 │   └── tests/           # sim_tests（8 个 TU；断言计数见 docs/testing.md）
 ├── prompts/       # Agent提示词包
 ├── examples/      # 最小可跑示例（examples/minimal：结构脚本 + 动作脚本 + dummy 驱动）
-├── test/          # 三层测试（87 Lua + 50 C++ + E2E）
+├── test/          # 三层测试（88 Lua + 50 C++ + E2E）
 └── docs/          # 深入文档（16篇Markdown + design/ 设计论证 + 架构分析网页与两张全景图，清单以 docs/README.md 为准）
 ```
 
@@ -434,14 +434,14 @@ bash test/run_all.sh agent-all
 汇总行的守门用例数、`sim_tests` 的断言数——**故意不写死在本页**，只给指针，因为
 静态门派生不出来、写死必漂移）：
 
-- 804 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
-- 87 个 Lua 测试文件 + 50 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
+- 808 个 C++ 单测（`test/cpp/`，零第三方框架，与被测程序共用同一套源文件）
+- 88 个 Lua 测试文件 + 50 个 C++ 单测文件 + 完整 E2E 场景（双进程、多协议、虚拟 DAC 闭环）
 - 守门用例数以 `bash test/run_all.sh` 末尾的汇总行为准（Lua 单测 + C++ 段 + 各 e2e 脚本）；
   跳过项只应剩 `test_jit_warmup.lua`——真机 ABI 回归，需 `/dev/i2c-*`
 - 另有三处不计入上面两个数字的独立套件：`./build/harness_selftest` 8 条（测测试框架自身，
   同文件里另有 5 个 `meta_*` 例句只作被测对象、不进缺省全量跑）、`./sim/build/sim_tests`
   （`sim/` 是独立 CMake 工程，TU 数见上、断言计数见 `docs/testing.md`）、Rust agent
-  `cargo test --release` 187 条
+  `cargo test --release` 188 条
 
 ### CI 门禁（GitLab CI，`.gitlab-ci.yml`）
 
