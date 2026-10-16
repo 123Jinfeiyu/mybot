@@ -130,6 +130,18 @@ require_driver("uart", {
 
 退出码：0 成功，1 运行错误，2 用法错误，130 被中断。
 
+### 在项目外目录使用
+
+`--robot` / `--input` 可以指向任意位置的文件，例如把驱动、结构和动作放在 `~/robots/<任务>/{modules,robots,scripts}`。显式 `--module-path` 会替换默认搜索路径，因此必须同时给出自定义目录和基础目录：
+
+```sh
+cd ~/robots/<任务>
+pymybot run --robot robots/<任务>.sql --input scripts/<任务>.mt \
+  --module-path modules --module-path /path/to/pymybot/modules --timeout 10
+```
+
+也可以用环境变量 `BOT4CJ_MODULE_PATH`（按系统路径分隔符连接多个目录）代替重复的 `--module-path`。`@Include` 只能引用动作脚本所在目录内的文件，`--camera-src-dir` 只允许读取该目录内的图片。
+
 ## 平台说明
 
 - UART：pyserial；Windows 使用确认过的 `COMn`，`loop://` 为无硬件回环。

@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -80,6 +81,51 @@ def test_authoring_example_generates_and_runs_through_cli(authoring_example):
         results.append(json.loads(result.stdout))
     assert results[0]["valid"] and results[0]["activated"] is False
     assert [output["rx"] for output in results[1]["outputs"]] == [0, 127, 128, 255]
+
+
+@pytest.fixture
+def external_workspace(authoring_example):
+    directory, blocks = authoring_example
+    workspace = directory / "home" / "robots" / "task"
+    for name, language in (("modules/LoopbackProbe.lua", "lua"), ("robots/loopback.sql", "sql"),
+                           ("scripts/loopback.mt", "mt")):
+        target = workspace / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(blocks[language], encoding="utf-8")
+    return workspace
+
+
+def run_control(workspace, *extra, env=None):
+    return subprocess.run([sys.executable, str(SKILL / "scripts" / "control.py"), "run",
+                           "--robot", "robots/loopback.sql", "--input", "scripts/loopback.mt",
+                           "--timeout", "5", *extra],
+                          cwd=workspace, capture_output=True, text=True, timeout=10, env=env)
+
+
+def test_external_workspace_runs_with_explicit_module_paths(external_workspace):
+    result = run_control(external_workspace, "--module-path", "modules", "--module-path", str(ROOT / "modules"))
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert [output["rx"] for output in json.loads(result.stdout)["outputs"]] == [0, 127, 128, 255]
+
+
+def test_external_workspace_runs_with_module_path_env(external_workspace):
+    env = {**os.environ, "BOT4CJ_MODULE_PATH": os.pathsep.join([str(external_workspace / "modules"), str(ROOT / "modules")])}
+    result = run_control(external_workspace, env=env)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert [output["rx"] for output in json.loads(result.stdout)["outputs"]] == [0, 127, 128, 255]
+
+
+def test_external_workspace_without_base_modules_fails_clearly(external_workspace):
+    result = run_control(external_workspace, "--module-path", "modules")
+    assert result.returncode == 1
+    assert "Lua module not found" in json.loads(result.stdout)["error"]["message"]
+
+
+def test_skill_documents_external_workspace():
+    text = (SKILL / "SKILL.md").read_text(encoding="utf-8")
+    assert "## 在项目外目录工作" in text
+    assert "BOT4CJ_MODULE_PATH" in text
+    assert "control.py" in text and "import pymybot" in text
 
 
 @pytest.mark.parametrize("value", ["-1", "256", "1.5", "bad"])
