@@ -1,0 +1,661 @@
+"""Regression tests for the C++ .mt grammar and execution contracts."""
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+
+from pymybot.actions import ActionRunner
+from pymybot.errors import BudgetExceeded, ScriptError
+from pymybot.expr import Expression, expr_body, render
+from pymybot.hardware import Alias, Number
+from pymybot.include import expand_includes
+from pymybot.matrix import Matrix, parse_matrices
+
+
+class FakeRegistry:
+    def __init__(self, *variables):
+        self.variables = {v.name: v for v in variables}
+
+    def get(self, name):
+        return self.variables.get(name)
+
+    def require(self, name):
+        if name not in self.variables:
+            raise ScriptError(f"Undefined variable '{name}'")
+        return self.variables[name]
+
+    def resolve(self, name):
+        variable = self.require(name)
+        if variable.kind == "vars":
+            return float(variable.read())
+        if variable.kind == "alias":
+            return variable.read()
+        raise ScriptError("Expression identifier is not a scalar")
+
+    def override(self, name, variable):
+        self.variables[name] = variable
+
+    @contextmanager
+    def session(self):
+        before = self.variables.copy()
+        try:
+            yield self
+        finally:
+            self.variables = before
+
+
+class FakeBudget:
+    def __init__(self, limit=10000):
+        self.remaining = limit
+
+    def check(self):
+        self.remaining -= 1
+        if self.remaining < 0:
+            raise BudgetExceeded("Stopped")
+
+
+class Driver:
+    kind = "lua"
+
+    def __init__(self, name="dev", callback=None, trace=None):
+        self.name = name
+        self.calls = []
+        self.callback = callback
+        self.trace = trace
+
+    def play(self, params):
+        self.calls.append(params.copy())
+        if self.trace is not None:
+            self.trace.append(self.name)
+        return self.callback(params) if self.callback else {"result": "OK", "reading": len(self.calls)}
+
+
+def run(text, *variables, budget=None):
+    registry = FakeRegistry(*variables)
+    results = ActionRunner(registry, budget or FakeBudget()).run(parse_matrices(text))
+    return registry, results
+
+
+def block(name, header, *rows):
+    return "@" + name + "\n" + ";\n".join([header, *rows]) + ";\n@\n"
+
+
+def expand(text, base):
+    return expand_includes(parse_matrices(text), base)
+
+
+def test_matrix_comments_crlf_and_eof():
+    text = "@Ti#comment\nname count;\nt0 50#comment\n;\n@\n@Action\nd.p;\n1;\n@"
+    assert parse_matrices(text) == parse_matrices(text.replace("\n", "\r\n"))
+    first, second = parse_matrices(text)
+    assert first.name == "Ti"
+    assert first.rows == [["name", "count"], ["t0", "50"]]
+    assert second.name == "Action"
+    assert parse_matrices("# nothing\n\n") == []
+    assert parse_matrices("@Action\na b;\n50# split\n60;\n@\n")[0].data == [["50", "60"]]
+
+
+def test_matrix_nested_interleaved_implicit_actions():
+    text = "@if(1>0)\na.p;1;\n@while(0>1)\n@Action\nb.p;2;\n@\n@\nc.p;3;\n@"
+    matrix = parse_matrices(text)[0]
+    assert matrix.rows == []
+    assert [m.name for m in matrix.children] == ["Action", "while(0>1)", "Action"]
+    assert matrix.children[0].header == ["a.p"]
+    assert matrix.children[1].children[0].data == [["2"]]
+    assert matrix.children[2].header == ["c.p"]
+
+
+def test_matrix_inheritance_not_header_and_mutable_rows():
+    matrix = Matrix("Action", [["d.p"], ["-"], ["1"], ["-"], ["-"]])
+    assert matrix.inherited(1, 0) == "-"
+    assert matrix.inherited(4, 0) == "1"
+    matrix.rows[2][0] = "2"
+    assert matrix.inherited(4, 0) == "2"
+    del matrix.rows[2]
+    assert matrix.inherited(3, 0) == "-"
+    with pytest.raises(ScriptError):
+        matrix.inherited(-1, 0)
+    with pytest.raises(ScriptError):
+        matrix.inherited(1, 3)
+
+
+@pytest.mark.parametrize("text", [
+    "@\n", "@Action\na.p;\n1;\n", "@Action\na b;\n1;\n@",
+    "@Action\na.p;1;\n@if(1>0)\na.p;1;\n@\n@",
+    "@if(1>0)\n@Action\na.p;1;\n@\n",
+    "@Action\na.p;\n1# missing semicolon\n@",
+])
+def test_matrix_rejects_malformed(text):
+    with pytest.raises(ScriptError):
+        parse_matrices(text)
+
+
+def test_matrix_depth_limit_and_global_line_number():
+    assert parse_matrices("@if(1>0)\n" * 32 + "@\n" * 32)
+    with pytest.raises(ScriptError, match="depth"):
+        parse_matrices("@if(1>0)\n" * 33 + "@\n" * 33)
+    with pytest.raises(ScriptError, match="line 6"):
+        parse_matrices("@Relay\n# h\nname note;\n# d\nr0 hello;\nr1;\n@\n")
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("1+2*3", 7.0), ("(1+2)*3", 9.0), ("10-2-3", 5.0),
+    ("100/5/2", 10.0), ("-7%4", -3.0), ("--5", 5.0), ("2e3+.5", 2000.5),
+    ('"x"+2', "x2"), ('2e3+"x"', "2000x"), ('"a"+"b"', "ab"),
+    ("1<0||2>0&&3>4", False), ("1>0||2>0&&3>4", True),
+    ('"x"=="x"', True), ("(1>0)==(2>1)", True), ("!(1>0)", False),
+    ("1<0&&missing", False), ("1>0||1/0>0", True),
+    (r'"a\n\t\r\\\""', 'a\n\t\r\\"'),
+    # Unary-run parity is deliberate compatibility with expr.cpp.
+    ("!!1", 1.0), ('+"x"', "x"), ("--1", 1.0),
+])
+def test_expression_grammar(text, expected):
+    value = Expression(text).evaluate(lambda name: pytest.fail(f"Resolved skipped '{name}'"))
+    assert type(value) is type(expected)
+    assert value == expected
+
+
+def test_expression_identifiers_hyphen_and_number_rendering():
+    expression = Expression("foo-bar+foo")
+    assert expression.identifiers == {"foo", "bar"}
+    assert expression.evaluate({"foo": 3.0, "bar": 2.0}.__getitem__) == 4.0
+    assert Expression("1>0||missing").identifiers == {"missing"}
+    assert render(2e3) == "2000"
+    assert render(1 / 3) == "0.333333333333333"
+    assert render(True) == "true"
+    assert expr_body("$(x+1)") == "x+1"
+    assert expr_body("$(x) ") is None
+    assert expr_body("$x") is None
+
+
+@pytest.mark.parametrize("text", [
+    "", "1+", "(1+2", "1 2", "1=2", "a.b", "[1]", "__import__('os')",
+    "1e309", '"unterminated', r'"bad\q"', "0x10", "1_000", "1e",
+    "1/0", "1%0", "1&&2", "!1", '"x"-1', '1=="1"', "1<2<3",
+    "(1>0)+2", '(1>0)+"x"', "1e308*10>0", "1e308*1e308", '"a"+(1e308*10)',
+])
+def test_expression_rejects_invalid_or_ill_typed_input(text):
+    with pytest.raises(ScriptError):
+        Expression(text).evaluate(lambda name: 1.0)
+
+
+def test_expression_depth_operator_limits_and_safe_diagnostics():
+    assert Expression("(" * 128 + "1" + ")" * 128).evaluate(None) == 1.0
+    assert Expression("0" + "+1" * 512).evaluate(None) == 512.0
+    for text in ["(" * 10000, "0" + "+1" * 513]:
+        with pytest.raises(ScriptError) as error:
+            Expression(text)
+        assert len(str(error.value)) < 512
+    with pytest.raises(ScriptError) as error:
+        Expression("\x1b[31m")
+    assert "\x1b" not in str(error.value)
+
+
+def test_dispatch_aliases_expression_headers_and_group_order():
+    trace = []
+    a, b = Driver("relay-2", trace=trace), Driver("b", trace=trace)
+    registry, outputs = run(
+        block("Action", "$(prefix+n).$(key) b.p alias.q", "$(n+1) 4 $(text+n)", "- - -"),
+        a, b, Alias("prefix", "relay-"), Number("n", 2), Alias("key", "angle"),
+        Alias("alias", "relay-2"), Alias("text", "v="),
+    )
+    assert trace == ["relay-2", "b", "relay-2", "b"]
+    assert a.calls == [{"angle": 3.0, "q": "v=2"}] * 2
+    assert b.calls == [{"p": 4.0}] * 2
+    assert len(outputs) == 4
+    assert registry.resolve("n") == 2
+
+
+def test_dispatch_phase_padding_and_all_dash_no_argument_devices():
+    a, b, c = Driver("a"), Driver("b"), Driver("c")
+    run(block("Action", "a.p b.p c.p", "1 - -", "- 2 -", "- - -"), a, b, c)
+    assert a.calls == [{"p": 1.0}] * 3
+    assert b.calls == [{"p": 2.0}] * 2
+    assert c.calls == [{"p": 0.0}] * 3
+
+
+def test_captures_are_after_whole_row_evaluation_and_re_evaluate_inherited_expressions():
+    a, b = Driver("a"), Driver("b")
+    registry, _ = run(block("Action", "a.p b.p", "$count=reading $(count)", "- -"),
+                      a, b, Number("count", 0))
+    assert a.calls == [{}, {}]
+    assert b.calls == [{"p": 0.0}, {"p": 1.0}]
+    assert registry.resolve("count") == 2.0
+
+
+def test_capture_path_auto_types_and_declared_alias_bool():
+    dev = Driver(callback=lambda params: {"obj": {"n": 2.5, "s": "hi", "b": True}})
+    registry, _ = run(block("Action", "dev.a dev.b dev.c", "$n=obj.n $s=obj.s $flag=obj.b"),
+                      dev, Alias("flag", "before"))
+    assert dev.calls == [{}]
+    assert registry.get("n").kind == "vars"
+    assert registry.get("s").kind == "alias"
+    assert registry.resolve("n") == 2.5
+    assert registry.resolve("flag") == "true"
+
+
+@pytest.mark.parametrize(("value", "target"), [
+    (True, None), (None, None), ({}, None), ([], None),
+    ("text", Number("x", 0)), (True, Number("x", 0)),
+    ({}, Alias("x", "")), (None, Alias("x", "")), (1, Driver("x")),
+    (float("inf"), None),
+])
+def test_capture_rejects_invalid_type(value, target):
+    dev = Driver(callback=lambda params: {"reading": value})
+    variables = [dev] + ([target] if target else [])
+    with pytest.raises(ScriptError):
+        run(block("Action", "dev.p", "$x=reading"), *variables)
+
+
+@pytest.mark.parametrize("cell", ["$x", "$=field", "$x=", "$x=a..b", "$x=.a", "$x=a.", "$bad-name=f", "$x=missing"])
+def test_capture_rejects_bad_shape_or_missing_field(cell):
+    with pytest.raises(ScriptError):
+        run(block("Action", "dev.p", cell), Driver())
+
+
+def test_nested_conditions_capture_driven_while_and_order():
+    trace = []
+    a, b, c = Driver("a", trace=trace), Driver("b", trace=trace), Driver("c", trace=trace)
+    script = ("@if(1>0)\n@while(count<3)\na.p;\n$count=reading;\n"
+              "@if(count>1)\n@Action\nb.p;\n$(count);\n@\n@\n"
+              "c.p;\n1;\n@\n@\n")
+    registry, outputs = run(script, a, b, c, Number("count", 0))
+    assert registry.resolve("count") == 3.0
+    assert trace == ["a", "c", "a", "b", "c", "a", "b", "c"]
+    assert b.calls == [{"p": 2.0}, {"p": 3.0}]
+    assert len(outputs) == 8
+
+
+def test_false_outer_condition_does_not_evaluate_children():
+    dev = Driver()
+    run("@if(0>1)\n@while(missing>0)\ndev.p;\n1;\n@\n@\n", dev)
+    assert dev.calls == []
+
+
+@pytest.mark.parametrize("name", ["if", "while", "if()", "while()", "if(1>", "if(1)", 'while("yes")'])
+def test_bad_conditions_rejected(name):
+    with pytest.raises(ScriptError):
+        ActionRunner(FakeRegistry(), FakeBudget()).run([Matrix(name)])
+
+
+def test_stop_and_deadline_budget_propagate_even_in_empty_loop():
+    with pytest.raises(BudgetExceeded):
+        run("@while(1==1)\n@", budget=FakeBudget(25))
+    budget = FakeBudget()
+    dev = Driver(callback=lambda params: (setattr(budget, "remaining", -1) or {"result": "OK"}))
+    other = Driver("other")
+    with pytest.raises(BudgetExceeded):
+        run(block("Action", "dev.p other.p", "1 1"), dev, other, budget=budget)
+    assert len(dev.calls) == 1
+    assert not other.calls
+
+
+@pytest.mark.parametrize(("header", "cell", "extras"), [
+    ("dev", "1", []), ("dev..p", "1", []), (".p", "1", []), ("dev.", "1", []),
+    ("dev.$(1.5)", "1", []), ("dev.p", "garbage", []), ("dev.p", "$(1>0)", []),
+    ("dev.p", "nan", []), ("dev.p", "inf", []), ("dev.p", "1_000", []),
+    ("dev.p", "$(1+", []), ("n.p", "1", [Number("n", 2)]),
+    ("a.p", "1", [Alias("a", "b"), Alias("b", "dev")]),
+    ("a.p", "1", [Alias("a", "missing")]),
+    ("missing.p", "-", []),
+])
+def test_invalid_dispatch(header, cell, extras):
+    with pytest.raises(ScriptError):
+        run(block("Action", header, cell), Driver(), *extras)
+
+
+def test_duplicate_resolved_columns_reject_before_play():
+    dev = Driver()
+    with pytest.raises(ScriptError, match="duplicates"):
+        run(block("Action", "a.p dev.$(key)", "1 2"), dev, Alias("a", "dev"), Alias("key", "p"))
+    assert dev.calls == []
+
+
+@pytest.mark.parametrize("result", [{}, 1, None, {"result": "ERR"}, {"result": "unknown"}, {"result": 1}])
+def test_driver_failure_halts_later_rows(result):
+    dev = Driver(callback=lambda params: result)
+    with pytest.raises(ScriptError):
+        run(block("Action", "dev.p", "1", "2"), dev)
+    assert len(dev.calls) == 1
+
+
+def test_reflex_order_multibeat_arguments_inheritance_and_restore():
+    dev = Driver()
+    script = (block("Reflex", "name dev.p", "blink $(x)", "other 9", "blink -")
+              + block("Trigger", "trigger", "blink(x=2)", "-", "other")
+              + block("Action", "dev.p", "1"))
+    registry, outputs = run(script, dev, Alias("x", "original"))
+    assert dev.calls == [{"p": 1.0}, {"p": "2"}, {"p": "2"}, {"p": "2"}, {"p": "2"}, {"p": 9.0}]
+    assert registry.resolve("x") == "original"
+    assert len(outputs) == 6
+
+
+def test_reflex_scopes_restore_on_failure_and_untriggered_is_lazy():
+    registry = FakeRegistry(Driver(callback=lambda p: {"result": "ERR"}), Alias("x", "original"))
+    runner = ActionRunner(registry, FakeBudget())
+    with pytest.raises(ScriptError):
+        runner.run(parse_matrices(block("Reflex", "name dev.p", "f $(x)") + block("Trigger", "trigger", "f(x=2)")))
+    assert registry.resolve("x") == "original"
+    runner.run(parse_matrices(block("Reflex", "garbage", "not_valid") + "@if(1<0)\n@"))
+
+
+@pytest.mark.parametrize("call", ["f(x)", "f(x=)", "f(=x)", "f(x=1,x=2)", "f(x=1", "f(bad-name=1)", "missing", "(x=1)"])
+def test_reflex_bad_calls(call):
+    with pytest.raises(ScriptError):
+        run(block("Reflex", "name dev.p", "f 1") + block("Trigger", "trigger", call), Driver())
+
+
+def test_no_executable_block_and_unexpanded_directive_rejected():
+    for text in ["", block("Alias", "name alias", "x y"), block("Trigger", "trigger", "missing"),
+                 block("Include", "path", "x.mt"), block("Unknown", "name", "x")]:
+        with pytest.raises(ScriptError):
+            run(text)
+
+
+def test_include_copy_repeated_once_named_files_and_nested_relative_paths(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "inner.once.mt").write_text("@if(1>0)\na.p;1;\n@", encoding="utf-8")
+    (sub / "mid.mt").write_text(block("Include", "path", "inner.once.mt", "inner.once.mt"), encoding="utf-8")
+    matrices = expand(block("Include", "path", "sub/mid.mt") + block("Action", "b.p", "2"), tmp_path)
+    assert [m.name for m in matrices] == ["if(1>0)", "if(1>0)", "Action"]
+    assert matrices[0].children[0].header == ["a.p"]
+
+
+def test_merge_phase_padding_inherited_phase_and_anchor(tmp_path):
+    (tmp_path / "b.mt").write_text(block("Action", "b.p", "100", "200"), encoding="utf-8")
+    (tmp_path / "c.mt").write_text(block("Action", "c.p", "7"), encoding="utf-8")
+    text = ("@if(0>1)\na.p;1;\n@\n" + block("Action", "a.p", "1", "2")
+            + block("Merge", "path phase", "b.mt 1", "c.mt -"))
+    matrices = expand(text, tmp_path)
+    assert [m.name for m in matrices] == ["if(0>1)", "Action"]
+    action = matrices[1]
+    assert action.rows == [["a.p", "b.p", "c.p"], ["1", "-", "-"], ["2", "100", "7"], ["-", "200", "-"]]
+    a, b, c = Driver("a"), Driver("b"), Driver("c")
+    ActionRunner(FakeRegistry(a, b, c), FakeBudget()).run(matrices)
+    assert b.calls == [{"p": 100.0}, {"p": 200.0}]
+    assert c.calls == [{"p": 7.0}, {"p": 7.0}]
+
+
+def test_merge_first_fragment_ignores_phase_without_accumulator(tmp_path):
+    (tmp_path / "b.mt").write_text(block("Action", "b.p", "1"), encoding="utf-8")
+    assert expand(block("Merge", "path phase", "b.mt 5"), tmp_path)[0].data == [["1"]]
+
+
+def test_merge_nested_relative_once_diamond_and_scalar_precedence(tmp_path):
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "shared.once.mt").write_text(block("Vars", "name value", "n 2") + block("Action", "s.p", "3"), encoding="utf-8")
+    (sub / "a.mt").write_text(block("Vars", "name value", "n 1") + block("Merge", "path", "shared.once.mt")
+                              + block("Action", "a.p", "1"), encoding="utf-8")
+    (sub / "b.mt").write_text(block("Merge", "path", "shared.once.mt") + block("Action", "b.p", "2"), encoding="utf-8")
+    matrices = expand(block("Vars", "name value", "n 9") + block("Merge", "path", "sub/a.mt", "sub/b.mt"), tmp_path)
+    assert matrices[0].rows == [["name", "value"], ["n", "9"]]
+    assert matrices[1].header == ["a.p", "s.p", "b.p"]
+    assert matrices[1].data == [["1", "3", "2"]]
+
+
+def test_merge_scalar_collision_and_repeated_definitions(tmp_path):
+    for name in ["a", "b"]:
+        (tmp_path / f"{name}.mt").write_text(block("Alias", "name alias", "x y"), encoding="utf-8")
+    with pytest.raises(ScriptError, match="duplicate Alias"):
+        expand(block("Merge", "path", "a.mt", "b.mt"), tmp_path)
+    with pytest.raises(ScriptError, match="duplicate Vars"):
+        expand(block("Vars", "name value", "x 1") + block("Vars", "name value", "x 2") + "@Merge\n@", tmp_path)
+
+
+def test_include_and_merge_cycles(tmp_path):
+    (tmp_path / "copy.mt").write_text(block("Include", "path", "copy.mt"), encoding="utf-8")
+    with pytest.raises(ScriptError, match="cycle"):
+        expand(block("Include", "path", "copy.mt"), tmp_path)
+    (tmp_path / "plain.mt").write_text(block("Merge", "path", "plain.mt"), encoding="utf-8")
+    with pytest.raises(ScriptError, match="more than once"):
+        expand(block("Merge", "path", "plain.mt"), tmp_path)
+    (tmp_path / "shared.once.mt").write_text(block("Merge", "path", "shared.once.mt") + block("Action", "a.p", "1"), encoding="utf-8")
+    assert expand(block("Merge", "path", "shared.once.mt"), tmp_path)[0].data == [["1"]]
+
+
+def test_nested_merge_is_position_local_and_recursive(tmp_path):
+    (tmp_path / "b.mt").write_text(block("Action", "b.p", "2"), encoding="utf-8")
+    text = "@if(1>0)\n@while(0>1)\n" + block("Merge", "path phase", "b.mt 1") + block("Action", "a.p", "1") + "@\n@"
+    matrices = expand(text, tmp_path)
+    merged = matrices[0].children[0].children[0]
+    assert merged.rows == [["a.p", "b.p"], ["1", "-"], ["-", "2"]]
+
+
+@pytest.mark.parametrize("directive", ["Include", "Merge"])
+@pytest.mark.parametrize("path", ["/secret.mt", "../secret.mt", "./a.mt", "a//b.mt", "a/../b.mt", "a.lua", "C:/secret.mt", "C:secret.mt", r"a\b.mt", "a\0.mt"])
+def test_include_sandbox_paths(tmp_path, directive, path):
+    matrices = [Matrix(directive, [["path"], [path]])]
+    with pytest.raises(ScriptError):
+        expand_includes(matrices, tmp_path)
+
+
+def test_include_rejects_links_and_directory_targets(tmp_path):
+    (tmp_path / "target.mt").write_text(block("Action", "a.p", "1"), encoding="utf-8")
+    (tmp_path / "directory.mt").mkdir()
+    with pytest.raises(ScriptError, match="regular file"):
+        expand(block("Include", "path", "directory.mt"), tmp_path)
+    try:
+        (tmp_path / "link.mt").symlink_to(tmp_path / "target.mt")
+        (tmp_path / "dirlink").symlink_to(tmp_path, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("Platform cannot create symbolic links")
+    for path in ["link.mt", "dirlink/target.mt"]:
+        with pytest.raises(ScriptError, match="symbolic link"):
+            expand(block("Include", "path", path), tmp_path)
+
+
+def test_include_shared_row_depth_and_byte_budgets(tmp_path, monkeypatch):
+    import pymybot.include as module
+
+    (tmp_path / "a.mt").write_text(block("Action", "a.p", "1"), encoding="utf-8")
+    monkeypatch.setattr(module, "MAX_INCLUDES", 2)
+    with pytest.raises(ScriptError, match="limit"):
+        expand(block("Include", "path", "a.mt", "a.mt", "absent.mt"), tmp_path)
+    monkeypatch.setattr(module, "MAX_INCLUDES", 32)
+    monkeypatch.setattr(module, "MAX_INCLUDE_DEPTH", 1)
+    (tmp_path / "b.mt").write_text(block("Include", "path", "a.mt"), encoding="utf-8")
+    with pytest.raises(ScriptError, match="limit"):
+        expand(block("Include", "path", "b.mt"), tmp_path)
+    monkeypatch.setattr(module, "MAX_INCLUDE_DEPTH", 32)
+    monkeypatch.setattr(module, "MAX_INCLUDE_BYTES", (tmp_path / "a.mt").stat().st_size + 1)
+    with pytest.raises(ScriptError, match="byte limit"):
+        expand(block("Include", "path", "a.mt", "a.mt"), tmp_path)
+
+
+def test_include_parse_failure_does_not_disclose_content(tmp_path):
+    secret = "VERY_SECRET_LOCAL_VALUE"
+    (tmp_path / "bad.mt").write_text("@" + secret, encoding="utf-8")
+    with pytest.raises(ScriptError) as error:
+        expand(block("Include", "path", "bad.mt"), tmp_path)
+    assert secret not in str(error.value)
+
+
+@pytest.mark.parametrize("text", [
+    block("Include", "path phase", "a.mt 1"),
+    "@if(1>0)\n" + block("Include", "path", "a.mt") + "@",
+    "@if(1>0)\n" + block("Merge", "path", "a.mt") + "@",
+    "@if(1>0)\n" + block("Merge", "path", "a.mt") + "@while(0>1)\n@\n@",
+    block("Action", "a.p", "1") + block("Merge", "path phase", "a.mt 1"),
+    block("Merge", "path phase", "a.mt nope"),
+    block("Merge", "path phase", "a.mt 100001"),
+    block("Merge", "path phase", "a.mt " + "9" * 10000),
+    block("Action", "b.p", "1") + block("Merge", "path phase", "a.mt 100000"),
+    block("Action", "b.p", "1") + block("Merge", "path phase", "a.mt -1"),
+])
+def test_merge_and_include_negative_contracts(tmp_path, text):
+    (tmp_path / "a.mt").write_text(block("Action", "a.p", "1"), encoding="utf-8")
+    with pytest.raises(ScriptError):
+        expand(text, tmp_path)
+
+
+@pytest.mark.parametrize("fragment", ["@if(1>0)\na.p;1;\n@", block("Reflex", "name a.p", "f 1"), block("Trigger", "trigger", "f")])
+def test_merge_rejects_unmergeable_fragment_blocks(tmp_path, fragment):
+    (tmp_path / "fragment.mt").write_text(fragment, encoding="utf-8")
+    with pytest.raises(ScriptError):
+        expand(block("Merge", "path", "fragment.mt"), tmp_path)
+
+
+def test_merge_negative_phase_partial_drop_and_cell_budget(tmp_path, monkeypatch):
+    import pymybot.include as module
+
+    (tmp_path / "b.mt").write_text(block("Action", "b.p", "1", "2", "3"), encoding="utf-8")
+    text = block("Action", "a.p", "0") + block("Merge", "path phase", "b.mt -1")
+    assert expand(text, tmp_path)[0].data == [["0", "2"], ["-", "3"]]
+    monkeypatch.setattr(module, "MAX_MERGED_CELLS", 3)
+    with pytest.raises(ScriptError, match="row/cell"):
+        expand(text, tmp_path)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize(("header", "rows", "phase", "seed", "params"), [
+    ("b.p", ["10", "-", "-"], -1, ["10"], {"p": 10.0}),
+    ("b.p b.q b.r b.s", ["10 1 - 9", "- 20 - -", "- - - 30", "- - - -"],
+     -2, ["10", "20", "-", "30"], {"p": 10.0, "q": 20.0, "s": 30.0}),
+])
+def test_merge_negative_phase_seeds_retained_inheritance_and_dispatch(
+        tmp_path, nested, header, rows, phase, seed, params):
+    (tmp_path / "b.mt").write_text(block("Action", header, *rows), encoding="utf-8")
+    directive = block("Merge", "path phase", f"b.mt {phase}")
+    action = block("Action", "a.p", "0")
+    text = "@if(1>0)\n" + directive + action + "@\n" if nested else action + directive
+    matrices = expand(text, tmp_path)
+    merged = matrices[0].children[0] if nested else matrices[0]
+    assert merged.rows == [["a.p", *header.split()], ["0", *seed], ["-"] * (len(seed) + 1)]
+    assert [[merged.inherited(row, col) for col in range(1, len(merged.header))]
+            for row in (1, 2)] == [seed, seed]
+    a, b = Driver("a"), Driver("b")
+    ActionRunner(FakeRegistry(a, b), FakeBudget()).run(matrices)
+    assert a.calls == [{"p": 0.0}] * 2
+    assert b.calls == [params] * 2
+
+
+def test_reflex_captures_persist_but_argument_captures_are_local():
+    dev = Driver()
+    script = (block("Reflex", "name dev.p", "read $count=reading", "use $(count)", "local $arg=reading")
+              + block("Trigger", "trigger", "read", "use", "local(arg=temporary)"))
+    registry, _ = run(script, dev, Alias("arg", "original"))
+    assert registry.resolve("count") == 1.0
+    assert registry.resolve("arg") == "original"
+    assert dev.calls == [{}, {"p": 1.0}, {}]
+
+
+def test_no_directives_fast_path_does_not_touch_filesystem(tmp_path):
+    matrices = parse_matrices(block("Action", "dev.p", "1"))
+    assert expand_includes(matrices, tmp_path / "nonexistent") is matrices
+
+
+def test_top_level_merge_retains_only_first_action_like_cpp(tmp_path, caplog):
+    (tmp_path / "a.mt").write_text(block("Action", "a.p", "3"), encoding="utf-8")
+    script = block("Action", "b.p", "1") + block("Action", "c.p", "2") + block("Merge", "path", "a.mt")
+    matrices = expand(script, tmp_path)
+    assert len(matrices) == 1
+    assert matrices[0].rows == [["b.p", "a.p"], ["1", "3"]]
+    assert "discarded" in caplog.text
+
+
+def test_bundled_relay_script():
+    path = Path(__file__).resolve().parents[1] / "scripts" / "relay-test.mt"
+    assert parse_matrices(path.read_text(encoding="utf-8")) == [
+        Matrix("Action", [["relay0.test"], ["1"]]),
+    ]
+
+
+def test_generic_script_fixture(tmp_path):
+    path = tmp_path / "generic.mt"
+    path.write_text(
+        "# Scalars, an alias, and inherited expression cells.\n"
+        "@Vars\nname value;\nlevel 2;\n@\n"
+        "@Alias\nname alias;\noutput relay0;\n@\n"
+        "@Action\noutput.test timer-0.delay;\n$(level+1) 10;\n- -;\n@\n",
+        encoding="utf-8",
+    )
+    assert parse_matrices(path.read_text(encoding="utf-8")) == [
+        Matrix("Vars", [["name", "value"], ["level", "2"]]),
+        Matrix("Alias", [["name", "alias"], ["output", "relay0"]]),
+        Matrix("Action", [["output.test", "timer-0.delay"], ["$(level+1)", "10"], ["-", "-"]]),
+    ]
+
+
+@pytest.mark.parametrize(("name", "text", "message"), [
+    ("missing_at.mt", "@Action\nrelay0.test;\n1;\n", "unclosed block"),
+    ("ragged.mt", "@Action\nrelay0.test timer-0.delay;\n1;\n@\n", "header column count"),
+])
+def test_invalid_generic_script_fixtures(tmp_path, name, text, message):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(ScriptError, match=message):
+        parse_matrices(path.read_text(encoding="utf-8"))
+
+
+def _expand_fixture_graph(tmp_path, files):
+    for name, text in files.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return expand((tmp_path / "main.mt").read_text(encoding="utf-8"), tmp_path)
+
+
+def test_include_main_fixture(tmp_path):
+    matrices = _expand_fixture_graph(tmp_path, {
+        "main.mt": (block("Merge", "path phase", "parts/a.mt 1", "parts/b.mt 2")
+                    + block("Action", "timer-0.delay", "200", "200")),
+        "parts/a.mt": block("Action", "r1.test", "100", "110"),
+        "parts/b.mt": block("Action", "r2.test", "200", "210", "220"),
+    })
+    assert matrices == [Matrix("Action", [
+        ["timer-0.delay", "r1.test", "r2.test"],
+        ["200", "-", "-"],
+        ["200", "100", "-"],
+        ["-", "110", "200"],
+        ["-", "-", "210"],
+        ["-", "-", "220"],
+    ])]
+
+
+def test_include_diamond_fixture(tmp_path):
+    matrices = _expand_fixture_graph(tmp_path, {
+        "main.mt": block("Merge", "path", "parts/a.once.mt", "parts/b.once.mt"),
+        "parts/a.once.mt": (block("Merge", "path", "shared.once.mt")
+                            + block("Action", "r1.test", "100", "110")),
+        "parts/b.once.mt": (block("Merge", "path", "shared.once.mt")
+                            + block("Action", "r2.test", "200")),
+        "parts/shared.once.mt": block("Action", "r3.test", "300"),
+    })
+    # Both arms resolve the same relative path, but its column/row occurs only once.
+    assert matrices == [Matrix("Action", [
+        ["r1.test", "r3.test", "r2.test"], ["100", "300", "200"], ["110", "-", "-"],
+    ])]
+
+
+def test_include_nested_fixture(tmp_path):
+    matrices = _expand_fixture_graph(tmp_path, {
+        "main.mt": (block("Action", "timer-0.delay", "100")
+                    + block("Merge", "path", "parts/scene.once.mt")),
+        # A composition-only fragment resolves its leaves relative to itself.
+        "parts/scene.once.mt": block("Merge", "path", "a.mt", "b.mt"),
+        "parts/a.mt": block("Action", "r1.test", "100", "110"),
+        "parts/b.mt": block("Action", "r2.test", "200", "210", "220"),
+    })
+    assert matrices == [Matrix("Action", [
+        ["timer-0.delay", "r1.test", "r2.test"],
+        ["100", "100", "200"], ["-", "110", "210"], ["-", "-", "220"],
+    ])]
+
+
+def test_include_knob_fixture(tmp_path):
+    matrices = _expand_fixture_graph(tmp_path, {
+        "main.mt": (block("Merge", "path", "parts/level.once.mt")
+                    + block("Vars", "name value", "amp 35")),
+        "parts/level.once.mt": (block("Vars", "name value", "amp 21")
+                                + block("Action", "r1.test", "$(amp)")),
+    })
+    assert matrices == [
+        Matrix("Vars", [["name", "value"], ["amp", "35"]]),
+        Matrix("Action", [["r1.test"], ["$(amp)"]]),
+    ]
+    relay = Driver("r1")
+    variables = [Number(name, float(value)) for name, value in matrices[0].data]
+    ActionRunner(FakeRegistry(relay, *variables), FakeBudget()).run(matrices)
+    assert relay.calls == [{"test": 35.0}]

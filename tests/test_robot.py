@@ -1,0 +1,236 @@
+from pathlib import Path
+import time
+
+import pytest
+
+from pymybot.errors import ControllerError, ScriptError
+from pymybot.robot import Robot
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def modules(tmp_path):
+    (tmp_path / "Probe.lua").write_text('''
+local count = 0
+function build(d)
+    if d.fail == "yes" then return {result="ERR", message="requested build failure"} end
+    return {result="OK"}
+end
+function call(d)
+    count = count + 1
+    return {result="OK", count=count, value=d.value or 0, word="hello"}
+end
+function read(d) return {result="OK", count=count} end
+function destroy(d) return {result="OK"} end
+''')
+    return [tmp_path, ROOT / "modules"]
+
+
+def probe_sql(extra=""):
+    return "CREATE TABLE Probe(name String, fail String); INSERT INTO Probe(name,fail) VALUES('dev','no');" + extra
+
+
+def test_relay_controller_chain():
+    with Robot.from_file(ROOT / "robots" / "relay-test.sql") as robot:
+        result = robot.run("@Action\nrelay0.test;\n1;\n@")
+        assert result[-1]["result"] == "OK"
+        assert result[-1]["slept"] == 1
+    assert robot.state == "Inactive"
+    robot.deactivate()
+
+
+def test_variable_capture_conditional_loop_and_scope(modules):
+    with Robot(probe_sql(), module_paths=modules) as robot:
+        result = robot.run("""@Vars
+name value;
+i 0;
+@
+@while(i<3)
+@Action
+dev.value dev.capture;
+$(i+1) $i=count;
+@
+@
+@if(i==3)
+@Action
+dev.value;
+99;
+@
+@
+""")
+        assert result[-1]["value"] == 99
+        assert robot.registry.get("i") is None
+        assert robot.registry["dev"].read()["count"] == 4
+
+
+def test_injected_alias_and_scope_on_failure(modules):
+    with Robot(probe_sql(), module_paths=modules) as robot:
+        result = robot.run("@Action\ndev.value;\n$(arg);\n@", vars={"arg": "hello"})
+        assert result[-1]["value"] == "hello"
+        assert "arg" not in robot.registry
+        with pytest.raises(ControllerError):
+            robot.run("@Alias\nname alias;\nx dev;\n@\n@Action\nmissing.value;\n1;\n@")
+        assert "x" not in robot.registry
+
+
+def test_invalid_reference_rejected_before_activation(modules):
+    robot = Robot("CREATE TABLE Probe(name String, src String); INSERT INTO Probe(name,src) VALUES('dev','$absent');", module_paths=modules)
+    with pytest.raises(ScriptError, match="undefined"):
+        robot.active()
+    assert robot.state == "Loaded"
+    assert len(robot.registry) == 0
+
+
+def test_hot_insert_rollback_update_delete_and_query(modules):
+    with Robot(probe_sql(), module_paths=modules) as robot:
+        robot.apply_sql("INSERT INTO Probe(name,fail) VALUES('second','no');")
+        assert "second" in robot.registry
+        assert "second" in robot.query_sql("SELECT * FROM Probe WHERE name='second';")
+        with pytest.raises(ControllerError, match="build failure"):
+            robot.apply_sql("INSERT INTO Probe(name,fail) VALUES('third','no'); INSERT INTO Probe(name,fail) VALUES('fourth','yes');")
+        assert set(robot.registry) == {"dev", "second"}
+        assert len(robot.tables["Probe"].data) == 2
+        robot.apply_sql("UPDATE Probe SET name='renamed' WHERE name='second';")
+        assert set(robot.registry) == {"dev", "renamed"}
+        robot.apply_sql("DELETE FROM Probe WHERE name='renamed';")
+        assert set(robot.registry) == {"dev"}
+        assert "Probe" in robot.query_sql("SHOW TABLES;")
+        robot.apply_sql("DROP TABLE Probe;")
+        assert not robot.tables
+
+
+def test_hot_sql_transient_action_executes_and_clears():
+    with Robot("CREATE TABLE Timer(name String); INSERT INTO Timer(name) VALUES('t0');") as robot:
+        result = robot.apply_sql("CREATE TABLE Action(t0.delay Number); INSERT INTO Action(t0.delay) VALUES(1);")
+        assert "已生效" in result
+        assert robot.tables["Action"].data == []
+        assert list(robot.registry) == ["t0"]
+
+
+def test_update_failure_does_not_restore_powered_down_variable(modules):
+    with Robot(probe_sql(), module_paths=modules) as robot:
+        with pytest.raises(ControllerError, match="remain deactivated"):
+            robot.apply_sql("UPDATE Probe SET fail='yes' WHERE name='dev';")
+        assert "dev" not in robot.registry
+        assert not robot.tables["Probe"].data
+
+
+def test_referenced_hardware_cannot_be_deleted(modules):
+    sql = probe_sql("CREATE TABLE Relay(name String,controller String); INSERT INTO Relay(name,controller) VALUES('relay','dev');")
+    with Robot(sql, module_paths=modules) as robot:
+        with pytest.raises(ScriptError, match="referenced|defined before"):
+            robot.apply_sql("DELETE FROM Probe;")
+        assert set(robot.registry) == {"dev", "relay"}
+
+
+def test_repeated_lifecycle_starts_fresh_state(modules):
+    robot = Robot(probe_sql(), module_paths=modules)
+    for _ in range(2):
+        with robot:
+            assert robot.run("@Action\ndev.value;\n1;\n@")[0]["count"] == 1
+
+
+def test_repeated_lifecycle_reopens_hal():
+    robot = Robot("CREATE TABLE Camera(name String); INSERT INTO Camera(name) VALUES('cam');")
+    previous = None
+    for _ in range(2):
+        with robot:
+            assert robot.hal is not previous
+            assert robot.registry["cam"].runtime is not None
+            previous = robot.hal
+
+
+def test_real_bus_refused_without_importing_backend(monkeypatch):
+    import pymybot.hal as hal
+
+    monkeypatch.setattr(hal.importlib, "import_module", lambda *a: pytest.fail("Physical backend imported"))
+    sql = "CREATE TABLE UART(name String,path String,baud Number); INSERT INTO UART(name,path,baud) VALUES('uart','COM3',115200);"
+    robot = Robot(sql)
+    with pytest.raises(ControllerError, match="allow-hardware"):
+        robot.active()
+    assert robot.state == "Inactive"
+
+
+@pytest.mark.parametrize("separator", [",", "|"])
+def test_virtual_daemon_sources_and_dependency_deletion(separator, synthetic_modules):
+    sql = f'''CREATE TABLE Daemon(name String,chunk String,proto String,driver String,addr Number,fields String,sources String);
+INSERT INTO Daemon(name,chunk,proto,driver,addr,fields,sources) VALUES('a','lib/sensor_daemon.lua','virt','SyntheticI2C',49,'TAG:f','-');
+INSERT INTO Daemon(name,chunk,proto,driver,addr,fields,sources) VALUES('b','lib/sensor_daemon.lua','virt','SyntheticI2C',49,'TAG:f','-');
+INSERT INTO Daemon(name,chunk,proto,driver,addr,fields,sources) VALUES('combined','lib/sensor_aggregate.lua','virt','SyntheticI2C',49,'TAG:f','a{separator}b');'''
+    with Robot(sql, module_paths=synthetic_modules) as robot:
+        assert robot.registry["a"].wait_for_sample(timeout=3)["values"] == [7]
+        assert robot.registry["b"].wait_for_sample(timeout=3)["values"] == [7]
+        combined = robot.registry["combined"]
+        deadline = time.monotonic() + 3
+        sample = combined.wait_for_sample(timeout=3)
+        while sample["nvals"] < 2:
+            sample = combined.wait_for_sample(after=sample["count"], timeout=max(0, deadline - time.monotonic()))
+        assert sample["values"] == [7, 7]
+        with pytest.raises(ScriptError):
+            robot.apply_sql("DELETE FROM Daemon WHERE name='a';")
+
+
+@pytest.mark.parametrize("literal,expected", [("0x10", 16), ("0x1.8p+2", 6), ("1e2", 100)])
+def test_numeric_variables_accept_source_numeric_literals(literal, expected):
+    sql = f"CREATE TABLE Vars(name String,value Number); INSERT INTO Vars(name,value) VALUES('x','{literal}');"
+    with Robot(sql) as robot:
+        assert robot.registry.resolve_number("x") == expected
+
+
+def test_empty_module_path_segments_use_default(monkeypatch):
+    import os
+    from pymybot.robot import module_roots
+
+    monkeypatch.setenv("BOT4CJ_MODULE_PATH", os.pathsep * 2)
+    assert module_roots() == [ROOT / "modules"]
+    monkeypatch.setenv("BOT4CJ_MODULE_PATH", os.pathsep.join(["", str(ROOT / "modules"), str(ROOT / "modules"), ""]))
+    assert module_roots() == [ROOT / "modules"]
+
+
+@pytest.mark.parametrize("chunk, columns, values, consumer", [
+    ("sensor_daemon.lua", "driver String,addr Number,fields String",
+     "'SyntheticI2C',49,'COUNT:f'", "sample-d0"),
+    ("sensor_daemon_multi.lua", "devices String",
+     "'SyntheticI2C@0x31@COUNT:f'", r"sample-d0\[0\]"),
+])
+def test_single_consumer_rejected_before_device_open(single_consumer_modules, monkeypatch,
+                                                    chunk, columns, values, consumer):
+    from pymybot.hal import HALManager
+    from pymybot.runtime import LuaState
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Single-consumer validation must precede Lua and hardware access")
+
+    monkeypatch.setattr(HALManager, "call", forbidden)
+    monkeypatch.setattr(LuaState, "__init__", forbidden)
+    names = ",".join(column.split()[0] for column in columns.split(","))
+    sql = f'''
+CREATE TABLE I2C(name String,path String);
+INSERT INTO I2C(name,path) VALUES('bus','/dev/i2c-99');
+CREATE TABLE SyntheticI2C(name String,I2C String,address String);
+INSERT INTO SyntheticI2C(name,I2C,address) VALUES('sample0','$bus','0x31');
+CREATE TABLE Daemon(name String,chunk String,proto String,path String,{columns});
+INSERT INTO Daemon(name,chunk,proto,path,{names}) VALUES('sample-d0','lib/{chunk}','i2c','/dev/i2c-99',{values});
+'''
+    robot = Robot(sql, module_paths=single_consumer_modules, allow_hardware=True)
+    with pytest.raises(ScriptError, match=f"Single-consumer.*{consumer}.*sample0"):
+        robot.active()
+    assert robot.state == "Loaded"
+    assert not robot.registry and not robot.hal._handles
+
+
+def test_hot_delete_failure_removes_dead_variable_and_rolls_back_additions(modules):
+    with Robot(probe_sql(), module_paths=modules) as robot:
+        variable = robot.registry["dev"]
+        destroy = variable.destroy
+
+        def failing_destroy():
+            destroy()
+            raise RuntimeError("device cleanup failed")
+
+        variable.destroy = failing_destroy
+        with pytest.raises(ControllerError, match="cleanup failed"):
+            robot.apply_sql("INSERT INTO Probe(name,fail) VALUES('new','no'); DELETE FROM Probe WHERE name='dev';")
+        assert not robot.tables["Probe"].data
+        assert set(robot.registry) == set()

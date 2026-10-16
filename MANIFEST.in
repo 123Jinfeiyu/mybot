@@ -1,0 +1,7 @@
+include build_support.py
+include LICENSE
+recursive-include modules *.lua
+recursive-include robots *.sql
+recursive-include scripts *.mt
+recursive-include tests *.py
+recursive-include .qoder/skills/robot-control *.md *.py

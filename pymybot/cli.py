@@ -1,0 +1,240 @@
+"""One-shot local robot commands; stdout is one JSON result, never a service."""
+from __future__ import annotations
+
+import argparse
+from contextlib import redirect_stdout
+import math
+import os
+from pathlib import Path
+import signal
+import sys
+import threading
+import time
+
+from .errors import ScriptError
+from .hardware import Budget, ensure_ok, safe_ident
+from .include import expand_includes
+from .matrix import parse_matrices
+from .robot import Robot
+from .security import MAX_BODY, SecurityError, checked_text, dumps, read_file
+
+MAX_TIMEOUT = 3600
+MAX_SAMPLES = 1000
+MAX_INTERVAL_MS = 60000
+
+
+class UsageError(ValueError):
+    pass
+
+
+class ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise UsageError(message)
+
+
+def bounded_int(low, high):
+    def parse(value):
+        try:
+            number = int(value)
+        except ValueError:
+            raise argparse.ArgumentTypeError("must be an integer") from None
+        if not low <= number <= high:
+            raise argparse.ArgumentTypeError(f"must be in {low}..{high}")
+        return number
+    return parse
+
+
+def positive_timeout(value):
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a number of seconds") from None
+    if not math.isfinite(number) or not 0 < number <= MAX_TIMEOUT:
+        raise argparse.ArgumentTypeError(f"must be positive and at most {MAX_TIMEOUT} seconds")
+    return number
+
+
+def variable(value):
+    name, separator, text = value.partition("=")
+    try:
+        if not separator:
+            raise ValueError("expected NAME=VALUE")
+        return safe_ident(name), checked_text(text)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def parser():
+    p = ArgumentParser(
+        prog="pymybot", allow_abbrev=False,
+        description="Local robot CLI. Static commands never activate drivers; results are JSON.",
+        epilog="Use only trusted Lua modules: LuaJIT FFI is not malicious-code isolation. "
+               "Activation itself may write to devices, including when sampling.")
+    commands = p.add_subparsers(dest="command", required=True)
+    descriptions = {
+        "check": "Statically validate structure SQL, modules/references and optional action Includes",
+        "hardware": "List declared hardware without probing or activating it",
+        "scripts": "List relative .mt script paths without executing Lua",
+        "query": "Read structure tables using SELECT * or SHOW TABLES, without activation",
+        "run": "Activate, execute an action script and deactivate (virtual-only by default)",
+        "sample": "Activate and read a named variable; activation itself may write to devices",
+        "apply-sql": "Apply SQL to a temporarily active robot; does not write the structure file",
+    }
+    for name, description in descriptions.items():
+        command = commands.add_parser(name, help=description, description=description, allow_abbrev=False)
+        if name == "scripts":
+            command.add_argument("--scripts-dir", help="default: packaged assets/scripts, else source scripts")
+            continue
+        command.add_argument("--robot", required=True, metavar="FILE", help="structure SQL file (at most 8 MiB)")
+        command.add_argument("--module-path", action="append", metavar="DIR", help="trusted Lua module root; repeatable")
+        command.add_argument("--camera-src-dir", metavar="DIR", help="explicit local camera image root")
+        if name in {"check", "run"}:
+            command.add_argument("--input", required=name == "run", metavar="MT", help="action script; Includes are relative to its parent")
+        if name in {"query", "apply-sql"}:
+            command.add_argument("--sql", required=True, metavar="TEXT", help="SQL text (at most 8 MiB)")
+        if name in {"run", "sample", "apply-sql"}:
+            command.add_argument("--allow-hardware", action="store_true",
+                                 help="permit physical devices; activation itself may write, even for sample")
+        if name in {"run", "sample"}:
+            command.add_argument("--timeout", type=positive_timeout, default=180, metavar="SECONDS",
+                                 help=f"cooperative execution budget, >0 and <={MAX_TIMEOUT} (default: 180)")
+        if name == "run":
+            command.add_argument("--var", type=variable, action="append", default=[], metavar="NAME=VALUE",
+                                 help="session alias binding (text); repeat with distinct names")
+        if name == "sample":
+            command.add_argument("--name", required=True, help="declared variable name")
+            command.add_argument("--count", type=bounded_int(1, MAX_SAMPLES), default=1,
+                                 help=f"number of samples, 1..{MAX_SAMPLES} (default: 1)")
+            command.add_argument("--interval-ms", type=bounded_int(0, MAX_INTERVAL_MS), default=0,
+                                 help=f"delay between samples, 0..{MAX_INTERVAL_MS} (default: 0)")
+    return p
+
+
+def default_scripts_dir():
+    package = Path(__file__).resolve().parent
+    packaged = package / "assets" / "scripts"
+    return packaged if packaged.is_dir() else package.parent / "scripts"
+
+
+def list_scripts(directory):
+    root = Path(directory).resolve(strict=True)
+    if not root.is_dir():
+        raise SecurityError("Scripts root must be an existing directory")
+    scripts = []
+    def walk_error(error):
+        raise error
+    for base, dirs, files in os.walk(root, followlinks=False, onerror=walk_error):
+        dirs[:] = [name for name in dirs if not (Path(base) / name).is_symlink()]
+        for name in files:
+            path = Path(base) / name
+            if path.suffix == ".mt" and not path.is_symlink() and path.is_file():
+                scripts.append(path.relative_to(root).as_posix())
+    return {"scripts_dir": str(root), "scripts": sorted(scripts), "activated": False}
+
+
+def sample(robot, args, stop):
+    budget = Budget(stop, args.timeout)
+    # Referenced variables may also read Lua; give them the same deadline.
+    previous = [(var, var.budget) for var in robot.registry.values() if hasattr(var, "budget")]
+    samples, size = [], 0
+    try:
+        for var, _ in previous:
+            var.budget = budget
+        target = robot.registry.require(args.name)
+        last_count = 0
+        for index in range(args.count):
+            budget.check()
+            if index:
+                remaining = max(0, budget.deadline - time.monotonic())
+                stop.wait(min(args.interval_ms / 1000, remaining))
+                budget.check()
+            if target.kind == "daemon":
+                value = target.wait_for_sample(after=last_count, timeout=max(0, budget.deadline - time.monotonic()))
+                last_count = value["count"]
+            else:
+                value = target.read()
+            budget.check()
+            if isinstance(value, dict):
+                ensure_ok(value, f"sample {args.name}")
+            size += len(dumps(value).encode("utf-8"))
+            if size > MAX_BODY:
+                raise SecurityError("Samples exceed the 8 MiB result budget")
+            samples.append(value)
+        return {"name": args.name, "samples": samples}
+    finally:
+        for var, old_budget in previous:
+            var.budget = old_budget
+
+
+def execute(args, stop):
+    if args.command == "scripts":
+        return list_scripts(args.scripts_dir or default_scripts_dir())
+    action, base_dir, matrices = None, None, None
+    if getattr(args, "input", None):
+        path = Path(args.input).absolute()
+        action, base_dir = read_file(path), path.parent
+        matrices = expand_includes(parse_matrices(action), base_dir)
+    if hasattr(args, "sql"):
+        checked_text(args.sql)
+    if args.command == "run" and len(dict(args.var)) != len(args.var):
+        raise UsageError("--var names must be distinct")
+    if args.command == "sample":
+        safe_ident(args.name)
+        if (args.count - 1) * args.interval_ms / 1000 >= args.timeout:
+            raise UsageError("Sample intervals exhaust --timeout; reduce count/interval or increase timeout")
+    robot = Robot(read_file(args.robot), module_paths=args.module_path,
+                  camera_src_root=args.camera_src_dir, stop_event=stop,
+                  allow_hardware=getattr(args, "allow_hardware", False))
+    robot._validate(robot.tables)
+    if args.command == "check":
+        return {"valid": True, "activated": False, "tables": list(robot.tables),
+                "action_blocks": [matrix.name for matrix in matrices] if matrices is not None else None}
+    if args.command == "hardware":
+        hardware = [{"name": name, "type": table.name,
+                     "metadata": {col: table.inherited(row, i) for i, col in enumerate(table.header) if col != "name"}}
+                    for name, (table, row) in robot._rows(robot.tables).items()
+                    if table.name not in {"Alias", "Vars"}]
+        return {"hardware": hardware, "activated": False}
+    if args.command == "query":
+        return {"output": robot.query_sql(args.sql), "activated": False}
+    if args.command == "sample" and args.name not in robot._rows(robot.tables):
+        raise ScriptError(f"Hardware variable '{args.name}' is not defined")
+    try:
+        robot.active()
+        if args.command == "run":
+            return {"outputs": robot.run(action, base_dir=str(base_dir), vars=dict(args.var), timeout=args.timeout)}
+        if args.command == "sample":
+            return sample(robot, args, stop)
+        return {"output": robot.apply_sql(args.sql)}
+    finally:
+        # Also required when active() fails after opening only some devices.
+        robot.deactivate()
+
+
+def main(argv=None):
+    stop = threading.Event()
+    handlers = {}
+    args = None
+    try:
+        args = parser().parse_args(argv)
+        if args.command in {"run", "sample", "apply-sql"} and threading.current_thread() is threading.main_thread():
+            for sig in (signal.SIGINT, signal.SIGTERM):
+                handlers[sig] = signal.signal(sig, lambda *_: stop.set())
+        # Python prints and Lua diagnostics must not contaminate the JSON channel.
+        with redirect_stdout(sys.stderr):
+            result = execute(args, stop)
+        output = dumps({"ok": True, "command": args.command, **result})
+        code = 0
+    except KeyboardInterrupt:
+        stop.set()
+        output = dumps({"ok": False, "error": {"type": "KeyboardInterrupt", "message": "Interrupted"}})
+        code = 130
+    except Exception as exc:
+        output = dumps({"ok": False, "error": {"type": type(exc).__name__, "message": str(exc)}})
+        print(f"pymybot: {exc}", file=sys.stderr)
+        code = 2 if isinstance(exc, UsageError) else 1
+    finally:
+        for sig, handler in handlers.items():
+            signal.signal(sig, handler)
+    print(output)
+    return code
