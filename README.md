@@ -1,6 +1,6 @@
 # pymybot
 
-跨平台的 Python 机器人控制器：用 Lupa（LuaJIT）加载 Lua 硬件驱动，用 sqlparse 解析受限 SQL 结构文件，用 MT 动作脚本驱动设备。随项目附带 `robot-control` Skill，让 AI 助手可以按需求编写驱动、结构和动作脚本，并在无硬件条件下完成验证。
+跨平台的 Python 机器人控制器：用 Lupa（LuaJIT）加载 Lua 硬件驱动，用 sqlparse 解析受限 SQL 结构文件，用 MT 动作脚本驱动设备。
 
 兼容 bot4cj 的「模块 → 结构 → 动作」三层脚本模型，但不依赖原 C++ 运行器、TCP 服务或 MCP。
 
@@ -12,7 +12,7 @@
 - **跨平台 HAL**：UART 走 pyserial，I2C/SPI 走 pyftdi（MPSSE），Camera 走 OpenCV；Linux 可选 smbus2/spidev。Windows / Linux / macOS 均可运行。
 - **无硬件验证**：内置虚拟总线（`virtbus`）、寄存器映射模型、串口 `loop://` 回环，支持 NACK / 超时 / 短读等故障注入。
 - **后台采样**：Daemon 表基于 Python 线程和独立 Lua 状态做周期采样，支持单设备、多设备同总线和聚合。
-- **按需驱动**：不预置具体芯片驱动，只提供 I2C / SPI / UART / Camera 基础资源和公共工具库，由使用者或 Skill 按数据手册编写。
+- **按需驱动**：不预置具体芯片驱动，只提供 I2C / SPI / UART / Camera 基础资源和公共工具库，由使用者按数据手册编写。
 
 ## 目录结构
 
@@ -30,7 +30,6 @@ modules/                  Lua 基础资源与公共库
 robots/                   SQL 结构文件（示例：relay-test.sql）
 scripts/                  MT 动作脚本（示例：relay-test.mt）
 tests/                    pytest 测试
-.qoder/skills/robot-control/   robot-control Skill 及编写指导
 ```
 
 ## 安装
@@ -112,7 +111,7 @@ require_driver("uart", {
 })
 ```
 
-`build` / `call` / `destroy` 返回非空表，推荐 `{result="OK", ...}` 或 `err("原因")`；可选 `read(data)` 提供快照。详细契约见 [硬件模块编写指导](.qoder/skills/robot-control/references/hardware-authoring.md)。
+`build` / `call` / `destroy` 返回非空表，推荐 `{result="OK", ...}` 或 `err("原因")`；可选 `read(data)` 提供快照。
 
 ## CLI 命令
 
@@ -150,25 +149,6 @@ pymybot run --robot robots/<任务>.sql --input scripts/<任务>.mt \
 - Camera：OpenCV；文件输入必须指定 `--camera-src-dir`。
 - 不提供 GPIO/PWM/Speaker 原生后端；相应外设通过受支持总线编写协议实现。
 - Lua 指令预算和可取消等待不能中断阻塞的原生库调用；进程退出不等于执行器物理急停。
-
-## robot-control Skill
-
-`.qoder/skills/robot-control/` 是一个 Qoder/Claude 风格的 Skill，描述了 AI 助手使用 pymybot 的完整工作流：
-
-1. 明确器件型号、接口、电气条件和安全范围，读取编写指导。
-2. 按需生成 `modules/<Device>.lua`、`robots/<任务>-virtual.sql`、`robots/<任务>.sql`、`scripts/<任务>.mt` 和测试。
-3. 静态检查（`check` / `hardware` / `query`）。
-4. 无硬件验证：编写虚拟模型，运行 `pytest` 和不带 `--allow-hardware` 的 `run`。
-5. 经用户逐次明确确认后，才带 `--allow-hardware` 执行真实硬件。
-
-参考文档：
-
-- [SKILL.md](.qoder/skills/robot-control/SKILL.md) — 安全边界、资源发现、工作流、交付要求
-- [hardware-authoring.md](.qoder/skills/robot-control/references/hardware-authoring.md) — Lua 驱动生命周期、HAL API、Daemon、虚拟模型
-- [script-authoring.md](.qoder/skills/robot-control/references/script-authoring.md) — SQL 结构、MT 动作、Daemon 采样、Camera
-- [authoring-example.md](.qoder/skills/robot-control/references/authoring-example.md) — 从零编写并验证三层脚本的回环示例
-
-Skill 的入口脚本 `scripts/control.py` 等价于 `python -m pymybot`。
 
 ## 安全边界
 

@@ -348,7 +348,11 @@ def test_help_errors_and_module_entrypoint(workspace):
         assert result.stderr
 
 
-@pytest.mark.parametrize("data", [b"\xff", b"\0", b"x" * (MAX_BODY + 1)])
+@pytest.mark.parametrize("data", [
+    pytest.param(b"\xff", id="invalid-utf8"),
+    pytest.param(b"\0", id="nul-byte"),
+    pytest.param(b"x" * (MAX_BODY + 1), id="oversized"),
+])
 @pytest.mark.parametrize("target", ["robot.sql", "action.mt"])
 def test_bad_or_oversized_utf8_inputs(workspace, capsys, data, target):
     (workspace / target).write_bytes(data)
