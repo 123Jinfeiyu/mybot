@@ -4,6 +4,22 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 
+
+def usable_symlink(link, target):
+    """Create a symlink and report whether the result is actually usable.
+
+    Windows has two failure modes: ``OSError`` when the account lacks
+    SeCreateSymbolicLinkPrivilege (Developer Mode off), and a silent no-op that
+    leaves an entry which neither ``is_symlink()`` nor ``exists()`` can resolve.
+    Both mean the platform cannot express the fixture, so callers skip instead
+    of asserting on a link that was never created.
+    """
+    try:
+        link.symlink_to(target, target_is_directory=target.is_dir())
+    except (OSError, NotImplementedError):
+        return False
+    return link.is_symlink() and link.exists()
+
 PRELUDE = '''
 dofile(__mpath.resolve("lib/drv_common.lua"))
 local function sample(count, tag, data)
