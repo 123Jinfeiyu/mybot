@@ -225,8 +225,25 @@ def disable_windows_faulthandler():
               file=sys.stderr)
 
 
+def utf8_streams():
+    """stdout/stderr are UTF-8 regardless of the console/pipe locale.
+
+    Windows pipes default to the ANSI code page (e.g. GBK): Chinese results reached
+    consumers as GBK bytes, and characters outside that code page made print() raise
+    before any JSON was written. RFC 8259 requires UTF-8 for the JSON channel; stderr
+    follows so callers decode both streams one way (as Python's UTF-8 mode, the
+    default from 3.15 per PEP 686, would). stderr keeps backslashreplace.
+    """
+    for stream, errors in ((sys.stdout, "strict"), (sys.stderr, "backslashreplace")):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "").replace("_", "")
+        reconfigure = getattr(stream, "reconfigure", None)
+        if encoding != "utf8" and reconfigure is not None:
+            reconfigure(encoding="utf-8", errors=errors)
+
+
 def main(argv=None):
     disable_windows_faulthandler()
+    utf8_streams()
     stop = threading.Event()
     handlers = {}
     args = None

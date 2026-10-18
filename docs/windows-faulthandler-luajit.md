@@ -222,9 +222,7 @@ for i in $(seq 1 15); do .venv/Scripts/python -m pytest -q -x tests/test_robot.p
 
 **模块路径按 `:` 切分**：已修复（2026-10-18），见下文「后续：模块路径探测修复」。
 
-同轮测试中还发现：Windows 管道下 stdout 使用本地编码（GBK）而非 UTF-8，含中文的结果（如
-`apply-sql` 的"已生效：…"）会被下游按 UTF-8 解析失败；设置 `PYTHONUTF8=1` 可绕过。该问题与本文
-无关，单独跟踪。
+**Windows 管道下 stdout 为 GBK**：已修复（2026-10-19），见下文「后续：输出流固定 UTF-8」。
 
 ## 后续：模块路径探测修复（2026-10-18）
 
@@ -262,3 +260,34 @@ Linux 上行为不变，可原样回流上游。各驱动文件头 `(__mpath or 
 加载。非 Windows 平台把自定义模块根命名为 `drivers:extra`，同样能复现旧问题，所以 Linux CI
 也守得住。修复前在 Windows 上失败（`C/lib/bus_contract.lua` 等 4 条），修复后全量
 `716 passed, 3 skipped`。
+
+## 后续：输出流固定 UTF-8（2026-10-19）
+
+### 现象与影响
+
+Windows 上 stdout/stderr 接管道时，Python 用 ANSI 代码页（中文系统为 GBK）编码。实测
+`apply-sql` 的结果"已生效：…"以 GBK 字节到达下游，按 UTF-8 解码报
+`UnicodeDecodeError: ... byte 0xd2`。更严重的一种情况：结果里含代码页之外的字符（如驱动元数据
+或回读值里的 emoji），stdout 的 `print` 直接抛 `UnicodeEncodeError`，一条 JSON 都输出不了，
+违反单条 JSON 约定。
+
+### 修法（`pymybot/cli.py` 的 `utf8_streams()`）
+
+`main()` 入口把 stdout 与 stderr 都 `reconfigure(encoding="utf-8")`，stdout 用 `strict`，stderr
+保留 Python 默认的 `backslashreplace`。已经是 UTF-8 的流不处理（如 Windows 控制台、pytest
+capsys）。
+
+为什么 stderr 也改：只改 stdout 的话，两路编码不一致，调用方没法统一解码（实测
+`subprocess.run(..., text=True)` 照样会坏，比如 Windows 上 `absent.sql` 的中文系统报错）。统一为
+UTF-8 与 Python UTF-8 模式一致（PEP 686 起 3.15 默认开启），也就是此前 `PYTHONUTF8=1` 绕过法的效果。
+代价：仍按 GBK 解码 stderr 的旧工具会看到乱码，按 UTF-8 解码即可。与 faulthandler 一样，把
+`main()` 嵌入其他程序时会改动调用方进程的 `sys.stdout`/`sys.stderr` 编码。
+
+### 测试
+
+- `tests/test_cli.py::test_output_streams_are_utf8_whatever_the_locale`：以 `PYTHONIOENCODING=gbk`
+  启动子进程（任何平台都能复现），按字节捕获，断言 `apply-sql` 结果、含 `✅` 的 `hardware`
+  元数据都能按 UTF-8 解析，且 `run` 时 Relay 打到 stderr 的 `note=✅` 按 UTF-8 原样可见。
+- 测试里原先用 `text=True`（按本地编码解码）调用 CLI 的三处，改为 `encoding="utf-8"`，与新约定一致。
+- 撤掉修复对照：新测试与 `test_help_errors_and_module_entrypoint` 都失败；修复后全量
+  `717 passed, 3 skipped`。

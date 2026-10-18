@@ -42,7 +42,7 @@ def workspace(tmp_path):
 
 def run_cli(workspace, *args):
     return subprocess.run([sys.executable, "-m", "pymybot", *map(str, args)], cwd=workspace,
-                          env=dict(os.environ, PYTHONPATH=str(ROOT)), input="", text=True,
+                          env=dict(os.environ, PYTHONPATH=str(ROOT)), input="", encoding="utf-8",
                           capture_output=True, timeout=10)
 
 
@@ -147,7 +147,7 @@ def test_scripts_default_source_and_installed_package(workspace, capsys):
     scripts.mkdir(parents=True)
     (scripts / "wheel.mt").write_text("# only packaged copy")
     result = subprocess.run([sys.executable, "-m", "pymybot", "scripts"], cwd=workspace,
-                            env=dict(os.environ, PYTHONPATH=str(install)), capture_output=True, text=True, timeout=10)
+                            env=dict(os.environ, PYTHONPATH=str(install)), capture_output=True, encoding="utf-8", timeout=10)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["scripts"] == ["wheel.mt"]
 
@@ -173,13 +173,39 @@ def test_faulthandler_cannot_break_json_on_lua_errors(workspace):
     result = subprocess.run(
         [sys.executable, "-X", "faulthandler", "-m", "pymybot", "sample", "--robot", "boom.sql",
          "--name", "b", "--module-path", str(modules), "--module-path", str(ROOT / "modules")],
-        cwd=workspace, env=dict(os.environ, PYTHONPATH=str(ROOT)), input="", text=True,
+        cwd=workspace, env=dict(os.environ, PYTHONPATH=str(ROOT)), input="", encoding="utf-8",
         capture_output=True, timeout=10)
     assert result.returncode == 1, result.stderr
     assert len(result.stdout.splitlines()) == 1
     payload = json.loads(result.stdout)
     assert payload["ok"] is False and "boom" in payload["error"]["message"]
     assert "Windows fatal exception" not in result.stderr
+
+
+def test_output_streams_are_utf8_whatever_the_locale(workspace):
+    # Windows pipes default to the ANSI code page (GBK on zh-CN), so Chinese results
+    # reached consumers as GBK bytes and characters outside the code page crashed
+    # print() before any JSON was written. PYTHONIOENCODING reproduces that on every
+    # platform; both streams must still be UTF-8.
+    env = {k: v for k, v in os.environ.items() if k != "PYTHONUTF8"}
+    env.update(PYTHONPATH=str(ROOT), PYTHONIOENCODING="gbk")
+    (workspace / "emoji.sql").write_text(
+        "CREATE TABLE Timer(name String); INSERT INTO Timer(name) VALUES('timer-0');"
+        "CREATE TABLE Relay(name String, controller String, note String);"
+        "INSERT INTO Relay(name, controller, note) VALUES('relay0', 'timer-0', '\u2705');", encoding="utf-8")
+    (workspace / "relay.mt").write_text("@Action\nrelay0.test;\n1;\n@\n", encoding="utf-8")
+    def cli_bytes(*args):
+        result = subprocess.run([sys.executable, "-m", "pymybot", *args], cwd=workspace, env=env,
+                                input=b"", capture_output=True, timeout=10)
+        assert result.returncode == 0, result.stderr.decode(errors="replace")
+        return json.loads(result.stdout.decode("utf-8")), result.stderr.decode("utf-8")
+    applied, _ = cli_bytes("apply-sql", "--robot", "robot.sql", "--sql", "INSERT INTO dummy(name) VALUES('second');")
+    assert applied["output"].startswith("已生效")
+    hardware, _ = cli_bytes("hardware", "--robot", "emoji.sql")
+    assert hardware["hardware"][1]["metadata"]["note"] == "\u2705"
+    ran, diagnostics = cli_bytes("run", "--robot", "emoji.sql", "--input", "relay.mt", "--timeout", "10")
+    assert ran["ok"] is True and "note=\u2705" in diagnostics
+
 
 def test_vars_are_repeated_text_bindings(workspace, capsys):
     (workspace / "action.mt").write_text("@Action\ntarget.param;\n$(word);\n@\n", encoding="utf-8")
