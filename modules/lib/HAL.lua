@@ -158,11 +158,12 @@ for _, kind in ipairs({ "i2c", "spi", "uart" }) do
     local key, previous = kind .. "_path_ok", bus[kind .. "_path_ok"]
     bus[key] = function(path) return virtual_path(path) or previous(path) end
 end
--- virtbus's original bootstrap splits paths on ':' (not Windows drive-safe).
--- Supply its already-loaded contract through a private source environment.
+-- Hand virtbus the already-loaded (and path-wrapped) contract through a private
+-- source environment instead of recompiling it. Host-resolved paths use the
+-- platform separator, so match either slash.
 local vchunk = assert(loadfile(mpath.resolve("lib/virtbus.lua")))
 local venvironment = setmetatable({ dofile = function(path)
-    if type(path) == "string" and path:match("/lib/bus_contract%.lua$") then return bus end
+    if type(path) == "string" and path:match("[/\\]lib[/\\]bus_contract%.lua$") then return bus end
     return dofile(path)
 end }, { __index = _G, __newindex = _G })
 setfenv(vchunk, venvironment)
@@ -200,12 +201,12 @@ for name, virtual_fn in pairs(routed) do
     end
 end
 _G.__BOT4CJ_HAL = HAL
--- drv_common's legacy proto=virt probe also splits Windows drive letters.
--- Keep the trusted source function, but resolve its library probes privately.
+-- Route drv_common's proto=virt library probes to this state's loaded tables
+-- (virtbus/bus_contract also guard re-entry; this just skips recompiling).
 if type(virt_prepare) ~= "function" then dofile(mpath.resolve("lib/drv_common.lua")) end
 local prepare_environment = setmetatable({ dofile = function(path)
-    if type(path) == "string" and path:match("/lib/virtbus%.lua$") then return vbus end
-    if type(path) == "string" and path:match("/lib/bus_contract%.lua$") then return bus end
+    if type(path) == "string" and path:match("[/\\]lib[/\\]virtbus%.lua$") then return vbus end
+    if type(path) == "string" and path:match("[/\\]lib[/\\]bus_contract%.lua$") then return bus end
     return dofile(path)
 end }, { __index = _G, __newindex = _G })
 setfenv(virt_prepare, prepare_environment)

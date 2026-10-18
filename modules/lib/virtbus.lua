@@ -145,9 +145,16 @@ virtbus.uart_fail_read = false  -- 总线级故障注入：true → uart_read �
 local bus
 do
 	local probed
-	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
-		local ok, m = pcall(dofile, p .. "/lib/bus_contract.lua")
-		if ok and type(m) == "table" then probed = m break end
+	if __mpath ~= nil then
+		-- 宿主注入的解析器优先：按 ':' 切分会把 Windows 盘符切成假路径
+		-- （与 drv_common.probe_lib 同规）。
+		local ok, m = pcall(dofile, __mpath.resolve("lib/bus_contract.lua"))
+		if ok and type(m) == "table" then probed = m end
+	else
+		for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+			local ok, m = pcall(dofile, p .. "/lib/bus_contract.lua")
+			if ok and type(m) == "table" then probed = m break end
+		end
 	end
 	bus = probed or dofile("./modules/lib/bus_contract.lua")
 end

@@ -220,12 +220,45 @@ for i in $(seq 1 15); do .venv/Scripts/python -m pytest -q -x tests/test_robot.p
 
 ## 相关但未处理的问题
 
-**模块路径按 `:` 切分**（详见上文"为什么正常运行也会抛出 Lua 错误"第 1 类）：`drv_common.lua`
-82/246/360 行、`virtbus.lua` 148 行、`mpath.lua` 16 行在 Windows 上切出错误路径。建议修法二选一：
-按平台选择分隔符（`package.config:sub(1,1) == "\\"` 时用 `;`），或在 `__mpath` 存在时直接用
-`__mpath.resolve("lib/bus_contract.lua")`（`sensor_daemon.lua` 已是此写法）。修复后应补一个
-Windows 下"探测成功、未走兜底"的测试。
+**模块路径按 `:` 切分**：已修复（2026-10-18），见下文「后续：模块路径探测修复」。
 
 同轮测试中还发现：Windows 管道下 stdout 使用本地编码（GBK）而非 UTF-8，含中文的结果（如
 `apply-sql` 的"已生效：…"）会被下游按 UTF-8 解析失败；设置 `PYTHONUTF8=1` 可绕过。该问题与本文
 无关，单独跟踪。
+
+## 后续：模块路径探测修复（2026-10-18）
+
+### 实际触发点
+
+逐个核对后，pymybot 下真正走到错误切分的只有两处（`HAL.lua` 已用 setfenv 把
+`virt_prepare` 与 virtbus 内部的探测拦截掉，且旧拦截正则 `/lib/...` 恰好能匹配切出来的
+`C/lib/...`）：
+
+- `drv_common.lua` 加载时的 `bus_contract` 探测：驱动文件头先 `dofile` drv_common，此时
+  HAL 还没加载、`__BOT4CJ_BUS_CONTRACT` 为 nil，于是按 `:` 切分探测 → 失败 → 走兜底 `finite_of`。
+- `sensor_daemon.lua` 直接 `pcall(dofile, mpath.resolve("lib/virtbus.lua"))`，不经 HAL 拦截，
+  virtbus 文件头的 `bus_contract` 探测按 `:` 切分。
+
+### 修法
+
+- `drv_common.lua` 新增局部 `probe_lib(rel, load)`：宿主注入了 `__mpath` 时用
+  `__mpath.resolve(rel)`，否则保留原逐段切分（脱离宿主直跑的场景）。`virt_prepare` 与
+  `bus_contract` 探测都改用它；`virt_prepare` 把自身环境里的 `dofile` 传入，HAL 的 setfenv
+  拦截因此依旧生效。
+- `virtbus.lua` 的 `bus_contract` 探测同规改写。
+- `HAL.lua` 两处拦截正则由 `/lib/...` 改为 `[/\\]lib[/\\]...`：`__mpath.resolve` 在 Windows 上
+  返回反斜杠路径，不改的话拦截不命中、会重复编译一次库文件（virtbus / bus_contract 有全局
+  重入守卫，实例身份不受影响，已用撤销对照确认）。
+
+bot4cj 的 C++ 宿主（`src/luasandbox.cpp`）同样注入真 `mpath` 表作为 `__mpath`，因此改动在
+Linux 上行为不变，可原样回流上游。各驱动文件头 `(__mpath or dofile(...match("[^:]+")...))` 与
+`drv_common` 的 mpath 引导都被 `__mpath` 短路，未改。
+
+### 回归测试
+
+`tests/test_robot.py::test_library_probes_survive_drive_letters_and_colons`：记录
+`LuaState._loader` 的所有失败路径，激活含 Timer/Relay、UART `loop://`、虚拟 I2C + 驱动、
+虚拟 Daemon 的结构并跑动作；断言除 `lib/virtbus/<驱动>.lua`（第 2 类，设计如此）外没有失败
+加载。非 Windows 平台把自定义模块根命名为 `drivers:extra`，同样能复现旧问题，所以 Linux CI
+也守得住。修复前在 Windows 上失败（`C/lib/bus_contract.lua` 等 4 条），修复后全量
+`716 passed, 3 skipped`。
