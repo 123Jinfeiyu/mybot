@@ -149,6 +149,7 @@ pymybot run --robot robots/<任务>.sql --input scripts/<任务>.mt \
 - Camera：OpenCV；文件输入必须指定 `--camera-src-dir`。
 - 不提供 GPIO/PWM/Speaker 原生后端；相应外设通过受支持总线编写协议实现。
 - Lua 指令预算和可取消等待不能中断阻塞的原生库调用；进程退出不等于执行器物理急停。
+- Windows：LuaJIT 以 SEH 异常（`0xE24C4A02`）抛出每个 Lua 错误，CPython faulthandler 会误判为崩溃并可能导致进程段错误，因此 CLI 在 Windows 上会关闭 `-X faulthandler` / `PYTHONFAULTHANDLER`（stderr 提示一行），测试套件同样在 Windows 上关闭 pytest 的 faulthandler。
 
 ## 安全边界
 

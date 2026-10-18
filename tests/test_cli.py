@@ -161,6 +161,26 @@ def test_real_virtual_relay_dummy_json_and_stderr(workspace):
     assert "Relay:" in result.stderr and "Dummy served 1" in result.stderr
 
 
+def test_faulthandler_cannot_break_json_on_lua_errors(workspace):
+    # Windows LuaJIT raises Lua errors as SEH exception 0xE24C4A02, which CPython's
+    # faulthandler mistakes for a crash: it dumps every thread's stack mid-unwind and
+    # can segfault the process. The CLI must neutralise it; elsewhere this is a no-op.
+    modules = workspace / "modules"
+    modules.mkdir()
+    (modules / "Boom.lua").write_text('function build(data) error("boom") end\n', encoding="utf-8")
+    (workspace / "boom.sql").write_text(
+        "CREATE TABLE Boom(name String); INSERT INTO Boom(name) VALUES('b');", encoding="utf-8")
+    result = subprocess.run(
+        [sys.executable, "-X", "faulthandler", "-m", "pymybot", "sample", "--robot", "boom.sql",
+         "--name", "b", "--module-path", str(modules), "--module-path", str(ROOT / "modules")],
+        cwd=workspace, env=dict(os.environ, PYTHONPATH=str(ROOT)), input="", text=True,
+        capture_output=True, timeout=10)
+    assert result.returncode == 1, result.stderr
+    assert len(result.stdout.splitlines()) == 1
+    payload = json.loads(result.stdout)
+    assert payload["ok"] is False and "boom" in payload["error"]["message"]
+    assert "Windows fatal exception" not in result.stderr
+
 def test_vars_are_repeated_text_bindings(workspace, capsys):
     (workspace / "action.mt").write_text("@Action\ntarget.param;\n$(word);\n@\n", encoding="utf-8")
     code, result, _ = invoke(capsys, "run", "--robot", workspace / "robot.sql", "--input", workspace / "action.mt",

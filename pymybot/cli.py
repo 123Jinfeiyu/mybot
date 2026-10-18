@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stdout
+import faulthandler
 import math
 import os
 from pathlib import Path
@@ -211,7 +212,21 @@ def execute(args, stop):
         robot.deactivate()
 
 
+def disable_windows_faulthandler():
+    """LuaJIT on Windows x64 raises every Lua error() as SEH exception 0xE24C4A02.
+
+    CPython's faulthandler only whitelists MSVC/COM codes, so it treats each one as a
+    crash and walks all thread stacks inside the exception handler. With daemon
+    threads running that races and can segfault, breaking the one-JSON contract.
+    """
+    if sys.platform == "win32" and faulthandler.is_enabled():
+        faulthandler.disable()
+        print("pymybot: faulthandler disabled on Windows (LuaJIT SEH errors are not crashes)",
+              file=sys.stderr)
+
+
 def main(argv=None):
+    disable_windows_faulthandler()
     stop = threading.Event()
     handlers = {}
     args = None

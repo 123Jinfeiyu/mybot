@@ -1,8 +1,20 @@
 from pathlib import Path
+import sys
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_configure(config):
+    # pytest enables faulthandler for the whole session. On Windows every Lua error()
+    # surfaces as SEH exception 0xE24C4A02; faulthandler treats it as fatal and walks
+    # all thread stacks mid-unwind, which segfaults daemon tests intermittently. See
+    # pymybot.cli.disable_windows_faulthandler. Other platforms keep faulthandler.
+    if sys.platform == "win32":
+        import faulthandler
+        faulthandler.disable()
 
 
 def usable_symlink(link, target):
