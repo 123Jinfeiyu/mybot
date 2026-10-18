@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import usable_symlink
 from pymybot.errors import BudgetExceeded, DriverError, ScriptError
 from pymybot.hardware import Budget, ensure_ok
 from pymybot.runtime import LuaState
@@ -60,10 +61,8 @@ def test_loader_rejects_escape_and_symlinks(state, tmp_path):
     target = tmp_path / "valid.lua"
     target.write_text("return {}")
     link = tmp_path / "linked.lua"
-    try:
-        link.symlink_to(target)
-    except OSError:
-        pytest.skip("Symlinks unavailable for this account")
+    if not usable_symlink(link, target):
+        pytest.skip("Platform cannot create usable symbolic links")
     with pytest.raises(DriverError, match="Symlink"):
         state.load(link)
 

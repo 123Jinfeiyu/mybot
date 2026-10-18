@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import usable_symlink
 from pymybot.actions import ActionRunner
 from pymybot.errors import BudgetExceeded, ScriptError
 from pymybot.expr import Expression, expr_body, render
@@ -437,10 +438,12 @@ def test_include_rejects_links_and_directory_targets(tmp_path):
     with pytest.raises(ScriptError, match="regular file"):
         expand(block("Include", "path", "directory.mt"), tmp_path)
     try:
-        (tmp_path / "link.mt").symlink_to(tmp_path / "target.mt")
-        (tmp_path / "dirlink").symlink_to(tmp_path, target_is_directory=True)
-    except (OSError, NotImplementedError):
-        pytest.skip("Platform cannot create symbolic links")
+        created = (usable_symlink(tmp_path / "link.mt", tmp_path / "target.mt")
+                   and usable_symlink(tmp_path / "dirlink", tmp_path))
+    except NotImplementedError:
+        created = False
+    if not created:
+        pytest.skip("Platform cannot create usable symbolic links")
     for path in ["link.mt", "dirlink/target.mt"]:
         with pytest.raises(ScriptError, match="symbolic link"):
             expand(block("Include", "path", path), tmp_path)
