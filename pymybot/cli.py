@@ -1,7 +1,8 @@
-"""One-shot local robot commands; stdout is one JSON result, never a service."""
+"""Local commands and an optional agent; stdout remains one JSON result."""
 from __future__ import annotations
 
 import argparse
+import asyncio
 from contextlib import redirect_stdout
 import faulthandler
 import math
@@ -12,7 +13,7 @@ import sys
 import threading
 import time
 
-from .errors import ScriptError
+from .errors import AgentInterrupted, ScriptError
 from .hardware import Budget, ensure_ok, safe_ident
 from .include import expand_includes
 from .matrix import parse_matrices
@@ -68,9 +69,12 @@ def variable(value):
 def parser():
     p = ArgumentParser(
         prog="pymybot", allow_abbrev=False,
-        description="Local robot CLI. Static commands never activate drivers; results are JSON.",
+        description="Local robot CLI. With --robot and no command, start the PydanticAI agent. "
+                    "Existing commands bypass the model; results are JSON.",
         epilog="Use only trusted Lua modules: LuaJIT FFI is not malicious-code isolation. "
-               "Activation itself may write to devices, including when sampling.")
+               "Activation itself may write to devices, including when sampling. "
+               "Example: pymybot --robot robot.sql --task 'List hardware' --model openai:MODEL")
+    p.add_argument("--no-agent", action="store_true", help="bypass models; with --robot use --input to run a script")
     commands = p.add_subparsers(dest="command", required=True)
     descriptions = {
         "check": "Statically validate structure SQL, modules/references and optional action Includes",
@@ -80,26 +84,28 @@ def parser():
         "run": "Activate, execute an action script and deactivate (virtual-only by default)",
         "sample": "Activate and read a named variable; activation itself may write to devices",
         "apply-sql": "Apply SQL to a temporarily active robot; does not write the structure file",
+        "agent": "PydanticAI task or interactive session (the default when only --robot is given)",
     }
     for name, description in descriptions.items():
         command = commands.add_parser(name, help=description, description=description, allow_abbrev=False)
+        command.add_argument("--no-agent", action="store_true", help="bypass the model; agent entry requires --input MT")
         if name == "scripts":
             command.add_argument("--scripts-dir", help="default: packaged assets/scripts, else source scripts")
             continue
         command.add_argument("--robot", required=True, metavar="FILE", help="structure SQL file (at most 8 MiB)")
         command.add_argument("--module-path", action="append", metavar="DIR", help="trusted Lua module root; repeatable")
         command.add_argument("--camera-src-dir", metavar="DIR", help="explicit local camera image root")
-        if name in {"check", "run"}:
-            command.add_argument("--input", required=name == "run", metavar="MT", help="action script; Includes are relative to its parent")
+        if name in {"check", "run", "agent"}:
+            command.add_argument("--input", required=name == "run", metavar="MT", help="direct action script (agent entry requires --no-agent)")
         if name in {"query", "apply-sql"}:
             command.add_argument("--sql", required=True, metavar="TEXT", help="SQL text (at most 8 MiB)")
-        if name in {"run", "sample", "apply-sql"}:
+        if name in {"run", "sample", "apply-sql", "agent"}:
             command.add_argument("--allow-hardware", action="store_true",
                                  help="permit physical devices; activation itself may write, even for sample")
-        if name in {"run", "sample"}:
+        if name in {"run", "sample", "agent"}:
             command.add_argument("--timeout", type=positive_timeout, default=180, metavar="SECONDS",
-                                 help=f"cooperative execution budget, >0 and <={MAX_TIMEOUT} (default: 180)")
-        if name == "run":
+                                 help=f"cooperative execution/task budget, >0 and <={MAX_TIMEOUT} (default: 180)")
+        if name in {"run", "agent"}:
             command.add_argument("--var", type=variable, action="append", default=[], metavar="NAME=VALUE",
                                  help="session alias binding (text); repeat with distinct names")
         if name == "sample":
@@ -108,7 +114,50 @@ def parser():
                                  help=f"number of samples, 1..{MAX_SAMPLES} (default: 1)")
             command.add_argument("--interval-ms", type=bounded_int(0, MAX_INTERVAL_MS), default=0,
                                  help=f"delay between samples, 0..{MAX_INTERVAL_MS} (default: 0)")
+        if name == "agent":
+            command.add_argument("--task", help="one natural-language task; omit for interactive TTY mode")
+            command.add_argument("--model", help="provider:model; defaults to MYBOT_MODEL")
+            command.add_argument("--base-url", help="provider endpoint; defaults to MYBOT_BASE_URL")
+            command.add_argument("--api-key-env", help="environment variable holding the API key (never the key itself)")
+            command.add_argument("--scripts-dir", help="trusted root of existing .mt scripts available to the agent")
+            command.add_argument("--read-var", action="append", default=[], metavar="NAME", help="allowlist a readable variable; repeatable")
+            command.add_argument("--camera-var", metavar="NAME", help="allow image capture from this declared Camera variable")
+            command.add_argument("--allow-actions", action="store_true",
+                                 help="preapprove agent scripts/reads/capture for this session; does NOT imply --allow-hardware")
+            command.add_argument("--max-requests", type=bounded_int(1, 100), default=8, help="model requests per task (default: 8)")
+            command.add_argument("--max-tool-calls", type=bounded_int(1, 1000), default=16, help="tool calls per task (default: 16)")
     return p
+
+
+def parse_args(argv=None):
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    commands = {"check", "hardware", "scripts", "query", "run", "sample", "apply-sql", "agent"}
+    if len(arguments) > 1 and arguments[0] == "--no-agent" and arguments[1] in commands:
+        arguments[:2] = [arguments[1], "--no-agent"]
+    if arguments and arguments[0] not in commands | {"--help", "-h"}:
+        arguments.insert(0, "agent")
+    args = parser().parse_args(arguments)
+    if args.command != "agent":
+        return args  # Existing subcommands always bypass the model.
+    if args.no_agent:
+        if args.task is not None or args.model or args.base_url or args.api_key_env or args.allow_actions or args.read_var or args.camera_var:
+            raise UsageError("--no-agent cannot be combined with model/task/agent tool options")
+        if not args.input:
+            raise UsageError("--no-agent requires --input MT; or use check/hardware/query/run/sample directly")
+        args.command = "run"
+        return args
+    if args.input or args.var:
+        raise UsageError("--input/--var require --no-agent or the run command; use --task for an agent")
+    if args.task is None and not sys.stdin.isatty():
+        raise UsageError("Non-interactive agent mode requires --task; use --no-agent --input for direct execution")
+    if args.task is not None:
+        checked_text(args.task, 16 * 1024)
+        if not args.task.strip():
+            raise UsageError("--task must not be empty")
+    for name in [*args.read_var, *([args.camera_var] if args.camera_var else [])]:
+        safe_ident(name)
+    args.scripts_dir = args.scripts_dir or default_scripts_dir()
+    return args
 
 
 def default_scripts_dir():
@@ -170,6 +219,14 @@ def sample(robot, args, stop):
 def execute(args, stop):
     if args.command == "scripts":
         return list_scripts(args.scripts_dir or default_scripts_dir())
+    if args.command == "agent":
+        try:
+            from .agent import run_cli_agent
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("Agent dependencies unavailable; install pymybot[agent] "
+                               "(source checkout: pip install -e '.[agent]'), "
+                               "or use --no-agent --input MT") from exc
+        return asyncio.run(run_cli_agent(args, stop))
     action, base_dir, matrices = None, None, None
     if getattr(args, "input", None):
         path = Path(args.input).absolute()
@@ -248,8 +305,8 @@ def main(argv=None):
     handlers = {}
     args = None
     try:
-        args = parser().parse_args(argv)
-        if args.command in {"run", "sample", "apply-sql"} and threading.current_thread() is threading.main_thread():
+        args = parse_args(argv)
+        if args.command in {"run", "sample", "apply-sql", "agent"} and threading.current_thread() is threading.main_thread():
             for sig in (signal.SIGINT, signal.SIGTERM):
                 handlers[sig] = signal.signal(sig, lambda *_: stop.set())
         # Python prints and Lua diagnostics must not contaminate the JSON channel.
@@ -257,12 +314,14 @@ def main(argv=None):
             result = execute(args, stop)
         output = dumps({"ok": True, "command": args.command, **result})
         code = 0
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, AgentInterrupted) as exc:
         stop.set()
-        output = dumps({"ok": False, "error": {"type": "KeyboardInterrupt", "message": "Interrupted"}})
+        extra = {key: getattr(exc, key) for key in ("tool_events", "cleanup_errors") if hasattr(exc, key)}
+        output = dumps({"ok": False, "error": {"type": "KeyboardInterrupt", "message": "Interrupted"}, **extra})
         code = 130
     except Exception as exc:
-        output = dumps({"ok": False, "error": {"type": type(exc).__name__, "message": str(exc)}})
+        extra = {key: getattr(exc, key) for key in ("tool_events", "cleanup_errors") if hasattr(exc, key)}
+        output = dumps({"ok": False, "error": {"type": type(exc).__name__, "message": str(exc)}, **extra})
         print(f"pymybot: {exc}", file=sys.stderr)
         code = 2 if isinstance(exc, UsageError) else 1
     finally:

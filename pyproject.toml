@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8,<10"]
+agent = ["pydantic-ai-slim[openai,anthropic]==2.57.0"]
 linux = ["smbus2>=0.5; sys_platform == 'linux'", "spidev>=3.6; sys_platform == 'linux'"]
 
 [project.scripts]

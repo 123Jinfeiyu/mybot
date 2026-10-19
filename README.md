@@ -7,8 +7,8 @@
 ## 特性
 
 - **三层脚本**：`modules/*.lua` 驱动、`robots/*.sql` 结构、`scripts/*.mt` 动作，一一对应。
-- **一次性 CLI**：每次调用独立装配、执行、清理，stdout 只输出一条 JSON，诊断走 stderr。
-- **默认安全**：静态命令不激活驱动；`run` / `sample` / `apply-sql` 默认只允许虚拟总线、串口回环或图片文件，必须显式 `--allow-hardware` 才打开物理设备。
+- **双模式 CLI**：无子命令时默认 PydanticAI 智能体；`--no-agent --input` 和原有子命令直接执行，不加载模型依赖。stdout 始终只输出一条最终 JSON，交互与诊断走 stderr。
+- **默认安全**：静态命令不激活驱动；`run` / `sample` / `apply-sql` 默认只允许虚拟总线、串口回环或图片文件，必须显式 `--allow-hardware` 才打开物理设备。智能体的脚本、读取和拍照另需操作者确认。
 - **跨平台 HAL**：UART 走 pyserial，I2C/SPI 走 pyftdi（MPSSE），Camera 走 OpenCV；Linux 可选 smbus2/spidev。Windows / Linux / macOS 均可运行。
 - **无硬件验证**：内置虚拟总线（`virtbus`）、寄存器映射模型、串口 `loop://` 回环，支持 NACK / 超时 / 短读等故障注入。
 - **后台采样**：Daemon 表基于 Python 线程和独立 Lua 状态做周期采样，支持单设备、多设备同总线和聚合。
@@ -45,6 +45,8 @@ python -m venv .venv
 ```
 
 Linux 上需要原生 `/dev/i2c-*` / `/dev/spidev*` 时追加 `.[linux]`。安装后可用 `pymybot` 命令或 `python -m pymybot`。
+
+启用智能体时，在虚拟环境内安装 `python -m pip install -e ".[agent,test]"`。仅直接执行可继续使用基础安装，不需要 PydanticAI、模型 API Key 或模型网络请求。智能体依赖锁定为已验证接口版本；缺少依赖时明确报错，不静默降级。
 
 验证依赖：
 
@@ -112,6 +114,34 @@ require_driver("uart", {
 ```
 
 `build` / `call` / `destroy` 返回非空表，推荐 `{result="OK", ...}` 或 `err("原因")`；可选 `read(data)` 提供快照。
+
+## 智能体与无智能体模式
+
+智能体使用 PydanticAI；不带子命令的 `--robot` 入口默认进入智能体模式，也可显式写 `agent`。配置 `MYBOT_MODEL`（或 `--model`），例如 `openai:你的模型名`、`anthropic:你的模型名`、`deepseek:你的模型名`。API Key 分别通过 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY` 提供；可用 `--api-key-env NAME` 指定其他环境变量，命令行不直接接收密钥。
+
+```sh
+# 一次性自然语言任务（先配置模型与 API Key）
+python -m pymybot --robot robots/relay-test.sql --task "列出硬件和可用动作脚本"
+
+# 交互会话：终端输入任务，/exit 退出
+python -m pymybot --robot robots/relay-test.sql
+
+# 无智能体：不需要模型配置或 agent 依赖，直接执行
+python -m pymybot --no-agent --robot robots/relay-test.sql --input scripts/relay-test.mt
+
+# 原有命令始终不经过模型
+python -m pymybot run --robot robots/relay-test.sql --input scripts/relay-test.mt
+```
+
+`--base-url`（或 `MYBOT_BASE_URL`）支持自定义端点，要求 HTTPS；本地回环服务允许 HTTP。地址中禁止凭据、查询参数和 fragment。兼容端点也需要配置 API Key 环境变量，本地无认证服务可使用非秘密占位值。各模型的工具调用和视觉能力不保证相同，需在部署时验证；默认 SDK 自动重试关闭。
+
+第一版智能体提供 `list_hardware`、`list_action_scripts`、`query_sql`、`run_action_script`；通过重复 `--read-var NAME` 开放指定变量读取，通过 `--camera-var NAME` 开放指定 Camera 变量的图片输入。脚本仅能来自 `--scripts-dir`（默认内置 scripts），只能选择已存在的相对 `.mt` 路径，不能创建脚本、执行 shell、写文件或热更新 SQL。文件图片仍需 `--camera-src-dir`，来源由 Camera 的结构配置决定。
+
+脚本执行、读取和拍照都会请求确认，因为激活和读取也可能写硬件。非交互任务不能弹出确认，默认拒绝这些调用；操作者可显式 `--allow-actions` 预先授权该会话中的这些工具。它**不等于** `--allow-hardware`，两道开关独立；不要对不可信脚本预授权。
+
+每个任务默认最多 8 次模型请求、16 次工具调用、180 秒墙钟预算，可用 `--max-requests`、`--max-tool-calls`、`--timeout` 调整。Robot 创建、工具调用和销毁在同一专用线程串行执行；动作已开始后的异常锁存为结果不明，拒绝后续工具派发，不自动重试或声称回滚。取消/超时停止模型及新派发，但无法强杀阻塞的原生 I/O；清理需等待已下发调用退出，不是物理急停。
+
+交互历史按完整轮次裁剪（最多 6 轮、4 MiB），避免孤立工具回执。最终 JSON 的 `tool_events` 仅记录工具名与执行状态，不保存参数、密钥或图片。此版不提供跨进程常驻后端、会话落盘恢复、ICA 或持久化审计日志；agent 退出时会清理同进程 Robot，不能自动恢复未完成动作。
 
 ## CLI 命令
 
