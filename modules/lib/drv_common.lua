@@ -72,17 +72,35 @@ end
 -- 注入必须在驱动碰总线之前完成，故 arg_table（各驱动入口第一行）仍代调它。
 local virt_state = "idle"		-- idle → done | error:<原因>；每状态机只尝试一次
 
+-- 按模块路径探测并加载一个共享库（rel 相对模块根，如 "lib/virtbus.lua"），
+-- 返回其模块表；找不到/加载失败返回 nil，由调用方决定兜底。
+-- 宿主注入了 __mpath（bot4cj luasandbox、pymybot runtime）时交给它解析：
+-- 自行按 ':' 切分 BOT4CJ_MODULE_PATH 会把 Windows 盘符（C:\...）切成假路径，
+-- 每次加载都抛一次被吞掉的 Lua 错误，且永远走不到真文件。脱离宿主直跑
+-- （luajit 单测、scscl_scan）没有 __mpath，才回到逐段切分。
+-- load 缺省为全局 dofile；virt_prepare 传入自己环境里的 dofile，宿主（pymybot
+-- HAL.lua）对 virt_prepare 做 setfenv 拦截时才能命中本状态机已有的实例。
+local function probe_lib(rel, load)
+	load = load or dofile
+	if __mpath ~= nil then
+		local ok, v = pcall(load, __mpath.resolve(rel))
+		if ok and type(v) == "table" then return v end
+		return nil
+	end
+	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
+		local ok, v = pcall(load, p .. "/" .. rel)
+		if ok and type(v) == "table" then return v end
+	end
+	return nil
+end
+
 -- 独立入口：准备虚拟总线（加载 virtbus → 发现并挂载 *_VIRT 模型 → inject）
 -- 返回 nil 表示无需动作或已就绪；返回字符串表示必须中止本次驱动调用
 function virt_prepare(data)
 	-- fix-plan 3-3：BOT4CJ_MODULE_PATH 各段逐段探测（此前只取首段，多路径
 	-- 布局下首段没有 virtbus.lua 即误报 cannot load）。保持原有「无仓库
 	-- 缺省布局兜底」的报错契约：找不到仍走 error 分支（见下）。
-	local vbus
-	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
-		local ok, v = pcall(dofile, p .. "/lib/virtbus.lua")
-		if ok and type(v) == "table" then vbus = v break end
-	end
+	local vbus = probe_lib("lib/virtbus.lua", dofile)
 	if type(vbus) ~= "table" then
 		virt_state = "error:cannot load lib/virtbus.lua"
 		return virt_state:sub(7)
@@ -243,10 +261,7 @@ end
 -- （与 virt_prepare 同一手法；bus_contract 自带重入口守卫，身份不变）。
 local bus = __BOT4CJ_BUS_CONTRACT
 if bus == nil then
-	for p in (os.getenv("BOT4CJ_MODULE_PATH") or "./modules"):gmatch("[^:]+") do
-		local ok, v = pcall(dofile, p .. "/lib/bus_contract.lua")
-		if ok and type(v) == "table" then bus = v break end
-	end
+	bus = probe_lib("lib/bus_contract.lua")
 end
 -- 兜底：布局异常导致 bus_contract 不可达时，判定不得静默退化成「NaN 放行」
 -- ——那正是本防线要堵的洞。兜底分支与 finite_of 逐字同判据，仅此一处。

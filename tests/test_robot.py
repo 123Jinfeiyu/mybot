@@ -178,6 +178,41 @@ def test_numeric_variables_accept_source_numeric_literals(literal, expected):
         assert robot.registry.resolve_number("x") == expected
 
 
+def test_library_probes_survive_drive_letters_and_colons(tmp_path, monkeypatch):
+    # Shared Lua libraries used to split BOT4CJ_MODULE_PATH on ':', so a Windows drive
+    # letter (or a POSIX directory containing ':') produced bogus probe paths and every
+    # activation raised and swallowed Lua errors. Every probe must now hit a real file.
+    import sys
+    from conftest import I2C_DRIVER, PRELUDE
+    from pymybot.runtime import LuaState
+
+    root = tmp_path / ("drivers" if sys.platform == "win32" else "drivers:extra")
+    root.mkdir()
+    (root / "SyntheticI2C.lua").write_text(PRELUDE + I2C_DRIVER, encoding="utf-8")
+    failures = []
+    original = LuaState._loader
+    def recording_loader(self, path):
+        loaded = original(self, path)
+        if isinstance(loaded, tuple):
+            failures.append(str(path))
+        return loaded
+    monkeypatch.setattr(LuaState, "_loader", recording_loader)
+    sql = '''CREATE TABLE Timer(name String); INSERT INTO Timer(name) VALUES('timer-0');
+CREATE TABLE Relay(name String, controller String); INSERT INTO Relay(name,controller) VALUES('relay0','timer-0');
+CREATE TABLE UART(name String,path String,baud Number); INSERT INTO UART(name,path,baud) VALUES('uart','loop://',115200);
+CREATE TABLE I2C(name String,path String,proto String); INSERT INTO I2C(name,path,proto) VALUES('bus','virt-i2c-0','virt');
+CREATE TABLE SyntheticI2C(name String,I2C String,address Number,proto String); INSERT INTO SyntheticI2C(name,I2C,address,proto) VALUES('dev','$bus',49,'virt');
+CREATE TABLE Daemon(name String,chunk String,proto String,driver String,addr Number,fields String);
+INSERT INTO Daemon(name,chunk,proto,driver,addr,fields) VALUES('d','lib/sensor_daemon.lua','virt','SyntheticI2C',49,'TAG:f');'''
+    with Robot(sql, module_paths=[root, ROOT / "modules"]) as robot:
+        assert robot.run("@Action\nrelay0.test;\n1;\n@")[-1]["result"] == "OK"
+        assert robot.registry["d"].wait_for_sample(timeout=3)["values"] == [7]
+    # The only expected miss: sensor_daemon prefers a standalone lib/virtbus/<driver>.lua
+    # model and falls back to the driver's embedded *_VIRT factory by design.
+    unexpected = [p for p in failures if not p.replace("\\", "/").endswith("lib/virtbus/synthetici2c.lua")]
+    assert unexpected == []
+
+
 def test_empty_module_path_segments_use_default(monkeypatch):
     import os
     from pymybot.robot import module_roots
